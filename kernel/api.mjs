@@ -27,8 +27,10 @@ function* segmentText(buffer) {
   }
 }
 
-async function* mockStream({ lastUserContent, signal }) {
-  const text = 'mock: ' + String(lastUserContent || '').slice(0, 120)
+async function* mockStream({ messages, signal }) {
+  const userMsgs = (messages || []).filter((m) => m.role === 'user')
+  const lastUser = userMsgs[userMsgs.length - 1]
+  const text = `mock: ${String(lastUser?.content ?? '').slice(0, 120)} (turn=${userMsgs.length})`
   // 模拟流式：切 3 段，段间短暂停顿使 cancel 可中断
   const step = Math.max(1, Math.ceil(text.length / 3))
   let rest = text
@@ -107,10 +109,9 @@ async function* remoteStream({ model, body, signal }) {
 export async function* streamMessages({ model, messages, maxTokens, signal }) {
   const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n')
   const rest = messages.filter((m) => m.role !== 'system')
-  const lastUser = [...messages].reverse().find((m) => m.role === 'user')
 
   if (process.env.YFW_MOCK_API === '1') {
-    yield* mockStream({ lastUserContent: lastUser?.content ?? '', signal })
+    yield* mockStream({ messages, signal })
     return
   }
   const body = {
