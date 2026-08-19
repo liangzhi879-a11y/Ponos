@@ -37,6 +37,16 @@ before(async () => {
   port = bridge.httpServer.address().port
 })
 
+// Windows 并发下子进程句柄释放有延迟，rmSync 会偶发 EPERM——重试兜底
+function rmSyncRetry(path, attempts = 8) {
+  for (let i = 0; i < attempts; i++) {
+    try { rmSync(path, { recursive: true, force: true }); return } catch (e) {
+      if (i === attempts - 1) throw e
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60)
+    }
+  }
+}
+
 after(async () => {
   // 杀掉 bridge 持有的 mock 内核进程（stdin 由 bridge 持有，测试结束必须清理），
   // 并等待其真正退出后再删临时目录（否则 rmSync EPERM / 进程句柄挂住事件循环）
@@ -54,7 +64,7 @@ after(async () => {
     try { ws.close() } catch {}
   }
   await new Promise((resolve) => bridge.httpServer.close(resolve))
-  rmSync(home, { recursive: true, force: true })
+  rmSyncRetry(home)
 })
 
 // --- 工具函数 ---------------------------------------------------------------

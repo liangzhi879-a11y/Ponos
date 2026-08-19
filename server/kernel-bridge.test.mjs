@@ -1,0 +1,161 @@
+// 真实内核 ↔ bridge 端到端集成测试（kernel/cli.mjs —— docs/bridge-contract.md §5/§6/§8）
+// ---------------------------------------------------------------------------
+// 与 bridge-contract.test.mjs 同构，但内核进程是净室引擎本体（YFWORKING_KERNEL
+// 指向 kernel/cli.mjs + YFWORKING_BUN=node + YFW_MOCK_API=1），验证 bridge 的
+// spawn 参数注入、事件转发、轮次闭环、cancel 与会话保留在真实引擎上成立。
+import { test, before, after } from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import WebSocket from 'ws'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const REAL_KERNEL = join(__dirname, '..', 'kernel', 'cli.mjs')
+
+let home
+let bridge
+let port
+let clients = []
+
+before(async () => {
+  home = mkdtempSync(join(tmpdir(), 'kernel-bridge-'))
+  process.env.YFW_HOME = home
+  process.env.YFW_BRIDGE_NO_LISTEN = '1'
+  process.env.YFWORKING_KERNEL = REAL_KERNEL
+  process.env.YFWORKING_BUN = process.execPath
+  process.env.YFW_MOCK_API = '1'
+  process.env.YFW_KERNEL_IDLE_MS = '0'    // 关闭空闲回收
+  process.env.YFW_KERNEL_STALL_MS = '0'   // 关闭 stall 告警
+
+  bridge = await import('./bridge.mjs')
+  await new Promise((resolve) => bridge.httpServer.listen(0, resolve))
+  port = bridge.httpServer.address().port
+})
+
+// Windows 并发下子进程句柄释放有延迟，rmSync 会偶发 EPERM——重试兜底
+function rmSyncRetry(path, attempts = 8) {
+  for (let i = 0; i < attempts; i++) {
+    try { rmSync(path, { recursive: true, force: true }); return } catch (e) {
+      if (i === attempts - 1) throw e
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60)
+    }
+  }
+}
+
+after(async () => {
+  const procs = [...bridge.sessions.values()].map((s) => s.proc).filter(Boolean)
+  for (const p of procs) {
+    try { p.kill() } catch {}
+  }
+  await Promise.all(procs.map((p) => new Promise((resolve) => {
+    if (p.exitCode !== null) return resolve()
+    const t = setTimeout(resolve, 2000)
+    t.unref?.()
+    p.once('exit', () => { clearTimeout(t); resolve() })
+  })))
+  for (const ws of clients) {
+    try { ws.close() } catch {}
+  }
+  await new Promise((resolve) => bridge.httpServer.close(resolve))
+  rmSyncRetry(home)
+})
+
+function connect() {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`)
+    ws._yfwQueue = []
+    ws._yfwWaiter = null
+    ws.on('message', (raw) => {
+      const m = JSON.parse(raw.toString())
+      const w = ws._yfwWaiter
+      if (w && w.predicate(m)) {
+        ws._yfwWaiter = null
+        clearTimeout(w.timer)
+        w.resolve(m)
+      } else {
+        ws._yfwQueue.push(m)
+      }
+    })
+    ws.on('open', () => resolve(ws))
+    ws.on('error', reject)
+    clients.push(ws)
+  })
+}
+
+function collect(ws, predicate, { timeoutMs = 5000 } = {}) {
+  const idx = ws._yfwQueue.findIndex(predicate)
+  if (idx >= 0) return Promise.resolve(ws._yfwQueue.splice(idx, 1)[0])
+  return new Promise((resolve, reject) => {
+    const w = { predicate, resolve, reject, timer: null }
+    w.timer = setTimeout(() => {
+      if (ws._yfwWaiter === w) ws._yfwWaiter = null
+      reject(new Error('collect timeout, queue=' + JSON.stringify(ws._yfwQueue)))
+    }, timeoutMs)
+    ws._yfwWaiter = w
+  })
+}
+
+function send(ws, msg) {
+  ws.send(JSON.stringify(msg))
+}
+
+// 收集某会话的一轮：assistant 事件（拼接 text）直到该会话 result
+async function collectTurn(ws, SID) {
+  const texts = []
+  while (true) {
+    const ev = await collect(ws, (m) => m.type === 'event' && m.sessionId === SID &&
+      (m.data.type === 'assistant' || m.data.type === 'result'))
+    if (ev.data.type === 'result') return texts.join('')
+    for (const b of ev.data.message.content) if (b.type === 'text') texts.push(b.text)
+  }
+}
+
+test('端到端：spawn 真实内核 → system(init) → 一轮 mock 对话 → result', async () => {
+  const ws = await connect()
+  const SID = 's-e2e'
+  send(ws, { type: 'send', sessionId: SID, cwd: home, prompt: '你好内核', requestId: 'r-e2e' })
+  const ack = await collect(ws, (m) => m.type === 'ack' && m.data.sessionId === SID)
+  assert.equal(ack.data.requestId, 'r-e2e')
+  // system(init) 被 bridge 以 event 包装转发
+  const init = await collect(ws, (m) => m.type === 'event' && m.sessionId === SID && m.data.type === 'system')
+  assert.equal(init.data.subtype, 'init')
+  // 一轮对话：mock 流文本
+  const text = await collectTurn(ws, SID)
+  assert.equal(text, 'mock: 你好内核')
+})
+
+test('端到端：cancel → cancelled 事件 + result，会话保留可续聊', async () => {
+  const ws = await connect()
+  const SID = 's-cancel'
+  send(ws, { type: 'send', sessionId: SID, cwd: home, prompt: '慢点', requestId: 'r-c1' })
+  await collect(ws, (m) => m.type === 'ack' && m.data.sessionId === SID)
+  await new Promise((r) => setTimeout(r, 60))
+  send(ws, { type: 'cancel', sessionId: SID })
+  const cancelled = await collect(ws, (m) => m.type === 'cancelled' && m.data?.sessionId === SID)
+  assert.ok(cancelled)
+  const text = await collectTurn(ws, SID)
+  assert.match(text, /已取消。$/)
+  // 会话保留：同 sessionId 续聊
+  send(ws, { type: 'send', sessionId: SID, cwd: home, prompt: '接着聊', requestId: 'r-c2' })
+  const again = await collectTurn(ws, SID)
+  assert.equal(again, 'mock: 接着聊')
+})
+
+test('端到端：resume 重开（--resume 注入），历史上下文保留', async () => {
+  const ws = await connect()
+  const SID = 's-resume'
+  send(ws, { type: 'send', sessionId: SID, cwd: home, prompt: '第一轮', requestId: 'r-r1' })
+  await collect(ws, (m) => m.type === 'ack' && m.data.sessionId === SID)
+  const t1 = await collectTurn(ws, SID)
+  assert.equal(t1, 'mock: 第一轮')
+  // 同一会话再次 send（bridge 复用进程，不重 spawn）——先验证进程复用
+  const session = bridge.sessions.get(SID)
+  const pid1 = session?.proc?.pid
+  send(ws, { type: 'send', sessionId: SID, cwd: home, prompt: '第二轮', requestId: 'r-r2' })
+  const t2 = await collectTurn(ws, SID)
+  assert.equal(t2, 'mock: 第二轮')
+  const pid2 = session?.proc?.pid
+  assert.equal(pid1, pid2, '同会话复用同一内核进程')
+})
