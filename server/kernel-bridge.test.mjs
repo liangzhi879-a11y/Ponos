@@ -5,11 +5,12 @@
 // spawn 参数注入、事件转发、轮次闭环、cancel 与会话保留在真实引擎上成立。
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
+import { sanitizeSegment } from '../kernel/session.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const REAL_KERNEL = join(__dirname, '..', 'kernel', 'cli.mjs')
@@ -123,7 +124,16 @@ test('端到端：spawn 真实内核 → system(init) → 一轮 mock 对话 →
   assert.equal(init.data.subtype, 'init')
   // 一轮对话：mock 流文本
   const text = await collectTurn(ws, SID)
-  assert.equal(text, 'mock: 你好内核')
+  assert.equal(text, "mock: 你好内核 (turn=1)")
+  // 内核会话 id 从 init 事件携带 → GUI 绑定 conversation.sessionId 后
+  // resume 用；transcript 落盘路径与 bridge /transcript/load 读取路径一致
+  const sid = init.data.session_id
+  assert.ok(sid)
+  const file = join(home, 'projects', sanitizeSegment(home), sid + '.jsonl')
+  assert.ok(existsSync(file), 'transcript 文件应落在 bridge 读取路径')
+  const entries = readFileSync(file, 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
+  assert.equal(entries.length, 2)
+  assert.equal(entries[0].message.content, '你好内核')
 })
 
 test('端到端：cancel → cancelled 事件 + result，会话保留可续聊', async () => {
@@ -140,7 +150,7 @@ test('端到端：cancel → cancelled 事件 + result，会话保留可续聊',
   // 会话保留：同 sessionId 续聊
   send(ws, { type: 'send', sessionId: SID, cwd: home, prompt: '接着聊', requestId: 'r-c2' })
   const again = await collectTurn(ws, SID)
-  assert.equal(again, 'mock: 接着聊')
+  assert.equal(again, "mock: 接着聊 (turn=2)")
 })
 
 test('端到端：resume 重开（--resume 注入），历史上下文保留', async () => {
@@ -149,13 +159,13 @@ test('端到端：resume 重开（--resume 注入），历史上下文保留', a
   send(ws, { type: 'send', sessionId: SID, cwd: home, prompt: '第一轮', requestId: 'r-r1' })
   await collect(ws, (m) => m.type === 'ack' && m.data.sessionId === SID)
   const t1 = await collectTurn(ws, SID)
-  assert.equal(t1, 'mock: 第一轮')
+  assert.equal(t1, "mock: 第一轮 (turn=1)")
   // 同一会话再次 send（bridge 复用进程，不重 spawn）——先验证进程复用
   const session = bridge.sessions.get(SID)
   const pid1 = session?.proc?.pid
   send(ws, { type: 'send', sessionId: SID, cwd: home, prompt: '第二轮', requestId: 'r-r2' })
   const t2 = await collectTurn(ws, SID)
-  assert.equal(t2, 'mock: 第二轮')
+  assert.equal(t2, "mock: 第二轮 (turn=2)")
   const pid2 = session?.proc?.pid
   assert.equal(pid1, pid2, '同会话复用同一内核进程')
 })

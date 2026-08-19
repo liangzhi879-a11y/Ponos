@@ -17,8 +17,11 @@
 import { createInterface } from 'node:readline'
 import { readFileSync, existsSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { createEngine } from './engine.mjs'
 import { makeWire } from './protocol.mjs'
+import { createSessionStore, newSessionId } from './session.mjs'
 
 const REQUIRED_FORMAT = 'stream-json'
 
@@ -91,10 +94,15 @@ export function main(argv) {
   }
 
   const wire = makeWire()
-  // system(init)：spawn 即发。bridge /test-provider 以此判定 CLI 加载成功，
-  // 并读取 model/tools 字段（bridge.mjs verifyProvider）。
+  // 会话身份：--resume 恢复既有会话，否则新建（session_id 供 GUI 从 init 事件
+  // 记录 conversation.sessionId，transcript 文件名 = 该 id，契约 §7/§8）
+  const sessionId = args.resume || newSessionId()
+  const configDir = process.env.CLAUDE_CONFIG_DIR || process.env.YFWORKING_HOME || join(homedir(), '.yfworking')
+  const store = createSessionStore({ configDir, cwd: args.addDirs[0] || '', sessionId })
+  // system(init)：spawn 即发。bridge /test-provider 判定 CLI 加载成功并读取
+  // model/tools；GUI 从 session_id 绑定会话（useYFWCLI.ts handleMessage）。
   const model = args.model || process.env.ANTHROPIC_MODEL || ''
-  wire.system('init', { model, tools: [] })
+  wire.system('init', { model, tools: [], session_id: sessionId })
 
   const engine = createEngine({
     opts: {
@@ -106,18 +114,30 @@ export function main(argv) {
     },
     wire,
   })
+  // --resume：从 transcript 恢复历史（同文件即 GUI 读取的权威源）
+  if (args.resume) {
+    const entries = store.load()
+    const history = entries.filter((e) => e?.type === 'user' || e?.type === 'assistant')
+    engine.seedHistory(history.map((e) => e.message))
+  }
 
   const state = { turnActive: false, queue: [], cancelling: false }
 
   async function handleUser(msg) {
+    const content = extractContent(msg)
+    const userEntry = store.userEntry(content)
+    store.append(userEntry)
     state.turnActive = true
     try {
-      const { usage } = await engine.runTurn({ content: extractContent(msg), msg })
+      const { usage, text, model: turnModel } = await engine.runTurn({ content, msg })
       wire.result(usage)
+      // 轮次落盘（transcript 权威源；assistant content 为块数组，含 usage/model）
+      store.append(store.assistantEntry([{ type: 'text', text }], { usage, model: turnModel }))
     } catch (err) {
       if (err?.name === 'AbortError' || state.cancelling) {
         wire.assistant('已取消。')
         wire.result()
+        store.append(store.assistantEntry([{ type: 'text', text: '已取消。' }]))
       } else {
         wire.assistant('处理出错：' + (err?.message || String(err)))
         wire.result()

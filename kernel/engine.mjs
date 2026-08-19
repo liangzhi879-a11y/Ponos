@@ -47,7 +47,7 @@ export function createEngine({ opts = {}, wire }) {
       }
       // 流式多段文本合并为单条历史（多轮对话上下文完整性）
       if (textBuf.trim()) history.push({ role: 'assistant', content: textBuf })
-      return { usage, model }
+      return { usage, model, text: textBuf }
     },
   }
 }
