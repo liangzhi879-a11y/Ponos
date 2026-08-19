@@ -27,11 +27,10 @@ function* segmentText(buffer) {
   }
 }
 
-async function* mockStream({ messages, signal }) {
-  const userMsgs = (messages || []).filter((m) => m.role === 'user')
-  const lastUser = userMsgs[userMsgs.length - 1]
-  const text = `mock: ${String(lastUser?.content ?? '').slice(0, 120)} (turn=${userMsgs.length})`
-  // 模拟流式：切 3 段，段间短暂停顿使 cancel 可中断
+const MOCK_USAGE = { input_tokens: 10, output_tokens: 20 }
+
+// 模拟流式文本：切 3 段，段间短暂停顿使 cancel 可中断
+async function* streamText(text, signal) {
   const step = Math.max(1, Math.ceil(text.length / 3))
   let rest = text
   while (rest) {
@@ -41,7 +40,36 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'text', text: rest.slice(0, step) }
     rest = rest.slice(step)
   }
-  yield { type: 'usage', usage: { input_tokens: 10, output_tokens: 20 } }
+}
+
+async function* mockStream({ messages, signal }) {
+  const userMsgs = (messages || []).filter((m) => m.role === 'user')
+  const lastUser = userMsgs[userMsgs.length - 1]
+  const lastContent = lastUser?.content
+  const lastText = typeof lastContent === 'string'
+    ? lastContent
+    : (Array.isArray(lastContent) ? lastContent.filter((b) => b?.type === 'text').map((b) => b.text).join('\n') : '')
+  const toolResults = Array.isArray(lastContent) ? lastContent.filter((b) => b?.type === 'tool_result') : []
+
+  // 工具结果回合：tool_result 已注入 → 报告执行结果（引擎工具循环第二轮）
+  if (toolResults.length) {
+    const body = `工具执行完成：${String(toolResults[0].content ?? '').slice(0, 120)}`
+    yield* streamText(body, signal)
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // 工具请求回合：[mock:tool] 触发 Bash tool_use（rm -rf 高危 → 审批挂起）
+  if (lastText.includes('[mock:tool]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_mock_1', name: 'Bash', input: { command: 'rm -rf /tmp/yfw-mock-target' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // 普通回合：回显（带 turn 计数，历史恢复可断言）
+  const text = `mock: ${String(lastText).slice(0, 120)} (turn=${userMsgs.length})`
+  yield* streamText(text, signal)
+  yield { type: 'usage', usage: MOCK_USAGE }
 }
 
 // 真实 API 流：fetch SSE 解析（Anthropic Messages 事件形状）
@@ -68,6 +96,8 @@ async function* remoteStream({ model, body, signal }) {
   let buf = ''
   let textBuf = ''
   let usage = {}
+  // tool_use 累积状态（content_block_start → input_json_delta → stop）
+  let tool = null // { index, id, name, inputJson }
   try {
     while (true) {
       const { done, value } = await reader.read()
@@ -84,13 +114,22 @@ async function* remoteStream({ model, body, signal }) {
         let ev
         try { ev = JSON.parse(payload) } catch { continue }
         const dt = ev.delta
-        if (ev.type === 'content_block_delta' && dt) {
+        if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use') {
+          tool = { index: ev.index, id: ev.content_block.id, name: ev.content_block.name, inputJson: '' }
+        } else if (ev.type === 'content_block_delta' && dt) {
           if (dt.type === 'text_delta' && dt.text) {
             textBuf += dt.text
             for (const seg of segmentText(textBuf)) { textBuf = ''; yield seg }
           } else if (dt.type === 'thinking_delta' && dt.thinking) {
             yield { type: 'thinking', text: dt.thinking }
+          } else if (dt.type === 'input_json_delta' && tool && dt.partial_json) {
+            tool.inputJson += dt.partial_json
           }
+        } else if (ev.type === 'content_block_stop' && tool) {
+          let input = {}
+          try { input = tool.inputJson ? JSON.parse(tool.inputJson) : {} } catch {}
+          yield { type: 'tool_use', id: tool.id, name: tool.name, input }
+          tool = null
         } else if (ev.type === 'message_start' && ev.message?.usage) {
           usage = { input_tokens: ev.message.usage.input_tokens ?? 0, output_tokens: ev.message.usage.output_tokens ?? 0 }
         } else if (ev.type === 'message_delta' && ev.usage) {

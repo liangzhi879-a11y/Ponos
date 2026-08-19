@@ -250,6 +250,70 @@ test('resume 恢复历史：--resume <sessionId> 从 transcript 恢复，turn �
   } finally { m.close() }
 })
 
+test('工具循环 + 审批闭环：can_use_tool 挂起 → control_response(allow) → 执行 → 结果文本', async () => {
+  const m = spawnKernel()
+  try {
+    const init = await readInit(m.reader)
+    assert.ok(init.tools.includes('Bash'))
+    m.send({ type: 'user', message: { role: 'user', content: '[mock:tool] 清理临时目录' } })
+    // 引擎先转发 tool_use 块（assistant 事件），随后高危 Bash 挂起审批
+    const toolEv = await m.reader.nextEvent()
+    assert.equal(toolEv.type, 'assistant')
+    assert.equal(toolEv.message.content[0].type, 'tool_use')
+    assert.equal(toolEv.message.content[0].name, 'Bash')
+    // 高危 Bash → can_use_tool control_request 挂起
+    const cr = await m.reader.nextEvent()
+    assert.equal(cr.type, 'control_request')
+    assert.equal(cr.request.subtype, 'can_use_tool')
+    assert.equal(cr.request.tool_name, 'Bash')
+    assert.match(cr.request.input.command, /rm -rf/)
+    assert.ok(cr.request_id)
+    // 回执 allow → 工具执行 → 再调 API → 文本 + result
+    m.send({
+      type: 'control_response',
+      response: {
+        request_id: cr.request_id,
+        subtype: 'success',
+        response: { behavior: 'allow', updatedInput: {}, toolUseID: cr.request.tool_use_id, decisionClassification: 'user_temporary' },
+      },
+    })
+    const turn = await collectTurn(m.reader)
+    assert.match(turn.text, /工具执行完成：/)
+  } finally { m.close() }
+})
+
+test('工具审批 deny：拒绝后不执行，模型收到拒绝结果', async () => {
+  const m = spawnKernel()
+  try {
+    await readInit(m.reader)
+    m.send({ type: 'user', message: { role: 'user', content: '[mock:tool] 清理' } })
+    const toolEv = await m.reader.nextEvent()
+    assert.equal(toolEv.type, 'assistant')
+    const cr = await m.reader.nextEvent()
+    assert.equal(cr.type, 'control_request')
+    m.send({
+      type: 'control_response',
+      response: {
+        request_id: cr.request_id,
+        subtype: 'success',
+        response: { behavior: 'deny', message: '用户拒绝了该高危操作', toolUseID: cr.request.tool_use_id },
+      },
+    })
+    const turn = await collectTurn(m.reader)
+    assert.match(turn.text, /拒绝/)
+  } finally { m.close() }
+})
+
+test('highrisk 匹配：rm -rf / git push --force / taskkill 触发，普通命令不触发', async () => {
+  const { matchesHighRisk } = await import('../kernel/highrisk.mjs')
+  assert.equal(matchesHighRisk('rm -rf /tmp/foo'), true)
+  assert.equal(matchesHighRisk('git push --force origin main'), true)
+  assert.equal(matchesHighRisk('taskkill /F /IM node.exe'), true)
+  assert.equal(matchesHighRisk('echo hello'), false)
+  assert.equal(matchesHighRisk('ls -la'), false)
+  assert.equal(matchesHighRisk('git status'), false)
+})
+
 test('stdin 关闭：进程正常退出（exit 0）', async () => {
   const m = spawnKernel()
   await readInit(m.reader)

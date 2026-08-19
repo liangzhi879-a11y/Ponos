@@ -153,6 +153,26 @@ test('端到端：cancel → cancelled 事件 + result，会话保留可续聊',
   assert.equal(again, "mock: 接着聊 (turn=2)")
 })
 
+test('端到端：高危 Bash 触发 approval 事件 → approval-response 回填 → 工具执行', async () => {
+  const ws = await connect()
+  const SID = 's-approval'
+  send(ws, { type: 'send', sessionId: SID, cwd: home, prompt: '[mock:tool] 清理', requestId: 'r-a1' })
+  await collect(ws, (m) => m.type === 'ack' && m.data.sessionId === SID)
+  await collect(ws, (m) => m.type === 'event' && m.sessionId === SID && m.data.type === 'system')
+  // GUI 视角：approval 事件（toolUseId/command/reason/highRisk）
+  const approval = await collect(ws, (m) => m.type === 'approval' && m.sessionId === SID)
+  assert.equal(approval.data.toolName, 'Bash')
+  assert.match(approval.data.command, /rm -rf/)
+  assert.equal(approval.data.highRisk, true)
+  assert.ok(approval.data.requestId)
+  // GUI 批准 → bridge 回填 control_response → 内核执行 → 结果文本
+  send(ws, { type: 'approval-response', sessionId: SID, toolUseId: approval.data.toolUseId, approved: true })
+  const text = await collectTurn(ws, SID)
+  assert.match(text, /工具执行完成：/)
+  const resolved = await collect(ws, (m) => m.type === 'approval-resolved' && m.sessionId === SID)
+  assert.equal(resolved.data.toolUseId, approval.data.toolUseId)
+})
+
 test('端到端：resume 重开（--resume 注入），历史上下文保留', async () => {
   const ws = await connect()
   const SID = 's-resume'

@@ -99,10 +99,6 @@ export function main(argv) {
   const sessionId = args.resume || newSessionId()
   const configDir = process.env.CLAUDE_CONFIG_DIR || process.env.YFWORKING_HOME || join(homedir(), '.yfworking')
   const store = createSessionStore({ configDir, cwd: args.addDirs[0] || '', sessionId })
-  // system(init)：spawn 即发。bridge /test-provider 判定 CLI 加载成功并读取
-  // model/tools；GUI 从 session_id 绑定会话（useYFWCLI.ts handleMessage）。
-  const model = args.model || process.env.ANTHROPIC_MODEL || ''
-  wire.system('init', { model, tools: [], session_id: sessionId })
 
   const engine = createEngine({
     opts: {
@@ -111,9 +107,14 @@ export function main(argv) {
       addDirs: args.addDirs,
       systemPrompt: readPromptFile(args.appendSystemPromptFile),
       verbose: args.verbose,
+      skipPermissions: args.skipPermissions,
     },
     wire,
   })
+  // system(init)：spawn 即发。bridge /test-provider 判定 CLI 加载成功并读取
+  // model/tools；GUI 从 session_id 绑定会话（useYFWCLI.ts handleMessage）。
+  const model = args.model || process.env.ANTHROPIC_MODEL || ''
+  wire.system('init', { model, tools: engine.toolNames, session_id: sessionId })
   // --resume：从 transcript 恢复历史（同文件即 GUI 读取的权威源）
   if (args.resume) {
     const entries = store.load()
@@ -181,7 +182,9 @@ export function main(argv) {
     } else if (parsed.type === 'control_request') {
       handleControlRequest(parsed)
     } else if (parsed.type === 'control_response') {
-      // 权限审批回执：里程碑 4（permissions.mjs）接入
+      // 权限审批回执：解除对应 tool_use 的挂起（engine 继续执行工具）
+      const inner = parsed.response?.response
+      if (inner?.toolUseID) engine.resolveApproval(inner.toolUseID, inner)
     }
   })
   rl.on('close', () => process.exit(0))
