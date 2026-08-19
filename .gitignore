@@ -1,0 +1,25 @@
+node_modules
+/node.exe
+dist
+dist-electron
+release
+.env
+.env.local
+*.log
+.DS_Store
+Thumbs.db
+
+# Debug residue scripts (temporary repro/probe scripts)
+.cli_*.mjs
+.cdp_*.mjs
+.yfw_*.mjs
+
+# Python cache
+__pycache__/
+*.pyc
+
+# SDD scratch workspace (per-plan review artifacts)
+.superpowers
+
+# Installed runtime environments (not source)
+runtime/
