@@ -117,7 +117,7 @@ ${YFW_MILESTONE_PROTOCOL}
 // All YFWorking state (skills, config, providers, sessions) lives here.
 // We never read from ~/.claude/ even if it exists on the machine.
 // ---------------------------------------------------------------------------
-const YFW_HOME = join(homedir(), '.yfworking')
+const YFW_HOME = process.env.YFW_HOME ? resolve(process.env.YFW_HOME) : join(homedir(), '.yfworking')
 const YFW_SKILLS_DIR = join(YFW_HOME, 'skills')
 const YFW_CONFIG_PATH = join(YFW_HOME, 'config.json')
 
@@ -2008,7 +2008,7 @@ sweepOrphanPromptFiles()
 if (!process.env.YFW_BRIDGE_NO_LISTEN) {
   httpServer.listen(PORT, () => { console.log('[bridge] http+ws://localhost:' + PORT); autoInstallSamples() })
 }
-export { httpServer }
+export { httpServer, sessions }
 wss.on('connection', (ws, req) => {
   // WebSocket 同样校验 Origin：浏览器发起的 WS 带 Origin 头，外部网页不得连接
   const wsOrigin = req.headers.origin
