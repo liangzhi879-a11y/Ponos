@@ -1,0 +1,362 @@
+[
+  {
+    "id": "brainstorming",
+    "name": "brainstorming",
+    "description": "You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation.",
+    "version": ""
+  },
+  {
+    "id": "context7",
+    "name": "context7",
+    "description": "Retrieve up-to-date documentation for software libraries, frameworks, and components via the Context7 API. This skill should be used when looking up documentation for any programming library or framework, finding code examples for specific APIs or features, verifying correct usage of library functions, or obtaining current information about library APIs that may have changed since training.",
+    "version": ""
+  },
+  {
+    "id": "dispatching-parallel-agents",
+    "name": "dispatching-parallel-agents",
+    "description": "Use when facing 2+ independent tasks that can be worked on without shared state or sequential dependencies",
+    "version": ""
+  },
+  {
+    "id": "example-skill",
+    "name": "example-skill",
+    "description": "示例技能：展示标准技能包格式。当用户提到示例技能、技能示例、skill example 时调用此技能。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "executing-plans",
+    "name": "executing-plans",
+    "description": "Use when you have a written implementation plan to execute in a separate session with review checkpoints",
+    "version": ""
+  },
+  {
+    "id": "find-skills",
+    "name": "find-skills",
+    "description": "Helps users discover and install agent skills when they ask questions like \"how do I do X\", \"find a skill for X\", \"is there a skill that can...\", or express interest in extending capabilities. This skill should be used when the user is looking for functionality that might exist as an installable skill.",
+    "version": ""
+  },
+  {
+    "id": "finishing-a-development-branch",
+    "name": "finishing-a-development-branch",
+    "description": "Use when implementation is complete, all tests pass, and you need to decide how to integrate the work",
+    "version": ""
+  },
+  {
+    "id": "frontend-design",
+    "name": "frontend-design",
+    "description": "Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and making choices that don't read as templated defaults.",
+    "version": ""
+  },
+  {
+    "id": "gxtz-achievement-materials",
+    "name": "gxtz-achievement-materials",
+    "description": "高新技术企业认定科技成果转化证明材料整理，确保成果与IP、RD、PS关联正确。当用户提到科技成果转化、成果转化、转化证明、整理成果转化材料时调用此技能。",
+    "version": "1.38.0"
+  },
+  {
+    "id": "gxtz-audit-verification",
+    "name": "gxtz-audit-verification",
+    "description": "高新专审报告核对技能：核对事务所出具的专审报告（研发费用专审+高新收入专审）与企业核心表格的一致性。5维度核对（跨报告一致性/RD内容/PS内容/IP内容/金额差异），核心原则：金额差异仅信息性不做严重性警告，非金额内容必须严格一致，按年度Sheet分别核对不跨表聚合。v1.9.0新增：年份硬过滤规则+OCR置信度预检+合同编号规范化。v1.10.0新增：doc转换fallback链+RAR版本MD5检测+技术领域逐字比对+locate文件名校验权重。",
+    "version": "1.10.0"
+  },
+  {
+    "id": "gxtz-contract-review",
+    "name": "gxtz-contract-review",
+    "description": "技术合同认定登记合同评估审查技能。对客户提供的技术合同草稿件进行合规评估，基于《技术合同认定登记管理办法》《技术合同认定规则》等法规，从合同类型判定、主体审查、必备条款完整性、技术内容、知识产权归属、价款报酬、财务税务、合同期限、附件完整性和签字盖章等维度进行系统化审查，输出评估报告（含通过项/警告项/整改建议）。当用户提到技术合同审查、合同评估、合同合规、技术开发合同、技术转让合同、合同认定登记前审查时调用此技能。v1.0.0初始版本：10维度合同审查体系+5级问题分类+整改建议生成。v1.1.0新增：Word格式评估报告输出+源文件审查批注（问题点位标注+改正建议）。",
+    "version": "1.1.0"
+  },
+  {
+    "id": "gxtz-core-tables",
+    "name": "gxtz-core-tables",
+    "description": "高新技术企业认定核心表格统筹 — 协调RD表/PS表/IP表/TOAI汇总表的生成与交叉校验。v1.40.0新增：模板内置打包+两级查找兜底+强制模板注入约束。v1.39.0核心架构变更：长文本字段统一采用提示词驱动生成，禁止算法拼接或模板句填充。当用户提到核心表格、知识产权表、RD-PS-IP关联汇总表、科技人员清单、人员三方对比、TOAI表时调用此技能。",
+    "version": "1.40.1"
+  },
+  {
+    "id": "gxtz-experience-sync",
+    "name": "gxtz-experience-sync",
+    "description": "经验积累与同步技能。Work模式：agent在技能执行中即时捕获经验（capture/fallback直接写入）或收工时汇总经验（finalize）。Code模式：agent读取全局经验库（待消费清单/已验证清单），用于技能迭代升级；支持归档已消费经验并移除。v1.4.0适配C盘统一架构：project_context_manager.py从C盘调用，新增版本检查。当用户提到经验积累、经验同步、提交经验、查看经验、capture、finalize、经验流转、归档经验、清理经验时调用此技能。",
+    "version": "1.4.0"
+  },
+  {
+    "id": "gxtz-file-compressor",
+    "name": "gxtz-file-compressor",
+    "description": "申报材料文件压缩技能。当用户需要压缩PDF/图片以满足申报系统大小要求时调用。v1.0.0初始版本：五级递进压缩+彩色优先ultra+自适应DPI估算。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "gxtz-file-organizer",
+    "name": "gxtz-file-organizer",
+    "description": "【触发场景】用户说'整理文件/资料整理/归类/申报材料整理/文件分类/整理原始资料'时使用。高新技术企业认定申报文件全流程整理技能，含内容识别分类、命名合规、备案结构映射、备份归集四大功能。v1.0.0",
+    "version": "1.0.0"
+  },
+  {
+    "id": "gxtz-info-collector",
+    "name": "gxtz-info-collector",
+    "description": "高新技术企业认定企业信息调查与资料收集清单生成。当用户提到高新认定、高企认定、信息收集、资料清单、企业信息调查时调用此技能。v1.31.0新增：AI输出类型安全强化（锐取项目发现的list/str类型匹配问题）。v1.30.0新增：合同发票收资清单三步强制校验（逐年度配对+按成果转化算缺额+全文OCR）。v1.28.0新增：企业深度研究Agent。v1.29.0: SKILL.md瘦身。",
+    "version": "1.31.1"
+  },
+  {
+    "id": "gxtz-invoice-ps-matching",
+    "name": "gxtz-invoice-ps-matching",
+    "description": "全量发票PS筛选技能：从历史申报材料（高新申报书）提取PS基线，读取全量发票Excel，按货物名称匹配PS产品，生成标注文件、统计表和占比分析。核心原则：PS名称必须从申请书提取，非发票反推。用于RDPS表格生成阶段确定PS范围。v1.3.0新增：输出隐患自查与汇报。v1.4.0新增：隐患自查扩充至7维（补齐文本质量+原始资料+字数+文档格式+政策符合性+可溯源性）。",
+    "version": "1.11.0"
+  },
+  {
+    "id": "gxtz-ip-materials",
+    "name": "gxtz-ip-materials",
+    "description": "高新技术企业认定知识产权证明材料整理，严格区分专利证书与其他专利资料文献（说明书、权利要求书、通知书、缴费凭证等），包括专利证书、软著证书及附属材料、专利状态证明、转让材料等。当用户提到知识产权、专利、软著、IP材料、整理知识产权证明材料时调用此技能。支持RD-IP-PS自主匹配校验，确保所有知识产权不闲置（每个IP都关联到RD），发明专利可作为技术基础关联较早RD。v1.25.0新增：IP→成果三层映射策略（精确匹配→规范化匹配→人工确认）。v1.24.0: SKILL.md瘦身。",
+    "version": "1.25.0"
+  },
+  {
+    "id": "gxtz-ip-tables",
+    "name": "gxtz-ip-tables",
+    "description": "IP知识产权表生成 — 专利/软著/授权状态/与PS关联。负责高新技术企业认定中IP知识产权表的生成与模板注入，包括知识产权编号、名称、类别、获得方式、专利号、授权日期、所属单位、摘要、先进性说明、支持作用说明（10列）。严格使用TemplateInjector.inject_ip_table()注入模板。长文本字段（先进性说明/支持作用说明）采用提示词驱动生成。对应TRAE源技能gxtz-core-tables的IP表部分。",
+    "version": "1.40.1"
+  },
+  {
+    "id": "gxtz-management-materials",
+    "name": "gxtz-management-materials",
+    "description": "高新技术企业认定管理制度及证明材料撰写，包括研发制度、辅助账、产学研合作等。当用户提到管理制度、研发制度、研发机构、产学研合作、成果转化激励、研发辅助账时调用此技能。v1.26.0新增：提示词驱动制度条款内容生成+质量复查步骤。v1.25.0新增：OneDrive占位符双路径输出+旧制度模板残留审查+用户格式偏好确认+研发机构简介别名映射+专精特新OCR复用+日期策略参数化。",
+    "version": "1.26.0"
+  },
+  {
+    "id": "gxtz-precision-refiner",
+    "name": "gxtz-precision-refiner",
+    "description": "高新资料全覆盖核对精修技能，精准手术刀式修复。接受用户自然语言描述的问题点，通过诊断→定位→方案→确认→执行的5阶段交互式工作流完成精细化修复。覆盖阶段0-12所有材料，可修可创，不笼统脚本覆盖，各环节充分掌握后精准修改。当用户提到精修、修复、修改材料、核对修改、问题修正、材料有问题需要改时调用此技能。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "gxtz-progress-manager",
+    "name": "gxtz-progress-manager",
+    "description": "【触发场景】用户说'查看项目进度/生成进度看板/更新进度/扫描项目资料'时使用。可视化进度管理技能，全面扫描项目资料，生成HTML进度看板，支持多项目管理和进度自动同步。v1.0.0",
+    "version": "1.0.0"
+  },
+  {
+    "id": "gxtz-ps-materials",
+    "name": "gxtz-ps-materials",
+    "description": "高新技术企业认定高新产品（服务）证明材料整理，包括技术说明、合同发票等。当用户提到高新产品、产品证明、PS材料、整理高新产品证明材料时调用此技能。",
+    "version": "1.33.0"
+  },
+  {
+    "id": "gxtz-ps-tables",
+    "name": "gxtz-ps-tables",
+    "description": "PS高新产品表生成 — 产品规格/收入占比/证明材料。负责高新技术企业认定中PS高新产品（服务）明细表的生成与模板注入，包括产品编号、名称、技术领域、销售收入、是否主要产品、关联IP、长文本字段（关键技术/竞争优势/知识产权支持作用）。数据来源于成果转化表、PS证明材料（合同/发票）。对应TRAE源技能gxtz-core-tables的PS表部分。",
+    "version": "1.40.1"
+  },
+  {
+    "id": "gxtz-rd-report",
+    "name": "gxtz-rd-report",
+    "description": "高新技术企业认定研发立项报告撰写。当用户提到研发立项报告、立项报告、RD报告、项目立项、研发项目报告时调用此技能。",
+    "version": "1.34.0"
+  },
+  {
+    "id": "gxtz-rd-tables",
+    "name": "gxtz-rd-tables",
+    "description": "RD研发项目表生成 — 项目概况/预算/人员/进度/验收。负责高新技术企业认定中RD研发项目汇总表的生成与模板注入，包括研发活动编号、名称、技术领域、时间、经费、人员、长文本字段（目的/核心技术/阶段成果）。数据来源于立项报告、验收报告、研发费用辅助账。对应TRAE源技能gxtz-core-tables的RD表部分。",
+    "version": "1.40.1"
+  },
+  {
+    "id": "gxtz-staff-materials",
+    "name": "gxtz-staff-materials",
+    "description": "高新技术企业认定科技人员材料撰写，包括人员比例说明、人员信息表等。核心：科技人员必须在上年12月社保缴费记录（带章）中且累计工作时长≥183天，比例≥10%。当用户提到科技人员、人员材料、人员比例、社保缴费证明时调用此技能。v1.18.0新增：输出隐患自查与汇报。v1.19.0新增：隐患自查扩充至7维（补齐文本质量+文档格式+政策符合性+可溯源性）。v1.27.0: SKILL.md瘦身（共享SECTION外置+内嵌代码改脚本引用）。",
+    "version": "1.27.0"
+  },
+  {
+    "id": "gxtz-submission-packager",
+    "name": "gxtz-submission-packager",
+    "description": "高新技术企业认定申报材料打包，根据申报系统要求（资料要求.xlsx）处理用户指定的证明材料（扫描→排序→合并→压缩→命名校验→校验），生成最终上传包。v1.1.0：新增交付前AI水印强制检测（validate_submission.py 第7维校验）。v1.0.0初始版本：19类材料打包+OCR强制校验+缺失材料确认协议+五级递进压缩+命名合规校验。",
+    "version": "1.1.0"
+  },
+  {
+    "id": "gxtz-toai-tables",
+    "name": "gxtz-toai-tables",
+    "description": "TOAI汇总表生成 — 四表联动汇总/高新技术产品收入占比/研发费用占比。基于RD/PS/IP三表生成TOAI汇总表，用于向系统/AI一次性提交企业核心数据。包含3个Sheet：企业情况（6行）、RD-研发项目（11列）、IP-知识产权（10列）。完成四表联动校验。对应TRAE源技能gxtz-core-tables的TOAI表部分（第六步）。",
+    "version": "1.40.1"
+  },
+  {
+    "id": "gxtz-wecom-collector",
+    "name": "gxtz-wecom-collector",
+    "description": "企业微信会话实时查询与附件收集。当用户提到从企微收集资料、企微附件、客户沟通记录、企微文件提取时调用此技能。所有操作实时解密最新数据库，附件收集通过会话上下文（conversation_id）按 md5 匹配缓存目录（实测命中率 82.35%），杜绝串客户。",
+    "version": "1.11.0"
+  },
+  {
+    "id": "receiving-code-review",
+    "name": "receiving-code-review",
+    "description": "Use when receiving code review feedback, before implementing suggestions, especially if feedback seems unclear or technically questionable - requires technical rigor and verification, not performative agreement or blind implementation",
+    "version": ""
+  },
+  {
+    "id": "requesting-code-review",
+    "name": "requesting-code-review",
+    "description": "Use when completing tasks, implementing major features, or before merging to verify work meets requirements",
+    "version": ""
+  },
+  {
+    "id": "shadcn",
+    "name": "shadcn",
+    "description": "Manages shadcn components and projects — adding, searching, fixing, debugging, styling, and composing UI, including chat interfaces. Provides project context, component docs, and usage examples. Applies when working with shadcn/ui, component registries, presets, --preset codes, or any project with a components.json file. Also triggers for \"shadcn init\", \"create an app with --preset\", or \"switch to --preset\".",
+    "version": ""
+  },
+  {
+    "id": "subagent-driven-development",
+    "name": "subagent-driven-development",
+    "description": "Use when executing implementation plans with independent tasks in the current session",
+    "version": ""
+  },
+  {
+    "id": "systematic-debugging",
+    "name": "systematic-debugging",
+    "description": "Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes",
+    "version": ""
+  },
+  {
+    "id": "tailwindcss",
+    "name": "tailwindcss",
+    "description": "Tailwind CSS utility-first CSS framework. Use when styling web applications with utility classes, building responsive designs, or customizing design systems with theme variables.",
+    "version": ""
+  },
+  {
+    "id": "test-driven-development",
+    "name": "test-driven-development",
+    "description": "Use when implementing any feature or bugfix, before writing implementation code",
+    "version": ""
+  },
+  {
+    "id": "ui-ux-pro-max",
+    "name": "ui-ux-pro-max",
+    "description": "UI/UX design intelligence for web and mobile. Searchable local database with 84 styles, 192 color palettes, 74 font pairings, 192 product types, 98 UX guidelines, 104 icon entries, 16 GSAP motion presets, and 25 chart types across 22 stacks (React, Next.js, Vue, Nuxt, Svelte, Astro, SwiftUI, React Native, Flutter, Tailwind, shadcn/ui, Jetpack Compose, Angular, Laravel, JavaFX, WPF, WinUI, Avalonia, Uno Platform, UWP, Three.js, and HTML/CSS). Use when designing, building, or reviewing UI: pages, components, color schemes, typography, layout, accessibility, animation, or data visualization.",
+    "version": ""
+  },
+  {
+    "id": "using-git-worktrees",
+    "name": "using-git-worktrees",
+    "description": "Use when starting feature work that needs isolation from current workspace or before executing implementation plans - ensures an isolated workspace exists via native tools or git worktree fallback",
+    "version": ""
+  },
+  {
+    "id": "using-superpowers",
+    "name": "using-superpowers",
+    "description": "Use when starting any conversation - establishes how to find and use skills, requiring skill invocation before ANY response including clarifying questions",
+    "version": ""
+  },
+  {
+    "id": "verification-before-completion",
+    "name": "verification-before-completion",
+    "description": "Use when about to claim work is complete, fixed, or passing, before committing or creating PRs - requires running verification commands and confirming output before making any success claims; evidence before assertions always",
+    "version": ""
+  },
+  {
+    "id": "writing-plans",
+    "name": "writing-plans",
+    "description": "Use when you have a spec or requirements for a multi-step task, before touching code",
+    "version": ""
+  },
+  {
+    "id": "writing-skills",
+    "name": "writing-skills",
+    "description": "Use when creating new skills, editing existing skills, or verifying skills work before deployment",
+    "version": ""
+  },
+  {
+    "id": "yfwdoc-excel",
+    "name": "yfwdoc-excel",
+    "description": "企业Excel数据分析与报表制作技能：多Sheet自动关联分析、公式保留（非硬编码）、数据透视表自动生成、条件格式+图表、大文件优化，输出 .xlsx + HTML看板。当用户提到分析数据、做报表、数据透视、图表分析、Excel处理、表格分析、数据看板时调用此技能。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "yfwdoc-pdf",
+    "name": "yfwdoc-pdf",
+    "description": "企业PDF文档处理技能：合并/拆分/旋转、扫描件OCR识别（含表格）、PDF表单填充、PDF↔Word/Excel格式互转、PDF压缩。当用户提到处理PDF、合并PDF、拆分PDF、提取表格、OCR识别、PDF转Word、PDF压缩、扫描件、表单填充时调用此技能。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "yfwdoc-pptx",
+    "name": "yfwdoc-pptx",
+    "description": "企业PPT/演示文稿制作技能：母版化方案（受众锁定→内容框架→视觉排版）、HTML→PPTX转换、企业主题色/Logo固化、VLM页面质检。当用户提到做PPT、汇报材料、项目路演、年终总结、演示文稿、幻灯片、PPT模板时调用此技能。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "yfwdoc-suite",
+    "name": "yfwdoc-suite",
+    "description": "企业文档处理总路由：按文件类型（Word/PPT/PDF/Excel）与用户意图自动分派到 yfwdoc-word / yfwdoc-pptx / yfwdoc-pdf / yfwdoc-excel / yfwdoc-template 子技能。当用户提到文档处理、办公文档、做文档、整理文档、处理文件、文档制作时调用此技能。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "yfwdoc-template",
+    "name": "yfwdoc-template",
+    "description": "企业文档模板库管理技能：模板注册、品牌规范固化（颜色/字体/Logo/页眉页脚）、模板版本管理、模板质量审核。当用户提到管理模板、新建模板、更新模板库、固化品牌、品牌规范、模板注册、企业模板时调用此技能。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "yfwdoc-word",
+    "name": "yfwdoc-word",
+    "description": "企业Word文档生成与排版技能：公文模板库（红头文件/通知/函/会议纪要/简报）、样式与目录自动生成、邮件合并、修订痕迹模式。当用户提到写公文、生成通知、制作标书、起草合同、排版文档、生成Word、红头文件、发文、会议纪要时调用此技能。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "yfwweb-form",
+    "name": "yfwweb-form",
+    "description": "申报系统表单填充：自动识别表单字段（label/placeholder/ARIA），从已有申报材料中提取答案逐字段填写，每页提交前人工确认闸门，填写进度保存与断点续填，填报后截图存档。当用户提到填报系统、自动填表、申报表填写、批量填报、表单填充、在线填表时调用此技能。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "yfwweb-scrape",
+    "name": "yfwweb-scrape",
+    "description": "智能网页抓取：多源聚合抓取政府网站/公示平台/行业协会的政策文件、公示数据、申报通知，基于Playwright浏览器自动化与LLM双模态页面理解，自动分页翻页、自愈重试（最多20次），输出结构化Excel。当用户提到抓取政策、采集数据、下载公示、批量获取、网页抓取、爬取信息、政策文件下载、公示数据采集时调用此技能。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "yfwweb-suite",
+    "name": "yfwweb-suite",
+    "description": "浏览器操作总路由：按操作类型（抓取/填表/核验）自动分派到子技能 yfwweb-scrape / yfwweb-form / yfwweb-verify。当用户提到浏览器操作、网页抓取、在线填表、企业信息查询、抓取政策、填报系统、核验企业信息等浏览器相关操作时调用此技能。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "yfwweb-verify",
+    "name": "yfwweb-verify",
+    "description": "企业公开信息核验：通过天眼查/企查查/国家企业信用信息公示系统等公开平台自动查询企业工商信息，与申报材料数据交叉比对，异常标记（注册时间/经营范围/股东结构与申报不符），生成核验报告（一致项/差异项/风险项）。当用户提到核验企业信息、查工商信息、验证资质、对比公示数据、企业信息查询时调用此技能。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "yfwx-dengling",
+    "name": "yfwx-dengling",
+    "description": "瞪羚企业申报技能：成长性指标计算与趋势图（营收复合增长率10%-25%按规模分档）、创新能力评估（研发投入2.5%-5%+发明专利≥2件或实用新型+软著≥8件）、信用评分预评估（≥75分）、证明材料整理与申报书撰写。侧重增速而非存量，材料风格偏向投融资视角。约50%材料可复用高新认定材料。当用户提到瞪羚企业申报、高成长企业认定、瞪羚入库、瞪羚时调用此技能。v1.0.0初始版本。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "yfwx-kexiao",
+    "name": "yfwx-kexiao",
+    "description": "科技型中小企业入库申报技能：四项硬指标核验（职工≤500人/年营收≤2亿/资产≤2亿）、百分制自评打分（科技人员20分+研发投入50分+科技成果30分，≥60分）、直通车条件检测（有效期内高新证书/国家级科技奖励/省部级以上研发机构/主导制定国际国家行业标准）、入库登记材料准备、在线填报指引与年度更新提醒。约80%材料可与高新技术企业认定材料复用（IP材料/科技人员/RD表）。当用户提到科小申报、科技型中小企业、科小编号、科小认定时调用此技能。v1.0.0初始版本。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "yfwx-qualification-chain",
+    "name": "yfwx-qualification-chain",
+    "description": "企业资质链规划器（核心入口）：输入企业基础数据（营收/人数/行业/IP数量/研发投入/成立年限/估值）→ 资质匹配引擎 → 生成资质矩阵（可申报/条件接近/暂不符合+差距分析）→ 时间线规划 → 材料复用分析 → 投入产出估算 → 输出规划报告。覆盖科技型中小企业/高新技术企业/专精特新/小巨人/瞪羚/独角兽/单项冠军全生命周期资质。当用户提到资质规划、企业能报什么、申报路线图、全生命周期资质、认定规划、申报策略时调用此技能。v1.0.0初始版本。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "yfwx-suite",
+    "name": "yfwx-suite",
+    "description": "行业资质申报套件总路由：按用户诉求（资质规划/科小/专精特新/小巨人/瞪羚/独角兽/单项冠军/高新）自动分派到 yfwx-qualification-chain（核心入口）、yfwx-kexiao、yfwx-zhuanjingtexin、yfwx-xiaojuren、yfwx-dengling、yfwx-unicorn 及 gxtz-* 高企技能。当用户提到资质申报、企业资质、能报什么资质、申报规划、资质体系、行业资质、yfwx时调用此技能。v1.0.0初始版本。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "yfwx-unicorn",
+    "name": "yfwx-unicorn",
+    "description": "独角兽企业/制造业单项冠军申报技能：企业估值分析（独角兽估值≥10亿美元）、全球市场地位论证（单项冠军全球市场占有率前三+深耕细分领域≥10年）、长期技术积累叙事构建与申报材料准备。材料复用率约40%。当用户提到独角兽企业、单项冠军、制造业单项冠军、独角兽认定时调用此技能。v1.0.0初始版本。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "yfwx-xiaojuren",
+    "name": "yfwx-xiaojuren",
+    "description": "专精特新小巨人（国家级专精特新）申报技能：前置条件确认（专精特新中小企业）、硬指标核验（营收≥5000万/主营占比≥90%/近两年研发合计≥1200万/4项Ⅰ类IP/市场占有率≥10%或国内前三）、卡脖子技术论证、产业链补链强链论证、市场排名数据包准备、进口替代分析、申报书撰写与国家级审核对标。约60%材料可复用高新认定材料。当用户提到小巨人申报、国家级专精特新、重点小巨人、小巨人认定时调用此技能。v1.0.0初始版本。",
+    "version": "1.0.0"
+  },
+  {
+    "id": "yfwx-zhuanjingtexin",
+    "name": "yfwx-zhuanjingtexin",
+    "description": "专精特新中小企业认定申报技能：前置条件确认（创新型中小企业）、自评打分（≥50分）、四化特征提炼（专业化/精细化/特色化/新颖化）、证明材料整理（约70%复用高新认定材料+30%新增市场占有率与产业链配套证明）、申报书撰写与审核提交。当用户提到专精特新申报、专精特新认定、专业化精细化特色化新颖化、专精特新时调用此技能。v1.0.0初始版本。",
+    "version": "1.0.0"
+  }
+]

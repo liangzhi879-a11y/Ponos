@@ -1,0 +1,200 @@
+[
+  {
+    "id": "gxtz-achievement-materials",
+    "name": "gxtz-achievement-materials",
+    "description": "高新技术企业认定科技成果转化证明材料整理，确保成果与IP、RD、PS关联正确。当用户提到科技成果转化、成果转化、转化证明、整理成果转化材料时调用此技能。",
+    "version": "1.38.0",
+    "triggers": [],
+    "lines": 1275,
+    "size_kb": 35
+  },
+  {
+    "id": "gxtz-audit-verification",
+    "name": "gxtz-audit-verification",
+    "description": "高新专审报告核对技能：核对事务所出具的专审报告（研发费用专审+高新收入专审）与企业核心表格的一致性。5维度核对（跨报告一致性/RD内容/PS内容/IP内容/金额差异），核心原则：金额差异仅信息性不做严重性警告，非金额内容必须严格一致，按年度Sheet分别核对不跨表聚合。v1.9.0新增：年份硬过滤规则+OCR置信度预检+合同编号规范化。v1.10.0新增：doc转换fallback链+RAR版本MD5检测+技术领域逐字比对+locate文件名校验权重。",
+    "version": "1.10.0",
+    "triggers": [],
+    "lines": 423,
+    "size_kb": 12
+  },
+  {
+    "id": "gxtz-contract-review",
+    "name": "gxtz-contract-review",
+    "description": "技术合同认定登记合同评估审查技能。对客户提供的技术合同草稿件进行合规评估，基于《技术合同认定登记管理办法》《技术合同认定规则》等法规，从合同类型判定、主体审查、必备条款完整性、技术内容、知识产权归属、价款报酬、财务税务、合同期限、附件完整性和签字盖章等维度进行系统化审查，输出评估报告（含通过项/警告项/整改建议）。当用户提到技术合同审查、合同评估、合同合规、技术开发合同、技术转让合同、合同认定登记前审查时调用此技能。v1.0.0初始版本：10维度合同审查体系+5级问题分类+整改建议生成。v1.1.0新增：Word格式评估报告输出+源文件审查批注（问题点位标注+改正建议）。",
+    "version": "1.1.0",
+    "triggers": [],
+    "lines": 609,
+    "size_kb": 12
+  },
+  {
+    "id": "gxtz-core-tables",
+    "name": "gxtz-core-tables",
+    "description": "高新技术企业认定核心表格统筹 — 协调RD表/PS表/IP表/TOAI汇总表的生成与交叉校验。v1.40.0新增：模板内置打包+两级查找兜底+强制模板注入约束。v1.39.0核心架构变更：长文本字段统一采用提示词驱动生成，禁止算法拼接或模板句填充。当用户提到核心表格、知识产权表、RD-PS-IP关联汇总表、科技人员清单、人员三方对比、TOAI表时调用此技能。",
+    "version": "1.40.1",
+    "triggers": [],
+    "lines": 488,
+    "size_kb": 13
+  },
+  {
+    "id": "gxtz-experience-sync",
+    "name": "gxtz-experience-sync",
+    "description": "经验积累与同步技能。Work模式：agent在技能执行中即时捕获经验（capture/fallback直接写入）或收工时汇总经验（finalize）。Code模式：agent读取全局经验库（待消费清单/已验证清单），用于技能迭代升级；支持归档已消费经验并移除。v1.4.0适配C盘统一架构：project_context_manager.py从C盘调用，新增版本检查。当用户提到经验积累、经验同步、提交经验、查看经验、capture、finalize、经验流转、归档经验、清理经验时调用此技能。",
+    "version": "1.4.0",
+    "triggers": [],
+    "lines": 587,
+    "size_kb": 15
+  },
+  {
+    "id": "gxtz-file-compressor",
+    "name": "gxtz-file-compressor",
+    "description": "申报材料文件压缩技能。当用户需要压缩PDF/图片以满足申报系统大小要求时调用。v1.0.0初始版本：五级递进压缩+彩色优先ultra+自适应DPI估算。",
+    "version": "1.0.0",
+    "triggers": [],
+    "lines": 176,
+    "size_kb": 4
+  },
+  {
+    "id": "gxtz-file-organizer",
+    "name": "gxtz-file-organizer",
+    "description": "【触发场景】用户说'整理文件/资料整理/归类/申报材料整理/文件分类/整理原始资料'时使用。高新技术企业认定申报文件全流程整理技能，含内容识别分类、命名合规、备案结构映射、备份归集四大功能。v1.0.0",
+    "version": "1.0.0",
+    "triggers": [],
+    "lines": 545,
+    "size_kb": 13
+  },
+  {
+    "id": "gxtz-info-collector",
+    "name": "gxtz-info-collector",
+    "description": "高新技术企业认定企业信息调查与资料收集清单生成。当用户提到高新认定、高企认定、信息收集、资料清单、企业信息调查时调用此技能。v1.31.0新增：AI输出类型安全强化（锐取项目发现的list/str类型匹配问题）。v1.30.0新增：合同发票收资清单三步强制校验（逐年度配对+按成果转化算缺额+全文OCR）。v1.28.0新增：企业深度研究Agent。v1.29.0: SKILL.md瘦身。",
+    "version": "1.31.1",
+    "triggers": [],
+    "lines": 6357,
+    "size_kb": 225
+  },
+  {
+    "id": "gxtz-invoice-ps-matching",
+    "name": "gxtz-invoice-ps-matching",
+    "description": "全量发票PS筛选技能：从历史申报材料（高新申报书）提取PS基线，读取全量发票Excel，按货物名称匹配PS产品，生成标注文件、统计表和占比分析。核心原则：PS名称必须从申请书提取，非发票反推。用于RDPS表格生成阶段确定PS范围。v1.3.0新增：输出隐患自查与汇报。v1.4.0新增：隐患自查扩充至7维（补齐文本质量+原始资料+字数+文档格式+政策符合性+可溯源性）。",
+    "version": "1.11.0",
+    "triggers": [],
+    "lines": 427,
+    "size_kb": 11
+  },
+  {
+    "id": "gxtz-ip-materials",
+    "name": "gxtz-ip-materials",
+    "description": "高新技术企业认定知识产权证明材料整理，严格区分专利证书与其他专利资料文献（说明书、权利要求书、通知书、缴费凭证等），包括专利证书、软著证书及附属材料、专利状态证明、转让材料等。当用户提到知识产权、专利、软著、IP材料、整理知识产权证明材料时调用此技能。支持RD-IP-PS自主匹配校验，确保所有知识产权不闲置（每个IP都关联到RD），发明专利可作为技术基础关联较早RD。v1.25.0新增：IP→成果三层映射策略（精确匹配→规范化匹配→人工确认）。v1.24.0: SKILL.md瘦身。",
+    "version": "1.25.0",
+    "triggers": [],
+    "lines": 1143,
+    "size_kb": 35
+  },
+  {
+    "id": "gxtz-ip-tables",
+    "name": "gxtz-ip-tables",
+    "description": "IP知识产权表生成 — 专利/软著/授权状态/与PS关联。负责高新技术企业认定中IP知识产权表的生成与模板注入，包括知识产权编号、名称、类别、获得方式、专利号、授权日期、所属单位、摘要、先进性说明、支持作用说明（10列）。严格使用TemplateInjector.inject_ip_table()注入模板。长文本字段（先进性说明/支持作用说明）采用提示词驱动生成。对应TRAE源技能gxtz-core-tables的IP表部分。",
+    "version": "1.40.1",
+    "triggers": [],
+    "lines": 247,
+    "size_kb": 5
+  },
+  {
+    "id": "gxtz-management-materials",
+    "name": "gxtz-management-materials",
+    "description": "高新技术企业认定管理制度及证明材料撰写，包括研发制度、辅助账、产学研合作等。当用户提到管理制度、研发制度、研发机构、产学研合作、成果转化激励、研发辅助账时调用此技能。v1.26.0新增：提示词驱动制度条款内容生成+质量复查步骤。v1.25.0新增：OneDrive占位符双路径输出+旧制度模板残留审查+用户格式偏好确认+研发机构简介别名映射+专精特新OCR复用+日期策略参数化。",
+    "version": "1.26.0",
+    "triggers": [],
+    "lines": 1298,
+    "size_kb": 40
+  },
+  {
+    "id": "gxtz-precision-refiner",
+    "name": "gxtz-precision-refiner",
+    "description": "高新资料全覆盖核对精修技能，精准手术刀式修复。接受用户自然语言描述的问题点，通过诊断→定位→方案→确认→执行的5阶段交互式工作流完成精细化修复。覆盖阶段0-12所有材料，可修可创，不笼统脚本覆盖，各环节充分掌握后精准修改。当用户提到精修、修复、修改材料、核对修改、问题修正、材料有问题需要改时调用此技能。",
+    "version": "1.0.0",
+    "triggers": [],
+    "lines": 526,
+    "size_kb": 16
+  },
+  {
+    "id": "gxtz-progress-manager",
+    "name": "gxtz-progress-manager",
+    "description": "【触发场景】用户说'查看项目进度/生成进度看板/更新进度/扫描项目资料'时使用。可视化进度管理技能，全面扫描项目资料，生成HTML进度看板，支持多项目管理和进度自动同步。v1.0.0",
+    "version": "1.0.0",
+    "triggers": [],
+    "lines": 290,
+    "size_kb": 7
+  },
+  {
+    "id": "gxtz-ps-materials",
+    "name": "gxtz-ps-materials",
+    "description": "高新技术企业认定高新产品（服务）证明材料整理，包括技术说明、合同发票等。当用户提到高新产品、产品证明、PS材料、整理高新产品证明材料时调用此技能。",
+    "version": "1.33.0",
+    "triggers": [],
+    "lines": 1161,
+    "size_kb": 31
+  },
+  {
+    "id": "gxtz-ps-tables",
+    "name": "gxtz-ps-tables",
+    "description": "PS高新产品表生成 — 产品规格/收入占比/证明材料。负责高新技术企业认定中PS高新产品（服务）明细表的生成与模板注入，包括产品编号、名称、技术领域、销售收入、是否主要产品、关联IP、长文本字段（关键技术/竞争优势/知识产权支持作用）。数据来源于成果转化表、PS证明材料（合同/发票）。对应TRAE源技能gxtz-core-tables的PS表部分。",
+    "version": "1.40.1",
+    "triggers": [],
+    "lines": 247,
+    "size_kb": 5
+  },
+  {
+    "id": "gxtz-rd-report",
+    "name": "gxtz-rd-report",
+    "description": "高新技术企业认定研发立项报告撰写。当用户提到研发立项报告、立项报告、RD报告、项目立项、研发项目报告时调用此技能。",
+    "version": "1.34.0",
+    "triggers": [],
+    "lines": 1853,
+    "size_kb": 47
+  },
+  {
+    "id": "gxtz-rd-tables",
+    "name": "gxtz-rd-tables",
+    "description": "RD研发项目表生成 — 项目概况/预算/人员/进度/验收。负责高新技术企业认定中RD研发项目汇总表的生成与模板注入，包括研发活动编号、名称、技术领域、时间、经费、人员、长文本字段（目的/核心技术/阶段成果）。数据来源于立项报告、验收报告、研发费用辅助账。对应TRAE源技能gxtz-core-tables的RD表部分。",
+    "version": "1.40.1",
+    "triggers": [],
+    "lines": 251,
+    "size_kb": 6
+  },
+  {
+    "id": "gxtz-staff-materials",
+    "name": "gxtz-staff-materials",
+    "description": "高新技术企业认定科技人员材料撰写，包括人员比例说明、人员信息表等。核心：科技人员必须在上年12月社保缴费记录（带章）中且累计工作时长≥183天，比例≥10%。当用户提到科技人员、人员材料、人员比例、社保缴费证明时调用此技能。v1.18.0新增：输出隐患自查与汇报。v1.19.0新增：隐患自查扩充至7维（补齐文本质量+文档格式+政策符合性+可溯源性）。v1.27.0: SKILL.md瘦身（共享SECTION外置+内嵌代码改脚本引用）。",
+    "version": "1.27.0",
+    "triggers": [],
+    "lines": 1479,
+    "size_kb": 42
+  },
+  {
+    "id": "gxtz-submission-packager",
+    "name": "gxtz-submission-packager",
+    "description": "高新技术企业认定申报材料打包，根据申报系统要求（资料要求.xlsx）处理用户指定的证明材料（扫描→排序→合并→压缩→命名校验→校验），生成最终上传包。v1.1.0：新增交付前AI水印强制检测（validate_submission.py 第7维校验）。v1.0.0初始版本：19类材料打包+OCR强制校验+缺失材料确认协议+五级递进压缩+命名合规校验。",
+    "version": "1.1.0",
+    "triggers": [],
+    "lines": 333,
+    "size_kb": 7
+  },
+  {
+    "id": "gxtz-toai-tables",
+    "name": "gxtz-toai-tables",
+    "description": "TOAI汇总表生成 — 四表联动汇总/高新技术产品收入占比/研发费用占比。基于RD/PS/IP三表生成TOAI汇总表，用于向系统/AI一次性提交企业核心数据。包含3个Sheet：企业情况（6行）、RD-研发项目（11列）、IP-知识产权（10列）。完成四表联动校验。对应TRAE源技能gxtz-core-tables的TOAI表部分（第六步）。",
+    "version": "1.40.1",
+    "triggers": [],
+    "lines": 365,
+    "size_kb": 11
+  },
+  {
+    "id": "gxtz-wecom-collector",
+    "name": "gxtz-wecom-collector",
+    "description": "企业微信会话实时查询与附件收集。当用户提到从企微收集资料、企微附件、客户沟通记录、企微文件提取时调用此技能。所有操作实时解密最新数据库，附件收集通过会话上下文（conversation_id）按 md5 匹配缓存目录（实测命中率 82.35%），杜绝串客户。",
+    "version": "1.11.0",
+    "triggers": [],
+    "lines": 603,
+    "size_kb": 18
+  }
+]

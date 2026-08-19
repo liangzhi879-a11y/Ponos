@@ -1,0 +1,88 @@
+{
+  "calendar_r7.db": {
+    "enc_key": "7488dc8ffce4363f2e8630b7145ac946",
+    "salt": "29050b9302ef7acd18b5a220eba74d34",
+    "size_mb": 0.5
+  },
+  "company.db": {
+    "enc_key": "7488dc8ffce4363f2e8630b7145ac946",
+    "salt": "29050b9302ef7acd3f60532035756225",
+    "size_mb": 0.2
+  },
+  "crm.db": {
+    "enc_key": "7488dc8ffce4363f2e8630b7145ac946",
+    "salt": "29050b9302ef7acd226dc825f84a6534",
+    "size_mb": 0.4
+  },
+  "file.db": {
+    "enc_key": "7488dc8ffce4363f2e8630b7145ac946",
+    "salt": "29050b9302ef7acd8d036ad9a05a0333",
+    "size_mb": 15.8
+  },
+  "forever_store.db": {
+    "enc_key": "7488dc8ffce4363f2e8630b7145ac946",
+    "salt": "29050b9302ef7acd144a49de7e516d87",
+    "size_mb": 0.3
+  },
+  "govern.db": {
+    "enc_key": "7488dc8ffce4363f2e8630b7145ac946",
+    "salt": "29050b9302ef7acd1c7c3582af7779bb",
+    "size_mb": 0.0
+  },
+  "group_collect.db": {
+    "enc_key": "7488dc8ffce4363f2e8630b7145ac946",
+    "salt": "29050b9302ef7acd4702c3ccd7a32145",
+    "size_mb": 0.0
+  },
+  "group_meeting.db": {
+    "enc_key": "7488dc8ffce4363f2e8630b7145ac946",
+    "salt": "29050b9302ef7acd4702c3ccd7a32145",
+    "size_mb": 0.0
+  },
+  "journal.db": {
+    "enc_key": "7488dc8ffce4363f2e8630b7145ac946",
+    "salt": "29050b9302ef7acd4702c3ccd7a32145",
+    "size_mb": 0.0
+  },
+  "kv.db": {
+    "enc_key": "7488dc8ffce4363f2e8630b7145ac946",
+    "salt": "29050b9302ef7acd9f8b5a84f73892cf",
+    "size_mb": 0.6
+  },
+  "message.db": {
+    "enc_key": "7488dc8ffce4363f2e8630b7145ac946",
+    "salt": "29050b9302ef7acdb171c00638fbcf57",
+    "size_mb": 49.6
+  },
+  "message_lookup.db": {
+    "enc_key": "7488dc8ffce4363f2e8630b7145ac946",
+    "salt": "29050b9302ef7acddfcbf73e5c9e8ef1",
+    "size_mb": 6.7
+  },
+  "session.db": {
+    "enc_key": "7488dc8ffce4363f2e8630b7145ac946",
+    "salt": "29050b9302ef7acdabeb5b557348c6f0",
+    "size_mb": 0.6
+  },
+  "tencent_doc_list.db": {
+    "enc_key": "7488dc8ffce4363f2e8630b7145ac946",
+    "salt": "29050b9302ef7acd2705a634050dd5a8",
+    "size_mb": 0.1
+  },
+  "user.db": {
+    "enc_key": "7488dc8ffce4363f2e8630b7145ac946",
+    "salt": "29050b9302ef7acdbba38fe6fcf83091",
+    "size_mb": 0.7
+  },
+  "user_extend.db": {
+    "enc_key": "7488dc8ffce4363f2e8630b7145ac946",
+    "salt": "29050b9302ef7acd0f0e9fa2dd3ef0e6",
+    "size_mb": 0.0
+  },
+  "voip_meeting.db": {
+    "enc_key": "7488dc8ffce4363f2e8630b7145ac946",
+    "salt": "29050b9302ef7acdcea807b09c6c4cb8",
+    "size_mb": 0.0
+  },
+  "_db_dir": "C:\\Users\\T203-15\\Documents\\WXWork\\1688856499787342\\Data"
+}

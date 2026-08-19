@@ -1,0 +1,103 @@
+{
+  "schema_version": "1.0",
+  "created_at": "2026-07-24T11:07:05.210103",
+  "tools": {
+    "file_compressor.py": {
+      "versions": [],
+      "history": [
+        {
+          "from": "2.0",
+          "to": "2.1",
+          "date": "2026-07-24T11:07:05.210103",
+          "summary": "彩色优先策略+自适应DPI+压缩有效性检测+快速模式"
+        }
+      ],
+      "current_version": "2.1"
+    },
+    "onedrive_utils.py": {
+      "versions": [],
+      "history": [
+        {
+          "from": "new",
+          "to": "1.0.0",
+          "date": "2026-07-25",
+          "summary": "OneDrive环境检测+CldFlt内核驱动状态+文件钉选防脱水+写入验证+同步根检测"
+        }
+      ],
+      "current_version": "1.0.0"
+    },
+    "safe_workspace.py": {
+      "versions": [],
+      "history": [
+        {
+          "from": "new",
+          "to": "1.0.0",
+          "date": "2026-07-25",
+          "summary": "安全工作区上下文管理器，自动检测OneDrive并重定向I/O到安全目录，完成后同步+钉选+验证+备份"
+        }
+      ],
+      "current_version": "1.0.0"
+    },
+    "generate_achievement_proofs.py": {
+      "versions": [],
+      "history": [
+        {
+          "from": "1.1.0",
+          "to": "1.2.0",
+          "date": "2026-07-25",
+          "summary": "集成OneDrive安全工作区自动保护，输出目录在OneDrive同步根下时自动启用SafeWorkspace"
+        }
+      ],
+      "current_version": "1.2.0"
+    },
+    "submission_packager.py": {
+      "versions": [],
+      "history": [
+        {
+          "from": "new",
+          "to": "1.0.0",
+          "date": "2026-07-28",
+          "summary": "申报材料打包引擎：scan/pack/validate/list-requirements四命令，19类材料扫描排序合并压缩命名校验全流程"
+        }
+      ],
+      "current_version": "1.0.0"
+    },
+    "project_context_manager.py": {
+      "versions": [],
+      "history": [
+        {
+          "from": "new",
+          "to": "1.0.0",
+          "date": "2026-07-29",
+          "summary": "finalize新增--no-move参数：禁用文件实体移动，仅做分类登记和索引更新"
+        }
+      ],
+      "current_version": "1.0.0"
+    },
+    "validate_submission.py": {
+      "versions": [],
+      "history": [
+        {
+          "from": "new",
+          "to": "1.0.0",
+          "date": "2026-07-28",
+          "summary": "申报材料最终校验脚本：6维完整性校验（完整性/命名/大小/格式/OCR/内容一致性）"
+        }
+      ],
+      "current_version": "1.0.0"
+    },
+    "precision_refiner.py": {
+      "versions": [],
+      "history": [
+        {
+          "from": "new",
+          "to": "1.0.0",
+          "date": "2026-07-30",
+          "summary": "精修辅助工具：locate/backup/apply/scan四命令，定位字段、备份文件、精准修改单元格、扫描项目文件"
+        }
+      ],
+      "current_version": "1.0.0"
+    }
+  },
+  "updated_at": "2026-07-30T11:00:00"
+}

@@ -1,0 +1,127 @@
+appId: com.yfworking.desktop
+productName: YFWorking
+copyright: Copyright © 2026 YFWorking
+
+# ============================================================
+# ⚠️ 此文件是 electron-builder 唯一的构建配置源。
+# 不要在 package.json#build 里复制一份 —— electron-builder 会优先用 yml，
+# 复制品一旦漂移就会埋雷（例如自定义 NSIS include 默默失效）。
+# ============================================================
+
+directories:
+  # Output to release/installer so electron-builder's build-time cleanup
+  # does NOT touch the portable debug build at release/YFWorking.
+  output: release/installer
+  buildResources: public
+
+# 使用本地已解压的 Electron 发行版（node_modules/electron/dist），
+# 打包不再联网下载 electron zip（避免 github 不可达时构建失败）。
+electronDist: node_modules/electron/dist
+
+files:
+  - dist/**/*
+  - electron/**/*
+  - server/**/*
+  - public/**/*
+  # sample-skills 仅打包 dist 内那份（vite 已把 public 复制进 dist）；
+  # 排除 public/sample-skills，避免安装包内出现 35M 的双份。
+  - '!public/sample-skills'
+  - package.json
+  - node.exe
+  - bin/**/*
+  # pet 由 extraResources 打进 resources/pet（main.cjs resolvePetScript 首选），
+  # 不再通过 files 重复打包一份到 app/pet。
+
+# Strip the node_modules from the bundled package.json (we ship a prebuilt
+# Bun bundle + vendored CLI, no runtime npm install path).
+extraMetadata:
+  main: electron/main.cjs
+
+extraResources:
+  # Embedded Python runtime with all dependencies
+  - from: runtime/python
+    to: runtime/python
+    filter:
+      - "**/*"
+      - "!__pycache__/**"
+      - "!*.pyc"
+      - "!pip/**"
+      - "!Scripts/**"
+  # Skills scripts
+  - from: runtime/skills
+    to: runtime/skills
+    filter:
+      - "**/*"
+  # Built-in agent templates (installed to ~/.yfworking/agents/ on first run)
+  - from: runtime/agents
+    to: runtime/agents
+    filter:
+      - "**/*"
+  # Built-in memory starter templates (installed to ~/.yfworking/memory/personal/)
+  - from: runtime/memory
+    to: runtime/memory
+    filter:
+      - "**/*"
+  # Built-in CLI tools (installed to ~/.yfworking/tools/)
+  - from: runtime/tools
+    to: runtime/tools
+    filter:
+      - "**/*"
+  # Pixel pet assets + driver (used by YF/jiajia-pixel-pet)
+  - from: YF/jiajia-pixel-pet/jiajia-pet.py
+    to: pet/jiajia-pet.py
+  - from: YF/jiajia-pixel-pet/accessories_lib.py
+    to: pet/accessories_lib.py
+  - from: YF/jiajia-pixel-pet/assets
+    to: pet/assets
+  # YFWorking kernel — the bun-bundled ESM CLI built from yfw-kernel/claude-code.
+  # Spawned by server/bridge.mjs via the bundled bun runtime below. The bridge
+  # resolves it at <app>/kernel/cli.mjs + <app>/runtime/bun/bun.exe.
+  - from: yfw-kernel/claude-code/dist
+    to: kernel
+    filter:
+      - "cli.mjs"
+      # Vendored ripgrep — kernel Grep/Glob tools resolve <app>/kernel/vendor/
+      # ripgrep/<arch>-win32/rg.exe in builtin mode (see src/utils/ripgrep.ts).
+      - "vendor/**"
+  # Bun runtime used to execute the YFW kernel (the kernel is a bun-targeted
+  # ESM bundle and cannot run under plain Node).
+  - from: runtime/bun
+    to: runtime/bun
+    filter:
+      - "bun.exe"
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: public/icon.ico
+  signExecutable: false
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  installerIcon: public/icon.ico
+  uninstallerIcon: public/icon.ico
+  installerHeaderIcon: public/icon.ico
+  shortcutName: YFWorking
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  runAfterFinish: true
+  # Don't wipe %APPDATA%\YFWorking on uninstall — user data must survive reinstall/uninstall.
+  deleteAppDataOnUninstall: false
+  # Brand the installer（位图由 build/make_installer_art.py 生成）
+  installerSidebar: build/installerSidebar.bmp
+  uninstallerSidebar: build/uninstallerSidebar.bmp
+  # 自定义 NSIS 脚本：检测已安装版本 → 比较版本 → 弹窗确认 → 覆盖更新安装（保留用户数据）
+  include: build/installer.nsh
+  # Multi-language
+  language: 2052
+
+# Force inclusion of key native modules
+asar: false
+# Keep archive uncompressed — payload is mostly already-compressed binaries
+# (bun.exe, node.exe, Python wheels, embedded CLI bundle); recompressing buys
+# little and slows install start.
+compression: store

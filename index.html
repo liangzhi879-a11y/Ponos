@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en" class="theme-yuanfang">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#171109" />
+  <title>YFWorking</title>
+  <meta name="description" content="YFWorking — AI-powered development assistant" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <link rel="icon" href="/favicon.ico" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Sora:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" />
+  <style>
+    /* Pre-mount 防闪白：透明背景以兼容玻璃主题（Electron transparent 窗口下 #171109 实色会挡住透明合成）。
+       AppShell mount 后第一个 useEffect 会立即覆盖 html/body 的 background 为 var(--bg-app)，
+       各主题（yuanfang/yuanfang-light/glass/glass-warm）按自己的背景色显示。 */
+    html, body { background: transparent; color: #f0e1c8; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

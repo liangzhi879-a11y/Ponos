@@ -1,0 +1,805 @@
+@import './themes.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   Base
+   ============================================================ */
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+body {
+  font-family: 'Inter', 'Sora', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 220ms ease, color 220ms ease;
+}
+
+/* ============================================================
+   Scrollbar
+   ============================================================ */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+  transition: background 160ms ease;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ============================================================
+   Focus
+   ============================================================ */
+
+:focus-visible {
+  outline: 2px solid var(--accent-default);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* 链接 hover — 远方红强调（plan §3 步骤 5 优先级 1） */
+a, [data-link] {
+  transition: color 0.15s ease;
+}
+a:hover, [data-link]:hover {
+  color: var(--accent-red);
+}
+
+/* ============================================================
+   Selection
+   ============================================================ */
+
+::selection {
+  background: var(--selection-bg);
+  color: var(--text-primary);
+}
+
+/* ============================================================
+   Native form controls
+   ============================================================ */
+
+input, textarea, select, button {
+  font: inherit;
+  color: inherit;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-tertiary);
+  opacity: 1;
+}
+
+/* ============================================================
+   Utility Classes
+   ============================================================ */
+
+.drag-region {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* ============================================================
+   Animations
+   ============================================================ */
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes fadeOut {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes slideLeft {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes slideRight {
+  from { opacity: 0; transform: translateX(8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes scaleOut {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(0.96); }
+}
+@keyframes dialogScaleIn {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+@keyframes dialogScaleOut {
+  from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  to   { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
+}
+@keyframes streamingCursor {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0; }
+}
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+@keyframes glowHorizon {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-subtle), 0 0 16px -4px var(--accent-default); }
+  50%      { box-shadow: 0 0 0 6px transparent,    0 0 28px -6px var(--accent-default); }
+}
+@keyframes floatingBubble {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-3px); }
+}
+/* 冷启动会话定位高亮（Sidebar 定位最新会话时一次性闪现）：
+   当最新会话位置靠上、滚动被钳制为 0 时，列表视觉与"未定位"无异，
+   用一次内发光描边让用户看到定位到了哪一行。用 box-shadow 而非
+   background 覆盖，避免与激活行的 bg-brand-500/15 底色冲突；
+   speed-mode 下被全局 animation:none 自动停用。 */
+@keyframes locateFlash {
+  0%   { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--brand-500) 75%, transparent), inset 0 0 14px color-mix(in srgb, var(--brand-500) 40%, transparent); }
+  100% { box-shadow: inset 0 0 0 2px transparent, inset 0 0 14px transparent; }
+}
+.locate-flash { animation: locateFlash 1.2s ease-out; }
+
+/* 压缩回涨提示：fill 一次性"压扁→过冲回弹"+ 亮度脉冲（挂在 .health-meter-fill 上，
+   scaleX 从 left 原点压扁，与宽度弹性回涨形成"压缩→释放"连贯节奏） */
+@keyframes compressFlash {
+  0%   { filter: brightness(1);   transform: scaleX(1); }
+  15%  { filter: brightness(1.6); transform: scaleX(0.88); }
+  40%  { filter: brightness(1.9); transform: scaleX(1.06); }
+  70%  { filter: brightness(1.3); transform: scaleX(0.98); }
+  100% { filter: brightness(1);   transform: scaleX(1); }
+}
+.animate-compress-flash { animation: compressFlash 1.2s ease-out; }
+
+/* ============ 上下文血条（游戏 HP 风格，扁平基线 + 玻璃态增强） ============
+   结构：.health-meter（外框+轨道） > .health-meter-fill（档位渐变填充） > .health-meter-text（压缩次数覆盖文字）。
+   扁平基线（普通主题）：无边框、无外阴影，仅低对比度轨道底色，主题令牌 var(--health-tier-{color}) 决定填充色，
+   文字色 var(--health-meter-text) 也按主题设定（浅主题更亮、深主题暖白）。换主题即时生效。
+   玻璃态增强（仅 .theme-glass / .theme-glass-warm）：在 .health-meter 上加 .health-meter-glass 类，
+   自动启用 1px 边框 + 霓虹辉光 + 顶部光泽高光——更通透游戏 HP 风格。
+   注意：不用 html:not([class*="theme-glass"]) 否定选择器——cssnano 压缩会破坏该选择器
+   （产物成 `theme-glass]) .xxx` 非法片段整条丢弃）。 */
+.health-meter {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 6px;
+  overflow: hidden;
+  /* 扁平基线：1px border 改为内嵌 box-shadow（不撑大容器）+ 无外阴影 */
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text-tertiary) 14%, transparent);
+}
+.health-meter-fill {
+  position: relative;
+  height: 100%;
+  border-radius: 2px;
+  transform-origin: left center;
+  /* 轻微过冲弹性曲线：压缩/使用量回涨时先冲过目标再回稳（HP 手感） */
+  transition: width 0.5s cubic-bezier(0.34, 1.3, 1, 1);
+}
+/* 顶部光泽高光已移除——按用户反馈"血条内部阴影还在"指的就是这个 fill::after 渐变。
+   完全扁平化：fill 就是纯档位渐变（绿/琥珀/红三档），不再叠任何内高光/内阴影。
+   仅保留外辉光（.health-meter-glass 上的 0 0 6px + 0 0 18px）作为游戏 HP 装饰。 */
+/* 玻璃态增强：保留霓虹辉光（外发光、随档位变色的"游戏 HP"质感），
+   去掉 inset 1px 边框（凹陷/硬边感）——扁平化与全应用 UI 风格一致，
+   但保留视觉装饰性辉光（颜色随档位变）。--meter-glow 仍在 fill 上挂色。 */
+.health-meter-glass {
+  box-shadow:
+    0 0 6px var(--meter-glow, rgba(72, 234, 91, 0.7)),
+    0 0 18px var(--meter-glow, rgba(72, 234, 91, 0.45));
+}
+/* 压缩次数覆盖文字（居中于填充层，颜色由 .health-meter-fill 容器 color 继承 var(--health-meter-text)） */
+.health-meter-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  font-weight: 700;
+  font-size: 9px;
+  letter-spacing: 0.3px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  white-space: nowrap;
+  pointer-events: none;
+}
+/* 压缩回涨脉冲（挂 .health-meter-fill，scaleX 只压扁填充层） */
+.health-meter-flash { animation: compressFlash 1.2s ease-out; }
+
+.animate-fade-in   { animation: fadeIn   0.18s ease-out   both; }
+.animate-fade-out  { animation: fadeOut  0.15s ease-in    both; }
+.animate-slide-up   { animation: slideUp   0.22s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-slide-down { animation: slideDown 0.22s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-slide-left { animation: slideLeft 0.22s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-slide-right{ animation: slideRight 0.22s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-scale-in    { animation: scaleIn    0.15s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-scale-out   { animation: scaleOut   0.12s ease-in    both; }
+.animate-dialog-in   { animation: dialogScaleIn  0.15s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-dialog-out  { animation: dialogScaleOut 0.12s ease-in    both; }
+.animate-glow-horizon { animation: glowHorizon 2.4s ease-in-out infinite; }
+.animate-streaming-cursor { animation: streamingCursor 0.8s ease-in-out infinite; }
+.animate-floating-bubble { animation: floatingBubble 1.6s ease-in-out infinite; }
+.animate-blink { animation: blinkCursor 1s steps(1) infinite; }
+/* blinkCursor 关键帧缺失（历史遗漏）→ .animate-blink 引用不存在的关键帧，
+   任何使用该类的元素在正常模式下都静默不动画。补齐定义恢复其功效：
+   光标式硬闪烁（steps(1) 无中间过渡，opacity 两态直切）。 */
+@keyframes blinkCursor {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+
+/* ============================================================
+   Code / Pre
+   ============================================================ */
+
+pre {
+  margin: 0;
+  font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+code {
+  font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
+  font-size: 0.9em;
+}
+
+/* ============================================================
+   Prose (Tailwind Typography) — theme-aware overrides.
+   Replaces prose-invert by binding all typography colors to
+   CSS variables so every theme (light/dark) renders correctly.
+   ============================================================ */
+
+.prose {
+  --tw-prose-body:        var(--text-primary);
+  --tw-prose-headings:    var(--text-primary);
+  --tw-prose-lead:        var(--text-secondary);
+  --tw-prose-links:       var(--brand-500);
+  --tw-prose-bold:        var(--text-primary);
+  --tw-prose-counters:    var(--text-tertiary);
+  --tw-prose-bullets:     var(--text-tertiary);
+  --tw-prose-hr:          var(--border-default);
+  --tw-prose-quotes:      var(--text-secondary);
+  --tw-prose-quote-borders: var(--brand-500);
+  --tw-prose-captions:    var(--text-tertiary);
+  --tw-prose-kbd:         var(--text-primary);
+  --tw-prose-kbd-shadows: var(--border-default);
+  --tw-prose-code:        var(--text-primary);
+  --tw-prose-pre-code:    var(--code-text);
+  --tw-prose-pre-bg:      var(--bg-code);
+  --tw-prose-th-borders:  var(--border-default);
+  --tw-prose-td-borders:  var(--border-default);
+  --tw-prose-invert-body:        var(--text-primary);
+  --tw-prose-invert-headings:    var(--text-primary);
+  --tw-prose-invert-lead:        var(--text-secondary);
+  --tw-prose-invert-links:       var(--brand-400);
+  --tw-prose-invert-bold:        var(--text-primary);
+  --tw-prose-invert-counters:    var(--text-tertiary);
+  --tw-prose-invert-bullets:     var(--text-tertiary);
+  --tw-prose-invert-hr:          var(--border-default);
+  --tw-prose-invert-quotes:      var(--text-secondary);
+  --tw-prose-invert-quote-borders: var(--brand-500);
+  --tw-prose-invert-captions:    var(--text-tertiary);
+  --tw-prose-invert-kbd:         var(--text-primary);
+  --tw-prose-invert-kbd-shadows: var(--border-default);
+  --tw-prose-invert-code:        var(--text-primary);
+  --tw-prose-invert-pre-code:    var(--text-primary);
+  --tw-prose-invert-pre-bg:      var(--bg-code);
+  --tw-prose-invert-th-borders:  var(--border-default);
+  --tw-prose-invert-td-borders:  var(--border-default);
+}
+
+/* ============================================================
+   kbd — keyboard chip
+   ============================================================ */
+
+kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.375rem;
+  font-family: 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--text-secondary);
+  background: var(--bg-kbd);
+  border: 1px solid var(--kbd-border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 1px 0 var(--kbd-border);
+  user-select: none;
+}
+
+/* ============================================================
+   Atmospheric — Yuanfang warm-glow accent
+   ============================================================ */
+
+.theme-yuanfang .accent-glow,
+.theme-yuanfang-light .accent-glow {
+  position: relative;
+}
+.theme-yuanfang .accent-glow::after,
+.theme-yuanfang-light .accent-glow::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(135deg, var(--accent-subtle), transparent);
+  opacity: 0.5;
+  mix-blend-mode: screen;
+}
+
+/* ===== 会话条目背景进度条（里程碑协议） ===== */
+.conv-progress {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 2px;
+  height: 2px;
+  border-radius: 1px;
+  overflow: hidden;
+  pointer-events: none;
+}
+/* 真实进度：尾端渐变减短（12%）、头部亮光、光晕沿状态线流动 */
+.conv-progress-fill {
+  position: relative;
+  overflow: hidden;
+  height: 100%;
+  background: linear-gradient(90deg, transparent 0%, var(--brand-500) 55%, var(--brand-300) 100%);
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 12%);
+  mask-image: linear-gradient(90deg, transparent 0%, #000 12%);
+  box-shadow: 0 0 6px var(--brand-400);
+  transition: width 0.3s ease;
+}
+.conv-progress-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 28%;
+  left: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.85) 50%, transparent);
+  /* 高光扫掠（2026-08-17 恢复核心反馈动效）：transform-only 合成器友好，
+     无 custom property / 每帧 style recalc；speed-mode 全局 animation:none
+     与系统"减少动画"下自动停用。 */
+  animation: convFillSweep 2.4s ease-in-out infinite;
+}
+/* 活动条：以中心为准左右往返；两端渐变收窄（亮心保持），超出的部分被裁剪。
+   渐变收窄用固定 25% 边距（原 custom property 动画 --conv-flow-fade 已移除：
+   每帧 style recalc + 整层重绘，透明窗口下实测 ~23% 渲染进程 CPU）。
+   往返扫掠（2026-08-17 恢复核心反馈动效）：transform-only 合成器友好，
+   无 per-frame style recalc；speed-mode 与系统"减少动画"下自动停用。 */
+.conv-progress-flow {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  left: 0;
+  background: linear-gradient(90deg,
+    transparent,
+    var(--brand-400) 25%,
+    var(--brand-400) calc(100% - 25%),
+    transparent 100%);
+  animation: convFlowSweep 2.2s ease-in-out infinite alternate;
+}
+.conv-progress-paused .conv-progress-fill,
+.conv-progress-paused .conv-progress-fill::after,
+.conv-progress-paused .conv-progress-flow {
+  animation-play-state: paused;
+  box-shadow: none;
+}
+/* 高光扫掠 keyframes：亮条自身宽 28%，translateX 百分比相对自身宽度，
+   0%→357% 恰好从左缘滑出右缘；末段 hold 让高光在右端停留后再循环。 */
+@keyframes convFillSweep {
+  0% { transform: translateX(-15%); }
+  70% { transform: translateX(357%); }
+  100% { transform: translateX(357%); }
+}
+/* 活动条往返扫掠：自身宽 40%，-100% 全出左缘，250% 全出右缘；alternate 往返。 */
+@keyframes convFlowSweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+/* ============================================================
+   THEME — Glass 系列 (磨砂玻璃) · aurora backdrop + frosted panels
+   ------------------------------------------------------------
+   结构：
+     body                    — 透明（inline background 绑定 --bg-app）
+     body::before (z:0)      — 极光光晕层（多层径向渐变，冷/暖两套配色）
+     body::after  (z:0)      — SVG 噪点纹理（增强"真玻璃"颗粒感，
+                               模糊前后差异明显，避免"贴图假玻璃"）
+     #root (z:1)             — 应用内容（根容器 bg-app 透明，露出光晕）
+     玻璃面板 (.bg-surface…) — 半透明白底 + backdrop-filter 实时模糊
+                               （滚动/漂移的内容穿过面板下方时被模糊）
+   主题类用 [class*="theme-glass"] 匹配 .theme-glass 与 .theme-glass-warm
+   ============================================================ */
+
+/* ---- 基础定位（两套光晕共享） ---- */
+:root[class*="theme-glass"] body::before,
+:root[class*="theme-glass"] body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+:root[class*="theme-glass"] #root {
+  position: relative;
+  z-index: 1;
+}
+/* 光晕漂移动画：两套配色共享；设置关闭动画时暂停（glassAurora=false）。
+   幅度刻意收小（≤±1.5% 位移 + 12deg 色相）+ 周期 20s：只保留"活的光晕"，
+   不产生整窗背景随光晕移动的晃动感（透明窗口下会误读为桌面在动）。 */
+:root[class*="theme-glass"] body::before {
+  animation: glass-aurora-drift 20s ease-in-out infinite alternate;
+}
+:root[class*="theme-glass"].glass-aurora-off body::before {
+  animation: none;
+}
+/* plan §3 步骤 7 — 玻璃色调偏移（用户拖动滑块调节）
+   应用到 body 而非 body::before：让 keyframe 的 hue-rotate 漂移不受冲突，
+   同时极光 + UI 颜色统一响应（拖动 -90° 极光变青、按钮变青、文字变青） */
+:root[class*="theme-glass"] body {
+  filter: hue-rotate(var(--glass-hue-shift, 0deg));
+  transition: filter 0.4s ease;
+}
+
+/* ---- 冷色光晕 · Glass（靛蓝紫） ----
+   窗口 transparent 透出真实桌面；光晕为半透明叠层（色块提供漂移细节）。
+   两个压暗层（顶部整屏 + 底部 160deg 基色）的 alpha 随 --glass-opacity
+   透光度设置联动：op=0.3 时背景更透（露出更多桌面），op 拉高时背景
+   变暗压住桌面保文字可读。默认 op=0.3 ≈ 顶部 0.15 / 基色 0.33。 */
+.theme-glass body::before {
+  background:
+    linear-gradient(rgba(3, 5, 12, calc(var(--glass-opacity, 0.3) * 0.5)), rgba(3, 5, 12, calc(var(--glass-opacity, 0.3) * 0.5))),
+    radial-gradient(34% 42% at 16% 20%, rgba(124, 58, 237, 0.50) 0%, transparent 55%),
+    radial-gradient(28% 36% at 84% 14%, rgba(56, 189, 248, 0.38) 0%, transparent 58%),
+    radial-gradient(40% 48% at 80% 86%, rgba(244, 114, 182, 0.28) 0%, transparent 58%),
+    radial-gradient(26% 32% at 6% 84%, rgba(167, 139, 250, 0.32) 0%, transparent 55%),
+    radial-gradient(20% 26% at 50% 45%, rgba(14, 165, 233, 0.18) 0%, transparent 60%),
+    linear-gradient(160deg, rgba(8, 12, 24, calc(var(--glass-opacity, 0.3) * 1.1)) 0%, rgba(14, 21, 48, calc(var(--glass-opacity, 0.3) * 0.9)) 52%, rgba(10, 14, 30, calc(var(--glass-opacity, 0.3) * 1.1)) 100%);
+}
+@keyframes glass-aurora-drift {
+  0%   { transform: translate3d(-1.2%, -0.8%, 0) scale(1.02); filter: hue-rotate(0deg); }
+  50%  { transform: translate3d(0.8%, 1%, 0) scale(1.05);  filter: hue-rotate(6deg); }
+  100% { transform: translate3d(1.5%, -0.6%, 0) scale(1.03); filter: hue-rotate(12deg); }
+}
+
+/* ---- 暖色光晕 · Glass Warm（YF 橙） ----
+   压暗层同样随 --glass-opacity 联动（默认 op=0.3 ≈ 顶部 0.18 / 基色 0.33）。 */
+.theme-glass-warm body::before {
+  background:
+    linear-gradient(rgba(10, 5, 2, calc(var(--glass-opacity, 0.3) * 0.6)), rgba(10, 5, 2, calc(var(--glass-opacity, 0.3) * 0.6))),
+    radial-gradient(36% 44% at 20% 18%, rgba(255, 106, 0, 0.44) 0%, transparent 56%),
+    radial-gradient(30% 38% at 82% 16%, rgba(251, 146, 60, 0.36) 0%, transparent 58%),
+    radial-gradient(42% 50% at 76% 86%, rgba(244, 63, 94, 0.22) 0%, transparent 58%),
+    radial-gradient(28% 34% at 8% 82%, rgba(245, 158, 11, 0.30) 0%, transparent 55%),
+    radial-gradient(22% 28% at 52% 50%, rgba(255, 183, 77, 0.16) 0%, transparent 60%),
+    linear-gradient(160deg, rgba(18, 10, 3, calc(var(--glass-opacity, 0.3) * 1.1)) 0%, rgba(30, 18, 4, calc(var(--glass-opacity, 0.3) * 0.9)) 52%, rgba(14, 8, 3, calc(var(--glass-opacity, 0.3) * 1.1)) 100%);
+}
+
+/* ---- SVG 噪点颗粒层：模糊前后对比强烈，玻璃才有"磨"的质感 ---- */
+:root[class*="theme-glass"] body::after {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='180' height='180' filter='url(%23n)' opacity='0.075'/></svg>");
+  background-size: 180px 180px;
+  opacity: 1;
+}
+
+/* ---- 磨砂面板 — 实时模糊背后的光晕 + 噪点 + 漂移内容 ----
+   属性包含匹配（[class*="bg-xxx"]）：Tailwind 不透明度修饰类
+   （bg-surface/80、bg-elevated/40、bg-brand-500/15 等）是独立 class token，
+   无法命中 .bg-surface 精确选择器，因此玻璃效果漏掉了大量面板。
+   用属性包含覆盖全部变体；:not([class*="hover:bg"]) 等排除仅 hover/focus
+   才填充的行/按钮，避免未悬停也被永久加模糊（focus-within 变体不排除：
+   输入框静态 bg-surface/80 与 focus-within:bg-surface 同元素，需保留）。 */
+:root[class*="theme-glass"] [class*="bg-surface"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="theme-glass"] [class*="bg-elevated"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="theme-glass"] [class*="bg-input"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="theme-glass"] [class*="bg-toolbar"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="theme-glass"] [class*="bg-hover"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="theme-glass"] [class*="bg-active"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="theme-glass"] [class*="bg-prose"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="theme-glass"] [class*="bg-brand-"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) {
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+}
+/* 浮层（popover/modal/tooltip）更重的模糊 */
+:root[class*="theme-glass"] [class*="bg-popover"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="theme-glass"] [class*="bg-modal"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="theme-glass"] [class*="bg-tooltip"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) {
+  backdrop-filter: blur(26px) saturate(165%);
+  -webkit-backdrop-filter: blur(26px) saturate(165%);
+}
+/* 主要面板顶部内高光，增强玻璃边缘质感（同样排除 hover/focus 变体） */
+:root[class*="theme-glass"] [class*="bg-surface"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="theme-glass"] [class*="bg-elevated"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="theme-glass"] [class*="bg-popover"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="theme-glass"] [class*="bg-modal"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="theme-glass"] [class*="bg-toolbar"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/* ---- 玻璃面板底色固定 — 修饰类取整为主题底色 ----
+   tailwind.config 用 color-mix+<alpha-value> 让 bg-surface/60 等修饰类全主题编译，
+   非玻璃主题按 /N 百分比正常缩放（60% 底色）。玻璃主题面板的"玻璃感"来自
+   完整底色（var(--bg-xxx)，其 alpha 已由 --glass-opacity 联动）+ backdrop blur；
+   若再叠 /N 缩放会出现双重减淡（60% × 50% = 30%），面板发虚、背景过度透出。
+   故玻璃主题下把面板修饰类固定为完整底色（忽略 /N 数值），品牌淡色选中态
+   （bg-brand-500/N）按透光度联动缩放。属性包含匹配覆盖全部 /N 变体，
+   hover/focus 等变体排除，避免未悬停就上色。 */
+:root[class*="theme-glass"] [class*="bg-surface/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-surface); }
+:root[class*="theme-glass"] [class*="bg-elevated/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-elevated); }
+:root[class*="theme-glass"] [class*="bg-input/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-input); }
+:root[class*="theme-glass"] [class*="bg-toolbar/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-toolbar); }
+:root[class*="theme-glass"] [class*="bg-app/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-app); }
+:root[class*="theme-glass"] [class*="bg-hover/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-hover); }
+:root[class*="theme-glass"] [class*="bg-active/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-active); }
+:root[class*="theme-glass"] [class*="bg-prose/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-prose); }
+:root[class*="theme-glass"] [class*="bg-code/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-code); }
+:root[class*="theme-glass"] [class*="bg-modal/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-modal); }
+:root[class*="theme-glass"] [class*="bg-popover/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-popover); }
+:root[class*="theme-glass"] [class*="bg-brand-500/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: color-mix(in srgb, var(--brand-500) calc(var(--glass-opacity, 0.3) * 50%), transparent); }
+
+/* ---- 玻璃框线统一 — 无显式颜色的边框类取设计边框色 ----
+   Tailwind 的 border/border-b/t/r/l 只设宽度，颜色 fallback currentColor
+   （= 主文字色，玻璃下纯白 #e7ecf5）→ 顶栏/侧边栏/面板分隔线一片刺眼白线。
+   玻璃主题下把这些无颜色边框统一为 --border-default 设计值（14% 白，柔和），
+   显式带色的边框类（border-default/subtle/brand/error/warning/success/accent/
+   transparent/dashed/collapse 等）不受影响。 */
+:root[class*="theme-glass"] [class~="border"]:not([class*="border-default"]):not([class*="border-subtle"]):not([class*="border-strong"]):not([class*="border-brand"]):not([class*="border-error"]):not([class*="border-warning"]):not([class*="border-success"]):not([class*="border-accent"]):not([class*="border-transparent"]):not([class*="border-kbd"]):not([class*="border-dashed"]):not([class*="border-collapse"]),
+:root[class*="theme-glass"] [class~="border-t"]:not([class*="border-default"]):not([class*="border-subtle"]):not([class*="border-strong"]):not([class*="border-brand"]):not([class*="border-error"]):not([class*="border-warning"]):not([class*="border-success"]):not([class*="border-accent"]):not([class*="border-transparent"]):not([class*="border-kbd"]):not([class*="border-dashed"]):not([class*="border-collapse"]),
+:root[class*="theme-glass"] [class~="border-b"]:not([class*="border-default"]):not([class*="border-subtle"]):not([class*="border-strong"]):not([class*="border-brand"]):not([class*="border-error"]):not([class*="border-warning"]):not([class*="border-success"]):not([class*="border-accent"]):not([class*="border-transparent"]):not([class*="border-kbd"]):not([class*="border-dashed"]):not([class*="border-collapse"]),
+:root[class*="theme-glass"] [class~="border-r"]:not([class*="border-default"]):not([class*="border-subtle"]):not([class*="border-strong"]):not([class*="border-brand"]):not([class*="border-error"]):not([class*="border-warning"]):not([class*="border-success"]):not([class*="border-accent"]):not([class*="border-transparent"]):not([class*="border-kbd"]):not([class*="border-dashed"]):not([class*="border-collapse"]),
+:root[class*="theme-glass"] [class~="border-l"]:not([class*="border-default"]):not([class*="border-subtle"]):not([class*="border-strong"]):not([class*="border-brand"]):not([class*="border-error"]):not([class*="border-warning"]):not([class*="border-success"]):not([class*="border-accent"]):not([class*="border-transparent"]):not([class*="border-kbd"]):not([class*="border-dashed"]):not([class*="border-collapse"]) {
+  border-color: var(--border-default);
+}
+
+/* ============================================================
+   Glass Buttons — 磨砂玻璃主题按钮质感（方案 A：.glass-btn 单一来源）
+   button.tsx 基础类新增 .glass-btn；全部规则限定 :root[class*="theme-glass"]，
+   其余主题零影响。共享骨架（内高光+微光泽+上浮回落）+ 各变体专属辉光。
+   ============================================================ */
+
+/* 共享骨架：顶部内高光、微光泽渐变（叠加于填充色之上）、hover 上浮 / active 回落 */
+:root[class*="theme-glass"] .glass-btn {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 45%);
+}
+/* 填充变体（primary/danger/success/secondary）追加柔和投影 + 略强内高光，
+   让按钮从背景"浮起"；否则内高光被 shadow-sm 等类覆盖后小尺寸按钮
+   （导航栏 +、发送按钮）静止时显得扁平、只剩 hover 辉光 */
+:root[class*="theme-glass"] .glass-btn[class*="bg-brand-500"],
+:root[class*="theme-glass"] .glass-btn[class*="bg-error"],
+:root[class*="theme-glass"] .glass-btn[class*="bg-success"],
+:root[class*="theme-glass"] .glass-btn[class*="bg-elevated"] {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15), 0 1px 2px rgba(2, 6, 23, 0.45);
+}
+:root[class*="theme-glass"] .glass-btn:hover {
+  transform: translateY(-1px);
+}
+:root[class*="theme-glass"] .glass-btn:active {
+  transform: translateY(0);
+}
+:root[class*="theme-glass"] .glass-btn:disabled {
+  transform: none;
+}
+
+/* primary — 半透明品牌玻璃：填充随透光度缩放（op=0.3 → 78%，>100% 钳制为实色），
+   排除选中标签等非按钮的 bg-brand-500/15 淡色 */
+:root[class*="theme-glass"] .glass-btn[class*="bg-brand-500"]:not([class*="bg-brand-500/"]) {
+  background-color: color-mix(in srgb, var(--brand-500) calc(var(--glass-opacity, 0.3) * 260%), transparent);
+}
+:root[class*="theme-glass"] .glass-btn[class*="bg-brand-500"]:not([class*="bg-brand-500/"]):hover {
+  background-color: color-mix(in srgb, var(--brand-500) calc(var(--glass-opacity, 0.3) * 320%), transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 4px 24px -4px color-mix(in srgb, var(--brand-500) 60%, transparent);
+}
+:root[class*="theme-glass"] .glass-btn[class*="bg-brand-500"]:not([class*="bg-brand-500/"]):active {
+  background-color: color-mix(in srgb, var(--brand-500) calc(var(--glass-opacity, 0.3) * 280%), transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 2px 10px -2px color-mix(in srgb, var(--brand-500) 40%, transparent);
+}
+
+/* danger / success — 各自色调辉光 */
+:root[class*="theme-glass"] .glass-btn[class*="bg-error"]:hover {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 4px 20px -4px color-mix(in srgb, var(--error) 45%, transparent);
+}
+:root[class*="theme-glass"] .glass-btn[class*="bg-success"]:hover {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 4px 20px -4px color-mix(in srgb, var(--success) 45%, transparent);
+}
+
+/* ghost / secondary / outline — 中性柔光 */
+:root[class*="theme-glass"] .glass-btn:hover:not([class*="bg-brand-500"]):not([class*="bg-error"]):not([class*="bg-success"]) {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 4px 16px -4px rgba(255, 255, 255, 0.08);
+}
+
+/* ---- 侧栏会话右键菜单（自定义 portal 菜单，未走 DropdownMenuContent 类体系）----
+   补齐玻璃面板语言：顶部内高光 + shadow-popover（含 0 0 0 1px 边缘环），
+   与 DropdownMenuContent 同配方；微光泽渐变叠加在内联 popover-bg 之上 */
+:root[class*="theme-glass"] .glass-context-menu {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), var(--shadow-popover);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0) 40%);
+}
+
+/* ---- 关键元素色相回正 — 玻璃色调滑块不改按钮/Logo/头像本色 ----
+   色调滑块把 hue-rotate 挂在 body 上（上方 body 规则），全体 UI 一起变色。
+   用户要求磨砂色调只作用于面板/极光背景，不改变关键按钮、Logo、头像的本色：
+   这些元素用反方向 hue-rotate(-θ) 抵消 body 的全局旋转——自身填充/文字/辉光
+   恢复设计色，背后的磨砂面板仍随滑块变色。filter 过渡时长跟随 body 的 0.4s。 */
+:root[class*="theme-glass"] .glass-logo,
+:root[class*="theme-glass"] .glass-avatar {
+  filter: hue-rotate(calc(var(--glass-hue-shift, 0deg) * -1));
+  transition: filter 0.4s ease;
+}
+:root[class*="theme-glass"] .glass-btn {
+  filter: hue-rotate(calc(var(--glass-hue-shift, 0deg) * -1));
+  /* 覆盖按钮基类 transition-all：filter 用 0.4s 跟随色调过渡，
+     其余属性保留 150ms 原过渡（hover 变色/上浮/按下不失效） */
+  transition-property: filter, background-color, color, border-color, box-shadow, transform, opacity;
+  transition-duration: 0.4s, 0.15s, 0.15s, 0.15s, 0.15s, 0.15s, 0.15s;
+}
+
+/* ---- 窗口关闭按钮（右上角 frameless 控制区）— 仅玻璃主题：hover 红色发光 ----
+   静止无辉光；hover 时红底（既有 hover:bg-error）叠加红色光晕 + 玻璃内高光，
+   过渡含 box-shadow（transition-colors 默认只过渡颜色）；色相同样回正 */
+:root[class*="theme-glass"] .window-close-btn {
+  filter: hue-rotate(calc(var(--glass-hue-shift, 0deg) * -1));
+  transition-property: color, background-color, box-shadow, filter;
+  transition-duration: 0.15s, 0.15s, 0.15s, 0.4s;
+}
+:root[class*="theme-glass"] .window-close-btn:hover {
+  box-shadow:
+    0 0 12px 2px color-mix(in srgb, var(--error) 45%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/* ---- Radix ScrollArea 内容包装层宽度修复 ----
+   Radix 给 Viewport 内容包一层 `display: table; min-width: 100%` 的 div，
+   其宽度按内容 min-content 计算：truncate 文本（white-space: nowrap）的
+   min-content = 完整宽度，长标题/长文件名会把整列撑出容器（横向溢出，
+   如侧边栏会话项日期被推到导航栏边界之外）。固定表格宽度为视口 100%，
+   内容在各单元格内正常截断。 */
+[data-radix-scroll-area-viewport] > div {
+  table-layout: fixed;
+  width: 100% !important;
+}
+
+/* ============================================================
+   极速形态（speed-mode）— 低配设备节能渲染
+   ------------------------------------------------------------
+   设置 → 极速形态 独立开关（任意主题下生效），html 根节点挂
+   speed-mode 类（AppShell 主题 effect 维护）。目标：关闭全部
+   动效开销，保留全部功能——纯扁平渲染，最大限度节约系统资源：
+     · 全部 animation / transition → none（21 组 keyframes 全部停摆）
+     · 全部 backdrop-filter 实时模糊 → none（玻璃磨砂降级为扁平色块）
+     · glass 主题的极光光晕层 + 噪点层 → display:none
+     · 全部 box-shadow（辉光/内高光/投影）→ none
+     · will-change 归位，减少合成器图层；滚动恢复为瞬时
+   非 glass 主题的 --bg-app 本就是实色，无需额外兜底；
+   glass 主题 --bg-app 为透明（靠光晕层撑背景），光晕被移除后
+   必须换成实色深底，否则整窗透明露出桌面、文字失去对比度。
+   ============================================================ */
+html.speed-mode *,
+html.speed-mode *::before,
+html.speed-mode *::after {
+  animation: none !important;
+  animation-duration: 0s !important;
+  animation-delay: 0s !important;
+  transition: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: none !important;
+  will-change: auto !important;
+}
+html.speed-mode {
+  scroll-behavior: auto !important;
+}
+/* 后台/最小化（document.hidden）→ 暂停全部动画：backgroundThrottling 已关闭
+   保 WS 心跳，但动画后台仍全速跑白烧 GPU；AppShell 挂/摘 anim-paused 类。
+   animation-play-state 只停动效，不影响 JS 定时器与消息处理。 */
+html.anim-paused *,
+html.anim-paused *::before,
+html.anim-paused *::after {
+  animation-play-state: paused !important;
+}
+/* 系统"减少动态效果"开启时同样收敛动效（无障碍 + 低配系统常见配置） */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  html {
+    scroll-behavior: auto !important;
+  }
+}
+/* 极光光晕层 + SVG 噪点层整体移除（两套 glass 主题共用结构） */
+html.speed-mode[class*="theme-glass"] body::before,
+html.speed-mode[class*="theme-glass"] body::after {
+  display: none !important;
+}
+/* glass 冷色（Glass）实色兜底：取主题表面色系，扁平化后保持可读 */
+html.speed-mode[class*="theme-glass"]:not([class*="theme-glass-warm"]) {
+  --bg-app:      #0e1324;
+  --bg-surface:  #141a30;
+  --bg-elevated: #1a2140;
+  --bg-hover:    #20284e;
+  --bg-active:   #28325f;
+  --bg-input:    #141a30;
+  --bg-toolbar:  #141a30;
+  --bg-modal:    #161c36;
+  --bg-popover:  #1a2140;
+  --bg-tooltip:  #161c36;
+  --bg-code:     #0a0f1e;
+  --bg-prose:    #141a30;
+  --bg-kbd:      #20284e;
+  --popover-bg:  #1a2140;
+  --tooltip-bg:  #161c36;
+  --modal-bg:    #161c36;
+}
+/* glass 暖色（Glass Warm / YF暖色）实色兜底 */
+html.speed-mode[class*="theme-glass-warm"] {
+  --bg-app:      #160e06;
+  --bg-surface:  #1e1308;
+  --bg-elevated: #27180a;
+  --bg-hover:    #2e1e0e;
+  --bg-active:   #382612;
+  --bg-input:    #1e1308;
+  --bg-toolbar:  #1e1308;
+  --bg-modal:    #221408;
+  --bg-popover:  #27180a;
+  --bg-tooltip:  #221408;
+  --bg-code:     #0f0803;
+  --bg-prose:    #1e1308;
+  --bg-kbd:      #2e1e0e;
+  --popover-bg:  #27180a;
+  --tooltip-bg:  #221408;
+  --modal-bg:    #221408;
+}

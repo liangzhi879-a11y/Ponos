@@ -1,0 +1,192 @@
+{
+  "policy_version": "2026.07",
+  "region": "深圳市",
+  "effective_date": "2016-01-01",
+  "last_updated": "2026-07-09",
+  "policy_sources": {
+    "national": [
+      {
+        "doc_id": "国科发火〔2016〕32号",
+        "doc_name": "高新技术企业认定管理办法",
+        "issuer": "科技部、财政部、税务总局",
+        "effective_date": "2016-01-01",
+        "note": "全国统一认定办法"
+      },
+      {
+        "doc_id": "国科发火〔2016〕194号",
+        "doc_name": "高新技术企业认定管理工作指引",
+        "issuer": "科技部火炬中心",
+        "effective_date": "2016-01-01",
+        "note": "全国统一工作指引"
+      }
+    ],
+    "shenzhen": [
+      {
+        "doc_id": "深科技创新规〔2020〕1号",
+        "doc_name": "深圳市高新技术企业培育资助管理办法",
+        "issuer": "深圳市科技创新委员会",
+        "effective_date": "2020-01-01",
+        "note": "深圳市地方政策"
+      }
+    ]
+  },
+  "eight_conditions": [
+    {
+      "condition_id": 1,
+      "condition_name": "企业注册成立满一年",
+      "policy_basis": "国科发火〔2016〕32号 第十一条第（一）项",
+      "requirement": "企业申请认定时须注册成立一年以上",
+      "validation_field": "register_date",
+      "validation_rule": "申报日期 - 注册日期 >= 365天",
+      "is_veto": true,
+      "validation_function": "validate_register_period"
+    },
+    {
+      "condition_id": 2,
+      "condition_name": "自主知识产权",
+      "policy_basis": "国科发火〔2016〕32号 第十一条第（二）项",
+      "requirement": "企业通过自主研发、受让、受赠、并购等方式，获得对其主要产品（服务）在技术上发挥核心支持作用的知识产权的所有权",
+      "validation_field": "ip_count",
+      "validation_rule": "I类IP>=1项 或 II类IP>=5项",
+      "is_veto": true,
+      "validation_function": "validate_ip_requirement"
+    },
+    {
+      "condition_id": 3,
+      "condition_name": "核心技术属于国家支持的高新技术领域",
+      "policy_basis": "国科发火〔2016〕32号 第十一条第（三）项",
+      "requirement": "对企业主要产品（服务）发挥核心支持作用的技术属于《国家重点支持的高新技术领域》规定的范围",
+      "validation_field": "tech_field",
+      "validation_rule": "8大领域之一：电子信息/生物与新医药/航空航天/新材料/高技术服务/新能源与节能/资源与环境/先进制造与自动化",
+      "is_veto": true,
+      "validation_function": "validate_tech_field"
+    },
+    {
+      "condition_id": 4,
+      "condition_name": "科技人员占比≥10%",
+      "policy_basis": "国科发火〔2016〕32号 第十一条第（四）项",
+      "requirement": "企业从事研发和相关技术创新活动的科技人员占企业当年职工总数的比例不低于10%",
+      "validation_field": "staff_ratio",
+      "validation_rule": "科技人员数 / 职工总数 >= 10%",
+      "threshold": 0.10,
+      "is_veto": true,
+      "validation_function": "validate_staff_ratio"
+    },
+    {
+      "condition_id": 5,
+      "condition_name": "研发费用占比达标",
+      "policy_basis": "国科发火〔2016〕32号 第十一条第（五）项",
+      "requirement": "企业近三个会计年度的研发费用总额占同期销售收入总额的比例符合要求",
+      "validation_field": "rnd_expense_ratio",
+      "validation_rule": {
+        "sales_below_50m": ">= 5%",
+        "sales_50m_to_200m": ">= 4%",
+        "sales_above_200m": ">= 3%"
+      },
+      "thresholds": {
+        "below_50m": 0.05,
+        "50m_to_200m": 0.04,
+        "above_200m": 0.03
+      },
+      "additional": "其中，企业在中国境内发生的研究开发费用金额占全部研究开发费用总额的比例不低于60%",
+      "is_veto": true,
+      "validation_function": "validate_rnd_expense_ratio"
+    },
+    {
+      "condition_id": 6,
+      "condition_name": "高新技术产品收入占比≥60%",
+      "policy_basis": "国科发火〔2016〕32号 第十一条第（六）项",
+      "requirement": "近一年高新技术产品（服务）收入占企业同期总收入的比例不低于60%",
+      "validation_field": "high_tech_revenue_ratio",
+      "validation_rule": "高新技术产品收入 / 总收入 >= 60%",
+      "threshold": 0.60,
+      "is_veto": true,
+      "validation_function": "validate_high_tech_revenue_ratio"
+    },
+    {
+      "condition_id": 7,
+      "condition_name": "企业创新能力评价≥70分",
+      "policy_basis": "国科发火〔2016〕194号",
+      "requirement": "企业创新能力主要从知识产权、科技成果转化、研究开发组织管理水平、成长性指标四项进行评价",
+      "validation_field": "innovation_score",
+      "validation_rule": "4项指标总分>=70分",
+      "score_breakdown": {
+        "知识产权": {"max_score": 30, "description": "技术的先进程度、对主要产品在技术上发挥核心支持作用、知识产权数量、获取方式"},
+        "科技成果转化": {"max_score": 30, "description": "年平均转化数量（近3年）≥5项得A档（24-30分）"},
+        "研究开发组织管理水平": {"max_score": 20, "description": "研发组织管理制度、研发机构、成果转化奖励、人才培养制度"},
+        "企业成长性": {"max_score": 20, "description": "净资产增长率+销售收入增长率"}
+      },
+      "threshold": 70,
+      "is_veto": false,
+      "validation_function": "validate_innovation_score"
+    },
+    {
+      "condition_id": 8,
+      "condition_name": "前一年内无重大违规",
+      "policy_basis": "国科发火〔2016〕32号 第十一条第（八）项",
+      "requirement": "企业申请认定前一年内未发生重大安全、重大质量事故或严重环境违法、严重违法失信行为",
+      "validation_field": "compliance_status",
+      "validation_rule": "无重大安全事故 + 无重大质量事故 + 无严重环境违法 + 无严重违法失信",
+      "is_veto": true,
+      "validation_function": "validate_compliance_status"
+    }
+  ],
+  "quantitative_thresholds": {
+    "staff_ratio": {"min": 0.10, "description": "科技人员占比不低于10%"},
+    "staff_work_days": {"min": 183, "description": "科技人员累计工作时长≥183天"},
+    "rnd_expense_ratio": {
+      "below_50m": 0.05,
+      "50m_to_200m": 0.04,
+      "above_200m": 0.03,
+      "description": "研发费用占比按销售收入分档"
+    },
+    "rnd_expense_domestic_ratio": {"min": 0.60, "description": "境内研发费用占比不低于60%"},
+    "high_tech_revenue_ratio": {"min": 0.60, "description": "高新收入占比不低于60%"},
+    "innovation_score": {"min": 70, "description": "创新能力评价不低于70分"},
+    "ip_class1_min": {"min": 1, "description": "I类知识产权至少1项（或II类≥5项）"},
+    "ip_class2_min": {"min": 5, "description": "无I类时II类至少5项"},
+    "achievement_transform_per_year": {"min": 1, "description": "近三年每年至少1项成果转化"},
+    "achievement_transform_per_rd": {"min": 1, "description": "每个RD项目至少1项成果转化"},
+    "register_period_days": {"min": 365, "description": "注册成立满一年"}
+  },
+  "shenzhen_specific": {
+    "ip_policy": {
+      "class1_independent_required": false,
+      "class2_max_count_for_scoring": 15,
+      "class2_ratio_limit": "深圳市无II类知识产权占比不超过50%的限制",
+      "note": "深圳市：I类IP有1项即可；II类可5项以上但不超过15项计分"
+    },
+    "staff_policy": {
+      "work_days_scope": "深圳本地",
+      "social_security_required": "上年12月社保缴费记录（带公章）",
+      "note": "深圳市：科技人员可在深圳本地累计工时"
+    },
+    "annual_fee_invoice": {
+      "required": false,
+      "recommended": true,
+      "note": "深圳市建议提供专利年费缴费发票（非必须）"
+    },
+    "declaration_system": "深圳市科技创新委员会系统",
+    "declaration_portal": "https://sticapply.sz.gov.cn/"
+  },
+  "tech_fields": [
+    {"code": "一", "name": "电子信息", "sub_fields": ["软件", "微电子技术", "计算机产品及其网络应用技术", "通信技术", "广播影视技术", "新型电子元器件", "信息安全技术", "智能交通和轨道交通技术"]},
+    {"code": "二", "name": "生物与新医药", "sub_fields": ["医药生物技术", "中药、天然药物", "化学药研发技术", "药物新剂型与制剂创制技术", "医疗仪器、设备与医学专用软件", "轻工和化工生物技术", "农业生物技术"]},
+    {"code": "三", "name": "航空航天", "sub_fields": ["航空技术", "航天技术"]},
+    {"code": "四", "name": "新材料", "sub_fields": ["金属材料", "无机非金属材料", "高分子材料", "生物医用材料", "精细化学品"]},
+    {"code": "五", "name": "高技术服务", "sub_fields": ["研发与设计服务", "检验检测认证与标准服务", "信息技术服务", "电子商务与现代物流技术", "文化创意产业支撑技术", "公共服务"]},
+    {"code": "六", "name": "新能源与节能", "sub_fields": ["可再生清洁能源", "核能及氢能", "新型高效能量转换与储存技术", "高效节能技术"]},
+    {"code": "七", "name": "资源与环境", "sub_fields": ["水污染控制与水资源利用技术", "大气污染控制技术", "固体废弃物处置与综合利用技术", "物理性污染防治技术", "环境监测及环境事故应急处理技术", "生态环境建设与保护技术", "清洁生产技术", "循环经济技术"]},
+    {"code": "八", "name": "先进制造与自动化", "sub_fields": ["工业生产过程控制系统", "高性能、智能化仪器仪表", "先进制造工艺与装备", "新型机械", "电力系统与设备", "汽车及轨道车辆相关技术", "高技术船舶与海洋工程装备设计制造技术", "传统产业改造升级技术与装备"]}
+  ],
+  "policy_compliance_checklist": [
+    {"item": "企业注册成立满一年", "condition_id": 1, "check_method": "营业执照注册日期", "required_doc": "营业执照"},
+    {"item": "拥有核心自主知识产权", "condition_id": 2, "check_method": "IP清单+证书扫描件", "required_doc": "专利证书/软著证书"},
+    {"item": "核心技术属于8大领域", "condition_id": 3, "check_method": "企业技术领域声明", "required_doc": "技术领域说明"},
+    {"item": "科技人员占比≥10%", "condition_id": 4, "check_method": "科技人员名单+社保", "required_doc": "社保缴费记录+人员名册"},
+    {"item": "研发费用占比达标", "condition_id": 5, "check_method": "研发费用专项审计", "required_doc": "研发费用专项审计报告"},
+    {"item": "高新收入占比≥60%", "condition_id": 6, "check_method": "高新收入专项审计", "required_doc": "高新收入专项审计报告"},
+    {"item": "创新能力评价≥70分", "condition_id": 7, "check_method": "4维度评分", "required_doc": "申报书"},
+    {"item": "前一年内无重大违规", "condition_id": 8, "check_method": "企业承诺+信用查询", "required_doc": "企业承诺书"}
+  ]
+}

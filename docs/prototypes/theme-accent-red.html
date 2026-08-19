@@ -1,0 +1,2148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>主题系统 v2 原型 v3 — 真实页面元素 + 玻璃色调调节 + 远方红统一白字 + lucide 图标规范</title>
+<style>
+/* ============================================================
+   Reset + 字体
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: #1a1d24;
+  color: #d3dcec;
+  padding: 24px 16px 64px;
+  min-height: 100vh;
+}
+h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+h2 { font-size: 12px; font-weight: 600; color: #94a1bf; text-transform: uppercase; letter-spacing: 0.08em; margin: 24px 0 10px; }
+p { font-size: 12px; line-height: 1.55; }
+code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 3px; }
+
+/* ============================================================
+   全局主题化：滚动条 · 文本选择 · 占位符 · 高亮 · 焦点环
+   所有值由各主题通过同名 --scrollbar-* / --selection-fg 等覆盖
+   ============================================================ */
+* {
+  /* Firefox */
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+*::-webkit-scrollbar {
+  width: var(--scrollbar-size, 8px);
+  height: var(--scrollbar-size, 8px);
+}
+*::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background 0.15s ease;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+*::-webkit-scrollbar-thumb:active {
+  background: var(--scrollbar-thumb-active);
+}
+*::-webkit-scrollbar-corner {
+  background: var(--scrollbar-track);
+}
+
+::selection,
+::-moz-selection {
+  background: var(--selection-bg);
+  color: var(--selection-fg, inherit);
+}
+
+::placeholder,
+::-webkit-input-placeholder {
+  color: var(--placeholder, var(--text-tertiary));
+  opacity: 1;
+}
+
+mark,
+.highlight {
+  background: var(--mark-bg, var(--warning-subtle));
+  color: var(--mark-fg, var(--warning));
+  padding: 1px 3px;
+  border-radius: 3px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--accent-red-ring));
+  outline-offset: 2px;
+}
+
+input, textarea, select, button {
+  caret-color: var(--caret-color, var(--accent));
+}
+
+/* ============================================================
+   Lucide 图标规范样式（仅 currentColor + stroke）
+   ============================================================ */
+.icon { display: inline-block; vertical-align: middle; flex-shrink: 0; color: inherit; }
+.icon-10 { width: 10px; height: 10px; stroke-width: 2; }
+.icon-12 { width: 12px; height: 12px; stroke-width: 2; }
+.icon-14 { width: 14px; height: 14px; stroke-width: 2; }
+.icon-22 { width: 22px; height: 22px; stroke-width: 1.75; }
+
+/* ============================================================
+   顶部控制栏
+   ============================================================ */
+.toolbar {
+  position: sticky; top: 0; z-index: 50;
+  background: rgba(20,22,30,0.85);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 20px;
+  display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+}
+.toolbar .group {
+  display: flex; align-items: center; gap: 8px;
+  padding-right: 14px; border-right: 1px solid rgba(255,255,255,0.08);
+}
+.toolbar .group:last-child { border-right: none; padding-right: 0; }
+.toolbar label { font-size: 11px; color: #94a1bf; }
+.toolbar select, .toolbar input[type=range] {
+  background: rgba(255,255,255,0.06);
+  color: #d3dcec;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.toolbar input[type=range] { padding: 0; width: 160px; }
+.toolbar .value { font-size: 11px; color: #c0c9e0; font-family: ui-monospace, Menlo, monospace; min-width: 48px; text-align: right; }
+
+/* ============================================================
+   6 主题网格
+   ============================================================ */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 18px;
+}
+
+/* ============================================================
+   应用窗口模拟
+   ============================================================ */
+.window {
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.08);
+  display: flex; flex-direction: column;
+  height: 760px;
+  position: relative;
+  isolation: isolate;
+}
+
+/* 玻璃主题：极光光晕（增强 — 多层径向 + 模糊 + 漂浮动画） */
+.window.glass-theme::before {
+  content: ''; position: absolute; inset: -60%;
+  background:
+    radial-gradient(ellipse at 20% 30%, rgba(139,92,246,0.65), transparent 50%),
+    radial-gradient(ellipse at 80% 60%, rgba(56,189,248,0.55), transparent 50%),
+    radial-gradient(ellipse at 50% 100%, rgba(192,132,252,0.45), transparent 60%);
+  pointer-events: none; z-index: 0;
+  filter: hue-rotate(var(--glass-hue-shift, 0deg)) blur(50px);
+  transition: filter 0.4s ease;
+  animation: aurora-drift 22s ease-in-out infinite;
+}
+.window.glass-warm-theme::before {
+  content: ''; position: absolute; inset: -60%;
+  background:
+    radial-gradient(ellipse at 20% 30%, rgba(255,106,0,0.70), transparent 50%),
+    radial-gradient(ellipse at 80% 60%, rgba(255,140,51,0.55), transparent 50%),
+    radial-gradient(ellipse at 50% 100%, rgba(255,180,80,0.50), transparent 60%);
+  pointer-events: none; z-index: 0;
+  filter: hue-rotate(var(--glass-hue-shift, 0deg)) blur(50px);
+  transition: filter 0.4s ease;
+  animation: aurora-drift 22s ease-in-out infinite;
+}
+@keyframes aurora-drift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(3%, -2%) scale(1.06); }
+  66% { transform: translate(-3%, 2%) scale(0.97); }
+}
+.window.glass-theme > *,
+.window.glass-warm-theme > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* 顶部模拟标题栏 */
+.window-titlebar {
+  height: 28px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex; align-items: center; padding: 0 12px; gap: 8px;
+  font-size: 10px; color: var(--text-tertiary);
+}
+.window-titlebar .dots { display: flex; gap: 6px; align-items: center; }
+.window-titlebar .dots span { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,0.15); }
+.window-titlebar .title { margin-left: 8px; font-weight: 500; }
+
+/* ============================================================
+   Sidebar
+   ============================================================ */
+.window-body { display: flex; flex: 1; min-height: 0; }
+.sidebar {
+  width: 200px; flex-shrink: 0;
+  background: var(--bg-app);
+  border-right: 1px solid var(--border-subtle);
+  display: flex; flex-direction: column;
+  font-size: 11px;
+}
+.sidebar-tabs {
+  display: flex; height: 32px; padding: 4px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.sidebar-tabs button {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  border-radius: 5px;
+  background: transparent;
+  border: none; cursor: pointer;
+  color: var(--text-tertiary);
+  transition: all 0.15s;
+  padding: 0;
+}
+.sidebar-tabs button.active { background: var(--bg-elevated); color: var(--text-primary); }
+.sidebar-tabs button:hover:not(.active) { color: var(--text-secondary); }
+
+.sidebar-search {
+  display: flex; gap: 4px; padding: 6px; border-bottom: 1px solid var(--border-subtle);
+}
+.sidebar-search .search {
+  flex: 1; position: relative;
+  background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: 5px;
+  padding: 4px 6px 4px 22px; font-size: 10px; color: var(--text-primary);
+  display: flex; align-items: center;
+}
+.sidebar-search .search::placeholder { color: var(--text-tertiary); }
+.sidebar-search .search-icon {
+  position: absolute; left: 6px; top: 50%; transform: translateY(-50%);
+  color: var(--text-tertiary);
+}
+.sidebar-search button {
+  background: transparent; border: none; cursor: pointer;
+  color: var(--text-tertiary); padding: 4px;
+  border-radius: 4px; transition: all 0.15s;
+  display: flex; align-items: center; justify-content: center;
+}
+.sidebar-search button:hover { background: var(--bg-elevated); color: var(--text-primary); }
+.sidebar-search button.primary { color: var(--accent); }
+.sidebar-search button.primary:hover { background: var(--accent-subtle); }
+
+.sidebar-section-title {
+  padding: 6px 8px 4px; font-size: 9px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+}
+
+.sidebar-list { flex: 1; overflow-y: auto; }
+.sidebar-item {
+  display: flex; align-items: center; gap: 5px;
+  padding: 5px 8px; border-radius: 5px;
+  cursor: pointer; font-size: 11px;
+  transition: all 0.15s;
+  color: var(--text-tertiary);
+}
+.sidebar-item:hover { background: var(--bg-elevated); color: var(--text-primary); }
+.sidebar-item.active { background: var(--accent-subtle); color: var(--text-primary); }
+.sidebar-item .stream {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent); flex-shrink: 0;
+}
+.sidebar-item .await {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--warning); flex-shrink: 0;
+  animation: pulse 1.5s infinite;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+.sidebar-item .title-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-item .meta { font-size: 9px; color: var(--text-tertiary); font-family: ui-monospace, monospace; }
+.sidebar-item .streaming-label { font-size: 9px; color: var(--accent); display: inline-flex; align-items: center; gap: 3px; }
+.sidebar-item .pin-icon { color: var(--warning); }
+
+/* ============================================================
+   主聊天区
+   ============================================================ */
+.chat {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column;
+  background: var(--bg-app);
+}
+
+/* StatusBar */
+.status-bar {
+  height: 22px; flex-shrink: 0;
+  background: var(--bg-app);
+  border-top: 1px solid var(--border-subtle);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 8px; font-size: 10px;
+  color: var(--text-tertiary);
+}
+.status-bar > div { display: flex; align-items: center; gap: 6px; }
+.status-bar .item {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 1px 4px; border-radius: 3px;
+  transition: background 0.15s;
+}
+.status-bar .item.ok { color: var(--success); }
+.status-bar .item.warn { color: var(--warning); }
+.status-bar .item.acc { color: var(--accent); }
+
+/* ChatWindow */
+.messages {
+  flex: 1; overflow-y: auto;
+  padding: 8px 0;
+}
+
+/* MessageBubble */
+.message {
+  display: flex; gap: 8px; padding: 8px 12px;
+  max-width: 100%;
+}
+.message .avatar {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--accent-subtle);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--accent); flex-shrink: 0;
+}
+.message .avatar.brand {
+  background: var(--accent);
+  color: var(--text-inverse, #fff);
+}
+.message .body { flex: 1; min-width: 0; }
+.message .header {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 3px;
+  font-size: 10px; color: var(--text-tertiary);
+}
+.message .header .name { font-weight: 600; }
+.message .header .badge {
+  font-size: 8px; padding: 1px 4px; border-radius: 3px;
+  background: var(--accent-subtle); color: var(--accent);
+}
+.message .header .time { margin-left: auto; opacity: 0.6; }
+.message .content { font-size: 11px; color: var(--text-primary); line-height: 1.55; word-break: break-word; }
+.message .content p { margin-bottom: 4px; }
+.message .content code {
+  background: var(--bg-elevated);
+  padding: 0 3px; border-radius: 3px;
+  font-size: 10px;
+  color: var(--accent);
+}
+.message .content a {
+  color: var(--text-secondary);
+  text-decoration: underline;
+  text-decoration-color: var(--border-default);
+  text-underline-offset: 2px;
+}
+.message .content a:hover { color: var(--accent-red); text-decoration-color: var(--accent-red); }
+.message .content blockquote {
+  border-left: 2px solid var(--accent-subtle);
+  padding-left: 6px;
+  color: var(--text-tertiary);
+  font-style: italic;
+  margin: 4px 0;
+}
+.message .content table {
+  width: 100%; border-collapse: collapse;
+  font-size: 10px;
+  margin: 4px 0;
+}
+.message .content th, .message .content td {
+  border: 1px solid var(--border-subtle);
+  padding: 3px 6px;
+  text-align: left;
+}
+.message .content th { background: var(--bg-elevated); font-weight: 600; }
+.message .content ul, .message .content ol { padding-left: 18px; margin: 4px 0; }
+.message .content li { margin-bottom: 2px; }
+
+/* Tool block */
+.tool-block {
+  margin: 4px 0; border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+.tool-block .head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 10px;
+}
+.tool-block .tool-name {
+  font-family: ui-monospace, monospace;
+  font-size: 9px; text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+}
+.tool-block .status {
+  font-size: 9px; padding: 1px 5px; border-radius: 3px;
+  font-weight: 600;
+  display: inline-flex; align-items: center; gap: 3px;
+}
+.tool-block .status.success { background: var(--success-subtle); color: var(--success); }
+.tool-block .status.error { background: var(--error-subtle); color: var(--error); }
+.tool-block .status.running { background: rgba(255,178,74,0.12); color: var(--warning); }
+.tool-block .status.pending { background: var(--bg-elevated); color: var(--text-tertiary); }
+.tool-block .body {
+  padding: 6px 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--text-secondary);
+  max-height: 120px; overflow-y: auto;
+}
+
+/* QuestionCard */
+.question-card {
+  max-width: 380px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  margin: 6px 0;
+  overflow: hidden;
+}
+.question-card .head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+}
+.question-card .head .left {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 600;
+  color: var(--text-primary);
+}
+.question-card .head .left .dot {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1.5s infinite;
+}
+.question-card .head .close-btn {
+  background: transparent; border: none; cursor: pointer;
+  color: var(--text-tertiary);
+  display: flex; align-items: center; justify-content: center;
+  padding: 2px;
+  border-radius: 3px;
+  transition: all 0.15s;
+}
+.question-card .head .close-btn:hover { color: var(--text-primary); background: var(--bg-elevated); }
+.question-card .body { padding: 10px 12px; }
+.question-card .q { margin-bottom: 8px; }
+.question-card .q-tag {
+  font-size: 9px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  background: var(--accent-subtle);
+  color: var(--accent);
+  padding: 1px 4px; border-radius: 3px;
+  margin-right: 5px;
+}
+.question-card .q-text { font-size: 11px; font-weight: 500; color: var(--text-primary); }
+.question-card .options { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.question-card .option {
+  padding: 4px 8px; border-radius: 5px;
+  background: var(--bg-elevated);
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  font-size: 10px; cursor: pointer;
+  transition: all 0.15s;
+}
+.question-card .option:hover {
+  border-color: var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+.question-card .option.selected {
+  background: var(--accent-subtle);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.question-card .footer {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+}
+.question-card .footer .hint { font-size: 9px; color: var(--text-tertiary); }
+.question-card .footer .actions { display: flex; gap: 5px; }
+.question-card .footer button {
+  padding: 4px 10px; border-radius: 5px;
+  font-size: 10px; cursor: pointer;
+  border: none;
+}
+.question-card .footer button.skip { background: transparent; color: var(--text-secondary); }
+.question-card .footer button.submit {
+  background: var(--accent);
+  color: var(--text-inverse, #fff);
+  font-weight: 600;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+
+/* ChatInput */
+.input-bar {
+  flex-shrink: 0;
+  padding: 6px;
+  border-top: 1px solid var(--border-subtle);
+}
+.input-card {
+  display: flex; align-items: end; gap: 5px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  padding: 6px 8px;
+  transition: all 0.15s;
+}
+.input-card:hover { border-color: var(--accent); }
+.input-card:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+.input-card .tools { display: flex; gap: 2px; padding-bottom: 2px; }
+.input-card .tools button {
+  background: transparent; border: none; cursor: pointer;
+  color: var(--text-tertiary);
+  width: 22px; height: 22px;
+  border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.15s;
+  padding: 0;
+}
+.input-card .tools button:hover { color: var(--text-secondary); background: var(--bg-elevated); }
+.input-card .tools button.skill-active { color: var(--accent); }
+.input-card textarea {
+  flex: 1; resize: none; outline: none;
+  background: transparent; border: none;
+  font-size: 11px;
+  color: var(--text-primary);
+  padding: 4px 2px;
+  min-height: 22px; max-height: 100px;
+  font-family: inherit;
+}
+.input-card textarea::placeholder { color: var(--text-tertiary); }
+.send-btn {
+  background: var(--accent);
+  color: var(--text-inverse, #fff);
+  border: none; border-radius: 6px;
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s;
+  padding: 0;
+}
+.send-btn:hover { background: var(--accent-hover); }
+
+/* Active skill badge */
+.active-skill {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--accent-subtle);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 10px;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+/* 玻璃主题：sidebar / chat 保持透明，让光晕透出；status-bar / input-bar 加 backdrop-blur 保可读 */
+.window.glass-theme .status-bar,
+.window.glass-warm-theme .status-bar {
+  background: rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.window.glass-theme .input-bar,
+.window.glass-warm-theme .input-bar {
+  background: rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* ============================================================
+   主题色变量 — 6 主题（强调按钮统一白字）
+   ============================================================ */
+
+/* T1 yuanfang-light */
+.theme-yuanfang-light {
+  --brand-500: #ff6a00;
+  --accent: #ff6a00;
+  --accent-hover: #ea580c;
+  --accent-subtle: rgba(255,106,0,0.12);
+  --accent-red: #ff2400;
+  --accent-red-hover: #e31e00;
+  --accent-red-active: #b81700;
+  --accent-red-subtle: rgba(255,36,0,0.10);
+  --accent-red-soft: rgba(255,36,0,0.18);
+  --accent-red-ring: rgba(255,36,0,0.35);
+  --accent-red-fg: #ffffff;
+  --error: #dc2626;
+  --error-subtle: rgba(220,38,38,0.10);
+  --success: #047857;
+  --success-subtle: rgba(4,120,87,0.10);
+  --warning: #b45309;
+  --bg-app: #f0f2f5;
+  --bg-surface: #ffffff;
+  --bg-elevated: #e8ebf0;
+  --bg-hover: #dfe3ea;
+  --bg-input: #ffffff;
+  --text-primary: #1e2432;
+  --text-secondary: #545b6b;
+  --text-tertiary: #7a8192;
+  --text-inverse: #ffffff;
+  --border-default: #c5c9d3;
+  --border-subtle: #e0e3ea;
+
+  /* 滚动条 */
+  --scrollbar-thumb:        #a7adba;
+  --scrollbar-thumb-hover:  #7a8192;
+  --scrollbar-thumb-active: #545b6b;
+  --scrollbar-track:        transparent;
+
+  /* 原 themes.css 还原（未涉及部分，保持原有视觉兼容） */
+  --popover-bg:     rgba(255, 255, 255, 0.85);
+  --tooltip-bg:     rgba(30, 36, 50, 0.92);
+  --modal-bg:       rgba(255, 255, 255, 0.88);
+  --popover-blur:   16px;
+  --shadow-sm:      0 1px 2px rgba(30,36,50,0.06);
+  --shadow-md:      0 4px 16px rgba(255,106,0,0.05), 0 2px 6px rgba(30,36,50,0.06);
+  --shadow-lg:      0 12px 36px rgba(255,106,0,0.08), 0 4px 12px rgba(30,36,50,0.08);
+  --shadow-modal:     0 20px 50px -10px rgba(30,36,50,0.22), 0 0 0 1px var(--border-default);
+  --shadow-popover:   0 8px 24px -6px rgba(30,36,50,0.16), 0 0 0 1px var(--border-default);
+  --overlay-bg:     rgba(14,17,24,0.42);
+  --overlay-blur:   5px;
+  --selection-bg:   rgba(255,106,0,0.18);
+  --kbd-border:     #c5c9d3;
+  --tooltip-fg:     #ffffff;
+  --scrollbar-size:         8px;
+  /* 焦点环 / 占位符 / 高亮 / caret / selection-fg */
+  --selection-fg:  #1e2432;
+  --focus-ring:    rgba(255,36,0,0.45);
+  --placeholder:   #a7adba;
+  --mark-bg:       rgba(180,83,9,0.18);
+  --mark-fg:       #b45309;
+  --caret-color:   #ff6a00;
+
+  background: var(--bg-app); color: var(--text-primary);
+}
+
+/* T2 yuanfang */
+.theme-yuanfang {
+  --brand-500: #e06b36;
+  --accent: #e06b36;
+  --accent-hover: #f58a56;
+  --accent-subtle: rgba(224,107,54,0.14);
+  --accent-red: #ff573b;
+  --accent-red-hover: #ff8d6e;
+  --accent-red-active: #d63d22;
+  --accent-red-subtle: rgba(255,87,59,0.14);
+  --accent-red-soft: rgba(255,87,59,0.22);
+  --accent-red-ring: rgba(255,87,59,0.40);
+  --accent-red-fg: #ffffff;
+  --error: #ef6b5b;
+  --error-subtle: rgba(239,107,91,0.14);
+  --success: #6ee7a7;
+  --success-subtle: rgba(110,231,167,0.12);
+  --warning: #ffb24a;
+  --bg-app: #100c08;
+  --bg-surface: #171109;
+  --bg-elevated: #211914;
+  --bg-hover: #2a1f16;
+  --bg-input: #100c08;
+  --text-primary: #e8d6b8;
+  --text-secondary: #b89c6e;
+  --text-tertiary: #9a7c55;
+  --text-inverse: #100c08;
+  --border-default: rgba(180,135,105,0.12);
+  --border-subtle: rgba(180,135,105,0.06);
+
+  /* 滚动条 */
+  --scrollbar-thumb:        #46351f;
+  --scrollbar-thumb-hover:  #6b5230;
+  --scrollbar-thumb-active: #9a7c55;
+  --scrollbar-track:        transparent;
+
+  /* 原 themes.css 还原 */
+  --popover-bg:     rgba(28, 20, 12, 0.72);
+  --tooltip-bg:     rgba(36, 26, 16, 0.78);
+  --modal-bg:       rgba(24, 18, 12, 0.75);
+  --popover-blur:   14px;
+  --shadow-sm:      0 1px 2px rgba(0,0,0,0.35);
+  --shadow-md:      0 4px 16px rgba(0,0,0,0.40), 0 2px 6px rgba(0,0,0,0.40);
+  --shadow-lg:      0 12px 36px rgba(0,0,0,0.50), 0 4px 12px rgba(0,0,0,0.50);
+  --shadow-modal:     0 20px 50px -10px rgba(0,0,0,0.60), 0 0 0 1px var(--border-default);
+  --shadow-popover:   0 8px 24px -6px rgba(0,0,0,0.50), 0 0 0 1px var(--border-default);
+  --overlay-bg:     rgba(20,8,0,0.62);
+  --overlay-blur:   6px;
+  --selection-bg:   rgba(224,107,54,0.28);
+  --kbd-border:     #251d14;
+  --tooltip-fg:     #e8d6b8;
+  --scrollbar-size:         8px;
+  /* 焦点环 / 占位符 / 高亮 / caret / selection-fg */
+  --selection-fg:  #e8d6b8;
+  --focus-ring:    rgba(255,87,59,0.55);
+  --placeholder:   #6b5230;
+  --mark-bg:       rgba(255,178,74,0.20);
+  --mark-fg:       #ffb24a;
+  --caret-color:   #e06b36;
+
+  background: var(--bg-app); color: var(--text-primary);
+}
+
+/* T3 dark */
+.theme-dark {
+  --brand-500: #0ea5e9;
+  --accent: #0ea5e9;
+  --accent-hover: #22d3ee;
+  --accent-subtle: rgba(14,165,233,0.12);
+  --accent-red: #ff573b;
+  --accent-red-hover: #ff8d6e;
+  --accent-red-active: #d63d22;
+  --accent-red-subtle: rgba(255,87,59,0.14);
+  --accent-red-soft: rgba(255,87,59,0.22);
+  --accent-red-ring: rgba(255,87,59,0.40);
+  --accent-red-fg: #ffffff;
+  --error: #f87171;
+  --error-subtle: rgba(248,113,113,0.12);
+  --success: #34d399;
+  --success-subtle: rgba(52,211,153,0.12);
+  --warning: #fbbf24;
+  --bg-app: #0c0e12;
+  --bg-surface: #15171d;
+  --bg-elevated: #1e2128;
+  --bg-hover: #272b34;
+  --bg-input: #101218;
+  --text-primary: #d8dce3;
+  --text-secondary: #8893a3;
+  --text-tertiary: #5a6575;
+  --text-inverse: #0c0e12;
+  --border-default: rgba(120,135,155,0.10);
+  --border-subtle: rgba(120,135,155,0.05);
+
+  /* 滚动条 */
+  --scrollbar-thumb:        #3d424d;
+  --scrollbar-thumb-hover:  #5a6070;
+  --scrollbar-thumb-active: #818998;
+  --scrollbar-track:        transparent;
+
+  /* 原 themes.css 还原 */
+  --popover-bg:     rgba(24, 28, 36, 0.72);
+  --tooltip-bg:     rgba(32, 36, 46, 0.78);
+  --modal-bg:       rgba(22, 26, 34, 0.75);
+  --popover-blur:   14px;
+  --shadow-sm:      0 1px 2px rgba(0,0,0,0.35);
+  --shadow-md:      0 4px 16px rgba(14,165,233,0.08), 0 2px 6px rgba(0,0,0,0.35);
+  --shadow-lg:      0 12px 36px rgba(14,165,233,0.12), 0 4px 12px rgba(0,0,0,0.45);
+  --shadow-modal:     0 20px 50px -10px rgba(0,0,0,0.65), 0 0 0 1px var(--border-default);
+  --shadow-popover:   0 8px 24px -6px rgba(0,0,0,0.50), 0 0 0 1px var(--border-default);
+  --overlay-bg:     rgba(6,8,12,0.65);
+  --overlay-blur:   6px;
+  --selection-bg:   rgba(14,165,233,0.28);
+  --kbd-border:     #2e3340;
+  --tooltip-fg:     #e6e9ef;
+  --scrollbar-size:         8px;
+  /* 焦点环 / 占位符 / 高亮 / caret / selection-fg */
+  --selection-fg:  #d8dce3;
+  --focus-ring:    rgba(14,165,233,0.45);
+  --placeholder:   #5a6070;
+  --mark-bg:       rgba(251,191,36,0.18);
+  --mark-fg:       #fbbf24;
+  --caret-color:   #0ea5e9;
+
+  background: var(--bg-app); color: var(--text-primary);
+}
+
+/* T4 light */
+.theme-light {
+  --brand-500: #4f46e5;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-subtle: rgba(79,70,229,0.10);
+  --accent-red: #ff2400;
+  --accent-red-hover: #e31e00;
+  --accent-red-active: #b81700;
+  --accent-red-subtle: rgba(255,36,0,0.10);
+  --accent-red-soft: rgba(255,36,0,0.18);
+  --accent-red-ring: rgba(255,36,0,0.35);
+  --accent-red-fg: #ffffff;
+  --error: #dc2626;
+  --error-subtle: rgba(220,38,38,0.10);
+  --success: #047857;
+  --success-subtle: rgba(4,120,87,0.10);
+  --warning: #b45309;
+  --bg-app: #f2f4f7;
+  --bg-surface: #ffffff;
+  --bg-elevated: #e6e9ef;
+  --bg-hover: #dfe3ea;
+  --bg-input: #ffffff;
+  --text-primary: #181d26;
+  --text-secondary: #4b5563;
+  --text-tertiary: #767f90;
+  --text-inverse: #ffffff;
+  --border-default: #cdd1da;
+  --border-subtle: #e6e9ef;
+
+  /* 滚动条 */
+  --scrollbar-thumb:        #a5abb8;
+  --scrollbar-thumb-hover:  #767f90;
+  --scrollbar-thumb-active: #4b5563;
+  --scrollbar-track:        transparent;
+
+  /* 原 themes.css 还原 */
+  --popover-bg:     rgba(255, 255, 255, 0.86);
+  --tooltip-bg:     rgba(24, 29, 38, 0.92);
+  --modal-bg:       rgba(255, 255, 255, 0.90);
+  --popover-blur:   16px;
+  --shadow-sm:      0 1px 2px rgba(24,29,38,0.05);
+  --shadow-md:      0 4px 16px rgba(79,70,229,0.07), 0 2px 6px rgba(24,29,38,0.05);
+  --shadow-lg:      0 12px 36px rgba(79,70,229,0.10), 0 4px 12px rgba(24,29,38,0.06);
+  --shadow-modal:     0 20px 50px -10px rgba(24,29,38,0.18), 0 0 0 1px var(--border-default);
+  --shadow-popover:   0 8px 24px -6px rgba(24,29,38,0.12), 0 0 0 1px var(--border-default);
+  --overlay-bg:     rgba(11,14,20,0.38);
+  --overlay-blur:   5px;
+  --selection-bg:   rgba(79,70,229,0.18);
+  --kbd-border:     #cdd1da;
+  --tooltip-fg:     #ffffff;
+  --scrollbar-size:         8px;
+  /* 焦点环 / 占位符 / 高亮 / caret / selection-fg */
+  --selection-fg:  #181d26;
+  --focus-ring:    rgba(79,70,229,0.40);
+  --placeholder:   #a5abb8;
+  --mark-bg:       rgba(180,83,9,0.18);
+  --mark-fg:       #b45309;
+  --caret-color:   #4f46e5;
+
+  background: var(--bg-app); color: var(--text-primary);
+}
+
+/* T5 glass */
+.theme-glass {
+  --brand-500: #a78bfa;
+  --accent: #a78bfa;
+  --accent-hover: #c4b5fd;
+  --accent-subtle: rgba(167,139,250,0.16);
+  --accent-red: #ff2400;
+  --accent-red-hover: #ff573b;
+  --accent-red-active: #cc1c00;
+  --accent-red-subtle: rgba(255,36,0,0.16);
+  --accent-red-soft: rgba(255,36,0,0.24);
+  --accent-red-ring: rgba(255,36,0,0.45);
+  --accent-red-fg: #ffffff;
+  --error: #f87171;
+  --error-subtle: rgba(248,113,113,0.14);
+  --success: #34d399;
+  --success-subtle: rgba(52,211,153,0.14);
+  --warning: #fbbf24;
+  --bg-app: rgba(13,18,36,0.30);
+  --bg-surface: rgba(13,18,36,0.45);
+  --bg-elevated: rgba(22,29,54,0.55);
+  --bg-hover: rgba(30,38,70,0.50);
+  --bg-input: rgba(13,18,36,0.50);
+  --text-primary: #d3dcec;
+  --text-secondary: #94a1bf;
+  --text-tertiary: #66738f;
+  --text-inverse: #0b0f1e;
+  --border-default: rgba(255,255,255,0.14);
+  --border-subtle: rgba(255,255,255,0.08);
+
+  /* 滚动条 — 玻璃主题半透明 */
+  --scrollbar-thumb:        rgba(255,255,255,0.22);
+  --scrollbar-thumb-hover:  rgba(255,255,255,0.35);
+  --scrollbar-thumb-active: rgba(255,255,255,0.50);
+  --scrollbar-track:        transparent;
+
+  /* 原 themes.css 还原 */
+  --popover-bg:     color-mix(in srgb, #121830 calc(var(--glass-opacity, 0.3) * 100%), transparent);
+  --tooltip-bg:     color-mix(in srgb, #10152a calc(var(--glass-opacity, 0.3) * 100%), transparent);
+  --modal-bg:       color-mix(in srgb, #10152a calc(var(--glass-opacity, 0.3) * 100%), transparent);
+  --popover-blur:   24px;
+  --shadow-sm:      0 1px 2px rgba(2, 6, 23, 0.40);
+  --shadow-md:      0 4px 16px rgba(2, 6, 23, 0.50), 0 0 0 1px var(--border-subtle);
+  --shadow-lg:      0 12px 36px rgba(2, 6, 23, 0.55), 0 0 0 1px var(--border-subtle);
+  --shadow-modal:     0 20px 50px -10px rgba(2, 6, 23, 0.60), 0 0 0 1px var(--border-default);
+  --shadow-popover:   0 8px 24px -6px rgba(2, 6, 23, 0.50), 0 0 0 1px var(--border-subtle);
+  --overlay-bg:     rgba(4, 6, 16, 0.50);
+  --overlay-blur:   8px;
+  --selection-bg:   rgba(167, 139, 250, 0.30);
+  --kbd-border:     rgba(255, 255, 255, 0.18);
+  --tooltip-fg:     #e7ecf5;
+
+  /* 色调调节 — 仅作用于本主题（冷色域） */
+  --glass-hue-shift: var(--glass-hue-shift-cold, 0deg);
+  --scrollbar-size:         8px;
+  /* 焦点环 / 占位符 / 高亮 / caret / selection-fg */
+  --selection-fg:  #d3dcec;
+  --focus-ring:    rgba(167,139,250,0.55);
+  --placeholder:   rgba(255,255,255,0.40);
+  --mark-bg:       rgba(251,191,36,0.22);
+  --mark-fg:       #fbbf24;
+  --caret-color:   #a78bfa;
+
+  background: var(--bg-app); color: var(--text-primary);
+  backdrop-filter: blur(20px);
+}
+
+/* T6 glass-warm */
+.theme-glass-warm {
+  --brand-500: #ff6a00;
+  --accent: #ff6a00;
+  --accent-hover: #ff8c33;
+  --accent-subtle: rgba(255,106,0,0.16);
+  --accent-red: #ff2400;
+  --accent-red-hover: #ff573b;
+  --accent-red-active: #cc1c00;
+  --accent-red-subtle: rgba(255,36,0,0.16);
+  --accent-red-soft: rgba(255,36,0,0.24);
+  --accent-red-ring: rgba(255,36,0,0.45);
+  --accent-red-fg: #ffffff;
+  --error: #f87171;
+  --error-subtle: rgba(248,113,113,0.14);
+  --success: #34d399;
+  --success-subtle: rgba(52,211,153,0.14);
+  --warning: #fbbf24;
+  --bg-app: rgba(22,14,6,0.30);
+  --bg-surface: rgba(22,14,6,0.45);
+  --bg-elevated: rgba(34,22,10,0.55);
+  --bg-hover: rgba(44,30,14,0.50);
+  --bg-input: rgba(22,14,6,0.50);
+  --text-primary: #f5ead9;
+  --text-secondary: #d3b48c;
+  --text-tertiary: #a5845c;
+  --text-inverse: #140b04;
+  --border-default: rgba(255,240,220,0.15);
+  --border-subtle: rgba(255,240,220,0.08);
+
+  /* 滚动条 — 玻璃主题半透明暖色 */
+  --scrollbar-thumb:        rgba(255,240,220,0.22);
+  --scrollbar-thumb-hover:  rgba(255,240,220,0.35);
+  --scrollbar-thumb-active: rgba(255,240,220,0.50);
+  --scrollbar-track:        transparent;
+
+  /* 原 themes.css 还原 */
+  --popover-bg:     color-mix(in srgb, #1e1308 calc(var(--glass-opacity, 0.3) * 100%), transparent);
+  --tooltip-bg:     color-mix(in srgb, #1a1007 calc(var(--glass-opacity, 0.3) * 100%), transparent);
+  --modal-bg:       color-mix(in srgb, #1a1007 calc(var(--glass-opacity, 0.3) * 100%), transparent);
+  --popover-blur:   24px;
+  --shadow-sm:      0 1px 2px rgba(12, 6, 2, 0.45);
+  --shadow-md:      0 4px 16px rgba(12, 6, 2, 0.55), 0 0 0 1px var(--border-subtle);
+  --shadow-lg:      0 12px 36px rgba(12, 6, 2, 0.60), 0 0 0 1px var(--border-subtle);
+  --shadow-modal:     0 20px 50px -10px rgba(12, 6, 2, 0.65), 0 0 0 1px var(--border-default);
+  --shadow-popover:   0 8px 24px -6px rgba(12, 6, 2, 0.55), 0 0 0 1px var(--border-subtle);
+  --overlay-bg:     rgba(8, 4, 0, 0.52);
+  --overlay-blur:   8px;
+  --selection-bg:   rgba(255, 106, 0, 0.30);
+  --kbd-border:     rgba(255, 240, 220, 0.18);
+  --tooltip-fg:     #f5ead9;
+
+  /* 色调调节 — 仅作用于本主题（暖色域） */
+  --glass-hue-shift: var(--glass-hue-shift-warm, 0deg);
+  --scrollbar-size:         8px;
+  /* 焦点环 / 占位符 / 高亮 / caret / selection-fg */
+  --selection-fg:  #f5ead9;
+  --focus-ring:    rgba(255,106,0,0.55);
+  --placeholder:   rgba(255,240,220,0.40);
+  --mark-bg:       rgba(251,191,36,0.22);
+  --mark-fg:       #fbbf24;
+  --caret-color:   #ff6a00;
+
+  background: var(--bg-app); color: var(--text-primary);
+  backdrop-filter: blur(20px);
+}
+
+/* ============================================================
+   强调按钮（统一白字）
+   ============================================================ */
+.btn-accent-red {
+  background: var(--accent-red);
+  color: var(--accent-red-fg);
+  border: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 11px; font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.btn-accent-red:hover { background: var(--accent-red-hover); }
+.btn-accent-red:active { background: var(--accent-red-active); }
+
+/* ============================================================
+   玻璃主题发光光晕增强 — 仅 glass/glass-warm
+   多层 box-shadow 叠加 + 呼吸动画
+   重点元素：强调红按钮 / 主操作按钮 / 选中态 / focus / pulse dot / avatar / streaming / active skill
+   ============================================================ */
+@keyframes red-glow-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(255,36,0,0.35),
+      0 0 12px rgba(255,36,0,0.50),
+      0 0 28px rgba(255,36,0,0.40),
+      0 4px 14px rgba(255,36,0,0.25);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(255,36,0,0.55),
+      0 0 18px rgba(255,36,0,0.75),
+      0 0 42px rgba(255,36,0,0.60),
+      0 4px 20px rgba(255,36,0,0.40);
+  }
+}
+@keyframes accent-glow-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 10px color-mix(in srgb, var(--accent) 35%, transparent),
+      0 0 22px color-mix(in srgb, var(--accent) 22%, transparent),
+      0 0 1px color-mix(in srgb, var(--accent) 50%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 14px color-mix(in srgb, var(--accent) 55%, transparent),
+      0 0 32px color-mix(in srgb, var(--accent) 35%, transparent),
+      0 0 1px color-mix(in srgb, var(--accent) 70%, transparent);
+  }
+}
+@keyframes soft-glow {
+  0%, 100% { box-shadow: 0 0 8px var(--accent-subtle); }
+  50%      { box-shadow: 0 0 16px var(--accent-subtle); }
+}
+@keyframes dot-pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 6px var(--accent), 0 0 12px var(--accent-subtle);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 10px var(--accent), 0 0 20px var(--accent);
+    transform: scale(1.15);
+  }
+}
+
+/* 强调红按钮 — 强烈红光晕 + 呼吸（玻璃主题专属） */
+.window.glass-theme .btn-accent-red,
+.window.glass-warm-theme .btn-accent-red {
+  box-shadow:
+    0 0 0 1px rgba(255,36,0,0.35),
+    0 0 12px rgba(255,36,0,0.50),
+    0 0 28px rgba(255,36,0,0.40),
+    0 4px 14px rgba(255,36,0,0.25);
+  animation: red-glow-pulse 2.5s ease-in-out infinite;
+}
+.window.glass-theme .btn-accent-red:hover,
+.window.glass-warm-theme .btn-accent-red:hover {
+  animation-duration: 1.2s;  /* hover 时呼吸加快 */
+}
+
+/* 品牌主操作按钮 + Send 按钮 — 主题色光晕 */
+.window.glass-theme .btn-primary,
+.window.glass-warm-theme .btn-primary {
+  animation: accent-glow-pulse 3s ease-in-out infinite;
+}
+.window.glass-theme .send-btn,
+.window.glass-warm-theme .send-btn {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent),
+    0 0 12px color-mix(in srgb, var(--accent) 50%, transparent),
+    0 0 24px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* 选中态 — sidebar 项 / sidebar tab */
+.window.glass-theme .sidebar-item.active,
+.window.glass-warm-theme .sidebar-item.active {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent),
+    0 0 14px var(--accent-subtle);
+  animation: soft-glow 3s ease-in-out infinite;
+}
+.window.glass-theme .sidebar-tabs button.active,
+.window.glass-warm-theme .sidebar-tabs button.active {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent),
+    0 0 10px var(--accent-subtle);
+}
+
+/* 输入框 focus — 强光环 */
+.window.glass-theme .input-card:focus-within,
+.window.glass-warm-theme .input-card:focus-within {
+  box-shadow:
+    0 0 0 2px var(--accent-subtle),
+    0 0 18px var(--accent-subtle),
+    0 0 32px color-mix(in srgb, var(--accent) 30%, transparent) !important;
+}
+
+/* QuestionCard 头部 pulse dot — 增强发光 + 缩放 */
+.window.glass-theme .question-card .head .left .dot,
+.window.glass-warm-theme .question-card .head .left .dot {
+  box-shadow: 0 0 8px var(--accent), 0 0 16px var(--accent-subtle);
+  animation: dot-pulse-glow 1.5s ease-in-out infinite;
+}
+
+/* QuestionCard 选中项 — 内发光 */
+.window.glass-theme .question-card .option.selected,
+.window.glass-warm-theme .question-card .option.selected {
+  box-shadow:
+    inset 0 0 0 1px var(--accent),
+    0 0 12px var(--accent-subtle);
+}
+
+/* YFWorking 头像 — 主题色光晕 */
+.window.glass-theme .message .avatar.brand,
+.window.glass-warm-theme .message .avatar.brand {
+  box-shadow:
+    0 0 8px var(--accent-subtle),
+    0 0 18px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* Sidebar streaming 圆点 */
+.window.glass-theme .sidebar-item .stream,
+.window.glass-warm-theme .sidebar-item .stream {
+  box-shadow: 0 0 6px var(--accent), 0 0 12px var(--accent-subtle);
+  animation: dot-pulse-glow 1.5s ease-in-out infinite;
+}
+
+/* Tool block running 状态 */
+.window.glass-theme .tool-block .status.running,
+.window.glass-warm-theme .tool-block .status.running {
+  box-shadow: 0 0 6px var(--warning-subtle), 0 0 14px rgba(251,191,36,0.20);
+}
+
+/* Active skill badge */
+.window.glass-theme .active-skill,
+.window.glass-warm-theme .active-skill {
+  box-shadow:
+    inset 0 0 0 1px var(--accent),
+    0 0 10px var(--accent-subtle),
+    0 0 20px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+/* ============================================================
+   测试用例区
+   ============================================================ */
+.test-zone {
+  background: rgba(255,255,255,0.04);
+  border: 1px dashed rgba(255,255,255,0.12);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+}
+.test-zone .label { font-size: 11px; color: #94a1bf; min-width: 80px; }
+.test-zone .preview-btn-row {
+  display: flex; gap: 10px; align-items: center;
+  padding: 8px 12px; border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  transition: background 0.15s;
+}
+.test-zone .preview-btn-row .badge {
+  font-size: 9px; padding: 2px 6px; border-radius: 999px;
+  background: var(--accent-subtle); color: var(--accent);
+  font-weight: 600;
+}
+.test-zone .preview-btn-row.glass-theme,
+  .test-zone .preview-btn-row.glass-warm-theme {
+  border: 1px solid var(--border-default);
+}
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+     Lucide SVG Sprite（项目现有图标集）
+     viewBox 24×24 · stroke=currentColor · fill=none · stroke-width 默认
+     ============================================================ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-message-square" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+    </symbol>
+    <symbol id="i-folder-tree" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 10a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-2.5a1 1 0 0 1-.8-.4l-.9-1.2A1 1 0 0 0 15 3h-2a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z"/>
+      <path d="M20 21a1 1 0 0 0 1-1v-3a1 1 0 0 0-1-1h-2.9a1 1 0 0 1-.88-.55l-.42-.85a1 1 0 0 0-.92-.6H13a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z"/>
+      <path d="M3 5a2 2 0 0 0 2 2h3"/>
+      <path d="M3 3v13a2 2 0 0 0 2 2h3"/>
+    </symbol>
+    <symbol id="i-git-fork" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="6" cy="3" r="2"/><circle cx="6" cy="21" r="2"/><circle cx="18" cy="6" r="2"/>
+      <path d="M6 5v14"/><path d="M18 8v2a2 2 0 0 1-2 2H8"/>
+    </symbol>
+    <symbol id="i-history" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+      <path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>
+    </symbol>
+    <symbol id="i-bot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/>
+      <path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>
+    </symbol>
+    <symbol id="i-puzzle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 0 1-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 1 0-3.214 3.214c.446.166.855.497.925.968a.98.98 0 0 1-.276.837l-1.61 1.61a2.404 2.404 0 0 1-1.705.707 2.402 2.402 0 0 1-1.704-.706l-1.568-1.568a1.026 1.026 0 0 0-.877-.29c-.493.074-.84.504-1.02.968a2.5 2.5 0 1 1-3.237-3.237c.464-.18.894-.527.967-1.02a1.026 1.026 0 0 0-.289-.877l-1.568-1.568A2.402 2.402 0 0 1 1.998 12c0-.617.236-1.234.706-1.704L4.23 8.77c.24-.24.581-.353.917-.303.515.077.877.528 1.073 1.01a2.5 2.5 0 1 0 3.259-3.259c-.482-.196-.933-.558-1.01-1.073-.05-.336.062-.676.303-.917l1.525-1.525A2.402 2.402 0 0 1 12 1.998c.617 0 1.234.236 1.704.706l1.568 1.568c.23.23.556.338.877.29.493-.074.84-.504 1.02-.968a2.5 2.5 0 1 1 3.237 3.237c-.464.18-.894.527-.967 1.02Z"/>
+    </symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+    </symbol>
+    <symbol id="i-wand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M15 4V2"/><path d="M15 16v-2"/><path d="M8 9h2"/><path d="M20 9h2"/>
+      <path d="M17.8 11.8 19 13"/><path d="M15 9h0"/><path d="M17.8 6.2 19 5"/>
+      <path d="m3 21 9-9"/><path d="M12.2 6.2 21 15"/>
+    </symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5 12h14"/><path d="M12 5v14"/>
+    </symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 17v5"/>
+      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>
+    </symbol>
+    <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+    </symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/>
+    </symbol>
+    <symbol id="i-repeat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/>
+      <path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>
+    </symbol>
+    <symbol id="i-paperclip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+    </symbol>
+    <symbol id="i-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>
+      <circle cx="9" cy="9" r="2"/>
+      <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+    </symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>
+    </symbol>
+    <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/>
+      <path d="m21.854 2.147-10.94 10.939"/>
+    </symbol>
+    <symbol id="i-wifi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5 13a10 10 0 0 1 14 0"/><path d="M8.5 16.5a5 5 0 0 1 7 0"/>
+      <path d="M2 8.82a15 15 0 0 1 20 0"/><line x1="12" x2="12.01" y1="20" y2="20"/>
+    </symbol>
+    <symbol id="i-wifi-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M2 8.82a15 15 0 0 1 20 0"/><path d="M5 13a10 10 0 0 1 5-2.7"/>
+      <path d="M8.5 16.5a5 5 0 0 1 7 0"/><line x1="12" x2="12.01" y1="20" y2="20"/>
+      <line x1="2" x2="22" y1="2" y2="2"/>
+    </symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect width="16" height="16" x="4" y="4" rx="2"/>
+      <rect width="6" height="6" x="9" y="9" rx="1"/>
+      <path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/>
+      <path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>
+    </symbol>
+    <symbol id="i-brain" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/>
+      <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>
+      <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/>
+      <path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/>
+      <path d="M3.477 10.896a4 4 0 0 1 .585-.396"/>
+      <path d="M6.401 17.5a3 3 0 0 0 .399-1.375"/><path d="M17.599 17.5a3 3 0 0 0 .399-1.375"/>
+    </symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>
+    </symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+    </symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+    </symbol>
+    <symbol id="i-arrow-up-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/>
+      <path d="M7 4v16"/>
+    </symbol>
+    <symbol id="i-circle-dot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1" fill="currentColor"/>
+    </symbol>
+    <symbol id="i-filter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+    </symbol>
+    <symbol id="i-loader" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/>
+      <path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/>
+      <path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/>
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 6 9 17l-5-5"/>
+    </symbol>
+  </defs>
+</svg>
+
+<h1>主题系统 v2 原型 v3</h1>
+<p>应用真实页面元素（Sidebar / MessageBubble / ChatInput / QuestionCard / StatusBar） · 远方红 <code>#ff2400</code> 作为 <code>--accent-red</code> 强调色 · 强调按钮 <strong>统一白字</strong> · 玻璃主题<strong>色调滑块</strong> · <strong>图标严格使用 lucide-react 现有规范集</strong></p>
+
+<!-- ============================================================
+     顶部控制栏
+     ============================================================ -->
+<div class="toolbar">
+  <div class="group">
+    <label>冷色调（T5 glass · 紫→蓝→青→绿）：</label>
+    <input type="range" id="hueShiftCold" min="-150" max="60" step="5" value="0" />
+    <span class="value" id="hueValueCold">0°</span>
+  </div>
+  <div class="group">
+    <label>暖色调（T6 glass-warm · 橙→红→黄→粉）：</label>
+    <input type="range" id="hueShiftWarm" min="-60" max="150" step="5" value="0" />
+    <span class="value" id="hueValueWarm">0°</span>
+  </div>
+  <div class="group">
+    <label>玻璃透光度：</label>
+    <input type="range" id="glassOpacity" min="0.15" max="0.95" step="0.05" value="0.45" />
+    <span class="value" id="opacityValue">45%</span>
+  </div>
+  <div class="group">
+    <label>强调整体预览：</label>
+    <div class="preview-btn-row theme-yuanfang-light" id="accentPreview">
+      <span class="badge">远方 Light</span>
+      <button class="btn-accent-red">
+        <svg class="icon icon-10"><use href="#i-zap"/></svg>
+        强调操作
+      </button>
+    </div>
+    <select id="accentPreviewTheme">
+      <option value="theme-yuanfang-light">T1 远方 Light</option>
+      <option value="theme-yuanfang">T2 远方 Deep</option>
+      <option value="theme-dark">T3 Graphite</option>
+      <option value="theme-light">T4 Clean Slate</option>
+      <option value="theme-glass">T5 Aurora Cold</option>
+      <option value="theme-glass-warm">T6 Aurora Warm</option>
+    </select>
+  </div>
+</div>
+
+<h2>色调滑块联动 · 拖动观察 T5/T6 玻璃主题背景极光色相变化</h2>
+
+<div class="grid">
+
+  <!-- T1 yuanfang-light -->
+  <div class="window theme-yuanfang-light">
+    <div class="window-titlebar">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <div class="title">YFWorking · T1 远方 Light (品牌默认)</div>
+    </div>
+    <div class="window-body">
+      <div class="sidebar">
+        <div class="sidebar-tabs">
+          <button class="active" title="Chats"><svg class="icon icon-12"><use href="#i-message-square"/></svg></button>
+          <button title="Files"><svg class="icon icon-12"><use href="#i-folder-tree"/></svg></button>
+          <button title="Worktrees"><svg class="icon icon-12"><use href="#i-git-fork"/></svg></button>
+          <button title="History"><svg class="icon icon-12"><use href="#i-history"/></svg></button>
+          <button title="Agents"><svg class="icon icon-12"><use href="#i-bot"/></svg></button>
+          <button title="Skills"><svg class="icon icon-12"><use href="#i-puzzle"/></svg></button>
+        </div>
+        <div class="sidebar-search">
+          <div class="search">
+            <svg class="icon icon-10 search-icon"><use href="#i-search"/></svg>
+            <span style="opacity: 0.7;">搜索会话...</span>
+          </div>
+          <button title="整理"><svg class="icon icon-12"><use href="#i-wand"/></svg></button>
+          <button title="排序"><svg class="icon icon-12"><use href="#i-arrow-up-down"/></svg></button>
+          <button class="primary" title="新建"><svg class="icon icon-12"><use href="#i-plus"/></svg></button>
+        </div>
+        <div class="sidebar-section-title">置顶</div>
+        <div class="sidebar-list">
+          <div class="sidebar-item">
+            <svg class="icon icon-10 pin-icon"><use href="#i-pin"/></svg>
+            <span class="title-text">项目立项讨论</span>
+            <span class="meta">2h</span>
+          </div>
+          <div class="sidebar-item active">
+            <span class="stream"></span>
+            <span class="title-text">主题方案 v2 评审</span>
+            <span class="streaming-label">
+              <svg class="icon icon-10"><use href="#i-loader"/></svg>
+              执行中
+            </span>
+          </div>
+        </div>
+        <div class="sidebar-section-title">未分组</div>
+        <div class="sidebar-list">
+          <div class="sidebar-item">
+            <span class="title-text">研发立项报告</span>
+            <span class="meta">昨天</span>
+          </div>
+          <div class="sidebar-item">
+            <span class="await"></span>
+            <span class="title-text">专审报告核对</span>
+            <span style="font-size: 9px; color: var(--warning); font-weight: 500;">待回复</span>
+          </div>
+          <div class="sidebar-item">
+            <span class="title-text">核心表格生成</span>
+            <span class="meta">3d</span>
+          </div>
+        </div>
+      </div>
+      <div class="chat">
+        <div class="messages">
+          <!-- 用户消息 -->
+          <div class="message">
+            <div class="avatar"><svg class="icon icon-12"><use href="#i-user"/></svg></div>
+            <div class="body">
+              <div class="header">
+                <span class="name">You</span>
+                <span class="time">14:23</span>
+              </div>
+              <div class="content">
+                <p>看下 <a href="#">主题系统 v2 规格文档</a>，远方红需要作为强调色集成进去。</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- 助手消息 + tool_use -->
+          <div class="message">
+            <div class="avatar brand">
+              <svg class="icon icon-12"><use href="#i-bot"/></svg>
+            </div>
+            <div class="body">
+              <div class="header">
+                <span class="name">YFWorking</span>
+                <span class="badge">deepseek-v4-pro</span>
+                <span class="time">14:23</span>
+              </div>
+              <div class="content">
+                <p>已读取规格。开始改造 <code>themes.css</code>，增加 6 套主题各自的 <code>--accent-red-*</code> 令牌。</p>
+                <div class="tool-block">
+                  <div class="head">
+                    <span class="tool-name">Read</span>
+                    <span class="status success">
+                      <svg class="icon icon-10"><use href="#i-check"/></svg>
+                      completed
+                    </span>
+                    <span style="margin-left:auto; font-size: 9px; color: var(--text-tertiary);">12ms</span>
+                  </div>
+                  <div class="body">themes.css (602 lines) ✓<br/>theme-yuanfang-light { ... }<br/>6 themes total</div>
+                </div>
+                <div class="tool-block">
+                  <div class="head">
+                    <span class="tool-name">Edit</span>
+                    <span class="status running">
+                      <svg class="icon icon-10"><use href="#i-loader"/></svg>
+                      running
+                    </span>
+                    <span style="margin-left:auto; font-size: 9px; color: var(--text-tertiary);">in progress</span>
+                  </div>
+                  <div class="body">Inserting --accent-red-* tokens...</div>
+                </div>
+                <button class="btn-accent-red" style="margin-top: 6px;">
+                  <svg class="icon icon-10"><use href="#i-filter"/></svg>
+                  查看修改 diff
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- QuestionCard -->
+          <div style="display: flex; gap: 8px; padding: 4px 12px 8px;">
+            <div style="width: 22px; flex-shrink: 0;"></div>
+            <div style="flex: 1;">
+              <div class="question-card">
+                <div class="head">
+                  <div class="left">
+                    <span class="dot"></span>
+                    <span>需要你的选择</span>
+                  </div>
+                  <button class="close-btn" title="跳过">
+                    <svg class="icon icon-12"><use href="#i-x"/></svg>
+                  </button>
+                </div>
+                <div class="body">
+                  <div class="q">
+                    <span class="q-tag">角色</span>
+                    <span class="q-text">远方红的语义角色？</span>
+                    <div class="options">
+                      <div class="option selected">强调/点高</div>
+                      <div class="option">错误色</div>
+                      <div class="option">警告色</div>
+                      <div class="option">独立色阶</div>
+                    </div>
+                  </div>
+                  <div class="q">
+                    <span class="q-tag">字体</span>
+                    <span class="q-text">强调按钮的字体颜色？</span>
+                    <div class="options">
+                      <div class="option selected">统一白字</div>
+                      <div class="option">按主题区分</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="footer">
+                  <span class="hint">2 个问题 · 单选</span>
+                  <div class="actions">
+                    <button class="skip">跳过</button>
+                    <button class="submit">
+                      <svg class="icon icon-10"><use href="#i-send"/></svg>
+                      提交
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 助手回复 -->
+          <div class="message">
+            <div class="avatar brand">
+              <svg class="icon icon-12"><use href="#i-bot"/></svg>
+            </div>
+            <div class="body">
+              <div class="header">
+                <span class="name">YFWorking</span>
+                <span class="time">14:25</span>
+              </div>
+              <div class="content">
+                <p>明白，统一 <strong>白字</strong> + <strong>强调</strong> 角色。下面开始注入。</p>
+                <blockquote>强调按钮：红底白字，与品牌主操作橙底白字保持视觉一致</blockquote>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ChatInput -->
+        <div class="input-bar">
+          <div class="active-skill">
+            <svg class="icon icon-10"><use href="#i-zap"/></svg>
+            <span style="font-weight: 600;">gxtz-suite</span>
+            <span style="font-size: 9px; opacity: 0.6;">v1.0</span>
+          </div>
+          <div class="input-card">
+            <div class="tools">
+              <button class="skill-active" title="Skill"><svg class="icon icon-12"><use href="#i-zap"/></svg></button>
+              <button title="循环任务"><svg class="icon icon-12"><use href="#i-repeat"/></svg></button>
+              <button title="附件"><svg class="icon icon-12"><use href="#i-paperclip"/></svg></button>
+              <button title="图片"><svg class="icon icon-12"><use href="#i-image"/></svg></button>
+              <button title="语音"><svg class="icon icon-12"><use href="#i-mic"/></svg></button>
+            </div>
+            <textarea placeholder="输入任务描述，将使用 gxtz-suite 技能执行...">请按规格生成原型 v3</textarea>
+            <button class="send-btn" title="发送">
+              <svg class="icon icon-12"><use href="#i-send"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- StatusBar -->
+        <div class="status-bar">
+          <div>
+            <span class="item ok">
+              <svg class="icon icon-10"><use href="#i-wifi"/></svg>
+              Connected
+            </span>
+            <span class="item">
+              <svg class="icon icon-10"><use href="#i-cpu"/></svg>
+              DeepSeek-v4-pro
+            </span>
+            <span class="item acc">
+              <svg class="icon icon-10"><use href="#i-brain"/></svg>
+              Thinking
+            </span>
+          </div>
+          <div>
+            <span class="item warn">
+              <svg class="icon icon-10"><use href="#i-activity"/></svg>
+              2 tasks
+            </span>
+            <span class="item">
+              <svg class="icon icon-10"><use href="#i-circle-dot"/></svg>
+              1.2K
+            </span>
+            <span class="item">
+              <svg class="icon icon-10"><use href="#i-shield"/></svg>
+              Auto
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- T2 yuanfang -->
+  <div class="window theme-yuanfang">
+    <div class="window-titlebar">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <div class="title">YFWorking · T2 远方 Deep (品牌深色)</div>
+    </div>
+    <div class="window-body">
+      <div class="sidebar">
+        <div class="sidebar-tabs">
+          <button class="active"><svg class="icon icon-12"><use href="#i-message-square"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-folder-tree"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-git-fork"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-history"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-bot"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-puzzle"/></svg></button>
+        </div>
+        <div class="sidebar-search">
+          <div class="search">
+            <svg class="icon icon-10 search-icon"><use href="#i-search"/></svg>
+            <span style="opacity: 0.7;">搜索会话...</span>
+          </div>
+          <button><svg class="icon icon-12"><use href="#i-wand"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-arrow-up-down"/></svg></button>
+          <button class="primary"><svg class="icon icon-12"><use href="#i-plus"/></svg></button>
+        </div>
+        <div class="sidebar-section-title">置顶</div>
+        <div class="sidebar-list">
+          <div class="sidebar-item">
+            <svg class="icon icon-10 pin-icon"><use href="#i-pin"/></svg>
+            <span class="title-text">夜间模式专题</span>
+            <span class="meta">2h</span>
+          </div>
+          <div class="sidebar-item active">
+            <span class="stream"></span>
+            <span class="title-text">远方深色对比</span>
+            <span class="streaming-label">
+              <svg class="icon icon-10"><use href="#i-loader"/></svg>
+              执行中
+            </span>
+          </div>
+        </div>
+        <div class="sidebar-section-title">未分组</div>
+        <div class="sidebar-list">
+          <div class="sidebar-item">
+            <span class="title-text">深夜写作助手</span>
+            <span class="meta">昨天</span>
+          </div>
+          <div class="sidebar-item">
+            <span class="await"></span>
+            <span class="title-text">阅读灯配置</span>
+            <span style="font-size: 9px; color: var(--warning); font-weight: 500;">待回复</span>
+          </div>
+        </div>
+      </div>
+      <div class="chat">
+        <div class="messages">
+          <div class="message">
+            <div class="avatar"><svg class="icon icon-12"><use href="#i-user"/></svg></div>
+            <div class="body">
+              <div class="header">
+                <span class="name">You</span>
+                <span class="time">22:41</span>
+              </div>
+              <div class="content">
+                <p>夜间使用，验证下 <a href="#">深色模式</a> 下远方红的可读性。</p>
+              </div>
+            </div>
+          </div>
+          <div class="message">
+            <div class="avatar brand"><svg class="icon icon-12"><use href="#i-bot"/></svg></div>
+            <div class="body">
+              <div class="header">
+                <span class="name">YFWorking</span>
+                <span class="badge">deepseek-v4-pro</span>
+                <span class="time">22:41</span>
+              </div>
+              <div class="content">
+                <p>夜间模式已开启。远方红已切换为 <code>#ff573b</code>（提亮补偿暗底）。</p>
+                <div class="tool-block">
+                  <div class="head">
+                    <span class="tool-name">Verify</span>
+                    <span class="status success">
+                      <svg class="icon icon-10"><use href="#i-check"/></svg>
+                      completed
+                    </span>
+                    <span style="margin-left:auto; font-size: 9px; color: var(--text-tertiary);">8ms</span>
+                  </div>
+                  <div class="body">--accent-red-fg: #ffffff ✓<br/>contrast ratio: 4.7:1 (WCAG AA pass)</div>
+                </div>
+                <button class="btn-accent-red" style="margin-top: 6px;">
+                  <svg class="icon icon-10"><use href="#i-filter"/></svg>
+                  夜间模式设置
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="input-bar">
+          <div class="input-card">
+            <div class="tools">
+              <button><svg class="icon icon-12"><use href="#i-zap"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-repeat"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-paperclip"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-image"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-mic"/></svg></button>
+            </div>
+            <textarea placeholder="夜间任务输入..."></textarea>
+            <button class="send-btn"><svg class="icon icon-12"><use href="#i-send"/></svg></button>
+          </div>
+        </div>
+        <div class="status-bar">
+          <div>
+            <span class="item ok"><svg class="icon icon-10"><use href="#i-wifi"/></svg> Connected</span>
+            <span class="item"><svg class="icon icon-10"><use href="#i-cpu"/></svg> DeepSeek-v4-pro</span>
+            <span class="item acc"><svg class="icon icon-10"><use href="#i-brain"/></svg> Thinking</span>
+          </div>
+          <div>
+            <span class="item"><svg class="icon icon-10"><use href="#i-circle-dot"/></svg> 892</span>
+            <span class="item"><svg class="icon icon-10"><use href="#i-shield"/></svg> Manual</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- T3 dark -->
+  <div class="window theme-dark">
+    <div class="window-titlebar">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <div class="title">YFWorking · T3 Graphite Midnight (代码专注)</div>
+    </div>
+    <div class="window-body">
+      <div class="sidebar">
+        <div class="sidebar-tabs">
+          <button class="active"><svg class="icon icon-12"><use href="#i-message-square"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-folder-tree"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-git-fork"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-history"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-bot"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-puzzle"/></svg></button>
+        </div>
+        <div class="sidebar-search">
+          <div class="search">
+            <svg class="icon icon-10 search-icon"><use href="#i-search"/></svg>
+            <span style="opacity: 0.7;">搜索会话...</span>
+          </div>
+          <button><svg class="icon icon-12"><use href="#i-wand"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-arrow-up-down"/></svg></button>
+          <button class="primary"><svg class="icon icon-12"><use href="#i-plus"/></svg></button>
+        </div>
+        <div class="sidebar-list">
+          <div class="sidebar-item">
+            <svg class="icon icon-10 pin-icon"><use href="#i-pin"/></svg>
+            <span class="title-text">Bug 排查</span>
+            <span class="meta">30m</span>
+          </div>
+          <div class="sidebar-item active">
+            <span class="title-text">代码审查 #234</span>
+            <span class="meta">5m</span>
+          </div>
+          <div class="sidebar-item">
+            <span class="await"></span>
+            <span class="title-text">性能优化</span>
+            <span style="font-size: 9px; color: var(--warning); font-weight: 500;">待回复</span>
+          </div>
+        </div>
+      </div>
+      <div class="chat">
+        <div class="messages">
+          <div class="message">
+            <div class="avatar"><svg class="icon icon-12"><use href="#i-user"/></svg></div>
+            <div class="body">
+              <div class="header">
+                <span class="name">You</span>
+                <span class="time">03:15</span>
+              </div>
+              <div class="content">
+                <p>这段 <a href="#">异步逻辑</a> 有问题吗？</p>
+                <pre style="background: var(--bg-elevated); padding: 6px; border-radius: 4px; font-size: 10px; overflow-x: auto; margin: 4px 0;"><code>await fetch(url).then(r =&gt; r.json())</code></pre>
+              </div>
+            </div>
+          </div>
+          <div class="message">
+            <div class="avatar brand"><svg class="icon icon-12"><use href="#i-bot"/></svg></div>
+            <div class="body">
+              <div class="header">
+                <span class="name">YFWorking</span>
+                <span class="badge">deepseek-v4-pro</span>
+                <span class="time">03:15</span>
+              </div>
+              <div class="content">
+                <p>有两个问题：</p>
+                <ol>
+                  <li>缺少错误处理</li>
+                  <li>应该用 <code>try/catch</code> 包裹</li>
+                </ol>
+                <button class="btn-accent-red" style="margin-top: 6px;">
+                  <svg class="icon icon-10"><use href="#i-filter"/></svg>
+                  查看建议修改
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="input-bar">
+          <div class="input-card">
+            <div class="tools">
+              <button><svg class="icon icon-12"><use href="#i-zap"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-repeat"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-paperclip"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-image"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-mic"/></svg></button>
+            </div>
+            <textarea placeholder="深夜代码 review..."></textarea>
+            <button class="send-btn"><svg class="icon icon-12"><use href="#i-send"/></svg></button>
+          </div>
+        </div>
+        <div class="status-bar">
+          <div>
+            <span class="item ok"><svg class="icon icon-10"><use href="#i-wifi"/></svg> Connected</span>
+            <span class="item"><svg class="icon icon-10"><use href="#i-cpu"/></svg> DeepSeek-v4-pro</span>
+          </div>
+          <div>
+            <span class="item"><svg class="icon icon-10"><use href="#i-circle-dot"/></svg> 4.5K</span>
+            <span class="item"><svg class="icon icon-10"><use href="#i-shield"/></svg> Auto</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- T4 light -->
+  <div class="window theme-light">
+    <div class="window-titlebar">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <div class="title">YFWorking · T4 Clean Slate Daylight (纯文本阅读)</div>
+    </div>
+    <div class="window-body">
+      <div class="sidebar">
+        <div class="sidebar-tabs">
+          <button class="active"><svg class="icon icon-12"><use href="#i-message-square"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-folder-tree"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-git-fork"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-history"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-bot"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-puzzle"/></svg></button>
+        </div>
+        <div class="sidebar-search">
+          <div class="search">
+            <svg class="icon icon-10 search-icon"><use href="#i-search"/></svg>
+            <span style="opacity: 0.7;">搜索会话...</span>
+          </div>
+          <button><svg class="icon icon-12"><use href="#i-wand"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-arrow-up-down"/></svg></button>
+          <button class="primary"><svg class="icon icon-12"><use href="#i-plus"/></svg></button>
+        </div>
+        <div class="sidebar-list">
+          <div class="sidebar-item">
+            <span class="title-text">市场调研</span>
+            <span class="meta">1h</span>
+          </div>
+          <div class="sidebar-item active">
+            <span class="title-text">用户访谈整理</span>
+            <span class="meta">10m</span>
+          </div>
+          <div class="sidebar-item">
+            <span class="title-text">产品定位</span>
+            <span class="meta">昨天</span>
+          </div>
+        </div>
+      </div>
+      <div class="chat">
+        <div class="messages">
+          <div class="message">
+            <div class="avatar"><svg class="icon icon-12"><use href="#i-user"/></svg></div>
+            <div class="body">
+              <div class="header">
+                <span class="name">You</span>
+                <span class="time">10:23</span>
+              </div>
+              <div class="content">
+                <p>汇总下 <a href="#">访谈记录</a> 的关键洞察。</p>
+              </div>
+            </div>
+          </div>
+          <div class="message">
+            <div class="avatar brand"><svg class="icon icon-12"><use href="#i-bot"/></svg></div>
+            <div class="body">
+              <div class="header">
+                <span class="name">YFWorking</span>
+                <span class="time">10:23</span>
+              </div>
+              <div class="content">
+                <p>3 个核心洞察：</p>
+                <table>
+                  <thead><tr><th>维度</th><th>占比</th></tr></thead>
+                  <tbody>
+                    <tr><td>效率</td><td>45%</td></tr>
+                    <tr><td>成本</td><td>32%</td></tr>
+                    <tr><td>易用性</td><td>23%</td></tr>
+                  </tbody>
+                </table>
+                <button class="btn-accent-red" style="margin-top: 6px;">
+                  <svg class="icon icon-10"><use href="#i-filter"/></svg>
+                  导出分析报告
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="input-bar">
+          <div class="input-card">
+            <div class="tools">
+              <button><svg class="icon icon-12"><use href="#i-zap"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-repeat"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-paperclip"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-image"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-mic"/></svg></button>
+            </div>
+            <textarea placeholder="白天阅读输入..."></textarea>
+            <button class="send-btn"><svg class="icon icon-12"><use href="#i-send"/></svg></button>
+          </div>
+        </div>
+        <div class="status-bar">
+          <div>
+            <span class="item ok"><svg class="icon icon-10"><use href="#i-wifi"/></svg> Connected</span>
+            <span class="item"><svg class="icon icon-10"><use href="#i-cpu"/></svg> DeepSeek-v4-pro</span>
+          </div>
+          <div>
+            <span class="item"><svg class="icon icon-10"><use href="#i-circle-dot"/></svg> 2.1K</span>
+            <span class="item"><svg class="icon icon-10"><use href="#i-shield"/></svg> Manual</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- T5 glass -->
+  <div class="window theme-glass glass-theme">
+    <div class="window-titlebar">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <div class="title">YFWorking · T5 Aurora Cold (玻璃冷) · 色调联动</div>
+    </div>
+    <div class="window-body">
+      <div class="sidebar">
+        <div class="sidebar-tabs">
+          <button class="active"><svg class="icon icon-12"><use href="#i-message-square"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-folder-tree"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-git-fork"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-history"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-bot"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-puzzle"/></svg></button>
+        </div>
+        <div class="sidebar-search">
+          <div class="search">
+            <svg class="icon icon-10 search-icon"><use href="#i-search"/></svg>
+            <span style="opacity: 0.7;">搜索会话...</span>
+          </div>
+          <button><svg class="icon icon-12"><use href="#i-wand"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-arrow-up-down"/></svg></button>
+          <button class="primary"><svg class="icon icon-12"><use href="#i-plus"/></svg></button>
+        </div>
+        <div class="sidebar-list">
+          <div class="sidebar-item">
+            <span class="title-text">创意头脑风暴</span>
+            <span class="meta">15m</span>
+          </div>
+          <div class="sidebar-item active">
+            <span class="stream"></span>
+            <span class="title-text">方案构思</span>
+            <span class="streaming-label">
+              <svg class="icon icon-10"><use href="#i-loader"/></svg>
+              执行中
+            </span>
+          </div>
+        </div>
+      </div>
+      <div class="chat">
+        <div class="messages">
+          <div class="message">
+            <div class="avatar"><svg class="icon icon-12"><use href="#i-user"/></svg></div>
+            <div class="body">
+              <div class="header">
+                <span class="name">You</span>
+                <span class="time">16:08</span>
+              </div>
+              <div class="content">
+                <p>玻璃主题下，<a href="#">极光色相</a> 是否需要可调？</p>
+              </div>
+            </div>
+          </div>
+          <div class="message">
+            <div class="avatar brand"><svg class="icon icon-12"><use href="#i-bot"/></svg></div>
+            <div class="body">
+              <div class="header">
+                <span class="name">YFWorking</span>
+                <span class="time">16:08</span>
+              </div>
+              <div class="content">
+                <p>需要。顶部<strong>色调滑块</strong>已联动 <code>hue-rotate()</code>，可实时调节极光底色（-180° ~ +180°）。</p>
+                <p>当前玻璃主题下，强调按钮保持<strong>红底白字</strong>，不会因色调调节变花。</p>
+                <button class="btn-accent-red" style="margin-top: 6px;">
+                  <svg class="icon icon-10"><use href="#i-check"/></svg>
+                  保存色调偏好
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="input-bar">
+          <div class="input-card">
+            <div class="tools">
+              <button><svg class="icon icon-12"><use href="#i-zap"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-repeat"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-paperclip"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-image"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-mic"/></svg></button>
+            </div>
+            <textarea placeholder="创意会话输入..."></textarea>
+            <button class="send-btn"><svg class="icon icon-12"><use href="#i-send"/></svg></button>
+          </div>
+        </div>
+        <div class="status-bar">
+          <div>
+            <span class="item ok"><svg class="icon icon-10"><use href="#i-wifi"/></svg> Connected</span>
+            <span class="item"><svg class="icon icon-10"><use href="#i-cpu"/></svg> DeepSeek-v4-pro</span>
+          </div>
+          <div>
+            <span class="item"><svg class="icon icon-10"><use href="#i-circle-dot"/></svg> 678</span>
+            <span class="item"><svg class="icon icon-10"><use href="#i-shield"/></svg> Auto</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- T6 glass-warm -->
+  <div class="window theme-glass-warm glass-warm-theme">
+    <div class="window-titlebar">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <div class="title">YFWorking · T6 Aurora Warm (玻璃暖) · 色调联动</div>
+    </div>
+    <div class="window-body">
+      <div class="sidebar">
+        <div class="sidebar-tabs">
+          <button class="active"><svg class="icon icon-12"><use href="#i-message-square"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-folder-tree"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-git-fork"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-history"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-bot"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-puzzle"/></svg></button>
+        </div>
+        <div class="sidebar-search">
+          <div class="search">
+            <svg class="icon icon-10 search-icon"><use href="#i-search"/></svg>
+            <span style="opacity: 0.7;">搜索会话...</span>
+          </div>
+          <button><svg class="icon icon-12"><use href="#i-wand"/></svg></button>
+          <button><svg class="icon icon-12"><use href="#i-arrow-up-down"/></svg></button>
+          <button class="primary"><svg class="icon icon-12"><use href="#i-plus"/></svg></button>
+        </div>
+        <div class="sidebar-list">
+          <div class="sidebar-item">
+            <svg class="icon icon-10 pin-icon"><use href="#i-pin"/></svg>
+            <span class="title-text">品牌活动策划</span>
+            <span class="meta">2h</span>
+          </div>
+          <div class="sidebar-item active">
+            <span class="title-text">远方橙品牌</span>
+            <span class="meta">1h</span>
+          </div>
+        </div>
+      </div>
+      <div class="chat">
+        <div class="messages">
+          <div class="message">
+            <div class="avatar"><svg class="icon icon-12"><use href="#i-user"/></svg></div>
+            <div class="body">
+              <div class="header">
+                <span class="name">You</span>
+                <span class="time">19:32</span>
+              </div>
+              <div class="content">
+                <p>玻璃暖色主题 + 远方红，是否会<strong>撞色</strong>？</p>
+              </div>
+            </div>
+          </div>
+          <div class="message">
+            <div class="avatar brand"><svg class="icon icon-12"><use href="#i-bot"/></svg></div>
+            <div class="body">
+              <div class="header">
+                <span class="name">YFWorking</span>
+                <span class="time">19:32</span>
+              </div>
+              <div class="content">
+                <p>不会。设计原则：</p>
+                <ul>
+                  <li>橙 = <strong>主操作</strong>（Send / Save）</li>
+                  <li>红 = <strong>强调</strong>（需点高 / 重要）</li>
+                  <li>分工明确，按钮配色 <strong>红 vs 橙</strong> 对比明显</li>
+                </ul>
+                <button class="btn-accent-red" style="margin-top: 6px;">
+                  <svg class="icon icon-10"><use href="#i-filter"/></svg>
+                  查看配色规范
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="input-bar">
+          <div class="input-card">
+            <div class="tools">
+              <button><svg class="icon icon-12"><use href="#i-zap"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-repeat"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-paperclip"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-image"/></svg></button>
+              <button><svg class="icon icon-12"><use href="#i-mic"/></svg></button>
+            </div>
+            <textarea placeholder="品牌策划输入..."></textarea>
+            <button class="send-btn"><svg class="icon icon-12"><use href="#i-send"/></svg></button>
+          </div>
+        </div>
+        <div class="status-bar">
+          <div>
+            <span class="item ok"><svg class="icon icon-10"><use href="#i-wifi"/></svg> Connected</span>
+            <span class="item"><svg class="icon icon-10"><use href="#i-cpu"/></svg> DeepSeek-v4-pro</span>
+          </div>
+          <div>
+            <span class="item"><svg class="icon icon-10"><use href="#i-circle-dot"/></svg> 1.8K</span>
+            <span class="item"><svg class="icon icon-10"><use href="#i-shield"/></svg> Manual</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// 冷色调（T5 glass）— 范围 -150° ~ +60°，限制在冷色域
+const hueInputCold = document.getElementById('hueShiftCold');
+const hueValueCold = document.getElementById('hueValueCold');
+hueInputCold.addEventListener('input', e => {
+  const deg = e.target.value;
+  document.documentElement.style.setProperty('--glass-hue-shift-cold', `${deg}deg`);
+  hueValueCold.textContent = `${deg}°`;
+});
+
+// 暖色调（T6 glass-warm）— 范围 -60° ~ +150°，限制在暖色域
+const hueInputWarm = document.getElementById('hueShiftWarm');
+const hueValueWarm = document.getElementById('hueValueWarm');
+hueInputWarm.addEventListener('input', e => {
+  const deg = e.target.value;
+  document.documentElement.style.setProperty('--glass-hue-shift-warm', `${deg}deg`);
+  hueValueWarm.textContent = `${deg}°`;
+});
+
+// 玻璃透光度滑块
+const opacityInput = document.getElementById('glassOpacity');
+const opacityValue = document.getElementById('opacityValue');
+opacityInput.addEventListener('input', e => {
+  const v = parseFloat(e.target.value);
+  const css = (v * 0.6 + 0.15).toFixed(2);
+  document.documentElement.style.setProperty('--glass-opacity-test', css);
+  opacityValue.textContent = `${Math.round(v * 100)}%`;
+});
+
+// 强调按钮预览主题切换
+const previewTheme = document.getElementById('accentPreviewTheme');
+const accentPreview = document.getElementById('accentPreview');
+previewTheme.addEventListener('change', e => {
+  const v = e.target.value;
+  accentPreview.className = 'preview-btn-row ' + v + (v.includes('glass') ? ' glass-theme' : '');
+});
+</script>
+
+</body>
+</html>

@@ -1,0 +1,151 @@
+{
+  "api": {
+    "base_url": "http://218.17.137.219:9980/v1",
+    "api_key": "app-0Y6hIhFfcsWoEKuUgKnHfDIt",
+    "user_id": "trae-agent",
+    "timeout_seconds": 600,
+    "download_base_url": "http://218.17.137.219:9980"
+  },
+  "workflow": {
+    "app_name": "WF_RDReport",
+    "description": "RD立项书生成工作流",
+    "response_mode": "streaming",
+    "poll_interval_ms": 3000
+  },
+  "variable_mapping": {
+    "strategy": "dynamic_fetch_first",
+    "fallback_to_static": true,
+    "description": "每次执行前先调GET /parameters获取实际变量定义，与本地文件通过映射规则匹配；获取失败时回退到static_variables",
+    "match_rules": [
+      {
+        "local_file_key": "rd_ps_excel",
+        "match_by": ["label", "variable", "hint"],
+        "match_keywords": ["RD_PS", "RD/PS", "RD_PS表格", "rd_ps_excel"],
+        "local_file_description": "RD/PS汇总表（含RD项目清单和高新产品PS清单）"
+      },
+      {
+        "local_file_key": "to_ai_excel",
+        "match_by": ["label", "variable", "hint"],
+        "match_keywords": ["TO_AI", "TO-AI", "TOAI", "to_ai_excel"],
+        "local_file_description": "TO-AI汇总表（企业情况+RD+IP三表合一）"
+      },
+      {
+        "local_file_key": "enterprise_name",
+        "match_by": ["label", "variable"],
+        "match_keywords": ["enterprise_name", "企业名称", "企业名"],
+        "local_file_description": "企业名称（从项目目录名正则提取，如【深圳锐取电子有限公司】→深圳锐取电子有限公司）",
+        "value_extraction": {
+          "method": "extract_from_project_dir",
+          "pattern": "【(.+?)】",
+          "fallback": "ask_user",
+          "note": "从项目根目录名中提取【】内的企业名称；如目录名无【】则提示用户输入"
+        }
+      }
+    ],
+    "static_variables": {
+      "rd_ps_excel": {
+        "variable_name": "RD_PS_excel",
+        "type": "file-list",
+        "file_type": "document",
+        "required": true,
+        "max_length": 1
+      },
+      "to_ai_excel": {
+        "variable_name": "TO_AI_excel",
+        "type": "file-list",
+        "file_type": "document",
+        "required": true,
+        "max_length": 1
+      },
+      "enterprise_name": {
+        "variable_name": "enterprise_name",
+        "type": "text-input",
+        "required": true,
+        "max_length": 50,
+        "default": "",
+        "workflow_default": "深圳市远方数据技术有限公司",
+        "workflow_default_warning": "工作流v2新增default=深圳市远方数据技术有限公司（一个具体企业名）。agent必须传项目实际企业名，绝对不可使用该工作流默认值，否则立项书会生成错误企业名。",
+        "extraction_method": "extract_from_project_dir",
+        "extraction_pattern": "【(.+?)】",
+        "note": "从项目目录名提取企业名称，如【深圳锐取电子有限公司】→深圳锐取电子有限公司。必须每次传入项目实际企业名。"
+      }
+    },
+    "optional_variables": {
+      "rd_total_count": {
+        "variable_name": "RD_total_count",
+        "type": "number",
+        "required": true,
+        "default": 6,
+        "note": "API可传此项控制循环处理的RD数量（v2已修复+1问题，直接传实际所需数量即可）",
+        "hint": "API 可传此项控制循环处理的 RD 数量"
+      },
+      "rd_report_template_id": {
+        "variable_name": "RD_REPORT_TEMPLATE_ID",
+        "type": "text-input",
+        "required": false,
+        "default": "d2eec9a4-9443-4088-8fac-fac03bbc4c99",
+        "hint": "DocHub 模板 ID（可在 API 中传入覆盖）",
+        "note": "DocHub模板ID，有默认值，通常不需要修改"
+      }
+    }
+  },
+  "output_mapping": {
+    "strategy": "auto_discover",
+    "description": "工作流输出通过outputs字段返回，动态解析doc_urls/qc_summaries等字段",
+    "known_output_fields": {
+      "doc_urls_field": ["rd_doc_urls", "doc_urls", "document_urls"],
+      "qc_field": ["qc_passed", "rd_qc_summaries", "qc_summaries"],
+      "stats_field": ["stats_json", "task_summary"],
+      "text_fields": ["rd_intro_texts", "rd_tech_texts", "rd_accept_texts"]
+    },
+    "doc_download_url_prefix": "http://218.17.137.219:9980",
+    "doc_path_field": "path",
+    "save_dir": "立项书输出docx"
+  },
+  "local_files": {
+    "rd_ps_excel_candidates": [
+      "001*-RD、高新产品PS-汇总表.xlsx",
+      "*RD*PS*汇总*.xlsx",
+      "*研发项目*高新产品*汇总*.xlsx"
+    ],
+    "to_ai_excel_candidates": [
+      "TO-AI.xlsx",
+      "TO_AI.xlsx",
+      "*TO-AI*.xlsx"
+    ]
+  },
+  "qc": {
+    "enabled": true,
+    "min_section_length": {
+      "intro": 200,
+      "tech": 500,
+      "accept": 500
+    },
+    "fail_action": "warn_and_continue",
+    "description": "QC失败时告警但继续保存文档，由人工审核"
+  },
+  "version": "1.3.0",
+  "last_updated": "2026-07-13",
+  "adaptation_log": [
+    {
+      "date": "2026-07-10",
+      "version": "1.0.0",
+      "change": "初始版本：RD_PS_excel + TO_AI_excel + RD_total_count(可选)"
+    },
+    {
+      "date": "2026-07-12",
+      "version": "1.1.0",
+      "change": "适配工作流新增必填变量enterprise_name（text-input）。添加match_rule和static_variable，取值策略为从项目目录名【】中正则提取"
+    },
+    {
+      "date": "2026-07-13",
+      "version": "1.2.0",
+      "change": "RD_total_count已修复API覆盖+1问题（hint改为'API可传'，required改为true，直接传实际所需数量即可）。新增第5变量RD_REPORT_TEMPLATE_ID（DocHub模板ID，可选有默认值）。"
+    },
+    {
+      "date": "2026-07-13",
+      "version": "1.3.0",
+      "change": "适配enterprise_name默认值变化：工作流v2新增default=深圳市远方数据技术有限公司。添加workflow_default_warning警告，agent必须传项目实际企业名，绝对不可使用工作流默认值。"
+    }
+  ]
+}
