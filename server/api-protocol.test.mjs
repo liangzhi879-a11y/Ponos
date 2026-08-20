@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { detectProtocol, createAnthropicParser, createOpenAIParser, protocolStream, streamMessages } from '../kernel/api.mjs'
+import { detectProtocol, createAnthropicParser, createOpenAIParser, protocolStream, streamMessages, toAbortSignal } from '../kernel/api.mjs'
 import { createToolRegistry } from '../kernel/tools.mjs'
 
 test('detectProtocol：OPENAI env 优先，否则 Anthropic，都没有返回 null', () => {
@@ -165,4 +165,19 @@ test('mock 扩展：YFW_MOCK_OVERFLOW=once 非压缩调用抛一次溢出，之�
   } finally {
     process.env = oldEnv
   }
+})
+
+test('toAbortSignal：engine 轮次级 signal（rawSignal getter）→ 真 AbortSignal，普通对象 → undefined（真实 API 集成回归）', () => {
+  // engine 的 signal 形状：{ aborted, get rawSignal() }——rawSignal 必须返回真 AbortSignal
+  const ac = new AbortController()
+  const engineSignal = { aborted: false, get rawSignal() { return ac.signal } }
+  const s1 = toAbortSignal(engineSignal)
+  assert.ok(s1 instanceof AbortSignal, 'rawSignal 应返回 AbortSignal 实例（undici fetch 要求）')
+  ac.abort()
+  assert.equal(s1.aborted, true, 'engine abort 应传导到底层 fetch 的 AbortSignal')
+  // AbortSignal 实例直传
+  const ac2 = new AbortController()
+  assert.equal(toAbortSignal(ac2.signal), ac2.signal)
+  // 普通对象（mock/测试直传场景）：返回 undefined，不传给 fetch
+  assert.equal(toAbortSignal({ aborted: false }), undefined)
 })
