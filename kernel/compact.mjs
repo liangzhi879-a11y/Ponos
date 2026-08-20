@@ -14,8 +14,10 @@ export const COMPACTION_INSTRUCTION =
 // —— 结构感知裁剪（确定性零成本；按行操作天然不切行中）——
 function detectKind(lines) {
   const head = lines.slice(0, 10).join('\n')
-  if (/[，,]/.test(head) && lines.length > 20) return 'table'
+  // JSON 优先于逗号表格：多行 JSON / JSONL（每行含逗号且 >20 行）不得被 table 规则抢占（F1-b）。
+  // 行首 {/[ 覆盖 pretty JSON 与 JSONL 首行；引号键（"key"/"name"）兜底带前缀包装的 JSON。
   if (/^\s*[{[]/.test(head) || head.includes('"key"') || head.includes('"name"')) return 'json'
+  if (/[，,]/.test(head) && lines.length > 20) return 'table'
   if (lines.some((l) => /(ERROR|error|exception|stderr)/.test(l))) return 'log'
   if (/\n[\t ]*(?:const|let|function|class|import|export|def|echo|SELECT)/.test('\n' + head)) return 'code'
   return 'plain'
@@ -33,7 +35,42 @@ function pruneCode(lines) {
   const tailCount = Math.max(5, Math.floor(lines.length * 0.15))
   return [...lines.slice(0, headCount), '// …（中间省略 ' + (lines.length - headCount - tailCount) + ' 行）…', ...lines.slice(-tailCount)]
 }
+// 单行 minified JSON → 多行：字符串感知、在顶层结构字符后断行，供行级采样。
+// 逐字符跟踪字符串状态（含反斜杠转义），避免把字符串内的逗号/花括号错当结构符。
+function reflowSingleLineJson(line) {
+  const out = []
+  let buf = ''
+  let inStr = false
+  let esc = false
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]
+    if (inStr) {
+      buf += c
+      if (esc) esc = false
+      else if (c === '\\') esc = true
+      else if (c === '"') inStr = false
+      continue
+    }
+    if (c === '"') { inStr = true; buf += c; continue }
+    if (c === '{' || c === '[' || c === ',' || c === '}' || c === ']') {
+      if (buf.trim()) out.push(buf.trim())
+      buf = ''
+      if (c !== ',') out.push(c)
+      continue
+    }
+    buf += c
+  }
+  if (buf.trim()) out.push(buf.trim())
+  return out.length ? out : [line]
+}
+
 function pruneJsonOrLog(lines) {
+  // 单行超长 JSON：先重排为多行再采样，避免唯一行被 head/tail 去重后整行原样保留——
+  // truncated:true 却无尺寸缩减（F1-a）。
+  if (lines.length === 1) {
+    const trimmed = lines[0].trim()
+    if (/^[{[]/.test(trimmed) && /[}\]]$/.test(trimmed)) lines = reflowSingleLineJson(trimmed)
+  }
   const errLines = lines.filter((l) => /(ERROR|error|exception|stderr)/.test(l))
   const head = lines.slice(0, 30)
   const tail = lines.slice(-10)
@@ -54,10 +91,16 @@ export function pruneToolResult(content, { budget = 20000 } = {}) {
   else if (kind === 'code') keptLines = pruneCode(lines)
   else if (kind === 'json' || kind === 'log') keptLines = pruneJsonOrLog(lines)
   else keptLines = prunePlain(lines)
+  let out = keptLines.join('\n')
+  if (out.length >= text.length) {
+    // 兜底：行级采样未带来任何尺寸缩减（如单行 JSON 只有一个超长字符串值，
+    // 重排后行数不足以触发头尾采样）→ 字节截断，保证 truncated:true 时尺寸真实下降（F1-a）。
+    out = text.slice(0, Math.max(1, Math.floor(text.length * 0.5))) + '\n…（已按字节截断）'
+  }
   const note =
-    `已截断：原 ${text.length} 字符 / ${lines.length} 行，仅保留结构采样（${keptLines.length} 行）。` +
+    `已截断：原 ${text.length} 字符 / ${lines.length} 行，仅保留结构采样（${out.split('\n').length} 行）。` +
     `可对该片段追问，或我用 Read offset/limit 补读`
-  return { text: keptLines.join('\n'), truncated: true, note, kind }
+  return { text: out, truncated: true, note, kind }
 }
 
 // —— 切点纪律 ——
