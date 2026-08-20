@@ -85,21 +85,50 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions }) {
   const registry = {
     Bash: {
       description: '执行 shell 命令',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { command: { type: 'string', description: '要执行的 shell 命令' } },
+        required: ['command'],
+      },
       run: (input) => runShell(String(input?.command ?? ''), cwd),
       isHighRisk: (input) => matchesHighRisk(String(input?.command ?? '')),
     },
     Read: {
       description: '读取文本文件内容',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { file_path: { type: 'string', description: '要读取的文件绝对路径' } },
+        required: ['file_path'],
+      },
       run: (input) => readFile(String(input?.file_path ?? ''), allowDirs),
     },
     Write: {
       description: '写入文本文件',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          file_path: { type: 'string', description: '要写入的文件绝对路径' },
+          content: { type: 'string', description: '文件内容' },
+        },
+        required: ['file_path', 'content'],
+      },
       run: (input) => writeFile(String(input?.file_path ?? ''), String(input?.content ?? ''), allowDirs),
     },
   }
   return {
     registry,
     toolNames: Object.keys(registry),
+    // 中立工具 schema 列表（Anthropic/OpenAI 协议字段映射在 api.mjs 完成）
+    toolSchemas() {
+      return Object.entries(registry).map(([name, tool]) => ({
+        name,
+        description: tool.description,
+        input_schema: tool.input_schema,
+      }))
+    },
     // 执行入口：返回 { content, isError }；approval 决策由调用方（engine）先行
     async run(toolUse, ctx) {
       const tool = registry[toolUse?.name]
