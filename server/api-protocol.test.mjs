@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { detectProtocol, createAnthropicParser, createOpenAIParser, streamMessages } from '../kernel/api.mjs'
+import { detectProtocol, createAnthropicParser, createOpenAIParser, protocolStream, streamMessages } from '../kernel/api.mjs'
 import { createToolRegistry } from '../kernel/tools.mjs'
 
 test('detectProtocol：OPENAI env 优先，否则 Anthropic，都没有返回 null', () => {
@@ -50,6 +50,33 @@ test('OpenAI 解析器：content/reasoning_content/tool_calls/末尾 usage → �
   assert.equal(usage.input_tokens, 11)
   assert.equal(usage.output_tokens, 7)
   assert.equal(usage.cache_read_input_tokens, 4)
+})
+
+test('protocolStream：Anthropic 完整事件序列（content_block_start→delta→stop→message_delta）仅产出一个 usage chunk', async () => {
+  const events = [
+    JSON.stringify({ type: 'message_start', message: { usage: { input_tokens: 5, output_tokens: 1 } } }),
+    JSON.stringify({ type: 'content_block_start', content_block: { type: 'text', text: '' } }),
+    JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text: '你好，世界。\n\n' } }),
+    JSON.stringify({ type: 'content_block_stop' }),
+    JSON.stringify({ type: 'message_delta', usage: { input_tokens: 5, output_tokens: 3, cache_read_input_tokens: 2, cache_creation_input_tokens: 1 } }),
+  ]
+  const sse = events.map((e) => `data: ${e}`).join('\n\n') + '\n\ndata: [DONE]\n\n'
+  const prev = global.fetch
+  global.fetch = async () => ({
+    ok: true,
+    body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(sse)); c.close() } }),
+  })
+  try {
+    const chunks = []
+    for await (const c of protocolStream({ protocol: 'anthropic', url: 'http://t/v1/messages', body: {}, headers: {} })) chunks.push(c)
+    const usages = chunks.filter((c) => c.type === 'usage')
+    assert.equal(usages.length, 1)
+    assert.equal(usages[0].usage.output_tokens, 3)
+    assert.equal(usages[0].usage.cache_read_input_tokens, 2)
+    assert.ok(chunks.some((c) => c.type === 'text'))
+  } finally {
+    global.fetch = prev
+  }
 })
 
 test('tools 注入：Anthropic 请求 body 含 tools[]（字段名映射，mock HTTP 断言）', async () => {
