@@ -151,6 +151,8 @@ function toolResultBlockToGui(block: any, msgId: string, index: number): Content
  */
 export function transcriptEntryToMessage(entry: any): Message | null {
   if (!entry || typeof entry !== 'object') return null
+  // 压缩条目（kind=compaction）是 surface 投影元数据，GUI 不渲染，折叠跳过
+  if (entry.kind === 'compaction') return null
   const type = entry.type
 
   // —— 内核 {type:'system', subtype:'compact_boundary', content, ...}：压缩边界 → 特殊 system 消息。

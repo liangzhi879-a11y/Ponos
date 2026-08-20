@@ -201,6 +201,15 @@ test('user entry：普通文本不受影响', () => {
 
 // ── system / queue-operation / 其它类型跳过 ──────────────────────────
 
+test('kind=compaction 条目折叠为 null（GUI 不渲染压缩条目）', () => {
+  const entry = {
+    type: 'assistant', id: 'c1', timestamp: 't',
+    kind: 'compaction', phase: 'summary',
+    message: { role: 'assistant', content: [{ type: 'text', text: '<compacted-summary>x</compacted-summary>' }] },
+  }
+  assert.equal(transcriptEntryToMessage(entry), null)
+})
+
 test('system compact_boundary → 特殊 system 消息', () => {
   const m = transcriptEntryToMessage({
     parentUuid: null,
