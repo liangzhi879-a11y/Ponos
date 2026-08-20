@@ -10,10 +10,29 @@ import { matchesHighRisk } from './highrisk.mjs'
 
 const BASH_TIMEOUT_MS = 120_000
 
+// Windows 探测 git-bash：Bash 工具语义须与系统提示一致（shell: bash）。
+// cmd.exe 的 /d /s /c 引号解析与 Node spawn 的参数包裹互相干扰（$HOME 不展开、
+// 引号错乱），且 PATH 混入 Git Unix 工具时行为不可预测；git-bash 与模型所见
+// 环境一致。找不到 git-bash 时回退 cmd.exe。
+function findGitBash() {
+  const candidates = [
+    process.env.ProgramFiles && join(process.env.ProgramFiles, 'Git', 'bin', 'bash.exe'),
+    process.env['ProgramFiles(x86)'] && join(process.env['ProgramFiles(x86)'], 'Git', 'bin', 'bash.exe'),
+    process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Programs', 'Git', 'bin', 'bash.exe'),
+  ].filter(Boolean)
+  return candidates.find((p) => existsSync(p)) || null
+}
+
 function runShell(command, cwd) {
   return new Promise((resolvePromise) => {
     const isWin = process.platform === 'win32'
-    const child = spawn(isWin ? 'cmd.exe' : 'sh', isWin ? ['/d', '/s', '/c', command] : ['-c', command], {
+    let shell, args
+    if (isWin) {
+      const bash = findGitBash()
+      if (bash) { shell = bash; args = ['-c', command] }
+      else { shell = 'cmd.exe'; args = ['/d', '/s', '/c', command] }
+    } else { shell = 'sh'; args = ['-c', command] }
+    const child = spawn(shell, args, {
       cwd: cwd || undefined,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
