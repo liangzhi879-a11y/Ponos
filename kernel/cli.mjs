@@ -87,7 +87,7 @@ function extractContent(msg) {
   return ''
 }
 
-export function main(argv) {
+export async function main(argv) {
   const args = parseArgs(argv)
   if (args.outputFormat !== REQUIRED_FORMAT || args.inputFormat !== REQUIRED_FORMAT) {
     console.error(`kernel: only ${REQUIRED_FORMAT} I/O format is supported`)
@@ -117,9 +117,11 @@ export function main(argv) {
   // name 字段标识净室引擎代号（诊断用，GUI 不依赖）。
   const model = args.model || process.env.ANTHROPIC_MODEL || ''
   wire.system('init', { model, tools: engine.toolNames, session_id: sessionId, name: 'YFW-turbo' })
-  // --resume：从 transcript 恢复历史（同文件即 GUI 读取的权威源）
+  // --resume：从 transcript 恢复历史（load 为 async 流式；同文件即 GUI 读取的
+  // 权威源）。本任务 engine 仍走内存 seedHistory（engine 迁移到 session 派生在
+  // Task 5 完成，届时此处简化为仅 await store.load()）
   if (args.resume) {
-    const entries = store.load()
+    const { entries } = await store.load()
     const history = entries.filter((e) => e?.type === 'user' || e?.type === 'assistant')
     engine.seedHistory(history.map((e) => e.message))
   }
@@ -193,8 +195,10 @@ export function main(argv) {
   return 0
 }
 
-// 直接执行（import 时跳过，测试可复用 parseArgs/main）
+// 直接执行（import 时跳过，测试可复用 parseArgs/main）。main 为 async，
+// Promise 落地 exitCode；load 失败（流式读错误）时以 1 退出并报错，避免悬空。
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
 if (isMain) {
-  process.exitCode = main(process.argv.slice(2))
+  main(process.argv.slice(2)).then((code) => { process.exitCode = code })
+    .catch((err) => { console.error('kernel:', err); process.exitCode = 1 })
 }
