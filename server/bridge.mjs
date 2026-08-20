@@ -1403,8 +1403,8 @@ const httpServer = createServer(async (req, res) => {
       return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({
         ok: true,
         totals: { ...stats.totals, cost_usd: Number(
-          Object.entries(stats.byModel).reduce((s, [, v]) => s + costUsd(v, priceTable), 0)
-        ).toFixed(4) },
+          Object.entries(stats.byModel).reduce((s, [k, v]) => s + costUsd({ model: k, ...v }, priceTable), 0).toFixed(4)
+        ) },
         byModel: withCost(stats.byModel),
         byProject: stats.byProject,
         byDate: stats.byDate,
