@@ -14,7 +14,7 @@ import { parseAskUserPayload, extractAskUserBlocks } from './askuser.mjs'
 import { buildExperienceIndex, buildSedimentPrompt, ensurePersonalDir } from './experience.mjs'
 export { ensurePersonalDir, buildExperienceIndex, buildSedimentPrompt } from './experience.mjs'
 import * as doubao from './doubao.mjs'
-import { createTranscriptHandlers } from './transcript.mjs'
+import { createTranscriptHandlers, aggregateStats, costUsd, sanitizePathSegment, transcriptBaseDir } from './transcript.mjs'
 import { makeBrowserRouter } from './browser-routing.mjs'
 
 const PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51309', 10)
@@ -620,6 +620,15 @@ function buildChildEnv() {
     console.log('[bridge] active provider:', provider.id, '| model:', model, '| baseUrl:', provider.apiBaseUrl)
   } else if (provider) {
     console.warn('[bridge] provider', provider.id, 'missing apiBaseUrl or authToken — using CLI defaults')
+  }
+  // OpenAI 兼容协议（provider.protocol === 'openai'）：注入 OPENAI_* env（双协议前置项）
+  if (provider && provider.protocol === 'openai' && provider.apiBaseUrl && provider.authToken) {
+    env.OPENAI_BASE_URL = provider.apiBaseUrl
+    env.OPENAI_API_KEY = provider.authToken
+    const model = provider.primaryModel || (provider.models && provider.models[0]) || ''
+    if (model) env.OPENAI_MODEL = model
+    if (provider.contextWindow) env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(provider.contextWindow)
+    console.log('[bridge] openai-compatible provider:', provider.id, '| model:', model, '| baseUrl:', provider.apiBaseUrl)
   }
   // 内核枚举 $YFW_HOME/agents/*.md 依赖 ripgrep（vendor/ripgrep/*/rg.exe）。
   // 早期发布包未携带该二进制导致静默失败（ENOENT→空列表）——当时强制走原生
@@ -1374,6 +1383,32 @@ const httpServer = createServer(async (req, res) => {
       const query = url.searchParams.get('query') || ''
       const limit = parseInt(url.searchParams.get('limit') || '50', 10) || 50
       return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, results: transcriptApi.searchTranscripts(query, limit) }))
+    }
+    // --- /transcript/stats：token 统计聚合（项目/模型/日期），GUI 成本面板数据源 ---
+    if (url.pathname === '/transcript/stats') {
+      const project = url.searchParams.get('project') || ''
+      const base = transcriptBaseDir()
+      const stats = project ? aggregateStats(join(base, sanitizePathSegment(project))) : aggregateStats(base)
+      // 成本换算：单价表来自 provider 配置
+      const cfg = loadConfig()
+      const provider = (cfg.providers || []).find((p) => p.id === cfg.activeProvider) || cfg.providers?.[0]
+      const priceTable = provider?.pricing || {}
+      const withCost = (bucket) => {
+        const out = {}
+        for (const [k, v] of Object.entries(bucket)) {
+          out[k] = { ...v, cost_usd: Number(costUsd({ model: k, input_tokens: v.input_tokens, output_tokens: v.output_tokens }, priceTable).toFixed(4)) }
+        }
+        return out
+      }
+      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({
+        ok: true,
+        totals: { ...stats.totals, cost_usd: Number(
+          Object.entries(stats.byModel).reduce((s, [, v]) => s + costUsd(v, priceTable), 0)
+        ).toFixed(4) },
+        byModel: withCost(stats.byModel),
+        byProject: stats.byProject,
+        byDate: stats.byDate,
+      }))
     }
 
     // 豆包图片生成端点（会话/历史/限速见 doubao.mjs；下载去水印走 watermark_remove.py）
