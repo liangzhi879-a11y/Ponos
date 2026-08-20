@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pruneToolResult, findCutPoint, extractSummary, assembleSummaryRequest, createCompactor } from '../kernel/compact.mjs'
+import { createHealth } from '../kernel/health.mjs'
 import { estimateMessage, contextWindowFor } from '../kernel/context.mjs'
 import { createSessionStore } from '../kernel/session.mjs'
 import { createEngine } from '../kernel/engine.mjs'
@@ -187,6 +188,32 @@ test('溢出恢复：context_window_exceeded → forceCompact → retry 成功�
     assert.ok(session.getSurface().replaceGeneration >= 1)
     delete process.env.YFW_MOCK_API
     delete process.env.YFW_MOCK_OVERFLOW
+    delete process.env.YFW_MOCK_COMPACT_RESPONSE
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('单通道（FIX R1）：装配 health 的 compactor 压缩成功后 yfw_summary 只发一次且 lastSummary 被记录', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'compact-health-'))
+  try {
+    const events = []
+    const wire = { assistant: (b) => events.push({ type: 'assistant' }), result: () => events.push({ type: 'result' }), controlRequest: () => {}, summary: () => events.push({ type: 'yfw_summary' }), health: () => events.push({ type: 'yfw_health' }) }
+    const session = createSessionStore({ configDir: dir, cwd: 'proj', sessionId: '00000000-0000-0000-0000-000000000010' })
+    const health = createHealth({ wire, model: 'm', contextWindow: 200_000 })
+    const compactor = createCompactor({
+      session,
+      context: { window: 500, thresholdRatio: 0.8, retainRatio: 0.16, estimate: (r) => ({ total: (r.messages?.length ?? 0) * 50 }), estimateMessage: () => 50, estimateHistory: (msgs) => (msgs?.length ?? 0) * 50 },
+      model: 'm', maxTokens: 100, wire, health,
+      env: { YFW_MOCK_API: '1' },
+    })
+    process.env.YFW_MOCK_API = '1'
+    process.env.YFW_MOCK_COMPACT_RESPONSE = '1'
+    for (let i = 1; i <= 5; i++) { session.appendUser(`q${i}`); session.appendAssistant([{ type: 'text', text: 'a'.repeat(100) }]) }
+    // 10 条消息 × 50 = 500 ≥ 阈值 400 → 触发；压缩成功后由 health 代发 yfw_summary
+    const r = await compactor.maybeCompact({ system: 'S', messages: session.deriveMessages() })
+    assert.equal(r.action, 'summarized')
+    assert.equal(events.filter((e) => e.type === 'yfw_summary').length, 1) // 单通道：只发一次（杜绝双发）
+    assert.equal(health.getState().lastSummary, '摘要输出') // health 代发并记录 lastSummary
+    delete process.env.YFW_MOCK_API
     delete process.env.YFW_MOCK_COMPACT_RESPONSE
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

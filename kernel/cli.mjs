@@ -104,7 +104,9 @@ export async function main(argv) {
   const configDir = process.env.CLAUDE_CONFIG_DIR || process.env.YFWORKING_HOME || join(homedir(), '.yfworking')
   const store = createSessionStore({ configDir, cwd: args.addDirs[0] || '', sessionId })
 
-  // 生产链路一次接齐：context（token 启发式）+ compactor（两阶段压缩）+ health（健康监控）。
+  // 生产链路一次接齐：context（token 启发式）+ health（健康监控）+ compactor（两阶段压缩）。
+  // compactor 装配 health → 压缩成功后 yfw_summary 走 health.recordCompaction 单通道
+  // （代发 + 记录 lastSummary），不再由 compactor 直接 wire.summary（FIX R1，杜绝双发）。
   // compactor 的 signal 传 undefined——cancel 不中断进行中的压缩摘要调用为已知限制
   // （deferred minor，勿改）。
   const model = args.model || process.env.ANTHROPIC_MODEL || ''
@@ -118,8 +120,8 @@ export async function main(argv) {
     estimateMessage,
     estimateHistory,
   }
-  const compactor = createCompactor({ session: store, context, model, maxTokens, wire, signal: undefined, env: process.env })
   const health = createHealth({ wire, model, contextWindow, env: process.env })
+  const compactor = createCompactor({ session: store, context, model, maxTokens, wire, health, signal: undefined, env: process.env })
 
   const engine = createEngine({
     opts: {

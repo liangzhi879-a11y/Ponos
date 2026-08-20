@@ -149,7 +149,7 @@ export function extractSummary(text) {
 }
 
 // —— 压缩器编排（pre-step 测压 / forceCompact 溢出兜底）——
-export function createCompactor({ session, context, model, maxTokens, wire, signal, env = process.env }) {
+export function createCompactor({ session, context, model, maxTokens, wire, health, signal, env = process.env }) {
   let summaryInFlight = false
   let lastSummary = null
   let consecutiveFailures = 0
@@ -203,7 +203,11 @@ export function createCompactor({ session, context, model, maxTokens, wire, sign
       session.appendCompactionStart(coveredSeqs)
       session.appendCompactionSummary({ summary, coveredSeqs })
       lastSummary = summary
-      wire.summary?.(summary, session.compactCount())
+      // 单通道（FIX R1）：压缩成功后 yfw_summary 只发一次——装配 health 时由
+      // health.recordCompaction 代发（并记录 lastSummary），未装配时保留 wire.summary 兜底。
+      // 两路互斥，杜绝 yfw_summary 双发（spec §6：compact 成功后 health.recordCompaction 为权威调用点）。
+      if (health) health.recordCompaction?.(summary, session.compactCount())
+      else wire.summary?.(summary, session.compactCount())
       return { action: 'summarized', summary, compactCount: session.compactCount() }
     } finally {
       summaryInFlight = false
