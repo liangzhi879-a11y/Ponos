@@ -74,6 +74,10 @@ describe('listSessions', () => {
     mk(proj, `${id2}.jsonl`, entry('user'))
     mk(proj, 'not-uuid.jsonl', entry('user'))
     mkdirSync(join(proj, `${id1}`)) // 同名子目录（subagent），必须忽略
+    // 显式设置不同 mtime，避免同毫秒写入导致排序不稳定（与 searchTranscripts 用例同法）
+    const t0 = new Date('2026-08-15T00:00:00Z')
+    utimesSync(join(proj, `${id1}.jsonl`), t0, t0)
+    utimesSync(join(proj, `${id2}.jsonl`), new Date(t0.getTime() + 1000), new Date(t0.getTime() + 1000))
 
     const res = listSessions(root, 'C:\\Users\\t\\demo-project')
     assert.equal(res.length, 2)

@@ -150,7 +150,17 @@ test('createDownloadHandler 落盘失败不发事件', () => {
   }
 })
 
-test('isBlockedUrl 对白名单/非白名单判断正确', () => {
+test('isBlockedUrl 对白名单/非白名单判断正确', (t) => {
+  // 隔离真实用户配置：本机 browser-whitelist.json 若含 example.com，子域匹配会把
+  // evil.example.com 误判为白名单内。临时 YFWORKING_HOME 空目录 → 仅默认白名单生效。
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-bu-'))
+  const prev = process.env.YFWORKING_HOME
+  process.env.YFWORKING_HOME = dir
+  t.after(() => {
+    if (prev === undefined) delete process.env.YFWORKING_HOME
+    else process.env.YFWORKING_HOME = prev
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
   assert.equal(isBlockedUrl('https://www.gov.cn/xxgk'), false)
   assert.equal(isBlockedUrl('http://localhost:5173/'), false)
   assert.equal(isBlockedUrl('https://evil.example.com'), true)
