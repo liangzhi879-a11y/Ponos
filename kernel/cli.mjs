@@ -27,6 +27,7 @@ import { createHealth } from './health.mjs'
 import { createCompactor } from './compact.mjs'
 import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
 import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
+import { YFW_VERSION } from '../version.mjs'
 
 const REQUIRED_FORMAT = 'stream-json'
 
@@ -147,8 +148,9 @@ export async function main(argv) {
   }))
   // system(init)：spawn 即发。bridge /test-provider 判定 CLI 加载成功并读取
   // model/tools；GUI 从 session_id 绑定会话（useYFWCLI.ts handleMessage）。
-  // name 字段标识净室引擎代号（诊断用，GUI 不依赖）。
-  wire.system('init', { model, tools: engine.toolNames, session_id: sessionId, name: 'YFW-turbo' })
+  // name 字段标识 agent 身份（诊断用，GUI 不依赖）；version 为 yfwturbo dev 版本线
+  // （version.mjs 单一数据源，与 GUI 发布版本相互独立）。
+  wire.system('init', { model, tools: engine.toolNames, session_id: sessionId, name: 'YFWorking', version: YFW_VERSION })
   // --resume：从 transcript 恢复（load 为 async 流式；同文件即 GUI 读取的权威源）。
   // 历史由 session.deriveMessages() 派生，engine 无需 seedHistory（seedHistory 已随
   // Task 5 迁移移除）。
