@@ -17,6 +17,7 @@ import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { computeScores } from './lib/scoring.mjs'
+import { diagnoseAgents, resolveApiKey, resolveModel, resolveBaseUrl } from './lib/llm-api.mjs'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const resultsRoot = join(__dirname, 'results')
@@ -193,6 +194,77 @@ function abortRun() {
   return { ok: true, pid }
 }
 
+// ── LLM API 配置（读 .env + 进程 env，保存写 .env 并立即注入评测子进程）─────
+const envFile = join(__dirname, '.env')
+
+/** 更新 .env 键值：非空写 `K=v`，空字符串删除该键；保留注释与其他行 */
+function updateDotEnv(updates) {
+  let lines = existsSync(envFile) ? readFileSync(envFile, 'utf8').split(/\r?\n/) : []
+  const out = []
+  const seen = new Set()
+  for (const line of lines) {
+    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/)
+    if (m && m[1] in updates) {
+      if (updates[m[1]]) out.push(`${m[1]}=${updates[m[1]]}`) // 空串=删除，整行丢弃
+      seen.add(m[1])
+      continue
+    }
+    out.push(line)
+  }
+  for (const [k, v] of Object.entries(updates)) {
+    if (!seen.has(k) && v) out.push(`${k}=${v}`)
+  }
+  writeFileSync(envFile, out.join('\n') + '\n')
+}
+
+/** 密钥掩码预览：sk-****abcd */
+function keyPreview(k) {
+  if (!k) return ''
+  return k.length <= 8 ? '****' : k.slice(0, 3) + '****' + k.slice(-4)
+}
+
+/** 当前配置快照（密钥只给掩码，前端编辑表单用） */
+function apiConfigSnapshot() {
+  const key = resolveApiKey()
+  return { key: { has: !!key, preview: keyPreview(key) }, model: resolveModel(), baseUrl: resolveBaseUrl() }
+}
+
+/**
+ * 保存配置：写 benchmark/.env + 立即更新进程 env（spawn run.mjs 继承生效）。
+ * key/model 空串=不修改；baseUrl 空串=清除端点（回退官方端点）。
+ * key 保存时同时覆盖 ANTHROPIC_AUTH_TOKEN / DEEPSEEK_API_KEY——
+ * apiKeyFor(agent) 对 yfw/claude 走 ANTHROPIC_AUTH_TOKEN、pi/deepseek 走
+ * DEEPSEEK_API_KEY，若系统已设置这些变量，只设 LLM_API_KEY 不会生效。
+ */
+function saveApiConfig(body) {
+  const updates = {}
+  if (typeof body.key === 'string' && body.key.trim()) {
+    const k = body.key.trim()
+    updates.LLM_API_KEY = k
+    process.env.LLM_API_KEY = k
+    process.env.ANTHROPIC_AUTH_TOKEN = k
+    process.env.DEEPSEEK_API_KEY = k
+  }
+  if (typeof body.model === 'string' && body.model.trim()) {
+    updates.LLM_MODEL = body.model.trim()
+    process.env.LLM_MODEL = updates.LLM_MODEL
+  }
+  if (typeof body.baseUrl === 'string') {
+    const v = body.baseUrl.trim()
+    if (v) {
+      updates.LLM_BASE_URL = v
+      process.env.LLM_BASE_URL = v
+    } else {
+      // 显式清空端点：删除 .env 键 + 进程 env（含 ANTHROPIC_BASE_URL 继承源）
+      updates.LLM_BASE_URL = ''
+      delete process.env.LLM_BASE_URL
+      delete process.env.ANTHROPIC_BASE_URL
+    }
+  }
+  updateDotEnv(updates)
+  return { ok: true, saved: updates, api: diagnoseAgents(['yfw', 'claude', 'pi', 'deepseek']) }
+}
+
 // ── HTTP 服务 ────────────────────────────────────────────────────────────────
 function sendJson(res, code, obj) {
   const body = JSON.stringify(obj)
@@ -278,6 +350,26 @@ const server = createServer((req, res) => {
     return sendJson(res, r.ok ? 200 : 409, r)
   }
 
+  if (p === '/api/apiconfig') {
+    if (req.method === 'GET') {
+      return sendJson(res, 200, apiConfigSnapshot())
+    }
+    if (req.method === 'POST') {
+      let body = ''
+      req.on('data', (c) => { body += c })
+      req.on('end', () => {
+        try {
+          const b = JSON.parse(body || '{}')
+          return sendJson(res, 200, saveApiConfig(b))
+        } catch (e) {
+          return sendJson(res, 400, { ok: false, error: '配置解析失败: ' + e.message })
+        }
+      })
+      return
+    }
+    return sendJson(res, 405, { error: '需要 GET 或 POST' })
+  }
+
   if (p === '/api/meta') {
     // 可选 agent / 任务列表（控制面板选择用）
     const tasksDir = join(__dirname, 'tasks')
@@ -292,6 +384,7 @@ const server = createServer((req, res) => {
       agents: ['yfw', 'claude', 'pi', 'deepseek'],
       tasks: taskList,
       control: ctlSnapshot(),
+      api: diagnoseAgents(['yfw', 'claude', 'pi', 'deepseek']), // LLM API 通道状态
     })
   }
 
@@ -353,6 +446,8 @@ pre{background:#f8f8f8;padding:10px;border-radius:6px;overflow:auto;font-size:12
 .ctl-state.aborted,.ctl-state.failed{background:#fde3e3;color:var(--fail)}
 .ctl-log{margin-top:8px}
 .ctl-log pre{max-height:180px;font-size:11px}
+.api-line{margin-top:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.api-chip{font-size:12px;color:var(--muted);background:var(--bg-soft);border:1px solid var(--line);border-radius:10px;padding:2px 8px}
 footer{color:var(--muted);font-size:12px;margin-top:22px;text-align:center}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 </style></head><body><div class="wrap">
@@ -377,6 +472,27 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
     <span class="ctl-state" id="ctlState">空闲</span>
   </div>
   <div class="ctl-log" id="ctlLog" style="display:none"><pre id="ctlLogPre"></pre></div>
+  <div class="api-line" id="apiLine" style="display:none"></div>
+  <div id="apiCfgPanel" style="display:none;margin-top:10px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg-soft)">
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px">LLM API 配置（保存到 benchmark/.env，立即生效；密钥不进入 git）</div>
+    <div style="display:flex;gap:8px;align-items:center;margin:6px 0">
+      <label style="flex:0 0 76px;font-size:13px">API Key</label>
+      <input id="apiCfgKey" type="password" style="flex:1;padding:5px 8px;border-radius:6px;border:1px solid var(--line)" placeholder="未配置">
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin:6px 0">
+      <label style="flex:0 0 76px;font-size:13px">模型</label>
+      <input id="apiCfgModel" type="text" style="flex:1;padding:5px 8px;border-radius:6px;border:1px solid var(--line)" placeholder="deepseek-v4-flash">
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin:6px 0">
+      <label style="flex:0 0 76px;font-size:13px">Base URL</label>
+      <input id="apiCfgBase" type="text" style="flex:1;padding:5px 8px;border-radius:6px;border:1px solid var(--line)" placeholder="https://api.deepseek.com/anthropic（留空=官方端点）">
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="ctl-btn" onclick="apiCfgSave()">保存</button>
+      <button class="ctl-btn" onclick="apiCfgCancel()">取消</button>
+      <span id="apiCfgMsg" style="font-size:12px;color:var(--muted);align-self:center"></span>
+    </div>
+  </div>
 </div>
 
 <div class="cards" id="overview"></div>
@@ -621,6 +737,7 @@ const META_TASKS = ['T001','T002','T003','T004','T005','T006'];
 let ctlSelAgents = new Set(META_AGENTS);
 let ctlSelTasks = new Set(META_TASKS);
 let CTRL = { state: 'idle' };
+let API_DIAG = [];
 
 async function loadMeta() {
   try {
@@ -630,6 +747,7 @@ async function loadMeta() {
     ctlSelAgents = new Set(META_AGENTS);
     ctlSelTasks = new Set(META_TASKS);
     CTRL = m.control || CTRL;
+    if (Array.isArray(m.api)) API_DIAG = m.api;
   } catch (e) { /* 保持默认 */ }
   renderControl();
 }
@@ -657,7 +775,54 @@ function renderControl() {
   } else {
     $('#ctlLog').style.display = 'none';
   }
+  // LLM API 通道状态（只读 chips + 配置入口）
+  const al = $('#apiLine');
+  if (API_DIAG.length) {
+    al.style.display = 'block';
+    al.innerHTML = '<b style="font-size:12px;color:var(--muted)">LLM API：</b>' + API_DIAG.map((d) =>
+      '<span class="api-chip" title="' + esc(d.desc) + (d.reason ? ' · ' + esc(d.reason) : '') + '">' +
+      (d.ok ? '🟢' : '🔴') + ' ' + esc(d.agent) + '</span>').join('') +
+      '<span style="font-size:11px;color:var(--muted)"> model=' + esc(API_DIAG[0]?.model || '') + (API_DIAG[0]?.baseUrl ? ' · ' + esc(API_DIAG[0].baseUrl) : '') + '</span>' +
+      '<button class="ctl-btn" style="margin-left:auto;font-size:12px;padding:2px 10px" onclick="apiCfgOpen()">⚙ 配置</button>';
+  } else {
+    al.style.display = 'none';
+  }
 }
+
+// ── LLM API 配置表单 ──────────────────────────────────────────────────────────
+let API_CFG = null; // { key:{has,preview}, model, baseUrl }
+async function apiCfgOpen() {
+  try {
+    API_CFG = await fetchJSON('/api/apiconfig');
+  } catch (e) { alert('读取配置失败: ' + e.message); return; }
+  $('#apiCfgKey').value = '';
+  $('#apiCfgKey').placeholder = API_CFG.key.has ? '已配置 ' + API_CFG.key.preview + '（留空不修改）' : '未配置，输入 API Key';
+  $('#apiCfgModel').value = API_CFG.model || '';
+  $('#apiCfgBase').value = API_CFG.baseUrl || '';
+  $('#apiCfgMsg').textContent = '';
+  $('#apiCfgPanel').style.display = 'block';
+}
+async function apiCfgSave() {
+  const body = {
+    key: $('#apiCfgKey').value.trim(),
+    model: $('#apiCfgModel').value.trim(),
+    baseUrl: $('#apiCfgBase').value.trim(),
+  };
+  try {
+    const r = await fetch('/api/apiconfig', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok) { $('#apiCfgMsg').textContent = '保存失败: ' + (j.error || r.statusText); return; }
+    if (Array.isArray(j.api)) API_DIAG = j.api;
+    $('#apiCfgMsg').textContent = '✓ 已保存到 benchmark/.env';
+    $('#apiCfgPanel').style.display = 'none';
+    renderControl(); // 刷新诊断 chips
+  } catch (e) { $('#apiCfgMsg').textContent = '请求失败: ' + e.message; }
+}
+function apiCfgCancel() { $('#apiCfgPanel').style.display = 'none'; }
 
 function toggleCtl(kind, val, on) {
   if (kind === 'agent') { on ? ctlSelAgents.add(val) : ctlSelAgents.delete(val); }

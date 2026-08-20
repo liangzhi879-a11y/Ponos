@@ -37,6 +37,17 @@ export function worktreeExists(repo, branch) {
 export function ensureWorkspace({ repo, wsRoot, branch, base }) {
   const wsPath = `${wsRoot}/${branch}`
   if (worktreeExists(repo, branch)) {
+    // 复用前重置到 base 干净状态——丢弃上次评测 agent 的改动与未跟踪文件，
+    // 否则 verify 会跑在旧改动上造成"假 PASS"（实测：usage=0 却 status=pass）。
+    // 保留 ignored 文件（node_modules 等），只清 tracked 修改与 untracked。
+    execFileSync('git', ['-C', wsPath, 'reset', '--hard', base], {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    execFileSync('git', ['-C', wsPath, 'clean', '-fd'], {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
     return wsPath
   }
   // 新建 branch + worktree（checkout 到 base commit）

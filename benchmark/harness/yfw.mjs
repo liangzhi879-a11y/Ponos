@@ -16,6 +16,7 @@
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { resolveModel, buildAgentEnv } from '../lib/llm-api.mjs'
 
 // Node 24 兼容垫片：剥离内核传给 fetch 的非 AbortSignal 信号（见 yfw-fetch-shim.mjs）
 const shimUrl = pathToFileURL(fileURLToPath(new URL('./yfw-fetch-shim.mjs', import.meta.url))).href
@@ -33,11 +34,12 @@ export async function runYFW({ ws, prompt, timeoutMs, onLog }) {
     '--output-format', 'stream-json',
     '--input-format', 'stream-json',
     '--dangerously-skip-permissions',
-    '--model', process.env.ANTHROPIC_MODEL || 'deepseek-v4-flash',
+    '--model', resolveModel(),
     '--add-dir', ws,
   ]
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, args, { cwd: ws, env: process.env, windowsHide: true })
+    // buildAgentEnv('yfw')：统一注入 ANTHROPIC_AUTH_TOKEN + baseUrl（DeepSeek 兼容端点）
+    const child = spawn(process.execPath, args, { cwd: ws, env: buildAgentEnv('yfw'), windowsHide: true })
     let stdout = ''
     let stderr = ''
     let timedOut = false

@@ -2,3 +2,5 @@ vendors/
 workspace/
 results/
 node_modules/
+# 密钥不入库：评测 API 配置放 benchmark/.env（模板见 .env.example）
+.env

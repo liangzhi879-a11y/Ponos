@@ -54,6 +54,29 @@ benchmark/start-dashboard.bat                            # Windows 双击
 bash benchmark/start-dashboard.sh                        # 终端（可传端口：start-dashboard.sh 9000）
 ```
 
+## LLM API 统一管理（lib/llm-api.mjs）
+
+4 个被测 agent 的 LLM API 配置统一收敛到 `lib/llm-api.mjs`，消除各 adapter 里重复的 `env.X || env.Y` 逻辑。运行 `run.mjs` / `dashboard.mjs` 时模块自动加载 `benchmark/.env`（进程 env 优先，不覆盖已设置变量），并打印各 agent 通道诊断：
+
+- **密钥解析**：主密钥 `LLM_API_KEY` → `ANTHROPIC_AUTH_TOKEN` → `DEEPSEEK_API_KEY` 回退链；按 agent 注入对应 env（yfw/claude → `ANTHROPIC_AUTH_TOKEN`；pi/deepseek → `DEEPSEEK_API_KEY`）
+- **模型解析**：`LLM_MODEL` → `ANTHROPIC_MODEL` → 默认 `deepseek-v4-flash`
+- **端点解析**：`LLM_BASE_URL` → `ANTHROPIC_BASE_URL`（仅 yfw/claude 使用，DeepSeek 兼容端点）
+- **用量→成本**：`costOf(usage)` 与 run.mjs 同源（$0.2/百万 input、$1.2/百万 output）
+- **启动诊断**：`diagnoseAgents()` / `printDiagnosis()` 检查密钥、bin 是否存在（pi/deepseek）、模型与端点，缺失时在 run.mjs 启动与 dashboard `/api/meta` 中以 ⚠️ 标出
+
+配置示例（`benchmark/.env`）：
+
+```bash
+# 主密钥（缺省回退 ANTHROPIC_AUTH_TOKEN / DEEPSEEK_API_KEY）
+LLM_API_KEY=sk-xxxx
+# 默认模型（缺省 deepseek-v4-flash）
+LLM_MODEL=deepseek-v4-flash
+# DeepSeek 兼容端点（yfw/claude 经 ANTHROPIC_BASE_URL 走它）
+LLM_BASE_URL=https://api.deepseek.com/anthropic
+```
+
+新增被测 agent 时：在 `AGENT_API` 表登记其 keyEnv/modelEnv/baseUrlEnv，adapter 用 `buildAgentEnv(agent)` 注入 env 即可，无需再写解析逻辑。
+
 ## Dashboard（实时交互）
 
 评测进行中打开 dashboard，每 3 秒自动轮询 `results/` 目录刷新：
@@ -62,6 +85,7 @@ bash benchmark/start-dashboard.sh                        # 终端（可传端口
 - **评测控制台**：勾选被测内核（yfw/claude/pi/deepseek）与测试科目（T001-T006），一键 **开始 / 暂停 / 继续 / 终止**，实时显示运行日志尾部与 PID
   - 控制经 `results/.control.json` 下发给 run.mjs（`--control-file`），**在任务边界生效**（不打断正在跑的单任务）
   - 终止先发 abort（run.mjs 优雅退出并写已完成的 partial summary），10 秒未退出则强杀
+- **LLM API 配置**：控制台 API 状态行右侧 `⚙ 配置` 按钮 → 内联表单可编辑 **API Key / 模型 / Base URL**，保存写入 `benchmark/.env` 并立即注入评测子进程（刷新诊断 chips）；密钥掩码显示、留空不修改、Base URL 留空=回退官方端点
 - **交互图表**（SVG，无外部依赖）：综合评分排行卡片（点击高亮 agent）、四维能力雷达图（hover 数值）、各任务耗时柱状图（hover 详情 / 点击筛选）
 - **任务完成矩阵**：点击任意单元格弹出右侧详情抽屉（验收输出、改动统计、stderr/stdout 尾部、运行日志）
 - **历史目录切换**：顶部下拉框切换任意一次评测结果（正式评测/冒烟均支持）

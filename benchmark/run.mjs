@@ -18,6 +18,7 @@ import { ensureWorkspace, collectDiff } from './lib/workspace.mjs'
 import { applyBasePatch, EXCLUDED_PATCH_FILES } from './lib/base-patches.mjs'
 import { runYFW } from './harness/yfw.mjs'
 import { runClaude, runPi, runDeepseek } from './harness/adapters.mjs'
+import { diagnoseAgents, printDiagnosis, costOf } from './lib/llm-api.mjs'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const root = CONFIG.root
@@ -29,6 +30,8 @@ function argVal(name) {
   return i >= 0 ? argv[i + 1] : null
 }
 const agents = (argVal('--agents') || CONFIG.agents.join(',')).split(',').map((s) => s.trim()).filter(Boolean)
+// 启动门禁跳过开关：--force 允许缺 key/baseUrl 仍继续（调试/离线冒烟用）
+const force = argv.includes('--force')
 const tasksFilter = argVal('--tasks')?.split(',').map((s) => s.trim()).filter(Boolean) || null
 const limit = argVal('--limit') ? Number(argVal('--limit')) : CONFIG.maxTasksPerAgent
 const smoke = argv.includes('--smoke')
@@ -122,10 +125,14 @@ async function runOne({ agent, task, ts, onLog }) {
   // 5. 指标汇总
   const cost = costOf(run.usage)
   const selfTested = /(node --test|npm test|run test|verify)/i.test(run.stdout + '\n' + run.stderr)
+  // 可信度：usage=0 且 toolCalls=0 说明 agent 未实际执行（协议/配置/链路问题），
+  // 结果标记 invalid 而非 pass/fail——否则 verify 在残留改动上会产出"假 PASS"
+  const executed = (run.usage?.input_tokens || run.usage?.output_tokens || 0) > 0 || (run.toolCalls || 0) > 0
 
   return {
     agent, task: task.id, base: task.base,
-    status: verify.ok ? 'pass' : 'fail',
+    status: executed ? (verify.ok ? 'pass' : 'fail') : 'invalid',
+    executed,
     durationMs,
     exitCode: run.exitCode,
     timedOut: run.timedOut,
@@ -152,14 +159,21 @@ async function verifyTask(task, ws, onLog) {
   })
 }
 
-function costOf(usage) {
-  if (!usage) return null
-  const p = CONFIG.pricePerMInput, o = CONFIG.pricePerMOutput
-  return (usage.input_tokens || 0) / 1e6 * p + (usage.output_tokens || 0) / 1e6 * o
-}
-
 // ── 主流程 ────────────────────────────────────────────────────────────────────
 async function main() {
+  // API 通道诊断（启动即打印各 agent 密钥/模型/端点状态）
+  const diag = diagnoseAgents(agents, { checkBin: true })
+  printDiagnosis(diag)
+  // 启动门禁：所选 agent 配置不完整（缺 key/baseUrl/可执行文件）时拒绝启动。
+  // 实测教训：无 baseUrl 时 yfw 内核首轮即报"未检测到可用协议"、usage=0 整批
+  // 结果作废——与其产出垃圾数据，不如先补齐配置（--force 可跳过）。
+  const bad = diag.filter((d) => !d.ok && !force)
+  if (bad.length) {
+    console.error('\n[FATAL] 以下被测对象配置不完整，拒绝启动评测：')
+    for (const d of bad) console.error(`  - ${d.agent}: ${d.reason}`)
+    console.error('请配置 benchmark/.env（模板见 benchmark/.env.example），或加 --force 跳过检查。')
+    process.exit(1)
+  }
   const tasks = loadTasks()
   const picked = tasksFilter
     ? tasks.filter((t) => tasksFilter.includes(t.id))

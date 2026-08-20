@@ -10,6 +10,7 @@ import { createInterface } from 'node:readline'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { resolveModel, buildAgentEnv, apiKeyFor } from '../lib/llm-api.mjs'
 
 // ── 通用小工具 ────────────────────────────────────────────────────────────────
 
@@ -72,7 +73,7 @@ export async function runClaude({ ws, prompt, timeoutMs, onLog }) {
   const bin = resolveClaudeBin()
   const args = ['-p', prompt, '--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose']
   const r = await runProcess({
-    cmd: bin, args, cwd: ws, env: process.env, timeoutMs,
+    cmd: bin, args, cwd: ws, env: buildAgentEnv('claude'), timeoutMs,
     onLine: (l) => onLog?.('out', l),
     onErr: (l) => onLog?.('err', l),
   })
@@ -104,12 +105,12 @@ export async function runPi({ ws, prompt, timeoutMs, onLog }) {
   if (!existsSync(piCli)) {
     return { exitCode: -3, stdout: '', stderr: `pi CLI not built: ${piCli}（先构建：npm install + build）`, usage: null, toolCalls: 0 }
   }
-  const model = process.env.ANTHROPIC_MODEL || process.env.PI_MODEL || 'deepseek-v4-flash'
+  const model = process.env.PI_MODEL || resolveModel()
   const r = await runProcess({
     cmd: process.execPath,
     args: [piCli, '-p', '--provider', 'deepseek', '--model', model, prompt],
     cwd: ws,
-    env: { ...process.env, DEEPSEEK_API_KEY: process.env.ANTHROPIC_AUTH_TOKEN || process.env.DEEPSEEK_API_KEY || '' },
+    env: buildAgentEnv('pi'),
     timeoutMs,
     onLine: (l) => onLog?.('out', l),
     onErr: (l) => onLog?.('err', l),
@@ -137,8 +138,8 @@ export async function runDeepseek({ ws, prompt, timeoutMs, onLog }) {
   const r = await runProcess({
     cmd: process.execPath,
     args: ['--import', pathToFileURL(tsxEsm).href, dshBin, '--profile', 'headless', prompt],
-    // DEEPSEEK_API_KEY 与 ANTHROPIC_AUTH_TOKEN 同源（当前环境为 DeepSeek 官方 key）
-    cwd: ws, env: { ...process.env, DEEPSEEK_API_KEY: process.env.ANTHROPIC_AUTH_TOKEN || process.env.DEEPSEEK_API_KEY || '', FORCE_COLOR: '0' }, timeoutMs,
+    // DEEPSEEK_API_KEY 由 llm-api 统一注入；FORCE_COLOR=0 关闭彩色输出便于解析
+    cwd: ws, env: { ...buildAgentEnv('deepseek'), FORCE_COLOR: '0' }, timeoutMs,
     onLine: (l) => onLog?.('out', l),
     onErr: (l) => onLog?.('err', l),
   })
