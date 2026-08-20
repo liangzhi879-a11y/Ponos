@@ -1,7 +1,9 @@
 // YFW-turbo LLM API 客户端（docs/bridge-contract.md §2 buildChildEnv 注入的 provider env）
 // ---------------------------------------------------------------------------
 // 以 Anthropic Messages API 兼容协议调上游（ANTHROPIC_BASE_URL +
-// ANTHROPIC_AUTH_TOKEN + ANTHROPIC_MODEL），SSE 流式解析后产出结构化 chunk：
+// ANTHROPIC_AUTH_TOKEN + ANTHROPIC_MODEL）。OpenAI 兼容端点已删除（2026-08-20 实测
+// deepseek OpenAI 端点带 tools 时高概率 thinking-only 空回复，见 zz-smoke 冒烟记录），
+// SSE 流式解析后产出结构化 chunk：
 //   { type: 'text',     text }      已累积的文本段（按段落/阈值切分）
 //   { type: 'thinking', text }      推理模型的思考块（deepseek 等）
 //   { type: 'usage',    usage }     最终 token 用量（input_tokens/output_tokens）
@@ -27,19 +29,14 @@ function* segmentText(buffer) {
   }
 }
 
-// 协议检测：OPENAI env 优先（可并存时走 OpenAI），否则 Anthropic；都没有返回 null
+// 协议检测：仅 Anthropic 兼容协议（deepseek 等 provider 的 /anthropic 端点）
 export function detectProtocol(env = process.env) {
-  if (env.OPENAI_BASE_URL && env.OPENAI_API_KEY) return 'openai'
-  if (env.ANTHROPIC_BASE_URL) return 'anthropic'
-  return null
+  return env.ANTHROPIC_BASE_URL ? 'anthropic' : null
 }
 
-// usage 归一化：兼容 anthropic/openai 字段名；扩展 cache_read/cache_creation（deepseek 系）
+// usage 归一化：扩展 cache_read/cache_creation（deepseek 系）
 function normalizeUsage(u = {}) {
-  const cacheRead =
-    u.cache_read_input_tokens ??
-    u.prompt_tokens_details?.cached_tokens ??
-    0
+  const cacheRead = u.cache_read_input_tokens ?? 0
   return {
     input_tokens: u.input_tokens ?? u.prompt_tokens ?? 0,
     output_tokens: u.output_tokens ?? u.completion_tokens ?? 0,
@@ -78,51 +75,6 @@ export function createAnthropicParser() {
       } else if (payload.type === 'message_delta' && payload.usage) {
         usage = normalizeUsage(payload.usage)
         out.push({ type: 'usage', usage })
-      }
-      return out
-    },
-    finish() {
-      const out = []
-      if (textBuf.trim()) out.push({ type: 'text', text: textBuf })
-      textBuf = ''
-      return out
-    },
-    usage() { return usage },
-  }
-}
-
-// OpenAI Chat Completions 事件流纯解析器（choices[].delta；deepseek 系 reasoning_content）
-export function createOpenAIParser() {
-  let tool = null // { index, id, name, inputJson }
-  let textBuf = ''
-  let usage = { input_tokens: 0, output_tokens: 0 }
-  return {
-    feed(payload) {
-      const out = []
-      if (payload.usage) {
-        usage = normalizeUsage(payload.usage)
-        out.push({ type: 'usage', usage })
-        return out
-      }
-      const choice = payload.choices?.[0] ?? {}
-      const delta = choice.delta ?? {}
-      if (delta.reasoning_content) out.push({ type: 'thinking', text: delta.reasoning_content })
-      if (delta.content) {
-        textBuf += delta.content
-        for (const seg of segmentText(textBuf)) { textBuf = ''; out.push(seg) }
-      }
-      if (Array.isArray(delta.tool_calls)) {
-        for (const tc of delta.tool_calls) {
-          if (tc.id) tool = { index: tc.index ?? 0, id: tc.id, name: tc.function?.name ?? '', inputJson: '' }
-          if (tool && tc.function?.name) tool.name = tc.function.name
-          if (tool && tc.function?.arguments) tool.inputJson += tc.function.arguments
-        }
-      }
-      if (choice.finish_reason === 'tool_calls' && tool) {
-        let input = {}
-        try { input = tool.inputJson ? JSON.parse(tool.inputJson) : {} } catch {}
-        out.push({ type: 'tool_use', id: tool.id, name: tool.name, input })
-        tool = null
       }
       return out
     },
@@ -214,8 +166,8 @@ export function toAbortSignal(s) {
   return s instanceof AbortSignal ? s : undefined
 }
 
-// 双协议流：统一产出归一化 chunk。protocol 由 env 检测（engine 无感）。
-export async function* protocolStream({ protocol, url, body, headers, signal }) {
+// Anthropic SSE 流：统一产出归一化 chunk。
+export async function* protocolStream({ url, body, headers, signal }) {
   const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: toAbortSignal(signal) })
   if (!res.ok || !res.body) {
     const detail = await res.text().catch(() => '')
@@ -225,7 +177,7 @@ export async function* protocolStream({ protocol, url, body, headers, signal }) 
   const decoder = new TextDecoder()
   let buf = ''
   let usagePushed = false
-  const parser = protocol === 'openai' ? createOpenAIParser() : createAnthropicParser()
+  const parser = createAnthropicParser()
   try {
     while (true) {
       const { done, value } = await reader.read()
@@ -274,7 +226,6 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
       : {}),
   }
   yield* protocolStream({
-    protocol: 'anthropic',
     url: base + '/v1/messages',
     body,
     headers: { 'content-type': 'application/json', 'x-api-key': token, 'anthropic-version': '2023-06-01' },
@@ -282,30 +233,7 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
   })
 }
 
-// OpenAI 协议流：tools 中立形状 → function 形状；system 并入 messages 首位
-async function* openaiStream({ model, messages, system, tools, maxTokens, signal }) {
-  const base = (process.env.OPENAI_BASE_URL || '').replace(/\/+$/, '')
-  const token = process.env.OPENAI_API_KEY || ''
-  if (!base || !token) throw new Error('内核：OPENAI_BASE_URL / OPENAI_API_KEY 未配置')
-  const body = {
-    model,
-    max_tokens: maxTokens,
-    stream: true,
-    messages: [...(system ? [{ role: 'system', content: system }] : []), ...messages],
-    ...(tools.length
-      ? { tools: tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } })) }
-      : {}),
-  }
-  yield* protocolStream({
-    protocol: 'openai',
-    url: base + '/v1/chat/completions',
-    body,
-    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
-    signal,
-  })
-}
-
-// 消息流入口：mock / 真实双协议分流。tools = 中立 [{name, description, input_schema}]
+// 消息流入口：mock / 真实 Anthropic 协议分流。tools = 中立 [{name, description, input_schema}]
 export async function* streamMessages({ model, messages, maxTokens, signal, tools = [] }) {
   const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n')
   const rest = messages.filter((m) => m.role !== 'system')
@@ -313,8 +241,6 @@ export async function* streamMessages({ model, messages, maxTokens, signal, tool
     yield* mockStream({ messages, signal })
     return
   }
-  const protocol = detectProtocol()
-  if (!protocol) throw new Error('内核：未检测到可用协议（需 ANTHROPIC_BASE_URL 或 OPENAI_BASE_URL+OPENAI_API_KEY）')
-  if (protocol === 'openai') yield* openaiStream({ model, messages: rest, system, tools, maxTokens, signal })
-  else yield* anthropicStream({ model, messages: rest, system, tools, maxTokens, signal })
+  if (!detectProtocol()) throw new Error('内核：未检测到可用协议（需 ANTHROPIC_BASE_URL）')
+  yield* anthropicStream({ model, messages: rest, system, tools, maxTokens, signal })
 }
