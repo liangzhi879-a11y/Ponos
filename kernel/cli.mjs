@@ -26,6 +26,7 @@ import { createSessionStore, newSessionId } from './session.mjs'
 import { createHealth } from './health.mjs'
 import { createCompactor } from './compact.mjs'
 import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
+import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
 
 const REQUIRED_FORMAT = 'stream-json'
 
@@ -128,7 +129,7 @@ export async function main(argv) {
       model: args.model,
       resumeId: args.resume,
       addDirs: args.addDirs,
-      systemPrompt: readPromptFile(args.appendSystemPromptFile),
+      systemPrompt: '', // 占位，下面三层组装后覆盖
       verbose: args.verbose,
       skipPermissions: args.skipPermissions,
     },
@@ -137,6 +138,13 @@ export async function main(argv) {
     health,
     compactor,
   })
+  // 提示词三层组装：内核基础行为规范 + AGENTS.md 项目指令 + GUI append 文件
+  // （最高优先级，后者覆盖前者）。cwd = addDirs[0]（会话工作目录）。
+  engine.setSystemPrompt(composeSystemPrompt({
+    toolNames: engine.toolNames,
+    agents: discoverAgentsMd({ cwd: args.addDirs[0] || '', addDirs: args.addDirs }),
+    append: readPromptFile(args.appendSystemPromptFile),
+  }))
   // system(init)：spawn 即发。bridge /test-provider 判定 CLI 加载成功并读取
   // model/tools；GUI 从 session_id 绑定会话（useYFWCLI.ts handleMessage）。
   // name 字段标识净室引擎代号（诊断用，GUI 不依赖）。
