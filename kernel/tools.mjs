@@ -1,4 +1,4 @@
-// 工具注册表与执行器（docs/bridge-contract.md §9 替换面：工具执行器）
+// YFW-turbo 工具注册表与执行器（docs/bridge-contract.md §9 替换面：工具执行器）
 // ---------------------------------------------------------------------------
 // 骨架工具集：Bash（shell 执行，高危命令经 permissions 审批）、Read/Write
 // （文件读写，路径边界校验）。返回统一结果 { content, isError }，由 engine

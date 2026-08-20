@@ -1,4 +1,4 @@
-// 净室内核 Agent 循环（docs/bridge-contract.md §9 替换面）
+// YFW-turbo Agent 循环（docs/bridge-contract.md §9 替换面）
 // ---------------------------------------------------------------------------
 // runTurn：user 消息入历史 → 循环调用 api.streamMessages：
 //   - 文本/思考块 → wire.assistant 流式转发

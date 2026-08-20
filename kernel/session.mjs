@@ -1,4 +1,4 @@
-// 会话持久化（docs/bridge-contract.md §7/§8：transcript 为权威源 + --resume 恢复）
+// YFW-turbo 会话持久化（docs/bridge-contract.md §7/§8：transcript 为权威源 + --resume 恢复）
 // ---------------------------------------------------------------------------
 // transcript 文件位置与 server/transcript.mjs 的约定一致（跨层契约，GUI 直接
 // 经 bridge /transcript/load 读取）：

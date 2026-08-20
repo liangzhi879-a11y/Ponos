@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// 净室内核入口（docs/bridge-contract.md §2 spawn 契约 + §3/§4 wire 语义）
+// YFW-turbo 内核入口（docs/bridge-contract.md §2 spawn 契约 + §3/§4 wire 语义）
 // ---------------------------------------------------------------------------
-// 由 bridge 经 bun 运行时以 stream-json 模式 spawn（findYFWorking 候选 #1：
-// <repo>/kernel/cli.mjs），也可直接 node kernel/cli.mjs 运行/测试。
+// 净室重建的原创内核（代号 YFW-turbo），由 bridge 经 bun 运行时以 stream-json
+// 模式 spawn（findYFWorking 候选 #1：<repo>/kernel/cli.mjs），也可直接
+// node kernel/cli.mjs 运行/测试。
 // 职责：
 //   - 解析契约参数（--print --output-format stream-json --input-format
 //     stream-json --verbose --dangerously-skip-permissions
@@ -27,7 +28,7 @@ const REQUIRED_FORMAT = 'stream-json'
 
 function usage() {
   console.error(
-    'usage: kernel/cli.mjs --print --output-format stream-json --input-format stream-json ' +
+    'YFW-turbo kernel: --print --output-format stream-json --input-format stream-json ' +
     '[--verbose] [--dangerously-skip-permissions] [--permission-prompt-tool stdio] ' +
     '[--disallowedTools <list>] [--resume <id>] [--append-system-prompt-file <file>] ' +
     '[--model <m>] [--add-dir <dir>]'
@@ -113,8 +114,9 @@ export function main(argv) {
   })
   // system(init)：spawn 即发。bridge /test-provider 判定 CLI 加载成功并读取
   // model/tools；GUI 从 session_id 绑定会话（useYFWCLI.ts handleMessage）。
+  // name 字段标识净室引擎代号（诊断用，GUI 不依赖）。
   const model = args.model || process.env.ANTHROPIC_MODEL || ''
-  wire.system('init', { model, tools: engine.toolNames, session_id: sessionId })
+  wire.system('init', { model, tools: engine.toolNames, session_id: sessionId, name: 'YFW-turbo' })
   // --resume：从 transcript 恢复历史（同文件即 GUI 读取的权威源）
   if (args.resume) {
     const entries = store.load()
