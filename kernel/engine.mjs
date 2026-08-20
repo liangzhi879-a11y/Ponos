@@ -28,7 +28,7 @@ function addUsage(acc, u = {}) {
   return out
 }
 
-export function createEngine({ opts = {}, wire, session, compactor }) {
+export function createEngine({ opts = {}, wire, session, compactor, health }) {
   const signal = { aborted: false }
   const model = opts.model || process.env.ANTHROPIC_MODEL || ''
   const maxTokens = Math.max(1, Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || 64000))
@@ -174,6 +174,7 @@ export function createEngine({ opts = {}, wire, session, compactor }) {
       const durationMs = Date.now() - t0
       // turnStats 每轮尾部产出（health/result/stats 共用）
       turnStats.push({ usage, durationMs, model: turnModel, ts: new Date().toISOString(), compactCount: session ? session.compactCount() : 0 })
+      health?.record(turnStats[turnStats.length - 1])
       // result 事件由 engine 发出（含 duration_ms；cli 不再重复 emit）
       wire.result(usage, { duration_ms: durationMs })
       return { usage, model: turnModel, text, durationMs }
