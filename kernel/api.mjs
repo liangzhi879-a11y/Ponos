@@ -144,11 +144,17 @@ async function* mockStream({ messages, signal }) {
       throw new Error('context_window_exceeded: 请求超出模型上下文窗口')
     }
   }
-  // 工具请求回合：[mock:tool] 触发 Bash tool_use（rm -rf 高危 → 审批挂起）
+  // 工具请求回合：[mock:tool] 触发 Bash tool_use（rm -rf 高危 → 审批挂起）。
+  // YFW_MOCK_TOOLS=N 时一次返回 N 个 tool_use（多工具轮合并回归用）
   if (lastText.includes('[mock:tool]')) {
     if (signal?.aborted) throw abortError()
     await sleep(MOCK_SLEEP_MS)
-    yield { type: 'tool_use', id: 'tool_use_mock_1', name: 'Bash', input: { command: 'rm -rf /tmp/yfw-mock-target' } }
+    const n = Math.max(1, Number(process.env.YFW_MOCK_TOOLS || 1))
+    for (let i = 1; i <= n; i++) {
+      // 第 1 个工具保留 rm -rf 高危命令（审批测试依赖 can_use_tool 触发）；多工具模式后续用安全 echo
+      const command = i === 1 ? 'rm -rf /tmp/yfw-mock-target' : `echo mock-tool-${i}`
+      yield { type: 'tool_use', id: `tool_use_mock_${i}`, name: 'Bash', input: { command } }
+    }
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }

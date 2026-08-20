@@ -144,12 +144,17 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       pushMemory({ role: 'assistant', content: assistantBlocks })
       // 中间 assistant 条目落盘（工具调用轮）：不带 usage（M1，usage 只写轮次最终条目）
       if (session) lastAssistantEntry = session.appendAssistant(assistantBlocks, { model })
-      // 逐个执行工具，结果回填为 user(tool_result) 消息（时序：tool_use → tool_result）
+      // 逐个执行工具。Anthropic API 要求同一 assistant 的多个 tool_use 的
+      // tool_result 必须合并进紧随其后的同一条 user 消息（拆多条会 400
+      // "tool_use without tool_result immediately after"）——先收集再一次性落盘。
+      const toolResults = []
       for (const b of blocks) {
         const result = await executeToolUse(b)
-        const toolResultMsg = { role: 'user', content: [{ type: 'tool_result', tool_use_id: b.id, content: result.content, is_error: result.isError }] }
-        pushMemory(toolResultMsg)
-        if (session) session.appendToolResult({ toolUseId: b.id, content: result.content, isError: result.isError })
+        toolResults.push({ tool_use_id: b.id, content: result.content, is_error: result.isError })
+      }
+      if (toolResults.length) {
+        pushMemory({ role: 'user', content: toolResults })
+        if (session) session.appendToolResults(toolResults)
       }
       // 继续下一轮 API 调用（模型看到 tool_result 后产出新回复）
       textBuf = ''

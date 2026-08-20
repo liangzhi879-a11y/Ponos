@@ -105,6 +105,37 @@ test('M1 E2E：工具轮后 transcript 聚合 == result.usage（usage 只写最�
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('多工具轮：同一 assistant 的多个 tool_use 的 tool_result 合并为一条 user 消息', async () => {
+  const { dir, session } = setup()
+  try {
+    process.env.YFW_MOCK_API = '1'
+    process.env.YFW_MOCK_TOOLS = '2'
+    let engine
+    const wire = {
+      assistant: () => {},
+      result: () => {},
+      controlRequest: (req) => queueMicrotask(() => engine?.resolveApproval(req.toolUseId, { behavior: 'allow' })),
+      summary: () => {},
+      health: () => {},
+    }
+    engine = createEngine({ opts: { model: 'm', addDirs: [dir], skipPermissions: true }, wire, session })
+    await engine.runTurn({ content: '[mock:tool]' })
+    const msgs = session.deriveMessages()
+    // 找到含 2 个 tool_use 的 assistant 消息，其后必须恰好一条 user 消息且含 2 个 tool_result
+    const asstIdx = msgs.findIndex((m) => Array.isArray(m.content) && m.content.filter((b) => b.type === 'tool_use').length === 2)
+    assert.ok(asstIdx >= 0, '存在含 2 个 tool_use 的 assistant 消息')
+    const next = msgs[asstIdx + 1]
+    assert.equal(next.role, 'user')
+    assert.equal(next.content.filter((b) => b.type === 'tool_result').length, 2, 'tool_result 合并为同一条 user 消息')
+    // tool_use_id 一一对应且顺序一致
+    const useIds = msgs[asstIdx].content.filter((b) => b.type === 'tool_use').map((b) => b.id)
+    const resultIds = next.content.map((b) => b.tool_use_id)
+    assert.deepEqual(resultIds, useIds)
+    delete process.env.YFW_MOCK_API
+    delete process.env.YFW_MOCK_TOOLS
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('turnStats 记录器：每轮一条，含 usage/durationMs/model/ts', async () => {
   const { dir, session } = setup()
   try {

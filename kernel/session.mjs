@@ -151,6 +151,24 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
         message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: String(content ?? ''), is_error: Boolean(isError) }] },
       }
     },
+    // 批量 tool_result：合并进同一条 user 消息（Anthropic API 要求同一 assistant
+    // 的多个 tool_use 的 tool_result 紧随其后且在同一条消息内）
+    toolResultsEntry(toolResults) {
+      return {
+        type: 'user',
+        id: randomUUID(),
+        timestamp: new Date().toISOString(),
+        message: {
+          role: 'user',
+          content: (toolResults || []).map((r) => ({
+            type: 'tool_result',
+            tool_use_id: r.tool_use_id,
+            content: String(r.content ?? ''),
+            is_error: Boolean(r.is_error),
+          })),
+        },
+      }
+    },
     compactionStartEntry(coveredSeqs) {
       return {
         type: 'assistant', id: randomUUID(), timestamp: new Date().toISOString(),
@@ -177,6 +195,10 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
     },
     appendToolResult({ toolUseId, content, isError }) {
       const entry = this.toolResultEntry({ toolUseId, content, isError })
+      return append(baseEntry('user', entry.message, {}))
+    },
+    appendToolResults(toolResults) {
+      const entry = this.toolResultsEntry(toolResults)
       return append(baseEntry('user', entry.message, {}))
     },
     // 已落盘条目的 usage 后挂（M1 空文本收尾轮专用：把本轮总 usage 挂到最后一条
