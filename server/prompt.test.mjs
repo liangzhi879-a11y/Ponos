@@ -9,13 +9,13 @@ function tmpDir() {
   return mkdtempSync(join(tmpdir(), 'yfw-prompt-'))
 }
 
-test('buildBaseSystemPrompt：含工具纪律与回复规范，无身份声明', () => {
+test('buildBaseSystemPrompt：含 YFWorking 身份 + 工具纪律与回复规范', () => {
   const p = buildBaseSystemPrompt({ toolNames: ['Bash', 'Read'] })
+  assert.match(p, /YFWorking/, '基础提示词应含 YFWorking 身份')
   assert.match(p, /工具纪律/)
   assert.match(p, /回复规范/)
   assert.match(p, /Bash/)
   assert.match(p, /可用工具：Bash, Read/)
-  assert.ok(!/YFWorking|远方工作台/.test(p), '基础提示词不应含身份声明（身份由 GUI 层注入）')
 })
 
 test('discoverAgentsMd：cwd 向上至 git root 发现 AGENTS.md，含 addDirs 根目录', () => {
