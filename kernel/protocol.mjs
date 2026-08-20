@@ -48,5 +48,11 @@ export function makeWire(stream = process.stdout) {
     bridgeRequest({ route, requestId, payload }) {
       writeLine(stream, { type: 'bridge_request', route, requestId, payload })
     },
+    health(data = {}) {
+      writeLine(stream, { type: 'yfw_health', ...data })
+    },
+    summary(text, compactCount) {
+      writeLine(stream, { type: 'yfw_summary', text: String(text ?? ''), compactCount })
+    },
   }
 }
