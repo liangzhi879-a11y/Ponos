@@ -23,6 +23,9 @@ import { join } from 'node:path'
 import { createEngine } from './engine.mjs'
 import { makeWire } from './protocol.mjs'
 import { createSessionStore, newSessionId } from './session.mjs'
+import { createHealth } from './health.mjs'
+import { createCompactor } from './compact.mjs'
+import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
 
 const REQUIRED_FORMAT = 'stream-json'
 
@@ -101,6 +104,23 @@ export async function main(argv) {
   const configDir = process.env.CLAUDE_CONFIG_DIR || process.env.YFWORKING_HOME || join(homedir(), '.yfworking')
   const store = createSessionStore({ configDir, cwd: args.addDirs[0] || '', sessionId })
 
+  // 生产链路一次接齐：context（token 启发式）+ compactor（两阶段压缩）+ health（健康监控）。
+  // compactor 的 signal 传 undefined——cancel 不中断进行中的压缩摘要调用为已知限制
+  // （deferred minor，勿改）。
+  const model = args.model || process.env.ANTHROPIC_MODEL || ''
+  const maxTokens = Math.max(1, Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || 64000))
+  const contextWindow = contextWindowFor(model)
+  const context = {
+    window: contextWindow,
+    thresholdRatio: 0.8,
+    retainRatio: 0.16,
+    estimate: ({ system, messages }) => estimateRequest({ system, messages }),
+    estimateMessage,
+    estimateHistory,
+  }
+  const compactor = createCompactor({ session: store, context, model, maxTokens, wire, signal: undefined, env: process.env })
+  const health = createHealth({ wire, model, contextWindow, env: process.env })
+
   const engine = createEngine({
     opts: {
       model: args.model,
@@ -112,11 +132,12 @@ export async function main(argv) {
     },
     wire,
     session: store,
+    health,
+    compactor,
   })
   // system(init)：spawn 即发。bridge /test-provider 判定 CLI 加载成功并读取
   // model/tools；GUI 从 session_id 绑定会话（useYFWCLI.ts handleMessage）。
   // name 字段标识净室引擎代号（诊断用，GUI 不依赖）。
-  const model = args.model || process.env.ANTHROPIC_MODEL || ''
   wire.system('init', { model, tools: engine.toolNames, session_id: sessionId, name: 'YFW-turbo' })
   // --resume：从 transcript 恢复（load 为 async 流式；同文件即 GUI 读取的权威源）。
   // 历史由 session.deriveMessages() 派生，engine 无需 seedHistory（seedHistory 已随
