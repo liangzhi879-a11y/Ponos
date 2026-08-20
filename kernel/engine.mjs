@@ -34,7 +34,13 @@ function hasUsage(u = {}) {
 }
 
 export function createEngine({ opts = {}, wire, session, compactor, health }) {
-  const signal = { aborted: false }
+  // signal 是轮次级取消标志（aborted 每轮由 runTurn 重置）；rawSignal 暴露真正
+  // 的 AbortSignal，供 api.mjs 中断底层 fetch（undici 要求 AbortSignal 实例）
+  let abortController = new AbortController()
+  const signal = {
+    aborted: false,
+    get rawSignal() { return abortController.signal },
+  }
   const model = opts.model || process.env.ANTHROPIC_MODEL || ''
   const maxTokens = Math.max(1, Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || 64000))
   const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: opts.addDirs, skipPermissions: opts.skipPermissions })
@@ -179,7 +185,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     signal,
     toolNames: tools.toolNames,
     toolSchemas: () => tools.toolSchemas(),
-    abort() { signal.aborted = true },
+    abort() { signal.aborted = true; abortController.abort() },
     seedCompactCount(n) { /* session 已从日志恢复 compactCount；兼容保留 */ },
     // cli 的 control_response 路由：解除对应 tool_use 的审批挂起
     resolveApproval(toolUseId, inner) {
@@ -193,6 +199,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     async runTurn({ content, msg }) {
       // 新轮次重置取消标志：abort() 只影响发出时正在进行的轮次
       signal.aborted = false
+      abortController = new AbortController()
       const t0 = Date.now()
       if (session) session.appendUser(String(content ?? ''))
       else pushMemory({ role: 'user', content: String(content ?? '') })

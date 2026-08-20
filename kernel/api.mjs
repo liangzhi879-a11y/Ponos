@@ -206,9 +206,17 @@ async function* mockStream({ messages, signal }) {
   yield { type: 'usage', usage: MOCK_USAGE }
 }
 
+// undici fetch 要求 signal 为 AbortSignal 实例。engine 的轮次级 signal 是自定义
+// 对象（rawSignal getter 暴露真 AbortSignal）；其余调用方（mock/测试）无 rawSignal
+// 时兜底：AbortSignal 直传，普通对象则不给 fetch（由调用方 chunk 循环检查中止）。
+export function toAbortSignal(s) {
+  if (s?.rawSignal) return s.rawSignal
+  return s instanceof AbortSignal ? s : undefined
+}
+
 // 双协议流：统一产出归一化 chunk。protocol 由 env 检测（engine 无感）。
 export async function* protocolStream({ protocol, url, body, headers, signal }) {
-  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal })
+  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: toAbortSignal(signal) })
   if (!res.ok || !res.body) {
     const detail = await res.text().catch(() => '')
     throw new Error(`内核：API 请求失败 ${res.status} ${detail.slice(0, 300)}`)
