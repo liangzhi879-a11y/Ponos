@@ -621,15 +621,8 @@ function buildChildEnv() {
   } else if (provider) {
     console.warn('[bridge] provider', provider.id, 'missing apiBaseUrl or authToken — using CLI defaults')
   }
-  // OpenAI 兼容协议（provider.protocol === 'openai'）：注入 OPENAI_* env（双协议前置项）
-  if (provider && provider.protocol === 'openai' && provider.apiBaseUrl && provider.authToken) {
-    env.OPENAI_BASE_URL = provider.apiBaseUrl
-    env.OPENAI_API_KEY = provider.authToken
-    const model = provider.primaryModel || (provider.models && provider.models[0]) || ''
-    if (model) env.OPENAI_MODEL = model
-    if (provider.contextWindow) env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(provider.contextWindow)
-    console.log('[bridge] openai-compatible provider:', provider.id, '| model:', model, '| baseUrl:', provider.apiBaseUrl)
-  }
+  // 注：OpenAI 兼容协议注入已删除（2026-08-20 实测 deepseek OpenAI 端点带 tools 时
+  // 高概率 thinking-only 空回复，YFW 统一走 Anthropic 兼容端点）。
   // 内核枚举 $YFW_HOME/agents/*.md 依赖 ripgrep（vendor/ripgrep/*/rg.exe）。
   // 早期发布包未携带该二进制导致静默失败（ENOENT→空列表）——当时强制走原生
   // Node 文件搜索兜底。现在发布包与 dev 构建均已随带 rg.exe，原生搜索反而

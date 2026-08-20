@@ -58,7 +58,7 @@ test('bridge /transcript/stats：totals.cost_usd > 0 且等于 byModel 各桶 co
   writeFileSync(join(cfgDir, 'config.json'), JSON.stringify({
     activeProvider: 'test-provider',
     providers: [{
-      id: 'test-provider', protocol: 'openai',
+      id: 'test-provider', protocol: 'anthropic',
       pricing: {
         'deepseek-v4-flash': { input_per_mtok: 0.1, output_per_mtok: 0.2 },
         'deepseek-v4-pro': { input_per_mtok: 0.5, output_per_mtok: 1 },
