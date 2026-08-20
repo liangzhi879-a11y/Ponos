@@ -198,7 +198,7 @@ async function* mockStream({ messages, signal }) {
 }
 
 // 双协议流：统一产出归一化 chunk。protocol 由 env 检测（engine 无感）。
-async function* protocolStream({ protocol, url, body, headers, signal }) {
+export async function* protocolStream({ protocol, url, body, headers, signal }) {
   const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal })
   if (!res.ok || !res.body) {
     const detail = await res.text().catch(() => '')
@@ -207,6 +207,7 @@ async function* protocolStream({ protocol, url, body, headers, signal }) {
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buf = ''
+  let usagePushed = false
   const parser = protocol === 'openai' ? createOpenAIParser() : createAnthropicParser()
   try {
     while (true) {
@@ -223,11 +224,18 @@ async function* protocolStream({ protocol, url, body, headers, signal }) {
         if (!payload || payload === '[DONE]') continue
         let ev
         try { ev = JSON.parse(payload) } catch { continue }
-        for (const c of parser.feed(ev)) yield c
+        for (const c of parser.feed(ev)) {
+          if (c.type === 'usage') usagePushed = true
+          yield c
+        }
       }
     }
-    for (const c of parser.finish()) yield c
-    yield { type: 'usage', usage: parser.usage() }
+    for (const c of parser.finish()) {
+      if (c.type === 'usage') usagePushed = true
+      yield c
+    }
+    // 每流一个终态 usage：解析器已 push（message_delta / OpenAI 末尾 usage）则不再兜底
+    if (!usagePushed) yield { type: 'usage', usage: parser.usage() }
   } finally {
     try { reader.releaseLock() } catch {}
   }
