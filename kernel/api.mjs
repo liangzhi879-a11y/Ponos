@@ -27,6 +27,115 @@ function* segmentText(buffer) {
   }
 }
 
+// 协议检测：OPENAI env 优先（可并存时走 OpenAI），否则 Anthropic；都没有返回 null
+export function detectProtocol(env = process.env) {
+  if (env.OPENAI_BASE_URL && env.OPENAI_API_KEY) return 'openai'
+  if (env.ANTHROPIC_BASE_URL) return 'anthropic'
+  return null
+}
+
+// usage 归一化：兼容 anthropic/openai 字段名；扩展 cache_read/cache_creation（deepseek 系）
+function normalizeUsage(u = {}) {
+  const cacheRead =
+    u.cache_read_input_tokens ??
+    u.prompt_tokens_details?.cached_tokens ??
+    0
+  return {
+    input_tokens: u.input_tokens ?? u.prompt_tokens ?? 0,
+    output_tokens: u.output_tokens ?? u.completion_tokens ?? 0,
+    cache_read_input_tokens: cacheRead ?? 0,
+    cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
+  }
+}
+
+// Anthropic Messages 事件流纯解析器（闭包状态：tool 累积/textBuf/usage）
+export function createAnthropicParser() {
+  let tool = null // { id, name, inputJson }
+  let textBuf = ''
+  let usage = { input_tokens: 0, output_tokens: 0 }
+  return {
+    feed(payload) {
+      const out = []
+      const dt = payload.delta
+      if (payload.type === 'content_block_start' && payload.content_block?.type === 'tool_use') {
+        tool = { id: payload.content_block.id, name: payload.content_block.name, inputJson: '' }
+      } else if (payload.type === 'content_block_delta' && dt) {
+        if (dt.type === 'text_delta' && dt.text) {
+          textBuf += dt.text
+          for (const seg of segmentText(textBuf)) { textBuf = ''; out.push(seg) }
+        } else if (dt.type === 'thinking_delta' && dt.thinking) {
+          out.push({ type: 'thinking', text: dt.thinking })
+        } else if (dt.type === 'input_json_delta' && tool && dt.partial_json) {
+          tool.inputJson += dt.partial_json
+        }
+      } else if (payload.type === 'content_block_stop' && tool) {
+        let input = {}
+        try { input = tool.inputJson ? JSON.parse(tool.inputJson) : {} } catch {}
+        out.push({ type: 'tool_use', id: tool.id, name: tool.name, input })
+        tool = null
+      } else if (payload.type === 'message_start' && payload.message?.usage) {
+        usage = normalizeUsage(payload.message.usage)
+      } else if (payload.type === 'message_delta' && payload.usage) {
+        usage = normalizeUsage(payload.usage)
+        out.push({ type: 'usage', usage })
+      }
+      return out
+    },
+    finish() {
+      const out = []
+      if (textBuf.trim()) out.push({ type: 'text', text: textBuf })
+      textBuf = ''
+      return out
+    },
+    usage() { return usage },
+  }
+}
+
+// OpenAI Chat Completions 事件流纯解析器（choices[].delta；deepseek 系 reasoning_content）
+export function createOpenAIParser() {
+  let tool = null // { index, id, name, inputJson }
+  let textBuf = ''
+  let usage = { input_tokens: 0, output_tokens: 0 }
+  return {
+    feed(payload) {
+      const out = []
+      if (payload.usage) {
+        usage = normalizeUsage(payload.usage)
+        out.push({ type: 'usage', usage })
+        return out
+      }
+      const choice = payload.choices?.[0] ?? {}
+      const delta = choice.delta ?? {}
+      if (delta.reasoning_content) out.push({ type: 'thinking', text: delta.reasoning_content })
+      if (delta.content) {
+        textBuf += delta.content
+        for (const seg of segmentText(textBuf)) { textBuf = ''; out.push(seg) }
+      }
+      if (Array.isArray(delta.tool_calls)) {
+        for (const tc of delta.tool_calls) {
+          if (tc.id) tool = { index: tc.index ?? 0, id: tc.id, name: tc.function?.name ?? '', inputJson: '' }
+          if (tool && tc.function?.name) tool.name = tc.function.name
+          if (tool && tc.function?.arguments) tool.inputJson += tc.function.arguments
+        }
+      }
+      if (choice.finish_reason === 'tool_calls' && tool) {
+        let input = {}
+        try { input = tool.inputJson ? JSON.parse(tool.inputJson) : {} } catch {}
+        out.push({ type: 'tool_use', id: tool.id, name: tool.name, input })
+        tool = null
+      }
+      return out
+    },
+    finish() {
+      const out = []
+      if (textBuf.trim()) out.push({ type: 'text', text: textBuf })
+      textBuf = ''
+      return out
+    },
+    usage() { return usage },
+  }
+}
+
 const MOCK_USAGE = { input_tokens: 10, output_tokens: 20 }
 
 // 模拟流式文本：切 3 段，段间短暂停顿使 cancel 可中断
@@ -72,21 +181,9 @@ async function* mockStream({ messages, signal }) {
   yield { type: 'usage', usage: MOCK_USAGE }
 }
 
-// 真实 API 流：fetch SSE 解析（Anthropic Messages 事件形状）
-async function* remoteStream({ model, body, signal }) {
-  const base = (process.env.ANTHROPIC_BASE_URL || '').replace(/\/+$/, '')
-  const token = process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || ''
-  if (!base || !token) throw new Error('内核：ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 未配置')
-  const res = await fetch(base + '/v1/messages', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': token,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify(body),
-    signal,
-  })
+// 双协议流：统一产出归一化 chunk。protocol 由 env 检测（engine 无感）。
+async function* protocolStream({ protocol, url, body, headers, signal }) {
+  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal })
   if (!res.ok || !res.body) {
     const detail = await res.text().catch(() => '')
     throw new Error(`内核：API 请求失败 ${res.status} ${detail.slice(0, 300)}`)
@@ -94,10 +191,7 @@ async function* remoteStream({ model, body, signal }) {
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buf = ''
-  let textBuf = ''
-  let usage = {}
-  // tool_use 累积状态（content_block_start → input_json_delta → stop）
-  let tool = null // { index, id, name, inputJson }
+  const parser = protocol === 'openai' ? createOpenAIParser() : createAnthropicParser()
   try {
     while (true) {
       const { done, value } = await reader.read()
@@ -113,52 +207,73 @@ async function* remoteStream({ model, body, signal }) {
         if (!payload || payload === '[DONE]') continue
         let ev
         try { ev = JSON.parse(payload) } catch { continue }
-        const dt = ev.delta
-        if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use') {
-          tool = { index: ev.index, id: ev.content_block.id, name: ev.content_block.name, inputJson: '' }
-        } else if (ev.type === 'content_block_delta' && dt) {
-          if (dt.type === 'text_delta' && dt.text) {
-            textBuf += dt.text
-            for (const seg of segmentText(textBuf)) { textBuf = ''; yield seg }
-          } else if (dt.type === 'thinking_delta' && dt.thinking) {
-            yield { type: 'thinking', text: dt.thinking }
-          } else if (dt.type === 'input_json_delta' && tool && dt.partial_json) {
-            tool.inputJson += dt.partial_json
-          }
-        } else if (ev.type === 'content_block_stop' && tool) {
-          let input = {}
-          try { input = tool.inputJson ? JSON.parse(tool.inputJson) : {} } catch {}
-          yield { type: 'tool_use', id: tool.id, name: tool.name, input }
-          tool = null
-        } else if (ev.type === 'message_start' && ev.message?.usage) {
-          usage = { input_tokens: ev.message.usage.input_tokens ?? 0, output_tokens: ev.message.usage.output_tokens ?? 0 }
-        } else if (ev.type === 'message_delta' && ev.usage) {
-          usage = { input_tokens: usage.input_tokens ?? 0, output_tokens: ev.usage.output_tokens ?? 0 }
-        }
+        for (const c of parser.feed(ev)) yield c
       }
     }
-    if (textBuf.trim()) yield { type: 'text', text: textBuf }
+    for (const c of parser.finish()) yield c
+    yield { type: 'usage', usage: parser.usage() }
   } finally {
     try { reader.releaseLock() } catch {}
   }
-  yield { type: 'usage', usage }
 }
 
-// 消息流入口：拼接 body（system 抽顶层），按 mock/真实 API 分流
-export async function* streamMessages({ model, messages, maxTokens, signal }) {
-  const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n')
-  const rest = messages.filter((m) => m.role !== 'system')
-
-  if (process.env.YFW_MOCK_API === '1') {
-    yield* mockStream({ messages, signal })
-    return
-  }
+// Anthropic 协议流：tools 中立形状 → tools[]；system 抽顶层
+async function* anthropicStream({ model, messages, system, tools, maxTokens, signal }) {
+  const base = (process.env.ANTHROPIC_BASE_URL || '').replace(/\/+$/, '')
+  const token = process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || ''
+  if (!base || !token) throw new Error('内核：ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 未配置')
   const body = {
     model,
     max_tokens: maxTokens,
     ...(system ? { system } : {}),
-    messages: rest,
+    messages,
     stream: true,
+    ...(tools.length
+      ? { tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema })) }
+      : {}),
   }
-  yield* remoteStream({ model, body, signal })
+  yield* protocolStream({
+    protocol: 'anthropic',
+    url: base + '/v1/messages',
+    body,
+    headers: { 'content-type': 'application/json', 'x-api-key': token, 'anthropic-version': '2023-06-01' },
+    signal,
+  })
+}
+
+// OpenAI 协议流：tools 中立形状 → function 形状；system 并入 messages 首位
+async function* openaiStream({ model, messages, system, tools, maxTokens, signal }) {
+  const base = (process.env.OPENAI_BASE_URL || '').replace(/\/+$/, '')
+  const token = process.env.OPENAI_API_KEY || ''
+  if (!base || !token) throw new Error('内核：OPENAI_BASE_URL / OPENAI_API_KEY 未配置')
+  const body = {
+    model,
+    max_tokens: maxTokens,
+    stream: true,
+    messages: [...(system ? [{ role: 'system', content: system }] : []), ...messages],
+    ...(tools.length
+      ? { tools: tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } })) }
+      : {}),
+  }
+  yield* protocolStream({
+    protocol: 'openai',
+    url: base + '/v1/chat/completions',
+    body,
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+    signal,
+  })
+}
+
+// 消息流入口：mock / 真实双协议分流。tools = 中立 [{name, description, input_schema}]
+export async function* streamMessages({ model, messages, maxTokens, signal, tools = [] }) {
+  const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n')
+  const rest = messages.filter((m) => m.role !== 'system')
+  if (process.env.YFW_MOCK_API === '1') {
+    yield* mockStream({ messages, signal })
+    return
+  }
+  const protocol = detectProtocol()
+  if (!protocol) throw new Error('内核：未检测到可用协议（需 ANTHROPIC_BASE_URL 或 OPENAI_BASE_URL+OPENAI_API_KEY）')
+  if (protocol === 'openai') yield* openaiStream({ model, messages: rest, system, tools, maxTokens, signal })
+  else yield* anthropicStream({ model, messages: rest, system, tools, maxTokens, signal })
 }
