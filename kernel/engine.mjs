@@ -28,7 +28,7 @@ function addUsage(acc, u = {}) {
   return out
 }
 
-export function createEngine({ opts = {}, wire, session }) {
+export function createEngine({ opts = {}, wire, session, compactor }) {
   const signal = { aborted: false }
   const model = opts.model || process.env.ANTHROPIC_MODEL || ''
   const maxTokens = Math.max(1, Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || 64000))
@@ -51,34 +51,58 @@ export function createEngine({ opts = {}, wire, session }) {
   async function runTurnInternal({ content }) {
     let usage = {}
     let textBuf = ''
+    let overflowRetries = 0
+    const maxOverflowRetries = Number(process.env.CLAUDE_CODE_MAX_OVERFLOW_RETRIES || 3)
     // 请求消息 = system 前缀（api.mjs 抽顶层）+ 派生历史；session/memory 两模式一致
     const requestMessages = () => {
       const msgs = deriveHistory()
       return [{ role: 'system', content: systemPrompt }].filter((m) => m.content).concat(msgs)
     }
+    // pre-step 测压检查点：每轮请求前（工具结果/上轮产物已落日志之后）
+    async function preStep() {
+      if (!compactor || !session) return
+      const msgs = session.deriveMessages()
+      await compactor.maybeCompact({ system: systemPrompt || '', messages: msgs })
+    }
     for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
+      await preStep()
       const blocks = []
-      for await (const chunk of streamMessages({
-        model,
-        messages: requestMessages(),
-        maxTokens,
-        signal,
-        tools: tools.toolSchemas(),
-      })) {
-        if (signal.aborted) throw abortError()
-        if (chunk.type === 'text') {
-          textBuf += chunk.text
-          wire.assistant([{ type: 'text', text: chunk.text }])
-        } else if (chunk.type === 'thinking') {
-          wire.assistant([{ type: 'thinking', thinking: chunk.text }])
-        } else if (chunk.type === 'tool_use') {
-          blocks.push({ type: 'tool_use', id: chunk.id, name: chunk.name, input: chunk.input })
-          // 工具调用块随 assistant 事件转发 GUI（工具卡片展示）
-          wire.assistant([{ type: 'tool_use', id: chunk.id, name: chunk.name, input: chunk.input }])
-        } else if (chunk.type === 'usage') {
-          usage = addUsage(usage, chunk.usage)
+      let overflowed = false
+      try {
+        for await (const chunk of streamMessages({
+          model,
+          messages: requestMessages(),
+          maxTokens,
+          signal,
+          tools: tools.toolSchemas(),
+        })) {
+          if (signal.aborted) throw abortError()
+          if (chunk.type === 'text') {
+            textBuf += chunk.text
+            wire.assistant([{ type: 'text', text: chunk.text }])
+          } else if (chunk.type === 'thinking') {
+            wire.assistant([{ type: 'thinking', thinking: chunk.text }])
+          } else if (chunk.type === 'tool_use') {
+            blocks.push({ type: 'tool_use', id: chunk.id, name: chunk.name, input: chunk.input })
+            // 工具调用块随 assistant 事件转发 GUI（工具卡片展示）
+            wire.assistant([{ type: 'tool_use', id: chunk.id, name: chunk.name, input: chunk.input }])
+          } else if (chunk.type === 'usage') {
+            usage = addUsage(usage, chunk.usage)
+          }
+        }
+      } catch (err) {
+        // 溢出兜底：强制压缩 → 仅 replaceGeneration 前进（压缩真实落地）才重试同一请求
+        if (/context_window_exceeded/.test(err?.message || '') && compactor && session && overflowRetries < maxOverflowRetries) {
+          const genBefore = session.getSurface().replaceGeneration
+          await compactor.forceCompact({ system: systemPrompt, messages: session.deriveMessages() })
+          const genAfter = session.getSurface().replaceGeneration
+          if (genAfter > genBefore) { overflowRetries++; overflowed = true }
+          else return { usage, model, text: '', error: 'overflow-compact-failed' }
+        } else {
+          throw err
         }
       }
+      if (overflowed) continue // 压缩落地 → 重试同一轮（deriveHistory 已含摘要条目）
       if (blocks.length === 0) break
       // 该轮 assistant 历史：文本块 + tool_use 块（Anthropic API 要求）
       const assistantBlocks = [...(textBuf.trim() ? [{ type: 'text', text: textBuf }] : []), ...blocks]
