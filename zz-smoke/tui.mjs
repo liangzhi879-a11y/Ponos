@@ -12,13 +12,15 @@
 //   /cancel       取消当前轮次
 //   /help         显示命令
 //   /banner       重显艺术字
+//   /version      显示 dev 版本号
 //   /quit         退出
 //   审批时：allow / deny（或 y / n / a / d）
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { YFW_VERSION } from '../version.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const DEFAULT_BANNER = join(ROOT, 'zz-smoke', 'yfw-banner.txt')
@@ -41,15 +43,21 @@ function parseArgs(argv) {
   return out
 }
 function usageText() {
-  return `YFW-turbo TUI
+  return `YFW-turbo TUI（${YFW_VERSION}）
 用法: node zz-smoke/tui.mjs [--resume <sid>] [--mock] [--dir <path>] [--banner <file>] [--no-banner]
-命令: /cancel /help /banner /quit
+快捷指令（支持 /yfw <cmd> 前缀，别名 yfwturbo）:
+  /cancel        取消当前轮次          /stats  会话统计（轮次/用量）
+  /clear         清屏并重显 banner     /tools  工具列表
+  /help          显示本帮助            /session 会话 ID
+  /model         当前模型              /banner 重显艺术字
+  /version       dev 版本号            /quit  退出
 审批: allow / deny（或 y / n / a / d）`
 }
 
 // ---------- 艺术字缩放（亮度重采样，适配终端宽度） ----------
-const CHARS = [' ', '.', '`', '/', '=', 'O', '@'] // 亮度递增的字符斜坡
-const CHAR_BRIGHTNESS = { ' ': 0, '.': 0.16, '`': 0.3, ',': 0.16, '/': 0.5, '\\': 0.5, '^': 0.5, '[': 0.66, ']': 0.66, '=': 0.82, '-': 0.82, 'O': 0.92, '@': 1 }
+// 渐变块字符斜坡（无 @ = O 等符号）：空白 → ░ → ▒ → ▓ → 全块
+const CHARS = [' ', '░', '▒', '▓', '█']
+const CHAR_BRIGHTNESS = { ' ': 0, '.': 0.16, '`': 0.3, ',': 0.16, '/': 0.5, '\\': 0.5, '^': 0.5, '[': 0.66, ']': 0.66, '=': 0.82, '-': 0.82, 'O': 0.92, '@': 1, '░': 0.25, '▒': 0.5, '▓': 0.75, '█': 1 }
 
 function brightnessOf(ch) {
   return CHAR_BRIGHTNESS[ch] ?? 0.5
@@ -65,6 +73,15 @@ function loadBannerLines(file) {
   const raw = readFileSync(file, 'utf-8').split('\n')
   const lines = raw.map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim().length > 0)
   return lines.length ? lines : null
+}
+
+// 行缓冲切分（纯函数，便于测试）：从缓冲+新块中取出"以 \n 结尾的完整行"，
+// 保留末尾不完整行。使流式输出多行内容（代码块/列表）正常分行而不逐 token 闪跳
+export function bufferChunk(buf, chunk) {
+  const combined = buf + chunk
+  const nl = combined.lastIndexOf('\n')
+  if (nl < 0) return { complete: '', rest: combined }
+  return { complete: combined.slice(0, nl + 1), rest: combined.slice(nl + 1) }
 }
 
 // 缩放到 targetW × targetH（亮度均值重采样）
@@ -95,12 +112,21 @@ export function scaleBanner(lines, targetW, targetH) {
 }
 
 // ---------- 终端颜色 ----------
+// 品牌色：YFW brand-500 #ff6a00（src/styles/themes.css）——真彩色 VT（conhost
+// 1709+ / Windows Terminal 支持）。键名沿用 cyan/green/yellow/magenta 以兼容
+// 现有调用点，语义映射为品牌橙系。
+const BRAND = '\x1b[38;2;255;106;0m'          // #ff6a00 品牌橙
+const BRAND_BRIGHT = '\x1b[38;2;251;146;60m'  // #fb923c brand-400（正文/强调）
 const COLORS = {
-  cyan: '\x1b[36m', green: '\x1b[32m', yellow: '\x1b[33m',
-  magenta: '\x1b[35m', dim: '\x1b[2m', red: '\x1b[31m', bold: '\x1b[1m', reset: '\x1b[0m',
+  cyan: BRAND,
+  green: BRAND_BRIGHT,
+  yellow: BRAND,
+  magenta: BRAND_BRIGHT,
+  dim: '\x1b[2m', red: '\x1b[31m', bold: '\x1b[1m', reset: '\x1b[0m',
 }
 let useColor = process.stdout.isTTY && !process.env.NO_COLOR
 
+function main() {
 // ---------- 主程序 ----------
 const args = parseArgs(process.argv.slice(2))
 if (args.mock) process.env.YFW_MOCK_API = '1'
@@ -139,36 +165,126 @@ const childRl = createInterface({ input: child.stdout })
 
 let pendingApproval = null // can_use_tool 挂起中：{ cr }
 let turnActive = false
-let streamBuf = '' // 当前流式文本缓冲
-let streamDirty = false // 流式行是否已在屏幕
+let toolSeq = 0 // 工具调用序号（卡片显示）
+let streamBuf = '' // 当前不完整流式行（无 \n 结尾）
+let streamDirty = false // 屏幕上是否存在未换行的流式半行
+let thinkingBuf = '' // 思考累积缓冲（逐 token 增量 → 静默累积，段末折叠）
+let thinkingDirty = false
+let turns = 0 // 已完成轮次
+let usageTotals = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+let initInfo = { model: '', tools: [] } // init 事件缓存（/tools /model 用）
 
+let lineWidth = 0 // 当前行已写可见宽度（重绘前擦除用）
+let thinkingHinted = false // 思考占位是否已显示（静默累积模式）
 function paint(text, color) {
   return useColor ? `${COLORS[color] ?? ''}${text}${COLORS.reset}` : text
 }
-// 输出事件行：先清当前输入行，打印，再重绘 prompt + 已输入内容
+// 艺术字行主题色化：浅块（░▒）用 brand-400 亮橙，实块（▓█）用 brand-500 主橙，
+// 空格不着色，形成品牌色渐变
+function paintBannerLine(line) {
+  if (!useColor) return line
+  let out = ''
+  for (const ch of line) {
+    if (ch === '░' || ch === '▒') out += BRAND_BRIGHT + ch + COLORS.reset
+    else if (ch === '▓' || ch === '█') out += BRAND + ch + COLORS.reset
+    else out += ch
+  }
+  return out
+}
+// 可见宽度：跳过 ANSI 序列，东亚宽字符按 2 计（擦除用，过估优于不足）
+function visWidth(str) {
+  const s = String(str)
+  let w = 0
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c === 0x1b) { while (i < s.length && s[i] !== 'm') i++; continue }
+    w += c >= 0x2E80 ? 2 : 1
+  }
+  return w
+}
+// 擦除当前行（\r + 空格 + \r，不依赖 ANSI 清行——cmd conhost 默认不解释
+// \x1b[2K，会导致流式重绘文本叠加）。宽度取当前行已写与输入行两者较大者，
+// 并封顶窗口列宽（超宽行在 conhost 会自动换行，\r 回到换行后行首导致擦除错位）。
+function clearLine() {
+  const cols = process.stdout.columns || 120
+  const inputW = (rl._prompt ? visWidth(rl._prompt) : 0) + (rl.line ? visWidth(rl.line) : 0)
+  const w = Math.min(Math.max(lineWidth, inputW), cols)
+  if (w) rl.output.write('\r' + ' '.repeat(w) + '\r')
+  lineWidth = 0
+}
+// 输出事件行：先清当前行，打印（\r\n 保证 conhost 换行），再重绘 prompt + 已输入
 // （非 TTY/管道场景直接输出，避免控制码乱入）
 function emitLine(text) {
-  if (!process.stdin.isTTY) { console.log(text); streamDirty = false; return }
+  if (!process.stdin.isTTY) { console.log(text); return }
   const cur = rl.line ?? ''
-  rl.output.write('\r\x1b[2K')
-  rl.output.write(text + '\n')
+  clearLine()
+  rl.output.write(text + '\r\n')
   if (rl._prompt) rl.output.write(rl._prompt + cur)
-  streamDirty = false
 }
-// 流式输出：增量追加到当前行（不换行），保持输入行下方
+// 流式文本输出：完整行直接落地（自然换行），当前半行擦除重绘
 function emitStream(chunk) {
   if (!process.stdin.isTTY) { streamBuf += chunk; streamDirty = true; return }
-  streamBuf += chunk
-  rl.output.write('\r\x1b[2K')
-  rl.output.write(paint(streamBuf, 'green'))
-  streamDirty = true
+  const { complete, rest } = bufferChunk(streamBuf, chunk)
+  streamBuf = rest
+  if (complete) {
+    clearLine()
+    rl.output.write(paint(complete, 'green'))
+    // complete 以 \n 结尾：光标已到下一行行首，当前行宽归零
+  }
+  if (streamBuf) {
+    clearLine()
+    // 半行预览截断到窗口宽度内（超宽会触发 conhost 自动换行 → \r 擦除错位）
+    const cols = process.stdout.columns || 120
+    const shown = visWidth(streamBuf) > cols - 4 ? streamBuf.slice(0, Math.max(8, cols - 6)) + '…' : streamBuf
+    rl.output.write(paint(shown, 'green'))
+    lineWidth = visWidth(shown)
+  }
 }
 function flushStream() {
-  if (streamDirty) {
-    emitLine(paint(streamBuf, 'green'))
+  if (process.stdin.isTTY) {
+    if (streamDirty) {
+      clearLine()
+      rl.output.write(paint(streamBuf, 'green') + '\r\n')
+    }
+  } else if (streamBuf) {
+    console.log(streamBuf)
   }
   streamBuf = ''
   streamDirty = false
+  lineWidth = 0
+}
+// 思考增量：静默累积，不逐 token 重绘（滚动重绘在窄窗口/非 VT 终端下
+// 极易叠加重复，成熟方案默认折叠思考）。首次出现显示静态占位，段末折叠输出。
+function emitThinking(chunk) {
+  thinkingBuf += chunk
+  if (!process.stdin.isTTY) { thinkingDirty = true; return }
+  if (!thinkingHinted) {
+    clearLine()
+    rl.output.write(paint('[思考中…]', 'dim'))
+    lineWidth = visWidth('[思考中…]')
+    thinkingHinted = true
+  }
+  thinkingDirty = true
+}
+// 思考段结束：折叠为一行（截断 + …），换行收尾
+function flushThinking() {
+  if (!thinkingBuf && !thinkingDirty) return
+  const text = thinkingBuf.replace(/\s+/g, ' ').trim()
+  if (process.stdin.isTTY) {
+    clearLine()
+    rl.output.write(paint('[思考] ' + (text.length > 200 ? text.slice(0, 200) + '…' : text), 'dim') + '\r\n')
+  } else if (text) {
+    console.log('[思考] ' + text)
+  }
+  thinkingBuf = ''
+  thinkingDirty = false
+  thinkingHinted = false
+  lineWidth = 0
+}
+// 统一收尾：思考 + 文本全部落地
+function flushAll() {
+  flushThinking()
+  flushStream()
 }
 
 function fmtBlocks(blocks) {
@@ -188,23 +304,25 @@ function handleEvent(ev) {
     case 'system':
       if (ev.subtype === 'init') {
         sessionId = ev.session_id
+        initInfo.model = ev.model || ''
+        initInfo.tools = ev.tools || []
         emitLine(paint(`[init] model=${ev.model} tools=${(ev.tools || []).join(',')} session=${ev.session_id}`, 'cyan'))
       }
       break
     case 'assistant': {
       const blocks = ev.message?.content ?? ev.blocks
       for (const b of blocks || []) {
-        if (b?.type === 'text') emitStream(b.text)
-        else if (b?.type === 'thinking') flushStream(), emitLine(paint(`[思考] ${b.thinking}`, 'dim'))
-        else if (b?.type === 'tool_use') flushStream(), emitLine(paint(`[工具] ${b.name}(${JSON.stringify(b.input)})`, 'yellow'))
-        else flushStream(), emitLine(`[assistant] ${JSON.stringify(b)}`)
+        if (b?.type === 'text') { flushThinking(); emitStream(b.text) }
+        else if (b?.type === 'thinking') emitThinking(b.thinking)
+        else if (b?.type === 'tool_use') { flushAll(); toolSeq++; emitLine(paint(`[工具 ${toolSeq}] ${b.name}(${JSON.stringify(b.input)})`, 'yellow')) }
+        else { flushAll(); emitLine(`[assistant] ${JSON.stringify(b)}`) }
       }
       break
     }
     case 'control_request': {
       const req = ev.request
       if (req?.subtype === 'can_use_tool') {
-        flushStream()
+        flushAll()
         emitLine(paint(`[审批] ${req.tool_name} 请求执行，理由：${req.decision_reason || req.reason || '-'}`, 'magenta'))
         emitLine(`        ${JSON.stringify(req.input)}`)
         emitLine(paint('        输入 allow / deny（或 y / n）', 'dim'))
@@ -215,8 +333,10 @@ function handleEvent(ev) {
       break
     }
     case 'result': {
-      flushStream()
+      flushAll()
       const u = ev.usage || {}
+      turns++
+      for (const k of Object.keys(usageTotals)) usageTotals[k] += u[k] ?? 0
       const ms = ev.duration_ms
       const usageStr = `in=${u.input_tokens ?? 0} out=${u.output_tokens ?? 0} cacheRead=${u.cache_read_input_tokens ?? 0} cacheWrite=${u.cache_creation_input_tokens ?? 0}`
       emitLine(paint(`[result] ${usageStr}${ms != null ? ` (${ms}ms)` : ''}`, 'dim'))
@@ -270,9 +390,11 @@ rl.on('line', (line) => {
     rl.prompt()
     return
   }
-  // 命令
-  if (text.startsWith('/')) {
-    const [cmd, ...rest] = text.split(/\s+/)
+  // 命令（支持 /yfw <cmd> 前缀与 yfwturbo 别名）
+  const cmdText = text.replace(/^\/yfw\s+/i, '/').replace(/^yfwturbo\s*/i, '').trim()
+  if (cmdText.startsWith('/') || /^yfwturbo/i.test(text)) {
+    const [cmd, ...rest] = cmdText.split(/\s+/)
+    if (!cmd) { emitLine(usageText()); rl.prompt(); return } // 裸 yfwturbo → 帮助菜单
     switch (cmd) {
       case '/cancel': {
         child.stdin.write(JSON.stringify({ type: 'control_request', request: { subtype: 'cancel' } }) + '\n')
@@ -280,6 +402,22 @@ rl.on('line', (line) => {
         break
       }
       case '/help': emitLine(usageText()); break
+      case '/yfw': case '/yfwturbo': emitLine(usageText()); break
+      case '/clear': {
+        // conhost 不解释 ANSI 清屏：退化为输出空行 + 重显 banner
+        const rows = process.stdout.rows || 40
+        rl.output.write('\r\n'.repeat(Math.max(5, rows)))
+        showBanner()
+        break
+      }
+      case '/stats': {
+        emitLine(paint(`[统计] 轮次=${turns}  in=${usageTotals.input_tokens} out=${usageTotals.output_tokens} cacheRead=${usageTotals.cache_read_input_tokens} cacheWrite=${usageTotals.cache_creation_input_tokens}`, 'cyan'))
+        break
+      }
+      case '/tools': emitLine(paint(`[工具] ${initInfo.tools.length ? initInfo.tools.join(', ') : '（尚未收到 init）'}`, 'cyan')); break
+      case '/session': emitLine(paint(`[会话] ${sessionId}`, 'cyan')); break
+      case '/model': emitLine(paint(`[模型] ${initInfo.model || MODEL}`, 'cyan')); break
+      case '/version': emitLine(paint(`[版本] ${YFW_VERSION}（${initInfo.model || MODEL}）`, 'cyan')); break
       case '/banner': showBanner(); break
       case '/quit': case '/exit': {
         rl.close()
@@ -292,7 +430,7 @@ rl.on('line', (line) => {
   }
   // 普通消息
   if (!text) { rl.prompt(); return }
-  flushStream()
+  flushAll()
   turnActive = true
   emitLine(paint(`[你] ${text}`, 'bold'))
   child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: text } }) + '\n')
@@ -310,9 +448,10 @@ function showBanner() {
   const targetH = Math.max(6, Math.min(24, Math.round((targetW * lines.length) / srcW)))
   const scaled = scaleBanner(lines, targetW, targetH)
   emitLine(paint('─'.repeat(Math.min(targetW, cols)), 'dim'))
-  for (const l of scaled) emitLine(l)
+  // 主题色渲染：密度渐变块按品牌双色（浅块 brand-400、实块 brand-500）逐字着色
+  for (const l of scaled) emitLine(paintBannerLine(l))
   emitLine(paint('─'.repeat(Math.min(targetW, cols)), 'dim'))
-  emitLine(paint(`YFW-turbo 交互终端${args.mock ? '（mock 模式）' : `（model: ${MODEL}）`}  session: ${sessionId}`, 'cyan'))
+  emitLine(paint(`YFWorking 交互终端 ${YFW_VERSION}${args.mock ? '（mock 模式）' : `（model: ${MODEL}）`}  session: ${sessionId}`, 'cyan'))
   emitLine(paint('输入消息开始对话；/help 查看命令', 'dim'))
 }
 showBanner()
@@ -343,3 +482,9 @@ rl.on('SIGINT', () => {
     rl.close()
   }
 })
+} // end main
+
+// 直接执行时跑主程序；被 import（测试）时不产生副作用
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main()
+}
