@@ -32,7 +32,7 @@
 - Consumes: 无（独立改造）
 - Produces: `createToolRegistry({ cwd, addDirs, skipPermissions })` 返回值新增方法 `toolSchemas()` → `[{ name, description, input_schema }]`（中立形状，协议映射在 api.mjs）；`run(toolUse, ctx)` 签名不变；`toolNames` 不变
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `server/tools-schema.test.mjs`：
 
@@ -70,12 +70,12 @@ test('各工具 input_schema 字段与 required 正确', () => {
 })
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `node --test server/tools-schema.test.mjs`
 Expected: FAIL —— `reg().toolSchemas is not a function`
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 在 `kernel/tools.mjs` 的 `createToolRegistry` 内，给三个工具补 `input_schema`，并在返回对象上新增 `toolSchemas()`：
 
@@ -138,17 +138,17 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions }) {
 }
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `node --test server/tools-schema.test.mjs`
 Expected: PASS（2 个测试）
 
-- [ ] **Step 5: 回归既有工具测试**
+- [x] **Step 5: 回归既有工具测试**
 
 Run: `node --test server/kernel-engine.test.mjs`
 Expected: PASS（tool+approval 闭环、highrisk 测试仍通过——run/toolNames 未变）
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add kernel/tools.mjs server/tools-schema.test.mjs
@@ -172,7 +172,7 @@ git commit -m "feat(kernel): tools registry 补 input_schema + toolSchemas()（�
   - `streamMessages({ model, messages, maxTokens, signal, tools })`（新增 `tools` 参数；chunk 形状不变）
   - usage 对象扩展：`{ input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens }`
 
-- [ ] **Step 1: 写失败测试（协议选择 + 解析器 + tools 注入 + cache usage）**
+- [x] **Step 1: 写失败测试（协议选择 + 解析器 + tools 注入 + cache usage）**
 
 `server/api-protocol.test.mjs`：
 
@@ -284,12 +284,12 @@ test('tools 注入：OpenAI 请求 body 为 function 形状且 system 并入 mes
 })
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `node --test server/api-protocol.test.mjs`
 Expected: FAIL —— `detectProtocol is not a function` / `createAnthropicParser is not a function` 等
 
-- [ ] **Step 3: 实现 detectProtocol + normalizeUsage + 纯解析器**
+- [x] **Step 3: 实现 detectProtocol + normalizeUsage + 纯解析器**
 
 在 `kernel/api.mjs` 顶部新增（`segmentText` 保留原样；新增导出）：
 
@@ -402,12 +402,12 @@ export function createOpenAIParser() {
 }
 ```
 
-- [ ] **Step 4: 运行确认通过（解析器部分）**
+- [x] **Step 4: 运行确认通过（解析器部分）**
 
 Run: `node --test server/api-protocol.test.mjs`
 Expected: 前 3 个测试 PASS；`tools 注入` 2 个测试仍 FAIL（remoteStream 未注入 tools / 无 openaiStream）
 
-- [ ] **Step 5: 重构 remoteStream 为双协议 + tools 注入**
+- [x] **Step 5: 重构 remoteStream 为双协议 + tools 注入**
 
 替换现有 `remoteStream` 与 `streamMessages` 尾部实现：
 
@@ -512,17 +512,17 @@ export async function* streamMessages({ model, messages, maxTokens, signal, tool
 
 同时删除旧的 `remoteStream` 函数体（被 `protocolStream` 取代）。
 
-- [ ] **Step 6: 运行确认全部通过**
+- [x] **Step 6: 运行确认全部通过**
 
 Run: `node --test server/api-protocol.test.mjs`
 Expected: PASS（5 个测试）
 
-- [ ] **Step 7: 回归 mock 路径**
+- [x] **Step 7: 回归 mock 路径**
 
 Run: `node --test server/kernel-engine.test.mjs server/kernel-contract.test.mjs`
 Expected: PASS（YFW_MOCK_API=1 分支未动，既有 wire 测试全绿）
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add kernel/api.mjs server/api-protocol.test.mjs
@@ -550,7 +550,7 @@ git commit -m "feat(kernel): 双协议适配（openai/anthropic）+ tools 注入
   - `createTokenLedger()` → `{ record(section, tokens), get(section), total(), toolResultShare() }`
   - `makeUsageAnchor()` → `{ estimate({ headKey, history }), record({ headKey, inputTokens }) }`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `server/context.test.mjs`：
 
@@ -626,12 +626,12 @@ test('usage 锚点：同 headKey 用基线+尾部增量，异 headKey 全量', (
 })
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `node --test server/context.test.mjs`
 Expected: FAIL —— 模块不存在 / 函数未定义
 
-- [ ] **Step 3: 实现 kernel/context.mjs**
+- [x] **Step 3: 实现 kernel/context.mjs**
 
 ```js
 // YFW-turbo 上下文管理（docs/superpowers/specs/2026-08-20-yfw-turbo-inner-core-design.md §5/§6.3）
@@ -763,12 +763,12 @@ export function makeUsageAnchor() {
 }
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `node --test server/context.test.mjs`
 Expected: PASS（5 个测试）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add kernel/context.mjs server/context.test.mjs
@@ -801,7 +801,7 @@ git commit -m "feat(kernel): context.mjs token 计价/窗口表/压力判定/tok
   - `entries`/`file` 只读访问
   - 既有 `userEntry`/`assistantEntry`/`sanitizeSegment`/`newSessionId` 保留
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `server/session-surface.test.mjs`：
 
@@ -907,12 +907,12 @@ test('窗口化恢复：maxEntries 超限截断到近窗口（保留尾部 + com
 })
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `node --test server/session-surface.test.mjs`
 Expected: FAIL —— `appendUser is not a function` / load 同步无 surface 返回等
 
-- [ ] **Step 3: 重写 kernel/session.mjs**
+- [x] **Step 3: 重写 kernel/session.mjs**
 
 保留 `MAX_SANITIZED_LENGTH`/`sanitizeSegment`/`newSessionId` 原样，重写 `createSessionStore`：
 
@@ -1127,12 +1127,12 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
 
 注意：`baseEntry` 内部已把 seq 追加进 nodes；`appendCompactionStart` 用裸 `append`（不进 nodes）；`appendCompactionSummary` 手动做 replace 语义。`load()` 的 async 包装避免 `async load(){ return load() }` 自引用命名冲突——上面实现里内部函数叫 `load`，返回对象里键是 `async load()`，`async load() { return load() }` 中的 `load` 引用的是内部函数，正确。
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `node --test server/session-surface.test.mjs`
 Expected: PASS（6 个测试）
 
-- [ ] **Step 5: cli.mjs 适配 async load（resume 块）**
+- [x] **Step 5: cli.mjs 适配 async load（resume 块）**
 
 `kernel/cli.mjs`：
 
@@ -1152,12 +1152,12 @@ export async function main(argv) {
 
 并将文件尾改为 `if (isMain) { main(process.argv.slice(2)).then((code) => { process.exitCode = code }) }`（main 变 async，Promise 落地 exitCode）。
 
-- [ ] **Step 6: 回归既有测试**
+- [x] **Step 6: 回归既有测试**
 
 Run: `node --test server/kernel-engine.test.mjs`
 Expected: PASS（transcript 落盘 / resume 测试仍通过——cli 仍由 engine 写入 assistant 条目前提未变，本任务未动 engine）
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add kernel/session.mjs kernel/cli.mjs server/session-surface.test.mjs
@@ -1178,7 +1178,7 @@ git commit -m "feat(kernel): session 事件日志 + surface 投影（流式加�
 - Consumes: Task 2 的 `streamMessages({..., tools})`；Task 4 的 `createSessionStore` 返回对象
 - Produces: `createEngine({ opts, wire, session })`（session 必传）；runTurn 返回不变 `{ usage, model, text }`；新增 `turnStats`（内存 append-only 数组，每轮一条 `{ usage, durationMs, model, ts, compactCount }`）与 `getTurnStats()`；`seedCompactCount(n)` 保留（兼容）；`toolSchemas()` 暴露给 cli 的 init 事件（可改为 schema 形状，或保留 toolNames——本任务保持 toolNames 不变，toolSchemas 内部使用）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `server/engine-session.test.mjs`（直接 import engine.mjs 用内存 store 测试，避免 spawn 开销；工具循环用法同 mock）：
 
@@ -1253,12 +1253,12 @@ test('turnStats 记录器：每轮一条，含 usage/durationMs/model/ts', async
 })
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `node --test server/engine-session.test.mjs`
 Expected: FAIL —— engine 未接 session / usage 覆盖而非累计（第二个工具回合覆盖为 10/20 而非 20/40）
 
-- [ ] **Step 3: engine.mjs 迁移实现**
+- [x] **Step 3: engine.mjs 迁移实现**
 
 在 `kernel/engine.mjs` 中替换 `createEngine`：
 
@@ -1402,12 +1402,12 @@ export function createEngine({ opts = {}, wire, session }) {
 
 注意：mock 流 `turn` 计数依赖 user 消息数——tool_result user 条目混入会导致计数偏移，需同步修 mock（Step 5）。
 
-- [ ] **Step 4: 运行确认 engine-session 测试通过**
+- [x] **Step 4: 运行确认 engine-session 测试通过**
 
 Run: `node --test server/engine-session.test.mjs`
 Expected: PASS（usage 20/40 累计、中间条目落盘、turnStats）
 
-- [ ] **Step 5: 修 mock 流 turn 计数（api.mjs）+ cli 适配**
+- [x] **Step 5: 修 mock 流 turn 计数（api.mjs）+ cli 适配**
 
 `kernel/api.mjs` 的 `mockStream` 中，user 计数与 tool_result 检测需排除工具结果消息（它们以 user 角色进入模型输入，但不是用户新轮次）：
 
@@ -1441,12 +1441,12 @@ const { usage, text, model: turnModel, durationMs } = await engine.runTurn({ con
 wire.result(usage, { duration_ms: durationMs })
 ```
 
-- [ ] **Step 6: 回归既有测试**
+- [x] **Step 6: 回归既有测试**
 
 Run: `node --test server/kernel-engine.test.mjs server/kernel-contract.test.mjs server/kernel-bridge.test.mjs server/tools-schema.test.mjs server/api-protocol.test.mjs server/context.test.mjs server/session-surface.test.mjs`
 Expected: PASS（尤其 kernel-engine「transcript 落盘 2 条目」「resume turn 从 2 开始」「tool+approval 闭环」——mock turn 计数修复保证 turn 数正确）
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add kernel/engine.mjs kernel/cli.mjs kernel/api.mjs server/engine-session.test.mjs
@@ -1472,7 +1472,7 @@ git commit -m "feat(kernel): engine 迁移 session 派生（usage 累计/中间�
   - `extractSummary(text)` → `<compacted-summary>` 标签内文本 | null
   - `createCompactor({ session, context, model, maxTokens, wire, signal, env })` → `{ maybeCompact({ system }), forceCompact({ system }) }`
 
-- [ ] **Step 1: 写失败测试（纯函数 + 集成）**
+- [x] **Step 1: 写失败测试（纯函数 + 集成）**
 
 `server/compact.test.mjs`：
 
@@ -1617,12 +1617,12 @@ test('溢出恢复：context_window_exceeded → forceCompact → retry 成功�
 })
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `node --test server/compact.test.mjs`
 Expected: FAIL —— compact.mjs 模块不存在
 
-- [ ] **Step 3: 实现 kernel/compact.mjs（纯函数）**
+- [x] **Step 3: 实现 kernel/compact.mjs（纯函数）**
 
 ```js
 // YFW-turbo 两阶段压缩器（docs/superpowers/specs/2026-08-20-yfw-turbo-inner-core-design.md §5）
@@ -1824,7 +1824,7 @@ export function createCompactor({ session, context, model, maxTokens, wire, sign
 }
 ```
 
-- [ ] **Step 4: mock 扩展（api.mjs）——压缩摘要指令检测 + 溢出模拟**
+- [x] **Step 4: mock 扩展（api.mjs）——压缩摘要指令检测 + 溢出模拟**
 
 在 `mockStream` 中追加两个分支（放在 `[mock:tool]` 分支之前）：
 
@@ -1849,7 +1849,7 @@ export function createCompactor({ session, context, model, maxTokens, wire, sign
 
 （`YFW_MOCK_OVERFLOW_CONSUMED` 用进程级 env 标记一次消费——单测进程内有效。）
 
-- [ ] **Step 5: engine.mjs 接入 pre-step 测压 + 溢出 retry 循环**
+- [x] **Step 5: engine.mjs 接入 pre-step 测压 + 溢出 retry 循环**
 
 `kernel/engine.mjs`：createEngine 增加 `compactor` 可选参数；`runTurnInternal` 请求循环外包：
 
@@ -1900,17 +1900,17 @@ export function createCompactor({ session, context, model, maxTokens, wire, sign
 
 （实现时保持原 chunk 分发 / blocks / tool 循环逻辑，仅在外层加 preStep 与 overflow retry 包装。）
 
-- [ ] **Step 6: 运行确认通过**
+- [x] **Step 6: 运行确认通过**
 
 Run: `node --test server/compact.test.mjs`
 Expected: PASS（6 个测试；溢出恢复测试依赖 mock 的 `context_window_exceeded` 抛一次 + forceCompact 成功）
 
-- [ ] **Step 7: 回归既有测试**
+- [x] **Step 7: 回归既有测试**
 
 Run: `node --test server/kernel-engine.test.mjs server/kernel-contract.test.mjs server/kernel-bridge.test.mjs`
 Expected: PASS（compactor 默认未注入 → preStep 短路，行为不变）
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add kernel/compact.mjs kernel/api.mjs kernel/engine.mjs server/compact.test.mjs
@@ -1937,7 +1937,7 @@ git commit -m "feat(kernel): compact.mjs 两阶段压缩（结构裁剪/摘要/�
   - `createHealth({ wire, model, contextWindow, env })` → `{ record(turnStats), recordCompaction(summary, count), getState() }`
   - `makeWire()` 新增 `health(data)` → `{ type: 'yfw_health', ...data }`、`summary(text, compactCount)` → `{ type: 'yfw_summary', text, compactCount }`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `server/health.test.mjs`：
 
@@ -2010,12 +2010,12 @@ test('createHealth：非 green 档位去抖只发一次 yfw_health；recordCompa
 })
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `node --test server/health.test.mjs`
 Expected: FAIL —— health.mjs 不存在
 
-- [ ] **Step 3: 实现 kernel/health.mjs + protocol.mjs 事件构造器**
+- [x] **Step 3: 实现 kernel/health.mjs + protocol.mjs 事件构造器**
 
 `kernel/health.mjs`：
 
@@ -2144,7 +2144,7 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
     },
 ```
 
-- [ ] **Step 4: engine/cli 装配 health（每轮尾部 record）**
+- [x] **Step 4: engine/cli 装配 health（每轮尾部 record）**
 
 `kernel/engine.mjs` createEngine 增加 `health` 可选参数；`runTurn` 尾部：
 
@@ -2176,17 +2176,17 @@ const health = createHealth({ wire, model, contextWindow, env: process.env })
 const engine = createEngine({ opts: {...}, wire, session: store, health, compactor })
 ```
 
-- [ ] **Step 5: 运行确认通过**
+- [x] **Step 5: 运行确认通过**
 
 Run: `node --test server/health.test.mjs`
 Expected: PASS（6 个测试）
 
-- [ ] **Step 6: 回归既有测试（health 事件不污染既有 wire 断言）**
+- [x] **Step 6: 回归既有测试（health 事件不污染既有 wire 断言）**
 
 Run: `node --test server/kernel-engine.test.mjs server/kernel-contract.test.mjs server/kernel-bridge.test.mjs`
 Expected: PASS（green 档不发事件；既有测试收集到 result 前忽略 yfw_* 事件）
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add kernel/health.mjs kernel/protocol.mjs kernel/engine.mjs kernel/cli.mjs server/health.test.mjs
@@ -2211,7 +2211,7 @@ git commit -m "feat(kernel): health.mjs 健康分/yfw_health/yfw_summary（去�
   - bridge `GET /transcript/stats?project=<cwd>` → `{ ok, stats }`
   - `buildChildEnv` 中 `provider.protocol === 'openai'` → 注入 `OPENAI_BASE_URL`/`OPENAI_API_KEY`/`OPENAI_MODEL`（保留 ANTHROPIC_* 兼容）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `server/stats.test.mjs`：
 
@@ -2274,12 +2274,12 @@ it('kind=compaction 条目折叠为 null（GUI 不渲染压缩条目）', () => 
 })
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `node --test server/stats.test.mjs` + `node --test src/lib/transcriptAdapter.test.ts`
 Expected: FAIL —— aggregateStats/costUsd 未导出；transcriptEntryToMessage 未折叠 compaction
 
-- [ ] **Step 3: transcript.mjs 实现聚合**
+- [x] **Step 3: transcript.mjs 实现聚合**
 
 在 `server/transcript.mjs` 末尾追加：
 
@@ -2349,7 +2349,7 @@ export function costUsd({ model = 'unknown', input_tokens = 0, output_tokens = 0
 }
 ```
 
-- [ ] **Step 4: bridge.mjs 路由 + OPENAI env 注入**
+- [x] **Step 4: bridge.mjs 路由 + OPENAI env 注入**
 
 `server/bridge.mjs` transcript 路由区（现有 /transcript/list、/transcript/load、/transcript/search 附近）追加：
 
@@ -2398,7 +2398,7 @@ export function costUsd({ model = 'unknown', input_tokens = 0, output_tokens = 0
 
 （注：bridge 侧现有 ANTHROPIC_* 注入分支保持；openai 分支在 provider.protocol 标记时补充 env。ANTHROPIC_MODEL 兼容保留。）
 
-- [ ] **Step 5: transcriptAdapter.ts 折叠 compaction**
+- [x] **Step 5: transcriptAdapter.ts 折叠 compaction**
 
 `src/lib/transcriptAdapter.ts` 的 `transcriptEntryToMessage` 开头（system compact_boundary 特殊处理之前）加：
 
@@ -2407,17 +2407,17 @@ export function costUsd({ model = 'unknown', input_tokens = 0, output_tokens = 0
   if (entry.kind === 'compaction') return null
 ```
 
-- [ ] **Step 6: 运行确认通过**
+- [x] **Step 6: 运行确认通过**
 
 Run: `node --test server/stats.test.mjs` + `node --test src/lib/transcriptAdapter.test.ts`
 Expected: PASS（新增用例 + 既有 adapter 用例）
 
-- [ ] **Step 7: 回归**
+- [x] **Step 7: 回归**
 
 Run: `node --test server/kernel-bridge.test.mjs server/kernel-engine.test.mjs server/kernel-contract.test.mjs`
 Expected: PASS
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add server/transcript.mjs server/bridge.mjs src/lib/transcriptAdapter.ts server/stats.test.mjs src/lib/transcriptAdapter.test.ts
@@ -2435,12 +2435,12 @@ git commit -m "feat(bridge): /transcript/stats 聚合端点 + OPENAI env 注入 
 - Consumes: 全部 Task 1-8 产出
 - Produces: 全绿回归基线
 
-- [ ] **Step 1: 运行全量测试**
+- [x] **Step 1: 运行全量测试**
 
 Run: `node --test "server/*.test.mjs" "electron/*.test.mjs" && node --test src/lib/transcriptAdapter.test.ts`
 Expected: 全部 PASS（kernel-engine / kernel-contract / kernel-bridge / tools-schema / api-protocol / context / session-surface / engine-session / compact / health / stats + GUI 侧既有测试）
 
-- [ ] **Step 2: 修复任何回归**
+- [x] **Step 2: 修复任何回归**
 
 如出现失败：
 - 确认 wire 事件形状未被破坏（尤其既有测试对 assistant/result 事件的深比较）
@@ -2449,7 +2449,7 @@ Expected: 全部 PASS（kernel-engine / kernel-contract / kernel-bridge / tools-
 
 Run（重复 Step 1）直至全绿。
 
-- [ ] **Step 3: 规格覆盖自检（spec §8 测试计划 24 项逐条对照）**
+- [x] **Step 3: 规格覆盖自检（spec §8 测试计划 24 项逐条对照）**
 
 | spec 测试 | 覆盖任务 |
 |---|---|
@@ -2478,7 +2478,7 @@ Run（重复 Step 1）直至全绿。
 | 23 resume 窗口化恢复 | Task 4（maxEntries 测试） |
 | 24 既有回归 | Task 9（全量） |
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add .
