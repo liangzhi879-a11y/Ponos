@@ -167,6 +167,22 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // 压缩摘要调用：检测 COMPACTION_INSTRUCTION → 返回 mock 摘要（收敛用）
+  if (lastText && lastText.includes('系统压缩指令')) {
+    const body = process.env.YFW_MOCK_COMPACT_RESPONSE === '1'
+      ? '<compacted-summary>摘要输出</compacted-summary>'
+      : '<compacted-summary>mock 摘要</compacted-summary>'
+    yield* streamText(body, signal)
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // 溢出模拟：YFW_MOCK_OVERFLOW=once → 非 summarizer 调用抛一次 context_window_exceeded
+  if (process.env.YFW_MOCK_OVERFLOW === 'once' && !String(lastText || '').includes('系统压缩指令')) {
+    if (process.env.YFW_MOCK_OVERFLOW_CONSUMED === '1') { /* 已抛过 */ } else {
+      process.env.YFW_MOCK_OVERFLOW_CONSUMED = '1'
+      throw new Error('context_window_exceeded: 请求超出模型上下文窗口')
+    }
+  }
   // 工具请求回合：[mock:tool] 触发 Bash tool_use（rm -rf 高危 → 审批挂起）
   if (lastText.includes('[mock:tool]')) {
     if (signal?.aborted) throw abortError()

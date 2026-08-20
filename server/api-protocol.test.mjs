@@ -103,3 +103,39 @@ test('tools 注入：OpenAI 请求 body 为 function 形状且 system 并入 mes
     process.env = oldEnv
   }
 })
+
+test('mock 扩展：检测系统压缩指令 → 返回 <compacted-summary> 摘要（收敛校验用）', async () => {
+  const oldEnv = { ...process.env }
+  Object.assign(process.env, { YFW_MOCK_API: '1', YFW_MOCK_COMPACT_RESPONSE: '1' })
+  try {
+    const chunks = []
+    for await (const c of streamMessages({ model: 'm', messages: [{ role: 'user', content: '请执行系统压缩指令，输出 checkpoint 摘要' }], maxTokens: 100 })) chunks.push(c)
+    const text = chunks.filter((c) => c.type === 'text').map((c) => c.text).join('')
+    assert.ok(text.includes('<compacted-summary>摘要输出</compacted-summary>'), text)
+    assert.ok(chunks.some((c) => c.type === 'usage'))
+  } finally {
+    process.env = oldEnv
+  }
+})
+
+test('mock 扩展：YFW_MOCK_OVERFLOW=once 非压缩调用抛一次溢出，之后恢复', async () => {
+  const oldEnv = { ...process.env }
+  Object.assign(process.env, { YFW_MOCK_API: '1', YFW_MOCK_OVERFLOW: 'once' })
+  delete process.env.YFW_MOCK_OVERFLOW_CONSUMED
+  try {
+    // 第一次非 summarizer 调用：抛 context_window_exceeded
+    await assert.rejects(
+      (async () => {
+        for await (const c of streamMessages({ model: 'm', messages: [{ role: 'user', content: 'hello' }], maxTokens: 100 })) {}
+      })(),
+      /context_window_exceeded/,
+    )
+    // 第二次调用：已消费，恢复正常 mock 回显
+    const chunks = []
+    for await (const c of streamMessages({ model: 'm', messages: [{ role: 'user', content: 'hello' }], maxTokens: 100 })) chunks.push(c)
+    assert.ok(chunks.some((c) => c.type === 'text'))
+    assert.ok(chunks.some((c) => c.type === 'usage'))
+  } finally {
+    process.env = oldEnv
+  }
+})
