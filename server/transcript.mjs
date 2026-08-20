@@ -187,3 +187,67 @@ export function createTranscriptHandlers(base) {
     searchTranscripts: (query, limit) => searchTranscripts(projectsDir, query, { limit }),
   }
 }
+
+// —— 统计聚合（spec §6.5：按 项目/模型/日期 聚合 token 用量；成本换算在 bridge 侧）——
+// usage 数据源：assistant entry.message.usage（engine 已累计多次 API 调用 + 压缩摘要用量）
+export function aggregateStats(projectsDir) {
+  const totals = { input_tokens: 0, output_tokens: 0, turns: 0, sessions: 0 }
+  const byModel = {}
+  const byProject = {}
+  const byDate = {}
+  if (!existsSync(projectsDir)) return { totals, byModel, byProject, byDate }
+  const add = (bucket, k, entry) => {
+    if (!bucket[k]) bucket[k] = { input_tokens: 0, output_tokens: 0, turns: 0 }
+    bucket[k].input_tokens += entry.input_tokens
+    bucket[k].output_tokens += entry.output_tokens
+    bucket[k].turns += 1
+  }
+  for (const projName of readdirSync(projectsDir)) {
+    const projDir = join(projectsDir, projName)
+    let pst
+    try { pst = statSync(projDir) } catch { continue }
+    if (!pst.isDirectory()) continue
+    let sessionSeen = false
+    for (const name of readdirSync(projDir)) {
+      if (!isUuidFile(name)) continue
+      const fp = join(projDir, name)
+      let st
+      try { st = statSync(fp) } catch { continue }
+      if (!st.isFile()) continue
+      let text
+      try { text = readFileSync(fp, 'utf-8') } catch { continue }
+      let sawUsage = false
+      for (const line of text.split('\n')) {
+        const t = line.trim()
+        if (!t) continue
+        let e
+        try { e = JSON.parse(t) } catch { continue }
+        const usage = e?.message?.usage
+        if (e?.type !== 'assistant' || !usage || !Number.isFinite(usage.input_tokens)) continue
+        const model = e.message.model || 'unknown'
+        const day = String(e.timestamp || '').slice(0, 10) || 'unknown'
+        const u = {
+          input_tokens: usage.input_tokens ?? 0,
+          output_tokens: usage.output_tokens ?? 0,
+        }
+        totals.input_tokens += u.input_tokens
+        totals.output_tokens += u.output_tokens
+        totals.turns += 1
+        add(byModel, model, u)
+        add(byProject, projName, u)
+        add(byDate, day, u)
+        sawUsage = true
+      }
+      if (sawUsage && !sessionSeen) { sessionSeen = true; totals.sessions += 1 }
+    }
+  }
+  return { totals, byModel, byProject, byDate }
+}
+
+// 成本换算（bridge 侧调用；单价表来自 provider 配置，provider 改价无需动内核）
+export function costUsd({ model = 'unknown', input_tokens = 0, output_tokens = 0 }, priceTable = {}) {
+  const p = priceTable[model] || priceTable.default || {}
+  const inRate = Number(p.input_per_mtok) || 0
+  const outRate = Number(p.output_per_mtok) || 0
+  return (input_tokens / 1e6) * inRate + (output_tokens / 1e6) * outRate
+}
