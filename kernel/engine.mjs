@@ -51,7 +51,9 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
 
   // 历史优先走 session.deriveMessages()；无 session 时退化为内存数组（测试直连场景）
   const memoryHistory = []
-  const systemPrompt = opts.systemPrompt || ''
+  // systemPrompt 默认可变：cli 在 createEngine 后经 setSystemPrompt 注入三层组装
+  // 提示词（基础行为规范 + AGENTS.md + append），直连测试可经 opts.systemPrompt 预置
+  let systemPrompt = opts.systemPrompt || ''
 
   function deriveHistory() {
     if (session) return session.deriveMessages()
@@ -185,6 +187,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     signal,
     toolNames: tools.toolNames,
     toolSchemas: () => tools.toolSchemas(),
+    setSystemPrompt(p) { systemPrompt = p || '' },
     abort() { signal.aborted = true; abortController.abort() },
     seedCompactCount(n) { /* session 已从日志恢复 compactCount；兼容保留 */ },
     // cli 的 control_response 路由：解除对应 tool_use 的审批挂起
