@@ -14,7 +14,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, copyFi
 import { join, basename } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { CONFIG } from './config.mjs'
-import { ensureWorkspace, collectDiff } from './lib/workspace.mjs'
+import { ensureWorkspace, collectDiff, repoGit } from './lib/workspace.mjs'
 import { applyBasePatch, EXCLUDED_PATCH_FILES } from './lib/base-patches.mjs'
 import { runYFW } from './harness/yfw.mjs'
 import { runClaude, runPi, runDeepseek } from './harness/adapters.mjs'
@@ -70,6 +70,10 @@ function loadTasks() {
     const metaFile = join(dir, 'task.json')
     if (!existsSync(metaFile)) continue
     const meta = JSON.parse(readFileSync(metaFile, 'utf8'))
+    // base="HEAD" 解析为主仓库当前 HEAD 的 commit hash——静态 "HEAD" 会随
+    // worktree 创建时刻冻结（复用旧 worktree 时 checkout 到陈旧版本），
+    // 必须每次评测解析为最新，否则历史内核跑在已修复形态上仍出旧缺陷
+    if (meta.base === 'HEAD') meta.base = repoGit(CONFIG.repo, ['rev-parse', 'HEAD']).trim()
     const prompt = readFileSync(join(dir, 'prompt.md'), 'utf8')
     const verifyFile = join(dir, 'verify.mjs')
     if (!existsSync(verifyFile)) throw new Error(`task ${meta.id}: verify.mjs missing`)

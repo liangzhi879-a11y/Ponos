@@ -5,7 +5,7 @@
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 
 const ws = process.argv[2]
 
@@ -36,18 +36,33 @@ const transcript = [
 ].map((e) => JSON.stringify(e)).join('\n') + '\n'
 writeFileSync(join(projectDir, `${sid}.jsonl`), transcript)
 
-const res = spawnSync(process.execPath, [
-  'kernel/cli.mjs',
-  '--resume', sid,
-  '--print', '--output-format', 'stream-json', '--input-format', 'stream-json',
-  '--dangerously-skip-permissions',
-  '--add-dir', ws,
-], {
-  cwd: ws,
-  encoding: 'utf8',
-  timeout: 60000,
-  input: JSON.stringify({ type: 'user', message: { role: 'user', content: '请继续' } }) + '\n',
-  env: { ...process.env, YFW_MOCK_API: '1', YFWORKING_HOME: home, CLAUDE_CONFIG_DIR: home },
+// 关键坑：不能 spawnSync 一次性写 input 再关闭 stdin——内核 readline 收到
+// stdin close 即 process.exit(0)，异步 runTurn（mock 也要 await sleep）必被
+// 截断、永不产出 result（实测任意内核版本都只出 init）。必须异步 spawn、
+// 写 user 后保持 stdin 打开，等 result 出现再 end() 优雅退出。
+const res = await new Promise((resolve) => {
+  const child = spawn(process.execPath, [
+    'kernel/cli.mjs',
+    '--resume', sid,
+    '--print', '--output-format', 'stream-json', '--input-format', 'stream-json',
+    '--dangerously-skip-permissions',
+    '--add-dir', ws,
+  ], { cwd: ws, env: { ...process.env, YFW_MOCK_API: '1', YFWORKING_HOME: home, CLAUDE_CONFIG_DIR: home } })
+  let stdout = ''
+  let stderr = ''
+  let settled = false
+  const done = (code) => { if (!settled) { settled = true; resolve({ code, stdout, stderr }) } }
+  child.stdout.on('data', (d) => {
+    stdout += d
+    // result 出现即本轮完成：关 stdin 让内核优雅退出（契约：stdin EOF → exit 0）
+    if (/"type":"result"/.test(stdout)) { try { child.stdin.end() } catch { /* 忽略 */ } }
+  })
+  child.stderr.on('data', (d) => { stderr += d })
+  child.on('close', (code) => done(code ?? 0))
+  child.on('error', (e) => { stderr += 'SPAWN_ERROR: ' + e.message + '\n'; done(-2) })
+  child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: '请继续' } }) + '\n')
+  // 兜底超时：60s 未出 result 按失败处理
+  setTimeout(() => { try { child.kill('SIGKILL') } catch { /* 忽略 */ } done(-1) }, 60000)
 })
 rmSync(home, { recursive: true, force: true })
 

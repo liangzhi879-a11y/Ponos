@@ -106,14 +106,33 @@ const ENGINE_SESSION_REPL = [
    "      const assistantBlocks = [...thinkingBlocks, ...(textBuf.trim() ? [{ type: 'text', text: textBuf }] : []), ...blocks]\n"],
 ]
 
+// —— engine.mjs 会话形态（T003-T006）：多工具轮 tool_result 合并 ——
+// disable_parallel_tool_use 对 DeepSeek 端点实测不可靠（T003-T006 仍发多 tool_use
+// 触发 400 "tool_use without tool_result"），必须在协议层合并：同一 assistant 的
+// 多个 tool_use 的 tool_result 收集后合并为单条 user 消息（对齐 d739669 真修复）
+const ENGINE_SESSION_TOOLRESULTS_REPL = [
+  ["      // 逐个执行工具，结果回填为 user(tool_result) 消息（时序：tool_use → tool_result）\n      for (const b of blocks) {\n        const result = await executeToolUse(b)\n        const toolResultMsg = { role: 'user', content: [{ type: 'tool_result', tool_use_id: b.id, content: result.content, is_error: result.isError }] }\n        pushMemory(toolResultMsg)\n        if (session) session.appendToolResult({ toolUseId: b.id, content: result.content, isError: result.isError })\n      }\n",
+   "      // 执行全部工具后，tool_result 合并为单条 user 消息（Anthropic 协议：tool_use\n      // 后所有 tool_result 须紧跟同一 user 消息；DeepSeek 端点严格校验，\n      // disable_parallel_tool_use 实测不可靠，须在协议层合并）\n      const toolResults = []\n      for (const b of blocks) {\n        const result = await executeToolUse(b)\n        toolResults.push({ tool_use_id: b.id, content: result.content, is_error: result.isError })\n      }\n      pushMemory({ role: 'user', content: toolResults })\n      if (session) session.appendToolResults(toolResults)\n"],
+]
+
+// —— session.mjs 会话形态（T003-T006）：补 appendToolResults/toolResultsEntry ——
+// engine 合并补丁依赖 session.appendToolResults（d739669 才加入，历史 base 缺失），
+// 一并注入（与 d739669 实现一致，幂等跳过）
+const SESSION_TOOLRESULTS_REPL = [
+  ["    toolResultEntry({ toolUseId, content, isError }) {\n      return {\n        type: 'user',\n        id: randomUUID(),\n        timestamp: new Date().toISOString(),\n        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: String(content ?? ''), is_error: Boolean(isError) }] },\n      }\n    },\n",
+   "    toolResultEntry({ toolUseId, content, isError }) {\n      return {\n        type: 'user',\n        id: randomUUID(),\n        timestamp: new Date().toISOString(),\n        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: String(content ?? ''), is_error: Boolean(isError) }] },\n      }\n    },\n    // 批量 tool_result：合并进同一条 user 消息（Anthropic API 要求同一 assistant\n    // 的多个 tool_use 的 tool_result 紧随其后且在同一条消息内）\n    toolResultsEntry(toolResults) {\n      return {\n        type: 'user',\n        id: randomUUID(),\n        timestamp: new Date().toISOString(),\n        message: {\n          role: 'user',\n          content: (toolResults || []).map((r) => ({\n            type: 'tool_result',\n            tool_use_id: r.tool_use_id,\n            content: String(r.content ?? ''),\n            is_error: Boolean(r.is_error),\n          })),\n        },\n      }\n    },\n"],
+  ["    appendToolResult({ toolUseId, content, isError }) {\n      const entry = this.toolResultEntry({ toolUseId, content, isError })\n      return append(baseEntry('user', entry.message, {}))\n    },\n",
+   "    appendToolResult({ toolUseId, content, isError }) {\n      const entry = this.toolResultEntry({ toolUseId, content, isError })\n      return append(baseEntry('user', entry.message, {}))\n    },\n    appendToolResults(toolResults) {\n      const entry = this.toolResultsEntry(toolResults)\n      return append(baseEntry('user', entry.message, {}))\n    },\n"],
+]
+
 // 任务 id → 补丁序列（逐条独立幂等）
 const PATCHES = {
   T001: [['kernel/api.mjs', API_REPL], ['kernel/engine.mjs', [...ENGINE_CAP_REPL, ...ENGINE_TEXTBUF_RESET_REPL, ...ENGINE_OLD_REPL]], ['kernel/permissions.mjs', PERMISSIONS_SKIP_REPL]],
   T002: [['kernel/api.mjs', API_REPL], ['kernel/engine.mjs', [...ENGINE_CAP_REPL, ...ENGINE_TEXTBUF_RESET_REPL, ...ENGINE_OLD_REPL]], ['kernel/permissions.mjs', PERMISSIONS_SKIP_REPL]],
-  T003: [['kernel/api.mjs', API_REPL], ['kernel/engine.mjs', [...ENGINE_CAP_REPL, ...ENGINE_SESSION_REPL]], ['kernel/permissions.mjs', PERMISSIONS_SKIP_REPL]],
-  T004: [['kernel/api.mjs', API_REPL], ['kernel/engine.mjs', [...ENGINE_CAP_REPL, ...ENGINE_SESSION_REPL]], ['kernel/permissions.mjs', PERMISSIONS_SKIP_REPL]],
-  T005: [['kernel/api.mjs', API_REPL], ['kernel/engine.mjs', [...ENGINE_CAP_REPL, ...ENGINE_SESSION_REPL]], ['kernel/permissions.mjs', PERMISSIONS_SKIP_REPL]],
-  T006: [['kernel/api.mjs', API_REPL], ['kernel/engine.mjs', [...ENGINE_CAP_REPL, ...ENGINE_SESSION_REPL]], ['kernel/permissions.mjs', PERMISSIONS_SKIP_REPL]],
+  T003: [['kernel/api.mjs', API_REPL], ['kernel/engine.mjs', [...ENGINE_CAP_REPL, ...ENGINE_SESSION_REPL, ...ENGINE_SESSION_TOOLRESULTS_REPL]], ['kernel/session.mjs', SESSION_TOOLRESULTS_REPL], ['kernel/permissions.mjs', PERMISSIONS_SKIP_REPL]],
+  T004: [['kernel/api.mjs', API_REPL], ['kernel/engine.mjs', [...ENGINE_CAP_REPL, ...ENGINE_SESSION_REPL, ...ENGINE_SESSION_TOOLRESULTS_REPL]], ['kernel/session.mjs', SESSION_TOOLRESULTS_REPL], ['kernel/permissions.mjs', PERMISSIONS_SKIP_REPL]],
+  T005: [['kernel/api.mjs', API_REPL], ['kernel/engine.mjs', [...ENGINE_CAP_REPL, ...ENGINE_SESSION_REPL, ...ENGINE_SESSION_TOOLRESULTS_REPL]], ['kernel/session.mjs', SESSION_TOOLRESULTS_REPL], ['kernel/permissions.mjs', PERMISSIONS_SKIP_REPL]],
+  T006: [['kernel/api.mjs', API_REPL], ['kernel/engine.mjs', [...ENGINE_CAP_REPL, ...ENGINE_SESSION_REPL, ...ENGINE_SESSION_TOOLRESULTS_REPL]], ['kernel/session.mjs', SESSION_TOOLRESULTS_REPL], ['kernel/permissions.mjs', PERMISSIONS_SKIP_REPL]],
 }
 
 /** @returns {string[] | null} 实际应用的补丁文件列表（相对仓库根，去重），无补丁为 null */
