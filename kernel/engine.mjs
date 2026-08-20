@@ -28,6 +28,11 @@ function addUsage(acc, u = {}) {
   return out
 }
 
+// usage 是否有实质计数（空对象 / 全零视为无用量，不写 transcript）
+function hasUsage(u = {}) {
+  return (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) > 0
+}
+
 export function createEngine({ opts = {}, wire, session, compactor, health }) {
   const signal = { aborted: false }
   const model = opts.model || process.env.ANTHROPIC_MODEL || ''
@@ -62,7 +67,27 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     async function preStep() {
       if (!compactor || !session) return
       const msgs = session.deriveMessages()
-      await compactor.maybeCompact({ system: systemPrompt || '', messages: msgs })
+      const r = await compactor.maybeCompact({ system: systemPrompt || '', messages: msgs })
+      // M2：摘要调用是一次完整 API 请求（prefill 含被遮蔽历史数万 token），
+      // 其 usage 并入本轮（再进 turnStats/result/最终条目）
+      if (r?.usage) usage = addUsage(usage, r.usage)
+    }
+    // 本轮已写最后一条 assistant 条目（M1 空文本收尾轮把 usage 挂到它上面）
+    let lastAssistantEntry = null
+    // usage 只写在轮次最终 assistant 条目上（M1 修复）：中间工具轮条目不带 usage，
+    // 仅带 model。空文本收尾轮（tool-only / 溢出后置分支）恰好一个带 usage 的
+    // assistant 条目——把 usage 挂到本轮最后一条已写条目；无已写条目则跳过
+    // （无用量可计，且不追加空内容条目以免破坏 API 消息流）。
+    const finalizeUsage = () => {
+      if (!session) return
+      if (textBuf.trim()) {
+        // 最终 assistant 条目由 engine 写入（带 usage/model；cli 不再重复落盘）
+        lastAssistantEntry = session.appendAssistant([{ type: 'text', text: textBuf }], { usage, model })
+        return
+      }
+      if (hasUsage(usage) && lastAssistantEntry) {
+        session.setEntryUsage(lastAssistantEntry, usage)
+      }
     }
     for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
       await preStep()
@@ -94,10 +119,12 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         // 溢出兜底：强制压缩 → 仅 replaceGeneration 前进（压缩真实落地）才重试同一请求
         if (/context_window_exceeded/.test(err?.message || '') && compactor && session && overflowRetries < maxOverflowRetries) {
           const genBefore = session.getSurface().replaceGeneration
-          await compactor.forceCompact({ system: systemPrompt, messages: session.deriveMessages() })
+          const r = await compactor.forceCompact({ system: systemPrompt, messages: session.deriveMessages() })
           const genAfter = session.getSurface().replaceGeneration
+          // M2：溢出路径的摘要调用同样是完整 API 请求，usage 并入本轮
+          if (r?.usage) usage = addUsage(usage, r.usage)
           if (genAfter > genBefore) { overflowRetries++; overflowed = true }
-          else return { usage, model, text: '', error: 'overflow-compact-failed' }
+          else { finalizeUsage(); return { usage, model, text: '', error: 'overflow-compact-failed' } }
         } else {
           throw err
         }
@@ -107,8 +134,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // 该轮 assistant 历史：文本块 + tool_use 块（Anthropic API 要求）
       const assistantBlocks = [...(textBuf.trim() ? [{ type: 'text', text: textBuf }] : []), ...blocks]
       pushMemory({ role: 'assistant', content: assistantBlocks })
-      // 中间 assistant 条目落盘（工具调用轮）
-      if (session) session.appendAssistant(assistantBlocks, { usage, model })
+      // 中间 assistant 条目落盘（工具调用轮）：不带 usage（M1，usage 只写轮次最终条目）
+      if (session) lastAssistantEntry = session.appendAssistant(assistantBlocks, { model })
       // 逐个执行工具，结果回填为 user(tool_result) 消息（时序：tool_use → tool_result）
       for (const b of blocks) {
         const result = await executeToolUse(b)
@@ -121,9 +148,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     }
     if (textBuf.trim()) {
       pushMemory({ role: 'assistant', content: textBuf })
-      // 最终 assistant 条目由 engine 写入（带 usage/model；cli 不再重复落盘）
-      if (session) session.appendAssistant([{ type: 'text', text: textBuf }], { usage, model })
     }
+    finalizeUsage()
     return { usage, model, text: textBuf }
   }
 

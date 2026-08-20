@@ -14,7 +14,7 @@
 // 加载语义：逐行流式读（超大 transcript 不整文件进内存）→ 依序重建 seq +
 // surface → 孤儿 compaction/start（无配对 summary）直接回滚忽略 → maxEntries
 // 超限时截断到近窗口（保留尾部）。
-import { existsSync, createReadStream, appendFileSync, mkdirSync } from 'node:fs'
+import { existsSync, createReadStream, appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
@@ -178,6 +178,27 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
     appendToolResult({ toolUseId, content, isError }) {
       const entry = this.toolResultEntry({ toolUseId, content, isError })
       return append(baseEntry('user', entry.message, {}))
+    },
+    // 已落盘条目的 usage 后挂（M1 空文本收尾轮专用：把本轮总 usage 挂到最后一条
+    // 已写 assistant 条目）。内存更新 entriesBySeq 引用 + 磁盘单行重写——
+    // append-only 日志的罕见例外路径，正常轮次 usage 总在最终条目写入时一次落盘。
+    setEntryUsage(entry, usage) {
+      if (!entry || !usage) return entry
+      entry.message.usage = usage
+      try {
+        const text = readFileSync(file, 'utf-8')
+        const lines = text.split('\n')
+        const idx = lines.findIndex((l) => {
+          const t = l.trim()
+          if (!t) return false
+          try { return JSON.parse(t).seq === entry.seq } catch { return false }
+        })
+        if (idx >= 0) {
+          lines[idx] = JSON.stringify(entry)
+          writeFileSync(file, lines.join('\n'), 'utf-8')
+        }
+      } catch { /* 磁盘不可写不致命：内存已更新 */ }
+      return entry
     },
     // 压缩开始占位：仅写日志（持锁标记），不进 surface.nodes；崩溃留孤儿 → 加载回滚
     appendCompactionStart(coveredSeqs) {

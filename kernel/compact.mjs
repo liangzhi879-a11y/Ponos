@@ -154,13 +154,25 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
   let lastSummary = null
   let consecutiveFailures = 0
 
+  // usage 逐次累加（input/output/cache），语义与 engine.mjs addUsage 一致
+  // （M2：摘要调用是完整 API 请求，其用量并入当前轮统计）
+  function addUsage(acc, u = {}) {
+    const out = { ...acc }
+    for (const k of ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']) {
+      out[k] = (acc[k] ?? 0) + (u[k] ?? 0)
+    }
+    return out
+  }
+
   async function runSummarizer({ system, messages, cut }) {
     const req = assembleSummaryRequest({ system, messages, cut, lastSummary })
     let buf = ''
+    let usage = {}
     for await (const chunk of streamMessages({ model, messages: req, maxTokens, signal, tools: [] })) {
       if (chunk.type === 'text') buf += chunk.text
+      else if (chunk.type === 'usage') usage = addUsage(usage, chunk.usage)
     }
-    return buf
+    return { text: buf, usage }
   }
 
   async function summarize({ system, messages }) {
@@ -175,8 +187,10 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
       const retries = Number(env.CLAUDE_CODE_COMPACTION_RETRIES || 3)
       let summary = null
       let converged = false
+      let usage = {} // M2：摘要调用用量累计（含收敛重试的多次调用）
       for (let attempt = 0; attempt < retries; attempt++) {
-        const text = await runSummarizer({ system, messages, cut })
+        const { text, usage: callUsage } = await runSummarizer({ system, messages, cut })
+        usage = addUsage(usage, callUsage)
         const s = extractSummary(text)
         if (!s) { consecutiveFailures++; continue }
         const summaryTokens = Math.ceil(s.length / 4)
@@ -186,7 +200,8 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
       }
       if (!converged || !summary) {
         consecutiveFailures++
-        return { action: 'none', reason: 'no-convergence', failures: consecutiveFailures }
+        // 调用已发生（被计费）→ usage 一并返回，engine 侧并入本轮统计
+        return { action: 'none', reason: 'no-convergence', failures: consecutiveFailures, usage }
       }
       consecutiveFailures = 0
       // 落地：日志锁（start 占位 → summary 落地 replace）+ 内存锁释放
@@ -208,7 +223,7 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
       // 两路互斥，杜绝 yfw_summary 双发（spec §6：compact 成功后 health.recordCompaction 为权威调用点）。
       if (health) health.recordCompaction?.(summary, session.compactCount())
       else wire.summary?.(summary, session.compactCount())
-      return { action: 'summarized', summary, compactCount: session.compactCount() }
+      return { action: 'summarized', summary, compactCount: session.compactCount(), usage }
     } finally {
       summaryInFlight = false
     }

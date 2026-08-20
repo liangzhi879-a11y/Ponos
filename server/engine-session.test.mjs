@@ -10,11 +10,12 @@
 //      本测试只验证 usage 累计与条目落盘，故 wire 自动放行。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createEngine } from '../kernel/engine.mjs'
 import { createSessionStore } from '../kernel/session.mjs'
+import { aggregateStats } from './transcript.mjs'
 
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), 'engine-session-'))
@@ -70,6 +71,36 @@ test('中间工具条目落盘：assistant tool_use + user tool_result 进入 se
     assert.ok(roles.includes('assistant'))
     assert.ok(msgs.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_use')))
     assert.ok(msgs.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_result')))
+    delete process.env.YFW_MOCK_API
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('M1 E2E：工具轮后 transcript 聚合 == result.usage（usage 只写最终条目，不双计）', async () => {
+  const { dir, events, session, wire, bind } = setup()
+  try {
+    process.env.YFW_MOCK_API = '1'
+    const engine = createEngine({ opts: { model: 'm', addDirs: [dir], skipPermissions: true, systemPrompt: '' }, wire, session })
+    bind(engine)
+    await engine.runTurn({ content: '[mock:tool]' })
+    // mock：工具请求轮 + 工具结果轮 = 2 次 API 调用（各 10/20）→ 累计 20/40
+    const result = events.find((e) => e.type === 'result')
+    assert.equal(result.usage.input_tokens, 20)
+    assert.equal(result.usage.output_tokens, 40)
+    // transcript 聚合必须 == result.usage（修复前中间条目也带 usage → 30/60，双计 50%）
+    const stats = aggregateStats(join(dir, 'projects'))
+    assert.equal(stats.totals.input_tokens, result.usage.input_tokens)
+    assert.equal(stats.totals.output_tokens, result.usage.output_tokens)
+    assert.equal(stats.totals.turns, 1)
+    // 条目级：中间工具轮条目不带 usage（仅 model）；只有最终条目带 usage
+    const lines = readFileSync(session.file, 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
+    const asst = lines.filter((e) => e.type === 'assistant')
+    assert.equal(asst.length, 2)
+    const [toolEntry, finalEntry] = asst
+    assert.ok(toolEntry.message.content.some((b) => b.type === 'tool_use'))
+    assert.ok(!('usage' in toolEntry.message), '中间工具轮条目不得带 usage 字段（仅 model）')
+    assert.equal(toolEntry.message.model, 'm')
+    assert.equal(finalEntry.message.usage.input_tokens, 20)
+    assert.equal(finalEntry.message.usage.output_tokens, 40)
     delete process.env.YFW_MOCK_API
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

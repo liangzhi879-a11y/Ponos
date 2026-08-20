@@ -8,6 +8,7 @@ import { createHealth } from '../kernel/health.mjs'
 import { estimateMessage, contextWindowFor } from '../kernel/context.mjs'
 import { createSessionStore } from '../kernel/session.mjs'
 import { createEngine } from '../kernel/engine.mjs'
+import { aggregateStats } from './transcript.mjs'
 
 test('结构感知裁剪：超长表格保留表头+采样+合计尾行，不切行中', () => {
   const lines = ['编号,名称,金额']
@@ -156,6 +157,41 @@ test('压缩集成（YFW_MOCK_API）：超阈值 → 摘要 replace 落地 → s
     // 摘要条目 content 为字符串（契约：投影后 m.content === summary 字符串）
     assert.ok(msgs.some((m) => m.content === '摘要输出'))
     assert.ok(session.getSurface().replaceGeneration >= 1)
+    delete process.env.YFW_MOCK_API
+    delete process.env.YFW_MOCK_COMPACT_RESPONSE
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('M2：压缩触发轮 result.usage 含摘要调用用量，且 transcript 聚合一致（M1+M2 协同）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'compact-usage-'))
+  try {
+    const events = []
+    const wire = { assistant: () => events.push({ type: 'assistant' }), result: (usage) => events.push({ type: 'result', usage }), controlRequest: () => {}, summary: () => {}, health: () => {} }
+    const session = createSessionStore({ configDir: dir, cwd: 'proj', sessionId: '00000000-0000-0000-0000-00000000000a' })
+    const compactor = createCompactor({
+      session,
+      context: { window: 500, thresholdRatio: 0.8, retainRatio: 0.16, estimate: (r) => ({ total: (r.messages?.length ?? 0) * 50 }), estimateMessage: () => 50, estimateHistory: (msgs) => (msgs?.length ?? 0) * 50 },
+      model: 'm', maxTokens: 100, wire,
+      env: { YFW_MOCK_API: '1' },
+    })
+    const engine = createEngine({
+      opts: { model: 'm', addDirs: [dir], skipPermissions: true, systemPrompt: 'S' },
+      wire, session, compactor,
+    })
+    process.env.YFW_MOCK_API = '1'
+    process.env.YFW_MOCK_COMPACT_RESPONSE = '1'
+    for (let i = 1; i <= 5; i++) { session.appendUser(`q${i}`); session.appendAssistant([{ type: 'text', text: 'a'.repeat(100) }]) }
+    // 第六轮：pre-step 估值 550 ≥ 阈值 400 → 触发摘要（调用 10/20）→ 主请求（10/20）
+    const out = await engine.runTurn({ content: 'q6' })
+    assert.ok(out.text.startsWith('mock: q6'))
+    assert.equal(session.compactCount(), 1)
+    const result = events.find((e) => e.type === 'result')
+    assert.equal(result.usage.input_tokens, 20, '摘要调用用量（10）必须并入主请求（10）')
+    assert.equal(result.usage.output_tokens, 40)
+    // 协同：并入后的总 usage 仍只写在最终条目 → transcript 聚合 == result.usage
+    const stats = aggregateStats(join(dir, 'projects'))
+    assert.equal(stats.totals.input_tokens, result.usage.input_tokens)
+    assert.equal(stats.totals.output_tokens, result.usage.output_tokens)
     delete process.env.YFW_MOCK_API
     delete process.env.YFW_MOCK_COMPACT_RESPONSE
   } finally { rmSync(dir, { recursive: true, force: true }) }

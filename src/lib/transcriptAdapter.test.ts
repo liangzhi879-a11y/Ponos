@@ -88,6 +88,17 @@ test('assistant entry：text / tool_use / thinking 块转换', () => {
   assert.equal(tx.content, '完成。')
 })
 
+test('assistant entry：无 usage 字段（中间工具轮条目，M1 后仅最终条目带 usage）→ tokensUsed 不设', () => {
+  const m = transcriptEntryToMessage(
+    assistantEntry([{ type: 'text', text: '中间轮' }], {
+      message: { role: 'assistant', model: 'deepseek-v4-flash', content: [{ type: 'text', text: '中间轮' }] },
+    })
+  )
+  assert.ok(m)
+  assert.equal(m!.tokensUsed, undefined) // 不带 usage → per-message tokensUsed 留空
+  assert.equal(m!.model, 'deepseek-v4-flash') // model 仍保留（中间条目仅带 model）
+})
+
 test('assistant entry：tool_result 块（content 为数组时 join）', () => {
   const m = transcriptEntryToMessage(
     assistantEntry([
