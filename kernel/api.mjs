@@ -152,17 +152,26 @@ async function* streamText(text, signal) {
 }
 
 async function* mockStream({ messages, signal }) {
-  const userMsgs = (messages || []).filter((m) => m.role === 'user')
-  const lastUser = userMsgs[userMsgs.length - 1]
+  // tool_result user 消息不是"新轮次"：计数与 lastText 提取都要跳过（工具循环
+  // 中间条目落盘后，tool_result 以 user 角色进入模型输入，不得算作用户新轮次）
+  const realUser = (messages || []).filter(
+    (m) => m.role === 'user' && !(Array.isArray(m.content) && m.content.some((b) => b?.type === 'tool_result'))
+  )
+  const lastUser = realUser[realUser.length - 1]
   const lastContent = lastUser?.content
   const lastText = typeof lastContent === 'string'
     ? lastContent
     : (Array.isArray(lastContent) ? lastContent.filter((b) => b?.type === 'text').map((b) => b.text).join('\n') : '')
-  const toolResults = Array.isArray(lastContent) ? lastContent.filter((b) => b?.type === 'tool_result') : []
+  const toolResults = (messages || []).filter(
+    (m) => m.role === 'user' && Array.isArray(m.content) && m.content.some((b) => b?.type === 'tool_result')
+  )
 
-  // 工具结果回合：tool_result 已注入 → 报告执行结果（引擎工具循环第二轮）
+  // 工具结果回合：tool_result 已注入 → 报告执行结果（引擎工具循环第二轮）。
+  // toolResults 为 user 消息（含 tool_result 块），需取块内 content（此前为块数组
+  // 直接 String → '[object Object]'）
   if (toolResults.length) {
-    const body = `工具执行完成：${String(toolResults[0].content ?? '').slice(0, 120)}`
+    const firstBlock = toolResults[0].content.find((b) => b?.type === 'tool_result')
+    const body = `工具执行完成：${String(firstBlock?.content ?? '').slice(0, 120)}`
     yield* streamText(body, signal)
     yield { type: 'usage', usage: MOCK_USAGE }
     return
@@ -192,7 +201,7 @@ async function* mockStream({ messages, signal }) {
     return
   }
   // 普通回合：回显（带 turn 计数，历史恢复可断言）
-  const text = `mock: ${String(lastText).slice(0, 120)} (turn=${userMsgs.length})`
+  const text = `mock: ${String(lastText).slice(0, 120)} (turn=${realUser.length})`
   yield* streamText(text, signal)
   yield { type: 'usage', usage: MOCK_USAGE }
 }

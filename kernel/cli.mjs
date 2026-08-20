@@ -111,43 +111,34 @@ export async function main(argv) {
       skipPermissions: args.skipPermissions,
     },
     wire,
+    session: store,
   })
   // system(init)：spawn 即发。bridge /test-provider 判定 CLI 加载成功并读取
   // model/tools；GUI 从 session_id 绑定会话（useYFWCLI.ts handleMessage）。
   // name 字段标识净室引擎代号（诊断用，GUI 不依赖）。
   const model = args.model || process.env.ANTHROPIC_MODEL || ''
   wire.system('init', { model, tools: engine.toolNames, session_id: sessionId, name: 'YFW-turbo' })
-  // --resume：从 transcript 恢复历史（load 为 async 流式；同文件即 GUI 读取的
-  // 权威源）。本任务 engine 仍走内存 seedHistory（engine 迁移到 session 派生在
-  // Task 5 完成，届时此处简化为仅 await store.load()）
+  // --resume：从 transcript 恢复（load 为 async 流式；同文件即 GUI 读取的权威源）。
+  // 历史由 session.deriveMessages() 派生，engine 无需 seedHistory（seedHistory 已随
+  // Task 5 迁移移除）。
   if (args.resume) {
-    const { entries } = await store.load()
-    // 仅恢复真实 user/assistant 轮次；compaction 条目（kind==='compaction'，type 同为
-    // 'assistant'，孤儿 start 的 content 为 []）不得进入 seedHistory——空 content 的
-    // assistant 消息在真实 API 请求中非法（Task 6 压缩落地前此路径不可达，提前堵住）
-    const history = entries.filter(
-      (e) => (e?.type === 'user' || e?.type === 'assistant') && e?.kind !== 'compaction'
-    )
-    engine.seedHistory(history.map((e) => e.message))
+    await store.load()
   }
 
   const state = { turnActive: false, queue: [], cancelling: false }
 
   async function handleUser(msg) {
     const content = extractContent(msg)
-    const userEntry = store.userEntry(content)
-    store.append(userEntry)
     state.turnActive = true
     try {
-      const { usage, text, model: turnModel } = await engine.runTurn({ content, msg })
-      wire.result(usage)
-      // 轮次落盘（transcript 权威源；assistant content 为块数组，含 usage/model）
-      store.append(store.assistantEntry([{ type: 'text', text }], { usage, model: turnModel }))
+      // engine 全权负责本轮：user 入 session、中间/最终 assistant 落盘、
+      // result 事件（含 duration_ms）——cli 不再重复 emit/append
+      await engine.runTurn({ content, msg })
     } catch (err) {
       if (err?.name === 'AbortError' || state.cancelling) {
         wire.assistant('已取消。')
         wire.result()
-        store.append(store.assistantEntry([{ type: 'text', text: '已取消。' }]))
+        store.appendAssistant([{ type: 'text', text: '已取消。' }])
       } else {
         wire.assistant('处理出错：' + (err?.message || String(err)))
         wire.result()
