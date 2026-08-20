@@ -122,7 +122,12 @@ export async function main(argv) {
   // Task 5 完成，届时此处简化为仅 await store.load()）
   if (args.resume) {
     const { entries } = await store.load()
-    const history = entries.filter((e) => e?.type === 'user' || e?.type === 'assistant')
+    // 仅恢复真实 user/assistant 轮次；compaction 条目（kind==='compaction'，type 同为
+    // 'assistant'，孤儿 start 的 content 为 []）不得进入 seedHistory——空 content 的
+    // assistant 消息在真实 API 请求中非法（Task 6 压缩落地前此路径不可达，提前堵住）
+    const history = entries.filter(
+      (e) => (e?.type === 'user' || e?.type === 'assistant') && e?.kind !== 'compaction'
+    )
     engine.seedHistory(history.map((e) => e.message))
   }
 
