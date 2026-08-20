@@ -1,0 +1,8 @@
+{
+  "id": "T005",
+  "title": "Anthropic 协议请求支持 cache_control 断点（默认关）",
+  "type": "feat",
+  "difficulty": 3,
+  "base": "HEAD",
+  "files": ["kernel/api.mjs", "server/api-protocol.test.mjs"]
+}

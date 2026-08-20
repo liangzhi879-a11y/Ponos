@@ -1,0 +1,9 @@
+{
+  "id": "T002",
+  "title": "修复 resume seedHistory 混入 compaction 条目",
+  "type": "fix",
+  "difficulty": 3,
+  "base": "7b4d9f1",
+  "files": ["kernel/cli.mjs"],
+  "relatedCommit": "9119d97"
+}

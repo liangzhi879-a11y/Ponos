@@ -1,0 +1,9 @@
+{
+  "id": "T001",
+  "title": "修复 protocolStream usage chunk 双发",
+  "type": "fix",
+  "difficulty": 2,
+  "base": "65fc730",
+  "files": ["kernel/api.mjs", "server/api-protocol.test.mjs"],
+  "relatedCommit": "e9d37e1"
+}

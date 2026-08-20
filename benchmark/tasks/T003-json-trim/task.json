@@ -1,0 +1,9 @@
+{
+  "id": "T003",
+  "title": "修复工具结果 JSON 形态裁剪三缺陷",
+  "type": "fix",
+  "difficulty": 3,
+  "base": "b92c85c",
+  "files": ["kernel/compact.mjs", "server/compact.test.mjs"],
+  "relatedCommit": "a7eecb6"
+}

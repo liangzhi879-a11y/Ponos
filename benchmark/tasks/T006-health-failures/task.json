@@ -1,0 +1,8 @@
+{
+  "id": "T006",
+  "title": "补全健康分「连续压缩失败」因子单元测试",
+  "type": "test",
+  "difficulty": 1,
+  "base": "HEAD",
+  "files": ["server/health.test.mjs"]
+}

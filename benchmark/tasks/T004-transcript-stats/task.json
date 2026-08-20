@@ -1,0 +1,8 @@
+{
+  "id": "T004",
+  "title": "新增 transcript 统计聚合模块（/transcript/stats 数据源）",
+  "type": "feat",
+  "difficulty": 3,
+  "base": "HEAD",
+  "files": ["server/transcript-stats.mjs", "server/bridge.mjs"]
+}
