@@ -1,4 +1,4 @@
-// LLM API 客户端（docs/bridge-contract.md §2 buildChildEnv 注入的 provider env）
+// YFW-turbo LLM API 客户端（docs/bridge-contract.md §2 buildChildEnv 注入的 provider env）
 // ---------------------------------------------------------------------------
 // 以 Anthropic Messages API 兼容协议调上游（ANTHROPIC_BASE_URL +
 // ANTHROPIC_AUTH_TOKEN + ANTHROPIC_MODEL），SSE 流式解析后产出结构化 chunk：
