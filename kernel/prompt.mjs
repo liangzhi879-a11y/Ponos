@@ -70,7 +70,7 @@ export function buildBaseSystemPrompt({ toolNames = [], cwd = '' } = {}) {
 
 // 三层组装：base + 可用子 Agent 区块 + AGENTS.md（带来源标注）+ append 文件
 // （最后，最高优先级）。subagents 为内置 ∪ 用户级的子 Agent 表（Agent 工具路由依据）。
-export function composeSystemPrompt({ toolNames, agents, subagents = [], append = '', cwd = '' }) {
+export function composeSystemPrompt({ toolNames, agents, subagents = [], append = '', cwd = '', skills = [] }) {
   const parts = [buildBaseSystemPrompt({ toolNames, cwd })]
   if (subagents && subagents.length > 0) {
     const lines = ['【可用子 Agent】可将独立子任务委派给以下子 Agent（Agent 工具的 subagent_type）：']
@@ -81,6 +81,11 @@ export function composeSystemPrompt({ toolNames, agents, subagents = [], append 
   }
   for (const a of agents || []) {
     parts.push(`# 项目指令（${a.path}）\n\n${a.content.trim()}`)
+  }
+  if (skills && skills.length > 0) {
+    const lines = ['【可用技能】任务匹配技能时按技能工作流执行，无匹配则按普通对话处理：']
+    for (const s of skills) lines.push(`- ${s.id}：${(s.description || '').slice(0, 120)}`)
+    parts.push(lines.join('\n'))
   }
   if (append && append.trim()) parts.push(append.trim())
   return parts.join('\n\n')
