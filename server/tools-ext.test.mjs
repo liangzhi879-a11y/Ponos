@@ -9,7 +9,7 @@ import { createServer } from 'node:http'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createToolRegistry } from '../kernel/tools.mjs'
+import { createToolRegistry, childEnv } from '../kernel/tools.mjs'
 
 function tmpReg() {
   const dir = mkdtempSync(join(tmpdir(), 'yfw-tools-ext-'))
@@ -212,4 +212,39 @@ test('OCR：越界路径与缺失文件报错（不触发 python）', async () =
       process.env.HOME = oldHome
     }
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('S2-2 env 白名单：API key 剥离、系统路径保留、自定义敏感变量不透传', () => {
+  const prev = {
+    ANTHROPIC_AUTH_TOKEN: process.env.ANTHROPIC_AUTH_TOKEN,
+    SECRET_TEST_VAR: process.env.SECRET_TEST_VAR,
+  }
+  process.env.ANTHROPIC_AUTH_TOKEN = 'sk-should-not-leak'
+  process.env.SECRET_TEST_VAR = 'sensitive'
+  try {
+    const env = childEnv()
+    assert.ok(!('ANTHROPIC_AUTH_TOKEN' in env), 'API key 必须剥离')
+    assert.ok(!('SECRET_TEST_VAR' in env), '非白名单自定义变量不透传')
+    assert.ok('PATH' in env || 'Path' in env, '系统路径保留')
+  } finally {
+    if (prev.ANTHROPIC_AUTH_TOKEN === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN
+    else process.env.ANTHROPIC_AUTH_TOKEN = prev.ANTHROPIC_AUTH_TOKEN
+    if (prev.SECRET_TEST_VAR === undefined) delete process.env.SECRET_TEST_VAR
+    else process.env.SECRET_TEST_VAR = prev.SECRET_TEST_VAR
+  }
+})
+
+test('S2-2 Bash 子进程：白名单 env 生效（不泄露敏感变量），命令正常执行', async () => {
+  const { dir, reg } = tmpReg()
+  const prev = process.env.SECRET_TEST_VAR
+  process.env.SECRET_TEST_VAR = 'must-not-leak'
+  try {
+    const r = await reg.run({ name: 'Bash', input: { command: 'echo "leak=$SECRET_TEST_VAR"' } })
+    assert.equal(r.isError, false)
+    assert.match(String(r.content), /leak=$/, `子进程不应看到 SECRET_TEST_VAR，实际 ${r.content}`)
+  } finally {
+    if (prev === undefined) delete process.env.SECRET_TEST_VAR
+    else process.env.SECRET_TEST_VAR = prev
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
