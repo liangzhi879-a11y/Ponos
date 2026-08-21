@@ -269,27 +269,43 @@ export async function* protocolStream({ url, body, headers, signal }) {
   }
 }
 
-// Anthropic 协议流：tools 中立形状 → tools[]；system 抽顶层
+// 是否因 cache_control 被端点拒绝（400/422 或缓存相关 message）→ 回退重发判断
+function isCacheRejection(err) {
+  const status = err?.status || 0
+  const msg = String(err?.message || '')
+  return status === 400 || status === 422 || /cache|unknown field|unsupported/i.test(msg)
+}
+
+// Anthropic 协议流：tools 中立形状 → tools[]；system 抽顶层。
+// prompt cache 显式化：YFW_PROMPT_CACHE=1 且 system 非空时，system 改数组形态并
+// 打 ephemeral 缓存标记（Anthropic 官方端点依赖显式标记命中缓存；DeepSeek 兼容
+// 端点自动缓存，显式标记无害）。端点拒绝该字段时自动去掉标记重发一次（兼容兜底）。
 async function* anthropicStream({ model, messages, system, tools, maxTokens, signal }) {
   const base = (process.env.ANTHROPIC_BASE_URL || '').replace(/\/+$/, '')
   const token = process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || ''
   if (!base || !token) throw new Error('内核：ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 未配置')
+  const useCache = process.env.YFW_PROMPT_CACHE === '1' && !!system
+  const headers = { 'content-type': 'application/json', 'x-api-key': token, 'anthropic-version': '2023-06-01' }
   const body = {
     model,
     max_tokens: maxTokens,
-    ...(system ? { system } : {}),
+    ...(system ? (useCache ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] } : { system }) : {}),
     messages,
     stream: true,
     ...(tools.length
       ? { tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema })) }
       : {}),
   }
-  yield* protocolStream({
-    url: base + '/v1/messages',
-    body,
-    headers: { 'content-type': 'application/json', 'x-api-key': token, 'anthropic-version': '2023-06-01' },
-    signal,
-  })
+  try {
+    yield* protocolStream({ url: base + '/v1/messages', body, headers, signal })
+  } catch (err) {
+    if (useCache && isCacheRejection(err)) {
+      // 缓存标记被拒：去掉后重发一次（body 恢复纯字符串 system）
+      yield* protocolStream({ url: base + '/v1/messages', body: { ...body, ...(system ? { system } : {}) }, headers, signal })
+    } else {
+      throw err
+    }
+  }
 }
 
 // 错误分类（P0-1）：结构化错误码 + 是否可重试。engine 据此决定退避重试或快速失败。
