@@ -64,3 +64,27 @@ test('createHealth：非 green 档位去抖只发一次 yfw_health；recordCompa
   h.record({ usage: {}, durationMs: 5, model: 'deepseek-v4-flash', ts: 't', compactCount: 2 })
   assert.equal(events.length, before) // 同档去抖：不再发
 })
+
+import { getOpsHealth } from '../kernel/health.mjs'
+
+test('O2-1 getOpsHealth：内存/API 状态/队列深度归一输出', () => {
+  const h = getOpsHealth({
+    memory: { rss: 500 * 1024 * 1024, heapUsed: 100 * 1024 * 1024 },
+    lastApi: { ok: true, ms: 320 },
+    pendingTurns: 2,
+    diskBytes: 25 * 1024 * 1024,
+  })
+  assert.equal(h.rssMB, 500)
+  assert.equal(h.heapMB, 100)
+  assert.equal(h.lastApiOk, true)
+  assert.equal(h.lastApiMs, 320)
+  assert.equal(h.pendingTurns, 2)
+  assert.equal(h.diskMB, 25)
+})
+
+test('O2-1 缺省输入降级：空对象返回 0/null 不抛', () => {
+  const h = getOpsHealth({})
+  assert.equal(h.rssMB, 0)
+  assert.equal(h.lastApiOk, null)
+  assert.equal(h.pendingTurns, 0)
+})

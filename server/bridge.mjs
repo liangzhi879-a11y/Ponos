@@ -19,6 +19,7 @@ import { makeBrowserRouter } from './browser-routing.mjs'
 import { buildAuditReport } from '../kernel/audit.mjs'
 import { aggregateUsage } from '../kernel/stats.mjs'
 import { costOf, withBudget } from '../kernel/cost.mjs'
+import { getOpsHealth } from '../kernel/health.mjs'
 
 const PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51309', 10)
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -1361,7 +1362,18 @@ const httpServer = createServer(async (req, res) => {
       }
     }
     if (url.pathname === '/health') {
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ status: 'ok', pid: process.pid }))
+      // O2-1：会话数由 bridge 聚合（全局概念，内核单进程无法感知）；运维指标走
+      // 内核 getOpsHealth 纯函数。lastApi 依赖内核上报（bridge 无法直接感知内核
+      // API 状态）——第一版占位 null，后续经 wire 事件透传。
+      const activeSessions = [...sessions.values()].filter((s) => !s._reaped)
+      const pendingTurns = activeSessions.filter((s) => s._turnActive).length
+      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({
+        status: 'ok',
+        pid: process.pid,
+        sessions: activeSessions.length,
+        pendingTurns,
+        ops: getOpsHealth({ memory: process.memoryUsage(), pendingTurns }),
+      }))
     }
 
     // 诊断信息端点：diag-monitor 定期轮询（只读内存统计，见 diagInfo 定义）

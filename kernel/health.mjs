@@ -110,3 +110,16 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
     getState() { return { compactCount, lastSummary, tier: lastTier, judgeEnabled } },
   }
 }
+
+// O2-1 运维健康归一：输入由调用方采集（内核测自身进程，bridge 测全局会话）。
+// 纯函数保证可测性——采集与展示分离。
+export function getOpsHealth({ memory = {}, lastApi = {}, pendingTurns = 0, diskBytes = 0 } = {}) {
+  return {
+    rssMB: Math.round((memory.rss || 0) / 1024 / 1024),
+    heapMB: Math.round((memory.heapUsed || 0) / 1024 / 1024),
+    lastApiOk: lastApi.ok ?? null,
+    lastApiMs: lastApi.ms ?? null,
+    pendingTurns: pendingTurns || 0,
+    diskMB: Math.round((diskBytes || 0) / 1024 / 1024),
+  }
+}
