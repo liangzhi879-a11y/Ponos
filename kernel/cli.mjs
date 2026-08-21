@@ -69,6 +69,7 @@ export function parseArgs(argv) {
       case '--dangerously-skip-permissions': out.skipPermissions = true; break
       case '--auto-approve-high-risk': out.autoApproveHighRisk = true; break
       case '--permission-prompt-tool': out.permissionPromptTool = next(); break
+      case '--permission-rules-file': out.permissionRulesFile = next() ?? null; break
       case '--disallowedTools':
         out.disallowedTools.push(...String(next() ?? '').split(',').filter(Boolean)); break
       case '--resume': out.resume = next() ?? null; break
@@ -140,6 +141,14 @@ export async function main(argv) {
   // （代发 + 记录 lastSummary），不再由 compactor 直接 wire.summary（FIX R1，杜绝双发）。
   // compactor 的 signal 传 undefined——cancel 不中断进行中的压缩摘要调用为已知限制
   // （deferred minor，勿改）。
+  // S3-1 权限规则文件：--permission-rules-file → JSON { permissions: { allow, deny, ask } }
+  let permissionRules = {}
+  if (args.permissionRulesFile) {
+    if (!existsSync(args.permissionRulesFile)) log.warn('permission rules 文件不存在', new Error(args.permissionRulesFile))
+    else {
+      try { permissionRules = JSON.parse(readFileSync(args.permissionRulesFile, 'utf-8')).permissions || {} } catch (e) { log.warn('permission rules 解析失败', e) }
+    }
+  }
   const model = args.model || process.env.ANTHROPIC_MODEL || ''
   const maxTokens = Math.max(1, Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || 64000))
   const contextWindow = contextWindowFor(model)
@@ -165,6 +174,7 @@ export async function main(argv) {
       skipPermissions: args.skipPermissions,
       autoApproveHighRisk: args.autoApproveHighRisk,
       disallowedTools: args.disallowedTools,
+      permissionRules,
     },
     wire,
     session: store,
