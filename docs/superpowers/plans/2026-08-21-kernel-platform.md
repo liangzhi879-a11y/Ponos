@@ -35,7 +35,7 @@
     - `merged` = `deepMerge(deepMerge(user, project), local)`，优先级 user < project < local
     - `paths` = `{ user, project }`（文件实际路径，供诊断）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```js
 // server/settings.test.mjs
@@ -76,12 +76,12 @@ test('loadSettings：无文件时返回空对象', () => {
 })
 ```
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/settings.test.mjs`
 Expected: FAIL —— `Cannot find module '../kernel/settings.mjs'`
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 ```js
 // kernel/settings.mjs —— 分层 settings（user < project < local 深合并）
@@ -122,12 +122,12 @@ export function loadSettings({ configDir = '', cwd = '', local = {} } = {}) {
 }
 ```
 
-- [ ] **Step 4: 跑测试验证通过**
+- [x] **Step 4: 跑测试验证通过**
 
 Run: `node --test server/settings.test.mjs`
 Expected: PASS（3 个测试）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/settings.mjs server/settings.test.mjs
@@ -151,7 +151,7 @@ git commit -m "feat(kernel): 分层 settings 深合并（user < project < local�
   - disallowedTools：`[...args.disallowedTools, ...(merged.disallowedTools || [])]`
   - settings.env 兜底：仅当 `process.env[k]` 未定义时写入（spawn env 快照仍权威）
 
-- [ ] **Step 1: 写失败测试（追加到 server/settings.test.mjs）**
+- [x] **Step 1: 写失败测试（追加到 server/settings.test.mjs）**
 
 ```js
 import { spawn } from 'node:child_process'
@@ -208,12 +208,12 @@ test('settings 集成：项目 settings.model 注入 system(init)', async () => 
 })
 ```
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/settings.test.mjs`
 Expected: FAIL —— init 事件 `model` 为 `''`（settings 未读取）
 
-- [ ] **Step 3: 实现 cli.mjs 挂载**
+- [x] **Step 3: 实现 cli.mjs 挂载**
 
 在 `kernel/cli.mjs`：
 1. import 区加：`import { loadSettings } from './settings.mjs'`
@@ -242,12 +242,12 @@ Expected: FAIL —— init 事件 `model` 为 `''`（settings 未读取）
       disallowedTools: [...args.disallowedTools, ...(settings.merged.disallowedTools || [])],
 ```
 
-- [ ] **Step 4: 跑测试验证通过**
+- [x] **Step 4: 跑测试验证通过**
 
 Run: `node --test server/settings.test.mjs`
 Expected: PASS（4 个测试）
 
-- [ ] **Step 5: 回归 + 提交**
+- [x] **Step 5: 回归 + 提交**
 
 Run: `node --test server/kernel-contract.test.mjs`
 Expected: PASS（协议未破坏）
@@ -274,7 +274,7 @@ git commit -m "feat(kernel): cli 挂载分层 settings（model/预算/权限/兜
     - 多条命中规则顺序执行，`deny` 或 `stop` 后短路
   - 事件语义：`preToolUse`（payload `{ toolName, toolUseId, input }`，脚本 stdout 首行 JSON `{ deny?, message? }`，`deny:true` → 否决）、`postToolUse`（payload `{ toolName, toolUseId, input, output }`）、`userPromptSubmit`（payload `{ prompt }`，JSON `{ stop?, message? }`）、`sessionStart`（payload `{ sessionId, cwd }`）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```js
 // server/hooks.test.mjs
@@ -333,12 +333,12 @@ test('createHooks.run：userPromptSubmit stop 解析', async () => {
 })
 ```
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/hooks.test.mjs`
 Expected: FAIL —— `Cannot find module '../kernel/hooks.mjs'`
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 ```js
 // kernel/hooks.mjs —— hooks 生命周期执行器（事件 → 规则匹配 → spawn 脚本 → 决策回填）
@@ -424,12 +424,12 @@ export function createHooks({ rules = [] } = {}) {
 }
 ```
 
-- [ ] **Step 4: 跑测试验证通过**
+- [x] **Step 4: 跑测试验证通过**
 
 Run: `node --test server/hooks.test.mjs`
 Expected: PASS（3 个测试）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/hooks.mjs server/hooks.test.mjs
@@ -449,7 +449,7 @@ git commit -m "feat(kernel): hooks 执行器（事件匹配/spawn/可否决决�
 - Consumes: `createHooks`（Task 3）、`loadSettings`（Task 1）
 - Produces: 引擎行为——`opts.hooks.run('preToolUse', ...)` 返回 `deny:true` 时工具不执行，tool_result 内容 = hook message；postToolUse 在工具结果后触发（output 截断 8KB）；cli 在 user 入 engine 前跑 userPromptSubmit，`stop` 时直接 assistant+result 不进轮次；spawn 完成 init 后触发 sessionStart（fire-and-forget）
 
-- [ ] **Step 1: 写失败测试（追加到 server/hooks.test.mjs）**
+- [x] **Step 1: 写失败测试（追加到 server/hooks.test.mjs）**
 
 ```js
 import { spawn } from 'node:child_process'
@@ -560,12 +560,12 @@ test('hooks 集成：userPromptSubmit stop → 拦截不进轮次', async () => 
 })
 ```
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/hooks.test.mjs`
 Expected: 单元 3 个 PASS，集成 2 个 FAIL（无 hooks 注入——第一个超时或 transcript 无标记；第二个直接走 engine 轮次出 mock 文本）
 
-- [ ] **Step 3: 实现 engine.mjs 注入点**
+- [x] **Step 3: 实现 engine.mjs 注入点**
 
 `kernel/engine.mjs` `executeToolUse`（line 333）内：权限审批通过后（原 line 366 `denialStreak = 0` 之后）、`const { store, ...toolCtx } = ctx`（原 line 369）之前插入：
 
@@ -593,7 +593,7 @@ Expected: 单元 3 个 PASS，集成 2 个 FAIL（无 hooks 注入——第一�
 
 注意：子 agent lane 复用 executeToolUse，hooks 同样生效（共享 opts.hooks），文档中注明即可。
 
-- [ ] **Step 4: 实现 cli.mjs 装配与触发**
+- [x] **Step 4: 实现 cli.mjs 装配与触发**
 
 `kernel/cli.mjs`：
 1. import 加：`import { createHooks } from './hooks.mjs'`
@@ -631,12 +631,12 @@ Expected: 单元 3 个 PASS，集成 2 个 FAIL（无 hooks 注入——第一�
 
 （return 后 finally 块仍会复位 turnActive/queue —— 与既有 finally 结构兼容。）
 
-- [ ] **Step 5: 跑测试验证通过**
+- [x] **Step 5: 跑测试验证通过**
 
 Run: `node --test server/hooks.test.mjs`
 Expected: PASS（5 个测试：3 单元 + 2 集成）
 
-- [ ] **Step 6: 回归 + 提交**
+- [x] **Step 6: 回归 + 提交**
 
 Run: `node --test server/kernel-contract.test.mjs server/kernel-bridge.test.mjs`
 Expected: PASS（无 hooks 配置时行为不变）
@@ -662,7 +662,7 @@ git commit -m "feat(kernel): hooks 注入点（preToolUse 否决/postToolUse/use
   - `seedFromFile(filePath, { env } = {})` → bool：读 providers.json → 取 activeProvider → `setProvider({ baseUrl, authToken, model, contextWindow })`；文件缺失/损坏/active 配置不全 → false 且不激活
   - `visionFromEnv(env = process.env)` → `{ baseUrl, model, configured } | null`：`YFW_VISION_BASE_URL/YFW_VISION_MODEL/YFW_VISION_AUTH_TOKEN`；baseUrl 与 model 缺一 → null
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```js
 // server/provider-chain.test.mjs
@@ -708,12 +708,12 @@ test('visionFromEnv：YFW_VISION_* 解析 + 缺字段返回 null', () => {
 })
 ```
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/provider-chain.test.mjs`
 Expected: FAIL —— `seedFromFile/visionFromEnv is not a function`
 
-- [ ] **Step 3: 实现 kernel/provider.mjs 追加导出**
+- [x] **Step 3: 实现 kernel/provider.mjs 追加导出**
 
 在 `kernel/provider.mjs` 末尾追加（文件头若缺 fs 导入则补 `import { existsSync, readFileSync } from 'node:fs'`）：
 
@@ -752,7 +752,7 @@ export function visionFromEnv(env = process.env) {
 
 （若 cli 已静态 import provider.mjs，则直接 `seedFromFile(join(configDir, 'providers.json'))`；Task 6 需要 `getProvider/visionFromEnv`，届时改为静态 import，此处两可。）
 
-- [ ] **Step 4: 实现 bridge.mjs 落盘**
+- [x] **Step 4: 实现 bridge.mjs 落盘**
 
 `server/bridge.mjs`：
 1. `YFW_SETTINGS_PATH` 定义附近加：
@@ -787,12 +787,12 @@ function writeProvidersFile() {
 2. `saveConfig`（line 453-460）内 `syncKernelSettings()` 之后加 `writeProvidersFile()`。
 3. 启动初始化处（line 551 `syncKernelSettings()` 旁）加 `writeProvidersFile()`。
 
-- [ ] **Step 5: 跑测试验证通过**
+- [x] **Step 5: 跑测试验证通过**
 
 Run: `node --test server/provider-chain.test.mjs`
 Expected: PASS（3 个测试）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add kernel/provider.mjs kernel/cli.mjs server/bridge.mjs server/provider-chain.test.mjs
@@ -817,7 +817,7 @@ git commit -m "feat(kernel): provider 配置传递链（bridge providers.json �
   - `verifySkillVersions({ lockPath, skills })` → `{ outdated: [{ id, lock, disk }] }`：lock 支持 `{ [id]: version }` 或 `{ skills: { [id]: version } }`；缺 lock 文件 → 空
   - cli：对每个 `--add-dir` 执行 discoverSkills（去重 by id）→ composeSystemPrompt 注入；init 事件扩展 `provider`（registry 激活时 `{ model, version }`，否则 null）、`vision`（visionFromEnv 非空时 `{ model }`）、`skills`（数量）、`settings: { hooks: n }`（全部只增字段）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```js
 // server/skills.test.mjs
@@ -921,12 +921,12 @@ test('集成：spawn 内核 + 技能目录 → init 事件带 skills 数量与 p
 
 > 注：`ev.provider.version` 具体初值取决于 P4-5 计划实现（version 从 0 还是 1 起步）——断言放宽为 `assert.ok(ev.provider && ev.provider.model === 'm1')`，去掉 version 相等断言，避免跨计划耦合。
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/skills.test.mjs`
 Expected: FAIL —— `Cannot find module '../kernel/skills.mjs'`
 
-- [ ] **Step 3: 实现 kernel/skills.mjs**
+- [x] **Step 3: 实现 kernel/skills.mjs**
 
 ```js
 // kernel/skills.mjs —— 技能发现内核化（与 bridge /skills 同一 schema：SKILL.md 目录 + legacy .md）
@@ -995,7 +995,7 @@ export function verifySkillVersions({ lockPath, skills = [] }) {
 }
 ```
 
-- [ ] **Step 4: 实现 prompt.mjs 注入**
+- [x] **Step 4: 实现 prompt.mjs 注入**
 
 `kernel/prompt.mjs` `composeSystemPrompt`（line 73）签名加 `skills = []`，在 AGENTS.md 区块之后、append 之前插入：
 
@@ -1007,7 +1007,7 @@ export function verifySkillVersions({ lockPath, skills = [] }) {
   }
 ```
 
-- [ ] **Step 5: 实现 cli.mjs 装配与 init 扩展**
+- [x] **Step 5: 实现 cli.mjs 装配与 init 扩展**
 
 `kernel/cli.mjs`：
 1. import 加：`import { discoverSkills } from './skills.mjs'` 与 `import { getProvider, visionFromEnv } from './provider.mjs'`（provider.mjs 静态 import；Task 5 的动态 import 改为静态）
@@ -1041,12 +1041,12 @@ export function verifySkillVersions({ lockPath, skills = [] }) {
 
 （`hooks` 变量来自 Task 4；若 Task 4 尚未落地，此处 `hooks.count` 用 `(settings.merged.hooks || []).length` 等价替换，保持本计划步骤自洽。）
 
-- [ ] **Step 6: 跑测试验证通过**
+- [x] **Step 6: 跑测试验证通过**
 
 Run: `node --test server/skills.test.mjs`
 Expected: PASS（4 个测试）
 
-- [ ] **Step 7: 回归 + 提交**
+- [x] **Step 7: 回归 + 提交**
 
 Run: `node --test server/settings.test.mjs server/hooks.test.mjs server/provider-chain.test.mjs server/skills.test.mjs server/kernel-contract.test.mjs server/kernel-bridge.test.mjs`
 Expected: 全绿
