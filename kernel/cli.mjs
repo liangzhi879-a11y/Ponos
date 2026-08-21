@@ -36,7 +36,7 @@ import { discoverSkills } from './skills.mjs'
 import { loadSettings } from './settings.mjs'
 import { createHooks } from './hooks.mjs'
 import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
-import { YFW_VERSION } from '../version.mjs'
+import { YFW_VERSION, SCHEMA_VERSION, buildId } from '../version.mjs'
 
 const REQUIRED_FORMAT = 'stream-json'
 
@@ -249,6 +249,8 @@ export async function main(argv) {
   const vision = visionFromEnv()
   wire.system('init', {
     model, tools: engine.toolNames, session_id: sessionId, name: 'YFWorking', version: YFW_VERSION, capacity,
+    schemaVersion: SCHEMA_VERSION,
+    buildId: buildId(),
     provider: prov ? { model: prov.model, version: providerVersion() } : null,
     vision: vision ? { model: vision.model } : null,
     skills: skills.length,
