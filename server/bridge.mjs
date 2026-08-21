@@ -611,7 +611,8 @@ const sessions = new Map()
 const wsClients = new Set()
 
 // 诊断埋点：供主进程 diag-monitor 查询（只读内存统计，跨会话累计，仅统计最近 7 天）
-const diagInfo = { firstTokenOk: 0, firstTokenTotal: 0, kernelCrashCount: 0, lastApiSuccessAt: null }
+const diagInfo = { firstTokenOk: 0, firstTokenTotal: 0, kernelCrashCount: 0, lastApiSuccessAt: null,
+  kernelVersion: '', schemaVersion: 0, buildId: '' }
 
 // O3-1/O3-2 共用：transcript 目录总大小（MB 取整；目录不可读时 0）
 function transcriptDirMB() {
@@ -1019,6 +1020,12 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     }
     let parsed = null
     try { parsed = JSON.parse(t) } catch (_) {}
+    // D4-1：init 事件版本字段采集（kernelVersion/schemaVersion/buildId 交叉比对）
+    if (parsed?.type === 'system' && parsed?.subtype === 'init') {
+      if (parsed.version) diagInfo.kernelVersion = parsed.version
+      if (parsed.schemaVersion) diagInfo.schemaVersion = parsed.schemaVersion
+      if (parsed.buildId) diagInfo.buildId = parsed.buildId
+    }
     if (parsed && parsed.usage && parsed.type === 'result') {
       const u = parsed.usage
       diagInfo.lastApiSuccessAt = Date.now()

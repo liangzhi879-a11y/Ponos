@@ -8,3 +8,9 @@ export const YFW_VERSION = 'dev 0.1'
 
 // settings 文件 schema 版本（D2-1）：无 schemaVersion 的旧文件视为 v0，读取时沿迁移链升级。
 export const SCHEMA_VERSION = 1
+
+// buildId（D4-1）：构建/发布时经环境注入（如 YFW_BUILD_ID=release-2026-08-21-a1b2），
+// dev 默认 'dev'。与 /diag 交叉比对：kernelVersion + schemaVersion + buildId 三源合一。
+export function buildId() {
+  return process.env.YFW_BUILD_ID || 'dev'
+}
