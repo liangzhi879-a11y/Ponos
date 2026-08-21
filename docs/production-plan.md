@@ -167,3 +167,15 @@ Phase 1 ──→ Phase 2 ──→ Phase 3 ──┬──→ Phase 6
 - P5 完成：500 轮长会话 token 预算稳定、跨会话记忆可检索
 - P6 完成：内核可独立部署、旧 settings/transcript 升级不破坏
 - 每阶段落地后跑全量回归（222+ tests）与 T003 评测确认无退化
+
+## 8. P7 评测回归与优化（2026-08-21 完成）
+
+P1-P6 全部落地后全量横评（yfw × T001-T006 + SWE001-006，deepseek-v4-flash），对比基线（08-20T14:24）：
+
+- **T 系列 6/6、SWE 系列 6/6 全 pass**（基线 5/6 + 5/6），两个基线失败点均转 pass：
+  - T004（08-20 fail）根因是 verify 期望 bug（byModelM1 漏算一条 m1 记录），已修（aebdc71）
+  - SWE004（08-20 fail）本次通过
+- **修复 1 项 P1 引入的真实缺陷**：R1-2 连接超时把 `AbortSignal.timeout` 并入 fetch signal，timer 在响应头到达后仍存活，30s 一到误杀仍在读取的长 thinking 流（deepseek 每轮 >30s 必现，T003 评测复现 "stream interrupted: timeout"）。修复为独立 timer 仅包裹 fetch（`599b9a8`），T003 复评 pass，全量单测 316/316
+- 结论：**P1-P6 零退化**，轻量内核在 12 任务全量评测下达到全 pass
+
+> 细化：docs/superpowers/plans/2026-08-21-benchmark-regression.md
