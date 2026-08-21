@@ -137,6 +137,43 @@ test('Read：部分读取带续读进度指引；超大文件报错带定向读�
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('Read 去重 stub：全量读后文件未变返回 stub；修改/部分读/新路径正常', async () => {
+  const { dir, reg } = tmpReg()
+  try {
+    const f = join(dir, 'dedup.txt')
+    writeFileSync(f, 'v1\nv2\nv3\n', 'utf-8')
+    // 第一次全量读 → 正常内容 + 记录缓存
+    const first = await reg.run({ name: 'Read', input: { file_path: f } })
+    assert.equal(first.isError, false)
+    assert.match(first.content, /v2/)
+    // 文件未变再次全量读 → stub（不返回内容）
+    const second = await reg.run({ name: 'Read', input: { file_path: f } })
+    assert.equal(second.isError, false)
+    assert.match(second.content, /文件自上次读取后未变化/)
+    assert.ok(!second.content.includes('v2'), 'stub 不应包含文件内容')
+    // Write 修改文件 → 缓存失效 → 再读返回新内容
+    await reg.run({ name: 'Write', input: { file_path: f, content: 'v9\n' } })
+    const afterWrite = await reg.run({ name: 'Read', input: { file_path: f } })
+    assert.ok(!afterWrite.content.includes('文件自上次读取后未变化'))
+    assert.match(afterWrite.content, /v9/)
+    // 部分读取（limit）不触发去重（不视为已有全部内容）
+    const partial = await reg.run({ name: 'Read', input: { file_path: f, limit: 1 } })
+    assert.ok(partial.content.includes('v9'), '部分读取应正常返回内容')
+    const partialAgain = await reg.run({ name: 'Read', input: { file_path: f, limit: 1 } })
+    assert.ok(partialAgain.content.includes('v9'), '部分读取不缓存，重复定向读仍返回内容')
+    // Edit 修改 → 缓存失效 → 再读新内容
+    await reg.run({ name: 'Edit', input: { file_path: f, old_string: 'v9', new_string: 'v10' } })
+    const afterEdit = await reg.run({ name: 'Read', input: { file_path: f } })
+    assert.ok(!afterEdit.content.includes('文件自上次读取后未变化'))
+    assert.match(afterEdit.content, /v10/)
+    // 新路径不受影响
+    const g = join(dir, 'other.txt')
+    writeFileSync(g, 'x', 'utf-8')
+    const fresh = await reg.run({ name: 'Read', input: { file_path: g } })
+    assert.match(fresh.content, /^x/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('OCR：越界路径与缺失文件报错（不触发 python）', async () => {
   const { dir, reg } = tmpReg()
   try {

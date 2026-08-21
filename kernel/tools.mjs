@@ -91,7 +91,12 @@ function resolvePath(p, cwd) {
   return resolve(cwd || process.cwd(), p)
 }
 
-function readFile(filePath, allowDirs, input = {}, cwd) {
+// Read 去重 stub（对照 claude FILE_UNCHANGED_STUB）：全量读过的文件在 mtime/size
+// 未变时再次读取返回 stub，提示直接引用此前结果——省去模型重复读同一文件
+// 的往返与 token（T003 上轮 Read 6 次中部分为重复读）。
+const READ_STUB_PREFIX = '文件自上次读取后未变化'
+
+function readFile(filePath, allowDirs, input = {}, cwd, readCache) {
   try {
     if (!filePath) return { content: 'file_path 缺失', isError: true }
     const resolved = resolvePath(filePath, cwd)
@@ -134,18 +139,28 @@ function readFile(filePath, allowDirs, input = {}, cwd) {
       const last = Math.min(limit, totalLines)
       return { content: content + progressHint(1, last), isError: false, meta: { range: [1, last], totalLines } }
     }
+    // 全量读：先查去重缓存（mtime/size 未变且此前全量读完 → stub，省重复读往返；
+    // 对照 claude FILE_UNCHANGED_STUB）。部分读取（offset/limit）不参与去重——定向
+    // 读是有意取特定范围，且不视为"已有全部内容"。
+    const cached = readCache?.get(resolved)
+    if (cached?.fullRead && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+      return { content: `${READ_STUB_PREFIX}（${resolved}，${st.size} 字节）。此前 Read 的结果仍有效，直接引用，无需重复读取。`, isError: false }
+    }
+    // 全量读成功 → 记录缓存（mtime/size 供下次去重）
+    if (readCache) readCache.set(resolved, { mtimeMs: st.mtimeMs, size: st.size, fullRead: true })
     return { content: full }
   } catch (e) {
     return { content: `读取失败：${e.message}`, isError: true }
   }
 }
 
-function writeFile(filePath, content, allowDirs, cwd) {
+function writeFile(filePath, content, allowDirs, cwd, readCache) {
   try {
     if (!filePath) return { content: 'file_path 缺失', isError: true }
     const resolved = resolvePath(filePath, cwd)
     if (!withinBoundary(resolved, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${resolved}）`, isError: true }
     writeFileSync(resolved, String(content ?? ''), 'utf-8')
+    readCache?.delete(resolved) // 文件已变，失效去重缓存
     return { content: `已写入 ${resolved}（${String(content ?? '').length} 字符）` }
   } catch (e) {
     return { content: `写入失败：${e.message}`, isError: true }
@@ -153,7 +168,7 @@ function writeFile(filePath, content, allowDirs, cwd) {
 }
 
 // Edit：先读后改的字符串替换。old_string 需在文件中唯一（否则要求 replace_all）。
-function editFile(filePath, oldString, newString, replaceAll, allowDirs, cwd) {
+function editFile(filePath, oldString, newString, replaceAll, allowDirs, cwd, readCache) {
   try {
     if (!filePath) return { content: 'file_path 缺失', isError: true }
     const resolved = resolvePath(filePath, cwd)
@@ -169,6 +184,7 @@ function editFile(filePath, oldString, newString, replaceAll, allowDirs, cwd) {
     }
     const next = replaceAll ? content.split(oldString).join(newString) : content.replace(oldString, newString)
     writeFileSync(resolved, next, 'utf-8')
+    readCache?.delete(resolved) // 文件已变，失效去重缓存
     return { content: `已编辑 ${resolved}（${replaceAll ? count : 1} 处替换）` }
   } catch (e) {
     return { content: `编辑失败：${e.message}`, isError: true }
@@ -474,6 +490,8 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, disallowedTo
   // 禁用工具集（--disallowedTools）：toolNames/toolSchemas/run/isConcurrencySafe
   // 全部基于过滤后视图；被禁工具的执行请求直接拒绝（防模型绕过工具列表）
   const blocked = new Set(disallowedTools || [])
+  // Read 去重缓存（会话级）：resolved → { mtimeMs, size, fullRead }，Write/Edit 失效
+  const readCache = new Map()
   // todo 清单（TodoWrite 覆盖式维护；同一进程共享）
   let todoItems = []
   const registry = {
@@ -502,7 +520,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, disallowedTo
         },
         required: ['file_path'],
       },
-      run: (input) => readFile(String(input?.file_path ?? ''), allowDirs, input, cwd),
+      run: (input) => readFile(String(input?.file_path ?? ''), allowDirs, input, cwd, readCache),
     },
     Write: {
       description: '写入文本文件（覆盖整个文件）。改动范围超过半个文件时优先考虑本工具而非多次 Edit。',
@@ -515,7 +533,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, disallowedTo
         },
         required: ['file_path', 'content'],
       },
-      run: (input) => writeFile(String(input?.file_path ?? ''), String(input?.content ?? ''), allowDirs, cwd),
+      run: (input) => writeFile(String(input?.file_path ?? ''), String(input?.content ?? ''), allowDirs, cwd, readCache),
     },
     Edit: {
       description: '先读后改的字符串替换编辑（old_string 需唯一，或指定 replace_all）。一次 Edit 覆盖一个完整逻辑块；同文件多处修改尽量合并为一次调用；改动过大时考虑 Write 重写。',
@@ -530,7 +548,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, disallowedTo
         },
         required: ['file_path', 'old_string', 'new_string'],
       },
-      run: (input) => editFile(String(input?.file_path ?? ''), String(input?.old_string ?? ''), String(input?.new_string ?? ''), input?.replace_all === true, allowDirs, cwd),
+      run: (input) => editFile(String(input?.file_path ?? ''), String(input?.old_string ?? ''), String(input?.new_string ?? ''), input?.replace_all === true, allowDirs, cwd, readCache),
     },
     Glob: {
       description: '在会话目录内递归搜索文件路径（pattern 支持 * ? 和 ** 通配）。先 Glob 定位候选文件再 Read，避免无目标 ls。',
