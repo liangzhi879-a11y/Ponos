@@ -21,6 +21,7 @@ import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createEngine } from './engine.mjs'
+import { resolveConfigDir, sharedDirFor } from './config.mjs'
 import { killActiveChildren } from './tools.mjs'
 import { createLogger } from './log.mjs'
 import { makeWire } from './protocol.mjs'
@@ -108,7 +109,12 @@ export async function main(argv) {
   // 会话身份：--resume 恢复既有会话，否则新建（session_id 供 GUI 从 init 事件
   // 记录 conversation.sessionId，transcript 文件名 = 该 id，契约 §7/§8）
   const sessionId = args.resume || newSessionId()
-  const configDir = process.env.CLAUDE_CONFIG_DIR || process.env.YFWORKING_HOME || join(homedir(), '.yfworking')
+  // S5-1 配置目录解析纯函数（CLAUDE_CONFIG_DIR > YFWORKING_HOME > ~/.yfworking）
+  const configDir = resolveConfigDir(process.env, homedir)
+  // S5-1 共享目录只读挂载：shared 存在时追加进 addDirs（tools withinBoundary 按
+  // 白名单 dir 放行；共享技能/配置多人共用，个人 configDir 保持隔离）
+  const sharedDir = sharedDirFor(configDir)
+  if (existsSync(sharedDir)) args.addDirs.push(sharedDir)
   const store = createSessionStore({ configDir, cwd: args.addDirs[0] || '', sessionId })
   // 内核结构化日志（R5-1）：stderr JSON 行，级别过滤经 CLAUDE_CODE_LOG_LEVEL
   const log = createLogger({ level: process.env.CLAUDE_CODE_LOG_LEVEL || 'info', sid: sessionId })
