@@ -31,7 +31,7 @@
   - `setProvider({ baseUrl, authToken, model })` → `{ provider, version }`（校验通过后原子替换，version 从 1 起递增；校验失败抛 `Error`）
   - `providerVersion()` → number
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```js
 // server/provider.test.mjs
@@ -67,12 +67,12 @@ test('setProvider 激活后固定 registry 值 + version 递增 + 尾部斜杠�
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/provider.test.mjs`
 Expected: FAIL（Cannot find module `../kernel/provider.mjs`）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 ```js
 // kernel/provider.mjs —— 运行时 provider 注册表（docs/production/platform.md P4-5）
@@ -111,12 +111,12 @@ export function setProvider({ baseUrl, authToken, model } = {}) {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/provider.test.mjs`
 Expected: PASS（3 个测试全过）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/provider.mjs server/provider.test.mjs
@@ -135,7 +135,7 @@ git commit -m "feat(kernel): provider 注册表——运行时热切换配置源
 - Consumes: `getProvider()`（Task 1）
 - Produces: `anthropicStream` 在 setProvider 激活后请求发往 registry 的 baseUrl（URL 可被测试断言）；未激活时行为与现状一致
 
-- [ ] **Step 1: 写失败测试（增补到 server/api-protocol.test.mjs 末尾）**
+- [x] **Step 1: 写失败测试（增补到 server/api-protocol.test.mjs 末尾）**
 
 ```js
 import { getProvider, setProvider } from '../kernel/provider.mjs'
@@ -164,12 +164,12 @@ test('P4-5 setProvider 激活后 streamMessages 请求走新 baseUrl（mock fetc
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/api-protocol.test.mjs`
 Expected: FAIL（请求仍发往 http://orig，urls 不含 hot-switched）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 ```js
 // api.mjs 顶部 import 区追加：
@@ -189,12 +189,12 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
   if (!base || !token) throw new Error('内核：ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 未配置')
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/api-protocol.test.mjs`
 Expected: PASS（全部原有测试 + 新增 1 个，共 ~10+ 个全过——未激活时 env 行为不变）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/api.mjs server/api-protocol.test.mjs
@@ -213,7 +213,7 @@ git commit -m "feat(kernel): api.mjs 从 provider 注册表解析 baseUrl/authTo
 - Consumes: 无
 - Produces: `appendMeta(kind, extra)` → entry（写日志 + entriesBySeq 记录，**不进 surface.nodes**，因此 deriveMessages 不含 meta）；load() 恢复后 meta 条目不污染投影
 
-- [ ] **Step 1: 写失败测试（增补到 server/session.test.mjs 末尾，沿用该文件现有 fixture 模式）**
+- [x] **Step 1: 写失败测试（增补到 server/session.test.mjs 末尾，沿用该文件现有 fixture 模式）**
 
 ```js
 import { appendFileSync } from 'node:fs'
@@ -239,12 +239,12 @@ test('P4-5 appendMeta：落盘 + 不进模型输入 + load 恢复不污染', asy
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/session.test.mjs`
 Expected: FAIL（`store.appendMeta is not a function`）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 ```js
 // kernel/session.mjs rebuildSurface 内、compaction-start 跳过逻辑旁（line 77）追加：
@@ -260,12 +260,12 @@ appendMeta(kind, extra = {}) {
 },
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/session.test.mjs`
 Expected: PASS（全部原有测试 + 新增 1 个）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/session.mjs server/session.test.mjs
@@ -284,7 +284,7 @@ git commit -m "feat(kernel): session appendMeta 审计条目——热切换留�
 - Consumes: `getProvider()`（Task 1）
 - Produces: runTurn 返回的 `{ model }` 反映 registry 当前 model（CLI `--model` 显式指定时优先于 registry）
 
-- [ ] **Step 1: 写失败测试（增补到 server/kernel-engine.test.mjs 末尾，沿用该文件直连 createEngine 的 fixture 模式——YFW_MOCK_API=1）**
+- [x] **Step 1: 写失败测试（增补到 server/kernel-engine.test.mjs 末尾，沿用该文件直连 createEngine 的 fixture 模式——YFW_MOCK_API=1）**
 
 ```js
 import { getProvider, setProvider } from '../kernel/provider.mjs'
@@ -303,12 +303,12 @@ test('P4-5 setProvider 换 model 后下一轮 runTurn 使用新 model', async ()
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/kernel-engine.test.mjs`
 Expected: FAIL（r2.model 仍为 'model-A'）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 ```js
 // kernel/engine.mjs:130 const → let，并改从 registry 取初值：
@@ -319,12 +319,12 @@ let model = opts.model || getProvider().model || ''
 model = opts.model || getProvider().model || ''
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/kernel-engine.test.mjs`
 Expected: PASS（全部原有测试 + 新增 1 个）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/engine.mjs server/kernel-engine.test.mjs
@@ -347,7 +347,7 @@ git commit -m "feat(kernel): engine 每轮从 provider 注册表刷新 model—�
   - 校验失败：stdout `system(provider_switch_rejected, { reason: <error message> })`
   - 旧调用方（GUI 旧版本）不感知该 subtype 时无回执（向后兼容，kernel-contract 现有测试不受影响）
 
-- [ ] **Step 1: 写失败测试（新建 server/provider-switch.test.mjs）**
+- [x] **Step 1: 写失败测试（新建 server/provider-switch.test.mjs）**
 
 ```js
 // server/provider-switch.test.mjs —— 内核原生 provider 热切换（docs/production/platform.md P4-5）
@@ -467,12 +467,12 @@ test('switch_provider：非法 payload 拒绝（校验失败回执）', async ()
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/provider-switch.test.mjs`
 Expected: FAIL（无 provider_switched 回执——read timeout，或 reason undefined）
 
-- [ ] **Step 3: 最小实现（kernel/cli.mjs）**
+- [x] **Step 3: 最小实现（kernel/cli.mjs）**
 
 ```js
 // import 区追加：
@@ -501,12 +501,12 @@ if (subtype === 'switch_provider') {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/provider-switch.test.mjs`
 Expected: PASS（3 个测试全过）
 
-- [ ] **Step 5: 回归 + 提交**
+- [x] **Step 5: 回归 + 提交**
 
 ```bash
 node --test server/kernel-contract.test.mjs server/kernel-bridge.test.mjs
@@ -526,7 +526,7 @@ git commit -m "feat(kernel): switch_provider 协议——空闲热切换/busy �
 - Consumes: 会话结构 `sessions.get(sid)` → `{ proc, _turnActive }`；写内核：`s.proc.stdin.write(JSON.stringify(msg) + '\n')`
 - Produces: `/providers`（POST 新增或 PUT 更新 activeProvider）成功后，对该 provider 名下活跃内核会话下发 `control_request { request: { subtype: 'switch_provider', payload: { baseUrl, authToken, model } } }`；无活跃会话或内核不支持（无回执）时静默——GUI 保留"重启生效"降级路径（现状行为不变）
 
-- [ ] **Step 1: 写失败测试（增补到 server/kernel-bridge.test.mjs，沿用其 WS/bridge fixture；新增前先断言现有活跃会话收到 provider_switched）**
+- [x] **Step 1: 写失败测试（增补到 server/kernel-bridge.test.mjs，沿用其 WS/bridge fixture；新增前先断言现有活跃会话收到 provider_switched）**
 
 ```js
 test('P4-5 /providers 保存 activeProvider 后活跃会话收到 provider_switched', async () => {
@@ -556,12 +556,12 @@ test('P4-5 /providers 保存 activeProvider 后活跃会话收到 provider_switc
 
 > 若现有 fixture 无 `expectSystem` 辅助，测试步骤 1 中内联读取 WS 消息队列直到匹配 `system/provider_switched`（参照该文件既有的事件读取方式）。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/kernel-bridge.test.mjs`
 Expected: FAIL（无 provider_switched 事件）
 
-- [ ] **Step 3: 最小实现（server/bridge.mjs）**
+- [x] **Step 3: 最小实现（server/bridge.mjs）**
 
 ```js
 // /providers POST/PUT 保存成功后（现有 saveConfig/syncKernelSettings 调用之后）追加：
@@ -583,12 +583,12 @@ function pushProviderSwitch(provider) {
 
 调用点：`/providers` POST/PUT handler 在 `saveConfig(...)` 成功后 `pushProviderSwitch(provider)`（provider 为本次保存并激活的那个）。无活跃会话时循环为空、零开销；旧内核忽略未知 subtype、无回执——bridge 不做等待，行为与现状一致（GUI 重启兜底）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/kernel-bridge.test.mjs`
 Expected: PASS（全部原有测试 + 新增 1 个）
 
-- [ ] **Step 5: 全量回归 + 提交**
+- [x] **Step 5: 全量回归 + 提交**
 
 ```bash
 node --test "server/*.test.mjs"
