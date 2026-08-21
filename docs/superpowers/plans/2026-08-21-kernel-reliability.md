@@ -30,7 +30,7 @@
   - 每行 JSON 到 stderr：`{"ts","level","sid","msg",...extra}`；`level` 过滤（fatal<error<warn<info<debug，默认 info）
   - 级别值：`process.env.CLAUDE_CODE_LOG_LEVEL`
 
-- [ ] **Step 1: 写失败测试（新建 server/log.test.mjs）**
+- [x] **Step 1: 写失败测试（新建 server/log.test.mjs）**
 
 ```js
 // server/log.test.mjs —— 内核结构化日志（docs/production/reliability.md R5-1）
@@ -68,12 +68,12 @@ test('createLogger：级别过滤（默认 info 不落 debug）', () => {
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/log.test.mjs`
 Expected: FAIL（Cannot find module `../kernel/log.mjs`）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 ```js
 // kernel/log.mjs —— 内核结构化日志（docs/production/reliability.md R5-1）
@@ -99,7 +99,7 @@ export function createLogger({ sink = process.stderr, level = '', sid = '' } = {
 }
 ```
 
-- [ ] **Step 4: cli.mjs 挂载（最小接入）**
+- [x] **Step 4: cli.mjs 挂载（最小接入）**
 
 ```js
 // cli.mjs import 区追加：
@@ -116,7 +116,7 @@ catch (err) {
 }
 ```
 
-- [ ] **Step 5: 跑测试确认通过 + 提交**
+- [x] **Step 5: 跑测试确认通过 + 提交**
 
 ```bash
 node --test server/log.test.mjs
@@ -138,7 +138,7 @@ git commit -m "feat(kernel): 结构化日志 addLog——stderr JSON 分级 + cl
   - `streamInterrupted(err)` → Error（name='StreamInterrupted'，仅 transient 类错误包装）
   - `anthropicStream` 流中断后自动重发完整请求（≤`CLAUDE_CODE_STREAM_RECONNECTS`，默认 3；1s/2s/4s），重发成功则新流产出；超限抛原错
 
-- [ ] **Step 1: 写失败测试（增补到 server/api-protocol.test.mjs 末尾）**
+- [x] **Step 1: 写失败测试（增补到 server/api-protocol.test.mjs 末尾）**
 
 ```js
 import { streamInterrupted } from '../kernel/api.mjs'
@@ -195,12 +195,12 @@ test('R1-1 流中断：第一次流中途抛 transient → 自动重发成功（
 
 > 说明：`pull() { throw ... }` 在部分 Node 版本不会透传错误到 reader.read()。若上述 mock 无法触发中断，改用可编程 reader 桩：Step 1 测试中把 fetch 返回 `{ ok: true, body: null, text: async () => '' }` 并 stub `streamMessages` 内部不可行——**备选实现**：测试直接构造 `protocolStream` 不适用（中断在 anthropicStream 重发层）。若 pull-throw 不可靠，测试改为：第一次 fetch 返回 `res.ok=false, status=503`（transient，走 anthropicStream 的重发分支），断言 calls===2 且最终成功——同一条重发链路，覆盖相同代码路径。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/api-protocol.test.mjs`
 Expected: FAIL（calls 为 1，无重发；或 503 直接抛错）
 
-- [ ] **Step 3: 最小实现（kernel/api.mjs）**
+- [x] **Step 3: 最小实现（kernel/api.mjs）**
 
 ```js
 // protocolStream 内读循环（line ~240 withIdleTimeout(reader.read(), idleTimeoutMs) 处）
@@ -258,12 +258,12 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
 
 > 注意：原实现 catch 分支的缓存回退（isCacheRejection）需保留在重发循环的 catch 中（如上），行为与现状一致。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/api-protocol.test.mjs`
 Expected: PASS（原有全部测试 + 新增 1 个）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/api.mjs server/api-protocol.test.mjs
@@ -282,7 +282,7 @@ git commit -m "feat(kernel): API 流中断退避重发 ≤3 次（1s/2s/4s），
 - Consumes: `session.deriveMessages()`（transcript 配对检查）
 - Produces: engine 工具循环内，收到 tool_use 时若其 id 已在 transcript 有配对 tool_result → **跳过执行**，直接回填既有结果（内容 + is_error 原样），防重连后模型重放已执行工具的副作用
 
-- [ ] **Step 1: 写失败测试（kernel/api.mjs 先加 mock 场景 + kernel-engine.test.mjs 增补）**
+- [x] **Step 1: 写失败测试（kernel/api.mjs 先加 mock 场景 + kernel-engine.test.mjs 增补）**
 
 ```js
 // kernel/api.mjs mockStream 内（[mock:tool-safe] 分支后）新增场景：
@@ -318,12 +318,12 @@ test('R1-1 防重放：同轮重复 tool_use id 只执行一次（第二次回�
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/kernel-engine.test.mjs`
 Expected: FAIL（results.length === 2，重复执行）
 
-- [ ] **Step 3: 最小实现（kernel/engine.mjs）**
+- [x] **Step 3: 最小实现（kernel/engine.mjs）**
 
 ```js
 // runTurnInternal 工具循环内、收到 tool_use chunk 入 blocks 之前（line ~210 附近），
@@ -351,12 +351,12 @@ for (const block of blocks) {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/kernel-engine.test.mjs`
 Expected: PASS（原有全部测试 + 新增 1 个）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/engine.mjs kernel/api.mjs server/kernel-engine.test.mjs
@@ -377,7 +377,7 @@ git commit -m "feat(kernel): 工具防重放——transcript 配对 tool_use 回
   - `kernel/cli.mjs`: SIGINT/SIGTERM → 打日志 + killActiveChildren + 删除 running marker + exit 0；启动时若 `<configDir>/runs/<sid>.running` 存在（上次 crash）→ `wire.system('crash_recovered', { sessionId })` + log.warn
   - marker 文件：`{ pid, ts }` JSON
 
-- [ ] **Step 1: 写失败测试（新建 server/graceful-exit.test.mjs，spawn 真内核）**
+- [x] **Step 1: 写失败测试（新建 server/graceful-exit.test.mjs，spawn 真内核）**
 
 ```js
 // server/graceful-exit.test.mjs —— 优雅退出 + 崩溃自愈（docs/production/reliability.md R2-1/R3-1）
@@ -451,12 +451,12 @@ test('R3-1 崩溃检测：SIGKILL 后 marker 残留 → 下次启动发 crash_re
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/graceful-exit.test.mjs`
 Expected: FAIL（marker 不存在 / SIGTERM 无 handler 直接退出但 marker 未写 / 无 crash_recovered）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 ```js
 // kernel/tools.mjs —— 活跃子进程登记（R2-1：优雅退出时 kill 整棵子进程树）
@@ -504,12 +504,12 @@ process.on('SIGTERM', () => shutdown(0))
 // rl.on('close', () => process.exit(0)) 改为 rl.on('close', () => shutdown(0))
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/graceful-exit.test.mjs`
 Expected: PASS（2 个测试全过）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/tools.mjs kernel/cli.mjs server/graceful-exit.test.mjs
@@ -530,7 +530,7 @@ git commit -m "feat(kernel): 优雅退出（SIGINT/TERM 清 marker 杀子进程�
   - `classifyApiError`：`TimeoutError` → `{ kind: 'transient', retryable: true }`（可被 Task 2 重发链路捕获）
   - 分级语义：连接/首字节超时（fetch 阶段）→ transient 重试；流空闲超时（读阶段，已有）→ transient 重试；两者错误信息可区分
 
-- [ ] **Step 1: 写失败测试（增补到 server/api-protocol.test.mjs 末尾）**
+- [x] **Step 1: 写失败测试（增补到 server/api-protocol.test.mjs 末尾）**
 
 ```js
 import { classifyApiError } from '../kernel/api.mjs'
@@ -578,12 +578,12 @@ test('R1-2 fetch 连接超时：AbortSignal.timeout 触发后经重发链路成�
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/api-protocol.test.mjs`
 Expected: FAIL（TimeoutError 分类为 unknown；或 fetch 无超时挂死导致测试超时）
 
-- [ ] **Step 3: 最小实现（kernel/api.mjs）**
+- [x] **Step 3: 最小实现（kernel/api.mjs）**
 
 ```js
 // classifyApiError（line ~319）内、abort 分支后追加：
@@ -603,12 +603,12 @@ async function* protocolStream({ url, body, headers, signal }) {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/api-protocol.test.mjs`
 Expected: PASS（原有全部测试 + 新增 2 个）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/api.mjs server/api-protocol.test.mjs
@@ -630,7 +630,7 @@ git commit -m "feat(kernel): 连接/首字节超时分级——TimeoutError tran
   - bridge `getOrCreateSession`：新建会话前 `sessions.size >= capacity`（来自该会话内核 init 的 capacity，或 env 兜底）→ 拒绝：`send({ type: 'error', data: { message: '已达并发会话上限（N），请关闭空闲会话后重试' }, sessionId: sid })` + return null
   - GUI 零新增（错误事件走既有 error 通道展示）
 
-- [ ] **Step 1: 写失败测试（增补到 server/kernel-bridge.test.mjs，沿用其 before/WS fixture）**
+- [x] **Step 1: 写失败测试（增补到 server/kernel-bridge.test.mjs，沿用其 before/WS fixture）**
 
 ```js
 test('R4-1 并发上限：超过 capacity 的新会话被拒绝（错误事件）', async () => {
@@ -651,12 +651,12 @@ test('R4-1 并发上限：超过 capacity 的新会话被拒绝（错误事件�
 
 > 若上述混合断言不易落地（fixture 单例 bridge），Step 1 测试改为**独立轻量验证**：直接在 kernel-bridge.test.mjs 的 `before` 中 `process.env.YFW_MAX_CONCURRENT_SESSIONS = '1'`（该文件每次测试会话独立），然后本测试开 2 个会话断言第 2 个被拒——但会影响同文件其他测试。**最终采用方案**：新建 `server/zz-concurrency.test.mjs`（独立 bridge 实例 + YFW_MAX_CONCURRENT_SESSIONS=1），完整断言：第 1 会话 init 带 capacity=1 → 第 2 会话创建收到 error「已达并发会话上限」。若时间有限，至少断言 `system(init).capacity` 存在且 = env 值。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/kernel-bridge.test.mjs`
 Expected: FAIL（init 无 capacity 字段；或超限未被拒）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 ```js
 // kernel/cli.mjs —— system(init)（line ~160）追加 capacity：
@@ -678,12 +678,12 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/kernel-bridge.test.mjs`
 Expected: PASS（原有全部测试 + 新增断言；若采用独立 zz 文件则跑该文件）
 
-- [ ] **Step 5: 全量回归 + 提交**
+- [x] **Step 5: 全量回归 + 提交**
 
 ```bash
 node --test "server/*.test.mjs"
