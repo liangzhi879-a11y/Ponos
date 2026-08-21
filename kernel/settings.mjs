@@ -56,7 +56,10 @@ export function loadSettings({ configDir = '', cwd = '', local = {} } = {}) {
   const projectPath = cwd ? join(cwd, '.yfworking', 'settings.json') : ''
   const user = readJson(userPath)
   const project = readJson(projectPath)
-  const { data: migratedUser, migrated } = migrateSettings(user)
+  // 迁移只对已存在的 user 文件执行：无文件 = 无配置，merged 保持空（P4 既有语义）
+  const { data: migratedUser, migrated } = userPath && existsSync(userPath)
+    ? migrateSettings(user)
+    : { data: user, migrated: false }
   const valid = validateSettings(migratedUser)
   return {
     user: migratedUser,
