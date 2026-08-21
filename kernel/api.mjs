@@ -172,6 +172,16 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // R1-1 防重放测试：同一次调用输出两个【相同 id】的 tool_use（echo 安全命令）
+  if (lastText.includes('[mock:replay]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    const id = 'tool_use_replay_1'
+    yield { type: 'tool_use', id, name: 'Bash', input: { command: 'echo replay-once' } }
+    yield { type: 'tool_use', id, name: 'Bash', input: { command: 'echo replay-once' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // 工具请求回合：[mock:tool] 触发 Bash tool_use（rm -rf 高危 → 审批挂起）。
   // YFW_MOCK_TOOLS=N 时一次返回 N 个 tool_use（多工具轮合并回归用）
   if (lastText.includes('[mock:tool]')) {
