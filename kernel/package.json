@@ -1,0 +1,14 @@
+{
+  "name": "yfw-kernel",
+  "version": "0.1.0",
+  "description": "YFW-turbo 内核独立部署包（零 npm 依赖，无 GUI）",
+  "type": "module",
+  "bin": { "yfw-kernel": "cli.mjs" },
+  "main": "engine.mjs",
+  "scripts": {
+    "start": "node cli.mjs",
+    "smoke": "node cli.mjs --help"
+  },
+  "engines": { "node": ">=18" },
+  "license": "UNLICENSED"
+}
