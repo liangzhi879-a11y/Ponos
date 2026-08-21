@@ -1,11 +1,17 @@
 // YFW-turbo 工具注册表与执行器（docs/bridge-contract.md §9 替换面：工具执行器）
 // ---------------------------------------------------------------------------
 // 工具集：Bash（shell 执行，高危命令经 permissions 审批）、Read/Write/Edit
-// （文件读写与编辑，路径边界校验）、Glob/Grep（边界内搜索）。返回统一结果
-// { content, isError, meta? }，由 engine 以 tool_result 回填模型。
+// （文件读写与编辑，路径边界校验）、Glob/Grep（边界内搜索）、Agent（子代理
+// 分发，执行体在 engine）、Task（后台任务管理）、TodoWrite（任务规划）、
+// WebFetch（URL 抓取，零依赖 Node https）、OCR（spawn python 调 ocr_engine.py
+// 识别扫描件，零 npm 依赖）。返回统一结果 { content, isError, meta? }，由
+// engine 以 tool_result 回填模型。
 import { spawn } from 'node:child_process'
-import { readFileSync, writeFileSync, statSync, existsSync, readdirSync } from 'node:fs'
-import { dirname, resolve, sep, join } from 'node:path'
+import { readFileSync, writeFileSync, statSync, existsSync, readdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, resolve, sep, join, extname } from 'node:path'
+import { get as httpsGet, request as httpsRequest } from 'node:https'
+import { get as httpGet, request as httpRequest } from 'node:http'
 import { matchesHighRisk } from './highrisk.mjs'
 
 const BASH_TIMEOUT_MS = 120_000
@@ -241,8 +247,205 @@ function grepSearch(pattern, allowDirs, { glob, context = 0, maxResults = 200 } 
   }
 }
 
+// WebFetch：抓取 URL 内容。仅 http/https；30s 超时；2MB 上限；HTML→文本简易提取
+function fetchUrl(url, { maxBytes = 2 * 1024 * 1024, timeoutMs = 30_000 } = {}) {
+  return new Promise((resolvePromise) => {
+    let u
+    try { u = new URL(String(url || '')) } catch { return resolvePromise({ content: `URL 无效：${url}`, isError: true }) }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+      return resolvePromise({ content: `仅支持 http/https：${u.protocol}`, isError: true })
+    }
+    const mod = u.protocol === 'https:' ? httpsRequest : httpRequest
+    const req = mod(u, {
+      method: 'GET',
+      headers: { 'user-agent': 'YFW-turbo/0.1', accept: 'text/html,text/plain,*/*' },
+    }, (res) => {
+      const status = res.statusCode || 0
+      const chunks = []
+      let size = 0
+      res.on('data', (d) => {
+        size += d.length
+        if (size > maxBytes) {
+          req.destroy()
+          resolvePromise({ content: `内容超限（>${maxBytes} 字节），已截断`, isError: true })
+          return
+        }
+        chunks.push(d)
+      })
+      res.on('end', () => {
+        const buf = Buffer.concat(chunks)
+        const type = String(res.headers['content-type'] || '')
+        if (!/html/i.test(type) && !/^text\//i.test(type)) {
+          return resolvePromise({ content: `响应类型 ${type}（${buf.length} 字节），非文本内容，未提取文本`, isError: false })
+        }
+        const text = /html/i.test(type) ? htmlToText(buf.toString('utf-8')) : buf.toString('utf-8')
+        resolvePromise({ content: `HTTP ${status}\n${(text.slice(0, maxBytes) || '(空内容)').trim()}`, isError: status >= 400 })
+      })
+    })
+    req.on('error', (e) => resolvePromise({ content: `抓取失败：${e.message}`, isError: true }))
+    req.setTimeout(timeoutMs, () => { req.destroy(); resolvePromise({ content: `抓取超时（${timeoutMs}ms）`, isError: true }) })
+    req.end()
+  })
+}
+
+// 简易 HTML→文本（零依赖）：去 script/style、标签、常用实体
+function htmlToText(html) {
+  return String(html)
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n\s*\n+/g, '\n')
+    .trim()
+}
+
+// ---------------------------------------------------------------------------
+// OCR：扫描件识别。内核保持零 npm 依赖——OCR 能力来自外部 python 引擎
+// （RapidOCR/PP-OCRv4，见 ~/.claude/skills/_common/ocr_engine.py），工具仅负责
+// 定位引擎、传参、解析输出。引擎探测：YFW_OCR_ENGINE env 覆盖 → 常见技能路径。
+// 输出用 --output 写临时 JSON 全量结果（stdout 仅 500 字符预览），解析后删除。
+// ---------------------------------------------------------------------------
+const OCR_TIMEOUT_MS = 300_000
+
+function findOcrEngine() {
+  if (process.env.YFW_OCR_ENGINE && existsSync(process.env.YFW_OCR_ENGINE)) return process.env.YFW_OCR_ENGINE
+  const home = process.env.USERPROFILE || process.env.HOME || ''
+  const candidates = [
+    join(home, '.claude', 'skills', '_common', 'ocr_engine.py'),
+    join(home, '.yfworking', 'skills', '_common', 'ocr_engine.py'),
+  ]
+  return candidates.find((p) => existsSync(p)) || null
+}
+
+// Windows 优先 python（rapidocr_onnxruntime 装入的解释器），ENOENT 时回退 py
+function runPythonCapture(args, { cwd, timeoutMs = OCR_TIMEOUT_MS } = {}) {
+  return new Promise((resolvePromise) => {
+    const pythons = process.platform === 'win32' ? ['python', 'py'] : ['python3', 'python']
+    let idx = 0
+    const attempt = () => {
+      const py = pythons[idx]
+      if (!py) return resolvePromise({ content: 'OCR 失败：未找到 python 解释器（需安装 python + rapidocr_onnxruntime）', isError: true })
+      const child = spawn(py, args, { cwd: cwd || undefined, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+      let stdout = ''
+      let stderr = ''
+      let settled = false
+      const finish = (content, isError) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolvePromise({ content, isError })
+      }
+      const timer = setTimeout(() => {
+        try { child.kill() } catch {}
+        finish(`OCR 超时（${timeoutMs}ms）`, true)
+      }, timeoutMs)
+      child.stdout.on('data', (d) => { stdout += d.toString(); if (stdout.length > 500_000) stdout = stdout.slice(-500_000) })
+      child.stderr.on('data', (d) => { stderr += d.toString(); if (stderr.length > 200_000) stderr = stderr.slice(-200_000) })
+      child.on('error', (e) => {
+        if (e.code === 'ENOENT') { idx++; attempt() }
+        else finish(`OCR 引擎启动失败：${e.message}`, true)
+      })
+      child.on('close', (code) => {
+        const out = stdout.trim()
+        const err = stderr.trim()
+        const body = code === 0
+          ? (out || '(OCR 引擎执行完成，无输出)')
+          : `OCR 引擎退出码 ${code}\n${out ? out + '\n' : ''}${err ? 'stderr: ' + err.slice(0, 2000) : ''}`.trim()
+        finish(body, code !== 0)
+      })
+    }
+    attempt()
+  })
+}
+
+const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff', '.webp']
+
+// OCR 主逻辑：边界/存在性校验 → 引擎探测 → python 执行 → 解析。
+// PDF 走 CLI（--output 临时 JSON 全量结果）；图片走内联 import 调 ocr_image()
+// （引擎 CLI 的 ocr 命令面向 PDF，fitz 包装图片会判为空白页）。零 npm 依赖。
+async function ocrFile(filePath, allowDirs, input = {}) {
+  try {
+    if (!filePath) return { content: 'file_path 缺失', isError: true }
+    if (!withinBoundary(filePath, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${filePath}）`, isError: true }
+    if (!existsSync(filePath)) return { content: `文件不存在：${filePath}`, isError: true }
+    if (statSync(filePath).isDirectory()) return { content: `是目录：${filePath}`, isError: true }
+    const mode = input?.mode === 'table' ? 'table' : 'text'
+    const project = String(input?.project || 'default')
+    const engine = findOcrEngine()
+    if (!engine) {
+      return { content: 'OCR 引擎不可用：未找到 ocr_engine.py（可设置 YFW_OCR_ENGINE 指向引擎路径）', isError: true }
+    }
+    const isImage = IMAGE_EXTS.includes(extname(filePath).toLowerCase())
+    let data = null
+    if (isImage) {
+      // 图片：内联 import ocr_engine.ocr_image（table 模式对图片无意义，一律全文）
+      const engineDir = dirname(engine)
+      const script = [
+        'import sys, json',
+        `sys.path.insert(0, ${JSON.stringify(engineDir)})`,
+        'from ocr_engine import ocr_image',
+        `r = ocr_image(${JSON.stringify(filePath)}, ${JSON.stringify(project)})`,
+        'print(json.dumps(r, ensure_ascii=False))',
+      ].join('; ')
+      const r = await runPythonCapture(['-c', script], { cwd: dirname(filePath) })
+      if (r.isError) return { content: `OCR 失败\n${r.content}`, isError: true }
+      // 引擎初始化日志混在 stdout，JSON 是最后一个以 { 开头的行
+      const jsonLine = r.content.split('\n').reverse().find((l) => l.trim().startsWith('{'))
+      try { data = JSON.parse(jsonLine) } catch { return { content: `OCR 引擎输出无效\n${r.content}`, isError: true } }
+      if (data?.error) return { content: `OCR 失败：${data.error}`, isError: true }
+    } else {
+      const tmpOut = join(tmpdir(), `yfw-ocr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`)
+      const args = mode === 'table'
+        ? [engine, 'ocr-table', '--file', filePath, '--project', project, '--output', tmpOut]
+        : [engine, 'ocr', '--file', filePath, '--project', project, '--output', tmpOut]
+      const r = await runPythonCapture(args, { cwd: dirname(filePath) })
+      try { data = JSON.parse(readFileSync(tmpOut, 'utf-8')) } catch {}
+      try { rmSync(tmpOut, { force: true }) } catch {}
+      if (r.isError) {
+        const errMsg = data?.error ? `：${data.error}` : ''
+        return { content: `OCR 失败${errMsg}\n${r.content}`, isError: true }
+      }
+      if (!data) return { content: `OCR 引擎无有效输出\n${r.content}`, isError: true }
+    }
+    // 组装结果：多页加页标记；table 模式追加表格（tab 分隔行）
+    const pages = Array.isArray(data.pages) ? data.pages : []
+    const textBlock = pages.length > 1
+      ? pages.map((p) => `--- 第 ${p.page} 页 ---\n${p.text || ''}`).join('\n')
+      : (pages[0]?.text || data.text || '')
+    const tables = Array.isArray(data.tables) ? data.tables : []
+    const tableBlock = tables.length
+      ? tables.map((t, i) => {
+          const rows = Array.isArray(t.data) ? t.data : []
+          const lines = rows.map((row) => (Array.isArray(row) ? row.join('\t') : String(row ?? '')))
+          return `[表格 ${i + 1}（第 ${t.page} 页，${lines.length} 行）]\n${lines.join('\n')}`
+        }).join('\n\n')
+      : ''
+    const meta = {
+      scanned: isImage ? null : data.is_scanned === true,
+      pages: pages.length,
+      cacheHit: data.cache_hit === true,
+      tables: tables.length,
+      confidence: data.confidence ?? pages[0]?.confidence ?? null,
+    }
+    const kind = isImage ? '图片' : (meta.scanned ? '扫描件' : '含文本层')
+    const head = `[OCR] ${data.file || filePath}（${kind}，${meta.pages} 页，缓存命中：${meta.cacheHit ? '是' : '否'}）`
+    const body = [head, textBlock, tableBlock].filter(Boolean).join('\n\n').trim()
+    return { content: body || `OCR 未识别到文本（${filePath}）`, isError: false, meta }
+  } catch (e) {
+    return { content: `OCR 失败：${e.message}`, isError: true }
+  }
+}
+
 export function createToolRegistry({ cwd, addDirs, skipPermissions }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
+  // todo 清单（TodoWrite 覆盖式维护；同一进程共享）
+  let todoItems = []
   const registry = {
     Bash: {
       description: '执行 shell 命令',
@@ -257,6 +460,8 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions }) {
     },
     Read: {
       description: '读取文本文件内容（支持 offset/limit 行范围读取，offset 从 1 开始）',
+      // concurrencySafe：只读工具可并发执行（P0-4 只读批并行）
+      concurrencySafe: true,
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -299,6 +504,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions }) {
     },
     Glob: {
       description: '在会话目录内递归搜索文件路径（pattern 支持 * ? 和 ** 通配）',
+      concurrencySafe: true,
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -312,6 +518,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions }) {
     },
     Grep: {
       description: '在会话目录内按正则搜索文件内容，返回 file:line 匹配行',
+      concurrencySafe: true,
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -329,10 +536,125 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions }) {
         maxResults: Number(input?.maxResults) || 200,
       }),
     },
+    // 子代理分发：执行体在 engine（ctx.spawnSubAgent）。子 lane 内禁止嵌套。
+    Agent: {
+      description: '将子任务委派给子 Agent 执行（按优势场景选择 subagent_type）；前台同步回填结果，或 run_in_background 后台异步执行',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          subagent_type: { type: 'string', description: '子 Agent 类型（general-purpose / researcher 或用户注册的 agent id）' },
+          prompt: { type: 'string', description: '委派给子 Agent 的完整任务说明' },
+          run_in_background: { type: 'boolean', description: '可选：true 时后台异步执行，立即返回 task_id（Task 工具查询/中止）' },
+          description: { type: 'string', description: '可选：任务描述（展示用）' },
+        },
+        required: ['subagent_type', 'prompt'],
+      },
+      run: (input, ctx) => {
+        if (ctx?.lane) return { content: '子 Agent 不支持嵌套分发', isError: true }
+        if (typeof ctx?.spawnSubAgent !== 'function') return { content: '子 Agent 执行器不可用', isError: true }
+        return ctx.spawnSubAgent(input, ctx)
+      },
+    },
+    // 后台子 Agent 任务管理（查询/中止）
+    Task: {
+      description: '管理后台子 Agent 任务：list 列出全部、status/output 查询单个、stop 中止',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          command: { type: 'string', description: 'list | status | output | stop' },
+          task_id: { type: 'string', description: '可选：status/output/stop 时的任务 id' },
+        },
+        required: ['command'],
+      },
+      run: (input, ctx) => {
+        if (typeof ctx?.taskSystem !== 'object') return { content: '任务系统不可用', isError: true }
+        const cmd = String(input?.command || '')
+        const id = String(input?.task_id || '')
+        const sys = ctx.taskSystem
+        if (cmd === 'list') return { content: sys.list() }
+        if (cmd === 'status') return { content: sys.status(id) }
+        if (cmd === 'output') return sys.output(id)
+        if (cmd === 'stop') return sys.stop(id)
+        return { content: `未知 command：${cmd}（支持 list/status/output/stop）`, isError: true }
+      },
+    },
+    // 任务规划清单（覆盖式更新，返回当前清单）
+    TodoWrite: {
+      description: '维护任务规划清单（todo list）：以完整清单覆盖更新，返回当前清单供模型跟踪进度',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          todos: {
+            type: 'array',
+            description: '完整的 todo 清单（覆盖式更新）：[{ content, status? }]，status 为 pending/in_progress/completed',
+            items: {
+              type: 'object',
+              additionalProperties: true,
+              properties: {
+                content: { type: 'string', description: '任务描述' },
+                status: { type: 'string', description: '可选：pending/in_progress/completed（默认 pending）' },
+              },
+            },
+          },
+        },
+        required: ['todos'],
+      },
+      run: (input) => {
+        const list = Array.isArray(input?.todos) ? input.todos : []
+        todoItems = list
+          .map((t) => ({
+            content: String(t?.content ?? ''),
+            status: ['pending', 'in_progress', 'completed'].includes(t?.status) ? t.status : 'pending',
+          }))
+          .filter((t) => t.content)
+        if (todoItems.length === 0) return { content: '（todo 清单为空）' }
+        const lines = todoItems.map((t, i) => {
+          const mark = t.status === 'completed' ? 'x' : t.status === 'in_progress' ? '→' : ' '
+          return `${i + 1}. [${mark}] ${t.content}`
+        })
+        return { content: lines.join('\n') }
+      },
+    },
+    // URL 抓取（零依赖 Node http/https）
+    WebFetch: {
+      description: '抓取 URL 内容并提取文本（仅 http/https；30s 超时；2MB 上限；HTML 自动转文本）',
+      concurrencySafe: true,
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          url: { type: 'string', description: '要抓取的 URL（http/https）' },
+        },
+        required: ['url'],
+      },
+      run: (input) => fetchUrl(String(input?.url || '')),
+    },
+    // 扫描件 OCR（spawn python 调 ocr_engine.py；PDF/图片均可；结果按 project 缓存）
+    OCR: {
+      description: '对扫描件 PDF 或图片执行 OCR 文字识别（mode=text 提取全文；mode=table 额外识别表格；结果按 project 缓存，重复识别秒回）',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          file_path: { type: 'string', description: '要识别的 PDF/图片绝对路径' },
+          mode: { type: 'string', description: '可选：text（默认，全文识别）| table（含表格识别）' },
+          project: { type: 'string', description: '可选：项目名（缓存隔离，默认 default）' },
+        },
+        required: ['file_path'],
+      },
+      run: (input) => ocrFile(String(input?.file_path ?? ''), allowDirs, input),
+    },
   }
   return {
     registry,
     toolNames: Object.keys(registry),
+    // P0-4：只读工具并发安全标记（Bash/Write/Edit/Agent/Task/OCR 等写/执行类串行）
+    isConcurrencySafe(name) {
+      return registry[name]?.concurrencySafe === true
+    },
     // 中立工具 schema 列表（Anthropic/OpenAI 协议字段映射在 api.mjs 完成）
     toolSchemas() {
       return Object.entries(registry).map(([name, tool]) => ({

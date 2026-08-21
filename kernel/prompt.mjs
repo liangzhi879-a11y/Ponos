@@ -58,9 +58,17 @@ export function buildBaseSystemPrompt({ toolNames = [] } = {}) {
   ].join('\n')
 }
 
-// 三层组装：base + AGENTS.md（带来源标注）+ append 文件（最后，最高优先级）
-export function composeSystemPrompt({ toolNames, agents, append = '' }) {
+// 三层组装：base + 可用子 Agent 区块 + AGENTS.md（带来源标注）+ append 文件
+// （最后，最高优先级）。subagents 为内置 ∪ 用户级的子 Agent 表（Agent 工具路由依据）。
+export function composeSystemPrompt({ toolNames, agents, subagents = [], append = '' }) {
   const parts = [buildBaseSystemPrompt({ toolNames })]
+  if (subagents && subagents.length > 0) {
+    const lines = ['【可用子 Agent】可将独立子任务委派给以下子 Agent（Agent 工具的 subagent_type）：']
+    for (const a of subagents) {
+      lines.push(`- ${a.id}：${a.description}${a.tools && a.tools.length ? `（tools: ${a.tools.join(', ')}）` : ''}`)
+    }
+    parts.push(lines.join('\n'))
+  }
   for (const a of agents || []) {
     parts.push(`# 项目指令（${a.path}）\n\n${a.content.trim()}`)
   }

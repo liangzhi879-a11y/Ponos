@@ -50,6 +50,7 @@ export function createAnthropicParser() {
   let tool = null // { id, name, inputJson }
   let textBuf = ''
   let usage = { input_tokens: 0, output_tokens: 0 }
+  let stopReason = null
   return {
     feed(payload) {
       const out = []
@@ -72,9 +73,13 @@ export function createAnthropicParser() {
         tool = null
       } else if (payload.type === 'message_start' && payload.message?.usage) {
         usage = normalizeUsage(payload.message.usage)
-      } else if (payload.type === 'message_delta' && payload.usage) {
-        usage = normalizeUsage(payload.usage)
-        out.push({ type: 'usage', usage })
+      } else if (payload.type === 'message_delta') {
+        // stop_reason 在 message_delta 才可靠（content_block_stop 时恒为 null）
+        if (payload.delta?.stop_reason) stopReason = payload.delta.stop_reason
+        if (payload.usage) {
+          usage = normalizeUsage(payload.usage)
+          out.push({ type: 'usage', usage })
+        }
       }
       return out
     },
@@ -85,6 +90,7 @@ export function createAnthropicParser() {
       return out
     },
     usage() { return usage },
+    stopReason() { return stopReason },
   }
 }
 
@@ -104,6 +110,13 @@ async function* streamText(text, signal) {
 }
 
 async function* mockStream({ messages, signal }) {
+  // 瞬时错误模拟（P0-1 retry 测试）：YFW_MOCK_TRANSIENT=once 首次调用抛网络层错误
+  if (process.env.YFW_MOCK_TRANSIENT === 'once' && process.env.YFW_MOCK_TRANSIENT_CONSUMED !== '1') {
+    process.env.YFW_MOCK_TRANSIENT_CONSUMED = '1'
+    const err = new Error('内核：API 请求失败 503 fetch failed')
+    err.status = 503
+    throw err
+  }
   // tool_result user 消息不是"新轮次"：计数与 lastText 提取都要跳过（工具循环
   // 中间条目落盘后，tool_result 以 user 角色进入模型输入，不得算作用户新轮次）
   const realUser = (messages || []).filter(
@@ -114,22 +127,28 @@ async function* mockStream({ messages, signal }) {
   const lastText = typeof lastContent === 'string'
     ? lastContent
     : (Array.isArray(lastContent) ? lastContent.filter((b) => b?.type === 'text').map((b) => b.text).join('\n') : '')
-  const toolResults = (messages || []).filter(
-    (m) => m.role === 'user' && Array.isArray(m.content) && m.content.some((b) => b?.type === 'tool_result')
-  )
-
-  // 工具结果回合：tool_result 已注入 → 报告执行结果（引擎工具循环第二轮）。
-  // toolResults 为 user 消息（含 tool_result 块），需取块内 content（此前为块数组
-  // 直接 String → '[object Object]'）
-  if (toolResults.length) {
-    const firstBlock = toolResults[0].content.find((b) => b?.type === 'tool_result')
+  // 工具结果回合：仅当"最后一条消息"为 tool_result 轮才报告执行结果（引擎工具
+  // 循环第二轮）。不得用"历史中任意 tool_result"判定——跨轮连续调用 [mock:tool]
+  // 时，上一轮被拒绝的 tool_result 残留在历史里，会让 mock 误走结果回显分支而
+  // 永远不再产出 tool_use（denial 降级测试复现，2026-08-21 修复）。
+  const lastMessage = (messages || [])[messages.length - 1]
+  const lastIsToolResult = lastMessage?.role === 'user' &&
+    Array.isArray(lastMessage.content) && lastMessage.content.some((b) => b?.type === 'tool_result')
+  if (lastIsToolResult) {
+    const firstBlock = lastMessage.content.find((b) => b?.type === 'tool_result')
     const body = `工具执行完成：${String(firstBlock?.content ?? '').slice(0, 120)}`
     yield* streamText(body, signal)
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
-  // 压缩摘要调用：检测 COMPACTION_INSTRUCTION → 返回 mock 摘要（收敛用）
+  // 压缩摘要调用：检测 COMPACTION_INSTRUCTION → 返回 mock 摘要（收敛用）。
+  // YFW_MOCK_COMPACT_BAD=1 → 返回无标签文本（extractSummary 失败，熔断测试用）
   if (lastText && lastText.includes('系统压缩指令')) {
+    if (process.env.YFW_MOCK_COMPACT_BAD === '1') {
+      yield* streamText('（压缩失败：模型未输出结构化摘要）', signal)
+      yield { type: 'usage', usage: MOCK_USAGE }
+      return
+    }
     const body = process.env.YFW_MOCK_COMPACT_RESPONSE === '1'
       ? '<compacted-summary>摘要输出</compacted-summary>'
       : '<compacted-summary>mock 摘要</compacted-summary>'
@@ -144,6 +163,15 @@ async function* mockStream({ messages, signal }) {
       throw new Error('context_window_exceeded: 请求超出模型上下文窗口')
     }
   }
+  // 安全工具请求回合：[mock:tool-safe] 触发非高危 Bash tool_use（echo）。
+  // 子 lane 测试用——高危命令会经 can_use_tool 审批挂起（无 CLI 无法解除）
+  if (lastText.includes('[mock:tool-safe]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_mock_safe', name: 'Bash', input: { command: 'echo mock-safe' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // 工具请求回合：[mock:tool] 触发 Bash tool_use（rm -rf 高危 → 审批挂起）。
   // YFW_MOCK_TOOLS=N 时一次返回 N 个 tool_use（多工具轮合并回归用）
   if (lastText.includes('[mock:tool]')) {
@@ -155,6 +183,24 @@ async function* mockStream({ messages, signal }) {
       const command = i === 1 ? 'rm -rf /tmp/yfw-mock-target' : `echo mock-tool-${i}`
       yield { type: 'tool_use', id: `tool_use_mock_${i}`, name: 'Bash', input: { command } }
     }
+    // P0-2 length 截断模拟：YFW_MOCK_STOP_REASON=length → 工具轮后置 stop_reason
+    if (process.env.YFW_MOCK_STOP_REASON === 'length') yield { type: 'stop_reason', reason: 'length' }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // 大结果工具轮（P0-3 磁盘持久化测试）：Bash 输出 30000 字符触发落盘 + 预览替换
+  if (lastText.includes('[mock:big]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_mock_big', name: 'Bash', input: { command: 'node -e "process.stdout.write(\'x\'.repeat(30000))"' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // 子 Agent 分发冒烟：[mock:agent] 触发 Agent tool_use（subagent 链路测试用）
+  if (lastText.includes('[mock:agent]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_mock_agent', name: 'Agent', input: { subagent_type: 'general-purpose', prompt: '测试子任务：请输出一句确认' } }
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
@@ -177,16 +223,21 @@ export async function* protocolStream({ url, body, headers, signal }) {
   const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: toAbortSignal(signal) })
   if (!res.ok || !res.body) {
     const detail = await res.text().catch(() => '')
-    throw new Error(`内核：API 请求失败 ${res.status} ${detail.slice(0, 300)}`)
+    // P0-1：错误携带 HTTP status，供 classifyApiError 结构化分类（5xx 可退避重试）
+    const err = new Error(`内核：API 请求失败 ${res.status} ${detail.slice(0, 300)}`)
+    err.status = res.status
+    throw err
   }
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buf = ''
   let usagePushed = false
   const parser = createAnthropicParser()
+  // P1-6：单次流读空闲看门狗（默认 300s，同 deepseek-harness）
+  const idleTimeoutMs = Number(process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS || 300_000)
   try {
     while (true) {
-      const { done, value } = await reader.read()
+      const { done, value } = await withIdleTimeout(reader.read(), idleTimeoutMs)
       if (done) break
       if (signal?.aborted) throw abortError()
       buf += decoder.decode(value, { stream: true })
@@ -209,6 +260,8 @@ export async function* protocolStream({ url, body, headers, signal }) {
       if (c.type === 'usage') usagePushed = true
       yield c
     }
+    // 流末尾：stop_reason（engine 判 length 截断用；无则 null）
+    yield { type: 'stop_reason', reason: parser.stopReason() }
     // 每流一个终态 usage：解析器已 push（message_delta / OpenAI 末尾 usage）则不再兜底
     if (!usagePushed) yield { type: 'usage', usage: parser.usage() }
   } finally {
@@ -236,6 +289,44 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
     body,
     headers: { 'content-type': 'application/json', 'x-api-key': token, 'anthropic-version': '2023-06-01' },
     signal,
+  })
+}
+
+// 错误分类（P0-1）：结构化错误码 + 是否可重试。engine 据此决定退避重试或快速失败。
+//   abort          —— 用户取消，永不重试
+//   context-window —— 上下文溢出，engine 有独立压缩兜底路径
+//   auth           —— 401/403 凭证问题，重试无意义
+//   quota          —— 配额/计费耗尽（insufficient_quota 类），快速失败
+//   rate-limit     —— 429 / rate limit，可退避重试
+//   transient      —— 5xx / 网络 / 流空闲超时，可退避重试（连接层瞬时错误）
+//   unknown        —— 其余，保守不重试
+export function classifyApiError(err) {
+  if (err?.name === 'AbortError') return { kind: 'abort', retryable: false }
+  const msg = String(err?.message || '')
+  const status = err?.status || 0
+  // context_window_exceeded 以 message 关键词判定（provider 不一定带 status，如 mock）
+  if (/context_window_exceeded/.test(msg)) return { kind: 'context-window', retryable: false }
+  if (status === 401 || status === 403) return { kind: 'auth', retryable: false }
+  if (status === 429 || /rate.?limit|too many requests/i.test(msg)) return { kind: 'rate-limit', retryable: true }
+  if (/quota|billing|insufficient/i.test(msg)) return { kind: 'quota', retryable: false }
+  if (/stream idle timeout/i.test(msg)) return { kind: 'transient', retryable: true }
+  if (status >= 500 || /ECONN|ENOTFOUND|EPIPE|ETIMEDOUT|fetch failed|network|socket/i.test(msg)) return { kind: 'transient', retryable: true }
+  return { kind: 'unknown', retryable: false }
+}
+
+// 单次读操作空闲看门狗（P1-6）：reader.read() 长时间无数据判超时。
+// 参考 deepseek-harness 的流式空闲看门狗（300s），防 fetch 永不 settle。
+function withIdleTimeout(promise, ms) {
+  if (!ms || ms <= 0) return promise
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => {
+      reject(Object.assign(new Error('stream idle timeout'), { code: 'STREAM_TIMEOUT' }))
+    }, ms)
+    if (t.unref) t.unref()
+    promise.then(
+      (v) => { clearTimeout(t); resolve(v) },
+      (e) => { clearTimeout(t); reject(e) },
+    )
   })
 }
 

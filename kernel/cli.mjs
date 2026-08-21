@@ -34,7 +34,7 @@ const REQUIRED_FORMAT = 'stream-json'
 function usage() {
   console.error(
     'YFW-turbo kernel: --print --output-format stream-json --input-format stream-json ' +
-    '[--verbose] [--dangerously-skip-permissions] [--permission-prompt-tool stdio] ' +
+    '[--verbose] [--dangerously-skip-permissions] [--auto-approve-high-risk] [--permission-prompt-tool stdio] ' +
     '[--disallowedTools <list>] [--resume <id>] [--append-system-prompt-file <file>] ' +
     '[--model <m>] [--add-dir <dir>]'
   )
@@ -48,6 +48,7 @@ export function parseArgs(argv) {
     inputFormat: null,
     verbose: false,
     skipPermissions: false,
+    autoApproveHighRisk: false,
     permissionPromptTool: null,
     disallowedTools: [],
     resume: null,
@@ -64,6 +65,7 @@ export function parseArgs(argv) {
       case '--input-format': out.inputFormat = next(); break
       case '--verbose': out.verbose = true; break
       case '--dangerously-skip-permissions': out.skipPermissions = true; break
+      case '--auto-approve-high-risk': out.autoApproveHighRisk = true; break
       case '--permission-prompt-tool': out.permissionPromptTool = next(); break
       case '--disallowedTools':
         out.disallowedTools.push(...String(next() ?? '').split(',').filter(Boolean)); break
@@ -129,20 +131,23 @@ export async function main(argv) {
     opts: {
       model: args.model,
       resumeId: args.resume,
+      configDir,
       addDirs: args.addDirs,
       systemPrompt: '', // 占位，下面三层组装后覆盖
       verbose: args.verbose,
       skipPermissions: args.skipPermissions,
+      autoApproveHighRisk: args.autoApproveHighRisk,
     },
     wire,
     session: store,
     health,
     compactor,
   })
-  // 提示词三层组装：内核基础行为规范 + AGENTS.md 项目指令 + GUI append 文件
-  // （最高优先级，后者覆盖前者）。cwd = addDirs[0]（会话工作目录）。
+  // 提示词组装：内核基础行为规范 + 可用子 Agent 区块（内置 ∪ 用户级）+ AGENTS.md
+  // 项目指令 + GUI append 文件（最高优先级，后者覆盖前者）。cwd = addDirs[0]。
   engine.setSystemPrompt(composeSystemPrompt({
     toolNames: engine.toolNames,
+    subagents: engine.agents,
     agents: discoverAgentsMd({ cwd: args.addDirs[0] || '', addDirs: args.addDirs }),
     append: readPromptFile(args.appendSystemPromptFile),
   }))
