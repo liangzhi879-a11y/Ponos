@@ -17,6 +17,8 @@ import * as doubao from './doubao.mjs'
 import { createTranscriptHandlers, aggregateStats, costUsd, sanitizePathSegment, transcriptBaseDir } from './transcript.mjs'
 import { makeBrowserRouter } from './browser-routing.mjs'
 import { buildAuditReport } from '../kernel/audit.mjs'
+import { aggregateUsage } from '../kernel/stats.mjs'
+import { costOf, withBudget } from '../kernel/cost.mjs'
 
 const PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51309', 10)
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -1386,30 +1388,51 @@ const httpServer = createServer(async (req, res) => {
       return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, results: transcriptApi.searchTranscripts(query, limit) }))
     }
     // --- /transcript/stats：token 统计聚合（项目/模型/日期），GUI 成本面板数据源 ---
+    // O1-2/O4-1：改用内核 aggregateUsage（cache 四字段/byTool/cacheRate/bySession）+
+    // costOf（含 cache 折扣计费）。聚合逻辑内核化，此处仅薄壳：目录遍历读 JSONL →
+    // 注入 sessionId/project → 内核纯函数聚合。响应字段只增不改（totals/byModel/
+    // byProject/byDate 键名与 aggregateStats 兼容）。预算阈值走 env，不新增 GUI 设置项。
     if (url.pathname === '/transcript/stats') {
       const project = url.searchParams.get('project') || ''
       const base = transcriptBaseDir()
-      const stats = project ? aggregateStats(join(base, sanitizePathSegment(project))) : aggregateStats(base)
-      // 成本换算：单价表来自 provider 配置
-      const cfg = loadConfig()
-      const provider = (cfg.providers || []).find((p) => p.id === cfg.activeProvider) || cfg.providers?.[0]
-      const priceTable = provider?.pricing || {}
+      const entries = []
+      const projects = readdirSync(base, { withFileTypes: true }).filter((d) => d.isDirectory())
+      for (const proj of projects) {
+        const projName = proj.name
+        if (project && sanitizePathSegment(project) !== projName) continue
+        const pdir = join(base, projName)
+        const files = readdirSync(pdir).filter((f) => f.endsWith('.jsonl'))
+        for (const f of files) {
+          const sid = f.replace(/\.jsonl$/, '')
+          const lines = readFileSync(join(pdir, f), 'utf-8').trim().split('\n').map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
+          for (const e of lines) { e.sessionId = sid; e.project = projName }
+          entries.push(...lines)
+        }
+      }
+      const agg = aggregateUsage(entries, { bySession: true })
+      // 成本换算：内核 costOf（含 cache 折扣计费），默认单价与 benchmark 口径一致
       const withCost = (bucket) => {
         const out = {}
         for (const [k, v] of Object.entries(bucket)) {
-          out[k] = { ...v, cost_usd: Number(costUsd({ model: k, input_tokens: v.input_tokens, output_tokens: v.output_tokens }, priceTable).toFixed(4)) }
+          out[k] = { ...v, cost_usd: Number(costOf(v).toFixed(4)) }
         }
         return out
       }
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({
+      const totals = { ...agg.totals, cost_usd: Number(costOf(agg.totals).toFixed(4)) }
+      // O4-1 月度预算：YFW_MONTHLY_BUDGET_USD env，未设时不输出 overBudget
+      const budget = Number(process.env.YFW_MONTHLY_BUDGET_USD || 0)
+      const { overBudget } = withBudget([{ cost_usd: totals.cost_usd }], budget)
+      const resp = {
         ok: true,
-        totals: { ...stats.totals, cost_usd: Number(
-          Object.entries(stats.byModel).reduce((s, [k, v]) => s + costUsd({ model: k, ...v }, priceTable), 0).toFixed(4)
-        ) },
-        byModel: withCost(stats.byModel),
-        byProject: stats.byProject,
-        byDate: stats.byDate,
-      }))
+        totals,
+        byModel: withCost(agg.byModel),
+        byProject: agg.byProject,
+        byDate: agg.byDate,
+        byTool: agg.byTool,
+        cacheRate: agg.cacheRate,
+      }
+      if (budget > 0) resp.overBudget = overBudget
+      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify(resp))
     }
 
     // --- /audit：审计聚合导出（S1-1，全量可追溯）。聚合逻辑在内核 audit.mjs，
