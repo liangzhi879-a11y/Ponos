@@ -4,6 +4,8 @@
 // 多因子加权（压缩次数/链深度/剩余水位/剩余轮数/失败/冗余率/分区失衡），模型自适应。
 // 全程 try/catch 静默降级，绝不影响主流程。LLM-as-Judge 默认关闭（可选调用）。
 
+import { predictTurns } from './context.mjs'
+
 // 断崖点：flash 3 / pro[1m] 6
 export function modelCap(model) {
   return /pro/i.test(String(model || '')) ? 6 : 3
@@ -62,23 +64,26 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
     const ceiling = attentionCeiling(contextWindow)
     const lastInput = recent.length ? (recent[recent.length - 1].usage?.input_tokens ?? 0) : 0
     const remainingPct = ceiling > 0 ? Math.max(0, 100 - (lastInput / ceiling) * 100) : 100
-    const avgPerTurn = recent.length
-      ? Math.max(1, Math.round(recent.reduce((s, t) => s + (t.usage?.input_tokens ?? 0), 0) / recent.length))
-      : 1000
-    const remainingTokens = Math.max(0, ceiling - lastInput)
-    const remainingTurns = Math.max(0, Math.floor(remainingTokens / avgPerTurn))
+    // L4-1：增长速率预测（替代原 avgPerTurn 估算）
+    const pred = predictTurns({ recent, window: contextWindow, thresholdRatio: 0.8 })
+    const remainingTurns = pred.predictedTurns
     const chainDepth = recent.reduce((s, t) => s + (t.compactCount > 0 ? 1 : 0), 0)
-    return computeHealthScore({
+    const h = computeHealthScore({
       compactCount, chainDepth, remainingPct, remainingTurns,
       failures: failures.count, redundancyRatio: 0, toolResultShare: 0, model,
     })
+    // 提前预警：预计 5~14 轮后达阈值（红档 reason 已含剩余轮数，不重复）
+    if (pred.predictedTurns >= 5 && pred.predictedTurns < 15 && h.tier !== 'red') {
+      h.reason = `预计约 ${pred.predictedTurns} 轮后接近上下文上限，建议关注压缩`
+    }
+    return { ...h, growthPerTurn: pred.growthPerTurn, predictedTurns: pred.predictedTurns }
   }
 
   function emitIfChanged() {
     const h = snapshot()
     if (h.tier !== lastTier) {
       lastTier = h.tier
-      wire.health?.({ score: h.score, tier: h.tier, compactCount, remainingPct: h.remainingPct, remainingTurns: h.remainingTurns, suggestNewSession: h.suggestNewSession, reason: h.reason })
+      wire.health?.({ score: h.score, tier: h.tier, compactCount, remainingPct: h.remainingPct, remainingTurns: h.remainingTurns, suggestNewSession: h.suggestNewSession, reason: h.reason, growthPerTurn: h.growthPerTurn, predictedTurns: h.predictedTurns })
     }
   }
 
