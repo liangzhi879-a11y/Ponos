@@ -16,6 +16,7 @@ export { ensurePersonalDir, buildExperienceIndex, buildSedimentPrompt } from './
 import * as doubao from './doubao.mjs'
 import { createTranscriptHandlers, aggregateStats, costUsd, sanitizePathSegment, transcriptBaseDir } from './transcript.mjs'
 import { makeBrowserRouter } from './browser-routing.mjs'
+import { buildAuditReport } from '../kernel/audit.mjs'
 
 const PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51309', 10)
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -1409,6 +1410,27 @@ const httpServer = createServer(async (req, res) => {
         byProject: stats.byProject,
         byDate: stats.byDate,
       }))
+    }
+
+    // --- /audit：审计聚合导出（S1-1，全量可追溯）。聚合逻辑在内核 audit.mjs，
+    // 此处仅薄壳：遍历 transcript 目录 → 读 JSONL → buildAuditReport 聚合排序 ---
+    if (url.pathname === '/audit') {
+      const from = url.searchParams.get('from') || ''
+      const to = url.searchParams.get('to') || ''
+      const base = transcriptBaseDir()
+      const rows = []
+      const projects = readdirSync(base, { withFileTypes: true }).filter((d) => d.isDirectory())
+      for (const proj of projects) {
+        const pdir = join(base, proj.name)
+        const files = readdirSync(pdir).filter((f) => f.endsWith('.jsonl'))
+        for (const f of files) {
+          const sid = f.replace(/\.jsonl$/, '')
+          const lines = readFileSync(join(pdir, f), 'utf-8').trim().split('\n').map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
+          rows.push(...buildAuditReport(lines, { from, to, sessionId: sid }))
+        }
+      }
+      rows.sort((a, b) => (a.ts < b.ts ? -1 : 1))
+      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, rows, count: rows.length }))
     }
 
     // 豆包图片生成端点（会话/历史/限速见 doubao.mjs；下载去水印走 watermark_remove.py）
