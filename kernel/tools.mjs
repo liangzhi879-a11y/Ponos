@@ -14,6 +14,19 @@ import { get as httpsGet, request as httpsRequest } from 'node:https'
 import { get as httpGet, request as httpRequest } from 'node:http'
 import { matchesHighRisk } from './highrisk.mjs'
 
+// R2-1 活跃子进程登记：Bash/OCR spawn 的子进程统一登记，内核退出（SIGINT/TERM）
+// 时 killActiveChildren 兜底清理，防孤儿进程。child 'close' 后自动移除。
+const ACTIVE_CHILDREN = new Set()
+export function registerChild(child) {
+  ACTIVE_CHILDREN.add(child)
+  child.once('close', () => ACTIVE_CHILDREN.delete(child))
+  return child
+}
+export function killActiveChildren() {
+  for (const c of ACTIVE_CHILDREN) { try { c.kill() } catch {} }
+  ACTIVE_CHILDREN.clear()
+}
+
 const BASH_TIMEOUT_MS = 120_000
 // Read 一次读取的容量上限（对照 claude/deepseek 的 2000 行、pi 的截断提示）：
 // 模型看到声明后放心一次读全文，不再用 sed/python 碎片化取样。
@@ -42,11 +55,11 @@ function runShell(command, cwd) {
       if (bash) { shell = bash; args = ['-c', command] }
       else { shell = 'cmd.exe'; args = ['/d', '/s', '/c', command] }
     } else { shell = 'sh'; args = ['-c', command] }
-    const child = spawn(shell, args, {
+    const child = registerChild(spawn(shell, args, {
       cwd: cwd || undefined,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
-    })
+    }))
     let stdout = ''
     let stderr = ''
     let settled = false
@@ -374,7 +387,7 @@ function runPythonCapture(args, { cwd, timeoutMs = OCR_TIMEOUT_MS } = {}) {
     const attempt = () => {
       const py = pythons[idx]
       if (!py) return resolvePromise({ content: 'OCR 失败：未找到 python 解释器（需安装 python + rapidocr_onnxruntime）', isError: true })
-      const child = spawn(py, args, { cwd: cwd || undefined, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = registerChild(spawn(py, args, { cwd: cwd || undefined, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }))
       let stdout = ''
       let stderr = ''
       let settled = false
