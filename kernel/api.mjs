@@ -231,17 +231,37 @@ export function toAbortSignal(s) {
   return s instanceof AbortSignal ? s : undefined
 }
 
+// R1-2 连接/首字节超时：只覆盖 fetch resolve（响应头到达）前。用独立 timer 包裹
+// fetch，resolve 后即清理——不得把 AbortSignal.timeout 并入 fetch signal（其 timer
+// 在 resolve 后仍存活，30s 一到会 abort 仍在读取的响应流，误杀长 thinking 流，
+// T003 评测实测 "stream interrupted: ... timeout"）。外部取消仍经 extSignal 传导：
+// abort → fetch reject AbortError（不重试）；连接超时 → TimeoutError（transient 重发）
+async function fetchWithConnectTimeout(url, { method, headers, body, signal }, connectTimeoutMs) {
+  const p = fetch(url, { method, headers, body, signal })
+  if (!connectTimeoutMs || connectTimeoutMs <= 0) return p
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => {
+      const e = new Error('连接超时: The operation was aborted due to timeout')
+      e.name = 'TimeoutError'
+      reject(e)
+    }, connectTimeoutMs)
+    p.then(
+      (v) => { clearTimeout(t); resolve(v) },
+      (e) => { clearTimeout(t); reject(e) },
+    )
+  })
+}
+
 // Anthropic SSE 流：统一产出归一化 chunk。
 export async function* protocolStream({ url, body, headers, signal }) {
-  // R1-2 连接/首字节超时：fetch resolve（响应头到达）前超时则 abort。
-  // AbortSignal.any 合并外部取消与超时：外部取消 → AbortError（不重试）；
-  // 超时 → TimeoutError（classifyApiError 判 transient，进 anthropicStream 重发）
   const connectTimeoutMs = Math.max(0, Number(process.env.CLAUDE_CODE_CONNECT_TIMEOUT_MS || 30_000))
   const extSignal = toAbortSignal(signal)
-  const combined = extSignal
-    ? AbortSignal.any([extSignal, AbortSignal.timeout(connectTimeoutMs)])
-    : AbortSignal.timeout(connectTimeoutMs)
-  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: combined })
+  const res = await fetchWithConnectTimeout(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    signal: extSignal,
+  }, connectTimeoutMs)
   if (!res.ok || !res.body) {
     const detail = await res.text().catch(() => '')
     // P0-1：错误携带 HTTP status，供 classifyApiError 结构化分类（5xx 可退避重试）

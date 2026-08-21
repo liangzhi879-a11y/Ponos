@@ -318,17 +318,17 @@ test('R1-2 超时分级：TimeoutError 分类为 transient（可重试），区�
   assert.deepEqual(classifyApiError(abort), { kind: 'abort', retryable: false })
 })
 
-test('R1-2 fetch 连接超时：AbortSignal.timeout 触发后经重发链路成功（fetch 调 2 次）', async () => {
+test('R1-2 fetch 连接超时：首次 fetch 抛 TimeoutError → 经重发链路成功（fetch 调 2 次）', async () => {
   const origFetch = globalThis.fetch
   let calls = 0
   globalThis.fetch = async (url, opts) => {
     calls++
     if (calls === 1) {
-      // 第一次永不 resolve（模拟连接挂起）；监听组合 signal——超时 abort 时以
-      // signal.reason（TimeoutError）reject，模拟真实 fetch 对 signal 的响应
-      return new Promise((resolve, reject) => {
-        opts.signal.addEventListener('abort', () => reject(opts.signal.reason || new Error('aborted')))
-      })
+      // 第一次模拟连接/首字节超时（响应头未到达）——内核 fetchWithConnectTimeout
+      // 在超时窗口内 reject TimeoutError；测试直接抛同形状错误验证重发判定
+      const e = new Error('连接超时: The operation was aborted due to timeout')
+      e.name = 'TimeoutError'
+      throw e
     }
     const enc = new TextEncoder()
     const ok = 'data: {"type":"message_start","message":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n' +
@@ -349,6 +349,48 @@ test('R1-2 fetch 连接超时：AbortSignal.timeout 触发后经重发链路成�
     for await (const c of streamMessages({ model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
     assert.equal(calls, 2, '连接超时后应重发')
     assert.ok(chunks.some((c) => c.type === 'usage'))
+  } finally {
+    globalThis.fetch = origFetch
+    process.env = oldEnv
+  }
+})
+
+test('R1-2 连接超时只作用于首字节：fetch 快速 resolve 后长流不被 30s timer 误杀', async () => {
+  // 回归：P1 R1-2 把 AbortSignal.timeout(connectTimeoutMs) 并入 fetch signal，
+  // 其 timer 在 fetch resolve 后仍存活——长 thinking 流（总时长 > 连接超时）
+  // 会被 30s 的 abort 误杀（T003 评测实测 "stream interrupted: ... timeout"）。
+  // 修复后：超时仅覆盖"响应头到达前"，流读取只受 idle 看门狗约束。
+  const origFetch = globalThis.fetch
+  const enc = new TextEncoder()
+  globalThis.fetch = async () => {
+    // fetch 立即 resolve（响应头到达）；正文分 5 块、每块间隔 40ms（总 200ms > 100ms 连接超时）
+    const body = new ReadableStream({
+      async start(c) {
+        for (const t of ['a', 'b', 'c', 'd', 'e']) {
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text: t } })}\n\n`))
+          await new Promise((r) => setTimeout(r, 40))
+        }
+        c.enqueue(enc.encode('data: [DONE]\n\n'))
+        c.close()
+      },
+    })
+    return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  }
+  const oldEnv = { ...process.env }
+  Object.assign(process.env, {
+    ANTHROPIC_BASE_URL: 'http://t',
+    ANTHROPIC_AUTH_TOKEN: 'k',
+    YFW_MOCK_API: '',
+    CLAUDE_CODE_CONNECT_TIMEOUT_MS: '100',  // 100ms 连接超时，远小于流总时长 200ms
+    CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS: '5000',
+  })
+  try {
+    const texts = []
+    for await (const c of streamMessages({ model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 100 })) {
+      if (c.type === 'text') texts.push(c.text)
+    }
+    // parser 合并同块 text_delta，断言拼接全文（是否被误杀看完整性，不看分块粒度）
+    assert.equal(texts.join(''), 'abcde', '长流应完整读完，不被连接超时误杀')
   } finally {
     globalThis.fetch = origFetch
     process.env = oldEnv
