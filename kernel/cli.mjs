@@ -29,6 +29,7 @@ import { createSessionStore, newSessionId } from './session.mjs'
 import { createHealth } from './health.mjs'
 import { createCompactor } from './compact.mjs'
 import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
+import { resolveCompactSettings } from './compact.mjs'
 import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
 import { discoverSkills } from './skills.mjs'
 import { loadSettings } from './settings.mjs'
@@ -172,10 +173,17 @@ export async function main(argv) {
   let model = args.model || getProvider().model || settings.merged.model || ''
   const maxTokens = Math.max(1, Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || settings.merged.maxOutputTokens || 64000))
   const contextWindow = contextWindowFor(model)
+  // L2-1：settings.compact 预算配置化——threshold/reserve ratio + 工具结果预算。
+  // 仅当 settings 显式配置 maxToolResults 且 env 未设置时才兜底填 env（不覆盖 spawn env）。
+  const compactCfg = resolveCompactSettings({ window: contextWindow, settings: settings.merged, env: process.env })
+  const maxToolResults = Number(settings.merged.compact?.maxToolResults)
+  if (Number.isFinite(maxToolResults) && maxToolResults > 0 && !process.env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES) {
+    process.env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES = String(maxToolResults)
+  }
   const context = {
     window: contextWindow,
-    thresholdRatio: 0.8,
-    retainRatio: 0.16,
+    thresholdRatio: compactCfg.thresholdRatio,
+    retainRatio: compactCfg.retainRatio,
     estimate: ({ system, messages }) => estimateRequest({ system, messages }),
     estimateMessage,
     estimateHistory,
