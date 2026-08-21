@@ -4,7 +4,57 @@
 // 阶段② 主模型摘要：前缀对齐主请求（KV 缓存复用）+ <compacted-summary> 9 节 checkpoint
 // 切点纪律：只切 turn 边界；tool-call/result 配对不可拆；open tail 返回 null。
 // 日志锁：compaction/start（占位）→ compaction/summary（落地）；孤儿 start 加载回滚。
+import { statSync, readFileSync } from 'node:fs'
 import { streamMessages } from './api.mjs'
+
+// P9-1：工具结果老化清除（microcompact 语义，对照 claude-code microCompact.ts）
+// ---------------------------------------------------------------------------
+// 零模型成本：上下文超过"老化清除阈值"时，把保留窗口之外的可重放工具
+// （Read/Bash/Grep/Glob/WebFetch/OCR——结果可按需重新调用工具读取）结果整条
+// 替换为占位标记。与阶段①结构采样的"每条内部保留部分"互补：这里整条丢弃，
+// 体积削减更彻底；原文仍在 transcript，模型需要时重新 Read 恢复。
+// Edit/Write/Agent/Task 等结果小且不可重放，一律不清。
+export const CLEARED_TOOL_RESULT_MARKER = '[旧工具结果已清除——需要时重新调用工具读取]'
+const REPLAYABLE_TOOLS = new Set(['Read', 'Bash', 'Grep', 'Glob', 'WebFetch', 'OCR'])
+
+export function ageOutToolResults(messages, { keepRecent = 2 } = {}) {
+  if (!Array.isArray(messages) || messages.length === 0) return 0
+  // 建立 tool_use_id → 工具名（assistant 消息的 tool_use block）
+  const nameById = new Map()
+  for (const m of messages) {
+    if (m?.role !== 'assistant' || !Array.isArray(m.content)) continue
+    for (const b of m.content) {
+      if (b?.type === 'tool_use' && typeof b.id === 'string' && typeof b.name === 'string') nameById.set(b.id, b.name)
+    }
+  }
+  // 按出现顺序记录所有 tool_result 及其是否可重放（保留窗口按"全部工具结果"计，
+  // 与 claude-code microCompact 一致：最近 N 条结果不论类型一律保留，只清窗口外
+  // 的可重放结果——否则 Edit/Write 的紧凑结果会挤占窗口导致可清条目永远不足）
+  const results = [] // { i, j, replayable }
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]
+    if (m?.role !== 'user' || !Array.isArray(m.content)) continue
+    for (let j = 0; j < m.content.length; j++) {
+      const b = m.content[j]
+      if (b?.type !== 'tool_result') continue
+      const name = nameById.get(b.tool_use_id)
+      results.push({ i, j, replayable: Boolean(name && REPLAYABLE_TOOLS.has(name)) })
+    }
+  }
+  // 保留最近 keepRecent 条（floor 1，防全清后零工作上下文）；仅窗口外的可重放结果被清
+  const keep = Math.max(1, Number(keepRecent) || 2)
+  const cutoff = Math.max(0, results.length - keep)
+  let cleared = 0
+  for (const { i, j, replayable } of results.slice(0, cutoff)) {
+    if (!replayable) continue
+    const b = messages[i].content[j]
+    if (typeof b.content === 'string' && b.content !== CLEARED_TOOL_RESULT_MARKER) {
+      b.content = CLEARED_TOOL_RESULT_MARKER
+      cleared++
+    }
+  }
+  return cleared
+}
 
 export const COMPACTION_INSTRUCTION =
   '系统压缩指令：请将以下旧对话内容压缩为一份 <compacted-summary> 结构化检查点，' +
@@ -172,16 +222,37 @@ export function keyInfoBlock(key) {
   return '（关键信息提示——摘要必须保留以下内容：）\n<key-info>\n' + lines.join('\n') + '\n</key-info>'
 }
 
+// P9-3：会话工作记忆（session memory，对照 claude-code sessionMemoryCompact.ts）
+// ---------------------------------------------------------------------------
+// 轮末把关键状态（todo/文件变更/最近决策）增量写入独立文件；压缩时读文件作为
+// 摘要事实来源，注入摘要请求——摘要不再依赖"对话全文的一次性有损概括"，且
+// 已压缩区间 sealed 后（P9-2）新摘要只针对增量，连续压缩质量不随次数衰减。
+// 文件路径由调用方（cli.mjs）注入：<configDir>/memory/session/<sessionId>.md
+export function buildSessionMemoryText(key) {
+  const lines = ['# 会话工作记忆（自动维护，压缩时作为摘要事实来源）']
+  if (key.todos.length) lines.push('\n## 任务清单', ...key.todos.slice(-5).map((t) => `- ${t}`))
+  if (key.files.length) lines.push('\n## 文件变更', ...key.files.slice(-12).map((f) => `- ${f}`))
+  if (key.decisions.length) lines.push('\n## 最近决策', ...key.decisions.map((d) => `- ${d.slice(0, 300)}`))
+  return lines.join('\n')
+}
+
 // —— 摘要请求组装（前缀对齐主请求：system + 旧消息 + 前次摘要 + 指令 + keyInfo）——
-export function assembleSummaryRequest({ system, messages, cut, lastSummary, keyInfo = '' }) {
-  const covered = cut.covered || []
+// P9-2 sealed：covered 中已压缩的 compaction summary 条目（字符串 content 的
+// assistant 消息）一律过滤——其内容已体现在 lastSummary，重塞回请求只会让模型
+// "对摘要的摘要再摘要"（层级坍缩，业界 re-compaction penalty 实测 15.9pp 精度
+// 损失）。每次摘要只针对"尚未压缩的新消息"，连续压缩质量不随次数衰减。
+export function assembleSummaryRequest({ system, messages, cut, lastSummary, keyInfo = '', sessionMemory = '' }) {
+  const covered = (cut.covered || []).filter((m) => !(m?.role === 'assistant' && typeof m?.content === 'string'))
   const body = []
   if (lastSummary) body.push({ role: 'user', content: `<compacted-summary>${lastSummary}</compacted-summary>` })
   body.push(...covered)
+  const smBlock = sessionMemory && sessionMemory.trim()
+    ? `\n\n（会话工作记忆——保留其中所有未过时事实：）\n<session-memory>\n${sessionMemory.trim().slice(0, 5000)}\n</session-memory>`
+    : ''
   body.push({
     role: 'user',
     content: COMPACTION_INSTRUCTION + (system ? `\n\n（系统提示开头：${String(system).slice(0, 200)}…）` : '') +
-      (keyInfo && keyInfo.trim() ? `\n\n${keyInfo}` : ''),
+      (keyInfo && keyInfo.trim() ? `\n\n${keyInfo}` : '') + smBlock,
   })
   return body
 }
@@ -192,7 +263,21 @@ export function extractSummary(text) {
 }
 
 // —— 压缩器编排（pre-step 测压 / forceCompact 溢出兜底）——
-export function createCompactor({ session, context, model, maxTokens, wire, health, signal, env = process.env }) {
+export function createCompactor({ session, context, model, maxTokens, wire, health, signal, env = process.env, sessionMemoryPath = null }) {
+  // P9-3：压缩时读取会话工作记忆文件，注入摘要请求作为事实来源（文件不存在/读失败静默降级）
+  let sessionMemoryCache = ''
+  let sessionMemoryReadAt = 0
+  function readSessionMemoryFile() {
+    if (!sessionMemoryPath) return ''
+    try {
+      const st = statSync(sessionMemoryPath)
+      if (st.mtimeMs !== sessionMemoryReadAt) {
+        sessionMemoryCache = readFileSync(sessionMemoryPath, 'utf-8').slice(0, 6000)
+        sessionMemoryReadAt = st.mtimeMs
+      }
+      return sessionMemoryCache
+    } catch { return sessionMemoryCache }
+  }
   let summaryInFlight = false
   let lastSummary = null
   let consecutiveFailures = 0
@@ -213,7 +298,12 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
 
   async function runSummarizer({ system, messages, cut }) {
     const keyInfo = keyInfoBlock(extractKeyInfo(messages))
-    const req = assembleSummaryRequest({ system, messages, cut, lastSummary, keyInfo })
+    // P9-3：会话工作记忆注入摘要请求（事实来源，辅助收敛与关键信息保留）
+    const sm = readSessionMemoryFile()
+    const req = assembleSummaryRequest({
+      system, messages, cut, lastSummary, keyInfo,
+      sessionMemory: sm || undefined,
+    })
     let buf = ''
     let usage = {}
     for await (const chunk of streamMessages({ model, messages: req, maxTokens, signal, tools: [] })) {
@@ -286,6 +376,16 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
       const threshold = Math.floor(window * (context.thresholdRatio ?? 0.8))
       const est = context.estimate ? context.estimate({ system, messages }) : { total: 0 }
       if (est.total < threshold) return { action: 'none', reason: 'below-threshold' }
+      // P9-1 阶段0：老化清除（阈值前防线）——上下文超过 clearRatio 时先零模型
+      // 成本清旧工具结果；清除后回落到 threshold 之下则本轮免摘要（压缩次数↓）
+      const clearRatio = Number(env.CLAUDE_CODE_TOOL_RESULT_CLEAR_RATIO || 0.5)
+      if (est.total >= Math.floor(window * clearRatio)) {
+        const cleared = ageOutToolResults(messages, { keepRecent: Number(env.CLAUDE_CODE_TOOL_RESULT_KEEP_RECENT || 2) })
+        if (cleared > 0) {
+          const est1 = context.estimate({ system, messages })
+          if (est1.total < threshold) return { action: 'aged', reason: `tool-results-aged-${cleared}`, cleared }
+        }
+      }
       // 阶段① 免模型裁剪（对超大 tool_result 就地替换为结构采样）
       const budget = Number(env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES || env.CLAUDE_CODE_TOOL_RESULT_BUDGET || 20000)
       let prunedAny = false

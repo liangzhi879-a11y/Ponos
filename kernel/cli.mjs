@@ -27,7 +27,7 @@ import { createLogger } from './log.mjs'
 import { makeWire } from './protocol.mjs'
 import { createSessionStore, newSessionId } from './session.mjs'
 import { createHealth } from './health.mjs'
-import { createCompactor } from './compact.mjs'
+import { createCompactor, extractKeyInfo, buildSessionMemoryText } from './compact.mjs'
 import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
 import { resolveCompactSettings } from './compact.mjs'
 import { memoryRoot, buildMemoryIndex, captureMemoryCandidates, appendMemoryEntry } from './memory.mjs'
@@ -190,7 +190,10 @@ export async function main(argv) {
     estimateHistory,
   }
   const health = createHealth({ wire, model, contextWindow, env: process.env })
-  const compactor = createCompactor({ session: store, context, model, maxTokens, wire, health, signal: undefined, env: process.env })
+  // P9-3：会话工作记忆文件路径（<configDir>/memory/session/<sessionId>.md）。
+  // 轮末写入关键状态，压缩时 compactor 读文件注入摘要请求（可选能力，读失败静默降级）
+  const sessionMemoryPath = join(configDir, 'memory', 'session', sessionId + '.md')
+  const compactor = createCompactor({ session: store, context, model, maxTokens, wire, health, signal: undefined, env: process.env, sessionMemoryPath })
 
   // P4-2 hooks：settings.hooks 规则装配（无规则 = count 0，run 恒 matched=false）
   const hooks = createHooks({ rules: settings.merged.hooks || [] })
@@ -317,6 +320,16 @@ export async function main(argv) {
           }
         }
       } catch { /* 记忆捕获失败不影响主流程 */ }
+      // P9-3：轮末写会话工作记忆（todo/文件变更/最近决策）——压缩时作为摘要事实来源
+      try {
+        if (sessionMemoryPath) {
+          const key = extractKeyInfo(store.deriveMessages())
+          if (key.todos.length || key.files.length || key.decisions.length) {
+            mkdirSync(join(configDir, 'memory', 'session'), { recursive: true })
+            writeFileSync(sessionMemoryPath, buildSessionMemoryText(key), 'utf-8')
+          }
+        }
+      } catch { /* 工作记忆写失败不影响主流程 */ }
       state.turnActive = false
       state.cancelling = false
       const nextMsg = state.queue.shift()
