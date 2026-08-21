@@ -30,6 +30,7 @@ import { createHealth } from './health.mjs'
 import { createCompactor } from './compact.mjs'
 import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
 import { resolveCompactSettings } from './compact.mjs'
+import { memoryRoot, buildMemoryIndex, captureMemoryCandidates, appendMemoryEntry } from './memory.mjs'
 import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
 import { discoverSkills } from './skills.mjs'
 import { loadSettings } from './settings.mjs'
@@ -221,8 +222,11 @@ export async function main(argv) {
       if (!seenSkillIds.has(s.id)) { seenSkillIds.add(s.id); skills.push(s) }
     }
   }
+  // L3-2：记忆索引注入（与 GUI 经验面板同一数据源；settings.memory.inject=false 逃生阀）
+  const memoryRootDir = memoryRoot(configDir)
+  const memoryBlock = settings.merged.memory?.inject === false ? '' : buildMemoryIndex({ root: memoryRootDir })
   // 提示词组装：内核基础行为规范 + 可用子 Agent 区块（内置 ∪ 用户级）+ AGENTS.md
-  // 项目指令 + 技能区块 + GUI append 文件（最高优先级，后者覆盖前者）。cwd = addDirs[0]。
+  // 项目指令 + 技能区块 + 记忆索引 + GUI append 文件（最高优先级，后者覆盖前者）。cwd = addDirs[0]。
   engine.setSystemPrompt(composeSystemPrompt({
     toolNames: engine.toolNames,
     subagents: engine.agents,
@@ -230,6 +234,7 @@ export async function main(argv) {
     append: readPromptFile(args.appendSystemPromptFile),
     cwd: args.addDirs[0] || '',
     skills,
+    memory: memoryBlock,
   }))
   // system(init)：spawn 即发。bridge /test-provider 判定 CLI 加载成功并读取
   // model/tools；GUI 从 session_id 绑定会话（useYFWCLI.ts handleMessage）。
@@ -302,6 +307,14 @@ export async function main(argv) {
         wire.result()
       }
     } finally {
+      // L3-1 轮末捕获：命中纠错/偏好模式 → 落盘记忆（默认开，settings.memory.capture=false 关闭）
+      try {
+        if (settings.merged.memory?.capture !== false && content.trim()) {
+          for (const c of captureMemoryCandidates({ userText: content, tag: settings.merged.memory?.taskTag || null, markers: settings.merged.memory?.markers || null })) {
+            appendMemoryEntry({ root: memoryRootDir, theme: c.theme, tag: c.tag, summary: c.summary, full: c.full })
+          }
+        }
+      } catch { /* 记忆捕获失败不影响主流程 */ }
       state.turnActive = false
       state.cancelling = false
       const nextMsg = state.queue.shift()
