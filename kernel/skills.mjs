@@ -16,6 +16,29 @@ export function parseFrontmatter(content) {
   return meta
 }
 
+// YAML 多行列表解析（triggers/subskills/dependencies 共用）：从 "<key>:" 行下一行开始，
+// 逐行收集 "- item"，遇到下一个行首 key 行或块尾终止（逐行解析，规避 m 模式下
+// $ 行尾备选导致非贪婪提前终止的正则陷阱）
+const KEY_LINE_RE = /^[a-zA-Z_][\w-]*:[ \t]*(\S.*)?$/
+function parseYamlList(raw, key) {
+  const lines = String(raw).split('\n')
+  const start = lines.findIndex((l) => new RegExp('^' + key + ':[ \\t]*$').test(l))
+  if (start < 0) return []
+  const out = []
+  for (let j = start + 1; j < lines.length; j++) {
+    if (KEY_LINE_RE.test(lines[j])) break
+    const v = lines[j].replace(/^\s*-\s*/, '').trim().replace(/^["']|["']$/g, '')
+    if (v) out.push(v)
+  }
+  return out
+}
+
+// YAML 单行字段解析（parent 用）：值去引号/空白，无该字段或失败 → ''
+function parseYamlSingle(raw, key) {
+  const m = String(raw).match(new RegExp('^' + key + ':[ \\t]*["\']?(.+?)["\']?[ \\t]*$', 'm'))
+  return m ? m[1].trim().replace(/^["']|["']$/g, '') : ''
+}
+
 export function discoverSkills({ root } = {}) {
   if (!root || !existsSync(root)) return []
   let entries = []
@@ -35,14 +58,16 @@ export function discoverSkills({ root } = {}) {
     } else continue
     const meta = parseFrontmatter(content)
     const firstLine = (content.split('\n')[0] || '').replace(/^#+\s*/, '').trim()
+    // P8 业务适配：triggers/subskills 解析为数组（触发词进提示词技能块），parent 单行
+    const yaml = String(content).match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] || ''
     skills.push({
       id,
       name: meta.name || id,
       description: (meta.description || firstLine || id).slice(0, 300),
       version: meta.version || '',
-      triggers: meta.triggers || '',
-      parent: meta.parent || '',
-      subskills: meta.subskills || '',
+      triggers: meta.triggers ? String(meta.triggers).split(/[,，]/).map((s) => s.trim()).filter(Boolean) : parseYamlList(yaml, 'triggers'),
+      parent: parseYamlSingle(yaml, 'parent'),
+      subskills: parseYamlList(yaml, 'subskills').length ? parseYamlList(yaml, 'subskills') : parseYamlList(yaml, 'dependencies'),
       lines: content.split('\n').length,
     })
   }
