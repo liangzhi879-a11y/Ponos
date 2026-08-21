@@ -841,6 +841,13 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     if (s.proc && !s.proc.killed) return s
     sessions.delete(sid)
   }
+  // R4-1 并发会话上限：策略值来自内核 init 上报的 capacity（env 兜底），bridge
+  // 仅执行拒绝；错误走既有 error 通道，GUI 零新增
+  const capacity = Math.max(1, Number(process.env.YFW_MAX_CONCURRENT_SESSIONS || 10))
+  if (sessions.size >= capacity) {
+    send({ type: 'error', data: { message: `已达并发会话上限（${capacity}），请关闭空闲会话后重试` }, sessionId: sid })
+    return null
+  }
   // 系统提示词临时文件：会话进程退出后删除，避免在 %TEMP% 长期堆积
   let promptFile = null
   const args = ['--print', '--output-format', 'stream-json', '--input-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
