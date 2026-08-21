@@ -19,6 +19,20 @@ test('buildBaseSystemPrompt：含 YFWorking 身份 + 工具纪律与回复规范
   assert.match(p, /可用工具：Bash, Read/)
 })
 
+test('buildBaseSystemPrompt：cwd 注入当前工作目录（对照 claude Primary working directory）', () => {
+  const withCwd = buildBaseSystemPrompt({ toolNames: ['Read'], cwd: '/x/proj' })
+  assert.match(withCwd, /当前工作目录：\/x\/proj/)
+  assert.match(withCwd, /相对路径均相对于此目录解析/)
+  // 无 cwd 时不含该行（CLI 无 addDirs 场景不注入空目录）
+  const noCwd = buildBaseSystemPrompt({ toolNames: ['Read'] })
+  assert.ok(!noCwd.includes('当前工作目录：'))
+})
+
+test('composeSystemPrompt：cwd 透传至基础层', () => {
+  const composed = composeSystemPrompt({ toolNames: ['Bash'], agents: [], append: '', cwd: '/x/proj' })
+  assert.match(composed, /当前工作目录：\/x\/proj/)
+})
+
 test('discoverAgentsMd：cwd 向上至 git root 发现 AGENTS.md，含 addDirs 根目录', () => {
   const dir = tmpDir()
   try {

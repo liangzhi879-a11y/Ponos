@@ -15,6 +15,10 @@ import { get as httpGet, request as httpRequest } from 'node:http'
 import { matchesHighRisk } from './highrisk.mjs'
 
 const BASH_TIMEOUT_MS = 120_000
+// Read 一次读取的容量上限（对照 claude/deepseek 的 2000 行、pi 的截断提示）：
+// 模型看到声明后放心一次读全文，不再用 sed/python 碎片化取样。
+const READ_MAX_LINES = 2000
+const READ_MAX_BYTES = 2 * 1024 * 1024
 
 // Windows 探测 git-bash：Bash 工具语义须与系统提示一致（shell: bash）。
 // cmd.exe 的 /d /s /c 引号解析与 Node spawn 的参数包裹互相干扰（$HOME 不展开、
@@ -79,16 +83,28 @@ function withinBoundary(filePath, allowDirs) {
   })
 }
 
-function readFile(filePath, allowDirs, input = {}) {
+// 相对路径解析到 cwd（消除"试 4 种路径格式"的浪费）：绝对路径原样，~ 展开，
+// 其余 resolve(cwd, p)。参考 claude/pi 的 resolveToCwd 机制。
+function resolvePath(p, cwd) {
+  if (!p) return p
+  if (p.startsWith('~') || p.startsWith('~/')) return join(process.env.HOME || process.env.USERPROFILE || '', p.slice(p[1] === '/' ? 2 : 1))
+  return resolve(cwd || process.cwd(), p)
+}
+
+function readFile(filePath, allowDirs, input = {}, cwd) {
   try {
     if (!filePath) return { content: 'file_path 缺失', isError: true }
-    if (!withinBoundary(filePath, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${filePath}）`, isError: true }
-    if (!existsSync(filePath)) return { content: `文件不存在：${filePath}`, isError: true }
-    const st = statSync(filePath)
-    if (st.isDirectory()) return { content: `是目录：${filePath}`, isError: true }
-    const MAX = 2 * 1024 * 1024
-    if (st.size > MAX) return { content: `文件过大（${st.size} 字节），超出 ${MAX} 字节读取上限`, isError: true }
-    const full = readFileSync(filePath, 'utf-8')
+    const resolved = resolvePath(filePath, cwd)
+    if (!withinBoundary(resolved, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${resolved}）`, isError: true }
+    if (!existsSync(resolved)) return { content: `文件不存在：${resolved}（当前工作目录：${cwd || process.cwd()}；可用 Glob 定位候选文件或用绝对路径）`, isError: true }
+    const st = statSync(resolved)
+    if (st.isDirectory()) return { content: `是目录：${resolved}`, isError: true }
+    // 超大文件不直接读全文（读一半即 2MB 内存），改为报错 + 定向读取建议
+    // （对照 claude 的 maxSizeInstruction：让模型知道用什么参数继续，而非猜）
+    if (st.size > READ_MAX_BYTES) {
+      return { content: `文件过大（${st.size} 字节），超出 ${READ_MAX_BYTES} 字节读取上限；请用 offset/limit 参数定向读取（offset 起始行号，limit 行数）`, isError: true }
+    }
+    const full = readFileSync(resolved, 'utf-8')
     // offset/limit：按行范围读取（offset 从 1 开始，limit=行数，均可选）
     const offset = Number(input.offset)
     const limit = Number(input.limit)
@@ -99,15 +115,24 @@ function readFile(filePath, allowDirs, input = {}) {
       const slice = all.slice(from0, to1)
       return { content: slice.join('\n') + (slice.length ? '\n' : ''), slice }
     }
+    // 部分读取时追加进度指引（对照 pi 的 "[Showing X-Y of N. Use offset=Z to continue]"）：
+    // 模型无需猜测文件大小与剩余内容，直接按指引续读，杜绝碎片化试错
+    const progressHint = (start, end) => {
+      const last = Math.min(end, totalLines)
+      if (last >= totalLines) return ''
+      return `\n\n[共 ${totalLines} 行，已显示 ${start}-${last}；用 offset=${last + 1} 继续读取剩余 ${totalLines - last} 行]`
+    }
     if (Number.isFinite(offset) && offset > 0) {
       const start = offset - 1
       const end = Number.isFinite(limit) && limit > 0 ? start + limit : totalLines
       const { content } = lineSlice(start, end)
-      return { content, isError: false, meta: { range: [offset, Math.min(end, totalLines)], totalLines } }
+      const last = Math.min(end, totalLines)
+      return { content: content + progressHint(offset, last), isError: false, meta: { range: [offset, last], totalLines } }
     }
     if (Number.isFinite(limit) && limit > 0) {
       const { content } = lineSlice(0, limit)
-      return { content, isError: false, meta: { range: [1, Math.min(limit, totalLines)], totalLines } }
+      const last = Math.min(limit, totalLines)
+      return { content: content + progressHint(1, last), isError: false, meta: { range: [1, last], totalLines } }
     }
     return { content: full }
   } catch (e) {
@@ -115,34 +140,36 @@ function readFile(filePath, allowDirs, input = {}) {
   }
 }
 
-function writeFile(filePath, content, allowDirs) {
+function writeFile(filePath, content, allowDirs, cwd) {
   try {
     if (!filePath) return { content: 'file_path 缺失', isError: true }
-    if (!withinBoundary(filePath, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${filePath}）`, isError: true }
-    writeFileSync(filePath, String(content ?? ''), 'utf-8')
-    return { content: `已写入 ${filePath}（${String(content ?? '').length} 字符）` }
+    const resolved = resolvePath(filePath, cwd)
+    if (!withinBoundary(resolved, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${resolved}）`, isError: true }
+    writeFileSync(resolved, String(content ?? ''), 'utf-8')
+    return { content: `已写入 ${resolved}（${String(content ?? '').length} 字符）` }
   } catch (e) {
     return { content: `写入失败：${e.message}`, isError: true }
   }
 }
 
 // Edit：先读后改的字符串替换。old_string 需在文件中唯一（否则要求 replace_all）。
-function editFile(filePath, oldString, newString, replaceAll, allowDirs) {
+function editFile(filePath, oldString, newString, replaceAll, allowDirs, cwd) {
   try {
     if (!filePath) return { content: 'file_path 缺失', isError: true }
-    if (!withinBoundary(filePath, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${filePath}）`, isError: true }
-    if (!existsSync(filePath)) return { content: `文件不存在：${filePath}`, isError: true }
+    const resolved = resolvePath(filePath, cwd)
+    if (!withinBoundary(resolved, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${resolved}）`, isError: true }
+    if (!existsSync(resolved)) return { content: `文件不存在：${resolved}（当前工作目录：${cwd || process.cwd()}；可用 Glob 定位候选文件或用绝对路径）`, isError: true }
     if (typeof oldString !== 'string' || !oldString) return { content: 'old_string 缺失或为空', isError: true }
     if (typeof newString !== 'string') return { content: 'new_string 必须为字符串', isError: true }
-    const content = readFileSync(filePath, 'utf-8')
+    const content = readFileSync(resolved, 'utf-8')
     const count = content.split(oldString).length - 1
     if (count === 0) return { content: `未找到匹配文本：${JSON.stringify(oldString.slice(0, 80))}`, isError: true }
     if (count > 1 && !replaceAll) {
       return { content: `old_string 出现 ${count} 次，不唯一；请使用 replace_all 或补充更多上下文`, isError: true }
     }
     const next = replaceAll ? content.split(oldString).join(newString) : content.replace(oldString, newString)
-    writeFileSync(filePath, next, 'utf-8')
-    return { content: `已编辑 ${filePath}（${replaceAll ? count : 1} 处替换）` }
+    writeFileSync(resolved, next, 'utf-8')
+    return { content: `已编辑 ${resolved}（${replaceAll ? count : 1} 处替换）` }
   } catch (e) {
     return { content: `编辑失败：${e.message}`, isError: true }
   }
@@ -442,13 +469,16 @@ async function ocrFile(filePath, allowDirs, input = {}) {
   }
 }
 
-export function createToolRegistry({ cwd, addDirs, skipPermissions }) {
+export function createToolRegistry({ cwd, addDirs, skipPermissions, disallowedTools = [] }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
+  // 禁用工具集（--disallowedTools）：toolNames/toolSchemas/run/isConcurrencySafe
+  // 全部基于过滤后视图；被禁工具的执行请求直接拒绝（防模型绕过工具列表）
+  const blocked = new Set(disallowedTools || [])
   // todo 清单（TodoWrite 覆盖式维护；同一进程共享）
   let todoItems = []
   const registry = {
     Bash: {
-      description: '执行 shell 命令',
+      description: '执行 shell 命令。仅用于系统命令/测试/构建/git 等必须场景；读文件用 Read、搜索内容用 Grep、找文件路径用 Glob（禁止用 cat/sed/grep/find 代替专用工具）。多步验证用 && 串联为一次调用。',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -459,51 +489,51 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions }) {
       isHighRisk: (input) => matchesHighRisk(String(input?.command ?? '')),
     },
     Read: {
-      description: '读取文本文件内容（支持 offset/limit 行范围读取，offset 从 1 开始）',
+      description: `读取文本文件内容。一次读全文（上限 ${READ_MAX_LINES} 行 / ${READ_MAX_BYTES / 1024 / 1024}MB），默认应读全文而非分段取样；超大文件用 offset/limit 定向读取，结果会提示续读位置。优先用本工具而非 Bash cat/sed 读文件；路径用绝对路径，或相对当前工作目录的相对路径。`,
       // concurrencySafe：只读工具可并发执行（P0-4 只读批并行）
       concurrencySafe: true,
       input_schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          file_path: { type: 'string', description: '要读取的文件绝对路径' },
+          file_path: { type: 'string', description: '要读取的文件路径（绝对路径，或相对当前工作目录）' },
           offset: { type: 'number', description: '可选：起始行号（1 开始）' },
-          limit: { type: 'number', description: '可选：读取行数' },
+          limit: { type: 'number', description: `可选：读取行数（默认一次读全文，最多 ${READ_MAX_LINES} 行）` },
         },
         required: ['file_path'],
       },
-      run: (input) => readFile(String(input?.file_path ?? ''), allowDirs, input),
+      run: (input) => readFile(String(input?.file_path ?? ''), allowDirs, input, cwd),
     },
     Write: {
-      description: '写入文本文件',
+      description: '写入文本文件（覆盖整个文件）。改动范围超过半个文件时优先考虑本工具而非多次 Edit。',
       input_schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          file_path: { type: 'string', description: '要写入的文件绝对路径' },
+          file_path: { type: 'string', description: '要写入的文件路径（绝对路径，或相对当前工作目录）' },
           content: { type: 'string', description: '文件内容' },
         },
         required: ['file_path', 'content'],
       },
-      run: (input) => writeFile(String(input?.file_path ?? ''), String(input?.content ?? ''), allowDirs),
+      run: (input) => writeFile(String(input?.file_path ?? ''), String(input?.content ?? ''), allowDirs, cwd),
     },
     Edit: {
-      description: '先读后改的字符串替换编辑（old_string 需唯一，或指定 replace_all）',
+      description: '先读后改的字符串替换编辑（old_string 需唯一，或指定 replace_all）。一次 Edit 覆盖一个完整逻辑块；同文件多处修改尽量合并为一次调用；改动过大时考虑 Write 重写。',
       input_schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          file_path: { type: 'string', description: '要编辑的文件绝对路径' },
+          file_path: { type: 'string', description: '要编辑的文件路径（绝对路径，或相对当前工作目录）' },
           old_string: { type: 'string', description: '要替换的原文（需精确匹配）' },
           new_string: { type: 'string', description: '替换后的内容' },
           replace_all: { type: 'boolean', description: '可选：true 时替换全部匹配（默认 false 仅替换唯一匹配）' },
         },
         required: ['file_path', 'old_string', 'new_string'],
       },
-      run: (input) => editFile(String(input?.file_path ?? ''), String(input?.old_string ?? ''), String(input?.new_string ?? ''), input?.replace_all === true, allowDirs),
+      run: (input) => editFile(String(input?.file_path ?? ''), String(input?.old_string ?? ''), String(input?.new_string ?? ''), input?.replace_all === true, allowDirs, cwd),
     },
     Glob: {
-      description: '在会话目录内递归搜索文件路径（pattern 支持 * ? 和 ** 通配）',
+      description: '在会话目录内递归搜索文件路径（pattern 支持 * ? 和 ** 通配）。先 Glob 定位候选文件再 Read，避免无目标 ls。',
       concurrencySafe: true,
       input_schema: {
         type: 'object',
@@ -517,7 +547,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions }) {
       run: (input) => globSearch(String(input?.pattern ?? ''), allowDirs, { maxResults: Number(input?.maxResults) || 200 }),
     },
     Grep: {
-      description: '在会话目录内按正则搜索文件内容，返回 file:line 匹配行',
+      description: '在会话目录内按正则搜索文件内容，返回 file:line 匹配行。带精确 pattern 与 glob 过滤；需要上下文时用 context 参数；避免试探性重复搜索。',
       concurrencySafe: true,
       input_schema: {
         type: 'object',
@@ -650,14 +680,14 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions }) {
   }
   return {
     registry,
-    toolNames: Object.keys(registry),
+    toolNames: Object.keys(registry).filter((n) => !blocked.has(n)),
     // P0-4：只读工具并发安全标记（Bash/Write/Edit/Agent/Task/OCR 等写/执行类串行）
     isConcurrencySafe(name) {
       return registry[name]?.concurrencySafe === true
     },
     // 中立工具 schema 列表（Anthropic/OpenAI 协议字段映射在 api.mjs 完成）
     toolSchemas() {
-      return Object.entries(registry).map(([name, tool]) => ({
+      return Object.entries(registry).filter(([name]) => !blocked.has(name)).map(([name, tool]) => ({
         name,
         description: tool.description,
         input_schema: tool.input_schema,
@@ -666,8 +696,10 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions }) {
     // 执行入口：返回归一化 { content, isError }（成功路径可能缺省 isError）；
     // approval 决策由调用方（engine）先行
     async run(toolUse, ctx) {
-      const tool = registry[toolUse?.name]
-      if (!tool) return { content: `未知工具：${toolUse?.name}`, isError: true }
+      const name = toolUse?.name
+      if (blocked.has(name)) return { content: `工具已被禁用：${name}`, isError: true }
+      const tool = registry[name]
+      if (!tool) return { content: `未知工具：${name}`, isError: true }
       const r = await tool.run(toolUse.input || {}, ctx)
       if (r && typeof r === 'object') {
         return { content: r.content ?? '', isError: r.isError === true, ...(r.meta ? { meta: r.meta } : {}) }

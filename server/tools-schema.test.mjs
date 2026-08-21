@@ -90,7 +90,9 @@ test('Read offset/limit：行范围读取，offset 从 1 开始', async () => {
     writeFileSync(f, 'L1\nL2\nL3\nL4\nL5\n', 'utf-8')
     const r = await reg.run({ name: 'Read', input: { file_path: f, offset: 2, limit: 3 } }, {})
     assert.equal(r.isError, false)
-    assert.equal(r.content, 'L2\nL3\nL4\n')
+    // 部分读取在正文后追加续读进度指引（对照 pi 的 showing X-Y of N）
+    assert.ok(r.content.startsWith('L2\nL3\nL4\n'))
+    assert.match(r.content, /共 5 行，已显示 2-4；用 offset=5 继续读取剩余 1 行/)
     assert.deepEqual(r.meta.range, [2, 4])
     assert.equal(r.meta.totalLines, 5)
   } finally { rmSync(dir, { recursive: true, force: true }) }
@@ -128,4 +130,17 @@ test('Grep：正则匹配 + context 上下文行 + glob 过滤', async () => {
     assert.match(r.content, /3:line3/)
     assert.ok(!r.content.includes('two.txt'))
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('disallowedTools 过滤：toolNames/toolSchemas 不含禁用工具，run 直接拒绝', async () => {
+  const g = createToolRegistry({ cwd: '/tmp', addDirs: ['/tmp'], skipPermissions: false, disallowedTools: ['Agent', 'Task'] })
+  assert.deepEqual(g.toolNames, ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TodoWrite', 'WebFetch', 'OCR'])
+  assert.ok(!g.toolSchemas().some((s) => s.name === 'Agent' || s.name === 'Task'))
+  // 被禁工具的执行请求（防绕过工具列表）→ 明确拒绝
+  const r = await g.run({ name: 'Agent', input: { subagent_type: 'general-purpose', prompt: 'x' } }, {})
+  assert.equal(r.isError, true)
+  assert.match(r.content, /已被禁用/)
+  // 未禁用工具不受影响
+  const ok = await g.run({ name: 'Read', input: { file_path: '/tmp/nonexist-xyz' } }, {})
+  assert.equal(typeof ok.content, 'string')
 })

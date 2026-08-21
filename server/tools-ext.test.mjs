@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createToolRegistry } from '../kernel/tools.mjs'
@@ -72,6 +72,69 @@ test('WebFetch：本地 http server 抓取 HTML → 文本（script 剥离）；
     server.close()
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('Read/Write/Edit：相对路径解析到 cwd（resolvePath），缺失文件带 cwd + Glob 纠错提示', async () => {
+  const { dir, reg } = tmpReg()
+  try {
+    mkdirSync(join(dir, 'sub'))
+    // Write 用相对路径（相对 cwd）写入
+    const w = await reg.run({ name: 'Write', input: { file_path: 'sub/rel.txt', content: 'hello' } })
+    assert.equal(w.isError, false)
+    assert.ok(w.content.includes(join(dir, 'sub', 'rel.txt')), 'Write 应回显解析后的绝对路径')
+    // Read 用相对路径读取同一文件
+    const r = await reg.run({ name: 'Read', input: { file_path: 'sub/rel.txt' } })
+    assert.equal(r.isError, false)
+    assert.equal(r.content.trim(), 'hello')
+    // Edit 用相对路径编辑
+    const e = await reg.run({ name: 'Edit', input: { file_path: 'sub/rel.txt', old_string: 'hello', new_string: 'hi' } })
+    assert.equal(e.isError, false)
+    assert.ok(e.content.includes(join(dir, 'sub', 'rel.txt')))
+    // 缺失文件：提示含解析后路径 + 当前工作目录 + Glob 建议
+    const miss = await reg.run({ name: 'Read', input: { file_path: 'no-such.txt' } })
+    assert.equal(miss.isError, true)
+    assert.match(miss.content, /文件不存在/)
+    assert.ok(miss.content.includes(join(dir, 'no-such.txt')), '提示应含解析后的绝对路径')
+    assert.ok(miss.content.includes(dir), '提示应含当前工作目录')
+    assert.match(miss.content, /Glob/)
+    // Edit 缺失文件同样带纠错提示
+    const eMiss = await reg.run({ name: 'Edit', input: { file_path: 'nope.txt', old_string: 'x', new_string: 'y' } })
+    assert.equal(eMiss.isError, true)
+    assert.match(eMiss.content, /文件不存在/)
+    assert.match(eMiss.content, /Glob/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('Read：部分读取带续读进度指引；超大文件报错带定向读取建议', async () => {
+  const { dir, reg } = tmpReg()
+  try {
+    // 20 行文件，limit=5 → 提示剩余行数与续读 offset（对照 pi 的 showing X-Y of N）
+    const f = join(dir, 'twenty.txt')
+    writeFileSync(f, Array.from({ length: 20 }, (_, i) => `line${i + 1}`).join('\n'), 'utf-8')
+    const partial = await reg.run({ name: 'Read', input: { file_path: f, limit: 5 } })
+    assert.equal(partial.isError, false)
+    assert.match(partial.content, /line5/)
+    assert.match(partial.content, /共 20 行，已显示 1-5/)
+    assert.match(partial.content, /用 offset=6 继续读取剩余 15 行/)
+    // offset 起点部分读取同样给指引
+    const mid = await reg.run({ name: 'Read', input: { file_path: f, offset: 10, limit: 3 } })
+    assert.match(mid.content, /已显示 10-12/)
+    assert.match(mid.content, /用 offset=13 继续/)
+    // 读到末尾无指引
+    const tail = await reg.run({ name: 'Read', input: { file_path: f, offset: 18 } })
+    assert.ok(!tail.content.includes('继续读取剩余'), '读到末尾不应有续读指引')
+    // 一次读全文（无 offset/limit）也不应有指引
+    const all = await reg.run({ name: 'Read', input: { file_path: f } })
+    assert.ok(!all.content.includes('继续读取剩余'))
+    // 超大文件（>2MB）→ 报错 + offset/limit 建议（对照 claude maxSizeInstruction）
+    const big = join(dir, 'big.bin')
+    const buf = Buffer.alloc(2 * 1024 * 1024 + 1024, 0x41)
+    writeFileSync(big, buf)
+    const over = await reg.run({ name: 'Read', input: { file_path: big } })
+    assert.equal(over.isError, true)
+    assert.match(over.content, /文件过大/)
+    assert.match(over.content, /offset\/limit/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('OCR：越界路径与缺失文件报错（不触发 python）', async () => {
