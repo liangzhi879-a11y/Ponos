@@ -354,3 +354,29 @@ test('R1-2 fetch 连接超时：AbortSignal.timeout 触发后经重发链路成�
     process.env = oldEnv
   }
 })
+
+test('P4-5 setProvider 激活后 streamMessages 请求走新 baseUrl（mock fetch 捕获 URL）', async () => {
+  const urls = []
+  const origFetch = globalThis.fetch
+  globalThis.fetch = async (url, opts) => {
+    urls.push(String(url))
+    return new Response(JSON.stringify({ type: 'message_start', message: { usage: { input_tokens: 1, output_tokens: 1 } } }) + '\ndata: [DONE]\n', {
+      status: 200, headers: { 'content-type': 'text/event-stream' },
+    })
+  }
+  const oldEnv = { ...process.env }
+  try {
+    process.env.ANTHROPIC_BASE_URL = 'http://orig'
+    process.env.ANTHROPIC_AUTH_TOKEN = 'k'
+    process.env.YFW_MOCK_API = ''
+    process.env.CLAUDE_CODE_CONNECT_TIMEOUT_MS = '150'
+    const { setProvider } = await import('../kernel/provider.mjs')
+    setProvider({ baseUrl: 'http://hot-switched', authToken: 'k2', model: 'm2' })
+    for await (const c of streamMessages({ model: 'm2', messages: [{ role: 'user', content: 'hi' }], maxTokens: 100 })) {}
+    assert.ok(urls.some((u) => u.startsWith('http://hot-switched')), `请求应发往新 baseUrl，实际 ${urls.join(',')}`)
+    assert.ok(!urls.some((u) => u.startsWith('http://orig')))
+  } finally {
+    globalThis.fetch = origFetch
+    process.env = oldEnv
+  }
+})
