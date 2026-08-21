@@ -11,9 +11,11 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
+import { Writable } from 'node:stream'
 import { parseArgs } from '../kernel/cli.mjs'
-import { sanitizeSegment } from '../kernel/session.mjs'
-import { patchOrphanToolUses, withToolDeadline } from '../kernel/engine.mjs'
+import { sanitizeSegment, createSessionStore } from '../kernel/session.mjs'
+import { patchOrphanToolUses, withToolDeadline, createEngine } from '../kernel/engine.mjs'
+import { makeWire } from '../kernel/protocol.mjs'
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'kernel', 'cli.mjs')
 
@@ -479,4 +481,34 @@ test('R1-1 防重放：同轮重复 tool_use id 只执行一次（第二次回�
     )
     assert.equal(results.length, 1, `重复 tool_use 只应执行一次，实际 ${results.length} 次`)
   } finally { m.close() }
+})
+
+test('O1-1 result 事件 usage 含 cache 四字段（mock 多工具轮累计）', async () => {
+  const events = []
+  // Writable 需完整 (c, enc, cb) 签名并调 cb，否则 stream.write 滞留不派发
+  const wire = makeWire(new Writable({ write(c, enc, cb) { try { events.push(JSON.parse(String(c))) } catch {} if (cb) cb() } }))
+  const session = createSessionStore({ configDir: mkdtempSync(join(tmpdir(), 'engine-usage-')), cwd: '', sessionId: 'u1' })
+  const prev = process.env.YFW_MOCK_API
+  try {
+    process.env.YFW_MOCK_API = '1'
+    const engine = createEngine({ opts: { addDirs: [], skipPermissions: true }, wire, session })
+    await engine.runTurn({ content: '[mock:tool-safe]' })
+  } finally {
+    if (prev === undefined) delete process.env.YFW_MOCK_API
+    else process.env.YFW_MOCK_API = prev
+    rmSync(session.file && join(session.file.split('jsonl')[0] + 'jsonl'), { force: true })
+  }
+  const result = events.find((e) => e.type === 'result')
+  assert.ok(result, '应收到 result 事件')
+  assert.ok(result.usage, 'result 应带 usage')
+  for (const k of ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']) {
+    assert.ok(k in result.usage, `usage 应含 ${k}`)
+  }
+  // 落盘条目同样带完整 usage
+  const msgs = session.deriveMessages()
+  const last = msgs[msgs.length - 1]
+  assert.ok(last?.usage, '最终 assistant 条目应带 usage')
+  for (const k of ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']) {
+    assert.ok(k in last.usage, `落盘 usage 应含 ${k}`)
+  }
 })
