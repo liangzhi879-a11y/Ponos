@@ -38,7 +38,7 @@
   - `keyInfoBlock(key)` → string：`<key-info>` 结构化提示块；空 key → `''`（todos 取最后 3 条、files 取最后 8 条、decisions 拼接截断 500 字符）
   - `assembleSummaryRequest({ system, messages, cut, lastSummary, keyInfo = '' })`：keyInfo 非空时追加在 COMPACTION_INSTRUCTION 之后
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```js
 // server/compact-keyinfo.test.mjs
@@ -82,12 +82,12 @@ test('assembleSummaryRequest：keyInfo 追加在压缩指令之后', () => {
 })
 ```
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/compact-keyinfo.test.mjs`
 Expected: FAIL —— `extractKeyInfo is not a function`
 
-- [ ] **Step 3: 实现 compact.mjs 追加**
+- [x] **Step 3: 实现 compact.mjs 追加**
 
 在 `kernel/compact.mjs` 的 `extractSummary` 之后追加：
 
@@ -150,12 +150,12 @@ export function keyInfoBlock(key) {
 ```
 并在 `runSummarizer({ system, messages, cut })` 内 `assembleSummaryRequest({ system, messages, cut, lastSummary, keyInfo })`。
 
-- [ ] **Step 4: 跑测试验证通过**
+- [x] **Step 4: 跑测试验证通过**
 
 Run: `node --test server/compact-keyinfo.test.mjs`
 Expected: PASS（3 个测试）
 
-- [ ] **Step 5: 回归 + 提交**
+- [x] **Step 5: 回归 + 提交**
 
 Run: `node --test server/kernel-contract.test.mjs server/kernel-bridge.test.mjs`
 Expected: PASS（keyInfo 缺省空串，既有行为不变）
@@ -182,7 +182,7 @@ git commit -m "feat(kernel): compact 关键信息保留（TodoWrite/文件变更
   - `settings.compact.maxToolResults`（>0）→ `toolResultBudget`；否则 env `CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES` 或 20000
   - cli 行为：context.thresholdRatio/retainRatio 取解析值；仅当 settings 显式配置 maxToolResults 时才兜底填 env（不覆盖 spawn env）
 
-- [ ] **Step 1: 写失败测试（追加到 server/compact-keyinfo.test.mjs）**
+- [x] **Step 1: 写失败测试（追加到 server/compact-keyinfo.test.mjs）**
 
 ```js
 import { resolveCompactSettings } from '../kernel/compact.mjs'
@@ -204,12 +204,12 @@ test('resolveCompactSettings：未配置 → 默认 0.8/0.16 + env 预算', () =
 })
 ```
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/compact-keyinfo.test.mjs`
 Expected: FAIL —— `resolveCompactSettings is not a function`
 
-- [ ] **Step 3: 实现 resolveCompactSettings + cli 装配**
+- [x] **Step 3: 实现 resolveCompactSettings + cli 装配**
 
 `kernel/compact.mjs` 末尾（createCompactor 之后）追加：
 
@@ -256,12 +256,12 @@ export function resolveCompactSettings({ window = 200_000, settings = {}, env = 
 ```
 （import 区补 `resolveCompactSettings`。）
 
-- [ ] **Step 4: 跑测试验证通过**
+- [x] **Step 4: 跑测试验证通过**
 
 Run: `node --test server/compact-keyinfo.test.mjs`
 Expected: PASS（5 个测试）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/compact.mjs kernel/cli.mjs server/compact-keyinfo.test.mjs
@@ -289,7 +289,7 @@ git commit -m "feat(kernel): settings.compact 预算配置化（阈值/保留/�
     - 偏好标记（缺省 `['我喜欢', '我希望', '我习惯', '以后都', '记得以后']`）命中 → theme `'communication'`
     - markers 可由 settings.memory.markers 覆盖（`{ correction: [], preference: [] }`）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```js
 // server/memory.test.mjs
@@ -344,12 +344,12 @@ test('captureMemoryCandidates：纠错 → workflow / 偏好 → communication',
 })
 ```
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/memory.test.mjs`
 Expected: FAIL —— `Cannot find module '../kernel/memory.mjs'`
 
-- [ ] **Step 3: 实现 kernel/memory.mjs**
+- [x] **Step 3: 实现 kernel/memory.mjs**
 
 ```js
 // kernel/memory.mjs —— 跨会话记忆内核化（L3-1/L3-2）
@@ -483,12 +483,12 @@ export function captureMemoryCandidates({ userText = '', tag = null, markers = n
 }
 ```
 
-- [ ] **Step 4: 跑测试验证通过**
+- [x] **Step 4: 跑测试验证通过**
 
 Run: `node --test server/memory.test.mjs`
 Expected: PASS（4 个测试）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/memory.mjs server/memory.test.mjs
@@ -510,7 +510,7 @@ git commit -m "feat(kernel): 记忆内核化（持久化原语 + 确定性捕获
   - `composeSystemPrompt({ toolNames, agents, subagents, append, cwd, skills, memory = '' })`：memory 区块插在 skills 之后、append 之前（append 仍最高优先级）
   - cli 行为：`settings.memory.inject === false` 时跳过索引注入（逃生阀，默认注入）；turn 结束后对 user 文本跑 captureMemoryCandidates，命中且 `settings.memory.capture !== false` 时 appendMemoryEntry 落盘 `memoryRoot(configDir)`
 
-- [ ] **Step 1: 写失败测试（追加到 server/memory.test.mjs）**
+- [x] **Step 1: 写失败测试（追加到 server/memory.test.mjs）**
 
 ```js
 import { composeSystemPrompt } from '../kernel/prompt.mjs'
@@ -564,12 +564,12 @@ test('集成：轮末捕获命中 → configDir/memory/personal 落盘条目', a
 
 > 注：`helpers.mjs` 若不存在，把 `makeReader`（行队列 nextEvent）与 `sanitizeSegment` 内联复制进本测试文件（参照 server/kernel-contract.test.mjs line 36-58 与 session.mjs sanitize 规则；本集成测试未用 sanitizeSegment，可省）。
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/memory.test.mjs`
 Expected: 单元 4 个 PASS；prompt 单元与集成 FAIL（memory 参数未实现 / 无捕获落盘）
 
-- [ ] **Step 3: 实现 prompt.mjs memory 参数**
+- [x] **Step 3: 实现 prompt.mjs memory 参数**
 
 `kernel/prompt.mjs` `composeSystemPrompt`（P4 Task 6 后签名）：签名加 `memory = ''`，在 skills 区块之后、append 之前插入：
 
@@ -577,7 +577,7 @@ Expected: 单元 4 个 PASS；prompt 单元与集成 FAIL（memory 参数未实�
   if (memory && memory.trim()) parts.push(memory.trim())
 ```
 
-- [ ] **Step 4: 实现 cli.mjs 注入与捕获**
+- [x] **Step 4: 实现 cli.mjs 注入与捕获**
 
 `kernel/cli.mjs`：
 1. import 加：`import { memoryRoot, buildMemoryIndex, captureMemoryCandidates, appendMemoryEntry } from './memory.mjs'`
@@ -602,12 +602,12 @@ Expected: 单元 4 个 PASS；prompt 单元与集成 FAIL（memory 参数未实�
     } catch { /* 记忆捕获失败不影响主流程 */ }
 ```
 
-- [ ] **Step 5: 跑测试验证通过**
+- [x] **Step 5: 跑测试验证通过**
 
 Run: `node --test server/memory.test.mjs`
 Expected: PASS（6 个测试）
 
-- [ ] **Step 6: 回归 + 提交**
+- [x] **Step 6: 回归 + 提交**
 
 Run: `node --test server/kernel-contract.test.mjs server/kernel-bridge.test.mjs`
 Expected: PASS
@@ -635,7 +635,7 @@ git commit -m "feat(kernel): 记忆注入系统提示 + 轮末确定性捕获落
     - threshold = `floor(window * thresholdRatio)`；predictedTurns = `max(0, floor((threshold - lastInput) / growthPerTurn))`
   - health：snapshot() 以 predictTurns 计算 remainingTurns（替代原 avgPerTurn 估算）；emit 事件增 `growthPerTurn, predictedTurns`；`predictedTurns < 15 && predictedTurns >= 5` 时 reason 追加"预计 N 轮后需压缩"
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```js
 // server/context-predict.test.mjs
@@ -674,12 +674,12 @@ test('health 集成：yfw_health 事件含 predictedTurns/growthPerTurn，红档
 })
 ```
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/context-predict.test.mjs`
 Expected: FAIL —— `predictTurns is not a function`（health 集成：无新字段断言失败）
 
-- [ ] **Step 3: 实现 context.mjs predictTurns**
+- [x] **Step 3: 实现 context.mjs predictTurns**
 
 `kernel/context.mjs` 末尾追加：
 
@@ -698,7 +698,7 @@ export function predictTurns({ recent = [], window = 200_000, thresholdRatio = 0
 }
 ```
 
-- [ ] **Step 4: 实现 health.mjs snapshot 扩展**
+- [x] **Step 4: 实现 health.mjs snapshot 扩展**
 
 `kernel/health.mjs`：import 区加 `import { predictTurns } from './context.mjs'`；`snapshot()`（原 line 59-75）内替换 remainingTurns 计算并返回预测：
 
@@ -733,12 +733,12 @@ export function predictTurns({ recent = [], window = 200_000, thresholdRatio = 0
       }
 ```
 
-- [ ] **Step 5: 跑测试验证通过**
+- [x] **Step 5: 跑测试验证通过**
 
 Run: `node --test server/context-predict.test.mjs`
 Expected: PASS（3 个测试）
 
-- [ ] **Step 6: 回归 + 提交**
+- [x] **Step 6: 回归 + 提交**
 
 Run: `node --test server/kernel-contract.test.mjs server/kernel-bridge.test.mjs`
 Expected: PASS
@@ -759,7 +759,7 @@ git commit -m "feat(kernel): 上下文预测（增长速率→剩余轮数）+ y
 - Consumes: Task 1/2/5 全部（keyInfo 注入、settings.compact、health 预测）；mock 摘要响应（api.mjs `系统压缩指令` 检测 → `<compacted-summary>mock 摘要</compacted-summary>`）
 - Produces: 无新导出——端到端验收：低阈值配置下多轮会话自动触发压缩；yfw_summary 事件携带摘要；yfw_health 事件含预测字段
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```js
 // server/session-long.test.mjs
@@ -847,21 +847,21 @@ test('端到端：低阈值 settings.compact → 多轮后触发压缩 → yfw_s
 })
 ```
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/session-long.test.mjs`
 Expected: FAIL —— 无 yfw_summary 事件（settings.compact 未接线 / 或行为未按预期；调试时先确认事件流：第 1 轮 assistant+result，第 2 轮 yfw_summary+assistant+result）
 
-- [ ] **Step 3: 若失败因 findCutPoint 边界（covered 为空 → cut null）**
+- [x] **Step 3: 若失败因 findCutPoint 边界（covered 为空 → cut null）**
 
 按 Task 2 设计的阈值语义检查：`thresholdTokens=1` → thresholdRatio=0.000005 → threshold=1（每轮必超）；`reserveTokens=1` → retainRatio=0.000005 → retainTokens=floor(200000×0.000005)=1 → 第 2 轮 pre-step 时历史含 [user1, assistant(tool_use), tool_result, assistant(text)] + user2，从尾部累计 1 token 即停 → cut.covered 非空 → 摘要发生。若事件顺序与预期不符，用 `node --test server/session-long.test.mjs --test-name-pattern=端到端` 单独跑并打印 events 类型序列定位（不要改 mock 语义）。
 
-- [ ] **Step 4: 跑测试验证通过**
+- [x] **Step 4: 跑测试验证通过**
 
 Run: `node --test server/session-long.test.mjs`
 Expected: PASS
 
-- [ ] **Step 5: 全量回归 + 提交**
+- [x] **Step 5: 全量回归 + 提交**
 
 Run: `node --test "server/*.test.mjs"`
 Expected: 全绿（222+ 既有测试 + 本计划新增）
