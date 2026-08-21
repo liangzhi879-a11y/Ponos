@@ -16,11 +16,12 @@
 //   - stdin 关闭 → exit 0（bridge 侧 kill 或 EOF 均优雅退出）
 
 import { createInterface } from 'node:readline'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createEngine } from './engine.mjs'
+import { killActiveChildren } from './tools.mjs'
 import { createLogger } from './log.mjs'
 import { makeWire } from './protocol.mjs'
 import { createSessionStore, newSessionId } from './session.mjs'
@@ -110,6 +111,29 @@ export async function main(argv) {
   const store = createSessionStore({ configDir, cwd: args.addDirs[0] || '', sessionId })
   // 内核结构化日志（R5-1）：stderr JSON 行，级别过滤经 CLAUDE_CODE_LOG_LEVEL
   const log = createLogger({ level: process.env.CLAUDE_CODE_LOG_LEVEL || 'info', sid: sessionId })
+
+  // R2-1/R3-1：运行 marker（<configDir>/runs/<sid>.running，{pid,ts} JSON）。
+  // 启动时存在 → 上次非优雅退出（崩溃）→ 发 crash_recovered 事件提示恢复；
+  // 正常流程随后重写 marker 接管。SIGINT/TERM 优雅退出时删除。
+  const runDir = join(configDir, 'runs')
+  const marker = join(runDir, sessionId + '.running')
+  try {
+    if (existsSync(marker)) {
+      const prev = JSON.parse(readFileSync(marker, 'utf-8') || '{}')
+      log.warn('previous run crashed', { pid: prev.pid, ts: prev.ts })
+      wire.system('crash_recovered', { sessionId })
+    }
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(marker, JSON.stringify({ pid: process.pid, ts: new Date().toISOString() }), 'utf-8')
+  } catch { /* marker 不可写不致命 */ }
+  // 统一退出：杀活跃子进程 → 清 marker → 退出
+  function shutdown(code) {
+    try { killActiveChildren() } catch {}
+    try { rmSync(marker, { force: true }) } catch {}
+    process.exit(code)
+  }
+  process.on('SIGINT', () => shutdown(0))
+  process.on('SIGTERM', () => shutdown(0))
 
   // 生产链路一次接齐：context（token 启发式）+ health（健康监控）+ compactor（两阶段压缩）。
   // compactor 装配 health → 压缩成功后 yfw_summary 走 health.recordCompaction 单通道
@@ -233,7 +257,7 @@ export async function main(argv) {
       if (inner?.toolUseID) engine.resolveApproval(inner.toolUseID, inner)
     }
   })
-  rl.on('close', () => process.exit(0))
+  rl.on('close', () => shutdown(0))
   return 0
 }
 
