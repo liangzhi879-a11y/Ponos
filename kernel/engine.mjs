@@ -355,7 +355,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   const DENIAL_TOTAL_LIMIT = 20
 
   async function executeToolUse(toolUse, ctx = {}) {
-    const perm = decideToolPermission({ toolName: toolUse.name, input: toolUse.input, skipPermissions: opts.skipPermissions, autoApproveHighRisk: opts.autoApproveHighRisk })
+    const perm = decideToolPermission({ toolName: toolUse.name, input: toolUse.input, skipPermissions: opts.skipPermissions, autoApproveHighRisk: opts.autoApproveHighRisk, rules: opts.permissionRules })
     if (perm.decision === 'deny') {
       denialStreak++
       denialTotal++
