@@ -134,6 +134,9 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   const agents = resolveAgents({ configDir: opts.configDir })
   // 审批挂起队列：toolUseId → resolve（cli 的 control_response 解除）
   const approvalWaiters = new Map()
+  // R1-1 防重放（轮级）：已执行 tool_use id → 结果。runTurn 开头重置，
+  // 同轮重复 id（重连重放）回填不重执行；跨轮自动失效（新轮新 map）
+  let executedToolIds = new Map()
   // 后台子 agent 任务登记：taskId → { status, promise, summary, outputFile, usage, laneStore }
   const pendingSubAgents = new Map()
   // turnStats 记录器（内存 append-only）：health / result / stats 三个消费者共用
@@ -155,6 +158,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     let usage = {}
     let textBuf = ''
     let overflowRetries = 0
+    // R1-1：每轮重置防重放集合（跨轮固定 id 不误判）
+    executedToolIds = new Map()
     const maxOverflowRetries = Number(process.env.CLAUDE_CODE_MAX_OVERFLOW_RETRIES || 3)
     // 请求消息 = system 前缀（api.mjs 抽顶层）+ 派生历史；session/memory 两模式一致。
     // 孤儿 tool_use 补丁（P1-8）在派生后执行（纯派生不入日志，请求面永远合法）
@@ -208,6 +213,10 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           } else if (chunk.type === 'thinking') {
             wire.assistant([{ type: 'thinking', thinking: chunk.text }])
           } else if (chunk.type === 'tool_use') {
+            // R1-1 同流防重放：重复 id 只保留首个（模型重发同工具时防 tool_result
+            // 重复与 assistant 重复 id 触发 API 400）；跨 iteration 重放由轮级
+            // executedToolIds 兜底
+            if (blocks.some((b) => b.id === chunk.id)) continue
             blocks.push({ type: 'tool_use', id: chunk.id, name: chunk.name, input: chunk.input })
             // 工具调用块随 assistant 事件转发 GUI（工具卡片展示）
             wire.assistant([{ type: 'tool_use', id: chunk.id, name: chunk.name, input: chunk.input }])
@@ -312,11 +321,26 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     }
     for (let i = 0; i < blocks.length; i++) {
       const b = blocks[i]
+      // R1-1 防重放：本轮内重复 tool_use id（重连后模型重放 / 同轮重复输出）→
+      // 不重复执行，回填既有结果（幂等防副作用）。轮级集合 runTurn 开头重置，
+      // 跨轮固定 id（mock 测试场景）不受影响。
+      const replay = executedToolIds.get(b.id)
+      if (replay) {
+        results[i] = { content: replay.content ?? '', isError: replay.is_error === true }
+        continue
+      }
       if (tools.isConcurrencySafe(b.name)) {
-        pending.push({ index: i, promise: executeToolUse(b, ctx) })
+        pending.push({
+          index: i,
+          promise: executeToolUse(b, ctx).then((x) => {
+            executedToolIds.set(b.id, { content: x?.content ?? '', is_error: x?.isError === true })
+            return x
+          }),
+        })
       } else {
         await flush()
         results[i] = await executeToolUse(b, ctx)
+        executedToolIds.set(b.id, { content: results[i]?.content ?? '', is_error: results[i]?.isError === true })
       }
     }
     await flush()
@@ -395,7 +419,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       for await (const chunk of retryStream({ model, messages: msgs(), maxTokens, signal: subSignal, tools: tools.toolSchemas() })) {
         if (signal.aborted || subSignal.aborted) throw abortError()
         if (chunk.type === 'text') textBuf += chunk.text
-        else if (chunk.type === 'tool_use') blocks.push({ type: 'tool_use', id: chunk.id, name: chunk.name, input: chunk.input })
+        else if (chunk.type === 'tool_use' && !blocks.some((b) => b.id === chunk.id)) blocks.push({ type: 'tool_use', id: chunk.id, name: chunk.name, input: chunk.input })
         else if (chunk.type === 'usage') usage = addUsage(usage, chunk.usage)
       }
       if (blocks.length === 0) break

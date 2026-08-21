@@ -463,3 +463,20 @@ test('resume/model/prompt-file：init 携带 model，轮次正常', async () => 
 test.after(() => {
   rmSync(tmp, { recursive: true, force: true })
 })
+
+test('R1-1 防重放：同轮重复 tool_use id 只执行一次（第二次回填既有结果）', async () => {
+  const m = spawnKernel()
+  try {
+    const init = await readInit(m.reader)
+    m.send({ type: 'user', message: { role: 'user', content: '[mock:replay]' } })
+    await collectTurn(m.reader)
+    const file = join(tmp, 'projects', sanitizeSegment(tmp), init.session_id + '.jsonl')
+    const entries = readFileSync(file, 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
+    const results = entries.flatMap((e) =>
+      Array.isArray(e.message?.content)
+        ? e.message.content.filter((b) => b?.type === 'tool_result' && b.tool_use_id === 'tool_use_replay_1')
+        : []
+    )
+    assert.equal(results.length, 1, `重复 tool_use 只应执行一次，实际 ${results.length} 次`)
+  } finally { m.close() }
+})
