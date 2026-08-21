@@ -215,8 +215,9 @@ test('transcript 落盘：轮次写入 projects/<cwd>/<sessionId>.jsonl，user/a
     await collectTurn(m.reader)
     const file = join(tmp, 'projects', sanitizeSegment(tmp), init.session_id + '.jsonl')
     const entries = readFileSync(file, 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
-    assert.equal(entries.length, 2)
-    const [u, a] = entries
+    assert.equal(entries.length, 3)
+    const [meta, u, a] = entries
+    assert.equal(meta.type, 'meta')
     assert.equal(u.type, 'user')
     assert.equal(u.message.role, 'user')
     assert.equal(u.message.content, '落盘测试')

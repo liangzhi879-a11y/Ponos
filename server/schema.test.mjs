@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SCHEMA_VERSION } from '../version.mjs'
-import { loadSettings, migrateSettings, validateSettings } from '../kernel/settings.mjs'
+import { loadSettings, migrateSettings, validateSettings, diffFromDefault, SETTINGS_DEFAULTS } from '../kernel/settings.mjs'
 
 const tmp = mkdtempSync(join(tmpdir(), 'yfw-schema-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
@@ -52,4 +52,15 @@ test('loadSettings：高于当前版本 → error 标注（merged 仍可用，�
   writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ schemaVersion: 99 }), 'utf-8')
   const r = loadSettings({ configDir, cwd: join(tmp, 'nope'), local: {} })
   assert.ok(r.schema.error.includes('高于内核支持'))
+})
+
+test('diffFromDefault：默认值 → 空；非默认 → 标注漂移项', () => {
+  assert.deepEqual(diffFromDefault({ ...SETTINGS_DEFAULTS }), [])
+  const r = diffFromDefault({ ...SETTINGS_DEFAULTS, model: 'custom-model' })
+  assert.equal(r.length, 1)
+  assert.equal(r[0].key, 'model')
+  assert.equal(r[0].value, 'custom-model')
+  const hooks = diffFromDefault({ ...SETTINGS_DEFAULTS, hooks: [{ event: 'sessionStart' }] })
+  assert.equal(hooks.length, 1)
+  assert.equal(hooks[0].key, 'hooks')
 })

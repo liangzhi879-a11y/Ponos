@@ -130,9 +130,9 @@ test('P4-5 appendMeta：落盘 + 不进模型输入 + load 恢复不污染', asy
     const msgs = store.deriveMessages()
     assert.equal(msgs.length, 2)
     assert.ok(msgs.every((m) => m.role !== undefined))  // meta 条目无 message.role，不应出现
-    // 磁盘确实落了 3 行
+    // 磁盘确实落了 4 行（meta 首行 + user + meta + assistant）
     const raw = readFileSync(store.file, 'utf-8').trim().split('\n')
-    assert.equal(raw.length, 3)
+    assert.equal(raw.length, 4)
     // load 恢复：meta 行存在但同样不进投影
     const store2 = createSessionStore({ configDir: dir, cwd: 'proj', sessionId: '00000000-0000-0000-0000-000000000001' })
     await store2.load()

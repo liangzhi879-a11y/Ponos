@@ -139,7 +139,7 @@ test('Agent 前台：task_started → task_notification(completed) → tool_resu
     assert.ok(mainText.includes('tool_use_mock_agent'))
     const mainEntries = mainText.split('\n').filter(Boolean).map((l) => JSON.parse(l))
     assert.ok(!mainEntries.some((e) => e.message?.role === 'user' && e.message.content === '测试子任务：请输出一句确认'))
-    assert.ok(mainEntries.some((e) => JSON.stringify(e.message.content).includes('工具执行完成')))
+    assert.ok(mainEntries.some((e) => e.message && JSON.stringify(e.message.content).includes('工具执行完成')))
   } finally { env.cleanup() }
 })
 

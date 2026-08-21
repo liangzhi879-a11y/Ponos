@@ -70,3 +70,26 @@ export function loadSettings({ configDir = '', cwd = '', local = {} } = {}) {
     schema: { version: SCHEMA_VERSION, migrated, error: valid.error },
   }
 }
+
+// —— D1-2 配置漂移检测：运行配置 vs schema 默认值 ——
+export const SETTINGS_DEFAULTS = {
+  model: '',
+  maxOutputTokens: 64000,
+  autoApproveHighRisk: false,
+  disallowedTools: [],
+  env: {},
+  compact: { thresholdTokens: 0, reserveTokens: 0, maxToolResults: 0 },
+  memory: { inject: true, capture: true },
+  hooks: [],
+}
+
+export function diffFromDefault(settings = {}) {
+  const out = []
+  for (const k of Object.keys(SETTINGS_DEFAULTS)) {
+    if (settings[k] === undefined) continue
+    if (JSON.stringify(settings[k]) !== JSON.stringify(SETTINGS_DEFAULTS[k])) {
+      out.push({ key: k, value: settings[k], default: SETTINGS_DEFAULTS[k] })
+    }
+  }
+  return out
+}
