@@ -29,6 +29,7 @@ import { createSessionStore, newSessionId } from './session.mjs'
 import { createHealth } from './health.mjs'
 import { createCompactor } from './compact.mjs'
 import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
+import { getProvider, setProvider, providerVersion } from './provider.mjs'
 import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
 import { YFW_VERSION } from '../version.mjs'
 
@@ -155,7 +156,8 @@ export async function main(argv) {
       try { permissionRules = JSON.parse(readFileSync(args.permissionRulesFile, 'utf-8')).permissions || {} } catch (e) { log.warn('permission rules 解析失败', e) }
     }
   }
-  const model = args.model || process.env.ANTHROPIC_MODEL || ''
+  // P4-5：model 热切换后可变（init/回执用最新值；未激活时 getProvider 现读 env）
+  let model = args.model || getProvider().model || ''
   const maxTokens = Math.max(1, Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || 64000))
   const contextWindow = contextWindowFor(model)
   const context = {
@@ -253,6 +255,24 @@ export async function main(argv) {
         wire.assistant('已取消。')
         wire.result()
         state.cancelling = false
+      }
+      return
+    }
+    // P4-5 热切换：空闲切换 / busy 拒绝 / 校验失败拒绝；成功落审计 meta 条目
+    if (subtype === 'switch_provider') {
+      const payload = req?.request?.payload || {}
+      if (state.turnActive) {
+        wire.system('provider_switch_rejected', { reason: 'busy' })
+        return
+      }
+      try {
+        const { provider, version } = setProvider(payload)
+        model = provider.model
+        context.window = contextWindowFor(provider.model)   // 上下文窗口随模型重算
+        store.appendMeta('provider_switched', { provider: { baseUrl: provider.baseUrl, model: provider.model }, version })
+        wire.system('provider_switched', { model: provider.model, baseUrl: provider.baseUrl, version })
+      } catch (err) {
+        wire.system('provider_switch_rejected', { reason: err?.message || String(err) })
       }
       return
     }
