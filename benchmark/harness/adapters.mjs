@@ -77,22 +77,32 @@ export async function runClaude({ ws, prompt, timeoutMs, onLog }) {
     onLine: (l) => onLog?.('out', l),
     onErr: (l) => onLog?.('err', l),
   })
-  // stream-json 事件里提取 usage（claude 的 assistant 事件 usage 是累计快照，取末值）
-  let usage = { input_tokens: 0, output_tokens: 0 }
+  // stream-json 事件里提取 usage：
+  //  - assistant 事件的 usage 是「每轮请求增量」（实测 input_tokens=584、183…），
+  //    覆盖取末值会把整轮用量压到最后一轮增量 → 用量/成本严重低估
+  //    （claude-T001 全程累计 input_tokens=39602，旧逻辑只记到 183）
+  //  - 最终 result 事件（含 is_error 布尔字段）才携带全程累计 usage，优先采用；
+  //    未找到时回退累加各 assistant 增量
+  let usage = null
+  let acc = { input_tokens: 0, output_tokens: 0 }
   let toolCalls = 0
   for (const line of r.stdout.split('\n')) {
     if (!line.startsWith('{')) continue
     try {
       const ev = JSON.parse(line)
       if (ev.type === 'assistant' && ev.message?.usage) {
-        usage = ev.message.usage // 快照语义：覆盖取末值，不累加
+        acc.input_tokens += ev.message.usage.input_tokens || 0
+        acc.output_tokens += ev.message.usage.output_tokens || 0
       }
       if (ev.type === 'assistant' && Array.isArray(ev.message?.content)) {
         toolCalls += ev.message.content.filter((b) => b.type === 'tool_use').length
       }
+      if (typeof ev.is_error === 'boolean' && ev.usage) {
+        usage = { input_tokens: ev.usage.input_tokens || 0, output_tokens: ev.usage.output_tokens || 0 }
+      }
     } catch { /* 忽略非 json 行 */ }
   }
-  return { ...r, usage, toolCalls }
+  return { ...r, usage: usage || acc, toolCalls }
 }
 
 // ── pi coding-agent（需先构建；vendors/pi-src/pi-main/packages/coding-agent/dist/cli.js）

@@ -1,0 +1,18 @@
+{
+  "id": "SWE003",
+  "title": "SWE-bench: sympy/sympy — SI._collect_factor_and_dimension() cannot properly detect that exponent is dimen",
+  "type": "swebench",
+  "difficulty": 3,
+  "base": "514579c655bf22e2af14f0743376ae1d7befe345",
+  "repo": "C:\\Users\\T203-15\\yfworking-dev\\benchmark\\vendors\\swebench-repos\\sympy",
+  "patchBefore": "test.patch",
+  "swebench": {
+    "instance": "sympy__sympy-24066",
+    "repo": "sympy/sympy",
+    "baseCommit": "514579c655bf22e2af14f0743376ae1d7befe345",
+    "failToPass": [
+      "test_issue_24062"
+    ],
+    "passToPassCount": 30
+  }
+}

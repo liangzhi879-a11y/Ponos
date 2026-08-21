@@ -28,6 +28,38 @@
 
 **新增任务**：`benchmark/tasks/<ID>/` 下放 `task.json`（base 写起点 commit；`"base": "HEAD"` 表示当前内核）+ `prompt.md` + `verify.mjs` 即可，无需改平台代码。
 
+## SWE-bench Verified 权威科目（SWE001-SWE006）
+
+T 系列是内核自产任务（纵向自我对比），SWE 系列引入**业界公认的权威科目**：OpenAI 验证的 500 例真实 GitHub issue→补丁修复（Python 生态），支持横向对标公开 leaderboard。首批导入 6 例 sympy 轻量子集。
+
+| 任务 | 实例 | base（sympy commit） | 修复难度 |
+|---|---|---|---|
+| SWE001 | sympy__sympy-23824 | 39de9a26 | kahane_simplify 归约 |
+| SWE002 | sympy__sympy-23950 | 88664e6e | ConditionSet.as_set |
+| SWE003 | sympy__sympy-24066 | 514579c6 | 求解/集合 issue 24062 |
+| SWE004 | sympy__sympy-24213 | e8c22f6e | issue 24211 |
+| SWE005 | sympy__sympy-24443 | 809c53c0 | homomorphism |
+| SWE006 | sympy__sympy-24562 | b1cb676c | PolyElement as_expr |
+
+**与 T 系列的架构差异**：
+
+- **外部仓库工作区**：SWE 任务的工作区是 `vendors/swebench-repos/` 下克隆的外部项目（非内核仓库），`task.json` 的 `repo` 字段指向它，`base` 是该外部仓库的历史 commit
+- **测试补丁后置**：官方 test.patch 在 agent 完成后才应用（`verify.mjs` 内 `git apply test.patch`），避免 agent 直接改测试作弊；FAIL_TO_PASS 从失败变通过 = 修复有效，PASS_TO_PASS 抽查防回归
+- **yfw 内核入口**：yfw 从内核仓库启动（`kernelDir=CONFIG.repo`），`--add-dir` 指向任务工作区——SWE 任务工作区是外部仓库，内核文件不在其中
+
+**新增/扩展 SWE 任务**：
+
+```bash
+# 环境准备（一次性）：克隆外部仓库 + 下载数据集 + 导入任务
+bash benchmark/scripts/swebench-clone.sh
+python benchmark/scripts/swebench-dump.py <swebench-verified.parquet>   # 数据集转 JSON
+node benchmark/scripts/swebench-import.mjs --list                        # 查看候选（sympy 74 例等）
+node benchmark/scripts/swebench-import.mjs --repo sympy/sympy --limit 6  # 导入 N 例
+node benchmark/scripts/swebench-import.mjs --ids sympy__sympy-24661      # 指定实例
+```
+
+数据集来源：HuggingFace `princeton-nlp/SWE-bench_Verified`（评测机经 hf-mirror.com 镜像拉取，PyPI 的 `swebench` 包可离线读取 parquet）。**注意**：仅选择 Python 3.12 可运行的任务（sympy 1.12.dev 时代起），旧 base 代码（2018-2021）依赖已移除的 `collections.Mapping` 等语法，需按此兼容性筛选。
+
 ## 使用
 
 ```bash
@@ -124,6 +156,7 @@ YFW-turbo 尚未完善，评测平台为其预留了接口，内核每次优化/
 - 运行时评测消耗真实 API token（每任务每 agent 一次完整会话）
 - pi / deepseek 的 usage 统计依赖其输出格式，可能上报不全
 - verify 中静态断言（如 T002 的 kind 过滤检查）是对行为测试的补充，4 个 agent 一视同仁
+- **SWE 系列**：测试在评测机 Python 3.12 上运行（官方用 Docker 固定旧版本，本平台以「base 代码在 3.12 可 import」为筛选条件，仅导入 1.12.dev 时代任务）；PASS_TO_PASS 只抽查前 10 例控制时长；外部仓库经 `--filter=blob:none` 克隆，首次 checkout 按需拉取 blob 较慢
 
 ## 环境兼容层（仅 yfw，保证被测内核可运行）
 

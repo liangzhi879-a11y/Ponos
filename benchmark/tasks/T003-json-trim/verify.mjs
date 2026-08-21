@@ -19,7 +19,9 @@ test('A. JSON 单行 minified（>20000 字符）：重排采样，truncated 时�
   assert.equal(r.truncated, true)
   assert.equal(r.kind, 'json')
   assert.ok(r.text.length < big.length, '裁剪后 ' + r.text.length + ' 应小于原 ' + big.length)
-  assert.ok(r.text.includes('"name":"big-result"'))
+  // 键名保留（格式容忍：minified 或重排后 pretty 形态均算保留——
+  // 只断言内容存在，不断言原始压缩形态，否则会误杀语义正确但已 pretty 化的实现）
+  assert.ok(/"name"\\s*:\\s*"big-result"/.test(r.text), '键名应保留，实际输出：' + r.text.slice(0, 200))
 })
 
 test('B. JSON 多行 pretty（>20000 字符）：键名行与错误行保留', () => {
@@ -45,8 +47,9 @@ test('C. JSONL 多行（含逗号 >20 行）：走 json 键名分支而非 table
   assert.equal(r.kind, 'json')
   const kept = r.text.split('\\n')
   assert.ok(kept.length <= 60, 'json 分支行数上限，实际 ' + kept.length)
-  assert.ok(r.text.includes('"name":"entry-0"'))
-  assert.ok(r.text.includes('"name":"entry-599"'))
+  // 同样格式容忍：minified 或 pretty 形态的 entry-0 / entry-599 均算保留
+  assert.ok(/"name"\\s*:\\s*"entry-0"/.test(r.text), '首条应保留：' + r.text.slice(0, 200))
+  assert.ok(/"name"\\s*:\\s*"entry-599"/.test(r.text), '末条应保留：' + r.text.slice(-200))
 })
 `
 writeFileSync(testFile, testContent)
@@ -56,8 +59,9 @@ try {
   process.exit(0)
 } catch (e) {
   const out = e.stdout?.toString?.() || ''
+  const err = e.stderr?.toString?.() || ''
   console.error('VERIFY_FAIL')
-  console.error(out.split('\n').slice(-20).join('\n'))
+  console.error((out + '\n' + err).split('\n').slice(-25).join('\n'))
   process.exit(1)
 } finally {
   try { unlinkSync(testFile) } catch { }

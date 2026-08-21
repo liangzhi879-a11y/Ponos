@@ -28,12 +28,21 @@ export function agentScore(summary, agent) {
   // 3. 验证能力 20
   const selfTestRate = rs.filter((x) => x.selfTested).length / rs.length
   // 4. 改动质量 20（聚焦度：未越界改动的任务占比）
+  // 白名单键是任务目录名（'T003-json-trim'），结果里 r.task 是任务 id（'T003'）——
+  // 以 id 前缀匹配目录键（r.taskDir 优先，兼容新旧结果格式）
   let focused = 0
   for (const r of rs) {
     if (r.status === 'workspace-error') continue
     const ns = r.diff?.nameStatus || ''
     const files = ns.split('\n').filter(Boolean).map((l) => l.split('\t')[1] || l.split(/\s+/)[1] || '')
-    const allowed = TASK_FILES[r.task] || []
+    const allowed =
+      TASK_FILES[r.taskDir] ||
+      Object.entries(TASK_FILES).find(([k]) => k.startsWith((r.task || '') + '-'))?.[1] ||
+      TASK_FILES[r.task] ||
+      []
+    // 无白名单的任务（如 SWE-bench：改动目标是外部仓库、合法改动面不可枚举）不判聚焦度，
+    // 计入分母但不惩罚，避免该维度被整类任务拖成 0%
+    if (!allowed.length) { focused++; continue }
     const ok = files.every((f) => allowed.some((p) => p.endsWith('/') ? f.startsWith(p) : f === p))
     if (ok) focused++
   }

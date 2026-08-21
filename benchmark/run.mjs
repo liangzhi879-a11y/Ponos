@@ -97,23 +97,29 @@ async function runOne({ agent, task, ts, onLog }) {
   mkdirSync(wsRoot, { recursive: true })
 
   // 1. 隔离工作区（git worktree，checkout 到任务 base commit）
+  //    SWE-bench 任务（type=swebench）的仓库是外部项目（vendors/swebench-repos/
+  //    下的克隆），base 是外部仓库历史 commit；其余任务用内核仓库
+  const taskRepo = task.repo || CONFIG.repo
   let ws
   try {
-    ws = ensureWorkspace({ repo: CONFIG.repo, wsRoot, branch, base: task.base })
+    ws = ensureWorkspace({ repo: taskRepo, wsRoot, branch, base: task.base })
   } catch (e) {
     return { agent, task: task.id, status: 'workspace-error', error: String(e) }
   }
 
   // 2. yfw 专属：任务 base 的历史内核兼容补丁（如 T001/T002 工具透传缺陷），
-  //    运行前应用，不影响 agent 改动统计（diff 中排除，basePatched 单独记录）
-  const basePatched = agent === 'yfw' ? applyBasePatch(task.id, ws) : null
+  //    运行前应用，不影响 agent 改动统计（diff 中排除，basePatched 单独记录）。
+  //    仅内核仓库任务适用（SWE-bench 任务打的是外部项目，无历史内核补丁）
+  const basePatched = agent === 'yfw' && !task.repo ? applyBasePatch(task.id, ws) : null
 
-  // 3. 跑 agent（同一提示词）
+  // 3. 跑 agent（同一提示词）。yfw 内核入口从内核仓库启动（kernel/cli.mjs），
+  //    --add-dir 指向任务工作区；SWE-bench 任务工作区是外部仓库，须显式传
+  //    kernelDir=内核仓库，否则内核启动文件找不到（ERR_MODULE_NOT_FOUND）
   const runner = AGENT_RUNNERS[agent]
   const started = Date.now()
   let run
   try {
-    run = await runner({ ws, prompt: task.prompt, timeoutMs: CONFIG.timeoutMs, onLog })
+    run = await runner({ ws, prompt: task.prompt, timeoutMs: CONFIG.timeoutMs, onLog, kernelDir: agent === 'yfw' ? CONFIG.repo : undefined })
   } catch (e) {
     run = { exitCode: -9, stdout: '', stderr: String(e), usage: null, toolCalls: 0, timedOut: false }
   }
@@ -124,7 +130,7 @@ async function runOne({ agent, task, ts, onLog }) {
 
   // 5. 采集改动（仅排除纯环境补丁文件 engine.mjs/permissions.mjs；
   //    api.mjs 虽也打补丁但可能是任务合法目标，必须计入 agent 改动）
-  const diff = collectDiff(CONFIG.repo, ws, basePatched ? EXCLUDED_PATCH_FILES : [])
+  const diff = collectDiff(taskRepo, ws, basePatched ? EXCLUDED_PATCH_FILES : [])
 
   // 5. 指标汇总
   const cost = costOf(run.usage)
@@ -146,7 +152,7 @@ async function runOne({ agent, task, ts, onLog }) {
     selfTested,
     basePatched,
     verify: { ok: verify.ok, stdout: verify.stdout.slice(0, 2000), stderr: verify.stderr.slice(0, 2000) },
-    diff: { stat: diff.stat.slice(0, 2000), nameStatus: diff.nameStatus.slice(0, 2000), untracked: diff.untracked.slice(0, 1000) },
+    diff: { stat: diff.stat.slice(0, 2000), nameStatus: diff.nameStatus.slice(0, 2000), untracked: diff.untracked.slice(0, 1000), patch: diff.patch },
     stdoutTail: run.stdout.slice(-3000),
     stderrTail: run.stderr.slice(-1500),
   }
@@ -155,8 +161,11 @@ async function runOne({ agent, task, ts, onLog }) {
 /** 在任务工作区上运行验收脚本 */
 async function verifyTask(task, ws, onLog) {
   const { execFile } = await import('node:child_process')
+  // 超时 300s：SWE-bench 任务 verify 需逐个跑 FAIL_TO_PASS + PASS_TO_PASS 的
+  // pytest（10+ 用例），Python 冷启动/import sympy 较慢；120s 上限实测误杀
+  // 正常修复（yfw×SWE004 EXIT:null 假失败，手动重跑 58s 即通过）。
   return new Promise((resolve) => {
-    execFile(process.execPath, [task.verifyFile, ws], { cwd: ws, timeout: 120000, env: process.env },
+    execFile(process.execPath, [task.verifyFile, ws], { cwd: ws, timeout: 300000, env: process.env },
       (err, stdout, stderr) => {
         resolve({ ok: !err, stdout: stdout || '', stderr: (stderr || '') + (err ? '\nEXIT:' + err.code : '') })
       })

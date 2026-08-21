@@ -1,0 +1,18 @@
+{
+  "id": "SWE004",
+  "title": "SWE-bench: sympy/sympy — collect_factor_and_dimension does not detect equivalent dimensions in addition",
+  "type": "swebench",
+  "difficulty": 2,
+  "base": "e8c22f6eac7314be8d92590bfff92ced79ee03e2",
+  "repo": "C:\\Users\\T203-15\\yfworking-dev\\benchmark\\vendors\\swebench-repos\\sympy",
+  "patchBefore": "test.patch",
+  "swebench": {
+    "instance": "sympy__sympy-24213",
+    "repo": "sympy/sympy",
+    "baseCommit": "e8c22f6eac7314be8d92590bfff92ced79ee03e2",
+    "failToPass": [
+      "test_issue_24211"
+    ],
+    "passToPassCount": 31
+  }
+}

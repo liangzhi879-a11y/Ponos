@@ -6,6 +6,8 @@
 //  - 任务完成后保留工作区（供人工检查 agent 改动），清理用 cleanupWorkspace()
 // ---------------------------------------------------------------------------
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 export function repoGit(repo, args, opts = {}) {
   return execFileSync('git', ['-C', repo, ...args], {
@@ -83,6 +85,19 @@ export function collectDiff(repo, wsPath, exclude = []) {
   } catch {
     out.untracked = ''
   }
+  // patch 全文（含未跟踪文件内容）：供语义越界审计扫描 agent 新增代码中的
+  // "自我合理化"注释/语义决策（如去重口径）。未跟踪文件无 diff，直接读内容。
+  let patch = ''
+  try {
+    patch = repoGit(wsPath, ['diff', '--no-color', '--', '.', ...exclArgs], { cwd: wsPath })
+  } catch { /* 忽略 */ }
+  for (const u of out.untracked.split('\n').filter(Boolean)) {
+    try {
+      const content = readFileSync(join(wsPath, u), 'utf8')
+      patch += `\n--- ${u} (untracked) ---\n${content}`
+    } catch { /* 忽略 */ }
+  }
+  out.patch = patch.slice(0, 60000)
   return out
 }
 

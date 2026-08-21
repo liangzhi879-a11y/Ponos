@@ -25,7 +25,12 @@ const shimUrl = pathToFileURL(fileURLToPath(new URL('./yfw-fetch-shim.mjs', impo
 // 使对比聚焦于内核工具循环能力而非缺失提示词（见 yfw-system-prompt.md）
 const systemPromptFile = fileURLToPath(new URL('./yfw-system-prompt.md', import.meta.url))
 
-export async function runYFW({ ws, prompt, timeoutMs, onLog }) {
+export async function runYFW({ ws, prompt, timeoutMs, onLog, kernelDir }) {
+  // 内核入口始终从内核仓库启动（kernel/cli.mjs 相对路径依赖 kernelDir），
+  // --add-dir ws 让内核工具面（Read/Grep/Bash 等）作用于任务工作区。
+  // 普通任务 ws 就是内核仓库的 worktree（kernelDir 缺省回退 ws，行为不变）；
+  // SWE-bench 任务 ws 是外部仓库 worktree，kernelDir 必须显式传内核仓库。
+  const kernelRoot = kernelDir || ws
   const args = [
     '--import', shimUrl,
     'kernel/cli.mjs',
@@ -34,12 +39,13 @@ export async function runYFW({ ws, prompt, timeoutMs, onLog }) {
     '--output-format', 'stream-json',
     '--input-format', 'stream-json',
     '--dangerously-skip-permissions',
+    '--auto-approve-high-risk',
     '--model', resolveModel(),
     '--add-dir', ws,
   ]
   return new Promise((resolve) => {
     // buildAgentEnv('yfw')：统一注入 ANTHROPIC_AUTH_TOKEN + baseUrl（DeepSeek 兼容端点）
-    const child = spawn(process.execPath, args, { cwd: ws, env: buildAgentEnv('yfw'), windowsHide: true })
+    const child = spawn(process.execPath, args, { cwd: kernelRoot, env: buildAgentEnv('yfw'), windowsHide: true })
     let stdout = ''
     let stderr = ''
     let timedOut = false

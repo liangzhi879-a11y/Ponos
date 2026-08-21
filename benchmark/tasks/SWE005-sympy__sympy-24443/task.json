@@ -1,0 +1,18 @@
+{
+  "id": "SWE005",
+  "title": "SWE-bench: sympy/sympy — `_check_homomorphism` is broken on PermutationGroups",
+  "type": "swebench",
+  "difficulty": 2,
+  "base": "809c53c077485ca48a206cee78340389cb83b7f1",
+  "repo": "C:\\Users\\T203-15\\yfworking-dev\\benchmark\\vendors\\swebench-repos\\sympy",
+  "patchBefore": "test.patch",
+  "swebench": {
+    "instance": "sympy__sympy-24443",
+    "repo": "sympy/sympy",
+    "baseCommit": "809c53c077485ca48a206cee78340389cb83b7f1",
+    "failToPass": [
+      "test_homomorphism"
+    ],
+    "passToPassCount": 1
+  }
+}

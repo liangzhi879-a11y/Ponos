@@ -13,6 +13,7 @@ import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { computeScores } from './lib/scoring.mjs'
+import { auditResults } from './lib/audit.mjs'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const argv = process.argv.slice(2)
@@ -125,8 +126,24 @@ if (fails.length) {
   }
 }
 
+// 语义越界审计（agent 自创语义/自我合理化注释检测，人工复核用）
+const audit = auditResults(summary)
+md += `## 四、语义越界审计\n\n`
+if (!audit.byResult.length) {
+  md += `未检测到"自创语义/合理化注释"特征（去重、只计首、防重复等关键词，含否定语境排除）。\n\n`
+} else {
+  md += `共 **${audit.total}** 处命中（检测 agent 新增代码中的自创语义注释，如 T004 实测的"去重口径"类发明；仅供参考，需人工复核）:\n\n`
+  md += `| Agent | 任务 | 状态 | 命中组 | 文件 | 命中文本 |\n|---|---|---|---|---|---|\n`
+  for (const r of audit.byResult) {
+    for (const h of r.hits) {
+      md += `| ${r.agent} | ${r.task} | ${okIcon({ status: r.status })}${r.status} | ${h.group} | \`${h.file}\` | \`${h.line.replace(/\|/g, '\\|')}\` |\n`
+    }
+  }
+  md += `\n`
+}
+
 // 能力洞察
-md += `## 四、探索成本与验证能力对比\n\n`
+md += `## 五、探索成本与验证能力对比\n\n`
 md += `| 指标 | ${agents.join(' | ')} |\n|---|---${'|---'.repeat(agents.length)}\n`
 for (const metric of ['平均耗时', '平均工具调用', '自测率', '改动聚焦度']) {
   md += `| ${metric} |`

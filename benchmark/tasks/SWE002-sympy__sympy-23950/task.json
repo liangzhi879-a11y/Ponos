@@ -1,0 +1,18 @@
+{
+  "id": "SWE002",
+  "title": "SWE-bench: sympy/sympy — Contains.as_set returns Contains",
+  "type": "swebench",
+  "difficulty": 2,
+  "base": "88664e6e0b781d0a8b5347896af74b555e92891e",
+  "repo": "C:\\Users\\T203-15\\yfworking-dev\\benchmark\\vendors\\swebench-repos\\sympy",
+  "patchBefore": "test.patch",
+  "swebench": {
+    "instance": "sympy__sympy-23950",
+    "repo": "sympy/sympy",
+    "baseCommit": "88664e6e0b781d0a8b5347896af74b555e92891e",
+    "failToPass": [
+      "test_as_set"
+    ],
+    "passToPassCount": 4
+  }
+}

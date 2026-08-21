@@ -40,7 +40,7 @@ const byModelM1 = r.byModel?.['m1']
 const byDate = r.byDate?.['2026-08-19']
 const ok1 =
   byProjA && byProjA.inputTokens === 700 && byProjA.outputTokens === 180 && byProjA.requests === 3 &&
-  byModelM1 && byModelM1.inputTokens === 150 && byModelM1.outputTokens === 60 &&
+  byModelM1 && byModelM1.inputTokens === 350 && byModelM1.outputTokens === 90 &&
   byDate && byDate.inputTokens === 300 && byDate.outputTokens === 80 &&
   r.totals && r.totals.inputTokens === 750 && r.totals.outputTokens === 190
 if (!ok1) {
@@ -61,14 +61,16 @@ if (noPrice.totals.costUsd !== null) {
 const withPrice = aggregateTranscriptStats(entries, {
   modelPriceUsd: { m1: { input: 0.2, output: 1.2 }, m2: { input: 0.5, output: 2.0 } },
 })
-const expectCost = (150 / 1e6 * 0.2) + (60 / 1e6 * 1.2) + (400 / 1e6 * 0.5) + (100 / 1e6 * 2.0)
+const expectCost = (350 / 1e6 * 0.2) + (90 / 1e6 * 1.2) + (400 / 1e6 * 0.5) + (100 / 1e6 * 2.0)
 if (typeof withPrice.totals.costUsd !== 'number' || Math.abs(withPrice.totals.costUsd - expectCost) > 1e-9) {
   console.error('VERIFY_FAIL: costUsd 计算错误，期望', expectCost, '实际', withPrice.totals.costUsd)
   process.exit(1)
 }
 
 // ── 用例 3：sanitizePathSegment ─────────────────────────────────────────────
-if (sanitizePathSegment('C:\\my proj/研发') !== 'C-my-proj-') {
+// 逐字符替换非字母数字 → '-'（不合并连续字符）：C : \ 空格 / 研发 共 6 处
+// 替换 → C--my-proj---（与 kernel/session.mjs sanitizeSegment 同算法）
+if (sanitizePathSegment('C:\\my proj/研发') !== 'C--my-proj---') {
   console.error('VERIFY_FAIL: sanitizePathSegment 归一错误，实际', JSON.stringify(sanitizePathSegment('C:\\my proj/研发')))
   process.exit(1)
 }
