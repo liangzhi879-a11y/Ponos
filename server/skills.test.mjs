@@ -35,6 +35,48 @@ test('discoverSkills：SKILL.md 目录格式 + legacy <id>.md 格式 + 排序', 
   assert.ok(skills.every((s) => s.lines > 0))
 })
 
+test('discoverSkills（P8 业务适配）：triggers/subskills 列表解析 + parent 单行 + dependencies 回退', () => {
+  const root = join(tmp, 'sroot-p8')
+  mkdirSync(join(root, 'suite'), { recursive: true })
+  mkdirSync(join(root, 'sub1'), { recursive: true })
+  mkdirSync(join(root, 'sub2'), { recursive: true })
+  writeFileSync(join(root, 'suite', 'SKILL.md'), [
+    '---',
+    'name: suite',
+    'description: 父技能',
+    'triggers:',
+    '  - 高企认定',
+    '  - 知识产权',
+    'subskills:',
+    '  - sub1',
+    '  - sub2',
+    '---',
+    'body',
+  ].join('\n'), 'utf-8')
+  writeFileSync(join(root, 'sub1', 'SKILL.md'), '---\nname: sub1\ndescription: 子一\nparent: suite\n---\nbody', 'utf-8')
+  writeFileSync(join(root, 'sub2', 'SKILL.md'), [
+    '---',
+    'name: sub2',
+    'description: 子二',
+    'triggers: 单行触发',
+    'dependencies:',
+    '  - legacy',
+    '---',
+    'body',
+  ].join('\n'), 'utf-8')
+  const skills = discoverSkills({ root })
+  const byId = Object.fromEntries(skills.map((s) => [s.id, s]))
+  assert.deepEqual(byId.suite.triggers, ['高企认定', '知识产权'])
+  assert.deepEqual(byId.suite.subskills, ['sub1', 'sub2'])
+  assert.equal(byId.suite.parent, '')
+  assert.equal(byId.sub1.parent, 'suite')
+  assert.deepEqual(byId.sub1.triggers, [])
+  // 单行 triggers 字符串归一为数组
+  assert.deepEqual(byId.sub2.triggers, ['单行触发'])
+  // 未声明 subskills 时回退 dependencies
+  assert.deepEqual(byId.sub2.subskills, ['legacy'])
+})
+
 test('verifySkillVersions：lock 不匹配 → outdated 列表', () => {
   const lockPath = join(tmp, 'skills-lock.json')
   writeFileSync(lockPath, JSON.stringify({ alpha: '1.0.0', beta: '2.0.0', skills: { legacy: '9.0.0' } }), 'utf-8')

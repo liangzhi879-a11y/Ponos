@@ -932,12 +932,12 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
   args.push('--disallowedTools', 'AskUserQuestion')
   if (resumeId) {
     // Resume: restore the original session. 不重复注入身份提示词（避免冲突），
-    // 但必须追加互动格式规范 + 技能清单，否则模型看不到 ASK_USER 唯一提问方式，
+    // 但必须追加互动格式规范，否则模型看不到 ASK_USER 唯一提问方式，
     // 会回退调用已被禁用的 AskUserQuestion 工具。
+    // P8 双路去重：技能清单已由内核从 --add-dir 技能根统一注入（cli.mjs
+    // composeSystemPrompt 技能块），宿主不再重复注入（见下方 appendSkillList）。
     args.push('--resume', resumeId)
-    // 精简技能清单默认开启；CLAUDE_CODE_FULL_SKILL_LIST=1 回退全量（不打折保险）
-    const resumeCompact = process.env.CLAUDE_CODE_FULL_SKILL_LIST !== '1'
-    let resumePrompt = appendSkillList(YFW_ASKUSER_FORMAT + YFW_MILESTONE_PROTOCOL, resumeCompact)
+    let resumePrompt = YFW_ASKUSER_FORMAT + YFW_MILESTONE_PROTOCOL
     const injectCfg = experienceInjectConfig()
     if (injectCfg.enabled) {
       // 沉积引导同样注入 resume 会话：原实现只进新会话，而应用默认"恢复最新
@@ -958,10 +958,12 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     // 自定义 agent systemPrompt 会整体替换默认提示词，必须追加互动问答格式 +
     // 里程碑协议，否则专家 agent 会话收不到 ASK_USER 卡片规范（会回退调用已被
     // 禁用的 AskUserQuestion 工具）与进度协议。
+    // P8 双路去重：技能清单不再经宿主注入（appendSkillList 保留导出供
+    // scripts/verify-skill-listing.mjs 回归；会话技能由内核技能块统一提供）。
     ensurePersonalDir()
     let effectivePrompt = systemPrompt
-      ? appendSkillList(`${systemPrompt}\n\n${YFW_ASKUSER_FORMAT}\n\n${YFW_MILESTONE_PROTOCOL}`)
-      : appendSkillList(YFW_SYSTEM_PROMPT)
+      ? `${systemPrompt}\n\n${YFW_ASKUSER_FORMAT}\n\n${YFW_MILESTONE_PROTOCOL}`
+      : YFW_SYSTEM_PROMPT
     const injectCfg = experienceInjectConfig()
     if (injectCfg.enabled) {
       effectivePrompt += buildSedimentPrompt()      // 沉积引导仅新会话注入

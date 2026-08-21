@@ -85,6 +85,40 @@ test('protocolStream（P1-6）：单次流读空闲看门狗——body 永不产
   }
 })
 
+test('protocolStream（C1）：慢 chunk 流不被空闲看门狗误杀——脉冲语义按单次 read 计', async () => {
+  // C1：idle 看门狗必须是"每次 read 的空闲"而非"整流静默"。chunk 间隔 40ms（< 阈值
+  // 80ms）但流总时长 160ms（> 阈值）——脉冲语义下每次 read 都在 40ms 内 resolve，
+  // 不应抛 stream idle timeout；若看门狗按整流计时则必然误杀（回归防线）。
+  const enc = new TextEncoder()
+  const prev = global.fetch
+  global.fetch = async () => ({
+    ok: true,
+    body: new ReadableStream({
+      async start(c) {
+        for (const t of ['a', 'b', 'c', 'd']) {
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text: t } })}\n\n`))
+          await new Promise((r) => setTimeout(r, 40))
+        }
+        c.enqueue(enc.encode('data: [DONE]\n\n'))
+        c.close()
+      },
+    }),
+  })
+  const old = process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS
+  process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS = '80'
+  try {
+    const texts = []
+    for await (const c of protocolStream({ url: 'http://t/v1/messages', body: {}, headers: {} })) {
+      if (c.type === 'text') texts.push(c.text)
+    }
+    assert.equal(texts.join(''), 'abcd', '慢 chunk 流应完整读完（单次 read 在阈值内，看门狗不触发）')
+  } finally {
+    global.fetch = prev
+    if (old === undefined) delete process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS
+    else process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS = old
+  }
+})
+
 test('detectProtocol：Anthropic env 存在 → anthropic，否则 null', () => {
   assert.equal(detectProtocol({ ANTHROPIC_BASE_URL: 'http://y' }), 'anthropic')
   assert.equal(detectProtocol({}), null)

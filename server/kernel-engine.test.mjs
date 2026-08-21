@@ -342,6 +342,27 @@ test('瞬时错误重试（P0-1）：YFW_MOCK_TRANSIENT=once 首块前失败 →
   } finally { m.close() }
 })
 
+test('瞬时错误重试（C2）：failed-turn 消息不残留——重试成功后 transcript 仅一条 assistant 条目', async () => {
+  // C2：重试只发生在"首块前失败"（retryStream 对已产出 chunk 的流不重试）。
+  // 首次 mock 在产出任何 chunk 前抛 503 → 失败轮次不落盘；成功轮次是唯一
+  // assistant 条目。若引擎把失败轮次也持久化，transcript 会出现重复/残留条目
+  // （恢复后模型看到重复轮次会错乱），此测试锁死该语义。
+  const m = spawnKernel({ extraEnv: { YFW_MOCK_TRANSIENT: 'once', YFW_MOCK_API_RETRIES: '3' } })
+  try {
+    const init = await readInit(m.reader)
+    m.send({ type: 'user', message: { role: 'user', content: '重试测试' } })
+    const turn = await collectTurn(m.reader)
+    assert.equal(turn.text, 'mock: 重试测试 (turn=1)')
+    const file = join(tmp, 'projects', sanitizeSegment(tmp), init.session_id + '.jsonl')
+    const entries = readFileSync(file, 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
+    const userEntries = entries.filter((e) => e.type === 'user')
+    const asstEntries = entries.filter((e) => e.type === 'assistant')
+    assert.equal(userEntries.length, 1, `应只有 1 条 user 条目，实际 ${userEntries.length}`)
+    assert.equal(asstEntries.length, 1, `重试成功后应只有 1 条 assistant 条目（失败轮次不残留），实际 ${asstEntries.length}`)
+    assert.equal(asstEntries[0].message.content[0].text, 'mock: 重试测试 (turn=1)')
+  } finally { m.close() }
+})
+
 test('length 截断注入（P0-2）：stop_reason=length 且已产工具调用 → 不执行、注入错误结果', async () => {
   const m = spawnKernel({ extraEnv: { YFW_MOCK_STOP_REASON: 'length' } })
   try {

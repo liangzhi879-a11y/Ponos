@@ -50,6 +50,7 @@ export function buildBaseSystemPrompt({ toolNames = [], cwd = '' } = {}) {
     '- 修改文件前先 Read 读取确认现状，再决定 Write/Edit。',
     '- 编辑用 Edit，old_string 需精确且唯一；不唯一时补充上下文或使用 replace_all。',
     '- 查找文件路径用 Glob，搜索文件内容用 Grep（可配合 glob 过滤与 context 上下文行）。',
+    '- 并行调用：需要读多个文件/多处搜索时，同一回复一次性并行发起多个独立的只读调用（如同时 Read a.mjs + Read b.mjs + Grep 一个符号），不要逐个串行发起；Bash/Edit/Write/Agent/Task 等写与执行类工具必须串行，等前一个结果返回后再发起下一个。',
     '- Bash 输出可能被截断；超大输出按需用 Read offset/limit 补读，不要臆测内容。',
     '- 工具结果如实反映，失败时报告错误信息，不编造结果。',
     '',
@@ -57,6 +58,8 @@ export function buildBaseSystemPrompt({ toolNames = [], cwd = '' } = {}) {
     '- 动手前先完整理解任务：一次读清任务要求/契约/验收标准，再规划探索路径，不做无目标试探。',
     '- 搜索精准：Grep 用精确 pattern（可带行号与 context），先用 Glob 定位候选文件再 Read；避免无目标的 ls 与重复试探性搜索。',
     '- 信息一次取足：同一文件一次 Read 读完（必要时用 offset/limit 定向补读），相关文件合并读取；已读内容不重复读。',
+    '- 复杂任务先规划：多步骤/多文件/含验证环节的任务，先用 TodoWrite 建立任务清单再动手，随进度更新状态。',
+    '- 探索只用专用工具：禁止用 Bash 读/搜文件内容——cat/sed/od/head/tail/less 与 python（open/read/heredoc）等任何变体都不行；读文件用 Read、搜内容用 Grep、找路径用 Glob。Bash 仅用于系统命令/测试/构建/git。',
     '- 命令合并：多步验证/检查用单条 Bash（&& 串联）一次完成，减少往返；同类批量改动用一次 Edit/replace_all 覆盖。',
     '- 探索与动手分离：先集中收集信息形成方案，再批量执行改动；不在信息不足时反复试错。',
     '',
@@ -83,8 +86,18 @@ export function composeSystemPrompt({ toolNames, agents, subagents = [], append 
     parts.push(`# 项目指令（${a.path}）\n\n${a.content.trim()}`)
   }
   if (skills && skills.length > 0) {
-    const lines = ['【可用技能】任务匹配技能时按技能工作流执行，无匹配则按普通对话处理：']
-    for (const s of skills) lines.push(`- ${s.id}：${(s.description || '').slice(0, 120)}`)
+    // P8 业务适配：技能块带触发词 + 父子结构（父技能条目内联子技能，子技能不单独成条），
+    // 与宿主原清单语义对齐；触发词为空时回退描述（截 120）
+    const lines = ['【可用技能】任务与以下技能匹配时，用 Skill 工具调用对应技能（skill 参数填技能名），不得自行模拟或改用其它方式；无匹配则按普通对话处理：']
+    const subsOf = new Map()
+    for (const s of skills) if (s.parent) subsOf.set(s.parent, [...(subsOf.get(s.parent) || []), s.id])
+    for (const s of skills) {
+      if (s.parent) continue
+      const trig = Array.isArray(s.triggers) && s.triggers.length ? s.triggers.join('、').slice(0, 80) : ''
+      const head = trig || (s.description || '').slice(0, 120)
+      const subs = subsOf.get(s.id)
+      lines.push(`- ${s.id}：${head}${subs && subs.length ? `（子：${subs.join('、')}）` : ''}`)
+    }
     parts.push(lines.join('\n'))
   }
   if (memory && memory.trim()) parts.push(memory.trim())

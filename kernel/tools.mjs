@@ -90,15 +90,26 @@ function runShell(command, cwd) {
       try { child.kill() } catch {}
       finish(`命令超时（${BASH_TIMEOUT_MS}ms）`, true)
     }, BASH_TIMEOUT_MS)
-    child.stdout.on('data', (d) => { stdout += d.toString(); if (stdout.length > 200_000) stdout = stdout.slice(-200_000) })
-    child.stderr.on('data', (d) => { stderr += d.toString(); if (stderr.length > 100_000) stderr = stderr.slice(-100_000) })
+    // A4 截断标记：超限保留尾部并显式标注，防模型误以为看到完整输出
+    const truncated = []
+    child.stdout.on('data', (d) => {
+      stdout += d.toString()
+      if (stdout.length > 200_000) { stdout = stdout.slice(-200_000); if (!truncated.includes('stdout')) truncated.push('stdout') }
+    })
+    child.stderr.on('data', (d) => {
+      stderr += d.toString()
+      if (stderr.length > 100_000) { stderr = stderr.slice(-100_000); if (!truncated.includes('stderr')) truncated.push('stderr') }
+    })
     child.on('error', (e) => finish(`命令启动失败：${e.message}`, true))
     child.on('close', (code) => {
       const out = stdout.trim()
       const err = stderr.trim()
-      const body = code === 0
+      const truncMark = truncated.length
+        ? `\n[truncated: ${truncated.join('/')} 输出超过上限，已截断保留尾部]`
+        : ''
+      const body = (code === 0
         ? (out || '(命令执行完成，无输出)')
-        : `退出码 ${code}\n${out ? out + '\n' : ''}${err ? 'stderr: ' + err : ''}`.trim()
+        : `退出码 ${code}\n${out ? out + '\n' : ''}${err ? 'stderr: ' + err : ''}`.trim()) + truncMark
       finish(body, code !== 0)
     })
   })
@@ -233,14 +244,23 @@ function editFile(filePath, oldString, newString, replaceAll, allowDirs, cwd, re
     if (!existsSync(resolved)) return { content: `文件不存在：${resolved}（当前工作目录：${cwd || process.cwd()}；可用 Glob 定位候选文件或用绝对路径）`, isError: true }
     if (typeof oldString !== 'string' || !oldString) return { content: 'old_string 缺失或为空', isError: true }
     if (typeof newString !== 'string') return { content: 'new_string 必须为字符串', isError: true }
-    const content = readFileSync(resolved, 'utf-8')
-    const count = content.split(oldString).length - 1
+    // CRLF 行尾归一化（对照 claude FileEditTool.ts:214 的 replaceAll('\r\n','\n')）：
+    // Windows 仓库文件普遍 CRLF，模型（LF 习惯）写的 old_string 若严格字节匹配
+    // 永不命中 → 连续失败重试 + 转 python repr 验证字节（T003 实测 34 次工具里
+    // Edit 连环失败即此根因）。归一化后 LF old_string 必然命中；写回时按原文件
+    // 行尾风格还原，避免整个文件行尾漂移（git diff 全文件变红）。
+    const raw = readFileSync(resolved, 'utf-8')
+    const hasCRLF = raw.includes('\r\n')
+    const content = hasCRLF ? raw.replaceAll('\r\n', '\n') : raw
+    const normOld = String(oldString).replaceAll('\r\n', '\n')
+    const normNew = String(newString).replaceAll('\r\n', '\n') // new_string 同归一化，避免还原时 \r\r\n
+    const count = content.split(normOld).length - 1
     if (count === 0) return { content: `未找到匹配文本：${JSON.stringify(oldString.slice(0, 80))}`, isError: true }
     if (count > 1 && !replaceAll) {
       return { content: `old_string 出现 ${count} 次，不唯一；请使用 replace_all 或补充更多上下文`, isError: true }
     }
-    const next = replaceAll ? content.split(oldString).join(newString) : content.replace(oldString, newString)
-    writeFileSync(resolved, next, 'utf-8')
+    const next = (replaceAll ? content.split(normOld).join(normNew) : content.replace(normOld, normNew))
+    writeFileSync(resolved, hasCRLF ? next.replaceAll('\n', '\r\n') : next, 'utf-8')
     readCache?.delete(resolved) // 文件已变，失效去重缓存
     return { content: `已编辑 ${resolved}（${replaceAll ? count : 1} 处替换）` }
   } catch (e) {

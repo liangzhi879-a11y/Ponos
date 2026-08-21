@@ -83,6 +83,35 @@ test('Edit：唯一匹配替换 + 多匹配拒绝 + replace_all 全替换', asyn
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('Edit（CRLF 归一化）：LF old_string 命中 CRLF 文件，写回保留原行尾', async () => {
+  const { dir, reg } = tmpReg()
+  try {
+    // Windows 仓库文件普遍 CRLF：\r\n 行尾
+    const f = join(dir, 'crlf.txt')
+    writeFileSync(f, 'line1\r\nTODO fix me\r\nline3\r\n', 'utf-8')
+    // 模型按 LF 习惯写 old_string——归一化后必须命中（对照 claude FileEditTool.ts:214）
+    const r = await reg.run({ name: 'Edit', input: { file_path: f, old_string: 'TODO fix me', new_string: 'DONE' } }, {})
+    assert.equal(r.isError, false)
+    assert.match(r.content, /1 处替换/)
+    // 写回保留 CRLF 行尾（git diff 不整文件漂移）
+    const out = readFileSync(f, 'utf-8')
+    assert.equal(out, 'line1\r\nDONE\r\nline3\r\n')
+    assert.ok(!out.includes('\nline1'), '行尾必须保持 CRLF')
+    // old_string 自带 CRLF 也能命中（模型复制原文时）
+    const f2 = join(dir, 'crlf2.txt')
+    writeFileSync(f2, 'aaa\r\nbbb\r\n', 'utf-8')
+    const r2 = await reg.run({ name: 'Edit', input: { file_path: f2, old_string: 'aaa\r\nbbb', new_string: 'AAA\r\nBBB' } }, {})
+    assert.equal(r2.isError, false)
+    assert.equal(readFileSync(f2, 'utf-8'), 'AAA\r\nBBB\r\n')
+    // 纯 LF 文件行为不变
+    const f3 = join(dir, 'lf.txt')
+    writeFileSync(f3, 'a\nb\n', 'utf-8')
+    const r3 = await reg.run({ name: 'Edit', input: { file_path: f3, old_string: 'a\nb', new_string: 'A\nB' } }, {})
+    assert.equal(r3.isError, false)
+    assert.equal(readFileSync(f3, 'utf-8'), 'A\nB\n')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('Read offset/limit：行范围读取，offset 从 1 开始', async () => {
   const { dir, reg } = tmpReg()
   try {
@@ -129,6 +158,17 @@ test('Grep：正则匹配 + context 上下文行 + glob 过滤', async () => {
     assert.match(r.content, /2:TODO fix me/)
     assert.match(r.content, /3:line3/)
     assert.ok(!r.content.includes('two.txt'))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('Bash（A4）：超长输出截尾保留尾部并带 [truncated] 标记', async () => {
+  const { dir, reg } = tmpReg()
+  try {
+    const r = await reg.run({ name: 'Bash', input: { command: `node -e "process.stdout.write('x'.repeat(250000))"` } }, {})
+    assert.equal(r.isError, false)
+    assert.match(r.content, /\[truncated: stdout 输出超过上限，已截断保留尾部\]/)
+    assert.ok(r.content.length < 200500, '截断后内容应远小于原始 250000')
+    assert.ok(r.content.includes('xxx'), '保留尾部内容可引用')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

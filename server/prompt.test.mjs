@@ -19,6 +19,20 @@ test('buildBaseSystemPrompt：含 YFWorking 身份 + 工具纪律与回复规范
   assert.match(p, /可用工具：Bash, Read/)
 })
 
+test('buildBaseSystemPrompt（A1/A2/A3）：并行纪律 + no-bash 探索边界 + todo-first', () => {
+  const p = buildBaseSystemPrompt({ toolNames: ['Bash', 'Read', 'Glob', 'Grep'] })
+  // A1 并行纪律：只读工具可并行（带具体示例）、写/执行类串行
+  assert.match(p, /并行调用/)
+  assert.match(p, /同时 Read a\.mjs \+ Read b\.mjs \+ Grep 一个符号/)
+  assert.match(p, /Bash\/Edit\/Write\/Agent\/Task 等写与执行类工具必须串行/)
+  // A2 todo-first：复杂任务先用 TodoWrite 建立清单
+  assert.match(p, /TodoWrite 建立任务清单/)
+  // A3 no-bash 探索边界：禁止一切读文件变体（含 python open/heredoc）
+  assert.match(p, /禁止用 Bash 读\/搜文件内容/)
+  assert.match(p, /cat\/sed\/od\/head\/tail\/less 与 python/)
+  assert.match(p, /Bash 仅用于系统命令\/测试\/构建\/git/)
+})
+
 test('buildBaseSystemPrompt：cwd 注入当前工作目录（对照 claude Primary working directory）', () => {
   const withCwd = buildBaseSystemPrompt({ toolNames: ['Read'], cwd: '/x/proj' })
   assert.match(withCwd, /当前工作目录：\/x\/proj/)
@@ -58,6 +72,25 @@ test('discoverAgentsMd：cwd 向上至 git root 发现 AGENTS.md，含 addDirs �
     const paths = found.map((f) => f.path)
     assert.equal(new Set(paths).size, paths.length)
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('composeSystemPrompt（P8 业务适配）：技能块父子结构 + 触发词 + Skill 调用纪律', () => {
+  const skills = [
+    { id: 'suite', name: 'suite', description: '父技能描述', triggers: ['高企认定', '知识产权', '研发立项'], parent: '', subskills: [] },
+    { id: 'sub1', name: 'sub1', description: '子一', triggers: [], parent: 'suite', subskills: [] },
+    { id: 'standalone', name: 'standalone', description: '独立技能', triggers: [], parent: '', subskills: [] },
+  ]
+  const composed = composeSystemPrompt({ toolNames: ['Bash'], agents: [], append: '', cwd: '', skills })
+  assert.match(composed, /用 Skill 工具调用对应技能/)
+  assert.match(composed, /不得自行模拟或改用其它方式/)
+  // 父技能条目：触发词 + 内联子技能；子技能不单独成条
+  assert.match(composed, /- suite：高企认定、知识产权、研发立项（子：sub1）/)
+  assert.ok(!composed.includes('- sub1：'), '子技能不独立成条')
+  // 无触发词技能回退描述
+  assert.match(composed, /- standalone：独立技能/)
+  // 无技能时不注入技能块
+  const none = composeSystemPrompt({ toolNames: ['Bash'], agents: [], append: '', cwd: '', skills: [] })
+  assert.ok(!none.includes('【可用技能】'))
 })
 
 test('composeSystemPrompt：base → AGENTS.md（带来源）→ append（最后最高优先级）', () => {
