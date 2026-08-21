@@ -27,6 +27,22 @@ export function killActiveChildren() {
   ACTIVE_CHILDREN.clear()
 }
 
+// S2-2 子进程 env 白名单：仅透传系统路径/编码/代理变量，剥离一切密钥与
+// ANTHROPIC_*/CLAUDE_CODE_* 配置（防 Bash/OCR 子进程窃取宿主密钥）。
+const ENV_WHITELIST = [
+  'PATH', 'Path', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TMP', 'TEMP', 'TMPDIR',
+  'SystemRoot', 'WINDIR', 'ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA', 'APPDATA',
+  'LANG', 'LC_ALL', 'LANGUAGE', 'TERM', 'SHELL', 'COMSPEC', 'PATHEXT', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
+]
+export function childEnv() {
+  const out = {}
+  for (const k of Object.keys(process.env)) {
+    if (ENV_WHITELIST.includes(k)) out[k] = process.env[k]
+  }
+  return out
+}
+
 const BASH_TIMEOUT_MS = 120_000
 // Read 一次读取的容量上限（对照 claude/deepseek 的 2000 行、pi 的截断提示）：
 // 模型看到声明后放心一次读全文，不再用 sed/python 碎片化取样。
@@ -59,6 +75,7 @@ function runShell(command, cwd) {
       cwd: cwd || undefined,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: childEnv(),
     }))
     let stdout = ''
     let stderr = ''
@@ -387,7 +404,7 @@ function runPythonCapture(args, { cwd, timeoutMs = OCR_TIMEOUT_MS } = {}) {
     const attempt = () => {
       const py = pythons[idx]
       if (!py) return resolvePromise({ content: 'OCR 失败：未找到 python 解释器（需安装 python + rapidocr_onnxruntime）', isError: true })
-      const child = registerChild(spawn(py, args, { cwd: cwd || undefined, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }))
+      const child = registerChild(spawn(py, args, { cwd: cwd || undefined, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: childEnv() }))
       let stdout = ''
       let stderr = ''
       let settled = false
