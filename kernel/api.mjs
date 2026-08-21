@@ -10,6 +10,7 @@
 // engine.mjs 消费该流并转发 wire.assistant，不感知具体 provider 流式格式。
 // YFW_MOCK_API=1：内置幂等 mock 流（引擎测试用，无网络）。
 import { abortError } from './protocol.mjs'
+import { getProvider } from './provider.mjs'
 
 const MOCK_SLEEP_MS = 30
 
@@ -29,7 +30,9 @@ function* segmentText(buffer) {
   }
 }
 
-// 协议检测：仅 Anthropic 兼容协议（deepseek 等 provider 的 /anthropic 端点）
+// 协议检测：仅 Anthropic 兼容协议（deepseek 等 provider 的 /anthropic 端点）。
+// 纯 env 契约（api-protocol.test.mjs 以自定义 env 对象调用，不得读 registry/process）。
+// P4-5 registry 生效点只在 anthropicStream 内部（getProvider 未激活时现读 env，等效）。
 export function detectProtocol(env = process.env) {
   return env.ANTHROPIC_BASE_URL ? 'anthropic' : null
 }
@@ -319,8 +322,10 @@ function isCacheRejection(err) {
 // 打 ephemeral 缓存标记（Anthropic 官方端点依赖显式标记命中缓存；DeepSeek 兼容
 // 端点自动缓存，显式标记无害）。端点拒绝该字段时自动去掉标记重发一次（兼容兜底）。
 async function* anthropicStream({ model, messages, system, tools, maxTokens, signal }) {
-  const base = (process.env.ANTHROPIC_BASE_URL || '').replace(/\/+$/, '')
-  const token = process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || ''
+  // P4-5：注册表解析（setProvider 激活后固定；未激活 getProvider 现读 env，行为不变）
+  const p = getProvider()
+  const base = p.baseUrl
+  const token = p.authToken
   if (!base || !token) throw new Error('内核：ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 未配置')
   const useCache = process.env.YFW_PROMPT_CACHE === '1' && !!system
   const headers = { 'content-type': 'application/json', 'x-api-key': token, 'anthropic-version': '2023-06-01' }
