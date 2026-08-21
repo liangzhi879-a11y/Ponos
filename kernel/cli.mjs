@@ -29,7 +29,8 @@ import { createSessionStore, newSessionId } from './session.mjs'
 import { createHealth } from './health.mjs'
 import { createCompactor } from './compact.mjs'
 import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
-import { getProvider, setProvider, providerVersion, seedFromFile } from './provider.mjs'
+import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
+import { discoverSkills } from './skills.mjs'
 import { loadSettings } from './settings.mjs'
 import { createHooks } from './hooks.mjs'
 import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
@@ -204,14 +205,23 @@ export async function main(argv) {
     health,
     compactor,
   })
+  // P4-4：技能发现内核化——每个 --add-dir 扫描（技能根目录命中 SKILL.md；项目目录为空集）
+  const skills = []
+  const seenSkillIds = new Set()
+  for (const dir of args.addDirs) {
+    for (const s of discoverSkills({ root: dir })) {
+      if (!seenSkillIds.has(s.id)) { seenSkillIds.add(s.id); skills.push(s) }
+    }
+  }
   // 提示词组装：内核基础行为规范 + 可用子 Agent 区块（内置 ∪ 用户级）+ AGENTS.md
-  // 项目指令 + GUI append 文件（最高优先级，后者覆盖前者）。cwd = addDirs[0]。
+  // 项目指令 + 技能区块 + GUI append 文件（最高优先级，后者覆盖前者）。cwd = addDirs[0]。
   engine.setSystemPrompt(composeSystemPrompt({
     toolNames: engine.toolNames,
     subagents: engine.agents,
     agents: discoverAgentsMd({ cwd: args.addDirs[0] || '', addDirs: args.addDirs }),
     append: readPromptFile(args.appendSystemPromptFile),
     cwd: args.addDirs[0] || '',
+    skills,
   }))
   // system(init)：spawn 即发。bridge /test-provider 判定 CLI 加载成功并读取
   // model/tools；GUI 从 session_id 绑定会话（useYFWCLI.ts handleMessage）。
@@ -221,7 +231,16 @@ export async function main(argv) {
   // R4-1 并发会话上限策略内核化：capacity 由内核决定（env 兜底），bridge 只执行
   // 拒绝（单进程内核无法感知其他会话，执行必须在会话管理方）
   const capacity = Math.max(1, Number(process.env.YFW_MAX_CONCURRENT_SESSIONS || 10))
-  wire.system('init', { model, tools: engine.toolNames, session_id: sessionId, name: 'YFWorking', version: YFW_VERSION, capacity })
+  // init 概览扩展（P4-4，只增字段）：provider 注册表激活态 / 视觉透传 / 技能数 / hooks 规则数
+  const prov = getProvider()
+  const vision = visionFromEnv()
+  wire.system('init', {
+    model, tools: engine.toolNames, session_id: sessionId, name: 'YFWorking', version: YFW_VERSION, capacity,
+    provider: prov ? { model: prov.model, version: providerVersion() } : null,
+    vision: vision ? { model: vision.model } : null,
+    skills: skills.length,
+    settings: { hooks: hooks.count },
+  })
   // --resume：从 transcript 恢复（load 为 async 流式；同文件即 GUI 读取的权威源）。
   // 历史由 session.deriveMessages() 派生，engine 无需 seedHistory（seedHistory 已随
   // Task 5 迁移移除）。
