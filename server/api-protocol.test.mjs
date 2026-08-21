@@ -308,3 +308,49 @@ test('R1-1 流中断：第一次流中途抛 transient → 自动重发成功（
     process.env = oldEnv
   }
 })
+
+test('R1-2 超时分级：TimeoutError 分类为 transient（可重试），区别于 abort', () => {
+  const timeoutErr = new Error('The operation was aborted due to timeout')
+  timeoutErr.name = 'TimeoutError'
+  assert.deepEqual(classifyApiError(timeoutErr), { kind: 'transient', retryable: true })
+  const abort = new Error('aborted')
+  abort.name = 'AbortError'
+  assert.deepEqual(classifyApiError(abort), { kind: 'abort', retryable: false })
+})
+
+test('R1-2 fetch 连接超时：AbortSignal.timeout 触发后经重发链路成功（fetch 调 2 次）', async () => {
+  const origFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = async (url, opts) => {
+    calls++
+    if (calls === 1) {
+      // 第一次永不 resolve（模拟连接挂起）；监听组合 signal——超时 abort 时以
+      // signal.reason（TimeoutError）reject，模拟真实 fetch 对 signal 的响应
+      return new Promise((resolve, reject) => {
+        opts.signal.addEventListener('abort', () => reject(opts.signal.reason || new Error('aborted')))
+      })
+    }
+    const enc = new TextEncoder()
+    const ok = 'data: {"type":"message_start","message":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n' +
+               'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}\n\n' +
+               'data: [DONE]\n'
+    return new Response(new ReadableStream({ start(c) { c.enqueue(enc.encode(ok)); c.close() } }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  }
+  const oldEnv = { ...process.env }
+  Object.assign(process.env, {
+    ANTHROPIC_BASE_URL: 'http://t',
+    ANTHROPIC_AUTH_TOKEN: 'k',
+    YFW_MOCK_API: '',
+    CLAUDE_CODE_CONNECT_TIMEOUT_MS: '150',   // 测试缩短
+    CLAUDE_CODE_STREAM_RECONNECTS: '2',
+  })
+  try {
+    const chunks = []
+    for await (const c of streamMessages({ model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
+    assert.equal(calls, 2, '连接超时后应重发')
+    assert.ok(chunks.some((c) => c.type === 'usage'))
+  } finally {
+    globalThis.fetch = origFetch
+    process.env = oldEnv
+  }
+})
