@@ -40,7 +40,7 @@
     - `validateSettings(data)` → `{ ok, error }`：`schemaVersion > SCHEMA_VERSION` → `{ ok: false, error: 'settings schema 版本 <v> 高于内核支持的 <SCHEMA_VERSION>，请升级内核' }`
     - `loadSettings` 返回追加 `schema: { version, migrated, error }`（增量字段，P4 测试不受影响）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```js
 // server/schema.test.mjs
@@ -100,12 +100,12 @@ test('loadSettings：高于当前版本 → error 标注（merged 仍可用，�
 })
 ```
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/schema.test.mjs`
 Expected: FAIL —— `SCHEMA_VERSION` 未导出 / `migrateSettings is not a function`
 
-- [ ] **Step 3: 实现 version.mjs 追加**
+- [x] **Step 3: 实现 version.mjs 追加**
 
 `version.mjs` 末尾追加：
 
@@ -114,7 +114,7 @@ Expected: FAIL —— `SCHEMA_VERSION` 未导出 / `migrateSettings is not a fun
 export const SCHEMA_VERSION = 1
 ```
 
-- [ ] **Step 4: 实现 settings.mjs 追加**
+- [x] **Step 4: 实现 settings.mjs 追加**
 
 `kernel/settings.mjs`：
 1. import 区加 `import { SCHEMA_VERSION } from '../version.mjs'`
@@ -169,12 +169,12 @@ export function validateSettings(data = {}) {
 
 > 注：project/local 层暂不独立迁移（与 user 同为 v1 结构；若未来分版本，在 merged 后统一校验）。迁移只对 user 文件执行，project/local 走 merged 校验兜底。
 
-- [ ] **Step 5: 跑测试验证通过**
+- [x] **Step 5: 跑测试验证通过**
 
 Run: `node --test server/schema.test.mjs`
 Expected: PASS（6 个测试）
 
-- [ ] **Step 6: 回归 + 提交**
+- [x] **Step 6: 回归 + 提交**
 
 Run: `node --test server/settings.test.mjs`
 Expected: PASS（P4 既有测试：无版本文件 → 自动迁移 → merged 语义不变）
@@ -200,7 +200,7 @@ git commit -m "feat(kernel): settings schema 版本化（迁移链 + 高于版�
   - `load()` 返回追加 `metaVersion`：文件含 schemaVersion meta → 该值；旧格式（无 meta）→ 1（自动适配）
   - `TRanscript_SCHEMA_VERSION = 1` 常量导出（供 meta 写入）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```js
 // server/session-meta.test.mjs
@@ -257,12 +257,12 @@ test('旧格式兼容：无 meta 首行的 transcript → load 正常 + metaVers
 })
 ```
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/session-meta.test.mjs`
 Expected: FAIL —— `TRANSCRIPT_SCHEMA_VERSION` 未导出 / 新会话无 meta 首行 / meta 进入 deriveMessages
 
-- [ ] **Step 3: 实现 session.mjs 追加**
+- [x] **Step 3: 实现 session.mjs 追加**
 
 `kernel/session.mjs`：
 1. 常量区（`MAX_SANITIZED_LENGTH` 附近）加：
@@ -300,12 +300,12 @@ export const TRANSCRIPT_SCHEMA_VERSION = 1
   }
 ```
 
-- [ ] **Step 4: 跑测试验证通过**
+- [x] **Step 4: 跑测试验证通过**
 
 Run: `node --test server/session-meta.test.mjs`
 Expected: PASS（3 个测试）
 
-- [ ] **Step 5: 回归 + 提交**
+- [x] **Step 5: 回归 + 提交**
 
 Run: `node --test server/kernel-contract.test.mjs server/kernel-bridge.test.mjs`
 Expected: PASS（旧 transcript 恢复路径不受影响）
@@ -332,7 +332,7 @@ git commit -m "feat(kernel): transcript meta 版本标记（新会话首行 + �
   - cli init 事件：`wire.system('init', { ..., schemaVersion: SCHEMA_VERSION, buildId: buildId() })`（纯增量字段）
   - bridge：`diagInfo` 追加 `{ kernelVersion: '', schemaVersion: 0, buildId: '' }`；主会话 stdout 行循环解析到 `system/init` 事件时赋值（与既有 `firstTokenAt` 采集并列）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```js
 // server/version.test.mjs
@@ -397,12 +397,12 @@ test('init 事件：携带 schemaVersion + buildId（含 YFW_BUILD_ID 注入）'
 })
 ```
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/version.test.mjs`
 Expected: FAIL —— `buildId is not a function` / init 事件无 schemaVersion/buildId
 
-- [ ] **Step 3: 实现 version.mjs + cli.mjs**
+- [x] **Step 3: 实现 version.mjs + cli.mjs**
 
 `version.mjs` 末尾追加：
 
@@ -421,7 +421,7 @@ export function buildId() {
     buildId: buildId(),
 ```
 
-- [ ] **Step 4: 实现 bridge.mjs diagInfo**
+- [x] **Step 4: 实现 bridge.mjs diagInfo**
 
 `server/bridge.mjs`：
 1. `diagInfo` 定义处（原 line 558）追加字段：
@@ -443,12 +443,12 @@ const diagInfo = { firstTokenOk: 0, firstTokenTotal: 0, kernelCrashCount: 0, las
 
 （/diag/info 端点原样返回 diagInfo，无需改动。）
 
-- [ ] **Step 5: 跑测试验证通过**
+- [x] **Step 5: 跑测试验证通过**
 
 Run: `node --test server/version.test.mjs`
 Expected: PASS（2 个测试）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add version.mjs kernel/cli.mjs server/bridge.mjs server/version.test.mjs
@@ -473,7 +473,7 @@ git commit -m "feat: 版本统一（SCHEMA_VERSION/buildId 单一数据源 + ini
   - `renderConfigReference({ env, flags })` → string（markdown：env 表 + CLI flag 表，含"影响面"占位列，默认值/示例由人工补注）
   - CLI：`node kernel/config-scan.mjs [--out <path>]` → 打印或写文件（无 --out 打印 stdout）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```js
 // server/config-scan.test.mjs
@@ -514,12 +514,12 @@ test('renderConfigReference：markdown 输出含 env/flags 两节', () => {
 })
 ```
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/config-scan.test.mjs`
 Expected: FAIL —— `Cannot find module '../kernel/config-scan.mjs'`
 
-- [ ] **Step 3: 实现 kernel/config-scan.mjs**
+- [x] **Step 3: 实现 kernel/config-scan.mjs**
 
 ```js
 #!/usr/bin/env node
@@ -587,7 +587,7 @@ if (isMain) {
 }
 ```
 
-- [ ] **Step 4: 生成文档 + 验证**
+- [x] **Step 4: 生成文档 + 验证**
 
 Run: `node --test server/config-scan.test.mjs`
 Expected: PASS（3 个测试）
@@ -595,7 +595,7 @@ Expected: PASS（3 个测试）
 Run: `node kernel/config-scan.mjs --out docs/manual/kernel-config.md`
 Expected: 输出 `[config-scan] N env / M flags -> docs/manual/kernel-config.md`（随后人工补注默认值/示例，属文档维护，不在测试范围）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/config-scan.mjs docs/manual/kernel-config.md server/config-scan.test.mjs
@@ -616,7 +616,7 @@ git commit -m "feat(kernel): 配置清单生成式 reference（env/CLI flag 盘�
 - Consumes: `kernel/cli.mjs`（既有入口）
 - Produces: 最小部署形态——`package.json`（无 dependencies，`npm start` = `node cli.mjs`，`bin` 指向 cli.mjs）+ `.env.example`（必需 env 模板）+ `README.md`（一步启动说明，配置方式与 GUI 集成方式两用）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```js
 // server/deploy-smoke.test.mjs
@@ -696,12 +696,12 @@ test('部署包：无 GUI mock 完成一轮对话', async () => {
 })
 ```
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/deploy-smoke.test.mjs`
 Expected: FAIL —— `kernel/package.json` 不存在（读取报错）
 
-- [ ] **Step 3: 创建部署包文件**
+- [x] **Step 3: 创建部署包文件**
 
 `kernel/package.json`：
 
@@ -764,12 +764,12 @@ ANTHROPIC_MODEL=your-model
 - 分层 settings（user < project < local）：见 kernel/settings.mjs 与生产化规划 Phase 4/6
 ```
 
-- [ ] **Step 4: 跑测试验证通过**
+- [x] **Step 4: 跑测试验证通过**
 
 Run: `node --test server/deploy-smoke.test.mjs`
 Expected: PASS（4 个测试）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/package.json kernel/.env.example kernel/README.md server/deploy-smoke.test.mjs
@@ -791,7 +791,7 @@ git commit -m "feat(kernel): 独立部署包（零依赖 package.json + env 模�
   - `diffFromDefault(settings)` → `[{ key, value, default }]`：非默认项列表（JSON 序列化比较；undefined/缺键不算漂移）
   - 集成验收：无 schemaVersion 旧 settings + 无 meta 旧 transcript → loadSettings 迁移 v1 + spawn `--resume` 完成一轮（内容等价、可读）
 
-- [ ] **Step 1: 写失败测试（追加）**
+- [x] **Step 1: 写失败测试（追加）**
 
 `server/schema.test.mjs` 追加单元：
 
@@ -870,12 +870,12 @@ test('迁移演练：旧 settings + 旧 transcript → --resume 完成一轮（�
 
 > 注：`writeFileSync` 需在 deploy-smoke.test.mjs 顶部 import 列表补 `writeFileSync`（既有 `readFileSync`）。
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/schema.test.mjs server/deploy-smoke.test.mjs`
 Expected: 新增 FAIL —— `diffFromDefault is not a function`；迁移演练（resume 旧 transcript 依赖 Task 2 meta 跳过——若 Task 2 已落地则通过，此步用于确认集成接线）
 
-- [ ] **Step 3: 实现 settings.mjs 追加**
+- [x] **Step 3: 实现 settings.mjs 追加**
 
 `kernel/settings.mjs` 末尾追加：
 
@@ -906,12 +906,12 @@ export function diffFromDefault(settings = {}) {
 
 （/diag/info 的漂移展示由 P3 计划 Task 6 的 configSummary 端点消费本函数——执行时合并输出 `changedFromDefault`；本计划交付内核侧纯函数 + 测试。）
 
-- [ ] **Step 4: 跑测试验证通过**
+- [x] **Step 4: 跑测试验证通过**
 
 Run: `node --test server/schema.test.mjs server/deploy-smoke.test.mjs`
 Expected: 全 PASS（schema 7 个 + deploy 5 个）
 
-- [ ] **Step 5: 全量回归 + 提交**
+- [x] **Step 5: 全量回归 + 提交**
 
 Run: `node --test "server/*.test.mjs"`
 Expected: 全绿（222+ 既有测试 + 本计划新增）
