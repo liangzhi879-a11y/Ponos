@@ -5,3 +5,6 @@
 // YFWorking GUI 的发布版本线，与此处的 yfwturbo dev 版本线相互独立。
 // 版本规范：dev <major>.<minor>（发布稳定后去掉 dev 前缀）
 export const YFW_VERSION = 'dev 0.1'
+
+// settings 文件 schema 版本（D2-1）：无 schemaVersion 的旧文件视为 v0，读取时沿迁移链升级。
+export const SCHEMA_VERSION = 1
