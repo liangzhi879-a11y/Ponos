@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createToolRegistry, childEnv } from '../kernel/tools.mjs'
@@ -246,5 +246,31 @@ test('S2-2 Bash 子进程：白名单 env 生效（不泄露敏感变量），�
     if (prev === undefined) delete process.env.SECRET_TEST_VAR
     else process.env.SECRET_TEST_VAR = prev
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('S4-1 符号链接逃逸：边界内 symlink 指向边界外 → 拒绝；指向边界内 → 允许', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'boundary-'))
+  const outside = mkdtempSync(join(tmpdir(), 'outside-'))
+  mkdirSync(join(dir, 'sub'))
+  try {
+    // Windows 目录链接需显式 junction（免管理员权限）；POSIX 忽略 type
+    const dirLinkType = process.platform === 'win32' ? 'junction' : undefined
+    symlinkSync(outside, join(dir, 'sub', 'escape'), dirLinkType)          // 逃逸链接
+    symlinkSync(join(dir, 'sub'), join(dir, 'oklink'), dirLinkType)        // 内部链接
+    writeFileSync(join(outside, 'secret.txt'), 's')
+    writeFileSync(join(dir, 'sub', 'ok.txt'), 'ok')
+    const reg = createToolRegistry({ cwd: dir, addDirs: [dir], skipPermissions: true })
+    // 通过逃逸链接读外部文件 → 拒绝
+    const r1 = await reg.run({ name: 'Read', input: { file_path: join(dir, 'sub', 'escape', 'secret.txt') } })
+    assert.equal(r1.isError, true)
+    assert.match(String(r1.content), /拒绝访问|边界/)
+    // 内部链接读内部文件 → 允许
+    const r2 = await reg.run({ name: 'Read', input: { file_path: join(dir, 'oklink', 'ok.txt') } })
+    assert.equal(r2.isError, false)
+    assert.match(String(r2.content), /ok/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(outside, { recursive: true, force: true })
   }
 })

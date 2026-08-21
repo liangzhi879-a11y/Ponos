@@ -7,9 +7,9 @@
 // 识别扫描件，零 npm 依赖）。返回统一结果 { content, isError, meta? }，由
 // engine 以 tool_result 回填模型。
 import { spawn } from 'node:child_process'
-import { readFileSync, writeFileSync, statSync, existsSync, readdirSync, rmSync } from 'node:fs'
+import { readFileSync, writeFileSync, statSync, existsSync, readdirSync, rmSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, resolve, sep, join, extname } from 'node:path'
+import { dirname, resolve, sep, join, extname, basename } from 'node:path'
 import { get as httpsGet, request as httpsRequest } from 'node:https'
 import { get as httpGet, request as httpRequest } from 'node:http'
 import { matchesHighRisk } from './highrisk.mjs'
@@ -105,11 +105,38 @@ function runShell(command, cwd) {
 }
 
 // 文件路径边界：仅允许读写 --add-dir 注入的目录（cwd / 技能根）内文件
+// S4-1 路径加固：realpath 解析真实路径（解符号链接），防链接逃逸出边界。
+// 文件不存在时对最近存在的父目录做 realpath，再拼回剩余段（写入新文件场景）。
+function safeRealpath(p) {
+  try { return realpathSync(p) } catch { return p }
+}
+function realForComparison(p) {
+  const r = resolve(p)
+  const real = safeRealpath(r)
+  if (real !== r) return real
+  // 路径不存在：逐级向上找最近存在的祖先做 realpath
+  let cur = r
+  const tail = []
+  for (let i = 0; i < 32; i++) {
+    try {
+      realpathSync(cur)
+      return join(realpathSync(cur), ...tail.reverse())
+    } catch {
+      const parent = dirname(cur)
+      if (parent === cur) return r
+      tail.push(basename(cur))
+      cur = parent
+    }
+  }
+  return r
+}
+
 function withinBoundary(filePath, allowDirs) {
   const resolved = resolve(filePath)
+  const real = realForComparison(resolved).toLowerCase()
   return allowDirs.some((dir) => {
-    const base = resolve(dir).toLowerCase()
-    return resolved.toLowerCase() === base || resolved.toLowerCase().startsWith(base + sep)
+    const base = realForComparison(resolve(dir)).toLowerCase()
+    return real === base || real.startsWith(base + sep)
   })
 }
 
