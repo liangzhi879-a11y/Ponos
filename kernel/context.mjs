@@ -125,3 +125,16 @@ export function makeUsageAnchor() {
     },
   }
 }
+
+// —— L4-1 上下文预测：token 增长速率 → 预测到达阈值轮数 ——
+// recent 形状与 health 一致：[{ usage: { input_tokens } }]；k = 参与均值计算的最近轮数。
+export function predictTurns({ recent = [], window = 200_000, thresholdRatio = 0.8, k = 5 } = {}) {
+  const usages = (Array.isArray(recent) ? recent : []).map((t) => Number(t?.usage?.input_tokens ?? 0))
+  const lastInput = usages.length ? usages[usages.length - 1] : 0
+  const threshold = Math.floor(window * thresholdRatio)
+  const deltas = []
+  for (let i = usages.length - 1; i > 0 && deltas.length < k; i--) deltas.push(usages[i] - usages[i - 1])
+  const growthPerTurn = deltas.length ? Math.max(1, Math.round(deltas.reduce((s, d) => s + d, 0) / deltas.length)) : 1000
+  const predictedTurns = Math.max(0, Math.floor((threshold - lastInput) / growthPerTurn))
+  return { growthPerTurn, predictedTurns, threshold, lastInput }
+}
