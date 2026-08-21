@@ -130,15 +130,58 @@ export function findCutPoint({ messages, retainTokens, estimateMessage }) {
   return { start, covered: messages.slice(0, start) }
 }
 
-// —— 摘要请求组装（前缀对齐主请求：system + 旧消息 + 前次摘要 + 指令）——
-export function assembleSummaryRequest({ system, messages, cut, lastSummary }) {
+// —— L1-1 关键信息保留：摘要请求注入结构化提示（零成本确定性提取）——
+// TodoWrite 整表重写 → 最后调用即权威清单；Write/Edit 记录文件变更；
+// 最近 assistant 文本作为决策上下文。todo 取最后 3、文件取最后 8 防溢出。
+export function extractKeyInfo(messages = []) {
+  const todos = []
+  const files = []
+  for (const m of messages) {
+    if (!Array.isArray(m.content)) continue
+    for (const b of m.content) {
+      if (b?.type !== 'tool_use') continue
+      const input = b.input || {}
+      if (b.name === 'TodoWrite') {
+        const items = (Array.isArray(input.todos) ? input.todos : [])
+          .map((t) => t?.content ?? t?.task ?? '')
+          .filter((x) => String(x).trim())
+        if (items.length) todos.push(items.join(' / '))
+      } else if (b.name === 'Write' || b.name === 'Edit') {
+        files.push(`${b.name} ${input.file_path ?? input.path ?? '?'}`)
+      }
+    }
+  }
+  const decisions = messages
+    .filter((m) => m.role === 'assistant')
+    .map((m) => {
+      if (typeof m.content === 'string') return m.content
+      if (Array.isArray(m.content)) return m.content.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join(' ')
+      return ''
+    })
+    .filter((t) => t.trim())
+    .slice(-2)
+  return { todos, files, decisions }
+}
+
+export function keyInfoBlock(key) {
+  const lines = []
+  if (key.todos.length) lines.push(`- 任务清单：${key.todos.slice(-3).join('；')}`)
+  if (key.files.length) lines.push(`- 文件变更：${key.files.slice(-8).join('，')}`)
+  if (key.decisions.length) lines.push(`- 最近决策：${key.decisions.join(' | ').slice(0, 500)}`)
+  if (!lines.length) return ''
+  return '（关键信息提示——摘要必须保留以下内容：）\n<key-info>\n' + lines.join('\n') + '\n</key-info>'
+}
+
+// —— 摘要请求组装（前缀对齐主请求：system + 旧消息 + 前次摘要 + 指令 + keyInfo）——
+export function assembleSummaryRequest({ system, messages, cut, lastSummary, keyInfo = '' }) {
   const covered = cut.covered || []
   const body = []
   if (lastSummary) body.push({ role: 'user', content: `<compacted-summary>${lastSummary}</compacted-summary>` })
   body.push(...covered)
   body.push({
     role: 'user',
-    content: COMPACTION_INSTRUCTION + (system ? `\n\n（系统提示开头：${String(system).slice(0, 200)}…）` : ''),
+    content: COMPACTION_INSTRUCTION + (system ? `\n\n（系统提示开头：${String(system).slice(0, 200)}…）` : '') +
+      (keyInfo && keyInfo.trim() ? `\n\n${keyInfo}` : ''),
   })
   return body
 }
@@ -169,7 +212,8 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
   }
 
   async function runSummarizer({ system, messages, cut }) {
-    const req = assembleSummaryRequest({ system, messages, cut, lastSummary })
+    const keyInfo = keyInfoBlock(extractKeyInfo(messages))
+    const req = assembleSummaryRequest({ system, messages, cut, lastSummary, keyInfo })
     let buf = ''
     let usage = {}
     for await (const chunk of streamMessages({ model, messages: req, maxTokens, signal, tools: [] })) {
@@ -272,4 +316,23 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
     },
     lastSummary: () => lastSummary,
   }
+}
+
+// —— L2-1 预算配置化：settings.compact { thresholdTokens, reserveTokens, maxToolResults } ——
+// 默认对齐现状（0.8 / 0.16 / env 预算）；数值配置按 window 换算 ratio。
+export function resolveCompactSettings({ window = 200_000, settings = {}, env = process.env } = {}) {
+  const c = settings.compact || {}
+  const thresholdTokens = Number(c.thresholdTokens)
+  const reserveTokens = Number(c.reserveTokens)
+  const maxToolResults = Number(c.maxToolResults)
+  const thresholdRatio = Number.isFinite(thresholdTokens) && thresholdTokens > 0
+    ? Math.min(1, Math.max(0.01, thresholdTokens / window))
+    : 0.8
+  const retainRatio = Number.isFinite(reserveTokens) && reserveTokens > 0
+    ? Math.min(0.5, Math.max(0.001, reserveTokens / window))
+    : 0.16
+  const toolResultBudget = Number.isFinite(maxToolResults) && maxToolResults > 0
+    ? maxToolResults
+    : Number(env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES || 20000)
+  return { thresholdRatio, retainRatio, toolResultBudget }
 }
