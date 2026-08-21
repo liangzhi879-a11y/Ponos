@@ -21,6 +21,7 @@ import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createEngine } from './engine.mjs'
+import { createLogger } from './log.mjs'
 import { makeWire } from './protocol.mjs'
 import { createSessionStore, newSessionId } from './session.mjs'
 import { createHealth } from './health.mjs'
@@ -107,6 +108,8 @@ export async function main(argv) {
   const sessionId = args.resume || newSessionId()
   const configDir = process.env.CLAUDE_CONFIG_DIR || process.env.YFWORKING_HOME || join(homedir(), '.yfworking')
   const store = createSessionStore({ configDir, cwd: args.addDirs[0] || '', sessionId })
+  // 内核结构化日志（R5-1）：stderr JSON 行，级别过滤经 CLAUDE_CODE_LOG_LEVEL
+  const log = createLogger({ level: process.env.CLAUDE_CODE_LOG_LEVEL || 'info', sid: sessionId })
 
   // 生产链路一次接齐：context（token 启发式）+ health（健康监控）+ compactor（两阶段压缩）。
   // compactor 装配 health → 压缩成功后 yfw_summary 走 health.recordCompaction 单通道
@@ -157,6 +160,7 @@ export async function main(argv) {
   // model/tools；GUI 从 session_id 绑定会话（useYFWCLI.ts handleMessage）。
   // name 字段标识 agent 身份（诊断用，GUI 不依赖）；version 为 yfwturbo dev 版本线
   // （version.mjs 单一数据源，与 GUI 发布版本相互独立）。
+  log.info('kernel start', { model, resume: Boolean(args.resume), cwd: args.addDirs[0] || '' })
   wire.system('init', { model, tools: engine.toolNames, session_id: sessionId, name: 'YFWorking', version: YFW_VERSION })
   // --resume：从 transcript 恢复（load 为 async 流式；同文件即 GUI 读取的权威源）。
   // 历史由 session.deriveMessages() 派生，engine 无需 seedHistory（seedHistory 已随
@@ -176,10 +180,12 @@ export async function main(argv) {
       await engine.runTurn({ content, msg })
     } catch (err) {
       if (err?.name === 'AbortError' || state.cancelling) {
+        log.info('turn cancelled')
         wire.assistant('已取消。')
         wire.result()
         store.appendAssistant([{ type: 'text', text: '已取消。' }])
       } else {
+        log.error('turn failed', err)
         wire.assistant('处理出错：' + (err?.message || String(err)))
         wire.result()
       }
