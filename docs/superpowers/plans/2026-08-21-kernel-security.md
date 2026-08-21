@@ -31,7 +31,7 @@
   - `redactEntry(entry)` → entry（递归打码 message.content 的 string/blocks/input JSON；`YFW_KEEP_SECRETS=1` 时原样）
   - session 磁盘落盘内容脱敏；内存 `deriveMessages()` 保留原文
 
-- [ ] **Step 1: 写失败测试（新建 server/redact.test.mjs + session 增补）**
+- [x] **Step 1: 写失败测试（新建 server/redact.test.mjs + session 增补）**
 
 ```js
 // server/redact.test.mjs —— 密钥脱敏（docs/production/security.md S2-1）
@@ -90,12 +90,12 @@ test('S2-1 磁盘脱敏：transcript 文件含打码内容，内存 deriveMessag
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/redact.test.mjs server/session.test.mjs`
 Expected: FAIL（redactText 未定义；磁盘含原文）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 ```js
 // kernel/redact.mjs —— 敏感信息脱敏（docs/production/security.md S2-1）
@@ -152,12 +152,12 @@ error(msg, err) { this.log('error', msg, err ? { err: redactText(err?.message ||
 // fatal/warn 同改
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/redact.test.mjs server/session.test.mjs server/log.test.mjs`
 Expected: PASS（redact 2 个 + session 增补 + log 原样）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/redact.mjs kernel/session.mjs kernel/log.mjs server/redact.test.mjs server/session.test.mjs
@@ -176,7 +176,7 @@ git commit -m "feat(kernel): 密钥脱敏——磁盘 transcript/日志打码，
 - Produces: `export function childEnv()` → 白名单 env 对象（系统路径/编码/代理变量；**剥离 ANTHROPIC_*/CLAUDE_CODE_*/密钥类变量**）
   - Bash spawn（line 45）与 OCR python spawn（line 377）加 `env: childEnv()`
 
-- [ ] **Step 1: 写失败测试（增补到 server/tools-ext.test.mjs 末尾）**
+- [x] **Step 1: 写失败测试（增补到 server/tools-ext.test.mjs 末尾）**
 
 ```js
 import { childEnv } from '../kernel/tools.mjs'
@@ -217,12 +217,12 @@ test('S2-2 Bash 子进程：白名单 env 生效（不泄露敏感变量），�
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/tools-ext.test.mjs`
 Expected: FAIL（ANTHROPIC_AUTH_TOKEN 泄漏；Bash 输出 leak=must-not-leak）
 
-- [ ] **Step 3: 最小实现（kernel/tools.mjs）**
+- [x] **Step 3: 最小实现（kernel/tools.mjs）**
 
 ```js
 // 模块级（withinBoundary 之前）追加：
@@ -245,12 +245,12 @@ export function childEnv() {
 // OCR python spawn（line ~377）追加 env: childEnv()
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/tools-ext.test.mjs`
 Expected: PASS（原有全部测试 + 新增 2 个——注意既有 Bash 测试依赖 PATH 透传，白名单含 PATH 故不破坏）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/tools.mjs server/tools-ext.test.mjs
@@ -272,7 +272,7 @@ git commit -m "feat(kernel): 子进程 env 白名单——剥离密钥与配置�
     - 参数/结果摘要截断 200 字符；`from`/`to` 为 ISO 时间字符串，过滤 entries
   - bridge `GET /audit?cwd=&from=&to=` → `{ ok: true, rows }`（聚合全部 transcript；参照 /transcript/stats 的文件遍历模式）
 
-- [ ] **Step 1: 写失败测试（新建 server/audit.test.mjs）**
+- [x] **Step 1: 写失败测试（新建 server/audit.test.mjs）**
 
 ```js
 // server/audit.test.mjs —— 审计聚合（docs/production/security.md S1-1）
@@ -315,12 +315,12 @@ test('buildAuditReport：时间范围过滤 + 长内容截断 200 字符', () =>
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/audit.test.mjs`
 Expected: FAIL（Cannot find module `../kernel/audit.mjs`）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 ```js
 // kernel/audit.mjs —— 审计聚合（docs/production/security.md S1-1）
@@ -384,12 +384,12 @@ if (url.pathname === '/audit') {
 
 > 注：`readdirSync/readFileSync` 已在 bridge.mjs import 区（/transcript 处理已用），无需新增 import；`transcriptBaseDir` 同文件已有。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/audit.test.mjs`
 Expected: PASS（2 个测试全过）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/audit.mjs server/audit.test.mjs server/bridge.mjs
@@ -411,7 +411,7 @@ git commit -m "feat(kernel+bridge): 审计聚合导出——tool_use/tool_result
   - 优先级：deny > ask > allow；命中即返回 `{ decision, reason }`；未命中走原默认逻辑
   - cli：`--permission-rules-file <file>` → JSON `{ permissions: { allow, deny, ask } }` → engine opts.permissionRules
 
-- [ ] **Step 1: 写失败测试（新建 server/permissions.test.mjs）**
+- [x] **Step 1: 写失败测试（新建 server/permissions.test.mjs）**
 
 ```js
 // server/permissions.test.mjs —— 权限规则 schema（docs/production/security.md S3-1）
@@ -448,12 +448,12 @@ test('S3-1 无规则命中：行为与现状一致（highrisk ask / 其他 allow
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/permissions.test.mjs`
 Expected: FAIL（deny 规则未生效——返回 ask/allow）
 
-- [ ] **Step 3: 最小实现（kernel/permissions.mjs）**
+- [x] **Step 3: 最小实现（kernel/permissions.mjs）**
 
 ```js
 import { matchesHighRisk } from './highrisk.mjs'
@@ -511,12 +511,12 @@ export function decideToolPermission({ toolName, input, skipPermissions, autoApp
 //   createEngine opts 增加 permissionRules
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/permissions.test.mjs`
 Expected: PASS（3 个测试全过）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/permissions.mjs kernel/engine.mjs kernel/cli.mjs server/permissions.test.mjs
@@ -534,7 +534,7 @@ git commit -m "feat(kernel): 权限规则文件——allow/deny/ask 三级优先
 **Interfaces:**
 - Produces: `withinBoundary(filePath, allowDirs)`——resolve 后对路径做 realpath（存在时），与 allowDirs 的 realpath 归一比较；符号链接逃逸（链接指向边界外）→ 拒绝；既有合法路径行为不变
 
-- [ ] **Step 1: 写失败测试（增补到 server/tools-ext.test.mjs 末尾）**
+- [x] **Step 1: 写失败测试（增补到 server/tools-ext.test.mjs 末尾）**
 
 ```js
 import { symlinkSync, mkdirSync } from 'node:fs'
@@ -564,12 +564,12 @@ test('S4-1 符号链接逃逸：边界内 symlink 指向边界外 → 拒绝；�
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/tools-ext.test.mjs`
 Expected: FAIL（逃逸链接被放行——当前 withinBoundary 仅字符串比较，symlink 逃逸 r1 非 error）
 
-- [ ] **Step 3: 最小实现（kernel/tools.mjs）**
+- [x] **Step 3: 最小实现（kernel/tools.mjs）**
 
 ```js
 // tools.mjs import 区追加：
@@ -613,12 +613,12 @@ function withinBoundary(filePath, allowDirs) {
 
 > 注意：`dirname/basename/resolve/sep` 已在 tools.mjs import（resolve/sep 已用；如 dirname/basename 未 import 则补 `import { dirname, basename } from 'node:path'`）。Windows 大小写归一（toLowerCase）已存在，本任务保留。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/tools-ext.test.mjs server/tools-schema.test.mjs`
 Expected: PASS（原有全部测试 + 新增 1 个——symlink 场景；既有边界测试不受影响）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/tools.mjs server/tools-ext.test.mjs
@@ -640,7 +640,7 @@ git commit -m "feat(kernel): 路径边界 realpath 加固——符号链接逃�
   - `sharedDirFor(configDir)` → `join(configDir, 'shared')`（共享只读技能/配置目录）
   - cli.mjs：main 内 shared 目录存在时追加进 addDirs（只读共享——tools withinBoundary 对 addDirs 白名单只读/可读写，共享目录以只读语义加入）
 
-- [ ] **Step 1: 写失败测试（新建 server/config.test.mjs）**
+- [x] **Step 1: 写失败测试（新建 server/config.test.mjs）**
 
 ```js
 // server/config.test.mjs —— 配置目录解析 + 共享目录（docs/production/security.md S5-1）
@@ -663,12 +663,12 @@ test('sharedDirFor：configDir 下 shared 子目录', () => {
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/config.test.mjs`
 Expected: FAIL（Cannot find module `../kernel/config.mjs`）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 ```js
 // kernel/config.mjs —— 配置目录解析（docs/production/security.md S5-1）
@@ -693,12 +693,12 @@ if (existsSync(sharedDir)) args.addDirs.push(sharedDir)   // 只读共享技能/
 
 > 注：`homedir` 已 import（cli.mjs line 21 `import { homedir } from 'node:os'`）。config.mjs 的 homedirFn 默认参数若需真实 homedir，改为 `import { homedir } from 'node:os'` 后 `() => homedir()`，测试传桩函数。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/config.test.mjs`
 Expected: PASS（2 个测试全过）
 
-- [ ] **Step 5: 全量回归 + 提交**
+- [x] **Step 5: 全量回归 + 提交**
 
 ```bash
 node --test "server/*.test.mjs"
