@@ -132,8 +132,10 @@ test('端到端：spawn 真实内核 → system(init) → 一轮 mock 对话 →
   const file = join(home, 'projects', sanitizeSegment(home), sid + '.jsonl')
   assert.ok(existsSync(file), 'transcript 文件应落在 bridge 读取路径')
   const entries = readFileSync(file, 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
-  assert.equal(entries.length, 2)
-  assert.equal(entries[0].message.content, '你好内核')
+  // D2-2：首行为 meta 版本标记，后续 user + assistant
+  assert.equal(entries.length, 3)
+  assert.equal(entries[0].type, 'meta')
+  assert.equal(entries[1].message.content, '你好内核')
 })
 
 test('端到端：cancel → cancelled 事件 + result，会话保留可续聊', async () => {
