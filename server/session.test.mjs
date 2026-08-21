@@ -5,7 +5,7 @@
 // 窗口化恢复。回归：server/kernel-engine.test.mjs（15/15）保持全绿。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createSessionStore } from '../kernel/session.mjs'
@@ -101,4 +101,21 @@ test('窗口化恢复：maxEntries 超限截断到近窗口（保留尾部 + com
     assert.ok(surface.nodes.length <= 4)
     assert.deepEqual(store.deriveMessages()[0].content, 'q5') // 近窗口：保留尾部 4 条 = U5..A6
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('S2-1 磁盘脱敏：transcript 文件含打码内容，内存 deriveMessages 保留原文', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'session-redact-'))
+  const prev = process.env.YFW_KEEP_SECRETS
+  process.env.YFW_KEEP_SECRETS = ''
+  try {
+    const store = createSessionStore({ configDir: dir, cwd: '', sessionId: 'r' })
+    store.appendUser('my key is sk-abc12345XYZ')
+    const raw = readFileSync(store.file, 'utf-8')
+    assert.match(raw, /sk-\*\*\*/)
+    assert.ok(!raw.includes('sk-abc12345XYZ'), '磁盘不得含原文密钥')
+    assert.equal(store.deriveMessages()[0].content, 'my key is sk-abc12345XYZ', '模型输入保留原文')
+  } finally {
+    process.env.YFW_KEEP_SECRETS = prev || ''
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

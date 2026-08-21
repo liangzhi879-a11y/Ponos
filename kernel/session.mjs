@@ -18,6 +18,7 @@ import { existsSync, createReadStream, appendFileSync, mkdirSync, readFileSync, 
 import { createInterface } from 'node:readline'
 import { join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
+import { redactEntry } from './redact.mjs'
 
 export const MAX_SANITIZED_LENGTH = 200
 
@@ -105,7 +106,8 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
   function append(entry) {
     try {
       mkdirSync(dir, { recursive: true })
-      appendFileSync(file, JSON.stringify(entry) + '\n', 'utf-8')
+      // S2-1 磁盘脱敏：落盘内容打码（内存 entriesBySeq 保留原文，模型输入不受影响）
+      appendFileSync(file, JSON.stringify(redactEntry(entry)) + '\n', 'utf-8')
     } catch { /* 磁盘不可写不致命：内存状态仍可用 */ }
     return entry
   }
