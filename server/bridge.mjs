@@ -414,6 +414,31 @@ function loadConfig() {
 // app works with plain API keys — no browser-based authentication needed.
 const YFW_SETTINGS_PATH = join(YFW_HOME, 'settings.json')
 
+// P4-1：内核 provider 注册表播种源（与 settings.json 同一信任域：YFW_HOME，含 token）
+const YFW_PROVIDERS_PATH = join(YFW_HOME, 'providers.json')
+
+function writeProvidersFile() {
+  try {
+    const cfg = loadConfig()
+    const snapshot = {
+      activeProvider: cfg.activeProvider || '',
+      providers: (cfg.providers || []).map((p) => ({
+        id: p.id,
+        apiBaseUrl: p.apiBaseUrl || '',
+        authToken: p.authToken || '',
+        primaryModel: p.primaryModel || '',
+        models: p.models || [],
+        subagentModel: p.subagentModel || '',
+        contextWindow: p.contextWindow || 0,
+        visionModel: p.visionModel || '',
+      })),
+    }
+    safeWriteJsonWithBak(YFW_PROVIDERS_PATH, JSON.stringify(snapshot, null, 2))
+  } catch (e) {
+    console.warn('[bridge] writeProvidersFile failed:', e.message)
+  }
+}
+
 function syncKernelSettings() {
   try {
     const cfg = loadConfig()
@@ -461,6 +486,7 @@ function saveConfig(updates) {
   safeWriteJsonWithBak(YFW_CONFIG_PATH, JSON.stringify(next, null, 2))
   // Keep the kernel's settings.json in sync so auth works without login.
   syncKernelSettings()
+  writeProvidersFile()
   return next
 }
 
@@ -578,6 +604,7 @@ const YFWORKING = findYFWorking()
 console.log('[bridge] YFWorking CLI:', YFWORKING)
 // Ensure kernel settings.json exists with credentials on boot.
 try { syncKernelSettings() } catch (e) { console.warn('[bridge] initial kernel settings sync failed:', e.message) }
+try { writeProvidersFile() } catch (e) { console.warn('[bridge] initial providers file write failed:', e.message) }
 console.log('[bridge] YFWorking home:', YFW_HOME)
 
 const sessions = new Map()

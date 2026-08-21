@@ -29,7 +29,7 @@ import { createSessionStore, newSessionId } from './session.mjs'
 import { createHealth } from './health.mjs'
 import { createCompactor } from './compact.mjs'
 import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
-import { getProvider, setProvider, providerVersion } from './provider.mjs'
+import { getProvider, setProvider, providerVersion, seedFromFile } from './provider.mjs'
 import { loadSettings } from './settings.mjs'
 import { createHooks } from './hooks.mjs'
 import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
@@ -119,6 +119,8 @@ export async function main(argv) {
   const sharedDir = sharedDirFor(configDir)
   if (existsSync(sharedDir)) args.addDirs.push(sharedDir)
   const store = createSessionStore({ configDir, cwd: args.addDirs[0] || '', sessionId })
+  // P4-1：bridge 落盘的 providers.json → 注册表播种（未激活时生效；激活后固定）
+  seedFromFile(join(configDir, 'providers.json'))
   // P4-3 分层 settings：user（configDir/settings.json）< project（cwd/.yfworking/settings.json）< local。
   // settings.env 仅兜底（spawn env 快照仍权威）：缺失键才写入 process.env。
   const settings = loadSettings({ configDir, cwd: args.addDirs[0] || '', local: {} })
