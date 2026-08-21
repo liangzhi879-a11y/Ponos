@@ -20,6 +20,7 @@ import { buildAuditReport } from '../kernel/audit.mjs'
 import { aggregateUsage } from '../kernel/stats.mjs'
 import { costOf, withBudget } from '../kernel/cost.mjs'
 import { getOpsHealth } from '../kernel/health.mjs'
+import { redactText } from '../kernel/redact.mjs'
 
 const PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51309', 10)
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -560,6 +561,22 @@ const wsClients = new Set()
 
 // 诊断埋点：供主进程 diag-monitor 查询（只读内存统计，跨会话累计，仅统计最近 7 天）
 const diagInfo = { firstTokenOk: 0, firstTokenTotal: 0, kernelCrashCount: 0, lastApiSuccessAt: null }
+
+// O3-1/O3-2 共用：transcript 目录总大小（MB 取整；目录不可读时 0）
+function transcriptDirMB() {
+  let bytes = 0
+  const base = transcriptBaseDir()
+  try {
+    for (const proj of readdirSync(base)) {
+      const pdir = join(base, proj)
+      if (!statSync(pdir).isDirectory()) continue
+      for (const f of readdirSync(pdir)) {
+        try { bytes += statSync(join(pdir, f)).size } catch {}
+      }
+    }
+  } catch {}
+  return Math.round(bytes / 1024 / 1024)
+}
 
 // ---------------------------------------------------------------------------
 // 内置浏览器自动化路由（bridge 侧接线）：内核 bridge_request(browser) → 主进程
@@ -1378,7 +1395,43 @@ const httpServer = createServer(async (req, res) => {
 
     // 诊断信息端点：diag-monitor 定期轮询（只读内存统计，见 diagInfo 定义）
     if (url.pathname === '/diag/info') {
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, data: diagInfo }))
+      // O3-1 补全：配置摘要（env 白名单键值脱敏）+ skills-lock 版本 + transcript 大小
+      const configSummary = {}
+      for (const k of Object.keys(process.env)) {
+        if (/^(ANTHROPIC_|CLAUDE_|YFW_|OPENAI_)/.test(k)) configSummary[k] = redactText(process.env[k] || '')
+      }
+      const skillsLock = join(YFW_HOME, 'skills-lock.json')
+      let skillsLockVersion = null
+      try { skillsLockVersion = JSON.parse(readFileSync(skillsLock, 'utf-8')).version ?? null } catch {}
+      const extended = { ...diagInfo, configSummary, skillsLockVersion, transcriptMB: transcriptDirMB() }
+      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, data: extended }))
+    }
+
+    // O3-2 一键诊断导出：支持排查用，不落盘文件，直接 JSON 返回（env 全量脱敏）
+    if (url.pathname === '/diag/export') {
+      const env = {}
+      for (const k of Object.keys(process.env)) {
+        if (/^(ANTHROPIC_|CLAUDE_|YFW_|OPENAI_)/.test(k)) env[k] = redactText(process.env[k] || '')
+      }
+      const base = transcriptBaseDir()
+      let sessions = 0
+      try {
+        for (const proj of readdirSync(base)) {
+          const pdir = join(base, proj)
+          if (!statSync(pdir).isDirectory()) continue
+          sessions += readdirSync(pdir).filter((f) => f.endsWith('.jsonl')).length
+        }
+      } catch {}
+      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({
+        ok: true,
+        exported: {
+          generatedAt: new Date().toISOString(),
+          version: diagInfo.version || '',
+          env,
+          sessions,
+          transcriptMB: transcriptDirMB(),
+        },
+      }))
     }
 
     // 内核 transcript 读取端点（实现见 transcript.mjs；GUI 会话系统改造第一步）
