@@ -137,6 +137,7 @@ export async function main(argv) {
       verbose: args.verbose,
       skipPermissions: args.skipPermissions,
       autoApproveHighRisk: args.autoApproveHighRisk,
+      disallowedTools: args.disallowedTools,
     },
     wire,
     session: store,
@@ -150,6 +151,7 @@ export async function main(argv) {
     subagents: engine.agents,
     agents: discoverAgentsMd({ cwd: args.addDirs[0] || '', addDirs: args.addDirs }),
     append: readPromptFile(args.appendSystemPromptFile),
+    cwd: args.addDirs[0] || '',
   }))
   // system(init)：spawn 即发。bridge /test-provider 判定 CLI 加载成功并读取
   // model/tools；GUI 从 session_id 绑定会话（useYFWCLI.ts handleMessage）。

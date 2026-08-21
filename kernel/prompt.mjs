@@ -39,9 +39,12 @@ export function discoverAgentsMd({ cwd, addDirs = [] }) {
 }
 
 // 内核基础行为规范（LLM 行为逻辑）：YFWorking 身份 + 工作规范。
-export function buildBaseSystemPrompt({ toolNames = [] } = {}) {
+// cwd 注入当前工作目录（对照 claude 的 "Primary working directory:" 注入），
+// 让模型基于确定路径规划工具调用，减少试错式路径猜测。
+export function buildBaseSystemPrompt({ toolNames = [], cwd = '' } = {}) {
   return [
     '你是 YFWorking 的 AI 助手，运行在 YFW-turbo 内核上，通过工具完成任务。请遵循以下工作规范：',
+    ...(cwd ? [`当前工作目录：${cwd}（工具的相对路径均相对于此目录解析）`] : []),
     '',
     '【工具纪律】',
     '- 修改文件前先 Read 读取确认现状，再决定 Write/Edit。',
@@ -67,8 +70,8 @@ export function buildBaseSystemPrompt({ toolNames = [] } = {}) {
 
 // 三层组装：base + 可用子 Agent 区块 + AGENTS.md（带来源标注）+ append 文件
 // （最后，最高优先级）。subagents 为内置 ∪ 用户级的子 Agent 表（Agent 工具路由依据）。
-export function composeSystemPrompt({ toolNames, agents, subagents = [], append = '' }) {
-  const parts = [buildBaseSystemPrompt({ toolNames })]
+export function composeSystemPrompt({ toolNames, agents, subagents = [], append = '', cwd = '' }) {
+  const parts = [buildBaseSystemPrompt({ toolNames, cwd })]
   if (subagents && subagents.length > 0) {
     const lines = ['【可用子 Agent】可将独立子任务委派给以下子 Agent（Agent 工具的 subagent_type）：']
     for (const a of subagents) {

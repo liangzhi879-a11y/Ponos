@@ -129,7 +129,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   }
   const model = opts.model || process.env.ANTHROPIC_MODEL || ''
   const maxTokens = Math.max(1, Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || 64000))
-  const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: opts.addDirs, skipPermissions: opts.skipPermissions })
+  const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: opts.addDirs, skipPermissions: opts.skipPermissions, disallowedTools: opts.disallowedTools })
   // agent 表（内置 ∪ 用户级 $YFW_HOME/agents/*.md）：Agent 工具路由依据
   const agents = resolveAgents({ configDir: opts.configDir })
   // 审批挂起队列：toolUseId → resolve（cli 的 control_response 解除）
@@ -521,7 +521,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     spawnSubAgent,
     taskSystem,
     pendingSubAgents,
-    agents,
+    // Agent 工具被禁用时（--disallowedTools Agent）子 Agent 区块不入提示词
+    agents: opts.disallowedTools?.includes('Agent') ? [] : agents,
     setSystemPrompt(p) { systemPrompt = p || '' },
     abort() { signal.aborted = true; abortController.abort() },
     seedCompactCount(n) { /* session 已从日志恢复 compactCount；兼容保留 */ },
