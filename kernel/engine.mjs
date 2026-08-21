@@ -18,6 +18,7 @@ import { decideToolPermission } from './permissions.mjs'
 import { createToolRegistry } from './tools.mjs'
 import { createSessionStore, newSessionId } from './session.mjs'
 import { resolveAgent, resolveAgents } from './agents.mjs'
+import { getProvider } from './provider.mjs'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 
@@ -127,7 +128,9 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     aborted: false,
     get rawSignal() { return abortController.signal },
   }
-  const model = opts.model || process.env.ANTHROPIC_MODEL || ''
+  // P4-5：model 每轮从 provider 注册表刷新（CLI --model 显式指定优先于 registry）；
+  // 未激活时 getProvider 现读 env.ANTHROPIC_MODEL，与既有行为一致
+  let model = opts.model || getProvider().model || ''
   const maxTokens = Math.max(1, Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || 64000))
   const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: opts.addDirs, skipPermissions: opts.skipPermissions, disallowedTools: opts.disallowedTools })
   // agent 表（内置 ∪ 用户级 $YFW_HOME/agents/*.md）：Agent 工具路由依据
@@ -155,6 +158,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   function pushMemory(m) { if (!session) memoryHistory.push(m) }
 
   async function runTurnInternal({ content }) {
+    // P4-5：provider 热切换后每轮重解析模型（下一轮立即生效，无需重建 engine）
+    model = opts.model || getProvider().model || ''
     let usage = {}
     let textBuf = ''
     let overflowRetries = 0

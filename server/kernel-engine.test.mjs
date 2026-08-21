@@ -512,3 +512,26 @@ test('O1-1 result 事件 usage 含 cache 四字段（mock 多工具轮累计）'
     assert.ok(k in last.usage, `落盘 usage 应含 ${k}`)
   }
 })
+
+test('P4-5 setProvider 换 model 后下一轮 runTurn 使用新 model', async () => {
+  const events = []
+  const wire = makeWire(new Writable({ write(c, enc, cb) { try { events.push(JSON.parse(String(c))) } catch {} if (cb) cb() } }))
+  const session = createSessionStore({ configDir: mkdtempSync(join(tmpdir(), 'engine-meta-')), cwd: '', sessionId: 'e1' })
+  const { setProvider, getProvider } = await import('../kernel/provider.mjs')
+  const prev = process.env.YFW_MOCK_API
+  try {
+    process.env.YFW_MOCK_API = '1'
+    setProvider({ baseUrl: 'http://x', authToken: 'k', model: 'model-A' })
+    const engine = createEngine({ opts: { addDirs: [], skipPermissions: true }, wire, session })
+    const r1 = await engine.runTurn({ content: 'hello' })
+    assert.equal(r1.model, 'model-A')
+    setProvider({ baseUrl: 'http://y', authToken: 'k2', model: 'model-B' })
+    const r2 = await engine.runTurn({ content: 'again' })
+    assert.equal(r2.model, 'model-B')   // 热切换后无需重建 engine
+  } finally {
+    if (prev === undefined) delete process.env.YFW_MOCK_API
+    else process.env.YFW_MOCK_API = prev
+    rmSync(join(session.file.split('jsonl')[0] + 'jsonl'), { force: true })
+    try { setProvider({ baseUrl: 'http://x', authToken: 'k', model: 'm' }) } catch { getProvider() }
+  }
+})
