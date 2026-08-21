@@ -235,9 +235,20 @@ export async function* protocolStream({ url, body, headers, signal }) {
   const parser = createAnthropicParser()
   // P1-6：单次流读空闲看门狗（默认 300s，同 deepseek-harness）
   const idleTimeoutMs = Number(process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS || 300_000)
+  // R1-1 流中断识别：读阶段 transient 错误（网络断/fetch failed/流空闲超时）包装为
+  // StreamInterrupted，供 anthropicStream 外层重发判定；abort/非 transient 原样抛
+  async function readWithRecover() {
+    try {
+      return await withIdleTimeout(reader.read(), idleTimeoutMs)
+    } catch (err) {
+      const cls = classifyApiError(err)
+      if (cls.kind === 'transient') throw streamInterrupted(err)
+      throw err
+    }
+  }
   try {
     while (true) {
-      const { done, value } = await withIdleTimeout(reader.read(), idleTimeoutMs)
+      const { done, value } = await readWithRecover()
       if (done) break
       if (signal?.aborted) throw abortError()
       buf += decoder.decode(value, { stream: true })
@@ -269,6 +280,15 @@ export async function* protocolStream({ url, body, headers, signal }) {
   }
 }
 
+// R1-1 流中断包装：读阶段 transient 错误 → StreamInterrupted（anthropicStream
+// 外层据此重发完整请求；abort/quota/auth/非 transient 不经此处）
+export function streamInterrupted(err) {
+  const e = new Error('stream interrupted: ' + (err?.message || String(err)))
+  e.name = 'StreamInterrupted'
+  e.kind = 'transient'
+  return e
+}
+
 // 是否因 cache_control 被端点拒绝（400/422 或缓存相关 message）→ 回退重发判断
 function isCacheRejection(err) {
   const status = err?.status || 0
@@ -296,13 +316,23 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
       ? { tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema })) }
       : {}),
   }
-  try {
-    yield* protocolStream({ url: base + '/v1/messages', body, headers, signal })
-  } catch (err) {
-    if (useCache && isCacheRejection(err)) {
-      // 缓存标记被拒：去掉后重发一次（body 恢复纯字符串 system）
-      yield* protocolStream({ url: base + '/v1/messages', body: { ...body, ...(system ? { system } : {}) }, headers, signal })
-    } else {
+  const maxReconnect = Math.max(0, Number(process.env.CLAUDE_CODE_STREAM_RECONNECTS ?? 3))
+  // R1-1 流中断重连：重发完整请求（无断点续传），已流出的半截文本丢弃（首段可能
+  // 重复，接受）；工具副作用由 engine 防重放（Task 3）兜底。abort/非 transient 直接抛。
+  for (let attempt = 0; ; attempt++) {
+    try {
+      yield* protocolStream({ url: base + '/v1/messages', body, headers, signal })
+      return
+    } catch (err) {
+      if (err?.name === 'StreamInterrupted' && !signal?.aborted && attempt < maxReconnect) {
+        await sleep(1000 * Math.pow(2, attempt))   // 1s / 2s / 4s
+        continue
+      }
+      if (useCache && isCacheRejection(err)) {
+        // 缓存标记被拒：去掉后重发一次（body 恢复纯字符串 system）
+        yield* protocolStream({ url: base + '/v1/messages', body: { ...body, ...(system ? { system } : {}) }, headers, signal })
+        return
+      }
       throw err
     }
   }

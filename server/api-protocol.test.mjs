@@ -269,3 +269,42 @@ test('prompt cache：端点拒绝缓存标记时自动去掉重发（兼容回�
     process.env = oldEnv
   }
 })
+
+test('R1-1 流中断：第一次流中途抛 transient → 自动重发成功（fetch 调 2 次，内容完整）', async () => {
+  let calls = 0
+  const origFetch = globalThis.fetch
+  globalThis.fetch = async () => {
+    calls++
+    const enc = new TextEncoder()
+    if (calls === 1) {
+      // 第一次：SSE 流中途中断（读第二块时抛 fetch failed）
+      const sse = 'data: {"type":"message_start","message":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n' +
+                 'data: {"type":"content_block_start","content_block":{"type":"text","text_block":{"type":"text","text":""}}}\n\n' +
+                 'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"part1 "}}\n\n'
+      const chunks = enc.encode(sse)
+      const outer = new ReadableStream({
+        start(c) { c.enqueue(chunks) },
+        pull() { throw new TypeError('fetch failed') },
+        cancel() {},
+      })
+      return new Response(outer, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    }
+    const ok = 'data: {"type":"message_start","message":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n' +
+               'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"done"}}\n\n' +
+               'data: [DONE]\n'
+    return new Response(new ReadableStream({ start(c) { c.enqueue(enc.encode(ok)); c.close() } }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  }
+  const oldEnv = { ...process.env }
+  Object.assign(process.env, { ANTHROPIC_BASE_URL: 'http://t', ANTHROPIC_AUTH_TOKEN: 'k', YFW_MOCK_API: '' })
+  try {
+    const chunks = []
+    for await (const c of streamMessages({ model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
+    assert.equal(calls, 2, '应自动重发一次')
+    const text = chunks.filter((c) => c.type === 'text').map((c) => c.text).join('')
+    assert.match(text, /done/, '重发后内容完整')
+    assert.ok(chunks.some((c) => c.type === 'usage'))
+  } finally {
+    globalThis.fetch = origFetch
+    process.env = oldEnv
+  }
+})
