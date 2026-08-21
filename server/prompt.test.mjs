@@ -13,6 +13,7 @@ test('buildBaseSystemPrompt：含 YFWorking 身份 + 工具纪律与回复规范
   const p = buildBaseSystemPrompt({ toolNames: ['Bash', 'Read'] })
   assert.match(p, /YFWorking/, '基础提示词应含 YFWorking 身份')
   assert.match(p, /工具纪律/)
+  assert.match(p, /探索纪律/)
   assert.match(p, /回复规范/)
   assert.match(p, /Bash/)
   assert.match(p, /可用工具：Bash, Read/)

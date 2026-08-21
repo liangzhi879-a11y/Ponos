@@ -216,3 +216,56 @@ test('toAbortSignal：engine 轮次级 signal（rawSignal getter）→ 真 Abort
   // 普通对象（mock/测试直传场景）：返回 undefined，不传给 fetch
   assert.equal(toAbortSignal({ aborted: false }), undefined)
 })
+
+test('prompt cache：YFW_PROMPT_CACHE=1 时 system 打 ephemeral 缓存标记（数组形态）', async () => {
+  const captured = []
+  const prev = global.fetch
+  global.fetch = async (url, init) => {
+    captured.push({ body: JSON.parse(String(init.body)) })
+    return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"message_delta","usage":{"input_tokens":1,"output_tokens":1}}\n\ndata: [DONE]\n\n')); c.close() } }) }
+  }
+  const oldEnv = { ...process.env }
+  Object.assign(process.env, { ANTHROPIC_BASE_URL: 'http://t', ANTHROPIC_AUTH_TOKEN: 'k', YFW_PROMPT_CACHE: '1' })
+  try {
+    const chunks = []
+    for await (const c of streamMessages({ model: 'm', messages: [{ role: 'system', content: 'SYS' }, { role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
+    assert.equal(captured.length, 1)
+    const sys = captured[0].body.system
+    assert.ok(Array.isArray(sys), 'system 应为数组形态')
+    assert.equal(sys[0].text, 'SYS')
+    assert.deepEqual(sys[0].cache_control, { type: 'ephemeral' })
+    assert.equal(captured[0].body.messages[0].role, 'user')
+  } finally {
+    global.fetch = prev
+    process.env = oldEnv
+  }
+})
+
+test('prompt cache：端点拒绝缓存标记时自动去掉重发（兼容回退）', async () => {
+  let calls = 0
+  const bodies = []
+  const prev = global.fetch
+  global.fetch = async (url, init) => {
+    calls++
+    bodies.push(JSON.parse(String(init.body)))
+    if (calls === 1) {
+      const err = new Error('内核：API 请求失败 400 {"error":{"message":"unknown field cache_control"}}')
+      err.status = 400
+      throw err
+    }
+    return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"message_delta","usage":{"input_tokens":1,"output_tokens":1}}\n\ndata: [DONE]\n\n')); c.close() } }) }
+  }
+  const oldEnv = { ...process.env }
+  Object.assign(process.env, { ANTHROPIC_BASE_URL: 'http://t', ANTHROPIC_AUTH_TOKEN: 'k', YFW_PROMPT_CACHE: '1' })
+  try {
+    const chunks = []
+    for await (const c of streamMessages({ model: 'm', messages: [{ role: 'system', content: 'SYS' }, { role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
+    assert.equal(calls, 2, '首次被拒后应重发一次')
+    assert.ok(Array.isArray(bodies[0].system), '首次请求带缓存标记')
+    assert.equal(bodies[1].system, 'SYS', '回退请求 system 恢复纯字符串')
+    assert.ok(chunks.some((c) => c.type === 'usage'))
+  } finally {
+    global.fetch = prev
+    process.env = oldEnv
+  }
+})

@@ -40,12 +40,17 @@ export async function runYFW({ ws, prompt, timeoutMs, onLog, kernelDir }) {
     '--input-format', 'stream-json',
     '--dangerously-skip-permissions',
     '--auto-approve-high-risk',
+    // 评测任务不依赖子代理分发：禁用 Agent/Task，避免模型分发 subagent 引入
+    // 额外变量（内核 --disallowedTools 过滤，2026-08-21 使其真正生效）
+    '--disallowedTools', 'Agent,Task',
     '--model', resolveModel(),
     '--add-dir', ws,
   ]
   return new Promise((resolve) => {
     // buildAgentEnv('yfw')：统一注入 ANTHROPIC_AUTH_TOKEN + baseUrl（DeepSeek 兼容端点）
-    const child = spawn(process.execPath, args, { cwd: kernelRoot, env: buildAgentEnv('yfw'), windowsHide: true })
+    // YFW_PROMPT_CACHE=1：显式启用 system prompt cache（内核侧带回退，端点拒绝缓存
+    // 字段时自动去掉重发），多任务间共享系统提示缓存、压低成本
+    const child = spawn(process.execPath, args, { cwd: kernelRoot, env: { ...buildAgentEnv('yfw'), YFW_PROMPT_CACHE: '1' }, windowsHide: true })
     let stdout = ''
     let stderr = ''
     let timedOut = false
