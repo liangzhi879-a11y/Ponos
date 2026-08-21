@@ -393,6 +393,12 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       }
       denialStreak = 0
     }
+    // hooks.preToolUse：可否决。deny → 工具不执行，错误回填给模型。
+    const hooks = opts.hooks
+    if (hooks) {
+      const h = await hooks.run('preToolUse', { toolName: toolUse.name, toolUseId: toolUse.id, input: toolUse.input })
+      if (h.deny) return { content: h.message || `PreToolUse hook 拒绝执行 ${toolUse.name}`, isError: true }
+    }
     // ctx：工具执行上下文——主循环注入 spawnSubAgent/taskSystem（Agent/Task 工具
     // 依赖），子 agent 循环注入 lane:true（禁嵌套分发）
     const { store, ...toolCtx } = ctx
@@ -402,6 +408,17 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     // P0-3：大结果落盘到目标会话目录（子 lane 独立 store）
     if (r && typeof r === 'object' && typeof r.content === 'string') {
       r.content = persistToolResult(store || session, toolUse.id, r.content)
+    }
+    // hooks.postToolUse：工具结果后触发（output 截断 8KB；不阻塞主流程决策）
+    if (hooks) {
+      try {
+        await hooks.run('postToolUse', {
+          toolName: toolUse.name,
+          toolUseId: toolUse.id,
+          input: toolUse.input,
+          output: typeof r?.content === 'string' ? r.content.slice(0, 8192) : '',
+        })
+      } catch { /* post 钩子失败不影响工具结果 */ }
     }
     return r
   }

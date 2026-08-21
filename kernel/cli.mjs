@@ -31,6 +31,7 @@ import { createCompactor } from './compact.mjs'
 import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
 import { getProvider, setProvider, providerVersion } from './provider.mjs'
 import { loadSettings } from './settings.mjs'
+import { createHooks } from './hooks.mjs'
 import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
 import { YFW_VERSION } from '../version.mjs'
 
@@ -179,6 +180,9 @@ export async function main(argv) {
   const health = createHealth({ wire, model, contextWindow, env: process.env })
   const compactor = createCompactor({ session: store, context, model, maxTokens, wire, health, signal: undefined, env: process.env })
 
+  // P4-2 hooks：settings.hooks 规则装配（无规则 = count 0，run 恒 matched=false）
+  const hooks = createHooks({ rules: settings.merged.hooks || [] })
+
   const engine = createEngine({
     opts: {
       model: args.model,
@@ -191,6 +195,7 @@ export async function main(argv) {
       autoApproveHighRisk: args.autoApproveHighRisk === true || settings.merged.autoApproveHighRisk === true,
       disallowedTools: [...args.disallowedTools, ...(settings.merged.disallowedTools || [])],
       permissionRules,
+      hooks,
     },
     wire,
     session: store,
@@ -221,13 +226,38 @@ export async function main(argv) {
   if (args.resume) {
     await store.load()
   }
+  // hooks.sessionStart：spawn 就绪后 fire-and-forget（不阻塞 init 事件）
+  if (hooks.count) {
+    try { await hooks.run('sessionStart', { sessionId, cwd: args.addDirs[0] || '' }) } catch {}
+  }
 
   const state = { turnActive: false, queue: [], cancelling: false }
 
   async function handleUser(msg) {
     const content = extractContent(msg)
     state.turnActive = true
+    // 早退路径（hook 拦截 / 竞态取消）统一落在外层 try 内，确保 finally 复位
+    // turnActive——否则后续消息会永远排队不处理。
     try {
+      // hooks.userPromptSubmit：可拦截。stop → 直接 assistant + result，不进轮次
+      try {
+        const intercept = await hooks.run('userPromptSubmit', { prompt: content })
+        if (intercept.stop) {
+          wire.assistant(intercept.message || '已由 hook 拦截。')
+          wire.result()
+          return
+        }
+      } catch { /* 钩子失败不拦截输入 */ }
+      // 竞态防护：hook await 期间 cancel 到达 → engine.runTurn 起始会重置 abort
+      // 标志（abort 只影响进行中的轮次），未开始就 abort 会被吞掉。在此兑现取消。
+      if (state.cancelling) {
+        wire.assistant('已取消。')
+        wire.result()
+        // 与 abort 路径一致的会话语义：user 入日志 + assistant 落盘
+        store.appendUser(content)
+        store.appendAssistant([{ type: 'text', text: '已取消。' }])
+        return
+      }
       // engine 全权负责本轮：user 入 session、中间/最终 assistant 落盘、
       // result 事件（含 duration_ms）——cli 不再重复 emit/append
       await engine.runTurn({ content, msg })
