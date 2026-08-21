@@ -464,6 +464,30 @@ function saveConfig(updates) {
   return next
 }
 
+// P4-5：provider 热切换下发——向全部空闲会话内核注入 switch_provider control_request。
+// 旧内核忽略未知 subtype 无回执，bridge 不等待（GUI 保留重启生效降级路径）。
+function pushProviderSwitch(provider) {
+  if (!provider || !provider.apiBaseUrl || !provider.authToken) return
+  const model = provider.primaryModel || (provider.models && provider.models[0]) || ''
+  if (!model) return
+  const payload = { baseUrl: provider.apiBaseUrl, authToken: provider.authToken, model }
+  for (const s of sessions.values()) {
+    if (s.proc?.stdin && !s._turnActive && !s._reaped) {
+      try {
+        s.proc.stdin.write(JSON.stringify({ type: 'control_request', request: { subtype: 'switch_provider', payload } }) + '\n')
+      } catch { /* 写失败忽略：回退重启路径 */ }
+    }
+  }
+}
+
+function pushActiveProviderSwitch() {
+  try {
+    const cfg = loadConfig()
+    const active = (cfg.providers || []).find((p) => p.id === cfg.activeProvider)
+    if (active) pushProviderSwitch(active)
+  } catch { /* 非致命 */ }
+}
+
 // ---------------------------------------------------------------------------
 // Kernel self-bootstrap: when the packaged app lives under Program Files
 // (or any ACL-restricted dir), spawning bun to execute the kernel fails with
@@ -1732,6 +1756,8 @@ const httpServer = createServer(async (req, res) => {
       if (req.method === 'POST') {
         const body = await readJsonBody(req)
         const saved = saveConfig(body)
+        // P4-5：前端 updateSettings({ providers, activeProvider }) 激活路径 → 热切换下发
+        if (body && typeof body.activeProvider === 'string' && body.activeProvider) pushActiveProviderSwitch()
         return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, config: saved }))
       }
       const cfg = loadConfig()
@@ -1753,7 +1779,11 @@ const httpServer = createServer(async (req, res) => {
           authToken: body.authToken || '',
         }
         const providers = [...(cfg.providers || []), newProvider]
-        saveConfig({ providers })
+        // P4-5：保存即激活（activeProvider: true）→ 向空闲会话下发热切换
+        const updates = { providers }
+        if (body.activeProvider) updates.activeProvider = newProvider.id
+        saveConfig(updates)
+        if (body.activeProvider) pushProviderSwitch(newProvider)
         return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, provider: newProvider }))
       }
       return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, providers: cfg.providers || [] }))

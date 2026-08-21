@@ -189,3 +189,23 @@ test('端到端：resume 重开（--resume 注入），历史上下文保留', a
   const pid2 = session?.proc?.pid
   assert.equal(pid1, pid2, '同会话复用同一内核进程')
 })
+
+test('P4-5 /providers 保存 activeProvider 后活跃会话收到 provider_switched', async () => {
+  const ws = await connect()
+  const SID = 's-switch'
+  send(ws, { type: 'send', sessionId: SID, cwd: home, prompt: 'hello', requestId: 'r-sw1' })
+  await collect(ws, (m) => m.type === 'ack' && m.data.sessionId === SID)
+  await collectTurn(ws, SID)   // 完成一轮，会话空闲
+  // 保存新 provider 并激活（activeProvider: true → 激活为新 provider）
+  const res = await fetch(`http://127.0.0.1:${port}/providers`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'Hot', apiBaseUrl: 'http://hot', authToken: 'k2', models: ['m2'], primaryModel: 'm2', activeProvider: true }),
+  })
+  assert.equal(res.status, 200)
+  // 活跃会话 stdout 经 bridge 转发 → provider_switched 回执
+  const switched = await collect(ws, (m) => m.type === 'event' && m.sessionId === SID &&
+    m.data.type === 'system' && m.data.subtype === 'provider_switched', { timeoutMs: 6000 })
+  assert.equal(switched.data.model, 'm2')
+  ws.close()
+})
