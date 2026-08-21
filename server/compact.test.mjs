@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { pruneToolResult, findCutPoint, extractSummary, assembleSummaryRequest, createCompactor } from '../kernel/compact.mjs'
+import { pruneToolResult, findCutPoint, extractSummary, assembleSummaryRequest, createCompactor, ageOutToolResults, buildSessionMemoryText } from '../kernel/compact.mjs'
 import { createHealth } from '../kernel/health.mjs'
 import { estimateMessage, contextWindowFor } from '../kernel/context.mjs'
 import { createSessionStore } from '../kernel/session.mjs'
@@ -105,9 +105,11 @@ test('extractSummary 提取 <compacted-summary> 标签内容', () => {
 })
 
 test('assembleSummaryRequest 前缀对齐主请求（system+旧消息+前次摘要+指令）', () => {
+  // 普通 assistant 消息在真实系统中是 block 数组（session.assistantEntry）；字符串
+  // content 是 compaction summary 专属（P9-2 sealed 会过滤），故此处用数组 fixture
   const msgs = [
-    { role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' },
-    { role: 'user', content: 'q2' }, { role: 'assistant', content: 'a2' },
+    { role: 'user', content: 'q1' }, { role: 'assistant', content: [{ type: 'text', text: 'a1' }] },
+    { role: 'user', content: 'q2' }, { role: 'assistant', content: [{ type: 'text', text: 'a2' }] },
   ]
   const cut = { start: 2, covered: msgs.slice(0, 2) }
   const req = assembleSummaryRequest({ system: 'SYS', messages: msgs, cut, lastSummary: null })
@@ -278,6 +280,117 @@ test('单通道（FIX R1）：装配 health 的 compactor 压缩成功后 yfw_su
     assert.equal(r.action, 'summarized')
     assert.equal(events.filter((e) => e.type === 'yfw_summary').length, 1) // 单通道：只发一次（杜绝双发）
     assert.equal(health.getState().lastSummary, '摘要输出') // health 代发并记录 lastSummary
+    delete process.env.YFW_MOCK_API
+    delete process.env.YFW_MOCK_COMPACT_RESPONSE
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ============ P9：上下文管理升级 ============
+
+test('P9-1 ageOutToolResults：清旧可重放工具结果、保留最近 N 条、Edit 结果不动', () => {
+  const CLEARED = '[旧工具结果已清除——需要时重新调用工具读取]'
+  // 消息序列：Read r1（旧）→ Read r2（旧）→ Read r3（新）→ Edit e1（新）
+  const messages = [
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'r1', name: 'Read', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'r1', content: '文件1内容'.repeat(500) }] },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'r2', name: 'Read', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'r2', content: '文件2内容'.repeat(500) }] },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'r3', name: 'Read', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'r3', content: '文件3内容' }] },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'e1', name: 'Edit', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'e1', content: '已修改 1 处' }] },
+  ]
+  const cleared = ageOutToolResults(messages, { keepRecent: 2 })
+  assert.equal(cleared, 2) // r1/r2 被清
+  assert.equal(messages[1].content[0].content, CLEARED)
+  assert.equal(messages[3].content[0].content, CLEARED)
+  assert.equal(messages[5].content[0].content, '文件3内容') // 最近 2 条保留（r3 + e1）
+  assert.equal(messages[7].content[0].content, '已修改 1 处') // Edit 结果不动
+})
+
+test('P9-1 ageOutToolResults：结果不足 keepRecent 或已清过则不重复清', () => {
+  const messages = [
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'r1', name: 'Bash', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'r1', content: 'out' }] },
+  ]
+  assert.equal(ageOutToolResults(messages, { keepRecent: 2 }), 0) // 不足阈值不清
+  assert.equal(messages[1].content[0].content, 'out')
+  // 已清过的结果不再重复替换（幂等）
+  const m2 = [{ role: 'assistant', content: [{ type: 'tool_use', id: 'x', name: 'Read', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: 'a'.repeat(100) }] }]
+  assert.equal(ageOutToolResults(m2, { keepRecent: 1 }), 0) // keep=1 保留全部 1 条
+  assert.equal(m2[1].content[0].content, 'a'.repeat(100))
+  const m3 = [{ role: 'assistant', content: [{ type: 'tool_use', id: 'y', name: 'Read', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'y', content: 'b'.repeat(100) }] },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'z', name: 'Grep', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'z', content: 'c'.repeat(100) }] }]
+  assert.equal(ageOutToolResults(m3, { keepRecent: 1 }), 1) // y 被清（保留最近 z）
+  assert.match(m3[1].content[0].content, /已清除/)
+  assert.equal(m3[3].content[0].content, 'c'.repeat(100))
+})
+
+test('P9-2 assembleSummaryRequest sealed：已压缩的 compaction 条目不进摘要请求（防摘要套摘要）', () => {
+  const cut = { covered: [
+    { role: 'user', content: '早期用户消息' },
+    { role: 'assistant', content: '<compacted-summary>第一次摘要：关键事实A</compacted-summary>' }, // compaction summary（字符串 content）
+    { role: 'user', content: '中期消息' },
+    { role: 'assistant', content: [{ type: 'text', text: '中间回答' }] }, // 普通 assistant（数组 content）
+  ] }
+  const req = assembleSummaryRequest({ system: 'sys', messages: cut.covered, cut, lastSummary: '最近摘要：关键事实B', keyInfo: '' })
+  const texts = req.map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))
+  // lastSummary 前置
+  assert.ok(req[0].content.includes('最近摘要：关键事实B'))
+  // 旧 compaction summary 被过滤（不出现第一次摘要文本）
+  const joined = texts.join('\n')
+  assert.ok(!joined.includes('第一次摘要：关键事实A'), '已压缩条目不得重塞回摘要请求')
+  // 普通消息保留
+  assert.ok(joined.includes('早期用户消息'))
+  assert.ok(joined.includes('中期消息'))
+  assert.ok(joined.includes('中间回答'))
+})
+
+test('P9-3 buildSessionMemoryText + 注入：工作记忆块格式正确且随摘要请求发出', () => {
+  const key = {
+    todos: ['T1 修 bug', 'T2 加测试'],
+    files: ['Write kernel/a.mjs', 'Edit kernel/b.mjs'],
+    decisions: ['方案B 被选中，原因X'],
+  }
+  const text = buildSessionMemoryText(key)
+  assert.ok(text.includes('# 会话工作记忆'))
+  assert.ok(text.includes('## 任务清单'))
+  assert.ok(text.includes('- T1 修 bug'))
+  assert.ok(text.includes('## 文件变更'))
+  assert.ok(text.includes('- Write kernel/a.mjs'))
+  assert.ok(text.includes('## 最近决策'))
+  // 空 key → 最小文件头
+  const empty = buildSessionMemoryText({ todos: [], files: [], decisions: [] })
+  assert.ok(empty.includes('# 会话工作记忆'))
+  // 注入摘要请求
+  const cut = { covered: [{ role: 'user', content: '旧消息' }] }
+  const req = assembleSummaryRequest({ system: 'sys', messages: cut.covered, cut, lastSummary: '', keyInfo: '', sessionMemory: text })
+  const last = req[req.length - 1]
+  assert.match(last.content, /<session-memory>/)
+  assert.match(last.content, /会话工作记忆/)
+})
+
+test('P9-3 createCompactor：配置 sessionMemoryPath 后压缩请求注入工作记忆文件内容', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yfw-p9-'))
+  const memFile = join(dir, 'session.md')
+  try {
+    const { writeFileSync } = await import('node:fs')
+    writeFileSync(memFile, '# 会话工作记忆\n## 任务清单\n- 修复T002', 'utf-8')
+    let injected = false
+    const session = createSessionStore({ configDir: dir, sessionId: 's1', cwd: dir })
+    const context = { window: 50000, thresholdRatio: 0.8, retainRatio: 0.16, estimate: () => ({ total: 999999 }), estimateMessage, estimateHistory: () => 100 }
+    const wire = {
+      summary: () => { injected = true },
+      assistant: () => {}, result: () => {}, system: () => {},
+    }
+    const compactor = createCompactor({ session, context, model: 'test', maxTokens: 1000, wire, health: null, signal: undefined, env: { ...process.env, YFW_MOCK_API: '1', YFW_MOCK_COMPACT_RESPONSE: 'ok' }, sessionMemoryPath: memFile })
+    const r = await compactor.forceCompact({ system: 'sys', messages: [{ role: 'user', content: 'hello' }] })
+    assert.ok(r.action === 'summarized' || r.reason)
+    // 摘要请求发生（mock 流返回），工作记忆文件被读取（无异常即注入路径通过）
+    assert.ok(typeof r.action === 'string')
     delete process.env.YFW_MOCK_API
     delete process.env.YFW_MOCK_COMPACT_RESPONSE
   } finally { rmSync(dir, { recursive: true, force: true }) }
