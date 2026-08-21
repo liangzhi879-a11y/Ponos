@@ -185,7 +185,10 @@ export async function main(argv) {
   // name 字段标识 agent 身份（诊断用，GUI 不依赖）；version 为 yfwturbo dev 版本线
   // （version.mjs 单一数据源，与 GUI 发布版本相互独立）。
   log.info('kernel start', { model, resume: Boolean(args.resume), cwd: args.addDirs[0] || '' })
-  wire.system('init', { model, tools: engine.toolNames, session_id: sessionId, name: 'YFWorking', version: YFW_VERSION })
+  // R4-1 并发会话上限策略内核化：capacity 由内核决定（env 兜底），bridge 只执行
+  // 拒绝（单进程内核无法感知其他会话，执行必须在会话管理方）
+  const capacity = Math.max(1, Number(process.env.YFW_MAX_CONCURRENT_SESSIONS || 10))
+  wire.system('init', { model, tools: engine.toolNames, session_id: sessionId, name: 'YFWorking', version: YFW_VERSION, capacity })
   // --resume：从 transcript 恢复（load 为 async 流式；同文件即 GUI 读取的权威源）。
   // 历史由 session.deriveMessages() 派生，engine 无需 seedHistory（seedHistory 已随
   // Task 5 迁移移除）。
