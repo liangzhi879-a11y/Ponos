@@ -230,7 +230,15 @@ export function toAbortSignal(s) {
 
 // Anthropic SSE 流：统一产出归一化 chunk。
 export async function* protocolStream({ url, body, headers, signal }) {
-  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: toAbortSignal(signal) })
+  // R1-2 连接/首字节超时：fetch resolve（响应头到达）前超时则 abort。
+  // AbortSignal.any 合并外部取消与超时：外部取消 → AbortError（不重试）；
+  // 超时 → TimeoutError（classifyApiError 判 transient，进 anthropicStream 重发）
+  const connectTimeoutMs = Math.max(0, Number(process.env.CLAUDE_CODE_CONNECT_TIMEOUT_MS || 30_000))
+  const extSignal = toAbortSignal(signal)
+  const combined = extSignal
+    ? AbortSignal.any([extSignal, AbortSignal.timeout(connectTimeoutMs)])
+    : AbortSignal.timeout(connectTimeoutMs)
+  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: combined })
   if (!res.ok || !res.body) {
     const detail = await res.text().catch(() => '')
     // P0-1：错误携带 HTTP status，供 classifyApiError 结构化分类（5xx 可退避重试）
@@ -334,7 +342,10 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
       yield* protocolStream({ url: base + '/v1/messages', body, headers, signal })
       return
     } catch (err) {
-      if (err?.name === 'StreamInterrupted' && !signal?.aborted && attempt < maxReconnect) {
+      // R1-2：连接/首字节超时（TimeoutError）与流中断（StreamInterrupted）同为
+      // transient 可重发；abort（用户取消）/非 transient 直接抛
+      const retryable = err?.name === 'StreamInterrupted' || err?.name === 'TimeoutError'
+      if (retryable && !signal?.aborted && attempt < maxReconnect) {
         await sleep(1000 * Math.pow(2, attempt))   // 1s / 2s / 4s
         continue
       }
@@ -358,6 +369,9 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
 //   unknown        —— 其余，保守不重试
 export function classifyApiError(err) {
   if (err?.name === 'AbortError') return { kind: 'abort', retryable: false }
+  // R1-2 超时分级：连接/首字节超时（AbortSignal.timeout）→ transient 可重试，
+  // 与用户取消（abort）区分；流空闲超时已有单独分支
+  if (err?.name === 'TimeoutError') return { kind: 'transient', retryable: true }
   const msg = String(err?.message || '')
   const status = err?.status || 0
   // context_window_exceeded 以 message 关键词判定（provider 不一定带 status，如 mock）
