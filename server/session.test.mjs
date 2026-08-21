@@ -119,3 +119,25 @@ test('S2-1 磁盘脱敏：transcript 文件含打码内容，内存 deriveMessag
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('P4-5 appendMeta：落盘 + 不进模型输入 + load 恢复不污染', async () => {
+  const { dir, store } = freshStore()
+  try {
+    store.appendUser('hi')
+    store.appendMeta('provider_switched', { provider: { baseUrl: 'http://x', model: 'm' }, version: 1 })
+    store.appendAssistant([{ type: 'text', text: 'ok' }])
+    // deriveMessages 不得含 meta 条目（其 message 为占位，进模型输入会污染）
+    const msgs = store.deriveMessages()
+    assert.equal(msgs.length, 2)
+    assert.ok(msgs.every((m) => m.role !== undefined))  // meta 条目无 message.role，不应出现
+    // 磁盘确实落了 3 行
+    const raw = readFileSync(store.file, 'utf-8').trim().split('\n')
+    assert.equal(raw.length, 3)
+    // load 恢复：meta 行存在但同样不进投影
+    const store2 = createSessionStore({ configDir: dir, cwd: 'proj', sessionId: '00000000-0000-0000-0000-000000000001' })
+    await store2.load()
+    assert.equal(store2.deriveMessages().length, 2)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

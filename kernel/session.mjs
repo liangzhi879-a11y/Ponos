@@ -76,6 +76,7 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
       nextSeq = Math.max(nextSeq, seq) + 1
       e.seq = seq
       if (e.kind === 'compaction' && e.phase === 'start') continue // 孤儿/占位不投影
+      if (e.type === 'meta') continue // P4-5 审计/元数据条目不投影（不进模型输入）
       entriesBySeq.set(seq, e)
       if (e.kind === 'compaction' && e.phase === 'summary') {
         // 被遮蔽 seq 区间（投影中连续前缀）→ 替换为 summary seq
@@ -202,6 +203,13 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
     appendToolResults(toolResults) {
       const entry = this.toolResultsEntry(toolResults)
       return append(baseEntry('user', entry.message, {}))
+    },
+    // P4-5 审计 meta 条目：写日志 + entriesBySeq 记录，不进 surface.nodes（模型输入纯净）
+    appendMeta(kind, extra = {}) {
+      const entry = { type: 'meta', kind, id: randomUUID(), seq: nextSeq++, timestamp: new Date().toISOString(), ...extra }
+      append(entry)
+      entriesBySeq.set(entry.seq, entry)
+      return entry
     },
     // 已落盘条目的 usage 后挂（M1 空文本收尾轮专用：把本轮总 usage 挂到最后一条
     // 已写 assistant 条目）。内存更新 entriesBySeq 引用 + 磁盘单行重写——
