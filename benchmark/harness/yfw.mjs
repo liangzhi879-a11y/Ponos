@@ -63,12 +63,17 @@ export async function runYFW({ ws, prompt, timeoutMs, onLog, kernelDir }) {
     let usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
     let toolCalls = 0
 
+    // result 事件只记账（usage/toolCalls）并 end stdin 请求内核退出，但
+    // 不 resolve——内核发出 result 后进程尚未退出（会话落盘/记忆捕获等收尾
+    // 仍在进行，agent 最后一批文件写入可能恰在 result 之后），立即 resolve
+    // 会让 run.mjs 的 verify 读到过期文件产生"假 FAIL"（实测 T002：agent
+    // 修复正确但 verify 读到旧 cli.mjs）。统一等 child close（进程真正退出）
+    // 再 resolve，保证 verify 面 = 最终文件态。
+    let resultSeen = false
     const finish = (exitCode) => {
       if (done) return
       done = true
       clearTimeout(timer)
-      // 关闭 stdin 让内核优雅退出（契约：stdin EOF → exit 0）
-      try { child.stdin.end() } catch { }
       resolve({ exitCode, stdout, stderr, timedOut, usage, toolCalls })
     }
     const timer = setTimeout(() => {
@@ -97,6 +102,7 @@ export async function runYFW({ ws, prompt, timeoutMs, onLog, kernelDir }) {
         if (Array.isArray(blocks)) toolCalls += blocks.filter((b) => b.type === 'tool_use').length
       }
       if (ev.type === 'result' && userSent) {
+        resultSeen = true
         const u = ev.usage
         if (u) {
           usage.input_tokens += u.input_tokens || 0
@@ -104,7 +110,8 @@ export async function runYFW({ ws, prompt, timeoutMs, onLog, kernelDir }) {
           usage.cache_read_input_tokens += u.cache_read_input_tokens || 0
           usage.cache_creation_input_tokens += u.cache_creation_input_tokens || 0
         }
-        finish(child.exitCode ?? 0)
+        // 请求内核优雅退出（stdin EOF → exit 0）；resolve 留到 close
+        try { child.stdin.end() } catch { }
       }
     })
     const rle = createInterface({ input: child.stderr, crlfDelay: Infinity })

@@ -35,6 +35,15 @@ const force = argv.includes('--force')
 const tasksFilter = argVal('--tasks')?.split(',').map((s) => s.trim()).filter(Boolean) || null
 const limit = argVal('--limit') ? Number(argVal('--limit')) : CONFIG.maxTasksPerAgent
 const smoke = argv.includes('--smoke')
+// B3 增量续跑：--resume（自动沿用最近结果目录）或 --resume <dir>（指定目录）。
+// 已存在结果的 agent×task 跳过不重跑；返回值以 `--` 开头时视为无值（用最新目录）
+function flagOrValue(name) {
+  const i = argv.indexOf(name)
+  if (i < 0) return null
+  const v = argv[i + 1]
+  return v && !v.startsWith('--') ? v : ''
+}
+const resumeSpec = flagOrValue('--resume')
 // dashboard 控制文件：JSON { cmd: 'pause'|'resume'|'abort', by }。任务边界检查，
 // 收到 pause 阻塞等待、abort 抛出中断（评测由 dashboard 子进程拉起时使用）
 const controlFile = argVal('--control-file')
@@ -114,19 +123,30 @@ async function runOne({ agent, task, ts, onLog }) {
 
   // 3. 跑 agent（同一提示词）。yfw 内核入口从内核仓库启动（kernel/cli.mjs），
   //    --add-dir 指向任务工作区；SWE-bench 任务工作区是外部仓库，须显式传
-  //    kernelDir=内核仓库，否则内核启动文件找不到（ERR_MODULE_NOT_FOUND）
+  //    kernelDir=内核仓库，否则内核启动文件找不到（ERR_MODULE_NOT_FOUND）。
+  //    B1：per-task timeoutMs（task.json 可声明）覆盖全局默认——"基线×3+缓冲"
+  //    以任务自身预算形式落地，防单任务拖垮全量（T004 30+ 分钟事件）
   const runner = AGENT_RUNNERS[agent]
   const started = Date.now()
   let run
+  let spawnError = null
   try {
-    run = await runner({ ws, prompt: task.prompt, timeoutMs: CONFIG.timeoutMs, onLog, kernelDir: agent === 'yfw' ? CONFIG.repo : undefined })
+    run = await runner({ ws, prompt: task.prompt, timeoutMs: task.timeoutMs || CONFIG.timeoutMs, onLog, kernelDir: agent === 'yfw' ? CONFIG.repo : undefined })
   } catch (e) {
-    run = { exitCode: -9, stdout: '', stderr: String(e), usage: null, toolCalls: 0, timedOut: false }
+    // B2：runner 抛异常 = 进程异常死亡/spawn 失败 → 标记 salvage，残留改动照常验收
+    spawnError = String(e)
+    run = { exitCode: -9, stdout: '', stderr: spawnError, usage: null, toolCalls: 0, timedOut: false }
   }
   const durationMs = Date.now() - started
 
-  // 4. 运行验收脚本（verify.mjs <ws>）
-  const verify = await verifyTask(task, ws, onLog)
+  // 4. B1：超时后跳过 verify（改动残留不可信，直接标 timeout，不产出假 pass/fail）；
+  //    B2：进程异常死亡（spawnError / 非 0 退出码）仍跑 verify 但结果带 salvage 标注
+  const timedOut = !!run.timedOut
+  const salvaged = !!spawnError || (run.exitCode !== 0 && !timedOut && run.exitCode !== -3) // -3=pi/deepseek 未构建，非异常
+  let verify = { ok: false, stdout: '', stderr: '(task timeout，跳过验收)' }
+  if (!timedOut) {
+    verify = await verifyTask(task, ws, onLog)
+  }
 
   // 5. 采集改动（仅排除纯环境补丁文件 engine.mjs/permissions.mjs；
   //    api.mjs 虽也打补丁但可能是任务合法目标，必须计入 agent 改动）
@@ -141,11 +161,12 @@ async function runOne({ agent, task, ts, onLog }) {
 
   return {
     agent, task: task.id, base: task.base,
-    status: executed ? (verify.ok ? 'pass' : 'fail') : 'invalid',
+    status: timedOut ? 'timeout' : (executed ? (verify.ok ? 'pass' : 'fail') : 'invalid'),
     executed,
     durationMs,
     exitCode: run.exitCode,
-    timedOut: run.timedOut,
+    timedOut,
+    salvaged,
     usage: run.usage,
     toolCalls: run.toolCalls,
     cost,
@@ -207,12 +228,31 @@ async function main() {
     return
   }
 
-  const ts = new Date().toISOString().replace(/[:.]/g, '-')
-  const resultsDir = join(root, CONFIG.dirs.results, ts)
-  mkdirSync(resultsDir, { recursive: true })
-  writeFileSync(join(resultsDir, 'meta.json'), JSON.stringify({
-    ts, agents, tasks: picked.map((t) => t.id), model: CONFIG.model, repo: CONFIG.repo,
-  }, null, 2))
+  // B3 增量续跑：--resume 复用既有结果目录（跳过已完成），否则新建本轮目录
+  const hasJson = (d) => {
+    try { return readdirSync(join(root, CONFIG.dirs.results, d)).some((f) => f.endsWith('.json')) } catch { return false }
+  }
+  let resultsDir
+  let ts
+  if (resumeSpec !== null) {
+    const base = join(root, CONFIG.dirs.results)
+    if (resumeSpec) {
+      resultsDir = join(base, resumeSpec.replace(/^results[/\\]/, ''))
+      if (!existsSync(resultsDir)) { console.error(`[FATAL] resume 结果目录不存在：${resultsDir}`); process.exit(1) }
+    } else {
+      const existing = readdirSync(base).filter((d) => hasJson(d)).sort()
+      if (!existing.length) { console.error('[FATAL] 无既有结果目录可 resume'); process.exit(1) }
+      resultsDir = join(base, existing[existing.length - 1])
+      console.log('[resume] 沿用最近结果目录：', resultsDir)
+    }
+  } else {
+    ts = new Date().toISOString().replace(/[:.]/g, '-')
+    resultsDir = join(root, CONFIG.dirs.results, ts)
+    mkdirSync(resultsDir, { recursive: true })
+    writeFileSync(join(resultsDir, 'meta.json'), JSON.stringify({
+      ts, agents, tasks: picked.map((t) => t.id), model: CONFIG.model, repo: CONFIG.repo,
+    }, null, 2))
+  }
 
   const summary = []
   // active.json 心跳：dashboard 据此显示"评测中 + 已耗时"（每任务开始写、结束删）
@@ -225,6 +265,13 @@ async function main() {
       for (const task of tasksForAgent) {
         const log = []
         const label = `${agent} × ${task.id}`
+        // B3：resume 模式下已有结果 → 跳过（读回并入 summary，供 report/dashboard 续用）
+        const outFile = join(resultsDir, `${agent}-${task.id}.json`)
+        if (resumeSpec !== null && existsSync(outFile)) {
+          console.log(`[resume] 跳过 ${label}（已有结果）`)
+          try { summary.push(JSON.parse(readFileSync(outFile, 'utf-8'))) } catch { /* 损坏则忽略 */ }
+          continue
+        }
         await checkControl(label) // 控制检查点：pause 等待 / abort 中断
         console.log(`[run] ${label} ...`)
         writeActive(agent, task.id)

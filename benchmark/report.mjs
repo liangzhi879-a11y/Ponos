@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // 横向对比报告生成器（可视化 + 评分）
-// 用法：node benchmark/report.mjs results/<ts> [--latest]
+// 用法：node benchmark/report.mjs results/<ts> [--latest] [--compare <baselineDir>]
 // 输出：results/<ts>/report.md + report.html（自包含，无外部依赖）
+// --compare：与基线结果目录逐任务对比，报告首部输出退化/改善清单（B5 自动化）
 // ---------------------------------------------------------------------------
 // 评分体系（每 agent 汇总分 0-100）：
 //   完成率   40%   pass 任务占比
@@ -14,6 +15,7 @@ import { join, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { computeScores } from './lib/scoring.mjs'
 import { auditResults } from './lib/audit.mjs'
+import { compareResults } from './lib/compare.mjs'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const argv = process.argv.slice(2)
@@ -74,6 +76,39 @@ md += `- 评测时间：${meta.ts || basename(dir)}\n`
 md += `- 模型：${meta.model || '—'}\n`
 md += `- 被测对象：${agents.join(' / ')}\n`
 md += `- 任务集：${taskIds.join(' / ')}\n\n`
+
+// B5 对比基线：--compare <baselineDir> → 报告首部输出退化/改善清单
+let cmp = null
+const cmpIdx = argv.indexOf('--compare')
+const baselineDir = cmpIdx >= 0 ? argv[cmpIdx + 1] : null
+if (baselineDir) {
+  const baseDir = join(resultsRoot, String(baselineDir).replace(/^results[/\\]/, ''))
+  let baseSummary = []
+  try {
+    if (existsSync(join(baseDir, 'summary.json'))) {
+      baseSummary = JSON.parse(readFileSync(join(baseDir, 'summary.json'), 'utf8'))
+    } else {
+      baseSummary = readdirSync(baseDir)
+        .filter((f) => f.endsWith('.json') && f !== 'meta.json' && f !== 'summary.json')
+        .map((f) => JSON.parse(readFileSync(join(baseDir, f), 'utf8')))
+    }
+  } catch (e) { console.error('基线读取失败:', e.message); process.exit(1) }
+  cmp = compareResults({ current: summary, baseline: baseSummary })
+  md += `## 退化对比（vs ${baselineDir}）\n\n`
+  md += `**汇总**：${cmp.summary.regressed} 退化 / ${cmp.summary.improved} 改善 / ${cmp.summary.slower} 变慢 / ${cmp.summary.same} 持平 / ${cmp.summary.new} 新增 / ${cmp.summary.missing} 缺失\n\n`
+  if (cmp.regressed.length || cmp.slower.length) {
+    md += `| 判定 | Agent | 任务 | 基线状态 | 当前状态 | 基线耗时 | 当前耗时 | 基线工具 | 当前工具 |\n|---|---|---|---|---|---|---|---|---|\n`
+    for (const r of [...cmp.regressed, ...cmp.slower]) {
+      const b = r.baseline || {}
+      const c = r.current || {}
+      md += `| ${r.verdict} | ${r.agent} | ${r.task} | ${b.status ?? '—'} | ${c.status ?? '—'} | ${fmt(b.durationMs ?? 0)} | ${fmt(c.durationMs ?? 0)} | ${b.toolCalls ?? '—'} | ${c.toolCalls ?? '—'} |\n`
+    }
+    md += `\n`
+  }
+  if (cmp.improved.length) {
+    md += `**改善**：${cmp.improved.map((r) => `${r.agent}×${r.task}`).join('、')}\n\n`
+  }
+}
 
 // 总评分排行
 md += `## 零、综合评分排行\n\n| 排名 | Agent | 综合分 | 完成率(40) | 探索效率(20) | 验证能力(20) | 改动质量(20) |\n|---|---|---|---|---|---|---|\n`
@@ -221,6 +256,24 @@ html += `<div class="cards">
   <div class="card"><div class="label">平均耗时</div><div class="num">${fmt(avgOf((x) => x.durationMs))}</div><div class="sub">每 (agent×task)</div></div>
   <div class="card"><div class="label">自测率</div><div class="num">${(summary.filter((x) => x.selfTested).length / summary.length * 100).toFixed(0)}%</div><div class="sub">主动运行测试/verify</div></div>
 </div>`
+
+// B5 退化对比（--compare 时插入首部表格）
+if (cmp) {
+  html += `<h2>退化对比（vs ${esc(baselineDir)}）</h2>`
+  html += `<p style="color:var(--muted);font-size:12px">${cmp.summary.regressed} 退化 / ${cmp.summary.improved} 改善 / ${cmp.summary.slower} 变慢 / ${cmp.summary.same} 持平 / ${cmp.summary.new} 新增 / ${cmp.summary.missing} 缺失</p>`
+  if (cmp.regressed.length || cmp.slower.length) {
+    html += `<table><tr><th>判定</th><th>Agent</th><th>任务</th><th>基线状态</th><th>当前状态</th><th>基线耗时</th><th>当前耗时</th><th>基线工具</th><th>当前工具</th></tr>`
+    for (const r of [...cmp.regressed, ...cmp.slower]) {
+      const b = r.baseline || {}
+      const c = r.current || {}
+      html += `<tr><td><span class="badge fail">${r.verdict}</span></td><td>${esc(r.agent)}</td><td>${esc(r.task)}</td><td>${esc(b.status ?? '—')}</td><td>${esc(c.status ?? '—')}</td><td>${fmt(b.durationMs ?? 0)}</td><td>${fmt(c.durationMs ?? 0)}</td><td>${b.toolCalls ?? '—'}</td><td>${c.toolCalls ?? '—'}</td></tr>`
+    }
+    html += `</table>`
+  }
+  if (cmp.improved.length) {
+    html += `<p style="color:var(--muted);font-size:12px"><b>改善</b>：${cmp.improved.map((r) => `${r.agent}×${r.task}`).join('、')}</p>`
+  }
+}
 
 // 综合评分排行（横向条形 + 排名）
 html += `<h2>综合评分排行</h2><div class="cards">`
@@ -384,3 +437,9 @@ writeFileSync(join(dir, 'report.html'), html)
 console.log('报告已生成：')
 console.log('  Markdown:', join(dir, 'report.md'))
 console.log('  HTML   :', join(dir, 'report.html'))
+if (cmp) {
+  console.log(`退化对比（vs ${baselineDir}）：${cmp.summary.regressed} 退化 / ${cmp.summary.improved} 改善 / ${cmp.summary.slower} 变慢 / ${cmp.summary.same} 持平 / ${cmp.summary.new} 新增 / ${cmp.summary.missing} 缺失`)
+  for (const r of [...cmp.regressed, ...cmp.slower]) {
+    console.log(`  [${r.verdict}] ${r.agent}×${r.task}：${r.baseline?.status ?? '—'}→${r.current?.status ?? '—'} (${fmt(r.baseline?.durationMs ?? 0)}→${fmt(r.current?.durationMs ?? 0)})`)
+  }
+}
