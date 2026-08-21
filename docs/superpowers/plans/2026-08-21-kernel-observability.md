@@ -26,7 +26,7 @@
 **Interfaces:**
 - Produces: 确认 `result` 事件 usage 含 `input_tokens/output_tokens/cache_read_input_tokens/cache_creation_input_tokens` 四字段（会话落盘 + GUI 用量展示的权威源）
 
-- [ ] **Step 1: 写测试（增补到 server/kernel-engine.test.mjs 末尾，沿用该文件 fixture）**
+- [x] **Step 1: 写测试（增补到 server/kernel-engine.test.mjs 末尾，沿用该文件 fixture）**
 
 ```js
 test('O1-1 result 事件 usage 含 cache 四字段（mock 多工具轮累计）', async () => {
@@ -48,16 +48,16 @@ test('O1-1 result 事件 usage 含 cache 四字段（mock 多工具轮累计）'
 })
 ```
 
-- [ ] **Step 2: 跑测试确认通过（或失败定位缺口）**
+- [x] **Step 2: 跑测试确认通过（或失败定位缺口）**
 
 Run: `node --test server/kernel-engine.test.mjs`
 Expected: PASS（若 cache 字段缺失则修复 engine.mjs——把 wire.result 与 appendAssistant 的 usage 统一为 addUsage 累计结果）
 
-- [ ] **Step 3: 修复（仅当 Step 2 失败）**
+- [x] **Step 3: 修复（仅当 Step 2 失败）**
 
 若 `usage` 缺 cache 字段，定位 engine.mjs 中 result 事件构造处（line ~551 `wire.result(usage, ...)`），确认 usage 来源为 addUsage 累计（非覆盖赋值）；若被覆盖，改为与 finalizeUsage 同一 usage 对象。
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add server/kernel-engine.test.mjs kernel/engine.mjs
@@ -81,7 +81,7 @@ git commit -m "test(kernel): result 事件 usage 四字段断言——cache 用�
     - 输入：transcript entries（同 aggregateStats 的 JSONL 行对象，`e.message.usage` 数据源）
   - 与现有 aggregateStats 响应兼容：`totals/byModel/byProject/byDate` 键名一致，新增 cache 字段与 byTool/bySession/cacheRate
 
-- [ ] **Step 1: 写失败测试（新建 server/stats.test.mjs）**
+- [x] **Step 1: 写失败测试（新建 server/stats.test.mjs）**
 
 ```js
 // server/stats.test.mjs —— 内核用量聚合（docs/production/observability.md O1-2/O4-2）
@@ -121,12 +121,12 @@ test('aggregateUsage：bySession 聚合 + 分母为 0 时 cacheRate 0', () => {
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/stats.test.mjs`
 Expected: FAIL（Cannot find module `../kernel/stats.mjs`）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 ```js
 // kernel/stats.mjs —— 用量聚合纯函数（docs/production/observability.md O1-2/O4-2）
@@ -188,12 +188,12 @@ export function aggregateUsage(entries, { bySession = false } = {}) {
 
 > 注：byProject 依赖外层传入 project 名（bridge 按目录遍历时已知）——Task 4 在 bridge 侧为每项目文件加 `e.sessionId` 与 project 归属（`e.project = projName`）后调用。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/stats.test.mjs`
 Expected: PASS（2 个测试全过）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/stats.mjs server/stats.test.mjs
@@ -215,7 +215,7 @@ git commit -m "feat(kernel): 用量聚合纯函数——cache 四字段/byTool/c
     - 默认值：pIn=0.2, pOut=1.2, cacheReadRatio=0.1（与 benchmark 一致）
   - `withBudget(rows, budgetUsd)` → `{ rows, totalUsd, overBudget: boolean }`（月度预算超限标记，预算值来自 env `YFW_MONTHLY_BUDGET_USD`）
 
-- [ ] **Step 1: 写失败测试（新建 server/cost.test.mjs）**
+- [x] **Step 1: 写失败测试（新建 server/cost.test.mjs）**
 
 ```js
 // server/cost.test.mjs —— 成本计费（docs/production/observability.md O4-1）
@@ -246,12 +246,12 @@ test('withBudget：总成本 + 超限标记', () => {
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/cost.test.mjs`
 Expected: FAIL（Cannot find module `../kernel/cost.mjs`）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 ```js
 // kernel/cost.mjs —— 成本计费纯函数（docs/production/observability.md O4-1）
@@ -271,12 +271,12 @@ export function withBudget(rows = [], budgetUsd = 0) {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/cost.test.mjs`
 Expected: PASS（3 个测试全过）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/cost.mjs server/cost.test.mjs
@@ -295,7 +295,7 @@ git commit -m "feat(kernel): 成本计费纯函数——cache 折扣计费 + 月
 - Consumes: `aggregateUsage`（Task 2）、`costOf`/`withBudget`（Task 3）、`costUsd`（transcript.mjs 现有——保留兼容或替换）
 - Produces: `/transcript/stats` 响应新增 `cache_read_input_tokens/cache_creation_input_tokens/cacheRate/byTool/bySession`（可选）字段；`totals.cost_usd` 计算改用 costOf（含 cache 计费）；`overBudget` 字段（`YFW_MONTHLY_BUDGET_USD` env，未设时不输出）
 
-- [ ] **Step 1: 写失败测试（增补到 server/stats.test.mjs 末尾——直接调 aggregateUsage 模拟 bridge 集成路径）**
+- [x] **Step 1: 写失败测试（增补到 server/stats.test.mjs 末尾——直接调 aggregateUsage 模拟 bridge 集成路径）**
 
 ```js
 // 模拟 bridge 的逐项目调用：为 entries 注入 sessionId/project 后聚合
@@ -311,12 +311,12 @@ test('bridge 集成：按项目注入 sessionId → bySession 生效', () => {
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/stats.test.mjs`
 Expected: FAIL（bySession 为空——当前 aggregateUsage 检查 `e.sessionId` 但测试注入后应通过；若实际失败为 byProject 聚合缺失）
 
-- [ ] **Step 3: 最小实现（kernel/stats.mjs 补 byProject + bridge.mjs 集成）**
+- [x] **Step 3: 最小实现（kernel/stats.mjs 补 byProject + bridge.mjs 集成）**
 
 ```js
 // kernel/stats.mjs aggregateUsage 内补 byProject（e.project 注入时聚合）：
@@ -337,12 +337,12 @@ import { costOf, withBudget } from '../kernel/cost.mjs'
 
 > 现有 `aggregateStats`（transcript.mjs）与 `costUsd` 保持导出兼容（其他调用方 /audit 等不受影响）；/transcript/stats 改为新聚合。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/stats.test.mjs server/kernel-bridge.test.mjs`
 Expected: PASS（stats 3 个 + kernel-bridge 原有全过——/transcript/stats 结构兼容）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/stats.mjs server/bridge.mjs server/stats.test.mjs
@@ -363,7 +363,7 @@ git commit -m "feat(bridge): /transcript/stats 集成内核聚合——cache 计
   - `getOpsHealth({ memory, lastApi, pendingTurns, diskBytes })` → `{ rssMB, heapMB, lastApiOk, lastApiMs, pendingTurns, diskMB }`（纯函数，输入由调用方采集——内核侧采集自身，bridge 采集全局）
   - bridge `/health` 响应扩展：`{ status, pid, sessions: <活跃会话数>, ops: <内核上报或 bridge 采集的运维指标>, apiOk, pendingTurns }`——会话数由 bridge 聚合（全局概念，内核单进程无法感知）
 
-- [ ] **Step 1: 写失败测试（增补到 server/health.test.mjs 末尾）**
+- [x] **Step 1: 写失败测试（增补到 server/health.test.mjs 末尾）**
 
 ```js
 import { getOpsHealth } from '../kernel/health.mjs'
@@ -391,12 +391,12 @@ test('O2-1 缺省输入降级：空对象返回 0/null 不抛', () => {
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/health.test.mjs`
 Expected: FAIL（getOpsHealth 未导出）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 ```js
 // kernel/health.mjs 末尾追加纯函数：
@@ -430,12 +430,12 @@ if (url.pathname === '/health') {
 
 > 注：bridge 侧 lastApi 采集（最近一次内核 API 调用结果）依赖内核上报——本任务先给 `lastApi: null`（bridge 无法直接感知内核 API 状态）；内核侧上报可在 health.mjs 的 engine 装配点补（record 时记最近一次 API 耗时，经 yfw_health 或后续 wire 事件透传）。第一版以 bridge 可采集项为准，内核 API 状态字段保留 `lastApiOk: null` 占位。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/health.test.mjs server/kernel-bridge.test.mjs`
 Expected: PASS（health 2 个新增 + 原有全过）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add kernel/health.mjs server/bridge.mjs server/health.test.mjs
@@ -456,7 +456,7 @@ git commit -m "feat(kernel+bridge): 运维健康——getOpsHealth 纯函数 + /
   - `/diag/info` 响应 data 追加：`configSummary`（env 白名单键值脱敏）、`skillsLockVersion`（skills-lock.json version，缺失时 null）、`transcriptMB`（transcript 目录总大小）
   - `/diag/export` → `{ ok: true, exported: { generatedAt, env: <脱敏键值>, sessions: <计数>, transcriptMB, logTail: <内核 stderr 日志尾部 100 行>, version } }`（供支持排查；不落盘文件，直接 JSON 返回）
 
-- [ ] **Step 1: 写失败测试（增补到 server/diag-info.test.mjs 末尾，沿用该文件 HTTP/WS fixture）**
+- [x] **Step 1: 写失败测试（增补到 server/diag-info.test.mjs 末尾，沿用该文件 HTTP/WS fixture）**
 
 ```js
 test('O3-1 /diag/info 补全：configSummary 脱敏 + skillsLockVersion + transcriptMB', async () => {
@@ -484,12 +484,12 @@ test('O3-2 /diag/export：环境脱敏 + transcript 摘要 + 无明文密钥', a
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test server/diag-info.test.mjs`
 Expected: FAIL（configSummary 未定义；/diag/export 404）
 
-- [ ] **Step 3: 最小实现（server/bridge.mjs）**
+- [x] **Step 3: 最小实现（server/bridge.mjs）**
 
 ```js
 // import 区追加：
@@ -549,12 +549,12 @@ if (url.pathname === '/diag/export') {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test server/diag-info.test.mjs`
 Expected: PASS（原有 + 新增 2 个）
 
-- [ ] **Step 5: 全量回归 + 提交**
+- [x] **Step 5: 全量回归 + 提交**
 
 ```bash
 node --test "server/*.test.mjs"
