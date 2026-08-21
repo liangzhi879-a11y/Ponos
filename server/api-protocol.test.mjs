@@ -1,7 +1,89 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { detectProtocol, createAnthropicParser, protocolStream, streamMessages, toAbortSignal } from '../kernel/api.mjs'
+import { detectProtocol, createAnthropicParser, protocolStream, streamMessages, toAbortSignal, classifyApiError } from '../kernel/api.mjs'
 import { createToolRegistry } from '../kernel/tools.mjs'
+
+test('classifyApiError（P0-1）：错误码结构化分类 + 可重试标记', () => {
+  const ab = new Error('turn aborted by cancel')
+  ab.name = 'AbortError'
+  assert.deepEqual(classifyApiError(ab), { kind: 'abort', retryable: false })
+  // context_window_exceeded 以 message 判定（无 status 也可识别）
+  assert.equal(classifyApiError(new Error('context_window_exceeded: 超出上下文')).kind, 'context-window')
+  const ctxErr = new Error('context_window_exceeded')
+  ctxErr.status = 400
+  assert.equal(classifyApiError(ctxErr).kind, 'context-window')
+  // auth / quota 快速失败
+  const authErr = new Error('unauthorized')
+  authErr.status = 401
+  assert.deepEqual(classifyApiError(authErr), { kind: 'auth', retryable: false })
+  const quotaErr = new Error('insufficient_quota: 余额不足')
+  assert.deepEqual(classifyApiError(quotaErr), { kind: 'quota', retryable: false })
+  // rate-limit / transient 可退避重试
+  const rateErr = new Error('rate limit exceeded')
+  rateErr.status = 429
+  assert.deepEqual(classifyApiError(rateErr), { kind: 'rate-limit', retryable: true })
+  const fiveErr = new Error('内核：API 请求失败 503 fetch failed')
+  fiveErr.status = 503
+  assert.deepEqual(classifyApiError(fiveErr), { kind: 'transient', retryable: true })
+  const netErr = new Error('fetch failed: ECONNREFUSED')
+  assert.equal(classifyApiError(netErr).kind, 'transient')
+  // unknown 保守不重试
+  assert.equal(classifyApiError(new Error('其他错误')).kind, 'unknown')
+})
+
+test('createAnthropicParser（P0-2）：message_delta 的 stop_reason 被捕获', () => {
+  const p = createAnthropicParser()
+  assert.equal(p.stopReason(), null)
+  p.feed({ type: 'message_delta', delta: { stop_reason: 'length' }, usage: { input_tokens: 1, output_tokens: 1 } })
+  assert.equal(p.stopReason(), 'length')
+  p.feed({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { input_tokens: 1, output_tokens: 1 } })
+  assert.equal(p.stopReason(), 'end_turn')
+})
+
+test('protocolStream（P0-2）：流末尾 yield stop_reason chunk（engine 判 length 截断）', async () => {
+  const events = [
+    JSON.stringify({ type: 'message_start', message: { usage: { input_tokens: 1, output_tokens: 1 } } }),
+    JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'hello\n\n' } }),
+    JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'length' }, usage: { input_tokens: 1, output_tokens: 1 } }),
+  ]
+  const sse = events.map((e) => `data: ${e}`).join('\n\n') + '\n\ndata: [DONE]\n\n'
+  const prev = global.fetch
+  global.fetch = async () => ({
+    ok: true,
+    body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(sse)); c.close() } }),
+  })
+  try {
+    const chunks = []
+    for await (const c of protocolStream({ url: 'http://t/v1/messages', body: {}, headers: {} })) chunks.push(c)
+    const sr = chunks.filter((c) => c.type === 'stop_reason')
+    assert.equal(sr.length, 1)
+    assert.equal(sr[0].reason, 'length')
+  } finally {
+    global.fetch = prev
+  }
+})
+
+test('protocolStream（P1-6）：单次流读空闲看门狗——body 永不产数据 → 抛 stream idle timeout', async () => {
+  const prev = global.fetch
+  global.fetch = async () => ({
+    ok: true,
+    body: new ReadableStream({ start(c) { /* 永不 enqueue/close */ } }),
+  })
+  const oldTimeout = process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS
+  process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS = '50'
+  try {
+    await assert.rejects(
+      (async () => {
+        for await (const c of protocolStream({ url: 'http://t/v1/messages', body: {}, headers: {} })) {}
+      })(),
+      /stream idle timeout/,
+    )
+  } finally {
+    global.fetch = prev
+    if (oldTimeout === undefined) delete process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS
+    else process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS = oldTimeout
+  }
+})
 
 test('detectProtocol：Anthropic env 存在 → anthropic，否则 null', () => {
   assert.equal(detectProtocol({ ANTHROPIC_BASE_URL: 'http://y' }), 'anthropic')
@@ -75,7 +157,7 @@ test('tools 注入：Anthropic 请求 body 含 tools[]（字段名映射，mock 
     assert.equal(captured.length, 1)
     assert.ok(captured[0].url.endsWith('/v1/messages'))
     assert.ok(Array.isArray(captured[0].body.tools))
-    assert.deepEqual(captured[0].body.tools.map((t) => t.name), ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep'])
+    assert.deepEqual(captured[0].body.tools.map((t) => t.name), ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'WebFetch', 'OCR'])
     assert.equal(captured[0].body.tools[0].input_schema.type, 'object')
     assert.ok(chunks.some((c) => c.type === 'usage'))
   } finally {

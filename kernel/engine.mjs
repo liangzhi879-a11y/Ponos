@@ -12,12 +12,19 @@
 // usage：chunk 逐次 addUsage 累计（input/output/cache 各字段），替代覆盖赋值。
 // 观测：每轮尾部产出 turnStats（usage/durationMs/model/ts/compactCount），
 // health/result/stats 三个消费者共用；result 事件由 engine 发出（cli 不再重复）。
-import { streamMessages } from './api.mjs'
+import { streamMessages, classifyApiError } from './api.mjs'
 import { abortError } from './protocol.mjs'
 import { decideToolPermission } from './permissions.mjs'
 import { createToolRegistry } from './tools.mjs'
+import { createSessionStore, newSessionId } from './session.mjs'
+import { resolveAgent, resolveAgents } from './agents.mjs'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
 
-const MAX_TOOL_ITERATIONS = 10
+// 工具循环上限：真实多步任务（探查→修复→测试）需 20+ 次工具调用，10 会在
+// 探索中打断模型（SWE 类任务实测 toolCalls 全部卡在 11-13）。提升至 50，
+// 与 claude/pi/deepseek 无上限对齐，仍受评测/交互整体超时约束。
+const MAX_TOOL_ITERATIONS = 50
 
 // usage 逐次累加（input/output/cache 各字段），修复"多次 API 调用只记最后一次"
 function addUsage(acc, u = {}) {
@@ -33,6 +40,85 @@ function hasUsage(u = {}) {
   return (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) > 0
 }
 
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)) }
+
+// P0-1 重试退避：指数 + 25% jitter（参考 pi provider-retry：抖动避免同步风暴）
+function retryDelayMs(attempt) {
+  return 500 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 250)
+}
+
+// P0-1：流式请求重试——仅对"首块前失败"的瞬时/限流错误退避重试（已流出的文本
+// 不重复，避免用户看到两次内容），abort/quota/auth/context-window 直接抛（engine
+// 上层各有处理）。mock 模式默认不重试（测试确定性），可经 YFW_MOCK_API_RETRIES 覆盖。
+async function* retryStream({ model, messages, maxTokens, signal, tools }) {
+  const isMock = process.env.YFW_MOCK_API === '1'
+  const configured = process.env.YFW_MOCK_API_RETRIES
+  const maxRetries = configured !== undefined
+    ? Number(configured)
+    : (isMock ? 0 : Number(process.env.CLAUDE_CODE_API_RETRIES || 5))
+  let attempt = 0
+  while (true) {
+    let produced = false
+    try {
+      for await (const chunk of streamMessages({ model, messages, maxTokens, signal, tools })) {
+        produced = true
+        yield chunk
+      }
+      return
+    } catch (err) {
+      if (signal?.aborted || produced) throw err
+      const cls = classifyApiError(err)
+      if (!['rate-limit', 'transient'].includes(cls.kind) || attempt >= maxRetries) throw err
+      attempt++
+      await sleep(retryDelayMs(attempt))
+    }
+  }
+}
+
+// P1-9 工具执行 deadline：超时返回结构化 TOOL_TIMEOUT 结果。不取消底层执行
+// （各工具自身超时负责 kill；deadline 仅兜"永不返回"的工具，防整轮挂死）
+export function withToolDeadline(promise, ms) {
+  if (!ms || ms <= 0) return promise
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => {
+      resolve({ content: `工具执行超时（${ms}ms），已中止`, isError: true, meta: { timeout: true } })
+    }, ms)
+    if (t.unref) t.unref()
+    promise.then(
+      (v) => { clearTimeout(t); resolve(v) },
+      (e) => { clearTimeout(t); reject(e) },
+    )
+  })
+}
+
+// P1-8：孤儿 tool_use 补丁——压缩/恢复破坏消息链时，为无配对 tool_result 的
+// tool_use 追加合成 is_error tool_result（保 API 请求消息链合法，防 400）。
+// 纯派生（不入日志）：每次请求前重建，日志保持权威。
+export function patchOrphanToolUses(msgs) {
+  const out = []
+  const unpaired = new Map()
+  for (const m of msgs) {
+    if (m.role === 'assistant' && Array.isArray(m.content)) {
+      for (const b of m.content) if (b?.type === 'tool_use') unpaired.set(b.id, b)
+    } else if (m.role === 'user' && Array.isArray(m.content)) {
+      for (const b of m.content) if (b?.type === 'tool_result') unpaired.delete(b.tool_use_id)
+    }
+    out.push(m)
+  }
+  if (unpaired.size) {
+    out.push({
+      role: 'user',
+      content: [...unpaired.values()].map((b) => ({
+        type: 'tool_result',
+        tool_use_id: b.id,
+        content: '（该工具调用因上下文压缩/恢复丢失，未执行，标记为错误）',
+        is_error: true,
+      })),
+    })
+  }
+  return out
+}
+
 export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // signal 是轮次级取消标志（aborted 每轮由 runTurn 重置）；rawSignal 暴露真正
   // 的 AbortSignal，供 api.mjs 中断底层 fetch（undici 要求 AbortSignal 实例）
@@ -44,8 +130,12 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   const model = opts.model || process.env.ANTHROPIC_MODEL || ''
   const maxTokens = Math.max(1, Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || 64000))
   const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: opts.addDirs, skipPermissions: opts.skipPermissions })
+  // agent 表（内置 ∪ 用户级 $YFW_HOME/agents/*.md）：Agent 工具路由依据
+  const agents = resolveAgents({ configDir: opts.configDir })
   // 审批挂起队列：toolUseId → resolve（cli 的 control_response 解除）
   const approvalWaiters = new Map()
+  // 后台子 agent 任务登记：taskId → { status, promise, summary, outputFile, usage, laneStore }
+  const pendingSubAgents = new Map()
   // turnStats 记录器（内存 append-only）：health / result / stats 三个消费者共用
   const turnStats = []
 
@@ -66,9 +156,10 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     let textBuf = ''
     let overflowRetries = 0
     const maxOverflowRetries = Number(process.env.CLAUDE_CODE_MAX_OVERFLOW_RETRIES || 3)
-    // 请求消息 = system 前缀（api.mjs 抽顶层）+ 派生历史；session/memory 两模式一致
+    // 请求消息 = system 前缀（api.mjs 抽顶层）+ 派生历史；session/memory 两模式一致。
+    // 孤儿 tool_use 补丁（P1-8）在派生后执行（纯派生不入日志，请求面永远合法）
     const requestMessages = () => {
-      const msgs = deriveHistory()
+      const msgs = patchOrphanToolUses(deriveHistory())
       return [{ role: 'system', content: systemPrompt }].filter((m) => m.content).concat(msgs)
     }
     // pre-step 测压检查点：每轮请求前（工具结果/上轮产物已落日志之后）
@@ -101,8 +192,9 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       await preStep()
       const blocks = []
       let overflowed = false
+      let stopReason = null
       try {
-        for await (const chunk of streamMessages({
+        for await (const chunk of retryStream({
           model,
           messages: requestMessages(),
           maxTokens,
@@ -121,6 +213,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
             wire.assistant([{ type: 'tool_use', id: chunk.id, name: chunk.name, input: chunk.input }])
           } else if (chunk.type === 'usage') {
             usage = addUsage(usage, chunk.usage)
+          } else if (chunk.type === 'stop_reason') {
+            stopReason = chunk.reason
           }
         }
       } catch (err) {
@@ -138,20 +232,37 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         }
       }
       if (overflowed) continue // 压缩落地 → 重试同一轮（deriveHistory 已含摘要条目）
+      // P0-2：输出被 max_tokens 截断且已产出工具调用 → 不执行残缺参数，注入
+      // 错误 tool_result 提示模型补全重发（pi 机制，消灭"执行参数残缺的调用"）
+      if (blocks.length > 0 && stopReason === 'length') {
+        const assistantBlocks = [...(textBuf.trim() ? [{ type: 'text', text: textBuf }] : []), ...blocks]
+        pushMemory({ role: 'assistant', content: assistantBlocks })
+        if (session) lastAssistantEntry = session.appendAssistant(assistantBlocks, { model })
+        const errorResults = blocks.map((b) => ({
+          tool_use_id: b.id,
+          content: '模型输出被 max_tokens 截断，工具调用参数可能不完整，未执行。请重新完整发起该工具调用。',
+          is_error: true,
+        }))
+        pushMemory({ role: 'user', content: errorResults })
+        if (session) session.appendToolResults(errorResults)
+        textBuf = ''
+        continue
+      }
       if (blocks.length === 0) break
       // 该轮 assistant 历史：文本块 + tool_use 块（Anthropic API 要求）
       const assistantBlocks = [...(textBuf.trim() ? [{ type: 'text', text: textBuf }] : []), ...blocks]
       pushMemory({ role: 'assistant', content: assistantBlocks })
       // 中间 assistant 条目落盘（工具调用轮）：不带 usage（M1，usage 只写轮次最终条目）
       if (session) lastAssistantEntry = session.appendAssistant(assistantBlocks, { model })
-      // 逐个执行工具。Anthropic API 要求同一 assistant 的多个 tool_use 的
-      // tool_result 必须合并进紧随其后的同一条 user 消息（拆多条会 400
-      // "tool_use without tool_result immediately after"）——先收集再一次性落盘。
-      const toolResults = []
-      for (const b of blocks) {
-        const result = await executeToolUse(b)
-        toolResults.push({ tool_use_id: b.id, content: result.content, is_error: result.isError })
-      }
+      // P0-4：只读工具批并发、写/执行类串行，结果按模型调用顺序收集。tool_result
+      // 必须合并进同一条 user 消息（Anthropic 要求同一 assistant 的多个 tool_use 的
+      // tool_result 紧随其后且同消息，拆多条会 400）——先收集再一次性落盘。
+      const executed = await runToolBatch(blocks, { spawnSubAgent, taskSystem })
+      const toolResults = blocks.map((b, i) => ({
+        tool_use_id: b.id,
+        content: executed[i]?.content ?? '',
+        is_error: executed[i]?.isError === true,
+      }))
       if (toolResults.length) {
         pushMemory({ role: 'user', content: toolResults })
         if (session) session.appendToolResults(toolResults)
@@ -166,10 +277,75 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     return { usage, model, text: textBuf }
   }
 
-  async function executeToolUse(toolUse) {
-    const perm = decideToolPermission({ toolName: toolUse.name, input: toolUse.input, skipPermissions: opts.skipPermissions })
-    if (perm.decision === 'deny') return { content: '用户拒绝执行该操作', isError: true }
+  // P0-3：大工具结果磁盘持久化 + 预览替换——超阈值全文落盘
+  // <sessionDir>/tool-results/<toolUseId>.json，模型输入只留 <persisted-output>
+  // 预览 + 路径（可 Read 补读，无损恢复；参考 claude toolResultStorage）
+  function persistToolResult(target, toolUseId, content) {
+    if (!target || typeof content !== 'string') return content
+    const limit = Number(process.env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES || 20000)
+    if (content.length <= limit) return content
+    try {
+      const dir = join(dirname(target.file), 'tool-results')
+      mkdirSync(dir, { recursive: true })
+      const file = join(dir, `${toolUseId}.json`)
+      writeFileSync(file, JSON.stringify({ id: toolUseId, content, ts: new Date().toISOString() }), 'utf-8')
+      const preview = content.slice(0, 2000).replace(/"/g, '&quot;')
+      return `<persisted-output path="${file}" preview="${preview}">（完整内容 ${content.length} 字符已落盘，可用 Read 读取）</persisted-output>`
+    } catch {
+      return content // 落盘失败退回原文（不阻断工具结果）
+    }
+  }
+
+  // P0-4：工具批执行——连续只读工具并发（Promise.all），写/执行类单独串行；
+  // 结果按模型调用顺序收集（tool_result 与 toolCall 一一对应，Anthropic 要求）
+  async function runToolBatch(blocks, ctx) {
+    const results = []
+    let pending = []
+    const flush = async () => {
+      if (!pending.length) return
+      const batch = pending
+      pending = []
+      const settled = await Promise.all(
+        batch.map((p) => p.promise.catch((e) => ({ content: `工具执行异常：${e?.message || String(e)}`, isError: true })))
+      )
+      settled.forEach((r, i) => { results[batch[i].index] = r })
+    }
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i]
+      if (tools.isConcurrencySafe(b.name)) {
+        pending.push({ index: i, promise: executeToolUse(b, ctx) })
+      } else {
+        await flush()
+        results[i] = await executeToolUse(b, ctx)
+      }
+    }
+    await flush()
+    return results
+  }
+
+  // P1-7：权限 denial 计数降级——连续拒绝 3 次 / 累计 20 次后，高危命令自动 deny
+  // （不再打扰用户弹窗），tool_result 明示模型停止尝试（参考 claude denialTracking）
+  let denialStreak = 0
+  let denialTotal = 0
+  const DENIAL_STREAK_LIMIT = 3
+  const DENIAL_TOTAL_LIMIT = 20
+
+  async function executeToolUse(toolUse, ctx = {}) {
+    const perm = decideToolPermission({ toolName: toolUse.name, input: toolUse.input, skipPermissions: opts.skipPermissions, autoApproveHighRisk: opts.autoApproveHighRisk })
+    if (perm.decision === 'deny') {
+      denialStreak++
+      denialTotal++
+      return { content: '用户拒绝执行该操作', isError: true }
+    }
     if (perm.decision === 'ask') {
+      // 降级检查：拒绝过多 → 直接 deny（不挂起弹窗）
+      if (denialStreak >= DENIAL_STREAK_LIMIT || denialTotal >= DENIAL_TOTAL_LIMIT) {
+        denialTotal++
+        return {
+          content: `用户已连续拒绝 ${denialStreak} 次高危操作（累计 ${denialTotal} 次）。请停止尝试危险命令，改用安全替代方案。`,
+          isError: true,
+        }
+      }
       // 发 can_use_tool control_request 挂起，等 cli 经 control_response 解除
       wire.controlRequest({
         requestId: 'req-' + toolUse.id,
@@ -182,16 +358,170 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         approvalWaiters.set(toolUse.id, resolvePromise)
       })
       if (decision?.behavior !== 'allow') {
+        denialStreak++
+        denialTotal++
         return { content: decision?.message || '用户拒绝执行该操作', isError: true }
       }
+      denialStreak = 0
     }
-    return tools.run(toolUse, {})
+    // ctx：工具执行上下文——主循环注入 spawnSubAgent/taskSystem（Agent/Task 工具
+    // 依赖），子 agent 循环注入 lane:true（禁嵌套分发）
+    const { store, ...toolCtx } = ctx
+    // P1-9：统一执行 deadline（兜"永不返回"的工具；各工具自身超时负责 kill）
+    const toolDeadlineMs = Number(process.env.CLAUDE_CODE_TOOL_TIMEOUT_MS || 300_000)
+    const r = await withToolDeadline(tools.run(toolUse, { ...toolCtx, toolUseId: toolUse.id }), toolDeadlineMs)
+    // P0-3：大结果落盘到目标会话目录（子 lane 独立 store）
+    if (r && typeof r === 'object' && typeof r.content === 'string') {
+      r.content = persistToolResult(store || session, toolUse.id, r.content)
+    }
+    return r
+  }
+
+  // —— 子 agent（subagent）执行：进程内 lane ——
+  // 子 lane = 独立 session store（复用 createSessionStore，sessionId=taskId，
+  // 独立 transcript 文件），主会话日志零污染（只有 Agent tool_use + 结果回填）。
+  // 子循环与 runTurnInternal 语义对齐但简化：无压缩/溢出恢复/健康（短会话）。
+  // signal 为轮次级取消：主 signal（用户 cancel 全中断）∨ 子 signal（Task stop）
+  async function runSubAgentLoop({ store, sysPrompt, signal: subSignal, onTool }) {
+    let usage = {}
+    let textBuf = ''
+    let toolUses = 0
+    const msgs = () => {
+      const m = patchOrphanToolUses(store.deriveMessages())
+      return [{ role: 'system', content: sysPrompt }].filter((x) => x.content).concat(m)
+    }
+    for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
+      const blocks = []
+      for await (const chunk of retryStream({ model, messages: msgs(), maxTokens, signal: subSignal, tools: tools.toolSchemas() })) {
+        if (signal.aborted || subSignal.aborted) throw abortError()
+        if (chunk.type === 'text') textBuf += chunk.text
+        else if (chunk.type === 'tool_use') blocks.push({ type: 'tool_use', id: chunk.id, name: chunk.name, input: chunk.input })
+        else if (chunk.type === 'usage') usage = addUsage(usage, chunk.usage)
+      }
+      if (blocks.length === 0) break
+      const assistantBlocks = [...(textBuf.trim() ? [{ type: 'text', text: textBuf }] : []), ...blocks]
+      store.appendAssistant(assistantBlocks, { model })
+      // P0-4：子 lane 同样走只读并发批；结果按模型顺序收集
+      const executed = await runToolBatch(blocks, { lane: true, store })
+      const toolResults = blocks.map((b, i) => ({
+        tool_use_id: b.id,
+        content: executed[i]?.content ?? '',
+        is_error: executed[i]?.isError === true,
+      }))
+      for (let i = 0; i < blocks.length; i++) {
+        toolUses++
+        onTool?.(blocks[i], executed[i], toolUses)
+      }
+      store.appendToolResults(toolResults)
+      textBuf = ''
+    }
+    return { usage, text: textBuf }
+  }
+
+  // Agent 工具执行体：前台同步回填 / 后台异步 + task_notification 交付
+  async function spawnSubAgent(input, ctx = {}) {
+    const type = String(input?.subagent_type || '')
+    const agent = resolveAgent(agents, type)
+    if (!agent) return { content: `未知子 Agent：${type}。可用：${agents.map((a) => a.id).join(', ')}`, isError: true }
+    const prompt = String(input?.prompt || '').trim()
+    if (!prompt) return { content: 'prompt 缺失：请说明要委派给子 Agent 的任务', isError: true }
+    const runInBackground = input?.run_in_background === true
+    const taskId = newSessionId()
+    const toolUseId = String(ctx?.toolUseId || '')
+    wire.taskStarted({ taskId, toolUseId, prompt })
+    const laneStore = createSessionStore({ configDir: opts.configDir, cwd: opts.addDirs?.[0] || '', sessionId: taskId })
+    // 子任务指令入子 lane（子循环 deriveMessages 的起点；与主 runTurn appendUser 对齐）
+    laneStore.appendUser(prompt)
+    const sysPrompt = agent.systemPrompt || `你是 YFWorking 的子 Agent「${agent.name}」：${agent.description}。使用简体中文。`
+    const subController = new AbortController()
+    const t0 = Date.now()
+    let lastWritePath = ''
+    const onTool = (b, r, count) => {
+      if (b.name === 'Write' && !r.isError) lastWritePath = String(b.input?.file_path || '')
+      wire.taskProgress({
+        taskId,
+        lastToolName: b.name,
+        description: r.isError ? `${b.name} 失败：${String(r.content || '').slice(0, 120)}` : `${b.name} 完成`,
+        usage: { tool_uses: count, total_tokens: 0, duration_ms: Date.now() - t0 },
+      })
+    }
+    const exec = async () => {
+      let text = ''
+      let status = 'completed'
+      let usage = {}
+      try {
+        const r = await runSubAgentLoop({ store: laneStore, sysPrompt, signal: subController.signal, onTool })
+        text = String(r.text || '').trim()
+        usage = r.usage
+      } catch (err) {
+        if (err?.name === 'AbortError') { status = 'stopped'; text = '（已取消）' }
+        else { status = 'failed'; text = `执行出错：${err?.message || String(err)}` }
+      }
+      const totalTokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)
+        + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
+      const notifUsage = { tool_uses: 0, total_tokens: totalTokens, duration_ms: Date.now() - t0 }
+      const entry = pendingSubAgents.get(taskId)
+      if (entry) Object.assign(entry, { status, summary: text, outputFile: lastWritePath, usage: notifUsage })
+      wire.taskNotification({ taskId, status, summary: text, outputFile: lastWritePath, usage: notifUsage })
+      return { status, text, usage, outputFile: lastWritePath }
+    }
+    if (runInBackground) {
+      const promise = exec()
+      pendingSubAgents.set(taskId, {
+        status: 'running', promise, laneStore,
+        stop: () => subController.abort(), // Task stop 中止该子任务（独立信号）
+      })
+      return { content: `子 Agent「${agent.id}」任务已后台启动（task_id: ${taskId}）。完成时收到通知，可用 Task 工具查询/中止。`, isError: false }
+    }
+    const r = await exec()
+    if (r.status === 'stopped') return { content: '子 Agent 任务已取消', isError: true }
+    if (r.status === 'failed') return { content: r.text, isError: true }
+    const totalTokens = (r.usage.input_tokens ?? 0) + (r.usage.output_tokens ?? 0)
+      + (r.usage.cache_read_input_tokens ?? 0) + (r.usage.cache_creation_input_tokens ?? 0)
+    const detail = [
+      `子 Agent「${agent.id}」执行完成（${totalTokens} tokens）`,
+      r.text,
+      r.outputFile ? `输出文件：${r.outputFile}` : '',
+    ].filter(Boolean).join('\n\n')
+    return { content: detail, isError: false }
+  }
+
+  // Task 工具能力（后台任务查询/中止）
+  const taskSystem = {
+    list() {
+      if (pendingSubAgents.size === 0) return '当前无后台子 Agent 任务'
+      return [...pendingSubAgents.entries()]
+        .map(([id, t]) => `${id.slice(0, 8)} [${t.status}]${t.summary ? ' ' + String(t.summary).slice(0, 80) : ''}`)
+        .join('\n')
+    },
+    status(taskId) {
+      const t = pendingSubAgents.get(String(taskId || ''))
+      return t ? `${taskId} [${t.status}]${t.summary ? '\n' + String(t.summary) : ''}` : `任务不存在：${taskId}`
+    },
+    output(taskId) {
+      const t = pendingSubAgents.get(String(taskId || ''))
+      if (!t) return { content: `任务不存在：${taskId}`, isError: true }
+      if (t.status === 'running') return { content: '任务仍在运行中', isError: false }
+      return { content: String(t.summary || '(无输出)'), isError: false }
+    },
+    stop(taskId) {
+      const t = pendingSubAgents.get(String(taskId || ''))
+      if (!t) return { content: `任务不存在：${taskId}`, isError: true }
+      if (t.status !== 'running') return { content: `任务已结束（${t.status}）`, isError: false }
+      if (typeof t.stop === 'function') t.stop() // 仅中止该子任务（独立信号），不影响主循环
+      return { content: `已请求中止任务 ${taskId}`, isError: false }
+    },
   }
 
   return {
     signal,
     toolNames: tools.toolNames,
     toolSchemas: () => tools.toolSchemas(),
+    // subagent 体系：Agent/Task 工具能力 + 后台任务登记
+    spawnSubAgent,
+    taskSystem,
+    pendingSubAgents,
+    agents,
     setSystemPrompt(p) { systemPrompt = p || '' },
     abort() { signal.aborted = true; abortController.abort() },
     seedCompactCount(n) { /* session 已从日志恢复 compactCount；兼容保留 */ },

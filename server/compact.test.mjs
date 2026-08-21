@@ -228,6 +228,35 @@ test('溢出恢复：context_window_exceeded → forceCompact → retry 成功�
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('P1-5 压缩熔断：摘要连续失败达上限后 maybeCompact/forceCompact 跳过摘要（circuit-open）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'compact-circuit-'))
+  try {
+    const wire = { assistant: () => {}, result: () => {}, controlRequest: () => {}, summary: () => {}, health: () => {} }
+    const session = createSessionStore({ configDir: dir, cwd: 'proj', sessionId: '00000000-0000-0000-0000-0000000000cc' })
+    const compactor = createCompactor({
+      session,
+      context: { window: 500, thresholdRatio: 0.8, retainRatio: 0.16, estimate: (r) => ({ total: (r.messages?.length ?? 0) * 50 }), estimateMessage: () => 50, estimateHistory: (msgs) => (msgs?.length ?? 0) * 50 },
+      model: 'm', maxTokens: 100, wire,
+      env: { YFW_MOCK_API: '1', YFW_MOCK_COMPACT_BAD: '1' },
+    })
+    process.env.YFW_MOCK_API = '1'
+    process.env.YFW_MOCK_COMPACT_BAD = '1'
+    for (let i = 1; i <= 5; i++) { session.appendUser(`q${i}`); session.appendAssistant([{ type: 'text', text: 'a'.repeat(100) }]) }
+    // 第一次：摘要失败（循环内 3 次 + 收尾计数），不落地
+    const r1 = await compactor.maybeCompact({ system: 'S', messages: session.deriveMessages() })
+    assert.equal(r1.action, 'none')
+    assert.match(r1.reason, /no-convergence/)
+    assert.equal(session.compactCount(), 0)
+    // 第二次起：熔断打开（consecutiveFailures ≥ 3）→ circuit-open，不再调摘要
+    const r2 = await compactor.maybeCompact({ system: 'S', messages: session.deriveMessages() })
+    assert.equal(r2.reason, 'circuit-open')
+    const rf = await compactor.forceCompact({ system: 'S', messages: session.deriveMessages() })
+    assert.equal(rf.reason, 'circuit-open')
+    delete process.env.YFW_MOCK_API
+    delete process.env.YFW_MOCK_COMPACT_BAD
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('单通道（FIX R1）：装配 health 的 compactor 压缩成功后 yfw_summary 只发一次且 lastSummary 被记录', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'compact-health-'))
   try {

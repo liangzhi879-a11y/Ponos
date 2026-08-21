@@ -6,13 +6,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 import { parseArgs } from '../kernel/cli.mjs'
 import { sanitizeSegment } from '../kernel/session.mjs'
+import { patchOrphanToolUses, withToolDeadline } from '../kernel/engine.mjs'
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'kernel', 'cli.mjs')
 
@@ -187,6 +188,7 @@ test('参数解析：parseArgs 精确还原契约参数', () => {
   assert.equal(args.inputFormat, 'stream-json')
   assert.equal(args.verbose, true)
   assert.equal(args.skipPermissions, true)
+  assert.equal(args.autoApproveHighRisk, false)
   assert.equal(args.permissionPromptTool, 'stdio')
   assert.deepEqual(args.disallowedTools, ['AskUserQuestion'])
   assert.equal(args.model, 'test-model')
@@ -304,6 +306,17 @@ test('工具审批 deny：拒绝后不执行，模型收到拒绝结果', async 
   } finally { m.close() }
 })
 
+test('auto-approve-high-risk：高危 Bash 不挂起审批，直接执行', async () => {
+  const m = spawnKernel({ extraArgs: ['--auto-approve-high-risk'] })
+  try {
+    await readInit(m.reader)
+    m.send({ type: 'user', message: { role: 'user', content: '[mock:tool] 清理临时目录' } })
+    // 无 control_request（headless 放行）→ 工具执行 → 文本 + result
+    const turn = await collectTurn(m.reader)
+    assert.match(turn.text, /工具执行完成：/)
+  } finally { m.close() }
+})
+
 test('highrisk 匹配：rm -rf / git push --force / taskkill 触发，普通命令不触发', async () => {
   const { matchesHighRisk } = await import('../kernel/highrisk.mjs')
   assert.equal(matchesHighRisk('rm -rf /tmp/foo'), true)
@@ -312,6 +325,118 @@ test('highrisk 匹配：rm -rf / git push --force / taskkill 触发，普通命�
   assert.equal(matchesHighRisk('echo hello'), false)
   assert.equal(matchesHighRisk('ls -la'), false)
   assert.equal(matchesHighRisk('git status'), false)
+})
+
+test('瞬时错误重试（P0-1）：YFW_MOCK_TRANSIENT=once 首块前失败 → 退避重试成功', async () => {
+  const m = spawnKernel({ extraEnv: { YFW_MOCK_TRANSIENT: 'once', YFW_MOCK_API_RETRIES: '3' } })
+  try {
+    await readInit(m.reader)
+    m.send({ type: 'user', message: { role: 'user', content: '重试测试' } })
+    const turn = await collectTurn(m.reader)
+    // 首次 mock 抛 503（transient），retryStream 退避重试 → 正常回显
+    assert.equal(turn.text, 'mock: 重试测试 (turn=1)')
+    assert.ok(turn.usage.input_tokens >= 0)
+  } finally { m.close() }
+})
+
+test('length 截断注入（P0-2）：stop_reason=length 且已产工具调用 → 不执行、注入错误结果', async () => {
+  const m = spawnKernel({ extraEnv: { YFW_MOCK_STOP_REASON: 'length' } })
+  try {
+    await readInit(m.reader)
+    m.send({ type: 'user', message: { role: 'user', content: '[mock:tool] 清理' } })
+    const toolEv = await m.reader.nextEvent()
+    assert.equal(toolEv.type, 'assistant')
+    assert.equal(toolEv.message.content[0].type, 'tool_use')
+    // 不挂起审批（无 control_request）；错误 tool_result 注入 → 模型回显截断提示
+    const turn = await collectTurn(m.reader)
+    assert.match(turn.text, /max_tokens 截断/)
+  } finally { m.close() }
+})
+
+test('大结果磁盘持久化（P0-3）：>20k 工具结果落盘 tool-results/ + 预览替换', async () => {
+  const m = spawnKernel()
+  try {
+    const init = await readInit(m.reader)
+    m.send({ type: 'user', message: { role: 'user', content: '[mock:big] 大输出' } })
+    const turn = await collectTurn(m.reader)
+    assert.match(turn.text, /工具执行完成：/)
+    // tool-results/<toolUseId>.json 落盘（内容完整 30000 字符）
+    const dir = join(tmp, 'projects', sanitizeSegment(tmp), 'tool-results')
+    const files = readdirSync(dir)
+    assert.equal(files.length, 1)
+    const saved = JSON.parse(readFileSync(join(dir, files[0]), 'utf-8'))
+    assert.equal(saved.id, 'tool_use_mock_big')
+    assert.equal(saved.content.length, 30000)
+    // transcript 中 tool_result content 被预览替换（模型输入不撑爆）
+    const file = join(tmp, 'projects', sanitizeSegment(tmp), init.session_id + '.jsonl')
+    const entries = readFileSync(file, 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
+    const tr = entries.find((e) => e.type === 'user' && Array.isArray(e.message.content) && e.message.content[0]?.type === 'tool_result')
+    assert.ok(tr.message.content[0].content.includes('<persisted-output'), tr.message.content[0].content.slice(0, 80))
+  } finally { m.close() }
+})
+
+test('多工具轮并行批（P0-4）：3 个工具执行，tool_result 合并一条 user 消息且按模型顺序', async () => {
+  const m = spawnKernel({ extraArgs: ['--auto-approve-high-risk'], extraEnv: { YFW_MOCK_TOOLS: '3' } })
+  try {
+    const init = await readInit(m.reader)
+    m.send({ type: 'user', message: { role: 'user', content: '[mock:tool] 多工具' } })
+    const turn = await collectTurn(m.reader)
+    assert.match(turn.text, /工具执行完成：/)
+    // transcript：3 个 tool_result 合并进同一条 user 消息，顺序 = 模型调用顺序
+    const file = join(tmp, 'projects', sanitizeSegment(tmp), init.session_id + '.jsonl')
+    const entries = readFileSync(file, 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
+    const tr = entries.filter((e) => e.type === 'user' && Array.isArray(e.message.content) && e.message.content[0]?.type === 'tool_result')
+    assert.equal(tr.length, 1, 'tool_result 必须合并进同一条 user 消息')
+    assert.equal(tr[0].message.content.length, 3)
+    assert.deepEqual(tr[0].message.content.map((b) => b.tool_use_id), ['tool_use_mock_1', 'tool_use_mock_2', 'tool_use_mock_3'])
+  } finally { m.close() }
+})
+
+test('denial 计数降级（P1-7）：连续拒绝 3 次后高危命令自动 deny（不再挂起审批）', async () => {
+  const m = spawnKernel()
+  try {
+    await readInit(m.reader)
+    for (let i = 1; i <= 3; i++) {
+      m.send({ type: 'user', message: { role: 'user', content: `[mock:tool] 清理${i}` } })
+      const toolEv = await m.reader.nextEvent()
+      assert.equal(toolEv.type, 'assistant')
+      const cr = await m.reader.nextEvent()
+      assert.equal(cr.type, 'control_request')
+      m.send({ type: 'control_response', response: { request_id: cr.request_id, subtype: 'success', response: { behavior: 'deny', message: '拒绝', toolUseID: cr.request.tool_use_id } } })
+      const turn = await collectTurn(m.reader)
+      assert.match(turn.text, /拒绝/)
+    }
+    // 第四轮：连续 3 次已达阈值 → 不再发 control_request，直接拒绝并提示停止
+    m.send({ type: 'user', message: { role: 'user', content: '[mock:tool] 清理4' } })
+    const turn = await collectTurn(m.reader)
+    assert.match(turn.text, /请停止尝试/)
+  } finally { m.close() }
+})
+
+test('孤儿 tool_use 补丁（P1-8）：无配对 tool_result 的 tool_use 追加合成 is_error 结果（纯派生）', () => {
+  const msgs = [
+    { role: 'user', content: 'q1' },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'out' }] },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 't2', name: 'Read', input: {} }] }, // 孤儿（压缩丢失配对）
+  ]
+  const out = patchOrphanToolUses(msgs)
+  const last = out[out.length - 1]
+  assert.equal(last.role, 'user')
+  assert.equal(last.content.length, 1)
+  assert.equal(last.content[0].tool_use_id, 't2')
+  assert.equal(last.content[0].is_error, true)
+  assert.equal(msgs.length, 4, '原消息不得被修改（纯派生）')
+})
+
+test('工具执行 deadline（P1-9）：永不返回的 promise 超时返回结构化 TOOL_TIMEOUT 结果', async () => {
+  const r = await withToolDeadline(new Promise(() => {}), 30)
+  assert.equal(r.isError, true)
+  assert.match(r.content, /超时/)
+  assert.equal(r.meta.timeout, true)
+  // 正常路径：透传
+  const ok = await withToolDeadline(Promise.resolve({ content: 'ok' }), 1000)
+  assert.equal(ok.content, 'ok')
 })
 
 test('stdin 关闭：进程正常退出（exit 0）', async () => {

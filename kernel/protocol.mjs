@@ -54,5 +54,23 @@ export function makeWire(stream = process.stdout) {
     summary(text, compactCount) {
       writeLine(stream, { type: 'yfw_summary', text: String(text ?? ''), compactCount })
     },
+    // —— subagent 生命周期事件（shape 对齐 release 内核，GUI useYFWCLI task_* 分支消费）——
+    taskStarted({ taskId, toolUseId, prompt }) {
+      writeLine(stream, { type: 'system', subtype: 'task_started', task_id: taskId, tool_use_id: toolUseId, prompt: prompt || '' })
+    },
+    taskProgress({ taskId, lastToolName, description, usage = {} }) {
+      writeLine(stream, {
+        type: 'system', subtype: 'task_progress', task_id: taskId,
+        last_tool_name: lastToolName || '', description: description || '',
+        usage: { tool_uses: usage.tool_uses ?? 0, total_tokens: usage.total_tokens ?? 0, duration_ms: usage.duration_ms ?? 0 },
+      })
+    },
+    taskNotification({ taskId, status, summary, outputFile, usage = {} }) {
+      writeLine(stream, {
+        type: 'system', subtype: 'task_notification', task_id: taskId,
+        status: status || 'completed', summary: summary || '', output_file: outputFile || '',
+        usage: { tool_uses: usage.tool_uses ?? 0, total_tokens: usage.total_tokens ?? 0, duration_ms: usage.duration_ms ?? 0 },
+      })
+    },
   }
 }

@@ -153,6 +153,10 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
   let summaryInFlight = false
   let lastSummary = null
   let consecutiveFailures = 0
+  // P1-5：压缩熔断——摘要连续失败达到上限即停止（防对不可救药的超限上下文烧 API）。
+  // 免模型 pruner 不受熔断影响（零成本）；forceCompact（溢出兜底）熔断后直接拒绝，
+  // engine 侧收到 'overflow-compact-failed' 收尾而非无限重试。
+  const CIRCUIT_LIMIT = 3
 
   // usage 逐次累加（input/output/cache），语义与 engine.mjs addUsage 一致
   // （M2：摘要调用是完整 API 请求，其用量并入当前轮统计）
@@ -232,6 +236,8 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
   return {
     // pre-step 测压：先裁剪（阶段①），仍超再摘要（阶段②）
     async maybeCompact({ system, messages }) {
+      // P1-5：熔断后仍可跑免模型 pruner（零成本），但跳过主模型摘要
+      const circuitOpen = consecutiveFailures >= CIRCUIT_LIMIT
       const window = context.window ?? 200_000
       const threshold = Math.floor(window * (context.thresholdRatio ?? 0.8))
       const est = context.estimate ? context.estimate({ system, messages }) : { total: 0 }
@@ -255,11 +261,13 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
         const est2 = context.estimate({ system, messages })
         if (est2.total < threshold) return { action: 'pruned', reason: 'tool-result-pruned' }
       }
+      if (circuitOpen) return { action: 'none', reason: 'circuit-open', failures: consecutiveFailures }
       // 阶段② 主模型摘要
       return summarize({ system, messages })
     },
     // 溢出兜底：跳过阈值判定直接强制压缩；仅当 replaceGeneration 前进（调用方校验）才 retry
     async forceCompact({ system, messages }) {
+      if (consecutiveFailures >= CIRCUIT_LIMIT) return { action: 'none', reason: 'circuit-open', failures: consecutiveFailures }
       return summarize({ system, messages })
     },
     lastSummary: () => lastSummary,

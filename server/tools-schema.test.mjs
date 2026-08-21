@@ -11,7 +11,7 @@ function reg() {
 
 test('registry 每工具带 input_schema（JSON Schema，additionalProperties:false）', () => {
   const schemas = reg().toolSchemas()
-  assert.deepEqual(schemas.map((s) => s.name), ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep'])
+  assert.deepEqual(schemas.map((s) => s.name), ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'WebFetch', 'OCR'])
   for (const s of schemas) {
     assert.equal(typeof s.description, 'string')
     assert.ok(s.description.length > 0)
@@ -43,6 +43,17 @@ test('各工具 input_schema 字段与 required 正确', () => {
   assert.ok(byName.Grep.input_schema.properties.glob)
   assert.ok(byName.Grep.input_schema.properties.context)
   assert.deepEqual(byName.Grep.input_schema.required, ['pattern'])
+  // 新工具（subagent 体系 + 扩展工具）schema
+  assert.deepEqual(byName.Agent.input_schema.required, ['subagent_type', 'prompt'])
+  assert.ok(byName.Agent.input_schema.properties.subagent_type)
+  assert.ok(byName.Agent.input_schema.properties.run_in_background)
+  assert.deepEqual(byName.Task.input_schema.required, ['command'])
+  assert.ok(byName.Task.input_schema.properties.task_id)
+  assert.deepEqual(byName.TodoWrite.input_schema.required, ['todos'])
+  assert.deepEqual(byName.WebFetch.input_schema.required, ['url'])
+  assert.deepEqual(byName.OCR.input_schema.required, ['file_path'])
+  assert.ok(byName.OCR.input_schema.properties.mode)
+  assert.ok(byName.OCR.input_schema.properties.project)
 })
 
 // 功能测试：临时目录内执行工具（真实文件系统，Windows 兼容）
