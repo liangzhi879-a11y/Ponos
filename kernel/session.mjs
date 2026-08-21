@@ -22,6 +22,9 @@ import { redactEntry } from './redact.mjs'
 
 export const MAX_SANITIZED_LENGTH = 200
 
+// transcript 文件 schema 版本（D2-2）：新会话首行写 meta 标记；旧格式（无 meta）视为 v1。
+export const TRANSCRIPT_SCHEMA_VERSION = 1
+
 // 与 server/transcript.mjs sanitizePathSegment 同算法：非字母数字 → '-'，
 // 超 200 字符截断并追加 md5 前 12 位 hex。
 export function sanitizeSegment(name) {
@@ -40,6 +43,12 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
   const file = join(dir, `${sessionId}.jsonl`)
   // 构造即确保落盘目录存在（旧 transcript 直写 store.file、后续 append 均可用）
   try { mkdirSync(dir, { recursive: true }) } catch { /* 目录不可建不致命 */ }
+  // D2-2：新会话落盘 meta 首行（版本标记；不占 seq、不投影）。旧文件/恢复会话不写。
+  if (!existsSync(file)) {
+    try {
+      appendFileSync(file, JSON.stringify({ type: 'meta', kind: 'transcript', schemaVersion: TRANSCRIPT_SCHEMA_VERSION, timestamp: new Date().toISOString() }) + '\n', 'utf-8')
+    } catch { /* 磁盘不可写不致命 */ }
+  }
   // 内存状态：entries（seq → entry）、surface（投影顺序）、derive 缓存、压缩计数
   const entriesBySeq = new Map()
   const nodes = []
@@ -72,11 +81,11 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
     compactCount = 0
     nextSeq = 1
     for (const e of entries) {
+      if (e.type === 'meta') continue // P4-5/D2-2 审计/元数据条目不投影、不占 seq（不进模型输入）
       const seq = e.seq ?? nextSeq
       nextSeq = Math.max(nextSeq, seq) + 1
       e.seq = seq
       if (e.kind === 'compaction' && e.phase === 'start') continue // 孤儿/占位不投影
-      if (e.type === 'meta') continue // P4-5 审计/元数据条目不投影（不进模型输入）
       entriesBySeq.set(seq, e)
       if (e.kind === 'compaction' && e.phase === 'summary') {
         // 被遮蔽 seq 区间（投影中连续前缀）→ 替换为 summary seq
@@ -99,7 +108,8 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
   async function load() {
     const entries = await readLines()
     rebuildSurface(entries)
-    return { entries, surface: { nodes, replaceGeneration }, compactCount }
+    const metaEntry = entries.find((e) => e?.kind === 'meta' && e?.schemaVersion != null)
+    return { entries, surface: { nodes, replaceGeneration }, compactCount, metaVersion: metaEntry ? Number(metaEntry.schemaVersion) : 1 }
   }
 
   function invalidate() { deriveCache = null }
