@@ -30,6 +30,7 @@ import { createHealth } from './health.mjs'
 import { createCompactor } from './compact.mjs'
 import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
 import { getProvider, setProvider, providerVersion } from './provider.mjs'
+import { loadSettings } from './settings.mjs'
 import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
 import { YFW_VERSION } from '../version.mjs'
 
@@ -117,6 +118,12 @@ export async function main(argv) {
   const sharedDir = sharedDirFor(configDir)
   if (existsSync(sharedDir)) args.addDirs.push(sharedDir)
   const store = createSessionStore({ configDir, cwd: args.addDirs[0] || '', sessionId })
+  // P4-3 分层 settings：user（configDir/settings.json）< project（cwd/.yfworking/settings.json）< local。
+  // settings.env 仅兜底（spawn env 快照仍权威）：缺失键才写入 process.env。
+  const settings = loadSettings({ configDir, cwd: args.addDirs[0] || '', local: {} })
+  for (const [k, v] of Object.entries(settings.merged.env || {})) {
+    if (v !== undefined && process.env[k] === undefined) process.env[k] = String(v)
+  }
   // 内核结构化日志（R5-1）：stderr JSON 行，级别过滤经 CLAUDE_CODE_LOG_LEVEL
   const log = createLogger({ level: process.env.CLAUDE_CODE_LOG_LEVEL || 'info', sid: sessionId })
 
@@ -157,8 +164,9 @@ export async function main(argv) {
     }
   }
   // P4-5：model 热切换后可变（init/回执用最新值；未激活时 getProvider 现读 env）
-  let model = args.model || getProvider().model || ''
-  const maxTokens = Math.max(1, Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || 64000))
+  // P4-3：settings.merged.model 三级兜底（args > env > settings）
+  let model = args.model || getProvider().model || settings.merged.model || ''
+  const maxTokens = Math.max(1, Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || settings.merged.maxOutputTokens || 64000))
   const contextWindow = contextWindowFor(model)
   const context = {
     window: contextWindow,
@@ -180,8 +188,8 @@ export async function main(argv) {
       systemPrompt: '', // 占位，下面三层组装后覆盖
       verbose: args.verbose,
       skipPermissions: args.skipPermissions,
-      autoApproveHighRisk: args.autoApproveHighRisk,
-      disallowedTools: args.disallowedTools,
+      autoApproveHighRisk: args.autoApproveHighRisk === true || settings.merged.autoApproveHighRisk === true,
+      disallowedTools: [...args.disallowedTools, ...(settings.merged.disallowedTools || [])],
       permissionRules,
     },
     wire,

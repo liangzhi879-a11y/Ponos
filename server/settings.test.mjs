@@ -34,3 +34,55 @@ test('loadSettings：无文件时返回空对象', () => {
   const r = loadSettings({ configDir: join(tmp, 'nope'), cwd: join(tmp, 'nope2') })
   assert.deepEqual(r.merged, {})
 })
+
+import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { dirname } from 'node:path'
+import { createInterface } from 'node:readline'
+
+const KERNEL = join(dirname(fileURLToPath(import.meta.url)), '..', 'kernel', 'cli.mjs')
+
+function makeReader(stream) {
+  const lines = []
+  const waiters = []
+  createInterface({ input: stream, crlfDelay: Infinity }).on('line', (l) => {
+    const line = l.trim()
+    if (!line) return
+    if (waiters.length) waiters.shift()(line)
+    else lines.push(line)
+  })
+  return {
+    nextEvent(timeoutMs = 5000) {
+      if (lines.length) return Promise.resolve(JSON.parse(lines.shift()))
+      return new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('read timeout: ' + JSON.stringify(lines))), timeoutMs)
+        waiters.push((l) => { clearTimeout(t); resolve(JSON.parse(l)) })
+      })
+    },
+  }
+}
+
+test('settings 集成：项目 settings.model 注入 system(init)', async () => {
+  const configDir = join(tmp, 'cfg2')
+  const cwd = join(tmp, 'proj2')
+  mkdirSync(configDir, { recursive: true })
+  mkdirSync(join(cwd, '.yfworking'), { recursive: true })
+  writeFileSync(join(cwd, '.yfworking', 'settings.json'), JSON.stringify({ model: 'my-model' }), 'utf-8')
+  const child = spawn(process.execPath, [
+    KERNEL, '--print', '--output-format', 'stream-json', '--input-format', 'stream-json',
+    '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
+    '--disallowedTools', 'AskUserQuestion', '--add-dir', cwd,
+  ], {
+    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir, ANTHROPIC_MODEL: '' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  const reader = makeReader(child.stdout)
+  try {
+    const ev = await reader.nextEvent()
+    assert.equal(ev.type, 'system')
+    assert.equal(ev.subtype, 'init')
+    assert.equal(ev.model, 'my-model')
+  } finally {
+    try { child.stdin.end() } catch {}
+  }
+})
