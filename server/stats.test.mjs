@@ -93,3 +93,50 @@ test('bridge /transcript/stats：totals.cost_usd > 0 且等于 byModel 各桶 co
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+// —— O1-2/O4-2 内核用量聚合（kernel/stats.mjs aggregateUsage）——
+
+import { aggregateUsage } from '../kernel/stats.mjs'
+
+function assistantEntry(model, usage, ts, seq, toolUses = []) {
+  return { type: 'assistant', seq, timestamp: ts, message: { role: 'assistant', model, usage, content: toolUses.map((t) => ({ type: 'tool_use', id: t, name: 'Bash', input: {} })) } }
+}
+
+test('aggregateUsage：cache 四字段累计 + byModel/byDate + 工具分布', () => {
+  const entries = [
+    assistantEntry('m1', { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 900, cache_creation_input_tokens: 1000 }, '2026-08-21T00:00:00Z', 1, ['t1']),
+    assistantEntry('m1', { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 90, cache_creation_input_tokens: 0 }, '2026-08-21T00:00:01Z', 2, ['t2', 't3']),
+    assistantEntry('m2', { input_tokens: 200, output_tokens: 100 }, '2026-08-22T00:00:00Z', 3, []),
+  ]
+  const r = aggregateUsage(entries)
+  assert.equal(r.totals.input_tokens, 310)
+  assert.equal(r.totals.cache_read_input_tokens, 990)
+  assert.equal(r.totals.cache_creation_input_tokens, 1000)
+  assert.equal(r.totals.turns, 3)
+  assert.equal(r.byModel.m1.cache_read_input_tokens, 990)
+  assert.equal(r.byDate['2026-08-21'].output_tokens, 55)
+  assert.equal(r.byTool.Bash, 3)
+  // 缓存命中率：990/(310+990) ≈ 0.7615
+  assert.ok(Math.abs(r.cacheRate - 990 / (310 + 990)) < 1e-6)
+})
+
+test('aggregateUsage：bySession 聚合 + 分母为 0 时 cacheRate 0', () => {
+  const entries = [
+    assistantEntry('m1', { input_tokens: 1, output_tokens: 0 }, '2026-08-21T00:00:00Z', 1),
+  ]
+  const r = aggregateUsage(entries, { bySession: true })
+  assert.ok(r.bySession)
+  assert.equal(r.cacheRate, 0)
+})
+
+// 模拟 bridge 的逐项目调用：为 entries 注入 sessionId/project 后聚合
+test('bridge 集成：按项目注入 sessionId → bySession 生效', () => {
+  const entries = [
+    { ...assistantEntry('m1', { input_tokens: 10, output_tokens: 2 }, '2026-08-21T00:00:00Z', 1), sessionId: 's1', project: 'p1' },
+    { ...assistantEntry('m1', { input_tokens: 20, output_tokens: 4 }, '2026-08-21T00:00:01Z', 2), sessionId: 's2', project: 'p1' },
+  ]
+  const r = aggregateUsage(entries, { bySession: true })
+  assert.equal(r.bySession.s1.input_tokens, 10)
+  assert.equal(r.bySession.s2.input_tokens, 20)
+  assert.equal(r.totals.input_tokens, 30)
+})
