@@ -57,7 +57,10 @@ export async function runYFW({ ws, prompt, timeoutMs, onLog, kernelDir }) {
     let initSeen = false
     let userSent = false
     let done = false
-    let usage = { input_tokens: 0, output_tokens: 0 }
+    // usage 累加 input/output/cache_read/cache_creation：内核 result 事件在
+    // usage 字段含全部四类（原始 stream 事件的 cache_read_input_tokens 仅在
+    // message_start 单独出现，result 已汇总），此处全量累加便于成本/缓存分析
+    let usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
     let toolCalls = 0
 
     const finish = (exitCode) => {
@@ -98,6 +101,8 @@ export async function runYFW({ ws, prompt, timeoutMs, onLog, kernelDir }) {
         if (u) {
           usage.input_tokens += u.input_tokens || 0
           usage.output_tokens += u.output_tokens || 0
+          usage.cache_read_input_tokens += u.cache_read_input_tokens || 0
+          usage.cache_creation_input_tokens += u.cache_creation_input_tokens || 0
         }
         finish(child.exitCode ?? 0)
       }

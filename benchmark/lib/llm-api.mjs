@@ -120,14 +120,22 @@ export function buildAgentEnv(agent, baseEnv = process.env) {
 }
 
 // ── 用量 → 成本 ───────────────────────────────────────────────────────────────
-export function costOf(usage, pricePerMInput = 0.2, pricePerMOutput = 1.2) {
+// 缓存计费：cache_read（命中）按输入价 cacheReadRatio（DeepSeek 约 1/10）计，
+// cache_creation（写入缓存）按输入全价计。yfw harness 已累加四类 usage。
+export function costOf(usage, pricePerMInput = 0.2, pricePerMOutput = 1.2, cacheReadRatio = 0.1) {
   if (!usage) return null
-  return (usage.input_tokens || 0) / 1e6 * pricePerMInput + (usage.output_tokens || 0) / 1e6 * pricePerMOutput
+  return (usage.input_tokens || 0) / 1e6 * pricePerMInput
+    + (usage.output_tokens || 0) / 1e6 * pricePerMOutput
+    + (usage.cache_read_input_tokens || 0) / 1e6 * pricePerMInput * cacheReadRatio
+    + (usage.cache_creation_input_tokens || 0) / 1e6 * pricePerMInput
 }
 
 export function usageText(usage) {
   if (!usage) return '—'
-  return `${(usage.input_tokens || 0).toLocaleString()} in / ${(usage.output_tokens || 0).toLocaleString()} out`
+  let t = `${(usage.input_tokens || 0).toLocaleString()} in / ${(usage.output_tokens || 0).toLocaleString()} out`
+  const cacheRead = usage.cache_read_input_tokens || 0
+  if (cacheRead) t += ` / cache ${cacheRead.toLocaleString()}`
+  return t
 }
 
 // ── 启动前诊断 ────────────────────────────────────────────────────────────────
