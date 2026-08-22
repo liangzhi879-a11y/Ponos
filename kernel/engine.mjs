@@ -295,6 +295,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         pushMemory({ role: 'assistant', content: assistantBlocks })
         if (session) lastAssistantEntry = session.appendAssistant(assistantBlocks, { model })
         const errorResults = blocks.map((b) => ({
+          type: 'tool_result',
           tool_use_id: b.id,
           content: '模型输出被 max_tokens 截断，工具调用参数可能不完整，未执行。请重新完整发起该工具调用。',
           is_error: true,
@@ -315,6 +316,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // tool_result 紧随其后且同消息，拆多条会 400）——先收集再一次性落盘。
       const executed = await runToolBatch(blocks, { spawnSubAgent, taskSystem })
       const toolResults = blocks.map((b, i) => ({
+        type: 'tool_result',
         tool_use_id: b.id,
         content: executed[i]?.content ?? '',
         is_error: executed[i]?.isError === true,
@@ -563,7 +565,14 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     }
     const totalTokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)
       + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
-    const notifUsage = { tool_uses: 0, total_tokens: totalTokens, duration_ms: Date.now() - t0 }
+    // notifUsage 带 in/out/cache 拆分字段（GUI 消费），total_tokens 为合计
+    const notifUsage = {
+      tool_uses: 0, total_tokens: totalTokens, duration_ms: Date.now() - t0,
+      input_tokens: usage.input_tokens ?? 0,
+      output_tokens: usage.output_tokens ?? 0,
+      cache_read_input_tokens: usage.cache_read_input_tokens ?? 0,
+      cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
+    }
     const outputFile = writePaths[writePaths.length - 1] || ''
     const entry = pendingSubAgents.get(taskId)
     if (entry) Object.assign(entry, { status, summary: text, outputFile, usage: notifUsage })
