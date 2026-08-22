@@ -14,6 +14,7 @@ import { getAgentById } from '@/lib/agents'
 import { useAgentStore } from '@/stores/agentStore'
 import { useHealthStore, type HealthInfo } from '@/stores/healthStore'
 import { useBrowserStore } from '@/stores/browserStore'
+import { useUIStore } from '@/stores/uiStore'
 import type { ContentBlock, Message, QuestionAnswer, BrowserEvent } from '@/types'
 
 const WS_URL = getWsUrl()
@@ -30,7 +31,12 @@ let ws: WebSocket | null = null
 let wsReady = false
 let pendingQueue: Array<() => void> = []
 // Per-conversation streaming state — supports parallel sessions
-const sessionState = new Map<string, { assistantId: string; blockIds: Record<string, string> }>()
+// lastKind/textSeq/thinkSeq：turbo 内核按文本 chunk 逐条发 assistant 事件且不带
+// message.id，前端需自维护块序号——同类型连续 chunk 并入同一块（append），中间
+// 隔了 tool_use/其它类型则新开一块。否则所有 chunk 共用同一 key，块内容被整块
+// 覆盖，最终只显示最后一个 chunk（流式适配，2026-08-22）。
+type SessionStreamState = { assistantId: string; blockIds: Record<string, string>; lastKind?: string; textSeq?: number; thinkSeq?: number }
+const sessionState = new Map<string, SessionStreamState>()
 // 同会话串行化：正在流式输出的会话集合。
 // 排队插话（方案A）不再前端 hold：生成中回车立即以 next 优先级发送，由内核在
 // 工具调用边界注入当前轮或等轮结束作为新轮；assistant 事件到达时以
@@ -156,6 +162,9 @@ export function sendAnswer(sessionId: string, answers: QuestionAnswer[], notes: 
   store.clearPendingQuestion(sessionId)
   const st = sessionState.get(sessionId)
   if (st?.assistantId) {
+    // 回答后新文本新开块：lastKind 置空使 bumpStreamSeq 序号递增（textSeq/thinkSeq
+    // 保留最大值保证新键不与卡片前文本块冲突），避免回答输出续接到卡片前文本块。
+    st.lastKind = undefined
     store._resumeStreaming(sessionId, st.assistantId)
   }
 }
@@ -394,7 +403,15 @@ export function useYFWCLI() {
     else doSend()
   }, [])
 
-  return { send, stop, interject, browserControl, connected }
+  // 思考深度切换：经 bridge set_effort → 内核 control_request(reasoning_effort)，下一轮生效
+  const setEffort = useCallback((conversationId: string, value: string) => {
+    const payload = JSON.stringify({ type: 'set_effort', sessionId: conversationId, value })
+    const doSend = () => getOrCreateWS()?.send(payload)
+    if (!wsReady) pendingQueue.push(doSend)
+    else doSend()
+  }, [])
+
+  return { send, stop, interject, browserControl, setEffort, connected }
 }
 
 // ---------------------------------------------------------------------------
@@ -407,11 +424,23 @@ const toolUseAgentMap = new Map<string, string>()
 
 // 流式事件批处理：同一帧内的多次 assistant 事件合并为一次状态更新。
 // 每事件语义不变（完整应用），仅降低重渲染频率。
-// st 类型与模块顶部 sessionState 的 value 类型一致：
-// { assistantId: string; blockIds: Record<string, string> }
-type StreamEvent = { sid: string; st: { assistantId: string; blockIds: Record<string, string> }; aid: string; event: Record<string, unknown> }
+type StreamEvent = { sid: string; st: SessionStreamState; aid: string; event: Record<string, unknown> }
 const pendingStreamEvents: StreamEvent[] = []
 let streamFlushScheduled = false
+
+// 流式文本/思考块序号：turbo 内核按文本 chunk 逐条发 assistant 事件且不带
+// message.id（旧 claude-code 内核每事件是完整消息、自带 id），前端必须自维护
+// 块序号——同类型连续 chunk 并入同一块（append），中间隔了 tool_use/其它类型
+// 则新开一块。修复前所有 chunk 共用 'text-0' 键，_updateStreamingBlock 整块覆盖，
+// 最终只显示最后一个 chunk。
+function bumpStreamSeq(st: SessionStreamState, bt: 'text' | 'thinking'): number {
+  const field = bt === 'text' ? 'textSeq' : 'thinkSeq'
+  if (st.lastKind !== bt) {
+    st[field] = (st[field] || 0) + 1
+    st.lastKind = bt
+  }
+  return st[field]!
+}
 
 function flushStreamEvents() {
   streamFlushScheduled = false
@@ -420,21 +449,22 @@ function flushStreamEvents() {
   const store = useChatStore.getState()
   for (const { st, aid, event } of batch) {
     const content = (event.message as any)?.content as Array<Record<string, unknown>> | undefined
-    const msgId = (event.message as any)?.id as string || '0'
     if (!content) continue
     for (const block of content) {
       const bt = block.type as string
-      const suffix = bt === 'tool_use' ? (block.id as string || 'tool') : msgId
       if (bt === 'thinking' && block.thinking) {
-        upsertBlock(store, st!, aid, 'thinking-' + suffix, { id: '', type: 'thinking', content: sanitizeText(block.thinking as string) })
+        const seq = bumpStreamSeq(st!, 'thinking')
+        upsertBlock(store, st!, aid, 'thinking-' + seq, { id: '', type: 'thinking', content: sanitizeText(block.thinking as string) }, true)
       } else if (bt === 'text' && block.text) {
-        upsertBlock(store, st!, aid, 'text-' + suffix, { id: '', type: 'text', content: sanitizeText(block.text as string) })
+        const seq = bumpStreamSeq(st!, 'text')
+        upsertBlock(store, st!, aid, 'text-' + seq, { id: '', type: 'text', content: sanitizeText(block.text as string) }, true)
       } else if (bt === 'tool_use') {
         const toolInput = (block as any).input || {}
         if (block.name === 'Agent' && block.id) {
           toolUseAgentMap.set(block.id as string, String(toolInput.subagent_type || ''))
         }
-        upsertBlock(store, st!, aid, 'tool-' + suffix, {
+        st!.lastKind = 'tool_use'
+        upsertBlock(store, st!, aid, 'tool-' + (block.id as string || 'tool'), {
           id: '', type: 'tool_use', content: sanitizeText(JSON.stringify(block.input || {}, null, 2)),
           metadata: { toolName: block.name, status: 'completed', toolUseId: block.id as string | undefined },
         })
@@ -528,6 +558,18 @@ function handleMessage(msg: Record<string, unknown>) {
   // Exact match only — never fallback to another session to prevent cross-project contamination
   let st = sessionState.get(sid)
 
+  // 内核失速告警（bridge 失速看门狗，KERNEL_STALL_WARN_MS 静默阈值）：写入
+  // uiStore 驱动 ChatWindow 提示条。任何后续 event（内核 stdout 有输出）自动清除。
+  if (msg.type === 'kernel-stall') {
+    const d = msg.data as { silentMs?: number } | undefined
+    useUIStore.getState().setKernelStall(sid, Number(d?.silentMs) || 0)
+    return
+  }
+  // 内核仍在产出（stdout 有行）→ 失速解除（clearKernelStall 幂等：无状态不触发更新）
+  if (msg.type === 'event' || msg.type === 'error' || msg.type === 'cancelled' || msg.type === 'closed') {
+    useUIStore.getState().clearKernelStall(sid)
+  }
+
   if (msg.type === 'event') {
     const event = msg.data as Record<string, unknown>
     const type = event.type as string
@@ -614,8 +656,12 @@ function handleMessage(msg: Record<string, unknown>) {
       setupStreamingState(sid)
       st = sessionState.get(sid)
     }
-    if (type === 'assistant' && aid) {
-      pendingStreamEvents.push({ sid, st: st!, aid, event })
+    // 新轮建块后 aid 必须取新状态的 assistantId：函数头捕获的 aid 仍指向上一轮
+    // 的流式消息（result 不删 sessionState），否则新轮首条 assistant 事件会错挂
+    // 到上一轮消息上（新轮消息保持空占位）。result 路径用函数头 aid 是对的
+    // （result 恒属当前轮），仅 assistant 事件需要这里校正。
+    if (type === 'assistant' && st?.assistantId) {
+      pendingStreamEvents.push({ sid, st, aid: st.assistantId, event })
       scheduleStreamFlush()
       return
     }
@@ -804,17 +850,18 @@ function handleMessage(msg: Record<string, unknown>) {
 
 function upsertBlock(
   store: ReturnType<typeof useChatStore.getState>,
-  st: { assistantId: string; blockIds: Record<string, string> },
+  st: SessionStreamState,
   messageId: string,
   keyId: string,
   block: ContentBlock,
+  append = false,
 ) {
   const key = block.type + '-' + keyId
   if (st.blockIds[key]) {
     store._updateStreamingBlock(messageId, st.blockIds[key], {
       content: block.content,
       ...(block.metadata ? { metadata: block.metadata } : {}),
-    })
+    }, append)
   } else {
     const newId = generateId()
     st.blockIds[key] = newId

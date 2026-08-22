@@ -200,9 +200,15 @@ function copyWithRewrite(srcDir, destDir, placeholder, yfwRootAbs) {
 
 // Python runtime：优先使用随应用捆绑的运行时（<app>/runtime/python/python.exe，
 // 与 main.cjs 的 findPythonExe 同路径约定），保证打包版离线可用；开发环境回退 PATH。
+// electron-builder extraResources 把 runtime 打进 <app>/resources/runtime/，
+// 故 resources 候选与 app 根候选都探测（dev 便携版 runtime 在 app 根）。
 function findPythonExe() {
-  const bundled = join(__dirname, '..', 'runtime', 'python', 'python.exe')
-  if (existsSync(bundled)) return bundled
+  const candidates = [
+    join(__dirname, '..', 'runtime', 'python', 'python.exe'),
+    join(__dirname, '..', '..', 'runtime', 'python', 'python.exe'),
+    join(__dirname, '..', 'resources', 'runtime', 'python', 'python.exe'),
+  ]
+  for (const p of candidates) if (existsSync(p)) return p
   return 'python'
 }
 
@@ -468,6 +474,7 @@ function syncKernelSettings() {
       ANTHROPIC_DEFAULT_OPUS_MODEL: model,
       ANTHROPIC_DEFAULT_HAIKU_MODEL: sub,
       CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(provider.contextWindow || 1000000),
+      CLAUDE_CODE_EFFORT_LEVEL: provider.effortLevel || '',
       YFW_VISION_BASE_URL: visionProvider.apiBaseUrl || '',
       YFW_VISION_AUTH_TOKEN: visionProvider.authToken || '',
       YFW_VISION_MODEL: visionProvider.visionModel || '',
@@ -496,7 +503,7 @@ function pushProviderSwitch(provider) {
   if (!provider || !provider.apiBaseUrl || !provider.authToken) return
   const model = provider.primaryModel || (provider.models && provider.models[0]) || ''
   if (!model) return
-  const payload = { baseUrl: provider.apiBaseUrl, authToken: provider.authToken, model }
+  const payload = { baseUrl: provider.apiBaseUrl, authToken: provider.authToken, model, effortLevel: provider.effortLevel || '' }
   for (const s of sessions.values()) {
     if (s.proc?.stdin && !s._turnActive && !s._reaped) {
       try {
@@ -565,26 +572,33 @@ function findYFWorking() {
     const bun = process.env.YFWORKING_BUN || join(homedir(), '.bun', 'bin', 'bun.exe')
     return `"${bun}" "${kernel}"`
   }
-  // 2) Well-known kernel locations. The packaged app ships the kernel at
-  //    <app>/kernel/cli.mjs and the bun runtime at <app>/runtime/bun/; the
-  //    dev build resolves the kernel inside this repo's yfw-kernel workspace.
+  // 2) Well-known kernel locations. YFW-turbo 净室重建内核（<repo>/kernel/cli.mjs）
+  //    为最高优先级：dev 走 PATH 上的 bun 直跑源码（改内核立即生效），生产以
+  //    scripts/build-kernel.mjs 打成单文件 bundle（<app>/kernel-dist/cli.mjs，
+  //    避开 vite emptyOutDir 对 dist/ 的清空）经 bootstrap 复制到
+  //    ~/.yfworking/runtime/。旧 yfw claude-code 内核仅作向后兼容 last resort。
+  //    注意：源码候选（direct:true）依赖同目录兄弟模块（engine.mjs/session.mjs/
+  //    ...），bootstrap 只复制单文件 cli.mjs 会缺依赖导致内核 200ms 内崩溃退出
+  //    （Cannot find module './engine.mjs'），故源码模式必须直跑源码目录，
+  //    只有单文件自包含的 bundle 才允许 bootstrap 进 ~/.yfworking/runtime/。
   const candidates = [
-    {
-      kernel: join(__dirname, '..', 'kernel', 'cli.mjs'),
-      bun: join(__dirname, '..', 'runtime', 'bun', 'bun.exe'),
-    },
-    {
-      kernel: join(__dirname, '..', '..', 'kernel', 'cli.mjs'),
-      bun: join(__dirname, '..', '..', 'runtime', 'bun', 'bun.exe'),
-    },
-    {
-      kernel: join(__dirname, '..', 'yfw-kernel', 'claude-code', 'dist', 'cli.mjs'),
-      bun: join(homedir(), '.bun', 'bin', 'bun.exe'),
-    },
+    // YFW-turbo 源码（dev / 仓库布局 <repo>/kernel）——直跑，不 bootstrap
+    { kernel: join(__dirname, '..', 'kernel', 'cli.mjs'), bun: join(__dirname, '..', 'runtime', 'bun', 'bun.exe'), direct: true },
+    { kernel: join(__dirname, '..', '..', 'kernel', 'cli.mjs'), bun: join(__dirname, '..', '..', 'runtime', 'bun', 'bun.exe'), direct: true },
+    // YFW-turbo 单文件 bundle（生产打包，bootstrap 只复制单文件不断依赖）
+    { kernel: join(__dirname, '..', 'kernel-dist', 'cli.mjs'), bun: join(__dirname, '..', 'runtime', 'bun', 'bun.exe') },
+    { kernel: join(__dirname, '..', '..', 'kernel-dist', 'cli.mjs'), bun: join(__dirname, '..', '..', 'runtime', 'bun', 'bun.exe') },
+    // electron-builder 打包版（asar 关）：kernel 打进 <app>/resources/app/kernel-dist
+    // （files 相对 app 目录），bun 打进 <app>/resources/runtime/bun（extraResources
+    // 落点在 resources 下）。kernel 与 bun 分处两个根，需交叉组合才能同时命中。
+    { kernel: join(__dirname, '..', 'kernel-dist', 'cli.mjs'), bun: join(__dirname, '..', '..', 'runtime', 'bun', 'bun.exe') },
+    // 旧 yfw claude-code 内核（向后兼容）
+    { kernel: join(__dirname, '..', 'yfw-kernel', 'claude-code', 'dist', 'cli.mjs'), bun: join(homedir(), '.bun', 'bin', 'bun.exe') },
   ]
-  for (const { kernel, bun } of candidates) {
+  for (const { kernel, bun, direct } of candidates) {
     if (!existsSync(kernel)) continue
     if (existsSync(bun)) {
+      if (direct) return `"${bun}" "${kernel}"`
       const b = bootstrapKernelToUserDir(kernel, bun)
       return `"${b.bun}" "${b.kernel}"`
     }
@@ -664,6 +678,10 @@ function buildChildEnv() {
     CLAUDE_CONFIG_DIR: YFW_HOME,
     YFWORKING_HOME: YFW_HOME,
   }
+  // 注入 bundled python 路径，内核 OCR 等 python 工具优先使用（新环境无系统
+  // python 时离线可用；裸 'python' 时内核回退 PATH，行为不变）。
+  const pythonExe = findPythonExe()
+  if (pythonExe !== 'python') env.YFWORKING_PYTHON = pythonExe
   // 开启内核原生定时任务（Kairos Cron：CronCreate/CronDelete/CronList 工具）
   // 与 /loop 循环执行 skill。release 内核 bundle 已编译全部代码，仅需此开关。
   // 用户环境变量可显式覆盖（如设为 false 关闭）。
@@ -686,6 +704,10 @@ function buildChildEnv() {
     if (provider.contextWindow) {
       env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(provider.contextWindow)
     }
+    // 思考深度初始档位：provider 配置 effortLevel（前端设置"推理深度"）→
+    // CLAUDE_CODE_EFFORT_LEVEL（Claude Code 命名，DeepSeek 官方推荐 agent 场景 max）；
+    // 用户显式 env 优先。
+    env.CLAUDE_CODE_EFFORT_LEVEL = process.env.CLAUDE_CODE_EFFORT_LEVEL || (provider.effortLevel || '')
     // Raise the kernel's max output token ceiling (default 32k). 64k is within
     // the native limit of current sonnet/opus models; older models with lower
     // caps are safely clamped by the kernel. Explicit user env still wins.
@@ -2301,6 +2323,22 @@ wss.on('connection', (ws, req) => {
           s._cancelTimer.unref?.()
         }
         send({ type: 'cancelled', data: { sessionId: sid } })
+      } else if (msg.type === 'set_effort') {
+        // GUI 思考深度切换 → 内核 control_request(reasoning_effort)，下一轮生效
+        const sid = msg.sessionId || 'default'
+        const s = sessions.get(sid)
+        const value = String(msg.value || '')
+        if (s && s.proc && !s.proc.killed) {
+          try {
+            s.proc.stdin.write(JSON.stringify({
+              type: 'control_request',
+              request_id: `effort-${Date.now()}`,
+              request: { subtype: 'reasoning_effort', payload: { value } },
+            }) + '\n')
+          } catch (e) {
+            console.warn('[bridge] set_effort write failed:', e.message)
+          }
+        }
       } else if (msg.type === 'pet:show-main') {
         // 桌面宠物双击 → 通知所有客户端（主进程监听后打开/聚焦主窗口）
         send({ type: 'pet:show-main', data: {} })

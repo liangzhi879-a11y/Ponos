@@ -19,6 +19,7 @@ import { createToolRegistry } from './tools.mjs'
 import { createSessionStore, newSessionId } from './session.mjs'
 import { resolveAgent, resolveAgents } from './agents.mjs'
 import { getProvider } from './provider.mjs'
+import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 
@@ -43,6 +44,17 @@ function hasUsage(u = {}) {
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)) }
 
+// 思考深度档位规范化（导出供测试）：对齐 Claude Code /effort 档位体系。
+// off/low/high/max 原样；medium → high（DeepSeek 旧映射，规避端点不识 medium）；
+// auto / 空 / 未知 → null（不注入任何字段，交给模型原生自适应——DeepSeek 默认
+// high、agent 场景自动 max，官方推荐 Claude Code 场景设 CLAUDE_CODE_EFFORT_LEVEL=max）
+export function normalizeEffort(value) {
+  const v = String(value ?? 'auto').trim().toLowerCase()
+  if (v === 'off' || v === 'low' || v === 'high' || v === 'max') return v
+  if (v === 'medium') return 'high'
+  return null
+}
+
 // P0-1 重试退避：指数 + 25% jitter（参考 pi provider-retry：抖动避免同步风暴）
 function retryDelayMs(attempt) {
   return 500 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 250)
@@ -51,7 +63,7 @@ function retryDelayMs(attempt) {
 // P0-1：流式请求重试——仅对"首块前失败"的瞬时/限流错误退避重试（已流出的文本
 // 不重复，避免用户看到两次内容），abort/quota/auth/context-window 直接抛（engine
 // 上层各有处理）。mock 模式默认不重试（测试确定性），可经 YFW_MOCK_API_RETRIES 覆盖。
-async function* retryStream({ model, messages, maxTokens, signal, tools }) {
+async function* retryStream({ model, messages, maxTokens, signal, tools, reasoningEffort = null }) {
   const isMock = process.env.YFW_MOCK_API === '1'
   const configured = process.env.YFW_MOCK_API_RETRIES
   const maxRetries = configured !== undefined
@@ -61,7 +73,7 @@ async function* retryStream({ model, messages, maxTokens, signal, tools }) {
   while (true) {
     let produced = false
     try {
-      for await (const chunk of streamMessages({ model, messages, maxTokens, signal, tools })) {
+      for await (const chunk of streamMessages({ model, messages, maxTokens, signal, tools, reasoningEffort })) {
         produced = true
         yield chunk
       }
@@ -99,9 +111,10 @@ export function patchOrphanToolUses(msgs) {
   const out = []
   const unpaired = new Map()
   for (const m of msgs) {
-    if (m.role === 'assistant' && Array.isArray(m.content)) {
+    // 防御：派生历史可能含 undefined 条目（旧格式 transcript 恢复），m?. 防护
+    if (m?.role === 'assistant' && Array.isArray(m.content)) {
       for (const b of m.content) if (b?.type === 'tool_use') unpaired.set(b.id, b)
-    } else if (m.role === 'user' && Array.isArray(m.content)) {
+    } else if (m?.role === 'user' && Array.isArray(m.content)) {
       for (const b of m.content) if (b?.type === 'tool_result') unpaired.delete(b.tool_use_id)
     }
     out.push(m)
@@ -137,6 +150,12 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   const agents = resolveAgents({ configDir: opts.configDir })
   // 审批挂起队列：toolUseId → resolve（cli 的 control_response 解除）
   const approvalWaiters = new Map()
+  // 浏览器桥挂起队列：requestId → resolve（bridge 回写 browser_response 解除；
+  // 内核发 bridge_request(browser) → 主进程执行器 → 响应回写 stdin）
+  const browserWaiters = new Map()
+  // P8 排队插话（priority:'next'）：cli 吸收入队，引擎在工具调用边界注入当前轮；
+  // 纯文本生成阶段不注入，轮末由 cli 作为新轮处理（前端方案 A 兜底语义）
+  const pendingNext = []
   // R1-1 防重放（轮级）：已执行 tool_use id → 结果。runTurn 开头重置，
   // 同轮重复 id（重连重放）回填不重执行；跨轮自动失效（新轮新 map）
   let executedToolIds = new Map()
@@ -150,6 +169,15 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // systemPrompt 默认可变：cli 在 createEngine 后经 setSystemPrompt 注入三层组装
   // 提示词（基础行为规范 + AGENTS.md + append），直连测试可经 opts.systemPrompt 预置
   let systemPrompt = opts.systemPrompt || ''
+  // 思考深度档位：null = auto（不注入，模型原生自适应）；off/low/high/max = 显式。
+  // 初始来源：CLAUDE_CODE_EFFORT_LEVEL（Claude Code 命名，DeepSeek 官方推荐）> YFW_REASONING_EFFORT > auto
+  let reasoningEffort = normalizeEffort(process.env.CLAUDE_CODE_EFFORT_LEVEL || process.env.YFW_REASONING_EFFORT || 'auto')
+  function resolveEffort() { return reasoningEffort }
+  function applyReasoningEffort(value) {
+    const v = String(value ?? 'auto').trim().toLowerCase()
+    reasoningEffort = normalizeEffort(v)
+    return { value: v, effort: reasoningEffort ?? 'auto' }
+  }
 
   function deriveHistory() {
     if (session) return session.deriveMessages()
@@ -200,6 +228,17 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     }
     for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
       await preStep()
+      // P8 排队插话注入（工具边界）：每次 API 调用前吸收 pendingNext 进当前轮
+      // （appendUser 落 transcript，请求面 deriveMessages 自动包含；模型下一轮
+      // 请求即见补充信息）。started 确认已在 queueNext 吸收时经 command_lifecycle
+      // 发出。轮次结束仍有残余（纯文本阶段）→ cli 轮末作为新轮处理。
+      if (pendingNext.length) {
+        const injects = pendingNext.splice(0)
+        for (const inj of injects) {
+          if (session) session.appendUser(inj.content)
+          else pushMemory({ role: 'user', content: inj.content })
+        }
+      }
       const blocks = []
       let overflowed = false
       let stopReason = null
@@ -210,6 +249,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           maxTokens,
           signal,
           tools: tools.toolSchemas(),
+          reasoningEffort: resolveEffort(),
         })) {
           if (signal.aborted) throw abortError()
           if (chunk.type === 'text') {
@@ -399,12 +439,12 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       const h = await hooks.run('preToolUse', { toolName: toolUse.name, toolUseId: toolUse.id, input: toolUse.input })
       if (h.deny) return { content: h.message || `PreToolUse hook 拒绝执行 ${toolUse.name}`, isError: true }
     }
-    // ctx：工具执行上下文——主循环注入 spawnSubAgent/taskSystem（Agent/Task 工具
-    // 依赖），子 agent 循环注入 lane:true（禁嵌套分发）
+    // ctx：工具执行上下文——主循环注入 spawnSubAgent/taskSystem/browserDriver
+    // （Agent/Task/Browser 工具依赖），子 agent 循环注入 lane:true（禁嵌套分发）
     const { store, ...toolCtx } = ctx
     // P1-9：统一执行 deadline（兜"永不返回"的工具；各工具自身超时负责 kill）
     const toolDeadlineMs = Number(process.env.CLAUDE_CODE_TOOL_TIMEOUT_MS || 300_000)
-    const r = await withToolDeadline(tools.run(toolUse, { ...toolCtx, toolUseId: toolUse.id }), toolDeadlineMs)
+    const r = await withToolDeadline(tools.run(toolUse, { ...toolCtx, toolUseId: toolUse.id, browserDriver: runBrowser }), toolDeadlineMs)
     // P0-3：大结果落盘到目标会话目录（子 lane 独立 store）
     if (r && typeof r === 'object' && typeof r.content === 'string') {
       r.content = persistToolResult(store || session, toolUse.id, r.content)
@@ -421,6 +461,30 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       } catch { /* post 钩子失败不影响工具结果 */ }
     }
     return r
+  }
+
+  // —— 内置浏览器驱动（bridge_request(browser) → 主进程执行器）——
+  const BROWSER_TIMEOUT_MS = 120_000
+  async function runBrowser(action, params) {
+    const requestId = 'br-' + randomUUID()
+    let timer
+    const resp = await new Promise((resolve) => {
+      browserWaiters.set(requestId, resolve)
+      timer = setTimeout(() => {
+        browserWaiters.delete(requestId)
+        resolve({ ok: false, error: `浏览器操作超时（${action}，${BROWSER_TIMEOUT_MS}ms）` })
+      }, BROWSER_TIMEOUT_MS)
+      if (timer.unref) timer.unref() // 超时 timer 不阻塞进程退出
+      // 发 bridge_request(browser)：bridge browserRouter 转主进程执行器，
+      // 完成后再经 stdin browser_response 回写解除挂起
+      wire.bridgeRequest({ route: 'browser', requestId, payload: { action, params } })
+    })
+    clearTimeout(timer)
+    if (resp?.ok) {
+      const body = resp.snapshot ?? resp.data ?? { ok: true }
+      return { content: typeof body === 'string' ? body : JSON.stringify(body), isError: false }
+    }
+    return { content: `浏览器操作失败：${resp?.error || '未知错误'}`, isError: true }
   }
 
   // —— 子 agent（subagent）执行：进程内 lane ——
@@ -570,6 +634,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     // Agent 工具被禁用时（--disallowedTools Agent）子 Agent 区块不入提示词
     agents: opts.disallowedTools?.includes('Agent') ? [] : agents,
     setSystemPrompt(p) { systemPrompt = p || '' },
+    // 思考深度热设置（cli control_request reasoning_effort）：返回规范化档位 + 生效 effort
+    setReasoningEffort(value) { return applyReasoningEffort(value) },
     abort() { signal.aborted = true; abortController.abort() },
     seedCompactCount(n) { /* session 已从日志恢复 compactCount；兼容保留 */ },
     // cli 的 control_response 路由：解除对应 tool_use 的审批挂起
@@ -580,6 +646,22 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         w(inner)
       }
     },
+    // cli 的 browser_response 路由（bridge 回写）：解除浏览器挂起
+    resolveBrowser(requestId, resp) {
+      const w = browserWaiters.get(requestId)
+      if (w) {
+        browserWaiters.delete(requestId)
+        w(resp)
+      }
+    },
+    // P8 排队插话：cli 在 turnActive 时吸收 next 消息入队并回发 command_lifecycle
+    queueNext(content, uuid) {
+      pendingNext.push({ content: String(content ?? ''), uuid })
+      if (uuid) wire.commandLifecycle(uuid, 'started')
+      return pendingNext.length
+    },
+    pendingNextCount() { return pendingNext.length },
+    drainNextPending() { return pendingNext.splice(0) },
     getTurnStats() { return turnStats },
     async runTurn({ content, msg }) {
       // 新轮次重置取消标志：abort() 只影响发出时正在进行的轮次

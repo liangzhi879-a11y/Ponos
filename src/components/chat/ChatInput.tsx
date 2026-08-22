@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Send, StopCircle, Paperclip, Sparkles, Mic, MicOff, Command, X, Zap, Repeat, MessageSquarePlus } from 'lucide-react'
+import { Send, StopCircle, Paperclip, Sparkles, Mic, MicOff, Command, X, Zap, Repeat, MessageSquarePlus, BrainCircuit } from 'lucide-react'
 import { Popover, PopoverTrigger, PopoverContent } from '@radix-ui/react-popover'
 import { DoubaoPanel } from '@/components/doubao/DoubaoPanel'
 import { ScheduleGuide } from './ScheduleGuide'
@@ -93,7 +93,17 @@ export function ChatInput({ conversationId }: Props) {
   const isStreaming = !!streamingConversations[conversationId]
   const settings = useSettingsStore(s => s.settings)
   const [isDragOver, setIsDragOver] = useState(false)
-  const { send, stop, interject } = useYFWCLI()
+  const { send, stop, interject, setEffort } = useYFWCLI()
+  // 思考深度档位（对齐内核 /effort：auto 默认 = 模型原生自适应）。初始取当前
+  // provider 配置的 effortLevel（设置页"推理深度"），点击循环切换并热下发内核。
+  const providerEffort = settings.providers.find(p => p.id === settings.activeProvider)?.effortLevel || 'auto'
+  const [effort, setEffortLocal] = useState(providerEffort || 'auto')
+  const EFFORT_CYCLE = ['auto', 'off', 'low', 'medium', 'high', 'max']
+  const cycleEffort = useCallback(() => {
+    const next = EFFORT_CYCLE[(EFFORT_CYCLE.indexOf(effort) + 1) % EFFORT_CYCLE.length]
+    setEffortLocal(next)
+    setEffort(conversationId, next)
+  }, [effort, conversationId, setEffort])
   const pendingAttachments = useUIStore(s => s.pendingAttachments)
   const clearPendingAttachments = useUIStore(s => s.clearPendingAttachments)
   const pendingInput = useUIStore(s => s.pendingInput)
@@ -618,6 +628,19 @@ export function ChatInput({ conversationId }: Props) {
         )}
         {/* Left toolbar */}
         <div className="flex items-center gap-0.5 pb-0.5">
+          {/* 思考深度切换：点击循环 auto→off→low→medium→high→max，下一轮生效 */}
+          <Tooltip content={t('chat.effort') + `（${effort}${effort === 'auto' ? ' · ' + t('chat.effortAuto') : ''}，下一轮生效）`}>
+            <Button
+              variant="ghost"
+              size="xs"
+              className={cn('text-tertiary hover:text-secondary', effort !== 'auto' && 'text-brand-500 hover:text-brand-500')}
+              onClick={cycleEffort}
+              aria-label="思考深度"
+            >
+              <BrainCircuit className={cn('w-4 h-4', effort !== 'auto' && 'text-brand-500')} />
+              <span className="text-[10px] font-mono">{effort}</span>
+            </Button>
+          </Tooltip>
           {/* Skill picker button */}
           {skills.length > 0 && (
             <>
