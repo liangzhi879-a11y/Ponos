@@ -2,6 +2,7 @@ node_modules
 /node.exe
 dist
 dist-electron
+kernel-dist
 release
 .env
 .env.local
@@ -17,6 +18,10 @@ Thumbs.db
 # Python cache
 __pycache__/
 *.pyc
+
+# Desktop pet venv & local config (API key lives in config.json)
+pet/**/.venv/
+pet/**/config.json
 
 # SDD scratch workspace (per-plan review artifacts)
 .superpowers
