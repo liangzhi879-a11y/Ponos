@@ -125,6 +125,7 @@ GUI/bridge 管线已为 release 内核（Claude Code）铺好，净室内核（k
 ## 8. 非目标（本轮）
 
 - Browser 工具 / WebSearch（roadmap，protocol 已留位）
-- 子 lane 压缩、嵌套 subagent、后台任务持久化（进程退出即失）
+- 子 lane 压缩、**嵌套 subagent**（S4 受控嵌套未做，仍禁止——升级方案 `2026-08-22-subagent-collaboration-upgrade.md` 预留）、后台任务**跨进程持久化**（进程退出即失）
+- **进程内可继续已实现**（S2/S3）：后台任务完成/中止/失败后可经 `Task resume` 或 `Agent resume_task_id` 复用原 lane 会话续跑（见升级方案 §3.2/§3.3），血缘登记（parent/depth）与级联取消随 S1 落地
 - Excel/PDF 原生解析（场景 A 大文件由技能层承载，内核保持文本工具）
 - NotebookEdit

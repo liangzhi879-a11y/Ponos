@@ -55,8 +55,17 @@ export function makeWire(stream = process.stdout) {
       writeLine(stream, { type: 'yfw_summary', text: String(text ?? ''), compactCount })
     },
     // —— subagent 生命周期事件（shape 对齐 release 内核，GUI useYFWCLI task_* 分支消费）——
-    taskStarted({ taskId, toolUseId, prompt }) {
-      writeLine(stream, { type: 'system', subtype: 'task_started', task_id: taskId, tool_use_id: toolUseId, prompt: prompt || '' })
+    // S1 血缘：task_started 携带 parent_task_id/depth（主 agent 派发为 null/0，
+    // GUI 可依此渲染任务树；子 lane 嵌套预留，见 subagent-collaboration-upgrade）
+    taskStarted({ taskId, toolUseId, prompt, parentTaskId = null, depth = 0 }) {
+      writeLine(stream, {
+        type: 'system', subtype: 'task_started', task_id: taskId, tool_use_id: toolUseId, prompt: prompt || '',
+        parent_task_id: parentTaskId || null, depth: Number(depth) || 0,
+      })
+    },
+    // S2 可继续：续跑既有子任务会话时发出（Task resume / Agent resume_task_id）
+    taskResumed({ taskId, prompt }) {
+      writeLine(stream, { type: 'system', subtype: 'task_resumed', task_id: taskId, prompt: prompt || '' })
     },
     taskProgress({ taskId, lastToolName, description, usage = {} }) {
       writeLine(stream, {
@@ -65,12 +74,20 @@ export function makeWire(stream = process.stdout) {
         usage: { tool_uses: usage.tool_uses ?? 0, total_tokens: usage.total_tokens ?? 0, duration_ms: usage.duration_ms ?? 0 },
       })
     },
-    taskNotification({ taskId, status, summary, outputFile, usage = {} }) {
+    // S3 结果承接：outputs 为子 agent 会话内全部 Write 产物路径（主 agent 中转
+    // 给下家子 agent 的"接力清单"，配合共享工作区实现流水线协同）
+    taskNotification({ taskId, status, summary, outputFile, usage = {}, outputs = [] }) {
       writeLine(stream, {
         type: 'system', subtype: 'task_notification', task_id: taskId,
         status: status || 'completed', summary: summary || '', output_file: outputFile || '',
+        outputs: Array.isArray(outputs) ? outputs : [],
         usage: { tool_uses: usage.tool_uses ?? 0, total_tokens: usage.total_tokens ?? 0, duration_ms: usage.duration_ms ?? 0 },
       })
+    },
+    // 插话/排队消息接收确认：内核吸收 user 消息（工具边界注入当前轮或作为新轮）
+    // 时回发，供 GUI 解除气泡悬浮态（useYFWCLI.ts command_lifecycle 分支消费）。
+    commandLifecycle(uuid, state = 'started') {
+      writeLine(stream, { type: 'command_lifecycle', data: { uuid, state } })
     },
   }
 }
