@@ -11,7 +11,7 @@ function reg() {
 
 test('registry 每工具带 input_schema（JSON Schema，additionalProperties:false）', () => {
   const schemas = reg().toolSchemas()
-  assert.deepEqual(schemas.map((s) => s.name), ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'WebFetch', 'OCR'])
+  assert.deepEqual(schemas.map((s) => s.name), ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'WebFetch', 'OCR', 'Skill', 'Browser'])
   for (const s of schemas) {
     assert.equal(typeof s.description, 'string')
     assert.ok(s.description.length > 0)
@@ -47,13 +47,17 @@ test('各工具 input_schema 字段与 required 正确', () => {
   assert.deepEqual(byName.Agent.input_schema.required, ['subagent_type', 'prompt'])
   assert.ok(byName.Agent.input_schema.properties.subagent_type)
   assert.ok(byName.Agent.input_schema.properties.run_in_background)
+  assert.ok(byName.Agent.input_schema.properties.resume_task_id) // S2/S3 续跑既有后台任务
   assert.deepEqual(byName.Task.input_schema.required, ['command'])
   assert.ok(byName.Task.input_schema.properties.task_id)
+  assert.ok(byName.Task.input_schema.properties.prompt) // resume 续跑指令
   assert.deepEqual(byName.TodoWrite.input_schema.required, ['todos'])
   assert.deepEqual(byName.WebFetch.input_schema.required, ['url'])
   assert.deepEqual(byName.OCR.input_schema.required, ['file_path'])
   assert.ok(byName.OCR.input_schema.properties.mode)
   assert.ok(byName.OCR.input_schema.properties.project)
+  assert.deepEqual(byName.Skill.input_schema.required, ['skill'])
+  assert.ok(byName.Skill.input_schema.properties.skill)
 })
 
 // 功能测试：临时目录内执行工具（真实文件系统，Windows 兼容）
@@ -174,7 +178,7 @@ test('Bash（A4）：超长输出截尾保留尾部并带 [truncated] 标记', a
 
 test('disallowedTools 过滤：toolNames/toolSchemas 不含禁用工具，run 直接拒绝', async () => {
   const g = createToolRegistry({ cwd: '/tmp', addDirs: ['/tmp'], skipPermissions: false, disallowedTools: ['Agent', 'Task'] })
-  assert.deepEqual(g.toolNames, ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TodoWrite', 'WebFetch', 'OCR'])
+  assert.deepEqual(g.toolNames, ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TodoWrite', 'WebFetch', 'OCR', 'Skill', 'Browser'])
   assert.ok(!g.toolSchemas().some((s) => s.name === 'Agent' || s.name === 'Task'))
   // 被禁工具的执行请求（防绕过工具列表）→ 明确拒绝
   const r = await g.run({ name: 'Agent', input: { subagent_type: 'general-purpose', prompt: 'x' } }, {})
@@ -183,4 +187,33 @@ test('disallowedTools 过滤：toolNames/toolSchemas 不含禁用工具，run �
   // 未禁用工具不受影响
   const ok = await g.run({ name: 'Read', input: { file_path: '/tmp/nonexist-xyz' } }, {})
   assert.equal(typeof ok.content, 'string')
+})
+
+test('Skill：加载技能全文（SKILL.md 目录格式 + legacy .md）+ 未知技能报错 + 缺参拒绝', async () => {
+  const { dir, reg } = tmpReg()
+  try {
+    // SKILL.md 目录格式技能
+    mkdirSync(join(dir, 'alpha', 'SKILL.md').slice(0, -7), { recursive: true })
+    writeFileSync(join(dir, 'alpha', 'SKILL.md'), '---\nname: Alpha\ndescription: first\n---\n# Alpha\n步骤一：读文件\n步骤二：改文件', 'utf-8')
+    // legacy 平铺格式技能
+    writeFileSync(join(dir, 'beta.md'), '---\ndescription: second\n---\n# Beta\n按 Beta 流程执行', 'utf-8')
+    // 命中 SKILL.md 目录格式
+    let r = await reg.run({ name: 'Skill', input: { skill: 'alpha' } }, {})
+    assert.equal(r.isError, false)
+    assert.match(r.content, /技能「alpha」已加载/)
+    assert.match(r.content, /步骤一：读文件/)
+    // 命中 legacy 平铺格式
+    r = await reg.run({ name: 'Skill', input: { skill: 'beta' } }, {})
+    assert.equal(r.isError, false)
+    assert.match(r.content, /按 Beta 流程执行/)
+    // 缺 skill 参数 → 拒绝
+    r = await reg.run({ name: 'Skill', input: {} }, {})
+    assert.equal(r.isError, true)
+    assert.match(r.content, /skill 参数缺失/)
+    // 未知技能 → 报错并列出可用技能
+    r = await reg.run({ name: 'Skill', input: { skill: 'gamma' } }, {})
+    assert.equal(r.isError, true)
+    assert.match(r.content, /技能不存在：gamma/)
+    assert.match(r.content, /alpha, beta/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })

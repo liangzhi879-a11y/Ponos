@@ -145,7 +145,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // 未激活时 getProvider 现读 env.ANTHROPIC_MODEL，与既有行为一致
   let model = opts.model || getProvider().model || ''
   const maxTokens = Math.max(1, Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || 64000))
-  const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: opts.addDirs, skipPermissions: opts.skipPermissions, disallowedTools: opts.disallowedTools })
+  const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: opts.addDirs, skipPermissions: opts.skipPermissions, allowOutsideDirs: opts.allowOutsideDirs, disallowedTools: opts.disallowedTools })
   // agent 表（内置 ∪ 用户级 $YFW_HOME/agents/*.md）：Agent 工具路由依据
   const agents = resolveAgents({ configDir: opts.configDir })
   // 审批挂起队列：toolUseId → resolve（cli 的 control_response 解除）
@@ -159,7 +159,9 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // R1-1 防重放（轮级）：已执行 tool_use id → 结果。runTurn 开头重置，
   // 同轮重复 id（重连重放）回填不重执行；跨轮自动失效（新轮新 map）
   let executedToolIds = new Map()
-  // 后台子 agent 任务登记：taskId → { status, promise, summary, outputFile, usage, laneStore }
+  // 后台子 agent 任务登记：taskId → { status, promise, laneStore, sysPrompt,
+  // lineage, summary, outputFile, usage, stop }。S2 续跑复用 laneStore/sysPrompt；
+  // S1 级联取消查 lineage.parentTaskId；进程退出即失（非持久化，spec 边界）
   const pendingSubAgents = new Map()
   // turnStats 记录器（内存 append-only）：health / result / stats 三个消费者共用
   const turnStats = []
@@ -528,26 +530,14 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     return { usage, text: textBuf }
   }
 
-  // Agent 工具执行体：前台同步回填 / 后台异步 + task_notification 交付
-  async function spawnSubAgent(input, ctx = {}) {
-    const type = String(input?.subagent_type || '')
-    const agent = resolveAgent(agents, type)
-    if (!agent) return { content: `未知子 Agent：${type}。可用：${agents.map((a) => a.id).join(', ')}`, isError: true }
-    const prompt = String(input?.prompt || '').trim()
-    if (!prompt) return { content: 'prompt 缺失：请说明要委派给子 Agent 的任务', isError: true }
-    const runInBackground = input?.run_in_background === true
-    const taskId = newSessionId()
-    const toolUseId = String(ctx?.toolUseId || '')
-    wire.taskStarted({ taskId, toolUseId, prompt })
-    const laneStore = createSessionStore({ configDir: opts.configDir, cwd: opts.addDirs?.[0] || '', sessionId: taskId })
-    // 子任务指令入子 lane（子循环 deriveMessages 的起点；与主 runTurn appendUser 对齐）
-    laneStore.appendUser(prompt)
-    const sysPrompt = agent.systemPrompt || `你是 YFWorking 的子 Agent「${agent.name}」：${agent.description}。使用简体中文。`
-    const subController = new AbortController()
-    const t0 = Date.now()
-    let lastWritePath = ''
-    const onTool = (b, r, count) => {
-      if (b.name === 'Write' && !r.isError) lastWritePath = String(b.input?.file_path || '')
+  // —— 子任务执行与登记（S1 血缘 / S2 可继续 / S3 结果承接）——
+  // 子 lane 产物收集：Write 工具成功路径记录文件路径（outputs 交付 + 最后产物）
+  function makeLaneOnTool({ taskId, writePaths, t0 }) {
+    return (b, r, count) => {
+      if (b.name === 'Write' && !r.isError) {
+        const p = String(b.input?.file_path || '')
+        if (p) writePaths.push(p)
+      }
       wire.taskProgress({
         taskId,
         lastToolName: b.name,
@@ -555,33 +545,93 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         usage: { tool_uses: count, total_tokens: 0, duration_ms: Date.now() - t0 },
       })
     }
-    const exec = async () => {
-      let text = ''
-      let status = 'completed'
-      let usage = {}
-      try {
-        const r = await runSubAgentLoop({ store: laneStore, sysPrompt, signal: subController.signal, onTool })
-        text = String(r.text || '').trim()
-        usage = r.usage
-      } catch (err) {
-        if (err?.name === 'AbortError') { status = 'stopped'; text = '（已取消）' }
-        else { status = 'failed'; text = `执行出错：${err?.message || String(err)}` }
-      }
-      const totalTokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)
-        + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
-      const notifUsage = { tool_uses: 0, total_tokens: totalTokens, duration_ms: Date.now() - t0 }
-      const entry = pendingSubAgents.get(taskId)
-      if (entry) Object.assign(entry, { status, summary: text, outputFile: lastWritePath, usage: notifUsage })
-      wire.taskNotification({ taskId, status, summary: text, outputFile: lastWritePath, usage: notifUsage })
-      return { status, text, usage, outputFile: lastWritePath }
+  }
+
+  // 子 lane 执行体（spawn 与 resume 共用）：跑完整子循环 → 登记更新 + 终态通知。
+  // resume 复用同一 laneStore（历史经 deriveMessages 原样保留，无副作用重放）
+  async function runLaneExecution({ taskId, laneStore, sysPrompt, signal: subSignal, writePaths, t0, onTool }) {
+    let text = ''
+    let status = 'completed'
+    let usage = {}
+    try {
+      const r = await runSubAgentLoop({ store: laneStore, sysPrompt, signal: subSignal, onTool })
+      text = String(r.text || '').trim()
+      usage = r.usage
+    } catch (err) {
+      if (err?.name === 'AbortError') { status = 'stopped'; text = '（已取消）' }
+      else { status = 'failed'; text = `执行出错：${err?.message || String(err)}` }
     }
+    const totalTokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)
+      + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
+    const notifUsage = { tool_uses: 0, total_tokens: totalTokens, duration_ms: Date.now() - t0 }
+    const outputFile = writePaths[writePaths.length - 1] || ''
+    const entry = pendingSubAgents.get(taskId)
+    if (entry) Object.assign(entry, { status, summary: text, outputFile, usage: notifUsage })
+    wire.taskNotification({ taskId, status, summary: text, outputFile, usage: notifUsage, outputs: [...writePaths] })
+    return { status, text, usage, outputFile }
+  }
+
+  // Agent 工具执行体：前台同步回填 / 后台异步 + task_notification 交付；
+  // resume_task_id 复用既有后台任务会话续跑（S2/S3，无需新建 lane）
+  async function spawnSubAgent(input, ctx = {}) {
+    const type = String(input?.subagent_type || '')
+    const prompt = String(input?.prompt || '').trim()
+    const toolUseId = String(ctx?.toolUseId || '')
+    // —— resume 模式：基于既有后台任务会话续跑（复用 laneStore/sysPrompt/血缘）——
+    const resumeTaskId = String(input?.resume_task_id || '')
+    if (resumeTaskId) {
+      const target = pendingSubAgents.get(resumeTaskId)
+      if (!target) return { content: `任务不存在：${resumeTaskId}`, isError: true }
+      if (target.status === 'running') return { content: `任务 ${resumeTaskId} 仍在运行中，无法续跑`, isError: true }
+      if (!target.laneStore) return { content: `任务 ${resumeTaskId} 无可恢复的会话`, isError: true }
+      if (!prompt) return { content: 'prompt 缺失：请说明续跑指令', isError: true }
+      // 续跑：追加 user 消息到既有 lane（子循环 deriveMessages 起点 = 原历史 + 续跑指令）
+      target.laneStore.appendUser(prompt)
+      const subController = new AbortController()
+      target.stop = () => subController.abort()
+      target.status = 'running'
+      wire.taskResumed({ taskId: resumeTaskId, prompt })
+      const t0 = Date.now()
+      const writePaths = []
+      const onTool = makeLaneOnTool({ taskId: resumeTaskId, writePaths, t0 })
+      target.promise = runLaneExecution({
+        taskId: resumeTaskId, laneStore: target.laneStore, sysPrompt: target.sysPrompt,
+        signal: subController.signal, writePaths, t0, onTool,
+      })
+      return { content: `子 Agent 任务已续跑（task_id: ${resumeTaskId}）。完成时收到通知，可用 Task 工具查询/中止。`, isError: false }
+    }
+    const agent = resolveAgent(agents, type)
+    if (!agent) return { content: `未知子 Agent：${type}。可用：${agents.map((a) => a.id).join(', ')}`, isError: true }
+    if (!prompt) return { content: 'prompt 缺失：请说明要委派给子 Agent 的任务', isError: true }
+    const runInBackground = input?.run_in_background === true
+    const taskId = newSessionId()
+    // S1 血缘：主 agent 派发 depth 0 / parent null；子 lane 派发（S4 预留）经 ctx.lane 透传
+    const lineage = {
+      parentTaskId: ctx?.lane?.taskId ?? null,
+      depth: (ctx?.lane?.depth ?? -1) + 1,
+      path: [...(ctx?.lane?.path || []), taskId],
+    }
+    wire.taskStarted({ taskId, toolUseId, prompt, parentTaskId: lineage.parentTaskId, depth: lineage.depth })
+    const laneStore = createSessionStore({ configDir: opts.configDir, cwd: opts.addDirs?.[0] || '', sessionId: taskId })
+    // 子任务指令入子 lane（子循环 deriveMessages 的起点；与主 runTurn appendUser 对齐）
+    laneStore.appendUser(prompt)
+    const sysPrompt = agent.systemPrompt || `你是 YFWorking 的子 Agent「${agent.name}」：${agent.description}。使用简体中文。`
+    const subController = new AbortController()
+    const t0 = Date.now()
+    const writePaths = []
+    const onTool = makeLaneOnTool({ taskId, writePaths, t0 })
+    const exec = () => runLaneExecution({
+      taskId, laneStore, sysPrompt,
+      signal: subController.signal, writePaths, t0, onTool,
+    })
     if (runInBackground) {
       const promise = exec()
+      // 登记含 sysPrompt/laneStore/lineage：resume 复用会话与血缘，级联取消查 parent
       pendingSubAgents.set(taskId, {
-        status: 'running', promise, laneStore,
+        status: 'running', promise, laneStore, sysPrompt, lineage,
         stop: () => subController.abort(), // Task stop 中止该子任务（独立信号）
       })
-      return { content: `子 Agent「${agent.id}」任务已后台启动（task_id: ${taskId}）。完成时收到通知，可用 Task 工具查询/中止。`, isError: false }
+      return { content: `子 Agent「${agent.id}」任务已后台启动（task_id: ${taskId}）。完成时收到通知，可用 Task 工具查询/中止/续跑。`, isError: false }
     }
     const r = await exec()
     if (r.status === 'stopped') return { content: '子 Agent 任务已取消', isError: true }
@@ -597,11 +647,26 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   }
 
   // Task 工具能力（后台任务查询/中止）
+  // 级联取消：中止任务及其全部后代（子级优先释放，对齐 deepseek 所有权图语义；
+  // 当前子 lane 禁嵌套无后代，结构为 S4 预留）
+  function stopSubTree(taskId, seen = new Set()) {
+    if (seen.has(taskId)) return
+    seen.add(taskId)
+    for (const [id, entry] of pendingSubAgents) {
+      if (entry.lineage?.parentTaskId === taskId) stopSubTree(id, seen)
+    }
+    const t = pendingSubAgents.get(taskId)
+    if (t && t.status === 'running' && typeof t.stop === 'function') t.stop()
+  }
+
   const taskSystem = {
     list() {
       if (pendingSubAgents.size === 0) return '当前无后台子 Agent 任务'
       return [...pendingSubAgents.entries()]
-        .map(([id, t]) => `${id.slice(0, 8)} [${t.status}]${t.summary ? ' ' + String(t.summary).slice(0, 80) : ''}`)
+        .map(([id, t]) => {
+          const indent = '  '.repeat(t.lineage?.depth ?? 0)
+          return `${indent}${id.slice(0, 8)} [${t.status}]${t.summary ? ' ' + String(t.summary).slice(0, 80) : ''}`
+        })
         .join('\n')
     },
     status(taskId) {
@@ -618,8 +683,18 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       const t = pendingSubAgents.get(String(taskId || ''))
       if (!t) return { content: `任务不存在：${taskId}`, isError: true }
       if (t.status !== 'running') return { content: `任务已结束（${t.status}）`, isError: false }
-      if (typeof t.stop === 'function') t.stop() // 仅中止该子任务（独立信号），不影响主循环
-      return { content: `已请求中止任务 ${taskId}`, isError: false }
+      stopSubTree(String(taskId || '')) // 级联中止（含后代；当前无嵌套场景等价单中止）
+      return { content: `已请求中止任务 ${taskId}（含其后代）`, isError: false }
+    },
+    // S2 可继续：基于既有后台任务会话续跑（复用 laneStore；prompt 为续跑指令）
+    async resume(taskId, prompt) {
+      const id = String(taskId || '')
+      const t = pendingSubAgents.get(id)
+      if (!t) return { content: `任务不存在：${id}`, isError: true }
+      if (t.status === 'running') return { content: `任务 ${id} 仍在运行中，无法续跑`, isError: true }
+      if (!t.laneStore) return { content: `任务 ${id} 无可恢复的会话`, isError: true }
+      // 复用 spawnSubAgent 的 resume 分支（同一语义：复用 lane + 追加续跑指令）
+      return spawnSubAgent({ resume_task_id: id, prompt: String(prompt || '').trim() || '（任务继续）' })
     },
   }
 

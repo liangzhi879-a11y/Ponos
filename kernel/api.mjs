@@ -175,6 +175,17 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // 子 agent 产物承接测试：[mock:write] 触发 Write tool_use（写两个文件，
+  // onTool 收集 → task_notification.outputs 断言）。YFW_MOCK_WRITE_DIR 指定目录
+  if (lastText.includes('[mock:write]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    const base = process.env.YFW_MOCK_WRITE_DIR || process.cwd()
+    yield { type: 'tool_use', id: 'tool_use_mock_write_1', name: 'Write', input: { file_path: `${base}/mock-a.txt`, content: 'a' } }
+    yield { type: 'tool_use', id: 'tool_use_mock_write_2', name: 'Write', input: { file_path: `${base}/mock-b.txt`, content: 'b' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // R1-1 防重放测试：同一次调用输出两个【相同 id】的 tool_use（echo 安全命令）
   if (lastText.includes('[mock:replay]')) {
     if (signal?.aborted) throw abortError()

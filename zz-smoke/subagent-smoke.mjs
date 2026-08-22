@@ -50,8 +50,31 @@ const hasDirectSubEntry = mainEntries.some(
 )
 check('主 transcript 无子 agent 独立条目（仅 tool_result 回填）', !hasDirectSubEntry)
 check('主 transcript 含 Agent tool_use', mainText.includes('tool_use_mock_agent'))
-check('主 transcript 含 tool_result 回填', mainEntries.some((e) => JSON.stringify(e.message.content).includes('工具执行完成')))
+check('主 transcript 含 tool_result 回填', mainEntries.some((e) => e.message && JSON.stringify(e.message.content).includes('工具执行完成')))
 check('后台登记表可查询', engine.taskSystem.list().length > 0)
+
+// —— S1/S2/S3 冒烟：血缘字段 + 后台任务续跑（resume 复用 lane）——
+const bg = await engine.spawnSubAgent(
+  { subagent_type: 'general-purpose', prompt: '冒烟第一轮', run_in_background: true },
+  { toolUseId: 'tool_use_smoke_bg' },
+)
+const bgTaskId = String(bg.content).match(/task_id: ([0-9a-f-]+)/)?.[1]
+check('后台任务启动返回 task_id', typeof bgTaskId === 'string' && !!bgTaskId)
+const bgStarted = events.filter((e) => e.type === 'system' && e.subtype === 'task_started' && e.task_id === bgTaskId)[0]
+check('task_started 带血缘字段（parent null / depth 0）', bgStarted?.parent_task_id === null && bgStarted?.depth === 0)
+const waitBgNotifs = (n, timeoutMs = 4000) => new Promise((resolve) => {
+  const iv = setInterval(() => {
+    if (events.filter((e) => e.type === 'system' && e.subtype === 'task_notification' && e.task_id === bgTaskId).length >= n) { clearInterval(iv); resolve() }
+  }, 10)
+  setTimeout(() => { clearInterval(iv); resolve() }, timeoutMs)
+})
+await waitBgNotifs(1)
+const resumeR = await engine.taskSystem.resume(bgTaskId, '冒烟第二轮')
+check('Task resume 续跑', resumeR.isError === false && /已续跑/.test(resumeR.content))
+check('task_resumed 事件发出', events.some((e) => e.type === 'system' && e.subtype === 'task_resumed' && e.task_id === bgTaskId))
+await waitBgNotifs(2)
+const bgNotifs = events.filter((e) => e.type === 'system' && e.subtype === 'task_notification' && e.task_id === bgTaskId)
+check('续跑后第二条完成通知（含续跑指令回显）', bgNotifs.length >= 2 && /冒烟第二轮/.test(bgNotifs[bgNotifs.length - 1].summary || ''))
 
 console.log(`\n耗时 ${ms}ms；事件序：${events.map((e) => e.type + (e.subtype ? '/' + e.subtype : '')).join(' → ')}`)
 rmSync(dir, { recursive: true, force: true })

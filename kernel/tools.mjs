@@ -13,6 +13,7 @@ import { dirname, resolve, sep, join, extname, basename } from 'node:path'
 import { get as httpsGet, request as httpsRequest } from 'node:https'
 import { get as httpGet, request as httpRequest } from 'node:http'
 import { matchesHighRisk } from './highrisk.mjs'
+import { discoverSkillsAll, loadSkillContent } from './skills.mjs'
 
 // R2-1 活跃子进程登记：Bash/OCR spawn 的子进程统一登记，内核退出（SIGINT/TERM）
 // 时 killActiveChildren 兜底清理，防孤儿进程。child 'close' 后自动移除。
@@ -164,11 +165,11 @@ function resolvePath(p, cwd) {
 // 的往返与 token（T003 上轮 Read 6 次中部分为重复读）。
 const READ_STUB_PREFIX = '文件自上次读取后未变化'
 
-function readFile(filePath, allowDirs, input = {}, cwd, readCache) {
+function readFile(filePath, allowDirs, input = {}, cwd, readCache, skipBoundary) {
   try {
     if (!filePath) return { content: 'file_path 缺失', isError: true }
     const resolved = resolvePath(filePath, cwd)
-    if (!withinBoundary(resolved, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${resolved}）`, isError: true }
+    if (!skipBoundary && !withinBoundary(resolved, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${resolved}）`, isError: true }
     if (!existsSync(resolved)) return { content: `文件不存在：${resolved}（当前工作目录：${cwd || process.cwd()}；可用 Glob 定位候选文件或用绝对路径）`, isError: true }
     const st = statSync(resolved)
     if (st.isDirectory()) return { content: `是目录：${resolved}`, isError: true }
@@ -222,11 +223,11 @@ function readFile(filePath, allowDirs, input = {}, cwd, readCache) {
   }
 }
 
-function writeFile(filePath, content, allowDirs, cwd, readCache) {
+function writeFile(filePath, content, allowDirs, cwd, readCache, skipBoundary) {
   try {
     if (!filePath) return { content: 'file_path 缺失', isError: true }
     const resolved = resolvePath(filePath, cwd)
-    if (!withinBoundary(resolved, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${resolved}）`, isError: true }
+    if (!skipBoundary && !withinBoundary(resolved, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${resolved}）`, isError: true }
     writeFileSync(resolved, String(content ?? ''), 'utf-8')
     readCache?.delete(resolved) // 文件已变，失效去重缓存
     return { content: `已写入 ${resolved}（${String(content ?? '').length} 字符）` }
@@ -236,11 +237,11 @@ function writeFile(filePath, content, allowDirs, cwd, readCache) {
 }
 
 // Edit：先读后改的字符串替换。old_string 需在文件中唯一（否则要求 replace_all）。
-function editFile(filePath, oldString, newString, replaceAll, allowDirs, cwd, readCache) {
+function editFile(filePath, oldString, newString, replaceAll, allowDirs, cwd, readCache, skipBoundary) {
   try {
     if (!filePath) return { content: 'file_path 缺失', isError: true }
     const resolved = resolvePath(filePath, cwd)
-    if (!withinBoundary(resolved, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${resolved}）`, isError: true }
+    if (!skipBoundary && !withinBoundary(resolved, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${resolved}）`, isError: true }
     if (!existsSync(resolved)) return { content: `文件不存在：${resolved}（当前工作目录：${cwd || process.cwd()}；可用 Glob 定位候选文件或用绝对路径）`, isError: true }
     if (typeof oldString !== 'string' || !oldString) return { content: 'old_string 缺失或为空', isError: true }
     if (typeof newString !== 'string') return { content: 'new_string 必须为字符串', isError: true }
@@ -344,7 +345,12 @@ function grepSearch(pattern, allowDirs, { glob, context = 0, maxResults = 200 } 
           let st
           try { st = statSync(full) } catch { continue }
           if (!st.isFile() || st.size > MAX_BYTES) continue
-          const lines = readFileSync(full, 'utf-8').split('\n')
+          // 单文件读取失败（权限/占用/编码）跳过，不中断整个搜索；
+          // 含 NUL 字节视为二进制跳过（避免乱码误匹配）
+          let content
+          try { content = readFileSync(full, 'utf-8') } catch { continue }
+          if (content.includes('\0')) continue
+          const lines = content.split('\n')
           for (let i = 0; i < lines.length; i++) {
             if (re.test(lines[i])) {
               const from = Math.max(0, i - ctx)
@@ -443,10 +449,15 @@ function findOcrEngine() {
   return candidates.find((p) => existsSync(p)) || null
 }
 
-// Windows 优先 python（rapidocr_onnxruntime 装入的解释器），ENOENT 时回退 py
+// Windows 优先 python（rapidocr_onnxruntime 装入的解释器），ENOENT 时回退 py。
+// 优先使用 bridge 注入的 YFWORKING_PYTHON（随应用捆绑的 runtime/python/python.exe，
+// 见 server/bridge.mjs findPythonExe），新环境无系统 python 时 OCR 仍可用。
 function runPythonCapture(args, { cwd, timeoutMs = OCR_TIMEOUT_MS } = {}) {
   return new Promise((resolvePromise) => {
-    const pythons = process.platform === 'win32' ? ['python', 'py'] : ['python3', 'python']
+    const envPy = process.env.YFWORKING_PYTHON
+    const pythons = envPy
+      ? [envPy]
+      : (process.platform === 'win32' ? ['python', 'py'] : ['python3', 'python'])
     let idx = 0
     const attempt = () => {
       const py = pythons[idx]
@@ -489,10 +500,10 @@ const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff', '.webp']
 // OCR 主逻辑：边界/存在性校验 → 引擎探测 → python 执行 → 解析。
 // PDF 走 CLI（--output 临时 JSON 全量结果）；图片走内联 import 调 ocr_image()
 // （引擎 CLI 的 ocr 命令面向 PDF，fitz 包装图片会判为空白页）。零 npm 依赖。
-async function ocrFile(filePath, allowDirs, input = {}) {
+async function ocrFile(filePath, allowDirs, input = {}, skipBoundary) {
   try {
     if (!filePath) return { content: 'file_path 缺失', isError: true }
-    if (!withinBoundary(filePath, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${filePath}）`, isError: true }
+    if (!skipBoundary && !withinBoundary(filePath, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${filePath}）`, isError: true }
     if (!existsSync(filePath)) return { content: `文件不存在：${filePath}`, isError: true }
     if (statSync(filePath).isDirectory()) return { content: `是目录：${filePath}`, isError: true }
     const mode = input?.mode === 'table' ? 'table' : 'text'
@@ -562,8 +573,11 @@ async function ocrFile(filePath, allowDirs, input = {}) {
   }
 }
 
-export function createToolRegistry({ cwd, addDirs, skipPermissions, disallowedTools = [] }) {
+export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [] }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
+  // 会话目录边界开关：--allow-outside-dirs / YFW_ALLOW_OUTSIDE_DIRS=1 解锁文件工具
+  // （Read/Write/Edit/OCR）的目录限制；Glob/Grep 仍限定会话目录内（避免全盘扫描）。
+  const skipBoundary = !!allowOutsideDirs || process.env.YFW_ALLOW_OUTSIDE_DIRS === '1'
   // 禁用工具集（--disallowedTools）：toolNames/toolSchemas/run/isConcurrencySafe
   // 全部基于过滤后视图；被禁工具的执行请求直接拒绝（防模型绕过工具列表）
   const blocked = new Set(disallowedTools || [])
@@ -584,7 +598,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, disallowedTo
       isHighRisk: (input) => matchesHighRisk(String(input?.command ?? '')),
     },
     Read: {
-      description: `读取文本文件内容。一次读全文（上限 ${READ_MAX_LINES} 行 / ${READ_MAX_BYTES / 1024 / 1024}MB），默认应读全文而非分段取样；超大文件用 offset/limit 定向读取，结果会提示续读位置。优先用本工具而非 Bash cat/sed 读文件；路径用绝对路径，或相对当前工作目录的相对路径。`,
+      description: `读取文本文件内容。一次读全文（上限 ${READ_MAX_LINES} 行 / ${READ_MAX_BYTES / 1024 / 1024}MB），默认应读全文而非分段取样；超大文件用 offset/limit 定向读取，结果会提示续读位置。优先用本工具而非 Bash cat/sed 读文件；路径用绝对路径，或相对当前工作目录的相对路径。边界限制：仅可读取当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标文件位于会话目录内，否则改用 Bash 或让用户放入会话目录。`,
       // concurrencySafe：只读工具可并发执行（P0-4 只读批并行）
       concurrencySafe: true,
       input_schema: {
@@ -597,10 +611,10 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, disallowedTo
         },
         required: ['file_path'],
       },
-      run: (input) => readFile(String(input?.file_path ?? ''), allowDirs, input, cwd, readCache),
+      run: (input) => readFile(String(input?.file_path ?? ''), allowDirs, input, cwd, readCache, skipBoundary),
     },
     Write: {
-      description: '写入文本文件（覆盖整个文件）。改动范围超过半个文件时优先考虑本工具而非多次 Edit。',
+      description: '写入文本文件（覆盖整个文件）。改动范围超过半个文件时优先考虑本工具而非多次 Edit。边界限制：仅可写入当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标路径位于会话目录内。',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -610,10 +624,10 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, disallowedTo
         },
         required: ['file_path', 'content'],
       },
-      run: (input) => writeFile(String(input?.file_path ?? ''), String(input?.content ?? ''), allowDirs, cwd, readCache),
+      run: (input) => writeFile(String(input?.file_path ?? ''), String(input?.content ?? ''), allowDirs, cwd, readCache, skipBoundary),
     },
     Edit: {
-      description: '先读后改的字符串替换编辑（old_string 需唯一，或指定 replace_all）。一次 Edit 覆盖一个完整逻辑块；同文件多处修改尽量合并为一次调用；改动过大时考虑 Write 重写。',
+      description: '先读后改的字符串替换编辑（old_string 需唯一，或指定 replace_all）。一次 Edit 覆盖一个完整逻辑块；同文件多处修改尽量合并为一次调用；改动过大时考虑 Write 重写。边界限制：仅可编辑当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝。',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -625,7 +639,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, disallowedTo
         },
         required: ['file_path', 'old_string', 'new_string'],
       },
-      run: (input) => editFile(String(input?.file_path ?? ''), String(input?.old_string ?? ''), String(input?.new_string ?? ''), input?.replace_all === true, allowDirs, cwd, readCache),
+      run: (input) => editFile(String(input?.file_path ?? ''), String(input?.old_string ?? ''), String(input?.new_string ?? ''), input?.replace_all === true, allowDirs, cwd, readCache, skipBoundary),
     },
     Glob: {
       description: '在会话目录内递归搜索文件路径（pattern 支持 * ? 和 ** 通配）。先 Glob 定位候选文件再 Read，避免无目标 ls。',
@@ -663,15 +677,16 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, disallowedTo
     },
     // 子代理分发：执行体在 engine（ctx.spawnSubAgent）。子 lane 内禁止嵌套。
     Agent: {
-      description: '将子任务委派给子 Agent 执行（按优势场景选择 subagent_type）；前台同步回填结果，或 run_in_background 后台异步执行',
+      description: '将子任务委派给子 Agent 执行（按优势场景选择 subagent_type）；前台同步回填结果，或 run_in_background 后台异步执行；可基于既有后台任务会话续跑（resume_task_id）',
       input_schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
           subagent_type: { type: 'string', description: '子 Agent 类型（general-purpose / researcher 或用户注册的 agent id）' },
-          prompt: { type: 'string', description: '委派给子 Agent 的完整任务说明' },
-          run_in_background: { type: 'boolean', description: '可选：true 时后台异步执行，立即返回 task_id（Task 工具查询/中止）' },
+          prompt: { type: 'string', description: '委派给子 Agent 的完整任务说明；resume 模式下为续跑指令' },
+          run_in_background: { type: 'boolean', description: '可选：true 时后台异步执行，立即返回 task_id（Task 工具查询/中止/续跑）' },
           description: { type: 'string', description: '可选：任务描述（展示用）' },
+          resume_task_id: { type: 'string', description: '可选：基于既有后台子任务会话继续执行（复用其 lane 会话，prompt 作为续跑指令追加；任务须已结束且进程存活）' },
         },
         required: ['subagent_type', 'prompt'],
       },
@@ -681,15 +696,16 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, disallowedTo
         return ctx.spawnSubAgent(input, ctx)
       },
     },
-    // 后台子 Agent 任务管理（查询/中止）
+    // 后台子 Agent 任务管理（查询/中止/续跑）
     Task: {
-      description: '管理后台子 Agent 任务：list 列出全部、status/output 查询单个、stop 中止',
+      description: '管理后台子 Agent 任务：list 列出全部（层级缩进）、status/output 查询单个、stop 中止、resume 续跑（基于既有会话继续）',
       input_schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          command: { type: 'string', description: 'list | status | output | stop' },
-          task_id: { type: 'string', description: '可选：status/output/stop 时的任务 id' },
+          command: { type: 'string', description: 'list | status | output | stop | resume' },
+          task_id: { type: 'string', description: '可选：status/output/stop/resume 时的任务 id' },
+          prompt: { type: 'string', description: '可选：resume 时的续跑指令（追加到既有会话；缺省「（任务继续）」）' },
         },
         required: ['command'],
       },
@@ -702,7 +718,8 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, disallowedTo
         if (cmd === 'status') return { content: sys.status(id) }
         if (cmd === 'output') return sys.output(id)
         if (cmd === 'stop') return sys.stop(id)
-        return { content: `未知 command：${cmd}（支持 list/status/output/stop）`, isError: true }
+        if (cmd === 'resume') return sys.resume(id, input?.prompt)
+        return { content: `未知 command：${cmd}（支持 list/status/output/stop/resume）`, isError: true }
       },
     },
     // 任务规划清单（覆盖式更新，返回当前清单）
@@ -759,7 +776,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, disallowedTo
     },
     // 扫描件 OCR（spawn python 调 ocr_engine.py；PDF/图片均可；结果按 project 缓存）
     OCR: {
-      description: '对扫描件 PDF 或图片执行 OCR 文字识别（mode=text 提取全文；mode=table 额外识别表格；结果按 project 缓存，重复识别秒回）',
+      description: '对扫描件 PDF 或图片执行 OCR 文字识别（mode=text 提取全文；mode=table 额外识别表格；结果按 project 缓存，重复识别秒回）。边界限制：仅可识别当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标文件位于会话目录内（若在会话外，先请用户将文件放入会话目录或经 --add-dir 挂载，不要盲目重试）。',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -770,7 +787,53 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, disallowedTo
         },
         required: ['file_path'],
       },
-      run: (input) => ocrFile(String(input?.file_path ?? ''), allowDirs, input),
+      run: (input) => ocrFile(String(input?.file_path ?? ''), allowDirs, input, skipBoundary),
+    },
+    // 技能加载：从技能根目录（--add-dir，与提示词【可用技能】块同数据源）读取
+    // SKILL.md 全文作为任务指引。只读工具，可并行加载多个技能；模型可在同一
+    // 任务的多轮次中自主调用不同技能（一个技能不满足时换另一个）。
+    Skill: {
+      description: '加载技能指令：按技能名（skill 参数）读取对应 SKILL.md 的完整操作步骤，读取后按其流程执行；同一任务可多轮次自主调用不同技能（先调用最匹配的，不满足再换）。',
+      concurrencySafe: true,
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { skill: { type: 'string', description: '技能名（与提示词【可用技能】清单中的 id 一致）' } },
+        required: ['skill'],
+      },
+      run: (input) => {
+        const id = String(input?.skill ?? '').trim()
+        if (!id) return { content: 'skill 参数缺失：请传入技能名（提示词【可用技能】清单中的 id）', isError: true }
+        const content = loadSkillContent({ roots: allowDirs, id })
+        if (content == null) {
+          const ids = discoverSkillsAll({ roots: allowDirs }).map((s) => s.id)
+          return { content: `技能不存在：${id}。可用技能：${ids.join(', ') || '（当前无可用技能）'}`, isError: true }
+        }
+        return { content: `技能「${id}」已加载，严格按以下指引执行：\n\n${content}`, isError: false }
+      },
+    },
+    // 内置浏览器自动化：经 bridge_request(browser) 路由到主进程执行器
+    // （docs/bridge-contract.md §4 bridge_request；bridge 的 browserRouter 已接线）。
+    // 执行体在 engine（ctx.browserDriver 挂起等 bridge 回写 browser_response 解除）。
+    Browser: {
+      description: '驱动内置浏览器执行页面操作（快照驱动：先 snapshot 查看页面结构与可交互元素 ref，再按 ref 操作）。支持动作：goto 导航 / back 后退 / forward 前进 / refresh 刷新 / snapshot 页面快照 / click 点击 / type 输入 / select 选择 / scroll 滚动 / hover 悬停 / wait 等待 / js 页面内执行 JS。',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          action: { type: 'string', description: '浏览器动作：goto/back/forward/refresh/snapshot/click/type/select/scroll/hover/wait/js' },
+          params: {
+            type: 'object',
+            additionalProperties: true,
+            description: '动作参数：goto 需 url；click/type/select/hover 需 ref（快照中的元素引用）；type 另需 text；scroll 需 direction；wait 需 ms；js 需 expression。快照驱动，未知元素先 snapshot 获取 ref。',
+          },
+        },
+        required: ['action'],
+      },
+      run: (input, ctx) => {
+        if (typeof ctx?.browserDriver !== 'function') return { content: '浏览器执行器不可用（应用主进程未注册）', isError: true }
+        return ctx.browserDriver(String(input?.action || ''), input?.params || {})
+      },
     },
   }
   return {

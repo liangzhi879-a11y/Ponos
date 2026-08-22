@@ -37,11 +37,12 @@ function makeEnv() {
   })
   engine.setSystemPrompt('你是 YFW-turbo 测试内核。')
   const laneFile = (taskId) => join(configDir, 'projects', dir.replace(/[^a-zA-Z0-9]/g, '-'), `${taskId}.jsonl`)
-  const waitNotif = async (taskId, timeoutMs = 8000) => {
+  // 等待第 nth 条完成通知（resume 后同一 taskId 有多条通知，find 只取首条会拿旧值）
+  const waitNotif = async (taskId, timeoutMs = 8000, nth = 1) => {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
-      const n = events.find((e) => e.type === 'system' && e.subtype === 'task_notification' && e.task_id === taskId)
-      if (n) return n
+      const ns = events.filter((e) => e.type === 'system' && e.subtype === 'task_notification' && e.task_id === taskId)
+      if (ns.length >= nth) return ns[nth - 1]
       await sleep(10)
     }
     return null
@@ -228,4 +229,155 @@ test('主 cancel：signal.aborted 中断前台子循环 → 子 Agent 任务已�
     const stoppedNotif = env.events.find((e) => e.type === 'system' && e.subtype === 'task_notification' && e.status === 'stopped')
     assert.ok(stoppedNotif, '中止前台子任务应发出 stopped 通知')
   } finally { env.cleanup() }
+})
+
+// —— S1 血缘登记 ——
+
+test('S1 血缘：task_started 带 parent_task_id/depth；后台登记 lineage 正确；list 层级缩进', async () => {
+  const env = makeEnv()
+  try {
+    const r = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: '[mock:tool-safe]', run_in_background: true },
+      { toolUseId: 'tool_use_lineage_1' },
+    )
+    const taskId = extractTaskId(r.content)
+    assert.ok(taskId)
+    const started = env.events.find((e) => e.type === 'system' && e.subtype === 'task_started' && e.task_id === taskId)
+    assert.ok(started, 'task_started 应发出')
+    // 主 agent 派发 → 血缘根：parent null / depth 0
+    assert.equal(started.parent_task_id, null)
+    assert.equal(started.depth, 0)
+    const entry = env.engine.pendingSubAgents.get(taskId)
+    assert.ok(entry, '后台任务应登记')
+    assert.equal(entry.lineage.parentTaskId, null)
+    assert.equal(entry.lineage.depth, 0)
+    assert.deepEqual(entry.lineage.path, [taskId])
+    // list 层级缩进：depth 0 无缩进，仍含任务 id
+    assert.match(env.engine.taskSystem.list(), new RegExp(taskId.slice(0, 8)))
+    await env.waitNotif(taskId)
+  } finally { env.cleanup() }
+})
+
+// —— S2 可继续子 agent（resume）——
+
+test('S2 resume：后台任务完成 → Task resume → task_resumed 事件 → 基于原 lane 续跑', async () => {
+  const env = makeEnv()
+  try {
+    const r = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: '第一轮任务', run_in_background: true },
+      { toolUseId: 'tool_use_resume_1' },
+    )
+    const taskId = extractTaskId(r.content)
+    assert.ok(taskId)
+    const n1 = await env.waitNotif(taskId)
+    assert.ok(n1, '首轮通知应到达')
+    assert.equal(n1.status, 'completed')
+    assert.match(n1.summary, /第一轮任务/)
+    // resume：续跑指令追加到既有 lane
+    const resume = await env.engine.taskSystem.resume(taskId, '第二轮：继续')
+    assert.equal(resume.isError, false)
+    assert.match(resume.content, /已续跑/)
+    const resumed = env.events.find((e) => e.type === 'system' && e.subtype === 'task_resumed' && e.task_id === taskId)
+    assert.ok(resumed, 'task_resumed 事件应发出')
+    assert.equal(resumed.prompt, '第二轮：继续')
+    const n2 = await env.waitNotif(taskId, 8000, 2)
+    assert.ok(n2, '续跑后通知应到达')
+    assert.equal(n2.task_id, taskId)
+    assert.match(n2.summary, /第二轮：继续/)
+    // lane transcript 含两条 user 消息（原指令 + 续跑指令），历史未丢失
+    const laneText = readFileSync(env.laneFile(taskId), 'utf-8')
+    const laneEntries = laneText.split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    const userTexts = laneEntries.filter((e) => e.message?.role === 'user' && typeof e.message.content === 'string').map((e) => e.message.content)
+    assert.ok(userTexts.includes('第一轮任务'), '原指令应保留')
+    assert.ok(userTexts.includes('第二轮：继续'), '续跑指令应追加')
+  } finally { env.cleanup() }
+})
+
+test('S2 resume 状态机：running 中拒绝；不存在任务报错；可重复续跑', async () => {
+  const env = makeEnv()
+  try {
+    // running 中 resume → 拒绝
+    const r = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: '[mock:tool-safe]', run_in_background: true },
+      { toolUseId: 'tool_use_resume_run_1' },
+    )
+    const taskId = extractTaskId(r.content)
+    assert.ok(taskId)
+    // spawnSubAgent 同步返回时已登记 running，立即 resume 必命中 running
+    const busy = await env.engine.taskSystem.resume(taskId, '再跑')
+    assert.equal(busy.isError, true)
+    assert.match(busy.content, /仍在运行/)
+    // 不存在任务
+    const ghost = await env.engine.taskSystem.resume('no-such-task', 'x')
+    assert.equal(ghost.isError, true)
+    assert.match(ghost.content, /任务不存在/)
+    // 完成后可重复续跑（第二次续跑同样成功）
+    await env.waitNotif(taskId)
+    const again = await env.engine.taskSystem.resume(taskId, '第二轮')
+    assert.equal(again.isError, false)
+    assert.match(again.content, /已续跑/)
+    await env.waitNotif(taskId)
+  } finally { env.cleanup() }
+})
+
+// —— S3 结果承接（resume_task_id + outputs）——
+
+test('S3 resume_task_id：Agent 工具基于既有后台任务会话续跑（等价 Task resume）', async () => {
+  const env = makeEnv()
+  try {
+    const r = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: '初始任务', run_in_background: true },
+      { toolUseId: 'tool_use_rtid_1' },
+    )
+    const taskId = extractTaskId(r.content)
+    assert.ok(taskId)
+    await env.waitNotif(taskId)
+    // 直接经 spawnSubAgent（Agent 工具执行体）续跑
+    const rtid = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: '续跑指令：产出结果', resume_task_id: taskId },
+      { toolUseId: 'tool_use_rtid_2' },
+    )
+    assert.equal(rtid.isError, false)
+    assert.match(rtid.content, /已续跑/)
+    const n2 = await env.waitNotif(taskId, 8000, 2)
+    assert.ok(n2, '续跑完成通知应到达')
+    assert.equal(n2.task_id, taskId)
+    assert.match(n2.summary, /续跑指令：产出结果/)
+    // resume_task_id 指向不存在任务 → 错误
+    const ghost = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: 'x', resume_task_id: 'no-such-task' },
+      {},
+    )
+    assert.equal(ghost.isError, true)
+    assert.match(ghost.content, /任务不存在/)
+  } finally { env.cleanup() }
+})
+
+test('S3 outputs：子 agent Write 产物路径全部进 task_notification.outputs，文件真实落盘', async () => {
+  const env = makeEnv()
+  const prev = process.env.YFW_MOCK_WRITE_DIR
+  try {
+    process.env.YFW_MOCK_WRITE_DIR = env.dir
+    const r = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: '[mock:write]', run_in_background: true },
+      { toolUseId: 'tool_use_outputs_1' },
+    )
+    const taskId = extractTaskId(r.content)
+    assert.ok(taskId)
+    const n = await env.waitNotif(taskId)
+    assert.ok(n, '完成通知应到达')
+    assert.equal(n.status, 'completed')
+    // outputs 含两个 Write 路径（onTool 收集，与 mock 生成的正斜杠拼法一致）
+    const outA = `${env.dir}/mock-a.txt`
+    const outB = `${env.dir}/mock-b.txt`
+    assert.deepEqual(n.outputs, [outA, outB])
+    assert.equal(n.output_file, outB, 'output_file 为最后产物')
+    // 文件真实落盘（Write 工具在共享工作区执行成功）
+    assert.ok(existsSync(outA))
+    assert.ok(existsSync(outB))
+  } finally {
+    if (prev === undefined) delete process.env.YFW_MOCK_WRITE_DIR
+    else process.env.YFW_MOCK_WRITE_DIR = prev
+    env.cleanup()
+  }
 })
