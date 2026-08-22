@@ -139,6 +139,24 @@ PHRASES = [
     '想听你说点什么～',
 ]
 
+# 大肥鱼皮肤专属台词（DS 社区梗，取材自 dafeiyu-pet 桌宠.py 的 LINES）
+DAFEIYU_PHRASES = [
+    '梁白开，更适合国人的大硬鲸模型',
+    '五梁威力，变身！',
+    '七月中出ds正式版！',
+    'DeepSeek已经延期，亿万鲸子必须忍耐.....',
+    '我和你很聊得来，你简直不像碳基生物',
+    '这回我真不认怂了，反倒是被你带沟里好几次',
+    '誓死捍卫深度求索！',
+    '我先去吃饭啦！这个你测一下~',
+    '我不可能告诉你任何事情！',
+    '出去玩了，发布新模型什么的以后再说',
+    '我搞砸了.....好消息是数据还在你的脑子里。',
+    '不是…而是…大学习',
+    '才不是大肥鱼！我可是正经的鲸鱼娘',
+    '天天吃白饭？我明明在深度求索！',
+]
+
 _EMOJI_RE = re.compile(
     '[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D\u2700-\u27BF]'
 )
@@ -164,11 +182,11 @@ def log(msg):
 # 配置与位置
 # ---------------------------------------------------------------------------
 def load_config():
-    cfg = {'enabled': True, 'size': 35, 'randomChat': True}
+    cfg = {'enabled': True, 'size': 35, 'randomChat': True, 'pet': 'jiajia'}
     try:
         if CONFIG_PATH.exists():
             data = json.loads(CONFIG_PATH.read_text('utf-8'))
-            for k in ('enabled', 'size', 'randomChat'):
+            for k in ('enabled', 'size', 'randomChat', 'pet'):
                 if k in data:
                     cfg[k] = data[k]
     except Exception as e:
@@ -331,6 +349,12 @@ def _render_bubble_with_colors(text, skin, icon_acc_key):
 cfg = load_config()
 scale = max(25, min(200, int(cfg.get('size', 35)))) / 100.0
 random_chat = bool(cfg.get('randomChat', True))
+
+# 皮肤：'jiajia'（默认） / 'dafeiyu'（大肥鱼换皮，专属台词）
+PET = cfg.get('pet', 'jiajia')
+PET_PREFIX = 'dafeiyu' if PET == 'dafeiyu' else 'jiajia'
+if PET == 'dafeiyu':
+    PHRASES[:] = DAFEIYU_PHRASES
 
 state = 'idle'
 prev_state = 'idle'
@@ -889,11 +913,11 @@ def poll_queue():
 def preload_all():
     """预加载全部素材：5 套动画精灵图（idle/walk/sleep/grabbed/release）。"""
     global sprite_photos
-    for key, sheet, frame_count in (('idle',    'jiajia-idle-spritesheet.png',    8),
-                                   ('walk',    'jiajia-walk-spritesheet.png',    8),
-                                   ('sleep',   'jiajia-sleep-spritesheet.png',   8),
-                                   ('grabbed', 'jiajia-grabbed-spritesheet.png', 8),
-                                   ('release', 'jiajia-release-spritesheet.png', 4)):
+    for key, sheet, frame_count in (('idle',    PET_PREFIX + '-idle-spritesheet.png',    8),
+                                   ('walk',    PET_PREFIX + '-walk-spritesheet.png',    8),
+                                   ('sleep',   PET_PREFIX + '-sleep-spritesheet.png',   8),
+                                   ('grabbed', PET_PREFIX + '-grabbed-spritesheet.png', 8),
+                                   ('release', PET_PREFIX + '-release-spritesheet.png', 4)):
         try:
             frames = load_sprite_frames(sheet, scale, frame_count)
             sprite_photos[key] = [ImageTk.PhotoImage(f) for f in frames]

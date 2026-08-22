@@ -250,6 +250,8 @@ export interface AppSettings {
   autoApproveBash: boolean
   autoApproveWebSearch: boolean
   restrictedDirectories: string[]
+  /** 允许访问会话目录外的文件（Read/Write/Edit/OCR 解锁边界；Glob/Grep 仍限会话目录内） */
+  allowOutsideDirs: boolean
 
   // YFWorking multi-provider config
   activeProvider: string
@@ -271,6 +273,8 @@ export interface AppSettings {
   petEnabled: boolean
   petSize: number
   petRandomChat: boolean
+  /** 桌面宠物形象：嘉嘉（bridge 联动） / 大肥鱼（独立） */
+  petType: 'jiajia' | 'dafeiyu'
 }
 
 export interface YFWorkingConfig {
@@ -310,6 +314,8 @@ export interface YFWorkingConfigV2 {
   experienceInjectEnabled?: boolean
   /** 新会话注入个人经验的上限（字符数） */
   experienceInjectMaxBytes?: number
+  /** 允许访问会话目录外文件（Read/Write/Edit/OCR 解锁边界） */
+  allowOutsideDirs?: boolean
 }
 
 // --- File System Types ---
@@ -385,7 +391,7 @@ export interface YFWAPI {
   setTrayBehavior: (enabled: boolean) => void
   notifyTaskComplete: (payload: { title: string; body: string; onlyBackground: boolean }) => Promise<{ shown: boolean }>
   openInExplorer: (filePath: string) => Promise<{ ok: boolean }>
-  setPetConfig: (config: { enabled: boolean; size: number; randomChat: boolean }) => Promise<{ ok: boolean }>
+  setPetConfig: (config: { enabled: boolean; size: number; randomChat: boolean; pet?: 'jiajia' | 'dafeiyu' }) => Promise<{ ok: boolean }>
   /** 将 GUI 注册的专业/自定义 agent 同步为内核 agent 文件（写/删 $YFW_HOME/agents/*.md） */
   agentsSync: (agents: AgentSyncPayload[]) => Promise<{ ok: boolean; written?: string[]; removed?: string[]; error?: string }>
   /** Current user's home directory (resolved in preload context via os.homedir()) */

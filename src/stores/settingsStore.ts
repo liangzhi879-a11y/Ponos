@@ -65,6 +65,7 @@ const defaultSettings: AppSettings = {
   autoApproveBash: false,
   autoApproveWebSearch: false,
   restrictedDirectories: [],
+  allowOutsideDirs: false,
 
   sidebarOpen: true,
   sidebarWidth: 300,
@@ -112,6 +113,7 @@ const defaultSettings: AppSettings = {
   petEnabled: false,
   petSize: 35,
   petRandomChat: true,
+  petType: 'jiajia',
 }
 
 interface SettingsState {
@@ -230,6 +232,7 @@ export const useSettingsStore = create<SettingsState>()(
           state.settings.glassHueShift ??= 0 // 【plan §3 步骤 7】兜底旧持久化数据
           state.settings.autoImageBridge ??= true // 自动图片桥接默认开启
           state.settings.visionProviderId ??= '' // 视觉来源默认跟随 activeProvider
+          state.settings.petType ??= 'jiajia' // 桌面宠物形象默认嘉嘉
         }
       },
     }

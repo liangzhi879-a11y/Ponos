@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { Settings, Monitor, Cpu, Info, Check, Sparkles, Globe, Save, Database, FolderOpen, Brain, ChevronDown, Plus, X, Trash2, Puzzle, ChevronRight, HardDrive, RefreshCw, Wifi, Zap } from 'lucide-react'
+import { Settings, Monitor, Cpu, Info, Check, Sparkles, Globe, Save, Database, FolderOpen, Brain, ChevronDown, Plus, X, Trash2, Puzzle, ChevronRight, HardDrive, RefreshCw, Wifi, Zap, ShieldOff } from 'lucide-react'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
   Button, ScrollArea, Switch,
@@ -282,6 +282,33 @@ export function SettingsView() {
                     <p className="text-xs text-tertiary mb-4">{t('settings.petDesc')}</p>
 
                     <div className="space-y-3">
+                      {/* Pet type selector */}
+                      <div>
+                        <label className="block text-sm text-secondary mb-1">{t('settings.petType')}</label>
+                        <p className="text-[10px] text-tertiary mb-2">{t('settings.petTypeDesc')}</p>
+                        <div className="grid grid-cols-2 gap-2">
+                          {([
+                            { id: 'jiajia', label: t('settings.petJiajia'), desc: t('settings.petJiajiaDesc') },
+                            { id: 'dafeiyu', label: t('settings.petDafeiyu'), desc: t('settings.petDafeiyuDesc') },
+                          ] as const).map(p => (
+                            <button
+                              key={p.id}
+                              type="button"
+                              onClick={() => updateSettings({ petType: p.id })}
+                              className={cn(
+                                'rounded-lg border px-3 py-2.5 text-left transition-colors',
+                                settings.petType === p.id
+                                  ? 'border-brand-500 bg-brand-500/10'
+                                  : 'border-border hover:border-brand-500/50'
+                              )}
+                            >
+                              <span className="block text-sm font-medium text-primary">{p.label}</span>
+                              <span className="block text-[10px] text-tertiary mt-0.5 leading-snug">{p.desc}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
                       {/* Enable desktop pet */}
                       <div>
                         <label className="flex items-center justify-between py-1">
@@ -340,7 +367,7 @@ export function SettingsView() {
 
               {section === 'about' && (
                 <div className="space-y-4 text-sm text-secondary">
-                  <h3 className="text-sm font-semibold text-primary">YFWorking</h3>
+                  <h3 className="text-sm font-semibold text-primary">YFWorking dev</h3>
                   <div className="space-y-2">
                     <div className="flex justify-between">
                       <span className="text-tertiary">Version</span>
@@ -426,6 +453,7 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
           autoCapture: cfg.autoCapture,
           autoImageBridge: cfg.autoImageBridge,
           visionProviderId: cfg.visionProviderId || '',
+          allowOutsideDirs: cfg.allowOutsideDirs === true,
         })
       })
       .catch(() => {})
@@ -529,6 +557,7 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
         autoCapture: settings.autoCapture,
         autoImageBridge: settings.autoImageBridge,
         visionProviderId: settings.visionProviderId || '',
+        allowOutsideDirs: settings.allowOutsideDirs,
         providers: settings.providers,
       }
       const saved = await saveBridgeConfig(cfg)
@@ -585,6 +614,23 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
               {t('settings.addCustomProvider')}
             </button>
           </div>
+        </div>
+
+        {/* 会话目录外文件访问开关（全局权限，非 provider 级） */}
+        <div className="mb-4">
+          <label className="flex items-center justify-between py-1">
+            <div>
+              <span className="text-xs font-medium text-secondary flex items-center gap-1.5">
+                <ShieldOff className="w-3 h-3" />
+                {t('settings.allowOutsideDirs')}
+              </span>
+              <p className="text-[10px] text-tertiary mt-0.5">{t('settings.allowOutsideDirsDesc')}</p>
+            </div>
+            <Switch
+              checked={settings.allowOutsideDirs}
+              onCheckedChange={v => updateSettings({ allowOutsideDirs: v })}
+            />
+          </label>
         </div>
 
         {activeProv && (

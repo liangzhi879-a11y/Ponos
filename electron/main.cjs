@@ -22,6 +22,13 @@ const { exportPackage, importPackage } = require('../server/packager.mjs')
 // 内置浏览器自动化执行器（窗口/CDP/快照/人工接管/下载）
 const { BrowserExecutor } = require('./browser-executor.cjs')
 
+// YFWorking home 单点解析：dev 调试版经 YFW_HOME env 指向独立目录
+// （~/.yfworking-dev），与正式版 ~/.yfworking 完全隔离——技能/密钥/会话/
+// 内核 bootstrap 互不干扰。缺省回落正式版默认路径。
+function yfwHome() {
+  return process.env.YFW_HOME ? path.resolve(process.env.YFW_HOME) : path.join(os.homedir(), '.yfworking')
+}
+
 // ---------------------------------------------------------------------------
 // 应用内诊断（Task 2）：日志 tee 最早期接入——启动序列第一行日志即入盘。
 // 崩溃清扫挂点：崩溃（uncaughtException/unhandledRejection）时优雅清扫残留运行。
@@ -40,10 +47,14 @@ logTee.onCrash(() => {
 })
 
 function findPythonExe() {
-  const bundled = path.join(__dirname, '..', '..', 'runtime', 'python', 'python.exe')
-  if (fs.existsSync(bundled)) return bundled
-  const dev = path.join(__dirname, '..', 'runtime', 'python', 'python.exe')
-  if (fs.existsSync(dev)) return dev
+  // 候选顺序：dev 便携版 app 根 runtime → 仓库布局上溯两级 → electron-builder
+  // 打包版 <app>/resources/runtime（extraResources 落点）。全部缺失回退 PATH。
+  const candidates = [
+    path.join(__dirname, '..', 'runtime', 'python', 'python.exe'),
+    path.join(__dirname, '..', '..', 'runtime', 'python', 'python.exe'),
+    path.join(__dirname, '..', 'resources', 'runtime', 'python', 'python.exe'),
+  ]
+  for (const p of candidates) if (fs.existsSync(p)) return p
   return 'python'
 }
 const PYTHON_EXE = findPythonExe()
@@ -56,9 +67,13 @@ const PYTHON_EXE = findPythonExe()
 // findPythonExe()，但裸命令名 'python' 会令 monitor 的 existsSync 相对 cwd 误报
 // （I4 语义）——map 成 null，monitor 对 null 返回 unknown。
 function resolveDiagPaths() {
+  // 打包版 kernel 在 <app>/resources/app/kernel-dist，bun/python 在
+  // <app>/resources/runtime/（electron-builder files vs extraResources 分根），
+  // 与 bridge findYFWorking 的交叉组合候选保持一致。
   const candidates = [
     { kernel: path.join(__dirname, '..', 'kernel', 'cli.mjs'), bun: path.join(__dirname, '..', 'runtime', 'bun', 'bun.exe') },
     { kernel: path.join(__dirname, '..', '..', 'kernel', 'cli.mjs'), bun: path.join(__dirname, '..', '..', 'runtime', 'bun', 'bun.exe') },
+    { kernel: path.join(__dirname, '..', 'kernel-dist', 'cli.mjs'), bun: path.join(__dirname, '..', '..', 'runtime', 'bun', 'bun.exe') },
   ]
   let appPaths = { kernel: null, bun: null }
   for (const c of candidates) {
@@ -136,7 +151,7 @@ let doubaoBusy = false          // 生成请求在途标记（空闲销毁不得
 let doubaoLastUse = 0           // 最近一次生成/捕获活动时间戳
 let doubaoIdleTimer = null      // 空闲销毁轮询定时器
 // 豆包会话文件：契约与 server/doubao.mjs 的 sessionFile() 一致
-const DOUBAO_SESSION_FILE = path.join(os.homedir(), '.yfworking', 'doubao-session.json')
+const DOUBAO_SESSION_FILE = path.join(yfwHome(), 'doubao-session.json')
 const DOUBAO_URL = 'https://www.doubao.com/chat/create-image'
 let bridgeProcess = null
 let bridgeAdopted = false           // 端口上跑的是"接入"的外部 bridge（非本进程 spawn）
@@ -156,7 +171,7 @@ let petProcess = null
 let gpuCrashCount = 0            // 诊断：GPU 进程崩溃累计（child-process-gone 处 ++）
 let renderCrashCount = 0         // 诊断：渲染进程崩溃累计（render-process-gone 处 ++）
 let monitor = null               // 应用内诊断 monitor（registerIpc 内创建；模块级事件 handler 经可选链引用）
-let petConfig = { enabled: false, size: 50, randomChat: true }
+let petConfig = { enabled: false, size: 50, randomChat: true, pet: 'jiajia' }
 let petIntentKill = null     // 主动 kill 的宠物进程（区分“用户右键退出”导致的意外退出）
 let petRestartTimer = null   // 宠物配置变更重启的防抖定时器
 const ICON_PATH = path.join(__dirname, '..', 'public', 'icon.png')
@@ -411,7 +426,7 @@ function createWindow() {
     height: 900,
     minWidth: 900,
     minHeight: 600,
-    title: 'YFWorking',
+    title: 'YFWorking dev',
     // Windows 透明窗口必须 frame:false（titleBarStyle:'hidden' 保留系统 frame，
     // 会挡住 DWM 透明合成，实测 Win10 无法透出桌面）。
     // 取舍：放弃系统 1px 边框/阴影/系统边缘拖拽，换来玻璃主题真透桌面；
@@ -515,7 +530,7 @@ function createTray() {
   if (icon.isEmpty()) icon = nativeImage.createEmpty()
 
   tray = new Tray(icon)
-  tray.setToolTip('YFWorking')
+  tray.setToolTip('YFWorking dev')
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开主窗口', click: showMainWindow },
     { type: 'separator' },
@@ -631,12 +646,12 @@ function connectBrowserExecutor() {
 // 另一半"消费升级"依赖人工触发——本提醒让积压不至于悄悄烂尾）。
 // ---------------------------------------------------------------------------
 function experienceDir() {
-  const yfw = path.join(os.homedir(), '.yfworking', 'memory', 'skill_experiences')
+  const yfw = path.join(yfwHome(), 'memory', 'skill_experiences')
   if (fs.existsSync(yfw)) return yfw
   return path.join(os.homedir(), '.trae-cn', 'memory', 'skill_experiences')
 }
 function experienceAlertStateFile() {
-  return path.join(os.homedir(), '.yfworking', 'experience-alert.json')
+  return path.join(yfwHome(), 'experience-alert.json')
 }
 const EXPERIENCE_ALERT_INTERVAL_MS = 24 * 60 * 60 * 1000
 
@@ -765,7 +780,7 @@ async function registerIpc() {
     if (p.onlyBackground && win && !win.isDestroyed() && win.isVisible() && win.isFocused()) {
       return { shown: false }
     }
-    new Notification({ title: p.title || 'YFWorking', body: p.body || '', icon: ICON_PATH }).show()
+    new Notification({ title: p.title || 'YFWorking dev', body: p.body || '', icon: ICON_PATH }).show()
     return { shown: true }
   })
 
@@ -1096,8 +1111,8 @@ async function registerIpc() {
   // 用 .yfw-managed.json 记录 GUI 管理的 id，删除时只删这些，不触碰用户手写文件。
   ipcMain.handle('agents:sync', async (_e, agents) => {
     try {
-      const yfwHome = ensureYfwHome()
-      const agentsDir = path.join(yfwHome, 'agents')
+      const home = ensureYfwHome()
+      const agentsDir = path.join(home, 'agents')
       fs.mkdirSync(agentsDir, { recursive: true })
       const registryFile = path.join(agentsDir, '.yfw-managed.json')
       let registry = []
@@ -1208,6 +1223,8 @@ async function registerIpc() {
 // ---------------------------------------------------------------------------
 // Desktop pet
 // ---------------------------------------------------------------------------
+// 宠物形象（嘉嘉 / 大肥鱼换皮）由 pet.json 的 pet 字段决定，统一走
+// jiajia-pet.py 引擎（tkinter 精灵图 + bridge 联动），皮肤素材在 pet/assets/。
 function resolvePetScript() {
   const bundled = path.join(__dirname, '..', '..', 'pet', 'jiajia-pet.py')
   if (fs.existsSync(bundled)) return bundled
@@ -1275,13 +1292,14 @@ function applyPetConfig(cfg) {
   const prev = { ...petConfig }
   Object.assign(petConfig, cfg)
 
-  const cfgPath = path.join(os.homedir(), '.yfworking', 'pet.json')
+  const cfgPath = path.join(yfwHome(), 'pet.json')
   try {
     if (!fs.existsSync(path.dirname(cfgPath))) fs.mkdirSync(path.dirname(cfgPath), { recursive: true })
     fs.writeFileSync(cfgPath, JSON.stringify({
       enabled: petConfig.enabled,
       size: petConfig.size,
       randomChat: petConfig.randomChat,
+      pet: petConfig.pet,
     }, null, 2))
   } catch (e) {
     console.warn('[pet] failed to persist config:', e.message)
@@ -1295,9 +1313,11 @@ function applyPetConfig(cfg) {
       spawnPet()
     } else if (
       (typeof cfg.size !== 'undefined' && cfg.size !== prev.size) ||
-      (typeof cfg.randomChat !== 'undefined' && cfg.randomChat !== prev.randomChat)
+      (typeof cfg.randomChat !== 'undefined' && cfg.randomChat !== prev.randomChat) ||
+      (typeof cfg.pet !== 'undefined' && cfg.pet !== prev.pet)
     ) {
-      // 防抖：滑块拖动等连续变更只重启一次
+      // 防抖：滑块拖动等连续变更只重启一次（换皮切换也走这里：重启后
+      // jiajia-pet.py 重新读 pet.json 加载对应皮肤素材与台词）
       petRestartTimer = setTimeout(() => { petRestartTimer = null; killPet(); spawnPet() }, 400)
     }
   } else if (!petConfig.enabled) {
@@ -1311,10 +1331,10 @@ function applyPetConfig(cfg) {
 // First-run setup — create ~/.yfworking/ and seed skills/config
 // ---------------------------------------------------------------------------
 function ensureYfwHome() {
-  const yfwHome = path.join(os.homedir(), '.yfworking')
-  const yfwSkills = path.join(yfwHome, 'skills')
+  const home = yfwHome()
+  const yfwSkills = path.join(home, 'skills')
 
-  if (!fs.existsSync(yfwHome)) fs.mkdirSync(yfwHome, { recursive: true })
+  if (!fs.existsSync(home)) fs.mkdirSync(home, { recursive: true })
   if (!fs.existsSync(yfwSkills)) fs.mkdirSync(yfwSkills, { recursive: true })
 
   // Seed sample skills on first run only (skip if any skill already present)
@@ -1351,7 +1371,7 @@ function ensureYfwHome() {
       console.warn('[main] no sample-skills dir found in candidates:', candidates)
     }
   }
-  return yfwHome
+  return home
 }
 
 // ---------------------------------------------------------------------------
@@ -1359,15 +1379,27 @@ function ensureYfwHome() {
 // shortcut multiple times.  Only the first instance is allowed to run;
 // subsequent ones focus the existing window instead.
 // ---------------------------------------------------------------------------
+// dev 隔离（YFW_HOME 注入时）：使用独立 userData，避免与正式版/旧调试版共享
+// Electron 单实例锁与缓存——否则正式版运行中时，dev 版因 !gotTheLock 静默退出
+// （表现为"桌面快捷方式点了没反应"）。setPath 必须在 requestSingleInstanceLock
+// 之前调用（锁基于 userData 判定），且均在 app ready 前。
+if (process.env.YFW_HOME) {
+  app.setPath('userData', path.join(yfwHome(), 'userData'))
+}
+
 const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
   app.quit()
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.show()
       mainWindow.focus()
+    } else if (app.isReady()) {
+      // 窗口已关闭但进程驻留（托盘模式）或主窗口尚未创建：重建窗口，
+      // 保证"实例在跑时再次双击快捷方式"也有可见响应（此前静默无响应）。
+      createWindow()
     }
   })
 
@@ -1397,7 +1429,7 @@ if (!gotTheLock) {
       const logPath = logTee.getLogPath()
       const { response } = await dialog.showMessageBox({
         type: 'error',
-        title: 'YFWorking 启动异常',
+        title: 'YFWorking dev 启动异常',
         message: '应用界面启动失败。完整错误日志已保存到：',
         detail: logPath,
         buttons: ['打开日志目录', '复制路径', '确定'],
@@ -1447,8 +1479,9 @@ if (!gotTheLock) {
     await registerIpc()
 
     // First-run: make sure ~/.yfworking/ exists and has skills
-    const yfwHome = ensureYfwHome()
-    console.log('[main] YFWorking home:', yfwHome)
+    // 局部变量命名避开全局函数 yfwHome()，防止遮蔽导致 pet restore 等调用炸掉
+    const home = ensureYfwHome()
+    console.log('[main] YFWorking home:', home)
 
     // Reuse an already-running bridge if present (adopt + supervise it),
     // else start our own. 复用不等于放手不管：接管后由健康轮询兜底，
@@ -1493,7 +1526,7 @@ if (!gotTheLock) {
     connectBrowserExecutor()
 
   // Restore last session's pet state (~/.yfworking/pet.json); skip if absent
-  const petCfgPath = path.join(os.homedir(), '.yfworking', 'pet.json')
+  const petCfgPath = path.join(home, 'pet.json')
   if (fs.existsSync(petCfgPath)) {
     try {
       applyPetConfig(JSON.parse(fs.readFileSync(petCfgPath, 'utf8')))
