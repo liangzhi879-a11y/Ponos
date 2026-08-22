@@ -201,6 +201,15 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // 浏览器桥冒烟：[mock:browser] 触发 Browser tool_use（bridge_request(browser)
+  // 挂起 → browser_response 解除 链路测试用）
+  if (lastText.includes('[mock:browser]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_mock_browser', name: 'Browser', input: { action: 'goto', params: { url: 'https://example.com' } } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // 大结果工具轮（P0-3 磁盘持久化测试）：Bash 输出 30000 字符触发落盘 + 预览替换
   if (lastText.includes('[mock:big]')) {
     if (signal?.aborted) throw abortError()
@@ -337,11 +346,27 @@ function isCacheRejection(err) {
   return status === 400 || status === 422 || /cache|unknown field|unsupported/i.test(msg)
 }
 
+// 思考深度 → 请求体字段（对齐 Claude Code 档位 + DeepSeek Anthropic 兼容端点：
+// 深度走 reasoning_effort（low/high/max），关闭走 thinking:disabled；两者不并发生
+// 发，避免 DeepSeek #1397 的 400）。auto/未知 → {}（模型原生自适应，不注入）。
+export function effortParam(effort) {
+  if (effort === 'off') return { thinking: { type: 'disabled' } }
+  if (effort === 'low' || effort === 'high' || effort === 'max') return { reasoning_effort: effort }
+  return {}
+}
+
+// 端点拒绝思考深度字段（400/422 且提及 effort/thinking）→ 去掉字段重发，退回模型默认
+function isEffortRejection(err) {
+  const status = err?.status || 0
+  const msg = String(err?.message || '')
+  return (status === 400 || status === 422) && /reasoning_effort|thinking|effort/i.test(msg)
+}
+
 // Anthropic 协议流：tools 中立形状 → tools[]；system 抽顶层。
 // prompt cache 显式化：YFW_PROMPT_CACHE=1 且 system 非空时，system 改数组形态并
 // 打 ephemeral 缓存标记（Anthropic 官方端点依赖显式标记命中缓存；DeepSeek 兼容
 // 端点自动缓存，显式标记无害）。端点拒绝该字段时自动去掉标记重发一次（兼容兜底）。
-async function* anthropicStream({ model, messages, system, tools, maxTokens, signal }) {
+async function* anthropicStream({ model, messages, system, tools, maxTokens, signal, reasoningEffort = null }) {
   // P4-5：注册表解析（setProvider 激活后固定；未激活 getProvider 现读 env，行为不变）
   const p = getProvider()
   const base = p.baseUrl
@@ -349,9 +374,12 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
   if (!base || !token) throw new Error('内核：ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 未配置')
   const useCache = process.env.YFW_PROMPT_CACHE === '1' && !!system
   const headers = { 'content-type': 'application/json', 'x-api-key': token, 'anthropic-version': '2023-06-01' }
+  // 思考深度：reasoningEffort（low/high/max → reasoning_effort；off → thinking disabled；
+  // 缺省 → 不注入，模型原生自适应）
   const body = {
     model,
     max_tokens: maxTokens,
+    ...effortParam(reasoningEffort),
     ...(system ? (useCache ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] } : { system }) : {}),
     messages,
     stream: true,
@@ -377,6 +405,12 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
       if (useCache && isCacheRejection(err)) {
         // 缓存标记被拒：去掉后重发一次（body 恢复纯字符串 system）
         yield* protocolStream({ url: base + '/v1/messages', body: { ...body, ...(system ? { system } : {}) }, headers, signal })
+        return
+      }
+      if (reasoningEffort && isEffortRejection(err)) {
+        // 端点不支持思考深度字段：去掉后重发一次（退回模型默认思考深度）
+        const { reasoning_effort, thinking, ...rest } = body
+        yield* protocolStream({ url: base + '/v1/messages', body: rest, headers, signal })
         return
       }
       throw err
@@ -426,7 +460,7 @@ function withIdleTimeout(promise, ms) {
 }
 
 // 消息流入口：mock / 真实 Anthropic 协议分流。tools = 中立 [{name, description, input_schema}]
-export async function* streamMessages({ model, messages, maxTokens, signal, tools = [] }) {
+export async function* streamMessages({ model, messages, maxTokens, signal, tools = [], reasoningEffort = null }) {
   const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n')
   const rest = messages.filter((m) => m.role !== 'system')
   if (process.env.YFW_MOCK_API === '1') {
@@ -434,5 +468,5 @@ export async function* streamMessages({ model, messages, maxTokens, signal, tool
     return
   }
   if (!detectProtocol()) throw new Error('内核：未检测到可用协议（需 ANTHROPIC_BASE_URL）')
-  yield* anthropicStream({ model, messages: rest, system, tools, maxTokens, signal })
+  yield* anthropicStream({ model, messages: rest, system, tools, maxTokens, signal, reasoningEffort })
 }

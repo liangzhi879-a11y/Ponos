@@ -36,7 +36,7 @@ import { discoverSkills } from './skills.mjs'
 import { loadSettings } from './settings.mjs'
 import { createHooks } from './hooks.mjs'
 import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
-import { YFW_VERSION, SCHEMA_VERSION, buildId } from '../version.mjs'
+import { KERNEL_VERSION, SCHEMA_VERSION, buildId } from '../version.mjs'
 
 const REQUIRED_FORMAT = 'stream-json'
 
@@ -251,7 +251,7 @@ export async function main(argv) {
   const prov = getProvider()
   const vision = visionFromEnv()
   wire.system('init', {
-    model, tools: engine.toolNames, session_id: sessionId, name: 'YFWorking', version: YFW_VERSION, capacity,
+    model, tools: engine.toolNames, session_id: sessionId, name: 'YFWorking', version: KERNEL_VERSION, capacity,
     schemaVersion: SCHEMA_VERSION,
     buildId: buildId(),
     provider: prov ? { model: prov.model, version: providerVersion() } : null,
@@ -274,6 +274,32 @@ export async function main(argv) {
 
   async function handleUser(msg) {
     const content = extractContent(msg)
+    const priority = msg?.priority
+    const uuid = msg?.uuid
+    // P8 排队插话（priority:'next'）：当前轮活跃时吸收进 engine 待注入队列，
+    // 工具边界注入当前轮（模型尽快看到补充信息）；立即回发 command_lifecycle
+    // started 解除前端气泡悬浮。纯文本阶段轮次结束仍未注入 → finally 兜底作为
+    // 新轮处理（前端方案 A 语义）。turnActive=false（轮次间隙到达）时作为新轮
+    // 直接执行，同样先发 started 确认——否则前端气泡悬浮 30s 兜底落位。
+    if (priority === 'next') {
+      if (state.turnActive) {
+        engine.queueNext(content, uuid) // 内部含 command_lifecycle started
+        return
+      }
+      if (uuid) wire.commandLifecycle(uuid, 'started')
+      // fallthrough：作为新轮执行
+    }
+    // 紧急插话（priority:'now'）：吸收确认后中断当前轮，消息作为新轮立即执行。
+    // 流程与前端 pendingInterject 对齐：被打断轮 result 到达 → GUI 建插话轮
+    // 占位 → 本消息作为新轮输出归属到插话轮。
+    if (state.turnActive && priority === 'now') {
+      if (uuid) wire.commandLifecycle(uuid, 'started')
+      state.cancelling = true
+      engine.abort()
+      state.queue = [] // 丢弃排队消息（紧急插话优先）
+      state.queue.push({ ...msg, priority: undefined, uuid: undefined })
+      return
+    }
     state.turnActive = true
     // 早退路径（hook 拦截 / 竞态取消）统一落在外层 try 内，确保 finally 复位
     // turnActive——否则后续消息会永远排队不处理。
@@ -332,6 +358,12 @@ export async function main(argv) {
       } catch { /* 工作记忆写失败不影响主流程 */ }
       state.turnActive = false
       state.cancelling = false
+      // 插话残余兜底：next 消息在纯文本阶段未被工具边界吸收 → 作为新轮处理
+      if (engine.pendingNextCount() > 0) {
+        for (const inj of engine.drainNextPending()) {
+          state.queue.push({ message: { role: 'user', content: inj.content } })
+        }
+      }
       const nextMsg = state.queue.shift()
       if (nextMsg) void handleUser(nextMsg)
     }
@@ -353,6 +385,11 @@ export async function main(argv) {
       }
       return
     }
+    // 浏览器桥响应（bridge 回写，browser-routing.mjs）：解除 engine 浏览器挂起
+    if (subtype === 'browser_response') {
+      engine.resolveBrowser(req?.request?.requestId, req?.request)
+      return
+    }
     // P4-5 热切换：空闲切换 / busy 拒绝 / 校验失败拒绝；成功落审计 meta 条目
     if (subtype === 'switch_provider') {
       const payload = req?.request?.payload || {}
@@ -364,11 +401,28 @@ export async function main(argv) {
         const { provider, version } = setProvider(payload)
         model = provider.model
         context.window = contextWindowFor(provider.model)   // 上下文窗口随模型重算
+        // 顺带同步思考深度档位（bridge 下发 payload.effortLevel；空值不动）
+        if (payload.effortLevel) {
+          const r = engine.setReasoningEffort(payload.effortLevel)
+          store.appendMeta('reasoning_effort', { value: r.value, effort: r.effort, source: 'provider_switch' })
+        }
         store.appendMeta('provider_switched', { provider: { baseUrl: provider.baseUrl, model: provider.model }, version })
         wire.system('provider_switched', { model: provider.model, baseUrl: provider.baseUrl, version })
       } catch (err) {
         wire.system('provider_switch_rejected', { reason: err?.message || String(err) })
       }
+      return
+    }
+    // 思考深度热切换：校验失败拒绝 / 生效于下一轮 API 请求；成功落审计 meta 条目
+    if (subtype === 'reasoning_effort') {
+      const value = req?.request?.payload?.value
+      if (value == null || String(value).trim() === '') {
+        wire.system('reasoning_effort_rejected', { reason: '缺少 value（off|low|medium|high|max|auto）' })
+        return
+      }
+      const r = engine.setReasoningEffort(String(value).trim())
+      store.appendMeta('reasoning_effort', { value: r.value, effort: r.effort })
+      wire.system('reasoning_effort_updated', { value: r.value, effort: r.effort })
       return
     }
     // 其余 control_request（interrupt 等）骨架阶段忽略
