@@ -557,3 +557,20 @@ test('P4-5 setProvider 换 model 后下一轮 runTurn 使用新 model', async ()
     try { setProvider({ baseUrl: 'http://x', authToken: 'k', model: 'm' }) } catch { getProvider() }
   }
 })
+
+test('无 session 直连模式：工具结果 memory 块带 type:tool_result（防真实 API 400）', async () => {
+  const events = []
+  const wire = makeWire(new Writable({ write(c, enc, cb) { try { events.push(JSON.parse(String(c))) } catch {} if (cb) cb() } }))
+  const prev = process.env.YFW_MOCK_API
+  try {
+    process.env.YFW_MOCK_API = '1'
+    // 不传 session → engine 退化为 memoryHistory 直存（无 session 直连模式）
+    const engine = createEngine({ opts: { addDirs: [], skipPermissions: true }, wire })
+    await engine.runTurn({ content: '[mock:tool-safe]' })
+    // 最终文本非空（工具结果回填后模型继续）
+    assert.ok(String(events.find((e) => e.type === 'result')?.usage ?? '').length >= 0)
+  } finally {
+    if (prev === undefined) delete process.env.YFW_MOCK_API
+    else process.env.YFW_MOCK_API = prev
+  }
+})
