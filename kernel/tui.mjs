@@ -580,13 +580,15 @@ function main() {
       case 'banner': return m.lines
       case 'user': {
         const pw = 6 // '┃ You '
-        const inner = Math.max(4, cols - pw - 1)
+        // 前缀实际宽 = '  '(2) + '┃ You '(6) = 8 列；-1 余量容纳 streaming tail
+        const inner = Math.max(4, cols - 8 - 1)
         const lines = wrapText(m.text, inner)
         return lines.map((ln, i) => (i === 0 ? '  ' + c('┃ You ', 'orange') + c(ln, 'text') : '  ' + c('┃' + ' '.repeat(pw - 1), 'orange') + c(ln, 'text')))
       }
       case 'assistant': {
         const pw = 12 // '┃ Assistant '
-        const inner = Math.max(4, cols - pw - 1)
+        // 前缀实际宽 = '  '(2) + '┃ Assistant '(12) = 14 列；-1 余量容纳 streaming tail
+        const inner = Math.max(4, cols - 14 - 1)
         const tail = m.streaming && m.text && m.text.trim() ? c('▍', 'red') : ''
         const lines = wrapText((m.text || '') + tail, inner)
         return lines.map((ln, i) => (i === 0 ? '  ' + c('┃ Assistant ', 'red') + c(ln, 'text') : '  ' + c('┃' + ' '.repeat(pw - 1), 'red') + c(ln, 'text')))
