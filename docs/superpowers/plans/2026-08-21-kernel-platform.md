@@ -6,7 +6,7 @@
 
 **Architecture:** 四个纯内核模块（settings.mjs / hooks.mjs / skills.mjs / provider.mjs 追加导出）+ cli.mjs 组装 + engine.mjs 两个注入点 + bridge.mjs 一个薄改动（providers.json 落盘）。遵循内核优先原则：全部机制在 kernel/，bridge 只负责把前端配置序列化成内核可读文件，前端零新增设置项。P4-5（provider 热切换）已有独立计划 `2026-08-21-provider-hot-switch.md`，本计划 Task 5 在其已创建的 `kernel/provider.mjs` 上**仅追加导出**，不重写。
 
-**Tech Stack:** 纯 Node ESM（node:test / node:fs / node:child_process），零 npm 依赖。测试沿用 `server/*.test.mjs` 模式：单元直连 import 内核模块；集成 spawn 真内核（`kernel/cli.mjs` + `YFW_MOCK_API=1`）+ makeReader 行队列（参照 `server/kernel-contract.test.mjs`）。
+**Tech Stack:** 纯 Node ESM（node:test / node:fs / node:child_process），零 npm 依赖。测试沿用 `server/*.test.mjs` 模式：单元直连 import 内核模块；集成 spawn 真内核（`kernel/cli.mjs` + `PONOS_MOCK_API=1`）+ makeReader 行队列（参照 `server/kernel-contract.test.mjs`）。
 
 ## Global Constraints
 
@@ -31,7 +31,7 @@
 - Produces:
   - `deepMerge(base, override)` → object：普通对象递归深合并；数组/标量直接覆盖；`null`/`undefined` 跳过（undefined 不覆盖）
   - `loadSettings({ configDir, cwd, local })` → `{ user, project, local, merged, paths }`
-    - `user` = configDir/settings.json（缺省 `{}`）；`project` = cwd/.yfworking/settings.json（缺省 `{}`）；`local` = 传入覆盖（缺省 `{}`）
+    - `user` = configDir/settings.json（缺省 `{}`）；`project` = cwd/.ponos/settings.json（缺省 `{}`）；`local` = 传入覆盖（缺省 `{}`）
     - `merged` = `deepMerge(deepMerge(user, project), local)`，优先级 user < project < local
     - `paths` = `{ user, project }`（文件实际路径，供诊断）
 
@@ -46,7 +46,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deepMerge, loadSettings } from '../kernel/settings.mjs'
 
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-settings-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-settings-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('deepMerge：标量覆盖 / 对象递归 / 数组替换 / undefined 跳过', () => {
@@ -59,9 +59,9 @@ test('loadSettings：user < project < local 三级合并 + paths', () => {
   const configDir = join(tmp, 'cfg')
   const cwd = join(tmp, 'proj')
   mkdirSync(join(configDir), { recursive: true })
-  mkdirSync(join(cwd, '.yfworking'), { recursive: true })
+  mkdirSync(join(cwd, '.ponos'), { recursive: true })
   writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ model: 'user-model', hooks: [{ event: 'sessionStart' }], env: { A: '1' } }), 'utf-8')
-  writeFileSync(join(cwd, '.yfworking', 'settings.json'), JSON.stringify({ model: 'project-model', env: { B: '2' } }), 'utf-8')
+  writeFileSync(join(cwd, '.ponos', 'settings.json'), JSON.stringify({ model: 'project-model', env: { B: '2' } }), 'utf-8')
   const r = loadSettings({ configDir, cwd, local: { model: 'local-model' } })
   assert.equal(r.merged.model, 'local-model')
   assert.equal(r.merged.env.B, '2')
@@ -109,7 +109,7 @@ function readJson(p) {
 
 export function loadSettings({ configDir = '', cwd = '', local = {} } = {}) {
   const userPath = configDir ? join(configDir, 'settings.json') : ''
-  const projectPath = cwd ? join(cwd, '.yfworking', 'settings.json') : ''
+  const projectPath = cwd ? join(cwd, '.ponos', 'settings.json') : ''
   const user = readJson(userPath)
   const project = readJson(projectPath)
   return {
@@ -186,14 +186,14 @@ test('settings 集成：项目 settings.model 注入 system(init)', async () => 
   const configDir = join(tmp, 'cfg2')
   const cwd = join(tmp, 'proj2')
   mkdirSync(configDir, { recursive: true })
-  mkdirSync(join(cwd, '.yfworking'), { recursive: true })
-  writeFileSync(join(cwd, '.yfworking', 'settings.json'), JSON.stringify({ model: 'my-model' }), 'utf-8')
+  mkdirSync(join(cwd, '.ponos'), { recursive: true })
+  writeFileSync(join(cwd, '.ponos', 'settings.json'), JSON.stringify({ model: 'my-model' }), 'utf-8')
   const child = spawn(process.execPath, [
     KERNEL, '--print', '--output-format', 'stream-json', '--input-format', 'stream-json',
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion', '--add-dir', cwd,
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir, ANTHROPIC_MODEL: '' },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir, ANTHROPIC_MODEL: '' },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const reader = makeReader(child.stdout)
@@ -220,7 +220,7 @@ Expected: FAIL —— init 事件 `model` 为 `''`（settings 未读取）
 2. `main()` 内 `configDir` 计算后（line 108 之后）插入 settings 加载与 env 兜底：
 
 ```js
-  // 分层 settings：user（configDir/settings.json）< project（cwd/.yfworking/settings.json）< local。
+  // 分层 settings：user（configDir/settings.json）< project（cwd/.ponos/settings.json）< local。
   // settings.env 仅兜底（spawn env 快照仍权威）：缺失键才写入。
   const settings = loadSettings({ configDir, cwd: args.addDirs[0] || '', local: {} })
   for (const [k, v] of Object.entries(settings.merged.env || {})) {
@@ -285,7 +285,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHooks, matchHook } from '../kernel/hooks.mjs'
 
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-hooks-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-hooks-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('matchHook：event 精确 + tools 列表过滤 + 缺省匹配全部', () => {
@@ -379,7 +379,7 @@ function parseDecision(rule, event, output) {
 async function runHook(rule, payload) {
   const started = Date.now()
   const child = spawn(rule.command, rule.args || [], {
-    env: { ...process.env, YFW_HOOK_EVENT: payload.event || '' },
+    env: { ...process.env, PONOS_HOOK_EVENT: payload.event || '' },
     timeout: rule.timeoutMs || 10_000,
     windowsHide: true,
   })
@@ -488,14 +488,14 @@ test('hooks 集成：preToolUse deny → tool_result 携带 hook 消息', async 
   const configDir = join(tmp, 'hcfg')
   const cwd = join(tmp, 'hproj')
   mkdirSync(configDir, { recursive: true })
-  mkdirSync(join(cwd, '.yfworking'), { recursive: true })
+  mkdirSync(join(cwd, '.ponos'), { recursive: true })
   const script = join(tmp, 'deny-all.mjs')
   writeFileSync(script, `
     import { readFileSync } from 'node:fs'
     readFileSync(0, 'utf-8')
     process.stdout.write(JSON.stringify({ deny: true, message: 'HOOK_DENY_MARK' }))
   `, 'utf-8')
-  writeFileSync(join(cwd, '.yfworking', 'settings.json'), JSON.stringify({
+  writeFileSync(join(cwd, '.ponos', 'settings.json'), JSON.stringify({
     hooks: [{ event: 'preToolUse', tools: 'Bash', command: process.execPath, args: [script] }],
   }), 'utf-8')
   const child = spawn(process.execPath, [
@@ -503,7 +503,7 @@ test('hooks 集成：preToolUse deny → tool_result 携带 hook 消息', async 
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion', '--add-dir', cwd,
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const reader = makeReader(child.stdout)
@@ -527,14 +527,14 @@ test('hooks 集成：userPromptSubmit stop → 拦截不进轮次', async () => 
   const configDir = join(tmp, 'hcfg2')
   const cwd = join(tmp, 'hproj2')
   mkdirSync(configDir, { recursive: true })
-  mkdirSync(join(cwd, '.yfworking'), { recursive: true })
+  mkdirSync(join(cwd, '.ponos'), { recursive: true })
   const script = join(tmp, 'stop-all.mjs')
   writeFileSync(script, `
     import { readFileSync } from 'node:fs'
     readFileSync(0, 'utf-8')
     process.stdout.write(JSON.stringify({ stop: true, message: 'STOPPED_BY_HOOK' }))
   `, 'utf-8')
-  writeFileSync(join(cwd, '.yfworking', 'settings.json'), JSON.stringify({
+  writeFileSync(join(cwd, '.ponos', 'settings.json'), JSON.stringify({
     hooks: [{ event: 'userPromptSubmit', command: process.execPath, args: [script] }],
   }), 'utf-8')
   const child = spawn(process.execPath, [
@@ -542,7 +542,7 @@ test('hooks 集成：userPromptSubmit stop → 拦截不进轮次', async () => 
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion', '--add-dir', cwd,
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const reader = makeReader(child.stdout)
@@ -651,16 +651,16 @@ git commit -m "feat(kernel): hooks 注入点（preToolUse 否决/postToolUse/use
 ### Task 5: provider 配置传递链（bridge providers.json + seedFromFile + 视觉透传）
 
 **Files:**
-- Modify: `server/bridge.mjs`（写 `~/.yfworking/providers.json`：saveConfig 内 + 启动时）
+- Modify: `server/bridge.mjs`（写 `~/.ponos/providers.json`：saveConfig 内 + 启动时）
 - Modify: `kernel/provider.mjs`（追加 `seedFromFile(filePath)` 与 `visionFromEnv(env)` 两个导出 —— 该文件由 P4-5 计划创建，本任务只追加不改既有函数）
 - Create: `server/provider-chain.test.mjs`
 
 **Interfaces:**
 - Consumes: `getProvider()/setProvider(patch)/providerVersion`（P4-5 计划已定义；`setProvider` 校验 http(s) baseUrl / authToken 非空 / model 非空，激活后 version++）
 - Produces:
-  - bridge：`~/.yfworking/providers.json` = `{ activeProvider, providers: [{ id, apiBaseUrl, authToken, primaryModel, models, subagentModel, contextWindow, visionModel }] }`（与 settings.json 同一信任域，均含 token，仅存 YFW_HOME）
+  - bridge：`~/.ponos/providers.json` = `{ activeProvider, providers: [{ id, apiBaseUrl, authToken, primaryModel, models, subagentModel, contextWindow, visionModel }] }`（与 settings.json 同一信任域，均含 token，仅存 PONOS_HOME）
   - `seedFromFile(filePath, { env } = {})` → bool：读 providers.json → 取 activeProvider → `setProvider({ baseUrl, authToken, model, contextWindow })`；文件缺失/损坏/active 配置不全 → false 且不激活
-  - `visionFromEnv(env = process.env)` → `{ baseUrl, model, configured } | null`：`YFW_VISION_BASE_URL/YFW_VISION_MODEL/YFW_VISION_AUTH_TOKEN`；baseUrl 与 model 缺一 → null
+  - `visionFromEnv(env = process.env)` → `{ baseUrl, model, configured } | null`：`PONOS_VISION_BASE_URL/PONOS_VISION_MODEL/PONOS_VISION_AUTH_TOKEN`；baseUrl 与 model 缺一 → null
 
 - [x] **Step 1: 写失败测试**
 
@@ -673,7 +673,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { seedFromFile, visionFromEnv, getProvider } from '../kernel/provider.mjs'
 
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-prov-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-prov-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('seedFromFile：读取 providers.json 激活 active provider', () => {
@@ -700,10 +700,10 @@ test('seedFromFile：文件缺失/active 配置不全 → false 不激活', () =
   assert.equal(seedFromFile(p), false)
 })
 
-test('visionFromEnv：YFW_VISION_* 解析 + 缺字段返回 null', () => {
-  assert.deepEqual(visionFromEnv({ YFW_VISION_BASE_URL: 'https://v.example.com', YFW_VISION_MODEL: 'gpt-v', YFW_VISION_AUTH_TOKEN: 'tv' }),
+test('visionFromEnv：PONOS_VISION_* 解析 + 缺字段返回 null', () => {
+  assert.deepEqual(visionFromEnv({ PONOS_VISION_BASE_URL: 'https://v.example.com', PONOS_VISION_MODEL: 'gpt-v', PONOS_VISION_AUTH_TOKEN: 'tv' }),
     { baseUrl: 'https://v.example.com', model: 'gpt-v', configured: true })
-  assert.equal(visionFromEnv({ YFW_VISION_BASE_URL: 'https://v.example.com' }), null)
+  assert.equal(visionFromEnv({ PONOS_VISION_BASE_URL: 'https://v.example.com' }), null)
   assert.equal(visionFromEnv({}), null)
 })
 ```
@@ -734,12 +734,12 @@ export function seedFromFile(filePath, { env = process.env } = {}) {
   return true
 }
 
-// 视觉模型透传：独立 provider（YFW_VISION_*，bridge buildChildEnv 已注入）→ 上报用对象。
+// 视觉模型透传：独立 provider（PONOS_VISION_*，bridge buildChildEnv 已注入）→ 上报用对象。
 export function visionFromEnv(env = process.env) {
-  const baseUrl = env.YFW_VISION_BASE_URL || ''
-  const model = env.YFW_VISION_MODEL || ''
+  const baseUrl = env.PONOS_VISION_BASE_URL || ''
+  const model = env.PONOS_VISION_MODEL || ''
   if (!baseUrl || !model) return null
-  return { baseUrl, model, configured: !!env.YFW_VISION_AUTH_TOKEN }
+  return { baseUrl, model, configured: !!env.PONOS_VISION_AUTH_TOKEN }
 }
 ```
 
@@ -755,11 +755,11 @@ export function visionFromEnv(env = process.env) {
 - [x] **Step 4: 实现 bridge.mjs 落盘**
 
 `server/bridge.mjs`：
-1. `YFW_SETTINGS_PATH` 定义附近加：
+1. `PONOS_SETTINGS_PATH` 定义附近加：
 
 ```js
-// P4-1：内核 provider 注册表播种源（与 settings.json 同一信任域：YFW_HOME，含 token）
-const YFW_PROVIDERS_PATH = join(YFW_HOME, 'providers.json')
+// P4-1：内核 provider 注册表播种源（与 settings.json 同一信任域：PONOS_HOME，含 token）
+const PONOS_PROVIDERS_PATH = join(PONOS_HOME, 'providers.json')
 
 function writeProvidersFile() {
   try {
@@ -777,7 +777,7 @@ function writeProvidersFile() {
         visionModel: p.visionModel || '',
       })),
     }
-    safeWriteJsonWithBak(YFW_PROVIDERS_PATH, JSON.stringify(snapshot, null, 2))
+    safeWriteJsonWithBak(PONOS_PROVIDERS_PATH, JSON.stringify(snapshot, null, 2))
   } catch (e) {
     console.warn('[bridge] writeProvidersFile failed:', e.message)
   }
@@ -832,7 +832,7 @@ import { dirname } from 'node:path'
 import { createInterface } from 'node:readline'
 import { discoverSkills, parseFrontmatter, verifySkillVersions } from '../kernel/skills.mjs'
 
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-skills-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-skills-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('parseFrontmatter：key: value 解析 + 去引号', () => {
@@ -888,7 +888,7 @@ test('集成：spawn 内核 + 技能目录 → init 事件带 skills 数量与 p
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion', '--add-dir', cwd, '--add-dir', skillRoot,
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir, YFW_VISION_BASE_URL: 'https://v.example.com', YFW_VISION_MODEL: 'gpt-v' },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir, PONOS_VISION_BASE_URL: 'https://v.example.com', PONOS_VISION_MODEL: 'gpt-v' },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const lines = []
@@ -1031,7 +1031,7 @@ export function verifySkillVersions({ lockPath, skills = [] }) {
   const prov = getProvider()
   const vision = visionFromEnv()
   wire.system('init', {
-    model, tools: engine.toolNames, session_id: sessionId, name: 'YFWorking', version: YFW_VERSION,
+    model, tools: engine.toolNames, session_id: sessionId, name: 'Ponos', version: PONOS_VERSION,
     provider: prov ? { model: prov.model, version: prov.version } : null,
     vision: vision ? { model: vision.model } : null,
     skills: skills.length,

@@ -158,7 +158,7 @@ export function matchesHighRisk(command) {
 **Files:**
 - Modify: `server/bridge.mjs`
 
-- [x] **Step 1**: `YFW_MILESTONE_PROTOCOL`（L55-67）追加（12095da）：
+- [x] **Step 1**: `PONOS_MILESTONE_PROTOCOL`（L55-67）追加（12095da）：
 
 ```
 - 开始执行某个里程碑时，先输出开始标记：<!--MILESTONE-START i/N 名称-->
@@ -174,7 +174,7 @@ export function matchesHighRisk(command) {
 ### Task 4: 内核清理（删工具 + 引用修复 + 重建 bundle）
 
 **Files:**
-- Delete: `yfw-kernel/claude-code/src/tools/EnterPlanModeTool/`（4 文件）、`tools/ExitPlanModeTool/`（4 文件）、`utils/planModeV2.ts`、`components/permissions/ExitPlanModePermissionRequest/`、`components/permissions/EnterPlanModePermissionRequest/`
+- Delete: `ponos-kernel/claude-code/src/tools/EnterPlanModeTool/`（4 文件）、`tools/ExitPlanModeTool/`（4 文件）、`utils/planModeV2.ts`、`components/permissions/ExitPlanModePermissionRequest/`、`components/permissions/EnterPlanModePermissionRequest/`
 - Modify: 约 20 处引用（spec §8 清单）
 
 - [x] **Step 1: 删除目录与文件**（`git rm -r` 或 rm + git add，确认无其他引用后）（a21c3f4）
@@ -198,11 +198,11 @@ export function matchesHighRisk(command) {
 ### Task 5: 内核高风险审批（强制 ask + 实证恢复格式）
 
 **Files:**
-- Modify: `yfw-kernel/claude-code/src/tools/BashTool/destructiveCommandWarning.ts`
+- Modify: `ponos-kernel/claude-code/src/tools/BashTool/destructiveCommandWarning.ts`
 - Modify: BashTool 权限检查（canUseTool，`tools/BashTool/bashPermissions.ts` 或 BashTool.ts 内）
 
 - [x] **Step 1: 扩展 DESTRUCTIVE_PATTERNS**：补 Windows 命令（del/erase/rmdir/rd /s/move/taskkill/kill/format/diskpart/reg delete/takeown /f/Stop-Process）+ `rm -f`（单文件）+ `mv`
-- [x] **Step 2: BashTool 权限检查命中 → 强制 ask**：在 canUseTool 权限判定处（query 权限流程返回 `{behavior:'ask', decisionReason:{type:'safetyCheck'}}` 之前）插入命中检测——命中 DESTRUCTIVE_PATTERNS → `{behavior:'ask', decisionReason:{type:'safetyCheck', reason:'yfw-highrisk-command'}}`（bypass-immune，L1252-1260 先例）
+- [x] **Step 2: BashTool 权限检查命中 → 强制 ask**：在 canUseTool 权限判定处（query 权限流程返回 `{behavior:'ask', decisionReason:{type:'safetyCheck'}}` 之前）插入命中检测——命中 DESTRUCTIVE_PATTERNS → `{behavior:'ask', decisionReason:{type:'safetyCheck', reason:'ponos-highrisk-command'}}`（bypass-immune，L1252-1260 先例）
 - [x] **Step 3: 重建 bundle**
 - [x] **Step 4: 实证恢复消息格式（spec §11.1）**：`scripts/verify-permission-flow.mjs` 实证——关键发现：**spawn 必须加 `--permission-prompt-tool stdio`**（否则 ask 退化为自动 deny，无批准途径）；恢复消息为 control_response（格式固化至 spec §4.2），allow/deny 两路径实证通过（exit 0）
 - [x] **Step 5: 提交**（5ddb427）
@@ -225,11 +225,11 @@ export function matchesHighRisk(command) {
 ### Task 7: 前端（inProgress + 审批弹窗 + tooltip）
 
 **Files:**
-- Modify: `src/types/index.ts`、`src/stores/chatStore.ts`、`src/hooks/useYFWCLI.ts`、`src/components/permissions/PermissionDialog.tsx`、`src/components/layout/Sidebar.tsx`
+- Modify: `src/types/index.ts`、`src/stores/chatStore.ts`、`src/hooks/usePonosCLI.ts`、`src/components/permissions/PermissionDialog.tsx`、`src/components/layout/Sidebar.tsx`
 
 - [x] **Step 1**: `ConversationProgress` 加 `inProgress?: number`（2a7979f）
 - [x] **Step 2**: chatStore 加 `setMilestoneStart(id, index)`（钳制：`Math.min(index, total)`，无现有 progress 时忽略）；`sendPermissionResponse` 经 ws 通道发 `approval-response`（2a7979f）
-- [x] **Step 3**: useYFWCLI 加 `milestone-start` handler（setMilestoneStart）与 `approval` handler（addPermissionRequest，激活死代码）+ `approval-resolved` handler（2a7979f）
+- [x] **Step 3**: usePonosCLI 加 `milestone-start` handler（setMilestoneStart）与 `approval` handler（addPermissionRequest，激活死代码）+ `approval-resolved` handler（2a7979f）
 - [x] **Step 4**: PermissionDialog 激活：approval 事件入队，Approve/Deny 先 `sendPermissionResponse` 再 `resolvePermission`（2a7979f）
 - [x] **Step 5**: Sidebar tooltip：有 total 时 `inProgress` 优先取里程碑名 `i/N`（`执行中 ${name} ${i}/${total}`），无 inProgress → `计划中`；无 total → `执行中`（2a7979f）
 - [x] **Step 6**: `npx tsc --noEmit` 无新增错误 + 提交（2a7979f）

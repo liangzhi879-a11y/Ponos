@@ -20,9 +20,9 @@
 
 ## 2. 架构约束
 
-- `yfw-kernel/` 零修改；`server/`、`electron/` 零修改（纯前端功能）。
+- `ponos-kernel/` 零修改；`server/`、`electron/` 零修改（纯前端功能）。
 - 前端无单测基建（现有测试仅覆盖 server）→ 验证门槛为 `npm run typecheck` 0 错误 + 手测清单。
-- `uiStore` 已有 zustand persist（key `yfworking-ui`）→ 新增排序模式字段自动持久化，无需改 storage。
+- `uiStore` 已有 zustand persist（key `ponos-ui`）→ 新增排序模式字段自动持久化，无需改 storage。
 - `chatStore` 的 `partialize` 已原样持久化 `conversationSets` → 数组顺序即手动顺序，无需改 partialize。
 - 导出顺序（`conversations` 数组序）、`autoOrganize` 语义不变。
 
@@ -103,7 +103,7 @@ setChatSortMode: (mode: ChatSortMode) => void
 - 手测清单：
   1. 4 种排序模式展示正确（置顶区不随排序变化）。
   2. 会话拖拽：手动模式下拖拽生效；非手动模式下开始拖拽即切回手动并正确落位。
-  3. 会话集拖拽排序生效，重启后顺序保持（localStorage `yfworking-chat` 的 conversationSets 顺序）。
-  4. 排序模式跨重启记住（localStorage `yfworking-ui`）。
+  3. 会话集拖拽排序生效，重启后顺序保持（localStorage `ponos-chat` 的 conversationSets 顺序）。
+  4. 排序模式跨重启记住（localStorage `ponos-ui`）。
   5. 搜索 + 排序组合正确；搜索时各组自动展开不受影响。
   6. 右键移动/导出/会话集菜单在排序模式下正常。

@@ -1,6 +1,6 @@
 // kernel/redact.mjs —— 敏感信息脱敏（docs/production/security.md S2-1）
 // 磁盘 transcript / 日志在落盘前打码；内存模型输入（deriveMessages）保留原文。
-// YFW_KEEP_SECRETS=1 时磁盘也保留（用户显式选择）。
+// PONOS_KEEP_SECRETS=1 时磁盘也保留（用户显式选择）。
 const SECRET_PATTERNS = [
   // Bearer 优先：先吞整段 token，避免其尾部 sk- 被下一条 pattern 抢先打码
   /\b(Bearer\s+)[A-Za-z0-9\-._~+/]{8,}/gi,
@@ -8,7 +8,7 @@ const SECRET_PATTERNS = [
   /(\bAKIA)[A-Z0-9]{16}\b/g,                    // AWS access key
   /(\b(?:api[_-]?key|auth[_-]?token|password|secret|token)\b\s*[:=]\s*["']?)[A-Za-z0-9_\-.]{8,}/gi,
 ]
-const KEEP = () => process.env.YFW_KEEP_SECRETS === '1'
+const KEEP = () => process.env.PONOS_KEEP_SECRETS === '1'
 
 export function redactText(text) {
   if (typeof text !== 'string' || !text || KEEP()) return text

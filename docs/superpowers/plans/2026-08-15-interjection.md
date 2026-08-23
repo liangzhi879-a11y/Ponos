@@ -4,7 +4,7 @@
 
 **Goal:** 让用户在 agent 生成中途插话——排队补充（回车）或紧急打断补充（插话按钮），插话带"补充信息/调整要求、继续当前任务"语义包装。
 
-**Architecture:** 零内核改动，复用内核 `priority:'now'` 的打断-继续机制。bridge.mjs 一行透传 priority；前端 useYFWCLI 新增 `interject()` + `pendingInterject` 缓冲（紧急插话被打断轮 result 到达后才建新流式占位），ChatInput 输入框生成中常开 + 新增插话按钮。
+**Architecture:** 零内核改动，复用内核 `priority:'now'` 的打断-继续机制。bridge.mjs 一行透传 priority；前端 usePonosCLI 新增 `interject()` + `pendingInterject` 缓冲（紧急插话被打断轮 result 到达后才建新流式占位），ChatInput 输入框生成中常开 + 新增插话按钮。
 
 **Tech Stack:** Node.js bridge (bridge.mjs)、React + zustand (src/)、Electron 应用；验证用 `node --test`（server 侧）+ `npm run typecheck` + E2E 脚本。
 
@@ -12,11 +12,11 @@
 
 - 插话语义（用户确认）：**补充信息/调整要求，不是新任务**。发送给内核的文本必须带 `wrapInterject` 包装；聊天界面显示用户原文。
 - 紧急插话 = 全会话中断（含进程内子 agent），与停止按钮（bridge cancel → control_request interrupt）同机制但走 `priority:'now'` 用户消息路径。
-- 排队插话复用现有 `sendQueue` 串行机制（useYFWCLI.ts:255-257），不新增并行路径。
+- 排队插话复用现有 `sendQueue` 串行机制（usePonosCLI.ts:255-257），不新增并行路径。
 - 内核零改动；`dist/cli.mjs` 不重建。
 - 现有测试框架：`npm test` 仅覆盖 `server/*.test.mjs`（纯单元，无内核/API 依赖）；E2E 脚本放 `server/interject.e2e.mjs`（不含 `.test.mjs`，不进 npm test）。
 - 停止按钮行为不变。
-- release 运行副本必须同步（源码改动 → `release/YFWorking_ms92cd6u/`），重启需用户确认。
+- release 运行副本必须同步（源码改动 → `release/Ponos_ms92cd6u/`），重启需用户确认。
 
 ---
 
@@ -63,7 +63,7 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = 52319
 const bridge = spawn(process.execPath, [join(__dirname, 'bridge.mjs')], {
-  env: { ...process.env, YFW_BRIDGE_PORT: String(PORT) },
+  env: { ...process.env, PONOS_BRIDGE_PORT: String(PORT) },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 bridge.stderr.on('data', d => process.stdout.write('[bridge-err] ' + String(d).slice(0, 120) + '\n'))
@@ -169,10 +169,10 @@ git commit -m "feat(interjection): bridge 透传 priority，支持内核 now 优
 
 ---
 
-### Task 2: useYFWCLI.ts —— interject + pendingInterject + 重构
+### Task 2: usePonosCLI.ts —— interject + pendingInterject + 重构
 
 **Files:**
-- Modify: `src/hooks/useYFWCLI.ts`（dispatchSend 重构、send() 排队包装、interject()、result handler、模块级 pendingInterject、hook 返回值）
+- Modify: `src/hooks/usePonosCLI.ts`（dispatchSend 重构、send() 排队包装、interject()、result handler、模块级 pendingInterject、hook 返回值）
 
 **Interfaces:**
 - Consumes: `wrapInterject(raw)`（本任务定义）；`buildSendPayload(conversationId, prompt, priority?)`；`setupStreamingState(conversationId)`；`sendPayloadWS(conversationId, payload)`
@@ -180,7 +180,7 @@ git commit -m "feat(interjection): bridge 透传 priority，支持内核 now 优
 
 - [ ] **Step 1: 模块级声明 pendingInterject + wrapInterject 工具**
 
-在 `src/hooks/useYFWCLI.ts` 模块顶部（`streamingSessions` 声明附近，约 :30-40）加入：
+在 `src/hooks/usePonosCLI.ts` 模块顶部（`streamingSessions` 声明附近，约 :30-40）加入：
 ```ts
 // 紧急插话缓冲：interject() 发送 now 优先级消息后置位，
 // 被打断轮次的 result 到达时消费（建插话轮流式占位），10s 无响应兜底清除。
@@ -383,8 +383,8 @@ Expected: 无错误
 - [ ] **Step 8: 提交**
 
 ```bash
-git add src/hooks/useYFWCLI.ts
-git commit -m "feat(interjection): useYFWCLI interject + pendingInterject 缓冲 + result handler 适配"
+git add src/hooks/usePonosCLI.ts
+git commit -m "feat(interjection): usePonosCLI interject + pendingInterject 缓冲 + result handler 适配"
 ```
 
 ---
@@ -396,7 +396,7 @@ git commit -m "feat(interjection): useYFWCLI interject + pendingInterject 缓冲
 - Modify: `src/i18n/translations/zh-CN.ts`、`src/i18n/translations/en-US.ts`
 
 **Interfaces:**
-- Consumes: `useYFWCLI()` 的 `interject(conversationId, userContent)`
+- Consumes: `usePonosCLI()` 的 `interject(conversationId, userContent)`
 - Produces: 生成中输入框可用（回车=排队插话）；streaming 时按钮区 = [插话] + [停止]
 
 - [ ] **Step 1: 引入 interject 与图标**
@@ -407,7 +407,7 @@ import { Send, StopCircle, Paperclip, ImageIcon, Mic, MicOff, Command, X, Zap, R
 ```
 第 91 行解构：
 ```tsx
-const { send, stop, interject } = useYFWCLI()
+const { send, stop, interject } = usePonosCLI()
 ```
 
 - [ ] **Step 2: 输入框生成中常开 + 提交拦截放开**
@@ -498,7 +498,7 @@ git commit -m "feat(interjection): 输入框生成中常开 + 插话按钮 + i18
 
 **Files:**
 - Run: `server/interject.e2e.mjs`（Task 1 创建）
-- Sync: `release/YFWorking_ms92cd6u/server/bridge.mjs` ← `server/bridge.mjs`
+- Sync: `release/Ponos_ms92cd6u/server/bridge.mjs` ← `server/bridge.mjs`
 
 **Interfaces:**
 - Consumes: Task 1-3 全部产物
@@ -517,9 +517,9 @@ Expected: 无异常报错；内核会话未被杀（无强杀日志）
 - [ ] **Step 3: 同步 release 副本**
 
 ```bash
-cp server/bridge.mjs release/YFWorking_ms92cd6u/server/bridge.mjs
-node --check release/YFWorking_ms92cd6u/server/bridge.mjs
-diff server/bridge.mjs release/YFWorking_ms92cd6u/server/bridge.mjs && echo IDENTICAL
+cp server/bridge.mjs release/Ponos_ms92cd6u/server/bridge.mjs
+node --check release/Ponos_ms92cd6u/server/bridge.mjs
+diff server/bridge.mjs release/Ponos_ms92cd6u/server/bridge.mjs && echo IDENTICAL
 ```
 
 - [ ] **Step 4: 手测清单（重启应用后执行，需用户确认重启）**

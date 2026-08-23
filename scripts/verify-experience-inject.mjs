@@ -3,10 +3,10 @@
 import { join } from 'node:path'
 import os from 'node:os'
 
-process.env.YFW_TEST_HOME = process.env.YFW_TEST_HOME || join(os.tmpdir(), 'yfw-verify-inject-home')
+process.env.PONOS_TEST_HOME = process.env.PONOS_TEST_HOME || join(os.tmpdir(), 'ponos-verify-inject-home')
 // 随机端口隔离 live 实例（避免 EADDRINUSE 被 bridge 的 uncaughtException handler 吞掉），
 // 同时让 listen 成功后事件循环可控（尾部显式 exit(0) 防挂死）
-process.env.YFW_BRIDGE_PORT = String(39000 + Math.floor(Math.random() * 1000))
+process.env.PONOS_BRIDGE_PORT = String(39000 + Math.floor(Math.random() * 1000))
 
 try {
   const bridge = await import('../server/bridge.mjs')

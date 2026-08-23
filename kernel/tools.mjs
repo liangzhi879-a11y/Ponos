@@ -1,4 +1,4 @@
-// YFW-turbo 工具注册表与执行器（docs/bridge-contract.md §9 替换面：工具执行器）
+// Ponos-turbo 工具注册表与执行器（docs/bridge-contract.md §9 替换面：工具执行器）
 // ---------------------------------------------------------------------------
 // 工具集：Bash（shell 执行，高危命令经 permissions 审批）、Read/Write/Edit
 // （文件读写与编辑，路径边界校验）、Glob/Grep（边界内搜索）、Agent（子代理
@@ -461,7 +461,7 @@ function fetchUrl(url, { maxBytes = 2 * 1024 * 1024, timeoutMs = 30_000, redirec
     const mod = u.protocol === 'https:' ? httpsRequest : httpRequest
     const req = mod(u, {
       method: 'GET',
-      headers: { 'user-agent': 'YFW-turbo/0.1', accept: 'text/html,text/plain,*/*' },
+      headers: { 'user-agent': 'Ponos-turbo/0.1', accept: 'text/html,text/plain,*/*' },
     }, (res) => {
       const status = res.statusCode || 0
       // 3xx + Location：跟随重定向（http/https，最多 3 跳）
@@ -539,7 +539,7 @@ const WEB_SEARCH_TIMEOUT_MS = 30_000
 const WEB_SEARCH_MAX_USES = 5
 const WEB_SEARCH_MAX_TOKENS = 4096
 
-// mock：YFW_MOCK_API=1 时返回固定结果（测试零依赖，验证格式链路）
+// mock：PONOS_MOCK_API=1 时返回固定结果（测试零依赖，验证格式链路）
 function webSearchMock(query) {
   return {
     content: [
@@ -586,7 +586,7 @@ function formatWebSearchResult(payload, query) {
 async function webSearch(query) {
   const q = String(query || '').trim()
   if (!q) return { content: 'query 不能为空：请提供搜索关键词', isError: true }
-  if (process.env.YFW_MOCK_API === '1') return webSearchMock(q)
+  if (process.env.PONOS_MOCK_API === '1') return webSearchMock(q)
   const p = getProvider()
   const base = p.baseUrl
   const token = p.authToken
@@ -603,7 +603,7 @@ async function webSearch(query) {
         'authorization': `Bearer ${token}`,
         'anthropic-version': '2023-06-01',
         'accept': 'application/json',
-        'user-agent': 'YFW-turbo/0.1',
+        'user-agent': 'Ponos-turbo/0.1',
       },
       body: JSON.stringify({
         model,
@@ -632,27 +632,27 @@ async function webSearch(query) {
 // ---------------------------------------------------------------------------
 // OCR：扫描件识别。内核保持零 npm 依赖——OCR 能力来自外部 python 引擎
 // （RapidOCR/PP-OCRv4，见 ~/.claude/skills/_common/ocr_engine.py），工具仅负责
-// 定位引擎、传参、解析输出。引擎探测：YFW_OCR_ENGINE env 覆盖 → 常见技能路径。
+// 定位引擎、传参、解析输出。引擎探测：PONOS_OCR_ENGINE env 覆盖 → 常见技能路径。
 // 输出用 --output 写临时 JSON 全量结果（stdout 仅 500 字符预览），解析后删除。
 // ---------------------------------------------------------------------------
 const OCR_TIMEOUT_MS = 300_000
 
 function findOcrEngine() {
-  if (process.env.YFW_OCR_ENGINE && existsSync(process.env.YFW_OCR_ENGINE)) return process.env.YFW_OCR_ENGINE
+  if (process.env.PONOS_OCR_ENGINE && existsSync(process.env.PONOS_OCR_ENGINE)) return process.env.PONOS_OCR_ENGINE
   const home = process.env.USERPROFILE || process.env.HOME || ''
   const candidates = [
     join(home, '.claude', 'skills', '_common', 'ocr_engine.py'),
-    join(home, '.yfworking', 'skills', '_common', 'ocr_engine.py'),
+    join(home, '.ponos', 'skills', '_common', 'ocr_engine.py'),
   ]
   return candidates.find((p) => existsSync(p)) || null
 }
 
 // Windows 优先 python（rapidocr_onnxruntime 装入的解释器），ENOENT 时回退 py。
-// 优先使用 bridge 注入的 YFWORKING_PYTHON（随应用捆绑的 runtime/python/python.exe，
+// 优先使用 bridge 注入的 PONOS_PYTHON（随应用捆绑的 runtime/python/python.exe，
 // 见 server/bridge.mjs findPythonExe），新环境无系统 python 时 OCR 仍可用。
 function runPythonCapture(args, { cwd, timeoutMs = OCR_TIMEOUT_MS } = {}) {
   return new Promise((resolvePromise) => {
-    const envPy = process.env.YFWORKING_PYTHON
+    const envPy = process.env.PONOS_PYTHON
     const pythons = envPy
       ? [envPy]
       : (process.platform === 'win32' ? ['python', 'py'] : ['python3', 'python'])
@@ -711,9 +711,9 @@ async function ocrFile(filePath, allowDirs, input = {}, skipBoundary) {
       const home = process.env.USERPROFILE || process.env.HOME || ''
       const checked = [
         join(home, '.claude', 'skills', '_common'),
-        join(home, '.yfworking', 'skills', '_common'),
+        join(home, '.ponos', 'skills', '_common'),
       ].join('、')
-      return { content: `OCR 引擎不可用：未找到 ocr_engine.py（已检查 ${checked}；可设置 YFW_OCR_ENGINE 指向引擎路径）`, isError: true }
+      return { content: `OCR 引擎不可用：未找到 ocr_engine.py（已检查 ${checked}；可设置 PONOS_OCR_ENGINE 指向引擎路径）`, isError: true }
     }
     const isImage = IMAGE_EXTS.includes(extname(filePath).toLowerCase())
     let data = null
@@ -734,7 +734,7 @@ async function ocrFile(filePath, allowDirs, input = {}, skipBoundary) {
       try { data = JSON.parse(jsonLine) } catch { return { content: `OCR 引擎输出无效\n${r.content}`, isError: true } }
       if (data?.error) return { content: `OCR 失败：${data.error}`, isError: true }
     } else {
-      const tmpOut = join(tmpdir(), `yfw-ocr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`)
+      const tmpOut = join(tmpdir(), `ponos-ocr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`)
       const args = mode === 'table'
         ? [engine, 'ocr-table', '--file', filePath, '--project', project, '--output', tmpOut]
         : [engine, 'ocr', '--file', filePath, '--project', project, '--output', tmpOut]
@@ -777,7 +777,7 @@ async function ocrFile(filePath, allowDirs, input = {}, skipBoundary) {
 }
 
 // ---------------------------------------------------------------------------
-// Vision：图片语义理解。走独立视觉模型端点（YFW_VISION_BASE_URL/MODEL/
+// Vision：图片语义理解。走独立视觉模型端点（PONOS_VISION_BASE_URL/MODEL/
 // AUTH_TOKEN，bridge buildChildEnv 已注入；visionFromEnv 上报同源），Anthropic
 // 兼容 /v1/messages 带 image block。零新依赖。OCR 是"提取文字"，Vision 是
 // "看图说话"（版面/物体/图表趋势/设计风格等语义），两者互补不替代。
@@ -787,7 +787,7 @@ const VISION_MAX_TOKENS = 2048
 const VISION_MAX_IMAGE_BYTES = 20 * 1024 * 1024
 const VISION_IMAGE_EXTS = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' }
 
-// mock：YFW_MOCK_API=1 时返回固定文本（测试零依赖，验证边界/参数链路）
+// mock：PONOS_MOCK_API=1 时返回固定文本（测试零依赖，验证边界/参数链路）
 function visionMock(filePath, instruction) {
   return { content: `【Vision · mock】${filePath}\n描述：${instruction}`, isError: false }
 }
@@ -808,12 +808,12 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
     if (bytes.length > VISION_MAX_IMAGE_BYTES) {
       return { content: `图片过大（${(bytes.length / 1024 / 1024).toFixed(1)}MB > 20MB），请先压缩或用 OCR 提取文字`, isError: true }
     }
-    if (process.env.YFW_MOCK_API === '1') return visionMock(filePath, instruction)
-    const base = (process.env.YFW_VISION_BASE_URL || '').replace(/\/+$/, '')
-    const model = process.env.YFW_VISION_MODEL || ''
-    const token = process.env.YFW_VISION_AUTH_TOKEN || ''
+    if (process.env.PONOS_MOCK_API === '1') return visionMock(filePath, instruction)
+    const base = (process.env.PONOS_VISION_BASE_URL || '').replace(/\/+$/, '')
+    const model = process.env.PONOS_VISION_MODEL || ''
+    const token = process.env.PONOS_VISION_AUTH_TOKEN || ''
     if (!base || !model || !token) {
-      return { content: 'Vision 未配置：需设置 YFW_VISION_BASE_URL / YFW_VISION_MODEL / YFW_VISION_AUTH_TOKEN（GUI 设置中选中视觉模型后由 bridge 注入）。需要提取图中文字时可先用 OCR', isError: true }
+      return { content: 'Vision 未配置：需设置 PONOS_VISION_BASE_URL / PONOS_VISION_MODEL / PONOS_VISION_AUTH_TOKEN（GUI 设置中选中视觉模型后由 bridge 注入）。需要提取图中文字时可先用 OCR', isError: true }
     }
     let res
     try {
@@ -825,7 +825,7 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
           'authorization': `Bearer ${token}`,
           'anthropic-version': '2023-06-01',
           'accept': 'application/json',
-          'user-agent': 'YFW-turbo/0.1',
+          'user-agent': 'Ponos-turbo/0.1',
         },
         body: JSON.stringify({
           model,
@@ -849,7 +849,7 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
         const j = await res.json()
         detail = j?.error?.message || j?.error?.type || ''
       } catch {}
-      return { content: `Vision 端点返回 HTTP ${res.status}${detail ? `：${detail}` : ''}——检查 YFW_VISION_* 配置；如需图中文字可改用 OCR`, isError: true }
+      return { content: `Vision 端点返回 HTTP ${res.status}${detail ? `：${detail}` : ''}——检查 PONOS_VISION_* 配置；如需图中文字可改用 OCR`, isError: true }
     }
     let payload
     try { payload = await res.json() } catch { return { content: 'Vision 响应解析失败（非 JSON）', isError: true } }
@@ -867,9 +867,9 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
 
 export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [] }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
-  // 会话目录边界开关：--allow-outside-dirs / YFW_ALLOW_OUTSIDE_DIRS=1 解锁文件工具
+  // 会话目录边界开关：--allow-outside-dirs / PONOS_ALLOW_OUTSIDE_DIRS=1 解锁文件工具
   // （Read/Write/Edit/OCR）的目录限制；Glob/Grep 仍限定会话目录内（避免全盘扫描）。
-  const skipBoundary = !!allowOutsideDirs || process.env.YFW_ALLOW_OUTSIDE_DIRS === '1'
+  const skipBoundary = !!allowOutsideDirs || process.env.PONOS_ALLOW_OUTSIDE_DIRS === '1'
   // 禁用工具集（--disallowedTools）：toolNames/toolSchemas/run/isConcurrencySafe
   // 全部基于过滤后视图；被禁工具的执行请求直接拒绝（防模型绕过工具列表）
   const blocked = new Set(disallowedTools || [])
@@ -1095,7 +1095,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutside
       },
       run: (input) => ocrFile(String(input?.file_path ?? ''), allowDirs, input, skipBoundary),
     },
-    // 图片语义理解：独立视觉模型端点（YFW_VISION_*；GUI 设置选中后注入）
+    // 图片语义理解：独立视觉模型端点（PONOS_VISION_*；GUI 设置选中后注入）
     Vision: {
       description: '用视觉模型理解图片内容（版面/物体/图表趋势/设计风格/图中文字语义；60s 超时；PNG/JPEG/WebP/GIF，≤20MB）。与 OCR 互补：OCR 提取文字，Vision 看图说话。未配置视觉模型时返回配置指引（勿重试，需先在应用设置中选中视觉模型）。边界限制：仅可识别当前会话目录及其挂载目录内的文件（同 Read/OCR）',
       concurrencySafe: true,

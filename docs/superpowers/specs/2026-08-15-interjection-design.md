@@ -26,7 +26,7 @@ agent 运行中途，客户（应用用户）希望**插话**——在任务执�
 | B：扩展 control_request 新 subtype | 内核新增 interject 协议 | 需改内核+重建 bundle，与现有 abort 重复 |
 | C：cancel + send 组合 | 先中断再排队发送 | 双消息竞态、时序不可控 |
 
-### 实测结论（内核 `now` 优先级，yfw-kernel/claude-code/dist/cli.mjs）
+### 实测结论（内核 `now` 优先级，ponos-kernel/claude-code/dist/cli.mjs）
 
 - 长生成中注入 `{type:'user', message, priority:'now'}` → 当前轮 47ms 内中止，emit `result`（`is_error=false, subtype=success`，比 control_request 中断的 `error_during_execution` 更干净）
 - 插话内容作为新一轮执行，进程存活、session_id 不变、后续对话正常
@@ -39,7 +39,7 @@ agent 运行中途，客户（应用用户）希望**插话**——在任务执�
 ```
 ┌─────────────┐   WS: {type:'send', priority}   ┌──────────────┐   stdin: {type:'user', priority:'now'}   ┌────────┐
 │  ChatInput   │ ───────────────────────────────▶│  bridge.mjs  │ ─────────────────────────────────────▶│  内核   │
-│  useYFWCLI   │ ◀───────────────────────────────│  (透传priority) │ ◀─────────────────────────────────────│ (零改动)│
+│  usePonosCLI   │ ◀───────────────────────────────│  (透传priority) │ ◀─────────────────────────────────────│ (零改动)│
 └─────────────┘   events: result/assistant/...   └──────────────┘   control_response/result              └────────┘
 ```
 
@@ -62,7 +62,7 @@ session.proc.stdin.write(JSON.stringify({
 
 ### 4.3 前端
 
-#### useYFWCLI.ts
+#### usePonosCLI.ts
 
 - `dispatchSend` 增加可选 `priority` 参数，payload 携带 `priority`
 - 新增 `pendingInterject: Map<conversationId, true>`（模块级，与 sessionState 同域）
@@ -80,7 +80,7 @@ session.proc.stdin.write(JSON.stringify({
 #### ChatInput.tsx
 
 - :691 去掉 `disabled={isStreaming || voiceActive}` → 生成中输入框可用；voiceActive 仍禁用
-- :230 提交拦截改为仅拦 `!prompt`；生成中回车走排队插话（现有 sendQueue 串行机制，useYFWCLI.ts:255-257）
+- :230 提交拦截改为仅拦 `!prompt`；生成中回车走排队插话（现有 sendQueue 串行机制，usePonosCLI.ts:255-257）
 - streaming 时按钮区：`[插话]`（有内容且非空才可点，onClick=interject）+ `[停止]`（原停止保留）
 - 排队插话与紧急插话共用 `wrapInterject` 包装（显示原文、发送包装文本）
 
@@ -133,7 +133,7 @@ export function wrapInterject(raw: string): string {
 ## 7. 测试计划
 
 1. **内核级**（已完成）：'now' 插话打断-继续、子进程终止、session 保留
-2. **E2E**（扩展既有 yfw-e2e 脚本）：
+2. **E2E**（扩展既有 ponos-e2e 脚本）：
    - WS send 带 priority:'now' → bridge 透传 → 当前轮中止 → 插话轮执行 → 续聊
    - 排队插话（priority 缺省，纯文本轮）→ 当前轮结束后作为新轮处理
    - 排队插话（priority 缺省，长工具执行中）→ 不打断当前轮，插话内容被模型吸收
@@ -145,7 +145,7 @@ export function wrapInterject(raw: string): string {
 ## 8. 交付物
 
 - server/bridge.mjs：priority 透传（1 行）
-- src/hooks/useYFWCLI.ts：interject + pendingInterject + result handler 修订 + setupStreamingState 拆分
+- src/hooks/usePonosCLI.ts：interject + pendingInterject + result handler 修订 + setupStreamingState 拆分
 - src/components/chat/ChatInput.tsx：输入框常开 + 插话按钮 + 回车排队
 - src/utils（或 hook 内）：wrapInterject
 - 同步 release 副本 + 重启验证（需用户确认）

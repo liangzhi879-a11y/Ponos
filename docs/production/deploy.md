@@ -15,13 +15,13 @@
 | 配置复杂度 | 50+ 可配置项 | env/CLI/settings 三入口，缺文档则不可用 |
 | 旧数据兼容 | 累计 1000+ 会话 transcript | 升级后旧 transcript 必须可恢复/可读，格式变化需迁移 |
 
-当前架构：electron-builder 打包（yfw-packaging 技能，electron/ 侧）；内核零依赖、随用随启；配置散落在 env/CLI/前端 settingsStore，无 schema/版本化；transcript JSONL 无版本标记。
+当前架构：electron-builder 打包（ponos-packaging 技能，electron/ 侧）；内核零依赖、随用随启；配置散落在 env/CLI/前端 settingsStore，无 schema/版本化；transcript JSONL 无版本标记。
 
 ## 2. 现状（已有能力映射）
 
 | 能力 | 现状位置 | 覆盖程度 |
 |---|---|---|
-| 打包分发 | electron-builder + yfw-packaging 技能（NSIS 安装包/跨设备） | ✅ 已有（GUI 侧） |
+| 打包分发 | electron-builder + ponos-packaging 技能（NSIS 安装包/跨设备） | ✅ 已有（GUI 侧） |
 | 内核独立部署 | kernel/ 零 npm 依赖，可独立 node 运行 | ✅ 已有 |
 | 配置文档 | docs/manual 产品说明书（持续维护中） | ⚠️ 有但未覆盖内核 env/CLI 全量 |
 | 配置 schema 版本化 | 无（settingsStore 前端默认值散落） | ❌ 缺失 |
@@ -41,7 +41,7 @@
 ## 4. 任务清单
 
 **P0（上线底线）**
-- [ ] D1-1 内核配置清单：盘点 kernel/ 全部 env（ANTHROPIC_*、CLAUDE_CODE_*、YFW_* 等）+ CLI flag → docs/manual 生成式 reference（每项：名称/默认值/示例/影响面）
+- [ ] D1-1 内核配置清单：盘点 kernel/ 全部 env（ANTHROPIC_*、CLAUDE_CODE_*、PONOS_* 等）+ CLI flag → docs/manual 生成式 reference（每项：名称/默认值/示例/影响面）
 - [ ] D3-1 独立部署包：`kernel/ + package.json + .env.example` 最小发布形态，`npm start` 或 `node cli.mjs` 一步跑通；文档化与 GUI 集成两用方式
 
 **P1（规模化）**

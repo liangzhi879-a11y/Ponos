@@ -4,17 +4,17 @@
 
 **Goal:** 在 claude-code-gui 聊天输入栏内嵌 HiDream AI 绘图面板，通过本地反代复用 hidream.org 免费额度，用户一次登录（Clerk 记住我）后可持续生成文生图/图生图图片。
 
-**Architecture:** 三层——Electron main 负责独立登录窗口并将 Clerk cookie 导出到 `~/.yfworking/hidream-session.json`；bridge.mjs（或独立模块 hidream.mjs）作为本地代理转发请求到 hidream.org 内部 API（带 cookie/Referer/UA 伪装）；React 前端在 ChatInput 原"附加图片"按钮位置弹出绘图面板，生成结果可插入当前输入作为图片附件。
+**Architecture:** 三层——Electron main 负责独立登录窗口并将 Clerk cookie 导出到 `~/.ponos/hidream-session.json`；bridge.mjs（或独立模块 hidream.mjs）作为本地代理转发请求到 hidream.org 内部 API（带 cookie/Referer/UA 伪装）；React 前端在 ChatInput 原"附加图片"按钮位置弹出绘图面板，生成结果可插入当前输入作为图片附件。
 
 **Tech Stack:** Node ESM（server）、Electron main（CJS）、React 18 + zustand + Radix Popover + lucide-react、node:test 单测、Tailwind 玻璃主题变量。
 
 ## Global Constraints
 
 - 用户运行 **release 打包版**：所有源码改动需 `npm run build` 后同步 release 目录，重启 live 应用前必须征得用户同意（见项目工作流记忆）
-- 单测命令：`npm test`（= `node --test "server/*.test.mjs"`）；测试隔离用 `YFW_TEST_HOME` 临时目录（仿 `server/experience.mjs:5-6`）
-- 测试环境隔离：`YFW_HIDREAM_BASE` 环境变量可覆盖转发目标（测试指向本地 stub server），绝不请求真实 hidream.org
+- 单测命令：`npm test`（= `node --test "server/*.test.mjs"`）；测试隔离用 `PONOS_TEST_HOME` 临时目录（仿 `server/experience.mjs:5-6`）
+- 测试环境隔离：`PONOS_HIDREAM_BASE` 环境变量可覆盖转发目标（测试指向本地 stub server），绝不请求真实 hidream.org
 - 转发仅允许 localhost 来源（复用 `isAllowedOrigin`），请求最小间隔 3s（节流护栏）
-- 会话 cookie 文件 `~/.yfworking/hidream-session.json` 权限收紧、不落日志
+- 会话 cookie 文件 `~/.ponos/hidream-session.json` 权限收紧、不落日志
 - 文案：UI 中文为主，i18n zh-CN/en-US 双语；风格遵循现有玻璃面板主题变量
 - 不引入新 npm 依赖（Node 内置 https/http 足够）
 
@@ -91,11 +91,11 @@ git commit -m "docs(hidream): P0 实测结论——转发策略定稿"
 **Interfaces:**
 - Consumes: 无
 - Produces:
-  - `sessionFile()` / `historyFile()` / `imagesDir()` → 绝对路径（`YFW_TEST_HOME || homedir()` 下）
+  - `sessionFile()` / `historyFile()` / `imagesDir()` → 绝对路径（`PONOS_TEST_HOME || homedir()` 下）
   - `isLoggedIn()` → boolean（cookie 文件含 `__session`）
   - `getSessionCookieHeader()` → string 或 ''（`name=value; ...`）
   - `saveSession(cookies)` / `clearSession()`
-  - `proxyRequest({ path, method, body, base, timeoutMs })` → `{ status, data }`（base 默认 `process.env.YFW_HIDREAM_BASE || 'https://hidream.org'`；转发带 cookie/Referer/Origin/UA 伪装）
+  - `proxyRequest({ path, method, body, base, timeoutMs })` → `{ status, data }`（base 默认 `process.env.PONOS_HIDREAM_BASE || 'https://hidream.org'`；转发带 cookie/Referer/Origin/UA 伪装）
   - `addHistory(entry)` / `listHistory()` / `removeHistory(id)`（本地 JSON 数组，新条目在前）
   - `rateLimitHit()` → boolean（距上次调用 <3000ms 返回 true，否则更新并 false）
 
@@ -111,8 +111,8 @@ import path from 'node:path'
 import fs from 'node:fs'
 import http from 'node:http'
 
-const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-hidream-'))
-process.env.YFW_TEST_HOME = testHome
+const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-hidream-'))
+process.env.PONOS_TEST_HOME = testHome
 const hid = await import('./hidream.mjs')
 
 // 本地 stub：模拟 hidream.org 响应并记录收到的请求头
@@ -179,14 +179,14 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, statSync } from 'fs'
 
-const HOME = process.env.YFW_TEST_HOME || homedir()
-const HIDREAM_BASE = process.env.YFW_HIDREAM_BASE || 'https://hidream.org'
+const HOME = process.env.PONOS_TEST_HOME || homedir()
+const HIDREAM_BASE = process.env.PONOS_HIDREAM_BASE || 'https://hidream.org'
 const HIDREAM_REFERER = 'https://hidream.org/zh/ai-image-generator'
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
 
-export const sessionFile = () => join(HOME, '.yfworking', 'hidream-session.json')
-export const historyFile = () => join(HOME, '.yfworking', 'hidream-history.json')
-export const imagesDir = () => join(HOME, '.yfworking', 'hidream-images')
+export const sessionFile = () => join(HOME, '.ponos', 'hidream-session.json')
+export const historyFile = () => join(HOME, '.ponos', 'hidream-history.json')
+export const imagesDir = () => join(HOME, '.ponos', 'hidream-images')
 
 let lastReqAt = 0
 
@@ -194,7 +194,7 @@ function readJson(p) {
   try { return existsSync(p) ? JSON.parse(readFileSync(p, 'utf-8')) : null } catch { return null }
 }
 function writeJson(p, v) {
-  mkdirSync(join(HOME, '.yfworking'), { recursive: true })
+  mkdirSync(join(HOME, '.ponos'), { recursive: true })
   writeFileSync(p, JSON.stringify(v, null, 2), 'utf-8')
 }
 
@@ -268,7 +268,7 @@ git commit -m "feat(hidream): 会话/历史/转发核心模块 + 单测"
 
 ---
 
-### Task 3: bridge.mjs 挂载 /yfw/img/* 代理端点
+### Task 3: bridge.mjs 挂载 /ponos/img/* 代理端点
 
 **Files:**
 - Modify: `server/bridge.mjs`（在 `url.pathname === '/health'` 分支之后、`/test-provider` 之前插入；引用 hidream.mjs 导出）
@@ -277,26 +277,26 @@ git commit -m "feat(hidream): 会话/历史/转发核心模块 + 单测"
 **Interfaces:**
 - Consumes: Task 2 全部导出（`proxyRequest`/`isLoggedIn`/`rateLimitHit`/`listHistory`/`removeHistory`/`addHistory`/`imagesDir`）
 - Produces: HTTP 端点（前端/Electron 调用）：
-  - `GET /yfw/img/status` → `{ loggedIn, exportedAt? }`
-  - `GET /yfw/img/credits` → 转发 `POST /api/user/get-user-credits` 的 `{code,message,data}`
-  - `POST /yfw/img/create` → body `{prompt, model_name?, image_type?, count?, image_url?, turnstile_token?}` 转发 `POST /api/create-image`
-  - `POST /yfw/img/instant` → body `{description}` 转发 `POST /api/image/instant`
-  - `GET /yfw/img/history` → `{ items }`
-  - `POST /yfw/img/history` → body 为一条历史条目 → `{ ok }`（store 在 generate 后落本地历史）
-  - `DELETE /yfw/img/history/:id` → `{ ok }`
-  - `GET /yfw/img/download?id=<id>` → 本地图片文件字节（image/jpeg|png）
+  - `GET /ponos/img/status` → `{ loggedIn, exportedAt? }`
+  - `GET /ponos/img/credits` → 转发 `POST /api/user/get-user-credits` 的 `{code,message,data}`
+  - `POST /ponos/img/create` → body `{prompt, model_name?, image_type?, count?, image_url?, turnstile_token?}` 转发 `POST /api/create-image`
+  - `POST /ponos/img/instant` → body `{description}` 转发 `POST /api/image/instant`
+  - `GET /ponos/img/history` → `{ items }`
+  - `POST /ponos/img/history` → body 为一条历史条目 → `{ ok }`（store 在 generate 后落本地历史）
+  - `DELETE /ponos/img/history/:id` → `{ ok }`
+  - `GET /ponos/img/download?id=<id>` → 本地图片文件字节（image/jpeg|png）
 
 - [ ] **Step 1: 写失败测试（端点集成）**
 
 在 `server/hidream.test.mjs` 追加（复用 stub server，导入 bridge 的 httpServer 监听随机端口）：
 
 ```js
-test('bridge /yfw/img/status 与 /yfw/img/create 联动', async () => {
+test('bridge /ponos/img/status 与 /ponos/img/create 联动', async () => {
   hid.saveSession([{ name: '__session', value: 'jwt' }])
-  const r = await fetch(`http://127.0.0.1:${bridgePort}/yfw/img/status`)
+  const r = await fetch(`http://127.0.0.1:${bridgePort}/ponos/img/status`)
   const st = await r.json()
   assert.equal(st.loggedIn, true)
-  const c = await fetch(`http://127.0.0.1:${bridgePort}/yfw/img/create`, {
+  const c = await fetch(`http://127.0.0.1:${bridgePort}/ponos/img/create`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prompt: 'cat', count: 1 }),
   })
@@ -307,29 +307,29 @@ test('bridge /yfw/img/status 与 /yfw/img/create 联动', async () => {
 })
 ```
 
-（`bridgePort` 通过在测试内 `import('../server/bridge.mjs')` 前设置 `process.env.YFW_BRIDGE_PORT = '0'` 不可行——bridge 固定 listen。改为：bridge.mjs 导出 `httpServer`，测试里 `await new Promise(r => httpServer.listen(0, r))` 取随机端口；注意 bridge.mjs 顶层已有 `httpServer.listen(PORT)` 副作用——为可测试性，在 bridge.mjs 末尾改为 `if (!process.env.YFW_BRIDGE_NO_LISTEN) httpServer.listen(...)`，测试设该环境变量。）
+（`bridgePort` 通过在测试内 `import('../server/bridge.mjs')` 前设置 `process.env.PONOS_BRIDGE_PORT = '0'` 不可行——bridge 固定 listen。改为：bridge.mjs 导出 `httpServer`，测试里 `await new Promise(r => httpServer.listen(0, r))` 取随机端口；注意 bridge.mjs 顶层已有 `httpServer.listen(PORT)` 副作用——为可测试性，在 bridge.mjs 末尾改为 `if (!process.env.PONOS_BRIDGE_NO_LISTEN) httpServer.listen(...)`，测试设该环境变量。）
 
 - [ ] **Step 2: 运行确认失败**
 
 Run: `node --test server/hidream.test.mjs`
-Expected: FAIL（/yfw/img/status 404 / bridge 无导出）
+Expected: FAIL（/ponos/img/status 404 / bridge 无导出）
 
 - [ ] **Step 3: 实现 bridge 改动**
 
 `server/bridge.mjs` 顶部加 `import * as hid from './hidream.mjs'`（放在既有 import 之后）。在 `url.pathname === '/health'` 分支后插入：
 
 ```js
-if (url.pathname.startsWith('/yfw/img/')) {
-  if (url.pathname === '/yfw/img/status') {
+if (url.pathname.startsWith('/ponos/img/')) {
+  if (url.pathname === '/ponos/img/status') {
     const s = hid.readSessionMeta ? hid.readSessionMeta() : null
     return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ loggedIn: hid.isLoggedIn(), exportedAt: s?.exportedAt || null }))
   }
-  if (url.pathname === '/yfw/img/credits') {
+  if (url.pathname === '/ponos/img/credits') {
     if (hid.rateLimitHit()) return reply(429, { 'Content-Type': 'application/json' }, JSON.stringify({ code: 429, message: 'rate limited' }))
     const r = await hid.proxyRequest({ path: '/api/user/get-user-credits', method: 'POST', body: {}, timeoutMs: 10000 })
     return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.data))
   }
-  if (url.pathname === '/yfw/img/create' && req.method === 'POST') {
+  if (url.pathname === '/ponos/img/create' && req.method === 'POST') {
     if (hid.rateLimitHit()) return reply(429, { 'Content-Type': 'application/json' }, JSON.stringify({ code: 429, message: 'rate limited' }))
     const b = await readJsonBody(req)
     if (!b.prompt) return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ code: 400, message: 'prompt required' }))
@@ -339,28 +339,28 @@ if (url.pathname.startsWith('/yfw/img/')) {
     const r = await hid.proxyRequest({ path: '/api/create-image', method: 'POST', body, timeoutMs: 60000 })
     return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.data))
   }
-  if (url.pathname === '/yfw/img/instant' && req.method === 'POST') {
+  if (url.pathname === '/ponos/img/instant' && req.method === 'POST') {
     if (hid.rateLimitHit()) return reply(429, { 'Content-Type': 'application/json' }, JSON.stringify({ code: 429, message: 'rate limited' }))
     const b = await readJsonBody(req)
     if (!b.description) return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ code: 400, message: 'description required' }))
     const r = await hid.proxyRequest({ path: '/api/image/instant', method: 'POST', body: { description: b.description }, timeoutMs: 60000 })
     return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.data))
   }
-  if (url.pathname === '/yfw/img/history' && req.method === 'GET') {
+  if (url.pathname === '/ponos/img/history' && req.method === 'GET') {
     return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ items: hid.listHistory() }))
   }
-  if (url.pathname === '/yfw/img/history' && req.method === 'POST') {
+  if (url.pathname === '/ponos/img/history' && req.method === 'POST') {
     const b = await readJsonBody(req)
     if (!b.id || !b.prompt) return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ code: 400, message: 'id and prompt required' }))
     hid.addHistory({ id: b.id, prompt: b.prompt, imageUrl: b.imageUrl || '', createdAt: b.createdAt || Date.now() })
     return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true }))
   }
-  if (url.pathname.startsWith('/yfw/img/history/') && req.method === 'DELETE') {
+  if (url.pathname.startsWith('/ponos/img/history/') && req.method === 'DELETE') {
     const id = decodeURIComponent(url.pathname.split('/').pop())
     hid.removeHistory(id)
     return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true }))
   }
-  if (url.pathname === '/yfw/img/download' && req.method === 'GET') {
+  if (url.pathname === '/ponos/img/download' && req.method === 'GET') {
     const id = url.searchParams.get('id') || ''
     const fp = join(hid.imagesDir(), id)
     if (!existsSync(fp) || statSync(fp).isDirectory()) return reply(404, { 'Content-Type': 'application/json' }, JSON.stringify({ error: 'not found' }))
@@ -385,7 +385,7 @@ export function readSessionMeta() {
 （读失败返回 null，用 try/catch 包裹）
 bridge.mjs 末尾 listen 改为：
 ```js
-if (!process.env.YFW_BRIDGE_NO_LISTEN) {
+if (!process.env.PONOS_BRIDGE_NO_LISTEN) {
   httpServer.listen(PORT, () => { console.log('[bridge] http+ws://localhost:' + PORT); autoInstallSamples() })
 }
 ```
@@ -399,7 +399,7 @@ Expected: 新增端点测试 PASS，既有 server 测试全绿
 
 ```bash
 git add server/bridge.mjs server/hidream.mjs server/hidream.test.mjs
-git commit -m "feat(hidream): bridge 挂载 /yfw/img/* 代理端点（限速/错误透传）"
+git commit -m "feat(hidream): bridge 挂载 /ponos/img/* 代理端点（限速/错误透传）"
 ```
 
 ---
@@ -411,7 +411,7 @@ git commit -m "feat(hidream): bridge 挂载 /yfw/img/* 代理端点（限速/错
 - Modify: `electron/preload.cjs`（暴露 `hidreamOpenLogin`/`hidreamGetStatus`/`hidreamLogout`）
 
 **Interfaces:**
-- Consumes: `~/.yfworking/hidream-session.json` 文件契约（与 hidream.mjs 一致，main 直接读写文件，不 import ESM）
+- Consumes: `~/.ponos/hidream-session.json` 文件契约（与 hidream.mjs 一致，main 直接读写文件，不 import ESM）
 - Produces:
   - IPC `hidream:open-login` → 创建登录窗口；登录成功（did-navigate 命中主路径且 cookie 含 `__session`）→ 导出 cookie 写文件 → 自动关窗 → resolve `{ok:true}`
   - IPC `hidream:get-status` → `{ loggedIn, exportedAt }`
@@ -448,7 +448,7 @@ const pathMain = require('path')
 新增（放在既有 `ipcMain.handle('editor:get-pending'...)` 附近）：
 ```js
 let hidreamWin = null
-const HIDREAM_SESSION_FILE = pathMain.join(require('os').homedir(), '.yfworking', 'hidream-session.json')
+const HIDREAM_SESSION_FILE = pathMain.join(require('os').homedir(), '.ponos', 'hidream-session.json')
 
 function writeHidreamSession(cookies) {
   fsMain.mkdirSync(pathMain.dirname(HIDREAM_SESSION_FILE), { recursive: true })
@@ -503,7 +503,7 @@ hidream: {
 - [ ] **Step 4: 手动冒烟（可选，需用户在 dev 下配合）**
 
 Run: `npm run dev` 另开终端 `npm run electron`，主窗口点"登录 HiDream"（Task 6 完成后）
-Expected: 登录窗口打开、登录后自动关闭、`~/.yfworking/hidream-session.json` 生成
+Expected: 登录窗口打开、登录后自动关闭、`~/.ponos/hidream-session.json` 生成
 
 - [ ] **Step 5: 提交**
 
@@ -578,13 +578,13 @@ export const useHidreamStore = create<State>((set, get) => ({
   status: null, credits: null, generating: false, results: [], history: [], busy: false,
   refreshStatus: async () => {
     try {
-      const r = await fetch(`${getBridgeUrl()}/yfw/img/status`)
+      const r = await fetch(`${getBridgeUrl()}/ponos/img/status`)
       set({ status: await r.json() })
     } catch { set({ status: { loggedIn: false, exportedAt: null } }) }
   },
   refreshCredits: async () => {
     try {
-      const r = await fetch(`${getBridgeUrl()}/yfw/img/credits`)
+      const r = await fetch(`${getBridgeUrl()}/ponos/img/credits`)
       const d = await r.json()
       if (d.data && typeof d.data.credits !== 'undefined') set({ credits: d.data.credits })
     } catch {}
@@ -596,7 +596,7 @@ export const useHidreamStore = create<State>((set, get) => ({
       if (p.imageUrl) body.image_url = p.imageUrl
       if (p.model) body.model_name = p.model
       if (p.turnstileToken) body.turnstile_token = p.turnstileToken
-      const r = await fetch(`${getBridgeUrl()}/yfw/img/create`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      const r = await fetch(`${getBridgeUrl()}/ponos/img/create`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       const d = await r.json()
       if (r.status === 401) set({ status: { loggedIn: false, exportedAt: null } })
       // d.data 结构以 P0 实测结论为准：图片 URL 数组 or task_id；第一版取 data.images 或 data.urls
@@ -604,15 +604,15 @@ export const useHidreamStore = create<State>((set, get) => ({
       const items: HidreamHistoryItem[] = urls.map(u => ({ id: nanoid(), prompt: p.prompt, imageUrl: u, createdAt: Date.now() }))
       set({ results: items })
       for (const it of items) {
-        await fetch(`${getBridgeUrl()}/yfw/img/history`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(it) })
+        await fetch(`${getBridgeUrl()}/ponos/img/history`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(it) })
       }
     } finally { set({ generating: false, busy: false }) }
   },
   loadHistory: async () => {
-    try { const r = await fetch(`${getBridgeUrl()}/yfw/img/history`); const d = await r.json(); set({ history: d.items || [] }) } catch {}
+    try { const r = await fetch(`${getBridgeUrl()}/ponos/img/history`); const d = await r.json(); set({ history: d.items || [] }) } catch {}
   },
   removeHistory: async (id) => {
-    await fetch(`${getBridgeUrl()}/yfw/img/history/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    await fetch(`${getBridgeUrl()}/ponos/img/history/${encodeURIComponent(id)}`, { method: 'DELETE' })
     set({ history: get().history.filter(h => h.id !== id) })
   },
   insertImage: (att) => { /* 由 ChatInput 注入回调：见 Task 7 */ },
@@ -731,7 +731,7 @@ export function HiDreamPanel({ onInsertImage }: { onInsertImage?: (att: { name: 
                     <button onClick={() => onInsertImage?.({ name: r.prompt.slice(0, 20) + '.png', path: r.imageUrl, preview: r.imageUrl })} title={t('hidream.insert')}>
                       <Wand2 className="w-4 h-4 text-white" />
                     </button>
-                    <a href={`${getBridgeUrl()}/yfw/img/download?id=${encodeURIComponent(r.id)}`} download title={t('hidream.download')}>
+                    <a href={`${getBridgeUrl()}/ponos/img/download?id=${encodeURIComponent(r.id)}`} download title={t('hidream.download')}>
                       <Download className="w-4 h-4 text-white" />
                     </a>
                   </div>
@@ -861,6 +861,6 @@ Expected: dist 更新。**随后询问用户**：是否同步 release 目录并�
 
 ## Self-Review 记录
 
-- **Spec 覆盖核对**：登录窗口+会话（Task 4）✓；代理端点（Task 3）✓；入口替换+面板（Task 6/7）✓；错误映射 401/402/403/429（Task 3 reply 状态透传 + Task 6/7 提示）✓；护栏节流（Task 2 `rateLimitHit`）✓；历史本地存储（Task 2/3）✓；i18n/类型（Task 5）✓；P0 实测（Task 1）✓；图生图（Task 6 上传→image_url）✓；下载（Task 3 `/yfw/img/download`）✓
+- **Spec 覆盖核对**：登录窗口+会话（Task 4）✓；代理端点（Task 3）✓；入口替换+面板（Task 6/7）✓；错误映射 401/402/403/429（Task 3 reply 状态透传 + Task 6/7 提示）✓；护栏节流（Task 2 `rateLimitHit`）✓；历史本地存储（Task 2/3）✓；i18n/类型（Task 5）✓；P0 实测（Task 1）✓；图生图（Task 6 上传→image_url）✓；下载（Task 3 `/ponos/img/download`）✓
 - **占位符扫描**：无 TBD/TODO；`d.data.images/urls` 取值以 P0 实测为准（Task 1 定稿项，Task 5 注明）
 - **类型一致性**：`proxyRequest({path, method, body, base, timeoutMs})` 在 Task 2 定义、Task 3 按此调用 ✓；`onInsertImage({name, path, preview?})` Task 6 定义、Task 7 消费 ✓；`Attachment` 结构沿用 ChatInput 现有 `{id,name,type:'image',content,path?,preview?}` ✓

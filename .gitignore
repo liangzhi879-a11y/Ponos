@@ -13,7 +13,7 @@ Thumbs.db
 # Debug residue scripts (temporary repro/probe scripts)
 .cli_*.mjs
 .cdp_*.mjs
-.yfw_*.mjs
+.ponos_*.mjs
 
 # Python cache
 __pycache__/

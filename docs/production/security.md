@@ -42,7 +42,7 @@
 ## 4. 任务清单
 
 **P0（合规底线）**
-- [ ] S2-1 transcript 脱敏：写 session 时对已知敏感 pattern（sk-、auth token、AK 开头密钥）打码；保留原文仅当 YFW_KEEP_SECRETS=1
+- [ ] S2-1 transcript 脱敏：写 session 时对已知敏感 pattern（sk-、auth token、AK 开头密钥）打码；保留原文仅当 PONOS_KEEP_SECRETS=1
 - [ ] S2-2 子进程 env 白名单：spawn Bash/OCR 时仅透传白名单 env（路径/编码/代理），剥离 API key
 - [ ] S1-1 审计导出：/audit REST（按会话/时间范围查询），复用 transcript JSONL 做聚合视图
 
@@ -50,7 +50,7 @@
 - [ ] S3-1 权限规则 schema：settings.json `permissions: { allow: [], deny: [], ask: [], rules: [{match, decision}] }`（命令 pattern/路径 glob/工具名三级），merge 进 decideToolPermission
 - [ ] S3-2 GUI permissions 面板扩展：规则编辑（allow/deny/ask 增删改），bridge /permissions REST
 - [ ] S4-1 路径加固：realpath 检测符号链接（resolve 后 realpath 再 withinBoundary）；拒绝 `..` 逃逸；Windows 大小写归一
-- [ ] S5-1 配置隔离：configDir 按用户分层（~/.yfworking/user 个人 + ~/.yfworking/shared 共享只读）
+- [ ] S5-1 配置隔离：configDir 按用户分层（~/.ponos/user 个人 + ~/.ponos/shared 共享只读）
 
 **P2（增强）**
 - [ ] S1-2 审计可视化：GUI 审计视图（时间线 + 过滤 + 导出 CSV）

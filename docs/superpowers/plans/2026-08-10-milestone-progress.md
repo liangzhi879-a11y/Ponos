@@ -4,13 +4,13 @@
 
 **Goal:** 执行中的会话在导航栏会话条目背景显示真实进度（里程碑驱动），无里程碑时回退为活动条。
 
-**Architecture:** 方案 A（系统提示协议，用户已确认）：bridge 在注入的 YFW_SYSTEM_PROMPT 追加里程碑协议规则 → agent 输出 `<!--MILESTONES n 名称|...-->` 与 `<!--MILESTONE-OK i/n 名称-->` 标记 → bridge 解析剥离并转发事件 → chatStore 记录 per-conversation 进度 → Sidebar 条目背景进度条渲染。与提问卡片机制同构，不改内核。
+**Architecture:** 方案 A（系统提示协议，用户已确认）：bridge 在注入的 PONOS_SYSTEM_PROMPT 追加里程碑协议规则 → agent 输出 `<!--MILESTONES n 名称|...-->` 与 `<!--MILESTONE-OK i/n 名称-->` 标记 → bridge 解析剥离并转发事件 → chatStore 记录 per-conversation 进度 → Sidebar 条目背景进度条渲染。与提问卡片机制同构，不改内核。
 
 **Tech Stack:** Electron + React 18 + zustand；server/bridge.mjs（Node ESM）；纯函数模块 server/milestones.mjs；CSS 变量主题（yuanfang-light/yuanfang/dark/light）。
 
 ## Global Constraints
 
-- **不改内核 bundle**（yfw-kernel/ 与 release 的 kernel/cli.mjs 均不动）
+- **不改内核 bundle**（ponos-kernel/ 与 release 的 kernel/cli.mjs 均不动）
 - **标记全部从对话流剥离**；会话标签标题不变；进度只体现在条目背景
 - **全部使用 CSS 变量（--brand-300/400/500）**，适配四主题；不支持硬编码色值
 - **无 git 仓库**：不执行 commit；每个任务以验证/构建代替，最终统一同步 release 副本（server/ + pet 不动 + dist/）
@@ -22,18 +22,18 @@
 ### Task 1: bridge 系统提示注入里程碑协议段落
 
 **Files:**
-- Modify: `server/bridge.mjs`（YFW_SYSTEM_PROMPT 模板字符串，line 52-75 内 `${YFW_ASKUSER_FORMAT}` 之后）
+- Modify: `server/bridge.mjs`（PONOS_SYSTEM_PROMPT 模板字符串，line 52-75 内 `${PONOS_ASKUSER_FORMAT}` 之后）
 
 **Interfaces:**
 - Consumes: 无
 - Produces: agent 行为约定（里程碑标记输出规则）——Task 2 解析依赖该约定
 
-- [ ] **Step 1: 在 YFW_SYSTEM_PROMPT 中追加协议段落**
+- [ ] **Step 1: 在 PONOS_SYSTEM_PROMPT 中追加协议段落**
 
-在 `server/bridge.mjs` 的 `YFW_SYSTEM_PROMPT` 模板字符串中，把 `${YFW_ASKUSER_FORMAT}` 一行替换为 `${YFW_ASKUSER_FORMAT}` + 新段落（普通文本，内部不得出现反引号）：
+在 `server/bridge.mjs` 的 `PONOS_SYSTEM_PROMPT` 模板字符串中，把 `${PONOS_ASKUSER_FORMAT}` 一行替换为 `${PONOS_ASKUSER_FORMAT}` + 新段落（普通文本，内部不得出现反引号）：
 
 ```js
-${YFW_ASKUSER_FORMAT}
+${PONOS_ASKUSER_FORMAT}
 
 【任务里程碑进度协议】
 - 执行多步骤/多阶段任务时：开始实施前，先内部拟定任务目标与阶段/里程碑清单，
@@ -55,7 +55,7 @@ Expected: 无输出（exit 0）
 
 Run:
 ```bash
-cp server/bridge.mjs release/YFWorking_ms92cd6u/server/bridge.mjs
+cp server/bridge.mjs release/Ponos_ms92cd6u/server/bridge.mjs
 ```
 Expected: exit 0（release 副本与源码一致，Task 6 会再整体同步）
 
@@ -174,7 +174,7 @@ Expected: 均无输出（exit 0）
 
 Run:
 ```bash
-cp server/milestones.mjs server/bridge.mjs release/YFWorking_ms92cd6u/server/
+cp server/milestones.mjs server/bridge.mjs release/Ponos_ms92cd6u/server/
 ```
 Expected: exit 0
 
@@ -277,10 +277,10 @@ Expected: exit 0（无输出）
 
 ---
 
-### Task 4: useYFWCLI 事件 handler
+### Task 4: usePonosCLI 事件 handler
 
 **Files:**
-- Modify: `src/hooks/useYFWCLI.ts`（handleMessage，question handler 之后 line 320）
+- Modify: `src/hooks/usePonosCLI.ts`（handleMessage，question handler 之后 line 320）
 
 **Interfaces:**
 - Consumes: Task 2 事件（msg.type 'milestones' / 'milestone-ok'，msg.sessionId）；Task 3 store actions
@@ -288,7 +288,7 @@ Expected: exit 0（无输出）
 
 - [ ] **Step 1: 新增两个事件分支**
 
-在 `useYFWCLI.ts` 的 `handleMessage` 中，`if (msg.type === 'question') { ... }` 块（line 311-320）之后、函数闭合 `}`（line 321）之前插入：
+在 `usePonosCLI.ts` 的 `handleMessage` 中，`if (msg.type === 'question') { ... }` 块（line 311-320）之后、函数闭合 `}`（line 321）之前插入：
 
 ```ts
   if (msg.type === 'milestones') {
@@ -472,22 +472,22 @@ Run:
 cd "C:/Users/T203-15/claude-code-gui"
 npx tsc --noEmit
 npx vite build
-cp -r dist/assets/. release/YFWorking_ms92cd6u/dist/assets/
-cp dist/index.html release/YFWorking_ms92cd6u/dist/index.html
-cp server/bridge.mjs server/milestones.mjs release/YFWorking_ms92cd6u/server/
+cp -r dist/assets/. release/Ponos_ms92cd6u/dist/assets/
+cp dist/index.html release/Ponos_ms92cd6u/dist/index.html
+cp server/bridge.mjs server/milestones.mjs release/Ponos_ms92cd6u/server/
 ```
-Expected: tsc exit 0；build 成功；拷贝 exit 0；`grep -o 'index-[A-Za-z0-9_-]*\.js' release/YFWorking_ms92cd6u/dist/index.html` 输出新构建哈希
+Expected: tsc exit 0；build 成功；拷贝 exit 0；`grep -o 'index-[A-Za-z0-9_-]*\.js' release/Ponos_ms92cd6u/dist/index.html` 输出新构建哈希
 
 - [ ] **Step 2: 复核 release 副本完整性**
 
 Run:
 ```bash
-grep -c "MILESTONES" release/YFWorking_ms92cd6u/server/bridge.mjs   # ≥1（协议段落）
-grep -c "extractMilestoneMarks" release/YFWorking_ms92cd6u/server/bridge.mjs  # ≥1
-ls release/YFWorking_ms92cd6u/server/milestones.mjs
+grep -c "MILESTONES" release/Ponos_ms92cd6u/server/bridge.mjs   # ≥1（协议段落）
+grep -c "extractMilestoneMarks" release/Ponos_ms92cd6u/server/bridge.mjs  # ≥1
+ls release/Ponos_ms92cd6u/server/milestones.mjs
 ```
 Expected: 三个命令均有非空输出
 
 - [ ] **Step 3: 交付说明**
 
-向用户说明：重启应用（托盘退出→YFWorking-debug.bat）后生效；验证路径 = Task 5 Step 6 冒烟清单；无需重启内核。
+向用户说明：重启应用（托盘退出→Ponos-debug.bat）后生效；验证路径 = Task 5 Step 6 冒烟清单；无需重启内核。

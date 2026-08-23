@@ -2,21 +2,21 @@
 
 - 日期：2026-08-15
 - 状态：已批准（brainstorming 流程）
-- 范围：YFWorking 桌面应用（Electron + React + server/bridge.mjs + yfw-kernel 内核）
+- 范围：Ponos 桌面应用（Electron + React + server/bridge.mjs + ponos-kernel 内核）
 
 ## 1. 背景与目标
 
-用户诉求："越用越好用""越用越懂业务"——YFWorking 应能自动沉积个人使用经验，并在多设备间继承项目与分享经验。
+用户诉求："越用越好用""越用越懂业务"——Ponos 应能自动沉积个人使用经验，并在多设备间继承项目与分享经验。
 
 现状盘点（可复用资产）：
-- **gxtz 业务经验库**：`~/.yfworking/memory/skill_experiences/{技能}.json` 全局汇聚 + 项目级 `.yfworking/` 经验库，状态流转 pending→consumed→verified→archived，capture/finalize CLI 可用——面向高企申报业务，技能级。
-- **auto memory 系统**：内核内置，项目级目录 `{项目}/.yfworking/projects/{hash}/memory/`，MEMORY.md 索引 + user/feedback/project/reference 四类记忆，自动静默写入。
-- **技能库**：`~/.yfworking/skills/` 实体化归位，内核实时扫描。
+- **gxtz 业务经验库**：`~/.ponos/memory/skill_experiences/{技能}.json` 全局汇聚 + 项目级 `.ponos/` 经验库，状态流转 pending→consumed→verified→archived，capture/finalize CLI 可用——面向高企申报业务，技能级。
+- **auto memory 系统**：内核内置，项目级目录 `{项目}/.ponos/projects/{hash}/memory/`，MEMORY.md 索引 + user/feedback/project/reference 四类记忆，自动静默写入。
+- **技能库**：`~/.ponos/skills/` 实体化归位，内核实时扫描。
 - **注入链路**：`server/bridge.mjs` 已在 spawn 内核时使用 `--append-system-prompt-file`（bridge.mjs:751/767），可复用。
 
 缺口：
 1. 经验沉积是"业务技能"专属，无**通用个人经验**自动沉积链路。
-2. 所有数据在本机 `~/.yfworking/`，无跨设备机制。
+2. 所有数据在本机 `~/.ponos/`，无跨设备机制。
 
 ### 需求决策记录（已与用户确认）
 
@@ -32,13 +32,13 @@
 ## 2. 架构总览（零内核改动）
 
 ```
-内核 auto memory 引导 ──自动写入──► ~/.yfworking/memory/personal/{主题}.md   [沉积]
+内核 auto memory 引导 ──自动写入──► ~/.ponos/memory/personal/{主题}.md   [沉积]
 bridge spawn 时 ──合并注入──► 现有 prompt 文件（技能清单 + 经验注入段）        [反哺]
 GUI 经验面板 ──浏览/管理/导出导入──► 全局经验库 + 分类型 zip 打包              [管理/分享]
 ```
 
 设计原则：
-- **不修改内核代码**（yfw-kernel/claude-code 为发行版）。全部复用现有机制：auto memory 写入约定 + `--append-system-prompt-file` 注入。
+- **不修改内核代码**（ponos-kernel/claude-code 为发行版）。全部复用现有机制：auto memory 写入约定 + `--append-system-prompt-file` 注入。
 - 通用个人经验与业务技能经验（skill_experiences）**并轨不合并**，导出时作为独立类型。
 - 注入规模受控（默认上限 4KB），与既有 token 预算优化方向一致。
 
@@ -46,7 +46,7 @@ GUI 经验面板 ──浏览/管理/导出导入──► 全局经验库 + 分
 
 ### 3.1 全局个人经验库
 
-- 根目录：`~/.yfworking/memory/personal/`
+- 根目录：`~/.ponos/memory/personal/`
 - 按**主题域**分文件：`{主题}.md`
 - 每条经验一个 bullet：`- [会话来源] 经验内容`
 - frontmatter：`name` / `description` / `active`（激活状态，默认 true）
@@ -67,21 +67,21 @@ GUI 经验面板 ──浏览/管理/导出导入──► 全局经验库 + 分
 
 ### 3.2 索引
 
-- `~/.yfworking/memory/personal/_index.json`：`{ "themes": { "{主题}": { "file": "...", "entry_count": n, "updated_at": "...", "active": true, "inject_bytes": n } } }`
+- `~/.ponos/memory/personal/_index.json`：`{ "themes": { "{主题}": { "file": "...", "entry_count": n, "updated_at": "...", "active": true, "inject_bytes": n } } }`
 - 索引由 GUI/服务端维护（沉积写入后重扫），内核不负责写索引。
 
 ### 3.3 与现有库的关系
 
 | 库 | 位置 | 内容 | 写者 |
 |----|------|------|------|
-| 个人经验库（新） | `~/.yfworking/memory/personal/` | 通用工作业务经验 md | 内核（auto memory 引导） |
-| 业务技能经验库（已有） | `~/.yfworking/memory/skill_experiences/` | gxtz 等技能经验 json | gxtz-experience-sync 技能 |
-| 项目记忆（已有） | `{项目}/.yfworking/projects/{hash}/memory/` | 项目级记忆 | 内核 auto memory |
+| 个人经验库（新） | `~/.ponos/memory/personal/` | 通用工作业务经验 md | 内核（auto memory 引导） |
+| 业务技能经验库（已有） | `~/.ponos/memory/skill_experiences/` | gxtz 等技能经验 json | gxtz-experience-sync 技能 |
+| 项目记忆（已有） | `{项目}/.ponos/projects/{hash}/memory/` | 项目级记忆 | 内核 auto memory |
 
 ## 4. 自动沉积（全自动静默）
 
 - bridge 维护一段"经验沉淀引导"文本（`EXP_SEDIMENT_PROMPT`），追加进注入 prompt 文件（与技能清单同文件）。
-- 引导内容：指示内核在会话中遇到 ①用户明确偏好 ②业务事实（财务/政策/申报口径）③问题-解决模式 ④工作流心得 时，用写文件工具追加到 `~/.yfworking/memory/personal/{主题}.md` 对应主题文件；文件不存在则按 frontmatter 模板创建。
+- 引导内容：指示内核在会话中遇到 ①用户明确偏好 ②业务事实（财务/政策/申报口径）③问题-解决模式 ④工作流心得 时，用写文件工具追加到 `~/.ponos/memory/personal/{主题}.md` 对应主题文件；文件不存在则按 frontmatter 模板创建。
 - 去重：引导要求写入前读文件，相同描述不重复追加。
 - 敏感边界：引导明确禁止写入密钥/密码/API token/身份证号/银行账号等隐私；GUI 导出时另有黑名单过滤兜底。
 - 不打断用户：不弹确认框、不要求用户操作。
@@ -108,12 +108,12 @@ GUI 经验面板 ──浏览/管理/导出导入──► 全局经验库 + 分
 
 | 类型 id | 名称 | 数据源 |
 |---------|------|--------|
-| `personal` | 个人记忆 | `~/.yfworking/memory/personal/` |
-| `skill_exp` | 技能经验库 | `~/.yfworking/memory/skill_experiences/` |
-| `skills` | 技能库 | `~/.yfworking/skills/` |
-| `config` | 全局配置 | `~/.yfworking/config.json` + GUI 设置（localStorage settings key） |
+| `personal` | 个人记忆 | `~/.ponos/memory/personal/` |
+| `skill_exp` | 技能经验库 | `~/.ponos/memory/skill_experiences/` |
+| `skills` | 技能库 | `~/.ponos/skills/` |
+| `config` | 全局配置 | `~/.ponos/config.json` + GUI 设置（localStorage settings key） |
 | `chats` | 会话历史 | localStorage 会话数据（chatStore persist key） |
-| `project` | 项目数据 | 当前项目 `.yfworking/` |
+| `project` | 项目数据 | 当前项目 `.ponos/` |
 
 ### 7.2 打包格式
 

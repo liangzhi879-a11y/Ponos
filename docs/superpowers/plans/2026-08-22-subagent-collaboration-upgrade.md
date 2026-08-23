@@ -29,7 +29,7 @@
 
 ### 1.3 与 deepseek-harness 的差距（目标形态）
 
-| 能力 | YFW 现状 | deepseek-harness | 本方案 |
+| 能力 | Ponos 现状 | deepseek-harness | 本方案 |
 |---|---|---|---|
 | 拓扑 | 扁平星型（主→从，1 层） | 血缘树（多代） | **血缘树（受控深度）** |
 | 子 agent 生命周期 | 一次性执行 | 可继续子 agent（Activation 驻留、多轮 FIFO） | **可继续（resume）** |
@@ -140,7 +140,7 @@ running ──正常结束──▶ completed ──resume──▶ running（�
 | `server/tools-schema.test.mjs` | 改 | Agent/Task schema 断言更新 |
 | `zz-smoke/subagent-smoke.mjs` | 改 | resume 冒烟链路 |
 | `docs/superpowers/specs/2026-08-20-subagent-tool-system-design.md` | 改 | §8 非目标更新（嵌套/resume 从"不做"改为"受控支持"） |
-| `docs/manual/YFWorking产品使用说明书.md` | 改 | 子 agent 协作能力描述 |
+| `docs/manual/Ponos产品使用说明书.md` | 改 | 子 agent 协作能力描述 |
 
 ---
 
@@ -156,7 +156,7 @@ running ──正常结束──▶ completed ──resume──▶ running（�
 
 - S1-S3 落地后：`server/subagent.test.mjs` 新增用例 ≥10 条，全量单测 ≥330 且全绿。
 - **端到端场景**（mock API 冒烟）：A 调研 → B 基于 A 产物续写 → C 汇总，全链路 3 个子任务完成且任务树正确（2 层）、产物清单可见。
-- 评测回归：`benchmark/run.mjs --agents yfw --tasks T001,T002` 无退化（subagent 不参与评测任务，仅确认不回归）。
+- 评测回归：`benchmark/run.mjs --agents ponos --tasks T001,T002` 无退化（subagent 不参与评测任务，仅确认不回归）。
 - 取消语义：stop 后台子任务及其后代全部中止，主循环不受影响（既有断言保持）。
 
 ## 7. 执行顺序与依赖

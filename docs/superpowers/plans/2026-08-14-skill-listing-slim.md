@@ -21,7 +21,7 @@
 - 子技能 SKILL.md 除 frontmatter 加 `parent` 一行外零改动；独立技能零改动
 - 触发词来源：父技能 `triggers` 字段优先，无则取聚合 description（剥版本后截断 80）
 - 宿主条目：触发词段上限 80 字符（超截断加 `…`）；内联子技能名全部列出不截断；触发词与剥版本后描述均空 → 只列 `- {name}`
-- 技能库位于 `~/.yfworking/skills`（不在 git 仓库）——批量修改必须带 `--dry-run` + 修改前备份
+- 技能库位于 `~/.ponos/skills`（不在 git 仓库）——批量修改必须带 `--dry-run` + 修改前备份
 - bun 一律用 `~/.bun/bin/bun.exe`；release 目录 git-ignored，同步不提交；生效需重启 live app（先征得用户同意）；不打包
 
 ---
@@ -165,8 +165,8 @@ function listInstalledSkills() {
 
 ```js
 // 宿主清单瘦身回归验证（Task 1 产物 + Task 4 扩展点）：node scripts/verify-skill-listing.mjs
-// bridge.mjs 模块加载即 httpServer.listen(PORT)（L1413），注入 YFW_BRIDGE_PORT=0 落到随机端口避免占用
-process.env.YFW_BRIDGE_PORT = '0'
+// bridge.mjs 模块加载即 httpServer.listen(PORT)（L1413），注入 PONOS_BRIDGE_PORT=0 落到随机端口避免占用
+process.env.PONOS_BRIDGE_PORT = '0'
 
 const bridge = await import('../server/bridge.mjs')
 const skills = bridge.listInstalledSkills()
@@ -241,10 +241,10 @@ git commit -m "feat(bridge): 宿主技能清单层级化渲染（parent/subskill
 ### Task 2: 内核清单层级化渲染（`loadSkillsDir.ts` + `prompt.ts`）
 
 **Files:**
-- Modify: `yfw-kernel/claude-code/src/types/command.ts:175-203`（`CommandBase` 加字段）
-- Modify: `yfw-kernel/claude-code/src/skills/loadSkillsDir.ts:185-265`（`parseSkillFrontmatterFields`）、`loadSkillsDir.ts:270+`（`createSkillCommand`）
-- Modify: `yfw-kernel/claude-code/src/tools/SkillTool/prompt.ts:43-50`（`getCommandDescription`）、`prompt.ts:70-171`（`formatCommandsWithinBudget`）
-- Create: `yfw-kernel/claude-code/tests/smoke/skill-listing.test.ts`
+- Modify: `ponos-kernel/claude-code/src/types/command.ts:175-203`（`CommandBase` 加字段）
+- Modify: `ponos-kernel/claude-code/src/skills/loadSkillsDir.ts:185-265`（`parseSkillFrontmatterFields`）、`loadSkillsDir.ts:270+`（`createSkillCommand`）
+- Modify: `ponos-kernel/claude-code/src/tools/SkillTool/prompt.ts:43-50`（`getCommandDescription`）、`prompt.ts:70-171`（`formatCommandsWithinBudget`）
+- Create: `ponos-kernel/claude-code/tests/smoke/skill-listing.test.ts`
 
 **Interfaces:**
 - Consumes: 现有 `MAX_LISTING_DESC_CHARS`（250）、`formatCommandsWithinBudget`（已 export）
@@ -252,7 +252,7 @@ git commit -m "feat(bridge): 宿主技能清单层级化渲染（parent/subskill
 
 - [ ] **Step 1: `CommandBase` 加字段**
 
-`yfw-kernel/claude-code/src/types/command.ts` 在 `userInvocable?: boolean`（L190）后插入：
+`ponos-kernel/claude-code/src/types/command.ts` 在 `userInvocable?: boolean`（L190）后插入：
 
 ```ts
   parent?: string // 子技能声明的父技能名（清单层级渲染用；调用不受影响）
@@ -396,13 +396,13 @@ describe('formatCommandsWithinBudget 层级渲染', () => {
 
 - [ ] **Step 7: 运行测试确认失败 → 通过**
 
-Run: `cd yfw-kernel/claude-code && ~/.bun/bin/bun.exe run test`
+Run: `cd ponos-kernel/claude-code && ~/.bun/bin/bun.exe run test`
 Expected: 先 FAIL（层级/剥离未实现）→ Step 2-5 实现后 PASS（含既有 `tests/smoke/*` 基线）
 
 - [ ] **Step 8: 提交**
 
 ```bash
-git add yfw-kernel/claude-code/src/types/command.ts yfw-kernel/claude-code/src/skills/loadSkillsDir.ts yfw-kernel/claude-code/src/tools/SkillTool/prompt.ts yfw-kernel/claude-code/tests/smoke/skill-listing.test.ts
+git add ponos-kernel/claude-code/src/types/command.ts ponos-kernel/claude-code/src/skills/loadSkillsDir.ts ponos-kernel/claude-code/src/tools/SkillTool/prompt.ts ponos-kernel/claude-code/tests/smoke/skill-listing.test.ts
 git commit -m "feat(kernel): skill 清单层级化渲染（Command.parent/subskills + 版本剥离 + 子条目隐藏/父内联）"
 ```
 
@@ -411,11 +411,11 @@ git commit -m "feat(kernel): skill 清单层级化渲染（Command.parent/subski
 ### Task 3: 技能库层级化改造（64 个 SKILL.md）
 
 **Files:**
-- Create: `~/.yfworking/skills/gxtz-suite/SKILL.md`
+- Create: `~/.ponos/skills/gxtz-suite/SKILL.md`
 - Create: `scripts/aggregate-skill-triggers.mjs`（聚合触发词初稿生成）
-- Modify: `~/.yfworking/skills/using-superpowers/SKILL.md`、`yfwdoc-suite/SKILL.md`、`yfwweb-suite/SKILL.md`、`yfwx-suite/SKILL.md`
+- Modify: `~/.ponos/skills/using-superpowers/SKILL.md`、`yfwdoc-suite/SKILL.md`、`yfwweb-suite/SKILL.md`、`yfwx-suite/SKILL.md`
 - Modify: 53 个子技能 SKILL.md（frontmatter 加一行 `parent: <父名>`）
-- ⚠️ 技能库在 `~/.yfworking/skills`，**不在 git 仓库**——所有批量修改先备份到 `%TEMP%/skills-backup-<日期>/`
+- ⚠️ 技能库在 `~/.ponos/skills`，**不在 git 仓库**——所有批量修改先备份到 `%TEMP%/skills-backup-<日期>/`
 
 **Interfaces:**
 - Consumes: spec 4.2 分类表（5 父 / 53 子 / 6 独立）
@@ -424,7 +424,7 @@ git commit -m "feat(kernel): skill 清单层级化渲染（Command.parent/subski
 - [ ] **Step 1: 备份技能库**
 
 ```bash
-mkdir -p "$TEMP/skills-backup-$(date +%Y%m%d)" && cp -r ~/.yfworking/skills "$TEMP/skills-backup-$(date +%Y%m%d)/"
+mkdir -p "$TEMP/skills-backup-$(date +%Y%m%d)" && cp -r ~/.ponos/skills "$TEMP/skills-backup-$(date +%Y%m%d)/"
 ```
 
 - [ ] **Step 2: 写聚合触发词脚本 `scripts/aggregate-skill-triggers.mjs`**
@@ -437,7 +437,7 @@ mkdir -p "$TEMP/skills-backup-$(date +%Y%m%d)" && cp -r ~/.yfworking/skills "$TE
 import { readFileSync, readdirSync, existsSync, join } from 'fs'
 import { homedir } from 'os'
 
-const SKILLS_DIR = join(homedir(), '.yfworking', 'skills')
+const SKILLS_DIR = join(homedir(), '.ponos', 'skills')
 const parentName = process.argv[2]
 if (!parentName) { console.error('用法: node scripts/aggregate-skill-triggers.mjs <父技能名>'); process.exit(1) }
 
@@ -494,7 +494,7 @@ Expected: 每个父技能输出子技能数（23/5/3/7/15）与触发词初稿�
 
 - [ ] **Step 4: 新制 `gxtz-suite/SKILL.md`**
 
-创建 `~/.yfworking/skills/gxtz-suite/SKILL.md`，结构：
+创建 `~/.ponos/skills/gxtz-suite/SKILL.md`，结构：
 
 ```markdown
 ---
@@ -586,7 +586,7 @@ subskills:
 
 - [ ] **Step 5: 改造 `using-superpowers/SKILL.md` 为父技能**
 
-`~/.yfworking/skills/using-superpowers/SKILL.md` frontmatter 改为（保留 name/description 原意并聚合触发词）：
+`~/.ponos/skills/using-superpowers/SKILL.md` frontmatter 改为（保留 name/description 原意并聚合触发词）：
 
 ```yaml
 ---
@@ -626,7 +626,7 @@ subskills:
 import { readFileSync, writeFileSync, readdirSync, existsSync, join } from 'fs'
 import { homedir } from 'os'
 
-const SKILLS_DIR = join(homedir(), '.yfworking', 'skills')
+const SKILLS_DIR = join(homedir(), '.ponos', 'skills')
 // 分类表（spec 4.2，53 项完整映射；键=目录名）：
 const MAP = {
   // gxtz → gxtz-suite（23）
@@ -716,7 +716,7 @@ git add scripts/aggregate-skill-triggers.mjs scripts/annotate-skill-parent.mjs
 git commit -m "feat(skills): 技能库层级化改造辅助脚本（聚合触发词生成 + parent 批量标注）"
 ```
 
-（技能库本体在 `~/.yfworking/skills`，git-ignored 不提交——备份见 Step 1。）
+（技能库本体在 `~/.ponos/skills`，git-ignored 不提交——备份见 Step 1。）
 
 ---
 
@@ -735,7 +735,7 @@ Expected: **全部断言全绿**——父技能 5 / 子技能 53 / 独立 6；�
 
 - [ ] **Step 2: 内核清单实测**
 
-Run: `cd yfw-kernel/claude-code && ~/.bun/bin/bun.exe run test`
+Run: `cd ponos-kernel/claude-code && ~/.bun/bin/bun.exe run test`
 Expected: 全部 PASS（单元 + 真实命令集）。真实命令集（getSkillToolCommands → formatCommandsWithinBudget）输出字符数人工记录（预期 < 5K，对比改造前 11,566）。
 
 - [ ] **Step 3: 聚合触发词抽查**
@@ -745,7 +745,7 @@ Expected: 全部 PASS（单元 + 真实命令集）。真实命令集（getSkill
 - [ ] **Step 4: 执行能力回归（diff 检查）**
 
 Run: `git diff HEAD --stat`
-Expected: 仅 `server/bridge.mjs`、`scripts/verify-skill-listing.mjs`、`scripts/aggregate-skill-triggers.mjs`、`scripts/annotate-skill-parent.mjs`、`yfw-kernel/claude-code/src/types/command.ts`、`yfw-kernel/claude-code/src/skills/loadSkillsDir.ts`、`yfw-kernel/claude-code/src/tools/SkillTool/prompt.ts`、`yfw-kernel/claude-code/tests/smoke/skill-listing.test.ts` 在改动集合内；`SkillTool.ts`、`commands.ts`、`attachments.ts`、`bootstrap/state.ts` 均不在 diff（调用执行/子代理注入/全文注入路径零改动）。
+Expected: 仅 `server/bridge.mjs`、`scripts/verify-skill-listing.mjs`、`scripts/aggregate-skill-triggers.mjs`、`scripts/annotate-skill-parent.mjs`、`ponos-kernel/claude-code/src/types/command.ts`、`ponos-kernel/claude-code/src/skills/loadSkillsDir.ts`、`ponos-kernel/claude-code/src/tools/SkillTool/prompt.ts`、`ponos-kernel/claude-code/tests/smoke/skill-listing.test.ts` 在改动集合内；`SkillTool.ts`、`commands.ts`、`attachments.ts`、`bootstrap/state.ts` 均不在 diff（调用执行/子代理注入/全文注入路径零改动）。
 
 - [ ] **Step 5: 结论落账**
 
@@ -756,8 +756,8 @@ Expected: 仅 `server/bridge.mjs`、`scripts/verify-skill-listing.mjs`、`script
 ### Task 5: release 双份同步 + sha256 校验
 
 **Files:**
-- Modify: `release/YFWorking/server/bridge.mjs`、`release/YFWorking_ms92cd6u/server/bridge.mjs`（复制自 workspace）
-- Modify: `release/YFWorking/kernel/cli.mjs`、`release/YFWorking_ms92cd6u/kernel/cli.mjs`（rebuild 后复制）
+- Modify: `release/Ponos/server/bridge.mjs`、`release/Ponos_ms92cd6u/server/bridge.mjs`（复制自 workspace）
+- Modify: `release/Ponos/kernel/cli.mjs`、`release/Ponos_ms92cd6u/kernel/cli.mjs`（rebuild 后复制）
 - 说明：release 目录 git-ignored，本任务不提交 git
 
 **Interfaces:**
@@ -768,29 +768,29 @@ Expected: 仅 `server/bridge.mjs`、`scripts/verify-skill-listing.mjs`、`script
 
 ```bash
 cd C:/Users/T203-15/claude-code-gui
-cp server/bridge.mjs release/YFWorking/server/bridge.mjs
-cp server/bridge.mjs release/YFWorking_ms92cd6u/server/bridge.mjs
+cp server/bridge.mjs release/Ponos/server/bridge.mjs
+cp server/bridge.mjs release/Ponos_ms92cd6u/server/bridge.mjs
 ```
 
 - [ ] **Step 2: rebuild 内核 bundle**
 
-Run: `cd yfw-kernel/claude-code && ~/.bun/bin/bun.exe scripts/build-bundle.ts`
-Expected: 生成 `yfw-kernel/claude-code/dist/cli.mjs`（无报错；不传 `--minify`，沿用既有构建参数）
+Run: `cd ponos-kernel/claude-code && ~/.bun/bin/bun.exe scripts/build-bundle.ts`
+Expected: 生成 `ponos-kernel/claude-code/dist/cli.mjs`（无报错；不传 `--minify`，沿用既有构建参数）
 
 - [ ] **Step 3: 同步 kernel 双份**
 
 ```bash
 cd C:/Users/T203-15/claude-code-gui
-cp yfw-kernel/claude-code/dist/cli.mjs release/YFWorking/kernel/cli.mjs
-cp yfw-kernel/claude-code/dist/cli.mjs release/YFWorking_ms92cd6u/kernel/cli.mjs
+cp ponos-kernel/claude-code/dist/cli.mjs release/Ponos/kernel/cli.mjs
+cp ponos-kernel/claude-code/dist/cli.mjs release/Ponos_ms92cd6u/kernel/cli.mjs
 # vendor 仅在存在差异时同步
-diff -rq yfw-kernel/claude-code/dist/vendor release/YFWorking/kernel/vendor 2>/dev/null || cp -r yfw-kernel/claude-code/dist/vendor/. release/YFWorking/kernel/vendor/
-diff -rq yfw-kernel/claude-code/dist/vendor release/YFWorking_ms92cd6u/kernel/vendor 2>/dev/null || cp -r yfw-kernel/claude-code/dist/vendor/. release/YFWorking_ms92cd6u/kernel/vendor/
+diff -rq ponos-kernel/claude-code/dist/vendor release/Ponos/kernel/vendor 2>/dev/null || cp -r ponos-kernel/claude-code/dist/vendor/. release/Ponos/kernel/vendor/
+diff -rq ponos-kernel/claude-code/dist/vendor release/Ponos_ms92cd6u/kernel/vendor 2>/dev/null || cp -r ponos-kernel/claude-code/dist/vendor/. release/Ponos_ms92cd6u/kernel/vendor/
 ```
 
 - [ ] **Step 4: sha256 三端一致校验**
 
-Run: `sha256sum yfw-kernel/claude-code/dist/cli.mjs release/YFWorking/kernel/cli.mjs release/YFWorking_ms92cd6u/kernel/cli.mjs server/bridge.mjs release/YFWorking/server/bridge.mjs release/YFWorking_ms92cd6u/server/bridge.mjs`
+Run: `sha256sum ponos-kernel/claude-code/dist/cli.mjs release/Ponos/kernel/cli.mjs release/Ponos_ms92cd6u/kernel/cli.mjs server/bridge.mjs release/Ponos/server/bridge.mjs release/Ponos_ms92cd6u/server/bridge.mjs`
 Expected: cli.mjs 三个 hash 相同；bridge.mjs 三个 hash 相同（跨组不同属正常）
 
 - [ ] **Step 5: 重启授权 + 生效**
@@ -803,8 +803,8 @@ Expected: cli.mjs 三个 hash 相同；bridge.mjs 三个 hash 相同（跨组不
 
 | 文件 | 同步目标 |
 |---|---|
-| `server/bridge.mjs` | `release/YFWorking/server/` + `release/YFWorking_ms92cd6u/server/` |
-| `yfw-kernel/claude-code/dist/cli.mjs`（rebuild） | `release/YFWorking/kernel/` + `release/YFWorking_ms92cd6u/kernel/` |
-| `~/.yfworking/skills/**/SKILL.md` | 用户目录直接生效（宿主指纹重建；内核 memoize 需新会话/重启） |
+| `server/bridge.mjs` | `release/Ponos/server/` + `release/Ponos_ms92cd6u/server/` |
+| `ponos-kernel/claude-code/dist/cli.mjs`（rebuild） | `release/Ponos/kernel/` + `release/Ponos_ms92cd6u/kernel/` |
+| `~/.ponos/skills/**/SKILL.md` | 用户目录直接生效（宿主指纹重建；内核 memoize 需新会话/重启） |
 
 - sha256 三端一致（Task 5 Step 4）；不打包；生效需重启 live app（先征得用户同意）

@@ -1,4 +1,4 @@
-// YFW-turbo 工具权限判定（docs/bridge-contract.md §4 can_use_tool 协议）
+// Ponos-turbo 工具权限判定（docs/bridge-contract.md §4 can_use_tool 协议）
 // ---------------------------------------------------------------------------
 // 净室语义：--dangerously-skip-permissions 使低危工具自动执行；Bash 高危命令
 // 仍发 can_use_tool control_request 挂起，经 GUI 审批（approval 事件）后以

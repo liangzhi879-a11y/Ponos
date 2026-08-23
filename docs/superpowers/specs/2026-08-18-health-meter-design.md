@@ -12,7 +12,7 @@
 |---|---|
 | 与顶部横幅关系 | **取代**（删除 HealthBanner） |
 | 显示时机 | **常驻**（绿/黄/红全程可见） |
-| 数据驱动 | 现有 yfw_health 档位事件 + CSS 扣血动画衔接（**不动内核**） |
+| 数据驱动 | 现有 ponos_health 档位事件 + CSS 扣血动画衔接（**不动内核**） |
 | 红档呼吸警告 | **消息区边缘呼吸光晕** |
 | 红档会话建议 | **输入框上浮卡片**（非模态） |
 | 代码组织 | **独立三组件**：HealthMeter / HealthGlow / HealthSuggestCard |
@@ -50,12 +50,12 @@ ChatWindow.tsx
 | 状态 | 旧用途 | 新用途 |
 |---|---|---|
 | `health` | 横幅数据源 | 三组件共享数据源（血条宽度/颜色、光晕开关、卡片内容） |
-| `summary` | 红档携带摘要 | 卡片携带摘要（yfw_summary 事件链路不变） |
+| `summary` | 红档携带摘要 | 卡片携带摘要（ponos_summary 事件链路不变） |
 | `dismissedUntil` | 横幅关闭冷却（5min） | 卡片"稍后再说"冷却（沿用 RED_DISMISS_MS） |
 | `dismiss()` | 横幅关闭 | 卡片关闭 |
 
 - 红档可见性统一判定：`health.tier === 'red' && Date.now() >= dismissedUntil`（光晕与卡片同源，冷却期一起熄灭）
-- 内核 `yfw_health`/`yfw_summary` → useYFWCLI.ts:512 事件链路**零改动**
+- 内核 `ponos_health`/`ponos_summary` → usePonosCLI.ts:512 事件链路**零改动**
 
 ## 组件设计
 
@@ -66,7 +66,7 @@ ChatWindow.tsx
 - 宽度：`width: remainingPct%`；health 为 null（首事件前）时显示 100% 极淡细线占位
 - 颜色：`tier` 决定——green → `text-green-500`、yellow → `text-amber-500`、red → `text-red-500`（玻璃质感下用半透明渐变填充，避免纯色刺眼）
 - 动画：`transition: width .45s ease-out`（扣血/回涨平滑衔接，档位跳变不突兀）
-- 压缩动画：压缩发生时（`summaryCompactCount` 递增，yfw_summary 先于下一轮 yfw_health 到达）血条一次性高亮脉冲 1.2s（`filter: brightness` 提升后回落，不破坏半透明 alpha），宽度随后由 transition 回涨——同一信号两段动画衔接
+- 压缩动画：压缩发生时（`summaryCompactCount` 递增，ponos_summary 先于下一轮 ponos_health 到达）血条一次性高亮脉冲 1.2s（`filter: brightness` 提升后回落，不破坏半透明 alpha），宽度随后由 transition 回涨——同一信号两段动画衔接
 - hover：复用现有 `Tooltip` 组件（ChatInput 已导入）显示「剩余 X% · 约 N 轮」补足黄档信息
 
 ### HealthGlow（边缘呼吸光晕）

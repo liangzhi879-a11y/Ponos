@@ -1,6 +1,6 @@
 // 宿主清单瘦身回归验证（Task 1 产物 + Task 4 扩展点）：node scripts/verify-skill-listing.mjs
-// bridge.mjs 模块加载即 httpServer.listen(PORT)（L1413），注入 YFW_BRIDGE_PORT=0 落到随机端口避免占用
-process.env.YFW_BRIDGE_PORT = '0'
+// bridge.mjs 模块加载即 httpServer.listen(PORT)（L1413），注入 PONOS_BRIDGE_PORT=0 落到随机端口避免占用
+process.env.PONOS_BRIDGE_PORT = '0'
 
 const bridge = await import('../server/bridge.mjs')
 const skills = bridge.listInstalledSkills()
@@ -14,7 +14,7 @@ const check = (cond, label) => {
 
 // ── 层级断言（Task 3 技能库标注后 + 经验系统优化 P1 符号链接实体化） ──
 // code-review-and-quality 原为符号链接（→ ~/.agents/skills），bridge 枚举时被过滤；
-// 2026-08-14 经验系统优化 P1 已复制实体到 ~/.yfworking/skills 并删除链接，
+// 2026-08-14 经验系统优化 P1 已复制实体到 ~/.ponos/skills 并删除链接，
 // 现为真实目录、正常参与枚举，子技能计数为 53，互逆检查无需豁免。
 const parents = skills.filter(s => s.subskills.length)
 const children = skills.filter(s => s.parent)

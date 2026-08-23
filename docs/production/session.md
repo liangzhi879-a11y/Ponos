@@ -15,7 +15,7 @@
 | 跨会话任务 | 多天连续工作 | 记忆跨会话可检索 |
 | 团队知识 | 共享项目规范/经验 | AGENTS.md + 经验沉淀 |
 
-当前架构：compact.mjs（275 行）按预算裁剪 + context.mjs（127 行）；记忆在 GUI/个人层（~/.yfworking/memory），内核未集成。
+当前架构：compact.mjs（275 行）按预算裁剪 + context.mjs（127 行）；记忆在 GUI/个人层（~/.ponos/memory），内核未集成。
 
 ## 2. 现状（已有能力映射）
 
@@ -24,7 +24,7 @@
 | 上下文压缩 | kernel/compact.mjs（275 行）+ CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES 工具结果落盘 | ✅ 基础版 |
 | 上下文健康 | kernel/context.mjs（127 行）+ GUI HealthMeter | ✅ 已有雏形 |
 | 会话恢复 | session.mjs JSONL + --resume | ✅ 已有 |
-| 记忆 | ~/.yfworking/memory（GUI 层沉淀） | ⚠️ 内核未集成 |
+| 记忆 | ~/.ponos/memory（GUI 层沉淀） | ⚠️ 内核未集成 |
 | 工具结果重放 | persistToolResult（落盘 + <persisted-output> 预览 + Read 补读） | ✅ 已有 |
 | compact 预算配置 | 无（硬编码/单 env） | ❌ 缺失 |
 
@@ -44,7 +44,7 @@
 - [ ] L2-1 预算配置化：`settings.compact: { thresholdTokens, reserveTokens, maxToolResults }`（对照 pi CompactionSettings）；默认按 provider contextWindow × 0.8
 
 **P1（规模化）**
-- [ ] L3-1 经验捕获内核化：内核侧关键事件（任务完成/用户纠错/业务事实）→ 结构化记忆条目 → ~/.yfworking/memory 落盘（对照 claude autoMemory / YFW 经验沉淀机制）
+- [ ] L3-1 经验捕获内核化：内核侧关键事件（任务完成/用户纠错/业务事实）→ 结构化记忆条目 → ~/.ponos/memory 落盘（对照 claude autoMemory / Ponos 经验沉淀机制）
 - [ ] L3-2 记忆注入：会话启动注入相关记忆（按任务标签检索），系统提示附"记忆来源"标注
 - [ ] L4-1 上下文预测：token 增长速率 = 最近 K 轮平均 → 预测达到阈值轮数 → HealthMeter 预警（context.mjs 扩展）
 

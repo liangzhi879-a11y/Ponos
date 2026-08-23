@@ -1,8 +1,8 @@
-# YFW-turbo subagent 体系 + 工具扩展设计
+# Ponos-turbo subagent 体系 + 工具扩展设计
 
 日期：2026-08-20
 状态：方案设计（实施中）
-依据：`2026-08-20-yfw-turbo-inner-core-design.md` §10（子代理/工具面"下一轮"）、`2026-08-13-multi-agent-collab-design.md`（GUI 侧已落地，内核侧未接）、用户确认（2026-08-20：两者并行 / 进程内 lane / 内置+扫描 / 工具对标旧内核及配套工具）
+依据：`2026-08-20-ponos-turbo-inner-core-design.md` §10（子代理/工具面"下一轮"）、`2026-08-13-multi-agent-collab-design.md`（GUI 侧已落地，内核侧未接）、用户确认（2026-08-20：两者并行 / 进程内 lane / 内置+扫描 / 工具对标旧内核及配套工具）
 
 ## 1. 背景与现状缺口
 
@@ -10,8 +10,8 @@ GUI/bridge 管线已为 release 内核（Claude Code）铺好，净室内核（k
 
 | 环节 | 现状 |
 |---|---|
-| GUI agent 注册表 / whenToUse / agents:sync / `$YFW_HOME/agents/*.md` | ✅ 已实现 |
-| 内核读取 `$YFW_HOME/agents/*.md`（用户级 agent） | ❌ `prompt.mjs::discoverAgentsMd` 只发现项目 `AGENTS.md` |
+| GUI agent 注册表 / whenToUse / agents:sync / `$PONOS_HOME/agents/*.md` | ✅ 已实现 |
+| 内核读取 `$PONOS_HOME/agents/*.md`（用户级 agent） | ❌ `prompt.mjs::discoverAgentsMd` 只发现项目 `AGENTS.md` |
 | Agent 工具（主 agent → 子 agent） | ❌ `tools.mjs` 无 |
 | 子 agent 执行模型 | ❌ engine 单循环 |
 | task_started / task_progress / task_notification 事件 | ❌ `protocol.mjs` 无构造器 |
@@ -25,9 +25,9 @@ GUI/bridge 管线已为 release 内核（Claude Code）铺好，净室内核（k
 ### 2.1 agent 发现（prompt.mjs + 新 kernel/agents.mjs）
 
 - 新增 `kernel/agents.mjs`：
-  - `BUILTIN_AGENTS`：内置 2 个系统级 agent——`general-purpose`（通用多步任务，全工具）、`researcher`（调查类，Bash/Glob/Grep/Read/WebFetch）。业务专业 agent（material-writer/table-expert 等 6 个）由 GUI 经 agents:sync 写入 `$YFW_HOME/agents/`，走扫描，不内置重复。
+  - `BUILTIN_AGENTS`：内置 2 个系统级 agent——`general-purpose`（通用多步任务，全工具）、`researcher`（调查类，Bash/Glob/Grep/Read/WebFetch）。业务专业 agent（material-writer/table-expert 等 6 个）由 GUI 经 agents:sync 写入 `$PONOS_HOME/agents/`，走扫描，不内置重复。
   - `parseAgentMarkdown(text)`：解析 `.md` frontmatter（name/description/tools/model/skills + 正文 prompt），与 multi-agent-collab 设计的 `.md` 格式一致；非法文件容错跳过。
-  - `discoverUserAgents({ configDir })`：扫描 `$YFW_HOME/agents/*.md`（跳过 `.` 开头与 `.yfw-managed.json`），返回 `[{ id, name, description, tools, model, systemPrompt }]`。
+  - `discoverUserAgents({ configDir })`：扫描 `$PONOS_HOME/agents/*.md`（跳过 `.` 开头与 `.ponos-managed.json`），返回 `[{ id, name, description, tools, model, systemPrompt }]`。
   - `resolveAgent(agents, type)`：内置 ∪ 扫描 的查找。
 - `prompt.mjs::composeSystemPrompt` 增补 **agents 区块**：`【可用子 Agent】type — whenToUse/description（tools: ...; model: ...）`，供主 agent 按优势场景路由。
 
@@ -63,7 +63,7 @@ GUI/bridge 管线已为 release 内核（Claude Code）铺好，净室内核（k
 
 ### 2.5 事件构造器（protocol.mjs）
 
-`makeWire` 新增（均走 `wire.system(subtype, extra)`，shape 对齐 GUI 消费端 useYFWCLI.ts task_* 分支）：
+`makeWire` 新增（均走 `wire.system(subtype, extra)`，shape 对齐 GUI 消费端 usePonosCLI.ts task_* 分支）：
 - `taskStarted({ taskId, toolUseId, prompt })` → `system/task_started`
 - `taskProgress({ taskId, lastToolName, description, usage })` → `system/task_progress`
 - `taskNotification({ taskId, status, summary, outputFile, usage })` → `system/task_notification`
@@ -76,7 +76,7 @@ GUI/bridge 管线已为 release 内核（Claude Code）铺好，净室内核（k
 | Task | 旧内核 Task | `{ command: 'list'\|'status'\|'output'\|'stop', task_id? }`；查询/中止后台任务 |
 | TodoWrite | 旧内核 TodoWrite | 内存 todo 规划列表，每次更新回显当前列表 |
 | WebFetch | 旧内核 WebFetch | Node 内置 https/http，零依赖；url 校验 http/https、30s 超时、2MB 上限、HTML→文本简易提取 |
-| OCR | 配套开发工具（OCR 引擎） | spawn python 调 `ocr_engine.py`（RapidOCR/PP-OCRv4，系统已装），零 npm 依赖；引擎探测 `YFW_OCR_ENGINE` env → `~/.claude/skills/_common/ocr_engine.py` → `~/.yfworking/skills/_common/`；PDF 走 CLI（--output 全量 JSON），图片走内联 import `ocr_image()`；`mode: text\|table`、`project` 缓存隔离；边界校验同 Read；5min 超时 |
+| OCR | 配套开发工具（OCR 引擎） | spawn python 调 `ocr_engine.py`（RapidOCR/PP-OCRv4，系统已装），零 npm 依赖；引擎探测 `PONOS_OCR_ENGINE` env → `~/.claude/skills/_common/ocr_engine.py` → `~/.ponos/skills/_common/`；PDF 走 CLI（--output 全量 JSON），图片走内联 import `ocr_image()`；`mode: text\|table`、`project` 缓存隔离；边界校验同 Read；5min 超时 |
 | WebSearch | 旧内核 WebSearch | 本轮 roadmap（零依赖搜索实现脆弱，需评估），v1 不做 |
 | Browser | 配套开发工具（BrowserTool） | roadmap：`bridge_request(browser)` 通道 bridge 侧已就绪（browserRouter），但 executor 依赖 electron 主进程浏览器，端到端验证成本高，本轮不做（protocol 已留位） |
 | NotebookEdit | 旧内核 | 非目标（申报/开发场景无 notebook） |

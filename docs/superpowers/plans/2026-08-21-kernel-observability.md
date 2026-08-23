@@ -6,11 +6,11 @@
 
 **Architecture:** 新建 kernel/stats.mjs（aggregateUsage 纯函数：cache 四字段 / bySession / 工具分布 / cacheRate）+ kernel/cost.mjs（costOf 含 cache 计费，对齐 benchmark/lib/llm-api.mjs 口径）；health.mjs 增加 getOpsHealth（内存/最近 API 结果/队列深度）；bridge /transcript/stats 切换新聚合并加月度预算阈值（走 env，不新增 GUI 设置项）、/health 拼会话数、/diag/info 补全 + /diag/export。
 
-**Tech Stack:** Node.js ESM（零 npm 依赖）、node:test + spawn 集成测试（YFW_MOCK_API=1）、transcript JSONL（server/transcript.mjs 同格式）。
+**Tech Stack:** Node.js ESM（零 npm 依赖）、node:test + spawn 集成测试（PONOS_MOCK_API=1）、transcript JSONL（server/transcript.mjs 同格式）。
 
 ## Global Constraints
 
-- **内核优先原则（用户硬性前提）**：聚合/成本/健康计算逻辑放 kernel/；bridge 只做文件读取、全局会话数拼接与 REST 薄壳；**不新增任何 GUI 设置项**（月度预算阈值走 env `YFW_MONTHLY_BUDGET_USD`，成本面板已有展示）。
+- **内核优先原则（用户硬性前提）**：聚合/成本/健康计算逻辑放 kernel/；bridge 只做文件读取、全局会话数拼接与 REST 薄壳；**不新增任何 GUI 设置项**（月度预算阈值走 env `PONOS_MONTHLY_BUDGET_USD`，成本面板已有展示）。
 - 口径一致：costOf 与 benchmark/lib/llm-api.mjs 同公式（cache_read 按 `pricePerMInput × cacheReadRatio` 计费，cache_creation 按全价 input 计费）；aggregateStats（transcript.mjs 现有）保持向后兼容，/transcript/stats 响应字段只增不改。
 - 向后兼容：现有 221+ 测试零破坏；/health、/diag/info、/transcript/stats 现有消费方（GUI 面板、diag-monitor）不得因字段扩展出问题（只加字段）。
 - 测试命令：`node --test server/<file>.test.mjs`；全量回归 `node --test "server/*.test.mjs"`。
@@ -213,7 +213,7 @@ git commit -m "feat(kernel): 用量聚合纯函数——cache 四字段/byTool/c
   - `costOf(usage, { pricePerMInput, pricePerMOutput, cacheReadRatio })` → 美元
     - 公式对齐 benchmark/lib/llm-api.mjs：`input×pIn + output×pOut + cache_read×pIn×cacheReadRatio + cache_creation×pIn`
     - 默认值：pIn=0.2, pOut=1.2, cacheReadRatio=0.1（与 benchmark 一致）
-  - `withBudget(rows, budgetUsd)` → `{ rows, totalUsd, overBudget: boolean }`（月度预算超限标记，预算值来自 env `YFW_MONTHLY_BUDGET_USD`）
+  - `withBudget(rows, budgetUsd)` → `{ rows, totalUsd, overBudget: boolean }`（月度预算超限标记，预算值来自 env `PONOS_MONTHLY_BUDGET_USD`）
 
 - [x] **Step 1: 写失败测试（新建 server/cost.test.mjs）**
 
@@ -293,7 +293,7 @@ git commit -m "feat(kernel): 成本计费纯函数——cache 折扣计费 + 月
 
 **Interfaces:**
 - Consumes: `aggregateUsage`（Task 2）、`costOf`/`withBudget`（Task 3）、`costUsd`（transcript.mjs 现有——保留兼容或替换）
-- Produces: `/transcript/stats` 响应新增 `cache_read_input_tokens/cache_creation_input_tokens/cacheRate/byTool/bySession`（可选）字段；`totals.cost_usd` 计算改用 costOf（含 cache 计费）；`overBudget` 字段（`YFW_MONTHLY_BUDGET_USD` env，未设时不输出）
+- Produces: `/transcript/stats` 响应新增 `cache_read_input_tokens/cache_creation_input_tokens/cacheRate/byTool/bySession`（可选）字段；`totals.cost_usd` 计算改用 costOf（含 cache 计费）；`overBudget` 字段（`PONOS_MONTHLY_BUDGET_USD` env，未设时不输出）
 
 - [x] **Step 1: 写失败测试（增补到 server/stats.test.mjs 末尾——直接调 aggregateUsage 模拟 bridge 集成路径）**
 
@@ -330,7 +330,7 @@ import { costOf, withBudget } from '../kernel/cost.mjs'
 //   for each 项目/文件：为每行 entry 注入 { sessionId: sid, project: projName }
 //   汇总 entries → aggregateUsage(entries, { bySession: true })
 // 成本：totals.cost_usd = costOf(totals)；byModel 逐模型 costOf
-// 预算：const budget = Number(process.env.YFW_MONTHLY_BUDGET_USD || 0)
+// 预算：const budget = Number(process.env.PONOS_MONTHLY_BUDGET_USD || 0)
 //   const { totalUsd, overBudget } = withBudget([{ cost_usd: totals.cost_usd }], budget)
 // 响应追加：cacheRead/cacheCreation/cacheRate/byTool/(bySession 可选)/overBudget
 ```
@@ -428,7 +428,7 @@ if (url.pathname === '/health') {
 }
 ```
 
-> 注：bridge 侧 lastApi 采集（最近一次内核 API 调用结果）依赖内核上报——本任务先给 `lastApi: null`（bridge 无法直接感知内核 API 状态）；内核侧上报可在 health.mjs 的 engine 装配点补（record 时记最近一次 API 耗时，经 yfw_health 或后续 wire 事件透传）。第一版以 bridge 可采集项为准，内核 API 状态字段保留 `lastApiOk: null` 占位。
+> 注：bridge 侧 lastApi 采集（最近一次内核 API 调用结果）依赖内核上报——本任务先给 `lastApi: null`（bridge 无法直接感知内核 API 状态）；内核侧上报可在 health.mjs 的 engine 装配点补（record 时记最近一次 API 耗时，经 ponos_health 或后续 wire 事件透传）。第一版以 bridge 可采集项为准，内核 API 状态字段保留 `lastApiOk: null` 占位。
 
 - [x] **Step 4: 跑测试确认通过**
 
@@ -501,9 +501,9 @@ if (url.pathname === '/diag/info') {
   const cfg = loadConfig()
   const configSummary = {}
   for (const k of Object.keys(process.env)) {
-    if (/^(ANTHROPIC_|CLAUDE_|YFW_|OPENAI_)/.test(k)) configSummary[k] = redactText(process.env[k] || '')
+    if (/^(ANTHROPIC_|CLAUDE_|PONOS_|OPENAI_)/.test(k)) configSummary[k] = redactText(process.env[k] || '')
   }
-  const skillsLock = join(YFW_HOME, 'skills-lock.json')
+  const skillsLock = join(PONOS_HOME, 'skills-lock.json')
   let skillsLockVersion = null
   try { skillsLockVersion = JSON.parse(readFileSync(skillsLock, 'utf-8')).version ?? null } catch {}
   let transcriptBytes = 0
@@ -525,7 +525,7 @@ if (url.pathname === '/diag/info') {
 if (url.pathname === '/diag/export') {
   const env = {}
   for (const k of Object.keys(process.env)) {
-    if (/^(ANTHROPIC_|CLAUDE_|YFW_|OPENAI_)/.test(k)) env[k] = redactText(process.env[k] || '')
+    if (/^(ANTHROPIC_|CLAUDE_|PONOS_|OPENAI_)/.test(k)) env[k] = redactText(process.env[k] || '')
   }
   const base = transcriptBaseDir()
   let sessions = 0
@@ -572,7 +572,7 @@ git commit -m "feat(bridge): /diag/info 补全（配置脱敏/skills-lock/transc
 - O3 故障可诊断 → Task 6（/diag/info 补全 + /diag/export）✓
 - O4 成本可预警 → Task 3（costOf）+ Task 4（预算阈值 env）✓
 - O4-2 缓存命中率 → Task 2（cacheRate）✓
-- 内核优先前提：聚合/成本/健康计算逻辑在 kernel/（stats.mjs、cost.mjs、health.mjs 纯函数）；bridge 仅文件读取 + 全局会话数拼接 + REST 薄壳；预算阈值走 env（YFW_MONTHLY_BUDGET_USD）不新增 GUI 设置项 ✓
+- 内核优先前提：聚合/成本/健康计算逻辑在 kernel/（stats.mjs、cost.mjs、health.mjs 纯函数）；bridge 仅文件读取 + 全局会话数拼接 + REST 薄壳；预算阈值走 env（PONOS_MONTHLY_BUDGET_USD）不新增 GUI 设置项 ✓
 - O2-2（GUI 健康面板增强）、O3-2 的 GUI 展示为前端工作，本计划只产出内核/服务端能力 ✓
 
 **Placeholder scan：** 无 TBD/TODO；每个代码步骤含完整实现。Task 1 的"修复"步骤为条件性（断言通过则零改动），属验收核对而非占位。

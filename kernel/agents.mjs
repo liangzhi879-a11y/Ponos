@@ -1,9 +1,9 @@
-// YFW-turbo agent 注册（内置 + 用户级扫描）——subagent 体系的路由依据
+// Ponos-turbo agent 注册（内置 + 用户级扫描）——subagent 体系的路由依据
 // ---------------------------------------------------------------------------
 // 两个来源：
 //   1. BUILTIN_AGENTS：内核内置系统级 agent（GUI 业务 agent 不内置，由
-//      agents:sync 写入 $YFW_HOME/agents/*.md 走扫描）
-//   2. discoverUserAgents：扫描 $YFW_HOME/agents/*.md（frontmatter 格式与
+//      agents:sync 写入 $PONOS_HOME/agents/*.md 走扫描）
+//   2. discoverUserAgents：扫描 $PONOS_HOME/agents/*.md（frontmatter 格式与
 //      GUI agents:sync 写入一致，见 multi-agent-collab 设计 §4.1）：
 //        ---
 //        name: <id>
@@ -18,7 +18,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 // 内置系统级 agent。业务专业 agent（material-writer/table-expert 等）由 GUI
-// 同步进 $YFW_HOME/agents/，不在此重复定义。
+// 同步进 $PONOS_HOME/agents/，不在此重复定义。
 export const BUILTIN_AGENTS = [
   {
     id: 'general-purpose',
@@ -27,7 +27,7 @@ export const BUILTIN_AGENTS = [
     tools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebFetch', 'TodoWrite'],
     model: '',
     systemPrompt: [
-      '你是 YFWorking 的子 Agent（general-purpose），由主 Agent 委派执行独立子任务。',
+      '你是 Ponos 的子 Agent（general-purpose），由主 Agent 委派执行独立子任务。',
       '请遵循与主 Agent 相同的工作规范：先 Read 确认现状再 Write/Edit；工具结果如实反映；',
       '最终以简体中文给出任务结论（摘要 + 关键依据），不要复述过程细节。',
     ].join('\n'),
@@ -39,7 +39,7 @@ export const BUILTIN_AGENTS = [
     tools: ['Bash', 'Read', 'Glob', 'Grep', 'WebFetch'],
     model: '',
     systemPrompt: [
-      '你是 YFWorking 的子 Agent（researcher），负责调查与资料汇总。',
+      '你是 Ponos 的子 Agent（researcher），负责调查与资料汇总。',
       '优先用 Glob/Grep 定位资料、Read 精读，需要外部信息时用 WebFetch。',
       '最终以简体中文给出结构化调研结论（要点列表 + 信息来源）。',
     ].join('\n'),
@@ -86,7 +86,7 @@ export function parseAgentMarkdown(text) {
   }
 }
 
-// 扫描用户级 agent 目录：$YFW_HOME/agents/*.md（跳过隐藏文件与 registry）
+// 扫描用户级 agent 目录：$PONOS_HOME/agents/*.md（跳过隐藏文件与 registry）
 export function discoverUserAgents({ configDir } = {}) {
   const dir = join(configDir || '', 'agents')
   if (!existsSync(dir)) return []

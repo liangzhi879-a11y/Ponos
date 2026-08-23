@@ -51,10 +51,10 @@ export function seedFromFile(filePath, { env = process.env } = {}) {
   return true
 }
 
-// 视觉模型透传：独立 provider（YFW_VISION_*，bridge buildChildEnv 已注入）→ 上报用对象。
+// 视觉模型透传：独立 provider（PONOS_VISION_*，bridge buildChildEnv 已注入）→ 上报用对象。
 export function visionFromEnv(env = process.env) {
-  const baseUrl = env.YFW_VISION_BASE_URL || ''
-  const model = env.YFW_VISION_MODEL || ''
+  const baseUrl = env.PONOS_VISION_BASE_URL || ''
+  const model = env.PONOS_VISION_MODEL || ''
   if (!baseUrl || !model) return null
-  return { baseUrl, model, configured: !!env.YFW_VISION_AUTH_TOKEN }
+  return { baseUrl, model, configured: !!env.PONOS_VISION_AUTH_TOKEN }
 }

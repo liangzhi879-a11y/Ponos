@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// YFW-turbo 内核入口（docs/bridge-contract.md §2 spawn 契约 + §3/§4 wire 语义）
+// Ponos-turbo 内核入口（docs/bridge-contract.md §2 spawn 契约 + §3/§4 wire 语义）
 // ---------------------------------------------------------------------------
-// 净室重建的原创内核（代号 YFW-turbo），由 bridge 经 bun 运行时以 stream-json
-// 模式 spawn（findYFWorking 候选 #1：<repo>/kernel/cli.mjs），也可直接
+// 净室重建的原创内核（代号 Ponos-turbo），由 bridge 经 bun 运行时以 stream-json
+// 模式 spawn（findPonos 候选 #1：<repo>/kernel/cli.mjs），也可直接
 // node kernel/cli.mjs 运行/测试。
 // 职责：
 //   - 解析契约参数（--print --output-format stream-json --input-format
@@ -42,7 +42,7 @@ const REQUIRED_FORMAT = 'stream-json'
 
 function usage() {
   console.error(
-    'YFW-turbo kernel: --print --output-format stream-json --input-format stream-json ' +
+    'Ponos-turbo kernel: --print --output-format stream-json --input-format stream-json ' +
     '[--verbose] [--dangerously-skip-permissions] [--auto-approve-high-risk] [--permission-prompt-tool stdio] ' +
     '[--disallowedTools <list>] [--resume <id>] [--append-system-prompt-file <file>] ' +
     '[--model <m>] [--add-dir <dir>] [--allow-outside-dirs]'
@@ -117,7 +117,7 @@ export async function main(argv) {
   // 会话身份：--resume 恢复既有会话，否则新建（session_id 供 GUI 从 init 事件
   // 记录 conversation.sessionId，transcript 文件名 = 该 id，契约 §7/§8）
   const sessionId = args.resume || newSessionId()
-  // S5-1 配置目录解析纯函数（CLAUDE_CONFIG_DIR > YFWORKING_HOME > ~/.yfworking）
+  // S5-1 配置目录解析纯函数（CLAUDE_CONFIG_DIR > PONOS_HOME > ~/.ponos）
   const configDir = resolveConfigDir(process.env, homedir)
   // S5-1 共享目录只读挂载：shared 存在时追加进 addDirs（tools withinBoundary 按
   // 白名单 dir 放行；共享技能/配置多人共用，个人 configDir 保持隔离）
@@ -126,7 +126,7 @@ export async function main(argv) {
   const store = createSessionStore({ configDir, cwd: args.addDirs[0] || '', sessionId })
   // P4-1：bridge 落盘的 providers.json → 注册表播种（未激活时生效；激活后固定）
   seedFromFile(join(configDir, 'providers.json'))
-  // P4-3 分层 settings：user（configDir/settings.json）< project（cwd/.yfworking/settings.json）< local。
+  // P4-3 分层 settings：user（configDir/settings.json）< project（cwd/.ponos/settings.json）< local。
   // settings.env 仅兜底（spawn env 快照仍权威）：缺失键才写入 process.env。
   const settings = loadSettings({ configDir, cwd: args.addDirs[0] || '', local: {} })
   for (const [k, v] of Object.entries(settings.merged.env || {})) {
@@ -159,7 +159,7 @@ export async function main(argv) {
   process.on('SIGTERM', () => shutdown(0))
 
   // 生产链路一次接齐：context（token 启发式）+ health（健康监控）+ compactor（两阶段压缩）。
-  // compactor 装配 health → 压缩成功后 yfw_summary 走 health.recordCompaction 单通道
+  // compactor 装配 health → 压缩成功后 ponos_summary 走 health.recordCompaction 单通道
   // （代发 + 记录 lastSummary），不再由 compactor 直接 wire.summary（FIX R1，杜绝双发）。
   // compactor 的 signal 传 undefined——cancel 不中断进行中的压缩摘要调用为已知限制
   // （deferred minor，勿改）。
@@ -203,7 +203,6 @@ export async function main(argv) {
   const engine = createEngine({
     opts: {
       model: args.model,
-      resumeId: args.resume,
       configDir,
       addDirs: args.addDirs,
       systemPrompt: '', // 占位，下面三层组装后覆盖
@@ -230,17 +229,17 @@ export async function main(argv) {
   // L3-2：记忆注入（与 GUI 经验面板同一数据源；settings.memory.inject=false 逃生阀）。
   // 两级注入：buildRelevantMemory 按当前任务上下文关键词抽调相关经验全文（模型直接
   // 可用），buildMemoryIndex 给全量索引指针（模型按需 Read）。任务关键词 = cwd/
-  // addDirs 目录名 + 显式任务标签（settings.memory.taskTag / env YFW_MEMORY_KEYWORDS，
-  // 逗号分隔可追加）。YFW_MEMORY_INJECT=index-only 时仅索引（旧行为）。
+  // addDirs 目录名 + 显式任务标签（settings.memory.taskTag / env PONOS_MEMORY_KEYWORDS，
+  // 逗号分隔可追加）。PONOS_MEMORY_INJECT=index-only 时仅索引（旧行为）。
   const memoryRootDir = memoryRoot(configDir)
-  const injectMode = process.env.YFW_MEMORY_INJECT || 'both'
+  const injectMode = process.env.PONOS_MEMORY_INJECT || 'both'
   let memoryBlock = ''
   if (settings.merged.memory?.inject !== false) {
     if (injectMode !== 'index-only') {
       const kw = [
         ...(args.addDirs || []).map((d) => basename(d)).filter(Boolean),
         ...(settings.merged.memory?.taskTag || '').split(',').map((s) => s.trim()).filter(Boolean),
-        ...(process.env.YFW_MEMORY_KEYWORDS || '').split(',').map((s) => s.trim()).filter(Boolean),
+        ...(process.env.PONOS_MEMORY_KEYWORDS || '').split(',').map((s) => s.trim()).filter(Boolean),
       ]
       memoryBlock += buildRelevantMemory({ root: memoryRootDir, keywords: kw })
     }
@@ -258,18 +257,18 @@ export async function main(argv) {
     memory: memoryBlock,
   }))
   // system(init)：spawn 即发。bridge /test-provider 判定 CLI 加载成功并读取
-  // model/tools；GUI 从 session_id 绑定会话（useYFWCLI.ts handleMessage）。
-  // name 字段标识 agent 身份（诊断用，GUI 不依赖）；version 为 yfwturbo dev 版本线
+  // model/tools；GUI 从 session_id 绑定会话（usePonosCLI.ts handleMessage）。
+  // name 字段标识 agent 身份（诊断用，GUI 不依赖）；version 为 ponos-turbo dev 版本线
   // （version.mjs 单一数据源，与 GUI 发布版本相互独立）。
   log.info('kernel start', { model, resume: Boolean(args.resume), cwd: args.addDirs[0] || '' })
   // R4-1 并发会话上限策略内核化：capacity 由内核决定（env 兜底），bridge 只执行
   // 拒绝（单进程内核无法感知其他会话，执行必须在会话管理方）
-  const capacity = Math.max(1, Number(process.env.YFW_MAX_CONCURRENT_SESSIONS || 10))
+  const capacity = Math.max(1, Number(process.env.PONOS_MAX_CONCURRENT_SESSIONS || 10))
   // init 概览扩展（P4-4，只增字段）：provider 注册表激活态 / 视觉透传 / 技能数 / hooks 规则数
   const prov = getProvider()
   const vision = visionFromEnv()
   wire.system('init', {
-    model, tools: engine.toolNames, session_id: sessionId, name: 'YFWorking', version: KERNEL_VERSION, capacity,
+    model, tools: engine.toolNames, session_id: sessionId, name: 'Ponos', version: KERNEL_VERSION, capacity,
     schemaVersion: SCHEMA_VERSION,
     buildId: buildId(),
     provider: prov ? { model: prov.model, version: providerVersion() } : null,
@@ -429,7 +428,9 @@ export async function main(argv) {
       try {
         const { provider, version } = setProvider(payload)
         model = provider.model
-        context.window = contextWindowFor(provider.model)   // 上下文窗口随模型重算
+        // 上下文窗口：bridge 显式下发 contextWindow（setProvider 已持久化）则尊重之，
+        // 自定义窗口在热切换时不丢失；未下发（0）才按模型表重算
+        context.window = provider.contextWindow > 0 ? provider.contextWindow : contextWindowFor(provider.model)
         // 顺带同步思考深度档位（bridge 下发 payload.effortLevel；空值不动）
         if (payload.effortLevel) {
           const r = engine.setReasoningEffort(payload.effortLevel)

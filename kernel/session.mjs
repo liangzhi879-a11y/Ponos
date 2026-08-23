@@ -1,8 +1,8 @@
-// YFW-turbo 会话持久化 + surface 投影（docs/bridge-contract.md §7/§8 + 内核设计 §4）
+// Ponos-turbo 会话持久化 + surface 投影（docs/bridge-contract.md §7/§8 + 内核设计 §4）
 // ---------------------------------------------------------------------------
 // transcript 文件位置与 server/transcript.mjs 的约定一致（跨层契约，GUI 直接
 // 经 bridge /transcript/load 读取）：
-//   <CLAUDE_CONFIG_DIR ?? ~/.yfworking>/projects/<sanitize(cwd)>/<sessionId>.jsonl
+//   <CLAUDE_CONFIG_DIR ?? ~/.ponos>/projects/<sanitize(cwd)>/<sessionId>.jsonl
 // 每行一个 NDJSON entry。entry 在既有 { type, id, timestamp, message } 之上扩展
 // 可选字段（旧文件可加载）：
 //   - seq：日志侧单调追加序号（跨进程稳定标识；旧 transcript 加载时按序补齐）

@@ -10,16 +10,16 @@
 
 ## 0. 前置：以调试版启动应用（带 CDP 9223）
 
-必须用桌面「YFWorking 调试版」快捷方式启动（等价命令）：
+必须用桌面「Ponos 调试版」快捷方式启动（等价命令）：
 
 ```bash
 # 在 release 目录下
-"release\YFWorking_ms92cd6u\electron\electron.exe" --remote-debugging-port=9223 --enable-logging "release\YFWorking_ms92cd6u\electron\main.cjs"
+"release\Ponos_ms92cd6u\electron\electron.exe" --remote-debugging-port=9223 --enable-logging "release\Ponos_ms92cd6u\electron\main.cjs"
 ```
 
-- 快捷方式实际参数（已核对桌面 .lnk）：`--remote-debugging-port=9223 --enable-logging <main.cjs>`，工作目录为 `release\YFWorking_ms92cd6u`
+- 快捷方式实际参数（已核对桌面 .lnk）：`--remote-debugging-port=9223 --enable-logging <main.cjs>`，工作目录为 `release\Ponos_ms92cd6u`
 - CDP 端口 9223 只在此调试方式下存在；普通启动没有，路径 B 不可用
-- 确保 `release\YFWorking_ms92cd6u` 副本已完成 Task 9 Step 1 同步（`server/doubao.mjs`、`server/watermark_remove.py`、`server/bridge.mjs`、`electron/main.cjs`、`electron/preload.cjs`、`electron/doubao-page-script.js` 均为新版本）
+- 确保 `release\Ponos_ms92cd6u` 副本已完成 Task 9 Step 1 同步（`server/doubao.mjs`、`server/watermark_remove.py`、`server/bridge.mjs`、`electron/main.cjs`、`electron/preload.cjs`、`electron/doubao-page-script.js` 均为新版本）
 
 ---
 

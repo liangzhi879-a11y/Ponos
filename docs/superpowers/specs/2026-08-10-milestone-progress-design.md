@@ -22,14 +22,14 @@
 
 **采用方案 A：系统提示协议**（用户确认）。
 
-- bridge 已在 spawn CLI 时通过 `--append-system-prompt-file` 注入 `YFW_SYSTEM_PROMPT` + 技能清单（bridge.mjs `buildChildEnv` 附近、约 line 537）
+- bridge 已在 spawn CLI 时通过 `--append-system-prompt-file` 注入 `PONOS_SYSTEM_PROMPT` + 技能清单（bridge.mjs `buildChildEnv` 附近、约 line 537）
 - 在该系统提示中**追加里程碑协议规则**，约定 agent 行为
 - 结构化标记由 bridge 解析剥离并转发事件——与提问卡片（`<!--ASK_USER-->`）机制完全同构
 - 不改内核 bundle（避免重建产物的既定风险）；"强制 check"依赖模型遵循系统提示
 
 ## 3. 里程碑协议
 
-### 3.1 agent 行为规则（注入 YFW_SYSTEM_PROMPT 的追加段落）
+### 3.1 agent 行为规则（注入 PONOS_SYSTEM_PROMPT 的追加段落）
 
 ```
 【任务里程碑进度协议】
@@ -121,7 +121,7 @@ ConversationItem 条目**底部 2px 背景进度条**：
 
 - `server/bridge.mjs`：系统提示追加协议段落 + assistant 解析处提取/剥离/转发
 - `src/stores/chatStore.ts`：`conversationProgress` + 3 个 action（type 定义 + persist 默认值）
-- `src/hooks/useYFWCLI.ts`：新增 `milestones` / `milestone-ok` 事件 handler
+- `src/hooks/usePonosCLI.ts`：新增 `milestones` / `milestone-ok` 事件 handler
 - `src/components/layout/Sidebar.tsx`：ConversationItem 背景进度条 + tooltip
 - `src/styles/globals.css`（或新增局部样式）：进度条 CSS（动画、渐变、mask、glow）
 - **不改**：内核 bundle、会话标题、对话流内容、i18n（进度条无文案，tooltip 用现有翻译/硬编码样式统一处理）

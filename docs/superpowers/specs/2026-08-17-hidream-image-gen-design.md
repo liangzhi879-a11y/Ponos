@@ -37,12 +37,12 @@
 [React 前端] ──HTTP──► [bridge.mjs 代理端点] ──https(带Cookie/UA/Referer伪装)──► hidream.org/api/*
       ▲                        │
       │                        ▼
-[main.cjs 登录窗口] ──导出──► ~/.yfworking/hidream-session.json
+[main.cjs 登录窗口] ──导出──► ~/.ponos/hidream-session.json
 ```
 
-1. **登录**：main.cjs 创建独立 BrowserWindow（`partition: 'persist:hidream'` 持久化分区），加载 `https://hidream.org/zh/ai-image-generator`。用户完成 Clerk 登录（勾选"记住我"）后，通过"登录完成"动作（URL 跳转到生成页 或 用户点击面板"完成登录"）触发：`session.cookies.get({ url: 'https://hidream.org' })` 导出 cookie → 写入 `~/.yfworking/hidream-session.json` → 关窗。
-2. **生成**：前端面板 → `POST /yfw/img/create`（bridge）→ 读 cookie 文件拼 `Cookie` 头，伪装同源 `Referer`/`Origin: https://hidream.org` 与浏览器 UA → 转发到 hidream.org 对应端点 → 透传 `{code, message, data}`。
-3. **额度/历史**：`/yfw/img/credits` 转发 get-user-credits；生成历史存本地 `~/.yfworking/hidream-history.json`（不依赖站点）。
+1. **登录**：main.cjs 创建独立 BrowserWindow（`partition: 'persist:hidream'` 持久化分区），加载 `https://hidream.org/zh/ai-image-generator`。用户完成 Clerk 登录（勾选"记住我"）后，通过"登录完成"动作（URL 跳转到生成页 或 用户点击面板"完成登录"）触发：`session.cookies.get({ url: 'https://hidream.org' })` 导出 cookie → 写入 `~/.ponos/hidream-session.json` → 关窗。
+2. **生成**：前端面板 → `POST /ponos/img/create`（bridge）→ 读 cookie 文件拼 `Cookie` 头，伪装同源 `Referer`/`Origin: https://hidream.org` 与浏览器 UA → 转发到 hidream.org 对应端点 → 透传 `{code, message, data}`。
+3. **额度/历史**：`/ponos/img/credits` 转发 get-user-credits；生成历史存本地 `~/.ponos/hidream-history.json`（不依赖站点）。
 
 ## 4. 详细设计
 
@@ -60,13 +60,13 @@
 
 | 端点 | 方法 | 说明 |
 |---|---|---|
-| `/yfw/img/status` | GET | 读 cookie 文件，返回 `{loggedIn, expiresAt?}` |
-| `/yfw/img/credits` | GET | 转发 `/api/user/get-user-credits` |
-| `/yfw/img/create` | POST | body `{prompt, model_name?, image_type?, count?, image_url?, aspect_ratio?}`；文生图走 create-image（`image_type: 'text2img'`），图生图先上传 image_url 再走 create-image（`image_type: 'img2img'`） |
-| `/yfw/img/instant` | POST | 兜底通道：body `{description}` 转发 `/api/image/instant`（免 Turnstile 候选，P0 实测） |
-| `/yfw/img/history` | GET | 读本地历史 |
-| `/yfw/img/history/:id` | DELETE | 删本地历史条目 |
-| `/yfw/img/download` | GET | 代理下载图片字节到本地（存 `~/.yfworking/hidream-images/<id>.<ext>`），返回本地路径 |
+| `/ponos/img/status` | GET | 读 cookie 文件，返回 `{loggedIn, expiresAt?}` |
+| `/ponos/img/credits` | GET | 转发 `/api/user/get-user-credits` |
+| `/ponos/img/create` | POST | body `{prompt, model_name?, image_type?, count?, image_url?, aspect_ratio?}`；文生图走 create-image（`image_type: 'text2img'`），图生图先上传 image_url 再走 create-image（`image_type: 'img2img'`） |
+| `/ponos/img/instant` | POST | 兜底通道：body `{description}` 转发 `/api/image/instant`（免 Turnstile 候选，P0 实测） |
+| `/ponos/img/history` | GET | 读本地历史 |
+| `/ponos/img/history/:id` | DELETE | 删本地历史条目 |
+| `/ponos/img/download` | GET | 代理下载图片字节到本地（存 `~/.ponos/hidream-images/<id>.<ext>`），返回本地路径 |
 
 转发实现：Node `https` 模块，`create-image` 超时 60s、状态类 10s；错误分类透传（401 会话过期 / 402 积分不足 / 403 风控 / 429 限速）；失败不落 cookie 日志。
 
@@ -76,7 +76,7 @@
 - **面板组件** `src/components/hidream/HiDreamPanel.tsx`：
   - 登录状态卡：未登录 → "登录 HiDream"（调 `hidream:open-login`）；已登录 → 额度显示（credits，轮询或进入时拉取）
   - 文生图：提示词 textarea、模型选择（默认 `dev`）、比例（1:1/16:9/9:16）、数量（1-4）
-  - 图生图：参考图上传（本地文件→经 `/yfw/img/create` 的 image_url 或先传 `/api/storage/upload-image`），与提示词组合
+  - 图生图：参考图上传（本地文件→经 `/ponos/img/create` 的 image_url 或先传 `/api/storage/upload-image`），与提示词组合
   - 结果画廊：生成图预览、"插入到输入栏"（作为 `@image:<本地路径>` 附件进当前会话，复用现有 Attachment 结构）、"下载到本地"
   - 历史列表：最近 N 条，可查看/下载/删除
 - **状态管理** `src/stores/hidreamStore.ts`（zustand）：`{loggedIn, credits, generating, results[], history[]}` + actions
@@ -97,7 +97,7 @@
 3. `/api/image/instant` 是否免 Turnstile、参数与返回结构，作兜底通道
 4. 图生图 `image_type`/`image_url` 确切传参（必要时用 `/api/storage/upload-image` 前置上传）
 
-**自动化单测**（server/*.test.mjs，node --test）：mock hidream 响应测试 `/yfw/img/*` 端点（cookie 注入、错误透传、history 存取、节流）。
+**自动化单测**（server/*.test.mjs，node --test）：mock hidream 响应测试 `/ponos/img/*` 端点（cookie 注入、错误透传、history 存取、节流）。
 **手测清单**：登录→文生图→图生图→额度显示→插入输入栏→下载→删除历史→会话过期重登→积分不足提示。
 
 ## 5. 范围外（YAGNI）

@@ -3,8 +3,8 @@
  *
  * 从 ~/.claude/skills 把 gxtz-* 技能（扁平 .md）与 _common 共享库
  * 转成目录式内置包（public/sample-skills/gxtz-xxx/SKILL.md + _common/），
- * 并把技能内所有 .claude/skills 路径引用重写为 {{YFW_SKILLS}} 占位符，
- * 由 bridge install-skill 在安装时替换为实际的 ~/.yfworking/skills 绝对路径。
+ * 并把技能内所有 .claude/skills 路径引用重写为 {{PONOS_SKILLS}} 占位符，
+ * 由 bridge install-skill 在安装时替换为实际的 ~/.ponos/skills 绝对路径。
  *
  * 用法: node scripts/sync-builtin-skills.mjs [--dry-run]
  */
@@ -23,7 +23,7 @@ const EXCLUDE_EXTS = new Set(['.pyc', '.pyo', '.log', '.tmp'])
 /** 文本文件才做占位符替换 */
 const TEXT_EXTS = new Set(['.md', '.py', '.json', '.txt', '.yaml', '.yml', '.js', '.mjs', '.cjs', '.ts', '.html', '.css', '.sh', '.bat', '.cmd', '.csv'])
 
-const PLACEHOLDER = '{{YFW_SKILLS}}'
+const PLACEHOLDER = '{{PONOS_SKILLS}}'
 
 /** 将各种 .claude/skills 引用形式统一替换为占位符 */
 function rewrite(text) {

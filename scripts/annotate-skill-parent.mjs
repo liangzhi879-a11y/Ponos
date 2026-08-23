@@ -1,12 +1,12 @@
 // scripts/annotate-skill-parent.mjs —— 批量标注（--dry-run 预览 / 默认执行）
-// 53 项映射 = spec 4.2 分类表；技能库在 ~/.yfworking/skills（不在 git 仓库），改前已整体备份
+// 53 项映射 = spec 4.2 分类表；技能库在 ~/.ponos/skills（不在 git 仓库），改前已整体备份
 // 注：code-review-and-quality 是符号链接（→ .agents/skills/…），写文件会穿透链接修改技能库之外
 // 的数据，故跳过并在输出中标记；其 parent 归属仍按 MAP（using-superpowers）。
 import { readFileSync, writeFileSync, readdirSync, existsSync, lstatSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
-const SKILLS_DIR = join(homedir(), '.yfworking', 'skills')
+const SKILLS_DIR = join(homedir(), '.ponos', 'skills')
 // 分类表（spec 4.2，53 项完整映射；键=目录名）：
 const MAP = {
   // gxtz → gxtz-suite（23）

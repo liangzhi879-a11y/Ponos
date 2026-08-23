@@ -49,12 +49,12 @@
 
 | 组件 | 位置 | 职责 |
 |---|---|---|
-| VisionTool.ts | `yfw-kernel/claude-code/src/tools/VisionTool/VisionTool.ts` | buildTool 定义，对齐 OcrTool 范式。SUPPORTED_EXTENSIONS 与 OcrTool 相同；schema：`file_path` + `instruction?` + `project?` + `force?`；`isReadOnly: true`；权限校验复用 `checkReadPermissionForTool` |
-| prompt.ts / UI.tsx | `yfw-kernel/claude-code/src/tools/VisionTool/` | 工具描述明确与 OcrTool 分工（语义理解 vs 精确读字）；渲染与摘要对齐 OcrTool 的 UI 模式 |
+| VisionTool.ts | `ponos-kernel/claude-code/src/tools/VisionTool/VisionTool.ts` | buildTool 定义，对齐 OcrTool 范式。SUPPORTED_EXTENSIONS 与 OcrTool 相同；schema：`file_path` + `instruction?` + `project?` + `force?`；`isReadOnly: true`；权限校验复用 `checkReadPermissionForTool` |
+| prompt.ts / UI.tsx | `ponos-kernel/claude-code/src/tools/VisionTool/` | 工具描述明确与 OcrTool 分工（语义理解 vs 精确读字）；渲染与摘要对齐 OcrTool 的 UI 模式 |
 | vision_prepare.py | `runtime/skills/_common/vision_prepare.py` | 预处理：fitz 渲染 PDF（每页 PNG，默认上限 10 页，`--max-pages` 可调，超出截断并提示）；PIL 归一化 bmp/tif/gif/webp→PNG、转 RGB、2048px 内等比缩放（超限警告）。无密钥逻辑 |
-| visionClient.ts | `yfw-kernel/claude-code/src/utils/visionClient.ts` | Node 侧唯一 API 出口：`describeImage(pages, instruction, config)` → POST `{apiBaseUrl}/v1/messages`（Anthropic 格式 image block + instruction）→ 文本；缓存读写 `.trae/vision_cache/{project}/`；60s 超时。供工具与桥接共用 |
+| visionClient.ts | `ponos-kernel/claude-code/src/utils/visionClient.ts` | Node 侧唯一 API 出口：`describeImage(pages, instruction, config)` → POST `{apiBaseUrl}/v1/messages`（Anthropic 格式 image block + instruction）→ 文本；缓存读写 `.trae/vision_cache/{project}/`；60s 超时。供工具与桥接共用 |
 | 桥接钩子 | 内核消息组装层（image block 发往主模型前） | 检测 image block + visionModel 已配 + 主模型非视觉 → 调 visionClient → 替换为文本块 |
-| 配置 | `src/types/index.ts` + `server/bridge.mjs` + SettingsView | `ModelProvider.visionModel?: string`；bridge 启动内核注入 `YFW_VISION_MODEL` env（baseUrl/token 复用现有 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`，同一 provider 同一端点）；前端 provider 编辑区加"视觉模型"下拉（从该 provider models 选，留空=禁用）+ "自动图片桥接"开关（默认开，配了 visionModel 才生效） |
+| 配置 | `src/types/index.ts` + `server/bridge.mjs` + SettingsView | `ModelProvider.visionModel?: string`；bridge 启动内核注入 `PONOS_VISION_MODEL` env（baseUrl/token 复用现有 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`，同一 provider 同一端点）；前端 provider 编辑区加"视觉模型"下拉（从该 provider models 选，留空=禁用）+ "自动图片桥接"开关（默认开，配了 visionModel 才生效） |
 
 ## 数据流
 
@@ -79,7 +79,7 @@
 ## 配置改动
 
 - `src/types/index.ts`：`ModelProvider` 增加 `visionModel?: string`
-- `server/bridge.mjs`：启动内核时注入 `YFW_VISION_MODEL`（取 activeProvider 的 visionModel，空则不注入）；内核 VisionTool 从 `process.env` 读取 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `YFW_VISION_MODEL`
+- `server/bridge.mjs`：启动内核时注入 `PONOS_VISION_MODEL`（取 activeProvider 的 visionModel，空则不注入）；内核 VisionTool 从 `process.env` 读取 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `PONOS_VISION_MODEL`
 - `src/stores/settingsStore.ts`：providers 初始化值（可选补 `visionModel` 占位）
 - `src/components/settings/SettingsView.tsx`：provider 编辑区新增"视觉模型"下拉（options 来自该 provider 的 models 数组，含"不使用"空选项）+ "自动图片桥接"开关（默认开启，仅配了 visionModel 时有效）
 

@@ -1,4 +1,4 @@
-// YFW-turbo LLM API 客户端（docs/bridge-contract.md §2 buildChildEnv 注入的 provider env）
+// Ponos-turbo LLM API 客户端（docs/bridge-contract.md §2 buildChildEnv 注入的 provider env）
 // ---------------------------------------------------------------------------
 // 以 Anthropic Messages API 兼容协议调上游（ANTHROPIC_BASE_URL +
 // ANTHROPIC_AUTH_TOKEN + ANTHROPIC_MODEL）。OpenAI 兼容端点已删除（2026-08-20 实测
@@ -8,7 +8,7 @@
 //   { type: 'thinking', text }      推理模型的思考块（deepseek 等）
 //   { type: 'usage',    usage }     最终 token 用量（input_tokens/output_tokens）
 // engine.mjs 消费该流并转发 wire.assistant，不感知具体 provider 流式格式。
-// YFW_MOCK_API=1：内置幂等 mock 流（引擎测试用，无网络）。
+// PONOS_MOCK_API=1：内置幂等 mock 流（引擎测试用，无网络）。
 import { abortError } from './protocol.mjs'
 import { getProvider } from './provider.mjs'
 
@@ -113,9 +113,9 @@ async function* streamText(text, signal) {
 }
 
 async function* mockStream({ messages, signal }) {
-  // 瞬时错误模拟（P0-1 retry 测试）：YFW_MOCK_TRANSIENT=once 首次调用抛网络层错误
-  if (process.env.YFW_MOCK_TRANSIENT === 'once' && process.env.YFW_MOCK_TRANSIENT_CONSUMED !== '1') {
-    process.env.YFW_MOCK_TRANSIENT_CONSUMED = '1'
+  // 瞬时错误模拟（P0-1 retry 测试）：PONOS_MOCK_TRANSIENT=once 首次调用抛网络层错误
+  if (process.env.PONOS_MOCK_TRANSIENT === 'once' && process.env.PONOS_MOCK_TRANSIENT_CONSUMED !== '1') {
+    process.env.PONOS_MOCK_TRANSIENT_CONSUMED = '1'
     const err = new Error('内核：API 请求失败 503 fetch failed')
     err.status = 503
     throw err
@@ -145,24 +145,24 @@ async function* mockStream({ messages, signal }) {
     return
   }
   // 压缩摘要调用：检测 COMPACTION_INSTRUCTION → 返回 mock 摘要（收敛用）。
-  // YFW_MOCK_COMPACT_BAD=1 → 返回无标签文本（extractSummary 失败，熔断测试用）
+  // PONOS_MOCK_COMPACT_BAD=1 → 返回无标签文本（extractSummary 失败，熔断测试用）
   if (lastText && lastText.includes('系统压缩指令')) {
-    if (process.env.YFW_MOCK_COMPACT_BAD === '1') {
+    if (process.env.PONOS_MOCK_COMPACT_BAD === '1') {
       yield* streamText('（压缩失败：模型未输出结构化摘要）', signal)
       yield { type: 'usage', usage: MOCK_USAGE }
       return
     }
-    const body = process.env.YFW_MOCK_COMPACT_RESPONSE === '1'
+    const body = process.env.PONOS_MOCK_COMPACT_RESPONSE === '1'
       ? '<compacted-summary>摘要输出</compacted-summary>'
       : '<compacted-summary>mock 摘要</compacted-summary>'
     yield* streamText(body, signal)
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
-  // 溢出模拟：YFW_MOCK_OVERFLOW=once → 非 summarizer 调用抛一次 context_window_exceeded
-  if (process.env.YFW_MOCK_OVERFLOW === 'once' && !String(lastText || '').includes('系统压缩指令')) {
-    if (process.env.YFW_MOCK_OVERFLOW_CONSUMED === '1') { /* 已抛过 */ } else {
-      process.env.YFW_MOCK_OVERFLOW_CONSUMED = '1'
+  // 溢出模拟：PONOS_MOCK_OVERFLOW=once → 非 summarizer 调用抛一次 context_window_exceeded
+  if (process.env.PONOS_MOCK_OVERFLOW === 'once' && !String(lastText || '').includes('系统压缩指令')) {
+    if (process.env.PONOS_MOCK_OVERFLOW_CONSUMED === '1') { /* 已抛过 */ } else {
+      process.env.PONOS_MOCK_OVERFLOW_CONSUMED = '1'
       throw new Error('context_window_exceeded: 请求超出模型上下文窗口')
     }
   }
@@ -176,11 +176,11 @@ async function* mockStream({ messages, signal }) {
     return
   }
   // 子 agent 产物承接测试：[mock:write] 触发 Write tool_use（写两个文件，
-  // onTool 收集 → task_notification.outputs 断言）。YFW_MOCK_WRITE_DIR 指定目录
+  // onTool 收集 → task_notification.outputs 断言）。PONOS_MOCK_WRITE_DIR 指定目录
   if (lastText.includes('[mock:write]')) {
     if (signal?.aborted) throw abortError()
     await sleep(MOCK_SLEEP_MS)
-    const base = process.env.YFW_MOCK_WRITE_DIR || process.cwd()
+    const base = process.env.PONOS_MOCK_WRITE_DIR || process.cwd()
     yield { type: 'tool_use', id: 'tool_use_mock_write_1', name: 'Write', input: { file_path: `${base}/mock-a.txt`, content: 'a' } }
     yield { type: 'tool_use', id: 'tool_use_mock_write_2', name: 'Write', input: { file_path: `${base}/mock-b.txt`, content: 'b' } }
     yield { type: 'usage', usage: MOCK_USAGE }
@@ -197,18 +197,18 @@ async function* mockStream({ messages, signal }) {
     return
   }
   // 工具请求回合：[mock:tool] 触发 Bash tool_use（rm -rf 高危 → 审批挂起）。
-  // YFW_MOCK_TOOLS=N 时一次返回 N 个 tool_use（多工具轮合并回归用）
+  // PONOS_MOCK_TOOLS=N 时一次返回 N 个 tool_use（多工具轮合并回归用）
   if (lastText.includes('[mock:tool]')) {
     if (signal?.aborted) throw abortError()
     await sleep(MOCK_SLEEP_MS)
-    const n = Math.max(1, Number(process.env.YFW_MOCK_TOOLS || 1))
+    const n = Math.max(1, Number(process.env.PONOS_MOCK_TOOLS || 1))
     for (let i = 1; i <= n; i++) {
       // 第 1 个工具保留 rm -rf 高危命令（审批测试依赖 can_use_tool 触发）；多工具模式后续用安全 echo
-      const command = i === 1 ? 'rm -rf /tmp/yfw-mock-target' : `echo mock-tool-${i}`
+      const command = i === 1 ? 'rm -rf /tmp/ponos-mock-target' : `echo mock-tool-${i}`
       yield { type: 'tool_use', id: `tool_use_mock_${i}`, name: 'Bash', input: { command } }
     }
-    // P0-2 length 截断模拟：YFW_MOCK_STOP_REASON=length → 工具轮后置 stop_reason
-    if (process.env.YFW_MOCK_STOP_REASON === 'length') yield { type: 'stop_reason', reason: 'length' }
+    // P0-2 length 截断模拟：PONOS_MOCK_STOP_REASON=length → 工具轮后置 stop_reason
+    if (process.env.PONOS_MOCK_STOP_REASON === 'length') yield { type: 'stop_reason', reason: 'length' }
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
@@ -393,7 +393,7 @@ function isEffortRejection(err) {
 }
 
 // Anthropic 协议流：tools 中立形状 → tools[]；system 抽顶层。
-// prompt cache 显式化：YFW_PROMPT_CACHE=1 且 system 非空时，system 改数组形态并
+// prompt cache 显式化：PONOS_PROMPT_CACHE=1 且 system 非空时，system 改数组形态并
 // 打 ephemeral 缓存标记（Anthropic 官方端点依赖显式标记命中缓存；DeepSeek 兼容
 // 端点自动缓存，显式标记无害）。端点拒绝该字段时自动去掉标记重发一次（兼容兜底）。
 async function* anthropicStream({ model, messages, system, tools, maxTokens, signal, reasoningEffort = null }) {
@@ -402,13 +402,13 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
   const base = p.baseUrl
   const token = p.authToken
   if (!base || !token) throw new Error('内核：ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 未配置')
-  const useCache = process.env.YFW_PROMPT_CACHE === '1' && !!system
+  const useCache = process.env.PONOS_PROMPT_CACHE === '1' && !!system
   const headers = { 'content-type': 'application/json', 'x-api-key': token, 'anthropic-version': '2023-06-01' }
   // 采样稳定性：默认 temperature=0（贪婪解码，确定性优先，支持该参数的端点生效；
-  // DeepSeek 兼容端点对 temperature 不敏感且不保证 seed 复现，注入无害）。YFW_SEED
+  // DeepSeek 兼容端点对 temperature 不敏感且不保证 seed 复现，注入无害）。PONOS_SEED
   // 可选固定采样种子（部分端点 temperature=0 + seed 时可复现）。
-  const temperature = Number(process.env.YFW_TEMPERATURE ?? 0)
-  const seedEnv = process.env.YFW_SEED
+  const temperature = Number(process.env.PONOS_TEMPERATURE ?? 0)
+  const seedEnv = process.env.PONOS_SEED
   // 思考深度：reasoningEffort（low/high/max → reasoning_effort；off → thinking disabled；
   // 缺省 → 不注入，模型原生自适应）
   const body = {
@@ -500,7 +500,7 @@ function withIdleTimeout(promise, ms) {
 export async function* streamMessages({ model, messages, maxTokens, signal, tools = [], reasoningEffort = null }) {
   const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n')
   const rest = messages.filter((m) => m.role !== 'system')
-  if (process.env.YFW_MOCK_API === '1') {
+  if (process.env.PONOS_MOCK_API === '1') {
     yield* mockStream({ messages, signal })
     return
   }

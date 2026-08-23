@@ -42,7 +42,7 @@
 2. **T2 P0-2+P1-1 js 动作**：js wrapper 归一化 + 二进制 512KB 内联/大文件落盘 + kernel schema
    - browser-executor.cjs：buildJsWrapperScript(expression) 工厂 + runJs + 主进程 finalize（b64→inline/file）
    - browser-common.cjs：binarySize 常量/判定（或放 executor）
-   - yfw-kernel BrowserTool.ts：action union 加 'js'，描述文档化；rebuild cli.mjs
+   - ponos-kernel BrowserTool.ts：action union 加 'js'，描述文档化；rebuild cli.mjs
    - 测试：wrapper 脚本内容（b64/元素摘要/深度截断/await）、finalize 决策（临时目录落盘）
 3. **T3 P1-2 a 标签下载语义**：collector download 标记 + click downloadURL + setWindowOpenHandler
    - browser-executor.cjs：isDownloadishUrl 纯函数、collect() 记 refHrefs/download flags、

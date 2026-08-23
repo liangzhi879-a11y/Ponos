@@ -1,9 +1,9 @@
 {
-  "name": "yfw-kernel",
+  "name": "ponos-kernel",
   "version": "0.1.0",
-  "description": "YFW-turbo 内核独立部署包（零 npm 依赖，无 GUI）",
+  "description": "Ponos-turbo 内核独立部署包（零 npm 依赖，无 GUI）",
   "type": "module",
-  "bin": { "yfw-kernel": "cli.mjs" },
+  "bin": { "ponos-kernel": "cli.mjs" },
   "main": "engine.mjs",
   "scripts": {
     "start": "node cli.mjs",

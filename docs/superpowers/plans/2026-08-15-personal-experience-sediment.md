@@ -2,22 +2,22 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 为 YFWorking 实现全自动静默的个人经验沉积（通用+业务两层，内核零改动），以及分类型可选的手动导出/导入，支撑"越用越好用"与跨设备项目继承、经验分享。
+**Goal:** 为 Ponos 实现全自动静默的个人经验沉积（通用+业务两层，内核零改动），以及分类型可选的手动导出/导入，支撑"越用越好用"与跨设备项目继承、经验分享。
 
-**Architecture:** 经验统一落盘 `~/.yfworking/memory/personal/{主题}.md`（md + 极简 frontmatter），由内核在"经验沉淀引导"指示下自动追加；bridge 在 spawn 时把激活经验合并进现有 `--append-system-prompt-file` 注入段（默认 4KB 上限）；GUI 设置页新增"经验"分区管理浏览与导出/导入；导出/导入由 `server/packager.mjs` 实现（staging + tar zip + manifest），Electron 主进程新增 IPC，renderer 负责传 chat/settings 的 localStorage 数据。
+**Architecture:** 经验统一落盘 `~/.ponos/memory/personal/{主题}.md`（md + 极简 frontmatter），由内核在"经验沉淀引导"指示下自动追加；bridge 在 spawn 时把激活经验合并进现有 `--append-system-prompt-file` 注入段（默认 4KB 上限）；GUI 设置页新增"经验"分区管理浏览与导出/导入；导出/导入由 `server/packager.mjs` 实现（staging + tar zip + manifest），Electron 主进程新增 IPC，renderer 负责传 chat/settings 的 localStorage 数据。
 
 **Tech Stack:** Node.js ESM（server/*.mjs）、node:test（内置测试）、Electron IPC（ipcMain.handle ↔ ipcRenderer.invoke）、React 18 + Zustand（前端）、Windows bsdtar（zip 打包，Git Bash GNU tar 与 `C:\Windows\System32\tar.exe` 均兼容）。
 
 ## Global Constraints
 
-- 零内核改动：`yfw-kernel/claude-code/` 不得修改，全部复用现有机制（auto memory 写入约定 + `--append-system-prompt-file` 注入，见 server/bridge.mjs:751/767）。
+- 零内核改动：`ponos-kernel/claude-code/` 不得修改，全部复用现有机制（auto memory 写入约定 + `--append-system-prompt-file` 注入，见 server/bridge.mjs:751/767）。
 - 所有新增代码遵循现有模式：server 模块 `export function` 风格；IPC 返回 `{ ok: boolean }` / `{ ok: false, error }` 风格（见 electron/main.cjs:486-534）；组件用 Tailwind + `cn()` + lucide-react 图标 + `@/components/ui`。
-- 数据目录：`~/.yfworking/` 为权威（`server/bridge.mjs:113 YFW_HOME`）。`~/.trae-cn/` 仅做只读回退。skill_experiences 权威路径为 `~/.yfworking/memory/skill_experiences/`（main.cjs:442 的旧 `.trae-cn` 路径需在 Task 5 修正为先新后旧）。
+- 数据目录：`~/.ponos/` 为权威（`server/bridge.mjs:113 PONOS_HOME`）。`~/.trae-cn/` 仅做只读回退。skill_experiences 权威路径为 `~/.ponos/memory/skill_experiences/`（main.cjs:442 的旧 `.trae-cn` 路径需在 Task 5 修正为先新后旧）。
 - 敏感数据：导出时 `authToken` 等凭据默认脱敏（configRedact 默认 true）；personal/skill_exp 导出按敏感词黑名单条目级过滤。
-- 注入规模受控：默认 4KB 上限（`~/.yfworking/config.json` 新增 `experienceInjectEnabled` / `experienceInjectMaxBytes` 字段控制，经现有 fetchBridgeConfig/saveBridgeConfig 读写）。
+- 注入规模受控：默认 4KB 上限（`~/.ponos/config.json` 新增 `experienceInjectEnabled` / `experienceInjectMaxBytes` 字段控制，经现有 fetchBridgeConfig/saveBridgeConfig 读写）。
 - 语言：前端新增 UI 文案走 `src/i18n/translations/zh-CN.ts` + `en-US.ts`；面板内示例/非关键说明可用中文字面量（项目已有先例，如 Sidebar.tsx"常规任务"）。
-- 测试：`node --test server/`（Node v24 内置），每个测试模块独立建临时目录（`os.tmpdir()`），不污染真实 `~/.yfworking`。
-- 实施完成后必须同步改动到 release 副本 `release/YFWorking_ms92cd6u/`（用户运行打包版；同步前先询问是否重启 live app）。
+- 测试：`node --test server/`（Node v24 内置），每个测试模块独立建临时目录（`os.tmpdir()`），不污染真实 `~/.ponos`。
+- 实施完成后必须同步改动到 release 副本 `release/Ponos_ms92cd6u/`（用户运行打包版；同步前先询问是否重启 live app）。
 
 ---
 
@@ -29,7 +29,7 @@
 - Modify: `package.json`（加 `"test": "node --test server/"` script）
 
 **Interfaces:**
-- Consumes: Node 内置 `os` / `fs` / `path`；约定路径 `~/.yfworking/memory/personal/`
+- Consumes: Node 内置 `os` / `fs` / `path`；约定路径 `~/.ponos/memory/personal/`
 - Produces（Task 2/5/6 依赖）:
   - `PERSONAL_DIR` / `INDEX_FILE` / `DEFAULT_THEMES`（常量）
   - `ensurePersonalDir()` → void（建目录 + 预置主题文件）
@@ -52,9 +52,9 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
 
-// 通过注入 HOME 重定向 personal 目录：模块导出 PERSONAL_DIR 基于 process.env.YFW_TEST_HOME
-const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-exp-home-'))
-process.env.YFW_TEST_HOME = testHome
+// 通过注入 HOME 重定向 personal 目录：模块导出 PERSONAL_DIR 基于 process.env.PONOS_TEST_HOME
+const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-exp-home-'))
+process.env.PONOS_TEST_HOME = testHome
 const mod = await import('./experience.mjs')
 
 beforeEach(() => { mod.ensurePersonalDir() })
@@ -62,7 +62,7 @@ afterEach(() => { fs.rmSync(testHome, { recursive: true, force: true }) })
 
 test('ensurePersonalDir 预置 7 个主题文件', () => {
   for (const t of mod.DEFAULT_THEMES) {
-    assert.ok(fs.existsSync(path.join(testHome, '.yfworking', 'memory', 'personal', `${t}.md`)), `${t}.md 缺失`)
+    assert.ok(fs.existsSync(path.join(testHome, '.ponos', 'memory', 'personal', `${t}.md`)), `${t}.md 缺失`)
   }
 })
 
@@ -72,7 +72,7 @@ test('hashLine 稳定且区分内容', () => {
 })
 
 test('listExperiences 返回条目与 frontmatter 状态', () => {
-  const file = path.join(testHome, '.yfworking', 'memory', 'personal', 'communication.md')
+  const file = path.join(testHome, '.ponos', 'memory', 'personal', 'communication.md')
   fs.writeFileSync(file, '---\nname: communication\ndescription: 沟通偏好\nactive: true\n---\n- [会话A] 用户偏好简洁回复\n- [会话B] 报告用中文\n', 'utf-8')
   const list = mod.listExperiences()
   const comm = list.find(x => x.theme === 'communication')
@@ -88,7 +88,7 @@ test('setThemeActive 更新 frontmatter', () => {
 })
 
 test('deleteThemeEntry 按行 hash 删除', () => {
-  const file = path.join(testHome, '.yfworking', 'memory', 'personal', 'communication.md')
+  const file = path.join(testHome, '.ponos', 'memory', 'personal', 'communication.md')
   fs.writeFileSync(file, '---\nname: communication\nactive: true\n---\n- [A] 第一条\n- [B] 第二条\n', 'utf-8')
   const list = mod.listExperiences()
   const comm = list.find(x => x.theme === 'communication')
@@ -100,7 +100,7 @@ test('deleteThemeEntry 按行 hash 删除', () => {
 })
 
 test('buildExperienceSection 按 updatedAt 降序且受 maxBytes 截断', () => {
-  const base = testHome + '/.yfworking/memory/personal/'
+  const base = testHome + '/.ponos/memory/personal/'
   fs.writeFileSync(base + 'a.md', '---\nname: a\nactive: true\n---\n- [A] ' + 'x'.repeat(100) + '\n', 'utf-8')
   fs.writeFileSync(base + 'b.md', '---\nname: b\nactive: true\n---\n- [B] ' + 'y'.repeat(100) + '\n', 'utf-8')
   const now = Date.now()
@@ -117,7 +117,7 @@ test('buildExperienceSection 空库返回空串', () => {
 
 test('refreshIndex 写出 _index.json', () => {
   mod.refreshIndex()
-  const idx = JSON.parse(fs.readFileSync(path.join(testHome, '.yfworking', 'memory', 'personal', '_index.json'), 'utf-8'))
+  const idx = JSON.parse(fs.readFileSync(path.join(testHome, '.ponos', 'memory', 'personal', '_index.json'), 'utf-8'))
   assert.ok(idx.themes.communication)
 })
 ```
@@ -136,9 +136,9 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, statSync, existsSync, rmSync, utimesSync } from 'node:fs'
 
-// 测试注入 HOME：process.env.YFW_TEST_HOME 存在时重定向（测试隔离，不碰真实 ~/.yfworking）
-const HOME = process.env.YFW_TEST_HOME || homedir()
-export const PERSONAL_DIR = join(HOME, '.yfworking', 'memory', 'personal')
+// 测试注入 HOME：process.env.PONOS_TEST_HOME 存在时重定向（测试隔离，不碰真实 ~/.ponos）
+const HOME = process.env.PONOS_TEST_HOME || homedir()
+export const PERSONAL_DIR = join(HOME, '.ponos', 'memory', 'personal')
 export const INDEX_FILE = join(PERSONAL_DIR, '_index.json')
 export const DEFAULT_THEMES = ['communication', 'code-style', 'workflow', 'finance', 'policy', 'project-application', 'office-docs']
 
@@ -257,7 +257,7 @@ export function buildExperienceSection(maxBytes = 4096) {
 export function buildSedimentPrompt() {
   return [
     '',
-    '【经验沉淀（静默，不询问用户）】当本次会话中出现以下情况时，用 Write/Edit 工具把经验写入 ~/.yfworking/memory/personal/{主题}.md（文件不存在则按现有 frontmatter 模板创建；主题从 communication/code-style/workflow/finance/policy/project-application/office-docs 中选最贴合的）：',
+    '【经验沉淀（静默，不询问用户）】当本次会话中出现以下情况时，用 Write/Edit 工具把经验写入 ~/.ponos/memory/personal/{主题}.md（文件不存在则按现有 frontmatter 模板创建；主题从 communication/code-style/workflow/finance/policy/project-application/office-docs 中选最贴合的）：',
     '① 用户明确表达偏好（回复风格、汇报粒度、代码风格、工具选择）',
     '② 业务事实（财务处理、政策解读、申报口径、项目要求等确定信息）',
     '③ 问题-解决模式（本次解决的关键问题及其方案、预防建议）',
@@ -305,7 +305,7 @@ git commit -m "feat(experience): 个人经验库核心模块（主题文件/fron
 
 **Interfaces:**
 - Consumes: Task 1 的 `buildExperienceSection(maxBytes)`、`buildSedimentPrompt()`、`ensurePersonalDir()`
-- Produces: 注入段出现在新会话与 resume 会话的 `--append-system-prompt-file` 内容中；沉积引导仅新会话注入。注入开关/上限读 `~/.yfworking/config.json` 的 `experienceInjectEnabled`（默认 true）与 `experienceInjectMaxBytes`（默认 4096）。
+- Produces: 注入段出现在新会话与 resume 会话的 `--append-system-prompt-file` 内容中；沉积引导仅新会话注入。注入开关/上限读 `~/.ponos/config.json` 的 `experienceInjectEnabled`（默认 true）与 `experienceInjectMaxBytes`（默认 4096）。
 
 - [ ] **Step 1: 写失败验证脚本**
 
@@ -319,7 +319,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import os from 'node:os'
 
-process.env.YFW_TEST_HOME = process.env.YFW_TEST_HOME || join(os.tmpdir(), 'yfw-verify-inject-home')
+process.env.PONOS_TEST_HOME = process.env.PONOS_TEST_HOME || join(os.tmpdir(), 'ponos-verify-inject-home')
 const bridge = await import('../server/bridge.mjs')
 bridge.ensurePersonalDir?.()
 
@@ -355,10 +355,10 @@ export { ensurePersonalDir, buildExperienceSection, buildSedimentPrompt } from '
 2. 新增读取注入配置的 helper（放在 `getOrCreateSession` 之前，`appendSkillList` 附近）：
 
 ```js
-// 经验注入开关/上限：存 ~/.yfworking/config.json（GUI 设置页经 fetchBridgeConfig/saveBridgeConfig 读写）
+// 经验注入开关/上限：存 ~/.ponos/config.json（GUI 设置页经 fetchBridgeConfig/saveBridgeConfig 读写）
 function experienceInjectConfig() {
   try {
-    const cfg = JSON.parse(readFileSync(join(YFW_HOME, 'config.json'), 'utf-8'))
+    const cfg = JSON.parse(readFileSync(join(PONOS_HOME, 'config.json'), 'utf-8'))
     return {
       enabled: cfg.experienceInjectEnabled !== false,
       maxBytes: Number(cfg.experienceInjectMaxBytes) > 0 ? Number(cfg.experienceInjectMaxBytes) : 4096,
@@ -372,7 +372,7 @@ function experienceInjectConfig() {
 3. `getOrCreateSession` 的 resume 分支（现在 `const resumePrompt = appendSkillList(...)` 处）改为：
 
 ```js
-    let resumePrompt = appendSkillList(YFW_ASKUSER_FORMAT + YFW_MILESTONE_PROTOCOL, resumeCompact)
+    let resumePrompt = appendSkillList(PONOS_ASKUSER_FORMAT + PONOS_MILESTONE_PROTOCOL, resumeCompact)
     const injectCfg = experienceInjectConfig()
     if (injectCfg.enabled) resumePrompt += buildExperienceSection(injectCfg.maxBytes)
 ```
@@ -382,8 +382,8 @@ function experienceInjectConfig() {
 ```js
     ensurePersonalDir()
     let effectivePrompt = systemPrompt
-      ? appendSkillList(`${systemPrompt}\n\n${YFW_ASKUSER_FORMAT}\n\n${YFW_MILESTONE_PROTOCOL}`)
-      : appendSkillList(YFW_SYSTEM_PROMPT)
+      ? appendSkillList(`${systemPrompt}\n\n${PONOS_ASKUSER_FORMAT}\n\n${PONOS_MILESTONE_PROTOCOL}`)
+      : appendSkillList(PONOS_SYSTEM_PROMPT)
     const injectCfg = experienceInjectConfig()
     if (injectCfg.enabled) {
       effectivePrompt += buildSedimentPrompt()      // 沉积引导仅新会话注入
@@ -414,7 +414,7 @@ git commit -m "feat(experience): bridge 集成——新会话注入沉积引导+
 - Test: `server/packager.test.mjs`
 
 **Interfaces:**
-- Consumes: Task 1 的 `PERSONAL_DIR`（经验库路径）；`~/.yfworking/config.json` / `~/.yfworking/settings.json`（config 类型源，读时脱敏）；renderer 传入的 `chatsJson`（IPC payload）；当前项目 `.yfworking/`（project 类型源，renderer 传 cwd）
+- Consumes: Task 1 的 `PERSONAL_DIR`（经验库路径）；`~/.ponos/config.json` / `~/.ponos/settings.json`（config 类型源，读时脱敏）；renderer 传入的 `chatsJson`（IPC payload）；当前项目 `.ponos/`（project 类型源，renderer 传 cwd）
 - Produces（Task 4/5/6 依赖）:
   - `exportPackage(opts)` → `Promise<{ ok: true, outPath: string, manifest: object, skipped: Array<{type:string, reason:string}> } | { ok: false, error: string }>`
     - `opts: { outPath: string, included: string[], sensitiveWords?: string[], chatsJson?: string|null, projectCwd?: string|null, configRedact?: boolean, onProgress?: (msg:string)=>void }`
@@ -432,23 +432,23 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
 
-const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-home-'))
-process.env.YFW_TEST_HOME = testHome
+const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-home-'))
+process.env.PONOS_TEST_HOME = testHome
 const exp = await import('./experience.mjs')
 exp.ensurePersonalDir()
 const pkg = await import('./packager.mjs')
 
 // 造一个可导出的迷你经验库 + config
-const personal = path.join(testHome, '.yfworking', 'memory', 'personal')
+const personal = path.join(testHome, '.ponos', 'memory', 'personal')
 fs.writeFileSync(path.join(personal, 'finance.md'),
   '---\nname: finance\nactive: true\n---\n- [会话] 研发费用口径 6 项\n- [会话] 密码在 sk-abc 开头\n', 'utf-8')
-fs.writeFileSync(path.join(testHome, '.yfworking', 'config.json'),
+fs.writeFileSync(path.join(testHome, '.ponos', 'config.json'),
   JSON.stringify({ activeProvider: 'p', providers: [{ id: 'p', authToken: 'sk-secret' }] }), 'utf-8')
 
 let zipPath = ''
 
 beforeEach(() => {
-  zipPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-out-')), 'exp.zip')
+  zipPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-out-')), 'exp.zip')
 })
 
 afterEach(() => {
@@ -460,7 +460,7 @@ test('导出 zip 含 manifest 与 personal 文件', async () => {
   const res = await pkg.exportPackage({ outPath: zipPath, included: ['personal'], configRedact: true })
   assert.equal(res.ok, true)
   const { spawnSync } = await import('node:child_process')
-  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-un-'))
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-un-'))
   spawnSync('tar', ['-xf', zipPath, '-C', staging])
   assert.ok(fs.existsSync(path.join(staging, 'manifest.json')))
   const manifest = JSON.parse(fs.readFileSync(path.join(staging, 'manifest.json'), 'utf-8'))
@@ -480,7 +480,7 @@ test('敏感词过滤跳过命中条目', async () => {
 test('config 类型导出时 authToken 脱敏', async () => {
   const res = await pkg.exportPackage({ outPath: zipPath, included: ['config'], configRedact: true })
   const { spawnSync } = await import('node:child_process')
-  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-un-'))
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-un-'))
   spawnSync('tar', ['-xf', zipPath, '-C', staging])
   const cfg = JSON.parse(fs.readFileSync(path.join(staging, 'config', 'config.json'), 'utf-8'))
   assert.notEqual(cfg.providers[0].authToken, 'sk-secret')
@@ -492,7 +492,7 @@ test('chatsJson 写入 chats 目录', async () => {
   const res = await pkg.exportPackage({ outPath: zipPath, included: ['chats'], chatsJson: '{"conversations":[]}', configRedact: true })
   assert.equal(res.ok, true)
   const { spawnSync } = await import('node:child_process')
-  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-un-'))
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-un-'))
   spawnSync('tar', ['-xf', zipPath, '-C', staging])
   const chat = JSON.parse(fs.readFileSync(path.join(staging, 'chats', 'chat-store.json'), 'utf-8'))
   assert.deepEqual(chat, { conversations: [] })
@@ -517,10 +517,10 @@ import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { PERSONAL_DIR } from './experience.mjs'
 
-const HOME = process.env.YFW_TEST_HOME || homedir()
-const YFW_HOME = join(HOME, '.yfworking')
-const SKILL_EXP_DIR = join(YFW_HOME, 'memory', 'skill_experiences')
-const SKILLS_DIR = join(YFW_HOME, 'skills')
+const HOME = process.env.PONOS_TEST_HOME || homedir()
+const PONOS_HOME = join(HOME, '.ponos')
+const SKILL_EXP_DIR = join(PONOS_HOME, 'memory', 'skill_experiences')
+const SKILLS_DIR = join(PONOS_HOME, 'skills')
 
 export const TYPE_LABELS = {
   personal: '个人记忆',
@@ -573,12 +573,12 @@ export function collectTypeStats(included, opts = {}) {
     } else if (t === 'config') {
       let bytes = 0
       for (const f of ['config.json', 'settings.json']) {
-        const fp = join(YFW_HOME, f)
+        const fp = join(PONOS_HOME, f)
         if (existsSync(fp)) bytes += statSync(fp).size
       }
       stats[t] = { files: bytes ? 1 : 0, bytes }
     } else if (t === 'project') {
-      const root = opts.projectCwd ? join(opts.projectCwd, '.yfworking') : null
+      const root = opts.projectCwd ? join(opts.projectCwd, '.ponos') : null
       stats[t] = { files: root && existsSync(root) ? 1 : 0, bytes: root && existsSync(root) ? 0 : 0 }
     }
   }
@@ -601,7 +601,7 @@ function copyDirFiltered(src, dest, filterLine) {
 export async function exportPackage(opts) {
   const { outPath, included = [], sensitiveWords = [], chatsJson = null, projectCwd = null, configRedact = true, onProgress = () => {} } = opts
   if (!included.length) return { ok: false, error: '未选择任何导出类型' }
-  const staging = mkdtempSync(join(tmpdir(), 'yfw-exp-export-'))
+  const staging = mkdtempSync(join(tmpdir(), 'ponos-exp-export-'))
   const skipped = []
   try {
     onProgress('收集数据…')
@@ -637,7 +637,7 @@ export async function exportPackage(opts) {
       const dest = join(staging, 'config')
       mkdirSync(dest, { recursive: true })
       for (const f of ['config.json', 'settings.json']) {
-        const fp = join(YFW_HOME, f)
+        const fp = join(PONOS_HOME, f)
         if (!existsSync(fp)) continue
         const data = JSON.parse(readFileSync(fp, 'utf-8'))
         writeFileSync(join(dest, f), JSON.stringify(configRedact ? redact(data) : data, null, 2), 'utf-8')
@@ -649,7 +649,7 @@ export async function exportPackage(opts) {
       writeFileSync(join(staging, 'chats', 'chat-store.json'), chatsJson, 'utf-8')
     }
     if (included.includes('project') && projectCwd) {
-      const src = join(projectCwd, '.yfworking')
+      const src = join(projectCwd, '.ponos')
       if (existsSync(src)) cpSync(src, join(staging, 'project'), { recursive: true })
       else skipped.push({ type: 'project', reason: `${src} 不存在，跳过` })
     }
@@ -667,7 +667,7 @@ export async function exportPackage(opts) {
     writeFileSync(join(staging, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf-8')
 
     onProgress('压缩打包…')
-    mkdirSync(join(tmpdir(), 'yfw-exp-export'), { recursive: true })
+    mkdirSync(join(tmpdir(), 'ponos-exp-export'), { recursive: true })
     const tar = spawnSync('tar', ['-a', '-c', '-f', outPath, '-C', staging, '.'], { stdio: 'pipe' })
     if (tar.status !== 0) {
       return { ok: false, error: `tar 打包失败: ${tar.stderr?.toString() || tar.status}` }
@@ -715,7 +715,7 @@ git commit -m "feat(experience): 导出打包器（6 类型收集/manifest/敏�
 import { spawnSync } from 'node:child_process'
 
 function makeZipWith(entries, outPath) {
-  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-make-'))
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-make-'))
   for (const [rel, content] of Object.entries(entries)) {
     const fp = path.join(staging, rel)
     fs.mkdirSync(path.dirname(fp), { recursive: true })
@@ -807,7 +807,7 @@ function mergeEntryLines(targetRaw, incomingRaw) {
 
 export async function importPackage(zipPath, opts) {
   const { conflict = 'skip', projectCwd = null, onProgress = () => {} } = opts
-  const staging = mkdtempSync(join(tmpdir(), 'yfw-exp-import-'))
+  const staging = mkdtempSync(join(tmpdir(), 'ponos-exp-import-'))
   const restored = []
   let conflicts = 0
   try {
@@ -823,7 +823,7 @@ export async function importPackage(zipPath, opts) {
       personal: PERSONAL_DIR,
       skill_exp: SKILL_EXP_DIR,
       skills: SKILLS_DIR,
-      config: YFW_HOME,
+      config: PONOS_HOME,
     }
     for (const t of included) {
       const srcDir = join(staging, t)
@@ -858,8 +858,8 @@ export async function importPackage(zipPath, opts) {
           }
         }
       } else if (t === 'project' && projectCwd) {
-        cpSync(srcDir, join(projectCwd, '.yfworking'), { recursive: true, force: conflict === 'overwrite' })
-        restored.push('project/.yfworking')
+        cpSync(srcDir, join(projectCwd, '.ponos'), { recursive: true, force: conflict === 'overwrite' })
+        restored.push('project/.ponos')
       }
     }
 
@@ -917,13 +917,13 @@ git commit -m "feat(experience): 导入（manifest 校验/三种冲突模式/行
 
 **Files:**
 - Modify: `electron/main.cjs`（`registerIpc()` 内追加 handler；`experienceDir()` 改为先新后旧；顶部 import 区）
-- Modify: `electron/preload.cjs`（`yfworkingAPI` 追加 5 个方法）
+- Modify: `electron/preload.cjs`（`ponosAPI` 追加 5 个方法）
 
 **Interfaces:**
 - Consumes: Task 1/3/4 的 `experience.mjs` / `packager.mjs` 函数
 - Produces（Task 6 依赖）:
   - IPC handler：`experience:list`、`experience:set-active`、`experience:delete-entry`、`experience:export`、`experience:import`
-  - preload：`window.yfworkingAPI.experienceList()` / `setExperienceActive(theme, active)` / `deleteExperienceEntry(theme, hash)` / `exportExperience(opts)` / `importExperience(opts)`
+  - preload：`window.ponosAPI.experienceList()` / `setExperienceActive(theme, active)` / `deleteExperienceEntry(theme, hash)` / `exportExperience(opts)` / `importExperience(opts)`
 
 - [ ] **Step 1: 写失败验证（node --check + 手动 grep 断言）**
 
@@ -957,8 +957,8 @@ const { exportPackage, importPackage, collectTypeStats, TYPE_LABELS } = require(
 
 ```js
 function experienceDir() {
-  const yfw = path.join(os.homedir(), '.yfworking', 'memory', 'skill_experiences')
-  if (fs.existsSync(yfw)) return yfw
+  const ponos = path.join(os.homedir(), '.ponos', 'memory', 'skill_experiences')
+  if (fs.existsSync(ponos)) return ponos
   return path.join(os.homedir(), '.trae-cn', 'memory', 'skill_experiences')
 }
 ```
@@ -1000,8 +1000,8 @@ function experienceDir() {
     try {
       const included = Array.isArray(payload?.included) ? payload.included : []
       const result = await dialog.showSaveDialog(mainWindow, {
-        title: '导出 YFWorking 经验/数据',
-        defaultPath: path.join(app.getPath('downloads'), `yfworking-export-${new Date().toISOString().slice(0, 10)}.zip`),
+        title: '导出 Ponos 经验/数据',
+        defaultPath: path.join(app.getPath('downloads'), `ponos-export-${new Date().toISOString().slice(0, 10)}.zip`),
         filters: [{ name: 'Zip Archive', extensions: ['zip'] }],
       })
       if (result.canceled || !result.filePath) return { ok: false, canceled: true }
@@ -1020,7 +1020,7 @@ function experienceDir() {
   ipcMain.handle('experience:import', async (_e, payload) => {
     try {
       const result = await dialog.showOpenDialog(mainWindow, {
-        title: '导入 YFWorking 经验/数据包',
+        title: '导入 Ponos 经验/数据包',
         properties: ['openFile'],
         filters: [{ name: 'Zip Archive', extensions: ['zip'] }],
       })
@@ -1036,7 +1036,7 @@ function experienceDir() {
 
 > 若 `checkPendingExperienceAlert` 是局部函数名，先确认 main.cjs 中实际名称（grep 后按实际名调用；该行可选，取不到就省略 `pendingAlert` 字段）。
 
-`electron/preload.cjs` 的 `yfworkingAPI` 追加：
+`electron/preload.cjs` 的 `ponosAPI` 追加：
 
 ```js
   // 个人经验库与导出/导入（experience.mjs / packager.mjs）
@@ -1067,15 +1067,15 @@ git commit -m "feat(experience): 主进程 IPC（list/set-active/delete/export/i
 - Create: `src/components/settings/ExperiencePanel.tsx`
 - Modify: `src/components/settings/SettingsView.tsx`（Section 类型、nav 项、分区渲染）
 - Modify: `src/i18n/translations/zh-CN.ts`、`src/i18n/translations/en-US.ts`（新增 key）
-- Modify: `src/types/index.ts`（preload API 类型：yfworkingAPI 扩展）
+- Modify: `src/types/index.ts`（preload API 类型：ponosAPI 扩展）
 
 **Interfaces:**
-- Consumes: Task 5 的 `window.yfworkingAPI.experienceList/setExperienceActive/deleteExperienceEntry/exportExperience/importExperience`；`fetchBridgeConfig/saveBridgeConfig`（`src/lib/config`，读写 `experienceInjectEnabled`/`experienceInjectMaxBytes`）；`useChatStore` 的 `lastCwd`
+- Consumes: Task 5 的 `window.ponosAPI.experienceList/setExperienceActive/deleteExperienceEntry/exportExperience/importExperience`；`fetchBridgeConfig/saveBridgeConfig`（`src/lib/config`，读写 `experienceInjectEnabled`/`experienceInjectMaxBytes`）；`useChatStore` 的 `lastCwd`
 - Produces: 设置页"经验"分区（列表/搜索/激活/删除/统计/导出对话框/导入对话框/注入设置）
 
 - [ ] **Step 1: 先加类型（让 typecheck 驱动失败）**
 
-`src/types/index.ts` 的 `YFWAPI` 类型（或实际存在的 yfworkingAPI 声明处）追加：
+`src/types/index.ts` 的 `PonosAPI` 类型（或实际存在的 ponosAPI 声明处）追加：
 
 ```ts
 export interface ExperienceTheme {
@@ -1087,7 +1087,7 @@ export interface ExperienceTheme {
   entries: { text: string; hash: string }[]
 }
 
-export interface YFWAPI { // 若已有同名接口，往里面追加以下 5 个方法
+export interface PonosAPI { // 若已有同名接口，往里面追加以下 5 个方法
   experienceList: () => Promise<{ ok: boolean; themes?: ExperienceTheme[]; error?: string }>
   setExperienceActive: (theme: string, active: boolean) => Promise<{ ok: boolean; error?: string }>
   deleteExperienceEntry: (theme: string, hash: string) => Promise<{ ok: boolean; deleted?: number; error?: string }>
@@ -1125,7 +1125,7 @@ export function ExperiencePanel({ t }: { t: (k: string) => string }) {
   const lastCwd = useChatStore(s => s.lastCwd)
 
   const load = () => {
-    window.yfworkingAPI.experienceList().then(r => {
+    window.ponosAPI.experienceList().then(r => {
       if (r.ok && r.themes) { setThemes(r.themes); return }
       setMsg({ text: r.error || '读取失败', ok: false })
     })
@@ -1157,7 +1157,7 @@ export function ExperiencePanel({ t }: { t: (k: string) => string }) {
   }, [themes, query])
 
   const chatsJson = () => {
-    try { return window.localStorage.getItem('yfworking-chat') } catch { return null }
+    try { return window.localStorage.getItem('ponos-chat') } catch { return null }
   }
 
   return (
@@ -1168,7 +1168,7 @@ export function ExperiencePanel({ t }: { t: (k: string) => string }) {
           个人经验
         </h3>
         <p className="text-xs text-tertiary mb-4">
-          全自动静默沉积于 ~/.yfworking/memory/personal/，新会话按相关性注入（上限 {injectMax} 字符）。共 {themes.length} 个主题 / {totalEntries} 条经验。
+          全自动静默沉积于 ~/.ponos/memory/personal/，新会话按相关性注入（上限 {injectMax} 字符）。共 {themes.length} 个主题 / {totalEntries} 条经验。
         </p>
 
         {/* 注入设置 */}
@@ -1228,7 +1228,7 @@ export function ExperiencePanel({ t }: { t: (k: string) => string }) {
                       <Switch
                         checked={x.active}
                         onCheckedChange={v => {
-                          window.yfworkingAPI.setExperienceActive(x.theme, v).then(r => { if (r.ok) load() })
+                          window.ponosAPI.setExperienceActive(x.theme, v).then(r => { if (r.ok) load() })
                         }}
                       />
                     </label>
@@ -1242,7 +1242,7 @@ export function ExperiencePanel({ t }: { t: (k: string) => string }) {
                       title="删除该经验"
                       onClick={() => {
                         if (!confirm(`删除这条经验？\n${e.text.slice(0, 60)}…`)) return
-                        window.yfworkingAPI.deleteExperienceEntry(x.theme, e.hash).then(r => {
+                        window.ponosAPI.deleteExperienceEntry(x.theme, e.hash).then(r => {
                           if (r.ok) { load(); flash('已删除') } else flash(r.error || '删除失败', false)
                         })
                       }}
@@ -1256,7 +1256,7 @@ export function ExperiencePanel({ t }: { t: (k: string) => string }) {
                 )}
               </div>
             ))}
-            {filtered.length === 0 && <div className="p-4 text-center text-xs text-tertiary">暂无经验，多用 YFWorking 工作会自动沉淀</div>}
+            {filtered.length === 0 && <div className="p-4 text-center text-xs text-tertiary">暂无经验，多用 Ponos 工作会自动沉淀</div>}
           </div>
         </ScrollArea>
       </div>
@@ -1289,7 +1289,7 @@ function ExportDialog({ lastCwd, chatsJson, onClose, onDone }: { lastCwd: string
     const included = Object.entries(sel).filter(([, v]) => v).map(([k]) => k)
     if (!included.length) return
     setBusy(true)
-    const res = await window.yfworkingAPI.exportExperience({
+    const res = await window.ponosAPI.exportExperience({
       included,
       sensitiveWords: words.split(/[,，]/).map(s => s.trim()).filter(Boolean),
       chatsJson: sel.chats ? chatsJson() : null,
@@ -1334,11 +1334,11 @@ function ImportDialog({ lastCwd, onClose, onDone }: { lastCwd: string | null; on
   const [conflict, setConflict] = useState<'skip' | 'overwrite' | 'merge'>('merge')
 
   const run = async () => {
-    const res = await window.yfworkingAPI.importExperience({ conflict, projectCwd: lastCwd })
+    const res = await window.ponosAPI.importExperience({ conflict, projectCwd: lastCwd })
     if (!res.ok) { onDone(res.error || '导入失败（可能已取消）'); onClose(); return }
     // chats 回传 renderer 写回 localStorage
     if (res.chatStoreJson) {
-      try { window.localStorage.setItem('yfworking-chat', res.chatStoreJson) } catch {}
+      try { window.localStorage.setItem('ponos-chat', res.chatStoreJson) } catch {}
     }
     onDone(`导入完成：恢复 ${res.restored?.length ?? 0} 项${res.conflicts ? `，跳过冲突 ${res.conflicts} 项` : ''}`)
     onClose()
@@ -1367,7 +1367,7 @@ function ImportDialog({ lastCwd, onClose, onDone }: { lastCwd: string | null; on
 }
 ```
 
-> 若 `src/lib/config` 的 `fetchBridgeConfig`/`saveBridgeConfig` 返回类型不含 `experienceInjectEnabled/MaxBytes`，在 `src/types/index.ts` 的 `YFWorkingConfigV2` 追加两个可选字段：`experienceInjectEnabled?: boolean`、`experienceInjectMaxBytes?: number`（bridge 侧 `readBridgeConfig`/`saveBridgeConfig` 已按透传处理，无需改 bridge 的 config 读写逻辑）。
+> 若 `src/lib/config` 的 `fetchBridgeConfig`/`saveBridgeConfig` 返回类型不含 `experienceInjectEnabled/MaxBytes`，在 `src/types/index.ts` 的 `PonosConfigV2` 追加两个可选字段：`experienceInjectEnabled?: boolean`、`experienceInjectMaxBytes?: number`（bridge 侧 `readBridgeConfig`/`saveBridgeConfig` 已按透传处理，无需改 bridge 的 config 读写逻辑）。
 
 - [ ] **Step 3: 接入 SettingsView**
 
@@ -1389,7 +1389,7 @@ function ImportDialog({ lastCwd, onClose, onDone }: { lastCwd: string | null; on
 - [ ] **Step 4: typecheck 确认通过**
 
 Run: `npm run typecheck`
-Expected: PASS（0 错误）。若 `window.yfworkingAPI` 类型缺方法，按 Step 1 的类型声明补齐后再跑。
+Expected: PASS（0 错误）。若 `window.ponosAPI` 类型缺方法，按 Step 1 的类型声明补齐后再跑。
 
 - [ ] **Step 5: Commit**
 
@@ -1420,7 +1420,7 @@ Expected: 全部通过（typecheck 0 错误；node --test 全部 PASS；verify �
 
 ```bash
 # 导出→导入 往返（用临时 HOME 隔离）
-YFW_TEST_HOME=$(mktemp -d) node --test server/packager.test.mjs
+PONOS_TEST_HOME=$(mktemp -d) node --test server/packager.test.mjs
 # 验证 bridge 注入段真实出现在 spawn 的 prompt 文件（打印断言，不 spawn 内核）
 node scripts/verify-experience-inject.mjs
 ```
@@ -1428,15 +1428,15 @@ Expected: 两个命令均 PASS。此步不重启 live app、不 spawn 内核进�
 
 - [ ] **Step 3: 同步 release 副本**
 
-把改动同步到 `release/YFWorking_ms92cd6u/`：
-- `server/experience.mjs`、`server/packager.mjs`、`server/bridge.mjs`（及 `server/*.test.mjs` 可选）→ `release/YFWorking_ms92cd6u/server/`
-- `electron/main.cjs`、`electron/preload.cjs` → `release/YFWorking_ms92cd6u/electron/`
-- 前端：`npm run build` 后把 `dist/` 产物复制到 `release/YFWorking_ms92cd6u/dist/`（或 release 对应静态目录）
+把改动同步到 `release/Ponos_ms92cd6u/`：
+- `server/experience.mjs`、`server/packager.mjs`、`server/bridge.mjs`（及 `server/*.test.mjs` 可选）→ `release/Ponos_ms92cd6u/server/`
+- `electron/main.cjs`、`electron/preload.cjs` → `release/Ponos_ms92cd6u/electron/`
+- 前端：`npm run build` 后把 `dist/` 产物复制到 `release/Ponos_ms92cd6u/dist/`（或 release 对应静态目录）
 - 完成后**询问用户**是否重启 live app 验证（memory: feedback_restart_permission），不得擅自杀进程/重启。
 
 ```bash
-cp server/experience.mjs server/packager.mjs server/bridge.mjs release/YFWorking_ms92cd6u/server/
-cp electron/main.cjs electron/preload.cjs release/YFWorking_ms92cd6u/electron/
+cp server/experience.mjs server/packager.mjs server/bridge.mjs release/Ponos_ms92cd6u/server/
+cp electron/main.cjs electron/preload.cjs release/Ponos_ms92cd6u/electron/
 ```
 
 - [ ] **Step 4: 收尾确认**

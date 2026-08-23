@@ -25,9 +25,9 @@
 ```
 内核 (每轮 query 完成后)
   └→ healthMonitor.ts 记录 turnStats → 计算健康分 → 档位变化时
-       stdout 输出一行: {"type":"yfw_health",...}
+       stdout 输出一行: {"type":"ponos_health",...}
 bridge.mjs  └→ 逐行解析，任何 JSON 行已原样转发 {type:'event'}（bridge.mjs:720-724）
-GUI 前端     └→ 过滤 event.type==='yfw_health' → healthStore → HealthBanner 横幅
+GUI 前端     └→ 过滤 event.type==='ponos_health' → healthStore → HealthBanner 横幅
 ```
 
 - 内核新增 `src/services/health/healthMonitor.ts`，模块级状态。bridge 按会话 spawn 独立
@@ -92,15 +92,15 @@ GUI 前端     └→ 过滤 event.type==='yfw_health' → healthStore → Healt
 ## 事件协议（内核 → GUI，两路）
 
 ```
-{"type":"yfw_health","score":72,"tier":"red","compactCount":3,
+{"type":"ponos_health","score":72,"tier":"red","compactCount":3,
   "remainingPct":8,"remainingTurns":4,"suggestNewSession":true,
   "reason":"已连续压缩3次，剩余约4轮"}
-{"type":"yfw_summary","text":"<最近一次压缩摘要全文>","compactCount":3}
+{"type":"ponos_summary","text":"<最近一次压缩摘要全文>","compactCount":3}
 ```
 
-- `yfw_health`：档位**变化**时发一次（去抖状态机）；`remainingTurns` 为模型自适应
+- `ponos_health`：档位**变化**时发一次（去抖状态机）；`remainingTurns` 为模型自适应
   估算的剩余可执行轮数；`remainingPct` 为相对 `attentionCeiling` 的剩余比例
-- `yfw_summary`：每次压缩成功后发一次（20K token 摘要 ≈ 15KB 文本，WebSocket 传输
+- `ponos_summary`：每次压缩成功后发一次（20K token 摘要 ≈ 15KB 文本，WebSocket 传输
   无压力），GUI 存进 healthStore 供"携带摘要"使用
 
 ## GUI 展示（新增 2 个组件 + 1 个 store）
@@ -111,7 +111,7 @@ GUI 前端     └→ 过滤 event.type==='yfw_health' → healthStore → Healt
 | `HealthBanner`（黄灯） | 聊天区顶部细条："上下文健康度下降（剩余 25%，约 8 轮），建议适时开始新会话" |
 | `HealthBanner`（红灯） | 醒目横幅（含剩余轮数）+ 「新建会话」按钮 + 「携带摘要」勾选（默认开） |
 
-- 新建会话流程：点按钮 → 若勾选"携带摘要"且 store 有 `yfw_summary` → 新会话首条
+- 新建会话流程：点按钮 → 若勾选"携带摘要"且 store 有 `ponos_summary` → 新会话首条
   消息自动填入摘要文本（用户可编辑）→ 创建会话并跳转
 - 复用现有新建会话 API，不新开 IPC 通道
 
@@ -130,9 +130,9 @@ GUI 前端     └→ 过滤 event.type==='yfw_health' → healthStore → Healt
 
 | 文件 | 改动 |
 |---|---|
-| `yfw-kernel/claude-code/src/services/health/healthMonitor.ts` | 新增，核心判定（含 reliableAttentionRatio 常量与按模型覆盖表） |
-| `yfw-kernel/claude-code/src/query.ts` | 每轮尾部调 record |
-| `yfw-kernel/claude-code/src/services/compact/compact.ts` | 压缩成功后发 yfw_summary |
+| `ponos-kernel/claude-code/src/services/health/healthMonitor.ts` | 新增，核心判定（含 reliableAttentionRatio 常量与按模型覆盖表） |
+| `ponos-kernel/claude-code/src/query.ts` | 每轮尾部调 record |
+| `ponos-kernel/claude-code/src/services/compact/compact.ts` | 压缩成功后发 ponos_summary |
 | `src/stores/healthStore.ts` | 新增 |
 | `src/components/HealthBanner.tsx` | 新增，接入 ChatWindow |
 | `src/...` 新建会话处 | 摘要注入 |

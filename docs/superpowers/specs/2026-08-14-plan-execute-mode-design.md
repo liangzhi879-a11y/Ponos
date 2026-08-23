@@ -7,7 +7,7 @@
 
 ## 1. 背景与目标
 
-结合 DeepSeek Harness（DSH）源码参考，对 YFW 做**参考性优化**：将执行模式（react / plan&execute）**协议化**——以对话流标记 + 前端两态视觉表达模式，删除与协议冲突的内核 plan mode / accept mode 实现，并新增**高风险命令强制审批**（内核硬约束）。前端不做复杂交互——**活动条（摆动）= react，进度条（填充）= plan/todo**，两种视觉形态即模式表达。
+结合 DeepSeek Harness（DSH）源码参考，对 Ponos 做**参考性优化**：将执行模式（react / plan&execute）**协议化**——以对话流标记 + 前端两态视觉表达模式，删除与协议冲突的内核 plan mode / accept mode 实现，并新增**高风险命令强制审批**（内核硬约束）。前端不做复杂交互——**活动条（摆动）= react，进度条（填充）= plan/todo**，两种视觉形态即模式表达。
 
 ### 1.1 DSH 参考结论（源码探查）
 
@@ -26,13 +26,13 @@
 
 - 状态机 pending / in_progress / completed；约束：**计划未完成时至少一个 in_progress**
 
-### 1.2 YFW 现状与差距
+### 1.2 Ponos 现状与差距
 
-| 能力 | YFW 现状 | 差距 |
+| 能力 | Ponos 现状 | 差距 |
 |---|---|---|
 | ReAct 循环 | ✅ 内核原生 query.ts queryLoop | — |
 | Plan mode | ⚠️ 内核 EnterPlanModeTool → setMode:'plan' → ExitPlanModeV2Tool 用户批准 | **与协议化目标冲突且无实际用途（GUI 不渲染其 UI），删除** |
-| accept mode | ⚠️ PermissionMode 'acceptEdits' 常量 | 无实际用途（YFW 用 --dangerously-skip-permissions），**删除其入口，常量保留** |
+| accept mode | ⚠️ PermissionMode 'acceptEdits' 常量 | 无实际用途（Ponos 用 --dangerously-skip-permissions），**删除其入口，常量保留** |
 | 里程碑展示 | ✅ MILESTONES/MILESTONE-OK 协议（bridge 解析剥离 → chatStore → Sidebar） | 无"当前正在执行哪个里程碑"信号 → 补 **MILESTONE-START** |
 | 模式显式化 | ❌ 无显式状态 | 纯协议两态：有里程碑计划=进度条，无=活动条 |
 | 高风险命令约束 | ❌ --dangerously-skip-permissions 全放行 | **补内核硬约束：命中高风险清单 → 强制 ask → 前端原生审批弹窗** |
@@ -61,7 +61,7 @@
 
 ### 2.2 里程碑状态机（DSH todo 三态映射）
 
-DSH todo 三态（pending/in_progress/completed）映射到 YFW 里程碑（failed/skipped 不引入——无失败重试交互）：
+DSH todo 三态（pending/in_progress/completed）映射到 Ponos 里程碑（failed/skipped 不引入——无失败重试交互）：
 
 ```
 planned ──(MILESTONE-START)──▶ in_progress ──(MILESTONE-OK)──▶ done
@@ -77,7 +77,7 @@ planned ──(MILESTONE-START)──▶ in_progress ──(MILESTONE-OK)──�
 
 ### 2.3 执行阶段系统提示（DSH plan:policy 同构）
 
-DSH 在 plan 激活时注入 `plan:policy`。YFW bridge 在 spawn 时一次性注入 `YFW_MILESTONE_PROTOCOL`（bridge.mjs L55-67，resume / 新会话均注入），无法会话中途动态切换——因此将 **MILESTONE-START 规则 + 执行阶段行为指导**追加进该协议段（启动即注入，模型任何时候遵循）：
+DSH 在 plan 激活时注入 `plan:policy`。Ponos bridge 在 spawn 时一次性注入 `PONOS_MILESTONE_PROTOCOL`（bridge.mjs L55-67，resume / 新会话均注入），无法会话中途动态切换——因此将 **MILESTONE-START 规则 + 执行阶段行为指导**追加进该协议段（启动即注入，模型任何时候遵循）：
 
 ```
 - 开始执行某个里程碑时，先输出开始标记：<!--MILESTONE-START i/N 名称-->
@@ -100,7 +100,7 @@ DSH 在 plan 激活时注入 `plan:policy`。YFW bridge 在 spawn 时一次性�
 
 **保留（不连锁）：** `PermissionMode` 类型 'plan'/'acceptEdits' 与 `PERMISSION_MODE_CONFIG` 条目（无副作用，避免连锁改动）；swarm/teammate 内部对权限模式的引用不动
 
-**重建内核 bundle：** `bun scripts/build-bundle.ts`（YFW 运行用 bundle，非 src）
+**重建内核 bundle：** `bun scripts/build-bundle.ts`（Ponos 运行用 bundle，非 src）
 
 ### 2.5 高风险命令强制审批（用户确认：扩展 destructiveCommandWarning.ts + 前端原生审批弹窗）
 
@@ -112,7 +112,7 @@ DSH 在 plan 激活时注入 `plan:policy`。YFW bridge 在 spawn 时一次性�
 - 补 `rm -f`（非递归单文件删除）与 `mv`（移动）
 
 **强制 ask（复用 bypass-immune 机制，permissions.ts L1252-1260 先例）：**
-- BashTool 权限检查命中高风险清单 → 返回 `{ behavior: 'ask', decisionReason: { type: 'safetyCheck', reason: 'yfw-highrisk' } }`
+- BashTool 权限检查命中高风险清单 → 返回 `{ behavior: 'ask', decisionReason: { type: 'safetyCheck', reason: 'ponos-highrisk' } }`
 - `decisionReason.type === 'safetyCheck'` → 即使 `--dangerously-skip-permissions` 也强制 ask（bypass-immune）
 - 内核挂起 tool_use（不执行），流中输出 assistant 消息含 tool_use（BashTool）
 
@@ -188,7 +188,7 @@ WebSocket 消息（L1499 ws.on('message') 扩展）：
 ```json
 {"type":"control_request","request_id":"<uuid>","request":{"subtype":"can_use_tool",
  "tool_name":"Bash","input":{"command":"rm -f ..."},"permission_suggestions":[],
- "decision_reason":"yfw-highrisk-command","tool_use_id":"<id>","agent_id":"<id>"}}
+ "decision_reason":"ponos-highrisk-command","tool_use_id":"<id>","agent_id":"<id>"}}
 ```
 
 bridge 检测 `parsed.type==='control_request' && parsed.request?.subtype==='can_use_tool'` 即知内核挂起等待审批。解除挂起靠向 stdin 注入 control_response（`request_id` 必须回填，`toolUseID` 回填 `tool_use_id`）：
@@ -203,7 +203,7 @@ bridge 检测 `parsed.type==='control_request' && parsed.request?.subtype==='can
 
 ### 4.3 系统提示追加
 
-`YFW_MILESTONE_PROTOCOL`（L55-67）追加 §2.3 的 START 规则 + 执行阶段指导文本；注入点（resume L680 / 新会话 L693）不变。
+`PONOS_MILESTONE_PROTOCOL`（L55-67）追加 §2.3 的 START 规则 + 执行阶段指导文本；注入点（resume L680 / 新会话 L693）不变。
 
 ## 5. 前端
 
@@ -222,7 +222,7 @@ bridge 检测 `parsed.type==='control_request' && parsed.request?.subtype==='can
 
 新增 action：`setMilestoneStart(id, index)`（钳制到 total）。其余不变。**无 mode 字段**（纯协议两态由数据驱动）。
 
-### 5.2 事件（src/hooks/useYFWCLI.ts）
+### 5.2 事件（src/hooks/usePonosCLI.ts）
 
 新增 `milestone-start` handler（照 milestone-ok 骨架）；`approval` handler → `addPermissionRequest`（激活现存 store action）。
 
@@ -230,7 +230,7 @@ bridge 检测 `parsed.type==='control_request' && parsed.request?.subtype==='can
 
 - **激活现存死代码**：addPermissionRequest 调用点补上后，PermissionDialog 自动生效
 - 展示命令 + 工作目录；批准/拒绝 → `resolvePermission(id, approved)` → 经 ws 发送 `approval-response`（需在 resolvePermission 实现处接 bridge 回传）
-- 现有 PermissionDialog 文案（"YFWorking wants to perform an action that requires your approval."）可复用，按需加命令展示
+- 现有 PermissionDialog 文案（"Ponos wants to perform an action that requires your approval."）可复用，按需加命令展示
 
 ### 5.4 进度条 tooltip（src/components/layout/Sidebar.tsx）
 
@@ -253,7 +253,7 @@ bridge 检测 `parsed.type==='control_request' && parsed.request?.subtype==='can
 
 ## 8. 影响范围
 
-### 内核（yfw-kernel/claude-code/src/，需重建 bundle）
+### 内核（ponos-kernel/claude-code/src/，需重建 bundle）
 
 | 文件 | 改动 |
 |---|---|
@@ -292,7 +292,7 @@ bridge 检测 `parsed.type==='control_request' && parsed.request?.subtype==='can
 |---|---|
 | `src/types/index.ts` | ConversationProgress 加 inProgress |
 | `src/stores/chatStore.ts` | setMilestoneStart + resolvePermission 接 bridge 回传 |
-| `src/hooks/useYFWCLI.ts` | milestone-start / approval handler |
+| `src/hooks/usePonosCLI.ts` | milestone-start / approval handler |
 | `src/components/permissions/PermissionDialog.tsx` | 激活（命令展示细化，可选） |
 | `src/components/layout/Sidebar.tsx` | tooltip 当前里程碑 + 计划中/执行中 |
 | **不改** | 进度条渲染逻辑、globals.css、i18n、对话流内容 |
