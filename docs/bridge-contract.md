@@ -13,7 +13,7 @@
 │ Electron 主进程 (node.exe, electron/main.cjs)                  │
 │   ├── Browser 执行器 (electron/browser-executor.cjs, WS 客户端)│
 │   └── spawn → server/bridge.mjs (Node: HTTP + WebSocket)       │
-│             端口 51309 (PONOS_BRIDGE_PORT 可覆盖)                 │
+│             端口 51311 (PONOS_BRIDGE_PORT 可覆盖)                 │
 │              ├── spawn(每会话一个内核进程) → kernel/cli.mjs     │
 │              │     经 runtime/bun/bun.exe，stream-json 模式    │
 │              ├── HTTP REST（文件/转换/配置/技能/transcript…）   │
@@ -129,7 +129,7 @@ bootstrap 复制到 `~/.ponos/runtime/kernel/cli.mjs`）：
 
 安全：WS 服务只接受本机可信来源——无 Origin、`file:`、`localhost/127.0.0.1/::1`；外部 Origin 一律 403。
 
-## 7. HTTP REST API（同端口 51309）
+## 7. HTTP REST API（同端口 51311）
 
 | 端点 | 用途 |
 |---|---|

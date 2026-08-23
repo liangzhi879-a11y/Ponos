@@ -6,7 +6,7 @@
 
 **Architecture:** Electron 主进程持有豆包隐藏窗口（persist:doubao 分区），生成请求通过 `webContents.executeJavaScript` 在页面上下文执行 `fetch`（字节 JS 劫持器自动注入 `a_bogus`/`msToken` 签名，规避风控）；图片下载经 bridge 调 Python（PIL+OpenCV）去水印后落盘本地。
 
-**Tech Stack:** Electron（main.cjs/preload.cjs）、ESM bridge（server/bridge.mjs, 端口 51309）、React + zustand（src/）、Python 3 + PIL 12.2 + OpenCV 4.13（server/watermark_remove.py）、node:test。
+**Tech Stack:** Electron（main.cjs/preload.cjs）、ESM bridge（server/bridge.mjs, 端口 51311）、React + zustand（src/）、Python 3 + PIL 12.2 + OpenCV 4.13（server/watermark_remove.py）、node:test。
 
 ## Global Constraints
 
