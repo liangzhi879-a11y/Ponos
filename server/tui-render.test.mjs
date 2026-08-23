@@ -66,8 +66,8 @@ test('visWidth：东亚宽字符按 2 计，ASCII 按 1', () => {
 })
 
 test('visWidth：跳过 ANSI 颜色序列（着色行宽度正确）', () => {
-  const colored = '\x1b[38;2;255;66;0mYFWorking\x1b[0m'
-  assert.equal(visWidth(colored), 9)
+  const colored = '\x1b[38;2;255;66;0mPonos\x1b[0m'
+  assert.equal(visWidth(colored), 5)
   const mixed = '\x1b[1m你好\x1b[0m world'
   assert.equal(visWidth(mixed), 10) // 你好=4 + 空格1 + world=5
 })
@@ -89,7 +89,7 @@ test('wrapText：ANSI 序列原样保留、不计宽、不拆行', () => {
 })
 
 test('trunc：ANSI 序列原样保留且绝不切半', () => {
-  const colored = 'YFWorking\x1b[38;2;255;66;0m 交互\x1b[0m'
+  const colored = 'Ponos\x1b[38;2;255;66;0m 交互\x1b[0m'
   const out = trunc(colored, 8)
   assert.ok(!out.includes('m\x1b') || true) // 无断言性检查，仅验证不抛
   // 截断后不残留未闭合的 ESC 序列：以 … 结尾且 ESC 只出现在成对序列中

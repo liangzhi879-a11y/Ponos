@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// YFW-turbo 横向评估 —— 实时交互 Dashboard
+// Ponos-turbo 横向评估 —— 实时交互 Dashboard
 // ---------------------------------------------------------------------------
 // 本地 HTTP 服务（零依赖，node:http）：
 //   GET /                       → 交互式 dashboard 页面（自包含，无外部依赖）
@@ -233,7 +233,7 @@ function apiConfigSnapshot() {
  * 保存配置：写 benchmark/.env + 立即更新进程 env（spawn run.mjs 继承生效）。
  * key/model 空串=不修改；baseUrl 空串=清除端点（回退官方端点）。
  * key 保存时同时覆盖 ANTHROPIC_AUTH_TOKEN / DEEPSEEK_API_KEY——
- * apiKeyFor(agent) 对 yfw/claude 走 ANTHROPIC_AUTH_TOKEN、pi/deepseek 走
+ * apiKeyFor(agent) 对 ponos/claude 走 ANTHROPIC_AUTH_TOKEN、pi/deepseek 走
  * DEEPSEEK_API_KEY，若系统已设置这些变量，只设 LLM_API_KEY 不会生效。
  */
 function saveApiConfig(body) {
@@ -262,7 +262,7 @@ function saveApiConfig(body) {
     }
   }
   updateDotEnv(updates)
-  return { ok: true, saved: updates, api: diagnoseAgents(['yfw', 'claude', 'pi', 'deepseek']) }
+  return { ok: true, saved: updates, api: diagnoseAgents(['ponos', 'claude', 'pi', 'deepseek']) }
 }
 
 // ── HTTP 服务 ────────────────────────────────────────────────────────────────
@@ -381,10 +381,10 @@ const server = createServer((req, res) => {
       })
     } catch { /* 忽略 */ }
     return sendJson(res, 200, {
-      agents: ['yfw', 'claude', 'pi', 'deepseek'],
+      agents: ['ponos', 'claude', 'pi', 'deepseek'],
       tasks: taskList,
       control: ctlSnapshot(),
-      api: diagnoseAgents(['yfw', 'claude', 'pi', 'deepseek']), // LLM API 通道状态
+      api: diagnoseAgents(['ponos', 'claude', 'pi', 'deepseek']), // LLM API 通道状态
     })
   }
 
@@ -394,7 +394,7 @@ const server = createServer((req, res) => {
 // ── 前端页面（自包含，无 CDN，内联 CSS/JS + SVG 交互图表）───────────────────
 const PAGE = `<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>YFW-turbo 横向评估 Dashboard</title>
+<title>Ponos-turbo 横向评估 Dashboard</title>
 <style>
 :root{--pass:#1a7f37;--fail:#c62828;--warn:#b26a00;--ink:#1a1a1a;--muted:#666;--line:#e5e7eb;--bg-card:#fff;--bg-soft:#f6f8fa;--blue:#2563eb}
 *{box-sizing:border-box}
@@ -452,7 +452,7 @@ footer{color:var(--muted);font-size:12px;margin-top:22px;text-align:center}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 </style></head><body><div class="wrap">
 <header>
-  <h1>YFW-turbo 内核横向评估 Dashboard</h1>
+  <h1>Ponos-turbo 内核横向评估 Dashboard</h1>
   <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">连接中…</span></span>
   <select id="dirSel" title="切换历史结果目录"></select>
   <button id="refreshBtn">刷新</button>
@@ -507,7 +507,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 </div>
 
 <div id="detail"><button class="close" onclick="closeDetail()">✕</button><div id="detailBody"></div></div>
-<footer>YFW-turbo 横向评估平台 · 实时刷新 · 失败案例比成功案例更有价值</footer>
+<footer>Ponos-turbo 横向评估平台 · 实时刷新 · 失败案例比成功案例更有价值</footer>
 </div>
 
 <div class="tooltip" id="tip"></div>
@@ -732,7 +732,7 @@ async function openDetail(agent, task) {
 function closeDetail() { $('#detail').classList.remove('open'); }
 
 // ── 评测控制台 ───────────────────────────────────────────────────────────────
-const META_AGENTS = ['yfw', 'claude', 'pi', 'deepseek'];
+const META_AGENTS = ['ponos', 'claude', 'pi', 'deepseek'];
 const META_TASKS = ['T001','T002','T003','T004','T005','T006'];
 let ctlSelAgents = new Set(META_AGENTS);
 let ctlSelTasks = new Set(META_TASKS);
@@ -878,7 +878,7 @@ boot();
 
 server.listen(port, () => {
   const dirs = listDirs()
-  console.log(`YFW-turbo Dashboard: http://localhost:${port}`)
+  console.log(`Ponos-turbo Dashboard: http://localhost:${port}`)
   console.log(`结果目录 ${resultsRoot}`)
   console.log(dirs.length ? `最近一次评测：${dirs[0]}` : '（暂无评测结果，跑 node benchmark/run.mjs 后自动出现）')
   console.log('按 Ctrl+C 停止')

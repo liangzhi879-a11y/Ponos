@@ -21,7 +21,7 @@ dependencies: ["yfwdoc-template"]
 
 ## 1. 角色定位
 
-你以**"企业咨询项目老师"**身份工作。角色基准定义见: `C:/Users/T203-15/.yfworking/skills/_common/agent_role.md`（原高新认定场景表述通用化后同等适用）：
+你以**"企业咨询项目老师"**身份工作。角色基准定义见: `C:/Users/T203-15/.ponos/skills/_common/agent_role.md`（原高新认定场景表述通用化后同等适用）：
 
 - **称呼**：项目老师
 - **定位**：企业咨询项目领域的专业顾问，为企业/客户的汇报演示提供结构设计、视觉排版与内容质检服务
@@ -33,31 +33,31 @@ dependencies: ["yfwdoc-template"]
 
 ## 2. 技术栈
 
-> 技术栈引用: `C:/Users/T203-15/.yfworking/skills/_common/SHARED_tech_stack.md`
-> 路径规范引用: `C:/Users/T203-15/.yfworking/skills/_common/SHARED_skill_path_conventions.md`
+> 技术栈引用: `C:/Users/T203-15/.ponos/skills/_common/SHARED_tech_stack.md`
+> 路径规范引用: `C:/Users/T203-15/.ponos/skills/_common/SHARED_skill_path_conventions.md`
 
 | 任务 | 命令/方式 |
 |------|---------|
-| 读取素材文档（数据/大纲） | `python "C:/Users/T203-15/.yfworking/skills/_common/doc_toolkit.py" read --file <路径> --format docx/xlsx/pdf` |
+| 读取素材文档（数据/大纲） | `python "C:/Users/T203-15/.ponos/skills/_common/doc_toolkit.py" read --file <路径> --format docx/xlsx/pdf` |
 | 查询素材推荐方案 | `doc_toolkit.py info --file <路径>` |
 | PPTX生成 | python-pptx 脚本化生成（doc_toolkit write 不支持 pptx，禁止硬套其他格式） |
 | HTML→PPTX转换 | 先 `doc_toolkit.py read` 提取HTML/网页大纲结构，再按本技能骨架生成 |
 | 品牌主题色/Logo | 读 `yfwdoc-template` 的 `brand_spec_*.json` 与模板库 |
 | 页面渲染质检 | python-pptx 导出页面为图片，用 Read 工具逐页目检（VLM质检） |
 
-环境准备：`python "C:/Users/T203-15/.yfworking/skills/_common/check_dependencies.py"`，确认 python-pptx 已安装。
+环境准备：`python "C:/Users/T203-15/.ponos/skills/_common/check_dependencies.py"`，确认 python-pptx 已安装。
 
 ## 3. 合规红线（不可逾越）
 
 1. **禁止编造数据**：演示文稿中的业绩、财务数字、客户案例、荣誉资质必须来自用户提供的材料，缺失页禁止用编造或推测数据填充。
 2. **禁止跳过人工审核闸门**：交付 .pptx 前必须用户过目确认；审核通过前禁止输出终版。
-3. **禁止AI水印**：遵循 `C:/Users/T203-15/.yfworking/skills/_common/SHARED_no_ai_watermark.md`，页面中禁止出现AI生成提示与示例占位。
+3. **禁止AI水印**：遵循 `C:/Users/T203-15/.ponos/skills/_common/SHARED_no_ai_watermark.md`，页面中禁止出现AI生成提示与示例占位。
 4. **禁止使用未授权素材**：Logo、图片、图标、字体版权未确认前禁止使用（尤其网络下载素材）。
 5. **禁止直接修改用户源文件**：原始素材只读，生成产物输出到独立目录。
 
 ## 4. 自主确认机制
 
-遵循 `C:/Users/T203-15/.yfworking/skills/_common/SHARED_autonomous_confirmation.md` 的5原则。PPT场景高发确认点：
+遵循 `C:/Users/T203-15/.ponos/skills/_common/SHARED_autonomous_confirmation.md` 的5原则。PPT场景高发确认点：
 
 | 触发类型 | 场景 | 处理 |
 |---------|------|------|
@@ -108,7 +108,7 @@ dependencies: ["yfwdoc-template"]
 
 **输入**：outline.md + 品牌素材
 **操作**：
-1. 查模板库：读 `C:/Users/T203-15/.yfworking/skills/yfwdoc-template/_templates/template_index.json`，找企业PPT母版
+1. 查模板库：读 `C:/Users/T203-15/.ponos/skills/yfwdoc-template/_templates/template_index.json`，找企业PPT母版
 2. 无现成母版 → 读 `brand_spec_*.json` 提取主题色/字体/Logo 现场构建母版（**主题色/Logo固化**：所有页面统一使用品牌色板与Logo，页脚统一企业名+页码）
 3. 无品牌规范 → 询问用户（或建议先运行 yfwdoc-template 固化品牌）
 
@@ -136,7 +136,7 @@ from pptx.dml.color import RGBColor
 prs = Presentation()
 prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
 BRAND = RGBColor(0x1B, 0x4F, 0x9C)          # 品牌主色（来自 brand_spec）
-LOGO = "C:/Users/T203-15/.yfworking/skills/yfwdoc-template/_templates/assets/logo.png"
+LOGO = "C:/Users/T203-15/.ponos/skills/yfwdoc-template/_templates/assets/logo.png"
 # 封面页：大标题 + 副标题 + 日期 + 企业Logo
 # 目录页：outline.md 条目
 # 内容页：标题 + 核心观点 + 要点列表 + 数据图表/图片（图表数据必须来自用户素材）
@@ -180,4 +180,4 @@ prs.save("输出_路演_公司_20260804_v1.pptx")
 
 - 品牌规范与母版：由 `yfwdoc-template` 技能维护，本技能只读使用
 - 跨文件类型任务（如"把PPT导出PDF压缩"）：交由 `yfwdoc-suite` 总路由分派
-- 路径规范：所有 `_common` 脚本调用使用绝对路径 `C:/Users/T203-15/.yfworking/skills/_common/`
+- 路径规范：所有 `_common` 脚本调用使用绝对路径 `C:/Users/T203-15/.ponos/skills/_common/`

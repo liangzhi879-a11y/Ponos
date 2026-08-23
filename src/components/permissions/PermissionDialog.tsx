@@ -4,7 +4,7 @@ import {
   DialogBody, DialogFooter, Button, Badge,
 } from '@/components/ui'
 import { useChatStore } from '@/stores/chatStore'
-import { sendPermissionResponse } from '@/hooks/useYFWCLI'
+import { sendPermissionResponse } from '@/hooks/usePonosCLI'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn } from '@/lib/utils'
 

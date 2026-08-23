@@ -93,7 +93,7 @@ async function waitLog(logPath, predicate, timeoutMs = 5000) {
 
 test('spawn 契约：argv 精确匹配 bridge 注入序列', async () => {
   const promptFile = join(tmp, 'sys-prompt.txt')
-  writeFileSync(promptFile, 'YFWorking identity prompt', 'utf-8')
+  writeFileSync(promptFile, 'Ponos identity prompt', 'utf-8')
   const cwd = tmp
   const m = spawnMock({ args: contractArgs([
     '--model', 'test-model',
@@ -115,11 +115,11 @@ test('spawn 契约：argv 精确匹配 bridge 注入序列', async () => {
 })
 
 test('spawn 契约：buildChildEnv 关键 env 注入', async () => {
-  const m = spawnMock({ extraEnv: { CLAUDE_CONFIG_DIR: '/test/cfg', YFWORKING_HOME: '/test/home' } })
+  const m = spawnMock({ extraEnv: { CLAUDE_CONFIG_DIR: '/test/cfg', PONOS_HOME: '/test/home' } })
   try {
     const rec = await waitLog(m.logPath, (r) => r.t === 'env')
     assert.equal(rec.env.CLAUDE_CONFIG_DIR, '/test/cfg')
-    assert.equal(rec.env.YFWORKING_HOME, '/test/home')
+    assert.equal(rec.env.PONOS_HOME, '/test/home')
   } finally { m.close() }
 })
 

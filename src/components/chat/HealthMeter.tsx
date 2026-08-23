@@ -36,7 +36,7 @@ export function HealthMeter({ conversationId }: { conversationId: string }) {
   const [flash, setFlash] = useState(false)
   const prevCount = useRef(summaryCompactCount)
 
-  // 压缩信号（yfw_summary 先于下一轮 yfw_health 到达）：血条一次性高亮脉冲，宽度随后回涨
+  // 压缩信号（ponos_summary 先于下一轮 ponos_health 到达）：血条一次性高亮脉冲，宽度随后回涨
   useEffect(() => {
     if (summaryCompactCount > prevCount.current) {
       prevCount.current = summaryCompactCount
@@ -48,7 +48,7 @@ export function HealthMeter({ conversationId }: { conversationId: string }) {
   }, [summaryCompactCount])
 
   const { widthPct, color } = meterState(health)
-  // 双源取 max：yfw_health 快照的 compactCount 与 yfw_summary 压缩事件计数都可能
+  // 双源取 max：ponos_health 快照的 compactCount 与 ponos_summary 压缩事件计数都可能
   // 较新（summary 先于下一轮 health 到达；进程重启后 seed 恢复的 health 更新快照）。
   const compactCount = Math.max(health?.compactCount ?? 0, summaryCompactCount)
   const label = health

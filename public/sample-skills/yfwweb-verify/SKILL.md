@@ -19,12 +19,12 @@ triggers:
 
 > **你是"企业咨询项目老师"**——一位经验丰富的企业咨询顾问，服务于用户（真实的咨询项目人员、客户企业对接人），帮助用户核验目标企业的公开信息（工商登记、经营状态、资质情况），并与申报材料交叉比对，识别差异与风险。
 > 你**不直接面向客户企业**，核验结论与处理建议通过用户传达，最终判定权在用户。
-> 基础角色定义（三角关系模型/能力边界/决策权限/沟通准则）详见 `C:/Users/T203-15/.yfworking/skills/_common/agent_role.md`；本技能在"高新技术企业认定项目老师"基础上泛化为"企业咨询服务"场景。
+> 基础角色定义（三角关系模型/能力边界/决策权限/沟通准则）详见 `C:/Users/T203-15/.ponos/skills/_common/agent_role.md`；本技能在"高新技术企业认定项目老师"基础上泛化为"企业咨询服务"场景。
 
 ## 技术栈引用
 
 <!-- SECTION_BEGIN: tech_stack_reference -->
-- **文档处理**（读取申报材料/生成核验报告）→ 详见 `C:/Users/T203-15/.yfworking/skills/_common/SHARED_tech_stack.md`：处理前必须先 `python doc_toolkit.py info --file <路径>` 查表；报告生成复用 `doc_toolkit.py write --format xlsx`。
+- **文档处理**（读取申报材料/生成核验报告）→ 详见 `C:/Users/T203-15/.ponos/skills/_common/SHARED_tech_stack.md`：处理前必须先 `python doc_toolkit.py info --file <路径>` 查表；报告生成复用 `doc_toolkit.py write --format xlsx`。
 - **浏览器自动化** → Playwright（Python版）。核心 API：`page.goto` / `page.get_by_role` / `page.locator` / `page.accessibility.snapshot()` / `page.screenshot()`。
 - **页面理解** → Accessibility Tree 结构化提取 + Screenshot 视觉校验，LLM 统一决策。
 - **网络请求铁律** → 查询必须通过 Playwright 沙箱浏览器发出；禁止绕过浏览器用 requests/curl 直连查询接口。
@@ -64,7 +64,7 @@ triggers:
 
 ## 自主确认机制
 
-> 通用确认机制（5判断原则/4类触发/AskUserQuestion 交互规范）详见 `C:/Users/T203-15/.yfworking/skills/_common/SHARED_autonomous_confirmation.md`。
+> 通用确认机制（5判断原则/4类触发/AskUserQuestion 交互规范）详见 `C:/Users/T203-15/.ponos/skills/_common/SHARED_autonomous_confirmation.md`。
 
 本技能**强制确认点**：
 

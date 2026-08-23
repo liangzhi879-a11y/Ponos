@@ -36,13 +36,13 @@
 ```
 Electron 主进程 (electron/main.cjs, node server/bridge.mjs)
   └─ bridge (WS:51309 + HTTP) ──stdio──▶ bun 内核 (kernel/cli.mjs, 每个会话一个进程)
-                                          ├─ CLAUDE_CONFIG_DIR 重定向到 ~/.yfworking
-                                          ├─ 会话 transcript 落盘 ~/.yfworking/projects/ (896MB)
+                                          ├─ CLAUDE_CONFIG_DIR 重定向到 ~/.ponos
+                                          ├─ 会话 transcript 落盘 ~/.ponos/projects/ (896MB)
                                           ├─ 子 agent 输出经 diskOutput.ts 写盘（上限 5GB/task）
                                           └─ 会话 cwd 可能在 D:（国高咨询项目在 D:/Projects/...）
 ```
 
-- 打包版 release 路径：`release/YFWorking_ms92cd6u/`（bun.exe + kernel/cli.mjs + vendor/ripgrep 已带 rg.exe）
+- 打包版 release 路径：`release/Ponos_ms92cd6u/`（bun.exe + kernel/cli.mjs + vendor/ripgrep 已带 rg.exe）
 - 应用启动会自动 resume 多个最近会话（bridge.log 实证 4~5 个并发 bun 内核，各带 1M 上下文模型）
 - 渲染层：流式事件按 animation frame 批处理（已有优化）；无目录轮询/watch；localStorage 很小（6.5MB）
 
@@ -53,7 +53,7 @@ Electron 主进程 (electron/main.cjs, node server/bridge.mjs)
 | 内存 commit 耗尽 | 资源耗尽检测器日志 488×1001/434×1002 全是例行启停，**无 2004/1004 低虚拟内存事件**；1003/1008 是 5 月/7 月旧事件 |
 | 磁盘硬件故障 | SMART Healthy；无磁盘错误事件；延迟测试盘可用（虽然慢） |
 | ripgrep 缺失→全树递归搜索 | 打包版已带 `kernel/vendor/ripgrep/x64-win32/rg.exe`，快速路径生效 |
-| 渲染层 localStorage/leveldb 洪写 | userData（%APPDATA%/yfworking-gui）仅 6.5MB |
+| 渲染层 localStorage/leveldb 洪写 | userData（%APPDATA%/ponos-gui）仅 6.5MB |
 | 视觉桥接 spawn 风暴 | `maybeBridgeImageBlocks` 是纯 API 调用无 spawn；VisionTool 每次只 spawn 1 个 python（10min 超时+清理）。注意：桥接无缓存命中逻辑，重复桥接 = 重复 API 调用（费钱不卡机） |
 | bridge stdio 缓冲堆积 | readline 逐行消费，无累积 |
 | bridge 文件浏览 sync 卡死 | FileBrowser 仅在用户点击时 fetch /list-dir，无轮询 |
@@ -103,11 +103,11 @@ Electron 主进程 (electron/main.cjs, node server/bridge.mjs)
 |---|---|
 | 本线索文件 | 仓库根 `FREEZE-INVESTIGATION.md` |
 | 系统快照脚本（只读） | `.salvage-work/freeze-diag.ps1` |
-| 打包版 bridge 日志 | `release/YFWorking_ms92cd6u/bridge.log`（+bridge.err.log） |
-| 内核会话库 | `~/.yfworking/projects/`（896MB，含 D: 项目会话） |
+| 打包版 bridge 日志 | `release/Ponos_ms92cd6u/bridge.log`（+bridge.err.log） |
+| 内核会话库 | `~/.ponos/projects/`（896MB，含 D: 项目会话） |
 | 死掉会话 transcript | `~/.claude/projects/C--Users-T203-15-claude-code-gui/0df4ab39-*.jsonl`（最后动作=进程计数+bridge.log扫描） |
-| 宠物日志（app 存活心跳） | `~/.yfworking/pet.log`（每次 bridge 重连都记一行） |
-| GUI userData | `%APPDATA%/yfworking-gui/`（6.5MB，无大库） |
+| 宠物日志（app 存活心跳） | `~/.ponos/pet.log`（每次 bridge 重连都记一行） |
+| GUI userData | `%APPDATA%/ponos-gui/`（6.5MB，无大库） |
 
 ## 8. 修复方向（待用户确认后再动代码）
 
@@ -135,7 +135,7 @@ Electron 主进程 (electron/main.cjs, node server/bridge.mjs)
   milestones/milestone-start/milestone-ok/question-resolved/raw/stderr + system task_progress；
   assistant/result/审批/提问/错误/关闭/ack 等关键事件永不丢。断流后自动恢复全量。
 
-### 修复 2：task_progress 按帧合并（src/hooks/useYFWCLI.ts）
+### 修复 2：task_progress 按帧合并（src/hooks/usePonosCLI.ts）
 - task_progress 进 Map<(sid,taskId)→event> 合并队列，rAF 每帧每任务只应用最后一条；
   task_started/task_notification 仍即时送达；error/cancelled/closed 路径清队列防任务卡复活；
   页面隐藏时兜底 flush。
@@ -148,7 +148,7 @@ Electron 主进程 (electron/main.cjs, node server/bridge.mjs)
 - 新增 `reapIdleKernels`（60s 扫描）：仅当「轮次已结束（result 已到）+ 无待答提问 +
   无待批审批 + 空闲超时」时回收 bun 内核进程（taskkill 进程树），下次发消息以
   --resume 原会话 ID 自动重启（首次 token 稍慢，无缝续聊）。回收退出不广播 closed
-  （渲染层保留任务卡）。默认阈值 10 分钟；`YFW_KERNEL_IDLE_MS` 覆盖毫秒数，`0` 关闭。
+  （渲染层保留任务卡）。默认阈值 10 分钟；`PONOS_KERNEL_IDLE_MS` 覆盖毫秒数，`0` 关闭。
 - 注：原"启动只恢复当前会话"假设不成立——渲染层无自动恢复逻辑，多内核是用户切换
   会话累积的；空闲回收才是正确的内存上界手段。
 
@@ -159,14 +159,14 @@ Electron 主进程 (electron/main.cjs, node server/bridge.mjs)
 
 ### 部署注意（重要）
 - 前端修改需 `npm run build` 重新生成 dist/ 才生效；
-- 打包版 release/YFWorking_ms92cd6u/ 下的 server/bridge.mjs 与 dist/ 需按既定流程同步；
-- 调试期可用 `YFW_KERNEL_IDLE_MS=60000` 快速验证回收行为（日志关键字 `idle kernel reaped`）。
+- 打包版 release/Ponos_ms92cd6u/ 下的 server/bridge.mjs 与 dist/ 需按既定流程同步；
+- 调试期可用 `PONOS_KERNEL_IDLE_MS=60000` 快速验证回收行为（日志关键字 `idle kernel reaped`）。
 
 ### 部署状态（2026-08-17 已完成）
 - `npm run build` 成功（dist 新 bundle：index-CfhKq-Hr.js）；
-- 按 BUILD.md 流程同步两份副本：release/YFWorking/ 与 release/YFWorking_ms92cd6u/
+- 按 BUILD.md 流程同步两份副本：release/Ponos/ 与 release/Ponos_ms92cd6u/
   （dist 镜像 + server/* 复制）；已验证：两份 bridge.mjs 均含 `idle kernel reaped` 与
-  `_yfwOverloaded`，dist/index.html 均指向新 bundle。
+  `_ponosOverloaded`，dist/index.html 均指向新 bundle。
 
 ---
 
@@ -190,18 +190,18 @@ Electron 主进程 (electron/main.cjs, node server/bridge.mjs)
 
 ### 本轮修复（已部署，无需重新 build——只改了 electron/main.cjs 与 server/bridge.mjs）
 - **修复 5：内核失速看门狗**（server/bridge.mjs）：轮次活跃但 stdout 静默超阈值 → 日志
-  `kernel stall warning` + kernel-stall 事件（只告警不自动杀，防丢工作）。`YFW_KERNEL_STALL_MS`
+  `kernel stall warning` + kernel-stall 事件（只告警不自动杀，防丢工作）。`PONOS_KERNEL_STALL_MS`
   覆盖（默认 10min，0 关闭）。
 - **修复 6：豆包窗口去模态 + 空闲销毁**（electron/main.cjs）：
   ① modal:true→false——登录窗加载慢/挂起不再阻塞主窗口；② 空闲超阈值销毁隐藏窗
   （doubao.com SSE/shared worker/动画是常驻 GPU/网络负载源），下次生成 ensureDoubaoReady
-  静默重建（persist:doubao 分区 cookie 不丢，60s 等自动登录）。`YFW_DOUBAO_IDLE_MS`
+  静默重建（persist:doubao 分区 cookie 不丢，60s 等自动登录）。`PONOS_DOUBAO_IDLE_MS`
   覆盖（默认 10min，0 关闭）。
 - 验证：node --check ×2 ✓；npm test 75/75 ✓；两份 release 副本已同步。
 - **生效前提：用户重启 app**（当前运行实例加载的是旧代码）。
 
 ### 待用户执行的系统级处置（按优先级）
-1. **360天擎信任区**：把 C:\Users\T203-15\claude-code-gui、D:\Projects、~\.yfworking、
+1. **360天擎信任区**：把 C:\Users\T203-15\claude-code-gui、D:\Projects、~\.ponos、
    %LOCALAPPDATA%\Temp\claude 加入 360 实时防护信任/白名单（减少 agent 文件风暴被扫）；
    如 360 有"核晶防护"（内核虚拟化）选项则关闭——与 VBS 叠加是冻死最大嫌疑。
 2. **VBS/HVCI**：设置→Windows 安全→设备安全→内核隔离→内存完整性，若非公司策略强制，
@@ -252,7 +252,7 @@ GUI 停止复用 CLI 的 interrupt 语义，在桌面应用场景完全失效：
 4. **多会话进程形态**：bridge 以 `shell:true`（bridge.mjs:780,784）经 cmd.exe 中转 spawn
    每个 bun 内核 → 每会话 = cmd + conhost + bun 三个进程；Bash 工具每次再 spawn
    bash.exe（+嵌套+conhost）。进程树实锤：bun→bash→嵌套 bash→conhost。
-5. **D: 机械盘负载确认**：transcript/工具结果写 C:（~/.yfworking/projects，937MB，写队列
+5. **D: 机械盘负载确认**：transcript/工具结果写 C:（~/.ponos/projects，937MB，写队列
    +flush 节流，非 D: 负载）；**D: 负载 = subagent 实际操作国高项目文件**
    （bridge.log 实锤两个会话 cwd 在 `D:/Projects/【国高】...`，git/rg/文档转换/读写全压机械盘）。
 
@@ -291,12 +291,12 @@ bridge 的 GUI cancel 不再发 `interrupt`，改发新的 control_request `canc
 - 双副本同步 + 特征验证：`subtype: 'cancel'`（bridge.mjs）、`case "cancel"` / `abort("cancel")` / `killAllRunningAgentTasks`（cli.mjs）✓
 
 ### 生效前提与复测方法
-- **需重启 app**（release/YFWorking_ms92cd6u 当前运行实例加载旧代码）。
+- **需重启 app**（release/Ponos_ms92cd6u 当前运行实例加载旧代码）。
 - 复测：并行 4 个 subagent（各跑 60s+ 长 Bash）→ 点停止一个 → 任务卡应立即消失、
   bash 进程树立即退出；再观察事件日志无新增 Event 41。
 
 ### 待系统侧处置（更新）
-1. **Defender 排除项**：`~/.yfworking`、`D:\Projects`、`C:\Users\T203-15\claude-code-gui`
+1. **Defender 排除项**：`~/.ponos`、`D:\Projects`、`C:\Users\T203-15\claude-code-gui`
    加入 Defender 实时保护排除目录（消除逐文件扫描放大）。
 2. 国高项目会话迁到 C: SSD（D: 机械盘仅做归档）。
 3. VBS 完全关闭确认；AweSun 退出；显卡驱动更新。
@@ -307,7 +307,7 @@ bridge 的 GUI cancel 不再发 `interrupt`，改发新的 control_request `canc
 
 ### 环境确认
 - app 已重启：electron 12:28:31、内核 bun 12:29:22；加载 12:26:20 同步的修复版 cli.mjs（cancel 语义）✓
-- 同步收集脚本 `.yfworking/stress-test/collect.sh` 独立后台运行（每 2s 采集响应耗时/内存/进程表/Event41），
+- 同步收集脚本 `.ponos/stress-test/collect.sh` 独立后台运行（每 2s 采集响应耗时/内存/进程表/Event41），
   卡死也不丢证据；cancel 触发器 `cancel-sender.cjs` 经 WS 模拟 GUI 停止按钮走完整链路。
 
 ### 测试过程
@@ -349,8 +349,8 @@ bridge 的 GUI cancel 不再发 `interrupt`，改发新的 control_request `canc
   `sessionId=b3a8ce6b-…`，两者不同。
 
 **断点 2（release 产物未同步）：即使 cancel 到达，旧内核报 unsupported**
-- 源码 `yfw-kernel/claude-code/src/bridge/bridgeMessaging.ts` 有 `case 'cancel':`（384-396 行）。
-- release 实际运行的 `release/YFWorking_ms92cd6u/kernel/cli.mjs` **不含 cancel case**
+- 源码 `ponos-kernel/claude-code/src/bridge/bridgeMessaging.ts` 有 `case 'cancel':`（384-396 行）。
+- release 实际运行的 `release/Ponos_ms92cd6u/kernel/cli.mjs` **不含 cancel case**
   （grep "case 'cancel'" = 0 处，default 分支报 "Unsupported control request subtype"）。
 - 2026-08-18 12:26 构建的 cli.mjs 早于 cancel 修复编译，未同步（§13 修复只进了源码，
   构建产物仍是旧的）——再次踩中"源码改动必须同步 release 并重启进程"的老坑。
@@ -418,7 +418,7 @@ task_progress、task_notification 事件驱动；终态只能由 task_notificati
 **修复（GUI 侧防御，2026-08-18）**：
 - `SubAgentTask` 新增运行时字段 `lastSeenAt`（事件心跳）+ `staleSwept`（超时清理标记）。
 - task_started / task_progress 刷新 lastSeenAt；task_progress 同时显式带 status:'running'。
-- `useYFWCLI.ts` 新增孤任务超时清理 `sweepStaleSubAgentTasks()`：running 任务超过 10 分钟
+- `usePonosCLI.ts` 新增孤任务超时清理 `sweepStaleSubAgentTasks()`：running 任务超过 10 分钟
   无任何事件 → 标记 stopped（summary"子代理进程已退出，状态超时自动清理"）。挂在挂载周期
   500ms 心跳里，60s 节流。
 - `chatStore.upsertSubAgentTask` 增加复活逻辑：staleSwept 任务收到新进度（lastSeenAt）→

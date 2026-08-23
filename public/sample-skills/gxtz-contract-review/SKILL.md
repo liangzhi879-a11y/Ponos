@@ -18,18 +18,18 @@ triggers:
 > 核心职责：识别合同是否符合"四技"合同认定标准，发现合同中可能导致不予登记的缺陷，提供专业整改建议。
 
 <!-- SECTION_BEGIN: tech_stack_reference -->
-## 技术栈引用 -> 详见 {{YFW_SKILLS}}/_common/SHARED_tech_stack.md
+## 技术栈引用 -> 详见 {{PONOS_SKILLS}}/_common/SHARED_tech_stack.md
 > 核心：处理文档前必须先 `python doc_toolkit.py info --file <路径>` 查表，禁止自行尝试不同库。
 <!-- SECTION_END: tech_stack_reference -->
 
 <!-- SECTION_BEGIN: ocr_reference -->
-## OCR能力引用 -> 详见 {{YFW_SKILLS}}/_common/SHARED_ocr_reference.md
+## OCR能力引用 -> 详见 {{PONOS_SKILLS}}/_common/SHARED_ocr_reference.md
 > PDF混合型必须用 --mode auto 逐页处理。扫描件用RapidOCR(ONNX)，准确率>95%。
-> ⚠️ OCR强制铁律：见 {{YFW_SKILLS}}/_common/SHARED_ocr_mandatory.md（先OCR后操作，禁止猜测，必须等待）
+> ⚠️ OCR强制铁律：见 {{PONOS_SKILLS}}/_common/SHARED_ocr_mandatory.md（先OCR后操作，禁止猜测，必须等待）
 <!-- SECTION_END: ocr_reference -->
 
 <!-- SECTION_BEGIN: no_ai_watermark -->
-## 输出资料合规规则 -> 详见 {{YFW_SKILLS}}/_common/SHARED_no_ai_watermark.md
+## 输出资料合规规则 -> 详见 {{PONOS_SKILLS}}/_common/SHARED_no_ai_watermark.md
 > 禁止AI水印。文档版本管理: 旧版.bak备份。
 <!-- SECTION_END: no_ai_watermark -->
 
@@ -43,7 +43,7 @@ triggers:
 1. **禁止无依据判定**：每条审查结论必须引用具体法规条款（管理办法/认定规则/民法典），不得凭经验臆断
 2. **禁止跳过关键审查维度**：10个审查维度必须逐一审查，不得遗漏
 3. **禁止忽略上下文关联**：合同条款之间存在关联（如技术内容与知识产权归属必须对应），不得孤立审查
-4. **禁止跳过脚本执行**：所有 `python {{YFW_SKILLS}}/_common/xxx.py` 命令必须通过 Bash 真正执行
+4. **禁止跳过脚本执行**：所有 `python {{PONOS_SKILLS}}/_common/xxx.py` 命令必须通过 Bash 真正执行
 5. **禁止自行兜底**：脚本报错时不得自行编写兜底代码，必须停止并告警
 6. **禁止合并/简化审查结论**：每条问题必须独立编号、独立描述，不得合并表述
 7. **禁止跨技能污染**：仅读取当前项目留痕，不跨项目读取
@@ -64,7 +64,7 @@ triggers:
 
 ## 自主确认机制
 
-> 通用规范详见 {{YFW_SKILLS}}/_common/SHARED_autonomous_confirmation.md
+> 通用规范详见 {{PONOS_SKILLS}}/_common/SHARED_autonomous_confirmation.md
 
 ### 本技能特有确认场景
 
@@ -77,15 +77,15 @@ triggers:
 
 ## 质疑与协同审查机制
 
-> 通用规范详见 {{YFW_SKILLS}}/_common/SHARED_questioning_review.md
+> 通用规范详见 {{PONOS_SKILLS}}/_common/SHARED_questioning_review.md
 > agent 必须遵守：四类触发(E/F/G/H) + 6条自问 + 质疑交互规范
 
 ## 蜂群协同
 
-> 通用规范详见 {{YFW_SKILLS}}/_common/SHARED_swarm_collaboration.md
+> 通用规范详见 {{PONOS_SKILLS}}/_common/SHARED_swarm_collaboration.md
 > 跨技能并行执行 + subagent规范 + file_lock并发控制。
 
-## 交叉验证协议 -> 详见 {{YFW_SKILLS}}/_common/SHARED_cross_validation.md
+## 交叉验证协议 -> 详见 {{PONOS_SKILLS}}/_common/SHARED_cross_validation.md
 > 关键决策点强制交叉验证。
 
 
@@ -103,7 +103,7 @@ triggers:
 所有脚本调用必须使用 Bash 工具，格式：
 
 ```
-python {{YFW_SKILLS}}/_common/xxx.py <参数>
+python {{PONOS_SKILLS}}/_common/xxx.py <参数>
 ```
 
 - 脚本路径必须使用绝对路径
@@ -116,7 +116,7 @@ python {{YFW_SKILLS}}/_common/xxx.py <参数>
 最后一步必须执行对应的审核验证脚本：
 
 ```
-python {{YFW_SKILLS}}/_common/validate_contract-review.py --dir "输出目录" --project-root "项目根目录"
+python {{PONOS_SKILLS}}/_common/validate_contract-review.py --dir "输出目录" --project-root "项目根目录"
 ```
 
 ### 审核通过条件
@@ -186,12 +186,12 @@ python {{YFW_SKILLS}}/_common/validate_contract-review.py --dir "输出目录" -
 在开始工作前，检查本技能的前置阶段是否已完成：
 
 ```bash
-python {{YFW_SKILLS}}/_common/progress_sync.py check-deps /n    --project-root "." /n    --skill "gxtz-contract-review"
+python {{PONOS_SKILLS}}/_common/progress_sync.py check-deps /n    --project-root "." /n    --skill "gxtz-contract-review"
 ```
 
 若返回 WARNING 提示存在未完成的前置阶段，agent 应提示用户先完成前置依赖。
 
-> 进度管理集成说明详见: `{{YFW_SKILLS}}/gxtz-progress-manager/SKILL.md`
+> 进度管理集成说明详见: `{{PONOS_SKILLS}}/gxtz-progress-manager/SKILL.md`
 
 
 ## 第一步：项目初始化（强制执行，不可跳过）
@@ -208,14 +208,14 @@ python {{YFW_SKILLS}}/_common/progress_sync.py check-deps /n    --project-root "
 
 **先调用 doc_toolkit.py info 查表确定处理方案**：
 ```bash
-python {{YFW_SKILLS}}/_common/doc_toolkit.py info --file "<合同文件路径>"
+python {{PONOS_SKILLS}}/_common/doc_toolkit.py info --file "<合同文件路径>"
 ```
 
 根据返回结果调用相应读取命令提取合同全文内容。
 
 **对于PDF扫描件**：必须执行OCR识别，准确率>95%。
 ```bash
-python {{YFW_SKILLS}}/_common/ocr_engine.py process --input "<合同文件路径>" --mode auto --output-dir "<临时输出目录>"
+python {{PONOS_SKILLS}}/_common/ocr_engine.py process --input "<合同文件路径>" --mode auto --output-dir "<临时输出目录>"
 ```
 
 ### 1.3 建立审查基准
@@ -257,7 +257,7 @@ python {{YFW_SKILLS}}/_common/ocr_engine.py process --input "<合同文件路径
 
 ### 判定脚本
 ```bash
-python {{YFW_SKILLS}}/gxtz-contract-review/contract_review.py classify --contract-json <合同内容JSON> --output <评估JSON>
+python {{PONOS_SKILLS}}/gxtz-contract-review/contract_review.py classify --contract-json <合同内容JSON> --output <评估JSON>
 ```
 
 ### 输出
@@ -287,7 +287,7 @@ python {{YFW_SKILLS}}/gxtz-contract-review/contract_review.py classify --contrac
 
 ### 审查脚本
 ```bash
-python {{YFW_SKILLS}}/gxtz-contract-review/contract_review.py check-parties --contract-json <合同内容JSON> --output <评估JSON>
+python {{PONOS_SKILLS}}/gxtz-contract-review/contract_review.py check-parties --contract-json <合同内容JSON> --output <评估JSON>
 ```
 
 
@@ -325,7 +325,7 @@ python {{YFW_SKILLS}}/gxtz-contract-review/contract_review.py check-parties --co
 
 ### 审查脚本
 ```bash
-python {{YFW_SKILLS}}/gxtz-contract-review/contract_review.py check-tech-content --contract-json <合同内容JSON> --contract-type <合同类型> --output <评估JSON>
+python {{PONOS_SKILLS}}/gxtz-contract-review/contract_review.py check-tech-content --contract-json <合同内容JSON> --contract-type <合同类型> --output <评估JSON>
 ```
 
 
@@ -349,7 +349,7 @@ python {{YFW_SKILLS}}/gxtz-contract-review/contract_review.py check-tech-content
 
 ### 审查脚本
 ```bash
-python {{YFW_SKILLS}}/gxtz-contract-review/contract_review.py check-ip-rights --contract-json <合同内容JSON> --contract-type <合同类型> --output <评估JSON>
+python {{PONOS_SKILLS}}/gxtz-contract-review/contract_review.py check-ip-rights --contract-json <合同内容JSON> --contract-type <合同类型> --output <评估JSON>
 ```
 
 
@@ -378,7 +378,7 @@ python {{YFW_SKILLS}}/gxtz-contract-review/contract_review.py check-ip-rights --
 
 ### 审查脚本
 ```bash
-python {{YFW_SKILLS}}/gxtz-contract-review/contract_review.py check-pricing --contract-json <合同内容JSON> --output <评估JSON>
+python {{PONOS_SKILLS}}/gxtz-contract-review/contract_review.py check-pricing --contract-json <合同内容JSON> --output <评估JSON>
 ```
 
 
@@ -436,7 +436,7 @@ python {{YFW_SKILLS}}/gxtz-contract-review/contract_review.py check-pricing --co
 
 ### 综合审查脚本
 ```bash
-python {{YFW_SKILLS}}/gxtz-contract-review/contract_review.py check-comprehensive --contract-json <合同内容JSON> --contract-type <合同类型> --output <评估JSON>
+python {{PONOS_SKILLS}}/gxtz-contract-review/contract_review.py check-comprehensive --contract-json <合同内容JSON> --contract-type <合同类型> --output <评估JSON>
 ```
 
 
@@ -446,7 +446,7 @@ python {{YFW_SKILLS}}/gxtz-contract-review/contract_review.py check-comprehensiv
 
 调用汇总脚本，自动生成 Markdown+JSON+清单+Word 四类文件：
 ```bash
-python {{YFW_SKILLS}}/gxtz-contract-review/contract_review.py generate-report  \
+python {{PONOS_SKILLS}}/gxtz-contract-review/contract_review.py generate-report  \
   --results-dir <审查结果目录>  \
   --enterprise "企业名称"  \
   --contract-name "合同名称"  \
@@ -457,7 +457,7 @@ python {{YFW_SKILLS}}/gxtz-contract-review/contract_review.py generate-report  \
 
 若仅需生成/补生成 Word 格式报告（如已有审查结果JSON）：
 ```bash
-python {{YFW_SKILLS}}/gxtz-contract-review/contract_review.py generate-docx-report  \
+python {{PONOS_SKILLS}}/gxtz-contract-review/contract_review.py generate-docx-report  \
   --results-dir <审查结果目录>  \
   --enterprise "企业名称"  \
   --contract-name "合同名称"  \
@@ -533,7 +533,7 @@ I级（信息提示）问题统一在文档末尾以汇总批注形式呈现。
 ### 8A.3 执行命令
 
 ```bash
-python {{YFW_SKILLS}}/gxtz-contract-review/contract_review.py annotate-contract  \
+python {{PONOS_SKILLS}}/gxtz-contract-review/contract_review.py annotate-contract  \
   --source-contract <源合同文件路径(.docx/.doc)>  \
   --review-results <审查结果JSON文件路径>  \
   --output-dir <批注版输出目录>
@@ -569,7 +569,7 @@ python {{YFW_SKILLS}}/gxtz-contract-review/contract_review.py annotate-contract 
 ### 9.1 执行验证脚本
 
 ```bash
-python {{YFW_SKILLS}}/_common/validate_contract-review.py  \
+python {{PONOS_SKILLS}}/_common/validate_contract-review.py  \
   --dir "评估报告输出目录"  \
   --project-root "项目根目录"
 ```
@@ -586,7 +586,7 @@ python {{YFW_SKILLS}}/_common/validate_contract-review.py  \
 完成所有工作后、文件整理前，更新进度看板：
 
 ```bash
-python {{YFW_SKILLS}}/_common/progress_sync.py update-stage /n    --project-root "." /n    --skill "gxtz-contract-review" /n    --status completed
+python {{PONOS_SKILLS}}/_common/progress_sync.py update-stage /n    --project-root "." /n    --skill "gxtz-contract-review" /n    --status completed
 ```
 
 此命令将自动匹配本技能对应的阶段并标记为"已完成"。

@@ -6,7 +6,7 @@
 
 ## 1. 背景与目标
 
-claude-code-gui（YFWorking 桌面应用：Electron + React + TS + Vite + Zustand，WebSocket bridge.mjs ↔ CLI 内核 yfw-kernel/claude-code，附带 python 桌面宠物）存在四类运行效率问题：
+claude-code-gui（Ponos 桌面应用：Electron + React + TS + Vite + Zustand，WebSocket bridge.mjs ↔ CLI 内核 ponos-kernel/claude-code，附带 python 桌面宠物）存在四类运行效率问题：
 
 | 维度 | 现状 | 痛点 |
 |---|---|---|
@@ -49,7 +49,7 @@ claude-code-gui（YFWorking 桌面应用：Electron + React + TS + Vite + Zustan
 
 ### 4.3 流式 token 批处理渲染
 
-- `useYFWCLI.ts` 收到的 token 流事件：改为 rAF（requestAnimationFrame）按帧批量 flush（16ms 合并窗口），避免每 token 触发 setState → 全消息重渲染。
+- `usePonosCLI.ts` 收到的 token 流事件：改为 rAF（requestAnimationFrame）按帧批量 flush（16ms 合并窗口），避免每 token 触发 setState → 全消息重渲染。
 - `MessageBubble` 等消息组件 `React.memo` 化，配合 Zustand selector 精确订阅，减少无关重渲染。
 - 保证不丢 token：flush 前队列非空则保底一次同步兜底（如页面隐藏/切走时 rAF 暂停，用 `visibilitychange` 补 flush）。
 
@@ -77,7 +77,7 @@ claude-code-gui（YFWorking 桌面应用：Electron + React + TS + Vite + Zustan
 - 仅对超长冗余工具输出（如大文件读取全文、超长命令输出）做截断 + 摘要提示（"已截断，前 N 字符，末尾 M 字符，可针对片段追问"）。
 - 截断阈值初始值 20000 字符、前后保留各 4000 字符，均通过配置项可调；默认极保守；可整体关闭（等于现状，零风险）。
 - 不触碰：对话消息、思考内容、用户指令、技能定义。
-- 内核 patch 位置：yfw-kernel/claude-code 工具结果注入路径（源码修改 + `scripts/build-bundle.ts` 重新 bundle + 同步两份 cli.mjs）。
+- 内核 patch 位置：ponos-kernel/claude-code 工具结果注入路径（源码修改 + `scripts/build-bundle.ts` 重新 bundle + 同步两份 cli.mjs）。
 
 ### 6.2 压缩窗口校准
 

@@ -96,7 +96,7 @@ function computeFingerprint({ title, href, textLen, inputCount }) {
 //  - 企业查询：企查查/天眼查/爱企查/水滴信用（企业信息核验场景）
 //  - 人社社保：12333 省级站（12333.cn 主域）
 //  - 常用邮箱：QQ/163/126 邮箱（收取申报材料/验证码）
-// 另有运行时动态配置：{YFW_HOME}/browser-whitelist.json 的 allow 数组，
+// 另有运行时动态配置：{PONOS_HOME}/browser-whitelist.json 的 allow 数组，
 // 免改代码免重启（mtime 变化自动重读），支持子域匹配。
 const DEFAULT_WHITELIST = [
   /\.gov\.cn$/i, /^localhost$/i, /^127\.0\.0\.1$/,
@@ -112,7 +112,7 @@ const os = require('os')
 let cfgMtime = 0
 let cfgHosts = null
 function whitelistConfigPath() {
-  const home = process.env.YFWORKING_HOME || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.yfworking')
+  const home = process.env.PONOS_HOME || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.ponos')
   return path.join(home, 'browser-whitelist.json')
 }
 // 惰性重读：文件 mtime 变化才重新解析，改配置即时生效，无需重启。

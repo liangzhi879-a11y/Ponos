@@ -64,13 +64,13 @@ export function FileEditor() {
 
   // 关闭按钮：通知主进程关闭本窗口
   const closeWindow = () => {
-    ;(window as any).yfworkingAPI?.closeEditorWindow?.()
+    ;(window as any).ponosAPI?.closeEditorWindow?.()
   }
 
   // 右上角按钮：直接用本地系统默认应用打开源文件
   const openInSystemApp = () => {
     if (!activeFile) return
-    const api = (window as any).yfworkingAPI
+    const api = (window as any).ponosAPI
     if (api?.openInExplorer) api.openInExplorer(activeFile.path)
   }
 

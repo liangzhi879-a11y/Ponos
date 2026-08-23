@@ -24,7 +24,7 @@ async function captureBody(envPatch) {
   Object.assign(process.env, {
     ANTHROPIC_BASE_URL: 'http://127.0.0.1:9',
     ANTHROPIC_AUTH_TOKEN: 'test-token',
-    YFW_MOCK_API: '0',
+    PONOS_MOCK_API: '0',
     OPENAI_BASE_URL: '', OPENAI_API_KEY: '', // 强制走 Anthropic
     ...envPatch,
   })

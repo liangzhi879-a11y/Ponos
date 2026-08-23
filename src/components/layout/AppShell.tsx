@@ -16,14 +16,14 @@ import { ShortcutsHelp } from '@/components/shortcuts/ShortcutsHelp'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { sendAnswer, dismissQuestion, useYFWCLI } from '@/hooks/useYFWCLI'
+import { sendAnswer, dismissQuestion, usePonosCLI } from '@/hooks/usePonosCLI'
 import { useTranslation } from '@/i18n/useTranslation'
 import { THEME_CLASS_NAMES, THEMES } from '@/types'
 
 // 一键消费的预设指令：让 agent 按 gxtz-experience-sync 的 Code 流程
 // 逐条消费全局经验库的 pending 经验并升级技能
 const EXPERIENCE_CONSUME_PROMPT = `请执行 gxtz-experience-sync 技能（Code 模式）：
-1. 运行 python C:/Users/T203-15/.yfworking/skills/_common/project_context_manager.py skill-loop 查看全局经验库待消费清单；
+1. 运行 python C:/Users/T203-15/.ponos/skills/_common/project_context_manager.py skill-loop 查看全局经验库待消费清单；
 2. 逐条消费 pending 经验：升级对应技能的 SKILL.md 与 CHANGELOG（逐条回应如何解决、在哪个版本解决）、沉淀技能包 experience.json、标记 status=consumed；
 3. 全部完成后按归档流程将已消费经验备份到 _archive 并从全局库移除。
 完成后汇报每条的消费结果。`
@@ -31,7 +31,7 @@ const EXPERIENCE_CONSUME_PROMPT = `请执行 gxtz-experience-sync 技能（Code 
 export function AppShell() {
   const { t } = useTranslation()
   const { activeConversationId, createConversation, pendingQuestions, clearPendingQuestion } = useChatStore()
-  const { send } = useYFWCLI()
+  const { send } = usePonosCLI()
   // 技能经验消费提醒：主进程启动时检测到 pending 积压会推送
   const [experienceAlert, setExperienceAlert] = useState<{ total: number; bySkill: { skill: string; count: number }[] } | null>(null)
   // 低配设备检测 → 极速形态引导提示（一次性，可关闭/不再提示）
@@ -63,7 +63,7 @@ export function AppShell() {
   // （关全部动画/特效），防止驱动重置后的恢复阶段再次把图形负载压垮。
   // 通知条 12s 后自动消失；关闭按钮在 UI 底部。
   useEffect(() => {
-    const win = window.yfworkingWindow
+    const win = window.ponosWindow
     if (!win?.onGpuCrash) return
     const off = win.onGpuCrash(() => {
       useSettingsStore.getState().updateSettings({ speedMode: true, speedModePromptDismissed: true })
@@ -88,7 +88,7 @@ export function AppShell() {
 
   // 监听主进程推送的技能经验消费提醒
   useEffect(() => {
-    const win = window.yfworkingWindow
+    const win = window.ponosWindow
     if (!win?.onExperienceAlert) return
     const off = win.onExperienceAlert((data) => {
       if (data && data.total > 0) setExperienceAlert(data)
@@ -98,7 +98,7 @@ export function AppShell() {
 
   // 原生编辑器窗口拖动/缩放后回传边界 → 同步 uiStore.editorRect 缓存（下次打开沿用）
   useEffect(() => {
-    const win = window.yfworkingWindow
+    const win = window.ponosWindow
     if (!win?.onEditorSyncBounds) return
     const off = win.onEditorSyncBounds((rect) => {
       if (rect && typeof rect.x === 'number') useUIStore.getState().setEditorRect(rect)
@@ -177,7 +177,7 @@ export function AppShell() {
   // 等任一设置变化都会连带触发主进程同步写盘（滑块拖动会连发）。
   useEffect(() => {
     const themeMode = THEMES.find(t => t.id === settings.theme)?.mode ?? 'dark'
-    window.yfworkingWindow?.saveTheme?.(settings.theme, themeMode)
+    window.ponosWindow?.saveTheme?.(settings.theme, themeMode)
   }, [settings.theme])
 
   // Theme + chat font

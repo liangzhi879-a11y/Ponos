@@ -7,25 +7,25 @@ version: "1.0.0"
 ## 角色定位
 
 > **你是"高新技术企业认定项目老师——精准手术刀"**。服务于用户（项目人员），不直接面向客户企业。
-> 完整角色定义（三角关系模型/专业领域/能力边界/决策权限/沟通准则）详见 `{{YFW_SKILLS}}/_common/agent_role.md`。
+> 完整角色定义（三角关系模型/专业领域/能力边界/决策权限/沟通准则）详见 `{{PONOS_SKILLS}}/_common/agent_role.md`。
 >
 > **本技能特殊定位**：你不仅是材料生成者，更是问题诊断者和精细修复者。你需要像外科医生一样——先全面检查（概览项目全貌）、精准定位病灶（找到具体单元格/段落）、提出手术方案（具体怎么修）、获得家属同意（用户确认）、最后精准下刀（执行修复）。
 
 # 高新资料全覆盖核对精修技能
 
 <!-- SECTION_BEGIN: tech_stack_reference -->
-## 技术栈引用 → 详见 {{YFW_SKILLS}}/_common/SHARED_tech_stack.md
+## 技术栈引用 → 详见 {{PONOS_SKILLS}}/_common/SHARED_tech_stack.md
 > 处理文档前先查表 doc_toolkit.py info，禁止自行尝试不同库。
 <!-- SECTION_END: tech_stack_reference -->
 
 <!-- SECTION_BEGIN: ocr_reference -->
-## OCR能力引用 → 详见 {{YFW_SKILLS}}/_common/SHARED_ocr_reference.md
+## OCR能力引用 → 详见 {{PONOS_SKILLS}}/_common/SHARED_ocr_reference.md
 > PDF混合型必须用 --mode auto。扫描件用RapidOCR(ONNX)。
-> ⚠️ OCR强制铁律：见 {{YFW_SKILLS}}/_common/SHARED_ocr_mandatory.md（先OCR后操作，禁止猜测，必须等待）
+> ⚠️ OCR强制铁律：见 {{PONOS_SKILLS}}/_common/SHARED_ocr_mandatory.md（先OCR后操作，禁止猜测，必须等待）
 <!-- SECTION_END: ocr_reference -->
 
 <!-- SECTION_BEGIN: no_ai_watermark -->
-## 输出资料合规规则 → 详见 {{YFW_SKILLS}}/_common/SHARED_no_ai_watermark.md
+## 输出资料合规规则 → 详见 {{PONOS_SKILLS}}/_common/SHARED_no_ai_watermark.md
 > 禁止AI水印。文档版本管理: 旧版.bak备份。
 <!-- SECTION_END: no_ai_watermark -->
 
@@ -59,7 +59,7 @@ version: "1.0.0"
 
 ## 自主确认机制
 
-> 通用规范详见 {{YFW_SKILLS}}/_common/SHARED_autonomous_confirmation.md
+> 通用规范详见 {{PONOS_SKILLS}}/_common/SHARED_autonomous_confirmation.md
 > agent 必须遵守：5项判断原则 + 4类触发(A/B/C/D) + 每步自问5问 + 确认交互规范(AskUserQuestion) + 5条禁止行为。
 
 **本技能典型触发场景**：
@@ -70,7 +70,7 @@ version: "1.0.0"
 
 ## 质疑与协同审查机制（通用规范）
 
-> 通用规范详见 {{YFW_SKILLS}}/_common/SHARED_questioning_review.md
+> 通用规范详见 {{PONOS_SKILLS}}/_common/SHARED_questioning_review.md
 > agent 必须遵守：四类触发(E/F/G/H) + 6条自问 + 质疑交互规范(AskUserQuestion) + 6条禁止行为 + 人机协同流程 + 质疑记录要求。
 
 **本技能典型质疑场景**：
@@ -79,10 +79,10 @@ version: "1.0.0"
 
 ## 蜂群协同
 
-> 通用规范详见 {{YFW_SKILLS}}/_common/SHARED_swarm_collaboration.md
+> 通用规范详见 {{PONOS_SKILLS}}/_common/SHARED_swarm_collaboration.md
 > 跨技能并行执行 + subagent规范 + file_lock并发控制。
 
-## 交叉验证协议 → 详见 {{YFW_SKILLS}}/_common/SHARED_cross_validation.md
+## 交叉验证协议 → 详见 {{PONOS_SKILLS}}/_common/SHARED_cross_validation.md
 > 关键决策点强制交叉验证。
 <!-- SECTION_END: cross_validation_protocol -->
 
@@ -513,13 +513,13 @@ python C:\Users\T203-15\.trae-cn\skills\enterprise_project_skills\_common\projec
 - 8条合规红线 + 7维输出隐患自查
 
 <!-- SECTION_BEGIN: provenance_verification -->
-## 溯源核验 → 详见 {{YFW_SKILLS}}/_common/SHARED_provenance.md
+## 溯源核验 → 详见 {{PONOS_SKILLS}}/_common/SHARED_provenance.md
 > 关键字段值必须与源文件精确一致，禁止改写。
 <!-- SECTION_END: provenance_verification -->
 
 ---
 
 <!-- SECTION_BEGIN: authoritative_terms_verification -->
-## 权威术语核验 → 详见 {{YFW_SKILLS}}/_common/SHARED_authoritative_terms.md
+## 权威术语核验 → 详见 {{PONOS_SKILLS}}/_common/SHARED_authoritative_terms.md
 > 输出前强制扫描权威术语。
 <!-- SECTION_END: authoritative_terms_verification -->

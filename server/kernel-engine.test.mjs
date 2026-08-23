@@ -1,7 +1,7 @@
 // 净室内核引擎直连 wire 测试（kernel/cli.mjs —— docs/bridge-contract.md §2-§4）
 // ---------------------------------------------------------------------------
 // 直接 spawn kernel/cli.mjs（node 运行，与 bun 运行共享同一实现），断言其
-// stdout NDJSON 语义。YFW_MOCK_API=1 走内置 mock 流（无网络、幂等）。
+// stdout NDJSON 语义。PONOS_MOCK_API=1 走内置 mock 流（无网络、幂等）。
 // 对照基线：kernel-contract.test.mjs（mock 内核断言同一套 wire 协议）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -63,8 +63,8 @@ function spawnKernel({ extraArgs = [], extraEnv = {} } = {}) {
   // 默认带 --add-dir tmp（与 bridge 真实注入序列一致），transcript 落在测试临时目录
   const args = contractArgs(['--add-dir', tmp, ...extraArgs])
   const child = spawn(process.execPath, [CLI, ...args], {
-    // CLAUDE_CONFIG_DIR 指向测试临时目录，避免污染 ~/.yfworking/projects
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: tmp, ...extraEnv },
+    // CLAUDE_CONFIG_DIR 指向测试临时目录，避免污染 ~/.ponos/projects
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: tmp, ...extraEnv },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const reader = makeReader(child.stdout)
@@ -330,8 +330,8 @@ test('highrisk 匹配：rm -rf / git push --force / taskkill 触发，普通命�
   assert.equal(matchesHighRisk('git status'), false)
 })
 
-test('瞬时错误重试（P0-1）：YFW_MOCK_TRANSIENT=once 首块前失败 → 退避重试成功', async () => {
-  const m = spawnKernel({ extraEnv: { YFW_MOCK_TRANSIENT: 'once', YFW_MOCK_API_RETRIES: '3' } })
+test('瞬时错误重试（P0-1）：PONOS_MOCK_TRANSIENT=once 首块前失败 → 退避重试成功', async () => {
+  const m = spawnKernel({ extraEnv: { PONOS_MOCK_TRANSIENT: 'once', PONOS_MOCK_API_RETRIES: '3' } })
   try {
     await readInit(m.reader)
     m.send({ type: 'user', message: { role: 'user', content: '重试测试' } })
@@ -347,7 +347,7 @@ test('瞬时错误重试（C2）：failed-turn 消息不残留——重试成功
   // 首次 mock 在产出任何 chunk 前抛 503 → 失败轮次不落盘；成功轮次是唯一
   // assistant 条目。若引擎把失败轮次也持久化，transcript 会出现重复/残留条目
   // （恢复后模型看到重复轮次会错乱），此测试锁死该语义。
-  const m = spawnKernel({ extraEnv: { YFW_MOCK_TRANSIENT: 'once', YFW_MOCK_API_RETRIES: '3' } })
+  const m = spawnKernel({ extraEnv: { PONOS_MOCK_TRANSIENT: 'once', PONOS_MOCK_API_RETRIES: '3' } })
   try {
     const init = await readInit(m.reader)
     m.send({ type: 'user', message: { role: 'user', content: '重试测试' } })
@@ -364,7 +364,7 @@ test('瞬时错误重试（C2）：failed-turn 消息不残留——重试成功
 })
 
 test('length 截断注入（P0-2）：stop_reason=length 且已产工具调用 → 不执行、注入错误结果', async () => {
-  const m = spawnKernel({ extraEnv: { YFW_MOCK_STOP_REASON: 'length' } })
+  const m = spawnKernel({ extraEnv: { PONOS_MOCK_STOP_REASON: 'length' } })
   try {
     await readInit(m.reader)
     m.send({ type: 'user', message: { role: 'user', content: '[mock:tool] 清理' } })
@@ -400,7 +400,7 @@ test('大结果磁盘持久化（P0-3）：>20k 工具结果落盘 tool-results/
 })
 
 test('多工具轮并行批（P0-4）：3 个工具执行，tool_result 合并一条 user 消息且按模型顺序', async () => {
-  const m = spawnKernel({ extraArgs: ['--auto-approve-high-risk'], extraEnv: { YFW_MOCK_TOOLS: '3' } })
+  const m = spawnKernel({ extraArgs: ['--auto-approve-high-risk'], extraEnv: { PONOS_MOCK_TOOLS: '3' } })
   try {
     const init = await readInit(m.reader)
     m.send({ type: 'user', message: { role: 'user', content: '[mock:tool] 多工具' } })
@@ -510,14 +510,14 @@ test('O1-1 result 事件 usage 含 cache 四字段（mock 多工具轮累计）'
   // Writable 需完整 (c, enc, cb) 签名并调 cb，否则 stream.write 滞留不派发
   const wire = makeWire(new Writable({ write(c, enc, cb) { try { events.push(JSON.parse(String(c))) } catch {} if (cb) cb() } }))
   const session = createSessionStore({ configDir: mkdtempSync(join(tmpdir(), 'engine-usage-')), cwd: '', sessionId: 'u1' })
-  const prev = process.env.YFW_MOCK_API
+  const prev = process.env.PONOS_MOCK_API
   try {
-    process.env.YFW_MOCK_API = '1'
+    process.env.PONOS_MOCK_API = '1'
     const engine = createEngine({ opts: { addDirs: [], skipPermissions: true }, wire, session })
     await engine.runTurn({ content: '[mock:tool-safe]' })
   } finally {
-    if (prev === undefined) delete process.env.YFW_MOCK_API
-    else process.env.YFW_MOCK_API = prev
+    if (prev === undefined) delete process.env.PONOS_MOCK_API
+    else process.env.PONOS_MOCK_API = prev
     rmSync(session.file && join(session.file.split('jsonl')[0] + 'jsonl'), { force: true })
   }
   const result = events.find((e) => e.type === 'result')
@@ -540,9 +540,9 @@ test('P4-5 setProvider 换 model 后下一轮 runTurn 使用新 model', async ()
   const wire = makeWire(new Writable({ write(c, enc, cb) { try { events.push(JSON.parse(String(c))) } catch {} if (cb) cb() } }))
   const session = createSessionStore({ configDir: mkdtempSync(join(tmpdir(), 'engine-meta-')), cwd: '', sessionId: 'e1' })
   const { setProvider, getProvider } = await import('../kernel/provider.mjs')
-  const prev = process.env.YFW_MOCK_API
+  const prev = process.env.PONOS_MOCK_API
   try {
-    process.env.YFW_MOCK_API = '1'
+    process.env.PONOS_MOCK_API = '1'
     setProvider({ baseUrl: 'http://x', authToken: 'k', model: 'model-A' })
     const engine = createEngine({ opts: { addDirs: [], skipPermissions: true }, wire, session })
     const r1 = await engine.runTurn({ content: 'hello' })
@@ -551,8 +551,8 @@ test('P4-5 setProvider 换 model 后下一轮 runTurn 使用新 model', async ()
     const r2 = await engine.runTurn({ content: 'again' })
     assert.equal(r2.model, 'model-B')   // 热切换后无需重建 engine
   } finally {
-    if (prev === undefined) delete process.env.YFW_MOCK_API
-    else process.env.YFW_MOCK_API = prev
+    if (prev === undefined) delete process.env.PONOS_MOCK_API
+    else process.env.PONOS_MOCK_API = prev
     rmSync(join(session.file.split('jsonl')[0] + 'jsonl'), { force: true })
     try { setProvider({ baseUrl: 'http://x', authToken: 'k', model: 'm' }) } catch { getProvider() }
   }
@@ -561,16 +561,16 @@ test('P4-5 setProvider 换 model 后下一轮 runTurn 使用新 model', async ()
 test('无 session 直连模式：工具结果 memory 块带 type:tool_result（防真实 API 400）', async () => {
   const events = []
   const wire = makeWire(new Writable({ write(c, enc, cb) { try { events.push(JSON.parse(String(c))) } catch {} if (cb) cb() } }))
-  const prev = process.env.YFW_MOCK_API
+  const prev = process.env.PONOS_MOCK_API
   try {
-    process.env.YFW_MOCK_API = '1'
+    process.env.PONOS_MOCK_API = '1'
     // 不传 session → engine 退化为 memoryHistory 直存（无 session 直连模式）
     const engine = createEngine({ opts: { addDirs: [], skipPermissions: true }, wire })
     await engine.runTurn({ content: '[mock:tool-safe]' })
     // 最终文本非空（工具结果回填后模型继续）
     assert.ok(String(events.find((e) => e.type === 'result')?.usage ?? '').length >= 0)
   } finally {
-    if (prev === undefined) delete process.env.YFW_MOCK_API
-    else process.env.YFW_MOCK_API = prev
+    if (prev === undefined) delete process.env.PONOS_MOCK_API
+    else process.env.PONOS_MOCK_API = prev
   }
 })

@@ -6,7 +6,7 @@
 //   - 纯文本阶段残余：pendingNextCount / drainNextPending 兜底为新轮
 //   - Browser 工具：registry 无 browserDriver 时报错；engine 链路发
 //     bridge_request(browser) → resolveBrowser 回写 → 工具结果回填模型
-//   - health env seed：YFW_HEALTH_COMPACT_COUNT 恢复压缩史（resume 血条）
+//   - health env seed：PONOS_HEALTH_COMPACT_COUNT 恢复压缩史（resume 血条）
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -18,14 +18,14 @@ import { makeWire } from '../kernel/protocol.mjs'
 import { createToolRegistry } from '../kernel/tools.mjs'
 import { createHealth } from '../kernel/health.mjs'
 
-process.env.YFW_MOCK_API = '1'
+process.env.PONOS_MOCK_API = '1'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 function makeEnv() {
   const events = []
   const wire = makeWire({ write(s) { events.push(JSON.parse(s)) } })
-  const dir = mkdtempSync(join(tmpdir(), 'yfw-interj-test-'))
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-interj-test-'))
   const configDir = join(dir, 'home')
   const store = createSessionStore({ configDir, cwd: dir, sessionId: 'main-session' })
   const engine = createEngine({
@@ -33,7 +33,7 @@ function makeEnv() {
     wire,
     session: store,
   })
-  engine.setSystemPrompt('你是 YFW-turbo 测试内核。')
+  engine.setSystemPrompt('你是 Ponos-turbo 测试内核。')
   return { events, engine, store, dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
 }
 
@@ -135,15 +135,15 @@ test('Browser 引擎链路：回写失败（ok:false）→ 工具结果 is_error
   } finally { cleanup() }
 })
 
-test('health env seed：YFW_HEALTH_COMPACT_COUNT 恢复压缩史（resume 血条不丢）', () => {
+test('health env seed：PONOS_HEALTH_COMPACT_COUNT 恢复压缩史（resume 血条不丢）', () => {
   const events = []
   const wire = makeWire({ write(s) { events.push(JSON.parse(s)) } })
-  const h = createHealth({ wire, model: 'mock', env: { YFW_HEALTH_COMPACT_COUNT: '3' } })
+  const h = createHealth({ wire, model: 'mock', env: { PONOS_HEALTH_COMPACT_COUNT: '3' } })
   assert.equal(h.getState().compactCount, 3)
   assert.equal(h.getState().tier, 'green') // 初始不发事件；首轮 record 后档位变化才 emit
   h.record({ usage: {}, durationMs: 1, model: 'mock', ts: new Date().toISOString(), compactCount: 3 })
-  const healthEvt = events.find((e) => e.type === 'yfw_health')
-  assert.ok(healthEvt, '压缩史恢复后档位非绿应发 yfw_health')
+  const healthEvt = events.find((e) => e.type === 'ponos_health')
+  assert.ok(healthEvt, '压缩史恢复后档位非绿应发 ponos_health')
   assert.equal(healthEvt.compactCount, 3)
   // 未设置 env → 0
   const h2 = createHealth({ wire, model: 'mock', env: {} })

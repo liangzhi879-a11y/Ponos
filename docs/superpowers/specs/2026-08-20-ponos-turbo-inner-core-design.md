@@ -1,4 +1,4 @@
-# YFW-turbo 内层逻辑架构设计（事件日志 + 上下文压缩 + 健康监控）
+# Ponos-turbo 内层逻辑架构设计（事件日志 + 上下文压缩 + 健康监控）
 
 日期：2026-08-20
 状态：架构定稿，待实施
@@ -6,7 +6,7 @@
 
 ## 1. 背景与动机
 
-YFW-turbo 是净室重建的原创内核（Node ESM、stream-json 协议、当前 Anthropic Messages 兼容 API——本轮扩展为双协议、单进程每会话）。当前只有最小 Agent 循环 + 3 个工具，**内层逻辑缺三块**：
+Ponos-turbo 是净室重建的原创内核（Node ESM、stream-json 协议、当前 Anthropic Messages 兼容 API——本轮扩展为双协议、单进程每会话）。当前只有最小 Agent 循环 + 3 个工具，**内层逻辑缺三块**：
 
 | 缺失能力 | 后果 |
 |---|---|
@@ -51,13 +51,13 @@ YFW-turbo 是净室重建的原创内核（Node ESM、stream-json 协议、当�
 |---|---|
 | 消息历史模型 | **追加式事件日志 + surface 派生**（对齐 deepseek-harness，与现有 transcript 权威源一致） |
 | 压缩摘要策略 | **允许调用主模型**，裁剪优先（先免模型 tool-result 裁剪，仍超才摘要调用） |
-| 本轮实施范围 | **压缩 + 健康监控一起**（context/compact/health 三模块 + yfw_health/yfw_summary 双事件） |
+| 本轮实施范围 | **压缩 + 健康监控一起**（context/compact/health 三模块 + ponos_health/ponos_summary 双事件） |
 | API 层 | **双协议适配 + tools schema 注入**（前置项，2026-08-20 确认）——OpenAI 兼容 + Anthropic 兼容并存，归一化 chunk 形状不变 |
 
 ## 3. 架构总览
 
 ```
-┌────────────────────────────── YFW-turbo 内核（每会话单进程）──────────────────────────────┐
+┌────────────────────────────── Ponos-turbo 内核（每会话单进程）──────────────────────────────┐
 │                                                                                            │
 │  cli.mjs（IO 层）──user──▶ engine.mjs（Agent 循环）                                         │
 │                              │  pre-step 测压检查点                                        │
@@ -68,7 +68,7 @@ YFW-turbo 是净室重建的原创内核（Node ESM、stream-json 协议、当�
 │                              ▼                                                            │
 │                        session.mjs（事件日志 + surface）◀── transcript JSONL（权威源）      │
 │                                                                                            │
-│  turnStats 记录器（每轮产出）→ health.mjs（纯计算）→ yfw_health / yfw_summary（stdout）      │
+│  turnStats 记录器（每轮产出）→ health.mjs（纯计算）→ ponos_health / ponos_summary（stdout）      │
 └────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -76,7 +76,7 @@ YFW-turbo 是净室重建的原创内核（Node ESM、stream-json 协议、当�
 
 ### 3.5.1 基础缺口（必须先修，协议无关）
 
-当前 `api.mjs` 请求 body **没有 `tools` 字段**（api.mjs:148-164），且 `tools.mjs` 的 registry 只有 `description` 无 JSON schema。后果：**真实 API 路径下模型不知道有工具可用，工具调用链路是断的**——现有工具测试全部靠 `YFW_MOCK_API` mock 流掩盖。无论走哪条传输协议，都必须先注入工具 schema。
+当前 `api.mjs` 请求 body **没有 `tools` 字段**（api.mjs:148-164），且 `tools.mjs` 的 registry 只有 `description` 无 JSON schema。后果：**真实 API 路径下模型不知道有工具可用，工具调用链路是断的**——现有工具测试全部靠 `PONOS_MOCK_API` mock 流掩盖。无论走哪条传输协议，都必须先注入工具 schema。
 
 - `tools.mjs` registry 每工具补 `input_schema`（JSON Schema，`additionalProperties: false`）；`toolNames`/`run` 不变。
 - `api.mjs` 请求构造把 schema 序列化为协议的 tools 参数（Anthropic `tools[]` / OpenAI `tools[]` 同构，字段名映射）。
@@ -181,7 +181,7 @@ surface = { nodes: [1, 2, 3, 4, 5], replaceGeneration: 0 }
 
 ### 4.4 resume
 
-`--resume` 加载 transcript → 依序重建 seq + surface（含压缩 replace 后的最终形态）→ 用 `YFW_HEALTH_COMPACT_COUNT`（bridge 已注入）恢复压缩计数。超大 transcript 的窗口化恢复见 §3.7 新增③（默认全量恢复保语义，配置可开"近窗口+压缩摘要"）。
+`--resume` 加载 transcript → 依序重建 seq + surface（含压缩 replace 后的最终形态）→ 用 `PONOS_HEALTH_COMPACT_COUNT`（bridge 已注入）恢复压缩计数。超大 transcript 的窗口化恢复见 §3.7 新增③（默认全量恢复保语义，配置可开"近窗口+压缩摘要"）。
 
 ## 5. 上下文压缩（kernel/context.mjs + kernel/compact.mjs）
 
@@ -266,7 +266,7 @@ estimateHistory(msgs)   // 全量启发式
 
 ```
 engine 每轮尾部 → turnStats 记录器
-   ├─ health.mjs 消费 → 健康分 → yfw_health / yfw_summary
+   ├─ health.mjs 消费 → 健康分 → ponos_health / ponos_summary
    ├─ result 事件携带（usage / duration_ms 对齐 GUI 读取）
    └─ /transcript/stats 聚合（bridge 侧从 transcript 重建）
 ```
@@ -290,9 +290,9 @@ engine 每轮尾部 → turnStats 记录器
 - 事件协议（与 spec 原文一致，bridge 已原样转发，零改动）：
 
 ```
-{"type":"yfw_health","score":72,"tier":"red","compactCount":3,"remainingPct":8,
+{"type":"ponos_health","score":72,"tier":"red","compactCount":3,"remainingPct":8,
  "remainingTurns":4,"suggestNewSession":true,"reason":"已连续压缩3次，剩余约4轮"}
-{"type":"yfw_summary","text":"<最近一次压缩摘要全文>","compactCount":3}
+{"type":"ponos_summary","text":"<最近一次压缩摘要全文>","compactCount":3}
 ```
 
 - 全程 try/catch 静默降级，绝不影响主流程。
@@ -326,7 +326,7 @@ engine 每轮尾部 → turnStats 记录器
 1. **turn 内多 API 调用 usage 只记最后一次**（engine.mjs 现状 `usage = chunk.usage` 覆盖）——工具循环每轮都调 API，中间轮用量丢失 → 改为**累计**（input/output 逐次累加）。
 2. **压缩摘要调用的用量未计入**——`compact.mjs` 摘要调用走独立流式，其 usage 并入当前轮统计。
 
-**成本换算边界（修正版，2026-08-20）**：内核只保证**精确 usage**，`total_cost_usd` 换算**全部收敛到 `/transcript/stats` 端点**（单价表/provider 配置在 bridge，provider 改价无需动内核）。result 事件**不补** total_cost_usd 字段——避免 bridge 为补字段而解析改写内核事件（破坏"原样转发"的干净性）。GUI 成本显示统一从 stats 端点取；其现有对 `result.total_cost_usd` 的读取（useYFWCLI.ts:623）无值时不报错，后续 GUI 重构时移除该读取。
+**成本换算边界（修正版，2026-08-20）**：内核只保证**精确 usage**，`total_cost_usd` 换算**全部收敛到 `/transcript/stats` 端点**（单价表/provider 配置在 bridge，provider 改价无需动内核）。result 事件**不补** total_cost_usd 字段——避免 bridge 为补字段而解析改写内核事件（破坏"原样转发"的干净性）。GUI 成本显示统一从 stats 端点取；其现有对 `result.total_cost_usd` 的读取（usePonosCLI.ts:623）无值时不报错，后续 GUI 重构时移除该读取。
 
 **聚合层**：bridge 新增 `/transcript/stats` 端点（按 项目/模型/日期 聚合，供 GUI 成本面板），数据源即 transcript 全量扫描；不做独立账本文件（避免与权威源双写不一致）。
 
@@ -352,7 +352,7 @@ engine 每轮尾部 → turnStats 记录器
 
 **本轮落地方式**（仍保持向后兼容，避免一步到位的破坏性改动）：
 - transcript entry 新增字段（seq/surfaceOp/sourceEventSeqs/kind）**全部可选**，旧文件可加载
-- yfw_health / yfw_summary 走 stdout 原样转发（bridge 零改动可先行），结构化升级放入演进队列
+- ponos_health / ponos_summary 走 stdout 原样转发（bridge 零改动可先行），结构化升级放入演进队列
 - stdin / spawn / wire 协议不变
 
 ## 8. 测试计划
@@ -361,7 +361,7 @@ engine 每轮尾部 → turnStats 记录器
 2. **切点纪律单测**：tool-call/result 配对不可拆；user 边界才可切；open tail 返回 null。
 3. **行边界裁剪单测（代码场景）**：超长代码输出裁剪不切在行中间，头尾行完整保留。
 4. **结构感知裁剪单测**：表格行采样保留表头+合计尾行；代码行边界不切行中；JSON 键名+错误行优先。
-5. **压缩流程单测（YFW_MOCK_API）**：mock 流注入超阈值历史 → 触发 → 裁剪优先（不调摘要）→ 仍超 → 摘要调用 → replace 落地 → surface 派生正确。
+5. **压缩流程单测（PONOS_MOCK_API）**：mock 流注入超阈值历史 → 触发 → 裁剪优先（不调摘要）→ 仍超 → 摘要调用 → replace 落地 → surface 派生正确。
 6. **收敛校验**：摘要不小于被遮蔽内容 → 重试 → 上限后放弃。
 7. **溢出恢复**：mock provider 返回 context_window_exceeded → 强制压缩 → retry 成功；replaceGeneration 未前进不 retry。
 8. **日志锁/崩溃恢复**：孤儿 compaction/start → 加载回滚。
@@ -390,10 +390,10 @@ engine 每轮尾部 → turnStats 记录器
 | `kernel/tools.mjs` | 改（前置） | registry 补 input_schema（JSON Schema） |
 | `kernel/context.mjs` | 新增 | 模型窗口表、token 计价、压力判定、**tokenLedger 四区记账** |
 | `kernel/compact.mjs` | 新增 | 两阶段压缩器（pruner + summarizer）、切点、保留尾巴、日志锁、溢出恢复、**治理结果入账、summarizer 前缀对齐主请求（缓存复用）** |
-| `kernel/health.mjs` | 新增 | 健康分模型（含**冗余率/分区失衡**因子）、yfw_health/yfw_summary 事件、去抖状态机、**红档 LLM-as-Judge 低频抽检（默认关）** |
+| `kernel/health.mjs` | 新增 | 健康分模型（含**冗余率/分区失衡**因子）、ponos_health/ponos_summary 事件、去抖状态机、**红档 LLM-as-Judge 低频抽检（默认关）** |
 | `kernel/session.mjs` | 改 | entry 扩展（seq/surfaceOp/sourceEventSeqs/kind）、surface 加载/重建、孤儿 start 回滚、**分段加载（流式读）** |
 | `kernel/engine.mjs` | 改 | pre-step 测压检查点、每轮尾部 health.record、压缩摘要消费、**usage 逐次累计**、双层循环骨架预留、**deriveMessages 缓存** |
-| `kernel/protocol.mjs` | 改 | yfw_health/yfw_summary 事件构造器（result 保持纯 usage） |
+| `kernel/protocol.mjs` | 改 | ponos_health/ponos_summary 事件构造器（result 保持纯 usage） |
 | `server/bridge.mjs` | 改 | `/transcript/stats` 聚合端点（项目/模型/日期 + 成本换算）；provider 配置支持 OPENAI_* env 注入 |
 | `server/transcript.mjs` 或 GUI 侧 | 小改（本轮同步） | transcriptAdapter 对 kind=compaction 条目容错折叠 |
 

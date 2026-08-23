@@ -22,7 +22,7 @@
 
 | 能力 | 现状位置 | 覆盖程度 |
 |---|---|---|
-| 多 provider | bridge /config + /providers（YFWorkingConfigV2/ModelProvider：apiBaseUrl/models/primaryModel/subagentModel/effortLevel/contextWindow/authToken/visionModel） | ✅ 前端/桥接已有 |
+| 多 provider | bridge /config + /providers（PonosConfigV2/ModelProvider：apiBaseUrl/models/primaryModel/subagentModel/effortLevel/contextWindow/authToken/visionModel） | ✅ 前端/桥接已有 |
 | 视觉桥接 | AppSettings autoImageBridge + visionProviderId | ✅ 已有 |
 | MCP | src/components/mcp + server mcp 相关 | ✅ 已有 |
 | 技能系统 | skills-lock.json + src/lib/skills.ts + skills 面板 + skillRoot/autoCapture | ✅ 已有 |
@@ -44,14 +44,14 @@
 ## 4. 任务清单
 
 **P0（内核化对齐 + 热切换）**
-- [ ] P4-1-1 配置传递链：bridge /config → spawn 内核时生成 `YFW_PROVIDER_<id>_BASE_URL/MODEL/AUTH_TOKEN` env 或 settings 文件 → kernel/api.mjs 解析（保留 ANTHROPIC_* 回退兼容）
+- [ ] P4-1-1 配置传递链：bridge /config → spawn 内核时生成 `PONOS_PROVIDER_<id>_BASE_URL/MODEL/AUTH_TOKEN` env 或 settings 文件 → kernel/api.mjs 解析（保留 ANTHROPIC_* 回退兼容）
 - [ ] P4-1-2 视觉模型透传：visionModel → Vision 工具/图片桥接走独立 provider（内核侧透传配置即可，执行在 GUI 侧已有）
-- [ ] P4-5-1 provider 注册表：kernel/provider.mjs——`getProvider()/setProvider(patch)` 原子替换 + 校验（baseUrl 格式/token 非空/模型名）+ 版本号递增；初始状态来自 env（ANTHROPIC_*/YFW_PROVIDER_*），env 仅为默认值
+- [ ] P4-5-1 provider 注册表：kernel/provider.mjs——`getProvider()/setProvider(patch)` 原子替换 + 校验（baseUrl 格式/token 非空/模型名）+ 版本号递增；初始状态来自 env（ANTHROPIC_*/PONOS_PROVIDER_*），env 仅为默认值
 - [ ] P4-5-2 switch_provider wire 协议：control_request 新 subtype，payload `{ providerId?, baseUrl, authToken, model, contextWindow }`；**仅 `!turnActive`（会话暂停）接受**，busy → 拒绝回执；成功 → `system(provider_switched, { providerId, model, version })` + transcript 追加 meta 事件（审计）；api.mjs 请求从 registry 取配置（不再每次读 process.env）
 - [ ] P4-5-3 bridge 免重启切换链路：/providers 保存后若该 provider 有活跃内核会话 → 发 switch_provider control_request（不 kill 进程）；内核无此 subtype（旧版本）→ 回退现状重启流程
 
 **P1（平台能力）**
-- [ ] P4-3-1 settings schema：`~/.yfworking/settings.json`（user）+ 项目 `.yfworking/settings.json`（project）+ 会话内覆盖（local），深合并（对照 claude settings.ts 优先级）
+- [ ] P4-3-1 settings schema：`~/.ponos/settings.json`（user）+ 项目 `.ponos/settings.json`（project）+ 会话内覆盖（local），深合并（对照 claude settings.ts 优先级）
 - [ ] P4-2-1 hooks 执行器：kernel/hooks.mjs——事件 → 规则匹配（tool/pattern）→ spawn 脚本（超时/退出码/输出回填 tool_result）；`permissions` 部分并入 security.md S3-1
 - [ ] P4-4-1 skills 发现内核化：内核读 skills-lock.json → 工具描述/系统提示注入（当前靠 append 文件，改为结构化加载）；与前端 skills 面板同一数据源
 

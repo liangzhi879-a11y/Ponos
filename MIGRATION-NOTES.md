@@ -1,6 +1,6 @@
 # 迁移说明（2026-08-19）
 
-YFWorking 开发目录由 `claude-code-gui` 迁出到本目录（`yfworking-dev`），作为**净室重建工作区**。
+Ponos 开发目录由 `claude-code-gui` 迁出到本目录（`ponos-dev`），作为**净室重建工作区**。
 
 ## 迁移了什么
 
@@ -10,7 +10,7 @@ YFWorking 开发目录由 `claude-code-gui` 迁出到本目录（`yfworking-dev`
 
 ## 刻意未迁移（合规隔离）
 
-- **`yfw-kernel/claude-code/`** —— Anthropic 专有代码的泄漏副本，净室工作区不携带（法律风险隔离）
+- **`ponos-kernel/claude-code/`** —— Anthropic 专有代码的泄漏副本，净室工作区不携带（法律风险隔离）
 - `release/`（旧目录运行副本继续在旧位置工作）、`dist/`、`node_modules/`、`node.exe`、`.env`（含密钥，勿迁移）、调试临时目录
 
 ## 开发运行方式（关键）
@@ -19,16 +19,16 @@ YFWorking 开发目录由 `claude-code-gui` 迁出到本目录（`yfworking-dev`
 
 ```bash
 # Windows cmd
-set YFWORKING_KERNEL=C:\Users\T203-15\claude-code-gui\yfw-kernel\claude-code\dist\cli.mjs
+set PONOS_KERNEL=C:\Users\T203-15\claude-code-gui\ponos-kernel\claude-code\dist\cli.mjs
 npm run dev
 ```
 
-或由 bridge 的 `bootstrapKernelToUserDir` 从已知位置自动拷贝内核到 `~/.yfworking/runtime/`（需内核可达）。
+或由 bridge 的 `bootstrapKernelToUserDir` 从已知位置自动拷贝内核到 `~/.ponos/runtime/`（需内核可达）。
 
 ## 打包调整点（本目录暂无内核，打包前需处理）
 
-- `electron-builder.yml:77-80`：`from: yfw-kernel/claude-code/dist` 打包内核 —— 路径在本目录不存在
-- `scripts/verify-permission-flow.mjs:15`：`yfw-kernel/claude-code/dist/cli.mjs` 路径
+- `electron-builder.yml:77-80`：`from: ponos-kernel/claude-code/dist` 打包内核 —— 路径在本目录不存在
+- `scripts/verify-permission-flow.mjs:15`：`ponos-kernel/claude-code/dist/cli.mjs` 路径
 - 方案：待净室内核落地后改为新路径；过渡期可临时指向旧仓库内核（仅内部使用）
 
 ## 净室注意

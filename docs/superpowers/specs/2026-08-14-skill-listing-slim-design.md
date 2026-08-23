@@ -5,12 +5,12 @@
 
 ## 1. 背景与量化
 
-YFWorking 的 skill 系统存在**双套清单并存的重复注入**，且 63 个技能**全平铺披露**、父子关系不可见：
+Ponos 的 skill 系统存在**双套清单并存的重复注入**，且 63 个技能**全平铺披露**、父子关系不可见：
 
 | 注入源 | 载体 | 现状体积 | 职责 |
 |---|---|---|---|
 | 宿主清单（`server/bridge.mjs` `appendSkillList`） | 系统提示词文件，**每轮常驻** | **11,073 字符**（description 截断 200/项，无总量预算） | 主会话技能发现 + 强制调用指令 |
-| 内核清单（`yfw-kernel/claude-code/src/utils/attachments.ts` `getSkillListingAttachments`） | turn-0 `skill_listing` attachment；子代理按 agentId 各注入一份 | 11,566 字符（250/项截断 + 1% 窗口预算） | 主会话 turn-0 发现 + 子代理唯一技能来源 |
+| 内核清单（`ponos-kernel/claude-code/src/utils/attachments.ts` `getSkillListingAttachments`） | turn-0 `skill_listing` attachment；子代理按 agentId 各注入一份 | 11,566 字符（250/项截断 + 1% 窗口预算） | 主会话 turn-0 发现 + 子代理唯一技能来源 |
 | 调用时全文注入（`SkillTool.call`） | 对话历史（`invokedSkills` 跨压缩存活） | 单技能 2KB–313KB | 技能执行本体 |
 
 - 宿主清单占宿主系统提示词总量的 **71%**
@@ -39,7 +39,7 @@ YFWorking 的 skill 系统存在**双套清单并存的重复注入**，且 63 �
 - **调用时全文注入 + invokedSkills 跨压缩存活——完全不动**（技能执行本体）
 - 内核的 1% 窗口预算、按 agentId 子代理注入——**保持不变**（渲染内容变化，机制不变）
 - 仅一层父子层级（不支持嵌套；gxtz 系列全部一级归 gxtz-suite，含 core-tables）
-- **不使用官方 `disable-model-invocation`**（YFW 内核用它同时禁止模型调用：`getSkillToolCommands:571` 过滤 + `SkillTool.ts:412` 拒绝，与"隐藏描述但保留调用"需求冲突）
+- **不使用官方 `disable-model-invocation`**（Ponos 内核用它同时禁止模型调用：`getSkillToolCommands:571` 过滤 + `SkillTool.ts:412` 拒绝，与"隐藏描述但保留调用"需求冲突）
 
 ## 3. 架构：职责分层（三级）
 
@@ -176,9 +176,9 @@ subskills:
 
 | 改动文件 | 同步目标 |
 |---|---|
-| `server/bridge.mjs` | `release/YFWorking/server/` + `release/YFWorking_ms92cd6u/server/` |
-| 内核 `loadSkillsDir.ts` + `prompt.ts` | rebuild bundle → `release/YFWorking/kernel/` + `release/YFWorking_ms92cd6u/kernel/` |
-| 技能库 `~/.yfworking/skills/**/SKILL.md` | 用户目录直接生效（无需 release 同步；技能目录指纹变化触发宿主清单重建；内核命令按 cwd memoize，技能变更需新会话/重启生效——既有行为） |
+| `server/bridge.mjs` | `release/Ponos/server/` + `release/Ponos_ms92cd6u/server/` |
+| 内核 `loadSkillsDir.ts` + `prompt.ts` | rebuild bundle → `release/Ponos/kernel/` + `release/Ponos_ms92cd6u/kernel/` |
+| 技能库 `~/.ponos/skills/**/SKILL.md` | 用户目录直接生效（无需 release 同步；技能目录指纹变化触发宿主清单重建；内核命令按 cwd memoize，技能变更需新会话/重启生效——既有行为） |
 
 - 同步后 sha256 三端一致校验（dist 不涉及）
 - 不打包（沿用项目约束）

@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { ExternalLink, Trash2, X } from 'lucide-react'
 import { useBrowserStore } from '@/stores/browserStore'
 import { useChatStore } from '@/stores/chatStore'
-import { useYFWCLI } from '@/hooks/useYFWCLI'
+import { usePonosCLI } from '@/hooks/usePonosCLI'
 import { useTranslation } from '@/i18n/useTranslation'
 
 interface Props {
@@ -25,7 +25,7 @@ interface Props {
 export function BrowserStatusBar({ conversationId }: Props) {
   const current = useBrowserStore(s => s.current)
   const isStreaming = useChatStore(s => !!s.streamingConversations[conversationId])
-  const { browserControl } = useYFWCLI()
+  const { browserControl } = usePonosCLI()
   const { t } = useTranslation()
 
   // 任务流式结束（result 到达）→ 自动收起浏览器状态胶囊：内核任务完成时不会

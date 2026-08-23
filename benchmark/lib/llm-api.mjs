@@ -1,11 +1,11 @@
 // LLM API 统一管理模块 —— 被测 agent 实际调用大模型 API 的单一入口
 // ---------------------------------------------------------------------------
-// 收敛 4 个 agent（yfw/claude/pi/deepseek）的 API 配置解析，消除 adapter 里
+// 收敛 4 个 agent（ponos/claude/pi/deepseek）的 API 配置解析，消除 adapter 里
 // 各自重复的 "env.X || env.Y || 默认值" 逻辑，并提供：
 //   1. .env 加载（benchmark/.env，进程 env 优先，不覆盖已设置变量）
 //   2. 密钥解析：按 agent 返回正确的 API key env 变量名 + 值
 //   3. 模型解析：统一默认模型，按 agent 映射
-//   4. 端点解析：yfw 支持 ANTHROPIC_BASE_URL（DeepSeek 兼容端点）
+//   4. 端点解析：ponos 支持 ANTHROPIC_BASE_URL（DeepSeek 兼容端点）
 //   5. 用量→成本换算（与 run.mjs 的 costOf 同源，避免两处漂移）
 //   6. 启动前诊断：哪些 agent 缺密钥/缺可执行文件，输出人类可读状态
 // ---------------------------------------------------------------------------
@@ -20,14 +20,14 @@ const benchmarkRoot = join(__dirname, '..')
 // 统一约定（.env 或进程 env）：
 //   LLM_API_KEY   主密钥（DeepSeek 官方 key）。缺省回退 ANTHROPIC_AUTH_TOKEN
 //   LLM_MODEL     默认模型。缺省 deepseek-v4-flash
-//   LLM_BASE_URL  可选，DeepSeek 兼容端点（yfw 内核经 ANTHROPIC_BASE_URL 走它）
+//   LLM_BASE_URL  可选，DeepSeek 兼容端点（ponos 内核经 ANTHROPIC_BASE_URL 走它）
 // 各 agent 实际使用的 env 变量名由 AGENT_API 表映射，adapter 无需再关心来源。
-export const AGENTS = ['yfw', 'claude', 'pi', 'deepseek']
+export const AGENTS = ['ponos', 'claude', 'pi', 'deepseek']
 
 /** 每个 agent 的 API 通道定义 */
 export const AGENT_API = {
   // 内核直接调 Anthropic 端点：ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL
-  yfw: {
+  ponos: {
     keyEnv: 'ANTHROPIC_AUTH_TOKEN',
     modelEnv: 'ANTHROPIC_MODEL',
     baseUrlEnv: 'ANTHROPIC_BASE_URL',
@@ -95,7 +95,7 @@ export function resolveModel() {
   return process.env.LLM_MODEL || process.env.ANTHROPIC_MODEL || DEFAULT_MODEL
 }
 
-/** yfw/claude 的 Anthropic 端点（DeepSeek 兼容端点或官方默认） */
+/** ponos/claude 的 Anthropic 端点（DeepSeek 兼容端点或官方默认） */
 export function resolveBaseUrl() {
   return process.env.LLM_BASE_URL || process.env.ANTHROPIC_BASE_URL || ''
 }
@@ -121,7 +121,7 @@ export function buildAgentEnv(agent, baseEnv = process.env) {
 
 // ── 用量 → 成本 ───────────────────────────────────────────────────────────────
 // 缓存计费：cache_read（命中）按输入价 cacheReadRatio（DeepSeek 约 1/10）计，
-// cache_creation（写入缓存）按输入全价计。yfw harness 已累加四类 usage。
+// cache_creation（写入缓存）按输入全价计。ponos harness 已累加四类 usage。
 export function costOf(usage, pricePerMInput = 0.2, pricePerMOutput = 1.2, cacheReadRatio = 0.1) {
   if (!usage) return null
   return (usage.input_tokens || 0) / 1e6 * pricePerMInput
@@ -153,7 +153,7 @@ export function diagnoseAgents(agents = AGENTS, { checkBin = false } = {}) {
     const baseUrl = def.baseUrlEnv ? resolveBaseUrl() : ''
     const issues = []
     if (!key) issues.push('缺 API key')
-    // 需要显式端点的 agent（yfw/claude 走 ANTHROPIC_BASE_URL）缺 baseUrl 时
+    // 需要显式端点的 agent（ponos/claude 走 ANTHROPIC_BASE_URL）缺 baseUrl 时
     // 内核会报"未检测到可用协议"直接挂——启动门禁据此拒绝，避免整批无意义结果
     if (def.baseUrlEnv && !baseUrl) issues.push('缺 baseUrl')
     if (checkBin && a === 'pi' && !process.env.PI_CLI_PATH && !existsSync(join(benchmarkRoot, 'vendors', 'pi-src', 'pi-main', 'packages', 'coding-agent', 'dist', 'cli.js'))) {

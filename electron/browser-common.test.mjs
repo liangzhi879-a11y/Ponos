@@ -184,10 +184,10 @@ test('isWhitelisted: 预设搜索/企查/人社/邮箱域名通过（含子域�
 })
 
 test('isWhitelisted: 配置文件 allow 动态生效（mtime 重读 + 子域匹配）', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-wl-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-wl-'))
   const cfgPath = path.join(dir, 'browser-whitelist.json')
-  const prev = process.env.YFWORKING_HOME
-  process.env.YFWORKING_HOME = dir
+  const prev = process.env.PONOS_HOME
+  process.env.PONOS_HOME = dir
   try {
     fs.writeFileSync(cfgPath, JSON.stringify({ allow: ['example.org'] }))
     assert.equal(isWhitelisted('https://example.org/'), true)
@@ -199,8 +199,8 @@ test('isWhitelisted: 配置文件 allow 动态生效（mtime 重读 + 子域匹�
     fs.unlinkSync(cfgPath)
     assert.equal(isWhitelisted('https://example.net/'), false)
   } finally {
-    if (prev === undefined) delete process.env.YFWORKING_HOME
-    else process.env.YFWORKING_HOME = prev
+    if (prev === undefined) delete process.env.PONOS_HOME
+    else process.env.PONOS_HOME = prev
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })

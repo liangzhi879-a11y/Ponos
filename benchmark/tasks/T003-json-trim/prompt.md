@@ -1,6 +1,6 @@
 # 任务：修复工具结果 JSON 形态结构裁剪的三缺陷
 
-这是 YFW-turbo 内核（Node ESM 净室项目）。当前工作区是该内核的一个历史版本，`kernel/compact.mjs` 是两阶段上下文压缩器（阶段①免模型结构裁剪 `pruneToolResult`），存在三个已确认的 JSON 形态缺陷。
+这是 Ponos-turbo 内核（Node ESM 净室项目）。当前工作区是该内核的一个历史版本，`kernel/compact.mjs` 是两阶段上下文压缩器（阶段①免模型结构裁剪 `pruneToolResult`），存在三个已确认的 JSON 形态缺陷。
 
 ## 缺陷描述
 

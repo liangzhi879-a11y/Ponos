@@ -1,8 +1,8 @@
 /**
- * Builds a portable YFWorking desktop app and creates a desktop shortcut.
+ * Builds a portable Ponos desktop app and creates a desktop shortcut.
  * Usage: node scripts/package-portable.cjs
  *
- * Output: release/YFWorking/ — double-click YFWorking.vbs to launch (no terminal).
+ * Output: release/Ponos/ — double-click Ponos.vbs to launch (no terminal).
  */
 const fs = require('fs')
 const path = require('path')
@@ -10,7 +10,7 @@ const { execSync } = require('child_process')
 
 const ROOT = path.resolve(__dirname, '..')
 const SCRIPTS = path.resolve(__dirname)
-let RELEASE = path.join(ROOT, 'release', 'YFWorking')
+let RELEASE = path.join(ROOT, 'release', 'Ponos')
 const DESKTOP = path.join(require('os').homedir(), 'Desktop')
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -53,11 +53,11 @@ function countFiles(dir) {
 
 // ── Clean ───────────────────────────────────────────────────────────────
 console.log('[1/5] Cleaning...')
-// If the canonical dir was previously locked, reuse the latest YFWorking_* sibling
+// If the canonical dir was previously locked, reuse the latest Ponos_* sibling
 const releaseRoot = path.join(ROOT, 'release')
 if (!fs.existsSync(RELEASE) && fs.existsSync(releaseRoot)) {
   const siblings = fs.readdirSync(releaseRoot, { withFileTypes: true })
-    .filter(d => d.isDirectory() && d.name.startsWith('YFWorking_'))
+    .filter(d => d.isDirectory() && d.name.startsWith('Ponos_'))
     .map(d => d.name).sort()
   if (siblings.length) {
     RELEASE = path.join(releaseRoot, siblings[siblings.length - 1])
@@ -71,7 +71,7 @@ if (fs.existsSync(RELEASE)) {
     // Directory locked (e.g. lingering electron process) — reuse the latest
     // sibling dir if any, else fall back to a fresh one.
     const siblings = fs.readdirSync(releaseRoot, { withFileTypes: true })
-      .filter(d => d.isDirectory() && d.name.startsWith('YFWorking_'))
+      .filter(d => d.isDirectory() && d.name.startsWith('Ponos_'))
       .map(d => d.name).sort()
     if (siblings.length) {
       RELEASE = path.join(releaseRoot, siblings[siblings.length - 1])
@@ -123,18 +123,18 @@ if (fs.existsSync(skillsSrc)) {
   console.log('  runtime/skills packaged (' + countFiles(skillsSrc) + ' files)')
 }
 
-// ── Copy YFW kernel + bun runtime ────────────────────────────────────────
-const kernelSrc = path.join(ROOT, 'yfw-kernel', 'claude-code', 'dist', 'cli.mjs')
+// ── Copy Ponos kernel + bun runtime ────────────────────────────────────────
+const kernelSrc = path.join(ROOT, 'ponos-kernel', 'claude-code', 'dist', 'cli.mjs')
 const kernelDst = path.join(RELEASE, 'kernel')
 if (fs.existsSync(kernelSrc)) {
   fs.mkdirSync(kernelDst, { recursive: true })
   fs.copyFileSync(kernelSrc, path.join(kernelDst, 'cli.mjs'))
-  console.log('  kernel/cli.mjs embedded (YFW self-contained kernel)')
+  console.log('  kernel/cli.mjs embedded (Ponos self-contained kernel)')
 } else {
   console.warn('  WARNING: kernel dist/cli.mjs not found — AI kernel missing')
 }
 // Vendored ripgrep — kernel Grep/Glob tools need kernel/vendor/ripgrep/*/rg.exe
-const kernelVendorSrc = path.join(ROOT, 'yfw-kernel', 'claude-code', 'dist', 'vendor')
+const kernelVendorSrc = path.join(ROOT, 'ponos-kernel', 'claude-code', 'dist', 'vendor')
 if (fs.existsSync(kernelVendorSrc)) {
   cpDir(kernelVendorSrc, path.join(kernelDst, 'vendor'), [])
   console.log('  kernel/vendor embedded (vendored ripgrep)')
@@ -188,15 +188,15 @@ WshShell.CurrentDirectory = appPath
 WshShell.Run """" & appPath & "\\electron\\electron.exe"" """ & appPath & "\\electron\\main.cjs""", 0, False
 `
 
-fs.writeFileSync(path.join(RELEASE, 'YFWorking.vbs'), vbsReliable, 'utf-8')
+fs.writeFileSync(path.join(RELEASE, 'Ponos.vbs'), vbsReliable, 'utf-8')
 
 // .bat for debugging
-fs.writeFileSync(path.join(RELEASE, 'YFWorking-debug.bat'), [
+fs.writeFileSync(path.join(RELEASE, 'Ponos-debug.bat'), [
   '@echo off',
   'cd /d "%~dp0"',
-  'echo Starting YFWorking Desktop...',
+  'echo Starting Ponos Desktop...',
   'start "" /wait "electron\\electron.exe" "electron\\main.cjs"',
-  'echo YFWorking closed.',
+  'echo Ponos closed.',
 ].join('\r\n'), 'utf-8')
 
 // ── Package node_modules/electron for portability ───────────────────────
@@ -256,8 +256,8 @@ if (fs.existsSync(electronModule)) {
 console.log('[5/5] Creating desktop shortcut...')
 // Shortcut points DIRECTLY at electron.exe (no wscript/VBS hop).
 // VBS only escapes quotes; backslashes are fine as-is.
-const lnkPath = path.join(DESKTOP, 'YFWorking.lnk')
-const shortcutVbs = path.join(DESKTOP, 'YFWorking-shortcut.vbs')
+const lnkPath = path.join(DESKTOP, 'Ponos.lnk')
+const shortcutVbs = path.join(DESKTOP, 'Ponos-shortcut.vbs')
 // VBS escaping: a literal " inside a string is written as "".
 // So Arguments needs """ + path + """ (3 quotes each side).
 const vq = '"""'
@@ -271,7 +271,7 @@ fs.writeFileSync(shortcutVbs, [
   `shortcut.Arguments = ${vq}${mainCjs}${vq}`,
   `shortcut.WorkingDirectory = "${RELEASE}"`,
   `shortcut.IconLocation = "${iconIco}"`,
-  `shortcut.Description = "YFWorking Desktop"`,
+  `shortcut.Description = "Ponos Desktop"`,
   `shortcut.Save`,
 ].join('\r\n'))
 execSync(`cscript //Nologo "${shortcutVbs}"`, { cwd: RELEASE, timeout: 10000 })
@@ -281,10 +281,10 @@ console.log('  Shortcut → electron.exe directly')
 // ── Done ────────────────────────────────────────────────────────────────
 console.log()
 console.log('========================================')
-console.log('  YFWorking Desktop packaged!')
+console.log('  Ponos Desktop packaged!')
 console.log(`  Location: ${RELEASE}`)
-console.log(`  Desktop shortcut: ${DESKTOP}\\YFWorking.lnk`)
+console.log(`  Desktop shortcut: ${DESKTOP}\\Ponos.lnk`)
 console.log('========================================')
 console.log()
-console.log('To launch: double-click YFWorking.lnk on Desktop')
-console.log('To debug:  right-click → run YFWorking-debug.bat')
+console.log('To launch: double-click Ponos.lnk on Desktop')
+console.log('To debug:  right-click → run Ponos-debug.bat')

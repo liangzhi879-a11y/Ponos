@@ -53,7 +53,7 @@ export function validateSettings(data = {}) {
 
 export function loadSettings({ configDir = '', cwd = '', local = {} } = {}) {
   const userPath = configDir ? join(configDir, 'settings.json') : ''
-  const projectPath = cwd ? join(cwd, '.yfworking', 'settings.json') : ''
+  const projectPath = cwd ? join(cwd, '.ponos', 'settings.json') : ''
   const user = readJson(userPath)
   const project = readJson(projectPath)
   // 迁移只对已存在的 user 文件执行：无文件 = 无配置，merged 保持空（P4 既有语义）

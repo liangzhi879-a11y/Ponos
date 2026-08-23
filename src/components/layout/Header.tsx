@@ -25,14 +25,14 @@ export function Header() {
 
   // Frameless window: track maximized state for the toggle icon
   const [isMax, setIsMax] = useState(false)
-  // Track whether `window.yfworkingWindow` has been exposed by the preload
+  // Track whether `window.ponosWindow` has been exposed by the preload
   // script. contextBridge runs before page scripts so it should be available
   // immediately in Electron; polling is a safety net for edge cases.
-  const [hasWindowAPI, setHasWindowAPI] = useState(typeof window !== 'undefined' && !!window.yfworkingWindow)
+  const [hasWindowAPI, setHasWindowAPI] = useState(typeof window !== 'undefined' && !!window.ponosWindow)
   useEffect(() => {
-    if (window.yfworkingWindow) {
+    if (window.ponosWindow) {
       setHasWindowAPI(true)
-      const sync = () => { window.yfworkingWindow?.isMaximized().then(setIsMax).catch(() => {}) }
+      const sync = () => { window.ponosWindow?.isMaximized().then(setIsMax).catch(() => {}) }
       sync()
       window.addEventListener('resize', sync)
       return () => window.removeEventListener('resize', sync)
@@ -44,7 +44,7 @@ export function Header() {
     let slowInterval: number | undefined
     const tick = () => {
       if (cancelled) return
-      if (window.yfworkingWindow) {
+      if (window.ponosWindow) {
         setHasWindowAPI(true)
         clearInterval(fastInterval)
         clearInterval(slowInterval)
@@ -72,7 +72,7 @@ export function Header() {
       {/* Logo + Sidebar toggle */}
       <div className="flex items-center gap-2">
         {/* 品牌 Logo：透明底，直接展示不加背景衬套 */}
-        <img src={`${import.meta.env.BASE_URL}logo.png`} alt="YFWorking" className="w-7 h-7 object-contain shrink-0 no-drag glass-logo" />
+        <img src={`${import.meta.env.BASE_URL}logo.png`} alt="Ponos" className="w-7 h-7 object-contain shrink-0 no-drag glass-logo" />
         <Tooltip content={t('header.toggleSidebar') + ' (⌘B)'}>
           <Button variant="ghost" size="xs" onClick={toggleSidebar} className="no-drag" aria-label={t('header.toggleSidebar')}>
             <Menu className="w-4 h-4" />
@@ -82,7 +82,7 @@ export function Header() {
 
       {/* Conversation title */}
       <div className="flex-1 min-w-0 text-sm font-medium text-secondary truncate ml-1">
-        {activeConv?.title || 'YFWorking dev'}
+        {activeConv?.title || 'Ponos dev'}
       </div>
 
       <div className="flex items-center gap-0.5 no-drag shrink-0">
@@ -118,25 +118,25 @@ export function Header() {
       </div>
 
       {/* Window controls (frameless) — only visible when running inside Electron
-         (preload has attached window.yfworkingWindow). Browser dev mode hides them. */}
+         (preload has attached window.ponosWindow). Browser dev mode hides them. */}
       {hasWindowAPI && (
         <div className="flex items-center -mr-3 no-drag shrink-0">
           <button
-            onClick={() => window.yfworkingWindow?.minimize()}
+            onClick={() => window.ponosWindow?.minimize()}
             className="w-10 h-11 flex items-center justify-center text-tertiary hover:bg-elevated hover:text-primary transition-colors"
             aria-label="Minimize"
           >
             <Minus className="w-3.5 h-3.5" />
           </button>
           <button
-            onClick={() => window.yfworkingWindow?.maximizeToggle()}
+            onClick={() => window.ponosWindow?.maximizeToggle()}
             className="w-10 h-11 flex items-center justify-center text-tertiary hover:bg-elevated hover:text-primary transition-colors"
             aria-label="Maximize"
           >
             {isMax ? <Copy className="w-3 h-3" /> : <Square className="w-3 h-3" />}
           </button>
           <button
-            onClick={() => window.yfworkingWindow?.close()}
+            onClick={() => window.ponosWindow?.close()}
             className="window-close-btn w-10 h-11 flex items-center justify-center text-tertiary hover:bg-error hover:text-inverse transition-colors"
             aria-label="Close"
           >

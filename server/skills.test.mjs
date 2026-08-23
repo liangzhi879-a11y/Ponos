@@ -10,7 +10,7 @@ import { dirname } from 'node:path'
 import { createInterface } from 'node:readline'
 import { discoverSkills, discoverSkillsAll, loadSkillContent, parseFrontmatter, verifySkillVersions } from '../kernel/skills.mjs'
 
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-skills-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-skills-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('parseFrontmatter：key: value 解析 + 去引号', () => {
@@ -108,7 +108,7 @@ test('集成：spawn 内核 + 技能目录 → init 事件带 skills 数量与 p
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion', '--add-dir', cwd, '--add-dir', skillRoot,
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir, YFW_VISION_BASE_URL: 'https://v.example.com', YFW_VISION_MODEL: 'gpt-v' },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir, PONOS_VISION_BASE_URL: 'https://v.example.com', PONOS_VISION_MODEL: 'gpt-v' },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const lines = []

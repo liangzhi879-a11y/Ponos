@@ -5,7 +5,7 @@ version: "1.0.0"
 ---
 
 <!-- SECTION_BEGIN: ocr_mandatory -->
-## OCR强制规范 → 详见 {{YFW_SKILLS}}/_common/SHARED_ocr_mandatory.md
+## OCR强制规范 → 详见 {{PONOS_SKILLS}}/_common/SHARED_ocr_mandatory.md
 > ⚠️ 核心铁律：先OCR后操作，禁止猜测，必须等待，结果空则报错。
 > 速查：`python ocr_engine.py detect --file <path>` → `python ocr_engine.py ocr --file <path> --project <project>`
 <!-- SECTION_END: ocr_mandatory -->
@@ -38,7 +38,7 @@ python C:\Users\T203-15\.trae-cn\skills\enterprise_project_skills\_common\progre
 
 若返回 WARNING 提示存在未完成的前置阶段，agent 应提示用户先完成前置依赖。
 
-> 进度管理集成说明详见: `{{YFW_SKILLS}}/gxtz-progress-manager/SKILL.md`
+> 进度管理集成说明详见: `{{PONOS_SKILLS}}/gxtz-progress-manager/SKILL.md`
 
 
 ### 1. 确认压缩目标
@@ -69,7 +69,7 @@ python file_compressor.py compress --input <源文件> --type PS --output <输�
 python file_compressor.py list-limits
 ```
 
-**执行位置**：从项目根目录运行，`file_compressor.py` 位于 `{{YFW_SKILLS}}/_common/`。
+**执行位置**：从项目根目录运行，`file_compressor.py` 位于 `{{PONOS_SKILLS}}/_common/`。
 
 ### 3. 输出报告
 压缩完成后汇报：

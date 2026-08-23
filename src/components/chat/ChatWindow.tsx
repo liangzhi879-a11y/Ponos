@@ -182,8 +182,8 @@ export function ChatWindow({ conversationId }: Props) {
       setHighlightId(id)
       setTimeout(() => setHighlightId((cur) => (cur === id ? null : cur)), 1500)
     }
-    window.addEventListener('yfworking:scroll-message', handler)
-    return () => window.removeEventListener('yfworking:scroll-message', handler)
+    window.addEventListener('ponos:scroll-message', handler)
+    return () => window.removeEventListener('ponos:scroll-message', handler)
   }, [])
 
   const scrollToBottom = () => {
@@ -213,7 +213,7 @@ export function ChatWindow({ conversationId }: Props) {
             <p className="mt-4 text-sm text-tertiary">加载会话中…</p>
           </div>
         ) : isEmpty ? (
-          /* YFWorking branded empty state */
+          /* Ponos branded empty state */
           <div className="flex-1 flex flex-col items-center justify-center h-full px-6 py-8 animate-fade-in select-none">
             {/* Brand hero */}
             <div className="relative mb-8">
@@ -248,7 +248,7 @@ export function ChatWindow({ conversationId }: Props) {
                   WebkitTextFillColor: 'transparent',
                 }}
               >
-                YFWorking dev
+                Ponos dev
               </h1>
               {/* Turbo 内核标识：区分稳定旧版 */}
               <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold tracking-widest text-brand-500 bg-brand-500/10 border border-brand-500/30 select-none">

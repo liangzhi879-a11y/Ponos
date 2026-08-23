@@ -1,5 +1,5 @@
 // server/provider-switch.test.mjs —— 内核原生 provider 热切换（docs/production/platform.md P4-5）
-// spawn 真内核（kernel/cli.mjs + YFW_MOCK_API=1），按契约注入 NDJSON 断言 stdout 事件。
+// spawn 真内核（kernel/cli.mjs + PONOS_MOCK_API=1），按契约注入 NDJSON 断言 stdout 事件。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -16,7 +16,7 @@ test.after(() => { try { rmSync(HOME, { recursive: true, force: true }) } catch 
 function spawnKernel(extraEnv = {}) {
   const proc = spawn(process.execPath, [KERNEL, '--print', '--output-format', 'stream-json', '--input-format', 'stream-json', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio'], {
     cwd: HOME,
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: HOME, ...extraEnv },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: HOME, ...extraEnv },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const lines = []

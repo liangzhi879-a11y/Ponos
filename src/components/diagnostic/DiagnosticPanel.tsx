@@ -23,8 +23,8 @@ export function DiagnosticPanel() {
   useEffect(() => {
     if (!diagOpen) return
     setKernelResult(null)
-    window.yfwDiag?.getStatus().then(setSnapshot).catch(() => {})
-    window.yfwDiag?.getBootSummary().then(setBootSummary).catch(() => {})
+    window.ponosDiag?.getStatus().then(setSnapshot).catch(() => {})
+    window.ponosDiag?.getBootSummary().then(setBootSummary).catch(() => {})
   }, [diagOpen, setSnapshot, setBootSummary])
 
   const groups = useMemo(() => {
@@ -35,23 +35,23 @@ export function DiagnosticPanel() {
 
   const runAll = async () => {
     setRunning(true)
-    try { const s = await window.yfwDiag?.rerunAll(); if (s) setSnapshot(s) } catch { /* 忽略 IPC 拒绝 */ } finally { setRunning(false) }
+    try { const s = await window.ponosDiag?.rerunAll(); if (s) setSnapshot(s) } catch { /* 忽略 IPC 拒绝 */ } finally { setRunning(false) }
   }
   const rerunOne = async (id: string) => {
     try {
-      const c = await window.yfwDiag?.rerun(id)
+      const c = await window.ponosDiag?.rerun(id)
       if (c && snapshot) setSnapshot({ ...snapshot, checks: snapshot.checks.map(x => x.id === id ? c : x) })
     } catch { /* 忽略 IPC 拒绝 */ }
   }
   const runKernel = async () => {
     try {
-      const r = await window.yfwDiag?.runKernelCheck()
+      const r = await window.ponosDiag?.runKernelCheck()
       if (r) setKernelResult(r)
     } catch { /* 忽略 IPC 拒绝 */ }
   }
   const doExport = async () => {
     try {
-      const r = await window.yfwDiag?.exportReport()
+      const r = await window.ponosDiag?.exportReport()
       if (!r) return
       await navigator.clipboard.writeText(r.text)
       alert(t('diagnostic.exportCopied'))
@@ -124,7 +124,7 @@ export function DiagnosticPanel() {
         <div className="flex flex-wrap items-center gap-2 px-6 py-4 border-t border-subtle">
           <Button size="sm" variant="secondary" onClick={runKernel}><Bug className="w-3.5 h-3.5" /> {t('diagnostic.kernelCheck')}</Button>
           <Button size="sm" variant="secondary" onClick={doExport}><FileText className="w-3.5 h-3.5" /> {t('diagnostic.exportReport')}</Button>
-          <Button size="sm" variant="ghost" onClick={() => window.yfwDiag?.openLogDir()}><FolderOpen className="w-3.5 h-3.5" /> {t('diagnostic.openLogDir')}</Button>
+          <Button size="sm" variant="ghost" onClick={() => window.ponosDiag?.openLogDir()}><FolderOpen className="w-3.5 h-3.5" /> {t('diagnostic.openLogDir')}</Button>
           {kernelResult && (
             <pre className="flex-1 min-w-0 text-[11px] font-mono text-secondary bg-elevated rounded-md px-3 py-2 overflow-x-auto">
               {kernelResult.stdout || kernelResult.stderr || `exit=${kernelResult.ok ? 0 : '非0'}`}

@@ -8,7 +8,7 @@ import type { Message, ContentBlock } from '@/types'
 
 function scrollToMessage(messageId: string) {
   (window as any).__scrollToMessageId = messageId
-  window.dispatchEvent(new CustomEvent('yfworking:scroll-message'))
+  window.dispatchEvent(new CustomEvent('ponos:scroll-message'))
 }
 
 interface TurnEntry {

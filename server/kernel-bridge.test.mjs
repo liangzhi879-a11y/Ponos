@@ -1,7 +1,7 @@
 // 真实内核 ↔ bridge 端到端集成测试（kernel/cli.mjs —— docs/bridge-contract.md §5/§6/§8）
 // ---------------------------------------------------------------------------
-// 与 bridge-contract.test.mjs 同构，但内核进程是净室引擎本体（YFWORKING_KERNEL
-// 指向 kernel/cli.mjs + YFWORKING_BUN=node + YFW_MOCK_API=1），验证 bridge 的
+// 与 bridge-contract.test.mjs 同构，但内核进程是净室引擎本体（PONOS_KERNEL
+// 指向 kernel/cli.mjs + PONOS_BUN=node + PONOS_MOCK_API=1），验证 bridge 的
 // spawn 参数注入、事件转发、轮次闭环、cancel 与会话保留在真实引擎上成立。
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -22,13 +22,13 @@ let clients = []
 
 before(async () => {
   home = mkdtempSync(join(tmpdir(), 'kernel-bridge-'))
-  process.env.YFW_HOME = home
-  process.env.YFW_BRIDGE_NO_LISTEN = '1'
-  process.env.YFWORKING_KERNEL = REAL_KERNEL
-  process.env.YFWORKING_BUN = process.execPath
-  process.env.YFW_MOCK_API = '1'
-  process.env.YFW_KERNEL_IDLE_MS = '0'    // 关闭空闲回收
-  process.env.YFW_KERNEL_STALL_MS = '0'   // 关闭 stall 告警
+  process.env.PONOS_HOME = home
+  process.env.PONOS_BRIDGE_NO_LISTEN = '1'
+  process.env.PONOS_KERNEL = REAL_KERNEL
+  process.env.PONOS_BUN = process.execPath
+  process.env.PONOS_MOCK_API = '1'
+  process.env.PONOS_KERNEL_IDLE_MS = '0'    // 关闭空闲回收
+  process.env.PONOS_KERNEL_STALL_MS = '0'   // 关闭 stall 告警
 
   bridge = await import('./bridge.mjs')
   await new Promise((resolve) => bridge.httpServer.listen(0, resolve))
@@ -66,17 +66,17 @@ after(async () => {
 function connect() {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}`)
-    ws._yfwQueue = []
-    ws._yfwWaiter = null
+    ws._ponosQueue = []
+    ws._ponosWaiter = null
     ws.on('message', (raw) => {
       const m = JSON.parse(raw.toString())
-      const w = ws._yfwWaiter
+      const w = ws._ponosWaiter
       if (w && w.predicate(m)) {
-        ws._yfwWaiter = null
+        ws._ponosWaiter = null
         clearTimeout(w.timer)
         w.resolve(m)
       } else {
-        ws._yfwQueue.push(m)
+        ws._ponosQueue.push(m)
       }
     })
     ws.on('open', () => resolve(ws))
@@ -86,15 +86,15 @@ function connect() {
 }
 
 function collect(ws, predicate, { timeoutMs = 5000 } = {}) {
-  const idx = ws._yfwQueue.findIndex(predicate)
-  if (idx >= 0) return Promise.resolve(ws._yfwQueue.splice(idx, 1)[0])
+  const idx = ws._ponosQueue.findIndex(predicate)
+  if (idx >= 0) return Promise.resolve(ws._ponosQueue.splice(idx, 1)[0])
   return new Promise((resolve, reject) => {
     const w = { predicate, resolve, reject, timer: null }
     w.timer = setTimeout(() => {
-      if (ws._yfwWaiter === w) ws._yfwWaiter = null
-      reject(new Error('collect timeout, queue=' + JSON.stringify(ws._yfwQueue)))
+      if (ws._ponosWaiter === w) ws._ponosWaiter = null
+      reject(new Error('collect timeout, queue=' + JSON.stringify(ws._ponosQueue)))
     }, timeoutMs)
-    ws._yfwWaiter = w
+    ws._ponosWaiter = w
   })
 }
 

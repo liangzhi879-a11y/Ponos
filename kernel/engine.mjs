@@ -1,4 +1,4 @@
-// YFW-turbo Agent 循环（docs/bridge-contract.md §9 替换面）
+// Ponos-turbo Agent 循环（docs/bridge-contract.md §9 替换面）
 // ---------------------------------------------------------------------------
 // runTurn：user 消息入 session → 循环调用 api.streamMessages：
 //   - 文本/思考块 → wire.assistant 流式转发
@@ -23,10 +23,12 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 
-// 工具循环上限：真实多步任务（探查→修复→测试）需 20+ 次工具调用，10 会在
-// 探索中打断模型（SWE 类任务实测 toolCalls 全部卡在 11-13）。提升至 50，
-// 与 claude/pi/deepseek 无上限对齐，仍受评测/交互整体超时约束。
-const MAX_TOOL_ITERATIONS = 50
+// 工具循环上限：默认 0 = 无上限——模型持续调用工具直到输出纯文本（多步任务
+// 不被截断，与 claude/pi/deepseek 无上限对齐）。风险：模型/端点异常时可能陷入
+// 无限工具循环（烧 token）——评测/交互层另有整体超时约束；如需硬边界可设
+// PONOS_MAX_TOOL_ITERATIONS（>0 生效；耗尽后按现有语义静默收尾：已有文本照常
+// 落盘返回，模型/用户侧可见"轮次结束"，继续操作发下一条消息即可）。
+const MAX_TOOL_ITERATIONS = Math.max(0, Number(process.env.PONOS_MAX_TOOL_ITERATIONS || 0))
 
 // usage 逐次累加（input/output/cache 各字段），修复"多次 API 调用只记最后一次"
 function addUsage(acc, u = {}) {
@@ -62,10 +64,10 @@ function retryDelayMs(attempt) {
 
 // P0-1：流式请求重试——仅对"首块前失败"的瞬时/限流错误退避重试（已流出的文本
 // 不重复，避免用户看到两次内容），abort/quota/auth/context-window 直接抛（engine
-// 上层各有处理）。mock 模式默认不重试（测试确定性），可经 YFW_MOCK_API_RETRIES 覆盖。
+// 上层各有处理）。mock 模式默认不重试（测试确定性），可经 PONOS_MOCK_API_RETRIES 覆盖。
 async function* retryStream({ model, messages, maxTokens, signal, tools, reasoningEffort = null }) {
-  const isMock = process.env.YFW_MOCK_API === '1'
-  const configured = process.env.YFW_MOCK_API_RETRIES
+  const isMock = process.env.PONOS_MOCK_API === '1'
+  const configured = process.env.PONOS_MOCK_API_RETRIES
   const maxRetries = configured !== undefined
     ? Number(configured)
     : (isMock ? 0 : Number(process.env.CLAUDE_CODE_API_RETRIES || 5))
@@ -146,7 +148,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   let model = opts.model || getProvider().model || ''
   const maxTokens = Math.max(1, Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || 64000))
   const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: opts.addDirs, skipPermissions: opts.skipPermissions, allowOutsideDirs: opts.allowOutsideDirs, disallowedTools: opts.disallowedTools })
-  // agent 表（内置 ∪ 用户级 $YFW_HOME/agents/*.md）：Agent 工具路由依据
+  // agent 表（内置 ∪ 用户级 $PONOS_HOME/agents/*.md）：Agent 工具路由依据
   const agents = resolveAgents({ configDir: opts.configDir })
   // 审批挂起队列：toolUseId → resolve（cli 的 control_response 解除）
   const approvalWaiters = new Map()
@@ -172,8 +174,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // 提示词（基础行为规范 + AGENTS.md + append），直连测试可经 opts.systemPrompt 预置
   let systemPrompt = opts.systemPrompt || ''
   // 思考深度档位：null = auto（不注入，模型原生自适应）；off/low/high/max = 显式。
-  // 初始来源：CLAUDE_CODE_EFFORT_LEVEL（Claude Code 命名，DeepSeek 官方推荐）> YFW_REASONING_EFFORT > auto
-  let reasoningEffort = normalizeEffort(process.env.CLAUDE_CODE_EFFORT_LEVEL || process.env.YFW_REASONING_EFFORT || 'auto')
+  // 初始来源：CLAUDE_CODE_EFFORT_LEVEL（Claude Code 命名，DeepSeek 官方推荐）> PONOS_REASONING_EFFORT > auto
+  let reasoningEffort = normalizeEffort(process.env.CLAUDE_CODE_EFFORT_LEVEL || process.env.PONOS_REASONING_EFFORT || 'auto')
   function resolveEffort() { return reasoningEffort }
   function applyReasoningEffort(value) {
     const v = String(value ?? 'auto').trim().toLowerCase()
@@ -228,7 +230,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         session.setEntryUsage(lastAssistantEntry, usage)
       }
     }
-    for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
+    for (let iter = 0; MAX_TOOL_ITERATIONS <= 0 || iter < MAX_TOOL_ITERATIONS; iter++) {
       await preStep()
       // P8 排队插话注入（工具边界）：每次 API 调用前吸收 pendingNext 进当前轮
       // （appendUser 落 transcript，请求面 deriveMessages 自动包含；模型下一轮
@@ -504,7 +506,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       const m = patchOrphanToolUses(store.deriveMessages())
       return [{ role: 'system', content: sysPrompt }].filter((x) => x.content).concat(m)
     }
-    for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
+    for (let iter = 0; MAX_TOOL_ITERATIONS <= 0 || iter < MAX_TOOL_ITERATIONS; iter++) {
       const blocks = []
       for await (const chunk of retryStream({ model, messages: msgs(), maxTokens, signal: subSignal, tools: tools.toolSchemas() })) {
         if (signal.aborted || subSignal.aborted) throw abortError()
@@ -624,7 +626,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     const laneStore = createSessionStore({ configDir: opts.configDir, cwd: opts.addDirs?.[0] || '', sessionId: taskId })
     // 子任务指令入子 lane（子循环 deriveMessages 的起点；与主 runTurn appendUser 对齐）
     laneStore.appendUser(prompt)
-    const sysPrompt = agent.systemPrompt || `你是 YFWorking 的子 Agent「${agent.name}」：${agent.description}。使用简体中文。`
+    const sysPrompt = agent.systemPrompt || `你是 Ponos 的子 Agent「${agent.name}」：${agent.description}。使用简体中文。`
     const subController = new AbortController()
     const t0 = Date.now()
     const writePaths = []
@@ -760,7 +762,6 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       signal.aborted = true
       abortController.abort()
     },
-    seedCompactCount(n) { /* session 已从日志恢复 compactCount；兼容保留 */ },
     // cli 的 control_response 路由：解除对应 tool_use 的审批挂起
     resolveApproval(toolUseId, inner) {
       const w = approvalWaiters.get(toolUseId)

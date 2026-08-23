@@ -16,7 +16,7 @@ import { makeWire } from '../kernel/protocol.mjs'
 import { createToolRegistry } from '../kernel/tools.mjs'
 import { parseAgentMarkdown, discoverUserAgents, resolveAgents, resolveAgent, BUILTIN_AGENTS } from '../kernel/agents.mjs'
 
-process.env.YFW_MOCK_API = '1'
+process.env.PONOS_MOCK_API = '1'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -27,7 +27,7 @@ const extractTaskId = (content) => String(content).match(/task_id: ([0-9a-f-]+)/
 function makeEnv() {
   const events = []
   const wire = makeWire({ write(s) { events.push(JSON.parse(s)) } })
-  const dir = mkdtempSync(join(tmpdir(), 'yfw-sub-test-'))
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-sub-test-'))
   const configDir = join(dir, 'home')
   const store = createSessionStore({ configDir, cwd: dir, sessionId: 'main-session' })
   const engine = createEngine({
@@ -35,7 +35,7 @@ function makeEnv() {
     wire,
     session: store,
   })
-  engine.setSystemPrompt('你是 YFW-turbo 测试内核。')
+  engine.setSystemPrompt('你是 Ponos-turbo 测试内核。')
   const laneFile = (taskId) => join(configDir, 'projects', dir.replace(/[^a-zA-Z0-9]/g, '-'), `${taskId}.jsonl`)
   // 等待第 nth 条完成通知（resume 后同一 taskId 有多条通知，find 只取首条会拿旧值）
   const waitNotif = async (taskId, timeoutMs = 8000, nth = 1) => {
@@ -78,7 +78,7 @@ test('parseAgentMarkdown：非法输入（无 frontmatter / 缺 name）→ null 
 })
 
 test('resolveAgents：内置 ∪ 扫描合并；用户级同名覆盖内置；非法/隐藏文件容错', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yfw-agents-'))
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-agents-'))
   try {
     mkdirSync(join(dir, 'agents'), { recursive: true })
     writeFileSync(join(dir, 'agents', 'general-purpose.md'),
@@ -99,7 +99,7 @@ test('resolveAgents：内置 ∪ 扫描合并；用户级同名覆盖内置；�
 })
 
 test('discoverUserAgents：多 agent 扫描（含新增业务 agent）', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yfw-agents-'))
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-agents-'))
   try {
     mkdirSync(join(dir, 'agents'), { recursive: true })
     writeFileSync(join(dir, 'agents', 'a.md'), '---\nname: "alpha"\ndescription: "A 代理"\n---\nbody a\n')
@@ -355,9 +355,9 @@ test('S3 resume_task_id：Agent 工具基于既有后台任务会话续跑（等
 
 test('S3 outputs：子 agent Write 产物路径全部进 task_notification.outputs，文件真实落盘', async () => {
   const env = makeEnv()
-  const prev = process.env.YFW_MOCK_WRITE_DIR
+  const prev = process.env.PONOS_MOCK_WRITE_DIR
   try {
-    process.env.YFW_MOCK_WRITE_DIR = env.dir
+    process.env.PONOS_MOCK_WRITE_DIR = env.dir
     const r = await env.engine.spawnSubAgent(
       { subagent_type: 'general-purpose', prompt: '[mock:write]', run_in_background: true },
       { toolUseId: 'tool_use_outputs_1' },
@@ -376,8 +376,8 @@ test('S3 outputs：子 agent Write 产物路径全部进 task_notification.outpu
     assert.ok(existsSync(outA))
     assert.ok(existsSync(outB))
   } finally {
-    if (prev === undefined) delete process.env.YFW_MOCK_WRITE_DIR
-    else process.env.YFW_MOCK_WRITE_DIR = prev
+    if (prev === undefined) delete process.env.PONOS_MOCK_WRITE_DIR
+    else process.env.PONOS_MOCK_WRITE_DIR = prev
     env.cleanup()
   }
 })

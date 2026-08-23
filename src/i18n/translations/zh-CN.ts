@@ -93,7 +93,7 @@ export const zhCN = {
     attachImage: '附加图片',
     voiceInput: '语音输入',
     voiceStop: '停止录音',
-    welcomeTitle: 'YFWorking dev',
+    welcomeTitle: 'Ponos dev',
     welcomeSubtitle: '企业咨询项目与开发的 AI 工作台——申报材料整理、核心表格生成、审计核对、系统诊断。选择场景或直接输入你的需求：',
     welcomeFooterHint: '按 ⌘N 新建对话 · ⌘K 打开命令面板 · / 聚焦聊天输入',
     quickStart: '开始使用',
@@ -169,9 +169,9 @@ export const zhCN = {
     installedSkillsCount: '个已安装技能',
     skillsManageHint: '在左侧边栏点击「技能」标签页管理技能包的安装和卸载。此处显示技能目录和自动经验捕获设置。',
 
-    // --- YFWorking 模型配置（新增） ---
-    yfworking: 'YFWorking 内核',
-    yfworkingDesc: '配置 YFWorking 会话使用的 AI 模型和 API 参数',
+    // --- Ponos 模型配置（新增） ---
+    ponos: 'Ponos 内核',
+    ponosDesc: '配置 Ponos 会话使用的 AI 模型和 API 参数',
     skillRoot: '技能目录',
     skillRootDesc: '技能包的安装位置',
     allowOutsideDirs: '允许访问会话目录外文件',
@@ -351,7 +351,7 @@ export const zhCN = {
   // --- 权限对话框 ---
   permissions: {
     title: '权限请求',
-    description: 'YFWorking 想要执行一个需要你批准的操作。',
+    description: 'Ponos 想要执行一个需要你批准的操作。',
     fileRead: '请求读取文件',
     fileWrite: '请求写入文件',
     bash: '请求执行命令',

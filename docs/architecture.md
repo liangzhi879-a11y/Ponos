@@ -1,15 +1,15 @@
-# YFWorking 系统架构
+# Ponos 系统架构
 
-> 本文档梳理 YFWorking 应用与 YFW-Turbo 内核的分层结构、运行形态与版本管理。
+> 本文档梳理 Ponos 应用与 Ponos-Turbo 内核的分层结构、运行形态与版本管理。
 > 版本线变更请走 `scripts/bump-version.mjs`（见文末「版本管理」章节）。
 
 ## 1. 分层结构
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  YFWorking 应用（GUI 层）                             │
+│  Ponos 应用（GUI 层）                             │
 │  React + Vite（src/）→ dist/ 静态资源                 │
-│  WebSocket 客户端（src/hooks/useYFWCLI.ts）           │
+│  WebSocket 客户端（src/hooks/usePonosCLI.ts）           │
 │  Electron 壳（electron/main.cjs，主进程/窗口/桥架启停） │
 └──────────────────────────┬──────────────────────────┘
                            │ WebSocket（ws://127.0.0.1:51309）
@@ -20,7 +20,7 @@
 └──────────────────────────┬──────────────────────────┘
                            │ stdin/stdout NDJSON（stream-json）
 ┌──────────────────────────▼──────────────────────────┐
-│  YFW-Turbo 内核（kernel/，零 npm 依赖）               │
+│  Ponos-Turbo 内核（kernel/，零 npm 依赖）               │
 │  cli.mjs 入口：--print --output-format stream-json   │
 │  engine.mjs 会话引擎 / tools / skills / memory ...    │
 └─────────────────────────────────────────────────────┘
@@ -40,7 +40,7 @@ node kernel/cli.mjs --print --output-format stream-json --input-format stream-js
 
 - 独立运行态：`kernel/tui.mjs`（全屏交互终端）、`zz-smoke/interact-real-api.mjs`、
   benchmark/harness 等直接以子进程方式驱动内核。
-- 组装态：桥架以子进程方式拉起内核，`kernel + bridge + GUI = 完整 YFWorking 应用`。
+- 组装态：桥架以子进程方式拉起内核，`kernel + bridge + GUI = 完整 Ponos 应用`。
 
 ## 3. 桥架职责边界
 
@@ -56,9 +56,9 @@ node kernel/cli.mjs --print --output-format stream-json --input-format stream-js
 
 | 实体 | 版本线 | 当前值 | 存放位置 |
 |---|---|---|---|
-| **YFWorking 应用**（turbo 内核版） | `APP_VERSION` | `dev 3.0.0` | `version.mjs` |
-| **YFW-Turbo 内核**（yfwturbo） | `KERNEL_VERSION` | `dev 0.1` | `version.mjs` + `kernel/package.json` |
-| YFWorking GUI 发布线（旧内核稳定版，当前开发平台） | `package.json version` | `2.7.0` | 根 `package.json`（electron-builder 打包名） |
+| **Ponos 应用**（turbo 内核版） | `APP_VERSION` | `dev 3.0.0` | `version.mjs` |
+| **Ponos-Turbo 内核**（ponos-turbo） | `KERNEL_VERSION` | `dev 0.1` | `version.mjs` + `kernel/package.json` |
+| Ponos GUI 发布线（旧内核稳定版，当前开发平台） | `package.json version` | `2.7.0` | 根 `package.json`（electron-builder 打包名） |
 
 - 应用与内核分开管理：应用升级（bump app）不影响内核；内核升级（bump kernel）同步
   `kernel/package.json` 的 semver。
@@ -68,12 +68,12 @@ node kernel/cli.mjs --print --output-format stream-json --input-format stream-js
 
 ## 5. 环境隔离（dev 调试版 vs 正式版）
 
-| 维度 | 正式版 | dev 调试版（YFWorking-dev-3.0.0） |
+| 维度 | 正式版 | dev 调试版（Ponos-dev-3.0.0） |
 |---|---|---|
-| home | `~/.yfworking` | `~/.yfworking-dev`（YFW_HOME 注入） |
-| bridge 端口 | 51309 | 51310（YFW_BRIDGE_PORT 注入） |
+| home | `~/.ponos` | `~/.ponos-dev`（PONOS_HOME 注入） |
+| bridge 端口 | 51309 | 51310（PONOS_BRIDGE_PORT 注入） |
 | 内核来源 | 正式 runtime | 源码直跑或 bootstrap 到 dev home runtime |
-| 启动入口 | YFWorking.vbs | YFWorking-dev-3.0.0/YFWorking.vbs |
+| 启动入口 | Ponos.vbs | Ponos-dev-3.0.0/Ponos.vbs |
 
 隔离原则：前端（dist）、桥架（server）、内核均不与正式版共享模块/状态。
 

@@ -136,11 +136,11 @@ function MessageBubbleImpl({ message, isStreaming, onRetry, onEdit }: Props) {
   useChatStore(s => s.subAgentTasks[activeConversationId ?? '']?.filter(t => t.status !== 'running').length ?? 0)
   const cwd = useChatStore(s => s.conversations.find(c => c.id === s.activeConversationId)?.cwd || '')
   // 会话绑定的 agent（用于 assistant 头像）：agent 头像修改后即时反映。
-  // 未绑定 agent 的普通会话回退到 YFWorking 内置 agent 身份——用户改了它的
+  // 未绑定 agent 的普通会话回退到 Ponos 内置 agent 身份——用户改了它的
   // 头像，聊天界面同样生效。
   const agentId = useChatStore(s => s.conversations.find(c => c.id === s.activeConversationId)?.agentId)
   const agents = useAgentStore(s => s.agents)
-  const sessionAgent = agentId ? getAgentById(agents, agentId) : getAgentById(agents, 'yfworking')
+  const sessionAgent = agentId ? getAgentById(agents, agentId) : getAgentById(agents, 'ponos')
 
   const handleFilePathClick = useCallback((e: React.MouseEvent, filePath: string, displayName: string) => {
     e.preventDefault()
@@ -153,7 +153,7 @@ function MessageBubbleImpl({ message, isStreaming, onRetry, onEdit }: Props) {
   const openInExplorer = useCallback((e: React.MouseEvent, filePath: string) => {
     e.preventDefault()
     e.stopPropagation()
-    const api = (window as any).yfworkingAPI
+    const api = (window as any).ponosAPI
     if (api?.openInExplorer) api.openInExplorer(filePath)
   }, [])
 
@@ -416,7 +416,7 @@ function MessageBubbleImpl({ message, isStreaming, onRetry, onEdit }: Props) {
         {/* Header */}
         <div className="flex items-center gap-2 mb-1">
           <span className="text-xs font-semibold text-tertiary">
-            {isUser ? 'You' : isAssistant ? 'YFWorking' : 'System'}
+            {isUser ? 'You' : isAssistant ? 'Ponos' : 'System'}
           </span>
           {isPendingInterject && (
             <span className="inline-flex items-center gap-1 text-[10px] font-medium text-brand-500/80">

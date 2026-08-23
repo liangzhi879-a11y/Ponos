@@ -39,7 +39,7 @@ function setup() {
 test('usage 逐次累计：工具循环多轮 API 调用全部计入 result.usage', async () => {
   const { dir, events, session, wire, bind } = setup()
   try {
-    process.env.YFW_MOCK_API = '1'
+    process.env.PONOS_MOCK_API = '1'
     const engine = createEngine({ opts: { model: 'm', addDirs: [dir], skipPermissions: true, systemPrompt: '' }, wire, session })
     bind(engine)
     await engine.runTurn({ content: '[mock:tool]' })
@@ -48,14 +48,14 @@ test('usage 逐次累计：工具循环多轮 API 调用全部计入 result.usag
     assert.equal(result.usage.input_tokens, 20)
     assert.equal(result.usage.output_tokens, 40)
     assert.ok(Number.isFinite(result.extra.duration_ms))
-    delete process.env.YFW_MOCK_API
+    delete process.env.PONOS_MOCK_API
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('中间工具条目落盘：assistant tool_use + user tool_result 进入 session', async () => {
   const { dir, session } = setup()
   try {
-    process.env.YFW_MOCK_API = '1'
+    process.env.PONOS_MOCK_API = '1'
     let engine
     const wire = {
       assistant: () => {},
@@ -71,14 +71,14 @@ test('中间工具条目落盘：assistant tool_use + user tool_result 进入 se
     assert.ok(roles.includes('assistant'))
     assert.ok(msgs.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_use')))
     assert.ok(msgs.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_result')))
-    delete process.env.YFW_MOCK_API
+    delete process.env.PONOS_MOCK_API
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('M1 E2E：工具轮后 transcript 聚合 == result.usage（usage 只写最终条目，不双计）', async () => {
   const { dir, events, session, wire, bind } = setup()
   try {
-    process.env.YFW_MOCK_API = '1'
+    process.env.PONOS_MOCK_API = '1'
     const engine = createEngine({ opts: { model: 'm', addDirs: [dir], skipPermissions: true, systemPrompt: '' }, wire, session })
     bind(engine)
     await engine.runTurn({ content: '[mock:tool]' })
@@ -101,15 +101,15 @@ test('M1 E2E：工具轮后 transcript 聚合 == result.usage（usage 只写最�
     assert.equal(toolEntry.message.model, 'm')
     assert.equal(finalEntry.message.usage.input_tokens, 20)
     assert.equal(finalEntry.message.usage.output_tokens, 40)
-    delete process.env.YFW_MOCK_API
+    delete process.env.PONOS_MOCK_API
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('多工具轮：同一 assistant 的多个 tool_use 的 tool_result 合并为一条 user 消息', async () => {
   const { dir, session } = setup()
   try {
-    process.env.YFW_MOCK_API = '1'
-    process.env.YFW_MOCK_TOOLS = '2'
+    process.env.PONOS_MOCK_API = '1'
+    process.env.PONOS_MOCK_TOOLS = '2'
     let engine
     const wire = {
       assistant: () => {},
@@ -131,8 +131,8 @@ test('多工具轮：同一 assistant 的多个 tool_use 的 tool_result 合并�
     const useIds = msgs[asstIdx].content.filter((b) => b.type === 'tool_use').map((b) => b.id)
     const resultIds = next.content.map((b) => b.tool_use_id)
     assert.deepEqual(resultIds, useIds)
-    delete process.env.YFW_MOCK_API
-    delete process.env.YFW_MOCK_TOOLS
+    delete process.env.PONOS_MOCK_API
+    delete process.env.PONOS_MOCK_TOOLS
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -153,7 +153,7 @@ test('P1-8 防御：patchOrphanToolUses 遇 undefined/null 条目不抛，孤儿
 test('turnStats 记录器：每轮一条，含 usage/durationMs/model/ts', async () => {
   const { dir, session } = setup()
   try {
-    process.env.YFW_MOCK_API = '1'
+    process.env.PONOS_MOCK_API = '1'
     let engine
     const wire = {
       assistant: () => {},
@@ -170,7 +170,7 @@ test('turnStats 记录器：每轮一条，含 usage/durationMs/model/ts', async
     assert.ok(stats[0].usage.output_tokens >= 0)
     assert.ok(Number.isFinite(stats[0].durationMs))
     assert.ok(stats[0].ts)
-    delete process.env.YFW_MOCK_API
+    delete process.env.PONOS_MOCK_API
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -204,7 +204,7 @@ test('取消即时性：审批挂起中 hardStop → waiter 解除，runTurn 以
     health: () => {},
   }
   try {
-    process.env.YFW_MOCK_API = '1'
+    process.env.PONOS_MOCK_API = '1'
     const session = createSessionStore({ configDir: dir, cwd: 'proj', sessionId: 'cancel-approval' })
     engine = createEngine({ opts: { model: 'm', addDirs: [dir], skipPermissions: false }, wire, session })
     // [mock:tool] → 高危 Bash(rm -rf) → can_use_tool 挂起（wire 不回执）
@@ -214,7 +214,7 @@ test('取消即时性：审批挂起中 hardStop → waiter 解除，runTurn 以
     let aborted = false
     try { await withTimeout(turnPromise, 3000, 'runTurn 未返回：审批挂起未被取消解除') } catch (e) { aborted = e?.name === 'AbortError' }
     assert.ok(aborted, 'hardStop 后 runTurn 应立即以 AbortError 结束（非超时）')
-    delete process.env.YFW_MOCK_API
+    delete process.env.PONOS_MOCK_API
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -231,7 +231,7 @@ test('取消即时性：审批挂起中 abort（插话打断路径）同样解�
     health: () => {},
   }
   try {
-    process.env.YFW_MOCK_API = '1'
+    process.env.PONOS_MOCK_API = '1'
     const session = createSessionStore({ configDir: dir, cwd: 'proj', sessionId: 'cancel-abort' })
     engine = createEngine({ opts: { model: 'm', addDirs: [dir], skipPermissions: false }, wire, session })
     const turnPromise = engine.runTurn({ content: '[mock:tool]' })
@@ -240,6 +240,6 @@ test('取消即时性：审批挂起中 abort（插话打断路径）同样解�
     let aborted = false
     try { await withTimeout(turnPromise, 3000, 'runTurn 未返回：abort 未解除审批挂起') } catch (e) { aborted = e?.name === 'AbortError' }
     assert.ok(aborted, 'abort 后 runTurn 应立即以 AbortError 结束（非超时）')
-    delete process.env.YFW_MOCK_API
+    delete process.env.PONOS_MOCK_API
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

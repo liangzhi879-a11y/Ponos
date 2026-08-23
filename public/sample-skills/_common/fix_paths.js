@@ -7,7 +7,7 @@ const files = [
   'gxtz-submission-packager.md'
 ];
 
-const baseDir = 'C:/Users/T203-15/Desktop/2023guogao/{{YFW_SKILLS}}';
+const baseDir = 'C:/Users/T203-15/Desktop/2023guogao/{{PONOS_SKILLS}}';
 
 for (const f of files) {
   const fp = path.join(baseDir, f);

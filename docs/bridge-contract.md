@@ -1,7 +1,7 @@
-# YFWorking 桥接契约规格（Bridge Contract）
+# Ponos 桥接契约规格（Bridge Contract）
 
 > 用途：GUI↔bridge↔内核 三层交互的**可重建契约基线**。目标是在不修改 GUI 的前提下，以自研/合规实现替换内核（净室重建）时，协议语义可逐条对照、可测试。
-> 权威来源：`server/bridge.mjs`、`electron/main.cjs`、内核 `kernel/cli.mjs`（YFW-turbo 净室重建，stream-json 模式）。
+> 权威来源：`server/bridge.mjs`、`electron/main.cjs`、内核 `kernel/cli.mjs`（Ponos-turbo 净室重建，stream-json 模式）。
 > 更新日期：2026-08-21
 
 ---
@@ -13,7 +13,7 @@
 │ Electron 主进程 (node.exe, electron/main.cjs)                  │
 │   ├── Browser 执行器 (electron/browser-executor.cjs, WS 客户端)│
 │   └── spawn → server/bridge.mjs (Node: HTTP + WebSocket)       │
-│             端口 51309 (YFW_BRIDGE_PORT 可覆盖)                 │
+│             端口 51309 (PONOS_BRIDGE_PORT 可覆盖)                 │
 │              ├── spawn(每会话一个内核进程) → kernel/cli.mjs     │
 │              │     经 runtime/bun/bun.exe，stream-json 模式    │
 │              ├── HTTP REST（文件/转换/配置/技能/transcript…）   │
@@ -27,16 +27,16 @@
 
 关键事实：
 - **桥是唯一中枢**：GUI 不直接接触内核；内核也不直接接触 GUI。替换内核时只需保持"bridge 眼中的内核协议"，GUI 零改动。
-- 内核启动链：Electron 主进程 → bridge → `bootstrapKernelToUserDir` 把 kernel+bun 拷贝到 `~/.yfworking/runtime/`（规避 Program Files ACL 限制）→ spawn。`YFWORKING_KERNEL` 环境变量可显式指定内核路径（开发调试用）。
+- 内核启动链：Electron 主进程 → bridge → `bootstrapKernelToUserDir` 把 kernel+bun 拷贝到 `~/.ponos/runtime/`（规避 Program Files ACL 限制）→ spawn。`PONOS_KERNEL` 环境变量可显式指定内核路径（开发调试用）。
 - 内核空闲回收：会话内核进程空闲 10min 被 bridge `taskkill`（reapIdleKernels），下次发消息以 `--resume` 无缝重启。
 
 ## 2. 内核 spawn 契约（bridge → kernel）
 
-命令（经 cmd.exe，参数均已引号转义；`<kernel>` 为 YFW-turbo 净室重建内核：
+命令（经 cmd.exe，参数均已引号转义；`<kernel>` 为 Ponos-turbo 净室重建内核：
 dev 用 `<repo>/kernel/cli.mjs` 源码，生产用 `scripts/build-kernel.mjs` 打成的单文件
 bundle `<app>/kernel-dist/cli.mjs`（node-targeted ESM，bun 运行；bundle 放
 `kernel-dist/` 而非 `dist/`，避开 vite `emptyOutDir:true` 对 dist/ 的清空），
-bootstrap 复制到 `~/.yfworking/runtime/kernel/cli.mjs`）：
+bootstrap 复制到 `~/.ponos/runtime/kernel/cli.mjs`）：
 ```
 "<bun>" "<kernel>/cli.mjs" \
   --print --output-format stream-json --input-format stream-json \
@@ -44,7 +44,7 @@ bootstrap 复制到 `~/.yfworking/runtime/kernel/cli.mjs`）：
   --permission-prompt-tool stdio \
   --disallowedTools AskUserQuestion \
   [--resume <sessionId>] \
-  [--append-system-prompt-file <%TEMP%\yfw-prompt-<sid>[.resume].txt>] \
+  [--append-system-prompt-file <%TEMP%\ponos-prompt-<sid>[.resume].txt>] \
   [--model <provider 主模型>] \
   [--add-dir <会话 cwd>] [--add-dir <技能根目录>]
 ```
@@ -52,16 +52,16 @@ bootstrap 复制到 `~/.yfworking/runtime/kernel/cli.mjs`）：
 环境变量（`buildChildEnv()`，bridge.mjs:586）：
 | 变量 | 值 | 作用 |
 |---|---|---|
-| `CLAUDE_CONFIG_DIR` | `~/.yfworking` | 内核独立配置/会话目录 |
-| `YFWORKING_HOME` | `~/.yfworking` | 同上（YFW 隔离） |
+| `CLAUDE_CONFIG_DIR` | `~/.ponos` | 内核独立配置/会话目录 |
+| `PONOS_HOME` | `~/.ponos` | 同上（Ponos 隔离） |
 | `CLAUDE_CODE_AGENT_TRIGGERS` | `true` | 启用内核原生定时任务（CronCreate/…） |
 | `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` | 用户配置的第三方 provider | 内核实际调用的 API |
 | `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_SONNET/OPUS/HAIKU_MODEL` | provider 主/子模型 | 模型路由 |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | contextWindow | 自动压缩窗口 |
 | `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | 64000（可覆盖） | 输出 token 上限 |
-| `YFW_HEALTH_COMPACT_COUNT` | 历史压缩次数（有值才注入） | 健康血条恢复 |
+| `PONOS_HEALTH_COMPACT_COUNT` | 历史压缩次数（有值才注入） | 健康血条恢复 |
 
-系统提示词注入：**不通过命令行传长文本**（cmd.exe 8191 字符限制），而是写入 `%TEMP%/yfw-prompt-<sid>.txt`（新会话）或 `.resume.txt`（resume），经 `--append-system-prompt-file` 传入；会话进程退出时删除。内容 = 身份提示词（或自定义 agent systemPrompt）+ 互动问答格式（ASK_USER 卡片规范）+ 里程碑协议 + 技能清单（resume 用精简版）+ 经验注入（沉积引导+摘要索引，可配置）。
+系统提示词注入：**不通过命令行传长文本**（cmd.exe 8191 字符限制），而是写入 `%TEMP%/ponos-prompt-<sid>.txt`（新会话）或 `.resume.txt`（resume），经 `--append-system-prompt-file` 传入；会话进程退出时删除。内容 = 身份提示词（或自定义 agent systemPrompt）+ 互动问答格式（ASK_USER 卡片规范）+ 里程碑协议 + 技能清单（resume 用精简版）+ 经验注入（沉积引导+摘要索引，可配置）。
 
 ## 3. 内核 stdin 协议（bridge → kernel，NDJSON 行）
 
@@ -70,7 +70,7 @@ bootstrap 复制到 `~/.yfworking/runtime/kernel/cli.mjs`）：
 | `user` | `{ message:{role:'user',content}, priority?, uuid? }` | 投递一轮用户消息（队列化）。**priority/uuid 与 type/message 平级**（顶层，bridge.mjs:2258 转发 shape） |
 | `control_request` | `{ request_id, request:{subtype} }` | 中断/取消。`subtype:'cancel'`（bridge 的优雅停止）、`'interrupt'`（abort 主查询）、`'browser_response'`（浏览器执行器回写，见 §4 bridge_request）等 |
 
-**插话语义（priority）**：`priority:'next'` = 排队插话——内核吸收（`command_lifecycle` 确认）后在**工具边界注入当前轮**（模型尽快看到补充信息）；`priority:'now'` = 紧急插话——吸收确认后中断当前轮，消息作为新轮立即执行。`uuid` 必填：内核吸收时立即回发 `command_lifecycle(uuid, 'started')`，供 GUI 解除气泡悬浮态（useYFWCLI settlePendingInterject）。轮次间隙到达（无活跃轮）的 `next` 消息作为新轮直接执行，同样先发 `started` 确认。
+**插话语义（priority）**：`priority:'next'` = 排队插话——内核吸收（`command_lifecycle` 确认）后在**工具边界注入当前轮**（模型尽快看到补充信息）；`priority:'now'` = 紧急插话——吸收确认后中断当前轮，消息作为新轮立即执行。`uuid` 必填：内核吸收时立即回发 `command_lifecycle(uuid, 'started')`，供 GUI 解除气泡悬浮态（usePonosCLI settlePendingInterject）。轮次间隙到达（无活跃轮）的 `next` 消息作为新轮直接执行，同样先发 `started` 确认。
 | `control_response` | `{ response:{ request_id, subtype:'success', response:{ behavior:'allow'/'deny', updatedInput, toolUseID, decisionClassification } } }` | 权限审批回执，解除 `can_use_tool` 挂起 |
 
 注：内核 CLI 还支持从 stdin 读取 agents JSON、systemPrompt 等（绕过 ARG_MAX）；`structuredIO.structuredInput` 为逐行解析器（print.ts:2834 起）。
@@ -87,8 +87,8 @@ bootstrap 复制到 `~/.yfworking/runtime/kernel/cli.mjs`）：
 | `control_request` | `request{ subtype:'can_use_tool', request_id, tool_use_id, tool_name, input, decision_reason }` | 权限审批弹窗触发源（bridge 转发为 `approval`，GUI 批准后回 `control_response`） |
 | `bridge_request` | `route:'browser', requestId, payload{action,params}` | 内置浏览器自动化请求 → **bridge 直连浏览器执行器，不转发 GUI**（防敏感载荷泄漏）。执行器完成后经 stdin `control_request{request:{subtype:'browser_response', requestId, ok, snapshot?, error?}}` 回写内核（`engine.resolveBrowser` 解除挂起）；120s 超时兜底报错 |
 | `command_lifecycle` | `data{ uuid, state }` | 插话/排队消息接收确认：内核吸收 user 消息时回发 `state:'started'`（GUI 解除气泡悬浮） |
-| `yfw_health` | `tier/compactCount/tokenUsage…` | 上下文健康血条（档位变化时发；`YFW_HEALTH_COMPACT_COUNT` env 恢复压缩史） |
-| `yfw_summary` | `text, compactCount` | 上下文压缩摘要事件 |
+| `ponos_health` | `tier/compactCount/tokenUsage…` | 上下文健康血条（档位变化时发；`PONOS_HEALTH_COMPACT_COUNT` env 恢复压缩史） |
+| `ponos_summary` | `text, compactCount` | 上下文压缩摘要事件 |
 | `stream_event` / `keep_alive` / `streamlined_text` / `prompt_suggestion` | — | 流式/保活/精简输出/建议（SDK 消费者用） |
 | `error` | `{message}` | 错误 |
 
@@ -137,10 +137,10 @@ bootstrap 复制到 `~/.yfworking/runtime/kernel/cli.mjs`）：
 | `/convert-office`、`/read-sheet`、`/write-sheet`、`/read-docx`、`/write-docx` | Office 读写（调 python 脚本 `convert_docx.py`/`convert_xls.py`/`docx_edit.py`/`sheet_edit.py`） |
 | `/transcript/list`、`/transcript/load`、`/transcript/search` | 会话转录（内核 transcript 为权威源，GUI 只读索引） |
 | `/health`、`/diag/info` | 健康/诊断 |
-| `/yfw/doubao/*` | 豆包抓取/下载/水印去除（调 `watermark_remove.py`） |
+| `/ponos/doubao/*` | 豆包抓取/下载/水印去除（调 `watermark_remove.py`） |
 | `/test-provider`、`/verify-provider` | provider 连通性 |
-| `/config`、`/providers`、`/providers/*` | 配置读写（`~/.yfworking/config.json`，写前备份+迁移） |
-| `/skills`、`/sample-skills`、`/install-skill`、`/uninstall-skill` | 技能管理（写入 `~/.yfworking/skills/`） |
+| `/config`、`/providers`、`/providers/*` | 配置读写（`~/.ponos/config.json`，写前备份+迁移） |
+| `/skills`、`/sample-skills`、`/install-skill`、`/uninstall-skill` | 技能管理（写入 `~/.ponos/skills/`） |
 | `/worktrees`、`/branches` | git worktree/分支管理 |
 
 ## 8. 会话生命周期
@@ -155,7 +155,7 @@ bootstrap 复制到 `~/.yfworking/runtime/kernel/cli.mjs`）：
 
 **必须保持**（GUI 零改动的前提）：
 1. 内核 spawn 参数与 env 契约（§2）——尤其 `stream-json` 输入/输出格式与 `--permission-prompt-tool stdio`、`--disallowedTools AskUserQuestion`。
-2. 内核 stdin/stdout NDJSON 语义（§3、§4）——`user`（含顶层 `priority`/`uuid` 插话契约）/`control_request`/`control_response` 输入；`system`/`assistant`/`result`/`control_request`/`bridge_request`/`command_lifecycle`/`yfw_health`/`yfw_summary` 输出。
+2. 内核 stdin/stdout NDJSON 语义（§3、§4）——`user`（含顶层 `priority`/`uuid` 插话契约）/`control_request`/`control_response` 输入；`system`/`assistant`/`result`/`control_request`/`bridge_request`/`command_lifecycle`/`ponos_health`/`ponos_summary` 输出。
 3. 里程碑标记与 ASK_USER 卡片在 assistant 文本中的**输出格式**（bridge 提取/剥离依赖其结构）。
 4. HTTP REST 端点与响应形状（§7，GUI 直接调用）。
 5. WS 事件/消息形状（§5、§6）。
@@ -163,11 +163,11 @@ bootstrap 复制到 `~/.yfworking/runtime/kernel/cli.mjs`）：
 **可自由替换**（已是自研，直接复用或重构）：
 - `electron/browser-executor.cjs`、`electron/browser-common.cjs`（浏览器自动化执行器，独立于内核）
 - `server/` 全部 python/Node 模块（文件转换、水印、transcript、askuser、milestones、经验注入）
-- `pet/`、GUI 渲染层、`~/.yfworking/skills/` 技能体系
+- `pet/`、GUI 渲染层、`~/.ponos/skills/` 技能体系
 
 **替换面** = 内核的 stream-json 语义实现：Agent 循环（消息→模型→工具→继续）、工具执行器、`can_use_tool` 权限协议、`bridge_request(browser)` 路由、会话持久化（`--resume` 兼容）。
 
 **净室注意事项**：
 - 从本契约（用户可见行为 + 公开文档）写实现，不照搬内核源码的文件结构/命名/注释/提示词原文。
 - 消息类型名与事件形状是跨层契约（§3-§6），保留是协议需要而非代码抄袭；实现内部的模块划分、算法、提示词应原创。
-- 身份提示词（YFW_*）、技能清单注入、经验注入等 bridge 侧文本已是自研内容，可直接沿用。
+- 身份提示词（PONOS_*）、技能清单注入、经验注入等 bridge 侧文本已是自研内容，可直接沿用。

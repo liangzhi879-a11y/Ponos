@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deepMerge, loadSettings } from '../kernel/settings.mjs'
 
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-settings-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-settings-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('deepMerge：标量覆盖 / 对象递归 / 数组替换 / undefined 跳过', () => {
@@ -19,9 +19,9 @@ test('loadSettings：user < project < local 三级合并 + paths', () => {
   const configDir = join(tmp, 'cfg')
   const cwd = join(tmp, 'proj')
   mkdirSync(join(configDir), { recursive: true })
-  mkdirSync(join(cwd, '.yfworking'), { recursive: true })
+  mkdirSync(join(cwd, '.ponos'), { recursive: true })
   writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ model: 'user-model', hooks: [{ event: 'sessionStart' }], env: { A: '1' } }), 'utf-8')
-  writeFileSync(join(cwd, '.yfworking', 'settings.json'), JSON.stringify({ model: 'project-model', env: { B: '2' } }), 'utf-8')
+  writeFileSync(join(cwd, '.ponos', 'settings.json'), JSON.stringify({ model: 'project-model', env: { B: '2' } }), 'utf-8')
   const r = loadSettings({ configDir, cwd, local: { model: 'local-model' } })
   assert.equal(r.merged.model, 'local-model')
   assert.equal(r.merged.env.B, '2')
@@ -66,14 +66,14 @@ test('settings 集成：项目 settings.model 注入 system(init)', async () => 
   const configDir = join(tmp, 'cfg2')
   const cwd = join(tmp, 'proj2')
   mkdirSync(configDir, { recursive: true })
-  mkdirSync(join(cwd, '.yfworking'), { recursive: true })
-  writeFileSync(join(cwd, '.yfworking', 'settings.json'), JSON.stringify({ model: 'my-model' }), 'utf-8')
+  mkdirSync(join(cwd, '.ponos'), { recursive: true })
+  writeFileSync(join(cwd, '.ponos', 'settings.json'), JSON.stringify({ model: 'my-model' }), 'utf-8')
   const child = spawn(process.execPath, [
     KERNEL, '--print', '--output-format', 'stream-json', '--input-format', 'stream-json',
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion', '--add-dir', cwd,
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir, ANTHROPIC_MODEL: '' },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir, ANTHROPIC_MODEL: '' },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const reader = makeReader(child.stdout)

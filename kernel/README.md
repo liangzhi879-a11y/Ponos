@@ -1,4 +1,4 @@
-# YFW-turbo 内核（独立部署）
+# Ponos-turbo 内核（独立部署）
 
 零 npm 依赖的 agent 内核。GUI 集成形态由 bridge spawn；本包为无 GUI 最小部署。
 

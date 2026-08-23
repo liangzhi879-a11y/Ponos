@@ -41,7 +41,7 @@ function mergeWithDefaults(persisted: Agent[]): Agent[] {
 
 // 将 agent 注册表同步为内核 agent 文件（.md）。失败静默降级，不影响会话。
 function syncAgentsToKernel(agents: Agent[]) {
-  const api = (window as any).yfworkingAPI
+  const api = (window as any).ponosAPI
   if (!api?.agentsSync) return
   api.agentsSync(agents).catch(() => {})
 }
@@ -114,7 +114,7 @@ export const useAgentStore = create<AgentState>()(
       },
     }),
     {
-      name: 'yfworking-agents',
+      name: 'ponos-agents',
       onRehydrateStorage: () => (state) => {
         if (state?.agents) {
           state.agents = mergeWithDefaults(state.agents)

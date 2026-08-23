@@ -1,10 +1,10 @@
 # 任务：为 Anthropic 协议请求支持 cache_control 断点（默认关）
 
-这是 YFW-turbo 内核（Node ESM 净室项目）。`kernel/api.mjs` 是双协议流适配层（Anthropic `/v1/messages` + OpenAI `/v1/chat/completions`），当前请求 body **不含** `cache_control` 断点。
+这是 Ponos-turbo 内核（Node ESM 净室项目）。`kernel/api.mjs` 是双协议流适配层（Anthropic `/v1/messages` + OpenAI `/v1/chat/completions`），当前请求 body **不含** `cache_control` 断点。
 
 ## 需求背景
 
-spec（docs/superpowers/specs/2026-08-20-yfw-turbo-inner-core-design.md §3.6「请求前缀缓存优化」）采纳了 **cache_control 断点（可选）**：在 Anthropic 协议的 system / 静态块上打 `cache_control: { type: 'ephemeral' }` 断点，让长前缀复用 KV/Prompt Cache，降低请求成本。但**未知 provider 可能忽略该字段**——因此必须**默认关闭**，仅当环境变量开启时才注入，且不得改变默认请求形状（现网请求零影响）。
+spec（docs/superpowers/specs/2026-08-20-ponos-turbo-inner-core-design.md §3.6「请求前缀缓存优化」）采纳了 **cache_control 断点（可选）**：在 Anthropic 协议的 system / 静态块上打 `cache_control: { type: 'ephemeral' }` 断点，让长前缀复用 KV/Prompt Cache，降低请求成本。但**未知 provider 可能忽略该字段**——因此必须**默认关闭**，仅当环境变量开启时才注入，且不得改变默认请求形状（现网请求零影响）。
 
 ## 任务要求
 

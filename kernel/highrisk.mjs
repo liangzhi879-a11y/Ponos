@@ -1,10 +1,12 @@
-// YFW-turbo 高危命令匹配（Bash 权限审批触发判定）
+// Ponos-turbo 高危命令匹配（Bash 权限审批触发判定）
 // ---------------------------------------------------------------------------
 // 破坏性/系统级/危险命令 → 触发 can_use_tool 审批。纯函数，供 permissions 与
 // 测试复用。注意：命令可能带引号/参数顺序变化，用宽松子串匹配 + 词边界。
 
 const HIGH_RISK_PATTERNS = [
-  /\brm\s+(-[a-zA-Z]*[rf]|[a-zA-Z]*rf[a-zA-Z]*\s+)/i,   // rm -rf / rm -r -f 等递归强删
+  // rm 递归强删：危险 flag 可在任意参数位置（rm -i -rf /、rm --recursive --force /、
+  // rm file -rf 均触发），不再要求紧跟 rm；r/f 任一出现即审批（宽松子串匹配语义）
+  /\brm\b\s+(?:.*\s)?(?:--recursive|--force|-[a-zA-Z]*[rf][a-zA-Z]*)/i,
   /\brmdir\s+\/s/i,                                     // Windows rmdir /s
   /\bdel\s+\/s/i,                                       // Windows del /s
   /\bformat\s+\w:/i,                                    // 磁盘格式化

@@ -45,8 +45,8 @@ log({ t: 'argv', argv: process.argv.slice(2) })
 log({
   t: 'env',
   env: Object.fromEntries(
-    ['CLAUDE_CONFIG_DIR', 'YFWORKING_HOME', 'CLAUDE_CODE_AGENT_TRIGGERS',
-     'ANTHROPIC_MODEL', 'YFW_ALLOW_OUTSIDE_DIRS', 'YFW_HEALTH_COMPACT_COUNT', 'MOCK_SCENARIO', 'MOCK_LOG']
+    ['CLAUDE_CONFIG_DIR', 'PONOS_HOME', 'CLAUDE_CODE_AGENT_TRIGGERS',
+     'ANTHROPIC_MODEL', 'PONOS_ALLOW_OUTSIDE_DIRS', 'PONOS_HEALTH_COMPACT_COUNT', 'MOCK_SCENARIO', 'MOCK_LOG']
       .filter(k => process.env[k] !== undefined)
       .map(k => [k, process.env[k]])
   ),

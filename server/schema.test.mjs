@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { SCHEMA_VERSION } from '../version.mjs'
 import { loadSettings, migrateSettings, validateSettings, diffFromDefault, SETTINGS_DEFAULTS } from '../kernel/settings.mjs'
 
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-schema-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-schema-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('SCHEMA_VERSION 单一数据源：version.mjs 导出且当前为 1', () => {

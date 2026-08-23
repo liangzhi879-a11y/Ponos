@@ -132,8 +132,8 @@ test('窗口化恢复：maxEntries 超限截断到近窗口（保留尾部 + com
 
 test('S2-1 磁盘脱敏：transcript 文件含打码内容，内存 deriveMessages 保留原文', () => {
   const dir = mkdtempSync(join(tmpdir(), 'session-redact-'))
-  const prev = process.env.YFW_KEEP_SECRETS
-  process.env.YFW_KEEP_SECRETS = ''
+  const prev = process.env.PONOS_KEEP_SECRETS
+  process.env.PONOS_KEEP_SECRETS = ''
   try {
     const store = createSessionStore({ configDir: dir, cwd: '', sessionId: 'r' })
     store.appendUser('my key is sk-abc12345XYZ')
@@ -142,7 +142,7 @@ test('S2-1 磁盘脱敏：transcript 文件含打码内容，内存 deriveMessag
     assert.ok(!raw.includes('sk-abc12345XYZ'), '磁盘不得含原文密钥')
     assert.equal(store.deriveMessages()[0].content, 'my key is sk-abc12345XYZ', '模型输入保留原文')
   } finally {
-    process.env.YFW_KEEP_SECRETS = prev || ''
+    process.env.PONOS_KEEP_SECRETS = prev || ''
     rmSync(dir, { recursive: true, force: true })
   }
 })

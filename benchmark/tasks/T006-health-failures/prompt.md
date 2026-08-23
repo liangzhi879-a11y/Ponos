@@ -1,6 +1,6 @@
 # 任务：补全健康分「连续压缩失败」因子的单元测试
 
-这是 YFW-turbo 内核（Node ESM 净室项目）。`kernel/health.mjs` 的 `computeHealthScore()` 是多因子健康分纯函数，其中包含「连续压缩失败」因子：
+这是 Ponos-turbo 内核（Node ESM 净室项目）。`kernel/health.mjs` 的 `computeHealthScore()` 是多因子健康分纯函数，其中包含「连续压缩失败」因子：
 
 ```js
 score += Math.min(3, failures) * 10   // 每次失败 +10，封顶 3 次

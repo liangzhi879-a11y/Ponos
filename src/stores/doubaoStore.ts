@@ -56,7 +56,7 @@ export const useDoubaoStore = create<State>((set, get) => ({
         let diskPath: string | undefined
         for (let attempt = 0; attempt < 2 && !id; attempt++) {
           try {
-            const r = await fetch(`${bridge()}/yfw/doubao/download`, {
+            const r = await fetch(`${bridge()}/ponos/doubao/download`, {
               method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: u }),
             })
             const d = await r.json()
@@ -65,12 +65,12 @@ export const useDoubaoStore = create<State>((set, get) => ({
           } catch { id = null }
         }
         if (id) {
-          items.push({ id, prompt: p.prompt, imageUrl: `${bridge()}/yfw/doubao/images/${id}`, path: diskPath, createdAt: Date.now() })
+          items.push({ id, prompt: p.prompt, imageUrl: `${bridge()}/ponos/doubao/images/${id}`, path: diskPath, createdAt: Date.now() })
         }
       }
       set({ error: null, results: items })
       for (const it of items) {
-        await fetch(`${bridge()}/yfw/doubao/history`, {
+        await fetch(`${bridge()}/ponos/doubao/history`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(it),
         }).catch(() => {})
@@ -79,11 +79,11 @@ export const useDoubaoStore = create<State>((set, get) => ({
   },
 
   loadHistory: async () => {
-    try { const r = await fetch(`${bridge()}/yfw/doubao/history`); const d = await r.json(); set({ history: d.items || [] }) } catch {}
+    try { const r = await fetch(`${bridge()}/ponos/doubao/history`); const d = await r.json(); set({ history: d.items || [] }) } catch {}
   },
 
   removeHistory: async (id) => {
-    await fetch(`${bridge()}/yfw/doubao/history/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    await fetch(`${bridge()}/ponos/doubao/history/${encodeURIComponent(id)}`, { method: 'DELETE' })
     set({ history: get().history.filter(h => h.id !== id) })
   },
 

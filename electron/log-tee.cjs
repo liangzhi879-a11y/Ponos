@@ -1,9 +1,9 @@
 // 日志 tee：console.log/error 双写（原输出 + app.log，时间戳前缀）。
 // 独立模块、不依赖 electron，保证 main.cjs 最早期即可引入。
 //
-// 日志目录默认随 YFW_HOME（dev 调试版 YFW_HOME=~/.yfworking-dev 时日志写
-// ~/.yfworking-dev/logs/app.log，与正式版 ~/.yfworking/logs 严格隔离；
-// 未设 YFW_HOME 时回退 ~/.yfworking/logs）。
+// 日志目录默认随 PONOS_HOME（dev 调试版 PONOS_HOME=~/.ponos-dev 时日志写
+// ~/.ponos-dev/logs/app.log，与正式版 ~/.ponos/logs 严格隔离；
+// 未设 PONOS_HOME 时回退 ~/.ponos/logs）。
 //
 // 注意（相对 brief 的偏差）：brief 原实现用 createWriteStream，但其打开文件是异步的，
 // 测试"双写"用例在 console.log 返回后同步 readFileSync 会读到 ENOENT（文件尚未创建）。
@@ -30,7 +30,7 @@ function createTee(writeFn) {
   }
 }
 
-function initLogTee({ logDir = join(process.env.YFW_HOME || join(os.homedir(), '.yfworking'), 'logs') } = {}) {
+function initLogTee({ logDir = join(process.env.PONOS_HOME || join(os.homedir(), '.ponos'), 'logs') } = {}) {
   mkdirSync(logDir, { recursive: true })
   const logPath = join(logDir, 'app.log')
 

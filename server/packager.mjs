@@ -4,10 +4,10 @@ import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync
 import { spawnSync } from 'node:child_process'
 import { PERSONAL_DIR, hashLine } from './experience.mjs'
 
-const HOME = process.env.YFW_TEST_HOME || homedir()
-const YFW_HOME = join(HOME, '.yfworking')
-const SKILL_EXP_DIR = join(YFW_HOME, 'memory', 'skill_experiences')
-const SKILLS_DIR = join(YFW_HOME, 'skills')
+const HOME = process.env.PONOS_TEST_HOME || homedir()
+const PONOS_HOME = join(HOME, '.ponos')
+const SKILL_EXP_DIR = join(PONOS_HOME, 'memory', 'skill_experiences')
+const SKILLS_DIR = join(PONOS_HOME, 'skills')
 
 // Windows：解析系统 bsdtar 的绝对路径（System32\tar.exe），避免 Git Bash 的 GNU tar
 // 把 `-f C:\...` 中的 `C:` 当作远程主机（报 "Cannot connect to C: resolve failed"）。
@@ -68,12 +68,12 @@ export function collectTypeStats(included, opts = {}) {
     } else if (t === 'config') {
       let bytes = 0
       for (const f of ['config.json', 'settings.json']) {
-        const fp = join(YFW_HOME, f)
+        const fp = join(PONOS_HOME, f)
         if (existsSync(fp)) bytes += statSync(fp).size
       }
       stats[t] = { files: bytes ? 1 : 0, bytes }
     } else if (t === 'project') {
-      const root = opts.projectCwd ? join(opts.projectCwd, '.yfworking') : null
+      const root = opts.projectCwd ? join(opts.projectCwd, '.ponos') : null
       stats[t] = { files: root && existsSync(root) ? 1 : 0, bytes: root && existsSync(root) ? 0 : 0 }
     }
   }
@@ -113,7 +113,7 @@ function importSkillsDir(srcDir, dstDir, conflict, restored) {
 export async function exportPackage(opts) {
   const { outPath, included = [], sensitiveWords = [], chatsJson = null, projectCwd = null, configRedact = true, onProgress = () => {} } = opts
   if (!included.length) return { ok: false, error: '未选择任何导出类型' }
-  const staging = mkdtempSync(join(tmpdir(), 'yfw-exp-export-'))
+  const staging = mkdtempSync(join(tmpdir(), 'ponos-exp-export-'))
   const skipped = []
   try {
     onProgress('收集数据…')
@@ -177,7 +177,7 @@ export async function exportPackage(opts) {
       const dest = join(staging, 'config')
       mkdirSync(dest, { recursive: true })
       for (const f of ['config.json', 'settings.json']) {
-        const fp = join(YFW_HOME, f)
+        const fp = join(PONOS_HOME, f)
         if (!existsSync(fp)) continue
         const data = JSON.parse(readFileSync(fp, 'utf-8'))
         writeFileSync(join(dest, f), JSON.stringify(configRedact ? redact(data) : data, null, 2), 'utf-8')
@@ -216,7 +216,7 @@ export async function exportPackage(opts) {
       }
     }
     if (included.includes('project') && projectCwd) {
-      const src = join(projectCwd, '.yfworking')
+      const src = join(projectCwd, '.ponos')
       if (existsSync(src)) cpSync(src, join(staging, 'project'), { recursive: true })
       else skipped.push({ type: 'project', reason: `${src} 不存在，跳过` })
     }
@@ -237,7 +237,7 @@ export async function exportPackage(opts) {
     writeFileSync(join(staging, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf-8')
 
     onProgress('压缩打包…')
-    mkdirSync(join(tmpdir(), 'yfw-exp-export'), { recursive: true })
+    mkdirSync(join(tmpdir(), 'ponos-exp-export'), { recursive: true })
     const tar = spawnSync(TAR_CMD, ['-a', '-c', '-f', outPath, '-C', staging, '.'], { stdio: 'pipe' })
     if (tar.status !== 0) {
       return { ok: false, error: `tar 打包失败: ${tar.stderr?.toString() || tar.status}` }
@@ -278,7 +278,7 @@ export async function importPackage(zipPath, opts) {
   if (!['skip', 'overwrite', 'merge'].includes(conflict)) {
     return { ok: false, error: 'conflict 必须是 skip/overwrite/merge' }
   }
-  const staging = mkdtempSync(join(tmpdir(), 'yfw-exp-import-'))
+  const staging = mkdtempSync(join(tmpdir(), 'ponos-exp-import-'))
   const restored = []
   let conflicts = 0
   try {
@@ -293,7 +293,7 @@ export async function importPackage(zipPath, opts) {
     const targets = {
       personal: PERSONAL_DIR,
       skill_exp: SKILL_EXP_DIR,
-      config: YFW_HOME,
+      config: PONOS_HOME,
     }
     for (const t of included) {
       const srcDir = join(staging, t)
@@ -346,20 +346,20 @@ export async function importPackage(zipPath, opts) {
           }
         }
       } else if (t === 'project' && projectCwd) {
-        // 按目录粒度处理：目标 .yfworking 已存在时（跨机导入正常场景），
+        // 按目录粒度处理：目标 .ponos 已存在时（跨机导入正常场景），
         // skip/merge 直接跳过并计 conflict，避免 cpSync force:false 抛 ERR_FS_CP_EEXIST 拖垮整个导入
-        const target = join(projectCwd, '.yfworking')
+        const target = join(projectCwd, '.ponos')
         if (existsSync(target)) {
           if (conflict === 'overwrite') {
             cpSync(srcDir, target, { recursive: true, force: true })
-            restored.push('project/.yfworking')
+            restored.push('project/.ponos')
           } else {
             conflicts++
-            restored.push('project/.yfworking (exists, skipped)')
+            restored.push('project/.ponos (exists, skipped)')
           }
         } else {
           cpSync(srcDir, target, { recursive: true })
-          restored.push('project/.yfworking')
+          restored.push('project/.ponos')
         }
       }
     }

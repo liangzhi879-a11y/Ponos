@@ -12,11 +12,11 @@
 
 - 版本：npm test 使用 `node --test "server/*.test.mjs" "electron/*.test.mjs"`——新增测试文件必须放这两目录。
 - 检测不得启动/重启常驻服务（bridge/内核会话/宠物）；仅允许 `--version` 类无副作用只读探测，用完立即回收。
-- 日志路径固定 `~/.yfworking/logs/app.log`；`last-boot.json` 固定 `~/.yfworking/logs/last-boot.json`。
+- 日志路径固定 `~/.ponos/logs/app.log`；`last-boot.json` 固定 `~/.ponos/logs/last-boot.json`。
 - 检测项 id 全局唯一，注册表模式扩展（新增项 = 注册一个对象，不改引擎骨架）。
 - 状态翻转才推送（`diag:status-changed`），避免高频推送。
 - 所有文案走 i18n（`src/i18n/translations/zh-CN.ts` + `en-US.ts`），不硬编码 UI 字符串。
-- preload 暴露统一 `window.yfwDiag` 命名空间。
+- preload 暴露统一 `window.ponosDiag` 命名空间。
 
 ---
 
@@ -96,7 +96,7 @@ Expected: FAIL——`Cannot find module './log-tee.cjs'`
 - [ ] **Step 3: 实现 `electron/log-tee.cjs`**
 
 ```js
-// 日志 tee：console.log/error 双写（原输出 + ~/.yfworking/logs/app.log，时间戳前缀）。
+// 日志 tee：console.log/error 双写（原输出 + ~/.ponos/logs/app.log，时间戳前缀）。
 // 独立模块、不依赖 electron，保证 main.cjs 最早期即可引入。
 'use strict'
 const { createWriteStream, existsSync, statSync, mkdirSync, renameSync, readFileSync } = require('fs')
@@ -112,7 +112,7 @@ function createTee(writeFn) {
   }
 }
 
-function initLogTee({ logDir = join(os.homedir(), '.yfworking', 'logs') } = {}) {
+function initLogTee({ logDir = join(os.homedir(), '.ponos', 'logs') } = {}) {
   mkdirSync(logDir, { recursive: true })
   const logPath = join(logDir, 'app.log')
 
@@ -181,7 +181,7 @@ git commit -m "feat(diag): 日志 tee 模块——时间戳双写、轮转、异
   - 全局 `logTee` 引用（monitor 与 IPC 复用）
   - `last-boot.json` 写入函数 `writeBootSummary(status)`；结构 `{ ok: bool, nodes: { mainReady, bridgeSpawn, bridgeReady, windowLoad, kernelSpawn }[], failedAt, error }`
   - `bootPhase(name, ok)` 打点函数（每阶段调用一次，结束时写 last-boot.json）
-  - 启动失败原生对话框 `showBootFailureDialog()`：`dialog.showMessageBox`，标题「YFWorking 启动异常」，正文含日志路径，按钮 [打开日志目录] [复制路径] [确定]
+  - 启动失败原生对话框 `showBootFailureDialog()`：`dialog.showMessageBox`，标题「Ponos 启动异常」，正文含日志路径，按钮 [打开日志目录] [复制路径] [确定]
   - 渲染层监听注册 `registerRendererErrorCapture(win)`：`did-fail-load` / `render-process-gone` / `console-message` / `preload-error` / `unresponsive` → `console.error('[render] ...')` 入盘
 
 - [ ] **Step 1: 修改 `electron/main.cjs`——顶部接入**
@@ -205,7 +205,7 @@ const logTee = initLogTee()          // 最早期：启动序列第一行日志�
   }
   function writeBootSummary() {
     try {
-      const p = join(ensureYfwHome(), 'logs', 'last-boot.json')
+      const p = join(ensurePonosHome(), 'logs', 'last-boot.json')
       mkdirSync(dirname(p), { recursive: true })
       writeFileSync(p, JSON.stringify({ ok: !bootPhaseFailed, nodes: bootNodes, failedAt: bootPhaseFailed ? new Date().toISOString() : null }, null, 2), 'utf-8')
     } catch (_) {}
@@ -216,7 +216,7 @@ const logTee = initLogTee()          // 最早期：启动序列第一行日志�
       const logPath = logTee.getLogPath()
       const { response } = await dialog.showMessageBox({
         type: 'error',
-        title: 'YFWorking 启动异常',
+        title: 'Ponos 启动异常',
         message: '应用界面启动失败。完整错误日志已保存到：',
         detail: logPath,
         buttons: ['打开日志目录', '复制路径', '确定'],
@@ -368,7 +368,7 @@ git commit -m "feat(diag): bridge 诊断埋点（首token/内核崩溃/API成功
 
 **Interfaces:**
 - Consumes:
-  - `logTee`（Task 2 全局）；`process.env.YFW_BRIDGE_PORT || '51309'`
+  - `logTee`（Task 2 全局）；`process.env.PONOS_BRIDGE_PORT || '51309'`
   - bridge `/diag/info`（Task 3，可选——取不到时 kernel-session/provider-reach/kernel-crash 返回 unknown）
   - `ctx`（由 main.cjs 注入）：`{ appPaths: { kernel, bun, python }, executorStatus: () => Promise<{connected:boolean, windows:number}>, petAlive: () => boolean, gpuCrashCount: () => number, renderCrashCount: () => number, bridgeRestartCount: () => number }`
 - Produces:
@@ -466,7 +466,7 @@ const CHECKS = [
   { id: 'render-health', group: 'render', label: 'diag.check.renderHealth' },
 ]
 
-const YFW_HOME = join(os.homedir(), '.yfworking')
+const PONOS_HOME = join(os.homedir(), '.ponos')
 
 function timeout(p, ms, tag) {
   return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(tag + ' timeout')), ms))])
@@ -512,7 +512,7 @@ function runProbe(cmdArgs, ms) {
   })
 }
 
-function createDiagMonitor({ ctx, bridgePort = process.env.YFW_BRIDGE_PORT || '51309' }) {
+function createDiagMonitor({ ctx, bridgePort = process.env.PONOS_BRIDGE_PORT || '51309' }) {
   let lastSnapshot = null
   let onChange = null
   let timer = null
@@ -527,15 +527,15 @@ function createDiagMonitor({ ctx, bridgePort = process.env.YFW_BRIDGE_PORT || '5
   }
 
   async function checkKernelBootstrap() {
-    const k = join(YFW_HOME, 'runtime', 'kernel', 'cli.mjs')
-    const b = join(YFW_HOME, 'runtime', 'bun', 'bun.exe')
+    const k = join(PONOS_HOME, 'runtime', 'kernel', 'cli.mjs')
+    const b = join(PONOS_HOME, 'runtime', 'bun', 'bun.exe')
     const ok = existsSync(k) && existsSync(b)
     return { status: ok ? 'ok' : 'warn', detail: ok ? `cached kernel=${k}` : '未生成 bootstrap 缓存（首次启动自动创建）' }
   }
 
   async function checkKernelLaunch() {
     const r = await timeout(runProbe([`"${ctx.appPaths.bun}"`, `"${ctx.appPaths.kernel}"`, '--version'], 15000).catch(() => ({ ok: false })), 16000, 'kernel-launch')
-    return { status: r.ok && /\(YFW\)/.test(r.stdout) ? 'ok' : 'error', detail: `stdout=${r.stdout?.trim() || ''} exit=${r.exitCode}` }
+    return { status: r.ok && /\(Ponos\)/.test(r.stdout) ? 'ok' : 'error', detail: `stdout=${r.stdout?.trim() || ''} exit=${r.exitCode}` }
   }
 
   async function checkBridgePort() {
@@ -563,7 +563,7 @@ function createDiagMonitor({ ctx, bridgePort = process.env.YFW_BRIDGE_PORT || '5
   }
 
   async function checkTranscriptDir() {
-    const dir = join(YFW_HOME, 'sessions')
+    const dir = join(PONOS_HOME, 'sessions')
     try { accessSync(dir); return { status: 'ok', detail: dir } } catch (_) { return { status: 'error', detail: `不可读: ${dir}` } }
   }
 
@@ -581,7 +581,7 @@ function createDiagMonitor({ ctx, bridgePort = process.env.YFW_BRIDGE_PORT || '5
   }
 
   async function checkBrowserWhitelist() {
-    const p = join(YFW_HOME, 'browser-whitelist.json')
+    const p = join(PONOS_HOME, 'browser-whitelist.json')
     try { JSON.parse(readFileSync(p, 'utf-8')); return { status: 'ok', detail: p } } catch (_) { return { status: 'warn', detail: '白名单缺失或不可解析（可选文件）' } }
   }
 
@@ -601,7 +601,7 @@ function createDiagMonitor({ ctx, bridgePort = process.env.YFW_BRIDGE_PORT || '5
   }
 
   async function checkDoubaoSession() {
-    const p = join(YFW_HOME, 'doubao-session.json')
+    const p = join(PONOS_HOME, 'doubao-session.json')
     try { JSON.parse(readFileSync(p, 'utf-8')); return { status: 'ok', detail: p } } catch (_) { return { status: 'warn', detail: '无豆包会话文件（未使用过）' } }
   }
 
@@ -611,33 +611,33 @@ function createDiagMonitor({ ctx, bridgePort = process.env.YFW_BRIDGE_PORT || '5
   }
 
   async function checkConfigValid() {
-    const files = [join(YFW_HOME, 'config.json'), join(YFW_HOME, 'settings.json')]
+    const files = [join(PONOS_HOME, 'config.json'), join(PONOS_HOME, 'settings.json')]
     const bad = files.filter(f => { try { JSON.parse(readFileSync(f, 'utf-8')); return false } catch (_) { return true } })
     return { status: bad.length ? 'error' : 'ok', detail: bad.length ? `不可解析: ${bad.join(',')}` : 'config/settings 可解析' }
   }
 
   async function checkProviderValid() {
     try {
-      const cfg = JSON.parse(readFileSync(join(YFW_HOME, 'config.json'), 'utf-8'))
+      const cfg = JSON.parse(readFileSync(join(PONOS_HOME, 'config.json'), 'utf-8'))
       const p = cfg.provider || (cfg.providers || [])[0]
       return { status: p?.apiBaseUrl && p?.apiKey ? 'ok' : 'warn', detail: p?.apiBaseUrl || '未配置完整 provider' }
     } catch (_) { return { status: 'error', detail: 'config.json 不可用' } }
   }
 
   async function checkDataDirs() {
-    const dirs = ['sessions', 'skills', 'memory', 'chats'].map(d => join(YFW_HOME, d))
+    const dirs = ['sessions', 'skills', 'memory', 'chats'].map(d => join(PONOS_HOME, d))
     const bad = dirs.filter(d => { try { mkdirSync(d, { recursive: true }); const f = join(d, '.diag-probe'); writeFileSync(f, '1'); rmSync(f); return false } catch (_) { return true } })
     return { status: bad.length ? 'error' : 'ok', detail: bad.length ? `不可写: ${bad.join(',')}` : '数据目录可写' }
   }
 
   async function checkSkillsIndex() {
-    const p = join(YFW_HOME, 'skills', '_skill_index.json')
+    const p = join(PONOS_HOME, 'skills', '_skill_index.json')
     try { JSON.parse(readFileSync(p, 'utf-8')); return { status: 'ok', detail: '技能索引可解析' } } catch (_) { return { status: 'warn', detail: '技能索引缺失（首次扫描后生成）' } }
   }
 
   async function checkLastBoot() {
     try {
-      const b = JSON.parse(readFileSync(join(YFW_HOME, 'logs', 'last-boot.json'), 'utf-8'))
+      const b = JSON.parse(readFileSync(join(PONOS_HOME, 'logs', 'last-boot.json'), 'utf-8'))
       return { status: b.ok ? 'ok' : 'warn', detail: b.ok ? '上次启动正常' : `上次启动异常（${b.failedAt}）` }
     } catch (_) { return { status: 'unknown', detail: '无启动记录（首启）' } }
   }
@@ -747,7 +747,7 @@ function createDiagMonitor({ ctx, bridgePort = process.env.YFW_BRIDGE_PORT || '5
   async function exportReport() {
     const snap = lastSnapshot || await runAll()
     const lines = []
-    lines.push(`YFWorking diagnostic report`)
+    lines.push(`Ponos diagnostic report`)
     lines.push(`generated: ${new Date().toISOString()}`)
     lines.push(`overall: ${snap.overall}`)
     lines.push('')
@@ -792,9 +792,9 @@ git commit -m "feat(diag): 检测引擎 diag-monitor——25 项注册表、聚�
 **Interfaces:**
 - Consumes: `createDiagMonitor`（Task 4）、`logTee`（Task 2）
 - Produces:
-  - `window.yfwDiag`（preload）：`getStatus/rerun/rerunAll/runKernelCheck/exportReport/getBootSummary/openLogDir/onStatusChanged`
+  - `window.ponosDiag`（preload）：`getStatus/rerun/rerunAll/runKernelCheck/exportReport/getBootSummary/openLogDir/onStatusChanged`
   - IPC：`diag:get-status / diag:rerun / diag:rerun-all / diag:run-kernel-check / diag:export / diag:get-boot-summary / diag:open-log-dir`（handle）+ `diag:status-changed`（send）
-  - 主进程侧 `ctx` 注入：`appPaths`（kernel/bun/python 用 findYFWorking 同款候选解析）、`executorStatus`（读 browserExecutor）、`petAlive`（petProcess 存活）、`gpuCrashCount`/`renderCrashCount`/`bridgeRestartCount`（计数变量）
+  - 主进程侧 `ctx` 注入：`appPaths`（kernel/bun/python 用 findPonos 同款候选解析）、`executorStatus`（读 browserExecutor）、`petAlive`（petProcess 存活）、`gpuCrashCount`/`renderCrashCount`/`bridgeRestartCount`（计数变量）
 
 - [ ] **Step 1: main.cjs 创建 monitor 并注册 IPC**
 
@@ -845,11 +845,11 @@ IPC 注册（monitor 定义之后）：
   })
 ```
 
-- [ ] **Step 2: preload.cjs 暴露 `yfwDiag`**
+- [ ] **Step 2: preload.cjs 暴露 `ponosDiag`**
 
 ```js
 // 诊断工具（main 侧 diag:* ipcMain.handle 配对）
-contextBridge.exposeInMainWorld('yfwDiag', {
+contextBridge.exposeInMainWorld('ponosDiag', {
   getStatus: () => ipcRenderer.invoke('diag:get-status'),
   rerun: (id) => ipcRenderer.invoke('diag:rerun', { id }),
   rerunAll: () => ipcRenderer.invoke('diag:rerun-all'),
@@ -875,7 +875,7 @@ Expected: 全 PASS
 
 ```bash
 git add electron/main.cjs electron/preload.cjs
-git commit -m "feat(diag): monitor 接入主进程 + diag:* IPC + preload yfwDiag 暴露"
+git commit -m "feat(diag): monitor 接入主进程 + diag:* IPC + preload ponosDiag 暴露"
 ```
 
 ---
@@ -889,11 +889,11 @@ git commit -m "feat(diag): monitor 接入主进程 + diag:* IPC + preload yfwDia
 - Modify: `src/stores/uiStore.ts`
 
 **Interfaces:**
-- Consumes: `window.yfwDiag`（Task 5 preload）
+- Consumes: `window.ponosDiag`（Task 5 preload）
 - Produces:
   - `DiagCheck` / `DiagSnapshot` / `DiagOverall` 类型（types/index.ts）
   - `diag.ts`：`export function fetchDiagStatus(): Promise<DiagSnapshot>` 等薄封装
-  - `diagStore.ts`：zustand `{ snapshot, overall, errorCount, diagOpen, bootSummary, setSnapshot, openDiagnostics, closeDiagnostics, setBootSummary }`；初始化订阅 `window.yfwDiag.onStatusChanged`
+  - `diagStore.ts`：zustand `{ snapshot, overall, errorCount, diagOpen, bootSummary, setSnapshot, openDiagnostics, closeDiagnostics, setBootSummary }`；初始化订阅 `window.ponosDiag.onStatusChanged`
   - `uiStore`：`diagOpen: boolean` + `openDiagnostics()`/`closeDiagnostics()`
 
 - [ ] **Step 1: types/index.ts 加类型**
@@ -920,7 +920,7 @@ export interface DiagBootSummary { ok: boolean; nodes: { name: string; at: strin
 ```ts
   interface Window {
     // ...
-    yfwDiag?: {
+    ponosDiag?: {
       getStatus: () => Promise<DiagSnapshot>
       rerun: (id: string) => Promise<DiagCheck | null>
       rerunAll: () => Promise<DiagSnapshot>
@@ -939,11 +939,11 @@ export interface DiagBootSummary { ok: boolean; nodes: { name: string; at: strin
 import type { DiagSnapshot } from '@/types'
 
 export function fetchDiagStatus(): Promise<DiagSnapshot> {
-  return window.yfwDiag?.getStatus() ?? Promise.resolve({ overall: 'unknown', checks: [], lastRunAt: 0 })
+  return window.ponosDiag?.getStatus() ?? Promise.resolve({ overall: 'unknown', checks: [], lastRunAt: 0 })
 }
 ```
 
-（其余调用直接走 `window.yfwDiag`，不重复封装。）
+（其余调用直接走 `window.ponosDiag`，不重复封装。）
 
 - [ ] **Step 3: `src/stores/diagStore.ts`**
 
@@ -976,8 +976,8 @@ export const useDiagStore = create<DiagState>((set) => ({
 }))
 
 // 启动时订阅主进程状态推送
-if (typeof window !== 'undefined' && window.yfwDiag?.onStatusChanged) {
-  window.yfwDiag.onStatusChanged((s) => useDiagStore.getState().setSnapshot(s))
+if (typeof window !== 'undefined' && window.ponosDiag?.onStatusChanged) {
+  window.ponosDiag.onStatusChanged((s) => useDiagStore.getState().setSnapshot(s))
 }
 ```
 
@@ -1117,7 +1117,7 @@ git commit -m "feat(diag): 命令面板诊断命令 + i18n 文案"
 - Modify: `src/components/layout/AppShell.tsx`（挂载 Panel + Banner）
 
 **Interfaces:**
-- Consumes: `useDiagStore`（Task 6）、`window.yfwDiag`（Task 5）、i18n（Task 7）
+- Consumes: `useDiagStore`（Task 6）、`window.ponosDiag`（Task 5）、i18n（Task 7）
 - Produces: 诊断面板 Dialog + 异常横幅组件
 
 - [ ] **Step 1: `DiagnosticPanel.tsx`**
@@ -1148,8 +1148,8 @@ export function DiagnosticPanel() {
   useEffect(() => {
     if (!diagOpen) return
     setKernelResult(null)
-    window.yfwDiag?.getStatus().then(setSnapshot).catch(() => {})
-    window.yfwDiag?.getBootSummary().then(setBootSummary).catch(() => {})
+    window.ponosDiag?.getStatus().then(setSnapshot).catch(() => {})
+    window.ponosDiag?.getBootSummary().then(setBootSummary).catch(() => {})
   }, [diagOpen, setSnapshot, setBootSummary])
 
   const groups = useMemo(() => {
@@ -1160,18 +1160,18 @@ export function DiagnosticPanel() {
 
   const runAll = async () => {
     setRunning(true)
-    try { const s = await window.yfwDiag?.rerunAll(); if (s) setSnapshot(s) } finally { setRunning(false) }
+    try { const s = await window.ponosDiag?.rerunAll(); if (s) setSnapshot(s) } finally { setRunning(false) }
   }
   const rerunOne = async (id: string) => {
-    const c = await window.yfwDiag?.rerun(id)
+    const c = await window.ponosDiag?.rerun(id)
     if (c && snapshot) setSnapshot({ ...snapshot, checks: snapshot.checks.map(x => x.id === id ? c : x) })
   }
   const runKernel = async () => {
-    const r = await window.yfwDiag?.runKernelCheck()
+    const r = await window.ponosDiag?.runKernelCheck()
     if (r) setKernelResult(r)
   }
   const doExport = async () => {
-    const r = await window.yfwDiag?.exportReport()
+    const r = await window.ponosDiag?.exportReport()
     if (!r) return
     await navigator.clipboard.writeText(r.text)
     alert(t('diagnostic.exportCopied'))
@@ -1241,7 +1241,7 @@ export function DiagnosticPanel() {
         <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-subtle">
           <Button size="sm" variant="secondary" onClick={runKernel}><Bug className="w-3.5 h-3.5" /> {t('diagnostic.kernelCheck')}</Button>
           <Button size="sm" variant="secondary" onClick={doExport}><FileText className="w-3.5 h-3.5" /> {t('diagnostic.exportReport')}</Button>
-          <Button size="sm" variant="ghost" onClick={() => window.yfwDiag?.openLogDir()}><FolderOpen className="w-3.5 h-3.5" /> {t('diagnostic.openLogDir')}</Button>
+          <Button size="sm" variant="ghost" onClick={() => window.ponosDiag?.openLogDir()}><FolderOpen className="w-3.5 h-3.5" /> {t('diagnostic.openLogDir')}</Button>
           {kernelResult && (
             <pre className="flex-1 min-w-0 text-[11px] font-mono text-secondary bg-elevated rounded-md px-3 py-2 overflow-x-auto">
               {kernelResult.stdout || kernelResult.stderr || `exit=${kernelResult.ok ? 0 : '非0'}`}
@@ -1326,16 +1326,16 @@ Expected: 全 PASS（含现有 server/electron 测试 + 新增 4 个测试文件
 
 - [ ] **Step 2: 构建 + 同步 release 副本**
 
-Run: `npm run build && cp -r dist/. release/YFWorking/dist/ && cp -r dist/. release/YFWorking_ms92cd6u/dist/ && cp electron/*.cjs release/YFWorking/electron/ && cp electron/*.cjs release/YFWorking_ms92cd6u/electron/ && cp electron/*.mjs release/YFWorking/electron/ 2>/dev/null; cp server/bridge.mjs release/YFWorking/server/ && cp server/bridge.mjs release/YFWorking_ms92cd6u/server/`
+Run: `npm run build && cp -r dist/. release/Ponos/dist/ && cp -r dist/. release/Ponos_ms92cd6u/dist/ && cp electron/*.cjs release/Ponos/electron/ && cp electron/*.cjs release/Ponos_ms92cd6u/electron/ && cp electron/*.mjs release/Ponos/electron/ 2>/dev/null; cp server/bridge.mjs release/Ponos/server/ && cp server/bridge.mjs release/Ponos_ms92cd6u/server/`
 Expected: 无错误
 
 - [ ] **Step 3: 手动验证清单（用户执行）**
 
 - [ ] 启动应用 → 命令面板（⌘K）→ 输入"诊断" → 面板出现，全绿或显示实际状态
-- [ ] 内核自检按钮 → 显示 `1.1.0 (YFW)`
+- [ ] 内核自检按钮 → 显示 `1.1.0 (Ponos)`
 - [ ] 导出报告 → 剪贴板内容含分组清单与日志尾部 200 行
-- [ ] `~/.yfworking/logs/app.log` 存在，含时间戳 `[2026-...]` 与 `[main]`/`[bridge]` 行
-- [ ] `~/.yfworking/logs/last-boot.json` 存在，`ok: true`
+- [ ] `~/.ponos/logs/app.log` 存在，含时间戳 `[2026-...]` 与 `[main]`/`[bridge]` 行
+- [ ] `~/.ponos/logs/last-boot.json` 存在，`ok: true`
 - [ ] 模拟故障（临时改名 `kernel/cli.mjs`）→ 重新检测 → kernel-files=error → 右上角横幅出现
 - [ ] 模拟界面启动失败（临时改名 `dist/index.html`）→ 启动 → 原生对话框弹出提示日志路径 → app.log 含 `did-fail-load` 记录
 
@@ -1363,6 +1363,6 @@ git commit -m "chore(diag): 集成验证与 release 副本同步"
 - §8 文件清单 → Tasks 1-8 对齐 ✓
 - §10 测试 → 各 Task 内 + Task 9 ✓
 
-**类型一致性：** `createDiagMonitor`（Task 4）返回 `start/stop/runAll/rerun/runKernelCheck/exportReport/onEvent/setOnChange/getSnapshot`；Task 5 IPC 调用同名方法 ✓。`DiagSnapshot`/`DiagCheck`/`DiagOverall`（Task 6）与 Task 4 快照结构字段一致 ✓。preload `yfwDiag` 方法与 Task 5 IPC 通道一一对应 ✓。
+**类型一致性：** `createDiagMonitor`（Task 4）返回 `start/stop/runAll/rerun/runKernelCheck/exportReport/onEvent/setOnChange/getSnapshot`；Task 5 IPC 调用同名方法 ✓。`DiagSnapshot`/`DiagCheck`/`DiagOverall`（Task 6）与 Task 4 快照结构字段一致 ✓。preload `ponosDiag` 方法与 Task 5 IPC 通道一一对应 ✓。
 
 **无占位符：** 所有代码步骤含完整实现；测试含断言。i18n 文案完整列出 zh-CN，en-US 为同结构翻译（明确说明）。

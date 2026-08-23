@@ -3,7 +3,7 @@
 // 契约：
 //   runTask(ctx) → { exitCode, output, stderr, durationMs, usageTokens, toolCalls }
 //   ctx = { ws, prompt, model, timeoutMs, onLog }
-// 每个适配器独立模块（yfw 单独文件），内核完善后仅需更新 yfw.mjs 即可重跑。
+// 每个适配器独立模块（ponos 单独文件），内核完善后仅需更新 ponos.mjs 即可重跑。
 // ---------------------------------------------------------------------------
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'

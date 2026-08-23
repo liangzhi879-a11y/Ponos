@@ -159,17 +159,17 @@ describe('loadTranscript', () => {
 describe('searchTranscripts', () => {
   test('跨项目内容子串匹配，大小写不敏感，返回 snippet/matchCount', (t) => {
     const { root, proj } = makeProjects(t)
-    mk(proj, `${UUID}.jsonl`, entry('user', { uuid: 'u1', message: { role: 'user', content: '前文 YFW_DEMO_KEYWORD 后文' } }) + '\n')
+    mk(proj, `${UUID}.jsonl`, entry('user', { uuid: 'u1', message: { role: 'user', content: '前文 PONOS_DEMO_KEYWORD 后文' } }) + '\n')
     const proj2 = join(root, sanitizePathSegment('D:\\other\\proj'))
     mkdirSync(proj2, { recursive: true })
     mk(proj2, '55555555-5555-4555-8555-555555555555.jsonl', entry('user', { message: { role: 'user', content: '无关键字的会话' } }) + '\n')
 
-    const res = searchTranscripts(root, 'yfw_demo_keyword') // 小写 query 命中大写内容
+    const res = searchTranscripts(root, 'ponos_demo_keyword') // 小写 query 命中大写内容
     assert.equal(res.length, 1)
     assert.equal(res[0].projectCwd, sanitizePathSegment('C:\\Users\\t\\demo-project'))
     assert.equal(res[0].sessionId, UUID)
     assert.equal(res[0].matchCount, 1)
-    assert.match(res[0].snippet, /YFW_DEMO_KEYWORD/)
+    assert.match(res[0].snippet, /PONOS_DEMO_KEYWORD/)
     assert.match(res[0].mtime, /^\d{4}-\d{2}-\d{2}T/)
   })
 

@@ -38,8 +38,8 @@ export function EditorWindowRoot() {
   }
 
   useEffect(() => {
-    const win = (window as any).yfworkingWindow
-    const api = (window as any).yfworkingAPI
+    const win = (window as any).ponosWindow
+    const api = (window as any).ponosAPI
     // 挂载后拉取 pending 文件（主进程在 did-finish-load 前登记，可能早于 React 挂载）
     api?.getPendingEditorFile?.().then((p: any) => { if (p) openFileIntoStore(p) }).catch(() => {})
     const off = win?.onEditorOpenFile?.((data: any) => openFileIntoStore(data))
@@ -50,7 +50,7 @@ export function EditorWindowRoot() {
   // 最后一个标签关闭 → 自动收起本窗口（首次打开文件前不触发）
   useEffect(() => {
     if (everOpened.current && openFiles.length === 0) {
-      ;(window as any).yfworkingAPI?.closeEditorWindow?.()
+      ;(window as any).ponosAPI?.closeEditorWindow?.()
     }
   }, [openFiles.length])
 

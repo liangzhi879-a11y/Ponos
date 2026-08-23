@@ -5,7 +5,7 @@ version: "1.0.0"
 ---
 
 <!-- SECTION_BEGIN: ocr_mandatory -->
-## OCR强制规范 → 详见 {{YFW_SKILLS}}/_common/SHARED_ocr_mandatory.md
+## OCR强制规范 → 详见 {{PONOS_SKILLS}}/_common/SHARED_ocr_mandatory.md
 > ⚠️ 核心铁律：先OCR后操作，禁止猜测，必须等待，结果空则报错。
 > 速查：`python ocr_engine.py detect --file <path>` → `python ocr_engine.py ocr --file <path> --project <project>`
 <!-- SECTION_END: ocr_mandatory -->

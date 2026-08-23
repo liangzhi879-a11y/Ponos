@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-YFWorking 产品使用说明书 → PDF 生成脚本
+Ponos 产品使用说明书 → PDF 生成脚本
 格式遵循《远方文档标准化》：
   - 封面：品牌 Logo（新远方数据横版）+ 产品标题 + 版本信息
   - 目录：仿宋 20 号加粗「目录」，一级/二级条目仿宋 12 号加粗，附页码
@@ -19,11 +19,11 @@ import markdown
 from playwright.sync_api import sync_playwright
 
 BASE = r"C:\Users\T203-15\claude-code-gui"
-MD_FILE = os.path.join(BASE, "docs", "manual", "YFWorking产品使用说明书.md")
+MD_FILE = os.path.join(BASE, "docs", "manual", "Ponos产品使用说明书.md")
 IMG_DIR = os.path.join(BASE, "docs", "manual", "images")
 LOGO_PNG = os.path.join(IMG_DIR, "logo_新远方数据LOGO横版.png")
 BUILD_DIR = os.path.join(BASE, "docs", "manual", "_build")
-OUT_FINAL = os.path.join(BASE, "docs", "manual", "YFWorking产品使用说明书.pdf")
+OUT_FINAL = os.path.join(BASE, "docs", "manual", "Ponos产品使用说明书.pdf")
 
 # ---------------- 品牌 / 版式常量 ----------------
 ORANGE = "#FF4200"   # 远方橙
@@ -38,7 +38,7 @@ md = open(MD_FILE, encoding="utf-8").read()
 md = re.sub(r"> \*\*关于截图\*\*：.*?\n\n", "", md, flags=re.S)
 
 # 1.2 移除文首文档大标题（封面已含标题）
-md = re.sub(r"^# YFWorking 产品使用说明书\s*\n+", "", md)
+md = re.sub(r"^# Ponos 产品使用说明书\s*\n+", "", md)
 
 # 1.3 提取封面信息表（第一张表），随后从正文删除
 m = re.search(r"\| 项目 \| 内容 \|.*?(?=\n\n)", md, flags=re.S)
@@ -243,7 +243,7 @@ toc_rows = "".join(
 front_html = wrap(
     '<div class="cover">'
     '<img class="logo" src="%s" alt="新远方数据 Logo"/>'
-    '<div class="title">YFWorking<br/>产品使用说明书</div>'
+    '<div class="title">Ponos<br/>产品使用说明书</div>'
     '<div class="subtitle">企业咨询项目与开发的 AI 工作台</div>'
     '<div class="rule"></div>'
     '<table><tbody>%s</tbody></table>'

@@ -6,7 +6,7 @@
 
 **Architecture:** 新增 kernel/provider.mjs 运行时 ProviderRegistry（未激活时每次现读 env 保持向后兼容，setProvider 激活后固定）；api.mjs/engine.mjs 从 registry 解析 baseUrl/token/model；cli.mjs 处理 switch_provider control_request（空闲切换 / busy 拒绝 / system 回执 / transcript meta 审计）；bridge.mjs 在 /providers 保存后向活跃会话下发热切换，旧内核静默忽略（回退重启）。
 
-**Tech Stack:** Node.js ESM（零 npm 依赖）、NDJSON wire 协议（docs/bridge-contract.md §3/§4）、node:test 测试、spawn 集成测试（YFW_MOCK_API=1）。
+**Tech Stack:** Node.js ESM（零 npm 依赖）、NDJSON wire 协议（docs/bridge-contract.md §3/§4）、node:test 测试、spawn 集成测试（PONOS_MOCK_API=1）。
 
 ## Global Constraints
 
@@ -284,7 +284,7 @@ git commit -m "feat(kernel): session appendMeta 审计条目——热切换留�
 - Consumes: `getProvider()`（Task 1）
 - Produces: runTurn 返回的 `{ model }` 反映 registry 当前 model（CLI `--model` 显式指定时优先于 registry）
 
-- [x] **Step 1: 写失败测试（增补到 server/kernel-engine.test.mjs 末尾，沿用该文件直连 createEngine 的 fixture 模式——YFW_MOCK_API=1）**
+- [x] **Step 1: 写失败测试（增补到 server/kernel-engine.test.mjs 末尾，沿用该文件直连 createEngine 的 fixture 模式——PONOS_MOCK_API=1）**
 
 ```js
 import { getProvider, setProvider } from '../kernel/provider.mjs'
@@ -351,7 +351,7 @@ git commit -m "feat(kernel): engine 每轮从 provider 注册表刷新 model—�
 
 ```js
 // server/provider-switch.test.mjs —— 内核原生 provider 热切换（docs/production/platform.md P4-5）
-// spawn 真内核（kernel/cli.mjs + YFW_MOCK_API=1），按契约注入 NDJSON 断言 stdout 事件。
+// spawn 真内核（kernel/cli.mjs + PONOS_MOCK_API=1），按契约注入 NDJSON 断言 stdout 事件。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -367,7 +367,7 @@ const HOME = mkdtempSync(join(tmpdir(), 'provider-switch-'))
 function spawnKernel(extraEnv = {}) {
   const proc = spawn(process.execPath, [KERNEL, '--print', '--output-format', 'stream-json', '--input-format', 'stream-json', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio'], {
     cwd: HOME,
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: HOME, ...extraEnv },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: HOME, ...extraEnv },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const lines = []

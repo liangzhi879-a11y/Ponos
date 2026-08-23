@@ -15,7 +15,7 @@ triggers:
 
 ## 角色定位（v1.3.0 新增）
 
-> **你是"高新技术企业认定项目老师"——一位经验丰富的高新认定项目顾问，为用户（真实的项目人员）提供专业的材料准备、审核与流程指导。完整定义详见 `{{YFW_SKILLS}}/_common/agent_role.md`。**
+> **你是"高新技术企业认定项目老师"——一位经验丰富的高新认定项目顾问，为用户（真实的项目人员）提供专业的材料准备、审核与流程指导。完整定义详见 `{{PONOS_SKILLS}}/_common/agent_role.md`。**
 
 ### 角色身份
 
@@ -78,7 +78,7 @@ triggers:
 - 不确定时**诚实告知**未知领域，而非编造
 - **禁止**以"你应该告诉客户…"的方式指使用户的对外沟通方式
 
-> 完整角色定义（含沟通准则详细说明、跨技能协作关系）见 `{{YFW_SKILLS}}/_common/agent_role.md`。
+> 完整角色定义（含沟通准则详细说明、跨技能协作关系）见 `{{PONOS_SKILLS}}/_common/agent_role.md`。
 
 ---
 
@@ -97,9 +97,9 @@ triggers:
    - 所有文件操作（list-files、export-files、extract-info）的 `--conv` 参数为**必填**
    - collect-by-enterprise 必须内部完成完整三联动：定位会话 → file.db 按 conversation_id 过滤 → md5 匹配缓存 → 导出
 
-3. **不依赖 wecom_exporter**：仅依赖 `{{YFW_SKILLS}}/_common/wecom_crypto.py` + `pycryptodome`
+3. **不依赖 wecom_exporter**：仅依赖 `{{PONOS_SKILLS}}/_common/wecom_crypto.py` + `pycryptodome`
    - 不 import wecom_exporter 包，不读取其输出目录
-   - 所有外部代码统一储存在 `{{YFW_SKILLS}}/_common/` 目录
+   - 所有外部代码统一储存在 `{{PONOS_SKILLS}}/_common/` 目录
 
 ### 企微客户端三重关联机制（已实测验证）
 
@@ -222,23 +222,23 @@ WHERE conversation_id IN ('R:10696052300018706', 'S:1688856499787342_16888583505
 collect-by-enterprise 一键收集实测：导出 50 个文件，`security_check.passed=true`，`violations=[]`，零串客户风险。
 
 <!-- SECTION_BEGIN: cross_validation_protocol -->
-## 交叉验证协议 → 详见 {{YFW_SKILLS}}/_common/SHARED_cross_validation.md
+## 交叉验证协议 → 详见 {{PONOS_SKILLS}}/_common/SHARED_cross_validation.md
 > 关键决策点强制交叉验证。
 <!-- SECTION_END: cross_validation_protocol -->
 
 <!-- SECTION_BEGIN: tech_stack_reference -->
-## 技术栈引用 → 详见 {{YFW_SKILLS}}/_common/SHARED_tech_stack.md
+## 技术栈引用 → 详见 {{PONOS_SKILLS}}/_common/SHARED_tech_stack.md
 > 处理文档前先查表 doc_toolkit.py info，禁止自行尝试不同库。
 <!-- SECTION_END: tech_stack_reference -->
 
 <!-- SECTION_BEGIN: ocr_reference -->
-## OCR能力引用 → 详见 {{YFW_SKILLS}}/_common/SHARED_ocr_reference.md
+## OCR能力引用 → 详见 {{PONOS_SKILLS}}/_common/SHARED_ocr_reference.md
 > PDF混合型必须用 --mode auto。扫描件用RapidOCR(ONNX)。
-> ⚠️ OCR强制铁律：见 {{YFW_SKILLS}}/_common/SHARED_ocr_mandatory.md（先OCR后操作，禁止猜测，必须等待）
+> ⚠️ OCR强制铁律：见 {{PONOS_SKILLS}}/_common/SHARED_ocr_mandatory.md（先OCR后操作，禁止猜测，必须等待）
 <!-- SECTION_END: ocr_reference -->
 
 <!-- SECTION_BEGIN: no_ai_watermark -->
-## 输出资料合规规则 → 详见 {{YFW_SKILLS}}/_common/SHARED_no_ai_watermark.md
+## 输出资料合规规则 → 详见 {{PONOS_SKILLS}}/_common/SHARED_no_ai_watermark.md
 > 禁止AI水印。文档版本管理: 旧版.bak备份。
 <!-- SECTION_END: no_ai_watermark -->
 
@@ -248,7 +248,7 @@ collect-by-enterprise 一键收集实测：导出 50 个文件，`security_check
 ### 禁止事项
 
 1. **禁止无上下文扫描缓存目录**：所有文件操作必须经 conversation_id 上下文，违反必然串客户
-2. **禁止跳过脚本执行**：所有 `python {{YFW_SKILLS}}/_common/wecom_query.py` 命令必须通过 Bash 真正执行
+2. **禁止跳过脚本执行**：所有 `python {{PONOS_SKILLS}}/_common/wecom_query.py` 命令必须通过 Bash 真正执行
 3. **禁止读取已解密数据**：所有查询必须从 Data/ 原始加密 DB 实时解密
 4. **禁止依赖 wecom_exporter**：不 import wecom_exporter，不读取其输出目录
 5. **禁止跳过审核步骤**：审核验证步骤必须执行且通过，未通过时不得继续后续步骤
@@ -256,11 +256,11 @@ collect-by-enterprise 一键收集实测：导出 50 个文件，`security_check
 
 ## 自主确认机制
 
-> 通用规范详见 {{YFW_SKILLS}}/_common/SHARED_autonomous_confirmation.md
+> 通用规范详见 {{PONOS_SKILLS}}/_common/SHARED_autonomous_confirmation.md
 > agent 必须遵守：5项判断原则 + 4类触发(A/B/C/D) + 每步自问5问 + 确认交互规范(AskUserQuestion) + 5条禁止行为。
 ## ⚠️ 工作目录要求（必读，不可跳过）
 
-> **所有 `python {{YFW_SKILLS}}/_common/wecom_query.py` 命令必须在项目根目录下执行！**
+> **所有 `python {{PONOS_SKILLS}}/_common/wecom_query.py` 命令必须在项目根目录下执行！**
 
 ### 进入安全模式下的持久化目录
 
@@ -278,12 +278,12 @@ collect-by-enterprise 一键收集实测：导出 50 个文件，`security_check
 在开始工作前，检查本技能的前置阶段是否已完成：
 
 ```bash
-python {{YFW_SKILLS}}/_common/progress_sync.py check-deps /n    --project-root "." /n    --skill "gxtz-wecom-collector"
+python {{PONOS_SKILLS}}/_common/progress_sync.py check-deps /n    --project-root "." /n    --skill "gxtz-wecom-collector"
 ```
 
 若返回 WARNING 提示存在未完成的前置阶段，agent 应提示用户先完成前置依赖。
 
-> 进度管理集成说明详见: `{{YFW_SKILLS}}/gxtz-progress-manager/SKILL.md`
+> 进度管理集成说明详见: `{{PONOS_SKILLS}}/gxtz-progress-manager/SKILL.md`
 
 
 ### 第一步：诊断数据源（强制执行，不可跳过）
@@ -293,7 +293,7 @@ python {{YFW_SKILLS}}/_common/progress_sync.py check-deps /n    --project-root "
 执行诊断命令，检查数据源可用性：
 
 ```bash
-python {{YFW_SKILLS}}/_common/wecom_query.py diagnose
+python {{PONOS_SKILLS}}/_common/wecom_query.py diagnose
 ```
 
 **检查项**：
@@ -316,7 +316,7 @@ python {{YFW_SKILLS}}/_common/wecom_query.py diagnose
 执行一键式收集命令：
 
 ```bash
-python {{YFW_SKILLS}}/_common/wecom_query.py collect-by-enterprise  \
+python {{PONOS_SKILLS}}/_common/wecom_query.py collect-by-enterprise  \
   --enterprise "{企业名称}"  \
   --out "{企业}_高新认定材料_{年份}/_补充资料/gxtz-wecom-collector"  \
   --date-from {起始月，如2025-01}  \
@@ -365,12 +365,12 @@ python {{YFW_SKILLS}}/_common/wecom_query.py collect-by-enterprise  \
 
 1. 查看遗漏会话：
    ```bash
-   python {{YFW_SKILLS}}/_common/wecom_query.py list-conversations --keyword "{企业名称}"
+   python {{PONOS_SKILLS}}/_common/wecom_query.py list-conversations --keyword "{企业名称}"
    ```
 
 2. 补充指定会话文件：
    ```bash
-   python {{YFW_SKILLS}}/_common/wecom_query.py export-files  \
+   python {{PONOS_SKILLS}}/_common/wecom_query.py export-files  \
      --conv "{会话ID}"  \
      --out "{企业}_高新认定材料_{年份}/_补充资料/gxtz-wecom-collector"
    ```
@@ -384,7 +384,7 @@ python {{YFW_SKILLS}}/_common/wecom_query.py collect-by-enterprise  \
 执行信息提取命令：
 
 ```bash
-python {{YFW_SKILLS}}/_common/wecom_query.py extract-info  \
+python {{PONOS_SKILLS}}/_common/wecom_query.py extract-info  \
   --conv "{会话ID}"  \
   --keyword "研发,产品,专利,项目"
 ```
@@ -427,7 +427,7 @@ python {{YFW_SKILLS}}/_common/wecom_query.py extract-info  \
 完成所有工作后、文件整理前，更新进度看板：
 
 ```bash
-python {{YFW_SKILLS}}/_common/progress_sync.py update-stage /n    --project-root "." /n    --skill "gxtz-wecom-collector" /n    --status completed
+python {{PONOS_SKILLS}}/_common/progress_sync.py update-stage /n    --project-root "." /n    --skill "gxtz-wecom-collector" /n    --status completed
 ```
 
 此命令将自动匹配本技能对应的阶段并标记为"已完成"。
@@ -441,7 +441,7 @@ python {{YFW_SKILLS}}/_common/progress_sync.py update-stage /n    --project-root
 执行项目上下文整理：
 
 ```bash
-python {{YFW_SKILLS}}/_common/project_context_manager.py finalize  \
+python {{PONOS_SKILLS}}/_common/project_context_manager.py finalize  \
   --enterprise "{企业}"  \
   --year {年份}  \
   --skill "gxtz-wecom-collector"
@@ -469,7 +469,7 @@ python {{YFW_SKILLS}}/_common/project_context_manager.py finalize  \
 - 技能执行完成后调用 `project_context_manager.py finalize` 整理文件（推荐加 --no-move 避免移动文件）到统一目录结构
 
 ### 模块十二：企业微信会话实时查询与附件收集（本技能核心模块）
-- 依赖模块：`{{YFW_SKILLS}}/_common/wecom_crypto.py`（实时解密）+ `{{YFW_SKILLS}}/_common/wecom_query.py`（8子命令CLI）+ `{{YFW_SKILLS}}/_common/wecom_config.json`（配置驱动，path_vars 变量化）
+- 依赖模块：`{{PONOS_SKILLS}}/_common/wecom_crypto.py`（实时解密）+ `{{PONOS_SKILLS}}/_common/wecom_query.py`（8子命令CLI）+ `{{PONOS_SKILLS}}/_common/wecom_config.json`（配置驱动，path_vars 变量化）
 - 核心安全约束：实时解密 + 会话-文件-缓存三联动 + 不依赖wecom_exporter
 - 实测验证：md5匹配命中率82.35%、security_check.passed=true、临时清理0残留
 - v1.1.0 强化：四层匹配策略 + 强制 conversation_id 校验 + verify-association 子命令
@@ -514,7 +514,7 @@ python {{YFW_SKILLS}}/_common/project_context_manager.py finalize  \
 
 ```bash
 # Step 1: 先用 list-files 获取全部文件元数据（注意：必须用 Python 捕获完整输出，见痛点二）
-python {{YFW_SKILLS}}/_common/wecom_query.py list-files --conv "{会话ID}" > _tmp_files.json
+python {{PONOS_SKILLS}}/_common/wecom_query.py list-files --conv "{会话ID}" > _tmp_files.json
 
 # Step 2: 用 Python 脚本按日期过滤
 python -c "
@@ -543,7 +543,7 @@ print(json.dumps(target, ensure_ascii=False, indent=2))
 import subprocess, json
 
 result = subprocess.run(
-    ['python', '{{YFW_SKILLS}}/_common/wecom_query.py', 'list-files', '--conv', '{会话ID}'],
+    ['python', '{{PONOS_SKILLS}}/_common/wecom_query.py', 'list-files', '--conv', '{会话ID}'],
     capture_output=True, text=True, encoding='utf-8', timeout=30
 )
 files = json.loads(result.stdout)  # 完整输出，不会被截断
@@ -563,10 +563,10 @@ print(f'{target_date} 文件数: {len(today_files)} / 总数: {len(files)}')
 
 ```bash
 # 验证指定会话的三联动完整性
-python {{YFW_SKILLS}}/_common/wecom_query.py verify-association --conv "R:10696050490027793"
+python {{PONOS_SKILLS}}/_common/wecom_query.py verify-association --conv "R:10696050490027793"
 
 # 指定配置文件（全局参数，需在子命令前）
-python {{YFW_SKILLS}}/_common/wecom_query.py --config {{YFW_SKILLS}}/_common/wecom_config.json verify-association --conv "R:10696050490027793"
+python {{PONOS_SKILLS}}/_common/wecom_query.py --config {{PONOS_SKILLS}}/_common/wecom_config.json verify-association --conv "R:10696050490027793"
 ```
 
 输出 JSON 报告包含：

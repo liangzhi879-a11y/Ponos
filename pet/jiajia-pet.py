@@ -2,7 +2,7 @@
 """
 jiajia-pet.py — 嘉嘉像素桌面宠物 v3（USAGE.md v2.0 规范重构版）
 
-通过 bridge WebSocket (端口由 YFW_BRIDGE_PORT 环境变量配置，默认 51309) 与 YFWorking 应用实时联动：
+通过 bridge WebSocket (端口由 PONOS_BRIDGE_PORT 环境变量配置，默认 51309) 与 Ponos 应用实时联动：
   - 任务处理中 → think 状态 + think_bubble 附件 + 气泡
   - 工具执行   → tool 状态 + tool_icon 附件 + walk 动画 + 气泡
   - 文本输出   → chat 状态 + chat_bubble 附件 + 气泡
@@ -18,9 +18,9 @@ jiajia-pet.py — 嘉嘉像素桌面宠物 v3（USAGE.md v2.0 规范重构版）
   - 鼠标拖动：grabbed → 跟随光标 → release → idle
 
 依赖：Python 3.12 + tkinter + Pillow + websocket-client
-配置：~/.yfworking/pet.json  {enabled, size, aiInteraction, randomChat}
-位置：~/.yfworking/pet-position.json
-日志：~/.yfworking/pet.log
+配置：~/.ponos/pet.json  {enabled, size, aiInteraction, randomChat}
+位置：~/.ponos/pet-position.json
+日志：~/.ponos/pet.log
 """
 import json
 import os
@@ -50,15 +50,15 @@ IS_WINDOWS = sys.platform == 'win32'
 MAGIC = '#010203'
 MAGIC_RGB = (1, 2, 3)
 
-# dev 调试版经 YFW_HOME 环境变量隔离（~/.yfworking-dev），与 main.cjs 的 yfwHome()
-# 保持同一路径；缺省回落正式版 ~/.yfworking
-YFW_HOME = Path(os.environ.get('YFW_HOME') or (Path(os.path.expanduser('~')) / '.yfworking'))
-CONFIG_PATH = YFW_HOME / 'pet.json'
-POS_PATH = YFW_HOME / 'pet-position.json'
-LOG_PATH = YFW_HOME / 'pet.log'
+# dev 调试版经 PONOS_HOME 环境变量隔离（~/.ponos-dev），与 main.cjs 的 ponosHome()
+# 保持同一路径；缺省回落正式版 ~/.ponos
+PONOS_HOME = Path(os.environ.get('PONOS_HOME') or (Path(os.path.expanduser('~')) / '.ponos'))
+CONFIG_PATH = PONOS_HOME / 'pet.json'
+POS_PATH = PONOS_HOME / 'pet-position.json'
+LOG_PATH = PONOS_HOME / 'pet.log'
 ASSET_DIR = Path(__file__).resolve().parent / 'assets'
 
-BRIDGE_PORT = os.environ.get('YFW_BRIDGE_PORT', '51309')
+BRIDGE_PORT = os.environ.get('PONOS_BRIDGE_PORT', '51309')
 BRIDGE_URL = f'ws://localhost:{BRIDGE_PORT}'
 
 FRAME_W, FRAME_H = 408, 512
@@ -173,7 +173,7 @@ def _strip_emoji(text):
 # ---------------------------------------------------------------------------
 def log(msg):
     try:
-        YFW_HOME.mkdir(parents=True, exist_ok=True)
+        PONOS_HOME.mkdir(parents=True, exist_ok=True)
         with LOG_PATH.open('a', encoding='utf-8') as f:
             f.write('[%s] %s\n' % (time.strftime('%Y-%m-%d %H:%M:%S'), msg))
     except Exception:
@@ -210,7 +210,7 @@ def load_position(win_w, win_h, screen_w, screen_h):
 
 def save_position(x, y):
     try:
-        YFW_HOME.mkdir(parents=True, exist_ok=True)
+        PONOS_HOME.mkdir(parents=True, exist_ok=True)
         POS_PATH.write_text(json.dumps({'x': int(x), 'y': int(y)}, ensure_ascii=False), 'utf-8')
     except Exception as e:
         log('save position error: %s' % e)
@@ -780,7 +780,7 @@ def quit_pet():
 
 
 def quit_app():
-    """直接退出程序：先通知主进程退出整个 YFWorking 应用，再关闭宠物。"""
+    """直接退出程序：先通知主进程退出整个 Ponos 应用，再关闭宠物。"""
     ws_send({'type': 'pet:quit-app'})
     quit_pet()
 

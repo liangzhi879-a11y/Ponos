@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { seedFromFile, visionFromEnv, getProvider } from '../kernel/provider.mjs'
 
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-prov-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-prov-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('seedFromFile：读取 providers.json 激活 active provider', () => {
@@ -33,9 +33,9 @@ test('seedFromFile：文件缺失/active 配置不全 → false 不激活', () =
   assert.equal(seedFromFile(p), false)
 })
 
-test('visionFromEnv：YFW_VISION_* 解析 + 缺字段返回 null', () => {
-  assert.deepEqual(visionFromEnv({ YFW_VISION_BASE_URL: 'https://v.example.com', YFW_VISION_MODEL: 'gpt-v', YFW_VISION_AUTH_TOKEN: 'tv' }),
+test('visionFromEnv：PONOS_VISION_* 解析 + 缺字段返回 null', () => {
+  assert.deepEqual(visionFromEnv({ PONOS_VISION_BASE_URL: 'https://v.example.com', PONOS_VISION_MODEL: 'gpt-v', PONOS_VISION_AUTH_TOKEN: 'tv' }),
     { baseUrl: 'https://v.example.com', model: 'gpt-v', configured: true })
-  assert.equal(visionFromEnv({ YFW_VISION_BASE_URL: 'https://v.example.com' }), null)
+  assert.equal(visionFromEnv({ PONOS_VISION_BASE_URL: 'https://v.example.com' }), null)
   assert.equal(visionFromEnv({}), null)
 })

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// YFW-turbo 内核横向评估平台 —— 评测主入口
+// Ponos-turbo 内核横向评估平台 —— 评测主入口
 // ---------------------------------------------------------------------------
 // 用法：
 //   node benchmark/run.mjs                    # 全量：4 agents × 全部任务
-//   node benchmark/run.mjs --agents yfw,claude # 指定被测对象
+//   node benchmark/run.mjs --agents ponos,claude # 指定被测对象
 //   node benchmark/run.mjs --tasks T001,T003   # 指定任务
 //   node benchmark/run.mjs --limit 1           # 每 agent 只跑前 N 个任务（冒烟）
 //   node benchmark/run.mjs --smoke             # 冒烟：每 agent 1 个任务验证链路
@@ -16,7 +16,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { CONFIG } from './config.mjs'
 import { ensureWorkspace, collectDiff, repoGit } from './lib/workspace.mjs'
 import { applyBasePatch, EXCLUDED_PATCH_FILES } from './lib/base-patches.mjs'
-import { runYFW } from './harness/yfw.mjs'
+import { runPonos } from './harness/ponos.mjs'
 import { runClaude, runPi, runDeepseek } from './harness/adapters.mjs'
 import { diagnoseAgents, printDiagnosis, costOf } from './lib/llm-api.mjs'
 
@@ -97,7 +97,7 @@ function loadTasks() {
 
 // ── agent 调度表（内核完善后在此注册新适配器）──────────────────────────────
 const AGENT_RUNNERS = {
-  yfw: runYFW,
+  ponos: runPonos,
   claude: runClaude,
   pi: runPi,
   deepseek: runDeepseek,
@@ -120,12 +120,12 @@ async function runOne({ agent, task, ts, onLog }) {
     return { agent, task: task.id, status: 'workspace-error', error: String(e) }
   }
 
-  // 2. yfw 专属：任务 base 的历史内核兼容补丁（如 T001/T002 工具透传缺陷），
+  // 2. ponos 专属：任务 base 的历史内核兼容补丁（如 T001/T002 工具透传缺陷），
   //    运行前应用，不影响 agent 改动统计（diff 中排除，basePatched 单独记录）。
   //    仅内核仓库任务适用（SWE-bench 任务打的是外部项目，无历史内核补丁）
-  const basePatched = agent === 'yfw' && !task.repo ? applyBasePatch(task.id, ws) : null
+  const basePatched = agent === 'ponos' && !task.repo ? applyBasePatch(task.id, ws) : null
 
-  // 3. 跑 agent（同一提示词）。yfw 内核入口从内核仓库启动（kernel/cli.mjs），
+  // 3. 跑 agent（同一提示词）。ponos 内核入口从内核仓库启动（kernel/cli.mjs），
   //    --add-dir 指向任务工作区；SWE-bench 任务工作区是外部仓库，须显式传
   //    kernelDir=内核仓库，否则内核启动文件找不到（ERR_MODULE_NOT_FOUND）。
   //    B1：per-task timeoutMs（task.json 可声明）覆盖全局默认——"基线×3+缓冲"
@@ -135,7 +135,7 @@ async function runOne({ agent, task, ts, onLog }) {
   let run
   let spawnError = null
   try {
-    run = await runner({ ws, prompt: task.prompt, timeoutMs: task.timeoutMs || CONFIG.timeoutMs, onLog, kernelDir: agent === 'yfw' ? CONFIG.repo : undefined })
+    run = await runner({ ws, prompt: task.prompt, timeoutMs: task.timeoutMs || CONFIG.timeoutMs, onLog, kernelDir: agent === 'ponos' ? CONFIG.repo : undefined })
   } catch (e) {
     // B2：runner 抛异常 = 进程异常死亡/spawn 失败 → 标记 salvage，残留改动照常验收
     spawnError = String(e)
@@ -188,7 +188,7 @@ async function verifyTask(task, ws, onLog) {
   const { execFile } = await import('node:child_process')
   // 超时 300s：SWE-bench 任务 verify 需逐个跑 FAIL_TO_PASS + PASS_TO_PASS 的
   // pytest（10+ 用例），Python 冷启动/import sympy 较慢；120s 上限实测误杀
-  // 正常修复（yfw×SWE004 EXIT:null 假失败，手动重跑 58s 即通过）。
+  // 正常修复（ponos×SWE004 EXIT:null 假失败，手动重跑 58s 即通过）。
   return new Promise((resolve) => {
     execFile(process.execPath, [task.verifyFile, ws], { cwd: ws, timeout: 300000, env: process.env },
       (err, stdout, stderr) => {
@@ -203,7 +203,7 @@ async function main() {
   const diag = diagnoseAgents(agents, { checkBin: true })
   printDiagnosis(diag)
   // 启动门禁：所选 agent 配置不完整（缺 key/baseUrl/可执行文件）时拒绝启动。
-  // 实测教训：无 baseUrl 时 yfw 内核首轮即报"未检测到可用协议"、usage=0 整批
+  // 实测教训：无 baseUrl 时 ponos 内核首轮即报"未检测到可用协议"、usage=0 整批
   // 结果作废——与其产出垃圾数据，不如先补齐配置（--force 可跳过）。
   const bad = diag.filter((d) => !d.ok && !force)
   if (bad.length) {

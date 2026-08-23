@@ -4,7 +4,7 @@
   "type": "swebench",
   "difficulty": 2,
   "base": "b1cb676cf92dd1a48365b731979833375b188bf2",
-  "repo": "C:\\Users\\T203-15\\yfworking-dev\\benchmark\\vendors\\swebench-repos\\sympy",
+  "repo": "C:\\Users\\T203-15\\ponos-dev\\benchmark\\vendors\\swebench-repos\\sympy",
   "patchBefore": "test.patch",
   "swebench": {
     "instance": "sympy__sympy-24562",

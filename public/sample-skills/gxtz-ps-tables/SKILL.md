@@ -24,9 +24,9 @@ triggers:
 
 ```bash
 # 生成PS表
-python {{YFW_SKILLS}}/_common/generate_ps_table.py --project-root "."
+python {{PONOS_SKILLS}}/_common/generate_ps_table.py --project-root "."
 # 校验PS表
-python {{YFW_SKILLS}}/_common/validate_ps_table.py --input "00_核心表格/PS表.xlsx"
+python {{PONOS_SKILLS}}/_common/validate_ps_table.py --input "00_核心表格/PS表.xlsx"
 ```
 
 或者使用模板注入方式：

@@ -21,24 +21,24 @@ triggers:
 ## 角色定位
 
 > 你是"高新技术企业认定项目老师"。服务于用户（项目人员），不直接面向客户企业。
-> 完整角色定义（三角关系模型/专业领域/能力边界/决策权限/沟通准则）详见 `{{YFW_SKILLS}}/_common/agent_role.md`。
+> 完整角色定义（三角关系模型/专业领域/能力边界/决策权限/沟通准则）详见 `{{PONOS_SKILLS}}/_common/agent_role.md`。
 
 ## 技术栈引用
 
-参见 `{{YFW_SKILLS}}/_common/SHARED_tech_stack.md`：
+参见 `{{PONOS_SKILLS}}/_common/SHARED_tech_stack.md`：
 - 处理文档前必须先 `python doc_toolkit.py info --file <路径>` 查表，禁止自行尝试不同库
 - 速查: xlsx→openpyxl, docx→python-docx, pdf文本→PyMuPDF, pdf表格→pdfplumber, pdf混合→--mode auto
 
 ## OCR能力引用
 
-参见 `{{YFW_SKILLS}}/_common/SHARED_ocr_reference.md`：
+参见 `{{PONOS_SKILLS}}/_common/SHARED_ocr_reference.md`：
 - PDF混合型必须用 --mode auto 逐页智能处理。扫描件用RapidOCR(ONNX)，准确率>95%。
 - 命令：`python doc_toolkit.py read --file X --format pdf --mode auto --project <project>`
-- OCR强制铁律：见 `{{YFW_SKILLS}}/_common/SHARED_ocr_mandatory.md`（先OCR后操作，禁止猜测，必须等待）
+- OCR强制铁律：见 `{{PONOS_SKILLS}}/_common/SHARED_ocr_mandatory.md`（先OCR后操作，禁止猜测，必须等待）
 
 ## 输出资料合规规则
 
-参见 `{{YFW_SKILLS}}/_common/SHARED_no_ai_watermark.md`：
+参见 `{{PONOS_SKILLS}}/_common/SHARED_no_ai_watermark.md`：
 - 禁止AI水印: 禁止脚本署名、AI工具署名、模型标识、生成声明
 - 文档版本管理: 旧版.bak备份
 
@@ -117,11 +117,11 @@ triggers:
 
 ```bash
 # 交叉校验
-python {{YFW_SKILLS}}/_common/validate_cross_tables.py --rd RD表 --ps PS表 --ip IP表 --toai TOAI表
+python {{PONOS_SKILLS}}/_common/validate_cross_tables.py --rd RD表 --ps PS表 --ip IP表 --toai TOAI表
 # 审核验证
-python {{YFW_SKILLS}}/_common/validate_tables.py --dir "输出目录" --project-root "项目根目录"
+python {{PONOS_SKILLS}}/_common/validate_tables.py --dir "输出目录" --project-root "项目根目录"
 # 进度同步
-python {{YFW_SKILLS}}/_common/progress_sync.py status --project-root "."
+python {{PONOS_SKILLS}}/_common/progress_sync.py status --project-root "."
 ```
 
 ### 审核通过条件
@@ -444,12 +444,12 @@ def optimize_text_to_fit(text, max_chars):
 
 ## 溯源核验
 
-参见 `{{YFW_SKILLS}}/_common/SHARED_provenance.md`
+参见 `{{PONOS_SKILLS}}/_common/SHARED_provenance.md`
 所有关键字段值必须与源文件精确一致，禁止改写/换词/扩写/缩写。
 
 ## 权威术语核验
 
-参见 `{{YFW_SKILLS}}/_common/SHARED_authoritative_terms.md`
+参见 `{{PONOS_SKILLS}}/_common/SHARED_authoritative_terms.md`
 输出前强制扫描权威术语。禁止: "新能源及节能"(应为"与")、"高技术服务业"(应为"服务")等。
 
 ## 关键时间逻辑

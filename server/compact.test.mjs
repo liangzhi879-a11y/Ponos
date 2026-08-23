@@ -135,7 +135,7 @@ test('seqsForMessages 反查契约：covered 与 seqs 数量/顺序对应（Task
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('压缩集成（YFW_MOCK_API）：超阈值 → 摘要 replace 落地 → surface 派生正确', async () => {
+test('压缩集成（PONOS_MOCK_API）：超阈值 → 摘要 replace 落地 → surface 派生正确', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'compact-'))
   try {
     const events = []
@@ -146,10 +146,10 @@ test('压缩集成（YFW_MOCK_API）：超阈值 → 摘要 replace 落地 → s
       session,
       context: { window: 500, thresholdRatio: 0.8, retainRatio: 0.16, estimate: (r) => ({ total: (r.messages?.length ?? 0) * 50 }), estimateMessage: () => 50, estimateHistory: (msgs) => (msgs?.length ?? 0) * 50 },
       model: 'm', maxTokens: 100, wire: { ...wire, summary: (t, c) => compactEvents.push({ type: 'summary', c }) },
-      env: { YFW_MOCK_API: '1' },
+      env: { PONOS_MOCK_API: '1' },
     })
-    process.env.YFW_MOCK_API = '1'
-    process.env.YFW_MOCK_COMPACT_RESPONSE = '1'
+    process.env.PONOS_MOCK_API = '1'
+    process.env.PONOS_MOCK_COMPACT_RESPONSE = '1'
     for (let i = 1; i <= 5; i++) { session.appendUser(`q${i}`); session.appendAssistant([{ type: 'text', text: 'a'.repeat(100) }]) }
     // 10 条消息 × 50 = 500 ≥ 阈值 400 → 触发；遮蔽前 8 条 [U1..A4]，保留 [U5,A5]
     const r = await compactor.maybeCompact({ system: 'S', messages: session.deriveMessages() })
@@ -159,8 +159,8 @@ test('压缩集成（YFW_MOCK_API）：超阈值 → 摘要 replace 落地 → s
     // 摘要条目 content 为字符串（契约：投影后 m.content === summary 字符串）
     assert.ok(msgs.some((m) => m.content === '摘要输出'))
     assert.ok(session.getSurface().replaceGeneration >= 1)
-    delete process.env.YFW_MOCK_API
-    delete process.env.YFW_MOCK_COMPACT_RESPONSE
+    delete process.env.PONOS_MOCK_API
+    delete process.env.PONOS_MOCK_COMPACT_RESPONSE
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -174,14 +174,14 @@ test('M2：压缩触发轮 result.usage 含摘要调用用量，且 transcript �
       session,
       context: { window: 500, thresholdRatio: 0.8, retainRatio: 0.16, estimate: (r) => ({ total: (r.messages?.length ?? 0) * 50 }), estimateMessage: () => 50, estimateHistory: (msgs) => (msgs?.length ?? 0) * 50 },
       model: 'm', maxTokens: 100, wire,
-      env: { YFW_MOCK_API: '1' },
+      env: { PONOS_MOCK_API: '1' },
     })
     const engine = createEngine({
       opts: { model: 'm', addDirs: [dir], skipPermissions: true, systemPrompt: 'S' },
       wire, session, compactor,
     })
-    process.env.YFW_MOCK_API = '1'
-    process.env.YFW_MOCK_COMPACT_RESPONSE = '1'
+    process.env.PONOS_MOCK_API = '1'
+    process.env.PONOS_MOCK_COMPACT_RESPONSE = '1'
     for (let i = 1; i <= 5; i++) { session.appendUser(`q${i}`); session.appendAssistant([{ type: 'text', text: 'a'.repeat(100) }]) }
     // 第六轮：pre-step 估值 550 ≥ 阈值 400 → 触发摘要（调用 10/20）→ 主请求（10/20）
     const out = await engine.runTurn({ content: 'q6' })
@@ -194,8 +194,8 @@ test('M2：压缩触发轮 result.usage 含摘要调用用量，且 transcript �
     const stats = aggregateStats(join(dir, 'projects'))
     assert.equal(stats.totals.input_tokens, result.usage.input_tokens)
     assert.equal(stats.totals.output_tokens, result.usage.output_tokens)
-    delete process.env.YFW_MOCK_API
-    delete process.env.YFW_MOCK_COMPACT_RESPONSE
+    delete process.env.PONOS_MOCK_API
+    delete process.env.PONOS_MOCK_COMPACT_RESPONSE
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -210,9 +210,9 @@ test('溢出恢复：context_window_exceeded → forceCompact → retry 成功�
       context: { window: 1000, thresholdRatio: 0.8, retainRatio: 0.16, estimate: (r) => ({ total: (r.messages?.length ?? 0) * 50 }), estimateMessage: () => 50, estimateHistory: (msgs) => (msgs?.length ?? 0) * 50 },
       model: 'm', maxTokens: 100, wire, env: process.env,
     })
-    process.env.YFW_MOCK_API = '1'
-    process.env.YFW_MOCK_OVERFLOW = 'once' // 非 summarizer 调用抛一次溢出
-    process.env.YFW_MOCK_COMPACT_RESPONSE = '1'
+    process.env.PONOS_MOCK_API = '1'
+    process.env.PONOS_MOCK_OVERFLOW = 'once' // 非 summarizer 调用抛一次溢出
+    process.env.PONOS_MOCK_COMPACT_RESPONSE = '1'
     const engine = createEngine({
       opts: { model: 'm', addDirs: [dir], skipPermissions: true, systemPrompt: 'S' },
       wire, session, compactor,
@@ -224,9 +224,9 @@ test('溢出恢复：context_window_exceeded → forceCompact → retry 成功�
     assert.ok(out.text.startsWith('mock: q6'))
     assert.equal(session.compactCount(), 1)
     assert.ok(session.getSurface().replaceGeneration >= 1)
-    delete process.env.YFW_MOCK_API
-    delete process.env.YFW_MOCK_OVERFLOW
-    delete process.env.YFW_MOCK_COMPACT_RESPONSE
+    delete process.env.PONOS_MOCK_API
+    delete process.env.PONOS_MOCK_OVERFLOW
+    delete process.env.PONOS_MOCK_COMPACT_RESPONSE
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -239,10 +239,10 @@ test('P1-5 压缩熔断：摘要连续失败达上限后 maybeCompact/forceCompa
       session,
       context: { window: 500, thresholdRatio: 0.8, retainRatio: 0.16, estimate: (r) => ({ total: (r.messages?.length ?? 0) * 50 }), estimateMessage: () => 50, estimateHistory: (msgs) => (msgs?.length ?? 0) * 50 },
       model: 'm', maxTokens: 100, wire,
-      env: { YFW_MOCK_API: '1', YFW_MOCK_COMPACT_BAD: '1' },
+      env: { PONOS_MOCK_API: '1', PONOS_MOCK_COMPACT_BAD: '1' },
     })
-    process.env.YFW_MOCK_API = '1'
-    process.env.YFW_MOCK_COMPACT_BAD = '1'
+    process.env.PONOS_MOCK_API = '1'
+    process.env.PONOS_MOCK_COMPACT_BAD = '1'
     for (let i = 1; i <= 5; i++) { session.appendUser(`q${i}`); session.appendAssistant([{ type: 'text', text: 'a'.repeat(100) }]) }
     // 第一次：摘要失败（循环内 3 次 + 收尾计数），不落地
     const r1 = await compactor.maybeCompact({ system: 'S', messages: session.deriveMessages() })
@@ -254,34 +254,34 @@ test('P1-5 压缩熔断：摘要连续失败达上限后 maybeCompact/forceCompa
     assert.equal(r2.reason, 'circuit-open')
     const rf = await compactor.forceCompact({ system: 'S', messages: session.deriveMessages() })
     assert.equal(rf.reason, 'circuit-open')
-    delete process.env.YFW_MOCK_API
-    delete process.env.YFW_MOCK_COMPACT_BAD
+    delete process.env.PONOS_MOCK_API
+    delete process.env.PONOS_MOCK_COMPACT_BAD
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('单通道（FIX R1）：装配 health 的 compactor 压缩成功后 yfw_summary 只发一次且 lastSummary 被记录', async () => {
+test('单通道（FIX R1）：装配 health 的 compactor 压缩成功后 ponos_summary 只发一次且 lastSummary 被记录', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'compact-health-'))
   try {
     const events = []
-    const wire = { assistant: (b) => events.push({ type: 'assistant' }), result: () => events.push({ type: 'result' }), controlRequest: () => {}, summary: () => events.push({ type: 'yfw_summary' }), health: () => events.push({ type: 'yfw_health' }) }
+    const wire = { assistant: (b) => events.push({ type: 'assistant' }), result: () => events.push({ type: 'result' }), controlRequest: () => {}, summary: () => events.push({ type: 'ponos_summary' }), health: () => events.push({ type: 'ponos_health' }) }
     const session = createSessionStore({ configDir: dir, cwd: 'proj', sessionId: '00000000-0000-0000-0000-000000000010' })
     const health = createHealth({ wire, model: 'm', contextWindow: 200_000 })
     const compactor = createCompactor({
       session,
       context: { window: 500, thresholdRatio: 0.8, retainRatio: 0.16, estimate: (r) => ({ total: (r.messages?.length ?? 0) * 50 }), estimateMessage: () => 50, estimateHistory: (msgs) => (msgs?.length ?? 0) * 50 },
       model: 'm', maxTokens: 100, wire, health,
-      env: { YFW_MOCK_API: '1' },
+      env: { PONOS_MOCK_API: '1' },
     })
-    process.env.YFW_MOCK_API = '1'
-    process.env.YFW_MOCK_COMPACT_RESPONSE = '1'
+    process.env.PONOS_MOCK_API = '1'
+    process.env.PONOS_MOCK_COMPACT_RESPONSE = '1'
     for (let i = 1; i <= 5; i++) { session.appendUser(`q${i}`); session.appendAssistant([{ type: 'text', text: 'a'.repeat(100) }]) }
-    // 10 条消息 × 50 = 500 ≥ 阈值 400 → 触发；压缩成功后由 health 代发 yfw_summary
+    // 10 条消息 × 50 = 500 ≥ 阈值 400 → 触发；压缩成功后由 health 代发 ponos_summary
     const r = await compactor.maybeCompact({ system: 'S', messages: session.deriveMessages() })
     assert.equal(r.action, 'summarized')
-    assert.equal(events.filter((e) => e.type === 'yfw_summary').length, 1) // 单通道：只发一次（杜绝双发）
+    assert.equal(events.filter((e) => e.type === 'ponos_summary').length, 1) // 单通道：只发一次（杜绝双发）
     assert.equal(health.getState().lastSummary, '摘要输出') // health 代发并记录 lastSummary
-    delete process.env.YFW_MOCK_API
-    delete process.env.YFW_MOCK_COMPACT_RESPONSE
+    delete process.env.PONOS_MOCK_API
+    delete process.env.PONOS_MOCK_COMPACT_RESPONSE
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -374,7 +374,7 @@ test('P9-3 buildSessionMemoryText + 注入：工作记忆块格式正确且随�
 })
 
 test('P9-3 createCompactor：配置 sessionMemoryPath 后压缩请求注入工作记忆文件内容', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yfw-p9-'))
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-p9-'))
   const memFile = join(dir, 'session.md')
   try {
     const { writeFileSync } = await import('node:fs')
@@ -386,12 +386,12 @@ test('P9-3 createCompactor：配置 sessionMemoryPath 后压缩请求注入工�
       summary: () => { injected = true },
       assistant: () => {}, result: () => {}, system: () => {},
     }
-    const compactor = createCompactor({ session, context, model: 'test', maxTokens: 1000, wire, health: null, signal: undefined, env: { ...process.env, YFW_MOCK_API: '1', YFW_MOCK_COMPACT_RESPONSE: 'ok' }, sessionMemoryPath: memFile })
+    const compactor = createCompactor({ session, context, model: 'test', maxTokens: 1000, wire, health: null, signal: undefined, env: { ...process.env, PONOS_MOCK_API: '1', PONOS_MOCK_COMPACT_RESPONSE: 'ok' }, sessionMemoryPath: memFile })
     const r = await compactor.forceCompact({ system: 'sys', messages: [{ role: 'user', content: 'hello' }] })
     assert.ok(r.action === 'summarized' || r.reason)
     // 摘要请求发生（mock 流返回），工作记忆文件被读取（无异常即注入路径通过）
     assert.ok(typeof r.action === 'string')
-    delete process.env.YFW_MOCK_API
-    delete process.env.YFW_MOCK_COMPACT_RESPONSE
+    delete process.env.PONOS_MOCK_API
+    delete process.env.PONOS_MOCK_COMPACT_RESPONSE
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

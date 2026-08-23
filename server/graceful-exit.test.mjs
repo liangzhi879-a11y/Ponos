@@ -16,7 +16,7 @@ const KERNEL = join(dirname(fileURLToPath(import.meta.url)), '..', 'kernel', 'cl
 function spawnKernel(home, sid, extraEnv = {}) {
   const proc = spawn(process.execPath, [KERNEL, '--print', '--output-format', 'stream-json', '--input-format', 'stream-json', '--dangerously-skip-permissions', '--resume', sid], {
     cwd: home,
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: home, ...extraEnv },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: home, ...extraEnv },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const events = []

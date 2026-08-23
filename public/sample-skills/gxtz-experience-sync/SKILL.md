@@ -5,7 +5,7 @@ version: "1.4.0"
 ---
 
 <!-- SECTION_BEGIN: ocr_mandatory -->
-## OCR强制规范 → 详见 {{YFW_SKILLS}}/_common/SHARED_ocr_mandatory.md
+## OCR强制规范 → 详见 {{PONOS_SKILLS}}/_common/SHARED_ocr_mandatory.md
 > ⚠️ 核心铁律：先OCR后操作，禁止猜测，必须等待，结果空则报错。
 > 速查：`python ocr_engine.py detect --file <path>` → `python ocr_engine.py ocr --file <path> --project <project>`
 <!-- SECTION_END: ocr_mandatory -->
@@ -18,7 +18,7 @@ version: "1.4.0"
 
 ## v1.4.0 C盘统一架构适配
 
-> **v1.4.0 架构变更**：`project_context_manager.py` 不再位于项目目录，而是统一存储在 C盘 `{{YFW_SKILLS}}/_common/`。
+> **v1.4.0 架构变更**：`project_context_manager.py` 不再位于项目目录，而是统一存储在 C盘 `{{PONOS_SKILLS}}/_common/`。
 > 所有 CLI 命令使用 C盘绝对路径调用，`--project-root` 参数必须显式指定项目路径。
 
 ### 版本检查（技能启动时）
@@ -42,7 +42,7 @@ python C:/Users/T203-15/.trae-cn/skills/enterprise_project_skills/sync_version.p
 
 | 资源 | 路径 |
 |------|------|
-| `project_context_manager.py` | `{{YFW_SKILLS}}/_common/project_context_manager.py` |
+| `project_context_manager.py` | `{{PONOS_SKILLS}}/_common/project_context_manager.py` |
 | 全局技能经验库 | `C:/Users/T203-15/.trae-cn/memory/skill_experiences/{skill_name}.json` |
 | 项目经验库 | `{project_root}/.claude/project_knowledge/experience_base.json` |
 | 项目留痕 | `{project_root}/.claude/working_trace.md` |
@@ -93,7 +93,7 @@ python C:\Users\T203-15\.trae-cn\skills\enterprise_project_skills\_common\progre
 
 若返回 WARNING 提示存在未完成的前置阶段，agent 应提示用户先完成前置依赖。
 
-> 进度管理集成说明详见: `{{YFW_SKILLS}}/gxtz-progress-manager/SKILL.md`
+> 进度管理集成说明详见: `{{PONOS_SKILLS}}/gxtz-progress-manager/SKILL.md`
 
 
 ## 路径一：即时捕获 (capture)
@@ -109,7 +109,7 @@ python C:\Users\T203-15\.trae-cn\skills\enterprise_project_skills\_common\progre
 **CLI 命令**（在项目根目录运行）：
 
 ```bash
-python {{YFW_SKILLS}}/_common/project_context_manager.py capture \
+python {{PONOS_SKILLS}}/_common/project_context_manager.py capture \
   --project-root "{项目绝对路径}" \
   --skill "{技能名}" \
   --enterprise "{企业名称}" \
@@ -148,7 +148,7 @@ python {{YFW_SKILLS}}/_common/project_context_manager.py capture \
 
 ```bash
 # 示例1：发现校验问题
-python {{YFW_SKILLS}}/_common/project_context_manager.py capture \
+python {{PONOS_SKILLS}}/_common/project_context_manager.py capture \
   --project-root "C:\Users\T203-15\Desktop\2023guogao" \
   --skill "gxtz-achievement-materials" \
   --enterprise "深圳市中瑞电子有限公司" \
@@ -158,7 +158,7 @@ python {{YFW_SKILLS}}/_common/project_context_manager.py capture \
   --prevention "整理合同发票时，每张发票标注唯一归属成果编号，生成后交叉校验"
 
 # 示例2：发现格式规律
-python {{YFW_SKILLS}}/_common/project_context_manager.py capture \
+python {{PONOS_SKILLS}}/_common/project_context_manager.py capture \
   --project-root "C:\Users\T203-15\Desktop\2023guogao" \
   --skill "gxtz-rd-report" \
   --enterprise "深圳市中瑞电子有限公司" \
@@ -189,7 +189,7 @@ agent调用capture → 写入experience_base.json
 **CLI 命令**：
 
 ```bash
-python {{YFW_SKILLS}}/_common/project_context_manager.py finalize \
+python {{PONOS_SKILLS}}/_common/project_context_manager.py finalize \
   --enterprise "{企业名称}" \
   --year {申报年份} \
   --skill "{技能名}" --no-move
@@ -348,7 +348,7 @@ NNN 从当前最大编号+1（如已有 EXP-2026-07-17-001，则生成 EXP-2026-
 **CLI 命令**：
 
 ```bash
-python {{YFW_SKILLS}}/_common/project_context_manager.py skill-loop
+python {{PONOS_SKILLS}}/_common/project_context_manager.py skill-loop
 ```
 
 **agent 也可以直接读文件**：

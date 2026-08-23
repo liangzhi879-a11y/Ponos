@@ -20,7 +20,7 @@ test('predictTurns：数据不足 → 保守默认 1000', () => {
   assert.equal(r.predictedTurns, 159)
 })
 
-test('health 集成：yfw_health 事件含 predictedTurns/growthPerTurn，红档触发', () => {
+test('health 集成：ponos_health 事件含 predictedTurns/growthPerTurn，红档触发', () => {
   const events = []
   const wire = { health: (h) => events.push(h), summary: () => {} }
   const h = createHealth({ wire, model: 'deepseek-v4-flash', contextWindow: 200_000, env: {} })

@@ -49,12 +49,12 @@ export function makeWire(stream = process.stdout) {
       writeLine(stream, { type: 'bridge_request', route, requestId, payload })
     },
     health(data = {}) {
-      writeLine(stream, { type: 'yfw_health', ...data })
+      writeLine(stream, { type: 'ponos_health', ...data })
     },
     summary(text, compactCount) {
-      writeLine(stream, { type: 'yfw_summary', text: String(text ?? ''), compactCount })
+      writeLine(stream, { type: 'ponos_summary', text: String(text ?? ''), compactCount })
     },
-    // —— subagent 生命周期事件（shape 对齐 release 内核，GUI useYFWCLI task_* 分支消费）——
+    // —— subagent 生命周期事件（shape 对齐 release 内核，GUI usePonosCLI task_* 分支消费）——
     // S1 血缘：task_started 携带 parent_task_id/depth（主 agent 派发为 null/0，
     // GUI 可依此渲染任务树；子 lane 嵌套预留，见 subagent-collaboration-upgrade）
     taskStarted({ taskId, toolUseId, prompt, parentTaskId = null, depth = 0 }) {
@@ -85,7 +85,7 @@ export function makeWire(stream = process.stdout) {
       })
     },
     // 插话/排队消息接收确认：内核吸收 user 消息（工具边界注入当前轮或作为新轮）
-    // 时回发，供 GUI 解除气泡悬浮态（useYFWCLI.ts command_lifecycle 分支消费）。
+    // 时回发，供 GUI 解除气泡悬浮态（usePonosCLI.ts command_lifecycle 分支消费）。
     commandLifecycle(uuid, state = 'started') {
       writeLine(stream, { type: 'command_lifecycle', data: { uuid, state } })
     },

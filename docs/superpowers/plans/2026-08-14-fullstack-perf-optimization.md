@@ -6,14 +6,14 @@
 
 **Architecture:** 批次1 改前端渲染层（消息列表虚拟化 + markdown 配置稳定化 + 流式事件 rAF 批处理）；批次2 改 bridge 中间层（resume 技能清单精简注入 + 首 token 计时探针）；批次3 改内核 token 成本（启用已内置的工具结果预算 feature + 上下文利用率探针）。三批互相独立，每批构建验证 + 同步 YFDesigningDebug 副本 + 用户验收。
 
-**Tech Stack:** React 18 + TypeScript + Vite + Zustand + @tanstack/react-virtual（新增，纯 JS）+ radix ScrollArea + Node bridge.mjs + yfw-kernel/claude-code 内核（bun bundle）
+**Tech Stack:** React 18 + TypeScript + Vite + Zustand + @tanstack/react-virtual（新增，纯 JS）+ radix ScrollArea + Node bridge.mjs + ponos-kernel/claude-code 内核（bun bundle）
 
 ## Global Constraints
 
 - **红线：agent 功能/运行效果零打折。** 所有行为改动默认保守、提供配置开关、可一键回退。任何经验证降低输出质量的改动一律撤销。
 - 纯 JS 依赖优先：新增依赖仅限 `@tanstack/react-virtual`（纯 JS，无原生模块）。
 - 每批完成必须 `npx tsc --noEmit && npm run build` 通过，然后同步 `C:\Users\T203-15\YFDesigningDebug\app\`（dist/electron/server），最后用户验收。
-- 同步与重启规则：进程重启前必须征得用户同意；改动内核需同时 patch `yfw-kernel/claude-code/dist/cli.mjs` 与调试版内核 bundle（如存在）。
+- 同步与重启规则：进程重启前必须征得用户同意；改动内核需同时 patch `ponos-kernel/claude-code/dist/cli.mjs` 与调试版内核 bundle（如存在）。
 - 工作区根：`C:\Users\T203-15\claude-code-gui`。
 - 提交风格：中文，前缀 `perf:`，标注批次（如 `perf(batch1): ...`）。
 
@@ -163,7 +163,7 @@ git commit -m "perf(batch1): ReactMarkdown components/插件引用稳定化"
 ### Task 3: 流式事件 rAF 批处理（批次 1）
 
 **Files:**
-- Modify: `src/hooks/useYFWCLI.ts`（`handleMessage` 中 `assistant` 事件分支，355-378 行）
+- Modify: `src/hooks/usePonosCLI.ts`（`handleMessage` 中 `assistant` 事件分支，355-378 行）
 
 **Interfaces:**
 - Consumes: `handleMessage` 现有事件处理、`upsertBlock`（513 行）
@@ -173,7 +173,7 @@ git commit -m "perf(batch1): ReactMarkdown components/插件引用稳定化"
 
 - [ ] **Step 1: 新增批处理基础设施**
 
-在 `useYFWCLI.ts` 模块顶部（`toolUseAgentMap` 附近）新增：
+在 `usePonosCLI.ts` 模块顶部（`toolUseAgentMap` 附近）新增：
 
 ```tsx
 // 流式事件批处理：同一帧内的多次 assistant 事件合并为一次状态更新。
@@ -257,7 +257,7 @@ Expected: 0 errors。注意确认 `upsertBlock`、`sanitizeText`、`toolUseAgent
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/hooks/useYFWCLI.ts
+git add src/hooks/usePonosCLI.ts
 git commit -m "perf(batch1): 流式 assistant 事件 rAF 批处理合并重渲染"
 ```
 
@@ -307,7 +307,7 @@ export function appendSkillList(basePrompt, compact = false) {
 args.push('--resume', resumeId)
 // 精简技能清单默认开启；CLAUDE_CODE_FULL_SKILL_LIST=1 回退全量（不打折保险）
 const resumeCompact = process.env.CLAUDE_CODE_FULL_SKILL_LIST !== '1'
-const resumePrompt = appendSkillList(YFW_ASKUSER_FORMAT + YFW_MILESTONE_PROTOCOL, resumeCompact)
+const resumePrompt = appendSkillList(PONOS_ASKUSER_FORMAT + PONOS_MILESTONE_PROTOCOL, resumeCompact)
 ```
 
 - [ ] **Step 3: 验证 resume 行为**
@@ -363,9 +363,9 @@ git commit -m "perf(batch2): 首 token 计时探针 + spawn env 核对（结论�
 ### Task 6: 启用内核工具结果预算（批次 3）
 
 **Files:**
-- Modify: `yfw-kernel/claude-code/src/utils/toolResultStorage.ts`（`provisionContentReplacementState` 445-462 行 enabled 判断）
+- Modify: `ponos-kernel/claude-code/src/utils/toolResultStorage.ts`（`provisionContentReplacementState` 445-462 行 enabled 判断）
 - Modify: `server/bridge.mjs`（`buildChildEnv` 注入开关 env）
-- Rebuild: `yfw-kernel/claude-code` bundle（`scripts/build-bundle.ts`）→ `dist/cli.mjs`
+- Rebuild: `ponos-kernel/claude-code` bundle（`scripts/build-bundle.ts`）→ `dist/cli.mjs`
 
 **Interfaces:**
 - Consumes: 内核既有 `applyToolResultBudget`（924 行）与 `provisionContentReplacementState`
@@ -397,19 +397,19 @@ if (process.env.CLAUDE_CODE_TOOL_RESULT_BUDGET !== 'false') {
 - [ ] **Step 3: 重建内核 bundle 并同步**
 
 ```bash
-cd C:/Users/T203-15/claude-code-gui/yfw-kernel/claude-code && bun scripts/build-bundle.ts --minify
+cd C:/Users/T203-15/claude-code-gui/ponos-kernel/claude-code && bun scripts/build-bundle.ts --minify
 ```
-（`scripts/build-bundle.ts` 用法：`bun scripts/build-bundle.ts --minify` 为生产构建。）产物 `dist/cli.mjs` 同步两份：release 副本 `release/YFWorking_ms92cd6u/kernel/cli.mjs`（如存在）与调试版副本 `C:/Users/T203-15/YFDesigningDebug/app/runtime/kernel/cli.mjs`（如存在，路径以实际为准——先 `find` 确认）。
+（`scripts/build-bundle.ts` 用法：`bun scripts/build-bundle.ts --minify` 为生产构建。）产物 `dist/cli.mjs` 同步两份：release 副本 `release/Ponos_ms92cd6u/kernel/cli.mjs`（如存在）与调试版副本 `C:/Users/T203-15/YFDesigningDebug/app/runtime/kernel/cli.mjs`（如存在，路径以实际为准——先 `find` 确认）。
 
 - [ ] **Step 4: 验证与回退**
 
-- 验证：同一长任务（含大文件读取）跑两次——开关开 vs `CLAUDE_CODE_TOOL_RESULT_BUDGET=false`，比对 `usage.input_tokens`（bridge 日志/useYFWCLI tokenCount）与输出质量（人工比对回答完整性）。
+- 验证：同一长任务（含大文件读取）跑两次——开关开 vs `CLAUDE_CODE_TOOL_RESULT_BUDGET=false`，比对 `usage.input_tokens`（bridge 日志/usePonosCLI tokenCount）与输出质量（人工比对回答完整性）。
 - 若质量打折 → 默认改回关闭，仅保留 env 手动开启能力。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add yfw-kernel/claude-code/src/utils/toolResultStorage.ts server/bridge.mjs
+git add ponos-kernel/claude-code/src/utils/toolResultStorage.ts server/bridge.mjs
 git commit -m "perf(batch3): 启用内核工具结果预算（env 开关，20KB 保守截断）"
 ```
 

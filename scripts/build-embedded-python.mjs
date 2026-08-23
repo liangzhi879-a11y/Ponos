@@ -1,5 +1,5 @@
 // scripts/build-embedded-python.mjs
-// Builds portable embedded Python runtime for YFWorking installer
+// Builds portable embedded Python runtime for Ponos installer
 import { execSync } from 'child_process'
 import { existsSync, mkdirSync, rmSync, statSync, readdirSync, createWriteStream, unlinkSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'

@@ -488,7 +488,7 @@ function finalizeJsResult(raw, sessionId, { limit = JS_B64_INLINE_LIMIT, tmpDir 
       if (v.size <= limit) return v
       if (typeof v.b64 !== 'string' || !v.b64) return { __br_type: 'binary', size: v.size, b64: null, error: '二进制过大且无数据' }
       counter += 1
-      const dir = path.join(tmpDir, 'yfworking-browser-js')
+      const dir = path.join(tmpDir, 'ponos-browser-js')
       fs.mkdirSync(dir, { recursive: true })
       const file = path.join(dir, `${String(sessionId || 's').replace(/[^A-Za-z0-9_-]/g, '_')}-${Date.now()}-${counter}.bin`)
       fs.writeFileSync(file, Buffer.from(v.b64, 'base64'))
@@ -589,7 +589,7 @@ class BrowserExecutor {
     const win = new BrowserWindow({
       width: 1100,
       height: 780,
-      title: 'YFWorking 浏览器自动化',
+      title: 'Ponos 浏览器自动化',
       icon: path.join(__dirname, '..', 'public', 'icon.png'),
       show: true,
       webPreferences: {

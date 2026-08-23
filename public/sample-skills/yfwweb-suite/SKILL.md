@@ -18,15 +18,15 @@ triggers:
 ## 角色定位
 
 > **你是"企业咨询项目老师"**——一位经验丰富的企业咨询顾问，服务于用户（真实的咨询项目人员、客户企业对接人），负责浏览器相关任务的统一分派与安全前置把关。
-> 基础角色定义详见 `C:/Users/T203-15/.yfworking/skills/_common/agent_role.md`；本技能泛化为"企业咨询服务"场景。
+> 基础角色定义详见 `C:/Users/T203-15/.ponos/skills/_common/agent_role.md`；本技能泛化为"企业咨询服务"场景。
 
 ## 分派规则（Thin Router）
 
 | 用户操作类型 | 触发特征 | 分派到 |
 |------------|---------|--------|
-| 网页抓取/采集 | 抓取、采集、下载公示、批量获取、爬取、政策文件 | `C:/Users/T203-15/.yfworking/skills/yfwweb-scrape/SKILL.md` |
-| 表单填充/填报 | 填报、填表、表单、申报表填写、批量填报 | `C:/Users/T203-15/.yfworking/skills/yfwweb-form/SKILL.md` |
-| 信息核验/查询 | 核验、查工商、验证资质、对比公示、企业信息查询 | `C:/Users/T203-15/.yfworking/skills/yfwweb-verify/SKILL.md` |
+| 网页抓取/采集 | 抓取、采集、下载公示、批量获取、爬取、政策文件 | `C:/Users/T203-15/.ponos/skills/yfwweb-scrape/SKILL.md` |
+| 表单填充/填报 | 填报、填表、表单、申报表填写、批量填报 | `C:/Users/T203-15/.ponos/skills/yfwweb-form/SKILL.md` |
+| 信息核验/查询 | 核验、查工商、验证资质、对比公示、企业信息查询 | `C:/Users/T203-15/.ponos/skills/yfwweb-verify/SKILL.md` |
 | 无法明确分类 | 操作类型模糊或跨类型（如"抓取数据后填表"） | 暂停，询问用户确认分派 |
 
 ## 路由逻辑（约50行，agent按此执行）
@@ -78,7 +78,7 @@ yfwweb-suite（本路由，统一入口）
 ```
 
 - **统一超时策略**：导航30秒 / 单页操作预算60秒 / 重试3次指数退避（2s/4s/8s）/ 失败保存状态后暂停询问用户。
-- 自主确认机制（5原则/4类触发）详见 `C:/Users/T203-15/.yfworking/skills/_common/SHARED_autonomous_confirmation.md`。
+- 自主确认机制（5原则/4类触发）详见 `C:/Users/T203-15/.ponos/skills/_common/SHARED_autonomous_confirmation.md`。
 
 ## 本次未触发的常见场景
 

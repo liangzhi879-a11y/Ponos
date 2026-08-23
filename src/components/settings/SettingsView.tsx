@@ -8,13 +8,13 @@ import {
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useChatStore } from '@/stores/chatStore'
-import { useYFWCLI } from '@/hooks/useYFWCLI'
+import { usePonosCLI } from '@/hooks/usePonosCLI'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn, formatShortcut, shortcutFromEvent } from '@/lib/utils'
 import { fetchSkills } from '@/lib/skills'
 import { fetchBridgeConfig, saveBridgeConfig, addProvider, deleteProvider, testProviderConnection } from '@/lib/config'
 import { ExperiencePanel } from '@/components/settings/ExperiencePanel'
-import type { AppSettings, ModelProvider, YFWorkingConfigV2 } from '@/types'
+import type { AppSettings, ModelProvider, PonosConfigV2 } from '@/types'
 import { THEMES, type ThemeMode, type ThemeMeta, type Language } from '@/types'
 
 type Section = 'general' | 'model' | 'skills' | 'pet' | 'experience' | 'about'
@@ -23,7 +23,7 @@ export function SettingsView() {
   const { settingsOpen, closeSettings } = useUIStore()
   const { settings, updateSettings } = useSettingsStore()
   const { sessionModel } = useChatStore()
-  const { connected } = useYFWCLI()
+  const { connected } = usePonosCLI()
   const { t } = useTranslation()
   const [section, setSection] = useState<Section>('general')
   // Lifted state: the outer Radix Dialog's outside-click & focus guards must
@@ -259,7 +259,7 @@ export function SettingsView() {
               )}
 
               {section === 'model' && (
-                <YFWorkingModelPanel
+                <PonosModelPanel
                   t={t}
                   settings={settings}
                   updateSettings={updateSettings}
@@ -367,7 +367,7 @@ export function SettingsView() {
 
               {section === 'about' && (
                 <div className="space-y-4 text-sm text-secondary">
-                  <h3 className="text-sm font-semibold text-primary">YFWorking dev</h3>
+                  <h3 className="text-sm font-semibold text-primary">Ponos dev</h3>
                   <div className="space-y-2">
                     <div className="flex justify-between">
                       <span className="text-tertiary">Version</span>
@@ -406,7 +406,7 @@ function SettingRow({ label, children }: { label: string; children: React.ReactN
   )
 }
 
-function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setShowAddDialog }: {
+function PonosModelPanel({ t, settings, updateSettings, showAddDialog, setShowAddDialog }: {
   t: (key: string) => string
   settings: AppSettings
   updateSettings: (u: Partial<AppSettings>) => void
@@ -551,7 +551,7 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
       // Test connectivity separately afterwards so a missing authToken
       // doesn't create a deadlock where save requires test but test
       // requires saved credentials.
-      const cfg: YFWorkingConfigV2 = {
+      const cfg: PonosConfigV2 = {
         activeProvider: settings.activeProvider,
         skillRoot: settings.skillRoot || '',
         autoCapture: settings.autoCapture,
@@ -583,9 +583,9 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
       <div>
         <h3 className="text-sm font-semibold text-primary mb-1 flex items-center gap-2">
           <Database className="w-4 h-4" />
-          {t('settings.yfworking')}
+          {t('settings.ponos')}
         </h3>
-        <p className="text-xs text-tertiary mb-4">{t('settings.yfworkingDesc')}</p>
+        <p className="text-xs text-tertiary mb-4">{t('settings.ponosDesc')}</p>
 
         {/* Provider Selector */}
         <div className="mb-4">

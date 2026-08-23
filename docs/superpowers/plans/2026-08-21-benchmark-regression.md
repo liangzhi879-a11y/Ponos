@@ -1,10 +1,10 @@
 # P7 评测回归与优化（Benchmark Regression）
 
-> 目的：P1-P6 全部落地后，对 yfw 内核跑全量横评（T001-T006 + SWE001-006），与 P1-P6 前基线对比确认**零退化**；对已知失败点（T004）与评测暴露的架构脱节（verify 依赖已下沉模块）做对齐修复。
+> 目的：P1-P6 全部落地后，对 ponos 内核跑全量横评（T001-T006 + SWE001-006），与 P1-P6 前基线对比确认**零退化**；对已知失败点（T004）与评测暴露的架构脱节（verify 依赖已下沉模块）做对齐修复。
 > 权威来源：kernel/（P1-P6 六份计划产出）、benchmark/（评测平台）、benchmark/results/2026-08-20T14-24-26-349Z（基线）。
 > 更新日期：2026-08-21
 
-## 1. 基线（2026-08-20T14-24-26-349Z，deepseek-v4-flash，yfw）
+## 1. 基线（2026-08-20T14-24-26-349Z，deepseek-v4-flash，ponos）
 
 | 任务 | 状态 | 耗时 | 工具调用 |
 |---|---|---|---|
@@ -21,7 +21,7 @@
 | T005 | ✅ | 209s | 38 |
 | T006 | ✅ | 18s | 4 |
 
-基线 yfw：SWE 5/6、T 5/6。
+基线 ponos：SWE 5/6、T 5/6。
 
 **已知失败根因（基线分析）**：
 - **T004**：verify 期望 `server/transcript-stats.mjs`（三维分组聚合 byProject/byModel/byDate + totals 一致）。agent 实现的聚合结果与 verify 期望不符（byProject 700 vs byModel 合计 750，requests 3 vs 4 类不一致）。且 P3（O1-1 usage 回传）后 stats 逻辑已下沉 kernel/stats.mjs，`server/transcript-stats.mjs` 已不存在——**任务 verify 与当前架构脱节**。
@@ -40,7 +40,7 @@
 ## 3. 任务清单（TDD）
 
 ### Task 1: 全量评测回归（✅ 完成）
-- Run: `node benchmark/run.mjs --agents yfw`（12 任务，后台）
+- Run: `node benchmark/run.mjs --agents ponos`（12 任务，后台）
 - 结果：SWE001-006 6/6 pass、T001/T002/T003 pass；**全量进程在 T004 中途消失**（T004 agent 用时 30+ 分钟，远超基线 8 分钟——模型行为，非内核问题）；T004 改用 worktree 直接 verify 判定 **VERIFY_PASS**；T005/T006 单独补跑 pass
 - 退化清单：仅发现 1 项（见 Task 3）
 
@@ -62,7 +62,7 @@
 
 ## 4. 验收标准（✅ 全部达成）
 
-- 全量评测 yfw：T 系列 **6/6**（基线 5/6）、SWE 系列 **6/6**（基线 5/6）
+- 全量评测 ponos：T 系列 **6/6**（基线 5/6）、SWE 系列 **6/6**（基线 5/6）
 - 无 P1-P6 引入的新退化（对比基线逐任务；T002 耗时 +68% 属 API 波动，verify 通过）
 - 内核单测 316/316 全绿
 

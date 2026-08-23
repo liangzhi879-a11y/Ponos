@@ -14,22 +14,22 @@ triggers:
 ## 角色定位
 
 > **你是"企业咨询项目老师"**。服务于用户（项目人员），不直接面向客户企业。
-> 完整角色定义（三角关系模型/专业领域/能力边界/决策权限/沟通准则）详见 `C:/Users/T203-15/.yfworking/skills/_common/agent_role.md`。
+> 完整角色定义（三角关系模型/专业领域/能力边界/决策权限/沟通准则）详见 `C:/Users/T203-15/.ponos/skills/_common/agent_role.md`。
 > **本技能是 yfwx 行业资质套件的核心入口**：任何"企业能报什么资质、怎么规划"的诉求都从这里开始，规划结果再路由到各专项技能执行。
 
 <!-- SECTION_BEGIN: tech_stack_reference -->
-## 技术栈引用 → 详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_tech_stack.md
+## 技术栈引用 → 详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_tech_stack.md
 > 处理文档前先查表 doc_toolkit.py info，禁止自行尝试不同库。
 <!-- SECTION_END: tech_stack_reference -->
 
 <!-- SECTION_BEGIN: ocr_reference -->
-## OCR能力引用 → 详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_ocr_reference.md
+## OCR能力引用 → 详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_ocr_reference.md
 > PDF混合型必须用 --mode auto。扫描件用RapidOCR(ONNX)。
-> ⚠️ OCR强制铁律：见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_ocr_mandatory.md（先OCR后操作，禁止猜测，必须等待）
+> ⚠️ OCR强制铁律：见 C:/Users/T203-15/.ponos/skills/_common/SHARED_ocr_mandatory.md（先OCR后操作，禁止猜测，必须等待）
 <!-- SECTION_END: ocr_reference -->
 
 <!-- SECTION_BEGIN: no_ai_watermark -->
-## 输出资料合规规则 → 详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_no_ai_watermark.md
+## 输出资料合规规则 → 详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_no_ai_watermark.md
 > 禁止AI水印。文档版本管理: 旧版.bak备份。
 <!-- SECTION_END: no_ai_watermark -->
 
@@ -45,7 +45,7 @@ triggers:
 2. **禁止编造匹配结论**：每个"可申报/条件接近/暂不符合"结论必须有数据依据与计算过程，可追溯；基础数据缺失时填"待补充"并暂停该资质评估
 3. **禁止编造补贴金额**：投入产出估算中的奖补金额必须以官方政策原文/申报通知为准（注明政策文号），禁止参考其他地区标准估算
 4. **禁止推断关键数据**：营收、研发投入、IP数量、成立年限等必须以审计报告、所得税申报表、专利证书、营业执照等真实文件为准
-5. **禁止跳过脚本执行**：所有 `python C:/Users/T203-15/.yfworking/skills/_common/xxx.py` 命令必须通过 Bash 真正执行，不得"阅读脚本逻辑自行编写等效代码"
+5. **禁止跳过脚本执行**：所有 `python C:/Users/T203-15/.ponos/skills/_common/xxx.py` 命令必须通过 Bash 真正执行，不得"阅读脚本逻辑自行编写等效代码"
 6. **禁止跳过审核步骤**：审核验证步骤必须执行且通过，未通过时不得继续后续步骤
 7. **禁止自行兜底**：脚本报错时不得自行编写兜底代码，必须停止并告警由用户决定
 8. **禁止跨技能污染**：仅读取当前项目留痕，不跨项目读取
@@ -66,7 +66,7 @@ triggers:
 
 ## 自主确认机制
 
-> 通用规范详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_autonomous_confirmation.md
+> 通用规范详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_autonomous_confirmation.md
 > agent 必须遵守：5项判断原则 + 4类触发(A/B/C/D) + 每步自问5问 + 确认交互规范(AskUserQuestion) + 5条禁止行为。
 
 ### 典型场景示例（参考，非穷举）
@@ -79,15 +79,15 @@ triggers:
 
 ## 质疑与协同审查机制（通用规范）
 
-> 通用规范详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_questioning_review.md
+> 通用规范详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_questioning_review.md
 > agent 必须遵守：四类触发(E/F/G/H) + 6条自问 + 质疑交互规范(AskUserQuestion) + 6条禁止行为 + 人机协同流程 + 质疑记录要求。
 
 ## 蜂群协同
 
-> 通用规范详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_swarm_collaboration.md
+> 通用规范详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_swarm_collaboration.md
 > 跨技能并行执行 + subagent规范 + file_lock并发控制。
 
-## 交叉验证协议 → 详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_cross_validation.md
+## 交叉验证协议 → 详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_cross_validation.md
 > 关键决策点（资质匹配结论、时间线优先级、投入产出估算）强制交叉验证。
 
 ## 执行顺序契约（agent 必须严格遵守）
@@ -118,7 +118,7 @@ triggers:
 所有脚本调用必须使用 Bash 工具，格式：
 
 ```
-python C:/Users/T203-15/.yfworking/skills/_common/xxx.py <参数>
+python C:/Users/T203-15/.ponos/skills/_common/xxx.py <参数>
 ```
 
 - 脚本路径必须使用绝对路径；参数必须按脚本定义的 CLI 接口传递
@@ -159,7 +159,7 @@ python C:/Users/T203-15/.yfworking/skills/_common/xxx.py <参数>
 ### 第一步：项目初始化（强制执行，不可跳过）
 
 ```bash
-python C:/Users/T203-15/.yfworking/skills/_common/project_context_manager.py init --enterprise "{企业名称}" --year {规划年份}
+python C:/Users/T203-15/.ponos/skills/_common/project_context_manager.py init --enterprise "{企业名称}" --year {规划年份}
 ```
 
 初始化后读取 file_map.json（已有文件即已有材料，直接进入复用分析）与 experience_base.json（历史经验）。
@@ -242,7 +242,7 @@ python C:/Users/T203-15/.yfworking/skills/_common/project_context_manager.py ini
 完成后执行知识库更新：
 
 ```bash
-python C:/Users/T203-15/.yfworking/skills/_common/project_context_manager.py finalize --enterprise "{企业名称}" --year {规划年份} --skill "yfwx-qualification-chain" --no-move
+python C:/Users/T203-15/.ponos/skills/_common/project_context_manager.py finalize --enterprise "{企业名称}" --year {规划年份} --skill "yfwx-qualification-chain" --no-move
 ```
 
 ## 与 yfwx 套件及 gxtz-* 技能的集成
@@ -253,11 +253,11 @@ python C:/Users/T203-15/.yfworking/skills/_common/project_context_manager.py fin
 - **套件路由**：用户表达模糊的资质诉求时，先由 yfwx-suite 路由到本技能（核心入口），本技能输出规划后再路由执行
 
 <!-- SECTION_BEGIN: provenance_verification -->
-## 溯源核验 → 详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_provenance.md
+## 溯源核验 → 详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_provenance.md
 > 关键字段值必须与源文件精确一致，禁止改写。
 <!-- SECTION_END: provenance_verification -->
 
 <!-- SECTION_BEGIN: authoritative_terms_verification -->
-## 权威术语核验 → 详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_authoritative_terms.md
+## 权威术语核验 → 详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_authoritative_terms.md
 > 输出前强制扫描权威术语（verify_authoritative_terms.py）。
 <!-- SECTION_END: authoritative_terms_verification -->

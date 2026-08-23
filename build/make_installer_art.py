@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-YFWorking 安装包视觉素材生成器
+Ponos 安装包视觉素材生成器
 生成 electron-builder NSIS 所需的位图：
   - build/installerSidebar.bmp   164x314  欢迎/完成页左侧边栏
   - build/uninstallerSidebar.bmp 164x314  卸载程序欢迎页
@@ -88,7 +88,7 @@ def make_sidebar(out_path, preview_path):
         font = ImageFont.truetype(r"C:\Windows\Fonts\segoeuib.ttf", 17)
     except OSError:
         font = ImageFont.load_default()
-    word = "YFWorking"
+    word = "Ponos"
     w = draw.textlength(word, font=font)
     draw.text(((SIDEBAR_W - w) / 2, 186), word, font=font, fill=(245, 236, 224))
 

@@ -21,7 +21,7 @@ dependencies: ["yfwdoc-template"]
 
 ## 1. 角色定位
 
-你以**"企业咨询项目老师"**身份工作。角色基准定义见: `C:/Users/T203-15/.yfworking/skills/_common/agent_role.md`（原高新认定场景表述通用化后同等适用）：
+你以**"企业咨询项目老师"**身份工作。角色基准定义见: `C:/Users/T203-15/.ponos/skills/_common/agent_role.md`（原高新认定场景表述通用化后同等适用）：
 
 - **称呼**：项目老师
 - **定位**：企业咨询项目领域的专业顾问，为客户数据提供清洗、分析、报表与看板服务
@@ -33,18 +33,18 @@ dependencies: ["yfwdoc-template"]
 
 ## 2. 技术栈
 
-> 技术栈引用: `C:/Users/T203-15/.yfworking/skills/_common/SHARED_tech_stack.md`
-> 路径规范引用: `C:/Users/T203-15/.yfworking/skills/_common/SHARED_skill_path_conventions.md`
+> 技术栈引用: `C:/Users/T203-15/.ponos/skills/_common/SHARED_tech_stack.md`
+> 路径规范引用: `C:/Users/T203-15/.ponos/skills/_common/SHARED_skill_path_conventions.md`
 
 | 任务 | 命令/方式 |
 |------|---------|
-| 查询文件推荐方案 | `python "C:/Users/T203-15/.yfworking/skills/_common/doc_toolkit.py" info --file <路径>` |
+| 查询文件推荐方案 | `python "C:/Users/T203-15/.ponos/skills/_common/doc_toolkit.py" info --file <路径>` |
 | 读取xlsx | `doc_toolkit.py read --file <路径> --format xlsx --max-rows 500` |
 | .xls 旧版转换 | `doc_toolkit.py convert --input <路径> --to xlsx`（先转换再读） |
 | 基础写入 | `doc_toolkit.py write --file 输出.xlsx --format xlsx --data-file data.json` |
 | 公式/透视表/图表/条件格式 | openpyxl 脚本化生成（`doc_toolkit.py info` 确认推荐库后直编） |
 | HTML看板 | 生成独立静态HTML（数据内嵌，双击即开） |
-| 环境检查 | `python "C:/Users/T203-15/.yfworking/skills/_common/check_dependencies.py"` |
+| 环境检查 | `python "C:/Users/T203-15/.ponos/skills/_common/check_dependencies.py"` |
 
 ## 3. 合规红线（不可逾越）
 
@@ -57,7 +57,7 @@ dependencies: ["yfwdoc-template"]
 
 ## 4. 自主确认机制
 
-遵循 `C:/Users/T203-15/.yfworking/skills/_common/SHARED_autonomous_confirmation.md` 的5原则。Excel场景高发确认点：
+遵循 `C:/Users/T203-15/.ponos/skills/_common/SHARED_autonomous_confirmation.md` 的5原则。Excel场景高发确认点：
 
 | 触发类型 | 场景 | 处理 |
 |---------|------|------|
@@ -86,8 +86,8 @@ dependencies: ["yfwdoc-template"]
 **输入**：用户提供的Excel文件路径
 **操作**：
 ```bash
-python "C:/Users/T203-15/.yfworking/skills/_common/doc_toolkit.py" info --file "<文件路径>"
-python "C:/Users/T203-15/.yfworking/skills/_common/doc_toolkit.py" read --file "<文件路径>" --format xlsx --max-rows 500
+python "C:/Users/T203-15/.ponos/skills/_common/doc_toolkit.py" info --file "<文件路径>"
+python "C:/Users/T203-15/.ponos/skills/_common/doc_toolkit.py" read --file "<文件路径>" --format xlsx --max-rows 500
 ```
 .xls 旧版先 `convert --to xlsx`。多文件/多Sheet时逐个读取并记录结构。
 
@@ -159,4 +159,4 @@ python "C:/Users/T203-15/.yfworking/skills/_common/doc_toolkit.py" read --file "
 
 - 品牌规范：由 `yfwdoc-template` 技能维护，本技能只读使用
 - 跨文件类型任务（如"把报表转PDF发给客户"）：交由 `yfwdoc-suite` 总路由分派
-- 路径规范：所有 `_common` 脚本调用使用绝对路径 `C:/Users/T203-15/.yfworking/skills/_common/`
+- 路径规范：所有 `_common` 脚本调用使用绝对路径 `C:/Users/T203-15/.ponos/skills/_common/`

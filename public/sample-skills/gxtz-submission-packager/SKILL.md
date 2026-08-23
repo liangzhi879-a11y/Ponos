@@ -15,7 +15,7 @@ triggers:
 ---
 
 <!-- SECTION_BEGIN: ocr_mandatory -->
-## OCR强制规范 → 详见 {{YFW_SKILLS}}/_common/SHARED_ocr_mandatory.md
+## OCR强制规范 → 详见 {{PONOS_SKILLS}}/_common/SHARED_ocr_mandatory.md
 > ⚠️ 核心铁律：先OCR后操作，禁止猜测，必须等待，结果空则报错。
 > 速查：`python ocr_engine.py detect --file <path>` → `python ocr_engine.py ocr --file <path> --project <project>`
 <!-- SECTION_END: ocr_mandatory -->
@@ -87,7 +87,7 @@ triggers:
 ### Step 0: 环境检查
 
 ```
-python {{YFW_SKILLS}}/_common/check_dependencies.py --skill submission-packager
+python {{PONOS_SKILLS}}/_common/check_dependencies.py --skill submission-packager
 ```
 
 ### Step 1: scan — 扫描预览
@@ -95,7 +95,7 @@ python {{YFW_SKILLS}}/_common/check_dependencies.py --skill submission-packager
 扫描项目目录，按19类材料分组，OCR强制识别，生成预览报告。
 
 ```bash
-python {{YFW_SKILLS}}/_common/submission_packager.py scan  \
+python {{PONOS_SKILLS}}/_common/submission_packager.py scan  \
     --project-root "项目目录"  \
     --requirements "99.其他资料/资料要求.xlsx"
 ```
@@ -128,13 +128,13 @@ scan 输出预览报告后，agent 必须：
 
 ```bash
 # 全部19类打包
-python {{YFW_SKILLS}}/_common/submission_packager.py pack  \
+python {{PONOS_SKILLS}}/_common/submission_packager.py pack  \
     --project-root "项目目录"  \
     --requirements "99.其他资料/资料要求.xlsx"  \
     --output-dir "_最终申报包"
 
 # 仅处理指定类别
-python {{YFW_SKILLS}}/_common/submission_packager.py pack  \
+python {{PONOS_SKILLS}}/_common/submission_packager.py pack  \
     --project-root "项目目录"  \
     --categories "1,2,3,6,7,8,9"  \
     --force  # 跳过确认
@@ -169,14 +169,14 @@ Round 4: 仍超标 → ⚠ "需手动处理"，不丢弃
 ### Step 4: validate — 最终校验
 
 ```bash
-python {{YFW_SKILLS}}/_common/submission_packager.py validate  \
+python {{PONOS_SKILLS}}/_common/submission_packager.py validate  \
     --output-dir "_最终申报包/"
 ```
 
 或使用独立校验脚本：
 
 ```bash
-python {{YFW_SKILLS}}/_common/validate_submission.py  \
+python {{PONOS_SKILLS}}/_common/validate_submission.py  \
     --output-dir "_最终申报包/"
 ```
 
@@ -311,8 +311,8 @@ OCR配置：
 ## 使用 `list-requirements` 快速查看要求
 
 ```bash
-python {{YFW_SKILLS}}/_common/submission_packager.py list-requirements
-python {{YFW_SKILLS}}/_common/submission_packager.py list-requirements --format json
+python {{PONOS_SKILLS}}/_common/submission_packager.py list-requirements
+python {{PONOS_SKILLS}}/_common/submission_packager.py list-requirements --format json
 ```
 
 ---
@@ -322,7 +322,7 @@ python {{YFW_SKILLS}}/_common/submission_packager.py list-requirements --format 
 技能执行中遇到问题，即时调用 capture 提交经验；收工时调用 finalize 汇聚经验。
 
 ```bash
-python {{YFW_SKILLS}}/_common/project_context_manager.py capture  \
+python {{PONOS_SKILLS}}/_common/project_context_manager.py capture  \
     --project-root "项目路径"  \
     --skill "gxtz-submission-packager"  \
     --enterprise "企业名"  \

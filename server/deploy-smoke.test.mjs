@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 
 const KERNEL_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'kernel')
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-deploy-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-deploy-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('部署包：package.json 零依赖 + start 指向 cli.mjs + bin', () => {
@@ -43,7 +43,7 @@ test('部署包：无 GUI mock 完成一轮对话', async () => {
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion',
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const lines = []
@@ -100,7 +100,7 @@ test('迁移演练：旧 settings + 旧 transcript → --resume 完成一轮（�
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion', '--resume', sid, '--add-dir', cwd,
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const lines = []

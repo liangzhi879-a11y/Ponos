@@ -1,8 +1,8 @@
 # AGENTS.md
 
-YFW-turbo 是净室重建的原创 agent 内核（代号 YFW-turbo），运行于 YFWorking 桌面应用，
+Ponos-turbo 是净室重建的原创 agent 内核（代号 Ponos-turbo），运行于 Ponos 桌面应用，
 由 bridge 以 stream-json 协议 spawn 驱动。本文件是仓库级开发守则，供 AI agent 与
-人类开发者共用。内核架构设计见 `docs/superpowers/specs/2026-08-20-yfw-turbo-inner-core-design.md`。
+人类开发者共用。内核架构设计见 `docs/superpowers/specs/2026-08-20-ponos-turbo-inner-core-design.md`。
 
 ## 仓库布局
 
@@ -13,7 +13,7 @@ kernel/         内核本体（Node ESM，零运行时依赖）
   api.mjs       Anthropic 协议流（fetch/SSE/usage 归一化）；mock 流（测试用）
   session.mjs   transcript 事件日志权威源 + surface 投影（压缩/resume 基础）
   compact.mjs   两阶段压缩：结构剪枝 + 摘要 checkpoint（<compacted-summary>）
-  health.mjs    多因子健康打分（yfw_health 事件）
+  health.mjs    多因子健康打分（ponos_health 事件）
   context.mjs   零依赖 token 启发式计价 + 模型窗口表 + tokenLedger
   tools.mjs     工具注册表：Bash/Read/Write/Edit/Glob/Grep（路径边界校验）
   highrisk.mjs  高危 Bash 命令匹配（审批触发）
@@ -39,7 +39,7 @@ node zz-smoke/interact-real-api.mjs    # 人工交互测试（S1-S5 场景）
 测试纪律（参照成熟方案）：
 - 内核改动必须配套测试；新测试放 `server/`（不在 kernel/ 内）。
 - 测试命令固定用 `node --test "server/*.test.mjs"`，不要自定义测试脚本。
-- 真实 API 冒烟/交互测试仅在明确需要时运行（消耗额度）；mock 测试 `YFW_MOCK_API=1` 无网络。
+- 真实 API 冒烟/交互测试仅在明确需要时运行（消耗额度）；mock 测试 `PONOS_MOCK_API=1` 无网络。
 - 提交前必须跑过全量测试，全部通过才提交。
 
 ## 内核架构铁律

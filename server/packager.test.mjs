@@ -5,23 +5,23 @@ import path from 'node:path'
 import fs from 'node:fs'
 import { spawnSync } from 'node:child_process'
 
-const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-home-'))
-process.env.YFW_TEST_HOME = testHome
+const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-home-'))
+process.env.PONOS_TEST_HOME = testHome
 const exp = await import('./experience.mjs')
 exp.ensurePersonalDir()
 const pkg = await import('./packager.mjs')
 
 // 造一个可导出的迷你经验库 + config
-const personal = path.join(testHome, '.yfworking', 'memory', 'personal')
+const personal = path.join(testHome, '.ponos', 'memory', 'personal')
 fs.writeFileSync(path.join(personal, 'finance.md'),
   '---\nname: finance\nactive: true\n---\n- [会话] 研发费用口径 6 项\n- [会话] 密码在 sk-abc 开头\n', 'utf-8')
-fs.writeFileSync(path.join(testHome, '.yfworking', 'config.json'),
+fs.writeFileSync(path.join(testHome, '.ponos', 'config.json'),
   JSON.stringify({ activeProvider: 'p', providers: [{ id: 'p', authToken: 'sk-secret' }] }), 'utf-8')
 
 let zipPath = ''
 
 beforeEach(() => {
-  zipPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-out-')), 'exp.zip')
+  zipPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-out-')), 'exp.zip')
 })
 
 afterEach(() => {
@@ -35,7 +35,7 @@ after(() => {
 test('导出 zip 含 manifest 与 personal 文件', async () => {
   const res = await pkg.exportPackage({ outPath: zipPath, included: ['personal'], configRedact: true })
   assert.equal(res.ok, true)
-  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-un-'))
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-un-'))
   spawnSync(pkg.TAR_CMD, ['-xf', zipPath, '-C', staging])
   assert.ok(fs.existsSync(path.join(staging, 'manifest.json')))
   const manifest = JSON.parse(fs.readFileSync(path.join(staging, 'manifest.json'), 'utf-8'))
@@ -54,7 +54,7 @@ test('敏感词过滤跳过命中条目', async () => {
 
 test('config 类型导出时 authToken 脱敏', async () => {
   const res = await pkg.exportPackage({ outPath: zipPath, included: ['config'], configRedact: true })
-  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-un-'))
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-un-'))
   spawnSync(pkg.TAR_CMD, ['-xf', zipPath, '-C', staging])
   const cfg = JSON.parse(fs.readFileSync(path.join(staging, 'config', 'config.json'), 'utf-8'))
   assert.notEqual(cfg.providers[0].authToken, 'sk-secret')
@@ -67,7 +67,7 @@ test('config 类型导出时 authToken 脱敏', async () => {
 test('chatsJson 写入 chats 目录（新格式：sets.json + sessions/，无旧单文件）', async () => {
   const res = await pkg.exportPackage({ outPath: zipPath, included: ['chats'], chatsJson: '{"conversations":[]}', configRedact: true })
   assert.equal(res.ok, true)
-  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-un-'))
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-un-'))
   spawnSync(pkg.TAR_CMD, ['-xf', zipPath, '-C', staging])
   const sets = JSON.parse(fs.readFileSync(path.join(staging, 'chats', 'sets.json'), 'utf-8'))
   assert.deepEqual(sets, { sets: [] })
@@ -77,7 +77,7 @@ test('chatsJson 写入 chats 目录（新格式：sets.json + sessions/，无旧
 })
 
 function makeZipWith(entries, outPath) {
-  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-make-'))
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-make-'))
   for (const [rel, content] of Object.entries(entries)) {
     const fp = path.join(staging, rel)
     fs.mkdirSync(path.dirname(fp), { recursive: true })
@@ -146,10 +146,10 @@ test('invalid conflict 值返回 ok:false', async () => {
 })
 
 test('project 已存在 + skip 不抛错且计 conflicts', async () => {
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-proj-'))
-  const yfwTarget = path.join(proj, '.yfworking')
-  fs.mkdirSync(yfwTarget, { recursive: true })
-  fs.writeFileSync(path.join(yfwTarget, 'keep.md'), '原有内容', 'utf-8')
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-proj-'))
+  const ponosTarget = path.join(proj, '.ponos')
+  fs.mkdirSync(ponosTarget, { recursive: true })
+  fs.writeFileSync(path.join(ponosTarget, 'keep.md'), '原有内容', 'utf-8')
   try {
     const zip = path.join(path.dirname(zipPath), 'proj.zip')
     makeZipWith({
@@ -159,8 +159,8 @@ test('project 已存在 + skip 不抛错且计 conflicts', async () => {
     const res = await pkg.importPackage(zip, { conflict: 'skip', projectCwd: proj })
     assert.equal(res.ok, true)
     assert.ok(res.conflicts >= 1)
-    assert.ok(fs.existsSync(path.join(yfwTarget, 'keep.md')))
-    assert.ok(res.restored.includes('project/.yfworking (exists, skipped)'))
+    assert.ok(fs.existsSync(path.join(ponosTarget, 'keep.md')))
+    assert.ok(res.restored.includes('project/.ponos (exists, skipped)'))
   } finally {
     fs.rmSync(proj, { recursive: true, force: true })
   }
@@ -175,13 +175,13 @@ test('redacted 包 + overwrite 拒绝覆盖 config', async () => {
   const res = await pkg.importPackage(zip, { conflict: 'overwrite' })
   assert.equal(res.ok, true)
   assert.ok(res.conflicts >= 1)
-  const cfg = JSON.parse(fs.readFileSync(path.join(testHome, '.yfworking', 'config.json'), 'utf-8'))
+  const cfg = JSON.parse(fs.readFileSync(path.join(testHome, '.ponos', 'config.json'), 'utf-8'))
   assert.equal(cfg.providers[0].authToken, 'sk-secret') // 未被空凭据覆盖
   assert.equal(cfg.activeProvider, 'p')
 })
 
 test('merge 时目标 JSON 非法 → 单文件跳过不拖垮整体', async () => {
-  const expDir = path.join(testHome, '.yfworking', 'memory', 'skill_experiences')
+  const expDir = path.join(testHome, '.ponos', 'memory', 'skill_experiences')
   fs.mkdirSync(expDir, { recursive: true })
   fs.writeFileSync(path.join(expDir, 'broken.json'), 'not-valid-json{', 'utf-8')
   const zip = path.join(path.dirname(zipPath), 'mergejson.zip')
@@ -206,11 +206,11 @@ test('skills 导入递归恢复子目录文件（merge 安装本地缺失）', a
   assert.equal(res.ok, true)
   assert.ok(res.restored.includes('skills/my-skill/SKILL.md'))
   assert.ok(res.restored.includes('skills/my-skill/experience.json'))
-  assert.ok(fs.existsSync(path.join(testHome, '.yfworking', 'skills', 'my-skill', 'SKILL.md')))
+  assert.ok(fs.existsSync(path.join(testHome, '.ponos', 'skills', 'my-skill', 'SKILL.md')))
 })
 
 test('skills 导入 merge 跳过已存在文件、overwrite 覆盖', async () => {
-  const skillDir = path.join(testHome, '.yfworking', 'skills', 'my-skill')
+  const skillDir = path.join(testHome, '.ponos', 'skills', 'my-skill')
   fs.mkdirSync(skillDir, { recursive: true })
   fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '原有内容', 'utf-8')
   const zip = path.join(path.dirname(zipPath), 'skills2.zip')
@@ -229,7 +229,7 @@ test('skills 导入 merge 跳过已存在文件、overwrite 覆盖', async () =>
 })
 
 test('skill_exp 导出敏感词过滤经验条目', async () => {
-  const expDir = path.join(testHome, '.yfworking', 'memory', 'skill_experiences')
+  const expDir = path.join(testHome, '.ponos', 'memory', 'skill_experiences')
   fs.mkdirSync(expDir, { recursive: true })
   fs.writeFileSync(path.join(expDir, 'gxtz-test.json'), JSON.stringify({
     skill_name: 'gxtz-test',
@@ -242,7 +242,7 @@ test('skill_exp 导出敏感词过滤经验条目', async () => {
   const res = await pkg.exportPackage({ outPath: zipPath, included: ['skill_exp'], sensitiveWords: ['password'], configRedact: true })
   assert.equal(res.ok, true)
   assert.ok(res.skipped.some(s => s.type === 'skill_exp'))
-  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-un-'))
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-un-'))
   spawnSync(pkg.TAR_CMD, ['-xf', zipPath, '-C', staging])
   const data = JSON.parse(fs.readFileSync(path.join(staging, 'skill_exp', 'gxtz-test.json'), 'utf-8'))
   assert.equal(data.experiences.length, 1)
@@ -260,7 +260,7 @@ test('chats 导出按会话拆分（sets.json + sessions/<id>.json，无旧单�
   })
   const res = await pkg.exportPackage({ outPath: zipPath, included: ['chats'], chatsJson, configRedact: true })
   assert.equal(res.ok, true)
-  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-un-'))
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-un-'))
   spawnSync(pkg.TAR_CMD, ['-xf', zipPath, '-C', staging])
   assert.ok(fs.existsSync(path.join(staging, 'chats', 'sets.json')))
   assert.ok(fs.existsSync(path.join(staging, 'chats', 'sessions', 'c1.json')))
@@ -276,7 +276,7 @@ test('chats 导出按会话拆分（sets.json + sessions/<id>.json，无旧单�
 })
 
 test('chats 导出解包 zustand persist 包装（{state,version}）——回归：真实运行包不静默跳过', async () => {
-  // renderer 传的是 localStorage['yfworking-chat'] 原值（zustand persist 序列化为
+  // renderer 传的是 localStorage['ponos-chat'] 原值（zustand persist 序列化为
   // {state:{...},version:0}），而非裸 {conversations, conversationSets}；此前该形状
   // 命中 !Array.isArray(data.conversations) 静默跳过，导出的 zip 零会话且仍标 chat_format:2
   const chatsJson = JSON.stringify({
@@ -289,7 +289,7 @@ test('chats 导出解包 zustand persist 包装（{state,version}）——回归
   const res = await pkg.exportPackage({ outPath: zipPath, included: ['chats'], chatsJson, configRedact: true })
   assert.equal(res.ok, true)
   assert.ok(!res.skipped.some(s => s.type === 'chats'))
-  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-un-'))
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-un-'))
   spawnSync(pkg.TAR_CMD, ['-xf', zipPath, '-C', staging])
   assert.ok(fs.existsSync(path.join(staging, 'chats', 'sessions', 'c1.json')))
   const sets = JSON.parse(fs.readFileSync(path.join(staging, 'chats', 'sets.json'), 'utf-8'))
@@ -310,7 +310,7 @@ test('chatsFilter: setId 与 conversationIds 只导出所选会话', async () =>
   })
   const res = await pkg.exportPackage({ outPath: zipPath, included: ['chats'], chatsJson, chatsFilter: { setId: 'set1' }, configRedact: true })
   assert.equal(res.ok, true)
-  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-un-'))
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-un-'))
   spawnSync(pkg.TAR_CMD, ['-xf', zipPath, '-C', staging])
   assert.ok(fs.existsSync(path.join(staging, 'chats', 'sessions', 'c1.json')))
   assert.ok(!fs.existsSync(path.join(staging, 'chats', 'sessions', 'c2.json')))

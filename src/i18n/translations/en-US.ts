@@ -89,7 +89,7 @@ export const enUS: TranslationKeys = {
     attachImage: 'Attach Image',
     voiceInput: 'Voice Input',
     voiceStop: 'Stop Recording',
-    welcomeTitle: 'YFWorking dev',
+    welcomeTitle: 'Ponos dev',
     welcomeSubtitle: 'Your AI workbench for enterprise consulting & development — organize declaration materials, generate core tables, verify audit reports, diagnose systems. Pick a scenario or just ask:',
     welcomeFooterHint: '⌘N new chat · ⌘K command palette · / focus input',
     quickStart: 'Get started',
@@ -163,9 +163,9 @@ export const enUS: TranslationKeys = {
     installedSkillsCount: 'installed skills',
     skillsManageHint: 'Click the Skills tab in the left sidebar to install and manage skill packages. This section shows skill directory and auto capture settings.',
 
-    // --- YFWorking Model Config (new) ---
-    yfworking: 'YFWorking Kernel',
-    yfworkingDesc: 'Configure AI model and API parameters for YFWorking sessions',
+    // --- Ponos Model Config (new) ---
+    ponos: 'Ponos Kernel',
+    ponosDesc: 'Configure AI model and API parameters for Ponos sessions',
     skillRoot: 'Skills Root',
     skillRootDesc: 'Directory where skill packages are installed',
     allowOutsideDirs: 'Allow file access outside session directory',
@@ -340,7 +340,7 @@ export const enUS: TranslationKeys = {
 
   permissions: {
     title: 'Permission Request',
-    description: 'YFWorking wants to perform an action that requires your approval.',
+    description: 'Ponos wants to perform an action that requires your approval.',
     fileRead: 'Requests to read file',
     fileWrite: 'Requests to write file',
     bash: 'Requests to execute command',

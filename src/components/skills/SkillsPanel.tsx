@@ -11,7 +11,7 @@ import { fetchSkills, buildSkillPrompt, type SkillEntry } from '@/lib/skills'
 export function SkillsPanel() {
   const { t } = useTranslation()
   const [skills, setSkills] = useState<SkillEntry[]>([])
-  const [skillsDir, setSkillsDir] = useState('~/.yfworking/skills')
+  const [skillsDir, setSkillsDir] = useState('~/.ponos/skills')
   const [filter, setFilter] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -33,8 +33,8 @@ export function SkillsPanel() {
         window.alert(`最多只能收藏 ${limit} 个常用技能，请先取消其他收藏再添加。`)
       }, 100)
     }
-    window.addEventListener('yfworking:pin-limit', handler)
-    return () => window.removeEventListener('yfworking:pin-limit', handler)
+    window.addEventListener('ponos:pin-limit', handler)
+    return () => window.removeEventListener('ponos:pin-limit', handler)
   }, [])
 
   // Click-outside to close dropdowns (mousedown to avoid race with button clicks)
@@ -82,7 +82,7 @@ export function SkillsPanel() {
 
   const installSkill = async () => {
     try {
-      const fileApi = window.yfworkingFile
+      const fileApi = window.ponosFile
       if (!fileApi?.openSkillPackage) {
         alert('Skill install requires Electron environment.')
         return

@@ -21,7 +21,7 @@ dependencies: []
 
 ## 1. 角色定位
 
-你以**"企业咨询项目老师"**身份工作。角色基准定义见: `C:/Users/T203-15/.yfworking/skills/_common/agent_role.md`（原高新认定场景表述通用化后同等适用）：
+你以**"企业咨询项目老师"**身份工作。角色基准定义见: `C:/Users/T203-15/.ponos/skills/_common/agent_role.md`（原高新认定场景表述通用化后同等适用）：
 
 - **称呼**：项目老师
 - **定位**：企业咨询项目领域的专业顾问，为企业维护统一的文档模板库与品牌视觉规范
@@ -33,15 +33,15 @@ dependencies: []
 
 ## 2. 技术栈
 
-> 技术栈引用: `C:/Users/T203-15/.yfworking/skills/_common/SHARED_tech_stack.md`
-> 路径规范引用: `C:/Users/T203-15/.yfworking/skills/_common/SHARED_skill_path_conventions.md`
+> 技术栈引用: `C:/Users/T203-15/.ponos/skills/_common/SHARED_tech_stack.md`
+> 路径规范引用: `C:/Users/T203-15/.ponos/skills/_common/SHARED_skill_path_conventions.md`
 
 | 任务 | 命令/方式 |
 |------|---------|
-| 检查模板文件 | `python "C:/Users/T203-15/.yfworking/skills/_common/doc_toolkit.py" info --file <路径>` |
+| 检查模板文件 | `python "C:/Users/T203-15/.ponos/skills/_common/doc_toolkit.py" info --file <路径>` |
 | 读取模板内容 | `doc_toolkit.py read --file <路径> --format docx/xlsx` |
 | 模板生成 | `doc_toolkit.py write`（docx/xlsx）+ python-docx/python-pptx/openpyxl 直编（复杂样式） |
-| 模板库位置 | `C:/Users/T203-15/.yfworking/skills/yfwdoc-template/_templates/` |
+| 模板库位置 | `C:/Users/T203-15/.ponos/skills/yfwdoc-template/_templates/` |
 | 注册表 | `_templates/template_index.json`（本技能维护，JSON格式） |
 | 品牌规范文件 | `_templates/brand_spec_{企业}.json` |
 | 品牌素材 | `_templates/assets/`（Logo/字体/页眉页脚图片） |
@@ -56,7 +56,7 @@ dependencies: []
 
 ## 4. 自主确认机制
 
-遵循 `C:/Users/T203-15/.yfworking/skills/_common/SHARED_autonomous_confirmation.md` 的5原则。模板场景高发确认点：
+遵循 `C:/Users/T203-15/.ponos/skills/_common/SHARED_autonomous_confirmation.md` 的5原则。模板场景高发确认点：
 
 | 触发类型 | 场景 | 处理 |
 |---------|------|------|
@@ -175,4 +175,4 @@ dependencies: []
 
 - 模板库被 `yfwdoc-word` / `yfwdoc-pptx` / `yfwdoc-excel` 只读消费：模板文件在 `_templates/`，规范在 `brand_spec_*.json`，检索在 `template_index.json`
 - 跨技能协作：用户直接提文档任务时由 `yfwdoc-suite` 总路由分派，本技能是各文档技能的"上游"
-- 路径规范：所有 `_common` 脚本调用使用绝对路径 `C:/Users/T203-15/.yfworking/skills/_common/`
+- 路径规范：所有 `_common` 脚本调用使用绝对路径 `C:/Users/T203-15/.ponos/skills/_common/`

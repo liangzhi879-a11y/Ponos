@@ -1,6 +1,6 @@
 # 任务：修复 protocolStream usage chunk 双发缺陷
 
-这是 YFW-turbo 内核（Node ESM 净室项目）。当前工作区是该内核的一个历史版本，存在一个已确认的缺陷。
+这是 Ponos-turbo 内核（Node ESM 净室项目）。当前工作区是该内核的一个历史版本，存在一个已确认的缺陷。
 
 ## 缺陷描述
 

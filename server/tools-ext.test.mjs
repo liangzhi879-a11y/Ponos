@@ -12,7 +12,7 @@ import { join } from 'node:path'
 import { createToolRegistry, childEnv } from '../kernel/tools.mjs'
 
 function tmpReg() {
-  const dir = mkdtempSync(join(tmpdir(), 'yfw-tools-ext-'))
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-tools-ext-'))
   return { dir, reg: createToolRegistry({ cwd: dir, addDirs: [dir], skipPermissions: true }) }
 }
 
@@ -224,13 +224,13 @@ test('OCR：越界路径与缺失文件报错（不触发 python）', async () =
     assert.equal(isDir.isError, true)
     assert.match(isDir.content, /目录/)
     // 引擎路径不可探测 → 引擎不可用错误（不 spawn python）：临时改 env 使
-    // YFW_OCR_ENGINE 与两个候选 home 路径全部落空
+    // PONOS_OCR_ENGINE 与两个候选 home 路径全部落空
     const txt = join(dir, 'plain.txt')
     writeFileSync(txt, 'hello', 'utf-8')
-    const oldEngine = process.env.YFW_OCR_ENGINE
+    const oldEngine = process.env.PONOS_OCR_ENGINE
     const oldUser = process.env.USERPROFILE
     const oldHome = process.env.HOME
-    process.env.YFW_OCR_ENGINE = join(dir, 'no-engine.py')
+    process.env.PONOS_OCR_ENGINE = join(dir, 'no-engine.py')
     process.env.USERPROFILE = join(dir, 'fake-home')
     process.env.HOME = join(dir, 'fake-home')
     try {
@@ -238,7 +238,7 @@ test('OCR：越界路径与缺失文件报错（不触发 python）', async () =
       assert.equal(noEngine.isError, true)
       assert.match(noEngine.content, /OCR 引擎不可用|引擎不可用/)
     } finally {
-      process.env.YFW_OCR_ENGINE = oldEngine
+      process.env.PONOS_OCR_ENGINE = oldEngine
       process.env.USERPROFILE = oldUser
       process.env.HOME = oldHome
     }
@@ -306,10 +306,10 @@ test('S4-1 符号链接逃逸：边界内 symlink 指向边界外 → 拒绝；�
   }
 })
 
-// --- 会话目录外文件访问开关（--allow-outside-dirs / YFW_ALLOW_OUTSIDE_DIRS=1） ---
+// --- 会话目录外文件访问开关（--allow-outside-dirs / PONOS_ALLOW_OUTSIDE_DIRS=1） ---
 test('边界开关：默认拒绝会话外文件；allowOutsideDirs 解锁 Read/Write/Edit/OCR', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yfw-bnd-in-'))
-  const outside = mkdtempSync(join(tmpdir(), 'yfw-bnd-out-'))
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-bnd-in-'))
+  const outside = mkdtempSync(join(tmpdir(), 'ponos-bnd-out-'))
   try {
     writeFileSync(join(outside, 'secret.txt'), 'outside-secret')
     const outsideFile = join(outside, 'secret.txt')
@@ -343,28 +343,28 @@ test('边界开关：默认拒绝会话外文件；allowOutsideDirs 解锁 Read/
   }
 })
 
-test('边界开关：YFW_ALLOW_OUTSIDE_DIRS=1 env 同样解锁', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yfw-bnd2-in-'))
-  const outside = mkdtempSync(join(tmpdir(), 'yfw-bnd2-out-'))
-  const prev = process.env.YFW_ALLOW_OUTSIDE_DIRS
+test('边界开关：PONOS_ALLOW_OUTSIDE_DIRS=1 env 同样解锁', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-bnd2-in-'))
+  const outside = mkdtempSync(join(tmpdir(), 'ponos-bnd2-out-'))
+  const prev = process.env.PONOS_ALLOW_OUTSIDE_DIRS
   try {
     writeFileSync(join(outside, 'env.txt'), 'env-unlocked')
-    process.env.YFW_ALLOW_OUTSIDE_DIRS = '1'
+    process.env.PONOS_ALLOW_OUTSIDE_DIRS = '1'
     const reg = createToolRegistry({ cwd: dir, addDirs: [dir], skipPermissions: true })
     const r = await reg.run({ name: 'Read', input: { file_path: join(outside, 'env.txt') } })
     assert.equal(r.isError, false)
     assert.match(String(r.content), /env-unlocked/)
   } finally {
-    if (prev === undefined) delete process.env.YFW_ALLOW_OUTSIDE_DIRS
-    else process.env.YFW_ALLOW_OUTSIDE_DIRS = prev
+    if (prev === undefined) delete process.env.PONOS_ALLOW_OUTSIDE_DIRS
+    else process.env.PONOS_ALLOW_OUTSIDE_DIRS = prev
     rmSync(dir, { recursive: true, force: true })
     rmSync(outside, { recursive: true, force: true })
   }
 })
 
 test('边界开关：Glob/Grep 仍限会话目录内（避免解锁后全盘扫描）', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yfw-bnd3-in-'))
-  const outside = mkdtempSync(join(tmpdir(), 'yfw-bnd3-out-'))
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-bnd3-in-'))
+  const outside = mkdtempSync(join(tmpdir(), 'ponos-bnd3-out-'))
   try {
     writeFileSync(join(outside, 'out-visible.txt'), 'x')
     const reg = createToolRegistry({ cwd: dir, addDirs: [dir], skipPermissions: true, allowOutsideDirs: true })
@@ -379,7 +379,7 @@ test('边界开关：Glob/Grep 仍限会话目录内（避免解锁后全盘扫�
 })
 
 test('搜索剪枝：node_modules/release/vendors/workspace 默认跳过，显式引用时放行', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yfw-prune-'))
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-prune-'))
   try {
     mkdirSync(join(dir, 'node_modules', 'dep'), { recursive: true })
     mkdirSync(join(dir, 'release', 'app'), { recursive: true })
@@ -420,7 +420,7 @@ test('搜索剪枝：node_modules/release/vendors/workspace 默认跳过，显�
 })
 
 test('Glob/Grep：brace 扩展 {a,b,c} 与相对路径前缀自动对齐绝对路径', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yfw-brace-'))
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-brace-'))
   try {
     mkdirSync(join(dir, 'src'), { recursive: true })
     mkdirSync(join(dir, 'src', 'sub'), { recursive: true })

@@ -1,4 +1,4 @@
-// YFW-turbo 内核适配器（预留接口，独立模块）
+// Ponos-turbo 内核适配器（预留接口，独立模块）
 // ---------------------------------------------------------------------------
 // 驱动方式：stdin NDJSON 契约（docs/bridge-contract.md）
 //   1. spawn kernel/cli.mjs --print --output-format stream-json --input-format stream-json
@@ -18,14 +18,14 @@ import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { resolveModel, buildAgentEnv } from '../lib/llm-api.mjs'
 
-// Node 24 兼容垫片：剥离内核传给 fetch 的非 AbortSignal 信号（见 yfw-fetch-shim.mjs）
-const shimUrl = pathToFileURL(fileURLToPath(new URL('./yfw-fetch-shim.mjs', import.meta.url))).href
-// yfw 内核自身不带系统提示（需调用方经 --append-system-prompt-file 注入），
+// Node 24 兼容垫片：剥离内核传给 fetch 的非 AbortSignal 信号（见 ponos-fetch-shim.mjs）
+const shimUrl = pathToFileURL(fileURLToPath(new URL('./ponos-fetch-shim.mjs', import.meta.url))).href
+// ponos 内核自身不带系统提示（需调用方经 --append-system-prompt-file 注入），
 // 评测注入一份标准 agent 系统提示，与 claude/pi/deepseek 自带提示对齐，
-// 使对比聚焦于内核工具循环能力而非缺失提示词（见 yfw-system-prompt.md）
-const systemPromptFile = fileURLToPath(new URL('./yfw-system-prompt.md', import.meta.url))
+// 使对比聚焦于内核工具循环能力而非缺失提示词（见 ponos-system-prompt.md）
+const systemPromptFile = fileURLToPath(new URL('./ponos-system-prompt.md', import.meta.url))
 
-export async function runYFW({ ws, prompt, timeoutMs, onLog, kernelDir }) {
+export async function runPonos({ ws, prompt, timeoutMs, onLog, kernelDir }) {
   // 内核入口始终从内核仓库启动（kernel/cli.mjs 相对路径依赖 kernelDir），
   // --add-dir ws 让内核工具面（Read/Grep/Bash 等）作用于任务工作区。
   // 普通任务 ws 就是内核仓库的 worktree（kernelDir 缺省回退 ws，行为不变）；
@@ -47,10 +47,10 @@ export async function runYFW({ ws, prompt, timeoutMs, onLog, kernelDir }) {
     '--add-dir', ws,
   ]
   return new Promise((resolve) => {
-    // buildAgentEnv('yfw')：统一注入 ANTHROPIC_AUTH_TOKEN + baseUrl（DeepSeek 兼容端点）
-    // YFW_PROMPT_CACHE=1：显式启用 system prompt cache（内核侧带回退，端点拒绝缓存
+    // buildAgentEnv('ponos')：统一注入 ANTHROPIC_AUTH_TOKEN + baseUrl（DeepSeek 兼容端点）
+    // PONOS_PROMPT_CACHE=1：显式启用 system prompt cache（内核侧带回退，端点拒绝缓存
     // 字段时自动去掉重发），多任务间共享系统提示缓存、压低成本
-    const child = spawn(process.execPath, args, { cwd: kernelRoot, env: { ...buildAgentEnv('yfw'), YFW_PROMPT_CACHE: '1' }, windowsHide: true })
+    const child = spawn(process.execPath, args, { cwd: kernelRoot, env: { ...buildAgentEnv('ponos'), PONOS_PROMPT_CACHE: '1' }, windowsHide: true })
     let stdout = ''
     let stderr = ''
     let timedOut = false

@@ -1,10 +1,10 @@
-# YFW-turbo 内层逻辑实施计划（事件日志 surface + 双协议 + 两阶段压缩 + 健康监控 + 统计）
+# Ponos-turbo 内层逻辑实施计划（事件日志 surface + 双协议 + 两阶段压缩 + 健康监控 + 统计）
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 为 YFW-turbo 内核补齐内层逻辑——消息历史从内存数组迁移到「追加式事件日志 + surface 派生」，实现双协议 API（OpenAI/Anthropic）+ tools schema 注入、两阶段上下文压缩（免模型裁剪 + 主模型摘要）、健康监控事件、token 统计聚合端点，全部保持既有 wire 契约与测试通过。
+**Goal:** 为 Ponos-turbo 内核补齐内层逻辑——消息历史从内存数组迁移到「追加式事件日志 + surface 派生」，实现双协议 API（OpenAI/Anthropic）+ tools schema 注入、两阶段上下文压缩（免模型裁剪 + 主模型摘要）、健康监控事件、token 统计聚合端点，全部保持既有 wire 契约与测试通过。
 
-**Architecture:** 单进程每会话。transcript JSONL 仍为权威源；新增内存 `surface = { nodes, replaceGeneration }` 投影，模型输入永远从 `session.deriveMessages()` 派生（带缓存）。`context.mjs`（token 计价/压力判定）与 `compact.mjs`（裁剪/摘要/切点/日志锁）配合 engine 的 pre-step 测压检查点触发压缩。每轮尾部产出 `turnStats`，供 `health.mjs` 纯计算消费 → `yfw_health`/`yfw_summary` 事件。api.mjs 增加协议选择层（env 检测 openai/anthropic）+ 纯解析器，tools 注入请求 body。统计聚合收敛到 bridge `/transcript/stats`。
+**Architecture:** 单进程每会话。transcript JSONL 仍为权威源；新增内存 `surface = { nodes, replaceGeneration }` 投影，模型输入永远从 `session.deriveMessages()` 派生（带缓存）。`context.mjs`（token 计价/压力判定）与 `compact.mjs`（裁剪/摘要/切点/日志锁）配合 engine 的 pre-step 测压检查点触发压缩。每轮尾部产出 `turnStats`，供 `health.mjs` 纯计算消费 → `ponos_health`/`ponos_summary` 事件。api.mjs 增加协议选择层（env 检测 openai/anthropic）+ 纯解析器，tools 注入请求 body。统计聚合收敛到 bridge `/transcript/stats`。
 
 **Tech Stack:** Node ESM（.mjs）、node:test + assert/strict、NDJSON stream-json 协议、node:readline/fs 流式读、无第三方运行时依赖（沿用净室原则）。
 
@@ -499,7 +499,7 @@ async function* openaiStream({ model, messages, system, tools, maxTokens, signal
 export async function* streamMessages({ model, messages, maxTokens, signal, tools = [] }) {
   const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n')
   const rest = messages.filter((m) => m.role !== 'system')
-  if (process.env.YFW_MOCK_API === '1') {
+  if (process.env.PONOS_MOCK_API === '1') {
     yield* mockStream({ messages, signal })
     return
   }
@@ -520,7 +520,7 @@ Expected: PASS（5 个测试）
 - [x] **Step 7: 回归 mock 路径**
 
 Run: `node --test server/kernel-engine.test.mjs server/kernel-contract.test.mjs`
-Expected: PASS（YFW_MOCK_API=1 分支未动，既有 wire 测试全绿）
+Expected: PASS（PONOS_MOCK_API=1 分支未动，既有 wire 测试全绿）
 
 - [x] **Step 8: Commit**
 
@@ -634,7 +634,7 @@ Expected: FAIL —— 模块不存在 / 函数未定义
 - [x] **Step 3: 实现 kernel/context.mjs**
 
 ```js
-// YFW-turbo 上下文管理（docs/superpowers/specs/2026-08-20-yfw-turbo-inner-core-design.md §5/§6.3）
+// Ponos-turbo 上下文管理（docs/superpowers/specs/2026-08-20-ponos-turbo-inner-core-design.md §5/§6.3）
 // ---------------------------------------------------------------------------
 // 零依赖纯函数：token 启发式计价（块级密度系数）、模型窗口表、pre-step 压力
 // 判定、tokenLedger 四区记账、usage 锚点优化（KV 前缀缓存近似）。全部确定性，
@@ -1209,7 +1209,7 @@ function setup() {
 test('usage 逐次累计：工具循环多轮 API 调用全部计入 result.usage', async () => {
   const { dir, events, session } = setup()
   try {
-    process.env.YFW_MOCK_API = '1'
+    process.env.PONOS_MOCK_API = '1'
     const engine = createEngine({ opts: { model: 'm', addDirs: [dir], skipPermissions: true, systemPrompt: '' }, wire, session })
     await engine.runTurn({ content: '[mock:tool]' })
     // mock 流：工具请求回合 + 工具结果回合 = 2 次 API 调用，各 10/20 → 累计 20/40
@@ -1217,14 +1217,14 @@ test('usage 逐次累计：工具循环多轮 API 调用全部计入 result.usag
     assert.equal(result.usage.input_tokens, 20)
     assert.equal(result.usage.output_tokens, 40)
     assert.ok(Number.isFinite(result.extra.duration_ms))
-    delete process.env.YFW_MOCK_API
+    delete process.env.PONOS_MOCK_API
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('中间工具条目落盘：assistant tool_use + user tool_result 进入 session', async () => {
   const { dir, session } = setup()
   try {
-    process.env.YFW_MOCK_API = '1'
+    process.env.PONOS_MOCK_API = '1'
     const engine = createEngine({ opts: { model: 'm', addDirs: [dir], skipPermissions: true }, wire: { assistant: () => {}, result: () => {}, controlRequest: () => {}, summary: () => {}, health: () => {} }, session })
     await engine.runTurn({ content: '[mock:tool]' })
     const msgs = session.deriveMessages()
@@ -1232,14 +1232,14 @@ test('中间工具条目落盘：assistant tool_use + user tool_result 进入 se
     assert.ok(roles.includes('assistant'))
     assert.ok(msgs.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_use')))
     assert.ok(msgs.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_result')))
-    delete process.env.YFW_MOCK_API
+    delete process.env.PONOS_MOCK_API
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('turnStats 记录器：每轮一条，含 usage/durationMs/model/ts', async () => {
   const { dir, session } = setup()
   try {
-    process.env.YFW_MOCK_API = '1'
+    process.env.PONOS_MOCK_API = '1'
     const engine = createEngine({ opts: { model: 'm', addDirs: [dir], skipPermissions: true }, wire: { assistant: () => {}, result: () => {}, controlRequest: () => {}, summary: () => {}, health: () => {} }, session })
     await engine.runTurn({ content: 'hello' })
     const stats = engine.getTurnStats()
@@ -1248,7 +1248,7 @@ test('turnStats 记录器：每轮一条，含 usage/durationMs/model/ts', async
     assert.ok(stats[0].usage.output_tokens >= 0)
     assert.ok(Number.isFinite(stats[0].durationMs))
     assert.ok(stats[0].ts)
-    delete process.env.YFW_MOCK_API
+    delete process.env.PONOS_MOCK_API
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 ```
@@ -1459,7 +1459,7 @@ git commit -m "feat(kernel): engine 迁移 session 派生（usage 累计/中间�
 
 **Files:**
 - Create: `kernel/compact.mjs`
-- Modify: `kernel/api.mjs`（mock 扩展：`系统压缩指令` 检测 → 返回 `YFW_MOCK_COMPACT_RESPONSE` 或 `<compacted-summary>`；`YFW_MOCK_OVERFLOW=once` → 非 summarizer 调用抛一次 context_window_exceeded）
+- Modify: `kernel/api.mjs`（mock 扩展：`系统压缩指令` 检测 → 返回 `PONOS_MOCK_COMPACT_RESPONSE` 或 `<compacted-summary>`；`PONOS_MOCK_OVERFLOW=once` → 非 summarizer 调用抛一次 context_window_exceeded）
 - Modify: `kernel/engine.mjs`（pre-step 测压检查点、溢出 retry 循环、compactor 接入）
 - Test: `server/compact.test.mjs`（新建）
 
@@ -1557,7 +1557,7 @@ test('assembleSummaryRequest 前缀对齐主请求（system+旧消息+前次摘�
   assert.ok(last.content.includes('Goal'))
 })
 
-test('压缩集成（YFW_MOCK_API）：超阈值 → 摘要 replace 落地 → surface 派生正确', async () => {
+test('压缩集成（PONOS_MOCK_API）：超阈值 → 摘要 replace 落地 → surface 派生正确', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'compact-'))
   try {
     const events = []
@@ -1568,10 +1568,10 @@ test('压缩集成（YFW_MOCK_API）：超阈值 → 摘要 replace 落地 → s
       session,
       context: { window: 500, thresholdRatio: 0.8, retainRatio: 0.16, estimate: (r) => ({ total: (r.messages?.length ?? 0) * 50 }), estimateMessage: () => 50, estimateHistory: (msgs) => (msgs?.length ?? 0) * 50 },
       model: 'm', maxTokens: 100, wire: { ...wire, summary: (t, c) => compactEvents.push({ type: 'summary', c }) },
-      env: { YFW_MOCK_API: '1' },
+      env: { PONOS_MOCK_API: '1' },
     })
-    process.env.YFW_MOCK_API = '1'
-    process.env.YFW_MOCK_COMPACT_RESPONSE = '1'
+    process.env.PONOS_MOCK_API = '1'
+    process.env.PONOS_MOCK_COMPACT_RESPONSE = '1'
     for (let i = 1; i <= 5; i++) { session.appendUser(`q${i}`); session.appendAssistant([{ type: 'text', text: 'a'.repeat(100) }]) }
     // 10 条消息 × 50 = 500 ≥ 阈值 400 → 触发；遮蔽前 8 条 [U1..A4]，保留 [U5,A5]
     const r = await compactor.maybeCompact({ system: 'S', messages: session.deriveMessages() })
@@ -1580,8 +1580,8 @@ test('压缩集成（YFW_MOCK_API）：超阈值 → 摘要 replace 落地 → s
     const msgs = session.deriveMessages()
     assert.ok(msgs.some((m) => Array.isArray(m.content) && m.content.some((b) => b?.text === '摘要输出')))
     assert.ok(session.getSurface().replaceGeneration >= 1)
-    delete process.env.YFW_MOCK_API
-    delete process.env.YFW_MOCK_COMPACT_RESPONSE
+    delete process.env.PONOS_MOCK_API
+    delete process.env.PONOS_MOCK_COMPACT_RESPONSE
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -1596,9 +1596,9 @@ test('溢出恢复：context_window_exceeded → forceCompact → retry 成功�
       context: { window: 1000, thresholdRatio: 0.8, retainRatio: 0.16, estimate: (r) => ({ total: (r.messages?.length ?? 0) * 50 }), estimateMessage: () => 50, estimateHistory: (msgs) => (msgs?.length ?? 0) * 50 },
       model: 'm', maxTokens: 100, wire, env: process.env,
     })
-    process.env.YFW_MOCK_API = '1'
-    process.env.YFW_MOCK_OVERFLOW = 'once' // 非 summarizer 调用抛一次溢出
-    process.env.YFW_MOCK_COMPACT_RESPONSE = '1'
+    process.env.PONOS_MOCK_API = '1'
+    process.env.PONOS_MOCK_OVERFLOW = 'once' // 非 summarizer 调用抛一次溢出
+    process.env.PONOS_MOCK_COMPACT_RESPONSE = '1'
     const engine = createEngine({
       opts: { model: 'm', addDirs: [dir], skipPermissions: true, systemPrompt: 'S' },
       wire, session, compactor,
@@ -1610,9 +1610,9 @@ test('溢出恢复：context_window_exceeded → forceCompact → retry 成功�
     assert.ok(out.text.startsWith('mock: q6'))
     assert.equal(session.compactCount(), 1)
     assert.ok(session.getSurface().replaceGeneration >= 1)
-    delete process.env.YFW_MOCK_API
-    delete process.env.YFW_MOCK_OVERFLOW
-    delete process.env.YFW_MOCK_COMPACT_RESPONSE
+    delete process.env.PONOS_MOCK_API
+    delete process.env.PONOS_MOCK_OVERFLOW
+    delete process.env.PONOS_MOCK_COMPACT_RESPONSE
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 ```
@@ -1625,7 +1625,7 @@ Expected: FAIL —— compact.mjs 模块不存在
 - [x] **Step 3: 实现 kernel/compact.mjs（纯函数）**
 
 ```js
-// YFW-turbo 两阶段压缩器（docs/superpowers/specs/2026-08-20-yfw-turbo-inner-core-design.md §5）
+// Ponos-turbo 两阶段压缩器（docs/superpowers/specs/2026-08-20-ponos-turbo-inner-core-design.md §5）
 // ---------------------------------------------------------------------------
 // 阶段① 免模型结构感知裁剪（ToolResultPruner）：表格采样/代码行边界/JSON 键名+错误行
 // 阶段② 主模型摘要：前缀对齐主请求（KV 缓存复用）+ <compacted-summary> 9 节 checkpoint
@@ -1831,23 +1831,23 @@ export function createCompactor({ session, context, model, maxTokens, wire, sign
 ```js
   // 压缩摘要调用：检测 COMPACTION_INSTRUCTION → 返回 mock 摘要（收敛用）
   if (lastText && lastText.includes('系统压缩指令')) {
-    const body = process.env.YFW_MOCK_COMPACT_RESPONSE === '1'
+    const body = process.env.PONOS_MOCK_COMPACT_RESPONSE === '1'
       ? '<compacted-summary>摘要输出</compacted-summary>'
       : '<compacted-summary>mock 摘要</compacted-summary>'
     yield* streamText(body, signal)
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
-  // 溢出模拟：YFW_MOCK_OVERFLOW=once → 非 summarizer 调用抛一次 context_window_exceeded
-  if (process.env.YFW_MOCK_OVERFLOW === 'once' && !String(lastText || '').includes('系统压缩指令')) {
-    if (process.env.YFW_MOCK_OVERFLOW_CONSUMED === '1') { /* 已抛过 */ } else {
-      process.env.YFW_MOCK_OVERFLOW_CONSUMED = '1'
+  // 溢出模拟：PONOS_MOCK_OVERFLOW=once → 非 summarizer 调用抛一次 context_window_exceeded
+  if (process.env.PONOS_MOCK_OVERFLOW === 'once' && !String(lastText || '').includes('系统压缩指令')) {
+    if (process.env.PONOS_MOCK_OVERFLOW_CONSUMED === '1') { /* 已抛过 */ } else {
+      process.env.PONOS_MOCK_OVERFLOW_CONSUMED = '1'
       throw new Error('context_window_exceeded: 请求超出模型上下文窗口')
     }
   }
 ```
 
-（`YFW_MOCK_OVERFLOW_CONSUMED` 用进程级 env 标记一次消费——单测进程内有效。）
+（`PONOS_MOCK_OVERFLOW_CONSUMED` 用进程级 env 标记一次消费——单测进程内有效。）
 
 - [x] **Step 5: engine.mjs 接入 pre-step 测压 + 溢出 retry 循环**
 
@@ -1919,7 +1919,7 @@ git commit -m "feat(kernel): compact.mjs 两阶段压缩（结构裁剪/摘要/�
 
 ---
 
-### Task 7: 阶段4 —— kernel/health.mjs 健康监控 + yfw_health/yfw_summary 事件
+### Task 7: 阶段4 —— kernel/health.mjs 健康监控 + ponos_health/ponos_summary 事件
 
 **Files:**
 - Create: `kernel/health.mjs`
@@ -1935,7 +1935,7 @@ git commit -m "feat(kernel): compact.mjs 两阶段压缩（结构裁剪/摘要/�
   - `computeHealthScore({ compactCount, chainDepth, remainingPct, remainingTurns, failures, redundancyRatio, toolResultShare, model })` → `{ score, tier, suggestNewSession, reason }`（tier ∈ green/yellow/red；<5 turns 强制 red）
   - `shouldJudge({ tier, judgeEnabled, lastJudgeAt, now, cooldownMs })` → boolean（默认关；仅红档；冷却）
   - `createHealth({ wire, model, contextWindow, env })` → `{ record(turnStats), recordCompaction(summary, count), getState() }`
-  - `makeWire()` 新增 `health(data)` → `{ type: 'yfw_health', ...data }`、`summary(text, compactCount)` → `{ type: 'yfw_summary', text, compactCount }`
+  - `makeWire()` 新增 `health(data)` → `{ type: 'ponos_health', ...data }`、`summary(text, compactCount)` → `{ type: 'ponos_summary', text, compactCount }`
 
 - [x] **Step 1: 写失败测试**
 
@@ -1990,20 +1990,20 @@ test('shouldJudge：默认关不触发；红档开启后才触发且走冷却', 
   assert.equal(shouldJudge({ tier: 'red', judgeEnabled: true, lastJudgeAt: now, now, cooldownMs: 300000 }), false)
 })
 
-test('createHealth：非 green 档位去抖只发一次 yfw_health；recordCompaction 发 yfw_summary', () => {
+test('createHealth：非 green 档位去抖只发一次 ponos_health；recordCompaction 发 ponos_summary', () => {
   const events = []
   const wire = {
-    health: (d) => events.push({ type: 'yfw_health', ...d }),
-    summary: (t, c) => events.push({ type: 'yfw_summary', text: t, compactCount: c }),
+    health: (d) => events.push({ type: 'ponos_health', ...d }),
+    summary: (t, c) => events.push({ type: 'ponos_summary', text: t, compactCount: c }),
   }
   const h = createHealth({ wire, model: 'deepseek-v4-flash', contextWindow: 200_000 })
   h.record({ usage: {}, durationMs: 5, model: 'deepseek-v4-flash', ts: 't', compactCount: 0 })
-  assert.equal(events.filter((e) => e.type === 'yfw_health').length, 0) // green 不发
+  assert.equal(events.filter((e) => e.type === 'ponos_health').length, 0) // green 不发
   h.recordCompaction('摘要A', 1)
-  const sum = events.filter((e) => e.type === 'yfw_summary')
+  const sum = events.filter((e) => e.type === 'ponos_summary')
   assert.equal(sum.length, 1)
   assert.equal(sum[0].text, '摘要A')
-  assert.ok(events.some((e) => e.type === 'yfw_health')) // 压缩后档位变化 → 发
+  assert.ok(events.some((e) => e.type === 'ponos_health')) // 压缩后档位变化 → 发
   const before = events.length
   h.record({ usage: {}, durationMs: 5, model: 'deepseek-v4-flash', ts: 't', compactCount: 2 })
   assert.equal(events.length, before) // 同档去抖：不再发
@@ -2020,9 +2020,9 @@ Expected: FAIL —— health.mjs 不存在
 `kernel/health.mjs`：
 
 ```js
-// YFW-turbo 健康监控（docs/superpowers/specs/2026-08-20-yfw-turbo-inner-core-design.md §6/§6.3）
+// Ponos-turbo 健康监控（docs/superpowers/specs/2026-08-20-ponos-turbo-inner-core-design.md §6/§6.3）
 // ---------------------------------------------------------------------------
-// 纯计算 + 去抖状态机。消费 engine 每轮尾部 turnStats；产出 yfw_health / yfw_summary。
+// 纯计算 + 去抖状态机。消费 engine 每轮尾部 turnStats；产出 ponos_health / ponos_summary。
 // 多因子加权（压缩次数/链深度/剩余水位/剩余轮数/失败/冗余率/分区失衡），模型自适应。
 // 全程 try/catch 静默降级，绝不影响主流程。LLM-as-Judge 默认关闭（可选调用）。
 
@@ -2137,10 +2137,10 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
 
 ```js
     health(data = {}) {
-      writeLine(stream, { type: 'yfw_health', ...data })
+      writeLine(stream, { type: 'ponos_health', ...data })
     },
     summary(text, compactCount) {
-      writeLine(stream, { type: 'yfw_summary', text: String(text ?? ''), compactCount })
+      writeLine(stream, { type: 'ponos_summary', text: String(text ?? ''), compactCount })
     },
 ```
 
@@ -2184,13 +2184,13 @@ Expected: PASS（6 个测试）
 - [x] **Step 6: 回归既有测试（health 事件不污染既有 wire 断言）**
 
 Run: `node --test server/kernel-engine.test.mjs server/kernel-contract.test.mjs server/kernel-bridge.test.mjs`
-Expected: PASS（green 档不发事件；既有测试收集到 result 前忽略 yfw_* 事件）
+Expected: PASS（green 档不发事件；既有测试收集到 result 前忽略 ponos_* 事件）
 
 - [x] **Step 7: Commit**
 
 ```bash
 git add kernel/health.mjs kernel/protocol.mjs kernel/engine.mjs kernel/cli.mjs server/health.test.mjs
-git commit -m "feat(kernel): health.mjs 健康分/yfw_health/yfw_summary（去抖+模型自适应+Judge默认关）"
+git commit -m "feat(kernel): health.mjs 健康分/ponos_health/ponos_summary（去抖+模型自适应+Judge默认关）"
 ```
 
 ---
@@ -2499,7 +2499,7 @@ git commit -m "test(kernel): 全量回归——内层逻辑 9 任务全部落地
 
 ---
 
-**Plan complete and saved to `docs/superpowers/plans/2026-08-20-yfw-turbo-inner-core.md`. Two execution options:**
+**Plan complete and saved to `docs/superpowers/plans/2026-08-20-ponos-turbo-inner-core.md`. Two execution options:**
 
 **1. Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration
 

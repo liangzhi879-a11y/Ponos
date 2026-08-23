@@ -4,13 +4,13 @@
 
 **Goal:** 内核判定主会话任务质量（综合健康分，模型自适应 + 可靠注意力上限），质量严重下降时在 GUI 弹出横幅，一键新建会话并可携带压缩摘要。
 
-**Architecture:** 内核新增 `healthMonitor.ts`，在 `query.ts` 每轮收尾处调用 `recordTurn/recordCompaction`，档位变化时向 stdout 输出 `{"type":"yfw_health",...}` JSON 行（复用现有 bridge 逐行转发通道，bridge 零改动）；GUI 在 `useYFWCLI.ts` 事件分发处过滤新事件类型存入 `healthStore`，`HealthBanner` 组件渲染横幅。仅主会话（querySource 以 `repl_main_thread` 开头）参与计分。
+**Architecture:** 内核新增 `healthMonitor.ts`，在 `query.ts` 每轮收尾处调用 `recordTurn/recordCompaction`，档位变化时向 stdout 输出 `{"type":"ponos_health",...}` JSON 行（复用现有 bridge 逐行转发通道，bridge 零改动）；GUI 在 `usePonosCLI.ts` 事件分发处过滤新事件类型存入 `healthStore`，`HealthBanner` 组件渲染横幅。仅主会话（querySource 以 `repl_main_thread` 开头）参与计分。
 
 **Tech Stack:** Bun（内核 bundle）、TypeScript、vitest（内核测试）、zustand（GUI store）、React + Vite（GUI）、Electron。
 
 ## Global Constraints
 
-- 内核源码改动必须**同步 release 双份**：`release/YFWorking/` 与 `release/YFWorking_ms92cd6u/` 的 `kernel/` 与 `dist/`（见 project_release_sync memory）
+- 内核源码改动必须**同步 release 双份**：`release/Ponos/` 与 `release/Ponos_ms92cd6u/` 的 `kernel/` 与 `dist/`（见 project_release_sync memory）
 - **不打包**：不跑 electron-builder / build:electron，除非用户明确要求
 - 主线程过滤：querySource 不以 `repl_main_thread` 开头的轮次一律跳过（子 agent 不参与）
 - healthMonitor 事件输出全程 try/catch，失败静默降级，绝不影响主流程
@@ -23,8 +23,8 @@
 ### Task 1: 内核 healthMonitor 核心模块 + 单测
 
 **Files:**
-- Create: `yfw-kernel/claude-code/src/services/health/healthMonitor.ts`
-- Test: `yfw-kernel/claude-code/tests/health/healthMonitor.test.ts`
+- Create: `ponos-kernel/claude-code/src/services/health/healthMonitor.ts`
+- Test: `ponos-kernel/claude-code/tests/health/healthMonitor.test.ts`
 - Modify: `docs/superpowers/specs/2026-08-13-health-monitor-design.md`（因子表改为归一化计分）
 
 **Interfaces:**
@@ -41,7 +41,7 @@
 - [ ] **Step 1: 写失败测试**
 
 ```ts
-// yfw-kernel/claude-code/tests/health/healthMonitor.test.ts
+// ponos-kernel/claude-code/tests/health/healthMonitor.test.ts
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   resetHealth,
@@ -149,13 +149,13 @@ describe('extractSummaryText', () => {
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd yfw-kernel/claude-code && npx vitest run tests/health/healthMonitor.test.ts`
+Run: `cd ponos-kernel/claude-code && npx vitest run tests/health/healthMonitor.test.ts`
 Expected: FAIL — 模块不存在/导入错误
 
 - [ ] **Step 3: 实现 healthMonitor.ts**
 
 ```ts
-// yfw-kernel/claude-code/src/services/health/healthMonitor.ts
+// ponos-kernel/claude-code/src/services/health/healthMonitor.ts
 import { getContextWindowForModel } from '../../utils/context.js'
 
 export type HealthTier = 'green' | 'yellow' | 'red'
@@ -353,7 +353,7 @@ export function recordTurn(stats: TurnStats, querySource?: string): HealthEventD
     if (evt.tier !== state.lastTier) {
       state.lastTier = evt.tier
       if (evt.tier === 'red') state.lastRedAt = Date.now()
-      if (evt.tier !== 'green' || state.lastTier !== null) emit('yfw_health', evt)
+      if (evt.tier !== 'green' || state.lastTier !== null) emit('ponos_health', evt)
       return evt.tier === 'green' && state.lastTier === null ? null : evt
     }
     if (
@@ -362,7 +362,7 @@ export function recordTurn(stats: TurnStats, querySource?: string): HealthEventD
       Date.now() - state.lastRedAt >= RED_COOLDOWN_MS
     ) {
       state.lastRedAt = Date.now()
-      emit('yfw_health', evt)
+      emit('ponos_health', evt)
       return evt
     }
     return null
@@ -371,13 +371,13 @@ export function recordTurn(stats: TurnStats, querySource?: string): HealthEventD
   }
 }
 
-/** 压缩成功后调用：计次、存摘要、发射 yfw_summary。 */
+/** 压缩成功后调用：计次、存摘要、发射 ponos_summary。 */
 export function recordCompaction(model: string, summaryText: string): void {
   try {
     state.model = model
     state.compactCount++
     state.lastSummaryText = summaryText
-    emit('yfw_summary', { text: summaryText, compactCount: state.compactCount })
+    emit('ponos_summary', { text: summaryText, compactCount: state.compactCount })
   } catch {
     // 静默降级
   }
@@ -388,7 +388,7 @@ export function recordCompaction(model: string, summaryText: string): void {
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: `cd yfw-kernel/claude-code && npx vitest run tests/health/healthMonitor.test.ts`
+Run: `cd ponos-kernel/claude-code && npx vitest run tests/health/healthMonitor.test.ts`
 Expected: PASS（如剩余轮数用例失败，按上述实现注意修正用例）
 
 - [ ] **Step 5: 修订 spec 因子表（归一化计分）**
@@ -403,7 +403,7 @@ Expected: PASS（如剩余轮数用例失败，按上述实现注意修正用例
 - [ ] **Step 6: 提交**
 
 ```bash
-git add yfw-kernel/claude-code/src/services/health/healthMonitor.ts yfw-kernel/claude-code/tests/health/healthMonitor.test.ts docs/superpowers/specs/2026-08-13-health-monitor-design.md
+git add ponos-kernel/claude-code/src/services/health/healthMonitor.ts ponos-kernel/claude-code/tests/health/healthMonitor.test.ts docs/superpowers/specs/2026-08-13-health-monitor-design.md
 git commit -m "feat(kernel): healthMonitor 综合健康分核心模块（模型自适应+注意力上限+归一化压缩计分）"
 ```
 
@@ -412,9 +412,9 @@ git commit -m "feat(kernel): healthMonitor 综合健康分核心模块（模型�
 ### Task 2: 内核挂载 query.ts（事件输出 + 主线程过滤）
 
 **Files:**
-- Modify: `yfw-kernel/claude-code/src/query.ts:470-543`（主动压缩分支 + else 分支）
-- Modify: `yfw-kernel/claude-code/src/query.ts:1134-1152`（reactive 压缩分支）
-- Verify: `yfw-kernel/claude-code/src/utils/context.ts` 导出 `getContextWindowForModel`（若不存在则修正 Task 1 导入）
+- Modify: `ponos-kernel/claude-code/src/query.ts:470-543`（主动压缩分支 + else 分支）
+- Modify: `ponos-kernel/claude-code/src/query.ts:1134-1152`（reactive 压缩分支）
+- Verify: `ponos-kernel/claude-code/src/utils/context.ts` 导出 `getContextWindowForModel`（若不存在则修正 Task 1 导入）
 
 **Interfaces:**
 - Consumes: Task 1 的 `recordTurn(stats, querySource)`、`recordCompaction(model, summaryText)`、`extractSummaryText(summaryMessages)`
@@ -514,31 +514,31 @@ import {
 
 - [ ] **Step 5: 类型检查**
 
-Run: `cd yfw-kernel/claude-code && npm run typecheck`
+Run: `cd ponos-kernel/claude-code && npm run typecheck`
 Expected: 通过（如有类型错误按报错修正；确认 `truePostCompactTokenCount`、`summaryMessages` 字段存在）
 
 - [ ] **Step 6: 回归内核既有测试（选择与 health 无关的轻量用例）**
 
-Run: `cd yfw-kernel/claude-code && npx vitest run tests/health/healthMonitor.test.ts`
+Run: `cd ponos-kernel/claude-code && npx vitest run tests/health/healthMonitor.test.ts`
 Expected: PASS（Task 1 用例不受影响）
 
 - [ ] **Step 7: 提交**
 
 ```bash
-git add yfw-kernel/claude-code/src/query.ts
+git add ponos-kernel/claude-code/src/query.ts
 git commit -m "feat(kernel): query.ts 挂载健康监控（主动/reactive 压缩 + 普通轮次记录，主线程过滤）"
 ```
 
 ---
 
-### Task 3: GUI healthStore + useYFWCLI 事件接入
+### Task 3: GUI healthStore + usePonosCLI 事件接入
 
 **Files:**
 - Create: `src/stores/healthStore.ts`
-- Modify: `src/hooks/useYFWCLI.ts`（handleMessage 事件分发）
+- Modify: `src/hooks/usePonosCLI.ts`（handleMessage 事件分发）
 
 **Interfaces:**
-- Consumes: Task 1 事件协议（平铺载荷）`{"type":"yfw_health","score":72,"tier":"red","compactCount":3,"remainingPct":8,"remainingTurns":4,"suggestNewSession":true,"reason":"..."}` 与 `{"type":"yfw_summary","text":"...","compactCount":3}`
+- Consumes: Task 1 事件协议（平铺载荷）`{"type":"ponos_health","score":72,"tier":"red","compactCount":3,"remainingPct":8,"remainingTurns":4,"suggestNewSession":true,"reason":"..."}` 与 `{"type":"ponos_summary","text":"...","compactCount":3}`
 - Produces（供 Task 4 使用）：`useHealthStore`，含 `health: HealthInfo | null`、`summary: string`、`summaryCompactCount: number`、`dismissedUntil: number`、`update(info)`、`setSummary(text, compactCount)`、`dismiss()`
 
 - [ ] **Step 1: 创建 healthStore.ts**
@@ -583,9 +583,9 @@ export const useHealthStore = create<HealthState>((set) => ({
 }))
 ```
 
-- [ ] **Step 2: useYFWCLI.ts 接入事件**
+- [ ] **Step 2: usePonosCLI.ts 接入事件**
 
-在 `src/hooks/useYFWCLI.ts` 顶部 import 区加：
+在 `src/hooks/usePonosCLI.ts` 顶部 import 区加：
 
 ```ts
 import { useHealthStore, type HealthInfo } from '@/stores/healthStore'
@@ -594,11 +594,11 @@ import { useHealthStore, type HealthInfo } from '@/stores/healthStore'
 在 `handleMessage` 的 `msg.type === 'event'` 分支内、`const type = event.type as string` 之后、现有 `if (type === 'system' ...)` 之前插入：
 
 ```ts
-    if (type === 'yfw_health') {
+    if (type === 'ponos_health') {
       useHealthStore.getState().update(event as unknown as HealthInfo)
       return
     }
-    if (type === 'yfw_summary') {
+    if (type === 'ponos_summary') {
       const s = event as Record<string, any>
       useHealthStore.getState().setSummary(String(s.text ?? ''), Number(s.compactCount ?? 0))
       return
@@ -613,8 +613,8 @@ Expected: 通过
 - [ ] **Step 4: 提交**
 
 ```bash
-git add src/stores/healthStore.ts src/hooks/useYFWCLI.ts
-git commit -m "feat(gui): healthStore 与内核健康事件接入（yfw_health/yfw_summary）"
+git add src/stores/healthStore.ts src/hooks/usePonosCLI.ts
+git commit -m "feat(gui): healthStore 与内核健康事件接入（ponos_health/ponos_summary）"
 ```
 
 ---
@@ -750,27 +750,27 @@ git commit -m "feat(gui): HealthBanner 横幅 + 一键新建会话携带摘要"
 ### Task 5: 全链路构建与 release 双份同步
 
 **Files:**
-- 构建产物：`yfw-kernel/claude-code/dist/`（cli.mjs + vendor/）→ `release/YFWorking/kernel/`、`release/YFWorking_ms92cd6u/kernel/`
-- GUI 产物：`dist/` → `release/YFWorking/dist/`、`release/YFWorking_ms92cd6u/dist/`
+- 构建产物：`ponos-kernel/claude-code/dist/`（cli.mjs + vendor/）→ `release/Ponos/kernel/`、`release/Ponos_ms92cd6u/kernel/`
+- GUI 产物：`dist/` → `release/Ponos/dist/`、`release/Ponos_ms92cd6u/dist/`
 
 - [ ] **Step 1: 内核测试全绿**
 
-Run: `cd yfw-kernel/claude-code && npx vitest run tests/health/healthMonitor.test.ts`
+Run: `cd ponos-kernel/claude-code && npx vitest run tests/health/healthMonitor.test.ts`
 Expected: PASS
 
 - [ ] **Step 2: 构建内核 bundle**
 
-Run: `cd yfw-kernel/claude-code && npm run build`
+Run: `cd ponos-kernel/claude-code && npm run build`
 Expected: 输出 `dist/cli.mjs` 与 `dist/vendor/`（含 `vendor/ripgrep/x64-win32/rg.exe`，由 build-bundle.ts 的 vendor 复制步骤保证）
 
 - [ ] **Step 3: 同步内核到 release 双份**
 
 ```bash
 cd C:/Users/T203-15/claude-code-gui
-for app in YFWorking YFWorking_ms92cd6u; do
-  cp yfw-kernel/claude-code/dist/cli.mjs "release/$app/kernel/cli.mjs"
+for app in Ponos Ponos_ms92cd6u; do
+  cp ponos-kernel/claude-code/dist/cli.mjs "release/$app/kernel/cli.mjs"
   rm -rf "release/$app/kernel/vendor"
-  cp -r yfw-kernel/claude-code/dist/vendor "release/$app/kernel/vendor"
+  cp -r ponos-kernel/claude-code/dist/vendor "release/$app/kernel/vendor"
 done
 ```
 
@@ -778,7 +778,7 @@ done
 
 ```bash
 npm run build
-for app in YFWorking YFWorking_ms92cd6u; do
+for app in Ponos Ponos_ms92cd6u; do
   cp -r dist/. "release/$app/dist/"
 done
 ```

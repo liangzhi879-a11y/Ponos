@@ -4,7 +4,7 @@ import { readFileSync, readdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
-const SKILLS_DIR = join(homedir(), '.yfworking', 'skills')
+const SKILLS_DIR = join(homedir(), '.ponos', 'skills')
 const parentName = process.argv[2]
 if (!parentName) { console.error('用法: node scripts/aggregate-skill-triggers.mjs <父技能名>'); process.exit(1) }
 

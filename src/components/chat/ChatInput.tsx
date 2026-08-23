@@ -11,7 +11,7 @@ import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useHealthStore } from '@/stores/healthStore'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { useYFWCLI } from '@/hooks/useYFWCLI'
+import { usePonosCLI } from '@/hooks/usePonosCLI'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn, formatSize, formatShortcut, matchShortcut, generateId } from '@/lib/utils'
 import { getBridgeUrl } from '@/lib/config'
@@ -74,7 +74,7 @@ export function ChatInput({ conversationId }: Props) {
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [voiceActive, setVoiceActive] = useState(false)
   const [skills, setSkills] = useState<SkillEntry[]>([])
-  const [skillsDir, setSkillsDir] = useState('~/.yfworking/skills')
+  const [skillsDir, setSkillsDir] = useState('~/.ponos/skills')
   const [activeSkill, setActiveSkill] = useState<string | null>(null)
   const [showSkillPicker, setShowSkillPicker] = useState(false)
   const [showScheduleGuide, setShowScheduleGuide] = useState(false)
@@ -93,7 +93,7 @@ export function ChatInput({ conversationId }: Props) {
   const isStreaming = !!streamingConversations[conversationId]
   const settings = useSettingsStore(s => s.settings)
   const [isDragOver, setIsDragOver] = useState(false)
-  const { send, stop, interject, setEffort } = useYFWCLI()
+  const { send, stop, interject, setEffort } = usePonosCLI()
   // 思考深度档位（对齐内核 /effort：auto 默认 = 模型原生自适应）。初始取当前
   // provider 配置的 effortLevel（设置页"推理深度"），点击循环切换并热下发内核。
   const providerEffort = settings.providers.find(p => p.id === settings.activeProvider)?.effortLevel || 'auto'

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP_DIR = resolve(__dirname, '..')
 
-const BRIDGE_PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51309', 10)
+const BRIDGE_PORT = parseInt(process.env.PONOS_BRIDGE_PORT || '51309', 10)
 const VITE_PORT = 5173
 
 function log(tag, msg) {
@@ -82,7 +82,7 @@ const vite = startVite()
 setTimeout(() => {
   console.log()
   console.log('  \x1b[93m╔══════════════════════════════════════════╗\x1b[0m')
-  console.log('  \x1b[93m║\x1b[0m        \x1b[38;5;208mYFWorking GUI\x1b[0m  \x1b[90mready\x1b[0m              \x1b[93m║\x1b[0m')
+  console.log('  \x1b[93m║\x1b[0m        \x1b[38;5;208mPonos GUI\x1b[0m  \x1b[90mready\x1b[0m              \x1b[93m║\x1b[0m')
   console.log('  \x1b[93m╠══════════════════════════════════════════╣\x1b[0m')
   console.log(`  \x1b[93m║\x1b[0m  Bridge  → \x1b[36mhttp://localhost:${BRIDGE_PORT}\x1b[0m              \x1b[93m║\x1b[0m`)
   console.log(`  \x1b[93m║\x1b[0m  GUI     → \x1b[36mhttp://localhost:${VITE_PORT}\x1b[0m              \x1b[93m║\x1b[0m`)

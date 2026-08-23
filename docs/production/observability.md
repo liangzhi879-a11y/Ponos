@@ -21,7 +21,7 @@
 
 | 能力 | 现状位置 | 覆盖程度 |
 |---|---|---|
-| 用量统计 | benchmark/harness/yfw.mjs usage（含 cache_read 已修）+ lib/llm-api.mjs costOf | ⚠️ 评测侧有，产品侧无 |
+| 用量统计 | benchmark/harness/ponos.mjs usage（含 cache_read 已修）+ lib/llm-api.mjs costOf | ⚠️ 评测侧有，产品侧无 |
 | 健康检查 | kernel/health.mjs（112 行）+ bridge /health | ⚠️ 基础版（进程存活） |
 | 诊断 | bridge /diag/info + /test-provider + GUI diagnostic/doctor 面板 | ✅ 已有可扩展 |
 | 会话统计 | /transcript/stats（transcript.mjs） | ✅ 已有 |

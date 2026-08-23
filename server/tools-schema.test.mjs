@@ -67,7 +67,7 @@ test('各工具 input_schema 字段与 required 正确', () => {
 
 // 功能测试：临时目录内执行工具（真实文件系统，Windows 兼容）
 function tmpReg() {
-  const dir = mkdtempSync(join(tmpdir(), 'yfw-tools-'))
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-tools-'))
   return { dir, reg: createToolRegistry({ cwd: dir, addDirs: [dir], skipPermissions: true }) }
 }
 

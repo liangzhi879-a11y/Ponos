@@ -1,4 +1,4 @@
-// YFW-turbo 内核人工交互测试（真实 API，ANTHROPIC_* env 必须已配置）
+// Ponos-turbo 内核人工交互测试（真实 API，ANTHROPIC_* env 必须已配置）
 // ---------------------------------------------------------------------------
 // 场景：S1 简单问答 / S2 工具调用（Bash echo）/ S3 多轮历史 / S4 取消 / S5 resume
 // 用法：node zz-smoke/interact-real-api.mjs
@@ -14,7 +14,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const MODEL = process.env.ANTHROPIC_MODEL || 'deepseek-v4-flash'
 const BASE = process.env.ANTHROPIC_BASE_URL
 if (!BASE) { console.error('错误: 需要 ANTHROPIC_BASE_URL env'); process.exit(2) }
-if (process.env.YFW_MOCK_API === '1') { console.error('错误: YFW_MOCK_API=1 会走 mock'); process.exit(2) }
+if (process.env.PONOS_MOCK_API === '1') { console.error('错误: PONOS_MOCK_API=1 会走 mock'); process.exit(2) }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -82,7 +82,7 @@ const ok = (name, cond, detail = '') => {
   else { fail++; console.log(`  ❌ ${name}${detail ? ' — ' + detail : ''}`) }
 }
 
-const DIR = join(homedir(), '.yfworking', 'projects', 'interact-smoke')
+const DIR = join(homedir(), '.ponos', 'projects', 'interact-smoke')
 mkdirSync(DIR, { recursive: true }) // --add-dir 必须存在，否则内核 spawn 子进程 cwd 无效 → ENOENT
 
 console.log('═══ S1 简单问答 ═══')

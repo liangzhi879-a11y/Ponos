@@ -12,8 +12,8 @@ import { join } from 'path'
 import { readFileSync, writeFileSync, rmSync, existsSync } from 'fs'
 
 const BUN = join(homedir(), '.bun', 'bin', 'bun.exe')
-const KERNEL = join(process.cwd(), 'yfw-kernel', 'claude-code', 'dist', 'cli.mjs')
-const YFW_HOME = join(homedir(), '.yfworking')
+const KERNEL = join(process.cwd(), 'ponos-kernel', 'claude-code', 'dist', 'cli.mjs')
+const PONOS_HOME = join(homedir(), '.ponos')
 
 const mode = (process.argv[2] || 'allow').toLowerCase()
 const dump = process.argv.includes('--dump')
@@ -22,7 +22,7 @@ if (mode !== 'allow' && mode !== 'deny') {
   process.exit(1)
 }
 
-const cfg = JSON.parse(readFileSync(join(YFW_HOME, 'config.json'), 'utf-8'))
+const cfg = JSON.parse(readFileSync(join(PONOS_HOME, 'config.json'), 'utf-8'))
 const provider = (cfg.providers || []).find(p => p.id === cfg.activeProvider) || (cfg.providers || [])[0]
 if (!provider || !provider.apiBaseUrl || !provider.authToken) {
   console.error('config.json 缺少可用 provider')
@@ -31,13 +31,13 @@ if (!provider || !provider.apiBaseUrl || !provider.authToken) {
 const model = provider.primaryModel || (provider.models && provider.models[0]) || ''
 
 const tmpDir = process.env.TEMP || join(homedir(), 'AppData', 'Local', 'Temp')
-const testFile = join(tmpDir, 'yfw-hr-test-' + Date.now() + '.txt')
+const testFile = join(tmpDir, 'ponos-hr-test-' + Date.now() + '.txt')
 writeFileSync(testFile, 'highrisk permission flow test', 'utf-8')
 const posixFile = testFile.replace(/\\/g, '/')
 
 const env = {
   ...process.env,
-  CLAUDE_CONFIG_DIR: YFW_HOME,
+  CLAUDE_CONFIG_DIR: PONOS_HOME,
   ANTHROPIC_BASE_URL: provider.apiBaseUrl,
   ANTHROPIC_AUTH_TOKEN: provider.authToken,
   ANTHROPIC_MODEL: model,

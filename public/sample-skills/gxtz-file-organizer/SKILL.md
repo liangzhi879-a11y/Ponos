@@ -30,7 +30,7 @@ version: "1.0.0"
 1. **禁止仅靠文件名分类**：必须读取文件内容（PDF文本/DOCX全文/XLSX表头/图片OCR）进行内容级判断，文件名仅作辅助线索
 2. **禁止跳过内容识别步骤**：每个文件必须经过内容识别分类器处理，不得跳过直接按文件名归类
 3. **禁止移动原始文件**：模块B（申报材料）和模块C（备案资料）为**复制**模式，不得移动原始文件
-4. **禁止跳过脚本执行**：所有 `python {{YFW_SKILLS}}/_common/xxx.py` 命令必须通过 Bash 真正执行
+4. **禁止跳过脚本执行**：所有 `python {{PONOS_SKILLS}}/_common/xxx.py` 命令必须通过 Bash 真正执行
 5. **禁止跳过审核步骤**：审核验证步骤必须执行且通过，未通过时不得继续后续步骤
 6. **禁止自行兜底**：脚本报错时不得自行编写兜底代码，必须停止并告警由用户决定
 7. **禁止跨技能污染**：仅读取当前项目留痕，不跨项目读取
@@ -194,7 +194,7 @@ python C:\Users\T203-15\.trae-cn\skills\enterprise_project_skills\_common\progre
 
 若返回 WARNING 提示存在未完成的前置阶段，agent 应提示用户先完成前置依赖。
 
-> 进度管理集成说明详见: `{{YFW_SKILLS}}/gxtz-progress-manager/SKILL.md`
+> 进度管理集成说明详见: `{{PONOS_SKILLS}}/gxtz-progress-manager/SKILL.md`
 
 
 ### 第一步：项目初始化（强制执行，不可跳过）
@@ -539,6 +539,6 @@ Copy-Item "<新位置>" "<原交付目录>" -Force
 
 <!-- SECTION_BEGIN: ocr_reference -->
 > PDF混合型必须用 --mode auto。扫描件用RapidOCR(ONNX)。
-> ⚠️ OCR强制铁律：见 {{YFW_SKILLS}}/_common/SHARED_ocr_mandatory.md（先OCR后操作，禁止猜测，必须等待）
+> ⚠️ OCR强制铁律：见 {{PONOS_SKILLS}}/_common/SHARED_ocr_mandatory.md（先OCR后操作，禁止猜测，必须等待）
 <!-- SECTION_END: ocr_reference -->
 ```

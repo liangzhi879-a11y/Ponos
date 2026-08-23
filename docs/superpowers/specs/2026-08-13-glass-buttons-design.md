@@ -58,7 +58,7 @@
 ## 验证
 
 - 构建后 Electron 无头实测（禁 transition 测稳态）：primary 在 op=0.3 为 ~78% 品牌色半透明 + 内高光 + 模糊；hover 辉光与上浮存在；danger/success/ghost/secondary 均含内高光与辉光；非玻璃主题按钮无变化。
-- 同步 dist 至 release/YFWorking 与 release/YFWorking_ms92cd6u，用户手动重启。
+- 同步 dist 至 release/Ponos 与 release/Ponos_ms92cd6u，用户手动重启。
 
 ## 范围外（YAGNI）
 

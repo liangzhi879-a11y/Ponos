@@ -18,7 +18,7 @@
 
 ```
 主进程 main.cjs
- ├─ 日志 tee ──→ ~/.yfworking/logs/app.log（console.log/error 双写，>5MB 轮转保留 1 份）
+ ├─ 日志 tee ──→ ~/.ponos/logs/app.log（console.log/error 双写，>5MB 轮转保留 1 份）
  ├─ DiagnosticMonitor
  │    ├─ 检测项注册表：{ id, group, 检测函数, 状态判定 }（24 项 / 8 组）
  │    ├─ 自检（ready 后 2s）+ 巡检（30s）+ 事件驱动重测
@@ -42,7 +42,7 @@ Electron 主进程进程活着，日志 tee 与崩溃兜底就在工作。主进
 
 ### 3.1 落盘时机：main.cjs 最早期
 
-- 文件：`~/.yfworking/logs/app.log`（追加写）
+- 文件：`~/.ponos/logs/app.log`（追加写）
 - 初始化位置：`electron/main.cjs` 顶部（`app.whenReady()` 之前，所有模块 require 之后
   立即执行），保证**启动序列第一行日志即入盘**（含 spawn bridge、内核路径解析等早期步骤）。
 - 实现：独立模块 `electron/log-tee.cjs`，`initLogTee()` 包装 `console.log` / `console.error`
@@ -73,15 +73,15 @@ Electron 主进程进程活着，日志 tee 与崩溃兜底就在工作。主进
 ### 3.3 启动失败兜底（last-boot.json + 原生对话框）
 
 - 主进程在启动序列关键节点打点（main ready / bridge spawn / bridge health / window load
-  done / kernel spawn），启动序列结束（成功或失败）时写 `~/.yfworking/logs/last-boot.json`：
+  done / kernel spawn），启动序列结束（成功或失败）时写 `~/.ponos/logs/last-boot.json`：
   各节点时间戳、成败、错误详情。
 - **界面起不来时的用户提醒**：主进程检测到启动失败（窗口 `did-fail-load`、`render-process-gone`
   且无界面可用、或 bridge 启动失败且窗口未加载完成）→ 弹**原生对话框**（`dialog.showMessageBox`，
   不依赖渲染层）：
   ```
-  ⚠ YFWorking 启动异常
+  ⚠ Ponos 启动异常
   应用界面启动失败。完整错误日志已保存到：
-  C:\Users\<user>\.yfworking\logs\app.log
+  C:\Users\<user>\.ponos\logs\app.log
   [打开日志目录] [复制路径] [确定]
   ```
   该对话框为兜底提醒，仅在检测到异常时出现，正常启动不打扰。
@@ -122,9 +122,9 @@ Overall = 'ok' | 'warn' | 'error'   // 任一 error → error；否则任一 war
 
 | id | 数据源 | 判定 |
 |---|---|---|
-| kernel-files | `<app>/kernel/cli.mjs` + `<app>/runtime/bun/bun.exe`（dev 时按 findYFWorking 候选路径） | 都存在=ok |
-| kernel-bootstrap | `~/.yfworking/runtime/kernel/cli.mjs` + `runtime/bun/bun.exe` 存在且大小与源一致 | ok |
-| kernel-launch | spawn `"<bun>" "<kernel>" --version`，15s 超时 | stdout 含 `(YFW)` 且 exit 0=ok |
+| kernel-files | `<app>/kernel/cli.mjs` + `<app>/runtime/bun/bun.exe`（dev 时按 findPonos 候选路径） | 都存在=ok |
+| kernel-bootstrap | `~/.ponos/runtime/kernel/cli.mjs` + `runtime/bun/bun.exe` 存在且大小与源一致 | ok |
+| kernel-launch | spawn `"<bun>" "<kernel>" --version`，15s 超时 | stdout 含 `(Ponos)` 且 exit 0=ok |
 | bridge-port | `http://127.0.0.1:51309/health`（800ms 超时） | 200=ok |
 | bridge-alive | 本进程 spawn 的 bridge 存活；重启计数（BRIDGE_RESTART 系列） | 存活=ok；重启>3 次=warn |
 | kernel-session | bridge 侧最近 3 次会话 spawn 的首 token 到达标记（session.firstTokenAt） | 3 次全到达=ok；存在失败=warn |
@@ -134,7 +134,7 @@ Overall = 'ok' | 'warn' | 'error'   // 任一 error → error；否则任一 war
 
 | id | 数据源 | 判定 |
 |---|---|---|
-| transcript-dir | `~/.yfworking/sessions/` 目录可读 | 可读=ok |
+| transcript-dir | `~/.ponos/sessions/` 目录可读 | 可读=ok |
 | transcript-index | bridge `GET /transcript/list` 端点 | 200 且 JSON 可解析=ok |
 
 ### C 浏览器自动化（executor-connected, executor-window, browser-whitelist）
@@ -143,7 +143,7 @@ Overall = 'ok' | 'warn' | 'error'   // 任一 error → error；否则任一 war
 |---|---|---|
 | executor-connected | 浏览器执行器 WS 连接状态（main.cjs browserExecutor） | 已连接=ok |
 | executor-window | 最近会话窗口存活（executor 状态查询） | 正常=ok |
-| browser-whitelist | `~/.yfworking/browser-whitelist.json` JSON 解析 | 可解析=ok |
+| browser-whitelist | `~/.ponos/browser-whitelist.json` JSON 解析 | 可解析=ok |
 
 ### D 文档处理（python-runtime, office-ocr）
 
@@ -157,18 +157,18 @@ Overall = 'ok' | 'warn' | 'error'   // 任一 error → error；否则任一 war
 | id | 数据源 | 判定 |
 |---|---|---|
 | pet-alive | 宠物进程存活（petProcess） | 存活=ok |
-| doubao-session | `~/.yfworking/doubao-session.json` JSON 解析 | 可解析=ok |
+| doubao-session | `~/.ponos/doubao-session.json` JSON 解析 | 可解析=ok |
 | editor-available | 编辑器依赖（原生窗口可用性基础资源）存在 | 存在=ok |
 
 ### F 配置数据（config-valid, provider-valid, data-dirs, skills-index）
 
 | id | 数据源 | 判定 |
 |---|---|---|
-| config-valid | `~/.yfworking/config.json` + `settings.json` JSON 解析 | 均可解析=ok |
+| config-valid | `~/.ponos/config.json` + `settings.json` JSON 解析 | 均可解析=ok |
 | provider-valid | 当前 provider 配置完整性（apiBaseUrl + apiKey 非空） | 完整=ok |
 | data-dirs | sessions/skills/memory/chats 目录存在且可写（写入探针文件后删除） | 全部可写=ok |
-| skills-index | `~/.yfworking/skills/_skill_index.json` 可解析 + 技能目录可扫描 | 正常=ok |
-| last-boot | `~/.yfworking/logs/last-boot.json`（3.3 生成） | 上次启动成功=ok；上次异常=warn（面板显示"上次启动异常"卡片） |
+| skills-index | `~/.ponos/skills/_skill_index.json` 可解析 + 技能目录可扫描 | 正常=ok |
+| last-boot | `~/.ponos/logs/last-boot.json`（3.3 生成） | 上次启动成功=ok；上次异常=warn（面板显示"上次启动异常"卡片） |
 
 ### G 网络（provider-reach）
 
@@ -186,7 +186,7 @@ Overall = 'ok' | 'warn' | 'error'   // 任一 error → error；否则任一 war
 > 实现说明：部分数据源（kernel-session 首 token 标记、provider-reach、bridge 重启计数、
 > gpu/render 计数）需要 main.cjs / bridge.mjs 增加**轻量埋点**，见第 8 节改动清单。
 
-## 6. IPC 契约（preload 暴露 `window.yfw.diag`）
+## 6. IPC 契约（preload 暴露 `window.ponos.diag`）
 
 | 通道 | 类型 | 入参 | 返回 |
 |---|---|---|---|
@@ -238,15 +238,15 @@ Dialog 宽屏（size="lg"），打开时 `diag:get-status` 拉取快照：
 | `electron/log-tee.cjs` | **新增**：日志 tee（时间戳前缀、EPIPE 防护、轮转、uncaughtException/unhandledRejection 兜底落盘） |
 | `electron/main.cjs` | 顶部 initLogTee；渲染层错误监听（did-fail-load/render-process-gone/console-message/preload-error/unresponsive）；启动打点 + last-boot.json；启动失败原生对话框；引入 DiagnosticMonitor；IPC 注册；事件埋点（gpu/render 计数、bridge 重启计数、executor 状态记录） |
 | `electron/diag-monitor.cjs` | **新增**：检测引擎（注册表、自检/巡检/事件驱动、状态聚合） |
-| `electron/preload.cjs` | 暴露 `window.yfw.diag` IPC 封装 |
+| `electron/preload.cjs` | 暴露 `window.ponos.diag` IPC 封装 |
 | `server/bridge.mjs` | 埋点：会话首 token 标记查询、provider-reach 成功记录、内核崩溃退出标记 |
 | `src/stores/uiStore.ts` | 新增 `diagOpen` 状态 + `openDiagnostics()` |
 | `src/stores/diagStore.ts` | **新增**：诊断状态 store + 事件订阅 |
 | `src/components/command-palette/CommandPalette.tsx` | 新增「诊断」命令 |
 | `src/components/diagnostic/DiagnosticPanel.tsx` | **新增**：诊断面板 |
-| `src/lib/diag.ts` | **新增**：`window.yfw.diag` 类型封装（或并入 preload 类型） |
+| `src/lib/diag.ts` | **新增**：`window.ponos.diag` 类型封装（或并入 preload 类型） |
 | `src/i18n/...` | 新增 i18n 文案（commandPalette 命令 + 面板文本） |
-| `src/types/index.ts` | `window.yfw.diag` 类型声明 |
+| `src/types/index.ts` | `window.ponos.diag` 类型声明 |
 
 ## 9. 错误处理
 

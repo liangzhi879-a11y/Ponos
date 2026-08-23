@@ -6,7 +6,7 @@
 // 用法：
 //   node zz-smoke/subagent-real-api.mjs
 // 前置：benchmark/.env 提供 LLM_API_KEY/LLM_BASE_URL（进程 env 优先），
-// 且未设 YFW_MOCK_API。脚本只打印 base/model，不打印密钥。
+// 且未设 PONOS_MOCK_API。脚本只打印 base/model，不打印密钥。
 import { mkdtempSync, existsSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -17,8 +17,8 @@ import { makeWire } from '../kernel/protocol.mjs'
 
 loadDotEnv() // 进程 env 优先，不覆盖已设置
 
-if (process.env.YFW_MOCK_API === '1') {
-  console.error('错误: YFW_MOCK_API=1 会走 mock，先清除再跑真实 API')
+if (process.env.PONOS_MOCK_API === '1') {
+  console.error('错误: PONOS_MOCK_API=1 会走 mock，先清除再跑真实 API')
   process.exit(2)
 }
 const BASE = resolveBaseUrl()
@@ -26,15 +26,15 @@ if (!BASE) { console.error('错误: 需要 LLM_BASE_URL 或 ANTHROPIC_BASE_URL�
 if (!process.env.LLM_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN && !process.env.DEEPSEEK_API_KEY) {
   console.error('错误: 缺少 API key（LLM_API_KEY / ANTHROPIC_AUTH_TOKEN / DEEPSEEK_API_KEY）'); process.exit(2)
 }
-// 注入 yfw 内核需要的 API env（ANTHROPIC_AUTH_TOKEN / ANTHROPIC_MODEL / ANTHROPIC_BASE_URL）
-Object.assign(process.env, buildAgentEnv('yfw'))
+// 注入 ponos 内核需要的 API env（ANTHROPIC_AUTH_TOKEN / ANTHROPIC_MODEL / ANTHROPIC_BASE_URL）
+Object.assign(process.env, buildAgentEnv('ponos'))
 
 const MODEL = resolveModel()
 console.log(`模型=${MODEL} base=${BASE}（密钥不打印）`)
 
 const events = []
 const wire = makeWire({ write(s) { events.push(JSON.parse(s)) } })
-const dir = mkdtempSync(join(tmpdir(), 'yfw-sub-real-'))
+const dir = mkdtempSync(join(tmpdir(), 'ponos-sub-real-'))
 const configDir = join(dir, 'home')
 const store = createSessionStore({ configDir, cwd: dir, sessionId: 'main-session' })
 const engine = createEngine({
@@ -42,7 +42,7 @@ const engine = createEngine({
   wire,
   session: store,
 })
-engine.setSystemPrompt('你是 YFW-turbo 内核，负责派发与管理子 Agent。使用简体中文。')
+engine.setSystemPrompt('你是 Ponos-turbo 内核，负责派发与管理子 Agent。使用简体中文。')
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const extractTaskId = (content) => String(content).match(/task_id: ([0-9a-f-]+)/)?.[1]

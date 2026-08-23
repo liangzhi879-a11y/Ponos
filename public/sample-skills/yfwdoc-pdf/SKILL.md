@@ -23,7 +23,7 @@ dependencies: []
 
 ## 1. 角色定位
 
-你以**"企业咨询项目老师"**身份工作。角色基准定义见: `C:/Users/T203-15/.yfworking/skills/_common/agent_role.md`（原高新认定场景表述通用化后同等适用）：
+你以**"企业咨询项目老师"**身份工作。角色基准定义见: `C:/Users/T203-15/.ponos/skills/_common/agent_role.md`（原高新认定场景表述通用化后同等适用）：
 
 - **称呼**：项目老师
 - **定位**：企业咨询项目领域的专业顾问，为客户材料提供 PDF 整理、转换、识别与质量保障服务
@@ -35,21 +35,21 @@ dependencies: []
 
 ## 2. 技术栈
 
-> 技术栈引用: `C:/Users/T203-15/.yfworking/skills/_common/SHARED_tech_stack.md`
-> 路径规范引用: `C:/Users/T203-15/.yfworking/skills/_common/SHARED_skill_path_conventions.md`
-> OCR强制规范: `C:/Users/T203-15/.yfworking/skills/_common/SHARED_ocr_mandatory.md`
+> 技术栈引用: `C:/Users/T203-15/.ponos/skills/_common/SHARED_tech_stack.md`
+> 路径规范引用: `C:/Users/T203-15/.ponos/skills/_common/SHARED_skill_path_conventions.md`
+> OCR强制规范: `C:/Users/T203-15/.ponos/skills/_common/SHARED_ocr_mandatory.md`
 
 | 任务 | 命令 |
 |------|------|
-| 查询文件推荐方案 | `python "C:/Users/T203-15/.yfworking/skills/_common/doc_toolkit.py" info --file <路径>` |
+| 查询文件推荐方案 | `python "C:/Users/T203-15/.ponos/skills/_common/doc_toolkit.py" info --file <路径>` |
 | 扫描件检测 | `doc_toolkit.py detect-scan --file <路径>` |
-| OCR识别 | `python "C:/Users/T203-15/.yfworking/skills/_common/ocr_engine.py" ocr --file <路径> --project <项目>` |
+| OCR识别 | `python "C:/Users/T203-15/.ponos/skills/_common/ocr_engine.py" ocr --file <路径> --project <项目>` |
 | OCR表格识别 | `ocr_engine.py ocr-table --file <路径> --project <项目>` |
-| 拆分/合并 | `python "C:/Users/T203-15/.yfworking/skills/_common/pdf_splitter.py" split/merge ...` |
+| 拆分/合并 | `python "C:/Users/T203-15/.ponos/skills/_common/pdf_splitter.py" split/merge ...` |
 | 提取文本/表格/图片 | `pdf_splitter.py extract --input <路径> --output <目录>` |
 | 读取文本/表格 | `doc_toolkit.py read --file <路径> --format pdf --mode text/table` |
 | 格式转换（doc/xls等） | `doc_toolkit.py convert --input <路径> --to docx/xlsx` |
-| 压缩/检查 | `python "C:/Users/T203-15/.yfworking/skills/_common/file_compressor.py" auto/check ...` |
+| 压缩/检查 | `python "C:/Users/T203-15/.ponos/skills/_common/file_compressor.py" auto/check ...` |
 
 ## 3. 合规红线（不可逾越）
 
@@ -62,7 +62,7 @@ dependencies: []
 
 ## 4. 自主确认机制
 
-遵循 `C:/Users/T203-15/.yfworking/skills/_common/SHARED_autonomous_confirmation.md` 的5原则。PDF场景高发确认点：
+遵循 `C:/Users/T203-15/.ponos/skills/_common/SHARED_autonomous_confirmation.md` 的5原则。PDF场景高发确认点：
 
 | 触发类型 | 场景 | 处理 |
 |---------|------|------|
@@ -90,10 +90,10 @@ dependencies: []
 **输入**：用户提供的PDF文件路径
 **操作**：
 ```bash
-python "C:/Users/T203-15/.yfworking/skills/_common/doc_toolkit.py" info --file "<文件路径>"
-python "C:/Users/T203-15/.yfworking/skills/_common/doc_toolkit.py" detect-scan --file "<文件路径>"
+python "C:/Users/T203-15/.ponos/skills/_common/doc_toolkit.py" info --file "<文件路径>"
+python "C:/Users/T203-15/.ponos/skills/_common/doc_toolkit.py" detect-scan --file "<文件路径>"
 # 混合PDF需确认扫描页范围时：
-python "C:/Users/T203-15/.yfworking/skills/_common/ocr_engine.py" detect --file "<文件路径>"
+python "C:/Users/T203-15/.ponos/skills/_common/ocr_engine.py" detect --file "<文件路径>"
 ```
 **输出**：`{类型: 文本PDF/扫描件/混合, 页数, 文件大小, 是否加密, 扫描页范围}`
 **验证标准**：类型识别完成；扫描件/混合PDF未完成OCR前，禁止进入任何依赖内容的操作（提取/转换/拆分）
@@ -124,25 +124,25 @@ python "C:/Users/T203-15/.yfworking/skills/_common/ocr_engine.py" detect --file 
 **操作**（按清单逐项执行）：
 ```bash
 # 合并
-python "C:/Users/T203-15/.yfworking/skills/_common/pdf_splitter.py" merge --inputs "a.pdf,b.pdf" --output "合并_20260804.pdf"
+python "C:/Users/T203-15/.ponos/skills/_common/pdf_splitter.py" merge --inputs "a.pdf,b.pdf" --output "合并_20260804.pdf"
 
 # 拆分（按书签）
-python "C:/Users/T203-15/.yfworking/skills/_common/pdf_splitter.py" split --input "大文件.pdf" --output "./out_split" --mode bookmark
+python "C:/Users/T203-15/.ponos/skills/_common/pdf_splitter.py" split --input "大文件.pdf" --output "./out_split" --mode bookmark
 
 # OCR（扫描件先OCR再提取；混合PDF仅对扫描页OCR）
-python "C:/Users/T203-15/.yfworking/skills/_common/ocr_engine.py" ocr --file "扫描件.pdf" --project "<项目名>"
-python "C:/Users/T203-15/.yfworking/skills/_common/ocr_engine.py" ocr-table --file "扫描表格.pdf" --project "<项目名>"
+python "C:/Users/T203-15/.ponos/skills/_common/ocr_engine.py" ocr --file "扫描件.pdf" --project "<项目名>"
+python "C:/Users/T203-15/.ponos/skills/_common/ocr_engine.py" ocr-table --file "扫描表格.pdf" --project "<项目名>"
 
 # 提取文本/表格
-python "C:/Users/T203-15/.yfworking/skills/_common/pdf_splitter.py" extract --input "文档.pdf" --output "./out_extract"
+python "C:/Users/T203-15/.ponos/skills/_common/pdf_splitter.py" extract --input "文档.pdf" --output "./out_extract"
 
 # PDF→Word/Excel（文本PDF直接提取；扫描件用OCR结果组装）
-python "C:/Users/T203-15/.yfworking/skills/_common/doc_toolkit.py" read --file "文档.pdf" --format pdf --mode text --max-pages 50
-python "C:/Users/T203-15/.yfworking/skills/_common/doc_toolkit.py" write --file "文档.docx" --format docx --data-file extracted.json
+python "C:/Users/T203-15/.ponos/skills/_common/doc_toolkit.py" read --file "文档.pdf" --format pdf --mode text --max-pages 50
+python "C:/Users/T203-15/.ponos/skills/_common/doc_toolkit.py" write --file "文档.docx" --format docx --data-file extracted.json
 
 # 压缩 + 合规检查
-python "C:/Users/T203-15/.yfworking/skills/_common/file_compressor.py" auto --input "材料.pdf" --output "./out" 
-python "C:/Users/T203-15/.yfworking/skills/_common/file_compressor.py" check --input "压缩后.pdf"
+python "C:/Users/T203-15/.ponos/skills/_common/file_compressor.py" auto --input "材料.pdf" --output "./out" 
+python "C:/Users/T203-15/.ponos/skills/_common/file_compressor.py" check --input "压缩后.pdf"
 
 # 旋转/表单填充（PyMuPDF脚本，由agent生成运行；表单值必须来自用户确认）
 #   import fitz; doc=fitz.open(...); page.set_rotation(90); doc.save(...)
@@ -176,6 +176,6 @@ python "C:/Users/T203-15/.yfworking/skills/_common/file_compressor.py" check --i
 
 ## 7. 集成与依赖
 
-- OCR/压缩/拆分脚本均位于 `C:/Users/T203-15/.yfworking/skills/_common/`，调用使用绝对路径
+- OCR/压缩/拆分脚本均位于 `C:/Users/T203-15/.ponos/skills/_common/`，调用使用绝对路径
 - 跨文件类型任务（如"写好的通知导出PDF压缩"）：交由 `yfwdoc-suite` 总路由分派（word→pdf串联）
-- 环境检查：`python "C:/Users/T203-15/.yfworking/skills/_common/check_dependencies.py"`，缺依赖时按 `requirements.txt` 安装后重试
+- 环境检查：`python "C:/Users/T203-15/.ponos/skills/_common/check_dependencies.py"`，缺依赖时按 `requirements.txt` 安装后重试

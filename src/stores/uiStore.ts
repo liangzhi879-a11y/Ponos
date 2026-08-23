@@ -220,7 +220,7 @@ export const useUIStore = create<UIState>()(
         } else if (cur.length >= 10) {
           // Cap at 10 — notify the user instead of silently replacing
           if (typeof window !== 'undefined') {
-            window.dispatchEvent(new CustomEvent('yfworking:pin-limit', { detail: { limit: 10 } }))
+            window.dispatchEvent(new CustomEvent('ponos:pin-limit', { detail: { limit: 10 } }))
           }
         } else {
           set({ pinnedSkills: [...cur, id] })
@@ -273,7 +273,7 @@ export const useUIStore = create<UIState>()(
       },
     }),
     {
-      name: 'yfworking-ui',
+      name: 'ponos-ui',
       partialize: (state) => ({
         sidebarOpen: state.sidebarOpen,
         sidebarWidth: state.sidebarWidth,

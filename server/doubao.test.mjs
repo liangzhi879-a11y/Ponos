@@ -8,7 +8,7 @@ import * as d from './doubao.mjs'   // homeDir() 延迟读取 env，模块求值
 let home
 before(() => {
   home = mkdtempSync(join(tmpdir(), 'doubao-test-'))
-  process.env.YFW_TEST_HOME = home
+  process.env.PONOS_TEST_HOME = home
 })
 after(() => { rmSync(home, { recursive: true, force: true }) })
 

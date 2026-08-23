@@ -4,16 +4,16 @@
 
 **Goal:** 500 轮长会话下 compact 质量不退化（关键信息保留）、token 预算可配置、跨会话记忆内核化、上下文容量可预测预警。
 
-**Architecture:** 四个纯内核模块扩展——compact.mjs 追加 `extractKeyInfo`/`resolveCompactSettings`（关键信息保留 + 预算解析）、新建 `kernel/memory.mjs`（记忆持久化 + 确定性捕获，与 GUI 层 server/experience.mjs 同一文件格式与 hash 算法）、context.mjs 追加 `predictTurns`（增长速率预测）、health.mjs 预警扩展；cli.mjs 组装（settings.compact → context/env、记忆索引注入、轮末捕获落盘）。全部机制在 kernel/，前端零新增设置项（HealthMeter 消费 yfw_health 新增字段，纯增量）。
+**Architecture:** 四个纯内核模块扩展——compact.mjs 追加 `extractKeyInfo`/`resolveCompactSettings`（关键信息保留 + 预算解析）、新建 `kernel/memory.mjs`（记忆持久化 + 确定性捕获，与 GUI 层 server/experience.mjs 同一文件格式与 hash 算法）、context.mjs 追加 `predictTurns`（增长速率预测）、health.mjs 预警扩展；cli.mjs 组装（settings.compact → context/env、记忆索引注入、轮末捕获落盘）。全部机制在 kernel/，前端零新增设置项（HealthMeter 消费 ponos_health 新增字段，纯增量）。
 
-**Tech Stack:** 纯 Node ESM（node:test / node:fs），零 npm 依赖。测试沿用 `server/*.test.mjs`：单元直连 import 内核模块；集成 spawn 真内核（`kernel/cli.mjs` + `YFW_MOCK_API=1`）+ makeReader 行队列（参照 `server/kernel-contract.test.mjs`）。
+**Tech Stack:** 纯 Node ESM（node:test / node:fs），零 npm 依赖。测试沿用 `server/*.test.mjs`：单元直连 import 内核模块；集成 spawn 真内核（`kernel/cli.mjs` + `PONOS_MOCK_API=1`）+ makeReader 行队列（参照 `server/kernel-contract.test.mjs`）。
 
 ## Global Constraints
 
 - 零 npm 依赖：kernel/ 内新代码只用 node 内置模块。
-- 内核优先：机制进 kernel/，前端零新增设置项；yfw_health 事件只增字段（growthPerTurn/predictedTurns），不删改既有字段。
+- 内核优先：机制进 kernel/，前端零新增设置项；ponos_health 事件只增字段（growthPerTurn/predictedTurns），不删改既有字段。
 - 向后兼容：settings.compact / memory / 捕获全部可选——缺配置时行为与现在完全一致（thresholdRatio 0.8 / retainRatio 0.16 / 默认预算 / 无记忆注入 / 无捕获）。
-- 与 GUI 记忆层同数据源：kernel/memory.mjs 读写 `~/.yfworking/memory/personal/{theme}.md`，条目格式 `- [会话|标签] 摘要 -- 全文` 与 hash 算法与 `server/experience.mjs` 完全一致（GUI 经验面板可继续管理同一批文件）。
+- 与 GUI 记忆层同数据源：kernel/memory.mjs 读写 `~/.ponos/memory/personal/{theme}.md`，条目格式 `- [会话|标签] 摘要 -- 全文` 与 hash 算法与 `server/experience.mjs` 完全一致（GUI 经验面板可继续管理同一批文件）。
 - 测试命令：`node --test server/<file>.test.mjs`；全量 `node --test "server/*.test.mjs"`。
 - 前置依赖（按依赖链 P1→P4 已落地）：
   - P4 计划 Task 1 的 `loadSettings({ configDir, cwd, local })` → `{ merged, ... }`（本计划 Task 2/4/6 消费 `settings.merged`）
@@ -300,7 +300,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { appendMemoryEntry, readMemoryEntries, buildMemoryIndex, captureMemoryCandidates, hashLine } from '../kernel/memory.mjs'
 
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-mem-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-mem-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('hashLine：与 experience.mjs 同算法（兼容 GUI 面板去重）', () => {
@@ -545,7 +545,7 @@ test('集成：轮末捕获命中 → configDir/memory/personal 落盘条目', a
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion', '--add-dir', cwd,
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const reader = makeReader(child.stdout)
@@ -623,7 +623,7 @@ git commit -m "feat(kernel): 记忆注入系统提示 + 轮末确定性捕获落
 
 **Files:**
 - Modify: `kernel/context.mjs`（追加 `predictTurns` 纯函数）
-- Modify: `kernel/health.mjs`（snapshot() 改用 predictTurns；yfw_health 事件增 growthPerTurn/predictedTurns 字段；predictedTurns < 15 且 ≥5 时 reason 提示）
+- Modify: `kernel/health.mjs`（snapshot() 改用 predictTurns；ponos_health 事件增 growthPerTurn/predictedTurns 字段；predictedTurns < 15 且 ≥5 时 reason 提示）
 - Create: `server/context-predict.test.mjs`
 
 **Interfaces:**
@@ -660,7 +660,7 @@ test('predictTurns：数据不足 → 保守默认 1000', () => {
   assert.equal(r.predictedTurns, 159)
 })
 
-test('health 集成：yfw_health 事件含 predictedTurns/growthPerTurn，红档触发', () => {
+test('health 集成：ponos_health 事件含 predictedTurns/growthPerTurn，红档触发', () => {
   const events = []
   const wire = { health: (h) => events.push(h), summary: () => {} }
   const h = createHealth({ wire, model: 'deepseek-v4-flash', contextWindow: 200_000, env: {} })
@@ -745,7 +745,7 @@ Expected: PASS
 
 ```bash
 git add kernel/context.mjs kernel/health.mjs server/context-predict.test.mjs
-git commit -m "feat(kernel): 上下文预测（增长速率→剩余轮数）+ yfw_health 提前预警字段"
+git commit -m "feat(kernel): 上下文预测（增长速率→剩余轮数）+ ponos_health 提前预警字段"
 ```
 
 ---
@@ -757,7 +757,7 @@ git commit -m "feat(kernel): 上下文预测（增长速率→剩余轮数）+ y
 
 **Interfaces:**
 - Consumes: Task 1/2/5 全部（keyInfo 注入、settings.compact、health 预测）；mock 摘要响应（api.mjs `系统压缩指令` 检测 → `<compacted-summary>mock 摘要</compacted-summary>`）
-- Produces: 无新导出——端到端验收：低阈值配置下多轮会话自动触发压缩；yfw_summary 事件携带摘要；yfw_health 事件含预测字段
+- Produces: 无新导出——端到端验收：低阈值配置下多轮会话自动触发压缩；ponos_summary 事件携带摘要；ponos_health 事件含预测字段
 
 - [x] **Step 1: 写失败测试**
 
@@ -773,7 +773,7 @@ import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 
 const KERNEL = join(dirname(fileURLToPath(import.meta.url)), '..', 'kernel', 'cli.mjs')
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-long-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-long-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 function makeReader(stream) {
@@ -800,12 +800,12 @@ function sanitizeSegment(s) {
   return String(s).replace(/[^a-zA-Z0-9\u4e00-\u9fa5.-]/g, '-')
 }
 
-test('端到端：低阈值 settings.compact → 多轮后触发压缩 → yfw_summary + 落盘', async () => {
+test('端到端：低阈值 settings.compact → 多轮后触发压缩 → ponos_summary + 落盘', async () => {
   const configDir = join(tmp, 'lcfg')
   const cwd = join(tmp, 'lproj')
   mkdirSync(configDir, { recursive: true })
   mkdirSync(cwd, { recursive: true })
-  writeFileSync(join(cwd, '.yfworking', 'settings.json'), JSON.stringify({
+  writeFileSync(join(cwd, '.ponos', 'settings.json'), JSON.stringify({
     compact: { thresholdTokens: 1, reserveTokens: 1 },
   }), 'utf-8')
   const child = spawn(process.execPath, [
@@ -813,7 +813,7 @@ test('端到端：低阈值 settings.compact → 多轮后触发压缩 → yfw_s
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion', '--add-dir', cwd,
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const reader = makeReader(child.stdout)
@@ -835,9 +835,9 @@ test('端到端：低阈值 settings.compact → 多轮后触发压缩 → yfw_s
   } finally {
     try { child.stdin.end() } catch {}
   }
-  // 压缩发生：yfw_summary 事件（health.recordCompaction 单通道）
-  const summaryEv = events.find((e) => e.type === 'yfw_summary')
-  assert.ok(summaryEv, '出现 yfw_summary 事件')
+  // 压缩发生：ponos_summary 事件（health.recordCompaction 单通道）
+  const summaryEv = events.find((e) => e.type === 'ponos_summary')
+  assert.ok(summaryEv, '出现 ponos_summary 事件')
   assert.ok(String(summaryEv.text ?? JSON.stringify(summaryEv)).includes('mock 摘要'))
   // 落盘：transcript 含 compaction 记录
   const transcriptPath = join(configDir, 'projects', sanitizeSegment(cwd), sid + '.jsonl')
@@ -850,7 +850,7 @@ test('端到端：低阈值 settings.compact → 多轮后触发压缩 → yfw_s
 - [x] **Step 2: 跑测试验证失败**
 
 Run: `node --test server/session-long.test.mjs`
-Expected: FAIL —— 无 yfw_summary 事件（settings.compact 未接线 / 或行为未按预期；调试时先确认事件流：第 1 轮 assistant+result，第 2 轮 yfw_summary+assistant+result）
+Expected: FAIL —— 无 ponos_summary 事件（settings.compact 未接线 / 或行为未按预期；调试时先确认事件流：第 1 轮 assistant+result，第 2 轮 ponos_summary+assistant+result）
 
 - [x] **Step 3: 若失败因 findCutPoint 边界（covered 为空 → cut null）**
 
@@ -886,7 +886,7 @@ git commit -m "test(kernel): 端到端——settings.compact 低阈值触发压�
 
 **2. Placeholder scan：** 无 TBD/TODO；每步骤含完整测试与实现代码。Task 4 测试引用的 `helpers.mjs` 给了明确替代方案（内联复制 makeReader，参照既有文件行号），不依赖未定义内容。Task 6 调试路径给了具体定位方法（事件序列打印），非空泛指令。
 
-**3. Type consistency：** `extractKeyInfo/keyInfoBlock/assembleSummaryRequest`（Task 1 定义，Task 6 隐式消费）、`resolveCompactSettings`（Task 2 定义，Task 6 端到端消费）、`memoryRoot/appendMemoryEntry/buildMemoryIndex/captureMemoryCandidates`（Task 3 定义，Task 4 消费）、`predictTurns`（Task 5 定义，health snapshot 消费）跨任务签名一致；`settings.merged.compact.*` 键名（thresholdTokens/reserveTokens/maxToolResults）Task 2/4/6 一致；yfw_health 新增字段（growthPerTurn/predictedTurns）Task 5 定义与测试断言一致；memory 配置键（inject/capture/taskTag/markers）Task 4 内部一致。
+**3. Type consistency：** `extractKeyInfo/keyInfoBlock/assembleSummaryRequest`（Task 1 定义，Task 6 隐式消费）、`resolveCompactSettings`（Task 2 定义，Task 6 端到端消费）、`memoryRoot/appendMemoryEntry/buildMemoryIndex/captureMemoryCandidates`（Task 3 定义，Task 4 消费）、`predictTurns`（Task 5 定义，health snapshot 消费）跨任务签名一致；`settings.merged.compact.*` 键名（thresholdTokens/reserveTokens/maxToolResults）Task 2/4/6 一致；ponos_health 新增字段（growthPerTurn/predictedTurns）Task 5 定义与测试断言一致；memory 配置键（inject/capture/taskTag/markers）Task 4 内部一致。
 
 ## Execution Handoff
 

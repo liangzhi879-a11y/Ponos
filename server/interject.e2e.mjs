@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = 52319
 const bridge = spawn(process.execPath, [join(__dirname, 'bridge.mjs')], {
-  env: { ...process.env, YFW_BRIDGE_PORT: String(PORT) },
+  env: { ...process.env, PONOS_BRIDGE_PORT: String(PORT) },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 bridge.stderr.on('data', d => process.stdout.write('[bridge-err] ' + String(d).slice(0, 120) + '\n'))

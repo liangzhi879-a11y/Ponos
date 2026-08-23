@@ -1,11 +1,11 @@
 // transcriptAdapter.ts — 内核 transcript entry → GUI Message 转换层（纯逻辑，无 IO）。
 //
-// 内核（yfw-kernel/claude-code，claude-code 官方同源）在磁盘写 append-only JSONL
+// 内核（ponos-kernel/claude-code，claude-code 官方同源）在磁盘写 append-only JSONL
 // transcript，每行一个原始 entry（形态见下）。GUI 内存不能装 377MB 全量 transcript，
 // 因此这里做"展示级裁剪"：text ≤8KB、tool_result ≤16KB、thinking ≤4KB、tool_use ≤8KB，
 // 超限截断并在 metadata.originalLength 记录原始长度。裁剪是架构要求，不是可选。
 //
-// 实测确认的内核 entry 形态（~/.yfworking/projects/<sanitize(cwd)>/<sessionId>.jsonl）：
+// 实测确认的内核 entry 形态（~/.ponos/projects/<sanitize(cwd)>/<sessionId>.jsonl）：
 //   - 通用字段：type / sessionId / timestamp(ISO 字符串!) / cwd / uuid / parentUuid(根为 null)
 //   - user entry：   { type:'user', message:{ role:'user', content: string | 块数组 }, ... }
 //   - assistant：    { type:'assistant', message:{ role:'assistant', model, content: 块数组,

@@ -6,19 +6,19 @@
 
 **Architecture:** 版本单一数据源 `version.mjs` 扩展（SCHEMA_VERSION + buildId）；`kernel/settings.mjs` 追加 schema 校验/迁移/漂移检测纯函数；`kernel/session.mjs` 新会话写 transcript meta 首行 + 旧格式自动适配；`kernel/config-scan.mjs` 生成式配置清单；`kernel/package.json + .env.example + README` 独立部署形态。bridge 仅一处薄改动（diagInfo 版本字段），前端零新增设置项。
 
-**Tech Stack:** 纯 Node ESM（node:test / node:fs / node:child_process），零 npm 依赖。测试沿用 `server/*.test.mjs`：单元直连 import；集成 spawn 真内核（`kernel/cli.mjs` + `YFW_MOCK_API=1`）+ makeReader（参照 `server/kernel-contract.test.mjs`）。
+**Tech Stack:** 纯 Node ESM（node:test / node:fs / node:child_process），零 npm 依赖。测试沿用 `server/*.test.mjs`：单元直连 import；集成 spawn 真内核（`kernel/cli.mjs` + `PONOS_MOCK_API=1`）+ makeReader（参照 `server/kernel-contract.test.mjs`）。
 
 ## Global Constraints
 
 - 零 npm 依赖：kernel/ 内新代码只用 node 内置模块；独立部署包无 dependencies。
 - 内核优先：迁移/校验/漂移逻辑在 kernel/；bridge 只做版本展示（diagInfo 字段），前端零新增设置项。
 - 向后兼容：无 schemaVersion 的 settings / 无 meta 首行的 transcript 一律视为 v1 自动适配，不报错不迁移；行为与现在完全一致。
-- 版本单一数据源：`version.mjs` 导出 `YFW_VERSION`（既有）+ `SCHEMA_VERSION` + `buildId()`；settings.mjs 引用 SCHEMA_VERSION，不得另起常量。
+- 版本单一数据源：`version.mjs` 导出 `PONOS_VERSION`（既有）+ `SCHEMA_VERSION` + `buildId()`；settings.mjs 引用 SCHEMA_VERSION，不得另起常量。
 - 测试命令：`node --test server/<file>.test.mjs`；全量 `node --test "server/*.test.mjs"`。
 - 前置依赖（按依赖链 P1→P5 已落地）：
   - `kernel/settings.mjs`（P4 Task 1）：`loadSettings({ configDir, cwd, local })` → `{ user, project, local, merged, paths }`（本计划 Task 1/6 在其上追加，不改既有返回字段语义）
   - `kernel/session.mjs`：既有 `createSessionStore({ configDir, cwd, sessionId, maxEntries })` 与 `append/load/rebuildSurface`（本计划 Task 2 追加 meta 首行，兼容 P4-5 已加的 `kind === 'meta'` 跳过逻辑）
-  - `version.mjs`：既有 `YFW_VERSION = 'dev 0.1'`（本计划 Task 1 追加 SCHEMA_VERSION、Task 3 追加 buildId）
+  - `version.mjs`：既有 `PONOS_VERSION = 'dev 0.1'`（本计划 Task 1 追加 SCHEMA_VERSION、Task 3 追加 buildId）
   - cli init 事件（P5 Task 6 后已含 provider/vision/skills/settings 字段；本计划 Task 3 再增 schemaVersion/buildId，纯增量）
 
 ---
@@ -31,7 +31,7 @@
 - Create: `server/schema.test.mjs`
 
 **Interfaces:**
-- Consumes: `loadSettings`（P4 Task 1）；`YFW_VERSION`（version.mjs 既有）
+- Consumes: `loadSettings`（P4 Task 1）；`PONOS_VERSION`（version.mjs 既有）
 - Produces:
   - `version.mjs`：`export const SCHEMA_VERSION = 1`（settings 文件 schema 版本，当前 v1）
   - `kernel/settings.mjs`：
@@ -52,7 +52,7 @@ import { join } from 'node:path'
 import { SCHEMA_VERSION } from '../version.mjs'
 import { loadSettings, migrateSettings, validateSettings } from '../kernel/settings.mjs'
 
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-schema-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-schema-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('SCHEMA_VERSION 单一数据源：version.mjs 导出且当前为 1', () => {
@@ -211,7 +211,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createSessionStore, TRANSCRIPT_SCHEMA_VERSION } from '../kernel/session.mjs'
 
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-meta-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-meta-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('新会话：文件首行写 transcript schemaVersion meta', () => {
@@ -326,9 +326,9 @@ git commit -m "feat(kernel): transcript meta 版本标记（新会话首行 + �
 - Create: `server/version.test.mjs`
 
 **Interfaces:**
-- Consumes: `YFW_VERSION` / `SCHEMA_VERSION`（version.mjs）；`TRANSCRIPT_SCHEMA_VERSION`（Task 2，不强制）
+- Consumes: `PONOS_VERSION` / `SCHEMA_VERSION`（version.mjs）；`TRANSCRIPT_SCHEMA_VERSION`（Task 2，不强制）
 - Produces:
-  - `version.mjs`：`export function buildId() { return process.env.YFW_BUILD_ID || 'dev' }`（构建时注入 YFW_BUILD_ID；dev 默认）
+  - `version.mjs`：`export function buildId() { return process.env.PONOS_BUILD_ID || 'dev' }`（构建时注入 PONOS_BUILD_ID；dev 默认）
   - cli init 事件：`wire.system('init', { ..., schemaVersion: SCHEMA_VERSION, buildId: buildId() })`（纯增量字段）
   - bridge：`diagInfo` 追加 `{ kernelVersion: '', schemaVersion: 0, buildId: '' }`；主会话 stdout 行循环解析到 `system/init` 事件时赋值（与既有 `firstTokenAt` 采集并列）
 
@@ -344,22 +344,22 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
-import { YFW_VERSION, SCHEMA_VERSION, buildId } from '../version.mjs'
+import { PONOS_VERSION, SCHEMA_VERSION, buildId } from '../version.mjs'
 
 const KERNEL = join(dirname(fileURLToPath(import.meta.url)), '..', 'kernel', 'cli.mjs')
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-ver-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-ver-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('version.mjs 单一数据源：常量 + buildId（env 注入 / dev 默认）', () => {
-  assert.ok(typeof YFW_VERSION === 'string' && YFW_VERSION.length > 0)
+  assert.ok(typeof PONOS_VERSION === 'string' && PONOS_VERSION.length > 0)
   assert.equal(SCHEMA_VERSION, 1)
   assert.equal(buildId(), 'dev')
-  const prev = process.env.YFW_BUILD_ID
-  process.env.YFW_BUILD_ID = 'build-123'
-  try { assert.equal(buildId(), 'build-123') } finally { if (prev === undefined) delete process.env.YFW_BUILD_ID; else process.env.YFW_BUILD_ID = prev }
+  const prev = process.env.PONOS_BUILD_ID
+  process.env.PONOS_BUILD_ID = 'build-123'
+  try { assert.equal(buildId(), 'build-123') } finally { if (prev === undefined) delete process.env.PONOS_BUILD_ID; else process.env.PONOS_BUILD_ID = prev }
 })
 
-test('init 事件：携带 schemaVersion + buildId（含 YFW_BUILD_ID 注入）', async () => {
+test('init 事件：携带 schemaVersion + buildId（含 PONOS_BUILD_ID 注入）', async () => {
   const configDir = join(tmp, 'c')
   mkdirSync(configDir, { recursive: true })
   const child = spawn(process.execPath, [
@@ -367,7 +367,7 @@ test('init 事件：携带 schemaVersion + buildId（含 YFW_BUILD_ID 注入）'
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion',
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir, YFW_BUILD_ID: 'ci-42' },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir, PONOS_BUILD_ID: 'ci-42' },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const lines = []
@@ -407,10 +407,10 @@ Expected: FAIL —— `buildId is not a function` / init 事件无 schemaVersion
 `version.mjs` 末尾追加：
 
 ```js
-// buildId（D4-1）：构建/发布时经环境注入（如 YFW_BUILD_ID=release-2026-08-21-a1b2），
+// buildId（D4-1）：构建/发布时经环境注入（如 PONOS_BUILD_ID=release-2026-08-21-a1b2），
 // dev 默认 'dev'。与 /diag 交叉比对：kernelVersion + schemaVersion + buildId 三源合一。
 export function buildId() {
-  return process.env.YFW_BUILD_ID || 'dev'
+  return process.env.PONOS_BUILD_ID || 'dev'
 }
 ```
 
@@ -490,7 +490,7 @@ test('scanKernelConfig：盘点 env 引用（关键项存在）', () => {
   assert.ok(r.env.includes('ANTHROPIC_BASE_URL'))
   assert.ok(r.env.includes('ANTHROPIC_AUTH_TOKEN'))
   assert.ok(r.env.includes('CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS'))
-  assert.ok(r.env.includes('YFW_MOCK_API'))
+  assert.ok(r.env.includes('PONOS_MOCK_API'))
   assert.ok(r.env.includes('CLAUDE_CONFIG_DIR'))
   // 去重 + 排序
   assert.equal(new Set(r.env).size, r.env.length)
@@ -630,7 +630,7 @@ import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 
 const KERNEL_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'kernel')
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-deploy-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-deploy-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('部署包：package.json 零依赖 + start 指向 cli.mjs + bin', () => {
@@ -664,7 +664,7 @@ test('部署包：无 GUI mock 完成一轮对话', async () => {
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion',
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const lines = []
@@ -707,11 +707,11 @@ Expected: FAIL —— `kernel/package.json` 不存在（读取报错）
 
 ```json
 {
-  "name": "yfw-kernel",
+  "name": "ponos-kernel",
   "version": "0.1.0",
-  "description": "YFW-turbo 内核独立部署包（零 npm 依赖，无 GUI）",
+  "description": "Ponos-turbo 内核独立部署包（零 npm 依赖，无 GUI）",
   "type": "module",
-  "bin": { "yfw-kernel": "cli.mjs" },
+  "bin": { "ponos-kernel": "cli.mjs" },
   "main": "engine.mjs",
   "scripts": {
     "start": "node cli.mjs",
@@ -722,19 +722,19 @@ Expected: FAIL —— `kernel/package.json` 不存在（读取报错）
 }
 ```
 
-> 版本同步注记：package.json version 与 version.mjs `YFW_VERSION`（'dev 0.1'）同线；发布时同步修改（D4-1 交叉比对项）。
+> 版本同步注记：package.json version 与 version.mjs `PONOS_VERSION`（'dev 0.1'）同线；发布时同步修改（D4-1 交叉比对项）。
 
 `kernel/.env.example`：
 
 ```bash
-# YFW-turbo 内核必需环境变量（独立部署最小集；GUI 集成时由 bridge 注入，无需手动配置）
+# Ponos-turbo 内核必需环境变量（独立部署最小集；GUI 集成时由 bridge 注入，无需手动配置）
 # Anthropic 兼容端点（必填）
 ANTHROPIC_BASE_URL=https://api.example.com
 ANTHROPIC_AUTH_TOKEN=sk-xxxx
 ANTHROPIC_MODEL=your-model
 
-# 数据目录（可选，默认 ~/.yfworking）
-# CLAUDE_CONFIG_DIR=C:/Users/you/.yfworking
+# 数据目录（可选，默认 ~/.ponos）
+# CLAUDE_CONFIG_DIR=C:/Users/you/.ponos
 
 # 其他可选调优项见 docs/manual/kernel-config.md
 ```
@@ -742,7 +742,7 @@ ANTHROPIC_MODEL=your-model
 `kernel/README.md`：
 
 ```markdown
-# YFW-turbo 内核（独立部署）
+# Ponos-turbo 内核（独立部署）
 
 零 npm 依赖的 agent 内核。GUI 集成形态由 bridge spawn；本包为无 GUI 最小部署。
 
@@ -833,7 +833,7 @@ test('迁移演练：旧 settings + 旧 transcript → --resume 完成一轮（�
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion', '--resume', sid, '--add-dir', cwd,
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const lines = []

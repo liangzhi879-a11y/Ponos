@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
 // ============================================================
-// Core TypeScript types for YFWorking GUI
+// Core TypeScript types for Ponos GUI
 // ============================================================
 
 // --- Message & Chat Types ---
@@ -253,7 +253,7 @@ export interface AppSettings {
   /** 允许访问会话目录外的文件（Read/Write/Edit/OCR 解锁边界；Glob/Grep 仍限会话目录内） */
   allowOutsideDirs: boolean
 
-  // YFWorking multi-provider config
+  // Ponos multi-provider config
   activeProvider: string
   providers: ModelProvider[]
   skillRoot: string
@@ -277,7 +277,7 @@ export interface AppSettings {
   petType: 'jiajia' | 'dafeiyu'
 }
 
-export interface YFWorkingConfig {
+export interface PonosConfig {
   apiBaseUrl: string
   authToken: string
   primaryModel: string
@@ -301,7 +301,7 @@ export interface ModelProvider {
   visionModel?: string
 }
 
-export interface YFWorkingConfigV2 {
+export interface PonosConfigV2 {
   activeProvider: string
   skillRoot: string
   autoCapture: boolean
@@ -387,12 +387,12 @@ export interface ExperienceTheme {
 
 // --- Window API (Electron) ---
 
-export interface YFWAPI {
+export interface PonosAPI {
   setTrayBehavior: (enabled: boolean) => void
   notifyTaskComplete: (payload: { title: string; body: string; onlyBackground: boolean }) => Promise<{ shown: boolean }>
   openInExplorer: (filePath: string) => Promise<{ ok: boolean }>
   setPetConfig: (config: { enabled: boolean; size: number; randomChat: boolean; pet?: 'jiajia' | 'dafeiyu' }) => Promise<{ ok: boolean }>
-  /** 将 GUI 注册的专业/自定义 agent 同步为内核 agent 文件（写/删 $YFW_HOME/agents/*.md） */
+  /** 将 GUI 注册的专业/自定义 agent 同步为内核 agent 文件（写/删 $PONOS_HOME/agents/*.md） */
   agentsSync: (agents: AgentSyncPayload[]) => Promise<{ ok: boolean; written?: string[]; removed?: string[]; error?: string }>
   /** Current user's home directory (resolved in preload context via os.homedir()) */
   userHome: string
@@ -414,12 +414,12 @@ export interface YFWAPI {
   importExperience: (opts: { conflict: 'skip' | 'overwrite' | 'merge'; projectCwd?: string | null }) => Promise<{ ok: boolean; restored?: string[]; chatStoreJson?: string | null; chats?: { sets: ConversationSet[]; conversations: Conversation[] } | null; conflicts?: number; error?: string; canceled?: boolean }>
 }
 
-/** File dialogs (skill install) — exposed by preload as `yfworkingFile` */
-export interface YFWFileAPI {
+/** File dialogs (skill install) — exposed by preload as `ponosFile` */
+export interface PonosFileAPI {
   openSkillPackage: () => Promise<string | null>
 }
 
-export interface YFWorkingWindowControls {
+export interface PonosWindowControls {
   minimize: () => void
   maximizeToggle: () => void
   close: () => void
@@ -481,9 +481,9 @@ export interface DiagBootSummary { ok: boolean; nodes: { name: string; at: strin
 
 declare global {
   interface Window {
-    yfworkingAPI?: YFWAPI
-    yfworkingWindow?: YFWorkingWindowControls
-    yfworkingFile?: YFWFileAPI
+    ponosAPI?: PonosAPI
+    ponosWindow?: PonosWindowControls
+    ponosFile?: PonosFileAPI
     doubao?: {
       openLogin: () => Promise<{ ok: boolean }>
       getStatus: () => Promise<DoubaoStatus>
@@ -501,7 +501,7 @@ declare global {
       getStatus: () => Promise<{ ok: boolean; running?: boolean }>
     }
     /** 应用内诊断工具（Task 5 preload 平铺 namespace：getStatus/rerun/rerunAll/runKernelCheck/exportReport/getBootSummary/openLogDir/onStatusChanged） */
-    yfwDiag?: {
+    ponosDiag?: {
       getStatus: () => Promise<DiagSnapshot>
       rerun: (id: string) => Promise<DiagCheck | null>
       rerunAll: () => Promise<DiagSnapshot>
@@ -514,7 +514,7 @@ declare global {
   }
   // Injected by Vite define at build time — reads package.json version
   const __APP_VERSION__: string
-  // Injected by Vite define — bridge port (from YFW_BRIDGE_PORT env or default)
+  // Injected by Vite define — bridge port (from PONOS_BRIDGE_PORT env or default)
   const __BRIDGE_PORT__: string
 }
 
@@ -528,8 +528,8 @@ export interface DoubaoStatus {
 export interface DoubaoResult {
   id: string
   prompt: string
-  imageUrl: string      // 本地去水印图（bridge /yfw/doubao/images/<id>）
-  /** 磁盘绝对路径（~/.yfworking/doubao-images/<id>.png），插入聊天时经 @image:<path> 发内核必须用本地路径 */
+  imageUrl: string      // 本地去水印图（bridge /ponos/doubao/images/<id>）
+  /** 磁盘绝对路径（~/.ponos/doubao-images/<id>.png），插入聊天时经 @image:<path> 发内核必须用本地路径 */
   path?: string
   createdAt: number
 }

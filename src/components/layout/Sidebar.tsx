@@ -34,7 +34,7 @@ const TABS = [
 // v2：消息体不再在 localStorage——逐会话从内核 transcript 全量读取（tailFirst=0, crop=false，
 // 完整消息，非展示级裁剪）组装 chatsJson，与旧导出格式兼容（{ state: { conversations, ... } }）。
 const exportChats = async (chatsFilter: { conversationIds?: string[]; setId?: string }) => {
-  if (!window.yfworkingAPI) return
+  if (!window.ponosAPI) return
   const st = useChatStore.getState()
   const all = st.conversations
   const picked = chatsFilter?.conversationIds
@@ -53,7 +53,7 @@ const exportChats = async (chatsFilter: { conversationIds?: string[]; setId?: st
     }
     // ext 兜底（导入的无 transcript 会话）合并
     try {
-      const raw = window.localStorage.getItem('yfworking-chat-ext-' + c.id)
+      const raw = window.localStorage.getItem('ponos-chat-ext-' + c.id)
       if (raw) parts.push(JSON.parse(raw) as Message[])
     } catch { /* ignore */ }
     const flat = parts.flat().sort((a, b) => a.timestamp - b.timestamp)
@@ -73,7 +73,7 @@ const exportChats = async (chatsFilter: { conversationIds?: string[]; setId?: st
       lastCwd: st.lastCwd,
     },
   })
-  window.yfworkingAPI.exportExperience({
+  window.ponosAPI.exportExperience({
     included: ['chats'],
     chatsJson,
     chatsFilter,

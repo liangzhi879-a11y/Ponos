@@ -6,12 +6,12 @@ import { join, sep } from 'node:path'
 import { discoverAgentsMd, buildBaseSystemPrompt, composeSystemPrompt } from '../kernel/prompt.mjs'
 
 function tmpDir() {
-  return mkdtempSync(join(tmpdir(), 'yfw-prompt-'))
+  return mkdtempSync(join(tmpdir(), 'ponos-prompt-'))
 }
 
-test('buildBaseSystemPrompt：含 YFWorking 身份 + 工具纪律与回复规范', () => {
+test('buildBaseSystemPrompt：含 Ponos 身份 + 工具纪律与回复规范', () => {
   const p = buildBaseSystemPrompt({ toolNames: ['Bash', 'Read'] })
-  assert.match(p, /YFWorking/, '基础提示词应含 YFWorking 身份')
+  assert.match(p, /Ponos/, '基础提示词应含 Ponos 身份')
   assert.match(p, /工具纪律/)
   assert.match(p, /探索纪律/)
   assert.match(p, /回复规范/)

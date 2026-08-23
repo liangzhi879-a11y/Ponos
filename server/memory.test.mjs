@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { appendMemoryEntry, readMemoryEntries, buildMemoryIndex, buildRelevantMemory, captureMemoryCandidates, hashLine } from '../kernel/memory.mjs'
 
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-mem-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-mem-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('hashLine：与 experience.mjs 同算法（兼容 GUI 面板去重）', () => {
@@ -138,7 +138,7 @@ test('集成：轮末捕获命中 → configDir/memory/personal 落盘条目', a
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion', '--add-dir', cwd,
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const reader = makeReader(child.stdout)

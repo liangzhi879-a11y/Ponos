@@ -2,9 +2,9 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-// YFW_BRIDGE_NO_LISTEN 必须在 import bridge.mjs 之前设置：模块求值（1983 行附近）
+// PONOS_BRIDGE_NO_LISTEN 必须在 import bridge.mjs 之前设置：模块求值（1983 行附近）
 // 会据此跳过顶层 listen，避免端口冲突。测试自行 listen(0) 起随机端口。
-process.env.YFW_BRIDGE_NO_LISTEN = '1'
+process.env.PONOS_BRIDGE_NO_LISTEN = '1'
 const { httpServer } = await import('./bridge.mjs')
 
 let port = 0

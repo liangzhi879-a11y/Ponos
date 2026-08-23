@@ -36,7 +36,7 @@ dependencies: []         # 依赖的其他技能ID列表（可选）
 
 技能包中的 `_scripts/` 目录存放 Python 附属脚本，agent 可通过 `python _scripts/xxx.py` 调用。
 
-脚本依赖通过 `_scripts/requirements.txt` 声明，安装时 YFWorking 会提示用户安装。
+脚本依赖通过 `_scripts/requirements.txt` 声明，安装时 Ponos 会提示用户安装。
 
 ## 经验库
 

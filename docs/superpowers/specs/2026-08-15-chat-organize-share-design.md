@@ -5,7 +5,7 @@
 
 ## 1. 背景与目标
 
-YFWorking 的会话历史全部持久化在 localStorage `yfworking-chat`（单个 JSON 文档，每条会话只保留最近 100 条消息）。三个问题：
+Ponos 的会话历史全部持久化在 localStorage `ponos-chat`（单个 JSON 文档，每条会话只保留最近 100 条消息）。三个问题：
 
 1. **体积**：导出 chats 类型把整个 JSON 打包成一个 `chat-store.json`；导入时整体写回 localStorage。会话多时包体积大，且 Chromium localStorage 配额（约 10MB，实际可用约 5-8MB）下整体写入可能抛 `QuotaExceededError`，跨设备迁移失败。
 2. **无组织**：会话列表（Sidebar → Chats）只有 pinned/unpinned 两组，没有项目/分组概念；会话模型有 `cwd` 字段但 UI 未按项目组织。
@@ -21,7 +21,7 @@ YFWorking 的会话历史全部持久化在 localStorage `yfworking-chat`（单�
 ## 2. 架构与约束
 
 - 改动范围：GUI 前端（chatStore / Sidebar / 设置经验面板）+ `server/packager.mjs`（导出/导入 chat 结构）+ `server/bridge.mjs` 零改动 + Electron IPC 透传。
-- 约束：`yfw-kernel/` 零修改；`yfworking-chat` persist key 不变；消息 100 条上限截断语义不变；导入必须兼容旧格式包（单 `chat-store.json`）。
+- 约束：`ponos-kernel/` 零修改；`ponos-chat` persist key 不变；消息 100 条上限截断语义不变；导入必须兼容旧格式包（单 `chat-store.json`）。
 - localStorage 技术约束（如实说明）：`setItem` 单次写入是整串，不存在真正"分批写"。降低超配额风险的手段是：合并时逐会话应用 100 条截断 + 写前估算序列化体积 + 超配时按最旧会话裁剪并计入报告 + 失败不损坏本地数据。写前估算上限固定为 4MB（保守预留，低于 Chromium 实际可用额度）。
 
 ## 3. 数据模型（chatStore）
@@ -39,7 +39,7 @@ conversationSets: {
 }[]
 ```
 
-- persist：`yfworking-chat` 的 partialize 增加 `conversationSets` 与会话 `setId`。
+- persist：`ponos-chat` 的 partialize 增加 `conversationSets` 与会话 `setId`。
 - 会话集删除：仅解除会话归属（`setId` 置 undefined），不删除会话。
 - 新建会话集：`createConversationSet(name, cwd?)`；移动会话：`setConversationSet(conversationId, setId | null)`；改名：`renameConversationSet(id, name)`；删除：`deleteConversationSet(id)`（解除归属）。
 
@@ -80,7 +80,7 @@ chats/
 **exportPackage(opts) 增加 `chatsFilter?: { conversationIds?: string[]; setId?: string }`**：
 - 无 filter → 全部会话。
 - 有 filter → 仅所选会话（会话集过滤 = 该集内全部会话；conversationIds 与 setId 可叠加取并集）。
-- chatsJson（localStorage `yfworking-chat` 字符串）在导出端解析并过滤、拆分写文件。
+- chatsJson（localStorage `ponos-chat` 字符串）在导出端解析并过滤、拆分写文件。
 
 **IPC**：`experience:export` handler 透传 `payload.chatsFilter`；preload `exportExperience(opts)` 类型同步更新。
 
@@ -117,7 +117,7 @@ chats/
 ## 9. 文件清单
 
 - Modify: `src/stores/chatStore.ts`（conversationSets + setId + 5 个 action + mergeImportedChats + partialize）
-- Modify: `src/types/index.ts`（ConversationSet、Conversation.setId、YFWAPI export/import 类型、chatsFilter）
+- Modify: `src/types/index.ts`（ConversationSet、Conversation.setId、PonosAPI export/import 类型、chatsFilter）
 - Modify: `src/components/layout/Sidebar.tsx`（分组渲染、会话集右键、会话右键新项、自动整理按钮）
 - Modify: `src/components/settings/ExperiencePanel.tsx`（导入回调 merge、导出对话框 chats 范围）
 - Modify: `server/packager.mjs`（chats 拆分导出/聚合导入/chatsFilter/兼容旧格式）

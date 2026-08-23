@@ -4,14 +4,14 @@
 
 **Goal:** 会话历史按"会话集"组织（手动 + 一键按 cwd 自动整理），支持会话/会话集级右键导出分享，chat 数据导出按会话拆分文件、导入受控合并写回避免 localStorage 超配额。
 
-**Architecture:** 会话集数据并入 chatStore（`conversationSets` + 会话 `setId`，随 `yfworking-chat` 一起持久化/导出）；`server/packager.mjs` 的 chats 类型导出改为拆分文件（`chats/sets.json` + `chats/sessions/<id>.json`，manifest 标记 `chat_format: 2`），导入端探测新格式聚合返回、兼容旧单文件；GUI 侧 merge 写回。agent 会话恢复走 CLI（resumeId），不受 chat 体积影响——不改动。
+**Architecture:** 会话集数据并入 chatStore（`conversationSets` + 会话 `setId`，随 `ponos-chat` 一起持久化/导出）；`server/packager.mjs` 的 chats 类型导出改为拆分文件（`chats/sets.json` + `chats/sessions/<id>.json`，manifest 标记 `chat_format: 2`），导入端探测新格式聚合返回、兼容旧单文件；GUI 侧 merge 写回。agent 会话恢复走 CLI（resumeId），不受 chat 体积影响——不改动。
 
 **Tech Stack:** React + zustand（chatStore）+ TypeScript + node:test（server 侧）+ Electron IPC（ipcMain.handle / ipcRenderer.invoke）+ System32 bsdtar（TAR_CMD）。
 
 ## Global Constraints
 
-- `yfw-kernel/` 零修改（vendored kernel）。
-- persist key `yfworking-chat` 不变；每条会话消息仍 `slice(-100)` 截断。
+- `ponos-kernel/` 零修改（vendored kernel）。
+- persist key `ponos-chat` 不变；每条会话消息仍 `slice(-100)` 截断。
 - 导入必须兼容旧格式包（`chats/chat-store.json` 单文件）→ 保持现状整体写回语义。
 - 写前估算上限固定 4MB（超限按 updatedAt 升序裁剪最旧新会话，计入报告）。
 - localStorage `setItem` 单次整串写入（不存在真分批）——"分批写回"实现为受控合并 + 截断 + 裁剪。
@@ -19,7 +19,7 @@
 - 置顶（pinned）语义不变：全局置顶区保留在分组视图之上，pinned 会话不参与分组归属展示。
 - zh-CN/en-US i18n；UI 正文中文为主（既有先例）。
 - server 测试命令：`node --test "server/*.test.mjs"`（glob 形式，Windows 下目录形式报 MODULE_NOT_FOUND）。
-- release 副本同步到 `release/YFWorking_ms92cd6u/`；重启 live app 前必须询问用户。
+- release 副本同步到 `release/Ponos_ms92cd6u/`；重启 live app 前必须询问用户。
 
 ---
 
@@ -222,7 +222,7 @@ test('chats 导出按会话拆分（sets.json + sessions/<id>.json，无旧单�
   })
   const res = await pkg.exportPackage({ outPath: zipPath, included: ['chats'], chatsJson, configRedact: true })
   assert.equal(res.ok, true)
-  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-un-'))
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-un-'))
   spawnSync(pkg.TAR_CMD, ['-xf', zipPath, '-C', staging])
   assert.ok(fs.existsSync(path.join(staging, 'chats', 'sets.json')))
   assert.ok(fs.existsSync(path.join(staging, 'chats', 'sessions', 'c1.json')))
@@ -247,7 +247,7 @@ test('chatsFilter: setId 与 conversationIds 只导出所选会话', async () =>
   })
   const res = await pkg.exportPackage({ outPath: zipPath, included: ['chats'], chatsJson, chatsFilter: { setId: 'set1' }, configRedact: true })
   assert.equal(res.ok, true)
-  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-un-'))
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-pkg-un-'))
   spawnSync(pkg.TAR_CMD, ['-xf', zipPath, '-C', staging])
   assert.ok(fs.existsSync(path.join(staging, 'chats', 'sessions', 'c1.json')))
   assert.ok(!fs.existsSync(path.join(staging, 'chats', 'sessions', 'c2.json')))
@@ -451,13 +451,13 @@ git commit -m "feat(chat): chats 导入聚合新格式（sets + conversations）
 **Files:**
 - Modify: `electron/main.cjs`（experience:export handler 714-721 行）
 - Modify: `electron/preload.cjs`（exportExperience 方法）
-- Modify: `src/types/index.ts`（YFWAPI.exportExperience / importExperience 类型）
+- Modify: `src/types/index.ts`（PonosAPI.exportExperience / importExperience 类型）
 
 **Interfaces:**
 - Consumes: Task 2 的 `exportPackage(opts.chatsFilter)`、Task 3 的返回结构
 - Produces（Task 5/6 依赖）:
-  - `window.yfworkingAPI.exportExperience(opts)` 支持 `opts.chatsFilter: { conversationIds?: string[]; setId?: string } | null`
-  - `window.yfworkingAPI.importExperience(opts)` 返回类型含 `chats?: { sets: unknown[]; conversations: unknown[] } | null`
+  - `window.ponosAPI.exportExperience(opts)` 支持 `opts.chatsFilter: { conversationIds?: string[]; setId?: string } | null`
+  - `window.ponosAPI.importExperience(opts)` 返回类型含 `chats?: { sets: unknown[]; conversations: unknown[] } | null`
 
 - [ ] **Step 1: main.cjs 透传**
 
@@ -477,9 +477,9 @@ git commit -m "feat(chat): chats 导入聚合新格式（sets + conversations）
 
 （现状已是透传，无需改动；Step 2 仅验证。）
 
-- [ ] **Step 3: YFWAPI 类型更新**
+- [ ] **Step 3: PonosAPI 类型更新**
 
-`src/types/index.ts` 的 `YFWAPI` 接口：
+`src/types/index.ts` 的 `PonosAPI` 接口：
 
 ```ts
   exportExperience: (opts: { included: string[]; sensitiveWords?: string[]; chatsJson?: string | null; projectCwd?: string | null; configRedact?: boolean; chatsFilter?: { conversationIds?: string[]; setId?: string } | null }) => Promise<{ ok: boolean; outPath?: string; skipped?: { type: string; reason: string }[]; error?: string; canceled?: boolean }>
@@ -495,7 +495,7 @@ Expected: 全过
 
 ```bash
 git add electron/main.cjs electron/preload.cjs src/types/index.ts
-git commit -m "feat(chat): IPC 透传 chatsFilter + YFWAPI export/import 类型（chats 聚合 + canceled）"
+git commit -m "feat(chat): IPC 透传 chatsFilter + PonosAPI export/import 类型（chats 聚合 + canceled）"
 ```
 
 ---
@@ -625,8 +625,8 @@ en-US 对应：
 ```tsx
   const exportChats = (chatsFilter: { conversationIds?: string[]; setId?: string }) => {
     let chatsJson: string | null = null
-    try { chatsJson = window.localStorage.getItem('yfworking-chat') } catch {}
-    window.yfworkingAPI.exportExperience({
+    try { chatsJson = window.localStorage.getItem('ponos-chat') } catch {}
+    window.ponosAPI.exportExperience({
       included: ['chats'],
       chatsJson,
       chatsFilter,
@@ -639,7 +639,7 @@ en-US 对应：
 
 - `onExportConversation(id)` → `exportChats({ conversationIds: [id] })`
 - `onExportSet(setId)` → `exportChats({ setId })`
-- 注意 dev 模式（无 preload）：`window.yfworkingAPI` 可能缺失 → 守卫 `if (!window.yfworkingAPI) return`（沿用 ExperiencePanel 的守卫惯例）。
+- 注意 dev 模式（无 preload）：`window.ponosAPI` 可能缺失 → 守卫 `if (!window.ponosAPI) return`（沿用 ExperiencePanel 的守卫惯例）。
 
 - [ ] **Step 5: typecheck + 运行确认**
 
@@ -670,7 +670,7 @@ git commit -m "feat(chat): 侧边栏会话集分组（折叠/右键重命名/导
 
 ```tsx
   const run = async () => {
-    const res = await window.yfworkingAPI.importExperience({ conflict, projectCwd: lastCwd })
+    const res = await window.ponosAPI.importExperience({ conflict, projectCwd: lastCwd })
     if (!res.ok) { onDone(res.error || '导入失败（可能已取消）'); onClose(); return }
     let note = ''
     if (res.chats) {
@@ -678,7 +678,7 @@ git commit -m "feat(chat): 侧边栏会话集分组（折叠/右键重命名/导
       const r = useChatStore.getState().mergeImportedChats(res.chats)
       note = `新增会话 ${r.addedConversations}${r.droppedOldest ? `，因体积裁剪最旧 ${r.droppedOldest} 个` : ''}`
     } else if (res.chatStoreJson) {
-      try { window.localStorage.setItem('yfworking-chat', res.chatStoreJson) } catch (e) { note = '，写回 localStorage 失败（体积过大或配额不足），本地会话未变' }
+      try { window.localStorage.setItem('ponos-chat', res.chatStoreJson) } catch (e) { note = '，写回 localStorage 失败（体积过大或配额不足），本地会话未变' }
     }
     onDone(`导入完成：恢复 ${res.restored?.length ?? 0} 项${res.conflicts ? `，跳过冲突 ${res.conflicts} 项` : ''}${note}`)
     onClose()
@@ -712,7 +712,7 @@ git commit -m "feat(chat): 侧边栏会话集分组（折叠/右键重命名/导
 ```tsx
     let chatsFilter: { conversationIds?: string[]; setId?: string } | null = null
     if (sel.chats && chatsScope.startsWith('set:')) chatsFilter = { setId: chatsScope.slice(4) }
-    const res = await window.yfworkingAPI.exportExperience({
+    const res = await window.ponosAPI.exportExperience({
       included,
       sensitiveWords: words.split(/[,，]/).map(s => s.trim()).filter(Boolean),
       chatsJson: sel.chats ? chatsJson() : null,
@@ -756,10 +756,10 @@ Expected: 全部通过（typecheck 0 错误；测试全 PASS；verify exit 0）
 - [ ] **Step 2: 同步 release 副本**
 
 ```bash
-cp server/packager.mjs server/experience.mjs server/bridge.mjs release/YFWorking_ms92cd6u/server/
-cp electron/main.cjs electron/preload.cjs release/YFWorking_ms92cd6u/electron/
+cp server/packager.mjs server/experience.mjs server/bridge.mjs release/Ponos_ms92cd6u/server/
+cp electron/main.cjs electron/preload.cjs release/Ponos_ms92cd6u/electron/
 npm run build
-cp -r dist/. release/YFWorking_ms92cd6u/dist/
+cp -r dist/. release/Ponos_ms92cd6u/dist/
 ```
 
 - [ ] **Step 3: 汇报**

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createToolRegistry } from '../kernel/tools.mjs'
 
-const file = process.argv[2] || join(tmpdir(), 'yfw-ocr-smoke.png')
+const file = process.argv[2] || join(tmpdir(), 'ponos-ocr-smoke.png')
 const dir = process.cwd()
 const reg = createToolRegistry({ cwd: dir, addDirs: [dir, tmpdir()], skipPermissions: true })
 
@@ -17,7 +17,7 @@ const check = (name, cond) => { console.log(`${cond ? 'PASS' : 'FAIL'} ${name}`)
 check('OCR 返回成功', !r1.isError)
 console.log('--- 首次识别（含引擎加载）---')
 console.log(r1.content)
-check('识别出 YFW-OCR', /YFW-OCR|YFW/i.test(String(r1.content ?? '')))
+check('识别出 Ponos-OCR', /Ponos-OCR|Ponos/i.test(String(r1.content ?? '')))
 check('识别出中文 测试', String(r1.content ?? '').includes('测试'))
 check('识别出数字 12345', String(r1.content ?? '').includes('12345'))
 check('meta.scanned 合理（PDF 扫描件=true / 图片=null）', /\.pdf$/i.test(file) ? r1.meta?.scanned === true : r1.meta?.scanned === null)

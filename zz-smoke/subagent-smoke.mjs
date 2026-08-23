@@ -1,6 +1,6 @@
 // subagent 体系 mock 冒烟：主 agent [mock:agent] → Agent tool_use → 子 lane 执行
 // → task_started/progress/notification 事件 + tool_result 回填 + 子 transcript 独立
-// 用法：node zz-smoke/subagent-smoke.mjs（YFW_MOCK_API=1 已内建）
+// 用法：node zz-smoke/subagent-smoke.mjs（PONOS_MOCK_API=1 已内建）
 import { mkdtempSync, existsSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,11 +8,11 @@ import { createEngine } from '../kernel/engine.mjs'
 import { createSessionStore } from '../kernel/session.mjs'
 import { makeWire } from '../kernel/protocol.mjs'
 
-process.env.YFW_MOCK_API = '1'
+process.env.PONOS_MOCK_API = '1'
 
 const events = []
 const wire = makeWire({ write(s) { events.push(JSON.parse(s)) } })
-const dir = mkdtempSync(join(tmpdir(), 'yfw-sub-smoke-'))
+const dir = mkdtempSync(join(tmpdir(), 'ponos-sub-smoke-'))
 const configDir = join(dir, 'home')
 const store = createSessionStore({ configDir, cwd: dir, sessionId: 'main-session' })
 const engine = createEngine({
@@ -20,7 +20,7 @@ const engine = createEngine({
   wire,
   session: store,
 })
-engine.setSystemPrompt('你是 YFW-turbo 测试内核。')
+engine.setSystemPrompt('你是 Ponos-turbo 测试内核。')
 
 const t0 = Date.now()
 const r = await engine.runTurn({ content: '[mock:agent]' })

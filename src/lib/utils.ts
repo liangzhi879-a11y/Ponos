@@ -6,7 +6,7 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 /** zustand persist 的会话数据 localStorage 键（Sidebar/ExperiencePanel 共用） */
-export const CHAT_STORAGE_KEY = 'yfworking-chat'
+export const CHAT_STORAGE_KEY = 'ponos-chat'
 
 export function formatDate(timestamp: number, compact = false): string {
   const date = new Date(timestamp)

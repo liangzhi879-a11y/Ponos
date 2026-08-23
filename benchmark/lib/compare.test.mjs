@@ -5,16 +5,16 @@ import { compareResults } from './compare.mjs'
 
 test('compareResults：退化/改善/变慢/新增/缺失 判定', () => {
   const baseline = [
-    { agent: 'yfw', task: 'T001', status: 'pass', durationMs: 100000, toolCalls: 30 },
-    { agent: 'yfw', task: 'T002', status: 'pass', durationMs: 200000, toolCalls: 40 },
-    { agent: 'yfw', task: 'T003', status: 'fail', durationMs: 50000, toolCalls: 20 },
-    { agent: 'yfw', task: 'T004', status: 'pass', durationMs: 60000, toolCalls: 10 },
+    { agent: 'ponos', task: 'T001', status: 'pass', durationMs: 100000, toolCalls: 30 },
+    { agent: 'ponos', task: 'T002', status: 'pass', durationMs: 200000, toolCalls: 40 },
+    { agent: 'ponos', task: 'T003', status: 'fail', durationMs: 50000, toolCalls: 20 },
+    { agent: 'ponos', task: 'T004', status: 'pass', durationMs: 60000, toolCalls: 10 },
   ]
   const current = [
-    { agent: 'yfw', task: 'T001', status: 'fail', durationMs: 90000, toolCalls: 20 },   // pass→fail = regressed
-    { agent: 'yfw', task: 'T002', status: 'pass', durationMs: 330000, toolCalls: 45 },  // 耗时 >1.5× = slower
-    { agent: 'yfw', task: 'T003', status: 'pass', durationMs: 40000, toolCalls: 15 },   // fail→pass = improved
-    { agent: 'yfw', task: 'T005', status: 'pass', durationMs: 60000, toolCalls: 10 },   // 新增
+    { agent: 'ponos', task: 'T001', status: 'fail', durationMs: 90000, toolCalls: 20 },   // pass→fail = regressed
+    { agent: 'ponos', task: 'T002', status: 'pass', durationMs: 330000, toolCalls: 45 },  // 耗时 >1.5× = slower
+    { agent: 'ponos', task: 'T003', status: 'pass', durationMs: 40000, toolCalls: 15 },   // fail→pass = improved
+    { agent: 'ponos', task: 'T005', status: 'pass', durationMs: 60000, toolCalls: 10 },   // 新增
   ]
   const r = compareResults({ current, baseline })
   assert.equal(r.regressed.length, 1)
@@ -29,8 +29,8 @@ test('compareResults：退化/改善/变慢/新增/缺失 判定', () => {
 })
 
 test('compareResults：timeout/salvage 状态参与退化判定（非 pass 非 pass 不误判退化）', () => {
-  const baseline = [{ agent: 'yfw', task: 'T006', status: 'timeout', durationMs: 900000, toolCalls: 0 }]
-  const current = [{ agent: 'yfw', task: 'T006', status: 'fail', durationMs: 800000, toolCalls: 5 }]
+  const baseline = [{ agent: 'ponos', task: 'T006', status: 'timeout', durationMs: 900000, toolCalls: 0 }]
+  const current = [{ agent: 'ponos', task: 'T006', status: 'fail', durationMs: 800000, toolCalls: 5 }]
   const r = compareResults({ current, baseline })
   // timeout→fail：两者都非 pass → 不判 regressed；无 pass 状态转换
   assert.equal(r.regressed.length, 0)

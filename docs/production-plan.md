@@ -1,6 +1,6 @@
-# YFW-turbo 内核生产化规划（Production Plan）
+# Ponos-turbo 内核生产化规划（Production Plan）
 
-> 用途：yfwturbo 内核从"评测/原型"走向"生产环境使用"的分阶段路线图。覆盖可靠性、安全、可观测、平台化、长会话、部署六大维度。
+> 用途：ponos-turbo 内核从"评测/原型"走向"生产环境使用"的分阶段路线图。覆盖可靠性、安全、可观测、平台化、长会话、部署六大维度。
 > 权威来源：kernel/（13 文件 2987 行）、server/bridge.mjs、electron/（GUI）、benchmark/（评测平台）。
 > 更新日期：2026-08-21
 
@@ -19,7 +19,7 @@
 
 ## 1. 定位与背景
 
-yfwturbo 内核以 ~3000 行 JS（13 文件）实现成熟项目（claude-code 48188 行 / pi 28004 行 / deepseek-harness 53830 行）约 1/9~1/18 的体积，在评测任务（T001-T006 + SWE）上达到 ~70% 能力（T003 已优化至 27 次工具调用 / 272s，逼近 claude 的 16 次 / 222-340s）。
+ponos-turbo 内核以 ~3000 行 JS（13 文件）实现成熟项目（claude-code 48188 行 / pi 28004 行 / deepseek-harness 53830 行）约 1/9~1/18 的体积，在评测任务（T001-T006 + SWE）上达到 ~70% 能力（T003 已优化至 27 次工具调用 / 272s，逼近 claude 的 16 次 / 222-340s）。
 
 **体积买的是"正确性之外的确定性"**：评测环境（干净 worktree、单轮、API 稳定）是成熟项目体积收益最低的场景；生产环境（API 抖动、长会话、多用户、合规审计）正是体积投入最密集的地方。本规划的目标是：**保持 1/18 体积的轻量优势，精准补齐生产环境必需的高杠杆机制，不照搬历史包袱（UI 组件/遥测平台/多端适配/兼容层）**。
 
@@ -125,7 +125,7 @@ yfwturbo 内核以 ~3000 行 JS（13 文件）实现成熟项目（claude-code 4
 | 任务 | 说明 |
 |---|---|
 | compact 升级 | 关键信息保留（文件状态/todo/决策）、token 预算配置化（对照 dsh compaction-basic） |
-| 记忆体系 | 跨会话记忆内核化（现有 ~/.yfworking/memory 机制） |
+| 记忆体系 | 跨会话记忆内核化（现有 ~/.ponos/memory 机制） |
 | 上下文健康 | context.mjs 扩展：容量预测、压缩预警 |
 
 > 细化：docs/production/session.md（P0：L1-1 compact 保留 / L2-1 预算配置化）
@@ -134,7 +134,7 @@ yfwturbo 内核以 ~3000 行 JS（13 文件）实现成熟项目（claude-code 4
 | 任务 | 说明 |
 |---|---|
 | 配置文档化 | 全量 env/CLI/settings 文档（docs/manual 产品说明书同步） |
-| 打包 | electron-builder 已有（yfw-packaging 技能），补内核独立部署形态 |
+| 打包 | electron-builder 已有（ponos-packaging 技能），补内核独立部署形态 |
 | 升级兼容 | 配置 schema 版本化、transcript 格式向后兼容 |
 
 > 细化：docs/production/deploy.md（P0：D1-1 配置清单 / D3-1 独立部署包）
@@ -158,7 +158,7 @@ Phase 1 ──→ Phase 2 ──→ Phase 3 ──┬──→ Phase 6
 |---|---|---|
 | Read 去重 stub（mtime 未变返回 stub） | claude FILE_UNCHANGED_STUB | ✅ 已落地（kernel/tools.mjs readCache，含测试） |
 | 并行工具调用（只读工具并发） | deepseek 有界并行池 | ✅ 已有（engine.mjs P0-4 runToolBatch） |
-| harness cache_read usage 解析缺口 | — | ✅ 已修（yfw.mjs 四字段累加 + costOf 缓存定价） |
+| harness cache_read usage 解析缺口 | — | ✅ 已修（ponos.mjs 四字段累加 + costOf 缓存定价） |
 
 ## 7. 验收标准（总体）
 
@@ -170,7 +170,7 @@ Phase 1 ──→ Phase 2 ──→ Phase 3 ──┬──→ Phase 6
 
 ## 8. P7 评测回归与优化（2026-08-21 完成）
 
-P1-P6 全部落地后全量横评（yfw × T001-T006 + SWE001-006，deepseek-v4-flash），对比基线（08-20T14:24）：
+P1-P6 全部落地后全量横评（ponos × T001-T006 + SWE001-006，deepseek-v4-flash），对比基线（08-20T14:24）：
 
 - **T 系列 6/6、SWE 系列 6/6 全 pass**（基线 5/6 + 5/6），两个基线失败点均转 pass：
   - T004（08-20 fail）根因是 verify 期望 bug（byModelM1 漏算一条 m1 记录），已修（aebdc71）

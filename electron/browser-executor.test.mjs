@@ -70,7 +70,7 @@ test('finalizeJsResult：≤limit 内联保留，>limit 落临时文件返回路
     const big = { ok: true, value: { b: { __br_type: 'binary', size: 10, b64: 'aGVsbG8gd29ybGQ=' } } }
     const outBig = finalizeJsResult(big, 'sess-1', { limit: 4, tmpDir: tmp })
     assert.equal(outBig.value.b.__br_type, 'file')
-    assert.match(outBig.value.b.path, /yfworking-browser-js/)
+    assert.match(outBig.value.b.path, /ponos-browser-js/)
     assert.equal(outBig.value.b.size, 10)
     assert.equal(fs.readFileSync(outBig.value.b.path, 'utf8'), 'hello world')
   } finally {
@@ -152,13 +152,13 @@ test('createDownloadHandler 落盘失败不发事件', () => {
 
 test('isBlockedUrl 对白名单/非白名单判断正确', (t) => {
   // 隔离真实用户配置：本机 browser-whitelist.json 若含 example.com，子域匹配会把
-  // evil.example.com 误判为白名单内。临时 YFWORKING_HOME 空目录 → 仅默认白名单生效。
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-bu-'))
-  const prev = process.env.YFWORKING_HOME
-  process.env.YFWORKING_HOME = dir
+  // evil.example.com 误判为白名单内。临时 PONOS_HOME 空目录 → 仅默认白名单生效。
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-bu-'))
+  const prev = process.env.PONOS_HOME
+  process.env.PONOS_HOME = dir
   t.after(() => {
-    if (prev === undefined) delete process.env.YFWORKING_HOME
-    else process.env.YFWORKING_HOME = prev
+    if (prev === undefined) delete process.env.PONOS_HOME
+    else process.env.PONOS_HOME = prev
     fs.rmSync(dir, { recursive: true, force: true })
   })
   assert.equal(isBlockedUrl('https://www.gov.cn/xxgk'), false)

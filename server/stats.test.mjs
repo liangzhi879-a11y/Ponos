@@ -50,11 +50,11 @@ test('bridge /transcript/stats：totals.cost_usd > 0 且等于 byModel 各桶 co
   const baseDir = join(root, 'base')
   mkdirSync(cfgDir, { recursive: true })
   mkdirSync(join(baseDir, 'projects', 'proj-a'), { recursive: true })
-  // 关键：YFW_HOME / CLAUDE_CONFIG_DIR / YFW_BRIDGE_NO_LISTEN 在 bridge.mjs 模块顶层求值，
-  // 必须在 import 之前设置，否则读取真实 ~/.yfworking 且顶层 listen 占用真实端口。
-  process.env.YFW_HOME = cfgDir
+  // 关键：PONOS_HOME / CLAUDE_CONFIG_DIR / PONOS_BRIDGE_NO_LISTEN 在 bridge.mjs 模块顶层求值，
+  // 必须在 import 之前设置，否则读取真实 ~/.ponos 且顶层 listen 占用真实端口。
+  process.env.PONOS_HOME = cfgDir
   process.env.CLAUDE_CONFIG_DIR = baseDir
-  process.env.YFW_BRIDGE_NO_LISTEN = '1'
+  process.env.PONOS_BRIDGE_NO_LISTEN = '1'
   writeFileSync(join(cfgDir, 'config.json'), JSON.stringify({
     activeProvider: 'test-provider',
     providers: [{

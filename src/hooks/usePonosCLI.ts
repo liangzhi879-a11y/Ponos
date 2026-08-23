@@ -1,7 +1,7 @@
 /**
- * Communicates with YFWorking CLI via WebSocket bridge (port configured via YFW_BRIDGE_PORT env or Vite define).
+ * Communicates with Ponos CLI via WebSocket bridge (port configured via PONOS_BRIDGE_PORT env or Vite define).
  *
- *   Browser ──WebSocket──► server/bridge.mjs ──stdio──► yfworking CLI
+ *   Browser ──WebSocket──► server/bridge.mjs ──stdio──► ponos CLI
  */
 
 import { useState, useCallback, useEffect } from 'react'
@@ -226,10 +226,10 @@ function buildSendPayload(conversationId: string, prompt: string, priority?: 'no
     // 携带当前主模型：bridge 以 --model 传入 CLI，resume 时可覆盖会话内
     // 存储的旧模型，实现同一聊天中两段会话之间的无缝模型切换
     ...(activeProv?.primaryModel ? { model: activeProv.primaryModel } : {}),
-    // 携带该会话的历史压缩次数：bridge 经 spawn env YFW_HEALTH_COMPACT_COUNT 注入
+    // 携带该会话的历史压缩次数：bridge 经 spawn env PONOS_HEALTH_COMPACT_COUNT 注入
     // 内核，恢复进程内 compactCount（进程空闲回收后压缩史不丢，血条不回绿）。
     // 双数据源取 max：healthBySession 为最近健康事件快照，summaryCompactCountBySession
-    // 为压缩事件计数（yfw_summary 可能先于 yfw_health 到达，二者都可能较新）。
+    // 为压缩事件计数（ponos_summary 可能先于 ponos_health 到达，二者都可能较新）。
     ...(compactCount > 0 ? { compactCount } : {}),
     ...(priority ? { priority } : {}),
     ...(uuid ? { uuid } : {}),
@@ -285,7 +285,7 @@ function dispatchSend(conversationId: string, userContent: string, priority?: 'n
   sendPayloadWS(conversationId, payload)
 }
 
-export function useYFWCLI() {
+export function usePonosCLI() {
   const [connected, setConnected] = useState(false)
 
   // Connect on mount
@@ -575,12 +575,12 @@ function handleMessage(msg: Record<string, unknown>) {
     const type = event.type as string
     const aid = st?.assistantId
 
-    if (type === 'yfw_health') {
+    if (type === 'ponos_health') {
       // 按会话隔离存储：sid 即发送该事件的内核进程所属会话（conversationId）
       useHealthStore.getState().update(sid, event as unknown as HealthInfo)
       return
     }
-    if (type === 'yfw_summary') {
+    if (type === 'ponos_summary') {
       const s = event as Record<string, any>
       useHealthStore.getState().setSummary(sid, String(s.text ?? ''), Number(s.compactCount ?? 0))
       return
@@ -594,9 +594,9 @@ function handleMessage(msg: Record<string, unknown>) {
     }
     if (type === 'system' && event.subtype === 'init') {
       // 内核新进程启动。仅"真正的新会话"（从未运行过、无旧 sessionId）才清空健康快照：
-      // 恢复旧会话（resume）时内核经 YFW_HEALTH_COMPACT_COUNT seed 恢复了压缩史，
+      // 恢复旧会话（resume）时内核经 PONOS_HEALTH_COMPACT_COUNT seed 恢复了压缩史，
       // 水位也由首轮 transcript 全量 usage 重新测得——GUI 应保留持久化快照直接显示，
-      // 直到内核首轮 yfw_health 刷新，避免"续断点后血条瞬间回满"。
+      // 直到内核首轮 ponos_health 刷新，避免"续断点后血条瞬间回满"。
       const conv = store.conversations.find(c => c.id === sid)
       if (!conv?.sessionId) {
         useHealthStore.getState().reset(sid)
@@ -694,7 +694,7 @@ function handleMessage(msg: Record<string, unknown>) {
           // CLI 若在等待提问答案，此 result 只是当前轮次结束，不算任务完成。
           try {
             const settings = useSettingsStore.getState().settings
-            const api = (window as any).yfworkingAPI
+            const api = (window as any).ponosAPI
             if (api?.notifyTaskComplete) {
               const isErr = !!(event as any).is_error
               const raw = String((event as any).result || '')
@@ -769,7 +769,7 @@ function handleMessage(msg: Record<string, unknown>) {
       if (parsed) {
         store.setPendingQuestion(sid, parsed)
       } else {
-        console.warn('[yfw] question payload parse failed (frontend), degrading:', qdata.raw.slice(0, 160))
+        console.warn('[ponos] question payload parse failed (frontend), degrading:', qdata.raw.slice(0, 160))
         store.setPendingQuestion(sid, {
           context: qdata.raw.slice(0, 400),
           questions: [{

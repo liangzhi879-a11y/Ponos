@@ -5,7 +5,7 @@ const os = require('os')
 // Used by the renderer as a default for file browsing — works on any machine.
 const userHome = os.homedir()
 
-const yfworkingAPI = {
+const ponosAPI = {
   setTrayBehavior: (enabled) => ipcRenderer.send('app:set-tray-behavior', enabled),
   notifyTaskComplete: (payload) => ipcRenderer.invoke('app:notify-task', payload),
   setPetConfig: (config) => ipcRenderer.invoke('pet:config', config),
@@ -26,10 +26,10 @@ const yfworkingAPI = {
   userHome,
 }
 
-contextBridge.exposeInMainWorld('yfworkingAPI', yfworkingAPI)
+contextBridge.exposeInMainWorld('ponosAPI', ponosAPI)
 
 // Frameless window controls
-contextBridge.exposeInMainWorld('yfworkingWindow', {
+contextBridge.exposeInMainWorld('ponosWindow', {
   minimize: () => ipcRenderer.send('window:minimize'),
   maximizeToggle: () => ipcRenderer.send('window:maximize-toggle'),
   close: () => ipcRenderer.send('window:close'),
@@ -63,7 +63,7 @@ contextBridge.exposeInMainWorld('yfworkingWindow', {
 })
 
 // File dialogs (skill install)
-contextBridge.exposeInMainWorld('yfworkingFile', {
+contextBridge.exposeInMainWorld('ponosFile', {
   openSkillPackage: () => ipcRenderer.invoke('dialog:open-skill-package'),
 })
 
@@ -87,7 +87,7 @@ contextBridge.exposeInMainWorld('browser', {
 })
 
 // 应用内诊断工具（main 侧 diag:* ipcMain.handle 配对）
-contextBridge.exposeInMainWorld('yfwDiag', {
+contextBridge.exposeInMainWorld('ponosDiag', {
   getStatus: () => ipcRenderer.invoke('diag:get-status'),
   rerun: (id) => ipcRenderer.invoke('diag:rerun', { id }),
   rerunAll: () => ipcRenderer.invoke('diag:rerun-all'),

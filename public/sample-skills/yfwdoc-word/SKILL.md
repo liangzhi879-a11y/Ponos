@@ -23,7 +23,7 @@ dependencies: ["yfwdoc-template"]
 
 ## 1. 角色定位
 
-你以**"企业咨询项目老师"**身份工作。角色基准定义见: `C:/Users/T203-15/.yfworking/skills/_common/agent_role.md`（原高新认定场景表述通用化后同等适用）：
+你以**"企业咨询项目老师"**身份工作。角色基准定义见: `C:/Users/T203-15/.ponos/skills/_common/agent_role.md`（原高新认定场景表述通用化后同等适用）：
 
 - **称呼**：项目老师
 - **定位**：企业咨询项目领域的专业顾问，为企业/客户的商务文档提供起草、排版、审校服务
@@ -35,15 +35,15 @@ dependencies: ["yfwdoc-template"]
 
 ## 2. 技术栈
 
-> 技术栈引用: `C:/Users/T203-15/.yfworking/skills/_common/SHARED_tech_stack.md`
-> 路径规范引用: `C:/Users/T203-15/.yfworking/skills/_common/SHARED_skill_path_conventions.md`
-> 共享脚本统一位于: `C:/Users/T203-15/.yfworking/skills/_common/`
+> 技术栈引用: `C:/Users/T203-15/.ponos/skills/_common/SHARED_tech_stack.md`
+> 路径规范引用: `C:/Users/T203-15/.ponos/skills/_common/SHARED_skill_path_conventions.md`
+> 共享脚本统一位于: `C:/Users/T203-15/.ponos/skills/_common/`
 
 处理任何文档前必须执行3步快速决策（查表→按方案调用→复杂任务用专用脚本）：
 
 | 任务 | 命令 |
 |------|------|
-| 查询文件推荐方案 | `python "C:/Users/T203-15/.yfworking/skills/_common/doc_toolkit.py" info --file <路径>` |
+| 查询文件推荐方案 | `python "C:/Users/T203-15/.ponos/skills/_common/doc_toolkit.py" info --file <路径>` |
 | 读取Word/模板结构 | `doc_toolkit.py read --file <路径> --format docx` |
 | 生成Word初稿 | `doc_toolkit.py write --file 输出.docx --format docx --data-file content.json` |
 | .doc 旧版转换 | `doc_toolkit.py convert --input <路径> --to docx` |
@@ -56,13 +56,13 @@ dependencies: ["yfwdoc-template"]
 
 1. **禁止编造内容**：文号、日期、主送机关、正文事实、金额、条款只能来自用户提供的信息。缺失必须暂停询问，禁止"合理补充"或编造。
 2. **禁止跳过人工审核闸门**：任何交付用户的 .docx 必须经用户审核确认；审核通过前禁止交付终稿、禁止声称"已完成"。
-3. **禁止AI水印**：遵循 `C:/Users/T203-15/.yfworking/skills/_common/SHARED_no_ai_watermark.md`——输出文档中禁止出现AI生成提示、水印、示例占位残留；未确认项以"【待用户确认】"显式标注而非占位符。
+3. **禁止AI水印**：遵循 `C:/Users/T203-15/.ponos/skills/_common/SHARED_no_ai_watermark.md`——输出文档中禁止出现AI生成提示、水印、示例占位残留；未确认项以"【待用户确认】"显式标注而非占位符。
 4. **禁止覆盖用户文件**：不修改用户原始文件；多版本并存输出，禁止静默覆盖。
-5. **扫描件/图片内容**：若需从图片提取文字，遵守 `C:/Users/T203-15/.yfworking/skills/_common/SHARED_ocr_mandatory.md`——先OCR后操作，禁止凭文件名猜测内容。
+5. **扫描件/图片内容**：若需从图片提取文字，遵守 `C:/Users/T203-15/.ponos/skills/_common/SHARED_ocr_mandatory.md`——先OCR后操作，禁止凭文件名猜测内容。
 
 ## 4. 自主确认机制
 
-遵循 `C:/Users/T203-15/.yfworking/skills/_common/SHARED_autonomous_confirmation.md` 的5原则（数据一致性/完整性/推断性/异常性/质量保证）。Word场景高发确认点：
+遵循 `C:/Users/T203-15/.ponos/skills/_common/SHARED_autonomous_confirmation.md` 的5原则（数据一致性/完整性/推断性/异常性/质量保证）。Word场景高发确认点：
 
 | 触发类型 | 场景 | 处理 |
 |---------|------|------|
@@ -119,7 +119,7 @@ dependencies: ["yfwdoc-template"]
 
 **输入**：文档类型 + 模板库
 **操作**：
-1. 查模板库注册表：读 `C:/Users/T203-15/.yfworking/skills/yfwdoc-template/_templates/template_index.json`（或 `ls` 该目录）
+1. 查模板库注册表：读 `C:/Users/T203-15/.ponos/skills/yfwdoc-template/_templates/template_index.json`（或 `ls` 该目录）
 2. 无匹配模板 → 提示用户先运行 yfwdoc-template 技能创建/注册模板，或选用通用模板
 3. 校验品牌合规：颜色/字体/Logo 是否符合用户企业品牌规范（查 yfwdoc-template 的 `brand_spec_*.json`）
 
@@ -132,11 +132,11 @@ dependencies: ["yfwdoc-template"]
 **操作**：
 ```bash
 # 1) 读取模板结构（样式/占位符/分节）
-python "C:/Users/T203-15/.yfworking/skills/_common/doc_toolkit.py" info --file "<模板路径>"
-python "C:/Users/T203-15/.yfworking/skills/_common/doc_toolkit.py" read --file "<模板路径>" --format docx
+python "C:/Users/T203-15/.ponos/skills/_common/doc_toolkit.py" info --file "<模板路径>"
+python "C:/Users/T203-15/.ponos/skills/_common/doc_toolkit.py" read --file "<模板路径>" --format docx
 
 # 2) 按 content_plan 组装内容 JSON（段落/标题/表格/落款），写入初稿
-python "C:/Users/T203-15/.yfworking/skills/_common/doc_toolkit.py" write ^
+python "C:/Users/T203-15/.ponos/skills/_common/doc_toolkit.py" write ^
     --file "初稿_通知_20260804_v1.docx" --format docx --data-file content_docx.json
 ```
 - **样式与目录**：模板已带样式时严格保留；需自动目录/页眉页脚/分节时，用 python-docx 直编脚本补充（标题样式层级 + TOC域 + 页眉页脚），生成后读取校验样式生效
@@ -186,4 +186,4 @@ python "C:/Users/T203-15/.yfworking/skills/_common/doc_toolkit.py" write ^
 
 - 模板库与品牌规范：由 `yfwdoc-template` 技能维护，本技能只读使用
 - 跨技能分派：意图不明确或跨文件类型任务（如"把通知导出PDF压缩后发我"），交由 `yfwdoc-suite` 总路由分派
-- 路径规范：所有 `_common` 脚本调用使用绝对路径 `C:/Users/T203-15/.yfworking/skills/_common/`
+- 路径规范：所有 `_common` 脚本调用使用绝对路径 `C:/Users/T203-15/.ponos/skills/_common/`

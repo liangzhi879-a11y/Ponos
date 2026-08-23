@@ -17,9 +17,9 @@ import { loadConversationMessages as loadTranscriptMessages } from '@/lib/transc
 //   1. 解析失败 → 先把原始损坏值备份到 CORRUPT_BACKUP_KEY（绝不静默丢弃）；
 //   2. 剥离控制字符后重试解析，成功则写回修复后的值；
 //   3. 解析成功但内容仍带控制字符 → 深清洗后写回，防止脏字节再次落地。
-const CORRUPT_BACKUP_KEY = 'yfworking-chat-corrupt-backup'
+const CORRUPT_BACKUP_KEY = 'ponos-chat-corrupt-backup'
 // 校验通过后的镜像副本：主值再损坏时回退到这里，保证历史永不静默丢失
-const MIRROR_KEY = 'yfworking-chat-mirror'
+const MIRROR_KEY = 'ponos-chat-mirror'
 
 // 模块级冲刷钩子：resilientChatStorage 闭包内赋值，供 importLegacyChatState 调用。
 // 直接暴露 flush 会破坏"持久化只经 store"的封装；外部一律通过 store action 进入。
@@ -83,13 +83,13 @@ const MIRROR_MAX_CHARS = 30 * 1024 * 1024
 // 背景：v1 把全部会话消息（可达 41MB）塞进单一 localStorage 键，启动全量 parse、
 // 每次写入全量序列化（372ms+），是整机卡死根因。参考 claude-code / deepseek-harness
 // 的会话系统设计（磁盘 append-only JSONL + header 列表 + 摘要压缩），v2 改为：
-//   1. 消息全文权威源 = 内核 transcript（~/.yfworking/projects/<cwd>/<sessionId>.jsonl，
+//   1. 消息全文权威源 = 内核 transcript（~/.ponos/projects/<cwd>/<sessionId>.jsonl，
 //      内核已 append-only 写入），GUI 不再持久化消息体；
 //   2. localStorage 只存会话元数据索引（目标 <200KB），启动/切换时按需从 bridge
 //      /transcript/load 拉取激活会话消息（展示级裁剪）；
 //   3. 导入的无 transcript 会话（mergeImportedChats / importLegacyChatState）消息
 //      兜底存 EXT_KEY_PREFIX + conversationId 分键，加载时与 transcript 合并。
-const EXT_KEY_PREFIX = 'yfworking-chat-ext-'
+const EXT_KEY_PREFIX = 'ponos-chat-ext-'
 // 内存最多驻留的已加载会话数（流式会话与激活会话豁免），超出卸载最旧
 const MAX_LOADED_CONVERSATIONS = 3
 
@@ -1134,11 +1134,11 @@ export const useChatStore = create<ChatState>()(
       }),
     }),
     {
-      name: 'yfworking-chat',
+      name: 'ponos-chat',
       storage: resilientChatStorage(),
       version: 2,
       // v1 → v2 迁移（2026-08-17）：消息体剥离（权威源 = 内核 transcript），收集 sessionIds，
-      // 旧 41MB 大键备份为 yfworking-chat-v1 供用户确认导出后清理，绝不静默删除。
+      // 旧 41MB 大键备份为 ponos-chat-v1 供用户确认导出后清理，绝不静默删除。
       migrate: (persisted, version) => {
         if (version === 2) {
           // v2 数据可能因 partialize 不存 messages 而缺字段（旧版写入/损坏），
@@ -1147,8 +1147,8 @@ export const useChatStore = create<ChatState>()(
           return { ...st, conversations: sanitizeConversations(st.conversations) }
         }
         try {
-          const raw = window.localStorage.getItem('yfworking-chat')
-          if (raw) window.localStorage.setItem('yfworking-chat-v1', raw)
+          const raw = window.localStorage.getItem('ponos-chat')
+          if (raw) window.localStorage.setItem('ponos-chat-v1', raw)
         } catch { /* ignore */ }
         const st = (persisted as any) || {}
         const convs = Array.isArray(st.conversations) ? st.conversations : []

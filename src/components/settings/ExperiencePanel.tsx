@@ -6,9 +6,9 @@ import { fetchBridgeConfig, saveBridgeConfig } from '@/lib/config'
 import { cn, CHAT_STORAGE_KEY } from '@/lib/utils'
 import type { ExperienceTheme } from '@/types'
 
-// preload 注入的 window.yfworkingAPI 仅存在于 Electron 渲染进程；
+// preload 注入的 window.ponosAPI 仅存在于 Electron 渲染进程；
 // dev 模式（纯 Vite、无 preload）下为 undefined，所有调用点必须守卫，避免挂载即崩溃。
-const api = window.yfworkingAPI
+const api = window.ponosAPI
 
 const TYPE_LABELS: Record<string, string> = {
   personal: '个人记忆', skill_exp: '技能经验库', skills: '技能库',
@@ -75,7 +75,7 @@ export function ExperiencePanel() {
           个人经验
         </h3>
         <p className="text-xs text-tertiary mb-4">
-          全自动静默沉积于 ~/.yfworking/memory/personal/，新会话按相关性注入（上限 {injectMax} 字符）。共 {themes.length} 个主题 / {totalEntries} 条经验。
+          全自动静默沉积于 ~/.ponos/memory/personal/，新会话按相关性注入（上限 {injectMax} 字符）。共 {themes.length} 个主题 / {totalEntries} 条经验。
         </p>
 
         {/* 注入设置 */}
@@ -184,7 +184,7 @@ export function ExperiencePanel() {
                 </div>
               )
             })}
-            {filtered.length === 0 && <div className="p-4 text-center text-xs text-tertiary">暂无经验，多用 YFWorking 工作会自动沉淀</div>}
+            {filtered.length === 0 && <div className="p-4 text-center text-xs text-tertiary">暂无经验，多用 Ponos 工作会自动沉淀</div>}
           </div>
         </ScrollArea>
       </div>

@@ -1,6 +1,6 @@
-// YFW-turbo 健康监控（docs/superpowers/specs/2026-08-20-yfw-turbo-inner-core-design.md §6/§6.3）
+// Ponos-turbo 健康监控（docs/superpowers/specs/2026-08-20-ponos-turbo-inner-core-design.md §6/§6.3）
 // ---------------------------------------------------------------------------
-// 纯计算 + 去抖状态机。消费 engine 每轮尾部 turnStats；产出 yfw_health / yfw_summary。
+// 纯计算 + 去抖状态机。消费 engine 每轮尾部 turnStats；产出 ponos_health / ponos_summary。
 // 多因子加权（压缩次数/链深度/剩余水位/剩余轮数/失败/冗余率/分区失衡），模型自适应。
 // 全程 try/catch 静默降级，绝不影响主流程。LLM-as-Judge 默认关闭（可选调用）。
 
@@ -49,12 +49,12 @@ export function shouldJudge({ tier, judgeEnabled = false, lastJudgeAt = 0, now =
 }
 
 export function createHealth({ wire, model = '', contextWindow = 200_000, env = process.env }) {
-  // YFW_HEALTH_COMPACT_COUNT：bridge 空闲回收后 resume 时注入历史压缩次数
+  // PONOS_HEALTH_COMPACT_COUNT：bridge 空闲回收后 resume 时注入历史压缩次数
   // （进程内变量随回收清零，不恢复则 GUI 血条压缩史丢失回绿）。session 从
   // transcript 恢复的 compactCount 走 record() 取 max 兜底，env 为双保险 seed。
-  let compactCount = Math.max(0, Number(env.YFW_HEALTH_COMPACT_COUNT) || 0)
+  let compactCount = Math.max(0, Number(env.PONOS_HEALTH_COMPACT_COUNT) || 0)
   let lastSummary = ''
-  // 初始即绿：green 档不发 yfw_health（首轮即绿不打扰；档位转黄/红时才通知）
+  // 初始即绿：green 档不发 ponos_health（首轮即绿不打扰；档位转黄/红时才通知）
   let lastTier = 'green'
   let lastJudgeAt = 0
   const recent = [] // 近 10 轮 turnStats

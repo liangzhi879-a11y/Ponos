@@ -3,7 +3,7 @@
 import os, re, shutil, json
 
 SRC_BASE = r"C:/Users/T203-15/.trae-cn/skills/enterprise_project_skills"
-DST_BASE = r"C:/Users/T203-15/Desktop/2023guogao/{{YFW_SKILLS}}"
+DST_BASE = r"C:/Users/T203-15/Desktop/2023guogao/{{PONOS_SKILLS}}"
 
 # Skill mapping: (source_dir, dest_filename, triggers)
 SKILLS = [
@@ -31,11 +31,11 @@ SKILLS = [
 ]
 
 PATH_REPLACEMENTS = [
-    (r"C:\\Users\\T203-15\\.trae-cn\\skills\\enterprise_project_skills\\_common\\", "{{YFW_SKILLS}}/_common/"),
-    (r"C:\\Users\\T203-15\\.trae-cn\\skills\\enterprise_project_skills\\", "{{YFW_SKILLS}}/"),
-    (r"C:\\Users\\T203-15\\.trae-cn\\skills\\", "{{YFW_SKILLS}}/"),
-    (r".trae/skills/_common/", "{{YFW_SKILLS}}/_common/"),
-    (r".trae/skills/", "{{YFW_SKILLS}}/"),
+    (r"C:\\Users\\T203-15\\.trae-cn\\skills\\enterprise_project_skills\\_common\\", "{{PONOS_SKILLS}}/_common/"),
+    (r"C:\\Users\\T203-15\\.trae-cn\\skills\\enterprise_project_skills\\", "{{PONOS_SKILLS}}/"),
+    (r"C:\\Users\\T203-15\\.trae-cn\\skills\\", "{{PONOS_SKILLS}}/"),
+    (r".trae/skills/_common/", "{{PONOS_SKILLS}}/_common/"),
+    (r".trae/skills/", "{{PONOS_SKILLS}}/"),
     (r".trae/", ".claude/"),
     # Windows line continuation
     (r" ^\n", r" \\\n"),
@@ -81,12 +81,12 @@ def apply_path_replacements(content):
     # Also handle the case where absolute Windows paths use different separators
     content = re.sub(
         r'C:\\Users\\T203-15\\.trae-cn\\skills\\enterprise_project_skills\\_common\\',
-        '{{YFW_SKILLS}}/_common/',
+        '{{PONOS_SKILLS}}/_common/',
         content
     )
     content = re.sub(
         r'C:\\Users\\T203-15\\.trae-cn\\skills\\enterprise_project_skills\\',
-        '{{YFW_SKILLS}}/',
+        '{{PONOS_SKILLS}}/',
         content
     )
     return content

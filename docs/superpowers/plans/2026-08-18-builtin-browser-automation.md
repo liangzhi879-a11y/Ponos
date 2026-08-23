@@ -15,7 +15,7 @@
 - 动作参数一律用 ref 索引（执行器预计算稳定选择器），模型不写 CSS 选择器。
 - 安全：域名白名单（默认 `*.gov.cn` 等，白名单外 goto 拒绝并需用户授权）；快照对身份证/手机号/账号脱敏；破解类（OCR 打码/指纹伪装/绕过授权/高频压测）始终禁止；拟真兜底 opt-in（默认关、人工闸门、日志标注）。
 - 单动作超时 30s；`pause_for_human` 不超时；工具整体 60s。
-- 测试：`npm test`（server/*.test.mjs 与 electron/*.test.mjs 并入）；typecheck 必须过；改动 GUI 需 `npm run build` + `cp -r dist/. release/YFWorking_ms92cd6u/dist/`；改动内核需在 `yfw-kernel/claude-code` 下 `bun scripts/build-bundle.ts --minify` + `cp dist/cli.mjs` 到 `release/YFWorking_ms92cd6u/kernel/cli.mjs` + grep 验证产物；重启/重载 live app 前必须先征得用户同意。
+- 测试：`npm test`（server/*.test.mjs 与 electron/*.test.mjs 并入）；typecheck 必须过；改动 GUI 需 `npm run build` + `cp -r dist/. release/Ponos_ms92cd6u/dist/`；改动内核需在 `ponos-kernel/claude-code` 下 `bun scripts/build-bundle.ts --minify` + `cp dist/cli.mjs` 到 `release/Ponos_ms92cd6u/kernel/cli.mjs` + grep 验证产物；重启/重载 live app 前必须先征得用户同意。
 - 提交风格：`feat(browser): ...` / `fix(browser): ...`（参照既有 `feat(doubao)` 风格）。
 
 ---
@@ -512,8 +512,8 @@ git commit -m "feat(browser): 主进程浏览器执行器——窗口/CDP 可信
 ### Task 4: 内核 BrowserTool + print.ts browser_response/browser_pause 处理
 
 **Files:**
-- Create: `yfw-kernel/claude-code/src/tools/BrowserTool/`（目录 + 实现 .ts，参照 `src/tools/AskUserQuestionTool/` 目录结构）
-- Modify: `yfw-kernel/claude-code/src/cli/print.ts`（import + `buildAllTools` 的 `tools` 基础数组注册 + control_request switch 加 `browser_response`/`browser_pause` case）
+- Create: `ponos-kernel/claude-code/src/tools/BrowserTool/`（目录 + 实现 .ts，参照 `src/tools/AskUserQuestionTool/` 目录结构）
+- Modify: `ponos-kernel/claude-code/src/cli/print.ts`（import + `buildAllTools` 的 `tools` 基础数组注册 + control_request switch 加 `browser_response`/`browser_pause` case）
 
 **Interfaces:**
 - Consumes: Task 2 协议（bridge_request 出 / browser_response 入）
@@ -528,7 +528,7 @@ git commit -m "feat(browser): 主进程浏览器执行器——窗口/CDP 可信
 
 - [ ] **Step 1: 先写内核侧单元测试（browser 工具协议封装）**
 
-参照既有内核测试结构（`yfw-kernel/claude-code` 下查找 browser-agnostic 的纯协议模块测试模式，如 `src/utils/*.test.ts`）。把"bridge_request 构造 + browser_response 解析"抽成纯函数模块 `src/tools/BrowserTool/protocol.ts`：
+参照既有内核测试结构（`ponos-kernel/claude-code` 下查找 browser-agnostic 的纯协议模块测试模式，如 `src/utils/*.test.ts`）。把"bridge_request 构造 + browser_response 解析"抽成纯函数模块 `src/tools/BrowserTool/protocol.ts`：
 
 ```ts
 export interface BrowserRequest { type: 'bridge_request'; requestId: string; route: 'browser'; payload: BrowserPayload }
@@ -555,7 +555,7 @@ test('isBrowserResponse 识别 browser_response', () => {
 
 - [ ] **Step 2: 运行确认失败**
 
-Run（在 `yfw-kernel/claude-code`）：`bun test src/tools/BrowserTool/protocol.test.ts`
+Run（在 `ponos-kernel/claude-code`）：`bun test src/tools/BrowserTool/protocol.test.ts`
 Expected: FAIL
 
 - [ ] **Step 3: 实现 protocol.ts + BrowserTool**
@@ -609,19 +609,19 @@ export const BrowserTool: Tool = {
 
 - [ ] **Step 5: 内核测试 + 重新构建 + 同步 release**
 
-Run（`yfw-kernel/claude-code`）：`bun test src/tools/BrowserTool/protocol.test.ts` 通过后：
+Run（`ponos-kernel/claude-code`）：`bun test src/tools/BrowserTool/protocol.test.ts` 通过后：
 ```bash
 bun scripts/build-bundle.ts --minify
-cp dist/cli.mjs ../../release/YFWorking_ms92cd6u/kernel/cli.mjs
-grep -c "browser_response" ../../release/YFWorking_ms92cd6u/kernel/cli.mjs   # 期望 ≥1
+cp dist/cli.mjs ../../release/Ponos_ms92cd6u/kernel/cli.mjs
+grep -c "browser_response" ../../release/Ponos_ms92cd6u/kernel/cli.mjs   # 期望 ≥1
 ```
-（构建产物路径按仓库实际：`release/YFWorking_ms92cd6u/kernel/`。）
+（构建产物路径按仓库实际：`release/Ponos_ms92cd6u/kernel/`。）
 
 - [ ] **Step 6: 提交**
 
 ```bash
 cd ../../..  # 仓库根
-git add yfw-kernel/claude-code/src/tools/BrowserTool/ yfw-kernel/claude-code/src/cli/print.ts
+git add ponos-kernel/claude-code/src/tools/BrowserTool/ ponos-kernel/claude-code/src/cli/print.ts
 git commit -m "feat(browser): 内核 browser 工具——bridge_request 出/browser_response 入 + 人工接管挂起"
 ```
 
@@ -631,7 +631,7 @@ git commit -m "feat(browser): 内核 browser 工具——bridge_request 出/brow
 
 **Files:**
 - Create: `src/components/browser/BrowserStatusBar.tsx`
-- Modify: `src/stores/browserStore.ts`（新建）、`src/hooks/useYFWCLI.ts`（browser:event 处理）、`src/components/layout/*`（挂载状态条）、`src/i18n/translations/zh-CN.ts` + `en-US.ts`、`src/types/index.ts`（BrowserEvent 类型）
+- Modify: `src/stores/browserStore.ts`（新建）、`src/hooks/usePonosCLI.ts`（browser:event 处理）、`src/components/layout/*`（挂载状态条）、`src/i18n/translations/zh-CN.ts` + `en-US.ts`、`src/types/index.ts`（BrowserEvent 类型）
 
 **Interfaces:**
 - Consumes: `browser:event`（bridge 广播，字段：`{ kind:'action_start'|'action_end'|'paused'|'human_done'|'imitation'|'snapshot', action?, url?, snapshotThumb? }`）；IPC `window.browser`（Task 3 preload）
@@ -661,7 +661,7 @@ interface BrowserState {
 }
 ```
 
-`src/hooks/useYFWCLI.ts` handleMessage 追加（`msg.type === 'browser:event'` 分支，参照 `type === 'event'` 处理处）：
+`src/hooks/usePonosCLI.ts` handleMessage 追加（`msg.type === 'browser:event'` 分支，参照 `type === 'event'` 处理处）：
 ```ts
 if (msg.type === 'browser:event') {
   useBrowserStore.getState().setEvent(msg.event as BrowserEvent)
@@ -675,28 +675,28 @@ if (msg.type === 'browser:event') {
 - 订阅 `useBrowserStore`；`current === null` 时返回 null
 - 渲染：`当前操作：{action} · {url}` + 徽标（humanMode → `人工接管中`；imitation → `拟真模式`）+ 按钮：
   - `打开窗口` → `window.browser?.openWindow(activeConversationId)`
-  - `暂停`/`继续` → 经 bridge 控制通道：复用 `useYFWCLI` 暴露的 `browserControl(convId, 'pause'|'resume')`（发 `{type:'browser_control', sessionId: convId, command}`）
+  - `暂停`/`继续` → 经 bridge 控制通道：复用 `usePonosCLI` 暴露的 `browserControl(convId, 'pause'|'resume')`（发 `{type:'browser_control', sessionId: convId, command}`）
   - `清空会话` → `window.browser?.clearSession(convId)`（二次确认）
 - 挂载：在 ChatWindow 消息区上方（参照 RunningAgentsBar 挂载方式），样式沿用玻璃主题 tokens（bg-elevated/border-brand-500/30，遵守"玻璃面板质感维护"偏好）。
 
 - [ ] **Step 3: i18n + 接线**
 
 - `zh-CN.ts`/`en-US.ts` 增加：`browser.*`（打开窗口/暂停/继续/清空会话/人工接管中/拟真模式/当前操作）。
-- `useYFWCLI` 返回值增加 `browserControl`。
+- `usePonosCLI` 返回值增加 `browserControl`。
 
 - [ ] **Step 4: 构建验证 + 同步 release**
 
 Run: `npm run typecheck && npm run build`
 Expected: PASS，然后：
 ```bash
-cp -r dist/. release/YFWorking_ms92cd6u/dist/
-grep -c "browser:event\|BrowserStatusBar" release/YFWorking_ms92cd6u/dist/assets/index-*.js   # 期望 ≥1（新 bundle）
+cp -r dist/. release/Ponos_ms92cd6u/dist/
+grep -c "browser:event\|BrowserStatusBar" release/Ponos_ms92cd6u/dist/assets/index-*.js   # 期望 ≥1（新 bundle）
 ```
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/components/browser/ src/stores/browserStore.ts src/hooks/useYFWCLI.ts src/types/index.ts src/i18n/translations/zh-CN.ts src/i18n/translations/en-US.ts
+git add src/components/browser/ src/stores/browserStore.ts src/hooks/usePonosCLI.ts src/types/index.ts src/i18n/translations/zh-CN.ts src/i18n/translations/en-US.ts
 git commit -m "feat(browser): GUI 精简状态条 + browser:event 订阅 + 暂停/继续控制通道"
 ```
 
@@ -737,7 +737,7 @@ git add -A && git commit -m "fix(browser): 核验端到端验收修复"
 ### Task 7: 拟真兜底模式（opt-in）
 
 **Files:**
-- Modify: `electron/browser-executor.cjs`（imitation 输入模式）、`yfw-kernel/claude-code/src/tools/BrowserTool/`（mode 传递）、`src/components/browser/BrowserStatusBar.tsx`（拟真模式确认弹窗）、技能红线文档
+- Modify: `electron/browser-executor.cjs`（imitation 输入模式）、`ponos-kernel/claude-code/src/tools/BrowserTool/`（mode 传递）、`src/components/browser/BrowserStatusBar.tsx`（拟真模式确认弹窗）、技能红线文档
 
 **Interfaces:**
 - Consumes: 既有 browser 链路；`mode` 参数（Task 4 schema 已预留）
@@ -770,12 +770,12 @@ async typeHuman(win, ref, text) {
 
 - [ ] **Step 3: 红线文档同步**
 
-Modify `C:/Users/T203-15/.yfworking/skills/yfwweb-scrape/SKILL.md` 红线 #3：
+Modify `C:/Users/T203-15/.ponos/skills/yfwweb-scrape/SKILL.md` 红线 #3：
 原文"禁止模拟真人行为规避反爬（如模拟鼠标轨迹）"改为"禁止破解类规避（验证码 OCR/滑块自动破解、指纹伪装、绕过站点授权、高频并发压测）；已授权站点的行为拟真仅限内置浏览器兜底模式，默认关闭、人工确认后开启、操作日志标注拟真模式"。`yfwweb-suite`/`yfwweb-form` 如有相同红线一并同步。
 
 - [ ] **Step 4: 构建同步 + 测试**
 
-GUI：`npm run typecheck && npm run build && cp -r dist/. release/YFWorking_ms92cd6u/dist/`；内核：重建 + cp + grep 验证。`npm test` 全绿。
+GUI：`npm run typecheck && npm run build && cp -r dist/. release/Ponos_ms92cd6u/dist/`；内核：重建 + cp + grep 验证。`npm test` 全绿。
 
 - [ ] **Step 5: 提交**
 

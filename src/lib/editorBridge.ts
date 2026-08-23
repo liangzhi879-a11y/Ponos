@@ -10,7 +10,7 @@ export function isEditorWindow(): boolean {
 // 主应用界面：请求打开/聚焦原生编辑器窗口并下发文件。
 // bounds 携带主窗口持久化的 editorRect 缓存，主进程校验后应用。
 export function openFileInEditor(path: string, name: string): void {
-  const api = (window as any).yfworkingAPI
+  const api = (window as any).ponosAPI
   if (!api?.editorOpenFile) return
   const rect = useUIStore.getState().editorRect
   api.editorOpenFile({ path, name, bounds: rect })

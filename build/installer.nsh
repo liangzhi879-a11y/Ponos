@@ -1,6 +1,6 @@
 ; ============================================================
-; YFWorking 自定义 NSIS 脚本 — 更新安装支持
-; 识别系统已安装的 YFWorking → 比较版本 → 弹窗确认 → 覆盖更新安装（保留用户数据）
+; Ponos 自定义 NSIS 脚本 — 更新安装支持
+; 识别系统已安装的 Ponos → 比较版本 → 弹窗确认 → 覆盖更新安装（保留用户数据）
 ; 通过 electron-builder.yml → nsis.include 注入到 electron-builder 模板
 ;
 ; 三档行为：
@@ -33,7 +33,7 @@
 !endif
 
 !macro customInit
-  ; ---- 1. 检测系统是否已安装 YFWorking ----
+  ; ---- 1. 检测系统是否已安装 Ponos ----
   ; INSTALL_REGISTRY_KEY = Software\<APP_GUID>，由 electron-builder 在 install 时写入 InstallLocation
   ReadRegStr $R0 SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" InstallLocation
   ${if} $R0 != ""
@@ -114,17 +114,17 @@
         ${if} $R2 == "1"
           ; 降级：MB_DEFBUTTON2 让【否】成为默认按钮，防止误点
           MessageBox MB_YESNO|MB_ICONEXCLAMATION|MB_DEFBUTTON2 \
-            "检测到当前已安装 YFWorking 版本（$R1）高于本次安装包版本（${VERSION}）。$\r$\n$\r$\n继续将把现有安装覆盖为较低版本 ${VERSION}，并保留您的数据与设置。$\r$\n$\r$\n点击【是】继续降级，点击【否】退出安装。" \
+            "检测到当前已安装 Ponos 版本（$R1）高于本次安装包版本（${VERSION}）。$\r$\n$\r$\n继续将把现有安装覆盖为较低版本 ${VERSION}，并保留您的数据与设置。$\r$\n$\r$\n点击【是】继续降级，点击【否】退出安装。" \
             IDYES lbl_continue_upgrade
         ${elseif} $R2 == "unknown"
           ; 版本号读取失败（可能来自旧版或异常安装）
           MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON1 \
-            "检测到系统已安装 YFWorking，但无法读取其版本号。$\r$\n$\r$\n本次安装将覆盖现有文件并保留您的数据与设置。$\r$\n$\r$\n点击【是】继续，点击【否】退出安装。" \
+            "检测到系统已安装 Ponos，但无法读取其版本号。$\r$\n$\r$\n本次安装将覆盖现有文件并保留您的数据与设置。$\r$\n$\r$\n点击【是】继续，点击【否】退出安装。" \
             IDYES lbl_continue_upgrade
         ${else}
           ; $R2 == "-1"，升级
           MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON1 \
-            "检测到系统已安装 YFWorking 版本：$R1$\r$\n$\r$\n本次将升级到 ${VERSION} 并保留您的数据与设置。$\r$\n$\r$\n点击【是】继续升级，点击【否】退出安装。" \
+            "检测到系统已安装 Ponos 版本：$R1$\r$\n$\r$\n本次将升级到 ${VERSION} 并保留您的数据与设置。$\r$\n$\r$\n点击【是】继续升级，点击【否】退出安装。" \
             IDYES lbl_continue_upgrade
         ${endIf}
         Quit
@@ -152,7 +152,7 @@
       StrCpy $installToolsPack "0"
 
       MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON1 \
-        "是否同时安装技能包（66 个技能）？$\r$\n$\r$\n技能包包含全部申报、文档处理、浏览器自动化等 66 个技能，安装到您的用户技能库（~\.yfworking\skills）。已有内容不会被覆盖（仅新增/更新的文件生效）。$\r$\n$\r$\n点击【是】安装技能包，点击【否】跳过。" \
+        "是否同时安装技能包（66 个技能）？$\r$\n$\r$\n技能包包含全部申报、文档处理、浏览器自动化等 66 个技能，安装到您的用户技能库（~\.ponos\skills）。已有内容不会被覆盖（仅新增/更新的文件生效）。$\r$\n$\r$\n点击【是】安装技能包，点击【否】跳过。" \
         IDYES lbl_skillpack_yes
       Goto lbl_skillpack_done
       lbl_skillpack_yes:
@@ -160,7 +160,7 @@
       lbl_skillpack_done:
 
       MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON1 \
-        "是否同时安装内置 Agents 模板（11 个专家代理）？$\r$\n$\r$\nAgents 包含材料撰写、表格处理、审计核对、申报打包、文档处理等专业代理模板，安装到您的用户代理库（~\.yfworking\agents）。已有内容不会被覆盖。$\r$\n$\r$\n点击【是】安装 Agents，点击【否】跳过。" \
+        "是否同时安装内置 Agents 模板（11 个专家代理）？$\r$\n$\r$\nAgents 包含材料撰写、表格处理、审计核对、申报打包、文档处理等专业代理模板，安装到您的用户代理库（~\.ponos\agents）。已有内容不会被覆盖。$\r$\n$\r$\n点击【是】安装 Agents，点击【否】跳过。" \
         IDYES lbl_agentpack_yes
       Goto lbl_agentpack_done
       lbl_agentpack_yes:
@@ -168,7 +168,7 @@
       lbl_agentpack_done:
 
       MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON1 \
-        "是否同时安装全局记忆 starter 模板（7 个主题）？$\r$\n$\r$\n全局记忆包含 code-style / communication / workflow / finance / office-docs / policy / project-application 共 7 个主题的空白 starter，安装到您的用户记忆库（~\.yfworking\memory\personal）。已有内容不会被覆盖。$\r$\n$\r$\n点击【是】安装 starter，点击【否】跳过。" \
+        "是否同时安装全局记忆 starter 模板（7 个主题）？$\r$\n$\r$\n全局记忆包含 code-style / communication / workflow / finance / office-docs / policy / project-application 共 7 个主题的空白 starter，安装到您的用户记忆库（~\.ponos\memory\personal）。已有内容不会被覆盖。$\r$\n$\r$\n点击【是】安装 starter，点击【否】跳过。" \
         IDYES lbl_memorypack_yes
       Goto lbl_memorypack_done
       lbl_memorypack_yes:
@@ -176,7 +176,7 @@
       lbl_memorypack_done:
 
       MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON1 \
-        "是否同时安装内置 CLI 工具（yfw-helper 等基础工具）？$\r$\n$\r$\n内置工具包含 yfw-helper（文件批量 hash / 重命名 / 统计等），安装到您的用户工具库（~\.yfworking\tools）。$\r$\n$\r$\n点击【是】安装内置工具，点击【否】跳过。" \
+        "是否同时安装内置 CLI 工具（ponos-helper 等基础工具）？$\r$\n$\r$\n内置工具包含 ponos-helper（文件批量 hash / 重命名 / 统计等），安装到您的用户工具库（~\.ponos\tools）。$\r$\n$\r$\n点击【是】安装内置工具，点击【否】跳过。" \
         IDYES lbl_toolspack_yes
       Goto lbl_toolspack_done
       lbl_toolspack_yes:
@@ -189,20 +189,20 @@
 ; ============================================================
 ; 安装阶段：将可选技能包从安装目录复制到用户技能库
 ; 源：$INSTDIR\resources\runtime\skills（extraResources 已随安装包携带）
-; 目标：%USERPROFILE%\.yfworking\skills
+; 目标：%USERPROFILE%\.ponos\skills
 ; 幂等：marker（.skillpack.json）存在则跳过，保留用户后续定制。
 ; ============================================================
 !ifndef BUILD_UNINSTALLER
 !macro customInstall
   ${if} $installSkillsPack == "1"
-    StrCpy $skillTargetDir "$%USERPROFILE%\.yfworking\skills"
+    StrCpy $skillTargetDir "$%USERPROFILE%\.ponos\skills"
     ${if} $skillTargetDir != ""
       CreateDirectory "$skillTargetDir"
       ; /E 递归含空目录 /I 目标视为目录 /D 仅复制日期更新的（不覆盖用户新改） /Y 覆盖只读
       ExecWait 'cmd /c xcopy /E /I /D /Y "$INSTDIR\resources\runtime\skills\*.*" "$skillTargetDir\"' $skillCopyExit
       ${if} $skillCopyExit == 0
         FileOpen $skillMarkerH "$skillTargetDir\.skillpack.json" w
-        FileWrite $skillMarkerH '{"installedBy":"YFWorking ${VERSION}","installedAt":"${__DATE__}","skills":66,"deployedCount":66}'
+        FileWrite $skillMarkerH '{"installedBy":"Ponos ${VERSION}","installedAt":"${__DATE__}","skills":66,"deployedCount":66}'
         FileClose $skillMarkerH
       ${endIf}
     ${endIf}
@@ -210,16 +210,16 @@
 
   ; ---- Agents 部署 ----
   ; 源：$INSTDIR\resources\runtime\agents（extraResources 已随安装包携带）
-  ; 目标：%USERPROFILE%\.yfworking\agents
+  ; 目标：%USERPROFILE%\.ponos\agents
   ; 用户已确认要安装：xcopy /D 保留用户自定义内容；marker 记录部署版本。
   ${if} $installAgentsPack == "1"
-    StrCpy $agentsTargetDir "$%USERPROFILE%\.yfworking\agents"
+    StrCpy $agentsTargetDir "$%USERPROFILE%\.ponos\agents"
     ${if} $agentsTargetDir != ""
       CreateDirectory "$agentsTargetDir"
       ExecWait 'cmd /c xcopy /E /I /D /Y "$INSTDIR\resources\runtime\agents\*.*" "$agentsTargetDir\"' $agentsCopyExit
       ${if} $agentsCopyExit == 0
         FileOpen $agentsMarkerH "$agentsTargetDir\.agents-pack.json" w
-        FileWrite $agentsMarkerH '{"installedBy":"YFWorking ${VERSION}","installedAt":"${__DATE__}","agents":11,"deployedCount":11}'
+        FileWrite $agentsMarkerH '{"installedBy":"Ponos ${VERSION}","installedAt":"${__DATE__}","agents":11,"deployedCount":11}'
         FileClose $agentsMarkerH
       ${endIf}
     ${endIf}
@@ -227,16 +227,16 @@
 
   ; ---- Memory 部署 ----
   ; 源：$INSTDIR\resources\runtime\memory（extraResources 已随安装包携带）
-  ; 目标：%USERPROFILE%\.yfworking\memory
+  ; 目标：%USERPROFILE%\.ponos\memory
   ; 用户已确认：xcopy /D 仅覆盖日期更新的文件（starter 模板不会被用户内容覆盖）。
   ${if} $installMemoryPack == "1"
-    StrCpy $memoryTargetDir "$%USERPROFILE%\.yfworking\memory"
+    StrCpy $memoryTargetDir "$%USERPROFILE%\.ponos\memory"
     ${if} $memoryTargetDir != ""
       CreateDirectory "$memoryTargetDir"
       ExecWait 'cmd /c xcopy /E /I /D /Y "$INSTDIR\resources\runtime\memory\*.*" "$memoryTargetDir\"' $memoryCopyExit
       ${if} $memoryCopyExit == 0
         FileOpen $memoryMarkerH "$memoryTargetDir\.memory-pack.json" w
-        FileWrite $memoryMarkerH '{"installedBy":"YFWorking ${VERSION}","installedAt":"${__DATE__}","themes":7,"deployedCount":7}'
+        FileWrite $memoryMarkerH '{"installedBy":"Ponos ${VERSION}","installedAt":"${__DATE__}","themes":7,"deployedCount":7}'
         FileClose $memoryMarkerH
       ${endIf}
     ${endIf}
@@ -244,16 +244,16 @@
 
   ; ---- Tools 部署 ----
   ; 源：$INSTDIR\resources\runtime\tools（extraResources 已随安装包携带）
-  ; 目标：%USERPROFILE%\.yfworking\tools
+  ; 目标：%USERPROFILE%\.ponos\tools
   ; 用户已确认：xcopy /D 保留用户后续添加的工具。
   ${if} $installToolsPack == "1"
-    StrCpy $toolsTargetDir "$%USERPROFILE%\.yfworking\tools"
+    StrCpy $toolsTargetDir "$%USERPROFILE%\.ponos\tools"
     ${if} $toolsTargetDir != ""
       CreateDirectory "$toolsTargetDir"
       ExecWait 'cmd /c xcopy /E /I /D /Y "$INSTDIR\resources\runtime\tools\*.*" "$toolsTargetDir\"' $toolsCopyExit
       ${if} $toolsCopyExit == 0
         FileOpen $toolsMarkerH "$toolsTargetDir\.tools-pack.json" w
-        FileWrite $toolsMarkerH '{"installedBy":"YFWorking ${VERSION}","installedAt":"${__DATE__}","tools":1,"deployedCount":1}'
+        FileWrite $toolsMarkerH '{"installedBy":"Ponos ${VERSION}","installedAt":"${__DATE__}","tools":1,"deployedCount":1}'
         FileClose $toolsMarkerH
       ${endIf}
     ${endIf}

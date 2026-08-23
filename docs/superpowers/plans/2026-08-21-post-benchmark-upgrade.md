@@ -1,14 +1,14 @@
 # P8 评测后优化与升级方案（Post-Benchmark Upgrade）
 
 > 目的：P7 全量横评（12/12 pass，零退化）后，针对评测暴露的**工具调用效率差距**、**评测平台治理缺口**、**超时机制误伤风险** 制定下一轮优化与升级方案。机制对照参考成熟项目源码（claude-code / pi / deepseek-harness）。
-> 权威来源：kernel/（yfw 内核）、benchmark/（评测平台）、docs/superpowers/plans/2026-08-21-benchmark-regression.md（P7 结果）、vendors/（成熟项目源码对照）。
+> 权威来源：kernel/（ponos 内核）、benchmark/（评测平台）、docs/superpowers/plans/2026-08-21-benchmark-regression.md（P7 结果）、vendors/（成熟项目源码对照）。
 > 更新日期：2026-08-21
 
 ---
 
 ## 1. 评测收尾现状与瓶颈
 
-P7 全量横评结论（yfw × T001-T006 + SWE001-006，deepseek-v4-flash）：
+P7 全量横评结论（ponos × T001-T006 + SWE001-006，deepseek-v4-flash）：
 
 | 指标 | P7 结果 | 基线（08-20T14:24） | 说明 |
 |---|---|---|---|
@@ -25,9 +25,9 @@ P7 全量横评结论（yfw × T001-T006 + SWE001-006，deepseek-v4-flash）：
 
 ## 2. 成熟项目机制对照表
 
-三个成熟项目（vendors/）的机制调研结论，按"yfw 是否已落地"标注：
+三个成熟项目（vendors/）的机制调研结论，按"ponos 是否已落地"标注：
 
-| 机制 | claude-code | pi | deepseek-harness | yfw 现状 | 优先级 |
+| 机制 | claude-code | pi | deepseek-harness | ponos 现状 | 优先级 |
 |---|---|---|---|---|---|
 | Read 去重 stub（mtime 未变返回 stub） | ✅ FileReadTool.ts:523-573 + fileStateCache.ts（~18% 命中） | — | — | ✅ 已落地（tools.mjs readCache，含测试） | — |
 | 并行工具调用（只读并发 / 写工具串行） | ✅ constants/prompts.ts:310 | ✅ agent-loop.ts:411-554 | ✅ 有界池 maxParallelToolCalls=10 + ordered commit（tool-calls.ts:59-246） | ✅ 已落地（engine.mjs runToolBatch + lane） | — |
@@ -39,7 +39,7 @@ P7 全量横评结论（yfw × T001-T006 + SWE001-006，deepseek-v4-flash）：
 | **pulse 重置 idle watchdog** | — | — | ✅ timer 只在 next() 等待期间存活、pulse() 重置（timeout/src/index.ts:126） | ⚠️ stream idle 300s 固定计时 | **C1 高** |
 | 溢出压缩后重试 | — | ✅ overflow-compact-then-retry | — | ✅ compact.mjs 已有溢出兜底 | — |
 
-> 结论：yfw 已落地 Read 去重、并行执行、压缩预算、重试退避等**机制层**能力；差距集中在**提示词层**（教会模型用这些机制）与**平台层**（评测治理）。这正符合"1/18 体积买确定性"的定位——机制已备，缺的是驱动。
+> 结论：ponos 已落地 Read 去重、并行执行、压缩预算、重试退避等**机制层**能力；差距集中在**提示词层**（教会模型用这些机制）与**平台层**（评测治理）。这正符合"1/18 体积买确定性"的定位——机制已备，缺的是驱动。
 
 ## 3. 优化升级任务清单
 
@@ -120,7 +120,7 @@ P8-C（可靠性强化，与 A 无依赖，可并行）
 | # | 落地内容 | 测试 |
 |---|---|---|
 | C1 | pulse 语义确认 + 回归测试：idle watchdog 已按单次 read 计时（withIdleTimeout 包 reader.read()）；新增慢 chunk 流测试（40ms 间隔 < 80ms 阈值、总时长 160ms > 阈值）证明不被误杀；真空闲超时仍触发（既有 P1-6 测试） | server/api-protocol.test.mjs |
-| C2 | 失败消息不残留确认 + 回归测试：retryStream 仅对"首块前失败"重试（已产出 chunk 不重试）；新增断言——YFW_MOCK_TRANSIENT=once 重试成功后 transcript 仅 1 条 user + 1 条 assistant，失败轮次不落盘 | server/kernel-engine.test.mjs |
+| C2 | 失败消息不残留确认 + 回归测试：retryStream 仅对"首块前失败"重试（已产出 chunk 不重试）；新增断言——PONOS_MOCK_TRANSIENT=once 重试成功后 transcript 仅 1 条 user + 1 条 assistant，失败轮次不落盘 | server/kernel-engine.test.mjs |
 
 ### 回归结果
 
@@ -137,11 +137,11 @@ P8-C（可靠性强化，与 A 无依赖，可并行）
 
 ## 7. 效率差距根因修正（2026-08-21 实测）
 
-> 初判"差距主因是模型（deepseek-v4-flash vs 真 Claude）"——**经核实错误**。benchmark 全部 4 个被测对象（yfw/claude/pi/deepseek）注入的是**同一套 API 配置**（`benchmark/lib/llm-api.mjs` AGENT_API + `.env` 的 LLM_BASE_URL/LLM_API_KEY/LLM_MODEL）：claude CLI 走 `ANTHROPIC_BASE_URL=deepseek 端点 + ANTHROPIC_MODEL=deepseek-v4-flash`。**同 LLM、不同 harness，工具调用差距 = 内核（harness）技术差距。**
+> 初判"差距主因是模型（deepseek-v4-flash vs 真 Claude）"——**经核实错误**。benchmark 全部 4 个被测对象（ponos/claude/pi/deepseek）注入的是**同一套 API 配置**（`benchmark/lib/llm-api.mjs` AGENT_API + `.env` 的 LLM_BASE_URL/LLM_API_KEY/LLM_MODEL）：claude CLI 走 `ANTHROPIC_BASE_URL=deepseek 端点 + ANTHROPIC_MODEL=deepseek-v4-flash`。**同 LLM、不同 harness，工具调用差距 = 内核（harness）技术差距。**
 
 ### 实证对比（同模型 deepseek-v4-flash，T001「修 api.mjs usage 双发」）
 
-| 维度 | claude（claude-code CLI） | yfw（本内核） |
+| 维度 | claude（claude-code CLI） | ponos（本内核） |
 |---|---|---|
 | 工具总数 | **13 次** | **34~51 次** |
 | Bash | 5 次（ls 列目录 / node --test / git diff，全系统命令） | 29 次（其中 **24 次 python/sed 读文件**） |
@@ -150,7 +150,7 @@ P8-C（可靠性强化，与 A 无依赖，可并行）
 
 ### 根因（机制层，非模型）
 
-**yfw Edit 工具缺 CRLF 行尾归一化**：`kernel/tools.mjs editFile` 严格字节匹配。Windows 仓库文件普遍 CRLF，模型（LF 习惯）写的 old_string 永不命中 → Edit 连环失败 → 模型转 `python -c "open().read()"`/`repr` 验证精确字节 → 工具数爆炸（T003 34 次中 Edit 失败重试 + workaround 脚本即此根因）。
+**ponos Edit 工具缺 CRLF 行尾归一化**：`kernel/tools.mjs editFile` 严格字节匹配。Windows 仓库文件普遍 CRLF，模型（LF 习惯）写的 old_string 永不命中 → Edit 连环失败 → 模型转 `python -c "open().read()"`/`repr` 验证精确字节 → 工具数爆炸（T003 34 次中 Edit 失败重试 + workaround 脚本即此根因）。
 
 claude-code 对照（vendors/claude-code-src/FileEditTool.ts:214）：
 ```js
@@ -168,7 +168,7 @@ fileContent = fileBuffer.toString(encoding).replaceAll('\r\n', '\n')
 
 **提示词层教训**：A3 补强（禁 python 读文件）对模型无效——T001 调优后 python 读文件仍 24/29。根因不在模型自觉而在 Edit 可靠性：Edit 可靠后模型自然无需验证字节。**机制层可靠 > 提示词说教**。
 
-### 实测验证（Edit CRLF 修复后，同 LLM deepseek-v4-flash，yfw × T001/T002/T003）
+### 实测验证（Edit CRLF 修复后，同 LLM deepseek-v4-flash，ponos × T001/T002/T003）
 
 | 任务 | 修复前（提示词调优后） | 修复后 | P7 基线 | 验收线 |
 |---|---|---|---|---|
@@ -187,16 +187,16 @@ fileContent = fileBuffer.toString(encoding).replaceAll('\r\n', '\n')
 
 - **现象**：全量 12 任务 11/12 pass，唯一失败 T002 深入调查后证实是**评测平台误判**——
   agent 修复完全正确（`selectResumeHistory` 实现正确，手动 verify PASS），但 verify 读到过期文件。
-- **根因**：`benchmark/harness/yfw.mjs` 在收到内核 `result` 事件时立即 resolve——而内核发出
+- **根因**：`benchmark/harness/ponos.mjs` 在收到内核 `result` 事件时立即 resolve——而内核发出
   result 后进程尚未退出（会话落盘/记忆捕获等收尾仍在进行，agent 最后一批文件写入可能恰在
   result 之后）。立即 resolve 让 `run.mjs` 的 verify 读到旧文件态，产生"假 FAIL"。
 - **证据链**：diff 快照（只有 api.mjs 被改）、worktree 5 个文件改动、cli.mjs mtime 晚于
   verify 读取时刻。
 - **修复**：result 事件只记账（usage/toolCalls）并 `stdin.end()` 请求内核优雅退出，
   **不 resolve**；`child.on('close')` 时才 finish(resolve)——verify 面 = 最终文件态。
-- **验证**：T002 重跑（`node benchmark/run.mjs --tasks T002 --agents yfw`）。
+- **验证**：T002 重跑（`node benchmark/run.mjs --tasks T002 --agents ponos`）。
 
-### 全量结果（yfw × T001-T006 + SWE001-006，deepseek-v4-flash）
+### 全量结果（ponos × T001-T006 + SWE001-006，deepseek-v4-flash）
 
 | 任务 | 结果 | 耗时 | 任务 | 结果 | 耗时 |
 |---|---|---|---|---|---|

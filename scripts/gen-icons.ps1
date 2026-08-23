@@ -1,9 +1,9 @@
-# Generate YFWorking app icons with TRANSPARENT background using System.Drawing
+# Generate Ponos app icons with TRANSPARENT background using System.Drawing
 # Creates public/icon-<size>.png files for packaging into .ico
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 
-function Draw-YFWorkingIcon([int]$size, [string]$path) {
+function Draw-PonosIcon([int]$size, [string]$path) {
     $bmp = New-Object System.Drawing.Bitmap($size, $size)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
@@ -43,16 +43,16 @@ function Draw-YFWorkingIcon([int]$size, [string]$path) {
     Write-Host ("  created {0} ({1}x{1})" -f $path, $size)
 }
 
-Write-Host "Generating YFWorking icons (transparent bg)..."
+Write-Host "Generating Ponos icons (transparent bg)..."
 $root = "C:\Users\T203-15\claude-code-gui\public"
 if (-not (Test-Path $root)) { New-Item -ItemType Directory -Path $root | Out-Null }
 
 # Generate master 256px PNG
-Draw-YFWorkingIcon 256 "$root\icon-256.png"
+Draw-PonosIcon 256 "$root\icon-256.png"
 Copy-Item "$root\icon-256.png" "$root\icon.png" -Force
 
 # Generate sizes for ICO
 foreach ($s in @(16, 32, 48, 64, 128, 256)) {
-    Draw-YFWorkingIcon $s "$root\icon-$s.png"
+    Draw-PonosIcon $s "$root\icon-$s.png"
 }
 Write-Host "Done generating PNGs."

@@ -18,7 +18,7 @@
 
 ```
 ┌─ 前端 React ──────────┐   ┌─ bridge.mjs (51309) ─┐   ┌─ Electron 主进程 ───────────┐
-│ DoubaoPanel           │   │ /yfw/doubao/*        │   │ 隐藏窗口 (persist:doubao)    │
+│ DoubaoPanel           │   │ /ponos/doubao/*        │   │ 隐藏窗口 (persist:doubao)    │
 │ doubaoStore           │◄──►│ download + 去水印    │◄─►│ executeJavaScript 页面内 fetch│
 │ 插入聊天输入栏         │   │                      │   │ 登录窗口（可见，仅登录时）    │
 └───────────────────────┘   └──────────────────────┘   └─────────────────────────────┘
@@ -105,17 +105,17 @@ const result = await hidreamWin.webContents.executeJavaScript(script)
 
 **接口**：CLI 调用 `python watermark_remove.py <input> [--mode auto|crop] [--output <path>]`，stdout 输出单行 JSON `{ok, output, mode, region}`，退出码非 0 视为失败（走原图降级）。
 
-**调用方**：bridge.mjs `/yfw/doubao/download` 端点（复用现有 `findPythonExe()` + spawn 模式）。
+**调用方**：bridge.mjs `/ponos/doubao/download` 端点（复用现有 `findPythonExe()` + spawn 模式）。
 
-## 7. bridge 端点（/yfw/doubao/*）
+## 7. bridge 端点（/ponos/doubao/*）
 
 | 端点 | 方法 | 说明 |
 |---|---|---|
-| `/yfw/doubao/status` | GET | 登录态 + 额度（尽力而为） |
-| `/yfw/doubao/generate` | POST | 文生图 `{prompt, model, ratio, count}` |
-| `/yfw/doubao/instant` | POST | 图生图 `{prompt, imageBase64, ...}` |
-| `/yfw/doubao/download` | GET | 下载图片 URL → 去水印 → 返回图片 |
-| `/yfw/doubao/logout` | POST | 清除会话（分区 cookie + 隐藏窗口重置） |
+| `/ponos/doubao/status` | GET | 登录态 + 额度（尽力而为） |
+| `/ponos/doubao/generate` | POST | 文生图 `{prompt, model, ratio, count}` |
+| `/ponos/doubao/instant` | POST | 图生图 `{prompt, imageBase64, ...}` |
+| `/ponos/doubao/download` | GET | 下载图片 URL → 去水印 → 返回图片 |
+| `/ponos/doubao/logout` | POST | 清除会话（分区 cookie + 隐藏窗口重置） |
 
 主进程侧通过 IPC 与新 `server/doubao.mjs`（或直接在主进程实现页面执行逻辑）交互。
 
@@ -133,17 +133,17 @@ const result = await hidreamWin.webContents.executeJavaScript(script)
 ## 9. 清理 hidream 死代码
 
 - `server/hidream.mjs` + `server/hidream.test.mjs`：删除
-- bridge.mjs `/yfw/img/*` 端点：删除
+- bridge.mjs `/ponos/img/*` 端点：删除
 - main.cjs hidream IPC（open-login / get-status / logout）+ `writeHidreamSession` / `readHidreamStatus` / `HIDREAM_SESSION_FILE`：删除
 - `src/components/hidream/`、`src/stores/hidreamStore.ts`、types/i18n 中 hidream：删除
-- `~/.yfworking/hidream-session.json`：不影响（残留文件，不主动删，清理脚本可选）
+- `~/.ponos/hidream-session.json`：不影响（残留文件，不主动删，清理脚本可选）
 
 ## 10. 测试
 
-- **单元/集成（node:test + YFW_TEST_HOME 隔离）**：
+- **单元/集成（node:test + PONOS_TEST_HOME 隔离）**：
   - `doubao.mjs`：登录判定 / 会话读写（stub cookie）
   - `watermark_remove.py`：构造带右下角水印的测试图 → 验证 inpaint / crop 输出
-  - bridge `/yfw/doubao/*` 端点：本地 stub 服务器模拟豆包 API
+  - bridge `/ponos/doubao/*` 端点：本地 stub 服务器模拟豆包 API
 - **真实手测清单**（P0）：
   1. 登录窗口打开 → 扫码登录 → 窗口自动隐藏
   2. 文生图成功 → 图片去水印 → 画廊展示

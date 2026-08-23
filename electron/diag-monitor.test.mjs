@@ -42,7 +42,7 @@ test('exportReport：不传 logTee 也能出报告（缺省空日志尾）', asy
   const mon = createDiagMonitor({ ctx: mkCtx() })
   const r = await mon.exportReport()
   assert.ok(typeof r.text === 'string')
-  assert.match(r.text, /YFWorking diagnostic report/)
+  assert.match(r.text, /Ponos diagnostic report/)
   assert.match(r.text, /--- log tail/)
 })
 

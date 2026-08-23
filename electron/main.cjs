@@ -1,5 +1,5 @@
 /**
- * YFWorking Desktop — Electron main process.
+ * Ponos Desktop — Electron main process.
  *
  * Architecture:
  *   Renderer (React) ──WebSocket──► bridge server (node server/bridge.mjs) ──stdio──► claude CLI
@@ -22,11 +22,11 @@ const { exportPackage, importPackage } = require('../server/packager.mjs')
 // 内置浏览器自动化执行器（窗口/CDP/快照/人工接管/下载）
 const { BrowserExecutor } = require('./browser-executor.cjs')
 
-// YFWorking home 单点解析：dev 调试版经 YFW_HOME env 指向独立目录
-// （~/.yfworking-dev），与正式版 ~/.yfworking 完全隔离——技能/密钥/会话/
+// Ponos home 单点解析：dev 调试版经 PONOS_HOME env 指向独立目录
+// （~/.ponos-dev），与正式版 ~/.ponos 完全隔离——技能/密钥/会话/
 // 内核 bootstrap 互不干扰。缺省回落正式版默认路径。
-function yfwHome() {
-  return process.env.YFW_HOME ? path.resolve(process.env.YFW_HOME) : path.join(os.homedir(), '.yfworking')
+function ponosHome() {
+  return process.env.PONOS_HOME ? path.resolve(process.env.PONOS_HOME) : path.join(os.homedir(), '.ponos')
 }
 
 // ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ const PYTHON_EXE = findPythonExe()
 
 // 应用内诊断（Task 5）：kernel/bun/python 路径探测。只做 existsSync 探测选第一个
 // kernel 存在的候选（spec 约束：detection 不得改变系统状态），不复刻 bridge
-// findYFWorking 的 bootstrap/拷贝副作用。候选相对路径与 bridge.mjs 同款
+// findPonos 的 bootstrap/拷贝副作用。候选相对路径与 bridge.mjs 同款
 // （monitor 的 __dirname=server/，本文件 __dirname=electron/，深度一致）：
 // 打包版 <app>/kernel + <app>/runtime/bun；dev 版上溯两级。python 复用
 // findPythonExe()，但裸命令名 'python' 会令 monitor 的 existsSync 相对 cwd 误报
@@ -69,7 +69,7 @@ const PYTHON_EXE = findPythonExe()
 function resolveDiagPaths() {
   // 打包版 kernel 在 <app>/resources/app/kernel-dist，bun/python 在
   // <app>/resources/runtime/（electron-builder files vs extraResources 分根），
-  // 与 bridge findYFWorking 的交叉组合候选保持一致。
+  // 与 bridge findPonos 的交叉组合候选保持一致。
   const candidates = [
     { kernel: path.join(__dirname, '..', 'kernel', 'cli.mjs'), bun: path.join(__dirname, '..', 'runtime', 'bun', 'bun.exe') },
     { kernel: path.join(__dirname, '..', '..', 'kernel', 'cli.mjs'), bun: path.join(__dirname, '..', '..', 'runtime', 'bun', 'bun.exe') },
@@ -97,7 +97,7 @@ function findPythonForPet() {
 
 // Windows: register AppUserModelId so system notifications show correctly
 if (process.platform === 'win32') {
-  try { app.setAppUserModelId('com.yfworking.desktop') } catch {}
+  try { app.setAppUserModelId('com.ponos.desktop') } catch {}
 }
 
 // 旧显卡/驱动不稳的机器上 GPU 进程可能因 TDR 等被系统重置。
@@ -151,7 +151,7 @@ let doubaoBusy = false          // 生成请求在途标记（空闲销毁不得
 let doubaoLastUse = 0           // 最近一次生成/捕获活动时间戳
 let doubaoIdleTimer = null      // 空闲销毁轮询定时器
 // 豆包会话文件：契约与 server/doubao.mjs 的 sessionFile() 一致
-const DOUBAO_SESSION_FILE = path.join(yfwHome(), 'doubao-session.json')
+const DOUBAO_SESSION_FILE = path.join(ponosHome(), 'doubao-session.json')
 const DOUBAO_URL = 'https://www.doubao.com/chat/create-image'
 let bridgeProcess = null
 let bridgeAdopted = false           // 端口上跑的是"接入"的外部 bridge（非本进程 spawn）
@@ -175,7 +175,7 @@ let petConfig = { enabled: false, size: 50, randomChat: true, pet: 'jiajia' }
 let petIntentKill = null     // 主动 kill 的宠物进程（区分“用户右键退出”导致的意外退出）
 let petRestartTimer = null   // 宠物配置变更重启的防抖定时器
 const ICON_PATH = path.join(__dirname, '..', 'public', 'icon.png')
-const BRIDGE_PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51309', 10)
+const BRIDGE_PORT = parseInt(process.env.PONOS_BRIDGE_PORT || '51309', 10)
 const BRIDGE_READY_URL = `http://localhost:${BRIDGE_PORT}/health`
 
 // ---------------------------------------------------------------------------
@@ -426,7 +426,7 @@ function createWindow() {
     height: 900,
     minWidth: 900,
     minHeight: 600,
-    title: 'YFWorking dev',
+    title: 'Ponos dev',
     // Windows 透明窗口必须 frame:false（titleBarStyle:'hidden' 保留系统 frame，
     // 会挡住 DWM 透明合成，实测 Win10 无法透出桌面）。
     // 取舍：放弃系统 1px 边框/阴影/系统边缘拖拽，换来玻璃主题真透桌面；
@@ -530,7 +530,7 @@ function createTray() {
   if (icon.isEmpty()) icon = nativeImage.createEmpty()
 
   tray = new Tray(icon)
-  tray.setToolTip('YFWorking dev')
+  tray.setToolTip('Ponos dev')
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开主窗口', click: showMainWindow },
     { type: 'separator' },
@@ -646,12 +646,12 @@ function connectBrowserExecutor() {
 // 另一半"消费升级"依赖人工触发——本提醒让积压不至于悄悄烂尾）。
 // ---------------------------------------------------------------------------
 function experienceDir() {
-  const yfw = path.join(yfwHome(), 'memory', 'skill_experiences')
-  if (fs.existsSync(yfw)) return yfw
+  const ponos = path.join(ponosHome(), 'memory', 'skill_experiences')
+  if (fs.existsSync(ponos)) return ponos
   return path.join(os.homedir(), '.trae-cn', 'memory', 'skill_experiences')
 }
 function experienceAlertStateFile() {
-  return path.join(yfwHome(), 'experience-alert.json')
+  return path.join(ponosHome(), 'experience-alert.json')
 }
 const EXPERIENCE_ALERT_INTERVAL_MS = 24 * 60 * 60 * 1000
 
@@ -692,7 +692,7 @@ function toYamlString(v) {
 }
 
 // ---------------------------------------------------------------------------
-// 豆包登录会话：写/读 ~/.yfworking/doubao-session.json（契约与 server/doubao.mjs 一致）
+// 豆包登录会话：写/读 ~/.ponos/doubao-session.json（契约与 server/doubao.mjs 一致）
 // ---------------------------------------------------------------------------
 function writeDoubaoSession(cookies) {
   fs.mkdirSync(path.dirname(DOUBAO_SESSION_FILE), { recursive: true })
@@ -780,7 +780,7 @@ async function registerIpc() {
     if (p.onlyBackground && win && !win.isDestroyed() && win.isVisible() && win.isFocused()) {
       return { shown: false }
     }
-    new Notification({ title: p.title || 'YFWorking dev', body: p.body || '', icon: ICON_PATH }).show()
+    new Notification({ title: p.title || 'Ponos dev', body: p.body || '', icon: ICON_PATH }).show()
     return { shown: true }
   })
 
@@ -892,7 +892,7 @@ async function registerIpc() {
   // 成功后 hide() 隐藏常驻（不销毁）：页面与字节 fetch 签名劫持器保持存活，
   // 生成请求靠 executeJavaScript 在页面上下文执行（Task 5）
   // ---------------------------------------------------------------------------
-  const _doubaoIdleEnv = process.env.YFW_DOUBAO_IDLE_MS
+  const _doubaoIdleEnv = process.env.PONOS_DOUBAO_IDLE_MS
   const DOUBAO_IDLE_DESTROY_MS = _doubaoIdleEnv === '0' ? 0 : (Number(_doubaoIdleEnv) > 0 ? Number(_doubaoIdleEnv) : 10 * 60 * 1000)
 
   const createDoubaoWindow = async ({ showOnReady } = {}) => {
@@ -1105,16 +1105,16 @@ async function registerIpc() {
     if (editorWin && !editorWin.isDestroyed()) editorWin.close()
   })
 
-  // Agent 注册表同步：写入/删除 $YFW_HOME/agents/<id>.md，供内核识别 GUI 注册的
+  // Agent 注册表同步：写入/删除 $PONOS_HOME/agents/<id>.md，供内核识别 GUI 注册的
   // 专业/自定义 agent 作为子 agent（方案 A，零内核改动）。
   // 只处理 professional/custom 且 enabled 的 agent；builtin 内核原生已有不注入。
-  // 用 .yfw-managed.json 记录 GUI 管理的 id，删除时只删这些，不触碰用户手写文件。
+  // 用 .ponos-managed.json 记录 GUI 管理的 id，删除时只删这些，不触碰用户手写文件。
   ipcMain.handle('agents:sync', async (_e, agents) => {
     try {
-      const home = ensureYfwHome()
+      const home = ensurePonosHome()
       const agentsDir = path.join(home, 'agents')
       fs.mkdirSync(agentsDir, { recursive: true })
-      const registryFile = path.join(agentsDir, '.yfw-managed.json')
+      const registryFile = path.join(agentsDir, '.ponos-managed.json')
       let registry = []
       try { registry = JSON.parse(fs.readFileSync(registryFile, 'utf8')) } catch {}
       if (!Array.isArray(registry)) registry = []
@@ -1128,7 +1128,7 @@ async function registerIpc() {
         const whenToUse = String(a.whenToUse || a.description || '').trim()
         if (!a.enabled || !whenToUse) continue
         const prompt = String(a.systemPrompt || '').trim()
-        const body = prompt || `你是 YFWorking 的 Agent「${a.name}」：${a.description}。使用简体中文，严禁自称 Claude、Anthropic 或其他 AI 品牌。`
+        const body = prompt || `你是 Ponos 的 Agent「${a.name}」：${a.description}。使用简体中文，严禁自称 Claude、Anthropic 或其他 AI 品牌。`
         const lines = ['---', `name: ${a.id}`, `description: ${toYamlString(whenToUse)}`]
         if (Array.isArray(a.tools) && a.tools.length > 0) lines.push(`tools: ${a.tools.join(', ')}`)
         if (a.model) lines.push(`model: ${a.model}`)
@@ -1185,8 +1185,8 @@ async function registerIpc() {
     try {
       const included = Array.isArray(payload?.included) ? payload.included : []
       const result = await dialog.showSaveDialog(mainWindow, {
-        title: '导出 YFWorking 经验/数据',
-        defaultPath: path.join(app.getPath('downloads'), `yfworking-export-${new Date().toISOString().slice(0, 10)}.zip`),
+        title: '导出 Ponos 经验/数据',
+        defaultPath: path.join(app.getPath('downloads'), `ponos-export-${new Date().toISOString().slice(0, 10)}.zip`),
         filters: [{ name: 'Zip Archive', extensions: ['zip'] }],
       })
       if (result.canceled || !result.filePath) return { ok: false, canceled: true }
@@ -1206,7 +1206,7 @@ async function registerIpc() {
   ipcMain.handle('experience:import', async (_e, payload) => {
     try {
       const result = await dialog.showOpenDialog(mainWindow, {
-        title: '导入 YFWorking 经验/数据包',
+        title: '导入 Ponos 经验/数据包',
         properties: ['openFile'],
         filters: [{ name: 'Zip Archive', extensions: ['zip'] }],
       })
@@ -1292,7 +1292,7 @@ function applyPetConfig(cfg) {
   const prev = { ...petConfig }
   Object.assign(petConfig, cfg)
 
-  const cfgPath = path.join(yfwHome(), 'pet.json')
+  const cfgPath = path.join(ponosHome(), 'pet.json')
   try {
     if (!fs.existsSync(path.dirname(cfgPath))) fs.mkdirSync(path.dirname(cfgPath), { recursive: true })
     fs.writeFileSync(cfgPath, JSON.stringify({
@@ -1328,17 +1328,17 @@ function applyPetConfig(cfg) {
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
-// First-run setup — create ~/.yfworking/ and seed skills/config
+// First-run setup — create ~/.ponos/ and seed skills/config
 // ---------------------------------------------------------------------------
-function ensureYfwHome() {
-  const home = yfwHome()
-  const yfwSkills = path.join(home, 'skills')
+function ensurePonosHome() {
+  const home = ponosHome()
+  const ponosSkills = path.join(home, 'skills')
 
   if (!fs.existsSync(home)) fs.mkdirSync(home, { recursive: true })
-  if (!fs.existsSync(yfwSkills)) fs.mkdirSync(yfwSkills, { recursive: true })
+  if (!fs.existsSync(ponosSkills)) fs.mkdirSync(ponosSkills, { recursive: true })
 
   // Seed sample skills on first run only (skip if any skill already present)
-  const existing = fs.existsSync(yfwSkills) ? fs.readdirSync(yfwSkills) : []
+  const existing = fs.existsSync(ponosSkills) ? fs.readdirSync(ponosSkills) : []
   const hasSkill = existing.some(n => n.endsWith('.md') || n === '_skill_index.json')
   if (!hasSkill) {
     const candidates = [
@@ -1359,11 +1359,11 @@ function ensureYfwHome() {
         for (const entry of entries) {
           if (!entry.isDirectory()) continue
           const from = path.join(src, entry.name)
-          const to = path.join(yfwSkills, entry.name)
+          const to = path.join(ponosSkills, entry.name)
           if (fs.existsSync(to)) continue
           fs.cpSync(from, to, { recursive: true })
         }
-        console.log('[main] seeded sample skills →', yfwSkills)
+        console.log('[main] seeded sample skills →', ponosSkills)
       } catch (e) {
         console.warn('[main] failed to seed sample skills:', e.message)
       }
@@ -1379,12 +1379,12 @@ function ensureYfwHome() {
 // shortcut multiple times.  Only the first instance is allowed to run;
 // subsequent ones focus the existing window instead.
 // ---------------------------------------------------------------------------
-// dev 隔离（YFW_HOME 注入时）：使用独立 userData，避免与正式版/旧调试版共享
+// dev 隔离（PONOS_HOME 注入时）：使用独立 userData，避免与正式版/旧调试版共享
 // Electron 单实例锁与缓存——否则正式版运行中时，dev 版因 !gotTheLock 静默退出
 // （表现为"桌面快捷方式点了没反应"）。setPath 必须在 requestSingleInstanceLock
 // 之前调用（锁基于 userData 判定），且均在 app ready 前。
-if (process.env.YFW_HOME) {
-  app.setPath('userData', path.join(yfwHome(), 'userData'))
+if (process.env.PONOS_HOME) {
+  app.setPath('userData', path.join(ponosHome(), 'userData'))
 }
 
 const gotTheLock = app.requestSingleInstanceLock()
@@ -1419,7 +1419,7 @@ if (!gotTheLock) {
   }
   function writeBootSummary() {
     try {
-      const p = path.join(ensureYfwHome(), 'logs', 'last-boot.json')
+      const p = path.join(ensurePonosHome(), 'logs', 'last-boot.json')
       fs.mkdirSync(path.dirname(p), { recursive: true })
       fs.writeFileSync(p, JSON.stringify({ ok: !bootPhaseFailed, nodes: bootNodes, failedAt: bootPhaseFailed ? new Date().toISOString() : null }, null, 2), 'utf-8')
     } catch (_) {}
@@ -1429,7 +1429,7 @@ if (!gotTheLock) {
       const logPath = logTee.getLogPath()
       const { response } = await dialog.showMessageBox({
         type: 'error',
-        title: 'YFWorking dev 启动异常',
+        title: 'Ponos dev 启动异常',
         message: '应用界面启动失败。完整错误日志已保存到：',
         detail: logPath,
         buttons: ['打开日志目录', '复制路径', '确定'],
@@ -1478,10 +1478,10 @@ if (!gotTheLock) {
     bootStartAt = Date.now()   // 刷新启动基线（60s 兜底弹窗窗口）
     await registerIpc()
 
-    // First-run: make sure ~/.yfworking/ exists and has skills
-    // 局部变量命名避开全局函数 yfwHome()，防止遮蔽导致 pet restore 等调用炸掉
-    const home = ensureYfwHome()
-    console.log('[main] YFWorking home:', home)
+    // First-run: make sure ~/.ponos/ exists and has skills
+    // 局部变量命名避开全局函数 ponosHome()，防止遮蔽导致 pet restore 等调用炸掉
+    const home = ensurePonosHome()
+    console.log('[main] Ponos home:', home)
 
     // Reuse an already-running bridge if present (adopt + supervise it),
     // else start our own. 复用不等于放手不管：接管后由健康轮询兜底，
@@ -1510,7 +1510,7 @@ if (!gotTheLock) {
           `  • 端口被 Windows WinNAT 或其他程序占用\n` +
           `  • 防火墙/安全软件阻止了网络访问\n\n` +
           `解决方法:\n` +
-          `  1. 设置环境变量 YFW_BRIDGE_PORT 为其他端口 (如 51309)\n` +
+          `  1. 设置环境变量 PONOS_BRIDGE_PORT 为其他端口 (如 51309)\n` +
           `  2. 以管理员身份运行: netsh int ipv4 add excludedportrange protocol=tcp startport=${BRIDGE_PORT} numberofports=1\n` +
           `  3. 重启 Windows 后 WinNAT 端口排除范围通常会重新分配`,
         )
@@ -1525,7 +1525,7 @@ if (!gotTheLock) {
     connectPetBridgeListener()
     connectBrowserExecutor()
 
-  // Restore last session's pet state (~/.yfworking/pet.json); skip if absent
+  // Restore last session's pet state (~/.ponos/pet.json); skip if absent
   const petCfgPath = path.join(home, 'pet.json')
   if (fs.existsSync(petCfgPath)) {
     try {

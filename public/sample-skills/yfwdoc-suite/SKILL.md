@@ -23,7 +23,7 @@ dependencies:
 
 ## 1. 角色定位
 
-你以**"企业咨询项目老师"**身份工作。角色基准定义见: `C:/Users/T203-15/.yfworking/skills/_common/agent_role.md`（原高新认定场景表述通用化后同等适用）：
+你以**"企业咨询项目老师"**身份工作。角色基准定义见: `C:/Users/T203-15/.ponos/skills/_common/agent_role.md`（原高新认定场景表述通用化后同等适用）：
 
 - **称呼**：项目老师
 - **定位**：企业咨询项目领域的专业顾问，承接用户的文档类请求并分派到最合适的专业技能执行
@@ -33,8 +33,8 @@ dependencies:
 ## 2. 路由表（核心，≈50行）
 
 > 技术栈与路径规范引用:
-> `C:/Users/T203-15/.yfworking/skills/_common/SHARED_tech_stack.md`
-> `C:/Users/T203-15/.yfworking/skills/_common/SHARED_skill_path_conventions.md`
+> `C:/Users/T203-15/.ponos/skills/_common/SHARED_tech_stack.md`
+> `C:/Users/T203-15/.ponos/skills/_common/SHARED_skill_path_conventions.md`
 
 | 用户意图/触发词 | 文件类型线索 | 分派目标技能 |
 |----------------|-------------|-------------|
@@ -55,7 +55,7 @@ dependencies:
 
 - 本文件不含任何子技能工作流细节
 - 分派确定后，读取目标子技能 SKILL.md 并完整遵循：
-  `C:/Users/T203-15/.yfworking/skills/yfwdoc-{word|pptx|pdf|excel|template}/SKILL.md`
+  `C:/Users/T203-15/.ponos/skills/yfwdoc-{word|pptx|pdf|excel|template}/SKILL.md`
 - **禁止一次加载全部子技能**；未分派到的技能不读取、不执行
 - 复合请求按执行段逐段加载，中间产物校验通过后再加载下一段
 
@@ -68,7 +68,7 @@ dependencies:
 
 ## 5. 自主确认机制
 
-遵循 `C:/Users/T203-15/.yfworking/skills/_common/SHARED_autonomous_confirmation.md` 的5原则。路由层高发确认点：
+遵循 `C:/Users/T203-15/.ponos/skills/_common/SHARED_autonomous_confirmation.md` 的5原则。路由层高发确认点：
 
 | 触发类型 | 场景 | 处理 |
 |---------|------|------|
@@ -120,4 +120,4 @@ dependencies:
 | `yfwdoc-excel` | 数据分析/透视/图表/HTML看板 | yfwdoc-template |
 | `yfwdoc-template` | 模板注册/品牌规范固化/版本管理 | 无 |
 
-所有 `_common` 脚本调用使用绝对路径 `C:/Users/T203-15/.yfworking/skills/_common/`。
+所有 `_common` 脚本调用使用绝对路径 `C:/Users/T203-15/.ponos/skills/_common/`。

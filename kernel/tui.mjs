@@ -1,4 +1,4 @@
-// YFW-Turbo 交互式 TUI（全屏 ANSI 版，远方品牌橙红深色主题）
+// Ponos-Turbo 交互式 TUI（全屏 ANSI 版，远方品牌橙红深色主题）
 // ---------------------------------------------------------------------------
 // 用法：
 //   node kernel/tui.mjs                     # 新会话；检测到历史时先弹会话选择器
@@ -40,7 +40,7 @@ const KERNEL_DIR = fileURLToPath(new URL('.', import.meta.url))
 const DEFAULT_BANNER = join(KERNEL_DIR, 'ascii-art-1787378784252.txt')
 
 // ---------- Provider/模型列表（P4-1 providers.json 快照，与 bridge 同一来源） ----------
-// ~/.yfworking/providers.json：{ activeProvider, providers: [{ id, apiBaseUrl, authToken,
+// ~/.ponos/providers.json：{ activeProvider, providers: [{ id, apiBaseUrl, authToken,
 // primaryModel, models[], subagentModel, contextWindow, visionModel }] }
 export function loadProviders(env = process.env) {
   try {
@@ -455,10 +455,10 @@ function main() {
     return out
   }
   function usageText() {
-    return `YFWorking 交互终端（YFW-Turbo 内核 ${KERNEL_VERSION}）
+    return `Ponos 交互终端（Ponos-Turbo 内核 ${KERNEL_VERSION}）
 用法: node kernel/tui.mjs [--resume <sid>] [--mock] [--dir <path>] [--banner <file>] [--no-banner] [--theme dark|light] [--allow-outside-dirs]
 键位: Enter 发送 · Shift+Enter/Ctrl+J 换行 · ↑↓ 历史 · ←→ 移动 · PgUp/PgDn 滚动 · Ctrl+G/B 顶/底 · Tab 补全
-命令（支持 /yfw <cmd> 前缀，别名 yfwturbo）:
+命令（支持 /ponos <cmd> 前缀，别名 ponos-turbo）:
   /cancel  取消当前轮次       /stats   会话统计（轮次/用量）
   /clear   清空对话重显 banner /tools  工具列表
   /help    显示本帮助          /session 会话 ID
@@ -472,10 +472,10 @@ function main() {
   }
 
   const args = parseArgs(process.argv.slice(2))
-  if (args.mock) process.env.YFW_MOCK_API = '1'
-  if (args.mock) process.env.YFW_MOCK_COMPACT_RESPONSE = '1'
+  if (args.mock) process.env.PONOS_MOCK_API = '1'
+  if (args.mock) process.env.PONOS_MOCK_COMPACT_RESPONSE = '1'
   if (!args.mock) {
-    if (process.env.YFW_MOCK_API === '1') { console.error('错误: YFW_MOCK_API=1 会走 mock，请清除或加 --mock'); process.exit(2) }
+    if (process.env.PONOS_MOCK_API === '1') { console.error('错误: PONOS_MOCK_API=1 会走 mock，请清除或加 --mock'); process.exit(2) }
     if (!process.env.ANTHROPIC_BASE_URL) { console.error('错误: 需要 ANTHROPIC_BASE_URL env（或加 --mock）'); process.exit(2) }
   }
   if (args.theme === 'light') { themeName = 'light'; theme = THEMES.light }
@@ -505,7 +505,7 @@ function main() {
   let historyTemp = ''
   let scrollOffset = 0 // 0 = 跟随底部
   // 思考深度档位（对齐 Claude Code /effort）：auto 默认 = 模型原生自适应
-  let effort = process.env.CLAUDE_CODE_EFFORT_LEVEL || process.env.YFW_REASONING_EFFORT || 'auto'
+  let effort = process.env.CLAUDE_CODE_EFFORT_LEVEL || process.env.PONOS_REASONING_EFFORT || 'auto'
   let toolExpanded = new Set()
   let toolSeqMap = new Map()
   let messages = []
@@ -517,7 +517,7 @@ function main() {
   let child = null
   let stderrBuf = '' // stderr 按行缓冲，避免 chunk 截断成半行
   const preSpawnLines = [] // 非 TTY：child spawn 前到达的输入行，就绪后重放
-  const ICONS = process.env.YFW_TUI_ICONS === 'ascii' ? { tool: '[工具]', think: '[思考]' } : { tool: '⚙', think: '💭' }
+  const ICONS = process.env.PONOS_TUI_ICONS === 'ascii' ? { tool: '[工具]', think: '[思考]' } : { tool: '⚙', think: '💭' }
 
   // ---------- 消息管理 ----------
   function pushMessage(m) {
@@ -549,7 +549,7 @@ function main() {
   }
   function renderHeader(cols) {
     const dot = turnActive ? c(breath % 2 ? '●' : '○', 'red') : c('○', 'meta')
-    let line1 = c('YFWorking', 'orange', true) + c(' · ' + (initInfo.model || MODEL), 'highlight')
+    let line1 = c('Ponos', 'orange', true) + c(' · ' + (initInfo.model || MODEL), 'highlight')
     line1 += ' ' + dot + ' ' + bar(contextPct())
     line1 += ' ' + c('in=' + fmtK(usageTotals.input_tokens), 'highlight')
     line1 += ' ' + c('out=' + fmtK(usageTotals.output_tokens), 'highlight')
@@ -839,10 +839,10 @@ function main() {
       case 'provider_switch_rejected':
         pushMessage({ kind: 'error', text: `模型切换被拒：${ev.reason || '未知原因'}` })
         render(); break
-      case 'yfw_health':
+      case 'ponos_health':
         pushMessage({ kind: 'result', text: `健康 score=${ev.score ?? '?'} tier=${ev.tier ?? '?'}` })
         render(); break
-      case 'yfw_summary':
+      case 'ponos_summary':
         pushMessage({ kind: 'result', text: `压缩摘要 第 ${ev.compactCount ?? '?'} 次：${String(ev.text || '').slice(0, 120)}` })
         render(); break
       default:
@@ -868,7 +868,7 @@ function main() {
     const [cmd, ...rest] = cmdText.split(/\s+/)
     switch (cmd) {
       case '/cancel': sendCancel(); break
-      case '/help': case '/yfw': case '/yfwturbo': pushMessage({ kind: 'system', text: usageText() }); render(); break
+      case '/help': case '/ponos': case '/ponos-turbo': pushMessage({ kind: 'system', text: usageText() }); render(); break
       case '/clear': messages = []; toolSeqMap.clear(); showBanner(); break
       case '/stats': pushMessage({ kind: 'result', text: `轮次=${turns} in=${fmtK(usageTotals.input_tokens)} out=${fmtK(usageTotals.output_tokens)} cacheRead=${fmtK(usageTotals.cache_read_input_tokens)} cacheWrite=${fmtK(usageTotals.cache_creation_input_tokens)}` }); render(); break
       case '/tools': pushMessage({ kind: 'result', text: initInfo.tools.length ? initInfo.tools.join(', ') : '（尚未收到 init）' }); render(); break
@@ -896,7 +896,7 @@ function main() {
         pushMessage({ kind: 'system', text: `已请求设置思考深度：${v}（下一轮生效）` })
         render(); break
       }
-      case '/version': pushMessage({ kind: 'result', text: `YFW-Turbo 内核 ${KERNEL_VERSION}（${initInfo.model || MODEL}）` }); render(); break
+      case '/version': pushMessage({ kind: 'result', text: `Ponos-Turbo 内核 ${KERNEL_VERSION}（${initInfo.model || MODEL}）` }); render(); break
       case '/theme': {
         themeName = themeName === 'dark' ? 'light' : 'dark'
         theme = THEMES[themeName]
@@ -1140,9 +1140,9 @@ function main() {
     if (history[history.length - 1] !== text) history.push(text)
     if (history.length > 50) history.shift()
     historyIdx = -1
-    // 命令（支持 /yfw <cmd> 前缀与 yfwturbo 别名）
-    const cmdText = text.replace(/^\/yfw\s+/i, '/').replace(/^yfwturbo\s*/i, '').trim()
-    if (cmdText.startsWith('/') || /^yfwturbo/i.test(text)) {
+    // 命令（支持 /ponos <cmd> 前缀与 ponos-turbo 别名）
+    const cmdText = text.replace(/^\/ponos\s+/i, '/').replace(/^ponos-turbo\s*/i, '').trim()
+    if (cmdText.startsWith('/') || /^ponos-turbo/i.test(text)) {
       const [cmd] = cmdText.split(/\s+/)
       if (!cmd) pushMessage({ kind: 'system', text: usageText() })
       else runCommand(cmdText)
@@ -1175,7 +1175,7 @@ function main() {
       '  ' + c('─'.repeat(Math.min(targetW, cols - 4)), 'border'),
       ...scaled.map((l) => '  ' + paintBannerLine(l)),
       '  ' + c('─'.repeat(Math.min(targetW, cols - 4)), 'border'),
-      '  ' + c(`YFWorking 交互终端（YFW-Turbo 内核 ${KERNEL_VERSION}）${args.mock ? '（mock 模式）' : `（model: ${MODEL}）`}  session: ${sessionId}`, 'highlight'),
+      '  ' + c(`Ponos 交互终端（Ponos-Turbo 内核 ${KERNEL_VERSION}）${args.mock ? '（mock 模式）' : `（model: ${MODEL}）`}  session: ${sessionId}`, 'highlight'),
       '  ' + c('输入消息开始对话；/help 查看命令', 'meta'),
     ]
     pushMessage({ kind: 'banner', lines: bannerLines })
@@ -1208,7 +1208,7 @@ function main() {
     stopAnim()
     try { if (process.stdin.isTTY) process.stdin.setRawMode(false) } catch {}
     if (isTui) process.stdout.write('\x1b[?25h\x1b[?1049l\r\n')
-    if (code) console.error(`[yfwturbo] 已退出（code ${code}）`)
+    if (code) console.error(`[ponos-turbo] 已退出（code ${code}）`)
     process.exit(code)
   }
 
@@ -1336,7 +1336,7 @@ function main() {
     plain.on('line', (line) => {
       const t = line.trim()
       if (!t) return
-      const cmdText = t.replace(/^\/yfw\s+/i, '/').replace(/^yfwturbo\s*/i, '').trim()
+      const cmdText = t.replace(/^\/ponos\s+/i, '/').replace(/^ponos-turbo\s*/i, '').trim()
       if (cmdText.startsWith('/')) { runCommand(cmdText); return }
       if (child) child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: t } }) + '\n')
       else preSpawnLines.push(t)

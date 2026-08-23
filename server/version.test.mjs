@@ -1,4 +1,4 @@
-// YFWorking 版本契约：单一数据源 version.mjs（APP_VERSION / KERNEL_VERSION 双版本线）。
+// Ponos 版本契约：单一数据源 version.mjs（APP_VERSION / KERNEL_VERSION 双版本线）。
 // 升级版本号禁止手改——走 scripts/bump-version.mjs 会自动同步本测试期望值。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -11,7 +11,7 @@ import { createInterface } from 'node:readline'
 import { APP_VERSION, KERNEL_VERSION, SCHEMA_VERSION, buildId } from '../version.mjs'
 
 const KERNEL = join(dirname(fileURLToPath(import.meta.url)), '..', 'kernel', 'cli.mjs')
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-ver-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-ver-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('版本符合 dev 格式', () => {
@@ -29,12 +29,12 @@ test('version.mjs 单一数据源：常量 + buildId（env 注入 / dev 默认�
   assert.ok(typeof KERNEL_VERSION === 'string' && KERNEL_VERSION.length > 0)
   assert.equal(SCHEMA_VERSION, 1)
   assert.equal(buildId(), 'dev')
-  const prev = process.env.YFW_BUILD_ID
-  process.env.YFW_BUILD_ID = 'build-123'
-  try { assert.equal(buildId(), 'build-123') } finally { if (prev === undefined) delete process.env.YFW_BUILD_ID; else process.env.YFW_BUILD_ID = prev }
+  const prev = process.env.PONOS_BUILD_ID
+  process.env.PONOS_BUILD_ID = 'build-123'
+  try { assert.equal(buildId(), 'build-123') } finally { if (prev === undefined) delete process.env.PONOS_BUILD_ID; else process.env.PONOS_BUILD_ID = prev }
 })
 
-test('init 事件：version = KERNEL_VERSION + schemaVersion + buildId（含 YFW_BUILD_ID 注入）', async () => {
+test('init 事件：version = KERNEL_VERSION + schemaVersion + buildId（含 PONOS_BUILD_ID 注入）', async () => {
   const configDir = join(tmp, 'c')
   mkdirSync(configDir, { recursive: true })
   const child = spawn(process.execPath, [
@@ -42,7 +42,7 @@ test('init 事件：version = KERNEL_VERSION + schemaVersion + buildId（含 YFW
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion',
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir, YFW_BUILD_ID: 'ci-42' },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir, PONOS_BUILD_ID: 'ci-42' },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const lines = []

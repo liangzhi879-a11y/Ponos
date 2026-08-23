@@ -1,12 +1,12 @@
 {
-  "name": "yfworking-gui",
+  "name": "ponos-gui",
   "version": "2.7.0",
-  "description": "YFWorking GUI — A beautiful desktop interface for YFWorking with full feature parity",
-  "author": "YFWorking",
+  "description": "Ponos GUI — A beautiful desktop interface for Ponos with full feature parity",
+  "author": "Ponos",
   "main": "electron/main.cjs",
   "type": "module",
   "bin": {
-    "yfworking": "./bin/cli.mjs"
+    "ponos": "./bin/cli.mjs"
   },
   "scripts": {
     "electron": "VITE_DEV_SERVER_URL=http://localhost:5173 electron .",

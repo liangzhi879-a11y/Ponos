@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Repeat, CalendarClock, X, ListChecks, Trash2, Send } from 'lucide-react'
 import { Button } from '@/components/ui'
-import { useYFWCLI } from '@/hooks/useYFWCLI'
+import { usePonosCLI } from '@/hooks/usePonosCLI'
 import { cn } from '@/lib/utils'
 
 interface Props {
@@ -25,7 +25,7 @@ const LOOP_INTERVALS = [
 const ONESHOT_QUICK = ['10分钟后', '1小时后', '今天18:00', '明天9:00']
 
 export function ScheduleGuide({ conversationId, mode, onClose }: Props) {
-  const { send } = useYFWCLI()
+  const { send } = usePonosCLI()
   const [task, setTask] = useState('')
   const [interval, setInterval] = useState('5m')
   const [customInterval, setCustomInterval] = useState('')

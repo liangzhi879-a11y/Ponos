@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createSessionStore, TRANSCRIPT_SCHEMA_VERSION } from '../kernel/session.mjs'
 
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-meta-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-meta-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('新会话：文件首行写 transcript schemaVersion meta', () => {

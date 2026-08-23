@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const SRC_BASE = "C:/Users/T203-15/.trae-cn/skills/enterprise_project_skills";
-const DST_BASE = "C:/Users/T203-15/Desktop/2023guogao/{{YFW_SKILLS}}";
+const DST_BASE = "C:/Users/T203-15/Desktop/2023guogao/{{PONOS_SKILLS}}";
 
 const SKILLS = [
   {
@@ -43,11 +43,11 @@ const SKILLS = [
 ];
 
 const PATH_REPLACEMENTS = [
-  [/C:\\Users\\T203-15\\.trae-cn\\skills\\enterprise_project_skills\\_common\\/g, "{{YFW_SKILLS}}/_common/"],
-  [/C:\\Users\\T203-15\\.trae-cn\\skills\\enterprise_project_skills\\/g, "{{YFW_SKILLS}}/"],
-  [/C:\\Users\\T203-15\\.trae-cn\\skills\\/g, "{{YFW_SKILLS}}/"],
-  [/\.trae\/skills\/_common\//g, "{{YFW_SKILLS}}/_common/"],
-  [/\.trae\/skills\//g, "{{YFW_SKILLS}}/"],
+  [/C:\\Users\\T203-15\\.trae-cn\\skills\\enterprise_project_skills\\_common\\/g, "{{PONOS_SKILLS}}/_common/"],
+  [/C:\\Users\\T203-15\\.trae-cn\\skills\\enterprise_project_skills\\/g, "{{PONOS_SKILLS}}/"],
+  [/C:\\Users\\T203-15\\.trae-cn\\skills\\/g, "{{PONOS_SKILLS}}/"],
+  [/\.trae\/skills\/_common\//g, "{{PONOS_SKILLS}}/_common/"],
+  [/\.trae\/skills\//g, "{{PONOS_SKILLS}}/"],
   [/\.trae\//g, ".claude/"],
   [/RunCommand/g, "Bash"],
   [/TRAE agent/g, "Claude Code agent"],

@@ -16,7 +16,7 @@ export interface HealthInfo {
 
 /**
  * 健康状态按会话（sessionId=conversationId）隔离存储：
- * 多会话并行（各自独立内核进程、独立 yfw_health/yfw_summary 事件流）时
+ * 多会话并行（各自独立内核进程、独立 ponos_health/ponos_summary 事件流）时
  * 各会话上下文健康度互不串线；血条/光晕/建议卡只读取当前查看会话的数据。
  */
 interface HealthState {
@@ -71,7 +71,7 @@ export const useHealthStore = create<HealthState>()(
         }),
     }),
     {
-      name: 'yfworking-health',
+      name: 'ponos-health',
       version: 1,
       storage: createJSONStorage(() => localStorage),
       partialize: (s) => ({

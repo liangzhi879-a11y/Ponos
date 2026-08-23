@@ -35,8 +35,8 @@ const CHECKS = [
   { id: 'render-health', group: 'render', label: 'diagnostic.check.renderHealth' },
 ]
 
-// dev 调试版经 YFW_HOME env 指向独立目录（与 main.cjs yfwHome() 同口径）
-const YFW_HOME = process.env.YFW_HOME ? resolve(process.env.YFW_HOME) : join(os.homedir(), '.yfworking')
+// dev 调试版经 PONOS_HOME env 指向独立目录（与 main.cjs ponosHome() 同口径）
+const PONOS_HOME = process.env.PONOS_HOME ? resolve(process.env.PONOS_HOME) : join(os.homedir(), '.ponos')
 
 function timeout(p, ms, tag) {
   return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(tag + ' timeout')), ms))])
@@ -91,7 +91,7 @@ function runProbe(cmdArgs, ms) {
 
 // 注意（协调者决议）：logTee 为可选依赖——Task 5 的 IPC diag:export 会传真身；
 // 缺省值时单测（不传 logTee）也能直接跑，exportReport 的日志尾默认空。
-function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort = process.env.YFW_BRIDGE_PORT || '51309' }) {
+function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort = process.env.PONOS_BRIDGE_PORT || '51309' }) {
   let lastSnapshot = null
   let onChange = null
   let timer = null
@@ -106,8 +106,8 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
   }
 
   async function checkKernelBootstrap() {
-    const k = join(YFW_HOME, 'runtime', 'kernel', 'cli.mjs')
-    const b = join(YFW_HOME, 'runtime', 'bun', 'bun.exe')
+    const k = join(PONOS_HOME, 'runtime', 'kernel', 'cli.mjs')
+    const b = join(PONOS_HOME, 'runtime', 'bun', 'bun.exe')
     const ok = existsSync(k) && existsSync(b)
     return { status: ok ? 'ok' : 'warn', detail: ok ? `cached kernel=${k}` : '未生成 bootstrap 缓存（首次启动自动创建）' }
   }
@@ -115,7 +115,7 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
   async function checkKernelLaunch() {
     // runProbe 自带 15s 内部超时已足够；16000 由 CHECKS 的 timeoutMs 在 runAll/rerun 层兜底
     const r = await runProbe([`"${ctx.appPaths.bun}"`, `"${ctx.appPaths.kernel}"`, '--version'], 15000).catch(() => ({ ok: false }))
-    return { status: r.ok && /\(YFW\)/.test(r.stdout) ? 'ok' : 'error', detail: `stdout=${r.stdout?.trim() || ''} exit=${r.exitCode}` }
+    return { status: r.ok && /\(Ponos\)/.test(r.stdout) ? 'ok' : 'error', detail: `stdout=${r.stdout?.trim() || ''} exit=${r.exitCode}` }
   }
 
   async function checkBridgePort() {
@@ -143,7 +143,7 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
   }
 
   async function checkTranscriptDir() {
-    const dir = join(YFW_HOME, 'sessions')
+    const dir = join(PONOS_HOME, 'sessions')
     try { accessSync(dir); return { status: 'ok', detail: dir } } catch (_) { return { status: 'error', detail: `不可读: ${dir}` } }
   }
 
@@ -161,7 +161,7 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
   }
 
   async function checkBrowserWhitelist() {
-    const p = join(YFW_HOME, 'browser-whitelist.json')
+    const p = join(PONOS_HOME, 'browser-whitelist.json')
     try { JSON.parse(readFileSync(p, 'utf-8')); return { status: 'ok', detail: p } } catch (_) { return { status: 'warn', detail: '白名单缺失或不可解析（可选文件）' } }
   }
 
@@ -183,7 +183,7 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
   }
 
   async function checkDoubaoSession() {
-    const p = join(YFW_HOME, 'doubao-session.json')
+    const p = join(PONOS_HOME, 'doubao-session.json')
     try { JSON.parse(readFileSync(p, 'utf-8')); return { status: 'ok', detail: p } } catch (_) { return { status: 'warn', detail: '无豆包会话文件（未使用过）' } }
   }
 
@@ -193,33 +193,33 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
   }
 
   async function checkConfigValid() {
-    const files = [join(YFW_HOME, 'config.json'), join(YFW_HOME, 'settings.json')]
+    const files = [join(PONOS_HOME, 'config.json'), join(PONOS_HOME, 'settings.json')]
     const bad = files.filter(f => { try { JSON.parse(readFileSync(f, 'utf-8')); return false } catch (_) { return true } })
     return { status: bad.length ? 'error' : 'ok', detail: bad.length ? `不可解析: ${bad.join(',')}` : 'config/settings 可解析' }
   }
 
   async function checkProviderValid() {
     try {
-      const cfg = JSON.parse(readFileSync(join(YFW_HOME, 'config.json'), 'utf-8'))
+      const cfg = JSON.parse(readFileSync(join(PONOS_HOME, 'config.json'), 'utf-8'))
       const p = cfg.provider || (cfg.providers || [])[0]
       return { status: p?.apiBaseUrl && p?.apiKey ? 'ok' : 'warn', detail: p?.apiBaseUrl || '未配置完整 provider' }
     } catch (_) { return { status: 'error', detail: 'config.json 不可用' } }
   }
 
   async function checkDataDirs() {
-    const dirs = ['sessions', 'skills', 'memory', 'chats'].map(d => join(YFW_HOME, d))
+    const dirs = ['sessions', 'skills', 'memory', 'chats'].map(d => join(PONOS_HOME, d))
     const bad = dirs.filter(d => { try { mkdirSync(d, { recursive: true }); const f = join(d, '.diag-probe'); writeFileSync(f, '1'); rmSync(f); return false } catch (_) { return true } })
     return { status: bad.length ? 'error' : 'ok', detail: bad.length ? `不可写: ${bad.join(',')}` : '数据目录可写' }
   }
 
   async function checkSkillsIndex() {
-    const p = join(YFW_HOME, 'skills', '_skill_index.json')
+    const p = join(PONOS_HOME, 'skills', '_skill_index.json')
     try { JSON.parse(readFileSync(p, 'utf-8')); return { status: 'ok', detail: '技能索引可解析' } } catch (_) { return { status: 'warn', detail: '技能索引缺失（首次扫描后生成）' } }
   }
 
   async function checkLastBoot() {
     try {
-      const b = JSON.parse(readFileSync(join(YFW_HOME, 'logs', 'last-boot.json'), 'utf-8'))
+      const b = JSON.parse(readFileSync(join(PONOS_HOME, 'logs', 'last-boot.json'), 'utf-8'))
       return { status: b.ok ? 'ok' : 'warn', detail: b.ok ? '上次启动正常' : `上次启动异常（${b.failedAt}）` }
     } catch (_) { return { status: 'unknown', detail: '无启动记录（首启）' } }
   }
@@ -358,7 +358,7 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
   async function exportReport() {
     const snap = lastSnapshot || await runAll()
     const lines = []
-    lines.push(`YFWorking diagnostic report`)
+    lines.push(`Ponos diagnostic report`)
     lines.push(`generated: ${new Date().toISOString()}`)
     lines.push(`overall: ${snap.overall}`)
     lines.push('')

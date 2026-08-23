@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHooks, matchHook } from '../kernel/hooks.mjs'
 
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-hooks-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-hooks-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 test('matchHook：event 精确 + tools 列表过滤 + 缺省匹配全部', () => {
@@ -89,14 +89,14 @@ test('hooks 集成：preToolUse deny → tool_result 携带 hook 消息', async 
   const configDir = join(tmp, 'hcfg')
   const cwd = join(tmp, 'hproj')
   mkdirSync(configDir, { recursive: true })
-  mkdirSync(join(cwd, '.yfworking'), { recursive: true })
+  mkdirSync(join(cwd, '.ponos'), { recursive: true })
   const script = join(tmp, 'deny-all.mjs')
   writeFileSync(script, `
     import { readFileSync } from 'node:fs'
     readFileSync(0, 'utf-8')
     process.stdout.write(JSON.stringify({ deny: true, message: 'HOOK_DENY_MARK' }))
   `, 'utf-8')
-  writeFileSync(join(cwd, '.yfworking', 'settings.json'), JSON.stringify({
+  writeFileSync(join(cwd, '.ponos', 'settings.json'), JSON.stringify({
     hooks: [{ event: 'preToolUse', tools: 'Bash', command: process.execPath, args: [script] }],
   }), 'utf-8')
   const child = spawn(process.execPath, [
@@ -104,7 +104,7 @@ test('hooks 集成：preToolUse deny → tool_result 携带 hook 消息', async 
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion', '--add-dir', cwd,
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const reader = makeReader(child.stdout)
@@ -128,14 +128,14 @@ test('hooks 集成：userPromptSubmit stop → 拦截不进轮次', async () => 
   const configDir = join(tmp, 'hcfg2')
   const cwd = join(tmp, 'hproj2')
   mkdirSync(configDir, { recursive: true })
-  mkdirSync(join(cwd, '.yfworking'), { recursive: true })
+  mkdirSync(join(cwd, '.ponos'), { recursive: true })
   const script = join(tmp, 'stop-all.mjs')
   writeFileSync(script, `
     import { readFileSync } from 'node:fs'
     readFileSync(0, 'utf-8')
     process.stdout.write(JSON.stringify({ stop: true, message: 'STOPPED_BY_HOOK' }))
   `, 'utf-8')
-  writeFileSync(join(cwd, '.yfworking', 'settings.json'), JSON.stringify({
+  writeFileSync(join(cwd, '.ponos', 'settings.json'), JSON.stringify({
     hooks: [{ event: 'userPromptSubmit', command: process.execPath, args: [script] }],
   }), 'utf-8')
   const child = spawn(process.execPath, [
@@ -143,7 +143,7 @@ test('hooks 集成：userPromptSubmit stop → 拦截不进轮次', async () => 
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion', '--add-dir', cwd,
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const reader = makeReader(child.stdout)

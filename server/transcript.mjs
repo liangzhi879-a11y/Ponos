@@ -1,7 +1,7 @@
 // transcript.mjs — GUI 从内核 transcript 按需读取会话消息的三个 handler（供 bridge.mjs 路由接入）。
 //
-// 内核（yfw-kernel/claude-code，claude-code 官方同源）每次会话都在磁盘写 append-only JSONL
-// transcript：<CLAUDE_CONFIG_DIR ?? ~/.yfworking>/projects/<sanitize(cwd)>/<sessionId>.jsonl，
+// 内核（ponos-kernel/claude-code，claude-code 官方同源）每次会话都在磁盘写 append-only JSONL
+// transcript：<CLAUDE_CONFIG_DIR ?? ~/.ponos>/projects/<sanitize(cwd)>/<sessionId>.jsonl，
 // 每行一个原始 entry（type: user/assistant/system/attachment/queue-operation…）。
 //
 // 本模块只负责读文件 + 原样返回 entry，不做任何转换（parentUuid 链重建在 renderer/chatStore 侧）。
@@ -49,7 +49,7 @@ export function isUuidFile(name) {
 /** 返回 transcript 项目根目录（projects 目录本身，不含项目子目录）。 */
 export function transcriptBaseDir() {
   const cfg = process.env.CLAUDE_CONFIG_DIR
-  return join(cfg || join(homedir(), '.yfworking'), 'projects')
+  return join(cfg || join(homedir(), '.ponos'), 'projects')
 }
 
 /** 扫描单个项目目录下所有 UUID transcript 文件，按 mtime 倒序。 */

@@ -30,9 +30,9 @@ triggers:
 
 ```bash
 # 生成TOAI汇总表
-python {{YFW_SKILLS}}/_common/generate_toai_table.py --rd RD表 --ps PS表 --ip IP表
+python {{PONOS_SKILLS}}/_common/generate_toai_table.py --rd RD表 --ps PS表 --ip IP表
 # 校验TOAI汇总表
-python {{YFW_SKILLS}}/_common/validate_toai_table.py --input "00_核心表格/TOAI汇总表.xlsx"
+python {{PONOS_SKILLS}}/_common/validate_toai_table.py --input "00_核心表格/TOAI汇总表.xlsx"
 ```
 
 ## TOAI表格结构

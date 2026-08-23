@@ -1,12 +1,12 @@
-// YFW-turbo 真实 API 冒烟（非破坏性）：Anthropic 协议 env 接线 / chunk 形状 / usage 累计 / 工具 schema 注入
+// Ponos-turbo 真实 API 冒烟（非破坏性）：Anthropic 协议 env 接线 / chunk 形状 / usage 累计 / 工具 schema 注入
 // 用法：
 //   node zz-smoke/smoke-real-api.mjs   # 用 ANTHROPIC_* env（OpenAI 兼容协议已删除）
-// 前置：ANTHROPIC_* env 已配置且未设 YFW_MOCK_API。脚本只打印 base/model，不打印密钥。
+// 前置：ANTHROPIC_* env 已配置且未设 PONOS_MOCK_API。脚本只打印 base/model，不打印密钥。
 import { streamMessages, detectProtocol } from '../kernel/api.mjs'
 import { createEngine } from '../kernel/engine.mjs'
 
-if (process.env.YFW_MOCK_API === '1') {
-  console.error('错误: YFW_MOCK_API=1 会走 mock，先清除再跑真实 API')
+if (process.env.PONOS_MOCK_API === '1') {
+  console.error('错误: PONOS_MOCK_API=1 会走 mock，先清除再跑真实 API')
   process.exit(2)
 }
 

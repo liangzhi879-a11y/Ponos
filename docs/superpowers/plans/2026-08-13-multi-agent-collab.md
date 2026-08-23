@@ -4,17 +4,17 @@
 
 **Goal:** 主 agent 能原生识别 GUI 注册的专业/自定义 agent 并按优势场景分发子任务；前端二级显示各子 agent 运行进度与工具活动流。
 
-**Architecture:** 方案 A（内核零改动）。① agentStore 变更 → IPC `agents:sync` → electron main 写/删 `$YFW_HOME/agents/<id>.md`（内核标准用户级 agents 目录，CLI 进程启动时自动加载，模型经 Agent 工具按 `whenToUse` 路由）。② 内核在 stream-json+verbose 模式输出 `system/task_started / task_progress / task_notification` SDK 事件 → bridge 原样转发 → useYFWCLI 新增分支 → chatStore `subAgentTasks` 切片 → ChatWindow 内二级面板渲染。
+**Architecture:** 方案 A（内核零改动）。① agentStore 变更 → IPC `agents:sync` → electron main 写/删 `$PONOS_HOME/agents/<id>.md`（内核标准用户级 agents 目录，CLI 进程启动时自动加载，模型经 Agent 工具按 `whenToUse` 路由）。② 内核在 stream-json+verbose 模式输出 `system/task_started / task_progress / task_notification` SDK 事件 → bridge 原样转发 → usePonosCLI 新增分支 → chatStore `subAgentTasks` 切片 → ChatWindow 内二级面板渲染。
 
 **Tech Stack:** Electron (main.cjs/preload.cjs)、React + zustand (persist)、TypeScript、Vite。无单元测试框架——每任务验证用 `npm run typecheck`，最终手动验收。
 
 ## Global Constraints
 
-- 零内核改动、零重编译：不得修改 `yfw-kernel/` 与 `release/*/kernel/` 任何文件
-- `$YFW_HOME` = `%USERPROFILE%\.yfworking`（`ensureYfwHome()` 解析）
-- 只注入 `type === 'professional' | 'custom'` 且 `enabled === true` 的 agent；builtin（Explore/general-purpose/Plan/statusline-setup）与 yfworking 不注入
+- 零内核改动、零重编译：不得修改 `ponos-kernel/` 与 `release/*/kernel/` 任何文件
+- `$PONOS_HOME` = `%USERPROFILE%\.ponos`（`ensurePonosHome()` 解析）
+- 只注入 `type === 'professional' | 'custom'` 且 `enabled === true` 的 agent；builtin（Explore/general-purpose/Plan/statusline-setup）与 ponos 不注入
 - `.md` frontmatter 必须含非空 `name` 与 `description`（内核 `parseAgentFromMarkdown` 校验），正文 `prompt` 非空；`description` 换行压成单行并 YAML 双引号转义
-- 只删除 GUI 已知 id（registry `.yfw-managed.json`）的 `.md`，不触碰用户手写文件
+- 只删除 GUI 已知 id（registry `.ponos-managed.json`）的 `.md`，不触碰用户手写文件
 - 所有新增 UI 文案与现有代码一致用简体中文
 - 同步失败静默降级（`.catch(() => {})` / try-catch），不得影响现有会话
 - 事件处理按 `task_id` upsert，终态幂等（已终态任务不被 running/进度覆盖）
@@ -70,13 +70,13 @@ git commit -m "feat(agents): Agent 模型新增 whenToUse 字段，专业 agent 
 
 ---
 
-### Task 2: YFWAPI 类型 + preload 暴露 `agentsSync`
+### Task 2: PonosAPI 类型 + preload 暴露 `agentsSync`
 
 **Files:**
 - Modify: `src/types/index.ts`、`electron/preload.cjs`
 
 **Interfaces:**
-- Produces: `YFWAPI.agentsSync(agents: AgentSyncPayload[]) => Promise<{ ok: boolean; written?: string[]; removed?: string[]; error?: string }>`；`window.yfworkingAPI.agentsSync` 可用（preload）。Task 4（agentStore）调用；Task 3（main IPC）实现。
+- Produces: `PonosAPI.agentsSync(agents: AgentSyncPayload[]) => Promise<{ ok: boolean; written?: string[]; removed?: string[]; error?: string }>`；`window.ponosAPI.agentsSync` 可用（preload）。Task 4（agentStore）调用；Task 3（main IPC）实现。
 
 - [ ] **Step 1: types/index.ts 新增载荷类型与 API 签名**
 
@@ -98,10 +98,10 @@ export interface AgentSyncPayload {
 }
 ```
 
-在 `YFWAPI` 接口（约 336 行）的 `setPetConfig` 之后新增：
+在 `PonosAPI` 接口（约 336 行）的 `setPetConfig` 之后新增：
 
 ```ts
-  /** 将 GUI 注册的专业/自定义 agent 同步为内核 agent 文件（写/删 $YFW_HOME/agents/*.md） */
+  /** 将 GUI 注册的专业/自定义 agent 同步为内核 agent 文件（写/删 $PONOS_HOME/agents/*.md） */
   agentsSync: (agents: AgentSyncPayload[]) => Promise<{ ok: boolean; written?: string[]; removed?: string[]; error?: string }>
 ```
 
@@ -133,7 +133,7 @@ git commit -m "feat(electron): preload 暴露 agentsSync IPC（agent 注册表�
 - Modify: `electron/main.cjs`（`registerIpc()` 内新增 handler；文件内新增 `toYamlString` 工具函数）
 
 **Interfaces:**
-- Consumes: `ensureYfwHome()`（已存在，返回 `$YFW_HOME`）、`path`、`fs`（文件顶部已 require）；IPC 载荷 `AgentSyncPayload[]`（Task 2）
+- Consumes: `ensurePonosHome()`（已存在，返回 `$PONOS_HOME`）、`path`、`fs`（文件顶部已 require）；IPC 载荷 `AgentSyncPayload[]`（Task 2）
 - Produces: `ipcMain.handle('agents:sync', ...)` 返回 `{ ok, written, removed } | { ok: false, error }`
 
 - [ ] **Step 1: 新增 `toYamlString` 工具函数**
@@ -152,16 +152,16 @@ function toYamlString(v) {
 在 `shell:open-path` handler 之后新增：
 
 ```js
-  // Agent 注册表同步：写入/删除 $YFW_HOME/agents/<id>.md，供内核识别 GUI 注册的
+  // Agent 注册表同步：写入/删除 $PONOS_HOME/agents/<id>.md，供内核识别 GUI 注册的
   // 专业/自定义 agent 作为子 agent（方案 A，零内核改动）。
   // 只处理 professional/custom 且 enabled 的 agent；builtin 内核原生已有不注入。
-  // 用 .yfw-managed.json 记录 GUI 管理的 id，删除时只删这些，不触碰用户手写文件。
+  // 用 .ponos-managed.json 记录 GUI 管理的 id，删除时只删这些，不触碰用户手写文件。
   ipcMain.handle('agents:sync', async (_e, agents) => {
     try {
-      const yfwHome = ensureYfwHome()
-      const agentsDir = path.join(yfwHome, 'agents')
+      const ponosHome = ensurePonosHome()
+      const agentsDir = path.join(ponosHome, 'agents')
       fs.mkdirSync(agentsDir, { recursive: true })
-      const registryFile = path.join(agentsDir, '.yfw-managed.json')
+      const registryFile = path.join(agentsDir, '.ponos-managed.json')
       let registry = []
       try { registry = JSON.parse(fs.readFileSync(registryFile, 'utf8')) } catch {}
       if (!Array.isArray(registry)) registry = []
@@ -175,7 +175,7 @@ function toYamlString(v) {
         const whenToUse = String(a.whenToUse || a.description || '').trim()
         if (!a.enabled || !whenToUse) continue
         const prompt = String(a.systemPrompt || '').trim()
-        const body = prompt || `你是 YFWorking 的 Agent「${a.name}」：${a.description}。使用简体中文，严禁自称 Claude、Anthropic 或其他 AI 品牌。`
+        const body = prompt || `你是 Ponos 的 Agent「${a.name}」：${a.description}。使用简体中文，严禁自称 Claude、Anthropic 或其他 AI 品牌。`
         const lines = ['---', `name: ${a.id}`, `description: ${toYamlString(whenToUse)}`]
         if (Array.isArray(a.tools) && a.tools.length > 0) lines.push(`tools: ${a.tools.join(', ')}`)
         if (a.model) lines.push(`model: ${a.model}`)
@@ -220,7 +220,7 @@ git commit -m "feat(electron): agents:sync IPC 写/删内核 agent 文件（.md 
 - Modify: `src/stores/agentStore.ts`
 
 **Interfaces:**
-- Consumes: `window.yfworkingAPI.agentsSync`（Task 2）；store 的 `(set, get)`
+- Consumes: `window.ponosAPI.agentsSync`（Task 2）；store 的 `(set, get)`
 - Produces: 每次增/删/改/启停/重置后自动同步；rehydrate 后启动时同步一次
 
 - [ ] **Step 1: 新增同步 helper**
@@ -230,7 +230,7 @@ git commit -m "feat(electron): agents:sync IPC 写/删内核 agent 文件（.md 
 ```ts
 // 将 agent 注册表同步为内核 agent 文件（.md）。失败静默降级，不影响会话。
 function syncAgentsToKernel(agents: Agent[]) {
-  const api = (window as any).yfworkingAPI
+  const api = (window as any).ponosAPI
   if (!api?.agentsSync) return
   api.agentsSync(agents).catch(() => {})
 }
@@ -328,7 +328,7 @@ git commit -m "feat(agents): 编辑表单新增优势场景字段"
 - Modify: `src/types/index.ts`、`src/stores/chatStore.ts`
 
 **Interfaces:**
-- Produces: `SubAgentTask` 类型；`useChatStore.subAgentTasks: Record<string, SubAgentTask[]>`、`upsertSubAgentTask(conversationId, patch)`、`clearSubAgentTasks(conversationId)`。Task 7（useYFWCLI）写、Task 8（SubAgentPanel）读。
+- Produces: `SubAgentTask` 类型；`useChatStore.subAgentTasks: Record<string, SubAgentTask[]>`、`upsertSubAgentTask(conversationId, patch)`、`clearSubAgentTasks(conversationId)`。Task 7（usePonosCLI）写、Task 8（SubAgentPanel）读。
 
 - [ ] **Step 1: types/index.ts 新增 SubAgentTask**
 
@@ -458,10 +458,10 @@ git commit -m "feat(chat): chatStore 新增 subAgentTasks 切片（upsert/clear�
 
 ---
 
-### Task 7: useYFWCLI 消费内核 system/task_* SDK 事件
+### Task 7: usePonosCLI 消费内核 system/task_* SDK 事件
 
 **Files:**
-- Modify: `src/hooks/useYFWCLI.ts`
+- Modify: `src/hooks/usePonosCLI.ts`
 
 **Interfaces:**
 - Consumes: `useChatStore.upsertSubAgentTask / clearSubAgentTasks`（Task 6）
@@ -555,8 +555,8 @@ Expected: 无错误
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/hooks/useYFWCLI.ts
-git commit -m "feat(chat): useYFWCLI 消费内核 task_started/progress/notification 事件"
+git add src/hooks/usePonosCLI.ts
+git commit -m "feat(chat): usePonosCLI 消费内核 task_started/progress/notification 事件"
 ```
 
 ---
@@ -763,24 +763,24 @@ Expected: `dist/` 生成，tsc + vite 无错误
 - [ ] **Step 2: 同步 release 调试版（用户实际运行环境，见 BUILD.md）**
 
 ```bash
-rm -rf release/YFWorking/dist/*
-cp -r dist/* release/YFWorking/dist/
-cp -r server/* release/YFWorking/server/
-cp -r public/* release/YFWorking/public/
-cp electron/main.cjs electron/preload.cjs release/YFWorking/electron/
-cp YF/jiajia-pixel-pet/jiajia-pet.py release/YFWorking/pet/jiajia-pet.py
+rm -rf release/Ponos/dist/*
+cp -r dist/* release/Ponos/dist/
+cp -r server/* release/Ponos/server/
+cp -r public/* release/Ponos/public/
+cp electron/main.cjs electron/preload.cjs release/Ponos/electron/
+cp YF/jiajia-pixel-pet/jiajia-pet.py release/Ponos/pet/jiajia-pet.py
 ```
 
 - [ ] **Step 3: 手动验收清单（重启应用后逐项勾选）**
 
-- [ ] 启动应用 → 检查 `%USERPROFILE%\.yfworking\agents\` 下生成了 6 个专业 agent 的 `.md`（material-writer.md 等），frontmatter 含 `name`/`description`/`model`/`skills`，正文为 systemPrompt
+- [ ] 启动应用 → 检查 `%USERPROFILE%\.ponos\agents\` 下生成了 6 个专业 agent 的 `.md`（material-writer.md 等），frontmatter 含 `name`/`description`/`model`/`skills`，正文为 systemPrompt
 - [ ] 主 agent 会话中让它"并行处理多个子任务"，对话中可见 Agent 工具调用，且前端出现多行"子 Agent"面板，每行有头像/名称/状态徽章/工具数/tokens/耗时
 - [ ] 展开某子 agent 行 → 工具活动流实时滚动（"当前：Read / Write..."类行），完成/失败状态徽章正确切换，摘要与结果文件路径展示
 - [ ] AgentsPanel 禁用某专业 agent → 对应 `.md` 被删除；新建会话主 agent 不再收到该 agent
 - [ ] 手动添加自定义 agent（填名称/描述/优势场景/系统提示词）→ 自动生成 `.md`，新建会话主 agent 能识别调用
 - [ ] 自定义 agent 编辑"优势场景"后 → `.md` 的 description 同步更新；留空时回退用描述
 - [ ] 会话退出后"子 Agent"面板清空；无子任务运行时无任何残留 UI
-- [ ] 用户手写的 `.yfworking/agents/xxx.md`（不在 GUI 注册表）不受同步影响，仍被内核加载
+- [ ] 用户手写的 `.ponos/agents/xxx.md`（不在 GUI 注册表）不受同步影响，仍被内核加载
 
 - [ ] **Step 4: Commit 剩余构建产物（如有）**
 
@@ -807,7 +807,7 @@ git commit -m "build: 同步多 agent 协同功能到 release 调试版"
 
 ## 风险与备注
 
-- **生效时机**：每个会话独立 CLI 进程，spawn 时读取 `$YFW_HOME/agents/`；已存在会话不感知 agent 变更（与 systemPrompt 行为一致）
+- **生效时机**：每个会话独立 CLI 进程，spawn 时读取 `$PONOS_HOME/agents/`；已存在会话不感知 agent 变更（与 systemPrompt 行为一致）
 - **事件时序**：assistant 消息（含 Agent tool_use）先于 task_started 到达，`toolUseAgentMap` 先填充；若个别时序异常导致取名回退为 task_id 短码，符合 spec 边界设计
 - **cmd.exe 限制**：全程 .md 文件注入，不碰 `--agents` JSON 命令行
 - **后台子 agent**：`result` 事件后任务仍可更新（面板独立于 leader 消息），Task 8 持续订阅 store

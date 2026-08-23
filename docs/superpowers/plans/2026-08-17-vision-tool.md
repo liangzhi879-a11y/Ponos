@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- 密钥零新增：视觉调用复用 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`，仅新增 `YFW_VISION_MODEL` 环境变量
+- 密钥零新增：视觉调用复用 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`，仅新增 `PONOS_VISION_MODEL` 环境变量
 - `vision_prepare.py` 禁止包含任何密钥/网络逻辑（仅图像预处理）
 - VisionTool 声明 `isReadOnly: true`，权限模型对齐 OcrTool
 - 视觉 API 请求为 Anthropic 消息格式（`POST {baseUrl}/v1/messages`，image block + text），60s 超时，`max_tokens: 1024`
@@ -300,8 +300,8 @@ git commit -m "feat(vision): vision_prepare.py 图片/PDF 预处理引擎（PNG 
 ### Task 2: visionClient.ts Node 侧 API 客户端
 
 **Files:**
-- Create: `yfw-kernel/claude-code/src/utils/visionClient.ts`
-- Create: `yfw-kernel/claude-code/src/utils/visionClient.test.ts`
+- Create: `ponos-kernel/claude-code/src/utils/visionClient.ts`
+- Create: `ponos-kernel/claude-code/src/utils/visionClient.test.ts`
 
 **Interfaces:**
 - Consumes: Task 1 的 `prepare` 输出 JSON（`md5`/`pages[].png`/`truncated`）
@@ -352,14 +352,14 @@ describe('getVisionConfigFromEnv', () => {
   it('returns null when any key missing', () => {
     delete process.env.ANTHROPIC_BASE_URL
     delete process.env.ANTHROPIC_AUTH_TOKEN
-    delete process.env.YFW_VISION_MODEL
+    delete process.env.PONOS_VISION_MODEL
     expect(getVisionConfigFromEnv()).toBeNull()
   })
 
   it('reads config from env and trims trailing slash', () => {
     vi.stubEnv('ANTHROPIC_BASE_URL', 'https://api.example.com/anthropic/')
     vi.stubEnv('ANTHROPIC_AUTH_TOKEN', 'sk-test')
-    vi.stubEnv('YFW_VISION_MODEL', 'vision-model')
+    vi.stubEnv('PONOS_VISION_MODEL', 'vision-model')
     const cfg = getVisionConfigFromEnv()
     expect(cfg).toEqual({
       baseUrl: 'https://api.example.com/anthropic',
@@ -459,7 +459,7 @@ describe('cache helpers', () => {
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd yfw-kernel/claude-code && npx vitest run src/utils/visionClient.test.ts`
+Run: `cd ponos-kernel/claude-code && npx vitest run src/utils/visionClient.test.ts`
 Expected: FAIL（模块不存在 / 函数未定义）
 
 - [ ] **Step 3: 实现 `visionClient.ts`**
@@ -496,12 +496,12 @@ const VISION_MAX_TOKENS = 1024
 
 /**
  * 从环境变量读取视觉模型配置（由 bridge 注入）：
- * ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 复用主 provider，YFW_VISION_MODEL 指定视觉模型。
+ * ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 复用主 provider，PONOS_VISION_MODEL 指定视觉模型。
  */
 export function getVisionConfigFromEnv(): VisionClientConfig | null {
   const baseUrl = process.env.ANTHROPIC_BASE_URL
   const authToken = process.env.ANTHROPIC_AUTH_TOKEN
-  const model = process.env.YFW_VISION_MODEL
+  const model = process.env.PONOS_VISION_MODEL
   if (!baseUrl || !authToken || !model) return null
   return { baseUrl: baseUrl.replace(/\/+$/, ''), authToken, model }
 }
@@ -619,13 +619,13 @@ export function writeVisionCache(
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: `cd yfw-kernel/claude-code && npx vitest run src/utils/visionClient.test.ts`
+Run: `cd ponos-kernel/claude-code && npx vitest run src/utils/visionClient.test.ts`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add yfw-kernel/claude-code/src/utils/visionClient.ts yfw-kernel/claude-code/src/utils/visionClient.test.ts
+git add ponos-kernel/claude-code/src/utils/visionClient.ts ponos-kernel/claude-code/src/utils/visionClient.test.ts
 git commit -m "feat(vision): visionClient Node 侧视觉 API 客户端（Anthropic 格式+缓存）"
 ```
 
@@ -634,11 +634,11 @@ git commit -m "feat(vision): visionClient Node 侧视觉 API 客户端（Anthrop
 ### Task 3: VisionTool 内核工具
 
 **Files:**
-- Create: `yfw-kernel/claude-code/src/tools/VisionTool/VisionTool.ts`
-- Create: `yfw-kernel/claude-code/src/tools/VisionTool/prompt.ts`
-- Create: `yfw-kernel/claude-code/src/tools/VisionTool/UI.tsx`
-- Create: `yfw-kernel/claude-code/src/tools/VisionTool/VisionTool.test.ts`
-- Modify: `yfw-kernel/claude-code/src/tools.ts`（注册，紧随 `OcrTool` 之后，约 207-210 行）
+- Create: `ponos-kernel/claude-code/src/tools/VisionTool/VisionTool.ts`
+- Create: `ponos-kernel/claude-code/src/tools/VisionTool/prompt.ts`
+- Create: `ponos-kernel/claude-code/src/tools/VisionTool/UI.tsx`
+- Create: `ponos-kernel/claude-code/src/tools/VisionTool/VisionTool.test.ts`
+- Modify: `ponos-kernel/claude-code/src/tools.ts`（注册，紧随 `OcrTool` 之后，约 207-210 行）
 
 **Interfaces:**
 - Consumes: Task 1 的 `vision_prepare.py`（spawn），Task 2 的 `getVisionConfigFromEnv` / `describeImages` / `buildVisionCacheKey` / `readVisionCache` / `writeVisionCache` / `VISION_DEFAULT_INSTRUCTION`
@@ -702,7 +702,7 @@ describe('VisionTool.call', () => {
   it('fails clearly when vision model not configured', async () => {
     vi.stubEnv('ANTHROPIC_BASE_URL', '')
     vi.stubEnv('ANTHROPIC_AUTH_TOKEN', '')
-    vi.stubEnv('YFW_VISION_MODEL', '')
+    vi.stubEnv('PONOS_VISION_MODEL', '')
     const file = makeTmpPng()
     await expect(
       VisionTool.call({ file_path: file }, makeCtx()),
@@ -712,7 +712,7 @@ describe('VisionTool.call', () => {
   it('throws when file does not exist', async () => {
     vi.stubEnv('ANTHROPIC_BASE_URL', 'https://api.example.com/anthropic')
     vi.stubEnv('ANTHROPIC_AUTH_TOKEN', 'sk-1')
-    vi.stubEnv('YFW_VISION_MODEL', 'vm')
+    vi.stubEnv('PONOS_VISION_MODEL', 'vm')
     await expect(
       VisionTool.call({ file_path: '/no/such/file.png' }, makeCtx()),
     ).rejects.toThrow(/does not exist/)
@@ -721,10 +721,10 @@ describe('VisionTool.call', () => {
   it('happy path: prepares, calls vision API, returns description', async () => {
     vi.stubEnv('ANTHROPIC_BASE_URL', 'https://api.example.com/anthropic')
     vi.stubEnv('ANTHROPIC_AUTH_TOKEN', 'sk-1')
-    vi.stubEnv('YFW_VISION_MODEL', 'vm')
+    vi.stubEnv('PONOS_VISION_MODEL', 'vm')
     // 指向真实 runtime（dev 布局：内核仓库同级 runtime/）
-    vi.stubEnv('YFWORKING_PYTHON', process.cwd().replace(/\\/g, '/').split('/yfw-kernel')[0] + '/runtime/python/python.exe')
-    vi.stubEnv('YFWORKING_VISION_PREPARE', process.cwd().replace(/\\/g, '/').split('/yfw-kernel')[0] + '/runtime/skills/_common/vision_prepare.py')
+    vi.stubEnv('PONOS_PYTHON', process.cwd().replace(/\\/g, '/').split('/ponos-kernel')[0] + '/runtime/python/python.exe')
+    vi.stubEnv('PONOS_VISION_PREPARE', process.cwd().replace(/\\/g, '/').split('/ponos-kernel')[0] + '/runtime/skills/_common/vision_prepare.py')
     const file = makeTmpPng()
     const out = await VisionTool.call({ file_path: file }, makeCtx())
     const data = out.data as { description: string; model: string; cacheHit: boolean }
@@ -738,7 +738,7 @@ describe('VisionTool.call', () => {
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd yfw-kernel/claude-code && npx vitest run src/tools/VisionTool/VisionTool.test.ts`
+Run: `cd ponos-kernel/claude-code && npx vitest run src/tools/VisionTool/VisionTool.test.ts`
 Expected: FAIL（`Cannot find module './VisionTool.js'`）
 
 - [ ] **Step 3: 实现 `prompt.ts`**
@@ -981,11 +981,11 @@ async function runPrepare(
 ): Promise<{ md5: string; pages: { page: number; png: string }[]; truncated: boolean }> {
   const tmpJson = path.join(
     tmpdir(),
-    `yfw-vision-${process.pid}-${Date.now()}-${Math.round(Math.random() * 1e9)}.json`,
+    `ponos-vision-${process.pid}-${Date.now()}-${Math.round(Math.random() * 1e9)}.json`,
   )
   const tmpPngDir = path.join(
     tmpdir(),
-    `yfw-vision-png-${process.pid}-${Date.now()}-${Math.round(Math.random() * 1e9)}`,
+    `ponos-vision-png-${process.pid}-${Date.now()}-${Math.round(Math.random() * 1e9)}`,
   )
   const args = [
     engine,
@@ -1170,16 +1170,16 @@ export const VisionTool = buildTool({
       throw e
     }
 
-    const python = resolveSiblingRuntime(PYTHON_REL_PARTS, 'YFWORKING_PYTHON')
+    const python = resolveSiblingRuntime(PYTHON_REL_PARTS, 'PONOS_PYTHON')
     if (!python) {
       throw new Error(
-        'Vision runtime not found: expected runtime/python/python.exe next to the kernel, or set YFWORKING_PYTHON.',
+        'Vision runtime not found: expected runtime/python/python.exe next to the kernel, or set PONOS_PYTHON.',
       )
     }
-    const engine = resolveSiblingRuntime(PREPARE_REL_PARTS, 'YFWORKING_VISION_PREPARE')
+    const engine = resolveSiblingRuntime(PREPARE_REL_PARTS, 'PONOS_VISION_PREPARE')
     if (!engine) {
       throw new Error(
-        'Vision prepare engine not found: expected runtime/skills/_common/vision_prepare.py next to the kernel, or set YFWORKING_VISION_PREPARE.',
+        'Vision prepare engine not found: expected runtime/skills/_common/vision_prepare.py next to the kernel, or set PONOS_VISION_PREPARE.',
       )
     }
 
@@ -1259,14 +1259,14 @@ import { VisionTool } from './tools/VisionTool/VisionTool.js'
 
 - [ ] **Step 7: 跑全部测试确认通过**
 
-Run: `cd yfw-kernel/claude-code && npx vitest run src/tools/VisionTool/VisionTool.test.ts`
+Run: `cd ponos-kernel/claude-code && npx vitest run src/tools/VisionTool/VisionTool.test.ts`
 Expected: PASS（validateInput 3 例 + call 2 例）
 再跑 `npx vitest run` 确认内核全量不回归。
 
 - [ ] **Step 8: 提交**
 
 ```bash
-git add yfw-kernel/claude-code/src/tools/VisionTool/ yfw-kernel/claude-code/src/tools.ts
+git add ponos-kernel/claude-code/src/tools/VisionTool/ ponos-kernel/claude-code/src/tools.ts
 git commit -m "feat(vision): VisionTool 内核工具（spawn 预处理 + visionClient 调用 + 缓存）"
 ```
 
@@ -1275,9 +1275,9 @@ git commit -m "feat(vision): VisionTool 内核工具（spawn 预处理 + visionC
 ### Task 4: 对话图片自动桥接
 
 **Files:**
-- Create: `yfw-kernel/claude-code/src/utils/visionBridge.ts`
-- Create: `yfw-kernel/claude-code/src/utils/visionBridge.test.ts`
-- Modify: `yfw-kernel/claude-code/src/utils/attachments.ts:1062-1073`
+- Create: `ponos-kernel/claude-code/src/utils/visionBridge.ts`
+- Create: `ponos-kernel/claude-code/src/utils/visionBridge.test.ts`
+- Modify: `ponos-kernel/claude-code/src/utils/attachments.ts:1062-1073`
 
 **Interfaces:**
 - Consumes: Task 2 的 `getVisionConfigFromEnv` / `describeImages` / `VISION_DEFAULT_INSTRUCTION`
@@ -1300,7 +1300,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', mockFetch)
   vi.stubEnv('ANTHROPIC_BASE_URL', 'https://api.example.com/anthropic')
   vi.stubEnv('ANTHROPIC_AUTH_TOKEN', 'sk-1')
-  vi.stubEnv('YFW_VISION_MODEL', 'vision-model')
+  vi.stubEnv('PONOS_VISION_MODEL', 'vision-model')
 })
 
 afterEach(() => {
@@ -1319,7 +1319,7 @@ describe('maybeBridgeImageBlocks', () => {
   })
 
   it('passes through when vision model not configured', async () => {
-    vi.stubEnv('YFW_VISION_MODEL', '')
+    vi.stubEnv('PONOS_VISION_MODEL', '')
     const blocks = [imageBlock()]
     const out = await maybeBridgeImageBlocks(blocks)
     expect(out).toEqual(blocks)
@@ -1354,7 +1354,7 @@ describe('maybeBridgeImageBlocks', () => {
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd yfw-kernel/claude-code && npx vitest run src/utils/visionBridge.test.ts`
+Run: `cd ponos-kernel/claude-code && npx vitest run src/utils/visionBridge.test.ts`
 Expected: FAIL（模块不存在）
 
 - [ ] **Step 3: 实现 `visionBridge.ts`**
@@ -1447,14 +1447,14 @@ import { maybeBridgeImageBlocks } from './visionBridge.js'
 
 - [ ] **Step 5: 跑测试确认通过 + 全量不回归**
 
-Run: `cd yfw-kernel/claude-code && npx vitest run src/utils/visionBridge.test.ts`
+Run: `cd ponos-kernel/claude-code && npx vitest run src/utils/visionBridge.test.ts`
 Expected: PASS
 再跑 `npx vitest run` 全量。
 
 - [ ] **Step 6: 提交**
 
 ```bash
-git add yfw-kernel/claude-code/src/utils/visionBridge.ts yfw-kernel/claude-code/src/utils/visionBridge.test.ts yfw-kernel/claude-code/src/utils/attachments.ts
+git add ponos-kernel/claude-code/src/utils/visionBridge.ts ponos-kernel/claude-code/src/utils/visionBridge.test.ts ponos-kernel/claude-code/src/utils/attachments.ts
 git commit -m "feat(vision): 对话图片自动桥接——主模型非视觉时 image block 转文字描述"
 ```
 
@@ -1464,14 +1464,14 @@ git commit -m "feat(vision): 对话图片自动桥接——主模型非视觉时
 
 **Files:**
 - Modify: `src/types/index.ts:269-277`（`ModelProvider` 加 `visionModel?: string`）
-- Modify: `server/bridge.mjs`（`syncKernelSettings` 中 `existing.env` 加 `YFW_VISION_MODEL`）
+- Modify: `server/bridge.mjs`（`syncKernelSettings` 中 `existing.env` 加 `PONOS_VISION_MODEL`）
 - Modify: `src/stores/settingsStore.ts`（providers 初始化值加 `visionModel: ''`）
 - Modify: `src/components/settings/SettingsView.tsx`（"视觉模型"下拉 + "自动图片桥接"开关）
 - Modify: `src/i18n/translations/zh-CN.ts`、`src/i18n/translations/en-US.ts`（新增文案键）
 - Verify: `npm run typecheck`（tsc --noEmit）
 
 **Interfaces:**
-- Produces: `ModelProvider.visionModel?: string`（前端存储）；`YFW_VISION_MODEL` env（bridge 注入内核，VisionTool/桥接读取）
+- Produces: `ModelProvider.visionModel?: string`（前端存储）；`PONOS_VISION_MODEL` env（bridge 注入内核，VisionTool/桥接读取）
 
 - [ ] **Step 1: 类型扩展**
 
@@ -1498,7 +1498,7 @@ export interface ModelProvider {
 `server/bridge.mjs` 的 `syncKernelSettings` 中 `existing.env` 对象（约 320-329 行）加一行（在 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 行后）：
 
 ```js
-      YFW_VISION_MODEL: provider.visionModel || '',
+      PONOS_VISION_MODEL: provider.visionModel || '',
 ```
 
 - [ ] **Step 3: settingsStore 默认值**
@@ -1570,7 +1570,7 @@ git commit -m "feat(vision): provider 视觉模型配置（visionModel 字段 + 
 
 - [ ] **Step 1: 内核测试与构建**
 
-Run: `cd yfw-kernel/claude-code && npx vitest run`（全量通过）→ `bun scripts/build-bundle.ts`（构建内核 bundle）
+Run: `cd ponos-kernel/claude-code && npx vitest run`（全量通过）→ `bun scripts/build-bundle.ts`（构建内核 bundle）
 
 - [ ] **Step 2: 前端构建**
 

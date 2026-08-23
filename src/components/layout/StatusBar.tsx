@@ -1,7 +1,7 @@
 import { Shield, Cpu, Wifi, WifiOff, Activity } from 'lucide-react'
 import { useChatStore } from '@/stores/chatStore'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { useYFWCLI } from '@/hooks/useYFWCLI'
+import { usePonosCLI } from '@/hooks/usePonosCLI'
 import { useTranslation } from '@/i18n/useTranslation'
 import { Tooltip } from '@/components/ui'
 import { cn } from '@/lib/utils'
@@ -45,7 +45,7 @@ export function StatusBar() {
     return tokens
   })
   const settings = useSettingsStore(s => s.settings)
-  const { connected } = useYFWCLI()
+  const { connected } = usePonosCLI()
   const { t } = useTranslation()
 
   const runningTasks = backgroundTasks.filter(t => t.status === 'running')

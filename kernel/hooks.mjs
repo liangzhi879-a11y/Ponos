@@ -36,7 +36,7 @@ function parseDecision(rule, event, output) {
 async function runHook(rule, payload) {
   const started = Date.now()
   const child = spawn(rule.command, rule.args || [], {
-    env: { ...process.env, YFW_HOOK_EVENT: payload.event || '' },
+    env: { ...process.env, PONOS_HOOK_EVENT: payload.event || '' },
     timeout: rule.timeoutMs || 10_000,
     windowsHide: true,
   })

@@ -21,7 +21,7 @@ export default function App() {
 function MainApp() {
   const s = useSettingsStore(st => st.settings)
   useEffect(() => {
-    const api = window.yfworkingAPI
+    const api = window.ponosAPI
     api?.setTrayBehavior?.(s.minimizeToTray)
     api?.setPetConfig?.({ enabled: s.petEnabled, size: s.petSize, randomChat: s.petRandomChat, pet: s.petType })
   }, [s.minimizeToTray, s.petEnabled, s.petSize, s.petRandomChat, s.petType])

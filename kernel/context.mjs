@@ -1,4 +1,4 @@
-// YFW-turbo 上下文管理（docs/superpowers/specs/2026-08-20-yfw-turbo-inner-core-design.md §5/§6.3）
+// Ponos-turbo 上下文管理（docs/superpowers/specs/2026-08-20-ponos-turbo-inner-core-design.md §5/§6.3）
 // ---------------------------------------------------------------------------
 // 零依赖纯函数：token 启发式计价（块级密度系数）、模型窗口表、pre-step 压力
 // 判定、tokenLedger 四区记账、usage 锚点优化（KV 前缀缓存近似）。全部确定性，

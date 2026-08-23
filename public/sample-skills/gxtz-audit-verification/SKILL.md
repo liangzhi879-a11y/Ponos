@@ -14,23 +14,23 @@ triggers:
 ## 角色定位
 
 > **你是"高新技术企业认定项目老师"**。服务于用户（项目人员），不直接面向客户企业。
-> 完整角色定义（三角关系模型/专业领域/能力边界/决策权限/沟通准则）详见 `{{YFW_SKILLS}}/_common/agent_role.md`。
+> 完整角色定义（三角关系模型/专业领域/能力边界/决策权限/沟通准则）详见 `{{PONOS_SKILLS}}/_common/agent_role.md`。
 
 # 高新专审报告核对技能
 
 <!-- SECTION_BEGIN: tech_stack_reference -->
-## 技术栈引用 → 详见 {{YFW_SKILLS}}/_common/SHARED_tech_stack.md
+## 技术栈引用 → 详见 {{PONOS_SKILLS}}/_common/SHARED_tech_stack.md
 > 处理文档前先查表 doc_toolkit.py info，禁止自行尝试不同库。
 <!-- SECTION_END: tech_stack_reference -->
 
 <!-- SECTION_BEGIN: ocr_reference -->
-## OCR能力引用 → 详见 {{YFW_SKILLS}}/_common/SHARED_ocr_reference.md
+## OCR能力引用 → 详见 {{PONOS_SKILLS}}/_common/SHARED_ocr_reference.md
 > PDF混合型必须用 --mode auto。扫描件用RapidOCR(ONNX)。
-> ⚠️ OCR强制铁律：见 {{YFW_SKILLS}}/_common/SHARED_ocr_mandatory.md（先OCR后操作，禁止猜测，必须等待）
+> ⚠️ OCR强制铁律：见 {{PONOS_SKILLS}}/_common/SHARED_ocr_mandatory.md（先OCR后操作，禁止猜测，必须等待）
 <!-- SECTION_END: ocr_reference -->
 
 <!-- SECTION_BEGIN: no_ai_watermark -->
-## 输出资料合规规则 → 详见 {{YFW_SKILLS}}/_common/SHARED_no_ai_watermark.md
+## 输出资料合规规则 → 详见 {{PONOS_SKILLS}}/_common/SHARED_no_ai_watermark.md
 > 禁止AI水印。文档版本管理: 旧版.bak备份。
 <!-- SECTION_END: no_ai_watermark -->
 
@@ -72,7 +72,7 @@ triggers:
 
 1. **禁止对金额差异做严重性警告**：事务所会根据审计调整，金额差异是正常的，仅列为信息性
 2. **禁止跨年度Sheet聚合核对**：RD项目按年度Sheet分别核对，不跨表聚合（避免误报）
-3. **禁止跳过脚本执行**：所有 `python {{YFW_SKILLS}}/_common/xxx.py` 命令必须通过 Bash 真正执行
+3. **禁止跳过脚本执行**：所有 `python {{PONOS_SKILLS}}/_common/xxx.py` 命令必须通过 Bash 真正执行
 4. **禁止跳过审核步骤**：审核验证步骤必须执行且通过，未通过时不得继续后续步骤
 5. **禁止自行兜底**：脚本报错时不得自行编写兜底代码，必须停止并告警由用户决定
 6. **禁止模糊匹配技术领域**：技术领域必须逐字对照，包括编号前缀（如"六、"、"1、"）
@@ -103,17 +103,17 @@ triggers:
 
 ## 自主确认机制
 
-> 通用规范详见 {{YFW_SKILLS}}/_common/SHARED_autonomous_confirmation.md
+> 通用规范详见 {{PONOS_SKILLS}}/_common/SHARED_autonomous_confirmation.md
 > agent 必须遵守：5项判断原则 + 4类触发(A/B/C/D) + 每步自问5问 + 确认交互规范(AskUserQuestion) + 5条禁止行为。
 ## 质疑与协同审查机制（通用规范）
 
-> 通用规范详见 {{YFW_SKILLS}}/_common/SHARED_questioning_review.md
+> 通用规范详见 {{PONOS_SKILLS}}/_common/SHARED_questioning_review.md
 > agent 必须遵守：四类触发(E/F/G/H) + 6条自问 + 质疑交互规范(AskUserQuestion) + 6条禁止行为 + 人机协同流程 + 质疑记录要求。
 ## 蜂群协同
 
-> 通用规范详见 {{YFW_SKILLS}}/_common/SHARED_swarm_collaboration.md
+> 通用规范详见 {{PONOS_SKILLS}}/_common/SHARED_swarm_collaboration.md
 > 跨技能并行执行 + subagent规范 + file_lock并发控制。
-## 交叉验证协议 → 详见 {{YFW_SKILLS}}/_common/SHARED_cross_validation.md
+## 交叉验证协议 → 详见 {{PONOS_SKILLS}}/_common/SHARED_cross_validation.md
 > 关键决策点强制交叉验证。
 <!-- SECTION_END: cross_validation_protocol -->
 
@@ -129,7 +129,7 @@ triggers:
 ### 脚本调用规范
 
 ```
-python {{YFW_SKILLS}}/_common/xxx.py <参数>
+python {{PONOS_SKILLS}}/_common/xxx.py <参数>
 ```
 
 ## 审核验证标准（agent 必须执行且通过）
@@ -137,7 +137,7 @@ python {{YFW_SKILLS}}/_common/xxx.py <参数>
 ### 审核脚本调用
 
 ```
-python {{YFW_SKILLS}}/_common/validate_audit_verification.py --dir "输出目录" --project-root "项目根目录"
+python {{PONOS_SKILLS}}/_common/validate_audit_verification.py --dir "输出目录" --project-root "项目根目录"
 ```
 
 ### 审核通过条件
@@ -176,7 +176,7 @@ python {{YFW_SKILLS}}/_common/validate_audit_verification.py --dir "输出目录
 
 **企微缓存预收集提示（可选）**：
 如果补充资料目录为空或关键资料缺失，可调用企微 CLI 从企微缓存目录预收集：
-python {{YFW_SKILLS}}/_common/wecom_query.py diagnose
+python {{PONOS_SKILLS}}/_common/wecom_query.py diagnose
 详见模块十二：企业微信会话实时查询与附件收集。
 
 ### 第零步完：确认进度依赖（v1.x.1新增，进度管理集成）
@@ -184,18 +184,18 @@ python {{YFW_SKILLS}}/_common/wecom_query.py diagnose
 在开始工作前，检查本技能的前置阶段是否已完成：
 
 ```bash
-python {{YFW_SKILLS}}/_common/progress_sync.py check-deps /n    --project-root "." /n    --skill "gxtz-audit-verification"
+python {{PONOS_SKILLS}}/_common/progress_sync.py check-deps /n    --project-root "." /n    --skill "gxtz-audit-verification"
 ```
 
 若返回 WARNING 提示存在未完成的前置阶段，agent 应提示用户先完成前置依赖。
 
-> 进度管理集成说明详见: `{{YFW_SKILLS}}/gxtz-progress-manager/SKILL.md`
+> 进度管理集成说明详见: `{{PONOS_SKILLS}}/gxtz-progress-manager/SKILL.md`
 
 
 ### 第一步：项目初始化（强制执行，不可跳过）
 
 ```bash
-python {{YFW_SKILLS}}/_common/project_context_manager.py init --enterprise "企业名称" --year 年份
+python {{PONOS_SKILLS}}/_common/project_context_manager.py init --enterprise "企业名称" --year 年份
 ```
 
 - 失败处理：立即停止，输出错误日志，不得自行兜底
@@ -203,7 +203,7 @@ python {{YFW_SKILLS}}/_common/project_context_manager.py init --enterprise "企�
 ### 第二步：定位专审报告文件
 
 ```bash
-python {{YFW_SKILLS}}/_common/audit_report_verifier.py locate --supplement-dir "_补充资料目录" --output "专审文件清单.json"
+python {{PONOS_SKILLS}}/_common/audit_report_verifier.py locate --supplement-dir "_补充资料目录" --output "专审文件清单.json"
 ```
 
 **注意事项**：
@@ -221,7 +221,7 @@ python {{YFW_SKILLS}}/_common/audit_report_verifier.py locate --supplement-dir "
 ### 第三步：数据提取
 
 ```bash
-python {{YFW_SKILLS}}/_common/audit_report_verifier.py extract --file-list "专审文件清单.json" --output "专审数据.json"
+python {{PONOS_SKILLS}}/_common/audit_report_verifier.py extract --file-list "专审文件清单.json" --output "专审数据.json"
 ```
 
 **注意事项**：
@@ -247,7 +247,7 @@ python {{YFW_SKILLS}}/_common/audit_report_verifier.py extract --file-list "专�
 ### 第四步：5维度核对
 
 ```bash
-python {{YFW_SKILLS}}/_common/audit_report_verifier.py verify --audit-data "专审数据.json" --core-tables-dir "00_核心表格目录" --output "核对结果.json"
+python {{PONOS_SKILLS}}/_common/audit_report_verifier.py verify --audit-data "专审数据.json" --core-tables-dir "00_核心表格目录" --output "核对结果.json"
 ```
 
 **5个核对维度**：
@@ -270,7 +270,7 @@ python {{YFW_SKILLS}}/_common/audit_report_verifier.py verify --audit-data "专�
 ### 第五步：生成核对报告
 
 ```bash
-python {{YFW_SKILLS}}/_common/audit_report_verifier.py generate-report --verify-result "核对结果.json" --output "核对报告.md" --enterprise "企业名称"
+python {{PONOS_SKILLS}}/_common/audit_report_verifier.py generate-report --verify-result "核对结果.json" --output "核对报告.md" --enterprise "企业名称"
 ```
 
 **报告结构**（7章节）：
@@ -290,7 +290,7 @@ python {{YFW_SKILLS}}/_common/audit_report_verifier.py generate-report --verify-
 ### 最后一步：审核验证（必须通过才能提交）
 
 ```bash
-python {{YFW_SKILLS}}/_common/validate_audit_verification.py --dir "输出目录" --project-root "项目根目录"
+python {{PONOS_SKILLS}}/_common/validate_audit_verification.py --dir "输出目录" --project-root "项目根目录"
 ```
 
 **校验项**：
@@ -310,7 +310,7 @@ python {{YFW_SKILLS}}/_common/validate_audit_verification.py --dir "输出目录
 完成所有工作后、文件整理前，更新进度看板：
 
 ```bash
-python {{YFW_SKILLS}}/_common/progress_sync.py update-stage /n    --project-root "." /n    --skill "gxtz-audit-verification" /n    --status completed
+python {{PONOS_SKILLS}}/_common/progress_sync.py update-stage /n    --project-root "." /n    --skill "gxtz-audit-verification" /n    --status completed
 ```
 
 此命令将自动匹配本技能对应的阶段并标记为"已完成"。
@@ -356,14 +356,14 @@ python {{YFW_SKILLS}}/_common/progress_sync.py update-stage /n    --project-root
 ---
 
 <!-- SECTION_BEGIN: provenance_verification v2.7 -->
-## 溯源核验 → 详见 {{YFW_SKILLS}}/_common/SHARED_provenance.md
+## 溯源核验 → 详见 {{PONOS_SKILLS}}/_common/SHARED_provenance.md
 > 关键字段值必须与源文件精确一致，禁止改写。
 <!-- SECTION_END: provenance_verification -->
 
 ---
 
 <!-- SECTION_BEGIN: authoritative_terms_verification v2.6 -->
-## 权威术语核验 → 详见 {{YFW_SKILLS}}/_common/SHARED_authoritative_terms.md
+## 权威术语核验 → 详见 {{PONOS_SKILLS}}/_common/SHARED_authoritative_terms.md
 > 输出前强制扫描权威术语。
 <!-- SECTION_END: authoritative_terms_verification -->
 

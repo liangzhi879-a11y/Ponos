@@ -6,12 +6,12 @@
 
 **Architecture:** 新建 kernel/redact.mjs（脱敏纯函数）+ kernel/audit.mjs（审计聚合纯函数）+ kernel/config.mjs（configDir 解析）；session.mjs 落盘前脱敏（内存模型输入保留原文）；tools.mjs Bash/OCR spawn 显式白名单 env；permissions.mjs 规则 schema 优先于默认判定；withinBoundary realpath 解符号链接逃逸。
 
-**Tech Stack:** Node.js ESM（零 npm 依赖）、node:test + spawn 集成测试（YFW_MOCK_API=1）、NDJSON transcript（server/transcript.mjs 同一文件格式）。
+**Tech Stack:** Node.js ESM（零 npm 依赖）、node:test + spawn 集成测试（PONOS_MOCK_API=1）、NDJSON transcript（server/transcript.mjs 同一文件格式）。
 
 ## Global Constraints
 
 - **内核优先原则（用户硬性前提）**：脱敏、白名单、审计聚合、规则解析、路径加固全部在 kernel/；bridge 仅 /audit 与 /permissions 的 REST 薄壳（读文件 + 调内核纯函数）；前端零新增设置项。S3-2（权限面板 UI）、S1-2（审计可视化）为本计划外——内核产出的能力已可供前端消费，UI 后续单独做。
-- 脱敏语义：**磁盘 transcript 脱敏、内存模型输入保留原文**（deriveMessages 不走落盘脱敏层）；`YFW_KEEP_SECRETS=1` 时磁盘也保留原文（用户显式选择）。
+- 脱敏语义：**磁盘 transcript 脱敏、内存模型输入保留原文**（deriveMessages 不走落盘脱敏层）；`PONOS_KEEP_SECRETS=1` 时磁盘也保留原文（用户显式选择）。
 - 规则优先级：显式规则 deny > ask > allow；无规则命中时行为与现状完全一致（highrisk 默认审批）。
 - 向后兼容：现有 221+ 测试零破坏（withinBoundary 加固不得拒绝既有合法路径；env 白名单不得破坏 Bash 基本命令执行）。
 - 测试命令：`node --test server/<file>.test.mjs`；全量回归 `node --test "server/*.test.mjs"`。
@@ -28,7 +28,7 @@
 **Interfaces:**
 - Produces:
   - `redactText(text)` → string（`sk-***`、`AKIA***`、`key/token=***`、`Bearer ***` 打码；非 string/空原样返回）
-  - `redactEntry(entry)` → entry（递归打码 message.content 的 string/blocks/input JSON；`YFW_KEEP_SECRETS=1` 时原样）
+  - `redactEntry(entry)` → entry（递归打码 message.content 的 string/blocks/input JSON；`PONOS_KEEP_SECRETS=1` 时原样）
   - session 磁盘落盘内容脱敏；内存 `deriveMessages()` 保留原文
 
 - [x] **Step 1: 写失败测试（新建 server/redact.test.mjs + session 增补）**
@@ -49,10 +49,10 @@ test('redactText：sk- / AKIA / key=value / Bearer 打码', () => {
   assert.equal(redactText(null), null)
 })
 
-test('redactEntry：content 字符串/文本块/工具输入递归打码；YFW_KEEP_SECRETS=1 保留', () => {
-  const prev = process.env.YFW_KEEP_SECRETS
+test('redactEntry：content 字符串/文本块/工具输入递归打码；PONOS_KEEP_SECRETS=1 保留', () => {
+  const prev = process.env.PONOS_KEEP_SECRETS
   try {
-    process.env.YFW_KEEP_SECRETS = ''
+    process.env.PONOS_KEEP_SECRETS = ''
     const e = redactEntry({
       type: 'assistant', message: {
         role: 'assistant',
@@ -64,19 +64,19 @@ test('redactEntry：content 字符串/文本块/工具输入递归打码；YFW_K
     })
     assert.match(e.message.content[0].text, /sk-\*\*\*/)
     assert.match(e.message.content[1].input.command, /Bearer \*\*\*/)
-    process.env.YFW_KEEP_SECRETS = '1'
+    process.env.PONOS_KEEP_SECRETS = '1'
     const keep = redactEntry({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'sk-abc12345XYZ' }] } })
     assert.equal(keep.message.content[0].text, 'sk-abc12345XYZ')
   } finally {
-    process.env.YFW_KEEP_SECRETS = prev || ''
+    process.env.PONOS_KEEP_SECRETS = prev || ''
   }
 })
 
 // server/session.test.mjs 增补（沿用该文件 fixture）：
 test('S2-1 磁盘脱敏：transcript 文件含打码内容，内存 deriveMessages 保留原文', () => {
   const dir = mkdtempSync(join(tmpdir(), 'session-redact-'))
-  const prev = process.env.YFW_KEEP_SECRETS
-  process.env.YFW_KEEP_SECRETS = ''
+  const prev = process.env.PONOS_KEEP_SECRETS
+  process.env.PONOS_KEEP_SECRETS = ''
   try {
     const store = createSessionStore({ configDir: dir, cwd: '', sessionId: 'r' })
     store.appendUser('my key is sk-abc12345XYZ')
@@ -85,7 +85,7 @@ test('S2-1 磁盘脱敏：transcript 文件含打码内容，内存 deriveMessag
     assert.ok(!raw.includes('sk-abc12345XYZ'), '磁盘不得含原文密钥')
     assert.equal(store.deriveMessages()[0].content, 'my key is sk-abc12345XYZ', '模型输入保留原文')
   } finally {
-    process.env.YFW_KEEP_SECRETS = prev || ''
+    process.env.PONOS_KEEP_SECRETS = prev || ''
   }
 })
 ```
@@ -105,7 +105,7 @@ const SECRET_PATTERNS = [
   /\b(Bearer\s+)[A-Za-z0-9\-._~+/]{8,}/gi,      // Bearer token（保留前缀词）
   /(\b(?:api[_-]?key|auth[_-]?token|password|secret|token)\b\s*[:=]\s*["']?)[A-Za-z0-9_\-.]{8,}/gi,
 ]
-const KEEP = () => process.env.YFW_KEEP_SECRETS === '1'
+const KEEP = () => process.env.PONOS_KEEP_SECRETS === '1'
 
 export function redactText(text) {
   if (typeof text !== 'string' || !text || KEEP()) return text
@@ -636,7 +636,7 @@ git commit -m "feat(kernel): 路径边界 realpath 加固——符号链接逃�
 
 **Interfaces:**
 - Produces:
-  - `resolveConfigDir(env = process.env, homedirFn)` → configDir（`CLAUDE_CONFIG_DIR` → `YFWORKING_HOME` → `~/.yfworking`，与现状一致）
+  - `resolveConfigDir(env = process.env, homedirFn)` → configDir（`CLAUDE_CONFIG_DIR` → `PONOS_HOME` → `~/.ponos`，与现状一致）
   - `sharedDirFor(configDir)` → `join(configDir, 'shared')`（共享只读技能/配置目录）
   - cli.mjs：main 内 shared 目录存在时追加进 addDirs（只读共享——tools withinBoundary 对 addDirs 白名单只读/可读写，共享目录以只读语义加入）
 
@@ -651,15 +651,15 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolveConfigDir, sharedDirFor } from '../kernel/config.mjs'
 
-test('resolveConfigDir：CLAUDE_CONFIG_DIR > YFWORKING_HOME > ~/.yfworking', () => {
+test('resolveConfigDir：CLAUDE_CONFIG_DIR > PONOS_HOME > ~/.ponos', () => {
   const h = mkdtempSync(join(tmpdir(), 'cfg-'))
   assert.equal(resolveConfigDir({ CLAUDE_CONFIG_DIR: join(h, 'a') }, () => h), join(h, 'a'))
-  assert.equal(resolveConfigDir({ YFWORKING_HOME: join(h, 'b') }, () => h), join(h, 'b'))
-  assert.equal(resolveConfigDir({}, () => h), join(h, '.yfworking'))
+  assert.equal(resolveConfigDir({ PONOS_HOME: join(h, 'b') }, () => h), join(h, 'b'))
+  assert.equal(resolveConfigDir({}, () => h), join(h, '.ponos'))
 })
 
 test('sharedDirFor：configDir 下 shared 子目录', () => {
-  assert.equal(sharedDirFor('/x/.yfworking'), join('/x/.yfworking', 'shared'))
+  assert.equal(sharedDirFor('/x/.ponos'), join('/x/.ponos', 'shared'))
 })
 ```
 
@@ -672,12 +672,12 @@ Expected: FAIL（Cannot find module `../kernel/config.mjs`）
 
 ```js
 // kernel/config.mjs —— 配置目录解析（docs/production/security.md S5-1）
-// 优先级与现状一致：CLAUDE_CONFIG_DIR > YFWORKING_HOME > ~/.yfworking。
+// 优先级与现状一致：CLAUDE_CONFIG_DIR > PONOS_HOME > ~/.ponos。
 // 抽为纯函数供 cli 与测试复用（多人共享：个人 configDir 隔离，shared 只读共享）。
 import { join } from 'node:path'
 
 export function resolveConfigDir(env = process.env, homedirFn = require_node_os_homedir) {
-  return env.CLAUDE_CONFIG_DIR || env.YFWORKING_HOME || join(homedirFn(), '.yfworking')
+  return env.CLAUDE_CONFIG_DIR || env.PONOS_HOME || join(homedirFn(), '.ponos')
 }
 export function sharedDirFor(configDir) {
   return join(configDir, 'shared')

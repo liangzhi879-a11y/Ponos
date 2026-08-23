@@ -1,6 +1,6 @@
 // src/components/chat/CompressedToast.tsx
 // 压缩提醒：右下角轻量 toast，2.4s 自动消失，不占据整个下方。
-// 触发：summaryCompactCountBySession[conversationId] 增长（内核 yfw_summary）。
+// 触发：summaryCompactCountBySession[conversationId] 增长（内核 ponos_summary）。
 // 与血条 HealthMeter 的"一次性脉冲"形成"短文本反馈"，互不冲突。
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from '@/i18n/useTranslation'

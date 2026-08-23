@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 
 const KERNEL = join(dirname(fileURLToPath(import.meta.url)), '..', 'kernel', 'cli.mjs')
-const tmp = mkdtempSync(join(tmpdir(), 'yfw-long-'))
+const tmp = mkdtempSync(join(tmpdir(), 'ponos-long-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
 
 function makeReader(stream) {
@@ -36,12 +36,12 @@ function sanitizeSegment(s) {
   return String(s).replace(/[^a-zA-Z0-9\u4e00-\u9fa5.-]/g, '-')
 }
 
-test('端到端：低阈值 settings.compact → 多轮后触发压缩 → yfw_summary + 落盘', async () => {
+test('端到端：低阈值 settings.compact → 多轮后触发压缩 → ponos_summary + 落盘', async () => {
   const configDir = join(tmp, 'lcfg')
   const cwd = join(tmp, 'lproj')
   mkdirSync(configDir, { recursive: true })
-  mkdirSync(join(cwd, '.yfworking'), { recursive: true })
-  writeFileSync(join(cwd, '.yfworking', 'settings.json'), JSON.stringify({
+  mkdirSync(join(cwd, '.ponos'), { recursive: true })
+  writeFileSync(join(cwd, '.ponos', 'settings.json'), JSON.stringify({
     compact: { thresholdTokens: 1, reserveTokens: 1 },
   }), 'utf-8')
   // CLAUDE_CODE_AUTO_COMPACT_WINDOW 缩小窗口（bridge 生产同样注入）：window=200 →
@@ -51,7 +51,7 @@ test('端到端：低阈值 settings.compact → 多轮后触发压缩 → yfw_s
     '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion', '--add-dir', cwd,
   ], {
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200' },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200' },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const reader = makeReader(child.stdout)
@@ -73,9 +73,9 @@ test('端到端：低阈值 settings.compact → 多轮后触发压缩 → yfw_s
   } finally {
     try { child.stdin.end() } catch {}
   }
-  // 压缩发生：yfw_summary 事件（health.recordCompaction 单通道）
-  const summaryEv = events.find((e) => e.type === 'yfw_summary')
-  assert.ok(summaryEv, '出现 yfw_summary 事件')
+  // 压缩发生：ponos_summary 事件（health.recordCompaction 单通道）
+  const summaryEv = events.find((e) => e.type === 'ponos_summary')
+  assert.ok(summaryEv, '出现 ponos_summary 事件')
   assert.ok(String(summaryEv.text ?? JSON.stringify(summaryEv)).includes('mock 摘要'))
   // 落盘：transcript 含 compaction 记录
   const transcriptPath = join(configDir, 'projects', sanitizeSegment(cwd), sid + '.jsonl')

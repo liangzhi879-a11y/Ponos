@@ -11,12 +11,12 @@ import { THEMES, THEME_CLASS_NAMES, type ThemeMode } from '@/types'
    before React paints.
    ------------------------------------------------------------ */
 
-// One-way migration: copy old claude-code-* keys to yfworking-* if new key doesn't exist yet
+// One-way migration: copy old claude-code-* keys to ponos-* if new key doesn't exist yet
 ;(function migrateStorageKeys() {
   const pairs: Array<[string, string]> = [
-    ['claude-code-settings', 'yfworking-settings'],
-    ['claude-code-chat', 'yfworking-chat'],
-    ['claude-code-ui-v2', 'yfworking-ui'],
+    ['claude-code-settings', 'ponos-settings'],
+    ['claude-code-chat', 'ponos-chat'],
+    ['claude-code-ui-v2', 'ponos-ui'],
   ]
   for (const [oldKey, newKey] of pairs) {
     const oldVal = localStorage.getItem(oldKey)
@@ -43,7 +43,7 @@ const THEME_FG: Record<ThemeMode, string> = {
 }
 
 try {
-  const raw = localStorage.getItem('yfworking-settings') || localStorage.getItem('claude-code-settings')
+  const raw = localStorage.getItem('ponos-settings') || localStorage.getItem('claude-code-settings')
   if (raw) {
     const parsed = JSON.parse(raw) as {
       state?: { settings?: { theme?: string } }

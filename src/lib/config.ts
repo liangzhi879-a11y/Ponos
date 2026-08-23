@@ -5,7 +5,7 @@
  *   Layer 3: sensible defaults
  */
 
-import type { ModelProvider, YFWorkingConfigV2 } from '@/types'
+import type { ModelProvider, PonosConfigV2 } from '@/types'
 
 // ---------------------------------------------------------------------------
 // Bridge connection
@@ -27,23 +27,23 @@ export function getDefaultHome(): string {
   const envHome = import.meta.env.VITE_DEFAULT_HOME
   if (envHome && envHome !== 'auto') return envHome
   // Runtime detection via preload (works on any machine — preload has Node.js access)
-  if (typeof window !== 'undefined' && window.yfworkingAPI?.userHome) return window.yfworkingAPI.userHome
+  if (typeof window !== 'undefined' && window.ponosAPI?.userHome) return window.ponosAPI.userHome
   if (typeof process !== 'undefined' && process.env?.HOME) return process.env.HOME
   if (typeof process !== 'undefined' && process.env?.USERPROFILE) return process.env.USERPROFILE
   return ''
 }
 
 // ---------------------------------------------------------------------------
-// YFWorking bridge config
+// Ponos bridge config
 // ---------------------------------------------------------------------------
 
-export async function fetchBridgeConfig(): Promise<YFWorkingConfigV2> {
+export async function fetchBridgeConfig(): Promise<PonosConfigV2> {
   const res = await fetch(`${getBridgeUrl()}/config`)
   if (!res.ok) throw new Error('Failed to fetch config')
   return res.json()
 }
 
-export async function saveBridgeConfig(cfg: Partial<YFWorkingConfigV2>): Promise<boolean> {
+export async function saveBridgeConfig(cfg: Partial<PonosConfigV2>): Promise<boolean> {
   const res = await fetch(`${getBridgeUrl()}/config`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

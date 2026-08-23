@@ -1,6 +1,6 @@
-appId: com.yfworking.desktop
-productName: YFWorking
-copyright: Copyright © 2026 YFWorking
+appId: com.ponos.desktop
+productName: Ponos
+copyright: Copyright © 2026 Ponos
 
 # ============================================================
 # ⚠️ 此文件是 electron-builder 唯一的构建配置源。
@@ -10,7 +10,7 @@ copyright: Copyright © 2026 YFWorking
 
 directories:
   # Output to release/installer so electron-builder's build-time cleanup
-  # does NOT touch the portable debug build at release/YFWorking.
+  # does NOT touch the portable debug build at release/Ponos.
   output: release/installer
   buildResources: public
 
@@ -20,7 +20,7 @@ electronDist: node_modules/electron/dist
 
 files:
   - dist/**/*
-  # YFW-turbo kernel single-file bundle (scripts/build-kernel.mjs → kernel-dist/).
+  # Ponos-turbo kernel single-file bundle (scripts/build-kernel.mjs → kernel-dist/).
   # Lives outside dist/ because vite build's emptyOutDir:true wipes dist/.
   # Bridge resolves it at <app>/kernel-dist/cli.mjs and bootstraps to user dir.
   - kernel-dist/**/*
@@ -56,17 +56,17 @@ extraResources:
     to: runtime/skills
     filter:
       - "**/*"
-  # Built-in agent templates (installed to ~/.yfworking/agents/ on first run)
+  # Built-in agent templates (installed to ~/.ponos/agents/ on first run)
   - from: runtime/agents
     to: runtime/agents
     filter:
       - "**/*"
-  # Built-in memory starter templates (installed to ~/.yfworking/memory/personal/)
+  # Built-in memory starter templates (installed to ~/.ponos/memory/personal/)
   - from: runtime/memory
     to: runtime/memory
     filter:
       - "**/*"
-  # Built-in CLI tools (installed to ~/.yfworking/tools/)
+  # Built-in CLI tools (installed to ~/.ponos/tools/)
   - from: runtime/tools
     to: runtime/tools
     filter:
@@ -78,9 +78,9 @@ extraResources:
     to: pet/accessories_lib.py
   - from: pet/assets
     to: pet/assets
-  # Bun runtime used to execute the YFW kernel (node-targeted ESM bundle — bun
+  # Bun runtime used to execute the Ponos kernel (node-targeted ESM bundle — bun
   # is a drop-in Node runtime). Bridge spawns: <bun> <kernel> then bootstraps
-  # both to ~/.yfworking/runtime/.
+  # both to ~/.ponos/runtime/.
   - from: runtime/bun
     to: runtime/bun
     filter:
@@ -100,11 +100,11 @@ nsis:
   installerIcon: public/icon.ico
   uninstallerIcon: public/icon.ico
   installerHeaderIcon: public/icon.ico
-  shortcutName: YFWorking
+  shortcutName: Ponos
   createDesktopShortcut: true
   createStartMenuShortcut: true
   runAfterFinish: true
-  # Don't wipe %APPDATA%\YFWorking on uninstall — user data must survive reinstall/uninstall.
+  # Don't wipe %APPDATA%\Ponos on uninstall — user data must survive reinstall/uninstall.
   deleteAppDataOnUninstall: false
   # Brand the installer（位图由 build/make_installer_art.py 生成）
   installerSidebar: build/installerSidebar.bmp

@@ -94,7 +94,7 @@ export function FilePreview({ path, name, onClose }: Props) {
           <span className="text-xs font-medium text-primary truncate flex-1">{name}</span>
           <span className="text-[10px] text-tertiary font-mono">{ext.toUpperCase()}</span>
           <button
-            onClick={() => (window as any).yfworkingAPI?.openInExplorer?.(path)}
+            onClick={() => (window as any).ponosAPI?.openInExplorer?.(path)}
             className="p-1 text-tertiary hover:text-primary"
             title={t('editor.openInSystem')}
           >

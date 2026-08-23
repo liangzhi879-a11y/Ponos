@@ -4,7 +4,7 @@
 
 **Goal:** 以输入框下方常驻血条 + 红档边缘呼吸光晕 + 上浮建议卡片取代顶部 HealthBanner，纯前端改造。
 
-**Architecture:** 三个独立组件（HealthMeter/HealthGlow/HealthSuggestCard）+ 一个纯逻辑模块（src/lib/healthUi.ts，node --test 可测）。数据源复用现有 healthStore（yfw_health/yfw_summary 事件链路零改动）；血条用 CSS transition 衔接档位跳变。删除 HealthBanner.tsx。
+**Architecture:** 三个独立组件（HealthMeter/HealthGlow/HealthSuggestCard）+ 一个纯逻辑模块（src/lib/healthUi.ts，node --test 可测）。数据源复用现有 healthStore（ponos_health/ponos_summary 事件链路零改动）；血条用 CSS transition 衔接档位跳变。删除 HealthBanner.tsx。
 
 **Tech Stack:** React 18 + Tailwind（玻璃质感 tokens）+ zustand（healthStore）+ i18n（zh-CN/en-US）+ node --test（Node 24 原生 TS 剥离，仅测纯逻辑 .ts）。
 
@@ -16,7 +16,7 @@
 - 血条提示行保持固定高度 `h-4 mt-1`，任何显隐不引起布局跳动
 - 玻璃质感主题：动态元素用 `animate-pulse`；血条用半透明填充避免纯色刺眼
 - i18n 双语（zh-CN/en-US）同步新增/删除
-- 生效：`npm run build` 后同步 dist → release 双副本（YFWorking + YFWorking_ms92cd6u）
+- 生效：`npm run build` 后同步 dist → release 双副本（Ponos + Ponos_ms92cd6u）
 
 ---
 
@@ -137,7 +137,7 @@ git commit -m "feat(health): healthUi 纯逻辑模块（血条状态/红档可�
 
 - [ ] **Step 1: 创建 HealthMeter 组件（含压缩脉冲动画）**
 
-压缩动画信号：内核压缩发生时先发 `yfw_summary`（healthStore.summaryCompactCount 递增），下一轮 `yfw_health` 才更新血条宽度。用 `summaryCompactCount` 递增触发 1.2s 一次性高亮脉冲（`filter: brightness` 提升后回落，不破坏半透明 alpha），宽度随后由既有 `transition-[width]` 回涨——同一信号两段动画衔接。
+压缩动画信号：内核压缩发生时先发 `ponos_summary`（healthStore.summaryCompactCount 递增），下一轮 `ponos_health` 才更新血条宽度。用 `summaryCompactCount` 递增触发 1.2s 一次性高亮脉冲（`filter: brightness` 提升后回落，不破坏半透明 alpha），宽度随后由既有 `transition-[width]` 回涨——同一信号两段动画衔接。
 
 ```tsx
 // src/components/chat/HealthMeter.tsx
@@ -162,7 +162,7 @@ export function HealthMeter() {
   const [flash, setFlash] = useState(false)
   const prevCount = useRef(summaryCompactCount)
 
-  // 压缩信号（yfw_summary 先于下一轮 yfw_health 到达）：血条一次性高亮脉冲，宽度随后回涨
+  // 压缩信号（ponos_summary 先于下一轮 ponos_health 到达）：血条一次性高亮脉冲，宽度随后回涨
   useEffect(() => {
     if (summaryCompactCount > prevCount.current) {
       prevCount.current = summaryCompactCount
@@ -425,7 +425,7 @@ git commit -m "feat(health): HealthGlow 边缘光晕取代 HealthBanner，清理
 
 **Files:**
 - Build 输出: `dist/`（vite build）
-- Sync: `release/YFWorking/dist/`、`release/YFWorking_ms92cd6u/dist/`（双副本）
+- Sync: `release/Ponos/dist/`、`release/Ponos_ms92cd6u/dist/`（双副本）
 
 - [ ] **Step 1: 全量构建**
 
@@ -444,8 +444,8 @@ Expected: 7 用例 PASS
 - [ ] **Step 3: 同步 release 双副本 dist**
 
 ```bash
-cp -r dist/* release/YFWorking/dist/
-cp -r dist/* release/YFWorking_ms92cd6u/dist/
+cp -r dist/* release/Ponos/dist/
+cp -r dist/* release/Ponos_ms92cd6u/dist/
 ```
 （若 dist 含 index.html，同步后确认 release 的 index.html 引用新哈希 assets）
 

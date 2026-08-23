@@ -46,22 +46,22 @@ test('shouldJudge：默认关不触发；红档开启后才触发且走冷却', 
   assert.equal(shouldJudge({ tier: 'red', judgeEnabled: true, lastJudgeAt: now, now, cooldownMs: 300000 }), false)
 })
 
-test('createHealth：非 green 档位去抖只发一次 yfw_health；recordCompaction 发 yfw_summary', () => {
+test('createHealth：非 green 档位去抖只发一次 ponos_health；recordCompaction 发 ponos_summary', () => {
   const events = []
   const wire = {
-    health: (d) => events.push({ type: 'yfw_health', ...d }),
-    summary: (t, c) => events.push({ type: 'yfw_summary', text: t, compactCount: c }),
+    health: (d) => events.push({ type: 'ponos_health', ...d }),
+    summary: (t, c) => events.push({ type: 'ponos_summary', text: t, compactCount: c }),
   }
-  // env: {} 隔离：YFW_HEALTH_COMPACT_COUNT 种子读 process.env，外部环境变量
-  // 泄漏会导致初始 compactCount≠0 → 首轮即黄档误发 yfw_health（测试必须 hermetic）
+  // env: {} 隔离：PONOS_HEALTH_COMPACT_COUNT 种子读 process.env，外部环境变量
+  // 泄漏会导致初始 compactCount≠0 → 首轮即黄档误发 ponos_health（测试必须 hermetic）
   const h = createHealth({ wire, model: 'deepseek-v4-flash', contextWindow: 200_000, env: {} })
   h.record({ usage: {}, durationMs: 5, model: 'deepseek-v4-flash', ts: 't', compactCount: 0 })
-  assert.equal(events.filter((e) => e.type === 'yfw_health').length, 0) // green 不发
+  assert.equal(events.filter((e) => e.type === 'ponos_health').length, 0) // green 不发
   h.recordCompaction('摘要A', 1)
-  const sum = events.filter((e) => e.type === 'yfw_summary')
+  const sum = events.filter((e) => e.type === 'ponos_summary')
   assert.equal(sum.length, 1)
   assert.equal(sum[0].text, '摘要A')
-  assert.ok(events.some((e) => e.type === 'yfw_health')) // 压缩后档位变化 → 发
+  assert.ok(events.some((e) => e.type === 'ponos_health')) // 压缩后档位变化 → 发
   const before = events.length
   h.record({ usage: {}, durationMs: 5, model: 'deepseek-v4-flash', ts: 't', compactCount: 2 })
   assert.equal(events.length, before) // 同档去抖：不再发

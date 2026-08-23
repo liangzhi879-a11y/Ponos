@@ -13,21 +13,21 @@ triggers:
 ## 角色定位
 
 > **你是"高新技术企业认定项目老师"**。服务于用户（项目人员），不直接面向客户企业。
-> 完整角色定义（三角关系模型/专业领域/能力边界/决策权限/沟通准则）详见 `{{YFW_SKILLS}}/_common/agent_role.md`。
+> 完整角色定义（三角关系模型/专业领域/能力边界/决策权限/沟通准则）详见 `{{PONOS_SKILLS}}/_common/agent_role.md`。
 
 <!-- SECTION_BEGIN: tech_stack_reference -->
-## 技术栈引用 → 详见 {{YFW_SKILLS}}/_common/SHARED_tech_stack.md
+## 技术栈引用 → 详见 {{PONOS_SKILLS}}/_common/SHARED_tech_stack.md
 > 处理文档前先查表 doc_toolkit.py info，禁止自行尝试不同库。
 <!-- SECTION_END: tech_stack_reference -->
 
 <!-- SECTION_BEGIN: ocr_reference -->
-## OCR能力引用 → 详见 {{YFW_SKILLS}}/_common/SHARED_ocr_reference.md
+## OCR能力引用 → 详见 {{PONOS_SKILLS}}/_common/SHARED_ocr_reference.md
 > PDF混合型必须用 --mode auto。扫描件用RapidOCR(ONNX)。
-> ⚠️ OCR强制铁律：见 {{YFW_SKILLS}}/_common/SHARED_ocr_mandatory.md（先OCR后操作，禁止猜测，必须等待）
+> ⚠️ OCR强制铁律：见 {{PONOS_SKILLS}}/_common/SHARED_ocr_mandatory.md（先OCR后操作，禁止猜测，必须等待）
 <!-- SECTION_END: ocr_reference -->
 
 <!-- SECTION_BEGIN: no_ai_watermark -->
-## 输出资料合规规则 → 详见 {{YFW_SKILLS}}/_common/SHARED_no_ai_watermark.md
+## 输出资料合规规则 → 详见 {{PONOS_SKILLS}}/_common/SHARED_no_ai_watermark.md
 > 禁止AI水印。文档版本管理: 旧版.bak备份。
 <!-- SECTION_END: no_ai_watermark -->
 
@@ -40,7 +40,7 @@ triggers:
 
 1. **禁止编造内容**：所有字段数据必须来自真实文件（立项书、证书、合同、发票、社保记录等），不得凭空编造
 2. **禁止推断关键数据**：技术领域、研发费用、人员占比、专利状态等关键字段，必须以官方文档（所得税申报表/申请书/证书）为准，不得从项目名称推断
-3. **禁止跳过脚本执行**：所有 `python {{YFW_SKILLS}}/_common/xxx.py` 命令必须通过 Bash 真正执行，不得"阅读脚本逻辑自行编写等效代码"
+3. **禁止跳过脚本执行**：所有 `python {{PONOS_SKILLS}}/_common/xxx.py` 命令必须通过 Bash 真正执行，不得"阅读脚本逻辑自行编写等效代码"
 4. **禁止跳过审核步骤**：审核验证步骤必须执行且通过，未通过时不得继续后续步骤
 5. **禁止自行兜底**：脚本报错时不得自行编写兜底代码，必须停止并告警由用户决定
 6. **禁止合并/简化字段名**：所有表格字段名必须与模板完全一致，不得简化（如"编号"不得代替"知识产权编号"）
@@ -61,7 +61,7 @@ triggers:
 
 ## 自主确认机制
 
-> 通用规范详见 {{YFW_SKILLS}}/_common/SHARED_autonomous_confirmation.md
+> 通用规范详见 {{PONOS_SKILLS}}/_common/SHARED_autonomous_confirmation.md
 > agent 必须遵守：5项判断原则 + 4类触发(A/B/C/D) + 每步自问5问 + 确认交互规范(AskUserQuestion) + 5条禁止行为。
 
 ### 典型场景示例（参考，非穷举）
@@ -80,13 +80,13 @@ triggers:
 - **人员在职天数临界**：某人员在职天数在 180-185 天临界 → C 类
 ## 质疑与协同审查机制（通用规范）
 
-> 通用规范详见 {{YFW_SKILLS}}/_common/SHARED_questioning_review.md
+> 通用规范详见 {{PONOS_SKILLS}}/_common/SHARED_questioning_review.md
 > agent 必须遵守：四类触发(E/F/G/H) + 6条自问 + 质疑交互规范(AskUserQuestion) + 6条禁止行为 + 人机协同流程 + 质疑记录要求。
 ## 蜂群协同
 
-> 通用规范详见 {{YFW_SKILLS}}/_common/SHARED_swarm_collaboration.md
+> 通用规范详见 {{PONOS_SKILLS}}/_common/SHARED_swarm_collaboration.md
 > 跨技能并行执行 + subagent规范 + file_lock并发控制。
-## 交叉验证协议 → 详见 {{YFW_SKILLS}}/_common/SHARED_cross_validation.md
+## 交叉验证协议 → 详见 {{PONOS_SKILLS}}/_common/SHARED_cross_validation.md
 > 关键决策点强制交叉验证。
 <!-- SECTION_END: cross_validation_protocol -->
 
@@ -120,7 +120,7 @@ triggers:
 所有脚本调用必须使用 Bash 工具，格式：
 
 ```
-python {{YFW_SKILLS}}/_common/xxx.py <参数>
+python {{PONOS_SKILLS}}/_common/xxx.py <参数>
 ```
 
 - 脚本路径必须使用项目相对路径
@@ -134,7 +134,7 @@ python {{YFW_SKILLS}}/_common/xxx.py <参数>
 最后一步必须执行对应的审核验证脚本：
 
 ```
-python {{YFW_SKILLS}}/_common/validate_ip.py --dir "输出目录" --project-root "项目根目录"
+python {{PONOS_SKILLS}}/_common/validate_ip.py --dir "输出目录" --project-root "项目根目录"
 ```
 
 ### 审核通过条件
@@ -239,14 +239,14 @@ def get_output_dir(enterprise_name, application_year, subdir):
 在开始工作前，检查本技能的前置阶段是否已完成：
 
 ```bash
-python {{YFW_SKILLS}}/_common/progress_sync.py check-deps ^
+python {{PONOS_SKILLS}}/_common/progress_sync.py check-deps ^
     --project-root "." ^
     --skill "gxtz-ip-materials"
 ```
 
 若返回 WARNING 提示存在未完成的前置阶段，agent 应提示用户先完成前置依赖。
 
-> 进度管理集成说明详见: `{{YFW_SKILLS}}/gxtz-progress-manager/SKILL.md`
+> 进度管理集成说明详见: `{{PONOS_SKILLS}}/gxtz-progress-manager/SKILL.md`
 
 
 ### 第一步：项目初始化（强制执行，不可跳过）
@@ -254,7 +254,7 @@ python {{YFW_SKILLS}}/_common/progress_sync.py check-deps ^
 **执行以下命令初始化项目知识库**（在项目根目录运行）：
 
 ```bash
-python {{YFW_SKILLS}}/_common/project_context_manager.py init --enterprise "{企业名称}" --year {申报年份}
+python {{PONOS_SKILLS}}/_common/project_context_manager.py init --enterprise "{企业名称}" --year {申报年份}
 ```
 
 此命令将创建 .claude/file_map.json、.claude/experience_base.json、.claude/project_index.json 并扫描项目文件分类到19类。
@@ -296,13 +296,13 @@ python {{YFW_SKILLS}}/_common/project_context_manager.py init --enterprise "{企
 **执行步骤**：
 1. 诊断数据源：
    ```bash
-   python {{YFW_SKILLS}}/_common/wecom_query.py diagnose
+   python {{PONOS_SKILLS}}/_common/wecom_query.py diagnose
    ```
    - 检查 `overall_ready=true`，否则跳过本扩展步骤
 
 2. 一键式按企业名称收集知识产权材料：
    ```bash
-   python {{YFW_SKILLS}}/_common/wecom_query.py collect-by-enterprise \
+   python {{PONOS_SKILLS}}/_common/wecom_query.py collect-by-enterprise \
      --enterprise "{企业}" \
      --out "{企业}_高新认定材料_{年份}/_补充资料/gxtz-ip-materials" \
      --keyword "专利,发明,实用新型,外观设计,软著,软件著作权" \
@@ -754,7 +754,7 @@ def generate_ip_materials_checklist(enterprise_name, ip_table, rd_table, achieve
 完成所有工作后、文件整理前，更新进度看板：
 
 ```bash
-python {{YFW_SKILLS}}/_common/progress_sync.py update-stage ^
+python {{PONOS_SKILLS}}/_common/progress_sync.py update-stage ^
     --project-root "." ^
     --skill "gxtz-ip-materials" ^
     --status completed
@@ -769,7 +769,7 @@ python {{YFW_SKILLS}}/_common/progress_sync.py update-stage ^
 **执行以下命令整理文件并更新知识库**（在项目根目录运行）：
 
 ```bash
-python {{YFW_SKILLS}}/_common/project_context_manager.py finalize --enterprise "{企业名称}" --year {申报年份} --skill "gxtz-ip-materials" --no-move
+python {{PONOS_SKILLS}}/_common/project_context_manager.py finalize --enterprise "{企业名称}" --year {申报年份} --skill "gxtz-ip-materials" --no-move
 ```
 
 此命令将：按19类目录结构整理文件 → 生成 .claude/_file_management_report.md 整理报告 → 更新 file_map.json / experience_base.json / project_index.json → 校验3个json文件已生成。
@@ -1107,36 +1107,36 @@ def validate_ip_consistency(ip_table, rd_table, achievement_table, certificate_s
 
 ## 模块六：PDF拆分与合并资料整理（pdf_splitter）
 
-> 详见 {{YFW_SKILLS}}/_common/pdf_splitter.py
+> 详见 {{PONOS_SKILLS}}/_common/pdf_splitter.py
 
 ---
 
 ## 模块七：文件分类整理（file_organizer）
 
-> 详见 {{YFW_SKILLS}}/_common/file_content_classifier.py
+> 详见 {{PONOS_SKILLS}}/_common/file_content_classifier.py
 
 ---
 
 ## 模块八：高新政策要求与合规校验（policy_compliance）
 
-> 详见 {{YFW_SKILLS}}/_common/policy_compliance.py
+> 详见 {{PONOS_SKILLS}}/_common/policy_compliance.py
 
 ---
 
 ## 模块九：企业基本信息联网搜索（enterprise_info_search）
 
-> 详见 {{YFW_SKILLS}}/_common/enterprise_info_search.py
+> 详见 {{PONOS_SKILLS}}/_common/enterprise_info_search.py
 
 ---
 
 <!-- SECTION_BEGIN: provenance_verification v2.7 -->
-## 溯源核验 → 详见 {{YFW_SKILLS}}/_common/SHARED_provenance.md
+## 溯源核验 → 详见 {{PONOS_SKILLS}}/_common/SHARED_provenance.md
 > 关键字段值必须与源文件精确一致，禁止改写。
 <!-- SECTION_END: provenance_verification -->
 
 ---
 
 <!-- SECTION_BEGIN: authoritative_terms_verification v2.6 -->
-## 权威术语核验 → 详见 {{YFW_SKILLS}}/_common/SHARED_authoritative_terms.md
+## 权威术语核验 → 详见 {{PONOS_SKILLS}}/_common/SHARED_authoritative_terms.md
 > 输出前强制扫描权威术语。
 <!-- SECTION_END: authoritative_terms_verification -->

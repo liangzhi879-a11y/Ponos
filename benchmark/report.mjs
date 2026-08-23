@@ -71,7 +71,7 @@ const avgOf = (fn, pred = () => true) => {
 }
 
 // ── Markdown ─────────────────────────────────────────────────────────────────
-let md = `# YFW-turbo 内核横向评估报告\n\n`
+let md = `# Ponos-turbo 内核横向评估报告\n\n`
 md += `- 评测时间：${meta.ts || basename(dir)}\n`
 md += `- 模型：${meta.model || '—'}\n`
 md += `- 被测对象：${agents.join(' / ')}\n`
@@ -210,7 +210,7 @@ const chartData = JSON.stringify({
   })),
 })
 
-let html = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>YFW-turbo 横向评估 ${meta.ts || ''}</title>
+let html = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>Ponos-turbo 横向评估 ${meta.ts || ''}</title>
 <style>
 :root{--pass:#1a7f37;--fail:#c62828;--warn:#b26a00;--ink:#1a1a1a;--muted:#666;--line:#e5e7eb;--bg-card:#fff;--bg-soft:#f6f8fa}
 *{box-sizing:border-box}
@@ -245,7 +245,7 @@ pre{background:#f8f8f8;padding:10px;border-radius:6px;overflow-x:auto;font-size:
 footer{color:var(--muted);font-size:12px;margin-top:28px;text-align:center}
 </style></head><body><div class="wrap">`
 
-html += `<h1>YFW-turbo 内核横向评估报告</h1>`
+html += `<h1>Ponos-turbo 内核横向评估报告</h1>`
 html += `<p style="color:var(--muted);margin:0">${esc(meta.ts || basename(dir))} · 模型 ${esc(meta.model || '—')} · 任务集 ${taskIds.join(' / ')}</p>`
 
 // 顶部总览卡片
@@ -328,7 +328,7 @@ if (fails.length) {
   }
 }
 
-html += `<footer>YFW-turbo 内核横向评估平台 · 成本按 usage × 单价（input $0.2/M, output $1.2/M）估算 · 失败案例比成功案例更有价值</footer>`
+html += `<footer>Ponos-turbo 内核横向评估平台 · 成本按 usage × 单价（input $0.2/M, output $1.2/M）估算 · 失败案例比成功案例更有价值</footer>`
 
 html += `<script>
 const DATA = ${chartData};

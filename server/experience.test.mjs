@@ -4,9 +4,9 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
 
-// 通过注入 HOME 重定向 personal 目录：模块导出 PERSONAL_DIR 基于 process.env.YFW_TEST_HOME
-const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-exp-home-'))
-process.env.YFW_TEST_HOME = testHome
+// 通过注入 HOME 重定向 personal 目录：模块导出 PERSONAL_DIR 基于 process.env.PONOS_TEST_HOME
+const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-exp-home-'))
+process.env.PONOS_TEST_HOME = testHome
 const mod = await import('./experience.mjs')
 
 beforeEach(() => { mod.ensurePersonalDir() })
@@ -14,7 +14,7 @@ afterEach(() => { fs.rmSync(testHome, { recursive: true, force: true }) })
 
 test('ensurePersonalDir 预置 7 个主题文件', () => {
   for (const t of mod.DEFAULT_THEMES) {
-    assert.ok(fs.existsSync(path.join(testHome, '.yfworking', 'memory', 'personal', `${t}.md`)), `${t}.md 缺失`)
+    assert.ok(fs.existsSync(path.join(testHome, '.ponos', 'memory', 'personal', `${t}.md`)), `${t}.md 缺失`)
   }
 })
 
@@ -24,7 +24,7 @@ test('hashLine 稳定且区分内容', () => {
 })
 
 test('listExperiences 返回条目与 frontmatter 状态', () => {
-  const file = path.join(testHome, '.yfworking', 'memory', 'personal', 'communication.md')
+  const file = path.join(testHome, '.ponos', 'memory', 'personal', 'communication.md')
   fs.writeFileSync(file, '---\nname: communication\ndescription: 沟通偏好\nactive: true\n---\n- [会话A] 用户偏好简洁回复\n- [会话B] 报告用中文\n', 'utf-8')
   const list = mod.listExperiences()
   const comm = list.find(x => x.theme === 'communication')
@@ -40,7 +40,7 @@ test('setThemeActive 更新 frontmatter', () => {
 })
 
 test('deleteThemeEntry 按行 hash 删除', () => {
-  const file = path.join(testHome, '.yfworking', 'memory', 'personal', 'communication.md')
+  const file = path.join(testHome, '.ponos', 'memory', 'personal', 'communication.md')
   fs.writeFileSync(file, '---\nname: communication\nactive: true\n---\n- [A] 第一条\n- [B] 第二条\n', 'utf-8')
   const list = mod.listExperiences()
   const comm = list.find(x => x.theme === 'communication')
@@ -52,7 +52,7 @@ test('deleteThemeEntry 按行 hash 删除', () => {
 })
 
 test('buildExperienceSection 按 updatedAt 降序且受 maxBytes 截断', () => {
-  const base = testHome + '/.yfworking/memory/personal/'
+  const base = testHome + '/.ponos/memory/personal/'
   fs.writeFileSync(base + 'a.md', '---\nname: a\nactive: true\n---\n- [A] ' + 'x'.repeat(100) + '\n', 'utf-8')
   fs.writeFileSync(base + 'b.md', '---\nname: b\nactive: true\n---\n- [B] ' + 'y'.repeat(100) + '\n', 'utf-8')
   const now = Date.now()
@@ -68,7 +68,7 @@ test('buildExperienceSection 空库返回空串', () => {
 })
 
 test('buildExperienceSection 单主题配额：一个主题不能挤占全部段落', () => {
-  const base = testHome + '/.yfworking/memory/personal/'
+  const base = testHome + '/.ponos/memory/personal/'
   // 主题 a 有 5 条短条目（总 ~80B），主题 b 有 1 条
   fs.writeFileSync(base + 'a.md', '---\nname: a\nactive: true\n---\n' + '- [A] 第一条经验内容\n- [A] 第二条经验内容\n- [A] 第三条经验内容\n- [A] 第四条经验内容\n- [A] 第五条经验内容\n', 'utf-8')
   fs.writeFileSync(base + 'b.md', '---\nname: b\nactive: true\n---\n- [B] 唯一长条目\n', 'utf-8')
@@ -82,7 +82,7 @@ test('buildExperienceSection 单主题配额：一个主题不能挤占全部段
 })
 
 test('buildExperienceSection 全局去重：相同内容只注入一次', () => {
-  const base = testHome + '/.yfworking/memory/personal/'
+  const base = testHome + '/.ponos/memory/personal/'
   const dup = '- [会话] 完全相同的经验内容' + 'x'.repeat(40) + '\n'
   fs.writeFileSync(base + 'a.md', '---\nname: a\nactive: true\n---\n' + dup + dup, 'utf-8')
   fs.writeFileSync(base + 'b.md', '---\nname: b\nactive: true\n---\n' + dup, 'utf-8')
@@ -93,7 +93,7 @@ test('buildExperienceSection 全局去重：相同内容只注入一次', () => 
 
 test('refreshIndex 写出 _index.json', () => {
   mod.refreshIndex()
-  const idx = JSON.parse(fs.readFileSync(path.join(testHome, '.yfworking', 'memory', 'personal', '_index.json'), 'utf-8'))
+  const idx = JSON.parse(fs.readFileSync(path.join(testHome, '.ponos', 'memory', 'personal', '_index.json'), 'utf-8'))
   assert.ok(idx.themes.communication)
 })
 
@@ -112,7 +112,7 @@ test('parseEntryLine：旧格式 - [会话] 内容 兼容（无标签，摘要=�
 })
 
 test('listExperiences 条目携带 tag/summary/full', () => {
-  const file = path.join(testHome, '.yfworking', 'memory', 'personal', 'workflow.md')
+  const file = path.join(testHome, '.ponos', 'memory', 'personal', 'workflow.md')
   fs.writeFileSync(file, '---\nname: workflow\nactive: true\n---\n- [会话|成果转化材料] 摘要A -- 全文A\n- [会话] 旧条目\n', 'utf-8')
   const list = mod.listExperiences()
   const wf = list.find(x => x.theme === 'workflow')
@@ -124,7 +124,7 @@ test('listExperiences 条目携带 tag/summary/full', () => {
 })
 
 test('buildExperienceIndex：按 主题|标签 分组聚合 + 未标注条目单列', () => {
-  const base = testHome + '/.yfworking/memory/personal/'
+  const base = testHome + '/.ponos/memory/personal/'
   fs.writeFileSync(base + 'workflow.md', '---\nname: workflow\nactive: true\n---\n- [会话|PS材料] 摘要1 -- 全文1\n- [会话|PS材料] 摘要2 -- 全文2\n- [会话|成果转化材料] 摘要3 -- 全文3\n- [会话] 未标注旧条目\n', 'utf-8')
   const idx = mod.buildExperienceIndex()
   assert.ok(idx.includes('[workflow|PS材料] 2 条'), '标签分组应聚合计数，实际：' + idx)
@@ -137,7 +137,7 @@ test('buildExperienceIndex：按 主题|标签 分组聚合 + 未标注条目单
 })
 
 test('buildExperienceIndex：按最近更新排序，超限时丢旧索引行不截断条目', () => {
-  const base = testHome + '/.yfworking/memory/personal/'
+  const base = testHome + '/.ponos/memory/personal/'
   fs.writeFileSync(base + 'a.md', '---\nname: a\nactive: true\n---\n- [会话|标签A] 摘要 -- 全文' + 'y'.repeat(50) + '\n', 'utf-8')
   fs.writeFileSync(base + 'b.md', '---\nname: b\nactive: true\n---\n- [会话|标签B] 摘要 -- 全文' + 'z'.repeat(50) + '\n', 'utf-8')
   const now = Date.now()

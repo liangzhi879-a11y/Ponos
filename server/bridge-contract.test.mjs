@@ -1,6 +1,6 @@
 // bridge ↔ 内核集成契约测试（docs/bridge-contract.md §5/§6/§8）
 // ---------------------------------------------------------------------------
-// 以 mock-kernel.mjs 作为内核进程，通过 YFW_BRIDGE_NO_LISTEN + YFW_HOME 注入
+// 以 mock-kernel.mjs 作为内核进程，通过 PONOS_BRIDGE_NO_LISTEN + PONOS_HOME 注入
 // 在临时目录起真实 bridge（httpServer.listen(0)），用 WS 客户端按 GUI 视角
 // 断言：spawn 参数/env、事件转发、里程碑/ASK_USER 提取剥离、审批闭环、
 // browser 路由不透传 GUI、cancel 优雅停止与会话保留、resume 重开、answer 注入。
@@ -22,13 +22,13 @@ let clients = []
 
 before(async () => {
   home = mkdtempSync(join(tmpdir(), 'bridge-contract-'))
-  process.env.YFW_HOME = home
-  process.env.YFW_BRIDGE_NO_LISTEN = '1'
-  process.env.YFWORKING_KERNEL = MOCK_KERNEL
-  process.env.YFWORKING_BUN = process.execPath
-  process.env.YFW_KERNEL_IDLE_MS = '0'    // 关闭空闲回收（测试不依赖 60s 定时器）
-  process.env.YFW_KERNEL_STALL_MS = '0'   // 关闭 stall 告警
-  process.env.YFW_MAX_CONCURRENT_SESSIONS = '20' // 用例逐会话递增，放宽并发上限防触顶
+  process.env.PONOS_HOME = home
+  process.env.PONOS_BRIDGE_NO_LISTEN = '1'
+  process.env.PONOS_KERNEL = MOCK_KERNEL
+  process.env.PONOS_BUN = process.execPath
+  process.env.PONOS_KERNEL_IDLE_MS = '0'    // 关闭空闲回收（测试不依赖 60s 定时器）
+  process.env.PONOS_KERNEL_STALL_MS = '0'   // 关闭 stall 告警
+  process.env.PONOS_MAX_CONCURRENT_SESSIONS = '20' // 用例逐会话递增，放宽并发上限防触顶
   // 每个 mock 进程独立日志：不设 MOCK_LOG，由测试在 spawn 前注入 —— 但 bridge
   // spawn 的 env 继承测试进程 env，MOCK_LOG 在测试内按会话名指向统一文件。
   process.env.MOCK_LOG = join(home, 'mock.log.jsonl')
@@ -76,17 +76,17 @@ function connect() {
     // 持久消息总线：连接时挂常驻监听，所有消息入队/交递给唯一等待者。
     // 避免"按次挂/摘监听器"在突发事件到达时丢消息（实测竞态：bridge 一次
     // 连发 ack+里程碑+assistant+result，中途挂载的监听会漏掉中间帧）。
-    ws._yfwQueue = []
-    ws._yfwWaiter = null
+    ws._ponosQueue = []
+    ws._ponosWaiter = null
     ws.on('message', (raw) => {
       const m = JSON.parse(raw.toString())
-      const w = ws._yfwWaiter
+      const w = ws._ponosWaiter
       if (w && w.predicate(m)) {
-        ws._yfwWaiter = null
+        ws._ponosWaiter = null
         clearTimeout(w.timer)
         w.resolve(m)
       } else {
-        ws._yfwQueue.push(m)
+        ws._ponosQueue.push(m)
       }
     })
     ws.on('open', () => resolve(ws))
@@ -97,15 +97,15 @@ function connect() {
 
 // 从消息总线取满足谓词的下一消息：先扫队列（命中即消费），否则注册等待者
 function collect(ws, predicate, { timeoutMs = 5000 } = {}) {
-  const idx = ws._yfwQueue.findIndex(predicate)
-  if (idx >= 0) return Promise.resolve(ws._yfwQueue.splice(idx, 1)[0])
+  const idx = ws._ponosQueue.findIndex(predicate)
+  if (idx >= 0) return Promise.resolve(ws._ponosQueue.splice(idx, 1)[0])
   return new Promise((resolve, reject) => {
     const w = { predicate, resolve, reject, timer: null }
     w.timer = setTimeout(() => {
-      if (ws._yfwWaiter === w) ws._yfwWaiter = null
-      reject(new Error('collect timeout, queue=' + JSON.stringify(ws._yfwQueue)))
+      if (ws._ponosWaiter === w) ws._ponosWaiter = null
+      reject(new Error('collect timeout, queue=' + JSON.stringify(ws._ponosQueue)))
     }, timeoutMs)
-    ws._yfwWaiter = w
+    ws._ponosWaiter = w
   })
 }
 
@@ -184,29 +184,29 @@ test('spawn 契约：argv/env 与 prompt 文件注入（§2）', async () => {
   // 系统提示词临时文件存在且含身份内容
   assert.ok(existsSync(promptFile), 'prompt file should exist')
   const promptText = readFileSync(promptFile, 'utf-8')
-  assert.match(promptText, /YFWorking/)
+  assert.match(promptText, /Ponos/)
   // cwd 与技能根目录均以 --add-dir 注入
   const addDirCount = argvRec.argv.filter((a, i) => argvRec.argv[i - 1] === '--add-dir').length
   assert.ok(addDirCount >= 1)
 
   const envRec = await waitLogFile((r) => r.t === 'env')
   assert.equal(envRec.env.CLAUDE_CONFIG_DIR, home)
-  assert.equal(envRec.env.YFWORKING_HOME, home)
+  assert.equal(envRec.env.PONOS_HOME, home)
   assert.equal(envRec.env.CLAUDE_CODE_AGENT_TRIGGERS, 'true')
 
   // 收尾：等本轮结果，避免 session 挂起影响后续用例
   await collect(ws, (m) => m.type === 'event' && m.sessionId === SID && m.data.type === 'result')
 })
 
-test('allowOutsideDirs：config 开启后 spawn env 注入 YFW_ALLOW_OUTSIDE_DIRS=1（默认不注入）', async () => {
+test('allowOutsideDirs：config 开启后 spawn env 注入 PONOS_ALLOW_OUTSIDE_DIRS=1（默认不注入）', async () => {
   const ws = await connect()
   const cwd = home
-  // 默认（config 未开启）：新会话 env 不应含 YFW_ALLOW_OUTSIDE_DIRS
+  // 默认（config 未开启）：新会话 env 不应含 PONOS_ALLOW_OUTSIDE_DIRS
   const envBefore1 = logRecords().filter((r) => r.t === 'env').length
   send(ws, { type: 'send', sessionId: 's-outside', cwd, prompt: 'hello outside', requestId: 'ro1' })
   await collect(ws, (m) => m.type === 'ack' && m.data.sessionId === 's-outside')
   const envRec1 = await waitLogFileCount('env', envBefore1 + 1)
-  assert.ok(envRec1.env.YFW_ALLOW_OUTSIDE_DIRS === undefined, '默认不应注入 YFW_ALLOW_OUTSIDE_DIRS')
+  assert.ok(envRec1.env.PONOS_ALLOW_OUTSIDE_DIRS === undefined, '默认不应注入 PONOS_ALLOW_OUTSIDE_DIRS')
   await collect(ws, (m) => m.type === 'event' && m.sessionId === 's-outside' && m.data.type === 'result')
 
   // 开启 allowOutsideDirs（POST /config 透传保存）→ 新会话 spawn env 注入
@@ -220,7 +220,7 @@ test('allowOutsideDirs：config 开启后 spawn env 注入 YFW_ALLOW_OUTSIDE_DIR
   send(ws, { type: 'send', sessionId: 's-outside2', cwd, prompt: 'hello outside2', requestId: 'ro2' })
   await collect(ws, (m) => m.type === 'ack' && m.data.sessionId === 's-outside2')
   const envRec2 = await waitLogFileCount('env', envBefore2 + 1)
-  assert.equal(envRec2.env.YFW_ALLOW_OUTSIDE_DIRS, '1')
+  assert.equal(envRec2.env.PONOS_ALLOW_OUTSIDE_DIRS, '1')
   await collect(ws, (m) => m.type === 'event' && m.sessionId === 's-outside2' && m.data.type === 'result')
 
   // 恢复默认（避免污染后续用例）
@@ -338,7 +338,7 @@ test('browser 路由：bridge_request 不透传 GUI，无执行器回写错误',
   assert.match(ev.data.message.content[0].text, /browser 完成/)
   await collect(ws, (m) => m.type === 'event' && m.sessionId === SID && m.data.type === 'result')
   // GUI 全程未收到任何 bridge_request 载荷（URL 等不泄漏，消息总线队列即全量留痕）
-  const leaked = ws._yfwQueue.filter((m) => m.sessionId === SID && m.type === 'event' && m.data.type === 'bridge_request')
+  const leaked = ws._ponosQueue.filter((m) => m.sessionId === SID && m.type === 'event' && m.data.type === 'bridge_request')
   assert.equal(leaked.length, 0, 'bridge_request must never reach GUI')
   // 内核收到 browser_response 错误回写
   const br = await waitLogFile((r) => r.t === 'stdin' && r.data.type === 'control_request' &&

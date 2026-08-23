@@ -1,7 +1,7 @@
 // scripts/build-installer.mjs
-// Builds the full YFWorking installer package
+// Builds the full Ponos installer package
 // 1. Builds embedded Python runtime (if not already built)
-// 2. Packages ~/.yfworking/skills
+// 2. Packages ~/.ponos/skills
 // 3. Builds electron-builder NSIS installer
 // 4. Builds portable .zip
 import { execSync } from 'child_process'
@@ -12,11 +12,11 @@ import { homedir } from 'os'
 const ROOT = join(import.meta.dirname, '..')
 const RELEASE = join(ROOT, 'release')
 const RUNTIME = join(ROOT, 'runtime', 'python')
-const SKILLS_SRC = join(homedir(), '.yfworking', 'skills')
+const SKILLS_SRC = join(homedir(), '.ponos', 'skills')
 const SKILLS_DEST = join(ROOT, 'runtime', 'skills')
 
 console.log('============================================')
-console.log('  YFWorking Full Installer Builder')
+console.log('  Ponos Full Installer Builder')
 console.log('============================================\n')
 
 // ── Step 1: Ensure embedded Python runtime exists ─────────────────────

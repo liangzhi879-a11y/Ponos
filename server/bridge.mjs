@@ -22,7 +22,7 @@ import { costOf, withBudget } from '../kernel/cost.mjs'
 import { getOpsHealth } from '../kernel/health.mjs'
 import { redactText } from '../kernel/redact.mjs'
 
-const PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51309', 10)
+const PORT = parseInt(process.env.PONOS_BRIDGE_PORT || '51309', 10)
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 /** 读取并 JSON.parse 请求体（各 POST 路由共用）。 */
@@ -35,12 +35,12 @@ function readJsonBody(req) {
 }
 
 // ---------------------------------------------------------------------------
-// YFWorking identity — injected into every session so the agent never
+// Ponos identity — injected into every session so the agent never
 // presents itself as Claude.
 // ---------------------------------------------------------------------------
 // 互动问答格式规范（独立常量：新会话随身份提示词注入；resume 会话单独注入，
 // 确保模型始终知晓唯一提问方式，不会回退到已被禁用的 AskUserQuestion 工具）
-const YFW_ASKUSER_FORMAT = `## 互动问答（提问卡片 —— 唯一允许的提问方式，最高优先级）
+const PONOS_ASKUSER_FORMAT = `## 互动问答（提问卡片 —— 唯一允许的提问方式，最高优先级）
 当你需要用户做出选择、澄清歧义、收集信息或确认方向时，【必须】在回复正文中输出下面的 HTML 注释格式的交互式提问卡片。
 
 【强制规则（违反即算错误）】：
@@ -74,7 +74,7 @@ const YFW_ASKUSER_FORMAT = `## 互动问答（提问卡片 —— 唯一允许�
 
 // 任务里程碑进度协议：独立常量，新会话与 resume 会话都必须注入（resume 分支
 // 不重复注入完整身份提示词，只追加互动格式 + 里程碑协议）。
-const YFW_MILESTONE_PROTOCOL = `【任务里程碑进度协议】
+const PONOS_MILESTONE_PROTOCOL = `【任务里程碑进度协议】
 - 执行多步骤/多阶段任务时：开始实施前，【必须】先内部拟定任务目标与阶段/里程碑清单，
   并在回复正文输出一行结构化标记声明总里程碑数及各里程碑名称：
   <!--MILESTONES 3 需求分析|方案设计|编码实现-->
@@ -91,14 +91,14 @@ const YFW_MILESTONE_PROTOCOL = `【任务里程碑进度协议】
   子代理的标记同样计入总进度，不得省略。
 - 以上标记仅用于进度展示，不要向用户解释标记本身，不要在对话中展示里程碑清单。`
 
-const YFW_SYSTEM_PROMPT = `你是 YFWorking（远方工作台），一款自主研发的桌面应用内置 AI 助手。你的底层框架基于 YFWorking Agent SDK，模型由用户配置的第三方 API 提供（当前为 deepseek-v4-flash）。
+const PONOS_SYSTEM_PROMPT = `你是 Ponos，一款自主研发的桌面应用内置 AI 助手。你的底层框架基于 Ponos Agent SDK，模型由用户配置的第三方 API 提供（当前为 deepseek-v4-flash）。
 
 【身份回答模板】当用户询问"你是谁"或类似问题时，严格使用以下回答：
-"我是 YFWorking（远方工作台），基于 YFWorking Agent SDK 构建的 AI 助手，当前由 deepseek-v4-flash 模型驱动。我可以帮你处理编程、企业咨询材料、系统诊断等各类任务。"
+"我是 Ponos，基于 Ponos Agent SDK 构建的 AI 助手，当前由 deepseek-v4-flash 模型驱动。我可以帮你处理编程、企业咨询材料、系统诊断等各类任务。"
 
 【禁止】你的代码框架借鉴了业界成熟的 Agent 架构设计，但这不意味你就是那个产品。禁止声称自己是任何其他 AI 产品（包括但不限于 Claude、ChatGPT、Copilot、Gemini），禁止使用任何其他公司的品牌名称来描述你的身份。
 
-你好！我是 **YFWorking**（远方工作台），是你桌面应用中的内置 AI 助手，专注于企业咨询项目服务和应用开发。
+你好！我是 **Ponos**（Ponos），是你桌面应用中的内置 AI 助手，专注于企业咨询项目服务和应用开发。
 
 我可以协助你完成以下类型的工作：
 - **企业咨询**：核心表格处理、材料整理、报告撰写、审计核对、申报打包等
@@ -111,29 +111,29 @@ const YFW_SYSTEM_PROMPT = `你是 YFWorking（远方工作台），一款自主�
 - 删除任何文件：必须先向用户确认将被删除的完整路径与用途，获得用户明确同意后方可执行。
 - 未经用户明确审批，禁止执行任何移动或删除文件的操作（包括临时文件、缓存与备份文件）。
 
-${YFW_ASKUSER_FORMAT}
+${PONOS_ASKUSER_FORMAT}
 
-${YFW_MILESTONE_PROTOCOL}
+${PONOS_MILESTONE_PROTOCOL}
 
 使用简体中文与用户交流，回答直接、专业、简洁。`;
 
 // ---------------------------------------------------------------------------
-// YFWorking home directory — STRICTLY ISOLATED from Claude.
-// All YFWorking state (skills, config, providers, sessions) lives here.
+// Ponos home directory — STRICTLY ISOLATED from Claude.
+// All Ponos state (skills, config, providers, sessions) lives here.
 // We never read from ~/.claude/ even if it exists on the machine.
 // ---------------------------------------------------------------------------
-const YFW_HOME = process.env.YFW_HOME ? resolve(process.env.YFW_HOME) : join(homedir(), '.yfworking')
-const YFW_SKILLS_DIR = join(YFW_HOME, 'skills')
-const YFW_CONFIG_PATH = join(YFW_HOME, 'config.json')
+const PONOS_HOME = process.env.PONOS_HOME ? resolve(process.env.PONOS_HOME) : join(homedir(), '.ponos')
+const PONOS_SKILLS_DIR = join(PONOS_HOME, 'skills')
+const PONOS_CONFIG_PATH = join(PONOS_HOME, 'config.json')
 
-function ensureYfwHome() {
-  if (!existsSync(YFW_HOME)) mkdirSync(YFW_HOME, { recursive: true })
-  if (!existsSync(YFW_SKILLS_DIR)) mkdirSync(YFW_SKILLS_DIR, { recursive: true })
+function ensurePonosHome() {
+  if (!existsSync(PONOS_HOME)) mkdirSync(PONOS_HOME, { recursive: true })
+  if (!existsSync(PONOS_SKILLS_DIR)) mkdirSync(PONOS_SKILLS_DIR, { recursive: true })
 }
 
 // 会话正常退出会删除各自的 --append-system-prompt-file；异常退出（进程强杀/
 // 崩溃/直接关窗）会遗留孤儿文件，长此以往 %TEMP% 堆积数百个。服务器重启意味着
-// 内存会话全部作废，残留的 yfw-prompt-* 均为孤儿。内核在 spawn 时已读入文件
+// 内存会话全部作废，残留的 ponos-prompt-* 均为孤儿。内核在 spawn 时已读入文件
 // 内容，此后文件不再被引用，因此清扫不会影响任何运行中会话；保守起见仍只清
 // 24h 前的文件（跨日长会话的提示词文件即使仍被引用也无害）。
 function sweepOrphanPromptFiles() {
@@ -142,7 +142,7 @@ function sweepOrphanPromptFiles() {
     const cutoff = Date.now() - 24 * 3600 * 1000
     let n = 0
     for (const name of readdirSync(t)) {
-      if (!name.startsWith('yfw-prompt-')) continue
+      if (!name.startsWith('ponos-prompt-')) continue
       try {
         if (statSync(join(t, name)).mtimeMs < cutoff) { rmSync(join(t, name), { force: true }); n++ }
       } catch {}
@@ -152,8 +152,8 @@ function sweepOrphanPromptFiles() {
 }
 
 function findSkillRoot() {
-  ensureYfwHome()
-  return YFW_SKILLS_DIR
+  ensurePonosHome()
+  return PONOS_SKILLS_DIR
 }
 
 // 内置示例技能目录候选（dev 源码 / vite 构建产物 / 打包后目录，多形态兼容）
@@ -179,20 +179,20 @@ function writeSkillIndex(idxPath, index) {
   writeFileSync(idxPath, JSON.stringify(index, null, 2), 'utf-8')
 }
 
-// Recursively copy a skill directory, rewriting {{YFW_SKILLS}} placeholders to
+// Recursively copy a skill directory, rewriting {{PONOS_SKILLS}} placeholders to
 // the real skill root so the bundled package stays portable across machines.
 // Shared by single-skill install and first-run bulk auto-install.
 const SKILL_TEXT_RE = /\.(md|py|json|txt|yaml|yml|js|mjs|cjs|ts|html|css|sh|bat|cmd|csv)$/i
-function copyWithRewrite(srcDir, destDir, placeholder, yfwRootAbs) {
+function copyWithRewrite(srcDir, destDir, placeholder, ponosRootAbs) {
   for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
     const src = join(srcDir, entry.name)
     const dest = join(destDir, entry.name)
     if (entry.isDirectory()) {
       mkdirSync(dest, { recursive: true })
-      copyWithRewrite(src, dest, placeholder, yfwRootAbs)
+      copyWithRewrite(src, dest, placeholder, ponosRootAbs)
     } else {
       const raw = readFileSync(src)
-      if (SKILL_TEXT_RE.test(entry.name)) writeFileSync(dest, raw.toString('utf-8').split(placeholder).join(yfwRootAbs), 'utf-8')
+      if (SKILL_TEXT_RE.test(entry.name)) writeFileSync(dest, raw.toString('utf-8').split(placeholder).join(ponosRootAbs), 'utf-8')
       else writeFileSync(dest, raw)
     }
   }
@@ -212,7 +212,7 @@ function findPythonExe() {
   return 'python'
 }
 
-// Default providers shipped with YFWorking — used on first run.
+// Default providers shipped with Ponos — used on first run.
 const DEFAULT_PROVIDERS = [
   // Model names follow official docs (verified 2026-08):
   //   DeepSeek: https://api-docs.deepseek.com/zh-cn/quick_start/pricing
@@ -247,7 +247,7 @@ const DEFAULT_PROVIDERS = [
 
 const DEFAULT_CONFIG = {
   activeProvider: 'deepseek',
-  skillRoot: YFW_SKILLS_DIR,
+  skillRoot: PONOS_SKILLS_DIR,
   autoCapture: true,
   autoImageBridge: true,
   visionProviderId: '',
@@ -381,23 +381,23 @@ function pruneStampedBackups(targetPath, keepDays) {
 }
 
 function loadConfig() {
-  ensureYfwHome()
-  if (!existsSync(YFW_CONFIG_PATH)) {
-    safeWriteJsonWithBak(YFW_CONFIG_PATH, JSON.stringify(DEFAULT_CONFIG, null, 2))
+  ensurePonosHome()
+  if (!existsSync(PONOS_CONFIG_PATH)) {
+    safeWriteJsonWithBak(PONOS_CONFIG_PATH, JSON.stringify(DEFAULT_CONFIG, null, 2))
     return DEFAULT_CONFIG
   }
-  const recovered = tryReadJsonWithRecovery(YFW_CONFIG_PATH)
+  const recovered = tryReadJsonWithRecovery(PONOS_CONFIG_PATH)
   if (!recovered) {
     // Both primary and every .bak are unreadable — fall back to defaults and
     // log loudly so the user knows to check disk / restore from external backup.
     console.error('[bridge] config.json + all .bak are unreadable — using DEFAULT_CONFIG')
-    safeWriteJsonWithBak(YFW_CONFIG_PATH, JSON.stringify(DEFAULT_CONFIG, null, 2))
+    safeWriteJsonWithBak(PONOS_CONFIG_PATH, JSON.stringify(DEFAULT_CONFIG, null, 2))
     return DEFAULT_CONFIG
   }
   if (recovered.recoveredFrom) {
     // Recovered — restore the good copy to config.json so the app state is
     // back to normal immediately, and let safeWriteJsonWithBak shadow it.
-    try { copyFileSync(recovered.recoveredFrom, YFW_CONFIG_PATH) } catch {}
+    try { copyFileSync(recovered.recoveredFrom, PONOS_CONFIG_PATH) } catch {}
   }
   try {
     const cfg = recovered.data
@@ -409,7 +409,7 @@ function loadConfig() {
     }
     // Persist migrated config so the frontend /config endpoint sees the
     // corrected values immediately and we skip re-migrating on every read.
-    try { safeWriteJsonWithBak(YFW_CONFIG_PATH, JSON.stringify(merged, null, 2)) } catch {}
+    try { safeWriteJsonWithBak(PONOS_CONFIG_PATH, JSON.stringify(merged, null, 2)) } catch {}
     return merged
   } catch {
     return DEFAULT_CONFIG
@@ -417,13 +417,13 @@ function loadConfig() {
 }
 
 // Bypass the kernel's interactive login (claude login / OAuth) by writing
-// the active provider's credentials into ~/.yfworking/settings.json. The
+// the active provider's credentials into ~/.ponos/settings.json. The
 // Claude Code kernel reads env vars from settings.json at startup, so the
 // app works with plain API keys — no browser-based authentication needed.
-const YFW_SETTINGS_PATH = join(YFW_HOME, 'settings.json')
+const PONOS_SETTINGS_PATH = join(PONOS_HOME, 'settings.json')
 
-// P4-1：内核 provider 注册表播种源（与 settings.json 同一信任域：YFW_HOME，含 token）
-const YFW_PROVIDERS_PATH = join(YFW_HOME, 'providers.json')
+// P4-1：内核 provider 注册表播种源（与 settings.json 同一信任域：PONOS_HOME，含 token）
+const PONOS_PROVIDERS_PATH = join(PONOS_HOME, 'providers.json')
 
 function writeProvidersFile() {
   try {
@@ -441,7 +441,7 @@ function writeProvidersFile() {
         visionModel: p.visionModel || '',
       })),
     }
-    safeWriteJsonWithBak(YFW_PROVIDERS_PATH, JSON.stringify(snapshot, null, 2))
+    safeWriteJsonWithBak(PONOS_PROVIDERS_PATH, JSON.stringify(snapshot, null, 2))
   } catch (e) {
     console.warn('[bridge] writeProvidersFile failed:', e.message)
   }
@@ -458,12 +458,12 @@ function syncKernelSettings() {
     // visionProviderId to point at any other configured provider.
     const visionProvider = (cfg.providers || []).find(p => p.id === cfg.visionProviderId) || provider
     const existing = {}
-    if (existsSync(YFW_SETTINGS_PATH)) {
-      const recovered = tryReadJsonWithRecovery(YFW_SETTINGS_PATH)
+    if (existsSync(PONOS_SETTINGS_PATH)) {
+      const recovered = tryReadJsonWithRecovery(PONOS_SETTINGS_PATH)
       if (recovered) {
         Object.assign(existing, recovered.data)
         if (recovered.recoveredFrom) {
-          try { copyFileSync(recovered.recoveredFrom, YFW_SETTINGS_PATH) } catch {}
+          try { copyFileSync(recovered.recoveredFrom, PONOS_SETTINGS_PATH) } catch {}
         }
       }
     }
@@ -477,15 +477,15 @@ function syncKernelSettings() {
       ANTHROPIC_DEFAULT_HAIKU_MODEL: sub,
       CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(provider.contextWindow || 1000000),
       CLAUDE_CODE_EFFORT_LEVEL: provider.effortLevel || '',
-      YFW_VISION_BASE_URL: visionProvider.apiBaseUrl || '',
-      YFW_VISION_AUTH_TOKEN: visionProvider.authToken || '',
-      YFW_VISION_MODEL: visionProvider.visionModel || '',
-      YFW_AUTO_IMAGE_BRIDGE: cfg.autoImageBridge === false ? '0' : '1',
+      PONOS_VISION_BASE_URL: visionProvider.apiBaseUrl || '',
+      PONOS_VISION_AUTH_TOKEN: visionProvider.authToken || '',
+      PONOS_VISION_MODEL: visionProvider.visionModel || '',
+      PONOS_AUTO_IMAGE_BRIDGE: cfg.autoImageBridge === false ? '0' : '1',
       // 会话目录外文件访问开关：开启时注入，关闭时删除（保持默认限制）
-      YFW_ALLOW_OUTSIDE_DIRS: cfg.allowOutsideDirs === true ? '1' : '',
+      PONOS_ALLOW_OUTSIDE_DIRS: cfg.allowOutsideDirs === true ? '1' : '',
     }
-    if (existing.env.YFW_ALLOW_OUTSIDE_DIRS === '') delete existing.env.YFW_ALLOW_OUTSIDE_DIRS
-    safeWriteJsonWithBak(YFW_SETTINGS_PATH, JSON.stringify(existing, null, 2))
+    if (existing.env.PONOS_ALLOW_OUTSIDE_DIRS === '') delete existing.env.PONOS_ALLOW_OUTSIDE_DIRS
+    safeWriteJsonWithBak(PONOS_SETTINGS_PATH, JSON.stringify(existing, null, 2))
     console.log('[bridge] kernel settings synced ->', provider.id, '| model:', model)
   } catch (e) {
     console.warn('[bridge] syncKernelSettings failed:', e.message)
@@ -495,7 +495,7 @@ function syncKernelSettings() {
 function saveConfig(updates) {
   const current = loadConfig()
   const next = { ...current, ...updates }
-  safeWriteJsonWithBak(YFW_CONFIG_PATH, JSON.stringify(next, null, 2))
+  safeWriteJsonWithBak(PONOS_CONFIG_PATH, JSON.stringify(next, null, 2))
   // Keep the kernel's settings.json in sync so auth works without login.
   syncKernelSettings()
   writeProvidersFile()
@@ -530,16 +530,16 @@ function pushActiveProviderSwitch() {
 // Kernel self-bootstrap: when the packaged app lives under Program Files
 // (or any ACL-restricted dir), spawning bun to execute the kernel fails with
 // EPERM (Windows denies higher-privilege file access under those roots).
-// We copy the kernel + bun runtime into the user home (~/.yfworking/runtime/)
+// We copy the kernel + bun runtime into the user home (~/.ponos/runtime/)
 // once and run from there, which is always writable/executable.
 // ---------------------------------------------------------------------------
 function bootstrapKernelToUserDir(kernel, bun) {
-  // 总是 bootstrap 到 ~/.yfworking/runtime/（不再仅限 Program Files）：
+  // 总是 bootstrap 到 ~/.ponos/runtime/（不再仅限 Program Files）：
   // 1) 用户级安装路径 AppData\Local\Programs\ 也有 ACL/AV 风险
   // 2) ~100MB 一次性复制，仅在大小变化时重做
   // 3) 用户家目录永远是可写可执行，spawn 不会受阻
   try {
-    const destBase = join(YFW_HOME, 'runtime')
+    const destBase = join(PONOS_HOME, 'runtime')
     const destKernel = join(destBase, 'kernel', 'cli.mjs')
     const destBun = join(destBase, 'bun', 'bun.exe')
     const kernelSize = existsSync(destKernel) ? statSync(destKernel).size : -1
@@ -561,44 +561,44 @@ function bootstrapKernelToUserDir(kernel, bun) {
   }
 }
 
-function findYFWorking() {
-  // NOTE: We MUST spawn the real YFWorking kernel — the bun-bundled ESM CLI
-  // built from yfw-kernel/claude-code — NOT the npm-global yfworking.cmd
-  // (that is the YFWorking GUI launcher: it starts bridge+vite+browser and
+function findPonos() {
+  // NOTE: We MUST spawn the real Ponos kernel — the bun-bundled ESM CLI
+  // built from ponos-kernel/claude-code — NOT the npm-global ponos.cmd
+  // (that is the Ponos GUI launcher: it starts bridge+vite+browser and
   // would kill a kernel session) and NOT stock Claude Code from PATH (that
-  // would bypass every YFW isolation fix). The kernel is started via a bun
+  // would bypass every Ponos isolation fix). The kernel is started via a bun
   // runtime: `"<bun>" "<kernel>"` (spawn uses shell:true and simply
   // concatenates command + args).
-  if (process.env.YFWORKING_PATH) return process.env.YFWORKING_PATH
-  // 1) Explicit kernel override: YFWORKING_KERNEL = path to cli.mjs,
-  //    YFWORKING_BUN (optional) = path to bun runtime.
-  if (process.env.YFWORKING_KERNEL) {
-    const kernel = process.env.YFWORKING_KERNEL
-    const bun = process.env.YFWORKING_BUN || join(homedir(), '.bun', 'bin', 'bun.exe')
+  if (process.env.PONOS_PATH) return process.env.PONOS_PATH
+  // 1) Explicit kernel override: PONOS_KERNEL = path to cli.mjs,
+  //    PONOS_BUN (optional) = path to bun runtime.
+  if (process.env.PONOS_KERNEL) {
+    const kernel = process.env.PONOS_KERNEL
+    const bun = process.env.PONOS_BUN || join(homedir(), '.bun', 'bin', 'bun.exe')
     return `"${bun}" "${kernel}"`
   }
-  // 2) Well-known kernel locations. YFW-turbo 净室重建内核（<repo>/kernel/cli.mjs）
+  // 2) Well-known kernel locations. Ponos-turbo 净室重建内核（<repo>/kernel/cli.mjs）
   //    为最高优先级：dev 走 PATH 上的 bun 直跑源码（改内核立即生效），生产以
   //    scripts/build-kernel.mjs 打成单文件 bundle（<app>/kernel-dist/cli.mjs，
   //    避开 vite emptyOutDir 对 dist/ 的清空）经 bootstrap 复制到
-  //    ~/.yfworking/runtime/。旧 yfw claude-code 内核仅作向后兼容 last resort。
+  //    ~/.ponos/runtime/。旧 ponos claude-code 内核仅作向后兼容 last resort。
   //    注意：源码候选（direct:true）依赖同目录兄弟模块（engine.mjs/session.mjs/
   //    ...），bootstrap 只复制单文件 cli.mjs 会缺依赖导致内核 200ms 内崩溃退出
   //    （Cannot find module './engine.mjs'），故源码模式必须直跑源码目录，
-  //    只有单文件自包含的 bundle 才允许 bootstrap 进 ~/.yfworking/runtime/。
+  //    只有单文件自包含的 bundle 才允许 bootstrap 进 ~/.ponos/runtime/。
   const candidates = [
-    // YFW-turbo 源码（dev / 仓库布局 <repo>/kernel）——直跑，不 bootstrap
+    // Ponos-turbo 源码（dev / 仓库布局 <repo>/kernel）——直跑，不 bootstrap
     { kernel: join(__dirname, '..', 'kernel', 'cli.mjs'), bun: join(__dirname, '..', 'runtime', 'bun', 'bun.exe'), direct: true },
     { kernel: join(__dirname, '..', '..', 'kernel', 'cli.mjs'), bun: join(__dirname, '..', '..', 'runtime', 'bun', 'bun.exe'), direct: true },
-    // YFW-turbo 单文件 bundle（生产打包，bootstrap 只复制单文件不断依赖）
+    // Ponos-turbo 单文件 bundle（生产打包，bootstrap 只复制单文件不断依赖）
     { kernel: join(__dirname, '..', 'kernel-dist', 'cli.mjs'), bun: join(__dirname, '..', 'runtime', 'bun', 'bun.exe') },
     { kernel: join(__dirname, '..', '..', 'kernel-dist', 'cli.mjs'), bun: join(__dirname, '..', '..', 'runtime', 'bun', 'bun.exe') },
     // electron-builder 打包版（asar 关）：kernel 打进 <app>/resources/app/kernel-dist
     // （files 相对 app 目录），bun 打进 <app>/resources/runtime/bun（extraResources
     // 落点在 resources 下）。kernel 与 bun 分处两个根，需交叉组合才能同时命中。
     { kernel: join(__dirname, '..', 'kernel-dist', 'cli.mjs'), bun: join(__dirname, '..', '..', 'runtime', 'bun', 'bun.exe') },
-    // 旧 yfw claude-code 内核（向后兼容）
-    { kernel: join(__dirname, '..', 'yfw-kernel', 'claude-code', 'dist', 'cli.mjs'), bun: join(homedir(), '.bun', 'bin', 'bun.exe') },
+    // 旧 ponos claude-code 内核（向后兼容）
+    { kernel: join(__dirname, '..', 'ponos-kernel', 'claude-code', 'dist', 'cli.mjs'), bun: join(homedir(), '.bun', 'bin', 'bun.exe') },
   ]
   for (const { kernel, bun, direct } of candidates) {
     if (!existsSync(kernel)) continue
@@ -613,18 +613,18 @@ function findYFWorking() {
     } catch { }
   }
   // 3) Last resort — a real Claude Code kernel on PATH (dev convenience only;
-  //    never reached once the YFW kernel is built or shipped).
+  //    never reached once the Ponos kernel is built or shipped).
   try { return execSync('where claude.cmd 2>nul', { encoding: 'utf-8', timeout: 5000 }).trim().split('\n')[0].trim() } catch { }
   try { return execSync('where claude 2>nul', { encoding: 'utf-8', timeout: 5000 }).trim().split('\n')[0].trim() } catch { }
   try { return execSync('where claude-code 2>nul', { encoding: 'utf-8', timeout: 5000 }).trim().split('\n')[0].trim() } catch { }
   return 'claude.cmd'
 }
-const YFWORKING = findYFWorking()
-console.log('[bridge] YFWorking CLI:', YFWORKING)
+const PONOS = findPonos()
+console.log('[bridge] Ponos CLI:', PONOS)
 // Ensure kernel settings.json exists with credentials on boot.
 try { syncKernelSettings() } catch (e) { console.warn('[bridge] initial kernel settings sync failed:', e.message) }
 try { writeProvidersFile() } catch (e) { console.warn('[bridge] initial providers file write failed:', e.message) }
-console.log('[bridge] YFWorking home:', YFW_HOME)
+console.log('[bridge] Ponos home:', PONOS_HOME)
 
 const sessions = new Map()
 const wsClients = new Set()
@@ -673,20 +673,20 @@ const browserRouter = makeBrowserRouter({ writeKernel: writeControlRequest })
 const q = (s) => '"' + String(s).replace(/"/g, '') + '"'
 
 // Build the isolated environment for spawned CLI processes.
-// CLAUDE_CONFIG_DIR redirects Claude Code's config dir to ~/.yfworking so
+// CLAUDE_CONFIG_DIR redirects Claude Code's config dir to ~/.ponos so
 // the agent's sessions, memory, and skills never collide with ~/.claude.
 function buildChildEnv() {
   const cfg = loadConfig()
   const provider = (cfg.providers || []).find(p => p.id === cfg.activeProvider) || cfg.providers?.[0]
   const env = {
     ...process.env,
-    CLAUDE_CONFIG_DIR: YFW_HOME,
-    YFWORKING_HOME: YFW_HOME,
+    CLAUDE_CONFIG_DIR: PONOS_HOME,
+    PONOS_HOME: PONOS_HOME,
   }
   // 注入 bundled python 路径，内核 OCR 等 python 工具优先使用（新环境无系统
   // python 时离线可用；裸 'python' 时内核回退 PATH，行为不变）。
   const pythonExe = findPythonExe()
-  if (pythonExe !== 'python') env.YFWORKING_PYTHON = pythonExe
+  if (pythonExe !== 'python') env.PONOS_PYTHON = pythonExe
   // 开启内核原生定时任务（Kairos Cron：CronCreate/CronDelete/CronList 工具）
   // 与 /loop 循环执行 skill。release 内核 bundle 已编译全部代码，仅需此开关。
   // 用户环境变量可显式覆盖（如设为 false 关闭）。
@@ -721,13 +721,13 @@ function buildChildEnv() {
   } else if (provider) {
     console.warn('[bridge] provider', provider.id, 'missing apiBaseUrl or authToken — using CLI defaults')
   }
-  // 会话目录外文件访问开关：cfg.allowOutsideDirs=true 时注入 YFW_ALLOW_OUTSIDE_DIRS=1，
+  // 会话目录外文件访问开关：cfg.allowOutsideDirs=true 时注入 PONOS_ALLOW_OUTSIDE_DIRS=1，
   // 内核解锁 Read/Write/Edit/OCR 的目录边界；默认不注入（保持限制）。
   // 与 provider 无关，置于条件块外（无 provider 配置时同样生效）。
-  if (cfg.allowOutsideDirs === true) env.YFW_ALLOW_OUTSIDE_DIRS = '1'
+  if (cfg.allowOutsideDirs === true) env.PONOS_ALLOW_OUTSIDE_DIRS = '1'
   // 注：OpenAI 兼容协议注入已删除（2026-08-20 实测 deepseek OpenAI 端点带 tools 时
-  // 高概率 thinking-only 空回复，YFW 统一走 Anthropic 兼容端点）。
-  // 内核枚举 $YFW_HOME/agents/*.md 依赖 ripgrep（vendor/ripgrep/*/rg.exe）。
+  // 高概率 thinking-only 空回复，Ponos 统一走 Anthropic 兼容端点）。
+  // 内核枚举 $PONOS_HOME/agents/*.md 依赖 ripgrep（vendor/ripgrep/*/rg.exe）。
   // 早期发布包未携带该二进制导致静默失败（ENOENT→空列表）——当时强制走原生
   // Node 文件搜索兜底。现在发布包与 dev 构建均已随带 rg.exe，原生搜索反而
   // 无条件递归整棵 cwd 树（不跳过 node_modules/.git）拖慢启动与搜索；
@@ -752,7 +752,7 @@ function ripgrepAvailable() {
   const bases = [
     join(__dirname, '..', 'kernel'),                                  // release: <app>/kernel
     join(__dirname, '..', '..', 'kernel'),                            // 备选部署布局
-    join(__dirname, '..', 'yfw-kernel', 'claude-code', 'dist'),       // dev 源码构建
+    join(__dirname, '..', 'ponos-kernel', 'claude-code', 'dist'),       // dev 源码构建
   ]
   const exe = process.platform === 'win32' ? 'rg.exe' : 'rg'
   for (const base of bases) {
@@ -837,7 +837,7 @@ export function formatSkillEntry({ name, description, triggers, subskills, hasPa
   return line
 }
 
-// 扫描已安装技能（~/.yfworking/skills 下各 SKILL.md 的 frontmatter），供模型识别并自主调用
+// 扫描已安装技能（~/.ponos/skills 下各 SKILL.md 的 frontmatter），供模型识别并自主调用
 export function listInstalledSkills() {
   const dir = findSkillRoot()
   const skills = []
@@ -926,10 +926,10 @@ function buildCompactSkillSection() {
   return '\n\n【已安装技能清单（精简）】技能名即唯一调用标识，任务匹配时直接用 Skill 工具调用对应技能：\n' + lines.join('\n')
 }
 
-// 经验注入开关/上限：存 ~/.yfworking/config.json（GUI 设置页经 fetchBridgeConfig/saveBridgeConfig 读写）
+// 经验注入开关/上限：存 ~/.ponos/config.json（GUI 设置页经 fetchBridgeConfig/saveBridgeConfig 读写）
 function experienceInjectConfig() {
   try {
-    const cfg = JSON.parse(readFileSync(join(YFW_HOME, 'config.json'), 'utf-8'))
+    const cfg = JSON.parse(readFileSync(join(PONOS_HOME, 'config.json'), 'utf-8'))
     return {
       enabled: cfg.experienceInjectEnabled !== false,
       maxBytes: Number(cfg.experienceInjectMaxBytes) > 0 ? Number(cfg.experienceInjectMaxBytes) : 4096,
@@ -947,7 +947,7 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
   }
   // R4-1 并发会话上限：策略值来自内核 init 上报的 capacity（env 兜底），bridge
   // 仅执行拒绝；错误走既有 error 通道，GUI 零新增
-  const capacity = Math.max(1, Number(process.env.YFW_MAX_CONCURRENT_SESSIONS || 10))
+  const capacity = Math.max(1, Number(process.env.PONOS_MAX_CONCURRENT_SESSIONS || 10))
   if (sessions.size >= capacity) {
     send({ type: 'error', data: { message: `已达并发会话上限（${capacity}），请关闭空闲会话后重试` }, sessionId: sid })
     return null
@@ -968,7 +968,7 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     // P8 双路去重：技能清单已由内核从 --add-dir 技能根统一注入（cli.mjs
     // composeSystemPrompt 技能块），宿主不再重复注入（见下方 appendSkillList）。
     args.push('--resume', resumeId)
-    let resumePrompt = YFW_ASKUSER_FORMAT + YFW_MILESTONE_PROTOCOL
+    let resumePrompt = PONOS_ASKUSER_FORMAT + PONOS_MILESTONE_PROTOCOL
     const injectCfg = experienceInjectConfig()
     if (injectCfg.enabled) {
       // 沉积引导同样注入 resume 会话：原实现只进新会话，而应用默认"恢复最新
@@ -978,12 +978,12 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
       resumePrompt += buildSedimentPrompt()
       resumePrompt += buildExperienceIndex(injectCfg.maxBytes)
     }
-    const resumePromptFile = join(tmpdir(), 'yfw-prompt-' + sid.replace(/[^\w-]/g, '_') + '.resume.txt')
+    const resumePromptFile = join(tmpdir(), 'ponos-prompt-' + sid.replace(/[^\w-]/g, '_') + '.resume.txt')
     promptFile = resumePromptFile
     try { writeFileSync(resumePromptFile, resumePrompt, 'utf-8') } catch {}
     args.push('--append-system-prompt-file', q(resumePromptFile))
   } else {
-    // New session: inject the YFWorking identity / agent-specific system prompt.
+    // New session: inject the Ponos identity / agent-specific system prompt.
     // Windows cmd.exe cannot carry multi-line args, so collapse newlines to
     // spaces and drop double quotes before quoting the value for the shell.
     // 自定义 agent systemPrompt 会整体替换默认提示词，必须追加互动问答格式 +
@@ -993,8 +993,8 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     // scripts/verify-skill-listing.mjs 回归；会话技能由内核技能块统一提供）。
     ensurePersonalDir()
     let effectivePrompt = systemPrompt
-      ? `${systemPrompt}\n\n${YFW_ASKUSER_FORMAT}\n\n${YFW_MILESTONE_PROTOCOL}`
-      : YFW_SYSTEM_PROMPT
+      ? `${systemPrompt}\n\n${PONOS_ASKUSER_FORMAT}\n\n${PONOS_MILESTONE_PROTOCOL}`
+      : PONOS_SYSTEM_PROMPT
     const injectCfg = experienceInjectConfig()
     if (injectCfg.enabled) {
       effectivePrompt += buildSedimentPrompt()      // 沉积引导仅新会话注入
@@ -1002,7 +1002,7 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     }
     // 写入临时文件传入（--append-system-prompt-file）：技能清单可能很长，
     // 命令行直接传会超 cmd.exe 8191 字符限制导致 spawn 失败；文件方式还保留换行，格式示例更清晰。
-    const newSessionPromptFile = join(tmpdir(), 'yfw-prompt-' + sid.replace(/[^\w-]/g, '_') + '.txt')
+    const newSessionPromptFile = join(tmpdir(), 'ponos-prompt-' + sid.replace(/[^\w-]/g, '_') + '.txt')
     promptFile = newSessionPromptFile
     try { writeFileSync(promptFile, effectivePrompt, 'utf-8') } catch {}
     args.push('--append-system-prompt-file', q(promptFile))
@@ -1020,15 +1020,15 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     // 此处 args 均已 q() 加引号转义，把整条命令拼进 command 字符串传给
     // cmd.exe 与原来的 spawn 拼接行为完全等价（子进程 argv 实测一致），
     // 且不再触发该弃用警告。
-    proc = spawn([YFWORKING, ...args].join(' '), {
+    proc = spawn([PONOS, ...args].join(' '), {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...buildChildEnv(),
         // 注入该会话的历史压缩次数：内核 seedHealthFromEnv() 在模块加载时恢复
         // compactCount（进程内变量在空闲回收后清零是"压缩次数时有时无"的根因），
-        // 恢复后首轮强制发射 yfw_health 覆盖 GUI 旧快照。
+        // 恢复后首轮强制发射 ponos_health 覆盖 GUI 旧快照。
         ...(Number.isFinite(Number(compactCount)) && Number(compactCount) > 0
-          ? { YFW_HEALTH_COMPACT_COUNT: String(Number(compactCount)) }
+          ? { PONOS_HEALTH_COMPACT_COUNT: String(Number(compactCount)) }
           : {}),
       },
       cwd: cwd || process.cwd(),
@@ -1248,7 +1248,7 @@ function send(msg) {
   const payload = JSON.stringify(msg)
   for (const c of wsClients) {
     if (c.readyState !== 1) continue
-    if (c._yfwOverloaded && isLowPriorityMessage(msg)) continue
+    if (c._ponosOverloaded && isLowPriorityMessage(msg)) continue
     try {
       c.send(payload)
     } catch (e) {
@@ -1260,12 +1260,12 @@ function send(msg) {
     }
     const buffered = c.bufferedAmount
     if (buffered > WS_OVERLOAD_BYTES) {
-      if (!c._yfwOverloaded) {
+      if (!c._ponosOverloaded) {
         console.warn(`[bridge] WS client overloaded (${(buffered / 1048576).toFixed(1)}MB buffered) — shedding low-priority events until drained`)
       }
-      c._yfwOverloaded = true
-    } else if (c._yfwOverloaded && buffered < WS_OVERLOAD_CLEAR_BYTES) {
-      c._yfwOverloaded = false
+      c._ponosOverloaded = true
+    } else if (c._ponosOverloaded && buffered < WS_OVERLOAD_CLEAR_BYTES) {
+      c._ponosOverloaded = false
       console.log('[bridge] WS client drained — full event stream resumed')
     }
   }
@@ -1427,7 +1427,7 @@ const httpServer = createServer(async (req, res) => {
       const fp = resolve((body.path || '').replace(/\//g, sep))
       if (!body.path) throw new Error('path required')
       validOfficeFile(fp)
-      const tmp = join(tmpdir(), 'yfw-sheet-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.json')
+      const tmp = join(tmpdir(), 'ponos-sheet-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.json')
       writeFileSync(tmp, JSON.stringify(body))
       try {
         const result = await runOfficeScript('sheet_edit.py', ['write', tmp])
@@ -1457,7 +1457,7 @@ const httpServer = createServer(async (req, res) => {
       const fp = resolve((body.path || '').replace(/\//g, sep))
       if (!body.path) throw new Error('path required')
       validOfficeFile(fp)
-      const tmp = join(tmpdir(), 'yfw-docx-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.json')
+      const tmp = join(tmpdir(), 'ponos-docx-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.json')
       writeFileSync(tmp, JSON.stringify(body))
       try {
         const result = await runOfficeScript('docx_edit.py', ['write', tmp])
@@ -1489,9 +1489,9 @@ const httpServer = createServer(async (req, res) => {
       // O3-1 补全：配置摘要（env 白名单键值脱敏）+ skills-lock 版本 + transcript 大小
       const configSummary = {}
       for (const k of Object.keys(process.env)) {
-        if (/^(ANTHROPIC_|CLAUDE_|YFW_|OPENAI_)/.test(k)) configSummary[k] = redactText(process.env[k] || '')
+        if (/^(ANTHROPIC_|CLAUDE_|PONOS_|OPENAI_)/.test(k)) configSummary[k] = redactText(process.env[k] || '')
       }
-      const skillsLock = join(YFW_HOME, 'skills-lock.json')
+      const skillsLock = join(PONOS_HOME, 'skills-lock.json')
       let skillsLockVersion = null
       try { skillsLockVersion = JSON.parse(readFileSync(skillsLock, 'utf-8')).version ?? null } catch {}
       const extended = { ...diagInfo, configSummary, skillsLockVersion, transcriptMB: transcriptDirMB() }
@@ -1502,7 +1502,7 @@ const httpServer = createServer(async (req, res) => {
     if (url.pathname === '/diag/export') {
       const env = {}
       for (const k of Object.keys(process.env)) {
-        if (/^(ANTHROPIC_|CLAUDE_|YFW_|OPENAI_)/.test(k)) env[k] = redactText(process.env[k] || '')
+        if (/^(ANTHROPIC_|CLAUDE_|PONOS_|OPENAI_)/.test(k)) env[k] = redactText(process.env[k] || '')
       }
       const base = transcriptBaseDir()
       let sessions = 0
@@ -1575,8 +1575,8 @@ const httpServer = createServer(async (req, res) => {
         return out
       }
       const totals = { ...agg.totals, cost_usd: Number(costOf(agg.totals).toFixed(4)) }
-      // O4-1 月度预算：YFW_MONTHLY_BUDGET_USD env，未设时不输出 overBudget
-      const budget = Number(process.env.YFW_MONTHLY_BUDGET_USD || 0)
+      // O4-1 月度预算：PONOS_MONTHLY_BUDGET_USD env，未设时不输出 overBudget
+      const budget = Number(process.env.PONOS_MONTHLY_BUDGET_USD || 0)
       const { overBudget } = withBudget([{ cost_usd: totals.cost_usd }], budget)
       const resp = {
         ok: true,
@@ -1613,26 +1613,26 @@ const httpServer = createServer(async (req, res) => {
     }
 
     // 豆包图片生成端点（会话/历史/限速见 doubao.mjs；下载去水印走 watermark_remove.py）
-    if (url.pathname.startsWith('/yfw/doubao/')) {
-      if (url.pathname === '/yfw/doubao/status') {
+    if (url.pathname.startsWith('/ponos/doubao/')) {
+      if (url.pathname === '/ponos/doubao/status') {
         const s = doubao.readSessionMeta()
         return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ loggedIn: doubao.isLoggedIn(), exportedAt: s?.exportedAt || null }))
       }
-      if (url.pathname === '/yfw/doubao/history' && req.method === 'GET') {
+      if (url.pathname === '/ponos/doubao/history' && req.method === 'GET') {
         return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ items: doubao.listHistory() }))
       }
-      if (url.pathname === '/yfw/doubao/history' && req.method === 'POST') {
+      if (url.pathname === '/ponos/doubao/history' && req.method === 'POST') {
         const b = await readJsonBody(req)
         if (!b.id || !b.prompt) return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ code: 400, message: 'id and prompt required' }))
         doubao.addHistory({ id: b.id, prompt: b.prompt, imageUrl: b.imageUrl || '', path: b.path || '', createdAt: b.createdAt || Date.now() })
         return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true }))
       }
-      if (url.pathname.startsWith('/yfw/doubao/history/') && req.method === 'DELETE') {
+      if (url.pathname.startsWith('/ponos/doubao/history/') && req.method === 'DELETE') {
         const id = decodeURIComponent(url.pathname.split('/').pop())
         doubao.removeHistory(id)
         return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true }))
       }
-      if (url.pathname === '/yfw/doubao/download' && req.method === 'POST') {
+      if (url.pathname === '/ponos/doubao/download' && req.method === 'POST') {
         if (doubao.rateLimitHit()) return reply(429, { 'Content-Type': 'application/json' }, JSON.stringify({ code: 429, message: 'rate limited' }))
         const b = await readJsonBody(req)
         if (!b.url) return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ code: 400, message: 'url required' }))
@@ -1667,9 +1667,9 @@ const httpServer = createServer(async (req, res) => {
         if (!meta || !meta.ok) {
           return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ code: 500, message: 'watermark remove bad output' }))
         }
-        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, id, mode: meta.mode, url: `/yfw/doubao/images/${id}`, path: outPng }))
+        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, id, mode: meta.mode, url: `/ponos/doubao/images/${id}`, path: outPng }))
       }
-      if (url.pathname.startsWith('/yfw/doubao/images/') && req.method === 'GET') {
+      if (url.pathname.startsWith('/ponos/doubao/images/') && req.method === 'GET') {
         const id = decodeURIComponent(url.pathname.split('/').pop())
         const fp = join(doubao.imagesDir(), `${id}.png`)
         if (!existsSync(fp)) return reply(404, { 'Content-Type': 'application/json' }, JSON.stringify({ error: 'not found' }))
@@ -1778,7 +1778,7 @@ const httpServer = createServer(async (req, res) => {
         // Add cwd + skill root so the CLI doesn't refuse to start
         const skillRoot = findSkillRoot()
         if (existsSync(skillRoot)) args.push('--add-dir', skillRoot)
-        proc = spawn([YFWORKING, ...args].join(' '), {
+        proc = spawn([PONOS, ...args].join(' '), {
           stdio: ['pipe', 'pipe', 'pipe'],
           env,
           cwd: process.cwd(),
@@ -1818,7 +1818,7 @@ const httpServer = createServer(async (req, res) => {
       return // response already sent in finish()
     }
 
-    // --- YFWorking config & providers (persisted in ~/.yfworking/) ---
+    // --- Ponos config & providers (persisted in ~/.ponos/) ---
     if (url.pathname === '/config') {
       if (req.method === 'POST') {
         const body = await readJsonBody(req)
@@ -1999,7 +1999,7 @@ const httpServer = createServer(async (req, res) => {
     function detectSkillFormat(dir) {
       const skillMdPath = join(dir, 'SKILL.md')
       if (existsSync(skillMdPath)) {
-        return { format: 'yfworking', entryFile: 'SKILL.md', content: readFileSync(skillMdPath, 'utf-8') }
+        return { format: 'ponos', entryFile: 'SKILL.md', content: readFileSync(skillMdPath, 'utf-8') }
       }
       const claudePath = join(dir, 'CLAUDE.md')
       if (existsSync(claudePath)) return { format: 'claude', entryFile: 'CLAUDE.md', content: readFileSync(claudePath, 'utf-8') }
@@ -2016,7 +2016,7 @@ const httpServer = createServer(async (req, res) => {
       return null
     }
 
-    function convertToYFWorking(dir, detected) {
+    function convertToPonos(dir, detected) {
       const { format, entryFile, content } = detected
       let skillName = basename(dir)
       let skillDesc = ''
@@ -2079,9 +2079,9 @@ ${bodyContent}
         const detected = detectSkillFormat(sourcePathResolved)
         if (!detected) throw new Error('No recognized skill file found. Expected SKILL.md, CLAUDE.md, AGENTS.md, plugin.json, or manifest.json')
         let converted = false
-        let originalFormat = 'yfworking'
-        if (detected.format !== 'yfworking') {
-          const result = convertToYFWorking(sourcePathResolved, detected)
+        let originalFormat = 'ponos'
+        if (detected.format !== 'ponos') {
+          const result = convertToPonos(sourcePathResolved, detected)
           converted = true
           originalFormat = result.originalFormat || detected.format
         }
@@ -2111,16 +2111,16 @@ ${bodyContent}
           }))
         }
         mkdirSync(skillDir, { recursive: true })
-        // Copy skill files, rewriting {{YFW_SKILLS}} to the real skill root so the
+        // Copy skill files, rewriting {{PONOS_SKILLS}} to the real skill root so the
         // bundled package stays portable across machines/usernames.
-        copyWithRewrite(sourcePathResolved, skillDir, '{{YFW_SKILLS}}', skillRoot.replace(/\\/g, '/'))
+        copyWithRewrite(sourcePathResolved, skillDir, '{{PONOS_SKILLS}}', skillRoot.replace(/\\/g, '/'))
         // Built-in package ships a sibling _common/ shared lib — copy it once.
         if (body.isExample) {
           const srcCommon = join(dirname(sourcePathResolved), '_common')
           const destCommon = join(skillRoot, '_common')
           if (existsSync(srcCommon) && !existsSync(destCommon)) {
             mkdirSync(destCommon, { recursive: true })
-            copyWithRewrite(srcCommon, destCommon, '{{YFW_SKILLS}}', skillRoot.replace(/\\/g, '/'))
+            copyWithRewrite(srcCommon, destCommon, '{{PONOS_SKILLS}}', skillRoot.replace(/\\/g, '/'))
             console.log('[bridge] shared lib installed ->', destCommon)
           }
         }
@@ -2200,9 +2200,9 @@ heartbeatTimer.unref?.()
 // （整机卡死放大器之一）。仅在"轮次已结束（result 已到）、无待答提问、
 // 无待批审批"且空闲超阈值时回收；回收后前端再发消息会以 --resume 原会话 ID
 // 重新 spawn，无缝续聊（代价仅是首次 token 稍慢）。
-// YFW_KERNEL_IDLE_MS 覆盖阈值（毫秒），设 0 完全关闭回收。
+// PONOS_KERNEL_IDLE_MS 覆盖阈值（毫秒），设 0 完全关闭回收。
 // ---------------------------------------------------------------------------
-const _idleEnv = process.env.YFW_KERNEL_IDLE_MS
+const _idleEnv = process.env.PONOS_KERNEL_IDLE_MS
 const KERNEL_IDLE_REAP_MS = _idleEnv === '0' ? 0 : (Number(_idleEnv) > 0 ? Number(_idleEnv) : 10 * 60 * 1000)
 function reapIdleKernels() {
   const now = Date.now()
@@ -2226,9 +2226,9 @@ if (KERNEL_IDLE_REAP_MS > 0) setInterval(reapIdleKernels, 60000).unref?.()
 // 文件 I/O 会阻塞分钟级，工具调用挂在半途，前端表现为"交互没反应"）。
 // 只告警不自动杀（杀进程会丢会话工作）；日志 + kernel-stall 事件供前端提示，
 // 用户可手动取消/重启会话（--resume 无缝续聊）。
-// YFW_KERNEL_STALL_MS 覆盖阈值（毫秒），设 0 关闭。
+// PONOS_KERNEL_STALL_MS 覆盖阈值（毫秒），设 0 关闭。
 // ---------------------------------------------------------------------------
-const _stallEnv = process.env.YFW_KERNEL_STALL_MS
+const _stallEnv = process.env.PONOS_KERNEL_STALL_MS
 const KERNEL_STALL_WARN_MS = _stallEnv === '0' ? 0 : (Number(_stallEnv) > 0 ? Number(_stallEnv) : 10 * 60 * 1000)
 function warnStalledKernels() {
   const now = Date.now()
@@ -2245,9 +2245,9 @@ function warnStalledKernels() {
 }
 if (KERNEL_STALL_WARN_MS > 0) setInterval(warnStalledKernels, 60000).unref?.()
 sweepOrphanPromptFiles()
-// 测试场景（doubao.test.mjs）通过 YFW_BRIDGE_NO_LISTEN 跳过顶层 listen，
+// 测试场景（doubao.test.mjs）通过 PONOS_BRIDGE_NO_LISTEN 跳过顶层 listen，
 // 由测试自行 httpServer.listen(0) 起随机端口；正式运行保持原有行为。
-if (!process.env.YFW_BRIDGE_NO_LISTEN) {
+if (!process.env.PONOS_BRIDGE_NO_LISTEN) {
   httpServer.listen(PORT, () => { console.log('[bridge] http+ws://localhost:' + PORT); autoInstallSamples() })
 }
 export { httpServer, sessions }
@@ -2431,7 +2431,7 @@ wss.on('connection', (ws, req) => {
 })
 
 // ---------------------------------------------------------------------------
-// First-run auto-install: bundle all built-in sample skills into ~/.yfworking
+// First-run auto-install: bundle all built-in sample skills into ~/.ponos
 // so the app is usable immediately without any manual installation step.
 // Idempotent: already-installed skills are skipped; a marker file is written
 // only when EVERY sample skill installs cleanly (partial failure retries on
@@ -2453,7 +2453,7 @@ function autoInstallSamples() {
       if (existsSync(target)) { okCount += 1; continue }
       try {
         mkdirSync(target, { recursive: true })
-        copyWithRewrite(join(src, d.name), target, '{{YFW_SKILLS}}', skillRoot.replace(/\\/g, '/'))
+        copyWithRewrite(join(src, d.name), target, '{{PONOS_SKILLS}}', skillRoot.replace(/\\/g, '/'))
         const md = readFileSync(join(target, 'SKILL.md'), 'utf-8')
         const yamlMatch = md.match(/^---\r?\n([\s\S]*?)\r?\n---/)
         let ver = ''
@@ -2492,7 +2492,7 @@ function autoInstallSamples() {
     if (existsSync(srcCommon) && !existsSync(destCommon)) {
       try {
         mkdirSync(destCommon, { recursive: true })
-        copyWithRewrite(srcCommon, destCommon, '{{YFW_SKILLS}}', skillRoot.replace(/\\/g, '/'))
+        copyWithRewrite(srcCommon, destCommon, '{{PONOS_SKILLS}}', skillRoot.replace(/\\/g, '/'))
         console.log('[bridge] auto-installed shared lib: _common')
       } catch (e) {
         failCount += 1

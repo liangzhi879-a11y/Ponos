@@ -6,7 +6,7 @@
 
 **Architecture:** 全部机制优先放 kernel/：新建 kernel/log.mjs（结构化日志）；api.mjs 流中断重发 + 超时分级；engine.mjs 工具防重放（transcript 配对回填）；tools.mjs 活跃子进程登记 + cli.mjs 信号处理与 crash marker。bridge 侧唯一增量是并发上限拒绝（单进程内核无法感知其他会话，执行必须在会话管理方），上限值 `capacity` 由内核 system(init) 上报。
 
-**Tech Stack:** Node.js ESM（零 npm 依赖）、NDJSON wire 协议、node:test + spawn 集成测试（YFW_MOCK_API=1）。
+**Tech Stack:** Node.js ESM（零 npm 依赖）、NDJSON wire 协议、node:test + spawn 集成测试（PONOS_MOCK_API=1）。
 
 ## Global Constraints
 
@@ -178,7 +178,7 @@ test('R1-1 流中断：第一次流中途抛 transient → 自动重发成功（
   try {
     process.env.ANTHROPIC_BASE_URL = 'http://t'
     process.env.ANTHROPIC_AUTH_TOKEN = 'k'
-    process.env.YFW_MOCK_API = ''
+    process.env.PONOS_MOCK_API = ''
     const chunks = []
     for await (const c of streamMessages({ model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
     assert.equal(calls, 2, '应自动重发一次')
@@ -231,7 +231,7 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
   const base = p.baseUrl
   const token = p.authToken
   if (!base || !token) throw new Error('内核：ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 未配置')
-  const useCache = process.env.YFW_PROMPT_CACHE === '1' && !!system
+  const useCache = process.env.PONOS_PROMPT_CACHE === '1' && !!system
   const headers = { 'content-type': 'application/json', 'x-api-key': token, 'anthropic-version': '2023-06-01' }
   const body = { model, max_tokens: maxTokens, ...(system ? (useCache ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] } : { system }) : {}), messages, stream: true, ...(tools.length ? { tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema })) } : {}) }
   const maxReconnect = Math.max(0, Number(process.env.CLAUDE_CODE_STREAM_RECONNECTS ?? 3))
@@ -297,7 +297,7 @@ if (lastText.includes('[mock:replay]')) {
   return
 }
 
-// server/kernel-engine.test.mjs 增补（沿用该文件 createEngine 直连 fixture，YFW_MOCK_API=1）：
+// server/kernel-engine.test.mjs 增补（沿用该文件 createEngine 直连 fixture，PONOS_MOCK_API=1）：
 test('R1-1 防重放：同轮重复 tool_use id 只执行一次（第二次回填既有结果）', async () => {
   const wire = makeWire({ stream: new Writable({ write() {} }) })   // 按该文件现有 fixture 方式
   const session = createSessionStore({ configDir: mkdtempSync(join(tmpdir(), 'engine-replay-')), cwd: '', sessionId: 'r1' })
@@ -395,7 +395,7 @@ const KERNEL = join(dirname(fileURLToPath(import.meta.url)), '..', 'kernel', 'cl
 function spawnKernel(home, sid, extraEnv = {}) {
   const proc = spawn(process.execPath, [KERNEL, '--print', '--output-format', 'stream-json', '--input-format', 'stream-json', '--dangerously-skip-permissions', '--resume', sid], {
     cwd: home,
-    env: { ...process.env, YFW_MOCK_API: '1', CLAUDE_CONFIG_DIR: home, ...extraEnv },
+    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: home, ...extraEnv },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   const events = []
@@ -562,7 +562,7 @@ test('R1-2 fetch 连接超时：AbortSignal.timeout 触发后经重发链路成�
   try {
     process.env.ANTHROPIC_BASE_URL = 'http://t'
     process.env.ANTHROPIC_AUTH_TOKEN = 'k'
-    process.env.YFW_MOCK_API = ''
+    process.env.PONOS_MOCK_API = ''
     process.env.CLAUDE_CODE_CONNECT_TIMEOUT_MS = '150'   // 测试缩短
     process.env.CLAUDE_CODE_STREAM_RECONNECTS = '2'
     const chunks = []
@@ -626,7 +626,7 @@ git commit -m "feat(kernel): 连接/首字节超时分级——TimeoutError tran
 **Interfaces:**
 - Consumes: `system(init)` 事件（新增 `capacity` 字段）
 - Produces:
-  - 内核 `system(init, { ..., capacity })`：`capacity = Number(process.env.YFW_MAX_CONCURRENT_SESSIONS || 10)`——策略值内核决定，bridge 只执行
+  - 内核 `system(init, { ..., capacity })`：`capacity = Number(process.env.PONOS_MAX_CONCURRENT_SESSIONS || 10)`——策略值内核决定，bridge 只执行
   - bridge `getOrCreateSession`：新建会话前 `sessions.size >= capacity`（来自该会话内核 init 的 capacity，或 env 兜底）→ 拒绝：`send({ type: 'error', data: { message: '已达并发会话上限（N），请关闭空闲会话后重试' }, sessionId: sid })` + return null
   - GUI 零新增（错误事件走既有 error 通道展示）
 
@@ -643,13 +643,13 @@ test('R4-1 并发上限：超过 capacity 的新会话被拒绝（错误事件�
   // 2) 上限拒绝：临时把 sessions 撑满不可行 → 用 env 覆盖重启 bridge 太重。
   //    备选断言（本测试内）：直接验证 getOrCreateSession 在 size 超限时返回 null——
   //    若现有 fixture 暴露 bridge 模块引用，调用 bridge 内部不可取；
-  //    改用集成断言：设置 process.env.YFW_MAX_CONCURRENT_SESSIONS='1' 后
+  //    改用集成断言：设置 process.env.PONOS_MAX_CONCURRENT_SESSIONS='1' 后
   //    顺序开 2 个会话，第 2 个收到 error 事件。
   c1.close()
 })
 ```
 
-> 若上述混合断言不易落地（fixture 单例 bridge），Step 1 测试改为**独立轻量验证**：直接在 kernel-bridge.test.mjs 的 `before` 中 `process.env.YFW_MAX_CONCURRENT_SESSIONS = '1'`（该文件每次测试会话独立），然后本测试开 2 个会话断言第 2 个被拒——但会影响同文件其他测试。**最终采用方案**：新建 `server/zz-concurrency.test.mjs`（独立 bridge 实例 + YFW_MAX_CONCURRENT_SESSIONS=1），完整断言：第 1 会话 init 带 capacity=1 → 第 2 会话创建收到 error「已达并发会话上限」。若时间有限，至少断言 `system(init).capacity` 存在且 = env 值。
+> 若上述混合断言不易落地（fixture 单例 bridge），Step 1 测试改为**独立轻量验证**：直接在 kernel-bridge.test.mjs 的 `before` 中 `process.env.PONOS_MAX_CONCURRENT_SESSIONS = '1'`（该文件每次测试会话独立），然后本测试开 2 个会话断言第 2 个被拒——但会影响同文件其他测试。**最终采用方案**：新建 `server/zz-concurrency.test.mjs`（独立 bridge 实例 + PONOS_MAX_CONCURRENT_SESSIONS=1），完整断言：第 1 会话 init 带 capacity=1 → 第 2 会话创建收到 error「已达并发会话上限」。若时间有限，至少断言 `system(init).capacity` 存在且 = env 值。
 
 - [x] **Step 2: 跑测试确认失败**
 
@@ -660,8 +660,8 @@ Expected: FAIL（init 无 capacity 字段；或超限未被拒）
 
 ```js
 // kernel/cli.mjs —— system(init)（line ~160）追加 capacity：
-const capacity = Math.max(1, Number(process.env.YFW_MAX_CONCURRENT_SESSIONS || 10))
-wire.system('init', { model, tools: engine.toolNames, session_id: sessionId, name: 'YFWorking', version: YFW_VERSION, capacity })
+const capacity = Math.max(1, Number(process.env.PONOS_MAX_CONCURRENT_SESSIONS || 10))
+wire.system('init', { model, tools: engine.toolNames, session_id: sessionId, name: 'Ponos', version: PONOS_VERSION, capacity })
 
 // server/bridge.mjs —— getOrCreateSession（line 838 开头）：
 function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCount) {
@@ -669,7 +669,7 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     ...原逻辑...
   }
   // R4-1 并发上限：策略值来自内核上报的 capacity（env 兜底），bridge 只执行拒绝
-  const capacity = Number(process.env.YFW_MAX_CONCURRENT_SESSIONS || 10)
+  const capacity = Number(process.env.PONOS_MAX_CONCURRENT_SESSIONS || 10)
   if (sessions.size >= capacity) {
     send({ type: 'error', data: { message: `已达并发会话上限（${capacity}），请关闭空闲会话后重试` }, sessionId: sid })
     return null

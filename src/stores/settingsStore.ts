@@ -1,16 +1,16 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { AppSettings, YFWorkingConfig, ModelProvider, YFWorkingConfigV2 } from '@/types'
+import type { AppSettings, PonosConfig, ModelProvider, PonosConfigV2 } from '@/types'
 import { useChatStore } from './chatStore'
 import { verifyActiveProvider, type ProviderVerifyResult } from '@/lib/config'
 
 /** Show a system notification through Electron's Notification API (cross-platform).
- *  Falls back silently in dev mode (no preload → no yfworkingAPI). */
+ *  Falls back silently in dev mode (no preload → no ponosAPI). */
 function notify(title: string, body: string) {
   try {
-    const api = (typeof window !== 'undefined' ? (window as any).yfworkingAPI : null)
+    const api = (typeof window !== 'undefined' ? (window as any).ponosAPI : null)
     if (api?.notifyTaskComplete) api.notifyTaskComplete({ title, body, onlyBackground: false })
-    else if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('yfworking:notify', { detail: { title, body } }))
+    else if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('ponos:notify', { detail: { title, body } }))
   } catch { /* ignore */ }
 }
 
@@ -70,7 +70,7 @@ const defaultSettings: AppSettings = {
   sidebarOpen: true,
   sidebarWidth: 300,
 
-  // YFWorking multi-provider config
+  // Ponos multi-provider config
   // Model names verified against official docs (2026-08):
   //   DeepSeek: deepseek-v4-flash (1M, 思考模式可切换), deepseek-v4-pro (1M, 旗舰)
   //     旧名 deepseek-chat / deepseek-reasoner 已于 2026/07/24 弃用。
@@ -119,8 +119,8 @@ const defaultSettings: AppSettings = {
 interface SettingsState {
   settings: AppSettings
   updateSettings: (updates: Partial<AppSettings>) => void
-  updateYFWorkingConfig: (updates: Partial<YFWorkingConfig>) => void
-  setYFWorkingConfig: (cfg: YFWorkingConfigV2) => void
+  updatePonosConfig: (updates: Partial<PonosConfig>) => void
+  setPonosConfig: (cfg: PonosConfigV2) => void
   updateActiveProvider: (providerId: string) => void
   updateProvider: (providerId: string, updates: Partial<ModelProvider>) => void
   addProvider: (provider: ModelProvider) => void
@@ -147,7 +147,7 @@ export const useSettingsStore = create<SettingsState>()(
           void runVerifyAndNotify()
         }
       },
-      updateYFWorkingConfig: (updates) => {
+      updatePonosConfig: (updates) => {
         set(state => {
           const active = state.settings.providers.find(p => p.id === state.settings.activeProvider)
           if (!active) return state
@@ -170,7 +170,7 @@ export const useSettingsStore = create<SettingsState>()(
         // Probe the new config in the background.
         void runVerifyAndNotify()
       },
-      setYFWorkingConfig: (cfg) => {
+      setPonosConfig: (cfg) => {
         set(state => ({
           settings: {
             ...state.settings,
@@ -223,7 +223,7 @@ export const useSettingsStore = create<SettingsState>()(
       resetSettings: () => set({ settings: { ...defaultSettings } }),
     }),
     {
-      name: 'yfworking-settings',
+      name: 'ponos-settings',
       // Migrate old persisted state to include new fields with defaults
       onRehydrateStorage: () => (state) => {
         if (state?.settings) {

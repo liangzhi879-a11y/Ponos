@@ -1,4 +1,4 @@
-// YFW-turbo 两阶段压缩器（docs/superpowers/specs/2026-08-20-yfw-turbo-inner-core-design.md §5）
+// Ponos-turbo 两阶段压缩器（docs/superpowers/specs/2026-08-20-ponos-turbo-inner-core-design.md §5）
 // ---------------------------------------------------------------------------
 // 阶段① 免模型结构感知裁剪（ToolResultPruner）：表格采样/代码行边界/JSON 键名+错误行
 // 阶段② 主模型摘要：前缀对齐主请求（KV 缓存复用）+ <compacted-summary> 9 节 checkpoint
@@ -356,9 +356,9 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
       session.appendCompactionStart(coveredSeqs)
       session.appendCompactionSummary({ summary, coveredSeqs })
       lastSummary = summary
-      // 单通道（FIX R1）：压缩成功后 yfw_summary 只发一次——装配 health 时由
+      // 单通道（FIX R1）：压缩成功后 ponos_summary 只发一次——装配 health 时由
       // health.recordCompaction 代发（并记录 lastSummary），未装配时保留 wire.summary 兜底。
-      // 两路互斥，杜绝 yfw_summary 双发（spec §6：compact 成功后 health.recordCompaction 为权威调用点）。
+      // 两路互斥，杜绝 ponos_summary 双发（spec §6：compact 成功后 health.recordCompaction 为权威调用点）。
       if (health) health.recordCompaction?.(summary, session.compactCount())
       else wire.summary?.(summary, session.compactCount())
       return { action: 'summarized', summary, compactCount: session.compactCount(), usage }
@@ -396,7 +396,6 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
           const r = pruneToolResult(b.content, { budget })
           if (r.truncated) {
             b.content = r.text + '\n\n' + r.note
-            b.__pruned = true
             prunedAny = true
           }
         }

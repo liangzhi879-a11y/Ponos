@@ -1,6 +1,6 @@
 # 任务：修复 resume 时 seedHistory 混入 compaction 条目
 
-这是 YFW-turbo 内核（Node ESM 净室项目）。当前工作区是该内核的一个历史版本，存在一个已确认的缺陷。
+这是 Ponos-turbo 内核（Node ESM 净室项目）。当前工作区是该内核的一个历史版本，存在一个已确认的缺陷。
 
 ## 缺陷描述
 
@@ -26,5 +26,5 @@ engine.seedHistory(history.map((e) => e.message))
 
 - 只修改必要的内核文件（预期 `kernel/cli.mjs`）。
 - 遵循项目风格：ESM、无第三方依赖。
-- 建议在 `server/` 下补一个针对 resume 过滤的测试（可用 `YFW_MOCK_API=1` 环境变量走内置 mock 流，无需真实网络）。
+- 建议在 `server/` 下补一个针对 resume 过滤的测试（可用 `PONOS_MOCK_API=1` 环境变量走内置 mock 流，无需真实网络）。
 - 不要改动无关文件。

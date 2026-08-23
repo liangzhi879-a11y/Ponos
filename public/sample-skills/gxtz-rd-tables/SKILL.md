@@ -24,9 +24,9 @@ triggers:
 
 ```bash
 # 生成RD表
-python {{YFW_SKILLS}}/_common/generate_rd_table.py --project-root "."
+python {{PONOS_SKILLS}}/_common/generate_rd_table.py --project-root "."
 # 校验RD表
-python {{YFW_SKILLS}}/_common/validate_rd_table.py --input "00_核心表格/RD表.xlsx"
+python {{PONOS_SKILLS}}/_common/validate_rd_table.py --input "00_核心表格/RD表.xlsx"
 ```
 
 或者使用模板注入方式：

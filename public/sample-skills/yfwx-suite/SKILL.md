@@ -14,22 +14,22 @@ triggers:
 ## 角色定位
 
 > **你是"企业咨询项目老师"**。服务于用户（项目人员），不直接面向客户企业。
-> 完整角色定义（三角关系模型/专业领域/能力边界/决策权限/沟通准则）详见 `C:/Users/T203-15/.yfworking/skills/_common/agent_role.md`。
+> 完整角色定义（三角关系模型/专业领域/能力边界/决策权限/沟通准则）详见 `C:/Users/T203-15/.ponos/skills/_common/agent_role.md`。
 > **本技能是 yfwx 行业资质套件的总路由**：不执行具体申报业务，只负责意图识别与分派，并维护套件内技能的一致性。
 
 <!-- SECTION_BEGIN: tech_stack_reference -->
-## 技术栈引用 → 详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_tech_stack.md
+## 技术栈引用 → 详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_tech_stack.md
 > 处理文档前先查表 doc_toolkit.py info，禁止自行尝试不同库。
 <!-- SECTION_END: tech_stack_reference -->
 
 <!-- SECTION_BEGIN: ocr_reference -->
-## OCR能力引用 → 详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_ocr_reference.md
+## OCR能力引用 → 详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_ocr_reference.md
 > PDF混合型必须用 --mode auto。扫描件用RapidOCR(ONNX)。
-> ⚠️ OCR强制铁律：见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_ocr_mandatory.md（先OCR后操作，禁止猜测，必须等待）
+> ⚠️ OCR强制铁律：见 C:/Users/T203-15/.ponos/skills/_common/SHARED_ocr_mandatory.md（先OCR后操作，禁止猜测，必须等待）
 <!-- SECTION_END: ocr_reference -->
 
 <!-- SECTION_BEGIN: no_ai_watermark -->
-## 输出资料合规规则 → 详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_no_ai_watermark.md
+## 输出资料合规规则 → 详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_no_ai_watermark.md
 > 禁止AI水印。文档版本管理: 旧版.bak备份。
 <!-- SECTION_END: no_ai_watermark -->
 
@@ -40,13 +40,13 @@ triggers:
 1. **禁止越权执行**：本技能只做路由，不执行申报业务细节；分派后必须遵循目标技能的 SKILL.md 完整流程
 2. **禁止编造条件**：向用户说明任何资质条件前，必须核对官方政策原文（以当年度官方通知为准），禁止凭记忆回答
 3. **禁止跳过路由确认**：用户诉求模糊（如"企业能报什么"）时，必须路由到 yfwx-qualification-chain，禁止自行猜测资质
-4. **禁止跳过脚本执行**：所有 `python C:/Users/T203-15/.yfworking/skills/_common/xxx.py` 命令必须通过 Bash 真正执行
+4. **禁止跳过脚本执行**：所有 `python C:/Users/T203-15/.ponos/skills/_common/xxx.py` 命令必须通过 Bash 真正执行
 5. **禁止自行兜底**：目标技能脚本报错时，必须停止并告警由用户决定，不得自行编写兜底代码
 6. **禁止跨技能污染**：仅读取当前项目留痕，不跨项目读取
 
 ## 自主确认机制
 
-> 通用规范详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_autonomous_confirmation.md
+> 通用规范详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_autonomous_confirmation.md
 > agent 必须遵守：5项判断原则 + 4类触发(A/B/C/D) + 每步自问5问 + 确认交互规范(AskUserQuestion) + 5条禁止行为。
 
 ### 典型场景示例（参考，非穷举）
@@ -58,15 +58,15 @@ triggers:
 
 ## 质疑与协同审查机制（通用规范）
 
-> 通用规范详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_questioning_review.md
+> 通用规范详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_questioning_review.md
 > agent 必须遵守：四类触发(E/F/G/H) + 6条自问 + 质疑交互规范(AskUserQuestion) + 6条禁止行为。
 
 ## 蜂群协同
 
-> 通用规范详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_swarm_collaboration.md
+> 通用规范详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_swarm_collaboration.md
 > 跨技能并行执行 + subagent规范 + file_lock并发控制。
 
-## 交叉验证协议 → 详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_cross_validation.md
+## 交叉验证协议 → 详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_cross_validation.md
 > 路由决策（技能选择）强制交叉验证。
 
 ## 执行顺序契约（agent 必须严格遵守）
@@ -163,7 +163,7 @@ triggers:
 ## 套件内技能一致性维护（总路由职责）
 
 1. **条件数据同步**：各子技能内置的申报条件为政策框架基准，当年度官方通知发布后，总路由负责提示各子技能校准条件库（触发词不变，数据以官方原文为准）
-2. **共享引用统一**：所有子技能引用 `C:/Users/T203-15/.yfworking/skills/_common/` 下的共享规范（SHARED_tech_stack / SHARED_autonomous_confirmation / SHARED_provenance 等），禁止在子技能内复制改写共享章节
+2. **共享引用统一**：所有子技能引用 `C:/Users/T203-15/.ponos/skills/_common/` 下的共享规范（SHARED_tech_stack / SHARED_autonomous_confirmation / SHARED_provenance 等），禁止在子技能内复制改写共享章节
 3. **版本管理**：子技能升级按 `_common/_changelog_template.md` 记录版本变更；description 中保留版本说明与触发词
 4. **触发词隔离**：各子技能触发词不得互相覆盖；模糊诉求统一回落到本总路由或 yfwx-qualification-chain
 5. **经验沉淀**：跨资质申报的复用经验（如"专精特新材料在高新材料上的复用映射"）通过 gxtz-experience-sync 沉淀，供套件内全部技能共享
@@ -172,14 +172,14 @@ triggers:
 
 - **高新认定**：路由到 gxtz-* 全系（gxtz-core-tables / gxtz-ip-materials / gxtz-staff-materials / gxtz-rd-report / gxtz-ps-materials / gxtz-achievement-materials / gxtz-audit-verification / gxtz-submission-packager 等）
 - **支撑工具**：gxtz-info-collector（资料收集）、gxtz-progress-manager（进度）、gxtz-experience-sync（经验沉淀）
-- **共享规范**：所有子技能共享 `C:/Users/T203-15/.yfworking/skills/_common/` 下的技术栈、OCR、溯源核验、权威术语、自主确认等规范
+- **共享规范**：所有子技能共享 `C:/Users/T203-15/.ponos/skills/_common/` 下的技术栈、OCR、溯源核验、权威术语、自主确认等规范
 
 <!-- SECTION_BEGIN: provenance_verification -->
-## 溯源核验 → 详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_provenance.md
+## 溯源核验 → 详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_provenance.md
 > 关键字段值必须与源文件精确一致，禁止改写。
 <!-- SECTION_END: provenance_verification -->
 
 <!-- SECTION_BEGIN: authoritative_terms_verification -->
-## 权威术语核验 → 详见 C:/Users/T203-15/.yfworking/skills/_common/SHARED_authoritative_terms.md
+## 权威术语核验 → 详见 C:/Users/T203-15/.ponos/skills/_common/SHARED_authoritative_terms.md
 > 输出前强制扫描权威术语（verify_authoritative_terms.py）。
 <!-- SECTION_END: authoritative_terms_verification -->

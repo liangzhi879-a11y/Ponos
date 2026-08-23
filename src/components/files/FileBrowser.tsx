@@ -209,7 +209,7 @@ export function FileBrowser() {
             {ctxMenu.entry.name}
           </div>
           <button
-            onClick={() => { const api = (window as any).yfworkingAPI; if (api?.openInExplorer) api.openInExplorer(ctxMenu.entry.path); closeCtxMenu() }}
+            onClick={() => { const api = (window as any).ponosAPI; if (api?.openInExplorer) api.openInExplorer(ctxMenu.entry.path); closeCtxMenu() }}
             className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-secondary hover:bg-input transition-colors"
           >
             <ExternalLink className="w-3.5 h-3.5 text-info/70" /> {t('fileBrowser.openInExplorer')}

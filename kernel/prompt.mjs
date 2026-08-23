@@ -1,8 +1,8 @@
-// YFW-turbo 提示词组装（LLM 行为逻辑层）
+// Ponos-turbo 提示词组装（LLM 行为逻辑层）
 // ---------------------------------------------------------------------------
 // 三层叠加（顺序 = 优先级从低到高，后者覆盖前者）：
-//   1. buildBaseSystemPrompt —— 内核基础行为规范（身份：YFWorking + 工具纪律/
-//      回复规范）。身份内置于基础层，使 TUI/CLI 直跑时模型即自称 YFWorking。
+//   1. buildBaseSystemPrompt —— 内核基础行为规范（身份：Ponos + 工具纪律/
+//      回复规范）。身份内置于基础层，使 TUI/CLI 直跑时模型即自称 Ponos。
 //   2. discoverAgentsMd —— 项目指令 AGENTS.md（cwd 及祖先链至 git root，
 //      加 --add-dir 根目录），成熟方案（Claude Code 等）的标配。
 //   3. append 文件（cli 注入的 GUI 提示词：身份/技能/格式规范）——最高优先级，
@@ -38,12 +38,12 @@ export function discoverAgentsMd({ cwd, addDirs = [] }) {
   return found
 }
 
-// 内核基础行为规范（LLM 行为逻辑）：YFWorking 身份 + 工作规范。
+// 内核基础行为规范（LLM 行为逻辑）：Ponos 身份 + 工作规范。
 // cwd 注入当前工作目录（对照 claude 的 "Primary working directory:" 注入），
 // 让模型基于确定路径规划工具调用，减少试错式路径猜测。
 export function buildBaseSystemPrompt({ toolNames = [], cwd = '' } = {}) {
   return [
-    '你是 YFWorking 的 AI 助手，运行在 YFW-turbo 内核上，通过工具完成任务。请遵循以下工作规范：',
+    '你是 Ponos 的 AI 助手，运行在 Ponos-turbo 内核上，通过工具完成任务。请遵循以下工作规范：',
     ...(cwd ? [`当前工作目录：${cwd}（工具的相对路径均相对于此目录解析）`] : []),
     '',
     '【工具纪律】',

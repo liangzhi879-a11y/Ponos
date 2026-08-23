@@ -31,24 +31,24 @@
 | LOCALAPPDATA |  |  |  |
 | P |  |  |  |
 | USERPROFILE |  |  |  |
-| YFWORKING_HOME |  |  |  |
-| YFW_KEEP_SECRETS |  |  |  |
-| YFW_MAX_CONCURRENT_SESSIONS |  |  |  |
-| YFW_MOCK_API |  |  |  |
-| YFW_MOCK_API_RETRIES |  |  |  |
-| YFW_MOCK_COMPACT_BAD |  |  |  |
-| YFW_MOCK_COMPACT_RESPONSE |  |  |  |
-| YFW_MOCK_OVERFLOW |  |  |  |
-| YFW_MOCK_OVERFLOW_CONSUMED |  |  |  |
-| YFW_MOCK_STOP_REASON |  |  |  |
-| YFW_MOCK_TOOLS |  |  |  |
-| YFW_MOCK_TRANSIENT |  |  |  |
-| YFW_MOCK_TRANSIENT_CONSUMED |  |  |  |
-| YFW_OCR_ENGINE |  |  |  |
-| YFW_PROMPT_CACHE |  |  |  |
-| YFW_VISION_AUTH_TOKEN |  |  |  |
-| YFW_VISION_BASE_URL |  |  |  |
-| YFW_VISION_MODEL |  |  |  |
+| PONOS_HOME |  |  |  |
+| PONOS_KEEP_SECRETS |  |  |  |
+| PONOS_MAX_CONCURRENT_SESSIONS |  |  |  |
+| PONOS_MOCK_API |  |  |  |
+| PONOS_MOCK_API_RETRIES |  |  |  |
+| PONOS_MOCK_COMPACT_BAD |  |  |  |
+| PONOS_MOCK_COMPACT_RESPONSE |  |  |  |
+| PONOS_MOCK_OVERFLOW |  |  |  |
+| PONOS_MOCK_OVERFLOW_CONSUMED |  |  |  |
+| PONOS_MOCK_STOP_REASON |  |  |  |
+| PONOS_MOCK_TOOLS |  |  |  |
+| PONOS_MOCK_TRANSIENT |  |  |  |
+| PONOS_MOCK_TRANSIENT_CONSUMED |  |  |  |
+| PONOS_OCR_ENGINE |  |  |  |
+| PONOS_PROMPT_CACHE |  |  |  |
+| PONOS_VISION_AUTH_TOKEN |  |  |  |
+| PONOS_VISION_BASE_URL |  |  |  |
+| PONOS_VISION_MODEL |  |  |  |
 
 ## 命令行参数
 

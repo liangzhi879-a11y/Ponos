@@ -202,7 +202,7 @@ test('tools 注入：Anthropic 请求 body 含 tools[]（字段名映射，mock 
 
 test('mock 扩展：检测系统压缩指令 → 返回 <compacted-summary> 摘要（收敛校验用）', async () => {
   const oldEnv = { ...process.env }
-  Object.assign(process.env, { YFW_MOCK_API: '1', YFW_MOCK_COMPACT_RESPONSE: '1' })
+  Object.assign(process.env, { PONOS_MOCK_API: '1', PONOS_MOCK_COMPACT_RESPONSE: '1' })
   try {
     const chunks = []
     for await (const c of streamMessages({ model: 'm', messages: [{ role: 'user', content: '请执行系统压缩指令，输出 checkpoint 摘要' }], maxTokens: 100 })) chunks.push(c)
@@ -214,10 +214,10 @@ test('mock 扩展：检测系统压缩指令 → 返回 <compacted-summary> 摘�
   }
 })
 
-test('mock 扩展：YFW_MOCK_OVERFLOW=once 非压缩调用抛一次溢出，之后恢复', async () => {
+test('mock 扩展：PONOS_MOCK_OVERFLOW=once 非压缩调用抛一次溢出，之后恢复', async () => {
   const oldEnv = { ...process.env }
-  Object.assign(process.env, { YFW_MOCK_API: '1', YFW_MOCK_OVERFLOW: 'once' })
-  delete process.env.YFW_MOCK_OVERFLOW_CONSUMED
+  Object.assign(process.env, { PONOS_MOCK_API: '1', PONOS_MOCK_OVERFLOW: 'once' })
+  delete process.env.PONOS_MOCK_OVERFLOW_CONSUMED
   try {
     // 第一次非 summarizer 调用：抛 context_window_exceeded
     await assert.rejects(
@@ -251,7 +251,7 @@ test('toAbortSignal：engine 轮次级 signal（rawSignal getter）→ 真 Abort
   assert.equal(toAbortSignal({ aborted: false }), undefined)
 })
 
-test('prompt cache：YFW_PROMPT_CACHE=1 时 system 打 ephemeral 缓存标记（数组形态）', async () => {
+test('prompt cache：PONOS_PROMPT_CACHE=1 时 system 打 ephemeral 缓存标记（数组形态）', async () => {
   const captured = []
   const prev = global.fetch
   global.fetch = async (url, init) => {
@@ -259,7 +259,7 @@ test('prompt cache：YFW_PROMPT_CACHE=1 时 system 打 ephemeral 缓存标记（
     return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"message_delta","usage":{"input_tokens":1,"output_tokens":1}}\n\ndata: [DONE]\n\n')); c.close() } }) }
   }
   const oldEnv = { ...process.env }
-  Object.assign(process.env, { ANTHROPIC_BASE_URL: 'http://t', ANTHROPIC_AUTH_TOKEN: 'k', YFW_PROMPT_CACHE: '1' })
+  Object.assign(process.env, { ANTHROPIC_BASE_URL: 'http://t', ANTHROPIC_AUTH_TOKEN: 'k', PONOS_PROMPT_CACHE: '1' })
   try {
     const chunks = []
     for await (const c of streamMessages({ model: 'm', messages: [{ role: 'system', content: 'SYS' }, { role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
@@ -290,7 +290,7 @@ test('prompt cache：端点拒绝缓存标记时自动去掉重发（兼容回�
     return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"message_delta","usage":{"input_tokens":1,"output_tokens":1}}\n\ndata: [DONE]\n\n')); c.close() } }) }
   }
   const oldEnv = { ...process.env }
-  Object.assign(process.env, { ANTHROPIC_BASE_URL: 'http://t', ANTHROPIC_AUTH_TOKEN: 'k', YFW_PROMPT_CACHE: '1' })
+  Object.assign(process.env, { ANTHROPIC_BASE_URL: 'http://t', ANTHROPIC_AUTH_TOKEN: 'k', PONOS_PROMPT_CACHE: '1' })
   try {
     const chunks = []
     for await (const c of streamMessages({ model: 'm', messages: [{ role: 'system', content: 'SYS' }, { role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
@@ -329,7 +329,7 @@ test('R1-1 流中断：第一次流中途抛 transient → 自动重发成功（
     return new Response(new ReadableStream({ start(c) { c.enqueue(enc.encode(ok)); c.close() } }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
   }
   const oldEnv = { ...process.env }
-  Object.assign(process.env, { ANTHROPIC_BASE_URL: 'http://t', ANTHROPIC_AUTH_TOKEN: 'k', YFW_MOCK_API: '' })
+  Object.assign(process.env, { ANTHROPIC_BASE_URL: 'http://t', ANTHROPIC_AUTH_TOKEN: 'k', PONOS_MOCK_API: '' })
   try {
     const chunks = []
     for await (const c of streamMessages({ model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
@@ -374,7 +374,7 @@ test('R1-2 fetch 连接超时：首次 fetch 抛 TimeoutError → 经重发链�
   Object.assign(process.env, {
     ANTHROPIC_BASE_URL: 'http://t',
     ANTHROPIC_AUTH_TOKEN: 'k',
-    YFW_MOCK_API: '',
+    PONOS_MOCK_API: '',
     CLAUDE_CODE_CONNECT_TIMEOUT_MS: '150',   // 测试缩短
     CLAUDE_CODE_STREAM_RECONNECTS: '2',
   })
@@ -414,7 +414,7 @@ test('R1-2 连接超时只作用于首字节：fetch 快速 resolve 后长流不
   Object.assign(process.env, {
     ANTHROPIC_BASE_URL: 'http://t',
     ANTHROPIC_AUTH_TOKEN: 'k',
-    YFW_MOCK_API: '',
+    PONOS_MOCK_API: '',
     CLAUDE_CODE_CONNECT_TIMEOUT_MS: '100',  // 100ms 连接超时，远小于流总时长 200ms
     CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS: '5000',
   })
@@ -444,7 +444,7 @@ test('P4-5 setProvider 激活后 streamMessages 请求走新 baseUrl（mock fetc
   try {
     process.env.ANTHROPIC_BASE_URL = 'http://orig'
     process.env.ANTHROPIC_AUTH_TOKEN = 'k'
-    process.env.YFW_MOCK_API = ''
+    process.env.PONOS_MOCK_API = ''
     process.env.CLAUDE_CODE_CONNECT_TIMEOUT_MS = '150'
     const { setProvider } = await import('../kernel/provider.mjs')
     setProvider({ baseUrl: 'http://hot-switched', authToken: 'k2', model: 'm2' })

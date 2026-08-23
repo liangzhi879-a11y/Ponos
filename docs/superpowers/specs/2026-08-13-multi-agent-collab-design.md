@@ -5,7 +5,7 @@
 
 ## 1. 背景与目标
 
-当前 agent 运行基本都依托主 agent（YFWorking）处理，用户很少指定其他内置/专业 agent 执行任务；主 agent 分发 subagent（多为 subagent-driven-development 技能触发）时，也不会调用系统中已注册的专业 agent 处理特定优势任务。
+当前 agent 运行基本都依托主 agent（Ponos）处理，用户很少指定其他内置/专业 agent 执行任务；主 agent 分发 subagent（多为 subagent-driven-development 技能触发）时，也不会调用系统中已注册的专业 agent 处理特定优势任务。
 
 目标：让主 agent 能够**原生启动多 agent 协同任务处理**——识别系统中所有已注册 agent，按各自优势场景并发分发任务；前端聊天界面**二级显示多个子 agent 输出行**，实时跟踪每个子 agent 运行进度。
 
@@ -20,8 +20,8 @@
 
 内核原生已具备全部所需能力，**无需修改内核、无需重编译 bundle**：
 
-1. **多 agent 并行分发**：主 agent 通过 Agent 工具在单条消息里并发发起多个子 agent 调用（`run_in_background: true` 可后台运行），每个成为独立 `local_agent` 任务并行执行（`yfw-kernel/claude-code/src/tasks/LocalAgentTask/LocalAgentTask.tsx:466`）
-2. **agent 识别**：内核从 `$YFW_HOME/agents/*.md`（用户级）加载自定义 agent；Agent 工具描述列出每个 agent 的 `type + whenToUse + tools`，模型按名称精确选择（`tools/AgentTool/prompt.ts:43-46`）
+1. **多 agent 并行分发**：主 agent 通过 Agent 工具在单条消息里并发发起多个子 agent 调用（`run_in_background: true` 可后台运行），每个成为独立 `local_agent` 任务并行执行（`ponos-kernel/claude-code/src/tasks/LocalAgentTask/LocalAgentTask.tsx:466`）
+2. **agent 识别**：内核从 `$PONOS_HOME/agents/*.md`（用户级）加载自定义 agent；Agent 工具描述列出每个 agent 的 `type + whenToUse + tools`，模型按名称精确选择（`tools/AgentTool/prompt.ts:43-46`）
 3. **进度事件链路已通**：GUI 以 `--print --output-format stream-json --verbose` spawn 内核（`server/bridge.mjs:599`），内核在 stream-json+verbose 模式向 stdout 输出 SDK 事件 `system/task_started` / `system/task_progress` / `system/task_notification`（`cli/print.ts:884-886`），bridge 已原样转发为 `event` 消息——前端目前**忽略**这些事件，新增处理即可
 
 ## 2. 方案选型
@@ -34,7 +34,7 @@
 ### 注入路径选型：`.md` 文件而非 `--agents` JSON
 
 - `--agents <json>` 经 `spawn(..., { shell: true })` 走 cmd.exe，受 **8191 字符命令行限制**，专业 agent 的 systemPrompt 有超限风险
-- `$YFW_HOME/agents/<id>.md` 是内核标准用户级 agents 目录（CLAUDE_CONFIG_DIR 已指向 YFW_HOME，`utils/markdownConfigLoader.ts:303`），无长度限制、可手写、随会话进程加载
+- `$PONOS_HOME/agents/<id>.md` 是内核标准用户级 agents 目录（CLAUDE_CONFIG_DIR 已指向 PONOS_HOME，`utils/markdownConfigLoader.ts:303`），无长度限制、可手写、随会话进程加载
 - 采用 `.md` 文件方案
 
 ## 3. 架构与数据流
@@ -43,13 +43,13 @@
 agentStore（启用的 professional + custom agent）
   │  变更后 renderer 调 IPC agents:sync（写/删 .md）
   ▼
-$YFW_HOME/agents/<id>.md   ← 内核用户级 agents 目录，CLI 进程启动时自动加载
+$PONOS_HOME/agents/<id>.md   ← 内核用户级 agents 目录，CLI 进程启动时自动加载
   │  → Agent 工具描述列出全部 agent（type + whenToUse + tools）
   ▼
 主 agent 并发调用 Agent 工具 → 内核并行跑多个 local_agent 任务
   │  → 输出 system/task_started / task_progress / task_notification（stream-json+verbose）
   ▼
-bridge 原样转发 event → useYFWCLI 新增分支 → chatStore.subAgentTasks → 二级面板渲染
+bridge 原样转发 event → usePonosCLI 新增分支 → chatStore.subAgentTasks → 二级面板渲染
 ```
 
 ## 4. Agent 注册表注入
@@ -71,13 +71,13 @@ model: deepseek-v4-flash
 ### 4.2 注入范围
 
 - **只注入 type 为 professional / custom 的已启用 agent**
-- builtin（Explore / general-purpose / Plan / statusline-setup）内核原生已有，注入会重复；`yfworking` 是主身份，不作为子 agent 注入
+- builtin（Explore / general-purpose / Plan / statusline-setup）内核原生已有，注入会重复；`ponos` 是主身份，不作为子 agent 注入
 - 用户后续手动添加的自定义 agent 走同一同步路径，自动被识别
 
 ### 4.3 同步机制
 
-- **触发点（唯一）**：agentStore 的每个变更 action（addAgent / updateAgent / deleteAgent / toggleAgent / resetAgent / resetAllAgents / setAgentAvatar 无关，不触发）内部统一调用同步 helper，经 `window.yfworkingAPI.agentsSync()` 调 IPC `agents:sync`——不依赖 UI 层逐处触发，保证任何入口改动都同步
-- electron main 写入或删除 `$YFW_HOME/agents/<id>.md`
+- **触发点（唯一）**：agentStore 的每个变更 action（addAgent / updateAgent / deleteAgent / toggleAgent / resetAgent / resetAllAgents / setAgentAvatar 无关，不触发）内部统一调用同步 helper，经 `window.ponosAPI.agentsSync()` 调 IPC `agents:sync`——不依赖 UI 层逐处触发，保证任何入口改动都同步
+- electron main 写入或删除 `$PONOS_HOME/agents/<id>.md`
 - **只删除 GUI 已知 id 的文件**，不触碰用户手写的、GUI 未管理的 `.md`（避免清掉用户的私有 agent）
 - 同步失败静默降级，不影响现有会话
 
@@ -93,7 +93,7 @@ model: deepseek-v4-flash
 
 ## 5. 前端二级子 agent 面板
 
-### 5.1 事件处理（useYFWCLI.ts 新增分支）
+### 5.1 事件处理（usePonosCLI.ts 新增分支）
 
 在 `msg.type === 'event'` 处理中新增三个 `system` 子类型：
 
@@ -158,9 +158,9 @@ subAgentTasks: Record<conversationId, SubAgentTask[]>
 |---|---|
 | `src/lib/agents.ts` | `Agent` 接口 + `whenToUse` 字段；专业 agent 预填优势场景文案 |
 | `src/components/agents/AgentsPanel.tsx` | 编辑表单新增"优势场景"输入框 |
-| `src/stores/agentStore.ts` | 各变更 action 内统一调用同步 helper（经 `yfworkingAPI.agentsSync`） |
-| `electron/main.cjs` | 新增 IPC `agents:sync` 处理器：写/删 `$YFW_HOME/agents/<id>.md` |
-| `src/hooks/useYFWCLI.ts` | 新增 task_started/progress/notification 事件分支 |
+| `src/stores/agentStore.ts` | 各变更 action 内统一调用同步 helper（经 `ponosAPI.agentsSync`） |
+| `electron/main.cjs` | 新增 IPC `agents:sync` 处理器：写/删 `$PONOS_HOME/agents/<id>.md` |
+| `src/hooks/usePonosCLI.ts` | 新增 task_started/progress/notification 事件分支 |
 | `src/stores/chatStore.ts` | 新增 `subAgentTasks` 切片 + upsert/clear actions |
 | `src/components/chat/SubAgentPanel.tsx` | 新建二级面板组件 |
 

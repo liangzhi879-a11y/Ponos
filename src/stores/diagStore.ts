@@ -29,6 +29,6 @@ export const useDiagStore = create<DiagState>((set) => ({
 }))
 
 // 启动时订阅主进程状态推送
-if (typeof window !== 'undefined' && window.yfwDiag?.onStatusChanged) {
-  window.yfwDiag.onStatusChanged((s) => useDiagStore.getState().setSnapshot(s))
+if (typeof window !== 'undefined' && window.ponosDiag?.onStatusChanged) {
+  window.ponosDiag.onStatusChanged((s) => useDiagStore.getState().setSnapshot(s))
 }

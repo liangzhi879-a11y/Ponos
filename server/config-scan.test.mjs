@@ -12,7 +12,7 @@ test('scanKernelConfig：盘点 env 引用（关键项存在）', () => {
   assert.ok(r.env.includes('ANTHROPIC_BASE_URL'))
   assert.ok(r.env.includes('ANTHROPIC_AUTH_TOKEN'))
   assert.ok(r.env.includes('CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS'))
-  assert.ok(r.env.includes('YFW_MOCK_API'))
+  assert.ok(r.env.includes('PONOS_MOCK_API'))
   assert.ok(r.env.includes('CLAUDE_CONFIG_DIR'))
   // 去重 + 排序
   assert.equal(new Set(r.env).size, r.env.length)

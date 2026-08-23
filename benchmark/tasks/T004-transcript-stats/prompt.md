@@ -1,6 +1,6 @@
 # 任务：新增 transcript 统计聚合模块（为 /transcript/stats 端点提供数据）
 
-这是 YFW-turbo 内核（Node ESM 净室项目）的完整仓库（含 server/ bridge 层）。spec（docs/superpowers/specs/2026-08-20-yfw-turbo-inner-core-design.md §6.5）规划了「按 对话/项目/模型 × 时间 统计 token 用量（成本/计费刚需）」，数据源是 transcript（JSONL 权威源），聚合逻辑收敛到 bridge 侧 `/transcript/stats` 端点。目前该能力尚未实现。
+这是 Ponos-turbo 内核（Node ESM 净室项目）的完整仓库（含 server/ bridge 层）。spec（docs/superpowers/specs/2026-08-20-ponos-turbo-inner-core-design.md §6.5）规划了「按 对话/项目/模型 × 时间 统计 token 用量（成本/计费刚需）」，数据源是 transcript（JSONL 权威源），聚合逻辑收敛到 bridge 侧 `/transcript/stats` 端点。目前该能力尚未实现。
 
 ## 任务要求
 
