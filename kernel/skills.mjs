@@ -74,6 +74,37 @@ export function discoverSkills({ root } = {}) {
   return skills.sort((a, b) => a.id.localeCompare(b.id))
 }
 
+// 跨 root 技能发现（去重）：Skill 工具与提示词技能块共用同一数据源
+export function discoverSkillsAll({ roots = [] } = {}) {
+  const out = []
+  const seen = new Set()
+  for (const root of roots) {
+    if (!root || !existsSync(root)) continue
+    for (const s of discoverSkills({ root })) {
+      if (!seen.has(s.id)) { seen.add(s.id); out.push(s) }
+    }
+  }
+  return out
+}
+
+// 技能全文加载（Skill 工具执行体）：按 id 在 roots 中找 <root>/<id>/SKILL.md 或
+// <root>/<id>.md，返回完整内容（含 frontmatter 与操作步骤）；未命中返回 null
+export function loadSkillContent({ roots = [], id } = {}) {
+  if (!id) return null
+  for (const root of roots) {
+    if (!root || !existsSync(root)) continue
+    const dirMd = join(root, id, 'SKILL.md')
+    if (existsSync(dirMd)) {
+      try { return readFileSync(dirMd, 'utf-8') } catch { continue }
+    }
+    const flatMd = join(root, `${id}.md`)
+    if (existsSync(flatMd)) {
+      try { return readFileSync(flatMd, 'utf-8') } catch { continue }
+    }
+  }
+  return null
+}
+
 // 版本一致性校验（轻量版）：lock 支持 { [id]: ver } 或 { skills: { [id]: ver } }。
 export function verifySkillVersions({ lockPath, skills = [] }) {
   if (!lockPath || !existsSync(lockPath)) return { outdated: [] }

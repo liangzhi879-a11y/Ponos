@@ -16,7 +16,9 @@
     "typecheck": "tsc --noEmit",
     "build:electron": "npm run build && electron-builder",
     "build:electron:dir": "npm run build && electron-builder --dir",
-    "test": "node --test \"server/*.test.mjs\" \"electron/*.test.mjs\""
+    "test": "node --test \"server/*.test.mjs\" \"electron/*.test.mjs\"",
+    "bump:app": "node scripts/bump-version.mjs app",
+    "bump:kernel": "node scripts/bump-version.mjs kernel"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.4",

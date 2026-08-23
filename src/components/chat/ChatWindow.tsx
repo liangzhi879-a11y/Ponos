@@ -7,6 +7,7 @@ import { DirectoryPicker } from './DirectoryPicker'
 import { RunningAgentsBar } from './RunningAgentsBar'
 import { HealthGlow } from './HealthGlow'
 import { CompressedToast } from './CompressedToast'
+import { KernelStallBar } from './KernelStallBar'
 import { BrowserStatusBar } from '@/components/browser/BrowserStatusBar'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -202,6 +203,8 @@ export function ChatWindow({ conversationId }: Props) {
       <HealthGlow conversationId={conversationId} />
       {/* 内置浏览器自动化精简状态条（消息区上方；无事件不占位） */}
       <BrowserStatusBar conversationId={conversationId} />
+      {/* 内核失速告警条（bridge kernel-stall 事件；有输出自动消失） */}
+      <KernelStallBar conversationId={conversationId} />
       <ScrollArea ref={scrollRef} className="flex-1 pl-1" onScroll={handleScrollWithPin}>
         {loadingWithHistory ? (
           /* v2 按需加载占位：历史会话消息拉取中 */
@@ -235,17 +238,23 @@ export function ChatWindow({ conversationId }: Props) {
             </div>
 
             {/* Title */}
-            <h1
-              className="text-2xl font-bold mb-1 tracking-tight"
-              style={{
-                fontFamily: '"Sora", "Inter", system-ui, sans-serif',
-                background: 'linear-gradient(135deg, var(--brand-500), var(--brand-300))',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-              }}
-            >
-              YFWorking
-            </h1>
+            <div className="flex items-center justify-center gap-2 mb-1">
+              <h1
+                className="text-2xl font-bold tracking-tight"
+                style={{
+                  fontFamily: '"Sora", "Inter", system-ui, sans-serif',
+                  background: 'linear-gradient(135deg, var(--brand-500), var(--brand-300))',
+                  WebkitBackgroundClip: 'text',
+                  WebkitTextFillColor: 'transparent',
+                }}
+              >
+                YFWorking dev
+              </h1>
+              {/* Turbo 内核标识：区分稳定旧版 */}
+              <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold tracking-widest text-brand-500 bg-brand-500/10 border border-brand-500/30 select-none">
+                TURBO
+              </span>
+            </div>
             <p className="text-sm text-tertiary mb-6 max-w-md text-center leading-relaxed">
               {t('chat.welcomeSubtitle')}
             </p>

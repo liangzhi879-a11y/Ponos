@@ -82,7 +82,7 @@ export function Header() {
 
       {/* Conversation title */}
       <div className="flex-1 min-w-0 text-sm font-medium text-secondary truncate ml-1">
-        {activeConv?.title || 'YFWorking'}
+        {activeConv?.title || 'YFWorking dev'}
       </div>
 
       <div className="flex items-center gap-0.5 no-drag shrink-0">

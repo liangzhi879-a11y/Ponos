@@ -74,7 +74,11 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
   }
 
   // 依序重建 seq + surface；孤儿 compaction/start 直接忽略（replace 从未落地）
-  function rebuildSurface(entries) {
+  // foreign：无 turbo transcript meta 标记的旧格式（claude-code 历史）transcript。
+  // 其 tool_use/tool_result 链不满足 Anthropic API「tool_result 必须紧跟 tool_use」
+  // 约束（跨层乱序 → 恢复时 API 400，2026-08-22 实测 1783 orphan tool_use）。
+  // 恢复时剥离 tool 块、只保留文本历史（工具无法重放，文本才是可恢复的对话）。
+  function rebuildSurface(entries, { foreign = false } = {}) {
     entriesBySeq.clear()
     nodes.length = 0
     replaceGeneration = 0
@@ -82,6 +86,19 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
     nextSeq = 1
     for (const e of entries) {
       if (e.type === 'meta') continue // P4-5/D2-2 审计/元数据条目不投影、不占 seq（不进模型输入）
+      // 兼容旧格式 transcript（queue-operation/last-prompt 等无 message 的元行）：
+      // 不投影进模型输入——否则 deriveMessages 产出 undefined 条目，后续
+      // context.estimateRequest / patchOrphanToolUses 访问 .content/.role 抛
+      // "Cannot read properties of undefined (reading 'content')"（用户侧
+      // G.content 运行时错误的根因，2026-08-22 修复）。旧格式的 user/assistant
+      // 消息行有 message.role，正常投影保留历史。
+      if (!e.message || typeof e.message !== 'object' || typeof e.message.role !== 'string') continue
+      if (foreign && Array.isArray(e.message.content)) {
+        // 旧格式工具链剥离：纯工具消息整条丢弃，混合消息只留文本块
+        const blocks = e.message.content.filter((b) => b && b.type !== 'tool_use' && b.type !== 'tool_result')
+        if (blocks.length === 0) continue
+        if (blocks.length !== e.message.content.length) e.message = { ...e.message, content: blocks }
+      }
       const seq = e.seq ?? nextSeq
       nextSeq = Math.max(nextSeq, seq) + 1
       e.seq = seq
@@ -107,9 +124,12 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
 
   async function load() {
     const entries = await readLines()
-    rebuildSurface(entries)
-    const metaEntry = entries.find((e) => e?.kind === 'meta' && e?.schemaVersion != null)
-    return { entries, surface: { nodes, replaceGeneration }, compactCount, metaVersion: metaEntry ? Number(metaEntry.schemaVersion) : 1 }
+    // 旧格式（foreign）判定：turbo 会话首行必写 transcript meta；无则视为
+    // claude-code 历史会话，恢复时按旧格式语义投影（剥离工具链，见 rebuildSurface）
+    const foreign = !entries.some((e) => e?.type === 'meta' && e?.kind === 'transcript' && e?.schemaVersion != null)
+    rebuildSurface(entries, { foreign })
+    const metaEntry = entries.find((e) => e?.type === 'meta' && e?.kind === 'transcript' && e?.schemaVersion != null)
+    return { entries, surface: { nodes, replaceGeneration }, compactCount, metaVersion: metaEntry ? Number(metaEntry.schemaVersion) : 1, foreign }
   }
 
   function invalidate() { deriveCache = null }

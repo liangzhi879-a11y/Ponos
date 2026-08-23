@@ -159,7 +159,7 @@ export function transcriptEntryToMessage(entry: any): Message | null {
   // 其它 system（api_config_changed / permission 等）由 GUI 运行时 SSE 事件驱动，历史不需要，跳过。
   if (type === 'system') {
     if (entry.subtype === 'compact_boundary') {
-      const id = typeof entry.uuid === 'string' ? entry.uuid : generateId()
+      const id = typeof entry.uuid === 'string' && entry.uuid ? entry.uuid : (typeof entry.id === 'string' && entry.id ? entry.id : generateId())
       return {
         id,
         role: 'system',

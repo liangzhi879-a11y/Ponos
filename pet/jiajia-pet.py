@@ -50,7 +50,9 @@ IS_WINDOWS = sys.platform == 'win32'
 MAGIC = '#010203'
 MAGIC_RGB = (1, 2, 3)
 
-YFW_HOME = Path(os.path.expanduser('~')) / '.yfworking'
+# dev 调试版经 YFW_HOME 环境变量隔离（~/.yfworking-dev），与 main.cjs 的 yfwHome()
+# 保持同一路径；缺省回落正式版 ~/.yfworking
+YFW_HOME = Path(os.environ.get('YFW_HOME') or (Path(os.path.expanduser('~')) / '.yfworking'))
 CONFIG_PATH = YFW_HOME / 'pet.json'
 POS_PATH = YFW_HOME / 'pet-position.json'
 LOG_PATH = YFW_HOME / 'pet.log'

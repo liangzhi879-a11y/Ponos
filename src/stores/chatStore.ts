@@ -387,7 +387,7 @@ interface ChatState {
   setMessagePending: (conversationId: string, messageId: string, pending: boolean) => void
   _addStreamingMessage: (conversationId: string) => string
   _appendStreamingBlock: (messageId: string, block: ContentBlock) => void
-  _updateStreamingBlock: (messageId: string, blockId: string, updates: Partial<ContentBlock>) => void
+  _updateStreamingBlock: (messageId: string, blockId: string, updates: Partial<ContentBlock>, appendText?: boolean) => void
   _resumeStreaming: (conversationId: string, messageId: string) => void
   _updateMessageMeta: (messageId: string, meta: { model?: string; tokensUsed?: number }) => void
   _finishStreaming: (messageId: string, usage: { inputTokens: number; outputTokens: number }) => void
@@ -837,7 +837,7 @@ export const useChatStore = create<ChatState>()(
         }))
       },
 
-      _updateStreamingBlock: (messageId, blockId, updates) => {
+      _updateStreamingBlock: (messageId, blockId, updates, appendText = false) => {
         set(state => ({
           conversations: state.conversations.map(c => ({
             ...c,
@@ -846,7 +846,13 @@ export const useChatStore = create<ChatState>()(
                 ? {
                     ...m,
                     content: m.content.map(b =>
-                      b.id === blockId ? { ...b, ...updates } as ContentBlock : b
+                      // appendText：流式文本/思考块累加（turbo 内核逐 chunk 事件无 id，
+                      // 同块多次到达必须拼接而非覆盖，否则只显示最后一个 chunk）
+                      b.id === blockId
+                        ? appendText && typeof b.content === 'string' && typeof updates.content === 'string'
+                          ? { ...b, content: b.content + updates.content } as ContentBlock
+                          : { ...b, ...updates } as ContentBlock
+                        : b
                     ),
                   }
                 : m

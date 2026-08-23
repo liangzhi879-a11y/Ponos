@@ -120,9 +120,9 @@ test('computeLayout：四层布局行数分配（含三条分隔线）', () => {
   assert.equal(l.headerRows + l.footerRows + l.dividerRows + l.inputRows + l.approvalRows + l.viewportRows, 30)
   // inputLines 封顶 4
   assert.equal(computeLayout(30, 100, { inputLines: 9 }).inputRows, 4)
-  // approval 占用 2 行
+  // approval 占用 3 行（标题/理由/选项）
   const la = computeLayout(30, 100, { inputLines: 1, approval: true })
-  assert.equal(la.approvalRows, 2)
+  assert.equal(la.approvalRows, 3)
   assert.equal(la.headerRows + la.footerRows + la.dividerRows + la.inputRows + la.approvalRows + la.viewportRows, 30)
 })
 
@@ -151,4 +151,78 @@ test('KeyStream：UTF-8 中文跨 chunk 不破坏', () => {
   assert.equal(ev1.filter((e) => e.name === 'char').length, 0) // 未完整解码，不输出
   const chars = ev2.filter((e) => e.name === 'char').map((e) => e.char).join('')
   assert.equal(chars, '你好')
+})
+
+// —— 历史会话扫描与投影（恢复历史会话） ——
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { scanSessions, readTranscriptHistory } from '../kernel/tui.mjs'
+import { sanitizeSegment } from '../kernel/session.mjs'
+
+function writeTranscript(configDir, cwd, sid, entries) {
+  const dir = join(configDir, 'projects', sanitizeSegment(cwd))
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, sid + '.jsonl'), entries.map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf-8')
+}
+
+test('scanSessions：扫描 transcript 目录，按时间倒序返回预览/条数', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tui-scan-'))
+  try {
+    writeTranscript(dir, 'proj', 'aaa', [
+      { type: 'meta', kind: 'transcript', schemaVersion: 1, timestamp: '2026-08-01T00:00:00Z' },
+      { type: 'user', timestamp: '2026-08-01T00:01:00Z', message: { role: 'user', content: '第一条消息' } },
+      { type: 'assistant', timestamp: '2026-08-01T00:02:00Z', message: { role: 'assistant', content: [{ type: 'text', text: '回复' }] } },
+    ])
+    writeTranscript(dir, 'proj', 'bbb', [
+      { type: 'meta', kind: 'transcript', schemaVersion: 1, timestamp: '2026-08-02T00:00:00Z' },
+      { type: 'user', timestamp: '2026-08-02T00:01:00Z', message: { role: 'user', content: '更新的一条' } },
+    ])
+    writeTranscript(dir, 'proj', 'ccc', [
+      { type: 'meta', kind: 'transcript', schemaVersion: 1, timestamp: '2026-08-03T00:00:00Z' }, // 仅 meta：不列为会话
+    ])
+    const sids = await scanSessions({ configDir: dir, cwd: 'proj' })
+    assert.equal(sids.length, 2)
+    assert.equal(sids[0].id, 'bbb') // 时间倒序：bbb 最新
+    assert.equal(sids[0].preview, '更新的一条')
+    assert.equal(sids[0].count, 1)
+    assert.equal(sids[1].id, 'aaa')
+    assert.equal(sids[1].count, 2)
+    // 不存在的项目目录 → 空列表
+    assert.deepEqual(await scanSessions({ configDir: dir, cwd: 'nope' }), [])
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('readTranscriptHistory：user/assistant 文本 + tool_use 卡片 + 摘要行投影，toolCount 续接', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tui-hist-'))
+  try {
+    const sid = 'hist-1'
+    const file = join(dir, sid + '.jsonl')
+    writeFileSync(file, [
+      { type: 'meta', kind: 'transcript', schemaVersion: 1 },
+      { type: 'user', message: { role: 'user', content: '请运行工具' } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }] } },
+      { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '完成：' }, { type: 'text', text: 'done' }] } },
+      { type: 'assistant', kind: 'compaction', phase: 'summary', sourceEventSeqs: [1, 2, 3], message: { role: 'assistant', content: '历史压缩摘要' } },
+    ].map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf-8')
+
+    const { msgs, toolCount } = readTranscriptHistory(file)
+    assert.equal(toolCount, 1)
+    assert.deepEqual(msgs[0], { kind: 'user', text: '请运行工具' })
+    assert.equal(msgs[1].kind, 'tool')
+    assert.equal(msgs[1].name, 'Bash')
+    assert.equal(msgs[1].seq, 1)
+    // tool_result user 消息不投影（无 text 块）
+    assert.equal(msgs[2].kind, 'assistant')
+    assert.equal(msgs[2].text, '完成：done') // 同一条 assistant 的多个 text 块合并
+    assert.equal(msgs[3].kind, 'result')
+    assert.ok(msgs[3].text.includes('历史压缩摘要'))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('readTranscriptHistory：不存在的文件返回空投影', () => {
+  const { msgs, toolCount } = readTranscriptHistory(join(tmpdir(), 'no-such-session.jsonl'))
+  assert.deepEqual(msgs, [])
+  assert.equal(toolCount, 0)
 })

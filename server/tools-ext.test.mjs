@@ -74,6 +74,37 @@ test('WebFetch：本地 http server 抓取 HTML → 文本（script 剥离）；
   }
 })
 
+test('WebFetch：3xx 跟随重定向（最多 3 跳）；无 content-type 响应按内容嗅探为文本', async () => {
+  const server = createServer((req, res) => {
+    if (req.url === '/hop1') { res.writeHead(302, { location: '/hop2' }); res.end(); return }
+    if (req.url === '/hop2') { res.writeHead(301, { location: '/final' }); res.end(); return }
+    if (req.url === '/final') { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('重定向最终页'); return }
+    if (req.url === '/loop') { res.writeHead(302, { location: '/loop' }); res.end(); return }
+    if (req.url === '/noct') { res.end('无 content-type 的文本内容'); return }
+    res.writeHead(404); res.end()
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const port = server.address().port
+  const { dir, reg } = tmpReg()
+  try {
+    // 302 → 301 → 200 跟随到底
+    const r = await reg.run({ name: 'WebFetch', input: { url: `http://127.0.0.1:${port}/hop1` } })
+    assert.equal(r.isError, false)
+    assert.match(r.content, /重定向最终页/)
+    // 自循环重定向 → 超过 3 跳报错
+    const loop = await reg.run({ name: 'WebFetch', input: { url: `http://127.0.0.1:${port}/loop` } })
+    assert.equal(loop.isError, true)
+    assert.match(loop.content, /重定向次数过多/)
+    // 无 content-type 的纯文本 → 嗅探提取，不再误判非文本
+    const noct = await reg.run({ name: 'WebFetch', input: { url: `http://127.0.0.1:${port}/noct` } })
+    assert.equal(noct.isError, false)
+    assert.match(noct.content, /无 content-type 的文本内容/)
+  } finally {
+    server.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('Read/Write/Edit：相对路径解析到 cwd（resolvePath），缺失文件带 cwd + Glob 纠错提示', async () => {
   const { dir, reg } = tmpReg()
   try {
@@ -272,5 +303,118 @@ test('S4-1 符号链接逃逸：边界内 symlink 指向边界外 → 拒绝；�
   } finally {
     rmSync(dir, { recursive: true, force: true })
     rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+// --- 会话目录外文件访问开关（--allow-outside-dirs / YFW_ALLOW_OUTSIDE_DIRS=1） ---
+test('边界开关：默认拒绝会话外文件；allowOutsideDirs 解锁 Read/Write/Edit/OCR', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yfw-bnd-in-'))
+  const outside = mkdtempSync(join(tmpdir(), 'yfw-bnd-out-'))
+  try {
+    writeFileSync(join(outside, 'secret.txt'), 'outside-secret')
+    const outsideFile = join(outside, 'secret.txt')
+
+    // 默认（无开关）：会话外文件被拒
+    const strict = createToolRegistry({ cwd: dir, addDirs: [dir], skipPermissions: true })
+    const d1 = await strict.run({ name: 'Read', input: { file_path: outsideFile } })
+    assert.equal(d1.isError, true)
+    assert.match(String(d1.content), /拒绝访问|边界/)
+    const d2 = await strict.run({ name: 'Edit', input: { file_path: outsideFile, old_string: 'x', new_string: 'y' } })
+    assert.equal(d2.isError, true)
+    assert.match(String(d2.content), /拒绝访问|边界/)
+
+    // 显式 allowOutsideDirs：Read/Write/Edit 均解锁
+    const open = createToolRegistry({ cwd: dir, addDirs: [dir], skipPermissions: true, allowOutsideDirs: true })
+    const r1 = await open.run({ name: 'Read', input: { file_path: outsideFile } })
+    assert.equal(r1.isError, false)
+    assert.match(String(r1.content), /outside-secret/)
+    // Write 到会话外
+    const w1 = await open.run({ name: 'Write', input: { file_path: join(outside, 'written.txt'), content: 'w' } })
+    assert.equal(w1.isError, false)
+    // Edit 会话外
+    const e1 = await open.run({ name: 'Edit', input: { file_path: outsideFile, old_string: 'outside-secret', new_string: 'edited' } })
+    assert.equal(e1.isError, false)
+    // OCR 会话外文件：边界已解锁，走"文件不存在/引擎"分支而不报边界错误
+    const o1 = await open.run({ name: 'OCR', input: { file_path: join(outside, 'no-such.png') } })
+    assert.ok(!String(o1.content).includes('拒绝访问'), 'OCR 不应再报边界错误')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test('边界开关：YFW_ALLOW_OUTSIDE_DIRS=1 env 同样解锁', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yfw-bnd2-in-'))
+  const outside = mkdtempSync(join(tmpdir(), 'yfw-bnd2-out-'))
+  const prev = process.env.YFW_ALLOW_OUTSIDE_DIRS
+  try {
+    writeFileSync(join(outside, 'env.txt'), 'env-unlocked')
+    process.env.YFW_ALLOW_OUTSIDE_DIRS = '1'
+    const reg = createToolRegistry({ cwd: dir, addDirs: [dir], skipPermissions: true })
+    const r = await reg.run({ name: 'Read', input: { file_path: join(outside, 'env.txt') } })
+    assert.equal(r.isError, false)
+    assert.match(String(r.content), /env-unlocked/)
+  } finally {
+    if (prev === undefined) delete process.env.YFW_ALLOW_OUTSIDE_DIRS
+    else process.env.YFW_ALLOW_OUTSIDE_DIRS = prev
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test('边界开关：Glob/Grep 仍限会话目录内（避免解锁后全盘扫描）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yfw-bnd3-in-'))
+  const outside = mkdtempSync(join(tmpdir(), 'yfw-bnd3-out-'))
+  try {
+    writeFileSync(join(outside, 'out-visible.txt'), 'x')
+    const reg = createToolRegistry({ cwd: dir, addDirs: [dir], skipPermissions: true, allowOutsideDirs: true })
+    const g = await reg.run({ name: 'Glob', input: { pattern: '**/*.txt' } })
+    assert.ok(!String(g.content).includes('out-visible.txt'), 'Glob 不应搜到会话外文件')
+    const gr = await reg.run({ name: 'Grep', input: { pattern: 'out-visible' } })
+    assert.ok(!String(gr.content).includes('out-visible.txt'), 'Grep 不应搜到会话外文件')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test('搜索剪枝：node_modules/release/vendors/workspace 默认跳过，显式引用时放行', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yfw-prune-'))
+  try {
+    mkdirSync(join(dir, 'node_modules', 'dep'), { recursive: true })
+    mkdirSync(join(dir, 'release', 'app'), { recursive: true })
+    mkdirSync(join(dir, 'vendors', 'third'), { recursive: true })
+    mkdirSync(join(dir, 'workspace', 'clone'), { recursive: true })
+    mkdirSync(join(dir, 'src'), { recursive: true })
+    writeFileSync(join(dir, 'node_modules', 'dep', 'a.js'), 'const marker = 1')
+    writeFileSync(join(dir, 'release', 'app', 'b.js'), 'const marker = 1')
+    writeFileSync(join(dir, 'vendors', 'third', 'c.js'), 'const marker = 1')
+    writeFileSync(join(dir, 'workspace', 'clone', 'd.js'), 'const marker = 1')
+    writeFileSync(join(dir, 'src', 'e.js'), 'const marker = 1')
+    const reg = createToolRegistry({ cwd: dir, addDirs: [dir], skipPermissions: true })
+
+    // 默认剪枝：忽略目录中的文件不可见
+    const g = await reg.run({ name: 'Glob', input: { pattern: '**/*.js' } })
+    const gContent = String(g.content)
+    assert.ok(gContent.includes('src'), '普通源码应可见')
+    for (const f of ['node_modules', 'release', 'vendors', 'workspace']) {
+      assert.ok(!gContent.includes(join(f, '').replace(/\\/g, '/')), `Glob 应剪枝 ${f}`)
+    }
+    const gr = await reg.run({ name: 'Grep', input: { pattern: 'marker' } })
+    const grContent = String(gr.content)
+    assert.ok(grContent.includes('src'), 'Grep 普通源码应命中')
+    for (const f of ['node_modules', 'release', 'vendors', 'workspace']) {
+      assert.ok(!grContent.includes(join(f, '')), `Grep 应剪枝 ${f}`)
+    }
+
+    // 显式引用（glob 含目录段）→ 放行定向搜索
+    const gx = await reg.run({ name: 'Glob', input: { pattern: '**/node_modules/**/*.js' } })
+    assert.ok(String(gx.content).includes('a.js'), '显式引用 node_modules 应放行')
+    const gx2 = await reg.run({ name: 'Glob', input: { pattern: '**/vendors/**/*.js' } })
+    assert.ok(String(gx2.content).includes('c.js'), '显式引用 vendors 应放行')
+    const grx = await reg.run({ name: 'Grep', input: { pattern: 'marker', glob: '**/release/**' } })
+    assert.ok(String(grx.content).includes('b.js'), 'Grep glob 显式引用 release 应放行')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })

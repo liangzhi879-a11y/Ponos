@@ -1,8 +1,8 @@
 // YFW-Turbo 交互式 TUI（全屏 ANSI 版，远方品牌橙红深色主题）
 // ---------------------------------------------------------------------------
 // 用法：
-//   node kernel/tui.mjs                     # 新会话（ANTHROPIC_* env 已配置）
-//   node kernel/tui.mjs --resume <sid>      # 恢复既有会话
+//   node kernel/tui.mjs                     # 新会话；检测到历史时先弹会话选择器
+//   node kernel/tui.mjs --resume <sid>      # 恢复既有会话（并投影历史到对话区）
 //   node kernel/tui.mjs --mock              # 离线 mock 模式（无网络，测交互链路）
 //   node kernel/tui.mjs --dir <path>        # 指定会话工作目录（默认当前目录）
 //   node kernel/tui.mjs --banner <file>     # 指定启动艺术字文件
@@ -24,18 +24,47 @@
 //   Tab                命令补全（/ 开头时）
 //   /cancel            取消当前轮次
 //   /help /banner /version /clear /stats /tools /session /model /theme /quit
-//   审批时：allow / deny（或 y / n / a / d）
+//   审批时：按键选择 1=允许 2=拒绝 3=取消（Esc 同取消；兼容输入 allow/deny 回车）
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { StringDecoder } from 'node:string_decoder'
-import { readFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSync, createReadStream } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { KERNEL_VERSION } from '../version.mjs'
+import { resolveConfigDir } from './config.mjs'
+import { sanitizeSegment } from './session.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const KERNEL_DIR = fileURLToPath(new URL('.', import.meta.url))
 const DEFAULT_BANNER = join(KERNEL_DIR, 'ascii-art-1787378784252.txt')
+
+// ---------- Provider/模型列表（P4-1 providers.json 快照，与 bridge 同一来源） ----------
+// ~/.yfworking/providers.json：{ activeProvider, providers: [{ id, apiBaseUrl, authToken,
+// primaryModel, models[], subagentModel, contextWindow, visionModel }] }
+export function loadProviders(env = process.env) {
+  try {
+    const file = join(resolveConfigDir(env), 'providers.json')
+    if (!existsSync(file)) return null
+    const data = JSON.parse(readFileSync(file, 'utf-8'))
+    const providers = Array.isArray(data.providers) ? data.providers : []
+    if (!providers.length) return null
+    return { providers, activeId: data.activeProvider || '' }
+  } catch {
+    return null
+  }
+}
+// 启动默认模型：env ANTHROPIC_MODEL 优先，其次 providers.json 当前激活 provider，最后内置兜底
+export function defaultModel(env = process.env) {
+  if (env.ANTHROPIC_MODEL) return env.ANTHROPIC_MODEL
+  const cfg = loadProviders(env)
+  if (cfg) {
+    const active = cfg.providers.find((p) => p.id === cfg.activeId) || cfg.providers[0]
+    if (active?.primaryModel) return active.primaryModel
+    if (active?.models?.[0]) return active.models[0]
+  }
+  return 'deepseek-v4-flash'
+}
 
 // ---------- 主题色板（远方品牌：暖黑底 + 远方橙 #ff4200 + 远方红 #ff2400） ----------
 const THEMES = {
@@ -298,16 +327,117 @@ export function computeLayout(rows, cols, { inputLines = 1, approval = false } =
   const footerRows = 1
   const dividerRows = 3 // Header 下 / Input 上 / Footer 上 各一条
   const inputRows = Math.max(1, Math.min(4, inputLines))
-  const approvalRows = approval ? 2 : 0
+  const approvalRows = approval ? 3 : 0
   const viewportRows = Math.max(1, rows - headerRows - footerRows - dividerRows - inputRows - approvalRows)
   return { headerRows, footerRows, dividerRows, inputRows, approvalRows, viewportRows }
+}
+
+// ---------- 历史会话扫描与投影（M 系列：恢复历史会话） ----------
+// 扫描 <configDir>/projects/<sanitize(cwd)> 下全部 transcript，按最后活动时间倒序
+// 返回元信息列表（预览取首条 user 文本，用于启动选择器 / /sessions 展示）。
+// 与 server/transcript.mjs 目录约定一致；损坏行跳过、超大文件流式读。
+export async function scanSessions({ configDir, cwd, limit = 20 }) {
+  const dir = join(configDir, 'projects', sanitizeSegment(cwd))
+  if (!existsSync(dir)) return []
+  const out = []
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith('.jsonl')) continue
+    const file = join(dir, f)
+    let preview = ''
+    let count = 0
+    let lastTs = ''
+    try {
+      const rl = createInterface({ input: createReadStream(file), crlfDelay: Infinity })
+      for await (const line of rl) {
+        const t = line.trim()
+        if (!t) continue
+        let e
+        try { e = JSON.parse(t) } catch { continue }
+        if (e.type === 'meta' || !e.message || typeof e.message !== 'object') continue
+        count++
+        if (e.timestamp && e.timestamp > lastTs) lastTs = e.timestamp
+        if (!preview && e.message.role === 'user') {
+          const c = e.message.content
+          preview = typeof c === 'string' ? c : (Array.isArray(c) ? c.filter((b) => b?.type === 'text').map((b) => b.text).join(' ') : '')
+        }
+      }
+    } catch { continue }
+    if (!count) continue // 空 transcript（仅 meta）不列为可恢复会话
+    let stat
+    try { stat = statSync(file) } catch { continue }
+    out.push({
+      id: f.replace(/\.jsonl$/, ''),
+      preview: preview.replace(/\s+/g, ' ').trim().slice(0, 60),
+      count,
+      ts: lastTs || stat.mtime.toISOString(),
+    })
+  }
+  out.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''))
+  return out.slice(0, limit)
+}
+
+// 读取 transcript 投影为 TUI 消息（--resume / 选择器恢复后填充 viewport）：
+// user 文本 / assistant 文本 / tool_use 卡片（历史工具结果不落 transcript 正文，
+// 卡片 result 留空显示输入即可）；compaction 摘要显示为 result 行。
+// 返回 { msgs, toolCount }（toolCount 用于续接 /tool 展开序号，避免新工具从 1 重排）。
+export function readTranscriptHistory(file) {
+  const msgs = []
+  let toolCount = 0
+  let pendingAssistant = null
+  const flushAssistant = () => {
+    if (pendingAssistant && pendingAssistant.text.trim()) msgs.push(pendingAssistant)
+    pendingAssistant = null
+  }
+  if (!existsSync(file)) return { msgs, toolCount }
+  for (const raw of readFileSync(file, 'utf-8').split('\n')) {
+    const t = raw.trim()
+    if (!t) continue
+    let e
+    try { e = JSON.parse(t) } catch { continue }
+    if (e.type === 'meta') continue
+    if (e.kind === 'compaction') {
+      flushAssistant()
+      if (e.phase === 'summary') msgs.push({ kind: 'result', text: `[压缩摘要] ${String(e.message?.content ?? '').slice(0, 100)}` })
+      continue
+    }
+    const m = e.message
+    if (!m || typeof m !== 'object' || typeof m.role !== 'string') continue
+    if (m.role === 'user') {
+      flushAssistant()
+      if (typeof m.content === 'string') {
+        if (m.content.trim()) msgs.push({ kind: 'user', text: m.content })
+      } else if (Array.isArray(m.content)) {
+        // tool_result 块不回填历史工具卡片（无 id 关联）；仅投影纯文本 user 消息
+        const texts = m.content.filter((b) => b?.type === 'text').map((b) => b.text).join('\n')
+        if (texts.trim()) msgs.push({ kind: 'user', text: texts })
+      }
+    } else if (m.role === 'assistant') {
+      if (typeof m.content === 'string') {
+        flushAssistant()
+        if (m.content.trim()) msgs.push({ kind: 'assistant', text: m.content })
+      } else if (Array.isArray(m.content)) {
+        for (const b of m.content) {
+          if (b?.type === 'text') {
+            if (!pendingAssistant) pendingAssistant = { kind: 'assistant', text: '', streaming: false }
+            pendingAssistant.text += b.text
+          } else if (b?.type === 'tool_use') {
+            flushAssistant()
+            toolCount++
+            msgs.push({ kind: 'tool', seq: toolCount, name: b.name, input: b.input, result: '' })
+          }
+        }
+      }
+    }
+  }
+  flushAssistant()
+  return { msgs, toolCount }
 }
 
 // ---------- 主程序 ----------
 function main() {
   // ---------- 参数 ----------
   function parseArgs(argv) {
-    const out = { resume: null, mock: false, dir: process.cwd(), banner: DEFAULT_BANNER, noBanner: false, theme: 'dark' }
+    const out = { resume: null, mock: false, dir: process.cwd(), banner: DEFAULT_BANNER, noBanner: false, theme: 'dark', allowOutsideDirs: false }
     for (let i = 0; i < argv.length; i++) {
       const a = argv[i]
       const next = () => argv[++i]
@@ -315,6 +445,7 @@ function main() {
         case '--resume': out.resume = next(); break
         case '--mock': out.mock = true; break
         case '--dir': out.dir = resolve(next()); break
+        case '--allow-outside-dirs': out.allowOutsideDirs = true; break
         case '--banner': out.banner = resolve(next()); break
         case '--no-banner': out.noBanner = true; break
         case '--theme': out.theme = next(); break
@@ -325,18 +456,19 @@ function main() {
   }
   function usageText() {
     return `YFWorking 交互终端（YFW-Turbo 内核 ${KERNEL_VERSION}）
-用法: node kernel/tui.mjs [--resume <sid>] [--mock] [--dir <path>] [--banner <file>] [--no-banner] [--theme dark|light]
+用法: node kernel/tui.mjs [--resume <sid>] [--mock] [--dir <path>] [--banner <file>] [--no-banner] [--theme dark|light] [--allow-outside-dirs]
 键位: Enter 发送 · Shift+Enter/Ctrl+J 换行 · ↑↓ 历史 · ←→ 移动 · PgUp/PgDn 滚动 · Ctrl+G/B 顶/底 · Tab 补全
 命令（支持 /yfw <cmd> 前缀，别名 yfwturbo）:
   /cancel  取消当前轮次       /stats   会话统计（轮次/用量）
   /clear   清空对话重显 banner /tools  工具列表
   /help    显示本帮助          /session 会话 ID
-  /model   当前模型            /banner  重显艺术字
+  /model   当前模型            /sessions 历史会话选择器（恢复/切换）
   /theme   切换深/亮主题       /tool <n> 展开/折叠工具卡片
   /effort 思考深度档位         /version dev 版本号
+  /model 查看模型列表          /model <序号|id|模型名> 切换模型
   /quit    退出
-思考深度: auto 模型原生自适应 · low/high/max 注入 reasoning_effort · off 关闭 · medium 并入 high
-审批: allow / deny（或 y / n / a / d）`
+历史: 启动时检测到历史会话自动弹出选择器（↑↓ 选择 Enter 确认 Esc 新建）；/sessions 随时重开
+审批: 选择项交互 ↑↓/←→ 移动高亮，Enter 确认（1=允许 2=拒绝 3=取消 数字快捷，Esc 取消）`
   }
 
   const args = parseArgs(process.argv.slice(2))
@@ -349,15 +481,19 @@ function main() {
   if (args.theme === 'light') { themeName = 'light'; theme = THEMES.light }
   mkdirSync(args.dir, { recursive: true })
   const DIR = args.dir
-  const MODEL = process.env.ANTHROPIC_MODEL || 'deepseek-v4-flash'
+  const MODEL = defaultModel()
   const CONTEXT_WINDOW = Number(process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || 1_000_000) || 1_000_000
   const isTui = !!(process.stdin.isTTY && process.stdout.isTTY)
 
   // ---------- 状态 ----------
   let sessionId = args.resume || '?'
   let pendingApproval = null
+  let approvalSel = 0 // 审批高亮选项：0=允许 1=拒绝 2=取消
   let turnActive = false
   let toolSeq = 0
+  // 会话选择器：null = 未激活；激活时 { items, sel, booting }（booting=启动阶段选择，
+  // Esc 关闭后走新建会话启动；否则 Esc 仅关闭选择器回到对话）
+  let picker = null
   let turns = 0
   let usageTotals = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
   let lastDurationMs = 0
@@ -380,6 +516,7 @@ function main() {
   let renderTimer = null
   let child = null
   let stderrBuf = '' // stderr 按行缓冲，避免 chunk 截断成半行
+  const preSpawnLines = [] // 非 TTY：child spawn 前到达的输入行，就绪后重放
   const ICONS = process.env.YFW_TUI_ICONS === 'ascii' ? { tool: '[工具]', think: '[思考]' } : { tool: '⚙', think: '💭' }
 
   // ---------- 消息管理 ----------
@@ -427,9 +564,16 @@ function main() {
     const req = pendingApproval.request || {}
     const title = c(`┌ 审批 ─ ${req.tool_name || ''} 请求执行`, 'red')
     const reason = String(req.decision_reason || req.reason || '-')
-    const line1 = trunc(title + c('　理由：' + reason, 'text'), Math.max(8, cols - 2))
-    const line2 = trunc(c('│ allow / deny（y / n / a / d）', 'red'), Math.max(8, cols - 2))
-    return [line1, line2]
+    const line1 = trunc(title, Math.max(8, cols - 2))
+    const line2 = trunc(c('│ 理由：' + reason, 'text'), Math.max(8, cols - 2))
+    // 选择项交互：▸ 高亮当前项，↑↓ 移动、Enter 确认、1/2/3 数字快捷、Esc 取消
+    const opts = [['1', '允许'], ['2', '拒绝'], ['3', '取消']]
+    const optStrs = opts.map(([n, label], i) => {
+      const s = `[${n}] ${label}`
+      return i === approvalSel ? c('▸ ' + s, 'highlight', true) : c('  ' + s, 'meta')
+    })
+    const line3 = trunc(c('│ ' + optStrs.join('　'), 'red'), Math.max(8, cols - 2))
+    return [line1, line2, line3]
   }
   function msgLines(m, cols) {
     switch (m.kind) {
@@ -472,6 +616,28 @@ function main() {
     }
   }
   function renderViewport(rows, cols) {
+    if (picker) {
+      const items = picker.items
+      // 选中项始终可见（sel 越界时滚动窗口）
+      const half = Math.floor(rows / 2)
+      let start = picker.sel - half
+      if (start < 0) start = 0
+      if (start + rows > items.length) start = Math.max(0, items.length - rows)
+      const lines = []
+      for (let i = start; i < Math.min(start + rows, items.length); i++) {
+        const it = items[i]
+        const sel = i === picker.sel
+        const marker = sel ? c('▸ ', 'orange', true) : '  '
+        if (!it.id) {
+          lines.push(marker + (sel ? c(it.label, 'highlight', true) : c(it.label, 'meta')))
+          continue
+        }
+        const ts = String(it.ts || '').slice(0, 16).replace('T', ' ')
+        const label = `${it.id.slice(0, 8)} · ${ts} · ${it.count} 条 · ${it.preview || '（无文本）'}`
+        lines.push(trunc(marker + (sel ? c(label, 'highlight', true) : c(label, 'text')), Math.max(10, cols - 2)))
+      }
+      return lines
+    }
     const all = []
     for (const m of messages) for (const ln of msgLines(m, cols)) all.push(ln)
     const maxOffset = Math.max(0, all.length - rows)
@@ -650,6 +816,7 @@ function main() {
         if (req?.subtype === 'can_use_tool') {
           endAssistantStream()
           pendingApproval = ev
+          approvalSel = 0 // 新审批默认高亮"允许"
           render()
         }
         break
@@ -665,6 +832,13 @@ function main() {
         render()
         break
       }
+      case 'provider_switched':
+        initInfo.model = ev.model || initInfo.model
+        pushMessage({ kind: 'result', text: `模型已切换：${ev.model}` })
+        render(); break
+      case 'provider_switch_rejected':
+        pushMessage({ kind: 'error', text: `模型切换被拒：${ev.reason || '未知原因'}` })
+        render(); break
       case 'yfw_health':
         pushMessage({ kind: 'result', text: `健康 score=${ev.score ?? '?'} tier=${ev.tier ?? '?'}` })
         render(); break
@@ -678,10 +852,16 @@ function main() {
   }
 
   // ---------- 命令 ----------
-  const COMMANDS = ['/banner', '/cancel', '/clear', '/effort', '/help', '/model', '/quit', '/session', '/stats', '/theme', '/tool', '/tools', '/version', '/exit']
+  const COMMANDS = ['/banner', '/cancel', '/clear', '/effort', '/help', '/model', '/quit', '/session', '/sessions', '/stats', '/theme', '/tool', '/tools', '/version', '/exit']
   function sendCancel() {
+    // 即时反馈：不等内核 result，先停动画/清除审批横幅/收尾流式尾巴
+    stopAnim()
+    turnActive = false
+    endAssistantStream()
+    pendingApproval = null
+    approvalSel = 0
     child.stdin.write(JSON.stringify({ type: 'control_request', request: { subtype: 'cancel' } }) + '\n')
-    pushMessage({ kind: 'system', text: '已发送取消' })
+    pushMessage({ kind: 'system', text: '正在中止当前轮次…（可继续输入新消息）' })
     render()
   }
   function runCommand(cmdText) {
@@ -693,7 +873,13 @@ function main() {
       case '/stats': pushMessage({ kind: 'result', text: `轮次=${turns} in=${fmtK(usageTotals.input_tokens)} out=${fmtK(usageTotals.output_tokens)} cacheRead=${fmtK(usageTotals.cache_read_input_tokens)} cacheWrite=${fmtK(usageTotals.cache_creation_input_tokens)}` }); render(); break
       case '/tools': pushMessage({ kind: 'result', text: initInfo.tools.length ? initInfo.tools.join(', ') : '（尚未收到 init）' }); render(); break
       case '/session': pushMessage({ kind: 'result', text: sessionId }); render(); break
-      case '/model': pushMessage({ kind: 'result', text: initInfo.model || MODEL }); render(); break
+      case '/sessions': pickerOpen(false); break
+      case '/model': {
+        const v = (rest[0] || '').trim()
+        if (!v) { listModels(); break }
+        switchModel(v)
+        break
+      }
       case '/effort': {
         const v = (rest[0] || '').trim().toLowerCase()
         const EFFORT_LEVELS = ['off', 'low', 'medium', 'high', 'max', 'auto']
@@ -732,41 +918,147 @@ function main() {
     return COMMANDS.filter((cmd) => cmd.startsWith(prefix))
   }
 
+  // ---------- 模型选择（P4-5 热切换：/model 列表 → switch_provider 控制请求） ----------
+  function listModels() {
+    const current = initInfo.model || MODEL
+    const lines = [`当前模型：${current}`]
+    const cfg = loadProviders()
+    if (!cfg) {
+      lines.push('未找到 providers.json（' + join(resolveConfigDir(process.env), 'providers.json') + '），仅支持 env ANTHROPIC_MODEL 指定模型')
+      pushMessage({ kind: 'result', text: lines.join('\n') })
+      render()
+      return
+    }
+    cfg.providers.forEach((p, i) => {
+      const mark = p.id === cfg.activeId ? c(' ●', 'orange') : ''
+      const models = (p.models && p.models.length ? p.models : [p.primaryModel]).filter(Boolean).join(' / ') || '-'
+      lines.push(`  ${i + 1}. ${c(p.id, 'highlight')}${mark}（${models}）`)
+    })
+    lines.push('用法：/model <序号|id|模型名> 切换（空闲时生效，写入 activeProvider）')
+    pushMessage({ kind: 'result', text: lines.join('\n') })
+    render()
+  }
+  function switchModel(v) {
+    const cfg = loadProviders()
+    if (!cfg) {
+      pushMessage({ kind: 'error', text: '未找到 providers.json，无法切换模型（/model 查看）' })
+      render()
+      return
+    }
+    // 1) 序号
+    if (/^\d+$/.test(v)) {
+      const p = cfg.providers[Number(v) - 1]
+      if (!p) {
+        pushMessage({ kind: 'error', text: `序号 ${v} 越界（共 ${cfg.providers.length} 个 provider）` })
+        render()
+        return
+      }
+      applySwitch(p, p.primaryModel || p.models?.[0] || '')
+      return
+    }
+    // 2) provider id
+    const byId = cfg.providers.find((p) => p.id === v)
+    if (byId) { applySwitch(byId, byId.primaryModel || byId.models?.[0] || ''); return }
+    // 3) 模型名（跨 provider 匹配）
+    const hit = []
+    for (const p of cfg.providers) for (const m of p.models || []) if (m === v) hit.push({ p, m })
+    if (hit.length === 1) { applySwitch(hit[0].p, hit[0].m); return }
+    if (hit.length > 1) {
+      pushMessage({ kind: 'error', text: `模型 ${v} 命中多个 provider：${hit.map((h) => h.p.id).join(', ')}，请用序号指定` })
+      render()
+      return
+    }
+    pushMessage({ kind: 'error', text: `未找到 ${v}（/model 查看列表）` })
+    render()
+  }
+  function applySwitch(p, modelName) {
+    if (turnActive) {
+      pushMessage({ kind: 'error', text: '当前轮次进行中，请等待完成后再切换模型' })
+      render()
+      return
+    }
+    child.stdin.write(JSON.stringify({
+      type: 'control_request',
+      request: {
+        subtype: 'switch_provider',
+        payload: {
+          baseUrl: p.apiBaseUrl,
+          authToken: p.authToken,
+          model: modelName || p.primaryModel || (p.models && p.models[0]) || '',
+          contextWindow: p.contextWindow || 0,
+        },
+      },
+    }) + '\n')
+    persistActiveProvider(p.id)
+    pushMessage({ kind: 'system', text: `已请求切换：${p.id} → ${modelName || p.primaryModel || '(默认)'}` })
+    render()
+  }
+  // 持久化 activeProvider（下次启动 defaultModel 生效）
+  function persistActiveProvider(id) {
+    try {
+      const file = join(resolveConfigDir(process.env), 'providers.json')
+      if (!existsSync(file)) return
+      const data = JSON.parse(readFileSync(file, 'utf-8'))
+      if (data.activeProvider === id) return
+      data.activeProvider = id
+      writeFileSync(file, JSON.stringify(data, null, 2) + '\n')
+    } catch (e) {
+      pushMessage({ kind: 'system', text: `（提示：activeProvider 持久化失败：${e.message}）` })
+    }
+  }
+
   // ---------- 键盘处理 ----------
+  // 提交审批回执（allow/deny），选择项 Enter 确认与数字快捷共用
+  function resolveApproval(allow) {
+    const cr = pendingApproval
+    pendingApproval = null
+    approvalSel = 0
+    inputText = ''
+    cursor = 0
+    child.stdin.write(JSON.stringify({
+      type: 'control_response',
+      response: {
+        request_id: cr.request_id,
+        subtype: 'success',
+        response: {
+          behavior: allow ? 'allow' : 'deny',
+          updatedInput: {},
+          toolUseID: cr.request?.tool_use_id,
+          decisionClassification: 'user_temporary',
+        },
+      },
+    }) + '\n')
+    pushMessage({ kind: allow ? 'result' : 'error', text: allow ? '审批：已批准，继续执行' : '审批：已拒绝' })
+    render()
+  }
   function handleKey(k) {
     if (k.name === 'unknown') return
-    // 审批挂起：回车提交审批回执
-    if (pendingApproval) {
-      if (k.name === 'enter' && !k.newline) {
-        const text = inputText.trim()
-        if (!/^(allow|y|yes|a|deny|n|no|d)$/i.test(text)) {
-          inputText = ''
-          cursor = 0
-          pushMessage({ kind: 'error', text: '请输入 allow / deny（或 y / n）' })
-          render()
-          return
-        }
-        const allow = /^(allow|y|yes|a)$/i.test(text)
-        const cr = pendingApproval
-        pendingApproval = null
-        inputText = ''
-        cursor = 0
-        child.stdin.write(JSON.stringify({
-          type: 'control_response',
-          response: {
-            request_id: cr.request_id,
-            subtype: 'success',
-            response: {
-              behavior: allow ? 'allow' : 'deny',
-              updatedInput: {},
-              toolUseID: cr.request?.tool_use_id,
-              decisionClassification: 'user_temporary',
-            },
-          },
-        }) + '\n')
-        pushMessage({ kind: allow ? 'result' : 'error', text: allow ? '审批：已批准，继续执行' : '审批：已拒绝' })
-        render()
+    // 会话选择器：↑↓/←→ 移动，Enter 选择，Esc 关闭（booting 阶段关闭即新建会话）
+    if (picker) {
+      switch (k.name) {
+        case 'up': case 'left': picker.sel = (picker.sel + picker.items.length - 1) % picker.items.length; render(); break
+        case 'down': case 'right': picker.sel = (picker.sel + 1) % picker.items.length; render(); break
+        case 'enter': if (!k.newline) pickConfirm(); break
+        case 'escape': pickerClose(); break
+        case 'char': if (k.char.toLowerCase() === 'q' || k.char.toLowerCase() === 'n') pickerClose(); break
       }
+      return
+    }
+    // 审批挂起：选择项交互（↑↓/←→ 移动高亮，Enter 确认，1/2/3 数字快捷，Esc 取消）
+    if (pendingApproval) {
+      if (k.name === 'up' || k.name === 'left') { approvalSel = (approvalSel + 2) % 3; render(); return }
+      if (k.name === 'down' || k.name === 'right') { approvalSel = (approvalSel + 1) % 3; render(); return }
+      if (k.name === 'enter' && !k.newline) {
+        approvalSel === 0 ? resolveApproval(true) : resolveApproval(false)
+        return
+      }
+      if (k.name === 'char') {
+        const ch = k.char.toLowerCase()
+        if (ch === '1' || ch === 'y' || ch === 'a') return resolveApproval(true)
+        if (ch === '2' || ch === 'n' || ch === 'd' || ch === '3') return resolveApproval(false)
+        return // 模态选择：忽略其它输入，避免污染输入框
+      }
+      if (k.name === 'escape' || (k.ctrl && k.name === 'c')) return resolveApproval(false)
       return
     }
     switch (k.name) {
@@ -901,6 +1193,7 @@ function main() {
       '--model', MODEL,
       '--add-dir', DIR,
     ]
+    if (args.allowOutsideDirs) cliArgs.push('--allow-outside-dirs')
     if (args.resume) cliArgs.push('--resume', args.resume)
     return spawn(process.execPath, cliArgs, { env: process.env, stdio: ['pipe', 'pipe', 'pipe'] })
   }
@@ -919,7 +1212,117 @@ function main() {
     process.exit(code)
   }
 
-  // ---------- 启动 ----------
+  // ---------- 启动（内核子进程装配 + 历史投影） ----------
+  // 会话选择器：启动阶段（booting）弹列表（新建/恢复）；Esc 或选"新建"即新会话。
+  function pickerOpen(booting = false) {
+    if (booting && args.resume) { startKernel(); return } // 显式 --resume 不弹选择器
+    if (!booting && turnActive) {
+      pushMessage({ kind: 'error', text: '当前轮次进行中，请等待完成后再选择会话' })
+      render()
+      return
+    }
+    void scanSessions({ configDir: resolveConfigDir(process.env), cwd: DIR }).then((sids) => {
+      if (!sids.length) {
+        if (booting) { startKernel(); return }
+        pushMessage({ kind: 'result', text: '暂无历史会话（新会话直接开始）' })
+        render()
+        return
+      }
+      picker = {
+        items: [
+          { id: null, label: '＋ 新建会话' },
+          ...sids.map((s) => ({
+            id: s.id,
+            label: `${s.id.slice(0, 8)} · ${String(s.ts || '').slice(0, 16).replace('T', ' ')} · ${s.count} 条 · ${s.preview || '（无文本）'}`,
+          })),
+        ],
+        sel: 0,
+        booting,
+      }
+      render()
+    })
+  }
+  // 确认选择：id=null 新建；否则 resume。booting 阶段确认后启动内核；
+  // 运行中（/sessions）选择恢复 → 重启内核装载所选会话。
+  function pickConfirm() {
+    const it = picker?.items?.[picker.sel]
+    if (!it) return
+    const wasBooting = picker.booting
+    picker = null
+    if (it.id) args.resume = it.id
+    if (wasBooting) { startKernel(); return }
+    restartKernel(it.id)
+  }
+  function pickerClose() {
+    const wasBooting = picker?.booting
+    picker = null
+    if (wasBooting && !child) startKernel() // Esc → 新建会话直接启动
+    else render()
+  }
+  // 运行中切换到历史会话：kill 旧内核 → 重置本地状态 → 按新 resume 重新装配
+  function restartKernel(resumeId) {
+    stopAnim()
+    turnActive = false
+    pendingApproval = null
+    approvalSel = 0
+    messages = []
+    toolSeqMap.clear()
+    toolExpanded.clear()
+    scrollOffset = 0
+    turns = 0
+    for (const k of Object.keys(usageTotals)) usageTotals[k] = 0
+    if (resumeId) args.resume = resumeId
+    try { if (child) { child.removeAllListeners(); child.kill() } } catch {}
+    child = null
+    startKernel()
+  }
+  function startKernel() {
+    // --resume / 选择恢复：投影历史到对话区（messages 从 transcript 重建，
+    // 工具序号续接，避免新工具卡片从 1 重排与历史卡片撞号）
+    if (args.resume) {
+      try {
+        const file = join(resolveConfigDir(process.env), 'projects', sanitizeSegment(DIR), args.resume + '.jsonl')
+        const hist = readTranscriptHistory(file)
+        if (hist.msgs.length) {
+          messages.push(...hist.msgs)
+          toolSeq = hist.toolCount
+        }
+      } catch { /* 历史投影失败不阻塞启动 */ }
+    }
+    child = spawnKernel()
+    const childRl = createInterface({ input: child.stdout })
+    childRl.on('line', (line) => {
+      const t = line.trim()
+      if (!t) return
+      let ev
+      try { ev = JSON.parse(t) } catch { return }
+      handleEvent(ev)
+    })
+    child.stderr.on('data', (d) => {
+      stderrBuf += String(d)
+      const lines = stderrBuf.split('\n')
+      stderrBuf = lines.pop() // 末尾不完整行留到下一个 chunk
+      for (const ln of lines) {
+        const t = ln.trim()
+        if (!t) continue
+        if (isTui) { pushMessage({ kind: 'system', text: `[kernel] ${t}` }); scheduleRender() }
+        else console.error(`[kernel-stderr] ${t}`)
+      }
+    })
+    child.on('close', (code) => {
+      leaveTui(code ?? 0)
+    })
+    showBanner()
+    // 重放 spawn 前暂存的非 TTY 输入行（管道输入早于内核装配的场景）
+    for (const t of preSpawnLines.splice(0)) {
+      child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: t } }) + '\n')
+    }
+  }
+  // 启动入口：TTY 且非 mock 且有历史 → 弹选择器；否则直接启动
+  function boot() {
+    if (isTui && !args.mock && !args.resume) { pickerOpen(true); return }
+    startKernel()
+  }
   if (isTui) {
     enterTui()
     const keys = new KeyStream()
@@ -927,40 +1330,21 @@ function main() {
       for (const k of keys.push(buf)) handleKey(k)
     })
   } else {
-    // 非 TTY：读行转发为消息/命令
+    // 非 TTY：读行转发为消息/命令。child 尚未 spawn 时到达的行暂存，就绪后重放
+    // （管道输入可能早于内核子进程装配，直接丢弃会让首个输入静默消失）
     const plain = createInterface({ input: process.stdin })
     plain.on('line', (line) => {
       const t = line.trim()
       if (!t) return
       const cmdText = t.replace(/^\/yfw\s+/i, '/').replace(/^yfwturbo\s*/i, '').trim()
       if (cmdText.startsWith('/')) { runCommand(cmdText); return }
-      child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: t } }) + '\n')
+      if (child) child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: t } }) + '\n')
+      else preSpawnLines.push(t)
     })
+    // 管道 EOF → 关闭内核 stdin，内核 readline close → 优雅退出（防挂起）
+    plain.on('close', () => { try { child?.stdin.end() } catch {} })
   }
-  child = spawnKernel()
-  const childRl = createInterface({ input: child.stdout })
-  childRl.on('line', (line) => {
-    const t = line.trim()
-    if (!t) return
-    let ev
-    try { ev = JSON.parse(t) } catch { return }
-    handleEvent(ev)
-  })
-  child.stderr.on('data', (d) => {
-    stderrBuf += String(d)
-    const lines = stderrBuf.split('\n')
-    stderrBuf = lines.pop() // 末尾不完整行留到下一个 chunk
-    for (const ln of lines) {
-      const t = ln.trim()
-      if (!t) continue
-      if (isTui) { pushMessage({ kind: 'system', text: `[kernel] ${t}` }); scheduleRender() }
-      else console.error(`[kernel-stderr] ${t}`)
-    }
-  })
-  child.on('close', (code) => {
-    leaveTui(code ?? 0)
-  })
-  showBanner()
+  boot()
 }
 
 // 直接执行时跑主程序；被 import（测试）时不产生副作用

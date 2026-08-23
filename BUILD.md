@@ -73,9 +73,22 @@ set YFW_BRIDGE_PORT=51309
 - `YF/jiajia-pixel-pet/jiajia-pet.py` — `YFW_BRIDGE_PORT` env var，默认 51309
 - `start.bat` — 可以通过 `set YFW_BRIDGE_PORT=...` 覆盖
 
-## 版本号
+## 版本号（三条独立版本线）
 
-修改 `package.json` 的 `version` 字段后，`__APP_VERSION__` 会通过 Vite 构建时注入。所有发布目录（dist、release/YFWorking、release/installer）需要重新构建/同步。
+| 实体 | 常量 / 位置 | 当前值 | bump 命令 |
+|---|---|---|---|
+| YFWorking 应用（turbo 内核版） | `APP_VERSION`（version.mjs） | dev 3.0.0 | `npm run bump:app -- 3.0.1` |
+| YFW-Turbo 内核（yfwturbo） | `KERNEL_VERSION`（version.mjs + kernel/package.json） | dev 0.1 | `npm run bump:kernel -- 0.2` |
+| YFWorking GUI 发布线（旧内核稳定版） | 根 package.json `version` | 2.7.0 | 手改（electron-builder 打包名） |
+
+**升级版本号禁止手改 `version.mjs`**，一律走 `scripts/bump-version.mjs`（`npm run bump:app -- <版本>` / `npm run bump:kernel -- <版本>`，加 `--dry-run` 演练）。脚本自动同步：
+- `version.mjs` 对应常量（APP_VERSION / KERNEL_VERSION）
+- `server/version.test.mjs` 期望值断言
+- `kernel/package.json` semver（仅内核线：`dev X.Y` → `X.Y.0`）
+
+版本格式：`dev <major>.<minor>[.<patch>]`，发布稳定后去掉 `dev` 前缀。
+
+界面版本号 `__APP_VERSION__` 由 Vite 从 `version.mjs` 的 `APP_VERSION` 注入（`YFW_APP_VERSION` env 可临时覆盖），不再读 package.json。改动版本号后需重新构建并同步 dist；GUI 发布线改 package.json `version` 只影响 electron-builder 安装包命名。完整架构见 `docs/architecture.md`。
 
 ## 故障排查
 

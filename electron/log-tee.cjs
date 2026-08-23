@@ -1,5 +1,9 @@
-// 日志 tee：console.log/error 双写（原输出 + ~/.yfworking/logs/app.log，时间戳前缀）。
+// 日志 tee：console.log/error 双写（原输出 + app.log，时间戳前缀）。
 // 独立模块、不依赖 electron，保证 main.cjs 最早期即可引入。
+//
+// 日志目录默认随 YFW_HOME（dev 调试版 YFW_HOME=~/.yfworking-dev 时日志写
+// ~/.yfworking-dev/logs/app.log，与正式版 ~/.yfworking/logs 严格隔离；
+// 未设 YFW_HOME 时回退 ~/.yfworking/logs）。
 //
 // 注意（相对 brief 的偏差）：brief 原实现用 createWriteStream，但其打开文件是异步的，
 // 测试"双写"用例在 console.log 返回后同步 readFileSync 会读到 ENOENT（文件尚未创建）。
@@ -26,9 +30,16 @@ function createTee(writeFn) {
   }
 }
 
-function initLogTee({ logDir = join(os.homedir(), '.yfworking', 'logs') } = {}) {
+function initLogTee({ logDir = join(process.env.YFW_HOME || join(os.homedir(), '.yfworking'), 'logs') } = {}) {
   mkdirSync(logDir, { recursive: true })
   const logPath = join(logDir, 'app.log')
+
+  // 宿主（wscript Exec 启动 / 无头重定向）退出后 stdout/stderr 管道读端关闭，
+  // 后续 console 写管道会触发 EPIPE；日志已双写文件，管道侧错误一律忽略，
+  // 避免主进程因 EPIPE 崩溃（"双击无响应"场景下 electron 秒退的防御之一）。
+  for (const s of [process.stdout, process.stderr]) {
+    s?.on?.('error', () => {})
+  }
 
   const tee = createTee((line) => appendFileSync(logPath, line + '\n'))
 

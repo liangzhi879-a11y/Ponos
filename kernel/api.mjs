@@ -237,6 +237,25 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // 后台子 Agent 分发冒烟：[mock:agent-bg] 触发 run_in_background Agent tool_use
+  // （cancel 全杀 subagent 测试用：hardStop 后任务应被中止为 stopped）。子 prompt
+  // 带 [mock:sleep] → 子 lane 进入长 Bash 执行（持续运行态，等待被 kill）。
+  if (lastText.includes('[mock:agent-bg]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_mock_agent_bg', name: 'Agent', input: { subagent_type: 'general-purpose', prompt: '[mock:sleep] 后台测试子任务：持续运行', run_in_background: true } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // 长 Bash 工具轮：[mock:sleep] 触发 sleep 30（killActiveChildren 全杀测试用：
+  // cancel/hardStop 后子进程被杀，轮快速收敛而非等 30s）
+  if (lastText.includes('[mock:sleep]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_mock_sleep', name: 'Bash', input: { command: 'sleep 30' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // 普通回合：回显（带 turn 计数，历史恢复可断言）
   const text = `mock: ${String(lastText).slice(0, 120)} (turn=${realUser.length})`
   yield* streamText(text, signal)

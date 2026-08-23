@@ -29,6 +29,33 @@ test('appendUser/appendAssistant 落盘且 surface.nodes 单调', async () => {
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('旧格式 foreign：无 role 行跳过 + tool_use/tool_result 链剥离（G.content + API 400 双根因回归）', async () => {
+  const { dir, store } = freshStore()
+  try {
+    writeFileSync(store.file, [
+      // 无 message.role 的元行（旧 claude-code 格式 queue-operation）→ 跳过，不得产出 undefined（G.content 根因）
+      JSON.stringify({ type: 'queue-operation', id: 'q', timestamp: 't', message: {} }),
+      JSON.stringify({ type: 'user', id: 'u1', timestamp: 't', message: { role: 'user', content: '查资料' } }),
+      // assistant 混合消息：tool_use 剥离、text 保留
+      JSON.stringify({ type: 'assistant', id: 'a1', timestamp: 't', message: { role: 'assistant', content: [{ type: 'text', text: '好的' }, { type: 'tool_use', id: 'tu1', name: 'grep', input: {} }] } }),
+      // 纯 tool_result user 消息 → 整条丢弃（结果不紧跟 tool_use，API 400 根因）
+      JSON.stringify({ type: 'user', id: 'u2', timestamp: 't', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'x' }] } }),
+      JSON.stringify({ type: 'assistant', id: 'a2', timestamp: 't', message: { role: 'assistant', content: [{ type: 'text', text: '结果' }] } }),
+      '',
+    ].join('\n'))
+    const r = await store.load()
+    assert.equal(r.foreign, true)
+    const msgs = store.deriveMessages()
+    assert.ok(msgs.every((m) => m && typeof m.role === 'string'), '不得含 undefined 条目')
+    assert.equal(msgs.length, 3)
+    assert.equal(msgs[0].content, '查资料')
+    assert.deepEqual(msgs[1].content, [{ type: 'text', text: '好的' }])
+    assert.deepEqual(msgs[2].content, [{ type: 'text', text: '结果' }])
+    const allBlocks = msgs.flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+    assert.ok(!allBlocks.some((b) => b.type === 'tool_use' || b.type === 'tool_result'), 'tool 块全部剥离')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('旧 transcript 无 seq → 加载按顺序补齐', async () => {
   const { dir, store } = freshStore()
   try {

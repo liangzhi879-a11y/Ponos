@@ -1,6 +1,6 @@
 'use strict'
 const { existsSync, readFileSync, accessSync, mkdirSync, writeFileSync, rmSync } = require('fs')
-const { join } = require('path')
+const { join, resolve } = require('path')
 const os = require('os')
 const http = require('http')
 const { spawn, spawnSync } = require('child_process')
@@ -35,7 +35,8 @@ const CHECKS = [
   { id: 'render-health', group: 'render', label: 'diagnostic.check.renderHealth' },
 ]
 
-const YFW_HOME = join(os.homedir(), '.yfworking')
+// dev 调试版经 YFW_HOME env 指向独立目录（与 main.cjs yfwHome() 同口径）
+const YFW_HOME = process.env.YFW_HOME ? resolve(process.env.YFW_HOME) : join(os.homedir(), '.yfworking')
 
 function timeout(p, ms, tag) {
   return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(tag + ' timeout')), ms))])

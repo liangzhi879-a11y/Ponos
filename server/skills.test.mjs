@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 import { createInterface } from 'node:readline'
-import { discoverSkills, parseFrontmatter, verifySkillVersions } from '../kernel/skills.mjs'
+import { discoverSkills, discoverSkillsAll, loadSkillContent, parseFrontmatter, verifySkillVersions } from '../kernel/skills.mjs'
 
 const tmp = mkdtempSync(join(tmpdir(), 'yfw-skills-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
@@ -136,4 +136,30 @@ test('集成：spawn 内核 + 技能目录 → init 事件带 skills 数量与 p
   } finally {
     try { child.stdin.end() } catch {}
   }
+})
+
+test('loadSkillContent：跨 root 加载 SKILL.md 目录格式与 legacy 平铺格式，未命中返回 null', () => {
+  const r1 = join(tmp, 'lc-root1')
+  const r2 = join(tmp, 'lc-root2')
+  mkdirSync(join(r1, 'dirskill'), { recursive: true })
+  mkdirSync(r2, { recursive: true })
+  writeFileSync(join(r1, 'dirskill', 'SKILL.md'), '---\ndescription: dir\n---\n目录格式技能正文', 'utf-8')
+  writeFileSync(join(r2, 'flatskill.md'), '---\ndescription: flat\n---\n平铺格式技能正文', 'utf-8')
+  assert.equal(loadSkillContent({ roots: [r1, r2], id: 'dirskill' }), '---\ndescription: dir\n---\n目录格式技能正文')
+  assert.equal(loadSkillContent({ roots: [r1, r2], id: 'flatskill' }), '---\ndescription: flat\n---\n平铺格式技能正文')
+  assert.equal(loadSkillContent({ roots: [r1, r2], id: 'missing' }), null)
+  assert.equal(loadSkillContent({ roots: [r1, r2], id: '' }), null)
+})
+
+test('discoverSkillsAll：跨 root 去重发现，重复 id 只保留首个', () => {
+  const r1 = join(tmp, 'all-root1')
+  const r2 = join(tmp, 'all-root2')
+  mkdirSync(join(r1, 'dup'), { recursive: true })
+  mkdirSync(join(r2, 'dup'), { recursive: true })
+  writeFileSync(join(r1, 'dup', 'SKILL.md'), '---\nname: DupOne\n---\nbody1', 'utf-8')
+  writeFileSync(join(r2, 'dup', 'SKILL.md'), '---\nname: DupTwo\n---\nbody2', 'utf-8')
+  writeFileSync(join(r2, 'only2.md'), '---\nname: OnlyTwo\n---\nbody3', 'utf-8')
+  const all = discoverSkillsAll({ roots: [r1, r2] })
+  assert.deepEqual(all.map((s) => s.id), ['dup', 'only2'])
+  assert.equal(all[0].name, 'DupOne') // 首个 root 的重复 id 胜出
 })

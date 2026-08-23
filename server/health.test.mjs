@@ -7,7 +7,7 @@ test('档位边界：40/70 分界；压缩次数驱动', () => {
   const g = computeHealthScore({ ...base, compactCount: 0, model: 'deepseek-v4-flash' })
   assert.equal(g.tier, 'green')
   const y = computeHealthScore({ ...base, compactCount: 1, model: 'deepseek-v4-flash' }) // 70×1/3=23 → max(40,23)=40
-  assert.equal(y.tier, 'yellow')
+  assert.equal(y.tier, 'amber')
   const r = computeHealthScore({ ...base, compactCount: 3, model: 'deepseek-v4-flash' }) // 70×3/3=70
   assert.equal(r.tier, 'red')
   assert.equal(r.suggestNewSession, true)
@@ -18,7 +18,7 @@ test('模型自适应：flash 3 次压缩=红；pro[1m] 3 次=黄（cap 6）', (
   const f = computeHealthScore({ ...base, compactCount: 3, model: 'deepseek-v4-flash' })
   const p = computeHealthScore({ ...base, compactCount: 3, model: 'deepseek-v4-pro' })
   assert.equal(f.tier, 'red')
-  assert.equal(p.tier, 'yellow')
+  assert.equal(p.tier, 'amber')
   assert.equal(modelCap('deepseek-v4-pro'), 6)
   assert.equal(modelCap('deepseek-v4-flash'), 3)
 })
@@ -52,7 +52,9 @@ test('createHealth：非 green 档位去抖只发一次 yfw_health；recordCompa
     health: (d) => events.push({ type: 'yfw_health', ...d }),
     summary: (t, c) => events.push({ type: 'yfw_summary', text: t, compactCount: c }),
   }
-  const h = createHealth({ wire, model: 'deepseek-v4-flash', contextWindow: 200_000 })
+  // env: {} 隔离：YFW_HEALTH_COMPACT_COUNT 种子读 process.env，外部环境变量
+  // 泄漏会导致初始 compactCount≠0 → 首轮即黄档误发 yfw_health（测试必须 hermetic）
+  const h = createHealth({ wire, model: 'deepseek-v4-flash', contextWindow: 200_000, env: {} })
   h.record({ usage: {}, durationMs: 5, model: 'deepseek-v4-flash', ts: 't', compactCount: 0 })
   assert.equal(events.filter((e) => e.type === 'yfw_health').length, 0) // green 不发
   h.recordCompaction('摘要A', 1)

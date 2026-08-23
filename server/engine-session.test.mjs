@@ -13,7 +13,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createEngine } from '../kernel/engine.mjs'
+import { createEngine, patchOrphanToolUses } from '../kernel/engine.mjs'
 import { createSessionStore } from '../kernel/session.mjs'
 import { aggregateStats } from './transcript.mjs'
 
@@ -136,6 +136,20 @@ test('多工具轮：同一 assistant 的多个 tool_use 的 tool_result 合并�
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('P1-8 防御：patchOrphanToolUses 遇 undefined/null 条目不抛，孤儿 tool_use 补合成 tool_result（旧格式恢复回归）', () => {
+  const out = patchOrphanToolUses([
+    undefined,
+    { role: 'user', content: '历史' },
+    null,
+    { role: 'assistant', content: [{ type: 'text', text: 'x' }, { type: 'tool_use', id: 't1', name: 'grep', input: {} }] },
+  ])
+  const last = out[out.length - 1]
+  assert.equal(last.role, 'user')
+  assert.equal(last.content[0].type, 'tool_result')
+  assert.equal(last.content[0].tool_use_id, 't1')
+  assert.equal(last.content[0].is_error, true)
+})
+
 test('turnStats 记录器：每轮一条，含 usage/durationMs/model/ts', async () => {
   const { dir, session } = setup()
   try {
@@ -156,6 +170,76 @@ test('turnStats 记录器：每轮一条，含 usage/durationMs/model/ts', async
     assert.ok(stats[0].usage.output_tokens >= 0)
     assert.ok(Number.isFinite(stats[0].durationMs))
     assert.ok(stats[0].ts)
+    delete process.env.YFW_MOCK_API
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// —— 取消即时性：审批挂起时 abort/hardStop 必须解除 waiter，runTurn 不得卡死 ——
+async function waitForCond(fn, timeoutMs = 3000) {
+  const t0 = Date.now()
+  while (Date.now() - t0 < timeoutMs) {
+    if (fn()) return
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  throw new Error('waitForCond timeout')
+}
+function withTimeout(p, ms, label) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`timeout: ${label}`)), ms)
+    p.then((v) => { clearTimeout(t); resolve(v) }, (e) => { clearTimeout(t); reject(e) })
+  })
+}
+
+test('取消即时性：审批挂起中 hardStop → waiter 解除，runTurn 以 AbortError 结束不卡死', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'engine-cancel-approval-'))
+  const events = []
+  let engine
+  const wire = {
+    assistant: (blocks) => events.push({ type: 'assistant', blocks }),
+    result: (usage, extra) => events.push({ type: 'result', usage, extra }),
+    // 不回执：审批保持挂起（模拟用户未决策即点取消）
+    controlRequest: (req) => events.push({ type: 'control_request', req }),
+    system: () => {},
+    summary: () => {},
+    health: () => {},
+  }
+  try {
+    process.env.YFW_MOCK_API = '1'
+    const session = createSessionStore({ configDir: dir, cwd: 'proj', sessionId: 'cancel-approval' })
+    engine = createEngine({ opts: { model: 'm', addDirs: [dir], skipPermissions: false }, wire, session })
+    // [mock:tool] → 高危 Bash(rm -rf) → can_use_tool 挂起（wire 不回执）
+    const turnPromise = engine.runTurn({ content: '[mock:tool]' })
+    await waitForCond(() => events.some((e) => e.type === 'control_request'))
+    engine.hardStop()
+    let aborted = false
+    try { await withTimeout(turnPromise, 3000, 'runTurn 未返回：审批挂起未被取消解除') } catch (e) { aborted = e?.name === 'AbortError' }
+    assert.ok(aborted, 'hardStop 后 runTurn 应立即以 AbortError 结束（非超时）')
+    delete process.env.YFW_MOCK_API
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('取消即时性：审批挂起中 abort（插话打断路径）同样解除 waiter', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'engine-cancel-abort-'))
+  const events = []
+  let engine
+  const wire = {
+    assistant: (blocks) => events.push({ type: 'assistant', blocks }),
+    result: (usage, extra) => events.push({ type: 'result', usage, extra }),
+    controlRequest: (req) => events.push({ type: 'control_request', req }),
+    system: () => {},
+    summary: () => {},
+    health: () => {},
+  }
+  try {
+    process.env.YFW_MOCK_API = '1'
+    const session = createSessionStore({ configDir: dir, cwd: 'proj', sessionId: 'cancel-abort' })
+    engine = createEngine({ opts: { model: 'm', addDirs: [dir], skipPermissions: false }, wire, session })
+    const turnPromise = engine.runTurn({ content: '[mock:tool]' })
+    await waitForCond(() => events.some((e) => e.type === 'control_request'))
+    engine.abort()
+    let aborted = false
+    try { await withTimeout(turnPromise, 3000, 'runTurn 未返回：abort 未解除审批挂起') } catch (e) { aborted = e?.name === 'AbortError' }
+    assert.ok(aborted, 'abort 后 runTurn 应立即以 AbortError 结束（非超时）')
     delete process.env.YFW_MOCK_API
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

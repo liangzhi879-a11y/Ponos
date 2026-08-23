@@ -90,6 +90,12 @@ interface UIState {
   // 定时任务引导：新建"定时任务"会话后，目标会话的 ChatInput 自动弹出引导面板
   scheduleGuideFor: string | null
   setScheduleGuideFor: (id: string | null) => void
+
+  // 内核失速告警（bridge kernel-stall 事件；运行时瞬态不持久化）：
+  // sessionId → 已静默毫秒数。有输出（assistant/result）时由 hook 自动清除。
+  kernelStalls: Record<string, number>
+  setKernelStall: (sessionId: string, silentMs: number) => void
+  clearKernelStall: (sessionId: string) => void
 }
 
 export const useUIStore = create<UIState>()(
@@ -116,6 +122,7 @@ export const useUIStore = create<UIState>()(
       pendingInput: '',
       pendingAutoSend: false,
       scheduleGuideFor: null,
+      kernelStalls: {},
 
       toggleSidebar: () => set(s => ({ sidebarOpen: !s.sidebarOpen })),
       toggleEditor: () => set(s => ({ editorOpen: !s.editorOpen })),
@@ -198,6 +205,13 @@ export const useUIStore = create<UIState>()(
       clearPendingAttachments: () => set({ pendingAttachments: [] }),
       setPendingInput: (text, autoSend) => set({ pendingInput: text, pendingAutoSend: !!autoSend }),
       setScheduleGuideFor: (id) => set({ scheduleGuideFor: id }),
+      setKernelStall: (sessionId, silentMs) => set(s => ({ kernelStalls: { ...s.kernelStalls, [sessionId]: silentMs } })),
+      clearKernelStall: (sessionId) => set(s => {
+        if (!(sessionId in s.kernelStalls)) return s
+        const kernelStalls = { ...s.kernelStalls }
+        delete kernelStalls[sessionId]
+        return { kernelStalls }
+      }),
       pinnedSkills: [],
       togglePinSkill: (id) => {
         const cur = get().pinnedSkills

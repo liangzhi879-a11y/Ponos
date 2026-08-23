@@ -28,6 +28,7 @@ before(async () => {
   process.env.YFWORKING_BUN = process.execPath
   process.env.YFW_KERNEL_IDLE_MS = '0'    // 关闭空闲回收（测试不依赖 60s 定时器）
   process.env.YFW_KERNEL_STALL_MS = '0'   // 关闭 stall 告警
+  process.env.YFW_MAX_CONCURRENT_SESSIONS = '20' // 用例逐会话递增，放宽并发上限防触顶
   // 每个 mock 进程独立日志：不设 MOCK_LOG，由测试在 spawn 前注入 —— 但 bridge
   // spawn 的 env 继承测试进程 env，MOCK_LOG 在测试内按会话名指向统一文件。
   process.env.MOCK_LOG = join(home, 'mock.log.jsonl')
@@ -139,6 +140,21 @@ function logRecords() {
     .filter(Boolean)
 }
 
+// 等待第 n 条（count 起始 1）指定 t 类型的记录出现——避免 waitLogFile 从头
+// 扫描重复命中历史记录。mock 日志按 spawn 顺序追加，env 记录计数即会话序号。
+function waitLogFileCount(type, count, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  return new Promise((resolve, reject) => {
+    const poll = () => {
+      if (Date.now() > deadline) return reject(new Error(`waitLogFileCount timeout: ${type}#${count}`))
+      const recs = logRecords().filter((r) => r.t === type)
+      if (recs.length >= count) return resolve(recs[count - 1])
+      setTimeout(poll, 30)
+    }
+    poll()
+  })
+}
+
 // --- 测试 -------------------------------------------------------------------
 
 test('spawn 契约：argv/env 与 prompt 文件注入（§2）', async () => {
@@ -180,6 +196,50 @@ test('spawn 契约：argv/env 与 prompt 文件注入（§2）', async () => {
 
   // 收尾：等本轮结果，避免 session 挂起影响后续用例
   await collect(ws, (m) => m.type === 'event' && m.sessionId === SID && m.data.type === 'result')
+})
+
+test('allowOutsideDirs：config 开启后 spawn env 注入 YFW_ALLOW_OUTSIDE_DIRS=1（默认不注入）', async () => {
+  const ws = await connect()
+  const cwd = home
+  // 默认（config 未开启）：新会话 env 不应含 YFW_ALLOW_OUTSIDE_DIRS
+  const envBefore1 = logRecords().filter((r) => r.t === 'env').length
+  send(ws, { type: 'send', sessionId: 's-outside', cwd, prompt: 'hello outside', requestId: 'ro1' })
+  await collect(ws, (m) => m.type === 'ack' && m.data.sessionId === 's-outside')
+  const envRec1 = await waitLogFileCount('env', envBefore1 + 1)
+  assert.ok(envRec1.env.YFW_ALLOW_OUTSIDE_DIRS === undefined, '默认不应注入 YFW_ALLOW_OUTSIDE_DIRS')
+  await collect(ws, (m) => m.type === 'event' && m.sessionId === 's-outside' && m.data.type === 'result')
+
+  // 开启 allowOutsideDirs（POST /config 透传保存）→ 新会话 spawn env 注入
+  const saveRes = await fetch(`http://127.0.0.1:${port}/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ allowOutsideDirs: true }),
+  })
+  assert.equal(saveRes.ok, true)
+  const envBefore2 = logRecords().filter((r) => r.t === 'env').length
+  send(ws, { type: 'send', sessionId: 's-outside2', cwd, prompt: 'hello outside2', requestId: 'ro2' })
+  await collect(ws, (m) => m.type === 'ack' && m.data.sessionId === 's-outside2')
+  const envRec2 = await waitLogFileCount('env', envBefore2 + 1)
+  assert.equal(envRec2.env.YFW_ALLOW_OUTSIDE_DIRS, '1')
+  await collect(ws, (m) => m.type === 'event' && m.sessionId === 's-outside2' && m.data.type === 'result')
+
+  // 恢复默认（避免污染后续用例）
+  await fetch(`http://127.0.0.1:${port}/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ allowOutsideDirs: false }),
+  })
+  // 释放两个会话（kill 进程 → close 事件 → sessions.delete），避免触达并发上限。
+  // close 事件异步触发，等待 sessions 真正移除再返回。
+  for (const sid of ['s-outside', 's-outside2']) {
+    const s = bridge.sessions.get(sid)
+    if (s?.proc && !s.proc.killed) { try { s.proc.kill() } catch {} }
+  }
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline) {
+    if (!bridge.sessions.has('s-outside') && !bridge.sessions.has('s-outside2')) break
+    await new Promise((r) => setTimeout(r, 30))
+  }
 })
 
 test('plain 轮次：send → ack → event(assistant) → event(result)', async () => {

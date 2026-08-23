@@ -54,6 +54,22 @@ test('estimateRequest 四区记账：system/task/tool_result/history', () => {
   assert.equal(ledger.toolResultShare(), 0.2)
 })
 
+test('防御：estimateRequest 遇 undefined/null 消息条目不抛（旧格式恢复回归）', () => {
+  const r = estimateRequest({
+    system: 'sys',
+    messages: [
+      undefined,
+      { role: 'user', content: '历史' },
+      null,
+      { role: 'assistant', content: [{ type: 'text', text: 'x' }] },
+      { role: 'user', content: '本轮' },
+    ],
+  })
+  assert.ok(r.sections.task > 0)
+  assert.ok(r.sections.history > 0)
+  assert.ok(r.total > 0)
+})
+
 test('usage 锚点：同 headKey 用基线+尾部增量，异 headKey 全量', () => {
   const anchor = makeUsageAnchor()
   const history = [{ role: 'user', content: 'a'.repeat(400) }]

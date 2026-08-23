@@ -7,11 +7,12 @@
 import { execSync } from 'child_process'
 import { existsSync, mkdirSync, rmSync, cpSync, copyFileSync, statSync, readdirSync } from 'fs'
 import { join } from 'path'
+import { homedir } from 'os'
 
 const ROOT = join(import.meta.dirname, '..')
 const RELEASE = join(ROOT, 'release')
 const RUNTIME = join(ROOT, 'runtime', 'python')
-const SKILLS_SRC = 'C:\\Users\\T203-15\\.yfworking\\skills'
+const SKILLS_SRC = join(homedir(), '.yfworking', 'skills')
 const SKILLS_DEST = join(ROOT, 'runtime', 'skills')
 
 console.log('============================================')

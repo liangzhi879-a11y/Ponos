@@ -251,6 +251,8 @@ const DEFAULT_CONFIG = {
   autoCapture: true,
   autoImageBridge: true,
   visionProviderId: '',
+  // 会话目录外文件访问：默认关闭（保持边界限制），仅显式开启才解锁
+  allowOutsideDirs: false,
   providers: DEFAULT_PROVIDERS,
 }
 
@@ -479,7 +481,10 @@ function syncKernelSettings() {
       YFW_VISION_AUTH_TOKEN: visionProvider.authToken || '',
       YFW_VISION_MODEL: visionProvider.visionModel || '',
       YFW_AUTO_IMAGE_BRIDGE: cfg.autoImageBridge === false ? '0' : '1',
+      // 会话目录外文件访问开关：开启时注入，关闭时删除（保持默认限制）
+      YFW_ALLOW_OUTSIDE_DIRS: cfg.allowOutsideDirs === true ? '1' : '',
     }
+    if (existing.env.YFW_ALLOW_OUTSIDE_DIRS === '') delete existing.env.YFW_ALLOW_OUTSIDE_DIRS
     safeWriteJsonWithBak(YFW_SETTINGS_PATH, JSON.stringify(existing, null, 2))
     console.log('[bridge] kernel settings synced ->', provider.id, '| model:', model)
   } catch (e) {
@@ -716,6 +721,10 @@ function buildChildEnv() {
   } else if (provider) {
     console.warn('[bridge] provider', provider.id, 'missing apiBaseUrl or authToken — using CLI defaults')
   }
+  // 会话目录外文件访问开关：cfg.allowOutsideDirs=true 时注入 YFW_ALLOW_OUTSIDE_DIRS=1，
+  // 内核解锁 Read/Write/Edit/OCR 的目录边界；默认不注入（保持限制）。
+  // 与 provider 无关，置于条件块外（无 provider 配置时同样生效）。
+  if (cfg.allowOutsideDirs === true) env.YFW_ALLOW_OUTSIDE_DIRS = '1'
   // 注：OpenAI 兼容协议注入已删除（2026-08-20 实测 deepseek OpenAI 端点带 tools 时
   // 高概率 thinking-only 空回复，YFW 统一走 Anthropic 兼容端点）。
   // 内核枚举 $YFW_HOME/agents/*.md 依赖 ripgrep（vendor/ripgrep/*/rg.exe）。

@@ -20,6 +20,10 @@ electronDist: node_modules/electron/dist
 
 files:
   - dist/**/*
+  # YFW-turbo kernel single-file bundle (scripts/build-kernel.mjs → kernel-dist/).
+  # Lives outside dist/ because vite build's emptyOutDir:true wipes dist/.
+  # Bridge resolves it at <app>/kernel-dist/cli.mjs and bootstraps to user dir.
+  - kernel-dist/**/*
   - electron/**/*
   - server/**/*
   - public/**/*
@@ -68,24 +72,15 @@ extraResources:
     filter:
       - "**/*"
   # Pixel pet assets + driver (used by YF/jiajia-pixel-pet)
-  - from: YF/jiajia-pixel-pet/jiajia-pet.py
+  - from: pet/jiajia-pet.py
     to: pet/jiajia-pet.py
-  - from: YF/jiajia-pixel-pet/accessories_lib.py
+  - from: pet/accessories_lib.py
     to: pet/accessories_lib.py
-  - from: YF/jiajia-pixel-pet/assets
+  - from: pet/assets
     to: pet/assets
-  # YFWorking kernel — the bun-bundled ESM CLI built from yfw-kernel/claude-code.
-  # Spawned by server/bridge.mjs via the bundled bun runtime below. The bridge
-  # resolves it at <app>/kernel/cli.mjs + <app>/runtime/bun/bun.exe.
-  - from: yfw-kernel/claude-code/dist
-    to: kernel
-    filter:
-      - "cli.mjs"
-      # Vendored ripgrep — kernel Grep/Glob tools resolve <app>/kernel/vendor/
-      # ripgrep/<arch>-win32/rg.exe in builtin mode (see src/utils/ripgrep.ts).
-      - "vendor/**"
-  # Bun runtime used to execute the YFW kernel (the kernel is a bun-targeted
-  # ESM bundle and cannot run under plain Node).
+  # Bun runtime used to execute the YFW kernel (node-targeted ESM bundle — bun
+  # is a drop-in Node runtime). Bridge spawns: <bun> <kernel> then bootstraps
+  # both to ~/.yfworking/runtime/.
   - from: runtime/bun
     to: runtime/bun
     filter:

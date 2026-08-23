@@ -32,11 +32,11 @@ export function computeHealthScore({
   score += Math.min(3, failures) * 10
   if (redundancyRatio > 0.5) score += 10
   if (toolResultShare > 0.5) score += 10
-  const tier = score >= 70 || forceRed ? 'red' : score >= 40 ? 'yellow' : 'green'
+  const tier = score >= 70 || forceRed ? 'red' : score >= 40 ? 'amber' : 'green'
   const reason =
     tier === 'red'
       ? `已连续压缩 ${compactCount} 次，剩余约 ${remainingTurns} 轮，建议开启新会话`
-      : tier === 'yellow'
+      : tier === 'amber'
         ? `上下文接近压力区（压缩 ${compactCount} 次，剩余 ${Math.round(remainingPct)}% 水位）`
         : '上下文健康'
   return { score, tier, compactCount, remainingPct: Math.round(remainingPct), remainingTurns, suggestNewSession: tier === 'red', reason }
@@ -49,7 +49,10 @@ export function shouldJudge({ tier, judgeEnabled = false, lastJudgeAt = 0, now =
 }
 
 export function createHealth({ wire, model = '', contextWindow = 200_000, env = process.env }) {
-  let compactCount = 0
+  // YFW_HEALTH_COMPACT_COUNT：bridge 空闲回收后 resume 时注入历史压缩次数
+  // （进程内变量随回收清零，不恢复则 GUI 血条压缩史丢失回绿）。session 从
+  // transcript 恢复的 compactCount 走 record() 取 max 兜底，env 为双保险 seed。
+  let compactCount = Math.max(0, Number(env.YFW_HEALTH_COMPACT_COUNT) || 0)
   let lastSummary = ''
   // 初始即绿：green 档不发 yfw_health（首轮即绿不打扰；档位转黄/红时才通知）
   let lastTier = 'green'
