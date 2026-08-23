@@ -418,3 +418,37 @@ test('搜索剪枝：node_modules/release/vendors/workspace 默认跳过，显�
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('Glob/Grep：brace 扩展 {a,b,c} 与相对路径前缀自动对齐绝对路径', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yfw-brace-'))
+  try {
+    mkdirSync(join(dir, 'src'), { recursive: true })
+    mkdirSync(join(dir, 'src', 'sub'), { recursive: true })
+    writeFileSync(join(dir, 'src', 'a.ts'), 'const markerA = 1')
+    writeFileSync(join(dir, 'src', 'b.tsx'), 'const markerB = 1')
+    writeFileSync(join(dir, 'src', 'sub', 'c.ts'), 'const markerC = 1')
+    const reg = createToolRegistry({ cwd: dir, addDirs: [dir], skipPermissions: true })
+
+    // brace 扩展：{ts,tsx} 同时命中 .ts 与 .tsx（修复前按字面匹配永远无结果）
+    const g1 = await reg.run({ name: 'Glob', input: { pattern: '**/*.{ts,tsx}' } })
+    const g1c = String(g1.content)
+    assert.ok(g1c.includes('a.ts') && g1c.includes('b.tsx') && g1c.includes('c.ts'), 'brace {ts,tsx} 应命中全部 ts/tsx')
+
+    // 相对路径前缀：'src/**/*.ts' 能命中绝对路径下的 src（修复前锚在开头对不上）
+    const g2 = await reg.run({ name: 'Glob', input: { pattern: 'src/**/*.ts' } })
+    const g2c = String(g2.content)
+    assert.ok(g2c.includes('a.ts') && g2c.includes('c.ts'), "相对前缀 'src/**' 应命中 src 下 ts")
+    assert.ok(!g2c.includes('b.tsx'), "'src/**/*.ts' 不应命中 tsx")
+
+    // Grep 的 glob 参数同样支持 brace 与相对前缀
+    const gr = await reg.run({ name: 'Grep', input: { pattern: 'marker[A-C]', glob: 'src/**/*.{ts,tsx}' } })
+    const grc = String(gr.content)
+    assert.ok(grc.includes('a.ts') && grc.includes('b.tsx') && grc.includes('c.ts'), 'Grep glob brace+相对前缀应命中')
+
+    // 简单文件名 pattern（无目录段）也可命中任意层
+    const g3 = await reg.run({ name: 'Glob', input: { pattern: 'c.ts' } })
+    assert.ok(String(g3.content).includes('c.ts'), "纯文件名 'c.ts' 应命中深层文件")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
