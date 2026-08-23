@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-REPO_URL="${PONOS_REPO:-https://github.com/USERNAME/ponos.git}"
+REPO_URL="${PONOS_REPO:-https://github.com/liangzhi879-a11y/Ponos.git}"
 TARGET="${PONOS_DIR:-$HOME/ponos}"
 
 echo "==> Ponos-turbo 内核一键部署"

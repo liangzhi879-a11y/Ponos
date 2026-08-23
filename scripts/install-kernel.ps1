@@ -11,7 +11,7 @@ rem ============================================================================
 
 $ErrorActionPreference = "Stop"
 
-$repoUrl = if ($env:PONOS_REPO) { $env:PONOS_REPO } else { "https://github.com/USERNAME/ponos.git" }
+$repoUrl = if ($env:PONOS_REPO) { $env:PONOS_REPO } else { "https://github.com/liangzhi879-a11y/Ponos.git" }
 $target  = if ($env:PONOS_DIR)  { $env:PONOS_DIR }  else { Join-Path $HOME "ponos" }
 
 Write-Host "==> Ponos-turbo 内核一键部署"

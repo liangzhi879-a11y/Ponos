@@ -13,13 +13,13 @@
 ### Linux / macOS / WSL
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/USERNAME/ponos/main/scripts/install-kernel.sh | bash
+curl -fsSL https://raw.githubusercontent.com/liangzhi879-a11y/Ponos/main/scripts/install-kernel.sh | bash
 ```
 
 ### Windows（PowerShell）
 
 ```powershell
-irm https://raw.githubusercontent.com/USERNAME/ponos/main/scripts/install-kernel.ps1 | iex
+irm https://raw.githubusercontent.com/liangzhi879-a11y/Ponos/main/scripts/install-kernel.ps1 | iex
 ```
 
 脚本自动完成：node 检查 → clone → 生成 `.env` → 冒烟验证 → 提示启动。
@@ -27,7 +27,7 @@ irm https://raw.githubusercontent.com/USERNAME/ponos/main/scripts/install-kernel
 ### 手动部署（等价一行）
 
 ```bash
-git clone https://github.com/USERNAME/ponos.git && cd ponos/kernel && cp .env.example .env && node cli.mjs
+git clone https://github.com/liangzhi879-a11y/Ponos.git && cd ponos/kernel && cp .env.example .env && node cli.mjs
 ```
 
 > 首次使用先编辑 `kernel/.env` 填入 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL`（Anthropic 兼容端点）。
