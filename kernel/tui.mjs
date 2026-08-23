@@ -37,7 +37,7 @@ import { sanitizeSegment } from './session.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const KERNEL_DIR = fileURLToPath(new URL('.', import.meta.url))
-const DEFAULT_BANNER = join(KERNEL_DIR, 'ascii-art-1787378784252.txt')
+const DEFAULT_BANNER = join(KERNEL_DIR, 'ascii-art-ponos.txt')
 
 // ---------- Provider/模型列表（P4-1 providers.json 快照，与 bridge 同一来源） ----------
 // ~/.ponos/providers.json：{ activeProvider, providers: [{ id, apiBaseUrl, authToken,

@@ -51,10 +51,7 @@ export function CommandPalette() {
         case 'toggle-sidebar': toggleSidebar(); break
         case 'open-settings': openSettings(); break
         case 'toggle-theme': {
-          const order: Array<'yuanfang' | 'yuanfang-light' | 'dark' | 'light'> = ['yuanfang', 'yuanfang-light', 'dark', 'light']
-          const idx = order.indexOf(settings.theme as any)
-          const next = order[(idx + 1) % order.length]
-          updateSettings({ theme: next })
+          // 单主题（shadow）：无需切换
           break
         }
         case 'shortcuts': openShortcutsHelp(); break

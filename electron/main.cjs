@@ -175,7 +175,9 @@ let petConfig = { enabled: false, size: 50, randomChat: true, pet: 'jiajia' }
 let petIntentKill = null     // 主动 kill 的宠物进程（区分“用户右键退出”导致的意外退出）
 let petRestartTimer = null   // 宠物配置变更重启的防抖定时器
 const ICON_PATH = path.join(__dirname, '..', 'public', 'icon.png')
-const BRIDGE_PORT = parseInt(process.env.PONOS_BRIDGE_PORT || '51309', 10)
+// dev 版（PONOS_HOME 注入）默认 51310（与 dev dist 编译端口一致、与 YFWorking 的 51309 错开）；
+// 正式版默认 51311（与 YFWorking 51309 彻底隔离，避免端口互踩）。
+const BRIDGE_PORT = parseInt(process.env.PONOS_BRIDGE_PORT || (process.env.PONOS_HOME ? '51310' : '51311'), 10)
 const BRIDGE_READY_URL = `http://localhost:${BRIDGE_PORT}/health`
 
 // ---------------------------------------------------------------------------
@@ -1379,13 +1381,12 @@ function ensurePonosHome() {
 // shortcut multiple times.  Only the first instance is allowed to run;
 // subsequent ones focus the existing window instead.
 // ---------------------------------------------------------------------------
-// dev 隔离（PONOS_HOME 注入时）：使用独立 userData，避免与正式版/旧调试版共享
-// Electron 单实例锁与缓存——否则正式版运行中时，dev 版因 !gotTheLock 静默退出
-// （表现为"桌面快捷方式点了没反应"）。setPath 必须在 requestSingleInstanceLock
-// 之前调用（锁基于 userData 判定），且均在 app ready 前。
-if (process.env.PONOS_HOME) {
-  app.setPath('userData', path.join(ponosHome(), 'userData'))
-}
+// userData 统一指向 ponosHome()/userData（正式版 ~/.ponos、dev 版 ~/.ponos-dev）：
+// 1. 与旧版 YFWorking（AppData/Roaming/yfworking-gui）彻底解耦，互不污染；
+// 2. 单实例锁基于 userData 判定，两版各自独立锁，可同时运行；
+// 3. 缓存/localStorage 全在各自 home 内，备份迁移只需拷贝一个目录。
+// setPath 必须在 requestSingleInstanceLock 之前调用（锁基于 userData 判定），且均在 app ready 前。
+app.setPath('userData', path.join(ponosHome(), 'userData'))
 
 const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
@@ -1510,7 +1511,7 @@ if (!gotTheLock) {
           `  • 端口被 Windows WinNAT 或其他程序占用\n` +
           `  • 防火墙/安全软件阻止了网络访问\n\n` +
           `解决方法:\n` +
-          `  1. 设置环境变量 PONOS_BRIDGE_PORT 为其他端口 (如 51309)\n` +
+          `  1. 设置环境变量 PONOS_BRIDGE_PORT 为其他端口 (如 51311)\n` +
           `  2. 以管理员身份运行: netsh int ipv4 add excludedportrange protocol=tcp startport=${BRIDGE_PORT} numberofports=1\n` +
           `  3. 重启 Windows 后 WinNAT 端口排除范围通常会重新分配`,
         )

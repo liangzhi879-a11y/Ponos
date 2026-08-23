@@ -22,7 +22,8 @@ import { costOf, withBudget } from '../kernel/cost.mjs'
 import { getOpsHealth } from '../kernel/health.mjs'
 import { redactText } from '../kernel/redact.mjs'
 
-const PORT = parseInt(process.env.PONOS_BRIDGE_PORT || '51309', 10)
+// dev 版（PONOS_HOME 注入）默认 51310；正式版默认 51311（与 YFWorking 的 51309 错开）
+const PORT = parseInt(process.env.PONOS_BRIDGE_PORT || (process.env.PONOS_HOME ? '51310' : '51311'), 10)
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 /** 读取并 JSON.parse 请求体（各 POST 路由共用）。 */

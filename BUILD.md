@@ -52,25 +52,25 @@ npm run build:electron
 
 ## 端口配置
 
-桥接服务器默认监听 **51309**（由 `PONOS_BRIDGE_PORT` 环境变量控制）。
+桥接服务器默认监听 **51311**（由 `PONOS_BRIDGE_PORT` 环境变量控制）。
 
-**为什么不是 3099？** Windows WinNAT（Hyper-V/WSL/Docker）会预留 3095-3194 端口段，导致 3099 被封锁（`EACCES`）。51309 远高于动态端口范围（1024-15001）和常见 WinNAT 预留段。
+**为什么不是 3099？** Windows WinNAT（Hyper-V/WSL/Docker）会预留 3095-3194 端口段，导致 3099 被封锁（`EACCES`）。51311 远高于动态端口范围（1024-15001）和常见 WinNAT 预留段。
 
 ### 修改端口
 
 设置环境变量后重启应用：
 
 ```bash
-set PONOS_BRIDGE_PORT=51309
+set PONOS_BRIDGE_PORT=51311
 # 然后启动 Ponos
 ```
 
 **注入位置**（全部读取同一环境变量）：
-- `server/bridge.mjs` — `PONOS_BRIDGE_PORT` env var，默认 51309
-- `electron/main.cjs` — `PONOS_BRIDGE_PORT` env var，默认 51309
-- `bin/cli.mjs` — `PONOS_BRIDGE_PORT` env var，默认 51309
+- `server/bridge.mjs` — `PONOS_BRIDGE_PORT` env var，默认 51311
+- `electron/main.cjs` — `PONOS_BRIDGE_PORT` env var，默认 51311
+- `bin/cli.mjs` — `PONOS_BRIDGE_PORT` env var，默认 51311
 - `src/lib/config.ts` — Vite `__BRIDGE_PORT__` 编译时常量（同环境变量注入）
-- `YF/jiajia-pixel-pet/jiajia-pet.py` — `PONOS_BRIDGE_PORT` env var，默认 51309
+- `YF/jiajia-pixel-pet/jiajia-pet.py` — `PONOS_BRIDGE_PORT` env var，默认 51311
 - `start.bat` — 可以通过 `set PONOS_BRIDGE_PORT=...` 覆盖
 
 ## 版本号（三条独立版本线）
@@ -98,8 +98,8 @@ set PONOS_BRIDGE_PORT=51309
 | 安装包生成到 `release/` 根目录 | `package.json` 或 `electron-builder.yml` 的 `output` 被改 | 改回 `release/installer` |
 | 浅色主题下代码块看不清 | `--bg-code` 与 `--text-primary` 颜色冲突 | 检查 `src/styles/themes.css` 中是否定义了 `--code-text` token |
 | 桌面有两个同名 `Ponos` 快捷方式 | 便携版与安装版快捷方式同名 | 区分使用即可，快捷方式指向不同 |
-| 启动无窗口，进程僵尸堆积 | 端口被 WinNAT 封锁 + 无单实例锁 | 设置 `PONOS_BRIDGE_PORT=51309` 后重试 |
-| `listen EACCES: permission denied 0.0.0.0:3099` | WinNAT 预留了 3095-3194 端口段 | 改用 51309 或更高端口（见端口配置章节） |
+| 启动无窗口，进程僵尸堆积 | 端口被 WinNAT 封锁 + 无单实例锁 | 设置 `PONOS_BRIDGE_PORT=51311` 后重试 |
+| `listen EACCES: permission denied 0.0.0.0:3099` | WinNAT 预留了 3095-3194 端口段 | 改用 51311 或更高端口（见端口配置章节） |
 
 ## 关键文件
 

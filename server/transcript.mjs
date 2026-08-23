@@ -46,9 +46,10 @@ export function isUuidFile(name) {
   return UUID_FILE_RE.test(name)
 }
 
-/** 返回 transcript 项目根目录（projects 目录本身，不含项目子目录）。 */
+/** 返回 transcript 项目根目录（projects 目录本身，不含项目子目录）。
+ *  优先级：CLAUDE_CONFIG_DIR（旧契约/测试注入）→ PONOS_HOME（dev 隔离域）→ 默认 ~/.ponos。 */
 export function transcriptBaseDir() {
-  const cfg = process.env.CLAUDE_CONFIG_DIR
+  const cfg = process.env.CLAUDE_CONFIG_DIR || process.env.PONOS_HOME
   return join(cfg || join(homedir(), '.ponos'), 'projects')
 }
 

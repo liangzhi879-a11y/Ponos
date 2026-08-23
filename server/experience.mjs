@@ -2,8 +2,9 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, statSync, existsSync, rmSync } from 'node:fs'
 
-// 测试注入 HOME：process.env.PONOS_TEST_HOME 存在时重定向（测试隔离，不碰真实 ~/.ponos）
-const HOME = process.env.PONOS_TEST_HOME || homedir()
+// 测试注入 HOME：process.env.PONOS_TEST_HOME 存在时重定向（测试隔离，不碰真实 ~/.ponos）。
+// dev 版（PONOS_HOME 注入）数据落在独立隔离域。
+const HOME = process.env.PONOS_TEST_HOME || process.env.PONOS_HOME || homedir()
 export const PERSONAL_DIR = join(HOME, '.ponos', 'memory', 'personal')
 export const INDEX_FILE = join(PERSONAL_DIR, '_index.json')
 export const DEFAULT_THEMES = ['communication', 'code-style', 'workflow', 'finance', 'policy', 'project-application', 'office-docs']

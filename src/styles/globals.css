@@ -803,3 +803,95 @@ html.speed-mode[class*="theme-glass-warm"] {
   --tooltip-bg:  #221408;
   --modal-bg:    #221408;
 }
+
+/* ============================================================
+   SHADOW 主题专属氛围（仅 .theme-shadow 生效）
+   深色游戏平台：vaporwave 背景图 + 霓虹粉/电青光晕 + 大圆角
+   ============================================================ */
+
+/* 背景层：vaporwave 大图压暗铺底（覆盖 html/body 背景），app 容器之上、
+   内容之下。全窗口固定，滚动不位移。 */
+html.theme-shadow body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(1200px 600px at 85% -10%, rgba(255, 45, 148, 0.14), transparent 60%),
+    radial-gradient(1000px 500px at -10% 110%, rgba(31, 216, 240, 0.12), transparent 55%),
+    url('/shadow-theme/bg-vaporwave.jpg') center 30% / cover no-repeat;
+  opacity: 0.35;
+  filter: saturate(1.1);
+  pointer-events: none;
+}
+/* 暗化蒙层，保证文字对比度 */
+html.theme-shadow body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(180deg, rgba(13, 13, 17, 0.55), rgba(13, 13, 17, 0.82) 40%, rgba(13, 13, 17, 0.9));
+  pointer-events: none;
+}
+
+/* 面板玻璃化 + 大圆角（shadow 主题整体套用游戏卡片质感） */
+html.theme-shadow .window-frame {
+  border-radius: 18px;
+}
+html.theme-shadow .bg-surface,
+html.theme-shadow .bg-popover {
+  background: color-mix(in srgb, var(--bg-surface) 82%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+html.theme-shadow .bg-elevated {
+  background: color-mix(in srgb, var(--bg-elevated) 78%, transparent);
+}
+
+/* 头部霓虹下缘光 */
+html.theme-shadow header {
+  background: linear-gradient(180deg, rgba(20, 20, 26, 0.85), rgba(16, 16, 22, 0.6)) !important;
+  border-bottom: 1px solid rgba(255, 45, 148, 0.25) !important;
+}
+html.theme-shadow header::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 45, 148, 0.6), rgba(31, 216, 240, 0.6), transparent);
+  pointer-events: none;
+}
+
+/* 游戏卡片 hover 霓虹光晕（通用 .shadow-card 类 + 列表行） */
+html.theme-shadow .shadow-card,
+html.theme-shadow .hover\:bg-elevated:hover {
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease, border-color 0.2s ease;
+}
+html.theme-shadow .shadow-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(255, 45, 148, 0.18), 0 0 0 1px rgba(255, 45, 148, 0.4);
+  border-color: rgba(255, 45, 148, 0.5);
+}
+
+/* 霓虹按钮主色 */
+html.theme-shadow .bg-brand-500 {
+  background: linear-gradient(135deg, #ff2d94, #c00f65);
+  box-shadow: 0 4px 16px rgba(255, 45, 148, 0.35);
+}
+
+/* SHADOW 主题：聊天输入框霓虹聚焦光晕（覆盖语义态，仅 shadow 生效） */
+html.theme-shadow .focus-within\:border-brand-500\/40:focus-within {
+  border-color: rgba(255, 45, 148, 0.55) !important;
+  box-shadow: 0 0 0 3px rgba(255, 45, 148, 0.18), 0 4px 20px rgba(255, 45, 148, 0.12) !important;
+}
+html.theme-shadow .bg-surface\/80 {
+  background: rgba(16, 16, 22, 0.72) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+/* 工具调用块霓虹描边（shadow 主题下的工具卡片） */
+html.theme-shadow .border.bg-elevated\/40 {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}

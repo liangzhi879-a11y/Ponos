@@ -125,7 +125,7 @@ Overall = 'ok' | 'warn' | 'error'   // 任一 error → error；否则任一 war
 | kernel-files | `<app>/kernel/cli.mjs` + `<app>/runtime/bun/bun.exe`（dev 时按 findPonos 候选路径） | 都存在=ok |
 | kernel-bootstrap | `~/.ponos/runtime/kernel/cli.mjs` + `runtime/bun/bun.exe` 存在且大小与源一致 | ok |
 | kernel-launch | spawn `"<bun>" "<kernel>" --version`，15s 超时 | stdout 含 `(Ponos)` 且 exit 0=ok |
-| bridge-port | `http://127.0.0.1:51309/health`（800ms 超时） | 200=ok |
+| bridge-port | `http://127.0.0.1:51311/health`（800ms 超时） | 200=ok |
 | bridge-alive | 本进程 spawn 的 bridge 存活；重启计数（BRIDGE_RESTART 系列） | 存活=ok；重启>3 次=warn |
 | kernel-session | bridge 侧最近 3 次会话 spawn 的首 token 到达标记（session.firstTokenAt） | 3 次全到达=ok；存在失败=warn |
 | kernel-crash | 内核子进程异常退出（非 cancel）计数 | 0=ok |

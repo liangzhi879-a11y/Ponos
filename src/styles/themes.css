@@ -44,648 +44,117 @@
    THEME 1 — 远方 · 浅色 (DEFAULT)
    Warm dawn parchment · ivory-and-amber palette
    ============================================================ */
-.theme-yuanfang-light {
-  --s-50:  #ffffff;
-  --s-100: #f7f8fa;
-  --s-200: #eef0f4;
-  --s-300: #e2e5eb;
-  --s-400: #d2d7e0;
-  --s-500: #a7adba;
-  --s-600: #7a8192;
-  --s-700: #545b6b;
-  --s-800: #363d4d;
-  --s-900: #1e2432;
-  --s-950: #0e1118;
+.theme-shadow {
+  --s-50:  #0a0a0d;
+  --s-100: #101014;
+  --s-200: #16161b;
+  --s-300: #1d1d24;
+  --s-400: #25252e;
+  --s-500: #3a3a47;
+  --s-600: #5a5a6e;
+  --s-700: #85859a;
+  --s-800: #b8b8c9;
+  --s-900: #e4e4ec;
+  --s-950: #f4f4f8;
 
-  --brand-50:  #fff7ed;
-  --brand-100: #ffedd5;
-  --brand-200: #fed7aa;
-  --brand-300: #fdba74;
-  --brand-400: #fb923c;
-  --brand-500: #ff6a00;
-  --brand-600: #ea580c;
-  --brand-700: #c2410c;
-  --brand-800: #9a3412;
-  --brand-900: #7c2d12;
-  --brand-950: #431407;
+  /* 霓虹粉（vaporwave 主强调，来自素材 #FF1B8D 相近） */
+  --brand-50:  #fff0f7;
+  --brand-100: #ffdcee;
+  --brand-200: #ffb8dc;
+  --brand-300: #ff8cc7;
+  --brand-400: #ff5aad;
+  --brand-500: #ff2d94;
+  --brand-600: #e6157c;
+  --brand-700: #c00f65;
+  --brand-800: #96104f;
+  --brand-900: #6e0f3a;
+  --brand-950: #3d0720;
 
-  --bg-app:      #f0f2f5;
-  --bg-surface:  #ffffff;
-  --bg-elevated: #e8ebf0;
-  --bg-hover:    #dfe3ea;
-  --bg-active:   #d3d8e0;
-  --bg-input:    #ffffff;
-  --bg-toolbar:  #e8ebf0;
-  --bg-modal:    #ffffff;
-  --bg-popover:  #ffffff;
-  --bg-tooltip:  #1e2432;
-  --bg-code:     #1e2432;
-  --code-text:   #e2e5eb;
-  --bg-prose:    #ffffff;
-  --bg-kbd:      #e8ebf0;
+  --bg-app:      #0d0d11;
+  --bg-surface:  #14141a;
+  --bg-elevated: #1c1c24;
+  --bg-hover:    #24242e;
+  --bg-active:   #2c2c38;
+  --bg-input:    #101016;
+  --bg-toolbar:  #16161c;
+  --bg-modal:    #1a1a22;
+  --bg-popover:  #1e1e27;
+  --bg-tooltip:  #262630;
+  --bg-code:     #0a0a0e;
+  --code-text:   #d8d8e4;
+  --bg-prose:    #14141a;
+  --bg-kbd:      #262630;
 
-  --popover-bg:   rgba(255, 255, 255, 0.85);
-  --tooltip-bg:   rgba(30, 36, 50, 0.92);
-  --modal-bg:     rgba(255, 255, 255, 0.88);
-  --popover-blur: 16px;
+  --popover-bg:   rgba(26, 26, 34, 0.72);
+  --tooltip-bg:   rgba(32, 32, 42, 0.78);
+  --modal-bg:     rgba(22, 22, 30, 0.75);
+  --popover-blur: 18px;
 
-  --text-primary:   #1e2432;
-  --text-secondary: #545b6b;
-  --text-tertiary:  #7a8192;
-  --text-inverse:   #ffffff;
+  --text-primary:   #f0f0f6;
+  --text-secondary: #a8a8bc;
+  --text-tertiary:  #70708a;
+  --text-inverse:   #0d0d11;
 
-  --border-default: #c5c9d3;
-  --border-subtle:  #e0e3ea;
-  --border-strong:  #9aa0ad;
+  --border-default: rgba(255, 255, 255, 0.12);
+  --border-subtle:  rgba(255, 255, 255, 0.06);
+  --border-strong:  rgba(255, 255, 255, 0.20);
 
-  --accent-default: #ff6a00;
-  --accent-hover:   #ea580c;
-  --accent-subtle:  rgba(255,106,0,0.10);
+  --accent-default: #ff2d94;
+  --accent-hover:   #ff5aad;
+  --accent-subtle:  rgba(255, 45, 148, 0.16);
 
-  /* 远方红强调色（plan §3 步骤 1） */
-  --accent-red:        #ff2400;
-  --accent-red-hover:  #e31e00;
-  --accent-red-active: #b81700;
-  --accent-red-subtle: rgba(255,36,0,0.10);
-  --accent-red-soft:   rgba(255,36,0,0.18);
-  --accent-red-fg:     #ffffff;
-  --accent-red-ring:   rgba(255,36,0,0.35);
-
-  --success:        #047857;
-  --success-rgb:    4 120 87;
-  --success-subtle: rgba(4,120,87,0.10);
-  --warning:        #b45309;
-  --warning-rgb:    180 83 9;
-  --warning-subtle: rgba(180,83,9,0.10);
-  --error:          #dc2626;
-  --error-rgb:      220 38 38;
-  --error-subtle:   rgba(220,38,38,0.10);
-  --info:           #2563eb;
-  --info-subtle:    rgba(37,99,235,0.10);
-
-  --scrollbar-thumb: #a7adba;
-  --scrollbar-track: transparent;
-
-  --shadow-sm:    0 1px 2px rgba(30,36,50,0.06);
-  --shadow-md:    0 4px 16px rgba(255,106,0,0.05), 0 2px 6px rgba(30,36,50,0.06);
-  --shadow-lg:    0 12px 36px rgba(255,106,0,0.08), 0 4px 12px rgba(30,36,50,0.08);
-  --shadow-modal:   0 20px 50px -10px rgba(30,36,50,0.22), 0 0 0 1px var(--border-default);
-  --shadow-popover: 0 8px 24px -6px rgba(30,36,50,0.16), 0 0 0 1px var(--border-default);
-  --shadow-window:  inset 0 0 0 1px var(--border-default), 0 0 0 transparent;
-  /* 血条档位色：yuanfang 深色暖 — 压暗饱和，绿/琥珀/红深色调 */
-  --health-tier-green: #4ade80;
-  --health-tier-amber: #fbbf24;
-  --health-tier-red:   #ef4444;
-  --health-meter-text: #fff8e7;
-
-  --overlay-bg:   rgba(14,17,24,0.42);
-  --overlay-blur: 5px;
-
-  --selection-bg: rgba(255,106,0,0.18);
-  --kbd-border:   #c5c9d3;
-  --tooltip-fg:   #ffffff;
-}
-
-/* ============================================================
-   THEME 2 — 远方 · 深色
-   Warm horizon at dusk · earth-and-ember palette
-   ============================================================ */
-.theme-yuanfang {
-  --s-50:  #0c0805;
-  --s-100: #120d08;
-  --s-200: #1a140b;
-  --s-300: #241b12;
-  --s-400: #2e2318;
-  --s-500: #46351f;
-  --s-600: #6b5230;
-  --s-700: #9a7c55;
-  --s-800: #c4a97c;
-  --s-900: #e6d1b1;
-  --s-950: #f7ebd7;
-
-  --brand-50:  #fff6f1;
-  --brand-100: #ffe8dc;
-  --brand-200: #ffd0b8;
-  --brand-300: #ffb08a;
-  --brand-400: #f58a56;
-  --brand-500: #e06b36;
-  --brand-600: #c45428;
-  --brand-700: #9c411f;
-  --brand-800: #74321a;
-  --brand-900: #4d2212;
-  --brand-950: #2a1109;
-
-  --bg-app:      #100c08;
-  --bg-surface:  #171109;
-  --bg-elevated: #211914;
-  --bg-hover:    #2a1f16;
-  --bg-active:   #332618;
-  --bg-input:    #100c08;
-  --bg-toolbar:  #1a140b;
-  --bg-modal:    #1f1810;
-  --bg-popover:  #241b12;
-  --bg-tooltip:  #2a1f14;
-  --bg-code:     #0c0805;
-  --code-text:   #e8d6b8;
-  --bg-prose:    #1a140b;
-  --bg-kbd:      #251d14;
-
-  --popover-bg:    rgba(28, 20, 12, 0.72);
-  --tooltip-bg:   rgba(36, 26, 16, 0.78);
-  --modal-bg:     rgba(24, 18, 12, 0.75);
-  --popover-blur: 14px;
-
-  --text-primary:   #e8d6b8;
-  --text-secondary: #b89c6e;
-  --text-tertiary:  #9a7c55;
-  --text-inverse:   #100c08;
-
-  --border-default: rgba(180, 135, 105, 0.08);
-  --border-subtle:  rgba(180, 135, 105, 0.04);
-  --border-strong:  rgba(180, 135, 105, 0.14);
-
-  --accent-default: #e06b36;
-  --accent-hover:   #f58a56;
-  --accent-subtle:  rgba(224, 107, 54, 0.14);
+  /* 电青（vaporwave 副强调，来自素材 #1FD8F0） */
+  --accent-cyan:      #1fd8f0;
+  --accent-cyan-hover: #5ae6f8;
+  --accent-cyan-subtle: rgba(31, 216, 240, 0.14);
 
   /* 远方红强调色（plan §3 步骤 1） */
-  --accent-red:        #ff573b;
-  --accent-red-hover:  #ff8d6e;
-  --accent-red-active: #d63d22;
-  --accent-red-subtle: rgba(255,87,59,0.14);
-  --accent-red-soft:   rgba(255,87,59,0.22);
+  --accent-red:        #ff3b57;
+  --accent-red-hover:  #ff6b81;
+  --accent-red-active: #e01e3a;
+  --accent-red-subtle: rgba(255,59,87,0.16);
+  --accent-red-soft:   rgba(255,59,87,0.24);
   --accent-red-fg:     #ffffff;
-  --accent-red-ring:   rgba(255,87,59,0.40);
+  --accent-red-ring:   rgba(255,59,87,0.45);
 
-  --success:        #6ee7a7;
-  --success-rgb:    110 231 167;
-  --success-subtle: rgba(110, 231, 167, 0.12);
-  --warning:        #ffb24a;
-  --warning-rgb:    255 178 74;
-  --warning-subtle: rgba(255, 178, 74, 0.14);
-  --error:          #ef6b5b;
-  --error-rgb:      239 107 91;
-  --error-subtle:   rgba(239, 107, 91, 0.14);
-  --info:           #5ab0ff;
-  --info-subtle:    rgba(90, 176, 255, 0.14);
-
-  --scrollbar-thumb: #251d14;
-  --scrollbar-track: transparent;
-
-  --shadow-sm:    0 1px 2px rgba(0,0,0,0.35);
-  --shadow-md:    0 4px 16px rgba(0,0,0,0.40), 0 2px 6px rgba(0,0,0,0.40);
-  --shadow-lg:    0 12px 36px rgba(0,0,0,0.50), 0 4px 12px rgba(0,0,0,0.50);
-  --shadow-modal:   0 20px 50px -10px rgba(0,0,0,0.60), 0 0 0 1px var(--border-default);
-  --shadow-popover: 0 8px 24px -6px rgba(0,0,0,0.50), 0 0 0 1px var(--border-default);
-  --shadow-window:  inset 0 0 0 1px var(--border-default), 0 0 0 transparent;
-  /* 血条档位色：yuanfang-light 浅色暖 — 明亮柔和 */
-  --health-tier-green: #16a34a;
-  --health-tier-amber: #d97706;
-  --health-tier-red:   #dc2626;
-  --health-meter-text: #fff8e7;
-
-  --overlay-bg:   rgba(20,8,0,0.62);
-  --overlay-blur: 6px;
-
-  --selection-bg: rgba(224,107,54,0.28);
-  --kbd-border:   #251d14;
-  --tooltip-fg:   #e8d6b8;
-}
-
-/* ============================================================
-   THEME 3 — Dark (Graphite)
-   Midnight cyan · cool industrial focus
-   ============================================================ */
-.theme-dark {
-  --s-50:  #080a0d;
-  --s-100: #101218;
-  --s-200: #171a21;
-  --s-300: #1f222b;
-  --s-400: #282c36;
-  --s-500: #3d424d;
-  --s-600: #5a6070;
-  --s-700: #818998;
-  --s-800: #aeb5c0;
-  --s-900: #e1e4e9;
-  --s-950: #f1f3f6;
-
-  --brand-50:  #ecfeff;
-  --brand-100: #cffafe;
-  --brand-200: #a5f3fc;
-  --brand-300: #67e8f9;
-  --brand-400: #22d3ee;
-  --brand-500: #0ea5e9;
-  --brand-600: #0284c7;
-  --brand-700: #0369a1;
-  --brand-800: #075985;
-  --brand-900: #0c4a6e;
-  --brand-950: #082f49;
-
-  --bg-app:      #0c0e12;
-  --bg-surface:  #15171d;
-  --bg-elevated: #1e2128;
-  --bg-hover:    #272b34;
-  --bg-active:   #30343d;
-  --bg-input:    #101218;
-  --bg-toolbar:  #181a21;
-  --bg-modal:    #1e2128;
-  --bg-popover:  #21252d;
-  --bg-tooltip:  #2a2e38;
-  --bg-code:     #080a0d;
-  --code-text:   #d8dce3;
-  --bg-prose:    #15171d;
-  --bg-kbd:      #2a2e38;
-
-  --popover-bg:   rgba(24, 28, 36, 0.72);
-  --tooltip-bg:   rgba(32, 36, 46, 0.78);
-  --modal-bg:     rgba(22, 26, 34, 0.75);
-  --popover-blur: 14px;
-
-  --text-primary:   #d8dce3;
-  --text-secondary: #8893a3;
-  --text-tertiary:  #5a6575;
-  --text-inverse:   #0c0e12;
-
-  --border-default: rgba(120, 135, 155, 0.07);
-  --border-subtle:  rgba(120, 135, 155, 0.035);
-  --border-strong:  rgba(120, 135, 155, 0.12);
-
-  --accent-default: #0ea5e9;
-  --accent-hover:   #22d3ee;
-  --accent-subtle:  rgba(14,165,233,0.12);
-
-  /* 远方红强调色（plan §3 步骤 1） */
-  --accent-red:        #ff573b;
-  --accent-red-hover:  #ff8d6e;
-  --accent-red-active: #d63d22;
-  --accent-red-subtle: rgba(255,87,59,0.14);
-  --accent-red-soft:   rgba(255,87,59,0.22);
-  --accent-red-fg:     #ffffff;
-  --accent-red-ring:   rgba(255,87,59,0.40);
-
-  --success:        #34d399;
-  --success-rgb:    52 211 153;
-  --success-subtle: rgba(52,211,153,0.12);
+  --success:        #4ade80;
+  --success-rgb:    74 222 128;
+  --success-subtle: rgba(74,222,128,0.14);
   --warning:        #fbbf24;
   --warning-rgb:    251 191 36;
-  --warning-subtle: rgba(251,191,36,0.12);
+  --warning-subtle: rgba(251,191,36,0.14);
   --error:          #f87171;
   --error-rgb:      248 113 113;
-  --error-subtle:   rgba(248,113,113,0.12);
-  --info:           #60a5fa;
-  --info-subtle:    rgba(96,165,250,0.12);
-
-  --scrollbar-thumb: #2e3340;
-  --scrollbar-track: transparent;
-
-  --shadow-sm:    0 1px 2px rgba(0,0,0,0.35);
-  --shadow-md:    0 4px 16px rgba(14,165,233,0.08), 0 2px 6px rgba(0,0,0,0.35);
-  --shadow-lg:    0 12px 36px rgba(14,165,233,0.12), 0 4px 12px rgba(0,0,0,0.45);
-  --shadow-modal:   0 20px 50px -10px rgba(0,0,0,0.65), 0 0 0 1px var(--border-default);
-  --shadow-popover: 0 8px 24px -6px rgba(0,0,0,0.50), 0 0 0 1px var(--border-default);
-  --shadow-window:  inset 0 0 0 1px var(--border-default), 0 0 0 transparent;
-  /* 血条档位色：dark 深色冷 — 冷色调档位 */
-  --health-tier-green: #34d399;
-  --health-tier-amber: #f59e0b;
-  --health-tier-red:   #f87171;
-  --health-meter-text: #f1f5f9;
-
-  --overlay-bg:   rgba(6,8,12,0.65);
-  --overlay-blur: 6px;
-
-  --selection-bg: rgba(14,165,233,0.28);
-  --kbd-border:   #2e3340;
-  --tooltip-fg:   #e6e9ef;
-}
-
-/* ============================================================
-   THEME 4 — Light (Clean Slate)
-   Daylight indigo · crisp neutral focus
-   ============================================================ */
-.theme-light {
-  --s-50:  #ffffff;
-  --s-100: #f7f8fa;
-  --s-200: #eceef2;
-  --s-300: #dfe2e8;
-  --s-400: #cdd1da;
-  --s-500: #a5abb8;
-  --s-600: #767f90;
-  --s-700: #4b5563;
-  --s-800: #2f3744;
-  --s-900: #181d26;
-  --s-950: #0b0e14;
-
-  --brand-50:  #eef2ff;
-  --brand-100: #e0e7ff;
-  --brand-200: #c7d2fe;
-  --brand-300: #a5b4fc;
-  --brand-400: #818cf8;
-  --brand-500: #4f46e5;
-  --brand-600: #4338ca;
-  --brand-700: #3730a3;
-  --brand-800: #312e81;
-  --brand-900: #1e1b4b;
-  --brand-950: #0f0d2a;
-
-  --bg-app:      #f2f4f7;
-  --bg-surface:  #ffffff;
-  --bg-elevated: #e6e9ef;
-  --bg-hover:    #dfe3ea;
-  --bg-active:   #d3d8e1;
-  --bg-input:    #ffffff;
-  --bg-toolbar:  #e6e9ef;
-  --bg-modal:    #ffffff;
-  --bg-popover:  #ffffff;
-  --bg-tooltip:  #181d26;
-  --bg-code:     #181d26;
-  --code-text:   #dfe2e8;
-  --bg-prose:    #ffffff;
-  --bg-kbd:      #eceef2;
-
-  --popover-bg:   rgba(255, 255, 255, 0.86);
-  --tooltip-bg:   rgba(24, 29, 38, 0.92);
-  --modal-bg:     rgba(255, 255, 255, 0.90);
-  --popover-blur: 16px;
-
-  --text-primary:   #181d26;
-  --text-secondary: #4b5563;
-  --text-tertiary:  #767f90;
-  --text-inverse:   #ffffff;
-
-  --border-default: #cdd1da;
-  --border-subtle:  #e6e9ef;
-  --border-strong:  #a5abb8;
-
-  --accent-default: #4f46e5;
-  --accent-hover:   #4338ca;
-  --accent-subtle:  rgba(79,70,229,0.10);
-
-  /* 远方红强调色（plan §3 步骤 1） */
-  --accent-red:        #ff2400;
-  --accent-red-hover:  #e31e00;
-  --accent-red-active: #b81700;
-  --accent-red-subtle: rgba(255,36,0,0.10);
-  --accent-red-soft:   rgba(255,36,0,0.18);
-  --accent-red-fg:     #ffffff;
-  --accent-red-ring:   rgba(255,36,0,0.35);
-
-  --success:        #047857;
-  --success-rgb:    4 120 87;
-  --success-subtle: rgba(4,120,87,0.10);
-  --warning:        #b45309;
-  --warning-rgb:    180 83 9;
-  --warning-subtle: rgba(180,83,9,0.10);
-  --error:          #dc2626;
-  --error-rgb:      220 38 38;
-  --error-subtle:   rgba(220,38,38,0.10);
-  --info:           #2563eb;
-  --info-subtle:    rgba(37,99,235,0.10);
-
-  --scrollbar-thumb: #a5abb8;
-  --scrollbar-track: transparent;
-
-  --shadow-sm:    0 1px 2px rgba(24,29,38,0.05);
-  --shadow-md:    0 4px 16px rgba(79,70,229,0.07), 0 2px 6px rgba(24,29,38,0.05);
-  --shadow-lg:    0 12px 36px rgba(79,70,229,0.10), 0 4px 12px rgba(24,29,38,0.06);
-  --shadow-modal:   0 20px 50px -10px rgba(24,29,38,0.18), 0 0 0 1px var(--border-default);
-  --shadow-popover: 0 8px 24px -6px rgba(24,29,38,0.12), 0 0 0 1px var(--border-default);
-  --shadow-window:  inset 0 0 0 1px var(--border-default), 0 0 0 transparent;
-  /* 血条档位色：light 浅色冷 — 浅主题血条更亮、更低饱和 */
-  --health-tier-green: #22c55e;
-  --health-tier-amber: #ea580c;
-  --health-tier-red:   #dc2626;
-  --health-meter-text: #ffffff;
-
-  --overlay-bg:   rgba(11,14,20,0.38);
-  --overlay-blur: 5px;
-
-  --selection-bg: rgba(79,70,229,0.18);
-  --kbd-border:   #cdd1da;
-  --tooltip-fg:   #ffffff;
-}
-
-/* ============================================================
-   THEME 5 — Glass (磨砂玻璃)
-   Aurora frost · 深靛蓝极光光晕 + 半透明磨砂面板
-   backdrop-filter 模糊由 globals.css 中的 .theme-glass 规则提供
-   ============================================================ */
-.theme-glass {
-  --s-50:  #0a0e1c;
-  --s-100: #10152a;
-  --s-200: #171d38;
-  --s-300: #1f2745;
-  --s-400: #2a3354;
-  --s-500: #3d4a73;
-  --s-600: #5d6c9c;
-  --s-700: #8a98c4;
-  --s-800: #c0c9e0;
-  --s-900: #e4e8f2;
-  --s-950: #f3f5fa;
-
-  --brand-50:  #f5f3ff;
-  --brand-100: #ede9fe;
-  --brand-200: #ddd6fe;
-  --brand-300: #c4b5fd;
-  --brand-400: #a78bfa;
-  --brand-500: #8b5cf6;
-  --brand-600: #7c3aed;
-  --brand-700: #6d28d9;
-  --brand-800: #5b21b6;
-  --brand-900: #4c1d95;
-  --brand-950: #2e1065;
-
-  /* --bg-app 透明 → 露出 body::before 的极光光晕层（见 globals.css）。
-     面板用"深玻璃底"（暗色半透明而非浅白半透明）：背后为亮白界面时仍能
-     压暗背景、保证文字对比度。透光度由 --glass-opacity（设置 → 玻璃透光度）控制：
-     color-mix 按该 alpha 混合面板基色与透明。 */
-  --bg-app:      transparent;
-  --bg-surface:  color-mix(in srgb, #0d1224 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-elevated: color-mix(in srgb, #161d36 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-hover:    color-mix(in srgb, #1e2646 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-active:   color-mix(in srgb, #263058 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-input:    color-mix(in srgb, #0d1224 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-toolbar:  color-mix(in srgb, #0d1224 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-modal:    color-mix(in srgb, #10152a calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-popover:  color-mix(in srgb, #121830 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-tooltip:  color-mix(in srgb, #10152a calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-code:     color-mix(in srgb, #060914 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --code-text:   #c7d2fe;
-  --bg-prose:    color-mix(in srgb, #0d1224 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-kbd:      color-mix(in srgb, #1e2646 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-
-  --popover-bg:   color-mix(in srgb, #121830 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --tooltip-bg:   color-mix(in srgb, #10152a calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --modal-bg:     color-mix(in srgb, #10152a calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --popover-blur: 24px;
-
-  --text-primary:   #d3dcec;
-  --text-secondary: #94a1bf;
-  --text-tertiary:  #66738f;
-  --text-inverse:   #0b0f1e;
-
-  --border-default: rgba(255, 255, 255, 0.14);
-  --border-subtle:  rgba(255, 255, 255, 0.08);
-  --border-strong:  rgba(255, 255, 255, 0.22);
-
-  --accent-default: #a78bfa;
-  --accent-hover:   #c4b5fd;
-  --accent-subtle:  rgba(167, 139, 250, 0.16);
-
-  /* 远方红强调色（plan §3 步骤 1） */
-  --accent-red:        #ff2400;
-  --accent-red-hover:  #ff573b;
-  --accent-red-active: #cc1c00;
-  --accent-red-subtle: rgba(255,36,0,0.16);
-  --accent-red-soft:   rgba(255,36,0,0.24);
-  --accent-red-fg:     #ffffff;
-  --accent-red-ring:   rgba(255,36,0,0.45);
-
-  --success:        #34d399;
-  --success-rgb:    52 211 153;
-  --success-subtle: rgba(52, 211, 153, 0.14);
-  --warning:        #fbbf24;
-  --warning-rgb:    251 191 36;
-  --warning-subtle: rgba(251, 191, 36, 0.14);
-  --error:          #f87171;
-  --error-rgb:      248 113 113;
-  --error-subtle:   rgba(248, 113, 113, 0.14);
+  --error-subtle:   rgba(248,113,113,0.14);
   --info:           #38bdf8;
-  --info-subtle:    rgba(56, 189, 248, 0.14);
+  --info-subtle:    rgba(56,189,248,0.14);
 
-  --scrollbar-thumb: rgba(255, 255, 255, 0.22);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.20);
   --scrollbar-track: transparent;
 
-  --shadow-sm:    0 1px 2px rgba(2, 6, 23, 0.40);
-  --shadow-md:    0 4px 16px rgba(2, 6, 23, 0.50), 0 0 0 1px var(--border-subtle);
-  --shadow-lg:    0 12px 36px rgba(2, 6, 23, 0.55), 0 0 0 1px var(--border-subtle);
-  --shadow-modal:   0 20px 50px -10px rgba(2, 6, 23, 0.60), 0 0 0 1px var(--border-default);
-  --shadow-popover: 0 8px 24px -6px rgba(2, 6, 23, 0.50), 0 0 0 1px var(--border-subtle);
+  --shadow-sm:    0 1px 2px rgba(0,0,0,0.40);
+  --shadow-md:    0 4px 16px rgba(255,45,148,0.10), 0 2px 6px rgba(0,0,0,0.45);
+  --shadow-lg:    0 12px 36px rgba(255,45,148,0.14), 0 4px 12px rgba(0,0,0,0.50);
+  --shadow-modal:   0 20px 50px -10px rgba(0,0,0,0.70), 0 0 0 1px var(--border-default);
+  --shadow-popover: 0 8px 24px -6px rgba(0,0,0,0.55), 0 0 0 1px var(--border-subtle);
   --shadow-window:  inset 0 0 0 1px var(--border-subtle), 0 0 0 transparent;
-  /* 血条档位色：glass 深色冷玻璃 — 与 dark 类似但略低饱和，让玻璃面板不抢戏 */
+  /* 血条档位色：shadow 霓虹暗色 — 高饱和荧光档位 */
   --health-tier-green: #4ade80;
   --health-tier-amber: #fbbf24;
   --health-tier-red:   #f87171;
   --health-meter-text: #f1f5f9;
 
-  --overlay-bg:   rgba(4, 6, 16, 0.50);
+  --overlay-bg:   rgba(4, 4, 10, 0.60);
   --overlay-blur: 8px;
 
-  --selection-bg: rgba(167, 139, 250, 0.30);
+  --selection-bg: rgba(255, 45, 148, 0.30);
   --kbd-border:   rgba(255, 255, 255, 0.18);
-  --tooltip-fg:   #e7ecf5;
-}
+  --tooltip-fg:   #f0f0f6;
 
-/* ============================================================
-   THEME 6 — Glass Warm (磨砂玻璃 · YF暖色光晕)
-   YF 橙光晕 + 半透明磨砂面板，与冷色 Glass 共享模糊机制
-   ============================================================ */
-.theme-glass-warm {
-  --s-50:  #140b04;
-  --s-100: #1c1107;
-  --s-200: #27190b;
-  --s-300: #33220f;
-  --s-400: #402c15;
-  --s-500: #5c421f;
-  --s-600: #8a6a37;
-  --s-700: #c49a5e;
-  --s-800: #e0c290;
-  --s-900: #f3e4c8;
-  --s-950: #fbf3e4;
-
-  --brand-50:  #fff7ed;
-  --brand-100: #ffedd5;
-  --brand-200: #fed7aa;
-  --brand-300: #fdba74;
-  --brand-400: #fb923c;
-  --brand-500: #ff6a00;
-  --brand-600: #ea580c;
-  --brand-700: #c2410c;
-  --brand-800: #9a3412;
-  --brand-900: #7c2d12;
-  --brand-950: #431407;
-
-  --bg-app:      transparent;
-  --bg-surface:  color-mix(in srgb, #160e06 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-elevated: color-mix(in srgb, #22160a calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-hover:    color-mix(in srgb, #2c1e0e calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-active:   color-mix(in srgb, #382612 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-input:    color-mix(in srgb, #160e06 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-toolbar:  color-mix(in srgb, #160e06 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-modal:    color-mix(in srgb, #1a1007 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-popover:  color-mix(in srgb, #1e1308 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-tooltip:  color-mix(in srgb, #1a1007 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-code:     color-mix(in srgb, #0a0602 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --code-text:   #fdd7a8;
-  --bg-prose:    color-mix(in srgb, #160e06 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-kbd:      color-mix(in srgb, #2c1e0e calc(var(--glass-opacity, 0.3) * 100%), transparent);
-
-  --popover-bg:   color-mix(in srgb, #1e1308 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --tooltip-bg:   color-mix(in srgb, #1a1007 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --modal-bg:     color-mix(in srgb, #1a1007 calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --popover-blur: 24px;
-
-  --text-primary:   #f5ead9;
-  --text-secondary: #d3b48c;
-  --text-tertiary:  #a5845c;
-  --text-inverse:   #140b04;
-
-  --border-default: rgba(255, 240, 220, 0.15);
-  --border-subtle:  rgba(255, 240, 220, 0.08);
-  --border-strong:  rgba(255, 240, 220, 0.24);
-
-  --accent-default: #ff6a00;
-  --accent-hover:   #ff8c33;
-  --accent-subtle:  rgba(255, 106, 0, 0.16);
-
-  /* 远方红强调色（plan §3 步骤 1） */
-  --accent-red:        #ff2400;
-  --accent-red-hover:  #ff573b;
-  --accent-red-active: #cc1c00;
-  --accent-red-subtle: rgba(255,36,0,0.16);
-  --accent-red-soft:   rgba(255,36,0,0.24);
-  --accent-red-fg:     #ffffff;
-  --accent-red-ring:   rgba(255,36,0,0.45);
-
-  --success:        #34d399;
-  --success-rgb:    52 211 153;
-  --success-subtle: rgba(52, 211, 153, 0.14);
-  --warning:        #fbbf24;
-  --warning-rgb:    251 191 36;
-  --warning-subtle: rgba(251, 191, 36, 0.14);
-  --error:          #f87171;
-  --error-rgb:      248 113 113;
-  --error-subtle:   rgba(248, 113, 113, 0.14);
-  --info:           #38bdf8;
-  --info-subtle:    rgba(56, 189, 248, 0.14);
-
-  --scrollbar-thumb: rgba(255, 240, 220, 0.22);
-  --scrollbar-track: transparent;
-
-  --shadow-sm:    0 1px 2px rgba(12, 6, 2, 0.45);
-  --shadow-md:    0 4px 16px rgba(12, 6, 2, 0.55), 0 0 0 1px var(--border-subtle);
-  --shadow-lg:    0 12px 36px rgba(12, 6, 2, 0.60), 0 0 0 1px var(--border-subtle);
-  --shadow-modal:   0 20px 50px -10px rgba(12, 6, 2, 0.65), 0 0 0 1px var(--border-default);
-  --shadow-popover: 0 8px 24px -6px rgba(12, 6, 2, 0.55), 0 0 0 1px var(--border-subtle);
-  --shadow-window:  inset 0 0 0 1px var(--border-subtle), 0 0 0 transparent;
-  /* 血条档位色：glass-warm 深色暖玻璃 — 与 yuanfang 类似但略低饱和 */
-  --health-tier-green: #86efac;
-  --health-tier-amber: #fcd34d;
-  --health-tier-red:   #fca5a5;
-  --health-meter-text: #fff8e7;
-
-  --overlay-bg:   rgba(8, 4, 0, 0.52);
-  --overlay-blur: 8px;
-
-  --selection-bg: rgba(255, 106, 0, 0.30);
-  --kbd-border:   rgba(255, 240, 220, 0.18);
-  --tooltip-fg:   #f5ead9;
+  /* SHADOW 专属：vaporwave 氛围背景（非 shadow 主题不渲染） */
+  --shadow-bg-image: url('/shadow-theme/bg-vaporwave.jpg');
 }
 
 /* ---------- Color-scheme ---------- */
-:root                          { color-scheme: light; }
-:root.theme-yuanfang-light     { color-scheme: light; }
-:root.theme-yuanfang           { color-scheme: dark; }
-:root.theme-dark               { color-scheme: dark; }
-:root.theme-light              { color-scheme: light; }
-:root.theme-glass              { color-scheme: dark; }
-:root.theme-glass-warm         { color-scheme: dark; }
+:root                          { color-scheme: dark; }
+:root.theme-shadow             { color-scheme: dark; }

@@ -91,7 +91,7 @@ function runProbe(cmdArgs, ms) {
 
 // 注意（协调者决议）：logTee 为可选依赖——Task 5 的 IPC diag:export 会传真身；
 // 缺省值时单测（不传 logTee）也能直接跑，exportReport 的日志尾默认空。
-function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort = process.env.PONOS_BRIDGE_PORT || '51309' }) {
+function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort = process.env.PONOS_BRIDGE_PORT || '51311' }) {
   let lastSnapshot = null
   let onChange = null
   let timer = null

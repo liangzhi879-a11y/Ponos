@@ -17,7 +17,7 @@
 ## 2. 架构总览
 
 ```
-┌─ 前端 React ──────────┐   ┌─ bridge.mjs (51309) ─┐   ┌─ Electron 主进程 ───────────┐
+┌─ 前端 React ──────────┐   ┌─ bridge.mjs (51311) ─┐   ┌─ Electron 主进程 ───────────┐
 │ DoubaoPanel           │   │ /ponos/doubao/*        │   │ 隐藏窗口 (persist:doubao)    │
 │ doubaoStore           │◄──►│ download + 去水印    │◄─►│ executeJavaScript 页面内 fetch│
 │ 插入聊天输入栏         │   │                      │   │ 登录窗口（可见，仅登录时）    │

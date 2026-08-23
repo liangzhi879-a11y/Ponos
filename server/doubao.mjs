@@ -3,8 +3,9 @@ import { join } from 'path'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, chmodSync } from 'fs'
 
 // HOME 延迟读取（每次调用读 env）：测试通过 PONOS_TEST_HOME 隔离，
-// 避免 ESM import 求值顺序问题（模块顶层求值时 env 可能尚未设置）
-export const homeDir = () => process.env.PONOS_TEST_HOME || homedir()
+// 避免 ESM import 求值顺序问题（模块顶层求值时 env 可能尚未设置）。
+// dev 版（PONOS_HOME 注入）数据落在独立隔离域（~/.ponos-dev），与正式版互不干扰。
+export const homeDir = () => process.env.PONOS_TEST_HOME || process.env.PONOS_HOME || homedir()
 export const sessionFile = () => join(homeDir(), '.ponos', 'doubao-session.json')
 export const historyFile = () => join(homeDir(), '.ponos', 'doubao-history.json')
 export const imagesDir = () => join(homeDir(), '.ponos', 'doubao-images')

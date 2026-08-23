@@ -34,7 +34,7 @@ async function runVerifyAndNotify() {
 }
 
 const defaultSettings: AppSettings = {
-  theme: 'yuanfang-light',
+  theme: 'shadow',
   language: 'zh-CN',
   fontSize: 14,
   fontFamily: 'Inter',

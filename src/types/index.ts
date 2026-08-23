@@ -99,7 +99,7 @@ export interface ConversationSet {
 
 // --- Settings Types ---
 
-export type ThemeMode = 'yuanfang-light' | 'yuanfang' | 'dark' | 'light' | 'glass' | 'glass-warm'
+export type ThemeMode = 'shadow'
 export type Language = 'zh-CN' | 'en-US'
 
 /** Static metadata for each theme (used by the picker UI). */
@@ -129,76 +129,16 @@ export interface ThemeMeta {
 
 export const THEMES: readonly ThemeMeta[] = [
   {
-    id: 'yuanfang-light',
-    name: '远方',
-    variant: '浅色',
-    tagline: '暖色破晓 · 远方的晨光',
-    glyph: '晓',
-    primary: '#ff6a00',
-    deep: '#ea580c',
-    surface: '#f7f8fa',
+    id: 'shadow',
+    name: 'Shadow',
+    variant: '游戏平台',
+    tagline: 'Vaporwave 霓虹 · SHADOW 游戏库界面',
+    glyph: '影',
+    primary: '#ff2d94',
+    deep: '#1fd8f0',
+    surface: '#14141a',
+    category: 'brand',
     isDefault: true,
-    category: 'brand',
-    mode: 'light',
-  },
-  {
-    id: 'yuanfang',
-    name: '远方',
-    variant: '深色',
-    tagline: '远方的地平线 · 落日与归途',
-    glyph: '远',
-    primary: '#e06b36',
-    deep: '#c45428',
-    surface: '#171109',
-    category: 'brand',
-    mode: 'dark',
-  },
-  {
-    id: 'dark',
-    name: 'Graphite',
-    variant: '深色',
-    tagline: 'Midnight cyan · cool industrial focus',
-    glyph: 'G',
-    primary: '#0ea5e9',
-    deep: '#0284c7',
-    surface: '#181a20',
-    category: 'solid',
-    mode: 'dark',
-  },
-  {
-    id: 'light',
-    name: 'Clean Slate',
-    variant: '浅色',
-    tagline: 'Daylight indigo · crisp neutral focus',
-    glyph: 'S',
-    primary: '#4f46e5',
-    deep: '#4338ca',
-    surface: '#f2f4f7',
-    category: 'solid',
-    mode: 'light',
-  },
-  {
-    id: 'glass',
-    name: 'Glass',
-    variant: '磨砂玻璃 · 冷色',
-    tagline: 'Aurora frost · 靛蓝极光下的磨砂玻璃',
-    glyph: '璃',
-    primary: '#a78bfa',
-    deep: '#8b5cf6',
-    surface: '#12172b',
-    category: 'glass',
-    mode: 'dark',
-  },
-  {
-    id: 'glass-warm',
-    name: 'Glass',
-    variant: '磨砂玻璃 · YF暖色',
-    tagline: 'YF暖橙光晕 · 落日熔金下的磨砂玻璃',
-    glyph: '暖',
-    primary: '#ff6a00',
-    deep: '#ea580c',
-    surface: '#1a1005',
-    category: 'glass',
     mode: 'dark',
   },
 ] as const

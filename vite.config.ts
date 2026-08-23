@@ -9,7 +9,7 @@ export default defineConfig({
     // 与根 package.json 的 GUI 发布线（2.7.0，electron-builder 打包名）解耦。
     // PONOS_APP_VERSION env 可临时覆盖（如发布稳定版）。
     __APP_VERSION__: JSON.stringify(process.env.PONOS_APP_VERSION || APP_VERSION),
-    __BRIDGE_PORT__: JSON.stringify(process.env.PONOS_BRIDGE_PORT || '51309'),
+    __BRIDGE_PORT__: JSON.stringify(process.env.PONOS_BRIDGE_PORT || '51311'),
   },
   plugins: [react()],
   base: './',

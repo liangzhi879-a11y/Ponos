@@ -26,20 +26,10 @@ import { THEMES, THEME_CLASS_NAMES, type ThemeMode } from '@/types'
   }
 })()
 const THEME_BG: Record<ThemeMode, string> = {
-  'yuanfang':       '#100c08',
-  'yuanfang-light': '#f0f2f5',
-  'dark':           '#0c0e12',
-  'light':          '#f2f4f7',
-  'glass':          '#0b0f1e',
-  'glass-warm':     '#160c05',
+  'shadow': '#0d0d11',
 }
 const THEME_FG: Record<ThemeMode, string> = {
-  'yuanfang':       '#e8d6b8',
-  'yuanfang-light': '#1e2432',
-  'dark':           '#d8dce3',
-  'light':          '#181d26',
-  'glass':          '#e7ecf5',
-  'glass-warm':     '#f5ead9',
+  'shadow': '#f0f0f6',
 }
 
 try {

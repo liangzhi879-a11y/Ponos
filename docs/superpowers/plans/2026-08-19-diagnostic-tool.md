@@ -368,7 +368,7 @@ git commit -m "feat(diag): bridge 诊断埋点（首token/内核崩溃/API成功
 
 **Interfaces:**
 - Consumes:
-  - `logTee`（Task 2 全局）；`process.env.PONOS_BRIDGE_PORT || '51309'`
+  - `logTee`（Task 2 全局）；`process.env.PONOS_BRIDGE_PORT || '51311'`
   - bridge `/diag/info`（Task 3，可选——取不到时 kernel-session/provider-reach/kernel-crash 返回 unknown）
   - `ctx`（由 main.cjs 注入）：`{ appPaths: { kernel, bun, python }, executorStatus: () => Promise<{connected:boolean, windows:number}>, petAlive: () => boolean, gpuCrashCount: () => number, renderCrashCount: () => number, bridgeRestartCount: () => number }`
 - Produces:
@@ -512,7 +512,7 @@ function runProbe(cmdArgs, ms) {
   })
 }
 
-function createDiagMonitor({ ctx, bridgePort = process.env.PONOS_BRIDGE_PORT || '51309' }) {
+function createDiagMonitor({ ctx, bridgePort = process.env.PONOS_BRIDGE_PORT || '51311' }) {
   let lastSnapshot = null
   let onChange = null
   let timer = null

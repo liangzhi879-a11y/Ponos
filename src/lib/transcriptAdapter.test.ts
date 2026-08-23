@@ -359,13 +359,13 @@ test('fetchTranscript：成功路径（stub fetch 返回原始 entries）', asyn
     })
   }) as any
   try {
-    const r = await fetchTranscript('sess-1', 'C:\\proj', { baseUrl: 'http://localhost:51309', tailFirst: true })
+    const r = await fetchTranscript('sess-1', 'C:\\proj', { baseUrl: 'http://localhost:51311', tailFirst: true })
     assert.equal(r.ok, true)
     assert.equal(r.truncated, true)
     assert.equal(r.messages.length, 2)
     assert.equal(r.skipped, 1) // queue-operation 被转换层跳过
     // URL 参数正确编码（cwd 含反斜杠/冒号）
-    assert.ok(calledUrl.startsWith('http://localhost:51309/transcript/load'))
+    assert.ok(calledUrl.startsWith('http://localhost:51311/transcript/load'))
     assert.ok(calledUrl.includes('sessionId=sess-1'))
     assert.ok(calledUrl.includes('tailFirst=1'))
     assert.ok(calledUrl.includes('cwd=' + encodeURIComponent('C:\\proj')))
@@ -435,7 +435,7 @@ test('loadConversationMessages：多 session 按时间合并排序 + 按 id 去�
   try {
     const msgs = await loadConversationMessages(
       { sessionIds: ['s1', 's2'], cwd: 'C:\\proj' },
-      { baseUrl: 'http://localhost:51309' }
+      { baseUrl: 'http://localhost:51311' }
     )
     assert.equal(msgs.length, 4) // u-1 重复被去重
     const order = msgs.map((m) => m.id)
@@ -458,7 +458,7 @@ test('loadConversationMessages：全部失败 → 回退 extMessages；无兜底
   try {
     const msgs = await loadConversationMessages(
       { sessionIds: ['s1', 's2'], cwd: 'C:\\proj' },
-      { baseUrl: 'http://localhost:51309' }
+      { baseUrl: 'http://localhost:51311' }
     )
     assert.deepEqual(msgs, [])
     const ext: Message[] = [
@@ -466,7 +466,7 @@ test('loadConversationMessages：全部失败 → 回退 extMessages；无兜底
     ]
     const withExt = await loadConversationMessages(
       { sessionIds: ['s1', 's2'], cwd: 'C:\\proj', extMessages: ext },
-      { baseUrl: 'http://localhost:51309' }
+      { baseUrl: 'http://localhost:51311' }
     )
     assert.equal(withExt, ext)
   } finally {
@@ -497,7 +497,7 @@ test('loadConversationMessages：并发限制 2（最大同时 in-flight ≤2）
   try {
     const msgs = await loadConversationMessages(
       { sessionIds: ['1', '2', '3', '4', '5'], cwd: 'C:\\proj' },
-      { baseUrl: 'http://localhost:51309' }
+      { baseUrl: 'http://localhost:51311' }
     )
     assert.equal(msgs.length, 5)
     assert.ok(maxInFlight <= 2, `并发超限: ${maxInFlight}`)

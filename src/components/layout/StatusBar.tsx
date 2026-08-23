@@ -1,4 +1,4 @@
-import { Shield, Cpu, Wifi, WifiOff, Activity } from 'lucide-react'
+import { Shield, Cpu, Wifi, WifiOff, Activity, Gamepad2 } from 'lucide-react'
 import { useChatStore } from '@/stores/chatStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { usePonosCLI } from '@/hooks/usePonosCLI'
@@ -63,6 +63,64 @@ export function StatusBar() {
     if (n < 1000) return `${n}`
     if (n < 1000000) return `${(n / 1000).toFixed(0)}K`
     return `${(n / 1000000).toFixed(1)}M`
+  }
+
+  // SHADOW 主题：游戏底部操作条（手柄按键风格）
+  if (settings.theme === 'shadow') {
+    return (
+      <footer className="h-9 flex items-center justify-between px-4 border-t bg-app text-xs shrink-0 relative">
+        {/* 左：连接/模型/任务 */}
+        <div className="flex items-center gap-2">
+          <span
+            className={cn(
+              'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs select-none',
+              connected ? 'text-success bg-success-subtle' : 'text-error bg-error-subtle',
+            )}
+          >
+            {connected ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
+            <span>{connected ? t('statusBar.connected') : t('statusBar.disconnected')}</span>
+          </span>
+          <span className="flex items-center gap-1.5 px-2 py-1 rounded-md text-tertiary bg-elevated/50 select-none">
+            <Cpu className="w-3 h-3 text-accent-cyan" />
+            <span>{modelLabel}</span>
+          </span>
+          {runningTasks.length > 0 && (
+            <span className="flex items-center gap-1.5 px-2 py-1 rounded-md text-warning bg-warning-subtle select-none">
+              <Activity className="w-3 h-3 animate-pulse" />
+              <span>{runningTasks.length} tasks</span>
+            </span>
+          )}
+        </div>
+
+        {/* 右：手柄操作提示（Sélectionner ○ / Quitter ●）+ 数据 */}
+        <div className="flex items-center gap-4">
+          <span className="hidden md:flex items-center gap-1.5 text-tertiary select-none">
+            <Gamepad2 className="w-3.5 h-3.5 text-brand-500/80" />
+            <span className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-full border border-accent-cyan inline-block" />
+              <span className="text-accent-cyan">Sélectionner</span>
+            </span>
+            <span className="mx-0.5 text-tertiary/60">·</span>
+            <span className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-full border border-accent-red inline-block relative">
+                <span className="absolute inset-[3px] rounded-full bg-accent-red" />
+              </span>
+              <span className="text-accent-red">Quitter</span>
+            </span>
+          </span>
+          <StatusItem
+            icon={<span className="text-[10px] font-mono font-bold text-accent-cyan">TK</span>}
+            label={`${t('statusBar.tokens')}: ${totalTokens.toLocaleString()}`}
+            value={formatTokens(totalTokens)}
+          />
+          <StatusItem
+            icon={<Shield className="w-3 h-3 text-brand-500" />}
+            label={`${settings.autoApproveBash ? t('statusBar.autoMode') : t('statusBar.manualMode')}`}
+            value={settings.autoApproveBash ? 'Auto' : 'Manual'}
+          />
+        </div>
+      </footer>
+    )
   }
 
   return (

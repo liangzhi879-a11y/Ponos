@@ -32,7 +32,6 @@ export function HealthMeter({ conversationId }: { conversationId: string }) {
   const health = useHealthStore(s => s.healthBySession[conversationId]) ?? null
   const summaryCompactCount = useHealthStore(s => s.summaryCompactCountBySession[conversationId]) ?? 0
   const theme = useSettingsStore(s => s.settings.theme)
-  const isGlass = theme === 'glass' || theme === 'glass-warm'
   const [flash, setFlash] = useState(false)
   const prevCount = useRef(summaryCompactCount)
 
@@ -59,7 +58,7 @@ export function HealthMeter({ conversationId }: { conversationId: string }) {
     <Tooltip content={label}>
       <div className="absolute left-0 right-0 top-[1.5px] bottom-[1.5px] z-0 flex items-center px-1">
         <div
-          className={cn('health-meter', isGlass && 'health-meter-glass')}
+          className={cn('health-meter')}
           style={{ ['--meter-glow' as string]: GLOW_COLOR[color] }}
         >
           {/* 压缩脉冲挂 fill：scaleX 压扁只作用于填充层（轨道不随之变形） */}

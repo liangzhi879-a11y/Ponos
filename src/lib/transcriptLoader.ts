@@ -2,7 +2,7 @@
 // 取回原始 entry 数组后交给 transcriptAdapter 转成 GUI Message。
 //
 // bridge 端口封装在 src/lib/config.ts 的 getBridgeUrl()（Vite define __BRIDGE_PORT__，
-// 默认 51309），这里直接复用，不硬编码端口。baseUrl 可注入以便单元测试/联调。
+// 默认 51311），这里直接复用，不硬编码端口。baseUrl 可注入以便单元测试/联调。
 
 import { getBridgeUrl } from './config.ts'
 import { entriesToMessages, cropMessages } from './transcriptAdapter.ts'

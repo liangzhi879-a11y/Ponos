@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync
 import { spawnSync } from 'node:child_process'
 import { PERSONAL_DIR, hashLine } from './experience.mjs'
 
-const HOME = process.env.PONOS_TEST_HOME || homedir()
+// 测试注入 HOME：PONOS_TEST_HOME 重定向；dev 版 PONOS_HOME 隔离域
+const HOME = process.env.PONOS_TEST_HOME || process.env.PONOS_HOME || homedir()
 const PONOS_HOME = join(HOME, '.ponos')
 const SKILL_EXP_DIR = join(PONOS_HOME, 'memory', 'skill_experiences')
 const SKILLS_DIR = join(PONOS_HOME, 'skills')

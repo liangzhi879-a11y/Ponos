@@ -38,7 +38,7 @@ Ponos 现有网页操作能力为 Python Playwright 沙箱（yfwweb-* 技能）�
 │    ├─ spawn/监管 bridge（既有）
 │    └─ 自动化窗口（按会话分区 lazily 创建）+ webContents.debugger（CDP）
 │        ▲ WS 客户端（新增，注册 browser-executor 通道，复用 bridge 健康重连）
-├─ bridge (node 51309) ───────── 新增路由：browser:exec 请求/响应中继 + browser:event 广播
+├─ bridge (node 51311) ───────── 新增路由：browser:exec 请求/响应中继 + browser:event 广播
 │        ▲ WS（会话）
 └─ kernel (bun, 每会话一个) ──── 新增 `browser` 工具：LLM 决策环（纯文本快照驱动）
 ```

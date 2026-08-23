@@ -35,7 +35,7 @@
 
 ```
 Electron 主进程 (electron/main.cjs, node server/bridge.mjs)
-  └─ bridge (WS:51309 + HTTP) ──stdio──▶ bun 内核 (kernel/cli.mjs, 每个会话一个进程)
+  └─ bridge (WS:51311 + HTTP) ──stdio──▶ bun 内核 (kernel/cli.mjs, 每个会话一个进程)
                                           ├─ CLAUDE_CONFIG_DIR 重定向到 ~/.ponos
                                           ├─ 会话 transcript 落盘 ~/.ponos/projects/ (896MB)
                                           ├─ 子 agent 输出经 diskOutput.ts 写盘（上限 5GB/task）

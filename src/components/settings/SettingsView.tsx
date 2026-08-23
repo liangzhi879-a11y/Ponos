@@ -14,8 +14,7 @@ import { cn, formatShortcut, shortcutFromEvent } from '@/lib/utils'
 import { fetchSkills } from '@/lib/skills'
 import { fetchBridgeConfig, saveBridgeConfig, addProvider, deleteProvider, testProviderConnection } from '@/lib/config'
 import { ExperiencePanel } from '@/components/settings/ExperiencePanel'
-import type { AppSettings, ModelProvider, PonosConfigV2 } from '@/types'
-import { THEMES, type ThemeMode, type ThemeMeta, type Language } from '@/types'
+import type { AppSettings, ModelProvider, PonosConfigV2, Language } from '@/types'
 
 type Section = 'general' | 'model' | 'skills' | 'pet' | 'experience' | 'about'
 
@@ -116,14 +115,6 @@ export function SettingsView() {
 
                   <div className="h-px bg-elevated" />
 
-                  <ThemePicker
-                    value={settings.theme}
-                    onChange={t => updateSettings({ theme: t })}
-                    t={t}
-                  />
-
-                  <div className="h-px bg-elevated" />
-
                   <div>
                     <h3 className="text-sm font-semibold text-primary mb-3">{t('settings.appearance')}</h3>
                     <div className="space-y-3">
@@ -138,63 +129,6 @@ export function SettingsView() {
                           ))}
                         </select>
                       </SettingRow>
-
-                      {/* Glass 磨砂玻璃设置 —— 仅 glass / glass-warm 主题显示 */}
-                      {(settings.theme === 'glass' || settings.theme === 'glass-warm') && (
-                        <>
-                          <div>
-                            <label className="flex items-center justify-between py-1">
-                              <div>
-                                <span className="text-sm text-secondary">{t('settings.glassOpacity')}</span>
-                                <p className="text-[10px] text-tertiary mt-0.5">{t('settings.glassOpacityDesc')}</p>
-                              </div>
-                              <div className="flex items-center gap-2 shrink-0">
-                                <input
-                                  type="range"
-                                  min="0.3"
-                                  max="0.98"
-                                  step="0.05"
-                                  value={settings.glassOpacity}
-                                  onChange={e => updateSettings({ glassOpacity: Number(e.target.value) })}
-                                  className="w-32 accent-brand-500"
-                                />
-                                <span className="text-xs text-primary w-10 text-right tabular-nums">{Math.round(settings.glassOpacity * 100)}%</span>
-                              </div>
-                            </label>
-                          </div>
-                          <label className="flex items-center justify-between py-1">
-                            <div>
-                              <span className="text-sm text-secondary">{t('settings.glassAurora')}</span>
-                              <p className="text-[10px] text-tertiary mt-0.5">{t('settings.glassAuroraDesc')}</p>
-                            </div>
-                            <Switch
-                              checked={settings.glassAurora}
-                              onCheckedChange={v => updateSettings({ glassAurora: v })}
-                            />
-                          </label>
-                          {/* plan §3 步骤 7 — 玻璃色调滑块（仅玻璃主题） */}
-                          <div>
-                            <label className="flex items-center justify-between py-1">
-                              <div>
-                                <span className="text-sm text-secondary">{t('settings.glassHueShift')}</span>
-                                <p className="text-[10px] text-tertiary mt-0.5">{t('settings.glassHueShiftDesc')}</p>
-                              </div>
-                              <div className="flex items-center gap-2 shrink-0">
-                                <input
-                                  type="range"
-                                  min="-180"
-                                  max="180"
-                                  step="5"
-                                  value={settings.glassHueShift}
-                                  onChange={e => updateSettings({ glassHueShift: Number(e.target.value) })}
-                                  className="w-32 accent-brand-500"
-                                />
-                                <span className="text-xs text-primary w-10 text-right tabular-nums">{settings.glassHueShift}°</span>
-                              </div>
-                            </label>
-                          </div>
-                        </>
-                      )}
 
                       {/* 极速形态 —— 任意主题生效 */}
                       <label className="flex items-center justify-between py-1">
@@ -1047,180 +981,5 @@ function ShortcutCapture({ t, value, onChange }: {
         {t('settings.interjectShortcutReset')}
       </button>
     </div>
-  )
-}
-
-function ThemePicker({ value, onChange, t }: { value: ThemeMode; onChange: (t: ThemeMode) => void; t: (key: string) => string }) {
-  const activeTheme = THEMES.find(theme => theme.id === value) ?? THEMES[0]
-  return (
-    <div>
-      <div className="flex items-baseline justify-between mb-3">
-        <h3 className="text-sm font-semibold text-primary">{t('settings.theme')}</h3>
-        <span className="text-[10px] text-tertiary uppercase tracking-wider">
-          {activeTheme.name}{activeTheme.variant ? ` · ${activeTheme.variant}` : ''} {activeTheme.isDefault ? `· ${t('common.default')}` : ''} · 6 themes · 1+3+2
-        </span>
-      </div>
-      {([
-        { key: 'brand' as const, label: t('themeGroup.brand') },
-        { key: 'solid' as const, label: t('themeGroup.solid') },
-        { key: 'glass' as const, label: t('themeGroup.glass') },
-      ]).map(g => (
-        <div key={g.key}>
-          <h4 className="text-[10px] font-semibold text-tertiary uppercase tracking-wider mt-3 mb-2">
-            {g.label} · {THEMES.filter(th => th.category === g.key).length}
-          </h4>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {THEMES.filter(th => th.category === g.key).map(theme => (
-              <ThemePreviewCard
-                key={theme.id}
-                theme={theme}
-                active={value === theme.id}
-                onSelect={() => onChange(theme.id)}
-              />
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function ThemePreviewCard({
-  theme,
-  active,
-  onSelect,
-}: {
-  theme: ThemeMeta
-  active: boolean
-  onSelect: () => void
-}) {
-  return (
-    <button
-      onClick={onSelect}
-      className={cn(
-        'group relative text-left rounded-xl overflow-hidden transition-all duration-200',
-        'border focus:outline-none',
-        active
-          ? 'border-brand-500/50 shadow-accent-md'
-          : 'border hover:border hover:shadow-accent-sm',
-      )}
-      aria-pressed={active}
-    >
-      {/* Preview swatch — miniature "app" rendered with this theme's tokens */}
-      <div
-        className="relative h-28 overflow-hidden"
-        style={{ background: theme.surface }}
-      >
-        {/* faux sidebar */}
-        <div
-          className="absolute left-0 top-0 bottom-0 w-9 border-r"
-          style={{
-            background: `color-mix(in srgb, ${theme.surface} 80%, black 20%)`,
-            borderColor: `color-mix(in srgb, ${theme.primary} 18%, transparent)`,
-          }}
-        >
-          <div className="p-1.5 space-y-1">
-            <div className="w-full h-1.5 rounded-sm" style={{ background: theme.primary, opacity: 0.85 }} />
-            <div className="w-3/4 h-1 rounded-sm" style={{ background: theme.primary, opacity: 0.25 }} />
-            <div className="w-2/3 h-1 rounded-sm" style={{ background: theme.primary, opacity: 0.18 }} />
-            <div className="w-1/2 h-1 rounded-sm" style={{ background: theme.primary, opacity: 0.12 }} />
-          </div>
-        </div>
-
-        {/* faux accent button */}
-        <div
-          className="absolute right-2 top-2 h-4 px-2 rounded-md text-[8px] font-semibold flex items-center"
-          style={{ background: theme.primary, color: 'var(--text-inverse)' }}
-        >
-          Send
-        </div>
-
-        {/* faux message bubbles */}
-        <div className="absolute left-12 right-2 top-8 space-y-1.5">
-          <div
-            className="h-2 rounded"
-            style={{
-              background: `color-mix(in srgb, ${theme.primary} 22%, transparent)`,
-              width: '78%',
-            }}
-          />
-          <div
-            className="h-2 rounded"
-            style={{
-              background: `color-mix(in srgb, ${theme.primary} 14%, transparent)`,
-              width: '54%',
-            }}
-          />
-          <div
-            className="h-2 rounded"
-            style={{
-              background: `color-mix(in srgb, ${theme.primary} 18%, transparent)`,
-              width: '66%',
-            }}
-          />
-        </div>
-
-        {/* primary swatch dot — bottom right */}
-        <div className="absolute right-2 bottom-2 flex gap-1">
-          <div
-            className="w-3 h-3 rounded-full ring-1 ring-white/20"
-            style={{ background: theme.primary }}
-            title={theme.primary}
-          />
-          <div
-            className="w-3 h-3 rounded-full ring-1 ring-white/20"
-            style={{ background: theme.deep }}
-            title={theme.deep}
-          />
-        </div>
-
-        {/* active checkmark */}
-        {active && (
-          <div className="absolute top-2 left-2 w-5 h-5 rounded-full flex items-center justify-center"
-               style={{ background: theme.primary, color: 'var(--text-inverse)' }}>
-            <Check className="w-3 h-3" strokeWidth={3} />
-          </div>
-        )}
-
-        {/* default badge */}
-        {theme.isDefault && !active && (
-          <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wider flex items-center gap-0.5"
-               style={{
-                 background: 'rgba(0,0,0,0.55)',
-                 color: theme.primary,
-                 backdropFilter: 'blur(4px)',
-               }}>
-            <Sparkles className="w-2.5 h-2.5" />
-            default
-          </div>
-        )}
-      </div>
-
-      {/* meta */}
-      <div className="px-3 py-2.5 bg-surface border-t border-subtle">
-        <div className="flex items-center justify-between">
-          <div className="flex items-baseline gap-1.5 min-w-0">
-            <div className="font-semibold text-sm text-primary truncate">{theme.name}</div>
-            {theme.variant && (
-              <div className="text-[10px] text-tertiary font-medium shrink-0">
-                · {theme.variant}
-              </div>
-            )}
-          </div>
-          <div
-            className="font-mono text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0"
-            style={{
-              background: `${theme.primary}1f`,
-              color: theme.primary,
-            }}
-          >
-            {theme.glyph}
-          </div>
-        </div>
-        <p className="text-[11px] text-tertiary mt-0.5 leading-snug line-clamp-1">
-          {theme.tagline}
-        </p>
-      </div>
-    </button>
   )
 }

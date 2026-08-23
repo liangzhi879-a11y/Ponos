@@ -12,7 +12,7 @@
 │  WebSocket 客户端（src/hooks/usePonosCLI.ts）           │
 │  Electron 壳（electron/main.cjs，主进程/窗口/桥架启停） │
 └──────────────────────────┬──────────────────────────┘
-                           │ WebSocket（ws://127.0.0.1:51309）
+                           │ WebSocket（ws://127.0.0.1:51311）
 ┌──────────────────────────▼──────────────────────────┐
 │  桥架 bridge.mjs（server/，Node）                     │
 │  职责：会话管理、transcript 持久化、内核进程生命周期、 │
@@ -50,7 +50,7 @@ node kernel/cli.mjs --print --output-format stream-json --input-format stream-js
 | transcript 持久化 | 桥架 | 内核 --resume 复用同一文件 |
 | 模型/工具初始化 | 内核 | init 事件上报 model/tools/skills |
 | 版本三源（kernelVersion/schemaVersion/buildId） | 内核产出 → 桥架采集 | init 事件 `version` 字段 |
-| WebSocket 服务 | 桥架 | 默认 51309（dev 版 51310） |
+| WebSocket 服务 | 桥架 | 默认 51311（dev 版 51310） |
 
 ## 4. 版本实体（三条独立版本线）
 
@@ -71,7 +71,7 @@ node kernel/cli.mjs --print --output-format stream-json --input-format stream-js
 | 维度 | 正式版 | dev 调试版（Ponos-dev-3.0.0） |
 |---|---|---|
 | home | `~/.ponos` | `~/.ponos-dev`（PONOS_HOME 注入） |
-| bridge 端口 | 51309 | 51310（PONOS_BRIDGE_PORT 注入） |
+| bridge 端口 | 51311 | 51310（PONOS_BRIDGE_PORT 注入） |
 | 内核来源 | 正式 runtime | 源码直跑或 bootstrap 到 dev home runtime |
 | 启动入口 | Ponos.vbs | Ponos-dev-3.0.0/Ponos.vbs |
 
