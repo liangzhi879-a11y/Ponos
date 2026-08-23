@@ -27,7 +27,7 @@ yfwturbo 内核以 ~3000 行 JS（13 文件）实现成熟项目（claude-code 4
 
 **已具备（生产可用基础）**：
 - 完整 agent 循环：engine.mjs（555 行）——工具执行/审批/重试退避（P0-1 指数退避+jitter，对照 pi）/流式
-- 10 工具：Bash / Read / Write / Edit / Glob / Grep / Agent / Task / TodoWrite / WebFetch / OCR
+- 15 工具：Bash / Read / Write / Edit / Glob / Grep / Agent / Task / TodoWrite / WebFetch / WebSearch / OCR / Vision / Skill / Browser
 - 会话持久化 session.mjs（JSONL transcript）+ `--resume` 恢复
 - 上下文压缩 compact.mjs（275 行）+ 工具结果裁剪（CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES）
 - 权限：highrisk.mjs（33 行）+ permissions.mjs（26 行）硬编码高危命令匹配

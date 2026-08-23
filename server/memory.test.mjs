@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, mkdirSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { appendMemoryEntry, readMemoryEntries, buildMemoryIndex, captureMemoryCandidates, hashLine } from '../kernel/memory.mjs'
+import { appendMemoryEntry, readMemoryEntries, buildMemoryIndex, buildRelevantMemory, captureMemoryCandidates, hashLine } from '../kernel/memory.mjs'
 
 const tmp = mkdtempSync(join(tmpdir(), 'yfw-mem-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
@@ -52,6 +52,38 @@ test('captureMemoryCandidates：纠错 → workflow / 偏好 → communication',
   assert.deepEqual(captureMemoryCandidates({ userText: '以后不要用 sed 改文件' }).map((c) => c.theme), ['workflow'])
   assert.deepEqual(captureMemoryCandidates({ userText: '我习惯先读文件再改' }).map((c) => c.theme), ['communication'])
   assert.deepEqual(captureMemoryCandidates({ userText: '实现导出功能' }), [])
+})
+
+test('captureMemoryCandidates：分级沉淀——业务要点按标签推断主题；流程要点落 workflow', () => {
+  // 业务事实（记住/必须走）+ 申报标签 → project-application
+  const fact = captureMemoryCandidates({ userText: '记住：研发费用专审要按三年分别列示', tag: '高企认定' })
+  assert.equal(fact.length, 1)
+  assert.equal(fact[0].theme, 'project-application')
+  assert.match(fact[0].summary, /业务要点/)
+  // 流程要点（流程是/标准做法）→ workflow，且不与 fact 重复
+  const wf = captureMemoryCandidates({ userText: '流程是：先抓清单再批量下载附件' })
+  assert.equal(wf.length, 1)
+  assert.equal(wf[0].theme, 'workflow')
+  assert.match(wf[0].summary, /流程要点/)
+  // 短文本不触发流程捕获（防噪音）
+  assert.deepEqual(captureMemoryCandidates({ userText: '先保存' }), [])
+})
+
+test('buildRelevantMemory：关键词触发抽调——命中条目注入全文，无关关键词返回空', () => {
+  const root = join(tmp, 'mem3')
+  mkdirSync(root, { recursive: true })
+  appendMemoryEntry({ root, theme: 'project-application', tag: '高企认定', summary: '研发费用占比核查口径', full: '近三年研发费用占销售收入比例须达标，材料按三年分别列示' })
+  appendMemoryEntry({ root, theme: 'workflow', tag: '材料压缩', summary: 'PDF 压缩用 gs', full: 'Ghostscript 压缩效果好' })
+  // 命中：标签/摘要含"高企"或"认定" → 全文注入
+  const rel = buildRelevantMemory({ root, keywords: ['高企', '认定'] })
+  assert.ok(rel.includes('【相关经验抽调】'))
+  assert.ok(rel.includes('近三年研发费用占销售收入比例须达标'), '命中条目注入全文')
+  assert.ok(!rel.includes('Ghostscript'), '无关条目不注入')
+  // 无关关键词 → 空
+  assert.equal(buildRelevantMemory({ root, keywords: ['zzz-nothing'] }), '')
+  // 无关键词/无目录 → 空
+  assert.equal(buildRelevantMemory({ root, keywords: [] }), '')
+  assert.equal(buildRelevantMemory({ root: join(tmp, 'no-such'), keywords: ['高企'] }), '')
 })
 
 import { composeSystemPrompt } from '../kernel/prompt.mjs'

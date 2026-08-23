@@ -14,6 +14,7 @@ import { get as httpsGet, request as httpsRequest } from 'node:https'
 import { get as httpGet, request as httpRequest } from 'node:http'
 import { matchesHighRisk } from './highrisk.mjs'
 import { discoverSkillsAll, loadSkillContent } from './skills.mjs'
+import { getProvider } from './provider.mjs'
 
 // R2-1 活跃子进程登记：Bash/OCR spawn 的子进程统一登记，内核退出（SIGINT/TERM）
 // 时 killActiveChildren 兜底清理，防孤儿进程。child 'close' 后自动移除。
@@ -493,6 +494,108 @@ function htmlToText(html) {
 }
 
 // ---------------------------------------------------------------------------
+// WebSearch：经 Anthropic 兼容端点的原生 web_search server tool 执行搜索。
+// 零新依赖——复用 provider（ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL），参考
+// deepseek-harness web-search-deepseek provider 的 wire 契约：POST /v1/messages，
+// body 带 tools:[{type:'web_search_20250305', name:'web_search', max_uses}]，
+// 解析 web_search_tool_result 块（url/title/page_age）+ text 块 citations
+// （cited_text 作 snippet，url 首见优先）。
+// ---------------------------------------------------------------------------
+const WEB_SEARCH_TIMEOUT_MS = 30_000
+const WEB_SEARCH_MAX_USES = 5
+const WEB_SEARCH_MAX_TOKENS = 4096
+
+// mock：YFW_MOCK_API=1 时返回固定结果（测试零依赖，验证格式链路）
+function webSearchMock(query) {
+  return {
+    content: [
+      `【WebSearch · mock】query=${query}`,
+      '',
+      'Sources:',
+      '- [Mock Source One](https://example.com/1) — mock 摘要一',
+      '- [Mock Source Two](https://example.com/2) — mock 摘要二',
+    ].join('\n'),
+    isError: false,
+  }
+}
+
+// Anthropic Messages 响应 → 来源列表（与 deepseek-harness mapAnthropicResponse 同构）
+function formatWebSearchResult(payload, query) {
+  const blocks = payload?.content || []
+  const resultBlocks = blocks.filter((b) => b.type === 'web_search_tool_result')
+  if (!resultBlocks.length) {
+    return { content: `搜索「${query}」未返回结果块（端点可能未触发原生搜索）——可尝试换关键词，或改用 WebFetch 抓取已知 URL`, isError: false }
+  }
+  const snippets = new Map()
+  for (const b of blocks) {
+    if (b.type !== 'text') continue
+    for (const cite of b.citations || []) {
+      if (cite?.url && cite?.cited_text && !snippets.has(cite.url)) snippets.set(cite.url, cite.cited_text)
+    }
+  }
+  const seen = new Set()
+  const lines = []
+  for (const rb of resultBlocks) {
+    for (const item of rb.content || []) {
+      if (item?.type !== 'web_search_result' || !item?.url || seen.has(item.url)) continue
+      seen.add(item.url)
+      const meta = []
+      if (snippets.get(item.url)) meta.push(snippets.get(item.url))
+      if (item.page_age) meta.push(`(${item.page_age})`)
+      lines.push(`- [${item.title || item.url}](${item.url})${meta.length ? ` — ${meta.join(' ')}` : ''}`)
+    }
+  }
+  if (!lines.length) return { content: `搜索「${query}」无结果`, isError: false }
+  return { content: `搜索「${query}」结果：\n\nSources:\n${lines.join('\n')}\n\n（引用来源时按上述 URL 标注 markdown 链接）`, isError: false }
+}
+
+async function webSearch(query) {
+  const q = String(query || '').trim()
+  if (!q) return { content: 'query 不能为空：请提供搜索关键词', isError: true }
+  if (process.env.YFW_MOCK_API === '1') return webSearchMock(q)
+  const p = getProvider()
+  const base = p.baseUrl
+  const token = p.authToken
+  const model = p.model || process.env.ANTHROPIC_MODEL || ''
+  if (!base || !token) return { content: 'WebSearch 需要配置 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN（与主对话同一 provider 端点）', isError: true }
+  const url = base.replace(/\/+$/, '') + '/v1/messages'
+  let res
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': token,
+        'authorization': `Bearer ${token}`,
+        'anthropic-version': '2023-06-01',
+        'accept': 'application/json',
+        'user-agent': 'YFW-turbo/0.1',
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: WEB_SEARCH_MAX_TOKENS,
+        messages: [{ role: 'user', content: [{ type: 'text', text: `Perform a web search for the query: ${q}` }] }],
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: WEB_SEARCH_MAX_USES }],
+      }),
+      signal: AbortSignal.timeout(WEB_SEARCH_TIMEOUT_MS),
+    })
+  } catch (e) {
+    return { content: `WebSearch 请求失败：${e.message}（网络/端点不可达；如目标 URL 已知可改用 WebFetch 直接抓取）`, isError: true }
+  }
+  if (!res.ok) {
+    let detail = ''
+    try {
+      const j = await res.json()
+      detail = j?.error?.message || j?.error?.type || ''
+    } catch {}
+    return { content: `WebSearch 端点返回 HTTP ${res.status}${detail ? `：${detail}` : ''}——当前端点可能不支持原生 web_search 工具，勿重试；如需抓取已知 URL 请用 WebFetch`, isError: true }
+  }
+  let payload
+  try { payload = await res.json() } catch { return { content: 'WebSearch 响应解析失败（非 JSON）', isError: true } }
+  return formatWebSearchResult(payload, q)
+}
+
+// ---------------------------------------------------------------------------
 // OCR：扫描件识别。内核保持零 npm 依赖——OCR 能力来自外部 python 引擎
 // （RapidOCR/PP-OCRv4，见 ~/.claude/skills/_common/ocr_engine.py），工具仅负责
 // 定位引擎、传参、解析输出。引擎探测：YFW_OCR_ENGINE env 覆盖 → 常见技能路径。
@@ -636,6 +739,95 @@ async function ocrFile(filePath, allowDirs, input = {}, skipBoundary) {
     return { content: body || `OCR 未识别到文本（${filePath}）`, isError: false, meta }
   } catch (e) {
     return { content: `OCR 失败：${e.message}`, isError: true }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Vision：图片语义理解。走独立视觉模型端点（YFW_VISION_BASE_URL/MODEL/
+// AUTH_TOKEN，bridge buildChildEnv 已注入；visionFromEnv 上报同源），Anthropic
+// 兼容 /v1/messages 带 image block。零新依赖。OCR 是"提取文字"，Vision 是
+// "看图说话"（版面/物体/图表趋势/设计风格等语义），两者互补不替代。
+// ---------------------------------------------------------------------------
+const VISION_TIMEOUT_MS = 60_000
+const VISION_MAX_TOKENS = 2048
+const VISION_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+const VISION_IMAGE_EXTS = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' }
+
+// mock：YFW_MOCK_API=1 时返回固定文本（测试零依赖，验证边界/参数链路）
+function visionMock(filePath, instruction) {
+  return { content: `【Vision · mock】${filePath}\n描述：${instruction}`, isError: false }
+}
+
+async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
+  try {
+    if (!filePath) return { content: 'file_path 缺失', isError: true }
+    if (!skipBoundary && !withinBoundary(filePath, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${filePath}）`, isError: true }
+    if (!existsSync(filePath)) return { content: `文件不存在：${filePath}`, isError: true }
+    if (statSync(filePath).isDirectory()) return { content: `是目录：${filePath}`, isError: true }
+    const ext = extname(filePath).toLowerCase()
+    const mediaType = VISION_IMAGE_EXTS[ext]
+    if (!mediaType) {
+      return { content: `Vision 仅支持 PNG/JPEG/WebP/GIF 图片（${ext || '无扩展名'} 不支持）——PDF/扫描件用 OCR 提取文字，文本文件用 Read`, isError: true }
+    }
+    const instruction = String(input?.instruction || '').trim() || '详细描述这张图片的内容（版面、物体、图表、文字），并总结其表达的核心信息'
+    const bytes = readFileSync(filePath)
+    if (bytes.length > VISION_MAX_IMAGE_BYTES) {
+      return { content: `图片过大（${(bytes.length / 1024 / 1024).toFixed(1)}MB > 20MB），请先压缩或用 OCR 提取文字`, isError: true }
+    }
+    if (process.env.YFW_MOCK_API === '1') return visionMock(filePath, instruction)
+    const base = (process.env.YFW_VISION_BASE_URL || '').replace(/\/+$/, '')
+    const model = process.env.YFW_VISION_MODEL || ''
+    const token = process.env.YFW_VISION_AUTH_TOKEN || ''
+    if (!base || !model || !token) {
+      return { content: 'Vision 未配置：需设置 YFW_VISION_BASE_URL / YFW_VISION_MODEL / YFW_VISION_AUTH_TOKEN（GUI 设置中选中视觉模型后由 bridge 注入）。需要提取图中文字时可先用 OCR', isError: true }
+    }
+    let res
+    try {
+      res = await fetch(base + '/v1/messages', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': token,
+          'authorization': `Bearer ${token}`,
+          'anthropic-version': '2023-06-01',
+          'accept': 'application/json',
+          'user-agent': 'YFW-turbo/0.1',
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: VISION_MAX_TOKENS,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: mediaType, data: bytes.toString('base64') } },
+              { type: 'text', text: instruction },
+            ],
+          }],
+        }),
+        signal: AbortSignal.timeout(VISION_TIMEOUT_MS),
+      })
+    } catch (e) {
+      return { content: `Vision 请求失败：${e.message}（网络/端点不可达）`, isError: true }
+    }
+    if (!res.ok) {
+      let detail = ''
+      try {
+        const j = await res.json()
+        detail = j?.error?.message || j?.error?.type || ''
+      } catch {}
+      return { content: `Vision 端点返回 HTTP ${res.status}${detail ? `：${detail}` : ''}——检查 YFW_VISION_* 配置；如需图中文字可改用 OCR`, isError: true }
+    }
+    let payload
+    try { payload = await res.json() } catch { return { content: 'Vision 响应解析失败（非 JSON）', isError: true } }
+    const text = (payload?.content || [])
+      .filter((b) => b?.type === 'text')
+      .map((b) => b.text)
+      .join('\n')
+      .trim()
+    if (!text) return { content: 'Vision 模型未返回文本描述', isError: false }
+    return { content: `[Vision] ${filePath}\n${text}`, isError: false }
+  } catch (e) {
+    return { content: `Vision 失败：${e.message}`, isError: true }
   }
 }
 
@@ -840,6 +1032,20 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutside
       },
       run: (input) => fetchUrl(String(input?.url || '')),
     },
+    // 网络搜索：经 Anthropic 兼容端点原生 web_search server tool（零新依赖）
+    WebSearch: {
+      description: '搜索互联网获取最新信息（当前 provider 端点原生 web_search 能力；30s 超时）。返回带摘要的来源列表（url/title/snippet），需全文时用 WebFetch 跟进。适合查最新政策/新闻/文档/API 变更等时效信息；搜索无结果或端点不支持时返回提示（勿盲目重试，可换关键词或改用 WebFetch 抓已知 URL）',
+      concurrencySafe: true,
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          query: { type: 'string', description: '搜索关键词（一句话或关键词组合）' },
+        },
+        required: ['query'],
+      },
+      run: (input) => webSearch(String(input?.query || '')),
+    },
     // 扫描件 OCR（spawn python 调 ocr_engine.py；PDF/图片均可；结果按 project 缓存）
     OCR: {
       description: '对扫描件 PDF 或图片执行 OCR 文字识别（mode=text 提取全文；mode=table 额外识别表格，仅 PDF 有效；结果按 project 缓存，重复识别秒回）。首次调用需加载识别模型，可能耗时数十秒——属正常初始化，勿误判卡死或重复调用。边界限制：仅可识别当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标文件位于会话目录内（若在会话外，先请用户将文件放入会话目录或经 --add-dir 挂载，不要盲目重试）。',
@@ -854,6 +1060,21 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutside
         required: ['file_path'],
       },
       run: (input) => ocrFile(String(input?.file_path ?? ''), allowDirs, input, skipBoundary),
+    },
+    // 图片语义理解：独立视觉模型端点（YFW_VISION_*；GUI 设置选中后注入）
+    Vision: {
+      description: '用视觉模型理解图片内容（版面/物体/图表趋势/设计风格/图中文字语义；60s 超时；PNG/JPEG/WebP/GIF，≤20MB）。与 OCR 互补：OCR 提取文字，Vision 看图说话。未配置视觉模型时返回配置指引（勿重试，需先在应用设置中选中视觉模型）。边界限制：仅可识别当前会话目录及其挂载目录内的文件（同 Read/OCR）',
+      concurrencySafe: true,
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          file_path: { type: 'string', description: '要理解的图片绝对路径（PNG/JPEG/WebP/GIF）' },
+          instruction: { type: 'string', description: '可选：理解指令（缺省为详细描述图片内容）' },
+        },
+        required: ['file_path'],
+      },
+      run: (input) => visionDescribe(String(input?.file_path ?? ''), allowDirs, input, skipBoundary),
     },
     // 技能加载：从技能根目录（--add-dir，与提示词【可用技能】块同数据源）读取
     // SKILL.md 全文作为任务指引。只读工具，可并行加载多个技能；模型可在同一

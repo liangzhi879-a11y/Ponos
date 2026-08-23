@@ -19,7 +19,7 @@ import { createInterface } from 'node:readline'
 import { readFileSync, existsSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 import { createEngine } from './engine.mjs'
 import { resolveConfigDir, sharedDirFor } from './config.mjs'
 import { killActiveChildren } from './tools.mjs'
@@ -30,7 +30,7 @@ import { createHealth } from './health.mjs'
 import { createCompactor, extractKeyInfo, buildSessionMemoryText } from './compact.mjs'
 import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
 import { resolveCompactSettings } from './compact.mjs'
-import { memoryRoot, buildMemoryIndex, captureMemoryCandidates, appendMemoryEntry } from './memory.mjs'
+import { memoryRoot, buildMemoryIndex, buildRelevantMemory, captureMemoryCandidates, appendMemoryEntry } from './memory.mjs'
 import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
 import { discoverSkills } from './skills.mjs'
 import { loadSettings } from './settings.mjs'
@@ -227,9 +227,25 @@ export async function main(argv) {
       if (!seenSkillIds.has(s.id)) { seenSkillIds.add(s.id); skills.push(s) }
     }
   }
-  // L3-2：记忆索引注入（与 GUI 经验面板同一数据源；settings.memory.inject=false 逃生阀）
+  // L3-2：记忆注入（与 GUI 经验面板同一数据源；settings.memory.inject=false 逃生阀）。
+  // 两级注入：buildRelevantMemory 按当前任务上下文关键词抽调相关经验全文（模型直接
+  // 可用），buildMemoryIndex 给全量索引指针（模型按需 Read）。任务关键词 = cwd/
+  // addDirs 目录名 + 显式任务标签（settings.memory.taskTag / env YFW_MEMORY_KEYWORDS，
+  // 逗号分隔可追加）。YFW_MEMORY_INJECT=index-only 时仅索引（旧行为）。
   const memoryRootDir = memoryRoot(configDir)
-  const memoryBlock = settings.merged.memory?.inject === false ? '' : buildMemoryIndex({ root: memoryRootDir })
+  const injectMode = process.env.YFW_MEMORY_INJECT || 'both'
+  let memoryBlock = ''
+  if (settings.merged.memory?.inject !== false) {
+    if (injectMode !== 'index-only') {
+      const kw = [
+        ...(args.addDirs || []).map((d) => basename(d)).filter(Boolean),
+        ...(settings.merged.memory?.taskTag || '').split(',').map((s) => s.trim()).filter(Boolean),
+        ...(process.env.YFW_MEMORY_KEYWORDS || '').split(',').map((s) => s.trim()).filter(Boolean),
+      ]
+      memoryBlock += buildRelevantMemory({ root: memoryRootDir, keywords: kw })
+    }
+    memoryBlock += buildMemoryIndex({ root: memoryRootDir })
+  }
   // 提示词组装：内核基础行为规范 + 可用子 Agent 区块（内置 ∪ 用户级）+ AGENTS.md
   // 项目指令 + 技能区块 + 记忆索引 + GUI append 文件（最高优先级，后者覆盖前者）。cwd = addDirs[0]。
   engine.setSystemPrompt(composeSystemPrompt({

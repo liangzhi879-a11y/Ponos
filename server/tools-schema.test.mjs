@@ -11,7 +11,7 @@ function reg() {
 
 test('registry 每工具带 input_schema（JSON Schema，additionalProperties:false）', () => {
   const schemas = reg().toolSchemas()
-  assert.deepEqual(schemas.map((s) => s.name), ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'WebFetch', 'OCR', 'Skill', 'Browser'])
+  assert.deepEqual(schemas.map((s) => s.name), ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'WebFetch', 'WebSearch', 'OCR', 'Vision', 'Skill', 'Browser'])
   for (const s of schemas) {
     assert.equal(typeof s.description, 'string')
     assert.ok(s.description.length > 0)
@@ -53,9 +53,14 @@ test('各工具 input_schema 字段与 required 正确', () => {
   assert.ok(byName.Task.input_schema.properties.prompt) // resume 续跑指令
   assert.deepEqual(byName.TodoWrite.input_schema.required, ['todos'])
   assert.deepEqual(byName.WebFetch.input_schema.required, ['url'])
+  assert.deepEqual(byName.WebSearch.input_schema.required, ['query'])
+  assert.ok(byName.WebSearch.input_schema.properties.query)
   assert.deepEqual(byName.OCR.input_schema.required, ['file_path'])
   assert.ok(byName.OCR.input_schema.properties.mode)
   assert.ok(byName.OCR.input_schema.properties.project)
+  assert.deepEqual(byName.Vision.input_schema.required, ['file_path'])
+  assert.ok(byName.Vision.input_schema.properties.file_path)
+  assert.ok(byName.Vision.input_schema.properties.instruction)
   assert.deepEqual(byName.Skill.input_schema.required, ['skill'])
   assert.ok(byName.Skill.input_schema.properties.skill)
 })
@@ -178,7 +183,7 @@ test('Bash（A4）：超长输出截尾保留尾部并带 [truncated] 标记', a
 
 test('disallowedTools 过滤：toolNames/toolSchemas 不含禁用工具，run 直接拒绝', async () => {
   const g = createToolRegistry({ cwd: '/tmp', addDirs: ['/tmp'], skipPermissions: false, disallowedTools: ['Agent', 'Task'] })
-  assert.deepEqual(g.toolNames, ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TodoWrite', 'WebFetch', 'OCR', 'Skill', 'Browser'])
+  assert.deepEqual(g.toolNames, ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TodoWrite', 'WebFetch', 'WebSearch', 'OCR', 'Vision', 'Skill', 'Browser'])
   assert.ok(!g.toolSchemas().some((s) => s.name === 'Agent' || s.name === 'Task'))
   // 被禁工具的执行请求（防绕过工具列表）→ 明确拒绝
   const r = await g.run({ name: 'Agent', input: { subagent_type: 'general-purpose', prompt: 'x' } }, {})
