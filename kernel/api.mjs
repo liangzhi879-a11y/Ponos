@@ -404,11 +404,18 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
   if (!base || !token) throw new Error('内核：ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 未配置')
   const useCache = process.env.YFW_PROMPT_CACHE === '1' && !!system
   const headers = { 'content-type': 'application/json', 'x-api-key': token, 'anthropic-version': '2023-06-01' }
+  // 采样稳定性：默认 temperature=0（贪婪解码，确定性优先，支持该参数的端点生效；
+  // DeepSeek 兼容端点对 temperature 不敏感且不保证 seed 复现，注入无害）。YFW_SEED
+  // 可选固定采样种子（部分端点 temperature=0 + seed 时可复现）。
+  const temperature = Number(process.env.YFW_TEMPERATURE ?? 0)
+  const seedEnv = process.env.YFW_SEED
   // 思考深度：reasoningEffort（low/high/max → reasoning_effort；off → thinking disabled；
   // 缺省 → 不注入，模型原生自适应）
   const body = {
     model,
     max_tokens: maxTokens,
+    ...(Number.isFinite(temperature) ? { temperature } : {}),
+    ...(seedEnv ? { seed: Number(seedEnv) } : {}),
     ...effortParam(reasoningEffort),
     ...(system ? (useCache ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] } : { system }) : {}),
     messages,

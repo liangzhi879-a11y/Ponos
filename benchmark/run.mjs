@@ -34,6 +34,10 @@ const agents = (argVal('--agents') || CONFIG.agents.join(',')).split(',').map((s
 const force = argv.includes('--force')
 const tasksFilter = argVal('--tasks')?.split(',').map((s) => s.trim()).filter(Boolean) || null
 const limit = argVal('--limit') ? Number(argVal('--limit')) : CONFIG.maxTasksPerAgent
+// 多轮稳定评测：--runs N 时每 (agent × task) 跑 N 次，聚合条目取中位数
+// （toolCalls/durationMs），status 全部 pass 才记 pass，各轮原始文件 .r<k> 留档。
+// LLM 采样存在随机性（单次 toolCalls 可波动 ±20），多轮中位数消除噪声后可比。
+const runs = argVal('--runs') ? Math.max(1, Number(argVal('--runs'))) : 1
 const smoke = argv.includes('--smoke')
 // B3 增量续跑：--resume（自动沿用最近结果目录）或 --resume <dir>（指定目录）。
 // 已存在结果的 agent×task 跳过不重跑；返回值以 `--` 开头时视为无值（用最新目录）
@@ -273,6 +277,42 @@ async function main() {
           continue
         }
         await checkControl(label) // 控制检查点：pause 等待 / abort 中断
+        if (runs > 1) {
+          // 多轮稳定评测：跑 N 次，聚合中位数，各轮留档
+          const rounds = []
+          for (let k = 1; k <= runs; k++) {
+            const roundLog = []
+            const rlabel = `${label} round ${k}/${runs}`
+            await checkControl(rlabel)
+            console.log(`[run] ${rlabel} ...`)
+            writeActive(agent, `${task.id}#${k}`)
+            const r = await runOne({ agent, task, ts, onLog: (kk, l) => roundLog.push(`[${kk}] ${l}`) })
+            r.log = roundLog.join('\n').slice(-12000)
+            writeFileSync(join(resultsDir, `${agent}-${task.id}.r${k}.json`), JSON.stringify(r, null, 2))
+            rounds.push(r)
+            console.log(`[run] ${rlabel}: ${r.status} (${r.durationMs}ms)`)
+          }
+          const median = (arr) => {
+            const s = [...arr].sort((a, b) => a - b)
+            const m = Math.floor(s.length / 2)
+            return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2)
+          }
+          const allPass = rounds.every((r) => r.status === 'pass')
+          const agg = {
+            agent, task: task.id, base: task.base, status: allPass ? 'pass' : 'fail',
+            rounds: rounds.map((r) => ({ status: r.status, toolCalls: r.toolCalls, durationMs: r.durationMs })),
+            toolCalls: median(rounds.map((r) => r.toolCalls ?? 0)),
+            durationMs: median(rounds.map((r) => r.durationMs ?? 0)),
+            usage: rounds[0]?.usage ?? null,
+            selfTested: rounds.every((r) => r.selfTested),
+            diff: rounds[0]?.diff ?? null,
+            basePatched: rounds[0]?.basePatched ?? null,
+          }
+          writeFileSync(join(resultsDir, `${agent}-${task.id}.json`), JSON.stringify(agg, null, 2))
+          summary.push(agg)
+          console.log(`[run] ${label}: 聚合 ${allPass ? 'pass' : 'fail'} (中位 ${agg.toolCalls} 工具 / ${agg.durationMs}ms)`)
+          continue
+        }
         console.log(`[run] ${label} ...`)
         writeActive(agent, task.id)
         const r = await runOne({ agent, task, ts, onLog: (k, l) => log.push(`[${k}] ${l}`) })
