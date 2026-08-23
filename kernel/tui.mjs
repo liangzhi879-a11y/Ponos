@@ -593,7 +593,8 @@ function main() {
       }
       case 'thinking': {
         const t = String(m.text || '').replace(/\s+/g, ' ').trim()
-        return ['  ' + c(`${ICONS.think} [思考] `, 'meta') + c(t.length > cols - 16 ? t.slice(0, cols - 19) + '…' : t, 'meta')]
+        const maxW = Math.max(20, cols - 16)
+        return ['  ' + c(`${ICONS.think} [思考] `, 'meta') + c(visWidth(t) > maxW ? trunc(t, maxW) : t, 'meta')]
       }
       case 'tool': {
         const out = []
@@ -606,7 +607,12 @@ function main() {
           if (lines.length > 8) out.push('  ' + c(`└ …（共 ${lines.length} 行，/tool ${m.seq} 折叠）`, 'placeholder'))
         } else {
           const one = r.replace(/\s+/g, ' ').trim()
-          if (one) out.push('  ' + c('└ ' + (one.length > 120 ? one.slice(0, 120) + '…' : one), 'meta'))
+          if (one) {
+            // 折叠预览：按可见宽度换行（不截断丢字），超 6 行提示展开
+            const wlines = wrapText(one, Math.max(4, cols - 6))
+            for (const ln of wlines.slice(0, 6)) out.push('  ' + c('└ ' + ln, 'meta'))
+            if (wlines.length > 6) out.push('  ' + c(`└ …（共 ${wlines.length} 行，/tool ${m.seq} 展开）`, 'placeholder'))
+          }
         }
         return out
       }
