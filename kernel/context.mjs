@@ -51,7 +51,8 @@ export function estimateTokens(block = {}, opts = {}) {
 
 // 消息级：role +4 + 各块合计（string content 视为单 text 块）
 export function estimateMessage(m = {}, opts) {
-  const content = m.content
+  // m?. 防御：旧格式恢复的派生历史可能含 undefined/null 条目（默认参只兜 undefined）
+  const content = m?.content
   if (typeof content === 'string') return 4 + estimateTokens({ type: 'text', text: content }, opts)
   if (Array.isArray(content)) return 4 + content.reduce((s, b) => s + estimateTokens(b, opts), 0)
   return 4
@@ -71,11 +72,13 @@ export function estimateRequest({ system = '', messages = [], opts }) {
   const arr = Array.isArray(messages) ? messages : []
   for (let i = 0; i < arr.length; i++) {
     const m = arr[i]
-    if (i === arr.length - 1 && m.role === 'user') {
+    // 防御：外部传入的 messages 可能含 undefined 条目（旧格式 transcript 恢复等），
+    // 直接访问 m.role/m.content 会抛 "reading 'content'"（2026-08-22 G.content 根因）
+    if (i === arr.length - 1 && m?.role === 'user') {
       task += estimateMessage(m, opts)
       continue
     }
-    if (Array.isArray(m.content) && m.content.some((b) => b?.type === 'tool_result')) {
+    if (Array.isArray(m?.content) && m.content.some((b) => b?.type === 'tool_result')) {
       toolResult += estimateMessage(m, opts)
       continue
     }

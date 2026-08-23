@@ -1,10 +1,15 @@
-// YFW-turbo（yfwturbo）dev 版本管理——单一数据源
+// YFWorking 版本管理——单一数据源
 // ---------------------------------------------------------------------------
-// 所有消费方（TUI banner、/version 命令、kernel init 事件）统一从这里读取，
-// 升级版本号只需改这一个常量。注意：package.json 的 version（2.7.0）是
-// YFWorking GUI 的发布版本线，与此处的 yfwturbo dev 版本线相互独立。
-// 版本规范：dev <major>.<minor>（发布稳定后去掉 dev 前缀）
-export const YFW_VERSION = 'dev 0.1'
+// 三条独立版本线（详见 docs/architecture.md「版本实体」）：
+//   1. APP_VERSION     — YFWorking 应用（turbo 内核版）
+//   2. KERNEL_VERSION  — YFW-Turbo 内核（yfwturbo），独立可运行
+//   3. package.json version — YFWorking GUI 发布线（旧内核稳定版，Vite 注入 __APP_VERSION__）
+// 升级版本号禁止手改，一律走 scripts/bump-version.mjs（自动同步测试期望值/package.json）。
+// 版本规范：dev <major>.<minor>[.<patch>]（发布稳定后去掉 dev 前缀）。
+export const APP_VERSION = 'dev 3.0.0'
+
+// YFW-Turbo 内核版本线（与 kernel/package.json 的 semver 同步，映射规则见 bump 脚本）
+export const KERNEL_VERSION = 'dev 0.1'
 
 // settings 文件 schema 版本（D2-1）：无 schemaVersion 的旧文件视为 v0，读取时沿迁移链升级。
 export const SCHEMA_VERSION = 1

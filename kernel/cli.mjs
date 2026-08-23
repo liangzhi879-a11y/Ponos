@@ -45,7 +45,7 @@ function usage() {
     'YFW-turbo kernel: --print --output-format stream-json --input-format stream-json ' +
     '[--verbose] [--dangerously-skip-permissions] [--auto-approve-high-risk] [--permission-prompt-tool stdio] ' +
     '[--disallowedTools <list>] [--resume <id>] [--append-system-prompt-file <file>] ' +
-    '[--model <m>] [--add-dir <dir>]'
+    '[--model <m>] [--add-dir <dir>] [--allow-outside-dirs]'
   )
 }
 
@@ -64,6 +64,7 @@ export function parseArgs(argv) {
     appendSystemPromptFile: null,
     model: null,
     addDirs: [],
+    allowOutsideDirs: false,
   }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -83,6 +84,7 @@ export function parseArgs(argv) {
       case '--append-system-prompt-file': out.appendSystemPromptFile = next() ?? null; break
       case '--model': out.model = next() ?? null; break
       case '--add-dir': out.addDirs.push(next() ?? ''); break
+      case '--allow-outside-dirs': out.allowOutsideDirs = true; break
       case '--help': case '-h': usage(); process.exit(0); break
       default:
         if (a && !a.startsWith('--')) out.positional = a
@@ -338,9 +340,11 @@ export async function main(argv) {
         wire.result()
       }
     } finally {
-      // L3-1 轮末捕获：命中纠错/偏好模式 → 落盘记忆（默认开，settings.memory.capture=false 关闭）
+      // L3-1 轮末捕获：命中纠错/偏好模式 → 落盘记忆（默认开，settings.memory.capture=false 关闭）。
+      // skipMemoryCapture：插话统一不捕获——工具边界注入路径（engine 内 appendUser）
+      // 本就不经 cli 捕获，兜底成新轮的插话带标记跳过，两条路径行为一致。
       try {
-        if (settings.merged.memory?.capture !== false && content.trim()) {
+        if (settings.merged.memory?.capture !== false && content.trim() && !msg?.skipMemoryCapture) {
           for (const c of captureMemoryCandidates({ userText: content, tag: settings.merged.memory?.taskTag || null, markers: settings.merged.memory?.markers || null })) {
             appendMemoryEntry({ root: memoryRootDir, theme: c.theme, tag: c.tag, summary: c.summary, full: c.full })
           }
@@ -358,10 +362,12 @@ export async function main(argv) {
       } catch { /* 工作记忆写失败不影响主流程 */ }
       state.turnActive = false
       state.cancelling = false
-      // 插话残余兜底：next 消息在纯文本阶段未被工具边界吸收 → 作为新轮处理
+      // 插话残余兜底：next 消息在纯文本阶段未被工具边界吸收 → 作为新轮处理。
+      // skipMemoryCapture 标记：插话不参与记忆捕获（与工具边界注入路径一致，
+      // 见 finally 捕获处注释）
       if (engine.pendingNextCount() > 0) {
         for (const inj of engine.drainNextPending()) {
-          state.queue.push({ message: { role: 'user', content: inj.content } })
+          state.queue.push({ message: { role: 'user', content: inj.content }, skipMemoryCapture: true })
         }
       }
       const nextMsg = state.queue.shift()
@@ -373,9 +379,16 @@ export async function main(argv) {
     const subtype = req?.request?.subtype
     if (subtype === 'cancel') {
       state.cancelling = true
-      engine.abort()
+      // 停止按钮全杀语义（engine.hardStop）：kill 工具子进程（Bash/OCR）+ 中止
+      // 全部后台子 agent + 中断当前 API 流。与打断插入（now，engine.abort()，
+      // 保持审批/浏览器挂起让模型理解新指令后继续）区分。
+      engine.hardStop()
       // 取消语义含丢弃排队输入（用户后续消息不再执行）
       state.queue = []
+      // P8 修复：一并丢弃尚未注入当前轮的排队插话（pendingNext）——否则轮末
+      // finally 会把残余插话 drain 成新轮执行，取消"取消不干净"。drain 返回值
+      // 即丢弃；空转 cancel（turnActive=false）时 pendingNext 必为空，无副作用。
+      engine.drainNextPending()
       // 无活跃轮次时的空转 cancel：直接完成（契约 §8，bridge 依赖 result
       // 复位 _cancelPending；mock 同语义）
       if (!state.turnActive) {
@@ -435,8 +448,17 @@ export async function main(argv) {
     let parsed = null
     try { parsed = JSON.parse(t) } catch { return }
     if (parsed.type === 'user') {
-      if (state.turnActive) state.queue.push(parsed)
-      else void handleUser(parsed)
+      // P8 插话消息（priority:'next'/'now'）在轮次活跃时必须进 handleUser——其
+      // priority 分支负责 queueNext 吸收（工具边界注入当前轮）或 now 打断；普通
+      // 消息才直接排队。修复：此前 turnActive 一律 queue.push 绕过了 handleUser，
+      // 使 next 的注入路径与 now 的打断路径在 cli 进程从未生效（dead code），
+      // 插话实际退化为"排队等新轮"（方案 A 兜底语义），command_lifecycle 也因此
+      // 滞后到轮末才发出（前端气泡 30s 兜底落位）。
+      if (state.turnActive && parsed.priority !== 'next' && parsed.priority !== 'now') {
+        state.queue.push(parsed)
+      } else {
+        void handleUser(parsed)
+      }
     } else if (parsed.type === 'control_request') {
       handleControlRequest(parsed)
     } else if (parsed.type === 'control_response') {

@@ -1,8 +1,8 @@
 # YFWorking 桥接契约规格（Bridge Contract）
 
 > 用途：GUI↔bridge↔内核 三层交互的**可重建契约基线**。目标是在不修改 GUI 的前提下，以自研/合规实现替换内核（净室重建）时，协议语义可逐条对照、可测试。
-> 权威来源：`server/bridge.mjs`（2279 行）、`electron/main.cjs`、内核 `src/cli/print.ts`（stream-json 模式）。
-> 更新日期：2026-08-19
+> 权威来源：`server/bridge.mjs`、`electron/main.cjs`、内核 `kernel/cli.mjs`（YFW-turbo 净室重建，stream-json 模式）。
+> 更新日期：2026-08-21
 
 ---
 
@@ -32,7 +32,11 @@
 
 ## 2. 内核 spawn 契约（bridge → kernel）
 
-命令（经 cmd.exe，参数均已引号转义）：
+命令（经 cmd.exe，参数均已引号转义；`<kernel>` 为 YFW-turbo 净室重建内核：
+dev 用 `<repo>/kernel/cli.mjs` 源码，生产用 `scripts/build-kernel.mjs` 打成的单文件
+bundle `<app>/kernel-dist/cli.mjs`（node-targeted ESM，bun 运行；bundle 放
+`kernel-dist/` 而非 `dist/`，避开 vite `emptyOutDir:true` 对 dist/ 的清空），
+bootstrap 复制到 `~/.yfworking/runtime/kernel/cli.mjs`）：
 ```
 "<bun>" "<kernel>/cli.mjs" \
   --print --output-format stream-json --input-format stream-json \
@@ -63,8 +67,10 @@
 
 | type | 载荷 | 语义 |
 |---|---|---|
-| `user` | `{ message:{role:'user',content}, priority?, uuid? }` | 投递一轮用户消息（队列化；`uuid` 用于生命周期追踪） |
-| `control_request` | `{ request_id, request:{subtype} }` | 中断/取消。`subtype:'cancel'`（bridge 的优雅停止）、`'interrupt'`（abort 主查询）等 |
+| `user` | `{ message:{role:'user',content}, priority?, uuid? }` | 投递一轮用户消息（队列化）。**priority/uuid 与 type/message 平级**（顶层，bridge.mjs:2258 转发 shape） |
+| `control_request` | `{ request_id, request:{subtype} }` | 中断/取消。`subtype:'cancel'`（bridge 的优雅停止）、`'interrupt'`（abort 主查询）、`'browser_response'`（浏览器执行器回写，见 §4 bridge_request）等 |
+
+**插话语义（priority）**：`priority:'next'` = 排队插话——内核吸收（`command_lifecycle` 确认）后在**工具边界注入当前轮**（模型尽快看到补充信息）；`priority:'now'` = 紧急插话——吸收确认后中断当前轮，消息作为新轮立即执行。`uuid` 必填：内核吸收时立即回发 `command_lifecycle(uuid, 'started')`，供 GUI 解除气泡悬浮态（useYFWCLI settlePendingInterject）。轮次间隙到达（无活跃轮）的 `next` 消息作为新轮直接执行，同样先发 `started` 确认。
 | `control_response` | `{ response:{ request_id, subtype:'success', response:{ behavior:'allow'/'deny', updatedInput, toolUseID, decisionClassification } } }` | 权限审批回执，解除 `can_use_tool` 挂起 |
 
 注：内核 CLI 还支持从 stdin 读取 agents JSON、systemPrompt 等（绕过 ARG_MAX）；`structuredIO.structuredInput` 为逐行解析器（print.ts:2834 起）。
@@ -79,7 +85,10 @@
 | `assistant` | `message.content[]`（text/thinking/tool_use 块）、`uuid` | 模型回复。bridge 从中**提取并剥离**里程碑标记与 `<!--ASK_USER-->` 卡片 |
 | `result` | `usage{input_tokens,output_tokens}` | 一轮结束；cancel 生效确认点；`_turnActive` 复位 |
 | `control_request` | `request{ subtype:'can_use_tool', request_id, tool_use_id, tool_name, input, decision_reason }` | 权限审批弹窗触发源（bridge 转发为 `approval`，GUI 批准后回 `control_response`） |
-| `bridge_request` | `route:'browser', …` | 内置浏览器自动化请求 → **bridge 直连浏览器执行器，不转发 GUI**（防敏感载荷泄漏） |
+| `bridge_request` | `route:'browser', requestId, payload{action,params}` | 内置浏览器自动化请求 → **bridge 直连浏览器执行器，不转发 GUI**（防敏感载荷泄漏）。执行器完成后经 stdin `control_request{request:{subtype:'browser_response', requestId, ok, snapshot?, error?}}` 回写内核（`engine.resolveBrowser` 解除挂起）；120s 超时兜底报错 |
+| `command_lifecycle` | `data{ uuid, state }` | 插话/排队消息接收确认：内核吸收 user 消息时回发 `state:'started'`（GUI 解除气泡悬浮） |
+| `yfw_health` | `tier/compactCount/tokenUsage…` | 上下文健康血条（档位变化时发；`YFW_HEALTH_COMPACT_COUNT` env 恢复压缩史） |
+| `yfw_summary` | `text, compactCount` | 上下文压缩摘要事件 |
 | `stream_event` / `keep_alive` / `streamlined_text` / `prompt_suggestion` | — | 流式/保活/精简输出/建议（SDK 消费者用） |
 | `error` | `{message}` | 错误 |
 
@@ -146,7 +155,7 @@
 
 **必须保持**（GUI 零改动的前提）：
 1. 内核 spawn 参数与 env 契约（§2）——尤其 `stream-json` 输入/输出格式与 `--permission-prompt-tool stdio`、`--disallowedTools AskUserQuestion`。
-2. 内核 stdin/stdout NDJSON 语义（§3、§4）——`user`/`control_request`/`control_response` 输入；`system`/`assistant`/`result`/`control_request`/`bridge_request` 输出。
+2. 内核 stdin/stdout NDJSON 语义（§3、§4）——`user`（含顶层 `priority`/`uuid` 插话契约）/`control_request`/`control_response` 输入；`system`/`assistant`/`result`/`control_request`/`bridge_request`/`command_lifecycle`/`yfw_health`/`yfw_summary` 输出。
 3. 里程碑标记与 ASK_USER 卡片在 assistant 文本中的**输出格式**（bridge 提取/剥离依赖其结构）。
 4. HTTP REST 端点与响应形状（§7，GUI 直接调用）。
 5. WS 事件/消息形状（§5、§6）。

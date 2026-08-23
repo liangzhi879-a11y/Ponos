@@ -6,7 +6,7 @@
 // WebFetch（URL 抓取，零依赖 Node https）、OCR（spawn python 调 ocr_engine.py
 // 识别扫描件，零 npm 依赖）。返回统一结果 { content, isError, meta? }，由
 // engine 以 tool_result 回填模型。
-import { spawn } from 'node:child_process'
+import { spawn, execSync } from 'node:child_process'
 import { readFileSync, writeFileSync, statSync, existsSync, readdirSync, rmSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, resolve, sep, join, extname, basename } from 'node:path'
@@ -24,7 +24,18 @@ export function registerChild(child) {
   return child
 }
 export function killActiveChildren() {
-  for (const c of ACTIVE_CHILDREN) { try { c.kill() } catch {} }
+  for (const c of ACTIVE_CHILDREN) {
+    try {
+      // Windows 坑：git-bash（MSYS2）的 bash.exe 对 TerminateProcess 免疫，
+      // child.kill() 返回 true 但进程不死（实测）。taskkill /F /T 杀整个进程树
+      // （含 bash 派生的 sleep 等子进程），契约 §8"真杀 bash"同源。非 Windows
+      // 走常规 kill。已退出进程 taskkill 非 0 → execSync 抛 → catch 忽略。
+      if (process.platform === 'win32') {
+        try { execSync(`taskkill /F /T /PID ${c.pid}`, { stdio: 'ignore' }) } catch { /* 进程已退出 */ }
+      }
+      c.kill()
+    } catch {}
+  }
   ACTIVE_CHILDREN.clear()
 }
 
@@ -269,12 +280,36 @@ function editFile(filePath, oldString, newString, replaceAll, allowDirs, cwd, re
   }
 }
 
+// 搜索忽略目录：依赖/构建产物目录默认剪枝——node_modules 等可达数十万文件，
+// 同步递归遍历会阻塞内核事件循环数秒并拖垮 Glob/Grep（实测含 node_modules 的
+// 会话目录下单次搜索 3.5-5s）。pattern/glob 显式引用目录名时放行（允许定向
+// 搜索依赖，如 **/node_modules/**/package.json）。
+const IGNORE_DIR_NAMES = new Set([
+  'node_modules', 'dist', 'build', 'out', 'coverage', '.next', '.nuxt',
+  'venv', '.venv', '__pycache__', '.cache', '.turbo', '.parcel-cache',
+  'bower_components', '.yarn', '.pnpm-store', 'target',
+  'release', 'runtime', 'kernel-dist', // 安装包产物 / 捆绑运行时
+  'vendors', 'workspace', // 第三方源码快照 / 评测克隆工作区（可达十万级文件）
+])
+// 从 pattern/glob 提取显式引用的忽略目录名（'**/node_modules/**' 含 node_modules 段）
+function explicitIgnoreDirs(pattern) {
+  const out = new Set()
+  for (const seg of String(pattern || '').split(/[\\/]/)) {
+    if (IGNORE_DIR_NAMES.has(seg)) out.add(seg)
+  }
+  return out
+}
+function shouldSkipDir(dirname, explicit) {
+  return IGNORE_DIR_NAMES.has(dirname) && !explicit.has(dirname)
+}
+
 // Glob：在会话目录边界内递归匹配文件名/路径（pattern 支持 * ? 和 **）。
 // 匹配前把路径归一化为正斜杠，Windows 反斜杠路径与 pattern 里的 / 均能命中。
 function globSearch(pattern, allowDirs, { maxResults = 200 } = {}) {
   try {
     if (!pattern) return { content: 'pattern 缺失', isError: true }
     const re = globToRegExp(String(pattern).replace(/\\/g, '/'))
+    const explicit = explicitIgnoreDirs(pattern)
     const results = []
     const seen = new Set()
     const walk = (dir) => {
@@ -285,15 +320,17 @@ function globSearch(pattern, allowDirs, { maxResults = 200 } = {}) {
         if (results.length >= maxResults) break
         if (ent.name.startsWith('.') && ent.name !== '.' && ent.name !== '..') continue // 跳过隐藏项
         const full = join(dir, ent.name)
-        if (ent.isDirectory()) walk(full)
-        else {
+        if (ent.isDirectory()) {
+          if (shouldSkipDir(ent.name, explicit)) continue // 剪枝依赖/构建目录
+          walk(full)
+        } else {
           const normalized = full.replace(/\\/g, '/')
           if (re.test(normalized) && !seen.has(full)) { seen.add(full); results.push(full) }
         }
       }
     }
     for (const base of allowDirs) walk(base)
-    if (results.length === 0) return { content: `无匹配文件（pattern: ${pattern}）` }
+    if (results.length === 0) return { content: `无匹配文件（pattern: ${pattern}）。依赖/构建目录（node_modules 等）默认剪枝——若目标在其中，请用含目录段的 pattern（如 **/node_modules/**）；否则用更精确的 pattern，勿反复全树试探` }
     const truncated = results.length >= maxResults ? `\n（已达 ${maxResults} 条上限，结果截断）` : ''
     return { content: results.join('\n') + truncated }
   } catch (e) {
@@ -330,6 +367,8 @@ function grepSearch(pattern, allowDirs, { glob, context = 0, maxResults = 200 } 
     try { re = new RegExp(String(pattern)) } catch (e) { return { content: `正则无效：${e.message}`, isError: true } }
     const ctx = Math.max(0, Math.min(Number(context) || 0, 10))
     const globRe = glob ? globToRegExp(String(glob).replace(/\\/g, '/')) : null
+    // 显式引用忽略目录（glob 或 pattern 含 node_modules 等）→ 该目录不剪枝
+    const explicit = new Set([...explicitIgnoreDirs(glob), ...explicitIgnoreDirs(pattern)])
     const results = []
     const MAX_BYTES = 2 * 1024 * 1024
     const walk = (dir) => {
@@ -340,8 +379,10 @@ function grepSearch(pattern, allowDirs, { glob, context = 0, maxResults = 200 } 
         if (results.length >= maxResults) break
         if (ent.name.startsWith('.')) continue
         const full = join(dir, ent.name)
-        if (ent.isDirectory()) walk(full)
-        else if (!globRe || globRe.test(full.replace(/\\/g, '/'))) {
+        if (ent.isDirectory()) {
+          if (shouldSkipDir(ent.name, explicit)) continue // 剪枝依赖/构建目录
+          walk(full)
+        } else if (!globRe || globRe.test(full.replace(/\\/g, '/'))) {
           let st
           try { st = statSync(full) } catch { continue }
           if (!st.isFile() || st.size > MAX_BYTES) continue
@@ -365,7 +406,7 @@ function grepSearch(pattern, allowDirs, { glob, context = 0, maxResults = 200 } 
       }
     }
     for (const base of allowDirs) walk(base)
-    if (results.length === 0) return { content: `无匹配行（pattern: ${pattern}${glob ? `, glob: ${glob}` : ''}）` }
+    if (results.length === 0) return { content: `无匹配行（pattern: ${pattern}${glob ? `, glob: ${glob}` : ''}）。依赖/构建目录默认剪枝——若目标在其中，glob 需含目录段（如 **/node_modules/**）显式放行；否则核对正则，勿反复试探` }
     const truncated = results.length >= maxResults ? `\n（已达 ${maxResults} 条上限，结果截断）` : ''
     return { content: results.join('\n\n') + truncated }
   } catch (e) {
@@ -373,8 +414,9 @@ function grepSearch(pattern, allowDirs, { glob, context = 0, maxResults = 200 } 
   }
 }
 
-// WebFetch：抓取 URL 内容。仅 http/https；30s 超时；2MB 上限；HTML→文本简易提取
-function fetchUrl(url, { maxBytes = 2 * 1024 * 1024, timeoutMs = 30_000 } = {}) {
+// WebFetch：抓取 URL 内容。仅 http/https；30s 超时；2MB 上限；HTML→文本简易提取；
+// 3xx 跟随重定向（最多 3 跳）；响应无 content-type 时按内容嗅探判定文本。
+function fetchUrl(url, { maxBytes = 2 * 1024 * 1024, timeoutMs = 30_000, redirects = 0 } = {}) {
   return new Promise((resolvePromise) => {
     let u
     try { u = new URL(String(url || '')) } catch { return resolvePromise({ content: `URL 无效：${url}`, isError: true }) }
@@ -387,6 +429,21 @@ function fetchUrl(url, { maxBytes = 2 * 1024 * 1024, timeoutMs = 30_000 } = {}) 
       headers: { 'user-agent': 'YFW-turbo/0.1', accept: 'text/html,text/plain,*/*' },
     }, (res) => {
       const status = res.statusCode || 0
+      // 3xx + Location：跟随重定向（http/https，最多 3 跳）
+      if (status >= 300 && status < 400 && res.headers.location) {
+        res.resume() // 排空响应体，避免连接占用
+        if (redirects >= 3) {
+          return resolvePromise({ content: `重定向次数过多（>3），停在 ${status} → ${res.headers.location}`, isError: true })
+        }
+        let next
+        try { next = new URL(String(res.headers.location), u) } catch {
+          return resolvePromise({ content: `重定向目标无效：${res.headers.location}`, isError: true })
+        }
+        if (next.protocol !== 'http:' && next.protocol !== 'https:') {
+          return resolvePromise({ content: `重定向目标仅支持 http/https：${next.protocol}`, isError: true })
+        }
+        return resolvePromise(fetchUrl(next.toString(), { maxBytes, timeoutMs, redirects: redirects + 1 }))
+      }
       const chunks = []
       let size = 0
       res.on('data', (d) => {
@@ -401,10 +458,14 @@ function fetchUrl(url, { maxBytes = 2 * 1024 * 1024, timeoutMs = 30_000 } = {}) 
       res.on('end', () => {
         const buf = Buffer.concat(chunks)
         const type = String(res.headers['content-type'] || '')
-        if (!/html/i.test(type) && !/^text\//i.test(type)) {
-          return resolvePromise({ content: `响应类型 ${type}（${buf.length} 字节），非文本内容，未提取文本`, isError: false })
+        const isHtml = /html/i.test(type)
+        // 有 content-type 按 MIME 判定；缺失（API/裸文本常见）回退内容嗅探：
+        // UTF-8 可解码（无替换符）且无 NUL 字节视为文本
+        const sniffedText = !type && buf.length > 0 && !buf.includes(0) && !buf.toString('utf-8').includes('\uFFFD')
+        if (!isHtml && !/^text\//i.test(type) && !sniffedText) {
+          return resolvePromise({ content: `响应类型 ${type || '(未声明)'}（${buf.length} 字节），非文本内容，本工具仅提取文本、勿重试——如确需该内容，请先下载到会话目录再用 OCR（图片/PDF）或 Read 处理`, isError: false })
         }
-        const text = /html/i.test(type) ? htmlToText(buf.toString('utf-8')) : buf.toString('utf-8')
+        const text = isHtml ? htmlToText(buf.toString('utf-8')) : buf.toString('utf-8')
         resolvePromise({ content: `HTTP ${status}\n${(text.slice(0, maxBytes) || '(空内容)').trim()}`, isError: status >= 400 })
       })
     })
@@ -510,7 +571,12 @@ async function ocrFile(filePath, allowDirs, input = {}, skipBoundary) {
     const project = String(input?.project || 'default')
     const engine = findOcrEngine()
     if (!engine) {
-      return { content: 'OCR 引擎不可用：未找到 ocr_engine.py（可设置 YFW_OCR_ENGINE 指向引擎路径）', isError: true }
+      const home = process.env.USERPROFILE || process.env.HOME || ''
+      const checked = [
+        join(home, '.claude', 'skills', '_common'),
+        join(home, '.yfworking', 'skills', '_common'),
+      ].join('、')
+      return { content: `OCR 引擎不可用：未找到 ocr_engine.py（已检查 ${checked}；可设置 YFW_OCR_ENGINE 指向引擎路径）`, isError: true }
     }
     const isImage = IMAGE_EXTS.includes(extname(filePath).toLowerCase())
     let data = null
@@ -587,7 +653,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutside
   let todoItems = []
   const registry = {
     Bash: {
-      description: '执行 shell 命令。仅用于系统命令/测试/构建/git 等必须场景；读文件用 Read、搜索内容用 Grep、找文件路径用 Glob（禁止用 cat/sed/grep/find 代替专用工具）。多步验证用 && 串联为一次调用。',
+      description: '执行 shell 命令。仅用于系统命令/测试/构建/git 等必须场景；读文件用 Read、搜索内容用 Grep、找文件路径用 Glob（禁止用 cat/sed/grep/find 代替专用工具）。多步验证用 && 串联为一次调用。限制：120s 超时；无 stdin（勿用 ssh/vi/read 等交互式命令）；输出超 200KB 截断保留尾部（带 [truncated] 标记）；失败返回退出码与 stderr。',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -598,7 +664,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutside
       isHighRisk: (input) => matchesHighRisk(String(input?.command ?? '')),
     },
     Read: {
-      description: `读取文本文件内容。一次读全文（上限 ${READ_MAX_LINES} 行 / ${READ_MAX_BYTES / 1024 / 1024}MB），默认应读全文而非分段取样；超大文件用 offset/limit 定向读取，结果会提示续读位置。优先用本工具而非 Bash cat/sed 读文件；路径用绝对路径，或相对当前工作目录的相对路径。边界限制：仅可读取当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标文件位于会话目录内，否则改用 Bash 或让用户放入会话目录。`,
+      description: `读取文本文件内容。一次读全文（上限 ${READ_MAX_LINES} 行 / ${READ_MAX_BYTES / 1024 / 1024}MB），默认应读全文而非分段取样；超大文件用 offset/limit 定向读取，结果会提示续读位置。重复读取未变化的文件会返回"文件自上次读取后未变化"提示——直接引用此前结果即可，勿重复发起。优先用本工具而非 Bash cat/sed 读文件；路径用绝对路径，或相对当前工作目录的相对路径。边界限制：仅可读取当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标文件位于会话目录内，否则改用 Bash 或让用户放入会话目录。`,
       // concurrencySafe：只读工具可并发执行（P0-4 只读批并行）
       concurrencySafe: true,
       input_schema: {
@@ -614,7 +680,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutside
       run: (input) => readFile(String(input?.file_path ?? ''), allowDirs, input, cwd, readCache, skipBoundary),
     },
     Write: {
-      description: '写入文本文件（覆盖整个文件）。改动范围超过半个文件时优先考虑本工具而非多次 Edit。边界限制：仅可写入当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标路径位于会话目录内。',
+      description: '写入文本文件（覆盖整个文件）。注意是整体覆盖语义——必须携带完整新内容，遗漏会导致文件被清空或内容丢失；改动范围超过半个文件时优先考虑本工具而非多次 Edit。边界限制：仅可写入当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标路径位于会话目录内。',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -627,7 +693,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutside
       run: (input) => writeFile(String(input?.file_path ?? ''), String(input?.content ?? ''), allowDirs, cwd, readCache, skipBoundary),
     },
     Edit: {
-      description: '先读后改的字符串替换编辑（old_string 需唯一，或指定 replace_all）。一次 Edit 覆盖一个完整逻辑块；同文件多处修改尽量合并为一次调用；改动过大时考虑 Write 重写。边界限制：仅可编辑当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝。',
+      description: '先读后改的字符串替换编辑（old_string 需与文件字节精确匹配，含空格/换行；需唯一，或指定 replace_all）。一次 Edit 覆盖一个完整逻辑块；同文件多处修改尽量合并为一次调用；改动过大时考虑 Write 重写。失败（未找到/不唯一）时按错误信息调整上下文或加 replace_all，勿原样重试。边界限制：仅可编辑当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝。',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -642,7 +708,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutside
       run: (input) => editFile(String(input?.file_path ?? ''), String(input?.old_string ?? ''), String(input?.new_string ?? ''), input?.replace_all === true, allowDirs, cwd, readCache, skipBoundary),
     },
     Glob: {
-      description: '在会话目录内递归搜索文件路径（pattern 支持 * ? 和 ** 通配）。先 Glob 定位候选文件再 Read，避免无目标 ls。',
+      description: '在会话目录内递归搜索文件路径（pattern 支持 * ? 和 ** 通配）。先 Glob 定位候选文件再 Read，避免无目标 ls。依赖/构建产物目录（node_modules/dist/build/release/vendors/workspace 等）默认剪枝不搜索——若目标在其中，pattern 需显式含目录名（如 **/node_modules/**）；无匹配时按返回提示换更精确的 pattern，勿反复全树试探（代价高）。',
       concurrencySafe: true,
       input_schema: {
         type: 'object',
@@ -656,7 +722,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutside
       run: (input) => globSearch(String(input?.pattern ?? ''), allowDirs, { maxResults: Number(input?.maxResults) || 200 }),
     },
     Grep: {
-      description: '在会话目录内按正则搜索文件内容，返回 file:line 匹配行。带精确 pattern 与 glob 过滤；需要上下文时用 context 参数；避免试探性重复搜索。',
+      description: '在会话目录内按正则搜索文件内容，返回 file:line 匹配行。带精确 pattern 与 glob 过滤；需要上下文时用 context 参数；结果最多 200 条（超出截断并标注）。依赖/构建产物目录默认剪枝（同 Glob，显式引用可放行）。无匹配时按返回提示调整，避免试探性重复搜索。',
       concurrencySafe: true,
       input_schema: {
         type: 'object',
@@ -724,7 +790,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutside
     },
     // 任务规划清单（覆盖式更新，返回当前清单）
     TodoWrite: {
-      description: '维护任务规划清单（todo list）：以完整清单覆盖更新，返回当前清单供模型跟踪进度',
+      description: '维护任务规划清单（todo list）：以完整清单覆盖更新，返回当前清单供模型跟踪进度。注意是覆盖语义——每次须传完整清单（含已完成与进行中的项），遗漏的项会被移除',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -762,7 +828,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutside
     },
     // URL 抓取（零依赖 Node http/https）
     WebFetch: {
-      description: '抓取 URL 内容并提取文本（仅 http/https；30s 超时；2MB 上限；HTML 自动转文本）',
+      description: '抓取 URL 内容并提取文本（仅 http/https；30s 超时；2MB 上限；自动跟随重定向≤3 跳；HTML 自动转文本）。仅提取文本——图片/PDF/二进制 URL 会返回"非文本"提示（勿重试，需下载到会话目录后走 OCR/Read）；非 2xx 状态（404/5xx）标记为错误',
       concurrencySafe: true,
       input_schema: {
         type: 'object',
@@ -776,7 +842,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutside
     },
     // 扫描件 OCR（spawn python 调 ocr_engine.py；PDF/图片均可；结果按 project 缓存）
     OCR: {
-      description: '对扫描件 PDF 或图片执行 OCR 文字识别（mode=text 提取全文；mode=table 额外识别表格；结果按 project 缓存，重复识别秒回）。边界限制：仅可识别当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标文件位于会话目录内（若在会话外，先请用户将文件放入会话目录或经 --add-dir 挂载，不要盲目重试）。',
+      description: '对扫描件 PDF 或图片执行 OCR 文字识别（mode=text 提取全文；mode=table 额外识别表格，仅 PDF 有效；结果按 project 缓存，重复识别秒回）。首次调用需加载识别模型，可能耗时数十秒——属正常初始化，勿误判卡死或重复调用。边界限制：仅可识别当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标文件位于会话目录内（若在会话外，先请用户将文件放入会话目录或经 --add-dir 挂载，不要盲目重试）。',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -816,7 +882,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutside
     // （docs/bridge-contract.md §4 bridge_request；bridge 的 browserRouter 已接线）。
     // 执行体在 engine（ctx.browserDriver 挂起等 bridge 回写 browser_response 解除）。
     Browser: {
-      description: '驱动内置浏览器执行页面操作（快照驱动：先 snapshot 查看页面结构与可交互元素 ref，再按 ref 操作）。支持动作：goto 导航 / back 后退 / forward 前进 / refresh 刷新 / snapshot 页面快照 / click 点击 / type 输入 / select 选择 / scroll 滚动 / hover 悬停 / wait 等待 / js 页面内执行 JS。',
+      description: '驱动内置浏览器执行页面操作（快照驱动：先 snapshot 查看页面结构与可交互元素 ref，再按 ref 操作）。支持动作：goto 导航 / back 后退 / forward 前进 / refresh 刷新 / snapshot 页面快照 / click 点击 / type 输入 / select 选择 / scroll 滚动 / hover 悬停 / wait 等待 / js 页面内执行 JS。元素 ref 随页面变化失效——操作失败时重新 snapshot 获取最新 ref，勿沿用旧 ref 重试。',
       input_schema: {
         type: 'object',
         additionalProperties: false,

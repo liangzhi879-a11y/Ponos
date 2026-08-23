@@ -15,7 +15,7 @@
 import { streamMessages, classifyApiError } from './api.mjs'
 import { abortError } from './protocol.mjs'
 import { decideToolPermission } from './permissions.mjs'
-import { createToolRegistry } from './tools.mjs'
+import { createToolRegistry, killActiveChildren } from './tools.mjs'
 import { createSessionStore, newSessionId } from './session.mjs'
 import { resolveAgent, resolveAgents } from './agents.mjs'
 import { getProvider } from './provider.mjs'
@@ -668,6 +668,30 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     if (t && t.status === 'running' && typeof t.stop === 'function') t.stop()
   }
 
+  // 全量中止所有后台子 agent（hardStop / cancel 用）：逐个 abort 子 lane 信号，
+  // 子循环在检查点抛 AbortError → runLaneExecution 置 status='stopped' 并发
+  // task_notification（"已取消"）。与 stopSubTree 的区别：不管血缘，全部停。
+  function abortAllSubAgents() {
+    for (const [id, t] of pendingSubAgents) {
+      if (t.status === 'running' && typeof t.stop === 'function') t.stop()
+    }
+  }
+
+  // 解除全部审批/浏览器挂起（abort / hardStop 共用）：挂起点在 await waiter，
+  // 若不 resolve，取消后 runTurn 永远卡在工具边界（can_use_tool 审批或
+  // browser_response）。审批按 deny 回执（模型侧表现为"用户拒绝/已取消"），
+  // 浏览器按失败回执——随后流循环检查 signal.aborted 抛 AbortError 结束轮次。
+  function rejectAllWaiters() {
+    for (const [id, resolve] of [...approvalWaiters]) {
+      approvalWaiters.delete(id)
+      resolve({ behavior: 'deny', message: '已取消' })
+    }
+    for (const [id, resolve] of [...browserWaiters]) {
+      browserWaiters.delete(id)
+      resolve({ ok: false, error: '已取消' })
+    }
+  }
+
   const taskSystem = {
     list() {
       if (pendingSubAgents.size === 0) return '当前无后台子 Agent 任务'
@@ -720,7 +744,22 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     setSystemPrompt(p) { systemPrompt = p || '' },
     // 思考深度热设置（cli control_request reasoning_effort）：返回规范化档位 + 生效 effort
     setReasoningEffort(value) { return applyReasoningEffort(value) },
-    abort() { signal.aborted = true; abortController.abort() },
+    abort() {
+      rejectAllWaiters()
+      signal.aborted = true
+      abortController.abort()
+    },
+    // 停止按钮（cancel）全杀：kill 工具子进程（Bash/OCR，模块级 ACTIVE_CHILDREN）
+    // + 中止全部后台子 agent + 中断当前 API 流 + 解除审批/浏览器挂起。与 abort()
+    // （打断插入用，同样解除挂起）语义：any 取消路径都必须立刻结束等待——
+    // 否则审批/浏览器 waiter 永不 resolve，runTurn 卡死在挂起点（取消不即时根因）。
+    hardStop() {
+      try { killActiveChildren() } catch {}
+      abortAllSubAgents()
+      rejectAllWaiters()
+      signal.aborted = true
+      abortController.abort()
+    },
     seedCompactCount(n) { /* session 已从日志恢复 compactCount；兼容保留 */ },
     // cli 的 control_response 路由：解除对应 tool_use 的审批挂起
     resolveApproval(toolUseId, inner) {
