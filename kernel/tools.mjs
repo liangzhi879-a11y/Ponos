@@ -341,23 +341,57 @@ function globSearch(pattern, allowDirs, { maxResults = 200 } = {}) {
 
 // 简易 glob → RegExp：** 跨目录 / * 单段内任意 / ? 单字符
 function globToRegExp(pattern) {
-  let re = '^'
-  for (let i = 0; i < pattern.length; i++) {
-    const c = pattern[i]
-    if (c === '*') {
-      if (pattern[i + 1] === '*') {
-        re += '.*'
-        i++
-      } else {
-        re += '[^/]*'
-      }
-    } else if (c === '?') {
-      re += '[^/]'
-    } else {
-      re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+  const p = String(pattern).replace(/\\/g, '/')
+  // 匹配基准是绝对路径（allowDirs 内 join 出的 full path）：相对路径 pattern
+  // （如 'src/**/*.ts'）自动补 '**/' 前缀使其能命中绝对路径任意层；
+  // '**/x' 开头与绝对路径（盘符 / UNC / POSIX 根）不补。
+  const isAbsolute = /^[A-Za-z]:[/]|^[/]{1,2}/.test(p)
+  const src = isAbsolute || p.startsWith('**') ? p : '**/' + p
+  // 找与 start 处 '{' 配对的 '}'（支持嵌套计数，未闭合返回 -1）
+  const findClosingBrace = (s, start) => {
+    let depth = 0
+    for (let i = start; i < s.length; i++) {
+      if (s[i] === '{') depth++
+      else if (s[i] === '}') { depth--; if (depth === 0) return i }
     }
+    return -1
   }
-  return new RegExp(re + '$', 'i')
+  const escapeLiteral = (ch) => ch.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+  const out = []
+  let i = 0
+  while (i < src.length) {
+    const c = src[i]
+    if (c === '*') {
+      if (src[i + 1] === '*') {
+        // '**/' 可匹配零层或多层目录（标准 glob 语义）；'**x' 按 .* 处理
+        if (src[i + 2] === '/') { out.push('(?:.*/)?'); i += 2 } else { out.push('.*'); i++ }
+      } else { out.push('[^/]*') }
+    } else if (c === '?') {
+      out.push('[^/]')
+    } else if (c === '{') {
+      // brace 展开：{a,b,c} → (?:a|b|c)；未闭合按字面
+      const end = findClosingBrace(src, i)
+      if (end === -1) { out.push(escapeLiteral(c)) }
+      else {
+        const alts = src.slice(i + 1, end).split(',').map((alt) => {
+          let s = ''
+          for (let j = 0; j < alt.length; j++) {
+            const ch = alt[j]
+            if (ch === '*') s += '[^/]*'
+            else if (ch === '?') s += '[^/]'
+            else s += escapeLiteral(ch)
+          }
+          return s
+        })
+        out.push('(?:' + alts.join('|') + ')')
+        i = end
+      }
+    } else {
+      out.push(escapeLiteral(c))
+    }
+    i++
+  }
+  return new RegExp('^' + out.join('') + '$', 'i')
 }
 
 // Grep：在边界内按正则搜索文件内容，返回 file:line 匹配行（含上下文）
