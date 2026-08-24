@@ -879,7 +879,7 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutside
   let todoItems = []
   const registry = {
     Bash: {
-      description: '执行 shell 命令。仅用于系统命令/测试/构建/git 等必须场景；读文件用 Read、搜索内容用 Grep、找文件路径用 Glob（禁止用 cat/sed/grep/find 代替专用工具）。多步验证用 && 串联为一次调用。限制：120s 超时；无 stdin（勿用 ssh/vi/read 等交互式命令）；输出超 200KB 截断保留尾部（带 [truncated] 标记）；失败返回退出码与 stderr。',
+      description: '执行 shell 命令。仅用于系统命令/测试/构建/git 等必须场景；读文件用 Read、搜索内容用 Grep、找文件路径用 Glob（禁止用 cat/sed/grep/find 代替专用工具）。多步验证用 && 串联为一次调用。限制：120s 超时；无 stdin（勿用 ssh/vi/read 等交互式命令）；输出超 200KB 截断保留尾部（带 [truncated] 标记）；失败返回退出码与 stderr。Windows 下命令输出可能为 GBK 乱码（tasklist/dir 等），需文本匹配时先 chcp 65001 或改用 PowerShell；大目录遍历/全树搜索优先限定 git 跟踪文件（git ls-files），避免无目标全量扫描。',
       input_schema: {
         type: 'object',
         additionalProperties: false,

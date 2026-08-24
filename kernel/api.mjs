@@ -263,6 +263,36 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // R3-2 守卫恢复测试：历史含守卫注入（【系统】…失败/承诺）→ 产出成功 tool_use
+  // （模拟"模型收到守卫提示后补发正确调用"；配合 hadToolError 成功重置验证闭环）
+  if (!lastIsToolResult && (messages || []).some(
+    (m) => m.role === 'user' && typeof m.content === 'string' &&
+      (m.content.includes('【系统】检测到上一轮存在失败/被取消的工具调用') || m.content.includes('【系统】你在上一轮承诺了后续动作'))
+  )) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_guard_recover', name: 'Bash', input: { command: 'echo guard-recovered' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // R3-2 失败自愈测试：[mock:guard-err] 产出失败的 tool_use（Bash exit 1 → is_error）。
+  // 回显轮"认错即停"→ 守卫注入 → 恢复分支产出成功调用（guard-recovered）
+  if (lastText.includes('[mock:guard-err]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_guard_err', name: 'Bash', input: { command: 'exit 1' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // R3-2 计划尾测试：[mock:guard-tail] 产出计划性纯文本（无工具，模拟"计划尾巴"）。
+  // engine 守卫检测到计划词（先看…/接下来…）后注入"承诺了后续动作"，恢复分支接管
+  if (lastText.includes('[mock:guard-tail]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield* streamText('我先看一下结构，接下来开始处理，然后再验证', signal)
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // 普通回合：回显（带 turn 计数，历史恢复可断言）
   const text = `mock: ${String(lastText).slice(0, 120)} (turn=${realUser.length})`
   yield* streamText(text, signal)

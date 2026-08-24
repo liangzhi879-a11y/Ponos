@@ -51,6 +51,11 @@ export function makeWire(stream = process.stdout) {
     health(data = {}) {
       writeLine(stream, { type: 'ponos_health', ...data })
     },
+    // 上下文窗口余量预警（engine preStep 在接近压缩阈值时发出；GUI/TUI 可渲染
+    // 黄色警示条，提醒长会话即将触发压缩）
+    warning(data = {}) {
+      writeLine(stream, { type: 'ponos_warning', ...data })
+    },
     // loop 迭代状态事件（cli.loopRunner 发出；GUI/bridge 依 state 渲染轮次徽标）
     loop(state, data = {}) {
       writeLine(stream, { type: 'loop', state, ...data })
