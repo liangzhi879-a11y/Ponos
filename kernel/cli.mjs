@@ -153,6 +153,8 @@ export async function main(argv) {
   // 统一退出：杀活跃子进程 → 清 marker → 退出
   function shutdown(code) {
     try { killActiveChildren() } catch {}
+    try { if (wfSchedulerStop) wfSchedulerStop() } catch {}
+    try { if (wfHttpServer) wfHttpServer.close() } catch {}
     try { rmSync(marker, { force: true }) } catch {}
     process.exit(code)
   }
@@ -204,6 +206,9 @@ export async function main(argv) {
   // workflow 引擎：与 skill 平权（同一发现/触发机制）。先创建实例（configDir 已知），
   // engine 创建后注入 registry/事件/模型/根目录（setDeps）。
   const wfEngine = createWorkflowEngine({ configDir })
+  // P3 webhook 服务 / cron 调度器句柄（幂等启动，shutdown 清理）
+  let wfHttpServer = null
+  let wfSchedulerStop = null
 
   const engine = createEngine({
     opts: {
@@ -468,6 +473,26 @@ export async function main(argv) {
       } else if (subtype === 'verify') {
         const r = wfEngine.verify(msg?.payload?.auditPath || msg?.payload?.path || '')
         wire.system('workflow_result', { subtype: 'verify', ok: r.ok, lines: r.lines, tampered: r.tampered, error: r.error })
+      } else if (subtype === 'webhook') {
+        // 启动 webhook 服务（幂等）：POST /wf/run/<id>（JSON body=inputs），GET /wf/list
+        const port = Number(process.env.PONOS_WF_WEBHOOK_PORT || 51312)
+        if (!wfHttpServer) {
+          wfHttpServer = wfEngine.createWebhookServer()
+          wfHttpServer.listen(port, () => {
+            wire.system('workflow_result', { subtype: 'webhook', ok: true, port, url: `http://localhost:${port}/wf/run/<id>` })
+          })
+          wfHttpServer.on('error', (err) => wire.system('workflow_result', { subtype: 'webhook', ok: false, error: err?.message || String(err) }))
+        } else {
+          wire.system('workflow_result', { subtype: 'webhook', ok: true, port, url: `http://localhost:${port}/wf/run/<id>`, note: 'already running' })
+        }
+      } else if (subtype === 'scheduler') {
+        // 启动 cron 调度器（幂等）：扫描 workflows 带 schedule 字段，到点自动 run
+        if (!wfSchedulerStop) {
+          wfSchedulerStop = wfEngine.startScheduler({ onRun: (id, res) => wire.system('workflow_result', { subtype: 'scheduled_run', workflow: id, ok: res.ok, status: res.status, runId: res.runId, auditPath: res.auditPath }) })
+          wire.system('workflow_result', { subtype: 'scheduler', ok: true, note: 'started (60s tick)' })
+        } else {
+          wire.system('workflow_result', { subtype: 'scheduler', ok: true, note: 'already running' })
+        }
       } else {
         wire.system('workflow_result', { subtype: 'error', error: `未知 /wf 子命令: ${subtype}` })
       }
@@ -574,8 +599,13 @@ export async function main(argv) {
       const inner = parsed.response?.response
       if (inner?.toolUseID) engine.resolveApproval(inner.toolUseID, inner)
     } else if (parsed.type === 'workflow_command') {
-      // /wf 命令（TUI/协议层）：list/run/verify → 调工作流引擎，结果 wire 回发
+      // /wf 命令（TUI/协议层）：list/run/verify/approve/reject → 调工作流引擎，结果 wire 回发
       void handleWorkflowCommand(parsed)
+    } else if (parsed.type === 'workflow_confirm') {
+      // 人工审批回传（TUI /wf approve|reject / 协议层）：解除 confirm 节点挂起
+      const { runId, node, action, comment } = parsed.payload || {}
+      const r = wfEngine.resolveConfirm(runId, node, { action: action || 'approved', comment: comment || '' })
+      wire.system('workflow_result', { subtype: 'confirm', ok: r.ok, error: r.error })
     }
   })
   rl.on('close', () => {

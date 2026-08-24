@@ -494,6 +494,8 @@ function main() {
   // ---------- 状态 ----------
   let sessionId = args.resume || '?'
   let pendingApproval = null
+  // P3 人工审批（confirm 节点）：runId/node 待 /wf approve|reject 回传
+  let pendingConfirm = null
   let approvalSel = 0 // 审批高亮选项：0=允许 1=拒绝 2=取消
   let turnActive = false
   let toolSeq = 0
@@ -823,15 +825,40 @@ function main() {
           if (r.subtype === 'list') {
             const wfs = r.workflows || []
             if (!wfs.length) pushMessage({ kind: 'result', text: '未发现工作流（addDirs 下 workflow.yml / .yml）' })
-            else pushMessage({ kind: 'result', text: `可用工作流（${wfs.length}）：\n` + wfs.map((w) => `- ${w.id}（${w.nodes} 节点）${(w.triggers || []).length ? '  triggers: ' + w.triggers.join('、') : ''}${w.description ? `  ${w.description.slice(0, 60)}` : ''}`).join('\n') })
+            else pushMessage({ kind: 'result', text: `可用工作流（${wfs.length}）：\n` + wfs.map((w) => `- ${w.id}（${w.nodes} 节点）${w.schedule ? `  schedule: ${w.schedule}` : ''}${(w.triggers || []).length ? '  triggers: ' + w.triggers.join('、') : ''}${w.description ? `  ${w.description.slice(0, 60)}` : ''}`).join('\n') })
           } else if (r.subtype === 'run') {
             if (r.ok) pushMessage({ kind: 'result', text: `工作流完成（${r.status}，${r.steps} 步）\n审计: ${r.auditPath || '未落盘'}\n输出: ${JSON.stringify(r.outputs, null, 2)}` })
             else pushMessage({ kind: 'error', text: `工作流失败: ${r.error}${r.node ? `（节点 ${r.node}）` : ''}` })
           } else if (r.subtype === 'verify') {
             if (r.ok) pushMessage({ kind: 'result', text: `审计完整（${r.lines} 条记录，哈希链验证通过）` })
             else pushMessage({ kind: 'error', text: `审计异常: ${JSON.stringify(r.tampered || r.error)}` })
+          } else if (r.subtype === 'confirm') {
+            if (r.ok) pushMessage({ kind: 'system', text: '审批回传成功，工作流继续' })
+            else pushMessage({ kind: 'error', text: `审批回传失败: ${r.error}` })
+          } else if (r.subtype === 'webhook') {
+            if (r.ok) pushMessage({ kind: 'result', text: `webhook 服务已启动: http://localhost:${r.port}/wf/run/<id>（POST JSON body=inputs）` })
+            else pushMessage({ kind: 'error', text: `webhook 启动失败: ${r.error}` })
+          } else if (r.subtype === 'scheduler') {
+            pushMessage({ kind: 'result', text: `cron 调度器${r.ok ? '已启动' : '失败'}: ${r.note || r.error || ''}` })
+          } else if (r.subtype === 'scheduled_run') {
+            pushMessage({ kind: 'system', text: `[调度] ${r.workflow} → ${r.ok ? r.status + '（' + r.steps + ' 步）' : '失败 ' + r.error}` })
           } else if (r.subtype === 'error') {
             pushMessage({ kind: 'error', text: `工作流: ${r.error}` })
+          }
+          render()
+        } else if (ev.subtype === 'workflow') {
+          // 工作流执行进度事件（start/node/end/confirm_request/confirm_resolved）
+          if (ev.type === 'confirm_request') {
+            pendingConfirm = { runId: ev.runId, node: ev.node }
+            const inputs = (ev.inputs || []).map((i) => `    ${i.name}${i.required ? '' : '（可选）'}: ${i.type || 'text'}${i.default ? '  默认 ' + i.default : ''}`).join('\n')
+            pushMessage({ kind: 'system', text: `[工作流] 人工审批请求：${ev.message}${inputs ? '\n' + inputs : ''}\n    → /wf approve [意见] 或 /wf reject [意见]` })
+            render()
+          } else if (ev.type === 'node') {
+            pushMessage({ kind: 'system', text: `[工作流] 节点 ${ev.node}（${ev.type}）${ev.status === 'done' ? '完成' : '失败'}` + (ev.dur_ms ? ` ${ev.dur_ms}ms` : '') })
+          } else if (ev.type === 'start') {
+            pushMessage({ kind: 'system', text: `[工作流] 开始：${ev.workflow}（${ev.nodes} 节点，runId ${ev.runId}）` })
+          } else if (ev.type === 'end') {
+            pushMessage({ kind: 'system', text: `[工作流] 结束：${ev.status}（${ev.steps} 步）` })
           }
           render()
         }
@@ -1010,8 +1037,24 @@ function main() {
           if (!path) { pushMessage({ kind: 'error', text: '/wf verify 需要审计文件路径' }); render(); break }
           child.stdin.write(JSON.stringify({ type: 'workflow_command', subtype: 'verify', payload: { auditPath: path } }) + '\n')
           pushMessage({ kind: 'system', text: '校验审计哈希链…' })
+        } else if (sub === 'approve' || sub === 'reject') {
+          // 人工审批：/wf approve [comment...] | /wf reject [comment...]
+          if (!pendingConfirm) { pushMessage({ kind: 'error', text: '当前无待审批的工作流节点（/wf list 后 run 触发 confirm 节点）' }); render(); break }
+          const comment = parts.slice(1).join(' ').trim()
+          const payload = { runId: pendingConfirm.runId, node: pendingConfirm.node, action: sub, comment }
+          child.stdin.write(JSON.stringify({ type: 'workflow_confirm', payload }) + '\n')
+          pushMessage({ kind: 'system', text: `已${sub === 'approve' ? '批准' : '拒绝'}审批${comment ? `（意见：${comment}）` : ''}` })
+          pendingConfirm = null
+          render()
+          break
+        } else if (sub === 'webhook') {
+          child.stdin.write(JSON.stringify({ type: 'workflow_command', subtype: 'webhook' }) + '\n')
+          pushMessage({ kind: 'system', text: '启动 webhook 服务…' })
+        } else if (sub === 'scheduler') {
+          child.stdin.write(JSON.stringify({ type: 'workflow_command', subtype: 'scheduler' }) + '\n')
+          pushMessage({ kind: 'system', text: '启动 cron 调度器…' })
         } else {
-          pushMessage({ kind: 'result', text: '用法：\n  /wf list                   — 列出可用工作流\n  /wf run <id> [--input k=v] — 执行工作流\n  /wf verify <审计文件路径>   — 校验审计哈希链' })
+          pushMessage({ kind: 'result', text: '用法：\n  /wf list                       — 列出可用工作流\n  /wf run <id> [--input k=v]     — 执行工作流\n  /wf verify <审计文件路径>       — 校验审计哈希链\n  /wf approve [意见] | /wf reject [意见] — 人工审批（confirm 节点挂起时）\n  /wf webhook                    — 启动 webhook 服务（POST /wf/run/<id>）\n  /wf scheduler                  — 启动 cron 调度器（workflow 带 schedule 字段）' })
         }
         render()
         break

@@ -10,6 +10,7 @@ function assert(name, cond, detail = '') {
   if (cond) { pass++; console.log(`  ✅ ${name}`) }
   else { fail++; console.log(`  ❌ ${name} ${detail}`) }
 }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // 1. YAML 解析
 console.log('== YAML 解析 ==')
@@ -406,6 +407,136 @@ writeFileSync(join(wfDir, 'ag-wf.yml'), ymlAgent)
 const r12 = await engine.run({ id: 'ag-wf', inputs: { task: '测试' } })
 assert('agent ok', r12.ok, JSON.stringify(r12))
 assert('agent 有输出', typeof r12.outputs.ag?.output?.text === 'string', JSON.stringify(r12.outputs.ag))
+
+// 16. confirm 人工审批（批准链）
+console.log('== confirm 审批 ==')
+const ymlConfirm = `
+name: cnf-wf
+description: 审批测试
+inputs:
+  - name: data
+    type: string
+nodes:
+  - id: start
+    type: start
+  - id: cf
+    type: confirm
+    message: "确认数据: {{inputs.data}}"
+    inputs:
+      - name: comment
+        type: paragraph
+        required: false
+    next_approve: approved_flow
+    next_reject: rejected_flow
+    next_timeout: timeout_flow
+  - id: approved_flow
+    type: template
+    template: "已批准: {{cf.comment}}"
+  - id: rejected_flow
+    type: template
+    template: "已拒绝"
+  - id: timeout_flow
+    type: template
+    template: "超时"
+  - id: end
+    type: end
+    outputs:
+      - variable: result
+        selector: "{{approved_flow}}"
+`
+writeFileSync(join(wfDir, 'cnf-wf.yml'), ymlConfirm)
+const cnfEngine = createWorkflowEngine({
+  configDir: tmp,
+  registry,
+  onEvent: (ev) => { events.push(ev) },
+  getModel: () => 'mock-model',
+})
+cnfEngine.addRoot(wfDir)
+const r13P = cnfEngine.run({ id: 'cnf-wf', inputs: { data: 'abc' } })
+await sleep(300)
+const confirmReq = events.filter((e) => e.type === 'confirm_request').pop()
+assert('confirm_request 事件', confirmReq && confirmReq.message.includes('abc'), JSON.stringify(confirmReq))
+const res13 = cnfEngine.resolveConfirm(confirmReq.runId, confirmReq.node, { action: 'approved', comment: 'OK' })
+assert('resolveConfirm ok', res13.ok, JSON.stringify(res13))
+const r13 = await r13P
+assert('confirm 批准链', r13.ok && r13.outputs.approved_flow?.output === '已批准: OK', JSON.stringify(r13.outputs))
+
+// 17. confirm 拒绝链
+console.log('== confirm 拒绝 ==')
+const r14P = cnfEngine.run({ id: 'cnf-wf', inputs: { data: 'x' } })
+await sleep(300)
+const confirmReq2 = events.filter((e) => e.type === 'confirm_request').pop()
+cnfEngine.resolveConfirm(confirmReq2.runId, confirmReq2.node, { action: 'rejected', comment: 'no' })
+const r14 = await r14P
+assert('confirm 拒绝链', r14.ok && r14.outputs.rejected_flow?.output === '已拒绝', JSON.stringify(r14.outputs))
+
+// 18. confirm 超时
+console.log('== confirm 超时 ==')
+const ymlConfirmTimeout = `
+name: cnf-t
+description: 审批超时测试
+nodes:
+  - id: start
+    type: start
+  - id: cf
+    type: confirm
+    message: "快速超时"
+    timeout_ms: 200
+    next_timeout: tflow
+  - id: tflow
+    type: template
+    template: "超时分支"
+  - id: end
+    type: end
+    outputs:
+      - variable: result
+        selector: "{{tflow}}"
+`
+writeFileSync(join(wfDir, 'cnf-t.yml'), ymlConfirmTimeout)
+const r15 = await cnfEngine.run({ id: 'cnf-t', inputs: {} })
+assert('confirm 超时分支', r15.ok && r15.outputs.tflow?.output === '超时分支', JSON.stringify(r15.outputs))
+
+// 19. cron 匹配
+console.log('== cron 匹配 ==')
+assert('* * * * * 匹配', cnfEngine.cronMatches('* * * * *', new Date('2026-08-24T10:30:00')))
+assert('30 10 * * * 匹配', cnfEngine.cronMatches('30 10 * * *', new Date('2026-08-24T10:30:00')))
+assert('30 10 * * * 不匹配', !cnfEngine.cronMatches('30 10 * * *', new Date('2026-08-24T10:31:00')))
+assert('*/5 分段匹配', cnfEngine.cronMatches('*/5 * * * *', new Date('2026-08-24T10:25:00')))
+assert('*/5 不匹配', !cnfEngine.cronMatches('*/5 * * * *', new Date('2026-08-24T10:26:00')))
+
+// 20. webhook 服务
+console.log('== webhook ==')
+const wfYml = `
+name: wh-wf
+description: webhook 测试
+inputs:
+  - name: name
+    type: string
+nodes:
+  - id: start
+    type: start
+  - id: t
+    type: template
+    template: "hello {{inputs.name}}"
+  - id: end
+    type: end
+    outputs:
+      - variable: result
+        selector: "{{t}}"
+`
+writeFileSync(join(wfDir, 'wh-wf.yml'), wfYml)
+const server = cnfEngine.createWebhookServer()
+await new Promise((resolve) => server.listen(0, resolve))
+const port = server.address().port
+const resp = await fetch(`http://localhost:${port}/wf/run/wh-wf`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'world' }),
+})
+const body = await resp.json()
+assert('webhook 触发 run', resp.status === 200 && body.ok && body.status === 'completed', JSON.stringify(body))
+const listResp = await fetch(`http://localhost:${port}/wf/list`)
+const listBody = await listResp.json()
+assert('webhook list', listBody.workflows?.some((w) => w.id === 'wh-wf'), JSON.stringify(listBody))
+await new Promise((resolve) => server.close(resolve))
 
 rmSync(tmp, { recursive: true, force: true })
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`)
