@@ -191,7 +191,7 @@ test('tools 注入：Anthropic 请求 body 含 tools[]（字段名映射，mock 
     assert.equal(captured.length, 1)
     assert.ok(captured[0].url.endsWith('/v1/messages'))
     assert.ok(Array.isArray(captured[0].body.tools))
-    assert.deepEqual(captured[0].body.tools.map((t) => t.name), ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'WebFetch', 'WebSearch', 'OCR', 'Vision', 'Skill', 'Browser'])
+    assert.deepEqual(captured[0].body.tools.map((t) => t.name), ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'WebFetch', 'WebSearch', 'OCR', 'Vision', 'Skill', 'Workflow', 'Browser'])
     assert.equal(captured[0].body.tools[0].input_schema.type, 'object')
     assert.ok(chunks.some((c) => c.type === 'usage'))
   } finally {

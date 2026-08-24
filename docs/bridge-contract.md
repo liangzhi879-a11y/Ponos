@@ -73,6 +73,7 @@ bootstrap 复制到 `~/.ponos/runtime/kernel/cli.mjs`）：
 
 **插话语义（priority）**：`priority:'next'` = 排队插话——内核吸收（`command_lifecycle` 确认）后在**工具边界注入当前轮**（模型尽快看到补充信息）；`priority:'now'` = 紧急插话——吸收确认后中断当前轮，消息作为新轮立即执行。`uuid` 必填：内核吸收时立即回发 `command_lifecycle(uuid, 'started')`，供 GUI 解除气泡悬浮态（usePonosCLI settlePendingInterject）。轮次间隙到达（无活跃轮）的 `next` 消息作为新轮直接执行，同样先发 `started` 确认。
 | `control_response` | `{ response:{ request_id, subtype:'success', response:{ behavior:'allow'/'deny', updatedInput, toolUseID, decisionClassification } } }` | 权限审批回执，解除 `can_use_tool` 挂起 |
+| `workflow_command` | `{ subtype:'list'/'run'/'verify', payload }` | 工作流命令（TUI `/wf` 同源）：`list`（列出可用工作流）、`run`（`payload:{ workflow, inputs }` 执行确定性 DAG）、`verify`（`payload:{ auditPath }` 校验审计哈希链）。结果经 stdout `system{subtype:'workflow_result'}` 回发 |
 
 注：内核 CLI 还支持从 stdin 读取 agents JSON、systemPrompt 等（绕过 ARG_MAX）；`structuredIO.structuredInput` 为逐行解析器（print.ts:2834 起）。
 
@@ -89,6 +90,8 @@ bootstrap 复制到 `~/.ponos/runtime/kernel/cli.mjs`）：
 | `bridge_request` | `route:'browser', requestId, payload{action,params}` | 内置浏览器自动化请求 → **bridge 直连浏览器执行器，不转发 GUI**（防敏感载荷泄漏）。执行器完成后经 stdin `control_request{request:{subtype:'browser_response', requestId, ok, snapshot?, error?}}` 回写内核（`engine.resolveBrowser` 解除挂起）；120s 超时兜底报错 |
 | `command_lifecycle` | `data{ uuid, state }` | 插话/排队消息接收确认：内核吸收 user 消息时回发 `state:'started'`（GUI 解除气泡悬浮） |
 | `loop` | `state`（start/iter/end）+ `index,total,until,fresh,judged,reason` | loop 迭代状态事件：`start`（发起，含 total/until/fresh）、`iter`（每轮完成，含 index/total；until 模式附 `judged`（bool）与 `reason`）、`end`（含 `reason`: `completed`/`until_hit`/`cancelled`/`judge_error` 与最终 index/total）。GUI 可依此渲染轮次徽标 `[loop 2/3]` |
+| `system`+`workflow_result` | `subtype:'workflow_result'`，载荷 `{ subtype:'list'/'run'/'verify', workflows?/ok?/outputs?/auditPath?/tampered?/error? }` | 工作流命令回执：`list` 附 `workflows:[{id,nodes,triggers,description}]`；`run` 附 `ok,status,steps,outputs,auditPath`（失败附 `error,node`）；`verify` 附 `ok,lines,tampered` |
+| `workflow` 事件（经 `system{subtype:'workflow'}`） | `{ type:'start'/'node'/'end', runId, workflow, ... }` | 工作流执行进度事件（Workflow 工具或 workflow_command 触发时实时推送）：`start`（runId/workflow/nodes）、`node`（node/type/status/dur_ms/output|error）、`end`（status: completed/failed/cancelled/steps）。GUI 可渲染节点进度条 |
 | `ponos_health` | `tier/compactCount/tokenUsage…` | 上下文健康血条（档位变化时发；`PONOS_HEALTH_COMPACT_COUNT` env 恢复压缩史） |
 | `ponos_summary` | `text, compactCount` | 上下文压缩摘要事件 |
 | `stream_event` / `keep_alive` / `streamlined_text` / `prompt_suggestion` | — | 流式/保活/精简输出/建议（SDK 消费者用） |

@@ -33,6 +33,7 @@ import { resolveCompactSettings } from './compact.mjs'
 import { memoryRoot, buildMemoryIndex, buildRelevantMemory, captureMemoryCandidates, appendMemoryEntry } from './memory.mjs'
 import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
 import { discoverSkills } from './skills.mjs'
+import { createWorkflowEngine, discoverWorkflowsAll } from './workflow.mjs'
 import { loadSettings } from './settings.mjs'
 import { createHooks } from './hooks.mjs'
 import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
@@ -200,6 +201,10 @@ export async function main(argv) {
   // P4-2 hooks：settings.hooks 规则装配（无规则 = count 0，run 恒 matched=false）
   const hooks = createHooks({ rules: settings.merged.hooks || [] })
 
+  // workflow 引擎：与 skill 平权（同一发现/触发机制）。先创建实例（configDir 已知），
+  // engine 创建后注入 registry/事件/模型/根目录（setDeps）。
+  const wfEngine = createWorkflowEngine({ configDir })
+
   const engine = createEngine({
     opts: {
       model: args.model,
@@ -212,12 +217,23 @@ export async function main(argv) {
       disallowedTools: [...args.disallowedTools, ...(settings.merged.disallowedTools || [])],
       permissionRules,
       hooks,
+      // workflow 引擎实例：engine 内部 createToolRegistry 时注入（Workflow 工具）
+      workflow: wfEngine,
     },
     wire,
     session: store,
     health,
     compactor,
   })
+  // workflow 引擎依赖注入：registry（tool/document 节点）、事件（wire 转发）、
+  // 模型（provider 热切换同源）、根目录（addDirs 技能/工作流同域）
+  wfEngine.setDeps({
+    configDir,
+    registry: engine.tools,
+    onEvent: (ev) => { try { wire.system('workflow', ev) } catch { /* 事件失败不阻断 */ } },
+    getModel: () => getProvider().model || model || process.env.ANTHROPIC_MODEL || '',
+  })
+  for (const dir of args.addDirs) wfEngine.addRoot(dir)
   // P4-4：技能发现内核化——每个 --add-dir 扫描（技能根目录命中 SKILL.md；项目目录为空集）
   const skills = []
   const seenSkillIds = new Set()
@@ -226,6 +242,9 @@ export async function main(argv) {
       if (!seenSkillIds.has(s.id)) { seenSkillIds.add(s.id); skills.push(s) }
     }
   }
+  // workflow 与 skill 平权：同一 addDirs 根目录发现（workflow.yml / .yml），
+  // 共享 triggers 触发词；发现结果入【可用工作流】独立区块（严格输出定位）
+  const workflows = discoverWorkflowsAll({ roots: args.addDirs })
   // L3-2：记忆注入（与 GUI 经验面板同一数据源；settings.memory.inject=false 逃生阀）。
   // 两级注入：buildRelevantMemory 按当前任务上下文关键词抽调相关经验全文（模型直接
   // 可用），buildMemoryIndex 给全量索引指针（模型按需 Read）。任务关键词 = cwd/
@@ -254,6 +273,7 @@ export async function main(argv) {
     append: readPromptFile(args.appendSystemPromptFile),
     cwd: args.addDirs[0] || '',
     skills,
+    workflows,
     memory: memoryBlock,
   }))
   // system(init)：spawn 即发。bridge /test-provider 判定 CLI 加载成功并读取
@@ -274,6 +294,7 @@ export async function main(argv) {
     provider: prov ? { model: prov.model, version: providerVersion() } : null,
     vision: vision ? { model: vision.model } : null,
     skills: skills.length,
+    workflows: workflows.length,
     settings: { hooks: hooks.count },
   })
   // --resume：从 transcript 恢复（load 为 async 流式；同文件即 GUI 读取的权威源）。
@@ -433,6 +454,27 @@ export async function main(argv) {
     }
   }
 
+  // /wf 命令执行：list/run/verify → 工作流引擎，结果 wire.system('workflow_result') 回发
+  async function handleWorkflowCommand(msg) {
+    const subtype = msg?.subtype
+    try {
+      if (subtype === 'list') {
+        const wfs = discoverWorkflowsAll({ roots: args.addDirs })
+        wire.system('workflow_result', { subtype: 'list', workflows: wfs.map((w) => ({ id: w.id, nodes: w.nodes, triggers: w.triggers, description: w.description })) })
+      } else if (subtype === 'run') {
+        const r = await wfEngine.run({ id: msg?.payload?.workflow || msg?.payload?.id || '', inputs: msg?.payload?.inputs || {} })
+        wire.system('workflow_result', { subtype: 'run', ok: r.ok, status: r.status, steps: r.steps, outputs: r.outputs, error: r.error, node: r.node, runId: r.runId, auditPath: r.auditPath })
+      } else if (subtype === 'verify') {
+        const r = wfEngine.verify(msg?.payload?.auditPath || msg?.payload?.path || '')
+        wire.system('workflow_result', { subtype: 'verify', ok: r.ok, lines: r.lines, tampered: r.tampered, error: r.error })
+      } else {
+        wire.system('workflow_result', { subtype: 'error', error: `未知 /wf 子命令: ${subtype}` })
+      }
+    } catch (err) {
+      wire.system('workflow_result', { subtype: 'error', error: err?.message || String(err) })
+    }
+  }
+
   function handleControlRequest(req) {
     const subtype = req?.request?.subtype
     if (subtype === 'cancel') {
@@ -530,6 +572,9 @@ export async function main(argv) {
       // 权限审批回执：解除对应 tool_use 的挂起（engine 继续执行工具）
       const inner = parsed.response?.response
       if (inner?.toolUseID) engine.resolveApproval(inner.toolUseID, inner)
+    } else if (parsed.type === 'workflow_command') {
+      // /wf 命令（TUI/协议层）：list/run/verify → 调工作流引擎，结果 wire 回发
+      void handleWorkflowCommand(parsed)
     }
   })
   rl.on('close', () => {

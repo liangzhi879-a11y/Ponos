@@ -11,7 +11,7 @@ function reg() {
 
 test('registry 每工具带 input_schema（JSON Schema，additionalProperties:false）', () => {
   const schemas = reg().toolSchemas()
-  assert.deepEqual(schemas.map((s) => s.name), ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'WebFetch', 'WebSearch', 'OCR', 'Vision', 'Skill', 'Browser'])
+  assert.deepEqual(schemas.map((s) => s.name), ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'WebFetch', 'WebSearch', 'OCR', 'Vision', 'Skill', 'Workflow', 'Browser'])
   for (const s of schemas) {
     assert.equal(typeof s.description, 'string')
     assert.ok(s.description.length > 0)
@@ -183,7 +183,7 @@ test('Bash（A4）：超长输出截尾保留尾部并带 [truncated] 标记', a
 
 test('disallowedTools 过滤：toolNames/toolSchemas 不含禁用工具，run 直接拒绝', async () => {
   const g = createToolRegistry({ cwd: '/tmp', addDirs: ['/tmp'], skipPermissions: false, disallowedTools: ['Agent', 'Task'] })
-  assert.deepEqual(g.toolNames, ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TodoWrite', 'WebFetch', 'WebSearch', 'OCR', 'Vision', 'Skill', 'Browser'])
+  assert.deepEqual(g.toolNames, ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TodoWrite', 'WebFetch', 'WebSearch', 'OCR', 'Vision', 'Skill', 'Workflow', 'Browser'])
   assert.ok(!g.toolSchemas().some((s) => s.name === 'Agent' || s.name === 'Task'))
   // 被禁工具的执行请求（防绕过工具列表）→ 明确拒绝
   const r = await g.run({ name: 'Agent', input: { subagent_type: 'general-purpose', prompt: 'x' } }, {})
