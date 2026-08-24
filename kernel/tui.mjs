@@ -465,8 +465,12 @@ function main() {
   /model   当前模型            /sessions 历史会话选择器（恢复/切换）
   /theme   切换深/亮主题       /tool <n> 展开/折叠工具卡片
   /effort 思考深度档位         /version dev 版本号
-  /model 查看模型列表          /model <序号|id|模型名> 切换模型
+  /loop   连续迭代             /model <序号|id|模型名> 切换模型
   /quit    退出
+  /loop 用法: /loop [次数] [--until 目标] [--fresh] [prompt...]（无 prompt 重放上一条）
+            例: /loop 3 优化这个函数            — 连续 3 轮迭代
+                /loop 5 --until 测试全部通过    — 直到模型判定达成（最多 5 轮）
+                /loop 3 --fresh 重新实现        — 每轮清上下文（独立轮次）
 历史: 启动时检测到历史会话自动弹出选择器（↑↓ 选择 Enter 确认 Esc 新建）；/sessions 随时重开
 审批: 选择项交互 ↑↓/←→ 移动高亮，Enter 确认（1=允许 2=拒绝 3=取消 数字快捷，Esc 取消）`
   }
@@ -783,6 +787,21 @@ function main() {
     }
     if (!isTui) { logPlain(ev); return }
     switch (ev.type) {
+      case 'loop': {
+        // loop 迭代状态：start/iter/end（渲染轮次徽标，不打断当前流）
+        const s = ev.state
+        if (s === 'start') {
+          pushMessage({ kind: 'system', text: `[loop] 开始 ${ev.total} 轮${ev.until ? `，直到达成「${ev.until}」` : ''}${ev.fresh ? '，fresh 清上下文' : ''}` })
+        } else if (s === 'iter') {
+          const judged = ev.judged === true ? ' ✓达成' : (ev.judged === false ? ' ✗未达成' : '')
+          pushMessage({ kind: 'system', text: `[loop] 第 ${ev.index}/${ev.total} 轮完成${judged}${ev.reason ? ' — ' + ev.reason : ''}` })
+        } else if (s === 'end') {
+          const reasonMap = { until_hit: '达成目标，提前结束', completed: '次数耗尽', cancelled: '已取消', judge_error: '判定失败，已停止' }
+          pushMessage({ kind: 'system', text: `[loop] 结束（${reasonMap[ev.reason] || ev.reason}）· 共 ${ev.index}/${ev.total} 轮` })
+        }
+        render()
+        break
+      }
       case 'system':
         if (ev.subtype === 'init') {
           sessionId = ev.session_id
@@ -860,7 +879,7 @@ function main() {
   }
 
   // ---------- 命令 ----------
-  const COMMANDS = ['/banner', '/cancel', '/clear', '/effort', '/help', '/model', '/quit', '/session', '/sessions', '/stats', '/theme', '/tool', '/tools', '/version', '/exit']
+  const COMMANDS = ['/banner', '/cancel', '/clear', '/effort', '/help', '/loop', '/model', '/quit', '/session', '/sessions', '/stats', '/theme', '/tool', '/tools', '/version', '/exit']
   function sendCancel() {
     // 即时反馈：不等内核 result，先停动画/清除审批横幅/收尾流式尾巴
     stopAnim()
@@ -918,6 +937,35 @@ function main() {
         render(); break
       }
       case '/banner': showBanner(); break
+      case '/loop': {
+        // /loop [次数] [--until 目标] [--fresh] [prompt...]（无 prompt 重放上一条）
+        // 例：/loop 3 优化这个函数
+        //     /loop 5 --until 测试全部通过 修复 bug
+        //     /loop 3 --fresh 重新实现
+        const lastUser = [...messages].reverse().find((m) => m.kind === 'user' || (m.role === 'user' && m.kind !== 'system'))
+        const restArgs = rest.slice()
+        let count = 3
+        if (restArgs.length && /^\d+$/.test(restArgs[0])) count = parseInt(restArgs[0], 10)
+        const flagStart = /^\d+$/.test(restArgs[0] || '') ? 1 : 0
+        let until = ''
+        let fresh = false
+        const clean = []
+        let inUntil = false
+        for (const a of restArgs.slice(flagStart)) {
+          if (a === '--fresh') { fresh = true; continue }
+          if (a === '--until') { inUntil = true; continue }
+          if (a.startsWith('--until=')) { until = a.slice(8); continue }
+          if (inUntil) { until = a; inUntil = false; continue }
+          clean.push(a)
+        }
+        const promptText = clean.join(' ')
+        const content = promptText || (lastUser ? (lastUser.text || lastUser.content || '') : '')
+        if (!content) { pushMessage({ kind: 'error', text: '没有可重放的上一条消息。/loop [次数] [--until 目标] [--fresh] 消息内容' }); render(); break }
+        child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content }, loop: { count, until, fresh } }) + '\n')
+        pushMessage({ kind: 'system', text: `[loop] 提交：${count} 轮${until ? `，直到达成「${until}」` : ''}${fresh ? '，fresh 清上下文' : ''}` })
+        render()
+        break
+      }
       case '/quit': case '/exit': leaveTui(0); break
       default: pushMessage({ kind: 'error', text: `未知命令 ${cmd}，/help 查看` }); render()
     }

@@ -256,6 +256,13 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // loop --until 判定请求：mock 返回可控 done（PONOS_MOCK_JUDGE=done|not，默认 not）
+  if (lastText && lastText.includes('请判定该目标在当前对话中是否已达成')) {
+    const done = process.env.PONOS_MOCK_JUDGE === 'done'
+    yield* streamText(JSON.stringify({ done, reason: done ? 'mock 判定达成' : 'mock 判定未达成' }), signal)
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // 普通回合：回显（带 turn 计数，历史恢复可断言）
   const text = `mock: ${String(lastText).slice(0, 120)} (turn=${realUser.length})`
   yield* streamText(text, signal)
