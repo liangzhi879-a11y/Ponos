@@ -288,11 +288,24 @@ export async function main(argv) {
   }
 
   const state = { turnActive: false, queue: [], cancelling: false }
+  // loop 迭代状态（顶层 msg.loop 字段驱动；cancel / until 命中 / 次数耗尽结束）
+  const loopState = { active: false, total: 0, until: '', content: '', index: 0, fresh: false }
 
   async function handleUser(msg) {
     const content = extractContent(msg)
     const priority = msg?.priority
     const uuid = msg?.uuid
+    // loop 初始化：首个带 loop 字段的消息进入时登记（内部推进消息 loopState 已 active，跳过）
+    const loop = msg?.loop
+    if (loop && !loopState.active) {
+      loopState.active = true
+      loopState.total = Math.max(1, Number(loop.count) || 1)
+      loopState.until = String(loop.until || '')
+      loopState.content = content
+      loopState.index = 0
+      loopState.fresh = !!loop.fresh
+      wire.loop('start', { index: 0, total: loopState.total, until: loopState.until, fresh: loopState.fresh })
+    }
     // P8 排队插话（priority:'next'）：当前轮活跃时吸收进 engine 待注入队列，
     // 工具边界注入当前轮（模型尽快看到补充信息）；立即回发 command_lifecycle
     // started 解除前端气泡悬浮。纯文本阶段轮次结束仍未注入 → finally 兜底作为
@@ -377,6 +390,36 @@ export async function main(argv) {
       } catch { /* 工作记忆写失败不影响主流程 */ }
       state.turnActive = false
       state.cancelling = false
+      // loop 推进（轮次已完成）：until 模型判定 / 次数检查 → 下一轮 unshift 入队
+      // （插话消息排在 loop 之后公平执行；cancel 已清 loopState.active 自然停止）
+      if (loopState.active) {
+        const nextIndex = loopState.index + 1
+        const endLoop = (reason) => {
+          wire.loop('end', { reason, index: nextIndex, total: loopState.total })
+          loopState.active = false
+        }
+        if (loopState.until) {
+          let j = null
+          try { j = await engine.judgeUntil({ target: loopState.until }) } catch { j = { done: false, error: true } }
+          wire.loop('iter', { index: nextIndex, total: loopState.total, judged: j?.done === true, reason: j?.reason || '', error: !!j?.error })
+          if (j?.done) endLoop('until_hit')
+          else if (j?.error || nextIndex >= loopState.total) endLoop(j?.error ? 'judge_error' : 'completed')
+          else {
+            // fresh：第 1 轮完成后设窗口起点，第 2 轮请求面只含本轮之后内容
+            if (loopState.fresh && nextIndex === 1) engine.setFreshWindow()
+            loopState.index = nextIndex
+            state.queue.unshift({ message: { role: 'user', content: loopState.content }, loop: { count: loopState.total, until: loopState.until, index: nextIndex }, skipMemoryCapture: true })
+          }
+        } else if (nextIndex >= loopState.total) {
+          endLoop('completed')
+        } else {
+          // fresh：第 1 轮完成后设窗口起点，第 2 轮请求面只含本轮之后内容
+          if (loopState.fresh && nextIndex === 1) engine.setFreshWindow()
+          loopState.index = nextIndex
+          wire.loop('iter', { index: nextIndex, total: loopState.total })
+          state.queue.unshift({ message: { role: 'user', content: loopState.content }, loop: { count: loopState.total, index: nextIndex }, skipMemoryCapture: true })
+        }
+      }
       // 插话残余兜底：next 消息在纯文本阶段未被工具边界吸收 → 作为新轮处理。
       // skipMemoryCapture 标记：插话不参与记忆捕获（与工具边界注入路径一致，
       // 见 finally 捕获处注释）
@@ -394,6 +437,11 @@ export async function main(argv) {
     const subtype = req?.request?.subtype
     if (subtype === 'cancel') {
       state.cancelling = true
+      // loop 立即终止：清 active（后续轮次不再推进），结束事件发出
+      if (loopState.active) {
+        loopState.active = false
+        wire.loop('end', { reason: 'cancelled', index: loopState.index + 1, total: loopState.total })
+      }
       // 停止按钮全杀语义（engine.hardStop）：kill 工具子进程（Bash/OCR）+ 中止
       // 全部后台子 agent + 中断当前 API 流。与打断插入（now，engine.abort()，
       // 保持审批/浏览器挂起让模型理解新指令后继续）区分。
@@ -484,7 +532,21 @@ export async function main(argv) {
       if (inner?.toolUseID) engine.resolveApproval(inner.toolUseID, inner)
     }
   })
-  rl.on('close', () => shutdown(0))
+  rl.on('close', () => {
+    // stdin EOF：若仍有活跃轮次 / 排队消息 / 进行中 loop，延迟到完成后退出
+    // （管道测试与 bridge 优雅退出两全；30s 兜底防挂起）
+    if (state.turnActive || state.queue.length || loopState.active) {
+      const timer = setInterval(() => {
+        if (!state.turnActive && !state.queue.length && !loopState.active) {
+          clearInterval(timer)
+          shutdown(0)
+        }
+      }, 50)
+      setTimeout(() => { clearInterval(timer); shutdown(0) }, 30000)
+    } else {
+      shutdown(0)
+    }
+  })
   return 0
 }
 

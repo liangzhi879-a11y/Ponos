@@ -51,6 +51,10 @@ export function makeWire(stream = process.stdout) {
     health(data = {}) {
       writeLine(stream, { type: 'ponos_health', ...data })
     },
+    // loop 迭代状态事件（cli.loopRunner 发出；GUI/bridge 依 state 渲染轮次徽标）
+    loop(state, data = {}) {
+      writeLine(stream, { type: 'loop', state, ...data })
+    },
     summary(text, compactCount) {
       writeLine(stream, { type: 'ponos_summary', text: String(text ?? ''), compactCount })
     },

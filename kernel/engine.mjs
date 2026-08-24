@@ -184,8 +184,14 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   }
 
   function deriveHistory() {
-    if (session) return session.deriveMessages()
-    return memoryHistory.filter((m) => m.role !== 'system')
+    const base = session ? session.deriveMessages() : memoryHistory.filter((m) => m.role !== 'system')
+    // loop --fresh：请求面跳过 fresh 之前的消息（transcript 继续记录，仅模型输入裁剪）
+    return historySkip > 0 ? base.slice(historySkip) : base
+  }
+  // loop --fresh 窗口起点：记录当前消息条数，之后 deriveHistory 从该点起派生
+  let historySkip = 0
+  function setFreshWindow() {
+    historySkip = session ? session.deriveMessages().length : memoryHistory.length
   }
   function pushMemory(m) { if (!session) memoryHistory.push(m) }
 
@@ -744,6 +750,39 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     // Agent 工具被禁用时（--disallowedTools Agent）子 Agent 区块不入提示词
     agents: opts.disallowedTools?.includes('Agent') ? [] : agents,
     setSystemPrompt(p) { systemPrompt = p || '' },
+    // loop --fresh：请求面从当前消息条数起裁剪（transcript 继续记录）
+    setFreshWindow,
+    // loop --until 模型判定：小 maxTokens 无工具请求，判定目标是否达成
+    // 返回 { done, reason, error }（error=true 时 done 恒 false，cli 据此停 loop）
+    async judgeUntil({ target, maxTokens = 512, signal: s = signal }) {
+      const history = deriveHistory().slice(-20)
+      const judgeMsgs = [
+        { role: 'system', content: '你是目标达成判定器。根据对话历史判断目标是否已达成。只输出一个 JSON 对象：{"done":true|false,"reason":"一句话理由"}' },
+        ...history,
+        { role: 'user', content: `目标：${target}\n请判定该目标在当前对话中是否已达成，只输出 JSON。` },
+      ]
+      let out = ''
+      try {
+        for await (const chunk of streamMessages({
+          model: opts.model || getProvider().model || '',
+          messages: judgeMsgs,
+          maxTokens,
+          signal: s?.rawSignal || s,
+          tools: [],
+        })) {
+          if (chunk.type === 'text') out += chunk.text
+        }
+      } catch (err) {
+        return { done: false, reason: `判定请求失败：${err?.message || String(err)}`, error: true }
+      }
+      const m = out.match(/\{[\s\S]*\}/)
+      try {
+        const j = JSON.parse(m ? m[0] : '{}')
+        return { done: j.done === true, reason: String(j.reason || ''), raw: out.slice(0, 200) }
+      } catch {
+        return { done: /达成|完成|通过|已满足|success|done|yes|true/i.test(out), reason: out.slice(0, 120), raw: out.slice(0, 200) }
+      }
+    },
     // 思考深度热设置（cli control_request reasoning_effort）：返回规范化档位 + 生效 effort
     setReasoningEffort(value) { return applyReasoningEffort(value) },
     abort() {

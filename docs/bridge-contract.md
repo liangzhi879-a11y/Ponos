@@ -68,6 +68,7 @@ bootstrap 复制到 `~/.ponos/runtime/kernel/cli.mjs`）：
 | type | 载荷 | 语义 |
 |---|---|---|
 | `user` | `{ message:{role:'user',content}, priority?, uuid? }` | 投递一轮用户消息（队列化）。**priority/uuid 与 type/message 平级**（顶层，bridge.mjs:2258 转发 shape） |
+| `user` + `loop` | `{ message, loop:{ count, until?, fresh?, index? } }` | 连续迭代：同一 content 自动重放 `count` 轮（默认共享上下文，模型基于前轮结果迭代）。`until` 存在时每轮结束经模型判定目标是否达成，命中提前终止；`fresh:true` 时第 2 轮起请求面裁剪（独立上下文，transcript 仍连续记录）。`index` 由内核维护（外部可不传）。`loop` 与 `priority`/`uuid` 平级（顶层） |
 | `control_request` | `{ request_id, request:{subtype} }` | 中断/取消。`subtype:'cancel'`（bridge 的优雅停止）、`'interrupt'`（abort 主查询）、`'browser_response'`（浏览器执行器回写，见 §4 bridge_request）等 |
 
 **插话语义（priority）**：`priority:'next'` = 排队插话——内核吸收（`command_lifecycle` 确认）后在**工具边界注入当前轮**（模型尽快看到补充信息）；`priority:'now'` = 紧急插话——吸收确认后中断当前轮，消息作为新轮立即执行。`uuid` 必填：内核吸收时立即回发 `command_lifecycle(uuid, 'started')`，供 GUI 解除气泡悬浮态（usePonosCLI settlePendingInterject）。轮次间隙到达（无活跃轮）的 `next` 消息作为新轮直接执行，同样先发 `started` 确认。
@@ -87,6 +88,7 @@ bootstrap 复制到 `~/.ponos/runtime/kernel/cli.mjs`）：
 | `control_request` | `request{ subtype:'can_use_tool', request_id, tool_use_id, tool_name, input, decision_reason }` | 权限审批弹窗触发源（bridge 转发为 `approval`，GUI 批准后回 `control_response`） |
 | `bridge_request` | `route:'browser', requestId, payload{action,params}` | 内置浏览器自动化请求 → **bridge 直连浏览器执行器，不转发 GUI**（防敏感载荷泄漏）。执行器完成后经 stdin `control_request{request:{subtype:'browser_response', requestId, ok, snapshot?, error?}}` 回写内核（`engine.resolveBrowser` 解除挂起）；120s 超时兜底报错 |
 | `command_lifecycle` | `data{ uuid, state }` | 插话/排队消息接收确认：内核吸收 user 消息时回发 `state:'started'`（GUI 解除气泡悬浮） |
+| `loop` | `state`（start/iter/end）+ `index,total,until,fresh,judged,reason` | loop 迭代状态事件：`start`（发起，含 total/until/fresh）、`iter`（每轮完成，含 index/total；until 模式附 `judged`（bool）与 `reason`）、`end`（含 `reason`: `completed`/`until_hit`/`cancelled`/`judge_error` 与最终 index/total）。GUI 可依此渲染轮次徽标 `[loop 2/3]` |
 | `ponos_health` | `tier/compactCount/tokenUsage…` | 上下文健康血条（档位变化时发；`PONOS_HEALTH_COMPACT_COUNT` env 恢复压缩史） |
 | `ponos_summary` | `text, compactCount` | 上下文压缩摘要事件 |
 | `stream_event` / `keep_alive` / `streamlined_text` / `prompt_suggestion` | — | 流式/保活/精简输出/建议（SDK 消费者用） |
