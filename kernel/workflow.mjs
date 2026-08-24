@@ -22,6 +22,7 @@ import { existsSync, readFileSync, readdirSync, mkdirSync, appendFileSync } from
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { createContext, runInContext } from 'node:vm'
+import { createServer } from 'node:http'
 import { parseFrontmatter } from './skills.mjs'
 import { streamMessages } from './api.mjs'
 import { buildRelevantMemory, appendMemoryEntry } from './memory.mjs'
@@ -228,6 +229,7 @@ export function discoverWorkflows({ root } = {}) {
       name: meta.name || parsed.name || id,
       description: (meta.description || parsed.description || firstLine || id).slice(0, 300),
       version: meta.version || parsed.version || '',
+      schedule: parsed.schedule || meta.schedule || '',
       triggers: Array.isArray(parsed.triggers)
         ? parsed.triggers.map(String)
         : meta.triggers ? String(meta.triggers).split(/[,，]/).map((s) => s.trim()).filter(Boolean)
@@ -483,6 +485,24 @@ async function execAgent(node, ctx) {
   return { output: { text: r.text, iters: r.iters, tool_uses: r.tool_uses }, next: node.next }
 }
 
+// confirm：人工审批节点（对标 Dify human-input）。发 confirm_request 事件后挂起，
+// 等待外部 resolveConfirm（TUI /wf approve|reject / 协议层 workflow_confirm）或超时。
+// 超时/拒绝走 next_timeout / next_reject 分支；批准走 next_approve / next。
+async function execConfirm(node, ctx) {
+  const message = renderTemplate(node.message || node.prompt || '请确认', ctx.vars)
+  const runId = ctx.runId || ''
+  const nodeId = node.id
+  const timeoutMs = node.timeout_ms || 300_000
+  const waiter = ctx.confirmWaiters?.create ? ctx.confirmWaiters.create(runId, nodeId, timeoutMs) : null
+  ctx.event('confirm_request', { runId, node: nodeId, message, inputs: node.inputs || [], timeout_ms: timeoutMs })
+  if (!waiter) return { output: { action: 'approved', comment: '' }, next: node.next_approve || node.next }
+  const r = await waiter.promise
+  ctx.event('confirm_resolved', { runId, node: nodeId, action: r.action, comment: r.comment, timed_out: r.timed_out })
+  if (r.timed_out) return { output: { action: 'timeout', comment: r.comment || '' }, next: node.next_timeout || node.next }
+  if (r.action === 'rejected') return { output: { action: 'rejected', comment: r.comment || '' }, next: node.next_reject || node.next }
+  return { output: { action: 'approved', comment: r.comment || '' }, next: node.next_approve || node.next }
+}
+
 function execCode(node, ctx) {
   const code = node.code || ''
   const inputVars = {}
@@ -662,6 +682,7 @@ async function executeNode(node, ctx) {
       case 'agent': result = await execAgent(node, ctx); break
       case 'iterate': result = await execIterate(node, ctx); break
       case 'loop': result = await execLoop(node, ctx); break
+      case 'confirm': result = await execConfirm(node, ctx); break
       default: throw new Error(`未知节点类型: ${node.type}`)
     }
     return { ok: true, ...result, dur_ms: Date.now() - t0 }
@@ -686,6 +707,36 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
   let _getModel = getModel || (() => process.env.ANTHROPIC_MODEL || '')
   let _signal = signal || { aborted: false }
   let _memoryRoot = memoryRoot
+  // confirm 挂起队列：key = runId:nodeId → { resolve, timer }
+  const confirmWaiters = new Map()
+
+  // 创建挂起项（超时自动 resolve 为 timed_out）
+  function createConfirmWaiter(runId, nodeId, timeoutMs) {
+    const key = `${runId}:${nodeId}`
+    if (confirmWaiters.has(key)) return confirmWaiters.get(key)
+    let resolveFn
+    const promise = new Promise((resolve) => { resolveFn = resolve })
+    const timer = setTimeout(() => {
+      if (confirmWaiters.has(key)) {
+        confirmWaiters.delete(key)
+        resolveFn({ action: 'timeout', comment: '', timed_out: true })
+      }
+    }, timeoutMs)
+    // 注意：confirm 超时 timer 不能 unref——审批挂起期间进程必须保持活跃等待
+    // （unref 会导致事件循环无活引用时进程退出、超时永不触发）
+    const waiter = { key, promise, resolve: (r) => { clearTimeout(timer); if (confirmWaiters.delete(key)) resolveFn({ ...r, timed_out: false }) } }
+    confirmWaiters.set(key, waiter)
+    return waiter
+  }
+
+  // 外部审批回传：TUI /wf approve|reject / 协议层 workflow_confirm
+  function resolveConfirm(runId, nodeId, { action = 'approved', comment = '' } = {}) {
+    const key = `${runId}:${nodeId}`
+    const w = confirmWaiters.get(key)
+    if (!w) return { ok: false, error: `无挂起审批（${key}）` }
+    w.resolve({ action, comment })
+    return { ok: true }
+  }
 
   function setDeps(deps = {}) {
     if (deps.configDir !== undefined) _configDir = deps.configDir
@@ -744,7 +795,7 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
       visited.add(nextId)
       const node = nodes.get(nextId)
       if (!node) return { ok: false, error: `未知节点: ${nextId}`, runId, auditPath }
-      const ctx = { vars, results, inputs, registry: _registry, signal: _signal, getModel: _getModel, nodes, auditState, memoryRoot: _memoryRoot, runBody }
+      const ctx = { vars, results, inputs, registry: _registry, signal: _signal, getModel: _getModel, nodes, auditState, memoryRoot: _memoryRoot, runBody, runId, event, confirmWaiters: { create: createConfirmWaiter } }
       const r = await executeNode(node, ctx)
       results[node.id] = r
       if (r.ok) {
@@ -771,6 +822,85 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
     return { ok: true, status, outputs: results, runId, auditPath, steps }
   }
 
+  // cron 表达式匹配（5 段：分 时 日 月 周；* / 数字 逗号）
+  function cronMatches(expr, date = new Date()) {
+    const fields = String(expr).trim().split(/\s+/)
+    if (fields.length !== 5) return false
+    const vals = [date.getMinutes(), date.getHours(), date.getDate(), date.getMonth() + 1, date.getDay()]
+    for (let i = 0; i < 5; i++) {
+      const f = fields[i]
+      if (f === '*') continue
+      if (f.startsWith('*/')) {
+        const step = Number(f.slice(2))
+        if (vals[i] % step !== 0) return false
+        continue
+      }
+      if (f.includes(',')) {
+        const parts = f.split(',').map(Number)
+        if (!parts.includes(vals[i])) return false
+        continue
+      }
+      if (Number(f) !== vals[i]) return false
+    }
+    return true
+  }
+
+  // 调度器：每 60s 扫描 roots 下带 schedule 字段的工作流，cron 匹配即 run。
+  // 防重：sameMinute 记录已触发（同分钟内不重复）。返回 stop()。
+  function startScheduler({ onRun } = {}) {
+    const last = new Map()
+    const timer = setInterval(() => {
+      for (const root of roots) {
+        for (const wf of discoverWorkflows({ root })) {
+          const schedule = wf.schedule
+          if (!schedule) continue
+          const now = new Date()
+          const minuteKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}-${now.getHours()}-${now.getMinutes()}`
+          if (!cronMatches(schedule, now)) continue
+          if (last.get(wf.id) === minuteKey) continue
+          last.set(wf.id, minuteKey)
+          const r = run({ id: wf.id, inputs: {} })
+          if (onRun) void r.then((res) => onRun(wf.id, res))
+        }
+      }
+    }, 60_000)
+    if (timer.unref) timer.unref()
+    return () => clearInterval(timer)
+  }
+
+  // webhook 触发：node:http 服务，POST /wf/run/<id>（JSON body = inputs）。
+  // 返回 server（调用方 listen）；默认端口 51312（PONOS_WF_WEBHOOK_PORT 覆盖）。
+  function createWebhookServer() {
+    const server = createServer(async (req, res) => {
+      if (req.method === 'POST' && req.url?.startsWith('/wf/run/')) {
+        const id = decodeURIComponent(req.url.slice('/wf/run/'.length))
+        let body = ''
+        for await (const chunk of req) body += chunk
+        let inputs = {}
+        try { inputs = JSON.parse(body || '{}') } catch { /* 非 JSON body 视为空 */ }
+        try {
+          const r = await run({ id, inputs })
+          res.writeHead(r.ok ? 200 : 400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: r.ok, status: r.status, steps: r.steps, runId: r.runId, auditPath: r.auditPath, error: r.error, node: r.node }))
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: err?.message || String(err) }))
+        }
+        return
+      }
+      if (req.method === 'GET' && req.url === '/wf/list') {
+        const list = []
+        for (const root of roots) for (const w of discoverWorkflows({ root })) list.push({ id: w.id, nodes: w.nodes, schedule: w.schedule || null, description: w.description })
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ workflows: list }))
+        return
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'not found' }))
+    })
+    return server
+  }
+
   return {
     run,
     setDeps,
@@ -778,5 +908,9 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
     load: (id) => loadWorkflow({ roots, id }),
     verify: (auditPath) => verifyRun(auditPath),
     addRoot: (root) => { if (root && !roots.includes(root)) roots.push(root) },
+    resolveConfirm,
+    startScheduler,
+    createWebhookServer,
+    cronMatches,
   }
 }
