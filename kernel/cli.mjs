@@ -232,6 +232,7 @@ export async function main(argv) {
     registry: engine.tools,
     onEvent: (ev) => { try { wire.system('workflow', ev) } catch { /* 事件失败不阻断 */ } },
     getModel: () => getProvider().model || model || process.env.ANTHROPIC_MODEL || '',
+    memoryRoot: memoryRoot(configDir),
   })
   for (const dir of args.addDirs) wfEngine.addRoot(dir)
   // P4-4：技能发现内核化——每个 --add-dir 扫描（技能根目录命中 SKILL.md；项目目录为空集）
