@@ -204,7 +204,7 @@ export function sendPermissionResponse(sessionId: string, toolUseId: string, app
  * （'started'=已接收处理），供前端解除气泡悬浮态。
  */
 // 构建 WS send payload；会话不存在返回 null
-function buildSendPayload(conversationId: string, prompt: string, priority?: 'now' | 'next' | 'later', uuid?: string): Record<string, unknown> | null {
+function buildSendPayload(conversationId: string, prompt: string, priority?: 'now' | 'next' | 'later', uuid?: string, loop?: { count: number; until?: string; fresh?: boolean }): Record<string, unknown> | null {
   const store = useChatStore.getState()
   const conversation = store.conversations.find(c => c.id === conversationId)
   if (!conversation) return null
@@ -233,6 +233,8 @@ function buildSendPayload(conversationId: string, prompt: string, priority?: 'no
     ...(compactCount > 0 ? { compactCount } : {}),
     ...(priority ? { priority } : {}),
     ...(uuid ? { uuid } : {}),
+    // /loop 连续迭代：透传 loop 配置到内核（count/until/fresh）
+    ...(loop ? { loop } : {}),
   }
 }
 
@@ -278,8 +280,8 @@ function sendPayloadWS(conversationId: string, payload: Record<string, unknown>)
 }
 
 // 原 dispatchSend 语义：立即发送（新建流式占位）
-function dispatchSend(conversationId: string, userContent: string, priority?: 'now' | 'next' | 'later') {
-  const payload = buildSendPayload(conversationId, userContent, priority)
+function dispatchSend(conversationId: string, userContent: string, priority?: 'now' | 'next' | 'later', loop?: { count: number; until?: string; fresh?: boolean }) {
+  const payload = buildSendPayload(conversationId, userContent, priority, undefined, loop)
   if (!payload) return
   setupStreamingState(conversationId)
   sendPayloadWS(conversationId, payload)
@@ -319,7 +321,7 @@ export function usePonosCLI() {
     }
   }, [])
 
-  const send = useCallback((conversationId: string, userContent: string) => {
+  const send = useCallback((conversationId: string, userContent: string, loop?: { count: number; until?: string; fresh?: boolean }) => {
     const store = useChatStore.getState()
     const conversation = store.conversations.find(c => c.id === conversationId)
     if (!conversation) return
@@ -363,7 +365,7 @@ export function usePonosCLI() {
       content: [{ id: generateId(), type: 'text', content: clean }],
       timestamp: Date.now(),
     })
-    dispatchSend(conversationId, userContent)
+    dispatchSend(conversationId, userContent, undefined, loop)
   }, [])
 
   const stop = useCallback((conversationId?: string) => {
@@ -583,6 +585,20 @@ function handleMessage(msg: Record<string, unknown>) {
     if (type === 'ponos_summary') {
       const s = event as Record<string, any>
       useHealthStore.getState().setSummary(sid, String(s.text ?? ''), Number(s.compactCount ?? 0))
+      return
+    }
+    if (type === 'loop') {
+      // /loop 连续迭代状态：start（置位 active）/ iter（推进轮次）/ end（结束，带 reason）
+      const s = event as Record<string, any>
+      const st = useChatStore.getState()
+      const state = s.state as string
+      if (state === 'start') {
+        st.setLoopState(sid, { active: true, index: 0, total: Number(s.total) || 1, until: s.until ? String(s.until) : undefined, fresh: !!s.fresh })
+      } else if (state === 'iter') {
+        st.setLoopState(sid, { index: Number(s.index) || 0, total: Number(s.total) || 0, judgeReason: s.reason ? String(s.reason) : undefined })
+      } else if (state === 'end') {
+        st.setLoopState(sid, { active: false, index: Number(s.index) || 0, total: Number(s.total) || 0, reason: s.reason ? String(s.reason) : undefined })
+      }
       return
     }
     if (type === 'command_lifecycle') {

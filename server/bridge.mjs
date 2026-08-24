@@ -2291,6 +2291,7 @@ wss.on('connection', (ws, req) => {
           message: { role: 'user', content: msg.prompt },
           ...(msg.priority ? { priority: msg.priority } : {}),
           ...(msg.uuid ? { uuid: msg.uuid } : {}),
+          ...(msg.loop ? { loop: msg.loop } : {}),
         }) + '\n')
         session._turnActive = true
         send({ type: 'ack', data: { requestId: msg.requestId, sessionId: sid } })

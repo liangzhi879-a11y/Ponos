@@ -23,6 +23,7 @@ interface Attachment { id: string; name: string; type: 'file' | 'image'; content
 const SLASH_COMMANDS_EN = [
   { id: 'help', label: '/help', description: 'Show help and available commands' },
   { id: 'clear', label: '/clear', description: 'Clear the conversation' },
+  { id: 'loop', label: '/loop', description: 'Iterate N times (or until goal met)' },
   { id: 'compact', label: '/compact', description: 'Compact conversation context' },
   { id: 'config', label: '/config', description: 'Open settings' },
   { id: 'cost', label: '/cost', description: 'Show usage cost' },
@@ -41,6 +42,7 @@ const SLASH_COMMANDS_EN = [
 const SLASH_COMMANDS_ZH = [
   { id: 'help', label: '/帮助', description: '显示帮助和可用命令' },
   { id: 'clear', label: '/清空', description: '清空对话' },
+  { id: 'loop', label: '/循环', description: '连续迭代 N 轮（或直到目标达成）' },
   { id: 'compact', label: '/压缩', description: '压缩对话上下文' },
   { id: 'config', label: '/设置', description: '打开设置' },
   { id: 'cost', label: '/费用', description: '查看使用费用' },
@@ -257,6 +259,57 @@ export function ChatInput({ conversationId }: Props) {
       setActiveSkill(null)
       setShowCommands(false)
       return
+    }
+
+    // /loop 连续迭代：/loop [次数] [--until 目标] [--fresh] [prompt...]
+    // （无 prompt 重放上一条——上一条从会话消息里取最近 user 消息）
+    if (prompt.trim().startsWith('/loop') || prompt.trim().startsWith('/循环')) {
+      const parts = prompt.trim().split(/\s+/)
+      const isLoop = parts[0] === '/loop' || parts[0] === '/循环'
+      if (isLoop) {
+        let count = 3
+        let idx = 1
+        if (parts[idx] && /^\d+$/.test(parts[idx])) { count = parseInt(parts[idx], 10); idx++ }
+        let until = ''
+        let fresh = false
+        const clean: string[] = []
+        let inUntil = false
+        for (const a of parts.slice(idx)) {
+          if (a === '--fresh') { fresh = true; continue }
+          if (a === '--until') { inUntil = true; continue }
+          if (a.startsWith('--until=')) { until = a.slice(8); continue }
+          if (inUntil) { until = a; inUntil = false; continue }
+          clean.push(a)
+        }
+        const loopPrompt = clean.join(' ').trim()
+        const content = loopPrompt || (() => {
+          // 重放上一条 user 消息（找会话里最近一条非 pending user 消息）
+          const conv = useChatStore.getState().conversations.find(c => c.id === conversationId)
+          if (!conv) return ''
+          for (let i = conv.messages.length - 1; i >= 0; i--) {
+            const m = conv.messages[i]
+            if (m.role === 'user' && !m.pending) {
+              const textBlock = (m.content || []).find(b => b.type === 'text') as { content?: string } | undefined
+              if (textBlock?.content) return textBlock.content
+            }
+          }
+          return ''
+        })()
+        if (!content) {
+          _skipUndo.current = true
+          setValue('/loop 3 输入要迭代的内容')
+          setShowCommands(false)
+          return
+        }
+        send(conversationId, content, { count, until, fresh })
+        _skipUndo.current = true
+        setValue('')
+        setAttachments([])
+        setActiveSkill(null)
+        setShowCommands(false)
+        if (textareaRef.current) textareaRef.current.style.height = 'auto'
+        return
+      }
     }
 
     send(conversationId, prompt)

@@ -8,6 +8,7 @@ import { RunningAgentsBar } from './RunningAgentsBar'
 import { HealthGlow } from './HealthGlow'
 import { CompressedToast } from './CompressedToast'
 import { KernelStallBar } from './KernelStallBar'
+import { LoopStatusBar } from './LoopStatusBar'
 import { BrowserStatusBar } from '@/components/browser/BrowserStatusBar'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -205,6 +206,8 @@ export function ChatWindow({ conversationId }: Props) {
       <BrowserStatusBar conversationId={conversationId} />
       {/* 内核失速告警条（bridge kernel-stall 事件；有输出自动消失） */}
       <KernelStallBar conversationId={conversationId} />
+      {/* /loop 连续迭代状态条（内核 loop 事件；无 loop 不占位） */}
+      <LoopStatusBar conversationId={conversationId} />
       <ScrollArea ref={scrollRef} className="flex-1 pl-1" onScroll={handleScrollWithPin}>
         {loadingWithHistory ? (
           /* v2 按需加载占位：历史会话消息拉取中 */

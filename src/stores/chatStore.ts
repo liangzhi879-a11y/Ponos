@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage, type PersistStorage, type StorageValue } from 'zustand/middleware'
-import type { Conversation, Message, ContentBlock, PermissionRequest, BackgroundTask, QuestionPayload, ConversationProgress, SubAgentTask, ConversationSet } from '@/types'
+import type { Conversation, Message, ContentBlock, PermissionRequest, BackgroundTask, QuestionPayload, ConversationProgress, SubAgentTask, ConversationSet, LoopState } from '@/types'
 import { generateId, sanitizeText, repairCorruptedJson, recoverCorruptedChatState } from '@/lib/utils'
 import { getDefaultHome } from '@/lib/config'
 import { useHealthStore } from '@/stores/healthStore'
@@ -350,6 +350,9 @@ interface ChatState {
   // 子 agent 任务（二级面板数据源，运行时瞬态不持久化）
   subAgentTasks: Record<string, SubAgentTask[]>
 
+  // /loop 连续迭代状态（运行时瞬态不持久化；内核 loop 事件驱动）
+  loopStates: Record<string, LoopState>
+
   // Actions
   createConversation: (cwd?: string, agentId?: string) => string
   deleteConversation: (id: string) => void
@@ -410,6 +413,8 @@ interface ChatState {
 
   upsertSubAgentTask: (conversationId: string, patch: Partial<SubAgentTask> & { taskId: string }) => void
   clearSubAgentTasks: (conversationId: string) => void
+  setLoopState: (conversationId: string, patch: Partial<LoopState>) => void
+  clearLoopState: (conversationId: string) => void
 }
 
 export const useChatStore = create<ChatState>()(
@@ -432,6 +437,7 @@ export const useChatStore = create<ChatState>()(
       pendingQuestions: {},
       conversationProgress: {},
       subAgentTasks: {},
+      loopStates: {},
 
       createConversation: (cwd?: string, agentId?: string) => {
         // 新建会话即视为开启全新健康周期：健康状态已按会话隔离存储，
@@ -1131,6 +1137,18 @@ export const useChatStore = create<ChatState>()(
         const next = { ...state.subAgentTasks }
         delete next[conversationId]
         return { subAgentTasks: next }
+      }),
+
+      setLoopState: (conversationId, patch) => set(state => {
+        const prev = state.loopStates[conversationId]
+        return { loopStates: { ...state.loopStates, [conversationId]: { ...(prev || { active: false, index: 0, total: 1 }), ...patch } } }
+      }),
+
+      clearLoopState: (conversationId) => set(state => {
+        if (!state.loopStates[conversationId]) return {}
+        const next = { ...state.loopStates }
+        delete next[conversationId]
+        return { loopStates: next }
       }),
     }),
     {

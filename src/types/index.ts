@@ -45,6 +45,24 @@ export interface ConversationProgress {
   inProgress?: number
 }
 
+/** /loop 连续迭代状态（运行时瞬态，不持久化；由内核 loop 事件驱动） */
+export interface LoopState {
+  /** 是否进行中（start 置位，end/cancel 清除） */
+  active: boolean
+  /** 当前轮次（1 起） */
+  index: number
+  /** 总轮数 */
+  total: number
+  /** until 目标（空 = 固定次数模式） */
+  until?: string
+  /** fresh 清上下文标记 */
+  fresh?: boolean
+  /** 结束原因（end 事件携带：completed/until_hit/cancelled/judge_error） */
+  reason?: string
+  /** until 判定的理由（iter 事件携带） */
+  judgeReason?: string
+}
+
 /** 子 agent 任务（运行时瞬态，不持久化；由内核 system/task_* SDK 事件驱动） */
 export interface SubAgentTask {
   taskId: string
