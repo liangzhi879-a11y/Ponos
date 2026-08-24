@@ -135,6 +135,17 @@ export function patchOrphanToolUses(msgs) {
   return out
 }
 
+// R3-2 计划尾检测：模型以"计划/承诺"措辞收尾但未执行工具调用（计划尾巴）。
+// 匹配文本尾部 120 字符内的计划词；完成语（完成/结束/以上就是/无需…）优先否决，
+// 避免误伤正常收尾。中英双语覆盖。
+const PLAN_TAIL_RE = /(先(读|看|查|确认|检查|验证|尝试|搜索|获取|执行|开始)|(接下来|然后|接着|下一步)(读|看|查|检查|验证|处理|执行|写|改|搜索|获取|开始|做|需要|要)|开始(实施|执行|动手|做|写|改|处理)|准备(好|一下)?|需要先|我先|让我(先|开始|试)|稍等|待会|再(继续|检查|验证|读|看)|立即(开始|动手|执行)|稍后|计划|first,?\s+let|next,?\s+(i|let|we)|let me (start|begin|first)|i will (first|start|begin|now)|i'?m going to (first|start|begin|now)|to do this,?\s+(i|we)|i need to (first|start|begin))/i
+const PLAN_TAIL_DONE_RE = /(已完成|完成|搞定|结束|成功|以上就是|以上就是全部|已处理|没有更多|无需|不需要|不需要了|bye|done|complete|finished|that'?s all|no more)/i
+export function isPlanTail(text) {
+  const tail = String(text ?? '').slice(-120)
+  if (PLAN_TAIL_DONE_RE.test(tail)) return false
+  return PLAN_TAIL_RE.test(tail)
+}
+
 export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // signal 是轮次级取消标志（aborted 每轮由 runTurn 重置）；rawSignal 暴露真正
   // 的 AbortSignal，供 api.mjs 中断底层 fetch（undici 要求 AbortSignal 实例）
@@ -201,6 +212,13 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     let usage = {}
     let textBuf = ''
     let overflowRetries = 0
+    // R3-1 本轮窗口预警已发标志（每轮至多一次）
+    let contextWarned = false
+    // R3-2 失败自愈/计划尾守卫：本轮存在 is_error 工具结果 → hadToolError；
+    // guardInjections 记录本轮已注入的"继续执行"提示次数（防模型拒不配合时死循环）
+    let hadToolError = false
+    let guardInjections = 0
+    const maxGuardInjections = Number(process.env.PONOS_GUARD_MAX || 3)
     // R1-1：每轮重置防重放集合（跨轮固定 id 不误判）
     executedToolIds = new Map()
     const maxOverflowRetries = Number(process.env.CLAUDE_CODE_MAX_OVERFLOW_RETRIES || 3)
@@ -218,6 +236,19 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // M2：摘要调用是一次完整 API 请求（prefill 含被遮蔽历史数万 token），
       // 其 usage 并入本轮（再进 turnStats/result/最终条目）
       if (r?.usage) usage = addUsage(usage, r.usage)
+      // R3-1 窗口余量预警：未触发压缩但消息体积已接近阈值（>=75% 窗口，字符粗估）
+      // 时发 warning 事件（每轮至多一次；GUI/TUI 渲染警示条，提醒长会话即将压缩）
+      if (r?.action === 'none' && !contextWarned) {
+        const budget = Number(process.env.PONOS_CONTEXT_WARNING_BUDGET || 150_000)
+        const total = msgs.reduce((a, m) => {
+          const c = m?.content
+          return a + (typeof c === 'string' ? c.length : (Array.isArray(c) ? JSON.stringify(c).length : 0))
+        }, 0)
+        if (total >= budget) {
+          contextWarned = true
+          wire.warning?.({ level: 'context', chars: total, budget, message: '上下文接近压缩阈值，长会话即将触发自动压缩' })
+        }
+      }
     }
     // 本轮已写最后一条 assistant 条目（M1 空文本收尾轮把 usage 挂到它上面）
     let lastAssistantEntry = null
@@ -313,7 +344,28 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         textBuf = ''
         continue
       }
-      if (blocks.length === 0) break
+      // R3-2 失败自愈 + 计划尾守卫：模型无工具调用即收尾时，若本轮存在工具错误
+      // 或文本带"计划/承诺"尾巴（先…/接下来…/开始…），注入引导继续执行——
+      // 消灭"认错即停"与"只计划不执行"两类中断（注入 user 文本，保持 API 消息链合法）
+      if (blocks.length === 0) {
+        if (hadToolError && guardInjections < maxGuardInjections) {
+          guardInjections++
+          const inject = '【系统】检测到上一轮存在失败/被取消的工具调用，任务尚未完成。请立即重试或补发正确的工具调用，不要停留在文本说明。'
+          pushMemory({ role: 'user', content: inject })
+          if (session) session.appendUser(inject)
+          textBuf = ''
+          continue
+        }
+        if (textBuf.trim() && guardInjections < maxGuardInjections && isPlanTail(textBuf)) {
+          guardInjections++
+          const inject = '【系统】你在上一轮承诺了后续动作（先…/接下来…/开始…）但未执行工具调用就结束了回合。任务型轮次必须以实际工具调用收尾——请立即落实你提到的计划，或明确说明任务已完成并给出结果摘要。'
+          pushMemory({ role: 'user', content: inject })
+          if (session) session.appendUser(inject)
+          textBuf = ''
+          continue
+        }
+        break
+      }
       // 该轮 assistant 历史：文本块 + tool_use 块（Anthropic API 要求）
       const assistantBlocks = [...(textBuf.trim() ? [{ type: 'text', text: textBuf }] : []), ...blocks]
       pushMemory({ role: 'assistant', content: assistantBlocks })
@@ -329,6 +381,10 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         content: executed[i]?.content ?? '',
         is_error: executed[i]?.isError === true,
       }))
+      // R3-2 失败自愈：记录本轮工具错误（模型下一轮若认错即停，守卫会强制重试）；
+      // 工具成功执行后重置（错误已恢复，不再触发守卫）
+      if (toolResults.some((r) => r.is_error)) hadToolError = true
+      else if (toolResults.length) hadToolError = false
       if (toolResults.length) {
         pushMemory({ role: 'user', content: toolResults })
         if (session) session.appendToolResults(toolResults)
