@@ -24,6 +24,7 @@ import { createHash } from 'node:crypto'
 import { createContext, runInContext } from 'node:vm'
 import { parseFrontmatter } from './skills.mjs'
 import { streamMessages } from './api.mjs'
+import { buildRelevantMemory, appendMemoryEntry } from './memory.mjs'
 
 // ===================== 轻量 YAML 子集解析 =====================
 // 支持：map、list（- item）、标量、多行块（key: |）、# 注释、引号、数字/bool。
@@ -38,6 +39,11 @@ function splitKV(text) {
 function unquote(v) {
   const s = String(v).trim()
   if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) return s.slice(1, -1)
+  if (s.startsWith('[') && s.endsWith(']')) {
+    const inner = s.slice(1, -1).trim()
+    if (!inner) return []
+    return inner.split(',').map((x) => unquote(x.trim()))
+  }
   if (s === 'true') return true
   if (s === 'false') return false
   if (/^-?\d+$/.test(s)) return Number(s)
@@ -276,12 +282,10 @@ function parseWorkflowFile(path) {
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)) }
 
-async function execLLM(node, ctx) {
-  const model = node.model || ctx.getModel()
-  if (!model) throw new Error('llm 节点缺少 model（未配置 provider）')
-  const prompt = renderTemplate(node.prompt || '', ctx.vars)
-  const system = renderTemplate(node.system || '', ctx.vars)
-  const maxTokens = node.max_tokens || 4096
+// 公共 LLM 文本请求（llm/classify/extract 共用）：模板渲染 prompt → 流式聚合文本 →
+// 可选 JSON 解析。返回聚合文本（json_schema 时可能为解析后的对象）
+async function callLLMText(model, prompt, node, vars, maxTokens = 4096) {
+  const system = node.system ? renderTemplate(node.system, vars) : ''
   const messages = [
     ...(system ? [{ role: 'system', content: system }] : []),
     { role: 'user', content: prompt },
@@ -295,9 +299,188 @@ async function execLLM(node, ctx) {
     }
   } finally { clearTimeout(timer) }
   if (node.json_schema) {
-    try { text = JSON.parse(text) } catch { /* 非 JSON 保留原文 */ }
+    const m = text.match(/\{[\s\S]*\}/)
+    try { text = JSON.parse(m ? m[0] : text) } catch { /* 非 JSON 保留原文 */ }
   }
-  return { output: text, next: node.next }
+  return text
+}
+
+// agent 节点：工作流内嵌 ReAct 循环（独立对话，不污染主会话 transcript）。
+// 工具执行走 registry（权限/边界/高危钩子沿用）；tools 白名单可选，缺省全量。
+async function runAgentLoop({ prompt, system = '', tools = [], model, signal, registry, maxIters = 8, timeoutMs = 120_000 }) {
+  if (!model) throw new Error('agent 节点缺少 model（未配置 provider）')
+  const messages = []
+  if (system) messages.push({ role: 'system', content: system })
+  messages.push({ role: 'user', content: prompt })
+  const allSchemas = registry?.toolSchemas ? registry.toolSchemas() : []
+  const schemas = tools && tools.length ? allSchemas.filter((t) => tools.includes(t.name)) : allSchemas
+  let text = ''
+  for (let i = 0; i < maxIters; i++) {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+    const toolUses = []
+    let roundText = ''
+    try {
+      for await (const chunk of streamMessages({ model, messages, maxTokens: 8192, signal: ctrl.signal, tools: schemas })) {
+        if (chunk.type === 'text') roundText += chunk.text
+        else if (chunk.type === 'tool_use') toolUses.push(chunk)
+      }
+    } finally { clearTimeout(timer) }
+    if (!toolUses.length) return { text: roundText || text, iters: i + 1, tool_uses: i }
+    text = roundText
+    messages.push({
+      role: 'assistant',
+      content: [
+        ...(roundText ? [{ type: 'text', text: roundText }] : []),
+        ...toolUses.map((tu) => ({ type: 'tool_use', id: tu.id, name: tu.name, input: tu.input })),
+      ],
+    })
+    const results = []
+    for (const tu of toolUses) {
+      try {
+        const r = await registry.run({ name: tu.name, input: tu.input }, {})
+        results.push({ type: 'tool_result', tool_use_id: tu.id, content: String(r?.content ?? '').slice(0, 20000), is_error: r?.isError === true })
+      } catch (err) {
+        results.push({ type: 'tool_result', tool_use_id: tu.id, content: `执行异常: ${err?.message || String(err)}`, is_error: true })
+      }
+    }
+    messages.push({ role: 'user', content: results })
+  }
+  return { text: text || '（达到最大迭代次数）', iters: maxIters, tool_uses: maxIters }
+}
+
+async function execLLM(node, ctx) {
+  const model = node.model || ctx.getModel()
+  if (!model) throw new Error('llm 节点缺少 model（未配置 provider）')
+  const prompt = renderTemplate(node.prompt || '', ctx.vars)
+  const out = await callLLMText(model, prompt, node, ctx.vars, node.max_tokens || 4096)
+  return { output: out, next: node.next }
+}
+
+// classify：LLM 分类 → 输出 category/class_index，可配 routes 按类别路由分支
+async function execClassify(node, ctx) {
+  const model = node.model || ctx.getModel()
+  if (!model) throw new Error('classify 节点缺少 model')
+  const query = renderTemplate(node.query || node.input || '', ctx.vars)
+  const classes = node.classes || []
+  if (!classes.length) throw new Error('classify 节点缺少 classes')
+  const instruction = node.instruction || '将输入分类到最合适的一类'
+  const prompt = `${instruction}\n\n输入：\n${query}\n\n可选类别（只输出类别名本身，不要编号和解释）：\n${classes.map((c, i) => `${i + 1}. ${c}`).join('\n')}`
+  const raw = await callLLMText(model, prompt, node, ctx.vars, 512)
+  let category = String(raw).trim().replace(/^["'\d.\s-]+|["']$/g, '')
+  let idx = classes.findIndex((c) => category === c || category.includes(c) || c.includes(category))
+  if (idx < 0) {
+    const num = parseInt(category, 10)
+    if (Number.isFinite(num) && num >= 1 && num <= classes.length) idx = num - 1
+  }
+  category = idx >= 0 ? classes[idx] : category
+  const routes = node.routes || []
+  const next = idx >= 0 && routes[idx] ? routes[idx] : node.next
+  return { output: { category, class_index: idx, raw }, next }
+}
+
+// extract：LLM 按 JSON schema 提取字段（对标 Dify parameter-extractor）
+async function execExtract(node, ctx) {
+  const model = node.model || ctx.getModel()
+  if (!model) throw new Error('extract 节点缺少 model')
+  const query = renderTemplate(node.query || node.input || '', ctx.vars)
+  const instruction = node.instruction || '从输入中提取指定字段'
+  const params = node.parameters || []
+  if (!params.length) throw new Error('extract 节点缺少 parameters')
+  const schemaDesc = params.map((p) => `- ${p.name}${p.required ? '（必填）' : '（可选）'}: ${p.type || 'string'}${p.description ? ' — ' + p.description : ''}`).join('\n')
+  const prompt = `${instruction}\n\n输入：\n${query}\n\n只输出一个 JSON 对象（不要 markdown 代码块、不要解释），字段定义：\n${schemaDesc}`
+  const raw = await callLLMText(model, prompt, node, ctx.vars, 1024)
+  const m = String(raw).match(/\{[\s\S]*\}/)
+  try {
+    const parsed = JSON.parse(m ? m[0] : String(raw))
+    return { output: { ...parsed, _raw: String(raw).slice(0, 500) }, next: node.next }
+  } catch {
+    return { output: { _raw: String(raw).slice(0, 2000) }, next: node.next }
+  }
+}
+
+// memory：语义检索（复用 buildRelevantMemory 关键词匹配）
+async function execMemory(node, ctx) {
+  const query = renderTemplate(node.query || node.input || '', ctx.vars)
+  const keywords = String(query).split(/[\s,，、;；]+/).filter(Boolean)
+  const root = ctx.memoryRoot || ''
+  const text = root ? buildRelevantMemory({ root, keywords, maxBytes: node.max_bytes || 2048 }) : '（未配置记忆库根目录）'
+  return { output: { text, keywords }, next: node.next }
+}
+
+// store：记忆写入（复用 appendMemoryEntry）
+async function execStore(node, ctx) {
+  const root = ctx.memoryRoot || ''
+  if (!root) throw new Error('store 节点需要记忆库根目录（未注入 memoryRoot）')
+  const theme = renderTemplate(node.theme || node.topic || '', ctx.vars)
+  const summary = renderTemplate(node.summary || '', ctx.vars)
+  const full = renderTemplate(node.full || node.content || '', ctx.vars)
+  const tag = renderTemplate(node.tag || '', ctx.vars)
+  if (!theme || !summary) throw new Error('store 节点缺少 theme/summary')
+  const ok = appendMemoryEntry({ root, theme, tag: tag || null, summary, full })
+  return { output: { ok: !!ok, theme, tag }, next: node.next }
+}
+
+// iterate：数组迭代（is_parallel 并行，parallel_nums 并发度）；每项注入 item/index
+// 执行 body 子图，聚合各次 body 末节点输出
+async function execIterate(node, ctx) {
+  const arr = resolvePath(ctx.vars, node.iterable || node.input || '')
+  if (!Array.isArray(arr)) throw new Error(`iterate 输入不是数组: ${node.iterable}`)
+  const body = node.body || []
+  if (!body.length) throw new Error('iterate 节点缺少 body（子节点 id 列表）')
+  const out = []
+  const parallel = node.is_parallel === true
+  const nums = Math.max(1, Number(node.parallel_nums || 1))
+  const items = arr.map((item, index) => ({ item, index }))
+  const runOne = async ({ item, index }) => {
+    const vars = { ...ctx.vars, item, index }
+    const sub = { ...ctx, vars }
+    return ctx.runBody(sub, body)
+  }
+  if (parallel) {
+    for (let i = 0; i < items.length; i += nums) {
+      const batch = items.slice(i, i + nums)
+      const rs = await Promise.all(batch.map(runOne))
+      out.push(...rs)
+    }
+  } else {
+    for (const it of items) out.push(await runOne(it))
+  }
+  return { output: out, next: node.next }
+}
+
+// loop：循环（count 次数 + break_conditions 提前终止）；每轮注入 iter/index 执行 body
+async function execLoop(node, ctx) {
+  const body = node.body || []
+  if (!body.length) throw new Error('loop 节点缺少 body')
+  const count = Math.max(1, Number(node.count || 3))
+  const out = []
+  for (let i = 0; i < count && !ctx.signal?.aborted; i++) {
+    const vars = { ...ctx.vars, iter: i, index: i }
+    const sub = { ...ctx, vars }
+    const last = await ctx.runBody(sub, body)
+    out.push(last)
+    // break 条件（对标 Dify loop break_conditions）
+    const conds = node.break_conditions || []
+    if (conds.length) {
+      const pass = conds.every((c) => evalCondition(c, sub.vars))
+      if (pass) return { output: { results: out, iterations: i + 1, broken: true }, next: node.next }
+    }
+  }
+  return { output: { results: out, iterations: Math.min(count, out.length), broken: false }, next: node.next }
+}
+
+// agent：工作流内嵌对话式执行（ReAct 循环，工具白名单可选）
+async function execAgent(node, ctx) {
+  const prompt = renderTemplate(node.prompt || node.query || '', ctx.vars)
+  const system = renderTemplate(node.system || '', ctx.vars)
+  const model = node.model || ctx.getModel()
+  const r = await runAgentLoop({
+    prompt, system, tools: node.tools || [], model,
+    signal: ctx.signal, registry: ctx.registry,
+    maxIters: node.max_iters || 8, timeoutMs: node.timeout_ms || 120_000,
+  })
+  return { output: { text: r.text, iters: r.iters, tool_uses: r.tool_uses }, next: node.next }
 }
 
 function execCode(node, ctx) {
@@ -472,6 +655,13 @@ async function executeNode(node, ctx) {
       case 'document': result = await execDocument(node, ctx); break
       case 'tool': result = await execTool(node, ctx); break
       case 'list': result = execList(node, ctx); break
+      case 'classify': result = await execClassify(node, ctx); break
+      case 'extract': result = await execExtract(node, ctx); break
+      case 'memory': result = await execMemory(node, ctx); break
+      case 'store': result = await execStore(node, ctx); break
+      case 'agent': result = await execAgent(node, ctx); break
+      case 'iterate': result = await execIterate(node, ctx); break
+      case 'loop': result = await execLoop(node, ctx); break
       default: throw new Error(`未知节点类型: ${node.type}`)
     }
     return { ok: true, ...result, dur_ms: Date.now() - t0 }
@@ -488,13 +678,14 @@ async function executeNode(node, ctx) {
 //   getModel:  () => 默认模型名（llm 节点未指定时）
 //   signal:    { aborted } 工作流级取消标志
 
-export function createWorkflowEngine({ configDir = '', registry, onEvent, getModel, signal } = {}) {
+export function createWorkflowEngine({ configDir = '', registry, onEvent, getModel, signal, memoryRoot = '' } = {}) {
   const roots = []
   let _configDir = configDir
   let _registry = registry
   let _onEvent = onEvent || (() => {})
   let _getModel = getModel || (() => process.env.ANTHROPIC_MODEL || '')
   let _signal = signal || { aborted: false }
+  let _memoryRoot = memoryRoot
 
   function setDeps(deps = {}) {
     if (deps.configDir !== undefined) _configDir = deps.configDir
@@ -502,10 +693,33 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
     if (deps.onEvent !== undefined) _onEvent = deps.onEvent || (() => {})
     if (deps.getModel !== undefined) _getModel = deps.getModel
     if (deps.signal !== undefined) _signal = deps.signal
+    if (deps.memoryRoot !== undefined) _memoryRoot = deps.memoryRoot
   }
 
   function event(type, payload) {
     try { _onEvent({ type, ...payload }) } catch { /* 事件失败不阻断 */ }
+  }
+
+  // 子图执行（iterate/loop 的 body）：按 body id 顺序执行，支持显式 next 跳转；
+  // 输出写入同一 vars（item/index 由外层注入），审计共享 auditState 哈希链
+  async function runBody(ctx, bodyIds) {
+    const visited = new Set()
+    let curId = bodyIds[0]
+    let guard = 0
+    while (curId && !_signal.aborted && guard++ < 200) {
+      if (visited.has(curId)) throw new Error(`子图循环检测: ${curId}`)
+      visited.add(curId)
+      const node = ctx.nodes.get(curId)
+      if (!node) throw new Error(`未知子图节点: ${curId}`)
+      const r = await executeNode(node, ctx)
+      if (!r.ok) throw new Error(`子图节点 ${curId} 失败: ${r.error}`)
+      ctx.vars[curId] = r.output
+      if (ctx.auditState?.path) ctx.auditState.prev = auditAppend(ctx.auditState.path, node, r, ctx.auditState.prev)
+      const idx = bodyIds.indexOf(curId)
+      curId = r.next !== undefined && r.next !== null ? r.next : (idx >= 0 && idx < bodyIds.length - 1 ? bodyIds[idx + 1] : null)
+    }
+    const lastId = bodyIds[bodyIds.length - 1]
+    return lastId ? ctx.vars[lastId] : undefined
   }
 
   async function run({ id, inputs = {}, mode = 'sync' } = {}) {
@@ -516,11 +730,11 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
     const auditPath = _configDir ? join(_configDir, 'workflow-runs', wf.name || id, `${ts}-${runId}.jsonl`) : ''
     const vars = { inputs: { ...inputs }, var: {}, root: {} }
     const nodes = new Map(wf.nodes.map((n) => [n.id, n]))
+    const auditState = { path: auditPath, prev: '-' }
     // start 节点：无则用第一个节点
     let cur = wf.nodes.find((n) => n.type === 'start') || wf.nodes[0]
     const visited = new Set()
     const results = {}
-    let prevHash = '-'
     event('start', { runId, workflow: wf.name || id, nodes: wf.nodes.length, mode })
     let nextId = cur.id
     let steps = 0
@@ -530,14 +744,14 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
       visited.add(nextId)
       const node = nodes.get(nextId)
       if (!node) return { ok: false, error: `未知节点: ${nextId}`, runId, auditPath }
-      const ctx = { vars, results, inputs, registry: _registry, signal: _signal, getModel: _getModel }
+      const ctx = { vars, results, inputs, registry: _registry, signal: _signal, getModel: _getModel, nodes, auditState, memoryRoot: _memoryRoot, runBody }
       const r = await executeNode(node, ctx)
       results[node.id] = r
       if (r.ok) {
         vars[node.id] = r.output
         if (typeof r.output === 'object' && r.output !== null) Object.assign(vars.root, r.output)
       }
-      prevHash = auditPath ? auditAppend(auditPath, node, r, prevHash) : prevHash
+      auditState.prev = auditPath ? auditAppend(auditPath, node, r, auditState.prev) : auditState.prev
       event('node', { runId, node: node.id, type: node.type, status: r.ok ? 'done' : 'failed', dur_ms: r.dur_ms, output: r.ok ? r.output : undefined, error: r.ok ? undefined : r.error })
       if (!r.ok && node.on_error !== 'continue') {
         event('end', { runId, status: 'failed', error: r.error, steps: steps + 1 })
