@@ -466,11 +466,13 @@ function main() {
   /theme   切换深/亮主题       /tool <n> 展开/折叠工具卡片
   /effort 思考深度档位         /version dev 版本号
   /loop   连续迭代             /model <序号|id|模型名> 切换模型
-  /quit    退出
+  /wf     工作流（严格流程）    /quit 退出
   /loop 用法: /loop [次数] [--until 目标] [--fresh] [prompt...]（无 prompt 重放上一条）
             例: /loop 3 优化这个函数            — 连续 3 轮迭代
                 /loop 5 --until 测试全部通过    — 直到模型判定达成（最多 5 轮）
                 /loop 3 --fresh 重新实现        — 每轮清上下文（独立轮次）
+  /wf 用法: /wf list | /wf run <id> [--input k=v ...] | /wf verify <审计文件路径>
+            例: /wf run 政策拆解 --input file=policy.pdf — 执行工作流（确定性 DAG + 审计）
 历史: 启动时检测到历史会话自动弹出选择器（↑↓ 选择 Enter 确认 Esc 新建）；/sessions 随时重开
 审批: 选择项交互 ↑↓/←→ 移动高亮，Enter 确认（1=允许 2=拒绝 3=取消 数字快捷，Esc 取消）`
   }
@@ -816,6 +818,22 @@ function main() {
         } else if (ev.subtype === 'reasoning_effort_rejected') {
           pushMessage({ kind: 'error', text: `思考深度设置被拒：${ev.reason ?? '未知原因'}` })
           render()
+        } else if (ev.subtype === 'workflow_result') {
+          const r = ev
+          if (r.subtype === 'list') {
+            const wfs = r.workflows || []
+            if (!wfs.length) pushMessage({ kind: 'result', text: '未发现工作流（addDirs 下 workflow.yml / .yml）' })
+            else pushMessage({ kind: 'result', text: `可用工作流（${wfs.length}）：\n` + wfs.map((w) => `- ${w.id}（${w.nodes} 节点）${(w.triggers || []).length ? '  triggers: ' + w.triggers.join('、') : ''}${w.description ? `  ${w.description.slice(0, 60)}` : ''}`).join('\n') })
+          } else if (r.subtype === 'run') {
+            if (r.ok) pushMessage({ kind: 'result', text: `工作流完成（${r.status}，${r.steps} 步）\n审计: ${r.auditPath || '未落盘'}\n输出: ${JSON.stringify(r.outputs, null, 2)}` })
+            else pushMessage({ kind: 'error', text: `工作流失败: ${r.error}${r.node ? `（节点 ${r.node}）` : ''}` })
+          } else if (r.subtype === 'verify') {
+            if (r.ok) pushMessage({ kind: 'result', text: `审计完整（${r.lines} 条记录，哈希链验证通过）` })
+            else pushMessage({ kind: 'error', text: `审计异常: ${JSON.stringify(r.tampered || r.error)}` })
+          } else if (r.subtype === 'error') {
+            pushMessage({ kind: 'error', text: `工作流: ${r.error}` })
+          }
+          render()
         }
         break
       case 'assistant': {
@@ -879,7 +897,7 @@ function main() {
   }
 
   // ---------- 命令 ----------
-  const COMMANDS = ['/banner', '/cancel', '/clear', '/effort', '/help', '/loop', '/model', '/quit', '/session', '/sessions', '/stats', '/theme', '/tool', '/tools', '/version', '/exit']
+  const COMMANDS = ['/banner', '/cancel', '/clear', '/effort', '/help', '/loop', '/model', '/quit', '/session', '/sessions', '/stats', '/theme', '/tool', '/tools', '/version', '/wf', '/exit']
   function sendCancel() {
     // 即时反馈：不等内核 result，先停动画/清除审批横幅/收尾流式尾巴
     stopAnim()
@@ -967,6 +985,37 @@ function main() {
         break
       }
       case '/quit': case '/exit': leaveTui(0); break
+      case '/wf': {
+        // /wf list | /wf run <id> [--input k=v ...] | /wf verify <auditPath>
+        const parts = rest.slice()
+        const sub = parts[0] || ''
+        if (sub === 'list') {
+          child.stdin.write(JSON.stringify({ type: 'workflow_command', subtype: 'list' }) + '\n')
+          pushMessage({ kind: 'system', text: '查询工作流列表…' })
+        } else if (sub === 'run') {
+          const id = parts[1]
+          if (!id) { pushMessage({ kind: 'error', text: '/wf run 需要工作流 id（/wf list 查看）' }); render(); break }
+          const inputs = {}
+          for (let i = 2; i < parts.length; i++) {
+            if (parts[i] === '--input' && parts[i + 1]) {
+              const eq = parts[i + 1].indexOf('=')
+              if (eq > 0) inputs[parts[i + 1].slice(0, eq)] = parts[i + 1].slice(eq + 1)
+              i++
+            }
+          }
+          child.stdin.write(JSON.stringify({ type: 'workflow_command', subtype: 'run', payload: { workflow: id, inputs } }) + '\n')
+          pushMessage({ kind: 'system', text: `工作流「${id}」执行中…` })
+        } else if (sub === 'verify') {
+          const path = parts[1]
+          if (!path) { pushMessage({ kind: 'error', text: '/wf verify 需要审计文件路径' }); render(); break }
+          child.stdin.write(JSON.stringify({ type: 'workflow_command', subtype: 'verify', payload: { auditPath: path } }) + '\n')
+          pushMessage({ kind: 'system', text: '校验审计哈希链…' })
+        } else {
+          pushMessage({ kind: 'result', text: '用法：\n  /wf list                   — 列出可用工作流\n  /wf run <id> [--input k=v] — 执行工作流\n  /wf verify <审计文件路径>   — 校验审计哈希链' })
+        }
+        render()
+        break
+      }
       default: pushMessage({ kind: 'error', text: `未知命令 ${cmd}，/help 查看` }); render()
     }
   }

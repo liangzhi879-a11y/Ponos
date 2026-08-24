@@ -76,7 +76,7 @@ export function buildBaseSystemPrompt({ toolNames = [], cwd = '' } = {}) {
 
 // 三层组装：base + 可用子 Agent 区块 + AGENTS.md（带来源标注）+ append 文件
 // （最后，最高优先级）。subagents 为内置 ∪ 用户级的子 Agent 表（Agent 工具路由依据）。
-export function composeSystemPrompt({ toolNames, agents, subagents = [], append = '', cwd = '', skills = [], memory = '' }) {
+export function composeSystemPrompt({ toolNames, agents, subagents = [], append = '', cwd = '', skills = [], workflows = [], memory = '' }) {
   const parts = [buildBaseSystemPrompt({ toolNames, cwd })]
   if (subagents && subagents.length > 0) {
     const lines = ['【可用子 Agent】可将独立子任务委派给以下子 Agent（Agent 工具的 subagent_type）：']
@@ -100,6 +100,21 @@ export function composeSystemPrompt({ toolNames, agents, subagents = [], append 
       const head = trig || (s.description || '').slice(0, 120)
       const subs = subsOf.get(s.id)
       lines.push(`- ${s.id}：${head}${subs && subs.length ? `（子：${subs.join('、')}）` : ''}`)
+    }
+    parts.push(lines.join('\n'))
+  }
+  if (workflows && workflows.length > 0) {
+    // 工作流独立区块：定位=严格输出（确定性 DAG + 审计留痕）。与技能区分——
+    // 技能=灵活处理（模型自由执行），工作流=固定流程（引擎严格执行）。
+    const lines = ['【可用工作流】需要严格流程/确定性输出/审计留痕时，用 Workflow 工具调用对应工作流（workflow 参数填 id）；灵活探索/自由编排任务用 Skill 工具，不要误用工作流：']
+    const subsOf = new Map()
+    for (const w of workflows) if (w.parent) subsOf.set(w.parent, [...(subsOf.get(w.parent) || []), w.id])
+    for (const w of workflows) {
+      if (w.parent) continue
+      const trig = Array.isArray(w.triggers) && w.triggers.length ? w.triggers.join('、').slice(0, 80) : ''
+      const head = trig || (w.description || '').slice(0, 120)
+      const subs = subsOf.get(w.id)
+      lines.push(`- ${w.id}：[工作流] ${head}${subs && subs.length ? `（子：${subs.join('、')}）` : ''}`)
     }
     parts.push(lines.join('\n'))
   }

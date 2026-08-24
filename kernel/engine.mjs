@@ -147,7 +147,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // 未激活时 getProvider 现读 env.ANTHROPIC_MODEL，与既有行为一致
   let model = opts.model || getProvider().model || ''
   const maxTokens = Math.max(1, Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || 64000))
-  const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: opts.addDirs, skipPermissions: opts.skipPermissions, allowOutsideDirs: opts.allowOutsideDirs, disallowedTools: opts.disallowedTools })
+  const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: opts.addDirs, skipPermissions: opts.skipPermissions, allowOutsideDirs: opts.allowOutsideDirs, disallowedTools: opts.disallowedTools, workflow: opts.workflow })
   // agent 表（内置 ∪ 用户级 $PONOS_HOME/agents/*.md）：Agent 工具路由依据
   const agents = resolveAgents({ configDir: opts.configDir })
   // 审批挂起队列：toolUseId → resolve（cli 的 control_response 解除）
@@ -743,6 +743,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     signal,
     toolNames: tools.toolNames,
     toolSchemas: () => tools.toolSchemas(),
+    // workflow 引擎依赖注入：registry 暴露给工作流 tool/document 节点
+    tools,
     // subagent 体系：Agent/Task 工具能力 + 后台任务登记
     spawnSubAgent,
     taskSystem,

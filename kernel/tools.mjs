@@ -865,7 +865,7 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
   }
 }
 
-export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [] }) {
+export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
   // 会话目录边界开关：--allow-outside-dirs / PONOS_ALLOW_OUTSIDE_DIRS=1 解锁文件工具
   // （Read/Write/Edit/OCR）的目录限制；Glob/Grep 仍限定会话目录内（避免全盘扫描）。
@@ -1131,6 +1131,35 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutside
           return { content: `技能不存在：${id}。可用技能：${ids.join(', ') || '（当前无可用技能）'}`, isError: true }
         }
         return { content: `技能「${id}」已加载，严格按以下指引执行：\n\n${content}`, isError: false }
+      },
+    },
+    // 工作流执行：与 Skill 平权（同一发现/触发机制），定位差异=严格输出。
+    // 需要固定流程/审计留痕的任务用 Workflow（确定性 DAG 执行 + 哈希链审计），
+    // 灵活探索用 Skill（模型按 SKILL.md 自由执行）。workflow 引擎实例由
+    // createWorkflowEngine 创建后经 cli 注入（registry 闭包 workflow 变量）。
+    Workflow: {
+      description: '执行固定流程工作流（严格输出、审计留痕）。当任务需要确定性流程/规范处理/可审计步骤时用（如申报材料审查、文件处理流水线、多步校验）；灵活探索/多方案任务用 Skill。workflow 参数传工作流 id（可用 /wf list 查看或提示词【可用工作流】清单），inputs 传入口参数。',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          workflow: { type: 'string', description: '工作流 id（与技能清单中【可用工作流】的 id 一致）' },
+          inputs: { type: 'object', description: '入口参数（工作流 inputs 定义），如 {"report_path":"..."}' },
+          mode: { type: 'string', enum: ['sync', 'background'], description: 'sync=阻塞等结果；background=立即返回 run_id' },
+        },
+        required: ['workflow'],
+      },
+      run: async (input) => {
+        const id = String(input?.workflow ?? '').trim()
+        if (!id) return { content: 'workflow 参数缺失：请传入工作流 id（提示词【可用工作流】清单）', isError: true }
+        if (!workflow) return { content: '工作流引擎未初始化', isError: true }
+        const mode = input?.mode === 'background' ? 'background' : 'sync'
+        const r = await workflow.run({ id, inputs: input?.inputs || {}, mode })
+        if (!r.ok) return { content: `工作流「${id}」执行失败: ${r.error}${r.node ? `（节点 ${r.node}）` : ''}`, isError: true }
+        return {
+          content: `工作流「${id}」执行完成（${r.status}，${r.steps} 步）\n审计: ${r.auditPath || '未落盘'}\n输出: ${JSON.stringify(r.outputs, null, 2)}`,
+          isError: false,
+        }
       },
     },
     // 内置浏览器自动化：经 bridge_request(browser) 路由到主进程执行器
