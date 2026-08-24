@@ -99,7 +99,14 @@ function treeToValue(node) {
   }
   const [k, v] = splitKV(t)
   if (v === '|') {
-    return { value: { [k]: node.children.map((c) => c.text).join('\n') } }
+    // 多行块：递归收集所有后代行（块内代码可能有更深缩进，如
+    // `function main(inputs) {` 6 空格 + `const raw` 8 空格是父子关系）
+    const lines = []
+    const collect = (n) => {
+      for (const c of n.children) { lines.push(c.text); collect(c) }
+    }
+    collect(node)
+    return { value: { [k]: lines.join('\n') } }
   }
   if (v !== undefined) return { value: { [k]: unquote(v) } }
   if (node.children.length === 0) return { value: { [k]: {} } }

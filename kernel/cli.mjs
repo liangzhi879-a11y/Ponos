@@ -209,6 +209,8 @@ export async function main(argv) {
   // P3 webhook 服务 / cron 调度器句柄（幂等启动，shutdown 清理）
   let wfHttpServer = null
   let wfSchedulerStop = null
+  // workflow 命令执行中标志：stdin EOF 时等待其完成（真实 API llm 调用耗时秒级）
+  let wfBusy = 0
 
   const engine = createEngine({
     opts: {
@@ -600,7 +602,8 @@ export async function main(argv) {
       if (inner?.toolUseID) engine.resolveApproval(inner.toolUseID, inner)
     } else if (parsed.type === 'workflow_command') {
       // /wf 命令（TUI/协议层）：list/run/verify/approve/reject → 调工作流引擎，结果 wire 回发
-      void handleWorkflowCommand(parsed)
+      wfBusy++
+      handleWorkflowCommand(parsed).finally(() => { wfBusy-- })
     } else if (parsed.type === 'workflow_confirm') {
       // 人工审批回传（TUI /wf approve|reject / 协议层）：解除 confirm 节点挂起
       const { runId, node, action, comment } = parsed.payload || {}
@@ -609,11 +612,11 @@ export async function main(argv) {
     }
   })
   rl.on('close', () => {
-    // stdin EOF：若仍有活跃轮次 / 排队消息 / 进行中 loop，延迟到完成后退出
+    // stdin EOF：若仍有活跃轮次 / 排队消息 / 进行中 loop / workflow 命令，延迟到完成后退出
     // （管道测试与 bridge 优雅退出两全；30s 兜底防挂起）
-    if (state.turnActive || state.queue.length || loopState.active) {
+    if (state.turnActive || state.queue.length || loopState.active || wfBusy > 0) {
       const timer = setInterval(() => {
-        if (!state.turnActive && !state.queue.length && !loopState.active) {
+        if (!state.turnActive && !state.queue.length && !loopState.active && wfBusy <= 0) {
           clearInterval(timer)
           shutdown(0)
         }
