@@ -81,6 +81,7 @@ export function buildIdf(docs) {
 // ---------- Task 2: 图谱存储 GraphStore ----------
 
 const GRAPH_FILE = 'graph.jsonl'
+const GRAPH_VERSION = 1
 
 function nodeLine(n) {
   return `- [会话${n.tag ? '|' + n.tag : ''}] ${n.summary} -- ${n.full}`
@@ -126,7 +127,11 @@ export function createGraphStore({ root = null } = {}) {
   return {
     getNodes: () => nodes,
     getIdf: () => idf,
-    async load({ memoryRoot = null } = {}) {
+    async load({ memoryRoot = null, force = false } = {}) {
+      if (force && memoryRoot) {
+        rebuildFromMemory(memoryRoot)
+        return
+      }
       if (existsSync(file)) {
         try { mkdirSync(dir, { recursive: true }) } catch {}
         const raw = readFileSync(file, 'utf-8')
@@ -135,6 +140,29 @@ export function createGraphStore({ root = null } = {}) {
           const t = line.trim()
           if (!t) continue
           try { nodes.push(JSON.parse(t)) } catch { /* 半截行跳过 */ }
+        }
+        // §3.2 启动重建校验（memoryRoot 存在时）：版本旧 → 重建；markdown mtime 新于图谱 → 重建
+        if (memoryRoot) {
+          // 版本校验：任一节点版本 != GRAPH_VERSION 即重建。旧节点无 v 字段视为当前版本
+          // （append 时代产物，避免对既有图谱误重建）。
+          if (nodes.some((n) => (n.v ?? GRAPH_VERSION) !== GRAPH_VERSION)) {
+            rebuildFromMemory(memoryRoot)
+            return
+          }
+          // mtime 校验：扫描 memoryRoot 全部主题 md（排除隐藏文件），最新 md mtime 晚于
+          // 图谱文件 → markdown 有新增/变更，重建派生索引。
+          const graphMtime = statSync(file).mtimeMs
+          let newestMd = -1
+          try {
+            for (const f of readdirSync(memoryRoot).filter((x) => x.endsWith('.md') && !x.startsWith('.'))) {
+              const m = statSync(join(memoryRoot, f)).mtimeMs
+              if (m > newestMd) newestMd = m
+            }
+          } catch { /* memoryRoot 不可读不校验 */ }
+          if (newestMd > graphMtime) {
+            rebuildFromMemory(memoryRoot)
+            return
+          }
         }
         recomputeIdf()
         return
@@ -197,4 +225,12 @@ export function createGraphStore({ root = null } = {}) {
       return out === header ? '' : out
     },
   }
+}
+
+// §3.2 命令式重建入口（DI 偏离说明：设计文档 §11 写 memory.mjs 导出，但 memory.mjs 不得
+// import graph.mjs（单向依赖避免循环）；rebuildGraph 依赖 createGraphStore，故导出在本模块）
+export async function rebuildGraph({ graphRoot, memoryRoot }) {
+  const g = createGraphStore({ root: graphRoot })
+  await g.load({ memoryRoot, force: true })
+  return g.getNodes().length
 }

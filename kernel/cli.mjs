@@ -31,6 +31,7 @@ import { createCompactor, extractKeyInfo, buildSessionMemoryText } from './compa
 import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
 import { resolveCompactSettings } from './compact.mjs'
 import { memoryRoot, buildMemoryIndex, buildRelevantMemory, captureMemoryCandidates, appendMemoryEntry } from './memory.mjs'
+import { createGraphStore } from './graph.mjs'
 import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
 import { discoverSkills } from './skills.mjs'
 import { createWorkflowEngine, discoverWorkflowsAll } from './workflow.mjs'
@@ -259,6 +260,9 @@ export async function main(argv) {
   // addDirs 目录名 + 显式任务标签（settings.memory.taskTag / env PONOS_MEMORY_KEYWORDS，
   // 逗号分隔可追加）。PONOS_MEMORY_INJECT=index-only 时仅索引（旧行为）。
   const memoryRootDir = memoryRoot(configDir)
+  // 神经图谱：图谱存储（markdown 权威，图谱派生索引；缺失/版本旧/markdown 更新自动重建）
+  const graph = createGraphStore({ root: join(configDir, 'memory', 'graph') })
+  try { await graph.load({ memoryRoot: memoryRootDir }) } catch { /* 图谱故障不影响主流程 */ }
   const injectMode = process.env.PONOS_MEMORY_INJECT || 'both'
   let memoryBlock = ''
   if (settings.merged.memory?.inject !== false) {
@@ -403,7 +407,7 @@ export async function main(argv) {
       try {
         if (settings.merged.memory?.capture !== false && content.trim() && !msg?.skipMemoryCapture) {
           for (const c of captureMemoryCandidates({ userText: content, tag: settings.merged.memory?.taskTag || null, markers: settings.merged.memory?.markers || null })) {
-            appendMemoryEntry({ root: memoryRootDir, theme: c.theme, tag: c.tag, summary: c.summary, full: c.full })
+            appendMemoryEntry({ root: memoryRootDir, theme: c.theme, tag: c.tag, summary: c.summary, full: c.full, graphStore: graph })
           }
         }
       } catch { /* 记忆捕获失败不影响主流程 */ }
