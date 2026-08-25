@@ -1,5 +1,5 @@
 // kernel/graph.mjs —— 内核神经图谱（无模型特征向量 + 图谱存储 + 检索）
-import { hashLine } from './memory.mjs'
+import { hashLine, readMemoryEntries } from './memory.mjs'
 export { hashLine }
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -76,4 +76,91 @@ export function buildIdf(docs) {
   // 标准 IDF（brief 接口）：ln((N+1)/(df+1)) + 1，df 高者 idf 低
   for (const [gram, count] of df) idf.set(gram, Math.log((N + 1) / (count + 1)) + 1)
   return idf
+}
+
+// ---------- Task 2: 图谱存储 GraphStore ----------
+
+const GRAPH_FILE = 'graph.jsonl'
+
+function nodeLine(n) {
+  return `- [会话${n.tag ? '|' + n.tag : ''}] ${n.summary} -- ${n.full}`
+}
+
+function entryToNode({ theme, tag, summary, full }, idf) {
+  const tagText = tag ? tag : ''
+  const vec = vectorizeText(`${theme} ${tagText} ${summary} ${full}`, { tagBoost: tag ? 3 : 1, idf })
+  return { id: hashLine(nodeLine({ tag, summary, full })), theme, tag: tag || null, summary, full, ts: new Date().toISOString(), vec }
+}
+
+export function createGraphStore({ root = null } = {}) {
+  const dir = root || join(process.env.PONOS_TEST_HOME || '', 'memory', 'graph')
+  const file = join(dir, GRAPH_FILE)
+  let nodes = []
+  let idf = new Map()
+  const recomputeIdf = () => {
+    idf = buildIdf(nodes.map((n) => ({ gramCounts: new Map(n.vec.map(([id]) => [id, 1])) })))
+  }
+  // 闭包重建：扫描 memoryRoot 全部主题 md → 两遍（先收集算 IDF，再向量化）→ 原子替换
+  const rebuildFromMemory = (memoryRoot) => {
+    const collected = []
+    let entries = []
+    try { entries = readdirSync(memoryRoot).filter((f) => f.endsWith('.md') && !f.startsWith('.')) } catch { return }
+    for (const f of entries) {
+      const theme = f.slice(0, -3)
+      for (const it of readMemoryEntries({ root: memoryRoot, theme })) {
+        collected.push({ theme, tag: it.tag, summary: it.summary, full: it.full })
+      }
+    }
+    const gramDocs = collected.map((c) => ({ gramCounts: new Map([...gramTokens(`${c.theme} ${c.tag || ''} ${c.summary} ${c.full}`)].map((g) => [g, 1])) }))
+    const memIdf = buildIdf(gramDocs)
+    const next = collected.map((c) => entryToNode(c, memIdf))
+    nodes = next
+    recomputeIdf()
+    try {
+      mkdirSync(dir, { recursive: true })
+      const tmp = file + '.tmp'
+      writeFileSync(tmp, nodes.map((n) => JSON.stringify(n)).join('\n') + '\n', 'utf-8')
+      renameSync(tmp, file)
+    } catch { /* 磁盘不可写不致命 */ }
+  }
+  return {
+    getNodes: () => nodes,
+    getIdf: () => idf,
+    async load({ memoryRoot = null } = {}) {
+      if (existsSync(file)) {
+        try { mkdirSync(dir, { recursive: true }) } catch {}
+        const raw = readFileSync(file, 'utf-8')
+        nodes = []
+        for (const line of raw.split(/\r?\n/)) {
+          const t = line.trim()
+          if (!t) continue
+          try { nodes.push(JSON.parse(t)) } catch { /* 半截行跳过 */ }
+        }
+        recomputeIdf()
+        return
+      }
+      if (memoryRoot) rebuildFromMemory(memoryRoot)
+    },
+    append({ theme = '', tag = null, summary = '', full = '' }) {
+      const node = entryToNode({ theme, tag, summary, full })
+      if (nodes.some((n) => n.id === node.id)) return { ok: true, deduped: true }
+      nodes.push(node)
+      recomputeIdf()
+      try {
+        mkdirSync(dir, { recursive: true })
+        writeFileSync(file, nodes.map((n) => JSON.stringify(n)).join('\n') + '\n', 'utf-8')
+      } catch { /* 磁盘不可写不致命：内存图谱可用 */ }
+      return { ok: true, deduped: false }
+    },
+    replaceAll(next) {
+      nodes = next
+      recomputeIdf()
+      try {
+        mkdirSync(dir, { recursive: true })
+        const tmp = file + '.tmp'
+        writeFileSync(tmp, nodes.map((n) => JSON.stringify(n)).join('\n') + '\n', 'utf-8')
+        renameSync(tmp, file)
+      } catch { /* 磁盘不可写不致命 */ }
+    },
+  }
 }
