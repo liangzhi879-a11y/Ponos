@@ -1,4 +1,14 @@
 // kernel/graph.mjs —— 内核神经图谱（无模型特征向量 + 图谱存储 + 检索）
+//
+// ========== IGraphBackend 接口预留（设计文档 §7）==========
+// 预留外部知识库替换点 —— 接口契约 IGraphBackend {
+//   search(query, { topK }) → Promise<[{ theme, tag, summary, full, score }]>
+//   write(entry) → Promise<{ ok, deduped }>
+//   health() → Promise<{ ok, detail }>
+// }
+// 配置位 env PONOS_GRAPH_BACKEND=local|external / settings memory.graphBackend（env 优先）。
+// 本次仅实现 local（markdown + graph.jsonl 派生索引），external 未实现
+// （未来实现同一接口注册到 createGraphBackend() 工厂即可整体替换，检索与沉淀全部依托外挂）。
 import { hashLine, keywordScore, readMemoryEntries } from './memory.mjs'
 export { hashLine }
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, statSync, appendFileSync, openSync, fstatSync, readSync, closeSync } from 'node:fs'
