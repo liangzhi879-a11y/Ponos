@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createWorkflowEngine } from '../kernel/workflow.mjs'
+import { createWorkflowEngine, discoverWorkflows, matchAutoTrigger } from '../kernel/workflow.mjs'
 
 process.env.PONOS_MOCK_API = '1'
 
@@ -475,4 +475,40 @@ nodes:
     // start + lp + 2 轮 tpl + end = 5 条
     assert.equal(v.lines, 5)
   } finally { cleanup(home) }
+})
+
+// ===================== 自动触发（auto_trigger） =====================
+
+test('discoverWorkflows：auto_trigger 字段解析', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-wf-'))
+  const wfRoot = path.join(home, 'wf')
+  fs.mkdirSync(path.join(wfRoot, 'on'), { recursive: true })
+  fs.mkdirSync(path.join(wfRoot, 'off'), { recursive: true })
+  try {
+    fs.writeFileSync(path.join(wfRoot, 'on', 'workflow.yml'), 'name: on\nauto_trigger: true\ntriggers: [材料压缩]\nnodes:\n  - id: start\n    type: start\n', 'utf-8')
+    fs.writeFileSync(path.join(wfRoot, 'off', 'workflow.yml'), 'name: off\ntriggers: [审计]\nnodes:\n  - id: start\n    type: start\n', 'utf-8')
+    const wfs = discoverWorkflows({ root: wfRoot })
+    const on = wfs.find((w) => w.id === 'on')
+    const off = wfs.find((w) => w.id === 'off')
+    assert.equal(on.autoTrigger, true, '显式 auto_trigger: true → 开启')
+    assert.equal(off.autoTrigger, false, '未声明 → 默认关闭')
+  } finally { cleanup(home) }
+})
+
+test('matchAutoTrigger：命中触发词返回工作流', () => {
+  const wfs = [
+    { id: 'a', autoTrigger: true, triggers: ['材料压缩'] },
+    { id: 'b', autoTrigger: true, triggers: ['审计核对', '专审'] },
+    { id: 'c', autoTrigger: false, triggers: ['成果转化'] },
+  ]
+  assert.equal(matchAutoTrigger(wfs, '帮我做材料压缩')?.id, 'a')
+  assert.equal(matchAutoTrigger(wfs, '专审报告要核对')?.id, 'b')
+  assert.equal(matchAutoTrigger(wfs, '成果转化材料'), null, 'auto_trigger=false 不触发')
+  assert.equal(matchAutoTrigger(wfs, '你好'), null, '无触发词命中')
+  assert.equal(matchAutoTrigger(wfs, ''), null, '空文本不触发')
+})
+
+test('matchAutoTrigger：触发词长度过滤（单字不触发）', () => {
+  const wfs = [{ id: 'a', autoTrigger: true, triggers: ['审'] }]
+  assert.equal(matchAutoTrigger(wfs, '审计'), null, '单字触发词被过滤')
 })

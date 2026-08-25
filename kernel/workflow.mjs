@@ -241,6 +241,7 @@ export function discoverWorkflows({ root } = {}) {
         ? parsed.triggers.map(String)
         : meta.triggers ? String(meta.triggers).split(/[,，]/).map((s) => s.trim()).filter(Boolean)
         : [],
+      autoTrigger: parsed.auto_trigger === true || meta.auto_trigger === true,
       nodes: Array.isArray(parsed.nodes) ? parsed.nodes.length : 0,
       lines: content.split('\n').length,
     })
@@ -258,6 +259,18 @@ export function discoverWorkflowsAll({ roots = [] } = {}) {
     }
   }
   return out
+}
+
+// 自动触发匹配：用户消息文本命中 auto_trigger 工作流的任一触发词（子串匹配）。
+// 触发词长度 >= 2 防单字误触；按 workflows 顺序返回第一个命中的工作流。
+export function matchAutoTrigger(workflows, text) {
+  if (!text || !Array.isArray(workflows)) return null
+  for (const w of workflows) {
+    if (w.autoTrigger !== true) continue
+    const trigs = (w.triggers || []).map((t) => String(t).trim()).filter((t) => t.length >= 2)
+    if (trigs.some((t) => text.includes(t))) return w
+  }
+  return null
 }
 
 export function loadWorkflow({ roots = [], id } = {}) {
