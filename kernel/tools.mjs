@@ -14,6 +14,7 @@ import { get as httpsGet, request as httpsRequest } from 'node:https'
 import { get as httpGet, request as httpRequest } from 'node:http'
 import { matchesHighRisk } from './highrisk.mjs'
 import { discoverSkillsAll, loadSkillContent } from './skills.mjs'
+import { searchSkills } from './skill-search.mjs'
 import { getProvider } from './provider.mjs'
 
 // R2-1 活跃子进程登记：Bash/OCR spawn 的子进程统一登记，内核退出（SIGINT/TERM）
@@ -865,8 +866,12 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
   }
 }
 
-export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null }) {
+export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
+  // P10-A：技能加载根 = 显式 skillsDirs（发现根，含默认 <configDir>/skills）优先，
+  // 缺省回退 allowDirs——Skill 工具与提示词【可用技能】块同一数据源（cli 发现用同 roots）。
+  // 注意：skillsDirs 不并入 allowDirs，避免扩大 Bash/Read 等工具的文件边界。
+  const skillLoadRoots = (skillsDirs?.length ? skillsDirs : allowDirs).filter(Boolean)
   // 会话目录边界开关：--allow-outside-dirs / PONOS_ALLOW_OUTSIDE_DIRS=1 解锁文件工具
   // （Read/Write/Edit/OCR）的目录限制；Glob/Grep 仍限定会话目录内（避免全盘扫描）。
   const skipBoundary = !!allowOutsideDirs || process.env.PONOS_ALLOW_OUTSIDE_DIRS === '1'
@@ -1125,12 +1130,54 @@ export function createToolRegistry({ cwd, addDirs, skipPermissions, allowOutside
       run: (input) => {
         const id = String(input?.skill ?? '').trim()
         if (!id) return { content: 'skill 参数缺失：请传入技能名（提示词【可用技能】清单中的 id）', isError: true }
-        const content = loadSkillContent({ roots: allowDirs, id })
+        const content = loadSkillContent({ roots: skillLoadRoots, id })
         if (content == null) {
-          const ids = discoverSkillsAll({ roots: allowDirs }).map((s) => s.id)
+          const ids = discoverSkillsAll({ roots: skillLoadRoots }).map((s) => s.id)
           return { content: `技能不存在：${id}。可用技能：${ids.join(', ') || '（当前无可用技能）'}`, isError: true }
         }
         return { content: `技能「${id}」已加载，严格按以下指引执行：\n\n${content}`, isError: false }
+      },
+    },
+    // 联网技能搜索：检索 Claude Code marketplace 生态（Anthropic 官方 + 社区市场），
+    // 返回技能名/描述/触发词/来源/SKILL.md 地址。只读检索、不安装；市场列表缓存
+    // 10 分钟，命中 top-K 才深挖 SKILL.md（控制请求预算）。安装仍走 bridge /install-skill。
+    SkillSearch: {
+      description: '联网搜索技能市场（Claude Code marketplace 生态：Anthropic 官方 + 社区市场）：按关键词检索可用的技能，返回技能名/描述/触发词/来源与 SKILL.md 地址。适合"有没有处理表格/PDF 的技能""找一个做 xxx 的技能"等需求；只读检索不安装，需要安装时向 bridge /install-skill 提供返回的地址。',
+      concurrencySafe: true,
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          query: { type: 'string', description: '搜索关键词（中英文均可，如 表格处理 / spreadsheet / pdf 文档）' },
+          limit: { type: 'number', description: '可选：返回条数上限（默认 8，最大 20）' },
+          source: { type: 'string', description: '可选：限定数据源（anthropic=官方 / community=社区市场，缺省全部）' },
+        },
+        required: ['query'],
+      },
+      run: async (input) => {
+        const q = String(input?.query ?? '').trim()
+        if (!q) return { content: 'query 参数缺失：请输入要检索的技能关键词（如"表格处理"或"pdf"）', isError: true }
+        const { results, failed, error } = await searchSkills({
+          query: q,
+          limit: Number(input?.limit) || 8,
+          source: String(input?.source ?? '').trim() || undefined,
+        })
+        if (error && !results.length) {
+          const failNote = failed.length ? `（来源失败：${failed.map((f) => `${f.source}:${f.reason}`).join('；')}）` : ''
+          return { content: `技能搜索失败：${error}${failNote}`, isError: true }
+        }
+        if (!results.length) {
+          const failNote = failed.length ? `（部分来源不可达：${failed.map((f) => f.source).join('、')}）` : ''
+          return { content: `未在技能市场找到与「${q}」匹配的技能${failNote}。可换关键词（如英文：spreadsheet / pdf / docx）重试`, isError: false }
+        }
+        const lines = [`【技能搜索】关键词「${q}」匹配 ${results.length} 条（来源：${[...new Set(results.map((r) => r.sourceLabel))].join(' + ')}）：`]
+        results.forEach((r, i) => {
+          const trig = Array.isArray(r.triggers) && r.triggers.length ? `（触发：${r.triggers.join('、')}）` : ''
+          lines.push(`${i + 1}. [${r.sourceLabel}] ${r.name} — ${r.description}${trig}`)
+          if (r.url) lines.push(`   SKILL.md: ${r.url}`)
+        })
+        if (failed.length) lines.push(`（注：来源不可达：${failed.map((f) => `${f.source}（${f.reason}）`).join('；')}）`)
+        return { content: lines.join('\n'), isError: false }
       },
     },
     // 工作流执行：与 Skill 平权（同一发现/触发机制），定位差异=严格输出。

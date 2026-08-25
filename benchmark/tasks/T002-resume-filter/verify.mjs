@@ -1,6 +1,6 @@
 // T002 验收：
 //  1. 源码断言：cli.mjs 的 seedHistory 过滤含 kind/compaction 排除条件
-//  2. 行为冒烟：resume 含 compaction 条目的 transcript（PONOS_MOCK_API=1）正常完成一轮
+//  2. 行为冒烟：resume 含 compaction 条目的 transcript（PONOS_MOCK_API=1，兼容历史 base 内核的 YFW_MOCK_API）正常完成一轮
 // 用法：node verify.mjs <workspace>
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -47,7 +47,7 @@ const res = await new Promise((resolve) => {
     '--print', '--output-format', 'stream-json', '--input-format', 'stream-json',
     '--dangerously-skip-permissions',
     '--add-dir', ws,
-  ], { cwd: ws, env: { ...process.env, PONOS_MOCK_API: '1', PONOS_HOME: home, CLAUDE_CONFIG_DIR: home } })
+  ], { cwd: ws, env: { ...process.env, PONOS_MOCK_API: '1', YFW_MOCK_API: '1', PONOS_HOME: home, CLAUDE_CONFIG_DIR: home } })
   let stdout = ''
   let stderr = ''
   let settled = false

@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 import { createInterface } from 'node:readline'
 import { discoverSkills, discoverSkillsAll, loadSkillContent, parseFrontmatter, verifySkillVersions } from '../kernel/skills.mjs'
+import { resolveSkillRoots } from '../kernel/cli.mjs'
 
 const tmp = mkdtempSync(join(tmpdir(), 'ponos-skills-'))
 test.after(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch {} })
@@ -162,4 +163,55 @@ test('discoverSkillsAll：跨 root 去重发现，重复 id 只保留首个', ()
   const all = discoverSkillsAll({ roots: [r1, r2] })
   assert.deepEqual(all.map((s) => s.id), ['dup', 'only2'])
   assert.equal(all[0].name, 'DupOne') // 首个 root 的重复 id 胜出
+})
+
+// ── P10-A：技能发现根解析（前端安装注册 → 内核发现使用；CLI 直跑自动挂默认根） ──
+test('resolveSkillRoots：显式 --skills-dir 优先', () => {
+  const cfg = join(tmp, 'rr-cfg1')
+  assert.deepEqual(
+    resolveSkillRoots({ skillsDirs: ['/x/skills'], addDirs: ['/ws'] }, cfg, {}),
+    ['/x/skills'],
+  )
+})
+
+test('resolveSkillRoots：addDirs + 默认根叠加（默认根存在），去重', () => {
+  const cfg = join(tmp, 'rr-cfg2')
+  const def = join(cfg, 'skills')
+  mkdirSync(def, { recursive: true })
+  const roots = resolveSkillRoots({ skillsDirs: [], addDirs: ['/ws', def] }, cfg, {})
+  assert.ok(roots.includes('/ws'))
+  assert.ok(roots.includes(def))
+  // 去重：addDirs 已含默认根时只出现一次
+  assert.equal(roots.filter((r) => r === def).length, 1)
+})
+
+test('resolveSkillRoots：默认根不存在时不挂；--no-default-skills 禁用', () => {
+  const cfg = join(tmp, 'rr-cfg3')
+  // 默认根不存在
+  assert.deepEqual(resolveSkillRoots({ skillsDirs: [], addDirs: ['/ws'] }, cfg, {}), ['/ws'])
+  // env 禁用（即使默认根存在）
+  const def = join(tmp, 'rr-cfg3b', 'skills')
+  mkdirSync(def, { recursive: true })
+  assert.deepEqual(resolveSkillRoots({ skillsDirs: [], addDirs: ['/ws'] }, join(tmp, 'rr-cfg3b'), { PONOS_NO_DEFAULT_SKILLS: '1' }), ['/ws'])
+  // CLI flag 禁用
+  assert.deepEqual(resolveSkillRoots({ skillsDirs: [], addDirs: ['/ws'], noDefaultSkills: true }, join(tmp, 'rr-cfg3b'), {}), ['/ws'])
+})
+
+// ── P10-A：Skill 工具从 skillsDirs（发现根）加载，独立于工具边界 addDirs ─────
+test('Skill 工具：skillsDirs 注入后从技能根加载全文（不依赖 addDirs）', async () => {
+  const { createToolRegistry } = await import('../kernel/tools.mjs')
+  const skillRoot = join(tmp, 'ss-skillroot')
+  mkdirSync(join(skillRoot, 'demo'), { recursive: true })
+  writeFileSync(join(skillRoot, 'demo', 'SKILL.md'), '---\nname: Demo\n---\n# Demo\n技能正文-P10A', 'utf-8')
+  // skillsDirs 指向技能根；addDirs 只含工作区（不含技能）——模拟 CLI 直跑默认根场景
+  const reg = createToolRegistry({ cwd: '/ws', addDirs: ['/ws'], skillsDirs: [skillRoot], skipPermissions: true })
+  const r = await reg.run({ name: 'Skill', input: { skill: 'demo' } }, {})
+  assert.equal(r.isError, false)
+  assert.match(r.content, /技能「demo」已加载/)
+  assert.match(r.content, /技能正文-P10A/)
+  // 未知技能报错列可用清单（从 skillsDirs 发现）
+  const r2 = await reg.run({ name: 'Skill', input: { skill: 'nope' } }, {})
+  assert.equal(r2.isError, true)
+  assert.match(r2.content, /技能不存在：nope/)
+  assert.match(r2.content, /demo/)
 })

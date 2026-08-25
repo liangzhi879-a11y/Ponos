@@ -50,7 +50,7 @@ export async function runPonos({ ws, prompt, timeoutMs, onLog, kernelDir }) {
     // buildAgentEnv('ponos')：统一注入 ANTHROPIC_AUTH_TOKEN + baseUrl（DeepSeek 兼容端点）
     // PONOS_PROMPT_CACHE=1：显式启用 system prompt cache（内核侧带回退，端点拒绝缓存
     // 字段时自动去掉重发），多任务间共享系统提示缓存、压低成本
-    const child = spawn(process.execPath, args, { cwd: kernelRoot, env: { ...buildAgentEnv('ponos'), PONOS_PROMPT_CACHE: '1' }, windowsHide: true })
+    const child = spawn(process.execPath, args, { cwd: kernelRoot, env: { ...buildAgentEnv('ponos'), PONOS_PROMPT_CACHE: '1', PONOS_NO_DEFAULT_SKILLS: '1' }, windowsHide: true })
     let stdout = ''
     let stderr = ''
     let timedOut = false
