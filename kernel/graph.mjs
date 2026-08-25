@@ -1,5 +1,5 @@
 // kernel/graph.mjs —— 内核神经图谱（无模型特征向量 + 图谱存储 + 检索）
-import { hashLine, readMemoryEntries } from './memory.mjs'
+import { hashLine, keywordScore, readMemoryEntries } from './memory.mjs'
 export { hashLine }
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, statSync, appendFileSync, openSync, fstatSync, readSync, closeSync } from 'node:fs'
 import { join } from 'node:path'
@@ -172,6 +172,29 @@ export function createGraphStore({ root = null } = {}) {
         writeFileSync(tmp, nodes.map((n) => JSON.stringify(n)).join('\n') + '\n', 'utf-8')
         renameSync(tmp, file)
       } catch { /* 磁盘不可写不致命 */ }
+    },
+    search({ query = '', keywords = [], topK = 5, maxBytes = 2048 } = {}) {
+      const q = String(query || '').trim()
+      if (!q && !keywords.length) return ''
+      const qvec = vectorizeText(q || keywords.join(' '), { idf })
+      const scored = nodes.map((n) => {
+        const cos = cosine(n.vec, qvec)
+        const kw = keywordScore(n, keywords) / 8 // 关键词分最大值约 3+2+2+1=8，归一化到 0-1
+        return { ...n, score: 0.7 * cos + 0.3 * Math.min(kw, 1) }
+      }).filter((n) => n.score > 0.001)
+      scored.sort((a, b) => b.score - a.score || b.ts.localeCompare(a.ts))
+      const header = '\n\n【相关经验抽调】根据当前任务关键词，以下过往经验与任务直接相关，可直接参考（格式：-[主题|标签] 摘要 -- 全文）：\n'
+      let out = header
+      const seen = new Set()
+      for (const it of scored.slice(0, topK)) {
+        const line = `- [${it.theme}${it.tag ? '|' + it.tag : ''}] ${it.summary} -- ${it.full}`
+        if (seen.has(it.id)) continue
+        const lb = line.length + 1
+        if (out.length + lb > maxBytes) break
+        seen.add(it.id)
+        out += line + '\n'
+      }
+      return out === header ? '' : out
     },
   }
 }
