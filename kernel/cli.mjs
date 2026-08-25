@@ -30,7 +30,7 @@ import { createHealth } from './health.mjs'
 import { createCompactor, extractKeyInfo, buildSessionMemoryText } from './compact.mjs'
 import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
 import { resolveCompactSettings } from './compact.mjs'
-import { memoryRoot, buildMemoryIndex, buildRelevantMemory, captureMemoryCandidates, appendMemoryEntry } from './memory.mjs'
+import { memoryRoot, buildMemoryIndex, captureMemoryCandidates, appendMemoryEntry } from './memory.mjs'
 import { createGraphStore } from './graph.mjs'
 import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
 import { discoverSkills } from './skills.mjs'
@@ -255,10 +255,10 @@ export async function main(argv) {
   // 共享 triggers 触发词；发现结果入【可用工作流】独立区块（严格输出定位）
   const workflows = discoverWorkflowsAll({ roots: args.addDirs })
   // L3-2：记忆注入（与 GUI 经验面板同一数据源；settings.memory.inject=false 逃生阀）。
-  // 两级注入：buildRelevantMemory 按当前任务上下文关键词抽调相关经验全文（模型直接
-  // 可用），buildMemoryIndex 给全量索引指针（模型按需 Read）。任务关键词 = cwd/
-  // addDirs 目录名 + 显式任务标签（settings.memory.taskTag / env PONOS_MEMORY_KEYWORDS，
-  // 逗号分隔可追加）。PONOS_MEMORY_INJECT=index-only 时仅索引（旧行为）。
+  // 两级注入：graph.search 按当前任务上下文关键词（余弦+关键词混合）从神经图谱抽调
+  // 相关经验全文（模型直接可用），buildMemoryIndex 给全量索引指针（模型按需 Read）。
+  // 任务关键词 = cwd/addDirs 目录名 + 显式任务标签（settings.memory.taskTag / env
+  // PONOS_MEMORY_KEYWORDS，逗号分隔可追加）。PONOS_MEMORY_INJECT=index-only 时仅索引（旧行为）。
   const memoryRootDir = memoryRoot(configDir)
   // 神经图谱：图谱存储（markdown 权威，图谱派生索引；缺失/版本旧/markdown 更新自动重建）
   const graph = createGraphStore({ root: join(configDir, 'memory', 'graph') })
@@ -272,7 +272,7 @@ export async function main(argv) {
         ...(settings.merged.memory?.taskTag || '').split(',').map((s) => s.trim()).filter(Boolean),
         ...(process.env.PONOS_MEMORY_KEYWORDS || '').split(',').map((s) => s.trim()).filter(Boolean),
       ]
-      memoryBlock += buildRelevantMemory({ root: memoryRootDir, keywords: kw })
+      memoryBlock += graph.search({ query: kw.join(' '), keywords: kw })
     }
     memoryBlock += buildMemoryIndex({ root: memoryRootDir })
   }
