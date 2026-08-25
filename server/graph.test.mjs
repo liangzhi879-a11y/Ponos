@@ -220,3 +220,38 @@ test('GraphStore.load：markdown 未变更时正常加载不重建', async () =>
     assert.equal(g2.getNodes().length, 2, 'markdown 更旧 → 不重建，保持图谱 2 条')
   } finally { fs.rmSync(mem, { recursive: true, force: true }); fs.rmSync(gdir, { recursive: true, force: true }) }
 })
+
+test('GraphStore：存储 IDF 生效——共享 gram 权重低于独有 gram', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-graph-'))
+  try {
+    const g = createGraphStore({ root: dir })
+    g.append({ theme: 'workflow', tag: '研发', summary: '研发 审计', full: '研发' })   // 共享 gram: 研发
+    g.append({ theme: 'workflow', tag: '研发', summary: '研发 研发', full: '研发' })   // 共享 gram: 研发
+    g.append({ theme: 'finance', tag: '发票', summary: '发票匹配', full: '发票' })     // 独有 gram: 发票
+    const idf = g.getIdf()
+    assert.ok(idf.get('研发') < idf.get('发票'), `共享 gram 的 idf 应更低：研发=${idf.get('研发')} 发票=${idf.get('发票')}`)
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('GraphStore：重建路径与增量路径检索结果一致', async () => {
+  const mem = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-graph-mem-'))
+  try {
+    fs.writeFileSync(path.join(mem, 'workflow.md'),
+      '---\nname: workflow\n---\n- [会话|研发] 压缩 -- 发票\n- [会话|压缩] 匹配 -- 匹配 压缩\n- [会话|研发] 审计 -- 发票\n', 'utf-8')
+    // 增量路径
+    const gAppend = createGraphStore({ root: path.join(mem, 'g-append') })
+    await gAppend.load({ memoryRoot: null })
+    gAppend.append({ theme: 'workflow', tag: '研发', summary: '压缩', full: '发票' })
+    gAppend.append({ theme: 'workflow', tag: '压缩', summary: '匹配', full: '匹配 压缩' })
+    gAppend.append({ theme: 'workflow', tag: '研发', summary: '审计', full: '发票' })
+    // 重建路径
+    const gRebuild = createGraphStore({ root: path.join(mem, 'g-rebuild') })
+    await gRebuild.load({ memoryRoot: mem })
+    const q1 = gAppend.search({ query: '审计 压缩' })
+    const q2 = gRebuild.search({ query: '审计 压缩' })
+    const top1 = q1.split('\n').find((l) => l.startsWith('- ['))
+    const top2 = q2.split('\n').find((l) => l.startsWith('- ['))
+    assert.ok(top1 && top2, `两路径均有命中：\n---append---\n${q1}\n---rebuild---\n${q2}`)
+    assert.equal(top1, top2, `两路径 top 命中条目一致：\nappend=${top1}\nrebuild=${top2}`)
+  } finally { fs.rmSync(mem, { recursive: true, force: true }) }
+})
