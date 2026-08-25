@@ -458,21 +458,41 @@ async function execIterate(node, ctx) {
   return { output: out, next: node.next }
 }
 
-// loop：循环（count 次数 + break_conditions 提前终止）；每轮注入 iter/index 执行 body
+// loop：循环（count 次数 + while_conditions 轮前检查 + break_conditions 提前终止）；
+// 每轮注入 iter/index 执行 body。count 支持模板渲染（{{var}} / {{inputs.n}} 动态次数）。
+// continue_on_error=true 时单轮失败记录 {__error} 继续；max_duration_ms 为整循环时间预算。
+// 注意：loop 不做并行（轮间共享 var 状态，并行会竞态）——并行迭代用 iterate.is_parallel。
 async function execLoop(node, ctx) {
   const body = node.body || []
   if (!body.length) throw new Error('loop 节点缺少 body')
-  const count = Math.max(1, Number(node.count || 3))
+  const rawCount = Number(renderTemplate(String(node.count ?? 3), ctx.vars))
+  const count = Number.isFinite(rawCount) ? Math.max(1, rawCount) : 3
   const out = []
+  const contOnErr = node.continue_on_error === true
+  const maxDur = Number(node.max_duration_ms || 0)
+  const t0 = Date.now()
+  const whiles = node.while_conditions || []
+  const breaks = node.break_conditions || []
   for (let i = 0; i < count && !ctx.signal?.aborted; i++) {
+    if (maxDur > 0 && Date.now() - t0 > maxDur) break
+    // while 条件（轮前检查）：不满足立即终止（对标 while/until 语义）
+    if (whiles.length) {
+      const pass = whiles.every((c) => evalCondition(c, { ...ctx.vars, iter: i, index: i }))
+      if (!pass) break
+    }
     const vars = { ...ctx.vars, iter: i, index: i }
     const sub = { ...ctx, vars }
-    const last = await ctx.runBody(sub, body)
+    let last
+    if (contOnErr) {
+      try { last = await ctx.runBody(sub, body) }
+      catch (err) { last = { __error: err.message || String(err), __iter: i } }
+    } else {
+      last = await ctx.runBody(sub, body)
+    }
     out.push(last)
-    // break 条件（对标 Dify loop break_conditions）
-    const conds = node.break_conditions || []
-    if (conds.length) {
-      const pass = conds.every((c) => evalCondition(c, sub.vars))
+    // break 条件（对标 Dify loop break_conditions）：本轮执行后检查
+    if (breaks.length) {
+      const pass = breaks.every((c) => evalCondition(c, sub.vars))
       if (pass) return { output: { results: out, iterations: i + 1, broken: true }, next: node.next }
     }
   }
@@ -759,24 +779,31 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
   }
 
   // 子图执行（iterate/loop 的 body）：按 body id 顺序执行，支持显式 next 跳转；
-  // 输出写入同一 vars（item/index 由外层注入），审计共享 auditState 哈希链
+  // 输出写入同一 vars（item/index 由外层注入），审计共享 auditState 哈希链。
+  // 返回"实际执行的最后一个节点"的输出（body 内 if 路由到分支节点时，
+  // 结果取分支节点而非 body 列表末位）；发 node 事件（in_body 标记）供 UI 观察进度。
   async function runBody(ctx, bodyIds) {
     const visited = new Set()
     let curId = bodyIds[0]
     let guard = 0
+    let lastId = null
     while (curId && !_signal.aborted && guard++ < 200) {
       if (visited.has(curId)) throw new Error(`子图循环检测: ${curId}`)
       visited.add(curId)
       const node = ctx.nodes.get(curId)
       if (!node) throw new Error(`未知子图节点: ${curId}`)
       const r = await executeNode(node, ctx)
+      lastId = curId
       if (!r.ok) throw new Error(`子图节点 ${curId} 失败: ${r.error}`)
       ctx.vars[curId] = r.output
       if (ctx.auditState?.path) ctx.auditState.prev = auditAppend(ctx.auditState.path, node, r, ctx.auditState.prev)
+      ctx.event?.('node', {
+        runId: ctx.runId, node: node.id, type: 'node', node_type: node.type, status: 'done',
+        dur_ms: r.dur_ms, output: r.output, in_body: true,
+      })
       const idx = bodyIds.indexOf(curId)
       curId = r.next !== undefined && r.next !== null ? r.next : (idx >= 0 && idx < bodyIds.length - 1 ? bodyIds[idx + 1] : null)
     }
-    const lastId = bodyIds[bodyIds.length - 1]
     return lastId ? ctx.vars[lastId] : undefined
   }
 
@@ -789,6 +816,28 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
     const vars = { inputs: { ...inputs }, var: {}, root: {} }
     const nodes = new Map(wf.nodes.map((n) => [n.id, n]))
     const auditState = { path: auditPath, prev: '-' }
+    // 子图专用节点：loop/iterate 的 body 成员 + 经 next 可达的节点（传递闭包）。
+    // 它们只经 runBody 执行，主循环按数组顺序推进时必须跳过，否则会被误执行。
+    const bodyOnly = new Set()
+    for (const n of wf.nodes) {
+      if ((n.type === 'loop' || n.type === 'iterate') && Array.isArray(n.body)) {
+        for (const id of n.body) {
+          if (bodyOnly.has(id)) continue
+          bodyOnly.add(id)
+          const q = [id]
+          while (q.length) {
+            const cid = q.shift()
+            const cn = nodes.get(cid)
+            if (!cn) continue
+            for (const nx of [cn.next, cn.next_true, cn.next_false]) {
+              if (!nx || bodyOnly.has(nx)) continue
+              const nxNode = nodes.get(nx)
+              if (nxNode && nxNode.type !== 'start' && nxNode.type !== 'end') { bodyOnly.add(nx); q.push(nx) }
+            }
+          }
+        }
+      }
+    }
     // start 节点：无则用第一个节点
     let cur = wf.nodes.find((n) => n.type === 'start') || wf.nodes[0]
     const visited = new Set()
@@ -810,16 +859,21 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
         if (typeof r.output === 'object' && r.output !== null) Object.assign(vars.root, r.output)
       }
       auditState.prev = auditPath ? auditAppend(auditPath, node, r, auditState.prev) : auditState.prev
-      event('node', { runId, node: node.id, type: node.type, status: r.ok ? 'done' : 'failed', dur_ms: r.dur_ms, output: r.ok ? r.output : undefined, error: r.ok ? undefined : r.error })
+      event('node', { runId, node: node.id, type: 'node', node_type: node.type, status: r.ok ? 'done' : 'failed', dur_ms: r.dur_ms, output: r.ok ? r.output : undefined, error: r.ok ? undefined : r.error })
       if (!r.ok && node.on_error !== 'continue') {
         event('end', { runId, status: 'failed', error: r.error, steps: steps + 1 })
         return { ok: false, error: r.error, node: node.id, runId, auditPath }
       }
       // 确定下一个节点：节点 next 显式 → if 分支已定 → 否则数组顺序
+      // （跳过子图专用节点——它们只能由 loop/iterate 的 runBody 执行）
       nextId = r.next !== undefined && r.next !== null ? r.next : null
       if (!nextId) {
-        const idx = wf.nodes.findIndex((n) => n.id === cur.id)
-        if (idx >= 0 && idx < wf.nodes.length - 1) nextId = wf.nodes[idx + 1].id
+        let idx = wf.nodes.findIndex((n) => n.id === cur.id)
+        while (idx >= 0 && idx < wf.nodes.length - 1) {
+          idx++
+          const cand = wf.nodes[idx]
+          if (cand && !bodyOnly.has(cand.id)) { nextId = cand.id; break }
+        }
       }
       cur = nodes.get(nextId) || cur
       steps++
