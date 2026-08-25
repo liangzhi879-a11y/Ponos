@@ -88,7 +88,7 @@ test('GraphStore：半截行 EOF 后 append 不粘连新节点', async () => {
   try {
     const g = createGraphStore({ root: dir })
     g.append({ theme: 'a', summary: 'x', full: 'x' })
-    fs.appendFileSync(path.join(dir, 'graph.jsonl'), '{"v":1,"id":"broken"\n', 'utf-8')
+    fs.appendFileSync(path.join(dir, 'graph.jsonl'), '{"v":1,"id":"broken', 'utf-8')
     const g2 = createGraphStore({ root: dir })
     await g2.load()
     g2.append({ theme: 'b', summary: 'y', full: 'y' })
