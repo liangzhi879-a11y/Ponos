@@ -20,7 +20,7 @@ export function parseFrontmatter(content) {
 // 逐行收集 "- item"，遇到下一个行首 key 行或块尾终止（逐行解析，规避 m 模式下
 // $ 行尾备选导致非贪婪提前终止的正则陷阱）
 const KEY_LINE_RE = /^[a-zA-Z_][\w-]*:[ \t]*(\S.*)?$/
-function parseYamlList(raw, key) {
+export function parseYamlList(raw, key) {
   const lines = String(raw).split('\n')
   const start = lines.findIndex((l) => new RegExp('^' + key + ':[ \\t]*$').test(l))
   if (start < 0) return []

@@ -66,6 +66,8 @@ export function parseArgs(argv) {
     appendSystemPromptFile: null,
     model: null,
     addDirs: [],
+    skillsDirs: [],
+    noDefaultSkills: false,
     allowOutsideDirs: false,
   }
   for (let i = 0; i < argv.length; i++) {
@@ -86,6 +88,8 @@ export function parseArgs(argv) {
       case '--append-system-prompt-file': out.appendSystemPromptFile = next() ?? null; break
       case '--model': out.model = next() ?? null; break
       case '--add-dir': out.addDirs.push(next() ?? ''); break
+      case '--skills-dir': out.skillsDirs.push(next() ?? ''); break
+      case '--no-default-skills': out.noDefaultSkills = true; break
       case '--allow-outside-dirs': out.allowOutsideDirs = true; break
       case '--help': case '-h': usage(); process.exit(0); break
       default:
@@ -99,6 +103,22 @@ export function parseArgs(argv) {
 function readPromptFile(path) {
   if (!path || !existsSync(path)) return ''
   try { return readFileSync(path, 'utf-8') } catch { return '' }
+}
+
+// P10-A：技能/工作流发现根解析——前端（bridge）负责下载/转化/安装/注册到技能根
+// （~/.ponos/skills），内核只负责发现与使用。优先显式 --skills-dir；否则 addDirs
+// （含 bridge 注入的技能根）之上叠加默认根 <configDir>/skills（CLI/benchmark 直跑
+// 无 addDirs 技能时内核仍可用）。--no-default-skills / PONOS_NO_DEFAULT_SKILLS=1
+// 禁用默认根（benchmark 横向对比需零外部污染）。结果去重（addDirs 已含默认根时不重复）。
+export function resolveSkillRoots(args, configDir, env = process.env) {
+  if (args.skillsDirs?.length) return [...new Set(args.skillsDirs.filter(Boolean))]
+  const roots = new Set((args.addDirs || []).filter(Boolean))
+  const noDefault = args.noDefaultSkills === true || env.PONOS_NO_DEFAULT_SKILLS === '1'
+  if (!noDefault) {
+    const def = join(configDir, 'skills')
+    if (existsSync(def)) roots.add(def)
+  }
+  return [...roots]
 }
 
 function extractContent(msg) {
@@ -121,6 +141,10 @@ export async function main(argv) {
   const sessionId = args.resume || newSessionId()
   // S5-1 配置目录解析纯函数（CLAUDE_CONFIG_DIR > PONOS_HOME > ~/.ponos）
   const configDir = resolveConfigDir(process.env, homedir)
+  // P10-A：技能/工作流发现根——前端（bridge）负责安装注册到技能根，内核只发现使用。
+  // 显式 --skills-dir 优先；否则 addDirs（含 bridge 注入技能根）叠加默认根 <configDir>/skills，
+  // CLI/benchmark 直跑无 addDirs 技能时内核仍可用（--no-default-skills 可禁用）。
+  const skillRoots = resolveSkillRoots(args, configDir, process.env)
   // S5-1 共享目录只读挂载：shared 存在时追加进 addDirs（tools withinBoundary 按
   // 白名单 dir 放行；共享技能/配置多人共用，个人 configDir 保持隔离）
   const sharedDir = sharedDirFor(configDir)
@@ -218,6 +242,7 @@ export async function main(argv) {
       model: args.model,
       configDir,
       addDirs: args.addDirs,
+      skillsDirs: skillRoots,
       systemPrompt: '', // 占位，下面三层组装后覆盖
       verbose: args.verbose,
       skipPermissions: args.skipPermissions,
@@ -242,18 +267,19 @@ export async function main(argv) {
     getModel: () => getProvider().model || model || process.env.ANTHROPIC_MODEL || '',
     memoryRoot: memoryRoot(configDir),
   })
-  for (const dir of args.addDirs) wfEngine.addRoot(dir)
-  // P4-4：技能发现内核化——每个 --add-dir 扫描（技能根目录命中 SKILL.md；项目目录为空集）
+  for (const dir of skillRoots) wfEngine.addRoot(dir)
+  // P4-4：技能发现内核化——每个技能根扫描（技能根目录命中 SKILL.md；项目目录为空集）。
+  // P10-A：roots = skillRoots（显式 --skills-dir > addDirs 叠加默认 <configDir>/skills）
   const skills = []
   const seenSkillIds = new Set()
-  for (const dir of args.addDirs) {
+  for (const dir of skillRoots) {
     for (const s of discoverSkills({ root: dir })) {
       if (!seenSkillIds.has(s.id)) { seenSkillIds.add(s.id); skills.push(s) }
     }
   }
-  // workflow 与 skill 平权：同一 addDirs 根目录发现（workflow.yml / .yml），
+  // workflow 与 skill 平权：同一技能根发现（workflow.yml / .yml），
   // 共享 triggers 触发词；发现结果入【可用工作流】独立区块（严格输出定位）
-  const workflows = discoverWorkflowsAll({ roots: args.addDirs })
+  const workflows = discoverWorkflowsAll({ roots: skillRoots })
   // L3-2：记忆注入（与 GUI 经验面板同一数据源；settings.memory.inject=false 逃生阀）。
   // 两级注入：graph.search 按当前任务上下文关键词（余弦+关键词混合）从神经图谱抽调
   // 相关经验全文（模型直接可用），buildMemoryIndex 给全量索引指针（模型按需 Read）。
@@ -496,7 +522,7 @@ export async function main(argv) {
     const subtype = msg?.subtype
     try {
       if (subtype === 'list') {
-        const wfs = discoverWorkflowsAll({ roots: args.addDirs })
+        const wfs = discoverWorkflowsAll({ roots: skillRoots })
         wire.system('workflow_result', { subtype: 'list', workflows: wfs.map((w) => ({ id: w.id, nodes: w.nodes, triggers: w.triggers, description: w.description })) })
       } else if (subtype === 'run') {
         const r = await wfEngine.run({ id: msg?.payload?.workflow || msg?.payload?.id || '', inputs: msg?.payload?.inputs || {} })
