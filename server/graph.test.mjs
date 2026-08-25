@@ -82,3 +82,18 @@ test('GraphStore：缺失时 load 从 memoryRoot 重建', async () => {
     assert.ok(g.getNodes()[0].vec.length > 0, '节点带向量')
   } finally { fs.rmSync(mem, { recursive: true, force: true }); fs.rmSync(gdir, { recursive: true, force: true }) }
 })
+
+test('GraphStore：半截行 EOF 后 append 不粘连新节点', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-graph-'))
+  try {
+    const g = createGraphStore({ root: dir })
+    g.append({ theme: 'a', summary: 'x', full: 'x' })
+    fs.appendFileSync(path.join(dir, 'graph.jsonl'), '{"v":1,"id":"broken"\n', 'utf-8')
+    const g2 = createGraphStore({ root: dir })
+    await g2.load()
+    g2.append({ theme: 'b', summary: 'y', full: 'y' })
+    const g3 = createGraphStore({ root: dir })
+    await g3.load()
+    assert.equal(g3.getNodes().length, 2)  // x 与 y 都在，broken 行被跳过
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
