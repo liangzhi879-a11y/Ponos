@@ -100,7 +100,7 @@ function nodeLine(n) {
 function entryToNode({ theme, tag, summary, full }, idf) {
   const tagText = tag ? tag : ''
   const vec = vectorizeText(`${theme} ${tagText} ${summary} ${full}`, { tagBoost: tag ? 3 : 1, idf })
-  return { id: hashLine(nodeLine({ tag, summary, full })), theme, tag: tag || null, summary, full, ts: new Date().toISOString(), vec }
+  return { id: hashLine(nodeLine({ tag, summary, full })), theme, tag: tag || null, summary, full, ts: new Date().toISOString(), vec, v: GRAPH_VERSION }
 }
 
 export function createGraphStore({ root = null } = {}) {
@@ -109,7 +109,9 @@ export function createGraphStore({ root = null } = {}) {
   let nodes = []
   let idf = new Map()
   const recomputeIdf = () => {
-    idf = buildIdf(nodes.map((n) => ({ gramCounts: new Map(n.vec.map(([id]) => [id, 1])) })))
+    // 从节点原文取 gram（文本键），与重建路径的 memIdf 一致；不要用 n.vec 的哈希 id 键
+    // （vectorizeText 用原始 gram 文本查 idf，哈希键永远查不到 → IDF 失效）
+    idf = buildIdf(nodes.map((n) => ({ gramCounts: new Map([...gramTokens(`${n.theme} ${n.tag || ''} ${n.summary} ${n.full}`)].map((g) => [g, 1])) })))
   }
   // 闭包重建：扫描 memoryRoot 全部主题 md → 两遍（先收集算 IDF，再向量化）→ 原子替换
   const rebuildFromMemory = (memoryRoot) => {
