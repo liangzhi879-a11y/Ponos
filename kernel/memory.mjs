@@ -111,6 +111,24 @@ export function buildMemoryIndex({ root = '', maxBytes = 4096 } = {}) {
   return out
 }
 
+// 从 buildRelevantMemory 抽取，供图谱检索复用（评分不变）
+export function keywordScore({ tag = '', summary = '', full = '', theme = '' }, keywords = []) {
+  const kws = keywords.map((k) => String(k).toLowerCase()).filter((k) => k.length >= 2)
+  if (!kws.length) return 0
+  const tagL = String(tag || '').toLowerCase()
+  const sumL = String(summary || '').toLowerCase()
+  const fullL = String(full || '').toLowerCase()
+  const themeL = String(theme || '').toLowerCase()
+  let score = 0
+  for (const k of kws) {
+    if (tagL.includes(k)) score += 3
+    if (themeL.includes(k)) score += 2
+    if (sumL.includes(k)) score += 2
+    if (fullL.includes(k)) score += 1
+  }
+  return score
+}
+
 // 关键词触发抽调（M4）：按当前任务上下文关键词，从经验库匹配高相关条目并注入
 // 全文（区别于 buildMemoryIndex 的索引指针——模型无需先 Read 即可直接用）。
 // 匹配维度：主题名 / 任务标签 / 摘要 / 全文。得分：标签命中 3 > 主题 2 > 摘要 2 > 全文 1。
@@ -126,17 +144,7 @@ export function buildRelevantMemory({ root = '', keywords = [], maxBytes = 2048 
       const theme = f.slice(0, -3)
       const { entries } = readTheme(root, theme)
       for (const e of entries) {
-        let score = 0
-        const tagL = (e.tag || '').toLowerCase()
-        const sumL = (e.summary || '').toLowerCase()
-        const fullL = (e.full || '').toLowerCase()
-        const themeL = theme.toLowerCase()
-        for (const k of kws) {
-          if (tagL.includes(k)) score += 3
-          if (themeL.includes(k)) score += 2
-          if (sumL.includes(k)) score += 2
-          if (fullL.includes(k)) score += 1
-        }
+        const score = keywordScore({ ...e, theme }, kws)
         if (score > 0) items.push({ theme, text: e.text, tag: e.tag, summary: e.summary, full: e.full, score })
       }
     }

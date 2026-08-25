@@ -97,3 +97,28 @@ test('GraphStore：半截行 EOF 后 append 不粘连新节点', async () => {
     assert.equal(g3.getNodes().length, 2)  // x 与 y 都在，broken 行被跳过
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
+
+test('GraphStore.search：余弦+关键词混合排序与注入格式', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-graph-'))
+  try {
+    const g = createGraphStore({ root: dir })
+    g.append({ theme: 'workflow', tag: '材料压缩', summary: 'PDF 压缩经验', full: '用压缩技能处理 PDF' })
+    g.append({ theme: 'finance', tag: '发票', summary: '发票匹配', full: 'PS 与发票匹配流程' })
+    const out = g.search({ query: '压缩 PDF 材料', keywords: ['材料压缩'] })
+    assert.ok(out.includes('【相关经验抽调】'), '引导语')
+    assert.ok(out.includes('- [workflow|材料压缩] PDF 压缩经验'), '行格式')
+    assert.ok(!out.includes('发票匹配'), '低相关不注入')
+    const out2 = g.search({ query: '发票 匹配 PS' })
+    assert.ok(out2.includes('发票匹配'))
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('GraphStore.search：maxBytes 截断', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-graph-'))
+  try {
+    const g = createGraphStore({ root: dir })
+    for (let i = 0; i < 20; i++) g.append({ theme: 'workflow', summary: `经验${i}`, full: 'x'.repeat(50) })
+    const out = g.search({ query: '经验', maxBytes: 500 })
+    assert.ok(out.length <= 500)
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
