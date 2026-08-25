@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { gramTokens, vectorizeText, cosine, buildIdf, hashLine, createGraphStore } from '../kernel/graph.mjs'
+import { gramTokens, vectorizeText, cosine, buildIdf, hashLine, createGraphStore, rebuildGraph } from '../kernel/graph.mjs'
 
 test('gramTokens：中文 bigram + 英文单词', () => {
   assert.deepEqual([...gramTokens('知识图谱')], ['知识', '识图', '图谱'])
@@ -121,4 +121,92 @@ test('GraphStore.search：maxBytes 截断', () => {
     const out = g.search({ query: '经验', maxBytes: 500 })
     assert.ok(out.length <= 500)
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ---------- Task 4: 经验沉淀双写 + 重建校验（缺失/版本/mtime/命令式） ----------
+
+test('appendMemoryEntry 传 graphStore 双写，不传只写 markdown', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-mem-home-'))
+  try {
+    const root = path.join(home, 'memory', 'personal')
+    const graphDir = path.join(home, 'memory', 'graph')
+    const { createGraphStore } = await import('../kernel/graph.mjs')
+    const { appendMemoryEntry, readMemoryEntries } = await import('../kernel/memory.mjs')
+    const g = createGraphStore({ root: graphDir })
+    await g.load()
+    const r = appendMemoryEntry({ root, theme: 'workflow', tag: 't1', summary: 's1', full: 'f1', graphStore: g })
+    assert.equal(r.ok, true)
+    assert.equal(g.getNodes().length, 1, '图谱有节点')
+    assert.equal(readMemoryEntries({ root, theme: 'workflow' }).length, 1, 'markdown 有条目')
+    const g2 = createGraphStore({ root: graphDir })
+    await g2.load()
+    assert.equal(g2.getNodes().length, 1, '重载后图谱仍有节点')
+  } finally { fs.rmSync(home, { recursive: true, force: true }) }
+})
+
+test('GraphStore.load：markdown mtime 新于图谱时触发重建', async () => {
+  const mem = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-graph-mem-'))
+  const gdir = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-graph-'))
+  try {
+    fs.writeFileSync(path.join(mem, 'workflow.md'),
+      '---\nname: workflow\n---\n- [会话|t] 旧 -- 旧\n', 'utf-8')
+    const g1 = createGraphStore({ root: gdir })
+    await g1.load({ memoryRoot: mem })        // 缺失 → 重建，入图 1 条
+    // markdown 直写新条目（不经图谱）：markdown mtime 新于 graph.jsonl
+    fs.writeFileSync(path.join(mem, 'workflow.md'),
+      '---\nname: workflow\n---\n- [会话|t] 旧 -- 旧\n- [会话|t] 新 -- 新\n', 'utf-8')
+    const g2 = createGraphStore({ root: gdir })
+    await g2.load({ memoryRoot: mem })        // mtime 校验 → 重建
+    assert.ok(g2.getNodes().some((n) => n.summary === '新'), '重建后新条目入图')
+  } finally { fs.rmSync(mem, { recursive: true, force: true }); fs.rmSync(gdir, { recursive: true, force: true }) }
+})
+
+test('GraphStore.load：版本旧触发重建', async () => {
+  const mem = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-graph-mem-'))
+  const gdir = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-graph-'))
+  try {
+    fs.writeFileSync(path.join(mem, 'workflow.md'),
+      '---\nname: workflow\n---\n- [会话|t] 甲 -- 甲\n', 'utf-8')
+    fs.mkdirSync(gdir, { recursive: true })
+    fs.writeFileSync(path.join(gdir, 'graph.jsonl'),
+      JSON.stringify({ v: 999, id: 'x', theme: 'stale', tag: null, summary: 'stale', full: 'stale', ts: new Date().toISOString(), vec: [] }) + '\n', 'utf-8')
+    const g = createGraphStore({ root: gdir })
+    await g.load({ memoryRoot: mem })
+    assert.equal(g.getNodes().length, 1)
+    assert.equal(g.getNodes()[0].summary, '甲', '版本旧 → 从 markdown 重建')
+  } finally { fs.rmSync(mem, { recursive: true, force: true }); fs.rmSync(gdir, { recursive: true, force: true }) }
+})
+
+test('rebuildGraph：命令式入口全量重建', async () => {
+  const mem = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-graph-mem-'))
+  const gdir = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-graph-'))
+  try {
+    fs.writeFileSync(path.join(mem, 'workflow.md'),
+      '---\nname: workflow\n---\n- [会话|t] 甲 -- 甲\n', 'utf-8')
+    const g1 = createGraphStore({ root: gdir })
+    await g1.load({ memoryRoot: mem })
+    g1.append({ theme: 'workflow', tag: 't2', summary: '乙', full: '乙' })  // 图谱比 markdown 多一条
+    fs.writeFileSync(path.join(mem, 'workflow.md'),
+      '---\nname: workflow\n---\n- [会话|t] 丙 -- 丙\n', 'utf-8')             // markdown 内容已改
+    const n = await rebuildGraph({ graphRoot: gdir, memoryRoot: mem })
+    assert.equal(n, 1)
+    const g2 = createGraphStore({ root: gdir })
+    await g2.load({ memoryRoot: mem })
+    assert.equal(g2.getNodes()[0].summary, '丙', '命令式重建后与 markdown 一致')
+  } finally { fs.rmSync(mem, { recursive: true, force: true }); fs.rmSync(gdir, { recursive: true, force: true }) }
+})
+
+test('GraphStore.load：markdown 未变更时正常加载不重建', async () => {
+  const mem = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-graph-mem-'))
+  const gdir = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-graph-'))
+  try {
+    fs.writeFileSync(path.join(mem, 'workflow.md'),
+      '---\nname: workflow\n---\n- [会话|t] 甲 -- 甲\n', 'utf-8')
+    const g1 = createGraphStore({ root: gdir })
+    await g1.load({ memoryRoot: mem })
+    g1.append({ theme: 'workflow', tag: 't2', summary: '乙', full: '乙' })  // 图谱 2 条，markdown 仍 1 条且更旧
+    const g2 = createGraphStore({ root: gdir })
+    await g2.load({ memoryRoot: mem })
+    assert.equal(g2.getNodes().length, 2, 'markdown 更旧 → 不重建，保持图谱 2 条')
+  } finally { fs.rmSync(mem, { recursive: true, force: true }); fs.rmSync(gdir, { recursive: true, force: true }) }
 })

@@ -61,7 +61,7 @@ export function readMemoryEntries({ root = '', theme = '' } = {}) {
   return readTheme(root, theme).entries
 }
 
-export function appendMemoryEntry({ root = '', theme = '', tag = null, summary = '', full = '' } = {}) {
+export function appendMemoryEntry({ root = '', theme = '', tag = null, summary = '', full = '', graphStore = null } = {}) {
   if (!root || !theme || !summary) return { ok: false, error: 'root/theme/summary required' }
   try { mkdirSync(root, { recursive: true }) } catch {}
   const { front, entries } = readTheme(root, theme)
@@ -72,6 +72,8 @@ export function appendMemoryEntry({ root = '', theme = '', tag = null, summary =
     : `name: ${theme}\ndescription: ${theme}\nactive: true`
   const body = entries.map((e) => e.text).concat(line)
   writeFileSync(themePath(root, theme), `---\n${head}\n---\n` + body.join('\n') + '\n', 'utf-8')
+  // 神经图谱：markdown 权威写入成功后同步派生索引（graphStore 内部去重）
+  if (graphStore) graphStore.append({ theme, tag, summary, full })
   return { ok: true, deduped: false }
 }
 
