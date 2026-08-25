@@ -1,7 +1,7 @@
 // kernel/graph.mjs —— 内核神经图谱（无模型特征向量 + 图谱存储 + 检索）
 import { hashLine, readMemoryEntries } from './memory.mjs'
 export { hashLine }
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, statSync, appendFileSync, openSync, fstatSync, readSync, closeSync } from 'node:fs'
 import { join } from 'node:path'
 
 const CJK = /[\u4e00-\u9fff]/
@@ -148,7 +148,18 @@ export function createGraphStore({ root = null } = {}) {
       recomputeIdf()
       try {
         mkdirSync(dir, { recursive: true })
-        writeFileSync(file, nodes.map((n) => JSON.stringify(n)).join('\n') + '\n', 'utf-8')
+        if (existsSync(file)) {
+          const fd = openSync(file, 'r')
+          try {
+            const { size } = fstatSync(fd)
+            if (size > 0) {
+              const buf = Buffer.alloc(1)
+              readSync(fd, buf, 0, 1, size - 1)
+              if (buf[0] !== 0x0a) appendFileSync(file, '\n', 'utf-8')
+            }
+          } finally { closeSync(fd) }
+        }
+        appendFileSync(file, JSON.stringify(node) + '\n', 'utf-8')
       } catch { /* 磁盘不可写不致命：内存图谱可用 */ }
       return { ok: true, deduped: false }
     },
