@@ -73,7 +73,7 @@ export function buildIdf(docs) {
   const N = docs.length
   for (const d of docs) for (const gram of d.gramCounts.keys()) df.set(gram, (df.get(gram) || 0) + 1)
   const idf = new Map()
-  // 分子/分母对调以满足 test 数据（'的' df=1 < '研发' df=2 且断言 idf('的') < idf('研发')）
-  for (const [gram, count] of df) idf.set(gram, Math.log((count + 1) / (N + 1)) + 1)
+  // 标准 IDF（brief 接口）：ln((N+1)/(df+1)) + 1，df 高者 idf 低
+  for (const [gram, count] of df) idf.set(gram, Math.log((N + 1) / (count + 1)) + 1)
   return idf
 }

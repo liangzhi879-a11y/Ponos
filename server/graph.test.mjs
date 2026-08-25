@@ -36,7 +36,7 @@ test('cosine：同义文本高、无关文本低', () => {
 
 test('buildIdf：泛化 gram 权重低', () => {
   const g1 = { gramCounts: new Map([['的', 1], ['研发', 1]]) }
-  const g2 = { gramCounts: new Map([['研发', 1]]) }
+  const g2 = { gramCounts: new Map([['的', 1]]) }
   const idf = buildIdf([g1, g2])
   assert.ok(idf.get('的') < idf.get('研发'), 'df 高者 idf 低')
 })
