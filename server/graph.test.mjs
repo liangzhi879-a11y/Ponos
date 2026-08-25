@@ -113,6 +113,16 @@ test('GraphStore.search：余弦+关键词混合排序与注入格式', async ()
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('search 输出独立可用（逃生阀由 cli 控制）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-g-'))
+  try {
+    const g = createGraphStore({ root: dir })
+    g.append({ theme: 'workflow', tag: 'x', summary: 's', full: 'f' })
+    const out = g.search({ query: 'x', keywords: ['x'] })
+    assert.ok(out.startsWith('\n\n【相关经验抽调】'))
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('GraphStore.search：maxBytes 截断', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-graph-'))
   try {
