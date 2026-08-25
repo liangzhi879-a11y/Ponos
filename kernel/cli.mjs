@@ -34,7 +34,7 @@ import { memoryRoot, buildMemoryIndex, captureMemoryCandidates, appendMemoryEntr
 import { createGraphStore } from './graph.mjs'
 import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
 import { discoverSkills } from './skills.mjs'
-import { createWorkflowEngine, discoverWorkflowsAll } from './workflow.mjs'
+import { createWorkflowEngine, discoverWorkflowsAll, matchAutoTrigger } from './workflow.mjs'
 import { loadSettings } from './settings.mjs'
 import { createHooks } from './hooks.mjs'
 import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
@@ -324,6 +324,29 @@ export async function main(argv) {
   // loop 迭代状态（顶层 msg.loop 字段驱动；cancel / until 命中 / 次数耗尽结束）
   const loopState = { active: false, total: 0, until: '', content: '', index: 0, fresh: false }
 
+  // workflow 自动触发：普通用户消息命中 auto_trigger 工作流的触发词 →
+  // 后台 run（wfBusy 防 EOF 提前退出），完成后结果经 engine.queueNext 注入
+  // 当前轮（工具边界）或下一轮，模型综合后继续；wire 回发 auto_triggered 事件。
+  function maybeAutoTriggerWorkflow(content) {
+    const hit = matchAutoTrigger(workflows, content)
+    if (!hit) return
+    const summarize = (o) => {
+      try { return JSON.stringify(o?.end?.output ?? o).slice(0, 400) } catch { return String(o) }
+    }
+    wfBusy++
+    void wfEngine.run({ id: hit.id, inputs: { user_message: content } }).then((r) => {
+      wfBusy--
+      const line = r.ok
+        ? `【自动触发工作流 ${hit.id} 完成】状态：${r.status}（${r.steps} 步，${r.runId}）。输出：${summarize(r.outputs)}`
+        : `【自动触发工作流 ${hit.id} 失败】${r.error}`
+      try { engine.queueNext(line) } catch { /* 注入失败不阻断 */ }
+      try { wire.system('workflow_result', { subtype: 'auto_triggered', workflow: hit.id, ok: r.ok, status: r.status, steps: r.steps, runId: r.runId, error: r.error }) } catch { /* ignore */ }
+    }).catch((err) => {
+      wfBusy--
+      log.error('auto-trigger workflow failed', err)
+    })
+  }
+
   async function handleUser(msg) {
     const content = extractContent(msg)
     const priority = msg?.priority
@@ -364,6 +387,8 @@ export async function main(argv) {
       return
     }
     state.turnActive = true
+    // workflow 自动触发（普通新消息；插话/loop 消息不触发，避免批处理重复执行）
+    try { maybeAutoTriggerWorkflow(content) } catch { /* 触发失败不影响主流程 */ }
     // 早退路径（hook 拦截 / 竞态取消）统一落在外层 try 内，确保 finally 复位
     // turnActive——否则后续消息会永远排队不处理。
     try {
