@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { gramTokens, vectorizeText, cosine, buildIdf, hashLine } from '../kernel/graph.mjs'
+import { gramTokens, vectorizeText, cosine, buildIdf, hashLine, createGraphStore } from '../kernel/graph.mjs'
 
 test('gramTokens：中文 bigram + 英文单词', () => {
   assert.deepEqual([...gramTokens('知识图谱')], ['知识', '识图', '图谱'])
@@ -39,4 +39,46 @@ test('buildIdf：泛化 gram 权重低', () => {
   const g2 = { gramCounts: new Map([['的', 1]]) }
   const idf = buildIdf([g1, g2])
   assert.ok(idf.get('的') < idf.get('研发'), 'df 高者 idf 低')
+})
+
+// ---------- Task 2: 图谱存储 GraphStore ----------
+
+test('GraphStore：append 后节点可读、hashLine 去重', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-graph-'))
+  try {
+    const g = createGraphStore({ root: dir })
+    const r1 = g.append({ theme: 'workflow', tag: '材料压缩', summary: '压缩经验', full: '全文内容' })
+    const r2 = g.append({ theme: 'workflow', tag: '材料压缩', summary: '压缩经验', full: '全文内容' })
+    assert.equal(r1.deduped, false); assert.equal(r2.deduped, true)
+    assert.equal(g.getNodes().length, 1)
+    const g2 = createGraphStore({ root: dir })  // 重新加载
+    await g2.load()
+    assert.equal(g2.getNodes().length, 1)
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('GraphStore：load 跳过半截行（崩溃恢复）', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-graph-'))
+  try {
+    const g = createGraphStore({ root: dir })
+    g.append({ theme: 'a', summary: 'x', full: 'x' })
+    fs.appendFileSync(path.join(dir, 'graph.jsonl'), '{"v":1,"id":"broken"\n', 'utf-8')
+    const g2 = createGraphStore({ root: dir })
+    await g2.load()
+    assert.equal(g2.getNodes().length, 1)
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('GraphStore：缺失时 load 从 memoryRoot 重建', async () => {
+  const mem = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-mem-'))
+  const gdir = fs.mkdtempSync(path.join(os.tmpdir(), 'ponos-graph-'))
+  try {
+    fs.mkdirSync(mem, { recursive: true })
+    fs.writeFileSync(path.join(mem, 'workflow.md'),
+      '---\nname: workflow\n---\n- [会话|材料压缩] 摘要A -- 全文A\n- [会话] 摘要B -- 全文B\n', 'utf-8')
+    const g = createGraphStore({ root: gdir })
+    await g.load({ memoryRoot: mem })
+    assert.equal(g.getNodes().length, 2)
+    assert.ok(g.getNodes()[0].vec.length > 0, '节点带向量')
+  } finally { fs.rmSync(mem, { recursive: true, force: true }); fs.rmSync(gdir, { recursive: true, force: true }) }
 })
