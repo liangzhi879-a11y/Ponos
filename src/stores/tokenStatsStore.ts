@@ -75,11 +75,47 @@ export async function backfillConversation(
   }
 }
 
+/** 从 bridge /transcript/stats 全量拉取并映射进 stats（主数据源）。
+ *  返回 true=成功；失败置 lastError（不吞错，驾驶舱显示重试态）。 */
+export async function refreshFromServer(
+  stats: TokenStats,
+  baseUrl?: string
+): Promise<{ stats: TokenStats; ok: boolean; error: string }> {
+  const base = baseUrl || getBridgeUrl()
+  try {
+    const res = await fetch(`${base}/transcript/stats`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    if (!data || data.ok !== true || !data.totals) throw new Error('stats 响应缺 totals')
+    const s: TokenStats = {
+      totalInput: data.totals.input_tokens ?? 0,
+      totalOutput: data.totals.output_tokens ?? 0,
+      byDay: {},
+      byConversation: stats.byConversation, // 服务端无 per-conversation 聚合，保留本地
+      byModel: {},
+      lastUpdatedAt: Date.now(),
+    }
+    for (const [day, v] of Object.entries(data.byDate || {})) {
+      const d = v as { input_tokens?: number; output_tokens?: number }
+      s.byDay[day] = { input: d.input_tokens ?? 0, output: d.output_tokens ?? 0 }
+    }
+    for (const [model, v] of Object.entries(data.byModel || {})) {
+      const m = v as { input_tokens?: number; output_tokens?: number }
+      s.byModel[model] = { input: m.input_tokens ?? 0, output: m.output_tokens ?? 0 }
+    }
+    return { stats: s, ok: true, error: '' }
+  } catch (e) {
+    return { stats, ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
 interface TokenStatsStore {
   stats: TokenStats
   backfilled: Record<string, boolean>
+  lastError: string | null
   recordUsage: (u: { input: number; output: number }, dims: { conversationId: string; model: string }) => void
   ensureBackfill: (convs: { id: string; cwd?: string; sessionIds?: string[] }[], baseUrl?: string) => Promise<void>
+  refreshFromServer: (baseUrl?: string) => Promise<boolean>
 }
 
 export const useTokenStatsStore = create<TokenStatsStore>()(
@@ -87,6 +123,7 @@ export const useTokenStatsStore = create<TokenStatsStore>()(
     (set, get) => ({
       stats: createEmptyStats(),
       backfilled: {},
+      lastError: null,
       recordUsage: (u, dims) =>
         set(s => ({ stats: addUsage(s.stats, u, { day: toDayKey(Date.now()), ...dims }) })),
       ensureBackfill: async (convs, baseUrl) => {
@@ -107,6 +144,12 @@ export const useTokenStatsStore = create<TokenStatsStore>()(
           if (anyOk) done[c.id] = true
         }
         set({ stats: s, backfilled: done })
+      },
+      refreshFromServer: async (baseUrl) => {
+        const cur = get()
+        const r = await refreshFromServer(cur.stats, baseUrl)
+        set({ stats: r.stats, lastError: r.ok ? null : r.error })
+        return r.ok
       },
     }),
     { name: 'ponos-token-stats', partialize: (s) => ({ stats: s.stats, backfilled: s.backfilled }) }

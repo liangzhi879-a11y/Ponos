@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createEmptyStats, addUsage, toDayKey, backfillConversation } from './tokenStatsStore.ts'
+import { createEmptyStats, addUsage, toDayKey, backfillConversation, useTokenStatsStore } from './tokenStatsStore.ts'
 
 test('createEmptyStats 全零', () => {
   const s = createEmptyStats()
@@ -43,4 +43,38 @@ test('backfillConversation 解析原始 transcript usage 并累加', async () =>
   assert.deepEqual(s.byModel['deepseek-v4-pro'], { input: 200, output: 80 })
   // 成功加载 transcript → ok 必须为 true
   assert.equal(r.ok, true)
+})
+
+test('refreshFromServer 映射 /transcript/stats 到 stats', async () => {
+  const serverResp = {
+    ok: true,
+    totals: { input_tokens: 1000, output_tokens: 400, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 },
+    byDate: { '2026-08-30': { input_tokens: 300, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+    byModel: { 'deepseek-v4-pro': { input_tokens: 700, output_tokens: 300, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 } },
+  }
+  const mockFetch = async (url: string) => {
+    assert.ok(String(url).includes('/transcript/stats'))
+    return { ok: true, json: async () => serverResp } as Response
+  }
+  globalThis.fetch = mockFetch as typeof fetch
+  const store = useTokenStatsStore
+  store.setState({ stats: createEmptyStats(), lastError: null })
+  const ok = await store.getState().refreshFromServer('http://mock')
+  assert.equal(ok, true)
+  const s = store.getState().stats
+  assert.equal(s.totalInput, 1000)
+  assert.equal(s.totalOutput, 400)
+  assert.deepEqual(s.byDay['2026-08-30'], { input: 300, output: 100 })
+  assert.deepEqual(s.byModel['deepseek-v4-pro'], { input: 700, output: 300 })
+})
+
+test('refreshFromServer 失败置 lastError 且保留旧 stats', async () => {
+  globalThis.fetch = (async () => {
+    throw new Error('bridge down')
+  }) as typeof fetch
+  const store = useTokenStatsStore
+  store.setState({ stats: createEmptyStats(), lastError: null })
+  const ok = await store.getState().refreshFromServer('http://mock')
+  assert.equal(ok, false)
+  assert.equal(store.getState().lastError, 'bridge down')
 })
