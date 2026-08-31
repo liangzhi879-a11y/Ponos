@@ -34,14 +34,19 @@ function MainApp() {
     api?.setPetConfig?.({ enabled: s.petEnabled, size: s.petSize, randomChat: s.petRandomChat, pet: s.petType })
   }, [s.minimizeToTray, s.petEnabled, s.petSize, s.petRandomChat, s.petType])
   useEffect(() => {
-    if (view === 'cockpit') {
-      const store = useTokenStatsStore.getState()
-      // 主数据源：/transcript/stats 全量聚合（成功则覆盖本地）
-      void store.refreshFromServer()
-      // 兜底：逐会话 transcript 回填（仅当 refresh 失败或需 byConversation 明细时）
-      const convs = useChatStore.getState().conversations
-      if (store.lastError) void store.ensureBackfill(convs)
-    }
+    if (view !== 'cockpit') return
+    const store = useTokenStatsStore.getState()
+    let cancelled = false
+    // 主数据源：/transcript/stats 全量聚合（成功则覆盖本地；refreshFromServer 返回 true=成功）
+    void store.refreshFromServer().then(ok => {
+      if (cancelled) return
+      if (!ok) {
+        // 兜底：refresh 失败时逐会话 transcript 回填
+        const convs = useChatStore.getState().conversations
+        void store.ensureBackfill(convs)
+      }
+    })
+    return () => { cancelled = true }   // 防 view 切换竞态
   }, [view])
   return (
     <TooltipProvider>
