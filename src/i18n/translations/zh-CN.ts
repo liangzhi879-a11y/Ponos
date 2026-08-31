@@ -452,6 +452,23 @@ export const zhCN = {
     agentCount: 'Agent 数',
     enter: '进入 →',
     backCockpit: '返回驾驶舱',
+    // --- 重构新增 ---
+    version: '版本',
+    projectDir: '当前项目',
+    newChat: '新建会话',
+    openFiles: '打开文件',
+    viewTokens: '查看 Token',
+    bridgeOnline: '在线',
+    bridgeOffline: '离线',
+    recentSessions: '最近会话',
+    noRecent: '暂无会话',
+    token30d: '近 30 日趋势',
+    skillGroups: '技能分类',
+    dataUnavailable: '数据暂不可用',
+    retry: '重试',
+    sessionToken: 'Token',
+    justNow: '刚刚',
+    hoursAgo: '小时前',
   },
 
   // --- Token 用量统计面板 ---

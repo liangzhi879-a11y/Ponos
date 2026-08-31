@@ -439,6 +439,23 @@ export const enUS: TranslationKeys = {
     agentCount: 'Agents',
     enter: 'Enter →',
     backCockpit: 'Back to cockpit',
+    // --- new keys ---
+    version: 'Version',
+    projectDir: 'Project',
+    newChat: 'New chat',
+    openFiles: 'Open files',
+    viewTokens: 'View tokens',
+    bridgeOnline: 'Online',
+    bridgeOffline: 'Offline',
+    recentSessions: 'Recent sessions',
+    noRecent: 'No sessions yet',
+    token30d: '30-day trend',
+    skillGroups: 'Skill groups',
+    dataUnavailable: 'Data unavailable',
+    retry: 'Retry',
+    sessionToken: 'Tokens',
+    justNow: 'just now',
+    hoursAgo: 'h ago',
   },
 
   // --- Token usage stats panel ---
