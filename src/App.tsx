@@ -33,11 +33,14 @@ function MainApp() {
     api?.setTrayBehavior?.(s.minimizeToTray)
     api?.setPetConfig?.({ enabled: s.petEnabled, size: s.petSize, randomChat: s.petRandomChat, pet: s.petType })
   }, [s.minimizeToTray, s.petEnabled, s.petSize, s.petRandomChat, s.petType])
-  // 驾驶舱首次打开时触发 Token 历史回填
   useEffect(() => {
     if (view === 'cockpit') {
+      const store = useTokenStatsStore.getState()
+      // 主数据源：/transcript/stats 全量聚合（成功则覆盖本地）
+      void store.refreshFromServer()
+      // 兜底：逐会话 transcript 回填（仅当 refresh 失败或需 byConversation 明细时）
       const convs = useChatStore.getState().conversations
-      void useTokenStatsStore.getState().ensureBackfill(convs)
+      if (store.lastError) void store.ensureBackfill(convs)
     }
   }, [view])
   return (
