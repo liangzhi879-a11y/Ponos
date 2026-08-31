@@ -304,7 +304,7 @@ export function CockpitView() {
         <StatItem label={t('cockpit.tokenToday')} value={formatTokens(tokenToday)} />
         <StatItem label={t('cockpit.completionRate')} value={`${completionRate}%`} />
         <div className="ml-auto flex items-center gap-1.5 text-xs">
-          <span className={cn('w-2 h-2 rounded-full', bridgeOk ? 'bg-emerald-500' : 'bg-error animate-pulse')} />
+          <span className={cn('w-2 h-2 rounded-full', bridgeOk ? 'bg-[var(--accent-cyan)]' : 'bg-error animate-pulse')} />
           <span className="text-tertiary">{bridgeOk ? t('cockpit.bridgeOnline') : t('cockpit.bridgeOffline')}</span>
         </div>
       </div>
@@ -370,7 +370,7 @@ export function CockpitView() {
                 {recent3.map(c => (
                   <button
                     key={c.id}
-                    onClick={() => openConversation(c.id)}
+                    onClick={e => { e.stopPropagation(); openConversation(c.id) }}
                     className="flex items-center gap-2 text-xs text-secondary hover:text-primary truncate"
                   >
                     <MessageSquare className="w-3 h-3 text-tertiary shrink-0" />
@@ -412,7 +412,7 @@ export function CockpitView() {
             {lastError ? (
               <div className="flex items-center gap-2 py-2">
                 <span className="text-xs text-tertiary truncate" title={lastError}>{t('cockpit.dataUnavailable')}</span>
-                <button onClick={retryRefresh} className="px-2 py-1 rounded text-xs border border-subtle hover:border-brand-500/50">
+                <button onClick={e => { e.stopPropagation(); retryRefresh() }} className="px-2 py-1 rounded text-xs border border-subtle hover:border-brand-500/50">
                   {t('cockpit.retry')}
                 </button>
               </div>
