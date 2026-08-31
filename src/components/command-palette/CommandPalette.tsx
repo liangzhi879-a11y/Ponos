@@ -58,7 +58,7 @@ export function CommandPalette() {
         case 'diagnostics': openDiagnostics(); break
         case 'cmd-focus': setTimeout(() => document.querySelector<HTMLTextAreaElement>('textarea')?.focus(), 50); break
         case 'history': setSidebarTab('history'); break
-        case 'files': setSidebarTab('files'); break
+        case 'files': useUIStore.setState({ rightRailOpen: true }); break
         default: break
       }
       closeCommandPalette()

@@ -13,7 +13,7 @@ interface DirEntry {
 }
 
 
-export function FileBrowser() {
+export function FileBrowser({ viewMode = 'list' }: { viewMode?: 'list' | 'grid' } = {}) {
   const { conversations, activeConversationId } = useChatStore()
   const activeConv = conversations.find(c => c.id === activeConversationId)
   const cwd = activeConv?.cwd || getDefaultHome()
@@ -193,6 +193,23 @@ export function FileBrowser() {
             </div>
           ) : entries.length === 0 ? (
             <div className="py-8 text-center text-tertiary text-xs">{t('fileBrowser.empty')}</div>
+          ) : viewMode === 'grid' ? (
+            <div className="grid grid-cols-3 gap-1.5 p-2">
+              {[...dirs, ...files].map(e => {
+                const isDir = e.type === 'directory' || e.type === 'drive'
+                return (
+                  <button key={e.path}
+                    onClick={() => isDir ? setRootPath(e.path) : openFile(e)}
+                    onContextMenu={ev => handleContextMenu(ev, e)}
+                    className="flex flex-col items-center gap-1.5 p-2 rounded-lg hover:bg-elevated transition-colors text-center min-w-0"
+                    title={e.name}>
+                    <span className="text-2xl">{e.type === 'drive' ? <HardDrive className="w-8 h-8 text-warning/75" /> :
+                      e.type === 'directory' ? <Folder className="w-8 h-8 text-warning/75" /> : getFileIcon(e.name)}</span>
+                    <span className="text-[10px] text-secondary truncate w-full leading-tight">{e.name}</span>
+                  </button>
+                )
+              })}
+            </div>
           ) : (
             [...dirs, ...files].map(e => renderNode(e, 0))
           )}

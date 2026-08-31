@@ -58,6 +58,8 @@ export const zhCN = {
     drives: '此电脑',
     refresh: '刷新',
     empty: '空文件夹',
+    listView: '列表视图',
+    gridView: '图标视图',
     preview: '预览',
     attachToChat: '附加到对话',
     openInEditor: '在编辑器中打开',

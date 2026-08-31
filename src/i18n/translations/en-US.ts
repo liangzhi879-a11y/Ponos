@@ -56,6 +56,8 @@ export const enUS: TranslationKeys = {
     drives: 'This PC',
     refresh: 'Refresh',
     empty: 'Empty directory',
+    listView: 'List View',
+    gridView: 'Icon View',
     preview: 'Preview',
     attachToChat: 'Attach to Chat',
     openInEditor: 'Open in Editor',

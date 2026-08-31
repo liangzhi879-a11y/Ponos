@@ -1,6 +1,7 @@
 import { useEffect, useCallback, useState } from 'react'
 import { Header } from './Header'
 import { Sidebar } from './Sidebar'
+import { RightRail } from './RightRail'
 import { StatusBar } from './StatusBar'
 import { ChatWindow } from '@/components/chat/ChatWindow'
 import { ChatInput } from '@/components/chat/ChatInput'
@@ -262,6 +263,9 @@ export function AppShell() {
             </div>
           )}
         </div>
+
+        {/* Right rail */}
+        <RightRail />
       </div>
 
       {/* 右下角提示卡堆叠容器：经验提醒/极速引导/GPU 兜底三个弹窗统一纵向堆叠，
