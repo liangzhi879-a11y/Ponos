@@ -5,11 +5,14 @@ import { useTokenStatsStore, toDayKey } from '@/stores/tokenStatsStore'
 import { useViewStore } from '@/stores/viewStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { usePonosCLI } from '@/hooks/usePonosCLI'
 import { fetchSkills } from '@/lib/skills'
 import { DEFAULT_AGENTS } from '@/lib/agents'
 import { getBridgeUrl, getDefaultHome } from '@/lib/config'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn } from '@/lib/utils'
+import { RecentSessions } from './RecentSessions'
+import { RunningTasks } from './RunningTasks'
 
 /**
  * K/M 格式化（与 StatusBar 相同逻辑；Task 12 计划提取公共工具，YAGNI 暂不提取）。
@@ -43,6 +46,19 @@ interface CockpitLine {
 /** 卡片标识：用于 ref 测量与 SVG 连线目标 */
 type CardId = 'sessions' | 'tokens' | 'files' | 'skills'
 
+/** 状态总览条单项：小标签 + 大数字（可带脉冲圆点）。 */
+function StatItem({ label, value, pulse }: { label: string; value: string; pulse?: boolean }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-[10px] uppercase tracking-wider text-tertiary">{label}</span>
+      <span className="text-lg font-semibold tabular-nums text-primary flex items-center gap-1.5">
+        {pulse && <span className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse" />}
+        {value}
+      </span>
+    </div>
+  )
+}
+
 export function CockpitView() {
   const { t } = useTranslation()
   const goWorkspace = useViewStore(s => s.goWorkspace)
@@ -54,6 +70,9 @@ export function CockpitView() {
   const stats = useTokenStatsStore(s => s.stats)
 
   const skillRoot = useSettingsStore(s => s.settings.skillRoot)
+
+  // Bridge 在线状态：直接取 CLI WS 心跳连接状态
+  const bridgeOk = usePonosCLI().connected
 
   // --- 会话 · 任务 卡片数据 ---
   const totalSessions = conversations.length
@@ -121,6 +140,12 @@ export function CockpitView() {
     }
   }, [skillRoot])
   const agentCount = DEFAULT_AGENTS.length
+
+  // --- Hero 快捷操作：新建会话 ---
+  const startNewChat = () => {
+    useViewStore.getState().goWorkspace('chats')
+    useChatStore.getState().createConversation()
+  }
 
   // --- SVG 连线层：测量卡片中心 + resize 重算 ---
   const gridRef = useRef<HTMLDivElement>(null)
@@ -194,190 +219,236 @@ export function CockpitView() {
 
   return (
     <div className="h-full w-full bg-app flex flex-col overflow-hidden p-6 md:p-10">
-      {/* 顶部欢迎区 */}
-      <header className="flex items-center justify-between pb-6 shrink-0">
+      {/* ① Hero：品牌欢迎区 + 快捷操作 */}
+      <header className="flex items-center justify-between pb-4 shrink-0">
         <div>
-          <h1 className="font-display font-bold text-2xl text-primary tracking-wide">{t('cockpit.welcome')}</h1>
-          <p className="text-sm text-tertiary mt-1">Ponos dev</p>
+          <h1 className="font-display font-bold text-2xl md:text-3xl tracking-wide bg-gradient-to-r from-brand-500 to-[var(--accent-cyan)] bg-clip-text text-transparent">
+            {t('cockpit.welcome')}
+          </h1>
+          <p className="text-sm text-tertiary mt-1 flex items-center gap-2">
+            <FolderOpen className="w-3.5 h-3.5" />
+            {t('cockpit.projectDir')}: {lastCwd ? lastCwd.split(/[\\/]/).pop() : 'ponos-dev'}
+            <span className="text-tertiary/60">· {t('cockpit.version')} dev 3.0.0</span>
+          </p>
         </div>
-        <span className="text-xs text-tertiary/60 hidden sm:block">{t('cockpit.enter')}</span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={startNewChat}
+            className="px-3.5 py-1.5 rounded-lg text-sm font-medium bg-brand-500/90 hover:bg-brand-500 text-white transition-colors"
+          >
+            {t('cockpit.newChat')}
+          </button>
+          <button
+            onClick={() => useUIStore.getState().toggleRightRail()}
+            className="px-3 py-1.5 rounded-lg text-sm border border-subtle text-secondary hover:border-brand-500/50 hover:text-primary transition-colors"
+          >
+            {t('cockpit.openFiles')}
+          </button>
+          <button
+            onClick={() => useUIStore.getState().openTokenPanel()}
+            className="px-3 py-1.5 rounded-lg text-sm border border-subtle text-secondary hover:border-brand-500/50 hover:text-primary transition-colors"
+          >
+            {t('cockpit.viewTokens')}
+          </button>
+        </div>
       </header>
 
-      {/* 2×2 卡片网格 + SVG 连线层 */}
-      <div ref={gridRef} className="relative flex-1 grid grid-cols-1 md:grid-cols-2 gap-6 min-h-0">
-        {/* 连线层：会话卡 → 其余卡 */}
-        <svg className="pointer-events-none absolute inset-0 z-0 h-full w-full" aria-hidden="true">
-          <defs>
-            <linearGradient id="gradPinkCyan" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" style={{ stopColor: 'var(--brand-500)' }} />
-              <stop offset="100%" style={{ stopColor: 'var(--accent-cyan)' }} />
-            </linearGradient>
-          </defs>
-          {lines.map(l => (
-            <path
-              key={l.id}
-              d={linePath(l)}
-              fill="none"
-              stroke="url(#gradPinkCyan)"
-              strokeWidth={1.5}
-              strokeOpacity={hoverSessions ? 0.6 : 0.25}
-              style={{ transition: 'stroke-opacity 0.2s ease' }}
-            />
-          ))}
-        </svg>
-
-        {/* 卡片 1：会话 · 任务 */}
-        <div
-          ref={el => {
-            cardRefs.current.sessions = el
-          }}
-          className={cardBase}
-          onMouseEnter={() => setHoverSessions(true)}
-          onMouseLeave={() => setHoverSessions(false)}
-          onClick={() => goWorkspace('chats')}
-          role="button"
-          tabIndex={0}
-          onKeyDown={e => {
-            if (e.key === 'Enter') goWorkspace('chats')
-          }}
-        >
-          <div className="flex items-center justify-between">
-            <span className="flex items-center gap-2 text-sm font-medium text-primary">
-              <MessageSquare className="w-4 h-4 text-brand-500" />
-              {t('cockpit.sessionsTitle')}
-            </span>
-            <ArrowRight className="w-4 h-4 text-tertiary/60 group-hover:text-brand-500 transition-colors" />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            {stat(t('cockpit.totalSessions'), String(totalSessions))}
-            {stat(t('cockpit.today'), String(todayUpdated))}
-            {stat(t('cockpit.runningTasks'), String(runningTasks), runningTasks > 0 ? 'text-warning' : undefined)}
-            {stat(t('cockpit.completionRate'), `${completionRate}%`)}
-          </div>
+      {/* ② 状态总览条 StatStrip */}
+      <div className="flex items-center gap-6 pb-5 shrink-0 border-b border-subtle mb-5">
+        <StatItem label={t('cockpit.runningTasks')} value={String(runningTasks)} pulse={runningTasks > 0} />
+        <StatItem label={t('cockpit.today')} value={String(todayUpdated)} />
+        <StatItem label={t('cockpit.tokenToday')} value={formatTokens(tokenToday)} />
+        <StatItem label={t('cockpit.completionRate')} value={`${completionRate}%`} />
+        <div className="ml-auto flex items-center gap-1.5 text-xs">
+          <span className={cn('w-2 h-2 rounded-full', bridgeOk ? 'bg-emerald-500' : 'bg-error animate-pulse')} />
+          <span className="text-tertiary">{bridgeOk ? t('cockpit.bridgeOnline') : t('cockpit.bridgeOffline')}</span>
         </div>
+      </div>
 
-        {/* 卡片 2：Token 用量 */}
-        <div
-          ref={el => {
-            cardRefs.current.tokens = el
-          }}
-          className={cardBase}
-          onClick={() => useUIStore.getState().openTokenPanel()}
-          role="button"
-          tabIndex={0}
-          onKeyDown={e => {
-            if (e.key === 'Enter') useUIStore.getState().openTokenPanel()
-          }}
-        >
-          <div className="flex items-center justify-between">
-            <span className="flex items-center gap-2 text-sm font-medium text-primary">
-              <Zap className="w-4 h-4" style={{ color: 'var(--accent-cyan)' }} />
-              {t('cockpit.tokenTitle')}
-            </span>
-            <ArrowRight className="w-4 h-4 text-tertiary/60 group-hover:text-brand-500 transition-colors" />
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            {stat(t('cockpit.tokenTotal'), formatTokens(tokenTotal))}
-            {stat(t('cockpit.tokenToday'), formatTokens(tokenToday))}
-            {stat(t('cockpit.token7d'), formatTokens(token7d))}
-          </div>
-          {/* 迷你近 7 日柱状趋势（手写 SVG） */}
-          <svg className="w-full h-10" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
+      {/* ③ 主网格 + ④ 右栏 */}
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-6 min-h-0">
+        {/* 主网格：四张卡片 + SVG 连线层（卡片内容升级见 Task 7） */}
+        <div ref={gridRef} className="relative grid grid-cols-1 md:grid-cols-2 gap-6 min-h-0">
+          {/* 连线层：会话卡 → 其余卡 */}
+          <svg className="pointer-events-none absolute inset-0 z-0 h-full w-full" aria-hidden="true">
             <defs>
-              <linearGradient id="cockpitBarGrad" x1="0" y1="1" x2="0" y2="0">
-                <stop offset="0%" style={{ stopColor: 'var(--accent-cyan)' }} />
-                <stop offset="100%" style={{ stopColor: 'var(--brand-500)' }} />
+              <linearGradient id="gradPinkCyan" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" style={{ stopColor: 'var(--brand-500)' }} />
+                <stop offset="100%" style={{ stopColor: 'var(--accent-cyan)' }} />
               </linearGradient>
             </defs>
-            {byDayValues.map((v, i) => {
-              const barW = 100 / 7
-              const x = i * barW + 2
-              const h = (v / maxDay) * 34
-              const y = 38 - h
-              return (
-                <rect
-                  key={i}
-                  x={x}
-                  y={y}
-                  width={barW - 4}
-                  height={h}
-                  rx={2}
-                  fill="url(#cockpitBarGrad)"
-                  opacity={i === byDayValues.length - 1 ? 1 : 0.45}
-                />
-              )
-            })}
+            {lines.map(l => (
+              <path
+                key={l.id}
+                d={linePath(l)}
+                fill="none"
+                stroke="url(#gradPinkCyan)"
+                strokeWidth={1.5}
+                strokeOpacity={hoverSessions ? 0.6 : 0.25}
+                style={{ transition: 'stroke-opacity 0.2s ease' }}
+              />
+            ))}
           </svg>
-        </div>
 
-        {/* 卡片 3：文件 · 目录 */}
-        <div
-          ref={el => {
-            cardRefs.current.files = el
-          }}
-          className={cardBase}
-          onClick={enterFileCard}
-          role="button"
-          tabIndex={0}
-          onKeyDown={e => {
-            if (e.key === 'Enter') enterFileCard()
-          }}
-        >
-          <div className="flex items-center justify-between">
-            <span className="flex items-center gap-2 text-sm font-medium text-primary">
-              <FolderOpen className="w-4 h-4" style={{ color: 'var(--accent-cyan)' }} />
-              {t('cockpit.fileTitle')}
-            </span>
-            <ArrowRight className="w-4 h-4 text-tertiary/60 group-hover:text-brand-500 transition-colors" />
-          </div>
-          {fs.error ? (
-            <div className="flex items-center gap-3 py-2">
-              <span className="text-xs text-tertiary truncate flex-1" title={fs.error}>
-                {fs.error}
+          {/* 卡片 1：会话 · 任务 */}
+          <div
+            ref={el => {
+              cardRefs.current.sessions = el
+            }}
+            className={cardBase}
+            onMouseEnter={() => setHoverSessions(true)}
+            onMouseLeave={() => setHoverSessions(false)}
+            onClick={() => goWorkspace('chats')}
+            role="button"
+            tabIndex={0}
+            onKeyDown={e => {
+              if (e.key === 'Enter') goWorkspace('chats')
+            }}
+          >
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-2 text-sm font-medium text-primary">
+                <MessageSquare className="w-4 h-4 text-brand-500" />
+                {t('cockpit.sessionsTitle')}
               </span>
-              <button
-                className="px-2.5 py-1 rounded-md text-xs border border-subtle text-secondary hover:border-brand-500/50 hover:text-primary transition-colors shrink-0"
-                onClick={e => {
-                  e.stopPropagation()
-                  loadDir()
-                }}
-              >
-                {t('common.retry')}
-              </button>
+              <ArrowRight className="w-4 h-4 text-tertiary/60 group-hover:text-brand-500 transition-colors" />
             </div>
-          ) : (
             <div className="grid grid-cols-2 gap-4">
-              {stat(t('cockpit.fileCount'), fs.loading ? '…' : String(fs.files))}
-              {stat(t('cockpit.dirCount'), fs.loading ? '…' : String(fs.dirs))}
+              {stat(t('cockpit.totalSessions'), String(totalSessions))}
+              {stat(t('cockpit.today'), String(todayUpdated))}
+              {stat(t('cockpit.runningTasks'), String(runningTasks), runningTasks > 0 ? 'text-warning' : undefined)}
+              {stat(t('cockpit.completionRate'), `${completionRate}%`)}
             </div>
-          )}
+          </div>
+
+          {/* 卡片 2：Token 用量 */}
+          <div
+            ref={el => {
+              cardRefs.current.tokens = el
+            }}
+            className={cardBase}
+            onClick={() => useUIStore.getState().openTokenPanel()}
+            role="button"
+            tabIndex={0}
+            onKeyDown={e => {
+              if (e.key === 'Enter') useUIStore.getState().openTokenPanel()
+            }}
+          >
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-2 text-sm font-medium text-primary">
+                <Zap className="w-4 h-4" style={{ color: 'var(--accent-cyan)' }} />
+                {t('cockpit.tokenTitle')}
+              </span>
+              <ArrowRight className="w-4 h-4 text-tertiary/60 group-hover:text-brand-500 transition-colors" />
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              {stat(t('cockpit.tokenTotal'), formatTokens(tokenTotal))}
+              {stat(t('cockpit.tokenToday'), formatTokens(tokenToday))}
+              {stat(t('cockpit.token7d'), formatTokens(token7d))}
+            </div>
+            {/* 迷你近 7 日柱状趋势（手写 SVG） */}
+            <svg className="w-full h-10" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
+              <defs>
+                <linearGradient id="cockpitBarGrad" x1="0" y1="1" x2="0" y2="0">
+                  <stop offset="0%" style={{ stopColor: 'var(--accent-cyan)' }} />
+                  <stop offset="100%" style={{ stopColor: 'var(--brand-500)' }} />
+                </linearGradient>
+              </defs>
+              {byDayValues.map((v, i) => {
+                const barW = 100 / 7
+                const x = i * barW + 2
+                const h = (v / maxDay) * 34
+                const y = 38 - h
+                return (
+                  <rect
+                    key={i}
+                    x={x}
+                    y={y}
+                    width={barW - 4}
+                    height={h}
+                    rx={2}
+                    fill="url(#cockpitBarGrad)"
+                    opacity={i === byDayValues.length - 1 ? 1 : 0.45}
+                  />
+                )
+              })}
+            </svg>
+          </div>
+
+          {/* 卡片 3：文件 · 目录 */}
+          <div
+            ref={el => {
+              cardRefs.current.files = el
+            }}
+            className={cardBase}
+            onClick={enterFileCard}
+            role="button"
+            tabIndex={0}
+            onKeyDown={e => {
+              if (e.key === 'Enter') enterFileCard()
+            }}
+          >
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-2 text-sm font-medium text-primary">
+                <FolderOpen className="w-4 h-4" style={{ color: 'var(--accent-cyan)' }} />
+                {t('cockpit.fileTitle')}
+              </span>
+              <ArrowRight className="w-4 h-4 text-tertiary/60 group-hover:text-brand-500 transition-colors" />
+            </div>
+            {fs.error ? (
+              <div className="flex items-center gap-3 py-2">
+                <span className="text-xs text-tertiary truncate flex-1" title={fs.error}>
+                  {fs.error}
+                </span>
+                <button
+                  className="px-2.5 py-1 rounded-md text-xs border border-subtle text-secondary hover:border-brand-500/50 hover:text-primary transition-colors shrink-0"
+                  onClick={e => {
+                    e.stopPropagation()
+                    loadDir()
+                  }}
+                >
+                  {t('common.retry')}
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-4">
+                {stat(t('cockpit.fileCount'), fs.loading ? '…' : String(fs.files))}
+                {stat(t('cockpit.dirCount'), fs.loading ? '…' : String(fs.dirs))}
+              </div>
+            )}
+          </div>
+
+          {/* 卡片 4：技能 · Agent */}
+          <div
+            ref={el => {
+              cardRefs.current.skills = el
+            }}
+            className={cardBase}
+            onClick={() => goWorkspace('skills')}
+            role="button"
+            tabIndex={0}
+            onKeyDown={e => {
+              if (e.key === 'Enter') goWorkspace('skills')
+            }}
+          >
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-2 text-sm font-medium text-primary">
+                <Sparkles className="w-4 h-4 text-brand-500" />
+                {t('cockpit.skillTitle')}
+              </span>
+              <ArrowRight className="w-4 h-4 text-tertiary/60 group-hover:text-brand-500 transition-colors" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              {stat(t('cockpit.skillCount'), skillCount === null ? '…' : String(skillCount))}
+              {stat(t('cockpit.agentCount'), String(agentCount))}
+            </div>
+          </div>
         </div>
 
-        {/* 卡片 4：技能 · Agent */}
-        <div
-          ref={el => {
-            cardRefs.current.skills = el
-          }}
-          className={cardBase}
-          onClick={() => goWorkspace('skills')}
-          role="button"
-          tabIndex={0}
-          onKeyDown={e => {
-            if (e.key === 'Enter') goWorkspace('skills')
-          }}
-        >
-          <div className="flex items-center justify-between">
-            <span className="flex items-center gap-2 text-sm font-medium text-primary">
-              <Sparkles className="w-4 h-4 text-brand-500" />
-              {t('cockpit.skillTitle')}
-            </span>
-            <ArrowRight className="w-4 h-4 text-tertiary/60 group-hover:text-brand-500 transition-colors" />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            {stat(t('cockpit.skillCount'), skillCount === null ? '…' : String(skillCount))}
-            {stat(t('cockpit.agentCount'), String(agentCount))}
-          </div>
-        </div>
+        {/* 右栏：最近会话 + 运行中任务 */}
+        <aside className="hidden lg:flex flex-col gap-6 overflow-y-auto pr-1 min-h-0">
+          <RecentSessions />
+          <RunningTasks />
+        </aside>
       </div>
     </div>
   )
