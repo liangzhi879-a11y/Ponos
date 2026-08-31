@@ -71,6 +71,7 @@ export function CockpitView() {
   const lastCwd = useChatStore(s => s.lastCwd)
 
   const stats = useTokenStatsStore(s => s.stats)
+  const lastError = useTokenStatsStore(s => s.lastError)
 
   const skillRoot = useSettingsStore(s => s.settings.skillRoot)
 
@@ -95,8 +96,10 @@ export function CockpitView() {
     [conversations],
   )
   // 统一激活会话并进入工作台（Task 8 收尾统一 RecentSessions 点击）
+  // 用 store 官方 action：除置 activeConversationId 外还会按需加载消息体，
+  // 否则冷启动时最近会话点击进入会显示空态。
   const openConversation = (id: string) => {
-    useChatStore.setState({ activeConversationId: id })
+    useChatStore.getState().setActiveConversation(id)
     goWorkspace('chats')
   }
 
@@ -105,6 +108,10 @@ export function CockpitView() {
   const byDay30 = useMemo(() => lastNDays(stats.byDay, 30), [stats.byDay])
   const tokenToday = byDay30[byDay30.length - 1] ?? 0
   const token7d = byDay30.slice(-7).reduce((a, b) => a + b, 0)
+  // 错误态重试：重新向内核 /transcript/stats 拉取（成功会自动清空 lastError）
+  const retryRefresh = () => {
+    void useTokenStatsStore.getState().refreshFromServer()
+  }
   // 近 30 日 MM-DD 标签（与 TokenStatsPanel 同逻辑）
   const trendLabels30 = useMemo(
     () =>
@@ -401,9 +408,20 @@ export function CockpitView() {
               {stat(t('cockpit.tokenToday'), formatTokens(tokenToday))}
               {stat(t('cockpit.token7d'), formatTokens(token7d))}
             </div>
-            {/* 近 30 日趋势 + 输入/输出堆叠条 */}
-            <TrendChart values={byDay30} labels={trendLabels30} />
-            <BarStack input={stats.totalInput} output={stats.totalOutput} className="mt-3" />
+            {/* 近 30 日趋势 + 输入/输出堆叠条；stats 拉取失败时显示错误态 + 重试 */}
+            {lastError ? (
+              <div className="flex items-center gap-2 py-2">
+                <span className="text-xs text-tertiary truncate" title={lastError}>{t('cockpit.dataUnavailable')}</span>
+                <button onClick={retryRefresh} className="px-2 py-1 rounded text-xs border border-subtle hover:border-brand-500/50">
+                  {t('cockpit.retry')}
+                </button>
+              </div>
+            ) : (
+              <>
+                <TrendChart values={byDay30} labels={trendLabels30} />
+                <BarStack input={stats.totalInput} output={stats.totalOutput} className="mt-3" />
+              </>
+            )}
           </div>
 
           {/* 卡片 3：文件 · 目录 */}
@@ -481,7 +499,7 @@ export function CockpitView() {
               <div className="pt-3 border-t border-subtle">
                 <span className="text-[10px] uppercase tracking-wider text-tertiary">{t('cockpit.skillGroups')}</span>
                 <div className="mt-2">
-                  <DonutChart segments={skillGroups} centerValue={skillCount ?? 0} />
+                  <DonutChart segments={skillGroups} centerValue={skillCount ?? 0} centerLabel={t('cockpit.skillCount')} />
                 </div>
               </div>
             )}

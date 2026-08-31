@@ -7,9 +7,10 @@ function formatTokens(n: number): string {
 
 const DONUT_COLORS = ['var(--brand-500)', 'var(--accent-cyan)', 'rgb(var(--error-rgb))']
 
-export function DonutChart({ segments, centerValue }: {
+export function DonutChart({ segments, centerValue, centerLabel = 'tokens' }: {
   segments: { label: string; value: number }[]
   centerValue: number
+  centerLabel?: string
 }) {
   const total = segments.reduce((a, s) => a + s.value, 0)
   let acc = 0
@@ -32,7 +33,7 @@ export function DonutChart({ segments, centerValue }: {
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
           <span className="text-lg font-semibold tabular-nums text-primary">{formatTokens(centerValue)}</span>
-          <span className="text-[10px] text-tertiary">tokens</span>
+          <span className="text-[10px] text-tertiary">{centerLabel}</span>
         </div>
       </div>
       <div className="flex-1 space-y-1.5 min-w-0">

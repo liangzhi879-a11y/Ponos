@@ -31,7 +31,10 @@ export function RecentSessions({ limit = 6 }: { limit?: number }) {
         recent.map(c => (
           <button
             key={c.id}
-            onClick={() => goWorkspace('chats')} // 实际进入并激活会话由工作台处理
+            onClick={() => {
+              useChatStore.getState().setActiveConversation(c.id)
+              goWorkspace('chats')
+            }}
             className={cn(
               'flex items-center gap-2.5 px-3 py-2 rounded-lg text-left',
               'hover:bg-hover transition-colors group',
