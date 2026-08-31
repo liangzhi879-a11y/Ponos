@@ -6,10 +6,11 @@
 
 import { useState, useCallback, useEffect } from 'react'
 import { useChatStore } from '@/stores/chatStore'
+import { useTokenStatsStore } from '@/stores/tokenStatsStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { generateId, sanitizeText } from '@/lib/utils'
 import { parseAskUserPayload } from '@/lib/askUser'
-import { getWsUrl } from '@/lib/config'
+import { getWsUrl, waitForBridgeBase } from '@/lib/config'
 import { getAgentById } from '@/lib/agents'
 import { useAgentStore } from '@/stores/agentStore'
 import { useHealthStore, type HealthInfo } from '@/stores/healthStore'
@@ -17,7 +18,9 @@ import { useBrowserStore } from '@/stores/browserStore'
 import { useUIStore } from '@/stores/uiStore'
 import type { ContentBlock, Message, QuestionAnswer, BrowserEvent } from '@/types'
 
-const WS_URL = getWsUrl()
+// 模块加载即触发 bridge 端口探测（dev 调试版 bridge 在 51310，编译端口可能
+// 是 51311）：探测完成后 getWsUrl() 返回真实端口，连接/重连自然用上。
+waitForBridgeBase()
 
 // Trim leading/trailing whitespace, collapse runs of whitespace/newlines into a
 // single space, and truncate to `max` chars with a trailing ellipsis when needed.
@@ -110,7 +113,11 @@ export function getOrCreateWS(): WebSocket | null {
     return ws
   }
   try {
-    ws = new WebSocket(WS_URL)
+    // 连接前确保端口探测已触发；探测未完成时以当前 getWsUrl() 先行连接，
+    // 若连到错误端口会走 onerror/onclose → scheduleReconnect 自愈重连
+    // （重连时探测已完成，getWsUrl() 已返回真实端口）。
+    waitForBridgeBase()
+    ws = new WebSocket(getWsUrl())
     ws.onopen = () => {
       console.log('[WS] connected')
       wsReady = true
@@ -693,6 +700,11 @@ function handleMessage(msg: Record<string, unknown>) {
         // 本轮响应结束 → 释放串行锁
         streamingSessions.delete(sid)
       }
+      // 实时 token 累加：本轮 usage 计入 tokenStatsStore（历史由 /transcript/stats 全量补齐）
+      useTokenStatsStore.getState().recordUsage(
+        { input: usage.input_tokens || 0, output: usage.output_tokens || 0 },
+        { conversationId: sid, model: store.sessionModel || '' },
+      )
       // Keep sessionState alive — subagent may still be running and producing output
       store._updateSessionMeta({ totalCost: event.total_cost_usd as number, duration: event.duration_ms as number })
 
