@@ -411,4 +411,26 @@ export const enUS: TranslationKeys = {
 
   // --- Login screen ---
   login: { tagline: 'AI-powered dev & consulting assistant', enter: 'Enter Ponos', version: 'Version' },
+
+  // --- Cockpit ---
+  cockpit: {
+    welcome: 'Welcome back',
+    today: "Today's messages",
+    runningTasks: 'Running tasks',
+    completionRate: 'Completion rate',
+    totalSessions: 'Total sessions',
+    sessionsTitle: 'Sessions · Tasks',
+    tokenTitle: 'Token Usage',
+    tokenTotal: 'Total usage',
+    tokenToday: "Today's usage",
+    token7d: 'Last 7 days',
+    fileTitle: 'Files · Directories',
+    fileCount: 'Files',
+    dirCount: 'Directories',
+    skillTitle: 'Skills · Agents',
+    skillCount: 'Skills',
+    agentCount: 'Agents',
+    enter: 'Enter →',
+    backCockpit: 'Back to cockpit',
+  },
 }

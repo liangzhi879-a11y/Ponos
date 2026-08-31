@@ -424,6 +424,28 @@ export const zhCN = {
 
   // --- 欢迎页 ---
   login: { tagline: 'AI 驱动的开发与咨询助手', enter: '进入 Ponos', version: '版本' },
+
+  // --- 驾驶舱 ---
+  cockpit: {
+    welcome: '欢迎回来',
+    today: '今日消息',
+    runningTasks: '运行中任务',
+    completionRate: '完成率',
+    totalSessions: '总会话',
+    sessionsTitle: '会话 · 任务',
+    tokenTitle: 'Token 用量',
+    tokenTotal: '累计用量',
+    tokenToday: '今日用量',
+    token7d: '近 7 日',
+    fileTitle: '文件 · 目录',
+    fileCount: '文件数',
+    dirCount: '目录数',
+    skillTitle: '技能 · Agent',
+    skillCount: '技能数',
+    agentCount: 'Agent 数',
+    enter: '进入 →',
+    backCockpit: '返回驾驶舱',
+  },
 }
 
 export type TranslationKeys = typeof zhCN
