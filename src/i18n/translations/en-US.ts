@@ -405,4 +405,10 @@ export const enUS: TranslationKeys = {
     currentOperation: 'Current operation',
     dismiss: 'Hide status bar',
   },
+
+  // --- Boot screen ---
+  boot: { initKernel: 'Initializing kernel', loadConfig: 'Loading config', connectModel: 'Connecting model', ready: 'Ready' },
+
+  // --- Login screen ---
+  login: { tagline: 'AI-powered dev & consulting assistant', enter: 'Enter Ponos', version: 'Version' },
 }

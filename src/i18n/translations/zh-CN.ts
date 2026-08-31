@@ -418,6 +418,12 @@ export const zhCN = {
     currentOperation: '当前操作',
     dismiss: '隐藏状态条',
   },
+
+  // --- 启动等待 ---
+  boot: { initKernel: '初始化内核', loadConfig: '加载配置', connectModel: '连接模型', ready: '准备就绪' },
+
+  // --- 欢迎页 ---
+  login: { tagline: 'AI 驱动的开发与咨询助手', enter: '进入 Ponos', version: '版本' },
 }
 
 export type TranslationKeys = typeof zhCN
