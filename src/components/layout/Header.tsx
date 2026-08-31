@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import {
-  Menu, Settings, Search, Terminal, Minus, Square, Copy, X,
+  Menu, Settings, Search, Terminal, PanelRight, Minus, Square, Copy, X,
 } from 'lucide-react'
 import { Button } from '@/components/ui'
 import { Tooltip } from '@/components/ui'
 import { useUIStore } from '@/stores/uiStore'
+import { useViewStore } from '@/stores/viewStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useTranslation } from '@/i18n/useTranslation'
@@ -61,16 +62,16 @@ export function Header() {
 
   return (
     <header className="h-12 flex items-center gap-3 px-4 border-b bg-app drag-region shrink-0 relative">
-      {/* SHADOW 品牌区：漩涡图标 + 品牌名 + 侧边栏开关 */}
-      <div className="flex items-center gap-2.5 shrink-0">
-        <div className="w-8 h-8 rounded-full overflow-hidden ring-2 ring-brand-500/60 shadow-[0_0_12px_rgba(255,45,148,0.5)] no-drag">
-          <img src="/shadow-theme/icon-vortex.png" alt="SHADOW" className="w-full h-full object-cover" />
-        </div>
-        <span className="font-display font-bold tracking-[0.2em] text-sm text-primary no-drag select-none">
-          SHADOW
-        </span>
+      {/* Ponos 品牌区：头像/Logo（点击返回驾驶舱）+ 侧边栏开关 */}
+      <div className="flex items-center gap-2.5 shrink-0 no-drag">
+        <button onClick={() => useViewStore.getState().goCockpit()} className="flex items-center gap-2.5 group" aria-label={t('header.backCockpit')}>
+          <div className="w-8 h-8 rounded-full overflow-hidden ring-2 ring-brand-500/60 shadow-[0_0_12px_rgba(255,45,148,0.5)] group-hover:ring-brand-400 transition-all">
+            <img src="/shadow-theme/icon-vortex.png" alt="Ponos" className="w-full h-full object-cover" />
+          </div>
+          <span className="font-display font-bold tracking-[0.2em] text-sm text-primary select-none group-hover:text-brand-300 transition-colors">Ponos</span>
+        </button>
         <Tooltip content={t('header.toggleSidebar') + ' (⌘B)'}>
-          <Button variant="ghost" size="xs" onClick={toggleSidebar} className="no-drag ml-1" aria-label={t('header.toggleSidebar')}>
+          <Button variant="ghost" size="xs" onClick={toggleSidebar} className="ml-1" aria-label={t('header.toggleSidebar')}>
             <Menu className="w-4 h-4" />
           </Button>
         </Tooltip>
@@ -81,8 +82,14 @@ export function Header() {
         {activeConv?.title || 'Ponos 会话'}
       </div>
 
-      {/* 右侧工具：搜索/命令面板/设置 */}
+      {/* 右侧工具：右侧栏开关/搜索/命令面板/设置 */}
       <div className="flex items-center gap-0.5 no-drag shrink-0">
+        <Tooltip content={t('header.toggleRightRail')}>
+          <Button variant="ghost" size="xs" onClick={() => useUIStore.getState().toggleRightRail()} aria-label={t('header.toggleRightRail')}>
+            <PanelRight className="w-4 h-4" />
+          </Button>
+        </Tooltip>
+
         <Tooltip content={t('search.title') + ' (⌘⇧F)'}>
           <Button variant="ghost" size="xs" onClick={openSearch} aria-label={t('search.title')}>
             <Search className="w-4 h-4" />

@@ -17,6 +17,8 @@ export const zhCN = {
   // --- Header ---
   header: {
     toggleSidebar: '切换侧边栏',
+    backCockpit: '返回驾驶舱',
+    toggleRightRail: '切换资源管理器 (⌘E)',
   },
 
   // --- 侧边栏 ---

@@ -145,6 +145,13 @@ export function AppShell() {
       return
     }
 
+    // Toggle right rail (file explorer)
+    if (mod && e.key === 'e') {
+      e.preventDefault()
+      useUIStore.getState().toggleRightRail()
+      return
+    }
+
     // Search
     if (mod && e.shiftKey && e.key === 'F') {
       e.preventDefault()

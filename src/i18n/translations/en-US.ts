@@ -17,6 +17,8 @@ export const enUS: TranslationKeys = {
 
   header: {
     toggleSidebar: 'Toggle Sidebar',
+    backCockpit: 'Back to cockpit',
+    toggleRightRail: 'Toggle File Explorer (⌘E)',
   },
 
   sidebar: {
