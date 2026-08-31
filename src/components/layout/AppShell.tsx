@@ -17,6 +17,7 @@ import { ShortcutsHelp } from '@/components/shortcuts/ShortcutsHelp'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { useViewStore } from '@/stores/viewStore'
 import { sendAnswer, dismissQuestion, usePonosCLI } from '@/hooks/usePonosCLI'
 import { useTranslation } from '@/i18n/useTranslation'
 import { THEME_CLASS_NAMES, THEMES } from '@/types'
@@ -48,6 +49,14 @@ export function AppShell() {
     if (!activeConversationId) {
       createConversation()
     }
+  }, [])
+
+  // 驾驶舱 goWorkspace(tab) 写入的 workspaceTab 在这里消费：
+  // 落地工作区时将侧边栏切到目标 tab（如 技能·Agent 卡 → skills）。
+  // 不重置 workspaceTab —— 设计上仅驾驶舱入口 goCockpit 清空它（见 viewStore）。
+  useEffect(() => {
+    const tab = useViewStore.getState().workspaceTab
+    if (tab) useUIStore.getState().setSidebarTab(tab as 'chats' | 'history' | 'agents' | 'worktrees' | 'skills')
   }, [])
 
   // 启动时低配设备检测：CPU 核心 ≤4 或内存 ≤4GB → 引导开启极速形态。

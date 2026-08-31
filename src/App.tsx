@@ -5,6 +5,7 @@ import { EditorWindowRoot } from '@/components/editor/EditorWindowRoot'
 import { BootScreen } from '@/components/boot/BootScreen'
 import { LoginScreen } from '@/components/login/LoginScreen'
 import { CockpitView } from '@/components/cockpit/CockpitView'
+import { TokenStatsPanel } from '@/components/cockpit/TokenStatsPanel'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useViewStore } from '@/stores/viewStore'
 import { useChatStore } from '@/stores/chatStore'
@@ -45,6 +46,9 @@ function MainApp() {
       {view === 'login' && <LoginScreen />}
       {view === 'cockpit' && <CockpitView />}
       {view === 'workspace' && <AppShell />}
+      {/* Token 统计面板：App 根级常驻挂载，视图切换（cockpit/workspace）均可打开；
+          组件内部按 useUIStore.tokenPanelOpen 自守卫，关闭时渲染 null */}
+      <TokenStatsPanel />
     </TooltipProvider>
   )
 }

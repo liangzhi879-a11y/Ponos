@@ -37,7 +37,10 @@ test('backfillConversation 解析原始 transcript usage 并累加', async () =>
   }
   globalThis.fetch = mockFetch as typeof fetch
   let s = createEmptyStats()
-  s = await backfillConversation(s, 'C:/proj', 'sess-1', 'c1', 'http://mock')
+  const r = await backfillConversation(s, 'C:/proj', 'sess-1', 'c1', 'http://mock')
+  s = r.stats
   assert.equal(s.totalInput, 250); assert.equal(s.totalOutput, 100)
   assert.deepEqual(s.byModel['deepseek-v4-pro'], { input: 200, output: 80 })
+  // 成功加载 transcript → ok 必须为 true
+  assert.equal(r.ok, true)
 })

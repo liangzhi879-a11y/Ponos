@@ -46,17 +46,19 @@ export function toDayKey(ts: number): string {
   return `${d.getFullYear()}-${m}-${day}`
 }
 
-/** 回填单个会话：拉取原始 transcript entries，解析 assistant 条目的 usage 累加。 */
+/** 回填单个会话：拉取原始 transcript entries，解析 assistant 条目的 usage 累加。
+ *  返回 { stats, ok }：ok=true 仅当 transcript 真正加载并解析到条目数组
+ *  （bridge 不可达 / 响应异常时静默降级为原 stats 且 ok=false，调用方据此决定是否标记完成）。 */
 export async function backfillConversation(
   stats: TokenStats, cwd: string, sessionId: string, convId: string, baseUrl?: string
-): Promise<TokenStats> {
+): Promise<{ stats: TokenStats; ok: boolean }> {
   const base = baseUrl || getBridgeUrl()
   const url = `${base}/transcript/load?cwd=${encodeURIComponent(cwd)}&sessionId=${encodeURIComponent(sessionId)}&tailFirst=0`
   try {
     const res = await fetch(url)
-    if (!res.ok) return stats
+    if (!res.ok) return { stats, ok: false }
     const data = await res.json()
-    if (!data || data.ok !== true || !Array.isArray(data.entries)) return stats
+    if (!data || data.ok !== true || !Array.isArray(data.entries)) return { stats, ok: false }
     let s = stats
     for (const e of data.entries) {
       if (e?.type !== 'assistant') continue
@@ -67,9 +69,9 @@ export async function backfillConversation(
       const ts = typeof e.timestamp === 'number' ? e.timestamp : Date.now()
       s = addUsage(s, { input, output }, { day: toDayKey(ts), conversationId: convId, model: e.model || '' })
     }
-    return s
+    return { stats: s, ok: true }
   } catch {
-    return stats  // bridge 不可达静默降级
+    return { stats, ok: false }  // bridge 不可达静默降级
   }
 }
 
@@ -94,10 +96,15 @@ export const useTokenStatsStore = create<TokenStatsStore>()(
         let s = get().stats
         const done = { ...backfilled }
         for (const c of todo) {
+          let anyOk = false
           for (const sid of (c.sessionIds || []).slice(0, 3)) {  // 大会话限 3 个 transcript 防卡顿
-            s = await backfillConversation(s, c.cwd || '', sid, c.id, baseUrl)
+            const r = await backfillConversation(s, c.cwd || '', sid, c.id, baseUrl)
+            s = r.stats
+            if (r.ok) anyOk = true
           }
-          done[c.id] = true
+          // 仅当至少一个 transcript 真正加载成功才标记完成；
+          // 否则保持未标记，下次进入驾驶舱会重试（避免 bridge 未就绪时永久放弃历史回填）。
+          if (anyOk) done[c.id] = true
         }
         set({ stats: s, backfilled: done })
       },
