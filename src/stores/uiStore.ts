@@ -25,6 +25,17 @@ interface UIState {
   // Panel sizes
   sidebarWidth: number
 
+  // Right rail / File view / Token panel
+  rightRailOpen: boolean          // 默认 true
+  rightRailWidth: number          // 默认 280
+  fileViewMode: 'list' | 'grid'   // 默认 'list'
+  tokenPanelOpen: boolean         // 默认 false
+  toggleRightRail: () => void
+  setRightRailWidth: (w: number) => void
+  setFileViewMode: (m: 'list' | 'grid') => void
+  openTokenPanel: () => void
+  closeTokenPanel: () => void
+
   // Floating editor window rect（x/y 为 -1 表示未初始化，首次打开时自动定位）
   editorRect: { x: number; y: number; w: number; h: number }
 
@@ -113,6 +124,16 @@ export const useUIStore = create<UIState>()(
 
       sidebarTab: 'chats',
       chatSortMode: 'manual',
+
+      rightRailOpen: true,
+      rightRailWidth: 280,
+      fileViewMode: 'list' as const,
+      tokenPanelOpen: false,
+      toggleRightRail: () => set(s => ({ rightRailOpen: !s.rightRailOpen })),
+      setRightRailWidth: (w) => set({ rightRailWidth: Math.max(200, Math.min(480, w)) }),
+      setFileViewMode: (m) => set({ fileViewMode: m }),
+      openTokenPanel: () => set({ tokenPanelOpen: true }),
+      closeTokenPanel: () => set({ tokenPanelOpen: false }),
 
       openFiles: [],
       activeFileId: null,
@@ -277,6 +298,9 @@ export const useUIStore = create<UIState>()(
       partialize: (state) => ({
         sidebarOpen: state.sidebarOpen,
         sidebarWidth: state.sidebarWidth,
+        rightRailOpen: state.rightRailOpen,
+        rightRailWidth: state.rightRailWidth,
+        fileViewMode: state.fileViewMode,
         editorRect: state.editorRect,
         sidebarTab: state.sidebarTab,
         chatSortMode: state.chatSortMode,
