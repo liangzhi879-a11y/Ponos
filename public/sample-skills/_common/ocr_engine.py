@@ -730,12 +730,14 @@ class OCREngine:
         except Exception as e:
             return {"text": "", "confidence": 0, "page": page_index + 1, "error": str(e)}
 
-    def ocr_image(self, image_path, project_name="default"):
+    def ocr_image(self, image_path, project_name="default", enhance=True):
         """对单张图片（PNG/JPG/JPEG）执行 OCR 识别（优化版）
 
         Args:
             image_path: 图片文件路径
             project_name: 项目名（用于缓存隔离）
+            enhance: True 时走增强管线（ocr_pipeline.py：深色模式反色/对比度/
+                     条件降噪/锐化/低置信度重试/数字复核/超长分块/证据封顶）。
 
         Returns:
             dict: {"text": str, "confidence": float, "page_type": "image", "pages": [...]}
@@ -748,10 +750,27 @@ class OCREngine:
 
         file_md5 = hashlib.md5(path.read_bytes()).hexdigest()
 
-        cached = self._get_full_cache(file_md5, project_name, "image")
+        # 增强管线使用独立缓存后缀（pipeline 版本参与缓存 key，升级不命中旧结果）
+        cache_suffix = "image.enhanced" if enhance else "image"
+        cached = self._get_full_cache(file_md5, project_name, cache_suffix)
         if cached:
             cached["cache_hit"] = True
             return cached
+
+        if enhance:
+            try:
+                from ocr_pipeline import ocr_image_enhanced
+            except ImportError as e:
+                return {"text": "", "confidence": 0, "error": f"增强管线不可用（ocr_pipeline.py 缺失: {e}），请设置 PONOS_OCR_ENHANCE=off 走基础 OCR"}
+            engine = self._ensure_engine()
+            if engine is None:
+                return {"text": "", "confidence": 0, "error": "RapidOCR 不可用"}
+            result = ocr_image_enhanced(str(path), engine)
+            if "error" in result:
+                return result
+            result["file"] = str(path)
+            self._save_full_cache(file_md5, project_name, cache_suffix, result)
+            return result
 
         try:
             from PIL import Image
@@ -799,7 +818,7 @@ class OCREngine:
             "images": [],
         }
 
-        self._save_full_cache(file_md5, project_name, "image", result)
+        self._save_full_cache(file_md5, project_name, cache_suffix, result)
         return result
 
     # --------------------------------------------------------
@@ -898,9 +917,9 @@ def ocr_with_table(pdf_path, project_name="default"):
     return get_engine().ocr_with_table(pdf_path, project_name)
 
 
-def ocr_image(image_path, project_name="default"):
-    """便捷函数：OCR识别单张图片（PNG/JPG/JPEG）"""
-    return get_engine().ocr_image(image_path, project_name)
+def ocr_image(image_path, project_name="default", enhance=True):
+    """便捷函数：OCR识别单张图片（PNG/JPG/JPEG），enhance=True 走增强管线"""
+    return get_engine().ocr_image(image_path, project_name, enhance=enhance)
 
 
 def warm_up_ocr():
@@ -957,8 +976,9 @@ def cmd_ocr_image(args):
     if not is_image_file(args.file):
         print(json.dumps({"error": f"不支持的图片格式: {args.file}", "text": "", "confidence": 0}, ensure_ascii=False))
         return True
-    result = ocr_image(args.file, project_name=args.project)
+    result = ocr_image(args.file, project_name=args.project, enhance=not args.no_enhance)
     print(f"\n[ocr-image] 文件: {args.file}")
+    print(f"[ocr-image] 增强管线: {result.get('enhanced', False)}")
     print(f"[ocr-image] 缓存命中: {result.get('cache_hit', False)}")
     print(f"[ocr-image] 置信度: {result.get('confidence', 0)}")
     if result.get("text"):
@@ -1037,6 +1057,7 @@ def main():
     ocr_img_parser.add_argument("--file", required=True, help="图片文件路径")
     ocr_img_parser.add_argument("--project", default="default", help="项目名（用于缓存隔离）")
     ocr_img_parser.add_argument("--output", default=None, help="输出JSON文件路径")
+    ocr_img_parser.add_argument("--no-enhance", action="store_true", help="关闭增强管线（走基础OCR）")
 
     ocr_t_parser = subparsers.add_parser("ocr-table", help="表格识别")
     ocr_t_parser.add_argument("--file", required=True, help="PDF文件路径")

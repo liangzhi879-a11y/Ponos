@@ -452,7 +452,13 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         })
       } else {
         await flush()
-        results[i] = await executeToolUse(b, ctx)
+        // 串行路径同样兜底：executeToolUse 抛异常（审批/执行器内部错误）不得中断
+        // 整个 turn——回填错误结果并继续，模型下一轮看到 is_error 后自愈重试。
+        try {
+          results[i] = await executeToolUse(b, ctx)
+        } catch (e) {
+          results[i] = { content: `工具执行异常：${e?.message || String(e)}`, isError: true }
+        }
         executedToolIds.set(b.id, { content: results[i]?.content ?? '', is_error: results[i]?.isError === true })
       }
     }
@@ -891,14 +897,25 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       const t0 = Date.now()
       if (session) session.appendUser(String(content ?? ''))
       else pushMemory({ role: 'user', content: String(content ?? '') })
-      const { usage, model: turnModel, text } = await runTurnInternal({ content })
+      let outcome
+      try {
+        const { usage, model: turnModel, text } = await runTurnInternal({ content })
+        outcome = { usage, model: turnModel, text }
+      } catch (e) {
+        // 全局兜底：turn 内部任何未捕获异常（模型流/审批/压缩等）都不得中断会话。
+        // 回填错误文本作为本轮结果，会话日志保留（transcript 权威源仍可回溯），
+        // 后续轮次照常继续——消灭"失败后断"。
+        const errMsg = e?.message || String(e)
+        pushMemory({ role: 'assistant', content: `【系统】本轮执行出现内部错误：${errMsg}` })
+        outcome = { usage: null, model: opts.model || process.env.ANTHROPIC_MODEL || '', text: `【系统】本轮执行出现内部错误：${errMsg}（会话已保留，可继续对话或重试）` }
+      }
       const durationMs = Date.now() - t0
       // turnStats 每轮尾部产出（health/result/stats 共用）
-      turnStats.push({ usage, durationMs, model: turnModel, ts: new Date().toISOString(), compactCount: session ? session.compactCount() : 0 })
+      turnStats.push({ usage: outcome.usage, durationMs, model: outcome.model, ts: new Date().toISOString(), compactCount: session ? session.compactCount() : 0 })
       health?.record(turnStats[turnStats.length - 1])
       // result 事件由 engine 发出（含 duration_ms；cli 不再重复 emit）
-      wire.result(usage, { duration_ms: durationMs })
-      return { usage, model: turnModel, text, durationMs }
+      wire.result(outcome.usage, { duration_ms: durationMs })
+      return { usage: outcome.usage, model: outcome.model, text: outcome.text, durationMs }
     },
   }
 }

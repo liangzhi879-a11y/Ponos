@@ -191,6 +191,36 @@ function readFile(filePath, allowDirs, input = {}, cwd, readCache, skipBoundary)
     if (st.size > READ_MAX_BYTES) {
       return { content: `文件过大（${st.size} 字节），超出 ${READ_MAX_BYTES} 字节读取上限；请用 offset/limit 参数定向读取（offset 起始行号，limit 行数）`, isError: true }
     }
+    // 二进制文件引导：先探测魔数，图片/PDF 等直接引导走 OCR/专用工具，
+    // 避免把二进制当文本读出乱码（对照 claude 的 isBinary 检测）。
+    const BINARY_MAGIC = [
+      ['PNG', [0x89, 0x50, 0x4e, 0x47]],
+      ['JPEG', [0xff, 0xd8, 0xff]],
+      ['GIF', [0x47, 0x49, 0x46, 0x38]],
+      ['BMP', [0x42, 0x4d]],
+      ['WebP', [0x52, 0x49, 0x46, 0x46]],
+      ['PDF', [0x25, 0x50, 0x44, 0x46]],
+      ['ZIP', [0x50, 0x4b, 0x03, 0x04]],
+      ['DOCX/XLSX/PPTX', [0x50, 0x4b, 0x03, 0x04]],
+    ]
+    const probeHead = readFileSync(resolved, 'latin1').slice(0, 8)
+    const headBytes = [...probeHead].map((c) => c.charCodeAt(0))
+    const isImage = /\.(png|jpe?g|gif|bmp|tiff?|webp)$/i.test(resolved)
+    const isPdf = /\.pdf$/i.test(resolved)
+    let binaryHint = ''
+    if (isImage) binaryHint = `这是图片文件（${extname(resolved)}）——提取图中文字用 OCR 工具，理解版面/语义用 Vision 工具`
+    else if (isPdf) binaryHint = `这是 PDF 文件——含文本层可用 Bash python doc_toolkit 提取，扫描件用 OCR 工具`
+    else {
+      for (const [name, magic] of BINARY_MAGIC) {
+        if (magic.every((b, i) => headBytes[i] === b)) {
+          binaryHint = `这是二进制文件（${name}）——文本内容请用 OCR 或对应文档工具提取`
+          break
+        }
+      }
+    }
+    if (binaryHint) {
+      return { content: `Read 仅支持文本文件：${resolved}\n${binaryHint}`, isError: true }
+    }
     const full = readFileSync(resolved, 'utf-8')
     // offset/limit：按行范围读取（offset 从 1 开始，limit=行数，均可选）
     const offset = Number(input.offset)
@@ -641,10 +671,24 @@ const OCR_TIMEOUT_MS = 300_000
 function findOcrEngine() {
   if (process.env.PONOS_OCR_ENGINE && existsSync(process.env.PONOS_OCR_ENGINE)) return process.env.PONOS_OCR_ENGINE
   const home = process.env.USERPROFILE || process.env.HOME || ''
-  const candidates = [
-    join(home, '.claude', 'skills', '_common', 'ocr_engine.py'),
-    join(home, '.ponos', 'skills', '_common', 'ocr_engine.py'),
-  ]
+  // 多路径探测（修复"新设备报 OCR 不可用"）：
+  //   1. PONOS_SKILLS_DIR（bridge 注入的技能根，PONOS_HOME 机制权威来源）
+  //   2. PONOS_HOME/skills（skillRoot 兜底）
+  //   3. 打包资源 runtime/skills（electron-builder extraResources → <app>/resources/runtime/skills）
+  //   4. 传统路径 ~/.ponos/skills、~/.ponos-dev/skills、~/.claude/skills
+  // 全部命中失败时再尝试从 python 同目录找（嵌入式 runtime 的 skills 并排部署）。
+  const candidates = []
+  const push = (p) => { if (p) candidates.push(p) }
+  const skillsDir = process.env.PONOS_SKILLS_DIR || ''
+  const ponosHome = process.env.PONOS_HOME || ''
+  push(join(skillsDir, '_common', 'ocr_engine.py'))
+  push(join(ponosHome, 'skills', '_common', 'ocr_engine.py'))
+  // 打包资源：dev 便携版 runtime 在仓库根；安装版在 resources/runtime（__dirname 相对 kernel/）
+  push(join(dirname(dirname(process.cwd())), 'runtime', 'skills', '_common', 'ocr_engine.py'))
+  push(join(dirname(dirname(process.cwd())), 'resources', 'runtime', 'skills', '_common', 'ocr_engine.py'))
+  push(join(home, '.ponos', 'skills', '_common', 'ocr_engine.py'))
+  push(join(home, '.ponos-dev', 'skills', '_common', 'ocr_engine.py'))
+  push(join(home, '.claude', 'skills', '_common', 'ocr_engine.py'))
   return candidates.find((p) => existsSync(p)) || null
 }
 
@@ -707,25 +751,33 @@ async function ocrFile(filePath, allowDirs, input = {}, skipBoundary) {
     if (statSync(filePath).isDirectory()) return { content: `是目录：${filePath}`, isError: true }
     const mode = input?.mode === 'table' ? 'table' : 'text'
     const project = String(input?.project || 'default')
+    // 增强管线开关：auto=图片默认增强（深色反色/对比度/低置信度重试/数字复核/超长分块），
+    // off=基础 OCR（兼容旧行为，用于图片预处理导致误伤时回退）。PDF 走 CLI 不受影响。
+    const enhance = input?.enhance === 'off' ? false : true
     const engine = findOcrEngine()
     if (!engine) {
       const home = process.env.USERPROFILE || process.env.HOME || ''
       const checked = [
-        join(home, '.claude', 'skills', '_common'),
+        process.env.PONOS_SKILLS_DIR && join(process.env.PONOS_SKILLS_DIR, '_common'),
+        process.env.PONOS_HOME && join(process.env.PONOS_HOME, 'skills', '_common'),
+        join(dirname(dirname(process.cwd())), 'runtime', 'skills', '_common'),
         join(home, '.ponos', 'skills', '_common'),
-      ].join('、')
-      return { content: `OCR 引擎不可用：未找到 ocr_engine.py（已检查 ${checked}；可设置 PONOS_OCR_ENGINE 指向引擎路径）`, isError: true }
+        join(home, '.ponos-dev', 'skills', '_common'),
+        join(home, '.claude', 'skills', '_common'),
+      ].filter(Boolean).join('、')
+      return { content: `OCR 引擎不可用：未找到 ocr_engine.py（已检查 ${checked}；可设置 PONOS_OCR_ENGINE 指向引擎路径，或确认应用已安装技能库）`, isError: true }
     }
     const isImage = IMAGE_EXTS.includes(extname(filePath).toLowerCase())
     let data = null
     if (isImage) {
-      // 图片：内联 import ocr_engine.ocr_image（table 模式对图片无意义，一律全文）
+      // 图片：内联 import ocr_engine.ocr_image（table 模式对图片无意义，一律全文；
+      // enhance 透传：auto 走增强管线，off 走基础 OCR）
       const engineDir = dirname(engine)
       const script = [
         'import sys, json',
         `sys.path.insert(0, ${JSON.stringify(engineDir)})`,
         'from ocr_engine import ocr_image',
-        `r = ocr_image(${JSON.stringify(filePath)}, ${JSON.stringify(project)})`,
+        `r = ocr_image(${JSON.stringify(filePath)}, ${JSON.stringify(project)}, enhance=${enhance ? 'True' : 'False'})`,
         'print(json.dumps(r, ensure_ascii=False))',
       ].join('; ')
       const r = await runPythonCapture(['-c', script], { cwd: dirname(filePath) })
@@ -814,6 +866,17 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
     const model = process.env.PONOS_VISION_MODEL || ''
     const token = process.env.PONOS_VISION_AUTH_TOKEN || ''
     if (!base || !model || !token) {
+      // 未配置视觉模型时：PONOS_AUTO_IMAGE_BRIDGE=1（bridge 注入）→ 自动降级走
+      // 增强 OCR 本地证据（dsh-pseudo-vision 同思路：text-only 模型用 OCR 文字
+      // "看"图），而非直接报错。OCR 失败也带降级说明（明确告知尝试了本地 OCR
+      // 但失败原因），不会让模型误判"视觉功能本身缺失"。
+      if (process.env.PONOS_AUTO_IMAGE_BRIDGE === '1' && process.env.PONOS_AUTO_IMAGE_BRIDGE !== '0') {
+        const ocrR = await ocrFile(filePath, allowDirs, { project: 'vision-bridge' }, skipBoundary)
+        return {
+          content: `【Vision 未配置 · 已自动降级为本地 OCR 证据】\n${ocrR.isError ? `（本地 OCR 失败：${ocrR.content}）` : ocrR.content}\n\n（视觉模型未启用：PONOS_VISION_* 未配置。以上为本地增强 OCR 提取的文字；如需版面/物体/图表语义理解，请在应用设置中启用视觉模型）`,
+          isError: false,
+        }
+      }
       return { content: 'Vision 未配置：需设置 PONOS_VISION_BASE_URL / PONOS_VISION_MODEL / PONOS_VISION_AUTH_TOKEN（GUI 设置中选中视觉模型后由 bridge 注入）。需要提取图中文字时可先用 OCR', isError: true }
     }
     let res
@@ -1087,7 +1150,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
     },
     // 扫描件 OCR（spawn python 调 ocr_engine.py；PDF/图片均可；结果按 project 缓存）
     OCR: {
-      description: '对扫描件 PDF 或图片执行 OCR 文字识别（mode=text 提取全文；mode=table 额外识别表格，仅 PDF 有效；结果按 project 缓存，重复识别秒回）。首次调用需加载识别模型，可能耗时数十秒——属正常初始化，勿误判卡死或重复调用。边界限制：仅可识别当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标文件位于会话目录内（若在会话外，先请用户将文件放入会话目录或经 --add-dir 挂载，不要盲目重试）。',
+      description: '对扫描件 PDF 或图片执行 OCR 文字识别（mode=text 提取全文；mode=table 额外识别表格，仅 PDF 有效；结果按 project 缓存，重复识别秒回）。图片默认走增强管线（enhance=auto：深色模式反色/对比度/低置信度重试/数字复核/超长截图分块，识别质量显著高于基础 OCR；enhance=off 可回退基础 OCR）。首次调用需加载识别模型，可能耗时数十秒——属正常初始化，勿误判卡死或重复调用。边界限制：仅可识别当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标文件位于会话目录内（若在会话外，先请用户将文件放入会话目录或经 --add-dir 挂载，不要盲目重试）。',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -1095,6 +1158,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
           file_path: { type: 'string', description: '要识别的 PDF/图片绝对路径' },
           mode: { type: 'string', description: '可选：text（默认，全文识别）| table（含表格识别）' },
           project: { type: 'string', description: '可选：项目名（缓存隔离，默认 default）' },
+          enhance: { type: 'string', description: '可选：auto（默认，图片走增强管线）| off（基础 OCR）' },
         },
         required: ['file_path'],
       },
@@ -1249,13 +1313,20 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
       }))
     },
     // 执行入口：返回归一化 { content, isError }（成功路径可能缺省 isError）；
-    // approval 决策由调用方（engine）先行
+    // approval 决策由调用方（engine）先行。兜底铁律：任何工具实现抛异常
+    // （含审批/hook 内部错误）都不得向上中断 turn——归一化为错误结果返回，
+    // 调用方（runToolBatch）看到 isError 后模型可自愈重试，会话不断。
     async run(toolUse, ctx) {
       const name = toolUse?.name
       if (blocked.has(name)) return { content: `工具已被禁用：${name}`, isError: true }
       const tool = registry[name]
       if (!tool) return { content: `未知工具：${name}`, isError: true }
-      const r = await tool.run(toolUse.input || {}, ctx)
+      let r
+      try {
+        r = await tool.run(toolUse.input || {}, ctx)
+      } catch (e) {
+        return { content: `工具执行异常：${e?.message || String(e)}`, isError: true }
+      }
       if (r && typeof r === 'object') {
         return { content: r.content ?? '', isError: r.isError === true, ...(r.meta ? { meta: r.meta } : {}) }
       }
