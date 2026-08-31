@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useLayoutEffect, memo } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  MessageSquare, History, FolderTree, Bot, Plus, Search, GitFork,
+  MessageSquare, History, LayoutDashboard, Bot, Plus, Search, GitFork,
   Pin, Trash2, Edit3, Puzzle, MessageSquarePlus, CalendarClock,
   Wand2, ChevronRight, FolderOpen, FolderPlus, Share2, ArrowUpDown, Check,
 } from 'lucide-react'
@@ -12,9 +12,9 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useChatStore } from '@/stores/chatStore'
 import { fetchTranscript } from '@/lib/transcriptLoader'
 import { useUIStore } from '@/stores/uiStore'
+import { useViewStore } from '@/stores/viewStore'
 import { useTranslation } from '@/i18n/useTranslation'
 import { HistoryView } from '@/components/history/HistoryView'
-import { FileBrowser } from '@/components/files/FileBrowser'
 import { AgentsPanel } from '@/components/agents/AgentsPanel'
 import { WorktreePanel } from '@/components/worktree/WorktreePanel'
 import { SkillsPanel } from '@/components/skills/SkillsPanel'
@@ -23,7 +23,6 @@ import type { Conversation, ConversationProgress, ConversationSet, Message } fro
 
 const TABS = [
   { id: 'chats' as const, icon: MessageSquare, labelKey: 'sidebar.chats' },
-  { id: 'files' as const, icon: FolderTree, labelKey: 'sidebar.files' },
   { id: 'worktrees' as const, icon: GitFork, labelKey: 'sidebar.worktrees' },
   { id: 'history' as const, icon: History, labelKey: 'sidebar.history' },
   { id: 'agents' as const, icon: Bot, labelKey: 'sidebar.agents' },
@@ -105,6 +104,8 @@ export function Sidebar() {
   const reorderConversationSets = useChatStore(s => s.reorderConversationSets)
   const sidebarTab = useUIStore(s => s.sidebarTab)
   const setSidebarTab = useUIStore(s => s.setSidebarTab)
+  const backgroundTasks = useChatStore(s => s.backgroundTasks)
+  const removeBackgroundTask = useChatStore(s => s.removeBackgroundTask)
   const setScheduleGuideFor = useUIStore(s => s.setScheduleGuideFor)
   const chatSortMode = useUIStore(s => s.chatSortMode)
   const setChatSortMode = useUIStore(s => s.setChatSortMode)
@@ -205,6 +206,8 @@ export function Sidebar() {
   })
   // 会话集仅手动顺序（store 顺序），不再按名称排序
   const filteredSets = conversationSets
+
+  const runningTasks = backgroundTasks.filter(t => t.status === 'running')
 
   const getConvIndex = (id: string) => conversations.findIndex(c => c.id === id)
 
@@ -347,6 +350,12 @@ export function Sidebar() {
     <aside className="flex flex-col h-full w-full bg-app border-r">
       {/* Tab bar */}
       <div className="flex items-center h-10 border-b px-1">
+        <Tooltip content={t('header.backCockpit')}>
+          <button onClick={() => useViewStore.getState().goCockpit()} aria-label={t('header.backCockpit')}
+            className="flex items-center justify-center h-8 rounded-md text-tertiary hover:text-secondary hover:bg-elevated transition-colors w-8">
+            <LayoutDashboard className="w-4 h-4" />
+          </button>
+        </Tooltip>
         {TABS.map(tab => {
           const Icon = tab.icon
           const active = sidebarTab === tab.id
@@ -369,6 +378,25 @@ export function Sidebar() {
 
       {/* Content by tab */}
       <div className="flex-1 flex flex-col min-h-0">
+        {/* 运行任务区 */}
+        <div className="px-2 py-1.5 border-b bg-app/60">
+          <div className="text-[10px] font-semibold text-tertiary uppercase tracking-wider mb-1">{t('sidebar.runningTasks')}</div>
+          {runningTasks.length === 0 ? (
+            <div className="text-[10px] text-tertiary/60 px-1">{t('sidebar.noRunningTasks')}</div>
+          ) : (
+            <div className="flex flex-col gap-1">
+              {runningTasks.map(task => (
+                <div key={task.id} className="flex items-center gap-2 px-2 py-1 rounded-md bg-elevated/60 text-xs text-secondary">
+                  <span className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse shrink-0" />
+                  <span className="flex-1 min-w-0 truncate">{task.name}</span>
+                  <button onClick={() => removeBackgroundTask(task.id)} className="text-[10px] text-error hover:bg-error/10 rounded px-1 py-0.5">
+                    {t('sidebar.stopTask')}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
         {sidebarTab === 'chats' && (
           <>
             {/* Search + New */}
@@ -536,7 +564,6 @@ export function Sidebar() {
 
         {sidebarTab === 'history' && <HistoryView />}
 
-        {sidebarTab === 'files' && <FileBrowser />}
         {sidebarTab === 'worktrees' && <WorktreePanel />}
         {sidebarTab === 'agents' && <AgentsPanel />}
         {sidebarTab === 'skills' && <SkillsPanel />}
