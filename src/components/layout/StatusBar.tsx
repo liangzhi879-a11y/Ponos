@@ -1,6 +1,7 @@
-import { Shield, Cpu, Wifi, WifiOff, Activity, Gamepad2 } from 'lucide-react'
+import { Shield, Cpu, Wifi, WifiOff, Activity } from 'lucide-react'
 import { useChatStore } from '@/stores/chatStore'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { useUIStore } from '@/stores/uiStore'
 import { usePonosCLI } from '@/hooks/usePonosCLI'
 import { useTranslation } from '@/i18n/useTranslation'
 import { Tooltip } from '@/components/ui'
@@ -92,26 +93,13 @@ export function StatusBar() {
           )}
         </div>
 
-        {/* 右：手柄操作提示（Sélectionner ○ / Quitter ●）+ 数据 */}
+        {/* 右：数据（TK / Auto-Manual） */}
         <div className="flex items-center gap-4">
-          <span className="hidden md:flex items-center gap-1.5 text-tertiary select-none">
-            <Gamepad2 className="w-3.5 h-3.5 text-brand-500/80" />
-            <span className="flex items-center gap-1">
-              <span className="w-3 h-3 rounded-full border border-accent-cyan inline-block" />
-              <span className="text-accent-cyan">Sélectionner</span>
-            </span>
-            <span className="mx-0.5 text-tertiary/60">·</span>
-            <span className="flex items-center gap-1">
-              <span className="w-3 h-3 rounded-full border border-accent-red inline-block relative">
-                <span className="absolute inset-[3px] rounded-full bg-accent-red" />
-              </span>
-              <span className="text-accent-red">Quitter</span>
-            </span>
-          </span>
           <StatusItem
             icon={<span className="text-[10px] font-mono font-bold text-accent-cyan">TK</span>}
             label={`${t('statusBar.tokens')}: ${totalTokens.toLocaleString()}`}
             value={formatTokens(totalTokens)}
+            onClick={useUIStore.getState().openTokenPanel}
           />
           <StatusItem
             icon={<Shield className="w-3 h-3 text-brand-500" />}
@@ -157,6 +145,7 @@ export function StatusBar() {
           icon={<span className="text-[10px] font-mono font-bold text-tertiary">TK</span>}
           label={`${t('statusBar.tokens')}: ${totalTokens.toLocaleString()}`}
           value={formatTokens(totalTokens)}
+          onClick={useUIStore.getState().openTokenPanel}
         />
         <StatusItem
           icon={<Shield className="w-3 h-3" />}
