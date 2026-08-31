@@ -6,11 +6,14 @@ import { useViewStore } from '@/stores/viewStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { usePonosCLI } from '@/hooks/usePonosCLI'
-import { fetchSkills } from '@/lib/skills'
+import { fetchSkills, type SkillEntry } from '@/lib/skills'
 import { DEFAULT_AGENTS } from '@/lib/agents'
 import { getBridgeUrl, getDefaultHome } from '@/lib/config'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn } from '@/lib/utils'
+import { TrendChart } from '@/components/charts/TrendChart'
+import { DonutChart } from '@/components/charts/DonutChart'
+import { BarStack } from '@/components/charts/BarStack'
 import { RecentSessions } from './RecentSessions'
 import { RunningTasks } from './RunningTasks'
 
@@ -86,13 +89,31 @@ export function CockpitView() {
     backgroundTasks.length > 0
       ? Math.round(((backgroundTasks.length - runningTasks) / backgroundTasks.length) * 100)
       : 100
+  // 最近 3 条会话（updatedAt 倒序）
+  const recent3 = useMemo(
+    () => [...conversations].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 3),
+    [conversations],
+  )
+  // 统一激活会话并进入工作台（Task 8 收尾统一 RecentSessions 点击）
+  const openConversation = (id: string) => {
+    useChatStore.setState({ activeConversationId: id })
+    goWorkspace('chats')
+  }
 
   // --- Token 用量 卡片数据 ---
   const tokenTotal = stats.totalInput + stats.totalOutput
-  const byDayValues = useMemo(() => lastNDays(stats.byDay, 7), [stats.byDay])
-  const tokenToday = byDayValues[byDayValues.length - 1] ?? 0
-  const token7d = byDayValues.reduce((a, b) => a + b, 0)
-  const maxDay = Math.max(1, ...byDayValues)
+  const byDay30 = useMemo(() => lastNDays(stats.byDay, 30), [stats.byDay])
+  const tokenToday = byDay30[byDay30.length - 1] ?? 0
+  const token7d = byDay30.slice(-7).reduce((a, b) => a + b, 0)
+  // 近 30 日 MM-DD 标签（与 TokenStatsPanel 同逻辑）
+  const trendLabels30 = useMemo(
+    () =>
+      byDay30.map((_, i) => {
+        const d = new Date(Date.now() - (29 - i) * DAY_MS)
+        return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      }),
+    [byDay30],
+  )
 
   // --- 文件 · 目录 卡片数据（bridge /list-dir，失败显示占位 + 重试）---
   const [fs, setFs] = useState<{ dirs: number; files: number; loading: boolean; error: string }>({
@@ -125,12 +146,16 @@ export function CockpitView() {
   }, [loadDir])
 
   // --- 技能 · Agent 卡片数据 ---
+  const [skills, setSkills] = useState<SkillEntry[]>([])
   const [skillCount, setSkillCount] = useState<number | null>(null)
   useEffect(() => {
     let alive = true
     fetchSkills(skillRoot)
       .then(list => {
-        if (alive) setSkillCount(list.length)
+        if (alive) {
+          setSkills(list)
+          setSkillCount(list.length)
+        }
       })
       .catch(() => {
         if (alive) setSkillCount(0)
@@ -140,6 +165,18 @@ export function CockpitView() {
     }
   }, [skillRoot])
   const agentCount = DEFAULT_AGENTS.length
+
+  // 技能分类聚合：id 前缀分组（gxtz/yfwx/yfwdoc/space…）
+  const skillGroups = useMemo(() => {
+    const groups: Record<string, number> = {}
+    for (const s of skills) {
+      const prefix = s.id.split('-')[0] || 'other'
+      groups[prefix] = (groups[prefix] || 0) + 1
+    }
+    return Object.entries(groups)
+      .map(([label, value]) => ({ label, value }))
+      .sort((a, b) => b.value - a.value)
+  }, [skills])
 
   // --- Hero 快捷操作：新建会话 ---
   const startNewChat = () => {
@@ -307,7 +344,9 @@ export function CockpitView() {
           >
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2 text-sm font-medium text-primary">
-                <MessageSquare className="w-4 h-4 text-brand-500" />
+                <span className="flex items-center justify-center w-6 h-6 rounded-md bg-brand-500/10 text-brand-500">
+                  <MessageSquare className="w-3.5 h-3.5" />
+                </span>
                 {t('cockpit.sessionsTitle')}
               </span>
               <ArrowRight className="w-4 h-4 text-tertiary/60 group-hover:text-brand-500 transition-colors" />
@@ -318,6 +357,21 @@ export function CockpitView() {
               {stat(t('cockpit.runningTasks'), String(runningTasks), runningTasks > 0 ? 'text-warning' : undefined)}
               {stat(t('cockpit.completionRate'), `${completionRate}%`)}
             </div>
+            {recent3.length > 0 && (
+              <div className="pt-3 border-t border-subtle flex flex-col gap-1.5">
+                <span className="text-[10px] uppercase tracking-wider text-tertiary">{t('cockpit.recentSessions')}</span>
+                {recent3.map(c => (
+                  <button
+                    key={c.id}
+                    onClick={() => openConversation(c.id)}
+                    className="flex items-center gap-2 text-xs text-secondary hover:text-primary truncate"
+                  >
+                    <MessageSquare className="w-3 h-3 text-tertiary shrink-0" />
+                    <span className="truncate">{c.title || c.id.slice(0, 10)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* 卡片 2：Token 用量 */}
@@ -335,7 +389,9 @@ export function CockpitView() {
           >
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2 text-sm font-medium text-primary">
-                <Zap className="w-4 h-4" style={{ color: 'var(--accent-cyan)' }} />
+                <span className="flex items-center justify-center w-6 h-6 rounded-md bg-brand-500/10" style={{ color: 'var(--accent-cyan)' }}>
+                  <Zap className="w-3.5 h-3.5" />
+                </span>
                 {t('cockpit.tokenTitle')}
               </span>
               <ArrowRight className="w-4 h-4 text-tertiary/60 group-hover:text-brand-500 transition-colors" />
@@ -345,33 +401,9 @@ export function CockpitView() {
               {stat(t('cockpit.tokenToday'), formatTokens(tokenToday))}
               {stat(t('cockpit.token7d'), formatTokens(token7d))}
             </div>
-            {/* 迷你近 7 日柱状趋势（手写 SVG） */}
-            <svg className="w-full h-10" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
-              <defs>
-                <linearGradient id="cockpitBarGrad" x1="0" y1="1" x2="0" y2="0">
-                  <stop offset="0%" style={{ stopColor: 'var(--accent-cyan)' }} />
-                  <stop offset="100%" style={{ stopColor: 'var(--brand-500)' }} />
-                </linearGradient>
-              </defs>
-              {byDayValues.map((v, i) => {
-                const barW = 100 / 7
-                const x = i * barW + 2
-                const h = (v / maxDay) * 34
-                const y = 38 - h
-                return (
-                  <rect
-                    key={i}
-                    x={x}
-                    y={y}
-                    width={barW - 4}
-                    height={h}
-                    rx={2}
-                    fill="url(#cockpitBarGrad)"
-                    opacity={i === byDayValues.length - 1 ? 1 : 0.45}
-                  />
-                )
-              })}
-            </svg>
+            {/* 近 30 日趋势 + 输入/输出堆叠条 */}
+            <TrendChart values={byDay30} labels={trendLabels30} />
+            <BarStack input={stats.totalInput} output={stats.totalOutput} className="mt-3" />
           </div>
 
           {/* 卡片 3：文件 · 目录 */}
@@ -389,7 +421,9 @@ export function CockpitView() {
           >
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2 text-sm font-medium text-primary">
-                <FolderOpen className="w-4 h-4" style={{ color: 'var(--accent-cyan)' }} />
+                <span className="flex items-center justify-center w-6 h-6 rounded-md bg-brand-500/10" style={{ color: 'var(--accent-cyan)' }}>
+                  <FolderOpen className="w-3.5 h-3.5" />
+                </span>
                 {t('cockpit.fileTitle')}
               </span>
               <ArrowRight className="w-4 h-4 text-tertiary/60 group-hover:text-brand-500 transition-colors" />
@@ -432,7 +466,9 @@ export function CockpitView() {
           >
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2 text-sm font-medium text-primary">
-                <Sparkles className="w-4 h-4 text-brand-500" />
+                <span className="flex items-center justify-center w-6 h-6 rounded-md bg-brand-500/10 text-brand-500">
+                  <Sparkles className="w-3.5 h-3.5" />
+                </span>
                 {t('cockpit.skillTitle')}
               </span>
               <ArrowRight className="w-4 h-4 text-tertiary/60 group-hover:text-brand-500 transition-colors" />
@@ -441,6 +477,14 @@ export function CockpitView() {
               {stat(t('cockpit.skillCount'), skillCount === null ? '…' : String(skillCount))}
               {stat(t('cockpit.agentCount'), String(agentCount))}
             </div>
+            {skillGroups.length > 0 && (
+              <div className="pt-3 border-t border-subtle">
+                <span className="text-[10px] uppercase tracking-wider text-tertiary">{t('cockpit.skillGroups')}</span>
+                <div className="mt-2">
+                  <DonutChart segments={skillGroups} centerValue={skillCount ?? 0} />
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
