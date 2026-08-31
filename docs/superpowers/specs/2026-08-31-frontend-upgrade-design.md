@@ -184,9 +184,10 @@ StatusBar（连接/模型/任务/TK）
 
 - **错误处理**：Token 回填失败（bridge 不可达 / transcript 缺失）静默降级，不阻塞
   驾驶舱渲染；文件卡片 bridge 请求失败显示占位并允许重试。
-- **测试**：
-  - `tokenStatsStore` 聚合纯函数单测（`src/stores/tokenStatsStore.test.ts`，
-    聚合/回填/增量幂等性）。
+- **测试**（前端测试沿用现有 Node 24 原生 TS 方式，命令
+  `node --test src/stores/tokenStatsStore.test.ts`，相对导入必须带 `.ts` 扩展名，
+  参照 `src/lib/healthUi.test.ts`）：
+  - `tokenStatsStore` 聚合纯函数单测（聚合/回填/增量幂等性）。
   - `viewStore` 状态机流转单测（boot→login→cockpit→workspace 往返）。
   - 现有全量测试 `node --test "server/*.test.mjs"` 保持通过。
   - 图标生成脚本冒烟（Pillow 输出尺寸/透明度断言）。
