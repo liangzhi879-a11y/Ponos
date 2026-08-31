@@ -433,4 +433,21 @@ export const enUS: TranslationKeys = {
     enter: 'Enter →',
     backCockpit: 'Back to cockpit',
   },
+
+  // --- Token usage stats panel ---
+  tokenPanel: {
+    title: 'Token Usage Stats',
+    total: 'Total Usage',
+    today: "Today's Usage",
+    week7: 'Last 7 Days',
+    trend: 'Last 30 Days Trend',
+    topSessions: 'Top 10 Sessions',
+    byModel: 'Usage by Model',
+    ioSplit: 'Input / Output Split',
+    window: 'Context Window Usage',
+    input: 'Input',
+    output: 'Output',
+    empty: 'No token data yet',
+    close: 'Close',
+  },
 }

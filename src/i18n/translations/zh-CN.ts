@@ -446,6 +446,23 @@ export const zhCN = {
     enter: '进入 →',
     backCockpit: '返回驾驶舱',
   },
+
+  // --- Token 用量统计面板 ---
+  tokenPanel: {
+    title: 'Token 用量统计',
+    total: '累计消耗',
+    today: '今日消耗',
+    week7: '近 7 日消耗',
+    trend: '近 30 日趋势',
+    topSessions: '会话消耗 Top 10',
+    byModel: '模型用量占比',
+    ioSplit: '输入 / 输出拆分',
+    window: '上下文窗口水位',
+    input: '输入',
+    output: '输出',
+    empty: '暂无 Token 数据',
+    close: '关闭',
+  },
 }
 
 export type TranslationKeys = typeof zhCN
