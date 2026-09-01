@@ -426,3 +426,16 @@ test('loadApis：用户 apis.json 损坏时回退静态 seed', () => {
     assert.ok(apis.modules.asset.commands.length > 0)
   })
 })
+
+test('loadApis：用户 apis.json 空 modules 回退 seed（空表不吞 535 命令）', () => {
+  const home = newHome()
+  mkdirSync(path.join(home, '.yfljsj'), { recursive: true })
+  writeFileSync(path.join(home, '.yfljsj', 'apis.json'), JSON.stringify({ version: 2, modules: {} }))
+  withHome(home, () => {
+    const apis = api.loadApis({ force: true })
+    // 空 modules 用户表 → 回退 seed：31 模块全量命令可用
+    assert.ok(Object.keys(apis.modules).length > 0)
+    assert.ok(apis.modules.asset)
+    assert.ok(apis.modules.asset.commands.length > 0)
+  })
+})
