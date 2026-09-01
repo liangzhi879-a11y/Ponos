@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type AppView = 'boot' | 'login' | 'cockpit' | 'workspace'
+export type AppView = 'boot' | 'login' | 'cockpit' | 'workspace' | 'dock'
 
 interface ViewState {
   view: AppView
@@ -9,6 +9,7 @@ interface ViewState {
   bootDone: () => void
   enter: () => void
   goCockpit: () => void
+  goDock: () => void
   goWorkspace: (tab?: string) => void
   setAuthToken: (t: string | null) => void
 }
@@ -20,6 +21,7 @@ export const useViewStore = create<ViewState>()((set) => ({
   bootDone: () => set({ view: 'login' }),
   enter: () => set({ view: 'cockpit' }),
   goCockpit: () => set({ view: 'cockpit', workspaceTab: null }),
+  goDock: () => set({ view: 'dock', workspaceTab: null }),
   goWorkspace: (tab) => set({ view: 'workspace', workspaceTab: tab ?? null }),
   setAuthToken: (t) => set({ authToken: t }),
 }))
