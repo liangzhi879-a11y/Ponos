@@ -394,3 +394,70 @@ test('clearToken 清除本地 token', async () => {
   const cfg = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'))
   assert.ok(!('accessToken' in cfg))
 })
+
+// ==================== 合并前审阅修复：时间戳量级判定（I-1） ====================
+
+test('extractTokens：绝对毫秒 / 绝对秒级 / 相对秒 三种量级判定', () => {
+  const now = Date.now()
+  // 绝对毫秒时间戳（>1e11）→ 直接用
+  assert.equal(auth.extractTokens({ body: { data: { accessToken: 'A', expiresAt: now } } }).expiresAt, now)
+  // 绝对秒级时间戳（1.7e9 量级，2026 年附近）→ *1000，不得误判为相对秒（2083 年）
+  const secTs = 1788222223
+  const t1 = auth.extractTokens({ body: { data: { accessToken: 'A', expiresAt: secTs } } }).expiresAt
+  assert.equal(t1, secTs * 1000)
+  assert.ok(t1 < now + 100 * 365 * 24 * 3600 * 1000) // 不是 2083 年
+  // 相对秒（小值，expiresIn 语义）→ Date.now() + v*1000
+  const t2 = auth.extractTokens({ body: { data: { accessToken: 'A', expiresAt: 7200 } } }).expiresAt
+  assert.ok(Math.abs(t2 - (now + 7200 * 1000)) < 2000)
+})
+
+test('login 响应秒级 expiresAt 时间戳 → 正确存储（自动续期可触发）', async () => {
+  const secTs = 1788222223
+  mock.state.loginHandler = (_e, respond) =>
+    respond(200, { success: true, code: 200, msg: 'ok', data: { accessToken: 'AT-sec', refreshToken: 'RT-sec', tenantId: 'T', expiresAt: secTs } })
+  const res = await auth.login({ method: 1, user: 'alice', password: 'pw', baseUrl: mock.baseUrl, rejectUnauthorized: false })
+  assert.equal(res.ok, true)
+  const tok = auth.getToken()
+  assert.equal(tok.expiresAt, secTs * 1000)
+  assert.ok(tok.expiresAt < Date.now() + 100 * 365 * 24 * 3600 * 1000) // 非 2083 年
+})
+
+// ==================== 合并前审阅修复：非交互空密码守卫（I-2） ====================
+
+test('login 非交互（stdin 非 TTY）缺密码 → USAGE_ERROR 不挂起', async () => {
+  const desc = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY')
+  try {
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true, writable: true })
+    const res = await auth.login({ method: 1, user: 'alice', baseUrl: mock.baseUrl, rejectUnauthorized: false })
+    assert.equal(res.ok, false)
+    assert.equal(res.code, 'USAGE_ERROR')
+    assert.match(res.error, /非交互/)
+    assert.equal(auth.getToken(), null) // 未发请求、未落 token
+    assert.equal(mock.state.requests.length, 0)
+  } finally {
+    if (desc) Object.defineProperty(process.stdin, 'isTTY', desc)
+    else delete process.stdin.isTTY
+  }
+})
+
+// ==================== 合并前审阅修复：登录网络错误分类（I-3） ====================
+
+test('isNetworkError：连接拒绝/超时/DNS/证书判网络错，凭证错不判', () => {
+  const mk = (code) => { const e = new Error(code); e.code = code; return e }
+  assert.equal(auth.isNetworkError(mk('ECONNREFUSED')), true)
+  assert.equal(auth.isNetworkError(mk('ECONNRESET')), true)
+  assert.equal(auth.isNetworkError(mk('ETIMEDOUT')), true)
+  assert.equal(auth.isNetworkError(mk('ENOTFOUND')), true)
+  assert.equal(auth.isNetworkError(new Error('fetch failed')), true)
+  assert.equal(auth.isNetworkError(new Error('socket hang up')), true)
+  assert.equal(auth.isNetworkError(new Error('用户名或密码错误')), false)
+})
+
+test('login 网络错误（连接拒绝）→ ok:false + network:true（CLI 映射 exit 4）', async () => {
+  const dead = await startMock()
+  const deadUrl = dead.baseUrl
+  await dead.close()
+  const res = await auth.login({ method: 1, user: 'alice', password: 'pw', baseUrl: deadUrl, rejectUnauthorized: false })
+  assert.equal(res.ok, false)
+  assert.equal(res.network, true)
+})

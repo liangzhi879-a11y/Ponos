@@ -329,6 +329,30 @@ test('CLI：auth login 端到端成功（mock oauth）并落 token', async () =>
   assert.equal(JSON.parse(st.out).data.accessToken, 'AT-cli')
 })
 
+// ==================== 合并前审阅修复：登录网络错误 exit 4 / 非交互空密码 exit 2 ====================
+
+test('CLI：auth login 网络错误（连接拒绝）→ 退出码 4，stdout 纯 JSON', async () => {
+  const dead = await startMock()
+  const deadOauth = dead.oauth
+  await dead.close()
+  const { code, out } = await run(
+    ['auth', 'login', '--method', 'password', '--user', 'alice', '--password', 'pw'],
+    { env: { YFLJSJ_GATEWAY: deadOauth, YFLJSJ_INSECURE: '1' } }
+  )
+  assert.equal(code, 4)
+  const j = JSON.parse(out)
+  assert.equal(j.success, false)
+  assert.equal(j.code, 4)
+})
+
+test('CLI：auth login 空密码（非交互）→ 退出码 2，不挂起', async () => {
+  const { code, out } = await run(['auth', 'login', '--method', 'password', '--user', 'alice', '--password='])
+  assert.equal(code, 2)
+  const j = JSON.parse(out)
+  assert.equal(j.success, false)
+  assert.equal(j.code, 2)
+})
+
 test('CLI：--human 表格输出（数组字段自动表头）', async () => {
   const home = newHome()
   seedConfig(home)

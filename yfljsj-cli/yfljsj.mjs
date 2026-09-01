@@ -270,8 +270,14 @@ export function extractTokens(res) {
   out.tenantId = src.tenantId || src.tenant_id || src.tenant || null
   const expiresIn = src.expiresIn || src.expires_in || src.expiresInSeconds
   if (src.expiresAt && !Number.isNaN(Number(src.expiresAt))) {
+    // 时间戳量级判定（合并前审阅修复）：1e11 区分「绝对毫秒」与「秒级/相对秒」
+    //   v > 1e11        → 绝对毫秒时间戳（如 1788222223000），直接用
+    //   1e9 < v ≤ 1e11  → 绝对秒级时间戳（如 1788222223，约 1.7e9），*1000
+    //   v ≤ 1e9         → 相对秒（expiresIn 语义，如 7200=2h），Date.now()+v*1000
     const v = Number(src.expiresAt)
-    out.expiresAt = v > 1e12 ? v : Date.now() + v * 1000 // 时间戳(ms) 或 相对秒
+    if (v > 1e11) out.expiresAt = v
+    else if (v > 1e9) out.expiresAt = v * 1000
+    else out.expiresAt = Date.now() + v * 1000
   } else if (expiresIn) {
     out.expiresAt = Date.now() + Number(expiresIn) * 1000
   }
@@ -310,6 +316,14 @@ export async function login({ method, user, password, code, tenant, userId, base
   const m = Number(method)
   let body
   if (m === 1) {
+    // 非交互守卫（合并前审阅修复）：非 TTY 且未传 password 时不再挂起等待 stdin，
+    // 直接返回用法错（CLI 映射 exit 2）。显式注入的 input 流（测试/工具）视为可控交互。
+    if (password == null || password === '') {
+      const interactive = input != null || !!(process.stdin && process.stdin.isTTY)
+      if (!interactive) {
+        return { ok: false, code: 'USAGE_ERROR', error: '非交互模式必须显式传 --password' }
+      }
+    }
     const pw = password != null && password !== '' ? password : await promptPassword({ input, output })
     // 平台契约：loginName 字段 + 密码 SM4 加密（真机联调破解）
     body = { loginMethod: 1, loginName: user, password: encryptPassword(pw) }
@@ -346,13 +360,28 @@ export async function login({ method, user, password, code, tenant, userId, base
     writeConfig(updated)
     return { ok: true }
   } catch (e) {
-    return { ok: false, error: e.message }
+    return { ok: false, error: e.message, network: isNetworkError(e) }
   }
+}
+
+// 网络层错误判定（合并前审阅修复）：CLI 据此把登录网络错误映射 exit 4（而非 1）。
+// 覆盖 Node 常见 socket/DNS/TLS 错误码与 fetch 兼容层语义。
+export function isNetworkError(e) {
+  const s = String((e && (e.code || e.message)) || '')
+  return /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|EPIPE|timeout|fetch failed|socket hang up|TLS|certificate|self signed/i.test(s)
 }
 
 // 密码交互输入（隐藏回显，零依赖：拦截 output.write 吞掉回显）
 export function promptPassword({ input = process.stdin, output = process.stdout, prompt = 'Password: ' } = {}) {
   return new Promise((resolve, reject) => {
+    // 非 TTY 守卫（合并前审阅修复）：默认 process.stdin 非 TTY（agent 子进程管道/EOF）时
+    // 拒绝而非挂起，避免 readline 在无数据/EOF 的 stdin 上永不回调。
+    if (input === process.stdin && !(process.stdin && process.stdin.isTTY)) {
+      const err = new Error('非交互模式必须显式传 --password')
+      err.code = 'USAGE_ERROR'
+      reject(err)
+      return
+    }
     const rl = readline.createInterface({ input, output, terminal: true })
     let restore = null
     if (output && typeof output.write === 'function') {
@@ -909,6 +938,9 @@ async function authLogin(opts, emit, usage, env) {
   if (!opts[required]) return usage(`auth login 缺少参数 ${required}`)
   const res = await login({ method, user, password: opts['--password'], code: opts['--code'], tenant: opts['--tenant'], ...env })
   if (res.ok) return emit(0, { success: true, code: 0, msg: 'ok', data: { loggedIn: true, method: methodName } })
+  // 合并前审阅修复：用法错 → exit 2；网络错误（连接拒绝/超时/DNS）→ exit 4；其余凭证/业务错 → exit 1
+  if (res.code === 'USAGE_ERROR') return usage(res.error || '非交互模式必须显式传 --password')
+  if (res.network) return emit(4, { success: false, code: 4, msg: res.error || '网络错误', data: null })
   return emit(1, { success: false, code: 1, msg: res.error || '登录失败', data: null })
 }
 

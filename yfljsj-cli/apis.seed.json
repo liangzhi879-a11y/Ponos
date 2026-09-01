@@ -3307,6 +3307,26 @@
      "method": "POST",
      "path": "/role/users/page",
      "params": {
+      "password": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "mobile": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "idCard": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "phone": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
       "current": "number",
       "size": "number"
      },
@@ -4008,6 +4028,26 @@
      "method": "POST",
      "path": "/dp/sysDpUserRoleRel/page",
      "params": {
+      "password": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "mobile": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "idCard": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "phone": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
       "current": "number",
       "size": "number"
      },
@@ -4018,7 +4058,28 @@
      "action": "sysDpUserRoleRel-pageTenantUsers",
      "method": "POST",
      "path": "/dp/sysDpUserRoleRel/pageTenantUsers",
-     "params": {},
+     "params": {
+      "password": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "mobile": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "idCard": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "phone": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      }
+     },
      "desc": "/dp/sysDpUserRoleRel/pageTenantUsers",
      "kind": "read"
     },
@@ -4034,7 +4095,28 @@
      "action": "sysDpUserRoleRel-listUserRoleWithChecked",
      "method": "POST",
      "path": "/dp/sysDpUserRoleRel/listUserRoleWithChecked",
-     "params": {},
+     "params": {
+      "password": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "mobile": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "idCard": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "phone": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      }
+     },
      "desc": "/dp/sysDpUserRoleRel/listUserRoleWithChecked",
      "kind": "read"
     },
@@ -4284,6 +4366,26 @@
      "method": "POST",
      "path": "/user/sysUser/page",
      "params": {
+      "password": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "mobile": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "idCard": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "phone": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
       "current": "number",
       "size": "number"
      },
@@ -4294,7 +4396,28 @@
      "action": "sysUser-queryById",
      "method": "POST",
      "path": "/user/sysUser/queryById",
-     "params": {},
+     "params": {
+      "password": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "mobile": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "idCard": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "phone": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      }
+     },
      "desc": "/user/sysUser/queryById",
      "kind": "read"
     },
@@ -4397,6 +4520,26 @@
      "method": "POST",
      "path": "/personnel/attendanceGroup/page",
      "params": {
+      "password": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "mobile": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "idCard": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "phone": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
       "current": "number",
       "size": "number"
      },
@@ -4408,6 +4551,26 @@
      "method": "POST",
      "path": "/personnel/attendanceClasses/list",
      "params": {
+      "password": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "mobile": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "idCard": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "phone": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
       "current": "number",
       "size": "number"
      },
@@ -4442,7 +4605,28 @@
      "action": "attendanceClasses-listCustomizeRule",
      "method": "POST",
      "path": "/personnel/attendanceClasses/listCustomizeRule",
-     "params": {},
+     "params": {
+      "password": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "mobile": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "idCard": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "phone": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      }
+     },
      "desc": "/personnel/attendanceClasses/listCustomizeRule",
      "kind": "read"
     },
@@ -4450,7 +4634,28 @@
      "action": "attendanceGroup-queryHolidays",
      "method": "POST",
      "path": "/personnel/attendanceGroup/queryHolidays",
-     "params": {},
+     "params": {
+      "password": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "mobile": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "idCard": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "phone": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      }
+     },
      "desc": "/personnel/attendanceGroup/queryHolidays",
      "kind": "read"
     },
@@ -4539,6 +4744,26 @@
      "method": "POST",
      "path": "/personnel/employeesSalary/page",
      "params": {
+      "password": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "mobile": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "idCard": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "phone": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
       "current": "number",
       "size": "number"
      },
@@ -4549,7 +4774,28 @@
      "action": "employeesSalary-queryById",
      "method": "POST",
      "path": "/personnel/employeesSalary/queryById",
-     "params": {},
+     "params": {
+      "password": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "mobile": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "idCard": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "phone": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      }
+     },
      "desc": "/personnel/employeesSalary/queryById",
      "kind": "read"
     },
@@ -4565,7 +4811,28 @@
      "action": "employeesSalary-listBonusDropdown",
      "method": "POST",
      "path": "/personnel/employeesSalary/listBonusDropdown",
-     "params": {},
+     "params": {
+      "password": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "mobile": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "idCard": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "phone": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      }
+     },
      "desc": "/personnel/employeesSalary/listBonusDropdown",
      "kind": "read"
     },
@@ -4614,6 +4881,26 @@
      "method": "POST",
      "path": "/personnel/attendanceClasses/page",
      "params": {
+      "password": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "mobile": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "idCard": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
+      "phone": {
+       "type": "string",
+       "sensitive": true,
+       "required": false
+      },
       "current": "number",
       "size": "number"
      },

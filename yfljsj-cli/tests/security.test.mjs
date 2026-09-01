@@ -242,6 +242,34 @@ test('runCommand：无 sensitive 声明 → sensitive=[]（跳过脱敏）', asy
   assert.deepEqual(r.sensitive, [])
 })
 
+// 合并前审阅修复 I-4：seed 命令表 PII 资源读接口已声明敏感字段，sensitiveFieldsOf 消费生效
+test('seed：user sysUser-page 敏感字段声明 → runCommand 暴露 sensitive 列表 + --human 脱敏', async () => {
+  api.loadApis({ force: true }) // 确保读到最新 seed
+  const apis = api.loadApis()
+  const mod = apis.modules.user
+  assert.ok(mod, 'seed 应含 user 模块')
+  const cmd = (mod.commands || []).find((c) => c.action === 'sysUser-page')
+  assert.ok(cmd, 'seed 应含 user sysUser-page')
+  mock.state.nextData = [{ id: 1, name: 'alice', mobile: '13800000000', idCard: '1101011990', phone: '010-1234' }]
+  try {
+    const r = await api.runCommand('user', 'sysUser-page', { current: 1, size: 10 }, RCMS())
+    assert.equal(r.exitCode, 0)
+    assert.ok(r.sensitive.includes('password'))
+    assert.ok(r.sensitive.includes('mobile'))
+    assert.ok(r.sensitive.includes('idCard'))
+    assert.ok(r.sensitive.includes('phone'))
+    // --human 分支实际脱敏；--json 保留原始
+    const human = api.formatOutput(r.json, { human: true, sensitive: r.sensitive })
+    assert.ok(!human.includes('13800000000'))
+    assert.ok(!human.includes('1101011990'))
+    assert.ok(human.includes('******'))
+    const plain = api.formatOutput(r.json, { sensitive: r.sensitive })
+    assert.ok(plain.includes('13800000000'))
+  } finally {
+    mock.state.nextData = undefined
+  }
+})
+
 test('e2e：命令表标 sensitive（params 与命令级数组）--human 脱敏生效', async () => {
   const home = mkdtempSync(path.join(os.tmpdir(), 'yfljsj-sec-home-'))
   mkdirSync(path.join(home, '.yfljsj'), { recursive: true })
