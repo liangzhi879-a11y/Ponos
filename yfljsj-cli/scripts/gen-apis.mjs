@@ -24,12 +24,15 @@ export function inferAction(path) {
   return `${resource}-${action}`
 }
 
-/** 分页接口：尾部为 page/list 且路径含常见资源 → 标 page 参数 */
+/** 分页接口：尾部为 page/list 等 → v2 对象定义 */
 const PAGE_SUFFIXES = ['page', 'list', 'pageForRegister', 'pageForSelect']
 export function inferParams(path) {
   const last = path.split('/').pop() || ''
-  if (PAGE_SUFFIXES.includes(last)) return { current: 'number', size: 'number' }
-  return {}
+  if (!PAGE_SUFFIXES.includes(last)) return {}
+  return {
+    current: { type: 'number', required: true, desc: '页码（从1开始）', auto: false },
+    size: { type: 'number', required: true, desc: '每页条数' },
+  }
 }
 
 // 敏感字段声明（合并前审阅修复 I-4）：

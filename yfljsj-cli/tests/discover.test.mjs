@@ -258,9 +258,12 @@ test('mergeApis：新接口并入 + 按 path 去重 + 服务/action/参数推断
   const add = merged.modules.asset.commands.find((c) => c.path === '/asset/building/add')
   assert.equal(add.params.name, 'string')
   assert.equal(add.params.count, 'number')
-  // 分页接口补 page 参数
+  // 分页接口补 page 参数（v2 对象定义）
   const page = merged.modules.user.commands.find((c) => c.path === '/user/sysUser/page')
-  assert.deepEqual(page.params, { current: 'number', size: 'number' })
+  assert.deepEqual(page.params, {
+    current: { type: 'number', required: true, desc: '页码（从1开始）', auto: false },
+    size: { type: 'number', required: true, desc: '每页条数' },
+  })
   // 不修改入参
   assert.equal(existing.modules.asset.commands.length, 1)
 })
@@ -310,7 +313,7 @@ test('runDiscover：捕获→合并→写回 apis.json + 统计输出 + loadApis
       assert.ok(existsSync(p))
       const apis = JSON.parse(readFileSync(p, 'utf8'))
       assert.ok(apis.modules.asset.commands.some((c) => c.path === '/asset/discoveredNew/list'))
-      assert.equal(apis.version, 1)
+      assert.equal(apis.version, 2) // v2：discover 写回的用户命令表为 v2 结构（loadApis 已迁移）
       // loadApis 优先读用户写回的 apis.json
       const loaded = api.loadApis({ force: true })
       assert.ok(loaded.modules.asset.commands.some((c) => c.path === '/asset/discoveredNew/list'))

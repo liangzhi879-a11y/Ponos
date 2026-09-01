@@ -544,6 +544,24 @@ export function apisPath() {
   return path.join(configDir(), 'apis.json')
 }
 
+/** v1 → v2 命令表迁移：params 字符串形式升级为对象定义；无损 */
+export function migrateApis(apis) {
+  if (!apis || apis.version >= 2) return apis
+  const out = { ...apis, version: 2 }
+  for (const m of Object.values(out.modules || {})) {
+    for (const c of (m.commands || [])) {
+      if (!c.params || typeof c.params !== 'object') continue
+      const v2 = {}
+      for (const [k, v] of Object.entries(c.params)) {
+        if (v && typeof v === 'object' && v.type) v2[k] = v // 已是 v2
+        else v2[k] = { type: typeof v === 'string' ? v : 'string', required: true, desc: '' }
+      }
+      c.params = v2
+    }
+  }
+  return out
+}
+
 // 加载命令表：~/.yfljsj/apis.json（discover 补漏产物）存在时优先，否则回退静态 seed。
 // force=true 强制重读（discover 写回后需要刷新缓存）。
 export function loadApis({ force = false } = {}) {
@@ -558,6 +576,7 @@ export function loadApis({ force = false } = {}) {
     } catch {
       /* 用户 apis.json 缺失/损坏 → 回退静态 seed */
     }
+    apis = migrateApis(apis)
     apisCache = apis
   }
   return apisCache

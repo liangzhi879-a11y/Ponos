@@ -1,5 +1,5 @@
 {
- "version": 1,
+ "version": 2,
  "services": {
   "oauth": "https://gateway.yfljsj.com/api/oauth",
   "upms": "https://gateway.yfljsj.com/api/upms",
@@ -23,8 +23,17 @@
      "method": "POST",
      "path": "/asset/capitalizationDetail/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/asset/capitalizationDetail/list",
      "kind": "read"
@@ -50,8 +59,17 @@
      "method": "POST",
      "path": "/asset/intangibleDetail/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/asset/intangibleDetail/list",
      "kind": "read"
@@ -69,8 +87,17 @@
      "method": "POST",
      "path": "/asset/building/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/asset/building/list",
      "kind": "read"
@@ -80,8 +107,17 @@
      "method": "POST",
      "path": "/asset/building/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/asset/building/page",
      "kind": "read"
@@ -163,8 +199,17 @@
      "method": "POST",
      "path": "/asset/capitalization/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/asset/capitalization/list",
      "kind": "read"
@@ -174,8 +219,17 @@
      "method": "POST",
      "path": "/asset/capitalization/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/asset/capitalization/page",
      "kind": "read"
@@ -241,8 +295,17 @@
      "method": "POST",
      "path": "/asset/deviceDetail/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/asset/deviceDetail/list",
      "kind": "read"
@@ -268,8 +331,17 @@
      "method": "POST",
      "path": "/asset/buildingDetail/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/asset/buildingDetail/list",
      "kind": "read"
@@ -287,8 +359,17 @@
      "method": "POST",
      "path": "/asset/intangible/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/asset/intangible/list",
      "kind": "read"
@@ -298,8 +379,17 @@
      "method": "POST",
      "path": "/asset/intangible/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/asset/intangible/page",
      "kind": "read"
@@ -381,8 +471,17 @@
      "method": "POST",
      "path": "/asset/device/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/asset/device/list",
      "kind": "read"
@@ -392,8 +491,17 @@
      "method": "POST",
      "path": "/asset/device/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/asset/device/page",
      "kind": "read"
@@ -475,8 +583,17 @@
      "method": "POST",
      "path": "/asset/deviceEnergy/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/asset/deviceEnergy/list",
      "kind": "read"
@@ -486,8 +603,17 @@
      "method": "POST",
      "path": "/asset/deviceEnergy/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/asset/deviceEnergy/page",
      "kind": "read"
@@ -567,8 +693,17 @@
      "method": "POST",
      "path": "/achievement/article/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/achievement/article/page",
      "kind": "read"
@@ -602,8 +737,17 @@
      "method": "POST",
      "path": "/achievement/evaluate/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/achievement/evaluate/page",
      "kind": "read"
@@ -645,8 +789,17 @@
      "method": "POST",
      "path": "/achievement/ipr/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/achievement/ipr/list",
      "kind": "read"
@@ -656,8 +809,17 @@
      "method": "POST",
      "path": "/achievement/ipr/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/achievement/ipr/page",
      "kind": "read"
@@ -667,8 +829,17 @@
      "method": "POST",
      "path": "/achievement/convert/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/achievement/convert/page",
      "kind": "read"
@@ -734,8 +905,17 @@
      "method": "POST",
      "path": "/achievement/search/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/achievement/search/page",
      "kind": "read"
@@ -777,8 +957,17 @@
      "method": "POST",
      "path": "/achievement/convert/pageForRegister",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/achievement/convert/pageForRegister",
      "kind": "read"
@@ -794,8 +983,17 @@
      "method": "POST",
      "path": "/human/configBonus/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/human/configBonus/list",
      "kind": "read"
@@ -837,8 +1035,17 @@
      "method": "POST",
      "path": "/human/configSocialInsurance/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/human/configSocialInsurance/list",
      "kind": "read"
@@ -870,8 +1077,17 @@
      "method": "POST",
      "path": "/resefunds/projectBudget/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/resefunds/projectBudget/page",
      "kind": "read"
@@ -889,8 +1105,17 @@
      "method": "POST",
      "path": "/resefunds/fundsEnough/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/resefunds/fundsEnough/page",
      "kind": "read"
@@ -956,8 +1181,17 @@
      "method": "POST",
      "path": "/resefunds/fundsAllocate/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/resefunds/fundsAllocate/page",
      "kind": "read"
@@ -1007,8 +1241,17 @@
      "method": "POST",
      "path": "/resefunds/fundsExpen/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/resefunds/fundsExpen/page",
      "kind": "read"
@@ -1072,8 +1315,17 @@
      "method": "POST",
      "path": "/workbench/projectRdCost/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/workbench/projectRdCost/list",
      "kind": "read"
@@ -1115,8 +1367,17 @@
      "method": "POST",
      "path": "/workbench/projectEquip/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/workbench/projectEquip/page",
      "kind": "read"
@@ -1198,8 +1459,17 @@
      "method": "POST",
      "path": "/workbench/projectInfo/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/workbench/projectInfo/list",
      "kind": "read"
@@ -1305,8 +1575,17 @@
      "method": "POST",
      "path": "/workbench/projectMaterialPick/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/workbench/projectMaterialPick/page",
      "kind": "read"
@@ -1380,8 +1659,17 @@
      "method": "POST",
      "path": "/workbench/projectMaterialDestination/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/workbench/projectMaterialDestination/page",
      "kind": "read"
@@ -1423,8 +1711,17 @@
      "method": "POST",
      "path": "/workbench/projectMaterialPick2/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/workbench/projectMaterialPick2/list",
      "kind": "read"
@@ -1450,8 +1747,17 @@
      "method": "POST",
      "path": "/workbench/projectMaterialPick2/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/workbench/projectMaterialPick2/page",
      "kind": "read"
@@ -1533,8 +1839,17 @@
      "method": "POST",
      "path": "/workbench/projectMember/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/workbench/projectMember/page",
      "kind": "read"
@@ -1592,8 +1907,17 @@
      "method": "POST",
      "path": "/workbench/projectNotice/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/workbench/projectNotice/list",
      "kind": "read"
@@ -1683,8 +2007,17 @@
      "method": "POST",
      "path": "/workbench/projectMeetingRecord/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/workbench/projectMeetingRecord/page",
      "kind": "read"
@@ -1726,8 +2059,17 @@
      "method": "POST",
      "path": "/workbench/projectTrialRecord/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/workbench/projectTrialRecord/page",
      "kind": "read"
@@ -1769,8 +2111,17 @@
      "method": "POST",
      "path": "/workbench/projectProgressReport/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/workbench/projectProgressReport/page",
      "kind": "read"
@@ -1812,8 +2163,17 @@
      "method": "POST",
      "path": "/workbench/projectAcceptance/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/workbench/projectAcceptance/page",
      "kind": "read"
@@ -1863,8 +2223,17 @@
      "method": "POST",
      "path": "/workbench/projectWorkhour/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/workbench/projectWorkhour/page",
      "kind": "read"
@@ -1882,8 +2251,17 @@
      "method": "POST",
      "path": "/workbench/projectWorkHourDetail/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/workbench/projectWorkHourDetail/list",
      "kind": "read"
@@ -1923,8 +2301,17 @@
      "method": "POST",
      "path": "/voucher/sysVoucher/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/voucher/sysVoucher/page",
      "kind": "read"
@@ -2078,8 +2465,17 @@
      "method": "POST",
      "path": "/voucher/voucherRaw/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/voucher/voucherRaw/list",
      "kind": "read"
@@ -2089,8 +2485,17 @@
      "method": "POST",
      "path": "/voucher/voucherRaw/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/voucher/voucherRaw/page",
      "kind": "read"
@@ -2146,8 +2551,17 @@
      "method": "POST",
      "path": "/enterprise/highTechProductMapping/yearly/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/enterprise/highTechProductMapping/yearly/page",
      "kind": "read"
@@ -2157,8 +2571,17 @@
      "method": "POST",
      "path": "/enterprise/highTechProductMapping/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/enterprise/highTechProductMapping/page",
      "kind": "read"
@@ -2200,8 +2623,17 @@
      "method": "POST",
      "path": "/enterprise/psItem/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/enterprise/psItem/list",
      "kind": "read"
@@ -2211,8 +2643,17 @@
      "method": "POST",
      "path": "/enterprise/declare/rdExpenseItem/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/enterprise/declare/rdExpenseItem/page",
      "kind": "read"
@@ -2302,8 +2743,17 @@
      "method": "POST",
      "path": "/enterprise/productIncomeDetail/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/enterprise/productIncomeDetail/page",
      "kind": "read"
@@ -2385,8 +2835,17 @@
      "method": "POST",
      "path": "/enterprise/declare/uploadedFile/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/enterprise/declare/uploadedFile/list",
      "kind": "write"
@@ -2428,8 +2887,17 @@
      "method": "POST",
      "path": "/enterprise/declare/rdItem/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/enterprise/declare/rdItem/page",
      "kind": "read"
@@ -2463,8 +2931,17 @@
      "method": "POST",
      "path": "/enterprise/declare/rdItem/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/enterprise/declare/rdItem/list",
      "kind": "read"
@@ -2490,8 +2967,17 @@
      "method": "POST",
      "path": "/enterprise/declare/ip/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/enterprise/declare/ip/list",
      "kind": "read"
@@ -2517,8 +3003,17 @@
      "method": "POST",
      "path": "/enterprise/dashboard/certification/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/enterprise/dashboard/certification/page",
      "kind": "read"
@@ -2624,8 +3119,17 @@
      "method": "POST",
      "path": "/enterprise/declare/techTransfer/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/enterprise/declare/techTransfer/page",
      "kind": "read"
@@ -2675,8 +3179,17 @@
      "method": "POST",
      "path": "/enterprise/psItem/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/enterprise/psItem/page",
      "kind": "read"
@@ -2758,8 +3271,17 @@
      "method": "POST",
      "path": "/enterprise/declare/psItemCorrelation/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/enterprise/declare/psItemCorrelation/page",
      "kind": "read"
@@ -2793,8 +3315,17 @@
      "method": "POST",
      "path": "/enterprise/declare/psItemCorrelation/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/enterprise/declare/psItemCorrelation/list",
      "kind": "read"
@@ -2812,8 +3343,17 @@
      "method": "POST",
      "path": "/enterprise/declare/ip/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/enterprise/declare/ip/page",
      "kind": "read"
@@ -2863,8 +3403,17 @@
      "method": "POST",
      "path": "/enterprise/declare/standards/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/enterprise/declare/standards/page",
      "kind": "read"
@@ -2960,8 +3509,17 @@
      "method": "POST",
      "path": "/reference/file/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/reference/file/list",
      "kind": "read"
@@ -3009,8 +3567,17 @@
      "method": "POST",
      "path": "/notice/manage/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/notice/manage/list",
      "kind": "read"
@@ -3050,8 +3617,17 @@
      "method": "POST",
      "path": "/financial/configCostCenter/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/financial/configCostCenter/page",
      "kind": "read"
@@ -3069,8 +3645,17 @@
      "method": "POST",
      "path": "/financial/configCostCenter/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/financial/configCostCenter/list",
      "kind": "read"
@@ -3080,8 +3665,17 @@
      "method": "POST",
      "path": "/financial/configEquipmentType/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/financial/configEquipmentType/list",
      "kind": "read"
@@ -3115,8 +3709,17 @@
      "method": "POST",
      "path": "/financial/configMaterialAux/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/financial/configMaterialAux/list",
      "kind": "read"
@@ -3150,8 +3753,17 @@
      "method": "POST",
      "path": "/financial/configSubject/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/financial/configSubject/list",
      "kind": "read"
@@ -3201,8 +3813,17 @@
      "method": "POST",
      "path": "/financial/configPowerType/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/financial/configPowerType/list",
      "kind": "read"
@@ -3236,8 +3857,17 @@
      "method": "POST",
      "path": "/financial/configProjectAllocation/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/financial/configProjectAllocation/list",
      "kind": "read"
@@ -3247,8 +3877,17 @@
      "method": "POST",
      "path": "/financial/sysAllocation/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/financial/sysAllocation/list",
      "kind": "read"
@@ -3272,8 +3911,17 @@
      "method": "POST",
      "path": "/role/sysRole/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/role/sysRole/list",
      "kind": "read"
@@ -3327,8 +3975,17 @@
        "sensitive": true,
        "required": false
       },
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/role/users/page",
      "kind": "read"
@@ -3448,8 +4105,17 @@
      "method": "POST",
      "path": "/material/power/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/material/power/list",
      "kind": "read"
@@ -3475,8 +4141,17 @@
      "method": "POST",
      "path": "/material/power/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/material/power/page",
      "kind": "read"
@@ -3526,8 +4201,17 @@
      "method": "POST",
      "path": "/material/fuel/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/material/fuel/list",
      "kind": "read"
@@ -3537,8 +4221,17 @@
      "method": "POST",
      "path": "/material/fuel/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/material/fuel/page",
      "kind": "read"
@@ -3604,8 +4297,17 @@
      "method": "POST",
      "path": "/material/raw/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/material/raw/list",
      "kind": "read"
@@ -3623,8 +4325,17 @@
      "method": "POST",
      "path": "/material/raw/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/material/raw/page",
      "kind": "read"
@@ -3634,8 +4345,17 @@
      "method": "POST",
      "path": "/material/flowLog/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/material/flowLog/list",
      "kind": "read"
@@ -3747,8 +4467,17 @@
      "method": "POST",
      "path": "/humanManagement/configEducation/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/humanManagement/configEducation/list",
      "kind": "read"
@@ -3836,8 +4565,17 @@
      "method": "POST",
      "path": "/group/sysGroupSubCompany/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/group/sysGroupSubCompany/page",
      "kind": "read"
@@ -3877,8 +4615,17 @@
      "method": "POST",
      "path": "/declare/declareFile/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/declare/declareFile/list",
      "kind": "read"
@@ -3938,8 +4685,17 @@
      "method": "POST",
      "path": "/dictionary/dictionaryType/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/dictionary/dictionaryType/list",
      "kind": "read"
@@ -3971,8 +4727,17 @@
      "method": "POST",
      "path": "/subject-init/expenditureSubject/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/subject-init/expenditureSubject/list",
      "kind": "read"
@@ -4048,8 +4813,17 @@
        "sensitive": true,
        "required": false
       },
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/dp/sysDpUserRoleRel/page",
      "kind": "read"
@@ -4125,8 +4899,17 @@
      "method": "POST",
      "path": "/dp/sysDpRole/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/dp/sysDpRole/page",
      "kind": "read"
@@ -4190,8 +4973,17 @@
      "method": "POST",
      "path": "/risk/riskBasicConf/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/risk/riskBasicConf/list",
      "kind": "read"
@@ -4225,8 +5017,17 @@
      "method": "POST",
      "path": "/risk/riskPersonMgrConfig/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/risk/riskPersonMgrConfig/list",
      "kind": "read"
@@ -4260,8 +5061,17 @@
      "method": "POST",
      "path": "/risk/riskProjMgrConfig/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/risk/riskProjMgrConfig/list",
      "kind": "read"
@@ -4303,8 +5113,17 @@
      "method": "POST",
      "path": "/risk/mgr/list",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/risk/mgr/list",
      "kind": "read"
@@ -4386,8 +5205,17 @@
        "sensitive": true,
        "required": false
       },
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/user/sysUser/page",
      "kind": "read"
@@ -4540,8 +5368,17 @@
        "sensitive": true,
        "required": false
       },
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/personnel/attendanceGroup/page",
      "kind": "read"
@@ -4571,8 +5408,17 @@
        "sensitive": true,
        "required": false
       },
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/personnel/attendanceClasses/list",
      "kind": "read"
@@ -4764,8 +5610,17 @@
        "sensitive": true,
        "required": false
       },
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/personnel/employeesSalary/page",
      "kind": "read"
@@ -4901,8 +5756,17 @@
        "sensitive": true,
        "required": false
       },
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/personnel/attendanceClasses/page",
      "kind": "read"
@@ -4950,8 +5814,17 @@
      "method": "POST",
      "path": "/merchant/lic/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/merchant/lic/page",
      "kind": "read"
@@ -4975,8 +5848,17 @@
      "method": "POST",
      "path": "/income/specialIncome/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/income/specialIncome/page",
      "kind": "read"
@@ -5032,8 +5914,17 @@
      "method": "POST",
      "path": "/priAdmin/manage/page",
      "params": {
-      "current": "number",
-      "size": "number"
+      "current": {
+       "type": "number",
+       "required": true,
+       "desc": "页码（从1开始）",
+       "auto": false
+      },
+      "size": {
+       "type": "number",
+       "required": true,
+       "desc": "每页条数"
+      }
      },
      "desc": "/priAdmin/manage/page",
      "kind": "read"
