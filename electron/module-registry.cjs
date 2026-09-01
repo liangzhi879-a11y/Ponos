@@ -34,6 +34,10 @@ const BUILTIN_MODULES = [
     id: 'approval', name: '审批', icon: 'shield-check', singleton: true, builtin: true,
     windowSpec: { width: 520, height: 360, minWidth: 440, minHeight: 300, resizable: false, frame: false },
   },
+  {
+    id: 'panel', name: '面板', icon: 'list', singleton: false, builtin: true,
+    windowSpec: { width: 280, height: 400, minWidth: 240, minHeight: 240, resizable: true, frame: false },
+  },
 ]
 
 const REQUIRED_MANIFEST_FIELDS = ['id', 'name', 'entry', 'windowSpec']

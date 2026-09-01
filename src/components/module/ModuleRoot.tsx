@@ -13,6 +13,7 @@ import { FilesModule } from '@/components/module/windows/FilesModule'
 import { SettingsModule } from '@/components/module/windows/SettingsModule'
 import { SkillsModule } from '@/components/module/windows/SkillsModule'
 import { ApprovalModule } from '@/components/module/windows/ApprovalModule'
+import { PanelModule } from '@/components/module/windows/PanelModule'
 import { CockpitView } from '@/components/cockpit/CockpitView'
 import { TokenStatsPanel } from '@/components/cockpit/TokenStatsPanel'
 
@@ -23,12 +24,15 @@ const MODULE_TITLES: Record<string, string> = {
   settings: '设置',
   skills: '技能',
   approval: '审批',
+  panel: '面板',
   cockpit: '驾驶舱',
   dock: '导航栏',
 }
 
 export function ModuleRoot() {
   const moduleId = getModuleId()
+  // dock 独立窗口：不套 ModuleFrame（dock 是窄条导航，自含关闭按钮）
+  if (moduleId === 'dock') return <DockBar />
   const title = MODULE_TITLES[moduleId ?? ''] ?? moduleId ?? 'Ponos'
   const TitleIcon = moduleIcon(moduleId)
   let content: React.ReactNode
@@ -52,6 +56,10 @@ export function ModuleRoot() {
     // 审批：全局独立审批窗口（主进程审批到达时自动打开，处理完自动关）
     case 'approval':
       content = <ApprovalModule />
+      break
+    // 面板：气泡点击后打开的独立小窗口（task/question/approval 列表）
+    case 'panel':
+      content = <PanelModule />
       break
     // 驾驶舱：独立模块窗口（导航条常驻时由登录后自动打开 / DockBar 品牌区打开）
     case 'cockpit':

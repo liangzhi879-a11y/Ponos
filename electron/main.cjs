@@ -496,7 +496,11 @@ const windowManager = createWindowManager({
       }
     },
     onWindowClosed: (type) => {
-      if (type === 'dock') dockService.detach()
+      if (type === 'dock') {
+        dockService.detach()
+        // dock 导航栏关闭 → 主窗口恢复显示（否则用户失去入口）
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show()
+      }
     },
   },
 })

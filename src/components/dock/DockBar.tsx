@@ -4,22 +4,21 @@
 // 锁定：locked=true → 常驻展开（不随 hover 收起）；false → hover 展开/离开收起。
 // 图标统一 lucide（moduleIcons 映射）。
 import { useEffect, useState } from 'react'
-import { Radar } from 'lucide-react'
-import { useDockStore, type DockChannel, type DockPanelChannel } from '@/stores/dockStore'
-import { listModules, openModule, subscribeBus } from '@/lib/moduleBridge'
+import { Radar, X } from 'lucide-react'
+import { useDockStore, type DockPanelChannel } from '@/stores/dockStore'
+import { listModules, openModule, closeModule, subscribeBus } from '@/lib/moduleBridge'
 import { CHANNEL_ICONS, moduleIcon, LOCK_ICONS } from '@/lib/moduleIcons'
-import { DockPanel } from '@/components/dock/DockPanel'
 import type { BusEvent } from '@/types'
 
-/** 不显示在导航区的模块（dock 自身 / approval 由审批到达自动开） */
-const HIDDEN_MODULES = new Set(['dock', 'approval'])
+/** 不显示在导航区的模块（dock 自身 / approval 由审批到达自动开 / panel 由气泡打开） */
+const HIDDEN_MODULES = new Set(['dock', 'approval', 'panel'])
 
 export function DockBar() {
-  const { expanded, locked, counts, setExpanded, setLocked, bump, reset, panel, setPanel } = useDockStore()
+  const { locked, counts, setLocked, bump, reset, panel, setPanel } = useDockStore()
   const [modules, setModules] = useState<Array<{ id: string; name: string }>>([])
   const [floating, setFloating] = useState(false)   // 悬浮模式（拖出后）
 
-  // 加载模块清单（过滤 dock 自身 + approval）
+  // 加载模块清单（过滤 dock 自身 + approval + panel）
   useEffect(() => {
     void listModules().then(list => setModules(list.filter(m => !HIDDEN_MODULES.has(m.id))))
   }, [])
@@ -50,10 +49,20 @@ export function DockBar() {
     reset('module')
   }
 
-  // 气泡点击：开/关对应面板
+  // 气泡点击：打开/关闭对应通道的独立面板窗口
+  // （dock 64px 宽放不下面板，独立窗口避免 absolute 裁剪不可见）
   const togglePanel = (ch: DockPanelChannel) => {
-    setPanel(panel === ch ? null : ch)
     reset(ch)   // 打开面板即清除角标
+    if (panel === ch) {
+      // 已打开 → 关闭
+      void closeModule('panel')
+      setPanel(null)
+    } else {
+      // 未打开 → 先关旧的再开新的
+      if (panel) void closeModule('panel')
+      void openModule('panel', { channel: ch })
+      setPanel(ch)
+    }
   }
 
   const LockIcon = LOCK_ICONS[locked ? 'locked' : 'unlocked']
@@ -62,12 +71,9 @@ export function DockBar() {
     <div
       className="relative h-full flex flex-col items-center py-3 gap-3 border-r border-subtle bg-app text-primary drag-region"
       style={{ width: 64, transition: 'width .15s ease' }}
-      onMouseEnter={() => setExpanded(true)}
-      onMouseLeave={() => { if (!locked) setExpanded(false) }}
+      onMouseEnter={() => useDockStore.getState().setExpanded(true)}
+      onMouseLeave={() => { if (!locked) useDockStore.getState().setExpanded(false) }}
     >
-      {/* 气泡面板：绝对定位于导航条右侧弹出 */}
-      {panel && <DockPanel channel={panel} />}
-
       {/* 品牌区：打开驾驶舱模块窗口 */}
       <button
         onClick={() => { void openModule('cockpit') }}
@@ -137,6 +143,15 @@ export function DockBar() {
         title={locked ? '解锁（恢复 hover 展开）' : '锁定（常驻展开）'}
       >
         <LockIcon size={16} />
+      </button>
+
+      {/* 关闭：dock 独立窗口只有关闭按钮（关闭后主窗口恢复显示） */}
+      <button
+        onClick={() => window.ponosWindow?.close()}
+        className="no-drag w-9 h-9 rounded-lg flex items-center justify-center text-tertiary hover:bg-error hover:text-inverse"
+        title="关闭导航栏"
+      >
+        <X size={16} />
       </button>
     </div>
   )
