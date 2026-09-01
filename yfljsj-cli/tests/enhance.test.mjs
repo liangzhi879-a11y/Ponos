@@ -127,6 +127,8 @@ test('parseValidationMsg：多字段校验报错解析', () => {
   assert.deepEqual(api.parseValidationMsg('[projectId:must not be null]'), ['projectId'])
   assert.deepEqual(api.parseValidationMsg('ok'), [])
   assert.deepEqual(api.parseValidationMsg(''), [])
+  // 网关共享校验模板噪音字段（Source/column）不进入探测结果
+  assert.deepEqual(api.parseValidationMsg('[Source:must not be null, column:must not be blank, projectId:must not be null]'), ['projectId'])
 })
 
 test('probeFields：空请求报错解析必填字段', async () => {

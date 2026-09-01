@@ -566,13 +566,19 @@ export function migrateApis(apis) {
 // force=true 强制重读（discover 写回后需要刷新缓存）。
 export function loadApis({ force = false } = {}) {
   if (!apisCache || force) {
-    let apis = JSON.parse(fs.readFileSync(APIS_SEED_URL, 'utf8'))
+    const seedApis = JSON.parse(fs.readFileSync(APIS_SEED_URL, 'utf8'))
+    let apis = seedApis
     try {
       const p = apisPath()
       if (fs.existsSync(p)) {
         const user = JSON.parse(fs.readFileSync(p, 'utf8'))
         // 用户表结构校验：modules 非空对象才覆盖 seed（空表/损坏表回退 seed，避免空表吞掉 535 命令）
-        if (user && user.modules && typeof user.modules === 'object' && Object.keys(user.modules).length > 0) apis = user
+        if (user && user.modules && typeof user.modules === 'object' && Object.keys(user.modules).length > 0) {
+          apis = user
+          // 旧版用户表（早期 explore 产物）缺元数据 → 从 seed 补入，避免升级后 relations/doc 空转
+          apis.operations = apis.operations || seedApis.operations
+          apis.relations = apis.relations || seedApis.relations
+        }
       }
     } catch {
       /* 用户 apis.json 缺失/损坏 → 回退静态 seed */
@@ -925,6 +931,10 @@ function helpText() {
     '  config get <key> / config list       读配置项',
     "  raw <path> [--method POST] [--data 'json'] [--service rcms]",
     '  <module> <action> [--param value]...  命令表驱动调用',
+    '  schema <module> <action>        查看命令字段定义（类型/必填/枚举/来源）',
+    '  relations [对象]                业务对象关联图谱与创建顺序',
+    '  explore <path> [--dry-run]      交互探测接口必填字段并沉淀',
+    '  doc [手册]                      操作手册（步骤+示例）',
     '  --help / --version',
     '',
     '选项：',
@@ -1012,6 +1022,9 @@ export function docCommand(object, { output = process.stdout } = {}) {
 //   替代手工下载前端 chunk 逆向：发空请求读报错 → 解析必填字段 → 逐个补字段迭代
 // =====================================================================
 
+/** 网关共享校验模板的噪音字段（Source/column 等非业务字段名，误探入 seed 的历史来源）→ 探测时忽略 */
+const NOISE_FIELD_RE = /^source$|^column$/i
+
 /** 解析参数校验报错：[xxx:must not be null, yyy:must not be blank] → ['xxx','yyy'] */
 export function parseValidationMsg(msg) {
   const fields = []
@@ -1021,7 +1034,7 @@ export function parseValidationMsg(msg) {
       for (const part of m[1].split(',')) {
         // trim：平台报错逗号后带空格（' xxx:...'），逐字实现会漏掉首字段后的字段
         const fm = part.trim().match(/^([a-zA-Z_][a-zA-Z0-9_]*):/)
-        if (fm) fields.push(fm[1])
+        if (fm && !NOISE_FIELD_RE.test(fm[1])) fields.push(fm[1])
       }
     }
   }
@@ -1250,7 +1263,7 @@ export async function main(argv = process.argv.slice(2)) {
     return emit(r.exitCode, r.json, r.sensitive)
   }
 
-  process.stderr.write(`yfljsj：未知命令 ${command}。可用：auth / discover / raw / <module> <action> / --help / --version\n`)
+  process.stderr.write(`yfljsj：未知命令 ${command}。可用：auth / discover / raw / schema / relations / explore / doc / <module> <action> / --help / --version\n`)
   return emit(2, { success: false, code: 2, msg: `未知命令：${command}`, data: null })
 }
 

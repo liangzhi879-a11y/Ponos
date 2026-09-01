@@ -8,6 +8,8 @@ import { writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
 const DANGEROUS = /delete|remove|clear|drop/i
+// 网关共享校验模板噪音字段（Source/column 非业务字段名）→ 探测结果不沉淀进命令表
+const NOISE_FIELD_RE = /^source$|^column$/i
 
 /**
  * 批量探测：遍历命令表全部命令，跳过危险路径；探出必填字段写回命令表 params。
@@ -31,6 +33,7 @@ export async function runBatchExplore({
         const { fields } = await probe(c.path, { method: c.method, service: m.service })
         if (fields.length) {
           for (const f of fields) {
+            if (NOISE_FIELD_RE.test(f)) continue // 噪音字段不入命令表
             if (!c.params[f]) c.params[f] = { type: guessType(f), required: true, desc: '' }
           }
           results.push({ module: mk, action: c.action, fields })

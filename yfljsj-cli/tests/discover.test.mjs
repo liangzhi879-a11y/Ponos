@@ -439,3 +439,30 @@ test('loadApis：用户 apis.json 空 modules 回退 seed（空表不吞 535 命
     assert.ok(apis.modules.asset.commands.length > 0)
   })
 })
+
+test('loadApis：旧版用户表缺 operations/relations → 从 seed 补入元数据', () => {
+  const home = newHome()
+  mkdirSync(path.join(home, '.yfljsj'), { recursive: true })
+  // 早期 explore 产物：modules 有效但缺 operations/relations 元数据
+  const oldUser = {
+    version: 1,
+    services: { rcms: 'https://gateway.yfljsj.com/api/rcms' },
+    modules: {
+      asset: {
+        title: 'asset',
+        service: 'rcms',
+        commands: [{ action: 'x-list', method: 'POST', path: '/asset/x/list', params: {}, desc: '/asset/x/list', kind: 'read' }],
+      },
+    },
+  }
+  writeFileSync(path.join(home, '.yfljsj', 'apis.json'), JSON.stringify(oldUser))
+  withHome(home, () => {
+    const apis = api.loadApis({ force: true })
+    // 用户表仍优先：命令来自用户表
+    assert.ok(apis.modules.asset.commands.some((c) => c.path === '/asset/x/list'))
+    assert.equal(apis.modules.asset.commands.length, 1)
+    // 缺元数据 → seed 补入：relations/doc 不空转
+    assert.ok(apis.operations && Object.keys(apis.operations).length > 0)
+    assert.ok(apis.relations && Object.keys(apis.relations).length > 0)
+  })
+})

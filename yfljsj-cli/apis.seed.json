@@ -984,16 +984,6 @@
        "type": "string",
        "required": true,
        "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
       }
      },
      "desc": "/achievement/ipr/add",
@@ -1342,16 +1332,6 @@
        "type": "number",
        "required": true,
        "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
       }
      },
      "desc": "/resefunds/fundsEnough/save",
@@ -1379,16 +1359,6 @@
       },
       "projectId": {
        "type": "number",
-       "required": true,
-       "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
        "required": true,
        "desc": ""
       }
@@ -1491,16 +1461,6 @@
        "type": "string",
        "required": true,
        "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
       }
      },
      "desc": "/resefunds/fundsAllocate/save",
@@ -1537,16 +1497,6 @@
        "desc": ""
       },
       "payee": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
        "type": "string",
        "required": true,
        "desc": ""
@@ -1594,16 +1544,6 @@
       },
       "projectId": {
        "type": "number",
-       "required": true,
-       "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
        "required": true,
        "desc": ""
       }
@@ -1670,16 +1610,6 @@
        "type": "string",
        "required": true,
        "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
       }
      },
      "desc": "/resefunds/fundsExpen/saveVoucher",
@@ -1726,16 +1656,6 @@
        "desc": ""
       },
       "voucherNo": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
        "type": "string",
        "required": true,
        "desc": ""
@@ -1786,16 +1706,6 @@
        "type": "number",
        "required": true,
        "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
       }
      },
      "desc": "/resefunds/fundsExpen/settleRdExpense",
@@ -1835,16 +1745,6 @@
        "type": "string",
        "required": true,
        "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
       }
      },
      "desc": "/resefunds/fundsExpen/settleIntangibleAsset",
@@ -1861,16 +1761,6 @@
        "desc": ""
       },
       "voucherDate": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
        "type": "string",
        "required": true,
        "desc": ""
@@ -1915,16 +1805,6 @@
      "method": "POST",
      "path": "/workbench/projectRdCost/modify",
      "params": {
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      }
      },
      "desc": "/workbench/projectRdCost/modify",
      "kind": "write"
@@ -1978,16 +1858,6 @@
      "method": "POST",
      "path": "/workbench/projectEquip/add",
      "params": {
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      }
      },
      "desc": "/workbench/projectEquip/add",
      "kind": "write"
@@ -2426,16 +2296,6 @@
      "method": "POST",
      "path": "/workbench/projectMaterialPick/consumeBatch",
      "params": {
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      }
      },
      "desc": "/workbench/projectMaterialPick/consumeBatch",
      "kind": "read"
@@ -2445,16 +2305,6 @@
      "method": "POST",
      "path": "/workbench/projectMaterialPick/pick",
      "params": {
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      }
      },
      "desc": "/workbench/projectMaterialPick/pick",
      "kind": "read"
@@ -2560,16 +2410,6 @@
      "method": "POST",
      "path": "/workbench/projectMaterialPick2/add",
      "params": {
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      }
      },
      "desc": "/workbench/projectMaterialPick2/add",
      "kind": "write"
@@ -2702,16 +2542,6 @@
      "method": "POST",
      "path": "/workbench/projectMember/add",
      "params": {
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      }
      },
      "desc": "/workbench/projectMember/add",
      "kind": "write"
@@ -3246,16 +3076,6 @@
      "method": "POST",
      "path": "/voucher/sysVoucher/addProject",
      "params": {
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      }
      },
      "desc": "/voucher/sysVoucher/addProject",
      "kind": "write"
@@ -3563,16 +3383,6 @@
      "method": "POST",
      "path": "/enterprise/highTechProductMapping/saveBatch",
      "params": {
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      }
      },
      "desc": "/enterprise/highTechProductMapping/saveBatch",
      "kind": "write"
@@ -5169,16 +4979,6 @@
      "method": "POST",
      "path": "/financial/configProjectAllocation/saveOrUpdate",
      "params": {
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      }
      },
      "desc": "/financial/configProjectAllocation/saveOrUpdate",
      "kind": "write"
@@ -5761,16 +5561,6 @@
      "method": "POST",
      "path": "/material/raw/saveOrUpdate",
      "params": {
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      }
      },
      "desc": "/material/raw/saveOrUpdate",
      "kind": "write"
@@ -7013,16 +6803,6 @@
        "type": "string",
        "required": true,
        "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
       }
      },
      "desc": "/user/sysUser/recover",
@@ -7040,16 +6820,6 @@
       },
       "id": {
        "type": "number",
-       "required": true,
-       "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
        "required": true,
        "desc": ""
       }
@@ -7071,16 +6841,6 @@
        "type": "string",
        "required": true,
        "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
       }
      },
      "desc": "/user/sysUser/batchRecover",
@@ -7097,16 +6857,6 @@
        "desc": ""
       },
       "resignDate": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
        "type": "string",
        "required": true,
        "desc": ""
@@ -7285,16 +7035,6 @@
        "type": "string",
        "required": true,
        "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
       }
      },
      "desc": "/personnel/attendanceGroup/getAvailableUserTree",
@@ -7350,16 +7090,6 @@
        "desc": ""
       },
       "startTime": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
        "type": "string",
        "required": true,
        "desc": ""
@@ -7467,16 +7197,6 @@
        "type": "number",
        "required": true,
        "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
       }
      },
      "desc": "/personnel/attendanceGroup/addUsers",
@@ -7498,16 +7218,6 @@
        "desc": ""
       },
       "joinTime": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
        "type": "string",
        "required": true,
        "desc": ""
@@ -7538,16 +7248,6 @@
        "type": "number",
        "required": true,
        "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
       }
      },
      "desc": "/personnel/attendanceGroup/addRuleUnchanged",
@@ -7570,16 +7270,6 @@
       },
       "groupId": {
        "type": "number",
-       "required": true,
-       "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
        "required": true,
        "desc": ""
       }
@@ -7616,16 +7306,6 @@
        "type": "number",
        "required": true,
        "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
       }
      },
      "desc": "/personnel/attendanceGroup/updateRuleCycle",
@@ -7647,16 +7327,6 @@
        "desc": ""
       },
       "checkTime": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
        "type": "string",
        "required": true,
        "desc": ""
@@ -8068,16 +7738,6 @@
      "method": "POST",
      "path": "/income/specialIncome/batchAdd",
      "params": {
-      "Source": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      },
-      "column": {
-       "type": "string",
-       "required": true,
-       "desc": ""
-      }
      },
      "desc": "/income/specialIncome/batchAdd",
      "kind": "read"
