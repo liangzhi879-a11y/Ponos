@@ -298,7 +298,9 @@ export function ensureToken({ baseUrl, force = false, rejectUnauthorized = true 
 }
 
 // 带认证的请求：附加 Bearer token；401 → 强制 refresh（单飞）→ 重试一次
-export async function authenticatedRequest({ url, method = 'POST', body, headers = {}, baseUrl, rejectUnauthorized = true, timeout = 30000 } = {}) {
+//   baseUrl：Task 2 兼容语义，仅用于 refresh 续期（refreshBaseUrl 缺省时的回退）
+//   refreshBaseUrl：refresh 续期固定走的服务前缀（如 oauth）；缺省回退 baseUrl，再回退 SERVICES.oauth
+export async function authenticatedRequest({ url, method = 'POST', body, headers = {}, baseUrl, refreshBaseUrl, rejectUnauthorized = true, timeout = 30000 } = {}) {
   const cfg = readConfig()
   if (!cfg.accessToken) {
     const err = new Error('未登录：请先执行 auth login')
@@ -309,7 +311,7 @@ export async function authenticatedRequest({ url, method = 'POST', body, headers
     httpRequest(url, { method, body, headers: { ...headers, Authorization: `Bearer ${token}` }, rejectUnauthorized, timeout })
   let res = await doReq(cfg.accessToken)
   if (res.status === 401) {
-    await ensureToken({ baseUrl, force: true, rejectUnauthorized })
+    await ensureToken({ baseUrl: refreshBaseUrl || baseUrl, force: true, rejectUnauthorized })
     const cfg2 = readConfig()
     res = await doReq(cfg2.accessToken)
   }
@@ -474,10 +476,22 @@ function errorResult(e) {
   return { exitCode: 4, json: { success: false, code: 4, msg: (e && e.message) || '网络错误', data: null } }
 }
 
+// refresh 续期固定走 oauth 服务前缀：
+//   默认取请求 base 同 origin 的 /api/oauth（生产即 SERVICES.oauth，测试可落到 mock 网关）；
+//   显式 refreshBaseUrl 优先（定制网关/单测注入）。
+function oauthRefreshBase(requestBase, refreshBaseUrl) {
+  if (refreshBaseUrl) return refreshBaseUrl
+  try {
+    return `${new URL(requestBase).origin}/api/oauth`
+  } catch {
+    return SERVICES.oauth
+  }
+}
+
 // 通用命令执行器：查命令表 → 校验必填 → 拼 URL（services[service]+path）→ 带认证请求 → 格式化
 //   GET→query 参数；POST/PUT→body JSON（args 除已知 --flag 外全进 body；--data 显式覆盖 body）
 export async function runCommand(module, action, args = {}, opts = {}) {
-  const { baseUrl, rejectUnauthorized = true, timeout, headers = {} } = opts
+  const { baseUrl, refreshBaseUrl, rejectUnauthorized = true, timeout, headers = {} } = opts
   const apis = loadApis()
   const mod = apis.modules[module]
   if (!mod) {
@@ -516,7 +530,8 @@ export async function runCommand(module, action, args = {}, opts = {}) {
     body = data !== undefined ? data : typed
   }
   try {
-    const res = await authenticatedRequest({ url, method, body, baseUrl: base, rejectUnauthorized, headers, timeout })
+    // 命令请求走 base（服务前缀）；refresh 续期固定走 oauth（refreshBaseUrl），不随命令服务前缀
+    const res = await authenticatedRequest({ url, method, body, refreshBaseUrl: oauthRefreshBase(base, refreshBaseUrl), rejectUnauthorized, headers, timeout })
     return formatResult(res)
   } catch (e) {
     return errorResult(e)
@@ -524,11 +539,11 @@ export async function runCommand(module, action, args = {}, opts = {}) {
 }
 
 // 兜底原始调用：不查命令表，按 {path, method, data, service} 直接发认证请求
-export async function rawRequest({ path, method = 'POST', data, service = 'rcms', baseUrl, rejectUnauthorized = true, timeout, headers = {} } = {}) {
+export async function rawRequest({ path, method = 'POST', data, service = 'rcms', baseUrl, refreshBaseUrl, rejectUnauthorized = true, timeout, headers = {} } = {}) {
   const base = baseUrl || SERVICES[service] || SERVICES.rcms
   const p = path.startsWith('/') ? path : `/${path}`
   try {
-    const res = await authenticatedRequest({ url: `${base}${p}`, method, body: data, baseUrl: base, rejectUnauthorized, headers, timeout })
+    const res = await authenticatedRequest({ url: `${base}${p}`, method, body: data, refreshBaseUrl: oauthRefreshBase(base, refreshBaseUrl), rejectUnauthorized, headers, timeout })
     return formatResult(res)
   } catch (e) {
     return errorResult(e)

@@ -52,9 +52,14 @@ function startMock() {
         res.writeHead(status, { 'Content-Type': 'application/json', ...extraHeaders })
         res.end(json === undefined ? '' : JSON.stringify(json))
       }
+      // refresh 端点仅在 /api/oauth 前缀提供（rcms/upms 等前缀返回 404 → 验证 refresh 固定走 oauth）
+      const isOauthRefresh = u.pathname === '/api/oauth/auth/refresh-token'
       // 去掉 /api/<service> 前缀后路由
       const route = u.pathname.replace(/^\/api\/[^/]+/, '')
       if (route === '/auth/refresh-token') {
+        if (!isOauthRefresh) {
+          return respond(404, { success: false, code: 404, msg: 'refresh 仅在 oauth 前缀提供', data: null })
+        }
         state.refreshCount++
         if (state.refreshHandler) return state.refreshHandler(entry, respond, state)
         return respond(200, { success: true, code: 200, msg: 'ok', data: makeTokens('AT-new', 'RT-new') })
@@ -235,6 +240,51 @@ test('401 重试后仍 401 → 退出码 3', async () => {
   mock.state.genericHandler = (_e, respond) => respond(401, { success: false, code: 401, msg: 'unauthorized', data: null })
   const r = await api.runCommand('asset', 'building-list', { current: 1, size: 10 }, RCMS())
   assert.equal(r.exitCode, 3)
+})
+
+test('401 → refresh 固定打到 oauth 前缀（不随命令服务前缀 rcms）', async () => {
+  seedConfig()
+  mock.state.genericHandler = (entry, respond) => {
+    const authz = entry.headers.authorization || ''
+    if (authz === 'Bearer AT-old') return respond(401, { success: false, code: 401, msg: 'unauthorized', data: null })
+    return respond(200, { success: true, code: 200, msg: 'ok', data: { echo: authz } })
+  }
+  // 命令请求走 rcms 前缀（mock.baseUrl=/api/rcms），401 触发的 refresh 必须落在 oauth 前缀
+  const r = await api.runCommand('asset', 'building-list', { current: 1, size: 10 }, RCMS())
+  assert.equal(r.exitCode, 0)
+  assert.equal(r.json.data.echo, 'Bearer AT-new')
+  const refreshReqs = mock.state.requests.filter((x) => x.path === '/api/oauth/auth/refresh-token')
+  assert.equal(refreshReqs.length, 1)
+  // 绝不允许 refresh 打到命令服务前缀（网关只在 oauth 前缀提供续期端点）
+  assert.equal(mock.state.requests.filter((x) => x.path === '/api/rcms/auth/refresh-token').length, 0)
+})
+
+test('rawRequest 401 → refresh 固定打到 oauth 前缀', async () => {
+  seedConfig()
+  mock.state.genericHandler = (entry, respond) => {
+    const authz = entry.headers.authorization || ''
+    if (authz === 'Bearer AT-old') return respond(401, { success: false, code: 401, msg: 'unauthorized', data: null })
+    return respond(200, { success: true, code: 200, msg: 'ok', data: { echo: authz } })
+  }
+  const r = await api.rawRequest({ path: '/asset/building/list', method: 'POST', data: { current: 1 }, baseUrl: mock.baseUrl, rejectUnauthorized: false })
+  assert.equal(r.exitCode, 0)
+  assert.equal(r.json.data.echo, 'Bearer AT-new')
+  assert.equal(mock.state.requests.filter((x) => x.path === '/api/oauth/auth/refresh-token').length, 1)
+  assert.equal(mock.state.requests.filter((x) => x.path === '/api/rcms/auth/refresh-token').length, 0)
+})
+
+test('opts.refreshBaseUrl 显式指定 → refresh 走指定前缀（默认不随命令服务前缀）', async () => {
+  seedConfig()
+  mock.state.genericHandler = (entry, respond) => {
+    const authz = entry.headers.authorization || ''
+    if (authz === 'Bearer AT-old') return respond(401, { success: false, code: 401, msg: 'unauthorized', data: null })
+    return respond(200, { success: true, code: 200, msg: 'ok', data: { echo: authz } })
+  }
+  // 显式把 refreshBaseUrl 指到 upms 前缀 → 网关对非 oauth 前缀的 refresh 返回 404 → 续期失败 → 认证错 3
+  const r = await api.runCommand('asset', 'building-list', { current: 1, size: 10 }, { ...RCMS(), refreshBaseUrl: mock.baseUrl.replace('/api/rcms', '/api/upms') })
+  assert.equal(r.exitCode, 3)
+  assert.equal(mock.state.requests.filter((x) => x.path === '/api/upms/auth/refresh-token').length, 1)
+  assert.equal(mock.state.requests.filter((x) => x.path === '/api/oauth/auth/refresh-token').length, 0)
 })
 
 // ==================== rawRequest ====================
