@@ -769,6 +769,13 @@ export async function runCommand(module, action, args = {}, opts = {}) {
     if (q) url += `?${q}`
   } else {
     body = data !== undefined ? data : typed
+    // --data 显式 body 同样注入 tenantId（用户显式传 --tenantId 或 body 含 tenantId 时以用户为准）
+    if (data !== undefined && body && typeof body === 'object' && !Array.isArray(body)) {
+      const cfg = readConfig()
+      if ((body.tenantId === undefined || body.tenantId === null || body.tenantId === '') && cfg.tenantId != null) {
+        body = { ...body, tenantId: cfg.tenantId }
+      }
+    }
   }
   // 安全钩子：域名白名单（防 SSRF）——请求前校验目标 host
   const wl = assertWhitelist(url)

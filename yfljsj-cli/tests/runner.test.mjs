@@ -137,14 +137,16 @@ test('--data 显式 JSON body 覆盖 args（且跳过必填校验）', async () 
   seedConfig()
   const r = await api.runCommand('asset', 'building-list', ['--data', '{"current":5,"size":20}'], RCMS())
   assert.equal(r.exitCode, 0)
-  assert.deepEqual(mock.state.requests[0].body, { current: 5, size: 20 })
+  // --data 显式 body 也自动注入 tenantId（用户显式传 body.tenantId 时以用户为准）
+  assert.deepEqual(mock.state.requests[0].body, { current: 5, size: 20, tenantId: 'T001' })
 })
 
 test('--data= 内联形式也解析', async () => {
   seedConfig()
   const r = await api.runCommand('asset', 'building-list', ['--data={"a":1}'], RCMS())
   assert.equal(r.exitCode, 0)
-  assert.deepEqual(mock.state.requests[0].body, { a: 1 })
+  // --data 内联形式同样自动注入 tenantId
+  assert.deepEqual(mock.state.requests[0].body, { a: 1, tenantId: 'T001' })
 })
 
 test('已知 --flag 不进 body（仅 login 态 tenantId 自动注入）', async () => {

@@ -1804,8 +1804,7 @@
      "action": "projectRdCost-modify",
      "method": "POST",
      "path": "/workbench/projectRdCost/modify",
-     "params": {
-     },
+     "params": {},
      "desc": "/workbench/projectRdCost/modify",
      "kind": "write"
     },
@@ -1857,8 +1856,7 @@
      "action": "projectEquip-add",
      "method": "POST",
      "path": "/workbench/projectEquip/add",
-     "params": {
-     },
+     "params": {},
      "desc": "/workbench/projectEquip/add",
      "kind": "write"
     },
@@ -2126,7 +2124,8 @@
       "applyDate": {
        "type": "string",
        "required": true,
-       "desc": ""
+       "desc": "申报日期",
+       "format": "yyyy-MM-dd HH:mm:ss"
       },
       "startDate": {
        "type": "string",
@@ -2295,8 +2294,7 @@
      "action": "projectMaterialPick-consumeBatch",
      "method": "POST",
      "path": "/workbench/projectMaterialPick/consumeBatch",
-     "params": {
-     },
+     "params": {},
      "desc": "/workbench/projectMaterialPick/consumeBatch",
      "kind": "read"
     },
@@ -2304,8 +2302,7 @@
      "action": "projectMaterialPick-pick",
      "method": "POST",
      "path": "/workbench/projectMaterialPick/pick",
-     "params": {
-     },
+     "params": {},
      "desc": "/workbench/projectMaterialPick/pick",
      "kind": "read"
     },
@@ -2409,8 +2406,7 @@
      "action": "projectMaterialPick2-add",
      "method": "POST",
      "path": "/workbench/projectMaterialPick2/add",
-     "params": {
-     },
+     "params": {},
      "desc": "/workbench/projectMaterialPick2/add",
      "kind": "write"
     },
@@ -2541,8 +2537,7 @@
      "action": "projectMember-add",
      "method": "POST",
      "path": "/workbench/projectMember/add",
-     "params": {
-     },
+     "params": {},
      "desc": "/workbench/projectMember/add",
      "kind": "write"
     },
@@ -3075,8 +3070,7 @@
      "action": "sysVoucher-addProject",
      "method": "POST",
      "path": "/voucher/sysVoucher/addProject",
-     "params": {
-     },
+     "params": {},
      "desc": "/voucher/sysVoucher/addProject",
      "kind": "write"
     },
@@ -3382,8 +3376,7 @@
      "action": "highTechProductMapping-saveBatch",
      "method": "POST",
      "path": "/enterprise/highTechProductMapping/saveBatch",
-     "params": {
-     },
+     "params": {},
      "desc": "/enterprise/highTechProductMapping/saveBatch",
      "kind": "write"
     },
@@ -4978,8 +4971,7 @@
      "action": "configProjectAllocation-saveOrUpdate",
      "method": "POST",
      "path": "/financial/configProjectAllocation/saveOrUpdate",
-     "params": {
-     },
+     "params": {},
      "desc": "/financial/configProjectAllocation/saveOrUpdate",
      "kind": "write"
     }
@@ -5560,8 +5552,7 @@
      "action": "raw-saveOrUpdate",
      "method": "POST",
      "path": "/material/raw/saveOrUpdate",
-     "params": {
-     },
+     "params": {},
      "desc": "/material/raw/saveOrUpdate",
      "kind": "write"
     },
@@ -7737,8 +7728,7 @@
      "action": "specialIncome-batchAdd",
      "method": "POST",
      "path": "/income/specialIncome/batchAdd",
-     "params": {
-     },
+     "params": {},
      "desc": "/income/specialIncome/batchAdd",
      "kind": "read"
     },
