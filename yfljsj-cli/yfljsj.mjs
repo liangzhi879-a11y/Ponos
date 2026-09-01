@@ -2,6 +2,7 @@
 // Task 2：认证模块（3 种登录 + token 本地存储 + refresh 自动续期 + 401 重试 + 并发单飞）
 // Task 3：通用命令执行器 runCommand + 兜底原始调用 rawRequest + 退出码映射
 // Task 4：CLI 入口 — parseArgs 参数解析 + main 命令路由 + formatOutput 输出格式化
+// Task 5：discover 代理 — 本地 HTTP 代理捕获浏览器真实请求，合并进命令表补漏
 import https from 'node:https'
 import http from 'node:http'
 import fs from 'node:fs'
@@ -9,6 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline'
 import { pathToFileURL } from 'node:url'
+import { inferAction, inferService, inferParams, inferKind } from './scripts/gen-apis.mjs'
 
 // 平台网关（与 scripts/gen-apis.mjs 的 SERVICES 保持一致）
 export const SERVICES = {
@@ -360,10 +362,34 @@ export async function sendCode({ user, baseUrl, rejectUnauthorized = true } = {}
 const APIS_SEED_URL = new URL('./apis.seed.json', import.meta.url)
 let apisCache = null
 
-// 加载命令表（Task 1 gen-apis 产物，模块级缓存）
-export function loadApis() {
-  if (!apisCache) apisCache = JSON.parse(fs.readFileSync(APIS_SEED_URL, 'utf8'))
+// 用户命令表路径：~/.yfljsj/apis.json（discover 合并产物，与 config 同目录）
+export function apisPath() {
+  return path.join(configDir(), 'apis.json')
+}
+
+// 加载命令表：~/.yfljsj/apis.json（discover 补漏产物）存在时优先，否则回退静态 seed。
+// force=true 强制重读（discover 写回后需要刷新缓存）。
+export function loadApis({ force = false } = {}) {
+  if (!apisCache || force) {
+    let apis = JSON.parse(fs.readFileSync(APIS_SEED_URL, 'utf8'))
+    try {
+      const p = apisPath()
+      if (fs.existsSync(p)) {
+        const user = JSON.parse(fs.readFileSync(p, 'utf8'))
+        if (user && user.modules && typeof user.modules === 'object') apis = user
+      }
+    } catch {
+      /* 用户 apis.json 缺失/损坏 → 回退静态 seed */
+    }
+    apisCache = apis
+  }
   return apisCache
+}
+
+// 写回用户命令表（discover 产物）
+export function writeApis(apis) {
+  fs.mkdirSync(configDir(), { recursive: true })
+  fs.writeFileSync(apisPath(), JSON.stringify(apis, null, 2) + '\n')
 }
 
 // 解析命令级 args → { params, flags, data }。args 支持：
@@ -666,7 +692,7 @@ function helpText() {
     '  auth logout',
     '  auth status',
     '  auth send-code --user X',
-    '  discover [--port 8899]               网关代理探测（Task 5 接入）',
+    '  discover [--port 8899]               代理捕获浏览器请求，接口补漏并合并命令表',
     "  raw <path> [--method POST] [--data 'json'] [--service rcms]",
     '  <module> <action> [--param value]...  命令表驱动调用',
     '  --help / --version',
@@ -761,8 +787,18 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (command === 'discover') {
-    // Task 5 占位：代理探测（127.0.0.1:8899）由 Task 5 接入
-    return usage('discover 未实现：网关代理探测由 Task 5 接入（--port 8899）')
+    // Task 5：本地 HTTP 代理捕获浏览器对网关的真实请求 → 合并进命令表补漏
+    const portRaw = opts['--port'] === undefined ? '' : String(opts['--port'])
+    const port = portRaw === '' ? 8899 : Number(portRaw)
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+      return usage(`discover --port 非法：${portRaw}（0-65535）`)
+    }
+    try {
+      await runDiscover({ port, output: process.stderr, baseUrl: env.baseUrl, rejectUnauthorized: env.rejectUnauthorized })
+      return 0
+    } catch (e) {
+      return errorResult(e).exitCode
+    }
   }
 
   if (command === 'raw') {
@@ -783,6 +819,270 @@ export async function main(argv = process.argv.slice(2)) {
 
   process.stderr.write(`yfljsj：未知命令 ${command}。可用：auth / discover / raw / <module> <action> / --help / --version\n`)
   return emit(2, { success: false, code: 2, msg: `未知命令：${command}`, data: null })
+}
+
+// =====================================================================
+// Task 5：discover 代理 — 捕获浏览器真实请求，补漏静态命令表
+// =====================================================================
+// 代理方案（实施选择并文档化）：
+//   不实现 HTTPS CONNECT 隧道（浏览器系统代理的 https 走 CONNECT，需 TLS 中间人）。
+//   改为「baseURL 替换」非标准代理：提示用户把前端网关 baseURL 指向
+//   http://127.0.0.1:<port>（替换 https://gateway.yfljsj.com），本地收 http 请求 →
+//   原样转发真实网关（https 出站）→ 记录 method/path/body 样例。
+//   同时兼容标准 HTTP 代理的绝对 URL 请求形式（req.url 为完整 URL 时直接透传）。
+//   浏览器对 https 的 CONNECT 会收到 501 + 引导文案。
+const GATEWAY_ORIGIN = 'https://gateway.yfljsj.com'
+
+// 读取请求体（上限 10MB 防滥用）
+function readBody(req, limit = 10 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0
+    req.on('data', (c) => {
+      size += c.length
+      if (size > limit) {
+        req.destroy()
+        reject(new Error('request body too large'))
+        return
+      }
+      chunks.push(c)
+    })
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    req.on('error', reject)
+  })
+}
+
+// 捕获记录：{ method, path, body样例, contentType }
+//   path 取 pathname（去掉 query）；body 样例为解析后的 JSON 对象，超大/非 JSON 截断
+function makeCaptureRecord(method, pathname, rawBody, contentType) {
+  let body样例 = null
+  if (rawBody && rawBody.length) {
+    const looksJson = /json/i.test(contentType || '') || /^\s*[\[{]/.test(rawBody)
+    if (looksJson) {
+      try {
+        body样例 = JSON.parse(rawBody)
+      } catch {
+        body样例 = rawBody.slice(0, 2048)
+      }
+    } else {
+      body样例 = rawBody.slice(0, 2048)
+    }
+  }
+  return { method, path: pathname, body样例, contentType: contentType || null }
+}
+
+// 透传时过滤逐跳（hop-by-hop）头，避免 host/content-length 等干扰
+const HOP_HEADERS = ['host', 'connection', 'content-length', 'transfer-encoding', 'proxy-connection', 'keep-alive', 'upgrade', 'te', 'trailer']
+function forwardHeaders(headers) {
+  const out = {}
+  for (const [k, v] of Object.entries(headers)) {
+    const lk = k.toLowerCase()
+    if (HOP_HEADERS.includes(lk) || lk.startsWith('proxy-')) continue
+    out[k] = v
+  }
+  return out
+}
+
+// 本地 HTTP 代理：接收浏览器请求 → 透传真实网关 → 返回响应；逐请求捕获记录。
+//   onCapture(record) 每捕获一条调用；返回 { server, port, captured, close }
+export function startProxy({ port = 0, onCapture, baseUrl = GATEWAY_ORIGIN, rejectUnauthorized = true } = {}) {
+  const captured = []
+  const server = http.createServer((req, res) => {
+    readBody(req)
+      .then((rawBody) => {
+        let pathname
+        let target
+        try {
+          if (/^https?:\/\//.test(req.url)) {
+            // 标准 HTTP 代理的绝对 URL 形式 → 原样透传目标
+            pathname = new URL(req.url).pathname
+            target = req.url
+          } else {
+            // baseURL 替换形式（origin-form）→ 解析到 baseUrl 真实网关
+            pathname = new URL(req.url, 'http://localhost').pathname
+            target = new URL(req.url, baseUrl).href
+          }
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ success: false, code: 400, msg: `discover 代理无法解析请求 URL：${e.message}`, data: null }))
+          return
+        }
+        const record = makeCaptureRecord(req.method, pathname, rawBody, req.headers['content-type'])
+        captured.push(record)
+        if (typeof onCapture === 'function') {
+          try {
+            onCapture(record)
+          } catch {
+            /* 回调异常不影响代理 */
+          }
+        }
+        const payload = rawBody && rawBody.length ? rawBody : undefined
+        httpRequest(target, { method: req.method, body: payload, headers: forwardHeaders(req.headers), rejectUnauthorized })
+          .then((up) => {
+            const outHeaders = {}
+            if (up.headers['content-type']) outHeaders['Content-Type'] = up.headers['content-type']
+            res.writeHead(up.status, outHeaders)
+            res.end(up.raw)
+          })
+          .catch((e) => {
+            res.writeHead(502, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ success: false, code: 502, msg: `discover 代理转发失败：${e.message}`, data: null }))
+          })
+      })
+      .catch((e) => {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ success: false, code: 400, msg: `discover 代理读取请求失败：${e.message}`, data: null }))
+      })
+  })
+  // 浏览器系统代理对 https 走 CONNECT 隧道（需 TLS 中间人）→ 明确 501 + 引导文案，不捕获不转发。
+  // Node http server 对 CONNECT 走 'connect' 事件而非 'request'。
+  server.on('connect', (req, socket) => {
+    const msg = `CONNECT 隧道（HTTPS 系统代理）未支持：请把前端网关 baseURL 直接指向 http://127.0.0.1:${server.address().port}（替换 https://gateway.yfljsj.com），而非使用系统代理`
+    socket.end(`HTTP/1.1 501 Not Implemented\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n${msg}`)
+  })
+  return new Promise((resolve, reject) => {
+    server.on('error', reject)
+    server.listen(port, '127.0.0.1', () => {
+      resolve({
+        server,
+        port: server.address().port,
+        captured,
+        close: () =>
+          new Promise((r) => {
+            if (typeof server.closeAllConnections === 'function') {
+              try {
+                server.closeAllConnections()
+              } catch {
+                /* ignore */
+              }
+            }
+            server.close(() => r())
+          }),
+      })
+    })
+  })
+}
+
+// 捕获路径归一化：去掉 /api/<service> 或 /api 前缀（前端 baseURL 含服务前缀），
+// 得到命令表使用的相对 path（运行时由 services[service] 前缀拼接）。
+export function normalizeCapturedPath(p) {
+  if (typeof p !== 'string' || !p.startsWith('/')) return p
+  let s = p
+  const m = s.match(/^\/api\/(?:rcms|upms|oauth)\//)
+  if (m) {
+    s = s.slice(m[0].length - 1) // 去掉 /api/<svc>，保留尾部 /path
+  } else if (s.startsWith('/api/')) {
+    s = s.slice('/api/'.length - 1)
+  }
+  return s.startsWith('/') ? s : `/${s}`
+}
+
+// 由 body 样例反推参数 schema（分页接口优先保留 page/list 参数）
+function paramsFromSample(path, sample) {
+  const params = inferParams(path)
+  if (sample && typeof sample === 'object' && !Array.isArray(sample)) {
+    for (const [k, v] of Object.entries(sample)) {
+      if (k in params) continue
+      const t = v === null || Array.isArray(v) ? 'object' : typeof v
+      params[k] = t === 'object' ? 'object' : t
+    }
+  }
+  return params
+}
+
+// 把捕获的接口并入现有命令表：按 path 去重（不重复），返回新命令表（不改入参）。
+//   captured: [{ method, path, body样例, contentType }]
+export function mergeApis(existing, captured) {
+  const out = {
+    version: (existing && existing.version) || 1,
+    services: (existing && existing.services) || { ...SERVICES },
+    modules: {},
+  }
+  for (const [modKey, mod] of Object.entries((existing && existing.modules) || {})) {
+    out.modules[modKey] = { title: (mod && mod.title) || modKey, service: mod && mod.service, commands: [...((mod && mod.commands) || [])] }
+  }
+  for (const rec of Array.isArray(captured) ? captured : []) {
+    const rawPath = rec && typeof rec.path === 'string' ? rec.path : null
+    if (!rawPath) continue
+    const path = normalizeCapturedPath(rawPath)
+    if (!path || path === '/') continue
+    const parts = path.split('/').filter(Boolean)
+    const modKey = parts[0] || 'other'
+    if (!out.modules[modKey]) out.modules[modKey] = { title: modKey, service: inferService(path), commands: [] }
+    if (out.modules[modKey].commands.some((c) => c.path === path)) continue // 按 path 去重
+    const method = typeof rec.method === 'string' ? rec.method.toUpperCase() : 'POST'
+    out.modules[modKey].commands.push({
+      action: inferAction(path),
+      method,
+      path,
+      params: paramsFromSample(path, rec.body样例),
+      desc: path,
+      kind: inferKind(path),
+    })
+  }
+  return out
+}
+
+// 统计：captured=捕获接口数（按 path 去重）、modules=涉及的模块数、added=新增命令数
+export function summarizeDiscover(existing, merged, captured) {
+  const existingPaths = new Set()
+  for (const mod of Object.values((existing && existing.modules) || {})) {
+    for (const c of (mod && mod.commands) || []) existingPaths.add(c.path)
+  }
+  const uniquePaths = new Set()
+  const modules = new Set()
+  for (const rec of Array.isArray(captured) ? captured : []) {
+    if (!rec || typeof rec.path !== 'string' || !rec.path) continue
+    uniquePaths.add(rec.path)
+    const np = normalizeCapturedPath(rec.path)
+    const seg = np.split('/').filter(Boolean)[0]
+    if (seg) modules.add(seg)
+  }
+  let added = 0
+  for (const mod of Object.values((merged && merged.modules) || {})) {
+    for (const c of (mod && mod.commands) || []) {
+      if (!existingPaths.has(c.path)) added++
+    }
+  }
+  return { captured: uniquePaths.size, modules: modules.size, added }
+}
+
+// discover 生命周期：启动代理 → 打印指向提示 → 等待结束（Ctrl+C / 注入信号 / whenReady）
+//   → 合并写回 apis.json + 打印统计。结束钩子优先级：signal > whenReady > 默认 SIGINT。
+export async function runDiscover({ port = 8899, baseUrl, output = process.stderr, rejectUnauthorized = true, whenReady, signal } = {}) {
+  const proxy = await startProxy({ port, baseUrl, rejectUnauthorized })
+  if (output && typeof output.write === 'function') {
+    output.write(`浏览器代理指向 http://127.0.0.1:${proxy.port}，操作前端各模块，Ctrl+C 结束\n`)
+  }
+  return await new Promise((resolve, reject) => {
+    let settled = false
+    const finish = async () => {
+      if (settled) return
+      settled = true
+      try {
+        await proxy.close()
+        const existing = loadApis({ force: true }) // 以最新命令表为底合并
+        const merged = mergeApis(existing, proxy.captured)
+        const stats = summarizeDiscover(existing, merged, proxy.captured)
+        writeApis(merged)
+        apisCache = null // 写回后下次 loadApis 读到用户产物
+        if (output && typeof output.write === 'function') {
+          output.write(`捕获 ${stats.captured} 接口、${stats.modules} 模块、新增 ${stats.added}\n`)
+        }
+        resolve({ proxy, captured: proxy.captured, merged, stats })
+      } catch (e) {
+        reject(e)
+      }
+    }
+    if (signal && typeof signal.then === 'function') {
+      signal.then(finish, finish)
+    } else if (typeof whenReady === 'function') {
+      whenReady({ proxy, finish })
+    } else {
+      process.once('SIGINT', finish)
+      proxy.server.once('close', () => process.removeListener('SIGINT', finish))
+    }
+  })
 }
 
 // 直接执行（import 时跳过，测试可复用 parseArgs/main/formatOutput）。main 为 async，

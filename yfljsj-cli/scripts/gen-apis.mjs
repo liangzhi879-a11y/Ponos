@@ -7,7 +7,7 @@ const SERVICES = {
 const UPMS_PREFIXES = ['user', 'role', 'permission', 'tenant', 'group', 'dp', 'dept', 'dict']
 
 /** 服务归属：auth→oauth；user/role/权限/租户→upms；其余→rcms */
-function inferService(path) {
+export function inferService(path) {
   const p = path.split('/')[1] || ''
   if (p === 'auth') return 'oauth'
   if (UPMS_PREFIXES.includes(p)) return 'upms'
@@ -15,7 +15,7 @@ function inferService(path) {
 }
 
 /** action 命名：最后一段资源 + 动作（building/list → building-list） */
-function inferAction(path) {
+export function inferAction(path) {
   const parts = path.split('/').filter(Boolean)
   const action = parts[parts.length - 1]
   const resource = parts.length >= 3 ? parts[parts.length - 2] : parts[0]
@@ -24,10 +24,15 @@ function inferAction(path) {
 
 /** 分页接口：尾部为 page/list 且路径含常见资源 → 标 page 参数 */
 const PAGE_SUFFIXES = ['page', 'list', 'pageForRegister', 'pageForSelect']
-function inferParams(path) {
+export function inferParams(path) {
   const last = path.split('/').pop() || ''
   if (PAGE_SUFFIXES.includes(last)) return { current: 'number', size: 'number' }
   return {}
+}
+
+/** 读写归类：含删除/变更/导入/启停等动词 → write，否则 read */
+export function inferKind(path) {
+  return /delete|remove|add|modify|update|save|import|upload|enable|disable/.test(path) ? 'write' : 'read'
 }
 
 export function genApis(calls) {
@@ -44,7 +49,7 @@ export function genApis(calls) {
       path: c.path,
       params: inferParams(c.path),
       desc: c.path,
-      kind: /delete|remove|add|modify|update|save|import|upload|enable|disable/.test(c.path) ? 'write' : 'read',
+      kind: inferKind(c.path),
     })
   }
   return { version: 1, services: SERVICES, modules }

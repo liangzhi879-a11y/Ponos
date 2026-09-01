@@ -232,12 +232,39 @@ test('CLI：auth status 有 token → 退出码 0，stdout 含 token 信息', as
   assert.equal(j.data.expired, false)
 })
 
-test('CLI：discover 占位 → 退出码 2，stdout 纯 JSON 含"未实现"', async () => {
-  const { code, out } = await run(['discover', '--port', '8899'])
-  assert.equal(code, 2)
-  const j = JSON.parse(out)
-  assert.equal(j.code, 2)
-  assert.match(j.msg, /未实现/)
+test('CLI：discover 启动本地代理并打印指向提示（交互式，kill 结束）', async () => {
+  const home = newHome()
+  const child = spawn(process.execPath, [CLI, 'discover', '--port', '0'], {
+    cwd: CLI_DIR,
+    env: { ...process.env, YFLJSJ_HOME: home },
+  })
+  let out = ''
+  let err = ''
+  child.stdout.on('data', (c) => { out += c })
+  child.stderr.on('data', (c) => { err += c })
+  const hintSeen = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`discover 未在超时内打印指向提示（err=${err}）`)), 5000)
+    child.stderr.on('data', () => {
+      if (/浏览器代理指向/.test(err)) {
+        clearTimeout(timer)
+        resolve()
+      }
+    })
+    child.on('close', (code) => {
+      if (!/浏览器代理指向/.test(err)) {
+        clearTimeout(timer)
+        reject(new Error(`discover 提前退出 code=${code}（err=${err}）`))
+      }
+    })
+  })
+  try {
+    await hintSeen
+    assert.match(err, /浏览器代理指向 http:\/\/127\.0\.0\.1:\d+，操作前端各模块，Ctrl\+C 结束/)
+    assert.equal(out, '') // 诊断走 stderr，stdout 保持干净
+  } finally {
+    child.kill()
+  }
+  await new Promise((r) => child.once('close', r))
 })
 
 test('CLI：<module> <action> 未登录 → 路由到 runCommand → 退出码 3，stdout 纯 JSON', async () => {
