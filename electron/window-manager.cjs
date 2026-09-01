@@ -1,6 +1,12 @@
 /**
  * 窗口管理器（BrowserWindow 依赖由 main.cjs 注入 createWindow，本文件可单测状态机）。
- * open/close/setBounds + bounds 校验。窗口 closed 时自动移除并发布 module:state。
+ * open/close/setBounds + bounds 校验 + 窗口类型注册表。
+ * 窗口 closed 时自动移除并发布 module:state。
+ *
+ * 类型化窗口：
+ *   - dock：贴边 + alwaysOnTop + 边界自动隐藏（行为由 onDockAttach 注入，DockService 实现）
+ *   - approval：置顶 + 聚焦 + 审批队列（行为由 onApprovalOpen 注入，ApprovalCenter 实现）
+ *   - module：普通模块窗口（chat/files/settings/skills...）
  */
 'use strict'
 
@@ -24,11 +30,23 @@ function clampBounds(bounds, spec, workArea) {
   return { x, y, w, h }
 }
 
-function createWindowManager({ getModule, bus, createWindow, onClosed }) {
+/**
+ * 窗口类型注册表：类型 → 创建行为。
+ * typeOf(id)：模块 id → 窗口类型（dock/approval 特殊，其余 module）。
+ * hooks 由 main.cjs 注入（DockService/ApprovalCenter），保持本文件可单测。
+ */
+function createWindowManager({ getModule, bus, createWindow, onClosed, hooks = {} }) {
   /** Map<moduleId, BrowserWindow>（非 singleton 模块按 moduleId+paramsKey 区分） */
   const windows = new Map()
   /** Map<BrowserWindow, moduleId> 反向索引（closed 回调反查） */
   const winToModule = new Map()
+
+  // 窗口类型判定：dock / approval / module
+  function typeOf(id) {
+    if (id === 'dock') return 'dock'
+    if (id === 'approval') return 'approval'
+    return 'module'
+  }
 
   function keyOf(id, params) {
     if (getModule(id)?.singleton !== false) return id
@@ -50,12 +68,17 @@ function createWindowManager({ getModule, bus, createWindow, onClosed }) {
     win = createWindow(mod, params)
     windows.set(key, win)
     winToModule.set(win, key)
+    const type = typeOf(id)
     win.on('closed', () => {
       windows.delete(key)
       winToModule.delete(win)
       onClosed?.(key)
+      // 类型化清理钩子：dock 停止贴边轮询 / approval 清除窗口引用
+      hooks.onWindowClosed?.(type, key)
       bus.publish({ channel: 'module', action: 'closed', payload: { moduleId: id, windowId: key }, from: 'main', ts: Date.now() })
     })
+    // 类型化创建钩子：dock 贴边 / approval 置顶聚焦
+    hooks.onWindowCreated?.(type, win, mod, params)
     bus.publish({ channel: 'module', action: 'opened', payload: { moduleId: id, windowId: key }, from: 'main', ts: Date.now() })
     return { ok: true, windowId: key, reused: false }
   }
@@ -93,7 +116,23 @@ function createWindowManager({ getModule, bus, createWindow, onClosed }) {
     return { ok: false, error: 'window not found' }
   }
 
-  return { open, close, getBounds, setBounds }
+  /** 查询当前是否已有某类型的窗口（供 DockService/ApprovalCenter 判断） */
+  function hasType(type) {
+    for (const key of windows.keys()) {
+      if (typeOf(key.split('::')[0]) === type) return true
+    }
+    return false
+  }
+
+  /** 取某类型的当前窗口（dock/approval 单例） */
+  function getByType(type) {
+    for (const [key, win] of windows) {
+      if (typeOf(key.split('::')[0]) === type && !win.isDestroyed()) return win
+    }
+    return null
+  }
+
+  return { open, close, getBounds, setBounds, hasType, getByType, typeOf }
 }
 
 module.exports = { createWindowManager, clampBounds }
