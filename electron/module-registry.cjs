@@ -38,6 +38,10 @@ const BUILTIN_MODULES = [
     id: 'panel', name: '面板', icon: 'list', singleton: false, builtin: true,
     windowSpec: { width: 280, height: 400, minWidth: 240, minHeight: 240, resizable: true, frame: false },
   },
+  {
+    id: 'question', name: '提问', icon: 'help-circle', singleton: true, builtin: true,
+    windowSpec: { width: 560, height: 420, minWidth: 480, minHeight: 320, resizable: true, frame: false },
+  },
 ]
 
 const REQUIRED_MANIFEST_FIELDS = ['id', 'name', 'entry', 'windowSpec']

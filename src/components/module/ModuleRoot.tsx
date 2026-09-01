@@ -14,6 +14,7 @@ import { SettingsModule } from '@/components/module/windows/SettingsModule'
 import { SkillsModule } from '@/components/module/windows/SkillsModule'
 import { ApprovalModule } from '@/components/module/windows/ApprovalModule'
 import { PanelModule } from '@/components/module/windows/PanelModule'
+import { QuestionModule } from '@/components/module/windows/QuestionModule'
 import { CockpitView } from '@/components/cockpit/CockpitView'
 import { TokenStatsPanel } from '@/components/cockpit/TokenStatsPanel'
 
@@ -25,6 +26,7 @@ const MODULE_TITLES: Record<string, string> = {
   skills: '技能',
   approval: '审批',
   panel: '面板',
+  question: '提问',
   cockpit: '驾驶舱',
   dock: '导航栏',
 }
@@ -60,6 +62,10 @@ export function ModuleRoot() {
     // 面板：气泡点击后打开的独立小窗口（task/question/approval 列表）
     case 'panel':
       content = <PanelModule />
+      break
+    // 提问：独立提问卡片窗口（内核提问到达时自动打开，回答后自动关）
+    case 'question':
+      content = <QuestionModule />
       break
     // 驾驶舱：独立模块窗口（导航条常驻时由登录后自动打开 / DockBar 品牌区打开）
     case 'cockpit':

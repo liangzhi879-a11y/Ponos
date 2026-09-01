@@ -2,24 +2,25 @@
 // 聊天模块窗口（?module=chat&conversation=<id>）。
 // 该窗口持有内核 WS 连接（usePonosCLI 模块级单例），任务/提问/审批事件
 // 经 StateBus 发布到 dock 气泡。
+// 提问卡片不再内嵌在聊天界面（统一走独立提问窗口 QuestionModule），
+// 聊天窗口只保留消息流 + 输入框，不遮挡内容。
 import { useEffect } from 'react'
 import { TooltipProvider } from '@/components/ui'
 import { ChatWindow } from '@/components/chat/ChatWindow'
 import { ChatInput } from '@/components/chat/ChatInput'
-import QuestionCard from '@/components/chat/QuestionCard'
 import { useChatStore } from '@/stores/chatStore'
 import { getModuleParam } from '@/lib/moduleBridge'
-import { sendAnswer, dismissQuestion, usePonosCLI } from '@/hooks/usePonosCLI'
+import { usePonosCLI } from '@/hooks/usePonosCLI'
 
 /**
  * 聊天模块窗口（?module=chat&conversation=<id>）。
  * 该窗口持有内核 WS 连接（usePonosCLI 模块级单例），任务/提问/审批事件
- * 经 StateBus 发布到 dock 气泡。
+ * 经 StateBus 发布到 dock 气泡；提问由独立 QuestionModule 窗口展示。
  */
 export function ChatModule() {
   const conversationId = getModuleParam('conversation')
   const isNew = getModuleParam('new') === '1'
-  const { activeConversationId, createConversation, setActiveConversation, pendingQuestions, clearPendingQuestion } = useChatStore()
+  const { activeConversationId, createConversation, setActiveConversation } = useChatStore()
 
   // 无 conversation 参数 → 激活/新建会话；new=1 → 强制新建会话
   useEffect(() => {
@@ -33,7 +34,6 @@ export function ChatModule() {
   }, [conversationId])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const sid = conversationId || activeConversationId
-  const pendingQuestion = sid ? pendingQuestions[sid] : undefined
   usePonosCLI() // 确保 WS 连接建立
 
   return (
@@ -42,22 +42,6 @@ export function ChatModule() {
         {sid ? (
           <>
             <ChatWindow conversationId={sid} />
-            {pendingQuestion && (
-              <div className="px-3 flex justify-center">
-                <QuestionCard
-                  key={`${sid}:${pendingQuestion.questions.map(q => `${q.id}|${q.question.slice(0, 24)}`).join('&') || 'raw'}`}
-                  payload={pendingQuestion}
-                  onAnswer={(response) => {
-                    sendAnswer(sid, response.answers, response.notes)
-                    clearPendingQuestion(sid)
-                  }}
-                  onDismiss={() => {
-                    clearPendingQuestion(sid)
-                    dismissQuestion(sid)
-                  }}
-                />
-              </div>
-            )}
             <ChatInput conversationId={sid} />
           </>
         ) : (

@@ -110,3 +110,23 @@ test('ApprovalCenter 非 approval 事件忽略', () => {
   assert.equal(center.pendingCount(), 0)
   assert.deepEqual(wm.opened, [])
 })
+
+test('ApprovalCenter question pending 打开提问窗口（带会话 id），重复去重', () => {
+  const wm = fakeWM()
+  const center = createApprovalCenter({ windowManager: wm, bus: {} })
+  center.handleEvent({ channel: 'question', action: 'pending', payload: { conversationId: 'c1' } })
+  center.handleEvent({ channel: 'question', action: 'pending', payload: { conversationId: 'c1' } })  // 重复
+  assert.equal(center.pendingCount(), 0)   // 提问不计入审批队列
+  assert.deepEqual(wm.opened, ['question'])
+})
+
+test('ApprovalCenter question resolved 清除提问窗口记录', () => {
+  const wm = fakeWM()
+  const center = createApprovalCenter({ windowManager: wm, bus: {} })
+  center.handleEvent({ channel: 'question', action: 'pending', payload: { conversationId: 'c1' } })
+  center.handleEvent({ channel: 'question', action: 'pending', payload: { conversationId: 'c1' } })
+  assert.deepEqual(wm.opened, ['question'])   // 去重：只开一次
+  center.handleEvent({ channel: 'question', action: 'resolved', payload: { conversationId: 'c1' } })
+  center.handleEvent({ channel: 'question', action: 'pending', payload: { conversationId: 'c1' } })
+  assert.deepEqual(wm.opened, ['question', 'question'])   // resolved 后可再开
+})
