@@ -1,13 +1,14 @@
 // yfljsj CLI — 单文件（零依赖，仅 Node 内置模块）
 // Task 2：认证模块（3 种登录 + token 本地存储 + refresh 自动续期 + 401 重试 + 并发单飞）
 // Task 3：通用命令执行器 runCommand + 兜底原始调用 rawRequest + 退出码映射
-// 骨架阶段：CLI 路由由 Task 4 填充。
+// Task 4：CLI 入口 — parseArgs 参数解析 + main 命令路由 + formatOutput 输出格式化
 import https from 'node:https'
 import http from 'node:http'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline'
+import { pathToFileURL } from 'node:url'
 
 // 平台网关（与 scripts/gen-apis.mjs 的 SERVICES 保持一致）
 export const SERVICES = {
@@ -365,11 +366,12 @@ export function loadApis() {
   return apisCache
 }
 
-// 解析 args → { params, flags, data }。args 支持：
+// 解析命令级 args → { params, flags, data }。args 支持：
 //   - 对象：{ key: value }；key='--data'/'data' 为显式 body，'--xxx' 为 flag，其余进 params
 //   - CLI token 数组：['key=value', '--data', '{json}', '--flag'/'--flag=value']
 // 除 --flag 外的键值进 params（GET→query；POST/PUT→body）；--data 显式 JSON 覆盖 body
-export function parseArgs(args = {}) {
+// 注：Task 4 起 CLI 级 parseArgs 负责 argv 解析；本函数专供 runCommand 消费命令参数。
+export function parseCommandArgs(args = {}) {
   const params = {}
   const flags = {}
   let data // 显式 body（--data），undefined 表示未提供
@@ -500,7 +502,7 @@ export async function runCommand(module, action, args = {}, opts = {}) {
   const cmd = (mod.commands || []).find((c) => c.action === action)
   if (!cmd) return usageResult(`未知命令：${module} ${action}（可用 action：${mod.commands.map((c) => c.action).join('、')}）`)
 
-  const { params, data } = parseArgs(args)
+  const { params, data } = parseCommandArgs(args)
   const schema = cmd.params || {}
 
   // 必填校验：命令表 params 中的字段（对象 schema 可用 required:false 豁免；--data 显式 body 时跳过）
@@ -550,4 +552,249 @@ export async function rawRequest({ path, method = 'POST', data, service = 'rcms'
   }
 }
 
-// 模块导出（各函数已单独 export；CLI 路由由 Task 4 补充）
+// =====================================================================
+// Task 4：CLI 入口 — 参数解析 / 命令路由 / 输出格式化
+// =====================================================================
+export const VERSION = '0.4.0'
+
+// CLI 级参数解析：argv = process.argv.slice(2)
+//   => { command, sub, args, opts, positional }
+//   command/sub：命令树前两个 token（'--help'/'-h' 等顶层 flag 直接作为 command）
+//   args：command/sub 之后的原始 token 数组（透传给 runCommand 桥接层）
+//   opts：{ '--key': value, '--flag': true, '--data': 'json 字符串' }
+//   positional：非 -- 前缀的零散 token
+export function parseArgs(argv = []) {
+  const tokens = Array.isArray(argv) ? argv.map(String) : []
+  const command = tokens[0] || null
+  if (command === null) return { command: null, sub: null, args: [], opts: {}, positional: [] }
+  const rest = tokens.slice(1)
+  let sub = null
+  let args = rest
+  if (rest.length && !rest[0].startsWith('--')) {
+    sub = rest[0]
+    args = rest.slice(1)
+  }
+  const { opts, positional } = parseFlagTokens(args)
+  return { command, sub, args, opts, positional }
+}
+
+// flag token 解析：--key value / --key=value / --flag / --data 'json' / key=value / 裸 token
+function parseFlagTokens(tokens) {
+  const opts = {}
+  const positional = []
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]
+    if (t === '--data') {
+      opts['--data'] = tokens[i + 1]
+      i += 1
+    } else if (t.startsWith('--data=')) {
+      opts['--data'] = t.slice('--data='.length)
+    } else if (t.startsWith('--') && t.includes('=')) {
+      const eq = t.indexOf('=')
+      opts[t.slice(0, eq)] = t.slice(eq + 1)
+    } else if (t.startsWith('--')) {
+      const next = tokens[i + 1]
+      if (next !== undefined && next !== '' && !next.startsWith('--')) {
+        opts[t] = next // --key value
+        i += 1
+      } else {
+        opts[t] = true // --flag（布尔）
+      }
+    } else if (t.includes('=')) {
+      const eq = t.indexOf('=')
+      opts[t.slice(0, eq)] = t.slice(eq + 1)
+    } else {
+      positional.push(t)
+    }
+  }
+  return { opts, positional }
+}
+
+// CLI flag → runCommand 可识别的参数对象（--key value → { key: value }；--data 显式 body）。
+// --human/--json 为 CLI 输出开关，不进入命令参数。
+function toCommandArgs(tokens) {
+  const { opts } = parseFlagTokens(tokens)
+  const out = {}
+  for (const [k, v] of Object.entries(opts)) {
+    if (k === '--data') out['--data'] = v
+    else if (k === '--human' || k === '--json') continue
+    else if (k.startsWith('--')) out[k.slice(2)] = v
+    else out[k] = v
+  }
+  return out
+}
+
+// 输出格式化：--json（默认）JSON.stringify 单行；--human 表格（数组字段自动表头）。
+export function formatOutput(json, { human = false } = {}) {
+  if (!human) return JSON.stringify(json) + '\n'
+  return humanTable(json)
+}
+
+function humanTable(json) {
+  const { data } = json
+  if (Array.isArray(data) && data.length > 0) {
+    const rows = data.map((d) => (d !== null && typeof d === 'object' ? d : { value: d }))
+    const keys = []
+    for (const r of rows) for (const k of Object.keys(r)) if (!keys.includes(k)) keys.push(k)
+    const cell = (v) => (v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v))
+    const widths = keys.map((k) => Math.max(String(k).length, ...rows.map((r) => cell(r[k]).length)))
+    const fmt = (arr) => '| ' + arr.map((c, i) => c.padEnd(widths[i])).join(' | ') + ' |'
+    const sep = '+' + widths.map((w) => '-'.repeat(w + 2)).join('+') + '+'
+    return [sep, fmt(keys), sep, ...rows.map((r) => fmt(keys.map((k) => cell(r[k])))), sep].join('\n')
+  }
+  // 非数组：key: value 平铺
+  return Object.entries(json).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`).join('\n')
+}
+
+// 环境覆盖（测试/自定义网关）：YFLJSJ_GATEWAY 替换网关 baseUrl；YFLJSJ_INSECURE=1 关闭 TLS 校验
+function envOverrides(env = process.env) {
+  const opts = {}
+  if (env.YFLJSJ_GATEWAY) opts.baseUrl = env.YFLJSJ_GATEWAY
+  if (env.YFLJSJ_INSECURE === '1') opts.rejectUnauthorized = false
+  return opts
+}
+
+function helpText() {
+  const mods = Object.keys(loadApis().modules)
+  return [
+    `yfljsj v${VERSION} — yfljsj 业务网关 CLI（命令表驱动，零依赖）`,
+    '',
+    '用法：yfljsj <command> [options]',
+    '',
+    '命令：',
+    '  auth login --method password|captcha|tenant --user X (--password P|--code C|--tenant T)',
+    '  auth logout',
+    '  auth status',
+    '  auth send-code --user X',
+    '  discover [--port 8899]               网关代理探测（Task 5 接入）',
+    "  raw <path> [--method POST] [--data 'json'] [--service rcms]",
+    '  <module> <action> [--param value]...  命令表驱动调用',
+    '  --help / --version',
+    '',
+    '选项：',
+    '  --json                                JSON 输出（默认）',
+    '  --human                               表格输出（数组字段自动表头）',
+    "  --data 'json'                         显式请求体",
+    '',
+    '退出码：0=成功 1=业务错误 2=用法错误 3=认证失败 4=网络错误',
+    '',
+    `可用模块（${mods.length}）：${mods.join(' ')}`,
+    '',
+  ].join('\n')
+}
+
+// auth login 子命令：--method 名称 → 登录方式编号，校验必填后调 login()
+async function authLogin(opts, emit, usage, env) {
+  const methodMap = { password: 1, captcha: 2, tenant: 3 }
+  const methodName = String(opts['--method'] || 'password').toLowerCase()
+  const method = methodMap[methodName]
+  if (!method) {
+    return usage(`auth login --method 非法：${opts['--method']}（password|captcha|tenant）`)
+  }
+  const user = opts['--user']
+  if (!user) return usage('auth login 缺少参数 --user')
+  const required = { 1: '--password', 2: '--code', 3: '--tenant' }[method]
+  if (!opts[required]) return usage(`auth login 缺少参数 ${required}`)
+  const res = await login({ method, user, password: opts['--password'], code: opts['--code'], tenant: opts['--tenant'], ...env })
+  if (res.ok) return emit(0, { success: true, code: 0, msg: 'ok', data: { loggedIn: true, method: methodName } })
+  return emit(1, { success: false, code: 1, msg: res.error || '登录失败', data: null })
+}
+
+// 主入口：命令分发。stdout 只写 JSON（process.stdout.write），诊断/错误走 stderr。
+export async function main(argv = process.argv.slice(2)) {
+  const { command, sub, args, opts } = parseArgs(argv)
+  const human = opts['--human'] === true || (opts['--human'] !== undefined && opts['--human'] !== 'false')
+
+  const emit = (exitCode, json) => {
+    process.stdout.write(formatOutput(json, { human }))
+    return exitCode
+  }
+  const usage = (msg) => {
+    process.stderr.write(`yfljsj：${msg}\n`)
+    return emit(2, { success: false, code: 2, msg, data: null })
+  }
+
+  if (command === null) {
+    process.stderr.write('yfljsj：缺少命令。用法：yfljsj <command> [options]（--help 查看命令树）\n')
+    return emit(2, { success: false, code: 2, msg: '缺少命令：yfljsj <command> [options]', data: null })
+  }
+  if (command === '--help' || command === '-h' || command === 'help') {
+    process.stdout.write(helpText())
+    return 0
+  }
+  if (command === '--version' || command === '-v' || command === 'version') {
+    process.stdout.write(`${VERSION}\n`)
+    return 0
+  }
+
+  const env = envOverrides()
+
+  if (command === 'auth') {
+    if (sub === 'login') return authLogin(opts, emit, usage, env)
+    if (sub === 'logout') {
+      const res = await logout(env)
+      if (res.ok) return emit(0, { success: true, code: 0, msg: 'ok', data: { loggedOut: true } })
+      return emit(1, { success: false, code: 1, msg: res.error || '登出失败', data: null })
+    }
+    if (sub === 'status') {
+      const tok = getToken()
+      if (!tok) return emit(3, { success: false, code: 3, msg: '未登录：请先执行 auth login', data: null })
+      return emit(0, {
+        success: true,
+        code: 0,
+        msg: 'ok',
+        data: { ...tok, expired: !!(tok.expiresAt && tok.expiresAt < Date.now()) },
+      })
+    }
+    if (sub === 'send-code') {
+      const user = opts['--user']
+      if (!user) return usage('auth send-code 缺少参数 --user')
+      const res = await sendCode({ user, ...env })
+      if (res.ok) return emit(0, { success: true, code: 0, msg: 'ok', data: { sent: true } })
+      return emit(1, { success: false, code: 1, msg: res.error || '发送验证码失败', data: null })
+    }
+    if (sub === '--help') {
+      process.stdout.write(helpText())
+      return 0
+    }
+    return usage('auth 需要子命令：login / logout / status / send-code')
+  }
+
+  if (command === 'discover') {
+    // Task 5 占位：代理探测（127.0.0.1:8899）由 Task 5 接入
+    return usage('discover 未实现：网关代理探测由 Task 5 接入（--port 8899）')
+  }
+
+  if (command === 'raw') {
+    if (!sub) return usage("raw 需要 path 参数。用法：yfljsj raw <path> [--method POST] [--data 'json'] [--service rcms]")
+    const method = String(opts['--method'] || 'POST').toUpperCase()
+    const service = String(opts['--service'] || 'rcms')
+    const data = opts['--data'] === undefined ? undefined : opts['--data']
+    const r = await rawRequest({ path: sub, method, data, service, ...env })
+    return emit(r.exitCode, r.json)
+  }
+
+  // <module> <action> [--param value]...  命令表驱动调用
+  if (sub) {
+    const r = await runCommand(command, sub, toCommandArgs(args), env)
+    if (r.exitCode === 2) process.stderr.write(`yfljsj：${r.json.msg}\n`)
+    return emit(r.exitCode, r.json)
+  }
+
+  process.stderr.write(`yfljsj：未知命令 ${command}。可用：auth / discover / raw / <module> <action> / --help / --version\n`)
+  return emit(2, { success: false, code: 2, msg: `未知命令：${command}`, data: null })
+}
+
+// 直接执行（import 时跳过，测试可复用 parseArgs/main/formatOutput）。main 为 async，
+// Promise 落地 exitCode；未捕获异常以 1 退出。
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
+if (isMain) {
+  main(process.argv.slice(2))
+    .then((code) => {
+      process.exitCode = code
+    })
+    .catch((err) => {
+      process.stderr.write(`yfljsj: 未捕获错误：${(err && err.stack) || err}\n`)
+      process.exitCode = 1
+    })
+}
