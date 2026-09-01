@@ -14,7 +14,13 @@
      "action": "capitalization-queryById",
      "method": "POST",
      "path": "/asset/capitalization/queryById",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/asset/capitalization/queryById",
      "kind": "read"
     },
@@ -33,6 +39,11 @@
        "type": "number",
        "required": true,
        "desc": "每页条数"
+      },
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/asset/capitalizationDetail/list",
@@ -50,7 +61,13 @@
      "action": "intangible-queryById",
      "method": "POST",
      "path": "/asset/intangible/queryById",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/asset/intangible/queryById",
      "kind": "read"
     },
@@ -69,6 +86,11 @@
        "type": "number",
        "required": true,
        "desc": "每页条数"
+      },
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/asset/intangibleDetail/list",
@@ -286,7 +308,13 @@
      "action": "device-queryById",
      "method": "POST",
      "path": "/asset/device/queryById",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/asset/device/queryById",
      "kind": "read"
     },
@@ -305,6 +333,11 @@
        "type": "number",
        "required": true,
        "desc": "每页条数"
+      },
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/asset/deviceDetail/list",
@@ -322,7 +355,13 @@
      "action": "building-queryById",
      "method": "POST",
      "path": "/asset/building/queryById",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/asset/building/queryById",
      "kind": "read"
     },
@@ -341,6 +380,11 @@
        "type": "number",
        "required": true,
        "desc": "每页条数"
+      },
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/asset/buildingDetail/list",
@@ -481,6 +525,11 @@
        "type": "number",
        "required": true,
        "desc": "每页条数"
+      },
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/asset/device/list",
@@ -712,7 +761,13 @@
      "action": "article-add",
      "method": "POST",
      "path": "/achievement/article/add",
-     "params": {},
+     "params": {
+      "projId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/achievement/article/add",
      "kind": "write"
     },
@@ -720,7 +775,13 @@
      "action": "article-modify",
      "method": "POST",
      "path": "/achievement/article/modify",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/achievement/article/modify",
      "kind": "write"
     },
@@ -756,7 +817,13 @@
      "action": "evaluate-add",
      "method": "POST",
      "path": "/achievement/evaluate/add",
-     "params": {},
+     "params": {
+      "projId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/achievement/evaluate/add",
      "kind": "write"
     },
@@ -764,7 +831,13 @@
      "action": "evaluate-modify",
      "method": "POST",
      "path": "/achievement/evaluate/modify",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/achievement/evaluate/modify",
      "kind": "write"
     },
@@ -799,6 +872,11 @@
        "type": "number",
        "required": true,
        "desc": "每页条数"
+      },
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/achievement/ipr/list",
@@ -848,7 +926,13 @@
      "action": "ipr-queryById",
      "method": "POST",
      "path": "/achievement/ipr/queryById",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/achievement/ipr/queryById",
      "kind": "read"
     },
@@ -856,7 +940,13 @@
      "action": "common-getIprList",
      "method": "POST",
      "path": "/achievement/common/getIprList",
-     "params": {},
+     "params": {
+      "projId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/achievement/common/getIprList",
      "kind": "read"
     },
@@ -864,7 +954,48 @@
      "action": "ipr-add",
      "method": "POST",
      "path": "/achievement/ipr/add",
-     "params": {},
+     "params": {
+      "iprType": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "achieveMethod": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "applyNo": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "applyDate": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "iprName": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/achievement/ipr/add",
      "kind": "write"
     },
@@ -872,7 +1003,18 @@
      "action": "ipr-modify",
      "method": "POST",
      "path": "/achievement/ipr/modify",
-     "params": {},
+     "params": {
+      "projId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/achievement/ipr/modify",
      "kind": "write"
     },
@@ -880,7 +1022,23 @@
      "action": "convert-add",
      "method": "POST",
      "path": "/achievement/convert/add",
-     "params": {},
+     "params": {
+      "projId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "type": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "name": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/achievement/convert/add",
      "kind": "write"
     },
@@ -888,7 +1046,13 @@
      "action": "convert-modify",
      "method": "POST",
      "path": "/achievement/convert/modify",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/achievement/convert/modify",
      "kind": "write"
     },
@@ -924,7 +1088,23 @@
      "action": "search-add",
      "method": "POST",
      "path": "/achievement/search/add",
-     "params": {},
+     "params": {
+      "reportNo": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "searchName": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/achievement/search/add",
      "kind": "write"
     },
@@ -932,7 +1112,13 @@
      "action": "search-modify",
      "method": "POST",
      "path": "/achievement/search/modify",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/achievement/search/modify",
      "kind": "write"
     },
@@ -1068,7 +1254,13 @@
      "action": "projectBudget-budgetTree",
      "method": "POST",
      "path": "/resefunds/projectBudget/budgetTree",
-     "params": {},
+     "params": {
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/resefunds/projectBudget/budgetTree",
      "kind": "read"
     },
@@ -1096,7 +1288,18 @@
      "action": "projectBudget-updateBudget",
      "method": "POST",
      "path": "/resefunds/projectBudget/updateBudget",
-     "params": {},
+     "params": {
+      "configBudgetId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/resefunds/projectBudget/updateBudget",
      "kind": "write"
     },
@@ -1124,7 +1327,33 @@
      "action": "fundsEnough-save",
      "method": "POST",
      "path": "/resefunds/fundsEnough/save",
-     "params": {},
+     "params": {
+      "enoughAmount": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "creditedTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/resefunds/fundsEnough/save",
      "kind": "write"
     },
@@ -1132,7 +1361,38 @@
      "action": "fundsEnough-update",
      "method": "POST",
      "path": "/resefunds/fundsEnough/update",
-     "params": {},
+     "params": {
+      "enoughAmount": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "creditedTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/resefunds/fundsEnough/update",
      "kind": "write"
     },
@@ -1156,7 +1416,13 @@
      "action": "fundsEnough-getProjectFinanceBudget",
      "method": "POST",
      "path": "/resefunds/fundsEnough/getProjectFinanceBudget",
-     "params": {},
+     "params": {
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/resefunds/fundsEnough/getProjectFinanceBudget",
      "kind": "read"
     },
@@ -1200,7 +1466,43 @@
      "action": "fundsAllocate-save",
      "method": "POST",
      "path": "/resefunds/fundsAllocate/save",
-     "params": {},
+     "params": {
+      "subTopic": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "allocateAmount": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "allocateTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "payee": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/resefunds/fundsAllocate/save",
      "kind": "write"
     },
@@ -1208,7 +1510,48 @@
      "action": "fundsAllocate-update",
      "method": "POST",
      "path": "/resefunds/fundsAllocate/update",
-     "params": {},
+     "params": {
+      "allocateAmount": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "subTopic": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "allocateTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "payee": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/resefunds/fundsAllocate/update",
      "kind": "write"
     },
@@ -1224,7 +1567,13 @@
      "action": "fundsAllocate-listSubTopicTree",
      "method": "POST",
      "path": "/resefunds/fundsAllocate/listSubTopicTree",
-     "params": {},
+     "params": {
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/resefunds/fundsAllocate/listSubTopicTree",
      "kind": "read"
     },
@@ -1232,7 +1581,33 @@
      "action": "fundsAllocate-validateAmount",
      "method": "POST",
      "path": "/resefunds/fundsAllocate/validateAmount",
-     "params": {},
+     "params": {
+      "allocateAmount": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "allocateTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/resefunds/fundsAllocate/validateAmount",
      "kind": "read"
     },
@@ -1260,7 +1635,53 @@
      "action": "fundsExpen-saveVoucher",
      "method": "POST",
      "path": "/resefunds/fundsExpen/saveVoucher",
-     "params": {},
+     "params": {
+      "voucherNo": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "expenType": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "voucherDate": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "voucherType": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "financeBudgetId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "voucherAmount": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/resefunds/fundsExpen/saveVoucher",
      "kind": "write"
     },
@@ -1268,7 +1689,58 @@
      "action": "fundsExpen-updateVoucher",
      "method": "POST",
      "path": "/resefunds/fundsExpen/updateVoucher",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "financeBudgetId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "voucherType": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "voucherDate": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "voucherAmount": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "expenType": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "voucherNo": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/resefunds/fundsExpen/updateVoucher",
      "kind": "write"
     },
@@ -1284,7 +1756,48 @@
      "action": "fundsExpen-settleRdExpense",
      "method": "POST",
      "path": "/resefunds/fundsExpen/settleRdExpense",
-     "params": {},
+     "params": {
+      "voucherNo": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "settleAmount": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "expenType": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "voucherDate": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "voucherType": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "financeBudgetId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/resefunds/fundsExpen/settleRdExpense",
      "kind": "read"
     },
@@ -1292,7 +1805,48 @@
      "action": "fundsExpen-settleIntangibleAsset",
      "method": "POST",
      "path": "/resefunds/fundsExpen/settleIntangibleAsset",
-     "params": {},
+     "params": {
+      "voucherType": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "financeBudgetId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "voucherNo": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "voucherDate": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "settleAmount": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "expenType": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/resefunds/fundsExpen/settleIntangibleAsset",
      "kind": "read"
     },
@@ -1300,7 +1854,28 @@
      "action": "fundsExpen-calculateSettleAmount",
      "method": "POST",
      "path": "/resefunds/fundsExpen/calculateSettleAmount",
-     "params": {},
+     "params": {
+      "expenType": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "voucherDate": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/resefunds/fundsExpen/calculateSettleAmount",
      "kind": "read"
     }
@@ -1325,6 +1900,11 @@
        "type": "number",
        "required": true,
        "desc": "每页条数"
+      },
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/workbench/projectRdCost/list",
@@ -1334,7 +1914,18 @@
      "action": "projectRdCost-modify",
      "method": "POST",
      "path": "/workbench/projectRdCost/modify",
-     "params": {},
+     "params": {
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/workbench/projectRdCost/modify",
      "kind": "write"
     },
@@ -1386,7 +1977,18 @@
      "action": "projectEquip-add",
      "method": "POST",
      "path": "/workbench/projectEquip/add",
-     "params": {},
+     "params": {
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/workbench/projectEquip/add",
      "kind": "write"
     },
@@ -1457,7 +2059,10 @@
        "type": "number",
        "required": true,
        "desc": "主要技术经济目标",
-       "enum": [1, 3]
+       "enum": [
+        1,
+        3
+       ]
       },
       "researchContent": {
        "type": "string",
@@ -1517,7 +2122,13 @@
      "action": "projectAppro-getById",
      "method": "POST",
      "path": "/workbench/projectAppro/getById",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/workbench/projectAppro/getById",
      "kind": "read"
     },
@@ -1560,14 +2171,19 @@
        "type": "string",
        "required": false,
        "desc": "项目来源",
-       "enum": ["1", "2"],
+       "enum": [
+        "1",
+        "2"
+       ],
        "source": "参考已有项目"
       },
       "projectType": {
        "type": "string",
        "required": false,
        "desc": "项目类型",
-       "enum": ["1-1"]
+       "enum": [
+        "1-1"
+       ]
       },
       "startDate": {
        "type": "string",
@@ -1636,7 +2252,58 @@
      "action": "projectInfo-modify",
      "method": "POST",
      "path": "/workbench/projectInfo/modify",
-     "params": {},
+     "params": {
+      "applyDate": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "startDate": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projectType": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projectCode": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "endDate": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projectSource": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "researchBudget": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "knowledgeField": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projectName": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/workbench/projectInfo/modify",
      "kind": "write"
     },
@@ -1676,7 +2343,23 @@
      "action": "attendance-ranking",
      "method": "POST",
      "path": "/workbench/attendance/ranking",
-     "params": {},
+     "params": {
+      "startTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "endTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/workbench/attendance/ranking",
      "kind": "read"
     },
@@ -1684,7 +2367,13 @@
      "action": "project-downloadMaterials",
      "method": "POST",
      "path": "/workbench/project/downloadMaterials",
-     "params": {},
+     "params": {
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/workbench/project/downloadMaterials",
      "kind": "read"
     },
@@ -1736,7 +2425,18 @@
      "action": "projectMaterialPick-consumeBatch",
      "method": "POST",
      "path": "/workbench/projectMaterialPick/consumeBatch",
-     "params": {},
+     "params": {
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/workbench/projectMaterialPick/consumeBatch",
      "kind": "read"
     },
@@ -1744,7 +2444,18 @@
      "action": "projectMaterialPick-pick",
      "method": "POST",
      "path": "/workbench/projectMaterialPick/pick",
-     "params": {},
+     "params": {
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/workbench/projectMaterialPick/pick",
      "kind": "read"
     },
@@ -1848,7 +2559,18 @@
      "action": "projectMaterialPick2-add",
      "method": "POST",
      "path": "/workbench/projectMaterialPick2/add",
-     "params": {},
+     "params": {
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/workbench/projectMaterialPick2/add",
      "kind": "write"
     },
@@ -1856,7 +2578,43 @@
      "action": "projectMaterialPick2-modify",
      "method": "POST",
      "path": "/workbench/projectMaterialPick2/modify",
-     "params": {},
+     "params": {
+      "docNo": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "pickTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "quantity": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "unitPrice": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "unit": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "materialName": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/workbench/projectMaterialPick2/modify",
      "kind": "write"
     },
@@ -1924,7 +2682,18 @@
      "action": "projectMaterialPick2-statistics",
      "method": "POST",
      "path": "/workbench/projectMaterialPick2/statistics",
-     "params": {},
+     "params": {
+      "endTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "startTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/workbench/projectMaterialPick2/statistics",
      "kind": "read"
     },
@@ -1932,7 +2701,18 @@
      "action": "projectMember-add",
      "method": "POST",
      "path": "/workbench/projectMember/add",
-     "params": {},
+     "params": {
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/workbench/projectMember/add",
      "kind": "write"
     },
@@ -2402,7 +3182,18 @@
      "action": "sysVoucher-getVoucherSummaryByPeriod",
      "method": "POST",
      "path": "/voucher/sysVoucher/getVoucherSummaryByPeriod",
-     "params": {},
+     "params": {
+      "periodType": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/voucher/sysVoucher/getVoucherSummaryByPeriod",
      "kind": "read"
     },
@@ -2454,7 +3245,18 @@
      "action": "sysVoucher-addProject",
      "method": "POST",
      "path": "/voucher/sysVoucher/addProject",
-     "params": {},
+     "params": {
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/voucher/sysVoucher/addProject",
      "kind": "write"
     },
@@ -2526,7 +3328,18 @@
      "action": "match-download",
      "method": "POST",
      "path": "/voucher/match/download",
-     "params": {},
+     "params": {
+      "voucherId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "subjectCode": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/voucher/match/download",
      "kind": "read"
     },
@@ -2534,7 +3347,18 @@
      "action": "match-execute",
      "method": "POST",
      "path": "/voucher/match/execute",
-     "params": {},
+     "params": {
+      "voucherId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "subjectCode": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/voucher/match/execute",
      "kind": "read"
     },
@@ -2724,7 +3548,13 @@
      "action": "highTechProductMapping-generate",
      "method": "POST",
      "path": "/enterprise/highTechProductMapping/generate",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/highTechProductMapping/generate",
      "kind": "read"
     },
@@ -2732,7 +3562,18 @@
      "action": "highTechProductMapping-saveBatch",
      "method": "POST",
      "path": "/enterprise/highTechProductMapping/saveBatch",
-     "params": {},
+     "params": {
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/highTechProductMapping/saveBatch",
      "kind": "write"
     },
@@ -2751,6 +3592,11 @@
        "type": "number",
        "required": true,
        "desc": "每页条数"
+      },
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/enterprise/psItem/list",
@@ -2780,7 +3626,13 @@
      "action": "rdExpenseItem-queryById",
      "method": "POST",
      "path": "/enterprise/declare/rdExpenseItem/queryById",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/declare/rdExpenseItem/queryById",
      "kind": "read"
     },
@@ -2820,7 +3672,13 @@
      "action": "rdExpenseSummary-queryById",
      "method": "POST",
      "path": "/enterprise/declare/rdExpenseSummary/queryById",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/declare/rdExpenseSummary/queryById",
      "kind": "read"
     },
@@ -2828,7 +3686,13 @@
      "action": "hrSummary-queryById",
      "method": "POST",
      "path": "/enterprise/declare/hrSummary/queryById",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/declare/hrSummary/queryById",
      "kind": "read"
     },
@@ -2844,7 +3708,13 @@
      "action": "qualificationSummary-queryById",
      "method": "POST",
      "path": "/enterprise/declare/qualificationSummary/queryById",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/declare/qualificationSummary/queryById",
      "kind": "read"
     },
@@ -2888,7 +3758,13 @@
      "action": "productIncomeDetail-queryById",
      "method": "POST",
      "path": "/enterprise/productIncomeDetail/queryById",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/productIncomeDetail/queryById",
      "kind": "read"
     },
@@ -2944,7 +3820,18 @@
      "action": "uploadedFile-autoGenerate",
      "method": "POST",
      "path": "/enterprise/declare/uploadedFile/autoGenerate",
-     "params": {},
+     "params": {
+      "materialCategoryId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/declare/uploadedFile/autoGenerate",
      "kind": "write"
     },
@@ -2963,6 +3850,16 @@
        "type": "number",
        "required": true,
        "desc": "每页条数"
+      },
+      "materialCategoryId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/enterprise/declare/uploadedFile/list",
@@ -2988,7 +3885,13 @@
      "action": "rdSummary-queryById",
      "method": "POST",
      "path": "/enterprise/declare/rdSummary/queryById",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/declare/rdSummary/queryById",
      "kind": "read"
     },
@@ -3024,7 +3927,13 @@
      "action": "rdItem-queryById",
      "method": "POST",
      "path": "/enterprise/declare/rdItem/queryById",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/declare/rdItem/queryById",
      "kind": "read"
     },
@@ -3118,6 +4027,11 @@
        "type": "number",
        "required": true,
        "desc": "每页条数"
+      },
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/enterprise/declare/rdItem/list",
@@ -3154,6 +4068,11 @@
        "type": "number",
        "required": true,
        "desc": "每页条数"
+      },
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/enterprise/declare/ip/list",
@@ -3163,7 +4082,13 @@
      "action": "dashboard-ipCount",
      "method": "POST",
      "path": "/enterprise/dashboard/ipCount",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/dashboard/ipCount",
      "kind": "read"
     },
@@ -3171,7 +4096,13 @@
      "action": "dashboard-productStatistics",
      "method": "POST",
      "path": "/enterprise/dashboard/productStatistics",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/dashboard/productStatistics",
      "kind": "read"
     },
@@ -3199,7 +4130,13 @@
      "action": "certification-certTypeCount",
      "method": "POST",
      "path": "/enterprise/dashboard/certification/certTypeCount",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/dashboard/certification/certTypeCount",
      "kind": "read"
     },
@@ -3215,7 +4152,13 @@
      "action": "certification-queryById",
      "method": "POST",
      "path": "/enterprise/dashboard/certification/queryById",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/dashboard/certification/queryById",
      "kind": "read"
     },
@@ -3247,7 +4190,13 @@
      "action": "dashboard-financeData",
      "method": "POST",
      "path": "/enterprise/dashboard/financeData",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/dashboard/financeData",
      "kind": "read"
     },
@@ -3255,7 +4204,13 @@
      "action": "dashboard-getRdStaffRatio",
      "method": "POST",
      "path": "/enterprise/dashboard/getRdStaffRatio",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/dashboard/getRdStaffRatio",
      "kind": "read"
     },
@@ -3263,7 +4218,13 @@
      "action": "organizationInfo-queryById",
      "method": "POST",
      "path": "/enterprise/dashboard/organizationInfo/queryById",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/dashboard/organizationInfo/queryById",
      "kind": "read"
     },
@@ -3271,7 +4232,23 @@
      "action": "organizationInfo-modify",
      "method": "POST",
      "path": "/enterprise/dashboard/organizationInfo/modify",
-     "params": {},
+     "params": {
+      "index": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "enabled": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/dashboard/organizationInfo/modify",
      "kind": "write"
     },
@@ -3315,7 +4292,13 @@
      "action": "techTransfer-queryById",
      "method": "POST",
      "path": "/enterprise/declare/techTransfer/queryById",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/declare/techTransfer/queryById",
      "kind": "read"
     },
@@ -3399,7 +4382,13 @@
      "action": "psItem-queryById",
      "method": "POST",
      "path": "/enterprise/psItem/queryById",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/psItem/queryById",
      "kind": "read"
     },
@@ -3415,7 +4404,13 @@
      "action": "innovationAbility-queryById",
      "method": "POST",
      "path": "/enterprise/declare/innovationAbility/queryById",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/declare/innovationAbility/queryById",
      "kind": "read"
     },
@@ -3431,7 +4426,13 @@
      "action": "psSummary-queryById",
      "method": "POST",
      "path": "/enterprise/declare/psSummary/queryById",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/declare/psSummary/queryById",
      "kind": "read"
     },
@@ -3467,7 +4468,13 @@
      "action": "psItem-listExcludeCorrelation",
      "method": "POST",
      "path": "/enterprise/psItem/listExcludeCorrelation",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/psItem/listExcludeCorrelation",
      "kind": "read"
     },
@@ -3502,6 +4509,11 @@
        "type": "number",
        "required": true,
        "desc": "每页条数"
+      },
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/enterprise/declare/psItemCorrelation/list",
@@ -3511,7 +4523,13 @@
      "action": "ip-statistics",
      "method": "POST",
      "path": "/enterprise/declare/ip/statistics",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/declare/ip/statistics",
      "kind": "read"
     },
@@ -3547,7 +4565,13 @@
      "action": "ip-queryById",
      "method": "POST",
      "path": "/enterprise/declare/ip/queryById",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/declare/ip/queryById",
      "kind": "read"
     },
@@ -3571,7 +4595,13 @@
      "action": "sync-data",
      "method": "POST",
      "path": "/enterprise/declare/sync/data",
-     "params": {},
+     "params": {
+      "itemCode": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/declare/sync/data",
      "kind": "read"
     },
@@ -3607,7 +4637,13 @@
      "action": "standards-queryById",
      "method": "POST",
      "path": "/enterprise/declare/standards/queryById",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/declare/standards/queryById",
      "kind": "read"
     },
@@ -3639,7 +4675,13 @@
      "action": "report-updateAssessment",
      "method": "POST",
      "path": "/enterprise/declare/report/updateAssessment",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/declare/report/updateAssessment",
      "kind": "write"
     },
@@ -3647,7 +4689,13 @@
      "action": "report-downloadAllAttachments",
      "method": "POST",
      "path": "/enterprise/declare/report/downloadAllAttachments",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/declare/report/downloadAllAttachments",
      "kind": "read"
     },
@@ -3663,7 +4711,13 @@
      "action": "highTechProductMapping-summary",
      "method": "POST",
      "path": "/enterprise/highTechProductMapping/summary",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/highTechProductMapping/summary",
      "kind": "read"
     },
@@ -3671,7 +4725,13 @@
      "action": "highTechProductMapping-export",
      "method": "POST",
      "path": "/enterprise/highTechProductMapping/export",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/enterprise/highTechProductMapping/export",
      "kind": "read"
     }
@@ -3721,7 +4781,18 @@
      "action": "file-refresh",
      "method": "POST",
      "path": "/reference/file/refresh",
-     "params": {},
+     "params": {
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/reference/file/refresh",
      "kind": "read"
     },
@@ -3777,7 +4848,13 @@
      "action": "configCostCenter-modify",
      "method": "POST",
      "path": "/financial/configCostCenter/modify",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/financial/configCostCenter/modify",
      "kind": "write"
     },
@@ -3869,7 +4946,13 @@
      "action": "configEquipmentType-modify",
      "method": "POST",
      "path": "/financial/configEquipmentType/modify",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/financial/configEquipmentType/modify",
      "kind": "write"
     },
@@ -3913,7 +4996,13 @@
      "action": "configMaterialAux-modify",
      "method": "POST",
      "path": "/financial/configMaterialAux/modify",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/financial/configMaterialAux/modify",
      "kind": "write"
     },
@@ -4017,7 +5106,13 @@
      "action": "configPowerType-modify",
      "method": "POST",
      "path": "/financial/configPowerType/modify",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/financial/configPowerType/modify",
      "kind": "write"
     },
@@ -4073,7 +5168,18 @@
      "action": "configProjectAllocation-saveOrUpdate",
      "method": "POST",
      "path": "/financial/configProjectAllocation/saveOrUpdate",
-     "params": {},
+     "params": {
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/financial/configProjectAllocation/saveOrUpdate",
      "kind": "write"
     }
@@ -4107,7 +5213,18 @@
      "action": "sysRole-add",
      "method": "POST",
      "path": "/role/sysRole/add",
-     "params": {},
+     "params": {
+      "roleType": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "roleName": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/role/sysRole/add",
      "kind": "write"
     },
@@ -4115,7 +5232,13 @@
      "action": "sysRole-modify",
      "method": "POST",
      "path": "/role/sysRole/modify",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/role/sysRole/modify",
      "kind": "write"
     },
@@ -4171,7 +5294,13 @@
      "action": "users-getAddTree",
      "method": "POST",
      "path": "/role/users/getAddTree",
-     "params": {},
+     "params": {
+      "roleId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/role/users/getAddTree",
      "kind": "read"
     },
@@ -4179,7 +5308,13 @@
      "action": "users-batchAdd",
      "method": "POST",
      "path": "/role/users/batchAdd",
-     "params": {},
+     "params": {
+      "roleId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/role/users/batchAdd",
      "kind": "read"
     },
@@ -4201,7 +5336,13 @@
      "action": "sysPermission-getPermissionTree",
      "method": "POST",
      "path": "/permission/sysPermission/getPermissionTree",
-     "params": {},
+     "params": {
+      "roleId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/permission/sysPermission/getPermissionTree",
      "kind": "read"
     },
@@ -4223,7 +5364,18 @@
      "action": "sysRolePermissionRel-modify",
      "method": "POST",
      "path": "/sys/sysRolePermissionRel/modify",
-     "params": {},
+     "params": {
+      "roleId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "permissionIds": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/sys/sysRolePermissionRel/modify",
      "kind": "write"
     }
@@ -4301,7 +5453,23 @@
      "action": "power-add",
      "method": "POST",
      "path": "/material/power/add",
-     "params": {},
+     "params": {
+      "recordMonth": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "details": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/material/power/add",
      "kind": "write"
     },
@@ -4337,7 +5505,18 @@
      "action": "power-generate",
      "method": "POST",
      "path": "/material/power/generate",
-     "params": {},
+     "params": {
+      "recordMonth": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/material/power/generate",
      "kind": "read"
     },
@@ -4353,7 +5532,23 @@
      "action": "power-modify",
      "method": "POST",
      "path": "/material/power/modify",
-     "params": {},
+     "params": {
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "details": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "recordMonth": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/material/power/modify",
      "kind": "write"
     },
@@ -4417,7 +5612,43 @@
      "action": "fuel-add",
      "method": "POST",
      "path": "/material/fuel/add",
-     "params": {},
+     "params": {
+      "amount": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "fuelName": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "unitPrice": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "unit": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "quantity": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "fuelCode": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "consumeTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/material/fuel/add",
      "kind": "write"
     },
@@ -4425,7 +5656,43 @@
      "action": "fuel-modify",
      "method": "POST",
      "path": "/material/fuel/modify",
-     "params": {},
+     "params": {
+      "amount": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "consumeTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "fuelCode": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "quantity": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "unitPrice": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "unit": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "fuelName": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/material/fuel/modify",
      "kind": "write"
     },
@@ -4493,7 +5760,18 @@
      "action": "raw-saveOrUpdate",
      "method": "POST",
      "path": "/material/raw/saveOrUpdate",
-     "params": {},
+     "params": {
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/material/raw/saveOrUpdate",
      "kind": "write"
     },
@@ -4613,7 +5891,28 @@
      "action": "batch-pick-batch",
      "method": "POST",
      "path": "/material/batch/pick-batch",
-     "params": {},
+     "params": {
+      "batchId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "userId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "quantity": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/material/batch/pick-batch",
      "kind": "read"
     },
@@ -4621,7 +5920,28 @@
      "action": "batch-pick-fifo",
      "method": "POST",
      "path": "/material/batch/pick-fifo",
-     "params": {},
+     "params": {
+      "userId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "quantity": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "materialId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/material/batch/pick-fifo",
      "kind": "read"
     },
@@ -4629,7 +5949,33 @@
      "action": "batch-return",
      "method": "POST",
      "path": "/material/batch/return",
-     "params": {},
+     "params": {
+      "userId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "quantity": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "pickId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "frozenUnitCost": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/material/batch/return",
      "kind": "read"
     }
@@ -4701,7 +6047,23 @@
      "action": "sysGroupOrg-add",
      "method": "POST",
      "path": "/group/sysGroupOrg/add",
-     "params": {},
+     "params": {
+      "groupTenantId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "orgName": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "parentId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/group/sysGroupOrg/add",
      "kind": "write"
     },
@@ -4709,7 +6071,13 @@
      "action": "sysGroupOrg-modify",
      "method": "POST",
      "path": "/group/sysGroupOrg/modify",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/group/sysGroupOrg/modify",
      "kind": "write"
     },
@@ -4761,7 +6129,18 @@
      "action": "sysGroupSubCompany-add",
      "method": "POST",
      "path": "/group/sysGroupSubCompany/add",
-     "params": {},
+     "params": {
+      "groupTenantId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "creditCode": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/group/sysGroupSubCompany/add",
      "kind": "write"
     },
@@ -4802,6 +6181,16 @@
        "type": "number",
        "required": true,
        "desc": "每页条数"
+      },
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "typeCode": {
+       "type": "string",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/declare/declareFile/list",
@@ -4811,7 +6200,18 @@
      "action": "declareFile-queryById",
      "method": "POST",
      "path": "/declare/declareFile/queryById",
-     "params": {},
+     "params": {
+      "typeCode": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/declare/declareFile/queryById",
      "kind": "read"
     },
@@ -4819,7 +6219,18 @@
      "action": "declareFile-updateAllSubReports",
      "method": "POST",
      "path": "/declare/declareFile/updateAllSubReports",
-     "params": {},
+     "params": {
+      "typeCode": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/declare/declareFile/updateAllSubReports",
      "kind": "write"
     }
@@ -4833,7 +6244,13 @@
      "action": "tenantCompanyInfo-getByTenantId",
      "method": "POST",
      "path": "/tenant/tenantCompanyInfo/getByTenantId",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/tenant/tenantCompanyInfo/getByTenantId",
      "kind": "read"
     }
@@ -4872,6 +6289,11 @@
        "type": "number",
        "required": true,
        "desc": "每页条数"
+      },
+      "dictCode": {
+       "type": "string",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/dictionary/dictionaryType/list",
@@ -4881,7 +6303,13 @@
      "action": "dictionaryType-getTree",
      "method": "POST",
      "path": "/dictionary/dictionaryType/getTree",
-     "params": {},
+     "params": {
+      "dictCode": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/dictionary/dictionaryType/getTree",
      "kind": "read"
     },
@@ -4889,7 +6317,18 @@
      "action": "dictionaryType-getSubList",
      "method": "POST",
      "path": "/dictionary/dictionaryType/getSubList",
-     "params": {},
+     "params": {
+      "parentId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "dictCode": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/dictionary/dictionaryType/getSubList",
      "kind": "read"
     }
@@ -5038,7 +6477,13 @@
      "action": "sysDpUserRoleRel-assignRoleToUser",
      "method": "POST",
      "path": "/dp/sysDpUserRoleRel/assignRoleToUser",
-     "params": {},
+     "params": {
+      "tenantUserId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/dp/sysDpUserRoleRel/assignRoleToUser",
      "kind": "read"
     },
@@ -5066,6 +6511,11 @@
        "type": "string",
        "sensitive": true,
        "required": false
+      },
+      "tenantUserId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/dp/sysDpUserRoleRel/listUserRoleWithChecked",
@@ -5103,7 +6553,13 @@
      "action": "sysDpRole-modify",
      "method": "POST",
      "path": "/dp/sysDpRole/modify",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/dp/sysDpRole/modify",
      "kind": "write"
     },
@@ -5127,7 +6583,13 @@
      "action": "sysDpRolePermissionRel-listByRoleId",
      "method": "POST",
      "path": "/dp/sysDpRolePermissionRel/listByRoleId",
-     "params": {},
+     "params": {
+      "roleId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/dp/sysDpRolePermissionRel/listByRoleId",
      "kind": "read"
     },
@@ -5135,7 +6597,13 @@
      "action": "sysDpRolePermissionRel-assignPermToRole",
      "method": "POST",
      "path": "/dp/sysDpRolePermissionRel/assignPermToRole",
-     "params": {},
+     "params": {
+      "roleId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/dp/sysDpRolePermissionRel/assignPermToRole",
      "kind": "read"
     }
@@ -5169,7 +6637,13 @@
      "action": "riskBasicConf-modify",
      "method": "POST",
      "path": "/risk/riskBasicConf/modify",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/risk/riskBasicConf/modify",
      "kind": "write"
     },
@@ -5177,7 +6651,13 @@
      "action": "riskBasicConf-add",
      "method": "POST",
      "path": "/risk/riskBasicConf/add",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/risk/riskBasicConf/add",
      "kind": "write"
     },
@@ -5221,7 +6701,13 @@
      "action": "riskPersonMgrConfig-modify",
      "method": "POST",
      "path": "/risk/riskPersonMgrConfig/modify",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/risk/riskPersonMgrConfig/modify",
      "kind": "write"
     },
@@ -5265,7 +6751,13 @@
      "action": "riskProjMgrConfig-modify",
      "method": "POST",
      "path": "/risk/riskProjMgrConfig/modify",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/risk/riskProjMgrConfig/modify",
      "kind": "write"
     },
@@ -5323,7 +6815,13 @@
      "action": "sysDept-getTree",
      "method": "POST",
      "path": "/dept/sysDept/getTree",
-     "params": {},
+     "params": {
+      "parentId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/dept/sysDept/getTree",
      "kind": "read"
     },
@@ -5331,7 +6829,13 @@
      "action": "sysDept-add",
      "method": "POST",
      "path": "/dept/sysDept/add",
-     "params": {},
+     "params": {
+      "name": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/dept/sysDept/add",
      "kind": "write"
     },
@@ -5339,7 +6843,13 @@
      "action": "sysDept-modify",
      "method": "POST",
      "path": "/dept/sysDept/modify",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/dept/sysDept/modify",
      "kind": "write"
     },
@@ -5430,7 +6940,48 @@
      "action": "sysUser-add",
      "method": "POST",
      "path": "/user/sysUser/add",
-     "params": {},
+     "params": {
+      "sex": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "category": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "education": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "username": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "employMethod": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "manageLevel": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "deptId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "workNumber": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/user/sysUser/add",
      "kind": "write"
     },
@@ -5438,7 +6989,13 @@
      "action": "sysUser-modify",
      "method": "POST",
      "path": "/user/sysUser/modify",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/user/sysUser/modify",
      "kind": "write"
     },
@@ -5446,7 +7003,28 @@
      "action": "sysUser-recover",
      "method": "POST",
      "path": "/user/sysUser/recover",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "joinDate": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/user/sysUser/recover",
      "kind": "read"
     },
@@ -5454,7 +7032,28 @@
      "action": "sysUser-resign",
      "method": "POST",
      "path": "/user/sysUser/resign",
-     "params": {},
+     "params": {
+      "resignDate": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/user/sysUser/resign",
      "kind": "read"
     },
@@ -5462,7 +7061,28 @@
      "action": "sysUser-batchRecover",
      "method": "POST",
      "path": "/user/sysUser/batchRecover",
-     "params": {},
+     "params": {
+      "ids": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "joinDate": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/user/sysUser/batchRecover",
      "kind": "read"
     },
@@ -5470,7 +7090,28 @@
      "action": "sysUser-batchResign",
      "method": "POST",
      "path": "/user/sysUser/batchResign",
-     "params": {},
+     "params": {
+      "ids": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "resignDate": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/user/sysUser/batchResign",
      "kind": "read"
     },
@@ -5486,7 +7127,18 @@
      "action": "sysUser-import",
      "method": "POST",
      "path": "/user/sysUser/import",
-     "params": {},
+     "params": {
+      "file": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "tenantId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/user/sysUser/import",
      "kind": "write"
     },
@@ -5502,7 +7154,18 @@
      "action": "onboard-modifyPassword",
      "method": "POST",
      "path": "/user/onboard/modifyPassword",
-     "params": {},
+     "params": {
+      "oldPassword": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "newPassword": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/user/onboard/modifyPassword",
      "kind": "write"
     },
@@ -5612,7 +7275,28 @@
      "action": "attendanceGroup-getAvailableUserTree",
      "method": "POST",
      "path": "/personnel/attendanceGroup/getAvailableUserTree",
-     "params": {},
+     "params": {
+      "groupId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "joinTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/personnel/attendanceGroup/getAvailableUserTree",
      "kind": "read"
     },
@@ -5620,7 +7304,13 @@
      "action": "attendanceGroup-getRule",
      "method": "POST",
      "path": "/personnel/attendanceGroup/getRule",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/personnel/attendanceGroup/getRule",
      "kind": "read"
     },
@@ -5648,6 +7338,31 @@
        "type": "string",
        "sensitive": true,
        "required": false
+      },
+      "groupId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "endTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "startTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/personnel/attendanceClasses/listCustomizeRule",
@@ -5677,6 +7392,11 @@
        "type": "string",
        "sensitive": true,
        "required": false
+      },
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/personnel/attendanceGroup/queryHolidays",
@@ -5686,7 +7406,18 @@
      "action": "attendanceGroup-add",
      "method": "POST",
      "path": "/personnel/attendanceGroup/add",
-     "params": {},
+     "params": {
+      "groupType": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "attendanceName": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/personnel/attendanceGroup/add",
      "kind": "write"
     },
@@ -5694,7 +7425,18 @@
      "action": "attendanceGroup-updateName",
      "method": "POST",
      "path": "/personnel/attendanceGroup/updateName",
-     "params": {},
+     "params": {
+      "groupId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "attendanceName": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/personnel/attendanceGroup/updateName",
      "kind": "write"
     },
@@ -5710,7 +7452,33 @@
      "action": "attendanceGroup-addUsers",
      "method": "POST",
      "path": "/personnel/attendanceGroup/addUsers",
-     "params": {},
+     "params": {
+      "joinTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "userIds": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "groupId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/personnel/attendanceGroup/addUsers",
      "kind": "write"
     },
@@ -5718,7 +7486,33 @@
      "action": "attendanceGroup-updateUserJoinTime",
      "method": "POST",
      "path": "/personnel/attendanceGroup/updateUserJoinTime",
-     "params": {},
+     "params": {
+      "userId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "groupId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "joinTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/personnel/attendanceGroup/updateUserJoinTime",
      "kind": "write"
     },
@@ -5734,7 +7528,28 @@
      "action": "attendanceGroup-addRuleUnchanged",
      "method": "POST",
      "path": "/personnel/attendanceGroup/addRuleUnchanged",
-     "params": {},
+     "params": {
+      "effectiveTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "groupId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/personnel/attendanceGroup/addRuleUnchanged",
      "kind": "write"
     },
@@ -5742,7 +7557,33 @@
      "action": "attendanceGroup-updateRuleUnchanged",
      "method": "PUT",
      "path": "/personnel/attendanceGroup/updateRuleUnchanged",
-     "params": {},
+     "params": {
+      "effectiveTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "groupId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/personnel/attendanceGroup/updateRuleUnchanged",
      "kind": "write"
     },
@@ -5750,7 +7591,43 @@
      "action": "attendanceGroup-updateRuleCycle",
      "method": "POST",
      "path": "/personnel/attendanceGroup/updateRuleCycle",
-     "params": {},
+     "params": {
+      "cycleName": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "effectiveTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "cycleNum": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "attendanceRuleList": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "groupId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/personnel/attendanceGroup/updateRuleCycle",
      "kind": "write"
     },
@@ -5758,7 +7635,33 @@
      "action": "attendanceClasses-toggle",
      "method": "POST",
      "path": "/personnel/attendanceClasses/toggle",
-     "params": {},
+     "params": {
+      "groupId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "currentClassesId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "checkTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/personnel/attendanceClasses/toggle",
      "kind": "read"
     },
@@ -5826,6 +7729,11 @@
        "type": "string",
        "sensitive": true,
        "required": false
+      },
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
       }
      },
      "desc": "/personnel/employeesSalary/queryById",
@@ -5872,7 +7780,18 @@
      "action": "employeesSalary-add",
      "method": "POST",
      "path": "/personnel/employeesSalary/add",
-     "params": {},
+     "params": {
+      "tenantUserId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "salaryTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/personnel/employeesSalary/add",
      "kind": "write"
     },
@@ -5880,7 +7799,13 @@
      "action": "employeesSalary-modify",
      "method": "POST",
      "path": "/personnel/employeesSalary/modify",
-     "params": {},
+     "params": {
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/personnel/employeesSalary/modify",
      "kind": "write"
     },
@@ -5904,7 +7829,18 @@
      "action": "employeesSalary-importData",
      "method": "POST",
      "path": "/personnel/employeesSalary/importData",
-     "params": {},
+     "params": {
+      "tenantId": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "file": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/personnel/employeesSalary/importData",
      "kind": "write"
     },
@@ -5952,7 +7888,28 @@
      "action": "attendanceClasses-save",
      "method": "POST",
      "path": "/personnel/attendanceClasses/save",
-     "params": {},
+     "params": {
+      "toWorkStartTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "offWorkEndTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "classesName": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "rest": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/personnel/attendanceClasses/save",
      "kind": "write"
     },
@@ -5960,7 +7917,33 @@
      "action": "attendanceClasses-update",
      "method": "POST",
      "path": "/personnel/attendanceClasses/update",
-     "params": {},
+     "params": {
+      "classesName": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "id": {
+       "type": "number",
+       "required": true,
+       "desc": ""
+      },
+      "rest": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "toWorkStartTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "offWorkEndTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/personnel/attendanceClasses/update",
      "kind": "write"
     },
@@ -5968,7 +7951,18 @@
      "action": "attendanceClasses-toggleStatus",
      "method": "POST",
      "path": "/personnel/attendanceClasses/toggleStatus",
-     "params": {},
+     "params": {
+      "enableStatus": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "classesIds": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/personnel/attendanceClasses/toggleStatus",
      "kind": "read"
     },
@@ -6010,7 +8004,28 @@
      "action": "lic-add",
      "method": "POST",
      "path": "/merchant/lic/add",
-     "params": {},
+     "params": {
+      "companyName": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "hwidSign": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "expireTime": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "maxSubCompanys": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/merchant/lic/add",
      "kind": "write"
     }
@@ -6052,7 +8067,18 @@
      "action": "specialIncome-batchAdd",
      "method": "POST",
      "path": "/income/specialIncome/batchAdd",
-     "params": {},
+     "params": {
+      "Source": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "column": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/income/specialIncome/batchAdd",
      "kind": "read"
     },
@@ -6110,7 +8136,33 @@
      "action": "manage-addTenant",
      "method": "POST",
      "path": "/priAdmin/manage/addTenant",
-     "params": {},
+     "params": {
+      "adminUserName": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "password": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "tenantName": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "mobile": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      },
+      "creditCode": {
+       "type": "string",
+       "required": true,
+       "desc": ""
+      }
+     },
      "desc": "/priAdmin/manage/addTenant",
      "kind": "write"
     },
@@ -6128,7 +8180,11 @@
  "relations": {
   "project": {
    "title": "项目",
-   "createOrder": ["projectInfo-add", "projectAppro-add", "rdItem-add"],
+   "createOrder": [
+    "projectInfo-add",
+    "projectAppro-add",
+    "rdItem-add"
+   ],
    "children": {
     "approval": {
      "title": "立项信息",
@@ -6159,12 +8215,16 @@
   },
   "rdItem": {
    "title": "研发活动",
-   "createOrder": ["rdItem-add"],
+   "createOrder": [
+    "rdItem-add"
+   ],
    "children": {}
   },
   "approval": {
    "title": "立项信息",
-   "createOrder": ["projectAppro-add"],
+   "createOrder": [
+    "projectAppro-add"
+   ],
    "children": {}
   }
  },
@@ -6185,7 +8245,10 @@
      "desc": "3. 建研发活动（sourceProjectId=项目id）"
     }
    ],
-   "examples": ["yfljsj workbench projectInfo-add --data '{\"projectName\":\"AI...\",\"projectCode\":\"TEST-RD-...\"}'", "yfljsj workbench projectAppro-add --data '{\"projectId\":100216,\"headPersonId\":100131,...}'"]
+   "examples": [
+    "yfljsj workbench projectInfo-add --data '{\"projectName\":\"AI...\",\"projectCode\":\"TEST-RD-...\"}'",
+    "yfljsj workbench projectAppro-add --data '{\"projectId\":100216,\"headPersonId\":100131,...}'"
+   ]
   }
  }
 }

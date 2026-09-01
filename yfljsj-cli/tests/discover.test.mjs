@@ -282,6 +282,25 @@ test('mergeApis：空捕获 / 缺 path 记录安全跳过', () => {
   assert.deepEqual(api.mergeApis(existing, [null, { method: 'GET' }, { path: '' }, { path: null }]).modules, {})
 })
 
+// Task 7：discover 合并写回不得丢业务元数据（relations/doc 子命令依赖）
+test('mergeApis：保留 existing 的 operations/relations 元数据', () => {
+  const existing = {
+    version: 2,
+    services: { rcms: 'x' },
+    modules: { asset: { title: 'asset', service: 'rcms', commands: [{ action: 'building-list', method: 'POST', path: '/asset/building/list', params: {}, kind: 'read' }] } },
+    operations: { createProject: { title: '创建研发项目', steps: [{ cmd: 'workbench projectInfo-add', desc: '1. 建项目' }] } },
+    relations: { project: { title: '项目', createOrder: ['projectInfo-add'] } },
+  }
+  const merged = api.mergeApis(existing, [{ method: 'POST', path: '/asset/new/add', body样例: {} }])
+  assert.deepEqual(merged.operations, existing.operations)
+  assert.deepEqual(merged.relations, existing.relations)
+  assert.ok(merged.modules.asset.commands.some((c) => c.path === '/asset/new/add'))
+  // 无 existing 元数据 → 兜底为空对象（不 undefined，relationsCommand/docCommand 可安全遍历）
+  const bare = api.mergeApis({ version: 2, services: {}, modules: {} }, [])
+  assert.deepEqual(bare.operations, {})
+  assert.deepEqual(bare.relations, {})
+})
+
 // ==================== runDiscover：捕获 → 合并 → 写回 + 统计 ====================
 
 test('runDiscover：捕获→合并→写回 apis.json + 统计输出 + loadApis 优先用户表', async () => {

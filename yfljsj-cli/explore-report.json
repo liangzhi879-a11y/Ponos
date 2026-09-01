@@ -1,0 +1,1847 @@
+[
+ {
+  "module": "asset",
+  "action": "capitalization-queryById",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "asset",
+  "action": "capitalizationDetail-list",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "asset",
+  "action": "intangible-queryById",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "asset",
+  "action": "intangibleDetail-list",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "asset",
+  "action": "building-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "asset",
+  "action": "building-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "asset",
+  "action": "capitalization-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "asset",
+  "action": "capitalization-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "asset",
+  "action": "device-queryById",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "asset",
+  "action": "deviceDetail-list",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "asset",
+  "action": "building-queryById",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "asset",
+  "action": "buildingDetail-list",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "asset",
+  "action": "intangible-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "asset",
+  "action": "intangible-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "asset",
+  "action": "device-list",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "asset",
+  "action": "device-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "asset",
+  "action": "device-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "asset",
+  "action": "deviceEnergy-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "asset",
+  "action": "deviceEnergy-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "achievement",
+  "action": "article-add",
+  "fields": [
+   "projId"
+  ]
+ },
+ {
+  "module": "achievement",
+  "action": "article-modify",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "achievement",
+  "action": "article-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "achievement",
+  "action": "evaluate-add",
+  "fields": [
+   "projId"
+  ]
+ },
+ {
+  "module": "achievement",
+  "action": "evaluate-modify",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "achievement",
+  "action": "evaluate-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "achievement",
+  "action": "ipr-list",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "achievement",
+  "action": "ipr-queryById",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "achievement",
+  "action": "common-getIprList",
+  "fields": [
+   "projId"
+  ]
+ },
+ {
+  "module": "achievement",
+  "action": "ipr-add",
+  "fields": [
+   "iprType",
+   "achieveMethod",
+   "projId",
+   "applyNo",
+   "applyDate",
+   "iprName",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "achievement",
+  "action": "ipr-modify",
+  "fields": [
+   "projId",
+   "id"
+  ]
+ },
+ {
+  "module": "achievement",
+  "action": "convert-add",
+  "fields": [
+   "projId",
+   "type",
+   "name"
+  ]
+ },
+ {
+  "module": "achievement",
+  "action": "convert-modify",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "achievement",
+  "action": "convert-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "achievement",
+  "action": "search-add",
+  "fields": [
+   "reportNo",
+   "searchName",
+   "projId"
+  ]
+ },
+ {
+  "module": "achievement",
+  "action": "search-modify",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "achievement",
+  "action": "search-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "human",
+  "action": "configBonus-delete",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "human",
+  "action": "configLicense-delete",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "resefunds",
+  "action": "projectBudget-budgetTree",
+  "fields": [
+   "projectId"
+  ]
+ },
+ {
+  "module": "resefunds",
+  "action": "projectBudget-updateBudget",
+  "fields": [
+   "configBudgetId",
+   "projectId"
+  ]
+ },
+ {
+  "module": "resefunds",
+  "action": "fundsEnough-save",
+  "fields": [
+   "enoughAmount",
+   "creditedTime",
+   "projectId",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "resefunds",
+  "action": "fundsEnough-update",
+  "fields": [
+   "enoughAmount",
+   "id",
+   "creditedTime",
+   "projectId",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "resefunds",
+  "action": "fundsEnough-delete",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "resefunds",
+  "action": "fundsEnough-listProjectDropdown",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "resefunds",
+  "action": "fundsEnough-getProjectFinanceBudget",
+  "fields": [
+   "projectId"
+  ]
+ },
+ {
+  "module": "resefunds",
+  "action": "fundsAllocate-save",
+  "fields": [
+   "subTopic",
+   "allocateAmount",
+   "allocateTime",
+   "projectId",
+   "payee",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "resefunds",
+  "action": "fundsAllocate-update",
+  "fields": [
+   "allocateAmount",
+   "subTopic",
+   "id",
+   "allocateTime",
+   "projectId",
+   "payee",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "resefunds",
+  "action": "fundsAllocate-delete",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "resefunds",
+  "action": "fundsAllocate-listSubTopicTree",
+  "fields": [
+   "projectId"
+  ]
+ },
+ {
+  "module": "resefunds",
+  "action": "fundsAllocate-validateAmount",
+  "fields": [
+   "allocateAmount",
+   "allocateTime",
+   "projectId",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "resefunds",
+  "action": "fundsExpen-saveVoucher",
+  "fields": [
+   "voucherNo",
+   "projectId",
+   "expenType",
+   "voucherDate",
+   "voucherType",
+   "financeBudgetId",
+   "voucherAmount",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "resefunds",
+  "action": "fundsExpen-updateVoucher",
+  "fields": [
+   "id",
+   "financeBudgetId",
+   "voucherType",
+   "voucherDate",
+   "voucherAmount",
+   "projectId",
+   "expenType",
+   "voucherNo",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "resefunds",
+  "action": "fundsExpen-delete",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "resefunds",
+  "action": "fundsExpen-settleRdExpense",
+  "fields": [
+   "voucherNo",
+   "settleAmount",
+   "expenType",
+   "voucherDate",
+   "voucherType",
+   "financeBudgetId",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "resefunds",
+  "action": "fundsExpen-settleIntangibleAsset",
+  "fields": [
+   "voucherType",
+   "financeBudgetId",
+   "voucherNo",
+   "voucherDate",
+   "settleAmount",
+   "expenType",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "resefunds",
+  "action": "fundsExpen-calculateSettleAmount",
+  "fields": [
+   "expenType",
+   "voucherDate",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "workbench",
+  "action": "projectRdCost-list",
+  "fields": [
+   "projectId"
+  ]
+ },
+ {
+  "module": "workbench",
+  "action": "projectRdCost-modify",
+  "fields": [
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "workbench",
+  "action": "projectRdCost-deleteFile",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectEquip-add",
+  "fields": [
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "workbench",
+  "action": "projectEquip-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectEquip-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectAppro-getById",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "workbench",
+  "action": "projectInfo-add",
+  "fields": [
+   "projectCode",
+   "projectName"
+  ]
+ },
+ {
+  "module": "workbench",
+  "action": "projectInfo-remove-child",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectInfo-modify",
+  "fields": [
+   "applyDate",
+   "startDate",
+   "projectType",
+   "projectCode",
+   "endDate",
+   "projectSource",
+   "researchBudget",
+   "id",
+   "knowledgeField",
+   "projectName"
+  ]
+ },
+ {
+  "module": "workbench",
+  "action": "projectInfo-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "attendance-ranking",
+  "fields": [
+   "startTime",
+   "projectId",
+   "endTime"
+  ]
+ },
+ {
+  "module": "workbench",
+  "action": "project-downloadMaterials",
+  "fields": [
+   "projectId"
+  ]
+ },
+ {
+  "module": "workbench",
+  "action": "projectMaterialPick-consumeBatch",
+  "fields": [
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "workbench",
+  "action": "projectMaterialPick-pick",
+  "fields": [
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "workbench",
+  "action": "projectMaterialDestination-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectMaterialPick2-add",
+  "fields": [
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "workbench",
+  "action": "projectMaterialPick2-modify",
+  "fields": [
+   "docNo",
+   "projectId",
+   "pickTime",
+   "quantity",
+   "unitPrice",
+   "unit",
+   "materialName"
+  ]
+ },
+ {
+  "module": "workbench",
+  "action": "projectMaterialPick2-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectMaterialPick2-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectMaterialPick2-statistics",
+  "fields": [
+   "endTime",
+   "startTime"
+  ]
+ },
+ {
+  "module": "workbench",
+  "action": "projectMember-add",
+  "fields": [
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "workbench",
+  "action": "projectMember-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectMember-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectNotice-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectMilestone-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectPrepRecord-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectMeetingRecord-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectMeetingRecord-batchRemove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectTrialRecord-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectTrialRecord-removeBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectProgressReport-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectProgressReport-removeBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectAcceptance-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectAcceptance-removeBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "workbench",
+  "action": "projectWorkhour-clear",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "voucher",
+  "action": "sysVoucher-getVoucherSummaryByPeriod",
+  "fields": [
+   "periodType",
+   "projectId"
+  ]
+ },
+ {
+  "module": "voucher",
+  "action": "sysVoucher-addProject",
+  "fields": [
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "voucher",
+  "action": "sysVoucher-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "voucher",
+  "action": "sysVoucher-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "voucher",
+  "action": "match-download",
+  "fields": [
+   "voucherId",
+   "subjectCode"
+  ]
+ },
+ {
+  "module": "voucher",
+  "action": "match-execute",
+  "fields": [
+   "voucherId",
+   "subjectCode"
+  ]
+ },
+ {
+  "module": "voucher",
+  "action": "voucherRaw-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "voucher",
+  "action": "sysVoucher-removeVouchersByRelId",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "voucher",
+  "action": "sysVoucher-removeVouchersByRelIds",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "yearly-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "yearly-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "highTechProductMapping-generate",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "highTechProductMapping-saveBatch",
+  "fields": [
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "psItem-list",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "rdExpenseItem-queryById",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "rdExpenseItem-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "rdExpenseSummary-queryById",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "hrSummary-queryById",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "qualificationSummary-queryById",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "productIncomeDetail-queryById",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "productIncomeDetail-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "productIncomeDetail-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "uploadedFile-autoGenerate",
+  "fields": [
+   "materialCategoryId",
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "uploadedFile-list",
+  "fields": [
+   "materialCategoryId",
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "uploadedFile-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "rdSummary-queryById",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "rdItem-queryById",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "rdItem-list",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "rdItem-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "rdItem-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "ip-list",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "dashboard-ipCount",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "dashboard-productStatistics",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "certification-certTypeCount",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "certification-queryById",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "certification-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "certification-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "dashboard-financeData",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "dashboard-getRdStaffRatio",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "organizationInfo-queryById",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "organizationInfo-modify",
+  "fields": [
+   "index",
+   "enabled",
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "techTransfer-queryById",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "techTransfer-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "techTransfer-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "psItem-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "psItem-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "psItem-queryById",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "innovationAbility-queryById",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "psSummary-queryById",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "psItem-listExcludeCorrelation",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "psItemCorrelation-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "psItemCorrelation-list",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "ip-statistics",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "ip-queryById",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "ip-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "sync-data",
+  "fields": [
+   "itemCode"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "standards-queryById",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "standards-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "standards-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "enterprise",
+  "action": "report-updateAssessment",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "report-downloadAllAttachments",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "highTechProductMapping-summary",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "enterprise",
+  "action": "highTechProductMapping-export",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "reference",
+  "action": "file-refresh",
+  "fields": [
+   "projectId",
+   "year"
+  ]
+ },
+ {
+  "module": "financial",
+  "action": "configCostCenter-modify",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "financial",
+  "action": "configCostCenter-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "financial",
+  "action": "configCostCenter-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "financial",
+  "action": "configEquipmentType-modify",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "financial",
+  "action": "configEquipmentType-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "financial",
+  "action": "configMaterialAux-modify",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "financial",
+  "action": "configMaterialAux-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "financial",
+  "action": "configFinanceBudget-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "financial",
+  "action": "configPowerType-modify",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "financial",
+  "action": "configPowerType-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "financial",
+  "action": "configProjectAllocation-saveOrUpdate",
+  "fields": [
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "role",
+  "action": "sysRole-add",
+  "fields": [
+   "roleType",
+   "roleName"
+  ]
+ },
+ {
+  "module": "role",
+  "action": "sysRole-modify",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "role",
+  "action": "sysRole-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "role",
+  "action": "users-getAddTree",
+  "fields": [
+   "roleId"
+  ]
+ },
+ {
+  "module": "role",
+  "action": "users-batchAdd",
+  "fields": [
+   "roleId"
+  ]
+ },
+ {
+  "module": "role",
+  "action": "users-batchDelete",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "permission",
+  "action": "sysPermission-getPermissionTree",
+  "fields": [
+   "roleId"
+  ]
+ },
+ {
+  "module": "sys",
+  "action": "sysRolePermissionRel-modify",
+  "fields": [
+   "roleId",
+   "permissionIds"
+  ]
+ },
+ {
+  "module": "material",
+  "action": "power-add",
+  "fields": [
+   "recordMonth",
+   "details",
+   "projectId"
+  ]
+ },
+ {
+  "module": "material",
+  "action": "power-generate",
+  "fields": [
+   "recordMonth",
+   "projectId"
+  ]
+ },
+ {
+  "module": "material",
+  "action": "power-modify",
+  "fields": [
+   "projectId",
+   "details",
+   "recordMonth"
+  ]
+ },
+ {
+  "module": "material",
+  "action": "power-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "material",
+  "action": "power-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "material",
+  "action": "fuel-add",
+  "fields": [
+   "amount",
+   "fuelName",
+   "unitPrice",
+   "unit",
+   "quantity",
+   "fuelCode",
+   "consumeTime"
+  ]
+ },
+ {
+  "module": "material",
+  "action": "fuel-modify",
+  "fields": [
+   "amount",
+   "consumeTime",
+   "fuelCode",
+   "quantity",
+   "unitPrice",
+   "unit",
+   "fuelName"
+  ]
+ },
+ {
+  "module": "material",
+  "action": "fuel-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "material",
+  "action": "fuel-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "material",
+  "action": "raw-saveOrUpdate",
+  "fields": [
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "material",
+  "action": "raw-delete",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "material",
+  "action": "materialType-delete",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "material",
+  "action": "batch-pick-batch",
+  "fields": [
+   "batchId",
+   "userId",
+   "projectId",
+   "quantity"
+  ]
+ },
+ {
+  "module": "material",
+  "action": "batch-pick-fifo",
+  "fields": [
+   "userId",
+   "quantity",
+   "projectId",
+   "materialId"
+  ]
+ },
+ {
+  "module": "material",
+  "action": "batch-return",
+  "fields": [
+   "userId",
+   "projectId",
+   "quantity",
+   "pickId",
+   "frozenUnitCost"
+  ]
+ },
+ {
+  "module": "humanManagement",
+  "action": "configEducation-delete",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "group",
+  "action": "sysGroupOrg-add",
+  "fields": [
+   "groupTenantId",
+   "orgName",
+   "parentId"
+  ]
+ },
+ {
+  "module": "group",
+  "action": "sysGroupOrg-modify",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "group",
+  "action": "sysGroupOrg-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "group",
+  "action": "sysGroupSubCompany-add",
+  "fields": [
+   "groupTenantId",
+   "creditCode"
+  ]
+ },
+ {
+  "module": "group",
+  "action": "sysGroupSubCompany-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "group",
+  "action": "sysGroupSubCompany-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "declare",
+  "action": "declareFile-list",
+  "fields": [
+   "year",
+   "typeCode"
+  ]
+ },
+ {
+  "module": "declare",
+  "action": "declareFile-queryById",
+  "fields": [
+   "typeCode",
+   "year"
+  ]
+ },
+ {
+  "module": "declare",
+  "action": "declareFile-updateAllSubReports",
+  "fields": [
+   "typeCode",
+   "year"
+  ]
+ },
+ {
+  "module": "tenant",
+  "action": "tenantCompanyInfo-getByTenantId",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "dictionary",
+  "action": "dictionaryType-list",
+  "fields": [
+   "dictCode"
+  ]
+ },
+ {
+  "module": "dictionary",
+  "action": "dictionaryType-getTree",
+  "fields": [
+   "dictCode"
+  ]
+ },
+ {
+  "module": "dictionary",
+  "action": "dictionaryType-getSubList",
+  "fields": [
+   "parentId",
+   "dictCode"
+  ]
+ },
+ {
+  "module": "subject-init",
+  "action": "expenditureSubject-remove",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "dp",
+  "action": "sysDpUserRoleRel-assignRoleToUser",
+  "fields": [
+   "tenantUserId"
+  ]
+ },
+ {
+  "module": "dp",
+  "action": "sysDpUserRoleRel-listUserRoleWithChecked",
+  "fields": [
+   "tenantUserId"
+  ]
+ },
+ {
+  "module": "dp",
+  "action": "sysDpRole-modify",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "dp",
+  "action": "sysDpRole-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "dp",
+  "action": "sysDpRole-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "dp",
+  "action": "sysDpRolePermissionRel-listByRoleId",
+  "fields": [
+   "roleId"
+  ]
+ },
+ {
+  "module": "dp",
+  "action": "sysDpRolePermissionRel-assignPermToRole",
+  "fields": [
+   "roleId"
+  ]
+ },
+ {
+  "module": "risk",
+  "action": "riskBasicConf-modify",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "risk",
+  "action": "riskBasicConf-add",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "risk",
+  "action": "riskBasicConf-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "risk",
+  "action": "riskPersonMgrConfig-modify",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "risk",
+  "action": "riskPersonMgrConfig-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "risk",
+  "action": "riskProjMgrConfig-modify",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "risk",
+  "action": "riskProjMgrConfig-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "dept",
+  "action": "sysDept-getTree",
+  "fields": [
+   "parentId"
+  ]
+ },
+ {
+  "module": "dept",
+  "action": "sysDept-add",
+  "fields": [
+   "name"
+  ]
+ },
+ {
+  "module": "dept",
+  "action": "sysDept-modify",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "dept",
+  "action": "sysDept-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "user",
+  "action": "sysUser-add",
+  "fields": [
+   "sex",
+   "category",
+   "education",
+   "username",
+   "employMethod",
+   "manageLevel",
+   "deptId",
+   "workNumber"
+  ]
+ },
+ {
+  "module": "user",
+  "action": "sysUser-modify",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "user",
+  "action": "sysUser-recover",
+  "fields": [
+   "id",
+   "joinDate",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "user",
+  "action": "sysUser-resign",
+  "fields": [
+   "resignDate",
+   "id",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "user",
+  "action": "sysUser-batchRecover",
+  "fields": [
+   "ids",
+   "joinDate",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "user",
+  "action": "sysUser-batchResign",
+  "fields": [
+   "ids",
+   "resignDate",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "user",
+  "action": "sysUser-import",
+  "fields": [
+   "file",
+   "tenantId"
+  ]
+ },
+ {
+  "module": "user",
+  "action": "onboard-modifyPassword",
+  "fields": [
+   "oldPassword",
+   "newPassword"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceGroup-getAvailableUserTree",
+  "fields": [
+   "groupId",
+   "joinTime",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceGroup-getRule",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceClasses-listCustomizeRule",
+  "fields": [
+   "groupId",
+   "endTime",
+   "startTime",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceGroup-queryHolidays",
+  "fields": [
+   "year"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceGroup-add",
+  "fields": [
+   "groupType",
+   "attendanceName"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceGroup-updateName",
+  "fields": [
+   "groupId",
+   "attendanceName"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceGroup-delete",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceGroup-addUsers",
+  "fields": [
+   "joinTime",
+   "userIds",
+   "groupId",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceGroup-updateUserJoinTime",
+  "fields": [
+   "userId",
+   "groupId",
+   "joinTime",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceGroup-deleteUsers",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceGroup-addRuleUnchanged",
+  "fields": [
+   "effectiveTime",
+   "groupId",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceGroup-updateRuleUnchanged",
+  "fields": [
+   "effectiveTime",
+   "id",
+   "groupId",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceGroup-updateRuleCycle",
+  "fields": [
+   "cycleName",
+   "effectiveTime",
+   "cycleNum",
+   "attendanceRuleList",
+   "groupId",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceClasses-toggle",
+  "fields": [
+   "groupId",
+   "currentClassesId",
+   "checkTime",
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "employeesSalary-queryById",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "employeesSalary-listBonusDropdown",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "personnel",
+  "action": "employeesSalary-add",
+  "fields": [
+   "tenantUserId",
+   "salaryTime"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "employeesSalary-modify",
+  "fields": [
+   "id"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "employeesSalary-batchDelete",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "personnel",
+  "action": "employeesSalary-importData",
+  "fields": [
+   "tenantId",
+   "file"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceClasses-save",
+  "fields": [
+   "toWorkStartTime",
+   "offWorkEndTime",
+   "classesName",
+   "rest"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceClasses-update",
+  "fields": [
+   "classesName",
+   "id",
+   "rest",
+   "toWorkStartTime",
+   "offWorkEndTime"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceClasses-toggleStatus",
+  "fields": [
+   "enableStatus",
+   "classesIds"
+  ]
+ },
+ {
+  "module": "personnel",
+  "action": "attendanceClasses-batchDelete",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "merchant",
+  "action": "lic-add",
+  "fields": [
+   "companyName",
+   "hwidSign",
+   "expireTime",
+   "maxSubCompanys"
+  ]
+ },
+ {
+  "module": "income",
+  "action": "specialIncome-batchAdd",
+  "fields": [
+   "Source",
+   "column"
+  ]
+ },
+ {
+  "module": "income",
+  "action": "specialIncome-deleteById",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "income",
+  "action": "specialIncome-deleteBatch",
+  "skipped": "dangerous"
+ },
+ {
+  "module": "priAdmin",
+  "action": "manage-addTenant",
+  "fields": [
+   "adminUserName",
+   "password",
+   "tenantName",
+   "mobile",
+   "creditCode"
+  ]
+ }
+]

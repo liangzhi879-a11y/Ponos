@@ -571,7 +571,8 @@ export function loadApis({ force = false } = {}) {
       const p = apisPath()
       if (fs.existsSync(p)) {
         const user = JSON.parse(fs.readFileSync(p, 'utf8'))
-        if (user && user.modules && typeof user.modules === 'object') apis = user
+        // 用户表结构校验：modules 非空对象才覆盖 seed（空表/损坏表回退 seed，避免空表吞掉 535 命令）
+        if (user && user.modules && typeof user.modules === 'object' && Object.keys(user.modules).length > 0) apis = user
       }
     } catch {
       /* 用户 apis.json 缺失/损坏 → 回退静态 seed */
@@ -1028,7 +1029,7 @@ export function parseValidationMsg(msg) {
 }
 
 /** 字段类型猜测：按字段名启发式（与 guessValue 取值逻辑一致） */
-function guessType(f) {
+export function guessType(f) {
   const l = f.toLowerCase()
   if (l.includes('id') && !l.includes('ids')) return 'number'
   if (l.includes('year')) return 'number'
@@ -1424,10 +1425,14 @@ function paramsFromSample(path, sample) {
 
 // 把捕获的接口并入现有命令表：按 path 去重（不重复），返回新命令表（不改入参）。
 //   captured: [{ method, path, body样例, contentType }]
+// Task 7 修复：保留 existing 的 operations/relations（业务元数据），与 version/services/modules 一并带出，
+//   避免 discover 合并写回后 relations/doc 子命令丢失人工沉淀的图谱/手册。
 export function mergeApis(existing, captured) {
   const out = {
     version: (existing && existing.version) || 1,
     services: (existing && existing.services) || { ...SERVICES },
+    operations: (existing && existing.operations) || {},
+    relations: (existing && existing.relations) || {},
     modules: {},
   }
   for (const [modKey, mod] of Object.entries((existing && existing.modules) || {})) {
