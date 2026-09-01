@@ -1,0 +1,4773 @@
+{
+ "version": 1,
+ "services": {
+  "oauth": "https://gateway.yfljsj.com/api/oauth",
+  "upms": "https://gateway.yfljsj.com/api/upms",
+  "rcms": "https://gateway.yfljsj.com/api/rcms"
+ },
+ "modules": {
+  "asset": {
+   "title": "asset",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "capitalization-queryById",
+     "method": "POST",
+     "path": "/asset/capitalization/queryById",
+     "params": {},
+     "desc": "/asset/capitalization/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "capitalizationDetail-list",
+     "method": "POST",
+     "path": "/asset/capitalizationDetail/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/asset/capitalizationDetail/list",
+     "kind": "read"
+    },
+    {
+     "action": "capitalizationDetail-modify",
+     "method": "POST",
+     "path": "/asset/capitalizationDetail/modify",
+     "params": {},
+     "desc": "/asset/capitalizationDetail/modify",
+     "kind": "write"
+    },
+    {
+     "action": "intangible-queryById",
+     "method": "POST",
+     "path": "/asset/intangible/queryById",
+     "params": {},
+     "desc": "/asset/intangible/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "intangibleDetail-list",
+     "method": "POST",
+     "path": "/asset/intangibleDetail/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/asset/intangibleDetail/list",
+     "kind": "read"
+    },
+    {
+     "action": "intangibleDetail-modify",
+     "method": "POST",
+     "path": "/asset/intangibleDetail/modify",
+     "params": {},
+     "desc": "/asset/intangibleDetail/modify",
+     "kind": "write"
+    },
+    {
+     "action": "building-list",
+     "method": "POST",
+     "path": "/asset/building/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/asset/building/list",
+     "kind": "read"
+    },
+    {
+     "action": "building-page",
+     "method": "POST",
+     "path": "/asset/building/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/asset/building/page",
+     "kind": "read"
+    },
+    {
+     "action": "building-add",
+     "method": "POST",
+     "path": "/asset/building/add",
+     "params": {},
+     "desc": "/asset/building/add",
+     "kind": "write"
+    },
+    {
+     "action": "building-modify",
+     "method": "POST",
+     "path": "/asset/building/modify",
+     "params": {},
+     "desc": "/asset/building/modify",
+     "kind": "write"
+    },
+    {
+     "action": "building-deleteById",
+     "method": "POST",
+     "path": "/asset/building/deleteById",
+     "params": {},
+     "desc": "/asset/building/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "building-deleteBatch",
+     "method": "POST",
+     "path": "/asset/building/deleteBatch",
+     "params": {},
+     "desc": "/asset/building/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "building-batchEnable",
+     "method": "POST",
+     "path": "/asset/building/batchEnable",
+     "params": {},
+     "desc": "/asset/building/batchEnable",
+     "kind": "read"
+    },
+    {
+     "action": "building-batchDisable",
+     "method": "POST",
+     "path": "/asset/building/batchDisable",
+     "params": {},
+     "desc": "/asset/building/batchDisable",
+     "kind": "read"
+    },
+    {
+     "action": "building-downloadTemplate",
+     "method": "POST",
+     "path": "/asset/building/downloadTemplate",
+     "params": {},
+     "desc": "/asset/building/downloadTemplate",
+     "kind": "read"
+    },
+    {
+     "action": "building-import",
+     "method": "POST",
+     "path": "/asset/building/import",
+     "params": {},
+     "desc": "/asset/building/import",
+     "kind": "write"
+    },
+    {
+     "action": "building-export",
+     "method": "POST",
+     "path": "/asset/building/export",
+     "params": {},
+     "desc": "/asset/building/export",
+     "kind": "read"
+    },
+    {
+     "action": "capitalization-list",
+     "method": "POST",
+     "path": "/asset/capitalization/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/asset/capitalization/list",
+     "kind": "read"
+    },
+    {
+     "action": "capitalization-page",
+     "method": "POST",
+     "path": "/asset/capitalization/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/asset/capitalization/page",
+     "kind": "read"
+    },
+    {
+     "action": "capitalization-add",
+     "method": "POST",
+     "path": "/asset/capitalization/add",
+     "params": {},
+     "desc": "/asset/capitalization/add",
+     "kind": "write"
+    },
+    {
+     "action": "capitalization-modify",
+     "method": "POST",
+     "path": "/asset/capitalization/modify",
+     "params": {},
+     "desc": "/asset/capitalization/modify",
+     "kind": "write"
+    },
+    {
+     "action": "capitalization-deleteById",
+     "method": "POST",
+     "path": "/asset/capitalization/deleteById",
+     "params": {},
+     "desc": "/asset/capitalization/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "capitalization-deleteBatch",
+     "method": "POST",
+     "path": "/asset/capitalization/deleteBatch",
+     "params": {},
+     "desc": "/asset/capitalization/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "capitalization-downloadTemplate",
+     "method": "POST",
+     "path": "/asset/capitalization/downloadTemplate",
+     "params": {},
+     "desc": "/asset/capitalization/downloadTemplate",
+     "kind": "read"
+    },
+    {
+     "action": "capitalization-import",
+     "method": "POST",
+     "path": "/asset/capitalization/import",
+     "params": {},
+     "desc": "/asset/capitalization/import",
+     "kind": "write"
+    },
+    {
+     "action": "device-queryById",
+     "method": "POST",
+     "path": "/asset/device/queryById",
+     "params": {},
+     "desc": "/asset/device/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "deviceDetail-list",
+     "method": "POST",
+     "path": "/asset/deviceDetail/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/asset/deviceDetail/list",
+     "kind": "read"
+    },
+    {
+     "action": "deviceDetail-modify",
+     "method": "POST",
+     "path": "/asset/deviceDetail/modify",
+     "params": {},
+     "desc": "/asset/deviceDetail/modify",
+     "kind": "write"
+    },
+    {
+     "action": "building-queryById",
+     "method": "POST",
+     "path": "/asset/building/queryById",
+     "params": {},
+     "desc": "/asset/building/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "buildingDetail-list",
+     "method": "POST",
+     "path": "/asset/buildingDetail/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/asset/buildingDetail/list",
+     "kind": "read"
+    },
+    {
+     "action": "buildingDetail-modify",
+     "method": "POST",
+     "path": "/asset/buildingDetail/modify",
+     "params": {},
+     "desc": "/asset/buildingDetail/modify",
+     "kind": "write"
+    },
+    {
+     "action": "intangible-list",
+     "method": "POST",
+     "path": "/asset/intangible/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/asset/intangible/list",
+     "kind": "read"
+    },
+    {
+     "action": "intangible-page",
+     "method": "POST",
+     "path": "/asset/intangible/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/asset/intangible/page",
+     "kind": "read"
+    },
+    {
+     "action": "intangible-add",
+     "method": "POST",
+     "path": "/asset/intangible/add",
+     "params": {},
+     "desc": "/asset/intangible/add",
+     "kind": "write"
+    },
+    {
+     "action": "intangible-modify",
+     "method": "POST",
+     "path": "/asset/intangible/modify",
+     "params": {},
+     "desc": "/asset/intangible/modify",
+     "kind": "write"
+    },
+    {
+     "action": "intangible-deleteById",
+     "method": "POST",
+     "path": "/asset/intangible/deleteById",
+     "params": {},
+     "desc": "/asset/intangible/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "intangible-deleteBatch",
+     "method": "POST",
+     "path": "/asset/intangible/deleteBatch",
+     "params": {},
+     "desc": "/asset/intangible/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "intangible-batchEnable",
+     "method": "POST",
+     "path": "/asset/intangible/batchEnable",
+     "params": {},
+     "desc": "/asset/intangible/batchEnable",
+     "kind": "read"
+    },
+    {
+     "action": "intangible-batchDisable",
+     "method": "POST",
+     "path": "/asset/intangible/batchDisable",
+     "params": {},
+     "desc": "/asset/intangible/batchDisable",
+     "kind": "read"
+    },
+    {
+     "action": "intangible-downloadTemplate",
+     "method": "POST",
+     "path": "/asset/intangible/downloadTemplate",
+     "params": {},
+     "desc": "/asset/intangible/downloadTemplate",
+     "kind": "read"
+    },
+    {
+     "action": "intangible-import",
+     "method": "POST",
+     "path": "/asset/intangible/import",
+     "params": {},
+     "desc": "/asset/intangible/import",
+     "kind": "write"
+    },
+    {
+     "action": "intangible-export",
+     "method": "POST",
+     "path": "/asset/intangible/export",
+     "params": {},
+     "desc": "/asset/intangible/export",
+     "kind": "read"
+    },
+    {
+     "action": "device-list",
+     "method": "POST",
+     "path": "/asset/device/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/asset/device/list",
+     "kind": "read"
+    },
+    {
+     "action": "device-page",
+     "method": "POST",
+     "path": "/asset/device/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/asset/device/page",
+     "kind": "read"
+    },
+    {
+     "action": "device-add",
+     "method": "POST",
+     "path": "/asset/device/add",
+     "params": {},
+     "desc": "/asset/device/add",
+     "kind": "write"
+    },
+    {
+     "action": "device-modify",
+     "method": "POST",
+     "path": "/asset/device/modify",
+     "params": {},
+     "desc": "/asset/device/modify",
+     "kind": "write"
+    },
+    {
+     "action": "device-deleteById",
+     "method": "POST",
+     "path": "/asset/device/deleteById",
+     "params": {},
+     "desc": "/asset/device/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "device-deleteBatch",
+     "method": "POST",
+     "path": "/asset/device/deleteBatch",
+     "params": {},
+     "desc": "/asset/device/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "device-batchEnable",
+     "method": "POST",
+     "path": "/asset/device/batchEnable",
+     "params": {},
+     "desc": "/asset/device/batchEnable",
+     "kind": "read"
+    },
+    {
+     "action": "device-batchDisable",
+     "method": "POST",
+     "path": "/asset/device/batchDisable",
+     "params": {},
+     "desc": "/asset/device/batchDisable",
+     "kind": "read"
+    },
+    {
+     "action": "device-downloadTemplate",
+     "method": "POST",
+     "path": "/asset/device/downloadTemplate",
+     "params": {},
+     "desc": "/asset/device/downloadTemplate",
+     "kind": "read"
+    },
+    {
+     "action": "device-import",
+     "method": "POST",
+     "path": "/asset/device/import",
+     "params": {},
+     "desc": "/asset/device/import",
+     "kind": "write"
+    },
+    {
+     "action": "device-export",
+     "method": "POST",
+     "path": "/asset/device/export",
+     "params": {},
+     "desc": "/asset/device/export",
+     "kind": "read"
+    },
+    {
+     "action": "deviceEnergy-list",
+     "method": "POST",
+     "path": "/asset/deviceEnergy/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/asset/deviceEnergy/list",
+     "kind": "read"
+    },
+    {
+     "action": "deviceEnergy-page",
+     "method": "POST",
+     "path": "/asset/deviceEnergy/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/asset/deviceEnergy/page",
+     "kind": "read"
+    },
+    {
+     "action": "deviceEnergy-add",
+     "method": "POST",
+     "path": "/asset/deviceEnergy/add",
+     "params": {},
+     "desc": "/asset/deviceEnergy/add",
+     "kind": "write"
+    },
+    {
+     "action": "deviceEnergy-addBatch",
+     "method": "POST",
+     "path": "/asset/deviceEnergy/addBatch",
+     "params": {},
+     "desc": "/asset/deviceEnergy/addBatch",
+     "kind": "write"
+    },
+    {
+     "action": "deviceEnergy-modify",
+     "method": "POST",
+     "path": "/asset/deviceEnergy/modify",
+     "params": {},
+     "desc": "/asset/deviceEnergy/modify",
+     "kind": "write"
+    },
+    {
+     "action": "deviceEnergy-deleteById",
+     "method": "POST",
+     "path": "/asset/deviceEnergy/deleteById",
+     "params": {},
+     "desc": "/asset/deviceEnergy/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "deviceEnergy-deleteBatch",
+     "method": "POST",
+     "path": "/asset/deviceEnergy/deleteBatch",
+     "params": {},
+     "desc": "/asset/deviceEnergy/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "deviceEnergy-downloadTemplate",
+     "method": "POST",
+     "path": "/asset/deviceEnergy/downloadTemplate",
+     "params": {},
+     "desc": "/asset/deviceEnergy/downloadTemplate",
+     "kind": "read"
+    },
+    {
+     "action": "deviceEnergy-import",
+     "method": "POST",
+     "path": "/asset/deviceEnergy/import",
+     "params": {},
+     "desc": "/asset/deviceEnergy/import",
+     "kind": "write"
+    },
+    {
+     "action": "deviceEnergy-export",
+     "method": "POST",
+     "path": "/asset/deviceEnergy/export",
+     "params": {},
+     "desc": "/asset/deviceEnergy/export",
+     "kind": "read"
+    }
+   ]
+  },
+  "achievement": {
+   "title": "achievement",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "article-page",
+     "method": "POST",
+     "path": "/achievement/article/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/achievement/article/page",
+     "kind": "read"
+    },
+    {
+     "action": "article-add",
+     "method": "POST",
+     "path": "/achievement/article/add",
+     "params": {},
+     "desc": "/achievement/article/add",
+     "kind": "write"
+    },
+    {
+     "action": "article-modify",
+     "method": "POST",
+     "path": "/achievement/article/modify",
+     "params": {},
+     "desc": "/achievement/article/modify",
+     "kind": "write"
+    },
+    {
+     "action": "article-deleteBatch",
+     "method": "POST",
+     "path": "/achievement/article/deleteBatch",
+     "params": {},
+     "desc": "/achievement/article/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "evaluate-page",
+     "method": "POST",
+     "path": "/achievement/evaluate/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/achievement/evaluate/page",
+     "kind": "read"
+    },
+    {
+     "action": "evaluate-add",
+     "method": "POST",
+     "path": "/achievement/evaluate/add",
+     "params": {},
+     "desc": "/achievement/evaluate/add",
+     "kind": "write"
+    },
+    {
+     "action": "evaluate-modify",
+     "method": "POST",
+     "path": "/achievement/evaluate/modify",
+     "params": {},
+     "desc": "/achievement/evaluate/modify",
+     "kind": "write"
+    },
+    {
+     "action": "evaluate-deleteBatch",
+     "method": "POST",
+     "path": "/achievement/evaluate/deleteBatch",
+     "params": {},
+     "desc": "/achievement/evaluate/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "common-getAchievementList",
+     "method": "POST",
+     "path": "/achievement/common/getAchievementList",
+     "params": {},
+     "desc": "/achievement/common/getAchievementList",
+     "kind": "read"
+    },
+    {
+     "action": "ipr-list",
+     "method": "POST",
+     "path": "/achievement/ipr/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/achievement/ipr/list",
+     "kind": "read"
+    },
+    {
+     "action": "ipr-page",
+     "method": "POST",
+     "path": "/achievement/ipr/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/achievement/ipr/page",
+     "kind": "read"
+    },
+    {
+     "action": "convert-page",
+     "method": "POST",
+     "path": "/achievement/convert/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/achievement/convert/page",
+     "kind": "read"
+    },
+    {
+     "action": "ipr-queryById",
+     "method": "POST",
+     "path": "/achievement/ipr/queryById",
+     "params": {},
+     "desc": "/achievement/ipr/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "common-getIprList",
+     "method": "POST",
+     "path": "/achievement/common/getIprList",
+     "params": {},
+     "desc": "/achievement/common/getIprList",
+     "kind": "read"
+    },
+    {
+     "action": "ipr-add",
+     "method": "POST",
+     "path": "/achievement/ipr/add",
+     "params": {},
+     "desc": "/achievement/ipr/add",
+     "kind": "write"
+    },
+    {
+     "action": "ipr-modify",
+     "method": "POST",
+     "path": "/achievement/ipr/modify",
+     "params": {},
+     "desc": "/achievement/ipr/modify",
+     "kind": "write"
+    },
+    {
+     "action": "convert-add",
+     "method": "POST",
+     "path": "/achievement/convert/add",
+     "params": {},
+     "desc": "/achievement/convert/add",
+     "kind": "write"
+    },
+    {
+     "action": "convert-modify",
+     "method": "POST",
+     "path": "/achievement/convert/modify",
+     "params": {},
+     "desc": "/achievement/convert/modify",
+     "kind": "write"
+    },
+    {
+     "action": "convert-deleteBatch",
+     "method": "POST",
+     "path": "/achievement/convert/deleteBatch",
+     "params": {},
+     "desc": "/achievement/convert/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "search-page",
+     "method": "POST",
+     "path": "/achievement/search/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/achievement/search/page",
+     "kind": "read"
+    },
+    {
+     "action": "search-add",
+     "method": "POST",
+     "path": "/achievement/search/add",
+     "params": {},
+     "desc": "/achievement/search/add",
+     "kind": "write"
+    },
+    {
+     "action": "search-modify",
+     "method": "POST",
+     "path": "/achievement/search/modify",
+     "params": {},
+     "desc": "/achievement/search/modify",
+     "kind": "write"
+    },
+    {
+     "action": "search-deleteBatch",
+     "method": "POST",
+     "path": "/achievement/search/deleteBatch",
+     "params": {},
+     "desc": "/achievement/search/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "common-getProjList",
+     "method": "POST",
+     "path": "/achievement/common/getProjList",
+     "params": {},
+     "desc": "/achievement/common/getProjList",
+     "kind": "read"
+    },
+    {
+     "action": "convert-pageForRegister",
+     "method": "POST",
+     "path": "/achievement/convert/pageForRegister",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/achievement/convert/pageForRegister",
+     "kind": "read"
+    }
+   ]
+  },
+  "human": {
+   "title": "human",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "configBonus-list",
+     "method": "POST",
+     "path": "/human/configBonus/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/human/configBonus/list",
+     "kind": "read"
+    },
+    {
+     "action": "configBonus-save",
+     "method": "POST",
+     "path": "/human/configBonus/save",
+     "params": {},
+     "desc": "/human/configBonus/save",
+     "kind": "write"
+    },
+    {
+     "action": "configBonus-update",
+     "method": "POST",
+     "path": "/human/configBonus/update",
+     "params": {},
+     "desc": "/human/configBonus/update",
+     "kind": "write"
+    },
+    {
+     "action": "configBonus-delete",
+     "method": "POST",
+     "path": "/human/configBonus/delete",
+     "params": {},
+     "desc": "/human/configBonus/delete",
+     "kind": "write"
+    },
+    {
+     "action": "configLicense-delete",
+     "method": "POST",
+     "path": "/human/configLicense/delete",
+     "params": {},
+     "desc": "/human/configLicense/delete",
+     "kind": "write"
+    },
+    {
+     "action": "configSocialInsurance-list",
+     "method": "POST",
+     "path": "/human/configSocialInsurance/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/human/configSocialInsurance/list",
+     "kind": "read"
+    },
+    {
+     "action": "configSocialInsurance-update",
+     "method": "POST",
+     "path": "/human/configSocialInsurance/update",
+     "params": {},
+     "desc": "/human/configSocialInsurance/update",
+     "kind": "write"
+    }
+   ]
+  },
+  "resefunds": {
+   "title": "resefunds",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "projectBudget-budgetTree",
+     "method": "POST",
+     "path": "/resefunds/projectBudget/budgetTree",
+     "params": {},
+     "desc": "/resefunds/projectBudget/budgetTree",
+     "kind": "read"
+    },
+    {
+     "action": "projectBudget-page",
+     "method": "POST",
+     "path": "/resefunds/projectBudget/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/resefunds/projectBudget/page",
+     "kind": "read"
+    },
+    {
+     "action": "projectBudget-updateBudget",
+     "method": "POST",
+     "path": "/resefunds/projectBudget/updateBudget",
+     "params": {},
+     "desc": "/resefunds/projectBudget/updateBudget",
+     "kind": "write"
+    },
+    {
+     "action": "fundsEnough-page",
+     "method": "POST",
+     "path": "/resefunds/fundsEnough/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/resefunds/fundsEnough/page",
+     "kind": "read"
+    },
+    {
+     "action": "fundsEnough-save",
+     "method": "POST",
+     "path": "/resefunds/fundsEnough/save",
+     "params": {},
+     "desc": "/resefunds/fundsEnough/save",
+     "kind": "write"
+    },
+    {
+     "action": "fundsEnough-update",
+     "method": "POST",
+     "path": "/resefunds/fundsEnough/update",
+     "params": {},
+     "desc": "/resefunds/fundsEnough/update",
+     "kind": "write"
+    },
+    {
+     "action": "fundsEnough-delete",
+     "method": "POST",
+     "path": "/resefunds/fundsEnough/delete",
+     "params": {},
+     "desc": "/resefunds/fundsEnough/delete",
+     "kind": "write"
+    },
+    {
+     "action": "fundsEnough-listProjectDropdown",
+     "method": "POST",
+     "path": "/resefunds/fundsEnough/listProjectDropdown",
+     "params": {},
+     "desc": "/resefunds/fundsEnough/listProjectDropdown",
+     "kind": "read"
+    },
+    {
+     "action": "fundsEnough-getProjectFinanceBudget",
+     "method": "POST",
+     "path": "/resefunds/fundsEnough/getProjectFinanceBudget",
+     "params": {},
+     "desc": "/resefunds/fundsEnough/getProjectFinanceBudget",
+     "kind": "read"
+    },
+    {
+     "action": "projectBudget-projectSourceList",
+     "method": "GET",
+     "path": "/resefunds/projectBudget/projectSourceList",
+     "params": {},
+     "desc": "/resefunds/projectBudget/projectSourceList",
+     "kind": "read"
+    },
+    {
+     "action": "projectBudget-projectAllTypeList",
+     "method": "GET",
+     "path": "/resefunds/projectBudget/projectAllTypeList",
+     "params": {},
+     "desc": "/resefunds/projectBudget/projectAllTypeList",
+     "kind": "read"
+    },
+    {
+     "action": "fundsAllocate-page",
+     "method": "POST",
+     "path": "/resefunds/fundsAllocate/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/resefunds/fundsAllocate/page",
+     "kind": "read"
+    },
+    {
+     "action": "fundsAllocate-save",
+     "method": "POST",
+     "path": "/resefunds/fundsAllocate/save",
+     "params": {},
+     "desc": "/resefunds/fundsAllocate/save",
+     "kind": "write"
+    },
+    {
+     "action": "fundsAllocate-update",
+     "method": "POST",
+     "path": "/resefunds/fundsAllocate/update",
+     "params": {},
+     "desc": "/resefunds/fundsAllocate/update",
+     "kind": "write"
+    },
+    {
+     "action": "fundsAllocate-delete",
+     "method": "POST",
+     "path": "/resefunds/fundsAllocate/delete",
+     "params": {},
+     "desc": "/resefunds/fundsAllocate/delete",
+     "kind": "write"
+    },
+    {
+     "action": "fundsAllocate-listSubTopicTree",
+     "method": "POST",
+     "path": "/resefunds/fundsAllocate/listSubTopicTree",
+     "params": {},
+     "desc": "/resefunds/fundsAllocate/listSubTopicTree",
+     "kind": "read"
+    },
+    {
+     "action": "fundsAllocate-validateAmount",
+     "method": "POST",
+     "path": "/resefunds/fundsAllocate/validateAmount",
+     "params": {},
+     "desc": "/resefunds/fundsAllocate/validateAmount",
+     "kind": "read"
+    },
+    {
+     "action": "fundsExpen-page",
+     "method": "POST",
+     "path": "/resefunds/fundsExpen/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/resefunds/fundsExpen/page",
+     "kind": "read"
+    },
+    {
+     "action": "fundsExpen-saveVoucher",
+     "method": "POST",
+     "path": "/resefunds/fundsExpen/saveVoucher",
+     "params": {},
+     "desc": "/resefunds/fundsExpen/saveVoucher",
+     "kind": "write"
+    },
+    {
+     "action": "fundsExpen-updateVoucher",
+     "method": "POST",
+     "path": "/resefunds/fundsExpen/updateVoucher",
+     "params": {},
+     "desc": "/resefunds/fundsExpen/updateVoucher",
+     "kind": "write"
+    },
+    {
+     "action": "fundsExpen-delete",
+     "method": "POST",
+     "path": "/resefunds/fundsExpen/delete",
+     "params": {},
+     "desc": "/resefunds/fundsExpen/delete",
+     "kind": "write"
+    },
+    {
+     "action": "fundsExpen-settleRdExpense",
+     "method": "POST",
+     "path": "/resefunds/fundsExpen/settleRdExpense",
+     "params": {},
+     "desc": "/resefunds/fundsExpen/settleRdExpense",
+     "kind": "read"
+    },
+    {
+     "action": "fundsExpen-settleIntangibleAsset",
+     "method": "POST",
+     "path": "/resefunds/fundsExpen/settleIntangibleAsset",
+     "params": {},
+     "desc": "/resefunds/fundsExpen/settleIntangibleAsset",
+     "kind": "read"
+    },
+    {
+     "action": "fundsExpen-calculateSettleAmount",
+     "method": "POST",
+     "path": "/resefunds/fundsExpen/calculateSettleAmount",
+     "params": {},
+     "desc": "/resefunds/fundsExpen/calculateSettleAmount",
+     "kind": "read"
+    }
+   ]
+  },
+  "workbench": {
+   "title": "workbench",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "projectRdCost-list",
+     "method": "POST",
+     "path": "/workbench/projectRdCost/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/workbench/projectRdCost/list",
+     "kind": "read"
+    },
+    {
+     "action": "projectRdCost-modify",
+     "method": "POST",
+     "path": "/workbench/projectRdCost/modify",
+     "params": {},
+     "desc": "/workbench/projectRdCost/modify",
+     "kind": "write"
+    },
+    {
+     "action": "projectRdCost-getFielInfo",
+     "method": "POST",
+     "path": "/workbench/projectRdCost/getFielInfo",
+     "params": {},
+     "desc": "/workbench/projectRdCost/getFielInfo",
+     "kind": "read"
+    },
+    {
+     "action": "projectRdCost-updateFile",
+     "method": "POST",
+     "path": "/workbench/projectRdCost/updateFile",
+     "params": {},
+     "desc": "/workbench/projectRdCost/updateFile",
+     "kind": "write"
+    },
+    {
+     "action": "projectRdCost-deleteFile",
+     "method": "POST",
+     "path": "/workbench/projectRdCost/deleteFile",
+     "params": {},
+     "desc": "/workbench/projectRdCost/deleteFile",
+     "kind": "write"
+    },
+    {
+     "action": "projectEquip-page",
+     "method": "POST",
+     "path": "/workbench/projectEquip/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/workbench/projectEquip/page",
+     "kind": "read"
+    },
+    {
+     "action": "projectEquip-add",
+     "method": "POST",
+     "path": "/workbench/projectEquip/add",
+     "params": {},
+     "desc": "/workbench/projectEquip/add",
+     "kind": "write"
+    },
+    {
+     "action": "projectEquip-modify",
+     "method": "POST",
+     "path": "/workbench/projectEquip/modify",
+     "params": {},
+     "desc": "/workbench/projectEquip/modify",
+     "kind": "write"
+    },
+    {
+     "action": "projectEquip-deleteBatch",
+     "method": "POST",
+     "path": "/workbench/projectEquip/deleteBatch",
+     "params": {},
+     "desc": "/workbench/projectEquip/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "projectEquip-remove",
+     "method": "POST",
+     "path": "/workbench/projectEquip/remove",
+     "params": {},
+     "desc": "/workbench/projectEquip/remove",
+     "kind": "write"
+    },
+    {
+     "action": "projectInfo-getById",
+     "method": "POST",
+     "path": "/workbench/projectInfo/getById",
+     "params": {},
+     "desc": "/workbench/projectInfo/getById",
+     "kind": "read"
+    },
+    {
+     "action": "projectInfo-getProjectIds",
+     "method": "POST",
+     "path": "/workbench/projectInfo/getProjectIds",
+     "params": {},
+     "desc": "/workbench/projectInfo/getProjectIds",
+     "kind": "read"
+    },
+    {
+     "action": "projectAppro-add",
+     "method": "POST",
+     "path": "/workbench/projectAppro/add",
+     "params": {},
+     "desc": "/workbench/projectAppro/add",
+     "kind": "write"
+    },
+    {
+     "action": "projectAppro-modify",
+     "method": "POST",
+     "path": "/workbench/projectAppro/modify",
+     "params": {},
+     "desc": "/workbench/projectAppro/modify",
+     "kind": "write"
+    },
+    {
+     "action": "projectAppro-getById",
+     "method": "POST",
+     "path": "/workbench/projectAppro/getById",
+     "params": {},
+     "desc": "/workbench/projectAppro/getById",
+     "kind": "read"
+    },
+    {
+     "action": "projectInfo-list",
+     "method": "POST",
+     "path": "/workbench/projectInfo/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/workbench/projectInfo/list",
+     "kind": "read"
+    },
+    {
+     "action": "projectInfo-add",
+     "method": "POST",
+     "path": "/workbench/projectInfo/add",
+     "params": {},
+     "desc": "/workbench/projectInfo/add",
+     "kind": "write"
+    },
+    {
+     "action": "projectInfo-add-child",
+     "method": "POST",
+     "path": "/workbench/projectInfo/add-child",
+     "params": {},
+     "desc": "/workbench/projectInfo/add-child",
+     "kind": "write"
+    },
+    {
+     "action": "projectInfo-child-list",
+     "method": "POST",
+     "path": "/workbench/projectInfo/child-list",
+     "params": {},
+     "desc": "/workbench/projectInfo/child-list",
+     "kind": "read"
+    },
+    {
+     "action": "projectInfo-get-child",
+     "method": "POST",
+     "path": "/workbench/projectInfo/get-child",
+     "params": {},
+     "desc": "/workbench/projectInfo/get-child",
+     "kind": "read"
+    },
+    {
+     "action": "projectInfo-remove-child",
+     "method": "POST",
+     "path": "/workbench/projectInfo/remove-child",
+     "params": {},
+     "desc": "/workbench/projectInfo/remove-child",
+     "kind": "write"
+    },
+    {
+     "action": "projectInfo-modify",
+     "method": "POST",
+     "path": "/workbench/projectInfo/modify",
+     "params": {},
+     "desc": "/workbench/projectInfo/modify",
+     "kind": "write"
+    },
+    {
+     "action": "projectInfo-remove",
+     "method": "POST",
+     "path": "/workbench/projectInfo/remove",
+     "params": {},
+     "desc": "/workbench/projectInfo/remove",
+     "kind": "write"
+    },
+    {
+     "action": "projectInfo-get-experience",
+     "method": "POST",
+     "path": "/workbench/projectInfo/get-experience",
+     "params": {},
+     "desc": "/workbench/projectInfo/get-experience",
+     "kind": "read"
+    },
+    {
+     "action": "projectInfo-uploadPlan",
+     "method": "POST",
+     "path": "/workbench/projectInfo/uploadPlan",
+     "params": {},
+     "desc": "/workbench/projectInfo/uploadPlan",
+     "kind": "write"
+    },
+    {
+     "action": "projectInfo-getCostPlanFile",
+     "method": "POST",
+     "path": "/workbench/projectInfo/getCostPlanFile",
+     "params": {},
+     "desc": "/workbench/projectInfo/getCostPlanFile",
+     "kind": "read"
+    },
+    {
+     "action": "attendance-ranking",
+     "method": "POST",
+     "path": "/workbench/attendance/ranking",
+     "params": {},
+     "desc": "/workbench/attendance/ranking",
+     "kind": "read"
+    },
+    {
+     "action": "project-downloadMaterials",
+     "method": "POST",
+     "path": "/workbench/project/downloadMaterials",
+     "params": {},
+     "desc": "/workbench/project/downloadMaterials",
+     "kind": "read"
+    },
+    {
+     "action": "projectMaterialPick-page",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/workbench/projectMaterialPick/page",
+     "kind": "read"
+    },
+    {
+     "action": "projectMaterialDestination-getDestinationByid",
+     "method": "POST",
+     "path": "/workbench/projectMaterialDestination/getDestinationByid",
+     "params": {},
+     "desc": "/workbench/projectMaterialDestination/getDestinationByid",
+     "kind": "read"
+    },
+    {
+     "action": "projectMaterialPick-getProjectStock",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick/getProjectStock",
+     "params": {},
+     "desc": "/workbench/projectMaterialPick/getProjectStock",
+     "kind": "read"
+    },
+    {
+     "action": "projectMaterialPick-consume",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick/consume",
+     "params": {},
+     "desc": "/workbench/projectMaterialPick/consume",
+     "kind": "read"
+    },
+    {
+     "action": "projectMaterialPick-consumeBatch",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick/consumeBatch",
+     "params": {},
+     "desc": "/workbench/projectMaterialPick/consumeBatch",
+     "kind": "read"
+    },
+    {
+     "action": "projectMaterialPick-pick",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick/pick",
+     "params": {},
+     "desc": "/workbench/projectMaterialPick/pick",
+     "kind": "read"
+    },
+    {
+     "action": "projectMaterialPick-return",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick/return",
+     "params": {},
+     "desc": "/workbench/projectMaterialPick/return",
+     "kind": "read"
+    },
+    {
+     "action": "projectMaterialPick-modify",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick/modify",
+     "params": {},
+     "desc": "/workbench/projectMaterialPick/modify",
+     "kind": "write"
+    },
+    {
+     "action": "projectMaterialPick-creatNewMaterial",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick/creatNewMaterial",
+     "params": {},
+     "desc": "/workbench/projectMaterialPick/creatNewMaterial",
+     "kind": "read"
+    },
+    {
+     "action": "projectMaterialDestination-page",
+     "method": "POST",
+     "path": "/workbench/projectMaterialDestination/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/workbench/projectMaterialDestination/page",
+     "kind": "read"
+    },
+    {
+     "action": "projectMaterialDestination-get",
+     "method": "POST",
+     "path": "/workbench/projectMaterialDestination/get",
+     "params": {},
+     "desc": "/workbench/projectMaterialDestination/get",
+     "kind": "read"
+    },
+    {
+     "action": "projectMaterialDestination-add",
+     "method": "POST",
+     "path": "/workbench/projectMaterialDestination/add",
+     "params": {},
+     "desc": "/workbench/projectMaterialDestination/add",
+     "kind": "write"
+    },
+    {
+     "action": "projectMaterialDestination-modify",
+     "method": "POST",
+     "path": "/workbench/projectMaterialDestination/modify",
+     "params": {},
+     "desc": "/workbench/projectMaterialDestination/modify",
+     "kind": "write"
+    },
+    {
+     "action": "projectMaterialDestination-remove",
+     "method": "POST",
+     "path": "/workbench/projectMaterialDestination/remove",
+     "params": {},
+     "desc": "/workbench/projectMaterialDestination/remove",
+     "kind": "write"
+    },
+    {
+     "action": "projectMaterialPick2-list",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick2/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/workbench/projectMaterialPick2/list",
+     "kind": "read"
+    },
+    {
+     "action": "projectMaterialPick2-add",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick2/add",
+     "params": {},
+     "desc": "/workbench/projectMaterialPick2/add",
+     "kind": "write"
+    },
+    {
+     "action": "projectMaterialPick2-modify",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick2/modify",
+     "params": {},
+     "desc": "/workbench/projectMaterialPick2/modify",
+     "kind": "write"
+    },
+    {
+     "action": "projectMaterialPick2-page",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick2/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/workbench/projectMaterialPick2/page",
+     "kind": "read"
+    },
+    {
+     "action": "projectMaterialPick2-deleteBatch",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick2/deleteBatch",
+     "params": {},
+     "desc": "/workbench/projectMaterialPick2/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "projectMaterialPick2-deleteById",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick2/deleteById",
+     "params": {},
+     "desc": "/workbench/projectMaterialPick2/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "projectMaterialPick2-downloadTemplate",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick2/downloadTemplate",
+     "params": {},
+     "desc": "/workbench/projectMaterialPick2/downloadTemplate",
+     "kind": "read"
+    },
+    {
+     "action": "projectMaterialPick2-import",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick2/import",
+     "params": {},
+     "desc": "/workbench/projectMaterialPick2/import",
+     "kind": "write"
+    },
+    {
+     "action": "projectMaterialPick2-export",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick2/export",
+     "params": {},
+     "desc": "/workbench/projectMaterialPick2/export",
+     "kind": "read"
+    },
+    {
+     "action": "projectMaterialPick2-statistics",
+     "method": "POST",
+     "path": "/workbench/projectMaterialPick2/statistics",
+     "params": {},
+     "desc": "/workbench/projectMaterialPick2/statistics",
+     "kind": "read"
+    },
+    {
+     "action": "projectMember-add",
+     "method": "POST",
+     "path": "/workbench/projectMember/add",
+     "params": {},
+     "desc": "/workbench/projectMember/add",
+     "kind": "write"
+    },
+    {
+     "action": "projectMember-addAll",
+     "method": "POST",
+     "path": "/workbench/projectMember/addAll",
+     "params": {},
+     "desc": "/workbench/projectMember/addAll",
+     "kind": "write"
+    },
+    {
+     "action": "projectMember-modify",
+     "method": "POST",
+     "path": "/workbench/projectMember/modify",
+     "params": {},
+     "desc": "/workbench/projectMember/modify",
+     "kind": "write"
+    },
+    {
+     "action": "projectMember-page",
+     "method": "POST",
+     "path": "/workbench/projectMember/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/workbench/projectMember/page",
+     "kind": "read"
+    },
+    {
+     "action": "projectMember-getMembers",
+     "method": "POST",
+     "path": "/workbench/projectMember/getMembers",
+     "params": {},
+     "desc": "/workbench/projectMember/getMembers",
+     "kind": "read"
+    },
+    {
+     "action": "projectMember-deleteBatch",
+     "method": "POST",
+     "path": "/workbench/projectMember/deleteBatch",
+     "params": {},
+     "desc": "/workbench/projectMember/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "projectMember-remove",
+     "method": "POST",
+     "path": "/workbench/projectMember/remove",
+     "params": {},
+     "desc": "/workbench/projectMember/remove",
+     "kind": "write"
+    },
+    {
+     "action": "projectNotice-add",
+     "method": "POST",
+     "path": "/workbench/projectNotice/add",
+     "params": {},
+     "desc": "/workbench/projectNotice/add",
+     "kind": "write"
+    },
+    {
+     "action": "projectNotice-modify",
+     "method": "POST",
+     "path": "/workbench/projectNotice/modify",
+     "params": {},
+     "desc": "/workbench/projectNotice/modify",
+     "kind": "write"
+    },
+    {
+     "action": "projectNotice-getNote",
+     "method": "POST",
+     "path": "/workbench/projectNotice/getNote",
+     "params": {},
+     "desc": "/workbench/projectNotice/getNote",
+     "kind": "read"
+    },
+    {
+     "action": "projectNotice-list",
+     "method": "POST",
+     "path": "/workbench/projectNotice/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/workbench/projectNotice/list",
+     "kind": "read"
+    },
+    {
+     "action": "projectNotice-remove",
+     "method": "POST",
+     "path": "/workbench/projectNotice/remove",
+     "params": {},
+     "desc": "/workbench/projectNotice/remove",
+     "kind": "write"
+    },
+    {
+     "action": "projectMilestone-add",
+     "method": "POST",
+     "path": "/workbench/projectMilestone/add",
+     "params": {},
+     "desc": "/workbench/projectMilestone/add",
+     "kind": "write"
+    },
+    {
+     "action": "projectMilestone-modify",
+     "method": "POST",
+     "path": "/workbench/projectMilestone/modify",
+     "params": {},
+     "desc": "/workbench/projectMilestone/modify",
+     "kind": "write"
+    },
+    {
+     "action": "projectMilestone-getMilestone",
+     "method": "POST",
+     "path": "/workbench/projectMilestone/getMilestone",
+     "params": {},
+     "desc": "/workbench/projectMilestone/getMilestone",
+     "kind": "read"
+    },
+    {
+     "action": "projectMilestone-getMilestoneList",
+     "method": "POST",
+     "path": "/workbench/projectMilestone/getMilestoneList",
+     "params": {},
+     "desc": "/workbench/projectMilestone/getMilestoneList",
+     "kind": "read"
+    },
+    {
+     "action": "projectMilestone-remove",
+     "method": "POST",
+     "path": "/workbench/projectMilestone/remove",
+     "params": {},
+     "desc": "/workbench/projectMilestone/remove",
+     "kind": "write"
+    },
+    {
+     "action": "projectPrepRecord-add",
+     "method": "POST",
+     "path": "/workbench/projectPrepRecord/add",
+     "params": {},
+     "desc": "/workbench/projectPrepRecord/add",
+     "kind": "write"
+    },
+    {
+     "action": "projectPrepRecord-modify",
+     "method": "POST",
+     "path": "/workbench/projectPrepRecord/modify",
+     "params": {},
+     "desc": "/workbench/projectPrepRecord/modify",
+     "kind": "write"
+    },
+    {
+     "action": "projectPrepRecord-getById",
+     "method": "POST",
+     "path": "/workbench/projectPrepRecord/getById",
+     "params": {},
+     "desc": "/workbench/projectPrepRecord/getById",
+     "kind": "read"
+    },
+    {
+     "action": "projectPrepRecord-remove",
+     "method": "POST",
+     "path": "/workbench/projectPrepRecord/remove",
+     "params": {},
+     "desc": "/workbench/projectPrepRecord/remove",
+     "kind": "write"
+    },
+    {
+     "action": "projectMeetingRecord-page",
+     "method": "POST",
+     "path": "/workbench/projectMeetingRecord/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/workbench/projectMeetingRecord/page",
+     "kind": "read"
+    },
+    {
+     "action": "projectMeetingRecord-add",
+     "method": "POST",
+     "path": "/workbench/projectMeetingRecord/add",
+     "params": {},
+     "desc": "/workbench/projectMeetingRecord/add",
+     "kind": "write"
+    },
+    {
+     "action": "projectMeetingRecord-modify",
+     "method": "POST",
+     "path": "/workbench/projectMeetingRecord/modify",
+     "params": {},
+     "desc": "/workbench/projectMeetingRecord/modify",
+     "kind": "write"
+    },
+    {
+     "action": "projectMeetingRecord-remove",
+     "method": "POST",
+     "path": "/workbench/projectMeetingRecord/remove",
+     "params": {},
+     "desc": "/workbench/projectMeetingRecord/remove",
+     "kind": "write"
+    },
+    {
+     "action": "projectMeetingRecord-batchRemove",
+     "method": "POST",
+     "path": "/workbench/projectMeetingRecord/batchRemove",
+     "params": {},
+     "desc": "/workbench/projectMeetingRecord/batchRemove",
+     "kind": "read"
+    },
+    {
+     "action": "projectTrialRecord-page",
+     "method": "POST",
+     "path": "/workbench/projectTrialRecord/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/workbench/projectTrialRecord/page",
+     "kind": "read"
+    },
+    {
+     "action": "projectTrialRecord-add",
+     "method": "POST",
+     "path": "/workbench/projectTrialRecord/add",
+     "params": {},
+     "desc": "/workbench/projectTrialRecord/add",
+     "kind": "write"
+    },
+    {
+     "action": "projectTrialRecord-modify",
+     "method": "POST",
+     "path": "/workbench/projectTrialRecord/modify",
+     "params": {},
+     "desc": "/workbench/projectTrialRecord/modify",
+     "kind": "write"
+    },
+    {
+     "action": "projectTrialRecord-remove",
+     "method": "POST",
+     "path": "/workbench/projectTrialRecord/remove",
+     "params": {},
+     "desc": "/workbench/projectTrialRecord/remove",
+     "kind": "write"
+    },
+    {
+     "action": "projectTrialRecord-removeBatch",
+     "method": "POST",
+     "path": "/workbench/projectTrialRecord/removeBatch",
+     "params": {},
+     "desc": "/workbench/projectTrialRecord/removeBatch",
+     "kind": "write"
+    },
+    {
+     "action": "projectProgressReport-page",
+     "method": "POST",
+     "path": "/workbench/projectProgressReport/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/workbench/projectProgressReport/page",
+     "kind": "read"
+    },
+    {
+     "action": "projectProgressReport-add",
+     "method": "POST",
+     "path": "/workbench/projectProgressReport/add",
+     "params": {},
+     "desc": "/workbench/projectProgressReport/add",
+     "kind": "write"
+    },
+    {
+     "action": "projectProgressReport-update",
+     "method": "POST",
+     "path": "/workbench/projectProgressReport/update",
+     "params": {},
+     "desc": "/workbench/projectProgressReport/update",
+     "kind": "write"
+    },
+    {
+     "action": "projectProgressReport-remove",
+     "method": "POST",
+     "path": "/workbench/projectProgressReport/remove",
+     "params": {},
+     "desc": "/workbench/projectProgressReport/remove",
+     "kind": "write"
+    },
+    {
+     "action": "projectProgressReport-removeBatch",
+     "method": "POST",
+     "path": "/workbench/projectProgressReport/removeBatch",
+     "params": {},
+     "desc": "/workbench/projectProgressReport/removeBatch",
+     "kind": "write"
+    },
+    {
+     "action": "projectAcceptance-page",
+     "method": "POST",
+     "path": "/workbench/projectAcceptance/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/workbench/projectAcceptance/page",
+     "kind": "read"
+    },
+    {
+     "action": "projectAcceptance-add",
+     "method": "POST",
+     "path": "/workbench/projectAcceptance/add",
+     "params": {},
+     "desc": "/workbench/projectAcceptance/add",
+     "kind": "write"
+    },
+    {
+     "action": "projectAcceptance-modify",
+     "method": "POST",
+     "path": "/workbench/projectAcceptance/modify",
+     "params": {},
+     "desc": "/workbench/projectAcceptance/modify",
+     "kind": "write"
+    },
+    {
+     "action": "projectAcceptance-remove",
+     "method": "POST",
+     "path": "/workbench/projectAcceptance/remove",
+     "params": {},
+     "desc": "/workbench/projectAcceptance/remove",
+     "kind": "write"
+    },
+    {
+     "action": "projectAcceptance-removeBatch",
+     "method": "POST",
+     "path": "/workbench/projectAcceptance/removeBatch",
+     "params": {},
+     "desc": "/workbench/projectAcceptance/removeBatch",
+     "kind": "write"
+    },
+    {
+     "action": "projectWorkhour-countUnifiedHours",
+     "method": "POST",
+     "path": "/workbench/projectWorkhour/countUnifiedHours",
+     "params": {},
+     "desc": "/workbench/projectWorkhour/countUnifiedHours",
+     "kind": "read"
+    },
+    {
+     "action": "projectWorkhour-page",
+     "method": "POST",
+     "path": "/workbench/projectWorkhour/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/workbench/projectWorkhour/page",
+     "kind": "read"
+    },
+    {
+     "action": "projectMember-getUserList",
+     "method": "POST",
+     "path": "/workbench/projectMember/getUserList",
+     "params": {},
+     "desc": "/workbench/projectMember/getUserList",
+     "kind": "read"
+    },
+    {
+     "action": "projectWorkHourDetail-list",
+     "method": "POST",
+     "path": "/workbench/projectWorkHourDetail/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/workbench/projectWorkHourDetail/list",
+     "kind": "read"
+    },
+    {
+     "action": "projectWorkhour-clear",
+     "method": "POST",
+     "path": "/workbench/projectWorkhour/clear",
+     "params": {},
+     "desc": "/workbench/projectWorkhour/clear",
+     "kind": "read"
+    }
+   ]
+  },
+  "voucher": {
+   "title": "voucher",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "sysVoucher-getVoucherSummaryByPeriod",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/getVoucherSummaryByPeriod",
+     "params": {},
+     "desc": "/voucher/sysVoucher/getVoucherSummaryByPeriod",
+     "kind": "read"
+    },
+    {
+     "action": "sysVoucher-getUnCarryOverMonth",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/getUnCarryOverMonth",
+     "params": {},
+     "desc": "/voucher/sysVoucher/getUnCarryOverMonth",
+     "kind": "read"
+    },
+    {
+     "action": "sysVoucher-page",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/voucher/sysVoucher/page",
+     "kind": "read"
+    },
+    {
+     "action": "sysVoucher-queryById",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/queryById",
+     "params": {},
+     "desc": "/voucher/sysVoucher/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "sysVoucher-add",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/add",
+     "params": {},
+     "desc": "/voucher/sysVoucher/add",
+     "kind": "write"
+    },
+    {
+     "action": "sysVoucher-addProject",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/addProject",
+     "params": {},
+     "desc": "/voucher/sysVoucher/addProject",
+     "kind": "write"
+    },
+    {
+     "action": "sysVoucher-calculateAmount",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/calculateAmount",
+     "params": {},
+     "desc": "/voucher/sysVoucher/calculateAmount",
+     "kind": "read"
+    },
+    {
+     "action": "sysVoucher-carryOver",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/carryOver",
+     "params": {},
+     "desc": "/voucher/sysVoucher/carryOver",
+     "kind": "read"
+    },
+    {
+     "action": "sysVoucher-getDetailById",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/getDetailById",
+     "params": {},
+     "desc": "/voucher/sysVoucher/getDetailById",
+     "kind": "read"
+    },
+    {
+     "action": "sysVoucher-deleteBatch",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/deleteBatch",
+     "params": {},
+     "desc": "/voucher/sysVoucher/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "sysVoucher-deleteById",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/deleteById",
+     "params": {},
+     "desc": "/voucher/sysVoucher/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "sysVoucher-modify",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/modify",
+     "params": {},
+     "desc": "/voucher/sysVoucher/modify",
+     "kind": "write"
+    },
+    {
+     "action": "sysVoucher-import",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/import",
+     "params": {},
+     "desc": "/voucher/sysVoucher/import",
+     "kind": "write"
+    },
+    {
+     "action": "sysVoucher-downloadTemplate",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/downloadTemplate",
+     "params": {},
+     "desc": "/voucher/sysVoucher/downloadTemplate",
+     "kind": "read"
+    },
+    {
+     "action": "match-download",
+     "method": "POST",
+     "path": "/voucher/match/download",
+     "params": {},
+     "desc": "/voucher/match/download",
+     "kind": "read"
+    },
+    {
+     "action": "match-execute",
+     "method": "POST",
+     "path": "/voucher/match/execute",
+     "params": {},
+     "desc": "/voucher/match/execute",
+     "kind": "read"
+    },
+    {
+     "action": "sysVoucher-export",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/export",
+     "params": {},
+     "desc": "/voucher/sysVoucher/export",
+     "kind": "read"
+    },
+    {
+     "action": "sysVoucher-statistics",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/statistics",
+     "params": {},
+     "desc": "/voucher/sysVoucher/statistics",
+     "kind": "read"
+    },
+    {
+     "action": "sysVoucher-getProjectsForVoucher",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/getProjectsForVoucher",
+     "params": {},
+     "desc": "/voucher/sysVoucher/getProjectsForVoucher",
+     "kind": "read"
+    },
+    {
+     "action": "voucherRaw-add",
+     "method": "POST",
+     "path": "/voucher/voucherRaw/add",
+     "params": {},
+     "desc": "/voucher/voucherRaw/add",
+     "kind": "write"
+    },
+    {
+     "action": "voucherRaw-import",
+     "method": "POST",
+     "path": "/voucher/voucherRaw/import",
+     "params": {},
+     "desc": "/voucher/voucherRaw/import",
+     "kind": "write"
+    },
+    {
+     "action": "voucherRaw-list",
+     "method": "POST",
+     "path": "/voucher/voucherRaw/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/voucher/voucherRaw/list",
+     "kind": "read"
+    },
+    {
+     "action": "voucherRaw-page",
+     "method": "POST",
+     "path": "/voucher/voucherRaw/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/voucher/voucherRaw/page",
+     "kind": "read"
+    },
+    {
+     "action": "voucherRaw-modify",
+     "method": "POST",
+     "path": "/voucher/voucherRaw/modify",
+     "params": {},
+     "desc": "/voucher/voucherRaw/modify",
+     "kind": "write"
+    },
+    {
+     "action": "voucherRaw-remove",
+     "method": "POST",
+     "path": "/voucher/voucherRaw/remove",
+     "params": {},
+     "desc": "/voucher/voucherRaw/remove",
+     "kind": "write"
+    },
+    {
+     "action": "sysVoucher-getVouchersByProjectId",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/getVouchersByProjectId",
+     "params": {},
+     "desc": "/voucher/sysVoucher/getVouchersByProjectId",
+     "kind": "read"
+    },
+    {
+     "action": "sysVoucher-removeVouchersByRelId",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/removeVouchersByRelId",
+     "params": {},
+     "desc": "/voucher/sysVoucher/removeVouchersByRelId",
+     "kind": "write"
+    },
+    {
+     "action": "sysVoucher-removeVouchersByRelIds",
+     "method": "POST",
+     "path": "/voucher/sysVoucher/removeVouchersByRelIds",
+     "params": {},
+     "desc": "/voucher/sysVoucher/removeVouchersByRelIds",
+     "kind": "write"
+    }
+   ]
+  },
+  "enterprise": {
+   "title": "enterprise",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "yearly-page",
+     "method": "POST",
+     "path": "/enterprise/highTechProductMapping/yearly/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/enterprise/highTechProductMapping/yearly/page",
+     "kind": "read"
+    },
+    {
+     "action": "highTechProductMapping-page",
+     "method": "POST",
+     "path": "/enterprise/highTechProductMapping/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/enterprise/highTechProductMapping/page",
+     "kind": "read"
+    },
+    {
+     "action": "yearly-deleteById",
+     "method": "POST",
+     "path": "/enterprise/highTechProductMapping/yearly/deleteById",
+     "params": {},
+     "desc": "/enterprise/highTechProductMapping/yearly/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "yearly-deleteBatch",
+     "method": "POST",
+     "path": "/enterprise/highTechProductMapping/yearly/deleteBatch",
+     "params": {},
+     "desc": "/enterprise/highTechProductMapping/yearly/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "highTechProductMapping-generate",
+     "method": "POST",
+     "path": "/enterprise/highTechProductMapping/generate",
+     "params": {},
+     "desc": "/enterprise/highTechProductMapping/generate",
+     "kind": "read"
+    },
+    {
+     "action": "highTechProductMapping-saveBatch",
+     "method": "POST",
+     "path": "/enterprise/highTechProductMapping/saveBatch",
+     "params": {},
+     "desc": "/enterprise/highTechProductMapping/saveBatch",
+     "kind": "write"
+    },
+    {
+     "action": "psItem-list",
+     "method": "POST",
+     "path": "/enterprise/psItem/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/enterprise/psItem/list",
+     "kind": "read"
+    },
+    {
+     "action": "rdExpenseItem-page",
+     "method": "POST",
+     "path": "/enterprise/declare/rdExpenseItem/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/enterprise/declare/rdExpenseItem/page",
+     "kind": "read"
+    },
+    {
+     "action": "rdExpenseItem-queryById",
+     "method": "POST",
+     "path": "/enterprise/declare/rdExpenseItem/queryById",
+     "params": {},
+     "desc": "/enterprise/declare/rdExpenseItem/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "rdExpenseItem-add",
+     "method": "POST",
+     "path": "/enterprise/declare/rdExpenseItem/add",
+     "params": {},
+     "desc": "/enterprise/declare/rdExpenseItem/add",
+     "kind": "write"
+    },
+    {
+     "action": "rdExpenseItem-modify",
+     "method": "POST",
+     "path": "/enterprise/declare/rdExpenseItem/modify",
+     "params": {},
+     "desc": "/enterprise/declare/rdExpenseItem/modify",
+     "kind": "write"
+    },
+    {
+     "action": "rdExpenseItem-deleteById",
+     "method": "POST",
+     "path": "/enterprise/declare/rdExpenseItem/deleteById",
+     "params": {},
+     "desc": "/enterprise/declare/rdExpenseItem/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "rdExpenseSummary-modify",
+     "method": "POST",
+     "path": "/enterprise/declare/rdExpenseSummary/modify",
+     "params": {},
+     "desc": "/enterprise/declare/rdExpenseSummary/modify",
+     "kind": "write"
+    },
+    {
+     "action": "rdExpenseSummary-queryById",
+     "method": "POST",
+     "path": "/enterprise/declare/rdExpenseSummary/queryById",
+     "params": {},
+     "desc": "/enterprise/declare/rdExpenseSummary/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "hrSummary-queryById",
+     "method": "POST",
+     "path": "/enterprise/declare/hrSummary/queryById",
+     "params": {},
+     "desc": "/enterprise/declare/hrSummary/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "hrSummary-modify",
+     "method": "POST",
+     "path": "/enterprise/declare/hrSummary/modify",
+     "params": {},
+     "desc": "/enterprise/declare/hrSummary/modify",
+     "kind": "write"
+    },
+    {
+     "action": "qualificationSummary-queryById",
+     "method": "POST",
+     "path": "/enterprise/declare/qualificationSummary/queryById",
+     "params": {},
+     "desc": "/enterprise/declare/qualificationSummary/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "qualificationSummary-modify",
+     "method": "POST",
+     "path": "/enterprise/declare/qualificationSummary/modify",
+     "params": {},
+     "desc": "/enterprise/declare/qualificationSummary/modify",
+     "kind": "write"
+    },
+    {
+     "action": "productIncomeDetail-page",
+     "method": "POST",
+     "path": "/enterprise/productIncomeDetail/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/enterprise/productIncomeDetail/page",
+     "kind": "read"
+    },
+    {
+     "action": "productIncomeDetail-add",
+     "method": "POST",
+     "path": "/enterprise/productIncomeDetail/add",
+     "params": {},
+     "desc": "/enterprise/productIncomeDetail/add",
+     "kind": "write"
+    },
+    {
+     "action": "productIncomeDetail-queryById",
+     "method": "POST",
+     "path": "/enterprise/productIncomeDetail/queryById",
+     "params": {},
+     "desc": "/enterprise/productIncomeDetail/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "productIncomeDetail-modify",
+     "method": "POST",
+     "path": "/enterprise/productIncomeDetail/modify",
+     "params": {},
+     "desc": "/enterprise/productIncomeDetail/modify",
+     "kind": "write"
+    },
+    {
+     "action": "productIncomeDetail-deleteById",
+     "method": "POST",
+     "path": "/enterprise/productIncomeDetail/deleteById",
+     "params": {},
+     "desc": "/enterprise/productIncomeDetail/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "productIncomeDetail-deleteBatch",
+     "method": "POST",
+     "path": "/enterprise/productIncomeDetail/deleteBatch",
+     "params": {},
+     "desc": "/enterprise/productIncomeDetail/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "productIncomeDetail-export",
+     "method": "POST",
+     "path": "/enterprise/productIncomeDetail/export",
+     "params": {},
+     "desc": "/enterprise/productIncomeDetail/export",
+     "kind": "read"
+    },
+    {
+     "action": "productIncomeDetail-downloadTemplate",
+     "method": "POST",
+     "path": "/enterprise/productIncomeDetail/downloadTemplate",
+     "params": {},
+     "desc": "/enterprise/productIncomeDetail/downloadTemplate",
+     "kind": "read"
+    },
+    {
+     "action": "productIncomeDetail-import",
+     "method": "POST",
+     "path": "/enterprise/productIncomeDetail/import",
+     "params": {},
+     "desc": "/enterprise/productIncomeDetail/import",
+     "kind": "write"
+    },
+    {
+     "action": "uploadedFile-autoGenerate",
+     "method": "POST",
+     "path": "/enterprise/declare/uploadedFile/autoGenerate",
+     "params": {},
+     "desc": "/enterprise/declare/uploadedFile/autoGenerate",
+     "kind": "write"
+    },
+    {
+     "action": "uploadedFile-list",
+     "method": "POST",
+     "path": "/enterprise/declare/uploadedFile/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/enterprise/declare/uploadedFile/list",
+     "kind": "write"
+    },
+    {
+     "action": "uploadedFile-upload",
+     "method": "POST",
+     "path": "/enterprise/declare/uploadedFile/upload",
+     "params": {},
+     "desc": "/enterprise/declare/uploadedFile/upload",
+     "kind": "write"
+    },
+    {
+     "action": "uploadedFile-deleteById",
+     "method": "POST",
+     "path": "/enterprise/declare/uploadedFile/deleteById",
+     "params": {},
+     "desc": "/enterprise/declare/uploadedFile/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "rdSummary-queryById",
+     "method": "POST",
+     "path": "/enterprise/declare/rdSummary/queryById",
+     "params": {},
+     "desc": "/enterprise/declare/rdSummary/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "rdSummary-modify",
+     "method": "POST",
+     "path": "/enterprise/declare/rdSummary/modify",
+     "params": {},
+     "desc": "/enterprise/declare/rdSummary/modify",
+     "kind": "write"
+    },
+    {
+     "action": "rdItem-page",
+     "method": "POST",
+     "path": "/enterprise/declare/rdItem/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/enterprise/declare/rdItem/page",
+     "kind": "read"
+    },
+    {
+     "action": "rdItem-queryById",
+     "method": "POST",
+     "path": "/enterprise/declare/rdItem/queryById",
+     "params": {},
+     "desc": "/enterprise/declare/rdItem/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "rdItem-modify",
+     "method": "POST",
+     "path": "/enterprise/declare/rdItem/modify",
+     "params": {},
+     "desc": "/enterprise/declare/rdItem/modify",
+     "kind": "write"
+    },
+    {
+     "action": "rdItem-add",
+     "method": "POST",
+     "path": "/enterprise/declare/rdItem/add",
+     "params": {},
+     "desc": "/enterprise/declare/rdItem/add",
+     "kind": "write"
+    },
+    {
+     "action": "rdItem-list",
+     "method": "POST",
+     "path": "/enterprise/declare/rdItem/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/enterprise/declare/rdItem/list",
+     "kind": "read"
+    },
+    {
+     "action": "rdItem-deleteById",
+     "method": "POST",
+     "path": "/enterprise/declare/rdItem/deleteById",
+     "params": {},
+     "desc": "/enterprise/declare/rdItem/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "rdItem-deleteBatch",
+     "method": "POST",
+     "path": "/enterprise/declare/rdItem/deleteBatch",
+     "params": {},
+     "desc": "/enterprise/declare/rdItem/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "ip-list",
+     "method": "POST",
+     "path": "/enterprise/declare/ip/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/enterprise/declare/ip/list",
+     "kind": "read"
+    },
+    {
+     "action": "dashboard-ipCount",
+     "method": "POST",
+     "path": "/enterprise/dashboard/ipCount",
+     "params": {},
+     "desc": "/enterprise/dashboard/ipCount",
+     "kind": "read"
+    },
+    {
+     "action": "dashboard-productStatistics",
+     "method": "POST",
+     "path": "/enterprise/dashboard/productStatistics",
+     "params": {},
+     "desc": "/enterprise/dashboard/productStatistics",
+     "kind": "read"
+    },
+    {
+     "action": "certification-page",
+     "method": "POST",
+     "path": "/enterprise/dashboard/certification/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/enterprise/dashboard/certification/page",
+     "kind": "read"
+    },
+    {
+     "action": "certification-certTypeCount",
+     "method": "POST",
+     "path": "/enterprise/dashboard/certification/certTypeCount",
+     "params": {},
+     "desc": "/enterprise/dashboard/certification/certTypeCount",
+     "kind": "read"
+    },
+    {
+     "action": "certification-add",
+     "method": "POST",
+     "path": "/enterprise/dashboard/certification/add",
+     "params": {},
+     "desc": "/enterprise/dashboard/certification/add",
+     "kind": "write"
+    },
+    {
+     "action": "certification-queryById",
+     "method": "POST",
+     "path": "/enterprise/dashboard/certification/queryById",
+     "params": {},
+     "desc": "/enterprise/dashboard/certification/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "certification-modify",
+     "method": "POST",
+     "path": "/enterprise/dashboard/certification/modify",
+     "params": {},
+     "desc": "/enterprise/dashboard/certification/modify",
+     "kind": "write"
+    },
+    {
+     "action": "certification-deleteById",
+     "method": "POST",
+     "path": "/enterprise/dashboard/certification/deleteById",
+     "params": {},
+     "desc": "/enterprise/dashboard/certification/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "certification-deleteBatch",
+     "method": "POST",
+     "path": "/enterprise/dashboard/certification/deleteBatch",
+     "params": {},
+     "desc": "/enterprise/dashboard/certification/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "dashboard-financeData",
+     "method": "POST",
+     "path": "/enterprise/dashboard/financeData",
+     "params": {},
+     "desc": "/enterprise/dashboard/financeData",
+     "kind": "read"
+    },
+    {
+     "action": "dashboard-getRdStaffRatio",
+     "method": "POST",
+     "path": "/enterprise/dashboard/getRdStaffRatio",
+     "params": {},
+     "desc": "/enterprise/dashboard/getRdStaffRatio",
+     "kind": "read"
+    },
+    {
+     "action": "organizationInfo-queryById",
+     "method": "POST",
+     "path": "/enterprise/dashboard/organizationInfo/queryById",
+     "params": {},
+     "desc": "/enterprise/dashboard/organizationInfo/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "organizationInfo-modify",
+     "method": "POST",
+     "path": "/enterprise/dashboard/organizationInfo/modify",
+     "params": {},
+     "desc": "/enterprise/dashboard/organizationInfo/modify",
+     "kind": "write"
+    },
+    {
+     "action": "profile-getCreditCode",
+     "method": "POST",
+     "path": "/enterprise/declare/profile/getCreditCode",
+     "params": {},
+     "desc": "/enterprise/declare/profile/getCreditCode",
+     "kind": "read"
+    },
+    {
+     "action": "profile-modify",
+     "method": "POST",
+     "path": "/enterprise/declare/profile/modify",
+     "params": {},
+     "desc": "/enterprise/declare/profile/modify",
+     "kind": "write"
+    },
+    {
+     "action": "techTransfer-page",
+     "method": "POST",
+     "path": "/enterprise/declare/techTransfer/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/enterprise/declare/techTransfer/page",
+     "kind": "read"
+    },
+    {
+     "action": "techTransfer-queryById",
+     "method": "POST",
+     "path": "/enterprise/declare/techTransfer/queryById",
+     "params": {},
+     "desc": "/enterprise/declare/techTransfer/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "techTransfer-deleteById",
+     "method": "POST",
+     "path": "/enterprise/declare/techTransfer/deleteById",
+     "params": {},
+     "desc": "/enterprise/declare/techTransfer/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "techTransfer-deleteBatch",
+     "method": "POST",
+     "path": "/enterprise/declare/techTransfer/deleteBatch",
+     "params": {},
+     "desc": "/enterprise/declare/techTransfer/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "techTransfer-modify",
+     "method": "POST",
+     "path": "/enterprise/declare/techTransfer/modify",
+     "params": {},
+     "desc": "/enterprise/declare/techTransfer/modify",
+     "kind": "write"
+    },
+    {
+     "action": "techTransfer-add",
+     "method": "POST",
+     "path": "/enterprise/declare/techTransfer/add",
+     "params": {},
+     "desc": "/enterprise/declare/techTransfer/add",
+     "kind": "write"
+    },
+    {
+     "action": "psItem-page",
+     "method": "POST",
+     "path": "/enterprise/psItem/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/enterprise/psItem/page",
+     "kind": "read"
+    },
+    {
+     "action": "psItem-add",
+     "method": "POST",
+     "path": "/enterprise/psItem/add",
+     "params": {},
+     "desc": "/enterprise/psItem/add",
+     "kind": "write"
+    },
+    {
+     "action": "psItem-deleteById",
+     "method": "POST",
+     "path": "/enterprise/psItem/deleteById",
+     "params": {},
+     "desc": "/enterprise/psItem/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "psItem-deleteBatch",
+     "method": "POST",
+     "path": "/enterprise/psItem/deleteBatch",
+     "params": {},
+     "desc": "/enterprise/psItem/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "psItem-queryById",
+     "method": "POST",
+     "path": "/enterprise/psItem/queryById",
+     "params": {},
+     "desc": "/enterprise/psItem/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "psItem-modify",
+     "method": "POST",
+     "path": "/enterprise/psItem/modify",
+     "params": {},
+     "desc": "/enterprise/psItem/modify",
+     "kind": "write"
+    },
+    {
+     "action": "innovationAbility-queryById",
+     "method": "POST",
+     "path": "/enterprise/declare/innovationAbility/queryById",
+     "params": {},
+     "desc": "/enterprise/declare/innovationAbility/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "innovationAbility-modify",
+     "method": "POST",
+     "path": "/enterprise/declare/innovationAbility/modify",
+     "params": {},
+     "desc": "/enterprise/declare/innovationAbility/modify",
+     "kind": "write"
+    },
+    {
+     "action": "psSummary-queryById",
+     "method": "POST",
+     "path": "/enterprise/declare/psSummary/queryById",
+     "params": {},
+     "desc": "/enterprise/declare/psSummary/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "psSummary-modify",
+     "method": "POST",
+     "path": "/enterprise/declare/psSummary/modify",
+     "params": {},
+     "desc": "/enterprise/declare/psSummary/modify",
+     "kind": "write"
+    },
+    {
+     "action": "psItemCorrelation-page",
+     "method": "POST",
+     "path": "/enterprise/declare/psItemCorrelation/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/enterprise/declare/psItemCorrelation/page",
+     "kind": "read"
+    },
+    {
+     "action": "psItem-listExcludeCorrelation",
+     "method": "POST",
+     "path": "/enterprise/psItem/listExcludeCorrelation",
+     "params": {},
+     "desc": "/enterprise/psItem/listExcludeCorrelation",
+     "kind": "read"
+    },
+    {
+     "action": "psItemCorrelation-add",
+     "method": "POST",
+     "path": "/enterprise/declare/psItemCorrelation/add",
+     "params": {},
+     "desc": "/enterprise/declare/psItemCorrelation/add",
+     "kind": "write"
+    },
+    {
+     "action": "psItemCorrelation-deleteById",
+     "method": "POST",
+     "path": "/enterprise/declare/psItemCorrelation/deleteById",
+     "params": {},
+     "desc": "/enterprise/declare/psItemCorrelation/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "psItemCorrelation-list",
+     "method": "POST",
+     "path": "/enterprise/declare/psItemCorrelation/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/enterprise/declare/psItemCorrelation/list",
+     "kind": "read"
+    },
+    {
+     "action": "ip-statistics",
+     "method": "POST",
+     "path": "/enterprise/declare/ip/statistics",
+     "params": {},
+     "desc": "/enterprise/declare/ip/statistics",
+     "kind": "read"
+    },
+    {
+     "action": "ip-page",
+     "method": "POST",
+     "path": "/enterprise/declare/ip/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/enterprise/declare/ip/page",
+     "kind": "read"
+    },
+    {
+     "action": "ip-add",
+     "method": "POST",
+     "path": "/enterprise/declare/ip/add",
+     "params": {},
+     "desc": "/enterprise/declare/ip/add",
+     "kind": "write"
+    },
+    {
+     "action": "ip-queryById",
+     "method": "POST",
+     "path": "/enterprise/declare/ip/queryById",
+     "params": {},
+     "desc": "/enterprise/declare/ip/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "ip-modify",
+     "method": "POST",
+     "path": "/enterprise/declare/ip/modify",
+     "params": {},
+     "desc": "/enterprise/declare/ip/modify",
+     "kind": "write"
+    },
+    {
+     "action": "ip-deleteById",
+     "method": "POST",
+     "path": "/enterprise/declare/ip/deleteById",
+     "params": {},
+     "desc": "/enterprise/declare/ip/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "sync-data",
+     "method": "POST",
+     "path": "/enterprise/declare/sync/data",
+     "params": {},
+     "desc": "/enterprise/declare/sync/data",
+     "kind": "read"
+    },
+    {
+     "action": "standards-page",
+     "method": "POST",
+     "path": "/enterprise/declare/standards/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/enterprise/declare/standards/page",
+     "kind": "read"
+    },
+    {
+     "action": "standards-add",
+     "method": "POST",
+     "path": "/enterprise/declare/standards/add",
+     "params": {},
+     "desc": "/enterprise/declare/standards/add",
+     "kind": "write"
+    },
+    {
+     "action": "standards-queryById",
+     "method": "POST",
+     "path": "/enterprise/declare/standards/queryById",
+     "params": {},
+     "desc": "/enterprise/declare/standards/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "standards-modify",
+     "method": "POST",
+     "path": "/enterprise/declare/standards/modify",
+     "params": {},
+     "desc": "/enterprise/declare/standards/modify",
+     "kind": "write"
+    },
+    {
+     "action": "standards-deleteById",
+     "method": "POST",
+     "path": "/enterprise/declare/standards/deleteById",
+     "params": {},
+     "desc": "/enterprise/declare/standards/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "standards-deleteBatch",
+     "method": "POST",
+     "path": "/enterprise/declare/standards/deleteBatch",
+     "params": {},
+     "desc": "/enterprise/declare/standards/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "report-updateAssessment",
+     "method": "POST",
+     "path": "/enterprise/declare/report/updateAssessment",
+     "params": {},
+     "desc": "/enterprise/declare/report/updateAssessment",
+     "kind": "write"
+    },
+    {
+     "action": "report-downloadAllAttachments",
+     "method": "POST",
+     "path": "/enterprise/declare/report/downloadAllAttachments",
+     "params": {},
+     "desc": "/enterprise/declare/report/downloadAllAttachments",
+     "kind": "read"
+    },
+    {
+     "action": "report-generateReport",
+     "method": "GET",
+     "path": "/enterprise/declare/report/generateReport",
+     "params": {},
+     "desc": "/enterprise/declare/report/generateReport",
+     "kind": "read"
+    },
+    {
+     "action": "highTechProductMapping-summary",
+     "method": "POST",
+     "path": "/enterprise/highTechProductMapping/summary",
+     "params": {},
+     "desc": "/enterprise/highTechProductMapping/summary",
+     "kind": "read"
+    },
+    {
+     "action": "highTechProductMapping-export",
+     "method": "POST",
+     "path": "/enterprise/highTechProductMapping/export",
+     "params": {},
+     "desc": "/enterprise/highTechProductMapping/export",
+     "kind": "read"
+    }
+   ]
+  },
+  "reference": {
+   "title": "reference",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "file-list",
+     "method": "POST",
+     "path": "/reference/file/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/reference/file/list",
+     "kind": "read"
+    },
+    {
+     "action": "file-projects",
+     "method": "POST",
+     "path": "/reference/file/projects",
+     "params": {},
+     "desc": "/reference/file/projects",
+     "kind": "read"
+    },
+    {
+     "action": "file-hasRunningTask",
+     "method": "POST",
+     "path": "/reference/file/hasRunningTask",
+     "params": {},
+     "desc": "/reference/file/hasRunningTask",
+     "kind": "read"
+    },
+    {
+     "action": "file-refresh",
+     "method": "POST",
+     "path": "/reference/file/refresh",
+     "params": {},
+     "desc": "/reference/file/refresh",
+     "kind": "read"
+    },
+    {
+     "action": "file-download",
+     "method": "GET",
+     "path": "/reference/file/download",
+     "params": {},
+     "desc": "/reference/file/download",
+     "kind": "read"
+    }
+   ]
+  },
+  "notice": {
+   "title": "notice",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "manage-list",
+     "method": "POST",
+     "path": "/notice/manage/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/notice/manage/list",
+     "kind": "read"
+    }
+   ]
+  },
+  "financial": {
+   "title": "financial",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "configCostCenter-add",
+     "method": "POST",
+     "path": "/financial/configCostCenter/add",
+     "params": {},
+     "desc": "/financial/configCostCenter/add",
+     "kind": "write"
+    },
+    {
+     "action": "configCostCenter-modify",
+     "method": "POST",
+     "path": "/financial/configCostCenter/modify",
+     "params": {},
+     "desc": "/financial/configCostCenter/modify",
+     "kind": "write"
+    },
+    {
+     "action": "configCostCenter-deleteBatch",
+     "method": "POST",
+     "path": "/financial/configCostCenter/deleteBatch",
+     "params": {},
+     "desc": "/financial/configCostCenter/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "configCostCenter-page",
+     "method": "POST",
+     "path": "/financial/configCostCenter/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/financial/configCostCenter/page",
+     "kind": "read"
+    },
+    {
+     "action": "configCostCenter-remove",
+     "method": "POST",
+     "path": "/financial/configCostCenter/remove",
+     "params": {},
+     "desc": "/financial/configCostCenter/remove",
+     "kind": "write"
+    },
+    {
+     "action": "configCostCenter-list",
+     "method": "POST",
+     "path": "/financial/configCostCenter/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/financial/configCostCenter/list",
+     "kind": "read"
+    },
+    {
+     "action": "configEquipmentType-list",
+     "method": "POST",
+     "path": "/financial/configEquipmentType/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/financial/configEquipmentType/list",
+     "kind": "read"
+    },
+    {
+     "action": "configEquipmentType-add",
+     "method": "POST",
+     "path": "/financial/configEquipmentType/add",
+     "params": {},
+     "desc": "/financial/configEquipmentType/add",
+     "kind": "write"
+    },
+    {
+     "action": "configEquipmentType-modify",
+     "method": "POST",
+     "path": "/financial/configEquipmentType/modify",
+     "params": {},
+     "desc": "/financial/configEquipmentType/modify",
+     "kind": "write"
+    },
+    {
+     "action": "configEquipmentType-remove",
+     "method": "POST",
+     "path": "/financial/configEquipmentType/remove",
+     "params": {},
+     "desc": "/financial/configEquipmentType/remove",
+     "kind": "write"
+    },
+    {
+     "action": "configMaterialAux-list",
+     "method": "POST",
+     "path": "/financial/configMaterialAux/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/financial/configMaterialAux/list",
+     "kind": "read"
+    },
+    {
+     "action": "configMaterialAux-add",
+     "method": "POST",
+     "path": "/financial/configMaterialAux/add",
+     "params": {},
+     "desc": "/financial/configMaterialAux/add",
+     "kind": "write"
+    },
+    {
+     "action": "configMaterialAux-modify",
+     "method": "POST",
+     "path": "/financial/configMaterialAux/modify",
+     "params": {},
+     "desc": "/financial/configMaterialAux/modify",
+     "kind": "write"
+    },
+    {
+     "action": "configMaterialAux-remove",
+     "method": "POST",
+     "path": "/financial/configMaterialAux/remove",
+     "params": {},
+     "desc": "/financial/configMaterialAux/remove",
+     "kind": "write"
+    },
+    {
+     "action": "configSubject-list",
+     "method": "POST",
+     "path": "/financial/configSubject/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/financial/configSubject/list",
+     "kind": "read"
+    },
+    {
+     "action": "configFinanceBudget-rootList",
+     "method": "POST",
+     "path": "/financial/configFinanceBudget/rootList",
+     "params": {},
+     "desc": "/financial/configFinanceBudget/rootList",
+     "kind": "read"
+    },
+    {
+     "action": "configFinanceBudget-treeLists",
+     "method": "POST",
+     "path": "/financial/configFinanceBudget/treeLists",
+     "params": {},
+     "desc": "/financial/configFinanceBudget/treeLists",
+     "kind": "read"
+    },
+    {
+     "action": "configFinanceBudget-add",
+     "method": "POST",
+     "path": "/financial/configFinanceBudget/add",
+     "params": {},
+     "desc": "/financial/configFinanceBudget/add",
+     "kind": "write"
+    },
+    {
+     "action": "configFinanceBudget-modify",
+     "method": "POST",
+     "path": "/financial/configFinanceBudget/modify",
+     "params": {},
+     "desc": "/financial/configFinanceBudget/modify",
+     "kind": "write"
+    },
+    {
+     "action": "configFinanceBudget-remove",
+     "method": "POST",
+     "path": "/financial/configFinanceBudget/remove",
+     "params": {},
+     "desc": "/financial/configFinanceBudget/remove",
+     "kind": "write"
+    },
+    {
+     "action": "configPowerType-list",
+     "method": "POST",
+     "path": "/financial/configPowerType/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/financial/configPowerType/list",
+     "kind": "read"
+    },
+    {
+     "action": "configPowerType-add",
+     "method": "POST",
+     "path": "/financial/configPowerType/add",
+     "params": {},
+     "desc": "/financial/configPowerType/add",
+     "kind": "write"
+    },
+    {
+     "action": "configPowerType-modify",
+     "method": "POST",
+     "path": "/financial/configPowerType/modify",
+     "params": {},
+     "desc": "/financial/configPowerType/modify",
+     "kind": "write"
+    },
+    {
+     "action": "configPowerType-remove",
+     "method": "POST",
+     "path": "/financial/configPowerType/remove",
+     "params": {},
+     "desc": "/financial/configPowerType/remove",
+     "kind": "write"
+    },
+    {
+     "action": "configProjectAllocation-list",
+     "method": "POST",
+     "path": "/financial/configProjectAllocation/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/financial/configProjectAllocation/list",
+     "kind": "read"
+    },
+    {
+     "action": "sysAllocation-list",
+     "method": "POST",
+     "path": "/financial/sysAllocation/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/financial/sysAllocation/list",
+     "kind": "read"
+    },
+    {
+     "action": "configProjectAllocation-saveOrUpdate",
+     "method": "POST",
+     "path": "/financial/configProjectAllocation/saveOrUpdate",
+     "params": {},
+     "desc": "/financial/configProjectAllocation/saveOrUpdate",
+     "kind": "write"
+    }
+   ]
+  },
+  "role": {
+   "title": "role",
+   "service": "upms",
+   "commands": [
+    {
+     "action": "sysRole-list",
+     "method": "POST",
+     "path": "/role/sysRole/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/role/sysRole/list",
+     "kind": "read"
+    },
+    {
+     "action": "sysRole-add",
+     "method": "POST",
+     "path": "/role/sysRole/add",
+     "params": {},
+     "desc": "/role/sysRole/add",
+     "kind": "write"
+    },
+    {
+     "action": "sysRole-modify",
+     "method": "POST",
+     "path": "/role/sysRole/modify",
+     "params": {},
+     "desc": "/role/sysRole/modify",
+     "kind": "write"
+    },
+    {
+     "action": "sysRole-deleteById",
+     "method": "POST",
+     "path": "/role/sysRole/deleteById",
+     "params": {},
+     "desc": "/role/sysRole/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "users-page",
+     "method": "POST",
+     "path": "/role/users/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/role/users/page",
+     "kind": "read"
+    },
+    {
+     "action": "users-getAddTree",
+     "method": "POST",
+     "path": "/role/users/getAddTree",
+     "params": {},
+     "desc": "/role/users/getAddTree",
+     "kind": "read"
+    },
+    {
+     "action": "users-batchAdd",
+     "method": "POST",
+     "path": "/role/users/batchAdd",
+     "params": {},
+     "desc": "/role/users/batchAdd",
+     "kind": "read"
+    },
+    {
+     "action": "users-batchDelete",
+     "method": "POST",
+     "path": "/role/users/batchDelete",
+     "params": {},
+     "desc": "/role/users/batchDelete",
+     "kind": "read"
+    }
+   ]
+  },
+  "permission": {
+   "title": "permission",
+   "service": "upms",
+   "commands": [
+    {
+     "action": "sysPermission-getPermissionTree",
+     "method": "POST",
+     "path": "/permission/sysPermission/getPermissionTree",
+     "params": {},
+     "desc": "/permission/sysPermission/getPermissionTree",
+     "kind": "read"
+    },
+    {
+     "action": "sysPermission-getRootPermissionTree",
+     "method": "POST",
+     "path": "/permission/sysPermission/getRootPermissionTree",
+     "params": {},
+     "desc": "/permission/sysPermission/getRootPermissionTree",
+     "kind": "read"
+    }
+   ]
+  },
+  "sys": {
+   "title": "sys",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "sysRolePermissionRel-modify",
+     "method": "POST",
+     "path": "/sys/sysRolePermissionRel/modify",
+     "params": {},
+     "desc": "/sys/sysRolePermissionRel/modify",
+     "kind": "write"
+    }
+   ]
+  },
+  "datastat": {
+   "title": "datastat",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "statDataCockpit-getCockpitStat",
+     "method": "POST",
+     "path": "/datastat/statDataCockpit/getCockpitStat",
+     "params": {},
+     "desc": "/datastat/statDataCockpit/getCockpitStat",
+     "kind": "read"
+    },
+    {
+     "action": "statDataCockpit-getCockpitOrgTree",
+     "method": "GET",
+     "path": "/datastat/statDataCockpit/getCockpitOrgTree",
+     "params": {},
+     "desc": "/datastat/statDataCockpit/getCockpitOrgTree",
+     "kind": "read"
+    }
+   ]
+  },
+  "tech": {
+   "title": "tech",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "category-getTechCategoryTree",
+     "method": "POST",
+     "path": "/tech/category/getTechCategoryTree",
+     "params": {},
+     "desc": "/tech/category/getTechCategoryTree",
+     "kind": "read"
+    },
+    {
+     "action": "ipType-getIpTypeTree",
+     "method": "POST",
+     "path": "/tech/ipType/getIpTypeTree",
+     "params": {},
+     "desc": "/tech/ipType/getIpTypeTree",
+     "kind": "read"
+    }
+   ]
+  },
+  "material": {
+   "title": "material",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "power-list",
+     "method": "POST",
+     "path": "/material/power/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/material/power/list",
+     "kind": "read"
+    },
+    {
+     "action": "power-add",
+     "method": "POST",
+     "path": "/material/power/add",
+     "params": {},
+     "desc": "/material/power/add",
+     "kind": "write"
+    },
+    {
+     "action": "power-byMonthList",
+     "method": "POST",
+     "path": "/material/power/byMonthList",
+     "params": {},
+     "desc": "/material/power/byMonthList",
+     "kind": "read"
+    },
+    {
+     "action": "power-page",
+     "method": "POST",
+     "path": "/material/power/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/material/power/page",
+     "kind": "read"
+    },
+    {
+     "action": "power-generate",
+     "method": "POST",
+     "path": "/material/power/generate",
+     "params": {},
+     "desc": "/material/power/generate",
+     "kind": "read"
+    },
+    {
+     "action": "power-queryById",
+     "method": "POST",
+     "path": "/material/power/queryById",
+     "params": {},
+     "desc": "/material/power/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "power-modify",
+     "method": "POST",
+     "path": "/material/power/modify",
+     "params": {},
+     "desc": "/material/power/modify",
+     "kind": "write"
+    },
+    {
+     "action": "power-deleteById",
+     "method": "POST",
+     "path": "/material/power/deleteById",
+     "params": {},
+     "desc": "/material/power/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "power-deleteBatch",
+     "method": "POST",
+     "path": "/material/power/deleteBatch",
+     "params": {},
+     "desc": "/material/power/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "fuel-list",
+     "method": "POST",
+     "path": "/material/fuel/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/material/fuel/list",
+     "kind": "read"
+    },
+    {
+     "action": "fuel-page",
+     "method": "POST",
+     "path": "/material/fuel/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/material/fuel/page",
+     "kind": "read"
+    },
+    {
+     "action": "fuel-add",
+     "method": "POST",
+     "path": "/material/fuel/add",
+     "params": {},
+     "desc": "/material/fuel/add",
+     "kind": "write"
+    },
+    {
+     "action": "fuel-modify",
+     "method": "POST",
+     "path": "/material/fuel/modify",
+     "params": {},
+     "desc": "/material/fuel/modify",
+     "kind": "write"
+    },
+    {
+     "action": "fuel-deleteById",
+     "method": "POST",
+     "path": "/material/fuel/deleteById",
+     "params": {},
+     "desc": "/material/fuel/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "fuel-deleteBatch",
+     "method": "POST",
+     "path": "/material/fuel/deleteBatch",
+     "params": {},
+     "desc": "/material/fuel/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "fuel-downloadTemplate",
+     "method": "POST",
+     "path": "/material/fuel/downloadTemplate",
+     "params": {},
+     "desc": "/material/fuel/downloadTemplate",
+     "kind": "read"
+    },
+    {
+     "action": "fuel-import",
+     "method": "POST",
+     "path": "/material/fuel/import",
+     "params": {},
+     "desc": "/material/fuel/import",
+     "kind": "write"
+    },
+    {
+     "action": "fuel-export",
+     "method": "POST",
+     "path": "/material/fuel/export",
+     "params": {},
+     "desc": "/material/fuel/export",
+     "kind": "read"
+    },
+    {
+     "action": "raw-list",
+     "method": "POST",
+     "path": "/material/raw/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/material/raw/list",
+     "kind": "read"
+    },
+    {
+     "action": "raw-saveOrUpdate",
+     "method": "POST",
+     "path": "/material/raw/saveOrUpdate",
+     "params": {},
+     "desc": "/material/raw/saveOrUpdate",
+     "kind": "write"
+    },
+    {
+     "action": "raw-page",
+     "method": "POST",
+     "path": "/material/raw/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/material/raw/page",
+     "kind": "read"
+    },
+    {
+     "action": "flowLog-list",
+     "method": "POST",
+     "path": "/material/flowLog/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/material/flowLog/list",
+     "kind": "read"
+    },
+    {
+     "action": "materialType-getTypeByProduct",
+     "method": "POST",
+     "path": "/material/materialType/getTypeByProduct",
+     "params": {},
+     "desc": "/material/materialType/getTypeByProduct",
+     "kind": "read"
+    },
+    {
+     "action": "raw-getByProduct",
+     "method": "POST",
+     "path": "/material/raw/getByProduct",
+     "params": {},
+     "desc": "/material/raw/getByProduct",
+     "kind": "read"
+    },
+    {
+     "action": "raw-delete",
+     "method": "POST",
+     "path": "/material/raw/delete",
+     "params": {},
+     "desc": "/material/raw/delete",
+     "kind": "write"
+    },
+    {
+     "action": "materialType-tree",
+     "method": "POST",
+     "path": "/material/materialType/tree",
+     "params": {},
+     "desc": "/material/materialType/tree",
+     "kind": "read"
+    },
+    {
+     "action": "materialType-add",
+     "method": "POST",
+     "path": "/material/materialType/add",
+     "params": {},
+     "desc": "/material/materialType/add",
+     "kind": "write"
+    },
+    {
+     "action": "materialType-update",
+     "method": "POST",
+     "path": "/material/materialType/update",
+     "params": {},
+     "desc": "/material/materialType/update",
+     "kind": "write"
+    },
+    {
+     "action": "materialType-delete",
+     "method": "POST",
+     "path": "/material/materialType/delete",
+     "params": {},
+     "desc": "/material/materialType/delete",
+     "kind": "write"
+    },
+    {
+     "action": "materialType-nodeIds",
+     "method": "POST",
+     "path": "/material/materialType/nodeIds",
+     "params": {},
+     "desc": "/material/materialType/nodeIds",
+     "kind": "read"
+    },
+    {
+     "action": "batch-inbound",
+     "method": "POST",
+     "path": "/material/batch/inbound",
+     "params": {},
+     "desc": "/material/batch/inbound",
+     "kind": "read"
+    },
+    {
+     "action": "batch-pick-batch",
+     "method": "POST",
+     "path": "/material/batch/pick-batch",
+     "params": {},
+     "desc": "/material/batch/pick-batch",
+     "kind": "read"
+    },
+    {
+     "action": "batch-pick-fifo",
+     "method": "POST",
+     "path": "/material/batch/pick-fifo",
+     "params": {},
+     "desc": "/material/batch/pick-fifo",
+     "kind": "read"
+    },
+    {
+     "action": "batch-return",
+     "method": "POST",
+     "path": "/material/batch/return",
+     "params": {},
+     "desc": "/material/batch/return",
+     "kind": "read"
+    }
+   ]
+  },
+  "humanManagement": {
+   "title": "humanManagement",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "configEducation-list",
+     "method": "POST",
+     "path": "/humanManagement/configEducation/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/humanManagement/configEducation/list",
+     "kind": "read"
+    },
+    {
+     "action": "configEducation-add",
+     "method": "POST",
+     "path": "/humanManagement/configEducation/add",
+     "params": {},
+     "desc": "/humanManagement/configEducation/add",
+     "kind": "write"
+    },
+    {
+     "action": "configEducation-modify",
+     "method": "POST",
+     "path": "/humanManagement/configEducation/modify",
+     "params": {},
+     "desc": "/humanManagement/configEducation/modify",
+     "kind": "write"
+    },
+    {
+     "action": "configEducation-delete",
+     "method": "POST",
+     "path": "/humanManagement/configEducation/delete",
+     "params": {},
+     "desc": "/humanManagement/configEducation/delete",
+     "kind": "write"
+    }
+   ]
+  },
+  "group": {
+   "title": "group",
+   "service": "upms",
+   "commands": [
+    {
+     "action": "sysGroupOrg-treeRoot",
+     "method": "POST",
+     "path": "/group/sysGroupOrg/treeRoot",
+     "params": {},
+     "desc": "/group/sysGroupOrg/treeRoot",
+     "kind": "read"
+    },
+    {
+     "action": "sysGroupOrg-add",
+     "method": "POST",
+     "path": "/group/sysGroupOrg/add",
+     "params": {},
+     "desc": "/group/sysGroupOrg/add",
+     "kind": "write"
+    },
+    {
+     "action": "sysGroupOrg-modify",
+     "method": "POST",
+     "path": "/group/sysGroupOrg/modify",
+     "params": {},
+     "desc": "/group/sysGroupOrg/modify",
+     "kind": "write"
+    },
+    {
+     "action": "sysGroupOrg-deleteById",
+     "method": "POST",
+     "path": "/group/sysGroupOrg/deleteById",
+     "params": {},
+     "desc": "/group/sysGroupOrg/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "sysGroupSubCompany-listForSelect",
+     "method": "POST",
+     "path": "/group/sysGroupSubCompany/listForSelect",
+     "params": {},
+     "desc": "/group/sysGroupSubCompany/listForSelect",
+     "kind": "read"
+    },
+    {
+     "action": "sysGroupOrg-treeForOrgWithSelf",
+     "method": "POST",
+     "path": "/group/sysGroupOrg/treeForOrgWithSelf",
+     "params": {},
+     "desc": "/group/sysGroupOrg/treeForOrgWithSelf",
+     "kind": "read"
+    },
+    {
+     "action": "sysGroupSubCompany-page",
+     "method": "POST",
+     "path": "/group/sysGroupSubCompany/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/group/sysGroupSubCompany/page",
+     "kind": "read"
+    },
+    {
+     "action": "sysGroupSubCompany-add",
+     "method": "POST",
+     "path": "/group/sysGroupSubCompany/add",
+     "params": {},
+     "desc": "/group/sysGroupSubCompany/add",
+     "kind": "write"
+    },
+    {
+     "action": "sysGroupSubCompany-deleteById",
+     "method": "POST",
+     "path": "/group/sysGroupSubCompany/deleteById",
+     "params": {},
+     "desc": "/group/sysGroupSubCompany/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "sysGroupSubCompany-deleteBatch",
+     "method": "POST",
+     "path": "/group/sysGroupSubCompany/deleteBatch",
+     "params": {},
+     "desc": "/group/sysGroupSubCompany/deleteBatch",
+     "kind": "write"
+    }
+   ]
+  },
+  "declare": {
+   "title": "declare",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "declareFile-list",
+     "method": "POST",
+     "path": "/declare/declareFile/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/declare/declareFile/list",
+     "kind": "read"
+    },
+    {
+     "action": "declareFile-queryById",
+     "method": "POST",
+     "path": "/declare/declareFile/queryById",
+     "params": {},
+     "desc": "/declare/declareFile/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "declareFile-updateAllSubReports",
+     "method": "POST",
+     "path": "/declare/declareFile/updateAllSubReports",
+     "params": {},
+     "desc": "/declare/declareFile/updateAllSubReports",
+     "kind": "write"
+    }
+   ]
+  },
+  "tenant": {
+   "title": "tenant",
+   "service": "upms",
+   "commands": [
+    {
+     "action": "tenantCompanyInfo-getByTenantId",
+     "method": "POST",
+     "path": "/tenant/tenantCompanyInfo/getByTenantId",
+     "params": {},
+     "desc": "/tenant/tenantCompanyInfo/getByTenantId",
+     "kind": "read"
+    }
+   ]
+  },
+  "file": {
+   "title": "file",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "sysFile-upload",
+     "method": "POST",
+     "path": "/file/sysFile/upload",
+     "params": {},
+     "desc": "/file/sysFile/upload",
+     "kind": "write"
+    }
+   ]
+  },
+  "dictionary": {
+   "title": "dictionary",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "dictionaryType-list",
+     "method": "POST",
+     "path": "/dictionary/dictionaryType/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/dictionary/dictionaryType/list",
+     "kind": "read"
+    },
+    {
+     "action": "dictionaryType-getTree",
+     "method": "POST",
+     "path": "/dictionary/dictionaryType/getTree",
+     "params": {},
+     "desc": "/dictionary/dictionaryType/getTree",
+     "kind": "read"
+    },
+    {
+     "action": "dictionaryType-getSubList",
+     "method": "POST",
+     "path": "/dictionary/dictionaryType/getSubList",
+     "params": {},
+     "desc": "/dictionary/dictionaryType/getSubList",
+     "kind": "read"
+    }
+   ]
+  },
+  "subject-init": {
+   "title": "subject-init",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "expenditureSubject-list",
+     "method": "POST",
+     "path": "/subject-init/expenditureSubject/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/subject-init/expenditureSubject/list",
+     "kind": "read"
+    },
+    {
+     "action": "expenditureSubject-add",
+     "method": "POST",
+     "path": "/subject-init/expenditureSubject/add",
+     "params": {},
+     "desc": "/subject-init/expenditureSubject/add",
+     "kind": "write"
+    },
+    {
+     "action": "expenditureSubject-modify",
+     "method": "POST",
+     "path": "/subject-init/expenditureSubject/modify",
+     "params": {},
+     "desc": "/subject-init/expenditureSubject/modify",
+     "kind": "write"
+    },
+    {
+     "action": "expenditureSubject-remove",
+     "method": "POST",
+     "path": "/subject-init/expenditureSubject/remove",
+     "params": {},
+     "desc": "/subject-init/expenditureSubject/remove",
+     "kind": "write"
+    },
+    {
+     "action": "expenditureSubject-downloadTemplate",
+     "method": "GET",
+     "path": "/subject-init/expenditureSubject/downloadTemplate",
+     "params": {},
+     "desc": "/subject-init/expenditureSubject/downloadTemplate",
+     "kind": "read"
+    },
+    {
+     "action": "expenditureSubject-import",
+     "method": "POST",
+     "path": "/subject-init/expenditureSubject/import",
+     "params": {},
+     "desc": "/subject-init/expenditureSubject/import",
+     "kind": "write"
+    }
+   ]
+  },
+  "dp": {
+   "title": "dp",
+   "service": "upms",
+   "commands": [
+    {
+     "action": "sysDpUserRoleRel-page",
+     "method": "POST",
+     "path": "/dp/sysDpUserRoleRel/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/dp/sysDpUserRoleRel/page",
+     "kind": "read"
+    },
+    {
+     "action": "sysDpUserRoleRel-pageTenantUsers",
+     "method": "POST",
+     "path": "/dp/sysDpUserRoleRel/pageTenantUsers",
+     "params": {},
+     "desc": "/dp/sysDpUserRoleRel/pageTenantUsers",
+     "kind": "read"
+    },
+    {
+     "action": "sysDpUserRoleRel-assignRoleToUser",
+     "method": "POST",
+     "path": "/dp/sysDpUserRoleRel/assignRoleToUser",
+     "params": {},
+     "desc": "/dp/sysDpUserRoleRel/assignRoleToUser",
+     "kind": "read"
+    },
+    {
+     "action": "sysDpUserRoleRel-listUserRoleWithChecked",
+     "method": "POST",
+     "path": "/dp/sysDpUserRoleRel/listUserRoleWithChecked",
+     "params": {},
+     "desc": "/dp/sysDpUserRoleRel/listUserRoleWithChecked",
+     "kind": "read"
+    },
+    {
+     "action": "sysDpRole-page",
+     "method": "POST",
+     "path": "/dp/sysDpRole/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/dp/sysDpRole/page",
+     "kind": "read"
+    },
+    {
+     "action": "sysDpRole-add",
+     "method": "POST",
+     "path": "/dp/sysDpRole/add",
+     "params": {},
+     "desc": "/dp/sysDpRole/add",
+     "kind": "write"
+    },
+    {
+     "action": "sysDpRole-modify",
+     "method": "POST",
+     "path": "/dp/sysDpRole/modify",
+     "params": {},
+     "desc": "/dp/sysDpRole/modify",
+     "kind": "write"
+    },
+    {
+     "action": "sysDpRole-deleteById",
+     "method": "POST",
+     "path": "/dp/sysDpRole/deleteById",
+     "params": {},
+     "desc": "/dp/sysDpRole/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "sysDpRole-deleteBatch",
+     "method": "POST",
+     "path": "/dp/sysDpRole/deleteBatch",
+     "params": {},
+     "desc": "/dp/sysDpRole/deleteBatch",
+     "kind": "write"
+    },
+    {
+     "action": "sysDpRolePermissionRel-listByRoleId",
+     "method": "POST",
+     "path": "/dp/sysDpRolePermissionRel/listByRoleId",
+     "params": {},
+     "desc": "/dp/sysDpRolePermissionRel/listByRoleId",
+     "kind": "read"
+    },
+    {
+     "action": "sysDpRolePermissionRel-assignPermToRole",
+     "method": "POST",
+     "path": "/dp/sysDpRolePermissionRel/assignPermToRole",
+     "params": {},
+     "desc": "/dp/sysDpRolePermissionRel/assignPermToRole",
+     "kind": "read"
+    }
+   ]
+  },
+  "risk": {
+   "title": "risk",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "riskBasicConf-list",
+     "method": "POST",
+     "path": "/risk/riskBasicConf/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/risk/riskBasicConf/list",
+     "kind": "read"
+    },
+    {
+     "action": "riskBasicConf-modify",
+     "method": "POST",
+     "path": "/risk/riskBasicConf/modify",
+     "params": {},
+     "desc": "/risk/riskBasicConf/modify",
+     "kind": "write"
+    },
+    {
+     "action": "riskBasicConf-add",
+     "method": "POST",
+     "path": "/risk/riskBasicConf/add",
+     "params": {},
+     "desc": "/risk/riskBasicConf/add",
+     "kind": "write"
+    },
+    {
+     "action": "riskBasicConf-deleteById",
+     "method": "POST",
+     "path": "/risk/riskBasicConf/deleteById",
+     "params": {},
+     "desc": "/risk/riskBasicConf/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "riskPersonMgrConfig-list",
+     "method": "POST",
+     "path": "/risk/riskPersonMgrConfig/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/risk/riskPersonMgrConfig/list",
+     "kind": "read"
+    },
+    {
+     "action": "riskPersonMgrConfig-add",
+     "method": "POST",
+     "path": "/risk/riskPersonMgrConfig/add",
+     "params": {},
+     "desc": "/risk/riskPersonMgrConfig/add",
+     "kind": "write"
+    },
+    {
+     "action": "riskPersonMgrConfig-modify",
+     "method": "POST",
+     "path": "/risk/riskPersonMgrConfig/modify",
+     "params": {},
+     "desc": "/risk/riskPersonMgrConfig/modify",
+     "kind": "write"
+    },
+    {
+     "action": "riskPersonMgrConfig-deleteById",
+     "method": "POST",
+     "path": "/risk/riskPersonMgrConfig/deleteById",
+     "params": {},
+     "desc": "/risk/riskPersonMgrConfig/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "riskProjMgrConfig-list",
+     "method": "POST",
+     "path": "/risk/riskProjMgrConfig/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/risk/riskProjMgrConfig/list",
+     "kind": "read"
+    },
+    {
+     "action": "riskProjMgrConfig-add",
+     "method": "POST",
+     "path": "/risk/riskProjMgrConfig/add",
+     "params": {},
+     "desc": "/risk/riskProjMgrConfig/add",
+     "kind": "write"
+    },
+    {
+     "action": "riskProjMgrConfig-modify",
+     "method": "POST",
+     "path": "/risk/riskProjMgrConfig/modify",
+     "params": {},
+     "desc": "/risk/riskProjMgrConfig/modify",
+     "kind": "write"
+    },
+    {
+     "action": "riskProjMgrConfig-deleteById",
+     "method": "POST",
+     "path": "/risk/riskProjMgrConfig/deleteById",
+     "params": {},
+     "desc": "/risk/riskProjMgrConfig/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "mgr-info",
+     "method": "POST",
+     "path": "/risk/mgr/info",
+     "params": {},
+     "desc": "/risk/mgr/info",
+     "kind": "read"
+    },
+    {
+     "action": "mgr-list",
+     "method": "POST",
+     "path": "/risk/mgr/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/risk/mgr/list",
+     "kind": "read"
+    },
+    {
+     "action": "mgr-detect",
+     "method": "POST",
+     "path": "/risk/mgr/detect",
+     "params": {},
+     "desc": "/risk/mgr/detect",
+     "kind": "read"
+    }
+   ]
+  },
+  "dept": {
+   "title": "dept",
+   "service": "upms",
+   "commands": [
+    {
+     "action": "sysDept-getTree",
+     "method": "POST",
+     "path": "/dept/sysDept/getTree",
+     "params": {},
+     "desc": "/dept/sysDept/getTree",
+     "kind": "read"
+    },
+    {
+     "action": "sysDept-add",
+     "method": "POST",
+     "path": "/dept/sysDept/add",
+     "params": {},
+     "desc": "/dept/sysDept/add",
+     "kind": "write"
+    },
+    {
+     "action": "sysDept-modify",
+     "method": "POST",
+     "path": "/dept/sysDept/modify",
+     "params": {},
+     "desc": "/dept/sysDept/modify",
+     "kind": "write"
+    },
+    {
+     "action": "sysDept-deleteById",
+     "method": "POST",
+     "path": "/dept/sysDept/deleteById",
+     "params": {},
+     "desc": "/dept/sysDept/deleteById",
+     "kind": "write"
+    }
+   ]
+  },
+  "user": {
+   "title": "user",
+   "service": "upms",
+   "commands": [
+    {
+     "action": "sysUser-page",
+     "method": "POST",
+     "path": "/user/sysUser/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/user/sysUser/page",
+     "kind": "read"
+    },
+    {
+     "action": "sysUser-queryById",
+     "method": "POST",
+     "path": "/user/sysUser/queryById",
+     "params": {},
+     "desc": "/user/sysUser/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "sysUser-add",
+     "method": "POST",
+     "path": "/user/sysUser/add",
+     "params": {},
+     "desc": "/user/sysUser/add",
+     "kind": "write"
+    },
+    {
+     "action": "sysUser-modify",
+     "method": "POST",
+     "path": "/user/sysUser/modify",
+     "params": {},
+     "desc": "/user/sysUser/modify",
+     "kind": "write"
+    },
+    {
+     "action": "sysUser-recover",
+     "method": "POST",
+     "path": "/user/sysUser/recover",
+     "params": {},
+     "desc": "/user/sysUser/recover",
+     "kind": "read"
+    },
+    {
+     "action": "sysUser-resign",
+     "method": "POST",
+     "path": "/user/sysUser/resign",
+     "params": {},
+     "desc": "/user/sysUser/resign",
+     "kind": "read"
+    },
+    {
+     "action": "sysUser-batchRecover",
+     "method": "POST",
+     "path": "/user/sysUser/batchRecover",
+     "params": {},
+     "desc": "/user/sysUser/batchRecover",
+     "kind": "read"
+    },
+    {
+     "action": "sysUser-batchResign",
+     "method": "POST",
+     "path": "/user/sysUser/batchResign",
+     "params": {},
+     "desc": "/user/sysUser/batchResign",
+     "kind": "read"
+    },
+    {
+     "action": "sysUser-downloadTemplate",
+     "method": "GET",
+     "path": "/user/sysUser/downloadTemplate",
+     "params": {},
+     "desc": "/user/sysUser/downloadTemplate",
+     "kind": "read"
+    },
+    {
+     "action": "sysUser-import",
+     "method": "POST",
+     "path": "/user/sysUser/import",
+     "params": {},
+     "desc": "/user/sysUser/import",
+     "kind": "write"
+    },
+    {
+     "action": "sysUser-getUserProfileInfo",
+     "method": "POST",
+     "path": "/user/sysUser/getUserProfileInfo",
+     "params": {},
+     "desc": "/user/sysUser/getUserProfileInfo",
+     "kind": "read"
+    },
+    {
+     "action": "onboard-modifyPassword",
+     "method": "POST",
+     "path": "/user/onboard/modifyPassword",
+     "params": {},
+     "desc": "/user/onboard/modifyPassword",
+     "kind": "write"
+    },
+    {
+     "action": "sysUser-getUserList",
+     "method": "POST",
+     "path": "/user/sysUser/getUserList",
+     "params": {},
+     "desc": "/user/sysUser/getUserList",
+     "kind": "read"
+    }
+   ]
+  },
+  "personnel": {
+   "title": "personnel",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "attendanceGroup-page",
+     "method": "POST",
+     "path": "/personnel/attendanceGroup/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/personnel/attendanceGroup/page",
+     "kind": "read"
+    },
+    {
+     "action": "attendanceClasses-list",
+     "method": "POST",
+     "path": "/personnel/attendanceClasses/list",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/personnel/attendanceClasses/list",
+     "kind": "read"
+    },
+    {
+     "action": "attendanceGroup-getUserPage",
+     "method": "POST",
+     "path": "/personnel/attendanceGroup/getUserPage",
+     "params": {},
+     "desc": "/personnel/attendanceGroup/getUserPage",
+     "kind": "read"
+    },
+    {
+     "action": "attendanceGroup-getAvailableUserTree",
+     "method": "POST",
+     "path": "/personnel/attendanceGroup/getAvailableUserTree",
+     "params": {},
+     "desc": "/personnel/attendanceGroup/getAvailableUserTree",
+     "kind": "read"
+    },
+    {
+     "action": "attendanceGroup-getRule",
+     "method": "POST",
+     "path": "/personnel/attendanceGroup/getRule",
+     "params": {},
+     "desc": "/personnel/attendanceGroup/getRule",
+     "kind": "read"
+    },
+    {
+     "action": "attendanceClasses-listCustomizeRule",
+     "method": "POST",
+     "path": "/personnel/attendanceClasses/listCustomizeRule",
+     "params": {},
+     "desc": "/personnel/attendanceClasses/listCustomizeRule",
+     "kind": "read"
+    },
+    {
+     "action": "attendanceGroup-queryHolidays",
+     "method": "POST",
+     "path": "/personnel/attendanceGroup/queryHolidays",
+     "params": {},
+     "desc": "/personnel/attendanceGroup/queryHolidays",
+     "kind": "read"
+    },
+    {
+     "action": "attendanceGroup-add",
+     "method": "POST",
+     "path": "/personnel/attendanceGroup/add",
+     "params": {},
+     "desc": "/personnel/attendanceGroup/add",
+     "kind": "write"
+    },
+    {
+     "action": "attendanceGroup-updateName",
+     "method": "POST",
+     "path": "/personnel/attendanceGroup/updateName",
+     "params": {},
+     "desc": "/personnel/attendanceGroup/updateName",
+     "kind": "write"
+    },
+    {
+     "action": "attendanceGroup-delete",
+     "method": "POST",
+     "path": "/personnel/attendanceGroup/delete",
+     "params": {},
+     "desc": "/personnel/attendanceGroup/delete",
+     "kind": "write"
+    },
+    {
+     "action": "attendanceGroup-addUsers",
+     "method": "POST",
+     "path": "/personnel/attendanceGroup/addUsers",
+     "params": {},
+     "desc": "/personnel/attendanceGroup/addUsers",
+     "kind": "write"
+    },
+    {
+     "action": "attendanceGroup-updateUserJoinTime",
+     "method": "POST",
+     "path": "/personnel/attendanceGroup/updateUserJoinTime",
+     "params": {},
+     "desc": "/personnel/attendanceGroup/updateUserJoinTime",
+     "kind": "write"
+    },
+    {
+     "action": "attendanceGroup-deleteUsers",
+     "method": "POST",
+     "path": "/personnel/attendanceGroup/deleteUsers",
+     "params": {},
+     "desc": "/personnel/attendanceGroup/deleteUsers",
+     "kind": "write"
+    },
+    {
+     "action": "attendanceGroup-addRuleUnchanged",
+     "method": "POST",
+     "path": "/personnel/attendanceGroup/addRuleUnchanged",
+     "params": {},
+     "desc": "/personnel/attendanceGroup/addRuleUnchanged",
+     "kind": "write"
+    },
+    {
+     "action": "attendanceGroup-updateRuleUnchanged",
+     "method": "PUT",
+     "path": "/personnel/attendanceGroup/updateRuleUnchanged",
+     "params": {},
+     "desc": "/personnel/attendanceGroup/updateRuleUnchanged",
+     "kind": "write"
+    },
+    {
+     "action": "attendanceGroup-updateRuleCycle",
+     "method": "POST",
+     "path": "/personnel/attendanceGroup/updateRuleCycle",
+     "params": {},
+     "desc": "/personnel/attendanceGroup/updateRuleCycle",
+     "kind": "write"
+    },
+    {
+     "action": "attendanceClasses-toggle",
+     "method": "POST",
+     "path": "/personnel/attendanceClasses/toggle",
+     "params": {},
+     "desc": "/personnel/attendanceClasses/toggle",
+     "kind": "read"
+    },
+    {
+     "action": "employeesSalary-page",
+     "method": "POST",
+     "path": "/personnel/employeesSalary/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/personnel/employeesSalary/page",
+     "kind": "read"
+    },
+    {
+     "action": "employeesSalary-queryById",
+     "method": "POST",
+     "path": "/personnel/employeesSalary/queryById",
+     "params": {},
+     "desc": "/personnel/employeesSalary/queryById",
+     "kind": "read"
+    },
+    {
+     "action": "employeesSalary-getUserDeptTree",
+     "method": "POST",
+     "path": "/personnel/employeesSalary/getUserDeptTree",
+     "params": {},
+     "desc": "/personnel/employeesSalary/getUserDeptTree",
+     "kind": "read"
+    },
+    {
+     "action": "employeesSalary-listBonusDropdown",
+     "method": "POST",
+     "path": "/personnel/employeesSalary/listBonusDropdown",
+     "params": {},
+     "desc": "/personnel/employeesSalary/listBonusDropdown",
+     "kind": "read"
+    },
+    {
+     "action": "employeesSalary-add",
+     "method": "POST",
+     "path": "/personnel/employeesSalary/add",
+     "params": {},
+     "desc": "/personnel/employeesSalary/add",
+     "kind": "write"
+    },
+    {
+     "action": "employeesSalary-modify",
+     "method": "POST",
+     "path": "/personnel/employeesSalary/modify",
+     "params": {},
+     "desc": "/personnel/employeesSalary/modify",
+     "kind": "write"
+    },
+    {
+     "action": "employeesSalary-batchDelete",
+     "method": "POST",
+     "path": "/personnel/employeesSalary/batchDelete",
+     "params": {},
+     "desc": "/personnel/employeesSalary/batchDelete",
+     "kind": "read"
+    },
+    {
+     "action": "employeesSalary-downloadTemplate",
+     "method": "POST",
+     "path": "/personnel/employeesSalary/downloadTemplate",
+     "params": {},
+     "desc": "/personnel/employeesSalary/downloadTemplate",
+     "kind": "read"
+    },
+    {
+     "action": "employeesSalary-importData",
+     "method": "POST",
+     "path": "/personnel/employeesSalary/importData",
+     "params": {},
+     "desc": "/personnel/employeesSalary/importData",
+     "kind": "write"
+    },
+    {
+     "action": "attendanceClasses-page",
+     "method": "POST",
+     "path": "/personnel/attendanceClasses/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/personnel/attendanceClasses/page",
+     "kind": "read"
+    },
+    {
+     "action": "attendanceClasses-save",
+     "method": "POST",
+     "path": "/personnel/attendanceClasses/save",
+     "params": {},
+     "desc": "/personnel/attendanceClasses/save",
+     "kind": "write"
+    },
+    {
+     "action": "attendanceClasses-update",
+     "method": "POST",
+     "path": "/personnel/attendanceClasses/update",
+     "params": {},
+     "desc": "/personnel/attendanceClasses/update",
+     "kind": "write"
+    },
+    {
+     "action": "attendanceClasses-toggleStatus",
+     "method": "POST",
+     "path": "/personnel/attendanceClasses/toggleStatus",
+     "params": {},
+     "desc": "/personnel/attendanceClasses/toggleStatus",
+     "kind": "read"
+    },
+    {
+     "action": "attendanceClasses-batchDelete",
+     "method": "POST",
+     "path": "/personnel/attendanceClasses/batchDelete",
+     "params": {},
+     "desc": "/personnel/attendanceClasses/batchDelete",
+     "kind": "read"
+    }
+   ]
+  },
+  "merchant": {
+   "title": "merchant",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "lic-page",
+     "method": "POST",
+     "path": "/merchant/lic/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/merchant/lic/page",
+     "kind": "read"
+    },
+    {
+     "action": "lic-add",
+     "method": "POST",
+     "path": "/merchant/lic/add",
+     "params": {},
+     "desc": "/merchant/lic/add",
+     "kind": "write"
+    }
+   ]
+  },
+  "income": {
+   "title": "income",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "specialIncome-page",
+     "method": "POST",
+     "path": "/income/specialIncome/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/income/specialIncome/page",
+     "kind": "read"
+    },
+    {
+     "action": "specialIncome-add",
+     "method": "POST",
+     "path": "/income/specialIncome/add",
+     "params": {},
+     "desc": "/income/specialIncome/add",
+     "kind": "write"
+    },
+    {
+     "action": "specialIncome-batchAdd",
+     "method": "POST",
+     "path": "/income/specialIncome/batchAdd",
+     "params": {},
+     "desc": "/income/specialIncome/batchAdd",
+     "kind": "read"
+    },
+    {
+     "action": "specialIncome-modify",
+     "method": "POST",
+     "path": "/income/specialIncome/modify",
+     "params": {},
+     "desc": "/income/specialIncome/modify",
+     "kind": "write"
+    },
+    {
+     "action": "specialIncome-deleteById",
+     "method": "POST",
+     "path": "/income/specialIncome/deleteById",
+     "params": {},
+     "desc": "/income/specialIncome/deleteById",
+     "kind": "write"
+    },
+    {
+     "action": "specialIncome-deleteBatch",
+     "method": "POST",
+     "path": "/income/specialIncome/deleteBatch",
+     "params": {},
+     "desc": "/income/specialIncome/deleteBatch",
+     "kind": "write"
+    }
+   ]
+  },
+  "priAdmin": {
+   "title": "priAdmin",
+   "service": "rcms",
+   "commands": [
+    {
+     "action": "manage-page",
+     "method": "POST",
+     "path": "/priAdmin/manage/page",
+     "params": {
+      "current": "number",
+      "size": "number"
+     },
+     "desc": "/priAdmin/manage/page",
+     "kind": "read"
+    },
+    {
+     "action": "manage-addTenant",
+     "method": "POST",
+     "path": "/priAdmin/manage/addTenant",
+     "params": {},
+     "desc": "/priAdmin/manage/addTenant",
+     "kind": "write"
+    },
+    {
+     "action": "manage-modifyTenant",
+     "method": "POST",
+     "path": "/priAdmin/manage/modifyTenant",
+     "params": {},
+     "desc": "/priAdmin/manage/modifyTenant",
+     "kind": "write"
+    }
+   ]
+  }
+ }
+}
