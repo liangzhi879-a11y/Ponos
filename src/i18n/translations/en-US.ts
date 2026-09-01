@@ -474,4 +474,15 @@ export const enUS: TranslationKeys = {
     empty: 'No token data yet',
     close: 'Close',
   },
+
+  // --- Dock bubble panels ---
+  dock: {
+    tasks: 'Running Tasks',
+    questions: 'Pending Questions',
+    approvals: 'Pending Approvals',
+    noTasks: 'No running tasks',
+    noQuestions: 'No pending questions',
+    noApprovals: 'No pending approvals',
+    open: 'Open',
+  },
 }

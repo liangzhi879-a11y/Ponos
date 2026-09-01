@@ -428,6 +428,45 @@ ipcMain.on('app:save-theme', (_event, data) => {
 // ---------------------------------------------------------------------------
 const stateBus = createStateBus()
 
+// ---------------------------------------------------------------------------
+// 主窗口 dock 化（导航条形态）状态与光标轮询：
+// 贴屏幕右缘 + 边界自动隐藏（鼠标靠近右缘滑出、离开 dock 区域滑回隐藏）。
+// 用户拖动 dock（drag-region）→ moved 事件解除贴边，变为自由悬浮窗。
+// ---------------------------------------------------------------------------
+let dockWindow = null      // 当前 dock 化的窗口
+let dockDocked = false     // 是否处于贴边自动隐藏模式
+let dockWatchTimer = null
+const DOCK_W = 64          // dock 展开宽度
+const DOCK_PEEK = 4        // 隐藏时露出的边缘像素（可被发现/点击）
+const DOCK_EDGE = 10       // 右缘探测阈值（鼠标进入该 px 内触发滑出）
+const DOCK_POLL_MS = 150   // 光标轮询间隔
+
+function stopDockWatch() {
+  if (dockWatchTimer) { clearInterval(dockWatchTimer); dockWatchTimer = null }
+}
+
+// 光标轮询：贴边模式下，鼠标靠近右缘滑出 dock，离开 dock 区域滑回隐藏。
+function startDockWatch() {
+  if (dockWatchTimer || !dockWindow || dockWindow.isDestroyed()) return
+  dockWatchTimer = setInterval(() => {
+    if (!dockDocked || !dockWindow || dockWindow.isDestroyed()) { stopDockWatch(); return }
+    const wa = screen.getPrimaryDisplay().workArea
+    const cp = screen.getCursorScreenPoint()
+    const b = dockWindow.getBounds()
+    const expandedX = wa.x + wa.width - DOCK_W
+    const hiddenX = wa.x + wa.width - DOCK_PEEK
+    // 鼠标在右缘 EDGE px 内 或 在 dock 窗口内 → 滑出展开
+    const nearEdge = cp.x >= wa.x + wa.width - DOCK_EDGE && cp.x <= wa.x + wa.width &&
+                     cp.y >= wa.y && cp.y <= wa.y + wa.height
+    const inDock = cp.x >= b.x && cp.x <= b.x + b.width && cp.y >= b.y && cp.y <= b.y + b.height
+    if (nearEdge || inDock) {
+      if (b.x !== expandedX) dockWindow.setBounds({ ...b, x: expandedX })
+    } else {
+      if (b.x !== hiddenX) dockWindow.setBounds({ ...b, x: hiddenX })
+    }
+  }, DOCK_POLL_MS)
+}
+
 function loadModuleUrl(win, moduleId, params = {}) {
   const q = new URLSearchParams({ module: moduleId, ...params })
   const devUrl = process.env.VITE_DEV_SERVER_URL
@@ -438,11 +477,39 @@ function loadModuleUrl(win, moduleId, params = {}) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 独立 dock 导航栏窗口：attachDock 在 dock 模块窗口创建后调用，
+// 贴屏幕右缘 + alwaysOnTop + 边界自动隐藏 + 可拖拽悬浮。
+// 与主窗口解耦：dock 是独立 BrowserWindow（?module=dock 只渲染 DockBar），
+// 拖拽 moved → 解除吸附变自由悬浮窗（宽度保持 64，不会拉出完整界面）。
+// ---------------------------------------------------------------------------
+function attachDock(win) {
+  dockWindow = win
+  dockDocked = true
+  if (!win.__dockBound) {
+    win.__dockBound = true
+    win.on('moved', () => {
+      if (dockWindow === win) {
+        dockDocked = false
+        stopDockWatch()
+        win.setAlwaysOnTop(false)
+        win.setResizable(true)
+      }
+    })
+    win.on('closed', () => {
+      if (dockWindow === win) { dockWindow = null; dockDocked = false; stopDockWatch() }
+    })
+  }
+  const wa = screen.getPrimaryDisplay().workArea
+  win.setBounds({ x: wa.x + wa.width - DOCK_W, y: wa.y, width: DOCK_W, height: wa.height })
+  win.setAlwaysOnTop(true)
+  startDockWatch()
+}
+
 const windowManager = createWindowManager({
   getModule,
   bus: stateBus,
-  createWindow: (mod, params) => {
-    const win = new BrowserWindow({
+  createWindow: (mod, params) => {    const win = new BrowserWindow({
       ...mod.windowSpec,
       title: mod.name,
       icon: ICON_PATH,
@@ -457,9 +524,12 @@ const windowManager = createWindowManager({
         backgroundThrottling: false,
       },
     })
-    // 边界变化回传（沿 editor:sync-bounds 模式）
-    win.on('moved', () => windowManager.setBounds(mod.id, win.getBounds()))
-    win.on('resized', () => windowManager.setBounds(mod.id, win.getBounds()))
+    // 边界变化回传（沿 editor:sync-bounds 模式）——dock 窗口除外：
+    // dock 的 moved 由 attachDock 接管（解除吸附变悬浮），不做 setBounds 回传
+    if (mod.id !== 'dock') {
+      win.on('moved', () => windowManager.setBounds(mod.id, win.getBounds()))
+      win.on('resized', () => windowManager.setBounds(mod.id, win.getBounds()))
+    }
     // 渲染层错误入盘
     registerRendererErrorCapture(win)
     // 窗口级 StateBus 接入：webContents 订阅总线（task/question/approval/module 全通道），
@@ -467,6 +537,8 @@ const windowManager = createWindowManager({
     for (const ch of ['task', 'question', 'approval', 'module']) stateBus.subscribe(ch, win.webContents)
     win.webContents.on('destroyed', () => stateBus.detach(win.webContents))
     loadModuleUrl(win, mod.id, params)
+    // 独立 dock 窗口：创建即贴边 + alwaysOnTop + 边界自动隐藏
+    if (mod.id === 'dock') attachDock(win)
     win.once('ready-to-show', () => win.show())
     return win
   },
@@ -512,6 +584,9 @@ function createWindow() {
   registerRendererErrorCapture(mainWindow)
 
   // 模块窗口/主窗口：webContents 销毁时从 StateBus detach（防悬挂订阅）
+  // 主窗口同时订阅 task/question/approval/module —— dock 化后 DockBar 常驻主窗口，
+  // 需收到状态广播才能更新气泡计数。
+  for (const ch of ['task', 'question', 'approval', 'module']) stateBus.subscribe(ch, mainWindow.webContents)
   mainWindow.webContents.on('destroyed', () => stateBus.detach(mainWindow.webContents))
 
   // 主窗口 dock 化：?module=dock 时渲染 DockBar（Task 6）
@@ -832,14 +907,30 @@ async function registerIpc() {
   })
 
   // Frameless window controls
-  ipcMain.on('window:minimize', () => mainWindow?.minimize())
-  ipcMain.on('window:maximize-toggle', () => {
-    if (!mainWindow) return
-    if (mainWindow.isMaximized()) mainWindow.unmaximize()
-    else mainWindow.maximize()
+  // 按发起请求的窗口操作（主窗口与模块窗口通用）：fromWebContents 取 sender 所在窗口，
+  // 而非写死 mainWindow——模块窗口（frame:false）同样可拖动/最小化/最大化/关闭。
+  const winOf = (event) => BrowserWindow.fromWebContents(event.sender)
+  ipcMain.on('window:minimize', (event) => winOf(event)?.minimize())
+  ipcMain.on('window:maximize-toggle', (event) => {
+    const win = winOf(event)
+    if (!win) return
+    if (win.isMaximized()) win.unmaximize()
+    else win.maximize()
   })
-  ipcMain.on('window:close', () => mainWindow?.close())
-  ipcMain.handle('window:is-maximized', () => mainWindow?.isMaximized() ?? false)
+  ipcMain.on('window:close', (event) => winOf(event)?.close())
+  ipcMain.handle('window:is-maximized', (event) => winOf(event)?.isMaximized() ?? false)
+
+  // 独立 dock 导航栏窗口：打开/聚焦 dock 模块窗口（?module=dock 渲染 DockBar）。
+  // dock 创建时经 windowManager.createWindow → attachDock 贴边 + 边界自动隐藏。
+  // 主窗口不再 dock 化（登录后由渲染层隐藏），dock 是独立 BrowserWindow。
+  ipcMain.handle('window:dock-mode', async () => {
+    return windowManager.open('dock')
+  })
+
+  // 主窗口隐藏（登录后进入 dock 形态：主窗口隐藏，dock 独立窗口常驻）
+  ipcMain.on('window:hide', (event) => {
+    winOf(event)?.hide()
+  })
 
   // Task-complete system notification
   ipcMain.handle('app:notify-task', async (_e, payload) => {
@@ -985,6 +1076,11 @@ async function registerIpc() {
 
   ipcMain.on('bus:publish', (_e, event) => {
     stateBus.publish(event)
+    // 审批请求到达（渲染层 usePonosCLI 发布 approval/pending）→ 自动打开全局独立审批窗口。
+    // 审批窗口自持 WS 直接响应，处理完自动关闭。
+    if (event && event.channel === 'approval' && event.action === 'pending') {
+      windowManager.open('approval')
+    }
   })
 
   ipcMain.handle('bus:get-snapshot', async (_e, req) => {

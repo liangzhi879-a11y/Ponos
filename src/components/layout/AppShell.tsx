@@ -11,7 +11,6 @@ import { SettingsView } from '@/components/settings/SettingsView'
 import { CommandPalette } from '@/components/command-palette/CommandPalette'
 import { DiagnosticPanel } from '@/components/diagnostic/DiagnosticPanel'
 import { DiagnosticBanner } from '@/components/diagnostic/DiagnosticBanner'
-import { PermissionDialog } from '@/components/permissions/PermissionDialog'
 import { SearchDialog } from '@/components/search/SearchDialog'
 import { ShortcutsHelp } from '@/components/shortcuts/ShortcutsHelp'
 import { useChatStore } from '@/stores/chatStore'
@@ -410,12 +409,11 @@ export function AppShell() {
       {/* Status bar */}
       <StatusBar />
 
-      {/* Overlays */}
+      {/* Overlays（审批弹窗已上移到 App 根级，模块窗口亦经 ModuleFrame 挂载） */}
       <SettingsView />
       <CommandPalette />
       <DiagnosticPanel />
       <DiagnosticBanner />
-      <PermissionDialog />
       <SearchDialog />
       <ShortcutsHelp />
       {previewFile && (

@@ -5,12 +5,12 @@ import { useViewStore } from './viewStore.ts'
 test('初始 view=boot', () => {
   assert.equal(useViewStore.getState().view, 'boot')
 })
-test('bootDone → login → enter → cockpit', () => {
+test('bootDone → login → enter → dock（登录后主窗口进入导航条形态）', () => {
   const s = useViewStore.getState()
   s.bootDone()
   assert.equal(useViewStore.getState().view, 'login')
   useViewStore.getState().enter()
-  assert.equal(useViewStore.getState().view, 'cockpit')
+  assert.equal(useViewStore.getState().view, 'dock')
 })
 test('goWorkspace 带 tab，goCockpit 清 tab', () => {
   useViewStore.getState().goWorkspace('agents')

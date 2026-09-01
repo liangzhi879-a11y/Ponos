@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowRight, FolderOpen, MessageSquare, Sparkles, Zap } from 'lucide-react'
 import { useChatStore } from '@/stores/chatStore'
 import { useTokenStatsStore, toDayKey } from '@/stores/tokenStatsStore'
-import { useViewStore } from '@/stores/viewStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { usePonosCLI } from '@/hooks/usePonosCLI'
+import { openModule } from '@/lib/moduleBridge'
 import { fetchSkills, type SkillEntry } from '@/lib/skills'
 import { DEFAULT_AGENTS } from '@/lib/agents'
 import { getBridgeUrl, getDefaultHome } from '@/lib/config'
@@ -64,7 +64,6 @@ function StatItem({ label, value, pulse }: { label: string; value: string; pulse
 
 export function CockpitView() {
   const { t } = useTranslation()
-  const goWorkspace = useViewStore(s => s.goWorkspace)
 
   const conversations = useChatStore(s => s.conversations)
   const backgroundTasks = useChatStore(s => s.backgroundTasks)
@@ -100,7 +99,8 @@ export function CockpitView() {
   // 否则冷启动时最近会话点击进入会显示空态。
   const openConversation = (id: string) => {
     useChatStore.getState().setActiveConversation(id)
-    goWorkspace('chats')
+    // 独立聊天模块窗口（导航条常驻，会话在独立窗口打开）
+    void openModule('chat', { conversation: id })
   }
 
   // --- Token 用量 卡片数据 ---
@@ -185,10 +185,9 @@ export function CockpitView() {
       .sort((a, b) => b.value - a.value)
   }, [skills])
 
-  // --- Hero 快捷操作：新建会话 ---
+  // --- Hero 快捷操作：新建会话（独立聊天模块窗口，new=1 强制新建会话） ---
   const startNewChat = () => {
-    useViewStore.getState().goWorkspace('chats')
-    useChatStore.getState().createConversation()
+    void openModule('chat', { new: '1' })
   }
 
   // --- SVG 连线层：测量卡片中心 + resize 重算 ---
@@ -244,9 +243,8 @@ export function CockpitView() {
   }
 
   const enterFileCard = () => {
-    goWorkspace('chats')
-    // 右侧栏（文件视图）默认开启；uiStore 无 openRightRail action，直接置状态
-    useUIStore.setState({ rightRailOpen: true })
+    // 独立文件模块窗口
+    void openModule('files')
   }
 
   const cardBase = cn(
@@ -342,11 +340,11 @@ export function CockpitView() {
             className={cardBase}
             onMouseEnter={() => setHoverSessions(true)}
             onMouseLeave={() => setHoverSessions(false)}
-            onClick={() => goWorkspace('chats')}
+            onClick={() => void openModule('chat')}
             role="button"
             tabIndex={0}
             onKeyDown={e => {
-              if (e.key === 'Enter') goWorkspace('chats')
+              if (e.key === 'Enter') void openModule('chat')
             }}
           >
             <div className="flex items-center justify-between">
@@ -475,11 +473,11 @@ export function CockpitView() {
               cardRefs.current.skills = el
             }}
             className={cardBase}
-            onClick={() => goWorkspace('skills')}
+            onClick={() => void openModule('skills')}
             role="button"
             tabIndex={0}
             onKeyDown={e => {
-              if (e.key === 'Enter') goWorkspace('skills')
+              if (e.key === 'Enter') void openModule('skills')
             }}
           >
             <div className="flex items-center justify-between">

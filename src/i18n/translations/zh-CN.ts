@@ -487,6 +487,17 @@ export const zhCN = {
     empty: '暂无 Token 数据',
     close: '关闭',
   },
+
+  // --- 导航栏气泡面板 ---
+  dock: {
+    tasks: '运行任务',
+    questions: '待提问',
+    approvals: '待审批',
+    noTasks: '暂无运行任务',
+    noQuestions: '暂无待提问',
+    noApprovals: '暂无待审批',
+    open: '打开',
+  },
 }
 
 export type TranslationKeys = typeof zhCN

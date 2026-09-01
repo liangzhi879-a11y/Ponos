@@ -18,11 +18,14 @@ import { sendAnswer, dismissQuestion, usePonosCLI } from '@/hooks/usePonosCLI'
  */
 export function ChatModule() {
   const conversationId = getModuleParam('conversation')
+  const isNew = getModuleParam('new') === '1'
   const { activeConversationId, createConversation, setActiveConversation, pendingQuestions, clearPendingQuestion } = useChatStore()
 
-  // 无 conversation 参数 → 激活/新建会话
+  // 无 conversation 参数 → 激活/新建会话；new=1 → 强制新建会话
   useEffect(() => {
-    if (!conversationId) {
+    if (isNew) {
+      createConversation()
+    } else if (!conversationId) {
       if (!activeConversationId) createConversation()
     } else {
       setActiveConversation(conversationId)

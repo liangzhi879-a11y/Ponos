@@ -34,6 +34,10 @@ contextBridge.exposeInMainWorld('ponosWindow', {
   maximizeToggle: () => ipcRenderer.send('window:maximize-toggle'),
   close: () => ipcRenderer.send('window:close'),
   isMaximized: () => ipcRenderer.invoke('window:is-maximized'),
+  // 主窗口隐藏（登录后 dock 独立窗口常驻，主窗口隐藏）
+  hide: () => ipcRenderer.send('window:hide'),
+  // 独立 dock 导航栏窗口（?module=dock，登录后打开）
+  dockMode: () => ipcRenderer.invoke('window:dock-mode'),
   // 技能经验消费提醒（主进程启动时推送 pending 积压）
   onExperienceAlert: (callback) => {
     const listener = (_event, data) => callback(data)

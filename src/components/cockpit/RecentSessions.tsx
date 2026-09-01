@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { MessageSquare } from 'lucide-react'
 import { useChatStore } from '@/stores/chatStore'
-import { useViewStore } from '@/stores/viewStore'
+import { openModule } from '@/lib/moduleBridge'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn } from '@/lib/utils'
 
@@ -17,7 +17,6 @@ function timeAgo(ts: number, t: (k: string) => string): string {
 export function RecentSessions({ limit = 6 }: { limit?: number }) {
   const { t } = useTranslation()
   const conversations = useChatStore(s => s.conversations)
-  const goWorkspace = useViewStore(s => s.goWorkspace)
   const recent = useMemo(
     () => [...conversations].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, limit),
     [conversations, limit],
@@ -33,7 +32,8 @@ export function RecentSessions({ limit = 6 }: { limit?: number }) {
             key={c.id}
             onClick={() => {
               useChatStore.getState().setActiveConversation(c.id)
-              goWorkspace('chats')
+              // 独立聊天模块窗口打开对应会话
+              void openModule('chat', { conversation: c.id })
             }}
             className={cn(
               'flex items-center gap-2.5 px-3 py-2 rounded-lg text-left',

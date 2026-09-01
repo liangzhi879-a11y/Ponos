@@ -382,6 +382,10 @@ export interface PonosWindowControls {
   maximizeToggle: () => void
   close: () => void
   isMaximized: () => Promise<boolean>
+  /** 主窗口隐藏（登录后 dock 独立窗口常驻） */
+  hide?: () => void
+  /** 独立 dock 导航栏窗口（?module=dock，登录后打开） */
+  dockMode?: () => Promise<{ ok: boolean; error?: string }>
   // 技能经验消费提醒：主进程启动时推送 pending 积压，返回取消订阅函数
   onExperienceAlert?: (callback: (data: { total: number; bySkill: { skill: string; count: number }[] }) => void) => (() => void) | undefined
   /** 编辑器窗口：主进程下发待打开文件（返回取消订阅函数） */

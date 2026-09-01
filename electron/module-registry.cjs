@@ -26,6 +26,14 @@ const BUILTIN_MODULES = [
     id: 'settings', name: '设置', icon: 'settings', singleton: true, builtin: true,
     windowSpec: { width: 720, height: 640, minWidth: 480, minHeight: 400, resizable: true, frame: false },
   },
+  {
+    id: 'skills', name: '技能', icon: 'sparkles', singleton: true, builtin: true,
+    windowSpec: { width: 900, height: 700, minWidth: 560, minHeight: 400, resizable: true, frame: false },
+  },
+  {
+    id: 'approval', name: '审批', icon: 'shield-check', singleton: true, builtin: true,
+    windowSpec: { width: 520, height: 360, minWidth: 440, minHeight: 300, resizable: false, frame: false },
+  },
 ]
 
 const REQUIRED_MANIFEST_FIELDS = ['id', 'name', 'entry', 'windowSpec']

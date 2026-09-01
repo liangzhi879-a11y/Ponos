@@ -19,7 +19,8 @@ export const useViewStore = create<ViewState>()((set) => ({
   workspaceTab: null,
   authToken: null,
   bootDone: () => set({ view: 'login' }),
-  enter: () => set({ view: 'cockpit' }),
+  // 登录后主窗口进入 dock 形态（导航条常驻）；驾驶舱作为独立模块窗口由 App 层打开。
+  enter: () => set({ view: 'dock' }),
   goCockpit: () => set({ view: 'cockpit', workspaceTab: null }),
   goDock: () => set({ view: 'dock', workspaceTab: null }),
   goWorkspace: (tab) => set({ view: 'workspace', workspaceTab: tab ?? null }),
