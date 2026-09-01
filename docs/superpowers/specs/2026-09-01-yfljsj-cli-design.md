@@ -24,9 +24,16 @@
 | 响应 | 统一 `{success, code, msg, data, timestamp}` | 网关实测 |
 | 认证 | JWT（accessToken + refreshToken + tenantId） | JS 提取 |
 
-**关键发现**：前端 JS 中 API 请求路径是动态拼接（`GO(instance, path)` 传变量），
-**无法从静态 JS 一次性提取完整接口清单**。12 模块 × 读写 = 数百接口，逐个手写不现实。
-→ 采用**运行时代理捕获**（discover）生成命令表。
+**关键发现（2026-09-01 深化逆向）**：下载全部 265 个前端 JS chunk（5MB），提取出
+**536 个真实 API 接口**（527 POST + 7 GET + 1 PUT + 1 模板拼接路径），按模块分布：
+workbench 98 / enterprise 95 / asset 63 / material 34 / personnel 31 / voucher 28 /
+financial 27 / achievement 25 / resefunds 24 / risk 15 / user 13 / dp 11 / group 10 /
+role 8 / human 7 / subject-init 6 / income 6 等 31 个模块前缀。
+
+请求形式统一为 `e({url:"/path", method:"post", data})`（Spring 风格，查询也走 POST），
+分页参数为 pageSize/current/size。**接口清单可从静态 JS 直接生成命令表骨架**，
+discover 代理捕获降级为**补充手段**（捕获模板路径、上传接口、参数样例）。
+接口全集存 `zz-smoke/yfljsj-re/api-calls.json`（实施时迁移为命令表）。
 
 ## 3. 总体架构
 
@@ -49,7 +56,8 @@ yfljsj.mjs（单文件，零依赖，node 直跑）
 
 1. **单文件零依赖**：纯 Node 内置模块（https/fs/readline），与 Ponos 内核哲学一致
 2. **命令表驱动**：`apis.json` 描述接口映射，通用执行器按表执行，避免数百命令手写
-3. **运行时发现**：discover 代理捕获解决接口清单问题，可增量扩充
+3. **静态逆向为主 + discover 补充**：536 接口已从 JS chunk 提取（生成命令表骨架），
+   discover 代理捕获用于补漏（模板路径/上传/参数样例）
 4. **agent 契约**：stdout 纯 JSON + 退出码语义化 + stderr 诊断，任何 agent 可 shell 调用
 
 ## 4. 认证模块
@@ -148,21 +156,20 @@ yfljsj auth login --method tenant --user <手机号> --tenant <租户ID>
 比逆向混淆 bundle 可靠；用户操作一遍 = 全量接口自动入表；可增量补录。
 参数语义（必填/枚举）经样例启发式生成，标 `NEEDS_REVIEW` 待人工复核。
 
-### 5.4 模块骨架（discover 前预置，立即可用）
+### 5.4 模块映射（命令表分组，来自 536 接口静态提取）
 
+31 个模块前缀（按接口数）：
 ```
-hitech   高企管理（board/declareMgr/highMgr/psMgr）
-research 研发费用（budgetManagement/in/out/pay/subject）
-tech     成果转化（articleMgr/evaluateMgr/registManagement/report）
-hr       人事薪酬（member/org/role/salary/attn）
-asset    资产管理（build/cap/equip/intangible）
-voucher  凭证管理（list/detail/special/subjectInit）
-tenant   租户管理（tenantMgr/groupMgr/orgView）
-config   配置（hr/salary/project/risk）
-workbench 工作台（projectList/welcome）
+workbench 工作台(98)  enterprise 企业(95)  asset 资产(63)  material 材料(34)
+personnel 人事(31)    voucher 凭证(28)     financial 财务(27) achievement 成果转化(25)
+resefunds 研发费用(24) risk 风控(15)        user 用户(13)    dp 数据平台(11)
+group 组织(10)        role 角色(8)         human 人力(7)    subject-init 科目(6)
+income 收入(6)        reference 参考资料(5) ...
 ```
 
-每个骨架含 2-4 个核心命令（list/detail），discover 后扩满。
+每个模块下命令按 action 展开：`list/page/detail/queryById`（读）、
+`add/modify/delete/deleteBatch/export/import`（写），命令表直接由 api-calls.json 生成。
+action 命名规则：`<资源><动作>`（如 `building-list`、`building-add`），参数为命令表 params。
 
 ## 6. Agent 接入与安全
 
@@ -215,7 +222,8 @@ node /opt/yfljsj/yfljsj.mjs research in --data '{"amount":1000,"subject":"材料
 
 1. `yfljsj auth login` 三种方式均可用（密码/验证码/租户），token 持久化 + 自动续期
 2. `yfljsj <module> <action>` 命令表驱动，读写命令可用，JSON 输出
-3. `yfljsj discover` 代理捕获真实接口，生成命令表
+3. **接口全覆盖**：536 个静态提取接口全部入命令表（api-calls.json → apis.json），
+   discover 可增量补漏（模板/上传/参数样例）
 4. 退出码契约稳定（agent 可依赖）
 5. 写操作需确认，delete 需 --force；审计日志留痕
 6. 单文件零依赖，跨平台 node 直跑
