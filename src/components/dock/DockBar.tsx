@@ -17,6 +17,7 @@ const HIDDEN_MODULES = new Set(['dock', 'approval'])
 export function DockBar() {
   const { expanded, locked, counts, setExpanded, setLocked, bump, reset, panel, setPanel } = useDockStore()
   const [modules, setModules] = useState<Array<{ id: string; name: string }>>([])
+  const [floating, setFloating] = useState(false)   // 悬浮模式（拖出后）
 
   // 加载模块清单（过滤 dock 自身 + approval）
   useEffect(() => {
@@ -31,8 +32,18 @@ export function DockBar() {
         if (e.action === 'resolved' || e.action === 'status-done') reset(ch)
       })
     )
-    return () => offs.forEach(off => off())
+    // 监听 module 通道：dock 挂靠/悬浮状态（DockService 发布）
+    const offModule = subscribeBus('module', (e: BusEvent) => {
+      if (e.action === 'dock-floating') setFloating(true)
+      else if (e.action === 'dock-docked') setFloating(false)
+    })
+    return () => { offs.forEach(off => off()); offModule() }
   }, [bump, reset])
+
+  // 锁定联动主进程：locked=true → 停止自动隐藏（常驻展开）；false → 恢复
+  useEffect(() => {
+    window.ponosDock?.setAutoHide(!locked)
+  }, [locked])
 
   const openModuleWindow = (id: string) => {
     void openModule(id)
@@ -43,6 +54,12 @@ export function DockBar() {
   const togglePanel = (ch: DockPanelChannel) => {
     setPanel(panel === ch ? null : ch)
     reset(ch)   // 打开面板即清除角标
+  }
+
+  // 悬浮 → 贴回右缘
+  const redock = () => {
+    void window.ponosDock?.redock()
+    setFloating(false)
   }
 
   const LockIcon = LOCK_ICONS[locked ? 'locked' : 'unlocked']
@@ -111,6 +128,17 @@ export function DockBar() {
           )
         })}
       </div>
+
+      {/* 悬浮时显示"贴回右缘"按钮 */}
+      {floating && (
+        <button
+          onClick={redock}
+          className="no-drag w-9 h-9 rounded-lg flex items-center justify-center text-accent hover:bg-surface"
+          title="贴回右缘（重新挂靠）"
+        >
+          <Radar size={16} className="rotate-90" />
+        </button>
+      )}
 
       {/* 锁定展开开关：锁定后常驻展开 */}
       <button

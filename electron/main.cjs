@@ -432,7 +432,7 @@ ipcMain.on('app:save-theme', (_event, data) => {
 const stateBus = createStateBus()
 
 // DockService：导航栏窗口贴边/自动隐藏/悬浮（光标轮询收敛于此）
-const dockService = createDockService({ screen })
+const dockService = createDockService({ screen, bus: stateBus })
 
 // ApprovalCenter：审批队列 + 窗口调度（主进程正规化）
 const approvalCenter = createApprovalCenter({ windowManager: null, bus: stateBus })
@@ -885,6 +885,14 @@ async function registerIpc() {
   // 主窗口隐藏（登录后进入 dock 形态：主窗口隐藏，dock 独立窗口常驻）
   ipcMain.on('window:hide', (event) => {
     winOf(event)?.hide()
+  })
+
+  // dock 悬浮 → 重新挂靠回右缘（DockBar "贴回"按钮触发）
+  ipcMain.handle('dock:redock', async () => dockService.redock())
+
+  // 锁定联动：false=停止自动隐藏（常驻展开），true=恢复自动隐藏
+  ipcMain.on('dock:set-auto-hide', (_e, enabled) => {
+    dockService.setAutoHide(enabled !== false)
   })
 
   // Task-complete system notification

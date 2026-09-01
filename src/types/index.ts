@@ -516,6 +516,11 @@ declare global {
       getSnapshot: (channel: string) => Promise<BusEvent[]>
       onEvent: (channel: string, cb: (e: BusEvent) => void) => () => void
     }
+    /** DockService：dock 挂靠/锁定联动 */
+    ponosDock?: {
+      redock: () => Promise<{ ok: boolean; error?: string }>
+      setAutoHide: (enabled: boolean) => void
+    }
   }
   // Injected by Vite define at build time — reads package.json version
   const __APP_VERSION__: string

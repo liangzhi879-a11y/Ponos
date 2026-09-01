@@ -130,3 +130,11 @@ contextBridge.exposeInMainWorld('ponosBus', {
     return () => ipcRenderer.removeListener(`bus:event:${channel}`, listener)
   },
 })
+
+// DockService（dock 贴边/挂靠/锁定联动）
+contextBridge.exposeInMainWorld('ponosDock', {
+  // 悬浮 → 重新挂靠回右缘
+  redock: () => ipcRenderer.invoke('dock:redock'),
+  // 锁定联动：false=停止自动隐藏（常驻展开）
+  setAutoHide: (enabled) => ipcRenderer.send('dock:set-auto-hide', enabled),
+})
