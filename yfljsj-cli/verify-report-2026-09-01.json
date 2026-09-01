@@ -1,0 +1,4832 @@
+{
+ "ts": "2026-09-01T02:27:12.270Z",
+ "tenantId": 224,
+ "total": 535,
+ "stat": {
+  "PARAM_NEEDED": 152,
+  "BIZ_-1": 125,
+  "SKIP_DANGEROUS": 97,
+  "OK": 113,
+  "BIZ_200": 20,
+  "BIZ_C_UNKNOWN": 9,
+  "PATH_404": 5,
+  "BIZ_C_DEFAULT": 14
+ },
+ "results": [
+  {
+   "module": "asset",
+   "action": "intangibleDetail-list",
+   "path": "/asset/intangibleDetail/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "asset",
+   "action": "intangible-queryById",
+   "path": "/asset/intangible/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "asset",
+   "action": "intangibleDetail-modify",
+   "path": "/asset/intangibleDetail/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "无形资产摊销明细记录编号不能为空"
+  },
+  {
+   "module": "asset",
+   "action": "building-deleteById",
+   "path": "/asset/building/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "asset",
+   "action": "building-deleteBatch",
+   "path": "/asset/building/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "asset",
+   "action": "capitalization-queryById",
+   "path": "/asset/capitalization/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "asset",
+   "action": "capitalizationDetail-list",
+   "path": "/asset/capitalizationDetail/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "asset",
+   "action": "building-page",
+   "path": "/asset/building/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "asset",
+   "action": "capitalizationDetail-modify",
+   "path": "/asset/capitalizationDetail/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "无形资产摊销明细记录编号不能为空"
+  },
+  {
+   "module": "asset",
+   "action": "building-list",
+   "path": "/asset/building/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "asset",
+   "action": "building-modify",
+   "path": "/asset/building/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "建筑物编号不能为空"
+  },
+  {
+   "module": "asset",
+   "action": "building-batchEnable",
+   "path": "/asset/building/batchEnable",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "asset",
+   "action": "building-export",
+   "path": "/asset/building/export",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "asset",
+   "action": "building-import",
+   "path": "/asset/building/import",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "Current request is not a multipart request"
+  },
+  {
+   "module": "asset",
+   "action": "capitalization-deleteById",
+   "path": "/asset/capitalization/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "asset",
+   "action": "capitalization-deleteBatch",
+   "path": "/asset/capitalization/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "asset",
+   "action": "building-batchDisable",
+   "path": "/asset/building/batchDisable",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "停用时间不能为空"
+  },
+  {
+   "module": "asset",
+   "action": "building-downloadTemplate",
+   "path": "/asset/building/downloadTemplate",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "asset",
+   "action": "building-add",
+   "path": "/asset/building/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "asset",
+   "action": "device-queryById",
+   "path": "/asset/device/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "asset",
+   "action": "capitalization-modify",
+   "path": "/asset/capitalization/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "资本化记录编号不能为空"
+  },
+  {
+   "module": "asset",
+   "action": "capitalization-add",
+   "path": "/asset/capitalization/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "asset",
+   "action": "capitalization-downloadTemplate",
+   "path": "/asset/capitalization/downloadTemplate",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "asset",
+   "action": "deviceDetail-list",
+   "path": "/asset/deviceDetail/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "asset",
+   "action": "capitalization-import",
+   "path": "/asset/capitalization/import",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "Current request is not a multipart request"
+  },
+  {
+   "module": "asset",
+   "action": "capitalization-list",
+   "path": "/asset/capitalization/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "asset",
+   "action": "capitalization-page",
+   "path": "/asset/capitalization/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "asset",
+   "action": "building-queryById",
+   "path": "/asset/building/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "asset",
+   "action": "intangible-deleteById",
+   "path": "/asset/intangible/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "asset",
+   "action": "intangible-deleteBatch",
+   "path": "/asset/intangible/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "asset",
+   "action": "buildingDetail-list",
+   "path": "/asset/buildingDetail/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "asset",
+   "action": "deviceDetail-modify",
+   "path": "/asset/deviceDetail/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "租金明细记录编号不能为空"
+  },
+  {
+   "module": "asset",
+   "action": "buildingDetail-modify",
+   "path": "/asset/buildingDetail/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "建筑物租金明细记录编号不能为空"
+  },
+  {
+   "module": "asset",
+   "action": "intangible-batchDisable",
+   "path": "/asset/intangible/batchDisable",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "停用时间不能为空"
+  },
+  {
+   "module": "asset",
+   "action": "intangible-page",
+   "path": "/asset/intangible/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "asset",
+   "action": "intangible-downloadTemplate",
+   "path": "/asset/intangible/downloadTemplate",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "asset",
+   "action": "intangible-modify",
+   "path": "/asset/intangible/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "无形资产编号不能为空"
+  },
+  {
+   "module": "asset",
+   "action": "intangible-batchEnable",
+   "path": "/asset/intangible/batchEnable",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "asset",
+   "action": "intangible-add",
+   "path": "/asset/intangible/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "asset",
+   "action": "device-deleteById",
+   "path": "/asset/device/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "asset",
+   "action": "device-deleteBatch",
+   "path": "/asset/device/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "asset",
+   "action": "intangible-list",
+   "path": "/asset/intangible/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "asset",
+   "action": "device-list",
+   "path": "/asset/device/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "asset",
+   "action": "device-batchDisable",
+   "path": "/asset/device/batchDisable",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "停用时间不能为空"
+  },
+  {
+   "module": "asset",
+   "action": "device-page",
+   "path": "/asset/device/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "asset",
+   "action": "device-batchEnable",
+   "path": "/asset/device/batchEnable",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "asset",
+   "action": "intangible-import",
+   "path": "/asset/intangible/import",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "Current request is not a multipart request"
+  },
+  {
+   "module": "asset",
+   "action": "device-modify",
+   "path": "/asset/device/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "设备编号不能为空"
+  },
+  {
+   "module": "asset",
+   "action": "intangible-export",
+   "path": "/asset/intangible/export",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "asset",
+   "action": "device-import",
+   "path": "/asset/device/import",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "Current request is not a multipart request"
+  },
+  {
+   "module": "asset",
+   "action": "deviceEnergy-page",
+   "path": "/asset/deviceEnergy/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "asset",
+   "action": "deviceEnergy-deleteById",
+   "path": "/asset/deviceEnergy/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "asset",
+   "action": "deviceEnergy-deleteBatch",
+   "path": "/asset/deviceEnergy/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "asset",
+   "action": "deviceEnergy-modify",
+   "path": "/asset/deviceEnergy/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "合同编号不能为空"
+  },
+  {
+   "module": "asset",
+   "action": "deviceEnergy-addBatch",
+   "path": "/asset/deviceEnergy/addBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_C_UNKNOWN",
+   "msg": "至少选择一个设备"
+  },
+  {
+   "module": "asset",
+   "action": "deviceEnergy-downloadTemplate",
+   "path": "/asset/deviceEnergy/downloadTemplate",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "asset",
+   "action": "device-add",
+   "path": "/asset/device/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "asset",
+   "action": "deviceEnergy-add",
+   "path": "/asset/deviceEnergy/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'device_id' d"
+  },
+  {
+   "module": "asset",
+   "action": "device-downloadTemplate",
+   "path": "/asset/device/downloadTemplate",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "achievement",
+   "action": "article-deleteBatch",
+   "path": "/achievement/article/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "asset",
+   "action": "deviceEnergy-list",
+   "path": "/asset/deviceEnergy/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "asset",
+   "action": "device-export",
+   "path": "/asset/device/export",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "achievement",
+   "action": "article-page",
+   "path": "/achievement/article/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "achievement",
+   "action": "evaluate-deleteBatch",
+   "path": "/achievement/evaluate/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "achievement",
+   "action": "evaluate-add",
+   "path": "/achievement/evaluate/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[projId:must not be null]"
+  },
+  {
+   "module": "achievement",
+   "action": "article-add",
+   "path": "/achievement/article/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[projId:must not be null]"
+  },
+  {
+   "module": "asset",
+   "action": "deviceEnergy-import",
+   "path": "/asset/deviceEnergy/import",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "Current request is not a multipart request"
+  },
+  {
+   "module": "achievement",
+   "action": "evaluate-page",
+   "path": "/achievement/evaluate/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "achievement",
+   "action": "convert-page",
+   "path": "/achievement/convert/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "achievement",
+   "action": "common-getAchievementList",
+   "path": "/achievement/common/getAchievementList",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "asset",
+   "action": "deviceEnergy-export",
+   "path": "/asset/deviceEnergy/export",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "achievement",
+   "action": "ipr-page",
+   "path": "/achievement/ipr/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "achievement",
+   "action": "ipr-list",
+   "path": "/achievement/ipr/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "achievement",
+   "action": "article-modify",
+   "path": "/achievement/article/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "achievement",
+   "action": "convert-deleteBatch",
+   "path": "/achievement/convert/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "achievement",
+   "action": "evaluate-modify",
+   "path": "/achievement/evaluate/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "achievement",
+   "action": "ipr-add",
+   "path": "/achievement/ipr/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[iprName:must not be null, applyNo:must not be null, projId:must not be null, ip"
+  },
+  {
+   "module": "achievement",
+   "action": "search-page",
+   "path": "/achievement/search/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "achievement",
+   "action": "search-deleteBatch",
+   "path": "/achievement/search/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "achievement",
+   "action": "ipr-modify",
+   "path": "/achievement/ipr/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[projId:must not be null, id:must not be null]"
+  },
+  {
+   "module": "achievement",
+   "action": "search-add",
+   "path": "/achievement/search/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[searchName:must not be blank, projId:must not be null, reportNo:must not be bla"
+  },
+  {
+   "module": "achievement",
+   "action": "convert-modify",
+   "path": "/achievement/convert/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "achievement",
+   "action": "common-getIprList",
+   "path": "/achievement/common/getIprList",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[projId:must not be null]"
+  },
+  {
+   "module": "achievement",
+   "action": "convert-add",
+   "path": "/achievement/convert/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[type:must not be null, projId:must not be null, name:must not be null]"
+  },
+  {
+   "module": "human",
+   "action": "configBonus-delete",
+   "path": "/human/configBonus/delete",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "human",
+   "action": "configLicense-delete",
+   "path": "/human/configLicense/delete",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "achievement",
+   "action": "ipr-queryById",
+   "path": "/achievement/ipr/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "achievement",
+   "action": "common-getProjList",
+   "path": "/achievement/common/getProjList",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "achievement",
+   "action": "convert-pageForRegister",
+   "path": "/achievement/convert/pageForRegister",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "achievement",
+   "action": "search-modify",
+   "path": "/achievement/search/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "human",
+   "action": "configBonus-list",
+   "path": "/human/configBonus/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "human",
+   "action": "configBonus-update",
+   "path": "/human/configBonus/update",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "resefunds",
+   "action": "projectBudget-budgetTree",
+   "path": "/resefunds/projectBudget/budgetTree",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[projectId:项目ID不能为空]"
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsEnough-page",
+   "path": "/resefunds/fundsEnough/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsEnough-delete",
+   "path": "/resefunds/fundsEnough/delete",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsEnough-listProjectDropdown",
+   "path": "/resefunds/fundsEnough/listProjectDropdown",
+   "method": "POST",
+   "kind": "read",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "resefunds",
+   "action": "projectBudget-updateBudget",
+   "path": "/resefunds/projectBudget/updateBudget",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[configBudgetId:科目配置ID不能为空, projectId:项目ID不能为空]"
+  },
+  {
+   "module": "human",
+   "action": "configSocialInsurance-update",
+   "path": "/human/configSocialInsurance/update",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "resefunds",
+   "action": "projectBudget-page",
+   "path": "/resefunds/projectBudget/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsEnough-update",
+   "path": "/resefunds/fundsEnough/update",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[enoughAmount:到账金额不能为空, projectId:项目ID不能为空, id:经费到位ID不能为空, creditedTime:到账时间不能为空"
+  },
+  {
+   "module": "human",
+   "action": "configBonus-save",
+   "path": "/human/configBonus/save",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'bonus_name' "
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsEnough-save",
+   "path": "/resefunds/fundsEnough/save",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[projectId:项目ID不能为空, enoughAmount:到账金额不能为空, creditedTime:到账时间不能为空]"
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsAllocate-delete",
+   "path": "/resefunds/fundsAllocate/delete",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "human",
+   "action": "configSocialInsurance-list",
+   "path": "/human/configSocialInsurance/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsEnough-getProjectFinanceBudget",
+   "path": "/resefunds/fundsEnough/getProjectFinanceBudget",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[projectId:项目ID不能为空]"
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsAllocate-page",
+   "path": "/resefunds/fundsAllocate/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "resefunds",
+   "action": "projectBudget-projectSourceList",
+   "path": "/resefunds/projectBudget/projectSourceList",
+   "method": "GET",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "resefunds",
+   "action": "projectBudget-projectAllTypeList",
+   "path": "/resefunds/projectBudget/projectAllTypeList",
+   "method": "GET",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsExpen-delete",
+   "path": "/resefunds/fundsExpen/delete",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsAllocate-save",
+   "path": "/resefunds/fundsAllocate/save",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[payee:收款单位不能为空, allocateAmount:拨付金额不能为空, subTopic:所属子课题不能为空, allocateTime:拨付时间不"
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsAllocate-listSubTopicTree",
+   "path": "/resefunds/fundsAllocate/listSubTopicTree",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[projectId:项目ID不能为空]"
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsExpen-updateVoucher",
+   "path": "/resefunds/fundsExpen/updateVoucher",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[expenType:支出类型不能为空, voucherType:凭证类型不能为空, financeBudgetId:科目ID不能为空, voucherNo:凭"
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsAllocate-validateAmount",
+   "path": "/resefunds/fundsAllocate/validateAmount",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[allocateAmount:拨付金额不能为空, projectId:项目ID不能为空, allocateTime:拨付时间不能为空]"
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsExpen-settleRdExpense",
+   "path": "/resefunds/fundsExpen/settleRdExpense",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[voucherType:凭证类型不能为空, expenType:支出类型不能为空, voucherNo:凭证号不能为空, settleAmount:结转金额不"
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsExpen-page",
+   "path": "/resefunds/fundsExpen/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "workbench",
+   "action": "projectRdCost-list",
+   "path": "/workbench/projectRdCost/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[projectId:must not be null]"
+  },
+  {
+   "module": "workbench",
+   "action": "projectRdCost-deleteFile",
+   "path": "/workbench/projectRdCost/deleteFile",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsExpen-saveVoucher",
+   "path": "/resefunds/fundsExpen/saveVoucher",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[voucherType:凭证类型不能为空, voucherNo:凭证号不能为空, expenType:支出类型不能为空, voucherDate:凭证日期不能"
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsAllocate-update",
+   "path": "/resefunds/fundsAllocate/update",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[allocateTime:拨付时间不能为空, projectId:项目ID不能为空, payee:收款单位不能为空, allocateAmount:拨付金额不"
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsExpen-settleIntangibleAsset",
+   "path": "/resefunds/fundsExpen/settleIntangibleAsset",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[settleAmount:结转金额不能为空, expenType:支出类型不能为空, voucherNo:凭证号不能为空, voucherDate:凭证日期不"
+  },
+  {
+   "module": "workbench",
+   "action": "projectEquip-deleteBatch",
+   "path": "/workbench/projectEquip/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectEquip-remove",
+   "path": "/workbench/projectEquip/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectRdCost-modify",
+   "path": "/workbench/projectRdCost/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "JSON parse error: Cannot deserialize value of type `java.util.ArrayList<com.yf.r"
+  },
+  {
+   "module": "workbench",
+   "action": "projectRdCost-getFielInfo",
+   "path": "/workbench/projectRdCost/getFielInfo",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "项目预算书不存在"
+  },
+  {
+   "module": "workbench",
+   "action": "projectRdCost-updateFile",
+   "path": "/workbench/projectRdCost/updateFile",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "resefunds",
+   "action": "fundsExpen-calculateSettleAmount",
+   "path": "/resefunds/fundsExpen/calculateSettleAmount",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[expenType:支出类型不能为空, voucherDate:结转凭证日期不能为空]"
+  },
+  {
+   "module": "workbench",
+   "action": "projectEquip-add",
+   "path": "/workbench/projectEquip/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "JSON parse error: Cannot deserialize value of type `java.util.ArrayList<com.yf.r"
+  },
+  {
+   "module": "workbench",
+   "action": "projectEquip-modify",
+   "path": "/workbench/projectEquip/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectInfo-getProjectIds",
+   "path": "/workbench/projectInfo/getProjectIds",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "text"
+  },
+  {
+   "module": "workbench",
+   "action": "projectInfo-add-child",
+   "path": "/workbench/projectInfo/add-child",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectEquip-page",
+   "path": "/workbench/projectEquip/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "workbench",
+   "action": "projectInfo-getById",
+   "path": "/workbench/projectInfo/getById",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectInfo-remove-child",
+   "path": "/workbench/projectInfo/remove-child",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectAppro-getById",
+   "path": "/workbench/projectAppro/getById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "workbench",
+   "action": "projectInfo-remove",
+   "path": "/workbench/projectInfo/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectAppro-modify",
+   "path": "/workbench/projectAppro/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "项目立项信息不存在"
+  },
+  {
+   "module": "workbench",
+   "action": "projectInfo-add",
+   "path": "/workbench/projectInfo/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[projectName:must not be null, projectCode:must not be null]"
+  },
+  {
+   "module": "workbench",
+   "action": "projectInfo-get-child",
+   "path": "/workbench/projectInfo/get-child",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectInfo-uploadPlan",
+   "path": "/workbench/projectInfo/uploadPlan",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "Current request is not a multipart request"
+  },
+  {
+   "module": "workbench",
+   "action": "projectAppro-add",
+   "path": "/workbench/projectAppro/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'project_id' "
+  },
+  {
+   "module": "workbench",
+   "action": "projectInfo-getCostPlanFile",
+   "path": "/workbench/projectInfo/getCostPlanFile",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "workbench",
+   "action": "projectInfo-list",
+   "path": "/workbench/projectInfo/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectInfo-modify",
+   "path": "/workbench/projectInfo/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[projectSource:must not be null, id:must not be null, researchBudget:must not be"
+  },
+  {
+   "module": "workbench",
+   "action": "projectInfo-child-list",
+   "path": "/workbench/projectInfo/child-list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "attendance-ranking",
+   "path": "/workbench/attendance/ranking",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[startTime:开始时间不能为空, endTime:结束时间不能为空, projectId:项目ID不能为空]"
+  },
+  {
+   "module": "workbench",
+   "action": "project-downloadMaterials",
+   "path": "/workbench/project/downloadMaterials",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[projectId:项目ID不能为空]"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick-pick",
+   "path": "/workbench/projectMaterialPick/pick",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "JSON parse error: Cannot deserialize value of type `java.util.ArrayList<com.yf.r"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick-page",
+   "path": "/workbench/projectMaterialPick/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick-consumeBatch",
+   "path": "/workbench/projectMaterialPick/consumeBatch",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "JSON parse error: Cannot deserialize value of type `java.util.ArrayList<com.yf.r"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick-consume",
+   "path": "/workbench/projectMaterialPick/consume",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "项目无可用库存"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialDestination-getDestinationByid",
+   "path": "/workbench/projectMaterialDestination/getDestinationByid",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick-getProjectStock",
+   "path": "/workbench/projectMaterialPick/getProjectStock",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick-return",
+   "path": "/workbench/projectMaterialPick/return",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "领用记录不存在"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialDestination-remove",
+   "path": "/workbench/projectMaterialDestination/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialDestination-get",
+   "path": "/workbench/projectMaterialDestination/get",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialDestination-page",
+   "path": "/workbench/projectMaterialDestination/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick2-add",
+   "path": "/workbench/projectMaterialPick2/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "JSON parse error: Cannot deserialize value of type `java.util.ArrayList<com.yf.r"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialDestination-modify",
+   "path": "/workbench/projectMaterialDestination/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick2-deleteBatch",
+   "path": "/workbench/projectMaterialPick2/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick2-deleteById",
+   "path": "/workbench/projectMaterialPick2/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick2-modify",
+   "path": "/workbench/projectMaterialPick2/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[unitPrice:must not be null, quantity:must not be null, projectId:must not be nu"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialDestination-add",
+   "path": "/workbench/projectMaterialDestination/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick2-page",
+   "path": "/workbench/projectMaterialPick2/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick-creatNewMaterial",
+   "path": "/workbench/projectMaterialPick/creatNewMaterial",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "创建新材料失败: 原材料不存在"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick2-import",
+   "path": "/workbench/projectMaterialPick2/import",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "Current request is not a multipart request"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick2-downloadTemplate",
+   "path": "/workbench/projectMaterialPick2/downloadTemplate",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "workbench",
+   "action": "projectMember-add",
+   "path": "/workbench/projectMember/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "JSON parse error: Cannot deserialize value of type `java.util.ArrayList<com.yf.r"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick2-statistics",
+   "path": "/workbench/projectMaterialPick2/statistics",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[endTime:must not be null, startTime:must not be null]"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMember-page",
+   "path": "/workbench/projectMember/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMember-deleteBatch",
+   "path": "/workbench/projectMember/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMember-remove",
+   "path": "/workbench/projectMember/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMember-modify",
+   "path": "/workbench/projectMember/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick-modify",
+   "path": "/workbench/projectMaterialPick/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PATH_404",
+   "msg": "请求的资源不存在"
+  },
+  {
+   "module": "workbench",
+   "action": "projectInfo-get-experience",
+   "path": "/workbench/projectInfo/get-experience",
+   "method": "POST",
+   "kind": "read",
+   "result": "PATH_404",
+   "msg": "请求的资源不存在"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick2-export",
+   "path": "/workbench/projectMaterialPick2/export",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "workbench",
+   "action": "projectNotice-remove",
+   "path": "/workbench/projectNotice/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMember-getMembers",
+   "path": "/workbench/projectMember/getMembers",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "workbench",
+   "action": "projectNotice-modify",
+   "path": "/workbench/projectNotice/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectNotice-getNote",
+   "path": "/workbench/projectNotice/getNote",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMilestone-modify",
+   "path": "/workbench/projectMilestone/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMilestone-remove",
+   "path": "/workbench/projectMilestone/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectNotice-list",
+   "path": "/workbench/projectNotice/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMilestone-add",
+   "path": "/workbench/projectMilestone/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "项目ID不能为空"
+  },
+  {
+   "module": "workbench",
+   "action": "projectNotice-add",
+   "path": "/workbench/projectNotice/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'project_id' "
+  },
+  {
+   "module": "workbench",
+   "action": "projectPrepRecord-remove",
+   "path": "/workbench/projectPrepRecord/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectPrepRecord-add",
+   "path": "/workbench/projectPrepRecord/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMilestone-getMilestone",
+   "path": "/workbench/projectMilestone/getMilestone",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectPrepRecord-modify",
+   "path": "/workbench/projectPrepRecord/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMeetingRecord-remove",
+   "path": "/workbench/projectMeetingRecord/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMeetingRecord-batchRemove",
+   "path": "/workbench/projectMeetingRecord/batchRemove",
+   "method": "POST",
+   "kind": "read",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMeetingRecord-modify",
+   "path": "/workbench/projectMeetingRecord/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectPrepRecord-getById",
+   "path": "/workbench/projectPrepRecord/getById",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMeetingRecord-page",
+   "path": "/workbench/projectMeetingRecord/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_C_DEFAULT",
+   "msg": "不合法的查询参数"
+  },
+  {
+   "module": "workbench",
+   "action": "projectTrialRecord-remove",
+   "path": "/workbench/projectTrialRecord/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectTrialRecord-removeBatch",
+   "path": "/workbench/projectTrialRecord/removeBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMilestone-getMilestoneList",
+   "path": "/workbench/projectMilestone/getMilestoneList",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "项目ID不能为空"
+  },
+  {
+   "module": "workbench",
+   "action": "projectTrialRecord-page",
+   "path": "/workbench/projectTrialRecord/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_C_DEFAULT",
+   "msg": "不合法的查询参数"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMeetingRecord-add",
+   "path": "/workbench/projectMeetingRecord/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'project_id' "
+  },
+  {
+   "module": "workbench",
+   "action": "projectProgressReport-remove",
+   "path": "/workbench/projectProgressReport/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectProgressReport-removeBatch",
+   "path": "/workbench/projectProgressReport/removeBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectTrialRecord-modify",
+   "path": "/workbench/projectTrialRecord/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectProgressReport-page",
+   "path": "/workbench/projectProgressReport/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_C_DEFAULT",
+   "msg": "不合法的查询参数"
+  },
+  {
+   "module": "workbench",
+   "action": "projectAcceptance-modify",
+   "path": "/workbench/projectAcceptance/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectAcceptance-remove",
+   "path": "/workbench/projectAcceptance/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectAcceptance-removeBatch",
+   "path": "/workbench/projectAcceptance/removeBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectProgressReport-add",
+   "path": "/workbench/projectProgressReport/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'project_id' "
+  },
+  {
+   "module": "workbench",
+   "action": "projectAcceptance-add",
+   "path": "/workbench/projectAcceptance/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'project_id' "
+  },
+  {
+   "module": "workbench",
+   "action": "projectProgressReport-update",
+   "path": "/workbench/projectProgressReport/update",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectAcceptance-page",
+   "path": "/workbench/projectAcceptance/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "workbench",
+   "action": "projectWorkhour-clear",
+   "path": "/workbench/projectWorkhour/clear",
+   "method": "POST",
+   "kind": "read",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectTrialRecord-add",
+   "path": "/workbench/projectTrialRecord/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'project_id' "
+  },
+  {
+   "module": "workbench",
+   "action": "projectWorkhour-countUnifiedHours",
+   "path": "/workbench/projectWorkhour/countUnifiedHours",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMember-getUserList",
+   "path": "/workbench/projectMember/getUserList",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "workbench",
+   "action": "projectWorkhour-page",
+   "path": "/workbench/projectWorkhour/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "workbench",
+   "action": "projectWorkHourDetail-list",
+   "path": "/workbench/projectWorkHourDetail/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-queryById",
+   "path": "/voucher/sysVoucher/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-page",
+   "path": "/voucher/sysVoucher/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-getUnCarryOverMonth",
+   "path": "/voucher/sysVoucher/getUnCarryOverMonth",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-getVoucherSummaryByPeriod",
+   "path": "/voucher/sysVoucher/getVoucherSummaryByPeriod",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[periodType:must not be null, projectId:must not be null]"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-deleteBatch",
+   "path": "/voucher/sysVoucher/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-deleteById",
+   "path": "/voucher/sysVoucher/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-add",
+   "path": "/voucher/sysVoucher/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_C_DEFAULT",
+   "msg": "请选择项目"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMember-addAll",
+   "path": "/workbench/projectMember/addAll",
+   "method": "POST",
+   "kind": "write",
+   "result": "PATH_404",
+   "msg": "请求的资源不存在"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-addProject",
+   "path": "/voucher/sysVoucher/addProject",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "JSON parse error: Cannot deserialize value of type `java.util.ArrayList<com.yf.r"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-calculateAmount",
+   "path": "/voucher/sysVoucher/calculateAmount",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-carryOver",
+   "path": "/voucher/sysVoucher/carryOver",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_C_DEFAULT",
+   "msg": "时间不能为空"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-modify",
+   "path": "/voucher/sysVoucher/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "voucher",
+   "action": "match-download",
+   "path": "/voucher/match/download",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[subjectCode:科目代码不能为空, voucherId:凭证ID不能为空]"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-statistics",
+   "path": "/voucher/sysVoucher/statistics",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-export",
+   "path": "/voucher/sysVoucher/export",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-getProjectsForVoucher",
+   "path": "/voucher/sysVoucher/getProjectsForVoucher",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "Text 'null-01' could not be parsed at index 0"
+  },
+  {
+   "module": "voucher",
+   "action": "match-execute",
+   "path": "/voucher/match/execute",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[voucherId:凭证ID不能为空, subjectCode:科目代码不能为空]"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-getDetailById",
+   "path": "/voucher/sysVoucher/getDetailById",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-import",
+   "path": "/voucher/sysVoucher/import",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "Current request is not a multipart request"
+  },
+  {
+   "module": "voucher",
+   "action": "voucherRaw-remove",
+   "path": "/voucher/voucherRaw/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-downloadTemplate",
+   "path": "/voucher/sysVoucher/downloadTemplate",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-removeVouchersByRelId",
+   "path": "/voucher/sysVoucher/removeVouchersByRelId",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-removeVouchersByRelIds",
+   "path": "/voucher/sysVoucher/removeVouchersByRelIds",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "voucher",
+   "action": "voucherRaw-list",
+   "path": "/voucher/voucherRaw/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "voucher",
+   "action": "voucherRaw-import",
+   "path": "/voucher/voucherRaw/import",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "Current request is not a multipart request"
+  },
+  {
+   "module": "enterprise",
+   "action": "yearly-deleteById",
+   "path": "/enterprise/highTechProductMapping/yearly/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "enterprise",
+   "action": "yearly-deleteBatch",
+   "path": "/enterprise/highTechProductMapping/yearly/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "voucher",
+   "action": "voucherRaw-modify",
+   "path": "/voucher/voucherRaw/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "enterprise",
+   "action": "highTechProductMapping-generate",
+   "path": "/enterprise/highTechProductMapping/generate",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:must not be null]"
+  },
+  {
+   "module": "enterprise",
+   "action": "yearly-page",
+   "path": "/enterprise/highTechProductMapping/yearly/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "voucher",
+   "action": "sysVoucher-getVouchersByProjectId",
+   "path": "/voucher/sysVoucher/getVouchersByProjectId",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "voucher",
+   "action": "voucherRaw-page",
+   "path": "/voucher/voucherRaw/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_C_DEFAULT",
+   "msg": "不合法的查询参数"
+  },
+  {
+   "module": "voucher",
+   "action": "voucherRaw-add",
+   "path": "/voucher/voucherRaw/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'voucher_no' "
+  },
+  {
+   "module": "enterprise",
+   "action": "highTechProductMapping-saveBatch",
+   "path": "/enterprise/highTechProductMapping/saveBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "JSON parse error: Cannot deserialize value of type `java.util.ArrayList<com.yf.r"
+  },
+  {
+   "module": "enterprise",
+   "action": "rdExpenseItem-deleteById",
+   "path": "/enterprise/declare/rdExpenseItem/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "enterprise",
+   "action": "psItem-list",
+   "path": "/enterprise/psItem/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "rdExpenseSummary-queryById",
+   "path": "/enterprise/declare/rdExpenseSummary/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "rdExpenseItem-page",
+   "path": "/enterprise/declare/rdExpenseItem/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "enterprise",
+   "action": "rdExpenseItem-queryById",
+   "path": "/enterprise/declare/rdExpenseItem/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "enterprise",
+   "action": "rdExpenseItem-modify",
+   "path": "/enterprise/declare/rdExpenseItem/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "enterprise",
+   "action": "rdExpenseItem-add",
+   "path": "/enterprise/declare/rdExpenseItem/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "enterprise",
+   "action": "hrSummary-queryById",
+   "path": "/enterprise/declare/hrSummary/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "qualificationSummary-queryById",
+   "path": "/enterprise/declare/qualificationSummary/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "qualificationSummary-modify",
+   "path": "/enterprise/declare/qualificationSummary/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "企业主要情况表（主要情况表）编号不能为空"
+  },
+  {
+   "module": "enterprise",
+   "action": "rdExpenseSummary-modify",
+   "path": "/enterprise/declare/rdExpenseSummary/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "企业研究开发费用结构（机构）编号不能为空"
+  },
+  {
+   "module": "enterprise",
+   "action": "productIncomeDetail-deleteById",
+   "path": "/enterprise/productIncomeDetail/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "enterprise",
+   "action": "productIncomeDetail-deleteBatch",
+   "path": "/enterprise/productIncomeDetail/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "enterprise",
+   "action": "highTechProductMapping-page",
+   "path": "/enterprise/highTechProductMapping/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "enterprise",
+   "action": "productIncomeDetail-add",
+   "path": "/enterprise/productIncomeDetail/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "enterprise",
+   "action": "hrSummary-modify",
+   "path": "/enterprise/declare/hrSummary/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "企业人力资源情况主表编号不能为空"
+  },
+  {
+   "module": "enterprise",
+   "action": "productIncomeDetail-page",
+   "path": "/enterprise/productIncomeDetail/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "enterprise",
+   "action": "productIncomeDetail-queryById",
+   "path": "/enterprise/productIncomeDetail/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "enterprise",
+   "action": "productIncomeDetail-import",
+   "path": "/enterprise/productIncomeDetail/import",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "Current request is not a multipart request"
+  },
+  {
+   "module": "enterprise",
+   "action": "uploadedFile-deleteById",
+   "path": "/enterprise/declare/uploadedFile/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "enterprise",
+   "action": "uploadedFile-upload",
+   "path": "/enterprise/declare/uploadedFile/upload",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "Current request is not a multipart request"
+  },
+  {
+   "module": "enterprise",
+   "action": "productIncomeDetail-downloadTemplate",
+   "path": "/enterprise/productIncomeDetail/downloadTemplate",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "enterprise",
+   "action": "uploadedFile-list",
+   "path": "/enterprise/declare/uploadedFile/list",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空, materialCategoryId:材料类别ID不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "rdSummary-queryById",
+   "path": "/enterprise/declare/rdSummary/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "rdItem-page",
+   "path": "/enterprise/declare/rdItem/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "enterprise",
+   "action": "rdSummary-modify",
+   "path": "/enterprise/declare/rdSummary/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "企业研究开发活动汇总表编号不能为空"
+  },
+  {
+   "module": "enterprise",
+   "action": "productIncomeDetail-modify",
+   "path": "/enterprise/productIncomeDetail/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_C_UNKNOWN",
+   "msg": "记录不存在"
+  },
+  {
+   "module": "enterprise",
+   "action": "rdItem-deleteById",
+   "path": "/enterprise/declare/rdItem/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "enterprise",
+   "action": "rdItem-deleteBatch",
+   "path": "/enterprise/declare/rdItem/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "enterprise",
+   "action": "uploadedFile-autoGenerate",
+   "path": "/enterprise/declare/uploadedFile/autoGenerate",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[materialCategoryId:材料类别ID不能为空, year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "rdItem-queryById",
+   "path": "/enterprise/declare/rdItem/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "enterprise",
+   "action": "ip-list",
+   "path": "/enterprise/declare/ip/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "rdItem-list",
+   "path": "/enterprise/declare/rdItem/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "dashboard-productStatistics",
+   "path": "/enterprise/dashboard/productStatistics",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "rdItem-modify",
+   "path": "/enterprise/declare/rdItem/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_C_UNKNOWN",
+   "msg": "记录不存在"
+  },
+  {
+   "module": "enterprise",
+   "action": "dashboard-ipCount",
+   "path": "/enterprise/dashboard/ipCount",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "rdItem-add",
+   "path": "/enterprise/declare/rdItem/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "enterprise",
+   "action": "certification-deleteById",
+   "path": "/enterprise/dashboard/certification/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "enterprise",
+   "action": "certification-deleteBatch",
+   "path": "/enterprise/dashboard/certification/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "enterprise",
+   "action": "certification-certTypeCount",
+   "path": "/enterprise/dashboard/certification/certTypeCount",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "enterprise",
+   "action": "dashboard-financeData",
+   "path": "/enterprise/dashboard/financeData",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "certification-modify",
+   "path": "/enterprise/dashboard/certification/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_C_UNKNOWN",
+   "msg": "数据不存在,id=null"
+  },
+  {
+   "module": "enterprise",
+   "action": "certification-page",
+   "path": "/enterprise/dashboard/certification/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "enterprise",
+   "action": "profile-getCreditCode",
+   "path": "/enterprise/declare/profile/getCreditCode",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "enterprise",
+   "action": "organizationInfo-queryById",
+   "path": "/enterprise/dashboard/organizationInfo/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "organizationInfo-modify",
+   "path": "/enterprise/dashboard/organizationInfo/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[index:指标索引不能为空, enabled:操作状态不能为空, year:申报年度不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "certification-queryById",
+   "path": "/enterprise/dashboard/certification/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "enterprise",
+   "action": "techTransfer-deleteById",
+   "path": "/enterprise/declare/techTransfer/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "enterprise",
+   "action": "techTransfer-deleteBatch",
+   "path": "/enterprise/declare/techTransfer/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "enterprise",
+   "action": "dashboard-getRdStaffRatio",
+   "path": "/enterprise/dashboard/getRdStaffRatio",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "certification-add",
+   "path": "/enterprise/dashboard/certification/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "enterprise",
+   "action": "techTransfer-modify",
+   "path": "/enterprise/declare/techTransfer/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_C_UNKNOWN",
+   "msg": "记录不存在"
+  },
+  {
+   "module": "enterprise",
+   "action": "psItem-add",
+   "path": "/enterprise/psItem/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "enterprise",
+   "action": "psItem-deleteById",
+   "path": "/enterprise/psItem/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "enterprise",
+   "action": "psItem-deleteBatch",
+   "path": "/enterprise/psItem/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "enterprise",
+   "action": "techTransfer-page",
+   "path": "/enterprise/declare/techTransfer/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "enterprise",
+   "action": "techTransfer-queryById",
+   "path": "/enterprise/declare/techTransfer/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "enterprise",
+   "action": "profile-modify",
+   "path": "/enterprise/declare/profile/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "企业注册登记信息（基本信息）编号不能为空"
+  },
+  {
+   "module": "enterprise",
+   "action": "psItem-queryById",
+   "path": "/enterprise/psItem/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "enterprise",
+   "action": "innovationAbility-modify",
+   "path": "/enterprise/declare/innovationAbility/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "企业创新能力描述表编号不能为空"
+  },
+  {
+   "module": "enterprise",
+   "action": "psSummary-queryById",
+   "path": "/enterprise/declare/psSummary/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "innovationAbility-queryById",
+   "path": "/enterprise/declare/innovationAbility/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "techTransfer-add",
+   "path": "/enterprise/declare/techTransfer/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'result_name'"
+  },
+  {
+   "module": "enterprise",
+   "action": "psItem-listExcludeCorrelation",
+   "path": "/enterprise/psItem/listExcludeCorrelation",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "psItemCorrelation-deleteById",
+   "path": "/enterprise/declare/psItemCorrelation/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "enterprise",
+   "action": "psItemCorrelation-add",
+   "path": "/enterprise/declare/psItemCorrelation/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_C_UNKNOWN",
+   "msg": "租户ID、年份不能为空"
+  },
+  {
+   "module": "enterprise",
+   "action": "psItemCorrelation-list",
+   "path": "/enterprise/declare/psItemCorrelation/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "ip-statistics",
+   "path": "/enterprise/declare/ip/statistics",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "psItem-modify",
+   "path": "/enterprise/psItem/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_C_UNKNOWN",
+   "msg": "高新技术产品（服务）情况明细表编号不存在"
+  },
+  {
+   "module": "enterprise",
+   "action": "ip-queryById",
+   "path": "/enterprise/declare/ip/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "enterprise",
+   "action": "ip-page",
+   "path": "/enterprise/declare/ip/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "enterprise",
+   "action": "ip-deleteById",
+   "path": "/enterprise/declare/ip/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "enterprise",
+   "action": "psSummary-modify",
+   "path": "/enterprise/declare/psSummary/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "高新技术产品（服务）情况汇总表编号不能为空"
+  },
+  {
+   "module": "enterprise",
+   "action": "ip-modify",
+   "path": "/enterprise/declare/ip/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_C_UNKNOWN",
+   "msg": "数据不存在,id=null"
+  },
+  {
+   "module": "enterprise",
+   "action": "psItemCorrelation-page",
+   "path": "/enterprise/declare/psItemCorrelation/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "enterprise",
+   "action": "ip-add",
+   "path": "/enterprise/declare/ip/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "enterprise",
+   "action": "psItem-page",
+   "path": "/enterprise/psItem/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "enterprise",
+   "action": "standards-deleteById",
+   "path": "/enterprise/declare/standards/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "enterprise",
+   "action": "standards-deleteBatch",
+   "path": "/enterprise/declare/standards/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "enterprise",
+   "action": "standards-add",
+   "path": "/enterprise/declare/standards/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "enterprise",
+   "action": "sync-data",
+   "path": "/enterprise/declare/sync/data",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[itemCode:材料子项编码不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "report-updateAssessment",
+   "path": "/enterprise/declare/report/updateAssessment",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "standards-modify",
+   "path": "/enterprise/declare/standards/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "enterprise",
+   "action": "report-downloadAllAttachments",
+   "path": "/enterprise/declare/report/downloadAllAttachments",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "enterprise",
+   "action": "standards-queryById",
+   "path": "/enterprise/declare/standards/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "enterprise",
+   "action": "highTechProductMapping-summary",
+   "path": "/enterprise/highTechProductMapping/summary",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:must not be null]"
+  },
+  {
+   "module": "enterprise",
+   "action": "highTechProductMapping-export",
+   "path": "/enterprise/highTechProductMapping/export",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:must not be null]"
+  },
+  {
+   "module": "reference",
+   "action": "file-hasRunningTask",
+   "path": "/reference/file/hasRunningTask",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "reference",
+   "action": "file-projects",
+   "path": "/reference/file/projects",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "enterprise",
+   "action": "standards-page",
+   "path": "/enterprise/declare/standards/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "reference",
+   "action": "file-download",
+   "path": "/reference/file/download",
+   "method": "GET",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "Required request parameter 'path' for method parameter type String is not presen"
+  },
+  {
+   "module": "reference",
+   "action": "file-refresh",
+   "path": "/reference/file/refresh",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空, projectId:项目ID不能为空]"
+  },
+  {
+   "module": "financial",
+   "action": "configCostCenter-deleteBatch",
+   "path": "/financial/configCostCenter/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "notice",
+   "action": "manage-list",
+   "path": "/notice/manage/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "financial",
+   "action": "configCostCenter-remove",
+   "path": "/financial/configCostCenter/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "financial",
+   "action": "configCostCenter-modify",
+   "path": "/financial/configCostCenter/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "financial",
+   "action": "configEquipmentType-list",
+   "path": "/financial/configEquipmentType/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "financial",
+   "action": "configCostCenter-page",
+   "path": "/financial/configCostCenter/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "financial",
+   "action": "configCostCenter-list",
+   "path": "/financial/configCostCenter/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "financial",
+   "action": "configEquipmentType-remove",
+   "path": "/financial/configEquipmentType/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "reference",
+   "action": "file-list",
+   "path": "/reference/file/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "financial",
+   "action": "configCostCenter-add",
+   "path": "/financial/configCostCenter/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'center_name'"
+  },
+  {
+   "module": "financial",
+   "action": "configMaterialAux-list",
+   "path": "/financial/configMaterialAux/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "financial",
+   "action": "configMaterialAux-remove",
+   "path": "/financial/configMaterialAux/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "financial",
+   "action": "configMaterialAux-add",
+   "path": "/financial/configMaterialAux/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'aux_name' do"
+  },
+  {
+   "module": "financial",
+   "action": "configSubject-list",
+   "path": "/financial/configSubject/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "financial",
+   "action": "configFinanceBudget-rootList",
+   "path": "/financial/configFinanceBudget/rootList",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "financial",
+   "action": "configMaterialAux-modify",
+   "path": "/financial/configMaterialAux/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "financial",
+   "action": "configEquipmentType-modify",
+   "path": "/financial/configEquipmentType/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "financial",
+   "action": "configFinanceBudget-remove",
+   "path": "/financial/configFinanceBudget/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "financial",
+   "action": "configEquipmentType-add",
+   "path": "/financial/configEquipmentType/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'type_name' d"
+  },
+  {
+   "module": "financial",
+   "action": "configFinanceBudget-add",
+   "path": "/financial/configFinanceBudget/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "financial",
+   "action": "configPowerType-list",
+   "path": "/financial/configPowerType/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "financial",
+   "action": "configPowerType-remove",
+   "path": "/financial/configPowerType/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "financial",
+   "action": "configProjectAllocation-list",
+   "path": "/financial/configProjectAllocation/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "查询项目间分摊配置列表时发生错误: null"
+  },
+  {
+   "module": "financial",
+   "action": "configPowerType-add",
+   "path": "/financial/configPowerType/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'power_name' "
+  },
+  {
+   "module": "financial",
+   "action": "configPowerType-modify",
+   "path": "/financial/configPowerType/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "financial",
+   "action": "configFinanceBudget-modify",
+   "path": "/financial/configFinanceBudget/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_C_DEFAULT",
+   "msg": "记录不存在"
+  },
+  {
+   "module": "financial",
+   "action": "configProjectAllocation-saveOrUpdate",
+   "path": "/financial/configProjectAllocation/saveOrUpdate",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "JSON parse error: Cannot deserialize value of type `java.util.ArrayList<com.yf.r"
+  },
+  {
+   "module": "role",
+   "action": "sysRole-list",
+   "path": "/role/sysRole/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "role",
+   "action": "sysRole-deleteById",
+   "path": "/role/sysRole/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "workbench",
+   "action": "projectMaterialPick2-list",
+   "path": "/workbench/projectMaterialPick2/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "role",
+   "action": "sysRole-add",
+   "path": "/role/sysRole/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[roleType:must not be null, roleName:must not be blank]"
+  },
+  {
+   "module": "role",
+   "action": "sysRole-modify",
+   "path": "/role/sysRole/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "role",
+   "action": "users-batchDelete",
+   "path": "/role/users/batchDelete",
+   "method": "POST",
+   "kind": "read",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "permission",
+   "action": "sysPermission-getPermissionTree",
+   "path": "/permission/sysPermission/getPermissionTree",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[roleId:must not be null]"
+  },
+  {
+   "module": "role",
+   "action": "users-getAddTree",
+   "path": "/role/users/getAddTree",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[roleId:must not be null]"
+  },
+  {
+   "module": "financial",
+   "action": "configFinanceBudget-treeLists",
+   "path": "/financial/configFinanceBudget/treeLists",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "role",
+   "action": "users-page",
+   "path": "/role/users/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "role",
+   "action": "users-batchAdd",
+   "path": "/role/users/batchAdd",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[roleId:must not be null]"
+  },
+  {
+   "module": "financial",
+   "action": "sysAllocation-list",
+   "path": "/financial/sysAllocation/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "datastat",
+   "action": "statDataCockpit-getCockpitOrgTree",
+   "path": "/datastat/statDataCockpit/getCockpitOrgTree",
+   "method": "GET",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "Required request parameter 'tenantId' for method parameter type Long is not pres"
+  },
+  {
+   "module": "sys",
+   "action": "sysRolePermissionRel-modify",
+   "path": "/sys/sysRolePermissionRel/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[permissionIds:must not be null, roleId:must not be null]"
+  },
+  {
+   "module": "datastat",
+   "action": "statDataCockpit-getCockpitStat",
+   "path": "/datastat/statDataCockpit/getCockpitStat",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "数据驾驶舱查询失败: 不支持的时间类型: null"
+  },
+  {
+   "module": "enterprise",
+   "action": "productIncomeDetail-export",
+   "path": "/enterprise/productIncomeDetail/export",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "material",
+   "action": "power-page",
+   "path": "/material/power/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "material",
+   "action": "power-byMonthList",
+   "path": "/material/power/byMonthList",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "material",
+   "action": "power-add",
+   "path": "/material/power/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[details:至少需要一条明细, recordMonth:核算时间不能为空, projectId:projectId 不能为空]"
+  },
+  {
+   "module": "tech",
+   "action": "ipType-getIpTypeTree",
+   "path": "/tech/ipType/getIpTypeTree",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "material",
+   "action": "power-deleteById",
+   "path": "/material/power/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "material",
+   "action": "power-deleteBatch",
+   "path": "/material/power/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "material",
+   "action": "power-list",
+   "path": "/material/power/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "permission",
+   "action": "sysPermission-getRootPermissionTree",
+   "path": "/permission/sysPermission/getRootPermissionTree",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "material",
+   "action": "power-modify",
+   "path": "/material/power/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[details:至少需要一条明细, recordMonth:核算时间不能为空, projectId:projectId 不能为空]"
+  },
+  {
+   "module": "material",
+   "action": "power-generate",
+   "path": "/material/power/generate",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[projectId:projectId 不能为空, recordMonth:核算时间不能为空]"
+  },
+  {
+   "module": "material",
+   "action": "fuel-deleteById",
+   "path": "/material/fuel/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "material",
+   "action": "fuel-deleteBatch",
+   "path": "/material/fuel/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "material",
+   "action": "power-queryById",
+   "path": "/material/power/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_C_UNKNOWN",
+   "msg": "动力消耗记录不存在"
+  },
+  {
+   "module": "tech",
+   "action": "category-getTechCategoryTree",
+   "path": "/tech/category/getTechCategoryTree",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "material",
+   "action": "fuel-add",
+   "path": "/material/fuel/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[quantity:请输入领料数量, unitPrice:请输入单价, fuelCode:请填写单据编号, unit:请填写单位, fuelName:请填写燃料"
+  },
+  {
+   "module": "material",
+   "action": "fuel-page",
+   "path": "/material/fuel/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "material",
+   "action": "fuel-import",
+   "path": "/material/fuel/import",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "Current request is not a multipart request"
+  },
+  {
+   "module": "material",
+   "action": "fuel-modify",
+   "path": "/material/fuel/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[fuelName:请填写燃料名称, consumeTime:请选择消耗时间, fuelCode:请填写单据编号, quantity:请输入领料数量, unit"
+  },
+  {
+   "module": "material",
+   "action": "fuel-downloadTemplate",
+   "path": "/material/fuel/downloadTemplate",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "material",
+   "action": "raw-list",
+   "path": "/material/raw/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "enterprise",
+   "action": "report-generateReport",
+   "path": "/enterprise/declare/report/generateReport",
+   "method": "GET",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "material",
+   "action": "raw-delete",
+   "path": "/material/raw/delete",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "material",
+   "action": "materialType-tree",
+   "path": "/material/materialType/tree",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "material",
+   "action": "raw-page",
+   "path": "/material/raw/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "material",
+   "action": "flowLog-list",
+   "path": "/material/flowLog/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "material",
+   "action": "materialType-delete",
+   "path": "/material/materialType/delete",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "material",
+   "action": "raw-saveOrUpdate",
+   "path": "/material/raw/saveOrUpdate",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "JSON parse error: Cannot deserialize value of type `java.util.ArrayList<com.yf.r"
+  },
+  {
+   "module": "material",
+   "action": "fuel-export",
+   "path": "/material/fuel/export",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_200",
+   "msg": ""
+  },
+  {
+   "module": "material",
+   "action": "materialType-getTypeByProduct",
+   "path": "/material/materialType/getTypeByProduct",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "material",
+   "action": "materialType-add",
+   "path": "/material/materialType/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'name' doesn'"
+  },
+  {
+   "module": "material",
+   "action": "batch-pick-fifo",
+   "path": "/material/batch/pick-fifo",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[projectId:must not be null, materialId:must not be null, quantity:must not be n"
+  },
+  {
+   "module": "material",
+   "action": "batch-pick-batch",
+   "path": "/material/batch/pick-batch",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[quantity:must not be null, userId:must not be null, batchId:must not be null, p"
+  },
+  {
+   "module": "material",
+   "action": "materialType-update",
+   "path": "/material/materialType/update",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "material",
+   "action": "materialType-nodeIds",
+   "path": "/material/materialType/nodeIds",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "humanManagement",
+   "action": "configEducation-delete",
+   "path": "/humanManagement/configEducation/delete",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "material",
+   "action": "batch-inbound",
+   "path": "/material/batch/inbound",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "group",
+   "action": "sysGroupOrg-treeRoot",
+   "path": "/group/sysGroupOrg/treeRoot",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "group",
+   "action": "sysGroupOrg-add",
+   "path": "/group/sysGroupOrg/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[parentId:must not be null, orgName:must not be null, groupTenantId:must not be "
+  },
+  {
+   "module": "group",
+   "action": "sysGroupOrg-deleteById",
+   "path": "/group/sysGroupOrg/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "material",
+   "action": "batch-return",
+   "path": "/material/batch/return",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[pickId:must not be null, quantity:must not be null, frozenUnitCost:must not be "
+  },
+  {
+   "module": "humanManagement",
+   "action": "configEducation-modify",
+   "path": "/humanManagement/configEducation/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "group",
+   "action": "sysGroupSubCompany-listForSelect",
+   "path": "/group/sysGroupSubCompany/listForSelect",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "humanManagement",
+   "action": "configEducation-list",
+   "path": "/humanManagement/configEducation/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "group",
+   "action": "sysGroupSubCompany-deleteById",
+   "path": "/group/sysGroupSubCompany/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "group",
+   "action": "sysGroupSubCompany-deleteBatch",
+   "path": "/group/sysGroupSubCompany/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "group",
+   "action": "sysGroupOrg-modify",
+   "path": "/group/sysGroupOrg/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:ID不能为空]"
+  },
+  {
+   "module": "group",
+   "action": "sysGroupSubCompany-add",
+   "path": "/group/sysGroupSubCompany/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[creditCode:must not be null, groupTenantId:must not be null]"
+  },
+  {
+   "module": "group",
+   "action": "sysGroupSubCompany-page",
+   "path": "/group/sysGroupSubCompany/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "declare",
+   "action": "declareFile-queryById",
+   "path": "/declare/declareFile/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空, typeCode:父级编码不能为空]"
+  },
+  {
+   "module": "declare",
+   "action": "declareFile-updateAllSubReports",
+   "path": "/declare/declareFile/updateAllSubReports",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[typeCode:父级编码不能为空, year:年份不能为空]"
+  },
+  {
+   "module": "material",
+   "action": "raw-getByProduct",
+   "path": "/material/raw/getByProduct",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "humanManagement",
+   "action": "configEducation-add",
+   "path": "/humanManagement/configEducation/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'name' doesn'"
+  },
+  {
+   "module": "group",
+   "action": "sysGroupOrg-treeForOrgWithSelf",
+   "path": "/group/sysGroupOrg/treeForOrgWithSelf",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "tenant",
+   "action": "tenantCompanyInfo-getByTenantId",
+   "path": "/tenant/tenantCompanyInfo/getByTenantId",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "dictionary",
+   "action": "dictionaryType-list",
+   "path": "/dictionary/dictionaryType/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[dictCode:must not be blank]"
+  },
+  {
+   "module": "declare",
+   "action": "declareFile-list",
+   "path": "/declare/declareFile/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[typeCode:父级编码不能为空, year:年份不能为空]"
+  },
+  {
+   "module": "subject-init",
+   "action": "expenditureSubject-remove",
+   "path": "/subject-init/expenditureSubject/remove",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "dictionary",
+   "action": "dictionaryType-getTree",
+   "path": "/dictionary/dictionaryType/getTree",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[dictCode:must not be blank]"
+  },
+  {
+   "module": "file",
+   "action": "sysFile-upload",
+   "path": "/file/sysFile/upload",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "Current request is not a multipart request"
+  },
+  {
+   "module": "dictionary",
+   "action": "dictionaryType-getSubList",
+   "path": "/dictionary/dictionaryType/getSubList",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[parentId:must not be null, dictCode:must not be blank]"
+  },
+  {
+   "module": "subject-init",
+   "action": "expenditureSubject-modify",
+   "path": "/subject-init/expenditureSubject/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "subject-init",
+   "action": "expenditureSubject-add",
+   "path": "/subject-init/expenditureSubject/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'subject_id' "
+  },
+  {
+   "module": "subject-init",
+   "action": "expenditureSubject-list",
+   "path": "/subject-init/expenditureSubject/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "dp",
+   "action": "sysDpUserRoleRel-assignRoleToUser",
+   "path": "/dp/sysDpUserRoleRel/assignRoleToUser",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[tenantUserId:用户ID不能为空]"
+  },
+  {
+   "module": "dp",
+   "action": "sysDpUserRoleRel-pageTenantUsers",
+   "path": "/dp/sysDpUserRoleRel/pageTenantUsers",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "subject-init",
+   "action": "expenditureSubject-import",
+   "path": "/subject-init/expenditureSubject/import",
+   "method": "POST",
+   "kind": "write",
+   "result": "PATH_404",
+   "msg": "请求的资源不存在"
+  },
+  {
+   "module": "dp",
+   "action": "sysDpRole-deleteById",
+   "path": "/dp/sysDpRole/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "dp",
+   "action": "sysDpRole-deleteBatch",
+   "path": "/dp/sysDpRole/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "dp",
+   "action": "sysDpUserRoleRel-page",
+   "path": "/dp/sysDpUserRoleRel/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "dp",
+   "action": "sysDpRole-page",
+   "path": "/dp/sysDpRole/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "dp",
+   "action": "sysDpUserRoleRel-listUserRoleWithChecked",
+   "path": "/dp/sysDpUserRoleRel/listUserRoleWithChecked",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[tenantUserId:用户ID不能为空]"
+  },
+  {
+   "module": "dp",
+   "action": "sysDpRolePermissionRel-assignPermToRole",
+   "path": "/dp/sysDpRolePermissionRel/assignPermToRole",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[roleId:must not be null]"
+  },
+  {
+   "module": "dp",
+   "action": "sysDpRolePermissionRel-listByRoleId",
+   "path": "/dp/sysDpRolePermissionRel/listByRoleId",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[roleId:must not be null]"
+  },
+  {
+   "module": "risk",
+   "action": "riskBasicConf-deleteById",
+   "path": "/risk/riskBasicConf/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "dp",
+   "action": "sysDpRole-modify",
+   "path": "/dp/sysDpRole/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:ID不能为空]"
+  },
+  {
+   "module": "risk",
+   "action": "riskBasicConf-modify",
+   "path": "/risk/riskBasicConf/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:ID不能为空]"
+  },
+  {
+   "module": "risk",
+   "action": "riskBasicConf-add",
+   "path": "/risk/riskBasicConf/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:must not be null]"
+  },
+  {
+   "module": "risk",
+   "action": "riskPersonMgrConfig-deleteById",
+   "path": "/risk/riskPersonMgrConfig/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "risk",
+   "action": "riskBasicConf-list",
+   "path": "/risk/riskBasicConf/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "subject-init",
+   "action": "expenditureSubject-downloadTemplate",
+   "path": "/subject-init/expenditureSubject/downloadTemplate",
+   "method": "GET",
+   "kind": "read",
+   "result": "PATH_404",
+   "msg": "请求的资源不存在"
+  },
+  {
+   "module": "risk",
+   "action": "riskPersonMgrConfig-list",
+   "path": "/risk/riskPersonMgrConfig/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "risk",
+   "action": "riskProjMgrConfig-deleteById",
+   "path": "/risk/riskProjMgrConfig/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "risk",
+   "action": "riskPersonMgrConfig-modify",
+   "path": "/risk/riskPersonMgrConfig/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:ID不能为空]"
+  },
+  {
+   "module": "risk",
+   "action": "riskProjMgrConfig-list",
+   "path": "/risk/riskProjMgrConfig/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "risk",
+   "action": "riskProjMgrConfig-add",
+   "path": "/risk/riskProjMgrConfig/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_C_DEFAULT",
+   "msg": "该公司已存在项目管理指标配置,不允许重复添加"
+  },
+  {
+   "module": "risk",
+   "action": "riskPersonMgrConfig-add",
+   "path": "/risk/riskPersonMgrConfig/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_C_DEFAULT",
+   "msg": "配置数据不能全为空"
+  },
+  {
+   "module": "risk",
+   "action": "riskProjMgrConfig-modify",
+   "path": "/risk/riskProjMgrConfig/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:ID不能为空]"
+  },
+  {
+   "module": "material",
+   "action": "fuel-list",
+   "path": "/material/fuel/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "dept",
+   "action": "sysDept-deleteById",
+   "path": "/dept/sysDept/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "risk",
+   "action": "mgr-list",
+   "path": "/risk/mgr/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "dp",
+   "action": "sysDpRole-add",
+   "path": "/dp/sysDpRole/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'role_name' d"
+  },
+  {
+   "module": "dept",
+   "action": "sysDept-getTree",
+   "path": "/dept/sysDept/getTree",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[parentId:must not be null]"
+  },
+  {
+   "module": "dept",
+   "action": "sysDept-add",
+   "path": "/dept/sysDept/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[name:must not be blank]"
+  },
+  {
+   "module": "risk",
+   "action": "mgr-info",
+   "path": "/risk/mgr/info",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "user",
+   "action": "sysUser-queryById",
+   "path": "/user/sysUser/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "dept",
+   "action": "sysDept-modify",
+   "path": "/dept/sysDept/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "user",
+   "action": "sysUser-add",
+   "path": "/user/sysUser/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[sex:must not be null, deptId:must not be null, workNumber:must not be blank, ca"
+  },
+  {
+   "module": "user",
+   "action": "sysUser-modify",
+   "path": "/user/sysUser/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "user",
+   "action": "sysUser-resign",
+   "path": "/user/sysUser/resign",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[resignDate:must not be null, id:must not be null]"
+  },
+  {
+   "module": "user",
+   "action": "sysUser-page",
+   "path": "/user/sysUser/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "user",
+   "action": "sysUser-batchResign",
+   "path": "/user/sysUser/batchResign",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[ids:must not be null, resignDate:must not be null]"
+  },
+  {
+   "module": "user",
+   "action": "sysUser-recover",
+   "path": "/user/sysUser/recover",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null, joinDate:must not be null]"
+  },
+  {
+   "module": "user",
+   "action": "sysUser-downloadTemplate",
+   "path": "/user/sysUser/downloadTemplate",
+   "method": "GET",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "user",
+   "action": "sysUser-batchRecover",
+   "path": "/user/sysUser/batchRecover",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[joinDate:must not be null, ids:must not be null]"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceGroup-page",
+   "path": "/personnel/attendanceGroup/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceClasses-list",
+   "path": "/personnel/attendanceClasses/list",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceGroup-getAvailableUserTree",
+   "path": "/personnel/attendanceGroup/getAvailableUserTree",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[groupId:考勤组ID不能为空, joinTime:加入时间不能为空]"
+  },
+  {
+   "module": "user",
+   "action": "onboard-modifyPassword",
+   "path": "/user/onboard/modifyPassword",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[oldPassword:must not be blank, newPassword:must not be blank]"
+  },
+  {
+   "module": "user",
+   "action": "sysUser-import",
+   "path": "/user/sysUser/import",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[file:上传文件不能为空, tenantId:租户ID不能为空]"
+  },
+  {
+   "module": "user",
+   "action": "sysUser-getUserProfileInfo",
+   "path": "/user/sysUser/getUserProfileInfo",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceGroup-getUserPage",
+   "path": "/personnel/attendanceGroup/getUserPage",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "null"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceGroup-delete",
+   "path": "/personnel/attendanceGroup/delete",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "user",
+   "action": "sysUser-getUserList",
+   "path": "/user/sysUser/getUserList",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceClasses-listCustomizeRule",
+   "path": "/personnel/attendanceClasses/listCustomizeRule",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[groupId:考勤组ID不能为空, endTime:结束时间不能为空, startTime:开始时间不能为空]"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceGroup-deleteUsers",
+   "path": "/personnel/attendanceGroup/deleteUsers",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceGroup-getRule",
+   "path": "/personnel/attendanceGroup/getRule",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "risk",
+   "action": "mgr-detect",
+   "path": "/risk/mgr/detect",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceGroup-queryHolidays",
+   "path": "/personnel/attendanceGroup/queryHolidays",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[year:年份不能为空]"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceGroup-add",
+   "path": "/personnel/attendanceGroup/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[attendanceName:考勤组名称不能为空, groupType:考勤组类型不能为空]"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceGroup-updateRuleUnchanged",
+   "path": "/personnel/attendanceGroup/updateRuleUnchanged",
+   "method": "PUT",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[effectiveTime:生效时间不能为空, groupId:考勤组ID不能为空, id:规则ID不能为空]"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceGroup-addRuleUnchanged",
+   "path": "/personnel/attendanceGroup/addRuleUnchanged",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[groupId:考勤组ID不能为空, effectiveTime:生效时间不能为空]"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceGroup-addUsers",
+   "path": "/personnel/attendanceGroup/addUsers",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[joinTime:加入时间不能为空, groupId:考勤组ID不能为空, userIds:用户ID列表不能为空]"
+  },
+  {
+   "module": "personnel",
+   "action": "employeesSalary-listBonusDropdown",
+   "path": "/personnel/employeesSalary/listBonusDropdown",
+   "method": "POST",
+   "kind": "read",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceGroup-updateUserJoinTime",
+   "path": "/personnel/attendanceGroup/updateUserJoinTime",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[userId:用户ID不能为空, groupId:考勤组ID不能为空, joinTime:加入时间不能为空]"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceGroup-updateName",
+   "path": "/personnel/attendanceGroup/updateName",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[attendanceName:考勤组名称不能为空, groupId:考勤组ID不能为空]"
+  },
+  {
+   "module": "personnel",
+   "action": "employeesSalary-batchDelete",
+   "path": "/personnel/employeesSalary/batchDelete",
+   "method": "POST",
+   "kind": "read",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceGroup-updateRuleCycle",
+   "path": "/personnel/attendanceGroup/updateRuleCycle",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[attendanceRuleList:周期排班规则列表不能为空, cycleNum:周期天数不能为空, groupId:考勤组ID不能为空, cycleNam"
+  },
+  {
+   "module": "personnel",
+   "action": "employeesSalary-queryById",
+   "path": "/personnel/employeesSalary/queryById",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:must not be null]"
+  },
+  {
+   "module": "personnel",
+   "action": "employeesSalary-downloadTemplate",
+   "path": "/personnel/employeesSalary/downloadTemplate",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "personnel",
+   "action": "employeesSalary-getUserDeptTree",
+   "path": "/personnel/employeesSalary/getUserDeptTree",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "personnel",
+   "action": "employeesSalary-page",
+   "path": "/personnel/employeesSalary/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_C_DEFAULT",
+   "msg": "租户ID不能为空"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceClasses-toggle",
+   "path": "/personnel/attendanceClasses/toggle",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[groupId:考勤组ID不能为空, currentClassesId:当前班次ID不能为空, checkTime:考勤时间不能为空]"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceClasses-batchDelete",
+   "path": "/personnel/attendanceClasses/batchDelete",
+   "method": "POST",
+   "kind": "read",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "personnel",
+   "action": "employeesSalary-modify",
+   "path": "/personnel/employeesSalary/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:ID不能为空]"
+  },
+  {
+   "module": "personnel",
+   "action": "employeesSalary-add",
+   "path": "/personnel/employeesSalary/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[tenantUserId:用户ID不能为空, salaryTime:工资发放月份不能为空]"
+  },
+  {
+   "module": "personnel",
+   "action": "employeesSalary-importData",
+   "path": "/personnel/employeesSalary/importData",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[tenantId:租户ID不能为空, file:上传文件不能为空]"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceClasses-update",
+   "path": "/personnel/attendanceClasses/update",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[id:班次ID不能为空, rest:是否包含休息时间不能为空, toWorkStartTime:上班开始时间不能为空, offWorkEndTime:下班结束"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceClasses-save",
+   "path": "/personnel/attendanceClasses/save",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[classesName:班次名称不能为空, offWorkEndTime:下班结束时间不能为空, toWorkStartTime:上班开始时间不能为空, re"
+  },
+  {
+   "module": "merchant",
+   "action": "lic-page",
+   "path": "/merchant/lic/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "OK",
+   "msg": "success"
+  },
+  {
+   "module": "income",
+   "action": "specialIncome-deleteById",
+   "path": "/income/specialIncome/deleteById",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "income",
+   "action": "specialIncome-deleteBatch",
+   "path": "/income/specialIncome/deleteBatch",
+   "method": "POST",
+   "kind": "write",
+   "result": "SKIP_DANGEROUS",
+   "msg": "危险写操作，跳过真机"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceClasses-page",
+   "path": "/personnel/attendanceClasses/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_C_DEFAULT",
+   "msg": "租户ID不能为空"
+  },
+  {
+   "module": "income",
+   "action": "specialIncome-page",
+   "path": "/income/specialIncome/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_C_DEFAULT",
+   "msg": "不合法的查询参数"
+  },
+  {
+   "module": "personnel",
+   "action": "attendanceClasses-toggleStatus",
+   "path": "/personnel/attendanceClasses/toggleStatus",
+   "method": "POST",
+   "kind": "read",
+   "result": "PARAM_NEEDED",
+   "msg": "[enableStatus:启用状态不能为空, classesIds:班次ID列表不能为空]"
+  },
+  {
+   "module": "priAdmin",
+   "action": "manage-addTenant",
+   "path": "/priAdmin/manage/addTenant",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[password:超级管理员姓名不能为空, tenantName:公司名称不能为空, creditCode:企业征信代码不能为空, adminUserName"
+  },
+  {
+   "module": "priAdmin",
+   "action": "manage-modifyTenant",
+   "path": "/priAdmin/manage/modifyTenant",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_C_DEFAULT",
+   "msg": "本操作是受限制的服务功能，目前不允许使用"
+  },
+  {
+   "module": "merchant",
+   "action": "lic-add",
+   "path": "/merchant/lic/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "PARAM_NEEDED",
+   "msg": "[hwidSign:must not be blank, companyName:must not be blank, maxSubCompanys:must "
+  },
+  {
+   "module": "income",
+   "action": "specialIncome-add",
+   "path": "/income/specialIncome/add",
+   "method": "POST",
+   "kind": "write",
+   "result": "BIZ_-1",
+   "msg": "\n### Error updating database.  Cause: java.sql.SQLException: Field 'sale_date' d"
+  },
+  {
+   "module": "income",
+   "action": "specialIncome-batchAdd",
+   "path": "/income/specialIncome/batchAdd",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_-1",
+   "msg": "JSON parse error: Cannot deserialize value of type `java.util.ArrayList<com.yf.r"
+  },
+  {
+   "module": "priAdmin",
+   "action": "manage-page",
+   "path": "/priAdmin/manage/page",
+   "method": "POST",
+   "kind": "read",
+   "result": "BIZ_C_DEFAULT",
+   "msg": "本操作是受限制的服务功能，目前不允许使用"
+  },
+  {
+   "module": "income",
+   "action": "specialIncome-modify",
+   "path": "/income/specialIncome/modify",
+   "method": "POST",
+   "kind": "write",
+   "result": "OK",
+   "msg": "success"
+  }
+ ]
+}
