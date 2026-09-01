@@ -985,6 +985,95 @@ export function relationsCommand(object, { output = process.stdout } = {}) {
   return 0
 }
 
+// =====================================================================
+// Task 4（字段级增强）：explore 子命令 — 交互式字段探测
+//   替代手工下载前端 chunk 逆向：发空请求读报错 → 解析必填字段 → 逐个补字段迭代
+// =====================================================================
+
+/** 解析参数校验报错：[xxx:must not be null, yyy:must not be blank] → ['xxx','yyy'] */
+export function parseValidationMsg(msg) {
+  const fields = []
+  if (msg && typeof msg === 'string') {
+    const m = msg.match(/\[([^\]]+)\]/)
+    if (m) {
+      for (const part of m[1].split(',')) {
+        // trim：平台报错逗号后带空格（' xxx:...'），逐字实现会漏掉首字段后的字段
+        const fm = part.trim().match(/^([a-zA-Z_][a-zA-Z0-9_]*):/)
+        if (fm) fields.push(fm[1])
+      }
+    }
+  }
+  return [...new Set(fields)]
+}
+
+/** 字段类型猜测：按字段名启发式（与 guessValue 取值逻辑一致） */
+function guessType(f) {
+  const l = f.toLowerCase()
+  if (l.includes('id') && !l.includes('ids')) return 'number'
+  if (l.includes('year')) return 'number'
+  if (l.includes('date') || l.includes('time')) return 'string'
+  if (l.includes('name') || l.includes('code') || l.includes('content')) return 'string'
+  if (l === 'current' || l === 'size') return 'number'
+  if (l.endsWith('flag') || l.startsWith('is')) return 'boolean'
+  return 'string'
+}
+
+/** 探测接口必填字段：发空 body → 解析报错 → 逐个补字段迭代（最多 5 轮） */
+export async function probeFields(path, { method = 'POST', service = 'rcms', baseUrl, rejectUnauthorized = true } = {}) {
+  const base = baseUrl || SERVICES[service] || SERVICES.rcms
+  const known = new Set()
+  const attempts = []
+  for (let round = 0; round < 5; round++) {
+    const body = { tenantId: readConfig().tenantId }
+    for (const f of known) body[f] = guessValue(f)
+    const res = await authenticatedRequest({ url: base + path, method, body, rejectUnauthorized, timeout: 10000 })
+    const b = res.body && typeof res.body === 'object' ? res.body : {}
+    if (b.success === true) break // 字段全满足（或接口宽容）
+    const newFields = parseValidationMsg(String(b.msg || ''))
+    const added = newFields.filter(f => !known.has(f))
+    if (added.length === 0) break // 无新字段，停止
+    for (const f of added) known.add(f)
+    attempts.push({ body: { ...body }, fields: newFields })
+  }
+  return { fields: [...known], attempts }
+}
+
+/** 字段值猜测：按字段名启发式 */
+function guessValue(f) {
+  const l = f.toLowerCase()
+  if (l.includes('id') && !l.includes('ids')) return 0
+  if (l.includes('year')) return new Date().getFullYear()
+  if (l.includes('date') || l.includes('time')) return '2026-01-01 00:00:00'
+  if (l.includes('name') || l.includes('code') || l.includes('content')) return '测试'
+  if (l === 'current') return 1
+  if (l === 'size') return 10
+  if (l.endsWith('flag') || l.startsWith('is')) return 0
+  return ''
+}
+
+/** explore：交互探测接口必填字段并（可选）写入命令表 */
+export async function exploreCommand(path, { output = process.stdout, dryRun = false, method = 'POST', service = 'rcms', module, action, baseUrl, rejectUnauthorized = true } = {}) {
+  output.write(`探测 ${path} (${method} ${service})\n`)
+  const { fields, attempts } = await probeFields(path, { method, service, baseUrl, rejectUnauthorized })
+  output.write(`已探明字段: ${fields.join(', ') || '(无必填字段或接口宽容)'}\n`)
+  if (dryRun) return 0
+  // 写入命令表：匹配现有命令或新增
+  const apis = loadApis()
+  const modKey = module || path.split('/')[1] || 'other'
+  if (!apis.modules[modKey]) apis.modules[modKey] = { title: modKey, service, commands: [] }
+  let cmd = apis.modules[modKey].commands.find(c => c.path === path)
+  if (!cmd) {
+    cmd = { action: path.split('/').slice(-2).join('-'), method, path, kind: /delete|remove|add|modify|update|save|import/.test(path) ? 'write' : 'read', params: {} }
+    apis.modules[modKey].commands.push(cmd)
+  }
+  for (const f of fields) {
+    if (!cmd.params[f]) cmd.params[f] = { type: guessType(f), required: true, desc: '' }
+  }
+  writeApis(apis)
+  output.write(`已写入命令表 ${modKey}.${cmd.action}（${fields.length} 个必填字段）\n`)
+  return 0
+}
+
 // auth login 子命令：--method 名称 → 登录方式编号，校验必填后调 login()
 async function authLogin(opts, emit, usage, env) {
   const methodMap = { password: 1, captcha: 2, tenant: 3 }
@@ -1093,6 +1182,11 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (command === 'relations') return relationsCommand(sub, { output: process.stdout })
+
+  if (command === 'explore') {
+    if (!sub) return usage('explore 需要 <path>')
+    return await exploreCommand(sub, { dryRun: opts['--dry-run'] === true, method: opts['--method'] || 'POST', service: opts['--service'] || 'rcms', module: opts['--module'] })
+  }
 
   if (command === 'discover') {
     // Task 5：本地 HTTP 代理捕获浏览器对网关的真实请求 → 合并进命令表补漏
