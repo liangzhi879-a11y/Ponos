@@ -6014,5 +6014,48 @@
     }
    ]
   }
+ },
+ "relations": {
+  "project": {
+   "title": "项目",
+   "createOrder": ["projectInfo-add", "projectAppro-add", "rdItem-add"],
+   "children": {
+    "approval": {
+     "title": "立项信息",
+     "via": "projectId → project.id",
+     "api": "projectAppro"
+    },
+    "rdItem": {
+     "title": "研发活动",
+     "via": "sourceProjectId → project.id",
+     "api": "rdItem"
+    },
+    "member": {
+     "title": "项目成员",
+     "via": "projectId → project.id",
+     "api": "projectMember"
+    },
+    "equipment": {
+     "title": "设备",
+     "via": "projectId → project.id",
+     "api": "projectEquip"
+    },
+    "budget": {
+     "title": "预算",
+     "via": "projectId → project.id",
+     "api": "projectRdCost"
+    }
+   }
+  },
+  "rdItem": {
+   "title": "研发活动",
+   "createOrder": ["rdItem-add"],
+   "children": {}
+  },
+  "approval": {
+   "title": "立项信息",
+   "createOrder": ["projectAppro-add"],
+   "children": {}
+  }
  }
 }

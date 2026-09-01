@@ -966,6 +966,25 @@ export function schemaCommand(module, action, { output = process.stdout } = {}) 
   return 0
 }
 
+/** relations：业务对象关联图谱 */
+export function relationsCommand(object, { output = process.stdout } = {}) {
+  const apis = loadApis()
+  const rels = apis.relations || {}
+  if (!object) {
+    output.write('可用对象: ' + Object.keys(rels).join('、') + '\n')
+    output.write('用法: yfljsj relations <对象>\n')
+    return 0
+  }
+  const r = rels[object]
+  if (!r) { output.write(`未知对象: ${object}\n可用: ${Object.keys(rels).join('、')}\n`); return 2 }
+  output.write(`${object} (${r.title})\n`)
+  for (const [k, v] of Object.entries(r.children || {})) {
+    output.write(` ├─ ${k} (${v.title})  via ${v.via}\n`)
+  }
+  if (r.createOrder?.length) output.write(`创建顺序: ${r.createOrder.join(' → ')}\n`)
+  return 0
+}
+
 // auth login 子命令：--method 名称 → 登录方式编号，校验必填后调 login()
 async function authLogin(opts, emit, usage, env) {
   const methodMap = { password: 1, captcha: 2, tenant: 3 }
@@ -1072,6 +1091,8 @@ export async function main(argv = process.argv.slice(2)) {
     if (!sub) return usage('schema 需要 <module> <action>')
     return schemaCommand(sub, args[0] || '', { output: process.stdout })
   }
+
+  if (command === 'relations') return relationsCommand(sub, { output: process.stdout })
 
   if (command === 'discover') {
     // Task 5：本地 HTTP 代理捕获浏览器对网关的真实请求 → 合并进命令表补漏

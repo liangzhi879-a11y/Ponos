@@ -61,6 +61,25 @@ export function inferKind(path) {
   return /delete|remove|add|modify|update|save|import|upload|enable|disable/.test(path) ? 'write' : 'read'
 }
 
+/** 生成 relations 骨架：路径首段归组 + 常见子对象关联（project→approval/rdItem/member 等） */
+export function buildRelations(modules) {
+  const relations = {}
+  // 核心对象显式定义（人工沉淀）
+  relations.project = {
+    title: '项目', createOrder: ['projectInfo-add', 'projectAppro-add', 'rdItem-add'],
+    children: {
+      approval: { title: '立项信息', via: 'projectId → project.id', api: 'projectAppro' },
+      rdItem: { title: '研发活动', via: 'sourceProjectId → project.id', api: 'rdItem' },
+      member: { title: '项目成员', via: 'projectId → project.id', api: 'projectMember' },
+      equipment: { title: '设备', via: 'projectId → project.id', api: 'projectEquip' },
+      budget: { title: '预算', via: 'projectId → project.id', api: 'projectRdCost' },
+    },
+  }
+  relations.rdItem = { title: '研发活动', createOrder: ['rdItem-add'], children: {} }
+  relations.approval = { title: '立项信息', createOrder: ['projectAppro-add'], children: {} }
+  return relations
+}
+
 export function genApis(calls) {
   const modules = {}
   for (const c of calls) {
@@ -79,5 +98,5 @@ export function genApis(calls) {
       kind: inferKind(c.path),
     })
   }
-  return { version: 1, services: SERVICES, modules }
+  return { version: 1, services: SERVICES, modules, relations: buildRelations(modules) }
 }

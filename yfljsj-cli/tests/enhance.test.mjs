@@ -19,3 +19,21 @@ test('schema：未知命令 → 退出码 2', () => {
   const code = api.schemaCommand('workbench', 'nonexistent', { output: { write: () => {} } })
   assert.equal(code, 2)
 })
+
+test('relations：输出对象关联图谱', () => {
+  const lines = []
+  const code = api.relationsCommand('project', { output: { write: s => lines.push(s) } })
+  assert.equal(code, 0)
+  const text = lines.join('')
+  assert.match(text, /project/)
+  assert.match(text, /projectAppro|立项/)
+  assert.match(text, /rdItem|研发/)
+  assert.match(text, /创建顺序/)
+})
+
+test('relations：无参 → 输出对象目录', () => {
+  const lines = []
+  const code = api.relationsCommand(null, { output: { write: s => lines.push(s) } })
+  assert.equal(code, 0)
+  assert.match(lines.join(''), /可用对象|对象/)
+})
