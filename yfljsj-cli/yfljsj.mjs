@@ -1,6 +1,7 @@
 // yfljsj CLI — 单文件（零依赖，仅 Node 内置模块）
 // Task 2：认证模块（3 种登录 + token 本地存储 + refresh 自动续期 + 401 重试 + 并发单飞）
-// 骨架阶段：本文件只含认证相关函数与模块导出；CLI 路由由 Task 4 填充。
+// Task 3：通用命令执行器 runCommand + 兜底原始调用 rawRequest + 退出码映射
+// 骨架阶段：CLI 路由由 Task 4 填充。
 import https from 'node:https'
 import http from 'node:http'
 import fs from 'node:fs'
@@ -297,7 +298,7 @@ export function ensureToken({ baseUrl, force = false, rejectUnauthorized = true 
 }
 
 // 带认证的请求：附加 Bearer token；401 → 强制 refresh（单飞）→ 重试一次
-export async function authenticatedRequest({ url, method = 'POST', body, headers = {}, baseUrl, rejectUnauthorized = true } = {}) {
+export async function authenticatedRequest({ url, method = 'POST', body, headers = {}, baseUrl, rejectUnauthorized = true, timeout = 30000 } = {}) {
   const cfg = readConfig()
   if (!cfg.accessToken) {
     const err = new Error('未登录：请先执行 auth login')
@@ -305,7 +306,7 @@ export async function authenticatedRequest({ url, method = 'POST', body, headers
     throw err
   }
   const doReq = (token) =>
-    httpRequest(url, { method, body, headers: { ...headers, Authorization: `Bearer ${token}` }, rejectUnauthorized })
+    httpRequest(url, { method, body, headers: { ...headers, Authorization: `Bearer ${token}` }, rejectUnauthorized, timeout })
   let res = await doReq(cfg.accessToken)
   if (res.status === 401) {
     await ensureToken({ baseUrl, force: true, rejectUnauthorized })
@@ -347,6 +348,190 @@ export async function sendCode({ user, baseUrl, rejectUnauthorized = true } = {}
       : { ok: false, error: (res.body && typeof res.body === 'object' && (res.body.msg || res.body.message)) || `sendCode HTTP ${res.status}` }
   } catch (e) {
     return { ok: false, error: e.message }
+  }
+}
+
+// =====================================================================
+// Task 3：命令表加载 + 参数解析（通用命令执行器）
+// =====================================================================
+const APIS_SEED_URL = new URL('./apis.seed.json', import.meta.url)
+let apisCache = null
+
+// 加载命令表（Task 1 gen-apis 产物，模块级缓存）
+export function loadApis() {
+  if (!apisCache) apisCache = JSON.parse(fs.readFileSync(APIS_SEED_URL, 'utf8'))
+  return apisCache
+}
+
+// 解析 args → { params, flags, data }。args 支持：
+//   - 对象：{ key: value }；key='--data'/'data' 为显式 body，'--xxx' 为 flag，其余进 params
+//   - CLI token 数组：['key=value', '--data', '{json}', '--flag'/'--flag=value']
+// 除 --flag 外的键值进 params（GET→query；POST/PUT→body）；--data 显式 JSON 覆盖 body
+export function parseArgs(args = {}) {
+  const params = {}
+  const flags = {}
+  let data // 显式 body（--data），undefined 表示未提供
+  if (Array.isArray(args)) {
+    let i = 0
+    while (i < args.length) {
+      const tok = String(args[i])
+      if (tok === '--data') {
+        data = parseJsonSafe(String(args[i + 1]))
+        i += 2
+      } else if (tok.startsWith('--data=')) {
+        data = parseJsonSafe(tok.slice('--data='.length))
+        i += 1
+      } else if (tok.startsWith('--')) {
+        const eq = tok.indexOf('=')
+        if (eq !== -1) flags[tok.slice(0, eq)] = tok.slice(eq + 1)
+        else flags[tok] = true
+        i += 1
+      } else if (tok.includes('=')) {
+        const eq = tok.indexOf('=')
+        params[tok.slice(0, eq)] = tok.slice(eq + 1)
+        i += 1
+      } else {
+        flags[tok] = true // 裸 token 视为 flag
+        i += 1
+      }
+    }
+  } else {
+    for (const [k, v] of Object.entries(args)) {
+      if (k === '--data' || k === 'data') {
+        data = typeof v === 'string' ? parseJsonSafe(v) : v
+      } else if (k.startsWith('--')) {
+        flags[k] = v
+      } else {
+        params[k] = v
+      }
+    }
+  }
+  return { params, flags, data }
+}
+
+function parseJsonSafe(s) {
+  try {
+    return JSON.parse(s)
+  } catch {
+    return s
+  }
+}
+
+// 按命令表 params 类型做值转换（CLI 字符串 → number/boolean）
+function coerceBySchema(params, schema) {
+  const out = {}
+  for (const [k, v] of Object.entries(params)) {
+    const t = schema[k]
+    const type = t && typeof t === 'object' ? t.type : t
+    if (type === 'number' && typeof v === 'string') {
+      const n = Number(v)
+      out[k] = Number.isNaN(n) ? v : n
+    } else if (type === 'boolean' && typeof v === 'string') {
+      if (v === 'true') out[k] = true
+      else if (v === 'false') out[k] = false
+      else out[k] = v
+    } else {
+      out[k] = v
+    }
+  }
+  return out
+}
+
+// 结果格式化 → { exitCode, json }。退出码契约：0=成功 / 1=业务错 / 2=用法错 / 3=认证失败 / 4=网络错
+function formatResult(res) {
+  const { status } = res
+  const body = res.body
+  // HTTP 401 优先判为认证失败（refresh 重试后仍 401 → 需重新登录）
+  if (status === 401) {
+    const msg = (body && typeof body === 'object' && (body.msg || body.message)) || '未授权（401）'
+    return { exitCode: 3, json: { success: false, code: 3, msg, data: null } }
+  }
+  if (body && typeof body === 'object' && 'success' in body) {
+    return body.success === false ? { exitCode: 1, json: body } : { exitCode: 0, json: body }
+  }
+  if (status >= 200 && status < 300) {
+    return { exitCode: 0, json: body !== null && body !== undefined ? body : { success: true, data: res.raw } }
+  }
+  return {
+    exitCode: 1,
+    json: {
+      success: false,
+      code: status,
+      msg: (body && typeof body === 'object' && (body.msg || body.message)) || `HTTP ${status}`,
+      data: null,
+    },
+  }
+}
+
+function usageResult(msg) {
+  return { exitCode: 2, json: { success: false, code: 2, msg, data: null } }
+}
+
+function errorResult(e) {
+  if (e && e.code === 'AUTH_REQUIRED') {
+    return { exitCode: 3, json: { success: false, code: 3, msg: e.message || '未登录：请先执行 auth login', data: null } }
+  }
+  return { exitCode: 4, json: { success: false, code: 4, msg: (e && e.message) || '网络错误', data: null } }
+}
+
+// 通用命令执行器：查命令表 → 校验必填 → 拼 URL（services[service]+path）→ 带认证请求 → 格式化
+//   GET→query 参数；POST/PUT→body JSON（args 除已知 --flag 外全进 body；--data 显式覆盖 body）
+export async function runCommand(module, action, args = {}, opts = {}) {
+  const { baseUrl, rejectUnauthorized = true, timeout, headers = {} } = opts
+  const apis = loadApis()
+  const mod = apis.modules[module]
+  if (!mod) {
+    return usageResult(`未知模块：${module}（可用模块：${Object.keys(apis.modules).join('、')}）`)
+  }
+  const cmd = (mod.commands || []).find((c) => c.action === action)
+  if (!cmd) return usageResult(`未知命令：${module} ${action}（可用 action：${mod.commands.map((c) => c.action).join('、')}）`)
+
+  const { params, data } = parseArgs(args)
+  const schema = cmd.params || {}
+
+  // 必填校验：命令表 params 中的字段（对象 schema 可用 required:false 豁免；--data 显式 body 时跳过）
+  const missing =
+    data !== undefined
+      ? []
+      : Object.keys(schema).filter((k) => {
+          const s = schema[k]
+          const required = s && typeof s === 'object' ? s.required !== false : true
+          return required && (params[k] === undefined || params[k] === null || params[k] === '')
+        })
+  if (missing.length) return usageResult(`缺少必填参数：${missing.join('、')}`)
+
+  const typed = coerceBySchema(params, schema)
+  const base = baseUrl || SERVICES[mod.service] || SERVICES.rcms
+  const method = (cmd.method || 'POST').toUpperCase()
+  let url = `${base}${cmd.path}`
+  let body
+  if (method === 'GET' && data === undefined) {
+    const qs = new URLSearchParams()
+    for (const [k, v] of Object.entries(typed)) {
+      qs.append(k, v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v))
+    }
+    const q = qs.toString()
+    if (q) url += `?${q}`
+  } else {
+    body = data !== undefined ? data : typed
+  }
+  try {
+    const res = await authenticatedRequest({ url, method, body, baseUrl: base, rejectUnauthorized, headers, timeout })
+    return formatResult(res)
+  } catch (e) {
+    return errorResult(e)
+  }
+}
+
+// 兜底原始调用：不查命令表，按 {path, method, data, service} 直接发认证请求
+export async function rawRequest({ path, method = 'POST', data, service = 'rcms', baseUrl, rejectUnauthorized = true, timeout, headers = {} } = {}) {
+  const base = baseUrl || SERVICES[service] || SERVICES.rcms
+  const p = path.startsWith('/') ? path : `/${path}`
+  try {
+    const res = await authenticatedRequest({ url: `${base}${p}`, method, body: data, baseUrl: base, rejectUnauthorized, headers, timeout })
+    return formatResult(res)
+  } catch (e) {
+    return errorResult(e)
   }
 }
 
