@@ -148,3 +148,18 @@ test('exploreCommand：dry-run 输出探测结果', async () => {
   assert.equal(code, 0)
   assert.match(lines.join(''), /headPerson/)
 })
+
+test('explore 未登录 → main 路由 catch → 退出码 3（AUTH_REQUIRED）', async () => {
+  // 无 config（未登录态）→ authenticatedRequest 抛 AUTH_REQUIRED；
+  // 此前异常逃逸到入口 .catch 打印完整栈，现应由 main explore 路由映射为退出码 3
+  const home = mkdtempSync(path.join(os.tmpdir(), 'yfljsj-explore-auth-'))
+  const oldHome = process.env.YFLJSJ_HOME
+  process.env.YFLJSJ_HOME = home
+  try {
+    const code = await api.main(['explore', '/workbench/projectAppro/add', '--dry-run'])
+    assert.equal(code, 3)
+  } finally {
+    process.env.YFLJSJ_HOME = oldHome
+    rmSync(home, { recursive: true, force: true })
+  }
+})

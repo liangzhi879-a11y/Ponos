@@ -1185,7 +1185,11 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (command === 'explore') {
     if (!sub) return usage('explore 需要 <path>')
-    return await exploreCommand(sub, { dryRun: opts['--dry-run'] === true, method: opts['--method'] || 'POST', service: opts['--service'] || 'rcms', module: opts['--module'] })
+    try {
+      return await exploreCommand(sub, { dryRun: opts['--dry-run'] === true, method: opts['--method'] || 'POST', service: opts['--service'] || 'rcms', module: opts['--module'] })
+    } catch (e) {
+      return errorResult(e).exitCode
+    }
   }
 
   if (command === 'discover') {
