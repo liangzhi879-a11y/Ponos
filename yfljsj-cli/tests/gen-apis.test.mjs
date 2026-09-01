@@ -88,3 +88,57 @@ test('migrateApis：v1 字符串 params 无损迁移 v2', () => {
   assert.equal(v2.modules.asset.commands[0].params.current.type, 'number')
   assert.equal(v2.modules.asset.commands[0].params.current.required, true)
 })
+
+// ==================== Task 6：核心命令字段模板（真机实测沉淀） ====================
+
+const coreCalls = [
+  { path: '/workbench/projectInfo/add', methods: 'POST', chunks: [] },
+  { path: '/workbench/projectAppro/add', methods: 'POST', chunks: [] },
+  { path: '/enterprise/declare/rdItem/add', methods: 'POST', chunks: [] },
+]
+
+function findCmd(out, path) {
+  return Object.values(out.modules).flatMap(m => m.commands).find(c => c.path === path)
+}
+
+test('genApis 核心链路字段模板：projectInfo-add 补齐完整字段', () => {
+  const out = genApis(coreCalls)
+  const cmd = findCmd(out, '/workbench/projectInfo/add')
+  assert.ok(cmd)
+  const p = cmd.params
+  // 必填字段
+  assert.deepEqual(p.projectName, { type: 'string', required: true, desc: '项目名称' })
+  assert.deepEqual(p.projectCode, { type: 'string', required: true, desc: '项目编号' })
+  // 枚举 + 来源标注
+  assert.deepEqual(p.projectSource, { type: 'string', required: false, desc: '项目来源', enum: ['1', '2'], source: '参考已有项目' })
+  assert.deepEqual(p.projectType.enum, ['1-1'])
+  // 非模板命令无核心字段
+  const page = findCmd(genApis([{ path: '/workbench/projectInfo/list', methods: 'POST', chunks: [] }]), '/workbench/projectInfo/list')
+  assert.ok(!page.params.projectName)
+})
+
+test('genApis 核心链路字段模板：projectAppro-add 12 字段完整（含 source/enum）', () => {
+  const out = genApis(coreCalls)
+  const cmd = findCmd(out, '/workbench/projectAppro/add')
+  assert.ok(cmd)
+  const p = cmd.params
+  const keys = Object.keys(p)
+  assert.equal(keys.length, 12)
+  assert.deepEqual(p.projectId, { type: 'number', required: true, desc: '项目ID', source: 'projectInfo-list.id' })
+  assert.deepEqual(p.techEconTarget, { type: 'number', required: true, desc: '主要技术经济目标', enum: [1, 3] })
+  assert.equal(p.headPersonId.source, 'user/sysUser/getUserList.id')
+  assert.equal(p.dept.required, false)
+})
+
+test('genApis 核心链路字段模板：rdItem-add 补齐完整字段', () => {
+  const out = genApis(coreCalls)
+  const cmd = findCmd(out, '/enterprise/declare/rdItem/add')
+  assert.ok(cmd)
+  const p = cmd.params
+  assert.equal(Object.keys(p).length, 11)
+  assert.deepEqual(p.year, { type: 'number', required: true, desc: '年度' })
+  assert.deepEqual(p.sourceProjectId, { type: 'number', required: true, desc: '关联项目ID', source: 'projectInfo-list.id' })
+  assert.equal(p.startTime.format, 'yyyy-MM-dd')
+  // 全部必填
+  for (const v of Object.values(p)) assert.equal(v.required, true)
+})

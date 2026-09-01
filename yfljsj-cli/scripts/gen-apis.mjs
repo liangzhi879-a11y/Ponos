@@ -98,6 +98,48 @@ export function buildOperations() {
   }
 }
 
+/** 核心命令字段模板（真机实测沉淀 2026-09-01） */
+const CORE_FIELD_TEMPLATES = {
+  '/workbench/projectInfo/add': {
+    projectName: { type: 'string', required: true, desc: '项目名称' },
+    projectCode: { type: 'string', required: true, desc: '项目编号' },
+    projectSource: { type: 'string', required: false, desc: '项目来源', enum: ['1', '2'], source: '参考已有项目' },
+    projectType: { type: 'string', required: false, desc: '项目类型', enum: ['1-1'] },
+    startDate: { type: 'string', required: false, desc: '开始日期', format: 'yyyy-MM-dd HH:mm:ss' },
+    endDate: { type: 'string', required: false, desc: '结束日期', format: 'yyyy-MM-dd HH:mm:ss' },
+    researchBudget: { type: 'number', required: false, desc: '研发预算（元）' },
+    knowledgeField: { type: 'string', required: false, desc: '技术领域（层级路径）' },
+    isResearch: { type: 'boolean', required: false, desc: '是否研发项目' },
+  },
+  '/workbench/projectAppro/add': {
+    projectId: { type: 'number', required: true, desc: '项目ID', source: 'projectInfo-list.id' },
+    headPerson: { type: 'string', required: true, desc: '项目负责人姓名', source: 'user/sysUser/getUserList.username' },
+    headPersonId: { type: 'number', required: true, desc: '负责人ID（getUserList 的 id 非 userId）', source: 'user/sysUser/getUserList.id' },
+    techEconTarget: { type: 'number', required: true, desc: '主要技术经济目标', enum: [1, 3] },
+    researchContent: { type: 'string', required: true, desc: '研究内容' },
+    expectTarget: { type: 'string', required: true, desc: '项目预期目标' },
+    orgImplementMode: { type: 'string', required: true, desc: '组织实施方式' },
+    coreTechInnovation: { type: 'string', required: true, desc: '核心技术及创新点' },
+    planFile: { type: 'string', required: true, desc: '计划任务书路径（无文件传占位）' },
+    resolveFile: { type: 'string', required: true, desc: '立项决议书路径（无文件传占位）' },
+    dept: { type: 'number', required: false, desc: '负责人部门ID', source: 'getUserList.deptId' },
+    workCode: { type: 'string', required: true, desc: '负责人工号', source: 'getUserList.workNumber' },
+  },
+  '/enterprise/declare/rdItem/add': {
+    year: { type: 'number', required: true, desc: '年度' },
+    activityCode: { type: 'string', required: true, desc: '活动编号（如 RD01）' },
+    sourceProjectId: { type: 'number', required: true, desc: '关联项目ID', source: 'projectInfo-list.id' },
+    activityName: { type: 'string', required: true, desc: '研发活动名称' },
+    startTime: { type: 'string', required: true, desc: '开始日期', format: 'yyyy-MM-dd' },
+    endTime: { type: 'string', required: true, desc: '结束日期', format: 'yyyy-MM-dd' },
+    technologySource: { type: 'number', required: true, desc: '技术来源' },
+    personnelCount: { type: 'number', required: true, desc: '人员数量' },
+    totalBudget: { type: 'number', required: true, desc: '总预算（元）' },
+    implementation: { type: 'string', required: true, desc: '组织实施情况' },
+    researchContent: { type: 'string', required: true, desc: '研发内容' },
+  },
+}
+
 export function genApis(calls) {
   const modules = {}
   for (const c of calls) {
@@ -110,8 +152,8 @@ export function genApis(calls) {
       action: inferAction(c.path),
       method: c.methods || 'POST',
       path: c.path,
-      // 分页参数 + 敏感字段声明合并（sensitive 字段 required:false，不影响必填校验）
-      params: { ...(inferSensitiveParams(c.path) || {}), ...inferParams(c.path) },
+      // 敏感字段声明（required:false 不影响必填校验）+ 分页参数 + 核心命令字段模板合并
+      params: { ...(inferSensitiveParams(c.path) || {}), ...inferParams(c.path), ...(CORE_FIELD_TEMPLATES[c.path] || {}) },
       desc: c.path,
       kind: inferKind(c.path),
     })

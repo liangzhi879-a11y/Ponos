@@ -1545,7 +1545,58 @@
      "action": "projectInfo-add",
      "method": "POST",
      "path": "/workbench/projectInfo/add",
-     "params": {},
+     "params": {
+      "projectName": {
+       "type": "string",
+       "required": true,
+       "desc": "项目名称"
+      },
+      "projectCode": {
+       "type": "string",
+       "required": true,
+       "desc": "项目编号"
+      },
+      "projectSource": {
+       "type": "string",
+       "required": false,
+       "desc": "项目来源",
+       "enum": ["1", "2"],
+       "source": "参考已有项目"
+      },
+      "projectType": {
+       "type": "string",
+       "required": false,
+       "desc": "项目类型",
+       "enum": ["1-1"]
+      },
+      "startDate": {
+       "type": "string",
+       "required": false,
+       "desc": "开始日期",
+       "format": "yyyy-MM-dd HH:mm:ss"
+      },
+      "endDate": {
+       "type": "string",
+       "required": false,
+       "desc": "结束日期",
+       "format": "yyyy-MM-dd HH:mm:ss"
+      },
+      "researchBudget": {
+       "type": "number",
+       "required": false,
+       "desc": "研发预算（元）"
+      },
+      "knowledgeField": {
+       "type": "string",
+       "required": false,
+       "desc": "技术领域（层级路径）"
+      },
+      "isResearch": {
+       "type": "boolean",
+       "required": false,
+       "desc": "是否研发项目"
+      }
+     },
      "desc": "/workbench/projectInfo/add",
      "kind": "write"
     },
@@ -2989,7 +3040,66 @@
      "action": "rdItem-add",
      "method": "POST",
      "path": "/enterprise/declare/rdItem/add",
-     "params": {},
+     "params": {
+      "year": {
+       "type": "number",
+       "required": true,
+       "desc": "年度"
+      },
+      "activityCode": {
+       "type": "string",
+       "required": true,
+       "desc": "活动编号（如 RD01）"
+      },
+      "sourceProjectId": {
+       "type": "number",
+       "required": true,
+       "desc": "关联项目ID",
+       "source": "projectInfo-list.id"
+      },
+      "activityName": {
+       "type": "string",
+       "required": true,
+       "desc": "研发活动名称"
+      },
+      "startTime": {
+       "type": "string",
+       "required": true,
+       "desc": "开始日期",
+       "format": "yyyy-MM-dd"
+      },
+      "endTime": {
+       "type": "string",
+       "required": true,
+       "desc": "结束日期",
+       "format": "yyyy-MM-dd"
+      },
+      "technologySource": {
+       "type": "number",
+       "required": true,
+       "desc": "技术来源"
+      },
+      "personnelCount": {
+       "type": "number",
+       "required": true,
+       "desc": "人员数量"
+      },
+      "totalBudget": {
+       "type": "number",
+       "required": true,
+       "desc": "总预算（元）"
+      },
+      "implementation": {
+       "type": "string",
+       "required": true,
+       "desc": "组织实施情况"
+      },
+      "researchContent": {
+       "type": "string",
+       "required": true,
+       "desc": "研发内容"
+      }
+     },
      "desc": "/enterprise/declare/rdItem/add",
      "kind": "write"
     },
