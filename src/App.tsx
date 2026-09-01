@@ -11,6 +11,8 @@ import { useViewStore } from '@/stores/viewStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useTokenStatsStore } from '@/stores/tokenStatsStore'
 import { isEditorWindow } from '@/lib/editorBridge'
+import { isModuleWindow } from '@/lib/moduleBridge'
+import { ModuleRoot } from '@/components/module/ModuleRoot'
 
 export default function App() {
   // 独立原生编辑器窗口（?editor=1）：只渲染编辑器根组件，不加载主界面。
@@ -21,6 +23,10 @@ export default function App() {
         <EditorWindowRoot />
       </TooltipProvider>
     )
+  }
+  // 模块化窗口（?module=<id>）：渲染对应模块根（chat/files/settings/cockpit/dock）。
+  if (isModuleWindow()) {
+    return <ModuleRoot />
   }
   return <MainApp />
 }
