@@ -16,6 +16,8 @@ import { useAgentStore } from '@/stores/agentStore'
 import { useHealthStore, type HealthInfo } from '@/stores/healthStore'
 import { useBrowserStore } from '@/stores/browserStore'
 import { useUIStore } from '@/stores/uiStore'
+import { publishBus } from '@/lib/moduleBridge'
+import { buildChatEvent } from '@/lib/busPublish'
 import type { ContentBlock, Message, QuestionAnswer, BrowserEvent } from '@/types'
 
 // 模块加载即触发 bridge 端口探测（dev 调试版 bridge 在 51310，编译端口可能
@@ -647,6 +649,7 @@ function handleMessage(msg: Record<string, unknown>) {
           prompt: typeof t.prompt === 'string' ? t.prompt : undefined,
           lastSeenAt: Date.now(),
         })
+        publishBus(buildChatEvent('task', 'status-change', { conversationId: sid, taskId: t.task_id, status: 'running' }, sid))
         return
       }
       if (subtype === 'task_progress') {
@@ -658,15 +661,17 @@ function handleMessage(msg: Record<string, unknown>) {
       }
       if (subtype === 'task_notification') {
         const t = event as Record<string, any>
+        const status = t.status === 'completed' ? 'completed' : t.status === 'failed' ? 'failed' : 'stopped'
         useChatStore.getState().upsertSubAgentTask(sid, {
           taskId: t.task_id,
-          status: t.status === 'completed' ? 'completed' : t.status === 'failed' ? 'failed' : 'stopped',
+          status,
           summary: t.summary || '',
           outputFile: t.output_file || '',
           toolUseCount: t.usage?.tool_uses ?? 0,
           tokenCount: t.usage?.total_tokens ?? 0,
           durationMs: t.usage?.duration_ms ?? 0,
         })
+        publishBus(buildChatEvent('task', 'status-done', { conversationId: sid, taskId: t.task_id, status }, sid))
         return
       }
     }
@@ -815,6 +820,8 @@ function handleMessage(msg: Record<string, unknown>) {
     // CLI 正在等待用户回答——清掉“执行中”流式标记，
     // 由“待回复”状态接管展示（见 Sidebar 徽标与输入框可用性）。
     store.stopStreaming(sid)
+    // 提问待回答 → 发布 StateBus，模块窗口/dock 可据此亮起提问气泡
+    publishBus(buildChatEvent('question', 'pending', { conversationId: sid }, sid))
   }
 
   if (msg.type === 'milestones') {
@@ -862,6 +869,7 @@ function handleMessage(msg: Record<string, unknown>) {
         sessionId: sid,
         toolUseId: d.toolUseId,
       })
+      publishBus(buildChatEvent('approval', 'pending', { conversationId: sid, toolUseId: d.toolUseId, command: d.command || '', highRisk: !!d.highRisk }, sid))
     }
     return
   }
@@ -871,6 +879,7 @@ function handleMessage(msg: Record<string, unknown>) {
     const d = msg.data as { toolUseId?: string } | undefined
     if (d?.toolUseId) {
       useChatStore.getState().resolvePermission(d.toolUseId, true)
+      publishBus(buildChatEvent('approval', 'resolved', { conversationId: sid, toolUseId: d.toolUseId }, sid))
     }
     return
   }
