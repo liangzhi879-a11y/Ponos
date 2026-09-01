@@ -943,6 +943,29 @@ function helpText() {
   ].join('\n')
 }
 
+/** schema：查看命令完整字段定义（类型/必填/描述/枚举/来源） */
+export function schemaCommand(module, action, { output = process.stdout } = {}) {
+  const apis = loadApis()
+  const mod = apis.modules[module]
+  if (!mod) { output.write(`未知模块：${module}\n`); return 2 }
+  const cmd = (mod.commands || []).find(c => c.action === action)
+  if (!cmd) { output.write(`未知命令：${module} ${action}\n可用：${mod.commands.map(c => c.action).join('、')}\n`); return 2 }
+  const lines = [`命令: ${cmd.action} (${cmd.method} ${cmd.path}) [${cmd.kind}]`, `字段:`]
+  const params = cmd.params || {}
+  for (const [k, v] of Object.entries(params)) {
+    const d = v && typeof v === 'object' ? v : { type: 'string', desc: '' }
+    const parts = [`  ${k.padEnd(18)} ${String(d.type || 'string').padEnd(8)} ${d.required ? '必填' : '可选'}`]
+    if (d.auto) parts[0] += ' [自动注入]'
+    if (d.desc) parts.push(` ${d.desc}`)
+    if (Array.isArray(d.enum)) parts.push(` = ${d.enum.join('|')}`)
+    if (d.source) parts.push(` ← ${d.source}`)
+    lines.push(parts.join(''))
+  }
+  if (cmd.relations) lines.push(`关联: ${cmd.relations}`)
+  output.write(lines.join('\n') + '\n')
+  return 0
+}
+
 // auth login 子命令：--method 名称 → 登录方式编号，校验必填后调 login()
 async function authLogin(opts, emit, usage, env) {
   const methodMap = { password: 1, captcha: 2, tenant: 3 }
@@ -1043,6 +1066,11 @@ export async function main(argv = process.argv.slice(2)) {
       return emit(0, { success: true, code: 0, msg: 'ok', data: getConfigValue() })
     }
     return usage('config 需要子命令：set / get / list')
+  }
+
+  if (command === 'schema') {
+    if (!sub) return usage('schema 需要 <module> <action>')
+    return schemaCommand(sub, args[0] || '', { output: process.stdout })
   }
 
   if (command === 'discover') {

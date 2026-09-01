@@ -1434,7 +1434,74 @@
      "action": "projectAppro-add",
      "method": "POST",
      "path": "/workbench/projectAppro/add",
-     "params": {},
+     "params": {
+      "projectId": {
+       "type": "number",
+       "required": true,
+       "desc": "项目ID",
+       "source": "projectInfo-list.id"
+      },
+      "headPerson": {
+       "type": "string",
+       "required": true,
+       "desc": "项目负责人姓名",
+       "source": "user/sysUser/getUserList.username"
+      },
+      "headPersonId": {
+       "type": "number",
+       "required": true,
+       "desc": "负责人ID（getUserList 的 id 非 userId）",
+       "source": "user/sysUser/getUserList.id"
+      },
+      "techEconTarget": {
+       "type": "number",
+       "required": true,
+       "desc": "主要技术经济目标",
+       "enum": [1, 3]
+      },
+      "researchContent": {
+       "type": "string",
+       "required": true,
+       "desc": "研究内容"
+      },
+      "expectTarget": {
+       "type": "string",
+       "required": true,
+       "desc": "项目预期目标"
+      },
+      "orgImplementMode": {
+       "type": "string",
+       "required": true,
+       "desc": "组织实施方式"
+      },
+      "coreTechInnovation": {
+       "type": "string",
+       "required": true,
+       "desc": "核心技术及创新点"
+      },
+      "planFile": {
+       "type": "string",
+       "required": true,
+       "desc": "计划任务书路径（无文件传占位）"
+      },
+      "resolveFile": {
+       "type": "string",
+       "required": true,
+       "desc": "立项决议书路径（无文件传占位）"
+      },
+      "dept": {
+       "type": "number",
+       "required": false,
+       "desc": "负责人部门ID",
+       "source": "getUserList.deptId"
+      },
+      "workCode": {
+       "type": "string",
+       "required": true,
+       "desc": "负责人工号",
+       "source": "getUserList.workNumber"
+      }
+     },
      "desc": "/workbench/projectAppro/add",
      "kind": "write"
     },
