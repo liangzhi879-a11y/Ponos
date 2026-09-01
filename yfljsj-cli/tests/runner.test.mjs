@@ -105,31 +105,32 @@ const RCMS = (opts = {}) => ({ baseUrl: mock.baseUrl, rejectUnauthorized: false,
 
 // ==================== 参数拼接 ====================
 
-test('GET 命令：args 拼成 query 串', async () => {
+test('GET 命令：args 拼成 query 串（登录态 tenantId 自动注入）', async () => {
   seedConfig()
   const r = await api.runCommand('resefunds', 'projectBudget-projectSourceList', { deptId: 'D1', deep: 1 }, RCMS())
   assert.equal(r.exitCode, 0)
   const req = mock.state.requests[0]
   assert.equal(req.path, '/api/rcms/resefunds/projectBudget/projectSourceList')
-  assert.deepEqual(req.query, { deptId: 'D1', deep: '1' })
+  // 平台契约：接口普遍要求 tenantId，缺失时从登录态 config 自动注入（seedConfig tenantId=T001）
+  assert.deepEqual(req.query, { deptId: 'D1', deep: '1', tenantId: 'T001' })
   assert.ok(r.json.success)
 })
 
-test('POST 命令：args 拼成 body JSON 透传', async () => {
+test('POST 命令：args 拼成 body JSON 透传（登录态 tenantId 自动注入）', async () => {
   seedConfig()
   const r = await api.runCommand('asset', 'building-list', { current: 1, size: 10 }, RCMS())
   assert.equal(r.exitCode, 0)
   const req = mock.state.requests[0]
   assert.equal(req.path, '/api/rcms/asset/building/list')
-  assert.deepEqual(req.body, { current: 1, size: 10 })
-  assert.deepEqual(r.json, { success: true, code: 200, msg: 'ok', data: { echo: { current: 1, size: 10 } } })
+  assert.deepEqual(req.body, { current: 1, size: 10, tenantId: 'T001' })
+  assert.deepEqual(r.json, { success: true, code: 200, msg: 'ok', data: { echo: { current: 1, size: 10, tenantId: 'T001' } } })
 })
 
 test('CLI token 数组 key=value + 按命令表类型转换 number', async () => {
   seedConfig()
   const r = await api.runCommand('asset', 'building-list', ['current=5', 'size=20'], RCMS())
   assert.equal(r.exitCode, 0)
-  assert.deepEqual(mock.state.requests[0].body, { current: 5, size: 20 })
+  assert.deepEqual(mock.state.requests[0].body, { current: 5, size: 20, tenantId: 'T001' })
 })
 
 test('--data 显式 JSON body 覆盖 args（且跳过必填校验）', async () => {
@@ -146,11 +147,26 @@ test('--data= 内联形式也解析', async () => {
   assert.deepEqual(mock.state.requests[0].body, { a: 1 })
 })
 
-test('已知 --flag 不进 body', async () => {
+test('已知 --flag 不进 body（仅 login 态 tenantId 自动注入）', async () => {
   seedConfig()
   const r = await api.runCommand('asset', 'building-list', { current: 1, size: 10, '--verbose': true }, RCMS())
   assert.equal(r.exitCode, 0)
+  assert.deepEqual(mock.state.requests[0].body, { current: 1, size: 10, tenantId: 'T001' })
+})
+
+test('显式 --tenantId 覆盖登录态注入', async () => {
+  seedConfig() // 登录态 tenantId=T001
+  const r = await api.runCommand('asset', 'building-list', { current: 1, size: 10, tenantId: 'T-EXPLICIT' }, RCMS())
+  assert.equal(r.exitCode, 0)
+  assert.deepEqual(mock.state.requests[0].body, { current: 1, size: 10, tenantId: 'T-EXPLICIT' })
+})
+
+test('登录态无 tenantId → 不注入', async () => {
+  seedConfig({ tenantId: null })
+  const r = await api.runCommand('asset', 'building-list', { current: 1, size: 10 }, RCMS())
+  assert.equal(r.exitCode, 0)
   assert.deepEqual(mock.state.requests[0].body, { current: 1, size: 10 })
+  assert.ok(!('tenantId' in mock.state.requests[0].body))
 })
 
 // ==================== JSON 输出透传 ====================

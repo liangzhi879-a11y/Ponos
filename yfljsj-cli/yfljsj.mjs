@@ -288,22 +288,37 @@ export function extractTokens(res) {
 
 const DEFAULT_EXPIRES_MS = 2 * 60 * 60 * 1000 // 未给 expiresIn 时默认 2h
 
+// SM4 密码加密（平台契约，真机联调破解 2026-09-01）：
+//   格式 = 16字节随机IV(hex,32字符) + SM4-CBC(key, iv) 加密明文(hex)
+//   密钥固定 9e2c5f1a8b3d7046f5a9c2e1b7d4803f（前端 Login chunk xA() 逆向）
+import { randomBytes, createCipheriv } from 'node:crypto'
+const SM4_KEY = Buffer.from('9e2c5f1a8b3d7046f5a9c2e1b7d4803f', 'hex')
+export function encryptPassword(pw) {
+  if (!pw) return ''
+  const iv = randomBytes(16).toString('hex') // 32 字符 hex 作 IV
+  const cipher = createCipheriv('sm4-cbc', SM4_KEY, Buffer.from(iv, 'hex'))
+  return iv + cipher.update(pw, 'utf8', 'hex') + cipher.final('hex')
+}
+
 // =====================================================================
 // 登录（3 种方式）
 //   method 1 = 密码（username/password）
 //   method 2 = 验证码（user/code）
 //   method 3 = 租户（user/tenantId）
 // =====================================================================
-export async function login({ method, user, password, code, tenant, baseUrl, rejectUnauthorized = true, input, output } = {}) {
+export async function login({ method, user, password, code, tenant, userId, baseUrl, rejectUnauthorized = true, input, output } = {}) {
   const m = Number(method)
   let body
   if (m === 1) {
     const pw = password != null && password !== '' ? password : await promptPassword({ input, output })
-    body = { loginMethod: 1, username: user, password: pw }
+    // 平台契约：loginName 字段 + 密码 SM4 加密（真机联调破解）
+    body = { loginMethod: 1, loginName: user, password: encryptPassword(pw) }
   } else if (m === 2) {
-    body = { loginMethod: 2, user, code }
+    // 平台契约：验证码也 SM4 加密，字段 opsLoginToken
+    body = { loginMethod: 2, loginName: user, opsLoginToken: encryptPassword(code) }
   } else if (m === 3) {
-    body = { loginMethod: 3, user, tenantId: tenant }
+    // 平台契约：租户登录用 userId + companyTenantId
+    body = { loginMethod: 3, userId: userId || user, companyTenantId: tenant }
   } else {
     return { ok: false, error: `method 必须是 1(密码)/2(验证码)/3(租户)，收到：${method}` }
   }
@@ -680,6 +695,12 @@ export async function runCommand(module, action, args = {}, opts = {}) {
   if (missing.length) return usageResult(`缺少必填参数：${missing.join('、')}`)
 
   const typed = coerceBySchema(params, schema)
+  // 平台契约：多数接口要求 tenantId（真机联调 2026-09-01 发现 rdItem/psItem 等缺 tenantId 报 C_PARAM_INVALID）。
+  // 自动从登录态配置注入（用户显式传 --tenantId 时以用户为准）。
+  if (typed.tenantId === undefined || typed.tenantId === null || typed.tenantId === '') {
+    const cfg = readConfig()
+    if (cfg.tenantId != null) typed.tenantId = cfg.tenantId
+  }
   const base = baseUrl || SERVICES[mod.service] || SERVICES.rcms
   const method = (cmd.method || 'POST').toUpperCase()
   let url = `${base}${cmd.path}`

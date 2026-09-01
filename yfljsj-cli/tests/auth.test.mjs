@@ -7,6 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 import { EventEmitter } from 'node:events'
+import { createDecipheriv } from 'node:crypto'
 
 // 自签名证书用于本地 https mock
 const KEY = readFileSync(new URL('./fixtures/key.pem', import.meta.url))
@@ -18,6 +19,15 @@ process.env.YFLJSJ_HOME = TMP
 const CONFIG_PATH = path.join(TMP, '.yfljsj', 'config.json')
 
 const auth = await import('../yfljsj.mjs')
+
+// SM4-CBC 解密辅助：encryptPassword 输出 = 32hex 随机IV + SM4-CBC(key,iv) 密文hex（真机契约 2026-09-01）
+const SM4_KEY = Buffer.from('9e2c5f1a8b3d7046f5a9c2e1b7d4803f', 'hex')
+function sm4Decrypt(s) {
+  assert.match(s, /^[0-9a-f]{32}[0-9a-f]+$/, 'SM4 密文格式应为 IV32hex + 密文hex')
+  const iv = Buffer.from(s.slice(0, 32), 'hex')
+  const d = createDecipheriv('sm4-cbc', SM4_KEY, iv)
+  return d.update(s.slice(32), 'hex', 'utf8') + d.final('utf8')
+}
 
 function resetConfig() {
   rmSync(CONFIG_PATH, { force: true })
@@ -119,9 +129,10 @@ test('login method=1 密码：请求体正确 + token 存储 config.json', async
   assert.equal(res.ok, true)
   const b = loginBody()
   assert.equal(b.loginMethod, 1)
-  assert.equal(b.username, 'alice')
-  assert.equal(b.password, 'pw123')
-  assert.ok(!('user' in b))
+  // 平台契约：loginName 字段 + 密码 SM4 加密（IV32hex+密文）
+  assert.equal(b.loginName, 'alice')
+  assert.equal(sm4Decrypt(b.password), 'pw123')
+  assert.ok(!('user' in b) && !('username' in b))
   // 存储校验
   const tok = auth.getToken()
   assert.equal(tok.accessToken, 'AT-login')
@@ -142,9 +153,10 @@ test('login method=2 验证码：请求体正确', async () => {
   assert.equal(res.ok, true)
   const b = loginBody()
   assert.equal(b.loginMethod, 2)
-  assert.equal(b.user, 'alice')
-  assert.equal(b.code, '123456')
-  assert.ok(!('password' in b) && !('tenantId' in b))
+  // 平台契约：loginName 字段 + 验证码也 SM4 加密（opsLoginToken）
+  assert.equal(b.loginName, 'alice')
+  assert.equal(sm4Decrypt(b.opsLoginToken), '123456')
+  assert.ok(!('user' in b) && !('code' in b) && !('password' in b) && !('tenantId' in b))
 })
 
 test('login method=3 租户：请求体正确', async () => {
@@ -152,8 +164,21 @@ test('login method=3 租户：请求体正确', async () => {
   assert.equal(res.ok, true)
   const b = loginBody()
   assert.equal(b.loginMethod, 3)
-  assert.equal(b.user, 'alice')
-  assert.equal(b.tenantId, 'TENANT_X')
+  // 平台契约：租户登录用 userId + companyTenantId
+  assert.equal(b.userId, 'alice')
+  assert.equal(b.companyTenantId, 'TENANT_X')
+  assert.ok(!('user' in b) && !('tenantId' in b))
+})
+
+test('encryptPassword：输出 = IV32hex + SM4-CBC 密文（随机IV），可解密回原密码', () => {
+  assert.equal(auth.encryptPassword(''), '')
+  for (const pw of ['pw123', 's3cret!', 'P@ssw0rd中文']) {
+    const enc = auth.encryptPassword(pw)
+    assert.match(enc, /^[0-9a-f]{32}[0-9a-f]+$/)
+    assert.equal(sm4Decrypt(enc), pw)
+  }
+  // 随机 IV：同一明文两次加密结果不同
+  assert.notEqual(auth.encryptPassword('pw123'), auth.encryptPassword('pw123'))
 })
 
 test('login method 非法 → ok:false', async () => {
@@ -345,7 +370,7 @@ test('login 缺省密码 → readline 交互输入且隐藏回显', async () => 
   const input = Readable.from(['s3cret!\n'])
   const res = await auth.login({ method: 1, user: 'alice', input, output: out, baseUrl: mock.baseUrl, rejectUnauthorized: false })
   assert.equal(res.ok, true)
-  assert.equal(loginBody().password, 's3cret!')
+  assert.equal(sm4Decrypt(loginBody().password), 's3cret!')
   // 回显被隐藏：输出流不含密码
   assert.ok(!writes.join('').includes('s3cret!'))
   assert.ok(writes.join('').includes('Password:'))
