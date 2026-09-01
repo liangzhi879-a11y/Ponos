@@ -3,6 +3,7 @@
 // Task 3：通用命令执行器 runCommand + 兜底原始调用 rawRequest + 退出码映射
 // Task 4：CLI 入口 — parseArgs 参数解析 + main 命令路由 + formatOutput 输出格式化
 // Task 5：discover 代理 — 本地 HTTP 代理捕获浏览器真实请求，合并进命令表补漏
+// Task 6：安全 — 写操作确认 / 域名白名单（防 SSRF）/ 审计日志 / 敏感字段脱敏
 import https from 'node:https'
 import http from 'node:http'
 import fs from 'node:fs'
@@ -103,6 +104,138 @@ function writeConfig(cfg) {
   } catch {
     /* Windows 无 POSIX 权限位，忽略 */
   }
+}
+
+// =====================================================================
+// Task 6：安全 — 写操作确认 / 域名白名单（防 SSRF）/ 审计日志 / 敏感字段脱敏
+// =====================================================================
+
+// config 配置读写（~/.yfljsj/config.json）：getConfigValue(key) / setConfigValue(key, value)。
+//   yfljsj config set auto-confirm-write true|false 由 main 路由到 setConfigValue。
+export function getConfigValue(key) {
+  const cfg = readConfig()
+  return key ? cfg[key] : cfg
+}
+export function setConfigValue(key, value) {
+  const cfg = readConfig()
+  cfg[key] = coerceConfigScalar(value)
+  writeConfig(cfg)
+  return cfg[key]
+}
+// CLI 传入的配置值是字符串：'true'/'false'/'数字' 做类型归一，其余保留原样
+function coerceConfigScalar(v) {
+  if (v === 'true') return true
+  if (v === 'false') return false
+  if (v !== '' && v != null && !Number.isNaN(Number(v))) return Number(v)
+  return v
+}
+
+// flag 是否生效：--flag / --flag=1 / 'true' 视为开启；缺省或 'false'/'0' 视为关闭
+function flagOn(opts, name) {
+  const v = opts && opts[name]
+  if (v === undefined || v === null) return false
+  if (v === true) return true
+  const s = String(v).toLowerCase()
+  return !(s === 'false' || s === '0' || s === '')
+}
+
+// 写操作确认：kind=write 需显式 --confirm/--yes（或配置 auto-confirm-write=true）；
+// delete/deleteBatch/remove 类还需额外显式 --force。返回 { allowed, reason }，拒绝时调用方应回退出码 2。
+export function confirmWrite(cmd, opts = {}) {
+  if (!cmd || cmd.kind !== 'write') return { allowed: true }
+  const action = String(cmd.action || '')
+  const isDeleteLike =
+    /delete|remove|batchDelete/i.test(action) || /delete|remove/i.test(String(cmd.path || ''))
+  const autoConfirm = getConfigValue('auto-confirm-write') === true
+  const confirmed = autoConfirm || flagOn(opts, '--confirm') || flagOn(opts, '--yes')
+  if (!confirmed) {
+    return {
+      allowed: false,
+      reason: `写操作 ${cmd.action} 需显式确认：加 --confirm（或 --yes；或 config set auto-confirm-write true）`,
+    }
+  }
+  if (isDeleteLike && !flagOn(opts, '--force')) {
+    return { allowed: false, reason: `删除操作 ${cmd.action} 需额外显式 --force 确认` }
+  }
+  return { allowed: true }
+}
+
+// 域名白名单（防 SSRF）：仅生产网关 *.yfljsj.com 与本机回环（localhost/127.0.0.1/::1，测试 mock）。
+const WHITELIST_DOMAIN = 'yfljsj.com'
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1'])
+export function isWhitelisted(urlStr) {
+  let u
+  try {
+    u = new URL(urlStr)
+  } catch {
+    return false
+  }
+  const host = String(u.hostname).replace(/^\[|\]$/g, '').toLowerCase()
+  if (LOOPBACK_HOSTS.has(host)) return true
+  return host === WHITELIST_DOMAIN || host.endsWith('.' + WHITELIST_DOMAIN)
+}
+export function assertWhitelist(url) {
+  if (isWhitelisted(url)) return { allowed: true }
+  return {
+    allowed: false,
+    reason: `域名不在白名单，已拒绝（防 SSRF）：${url}（仅允许 *.yfljsj.com / localhost / 127.0.0.1）`,
+  }
+}
+
+// 审计日志：~/.yfljsj/audit.log 追加一行（时间戳 + 命令 + 路径 + 方法；不含 token/密码）。
+//   entry: { cmd, path, method }
+export function appendAudit(entry = {}) {
+  const ts = new Date().toISOString()
+  const cmd = entry.cmd || entry.moduleAction || ''
+  const entryPath = entry.path || ''
+  const method = entry.method || ''
+  const line = `${ts} cmd=${cmd} method=${method} path=${entryPath}\n`
+  const dir = configDir()
+  fs.mkdirSync(dir, { recursive: true })
+  fs.appendFileSync(path.join(dir, 'audit.log'), line)
+}
+// 审计失败不阻断请求（只读文件系统等极端场景降级）
+function safeAudit(entry) {
+  try {
+    appendAudit(entry)
+  } catch {
+    /* ignore */
+  }
+}
+
+// 敏感字段脱敏：递归把 data 中标 sensitive 的字段替换为掩码（--human 输出分支用）。
+//   基于结构化克隆（不改动调用方原始数据），仅值替换为 '******'。
+export function maskSensitive(data, fields = []) {
+  if (data == null || typeof data !== 'object' || !Array.isArray(fields) || fields.length === 0) return data
+  const walk = (node) => {
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item)
+    } else if (node && typeof node === 'object') {
+      for (const [k, v] of Object.entries(node)) {
+        if (fields.includes(k) && v !== null && v !== undefined) {
+          node[k] = '******'
+        } else if (v && typeof v === 'object') {
+          walk(v)
+        }
+      }
+    }
+    return node
+  }
+  return walk(structuredClone(data))
+}
+
+// 从命令表命令提取敏感字段：params 中标 sensitive 的 key + 命令级 sensitive 数组；无声明 → []
+function sensitiveFieldsOf(cmd) {
+  const fields = []
+  const params = cmd && cmd.params
+  if (params && typeof params === 'object') {
+    for (const [k, v] of Object.entries(params)) {
+      if (v && typeof v === 'object' && v.sensitive) fields.push(k)
+    }
+  }
+  const extra = cmd && cmd.sensitive
+  if (Array.isArray(extra)) for (const f of extra) if (!fields.includes(f)) fields.push(f)
+  return fields
 }
 
 // 读取已存 token（未登录返回 null）
@@ -528,6 +661,10 @@ export async function runCommand(module, action, args = {}, opts = {}) {
   const cmd = (mod.commands || []).find((c) => c.action === action)
   if (!cmd) return usageResult(`未知命令：${module} ${action}（可用 action：${mod.commands.map((c) => c.action).join('、')}）`)
 
+  // 安全钩子：写操作确认（kind=write 需 --confirm/--yes；delete/remove 类还需 --force）
+  const confirm = confirmWrite(cmd, opts)
+  if (!confirm.allowed) return usageResult(confirm.reason)
+
   const { params, data } = parseCommandArgs(args)
   const schema = cmd.params || {}
 
@@ -557,11 +694,21 @@ export async function runCommand(module, action, args = {}, opts = {}) {
   } else {
     body = data !== undefined ? data : typed
   }
+  // 安全钩子：域名白名单（防 SSRF）——请求前校验目标 host
+  const wl = assertWhitelist(url)
+  if (!wl.allowed) return usageResult(wl.reason)
+  // 审计条目：只记录命令/路径/方法，绝不落 token/密码
+  const auditEntry = { cmd: `${module} ${action}`, path: cmd.path, method }
   try {
     // 命令请求走 base（服务前缀）；refresh 续期固定走 oauth（refreshBaseUrl），不随命令服务前缀
     const res = await authenticatedRequest({ url, method, body, refreshBaseUrl: oauthRefreshBase(base, refreshBaseUrl), rejectUnauthorized, headers, timeout })
-    return formatResult(res)
+    const result = formatResult(res)
+    // 安全钩子：审计日志（请求后）
+    safeAudit(auditEntry)
+    // 附带命令表标 sensitive 的字段（--human 输出脱敏用）
+    return { ...result, sensitive: sensitiveFieldsOf(cmd) }
   } catch (e) {
+    safeAudit(auditEntry)
     return errorResult(e)
   }
 }
@@ -570,10 +717,20 @@ export async function runCommand(module, action, args = {}, opts = {}) {
 export async function rawRequest({ path, method = 'POST', data, service = 'rcms', baseUrl, refreshBaseUrl, rejectUnauthorized = true, timeout, headers = {} } = {}) {
   const base = baseUrl || SERVICES[service] || SERVICES.rcms
   const p = path.startsWith('/') ? path : `/${path}`
+  const url = `${base}${p}`
+  // 安全钩子：域名白名单（防 SSRF）——请求前校验目标 host
+  const wl = assertWhitelist(url)
+  if (!wl.allowed) return usageResult(wl.reason)
+  // 审计条目：只记录路径/方法，绝不落 token/密码
+  const auditEntry = { cmd: `raw ${p}`, path: p, method: String(method).toUpperCase() }
   try {
-    const res = await authenticatedRequest({ url: `${base}${p}`, method, body: data, refreshBaseUrl: oauthRefreshBase(base, refreshBaseUrl), rejectUnauthorized, headers, timeout })
-    return formatResult(res)
+    const res = await authenticatedRequest({ url, method, body: data, refreshBaseUrl: oauthRefreshBase(base, refreshBaseUrl), rejectUnauthorized, headers, timeout })
+    const result = formatResult(res)
+    // 安全钩子：审计日志（请求后）
+    safeAudit(auditEntry)
+    return result
   } catch (e) {
+    safeAudit(auditEntry)
     return errorResult(e)
   }
 }
@@ -581,7 +738,7 @@ export async function rawRequest({ path, method = 'POST', data, service = 'rcms'
 // =====================================================================
 // Task 4：CLI 入口 — 参数解析 / 命令路由 / 输出格式化
 // =====================================================================
-export const VERSION = '0.4.0'
+export const VERSION = '0.5.0'
 
 // CLI 级参数解析：argv = process.argv.slice(2)
 //   => { command, sub, args, opts, positional }
@@ -637,13 +794,13 @@ function parseFlagTokens(tokens) {
 }
 
 // CLI flag → runCommand 可识别的参数对象（--key value → { key: value }；--data 显式 body）。
-// --human/--json 为 CLI 输出开关，不进入命令参数。
+// --human/--json 为 CLI 输出开关；--confirm/--yes/--force 为安全确认开关，均不进入命令参数。
 function toCommandArgs(tokens) {
   const { opts } = parseFlagTokens(tokens)
   const out = {}
   for (const [k, v] of Object.entries(opts)) {
     if (k === '--data') out['--data'] = v
-    else if (k === '--human' || k === '--json') continue
+    else if (k === '--human' || k === '--json' || k === '--confirm' || k === '--yes' || k === '--force') continue
     else if (k.startsWith('--')) out[k.slice(2)] = v
     else out[k] = v
   }
@@ -651,9 +808,10 @@ function toCommandArgs(tokens) {
 }
 
 // 输出格式化：--json（默认）JSON.stringify 单行；--human 表格（数组字段自动表头）。
-export function formatOutput(json, { human = false } = {}) {
+//   sensitive：命令表标 sensitive 的字段名数组，仅 --human 分支脱敏（--json 保留原始）。
+export function formatOutput(json, { human = false, sensitive = [] } = {}) {
   if (!human) return JSON.stringify(json) + '\n'
-  return humanTable(json)
+  return humanTable(maskSensitive(json, sensitive))
 }
 
 function humanTable(json) {
@@ -693,14 +851,21 @@ function helpText() {
     '  auth status',
     '  auth send-code --user X',
     '  discover [--port 8899]               代理捕获浏览器请求，接口补漏并合并命令表',
+    '  config set <key> <value>             写配置项（如 auto-confirm-write true|false）',
+    '  config get <key> / config list       读配置项',
     "  raw <path> [--method POST] [--data 'json'] [--service rcms]",
     '  <module> <action> [--param value]...  命令表驱动调用',
     '  --help / --version',
     '',
     '选项：',
     '  --json                                JSON 输出（默认）',
-    '  --human                               表格输出（数组字段自动表头）',
+    '  --human                               表格输出（数组字段自动表头；命令表标 sensitive 字段脱敏）',
+    '  --confirm / --yes                     写操作显式确认（kind=write 必需）',
+    '  --force                               删除/移除类操作额外强制确认',
     "  --data 'json'                         显式请求体",
+    '',
+    '安全：写操作需显式确认；请求域名仅白名单（*.yfljsj.com / localhost / 127.0.0.1）；',
+    '      请求记录审计日志 ~/.yfljsj/audit.log（不含 token/密码）；config set auto-confirm-write true 可免确认。',
     '',
     '退出码：0=成功 1=业务错误 2=用法错误 3=认证失败 4=网络错误',
     '',
@@ -728,11 +893,11 @@ async function authLogin(opts, emit, usage, env) {
 
 // 主入口：命令分发。stdout 只写 JSON（process.stdout.write），诊断/错误走 stderr。
 export async function main(argv = process.argv.slice(2)) {
-  const { command, sub, args, opts } = parseArgs(argv)
+  const { command, sub, args, opts, positional } = parseArgs(argv)
   const human = opts['--human'] === true || (opts['--human'] !== undefined && opts['--human'] !== 'false')
 
-  const emit = (exitCode, json) => {
-    process.stdout.write(formatOutput(json, { human }))
+  const emit = (exitCode, json, sensitive = []) => {
+    process.stdout.write(formatOutput(json, { human, sensitive }))
     return exitCode
   }
   const usage = (msg) => {
@@ -786,6 +951,28 @@ export async function main(argv = process.argv.slice(2)) {
     return usage('auth 需要子命令：login / logout / status / send-code')
   }
 
+  if (command === 'config') {
+    // 配置项读写（~/.yfljsj/config.json）：config set auto-confirm-write true|false
+    if (sub === 'set') {
+      const key = positional[0]
+      const value = positional[1]
+      if (!key || value === undefined) {
+        return usage('config set 用法：yfljsj config set <key> <value>（如 auto-confirm-write true）')
+      }
+      const stored = setConfigValue(key, value)
+      return emit(0, { success: true, code: 0, msg: 'ok', data: { key, value: stored } })
+    }
+    if (sub === 'get') {
+      const key = positional[0]
+      if (!key) return usage('config get 用法：yfljsj config get <key>')
+      return emit(0, { success: true, code: 0, msg: 'ok', data: { key, value: getConfigValue(key) } })
+    }
+    if (sub === 'list' || sub === null) {
+      return emit(0, { success: true, code: 0, msg: 'ok', data: getConfigValue() })
+    }
+    return usage('config 需要子命令：set / get / list')
+  }
+
   if (command === 'discover') {
     // Task 5：本地 HTTP 代理捕获浏览器对网关的真实请求 → 合并进命令表补漏
     const portRaw = opts['--port'] === undefined ? '' : String(opts['--port'])
@@ -812,9 +999,12 @@ export async function main(argv = process.argv.slice(2)) {
 
   // <module> <action> [--param value]...  命令表驱动调用
   if (sub) {
-    const r = await runCommand(command, sub, toCommandArgs(args), env)
+    // 安全确认开关（--confirm/--yes/--force）从 CLI opts 透传 runCommand，不进入命令参数
+    const secFlags = {}
+    for (const k of ['--confirm', '--yes', '--force']) if (opts[k] !== undefined) secFlags[k] = opts[k]
+    const r = await runCommand(command, sub, toCommandArgs(args), { ...env, ...secFlags })
     if (r.exitCode === 2) process.stderr.write(`yfljsj：${r.json.msg}\n`)
-    return emit(r.exitCode, r.json)
+    return emit(r.exitCode, r.json, r.sensitive)
   }
 
   process.stderr.write(`yfljsj：未知命令 ${command}。可用：auth / discover / raw / <module> <action> / --help / --version\n`)
