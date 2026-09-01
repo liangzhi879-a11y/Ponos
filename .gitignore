@@ -28,3 +28,6 @@ pet/**/config.json
 
 # Installed runtime environments (not source)
 runtime/
+
+# Git worktrees (isolated implementation workspaces)
+.yfworking/
