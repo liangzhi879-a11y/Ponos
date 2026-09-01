@@ -101,3 +101,28 @@ contextBridge.exposeInMainWorld('ponosDiag', {
     return () => ipcRenderer.removeListener('diag:status-changed', listener)
   },
 })
+
+// 模块化窗口（main 侧 module:* ipcMain.handle 配对）
+contextBridge.exposeInMainWorld('ponosModules', {
+  list: () => ipcRenderer.invoke('module:list'),
+  open: (id, params) => ipcRenderer.invoke('module:open', { id, params }),
+  close: (id) => ipcRenderer.invoke('module:close', { id }),
+  getBounds: (id) => ipcRenderer.invoke('module:get-bounds', { id }),
+  setBounds: (id, bounds) => ipcRenderer.invoke('module:set-bounds', { id, bounds }),
+  onModuleState: (callback) => {
+    const listener = (_event, data) => callback(data)
+    ipcRenderer.on('module:state', listener)
+    return () => ipcRenderer.removeListener('module:state', listener)
+  },
+})
+
+// 状态总线（main 侧 StateBus 广播；publish 用 send，事件用 on）
+contextBridge.exposeInMainWorld('ponosBus', {
+  publish: (event) => ipcRenderer.send('bus:publish', event),
+  getSnapshot: (channel) => ipcRenderer.invoke('bus:get-snapshot', { channel }),
+  onEvent: (channel, callback) => {
+    const listener = (_event, data) => callback(data)
+    ipcRenderer.on(`bus:event:${channel}`, listener)
+    return () => ipcRenderer.removeListener(`bus:event:${channel}`, listener)
+  },
+})

@@ -414,6 +414,34 @@ export interface QuestionPayload {
   context: string
 }
 
+// --- 模块化窗口 (Modular Windows) Types ---
+
+export interface ModuleWindowSpec {
+  width: number
+  height: number
+  minWidth: number
+  minHeight: number
+  resizable: boolean
+  frame: boolean
+}
+
+export interface ModuleDescriptor {
+  id: string
+  name: string
+  icon: string
+  singleton: boolean
+  builtin: boolean
+  windowSpec: ModuleWindowSpec
+}
+
+export interface BusEvent {
+  channel: string
+  action: string
+  payload: unknown
+  from: string
+  ts: number
+}
+
 export interface QuestionAnswer {
   questionId: string
   question: string
@@ -468,6 +496,21 @@ declare global {
       getBootSummary: () => Promise<DiagBootSummary | null>
       openLogDir: () => Promise<string>
       onStatusChanged: (cb: (s: DiagSnapshot) => void) => () => void
+    }
+    /** 模块化窗口（module:* IPC 配对） */
+    ponosModules?: {
+      list: () => Promise<ModuleDescriptor[]>
+      open: (id: string, params?: Record<string, string>) => Promise<{ ok: boolean; windowId?: string; reused?: boolean; error?: string }>
+      close: (id: string) => Promise<{ ok: boolean }>
+      getBounds: (id: string) => Promise<{ x: number; y: number; w: number; h: number } | null>
+      setBounds: (id: string, bounds: { x?: number; y?: number; w?: number; h?: number }) => Promise<{ ok: boolean }>
+      onModuleState: (cb: (e: BusEvent) => void) => () => void
+    }
+    /** 状态总线（bus:* IPC 配对） */
+    ponosBus?: {
+      publish: (event: BusEvent) => void
+      getSnapshot: (channel: string) => Promise<BusEvent[]>
+      onEvent: (channel: string, cb: (e: BusEvent) => void) => () => void
     }
   }
   // Injected by Vite define at build time — reads package.json version
