@@ -156,3 +156,44 @@ node yfljsj-cli/yfljsj.mjs auth login --method password --user admin --password 
    `yfljsj-cli/apis.seed.json` 中；不确定可用 action 时，跑 `yfljsj --help` 看模块列表，
    或读取 `apis.json` / `apis.seed.json` 的 `modules[<module>].commands[].action` 列表
    （输入不存在的 action 时 CLI 会以退出码 2 报出该模块全部可用 action）。
+
+---
+
+## 7. 模型接入流程（字段级四件套 schema / relations / explore / doc）
+
+执行「填表 / 建单」类业务操作前，按以下顺序准备参数，**避免盲猜字段**：
+
+1. **看图谱** `yfljsj relations <对象>`：了解对象间主外键（`via`）与创建顺序，
+   确定要建哪些对象、先后顺序。
+   - 无参运行 `yfljsj relations` 列出全部业务对象。
+2. **看操作序列** `yfljsj doc <手册名>`：查看整条业务链的分步命令序列（每步标注对应
+   `<module> <action>`）与示例，确定当前要执行哪一步。
+   - 无参运行 `yfljsj doc` 列出全部手册。
+3. **看字段** `yfljsj schema <module> <action>`：查看目标命令的完整字段定义
+   （类型 / 必填 / 枚举 / 来源 / 占位说明），逐一准备参数。
+4. **执行** `node yfljsj-cli/yfljsj.mjs <module> <action> [字段=值 ...]`；
+   写操作追加 `--confirm`，删除类再加 `--force`。
+
+**字段来源（source）约定**：`schema` 输出中带 `← <来源>` 的字段，其值应取自来源命令的
+返回字段，而不是随意编造。例：`projectId ← projectInfo-list.id` 表示：
+
+```bash
+# ① 先跑来源命令拿值（注意取 data 里的 id）
+node yfljsj-cli/yfljsj.mjs workbench projectInfo-list current=1 size=1 --json
+
+# ② 把拿到的 id 填入目标字段（写操作仍需 --confirm）
+node yfljsj-cli/yfljsj.mjs workbench projectAppro-add projectId=<上一步的id> ... --confirm
+```
+
+若来源命令自身也有 `source` 标注，则递归向上取数；最长链路可按 `relations` 图谱判断。
+
+**占位规则**：`desc` 注明「无文件传占位」的字段（如 `planFile` / `resolveFile`），
+没有真实文件时传占位字符串即可，不必卡在取文件上。
+
+**字段探测（新接口）**：命令表里没有的接口，用 `explore` 交互式探测必填字段：
+
+```bash
+# 先 --dry-run 只探测不落库
+node yfljsj-cli/yfljsj.mjs explore /workbench/projectAppro/add --dry-run
+# 确认无误后去掉 --dry-run，探测结果写入用户命令表 ~/.yfljsj/apis.json
+```

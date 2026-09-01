@@ -61,6 +61,19 @@ config
 raw
   raw <path> [--method POST] [--data 'json'] [--service rcms]
 
+schema
+  schema <module> <action>      查看命令完整字段定义（类型/必填/枚举/来源/占位说明）
+
+relations
+  relations [对象]              查看业务对象关联图谱（子对象、外键 via、创建顺序）
+
+explore
+  explore <path> [--dry-run] [--method POST] [--service rcms] [--module M]
+                                交互式探测接口必填字段（可写入命令表）
+
+doc
+  doc [手册名]                   查看完整操作手册（步骤 + 示例命令）
+
 命令表驱动
   <module> <action> [--param value]...
 
@@ -166,6 +179,84 @@ yfljsj raw /order/list --method GET --service rcms
 - `--service`：目标服务前缀（`oauth` / `upms` / `rcms`，默认 `rcms`），拼成
   `https://gateway.yfljsj.com/api/<service><path>`。
 - 同样走认证 / 白名单 / 审计安全钩子。
+
+---
+
+## schema / relations / explore / doc：字段级四件套
+
+命令表 v2 为每条命令沉淀了字段级元数据。四个子命令分别从「字段 / 图谱 / 操作序列」三个视角
+查看命令与接口，适合在 `<module> <action>` 调用之前做参数准备（`schema` 看字段 → `relations`
+看图谱 → `doc` 看操作序列）。
+
+### schema：查看命令字段定义
+
+```bash
+yfljsj schema <module> <action>
+yfljsj schema workbench projectAppro-add
+```
+
+逐行输出每个字段的：类型（`number`/`string`/`boolean`）、必填/可选、中文描述、枚举取值
+（`= a|b`）、字段来源（`← <来源>`）与自动注入标记（`[自动注入]`）：
+
+```
+命令: projectAppro-add (POST /workbench/projectAppro/add) [write]
+字段:
+  projectId          number   必填 项目ID ← projectInfo-list.id
+  headPerson         string   必填 项目负责人姓名 ← user/sysUser/getUserList.username
+  techEconTarget     number   必填 主要技术经济目标 = 1|3
+  planFile           string   必填 计划任务书路径（无文件传占位）
+  ...
+```
+
+### relations：查看业务对象关联图谱
+
+```bash
+yfljsj relations              # 列出所有业务对象
+yfljsj relations project      # 查看 project 对象图谱
+```
+
+输出对象 → 子对象（外键 `via` 指向）与创建顺序，帮助理解对象间主外键关系与建单先后。
+
+### doc：查看完整操作手册
+
+```bash
+yfljsj doc                    # 列出所有手册
+yfljsj doc createProject      # 查看「创建研发项目（含立项）」手册
+```
+
+手册输出分步操作序列（每步标注对应 `<module> <action>`）与示例命令，是整条业务链的操作总览。
+
+### explore：交互式字段探测
+
+```bash
+yfljsj explore <path> [--dry-run] [--method POST] [--service rcms] [--module M]
+yfljsj explore /workbench/projectAppro/add --dry-run
+```
+
+对未知/新增接口：发空请求 → 读校验报错解析必填字段 → 逐轮补齐迭代（最多 5 轮），
+把探测结果写入用户命令表 `~/.yfljsj/apis.json`（`--dry-run` 只探测不写入）。
+
+---
+
+## 命令表 v2：字段定义约定
+
+命令表（静态 seed `apis.seed.json` + 用户表 `~/.yfljsj/apis.json`，用户表优先）中，
+每条命令除 `method` / `path` / `kind` 外，`params` 为字段级定义，供 `schema` 展示与参数组装消费：
+
+| 属性 | 含义 | 示例 |
+|---|---|---|
+| `type` | 字段类型 `number` / `string` / `boolean` | `{ type: 'number' }` |
+| `required` | `true` 必填 / `false` 可选 | `{ required: true }` |
+| `desc` | 中文描述（含取值与占位说明） | `{ desc: '计划任务书路径（无文件传占位）' }` |
+| `enum` | 允许取值枚举，schema 显示为 `= a|b` | `{ enum: [1, 3] }` |
+| `source` | 字段来源 `← <来源>`：值应取自来源命令的返回字段 | `{ source: 'projectInfo-list.id' }` |
+| `auto` | `true` 表示 CLI 自动注入（如 `tenantId` 从登录态填充），用户无需传 | `{ auto: true }` |
+| `sensitive` | `--human` 输出脱敏 | 密码 / 手机号 |
+
+- **source 用法**：如 `projectId ← projectInfo-list.id`，表示取值应先跑 `workbench projectInfo-list`
+  取返回 `data` 中的 `id` 填入，而非随意编造；来源命令自身若也有 `source` 则递归向上取数。
+- **占位规则**：`desc` 注明「无文件传占位」的字段（如 `planFile` / `resolveFile`），
+  没有真实文件时传占位字符串即可，不必卡在取文件上。
 
 ---
 
