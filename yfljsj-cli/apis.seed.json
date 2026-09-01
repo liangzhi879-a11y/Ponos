@@ -3002,7 +3002,7 @@
   },
   "notice": {
    "title": "notice",
-   "service": "rcms",
+   "service": "upms",
    "commands": [
     {
      "action": "manage-list",
@@ -3383,7 +3383,7 @@
   },
   "sys": {
    "title": "sys",
-   "service": "rcms",
+   "service": "upms",
    "commands": [
     {
      "action": "sysRolePermissionRel-modify",
@@ -3931,7 +3931,7 @@
   },
   "dictionary": {
    "title": "dictionary",
-   "service": "rcms",
+   "service": "upms",
    "commands": [
     {
      "action": "dictionaryType-list",
@@ -4943,7 +4943,7 @@
   },
   "merchant": {
    "title": "merchant",
-   "service": "rcms",
+   "service": "upms",
    "commands": [
     {
      "action": "lic-page",
@@ -5025,7 +5025,7 @@
   },
   "priAdmin": {
    "title": "priAdmin",
-   "service": "rcms",
+   "service": "upms",
    "commands": [
     {
      "action": "manage-page",

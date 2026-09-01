@@ -4,7 +4,9 @@ const SERVICES = {
   upms: 'https://gateway.yfljsj.com/api/upms',
   rcms: 'https://gateway.yfljsj.com/api/rcms',
 }
-const UPMS_PREFIXES = ['user', 'role', 'permission', 'tenant', 'group', 'dp', 'dept', 'dict']
+// 服务归属（真机全量检测校准 2026-09-01）：auth→oauth；
+// user/role/permission/tenant/group/dp/dept/dict/dictionary/sys/merchant/notice/priAdmin→upms；其余→rcms
+const UPMS_PREFIXES = ['user', 'role', 'permission', 'tenant', 'group', 'dp', 'dept', 'dict', 'dictionary', 'sys', 'merchant', 'notice', 'priAdmin']
 
 /** 服务归属：auth→oauth；user/role/权限/租户→upms；其余→rcms */
 export function inferService(path) {
