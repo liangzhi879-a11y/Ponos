@@ -21,6 +21,10 @@ const { listExperiences, setThemeActive, deleteThemeEntry, refreshIndex } = requ
 const { exportPackage, importPackage } = require('../server/packager.mjs')
 // 内置浏览器自动化执行器（窗口/CDP/快照/人工接管/下载）
 const { BrowserExecutor } = require('./browser-executor.cjs')
+// 模块化窗口（Task 2-6）：模块注册表 / 状态总线 / 窗口管理器
+const { createStateBus } = require('./state-bus.cjs')
+const { createWindowManager, clampBounds } = require('./window-manager.cjs')
+const { listModules, getModule, parseManifest } = require('./module-registry.cjs')
 
 // Ponos home 单点解析：dev 调试版经 PONOS_HOME env 指向独立目录
 // （~/.ponos-dev），与正式版 ~/.ponos 完全隔离——技能/密钥/会话/
@@ -419,6 +423,59 @@ ipcMain.on('app:save-theme', (_event, data) => {
   }
 })
 
+// ---------------------------------------------------------------------------
+// 模块化窗口（Task 2-6）：状态总线 + 窗口管理器
+// ---------------------------------------------------------------------------
+const stateBus = createStateBus()
+
+function loadModuleUrl(win, moduleId, params = {}) {
+  const q = new URLSearchParams({ module: moduleId, ...params })
+  const devUrl = process.env.VITE_DEV_SERVER_URL
+  if (devUrl) {
+    win.loadURL(`${devUrl}?${q.toString()}`)
+  } else {
+    win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), { query: Object.fromEntries(q) })
+  }
+}
+
+const windowManager = createWindowManager({
+  getModule,
+  bus: stateBus,
+  createWindow: (mod, params) => {
+    const win = new BrowserWindow({
+      ...mod.windowSpec,
+      title: mod.name,
+      icon: ICON_PATH,
+      show: false,
+      frame: mod.windowSpec.frame === true,  // 内置模块默认无边框（仿主窗口）
+      backgroundColor: '#100c08',
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.cjs'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false,
+        backgroundThrottling: false,
+      },
+    })
+    // 边界变化回传（沿 editor:sync-bounds 模式）
+    win.on('moved', () => windowManager.setBounds(mod.id, win.getBounds()))
+    win.on('resized', () => windowManager.setBounds(mod.id, win.getBounds()))
+    // 渲染层错误入盘
+    registerRendererErrorCapture(win)
+    // 窗口级 StateBus 接入：webContents 订阅总线（task/question/approval/module 全通道），
+    // 销毁时自动 detach（防悬挂订阅残留 target）
+    for (const ch of ['task', 'question', 'approval', 'module']) stateBus.subscribe(ch, win.webContents)
+    win.webContents.on('destroyed', () => stateBus.detach(win.webContents))
+    loadModuleUrl(win, mod.id, params)
+    win.once('ready-to-show', () => win.show())
+    return win
+  },
+  onClosed: (windowId) => {
+    // 窗口销毁 → 移除其 StateBus 订阅（各窗口 webContents 已随窗口销毁，
+    // detach 兜底清理残留 target）
+  },
+})
+
 function createWindow() {
   // 无主题记录时默认透明（保持历史行为，防止升级后玻璃用户视觉回归）
   const themeMeta = readPersistedTheme()
@@ -453,6 +510,15 @@ function createWindow() {
   // 渲染层错误全链路入盘：did-fail-load / render-process-gone / console /
   // preload-error / unresponsive → console.* → logTee 双写入盘
   registerRendererErrorCapture(mainWindow)
+
+  // 模块窗口/主窗口：webContents 销毁时从 StateBus detach（防悬挂订阅）
+  mainWindow.webContents.on('destroyed', () => stateBus.detach(mainWindow.webContents))
+
+  // 主窗口 dock 化：?module=dock 时渲染 DockBar（Task 6）
+  // 通过 query 区分：createWindow 默认加载主界面（现状），dock 由渲染层
+  // viewStore.goDock() 触发主窗口收窄后由 windowManager.open('dock') 复用。
+  // 阶段 A：主窗口仍加载主界面（boot→login→cockpit→workspace），
+  // dock 窗口由驾驶舱内按钮触发打开（见 Task 6 DockBar 说明）。
 
   // Windows 透明窗口已知 bug：失焦时系统可能重新绘制出蓝色标题栏条。
   // 聚焦/失焦都重置背景为全透明，保持透明合成（渲染层页面自身不透明背景不受影响）。
@@ -886,6 +952,44 @@ async function registerIpc() {
     const f = pendingEditorFile
     pendingEditorFile = null
     return f
+  })
+
+  // ---------------------------------------------------------------------------
+  // 模块化窗口 IPC（Task 2-6）
+  // ---------------------------------------------------------------------------
+  ipcMain.handle('module:list', async () => listModules())
+
+  ipcMain.handle('module:open', async (_e, req) => {
+    const id = typeof req?.id === 'string' ? req.id : ''
+    if (!id) return { ok: false, error: 'empty module id' }
+    const params = req.params && typeof req.params === 'object' ? req.params : {}
+    return windowManager.open(id, params)
+  })
+
+  ipcMain.handle('module:close', async (_e, req) => {
+    const id = typeof req?.id === 'string' ? req.id : ''
+    if (!id) return { ok: false, error: 'empty module id' }
+    return windowManager.close(id)
+  })
+
+  ipcMain.handle('module:get-bounds', async (_e, req) => {
+    const id = typeof req?.id === 'string' ? req.id : ''
+    return windowManager.getBounds(id)
+  })
+
+  ipcMain.handle('module:set-bounds', async (_e, req) => {
+    const id = typeof req?.id === 'string' ? req.id : ''
+    const b = req?.bounds && typeof req.bounds === 'object' ? req.bounds : {}
+    return windowManager.setBounds(id, b)
+  })
+
+  ipcMain.on('bus:publish', (_e, event) => {
+    stateBus.publish(event)
+  })
+
+  ipcMain.handle('bus:get-snapshot', async (_e, req) => {
+    const channel = typeof req?.channel === 'string' ? req.channel : ''
+    return channel ? stateBus.getSnapshot(channel) : []
   })
 
   // ---------------------------------------------------------------------------
@@ -1537,6 +1641,7 @@ if (!gotTheLock) {
   }
 })
 
+// 窗口关闭 → StateBus detach（webContents destroyed 已处理；此处兜底非 webContents target）
 app.on('window-all-closed', () => {
   if (isQuitting || !trayEnabled) {
     killBridge()
