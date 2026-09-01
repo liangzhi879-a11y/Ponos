@@ -5,7 +5,8 @@
  *
  * 行为：
  *   - attach(win)：贴屏幕右缘 + alwaysOnTop + 启动光标轮询
- *   - moved 事件 → 用户拖动 → 解除贴边变自由悬浮窗
+ *   - moved 事件 → 拖动检测：拖离右缘 → 解除贴边变自由悬浮窗；
+ *     拖到右缘附近（≤DOCK_SNAP）→ 自动吸附回贴（无需按钮）
  *     （保持不可缩放 → 禁用 Windows Aero Snap，拖到边缘不会半屏/全屏捕捉）
  *   - redock(win)：悬浮状态重新贴回右缘（挂靠）
  *   - setAutoHide(enabled)：锁定联动——false 时停止自动隐藏（常驻展开）
@@ -16,6 +17,7 @@
 const DOCK_W = 64          // dock 展开宽度
 const DOCK_PEEK = 4        // 隐藏时露出的边缘像素
 const DOCK_EDGE = 10       // 右缘探测阈值
+const DOCK_SNAP = 60       // 拖到右缘 60px 内自动吸附
 const DOCK_POLL_MS = 150   // 光标轮询间隔
 
 function createDockService({ screen, bus } = {}) {
@@ -62,14 +64,20 @@ function createDockService({ screen, bus } = {}) {
     if (!win.__dockServiceBound) {
       win.__dockServiceBound = true
       win.on('moved', () => {
-        if (dockWindow === win && dockDocked) {
-          // 用户拖动 → 解除贴边变自由悬浮窗。
-          // 保持不可缩放（resizable 保持 false）：禁用 Aero Snap，
-          // 防止拖到屏幕边缘触发半屏/全屏捕捉。
+        if (dockWindow !== win) return
+        // 拖动结束（或拖动中）检测：窗口右缘靠近屏幕右缘 → 自动吸附回贴
+        const wa = screen.getPrimaryDisplay().workArea
+        const b = win.getBounds()
+        const nearRightEdge = (wa.x + wa.width) - (b.x + b.width) <= DOCK_SNAP
+        if (dockDocked && !nearRightEdge) {
+          // 用户拖离右缘 → 解除贴边变自由悬浮窗
           dockDocked = false
           stopWatch()
           win.setAlwaysOnTop(false)
           publish('dock-floating')
+        } else if (!dockDocked && nearRightEdge) {
+          // 拖到右缘附近 → 自动吸附回贴（redock 内部会 setBounds + 恢复贴边）
+          redock()
         }
       })
       win.on('closed', () => {

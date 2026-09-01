@@ -38,13 +38,32 @@ test('DockService attach 贴右缘 + 启动轮询（鼠标靠近右缘滑出）'
   dock.stopWatch()
 })
 
-test('DockService moved 事件解除吸附（悬浮模式）', () => {
+test('DockService moved 拖离右缘 → 解除吸附（悬浮模式）', () => {
   const dock = createDockService({ screen: fakeScreen() })
   const { win, handlers } = fakeWin()
   dock.attach(win)
   assert.equal(dock.isDocked(), true)
-  handlers.moved()   // 用户拖动
+  // 拖离：窗口移到屏幕中间（右缘距离远超 SNAP=60）
+  win.bounds = { x: 800, y: 100, width: 64, height: 480 }
+  handlers.moved()
   assert.equal(dock.isDocked(), false)
+  dock.detach()
+})
+
+test('DockService moved 拖到右缘附近 → 自动吸附回贴', () => {
+  const dock = createDockService({ screen: fakeScreen() })
+  const { win, handlers } = fakeWin()
+  dock.attach(win)
+  // 先拖离（悬浮）
+  win.bounds = { x: 800, y: 100, width: 64, height: 480 }
+  handlers.moved()
+  assert.equal(dock.isDocked(), false)
+  // 拖到右缘附近（右缘距离 = 1920-(1850+64) = 6 ≤ SNAP=60）
+  win.bounds = { x: 1850, y: 100, width: 64, height: 480 }
+  handlers.moved()
+  assert.equal(dock.isDocked(), true)
+  // 自动吸附后贴回右缘（x = 1920-64 = 1856）
+  assert.equal(win.bounds.x, 1856)
   dock.detach()
 })
 

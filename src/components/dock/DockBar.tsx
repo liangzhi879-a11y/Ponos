@@ -56,12 +56,6 @@ export function DockBar() {
     reset(ch)   // 打开面板即清除角标
   }
 
-  // 悬浮 → 贴回右缘
-  const redock = () => {
-    void window.ponosDock?.redock()
-    setFloating(false)
-  }
-
   const LockIcon = LOCK_ICONS[locked ? 'locked' : 'unlocked']
 
   return (
@@ -129,15 +123,11 @@ export function DockBar() {
         })}
       </div>
 
-      {/* 悬浮时显示"贴回右缘"按钮 */}
+      {/* 悬浮提示：拖到屏幕右缘自动吸附回贴 */}
       {floating && (
-        <button
-          onClick={redock}
-          className="no-drag w-9 h-9 rounded-lg flex items-center justify-center text-accent hover:bg-surface"
-          title="贴回右缘（重新挂靠）"
-        >
-          <Radar size={16} className="rotate-90" />
-        </button>
+        <div className="no-drag text-[9px] text-tertiary text-center leading-tight w-12" title="拖到屏幕右缘自动吸附">
+          拖到右缘<br />自动吸附
+        </div>
       )}
 
       {/* 锁定展开开关：锁定后常驻展开 */}
