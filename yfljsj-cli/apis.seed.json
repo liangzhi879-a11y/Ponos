@@ -6057,5 +6057,25 @@
    "createOrder": ["projectAppro-add"],
    "children": {}
   }
+ },
+ "operations": {
+  "createProject": {
+   "title": "创建研发项目（含立项）",
+   "steps": [
+    {
+     "cmd": "workbench projectInfo-add",
+     "desc": "1. 建项目基础信息（projectName/projectCode 必填）"
+    },
+    {
+     "cmd": "workbench projectAppro-add",
+     "desc": "2. 建立项信息（负责人 headPersonId 从 getUserList 选）"
+    },
+    {
+     "cmd": "enterprise rdItem-add",
+     "desc": "3. 建研发活动（sourceProjectId=项目id）"
+    }
+   ],
+   "examples": ["yfljsj workbench projectInfo-add --data '{\"projectName\":\"AI...\",\"projectCode\":\"TEST-RD-...\"}'", "yfljsj workbench projectAppro-add --data '{\"projectId\":100216,\"headPersonId\":100131,...}'"]
+  }
  }
 }

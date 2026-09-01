@@ -80,6 +80,24 @@ export function buildRelations(modules) {
   return relations
 }
 
+/** 生成 operations 手册：人工沉淀的完整操作流程（步骤 + 示例命令），供 doc 子命令输出 */
+export function buildOperations() {
+  return {
+    createProject: {
+      title: '创建研发项目（含立项）',
+      steps: [
+        { cmd: 'workbench projectInfo-add', desc: '1. 建项目基础信息（projectName/projectCode 必填）' },
+        { cmd: 'workbench projectAppro-add', desc: '2. 建立项信息（负责人 headPersonId 从 getUserList 选）' },
+        { cmd: 'enterprise rdItem-add', desc: '3. 建研发活动（sourceProjectId=项目id）' },
+      ],
+      examples: [
+        "yfljsj workbench projectInfo-add --data '{\"projectName\":\"AI...\",\"projectCode\":\"TEST-RD-...\"}'",
+        "yfljsj workbench projectAppro-add --data '{\"projectId\":100216,\"headPersonId\":100131,...}'",
+      ],
+    },
+  }
+}
+
 export function genApis(calls) {
   const modules = {}
   for (const c of calls) {
@@ -98,5 +116,5 @@ export function genApis(calls) {
       kind: inferKind(c.path),
     })
   }
-  return { version: 1, services: SERVICES, modules, relations: buildRelations(modules) }
+  return { version: 1, services: SERVICES, modules, relations: buildRelations(modules), operations: buildOperations() }
 }

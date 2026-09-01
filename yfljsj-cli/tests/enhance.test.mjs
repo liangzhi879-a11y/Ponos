@@ -163,3 +163,23 @@ test('explore 未登录 → main 路由 catch → 退出码 3（AUTH_REQUIRED）
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+// ==================== doc（Task 5：操作手册） ====================
+
+test('doc：输出操作手册（步骤+示例）', () => {
+  const lines = []
+  const code = api.docCommand('createProject', { output: { write: s => lines.push(s) } })
+  assert.equal(code, 0)
+  const text = lines.join('')
+  assert.match(text, /创建研发项目/)
+  assert.match(text, /projectInfo-add/)
+  assert.match(text, /projectAppro-add/)
+  assert.match(text, /yfljsj /)
+})
+
+test('doc：无参 → 输出目录', () => {
+  const lines = []
+  const code = api.docCommand(null, { output: { write: s => lines.push(s) } })
+  assert.equal(code, 0)
+  assert.match(lines.join(''), /createProject|可用手册/)
+})

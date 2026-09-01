@@ -985,6 +985,27 @@ export function relationsCommand(object, { output = process.stdout } = {}) {
   return 0
 }
 
+/** doc：完整操作手册 */
+export function docCommand(object, { output = process.stdout } = {}) {
+  const apis = loadApis()
+  const ops = apis.operations || {}
+  if (!object) {
+    output.write('可用手册: ' + Object.keys(ops).join('、') + '\n')
+    output.write('用法: yfljsj doc <手册名>\n')
+    return 0
+  }
+  const op = ops[object]
+  if (!op) { output.write(`未知手册: ${object}\n可用: ${Object.keys(ops).join('、')}\n`); return 2 }
+  output.write(`${object} — ${op.title}\n`)
+  output.write('步骤:\n')
+  for (const s of op.steps || []) output.write(`  ${s.desc} (${s.cmd})\n`)
+  if (op.examples?.length) {
+    output.write('示例:\n')
+    for (const e of op.examples) output.write(`  ${e}\n`)
+  }
+  return 0
+}
+
 // =====================================================================
 // Task 4（字段级增强）：explore 子命令 — 交互式字段探测
 //   替代手工下载前端 chunk 逆向：发空请求读报错 → 解析必填字段 → 逐个补字段迭代
@@ -1182,6 +1203,8 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (command === 'relations') return relationsCommand(sub, { output: process.stdout })
+
+  if (command === 'doc') return docCommand(sub, { output: process.stdout })
 
   if (command === 'explore') {
     if (!sub) return usage('explore 需要 <path>')
