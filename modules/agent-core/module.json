@@ -1,0 +1,10 @@
+{
+  "id": "agent-core",
+  "name": "Agent 内核",
+  "version": "0.1.0",
+  "icon": "brain",
+  "runtime": "cli-bridge",
+  "singleton": true,
+  "capabilities": [],
+  "entry": { "main": "modules/agent-core/main.cjs" }
+}
