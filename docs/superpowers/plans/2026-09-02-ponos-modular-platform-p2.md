@@ -267,7 +267,7 @@ BUILTIN_MODULES 追加（保持 launcher/chat 不动，尾部新增）：
   },
 ```
 
-（`normalizeEntry` 已支持 `{ main }`；parseManifest 的 `num(ws.width, 640)` 对缺省 windowSpec 已回落默认，无需改其逻辑。）
+（`normalizeEntry` 已支持 `{ main }`；**注意**：parseManifest 现有 `const ws = raw.windowSpec` 后直接 `ws.width`（module-registry.cjs:72/83）——REQUIRED 放宽后缺 windowSpec 的 manifest 会抛 TypeError，**必须**把该行改为 `const ws = raw.windowSpec || {}` 使 `num(ws.width, 640)` 真正回落默认。）
 
 Modify `harness/src/kernel/process-orchestrator.cjs`：
 
