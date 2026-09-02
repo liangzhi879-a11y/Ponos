@@ -61,6 +61,18 @@ function getModule(id) {
   return BUILTIN_MODULES.find(m => m.id === id)
 }
 
+// entry 归一化：旧字符串 → { ui }；对象保持，ui-renderer 缺 main 也可
+function normalizeEntry(raw) {
+  if (typeof raw === 'string' && raw.length > 0) return { ui: raw }
+  if (raw && typeof raw === 'object') {
+    const out = {}
+    if (typeof raw.ui === 'string' && raw.ui.length > 0) out.ui = raw.ui
+    if (typeof raw.main === 'string' && raw.main.length > 0) out.main = raw.main
+    return Object.keys(out).length > 0 ? out : null
+  }
+  return null
+}
+
 /**
  * 解析并校验外部模块 manifest.json。
  * 返回 { ok:true, manifest } 或 { ok:false, error }。不读取文件系统（调用方负责读文件）。
@@ -80,6 +92,8 @@ function parseManifest(jsonText, baseDir) {
       return { ok: false, error: `manifest 缺少必需字段: ${f}` }
     }
   }
+  const entry = normalizeEntry(raw.entry)
+  if (!entry) return { ok: false, error: 'manifest entry 必须为非空字符串或 { ui|main } 对象' }
   const ws = raw.windowSpec
   const num = (v, dft) => (typeof v === 'number' && Number.isFinite(v) && v > 0) ? Math.round(v) : dft
   const manifest = {
@@ -87,7 +101,8 @@ function parseManifest(jsonText, baseDir) {
     name: String(raw.name),
     version: typeof raw.version === 'string' ? raw.version : '0.0.0',
     icon: typeof raw.icon === 'string' ? raw.icon : '',
-    entry: String(raw.entry),
+    runtime: ['ui-renderer', 'node-worker', 'cli-bridge'].includes(raw.runtime) ? raw.runtime : 'ui-renderer',
+    entry,
     baseDir: String(baseDir || ''),
     windowSpec: {
       width: num(ws.width, 640),
@@ -100,6 +115,13 @@ function parseManifest(jsonText, baseDir) {
     singleton: raw.singleton !== false,
     channels: Array.isArray(raw.channels) ? raw.channels.map(c => String(c)) : [],
     permissions: Array.isArray(raw.permissions) ? raw.permissions.map(p => String(p)) : [],
+    interfaces: {
+      provides: Array.isArray(raw.interfaces?.provides) ? raw.interfaces.provides : [],
+      consumes: Array.isArray(raw.interfaces?.consumes) ? raw.interfaces.consumes : [],
+    },
+    capabilities: Array.isArray(raw.capabilities) ? raw.capabilities.map(c => String(c)) : [],
+    lifecycle: (raw.lifecycle && typeof raw.lifecycle === 'object') ? { init: raw.lifecycle.init || null, destroy: raw.lifecycle.destroy || null } : { init: null, destroy: null },
+    runtimeConfig: (raw.runtimeConfig && typeof raw.runtimeConfig === 'object') ? raw.runtimeConfig : { sandbox: {} },
     homepage: typeof raw.homepage === 'string' ? raw.homepage : '',
     author: typeof raw.author === 'string' ? raw.author : '',
   }
