@@ -32,6 +32,23 @@ test('send 写 JSON 行；onMessage 收到解析后的对象（半行合并 + �
   assert.equal(got.length, 1)
 })
 
+test('UTF-8 多字节字符跨 chunk 分裂不丢字（StringDecoder 缓冲半字）', () => {
+  const c = fakeChild()
+  const t = createStdioTransport({ child: c })
+  const got = []
+  t.onMessage(m => got.push(m))
+  const line = JSON.stringify({ id: 9, result: { text: '你好世界' } }) + '\n'
+  const full = Buffer.from(line, 'utf8')
+  const youStart = full.indexOf(Buffer.from('你', 'utf8'))  // '你' 的首字节 offset（其前全 ASCII）
+  assert.ok(youStart > 0, '夹具应能找到多字节起点')
+  const cut = youStart + 1  // 切在 '你' 三字节中间 → 半字分裂（E4 已到，BD A0 下一片）
+  c.emit(full.subarray(0, cut))
+  assert.equal(got.length, 0, '半行不应触发')
+  c.emit(full.subarray(cut))
+  assert.equal(got.length, 1)
+  assert.deepEqual(got[0], { id: 9, result: { text: '你好世界' } }, '跨 chunk 分裂的多字节字符应无损还原')
+})
+
 test('onMessage 返回退订；close 调 child.kill', () => {
   const c = fakeChild()
   const t = createStdioTransport({ child: c })
