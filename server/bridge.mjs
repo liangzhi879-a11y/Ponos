@@ -1,3 +1,7 @@
+// P3 注记：会话语义已按 cli-bridge 协议在 modules/agent-core 落地（session.send/cancel/status，
+// harness/src/main.cjs 装配）；本文件 HTTP/WS 端点保留运行，支撑旧 GUI 冻结基线，
+// 会话逻辑迁移源（getOrCreateSession/findPonos/cancel/回收）在 Phase 5 旧 GUI 退役期整体下线。
+
 import { spawn, execSync } from 'child_process'
 import { createInterface } from 'readline'
 import { WebSocketServer } from 'ws'

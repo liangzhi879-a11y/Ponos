@@ -2,7 +2,7 @@
 
 > 用途：GUI↔bridge↔内核 三层交互的**可重建契约基线**。目标是在不修改 GUI 的前提下，以自研/合规实现替换内核（净室重建）时，协议语义可逐条对照、可测试。
 > 权威来源：`server/bridge.mjs`、`electron/main.cjs`、内核 `kernel/cli.mjs`（Ponos-turbo 净室重建，stream-json 模式）。
-> 更新日期：2026-08-21
+> 更新日期：2026-09-02
 
 ---
 
@@ -176,3 +176,66 @@ bootstrap 复制到 `~/.ponos/runtime/kernel/cli.mjs`）：
 - 从本契约（用户可见行为 + 公开文档）写实现，不照搬内核源码的文件结构/命名/注释/提示词原文。
 - 消息类型名与事件形状是跨层契约（§3-§6），保留是协议需要而非代码抄袭；实现内部的模块划分、算法、提示词应原创。
 - 身份提示词（PONOS_*）、技能清单注入、经验注入等 bridge 侧文本已是自研内容，可直接沿用。
+
+## 10. P3 模块化（2026-09-02）：agent-core cli-bridge 会话契约
+
+> P3 起，会话语义在新模块体系落地：`modules/agent-core/`（`runtime:'cli-bridge'` 外部子进程）经宿主装配
+> （`harness/src/main.cjs`）把 `session.*` 方法集与事件推送给 chat 模块，chat 全程走 ponosRpc（不再直连本文档
+> §5-§6 的 WS）。**内核侧契约不变**——agent-core wrapper 直接复用 `kernel/cli.mjs`（零改造），spawn 参数与
+> stdin/stdout NDJSON 语义**以本文档 §2/§3/§4 为权威来源**。本文档 §1-§8 描述的 bridge.mjs HTTP/WS 端点
+> **保留运行**，支撑旧 GUI 冻结基线；其会话逻辑作为迁移源在 **Phase 5（旧 GUI 退役期）整体下线**（见
+> `server/bridge.mjs` 文件头 P3 注记）。
+
+**会话链路（P3 拓扑）**：
+
+```
+chat 模块 UI（modules/chat，ui-renderer，能力门 ['session']）
+        │  session.send / session.cancel / session.status（宿主 router 方法）
+        ▼
+harness/src/main.cjs（Electron 主进程装配）── rpc-client（createRpcClient + stdio-transport）
+        │  stdout 响应 {id, result|error}；通知 {method:'session.event', params:{sessionId, event}}
+        ▼
+modules/agent-core/main.cjs（cli-bridge 子进程，orchestrator startCli spawn：node main.cjs）
+        │  spawn → kernel/cli.mjs（node 运行）：
+        │    --print --output-format stream-json --input-format stream-json --dangerously-skip-permissions
+        ▼
+kernel 进程 ── stdout NDJSON 事件流（§4：system(init) / assistant 流式块 / result 闭轮 …）
+```
+
+kernel spawn 与 §2 的差异（P3 范围）：wrapper 以 `process.execPath`（node）运行 kernel/cli.mjs，参数取 §2 stream-json
+子集；**单默认会话**——不传 `--resume`，多会话并行与无缝恢复属 P5 bridge 迁移语义。wrapper 不实现 §5 bridge 层
+职责（里程碑/ASK_USER 卡片提取剥离、权限审批 `can_use_tool` 处理等），kernel 事件一律原样透传。
+
+**宿主 ↔ wrapper（cli-bridge envelope，stdin/stdout JSON 行）**：
+
+| 方向 | 行 shape | 说明 |
+|---|---|---|
+| host → wrapper | `{ id, method, params }` | 请求；wrapper 内 `handleRequest(method, params)` 分派 |
+| wrapper → host（响应） | `{ id, result }` / `{ id, error }` | result 恒含 `ok` 标记；error 为字符串码（如 `NOT_RUNNING`/`METHOD_NOT_FOUND`） |
+| wrapper → host（通知） | `{ method:'session.event', params:{ sessionId, event } }` | 无 `id` 的消息即通知；`event` = kernel NDJSON 事件（§4）原样透传 |
+
+**session.* 方法**（宿主 router 注册，能力门 `['session']`；经 rpc-client 转发 wrapper）：
+
+| 方法 | params | result（成功） | error |
+|---|---|---|---|
+| `session.send` | `{ text }` | `{ ok:true, sessionId }`（sessionId 取当前会话，kernel init 后才非空） | `{ ok:false, error:'NOT_RUNNING' }` |
+| `session.cancel` | `{}` | `{ ok:true }`（向 kernel 写 `control_request{request:{subtype:'cancel'}}`，§3） | `{ ok:false, error:'NOT_RUNNING' }` |
+| `session.status` | `{}` | `{ ok:true, busy, firstTokenAt, sessionId }` | —（wrapper 恒返回） |
+
+会话状态（wrapper 内部维护）：`busy` 在收到 `assistant` 事件时置位、`result` 事件复位；`firstTokenAt` 记录首块时间；
+`sessionId` 取自 kernel `system{subtype:'init'}` 事件的 `session_id`。宿主侧无 agent-core 客户端时（未装配/启动前）
+session.* 直接返回 `{ ok:false, error:'NOT_RUNNING' }`。
+
+**session.event 推送（kernel 事件透传 → chat）**：宿主收到 wrapper 通知后包成 envelope
+（`method:'session.event'`、`x_sender:'agent-core'`、`x_target:'chat'`）经 message-router 发至 chat 模块；
+chat 按 §4 语义渲染：`assistant` 流式 text 块累积为单条气泡、`result` 闭轮清 busy（thinking/tool_use 纯块 v1 不渲染）。
+
+**崩溃恢复（respawn 语义）**：
+- wrapper 内 kernel 崩溃（`error` 或 exit(code≠0)）→ 500ms respawn，会话状态重置；exit 0 优雅收尾不重建。
+- 宿主侧 agent-core 子进程崩溃（child_process 真实崩溃形态为 exit(code≠0)，`error` 仅 spawn 失败）→ orchestrator
+  `startCli` 500ms respawn；respawn 后发布 worker `started` → 宿主 `connectAgentCore` 重连
+  （detach 残留 → 新 stdio-transport → attach），新 session_id 由下次 kernel init 产生。
+
+**外部程序接入（echo-demo 最小参考）**：`modules/echo-demo/main.py`（Python 3 纯标准库）示范非 Node 程序注册
+cli-bridge——stdin 行 `{id, method, params}` → stdout 行 `{id, result:{ok,…}}`，提供 `echo.echo`/`echo.time`/
+`echo.add`；无窗口、无 capabilities，属后台模块（launcher 只展示 `runtime:'ui-renderer'` 且有 `entry.ui` 的模块）。
