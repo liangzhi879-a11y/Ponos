@@ -1,7 +1,8 @@
 'use strict'
 
-/** 宿主侧 state-manager rpc client：请求/响应经递增 id 配对，无 id 消息分发通知。 */
-function createStateManagerClient({ transport }) {
+/** 宿主侧通用 rpc client：请求/响应经递增 id 配对，无 id 消息分发通知。
+ *  由 P2 state-manager-client 泛化更名（P3）：state-manager 与 agent-core 宿主接入共用。 */
+function createRpcClient({ transport }) {
   let seq = 0
   const pending = new Map()
   const notifications = new Set()
@@ -29,4 +30,4 @@ function createStateManagerClient({ transport }) {
   }
 }
 
-module.exports = { createStateManagerClient }
+module.exports = { createRpcClient }

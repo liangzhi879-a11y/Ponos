@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createStateManagerClient } from './state-manager-client.cjs'
+import { createRpcClient } from './rpc-client.cjs'
 
 function fakeTransport() {
   const listeners = []
@@ -14,7 +14,7 @@ function fakeTransport() {
 
 test('call 请求带递增 id，响应经 id 配对 resolve', async () => {
   const t = fakeTransport()
-  const c = createStateManagerClient({ transport: t })
+  const c = createRpcClient({ transport: t })
   const p = c.call('state.get', { key: 'a' })
   assert.equal(t.sent[0].id, 1)
   assert.equal(t.sent[0].method, 'state.get')
@@ -24,7 +24,7 @@ test('call 请求带递增 id，响应经 id 配对 resolve', async () => {
 
 test('error 响应 reject；无 id 消息走 onNotification', async () => {
   const t = fakeTransport()
-  const c = createStateManagerClient({ transport: t })
+  const c = createRpcClient({ transport: t })
   const got = []
   c.onNotification(m => got.push(m))
   const p = c.call('state.set', { key: 'a', value: 1, from: 'x' })

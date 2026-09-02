@@ -10,7 +10,7 @@ const { createProcessOrchestrator } = require('./kernel/process-orchestrator.cjs
 const { createPermissionGate } = require('./kernel/permission-gate.cjs')
 const { createIpcTransport } = require('./rpc/transports/ipc-transport.cjs')
 const { createWorkerTransport } = require('./rpc/transports/worker-transport.cjs')
-const { createStateManagerClient } = require('./kernel/state-manager-client.cjs')
+const { createRpcClient } = require('./kernel/rpc-client.cjs')
 const { createAgentBridge } = require('./kernel/agent-bridge.cjs') // Task 10：P1 最小内核桥
 const { makeEnvelope } = require('./rpc/envelope.cjs')
 
@@ -80,7 +80,7 @@ function buildApp({ ipcMain: ipc, createWindow, createWorker, workArea, kernelAr
     if (!worker) return
     smTransport?.close()
     smTransport = createWorkerTransport({ worker })
-    smClient = createStateManagerClient({ transport: smTransport })
+    smClient = createRpcClient({ transport: smTransport })
     smClient.onNotification(ev => {
       if (ev?.method === 'state.changed') {
         mr.broadcast({ channel: 'state', event: { type: 'changed', ...(ev.params || {}) }, sender: 'state-manager' })
@@ -101,7 +101,10 @@ function buildApp({ ipcMain: ipc, createWindow, createWorker, workArea, kernelAr
 }
 
 // Electron 启动装配（dev 冒烟/真实启动共用：npm run electron 直接走此入口）
-if (require.main === module) {
+// 守卫含 process.defaultApp：electron.exe <entry> 经 default_app.asar 用 ESM import() 加载入口时
+// require.main 指向 default_app 的 main.js（filename='electron'），require.main === module 恒 false；
+// process.defaultApp 为 true 时同样需要执行装配（真实启动），单测 require 本文件时两者皆不成立 → 不触发。
+if (require.main === module || process.defaultApp) {
   app.whenReady().then(() => {
     // ctx 声明提前：createWindow 闭包经 ctx.orchestrator.keyOf 计算实例 key
     // （open 在 buildApp 返回后调用，ctx 已赋值，安全）
