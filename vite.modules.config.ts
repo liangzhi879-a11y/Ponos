@@ -19,6 +19,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         launcher: path.resolve(__dirname, 'modules/launcher/index.html'),
+        chat: path.resolve(__dirname, 'modules/chat/index.html'),
       },
       output: {
         entryFileNames: '[name]/index.js',
