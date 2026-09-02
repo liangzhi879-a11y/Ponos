@@ -9,10 +9,10 @@ const { createMessageRouter } = require('./kernel/message-router.cjs')
 const { createProcessOrchestrator } = require('./kernel/process-orchestrator.cjs')
 const { createPermissionGate } = require('./kernel/permission-gate.cjs')
 const { createIpcTransport } = require('./rpc/transports/ipc-transport.cjs')
-const { createAgentBridge } = require('./kernel/agent-bridge.cjs') // Task 10 实装，先占位
+const { createAgentBridge } = require('./kernel/agent-bridge.cjs') // Task 10：P1 最小内核桥
 const { makeEnvelope } = require('./rpc/envelope.cjs')
 
-function buildApp({ ipcMain: ipc, createWindow, workArea, kernelArgs }) {
+function buildApp({ ipcMain: ipc, createWindow, workArea, kernelArgs = {} }) {
   const bus = createStateBus()
   const router = createRouter()
   const mr = createMessageRouter({ router, bus })
@@ -39,13 +39,26 @@ function buildApp({ ipcMain: ipc, createWindow, workArea, kernelArgs }) {
   router.register('system.window.open', (params) => orchestrator.open(params.moduleId, params.params || {}), { capabilities: ['system.window'] })
   router.register('system.window.close', (params) => orchestrator.close(params.moduleId, params.params), { capabilities: ['system.window'] })
   router.register('system.discover', () => router.discover(), { capabilities: ['system'] })
-  // agent 方法由 createAgentBridge 注册（Task 10）；P1 中间态先占位
-  const agent = createAgentBridge ? { send: () => ({ ok: false, error: 'NOT_READY' }) } : null
+
+  // —— Agent 桥（P1 最小：spawn kernel/cli.mjs）——
+  const bridge = createAgentBridge({
+    kernelPath: kernelArgs.kernelPath || path.join(__dirname, '..', '..', 'kernel', 'cli.mjs'),
+    env: kernelArgs.env,
+    spawnImpl: kernelArgs.spawnImpl,
+    readlineImpl: kernelArgs.readlineImpl,
+  })
+  bridge.onEvent(ev => {
+    const env = makeEnvelope({ method: 'agent.event', params: ev, x_sender: 'agent', x_target: 'chat' })
+    mr.sendTo('chat', env)
+  })
+  router.register('agent.send', (params) => bridge.send(params.text), { capabilities: ['agent'] })
+  router.register('agent.cancel', () => bridge.cancel(), { capabilities: ['agent'] })
+  bridge.start()
 
   const transport = createIpcTransport({ ipcMain: ipc, mr, gate, instanceOf })
   transport.handle()
 
-  return { app, router, mr, orchestrator, bus, agent }
+  return { app, router, mr, orchestrator, bus, agent: bridge }
 }
 
 // Electron 启动装配（仅 dev 冒烟用；正式装配在 Task 11 收口）

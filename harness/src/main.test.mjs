@@ -2,6 +2,19 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { buildApp } from './main.cjs'
 
+// 注入 fake spawn：buildApp 内 bridge.start() 不真实拉起 node kernel 子进程
+function fakeChild() {
+  const c = {
+    stdin: { write: () => {}, end: () => {} },
+    stdout: {},
+    kill: () => { c.killed = true },
+    killed: false,
+    on: () => {},
+    pid: 42,
+  }
+  return c
+}
+
 test('buildApp 注册主进程方法集并可用', async () => {
   const handlers = new Map()
   const WC = {} // webContents 哨兵对象：orchestrator 反查模块 id 的比对对象
@@ -9,6 +22,7 @@ test('buildApp 注册主进程方法集并可用', async () => {
   const ctx = buildApp({
     ipcMain,
     createWindow: () => ({ isDestroyed: () => false, on() {}, destroy() {}, close() {}, webContents: WC }),
+    kernelArgs: { spawnImpl: () => fakeChild(), readlineImpl: () => ({ on() {} }) },
   })
   // 打开 chat 窗口触发装配的 onWindowCreated 钩子 → attach chat（capabilities: ['anchor-host']，
   // 不覆盖 agent.*，权限拒绝路径经 transport + 权限门验证）
