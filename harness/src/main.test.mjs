@@ -4,6 +4,9 @@ import { buildApp } from './main.cjs'
 
 // 窗口壳 fake：orchestrator 反查模块 id 的 webContents 哨兵对象
 function fakeWindow(WC) {
+  // P2 壳：attach 需 wc.on('did-frame-finish-load') 记录模块子 frame——就地补方法保对象同一性
+  // （instanceOf 按 win.webContents === event.sender 反查，换壳会丢映射）
+  WC.on ||= () => {}
   return { isDestroyed: () => false, on() {}, destroy() {}, close() {}, webContents: WC }
 }
 
@@ -103,6 +106,35 @@ test('chat 模块 session.status ok 帧经宿主回传解析为结果（plan-fix
   assert.equal(res.ok, true)
   assert.equal(res.result.ok, true)
   assert.equal(res.result.busy, false)
+})
+
+test('P2 壳：模块 UI 在 shell 子 frame，通知经 sendToFrame 定向子 frame 送达（wc.send 只达主 frame）', async () => {
+  const handlers = new Map()
+  const ipcMain = { handle(ch, fn) { handlers.set(ch, fn) }, on() {} }
+  // webContents duck：捕获 send（主 frame 路径）与 sendToFrame（子 frame 定向）两路下行
+  const wc = {
+    sentTop: [], sentFrames: [], frameCbs: [],
+    on(ev, cb) { if (ev === 'did-frame-finish-load') this.frameCbs.push(cb) },
+    send(ch, data) { this.sentTop.push([ch, data]) },
+    sendToFrame(fid, ch, data) { this.sentFrames.push([fid, ch, data]) },
+    isDestroyed: () => false,
+  }
+  const cli = fakeCli()
+  const ctx = buildApp({
+    ipcMain,
+    createWindow: () => ({ isDestroyed: () => false, on() {}, destroy() {}, close() {}, webContents: wc }),
+    createCli: () => cli,
+  })
+  ctx.orchestrator.open('chat')  // attach chat（target 收模块事件下行）
+  // 子 frame（模块 UI iframe）加载完成 → 记录 frameId=[pid, routingId]
+  wc.frameCbs.forEach(cb => cb({}, false, 7, 99))
+
+  // 触发一次 broadcast：下行应定向 chat 窗口的子 frame，而非主 frame
+  ctx.mr.broadcast({ channel: 'state', event: { type: 'changed', key: 'x' }, sender: 'state-manager' })
+  const hits = wc.sentFrames.filter(([fid]) => fid[0] === 7 && fid[1] === 99)
+  assert.ok(hits.length >= 1, '通知应经 sendToFrame 定向模块子 frame')
+  assert.ok(hits.some(([, ch]) => ch === 'rpc:event:state'), 'channel 为 rpc:event:state')
+  assert.equal(wc.sentTop.length, 0, '子 frame 就绪后不再走 wc.send 主 frame 路径')
 })
 
 test('settings 窗口 state.get 经 router → worker，changed 通知广播到 attach 模块', async () => {

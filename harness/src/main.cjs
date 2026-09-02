@@ -25,8 +25,20 @@ function buildApp({ ipcMain: ipc, createWindow, createWorker, createCli, workAre
     hooks: {
       onWindowCreated: (type, win, mod, params) => {
         const moduleId = mod.id
+        // P2 壳：模块 UI 加载在 shell 子 frame（iframe），wc.send 只达主 frame（shell 标题栏），
+        // 模块事件下行须 sendToFrame 定向模块子 frame（冒烟实测 wc.send 不到 iframe）。
+        // 子 frame 未加载完成前回退 wc.send（此时模块 UI 尚未订阅，事件必在其后到达）。
+        let moduleFrame = null
+        const wc = win.webContents
+        wc.on('did-frame-finish-load', (_e, isMainFrame, frameProcessId, frameRoutingId) => {
+          if (!isMainFrame) moduleFrame = [frameProcessId, frameRoutingId]
+        })
         mr.attach(moduleId, {
-          send: (channel, data) => { if (!win.isDestroyed()) win.webContents.send(channel, data) },
+          send: (channel, data) => {
+            if (win.isDestroyed()) return
+            if (moduleFrame) wc.sendToFrame(moduleFrame, channel, data)
+            else wc.send(channel, data)
+          },
         }, mod.capabilities)
       },
     },
