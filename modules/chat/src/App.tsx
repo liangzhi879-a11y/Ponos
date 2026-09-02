@@ -8,14 +8,14 @@ export function App() {
   const [input, setInput] = useState('')
   const endRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    const off = window.ponosRpc?.on('agent.event', (env) => setState(s => reduceEvents(s, env.params)))
+    const off = window.ponosRpc?.on('session.event', (env) => setState(s => reduceEvents(s, env.params?.event)))
     return () => off?.()
   }, [])
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [state.msgs])
   const send = () => {
     if (!input.trim() || state.busy) return
     setState(s => ({ msgs: [...s.msgs, { role: 'user', text: input, ts: Date.now() }], busy: true }))
-    window.ponosRpc?.call('agent.send', { text: input }).then(() => setState(s => ({ ...s, busy: false })))
+    window.ponosRpc?.call('session.send', { text: input }).catch(() => { /* NOT_RUNNING 等拒绝：busy 由 result 事件兜底 */ })
     setInput('')
   }
   return (

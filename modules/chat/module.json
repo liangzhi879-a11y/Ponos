@@ -7,5 +7,5 @@
   "entry": { "ui": "../../dist/modules/chat/index.html" },
   "windowSpec": { "width": 900, "height": 700, "minWidth": 600, "minHeight": 400, "resizable": true, "frame": false },
   "singleton": false,
-  "capabilities": ["system.window", "agent"]
+  "capabilities": ["system.window", "session"]
 }
