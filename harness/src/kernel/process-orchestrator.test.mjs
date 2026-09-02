@@ -24,6 +24,8 @@ function fakeWin(bus) {
 
 const MODS = {
   chat: { id: 'chat', singleton: false, windowSpec: { width: 900, height: 700, minWidth: 600, minHeight: 400 } },
+  state: { id: 'state', runtime: 'node-worker', singleton: true },
+  settings: { id: 'settings', runtime: 'ui-renderer', singleton: false, windowSpec: { width: 720, height: 560, minWidth: 480, minHeight: 400 } },
 }
 
 test('open/close/typeOf 与旧 window-manager 语义一致', () => {
@@ -177,4 +179,62 @@ test('崩溃重建路径：旧窗 closed 异步迟到 → 实例守卫不清 suc
   const restarted = bus.getSnapshot('module').filter(e => e.action === 'restarted')
   assert.equal(restarted.length, 1, '应发布一次 restarted 重建事件')
   assert.equal(restarted[0].payload.windowId, 'chat::s1')
+})
+
+function fakeWorker() {
+  const listeners = {}
+  return {
+    on(ev, cb) { (listeners[ev] ||= []).push(cb) },
+    emit(ev, ...a) { (listeners[ev] || []).forEach(cb => cb(...a)) },
+    postMessage() {}, terminate() { this.terminated = true },
+  }
+}
+
+test('startWorker 创建 worker、发布 started、重复启动报 ALREADY_RUNNING', () => {
+  const bus = createStateBus()
+  const created = []
+  const orch = createProcessOrchestrator({
+    getModule: id => MODS[id], bus, createWindow: () => fakeWin(bus),
+    createWorker: mod => { const w = fakeWorker(); created.push(w); return w },
+    onClosed: () => {}, hooks: {},
+  })
+  const r = orch.startWorker('state')
+  assert.equal(r.ok, true)
+  assert.equal(created.length, 1)
+  assert.equal(orch.startWorker('state').error, 'ALREADY_RUNNING')
+  assert.equal(bus.getSnapshot('worker').filter(e => e.action === 'started').length, 1)
+})
+
+test('worker 崩溃 → 500ms 延迟 respawn 并发布 restarted', async () => {
+  const bus = createStateBus()
+  let n = 0
+  const orch = createProcessOrchestrator({
+    getModule: id => MODS[id], bus, createWindow: () => fakeWin(bus),
+    createWorker: () => { n++; return fakeWorker() },
+    onClosed: () => {}, hooks: {},
+  })
+  orch.startWorker('state')
+  const first = orch.getWorker('state')
+  first.emit('error', new Error('boom'))
+  await new Promise(r => setTimeout(r, 700))
+  assert.equal(n, 2)
+  assert.ok(orch.getWorker('state'))
+  assert.notEqual(orch.getWorker('state'), first)
+  assert.equal(bus.getSnapshot('worker').filter(e => e.action === 'restarted').length, 1)
+})
+
+test('worker exit → 清理映射并触发 onWorkerExit；ui-renderer 模块不可 startWorker', () => {
+  const bus = createStateBus()
+  const exited = []
+  const orch = createProcessOrchestrator({
+    getModule: id => MODS[id], bus, createWindow: () => fakeWin(bus),
+    createWorker: () => fakeWorker(),
+    onClosed: () => {}, onWorkerExit: id => exited.push(id), hooks: {},
+  })
+  orch.startWorker('state')
+  const w = orch.getWorker('state')
+  w.emit('exit')
+  assert.equal(orch.getWorker('state'), null)
+  assert.deepEqual(exited, ['state'])
+  assert.equal(orch.startWorker('settings').error, 'not a node-worker module')
 })

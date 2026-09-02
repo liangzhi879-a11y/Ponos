@@ -13,6 +13,12 @@
  *   - dock：贴边 + alwaysOnTop + 边界自动隐藏（行为由 onDockAttach 注入，DockService 实现）
  *   - approval：置顶 + 聚焦 + 审批队列（行为由 onApprovalOpen 注入，ApprovalCenter 实现）
  *   - module：普通模块窗口（chat/files/settings/skills...）
+ *
+ * node-worker 运行时（P2）：runtime 为 'node-worker' 的模块不走窗口，
+ * 由宿主注入 createWorker 创建 Node Worker 进程，本文件管理其生命周期：
+ *   - error（崩溃）→ 500ms 延迟 respawn（沿用 crashReboot 同款竞态守卫：
+ *     映射仍指向本 worker 才重建），并发布 module:state（action `restarted`）
+ *   - exit → 清理映射 + onWorkerExit?.(id)
  */
 'use strict'
 
@@ -41,11 +47,13 @@ function clampBounds(bounds, spec, workArea) {
  * typeOf(id)：模块 id → 窗口类型（dock/approval 特殊，其余 module）。
  * hooks 由宿主注入（DockService/ApprovalCenter），保持本文件可单测。
  */
-function createProcessOrchestrator({ getModule, bus, createWindow, onClosed, hooks = {} }) {
+function createProcessOrchestrator({ getModule, bus, createWindow, createWorker, onClosed, onWorkerExit, hooks = {} }) {
   /** Map<moduleId, BrowserWindow>（非 singleton 模块按 moduleId+paramsKey 区分） */
   const windows = new Map()
   /** Map<BrowserWindow, moduleId> 反向索引（closed 回调反查） */
   const winToModule = new Map()
+  /** Map<moduleId, Worker>（node-worker 运行时进程；崩溃 respawn 沿用 crashReboot 500ms 守卫） */
+  const workers = new Map()
 
   // 窗口类型判定：dock / approval / module
   function typeOf(id) {
@@ -64,6 +72,43 @@ function createProcessOrchestrator({ getModule, bus, createWindow, onClosed, hoo
   function publishState(channel, action, payload) {
     bus.publish({ channel, action, payload, from: 'main', ts: Date.now() })
   }
+
+  /**
+   * node-worker 生命周期：仅 runtime === 'node-worker' 的模块可启动；
+   * 崩溃（error）→ 500ms 延迟 respawn（竞态守卫：映射仍指向本 worker 才重建）；
+   * 正常退出（exit）→ 清理映射并触发 onWorkerExit。
+   */
+  function startWorker(id) {
+    const mod = getModule(id)
+    if (!mod || mod.runtime !== 'node-worker') return { ok: false, error: 'not a node-worker module' }
+    if (workers.has(id)) return { ok: false, error: 'ALREADY_RUNNING' }
+    const worker = createWorker(mod)
+    workers.set(id, worker)
+    worker.on('error', () => {
+      setTimeout(() => {
+        if (workers.get(id) !== worker) return  // 竞态守卫：映射已被替换/清理 → 跳过
+        workers.delete(id)
+        try { worker.terminate?.() } catch {}
+        startWorker(id)
+        publishState('worker', 'restarted', { moduleId: id })
+      }, 500)
+    })
+    worker.on('exit', () => {
+      if (workers.get(id) === worker) { workers.delete(id); onWorkerExit?.(id) }
+    })
+    publishState('worker', 'started', { moduleId: id })
+    return { ok: true, workerId: id }
+  }
+
+  function stopWorker(id) {
+    const w = workers.get(id)
+    if (!w) return { ok: false, error: 'NOT_RUNNING' }
+    workers.delete(id)
+    try { w.terminate?.() } catch {}
+    return { ok: true }
+  }
+
+  function getWorker(id) { return workers.get(id) || null }
 
   /**
    * 崩溃重启：窗口 render-process-gone 时触发，延迟 500ms 后：
@@ -199,7 +244,7 @@ function createProcessOrchestrator({ getModule, bus, createWindow, onClosed, hoo
     return [...windows.entries()]
   }
 
-  return { open, close, getBounds, setBounds, hasType, getByType, getByParams, listWindows, typeOf, crashReboot }
+  return { open, close, getBounds, setBounds, hasType, getByType, getByParams, listWindows, typeOf, crashReboot, startWorker, stopWorker, getWorker, keyOf }
 }
 
 module.exports = { createProcessOrchestrator, clampBounds }

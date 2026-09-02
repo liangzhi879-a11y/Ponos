@@ -37,3 +37,13 @@ test('parseManifest v2：对象 entry 与 interfaces/capabilities/lifecycle/runt
   assert.equal(r.manifest.lifecycle.init, 'b.init')
   assert.deepEqual(r.manifest.runtimeConfig.sandbox.allowNetwork, ['localhost:8080'])
 })
+
+test('parseManifest 对 node-worker 模块不再强制 windowSpec（ui-renderer 仍给默认）', () => {
+  const ok = parseManifest(JSON.stringify({ id: 'sm', name: '状态服务', runtime: 'node-worker', entry: { main: 'main.cjs' } }), '/x')
+  assert.equal(ok.ok, true)
+  assert.equal(ok.manifest.runtime, 'node-worker')
+  assert.equal(ok.manifest.entry.main, 'main.cjs')
+  const ok2 = parseManifest(JSON.stringify({ id: 'ui', name: 'UI', entry: 'a.html' }), '/x')
+  assert.equal(ok2.ok, true)
+  assert.equal(ok2.manifest.windowSpec.width, 640, '缺 windowSpec 时回落默认')
+})

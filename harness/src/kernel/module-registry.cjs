@@ -4,9 +4,10 @@
  * 外部模块完整扫描/加载在阶段 B 启用；本文件已含 schema 校验（parseManifest）。
  *
  * P1 收敛：BUILTIN_MODULES 仅保留计划所需两个内置模块（launcher、chat）。
- * 其余 dock/cockpit/files/settings/skills/approval/panel/question/sessions 为
+ * 其余 dock/cockpit/files/skills/approval/panel/question/sessions 为
  * YFWorking 旧基线遗留，超出 P1 范围（阶段 B 起由外部 manifest 扫描承担）。
- * entry.ui 为仓库根相对路径（repo root = harness/src 的 ../..）。
+ * P2 扩展：新增 state-manager（node-worker 运行时进程）与 settings（ui-renderer 窗口）。
+ * entry.ui 为仓库根相对路径（repo root = harness/src 的 ../..）；entry.main 为 node-worker 进程入口。
  */
 'use strict'
 
@@ -23,9 +24,22 @@ const BUILTIN_MODULES = [
     capabilities: ['system.window', 'agent'],  // 与 modules/chat/module.json 对齐：可开窗 + 直连 agent
     entry: { ui: 'dist/modules/chat/index.html' },
   },
+  {
+    id: 'state-manager', name: '状态服务', icon: 'database', singleton: true, builtin: true,
+    runtime: 'node-worker',
+    capabilities: ['state'],
+    entry: { main: 'modules/state-manager/main.cjs' },  // repo-root 相对（node-worker 进程入口）
+  },
+  {
+    id: 'settings', name: '设置', icon: 'settings', singleton: false, builtin: true,
+    windowSpec: { width: 720, height: 560, minWidth: 480, minHeight: 400, resizable: true, frame: false },
+    capabilities: ['state'],  // 与 modules/settings/module.json 对齐：读/写全局状态
+    entry: { ui: 'dist/modules/settings/index.html' },
+  },
 ]
 
-const REQUIRED_MANIFEST_FIELDS = ['id', 'name', 'entry', 'windowSpec']
+// REQUIRED_MANIFEST_FIELDS 放宽：windowSpec 仅 ui-renderer 语义必需，node-worker/cli-bridge 无窗口
+const REQUIRED_MANIFEST_FIELDS = ['id', 'name', 'entry']
 
 function listModules() {
   // 阶段 B：合并 scanExternalModules() 结果
@@ -69,7 +83,7 @@ function parseManifest(jsonText, baseDir) {
   }
   const entry = normalizeEntry(raw.entry)
   if (!entry) return { ok: false, error: 'manifest entry 必须为非空字符串或 { ui|main } 对象' }
-  const ws = raw.windowSpec
+  const ws = raw.windowSpec || {}  // node-worker/cli-bridge 可无窗口 → 回落默认
   const num = (v, dft) => (typeof v === 'number' && Number.isFinite(v) && v > 0) ? Math.round(v) : dft
   const manifest = {
     id: String(raw.id),
