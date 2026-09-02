@@ -68,19 +68,21 @@ function buildApp({ ipcMain: ipc, createWindow, createWorker, createCli, workAre
 
   // —— agent-core（cli-bridge 模块）：会话方法集 + 事件转发 chat ——
   let agentCoreClient = null
+  let agentTransport = null  // 模块级引用：respawn 重连前 close 旧 transport（对称 connectStateManager）
   function connectAgentCore() {
     mr.detach('agent-core')  // 重连前清残留（respawn 崩溃路径同 state-manager）
     const child = orchestrator.getCli('agent-core')
     if (!child) return
-    const transport = createStdioTransport({ child })
-    const client = createRpcClient({ transport })
+    agentTransport?.close()  // 关旧 transport：防 in-flight session RPC 永久 pending + 向死 child stdin 写触发 EPIPE
+    agentTransport = createStdioTransport({ child })
+    const client = createRpcClient({ transport: agentTransport })
     client.onNotification(ev => {
       if (ev?.method === 'session.event') {
         const env = makeEnvelope({ method: 'session.event', params: ev.params, x_sender: 'agent-core', x_target: 'chat' })
         mr.sendTo('chat', env)
       }
     })
-    mr.attach('agent-core', { send: (ch, env) => transport.send(env) }, [])
+    mr.attach('agent-core', { send: (ch, env) => agentTransport.send(env) }, [])
     agentCoreClient = client
   }
   const sessionCall = method => (params) => agentCoreClient

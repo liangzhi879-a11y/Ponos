@@ -137,6 +137,45 @@ test('P2 壳：模块 UI 在 shell 子 frame，通知经 sendToFrame 定向子 f
   assert.equal(wc.sentTop.length, 0, '子 frame 就绪后不再走 wc.send 主 frame 路径')
 })
 
+test('agent-core respawn：connectAgentCore 重连前关闭旧 transport（新 child 接管）', async () => {
+  const handlers = new Map()
+  const WC = {} // webContents 哨兵对象
+  const ipcMain = { handle(ch, fn) { handlers.set(ch, fn) }, on() {} }
+  const children = [fakeCli(), fakeCli()]
+  let spawn = 0
+  const ctx = buildApp({
+    ipcMain,
+    createWindow: () => fakeWindow(WC),
+    createCli: () => children[Math.min(spawn++, 1)],
+  })
+  // buildApp 末尾 startCli('agent-core') → createCli → child[0] → connectAgentCore 绑定
+  ctx.orchestrator.open('chat')  // attach chat（session 能力）
+  const callFn = handlers.get('ponos:call')
+
+  // 基线：send 到 child[0]
+  const p0 = callFn({ sender: WC }, { method: 'session.status' })
+  await new Promise(r => setTimeout(r, 0))
+  assert.ok(children[0].written.find(m => m.method === 'session.status'), '基线请求应写入 child[0]')
+
+  // 模拟 orchestrator respawn：映射已换新 child（orchestrator 侧 startCli 已完成），
+  // 宿主侧经 worker started 事件触发 connectAgentCore 重新绑定
+  const realGetCli = ctx.orchestrator.getCli
+  ctx.orchestrator.getCli = id => (id === 'agent-core' ? children[1] : realGetCli(id))
+  ctx.bus.publish({ channel: 'worker', action: 'started', payload: { moduleId: 'agent-core' }, from: 'test' })
+  assert.equal(children[0].killed, true, '重连前旧 transport 应 close（child[0] 被 kill）')
+
+  // 重连后：send 写新 child，链路可用
+  const p1 = callFn({ sender: WC }, { method: 'session.send', params: { text: '重启后' } })
+  await new Promise(r => setTimeout(r, 0))
+  const req = children[1].written.find(m => m.method === 'session.send')
+  assert.ok(req, '重连后 session.send 应写入新 child stdin')
+  assert.equal(req.params.text, '重启后')
+  children[1].emitData(JSON.stringify({ id: req.id, result: { ok: true, sessionId: 's-2' } }) + '\n')
+  const res = await p1
+  assert.equal(res.ok, true)
+  assert.equal(res.result.sessionId, 's-2')
+})
+
 test('settings 窗口 state.get 经 router → worker，changed 通知广播到 attach 模块', async () => {
   const handlers = new Map()
   const WC = {}
