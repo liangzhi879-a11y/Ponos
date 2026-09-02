@@ -40,3 +40,21 @@ test('buildApp 注册主进程方法集并可用', async () => {
   const deny = await callFn({ sender: WC }, { method: 'agent.send', params: { text: 'hi' } })
   assert.equal(deny.error, 'PERMISSION_DENIED')
 })
+
+test('chat 模块 agent.send 经权限门放行（ALLOWED 冒烟，验收标准入库）', async () => {
+  const handlers = new Map()
+  const WC = {} // webContents 哨兵对象
+  const ipcMain = { handle(ch, fn) { handlers.set(ch, fn) }, on() {} }
+  const ctx = buildApp({
+    ipcMain,
+    createWindow: () => ({ isDestroyed: () => false, on() {}, destroy() {}, close() {}, webContents: WC }),
+    kernelArgs: { spawnImpl: () => fakeChild(), readlineImpl: () => ({ on() {} }) },
+  })
+  // 打开 chat 窗口 → attach chat（capabilities ['system.window','agent'] 覆盖 agent.send → 放行路径）
+  ctx.orchestrator.open('chat')
+
+  const callFn = handlers.get('ponos:call')
+  const res = await callFn({ sender: WC }, { method: 'agent.send', params: { text: '你好' } })
+  assert.equal(res.ok, true)
+  assert.equal(res.result.ok, true, 'bridge.send 应被调用并返回 ok')
+})
