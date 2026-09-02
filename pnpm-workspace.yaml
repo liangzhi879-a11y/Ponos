@@ -1,0 +1,9 @@
+packages:
+  - harness
+  - modules/*
+  - external-sdk
+
+allowBuilds:
+  classic-level: true
+  electron-winstaller: true
+  esbuild: true
