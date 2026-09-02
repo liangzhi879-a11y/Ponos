@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>Ponos</title>
+  <link rel="stylesheet" href="../../src/styles/globals.css" />
+  <style>
+    html, body { height: 100%; margin: 0; overflow: hidden; background: var(--bg-app); color: var(--text-primary); }
+    .shell { display: flex; flex-direction: column; height: 100%; }
+    .titlebar { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 8px 0 12px;
+      background: var(--bg-toolbar); border-bottom: 1px solid var(--border-subtle); user-select: none; -webkit-app-region: drag; }
+    .titlebar button { -webkit-app-region: no-drag; background: none; border: none; color: var(--text-secondary);
+      font-size: 14px; width: 28px; height: 28px; border-radius: 6px; cursor: pointer; }
+    .titlebar button:hover { background: var(--bg-hover); }
+    .shell-icon { font-size: 14px; color: var(--accent-default); }
+    .shell-title { font-size: 13px; font-weight: 600; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .btn-group { display: flex; gap: 2px; -webkit-app-region: no-drag; }
+    .session { font-size: 12px; color: var(--text-tertiary); margin-right: 8px; }
+    .content { flex: 1; position: relative; }
+    .content iframe { width: 100%; height: 100%; border: none; background: var(--bg-app); }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="titlebar">
+      <span class="shell-icon" id="icon">◈</span>
+      <span class="shell-title" id="title">加载中…</span>
+      <span class="session" id="session"></span>
+      <div class="btn-group">
+        <button id="btn-new" title="新建会话">＋</button>
+        <button id="btn-min" title="最小化">─</button>
+        <button id="btn-max" title="最大化">□</button>
+        <button id="btn-close" title="关闭">✕</button>
+      </div>
+    </div>
+    <div class="content"><iframe id="frame"></iframe></div>
+  </div>
+  <script src="./shell.js"></script>
+</body>
+</html>

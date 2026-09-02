@@ -244,7 +244,49 @@ function createProcessOrchestrator({ getModule, bus, createWindow, createWorker,
     return [...windows.entries()]
   }
 
-  return { open, close, getBounds, setBounds, hasType, getByType, getByParams, listWindows, typeOf, crashReboot, startWorker, stopWorker, getWorker, keyOf }
+  /** 按实例 key 最小化窗口（非 singleton 多实例由 key 精确定位）。 */
+  function minimize(key) {
+    const win = windows.get(key)
+    if (!win || win.isDestroyed()) return { ok: false, error: 'window not found' }
+    win.minimize()
+    return { ok: true }
+  }
+
+  /** 按实例 key 最大化/还原切换。 */
+  function maximize(key) {
+    const win = windows.get(key)
+    if (!win || win.isDestroyed()) return { ok: false, error: 'window not found' }
+    if (win.isMaximized()) win.unmaximize()
+    else win.maximize()
+    return { ok: true }
+  }
+
+  /** 窗口壳上下文：名称/图标/会话实例列表/当前会话 + entry（宿主转 file URL）。 */
+  function context(key) {
+    const win = windows.get(key)
+    if (!win || win.isDestroyed()) return { ok: false, error: 'window not found' }
+    const id = key.split('::')[0]
+    const mod = getModule(id)
+    if (!mod) return { ok: false, error: 'unknown module' }
+    const conversations = [...windows.keys()]
+      .filter(k => k === id || k.startsWith(`${id}::`))
+      .map(k => { const p = k.indexOf('::'); return p === -1 ? '' : k.slice(p + 2) })
+      .filter(Boolean)
+    const p = key.indexOf('::')
+    return {
+      ok: true,
+      result: { name: mod.name, icon: mod.icon || '', entry: mod.entry?.ui || '', conversations, current: p === -1 ? '' : key.slice(p + 2) },
+    }
+  }
+
+  function closeByKey(key) {
+    const win = windows.get(key)
+    if (!win || win.isDestroyed()) return { ok: false, error: 'window not found' }
+    win.close()
+    return { ok: true }
+  }
+
+  return { open, close, getBounds, setBounds, hasType, getByType, getByParams, listWindows, typeOf, crashReboot, startWorker, stopWorker, getWorker, keyOf, minimize, maximize, context, closeByKey }
 }
 
 module.exports = { createProcessOrchestrator, clampBounds }

@@ -5,11 +5,15 @@ import { createStateBus } from '../../../electron/state-bus.cjs'
 
 function fakeWin(bus) {
   const w = {
-    destroyed: false, minimized: false, shown: false, bounds: { x: 0, y: 0, w: 900, h: 700 },
+    destroyed: false, minimized: false, maximized: false, shown: false, bounds: { x: 0, y: 0, w: 900, h: 700 },
     listeners: {},
     isDestroyed() { return this.destroyed },
     isMinimized() { return this.minimized },
+    minimize() { this.minimized = true },
     restore() { this.minimized = false },
+    isMaximized() { return this.maximized },
+    maximize() { this.maximized = true },
+    unmaximize() { this.maximized = false },
     show() { this.shown = true },
     focus() {},
     getBounds() { return this.bounds },
@@ -23,9 +27,9 @@ function fakeWin(bus) {
 }
 
 const MODS = {
-  chat: { id: 'chat', singleton: false, windowSpec: { width: 900, height: 700, minWidth: 600, minHeight: 400 } },
+  chat: { id: 'chat', name: '聊天', singleton: false, windowSpec: { width: 900, height: 700, minWidth: 600, minHeight: 400 } },
   state: { id: 'state', runtime: 'node-worker', singleton: true },
-  settings: { id: 'settings', runtime: 'ui-renderer', singleton: false, windowSpec: { width: 720, height: 560, minWidth: 480, minHeight: 400 } },
+  settings: { id: 'settings', name: '设置', runtime: 'ui-renderer', singleton: false, windowSpec: { width: 720, height: 560, minWidth: 480, minHeight: 400 } },
 }
 
 test('open/close/typeOf 与旧 window-manager 语义一致', () => {
@@ -237,4 +241,25 @@ test('worker exit → 清理映射并触发 onWorkerExit；ui-renderer 模块不
   assert.equal(orch.getWorker('state'), null)
   assert.deepEqual(exited, ['state'])
   assert.equal(orch.startWorker('settings').error, 'not a node-worker module')
+})
+
+test('minimize/maximize/contextByKey 按 key 定位窗口操作', () => {
+  const bus = createStateBus()
+  const created = []
+  const orch = createProcessOrchestrator({
+    getModule: id => MODS[id], bus,
+    createWindow: (mod, params) => { const w = fakeWin(bus); w.key = orch.keyOf(mod.id, params); created.push(w); return w },
+    onClosed: () => {}, hooks: {},
+  })
+  orch.open('chat', { conversation: 's1' })
+  const win = created[0]
+  assert.equal(orch.minimize('chat::s1').ok, true)
+  assert.equal(win.minimized, true)
+  assert.equal(orch.maximize('chat::s1').ok, true)
+  const ctx = orch.context('chat::s1')
+  assert.equal(ctx.ok, true)
+  assert.equal(ctx.result.name, '聊天')
+  assert.deepEqual(ctx.result.conversations, ['s1'])
+  assert.equal(ctx.result.current, 's1')
+  assert.equal(orch.minimize('chat::nope').ok, false)
 })

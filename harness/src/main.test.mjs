@@ -28,6 +28,11 @@ test('buildApp 注册主进程方法集并可用', async () => {
   // ['system.modules','system.window'] 不覆盖 agent.*，权限拒绝路径经 transport + 权限门验证）
   ctx.orchestrator.open('launcher')
 
+  // 窗口壳 RPC 可达（context 按 key 反查模块信息）
+  const ctxR = await ctx.router.invoke({ method: 'system.window.context', x_sender: 'launcher', params: { key: 'launcher' } })
+  assert.equal(ctxR.ok, true)
+  assert.equal(ctxR.result.name, '启动台')
+
   // 正向断言走 router：system.modules.list 的 handler capabilities 前缀匹配方法名即放行
   const list = await ctx.router.invoke({ method: 'system.modules.list', x_sender: 'launcher' })
   assert.equal(list.ok, true)
