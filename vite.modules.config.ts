@@ -20,6 +20,7 @@ export default defineConfig({
       input: {
         launcher: path.resolve(__dirname, 'modules/launcher/index.html'),
         chat: path.resolve(__dirname, 'modules/chat/index.html'),
+        settings: path.resolve(__dirname, 'modules/settings/index.html'),
       },
       output: {
         entryFileNames: '[name]/index.js',

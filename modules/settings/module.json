@@ -1,0 +1,11 @@
+{
+  "id": "settings",
+  "name": "设置",
+  "version": "0.1.0",
+  "runtime": "ui-renderer",
+  "icon": "settings",
+  "entry": { "ui": "../../dist/modules/settings/index.html" },
+  "windowSpec": { "width": 720, "height": 560, "minWidth": 480, "minHeight": 400, "resizable": true, "frame": false },
+  "singleton": false,
+  "capabilities": ["state"]
+}
