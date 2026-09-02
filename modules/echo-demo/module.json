@@ -1,0 +1,10 @@
+{
+  "id": "echo-demo",
+  "name": "外部程序示例",
+  "version": "0.1.0",
+  "icon": "terminal",
+  "runtime": "cli-bridge",
+  "singleton": true,
+  "capabilities": [],
+  "entry": { "main": "modules/echo-demo/main.py" }
+}

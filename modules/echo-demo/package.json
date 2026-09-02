@@ -1,0 +1,6 @@
+{
+  "name": "@ponos/echo-demo",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": { "test": "node --test demo.test.mjs" }
+}
