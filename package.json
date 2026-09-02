@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "build:electron": "npm run build && electron-builder",
     "build:electron:dir": "npm run build && electron-builder --dir",
+    "build:modules": "node scripts/build-modules.mjs",
     "test": "node --test \"server/*.test.mjs\" \"electron/*.test.mjs\"",
     "bump:app": "node scripts/bump-version.mjs app",
     "bump:kernel": "node scripts/bump-version.mjs kernel"

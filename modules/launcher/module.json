@@ -1,0 +1,11 @@
+{
+  "id": "launcher",
+  "name": "启动台",
+  "version": "0.1.0",
+  "runtime": "ui-renderer",
+  "icon": "vortex",
+  "entry": { "ui": "../../dist/modules/launcher/index.html" },
+  "windowSpec": { "width": 480, "height": 640, "minWidth": 360, "minHeight": 480, "resizable": true, "frame": false },
+  "singleton": true,
+  "capabilities": ["system.modules", "system.window"]
+}
