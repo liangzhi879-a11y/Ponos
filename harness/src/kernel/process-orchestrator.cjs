@@ -17,7 +17,7 @@
  * node-worker 运行时（P2）：runtime 为 'node-worker' 的模块不走窗口，
  * 由宿主注入 createWorker 创建 Node Worker 进程，本文件管理其生命周期：
  *   - error（崩溃）→ 500ms 延迟 respawn（沿用 crashReboot 同款竞态守卫：
- *     映射仍指向本 worker 才重建），并发布 module:state（action `restarted`）
+ *     映射仍指向本 worker 才重建），并发布 worker 频道事件（action `restarted`）
  *   - exit → 清理映射 + onWorkerExit?.(id)
  */
 'use strict'
@@ -68,7 +68,7 @@ function createProcessOrchestrator({ getModule, bus, createWindow, createWorker,
     return `${id}::${c}`
   }
 
-  /** 发布 module:state（bus.publish 封装），崩溃重启等场景复用。 */
+  /** 发布频道事件（bus.publish 封装，channel 由调用方指定：module / worker），崩溃重启等场景复用。 */
   function publishState(channel, action, payload) {
     bus.publish({ channel, action, payload, from: 'main', ts: Date.now() })
   }
@@ -86,7 +86,7 @@ function createProcessOrchestrator({ getModule, bus, createWindow, createWorker,
     workers.set(id, worker)
     worker.on('error', () => {
       setTimeout(() => {
-        if (workers.get(id) !== worker) return  // 竞态守卫：映射已被替换/清理 → 跳过
+        if (workers.get(id) && workers.get(id) !== worker) return  // 竞态守卫：仅当映射指向其他 worker（已被手动替换）才跳过；映射不存在（exit 已清理）→ 正常重建
         workers.delete(id)
         try { worker.terminate?.() } catch {}
         startWorker(id)

@@ -227,6 +227,25 @@ test('worker 崩溃 → 500ms 延迟 respawn 并发布 restarted', async () => {
   assert.equal(bus.getSnapshot('worker').filter(e => e.action === 'restarted').length, 1)
 })
 
+test('worker error→exit 真实序列：exit 先清理映射，respawn 仍发生', async () => {
+  const bus = createStateBus()
+  let n = 0
+  const orch = createProcessOrchestrator({
+    getModule: id => MODS[id], bus, createWindow: () => fakeWin(bus),
+    createWorker: () => { n++; return fakeWorker() },
+    onClosed: () => {}, hooks: {},
+  })
+  orch.startWorker('state')
+  const first = orch.getWorker('state')
+  first.emit('error', new Error('boom'))   // 先 error（排程 respawn）
+  first.emit('exit')                        // 后 exit（真实序列：映射先被清理）
+  await new Promise(r => setTimeout(r, 700))
+  assert.equal(n, 2, 'error 后 exit 清理映射，respawn 应仍发生')
+  assert.ok(orch.getWorker('state'))
+  assert.notEqual(orch.getWorker('state'), first)
+  assert.equal(bus.getSnapshot('worker').filter(e => e.action === 'restarted').length, 1)
+})
+
 test('worker exit → 清理映射并触发 onWorkerExit；ui-renderer 模块不可 startWorker', () => {
   const bus = createStateBus()
   const exited = []

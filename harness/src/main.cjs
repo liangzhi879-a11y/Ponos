@@ -75,6 +75,7 @@ function buildApp({ ipcMain: ipc, createWindow, createWorker, workArea, kernelAr
   let smTransport = null
   let smClient = null
   function connectStateManager() {
+    mr.detach('state-manager')  // 重连前清残留连接（respawn 崩溃路径不 detach → attach 会 ALREADY_ATTACHED）
     const worker = orchestrator.getWorker('state-manager')
     if (!worker) return
     smTransport?.close()
@@ -85,7 +86,7 @@ function buildApp({ ipcMain: ipc, createWindow, createWorker, workArea, kernelAr
         mr.broadcast({ channel: 'state', event: { type: 'changed', ...(ev.params || {}) }, sender: 'state-manager' })
       }
     })
-    mr.attach('state-manager', { send: env => smTransport.send(env) }, [])
+    mr.attach('state-manager', { send: (ch, env) => smTransport.send(env) }, [])
   }
   bus.subscribe('worker', { send: (ch, full) => { if (full?.action === 'started' && full.payload?.moduleId === 'state-manager') connectStateManager() } })
   router.register('state.get', (p) => smClient ? smClient.call('state.get', { key: p?.key }) : { ok: false, error: 'NOT_RUNNING' }, { capabilities: ['state'] })
