@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseManifest } from './module-registry.cjs'
+import { parseManifest, getModule } from './module-registry.cjs'
 
 test('parseManifest 接受旧版字符串 entry', () => {
   const r = parseManifest(JSON.stringify({ id: 'x', name: 'X', entry: './index.html', windowSpec: { width: 100, height: 100 } }), '/base')
@@ -46,4 +46,13 @@ test('parseManifest 对 node-worker 模块不再强制 windowSpec（ui-renderer 
   const ok2 = parseManifest(JSON.stringify({ id: 'ui', name: 'UI', entry: 'a.html' }), '/x')
   assert.equal(ok2.ok, true)
   assert.equal(ok2.manifest.windowSpec.width, 640, '缺 windowSpec 时回落默认')
+})
+
+test('BUILTIN 含 cli-bridge 模块（agent-core/echo-demo，无 windowSpec 必需）', () => {
+  const ac = getModule('agent-core')
+  assert.equal(ac.runtime, 'cli-bridge')
+  assert.equal(ac.entry.main, 'modules/agent-core/main.cjs')
+  const ed = getModule('echo-demo')
+  assert.equal(ed.runtime, 'cli-bridge')
+  assert.equal(ed.entry.main, 'modules/echo-demo/main.py')
 })

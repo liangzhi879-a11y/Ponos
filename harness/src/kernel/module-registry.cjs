@@ -7,7 +7,8 @@
  * 其余 dock/cockpit/files/skills/approval/panel/question/sessions 为
  * YFWorking 旧基线遗留，超出 P1 范围（阶段 B 起由外部 manifest 扫描承担）。
  * P2 扩展：新增 state-manager（node-worker 运行时进程）与 settings（ui-renderer 窗口）。
- * entry.ui 为仓库根相对路径（repo root = harness/src 的 ../..）；entry.main 为 node-worker 进程入口。
+ * P3 扩展：新增 agent-core、echo-demo（cli-bridge 运行时，外部子进程，实体模块 Task 4/7 落地）。
+ * entry.ui 为仓库根相对路径（repo root = harness/src 的 ../..）；entry.main 为 node-worker/cli-bridge 进程入口。
  */
 'use strict'
 
@@ -35,6 +36,18 @@ const BUILTIN_MODULES = [
     windowSpec: { width: 720, height: 560, minWidth: 480, minHeight: 400, resizable: true, frame: false },
     capabilities: ['state'],  // 与 modules/settings/module.json 对齐：读/写全局状态
     entry: { ui: 'dist/modules/settings/index.html' },
+  },
+  {
+    id: 'agent-core', name: 'Agent 内核', icon: 'brain', singleton: true, builtin: true,
+    runtime: 'cli-bridge',
+    capabilities: [],  // 无窗口；能力由 cli-bridge 子进程提供（Task 4 建实体）
+    entry: { main: 'modules/agent-core/main.cjs' },
+  },
+  {
+    id: 'echo-demo', name: '外部程序示例', icon: 'terminal', singleton: true, builtin: true,
+    runtime: 'cli-bridge',
+    capabilities: [],  // 无窗口；演示外部程序接入（Task 7 建实体）
+    entry: { main: 'modules/echo-demo/main.py' },
   },
 ]
 

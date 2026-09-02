@@ -19,6 +19,13 @@
  *   - error（崩溃）→ 500ms 延迟 respawn（沿用 crashReboot 同款竞态守卫：
  *     映射仍指向本 worker 才重建），并发布 worker 频道事件（action `restarted`）
  *   - exit → 清理映射 + onWorkerExit?.(id)
+ *
+ * cli-bridge 运行时（P3）：runtime 为 'cli-bridge' 的模块为外部子进程（child_process），
+ * 由宿主注入 createCli(mod) 创建（返回 child duck：{ stdin:{write}, stdout:{on}, on(ev,cb), kill() }），
+ * 生命周期对称 startWorker：
+ *   - error（spawn 失败）与 exit 非零码（真实 child_process 崩溃形态）→ 500ms 延迟 respawn，
+ *     发布 worker 频道事件（action `restarted`）；竞态守卫同 startWorker（映射已删/已替换才跳过）
+ *   - exit code 0（优雅退出）→ 清理映射 + onWorkerExit?.(id)
  */
 'use strict'
 
@@ -47,13 +54,15 @@ function clampBounds(bounds, spec, workArea) {
  * typeOf(id)：模块 id → 窗口类型（dock/approval 特殊，其余 module）。
  * hooks 由宿主注入（DockService/ApprovalCenter），保持本文件可单测。
  */
-function createProcessOrchestrator({ getModule, bus, createWindow, createWorker, onClosed, onWorkerExit, hooks = {} }) {
+function createProcessOrchestrator({ getModule, bus, createWindow, createWorker, createCli, onClosed, onWorkerExit, hooks = {} }) {
   /** Map<moduleId, BrowserWindow>（非 singleton 模块按 moduleId+paramsKey 区分） */
   const windows = new Map()
   /** Map<BrowserWindow, moduleId> 反向索引（closed 回调反查） */
   const winToModule = new Map()
   /** Map<moduleId, Worker>（node-worker 运行时进程；崩溃 respawn 沿用 crashReboot 500ms 守卫） */
   const workers = new Map()
+  /** Map<moduleId, ChildProcess>（cli-bridge 运行时子进程；崩溃 respawn 沿用 500ms 守卫） */
+  const clis = new Map()
 
   // 窗口类型判定：dock / approval / module
   function typeOf(id) {
@@ -109,6 +118,49 @@ function createProcessOrchestrator({ getModule, bus, createWindow, createWorker,
   }
 
   function getWorker(id) { return workers.get(id) || null }
+
+  /**
+   * cli-bridge 生命周期：仅 runtime === 'cli-bridge' 的模块可启动；
+   * 崩溃 → 500ms 延迟 respawn（映射守卫同 startWorker）；正常退出 → 清理并触发 onWorkerExit。
+   * 注意：child_process 与 node-worker 崩溃信号不同——worker_threads 用 'error' 表达脚本崩溃，
+   * child_process 真实崩溃是 exit(code≠0)（'error' 仅 spawn 失败），两者都做 respawn。
+   * 退出判定：code===0 或映射已被替换（stopCli 先删映射）→ 不 respawn。
+   */
+  function crashRespawn(id, child) {
+    setTimeout(() => {
+      if (clis.get(id) && clis.get(id) !== child) return
+      clis.delete(id)
+      try { child.kill?.() } catch {}
+      startCli(id)
+      publishState('worker', 'restarted', { moduleId: id })
+    }, 500)
+  }
+
+  function startCli(id) {
+    const mod = getModule(id)
+    if (!mod || mod.runtime !== 'cli-bridge') return { ok: false, error: 'not a cli-bridge module' }
+    if (clis.has(id)) return { ok: false, error: 'ALREADY_RUNNING' }
+    const child = createCli(mod)
+    clis.set(id, child)
+    child.on('error', () => crashRespawn(id, child))          // spawn 失败
+    child.on('exit', (code) => {
+      if (clis.get(id) !== child) return                      // stopCli 已先删映射 → 不处理
+      if (code === 0) { clis.delete(id); onWorkerExit?.(id) } // 优雅退出
+      else crashRespawn(id, child)                            // 崩溃（非零退出）
+    })
+    publishState('worker', 'started', { moduleId: id })
+    return { ok: true, cliId: id }
+  }
+
+  function stopCli(id) {
+    const c = clis.get(id)
+    if (!c) return { ok: false, error: 'NOT_RUNNING' }
+    clis.delete(id)
+    try { c.kill?.() } catch {}
+    return { ok: true }
+  }
+
+  function getCli(id) { return clis.get(id) || null }
 
   /**
    * 崩溃重启：窗口 render-process-gone 时触发，延迟 500ms 后：
@@ -286,7 +338,7 @@ function createProcessOrchestrator({ getModule, bus, createWindow, createWorker,
     return { ok: true }
   }
 
-  return { open, close, getBounds, setBounds, hasType, getByType, getByParams, listWindows, typeOf, crashReboot, startWorker, stopWorker, getWorker, keyOf, minimize, maximize, context, closeByKey }
+  return { open, close, getBounds, setBounds, hasType, getByType, getByParams, listWindows, typeOf, crashReboot, startWorker, stopWorker, getWorker, startCli, stopCli, getCli, keyOf, minimize, maximize, context, closeByKey }
 }
 
 module.exports = { createProcessOrchestrator, clampBounds }

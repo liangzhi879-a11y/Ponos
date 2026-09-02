@@ -30,6 +30,8 @@ const MODS = {
   chat: { id: 'chat', name: '聊天', singleton: false, windowSpec: { width: 900, height: 700, minWidth: 600, minHeight: 400 } },
   state: { id: 'state', runtime: 'node-worker', singleton: true },
   settings: { id: 'settings', name: '设置', runtime: 'ui-renderer', singleton: false, windowSpec: { width: 720, height: 560, minWidth: 480, minHeight: 400 } },
+  'agent-core': { id: 'agent-core', runtime: 'cli-bridge', singleton: true },
+  'echo-demo': { id: 'echo-demo', runtime: 'cli-bridge', singleton: true },
 }
 
 test('open/close/typeOf 与旧 window-manager 语义一致', () => {
@@ -281,4 +283,83 @@ test('minimize/maximize/contextByKey 按 key 定位窗口操作', () => {
   assert.deepEqual(ctx.result.conversations, ['s1'])
   assert.equal(ctx.result.current, 's1')
   assert.equal(orch.minimize('chat::nope').ok, false)
+})
+
+function fakeCli() {
+  const listeners = {}
+  return {
+    on(ev, cb) { (listeners[ev] ||= []).push(cb) },
+    emit(ev, ...a) { (listeners[ev] || []).forEach(cb => cb(...a)) },
+    stdin: { write() {} },
+    stdout: { on() {} },
+    kill() { this.killed = true },
+  }
+}
+
+test('startCli 创建 cli 子进程、发布 started、重复启动报 ALREADY_RUNNING', () => {
+  const bus = createStateBus()
+  const created = []
+  const orch = createProcessOrchestrator({
+    getModule: id => MODS[id], bus, createWindow: () => fakeWin(bus),
+    createCli: mod => { const c = fakeCli(); created.push(c); return c },
+    onClosed: () => {}, hooks: {},
+  })
+  const r = orch.startCli('agent-core')
+  assert.equal(r.ok, true)
+  assert.equal(created.length, 1)
+  assert.equal(orch.startCli('agent-core').error, 'ALREADY_RUNNING')
+  const started = bus.getSnapshot('worker').filter(e => e.action === 'started' && e.payload.moduleId === 'agent-core')
+  assert.equal(started.length, 1)
+})
+
+test('cli 崩溃 → 500ms 延迟 respawn 并发布 restarted', async () => {
+  const bus = createStateBus()
+  let n = 0
+  const orch = createProcessOrchestrator({
+    getModule: id => MODS[id], bus, createWindow: () => fakeWin(bus),
+    createCli: () => { n++; return fakeCli() },
+    onClosed: () => {}, hooks: {},
+  })
+  orch.startCli('agent-core')
+  const first = orch.getCli('agent-core')
+  first.emit('error', new Error('boom'))
+  await new Promise(r => setTimeout(r, 700))
+  assert.equal(n, 2)
+  assert.ok(orch.getCli('agent-core'))
+  assert.notEqual(orch.getCli('agent-core'), first)
+  assert.equal(bus.getSnapshot('worker').filter(e => e.action === 'restarted').length, 1)
+})
+
+test('cli 正常退出（code 0）→ 清理映射并触发 onWorkerExit；ui-renderer 模块不可 startCli', () => {
+  const bus = createStateBus()
+  const exited = []
+  const orch = createProcessOrchestrator({
+    getModule: id => MODS[id], bus, createWindow: () => fakeWin(bus),
+    createCli: () => fakeCli(),
+    onClosed: () => {}, onWorkerExit: id => exited.push(id), hooks: {},
+  })
+  orch.startCli('agent-core')
+  const c = orch.getCli('agent-core')
+  c.emit('exit', 0)   // 优雅退出（stdin EOF 等）→ 清理；真实崩溃（code≠0）见下一用例
+  assert.equal(orch.getCli('agent-core'), null)
+  assert.deepEqual(exited, ['agent-core'])
+  assert.equal(orch.startCli('chat').error, 'not a cli-bridge module')
+})
+
+test('cli 非零退出（真实 child_process 崩溃形态）→ 500ms respawn 并发布 restarted', async () => {
+  const bus = createStateBus()
+  let n = 0
+  const orch = createProcessOrchestrator({
+    getModule: id => MODS[id], bus, createWindow: () => fakeWin(bus),
+    createCli: () => { n++; return fakeCli() },
+    onClosed: () => {}, hooks: {},
+  })
+  orch.startCli('agent-core')
+  const first = orch.getCli('agent-core')
+  first.emit('exit', 1)
+  await new Promise(r => setTimeout(r, 700))
+  assert.equal(n, 2, '非零退出应触发 respawn')
+  assert.ok(orch.getCli('agent-core'))
+  assert.notEqual(orch.getCli('agent-core'), first)
+  assert.equal(bus.getSnapshot('worker').filter(e => e.action === 'restarted').length, 1)
 })
