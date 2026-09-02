@@ -2,51 +2,26 @@
  * 模块注册表（纯逻辑，不依赖 electron，可单测）。
  * 内置模块清单 + 外部模块 manifest 解析器。
  * 外部模块完整扫描/加载在阶段 B 启用；本文件已含 schema 校验（parseManifest）。
+ *
+ * P1 收敛：BUILTIN_MODULES 仅保留计划所需两个内置模块（launcher、chat）。
+ * 其余 dock/cockpit/files/settings/skills/approval/panel/question/sessions 为
+ * YFWorking 旧基线遗留，超出 P1 范围（阶段 B 起由外部 manifest 扫描承担）。
+ * entry.ui 为仓库根相对路径（repo root = harness/src 的 ../..）。
  */
 'use strict'
 
 const BUILTIN_MODULES = [
   {
-    id: 'dock', name: '导航栏', icon: 'vortex', singleton: true, builtin: true,
-    windowSpec: { width: 64, height: 480, minWidth: 48, minHeight: 200, resizable: false, frame: false },
-  },
-  {
-    id: 'cockpit', name: '驾驶舱', icon: 'layout-dashboard', singleton: true, builtin: true,
-    windowSpec: { width: 1200, height: 800, minWidth: 900, minHeight: 600, resizable: true, frame: false },
+    id: 'launcher', name: '启动台', icon: 'vortex', singleton: true, builtin: true,
+    windowSpec: { width: 480, height: 640, minWidth: 360, minHeight: 480, resizable: true, frame: false },
+    capabilities: ['system.modules', 'system.window'],
+    entry: { ui: 'dist/modules/launcher/index.html' },
   },
   {
     id: 'chat', name: '聊天', icon: 'message-square', singleton: false, builtin: true,
     windowSpec: { width: 900, height: 700, minWidth: 600, minHeight: 400, resizable: true, frame: false },
-    capabilities: ['anchor-host'],  // 可作吸附锚点（积木式拼接主体）
-  },
-  {
-    id: 'files', name: '文件', icon: 'folder', singleton: true, builtin: true,
-    windowSpec: { width: 820, height: 640, minWidth: 480, minHeight: 320, resizable: true, frame: false },
-  },
-  {
-    id: 'settings', name: '设置', icon: 'settings', singleton: true, builtin: true,
-    windowSpec: { width: 720, height: 640, minWidth: 480, minHeight: 400, resizable: true, frame: false },
-  },
-  {
-    id: 'skills', name: '技能', icon: 'sparkles', singleton: true, builtin: true,
-    windowSpec: { width: 900, height: 700, minWidth: 560, minHeight: 400, resizable: true, frame: false },
-  },
-  {
-    id: 'approval', name: '审批', icon: 'shield-check', singleton: true, builtin: true,
-    windowSpec: { width: 520, height: 360, minWidth: 440, minHeight: 300, resizable: false, frame: false },
-  },
-  {
-    id: 'panel', name: '面板', icon: 'list', singleton: false, builtin: true,
-    windowSpec: { width: 280, height: 400, minWidth: 240, minHeight: 240, resizable: true, frame: false },
-  },
-  {
-    id: 'question', name: '提问', icon: 'help-circle', singleton: false, builtin: true,
-    windowSpec: { width: 560, height: 420, minWidth: 480, minHeight: 320, resizable: true, frame: false },
-  },
-  {
-    id: 'sessions', name: '会话管理', icon: 'history', singleton: true, builtin: true,
-    windowSpec: { width: 340, height: 720, minWidth: 300, minHeight: 400, resizable: true, frame: false },
-    capabilities: ['anchor'],  // 可吸附到锚点窗口侧边（积木式拼接）
+    capabilities: ['system.window', 'agent'],  // 与 modules/chat/module.json 对齐：可开窗 + 直连 agent
+    entry: { ui: 'dist/modules/chat/index.html' },
   },
 ]
 

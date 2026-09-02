@@ -34,7 +34,20 @@ git clone https://github.com/liangzhi879-a11y/Ponos.git && cd ponos/kernel && cp
 
 ---
 
-## 架构
+## 架构（v3 模块化平台）
+
+```
+Launcher/Chat 模块窗口 ──ponosRpc (JSON-RPC 2.0 over IPC)──▶ harness 微内核
+                                                               ├─ Message Router（方法路由/广播）
+                                                               ├─ Module Registry（manifest v2.0）
+                                                               ├─ Process Orchestrator（窗口编排/崩溃重启）
+                                                               ├─ Permission Gatekeeper（capabilities 拦截）
+                                                               └─ Agent Bridge（spawn kernel，NDJSON）
+```
+
+P1 基线：`npm run electron` 启动后打开 Launcher（启动台），列出「聊天」模块，点击打开 Chat 窗口，可完成一轮对话（经 Agent Bridge spawn `kernel/cli.mjs`）。模块构建产物 `dist/modules/<id>/index.html` 由 `npm run build:modules` 生成。
+
+### 旧基线（v2 单窗口架构，P1 后不再作为主入口）
 
 ```
 GUI (React/Electron)  ──bridge──▶  server/bridge.mjs  ──spawn──▶  kernel/cli.mjs (Ponos-turbo)

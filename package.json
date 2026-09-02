@@ -3,7 +3,7 @@
   "version": "2.7.0",
   "description": "Ponos GUI — A beautiful desktop interface for Ponos with full feature parity",
   "author": "Ponos",
-  "main": "electron/main.cjs",
+  "main": "harness/src/main.cjs",
   "type": "module",
   "bin": {
     "ponos": "./bin/cli.mjs"

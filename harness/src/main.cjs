@@ -43,6 +43,7 @@ function buildApp({ ipcMain: ipc, createWindow, workArea, kernelArgs = {} }) {
   // —— Agent 桥（P1 最小：spawn kernel/cli.mjs）——
   const bridge = createAgentBridge({
     kernelPath: kernelArgs.kernelPath || path.join(__dirname, '..', '..', 'kernel', 'cli.mjs'),
+    nodePath: kernelArgs.nodePath || 'node',  // Electron 内 process.execPath 是 electron.exe，必须显式 node
     env: kernelArgs.env,
     spawnImpl: kernelArgs.spawnImpl,
     readlineImpl: kernelArgs.readlineImpl,
@@ -61,20 +62,24 @@ function buildApp({ ipcMain: ipc, createWindow, workArea, kernelArgs = {} }) {
   return { app, router, mr, orchestrator, bus, agent: bridge }
 }
 
-// Electron 启动装配（仅 dev 冒烟用；正式装配在 Task 11 收口）
+// Electron 启动装配（dev 冒烟/真实启动共用：npm run electron 直接走此入口）
 if (require.main === module) {
   app.whenReady().then(() => {
     const ctx = buildApp({
       ipcMain,
       createWindow: (mod, params) => {
+        const spec = mod.windowSpec || { width: 800, height: 600 }
         const win = new BrowserWindow({
-          width: mod.windowSpec.width, height: mod.windowSpec.height,
-          frame: false, webPreferences: { preload: path.join(__dirname, 'preload.cjs') },
+          width: spec.width, height: spec.height, minWidth: spec.minWidth, minHeight: spec.minHeight,
+          resizable: spec.resizable !== false, frame: false,
+          webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true },
         })
-        win.loadFile(path.join(mod.baseDir || __dirname, '..', '..', mod.entry.ui))
+        const entry = mod.entry?.ui || mod.entry
+        win.loadFile(path.resolve(__dirname, '..', '..', entry))
         return win
       },
     })
+    // P1 基线：启动即开 Launcher，列出 Chat 模块（窗口壳标题栏渲染在 P2 统一精化）
     ctx.orchestrator.open('launcher')
   })
 }

@@ -24,9 +24,9 @@ test('buildApp 注册主进程方法集并可用', async () => {
     createWindow: () => ({ isDestroyed: () => false, on() {}, destroy() {}, close() {}, webContents: WC }),
     kernelArgs: { spawnImpl: () => fakeChild(), readlineImpl: () => ({ on() {} }) },
   })
-  // 打开 chat 窗口触发装配的 onWindowCreated 钩子 → attach chat（capabilities: ['anchor-host']，
-  // 不覆盖 agent.*，权限拒绝路径经 transport + 权限门验证）
-  ctx.orchestrator.open('chat')
+  // 打开 launcher 窗口触发装配的 onWindowCreated 钩子 → attach launcher（capabilities:
+  // ['system.modules','system.window'] 不覆盖 agent.*，权限拒绝路径经 transport + 权限门验证）
+  ctx.orchestrator.open('launcher')
 
   // 正向断言走 router：system.modules.list 的 handler capabilities 前缀匹配方法名即放行
   const list = await ctx.router.invoke({ method: 'system.modules.list', x_sender: 'launcher' })
@@ -34,7 +34,8 @@ test('buildApp 注册主进程方法集并可用', async () => {
   assert.ok(Array.isArray(list.result))
   assert.ok(list.result.some(m => m.id === 'chat'))
 
-  // 权限拒绝经 transport 验证：instanceOf(webContents) → gate.check('chat', 'agent.send') → deny
+  // 权限拒绝经 transport 验证：instanceOf(webContents) → gate.check('launcher', 'agent.send') → deny
+  // （chat 的 capabilities 含 agent，属放行路径；launcher 无 agent.* → PERMISSION_DENIED）
   const callFn = handlers.get('ponos:call')
   const deny = await callFn({ sender: WC }, { method: 'agent.send', params: { text: 'hi' } })
   assert.equal(deny.error, 'PERMISSION_DENIED')
