@@ -11,16 +11,16 @@ const { createPermissionGate } = require('./kernel/permission-gate.cjs')
 const { createIpcTransport } = require('./rpc/transports/ipc-transport.cjs')
 const { createWorkerTransport } = require('./rpc/transports/worker-transport.cjs')
 const { createRpcClient } = require('./kernel/rpc-client.cjs')
-const { createAgentBridge } = require('./kernel/agent-bridge.cjs') // Task 10：P1 最小内核桥
+const { createStdioTransport } = require('./rpc/transports/stdio-transport.cjs')
 const { makeEnvelope } = require('./rpc/envelope.cjs')
 
-function buildApp({ ipcMain: ipc, createWindow, createWorker, workArea, kernelArgs = {} }) {
+function buildApp({ ipcMain: ipc, createWindow, createWorker, createCli, workArea }) {
   const bus = createStateBus()
   const router = createRouter()
   const mr = createMessageRouter({ router, bus })
   const gate = createPermissionGate({ registry: { getModule } })
   const orchestrator = createProcessOrchestrator({
-    getModule, bus, createWindow, createWorker, onWorkerExit: () => {},
+    getModule, bus, createWindow, createWorker, createCli, onWorkerExit: () => {},
     onClosed: key => mr.detach(key.split('::')[0]),
     hooks: {
       onWindowCreated: (type, win, mod, params) => {
@@ -54,21 +54,29 @@ function buildApp({ ipcMain: ipc, createWindow, createWorker, workArea, kernelAr
   router.register('system.window.close', (p) => p?.key ? orchestrator.closeByKey(p.key) : orchestrator.close(p?.moduleId, p?.params), { capabilities: ['system.window'] })
   router.register('system.discover', () => router.discover(), { capabilities: ['system'] })
 
-  // —— Agent 桥（P1 最小：spawn kernel/cli.mjs）——
-  const bridge = createAgentBridge({
-    kernelPath: kernelArgs.kernelPath || path.join(__dirname, '..', '..', 'kernel', 'cli.mjs'),
-    nodePath: kernelArgs.nodePath || 'node',  // Electron 内 process.execPath 是 electron.exe，必须显式 node
-    env: kernelArgs.env,
-    spawnImpl: kernelArgs.spawnImpl,
-    readlineImpl: kernelArgs.readlineImpl,
-  })
-  bridge.onEvent(ev => {
-    const env = makeEnvelope({ method: 'agent.event', params: ev, x_sender: 'agent', x_target: 'chat' })
-    mr.sendTo('chat', env)
-  })
-  router.register('agent.send', (params) => bridge.send(params.text), { capabilities: ['agent'] })
-  router.register('agent.cancel', () => bridge.cancel(), { capabilities: ['agent'] })
-  bridge.start()
+  // —— agent-core（cli-bridge 模块）：会话方法集 + 事件转发 chat ——
+  let agentCoreClient = null
+  function connectAgentCore() {
+    mr.detach('agent-core')  // 重连前清残留（respawn 崩溃路径同 state-manager）
+    const child = orchestrator.getCli('agent-core')
+    if (!child) return
+    const transport = createStdioTransport({ child })
+    const client = createRpcClient({ transport })
+    client.onNotification(ev => {
+      if (ev?.method === 'session.event') {
+        const env = makeEnvelope({ method: 'session.event', params: ev.params, x_sender: 'agent-core', x_target: 'chat' })
+        mr.sendTo('chat', env)
+      }
+    })
+    mr.attach('agent-core', { send: (ch, env) => transport.send(env) }, [])
+    agentCoreClient = client
+  }
+  const sessionCall = method => (params) => agentCoreClient
+    ? agentCoreClient.call(method, params || {})
+    : { ok: false, error: 'NOT_RUNNING' }
+  router.register('session.send', sessionCall('session.send'), { capabilities: ['session'] })
+  router.register('session.cancel', sessionCall('session.cancel'), { capabilities: ['session'] })
+  router.register('session.status', sessionCall('session.status'), { capabilities: ['session'] })
 
   // —— 状态服务（node-worker：state-manager）——
   // worker started 事件驱动连接重建（崩溃 respawn 后重新绑定 transport/client/attach）
@@ -88,16 +96,20 @@ function buildApp({ ipcMain: ipc, createWindow, createWorker, workArea, kernelAr
     })
     mr.attach('state-manager', { send: (ch, env) => smTransport.send(env) }, [])
   }
-  bus.subscribe('worker', { send: (ch, full) => { if (full?.action === 'started' && full.payload?.moduleId === 'state-manager') connectStateManager() } })
+  bus.subscribe('worker', { send: (ch, full) => {
+    if (full?.action === 'started' && full.payload?.moduleId === 'state-manager') connectStateManager()
+    if (full?.action === 'started' && full.payload?.moduleId === 'agent-core') connectAgentCore()
+  } })
   router.register('state.get', (p) => smClient ? smClient.call('state.get', { key: p?.key }) : { ok: false, error: 'NOT_RUNNING' }, { capabilities: ['state'] })
   router.register('state.set', (p) => smClient ? smClient.call('state.set', { key: p?.key, value: p?.value, from: p?.from }) : { ok: false, error: 'NOT_RUNNING' }, { capabilities: ['state'] })
   router.register('state.list', () => smClient ? smClient.call('state.list', {}) : { ok: false, error: 'NOT_RUNNING' }, { capabilities: ['state'] })
   if (createWorker) orchestrator.startWorker('state-manager')  // 触发 worker:started → connectStateManager（单测无 createWorker 注入时不 spawn）
+  if (createCli) orchestrator.startCli('agent-core')  // 触发 worker:started → connectAgentCore
 
   const transport = createIpcTransport({ ipcMain: ipc, mr, gate, instanceOf })
   transport.handle()
 
-  return { app, router, mr, orchestrator, bus, agent: bridge }
+  return { app, router, mr, orchestrator, bus }
 }
 
 // Electron 启动装配（dev 冒烟/真实启动共用：npm run electron 直接走此入口）
@@ -128,6 +140,12 @@ if (require.main === module || process.defaultApp) {
       createWorker: (mod) => new (require('node:worker_threads').Worker)(path.join(__dirname, '..', '..', 'modules', 'state-manager', 'main.cjs'), {
         env: { ...process.env, STATE_STORE_PATH: path.join(app.getPath('userData'), 'state-store.json') },
       }),
+      createCli: (mod) => {
+        const file = path.join(__dirname, '..', '..', mod.entry.main)  // entry.main 为 repo-root 相对
+        return require('node:child_process').spawn('node', [file], {
+          env: { ...process.env }, stdio: ['pipe', 'pipe', 'pipe'],
+        })
+      },
     })
     // P2 壳：统一标题栏（shell.html）承载全部 ui-renderer 窗口
     ctx.orchestrator.open('launcher')

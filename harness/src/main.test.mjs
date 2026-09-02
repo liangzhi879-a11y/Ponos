@@ -2,17 +2,25 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { buildApp } from './main.cjs'
 
-// 注入 fake spawn：buildApp 内 bridge.start() 不真实拉起 node kernel 子进程
-function fakeChild() {
-  const c = {
-    stdin: { write: () => {}, end: () => {} },
-    stdout: {},
-    kill: () => { c.killed = true },
-    killed: false,
-    on: () => {},
-    pid: 42,
+// 窗口壳 fake：orchestrator 反查模块 id 的 webContents 哨兵对象
+function fakeWindow(WC) {
+  return { isDestroyed: () => false, on() {}, destroy() {}, close() {}, webContents: WC }
+}
+
+// fake cli 子进程（agent-core 的 cli-bridge child duck）：
+// 捕获 stdin 写（RPC 请求行）；stdout.on('data') 供 stdio-transport 注册，测试手动注入响应。
+function fakeCli() {
+  const cli = {
+    written: [],
+    stdin: { write(s) { cli.written.push(JSON.parse(s)) } },
+    stdout: { on() {} },
+    kill() { this.killed = true },
+    on() {},
   }
-  return c
+  const dataCbs = []
+  cli.stdout.on = (ev, cb) => { if (ev === 'data') dataCbs.push(cb) }
+  cli.emitData = chunk => dataCbs.forEach(cb => cb(chunk))
+  return cli
 }
 
 test('buildApp 注册主进程方法集并可用', async () => {
@@ -21,11 +29,10 @@ test('buildApp 注册主进程方法集并可用', async () => {
   const ipcMain = { handle(ch, fn) { handlers.set(ch, fn) }, on() {} }
   const ctx = buildApp({
     ipcMain,
-    createWindow: () => ({ isDestroyed: () => false, on() {}, destroy() {}, close() {}, webContents: WC }),
-    kernelArgs: { spawnImpl: () => fakeChild(), readlineImpl: () => ({ on() {} }) },
+    createWindow: () => fakeWindow(WC),
   })
   // 打开 launcher 窗口触发装配的 onWindowCreated 钩子 → attach launcher（capabilities:
-  // ['system.modules','system.window'] 不覆盖 agent.*，权限拒绝路径经 transport + 权限门验证）
+  // ['system.modules','system.window'] 不覆盖 session.*，权限拒绝路径经 transport + 权限门验证）
   ctx.orchestrator.open('launcher')
 
   // 窗口壳 RPC 可达（context 按 key 反查模块信息）
@@ -39,29 +46,63 @@ test('buildApp 注册主进程方法集并可用', async () => {
   assert.ok(Array.isArray(list.result))
   assert.ok(list.result.some(m => m.id === 'chat'))
 
-  // 权限拒绝经 transport 验证：instanceOf(webContents) → gate.check('launcher', 'agent.send') → deny
-  // （chat 的 capabilities 含 agent，属放行路径；launcher 无 agent.* → PERMISSION_DENIED）
+  // 权限拒绝经 transport 验证：instanceOf(webContents) → gate.check('launcher', 'session.send') → deny
+  // （chat 的 capabilities 含 session，属放行路径；launcher 无 session.* → PERMISSION_DENIED）
   const callFn = handlers.get('ponos:call')
-  const deny = await callFn({ sender: WC }, { method: 'agent.send', params: { text: 'hi' } })
+  const deny = await callFn({ sender: WC }, { method: 'session.send', params: { text: 'hi' } })
   assert.equal(deny.error, 'PERMISSION_DENIED')
 })
 
-test('chat 模块 agent.send 经权限门放行（ALLOWED 冒烟，验收标准入库）', async () => {
+test('chat 模块 session.send 经权限门放行，请求直达 agent-core 子进程', async () => {
   const handlers = new Map()
   const WC = {} // webContents 哨兵对象
   const ipcMain = { handle(ch, fn) { handlers.set(ch, fn) }, on() {} }
+  const cli = fakeCli()
   const ctx = buildApp({
     ipcMain,
-    createWindow: () => ({ isDestroyed: () => false, on() {}, destroy() {}, close() {}, webContents: WC }),
-    kernelArgs: { spawnImpl: () => fakeChild(), readlineImpl: () => ({ on() {} }) },
+    createWindow: () => fakeWindow(WC),
+    createCli: () => cli,
   })
-  // 打开 chat 窗口 → attach chat（capabilities ['system.window','agent'] 覆盖 agent.send → 放行路径）
+  ctx.orchestrator.open('chat')  // attach chat（caps ['system.window','session']）
+
+  const callFn = handlers.get('ponos:call')
+  const p = callFn({ sender: WC }, { method: 'session.send', params: { text: '你好' } })
+  await new Promise(r => setTimeout(r, 0))  // 等待 RPC 请求经 transport 写入
+  const req = cli.written.find(m => m.method === 'session.send')
+  assert.ok(req, 'session.send 请求应写入 agent-core stdin')
+  assert.equal(req.params.text, '你好')
+  // 子进程响应回传（stdio data 行 → rpc client 配对 → invoke result）
+  cli.emitData(JSON.stringify({ id: req.id, result: { ok: true, sessionId: 's-1' } }) + '\n')
+  const res = await p
+  assert.equal(res.ok, true)
+  assert.equal(res.result.ok, true)
+  assert.equal(res.result.sessionId, 's-1')
+})
+
+test('chat 模块 session.status ok 帧经宿主回传解析为结果（plan-fix：不落 error 分支丢结果）', async () => {
+  const handlers = new Map()
+  const WC = {} // webContents 哨兵对象
+  const ipcMain = { handle(ch, fn) { handlers.set(ch, fn) }, on() {} }
+  const cli = fakeCli()
+  const ctx = buildApp({
+    ipcMain,
+    createWindow: () => fakeWindow(WC),
+    createCli: () => cli,
+  })
   ctx.orchestrator.open('chat')
 
   const callFn = handlers.get('ponos:call')
-  const res = await callFn({ sender: WC }, { method: 'agent.send', params: { text: '你好' } })
+  const p = callFn({ sender: WC }, { method: 'session.status' })
+  await new Promise(r => setTimeout(r, 0))
+  const req = cli.written.find(m => m.method === 'session.status')
+  assert.ok(req, 'session.status 请求应写入 agent-core stdin')
+  // agent-core 子进程按 res.ok 分帧（main.cjs if (res.ok)）：core.cjs handleRequest('session.status')
+  // 返回 { ok:true, ...status() } → ok 分支写 { id, result: res }；无 ok 标记会落入 error 分支 → 宿主侧 result 缺失
+  cli.emitData(JSON.stringify({ id: req.id, result: { ok: true, busy: false, firstTokenAt: null, sessionId: '' } }) + '\n')
+  const res = await p
   assert.equal(res.ok, true)
-  assert.equal(res.result.ok, true, 'bridge.send 应被调用并返回 ok')
+  assert.equal(res.result.ok, true)
+  assert.equal(res.result.busy, false)
 })
 
 test('settings 窗口 state.get 经 router → worker，changed 通知广播到 attach 模块', async () => {
@@ -79,9 +120,8 @@ test('settings 窗口 state.get 经 router → worker，changed 通知广播到 
   }
   const ctx = buildApp({
     ipcMain,
-    createWindow: () => ({ isDestroyed: () => false, on() {}, destroy() {}, close() {}, webContents: WC }),
+    createWindow: () => fakeWindow(WC),
     createWorker: () => worker,
-    kernelArgs: { spawnImpl: () => fakeChild(), readlineImpl: () => ({ on() {} }) },
   })
   ctx.orchestrator.open('settings')  // attach settings（caps ['state']）
   const callFn = handlers.get('ponos:call')

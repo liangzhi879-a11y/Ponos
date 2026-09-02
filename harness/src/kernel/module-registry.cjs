@@ -22,7 +22,7 @@ const BUILTIN_MODULES = [
   {
     id: 'chat', name: '聊天', icon: 'message-square', singleton: false, builtin: true,
     windowSpec: { width: 900, height: 700, minWidth: 600, minHeight: 400, resizable: true, frame: false },
-    capabilities: ['system.window', 'agent'],  // 与 modules/chat/module.json 对齐：可开窗 + 直连 agent
+    capabilities: ['system.window', 'session'],  // P3：agent.* 退役，会话方法集 session.*
     entry: { ui: 'dist/modules/chat/index.html' },
   },
   {

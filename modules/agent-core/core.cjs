@@ -74,7 +74,7 @@ function createSessionHost({ spawnImpl, readlineImpl, kernelPath, nodePath, args
         return { ok: true, sessionId }
       }
       case 'session.cancel': return cancel()
-      case 'session.status': return status()
+      case 'session.status': return { ok: true, ...status() }  // 需 ok 标记：宿主 main.cjs 按 res.ok 分帧（无 ok → 落入 error 分支丢结果）
       default: return { ok: false, error: 'METHOD_NOT_FOUND' }
     }
   }
