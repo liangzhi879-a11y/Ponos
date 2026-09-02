@@ -139,3 +139,42 @@ test('崩溃延迟窗口期内旧窗口自毁 → 到期仍正常重建并发布
   assert.equal(restarted.length, 1, '应发布一次 restarted 重建事件')
   assert.equal(restarted[0].payload.windowId, 'chat::s1')
 })
+
+test('崩溃重建路径：旧窗 closed 异步迟到 → 实例守卫不清 successor 映射', async () => {
+  const bus = createStateBus()
+  let winCount = 0
+  const closedKeys = []
+  const orch = createProcessOrchestrator({
+    getModule: id => MODS[id],
+    bus,
+    createWindow: (mod, params) => {
+      winCount++
+      // 专用 fakeWin：destroy 延迟发射 closed（模拟真实 Electron 时序不定：destroy 后
+      // 'closed' 可能在 successor 已重建同 key 之后才异步触发）
+      const w = fakeWin(bus)
+      w.destroy = function () { this.destroyed = true; queueMicrotask(() => this.emit('closed')) }
+      return w
+    },
+    onClosed: key => closedKeys.push(key),
+    hooks: {},
+  })
+  orch.open('chat', { conversation: 's1' })
+  const first = orch.getByParams('chat', { conversation: 's1' })
+  assert.ok(first)
+
+  // 崩溃 → 500ms 延迟重建：到期时 orchestrator 先 destroy 旧窗（closed 异步未发），
+  // 随即 open 重建同 key successor（映射已指向 successor）→ 微任务才执行旧窗迟到 closed
+  first.emit('render-process-gone', {}, { reason: 'crashed' })
+  await new Promise(r => setTimeout(r, 700))
+
+  assert.equal(winCount, 2, '崩溃路径应重建 successor')
+  const cur = orch.getByParams('chat', { conversation: 's1' })
+  assert.ok(cur, 'successor 映射不应被迟到 closed 清掉')
+  assert.notEqual(cur, first, '查询应返回 successor 而非已销毁旧窗')
+  assert.equal(cur.destroyed, false, 'successor 不应被误销毁')
+  assert.equal(orch.listWindows().length, 1, '映射应仅剩 successor 一条')
+  assert.equal(closedKeys.length, 0, '迟到 closed 不应触发 onClosed（否则主进程 mr.detach 断流）')
+  const restarted = bus.getSnapshot('module').filter(e => e.action === 'restarted')
+  assert.equal(restarted.length, 1, '应发布一次 restarted 重建事件')
+  assert.equal(restarted[0].payload.windowId, 'chat::s1')
+})

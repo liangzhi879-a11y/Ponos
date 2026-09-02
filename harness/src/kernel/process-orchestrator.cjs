@@ -118,6 +118,9 @@ function createProcessOrchestrator({ getModule, bus, createWindow, onClosed, hoo
     winToModule.set(win, key)
     const type = typeOf(id)
     win.on('closed', () => {
+      // 实例守卫：迟到 closed（崩溃重启路径 destroy 的 'closed' 异步发射）时，
+      // 映射已被 successor 替换 → 仅当映射仍指向本窗口才执行清理，否则清掉 successor。
+      if (windows.get(key) !== win) return
       windows.delete(key)
       winToModule.delete(win)
       onClosed?.(key)

@@ -37,7 +37,11 @@ function createMessageRouter({ router, bus }) {
   function sendTo(moduleId, env) {
     const conn = connections.get(moduleId)
     if (!conn) return false
-    if (validateEnvelope(env).ok && decrementTtl(env) === 0) return false
+    // 非法 envelope 一律丢弃（含 x_ttl 已耗尽衰减为 0 的情况，校验层拦截）
+    if (!validateEnvelope(env).ok) return false
+    // TTL 已耗尽 → 丢弃（防无限转发）；x_ttl 缺失时按默认值走 decrementTtl 的兜底
+    if (env.x_ttl === 0) return false
+    env.x_ttl = decrementTtl(env) // TTL 回写衰减
     try {
       conn.target.send(`rpc:${env.method}`, env)
       return true

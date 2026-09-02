@@ -81,6 +81,12 @@ if (require.main === module) {
     })
     // P1 基线：启动即开 Launcher，列出 Chat 模块（窗口壳标题栏渲染在 P2 统一精化）
     ctx.orchestrator.open('launcher')
+    // Windows 约定：全部窗口关闭即退出（否则进程挂后台）
+    app.on('window-all-closed', () => app.quit())
+    // 重激活（macOS 惯例）：无窗口时重新打开 Launcher
+    app.on('activate', () => {
+      if (ctx.orchestrator.listWindows().length === 0) ctx.orchestrator.open('launcher')
+    })
   })
 }
 
