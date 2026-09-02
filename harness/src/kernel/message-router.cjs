@@ -32,6 +32,11 @@ function createMessageRouter({ router, bus }) {
   function broadcast({ channel, event, sender }) {
     const full = { channel, action: event?.type || 'event', payload: event, from: sender, ts: Date.now() }
     bus.publish(full)
+    // P2：广播同时推送所有 attach 模块（rpc:event:<channel>），模块 UI ponosRpc.on('event:<channel>') 订阅
+    const env = makeEnvelope({ method: `event:${channel}`, params: event, x_sender: sender || 'bus' })
+    for (const conn of connections.values()) {
+      try { conn.target.send(`rpc:${env.method}`, env) } catch { /* 窗口销毁，忽略 */ }
+    }
   }
 
   function sendTo(moduleId, env) {

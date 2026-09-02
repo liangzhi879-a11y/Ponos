@@ -86,3 +86,23 @@ test('sendTo x_ttl=1 首跳即转发并回写 0，第二跳丢弃', () => {
   assert.equal(mr.sendTo('chat', env), false, '第二跳（x_ttl=0）丢弃')
   assert.equal(t.sent.length, 1)
 })
+
+test('broadcast 增强：bus 订阅保留 + 推送所有 attach 模块 rpc:event:<channel>', () => {
+  const bus = createStateBus()
+  const router = createRouter()
+  const mr = createMessageRouter({ router, bus })
+  const a = fakeTarget(); const b = fakeTarget()
+  mr.attach('chat', a, ['chat']); mr.attach('settings', b, ['state'])
+  const busT = fakeTarget()
+  bus.subscribe('state', busT)
+  const event = { type: 'changed', key: 'settings', value: { theme: 'dark' }, version: 1, from: 'settings' }
+  mr.broadcast({ channel: 'state', event, sender: 'state-manager' })
+  assert.equal(busT.sent.length, 1)
+  assert.equal(busT.sent[0].channel, 'bus:event:state')
+  for (const t of [a, b]) {
+    assert.equal(t.sent.length, 1)
+    assert.equal(t.sent[0].channel, 'rpc:event:state')
+    assert.equal(t.sent[0].data.params.key, 'settings')
+    assert.equal(t.sent[0].data.method, 'event:state')
+  }
+})
