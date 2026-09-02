@@ -9,16 +9,18 @@ const { createMessageRouter } = require('./kernel/message-router.cjs')
 const { createProcessOrchestrator } = require('./kernel/process-orchestrator.cjs')
 const { createPermissionGate } = require('./kernel/permission-gate.cjs')
 const { createIpcTransport } = require('./rpc/transports/ipc-transport.cjs')
+const { createWorkerTransport } = require('./rpc/transports/worker-transport.cjs')
+const { createStateManagerClient } = require('./kernel/state-manager-client.cjs')
 const { createAgentBridge } = require('./kernel/agent-bridge.cjs') // Task 10：P1 最小内核桥
 const { makeEnvelope } = require('./rpc/envelope.cjs')
 
-function buildApp({ ipcMain: ipc, createWindow, workArea, kernelArgs = {} }) {
+function buildApp({ ipcMain: ipc, createWindow, createWorker, workArea, kernelArgs = {} }) {
   const bus = createStateBus()
   const router = createRouter()
   const mr = createMessageRouter({ router, bus })
   const gate = createPermissionGate({ registry: { getModule } })
   const orchestrator = createProcessOrchestrator({
-    getModule, bus, createWindow,
+    getModule, bus, createWindow, createWorker, onWorkerExit: () => {},
     onClosed: key => mr.detach(key.split('::')[0]),
     hooks: {
       onWindowCreated: (type, win, mod, params) => {
@@ -56,6 +58,29 @@ function buildApp({ ipcMain: ipc, createWindow, workArea, kernelArgs = {} }) {
   router.register('agent.cancel', () => bridge.cancel(), { capabilities: ['agent'] })
   bridge.start()
 
+  // —— 状态服务（node-worker：state-manager）——
+  // worker started 事件驱动连接重建（崩溃 respawn 后重新绑定 transport/client/attach）
+  let smTransport = null
+  let smClient = null
+  function connectStateManager() {
+    const worker = orchestrator.getWorker('state-manager')
+    if (!worker) return
+    smTransport?.close()
+    smTransport = createWorkerTransport({ worker })
+    smClient = createStateManagerClient({ transport: smTransport })
+    smClient.onNotification(ev => {
+      if (ev?.method === 'state.changed') {
+        mr.broadcast({ channel: 'state', event: { type: 'changed', ...(ev.params || {}) }, sender: 'state-manager' })
+      }
+    })
+    mr.attach('state-manager', { send: env => smTransport.send(env) }, [])
+  }
+  bus.subscribe('worker', { send: (ch, full) => { if (full?.action === 'started' && full.payload?.moduleId === 'state-manager') connectStateManager() } })
+  router.register('state.get', (p) => smClient ? smClient.call('state.get', { key: p?.key }) : { ok: false, error: 'NOT_RUNNING' }, { capabilities: ['state'] })
+  router.register('state.set', (p) => smClient ? smClient.call('state.set', { key: p?.key, value: p?.value, from: p?.from }) : { ok: false, error: 'NOT_RUNNING' }, { capabilities: ['state'] })
+  router.register('state.list', () => smClient ? smClient.call('state.list', {}) : { ok: false, error: 'NOT_RUNNING' }, { capabilities: ['state'] })
+  if (createWorker) orchestrator.startWorker('state-manager')  // 触发 worker:started → connectStateManager（单测无 createWorker 注入时不 spawn）
+
   const transport = createIpcTransport({ ipcMain: ipc, mr, gate, instanceOf })
   transport.handle()
 
@@ -78,6 +103,9 @@ if (require.main === module) {
         win.loadFile(path.resolve(__dirname, '..', '..', entry))
         return win
       },
+      createWorker: (mod) => new (require('node:worker_threads').Worker)(path.join(__dirname, '..', '..', 'modules', 'state-manager', 'main.cjs'), {
+        env: { ...process.env, STATE_STORE_PATH: path.join(app.getPath('userData'), 'state-store.json') },
+      }),
     })
     // P1 基线：启动即开 Launcher，列出 Chat 模块（窗口壳标题栏渲染在 P2 统一精化）
     ctx.orchestrator.open('launcher')
