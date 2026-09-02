@@ -104,3 +104,38 @@ test('崩溃延迟窗口期内手动 open 同 key → 到期不重复重建', as
   const restarted = bus.getSnapshot('module').filter(e => e.action === 'restarted')
   assert.equal(restarted.length, 0, '映射已被替换 → 不应再发布 restarted 重建事件')
 })
+
+test('崩溃延迟窗口期内旧窗口自毁 → 到期仍正常重建并发布 restarted', async () => {
+  const bus = createStateBus()
+  let winCount = 0
+  const orch = createProcessOrchestrator({
+    getModule: id => MODS[id],
+    bus,
+    createWindow: (mod, params) => {
+      winCount++
+      return fakeWin(bus)
+    },
+    onClosed: () => {},
+    hooks: {},
+  })
+  orch.open('chat', { conversation: 's1' })
+  const first = orch.getByParams('chat', { conversation: 's1' })
+  assert.ok(first)
+
+  // 崩溃 → 进入 500ms 延迟重建窗口期
+  first.emit('render-process-gone', {}, { reason: 'crashed' })
+
+  // 延迟窗口期内：旧窗口自毁（emit closed + destroyed=true）→ closed 清理已删除映射
+  first.destroy()
+  assert.equal(orch.getByParams('chat', { conversation: 's1' }), null, '自毁后映射应已被清理')
+
+  // 延迟到期：映射不存在（cur === undefined）→ 应正常重建，不得静默跳过
+  await new Promise(r => setTimeout(r, 700))
+  assert.equal(winCount, 2, '自毁路径应正常重建（winCount 增加）')
+  const rebooted = orch.getByParams('chat', { conversation: 's1' })
+  assert.ok(rebooted, '重建后的窗口应可查')
+  assert.notEqual(rebooted, first, '重建窗口应为新窗口（非已自毁旧窗口）')
+  const restarted = bus.getSnapshot('module').filter(e => e.action === 'restarted')
+  assert.equal(restarted.length, 1, '应发布一次 restarted 重建事件')
+  assert.equal(restarted[0].payload.windowId, 'chat::s1')
+})

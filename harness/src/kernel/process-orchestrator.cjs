@@ -67,9 +67,9 @@ function createProcessOrchestrator({ getModule, bus, createWindow, onClosed, hoo
 
   /**
    * 崩溃重启：窗口 render-process-gone 时触发，延迟 500ms 后：
-   *   0) 竞态守卫：仅当该 key 在 windows Map 中仍指向本次崩溃的旧 win 时才继续
-   *      （延迟窗口期内用户可能已手动重建/替换同 key 窗口——此时映射已被替换，
-   *       destroy 旧窗口会触发其 closed 清理（按 key 删除映射），误删新窗口映射）
+   *   0) 竞态守卫：仅当该 key 在 windows Map 中仍存在且指向其他窗口时才跳过重建
+   *      （延迟窗口期内用户手动重建/替换同 key → 映射指向新窗口，跳过以免误删新窗口映射）；
+   *      映射不存在（旧窗口已自毁、closed 清理已删除该 key）→ 正常重建。
    *   1) 窗口未自毁则先 destroy()（触发 closed 清理语义，移除映射）
    *   2) open 重建同 key 窗口
    *   3) 发布 module:state（action `restarted`）
@@ -78,8 +78,10 @@ function createProcessOrchestrator({ getModule, bus, createWindow, onClosed, hoo
     win.on('render-process-gone', () => {
       // 崩溃 → 延迟重建（原窗口 closed 流程会清理映射，open 重新创建同 key）
       setTimeout(() => {
-        // 竞态修复：映射已被替换（用户手动重建/替换）→ 已有新窗口，跳过重建
-        if (windows.get(key) !== win) return
+        // 竞态修复：仅当映射仍存在且指向其他窗口（延迟期内被手动重建/替换）时才跳过重建；
+        // 映射不存在（旧窗口已自毁、closed 清理已删除该 key）→ 正常重建。
+        const cur = windows.get(key)
+        if (cur && cur !== win) return
         if (!win.isDestroyed()) {
           // 窗口未自毁时先触发一次 closed 语义清理
           win.destroy()
