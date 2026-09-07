@@ -4,7 +4,7 @@
 
 **Goal:** 在 `C:\Users\T203-15\yfworking` 净室库上，从 claude-code-gui 工作树（在售 v2.7.5 全量形态）迁入自研产品代码/根配置/docs，从 ponos-dev HEAD `1696286`（P1-11 已落地）迁入内核源码与测试，使 `npm ci → typecheck → vite build → npm test` 对齐旧库基线，内核测试 8 套件 50 用例全绿，为 S4 内核接线交付"源码直跑 dev"形态的净室库。
 
-**Architecture:** 迁移 = 纯文件拷贝（cp，非 git 操作），在 yfworking 既有的全新 git 历史（docs/superpowers 净室原生 7 文件 + .gitignore）之上逐任务增量提交。产品侧迁入"工作树 on-disk"内容（保留在途 v2.7.5 改动），排除旧内核 yfw-kernel/ 与全部非运行面目录；内核侧迁入 kernel/ 33 文件 + 根 version.mjs + 8 个内核测试套件（放 `kernel-tests/`，相对 import `../kernel/` 天然指向根 kernel/，无需改路径）。S3 不触碰内核路径引用改接（bridge/kernel-paths 等残留指向旧内核属 S4 接线范围，本计划只记录现状基线）。
+**Architecture:** 迁移 = 纯文件拷贝（cp，非 git 操作），在 yfworking 既有的全新 git 历史（docs/superpowers 净室原生 8 文件（7 + 本 S3 计划文档） + .gitignore）之上逐任务增量提交。产品侧迁入"工作树 on-disk"内容（保留在途 v2.7.5 改动），排除旧内核 yfw-kernel/ 与全部非运行面目录；内核侧迁入 kernel/ 33 文件 + 根 version.mjs + 8 个内核测试套件（放 `kernel-tests/`，相对 import `../kernel/` 天然指向根 kernel/，无需改路径）。S3 不触碰内核路径引用改接（bridge/kernel-paths 等残留指向旧内核属 S4 接线范围，本计划只记录现状基线）。
 
 **Tech Stack:** node v24（node:test 内建）、npm 11、vite 5、typescript 5.7、electron 43（不打包）；内核零 npm 依赖多文件 ESM。
 
@@ -17,7 +17,7 @@
 3. **排除集**（权威 = S1 清单③ 与 cg-inflight-adjudication 分类；Task 5 验证不存在性）：
    - cg：`yfw-kernel/`（2490 受控 + vendor/ 等未跟踪 = D 类整体排除）、`.claude/`、`.agents/`、`YF/`、`docs/superpowers/`（38 受控）、`FREEZE-INVESTIGATION.md`（本机卡死调查线索，机器路径/非产品面，裁决排除）、一切未受控杂物（node_modules/dist/release/runtime/.salvage-work/.yfworking/e2e-entry5.ts/docs/manual/_build/docs/prototypes/YF/jiajia-pixel-pet/make_dafeiyu_pixel_anims.py——后两项 C 类排除）。
    - pd：v3 平台目录（modules/harness/yfljsj-cli/external-sdk/benchmark/zz-smoke/user-data）、`kernel-dist/`、根 v3 工具（pnpm-workspace/vite.modules.config/lefthook.yml）、测试只迁 Task 4 点名的 8 套件（**不**全量迁 server/*.test.mjs）。
-   - yfworking 净室原生 `docs/superpowers/`（audits/plans/specs 7 文件）与 `.gitignore` **保留原样不被覆盖**；cg 同名目录（docs/superpowers、.gitignore）不得拷入。
+   - yfworking 净室原生 `docs/superpowers/`（audits/plans/specs 8 文件（7 + 本 S3 计划文档））与 `.gitignore` **保留原样不被覆盖**；cg 同名目录（docs/superpowers、.gitignore）不得拷入。
 4. **内核构建决策**（预研④落地）：S3 **不引入** bun 构建，不迁 `scripts/build-kernel.mjs` 与 `kernel-dist/` 产物；只迁 kernel/ 源码 + 根 version.mjs（源码直跑 dev 链路 = bridge direct 语义）。构建/打包链（electron-builder.yml 指向 kernel-dist 等）归 S4。
 5. **残留引用保持原样 + 记录，不改接**：bridge.mjs / kernel-paths.cjs / electron-builder.yml / package-portable.cjs / verify-permission-flow.mjs / bin/yfworking.cmd / start.bat / main.cjs 注释中的旧内核路径与 Claude Code 兜底，S3 **原样拷贝不做任何改接**（改接是 S4 工作）；Task 5 产出"残留现状基线"清单作为 S4 backlog。仅 S1 清单③ 判「仅记录/保留」的协议字段名/品牌词同样不动。
 6. **版本**：package.json 2.7.5 为准（含 package-lock 2.7.5 同版拷贝，npm ci 确定性）；手册内 V2.7.2·2026-08-20 不一致、installer.nsh 技能数 65→85 校准，**只记录**（归 S6 出包统一）。
@@ -147,7 +147,7 @@ cat /tmp/s3-t2.txt | while IFS= read -r f; do cmp -s "$SRC/$f" "$DST/$f" || echo
 cd "$DST"
 git -c core.quotepath=false status --short docs | grep -c '^??'   # expect 35
 # 排除集确认：docs/superpowers 与 docs/manual/_build 不在 untracked 中
-git status --short docs/manual/_build docs/superpowers | wc -l     # expect 0（superpowers 已 tracked 原生 7）
+git status --short docs/manual/_build docs/superpowers | wc -l     # expect 0（superpowers 已 tracked 原生 8）
 ```
 
 - [ ] **Step 3: scoped commit**
@@ -297,11 +297,11 @@ done
 # ③ 构建产物确实被忽略（而非被追踪）
 git check-ignore node_modules dist release runtime >/dev/null && echo "build artifacts gitignored: OK"
 echo "scan done"
-# 净室 docs/superpowers 仍为原生 7 文件（未被 cg 同名覆盖）
+# 净室 docs/superpowers 仍为原生文件（未被 cg 同名覆盖）
 git -c core.quotepath=false ls-files docs/superpowers | wc -l    # expect 7
 ```
 
-Expected：① 0 命中；② 无 UNEXPECTED PRESENT；③ OK；docs/superpowers = 7。
+Expected：① 0 命中；② 无 UNEXPECTED PRESENT；③ OK；docs/superpowers = 8（原生 7 + S3 计划文档，净室自有、非 cg 迁入）。
 
 - [ ] **Step 2: S1 ③ 残留现状基线（= S4 backlog 输入）**
 
