@@ -144,12 +144,68 @@ cd C:/Users/T203-15/ponos-dev && git add kernel/api.mjs && git commit -m "docs(k
 
 若评估结论为"移植"或"部分移植"，在实施前把决策（移植范围、理由）通过问题卡片提交用户确认（#10 原审计措辞为"评估移植成本后决定"，决策权在用户）。若评估结论为"不移植"，同样记录理由并征询。**未经用户确认不得直接实施。**
 
-- [ ] **Step 3: 按决策实施（若确认移植）**
+- [ ] **Step 3: 按决策实施（决策已确认：R3-2 与 ⑤ 两项都移植——2026-09-07 用户裁决）**
 
-【推进标注——此步在决策确认后补全为完整 TDD 步骤再实施】：镜像 `r3-guard.test.mjs`（主循环 R3-2 mock `[mock:guard-err]`/恢复分支 `[mock:guard-recovered]`）与 `engine-guard-iter.test.mjs`（⑤ 提醒断言）造子 lane 版 mock（lane marker + 恢复分支），TDD 写测试→RED→改 runSubAgentLoop→GREEN；配套测试镜像 lane-trunc harness。若决策为不移植，跳过本步并把理由连同"未来何时值得重估"记入计划执行记录。
+【推进标注已补全——完整 TDD 步骤】只读评估备忘录：`sdd/2026-09-07-s2-p2-kernel-p2-fixes/task-3-assessment.md`（含当前树行号证据 A-F）。**行号一律以实施时实读为准。**
+
+- [ ] **Step 3.1: 读主循环镜像源 + 子 lane 现状（只读）**
+
+读主循环 verbatim：R3-2 注入块（runTurnInternal 内，评估定位 ~783-791：blocks 结果含失败时 hadToolError 且 guardInjections < maxGuardInjections → 注入"请立即重试"续跑指令）+ hadToolError/guardInjections 计数（~819-820 与 ~455-456，PONOS_GUARD_MAX）；⑤ 同工具提醒（~836-851：canonicalToolCallKey(blocks[0]) 连续计数 + REPEAT_REMIND_AT@65 命中注入提醒不 veto）。读主循环行为锁定测试 `server/r3-guard.test.mjs` 与 `server/engine-guard-iter.test.mjs` 的断言（R3-2 注入时机/文案、guardInjections 上限、⑤ 连续计数/复位/注入文案）作为 lane 版行为规格。读子 lane 现状（runSubAgentLoop：工具结果落 store ~1236、blocks.length===0 break ~1222、熔断判定 ~1244-1253、循环头状态区 ~1093-1095）。
+
+- [ ] **Step 3.2: mock 追加（api.mjs，纯追加零改动既有分支）**
+
+按评估备忘录建议 + 既有 lane marker 结构（`[mock:lane-melt]`/`[mock:agent-lane-melt]` 范本）追加：
+- R3-2 lane 版：`[mock:agent-lane-heal]` spawner + `[mock:lane-heal-fail]`（lane 首轮产 is_error 工具结果，镜像 `[mock:guard-err]` 语义）+ 恢复分支（第二轮起成功，镜像 `[mock:guard-recovered]` 语义——once-flag 或轮次门控按既有 lane mock 约定）。
+- ⑤ lane 版：`[mock:agent-lane-iter]` spawner + `[mock:lane-iter]`（lane 内连续 N 轮产同一工具调用，使同工具连续计数真实推进到 REPEAT_REMIND_AT 命中）。marker 名以实测/评估备忘录为准，测试与 mock 保持一致。
+
+- [ ] **Step 3.3: 写失败测试（RED）**
+
+新建 `server/engine-lane-heal.test.mjs`（makeEnv 镜像 lane-trunc harness；两层 env 冻结纪律同 S2-P1）。断言意图（以主循环测试为行为规格，措辞实测对齐）：
+- R3-2：lane 工具失败轮后，历史/转录含系统续跑注入（"请立即重试"类文案）且 lane 继续执行到成功轮——而非失败后即以文本收尾；guardInjections 达上限后不再注入（走既有熔断收尾）。
+- ⑤：lane 连续 N 次同一工具 → 提醒注入出现（含 REPEAT_REMIND_AT 命中语义）；成功/换工具 → 计数复位不再提醒。
+
+- [ ] **Step 3.4: 跑测试确认失败**
+
+Run: `cd C:/Users/T203-15/ponos-dev && node --test server/engine-lane-heal.test.mjs`
+Expected: FAIL（R3-2 注入缺失 / ⑤ 提醒缺失——lane 现状失败轮无注入、同工具无提醒）。
+
+- [ ] **Step 3.5: 生产代码修复（engine.mjs runSubAgentLoop）**
+
+按评估备忘录插入点最小改动：循环头状态区（~1093-1095 后）加 lane 版 guardInjections/hadToolError 与同工具连续计数状态；工具结果落 store（~1236）后、熔断判定前镜像主循环顺序处理 ⑤ 提醒注入（store.appendUser，不 veto）；失败标志随每轮更新；`blocks.length === 0` break（~1222）前镜像 R3-2 注入（失败且有注入额度时先 appendUser 续跑指令再 continue/放行）。镜像主循环语义与文案，不改既有守卫（熔断/溢出/截断/③③b）逻辑。P1-11 在途批零触碰。
+
+- [ ] **Step 3.6: 跑测试确认通过 + 回归**
+
+Run: `cd C:/Users/T203-15/ponos-dev && node --test server/engine-lane-heal.test.mjs server/r3-guard.test.mjs server/engine-guard-iter.test.mjs server/engine-lane-trunc.test.mjs server/engine-lane-meltdown.test.mjs server/engine-lane-overflow.test.mjs server/engine-lane-summary.test.mjs server/subagent.test.mjs`
+Expected: 全 PASS（新增 + 主循环 R3-2/⑤ 零回归 + 子 lane 全部既有零回归）。
+
+- [ ] **Step 3.7: Commit（scoped staging）**
+
+```bash
+cd C:/Users/T203-15/ponos-dev && git commit -m "fix(kernel): 子 lane 补 R3-2 失败续跑注入与同工具提醒，对齐主循环（审计 #10）"
+```
+> 工作树纪律：engine.mjs/api.mjs 含 P1-11 在途批——严禁整文件 git add，逐 hunk scoped staging 只 stage 本任务改动；提交后 `git show --stat` 自证只含本任务文件；git status 确认在途批仍在。git add 文件清单按实改（engine.mjs、api.mjs、engine-lane-heal.test.mjs）。
+
+若决策为不移植，跳过本步并把理由连同"未来何时值得重估"记入计划执行记录（本次决策 = 两项都移植，不适用）。
 
 ---
 
-## 执行记录（S2-P2，待填充）
+## 执行记录（S2-P2，已完成 2026-09-07）
 
-（执行后记录：#8 commit、#9 注释位置、#10 评估结论与决策）
+起始 HEAD 37a8147（S2-P1 完结态）→ 完结 HEAD 030f0a2。每 task 独立 commit 直上 main + task-scoped 评审（均 Approved，0 Critical / 0 Important）。工作树纪律：全程逐 hunk scoped staging，P1-11 在途批（非 S2-P2 范围、用户裁决保留不动）零卷入、零触碰。
+
+| Task | 审计项 | commit | 处置 |
+|---|---|---|---|
+| 1 | #8 子 lane 摘要只累 text | bf28829 | 修复：runSubAgentLoop textBuf 拆分流（text 才进 textBuf + genWindow，thinking 只进 genWindow——镜像主循环 ~580-586；③/③b 零扰动）；api.mjs 纯追加 `[mock:agent-lane-think]`/`[mock:lane-think]`；新测试 engine-lane-summary.test.mjs（RED thinking 混入 → GREEN 5 套件 19/19） |
+| 2 | #9 流重连半截文本重复 | 57355f4 | **维持现状**（审计已注明接受）：kernel/api.mjs:768 R1-1 注释正上方 +3 行取舍注释（"接受"裁决、重试正确性优先、改进需真实断流复现与评估的护栏、2026-09-07 复核）。零行为改动 |
+| 3 | #10 子 lane 补 R3-2 与 ⑤ | 030f0a2 | 评估（task-3-assessment.md：两项均低成本、无冲突、与熔断互补）→ **用户裁决：两项都移植** → 补全 TDD 步骤入档 → 修复：lane 版 R3-2（失败后注入续跑，guardInjections 额度）+ ⑤（连续同工具提醒不 veto）；新测试 engine-lane-heal.test.mjs（RED 3/3 → GREEN 8 套件 25/25） |
+
+审计项最终处置：
+- **#8 修复 + 测试锁定**（thinking 不再混入任务通知/登记摘要，仍参与 ③ 检测窗）。
+- **#9 维持现状 + 双处明示**：代码注释（api.mjs:768 前）与本文档本记录。"半截文本处理改进"评估前提（真实断流复现、重复对下游摘要/转录的实际影响度量）留作后续开放项，不阻塞 S2 基线。
+- **#10 两项都移植 + 测试锁定**（用户裁决；与 S2-P1 熔断互补：R3-2 给重试机会、熔断兜底；⑤ 防同工具空转，与 ③/③b 文本重复检测不重叠）。
+- 既有红项：无。
+
+已知开放项（deferred，供 whole-branch/final review 治理裁定，不阻塞本计划）：
+- Task 1：通知无"summary 含 Y"正断言（补一行即锁正语义）；lane 门控位置前瞻（工具型 lane 需上移）；genWindow 两分支重复（镜像优先）。
+- Task 2：计划文档明示已在本记录完成。
+- Task 3：⑤ 换工具复位与 R3-2 hadToolError 门控两处测试判别缺口（实现经查正确、镜像主循环自身覆盖）；上限用例依赖 PONOS_GUARD_MAX 默认；plan-tail（isPlanTail）lane 镜像未做（范围克制，非遗漏）。
