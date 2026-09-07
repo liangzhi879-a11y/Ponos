@@ -24,10 +24,18 @@
 3. 运行时方案预研：内核零依赖 node≥18；打包内 node vs 系统 node 是 S4 决策，S3 只需 dev 链路能起（系统 node）。
 
 【推进标注——写完整 plan 前必须补】：
-- [ ] 逐目录核对 claude-code-gui 与 ponos-dev 待迁文件的实际清单（以 `ls`/`git ls-files` 实测，勿凭记忆），排除集逐项验证存在性
-- [ ] claude-code-gui 的 `npm ci → typecheck → vite build → npm test` 旧库基线数值（各命令 pass/fail、时长），作对齐基准
-- [ ] kernel 迁入后的测试入口与依赖（内核测试是否需独立脚本；bun build 是否在 S3 引入）
-- [ ] S1 清单③（残留引用点 + v3 排除边界）作为排除集的权威依据——若 S1 未完成，S3 不得开始
+- [x] 逐目录核对 claude-code-gui 与 ponos-dev 待迁文件的实际清单（以 `ls`/`git ls-files` 实测，勿凭记忆），排除集逐项验证存在性
+- [x] claude-code-gui 的 `npm ci → typecheck → vite build → npm test` 旧库基线数值（各命令 pass/fail、时长），作对齐基准
+- [x] kernel 迁入后的测试入口与依赖（内核测试是否需独立脚本；bun build 是否在 S3 引入）
+- [x] S1 清单③（残留引用点 + v3 排除边界）作为排除集的权威依据——若 S1 未完成，S3 不得开始
+
+**执行记录（2026-09-08，S3 完结）**：S3 净室库落成完结，5 Task 全部完成（计划见 `docs/superpowers/plans/2026-09-07-s3-cleanroom-migration.md`）。
+- Commits：`86280e8`（S3 计划）→ `8e164b7`（Task 1 产品代码迁入，556 文件含 .gitignore）→ `12cbec4`（Task 2 docs/manual 27 受控 + 在途宣传页/6 截图 + bridge-contract）→ `ff492ff`/`b4db8a5`（docs/superpowers 计数 7→8 修正）→ `9061826`（YFWORKING_HOME 变量名修正）→ `0dda384`（Task 4 内核 kernel/33 + 根 version.mjs + kernel-tests 8 套件）→ 完结 commit（本文件 roadmap S3 节更新）。Task 3 为纯验证任务无 commit。
+- 四步流水线对齐旧库基线：`npm ci` exit 0（28.4s，51+13 deps）→ `typecheck` exit 0（12.3s）→ `vite build` exit 0（46.9s）→ `npm test` **130 tests / 128 pass / 2 fail 与旧库基线精确一致**（2 失败均为预期环境性：browser-executor whitelist 污染——YFWORKING_HOME 隔离后单文件 15/15 通过证根因；transcript mtime flaky 非确定复现）。
+- 内核：kernel/ 33 文件 + 根 version.mjs（3 处 import 前提）迁入，kernel-tests/ 8 套件 **50/50 全绿**（无 env 前缀直跑）。
+- 排除集验证（Task 5）：追踪面 grep 0 命中；on-disk 全部不存在；node_modules/dist/release/runtime gitignored OK；docs/superpowers 仍为净室原生 8 受控文件（7 + S3 计划文档，非 cg 迁入）。
+- 决策落点（S3 纯拷贝、零代码改写，下列清洗项只记 backlog）：build_promo_pdf.py BASE 硬编码 `C:\Users\T203-15\claude-code-gui` 需参数化（归 S4/S6 脚本清洗批，与 package-portable/verify-permission-flow 同族）；installer.nsh 技能数 65→85 校准与手册 V2.7.2/V2.7.5 版本不一致（记 S6 出包统一）；YFWORKING_HOME 变量名实测（browser-common.cjs:115）；CRLF/.gitattributes 延迟至 S6 字节复核前。
+- **S4 backlog**：S1 清单③ 残留引用（旧内核路径 + Claude Code 兜底）此刻全部"原样残留"、无一改接——完整 `文件:行 + 引用 + S4 改接去向` 表见完结报告 `.superpowers/sdd/2026-09-07-s3-cleanroom-migration/task-5-report.md`「S4 backlog」节（scratch，不入 git），S4 计划直接消费。
 
 ---
 
