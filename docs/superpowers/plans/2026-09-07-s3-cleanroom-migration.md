@@ -200,11 +200,11 @@ cd /c/Users/T203-15/yfworking && npm test 2>&1 | tail -15
 ```
 
 Expected：tests 130 / pass ≥128 / fail ≤2；11 文件全命中（server 7 + electron 4）。两个环境性失败（若再现）逐一归因：
-1. `electron/browser-executor.test.mjs` isBlockedUrl：读 `~/.yfworking/browser-whitelist.json`（allow 含 example.com）→ `evil.example.com` 被放行。**演示根因**（单文件、隔离 YFW_HOME，证明是环境不是代码）：
+1. `electron/browser-executor.test.mjs` isBlockedUrl：读 `{home}/browser-whitelist.json`（allow 含 example.com）→ `evil.example.com` 被放行。**演示根因**（单文件、隔离 home，证明是环境不是代码）。注意环境变量为 **`YFWORKING_HOME`**（electron/browser-common.cjs:115 `process.env.YFWORKING_HOME || process.env.CLAUDE_CONFIG_DIR || ~/.yfworking`；测试 harness 会预置真实值，须显式覆盖）：
    ```bash
-   cd /c/Users/T203-15/yfworking && TMPHOME=$(mktemp -d) && YFW_HOME="$TMPHOME" node --test electron/browser-executor.test.mjs 2>&1 | tail -5 && rm -rf "$TMPHOME"
+   cd /c/Users/T203-15/yfworking && TMPHOME=$(mktemp -d) && YFWORKING_HOME="$TMPHOME" node --test electron/browser-executor.test.mjs 2>&1 | tail -5 && rm -rf "$TMPHOME"
    ```
-   Expected：该用例在空 YFW_HOME 下 **PASS**（默认白名单 block example.com）。
+   Expected：该用例在空 home 下 **PASS**（默认白名单 block example.com）。
 2. `server/transcript.test.mjs` mtime 倒序 flaky：两次紧邻写文件 mtimeMs 相同 → 退化为目录序。同命令重跑若 PASS 即归因 flaky，不修。
 **禁止**为掩盖环境失败修改任何测试/生产代码。
 
