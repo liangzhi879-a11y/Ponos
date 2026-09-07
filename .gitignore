@@ -1,0 +1,20 @@
+# 依赖与构建产物
+node_modules/
+dist/
+release/
+kernel-dist/
+
+# 环境与密钥
+.env
+.env.local
+*.local
+
+# 调试临时
+*.log
+.ponos-repro/
+zz-smoke/
+zz-bench/
+
+# 系统
+.DS_Store
+Thumbs.db
