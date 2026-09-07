@@ -336,6 +336,26 @@ cd C:/Users/T203-15/yfworking && git add docs/superpowers/plans/2026-09-07-s2-p1
 
 ---
 
-## 执行记录（S2-P1，待填充）
+## 执行记录（S2-P1，已完成 2026-09-07）
 
-（执行后记录：各 commit、审计项最终处置、全量门禁结果）
+全量门禁基线 513/513 → 收尾 517/517（每任务相关套件 RED→GREEN，全量复跑多次连续全绿，Task 5 复跑 517/517、22.6s）。
+
+| Task | 审计项 | commit | 处置 | 全量 pass |
+|---|---|---|---|---|
+| 1 | #4 子 lane 熔断 | 3e87f01 | 修复：runSubAgentLoop 镜像主循环 errorStreak/MAX_ERROR_ITERATIONS，全败达阈值 guardStop + 落盘熔断文案；新 mock（history-gated `[mock:lane-melt]` + `[mock:agent-lane-melt]` spawner）；新测试 engine-lane-meltdown.test.mjs（阈值 2，RED 空转 40 轮） | 514/514 |
+| 2 | #5 子 lane 溢出自愈 | 7121800 | 修复：runSubAgentLoop attemptMaxTokens 收窄（镜像主循环 context-window 正则/公式），可收窄 continue 否则 guardStop；新 mock `[mock:lane-overflow]`/`[mock:agent-lane-overflow]`（once-flag `PONOS_MOCK_LANE_OVERFLOW_FIRED`，400 报文实测 classifyApiError context-window）；新测试 engine-lane-overflow.test.mjs | 515/515 |
+| 3 | #6 审批超时验证+补测 | 94c1bdb | **快照过时确认**：`git log -S approvalTimeoutMs` 单命中 0817e8d、`git show 0817e8d^` 无超时代码 → 机制在 HEAD 已实现（审计 866 行指向 0817e8d^ 为旧快照）。处置 = 验证 + 补行为测试 + 超时文案动态化（label 整分"N 分钟"/秒，engine clamp `Math.max(1000,·)`）；新测试 engine-approval-timeout.test.mjs（silentWire 记录 controlRequest 从不 reply → 断言 timeout 消息全文/elapsed∈[900,8000)/is_error/denial 不递增） | 517/517 |
+| 4 | #11 flaky 治理 | 77f337b | 12 个 server/*.test.mjs 收集 helper（collect/next/nextEvent/waitLog/waitLogFile/waitLogFileCount）默认 5000→TEST_COLLECT_TIMEOUT_MS（env `PONOS_TEST_COLLECT_TIMEOUT_MS`，缺省 15000）；grep `timeoutMs = 5000` 无残留；跳过 10 类非收集性 5000（语义/数据字面量，逐处核实）；超时错误文案逐字保留 | 517/517 ×2 连续 |
+| 5 | 回归固化 | docs commit | 全量复跑 517/517 + 本文档执行记录 | 517/517 |
+
+审计项最终处置：
+- **#4/#5 修复 + 测试锁定**（新 mock 分支零改动既有语义，全以新 marker/env 追加）。
+- **#6 快照过时**：机制已由 0817e8d 实现于 HEAD；补行为测试（审批挂起 → timeout behavior，denial 不递增）+ 消息文案动态化。与 S2-P0 的 #7（guard tests exist）同类：审计基于旧快照。
+- **#11 超时提升 + env 覆盖 + 两次全绿**：收集超时 5s→15s；本计划执行中全量复跑 ≥4 次全绿，无 flaky 再现。
+- 既有红项：无。
+
+已知开放项（deferred，供 whole-branch/final review 治理裁定，不阻塞本计划）：
+- Task 1 store-append 不对称（熔断守卫落 store，兄弟守卫不落）、熔断 notice 措辞双计、isErrCount≥2 非判别性。
+- Task 2 once-flag 不清理、正则无 /i 与 tokens 后缀、无解析 limit 路径直接 guardStop（lane 无 compactor，可接受）。
+- Task 3 "1 秒"断言与 engine clamp 两跳耦合、非数字 env → "NaN 秒"。
+- Task 4 12 文件就地 env 常量重复（plan-mandated）；同属收集等待但默认非 5000 的四处遗留（provider-switch:31/subagent:41/graceful-exit:29 的 8000/8000/6000）未 env 化，engine-session:178 waitForCond 3000 系响应性语义断言不应提升。
