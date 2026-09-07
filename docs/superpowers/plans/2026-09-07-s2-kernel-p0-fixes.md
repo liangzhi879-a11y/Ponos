@@ -360,3 +360,21 @@ Expected: 全部 PASS（含 Task 1 记录的守卫基线——若 Task 1 存在 
 - [ ] **Step 2: 提交回归记录**
 
 在 `docs/superpowers/plans/2026-09-07-s2-kernel-p0-fixes.md` 末尾的"执行记录"区追加：修复后各 suite pass 数、守卫测试基线结论（#7 在该 HEAD 的实测状态）、任何既有红项。随计划文档在 yfworking 仓库提交（`cd C:/Users/T203-15/yfworking && git add docs/superpowers/plans/2026-09-07-s2-kernel-p0-fixes.md && git commit -m "docs(plan): S2-P0 执行记录"`）。
+
+---
+
+## 执行记录（S2-P0，2026-09-07）
+
+修复基线：ponos-dev main 26bd8de → 1b350c5（三个独立 commit，每任务经独立 task review 后合入）。
+
+| 审计项 | 修复 | 提交 | 测试证据 |
+|---|---|---|---|
+| #1 子 lane stop_reason/截断拒执 | engine.mjs runSubAgentLoop 消费 stop_reason + 镜像主循环 P0-2（is_error 拒执残缺 tool_use） | 4a6e594 | engine-lane-trunc + subagent 16/16 |
+| #3 health chainDepth 窗口增量 | health.mjs snapshot() reduce 改增量计数（压缩后不再 10 轮恒红） | 882464c | health 9/9 |
+| #2 摘要请求孤儿 tool_use 补丁 | compact.mjs covered 过 patchOrphanToolUses | 1b350c5 | compact + compact-keyinfo 27/27 |
+
+守卫基线核验结论（审计 #7"零覆盖"论断）：在 26bd8de 快照不成立——7 个守卫相关套件（engine-guard-gen/heal/iter/meltdown/idle、r3-guard、subagent）已存在且全 PASS 24/24；本轮无"补守卫测试"工作量，守卫 suite 在修复后复跑仍全绿（engine-guard-* + r3-guard 共 9 个用例 PASS）。
+
+修复后全量相关套件复跑（Task 5）：engine-lane-trunc 1/1、subagent 15/15、health 9/9、compact 22/22、compact-keyinfo 5/5、engine-guard-gen 1/1、engine-guard-heal 3/3、engine-guard-iter 1/1、engine-guard-meltdown 1/1、engine-guard-idle 1/1、r3-guard 2/2 —— 全部 PASS，无既有红项、无 flaky 抖动。
+
+已知取舍：审计 #11 全量套件 flaky 治理（bridge/spawn collect timeout）与 #4/#5/#6、#8-#10 归 S2-P1/P2；本计划为 S3 迁移提供修复后基线。
