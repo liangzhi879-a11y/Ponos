@@ -288,17 +288,20 @@ git commit -m "feat(s3): 内核源码迁入——pd HEAD 1696286 kernel/ 33 文�
 
 ```bash
 cd /c/Users/T203-15/yfworking
-git ls-files | grep -cE '^(yfw-kernel|\.claude|\.agents|YF|docs/superpowers/2026|node_modules|dist/|release|kernel-dist)'   # expect 0（docs/superpowers 原生 7 为净室自有，用更严模式核实）
-# 权威排除项逐一确认不存在
-for p in yfw-kernel .claude .agents YF node_modules dist release runtime .salvage-work e2e-entry5.ts docs/manual/_build docs/prototypes FREEZE-INVESTIGATION.md; do
-  [ -e "$p" ] && echo "PRESENT(应为空): $p" || true
+# ① 追踪面零泄漏：排除项不应出现在 git ls-files（node_modules/dist 等构建产物已被 .gitignore 覆盖，同样不应被追踪）
+git ls-files | grep -E '^(yfw-kernel|\.claude|\.agents|YF|FREEZE-INVESTIGATION|e2e-entry5|\.salvage-work|node_modules/|^dist/|release|kernel-dist)' || true   # expect 0 命中
+# ② 源码树排除项 on-disk 不存在（node_modules/dist/release/runtime 是 gitignored 构建产物，on-disk 存在属预期，不在此查）
+for p in yfw-kernel .claude .agents YF FREEZE-INVESTIGATION.md e2e-entry5.ts .salvage-work docs/manual/_build docs/prototypes; do
+  [ -e "$p" ] && echo "UNEXPECTED PRESENT: $p" || true
 done
+# ③ 构建产物确实被忽略（而非被追踪）
+git check-ignore node_modules dist release runtime >/dev/null && echo "build artifacts gitignored: OK"
 echo "scan done"
 # 净室 docs/superpowers 仍为原生 7 文件（未被 cg 同名覆盖）
 git -c core.quotepath=false ls-files docs/superpowers | wc -l    # expect 7
 ```
 
-Expected：0 命中（kernel-dist 无产物目录）、排除项无一存在、docs/superpowers = 7。
+Expected：① 0 命中；② 无 UNEXPECTED PRESENT；③ OK；docs/superpowers = 7。
 
 - [ ] **Step 2: S1 ③ 残留现状基线（= S4 backlog 输入）**
 
