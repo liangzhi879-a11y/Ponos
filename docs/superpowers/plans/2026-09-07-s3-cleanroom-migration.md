@@ -298,7 +298,7 @@ done
 git check-ignore node_modules dist release runtime >/dev/null && echo "build artifacts gitignored: OK"
 echo "scan done"
 # 净室 docs/superpowers 仍为原生文件（未被 cg 同名覆盖）
-git -c core.quotepath=false ls-files docs/superpowers | wc -l    # expect 7
+git -c core.quotepath=false ls-files docs/superpowers | wc -l    # expect 8
 ```
 
 Expected：① 0 命中；② 无 UNEXPECTED PRESENT；③ OK；docs/superpowers = 8（原生 7 + S3 计划文档，净室自有、非 cg 迁入）。
