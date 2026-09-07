@@ -1,0 +1,10 @@
+{
+  "skill_name": "example-skill",
+  "version": "1.0.0",
+  "experiences": [],
+  "execution_reference": {
+    "auto_apply_rules": [],
+    "common_pitfalls": [],
+    "best_practices": []
+  }
+}

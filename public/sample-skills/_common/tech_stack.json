@@ -1,0 +1,363 @@
+{
+  "_comment": "gxtz技能系统预置技术栈决策表 - agent处理文件时直接查表，无需尝试不同方案",
+  "_usage": "agent调用 doc_toolkit.py info <file> 时返回对应条目；或直接读取本文件按扩展名查找",
+  "version": "2.0",
+  "updated_at": "2026-07-17",
+
+  "file_type_handlers": {
+    ".xlsx": {
+      "description": "Excel 2007+ 工作簿（核心表格、发票明细、人员信息）",
+      "primary_library": "openpyxl",
+      "library_install": "pip install openpyxl",
+      "read": {
+        "function": "openpyxl.load_workbook",
+        "example": "wb = openpyxl.load_workbook(path, data_only=True); ws = wb.active; cell = ws['A1'].value",
+        "toolkit_command": "python doc_toolkit.py read --file <path> --format xlsx"
+      },
+      "write": {
+        "function": "openpyxl.Workbook",
+        "example": "wb = openpyxl.Workbook(); ws = wb.active; ws['A1'] = 'value'; wb.save(path)",
+        "toolkit_command": "python doc_toolkit.py write --file <path> --format xlsx --data <json>"
+      },
+      "template_copy": {
+        "function": "openpyxl.load_workbook + copy",
+        "toolkit_command": "python generate_tables_from_template.py --template <template> --output <output> --data <data.json>",
+        "notes": "核心表格生成必须使用此脚本，保留模板样式"
+      },
+      "validate": {
+        "function": "validate_tables.py",
+        "toolkit_command": "python validate_tables.py --dir <output_dir> --project-root <root>",
+        "notes": "5张核心表格对齐校验"
+      },
+      "common_scenarios": {
+        "读取发票明细": "openpyxl.load_workbook(data_only=True) 逐行读取",
+        "生成核心表格": "generate_tables_from_template.py（模板写死，保留样式）",
+        "校验表格对齐": "validate_tables.py（对照00高新模板）"
+      }
+    },
+
+    ".xls": {
+      "description": "Excel 97-2003 旧版工作簿（部分历史资料）",
+      "primary_library": "xlrd",
+      "fallback_library": "openpyxl（仅支持只读，可能丢失格式）",
+      "library_install": "pip install xlrd",
+      "read": {
+        "function": "xlrd.open_workbook",
+        "example": "wb = xlrd.open_workbook(path); ws = wb.sheet_by_index(0); cell = ws.cell_value(0, 0)",
+        "toolkit_command": "python doc_toolkit.py read --file <path> --format xls"
+      },
+      "write": {
+        "function": "xlwt.Workbook（仅 .xls 格式写入）",
+        "alternative": "转换为 .xlsx 后用 openpyxl 写入（推荐）",
+        "toolkit_command": "python doc_toolkit.py convert --input <path> --to xlsx"
+      },
+      "common_scenarios": {
+        "读取旧版RD/PS名称表": "xlrd.open_workbook 读取",
+        "转换为xlsx处理": "doc_toolkit.py convert --to xlsx（推荐升级格式）"
+      }
+    },
+
+    ".docx": {
+      "description": "Word 2007+ 文档（立项书、清单、制度材料）",
+      "primary_library": "python-docx",
+      "library_install": "pip install python-docx",
+      "read": {
+        "function": "docx.Document",
+        "example": "doc = docx.Document(path); for p in doc.paragraphs: print(p.text); for t in doc.tables: ...",
+        "toolkit_command": "python doc_toolkit.py read --file <path> --format docx"
+      },
+      "write": {
+        "function": "docx.Document + save",
+        "example": "doc = docx.Document(); doc.add_paragraph('text'); doc.save(path)",
+        "toolkit_command": "python doc_toolkit.py write --file <path> --format docx --data <json>"
+      },
+      "generate_from_template": {
+        "function": "generate_checklist.py",
+        "toolkit_command": "python generate_checklist.py --output <path> --data <data.json>",
+        "notes": "资料收集清单生成（保留标准格式）"
+      },
+      "validate": {
+        "function": "validate_rd_report.py / validate_management.py",
+        "toolkit_command": "python validate_rd_report.py --dir <dir> --project-root <root>"
+      },
+      "common_scenarios": {
+        "读取立项书内容": "docx.Document() 遍历 paragraphs 和 tables",
+        "生成资料清单": "generate_checklist.py（标准格式）",
+        "字数统计": "sum(len(p.text) for p in doc.paragraphs)",
+        "对比两份docx": "python compare_docx.py <file1> <file2>"
+      }
+    },
+
+    ".doc": {
+      "description": "Word 97-2003 旧版文档（21个RD立项报告模板、政策文件）",
+      "primary_library": "pywin32 (win32com)",
+      "fallback_library": "LibreOffice 转换（非 Windows 平台）",
+      "library_install": "pip install pywin32",
+      "platform": "windows",
+      "read": {
+        "function": "win32com.client.Dispatch('Word.Application')",
+        "example": "word = win32com.client.Dispatch('Word.Application'); doc = word.Documents.Open(path); text = doc.Content.Text",
+        "toolkit_command": "python doc_toolkit.py read --file <path> --format doc"
+      },
+      "convert_to_docx": {
+        "function": "win32com + SaveAs",
+        "example": "doc.SaveAs(new_path, FileFormat=16)  # 16 = wdFormatXMLDocument (.docx)",
+        "toolkit_command": "python doc_toolkit.py convert --input <path> --to docx",
+        "notes": "转换后用 python-docx 处理，效率更高"
+      },
+      "common_scenarios": {
+        "读取RD立项模板": "先转换为docx，再用python-docx处理",
+        "批量转换21个模板": "doc_toolkit.py convert-dir --input <dir> --to docx"
+      }
+    },
+
+    ".pdf": {
+      "description": "PDF文档（申请书、审计报告、证书扫描件、发票）",
+      "primary_library": "PyMuPDF (fitz)",
+      "secondary_libraries": {
+        "text_extraction": "pdfplumber",
+        "split_merge": "PyPDF2",
+        "image_extraction": "Pillow (PIL)",
+        "ocr": "RapidOCR (PP-OCRv4 via ONNX Runtime)"
+      },
+      "library_install": "pip install PyMuPDF pdfplumber PyPDF2 Pillow",
+      "ocr": {
+        "description": "扫描件PDF的OCR识别（中文，识别率>95%）",
+        "primary_library": "RapidOCR (基于ONNX Runtime，无Windows兼容性问题)",
+        "library_install": "pip install rapidocr-onnxruntime",
+        "detect_scanned": {
+          "function": "ocr_engine.detect_scanned_pdf",
+          "toolkit_command": "python doc_toolkit.py detect-scan --file <path>",
+          "notes": "判定规则：文本层<50字符 OR 图片占比>80%"
+        },
+        "ocr_text": {
+          "function": "ocr_engine.ocr_pdf",
+          "toolkit_command": "python doc_toolkit.py read --file <path> --format pdf --mode ocr --project <project>",
+          "notes": "结果缓存到.trae/ocr_cache/{project}/{md5}.json"
+        },
+        "ocr_with_table": {
+          "function": "ocr_engine.ocr_with_table",
+          "toolkit_command": "python ocr_engine.py ocr-table --file <path> --project <project>",
+          "notes": "OCR所有文字+启发式表格行识别（连续多列数字行）"
+        },
+        "smart_auto": {
+          "function": "doc_toolkit.read_pdf (mode=auto)",
+          "toolkit_command": "python doc_toolkit.py read --file <path> --format pdf --mode auto --project <project>",
+          "notes": "智能检测扫描件+自动OCR（推荐默认使用）"
+        }
+      },
+      "read_text": {
+        "function": "fitz.open",
+        "example": "doc = fitz.open(path); for page in doc: text = page.get_text()",
+        "toolkit_command": "python doc_toolkit.py read --file <path> --format pdf --mode text",
+        "notes": "PyMuPDF读取速度最快，但扫描件返回空内容"
+      },
+      "read_table": {
+        "function": "pdfplumber.open",
+        "example": "with pdfplumber.open(path) as pdf: tables = pdf.pages[0].extract_tables()",
+        "toolkit_command": "python doc_toolkit.py read --file <path> --format pdf --mode table"
+      },
+      "split": {
+        "function": "pdf_splitter.py",
+        "toolkit_command": "python pdf_splitter.py split --input <path> --pages <range> --output <dir>",
+        "notes": "PDF拆分与合并资料整理工具"
+      },
+      "merge": {
+        "function": "pdf_splitter.py",
+        "toolkit_command": "python pdf_splitter.py merge --inputs <files> --output <merged.pdf>"
+      },
+      "extract_images": {
+        "function": "pdf_splitter.py",
+        "toolkit_command": "python pdf_splitter.py extract-images --input <path> --output <dir>"
+      },
+      "compress": {
+        "function": "file_compressor.py (v2.1)",
+        "toolkit_command": "python file_compressor.py compress --input <path> --type <material_type> --output <output>",
+        "auto_command": "python file_compressor.py auto --input <path> --type <material_type> --output <output>",
+        "quick_command": "python file_compressor.py compress --input <path> --type <material_type> --output <output> --quick",
+        "check_command": "python file_compressor.py check --input <path> --type <material_type>",
+        "list_limits": "python file_compressor.py list-limits",
+        "notes": "v2.1优化版：自适应DPI计算+压缩有效性检测(deep<5%跳过extreme)+彩色优先策略(先扫彩色全DPI，超标再灰度)。实测18.17MB→3.84MB彩色(78.9%)，签章颜色保留。--quick直跳ultra",
+        "strategies": {
+          "light": "garbage=3 + deflate (2.7%压缩比)",
+          "medium": "garbage=4 + clean content streams (2.7%压缩比)",
+          "deep": "+ deflate_images + deflate_fonts (2.7%压缩比，扫描件无效)",
+          "extreme_skip": "deep压缩比<5%时自动跳过extreme",
+          "extreme": "+ page.clean_contents() + image recompress(q75→30) + JPEG2000→JPEG",
+          "ultra_color_first": "彩色优先扫描(200→50共18级) → 找最高不超标DPI → 全线超标再降灰度"
+        },
+        "test_benchmark": {
+          "file": "PS01_精密过滤器.pdf",
+          "original": "18.17MB, 65页, 158图",
+          "ultra_color_dpi95": "3.84MB (-78.9%, 达标, 签章颜色保留)",
+          "ultra_color_dpi90": "3.48MB (-80.8%, 达标)",
+          "ultra_gray_dpi100": "3.91MB (-78.5%, 备用方案)",
+          "ultra_gray_dpi90": "3.28MB (-81.9%, 备用方案)"
+        },
+        "material_limits": {
+          "IP": "≤2MB", "RD": "≤2MB", "PS": "≤4MB", "ACHIEVEMENT": "≤2MB",
+          "STANDARD": "≤2MB", "LICENSE": "≤500KB", "COVER": "≤1MB",
+          "AUDIT_FINANCIAL": "≤100MB", "AUDIT_RD": "≤100MB", "AUDIT_PS": "≤100MB",
+          "TAX": "≤5MB", "MANAGEMENT": "≤20MB", "INSTITUTION": "≤20MB",
+          "INCENTIVE": "≤5MB", "TRAINING": "≤5MB", "HR": "≤8MB",
+          "CONTRACT": "≤20MB", "PROMISE": "≤1MB", "APPLICATION": "≤50MB"
+        }
+      },
+      "extract_ps_baseline": {
+        "function": "invoice_ps_matcher.py",
+        "toolkit_command": "python invoice_ps_matcher.py --application-pdf <申请书.pdf> --invoices <发票.xlsx>",
+        "notes": "从申请书提取PS基线（专用脚本）"
+      },
+      "common_scenarios": {
+        "读取申请书内容": "doc_toolkit.py read --mode auto（推荐，自动识别扫描件）",
+        "提取审计报告表格": "doc_toolkit.py read --mode table",
+        "拆分多证书PDF": "pdf_splitter.py split",
+        "合并多个PDF": "pdf_splitter.py merge",
+        "从申请书提取PS": "invoice_ps_matcher.py（专用）",
+        "扫描件PDF识别": "doc_toolkit.py read --mode auto（自动检测+OCR）",
+        "扫描件强制OCR": "doc_toolkit.py read --mode ocr --force-ocr",
+        "发票表格OCR": "ocr_engine.py ocr-table --file 发票.pdf",
+        "合同字段提取": "contract_invoice_extractor.py extract --file 合同.pdf",
+        "PDF压缩到申报要求": "file_compressor.py auto --type <材料类型>",
+        "检查文件大小合规": "file_compressor.py check --type <材料类型>"
+      }
+    },
+
+    ".jpg": { "description": "JPEG图像（营业执照扫描件）", "primary_library": "Pillow", "library_install": "pip install Pillow", "read": { "function": "PIL.Image.open", "example": "img = Image.open(path); print(img.size, img.mode)" }, "compress": { "function": "file_compressor.py", "toolkit_command": "python file_compressor.py compress --input <path> --type LICENSE --output <output>", "notes": "JPEG质量递减85→20+chroma4:2:0(参考Squoosh)→WebP转换(减小25-35%)。测试:227KB→96KB" } },
+    ".png": { "description": "PNG图像", "primary_library": "Pillow", "library_install": "pip install Pillow", "read": { "function": "PIL.Image.open" }, "compress": { "function": "file_compressor.py", "toolkit_command": "python file_compressor.py compress --input <path> --max-size <size_mb> --output <output>", "notes": "PNG优化→量化256色(参考Caesium/pngquant)→转JPEG chroma4:2:0→转WebP" } },
+    ".txt": { "description": "纯文本（提示词文件）", "primary_library": "标准库", "read": { "function": "open(path, 'r', encoding='utf-8')" } },
+    ".json": { "description": "JSON数据（知识库、配置、经验库）", "primary_library": "标准库", "read": { "function": "json.load" }, "write": { "function": "json.dump" } },
+    ".zip": { "description": "ZIP压缩包（技能包、附件）", "primary_library": "标准库 zipfile", "extract": { "function": "archive_extractor.py", "toolkit_command": "python archive_extractor.py --input <path> --output <dir>" } },
+    ".rar": { "description": "RAR压缩包", "primary_library": "archive_extractor.py（需系统安装unrar）", "extract": { "function": "archive_extractor.py", "notes": "需系统PATH中有unrar.exe" } },
+    ".7z": { "description": "7z压缩包", "primary_library": "archive_extractor.py（需py7zr）", "extract": { "function": "archive_extractor.py", "notes": "pip install py7zr（按需）" } }
+  },
+
+  "task_based_recommendations": {
+    "生成核心表格（RD/PS/IP/TOAI/成果转化）": {
+      "primary": "generate_tables_from_template.py",
+      "library": "openpyxl",
+      "command": "python generate_tables_from_template.py --template <template.xlsx> --output <output.xlsx> --data <data.json>",
+      "validate": "python validate_tables.py --dir <output_dir> --project-root <root>",
+      "notes": "必须从模板复制以保留样式，禁止从头创建"
+    },
+    "生成资料收集清单": {
+      "primary": "generate_checklist.py",
+      "library": "python-docx",
+      "command": "python generate_checklist.py --output <output.docx> --data <data.json>"
+    },
+    "发票匹配PS产品": {
+      "primary": "invoice_ps_matcher.py",
+      "library": "openpyxl + PyMuPDF",
+      "command": "python invoice_ps_matcher.py --application-pdf <申请书.pdf> --invoices <发票.xlsx>",
+      "validate": "python validate_invoice_ps.py --dir <dir>"
+    },
+    "RD-IP-PS三角映射": {
+      "primary": "rd_ip_ps_matching.py",
+      "command": "python rd_ip_ps_matching.py --project-root <root>"
+    },
+    "成果转化材料日期合规校验": {
+      "primary": "year_compliance_checker.py",
+      "library": "openpyxl + PyMuPDF + PaddleOCR",
+      "command": "python year_compliance_checker.py --apply-year <年份> --check-dir <成果目录> --achievement-table <转化表.xlsx>",
+      "notes": "依据EXP-2026-07-17-001，5条强制规则：年份硬过滤/同年配对/测试报告不跨年/专利证书优先/文件名年份校验；含OCR fallback支持扫描件"
+    },
+    "成果转化证明材料PDF生成": {
+      "primary": "generate_achievement_proofs.py",
+      "library": "openpyxl + PyPDF2 + Pillow",
+      "command": "python generate_achievement_proofs.py organize --achievement-table <转化表.xlsx> --materials-dir <材料目录> --ip-dir <IP证书目录> --output-dir <最终版本>",
+      "notes": "三模式(preview/organize/auto-scan)。v1.36.0新增。预览确认后合并IP证书+合同+发票+产品证明为单个PDF。超2MB自动告警压缩指令。"
+    },
+    "单文件年份提取（调试）": {
+      "primary": "year_compliance_checker.py",
+      "command": "python year_compliance_checker.py --extract-year --file <文件>",
+      "notes": "支持HXS编码/dzfp时间戳/通用日期/纯年份，辅以PDF内容+OCR交叉验证"
+    },
+    "扫描件PDF识别": {
+      "primary": "ocr_engine.py",
+      "library": "RapidOCR (PP-OCRv4 via ONNX Runtime)",
+      "command": "python ocr_engine.py ocr --file <path> --project <project>",
+      "notes": "智能检测+OCR，结果缓存到.trae/ocr_cache/{project}/{md5}.json，agent可重复读取"
+    },
+    "扫描件检测": {
+      "primary": "doc_toolkit.py detect-scan",
+      "library": "PyMuPDF（图片占比分析）",
+      "command": "python doc_toolkit.py detect-scan --file <path>",
+      "notes": "判定规则：文本层<50字符 OR 图片占比>80%"
+    },
+    "合同字段提取": {
+      "primary": "contract_invoice_extractor.py",
+      "library": "RapidOCR + 正则",
+      "command": "python contract_invoice_extractor.py extract --file <合同.pdf> --output-dir <dir>",
+      "notes": "提取甲乙方/签订日期/合同金额/合同编号/标的物，JSON+Excel双输出"
+    },
+    "发票字段提取": {
+      "primary": "contract_invoice_extractor.py",
+      "library": "RapidOCR + 正则",
+      "command": "python contract_invoice_extractor.py extract --file <发票.pdf> --output-dir <dir>",
+      "notes": "提取发票号/开票日期/购销方/货物明细/金额/税额/价税合计，JSON+Excel双输出"
+    },
+    "批量合同发票提取": {
+      "primary": "contract_invoice_extractor.py batch",
+      "library": "RapidOCR + 正则",
+      "command": "python contract_invoice_extractor.py batch --dir <目录> --output-dir <结果目录>",
+      "notes": "批量处理目录下所有PDF，自动检测文档类型并提取字段"
+    },
+    "OCR缓存查询": {
+      "primary": "ocr_engine.py cache-list",
+      "command": "python ocr_engine.py cache-list --project <project>",
+      "notes": "查询项目的OCR缓存索引，避免重复OCR"
+    },
+    "输出文档版本管理": {
+      "primary": "output_version_manager.py",
+      "command": "python output_version_manager.py backup --file <输出文件> --skill <技能名>",
+      "notes": "技能产出新文档前调用，自动将上一版本备份到.trae/output_backup/{skill}/，规定目录仅保留最新版本"
+    },
+    "目录清理（过程版本移入备份）": {
+      "primary": "output_version_manager.py cleanup",
+      "command": "python output_version_manager.py cleanup --dir <目录> --skill <技能名>",
+      "notes": "扫描目录中_v1/_backup/_draft等过程版本文件，移入备份文件夹"
+    },
+    "专审报告核对": {
+      "primary": "audit_report_verifier.py",
+      "library": "openpyxl + python-docx + pywin32",
+      "command": "python audit_report_verifier.py --audit-pdf <报告.pdf> --core-tables <dir>",
+      "validate": "python validate_audit_verification.py --dir <dir>"
+    },
+    "PDF拆分合并": {
+      "primary": "pdf_splitter.py",
+      "library": "PyPDF2 + pdfplumber + Pillow",
+      "command": "python pdf_splitter.py split --input <path> --pages <range> --output <dir>"
+    },
+    "企微会话查询": {
+      "primary": "wecom_query.py",
+      "library": "pycryptodome + sqlite3",
+      "command": "python wecom_query.py --action search --keyword <keyword>"
+    },
+    "Dify工作流生成RD立项书": {
+      "primary": "dify_workflow.py",
+      "library": "requests",
+      "command": "python dify_workflow.py --action generate --rd-id <id> --count <n>"
+    },
+    "文件压缩（申报材料合规）": {
+      "primary": "file_compressor.py",
+      "library": "PyMuPDF + Pillow",
+      "command": "python file_compressor.py auto --input <path> --type <材料类型> --output <output>",
+      "check": "python file_compressor.py check --input <path> --type <材料类型>",
+      "list_limits": "python file_compressor.py list-limits",
+      "notes": "五级递进压缩。Ultra级支持9.7MB→1.7MB(82%压缩率)。图片支持WebP/PNG量化/chroma子采样"
+    }
+  },
+
+  "anti_patterns": {
+    "_comment": "禁止的低效模式，agent 不应尝试",
+    "禁止从头创建xlsx": "必须用 generate_tables_from_template.py 从模板复制",
+    "禁止用openpyxl读.doc": ".doc是二进制格式，openpyxl无法读取，必须先转换",
+    "禁止用docx读.doc": "python-docx不支持.doc，必须用win32com转换或LibreOffice",
+    "禁止手动解析PDF": "必须用PyMuPDF/pdfplumber，禁止逐字节解析",
+    "禁止用requests下载本地文件": "本地文件用shutil.copy或open()读取",
+    "禁止用json读取非json文件": "json.load只适用于.json文件",
+    "禁止对扫描件返回空内容认为文件损坏": "扫描件需用 doc_toolkit.py read --mode auto 触发OCR",
+    "禁止仅用text.strip()==''判定扫描件": "可能漏掉部分扫描件，应使用 doc_toolkit.py detect-scan 检测",
+    "禁止重复OCR同一文件": "必须用 --project 参数指定项目，OCR结果自动缓存"
+  }
+}

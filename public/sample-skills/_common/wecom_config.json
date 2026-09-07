@@ -1,0 +1,95 @@
+{
+  "path_vars": {
+    "USERPROFILE": "",
+    "WXWORK_ROOT": "${USERPROFILE}\\Documents\\WXWork",
+    "UID": "1688856499787342"
+  },
+  "data_source": {
+    "wxwork_root": "${WXWORK_ROOT}",
+    "uid": "${UID}",
+    "db_dir": "${WXWORK_ROOT}\\${UID}\\Data",
+    "description": "企微客户端数据根目录（db_dir为加密数据库目录，只读）",
+    "auto_detect": true
+  },
+  "keys": {
+    "keys_file": "",
+    "description": "密钥文件路径（空则自动查找 _common/wxwork_keys.json 或从进程内存提取）",
+    "fallback_to_memory_extract": true
+  },
+  "cache": {
+    "file_dir": "${WXWORK_ROOT}\\${UID}\\Cache\\File",
+    "image_dir": "${WXWORK_ROOT}\\${UID}\\Cache\\Image",
+    "file_temp_dir": "${WXWORK_ROOT}\\${UID}\\Cache\\File\\Temp",
+    "wedrive_trash_dir": "${WXWORK_ROOT}\\${UID}\\WeDrive\\.Trash",
+    "description": "企微缓存目录（v5：file_dir=普通文件, image_dir=图片截图, file_temp_dir=临时下载）"
+  },
+  "keyword_mappings": {
+    "business_license": ["营业执照", "工商执照", "三证合一"],
+    "social_security": ["社保", "社会保险", "缴费证明", "缴费记录"],
+    "audit_report": ["审计报告", "财审", "财务审计", "税审"],
+    "tax_return": ["纳税申报", "所得税申报", "完税证明"],
+    "patent_certificate": ["专利", "发明", "实用新型", "外观设计"],
+    "software_copyright": ["软著", "软件著作权"],
+    "contract": ["合同", "订单", "采购", "销售合同"],
+    "invoice": ["发票", "增值税", "专用发票"],
+    "degree_certificate": ["学历", "学位", "毕业证"],
+    "rd_report": ["立项书", "研发报告", "立项报告", "项目"],
+    "product_manual": ["产品说明", "技术说明", "产品手册"],
+    "test_report": ["检测报告", "测试报告", "检验报告"],
+    "equipment": ["设备", "叉车", "试验机", "测试仪"],
+    "photo": ["照片", "场地", "实验室", "办公区"]
+  },
+  "export": {
+    "default_output_subdir": "_补充资料/gxtz-wecom-collector",
+    "filename_strategy": "preserve_original_name",
+    "generate_meta_file": true,
+    "meta_file_suffix": ".wecom_meta.json",
+    "deduplicate_by": "md5_or_name_size"
+  },
+  "search": {
+    "default_limit": 100,
+    "max_content_length": 500,
+    "time_format": "%Y-%m-%d %H:%M:%S"
+  },
+  "decrypt": {
+    "use_temp_dir": true,
+    "cleanup_after_query": true,
+    "dbs_for_messages": ["message.db", "user.db", "session.db"],
+    "dbs_for_files": ["file.db", "user.db"],
+    "dbs_for_collect_all": ["message.db", "file.db", "user.db", "session.db"],
+    "temp_dir_prefix": "wecom_decrypted_"
+  },
+  "match": {
+    "strategy": "name_size_then_md5",
+    "prefer_download_file_point": true,
+    "precise_year_month_lookup": true,
+    "strict_conversation_id_check": true,
+    "fallback_to_full_scan": true,
+    "md5_empty_fallback": "name_size_only",
+    "cache_scan_chunk_size": 8192
+  },
+  "version": "1.2.1",
+  "last_updated": "2026-07-16",
+  "adaptation_log": [
+    {
+      "date": "2026-07-16",
+      "version": "1.0.0",
+      "change": "初始版本：实时解密+会话-文件-缓存三联动，14类关键词映射，v5基于实测验证"
+    },
+    {
+      "date": "2026-07-16",
+      "version": "1.1.0",
+      "change": "v7强化：match段新增prefer_download_file_point/precise_year_month_lookup/strict_conversation_id_check/fallback_to_full_scan四项配置，强化会话-文件-缓存三联动防串客户"
+    },
+    {
+      "date": "2026-07-16",
+      "version": "1.2.0",
+      "change": "v7迭代3：新增path_vars段变量化所有路径（${WXWORK_ROOT}/${UID}/${USERPROFILE}），新增verify-association子命令，load_config_with_vars函数支持环境变量覆盖"
+    },
+    {
+      "date": "2026-07-16",
+      "version": "1.2.1",
+      "change": "v7迭代4：USERPROFILE默认值改为空字符串，由load_config_with_vars动态从环境变量获取，避免硬编码个人路径"
+    }
+  ]
+}

@@ -1,0 +1,123 @@
+{
+  "workflow_api": {
+    "base_url": "http://218.17.137.219:9980/v1",
+    "api_key": "app-I68kqHLxDvlaOYtITLvOP0aK",
+    "app_name": "WF_RD_PS_IP_Matching_V2",
+    "input_variable": "input_data",
+    "user_id": "trae-agent",
+    "timeout_seconds": 900,
+    "response_mode": "streaming",
+    "note": "工作流仅作交叉参考。v2已更新hint，新增linked_ip字段说明，IP匹配节点可能已修复，建议重新端到端测试验证。"
+  },
+  "input_schema": {
+    "description": "工作流input_data变量JSON结构定义（v2 hint提取）",
+    "top_level_fields": ["RD_list", "PS_list", "IP_list"],
+    "rd_list_item": {
+      "id": "编号，如\"1\"",
+      "name": "项目名称",
+      "year": "立项年份，如2023",
+      "start_date": "开始时间\"2023-01-03\"",
+      "end_date": "完成时间",
+      "budget_wan": "预算（万）",
+      "actual_wan": "实际费用（万）",
+      "leader": "负责人",
+      "staff_count": "研发人数",
+      "labor_wan": "人工费（万）",
+      "linked_ip": "关联IP编号列表，如[\"IP10\",\"IP14\",\"IP16\"]"
+    },
+    "ps_list_item": {
+      "id": "如\"PS01\"",
+      "name": "产品名称"
+    },
+    "ip_list_item": {
+      "id": "如\"IP01\"",
+      "name": "知识产权全称",
+      "type": "类别：发明授权/实用新型/外观设计",
+      "patent_no": "专利号，如ZL202322711801.6",
+      "apply_date": "申请日期\"2023-10-08\"",
+      "auth_date": "授权日期\"2024-04-30\"",
+      "summary": "国家知识产权局摘要≤400字",
+      "tech_advantage": "核心技术先进性说明≤400字",
+      "product_support": "对产品支持作用说明≤400字"
+    },
+    "note": "v2新增linked_ip字段（RD可携带预设关联IP列表），用于工作流交叉参考。自主算法仍按领域+关键词+时间打分，不完全依赖linked_ip。"
+  },
+  "strategy": {
+    "primary": "autonomous",
+    "workflow_role": "cross_reference",
+    "on_conflict": "prefer_autonomous_and_log_diff",
+    "description": "自主确定性算法为主匹配器，工作流为交叉参考；不一致时以自主算法为准并在审核报告标注差异"
+  },
+  "domain_classification": {
+    "curtain_wall": {
+      "display_name": "幕墙",
+      "ps_hint": "PS02",
+      "keywords": ["幕墙", "蜂窝板", "蜂窝铝板", "立柱", "遮阳", "型材（幕墙）", "金属型材", "防雷幕墙", "护板", "护栏", "开阖"]
+    },
+    "window_door": {
+      "display_name": "门窗",
+      "ps_hint": "PS01",
+      "keywords": ["门窗", "推拉", "平开", "纱窗", "纱扇", "铰链", "中梃", "压条", "压线", "锁", "自锁", "排水", "密封", "隔热", "隔音", "保温", "断桥", "外开窗", "内开", "防蚊", "呼吸", "十字中梃", "垫块", "卡件", "防脱", "防撞", "折叠平开门"]
+    },
+    "general": {
+      "display_name": "通用/技术基础",
+      "ps_hint": "",
+      "keywords": ["氧浓度", "栏杆", "木塑", "复合材料", "监测", "单片机", "物联网", "磁悬浮", "人工智能", "参数化"]
+    }
+  },
+  "matching_rules": {
+    "one_rd_multiple_ip_ps": true,
+    "one_rd_multiple_ip_ps_note": "一个RD可对应多个PS和IP",
+    "time_constraint": {
+      "rule": "rd_year_not_later_than_ip",
+      "description": "RD时间不应晚于IP：RD.year <= IP申请年份",
+      "hard_constraint_for_non_invention": true,
+      "proximity_window_years": 1,
+      "proximity_note": "非发明专利：RD与IP申请年份差距越小分越高；超出proximity_window_years降权"
+    },
+    "invention_exception": {
+      "enabled": true,
+      "invention_types": ["发明授权", "发明专利", "发明"],
+      "description": "发明专利豁免时间相近约束，允许RD关联较早年份的发明作为技术基础（IP.year可早于RD.year）",
+      "allow_ip_earlier_than_rd": true
+    },
+    "no_idle_ip": {
+      "enabled": true,
+      "description": "所有IP必须匹配不能闲置",
+      "fallback": "force_assign_to_closest_rd",
+      "fallback_note": "未被任何RD匹配的IP，强制分配到领域+时间最相近的RD，并在审核报告标注为兜底分配"
+    }
+  },
+  "scoring_weights": {
+    "domain_match": 40,
+    "keyword_overlap": 35,
+    "time_proximity": 25,
+    "invention_tech_basis_bonus": 10,
+    "min_score_threshold": 20,
+    "description": "综合得分 = 领域匹配40 + 关键词重叠35 + 时间接近度25(+发明技术基础加分10)，低于min_score_threshold不主动匹配（仅兜底可突破）"
+  },
+  "audit": {
+    "checks": [
+      "no_idle_ip",
+      "rd_not_later_than_ip_for_non_invention",
+      "each_rd_has_ps",
+      "ip_domain_consistency",
+      "workflow_cross_check_diff"
+    ],
+    "report_sections": ["匹配概览", "RD-IP-PS明细", "闲置IP兜底记录", "时间约束违规", "工作流交叉参考差异", "人工复核建议"]
+  },
+  "version": "1.1.0",
+  "last_updated": "2026-07-13",
+  "adaptation_log": [
+    {
+      "date": "2026-07-12",
+      "version": "1.0.0",
+      "change": "初始版本：workflow_api配置+strategy以自主为主+domain_classification（幕墙/门窗/通用）+matching_rules（4条规则）+scoring_weights+audit校验"
+    },
+    {
+      "date": "2026-07-13",
+      "version": "1.1.0",
+      "change": "适配工作流v2更新：hint大幅增强，明确input_data JSON结构，新增linked_ip字段说明（RD可携带预设关联IP列表）。新增input_schema章节记录工作流期望的字段结构。workflow_api.note更新为'IP匹配节点可能已修复，建议重新端到端测试'。"
+    }
+  ]
+}

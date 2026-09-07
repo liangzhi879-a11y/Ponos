@@ -1,0 +1,77 @@
+# gxtz 技能系统依赖清单
+# 生成时间：2026-07-17
+# 更新时间：2026-07-28（v4 OCR性能优化：预渲染+灰度化+消除PNG编解码，OpenVINO后端提速50%+）
+# 用途：高新技术企业认定材料处理（Word/Excel/PDF/企微解密/OCR/截图）
+#
+# 安装命令：
+#   pip install -r .trae/skills/_common/requirements.txt
+#
+# OCR性能提示（v2026-07-28优化）：
+#   - rapidocr-openvino（推荐！Intel CPU提速50%+，安装: pip install rapidocr-openvino）
+#   - rapidocr-onnxruntime（兼容性最好，自动回退）
+#   - 引擎自动按优先级选择：OpenVINO > ONNX Runtime
+#   - 优化后预估单页OCR从40s降至15-20s（OpenVINO）/ 20-30s（ONNX）
+#
+# 说明：
+#   - 所有库均经实际项目验证，对应 _common/*.py 脚本的 import 扫描结果
+#   - 标注 [optional] 的库为增强功能，缺失时脚本自动降级
+#   - 标注 [windows] 的库仅在 Windows 平台需要
+
+# ============================================================
+# 核心文档处理（必需）
+# ============================================================
+openpyxl>=3.1.0          # .xlsx 读写（4个脚本直接使用）
+python-docx>=0.8.11      # .docx 读写（imports as docx）
+PyPDF2>=3.0.0            # PDF 拆分/合并
+pdfplumber>=0.9.0        # PDF 文本/表格提取
+PyMuPDF>=1.23.0          # PDF 高效读取（imports as fitz，用于申请书解析）
+Pillow>=10.0.0           # 图像提取（imports as PIL）
+
+# ============================================================
+# OCR识别（必需，用于扫描件PDF/图片型PDF）
+# 项目70-80个扫描件PDF依赖此分类，缺失会导致扫描件返回空内容
+# 使用RapidOCR引擎，后端优先级：OpenVINO > ONNX Runtime
+# rapidocr-openvino: Intel CPU加速（推荐，速度最快）
+# rapidocr-onnxruntime: ONNX Runtime推理（兼容性最好，回退方案）
+# ============================================================
+rapidocr-onnxruntime>=1.4.4  # [必需] RapidOCR ONNX后端（至少安装一个）
+onnxruntime>=1.7.0            # ONNX推理引擎
+pdf2image>=1.16.0             # PDF转图片（扫描件检测辅助，需系统安装poppler）
+opencv-python>=4.5.1          # 图像处理（RapidOCR依赖）
+Shapely>=1.7.1                # 几何运算（RapidOCR依赖）
+pyclipper>=1.2.0              # 多边形裁剪（RapidOCR依赖）
+
+# OCR Intel加速 [推荐]
+rapidocr-openvino>=1.4.0      # [推荐] OpenVINO后端，Intel CPU下提速30-50%
+# 网络与 API（必需）
+# ============================================================
+requests>=2.28.0         # HTTP 请求（Dify 工作流、MiniMax API）
+
+# ============================================================
+# 企微解密（gxtz-wecom-collector 技能专用）
+# ============================================================
+pycryptodome>=3.18.0     # AES-128-CBC 解密（imports as Crypto）
+
+# ============================================================
+# 增强功能 [optional]
+# ============================================================
+jieba>=0.42.1            # 中文分词，发票货物名称匹配优化
+portalocker>=2.7.0       # 跨进程文件锁（file_lock.py 优先使用，缺失时回退 msvcrt）
+
+# ============================================================
+# OCR降级备用 [optional]
+# ============================================================
+pytesseract>=0.3.10      # Tesseract OCR（RapidOCR不可用时的降级方案，需系统安装Tesseract-OCR）
+
+# ============================================================
+# Windows 专用 [windows]
+# ============================================================
+pywin32>=305             # .doc→.docx 转换（imports as win32com，仅 Windows 需要）
+xlrd>=2.0.1              # 旧版 .xls 读取（audit_report_verifier.py 声明但未实际使用）
+
+# ============================================================
+# 截图/图形转换（gxtz-achievement-materials R17 案例）
+# ============================================================
+img2pdf>=0.6.0           # PNG→PDF 转换，保持图片质量
+playwright>=1.40.0        # 浏览器自动化截图（安装后需运行: playwright install chromium）
+python-dateutil>=2.8.0    # 日期计算（relativedelta），core-tables 使用

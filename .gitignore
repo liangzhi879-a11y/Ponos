@@ -18,3 +18,15 @@ zz-bench/
 # 系统
 .DS_Store
 Thumbs.db
+
+# S3 合并自 cg（2026-09-07）：构建产物 / 运行时 / 调试残留 / SDD 工作区
+dist-electron
+/node.exe
+__pycache__/
+*.pyc
+runtime/
+.trae/
+.superpowers
+.cli_*.mjs
+.cdp_*.mjs
+.yfw_*.mjs

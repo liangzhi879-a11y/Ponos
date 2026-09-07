@@ -1,0 +1,72 @@
+{
+  "_comment": "双模型交叉验证配置文件 - DeepSeek(主) + MiniMax(校验)",
+  "_usage": "API Key优先使用环境变量 MINIMAX_API_KEY / MINIMAX_GROUP_ID，本文件作为备选",
+  
+  "minimax": {
+    "api_key": "sk-cp-KxDabvVJFrFlo4QrWRWNUsPjOjP1rrK4ZJxyGEdsPZ3_bR8StchQoIehE1d-w-_VQiEG8Qr4y0UuYbM0k5abhktekPl38LUlqGBrmqqNGAvHUjLENWHG_Ik",
+    "group_id": "",
+    "model": "MiniMax-M3",
+    "api_url": "https://api.minimax.chat/v1/text/chatcompletion_v2",
+    "max_tokens": 16384,
+    "temperature": 0.1,
+    "timeout_seconds": 120
+  },
+
+  "cross_validation": {
+    "enabled": true,
+    "default_mode": "parallel",
+    "consensus_quick_pass": true,
+    "dispute_handling": {
+      "type_A": "auto_retry_with_source",      
+      "type_B": "pause_for_human",             
+      "type_C": "log_only"                     
+    },
+    "experience_capture": {
+      "require_cross_validation": true,
+      "disputed_action": "hold_for_human",
+      "single_source_max_count": 3
+    },
+    "performance": {
+      "parallel_api_calls": true,
+      "checkpoint_timeout_seconds": 180,
+      "max_retries": 2,
+      "retry_delay_seconds": 5
+    }
+  },
+
+  "skill_checkpoints": {
+    "gxtz-core-tables": {
+      "enabled_checkpoints": ["rd_ps_ip_mapping", "staff_count_ratio", "ip_count_check"],
+      "consensus_threshold": 0.90
+    },
+    "gxtz-achievement-materials": {
+      "enabled_checkpoints": ["achievement_ip_link", "conversion_chain"],
+      "consensus_threshold": 0.85
+    },
+    "gxtz-invoice-ps-matching": {
+      "enabled_checkpoints": ["ps_name_extraction", "invoice_match_accuracy"],
+      "consensus_threshold": 0.80
+    },
+    "gxtz-rd-report": {
+      "enabled_checkpoints": ["format_compliance", "content_logic"],
+      "consensus_threshold": 0.90
+    },
+    "gxtz-ip-materials": {
+      "enabled_checkpoints": ["ip_completeness", "ip_rd_linkage"],
+      "consensus_threshold": 0.90
+    },
+    "gxtz-staff-materials": {
+      "enabled_checkpoints": ["staff_headcount", "work_duration_183"],
+      "consensus_threshold": 0.90
+    },
+    "gxtz-ps-materials": {
+      "enabled_checkpoints": ["ps_tech_description", "ps_revenue_ratio"],
+      "consensus_threshold": 0.85
+    },
+    "gxtz-audit-verification": {
+      "enabled_checkpoints": ["cross_report_consistency", "rd_ip_ps_content_match"],
+      "consensus_threshold": 0.95
+    }
+  }
+
+}
