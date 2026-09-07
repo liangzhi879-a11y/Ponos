@@ -122,6 +122,16 @@ cd C:/Users/T203-15/yfworking && git add docs/superpowers/audits/2026-09-07-s1-d
 
 ---
 
-## 执行记录（S1，待填充）
+## 执行记录（S1，2026-09-07 完成）
 
-（执行后在此记录：两库 HEAD、清单三件套要点、发现的决策性开放项）
+- **两库 HEAD**：claude-code-gui `6ba18ecfd8d6e982797f0dde7b950b8fecfb45a1`；ponos-dev `030f0a2251430baeda321e8ccfdb41249e8341c4`（含 P1-11 在途批 dirty，只读不受影响）。全程只读：两库零修改；仅 yfworking 新增审计文档。
+- **产出**：`docs/superpowers/audits/2026-09-07-s1-diff-audit.md`（179 行，清单三件套 + 处置去向汇总）。
+  - 清单①（17 行差异表 + 汇总判定）：产品功能主体全部在旧线 cg（src/server/electron/pet/public/docs 手册/根配置 ≈606 产品文件），S3 迁入来源 = 旧线主体 + pd kernel/（33 文件，内核侧随 S2）；cg yfw-kernel/（2490 文件旧派生内核）排除不迁（8 依赖点）；同源分叉（08-19 前共享历史），分叉多品牌重命名 + pd 测试/v3 增量。
+  - 清单②（9 项候选）：整项移植 2（②-03 技能清单去重 P8、②-07 WS 心跳+pong）、部分移植 4（②-02 压缩可见化、②-04 browser-executor 增强、②-05 守卫自愈 GUI 接线、②-08 effort/provider 透传）、不移植/排除 2（②-01 审批窗 v3、②-09 v3 多窗口平台）、纯内核随迁 1（②-06 CJK 估算）。
+  - 清单③：(a) 残留引用点 39 行（内核路径/派生内核 bootstrap → S3 改接 pd kernel/kernel-dist；协议 env/生态格式/身份守卫品牌词/文档语料 → 白名单保留）；(b) yfw-kernel 泄漏副本字面引用 13 行/9 文件（Task 1 8 依赖点复核 + 补全 kernel-paths.cjs；cg 可执行引用 5 文件）；(c) v3 排除边界 12 项（pd modules/harness/yfljsj-cli/external-sdk/benchmark/zz-smoke/user-data + 未受控产物 + cg yfw-kernel/ + v3 窗口项）。
+- **决策性开放项（移交 S3 计划/用户）**：
+  1. cg 工作树存在未提交在途修改与未跟踪文件（src/electron/server/docs 20+、docs/bridge-contract.md、docs/prototypes/、e2e-entry5.ts、YF/jiajia-pixel-pet/*、electron/kernel-paths.cjs）——S3 迁入以 HEAD 快照为源，是否并入在途工作需先裁决。
+  2. pd 自身残留 ponos-kernel/claude-code 死路径（bridge.mjs:586-621,776、package-portable.cjs:127,137、verify-permission-flow.mjs:15）待改写；两库"库存 Claude Code 兜底 spawn"（where claude.cmd）净室剔除；两库脚本本机绝对路径 C:\Users\T203-15\claude-code-gui 待参数化。
+  3. public 40 个分叉 SKILL.md 归一化品牌词后 18 个仍差（品牌别名 + ~/.yfworking↔~/.yfw skills 目录）——净室以旧线文本为基准。
+  4. ②-07/⑧ bridge.mjs 大分叉（2279 vs 2571 行）：S3 迁 cg 主体后按语义 diff 选择性并入，勿整体覆盖丢失 cg 产品特化（askuser/browser-routing 接线）。
+  5. ②-04 browser-executor 基线 2026-08-19 非 09 新增 → 降 S5 可选；yfw-kernel 本体 2490 文件残留概括记录（Anthropic claude-code 官方同源），S4 删分支对象。
