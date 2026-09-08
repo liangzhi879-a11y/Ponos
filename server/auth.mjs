@@ -34,7 +34,7 @@ export async function getAuthStatus() {
 export async function setupPassword(password) {
   const cur = await getAuthStatus()
   if (cur.phase !== 'uninitialized') throw new Error('auth: already initialized')
-  if (String(password).length < 4) throw new Error('auth: password too short')
+  if (typeof password !== 'string' || String(password).length < 4) throw new Error('auth: password too short')
   const salt = randomBytes(16).toString('hex')
   writeState({ version: 1, salt, hash: hashOf(password, salt), failCount: 0, lockedUntil: 0 })
 }
