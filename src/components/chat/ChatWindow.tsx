@@ -8,6 +8,7 @@ import { RunningAgentsBar } from './RunningAgentsBar'
 import { HealthGlow } from './HealthGlow'
 import { CompressedToast } from './CompressedToast'
 import { KernelStallBar } from './KernelStallBar'
+import { SystemWarningStrip } from './SystemWarningStrip'
 import { LoopStatusBar } from './LoopStatusBar'
 import { CompactingBar } from './CompactingBar'
 import { BrowserStatusBar } from '@/components/browser/BrowserStatusBar'
@@ -239,6 +240,8 @@ export function ChatWindow({ conversationId }: Props) {
       <BrowserStatusBar conversationId={conversationId} />
       {/* 内核失速守卫条（bridge 看门狗 kernel-stall 告警；无告警不占位，BrowserStatusBar 在时自动下移） */}
       <KernelStallBar conversationId={conversationId} />
+      {/* agentloop P3 统一系统提示条（ponos_warning：budget/skill_version/agent_spec/context；文档流元素，无告警不占位） */}
+      <SystemWarningStrip conversationId={conversationId} />
       <ScrollArea ref={scrollRef} className="flex-1 pl-1" onScroll={handleScrollWithPin}>
         {loadingWithHistory ? (
           /* v2 按需加载占位：历史会话消息拉取中 */

@@ -14,6 +14,8 @@ import { getWsUrl } from '@/lib/config'
 import { getAgentById } from '@/lib/agents'
 import { useAgentStore } from '@/stores/agentStore'
 import { useHealthStore, type HealthInfo } from '@/stores/healthStore'
+import { useWarningStore } from '@/stores/warningStore'
+import { normalizeWarning } from '@/lib/warningUi'
 import { useBrowserStore } from '@/stores/browserStore'
 import type { ContentBlock, Message, QuestionAnswer, BrowserEvent, LoopState } from '@/types'
 
@@ -596,6 +598,12 @@ function handleMessage(msg: Record<string, unknown>) {
       useHealthStore.getState().setSummary(sid, String(s.text ?? ''), Number(s.compactCount ?? 0))
       return
     }
+    if (type === 'ponos_warning') {
+      // agentloop P3 告警统一系统条：budget/skill_version/agent_spec（context 顺带覆盖）。
+      // 按会话隔离；同 level 后到覆盖（内核侧各 level 已单次/低频，无刷屏路径）。
+      useWarningStore.getState().set(sid, normalizeWarning(event as Record<string, unknown>))
+      return
+    }
     if (type === 'command_lifecycle') {
       // 排队插话接收确认：内核 started = 消息已被吸收进当前轮（工具边界注入）或
       // 作为新轮开始 → 解除气泡悬浮态（落位到会话序列）。
@@ -611,6 +619,7 @@ function handleMessage(msg: Record<string, unknown>) {
       const conv = store.conversations.find(c => c.id === sid)
       if (!conv?.sessionId) {
         useHealthStore.getState().reset(sid)
+        useWarningStore.getState().reset(sid)
       }
       store._updateSessionMeta({
         // sid is the bridge's session id, which the frontend sends as conversationId

@@ -113,6 +113,15 @@ export const enUS: TranslationKeys = {
     dismiss: 'Dismiss',
   },
 
+  // --- Unified system warning strip (agentloop P3 ponos_warning) ---
+  warnings: {
+    budget: 'Budget exceeded: {usd} USD used, limit {budgetUsd} USD',
+    skillVersion: '{n} skills differ from skills.lock.json',
+    stopTask: 'Stop task',
+    dismiss: 'Dismiss',
+    unknown: '{level} warning',
+  },
+
   // --- Kernel stall guard / multi-round loop status (S5 ②-05) ---
   kernelStall: {
     title: 'Kernel silent {secs}s — possible stall',

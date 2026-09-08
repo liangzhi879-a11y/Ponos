@@ -117,6 +117,15 @@ export const zhCN = {
     dismiss: '关闭',
   },
 
+  // --- 统一系统提示条（agentloop P3 ponos_warning） ---
+  warnings: {
+    budget: '预算超支：累计 {usd} USD，超过限额 {budgetUsd} USD',
+    skillVersion: '{n} 个技能与 skills.lock.json 版本不一致',
+    stopTask: '停止任务',
+    dismiss: '关闭',
+    unknown: '{level} 系统告警',
+  },
+
   // --- 内核失速守卫 / 多轮 loop 状态（S5 ②-05） ---
   kernelStall: {
     title: '内核静默 {secs} 秒，可能失速',
