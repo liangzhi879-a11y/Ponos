@@ -32,8 +32,8 @@ files:
   # pet 由 extraResources 打进 resources/pet（main.cjs resolvePetScript 首选），
   # 不再通过 files 重复打包一份到 app/pet。
 
-# Strip the node_modules from the bundled package.json (we ship a prebuilt
-# Bun bundle + vendored CLI, no runtime npm install path).
+# Packaged package.json override（main 指向 electron 主进程）。产品无运行时
+# npm install 路径：node_modules 由 files 显式列出，内核为预置 node bundle。
 extraMetadata:
   main: electron/main.cjs
 
@@ -67,29 +67,22 @@ extraResources:
     to: runtime/tools
     filter:
       - "**/*"
-  # Pixel pet assets + driver (used by YF/jiajia-pixel-pet)
-  - from: YF/jiajia-pixel-pet/jiajia-pet.py
+  # Pixel pet assets + driver（净室 pet/ 源；main.cjs resolvePetScript 首选）
+  - from: pet/jiajia-pet.py
     to: pet/jiajia-pet.py
-  - from: YF/jiajia-pixel-pet/accessories_lib.py
+  - from: pet/accessories_lib.py
     to: pet/accessories_lib.py
-  - from: YF/jiajia-pixel-pet/assets
+  - from: pet/assets
     to: pet/assets
-  # YFWorking kernel — the bun-bundled ESM CLI built from yfw-kernel/claude-code.
-  # Spawned by server/bridge.mjs via the bundled bun runtime below. The bridge
-  # resolves it at <app>/kernel/cli.mjs + <app>/runtime/bun/bun.exe.
-  - from: yfw-kernel/claude-code/dist
+  # YFWorking 净室内核 — scripts/build-kernel.mjs 的 node-targeted 单文件 ESM
+  # bundle（kernel-dist/cli.mjs；node 直跑 D1，无 vendor/ripgrep 依赖 F3）。
+  # 运行时 = node：server/bridge.mjs / 诊断探针经 resolveNode()/process.execPath
+  # spawn，bun 不随包。解析落点 resources/kernel/cli.mjs（kernel-paths 上溯一级
+  # 候选命中）。
+  - from: kernel-dist
     to: kernel
     filter:
       - "cli.mjs"
-      # Vendored ripgrep — kernel Grep/Glob tools resolve <app>/kernel/vendor/
-      # ripgrep/<arch>-win32/rg.exe in builtin mode (see src/utils/ripgrep.ts).
-      - "vendor/**"
-  # Bun runtime used to execute the YFW kernel (the kernel is a bun-targeted
-  # ESM bundle and cannot run under plain Node).
-  - from: runtime/bun
-    to: runtime/bun
-    filter:
-      - "bun.exe"
 
 win:
   target:
