@@ -7,7 +7,7 @@
 // 背景决策：整屏 .auth-bg 与 boot 同族的深色品牌渐变（容器不加 bg-app）——白色 boost 字标只在
 // 深色面上可读，浅色主题下若透出 html/body 浅底会"白上白"；主题跟随由卡内元素（auth-card 用
 // --popover-bg/blur 磨砂玻璃 + text-primary/secondary + 品牌按钮）承载。
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Lock, RefreshCw } from 'lucide-react'
 import { useTranslation } from '@/i18n/useTranslation'
 import { useAuthStore } from '@/stores/authStore'
@@ -52,6 +52,14 @@ function LoginView() {
   const login = useAuthStore(s => s.login)
   const [pw, setPw] = useState('')
   const [shakeKey, setShakeKey] = useState(0)
+
+  // 每次挂载登录表单清一次陈旧 error：423 锁定期满（或并发首设）后 init() 只更新
+  // phase/lockedForMs 不清 error，重挂载若仍残留上次 'bad-password' → 首帧即红框 + 抖动。
+  // 用 layout effect 在浏览器绘制前清，保证用户看不到任何一帧残留错误（本文件内无其它
+  // phase 路径受影响：本视图存活期间的失败登录由 login() 自行 set error，不经过此处）。
+  useLayoutEffect(() => {
+    useAuthStore.setState({ error: null })
+  }, [])
 
   const submit = async () => {
     if (pending) return
