@@ -92,7 +92,7 @@ cpDir(path.join(ROOT, 'server'), path.join(RELEASE, 'server'))
 cpDir(path.join(ROOT, 'public'), path.join(RELEASE, 'public'))
 
 // ── Copy desktop pet (independent Python pet: runtime script + assets) ──
-const petSrc = path.join(ROOT, 'YF', 'jiajia-pixel-pet')
+const petSrc = path.join(ROOT, 'pet')
 const petDst = path.join(RELEASE, 'pet')
 if (fs.existsSync(petSrc)) {
   fs.mkdirSync(petDst, { recursive: true })
@@ -123,30 +123,18 @@ if (fs.existsSync(skillsSrc)) {
   console.log('  runtime/skills packaged (' + countFiles(skillsSrc) + ' files)')
 }
 
-// ── Copy YFW kernel + bun runtime ────────────────────────────────────────
-const kernelSrc = path.join(ROOT, 'yfw-kernel', 'claude-code', 'dist', 'cli.mjs')
+// ── Copy YFW kernel (净室内核 bundle，node 直跑 D1) ───────────────────────
+// 内核 = scripts/build-kernel.mjs 的产物 kernel-dist/cli.mjs（gitignored，
+// bun build --target=node 单文件 ESM，零外部依赖 → 无 vendor/；运行时 = node，
+// 由包内 node.exe 或系统 node 拉起，bun 不随包）。
+const kernelSrc = path.join(ROOT, 'kernel-dist', 'cli.mjs')
 const kernelDst = path.join(RELEASE, 'kernel')
 if (fs.existsSync(kernelSrc)) {
   fs.mkdirSync(kernelDst, { recursive: true })
   fs.copyFileSync(kernelSrc, path.join(kernelDst, 'cli.mjs'))
-  console.log('  kernel/cli.mjs embedded (YFW self-contained kernel)')
+  console.log('  kernel/cli.mjs embedded (YFWorking ponos kernel bundle)')
 } else {
-  console.warn('  WARNING: kernel dist/cli.mjs not found — AI kernel missing')
-}
-// Vendored ripgrep — kernel Grep/Glob tools need kernel/vendor/ripgrep/*/rg.exe
-const kernelVendorSrc = path.join(ROOT, 'yfw-kernel', 'claude-code', 'dist', 'vendor')
-if (fs.existsSync(kernelVendorSrc)) {
-  cpDir(kernelVendorSrc, path.join(kernelDst, 'vendor'), [])
-  console.log('  kernel/vendor embedded (vendored ripgrep)')
-}
-const bunSrc = path.join(ROOT, 'runtime', 'bun', 'bun.exe')
-const bunDst = path.join(RELEASE, 'runtime', 'bun')
-if (fs.existsSync(bunSrc)) {
-  fs.mkdirSync(bunDst, { recursive: true })
-  fs.copyFileSync(bunSrc, path.join(bunDst, 'bun.exe'))
-  console.log('  runtime/bun/bun.exe embedded')
-} else {
-  console.warn('  WARNING: runtime/bun/bun.exe not found — kernel cannot run')
+  console.warn('  WARNING: kernel-dist/cli.mjs not found — run `node scripts/build-kernel.mjs` first')
 }
 
 // ── Copy production node_modules ────────────────────────────────────────

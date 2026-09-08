@@ -12,8 +12,11 @@ import { join } from 'path'
 import { readFileSync, writeFileSync, rmSync, existsSync } from 'fs'
 import { resolveYfwHome } from '../server/yfw-home.cjs'
 
-const BUN = join(homedir(), '.bun', 'bin', 'bun.exe')
-const KERNEL = join(process.cwd(), 'yfw-kernel', 'claude-code', 'dist', 'cli.mjs')
+// 运行时 = node（D1）：与 bridge 实际 spawn 方式一致——净室零 bun（D1 不随包）。
+const RUNTIME = process.execPath
+// 内核 = kernel-dist/cli.mjs（bundle 形态：scripts/build-kernel.mjs 的
+// --target=node 单文件 ESM 产物，node 直跑）；bundle 缺失时先构建该文件。
+const KERNEL = join(process.cwd(), 'kernel-dist', 'cli.mjs')
 const YFW_HOME = resolveYfwHome()
 
 const mode = (process.argv[2] || 'allow').toLowerCase()
@@ -60,7 +63,7 @@ const args = [
 
 console.log(`[flow] mode=${mode} kernel=${KERNEL}`)
 console.log(`[flow] testFile=${posixFile}`)
-const proc = spawn(`"${BUN}" "${KERNEL}"`, args, {
+const proc = spawn(`"${RUNTIME}" "${KERNEL}"`, args, {
   stdio: ['pipe', 'pipe', 'pipe'], env, cwd: tmpDir, shell: true,
 })
 
@@ -73,7 +76,7 @@ const finish = (code, msg) => {
   if (done) return
   done = true
   if (msg) console.log(msg)
-  // shell:true 下 proc 是 cmd.exe，bun 内核是其子进程，proc.kill() 杀不干净——
+  // shell:true 下 proc 是 cmd.exe，node 内核是其子进程，proc.kill() 杀不干净——
   // Windows 统一用 taskkill 整树强杀，确保测试内核不残留。
   try {
     if (process.platform === 'win32' && proc.pid) {

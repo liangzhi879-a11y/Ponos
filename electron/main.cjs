@@ -1273,8 +1273,6 @@ function resolvePetScript() {
   if (fs.existsSync(bundled)) return bundled
   const appPet = path.join(__dirname, '..', 'pet', 'jiajia-pet.py')
   if (fs.existsSync(appPet)) return appPet
-  const dev = path.join(__dirname, '..', 'YF', 'jiajia-pixel-pet', 'jiajia-pet.py')
-  if (fs.existsSync(dev)) return dev
   return null
 }
 
