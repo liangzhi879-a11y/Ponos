@@ -190,6 +190,7 @@ print('icon-16 不透明占比: %.0f%%' % (opaque*100))
 logo = Image.open('public/logo.png').convert('RGBA')
 print('logo size:', logo.size)
 "
+```
 - [ ] **Step 7: Commit**
 ```bash
 git add scripts/render-ai-assets.py scripts/png-to-ico.cjs public/icon-16.png public/icon-32.png public/icon-48.png public/icon-64.png public/icon-128.png public/icon-256.png public/icon.png public/icon.ico public/favicon.ico public/logo.png
