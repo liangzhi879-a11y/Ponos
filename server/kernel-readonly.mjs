@@ -36,7 +36,7 @@ export function kernelReadonlySync(argsList = [], { env = process.env, cwd = pro
   const cli = resolveKernelCli()
   const stdio = ['ignore', 'pipe', 'pipe']
   const out = execFileSync(process.execPath, [cli, '--output-format', 'stream-json', '--input-format', 'stream-json', ...argsList], {
-    env, cwd, timeout: timeoutMs, stdio, encoding: 'utf8',
+    env, cwd, timeout: timeoutMs, stdio, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
   })
   return out.trim()
 }
