@@ -1,8 +1,8 @@
 # YFWorking 桥接契约规格（Bridge Contract）
 
 > 用途：GUI↔bridge↔内核 三层交互的**可重建契约基线**。目标是在不修改 GUI 的前提下，以自研/合规实现替换内核（净室重建）时，协议语义可逐条对照、可测试。
-> 权威来源：`server/bridge.mjs`（2279 行）、`electron/main.cjs`、内核 `src/cli/print.ts`（stream-json 模式）。
-> 更新日期：2026-08-19
+> 权威来源：`server/bridge.mjs`、`electron/main.cjs`、内核 `kernel/cli.mjs`（净室 ponos 内核，stream-json 模式）。
+> 更新日期：2026-09-08（S4 净室改接后同步：运行时 = node；内核落点 `<home>/runtime/ponos-kernel/`；新版独立端口 51517/5197/4197；双版 env 隔离表见 §10）
 
 ---
 
@@ -13,28 +13,29 @@
 │ Electron 主进程 (node.exe, electron/main.cjs)                  │
 │   ├── Browser 执行器 (electron/browser-executor.cjs, WS 客户端)│
 │   └── spawn → server/bridge.mjs (Node: HTTP + WebSocket)       │
-│             端口 51309 (YFW_BRIDGE_PORT 可覆盖)                 │
+│             端口 51517 (新版独立默认，YFW_BRIDGE_PORT 可覆盖； │
+│             在售旧版为 51309，可同机并行)                       │
 │              ├── spawn(每会话一个内核进程) → kernel/cli.mjs     │
-│              │     经 runtime/bun/bun.exe，stream-json 模式    │
+│              │     经 node 直跑，stream-json 模式              │
 │              ├── HTTP REST（文件/转换/配置/技能/transcript…）   │
 │              └── WebSocket（GUI 渲染层 + 桌面宠物 + 执行器）    │
-├── GUI 渲染层 (React/Vite，file:// 或 localhost:5173) ← WS → bridge
+├── GUI 渲染层 (React/Vite，file:// 或 localhost:5197) ← WS → bridge
 ├── 桌面宠物 (pet/jiajia-pet.py, Python Tkinter) ← WS → bridge
-└── 内核进程 (bun + cli.mjs, --print --output-format stream-json)
+└── 内核进程 (node + cli.mjs, --print --output-format stream-json)
         stdin  ← NDJSON（user / control_request / control_response）
         stdout → NDJSON（system / assistant / result / control_request / …）
 ```
 
 关键事实：
 - **桥是唯一中枢**：GUI 不直接接触内核；内核也不直接接触 GUI。替换内核时只需保持"bridge 眼中的内核协议"，GUI 零改动。
-- 内核启动链：Electron 主进程 → bridge → `bootstrapKernelToUserDir` 把 kernel+bun 拷贝到 `~/.yfworking/runtime/`（规避 Program Files ACL 限制）→ spawn。`YFWORKING_KERNEL` 环境变量可显式指定内核路径（开发调试用）。
+- 内核启动链：Electron 主进程 → bridge → `bootstrapKernelToUserDir` 把内核镜像同步到 `<home>/runtime/ponos-kernel/`（目录名**专用**——默认 home 下也不与在售旧版 `~/.yfworking/runtime/kernel` 互覆；多文件源码内核整目录镜像，`../version.mjs` 等父依赖逃逸到 `<home>/runtime/`；规避 Program Files ACL）→ spawn。运行时 = node（D1），由调用方定位（bridge = `process.execPath`；Electron main = bundled node.exe 或 PATH 'node'）。`YFWORKING_KERNEL` 环境变量是**唯一逃生口**，可显式指定内核 cli.mjs 路径（值无效即抛错，绝不静默回退）。
 - 内核空闲回收：会话内核进程空闲 10min 被 bridge `taskkill`（reapIdleKernels），下次发消息以 `--resume` 无缝重启。
 
 ## 2. 内核 spawn 契约（bridge → kernel）
 
-命令（经 cmd.exe，参数均已引号转义）：
+命令（经 cmd.exe，参数均已引号转义；`<kernel>` = 安装候选 `<repo>/kernel/cli.mjs`（源码）或 `<repo>/kernel-dist/cli.mjs`（bundle），或 home 缓存 `<home>/runtime/ponos-kernel/cli.mjs` 兜底）：
 ```
-"<bun>" "<kernel>/cli.mjs" \
+"<node>" "<kernel>" \
   --print --output-format stream-json --input-format stream-json \
   --verbose --dangerously-skip-permissions \
   --permission-prompt-tool stdio \
@@ -45,11 +46,11 @@
   [--add-dir <会话 cwd>] [--add-dir <技能根目录>]
 ```
 
-环境变量（`buildChildEnv()`，bridge.mjs:586）：
+环境变量（`buildChildEnv()`，解析序统一 `YFWORKING_HOME || CLAUDE_CONFIG_DIR || ~/.yfworking`，见 server/yfw-home.cjs）：
 | 变量 | 值 | 作用 |
 |---|---|---|
-| `CLAUDE_CONFIG_DIR` | `~/.yfworking` | 内核独立配置/会话目录 |
-| `YFWORKING_HOME` | `~/.yfworking` | 同上（YFW 隔离） |
+| `CLAUDE_CONFIG_DIR` | `<home>` | 内核独立配置/会话目录 |
+| `YFWORKING_HOME` | `<home>` | 数据根（隔离双版时指向专用目录） |
 | `CLAUDE_CODE_AGENT_TRIGGERS` | `true` | 启用内核原生定时任务（CronCreate/…） |
 | `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` | 用户配置的第三方 provider | 内核实际调用的 API |
 | `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_SONNET/OPUS/HAIKU_MODEL` | provider 主/子模型 | 模型路由 |
@@ -120,7 +121,7 @@
 
 安全：WS 服务只接受本机可信来源——无 Origin、`file:`、`localhost/127.0.0.1/::1`；外部 Origin 一律 403。
 
-## 7. HTTP REST API（同端口 51309）
+## 7. HTTP REST API（同端口 51517）
 
 | 端点 | 用途 |
 |---|---|
@@ -162,3 +163,23 @@
 - 从本契约（用户可见行为 + 公开文档）写实现，不照搬内核源码的文件结构/命名/注释/提示词原文。
 - 消息类型名与事件形状是跨层契约（§3-§6），保留是协议需要而非代码抄袭；实现内部的模块划分、算法、提示词应原创。
 - 身份提示词（YFW_*）、技能清单注入、经验注入等 bridge 侧文本已是自研内容，可直接沿用。
+
+---
+
+## 10. S4 净室改接实录（2026-09-08，双版隔离取值表）
+
+S4 把 bridge 内核解析/构建/bootstrap 全指向本库内核，并落地在售旧版 ↔ 新版净室的双版隔离取值。两版默认值互不交集，可同机并行：
+
+| 隔离资源 | 旧版在售 | 新版净室（S4 起默认） | 覆盖 / 说明 |
+|---|---|---|---|
+| 内核运行时 | bun 布局（legacy） | **node**（D1：bridge = `process.execPath`；Electron main = bundled node.exe 或 PATH `node`） | 由调用方定位 |
+| bridge HTTP+WS 端口 | 51309 | **51517** | `YFW_BRIDGE_PORT` |
+| vite dev / preview 端口 | 5173 / 4173 | **5197 / 4197** | `YFW_VITE_PORT` / `YFW_VITE_PREVIEW_PORT` |
+| 数据根 home | `~/.yfworking`（在售） | 默认同 `~/.yfworking`；隔离双版/测试时经 `YFWORKING_HOME` 指向专用目录 | 解析序 `YFWORKING_HOME \|\| CLAUDE_CONFIG_DIR \|\| ~/.yfworking`（server/yfw-home.cjs） |
+| 内核缓存落地目录 | `~/.yfworking/runtime/kernel`（cli.mjs + vendor/ripgrep，在售使用中，**绝不可覆写**） | `<home>/runtime/ponos-kernel`（多文件源码整目录镜像，专用目录名不互覆，D3） | 2026-09-08 覆写事故固化为专用目录 |
+| 内核来源 | yfw-kernel 分支（legacy） | 本库 `kernel/`（源，node 直跑）→ `kernel-dist/cli.mjs`（bundle，D7 产物） | `YFWORKING_KERNEL` 唯一逃生口（D8，值无效即抛错，不静默回退） |
+| 内核 API | — | `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL`（第三方 provider） | 实测：云端 ds 与本地 Qwen 均通（2026-09-08） |
+| 浏览器 CDP | — | 进程内 `webContents.debugger.attach('1.3')`，**无网络端口**（D5） | 隔离矩阵原 52319/9223 行修订为 N/A |
+| App 身份 / userData | 在售 appId/productName | 区分决策已定（D6），取值表归 S6 产物身份 | S6 backlog ⑤ |
+
+双版冒烟（2026-09-08，Task 6）：旧版 51309（在售运行中）与新版 51517（隔离 home）同机同时 healthy；隔离 home 下 bootstrap 落地 `runtime/ponos-kernel`，在售 `runtime/kernel` 前后 md5 不变（`86697d84…`）；bridge 级 mock 会话、真实云端 ds、真实本地 Qwen 三态全通。产物身份/userData 区分（S5/S6）与文档面旧值清洗（S6）为本节后续项。
