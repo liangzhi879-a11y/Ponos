@@ -45,6 +45,28 @@ export interface ConversationProgress {
   inProgress?: number
 }
 
+/** 多轮 loop 终止原因（内核 loop end 帧 reason 字段值域） */
+export type LoopEndReason = 'completed' | 'until_hit' | 'cancelled' | 'judge_error'
+
+/** 多轮 loop 进度（运行时瞬态，不持久化；由内核 loop 帧 state start/iter/end 驱动，
+ *  语义对照 kernel/cli.mjs wire.loop 发射点与 S5 ②-05 pd 参照 LoopState 形状） */
+export interface LoopState {
+  /** loop 是否仍在推进（iter 间恒 true；end/取消/异常清除后 false） */
+  active: boolean
+  /** 已完成轮次数（start=0，每完成一轮 iter 递增；展示型字段，值域以内核为准） */
+  index: number
+  /** loop 总轮数（loop.count 归一化，至少 1） */
+  total: number
+  /** loop 目标描述（until 字段，模型判定达成即提前结束；无目标循环为空/缺省） */
+  until?: string
+  /** 首轮完成后设 fresh 窗口：第 2 轮请求面只含本轮之后内容 */
+  fresh?: boolean
+  /** 终止原因（仅 end 帧携带：次数耗尽/达成目标/已取消/判定失败） */
+  reason?: LoopEndReason
+  /** 最近一次 until 模型判定文本（judged iter 帧的 reason 字段，LoopStatusBar 判定文案） */
+  judgeReason?: string
+}
+
 /** 子 agent 任务（运行时瞬态，不持久化；由内核 system/task_* SDK 事件驱动） */
 export interface SubAgentTask {
   taskId: string

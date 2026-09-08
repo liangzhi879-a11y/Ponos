@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage, type PersistStorage, type StorageValue } from 'zustand/middleware'
-import type { Conversation, Message, ContentBlock, PermissionRequest, BackgroundTask, QuestionPayload, ConversationProgress, SubAgentTask, ConversationSet } from '@/types'
+import type { Conversation, Message, ContentBlock, PermissionRequest, BackgroundTask, QuestionPayload, ConversationProgress, SubAgentTask, ConversationSet, LoopState } from '@/types'
 import { generateId, sanitizeText, repairCorruptedJson, recoverCorruptedChatState } from '@/lib/utils'
 import { getDefaultHome } from '@/lib/config'
 import { useHealthStore } from '@/stores/healthStore'
@@ -347,6 +347,9 @@ interface ChatState {
   // Milestone progress — per-conversation, runtime-only (not persisted)
   conversationProgress: Record<string, ConversationProgress>
 
+  // 多轮 loop 进度（S5 ②-05）—— per-conversation, runtime-only (not persisted)
+  loopStates: Record<string, LoopState>
+
   // 子 agent 任务（二级面板数据源，运行时瞬态不持久化）
   subAgentTasks: Record<string, SubAgentTask[]>
 
@@ -407,6 +410,10 @@ interface ChatState {
   setConversationMilestones: (conversationId: string, total: number, names: string[]) => void
   setMilestoneDone: (conversationId: string, index: number) => void
   setMilestoneStart: (conversationId: string, index: number) => void
+  /** 多轮 loop 进度归约（useYFWCLI event type==='loop' 分支消费；merge 进既有状态） */
+  setLoopState: (conversationId: string, patch: Partial<LoopState>) => void
+  /** 清除该会话 loop 进度（无键幂等；会话 closed/删除/新 loop 取代前清理） */
+  clearLoopState: (conversationId: string) => void
 
   upsertSubAgentTask: (conversationId: string, patch: Partial<SubAgentTask> & { taskId: string }) => void
   clearSubAgentTasks: (conversationId: string) => void
@@ -431,6 +438,7 @@ export const useChatStore = create<ChatState>()(
       pendingResend: null,
       pendingQuestions: {},
       conversationProgress: {},
+      loopStates: {},
       subAgentTasks: {},
 
       createConversation: (cwd?: string, agentId?: string) => {
@@ -471,9 +479,11 @@ export const useChatStore = create<ChatState>()(
             : state.activeConversationId
           const conversationProgress = { ...state.conversationProgress }
           delete conversationProgress[id]
+          const loopStates = { ...state.loopStates }
+          delete loopStates[id]
           const subAgentTasks = { ...state.subAgentTasks }
           delete subAgentTasks[id]
-          return { conversations: filtered, activeConversationId: nextActive, conversationProgress, subAgentTasks }
+          return { conversations: filtered, activeConversationId: nextActive, conversationProgress, loopStates, subAgentTasks }
         })
       },
 
@@ -1062,6 +1072,19 @@ export const useChatStore = create<ChatState>()(
             [id]: { ...base, current: next },
           },
         }
+      }),
+
+      setLoopState: (id, patch) => set(state => {
+        const prev = state.loopStates[id]
+        // merge 进既有进度；无记录时以默认 inactive 态打底
+        const base = prev || { active: false, index: 0, total: 1 }
+        return { loopStates: { ...state.loopStates, [id]: { ...base, ...patch } } }
+      }),
+      clearLoopState: (id) => set(state => {
+        if (!state.loopStates[id]) return {} // delete 幂等：无键不动作
+        const next = { ...state.loopStates }
+        delete next[id]
+        return { loopStates: next }
       }),
 
       setMilestoneStart: (id, index) => set(state => {

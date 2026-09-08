@@ -120,6 +120,23 @@ export const enUS: TranslationKeys = {
     dismiss: 'Dismiss',
   },
 
+  // --- Kernel stall guard / multi-round loop status (S5 ②-05) ---
+  kernelStall: {
+    title: 'Kernel silent {secs}s — possible stall',
+    cancel: 'Cancel task',
+    dismiss: 'Dismiss alert',
+  },
+  loopStatus: {
+    round: 'Loop rounds',
+    progress: '{current}/{total} rounds',
+    until: 'Target: {until}',
+    judge: 'Judge: {text}',
+    reasonCompleted: 'Rounds exhausted',
+    reasonUntilHit: 'Target reached',
+    reasonCancelled: 'Cancelled',
+    reasonJudgeError: 'Judge failed',
+  },
+
   settings: {
     title: 'Settings',
 

@@ -6,6 +6,7 @@
 
 import { useState, useCallback, useEffect } from 'react'
 import { useChatStore } from '@/stores/chatStore'
+import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { generateId, sanitizeText } from '@/lib/utils'
 import { parseAskUserPayload } from '@/lib/askUser'
@@ -14,7 +15,7 @@ import { getAgentById } from '@/lib/agents'
 import { useAgentStore } from '@/stores/agentStore'
 import { useHealthStore, type HealthInfo } from '@/stores/healthStore'
 import { useBrowserStore } from '@/stores/browserStore'
-import type { ContentBlock, Message, QuestionAnswer, BrowserEvent } from '@/types'
+import type { ContentBlock, Message, QuestionAnswer, BrowserEvent, LoopState } from '@/types'
 
 const WS_URL = getWsUrl()
 
@@ -568,10 +569,21 @@ function handleMessage(msg: Record<string, unknown>) {
   // Exact match only — never fallback to another session to prevent cross-project contamination
   let st = sessionState.get(sid)
 
+  // S5 ②-05 守卫接线：bridge 失速看门狗告警（顶层 kernel-stall，非内核事件）。
+  // data.silentMs = 距上次内核 stdout 的静默毫秒（bridge 只告警不杀进程）。
+  // 任何内核输出（event/error/cancelled/closed）到达即视为已自愈 → clearKernelStall。
+  if (msg.type === 'kernel-stall') {
+    const d = msg.data as { silentMs?: unknown } | undefined
+    useUIStore.getState().setKernelStall(sid, Number(d?.silentMs) || 0)
+    return
+  }
+
   if (msg.type === 'event') {
     const event = msg.data as Record<string, unknown>
     const type = event.type as string
     const aid = st?.assistantId
+    // 任何内核事件帧都是 stdout 输出 → 失速自愈，先清看门狗告警
+    useUIStore.getState().clearKernelStall(sid)
 
     if (type === 'yfw_health') {
       // 按会话隔离存储：sid 即发送该事件的内核进程所属会话（conversationId）
@@ -646,6 +658,47 @@ function handleMessage(msg: Record<string, unknown>) {
       }
     }
 
+    if (type === 'loop') {
+      // S5 ②-05 守卫接线：多轮 loop 进度归约。净室内核 loop 帧（kernel/cli.mjs wire.loop）：
+      //   start { index:0, total, until, fresh } /
+      //   iter { index, total, judged?, reason?, error? }（until 判定的 iter 才带 reason）/
+      //   end { reason:'completed'|'until_hit'|'cancelled'|'judge_error', index, total }
+      // 帧负载经 bridge 原样透传（{type:'event',data:帧}），归约只映射展示字段。
+      const d = event as Record<string, unknown>
+      const loopState = String(d.state || '')
+      const chat = useChatStore.getState()
+      if (loopState === 'start') {
+        chat.setLoopState(sid, {
+          active: true,
+          index: 0,
+          total: Number(d.total) || 1,
+          until: typeof d.until === 'string' && d.until ? d.until : undefined,
+          fresh: d.fresh === true,
+          // 新 loop 起跑：清掉上一 loop 残留的终结/判定文案，避免跨轮串扰
+          reason: undefined,
+          judgeReason: undefined,
+        })
+      } else if (loopState === 'iter') {
+        chat.setLoopState(sid, {
+          index: Number(d.index) || 0,
+          total: Number(d.total) || 1,
+          // until 判定的 iter 帧带模型判定文本（reason）；纯次数 iter 帧无该字段 → 清空
+          judgeReason: typeof d.reason === 'string' && d.reason ? d.reason : undefined,
+        })
+      } else if (loopState === 'end') {
+        const rawReason = String(d.reason || '')
+        const validEnd = rawReason === 'completed' || rawReason === 'until_hit'
+          || rawReason === 'cancelled' || rawReason === 'judge_error'
+        chat.setLoopState(sid, {
+          active: false,
+          index: Number(d.index) || 0,
+          total: Number(d.total) || 1,
+          reason: validEnd ? rawReason as LoopState['reason'] : undefined,
+        })
+      }
+      return
+    }
+
     if (type === 'assistant' && !streamingSessions.has(sid)) {
       // 新轮自动建块（方案A）：排队插话立即发送 next 后，若上一轮已 result 结束、
       // 内核把消息作为新轮处理，assistant 事件到达时本会话已不在流式集合——
@@ -711,6 +764,7 @@ function handleMessage(msg: Record<string, unknown>) {
   if (msg.type === 'error') {
     // 先 flush 待批的 assistant 事件，保证失败路径下块顺序不变
     flushStreamEvents()
+    useUIStore.getState().clearKernelStall(sid) // 出错回执 = 内核已应答，失速自愈
     dropPendingTaskProgress(sid)
     pendingInterject.delete(sid)
     settlePendingInterjectsBySession(sid)
@@ -729,6 +783,7 @@ function handleMessage(msg: Record<string, unknown>) {
   if (msg.type === 'cancelled') {
     // 先 flush 待批的 assistant 事件，保证取消路径下块顺序不变
     flushStreamEvents()
+    useUIStore.getState().clearKernelStall(sid) // 取消回执 = 内核已应答，失速自愈
     dropPendingTaskProgress(sid)
     pendingInterject.delete(sid)
     settlePendingInterjectsBySession(sid)
@@ -736,11 +791,14 @@ function handleMessage(msg: Record<string, unknown>) {
     store.stopStreaming(sid)
     streamingSessions.delete(sid)
     sessionState.delete(sid)
+    // 进程已销毁，loop 不可能再推进 → 清守卫状态（内核 cancel 通常已先发 loop end）
+    useChatStore.getState().clearLoopState(sid)
   }
 
   if (msg.type === 'closed') {
     // 先 flush 待批的 assistant 事件，保证关闭路径下块顺序不变
     flushStreamEvents()
+    useUIStore.getState().clearKernelStall(sid) // 进程已退出，失速告警一并清除
     dropPendingTaskProgress(sid)
     pendingInterject.delete(sid)
     settlePendingInterjectsBySession(sid)
@@ -748,6 +806,7 @@ function handleMessage(msg: Record<string, unknown>) {
     streamingSessions.delete(sid)
     sessionState.delete(sid)
     useChatStore.getState().clearSubAgentTasks(sid)
+    useChatStore.getState().clearLoopState(sid) // loop 随内核进程终止，防悬挂 active
   }
 
   if (msg.type === 'question') {

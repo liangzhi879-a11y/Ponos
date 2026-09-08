@@ -7,6 +7,8 @@ import { DirectoryPicker } from './DirectoryPicker'
 import { RunningAgentsBar } from './RunningAgentsBar'
 import { HealthGlow } from './HealthGlow'
 import { CompressedToast } from './CompressedToast'
+import { KernelStallBar } from './KernelStallBar'
+import { LoopStatusBar } from './LoopStatusBar'
 import { BrowserStatusBar } from '@/components/browser/BrowserStatusBar'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -202,6 +204,8 @@ export function ChatWindow({ conversationId }: Props) {
       <HealthGlow conversationId={conversationId} />
       {/* 内置浏览器自动化精简状态条（消息区上方；无事件不占位） */}
       <BrowserStatusBar conversationId={conversationId} />
+      {/* 内核失速守卫条（bridge 看门狗 kernel-stall 告警；无告警不占位，BrowserStatusBar 在时自动下移） */}
+      <KernelStallBar conversationId={conversationId} />
       <ScrollArea ref={scrollRef} className="flex-1 pl-1" onScroll={handleScrollWithPin}>
         {loadingWithHistory ? (
           /* v2 按需加载占位：历史会话消息拉取中 */
@@ -397,6 +401,9 @@ export function ChatWindow({ conversationId }: Props) {
 
       {/* 运行中子 Agent 悬浮条（终态后由消息下方嵌入面板承接） */}
       <RunningAgentsBar conversationId={conversationId} />
+
+      {/* 多轮 loop 轮次状态条（消息流/输入上方；非 active 不占位） */}
+      <LoopStatusBar conversationId={conversationId} />
 
       {/* 压缩提醒：右下角轻量 toast，2.4s 自动消失 */}
       <CompressedToast conversationId={conversationId} />

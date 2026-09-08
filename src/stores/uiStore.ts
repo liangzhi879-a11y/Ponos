@@ -90,6 +90,13 @@ interface UIState {
   // 定时任务引导：新建"定时任务"会话后，目标会话的 ChatInput 自动弹出引导面板
   scheduleGuideFor: string | null
   setScheduleGuideFor: (id: string | null) => void
+
+  // 内核失速告警（S5 ②-05 守卫接线）：conversationId → 静默毫秒。bridge 看门狗
+  // 发顶层 kernel-stall 置位、任何内核输出（event/error/cancelled/closed）到达即清
+  //（自愈语义，见 useYFWCLI handleMessage）。瞬时态，不入 partialize。
+  kernelStalls: Record<string, number>
+  setKernelStall: (id: string, ms: number) => void
+  clearKernelStall: (id: string) => void
 }
 
 export const useUIStore = create<UIState>()(
@@ -116,6 +123,7 @@ export const useUIStore = create<UIState>()(
       pendingInput: '',
       pendingAutoSend: false,
       scheduleGuideFor: null,
+      kernelStalls: {},
 
       toggleSidebar: () => set(s => ({ sidebarOpen: !s.sidebarOpen })),
       toggleEditor: () => set(s => ({ editorOpen: !s.editorOpen })),
@@ -198,6 +206,13 @@ export const useUIStore = create<UIState>()(
       clearPendingAttachments: () => set({ pendingAttachments: [] }),
       setPendingInput: (text, autoSend) => set({ pendingInput: text, pendingAutoSend: !!autoSend }),
       setScheduleGuideFor: (id) => set({ scheduleGuideFor: id }),
+      setKernelStall: (id, ms) => set(s => ({ kernelStalls: { ...s.kernelStalls, [id]: ms } })),
+      clearKernelStall: (id) => set(s => {
+        if (!(id in s.kernelStalls)) return {} // delete 幂等：无键不动作
+        const next = { ...s.kernelStalls }
+        delete next[id]
+        return { kernelStalls: next }
+      }),
       pinnedSkills: [],
       togglePinSkill: (id) => {
         const cur = get().pinnedSkills

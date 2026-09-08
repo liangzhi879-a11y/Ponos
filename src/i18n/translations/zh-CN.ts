@@ -124,6 +124,23 @@ export const zhCN = {
     dismiss: '关闭',
   },
 
+  // --- 内核失速守卫 / 多轮 loop 状态（S5 ②-05） ---
+  kernelStall: {
+    title: '内核静默 {secs} 秒，可能失速',
+    cancel: '取消任务',
+    dismiss: '关闭告警',
+  },
+  loopStatus: {
+    round: '循环轮次',
+    progress: '{current}/{total} 轮',
+    until: '目标：{until}',
+    judge: '判定：{text}',
+    reasonCompleted: '次数耗尽',
+    reasonUntilHit: '达成目标',
+    reasonCancelled: '已取消',
+    reasonJudgeError: '判定失败',
+  },
+
   // --- 终端 ---
   // --- 设置面板 ---
   settings: {
