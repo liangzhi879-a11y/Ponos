@@ -40,7 +40,7 @@
 |---|---|---|---|
 | D1 | **运行时 = node** | 内核源与 kernel-dist bundle 均以 node 直跑（bundle 为 `--target=node` ESM）。bridge `findYFWorking` 返回 `"<node>" "<kernel>"`（node = 包内 node.exe 兜底 process.execPath）。放弃 bun 随包 | T1 实证 `node kernel-dist/cli.mjs` mock 轮次；失败则回退 bun 随包（D1b），plan 不预设 |
 | D2 | **home 中心开关 = `YFWORKING_HOME`** | 沿用 browser-common.cjs:115 解析序 `YFWORKING_HOME \|\| CLAUDE_CONFIG_DIR \|\| ~/.yfworking`；建单一共享解析模块，F6 全部硬编码点改接；隔离 home 后 runtime/skills/logs 等派生目录自动专用 | T2 隔离 home 实证 + 130 测试回归 |
-| D3 | bootstrap 目标随 D2 home | 内核拷至 `<home>/runtime/kernel/`（env 隔离时即专用目录，不与旧 `~/.yfworking/runtime/kernel` 互覆）；**去掉 vendor 复制语义**（F3） | T3 |
+| D3 | **bootstrap 目标 = `<home>/runtime/ponos-kernel`（专用目录名）** | 内核镜像拷至 `<home>/runtime/ponos-kernel/`——**目录名专用是 D3 真义**（设计 §8 第 5 行）：默认 home（未设 env）下也不与旧 `~/.yfworking/runtime/kernel`（在售版 + 内置 harness 的 legacy 缓存，含 vendor/ripgrep）互覆。**事件（2026-09-08，T3 验证期）**：bootstrap 以默认 home 覆写 `runtime/kernel` → 本会话 harness 的 rg.exe 路径（旧布局 vendor/）被清 → Grep/Glob ENOENT；已手工恢复 legacy 缓存、ponos 镜像暂迁 `runtime/ponos-kernel/`。T3 提交代码仅 home 化、目录名仍 `kernel` → **归 T4 步骤 0 强制改接**。去 vendor 复制语义（F3）不变 | T4 步骤 0（目录专用化修复） |
 | D4 | **新版独立端口默认值**（env 全部可覆盖；与旧值 51309/5173/4173/52319/9223 无交集）：bridge WS 51309→**51517**、vite dev 5173→**5197**、vite preview 4173→**4197**。新增统一 env `YFW_VITE_PORT` / `YFW_VITE_PREVIEW_PORT`（bridge 沿用 `YFW_BRIDGE_PORT`） | 前端 define `__BRIDGE_PORT__` 默认同步 51517；既有测试中显式传 baseUrl 的 URL 字面量**语义保留不动**，仅改"默认/回退"语境 | T4 双版冒烟对照 |
 | D5 | **Electron CDP 隔离行修订**：净室 browser executor CDP 为进程内 attach（F10）→ 设计 §8 矩阵第 3 行"52319/9223 端口隔离"**不适用净室**，修订为"N/A（进程内 CDP）"并留 interject.e2e 固定测试口 52319（单测语境，不冲突）；记录于 roadmap 执行记录 | — | T4 文档修订 |
 | D6 | **dev userData 隔离 = `app.setPath('userData', <home>/userData)`**（main.cjs app-ready 前，home 解析随 D2）；未设 env 时保持 Electron 默认（单版场景） | 安装版 userData/appId/productName 区分归 S6（产物身份） | T2 |
@@ -113,6 +113,8 @@
 
 **范围**：bridge/kernel-paths 全部 yfw-kernel 引用与旧兜底清零；运行时按 D1。
 
+> **T3 已完成**（commits a622e71/d11e8cd/110ca09，review 修复轮后 Approve）。本节的「拷贝目标 = <home>/runtime/kernel」措辞已被 **D3 修订**取代——目录专用化 `runtime/ponos-kernel` 的收尾改接归 **T4 步骤 0**（事件实证：默认 home 下覆写 legacy runtime/kernel 曾致 harness rg ENOENT）。
+
 步骤（以 `git grep -n "yfw-kernel" server electron scripts` 逐行清）：
 1. `electron/kernel-paths.cjs`：
    - 候选 3（:40 `yfw-kernel/claude-code/dist`）删除/改指 → 候选 3 = `<appRoot>/kernel-dist/cli.mjs`（bundle 形态，供构建后 dev 自选）+ 候选 1 `<appRoot>/kernel/cli.mjs`（源码）保留。注释同步（backlog #6）。
@@ -140,7 +142,11 @@
 **范围**：backlog #4 兜底删除（若 T3 未覆盖则在此兜底）、#9、#10、#11、#12、#13、#14、#15、#16、#17、#18 + D4 端口默认值 + D5 CDP 修订记录。
 
 步骤：
-1. **端口 env 化 + 新默认值（D4）**：
+0. **bootstrap 目录专用化修复（D3 事件固化，强制先行）**——T3 提交代码的缓存/boot 目录名仍为 `kernel`，默认 home 下会覆写在售 legacy 缓存（2026-09-08 事故实证）。本次全链改指 **`runtime/ponos-kernel`**：
+   - `electron/kernel-paths.cjs:35` `cachedKernel = join(yfwHome, 'runtime', 'ponos-kernel', 'cli.mjs')`；头部注释 :8-10「runtime/kernel」→「runtime/ponos-kernel」并注明专用目录名缘由（默认 home 下不覆写在售 legacy 缓存）。
+   - `server/bridge.mjs:557` `destKernelDir = join(destBase, 'ponos-kernel')`；注释 :478/:524-525/:589 与日志措辞中 `runtime/kernel` → `runtime/ponos-kernel`（`kernel-stderr.log` 等 logs/ 路径不动，随 home 自动）。:205-206 历史注释的旧路径按「home bootstrap 缓存模式」泛指改写（可选）。
+   - `electron/diag-monitor.cjs` 与 main.cjs 的 kernel 探针经 kernel-paths `cachedKernel` 自动跟随（main.cjs:60-70 resolveDiagPaths 已共用），无需单列；但**确认无其它 `runtime/kernel` 字面量残留**（`git grep -n "runtime['\"], *'kernel'"` 或等价检索）。
+   - **回归验证（对照事故场景）**：`node server/bridge.mjs` 以**默认 home** 起健康检查 → 确认新写入目录为 `<home>/runtime/ponos-kernel/`、legacy `~/.yfworking/runtime/kernel/`（cli.mjs+vendor/）mtime/内容不被触碰（记录改造前后 stat）。
    - `vite.config.ts:42/47`：server.port ← `Number(process.env.YFW_VITE_PORT || '5197')`、preview.port ← `Number(process.env.YFW_VITE_PREVIEW_PORT || '4197')`；:11 `__BRIDGE_PORT__` 默认 51309→51517。
    - `server/bridge.mjs:21`、`electron/main.cjs:161`、`electron/diag-monitor.cjs:119`、`bin/cli.mjs:10`：默认 51309→51517。
    - 前端/测试中**显式 URL 字面量**（如 transcriptAdapter.test.ts 的 baseUrl localhost:51309）为 mock 注入值——保留语义不动；但**默认/回退语境**的 51309/5173/4173 字面量必须逐处人工判断改默认值。
@@ -157,7 +163,7 @@
    - :89-92 bun extraResources 段删除（D1）或改 node.exe 注释（files 已含 node.exe:30）。
    - :70-76 pet 三条 `from: YF/jiajia-pixel-pet/...` → `from: pet/jiajia-pet.py` / `from: pet/accessories_lib.py` / `from: pet/assets`（to 不变）（#11）。
    - appId/productName（:1-2）**不动**（S6 产物身份决策）。
-5. **diag-monitor 适配（#9）**：:194 kernel-runtime-rg 探针改判——净室 kernel 无 rg（F3），该项改为探测 `<home>/runtime/kernel/cli.mjs` 存在性（内核进程可跑）或整项移除并注释；与 T3 bootstrap 布局复核一致（#8 的 kernel-stderr 布局不变，随 home 自动）。
+5. **diag-monitor 适配（#9）**：`checkKernelRuntimeRg`（:196-201）语义随旧内核 rg 布局失效（F3 净室内核无 rg）——**推荐整项移除**：删 CHECKS 注册项（:20 `kernel-runtime-rg`）、:305 map 条目、函数体；`electron/diag-monitor.test.mjs:18` CHECKS 计数 27→26（及任何断言该 id 的用例）；i18n label `zh-CN.ts:312` / `en-US.ts:303` 键删。完整性已由 kernel-bootstrap（cachedReady）+ kernel-launch（真实 `--help` probe）覆盖。若实现上更倾向保留检查项，则改义为探测 `<home>/runtime/ponos-kernel/cli.mjs` 存在并同步 label/注释——二选一，report 记录决策。
 6. **验证**：
    - `git grep -n "yfw-kernel\|YF/jiajia\|where claude\|claude.cmd" --include 产品树(排除 docs/kernel)` → 预期 0（残留清零里程碑；BUILD.md 若含 YF 引用记入 S6 文档清洗 backlog）。
    - 默认值一致性检查：grep 确认 51517/5197/4197 默认值落地点成对（代码默认 vs env 回退）。
@@ -197,6 +203,7 @@
    | 内核 spawn | — | bridge 日志 spawn 行指向本库 kernel/ 或 kernel-dist | 无 yfw-kernel |
    | 会话一轮 | 真 provider 或跳过 | `PONOS_MOCK_API=1` 一轮 stream-json | result 正常 |
    | 数据根 | ~/.yfworking（不动） | 隔离 TMP/专用 home | 两版目录互不写入对方 |
+   | 内核落地目录 | ~/.yfworking/runtime/kernel（legacy 缓存，cli.mjs+vendor，**不动**） | `<新home>/runtime/ponos-kernel`（或默认 home 下 ~/.yfworking/runtime/ponos-kernel） | 新版 bootstrap 不覆写 legacy runtime/kernel（D3 专用目录名实证） |
    | userData | %APPDATA%\yfworking-gui | <新 home>/userData（D6） | 两版 theme 独立 |
    | 同时运行 | 两版同开，端口/数据根无冲突 | — | 无端口占用失败 |
    执行方式：新版启动命令全 env（`YFW_BRIDGE_PORT=51517 YFW_VITE_PORT=5197 YFWORKING_HOME=<新home> node server/bridge.mjs` + vite 同 env）；旧版用 cg 现状命令。真实 API 会话为**可选人工项**（需新 home 内 config.json，可复制用户 config 或在 GUI 配置；mock 闭环已覆盖协议）。
