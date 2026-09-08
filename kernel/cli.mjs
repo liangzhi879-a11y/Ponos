@@ -283,6 +283,9 @@ export async function main(argv) {
       hooks,
       // workflow 引擎实例：engine 内部 createToolRegistry 时注入（Workflow 工具）
       workflow: wfEngine,
+      // MS1：MemorySearch 个人经验根（<configDir>/memory/personal，memoryRoot(configDir)）。
+      // projectMemoryRoot 当前无项目记忆写入方，cli 不传 —— tools 侧 null → project scope 0 命中。
+      memoryRoot: memoryRoot(configDir),
     },
     wire,
     session: store,

@@ -15,6 +15,7 @@ import { get as httpGet, request as httpRequest } from 'node:http'
 import { matchesHighRisk } from './highrisk.mjs'
 import { discoverSkillsAll, loadSkillContent } from './skills.mjs'
 import { searchSkills } from './skill-search.mjs'
+import { searchLocalMemory } from './memory-search.mjs'
 import { getProvider } from './provider.mjs'
 
 // R2-1 活跃子进程登记：Bash/OCR spawn 的子进程统一登记，内核退出（SIGINT/TERM）
@@ -932,7 +933,7 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
   }
 }
 
-export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null }) {
+export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
   // P10-A：技能加载根 = 显式 skillsDirs（发现根，含默认 <configDir>/skills）优先，
   // 缺省回退 allowDirs——Skill 工具与提示词【可用技能】块同一数据源（cli 发现用同 roots）。
@@ -1203,6 +1204,43 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
           return { content: `技能不存在：${id}。可用技能：${ids.join(', ') || '（当前无可用技能）'}`, isError: true }
         }
         return { content: `技能「${id}」已加载，严格按以下指引执行：\n\n${content}`, isError: false }
+      },
+    },
+    // MS1 个人/项目经验检索：本地无模型向量匹配（cosine，无网络）。与神经图谱同源
+    //（memory/personal *.md 条目 `- [会话|标签] 摘要 -- 全文`），输出条目含 file 供
+    // Read 追全文。无命中返回明确提示（勿盲目换词重试——可先确认经验库是否有沉淀）。
+    MemorySearch: {
+      description: '检索个人/项目经验库（本地无模型向量匹配）：按 query 找过往沉淀经验条目（主题/标签/摘要/全文余弦相似度）。命中返回条目清单（含主题/标签/摘要/所在文件，score 排序），需全文用 Read 读 file。适合"以前处理过类似问题吗"类查询。scope：personal=个人经验；project=项目经验（需项目库存在）；all=全部（默认）。',
+      concurrencySafe: true,
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          query: { type: 'string', description: '检索关键词（一句话描述想找的经验主题）' },
+          topK: { type: 'number', description: '可选：返回条数上限（1-10，默认 5）' },
+          scope: { type: 'string', description: "可选：'personal' | 'project' | 'all'（默认 all）" },
+        },
+        required: ['query'],
+      },
+      run: (input) => {
+        const q = String(input?.query ?? '').trim()
+        if (!q) return { content: 'query 参数缺失：请描述想检索的经验主题', isError: true }
+        const { items, count } = searchLocalMemory({
+          personalRoot: memoryRoot,
+          projectRoot: projectMemoryRoot,
+          query: q,
+          topK: Number(input?.topK) || 5,
+          scope: String(input?.scope || 'all'),
+        })
+        if (!items.length) {
+          const why = count > 0 ? '（均未达相似度阈值）' : ''
+          return { content: `经验库无「${q}」相关命中${why}。可换关键词，或确认该主题尚未沉淀过经验。`, isError: false }
+        }
+        const lines = [`【经验库命中 ${count} 条，取前 ${items.length}】`]
+        for (const it of items) {
+          lines.push(`- [${it.theme}${it.tag ? '|' + it.tag : ''}] ${it.summary} -- ${it.full}（score ${it.score} · ${it.file}）`)
+        }
+        return { content: lines.join('\n'), isError: false }
       },
     },
     // 联网技能搜索：检索 Claude Code marketplace 生态（Anthropic 官方 + 社区市场），

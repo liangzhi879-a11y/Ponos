@@ -382,7 +382,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     : (opts.configDir && opts.addDirs?.[0])
       ? join(opts.configDir, 'projects', sanitizeSegment(opts.addDirs[0]), 'tool-results')
       : null
-  const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: toolResultsDir ? [...(opts.addDirs || []), toolResultsDir] : opts.addDirs, skillsDirs: opts.skillsDirs, skipPermissions: opts.skipPermissions, allowOutsideDirs: opts.allowOutsideDirs, disallowedTools: opts.disallowedTools, workflow: opts.workflow })
+  const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: toolResultsDir ? [...(opts.addDirs || []), toolResultsDir] : opts.addDirs, skillsDirs: opts.skillsDirs, skipPermissions: opts.skipPermissions, allowOutsideDirs: opts.allowOutsideDirs, disallowedTools: opts.disallowedTools, workflow: opts.workflow, memoryRoot: opts.memoryRoot || null, projectMemoryRoot: opts.projectMemoryRoot || null })
   // 审批门注入工作流引擎：wfEngine 内嵌 tool/document/agent 节点的工具调用须经
   // 与主 agent 会话同等的权限决策（gateToolUse 含 ask 审批挂起 / hook 否决），
   // 杜绝模型经 Workflow 工具旁路高危命令审批。cli 后续 setDeps（registry/事件）
