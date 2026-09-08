@@ -59,7 +59,10 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
   let lastJudgeAt = 0
   const recent = [] // 近 10 轮 turnStats
   const failures = { count: 0 }
-  const judgeEnabled = env.CLAUDE_CODE_LLM_JUDGE === '1'
+  const judgeEnabled = env.PONOS_LLM_JUDGE === '1' || env.CLAUDE_CODE_LLM_JUDGE === '1'
+  // J1：Judge 结论暂存——仅随 force 发（recordJudge → emitIfChanged(true)）的
+  // ponos_health 一次性带出（judge 字段；发完即清，不残留到后续事件）
+  let pendingJudge = null
 
   function snapshot() {
     // 剩余水位：最近一轮 usage.input 与 attentionCeiling 的近似（engine 侧可传入精确值，
@@ -85,12 +88,15 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
     return { ...h, growthPerTurn: pred.growthPerTurn, predictedTurns: pred.predictedTurns }
   }
 
-  function emitIfChanged() {
+  function emitIfChanged(force = false) {
     const h = snapshot()
-    if (h.tier !== lastTier) {
+    const changed = force || h.tier !== lastTier
+    if (changed) {
       lastTier = h.tier
-      wire.health?.({ score: h.score, tier: h.tier, compactCount, remainingPct: h.remainingPct, remainingTurns: h.remainingTurns, suggestNewSession: h.suggestNewSession, reason: h.reason, growthPerTurn: h.growthPerTurn, predictedTurns: h.predictedTurns })
+      const base = { score: h.score, tier: h.tier, compactCount, remainingPct: h.remainingPct, remainingTurns: h.remainingTurns, suggestNewSession: h.suggestNewSession, reason: h.reason, growthPerTurn: h.growthPerTurn, predictedTurns: h.predictedTurns }
+      wire.health?.({ ...base, ...(pendingJudge ? { judge: pendingJudge } : {}) })
     }
+    if (force) pendingJudge = null // force 发完即清：judge 只随当次事件带出
   }
 
   return {
@@ -117,6 +123,24 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
       if (!shouldJudge({ tier: h.tier, judgeEnabled, lastJudgeAt })) return false
       lastJudgeAt = Date.now()
       return true
+    },
+    // J1：内部错误兜底登记（engine runTurn 非 Abort 异常路径调用）——即时重估，
+    // failures 计分进 snapshot（上限 +30），档位变化即发 ponos_health
+    recordFailure() {
+      try {
+        failures.count += 1
+        emitIfChanged()
+      } catch { /* 静默降级 */ }
+    },
+    // J1：Judge 结论暂存 + 强制带出（done/reason 进 wire.health.judge，一次性）
+    recordJudge({ done, reason } = {}) {
+      try {
+        pendingJudge = { done: done === true, reason: String(reason || '') }
+        emitIfChanged(true)
+      } catch { /* 静默降级 */ }
+    },
+    snapshotState() {
+      try { return snapshot() } catch { return null }
     },
     getState() { return { compactCount, lastSummary, tier: lastTier, judgeEnabled } },
   }

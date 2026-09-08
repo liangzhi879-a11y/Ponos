@@ -1666,6 +1666,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         // 收尾、进程保留可续聊。不落入下方"内部错误"兜底——AbortError 是有意信号，
         // 吞掉会让取消轮只剩半截文本、UI 无收尾确认（Stop 按钮体验依赖此路径）。
         if (e?.name === 'AbortError') throw e
+        // J1：内部错误（非取消）登记到 health failures——多次失败推高健康分/触发红档判定
+        try { health?.recordFailure?.() } catch { /* 静默 */ }
         // 全局兜底：turn 内部任何未捕获异常（模型流/审批/压缩等）都不得中断会话。
         // 回填错误文本作为本轮结果，会话日志保留（transcript 权威源仍可回溯），
         // 后续轮次照常继续——消灭"失败后断"。错误文本必须 wire.assistant 发出：
@@ -1681,6 +1683,15 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // turnStats 每轮尾部产出（health/result/stats 共用）
       turnStats.push({ usage: outcome.usage, durationMs, model: outcome.model, ts: new Date().toISOString(), compactCount: session ? session.compactCount() : 0 })
       health?.record(turnStats[turnStats.length - 1])
+      // J1：LLM-as-Judge 低频抽检（shouldRunJudge = 红档 + 冷却 300s；默认关零行为）。
+      // judge 失败/抛异常一律静默——判定不得影响主流程（spec：Judge 为新增侧路）。
+      // health.runJudge 为可选数据属性（cli 装配 engine.judgeUntil 包装，见 Task5 Step 3）
+      try {
+        if (health?.shouldRunJudge?.()) {
+          const j = await health.runJudge?.(health.snapshotState?.() ?? null)
+          if (j) health.recordJudge?.(j)
+        }
+      } catch { /* judge 异常静默：不影响本轮 result */ }
       // result 事件由 engine 发出（含 duration_ms；cli 不再重复 emit）
       wire.result(outcome.usage, { duration_ms: durationMs })
       return { usage: outcome.usage, model: outcome.model, text: outcome.text, durationMs }

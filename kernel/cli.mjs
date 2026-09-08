@@ -289,6 +289,18 @@ export async function main(argv) {
     health,
     compactor,
   })
+  // J1：health Judge 注入位——包装 engine.judgeUntil 作健康判定（目标 = 当前会话
+  // 健康状态判定：是否建议重置/继续/压缩后继续）。默认关（PONOS_LLM_JUDGE /
+  // CLAUDE_CODE_LLM_JUDGE），开时仅红档 + 冷却 300s 触发；异常由 health 侧静默。
+  try {
+    health.runJudge = async () => {
+      const j = await engine.judgeUntil({
+        target: '判定当前会话健康状态：是否建议重置会话 / 继续当前会话 / 压缩上下文后继续',
+        maxTokens: 512,
+      })
+      return { done: j?.done === true, reason: j?.reason || j?.raw || '' }
+    }
+  } catch { /* 注入失败不阻断启动（judge 可选能力） */ }
   // workflow 引擎依赖注入：registry（tool/document 节点）、事件（wire 转发）、
   // 模型（provider 热切换同源）、根目录（addDirs 技能/工作流同域）
   wfEngine.setDeps({
