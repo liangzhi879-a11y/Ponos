@@ -300,7 +300,6 @@ export const enUS: TranslationKeys = {
       kernelSession: 'Kernel session first response',
       kernelCrash: 'Kernel abnormal exit',
       kernelStderr: 'Kernel stderr output',
-      kernelRuntimeRg: 'Kernel search binary',
       transcriptDir: 'Session data directory',
       transcriptIndex: 'Session index endpoint',
       executorConnected: 'Browser executor connection',

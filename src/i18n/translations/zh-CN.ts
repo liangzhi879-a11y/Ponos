@@ -309,7 +309,6 @@ export const zhCN = {
       kernelSession: '内核会话首响应',
       kernelCrash: '内核异常退出',
       kernelStderr: '内核错误输出',
-      kernelRuntimeRg: '内核搜索组件',
       transcriptDir: '会话数据目录',
       transcriptIndex: '会话索引端点',
       executorConnected: '浏览器执行器连接',

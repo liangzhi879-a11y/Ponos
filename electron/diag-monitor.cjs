@@ -17,7 +17,6 @@ const CHECKS = [
   { id: 'kernel-session', group: 'core', label: 'diagnostic.check.kernelSession' },
   { id: 'kernel-crash', group: 'core', label: 'diagnostic.check.kernelCrash' },
   { id: 'kernel-stderr', group: 'core', label: 'diagnostic.check.kernelStderr' },
-  { id: 'kernel-runtime-rg', group: 'core', label: 'diagnostic.check.kernelRuntimeRg' },
   { id: 'transcript-dir', group: 'session', label: 'diagnostic.check.transcriptDir' },
   { id: 'transcript-index', group: 'session', label: 'diagnostic.check.transcriptIndex' },
   { id: 'executor-connected', group: 'browser', label: 'diagnostic.check.executorConnected' },
@@ -149,7 +148,6 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
     const rp = resolveKernelPaths()
     const probeRuntime = ctx.appPaths?.runtime
     const probeKernel = rp.kernel || ctx.appPaths?.kernel
-    const source = rp.kernel === rp.cachedKernel ? '缓存路径' : '安装目录'
     const r = await runProbe([`"${probeRuntime}"`, `"${probeKernel}"`, '--help'], 15000, 'probe:kernel-launch').catch(() => ({ ok: false, stderr: '' }))
     let detail = `stdout=${r.stdout?.trim() || ''} exit=${r.exitCode}`
     if (!r.ok && (r.stderr || '').trim()) {
@@ -191,13 +189,6 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
       const tail = lines.slice(-6).map(l => l.length > 160 ? l.slice(0, 160) + '…' : l).join(' | ')
       return { status: 'ok', detail: `最近 ${Math.min(lines.length, 6)} 行: ${tail}` }
     } catch (_) { return { status: 'unknown', detail: '尚无内核 stderr 记录（无异常时不会生成）' } }
-  }
-
-  async function checkKernelRuntimeRg() {
-    // bootstrap 后的实际运行路径是否带 ripgrep 组件（缺失 → Grep/Glob 工具 ENOENT）
-    const exe = process.platform === 'win32' ? 'rg.exe' : 'rg'
-    const rg = join(YFW_HOME, 'runtime', 'kernel', 'vendor', 'ripgrep', `${process.arch}-${process.platform}`, exe)
-    return { status: existsSync(rg) ? 'ok' : 'warn', detail: existsSync(rg) ? rg : `缺失: ${rg}（Grep/Glob 工具将不可用）` }
   }
 
   async function checkTranscriptDir() {
@@ -302,7 +293,7 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
   const IMPL = {
     'kernel-files': checkKernelFiles, 'kernel-bootstrap': checkKernelBootstrap, 'kernel-launch': checkKernelLaunch,
     'bridge-port': checkBridgePort, 'bridge-alive': checkBridgeAlive, 'kernel-session': checkKernelSession,
-    'kernel-crash': checkKernelCrash, 'kernel-stderr': checkKernelStderr, 'kernel-runtime-rg': checkKernelRuntimeRg,
+    'kernel-crash': checkKernelCrash, 'kernel-stderr': checkKernelStderr,
     'transcript-dir': checkTranscriptDir, 'transcript-index': checkTranscriptIndex,
     'executor-connected': checkExecutorConnected, 'executor-window': checkExecutorWindow, 'browser-whitelist': checkBrowserWhitelist,
     'python-runtime': checkPythonRuntime, 'office-ocr': checkOfficeOcr, 'pet-alive': checkPetAlive,
