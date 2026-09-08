@@ -253,8 +253,10 @@ memory.mjs: 经验条目格式 `- [会话|标签] 摘要 -- 全文`（readMemory
 | WS 心跳 15s ping / 60s 判死走重连 | S5 已交付 | G0 | — |
 | workflow cron scheduler | workflow.mjs | G0 | — |
 | health 事件流（档位/压缩史） | health.mjs | G0 | — |
-| kernel 侧 stall 判定 env | 待核对 | — | 若缺则补 |
-| 会话空闲回收 | bridge YFW_KERNEL_IDLE_MS | G0 | — |
+| kernel 侧 stall 判定 env | engine.mjs 守卫常量（PONOS_TURN_TIMEOUT_MS/STREAM_IDLE_MS/LOOP_*） | 已覆盖 G0 | — |
+| 会话空闲回收 | bridge YFW_KERNEL_IDLE_MS / YFW_KERNEL_STALL_MS | 已覆盖 G0 | — |
+
+> 实施期核对（2026-09-08，Task 10）：六项能力逐项确认存在——KernelStallBar/LoopStatusBar（S5）、WS 15s/60s 心跳（S5）、workflow cron scheduler、health 事件流、bridge 空闲回收 env、kernel 侧守卫 env 全部在列；未发现需新增 env 的缺口。
 
 ## 附录 D：关联文档
 - 差距报告：`docs/superpowers/audits/2026-09-08-agentloop-guide-gap.md`
