@@ -1,62 +1,63 @@
 'use strict'
-// 内核/bun 路径解析——全应用单一事实来源。
+// 内核路径解析——全应用单一事实来源。
 //
 // 背景（2026-08-20 生产事故）：bridge.mjs findYFWorking() 与 main.cjs
-// resolveDiagPaths() 各自维护内核路径解析，发生漂移——bridge 会话用
-// ~/.yfworking/runtime/ bootstrap 缓存（用户家目录，无 ACL 限制），而诊断
-// 探针直接 spawn 安装目录（Program Files 下 EPERM）→ kernel-launch 误报
-// exit=1。统一规则：**bootstrap 缓存优先（实际运行路径），安装路径兜底**。
+// resolveDiagPaths() 各自维护内核路径解析，发生漂移——bridge 会话跑 bootstrap
+// 缓存（用户家目录，无 ACL 限制），而诊断探针直接 spawn 安装目录（Program
+// Files 下 EPERM）→ kernel-launch 误报 exit=1。统一规则（S4 净室改接后）：
+// 解析顺序与 findYFWorking 一致——① <appRoot>/kernel/cli.mjs（或上溯一级 /
+// kernel-dist bundle）安装候选命中即用；② home bootstrap 缓存
+// （runtime/kernel）作 install 缺失时的兜底（升级/卸载残留）。
+//
+// 运行时 = node（D1）：内核以 `"<node>" "<kernel>"` 方式运行，node 定位由调用方
+// 提供（bridge = process.execPath；Electron main = resolveNode() 的 bundled
+// node.exe 或 PATH 'node'）——本模块只解析内核路径，不再解析 bun 运行时。
 //
 // 本模块同时供 ESM（bridge.mjs `import paths from`）与 CJS（main.cjs /
 // diag-monitor.cjs `require`）使用，避免再次漂移。
 const { existsSync } = require('fs')
 const { join } = require('path')
-const os = require('os')
 const { resolveYfwHome } = require('../server/yfw-home.cjs')
 
 /**
- * 解析内核/bun 路径。
+ * 解析内核路径（运行时 node 由调用方定位，本模块只管内核落点）。
  * @param {{ appDir?: string }} [opts] appDir：app 根目录（含 kernel/ 与
- *   runtime/bun/ 的目录）。缺省按本模块位置推导（electron/ 的上层）。
+ *   kernel-dist/ 的目录）。缺省按本模块位置推导（electron/ 的上层）。
  * @returns {{
  *   yfwHome: string,
- *   cachedKernel: string, cachedBun: string, cachedReady: boolean,
- *   kernel: string|null, bun: string|null,
- *   install: { kernel: string|null, bun: string|null },
+ *   cachedKernel: string, cachedReady: boolean,
+ *   kernel: string|null,               // 生效内核：install 候选命中优先，home 缓存兜底
+ *   install: { kernel: string|null },  // 安装候选（repo/app kernel 源码或 kernel-dist bundle）
  * }}
  */
 function resolveKernelPaths({ appDir } = {}) {
   const yfwHome = resolveYfwHome()
   const cachedKernel = join(yfwHome, 'runtime', 'kernel', 'cli.mjs')
-  const cachedBun = join(yfwHome, 'runtime', 'bun', 'bun.exe')
 
   const appRoot = appDir || join(__dirname, '..') // electron/ 的上层 = app 根
   const candidates = [
-    // 打包版/便携版：<app>/kernel + <app>/runtime/bun
-    { kernel: join(appRoot, 'kernel', 'cli.mjs'), bun: join(appRoot, 'runtime', 'bun', 'bun.exe') },
+    // 打包版/便携版 + dev 源码直跑：<appRoot>/kernel/cli.mjs（源或单文件 bundle 落位）
+    join(appRoot, 'kernel', 'cli.mjs'),
     // 备选部署布局：上溯一级
-    { kernel: join(appRoot, '..', 'kernel', 'cli.mjs'), bun: join(appRoot, '..', 'runtime', 'bun', 'bun.exe') },
-    // dev 源码构建：<appRoot>/yfw-kernel/claude-code/dist + ~/.bun
-    // （bridge 原实现：server/../yfw-kernel/claude-code/dist，appRoot=server/.. 等价）
-    { kernel: join(appRoot, 'yfw-kernel', 'claude-code', 'dist', 'cli.mjs'), bun: join(os.homedir(), '.bun', 'bin', 'bun.exe') },
+    join(appRoot, '..', 'kernel', 'cli.mjs'),
+    // dev bundle 形态：<appRoot>/kernel-dist/cli.mjs（scripts/build-kernel.mjs 产物）
+    join(appRoot, 'kernel-dist', 'cli.mjs'),
   ]
-  let install = { kernel: null, bun: null }
-  for (const c of candidates) {
-    if (c.kernel && existsSync(c.kernel)) {
-      install = { kernel: c.kernel, bun: existsSync(c.bun) ? c.bun : null }
+  let install = { kernel: null }
+  for (const k of candidates) {
+    if (existsSync(k)) {
+      install = { kernel: k }
       break
     }
   }
 
-  const cachedReady = existsSync(cachedKernel) && existsSync(cachedBun)
+  const cachedReady = existsSync(cachedKernel)
   return {
     yfwHome,
     cachedKernel,
-    cachedBun,
     cachedReady,
-    // 缓存优先（实际运行路径），安装路径兜底
-    kernel: existsSync(cachedKernel) ? cachedKernel : install.kernel,
-    bun: existsSync(cachedBun) ? cachedBun : install.bun,
+    // 生效内核与 findYFWorking 解析同序：install 候选命中即用，home 缓存兜底
+    kernel: install.kernel || (existsSync(cachedKernel) ? cachedKernel : null),
     install,
   }
 }

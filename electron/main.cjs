@@ -2,7 +2,7 @@
  * YFWorking Desktop — Electron main process.
  *
  * Architecture:
- *   Renderer (React) ──WebSocket──► bridge server (node server/bridge.mjs) ──stdio──► claude CLI
+ *   Renderer (React) ──WebSocket──► bridge server (node server/bridge.mjs) ──stdio──► ponos 内核（本库 kernel/cli.mjs 源码或 kernel-dist bundle，node 直跑）
  *
  * Electron auto-starts the bridge, then loads the frontend.
  * CommonJS so Electron runs it directly without transpilation.
@@ -49,19 +49,21 @@ function findPythonExe() {
 }
 const PYTHON_EXE = findPythonExe()
 
-// 应用内诊断（Task 5）：kernel/bun/python 路径探测。与 bridge.mjs 共用
-// electron/kernel-paths.cjs 统一解析（缓存优先、安装兜底），杜绝两套逻辑
-// 漂移——生产事故：诊断探针曾直接 spawn 安装目录（Program Files）→ EPERM
-// → kernel-launch 误报 exit=1，而实际会话走 bootstrap 缓存始终正常。
-// python 复用 findPythonExe()，但裸命令名 'python' 会令 monitor 的 existsSync
-// 相对 cwd 误报（I4 语义）——map 成 null，monitor 对 null 返回 unknown。
+// 应用内诊断：kernel/runtime(node)/python 路径探测。内核与 bridge.mjs 共用
+// electron/kernel-paths.cjs 统一解析（install 候选命中优先、home 缓存兜底），
+// 杜绝两套逻辑漂移——生产事故：诊断探针曾直接 spawn 安装目录（Program Files）
+// → EPERM → kernel-launch 误报 exit=1，而实际会话走 bootstrap 缓存始终正常。
+// 运行时 = node（D1）：runtime 经 resolveNode() 定位（打包 <app>/node.exe，
+// dev 回退 PATH 'node'）。python 复用 findPythonExe()，但裸命令名 'python' 会
+// 令 monitor 的 existsSync 相对 cwd 误报（I4 语义）——map 成 null，monitor 对
+// null 返回 unknown。
 function resolveDiagPaths() {
   const { resolveKernelPaths } = require('./kernel-paths.cjs')
   const rp = resolveKernelPaths() // 本模块与 kernel-paths.cjs 同处 electron/，缺省推导一致
   const python = findPythonExe()
   return {
-    kernel: rp.kernel, // 缓存优先（无 ACL 限制），安装路径兜底
-    bun: rp.bun,
+    kernel: rp.kernel, // install 候选命中优先，home 缓存兜底（与 findYFWorking 同序）
+    runtime: resolveNode(), // node 运行时：bundled node.exe 或 PATH 'node'
     install: rp.install,
     python: python === 'python' ? null : python,
   }
@@ -752,7 +754,7 @@ function readDoubaoStatus() {
 async function registerIpc() {
   // ---------------------------------------------------------------------------
   // 应用内诊断（Task 5）：monitor 接入主进程 + diag:* IPC。
-  // ctx 注入：appPaths（kernel/bun/python 探测）/executorStatus/petAlive/
+  // ctx 注入：appPaths（kernel/runtime/python 探测）/executorStatus/petAlive/
   // 崩溃计数/bridge 重启计数。事件驱动接线（bridge-exit/gpu-crash/
   // executor-disconnect）在模块级 handler 处经 monitor?.onEvent 调用；
   // kernel-session-fail 无推送源（bridge 只有 /diag/info 轮询），由 30s 巡检覆盖。

@@ -84,6 +84,12 @@ function getJson(url, ms = 2000) {
   })
 }
 
+// 可执行文件可用性：绝对/相对路径按 existsSync 判；裸命令名（无 / 或 \，
+// 如 dev 下 resolveNode() 回退的 PATH 'node'）由 shell/PATH 解析，视为可用。
+function exeUsable(p) {
+  return !!p && (existsSync(p) || !/[\\/]/.test(p))
+}
+
 function runProbe(cmdArgs, ms, tag = 'probe') {
   return new Promise((resolve) => {
     const t0 = Date.now()
@@ -96,7 +102,7 @@ function runProbe(cmdArgs, ms, tag = 'probe') {
     } catch (e) { return finish(false, -1) }
     const timer = setTimeout(() => {
       // Windows 专用：shell:true 下 proc 是 cmd shell，proc.kill() 只杀 shell 不杀孙进程；
-      // 必须先 taskkill /T 杀整棵进程树（含 bun 等孙进程），防超时孤儿——顺序不能反：
+      // 必须先 taskkill /T 杀整棵进程树（含内核等孙进程），防超时孤儿——顺序不能反：
       // 若先 kill 掉根 shell，Windows 无"父亡子随灭"语义，taskkill 就无树可枚举了。
       try { spawnSync('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { stdio: 'ignore', timeout: 3000 }) } catch (_) {}
       try { proc.kill() } catch (_) {}  // taskkill 缺失/失败时的兜底
@@ -125,9 +131,9 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
   const bridgeInfo = () => getJson(`http://127.0.0.1:${bridgePort}/diag/info`)
 
   async function checkKernelFiles() {
-    const { kernel, bun } = ctx.appPaths
-    return { status: kernel && bun && existsSync(kernel) && existsSync(bun) ? 'ok' : 'error',
-      detail: `kernel=${kernel || '?'} bun=${bun || '?'}` }
+    const { kernel, runtime } = ctx.appPaths
+    return { status: exeUsable(kernel) && exeUsable(runtime) ? 'ok' : 'error',
+      detail: `kernel=${kernel || '?'} runtime=${runtime || '?'}` }
   }
 
   async function checkKernelBootstrap() {
@@ -136,21 +142,20 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
   }
 
   async function checkKernelLaunch() {
-    // 统一路径解析（缓存优先）：探针必须跑缓存路径——安装目录（Program Files）
-    // 受 ACL 限制，直接 spawn bun 会 EPERM → 误报 exit=1（2026-08-20 生产事故）。
+    // 统一内核路径解析（install 候选命中优先、home 缓存兜底，与 findYFWorking
+    // 同序）；运行时 = node（D1）。探针跑 `"<node>" "<kernel>" --help` 验证内核
+    // 可启动（ponos 内核支持 --help，usage 打到 stderr、exit 0）。
     // runProbe 自带 15s 内部超时已足够；16000 由 CHECKS 的 timeoutMs 在 runAll/rerun 层兜底
     const rp = resolveKernelPaths()
-    const probeBun = rp.bun || ctx.appPaths?.bun
+    const probeRuntime = ctx.appPaths?.runtime
     const probeKernel = rp.kernel || ctx.appPaths?.kernel
     const source = rp.kernel === rp.cachedKernel ? '缓存路径' : '安装目录'
-    const r = await runProbe([`"${probeBun}"`, `"${probeKernel}"`, '--version'], 15000, 'probe:kernel-launch').catch(() => ({ ok: false, stderr: '' }))
+    const r = await runProbe([`"${probeRuntime}"`, `"${probeKernel}"`, '--help'], 15000, 'probe:kernel-launch').catch(() => ({ ok: false, stderr: '' }))
     let detail = `stdout=${r.stdout?.trim() || ''} exit=${r.exitCode}`
-    if (!r.ok && /EPERM/i.test(r.stderr || '')) {
-      detail += ` | 安装目录 ACL 受限（EPERM），改用 ${source}: ${probeKernel}`
-    } else if (!r.ok && (r.stderr || '').trim()) {
+    if (!r.ok && (r.stderr || '').trim()) {
       detail += ` | stderr: ${r.stderr.trim().slice(0, 200)}`
     }
-    return { status: r.ok && /\(YFW\)/.test(r.stdout) ? 'ok' : 'error', detail }
+    return { status: r.ok && /Ponos-turbo kernel/.test(r.stderr || '') ? 'ok' : 'error', detail }
   }
 
   async function checkBridgePort() {
@@ -394,7 +399,7 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
   async function runKernelCheck() {
     if (kernelCheckInflight) return { ok: false, stdout: '', stderr: 'in-flight', exitCode: -1, latencyMs: 0 }
     kernelCheckInflight = true
-    try { return await timeout(runProbe([`"${ctx.appPaths.bun}"`, `"${ctx.appPaths.kernel}"`, '--version'], 15000), 16000, 'kernel-check') }
+    try { return await timeout(runProbe([`"${ctx.appPaths.runtime}"`, `"${ctx.appPaths.kernel}"`, '--help'], 15000), 16000, 'kernel-check') }
     finally { kernelCheckInflight = false }
   }
 

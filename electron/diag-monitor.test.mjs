@@ -4,7 +4,7 @@ import { createDiagMonitor, CHECKS } from './diag-monitor.cjs'
 
 function mkCtx(overrides = {}) {
   return {
-    appPaths: { kernel: '/x/cli.mjs', bun: '/x/bun.exe', python: '/x/python.exe' },
+    appPaths: { kernel: '/x/cli.mjs', runtime: '/x/node.exe', python: '/x/python.exe' },
     executorStatus: async () => ({ connected: true, windows: 1 }),
     petAlive: () => true,
     gpuCrashCount: () => 0,
@@ -24,7 +24,7 @@ test('CHECKS 注册表：27 项、id 唯一、分组合法', () => {
 test('状态聚合：任一 error → overall=error', async () => {
   const ctx = mkCtx({ gpuCrashCount: () => 1 })  // 不算 error，但用一个必错的项验证
   // 用 fs 缺失路径制造 kernel-files error
-  const mon = createDiagMonitor({ ctx: { ...ctx, appPaths: { kernel: '/nonexistent/cli.mjs', bun: '/nonexistent/bun.exe', python: '/x/python.exe' } } })
+  const mon = createDiagMonitor({ ctx: { ...ctx, appPaths: { kernel: '/nonexistent/cli.mjs', runtime: '/nonexistent/node.exe', python: '/x/python.exe' } } })
   const snap = await mon.runAll()
   assert.equal(snap.overall, 'error')
   const kf = snap.checks.find(c => c.id === 'kernel-files')
