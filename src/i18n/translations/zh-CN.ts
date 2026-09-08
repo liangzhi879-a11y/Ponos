@@ -27,6 +27,7 @@ export const zhCN = {
     agents: '智能体',
     worktrees: '工作树',
     skills: '技能',
+    usage: '用量',
     newChat: '新建对话',
     pinned: '置顶',
     noConversations: '暂无对话',
@@ -152,6 +153,27 @@ export const zhCN = {
   // --- 子任务压缩提示（agentloop lane_compaction） ---
   laneCompact: {
     title: '子任务压缩 · 第 {n} 次',
+  },
+
+  // --- 用量 / 审计（侧栏视图） ---
+  usage: {
+    segmentUsage: '用量摘要',
+    segmentAudit: '审计明细',
+    inputTokens: '输入',
+    outputTokens: '输出',
+    cacheRead: '缓存读',
+    cacheRate: '缓存率',
+    turns: '轮数',
+    cost: '成本',
+    budget: '预算',
+    byModel: '按模型',
+    byProject: '按项目',
+    byTool: '按工具',
+    allProjects: '全部项目',
+    noData: '暂无用量数据',
+    emptyAudit: '暂无审计明细',
+    error: '加载失败',
+    refresh: '刷新',
   },
 
   // --- 终端 ---

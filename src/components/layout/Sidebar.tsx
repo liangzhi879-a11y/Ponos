@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useLayoutEffect, memo } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  MessageSquare, History, FolderTree, Bot, Plus, Search, GitFork,
+  MessageSquare, History, FolderTree, Bot, Plus, Search, GitFork, Gauge,
   Pin, Trash2, Edit3, Puzzle, MessageSquarePlus, CalendarClock,
   Wand2, ChevronRight, FolderOpen, FolderPlus, Share2, ArrowUpDown, Check,
 } from 'lucide-react'
@@ -18,6 +18,7 @@ import { FileBrowser } from '@/components/files/FileBrowser'
 import { AgentsPanel } from '@/components/agents/AgentsPanel'
 import { WorktreePanel } from '@/components/worktree/WorktreePanel'
 import { SkillsPanel } from '@/components/skills/SkillsPanel'
+import { UsagePanel } from '@/components/usage/UsagePanel'
 import { formatDate, cn } from '@/lib/utils'
 import type { Conversation, ConversationProgress, ConversationSet, Message } from '@/types'
 
@@ -28,6 +29,7 @@ const TABS = [
   { id: 'history' as const, icon: History, labelKey: 'sidebar.history' },
   { id: 'agents' as const, icon: Bot, labelKey: 'sidebar.agents' },
   { id: 'skills' as const, icon: Puzzle, labelKey: 'sidebar.skills' },
+  { id: 'usage' as const, icon: Gauge, labelKey: 'sidebar.usage' },
 ]
 
 // 导出会话（单个/整个会话集）为 zip：dev 模式无 preload，直接返回。
@@ -540,6 +542,7 @@ export function Sidebar() {
         {sidebarTab === 'worktrees' && <WorktreePanel />}
         {sidebarTab === 'agents' && <AgentsPanel />}
         {sidebarTab === 'skills' && <SkillsPanel />}
+        {sidebarTab === 'usage' && <UsagePanel />}
       </div>
     </aside>
   )

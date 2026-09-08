@@ -26,6 +26,7 @@ export const enUS: TranslationKeys = {
     agents: 'Agents',
     worktrees: 'Worktrees',
     skills: 'Skills',
+    usage: 'Usage',
     newChat: 'New Chat',
     pinned: 'Pinned',
     noConversations: 'No conversations',
@@ -148,6 +149,27 @@ export const enUS: TranslationKeys = {
   // --- Subtask compaction toast (agentloop lane_compaction) ---
   laneCompact: {
     title: 'Subtask compacted · round {n}',
+  },
+
+  // --- Usage / audit (sidebar view) ---
+  usage: {
+    segmentUsage: 'Usage',
+    segmentAudit: 'Audit',
+    inputTokens: 'Input',
+    outputTokens: 'Output',
+    cacheRead: 'Cache read',
+    cacheRate: 'Cache rate',
+    turns: 'Turns',
+    cost: 'Cost',
+    budget: 'Budget',
+    byModel: 'By model',
+    byProject: 'By project',
+    byTool: 'By tool',
+    allProjects: 'All projects',
+    noData: 'No usage data',
+    emptyAudit: 'No audit rows',
+    error: 'Load failed',
+    refresh: 'Refresh',
   },
 
   settings: {

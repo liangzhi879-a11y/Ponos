@@ -29,7 +29,7 @@ interface UIState {
   editorRect: { x: number; y: number; w: number; h: number }
 
   // Sidebar tab
-  sidebarTab: 'chats' | 'history' | 'files' | 'agents' | 'worktrees' | 'skills'
+  sidebarTab: 'chats' | 'history' | 'files' | 'agents' | 'worktrees' | 'skills' | 'usage'
 
   // 会话列表排序模式（persist 白名单持久化）
   chatSortMode: ChatSortMode
@@ -69,7 +69,7 @@ interface UIState {
 
   setSidebarWidth: (w: number) => void
   setEditorRect: (rect: { x: number; y: number; w: number; h: number }) => void
-  setSidebarTab: (tab: 'chats' | 'history' | 'files' | 'agents' | 'worktrees' | 'skills') => void
+  setSidebarTab: (tab: 'chats' | 'history' | 'files' | 'agents' | 'worktrees' | 'skills' | 'usage') => void
 
   openFile: (file: FileTab) => void
   closeFile: (id: string) => void
