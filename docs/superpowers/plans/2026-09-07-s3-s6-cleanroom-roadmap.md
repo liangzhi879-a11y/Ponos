@@ -61,7 +61,7 @@
 
 **执行记录（2026-09-08，S4 推进中）**：
 - **CDP 隔离行修订（D5）**：净室 browser executor 的 CDP 为进程内 `webContents.debugger.attach('1.3')`（browser-executor.cjs），**无网络端口**——设计 §8 隔离矩阵第 3 行"52319/9223 端口隔离"对净室不适用，修订为 **N/A（进程内 CDP）**；52319 仅 `server/interject.e2e.mjs` 固定测试口（单测语境，不与双版并行冲突）。
-- **T6 backlog 显式登记**（T4 完结复查移交，均归 T6/S6 处置）：① `kernel/cli.mjs:5` 注释「bun 运行时 spawn（findPonos 候选 #1）」措辞统一为净室语义（YFWORKING_KERNEL，D8）——kernel 本体纪律零改动，本行仅登记不改；② installer.nsh 技能数 65→85 校准与手册版本不一致（S6 出包统一）；③ build_promo_pdf.py BASE 硬编码路径参数化；④ BUILD.md 的 YF/旧端口默认值（51309/5173）文档引用清洗（S6 文档面）；⑤ 产物身份 appId/productName 区分决策（S6）；⑥ CRLF/.gitattributes 字节复核。
+- **T6 backlog 显式登记**（T4 完结复查移交，均归 T6/S6 处置）：① `kernel/cli.mjs:5` 注释「bun 运行时 spawn（findPonos 候选 #1）」措辞统一为净室语义（YFWORKING_KERNEL，D8）——kernel 本体纪律零改动，本行仅登记不改；② installer.nsh 技能数 65→85 校准与手册版本不一致（S6 出包统一）；③ build_promo_pdf.py BASE 硬编码路径参数化；④ BUILD.md + docs/manual 的 YF/旧端口默认值（51309/5173）文档引用清洗（S6 文档面）；⑤ 产物身份 appId/productName 区分决策（S6）；⑥ CRLF/.gitattributes 字节复核；⑦ 根 diag-yfw.bat（legacy 安装诊断工具）bun 布局引用（`resources/runtime/bun/bun.exe` 等）清洗或退役（T4 review concern 3）；⑧ verify-permission-flow.mjs env 的 `CLAUDE_CODE_USE_NATIVE_FILE_SEARCH:'true'` 残留（旧内核 rg 语义、ponos 内核忽略；随 S5/S6 脚本清洗顺带移除，T4 review concern 5）；⑨ electron-builder.yml :40-69 runtime/python、runtime/skills 等 extraResources 源悬空（净室无 runtime/，S6 出包须随构建补齐资源或调整源，T4 concern 2）；⑩ electron-builder.yml compression 段注释 bun.exe 残留措辞（T4 review Minor）。（⑦-⑩ 为 T4 review Approve 建议项补登，2026-09-08）
 
 ---
 
