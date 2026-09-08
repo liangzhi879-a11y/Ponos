@@ -10,10 +10,11 @@ import { createInterface } from 'readline'
 import { homedir } from 'os'
 import { join } from 'path'
 import { readFileSync, writeFileSync, rmSync, existsSync } from 'fs'
+import { resolveYfwHome } from '../server/yfw-home.cjs'
 
 const BUN = join(homedir(), '.bun', 'bin', 'bun.exe')
 const KERNEL = join(process.cwd(), 'yfw-kernel', 'claude-code', 'dist', 'cli.mjs')
-const YFW_HOME = join(homedir(), '.yfworking')
+const YFW_HOME = resolveYfwHome()
 
 const mode = (process.argv[2] || 'allow').toLowerCase()
 const dump = process.argv.includes('--dump')
