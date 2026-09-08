@@ -1,6 +1,6 @@
 // transcriptAdapter.ts — 内核 transcript entry → GUI Message 转换层（纯逻辑，无 IO）。
 //
-// 内核（yfw-kernel/claude-code，claude-code 官方同源）在磁盘写 append-only JSONL
+// 内核（本库 kernel/ 源码或 kernel-dist bundle——ponos，node 直跑）在磁盘写 append-only JSONL
 // transcript，每行一个原始 entry（形态见下）。GUI 内存不能装 377MB 全量 transcript，
 // 因此这里做"展示级裁剪"：text ≤8KB、tool_result ≤16KB、thinking ≤4KB、tool_use ≤8KB，
 // 超限截断并在 metadata.originalLength 记录原始长度。裁剪是架构要求，不是可选。
@@ -17,7 +17,8 @@
 //
 // assistant content 块：{type:'text', text, citations?} | {type:'tool_use', id, name, input}
 //                     | {type:'tool_result', tool_use_id, content, is_error?} | {type:'thinking', thinking}
-// user content 数组：claude-code 会把 tool_result 作为 user 消息的 content 块回传（实测出现）。
+// user content 数组：内核会把 tool_result 作为 user 消息的 content 块回传
+// （wire 契约沿 claude-code transcript 形态，实测出现）。
 
 import { sanitizeText, generateId } from './utils.ts'
 import type { Message, ContentBlock } from '../types/index.ts'
@@ -190,8 +191,8 @@ export function transcriptEntryToMessage(entry: any): Message | null {
   // —— 内核 user entry：message.content 为 string 时转单个 text 块；为数组时逐块转。
   // 两类"非用户发言"的 user 条目在此过滤：
   //   1. harness 注入的系统管道消息（<task-notification> 等 XML 信封）——string 形态；
-  //   2. tool_result 回显块——claude-code 把工具结果作为 user 消息的 content 块回传
-  //      （实测出现），属内核回显而非用户发言；结果由 entriesToMessages 预扫描后
+  //   2. tool_result 回显块——内核把工具结果作为 user 消息的 content 块回传
+  //      （wire 契约沿 claude-code 形态，实测出现），属内核回显而非用户发言；结果由 entriesToMessages 预扫描后
   //      挂接到对应 assistant tool_use 块，这里不单独成"用户消息"。
   if (type === 'user') {
     const content = msg.content

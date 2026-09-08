@@ -4,10 +4,10 @@ import { WebSocketServer } from 'ws'
 import http, { createServer } from 'http'
 import https from 'https'
 import { fileURLToPath } from 'url'
-import { readdirSync, statSync, existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, copyFileSync, unlinkSync, appendFileSync, cpSync } from 'fs'
+import { readdirSync, statSync, existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, copyFileSync, unlinkSync, appendFileSync } from 'fs'
 import { readdir, stat } from 'fs/promises'
 import { join, sep, dirname, resolve, basename } from 'path'
-import { homedir, tmpdir } from 'os'
+import { tmpdir } from 'os'
 import { extractMilestoneMarks, extractProseStages } from './milestones.mjs'
 import { matchesHighRisk } from './highrisk.mjs'
 import { parseAskUserPayload, extractAskUserBlocks } from './askuser.mjs'
@@ -475,103 +475,62 @@ function saveConfig(updates) {
 }
 
 // ---------------------------------------------------------------------------
-// Kernel self-bootstrap: when the packaged app lives under Program Files
-// (or any ACL-restricted dir), spawning bun to execute the kernel fails with
-// EPERM (Windows denies higher-privilege file access under those roots).
-// We copy the kernel + bun runtime into the user home (~/.yfworking/runtime/)
-// once and run from there, which is always writable/executable.
+// Kernel self-bootstrap (D3)：把安装/源码内核拷贝到 <home>/runtime/kernel/ 一次，
+// 供 install 候选缺失时兜底与诊断检查。运行时 = node（D1）——node 自身不随拷
+// （由调用方 process.execPath / resolveNode() 定位）；新内核 Grep/Glob 为原生
+// node 递归实现（kernel/tools.mjs），无 ripgrep/vendor 依赖（F3）→ 只拷 kernel
+// cli.mjs，无 vendor 复制。
 // ---------------------------------------------------------------------------
-function bootstrapKernelToUserDir(kernel, bun) {
-  // 总是 bootstrap 到 ~/.yfworking/runtime/（不再仅限 Program Files）：
-  // 1) 用户级安装路径 AppData\Local\Programs\ 也有 ACL/AV 风险
-  // 2) ~100MB 一次性复制，仅在大小变化时重做
-  // 3) 用户家目录永远是可写可执行，spawn 不会受阻
-  //
-  // vendor/ 必须随 kernel 一并复制：内核以 `bun cli.mjs` 方式运行（非 Bun
-  // standalone），isInBundledMode()=false，ripgrep 走 builtin 模式按
-  // __dirname/vendor/ripgrep/<arch>-win32/rg.exe 解析。只拷 cli.mjs 会让
-  // runtime/kernel 缺 vendor → Grep/Glob 工具 ENOENT（本机实测
-  // `uv_spawn ...runtime\kernel\vendor\ripgrep\x64-win32\rg.exe` 报错），
-  // 且 CLAUDE_CODE_USE_NATIVE_FILE_SEARCH 兜底依赖 PATH 无 rg 时会拖慢搜索。
+function bootstrapKernelToUserDir(kernel) {
+  // 拷贝目标随 YFWORKING_HOME（T2 home 解析）；仅源文件大小变化时重做。
   try {
     const destBase = join(YFW_HOME, 'runtime')
     const destKernel = join(destBase, 'kernel', 'cli.mjs')
-    const destBun = join(destBase, 'bun', 'bun.exe')
     const kernelSize = existsSync(destKernel) ? statSync(destKernel).size : -1
-    const bunSize = (bun && existsSync(destBun)) ? statSync(destBun).size : -1
     const needCopyKernel = kernelSize !== statSync(kernel).size
-    const needCopyBun = bun && bunSize !== statSync(bun).size
-    const vendorSrc = join(dirname(kernel), 'vendor')
-    const vendorDest = join(destBase, 'kernel', 'vendor')
-    // vendor 就绪判定：目标存在且含当前平台 rg 可执行文件（与 ripgrep.ts
-    // builtin 模式路径一致：<arch>-win32 / <arch>-<platform>）。
-    const rgExeName = process.platform === 'win32' ? 'rg.exe' : 'rg'
-    const vendorDestRg = join(vendorDest, 'ripgrep', `${process.arch}-${process.platform}`, rgExeName)
-    const needCopyVendor = existsSync(vendorSrc) && !existsSync(vendorDestRg)
-    if (!needCopyKernel && !needCopyBun && !needCopyVendor) {
-      return { kernel: destKernel, bun: destBun, bootstrapped: false, cached: true }
-    }
+    if (!needCopyKernel) return { kernel: destKernel, bootstrapped: false, cached: true }
     mkdirSync(join(destBase, 'kernel'), { recursive: true })
-    if (bun) mkdirSync(join(destBase, 'bun'), { recursive: true })
-    if (needCopyKernel) copyFileSync(kernel, destKernel)
-    if (needCopyBun) copyFileSync(bun, destBun)
-    if (needCopyVendor) {
-      // 先删旧 vendor 再整体复制，避免升级时残留过期架构目录
-      try { rmSync(vendorDest, { recursive: true, force: true }) } catch {}
-      cpSync(vendorSrc, vendorDest, { recursive: true })
-    }
-    console.log('[bridge] kernel bootstrapped to', destBase, '(kernel:', needCopyKernel, 'bun:', needCopyBun, 'vendor:', needCopyVendor, ')')
-    return { kernel: destKernel, bun: destBun, bootstrapped: true }
+    copyFileSync(kernel, destKernel)
+    console.log('[bridge] kernel bootstrapped to', destKernel)
+    return { kernel: destKernel, bootstrapped: true }
   } catch (e) {
     console.warn('[bridge] kernel bootstrap failed, falling back to original paths:', e.message)
-    return { kernel, bun, bootstrapped: false }
+    return { kernel, bootstrapped: false }
   }
 }
 
 function findYFWorking() {
-  // NOTE: We MUST spawn the real YFWorking kernel — the bun-bundled ESM CLI
-  // built from yfw-kernel/claude-code — NOT the npm-global yfworking.cmd
-  // (that is the YFWorking GUI launcher: it starts bridge+vite+browser and
-  // would kill a kernel session) and NOT stock Claude Code from PATH (that
-  // would bypass every YFW isolation fix). The kernel is started via a bun
-  // runtime: `"<bun>" "<kernel>"` (spawn uses shell:true and simply
-  // concatenates command + args).
-  if (process.env.YFWORKING_PATH) return process.env.YFWORKING_PATH
-  // 1) Explicit kernel override: YFWORKING_KERNEL = path to cli.mjs,
-  //    YFWORKING_BUN (optional) = path to bun runtime.
+  // NOTE: 必须 spawn 本库 ponos 内核（kernel/ 源码或 kernel-dist bundle，node
+  // 直跑）——NOT npm-global yfworking.cmd（那是 GUI launcher：会起 bridge+vite+
+  // browser、杀掉内核会话），也 NOT PATH 上的 stock Claude Code（会绕过一切 YFW
+  // 隔离修复）。运行时 = node（D1）：`"<node>" "<kernel>"`（spawn shell:true，
+  // 命令 + args 直接拼接）。node 定位 = process.execPath——bridge 恒由 node 拉起
+  //（dev：node server/bridge.mjs；packaged：main.cjs startBridge resolveNode()）。
+  const node = process.execPath
+  // 1) 显式内核覆盖（D8 唯一逃生口）：YFWORKING_KERNEL = kernel cli.mjs 路径，
+  //    运行时固定 node。值无效即抛错，绝不静默回退。
   if (process.env.YFWORKING_KERNEL) {
     const kernel = process.env.YFWORKING_KERNEL
-    const bun = process.env.YFWORKING_BUN || join(homedir(), '.bun', 'bin', 'bun.exe')
-    return `"${bun}" "${kernel}"`
+    if (!existsSync(kernel)) {
+      throw new Error(`[bridge] kernel not found: YFWORKING_KERNEL=${kernel} — file does not exist`)
+    }
+    return `"${node}" "${kernel}"`
   }
-  // 2) Well-known kernel locations. 与诊断探针共享 electron/kernel-paths.cjs
-  //    的统一路径解析（单一事实来源，杜绝两套逻辑漂移）：
-  //    - bootstrap 源始终取安装路径（Program Files 等），拷贝到用户家目录缓存
-  //    - 诊断探针则直接跑缓存（不 bootstrap、不碰安装路径）→ 无 EPERM 误报
+  // 2) kernel-paths 统一解析（与诊断探针共享 electron/kernel-paths.cjs，单一事实
+  //    来源）：install 命中 <app>/kernel/cli.mjs（源码）或 kernel-dist/cli.mjs
+  //    （bundle）→ 直接组装。home bootstrap 缓存（<home>/runtime/kernel，路径随
+  //    YFWORKING_HOME）随启动同步（D3），install 缺失时作兜底（3）。
   const rp = resolveKernelPaths({ appDir: join(__dirname, '..') })
-  const srcKernel = rp.install.kernel
-  const srcBun = rp.install.bun
-  if (srcKernel && srcBun) {
-    const b = bootstrapKernelToUserDir(srcKernel, srcBun)
-    return `"${b.bun}" "${b.kernel}"`
+  if (rp.install.kernel) {
+    // 缓存同步失败不阻断：install 候选仍可直接 spawn（node 读 cli.mjs 无 EPERM）
+    try { bootstrapKernelToUserDir(rp.install.kernel) } catch { }
+    return `"${node}" "${rp.install.kernel}"`
   }
-  if (srcKernel) {
-    try {
-      execSync('bun --version 2>nul', { timeout: 5000, stdio: 'ignore' })
-      return `bun "${srcKernel}"`
-    } catch { }
-  }
-  // 罕见兜底：安装路径消失但缓存仍在（升级/卸载残留）→ 直接用缓存
-  if (rp.kernel) {
-    if (rp.bun) return `"${rp.bun}" "${rp.kernel}"`
-    return `bun "${rp.kernel}"`
-  }
-  // 3) Last resort — a real Claude Code kernel on PATH (dev convenience only;
-  //    never reached once the YFW kernel is built or shipped).
-  try { return execSync('where claude.cmd 2>nul', { encoding: 'utf-8', timeout: 5000 }).trim().split('\n')[0].trim() } catch { }
-  try { return execSync('where claude 2>nul', { encoding: 'utf-8', timeout: 5000 }).trim().split('\n')[0].trim() } catch { }
-  try { return execSync('where claude-code 2>nul', { encoding: 'utf-8', timeout: 5000 }).trim().split('\n')[0].trim() } catch { }
-  return 'claude.cmd'
+  // 3) 罕见兜底：安装/源码路径消失但 home 缓存仍在（升级/卸载残留）→ 直接用缓存
+  if (rp.kernel) return `"${node}" "${rp.kernel}"`
+  // 4) Last resort（PATH 上的 claude 命令兜底）已删：全部落空 → 抛清晰错误，
+  //    严禁静默回退 claude
+  throw new Error('[bridge] kernel not found — set YFWORKING_KERNEL, or ensure <repo>/kernel/cli.mjs or <repo>/kernel-dist/cli.mjs exists (node scripts/build-kernel.mjs)')
 }
 const YFWORKING = findYFWorking()
 console.log('[bridge] YFWorking CLI:', YFWORKING)
@@ -675,15 +634,9 @@ function buildChildEnv() {
   } else if (provider) {
     console.warn('[bridge] provider', provider.id, 'missing apiBaseUrl or authToken — using CLI defaults')
   }
-  // 内核枚举 $YFW_HOME/agents/*.md 依赖 ripgrep（vendor/ripgrep/*/rg.exe）。
-  // 早期发布包未携带该二进制导致静默失败（ENOENT→空列表）——当时强制走原生
-  // Node 文件搜索兜底。现在发布包与 dev 构建均已随带 rg.exe，原生搜索反而
-  // 无条件递归整棵 cwd 树（不跳过 node_modules/.git）拖慢启动与搜索；
-  // 改为：rg 可用时走 ripgrep 快速路径，仅当 rg 缺失时才强制原生兜底。
-  // 用户环境变量可显式覆盖（设为 false 关闭）。
-  if (!ripgrepAvailable() && process.env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH !== 'false') {
-    env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH = 'true'
-  }
+  // 内核 Grep/Glob 为原生 node 递归实现（本库 ponos 内核，kernel/tools.mjs），
+  // 无 ripgrep/vendor 依赖（F3）→ CLAUDE_CODE_USE_NATIVE_FILE_SEARCH 注入不再
+  // 必要（旧 claude-code 内核 vendor rg 语义不适用；内核忽略未知 env）。
   // 内核工具结果预算（opt-in：显式 true 才开启，20KB 保守截断；未设置 = 现状。
   // 批次 3 A/B 验收通过后再改为默认开启。）
   if (process.env.CLAUDE_CODE_TOOL_RESULT_BUDGET === 'true') {
@@ -693,25 +646,6 @@ function buildChildEnv() {
     }
   }
   return env
-}
-
-/** 检测内核候选路径下是否随带 ripgrep 二进制（release/dev/运行时任一命中即可用）。 */
-function ripgrepAvailable() {
-  const bases = [
-    join(__dirname, '..', 'kernel'),                                  // release: <app>/kernel
-    join(__dirname, '..', '..', 'kernel'),                            // 备选部署布局
-    join(__dirname, '..', 'yfw-kernel', 'claude-code', 'dist'),       // dev 源码构建
-    join(YFW_HOME, 'runtime', 'kernel'),                              // bootstrap 后的实际运行路径
-  ]
-  const exe = process.platform === 'win32' ? 'rg.exe' : 'rg'
-  for (const base of bases) {
-    try {
-      const rgDir = join(base, 'vendor', 'ripgrep')
-      if (!existsSync(rgDir)) continue
-      if (readdirSync(rgDir).some(d => existsSync(join(rgDir, d, exe)))) return true
-    } catch { /* continue */ }
-  }
-  return false
 }
 
 // 多行 "- " 列表解析（triggers 与 subskills 共用）：/^key:\n(- item\n)*/m

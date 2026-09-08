@@ -1,6 +1,6 @@
 // transcript.mjs — GUI 从内核 transcript 按需读取会话消息的三个 handler（供 bridge.mjs 路由接入）。
 //
-// 内核（yfw-kernel/claude-code，claude-code 官方同源）每次会话都在磁盘写 append-only JSONL
+// 内核（本库 kernel/ 源码或 kernel-dist bundle——ponos，node 直跑）每次会话都在磁盘写 append-only JSONL
 // transcript：<CLAUDE_CONFIG_DIR ?? ~/.yfworking>/projects/<sanitize(cwd)>/<sessionId>.jsonl，
 // 每行一个原始 entry（type: user/assistant/system/attachment/queue-operation…）。
 //
