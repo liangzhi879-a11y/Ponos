@@ -1,0 +1,328 @@
+// 净室真实内核 ↔ spawn 会话协议接线测试（S4 Task 5）
+// ---------------------------------------------------------------------------
+// 适配自 pd（ponos-dev）server/kernel-bridge.test.mjs 测试族，但按净室差异改写：
+//   - pd 版经 PONOS_KERNEL + PONOS_BUN=node 由 bridge 起内核、WebSocket 驱动；
+//     净室无 PONOS_KERNEL 名（D8 逃生口 = YFWORKING_KERNEL，属产品层），本测试
+//     不启动 bridge/完整 GUI，直接以 `node kernel/cli.mjs` spawn 真实内核进程，
+//     经 stdin/stdout NDJSON 走完整会话协议（docs/bridge-contract.md §3/§4/§5）。
+//   - spawn 参数与 server/bridge.mjs getOrCreateSession（F8）一致（最小必要集，
+//     无 --resume/--append-system-prompt-file 时按会话契约注入 home/projects 转录）。
+//   - 环境隔离：CLAUDE_CONFIG_DIR（内核 resolveConfigDir 读取，config.mjs）与
+//     YFWORKING_HOME 均指向测试临时目录，PONOS_MOCK_API=1 免网络——不触碰真实
+//     ~/.yfworking / ~/.ponos。
+//   - 本文件被 npm test 的 `server/*.test.mjs` glob 收录，必须在无真实 config、
+//     无网络下通过；spawn 子进程在 finally 中必然 EOF/kill 收尾，不留悬挂句柄。
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { sanitizeSegment } from '../kernel/session.mjs'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const REPO_ROOT = join(__dirname, '..')
+const KERNEL_CLI = join(REPO_ROOT, 'kernel', 'cli.mjs')
+
+// 事件收集默认超时：15000ms，可用 PONOS_TEST_COLLECT_TIMEOUT_MS 覆盖（pd 同款）
+const COLLECT_TIMEOUT_MS = Number(process.env.PONOS_TEST_COLLECT_TIMEOUT_MS) > 0
+  ? Number(process.env.PONOS_TEST_COLLECT_TIMEOUT_MS) : 15000
+
+// Windows 并发下子进程句柄释放有延迟，rmSync 会偶发 EPERM——重试兜底
+function rmSyncRetry(path, attempts = 8) {
+  for (let i = 0; i < attempts; i++) {
+    try { rmSync(path, { recursive: true, force: true }); return } catch (e) {
+      if (i === attempts - 1) throw e
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60)
+    }
+  }
+}
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)) }
+
+// —— 真实内核子进程会话封装 ——
+// spawn `node kernel/cli.mjs` + bridge 会话契约参数（F8 最小必要集），stdout 逐行
+// NDJSON 收集（坏行忽略），提供 collect/send/endInput/stop 原语。
+function spawnKernel({ home, workDir, resume }) {
+  const args = [
+    '--print', '--output-format', 'stream-json', '--input-format', 'stream-json',
+    '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
+    '--disallowedTools', 'AskUserQuestion',
+  ]
+  if (resume) args.push('--resume', resume)
+  args.push('--add-dir', workDir)
+
+  const env = {
+    ...process.env,
+    PONOS_MOCK_API: '1',                 // mock：免网络免真实 config
+    CLAUDE_CONFIG_DIR: home,             // 内核数据根（config.mjs resolveConfigDir）
+    YFWORKING_HOME: home,                // 净室 home 语义一致性（内核不读，产品层用）
+  }
+  delete env.PONOS_HOME                  // 防止宿主演进到内核解析链
+
+  const proc = spawn(process.execPath, [KERNEL_CLI, ...args], {
+    cwd: REPO_ROOT,
+    env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+
+  const events = []
+  const waiters = new Set()
+  let buf = ''
+  let stderrBuf = ''
+  let exitInfo = null
+  let killed = false
+
+  const wake = () => { for (const w of [...waiters]) w() }
+
+  proc.stdout.setEncoding('utf8')
+  proc.stderr.setEncoding('utf8')
+  proc.stdout.on('data', (d) => {
+    buf += String(d)
+    let i
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim()
+      buf = buf.slice(i + 1)
+      if (!line) continue
+      try { events.push(JSON.parse(line)) } catch { /* 非 NDJSON 噪音行忽略 */ }
+      wake()
+    }
+  })
+  proc.stderr.on('data', (d) => { stderrBuf += String(d) })
+  const exitPromise = new Promise((resolve) => {
+    proc.once('exit', (code, signal) => { exitInfo = { code, signal }; wake(); resolve(exitInfo) })
+  })
+
+  const send = (obj) => new Promise((resolve, reject) => {
+    try { proc.stdin.write(JSON.stringify(obj) + '\n', resolve) } catch (e) { reject(e) }
+  })
+
+  // 等待一条满足 predicate 的事件（消费式：命中即从缓冲移除）
+  function collect(pred, { timeoutMs = COLLECT_TIMEOUT_MS } = {}) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        waiters.delete(scan)
+        const brief = events.slice(0, 5).map((e) => {
+          const s = JSON.stringify(e)
+          return s.length > 200 ? s.slice(0, 200) + '…' : s
+        })
+        reject(new Error(
+          `collect timeout (${timeoutMs}ms) after ${exitInfo ? `exit(${exitInfo.code})` : 'process alive'}; ` +
+          `buffered=${events.length} ${brief.join(' | ')}; stderr tail: ${stderrBuf.slice(-600)}`
+        ))
+      }, timeoutMs)
+      const scan = () => {
+        const i = events.findIndex(pred)
+        if (i >= 0) {
+          const e = events.splice(i, 1)[0]
+          clearTimeout(timer)
+          waiters.delete(scan)
+          resolve(e)
+        }
+      }
+      waiters.add(scan)
+      scan()
+    })
+  }
+
+  // 收集一轮：assistant 事件 text 块拼接，直到 result（与 pd collectTurn 同语义）
+  async function collectTurn() {
+    const texts = []
+    while (true) {
+      const ev = await collect((m) => m.type === 'assistant' || m.type === 'result')
+      if (ev.type === 'result') return { text: texts.join(''), result: ev }
+      for (const b of ev.message?.content || []) if (b?.type === 'text') texts.push(b.text)
+    }
+  }
+
+  // 优雅停止：EOF → 等退出（默认 6s）；未退则强杀。成功 EOF 路径内核 exit 0
+  // （cli.mjs stdin close → shutdown(0) 契约）。
+  async function stop({ graceMs = 6000 } = {}) {
+    if (!exitInfo) {
+      try { if (!proc.stdin.writableEnded) proc.stdin.end() } catch { /* ignore */ }
+      await Promise.race([exitPromise, sleep(graceMs)])
+    }
+    if (!exitInfo && !killed) {
+      killed = true
+      try { proc.kill() } catch { /* ignore */ }
+      await Promise.race([exitPromise, sleep(2000)])
+    }
+    if (!exitInfo) {
+      // 杀不掉：记录 PID 留给主线程，不反复强杀
+      console.error(`[kernel-bridge.test] 子进程未退出，PID=${proc.pid}（交由主线程处置）`)
+    }
+    return exitInfo
+  }
+
+  return {
+    proc, send, collect, collectTurn, stop,
+    get exitInfo() { return exitInfo },
+    get pid() { return proc.pid },
+    get stderrTail() { return stderrBuf.slice(-600) },
+  }
+}
+
+// 转录文件路径与内核 session.mjs / server/transcript.mjs 读取路径一致
+function transcriptPath(home, cwd, sessionId) {
+  return join(home, 'projects', sanitizeSegment(cwd), `${sessionId}.jsonl`)
+}
+
+// system(init) 事件：会话身份（session_id）由内核生成并经 init 携带
+async function spawnAndInit({ home, workDir, resume }) {
+  const k = spawnKernel({ home, workDir, resume })
+  const init = await k.collect((m) => m.type === 'system' && m.subtype === 'init')
+  return { k, init }
+}
+
+test('协议闭环：bridge 会话 spawn 参数 → system(init) → user → assistant/result → EOF exit 0', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'yfw-kb-home-'))
+  const workDir = mkdtempSync(join(tmpdir(), 'yfw-kb-work-'))
+  let k
+  try {
+    const { k: kk, init } = await spawnAndInit({ home, workDir })
+    k = kk
+    // init 契约字段（cli.mjs wire.system('init')：session_id/tools/capacity）
+    assert.ok(init.session_id, 'init 应携带 session_id')
+    assert.ok(Array.isArray(init.tools), 'init.tools 应为数组')
+    assert.ok(init.tools.includes('Bash'), '工具清单应含 Bash')
+    assert.ok(Number.isFinite(init.capacity) && init.capacity >= 1, 'init.capacity 应 >= 1')
+    const sid = init.session_id
+
+    // 一轮 mock 对话：user → assistant 文本回显 → result
+    await k.send({ type: 'user', message: { role: 'user', content: '你好内核' } })
+    const { text, result } = await k.collectTurn()
+    assert.equal(text, 'mock: 你好内核 (turn=1)')
+    assert.equal(result.subtype, 'success')
+
+    // 转录落盘在 bridge/transcript 读取路径（<configDir>/projects/<cwd>/<sid>.jsonl），
+    // 首行为 meta 版本标记，后续 user + assistant（D2-2）
+    const file = transcriptPath(home, workDir, sid)
+    assert.ok(existsSync(file), 'transcript 文件应落在内核 store 路径')
+    const entries = readFileSync(file, 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
+    assert.equal(entries.length, 3)
+    assert.equal(entries[0].type, 'meta')
+    assert.equal(entries[1].type, 'user')
+    assert.equal(entries[1].message.content, '你好内核')
+    assert.equal(entries[2].type, 'assistant')
+
+    // EOF 优雅退出契约：stdin 关闭 → exit 0
+    const info = await k.stop()
+    assert.ok(info, '进程应已退出')
+    assert.equal(info.code, 0)
+  } finally {
+    if (k) await k.stop()
+    rmSyncRetry(workDir)
+    rmSyncRetry(home)
+  }
+})
+
+test('审批闭环：高危 Bash 触发 can_use_tool control_request → control_response(allow) → 工具执行 → result', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'yfw-kb-home-'))
+  const workDir = mkdtempSync(join(tmpdir(), 'yfw-kb-work-'))
+  let k
+  try {
+    const { k: kk } = await spawnAndInit({ home, workDir })
+    k = kk
+    await k.send({ type: 'user', message: { role: 'user', content: '[mock:tool] 清理' } })
+    // mock 引擎产 Bash(rm -rf) tool_use → 权限门 ask → control_request(can_use_tool)
+    const req = await k.collect((m) => m.type === 'control_request' && m.request?.subtype === 'can_use_tool')
+    assert.ok(req.request_id)
+    assert.equal(req.request.tool_name, 'Bash')
+    assert.match(String(req.request.input?.command ?? ''), /rm -rf/)
+    assert.ok(req.request.tool_use_id)
+
+    // GUI 批准 → stdin 注入 control_response（与 bridge.mjs approval-response 写形状一致）
+    await k.send({
+      type: 'control_response',
+      response: {
+        request_id: req.request_id,
+        subtype: 'success',
+        response: {
+          behavior: 'allow',
+          updatedInput: {},
+          toolUseID: req.request.tool_use_id,
+          decisionClassification: 'user_temporary',
+        },
+      },
+    })
+    // 工具结果回合 mock 回显 → 本轮正常 result
+    const { text } = await k.collectTurn()
+    assert.match(text, /工具执行完成：/)
+    const info = await k.stop()
+    assert.ok(info)
+    assert.equal(info.code, 0)
+  } finally {
+    if (k) await k.stop()
+    rmSyncRetry(workDir)
+    rmSyncRetry(home)
+  }
+})
+
+test('cancel 闭环：control_request(cancel) → assistant(已取消。)+result → 会话保留可续聊', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'yfw-kb-home-'))
+  const workDir = mkdtempSync(join(tmpdir(), 'yfw-kb-work-'))
+  let k
+  try {
+    const { k: kk } = await spawnAndInit({ home, workDir })
+    k = kk
+    // 空转 cancel（无活跃轮次）：内核同步收尾 已取消。+ result（契约 §8，bridge 依赖
+    // result 复位 _cancelPending）
+    await k.send({ type: 'control_request', request_id: 'cancel-test-1', request: { subtype: 'cancel' } })
+    const { text, result } = await k.collectTurn()
+    assert.equal(text, '已取消。')
+    assert.equal(result.subtype, 'success')
+    // 会话保留：同进程续聊仍可正常完成一轮（同进程首条 user → turn=1）
+    await k.send({ type: 'user', message: { role: 'user', content: '接着聊' } })
+    const again = await k.collectTurn()
+    assert.equal(again.text, 'mock: 接着聊 (turn=1)')
+    const info = await k.stop()
+    assert.ok(info)
+    assert.equal(info.code, 0)
+  } finally {
+    if (k) await k.stop()
+    rmSyncRetry(workDir)
+    rmSyncRetry(home)
+  }
+})
+
+test('resume 兼容：--resume <session_id> 重开进程加载同转录 → init 会话身份保留 + 历史上下文续聊', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'yfw-kb-home-'))
+  const workDir = mkdtempSync(join(tmpdir(), 'yfw-kb-work-'))
+  let k
+  try {
+    // 第一进程：新会话一轮
+    const a = await spawnAndInit({ home, workDir })
+    k = a.k
+    const sid = a.init.session_id
+    await a.k.send({ type: 'user', message: { role: 'user', content: '第一轮' } })
+    const t1 = await a.k.collectTurn()
+    assert.equal(t1.text, 'mock: 第一轮 (turn=1)')
+    // 转录已含 meta + user + assistant（result 前 finalizeUsage 已落盘）
+    const file = transcriptPath(home, workDir, sid)
+    assert.ok(existsSync(file))
+    // EOF 优雅退出后重开（进程级 --resume，模拟 GUI 恢复会话场景）
+    const infoA = await a.k.stop()
+    assert.equal(infoA.code, 0)
+    k = null
+
+    // 第二进程：--resume sid → init 会话身份保留
+    const b = await spawnAndInit({ home, workDir, resume: sid })
+    k = b.k
+    assert.equal(b.init.session_id, sid, 'resume init 应携带同一 session_id')
+    // 历史上下文保留：请求面含第一轮 user+assistant → mock 回显 turn 计数为 2
+    await b.k.send({ type: 'user', message: { role: 'user', content: '第二轮' } })
+    const t2 = await b.k.collectTurn()
+    assert.equal(t2.text, 'mock: 第二轮 (turn=2)')
+    // 同一转录文件追加续写（meta+user1+assistant1+user2+assistant2）
+    const entries = readFileSync(file, 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
+    assert.equal(entries.length, 5)
+    assert.equal(entries[3].message.content, '第二轮')
+    const infoB = await b.k.stop()
+    assert.equal(infoB.code, 0)
+  } finally {
+    if (k) await k.stop()
+    rmSyncRetry(workDir)
+    rmSyncRetry(home)
+  }
+})
