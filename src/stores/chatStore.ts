@@ -5,6 +5,8 @@ import { generateId, sanitizeText, repairCorruptedJson, recoverCorruptedChatStat
 import { getDefaultHome } from '@/lib/config'
 import { useHealthStore } from '@/stores/healthStore'
 import { loadConversationMessages as loadTranscriptMessages } from '@/lib/transcriptLoader'
+import { pushLaneNote as pushLane, dismissLaneNote as dismissLane } from '@/lib/laneUi'
+import type { LaneNote } from '@/lib/laneUi'
 
 // ---------------------------------------------------------------------------
 // 防御性持久化（2026-08-13 事故修复）
@@ -356,6 +358,9 @@ interface ChatState {
   // 子 agent 任务（二级面板数据源，运行时瞬态不持久化）
   subAgentTasks: Record<string, SubAgentTask[]>
 
+  // 子任务压缩提示队列（agentloop lane_compaction）—— per-conversation, runtime-only (not persisted)
+  laneNotesBySession: Record<string, LaneNote[]>
+
   // Actions
   createConversation: (cwd?: string, agentId?: string) => string
   deleteConversation: (id: string) => void
@@ -422,6 +427,8 @@ interface ChatState {
 
   upsertSubAgentTask: (conversationId: string, patch: Partial<SubAgentTask> & { taskId: string }) => void
   clearSubAgentTasks: (conversationId: string) => void
+  pushLaneNote: (conversationId: string, note: LaneNote) => void
+  dismissLaneNote: (conversationId: string) => void
 }
 
 export const useChatStore = create<ChatState>()(
@@ -446,6 +453,7 @@ export const useChatStore = create<ChatState>()(
       loopStates: {},
       compactingBySession: {},
       subAgentTasks: {},
+      laneNotesBySession: {},
 
       createConversation: (cwd?: string, agentId?: string) => {
         // 新建会话即视为开启全新健康周期：健康状态已按会话隔离存储，
@@ -1162,6 +1170,25 @@ export const useChatStore = create<ChatState>()(
         const next = { ...state.subAgentTasks }
         delete next[conversationId]
         return { subAgentTasks: next }
+      }),
+
+      pushLaneNote: (conversationId, note) => set(state => ({
+        laneNotesBySession: {
+          ...state.laneNotesBySession,
+          [conversationId]: pushLane(state.laneNotesBySession[conversationId] || [], note),
+        },
+      })),
+
+      dismissLaneNote: (conversationId) => set(state => {
+        const list = state.laneNotesBySession[conversationId]
+        if (!list || list.length === 0) return {}
+        const next = dismissLane(list)
+        if (next.length === 0) {
+          const rest = { ...state.laneNotesBySession }
+          delete rest[conversationId]
+          return { laneNotesBySession: rest }
+        }
+        return { laneNotesBySession: { ...state.laneNotesBySession, [conversationId]: next } }
       }),
     }),
     {

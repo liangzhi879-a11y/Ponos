@@ -145,6 +145,11 @@ export const enUS: TranslationKeys = {
     hint: 'summarizing history to free up room',
   },
 
+  // --- Subtask compaction toast (agentloop lane_compaction) ---
+  laneCompact: {
+    title: 'Subtask compacted · round {n}',
+  },
+
   settings: {
     title: 'Settings',
 

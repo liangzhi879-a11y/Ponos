@@ -7,6 +7,7 @@ import { DirectoryPicker } from './DirectoryPicker'
 import { RunningAgentsBar } from './RunningAgentsBar'
 import { HealthGlow } from './HealthGlow'
 import { CompressedToast } from './CompressedToast'
+import { LaneCompactionToast } from './LaneCompactionToast'
 import { KernelStallBar } from './KernelStallBar'
 import { SystemWarningStrip } from './SystemWarningStrip'
 import { LoopStatusBar } from './LoopStatusBar'
@@ -393,6 +394,9 @@ export function ChatWindow({ conversationId }: Props) {
 
       {/* 压缩提醒：右下角轻量 toast，2.4s 自动消失 */}
       <CompressedToast conversationId={conversationId} />
+
+      {/* 子任务压缩提示（lane_compaction 轻量胶囊；与主压缩 toast 错位，5s 自消） */}
+      <LaneCompactionToast conversationId={conversationId} />
     </div>
   )
 }

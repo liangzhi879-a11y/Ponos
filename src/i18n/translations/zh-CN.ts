@@ -149,6 +149,11 @@ export const zhCN = {
     hint: '整理历史消息以腾出空间',
   },
 
+  // --- 子任务压缩提示（agentloop lane_compaction） ---
+  laneCompact: {
+    title: '子任务压缩 · 第 {n} 次',
+  },
+
   // --- 终端 ---
   // --- 设置面板 ---
   settings: {

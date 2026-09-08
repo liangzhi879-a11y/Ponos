@@ -16,6 +16,7 @@ import { useAgentStore } from '@/stores/agentStore'
 import { useHealthStore, type HealthInfo } from '@/stores/healthStore'
 import { useWarningStore } from '@/stores/warningStore'
 import { normalizeWarning } from '@/lib/warningUi'
+import { makeLaneNote } from '@/lib/laneUi'
 import { useBrowserStore } from '@/stores/browserStore'
 import type { ContentBlock, Message, QuestionAnswer, BrowserEvent, LoopState } from '@/types'
 
@@ -679,6 +680,13 @@ function handleMessage(msg: Record<string, unknown>) {
         } else if (compState === 'done' || compState === 'error') {
           useChatStore.getState().setCompacting(sid, false)
         }
+        return
+      }
+      if (subtype === 'lane_compaction') {
+        // agentloop lane 压缩可见化：子 Agent 会话达阈值完成摘要 → 队列尾部 push toast。
+        // 帧 { taskId, text, compactCount }；同 taskId 覆盖（pushLaneNote cap 3）。
+        const n = event as { taskId?: unknown; text?: unknown; compactCount?: unknown }
+        useChatStore.getState().pushLaneNote(sid, makeLaneNote(String(n.taskId ?? ''), String(n.text ?? ''), Number(n.compactCount) || 0))
         return
       }
     }
