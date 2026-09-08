@@ -14,7 +14,8 @@ import os
 
 from playwright.sync_api import sync_playwright
 
-BASE = r"C:\Users\T203-15\claude-code-gui"
+# S6 清洗：BASE 由 repo 根解析（原硬编码旧库路径 claude-code-gui，随 S3 迁移失效）
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # = <repo 根>（scripts/ 上一级）
 IMG_DIR = os.path.join(BASE, "docs", "manual", "images")
 LOGO_PNG = os.path.join(IMG_DIR, "logo_新远方数据LOGO横版.png")
 OUT_PDF = os.path.join(BASE, "docs", "manual", "YFWorking宣传页.pdf")
@@ -134,7 +135,7 @@ FOOTER = (
     '<div style="width:100%;font-size:0;padding:0 18mm;">'
     '<div style="display:flex;justify-content:space-between;align-items:baseline;'
     'font-size:7.5pt;font-family:Consolas,monospace;letter-spacing:1px;color:#9a9188;">'
-    '<span>YFWorking V2.7.2 · 深圳市远方数据技术有限公司</span>'
+    '<span>YFWorking V2.8.0 · 深圳市远方数据技术有限公司</span>'
     '<span>PAGE <span class="pageNumber"></span> / <span class="totalPages"></span></span>'
     '</div></div>'
 )
@@ -152,7 +153,7 @@ P1 = """
     <div class="badge glass"><div class="b-en">MULTI-MODEL</div><div class="b-cn">多模型自由接入</div></div>
     <div class="badge glass"><div class="b-en">SKILLS &amp; AGENTS</div><div class="b-cn">技能 · 智能体生态</div></div>
   </div>
-  <div class="c-foot">YFWORKING 2.7.2 · NEW YUANFANG DATA · 2026-08</div>
+  <div class="c-foot">YFWORKING 2.8.0 · NEW YUANFANG DATA · 2026-08</div>
 </div>
 """
 

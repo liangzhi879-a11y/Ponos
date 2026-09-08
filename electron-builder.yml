@@ -117,6 +117,6 @@ nsis:
 # Force inclusion of key native modules
 asar: false
 # Keep archive uncompressed — payload is mostly already-compressed binaries
-# (bun.exe, node.exe, Python wheels, embedded CLI bundle); recompressing buys
+# (node.exe, Python wheels, embedded CLI bundle); recompressing buys
 # little and slows install start.
 compression: store

@@ -48,7 +48,6 @@ const env = {
   ANTHROPIC_DEFAULT_SONNET_MODEL: model,
   ANTHROPIC_DEFAULT_OPUS_MODEL: model,
   ANTHROPIC_DEFAULT_HAIKU_MODEL: provider.subagentModel || model,
-  CLAUDE_CODE_USE_NATIVE_FILE_SEARCH: 'true',
 }
 
 // --permission-prompt-tool stdio: 让内核的 ask 决策走 can_use_tool
