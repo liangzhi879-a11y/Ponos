@@ -18,7 +18,6 @@ import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { sendAnswer, dismissQuestion, useYFWCLI } from '@/hooks/useYFWCLI'
 import { useTranslation } from '@/i18n/useTranslation'
-import { THEME_CLASS_NAMES, THEMES } from '@/types'
 
 // 一键消费的预设指令：让 agent 按 gxtz-experience-sync 的 Code 流程
 // 逐条消费全局经验库的 pending 经验并升级技能
@@ -40,7 +39,6 @@ export function AppShell() {
   const [gpuCrashNotice, setGpuCrashNotice] = useState(false)
   const pendingQuestion = activeConversationId ? pendingQuestions[activeConversationId] : undefined
   const { sidebarOpen, sidebarWidth, previewFile, setPreviewFile } = useUIStore()
-  const { settings } = useSettingsStore()
 
   // Create initial conversation if needed
   useEffect(() => {
@@ -172,34 +170,9 @@ export function AppShell() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [handleKeyDown])
 
-  // 主题落盘给主进程：下次启动据此决定透明窗口与否（仅 glass 需真透明）。
-  // 独立 effect（仅依赖 theme）：原来混在下方样式 effect 里，fontSize/玻璃/极速
-  // 等任一设置变化都会连带触发主进程同步写盘（滑块拖动会连发）。
-  useEffect(() => {
-    const themeMode = THEMES.find(t => t.id === settings.theme)?.mode ?? 'dark'
-    window.yfworkingWindow?.saveTheme?.(settings.theme, themeMode)
-  }, [settings.theme])
-
-  // Theme + chat font
-  useEffect(() => {
-    const root = document.documentElement
-    root.classList.remove(...THEME_CLASS_NAMES)
-    root.classList.add(`theme-${settings.theme}`)
-    root.style.setProperty('--chat-font', settings.fontSize + 'px')
-    // Glass 主题设置：透光度变量 + 色调偏移 + 光晕动画开关（非 glass 主题无效果，不产生副作用）
-    root.style.setProperty('--glass-opacity', String(settings.glassOpacity))
-    root.style.setProperty('--glass-hue-shift', settings.glassHueShift + 'deg')
-    root.classList.toggle('glass-aurora-off', !settings.glassAurora)
-    // 极速形态：关闭全部动效/毛玻璃/光晕/阴影（任意主题下生效）
-    root.classList.toggle('speed-mode', settings.speedMode)
-    // 必须同时覆盖 html 与 body 背景：index.html 的内联防闪白样式
-    // 给 html 设置了不透明背景 #171109，body 透明后它会露出并挡住窗口透明合成，
-    // 导致桌面无法透出（glass 主题下两处都应透明，其余主题为各自背景色）。
-    document.documentElement.style.background = 'var(--bg-app)'
-    document.body.style.background = 'var(--bg-app)'
-    document.body.style.color = 'var(--text-primary)'
-  }, [settings.theme, settings.fontSize, settings.glassOpacity, settings.glassHueShift, settings.glassAurora, settings.speedMode])
-
+  // 注：主题落盘 / 主题变量 / --chat-font / glass vars / speed-mode / html-body 背景
+  // 两个 effect 已上移到 ViewRouter.tsx（Task 6）——login/boot/cockpit 也要吃主题系统，
+  // AppShell 只在 work 分支挂载，原有位置会让登录屏缺主题变量。
   return (
     <div
       className="h-full flex flex-col bg-app text-primary relative window-frame"

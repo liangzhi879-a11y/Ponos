@@ -260,6 +260,17 @@ textarea::placeholder {
   50%, 100% { opacity: 0; }
 }
 
+/* 密码错误抖动（AuthScreen/SetupWizard 口令框）：水平抖三下后归位，
+   配合红边框提示错误；speed-mode 与系统"减少动画"下自动停用。 */
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%      { transform: translateX(-7px); }
+  40%      { transform: translateX(7px); }
+  60%      { transform: translateX(-4px); }
+  80%      { transform: translateX(4px); }
+}
+.animate-shake { animation: shake 0.3s ease; }
+
 
 /* ============================================================
    Code / Pre
@@ -802,4 +813,30 @@ html.speed-mode[class*="theme-glass-warm"] {
   --popover-bg:  #27180a;
   --tooltip-bg:  #221408;
   --modal-bg:    #221408;
+}
+
+/* ============================================================
+   登录 / 首设口令（AuthScreen 家族）—— auth-bg
+   ------------------------------------------------------------
+   · 与 .boot-bg 同族的深色品牌底（无淡出、常驻整屏）：白色
+     boost 字标（boost-logo-light.png）只在深色面上可读，因此
+     登录/锁定/向导整屏强制此渐变（浅色主题下不被 html/body
+     的浅色背景透出），保证 logo 白上白问题不发生。
+   · 文字/输入/按钮仍全部走主题 token，主题跟随通过卡片等
+     局部元素体现；容器不用 bg-app，避免浅色主题露浅底。
+   · speed-mode 下此渐变是纯静态背景（无动画），无需兜底。 */
+.auth-bg {
+  background:
+    radial-gradient(120% 90% at 50% 10%, rgba(255, 138, 61, 0.10), transparent 62%),
+    linear-gradient(165deg, #17110b 0%, #120d09 46%, #0f0b07 100%);
+}
+
+/* 认证卡（登录/向导/锁定共用）：popover-bg 磨砂玻璃语言，
+   文字/输入框走各自主题 token——主题跟随在卡内元素上体现。 */
+.auth-card {
+  background: var(--popover-bg);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-modal);
+  backdrop-filter: blur(var(--popover-blur));
+  -webkit-backdrop-filter: blur(var(--popover-blur));
 }

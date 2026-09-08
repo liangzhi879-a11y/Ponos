@@ -21,6 +21,24 @@ export const zhCN = {
     phaseReady: '准备就绪',
   },
 
+  // --- 登录 / 首设口令（SetupWizard + AuthScreen） ---
+  auth: {
+    title: '欢迎使用 YFWorking',
+    subtitle: '输入本机口令以继续',
+    passwordLabel: '口令',
+    show: '显示',
+    hide: '隐藏',
+    login: '进入驾驶舱',
+    setupTitle: '设置本机访问口令',
+    setupHint: '此口令用于本机启动解锁，仅存于本地。',
+    confirmLabel: '确认口令',
+    mismatch: '两次输入不一致',
+    tooShort: '口令至少 4 位',
+    error: '口令错误，请重试',
+    locked: '尝试过多，请等待 {seconds} 秒后重试',
+    remember: '登录后进入驾驶舱',
+  },
+
   // --- Header ---
   header: {
     toggleSidebar: '切换侧边栏',

@@ -22,6 +22,24 @@ export const enUS: TranslationKeys = {
     phaseReady: 'Ready',
   },
 
+  // --- Login / first-time password setup (SetupWizard + AuthScreen) ---
+  auth: {
+    title: 'Welcome to YFWorking',
+    subtitle: 'Enter your local password to continue',
+    passwordLabel: 'Password',
+    show: 'Show',
+    hide: 'Hide',
+    login: 'Enter Cockpit',
+    setupTitle: 'Set a local access password',
+    setupHint: 'This password unlocks this machine at startup and stays local only.',
+    confirmLabel: 'Confirm password',
+    mismatch: 'The two entries do not match',
+    tooShort: 'Password must be at least 4 characters',
+    error: 'Wrong password, please try again',
+    locked: 'Too many attempts. Wait {seconds} seconds and retry',
+    remember: 'Enter the cockpit after signing in',
+  },
+
   header: {
     toggleSidebar: 'Toggle Sidebar',
   },
