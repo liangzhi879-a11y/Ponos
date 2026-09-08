@@ -146,6 +146,32 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // 压缩摘要调用检测（前移：须先于 [mock:lane-melt]/[mock:lane-iter] 历史门控——
+  // lane 压缩开启后摘要请求的 covered 历史含 [mock:lane-iter] 标记，被门控抢先会产
+  // 工具而非摘要。原位置在 L232，判定语义等价）。mLastIsToolResult 守卫镜像原"回显
+  // 先于摘要"的隐式顺序（末条为 tool_result 的回合交回显，不在此误判）。
+  const mLaneLast = (messages || [])[messages.length - 1]
+  const mLastIsToolResult = mLaneLast?.role === 'user' &&
+    Array.isArray(mLaneLast.content) && mLaneLast.content.some((b) => b?.type === 'tool_result')
+  const mSummaryText = (() => {
+    const lu = [...(messages || [])].reverse().find((m) => m.role === 'user' &&
+      !(Array.isArray(m.content) && m.content.some((b) => b?.type === 'tool_result')))
+    const c = lu?.content
+    return typeof c === 'string' ? c : (Array.isArray(c) ? c.filter((b) => b?.type === 'text').map((b) => b.text).join('\n') : '')
+  })()
+  if (!mLastIsToolResult && mSummaryText.includes('系统压缩指令')) {
+    if (process.env.PONOS_MOCK_COMPACT_BAD === '1') {
+      yield* streamText('（压缩失败：模型未输出结构化摘要）', signal)
+      yield { type: 'usage', usage: MOCK_USAGE }
+      return
+    }
+    const body = process.env.PONOS_MOCK_COMPACT_RESPONSE === '1'
+      ? '<compacted-summary>摘要输出</compacted-summary>'
+      : '<compacted-summary>mock 摘要</compacted-summary>'
+    yield* streamText(body, signal)
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // 子 lane 熔断模拟（审计 #4）：子 lane 会话历史含 [mock:lane-melt] 时，每次请求都
   // 产出失败 Bash（exit 1 → is_error），模拟"连续全败"工具链让 lane 熔断守卫触发。
   // 必须放 tool_result 回显分支之前：lane 第 2 轮起末条即 tool_result user 消息，回显
@@ -223,21 +249,6 @@ async function* mockStream({ messages, signal }) {
   if (lastIsToolResult) {
     const firstBlock = lastMessage.content.find((b) => b?.type === 'tool_result')
     const body = `工具执行完成：${String(firstBlock?.content ?? '').slice(0, 120)}`
-    yield* streamText(body, signal)
-    yield { type: 'usage', usage: MOCK_USAGE }
-    return
-  }
-  // 压缩摘要调用：检测 COMPACTION_INSTRUCTION → 返回 mock 摘要（收敛用）。
-  // PONOS_MOCK_COMPACT_BAD=1 → 返回无标签文本（extractSummary 失败，熔断测试用）
-  if (lastText && lastText.includes('系统压缩指令')) {
-    if (process.env.PONOS_MOCK_COMPACT_BAD === '1') {
-      yield* streamText('（压缩失败：模型未输出结构化摘要）', signal)
-      yield { type: 'usage', usage: MOCK_USAGE }
-      return
-    }
-    const body = process.env.PONOS_MOCK_COMPACT_RESPONSE === '1'
-      ? '<compacted-summary>摘要输出</compacted-summary>'
-      : '<compacted-summary>mock 摘要</compacted-summary>'
     yield* streamText(body, signal)
     yield { type: 'usage', usage: MOCK_USAGE }
     return

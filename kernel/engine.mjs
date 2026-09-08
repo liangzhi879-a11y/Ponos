@@ -23,6 +23,7 @@ import { getProvider } from './provider.mjs'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import { createCompactor } from './compact.mjs'
 
 // —— agent loop 兜底（本地模型死循环防护）——
 // 参考 claude-code/pi/dsh：三者主循环均默认无全局硬上限（靠 Esc 中断/可选 maxTurns/上下文
@@ -410,6 +411,9 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   const pendingSubAgents = new Map()
   // turnStats 记录器（内存 append-only）：health / result / stats 三个消费者共用
   const turnStats = []
+  // P2-1③：lane 压缩可选开关 + 主会话 context（engineCtx.estimate 供 lane 压缩器阈值判定）
+  const engineCtx = opts.context || null
+  const LANE_COMPACT_ENABLED = process.env.PONOS_LANE_COMPACT === '1'
 
   // 历史优先走 session.deriveMessages()；无 session 时退化为内存数组（测试直连场景）
   const memoryHistory = []
@@ -1121,6 +1125,27 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     let subRepeatStreak = 0
     let lastSubToolKey = ''
     let subRemindedAt = new Set()
+    // P2-1③：lane 压缩（可选，PONOS_LANE_COMPACT=1 且主会话提供 context）。复用主
+    // loop 压缩语义（compact.mjs 两阶段 + 熔断），摘要落地到 laneStore（独立 transcript，
+    // 主会话零污染）。wire 摘要经 laneWire 转发为 system('lane_compaction') 事件带 taskId。
+    // 零回归锁②：默认关（LANE_COMPACT_ENABLED=false → laneCompactor 恒 null，零开销）。
+    let laneCompactor = null
+    if (LANE_COMPACT_ENABLED && engineCtx?.estimate) {
+      try {
+        const laneWire = { summary: (text, count) => { try { wire.system?.('lane_compaction', { text: String(text ?? ''), compactCount: count }) } catch { /* 事件失败静默 */ } } }
+        laneCompactor = createCompactor({
+          session: store,
+          context: engineCtx,
+          model: loopModel,
+          maxTokens,
+          wire: laneWire,
+          health: undefined,
+          signal: subSignal,
+          env: process.env,
+          sessionMemoryPath: null,
+        })
+      } catch { laneCompactor = null } // lane 压缩器装配失败 → 该 lane 不压缩（静默降级）
+    }
     for (let iter = 0; ; iter++) {
       // 守卫（子 lane 同主 loop）：墙钟 + 迭代上限——命中即附说明收尾（防子任务
       // 拖死整个后台任务；同主任务守卫共用同一组 PONOS_* 阈值）
@@ -1129,6 +1154,17 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       }
       if (MAX_TOOL_ITERATIONS > 0 && iter >= MAX_TOOL_ITERATIONS) {
         return guardStop(stopNotice('达到迭代上限', `连续 ${MAX_TOOL_ITERATIONS} 轮工具循环`))
+      }
+      // P2-1③：lane 压缩触发（turn 边界，阈值判定复用主循环阈值体系）。摘要调用
+      // usage 并入 lane usage（与主循环 M2 语义一致）；outputBudget 透传本流 attemptMaxTokens
+      //（同主循环 L485 compactor.maybeCompact 调用形态）。任何异常静默——压缩失败不阻断 lane。
+      if (laneCompactor) {
+        try {
+          const laneMsgs = patchOrphanToolUses(store.deriveMessages())
+          const cr = await laneCompactor.maybeCompact({ system: sysPrompt, messages: laneMsgs, outputBudget: attemptMaxTokens })
+          if (cr?.usage) usage = addUsage(usage, cr.usage)
+          if (cr?.action === 'summarized') textBuf = '' // 摘要落地后收尾文本已被遮蔽，置空防拼接
+        } catch { /* lane 压缩异常静默 */ }
       }
       const blocks = []
       let subStopReason = null // P0-2（同主 loop）：流内 stop_reason 消费（length 截断判据）

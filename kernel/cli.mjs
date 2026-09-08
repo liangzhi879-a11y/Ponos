@@ -286,6 +286,8 @@ export async function main(argv) {
       // MS1：MemorySearch 个人经验根（<configDir>/memory/personal，memoryRoot(configDir)）。
       // projectMemoryRoot 当前无项目记忆写入方，cli 不传 —— tools 侧 null → project scope 0 命中。
       memoryRoot: memoryRoot(configDir),
+      // P2-1③：主会话 context（estimate 闭包）透传——lane 压缩器阈值判定复用
+      context,
     },
     wire,
     session: store,
