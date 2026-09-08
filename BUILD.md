@@ -36,7 +36,7 @@ rm -rf release/YFWorking/dist/*
 cp -r dist/* release/YFWorking/dist/
 cp -r server/* release/YFWorking/server/
 cp -r public/* release/YFWorking/public/
-cp YF/jiajia-pixel-pet/jiajia-pet.py release/YFWorking/pet/jiajia-pet.py
+cp -r pet/* release/YFWorking/pet/
 ```
 
 ### 打包安装包
@@ -52,26 +52,27 @@ npm run build:electron
 
 ## 端口配置
 
-桥接服务器默认监听 **51309**（由 `YFW_BRIDGE_PORT` 环境变量控制）。
+桥接服务器默认监听 **51517**（由 `YFW_BRIDGE_PORT` 环境变量控制）。
 
-**为什么不是 3099？** Windows WinNAT（Hyper-V/WSL/Docker）会预留 3095-3194 端口段，导致 3099 被封锁（`EACCES`）。51309 远高于动态端口范围（1024-15001）和常见 WinNAT 预留段。
+**端口选型** Windows WinNAT（Hyper-V/WSL/Docker）会预留 3095-3194 端口段。默认端口 **51517** 高于 WinNAT 预留段与常见动态端口范围，可避免端口被封锁（`EACCES`）；如需变更可通过 `YFW_BRIDGE_PORT` 环境变量覆盖（见「修改端口」）。
 
 ### 修改端口
 
 设置环境变量后重启应用：
 
 ```bash
-set YFW_BRIDGE_PORT=51309
+set YFW_BRIDGE_PORT=51517
 # 然后启动 YFWorking
 ```
 
 **注入位置**（全部读取同一环境变量）：
-- `server/bridge.mjs` — `YFW_BRIDGE_PORT` env var，默认 51309
-- `electron/main.cjs` — `YFW_BRIDGE_PORT` env var，默认 51309
-- `bin/cli.mjs` — `YFW_BRIDGE_PORT` env var，默认 51309
+- `server/bridge.mjs` — `YFW_BRIDGE_PORT` env var，默认 51517
+- `electron/main.cjs` — `YFW_BRIDGE_PORT` env var，默认 51517
+- `bin/cli.mjs` — `YFW_BRIDGE_PORT` env var，默认 51517
 - `src/lib/config.ts` — Vite `__BRIDGE_PORT__` 编译时常量（同环境变量注入）
-- `YF/jiajia-pixel-pet/jiajia-pet.py` — `YFW_BRIDGE_PORT` env var，默认 51309
 - `start.bat` — 可以通过 `set YFW_BRIDGE_PORT=...` 覆盖
+
+**开发/预览端口**：vite dev server 默认 **5197**，preview 默认 **4197**（可分别用 `YFW_VITE_PORT` / `YFW_VITE_PREVIEW_PORT` 覆盖，见 `vite.config.ts`）。
 
 ## 版本号
 
@@ -85,8 +86,8 @@ set YFW_BRIDGE_PORT=51309
 | 安装包生成到 `release/` 根目录 | `package.json` 或 `electron-builder.yml` 的 `output` 被改 | 改回 `release/installer` |
 | 浅色主题下代码块看不清 | `--bg-code` 与 `--text-primary` 颜色冲突 | 检查 `src/styles/themes.css` 中是否定义了 `--code-text` token |
 | 桌面有两个同名 `YFWorking` 快捷方式 | 便携版与安装版快捷方式同名 | 区分使用即可，快捷方式指向不同 |
-| 启动无窗口，进程僵尸堆积 | 端口被 WinNAT 封锁 + 无单实例锁 | 设置 `YFW_BRIDGE_PORT=51309` 后重试 |
-| `listen EACCES: permission denied 0.0.0.0:3099` | WinNAT 预留了 3095-3194 端口段 | 改用 51309 或更高端口（见端口配置章节） |
+| 启动无窗口，进程僵尸堆积 | 端口被 WinNAT 封锁 + 无单实例锁 | 设置 `YFW_BRIDGE_PORT=51517` 后重试 |
+| `listen EACCES: permission denied` | 配置的端口落在 WinNAT 预留段（3095-3194）被封锁 | 改用默认 51517 或更高端口（见端口配置章节） |
 
 ## 关键文件
 
