@@ -8,6 +8,7 @@ import { readdirSync, statSync, existsSync, readFileSync, writeFileSync, mkdirSy
 import { readdir, stat } from 'fs/promises'
 import { join, sep, dirname, resolve, basename } from 'path'
 import { tmpdir } from 'os'
+import { randomBytes } from 'node:crypto'
 import { extractMilestoneMarks, extractProseStages } from './milestones.mjs'
 import { matchesHighRisk } from './highrisk.mjs'
 import { parseAskUserPayload, extractAskUserBlocks } from './askuser.mjs'
@@ -19,6 +20,7 @@ import * as doubao from './doubao.mjs'
 import { createTranscriptHandlers } from './transcript.mjs'
 import { makeBrowserRouter } from './browser-routing.mjs'
 import { kernelReadonlySync } from './kernel-readonly.mjs'
+import { getAuthStatus, setupPassword, checkPassword } from './auth.mjs'
 
 const PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51517', 10)
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -621,6 +623,11 @@ console.log('[bridge] YFWorking home:', YFW_HOME)
 
 const sessions = new Map()
 const wsClients = new Set()
+
+// 登录 token 占位表：token -> expiry（24h）。重启即清空 → 每次启动都要口令；
+// /api/auth/status 不做 token 免密判定，token 仅作为未来服务端会话换用的占位。
+const authTokens = new Map() // token -> expiry（重启清空）
+function issueToken() { const t = randomBytes(24).toString('hex'); authTokens.set(t, Date.now() + 86_400_000); return t }
 
 // 诊断埋点：供主进程 diag-monitor 查询（只读内存统计，跨会话累计，仅统计最近 7 天）
 const diagInfo = { firstTokenOk: 0, firstTokenTotal: 0, kernelCrashCount: 0, lastApiSuccessAt: null }
@@ -1316,6 +1323,31 @@ const httpServer = createServer(async (req, res) => {
     }
     if (url.pathname === '/health') {
       return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ status: 'ok', pid: process.pid }))
+    }
+
+    // 登录屏口令端点（GUI 专用）：本地 scrypt 口令（server/auth.mjs），token 仅占位
+    if (url.pathname === '/api/auth/status') {
+      const st = await getAuthStatus()
+      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify(st))
+    }
+    if (url.pathname === '/api/auth/setup' && req.method === 'POST') {
+      const { password } = await readJsonBody(req).catch(() => ({}))
+      try { await setupPassword(password); return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true })) }
+      catch (e) { return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: e?.message || String(e) })) }
+    }
+    if (url.pathname === '/api/auth/login' && req.method === 'POST') {
+      const { password } = await readJsonBody(req).catch(() => ({}))
+      try {
+        const r = await checkPassword(password)
+        if (r.ok) return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, token: issueToken() }))
+        const code = r.lockedForMs != null ? 423 : 401
+        return reply(code, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: r.reason, lockedForMs: r.lockedForMs ?? null }))
+      } catch (e) { return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: e?.message || String(e) })) }
+    }
+    if (url.pathname === '/api/auth/logout' && req.method === 'POST') {
+      const { token } = await readJsonBody(req).catch(() => ({}))
+      if (token) authTokens.delete(token)
+      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true }))
     }
 
     // U1 只读子命令薄转发：query → kernel 只读子命令 → 透传 stdout JSON（schema A.1/A.2）
