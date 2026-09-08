@@ -57,7 +57,7 @@ function parseYamlValue(raw) {
 }
 
 // 解析单个 agent .md（frontmatter + 正文）。返回 { id, name, description,
-// tools, model, systemPrompt }；不合法返回 null（容错跳过）。
+// tools, model, skills, systemPrompt }；不合法返回 null（容错跳过）。
 export function parseAgentMarkdown(text) {
   try {
     const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(String(text ?? ''))
@@ -79,6 +79,7 @@ export function parseAgentMarkdown(text) {
       description,
       tools: String(fields.tools || '').split(',').map((s) => s.trim()).filter(Boolean),
       model: fields.model || '',
+      skills: String(fields.skills || '').split(',').map((s) => s.trim()).filter(Boolean),
       systemPrompt: (m[2] || '').trim(),
     }
   } catch {

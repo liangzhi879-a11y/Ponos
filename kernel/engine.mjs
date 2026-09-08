@@ -404,8 +404,9 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // 同轮重复 id（重连重放）回填不重执行；跨轮自动失效（新轮新 map）
   let executedToolIds = new Map()
   // 后台子 agent 任务登记：taskId → { status, promise, laneStore, sysPrompt,
-  // lineage, summary, outputFile, usage, stop }。S2 续跑复用 laneStore/sysPrompt；
-  // S1 级联取消查 lineage.parentTaskId；进程退出即失（非持久化，spec 边界）
+  // lineage, laneOptions, summary, outputFile, usage, stop }。S2 续跑复用
+  // laneStore/sysPrompt（laneOptions 保白名单沿用）；S1 级联取消查
+  // lineage.parentTaskId；进程退出即失（非持久化，spec 边界）
   const pendingSubAgents = new Map()
   // turnStats 记录器（内存 append-only）：health / result / stats 三个消费者共用
   const turnStats = []
@@ -1379,6 +1380,19 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     return { status, text, usage, outputFile }
   }
 
+  // AS1：agent tools/skills 引用未知项诊断（提示不拦截；skillIds 仅在 cli 提供时校验，
+  // 缺省（cli 在 Task 6 前无需传）跳过技能校验）
+  function warnUnknownAgentRefs(agent) {
+    try {
+      const knownTools = new Set(tools.toolNames)
+      const unknownTools = (agent.tools || []).filter((t) => !knownTools.has(t))
+      const knownSkills = opts.skillIds ? new Set(opts.skillIds) : null
+      const unknownSkills = knownSkills ? (agent.skills || []).filter((s) => !knownSkills.has(s)) : []
+      const unk = [...unknownTools.map((t) => `工具 ${t}`), ...unknownSkills.map((s) => `技能 ${s}`)]
+      if (unk.length) wire.warning?.({ level: 'agent_spec', agent: agent.id, message: `子 Agent「${agent.id}」引用未知${unk.join('、')}（已忽略，不拦截执行）` })
+    } catch { /* 诊断失败静默 */ }
+  }
+
   // Agent 工具执行体：前台同步回填 / 后台异步 + task_notification 交付；
   // resume_task_id 复用既有后台任务会话续跑（S2/S3，无需新建 lane）
   async function spawnSubAgent(input, ctx = {}) {
@@ -1404,13 +1418,29 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       const onTool = makeLaneOnTool({ taskId: resumeTaskId, writePaths, t0 })
       target.promise = runLaneExecution({
         taskId: resumeTaskId, laneStore: target.laneStore, sysPrompt: target.sysPrompt,
-        signal: subController.signal, writePaths, t0, onTool,
+        signal: subController.signal, writePaths, t0, onTool, laneOptions: target.laneOptions,
       })
       return { content: `子 Agent 任务已续跑（task_id: ${resumeTaskId}）。完成时收到通知，可用 Task 工具查询/中止。`, isError: false }
     }
     const agent = resolveAgent(agents, type)
     if (!agent) return { content: `未知子 Agent：${type}。可用：${agents.map((a) => a.id).join(', ')}`, isError: true }
     if (!prompt) return { content: 'prompt 缺失：请说明要委派给子 Agent 的任务', isError: true }
+    // AS1：agent spec 三字段接线（P2-1① 签名扩展的消费方）。tools/skills 引用未知项 →
+    // wire.warning（level:'agent_spec'）提示不拦截；空/未定义 = 全量（零回归锁①）。
+    const laneOptions = {
+      model: agent.model || '',
+      allowedTools: Array.isArray(agent.tools) && agent.tools.length ? agent.tools : undefined,
+      allowedSkills: Array.isArray(agent.skills) && agent.skills.length ? agent.skills : undefined,
+    }
+    // 空 schema 守卫：tools 名单无一命中已注册工具名时，toolSchemas().filter 结果为空集
+    // ——空集（非 null）会让 retryStream 收到 tools:[]（lane 无工具可用）。此时视为
+    // "未收窄"（allowedTools 清空 → 全量 schema + deny gate 放行）。注册表名与
+    // toolSchemas 的 name 同源（tools.mjs toolNames），此处判定等价于 schema 命中判定。
+    if (Array.isArray(laneOptions.allowedTools) && laneOptions.allowedTools.length) {
+      const knownToolNames = new Set(tools.toolNames)
+      if (!laneOptions.allowedTools.some((t) => knownToolNames.has(t))) laneOptions.allowedTools = undefined
+    }
+    warnUnknownAgentRefs(agent)
     const runInBackground = input?.run_in_background === true
     const taskId = newSessionId()
     // S1 血缘：主 agent 派发 depth 0 / parent null；子 lane 派发（S4 预留）经 ctx.lane 透传
@@ -1430,13 +1460,14 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     const onTool = makeLaneOnTool({ taskId, writePaths, t0 })
     const exec = () => runLaneExecution({
       taskId, laneStore, sysPrompt,
-      signal: subController.signal, writePaths, t0, onTool,
+      signal: subController.signal, writePaths, t0, onTool, laneOptions,
     })
     if (runInBackground) {
       const promise = exec()
-      // 登记含 sysPrompt/laneStore/lineage：resume 复用会话与血缘，级联取消查 parent
+      // 登记含 sysPrompt/laneStore/lineage/laneOptions：resume 复用会话与血缘
+      // （laneOptions 保证续跑沿用同一 tools/skills 白名单），级联取消查 parent
       pendingSubAgents.set(taskId, {
-        status: 'running', promise, laneStore, sysPrompt, lineage,
+        status: 'running', promise, laneStore, sysPrompt, lineage, laneOptions,
         stop: () => subController.abort(), // Task stop 中止该子任务（独立信号）
       })
       return { content: `子 Agent「${agent.id}」任务已后台启动（task_id: ${taskId}）。完成时收到通知，可用 Task 工具查询/中止/续跑。`, isError: false }

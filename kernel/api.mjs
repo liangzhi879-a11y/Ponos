@@ -287,6 +287,32 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // AS1 技能白名单测试：主 loop 标记 → Agent 子任务 prompt 内嵌 [mock:lane-skill]
+  if (lastText.includes('[mock:agent-lane-skill]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_mock_agent_lane_skill', name: 'Agent',
+      input: { subagent_type: 'general-purpose', prompt: '子任务：请针对 [mock:lane-skill] 输出确认并执行' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // AS1 技能白名单：lane 会话历史含 [mock:lane-skill] 且尚无 Skill tool_use → 产
+  // Skill tool_use {skill:'demo'}。历史门控（同 lane-iter）：[mock:lane-skill] 只存在于
+  // lane 转录，不影响主 loop。once 语义靠 laneSkillSeen（前轮 Skill 调用已入历史 →
+  // 本分支跳过 → 后续回合走回显/默认收尾，lane 自然完成；deny 路径同样不重复触发）。
+  const laneSkillSeen = (messages || []).some((m) => m?.role === 'assistant' &&
+    Array.isArray(m?.content) && m.content.some((b) => b?.type === 'tool_use' && b.name === 'Skill'))
+  if (!laneSkillSeen && (messages || []).some((m) => m?.role === 'user' && (
+    typeof m?.content === 'string'
+      ? m.content.includes('[mock:lane-skill]')
+      : (Array.isArray(m?.content) && m.content.some((b) => b?.type === 'text' && String(b?.text ?? '').includes('[mock:lane-skill]')))
+  ))) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_lane_skill_1', name: 'Skill', input: { skill: 'demo' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // 子 lane 溢出自愈（审计 #5）：触发 Agent tool_use，子任务 prompt 内嵌 [mock:lane-overflow]
   if (lastText.includes('[mock:agent-lane-overflow]')) {
     if (signal?.aborted) throw abortError()

@@ -38,6 +38,7 @@ import { createWorkflowEngine, discoverWorkflowsAll, matchAutoTrigger } from './
 import { loadSettings } from './settings.mjs'
 import { createHooks } from './hooks.mjs'
 import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
+import { runReadonly } from './readonly.mjs'
 import { KERNEL_VERSION, SCHEMA_VERSION, buildId } from '../version.mjs'
 
 const REQUIRED_FORMAT = 'stream-json'
@@ -69,6 +70,14 @@ export function parseArgs(argv) {
     skillsDirs: [],
     noDefaultSkills: false,
     allowOutsideDirs: false,
+    agents: false,
+    usage: false,
+    audit: false,
+    scope: null,
+    sessionId: null,
+    project: null,
+    from: null,
+    to: null,
   }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -91,6 +100,14 @@ export function parseArgs(argv) {
       case '--skills-dir': out.skillsDirs.push(next() ?? ''); break
       case '--no-default-skills': out.noDefaultSkills = true; break
       case '--allow-outside-dirs': out.allowOutsideDirs = true; break
+      case '--agents': out.agents = true; break
+      case '--usage': out.usage = true; break
+      case '--audit': out.audit = true; break
+      case '--scope': out.scope = next() ?? null; break
+      case '--sessionId': out.sessionId = next() ?? null; break
+      case '--project': out.project = next() ?? null; break
+      case '--from': out.from = next() ?? null; break
+      case '--to': out.to = next() ?? null; break
       case '--help': case '-h': usage(); process.exit(0); break
       default:
         if (a && !a.startsWith('--')) out.positional = a
@@ -133,6 +150,20 @@ export async function main(argv) {
   if (args.outputFormat !== REQUIRED_FORMAT || args.inputFormat !== REQUIRED_FORMAT) {
     console.error(`kernel: only ${REQUIRED_FORMAT} I/O format is supported`)
     return 2
+  }
+  // U1/AS1 只读子命令：--usage / --audit / --agents（stdout JSON，不进 loop）。
+  // 聚合实现 kernel/readonly.mjs（kernel 自读 transcript）；bridge 只薄转发。
+  if (args.agents || args.usage || args.audit) {
+    const mode = args.agents ? 'agents' : args.usage ? 'usage' : 'audit'
+    const configDir = resolveConfigDir(process.env, homedir)
+    try {
+      const { output, code } = runReadonly({ mode, args, configDir })
+      console.log(JSON.stringify(output))
+      return code
+    } catch (e) {
+      console.log(JSON.stringify({ error: e?.message || String(e) }))
+      return 1
+    }
   }
 
   const wire = makeWire()
