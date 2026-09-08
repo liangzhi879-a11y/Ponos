@@ -59,6 +59,10 @@
 - [ ] 双版并行的冒烟用例清单（同用例在两版各跑一遍的对照表）
 - [ ] `YFW_HOME` 覆盖机制在 claude-code-gui 现有实现的核实（环境变量名与传播路径）
 
+**执行记录（2026-09-08，S4 推进中）**：
+- **CDP 隔离行修订（D5）**：净室 browser executor 的 CDP 为进程内 `webContents.debugger.attach('1.3')`（browser-executor.cjs），**无网络端口**——设计 §8 隔离矩阵第 3 行"52319/9223 端口隔离"对净室不适用，修订为 **N/A（进程内 CDP）**；52319 仅 `server/interject.e2e.mjs` 固定测试口（单测语境，不与双版并行冲突）。
+- **T6 backlog 显式登记**（T4 完结复查移交，均归 T6/S6 处置）：① `kernel/cli.mjs:5` 注释「bun 运行时 spawn（findPonos 候选 #1）」措辞统一为净室语义（YFWORKING_KERNEL，D8）——kernel 本体纪律零改动，本行仅登记不改；② installer.nsh 技能数 65→85 校准与手册版本不一致（S6 出包统一）；③ build_promo_pdf.py BASE 硬编码路径参数化；④ BUILD.md 的 YF/旧端口默认值（51309/5173）文档引用清洗（S6 文档面）；⑤ 产物身份 appId/productName 区分决策（S6）；⑥ CRLF/.gitattributes 字节复核。
+
 ---
 
 ## S5：协议增强移植
