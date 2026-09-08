@@ -656,6 +656,21 @@ function handleMessage(msg: Record<string, unknown>) {
         })
         return
       }
+      if (subtype === 'compaction') {
+        // S5 ②-02 压缩可见化：净室内核 compact.mjs 进入模型摘要前发 start、
+        // finally 对称补发 done（ok 布尔；收敛失败/中止/异常同走 finally，UI 不悬挂），
+        // 帧形 { type:'system', subtype:'compaction', state:'start'|'done', covered,
+        // coveredTokens }（bridge 原样透传）。归约只消费 state 开关 compactingBySession
+        // 驱动指示条；covered/coveredTokens 为计量字段，本态展示不需要，不消费。
+        // done/error 对称复位（error 内核当前不发，保留作未来健壮性）。幂等见 setCompacting。
+        const compState = String((event as Record<string, any>).state || '')
+        if (compState === 'start') {
+          useChatStore.getState().setCompacting(sid, true)
+        } else if (compState === 'done' || compState === 'error') {
+          useChatStore.getState().setCompacting(sid, false)
+        }
+        return
+      }
     }
 
     if (type === 'loop') {
@@ -793,6 +808,8 @@ function handleMessage(msg: Record<string, unknown>) {
     sessionState.delete(sid)
     // 进程已销毁，loop 不可能再推进 → 清守卫状态（内核 cancel 通常已先发 loop end）
     useChatStore.getState().clearLoopState(sid)
+    // 压缩指示同随复位：kill 打断压缩时内核 finally 未必执行，不清理会悬挂指示条
+    useChatStore.getState().setCompacting(sid, false)
   }
 
   if (msg.type === 'closed') {
@@ -807,6 +824,7 @@ function handleMessage(msg: Record<string, unknown>) {
     sessionState.delete(sid)
     useChatStore.getState().clearSubAgentTasks(sid)
     useChatStore.getState().clearLoopState(sid) // loop 随内核进程终止，防悬挂 active
+    useChatStore.getState().setCompacting(sid, false) // 压缩指示同随进程终止复位，防悬挂
   }
 
   if (msg.type === 'question') {

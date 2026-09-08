@@ -350,6 +350,9 @@ interface ChatState {
   // 多轮 loop 进度（S5 ②-05）—— per-conversation, runtime-only (not persisted)
   loopStates: Record<string, LoopState>
 
+  // 压缩进行中标志（S5 ②-02）—— per-conversation, runtime-only (not persisted)
+  compactingBySession: Record<string, boolean>
+
   // 子 agent 任务（二级面板数据源，运行时瞬态不持久化）
   subAgentTasks: Record<string, SubAgentTask[]>
 
@@ -414,6 +417,8 @@ interface ChatState {
   setLoopState: (conversationId: string, patch: Partial<LoopState>) => void
   /** 清除该会话 loop 进度（无键幂等；会话 closed/删除/新 loop 取代前清理） */
   clearLoopState: (conversationId: string) => void
+  /** 压缩进行中标志归约（useYFWCLI system/compaction 分支消费）；同值幂等不动作 */
+  setCompacting: (conversationId: string, value: boolean) => void
 
   upsertSubAgentTask: (conversationId: string, patch: Partial<SubAgentTask> & { taskId: string }) => void
   clearSubAgentTasks: (conversationId: string) => void
@@ -439,6 +444,7 @@ export const useChatStore = create<ChatState>()(
       pendingQuestions: {},
       conversationProgress: {},
       loopStates: {},
+      compactingBySession: {},
       subAgentTasks: {},
 
       createConversation: (cwd?: string, agentId?: string) => {
@@ -481,9 +487,11 @@ export const useChatStore = create<ChatState>()(
           delete conversationProgress[id]
           const loopStates = { ...state.loopStates }
           delete loopStates[id]
+          const compactingBySession = { ...state.compactingBySession }
+          delete compactingBySession[id]
           const subAgentTasks = { ...state.subAgentTasks }
           delete subAgentTasks[id]
-          return { conversations: filtered, activeConversationId: nextActive, conversationProgress, loopStates, subAgentTasks }
+          return { conversations: filtered, activeConversationId: nextActive, conversationProgress, loopStates, compactingBySession, subAgentTasks }
         })
       },
 
@@ -1085,6 +1093,12 @@ export const useChatStore = create<ChatState>()(
         const next = { ...state.loopStates }
         delete next[id]
         return { loopStates: next }
+      }),
+      setCompacting: (id, value) => set(state => {
+        // 幂等：同值短路不动作（start 已 true 不重置、done 非 true 不写），
+        // 也避免同值重写产生新引用触发无关重渲染
+        if ((state.compactingBySession[id] ?? false) === value) return {}
+        return { compactingBySession: { ...state.compactingBySession, [id]: value } }
       }),
 
       setMilestoneStart: (id, index) => set(state => {

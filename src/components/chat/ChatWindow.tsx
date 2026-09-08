@@ -9,6 +9,7 @@ import { HealthGlow } from './HealthGlow'
 import { CompressedToast } from './CompressedToast'
 import { KernelStallBar } from './KernelStallBar'
 import { LoopStatusBar } from './LoopStatusBar'
+import { CompactingBar } from './CompactingBar'
 import { BrowserStatusBar } from '@/components/browser/BrowserStatusBar'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -404,6 +405,9 @@ export function ChatWindow({ conversationId }: Props) {
 
       {/* 多轮 loop 轮次状态条（消息流/输入上方；非 active 不占位） */}
       <LoopStatusBar conversationId={conversationId} />
+
+      {/* 压缩进行中指示条（②-02；底部状态族最高一格，非压缩期不占位） */}
+      <CompactingBar conversationId={conversationId} />
 
       {/* 压缩提醒：右下角轻量 toast，2.4s 自动消失 */}
       <CompressedToast conversationId={conversationId} />

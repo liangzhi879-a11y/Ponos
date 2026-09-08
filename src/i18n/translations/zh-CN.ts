@@ -141,6 +141,12 @@ export const zhCN = {
     reasonJudgeError: '判定失败',
   },
 
+  // --- 压缩进行中指示条（S5 ②-02） ---
+  compacting: {
+    title: '正在压缩上下文…',
+    hint: '整理历史消息以腾出空间',
+  },
+
   // --- 终端 ---
   // --- 设置面板 ---
   settings: {

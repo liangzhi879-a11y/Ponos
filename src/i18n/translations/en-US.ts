@@ -137,6 +137,12 @@ export const enUS: TranslationKeys = {
     reasonJudgeError: 'Judge failed',
   },
 
+  // --- Compaction in-progress indicator (S5 ②-02) ---
+  compacting: {
+    title: 'Compacting context…',
+    hint: 'summarizing history to free up room',
+  },
+
   settings: {
     title: 'Settings',
 
