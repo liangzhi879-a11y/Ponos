@@ -46,6 +46,7 @@ let lastSessionId: string | null = null
 const WS_HEARTBEAT_INTERVAL_MS = 15000
 const WS_HEARTBEAT_TIMEOUT_MS = 60000
 let lastWsActivity = Date.now()
+// 判死标记（S5 ②-07）：置位后立即 s.close() 触发既有指数退避重连；重建路径（onopen）清位。该标记为显式化"为何关闭"，供调试观测，不做二次判定。
 let heartbeatDead = false
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
