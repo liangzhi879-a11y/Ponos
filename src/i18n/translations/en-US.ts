@@ -15,6 +15,13 @@ export const enUS: TranslationKeys = {
     refresh: 'Refresh',
   },
 
+  // --- Brand boot animation (BootScreen phase text) ---
+  boot: {
+    phaseBridge: 'Starting bridge…',
+    phaseEnv: 'Checking runtime…',
+    phaseReady: 'Ready',
+  },
+
   header: {
     toggleSidebar: 'Toggle Sidebar',
   },

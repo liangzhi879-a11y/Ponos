@@ -14,6 +14,13 @@ export const zhCN = {
     refresh: '刷新',
   },
 
+  // --- 启动品牌动画（BootScreen 底部阶段字） ---
+  boot: {
+    phaseBridge: '正在启动桥接…',
+    phaseEnv: '校验运行环境…',
+    phaseReady: '准备就绪',
+  },
+
   // --- Header ---
   header: {
     toggleSidebar: '切换侧边栏',

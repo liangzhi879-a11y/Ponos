@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { TooltipProvider } from '@/components/ui'
-import { AppShell } from '@/components/layout/AppShell'
+import { ViewRouter } from '@/components/layout/ViewRouter'
 import { EditorWindowRoot } from '@/components/editor/EditorWindowRoot'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { isEditorWindow } from '@/lib/editorBridge'
@@ -27,7 +27,8 @@ function MainApp() {
   }, [s.minimizeToTray, s.petEnabled, s.petSize, s.petRandomChat])
   return (
     <TooltipProvider>
-      <AppShell />
+      {/* view 状态机路由：boot→login→cockpit→work；AppShell 在 ViewRouter work 分支渲染 */}
+      <ViewRouter />
     </TooltipProvider>
   )
 }

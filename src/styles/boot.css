@@ -1,0 +1,70 @@
+/* ============================================================
+   启动品牌动画（BootScreen）—— task-5 Step 1
+   ------------------------------------------------------------
+   · boot 屏为全屏深色品牌底 + 白色 boost 字标，.boot-* 全部使用
+     主题无关的暖色渐变/半透明白（不绑任一主题 token），未来
+     主题兼容可在其上覆盖。
+   · settings.speedMode === true 时 ViewRouter 直接短路到 login、
+     不挂载本屏，因此这里不写任何 .speed-mode 规则。
+   · 动画：logo 呼吸光晕 2.4s 脉冲；流光进度条一趟 1.5s；
+     整屏在 1.42s 起淡出收尾，1.6s onDone 时与下一屏无缝交棒。
+   ============================================================ */
+
+.boot-bg {
+  background:
+    radial-gradient(120% 90% at 50% 10%, rgba(255, 138, 61, 0.10), transparent 62%),
+    linear-gradient(165deg, #17110b 0%, #120d09 46%, #0f0b07 100%);
+  animation: boot-fade-out 0.2s ease-in 1.4s both;
+}
+
+@keyframes boot-fade-out {
+  to { opacity: 0; }
+}
+
+/* 白色 boost 字标：drop-shadow 沿 alpha 轮廓做呼吸光晕（宽 ≤180px） */
+.boot-logo {
+  width: min(180px, 46vw);
+  height: auto;
+  user-select: none;
+  -webkit-user-drag: none;
+  animation: boot-logo-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes boot-logo-breathe {
+  0%, 100% { filter: drop-shadow(0 0 14px rgba(255, 138, 61, 0.22)) brightness(1); }
+  50%      { filter: drop-shadow(0 0 36px rgba(255, 66, 0, 0.42)) brightness(1.12); }
+}
+
+/* 流光进度条：240×3 细轨 + 内部渐变扫光（装饰性，非真实进度） */
+.boot-track {
+  position: relative;
+  width: 240px;
+  height: 3px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.10);
+  overflow: hidden;
+}
+
+.boot-shine {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -80%;
+  width: 70%;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, transparent, #ff8a3d 28%, #ff4200 50%, #ffb27d 72%, transparent);
+  animation: boot-shine-sweep 1.5s cubic-bezier(0.4, 0, 0.6, 1) forwards;
+}
+
+@keyframes boot-shine-sweep {
+  0%   { left: -80%; opacity: 0; }
+  12%  { opacity: 1; }
+  88%  { opacity: 1; }
+  100% { left: 100%; opacity: 0; }
+}
+
+/* 底部阶段小字（暖灰半透明，三个状态由 BootScreen 400ms 步进） */
+.boot-phase {
+  color: rgba(240, 217, 196, 0.62);
+  letter-spacing: 0.08em;
+}
