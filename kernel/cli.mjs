@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Ponos-turbo 内核入口（docs/bridge-contract.md §2 spawn 契约 + §3/§4 wire 语义）
 // ---------------------------------------------------------------------------
-// 净室重建的原创内核（代号 Ponos-turbo），由 bridge 经 bun 运行时以 stream-json
-// 模式 spawn（findPonos 候选 #1：<repo>/kernel/cli.mjs），也可直接
+// 净室重建的原创内核（代号 Ponos-turbo），由 bridge 经 node 运行时以 stream-json
+// 模式 spawn（YFWORKING_KERNEL 逃生口候选 #1：<repo>/kernel/cli.mjs），也可直接
 // node kernel/cli.mjs 运行/测试。
 // 职责：
 //   - 解析契约参数（--print --output-format stream-json --input-format

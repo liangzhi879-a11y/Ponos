@@ -475,24 +475,92 @@ function saveConfig(updates) {
 }
 
 // ---------------------------------------------------------------------------
-// Kernel self-bootstrap (D3)：把安装/源码内核拷贝到 <home>/runtime/kernel/ 一次，
-// 供 install 候选缺失时兜底与诊断检查。运行时 = node（D1）——node 自身不随拷
-// （由调用方 process.execPath / resolveNode() 定位）；新内核 Grep/Glob 为原生
-// node 递归实现（kernel/tools.mjs），无 ripgrep/vendor 依赖（F3）→ 只拷 kernel
-// cli.mjs，无 vendor 复制。
+// Kernel self-bootstrap (D3)：把安装/源码内核同步到 <home>/runtime/kernel/，供
+// install 候选缺失时兜底（findYFWorking ③）与诊断检查——缓存自身必须完整可运
+// 行：源若是目录级多文件内核（repo/kernel/ 平铺源码，cli.mjs 相对 import 同目录
+// 兄弟文件与 ../version.mjs），整目录内容同步，并把逃逸到上一级的依赖镜像到
+// <home>/runtime/ 对应位置（缓存 cli.mjs 的 '../' = runtime/）；源若是自足单文
+// 件 bundle（kernel-dist/cli.mjs），目录即单文件，同步效果等价单文件拷贝。变更
+// 判定 = 逐文件尺寸差异 + 目标残留清理（旧 vendor/ 等源已无条目即删），无差异
+// 不重写。运行时 = node（D1）——node 自身不随拷（由调用方 process.execPath /
+// resolveNode() 定位）；新内核 Grep/Glob 原生 node 递归（kernel/tools.mjs），
+// 无 ripgrep/vendor 依赖（F3）。
 // ---------------------------------------------------------------------------
+function syncDirToMirror(srcDir, destDir) {
+  // 把 srcDir 内容镜像到 destDir：新增/尺寸变化重拷；源已不存在的残留条目删除。
+  // 返回是否发生任何写入。
+  let changed = false
+  mkdirSync(destDir, { recursive: true })
+  const srcNames = new Set()
+  for (const name of readdirSync(srcDir)) {
+    srcNames.add(name)
+    const srcFile = join(srcDir, name)
+    const destFile = join(destDir, name)
+    const srcStat = statSync(srcFile)
+    let destStat = null
+    try { destStat = statSync(destFile) } catch { }
+    if (srcStat.isDirectory()) {
+      if (destStat && !destStat.isDirectory()) { rmSync(destFile, { recursive: true, force: true }); changed = true }
+      if (syncDirToMirror(srcFile, destFile)) changed = true
+    } else {
+      if (!destStat || destStat.isDirectory() || destStat.size !== srcStat.size) {
+        if (destStat && destStat.isDirectory()) rmSync(destFile, { recursive: true, force: true })
+        copyFileSync(srcFile, destFile)
+        changed = true
+      }
+    }
+  }
+  for (const name of readdirSync(destDir)) {
+    if (!srcNames.has(name)) {
+      rmSync(join(destDir, name), { recursive: true, force: true })
+      changed = true
+    }
+  }
+  return changed
+}
+
+function mirrorKernelParentDeps(srcDir, destBase) {
+  // 多文件源码内核把 import 逃逸到 kernel/ 上一级（当前仅 ../version.mjs）。
+  // 缓存 cli.mjs 位于 <home>/runtime/kernel/，其 '../' 解析到 <home>/runtime/，
+  // 故把源上一级被引用文件镜像到 destBase 同相对位置，缓存才完整可运行。
+  // 自足 bundle 无 '../' 依赖，此步为空操作。目前内核闭包仅一级 '../'；若将来
+  // 出现更深层级逃逸需扩展镜像深度。
+  let changed = false
+  const relDeps = new Set()
+  for (const name of readdirSync(srcDir)) {
+    if (!/\.(mjs|cjs|js)$/.test(name)) continue
+    let text
+    try { text = readFileSync(join(srcDir, name), 'utf8') } catch { continue }
+    const re = /(?:from\s+|import\s*\()\s*['"](\.\.\/[^'"]+)['"]/g
+    let m
+    while ((m = re.exec(text))) relDeps.add(m[1])
+  }
+  for (const rel of relDeps) {
+    const srcFile = resolve(srcDir, rel)
+    if (!existsSync(srcFile)) continue
+    const destFile = join(destBase, rel.replace(/^\.\.\//, ''))
+    let same = false
+    try { same = statSync(destFile).size === statSync(srcFile).size } catch { }
+    if (!same) {
+      mkdirSync(dirname(destFile), { recursive: true })
+      copyFileSync(srcFile, destFile)
+      changed = true
+    }
+  }
+  return changed
+}
+
 function bootstrapKernelToUserDir(kernel) {
-  // 拷贝目标随 YFWORKING_HOME（T2 home 解析）；仅源文件大小变化时重做。
+  // 拷贝目标随 YFWORKING_HOME（T2 home 解析）；源/目标清单无差异时不重写。
   try {
     const destBase = join(YFW_HOME, 'runtime')
-    const destKernel = join(destBase, 'kernel', 'cli.mjs')
-    const kernelSize = existsSync(destKernel) ? statSync(destKernel).size : -1
-    const needCopyKernel = kernelSize !== statSync(kernel).size
-    if (!needCopyKernel) return { kernel: destKernel, bootstrapped: false, cached: true }
-    mkdirSync(join(destBase, 'kernel'), { recursive: true })
-    copyFileSync(kernel, destKernel)
-    console.log('[bridge] kernel bootstrapped to', destKernel)
-    return { kernel: destKernel, bootstrapped: true }
+    const destKernelDir = join(destBase, 'kernel')
+    const destCli = join(destKernelDir, 'cli.mjs')
+    const dirChanged = syncDirToMirror(dirname(kernel), destKernelDir)
+    const parentChanged = mirrorKernelParentDeps(dirname(kernel), destBase)
+    if (!dirChanged && !parentChanged) return { kernel: destCli, bootstrapped: false, cached: true }
+    console.log('[bridge] kernel bootstrapped to', destCli)
+    return { kernel: destCli, bootstrapped: true }
   } catch (e) {
     console.warn('[bridge] kernel bootstrap failed, falling back to original paths:', e.message)
     return { kernel, bootstrapped: false }
