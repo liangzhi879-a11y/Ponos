@@ -57,10 +57,10 @@ export function SystemWarningStrip({ conversationId }: Props) {
 
   return (
     <div className="flex justify-center px-4 pt-3" role="status" aria-live="polite">
-      <div className={`pointer-events-auto flex items-center gap-2 max-w-[900px] rounded-full border bg-elevated/90 px-3 py-1.5 shadow-lg backdrop-blur ${meta.border}`}>
+      <div className={`pointer-events-auto flex items-center gap-2 max-w-[900px] overflow-hidden rounded-full border bg-elevated/90 px-3 py-1.5 shadow-lg backdrop-blur ${meta.border}`}>
         <Icon className={`w-3.5 h-3.5 shrink-0 ${meta.text}`} />
         <span
-          className={`text-[11px] font-semibold whitespace-nowrap ${meta.text}`}
+          className={`text-[11px] font-semibold min-w-0 overflow-hidden text-ellipsis whitespace-nowrap ${meta.text}`}
           title={detail || title}
         >
           {title}
