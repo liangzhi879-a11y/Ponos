@@ -54,7 +54,7 @@ npm run build:electron
 
 桥接服务器默认监听 **51517**（由 `YFW_BRIDGE_PORT` 环境变量控制）。
 
-**端口选型** Windows WinNAT（Hyper-V/WSL/Docker）会预留 3095-3194 端口段。默认端口 **51517** 高于 WinNAT 预留段与常见动态端口范围，可避免端口被封锁（`EACCES`）；如需变更可通过 `YFW_BRIDGE_PORT` 环境变量覆盖（见「修改端口」）。
+**端口选型** Windows WinNAT（Hyper-V/WSL/Docker）会预留 3095-3194 端口段。默认端口 **51517** 避开该 WinNAT 预留段与常见动态端口冲突面，不会落入易被 WinNAT 动态保留而封锁（`EACCES`）的端口区间；如需变更可通过 `YFW_BRIDGE_PORT` 环境变量覆盖（见「修改端口」）。
 
 ### 修改端口
 

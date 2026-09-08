@@ -16,7 +16,7 @@ const { join } = path
 const isoHome = mkdtempSync(join(tmpdir(), 'yfw-bexec-'))
 process.env.YFWORKING_HOME = isoHome
 process.env.CLAUDE_CONFIG_DIR = isoHome
-// 文件最末追加清理（node --test 进程退出即回收，亦可用 test.after 或 process.on('exit')）
+// 临时数据根清理钩子注册于文件头（node --test 进程退出即回收，亦可用 test.after 替代）
 process.on('exit', () => { try { rmSync(isoHome, { recursive: true, force: true }) } catch {} })
 
 test('buildClickBoxScript 含 ref 解析与 getBoundingClientRect', () => {

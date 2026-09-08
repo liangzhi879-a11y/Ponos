@@ -18,7 +18,8 @@ import fitz  # PyMuPDF
 import markdown
 from playwright.sync_api import sync_playwright
 
-BASE = r"C:\Users\T203-15\claude-code-gui"
+# S6 清洗：BASE 由 repo 根解析（原硬编码旧库本机绝对路径，随 S3 迁移失效）
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # = <repo 根>（scripts/ 上一级）
 MD_FILE = os.path.join(BASE, "docs", "manual", "YFWorking产品使用说明书.md")
 IMG_DIR = os.path.join(BASE, "docs", "manual", "images")
 LOGO_PNG = os.path.join(IMG_DIR, "logo_新远方数据LOGO横版.png")
@@ -282,7 +283,7 @@ front_html = wrap(
     '<div class="subtitle">企业咨询项目与开发的 AI 工作台</div>'
     '<div class="rule"></div>'
     '<div class="info-card"><table><tbody>%s</tbody></table></div>'
-    '<div class="version">V2.7.2　·　2026-08-20</div>'
+    '<div class="version">2.8.0　·　2026-09-08</div>'
     '</div>'
     '<div class="c-bottom">'
     '<div class="c-line"></div>'

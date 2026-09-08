@@ -2,7 +2,7 @@
 // S6 打包资源面预检（Batch B 出包前跑）。校验 electron-builder.yml extraResources
 // 声明的源在本仓库的存在性；构建期组装源（runtime/python、runtime/skills）标注为
 // build-installer.mjs 前置产物，缺失时提示先跑 build-installer.mjs。
-import { existsSync, readFileSync, readdirSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { load } from 'js-yaml'
 
