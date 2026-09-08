@@ -95,7 +95,7 @@ test('开启态：PONOS_LANE_COMPACT=1 + engineCtx → lane 摘要落地 + lane_
     const mainText = readFileSync(env.store.file, 'utf-8')
     assert.ok(!mainText.includes('"kind":"compaction"'))
     // lane_compaction 事件带摘要文本
-    assert.ok(env.events.some((e) => e.type === 'system' && e.subtype === 'lane_compaction' && typeof e.text === 'string'))
+    assert.ok(env.events.some((e) => e.type === 'system' && e.subtype === 'lane_compaction' && typeof e.text === 'string' && e.taskId === taskId))
   } finally {
     delete process.env.PONOS_LANE_COMPACT
     env.cleanup()

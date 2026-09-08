@@ -1090,7 +1090,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // 子循环与 runTurnInternal 语义对齐但简化：无健康（短会话）；无压缩器——上下文溢出
   // 仅靠输出预算收窄自愈（见下方 #5 catch），不引入主循环式压缩/窗口采纳。
   // signal 为轮次级取消：主 signal（用户 cancel 全中断）∨ 子 signal（Task stop）
-  async function runSubAgentLoop({ store, sysPrompt, signal: subSignal, onTool, options = {} }) {
+  async function runSubAgentLoop({ store, sysPrompt, signal: subSignal, onTool, options = {}, taskId }) {
     let usage = {}
     let textBuf = ''
     let toolUses = 0
@@ -1132,7 +1132,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     let laneCompactor = null
     if (LANE_COMPACT_ENABLED && engineCtx?.estimate) {
       try {
-        const laneWire = { summary: (text, count) => { try { wire.system?.('lane_compaction', { text: String(text ?? ''), compactCount: count }) } catch { /* 事件失败静默 */ } } }
+        const laneWire = { summary: (text, count) => { try { wire.system?.('lane_compaction', { taskId, text: String(text ?? ''), compactCount: count }) } catch { /* 事件失败静默 */ } } }
         laneCompactor = createCompactor({
           session: store,
           context: engineCtx,
@@ -1390,7 +1390,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     let status = 'completed'
     let usage = {}
     try {
-      const r = await runSubAgentLoop({ store: laneStore, sysPrompt, signal: subSignal, onTool, options: laneOptions })
+      const r = await runSubAgentLoop({ store: laneStore, sysPrompt, signal: subSignal, onTool, options: laneOptions, taskId })
       text = String(r.text || '').trim()
       usage = r.usage
       // 守卫停（防死循环自动中止）→ 与取消同态登记为 stopped（可 resume 续跑）
