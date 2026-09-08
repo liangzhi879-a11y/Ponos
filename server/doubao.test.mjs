@@ -3,14 +3,19 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import * as d from './doubao.mjs'   // homeDir() 延迟读取 env，模块求值时机无关紧要
+import * as d from './doubao.mjs'   // 数据根延迟读取 env，模块求值时机无关紧要
 
 let home
+const prevYfwHome = process.env.YFWORKING_HOME
 before(() => {
   home = mkdtempSync(join(tmpdir(), 'doubao-test-'))
-  process.env.YFW_TEST_HOME = home
+  process.env.YFWORKING_HOME = home
 })
-after(() => { rmSync(home, { recursive: true, force: true }) })
+after(() => {
+  if (prevYfwHome === undefined) delete process.env.YFWORKING_HOME
+  else process.env.YFWORKING_HOME = prevYfwHome
+  rmSync(home, { recursive: true, force: true })
+})
 
 test('isLoggedIn: 无会话文件返回 false', () => {
   assert.equal(d.isLoggedIn(), false)

@@ -8,8 +8,8 @@
 // 目录下还有 <sessionId>/ 子目录（subagent 产物），一律忽略，只处理 *.jsonl 且 UUID 命名的文件。
 import { readdirSync, statSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
 import { createHash } from 'crypto'
+import { resolveYfwHome } from './yfw-home.cjs'
 
 /** 单个路径段允许的最大长度（与内核 MAX_SANITIZED_LENGTH 一致，200 字符）。 */
 export const MAX_SANITIZED_LENGTH = 200
@@ -48,8 +48,10 @@ export function isUuidFile(name) {
 
 /** 返回 transcript 项目根目录（projects 目录本身，不含项目子目录）。 */
 export function transcriptBaseDir() {
-  const cfg = process.env.CLAUDE_CONFIG_DIR
-  return join(cfg || join(homedir(), '.yfworking'), 'projects')
+  // 数据根经共享模块解析（YFWORKING_HOME || CLAUDE_CONFIG_DIR || ~/.yfworking）：
+  // 与 bridge spawn 内核时注入的 CLAUDE_CONFIG_DIR 指向同一 home，隔离模式下
+  // 转录读写一致落在隔离根目录。
+  return join(resolveYfwHome(), 'projects')
 }
 
 /** 扫描单个项目目录下所有 UUID transcript 文件，按 mtime 倒序。 */

@@ -1,11 +1,11 @@
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, readdirSync, statSync, copyFileSync, cpSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { PERSONAL_DIR, hashLine } from './experience.mjs'
+import { resolveYfwHome } from './yfw-home.cjs'
 
-const HOME = process.env.YFW_TEST_HOME || homedir()
-const YFW_HOME = join(HOME, '.yfworking')
+const YFW_HOME = resolveYfwHome()
 const SKILL_EXP_DIR = join(YFW_HOME, 'memory', 'skill_experiences')
 const SKILLS_DIR = join(YFW_HOME, 'skills')
 

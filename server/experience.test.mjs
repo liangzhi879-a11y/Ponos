@@ -1,13 +1,20 @@
-import { test, beforeEach, afterEach } from 'node:test'
+import { test, beforeEach, afterEach, after } from 'node:test'
 import assert from 'node:assert/strict'
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
 
-// 通过注入 HOME 重定向 personal 目录：模块导出 PERSONAL_DIR 基于 process.env.YFW_TEST_HOME
+// 通过注入数据根重定向 personal 目录：模块 PERSONAL_DIR 经共享模块
+// yfw-home.cjs 解析（YFWORKING_HOME || CLAUDE_CONFIG_DIR || ~/.yfworking）
 const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-exp-home-'))
-process.env.YFW_TEST_HOME = testHome
+const prevYfwHome = process.env.YFWORKING_HOME
+process.env.YFWORKING_HOME = path.join(testHome, '.yfworking')
 const mod = await import('./experience.mjs')
+
+after(() => {
+  if (prevYfwHome === undefined) delete process.env.YFWORKING_HOME
+  else process.env.YFWORKING_HOME = prevYfwHome
+})
 
 beforeEach(() => { mod.ensurePersonalDir() })
 afterEach(() => { fs.rmSync(testHome, { recursive: true, force: true }) })

@@ -6,7 +6,11 @@ import fs from 'node:fs'
 import { spawnSync } from 'node:child_process'
 
 const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-pkg-home-'))
-process.env.YFW_TEST_HOME = testHome
+// 数据根经共享模块 yfw-home.cjs 解析；YFWORKING_HOME 指向 testHome/.yfworking，
+// 与 experience.mjs PERSONAL_DIR / packager YFW_HOME 统一（旧 YFW_TEST_HOME 注入
+// 已废弃——解析不再依赖假家目录语义）。
+const prevYfwHome = process.env.YFWORKING_HOME
+process.env.YFWORKING_HOME = path.join(testHome, '.yfworking')
 const exp = await import('./experience.mjs')
 exp.ensurePersonalDir()
 const pkg = await import('./packager.mjs')
@@ -29,6 +33,8 @@ afterEach(() => {
 })
 
 after(() => {
+  if (prevYfwHome === undefined) delete process.env.YFWORKING_HOME
+  else process.env.YFWORKING_HOME = prevYfwHome
   fs.rmSync(testHome, { recursive: true, force: true })
 })
 

@@ -1,10 +1,10 @@
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, statSync, existsSync, rmSync } from 'node:fs'
+import { resolveYfwHome } from './yfw-home.cjs'
 
-// 测试注入 HOME：process.env.YFW_TEST_HOME 存在时重定向（测试隔离，不碰真实 ~/.yfworking）
-const HOME = process.env.YFW_TEST_HOME || homedir()
-export const PERSONAL_DIR = join(HOME, '.yfworking', 'memory', 'personal')
+// 数据根经共享模块解析（YFWORKING_HOME || CLAUDE_CONFIG_DIR || ~/.yfworking）；
+// 测试设 YFWORKING_HOME 指向临时目录即隔离，不碰真实 ~/.yfworking。
+export const PERSONAL_DIR = join(resolveYfwHome(), 'memory', 'personal')
 export const INDEX_FILE = join(PERSONAL_DIR, '_index.json')
 export const DEFAULT_THEMES = ['communication', 'code-style', 'workflow', 'finance', 'policy', 'project-application', 'office-docs']
 

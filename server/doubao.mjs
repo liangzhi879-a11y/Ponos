@@ -1,13 +1,13 @@
-import { homedir } from 'os'
 import { join } from 'path'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, chmodSync } from 'fs'
+import { resolveYfwHome } from './yfw-home.cjs'
 
-// HOME 延迟读取（每次调用读 env）：测试通过 YFW_TEST_HOME 隔离，
-// 避免 ESM import 求值顺序问题（模块顶层求值时 env 可能尚未设置）
-export const homeDir = () => process.env.YFW_TEST_HOME || homedir()
-export const sessionFile = () => join(homeDir(), '.yfworking', 'doubao-session.json')
-export const historyFile = () => join(homeDir(), '.yfworking', 'doubao-history.json')
-export const imagesDir = () => join(homeDir(), '.yfworking', 'doubao-images')
+// 数据根每次调用经共享模块 yfw-home.cjs 延迟解析（读 env：YFWORKING_HOME ||
+// CLAUDE_CONFIG_DIR || ~/.yfworking）；测试设 YFWORKING_HOME 指向临时目录即可隔离，
+// 不碰真实 ~/.yfworking；延迟读取避免 ESM import 求值顺序问题（顶层求值时 env 可能未设）。
+export const sessionFile = () => join(resolveYfwHome(), 'doubao-session.json')
+export const historyFile = () => join(resolveYfwHome(), 'doubao-history.json')
+export const imagesDir = () => join(resolveYfwHome(), 'doubao-images')
 
 let rateReqTimes = []
 
@@ -15,7 +15,7 @@ function readJson(p) {
   try { return existsSync(p) ? JSON.parse(readFileSync(p, 'utf-8')) : null } catch { return null }
 }
 function writeJson(p, v) {
-  mkdirSync(join(homeDir(), '.yfworking'), { recursive: true })
+  mkdirSync(resolveYfwHome(), { recursive: true })
   writeFileSync(p, JSON.stringify(v, null, 2), 'utf-8')
 }
 

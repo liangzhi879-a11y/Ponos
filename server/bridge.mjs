@@ -12,6 +12,7 @@ import { extractMilestoneMarks, extractProseStages } from './milestones.mjs'
 import { matchesHighRisk } from './highrisk.mjs'
 import { parseAskUserPayload, extractAskUserBlocks } from './askuser.mjs'
 import { resolveKernelPaths } from '../electron/kernel-paths.cjs'
+import { resolveYfwHome } from './yfw-home.cjs'
 import { buildExperienceIndex, buildSedimentPrompt, ensurePersonalDir } from './experience.mjs'
 export { ensurePersonalDir, buildExperienceIndex, buildSedimentPrompt } from './experience.mjs'
 import * as doubao from './doubao.mjs'
@@ -117,8 +118,11 @@ ${YFW_MILESTONE_PROTOCOL}
 // YFWorking home directory — STRICTLY ISOLATED from Claude.
 // All YFWorking state (skills, config, providers, sessions) lives here.
 // We never read from ~/.claude/ even if it exists on the machine.
+// 数据根经共享模块 yfw-home.cjs 解析：YFWORKING_HOME || CLAUDE_CONFIG_DIR ||
+// ~/.yfworking（双版并行隔离开关；模块加载期解析，spawn 子进程经
+// buildChildEnv 注入解析后的 home）。
 // ---------------------------------------------------------------------------
-const YFW_HOME = join(homedir(), '.yfworking')
+const YFW_HOME = resolveYfwHome()
 const YFW_SKILLS_DIR = join(YFW_HOME, 'skills')
 const YFW_CONFIG_PATH = join(YFW_HOME, 'config.json')
 
