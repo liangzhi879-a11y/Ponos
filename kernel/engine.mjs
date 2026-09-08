@@ -15,6 +15,7 @@
 import { streamMessages, classifyApiError, deadStreamError } from './api.mjs'
 import { abortError } from './protocol.mjs'
 import { countCjk } from './context.mjs'
+import { costOf } from './cost.mjs'
 import { decideToolPermission } from './permissions.mjs'
 import { createToolRegistry, killActiveChildren } from './tools.mjs'
 import { createSessionStore, newSessionId, sanitizeSegment } from './session.mjs'
@@ -414,6 +415,17 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // P2-1③：lane 压缩可选开关 + 主会话 context（engineCtx.estimate 供 lane 压缩器阈值判定）
   const engineCtx = opts.context || null
   const LANE_COMPACT_ENABLED = process.env.PONOS_LANE_COMPACT === '1'
+  // P2-2 预算护栏（热累计，进程内；跨会话/历史预算走 U1 文件聚合——两层互补）。
+  // 单价 env：PONOS_PRICE_PER_M_INPUT/OUTPUT、PONOS_CACHE_READ_RATIO；PONOS_BUDGET_USD
+  // >0 启用。告警不硬停（硬停决策交调用方/GUI）；进程重启护栏清零。
+  const PRICES = {
+    pricePerMInput: Number(process.env.PONOS_PRICE_PER_M_INPUT) || 0.2,
+    pricePerMOutput: Number(process.env.PONOS_PRICE_PER_M_OUTPUT) || 1.2,
+    cacheReadRatio: Number(process.env.PONOS_CACHE_READ_RATIO) || 0.1,
+  }
+  const BUDGET_USD = Number(process.env.PONOS_BUDGET_USD) || 0
+  const sessionUsageAcc = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+  let budgetWarned = false
 
   // 历史优先走 session.deriveMessages()；无 session 时退化为内存数组（测试直连场景）
   const memoryHistory = []
@@ -1718,6 +1730,20 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       const durationMs = Date.now() - t0
       // turnStats 每轮尾部产出（health/result/stats 共用）
       turnStats.push({ usage: outcome.usage, durationMs, model: outcome.model, ts: new Date().toISOString(), compactCount: session ? session.compactCount() : 0 })
+      // P2-2：会话级用量累计（四字段）→ costOf 单价 env → 跨 PONOS_BUDGET_USD 阈值
+      // 发 budget 告警（每会话单次 crossing，防刷屏）。usage null（内部错误轮）不累计。
+      if (outcome.usage) {
+        for (const k of Object.keys(sessionUsageAcc)) sessionUsageAcc[k] += outcome.usage[k] ?? 0
+      }
+      if (BUDGET_USD > 0 && !budgetWarned) {
+        try {
+          const usd = costOf(sessionUsageAcc, PRICES)
+          if (usd > BUDGET_USD) {
+            budgetWarned = true
+            wire.warning?.({ level: 'budget', usd: Number(usd.toFixed(4)), budgetUsd: BUDGET_USD })
+          }
+        } catch { /* 预算计算异常静默 */ }
+      }
       health?.record(turnStats[turnStats.length - 1])
       // J1：LLM-as-Judge 低频抽检（shouldRunJudge = 红档 + 冷却 300s；默认关零行为）。
       // judge 失败/抛异常一律静默——判定不得影响主流程（spec：Judge 为新增侧路）。
