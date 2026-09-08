@@ -1013,6 +1013,17 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   async function executeToolUse(toolUse, ctx = {}) {
     const gate = await gateToolUse(toolUse)
     if (!gate.allowed) return { content: gate.message, isError: true }
+    // P2-1①/AS1：lane 白名单 deny gate——子 agent options 显式声明 tools/skills 时收窄。
+    // 空数组/未定义跳过（全量）。仅当 mock/模型以名单外工具名发起时才拦截（第二道保险，
+    // 第一道是 retryStream 的 tools 收窄让模型根本看不到名单外工具）。
+    const lo = ctx?.laneOptions
+    if (lo && Array.isArray(lo.allowedTools) && lo.allowedTools.length && !lo.allowedTools.includes(toolUse.name)) {
+      return { content: `子 Agent 工具白名单不含 ${toolUse.name}（允许：${lo.allowedTools.join(', ')}），已拒绝执行`, isError: true }
+    }
+    if (toolUse.name === 'Skill' && Array.isArray(lo?.allowedSkills) && lo.allowedSkills.length
+        && !lo.allowedSkills.includes(String(toolUse.input?.skill ?? ''))) {
+      return { content: `子 Agent 技能白名单不含「${String(toolUse.input?.skill ?? '')}」（允许：${lo.allowedSkills.join(', ')}），已拒绝加载`, isError: true }
+    }
     // ctx：工具执行上下文——主循环注入 spawnSubAgent/taskSystem/browserDriver
     // （Agent/Task/Browser 工具依赖），子 agent 循环注入 lane:true（禁嵌套分发）
     const { store, ...toolCtx } = ctx
@@ -1074,11 +1085,17 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // 子循环与 runTurnInternal 语义对齐但简化：无健康（短会话）；无压缩器——上下文溢出
   // 仅靠输出预算收窄自愈（见下方 #5 catch），不引入主循环式压缩/窗口采纳。
   // signal 为轮次级取消：主 signal（用户 cancel 全中断）∨ 子 signal（Task stop）
-  async function runSubAgentLoop({ store, sysPrompt, signal: subSignal, onTool }) {
+  async function runSubAgentLoop({ store, sysPrompt, signal: subSignal, onTool, options = {} }) {
     let usage = {}
     let textBuf = ''
     let toolUses = 0
     const subT0 = Date.now()
+    // P2-1①/AS1：lane 级参数（model/tools/skills 白名单）。options 未定义/空 =
+    // 全量（零回归锁①）。loopModel 在 retryStream 与落盘（appendAssistant）统一使用。
+    const loopModel = options?.model || model
+    const laneToolSchemas = (Array.isArray(options?.allowedTools) && options.allowedTools.length)
+      ? tools.toolSchemas().filter((t) => options.allowedTools.includes(t.name))
+      : null
     // 守卫命中时的收尾说明（resume 续跑提示；null = 正常运行）。stopped 标志让
     // runLaneExecution 把守卫停登记为 status='stopped'（同取消，可 resume 续跑）。
     const stopNotice = (reason, detail) =>
@@ -1131,7 +1148,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // 须用本标志，否则"只产 thinking 后停"的 lane 会被误报"上游服务空流（未收到任何数据）"。
       let streamProduced = false
       try {
-        for await (const chunk of retryStream({ model, messages: msgs(), maxTokens: attemptMaxTokens, signal: streamSignal, tools: tools.toolSchemas() })) {
+        for await (const chunk of retryStream({ model: loopModel, messages: msgs(), maxTokens: attemptMaxTokens, signal: streamSignal, tools: laneToolSchemas ?? tools.toolSchemas() })) {
           if (signal.aborted || subSignal.aborted) throw abortError()
           watchdog.tick()
           streamProduced = true
@@ -1226,7 +1243,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // 注入 is_error tool_result 提示模型补全重发（主循环同款保护，防子 lane 复活缺陷）
       if (blocks.length > 0 && subStopReason === 'length') {
         const assistantBlocks = [...(textBuf.trim() ? [{ type: 'text', text: textBuf }] : []), ...blocks]
-        store.appendAssistant(assistantBlocks, { model })
+        store.appendAssistant(assistantBlocks, { model: loopModel })
         const errorResults = blocks.map((b) => ({
           type: 'tool_result',
           tool_use_id: b.id,
@@ -1253,9 +1270,9 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         break
       }
       const assistantBlocks = [...(textBuf.trim() ? [{ type: 'text', text: textBuf }] : []), ...blocks]
-      store.appendAssistant(assistantBlocks, { model })
+      store.appendAssistant(assistantBlocks, { model: loopModel })
       // P0-4：子 lane 同样走只读并发批；结果按模型顺序收集
-      const executed = await runToolBatch(blocks, { lane: true, store })
+      const executed = await runToolBatch(blocks, { lane: true, store, laneOptions: options })
       const toolResults = blocks.map((b, i) => ({
         tool_use_id: b.id,
         content: executed[i]?.content ?? '',
@@ -1304,7 +1321,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         )
         // 收尾说明同主循环 loopStop 文案落会话：追加进子 lane 转录，resume_task_id 续跑
         // 时模型可见停止原因（r.text 亦带同文案，经 task_notification.summary 交付）
-        store.appendAssistant([{ type: 'text', text: meltdownNotice }], { model })
+        store.appendAssistant([{ type: 'text', text: meltdownNotice }], { model: loopModel })
         return guardStop(meltdownNotice)
       }
       textBuf = ''
@@ -1331,12 +1348,12 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
 
   // 子 lane 执行体（spawn 与 resume 共用）：跑完整子循环 → 登记更新 + 终态通知。
   // resume 复用同一 laneStore（历史经 deriveMessages 原样保留，无副作用重放）
-  async function runLaneExecution({ taskId, laneStore, sysPrompt, signal: subSignal, writePaths, t0, onTool }) {
+  async function runLaneExecution({ taskId, laneStore, sysPrompt, signal: subSignal, writePaths, t0, onTool, laneOptions }) {
     let text = ''
     let status = 'completed'
     let usage = {}
     try {
-      const r = await runSubAgentLoop({ store: laneStore, sysPrompt, signal: subSignal, onTool })
+      const r = await runSubAgentLoop({ store: laneStore, sysPrompt, signal: subSignal, onTool, options: laneOptions })
       text = String(r.text || '').trim()
       usage = r.usage
       // 守卫停（防死循环自动中止）→ 与取消同态登记为 stopped（可 resume 续跑）
