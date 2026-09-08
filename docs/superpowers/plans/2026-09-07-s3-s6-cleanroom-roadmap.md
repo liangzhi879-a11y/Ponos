@@ -80,10 +80,19 @@
 
 **移植纪律**：移植单元 = 代码改动 + 配套测试；沿用"测试权威"惯例（先跑/先写测试再改实现）；每项独立 task + review 门禁。
 
-【推进标注——写完整 plan 前必须补】：
-- [ ] S1 清单②完成（逐项标 影响面/依赖/建议）——本子工程的输入
-- [ ] 每项候选在 ponos-dev 的源码位置与在新库的目标落点对照表
-- [ ] 与 v3 内容的边界：逐项确认不携带 harness/modules/cockpit UI
+【推进标注——写完整 plan 前必须补】（全部完成，2026-09-08 S5 完结勾选）：
+- [x] S1 清单②完成（逐项标 影响面/依赖/建议）——本子工程的输入；S1 清单② 9 项全 complete（②-01…②-09），纳入 S5 的 4 项见下方执行记录
+- [x] 每项候选在 ponos-dev 的源码位置与在新库的目标落点对照表——pd 参照证据包 `.superpowers/sdd/2026-09-08-s5-protocol-porting/pd-reference-pack.md`（pd HEAD 1696286 只读）；净室实测事实 F1-F13 见 S5 plan §2.1
+- [x] 与 v3 内容的边界：逐项确认不携带 harness/modules/cockpit UI——②-09（v3 windows 平台）明确排除；②-02/②-05 移植仅取事件消费/归约语义，pd 的 v3 busy 闸/会话树模型不携带（净室 streamingSessions 语义简化，见 S5 plan D5/§Task 4）
+
+**执行记录（2026-09-08，S5 完结）**：S5 协议增强移植完结，5 Task 全 approve（计划见 `docs/superpowers/plans/2026-09-08-s5-protocol-porting.md`，范围 = ②-03/②-07/②-05/②-02 四候选）。
+- **Commit 链**：`206d803`（S5 计划成稿）→ `1218aaf`（T1 技能内核块基线测试）→ `bb99840`（T1 停用 bridge 宿主技能注入）→ `5002b28`（T2 WS ping→pong 接线测试）→ `df6a0bc`（T2 GUI 15s/60s 半开心跳）→ `96185b0`（T3 KernelStallBar+LoopStatusBar 守卫自愈接线）→ `7ac001c`（T4 CompactingBar 压缩可见化）。
+- **四候选实测结论**：②-03 技能清单去重——双份实锤（内核 composeSystemPrompt【可用技能】块 kernel/prompt.mjs:100 vs bridge 宿主【已安装技能清单】注入）→ 停宿主注入（D1），技能可见性唯一来源 = 内核技能块（经 `--add-dir` 技能根发现），宿主保留 ASKUSER/MILESTONE/经验注入；`server/prompt-skills.test.mjs` 锁内核块行为 + `scripts/verify-skill-listing.mjs` 改写（宿主清单断言 → 内核技能块结构不变量）。②-07 WS 半开心跳——bridge WS 分支链加 ping→pong（server/bridge.mjs:2118-2123，ws 库级心跳不动）+ `server/ws-heartbeat.test.mjs`（spawn bridge + WS ping→pong 锁线协议）+ GUI 15s ping/60s 判死强关走既有指数退避重连（src/hooks/useYFWCLI.ts）。②-05 守卫自愈接线（GUI）——kernel-stall 顶层消息 + loop start/iter/end 帧归约 → KernelStallBar（内核静默警告+取消+关闭）+ LoopStatusBar（轮次进度）；store 放置 = uiStore.kernelStalls（不入 partialize）+ chatStore.loopStates（runtime-only）。②-02 压缩可见化（GUI）——system/compaction start/done 帧归约 → chatStore.compactingBySession（runtime-only）+ CompactingBar（「正在压缩上下文…」指示条）；不引入 pd v3 busy 闸（净室 streamingSessions 语义简化），cancelled/closed 复位兜底防悬挂。
+- **②-04 已落地/②-08 延后**：②-04 browser-executor snapshot 净室已含（electron/browser-executor.cjs:121/164/170 isInsideOverlay 行号与 pd 全同），S5 不重复移植；②-08（set_effort/switch_provider）内核已支持（kernel/cli.mjs:595/620），bridge 透传 + GUI 档位入口价值有限，延后为 S5 backlog，S6 前产品明确热切需求再评估。
+- **范围纪律**：kernel/、kernel-tests/ 零改动（②-0x 全部 server/GUI 侧）；`YF/` untracked 用户素材零触碰；diff 逐 task 复核（T2 3 文件、T3 9 文件、T4 6 文件全在 server//src/）。GUI 验证 = typecheck + vite build + 授权 manual 标注（未执行，S6 GUI 全栈冒烟承接）。
+- **回归**：npm test 142/142（临时 home；electron/browser-executor isBlockedUrl 1 fail 为真实 home whitelist 环境性 pre-existing，经 stash 复跑证实与 S5 无关，归 S6 backlog）；kernel-tests 50/50；typecheck/build 0 逐 Task 收尾。
+- **Review 门禁**：T1-T4 各 1 轮 reviewer Approve（T1 0/0、T2 0/2、T3 0/2、T4 0/1；minors 全部视觉/文档级或 pd 同构，零阻塞）。ledger 见 `.superpowers/sdd/2026-09-08-s5-protocol-porting/`。
+- **S5→S6 backlog 移交**：②-08 热切需求评估（本 S5 延后项）+ S6 backlog ①-⑩（S4 T6 登记）保持 + browser-executor.test isBlockedUrl 环境性失败修复 + 本 S5 三处 minor 视觉/注释项（可随 S6 文档/视觉面一并处理）。
 
 ---
 
