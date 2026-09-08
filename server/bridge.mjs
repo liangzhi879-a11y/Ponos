@@ -18,6 +18,7 @@ export { ensurePersonalDir, buildExperienceIndex, buildSedimentPrompt } from './
 import * as doubao from './doubao.mjs'
 import { createTranscriptHandlers } from './transcript.mjs'
 import { makeBrowserRouter } from './browser-routing.mjs'
+import { kernelReadonlySync } from './kernel-readonly.mjs'
 
 const PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51517', 10)
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -1315,6 +1316,22 @@ const httpServer = createServer(async (req, res) => {
     }
     if (url.pathname === '/health') {
       return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ status: 'ok', pid: process.pid }))
+    }
+
+    // U1 只读子命令薄转发：query → kernel 只读子命令 → 透传 stdout JSON（schema A.1/A.2）
+    if (url.pathname === '/api/usage' || url.pathname === '/api/audit') {
+      const sub = url.pathname === '/api/usage' ? '--usage' : '--audit'
+      const flags = []
+      for (const k of ['scope', 'sessionId', 'project', 'from', 'to']) {
+        const v = url.searchParams.get(k)
+        if (v) flags.push(`--${k}`, v)
+      }
+      try {
+        const out = kernelReadonlySync([sub, ...flags], { env: buildChildEnv(), cwd: process.cwd() })
+        return reply(200, { 'Content-Type': 'application/json' }, out)
+      } catch (e) {
+        return reply(502, { 'Content-Type': 'application/json' }, JSON.stringify({ error: e?.message || String(e) }))
+      }
     }
 
     // 诊断信息端点：diag-monitor 定期轮询（只读内存统计，见 diagInfo 定义）
