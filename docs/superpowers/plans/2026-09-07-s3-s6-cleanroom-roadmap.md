@@ -53,15 +53,22 @@
 
 **运行时决策**（设计 §13 开放项在此敲定）：打包内 node vs 系统 node。
 
-【推进标注——写完整 plan 前必须补】：
-- [ ] 读 claude-code-gui 实际 bridge 内核解析/bootstrap 代码，列出待删分支与兜底的具体文件:行（S1 清单③ 输入）
-- [ ] 新版各隔离资源的具体取值（端口号、appId、运行时目录名、数据根名）——取值表需与旧版清单无交集
-- [ ] 双版并行的冒烟用例清单（同用例在两版各跑一遍的对照表）
-- [ ] `YFW_HOME` 覆盖机制在 claude-code-gui 现有实现的核实（环境变量名与传播路径）
+【推进标注——写完整 plan 前必须补】（全部完成，2026-09-08 S4 完结勾选）：
+- [x] 读 claude-code-gui 实际 bridge 内核解析/bootstrap 代码，列出待删分支与兜底的具体文件:行（S1 清单③ 输入）——T3/T4 落地：解析顺序全指向本库 `kernel/`→`kernel-dist`→`<home>/runtime/ponos-kernel`
+- [x] 新版各隔离资源的具体取值（端口号、appId、运行时目录名、数据根名）——取值表需与旧版清单无交集——D3/D4 取值落位，双版 env 隔离取值表见 `docs/bridge-contract.md` §10；appId/userData 取值归 S6（backlog ⑤）
+- [x] 双版并行的冒烟用例清单（同用例在两版各跑一遍的对照表）——T6 冒烟矩阵全跑，见下方「S4 完结执行记录」
+- [x] `YFW_HOME` 覆盖机制在 claude-code-gui 现有实现的核实（环境变量名与传播路径）——实测变量名为 `YFWORKING_HOME`（原设计名修正），解析序 `YFWORKING_HOME || CLAUDE_CONFIG_DIR || ~/.yfworking`，见 server/yfw-home.cjs
 
 **执行记录（2026-09-08，S4 推进中）**：
 - **CDP 隔离行修订（D5）**：净室 browser executor 的 CDP 为进程内 `webContents.debugger.attach('1.3')`（browser-executor.cjs），**无网络端口**——设计 §8 隔离矩阵第 3 行"52319/9223 端口隔离"对净室不适用，修订为 **N/A（进程内 CDP）**；52319 仅 `server/interject.e2e.mjs` 固定测试口（单测语境，不与双版并行冲突）。
 - **T6 backlog 显式登记**（T4 完结复查移交，均归 T6/S6 处置）：① `kernel/cli.mjs:5` 注释「bun 运行时 spawn（findPonos 候选 #1）」措辞统一为净室语义（YFWORKING_KERNEL，D8）——kernel 本体纪律零改动，本行仅登记不改；② installer.nsh 技能数 65→85 校准与手册版本不一致（S6 出包统一）；③ build_promo_pdf.py BASE 硬编码路径参数化；④ BUILD.md + docs/manual 的 YF/旧端口默认值（51309/5173）文档引用清洗（S6 文档面）；⑤ 产物身份 appId/productName 区分决策（S6）；⑥ CRLF/.gitattributes 字节复核；⑦ 根 diag-yfw.bat（legacy 安装诊断工具）bun 布局引用（`resources/runtime/bun/bun.exe` 等）清洗或退役（T4 review concern 3）；⑧ verify-permission-flow.mjs env 的 `CLAUDE_CODE_USE_NATIVE_FILE_SEARCH:'true'` 残留（旧内核 rg 语义、ponos 内核忽略；随 S5/S6 脚本清洗顺带移除，T4 review concern 5）；⑨ electron-builder.yml :40-69 runtime/python、runtime/skills 等 extraResources 源悬空（净室无 runtime/，S6 出包须随构建补齐资源或调整源，T4 concern 2）；⑩ electron-builder.yml compression 段注释 bun.exe 残留措辞（T4 review Minor）。（⑦-⑩ 为 T4 review Approve 建议项补登，2026-09-08）
+
+**执行记录（2026-09-08，S4 完结）**：
+- **Commit 链**：`932f351`（S4 计划+修订）→ `80d89cf`（T1 kernel-dist 构建链+D1 实证）→ `1e0e2b6`/`c0a74e3`/`312e35b`（T2 home env-aware）→ `a622e71`/`d11e8cd`/`110ca09`（T3 内核解析链改接+整目录镜像）→ `958f790`→`7025e8e` 8 commits（T4 端口/启动器/打包/残留清扫）→ `ef28690`（T5 spawn 接线测试）→ `2fb45d8`（T6 backlog 补登）→ `bdf289c`（T6 文档完结：bridge-contract 净室契约基线 §10）。
+- **Decision 全集落位**：D1 runtime=node（非 bun）；D2 home 解析序 `YFWORKING_HOME || CLAUDE_CONFIG_DIR || ~/.yfworking`；D3 bootstrap 目录专用化 `<home>/runtime/ponos-kernel`（2026-09-08 覆写事故固化）；D4 端口 51517/5197/4197 + env 覆盖（YFW_BRIDGE_PORT/YFW_VITE_PORT/YFW_VITE_PREVIEW_PORT）；D5 browser CDP 进程内无端口（隔离矩阵行 N/A）；D6 App 身份/userData 区分决策已定、取值归 S6（backlog ⑤）；D7 kernel-dist gitignored 构建产物；D8 `YFWORKING_KERNEL` 唯一逃生口（值无效即抛错）。
+- **T6 双版冒烟（脚本化行全跑，GUI 行按授权标 manual）**：旧版 51309（在售运行中）与新版 51517（隔离 home）同机同时 healthy；隔离 home 下 bootstrap 落地 `runtime/ponos-kernel`，在售 `runtime/kernel` 前后 md5 不变（`86697d84…`）；spawn 行指向 repo `kernel/cli.mjs`；bridge 级 mock 会话（RESULT subtype=success，usage in=10/out=20）；真实云端 ds 1532ms「收到」（input 10348）；真实本地 Qwen（218.17.137.219:8900）5629ms。token 临时配置与全部测试进程已清理，端口 51517/5197 free。Electron 全栈 GUI 行 = manual（S6 功能冒烟矩阵承接）。
+- **Review 门禁**：T1-T5 各 1 轮 reviewer Approve（T3 修复轮 1 后；T4/T5 0 blocking，T5 3 minors 已清理/登记）。T6 docs/state 复核通过后 ledger 记 S4 完结（见 .superpowers/sdd ledger）。
+- **S5/S6 backlog 移交**：S5 输入 = 本 roadmap §S5 推进标注（**S1 清单② 未完成则 S5 不得启动**）；S6 承接 = 上文 T6 backlog ①-⑩ + `docs/bridge-contract.md` §10 双版取值表 App 身份行 + GUI 全栈功能冒烟矩阵 + 打包实跑（electron-builder.yml runtime/ 悬空源，backlog ⑨）。
 
 ---
 
