@@ -33,7 +33,7 @@ import { resolveCompactSettings } from './compact.mjs'
 import { memoryRoot, buildMemoryIndex, captureMemoryCandidates, appendMemoryEntry } from './memory.mjs'
 import { createGraphStore } from './graph.mjs'
 import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
-import { discoverSkills } from './skills.mjs'
+import { discoverSkills, verifySkillVersions } from './skills.mjs'
 import { createWorkflowEngine, discoverWorkflowsAll, matchAutoTrigger } from './workflow.mjs'
 import { loadSettings } from './settings.mjs'
 import { createHooks } from './hooks.mjs'
@@ -320,6 +320,16 @@ export async function main(argv) {
       if (!seenSkillIds.has(s.id)) { seenSkillIds.add(s.id); skills.push(s) }
     }
   }
+  // SV1 技能版本守卫：<configDir>/skills.lock.json 存在时校验当前技能表 id/version。
+  // outdated 非空 → wire.warning(level:'skill_version')，不阻断启动（lock 当前无写入
+  // 者，文件不存在即零激活——天然零回归）。
+  try {
+    const lockPath = join(configDir, 'skills.lock.json')
+    if (existsSync(lockPath)) {
+      const { outdated } = verifySkillVersions({ lockPath, skills })
+      if (outdated.length) wire.warning?.({ level: 'skill_version', outdated })
+    }
+  } catch { /* 版本校验失败不阻断启动 */ }
   // workflow 与 skill 平权：同一技能根发现（workflow.yml / .yml），
   // 共享 triggers 触发词；发现结果入【可用工作流】独立区块（严格输出定位）
   const workflows = discoverWorkflowsAll({ roots: skillRoots })
