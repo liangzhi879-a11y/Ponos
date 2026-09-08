@@ -1,14 +1,20 @@
 /**
  * Packs PNG files (16/32/48/64/128/256) into a single multi-size ICO file.
  * Windows Vista+ supports PNG-compressed ICO entries.
- * Usage: node scripts/png-to-ico.cjs
+ * Usage: node scripts/png-to-ico.cjs [basename] [outputPath]
+ *   basename   PNG 前缀，读取 public/${basename}-{size}.png（默认 'icon'）
+ *   outputPath 输出 .ico 路径（默认 public/icon.ico）
+ *   仅打包实际存在的尺寸（SIZES 按文件过滤），favicon 传 16/32/48/64 子集亦可。
  */
 const fs = require('fs')
 const path = require('path')
 
 const ROOT = path.resolve(__dirname, '..')
 const PUBLIC = path.join(ROOT, 'public')
-const SIZES = [16, 32, 48, 64, 128, 256]
+const base = process.argv[2] || 'icon'
+const outPath = process.argv[3] || path.join(PUBLIC, 'icon.ico')
+const SIZES = [16, 32, 48, 64, 128, 256].filter(s =>
+  fs.existsSync(path.join(PUBLIC, `${base}-${s}.png`)))
 
 // --- ICO header (6 bytes) ---
 const header = Buffer.alloc(6)
@@ -22,11 +28,7 @@ const payloads = []
 let offset = 6 + SIZES.length * 16
 
 for (const size of SIZES) {
-  const pngPath = path.join(PUBLIC, `icon-${size}.png`)
-  if (!fs.existsSync(pngPath)) {
-    console.error('Missing:', pngPath)
-    continue
-  }
+  const pngPath = path.join(PUBLIC, `${base}-${size}.png`)
   const png = fs.readFileSync(pngPath)
 
   const entry = Buffer.alloc(16)
@@ -44,5 +46,5 @@ for (const size of SIZES) {
 }
 
 const ico = Buffer.concat([header, ...entries, ...payloads])
-fs.writeFileSync(path.join(PUBLIC, 'icon.ico'), ico)
-console.log(`icon.ico created: ${ico.length} bytes (${SIZES.length} sizes: ${SIZES.join(', ')})`)
+fs.writeFileSync(outPath, ico)
+console.log(`${path.basename(outPath)} created: ${ico.length} bytes (${SIZES.length} sizes: ${SIZES.join(', ')})`)
