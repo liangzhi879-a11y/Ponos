@@ -2115,6 +2115,12 @@ wss.on('connection', (ws, req) => {
         // GUI 暂停/继续执行器 → 转发 executor（bridge 仅路由，不解释语义）
         browserRouter.onGuiControl(msg.sessionId, msg.command)
       }
+      else if (msg.type === 'ping') {
+        // 应用层心跳：GUI 定期 ping 探测 WS 是否半开——TCP 假死时浏览器 send
+        // 静默失败且不触发 error/close，仅靠传输层 ping 无法感知失联。收到即回
+        // pong；超时未收到任何消息的判死与自愈重连由 GUI 侧负责（bridge 不判超时）。
+        try { ws.send(JSON.stringify({ type: 'pong', t: Date.now() })) } catch {}
+      }
     } catch (e) { console.error('[bridge] msg error:', e.message) }
   })
   ws.on('close', () => {
