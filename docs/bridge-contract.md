@@ -2,7 +2,7 @@
 
 > 用途：GUI↔bridge↔内核 三层交互的**可重建契约基线**。目标是在不修改 GUI 的前提下，以自研/合规实现替换内核（净室重建）时，协议语义可逐条对照、可测试。
 > 权威来源：`server/bridge.mjs`、`electron/main.cjs`、内核 `kernel/cli.mjs`（净室 ponos 内核，stream-json 模式）。
-> 更新日期：2026-09-08（S4 净室改接后同步：运行时 = node；内核落点 `<home>/runtime/ponos-kernel/`；新版独立端口 51517/5197/4197；双版 env 隔离表见 §10）
+> 更新日期：2026-09-08（S4 净室改接后同步：运行时 = node；内核落点 `<home>/runtime/ponos-kernel/`；新版独立端口 51517/5197/4197；双版 env 隔离表见 §10；S6 身份定案）
 
 ---
 
@@ -180,6 +180,6 @@ S4 把 bridge 内核解析/构建/bootstrap 全指向本库内核，并落地在
 | 内核来源 | yfw-kernel 分支（legacy） | 本库 `kernel/`（源，node 直跑）→ `kernel-dist/cli.mjs`（bundle，D7 产物） | `YFWORKING_KERNEL` 唯一逃生口（D8，值无效即抛错，不静默回退） |
 | 内核 API | — | `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL`（第三方 provider） | 实测：云端 ds 与本地 Qwen 均通（2026-09-08） |
 | 浏览器 CDP | — | 进程内 `webContents.debugger.attach('1.3')`，**无网络端口**（D5） | 隔离矩阵原 52319/9223 行修订为 N/A |
-| App 身份 / userData | 在售 appId/productName | 区分决策已定（D6），取值表归 S6 产物身份 | S6 backlog ⑤ |
+| App 身份 / userData | 在售 appId/productName | S6 定案（正式替换身份）：与在售同 appId `com.yfworking.desktop` / productName `YFWorking`，版本 2.8.0；userData = main.cjs:95-97 现行为（设 `YFWORKING_HOME` 重定向 `<数据根>/userData`，否则 Electron 默认） | 安装形态走 `build/installer.nsh` 版本比较（2.8.0）覆盖升级保留数据；双版并存由便携/dev 目录隔离 + userData 重定向兜底，无需独立 appId |
 
-双版冒烟（2026-09-08，Task 6）：旧版 51309（在售运行中）与新版 51517（隔离 home）同机同时 healthy；隔离 home 下 bootstrap 落地 `runtime/ponos-kernel`，在售 `runtime/kernel` 前后 md5 不变（`86697d84…`）；bridge 级 mock 会话、真实云端 ds、真实本地 Qwen 三态全通。产物身份/userData 区分（S5/S6）与文档面旧值清洗（S6）为本节后续项。
+双版冒烟（2026-09-08，Task 6）：旧版 51309（在售运行中）与新版 51517（隔离 home）同机同时 healthy；隔离 home 下 bootstrap 落地 `runtime/ponos-kernel`，在售 `runtime/kernel` 前后 md5 不变（`86697d84…`）；bridge 级 mock 会话、真实云端 ds、真实本地 Qwen 三态全通。产物身份/userData 区分 S6 定案落位（正式替换身份 = 与在售同 appId/productName，版本 2.8.0，userData 规则 = main.cjs:95-97 现行为），本节后续项仅剩文档面旧值清洗（S6）。

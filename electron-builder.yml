@@ -1,3 +1,5 @@
+# S6 产物身份定案（正式替换身份）：与在售同 appId/productName，安装形态走
+# build/installer.nsh 版本比较覆盖升级；双版并存见 docs/bridge-contract.md §10。
 appId: com.yfworking.desktop
 productName: YFWorking
 copyright: Copyright © 2026 YFWorking

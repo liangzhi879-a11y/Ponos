@@ -89,7 +89,9 @@ if (process.platform === 'win32') {
 // D6：dev 双版 userData 隔离——设置 YFWORKING_HOME 时把 Electron userData
 //（默认 %APPDATA%\yfworking-gui）重定向到 <数据根>/userData，避免净室新版与
 // 在售旧版同机并行时 userData（settings/主题/缓存）互踩；未设 env 时保持
-// Electron 默认行为（单版场景）。安装版产物身份（appId/productName）归 S6。
+// Electron 默认行为（单版场景）。安装版产物身份（S6 定案，正式替换身份）：appId com.yfworking.desktop / productName
+// YFWorking 与在售一致——安装形态经 installer.nsh 版本比较（2.8.0）覆盖升级保留数据；
+// 双版并存由便携/dev 目录隔离 + 本 userData 重定向兜底，无需独立 appId。
 if (process.env.YFWORKING_HOME) {
   try { app.setPath('userData', path.join(resolveYfwHome(), 'userData')) } catch {}
 }
