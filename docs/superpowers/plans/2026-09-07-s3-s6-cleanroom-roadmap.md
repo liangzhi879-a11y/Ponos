@@ -147,6 +147,35 @@
   - 旧库/旧产物处置（退役 yfw-kernel 等破坏性 ops）——单独逐项征询、不预设
   - 文档面 manual 行：说明书/宣传页 PDF 重建——重建前先做 `scripts/build_manual_pdf.py` 清洗（终审 carry-forward：:21 旧库绝对路径 BASE 相对化、:285 V2.7.2/2026-08-20 版本字面同步 2.8.0/2026-09-08，与 T3 promo 同批；T3/T4 已清洗范围 = build_promo_pdf.py + BUILD.md/manual .md，build_manual_pdf.py 不在其内）；`scripts/gen-icons.ps1:47` 旧路径顺带核；package-lock.json root version 2.7.5 与 package.json 2.8.0 drift（t2-minor1）后续清洗
 
+**执行记录（2026-09-08，S6 Batch B 完结）**：S6 Batch B（便携版交付 + 验收收口）完结——T0-T8 全过 + T8（本 commit）完结勾选（计划见 `docs/superpowers/plans/2026-09-08-s6-batchb-portable.md`；范围 = 图标统一 icon-logo/boost-logo / 便携出包 / 文档清洗收口 / 四层零残留审计 / GUI 全栈冒烟 / 双版并存 / 完结交接）。NSIS 安装包本批不构建（D6-B2 明确留后续出包批）；旧库/旧产物处置等破坏性 ops 不自动执行，随完结汇报逐项征询用户。
+- **Commit 链**：`1af70a4`（T0 计划成稿 8 Task）→ `579bac1`（T1 图标统一，D6-F/G/H）→ `9a4c495`（plan fence 修正 docs）→ `f51c4c9`（T3 出包修订，D6-B2/I）→ `318cc0e`（T4 文档清洗收口 + deferred minors + gen-icons.ps1 退役）→ `2dfbfb6`（T5 审计代码面清理）；T2（前置产物）/T6（GUI 冒烟）/T7（双版并存）为无 commit 验证任务；本 commit = T8 roadmap 完结。HEAD = 2dfbfb6。
+- **D6 决策全集补录（Batch A 定 D6-A~E，本批补 D6-B2/F/G/H/I）**：D6-B2 打包形态 = **便携版**（package-portable.cjs → `release/YFWorking/`），本轮不建 NSIS 安装包、installer 配置就位留后续出包批；D6-F 应用图标族统一 `YF/icon-logo.ai`（方形徽标）矢量渲染；D6-G UI 品牌 logo/favicon 统一 `YF/boost-logo.ai`（横版标识）矢量渲染；D6-H 渲染 PNG/ICO 资产 + 渲染脚本（`scripts/render-ai-assets.py` + png-to-ico.cjs 参数化）入 git、`.ai` 源留 `YF/` 不入库；D6-I 桌面快捷方式经 PowerShell `[Environment]::GetFolderPath('Desktop')` 真实桌面解析（OneDrive 重定向安全，解析失败回退 homedir）。
+- **便携出包 + 产物核对（T1-T3）**：public 10 资产替换为 icon-logo.ai/boost-logo.ai 渲染族（icon-256 中心 (200,92,37) 非白、icon-16 不透明 95%、icon.ico 6 entries/favicon.ico 4 entries、logo 512×356）；前置产物 dist（1984 modules）/kernel-dist cli.mjs（193864B）/runtime python（362M）/runtime skills（180M）；package-portable.cjs 补模板资源拷贝（build/templates/{agents,memory,tools}→release/YFWorking/runtime/，缺失 console.error+exit 1）与真实桌面解析；出包 [1/5]..[5/5] 全过含 icon 注入；`release/YFWorking/` du **1.3G**；verify-portable-layout.mjs 布局核对 EXIT 0（桌面快捷方式命中 `C:\Users\T203-15\Desktop\YFWorking.lnk`、electron.exe 215.2 MB、模板三组非空）。
+- **四层零残留审计（T5）**：代码面零残留——transcriptAdapter.test.ts 6 处 51309 fixture 裁决改 51517（fixture 语义 = 渲染层所连 bridge 地址 = 新版默认，生产缺省 getBridgeUrl()=51517；单文件 +6/-6，commit `2dfbfb6`），其余命中全落五类（fixture 字面/历史注释/第三方依赖/白名单区/untracked 素材）；产物面便携 kernel/cli.mjs **ponos=104 / anthropic=25**（25 处全白名单归因：`anthropic-version` 协议头×3、ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL env 兼容标识、skills 市场源 anthropics/skills、帮助文案，UA=Ponos-turbo/0.1，零旧 claude 逻辑），对照旧便携（claude-code-gui）**anthropic=871 / ponos=0**（20.91MB）；依赖面 deploy-smoke **3/3** + 便携 cli --help **exit 0**；测试面 npm test **145/145** + kernel-tests **50/50**。
+- **backlog⑥ CRLF 字节复核（T5）**：**关闭于「字节复核完成、无功能风险」**——全库无 .gitattributes，索引层 680 文件全量 LF（602 text `i/lf` + 80 binary `i/-text`，`i/crlf` 0 个），工作树 159 个 `w/crlf` 为 autocrlf=true 检出态、提交时自动归一 LF；.gitattributes 引入留待跨平台成员协作再实施（可选，非必需）。
+- **GUI 全栈冒烟（T6，隔离 home yfw-s6-smoke + PONOS_MOCK_API=1）**：自动行全绿——cscript VBS 拉起便携（electron 33084 + bridge 46700），8s 后 /health `{"status":"ok"}`、51517 LISTENING、kernel bootstrap 落 `<隔离home>/runtime/ponos-kernel/cli.mjs`（193864B 逐字节同源）；模板首启落位 agents **11/11** + memory/personal **7/7**（diff 与 build/templates 全等）；WS 会话 RESULT subtype=success usage 10/20 文本 "mock: 你好内核 (turn=1)"；browser-executor **15/15**；自启进程树 taskkill 回收、51517 零残留、在售 51309 未扰。**发现 F1（交付级，转后续批）**：portable 首启无 tools 模板播种方——agents 有 main.cjs:1159 `agents:sync`、memory/personal 有 bridge.mjs:823 ensurePersonalDir 播种，tools（runtime/tools README.md+yfw-helper）无对称代码路径（reviewer 限定：installer.nsh:246-261 对安装形态已有可选 tools→home 拷贝）。manual 授权行 M1-M4（窗口/托盘图标 icon-logo、Header/气泡 boost-logo、窗口标题版本）待用户在 GUI 人工核对。
+- **双版并存（T7）**：新版便携 51517（隔离 home yfw-s6-dual，bootstrap md5 `9b05f6ec`=新版包 kernel）与在售旧版 51309（ms92cd6u，PID 54408/77008，今日 11:05 重启致真实 home kernel 被旧包 e76efbbf 覆盖、S4 基线 86697d84 不可直接对照——报告披露改以「前后不变」断言）同机同开：双 /health 200 同时 LISTENING（51309 pid 54408 + 51517 pid 77216）；**5 面 kernel md5 前后不变**；真实 home/旧版包目录零新写入（时间戳验证）；并存期间新版 mock 会话 subtype=success；桌面双快捷方式并存（YFWorking.lnk 新版便携 + 旧版调试版 lnk 带 `--remote-debugging-port=9223`，未删改，BUILD.md:88 引用真实命中）；回收新版进程树 81052、51517 零残留、51309 不受扰。
+- **文档清洗收口（T4）**：build_manual_pdf.py BASE 相对化（os.path.dirname×2 对齐 promo 先例）+ 版本字面 2.8.0/2026-09-08；PDF 重建成功无缺依赖（manual 文本层 2.8.0×8/2026-09-08×2/51517×3 命中、promo 2.8.0×4）；Batch A deferred minors 收口：t1-minor2（verify-package-assets readdirSync import 删）、t2-minor1（package-lock root version→2.8.0）、t4-minor3（BUILD.md:57 表述避开 WinNAT 预留段 3095-3194）、t5-minor1（exit 清理注释改「文件头」）；gen-icons.ps1 `git rm` 退役（被 render-ai-assets.py+png-to-ico.cjs 取代，无独有逻辑丢失）。
+- **Batch B deferred minors 处置表（均记录不阻断）**：
+
+| # | 内容 | 处置 |
+|---|---|---|
+| t1b-minor1 | render 重跑在 public/ 留 favicon-*.png untracked 中间产物 | 记录——plan 决策允许（不入 commit，favicon.ico 已打包，重跑即再生成） |
+| t2b-minor1/2 | 体积口径（脚本十进制 339.2MB vs du 362M） | 记录——以 du 为准，报告双口径并存 |
+| t3b-minor1 | package-portable 模板拷贝仅查 build/templates 根不查组目录 | 记录——verify-portable-layout 脚本兜底，brief 仅要求根检查 |
+| t3b-minor2 | 桌面 lnk 检查 warn-only（重定向桌面场景） | 记录——S6_TEST_DESKTOP 测试注入，brief 设计如此 |
+| t4b-minor1 | package-lock packages[""] 仍 2.7.5 与根 2.8.0 并存 | 记录——brief 明示只改根；建议正式出包前同步 packages[""] |
+| t5b-minor1 | CRLF 计数漂移（报告 80/159 vs 实测 78/154、602+80=682 vs 自称 680） | 记录——报告表述级，结论不变 |
+| t5b-minor2 | kernel/*.mjs:1 注释所引 docs/superpowers/specs/2026-08-20-ponos-turbo-* 本库不存在（报告称「指向白名单」失实） | 记录——报告表述订正，裁决保留成立 |
+| t6b-minor1 | 报告基线写 b4182b6 实为 2dfbfb6 | 记录——冒烟物与 HEAD 一致，无实质影响 |
+| t6b-minor2 | F1 初报未提 installer.nsh 既有 tools 路径 | 记录——reviewer 限定已补，F1 精确表述 = portable 首启无 tools 播种 |
+| t6b-minor3 | tools「3 文件」子树实 4 文件措辞歧义 | 记录——报告表述级 |
+| t7b-minor1 | lnk 显示名误录——实际「YFWorking 调试版.lnk」 | 记录——目标/参数/并存事实均属实，GBK 乱码所致，reviewer 实测订正 |
+
+- **Review 门禁**：T0/T2 N/A（计划/无 commit 前置产物）；T1/T3/T4/T5 commit 任务各 1 轮 reviewer PASS（T5 PASS-with-minors）；T6/T7 无 commit 任务 PASS-with-minors（自动行全绿，manual 行随完结汇报呈用户）；deferred minor 与裁决全量记 scratch ledger `.superpowers/sdd/2026-09-08-s6-batchb-portable/progress.md`。
+- **回归（T8 完结复核）**：typecheck 0 error、npm test 145/145、kernel-tests 50/50、build 成功（verbatim 见 Batch B ledger/report）。
+- **后续批/开放项转交**：NSIS 安装包出包（D6-B2，installer 配置与产物身份已就位，build-installer.mjs 前置生成 runtime/python+skills 后实跑）；F1 portable tools 模板首启播种方（定机制后再出正式版）；旧图标程序化资产（favicon-*.png 中间产物、YF/ .ai 源处置）与 YF/ 素材旧路径（51309/claude-code-gui 红线外披露项）；manual GUI 行 M1-M4 待用户授权核对；browser-executor.test 5173 fixture 可选统一 5197、package-lock packages[""] 同步、.gitattributes 引入等建议项随常规改动处理；**旧库/旧产物处置（退役在售旧库 yfw-kernel/旧便携产物、清理 release/ 历史构建副本 YFWorking_ms92cd6u）继续列开放项集中清单，逐项征询后执行**。
+
 ---
 
 ## 开放项集中清单（跨 S3–S6，来自设计 §13）
