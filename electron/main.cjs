@@ -467,8 +467,8 @@ function createWindow() {
   const themeMeta = readPersistedTheme()
   const isGlass = !themeMeta || GLASS_THEMES.includes(themeMeta.theme)
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
+    width: 1100,
+    height: 720,
     minWidth: 900,
     minHeight: 600,
     title: 'YFWorking',

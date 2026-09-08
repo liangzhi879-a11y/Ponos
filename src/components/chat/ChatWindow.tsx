@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { ArrowDown, FolderOpen, Code2, FileSearch, Table2, ShieldCheck, Gauge, Puzzle } from 'lucide-react'
+import { ArrowDown, FolderOpen, Lightbulb } from 'lucide-react'
 import { Button } from '@/components/ui'
 import { ScrollArea } from '@/components/ui'
 import { MessageBubble } from './MessageBubble'
@@ -27,7 +27,37 @@ interface Props {
   conversationId: string
 }
 
-const SUGGESTION_ICONS = [FileSearch, Table2, ShieldCheck, Gauge, Code2, Puzzle]
+// 欢迎屏「使用提示」储备池：基于应用真实可用能力编写（工作目录/排队插话/轮次与子
+// Agent 状态/自动压缩/历史检索/智能体档案/技能库/自然语言拆解）。空态每次只展示
+// 随机一条（含去重轮换），供用户快速建立正确使用心智，而非推荐任务。
+const TIPS_POOL = {
+  'zh-CN': [
+    '提问前先设定工作目录——agent 会在该目录内读写文件，结果落盘位置可预期。',
+    '流式回复生成中随时按 Enter 排队补充要求，不会打断当前输出。',
+    '多轮任务推进时留意轮次状态条与子 Agent 悬浮条，可随时停止纠偏。',
+    '长会话会自动压缩并携带摘要延续，无需手动清理历史。',
+    '侧边栏可重命名、置顶、按会话集归类对话；在「历史」中搜索可跳回任一条消息。',
+    '对话可绑定不同智能体档案，任务类型不匹配时换一个再问。',
+    '内置技能覆盖文档处理、浏览器抓取、企业资质申报等场景，可在「技能」面板浏览启用。',
+    '把任务描述清楚（目标、范围、产出、验收标准），agent 会自动拆解成多轮步骤推进。',
+  ],
+  'en-US': [
+    'Set the working directory first — the agent reads and writes files under it, so results land where you expect.',
+    'While a reply is streaming, press Enter to queue extra instructions without interrupting output.',
+    'Watch the round status bar and running sub-agent bar on multi-round tasks; you can stop or redirect anytime.',
+    'Long conversations auto-compact and carry summaries forward — no manual cleanup needed.',
+    'Rename, pin, and group conversations from the sidebar; search History to jump back to any message.',
+    'Each conversation can bind a different agent profile — switch when the task type does not match.',
+    'Built-in skills cover documents, web scraping, qualification filing and more — browse them in the Skills view.',
+    'Describe the task clearly (goal, scope, output, acceptance) and the agent breaks it into multi-round steps.',
+  ],
+} as const
+function pickRandomTip(pool: readonly string[], exclude?: string): string {
+  // 排除当前展示条（去重轮换）；池空时退化为任意一条
+  const candidates = pool.filter(t => t !== exclude)
+  const source = candidates.length > 0 ? candidates : pool
+  return source[Math.floor(Math.random() * source.length)]
+}
 
 export function ChatWindow({ conversationId }: Props) {
   // 选择器订阅（非整 store）：流式风暴下每事件 set() 只重建 conversations 等受影响
@@ -38,7 +68,7 @@ export function ChatWindow({ conversationId }: Props) {
   const editMessage = useChatStore(s => s.editMessage)
   const { setPendingInput } = useUIStore()
   const { settings } = useSettingsStore()
-  const { t } = useTranslation()
+  const { t, lang } = useTranslation()
   const subAgentTasks = useChatStore(s => s.subAgentTasks[conversationId])
   // v2 按需加载：切换会话时消息异步从内核 transcript 拉取，加载中显示轻量占位而非空态
   const conversationLoading = useChatStore(s => !!s.conversationLoading[conversationId])
@@ -46,8 +76,12 @@ export function ChatWindow({ conversationId }: Props) {
   const allAgents = useAgentStore(s => s.agents)
   const scrollRef = useRef<HTMLDivElement>(null)
   const [showScrollButton, setShowScrollButton] = useState(false)
-  const [selectedSuggestion, setSelectedSuggestion] = useState<string | null>(null)
   const [highlightId, setHighlightId] = useState<string | null>(null)
+  // 使用提示：空态单条展示。切换会话/语言时重抽一条
+  const [tip, setTip] = useState<string>(() => pickRandomTip(TIPS_POOL[lang] ?? TIPS_POOL['zh-CN']))
+  useEffect(() => {
+    setTip(pickRandomTip(TIPS_POOL[lang] ?? TIPS_POOL['zh-CN']))
+  }, [conversationId, lang])
 
   const conversation = conversations.find(c => c.id === conversationId)
   const messages = conversation?.messages || []
@@ -55,6 +89,14 @@ export function ChatWindow({ conversationId }: Props) {
   // 加载中但历史非空（索引里 messageCount>0）：显示占位，不闪"新对话"空态
   const loadingWithHistory = conversationLoading && isEmpty && (conversation?.messageCount ?? 0) > 0
   const [showDirPicker, setShowDirPicker] = useState(false)
+  // 空态停留时缓慢轮换单条 tips（10s/条、去重），让储备池内容逐步露出
+  useEffect(() => {
+    if (!isEmpty) return
+    const id = setInterval(() => {
+      setTip(cur => pickRandomTip(TIPS_POOL[lang] ?? TIPS_POOL['zh-CN'], cur))
+    }, 10_000)
+    return () => clearInterval(id)
+  }, [isEmpty, conversationId, lang])
 
   // Virtualized message list: only the visible window is rendered inside the
   // radix ScrollArea viewport (the real scroll container), so a 10k-message
@@ -75,11 +117,6 @@ export function ChatWindow({ conversationId }: Props) {
   messagesRef.current = messages
   const virtualizerRef = useRef(virtualizer)
   virtualizerRef.current = virtualizer
-
-  const welcomeSuggestions = SUGGESTION_ICONS.map((Icon, i) => ({
-    icon: Icon,
-    text: t(`chat.suggestion${i + 1}` as const),
-  }))
 
   // Smart auto-scroll: only follow when the user is pinned to the bottom.
   // Once the user scrolls up to read history, stop forcing — the "scroll to
@@ -195,11 +232,6 @@ export function ChatWindow({ conversationId }: Props) {
     }
   }
 
-  const handleSuggestionClick = (suggestion: { icon: any; text: string }) => {
-    setSelectedSuggestion(suggestion.text)
-    setPendingInput(suggestion.text, true)
-  }
-
   return (
     <div className="flex-1 flex flex-col min-h-0 relative">
       <HealthGlow conversationId={conversationId} />
@@ -217,43 +249,13 @@ export function ChatWindow({ conversationId }: Props) {
         ) : isEmpty ? (
           /* YFWorking branded empty state */
           <div className="flex-1 flex flex-col items-center justify-center h-full px-6 py-8 animate-fade-in select-none">
-            {/* Brand hero */}
-            <div className="relative mb-8">
-              <div
-                className="w-20 h-20 rounded-3xl flex items-center justify-center"
-                style={{
-                  background: 'linear-gradient(135deg, var(--brand-500), var(--brand-600))',
-                  boxShadow: '0 8px 32px var(--brand-500, rgba(255,106,0,0.35)), inset 0 1px 0 rgba(255,255,255,0.2)',
-                }}
-              >
-                <span className="text-3xl font-bold text-inverse tracking-tight select-none"
-                  style={{ fontFamily: '"Sora", "Inter", system-ui, sans-serif' }}
-                >YF</span>
-              </div>
-              {/* Decorative ring（旋转已静态化：旋转动画每帧改包围盒，旧 GPU 上触发整层重绘级负载） */}
-              <div
-                className="absolute -inset-3 rounded-[20px] -z-10 opacity-30"
-                style={{
-                  border: '2px dashed var(--brand-500, rgba(255,106,0,0.5))',
-                }}
-              />
-            </div>
-
-            {/* Title */}
-            <h1
-              className="text-2xl font-bold mb-1 tracking-tight"
-              style={{
-                fontFamily: '"Sora", "Inter", system-ui, sans-serif',
-                background: 'linear-gradient(135deg, var(--brand-500), var(--brand-300))',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-              }}
-            >
-              YFWorking
-            </h1>
-            <p className="text-sm text-tertiary mb-6 max-w-md text-center leading-relaxed">
-              {t('chat.welcomeSubtitle')}
-            </p>
+            {/* Brand hero：boost-logo 横版整标（纯图形；品牌字标由下方 h1 承担，与 Header 图文分工一致） */}
+            <img
+              src={`${import.meta.env.BASE_URL}logo.png`}
+              alt="YFWorking"
+              draggable={false}
+              className="w-44 h-auto object-contain mb-10 select-none"
+            />
 
             {/* Working directory selector */}
             <div className="mb-8 w-full max-w-md">
@@ -308,37 +310,14 @@ export function ChatWindow({ conversationId }: Props) {
               )
             })()}
 
-            {/* Suggestions */}
-            <div className="w-full max-w-lg">
-              <p className="text-[11px] text-tertiary mb-3 font-semibold uppercase tracking-wider text-center">
-                {t('chat.quickStart')}
+            {/* 使用提示：非推荐任务——储备池随机单条展示（10s 轮换），引导建立正确使用心智 */}
+            <div className="mb-2 w-full max-w-md">
+              <p className="text-[11px] text-tertiary mb-2 font-semibold uppercase tracking-wider text-center">
+                {t('chat.usageTips')}
               </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {welcomeSuggestions.map((suggestion) => {
-                  const Icon = suggestion.icon
-                  return (
-                    <button
-                      key={suggestion.text}
-                      onClick={() => handleSuggestionClick(suggestion)}
-                      className={cn(
-                        'flex items-center gap-3 text-left px-4 py-3 rounded-xl border border-subtle',
-                        'hover:bg-elevated hover:border transition-all duration-200 hover:shadow-sm',
-                        'group',
-                        selectedSuggestion === suggestion.text
-                          ? 'border-brand-500/40 bg-brand-500/8 shadow-sm'
-                          : 'text-tertiary hover:text-primary',
-                      )}
-                    >
-                      <Icon className={cn(
-                        'w-4 h-4 shrink-0 transition-colors',
-                        selectedSuggestion === suggestion.text
-                          ? 'text-brand-500'
-                          : 'text-tertiary group-hover:text-brand-500/60',
-                      )} />
-                      <span className="text-sm leading-snug">{suggestion.text}</span>
-                    </button>
-                  )
-                })}
+              <div className="flex items-start gap-2 px-3.5 py-2.5 rounded-lg border border-subtle bg-elevated/30">
+                <Lightbulb className="w-3.5 h-3.5 shrink-0 mt-px text-brand-500/50" />
+                <span className="text-[13px] leading-relaxed text-tertiary">{tip}</span>
               </div>
             </div>
 
