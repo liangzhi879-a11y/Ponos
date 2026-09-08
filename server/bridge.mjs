@@ -19,7 +19,7 @@ import * as doubao from './doubao.mjs'
 import { createTranscriptHandlers } from './transcript.mjs'
 import { makeBrowserRouter } from './browser-routing.mjs'
 
-const PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51309', 10)
+const PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51517', 10)
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 /** 读取并 JSON.parse 请求体（各 POST 路由共用）。 */
@@ -202,8 +202,8 @@ function copyWithRewrite(srcDir, destDir, placeholder, yfwRootAbs) {
 // 与 main.cjs 的 findPythonExe 同路径约定），保证打包版离线可用；开发环境回退 PATH。
 // Python 解释器候选链：app 根 runtime → 上溯两级 → resources/runtime
 // （electron-builder extraResources 落点 <app>/resources/runtime/python）。
-// 2026-08-22：原实现只查 app 根 runtime，bootstrap 缓存内核（~/.yfworking/
-// runtime/kernel）模式下找不到安装目录 python，内核 OCR/Vision 静默不可用。
+// 2026-08-22：原实现只查 app 根 runtime，内核运行在 home bootstrap 缓存模式
+// 下找不到安装目录 python，内核 OCR/Vision 静默不可用。
 function findPythonExe() {
   const candidates = [
     join(__dirname, '..', 'runtime', 'python', 'python.exe'),
@@ -475,7 +475,7 @@ function saveConfig(updates) {
 }
 
 // ---------------------------------------------------------------------------
-// Kernel self-bootstrap (D3)：把安装/源码内核同步到 <home>/runtime/kernel/，供
+// Kernel self-bootstrap (D3)：把安装/源码内核同步到 <home>/runtime/ponos-kernel/，供
 // install 候选缺失时兜底（findYFWorking ③）与诊断检查——缓存自身必须完整可运
 // 行：源若是目录级多文件内核（repo/kernel/ 平铺源码，cli.mjs 相对 import 同目录
 // 兄弟文件与 ../version.mjs），整目录内容同步，并把逃逸到上一级的依赖镜像到
@@ -521,7 +521,7 @@ function syncDirToMirror(srcDir, destDir) {
 
 function mirrorKernelParentDeps(srcDir, destBase) {
   // 多文件源码内核把 import 逃逸到 kernel/ 上一级（当前仅 ../version.mjs）。
-  // 缓存 cli.mjs 位于 <home>/runtime/kernel/，其 '../' 解析到 <home>/runtime/，
+  // 缓存 cli.mjs 位于 <home>/runtime/ponos-kernel/，其 '../' 解析到 <home>/runtime/，
   // 故把源上一级被引用文件镜像到 destBase 同相对位置，缓存才完整可运行。
   // 自足 bundle 无 '../' 依赖，此步为空操作。目前内核闭包仅一级 '../'；若将来
   // 出现更深层级逃逸需扩展镜像深度。
@@ -554,7 +554,7 @@ function bootstrapKernelToUserDir(kernel) {
   // 拷贝目标随 YFWORKING_HOME（T2 home 解析）；源/目标清单无差异时不重写。
   try {
     const destBase = join(YFW_HOME, 'runtime')
-    const destKernelDir = join(destBase, 'kernel')
+    const destKernelDir = join(destBase, 'ponos-kernel')
     const destCli = join(destKernelDir, 'cli.mjs')
     const dirChanged = syncDirToMirror(dirname(kernel), destKernelDir)
     const parentChanged = mirrorKernelParentDeps(dirname(kernel), destBase)
@@ -586,7 +586,7 @@ function findYFWorking() {
   }
   // 2) kernel-paths 统一解析（与诊断探针共享 electron/kernel-paths.cjs，单一事实
   //    来源）：install 命中 <app>/kernel/cli.mjs（源码）或 kernel-dist/cli.mjs
-  //    （bundle）→ 直接组装。home bootstrap 缓存（<home>/runtime/kernel，路径随
+  //    （bundle）→ 直接组装。home bootstrap 缓存（<home>/runtime/ponos-kernel，路径随
   //    YFWORKING_HOME）随启动同步（D3），install 缺失时作兜底（3）。
   const rp = resolveKernelPaths({ appDir: join(__dirname, '..') })
   if (rp.install.kernel) {

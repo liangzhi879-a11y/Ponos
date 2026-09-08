@@ -7,7 +7,11 @@
 // Files 下 EPERM）→ kernel-launch 误报 exit=1。统一规则（S4 净室改接后）：
 // 解析顺序与 findYFWorking 一致——① <appRoot>/kernel/cli.mjs（或上溯一级 /
 // kernel-dist bundle）安装候选命中即用；② home bootstrap 缓存
-// （runtime/kernel）作 install 缺失时的兜底（升级/卸载残留）。
+// （runtime/ponos-kernel）作 install 缺失时的兜底（升级/卸载残留）。
+// 缓存目录名专用为 ponos-kernel（D3）：默认 home（未设 YFWORKING_HOME）下
+// bootstrap 也不与在售 legacy 缓存 ~/.yfworking/runtime/kernel（cli.mjs +
+// vendor/ripgrep）互覆——2026-09-08 事故实证：曾以默认 home 覆写该目录，清掉
+// 内置 harness 的 rg.exe → Grep/Glob ENOENT。
 //
 // 运行时 = node（D1）：内核以 `"<node>" "<kernel>"` 方式运行，node 定位由调用方
 // 提供（bridge = process.execPath；Electron main = resolveNode() 的 bundled
@@ -32,7 +36,7 @@ const { resolveYfwHome } = require('../server/yfw-home.cjs')
  */
 function resolveKernelPaths({ appDir } = {}) {
   const yfwHome = resolveYfwHome()
-  const cachedKernel = join(yfwHome, 'runtime', 'kernel', 'cli.mjs')
+  const cachedKernel = join(yfwHome, 'runtime', 'ponos-kernel', 'cli.mjs')
 
   const appRoot = appDir || join(__dirname, '..') // electron/ 的上层 = app 根
   const candidates = [
