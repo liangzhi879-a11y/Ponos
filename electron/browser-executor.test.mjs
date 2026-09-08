@@ -8,6 +8,17 @@ import path from 'node:path'
 // 纯 node 可测；窗口/CDP/可信输入留待 Task 7 端到端人工验收。
 import { buildClickBoxScript, buildAxTreeCollectorScript, buildScrollDeltaScript, buildJsWrapperScript, finalizeJsResult, createDownloadHandler, isBlockedUrl, isDownloadishUrl } from './browser-executor.cjs'
 
+// S6 环境性隔离：真实 home 的 browser-whitelist.json allow 域会污染单测断言，
+// 故在 import 后、用例前把数据根指向临时空目录（browser-common 惰性读取，运行期生效）
+const { mkdtempSync, rmSync } = fs
+const { tmpdir } = os
+const { join } = path
+const isoHome = mkdtempSync(join(tmpdir(), 'yfw-bexec-'))
+process.env.YFWORKING_HOME = isoHome
+process.env.CLAUDE_CONFIG_DIR = isoHome
+// 文件最末追加清理（node --test 进程退出即回收，亦可用 test.after 或 process.on('exit')）
+process.on('exit', () => { try { rmSync(isoHome, { recursive: true, force: true }) } catch {} })
+
 test('buildClickBoxScript 含 ref 解析与 getBoundingClientRect', () => {
   const s = buildClickBoxScript(12)
   assert.match(s, /__brRefs\[12\]/)
