@@ -11,7 +11,17 @@ const { execSync } = require('child_process')
 const ROOT = path.resolve(__dirname, '..')
 const SCRIPTS = path.resolve(__dirname)
 let RELEASE = path.join(ROOT, 'release', 'YFWorking')
-const DESKTOP = path.join(require('os').homedir(), 'Desktop')
+// S6 Batch B：真实桌面解析（OneDrive 重定向安全），PowerShell 查询一次
+let DESKTOP
+try {
+  DESKTOP = execSync(
+    "powershell -NoProfile -Command \"[Environment]::GetFolderPath('Desktop')\"",
+    { encoding: 'utf8', timeout: 10000 },
+  ).trim()
+} catch (err) {
+  console.warn('  WARNING: PowerShell Desktop resolution failed, falling back to homedir/Desktop:', err.message)
+  DESKTOP = path.join(require('os').homedir(), 'Desktop')
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 function cpDir(src, dest, ignoreList = ['node_modules']) {
@@ -90,6 +100,20 @@ cpDir(path.join(ROOT, 'dist'), path.join(RELEASE, 'dist'))
 cpDir(path.join(ROOT, 'electron'), path.join(RELEASE, 'electron'))
 cpDir(path.join(ROOT, 'server'), path.join(RELEASE, 'server'))
 cpDir(path.join(ROOT, 'public'), path.join(RELEASE, 'public'))
+
+// ── Copy built-in agent/memory/tools templates ──────────────────────────
+// 对齐 electron-builder extraResources `to: runtime/agents|memory|tools`
+//（T1 改接源：build/templates/{agents,memory,tools}）语义；main.cjs dev 形态
+// 候选解析 app 根 runtime/（main.cjs:46 先例）→ 便携包落 <app>/runtime/ 同址。
+const templatesSrc = path.join(ROOT, 'build', 'templates')
+if (!fs.existsSync(templatesSrc)) {
+  console.error('  ERROR: build/templates not found — portable package would be incomplete, aborting')
+  process.exit(1)
+}
+for (const group of ['agents', 'memory', 'tools']) {
+  cpDir(path.join(templatesSrc, group), path.join(RELEASE, 'runtime', group), ['__pycache__'])
+  console.log('  runtime/' + group + ' templates packaged')
+}
 
 // ── Copy desktop pet (independent Python pet: runtime script + assets) ──
 const petSrc = path.join(ROOT, 'pet')
