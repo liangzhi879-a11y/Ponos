@@ -38,6 +38,16 @@ const sessionState = new Map<string, { assistantId: string; blockIds: Record<str
 const streamingSessions = new Set<string>()
 let lastSessionId: string | null = null
 
+// 应用层心跳（WS 半开自愈，S5 ②-07）：TCP 假死时浏览器 send 静默失败且不触发
+// error/close，仅靠传输层 ping 无法感知失联。GUI 每 15s 发一次应用层 ping，
+// 60s 内未收到任何消息（含流式事件）即判死强关 ws → 走既有指数退避重连自愈。
+// bridge 收 ping 只回 pong、不判超时（判死在 GUI 侧，S5 D3）。
+const WS_HEARTBEAT_INTERVAL_MS = 15000
+const WS_HEARTBEAT_TIMEOUT_MS = 60000
+let lastWsActivity = Date.now()
+let heartbeatDead = false
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null
+
 // 紧急插话缓冲：interject() 发送 now 优先级消息后置位，
 // 被打断轮次的 result 到达时消费（建插话轮流式占位），10s 无响应兜底清除。
 const pendingInterject = new Map<string, true>()
@@ -99,17 +109,44 @@ function scheduleReconnect() {
   }, delay)
 }
 
+function stopHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer)
+    heartbeatTimer = null
+  }
+}
+
+function startHeartbeat() {
+  stopHeartbeat() // 建连/重连先停旧 interval，杜绝重复心跳
+  heartbeatTimer = setInterval(() => {
+    const s = ws
+    if (!s || s.readyState !== WebSocket.OPEN) return
+    const idle = Date.now() - lastWsActivity
+    if (idle > WS_HEARTBEAT_TIMEOUT_MS) {
+      // 60s 无任何消息 → 判死：强关 ws 触发 onclose → scheduleReconnect 指数退避自愈
+      heartbeatDead = true
+      try { s.close() } catch {}
+    } else {
+      // 每 15s 应用层 ping；bridge 收 ping 回 pong（pong 到达刷新 lastWsActivity）
+      try { s.send(JSON.stringify({ type: 'ping' })) } catch {}
+    }
+  }, WS_HEARTBEAT_INTERVAL_MS)
+}
+
 export function getOrCreateWS(): WebSocket | null {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
     return ws
   }
   try {
     ws = new WebSocket(WS_URL)
+    heartbeatDead = false // 重建路径清判死标记，等待 onopen 重启心跳
     ws.onopen = () => {
       console.log('[WS] connected')
       wsReady = true
       reconnectAttempts = 0
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+      lastWsActivity = Date.now() // 建连即视为活跃（心跳从此刻起算）
+      startHeartbeat()
       const q = pendingQueue
       pendingQueue = []
       q.forEach(fn => fn())
@@ -117,6 +154,8 @@ export function getOrCreateWS(): WebSocket | null {
     ws.onmessage = (raw) => {
       try {
         const msg = JSON.parse(raw.data.toString())
+        lastWsActivity = Date.now() // 任何下行消息（含流式事件/pong）都算活动
+        if (msg.type === 'pong') return // pong 仅心跳应答，不进业务分发
         console.log('[WS] recv:', msg.type, msg.sessionId?.slice(0,8) || '', msg.data?.type || '')
         handleMessage(msg)
       } catch (e) { console.error('[WS] parse error:', e) }
@@ -125,6 +164,7 @@ export function getOrCreateWS(): WebSocket | null {
       console.log('[WS] closed:', ev.code, ev.reason || '')
       wsReady = false
       ws = null
+      stopHeartbeat() // 关闭/重连等待期间心跳停转，onopen 时再启
       scheduleReconnect()
     }
     ws.onerror = () => { wsReady = false }
