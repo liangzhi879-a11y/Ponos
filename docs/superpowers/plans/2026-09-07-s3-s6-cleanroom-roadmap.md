@@ -109,10 +109,43 @@
 **功能冒烟矩阵**：浏览器/填表/抓取/文档/表格/打包/宠物/技能/企微等主要功能，新旧两版同用例对照。
 
 【推进标注——写完整 plan 前必须补】：
-- [ ] 冒烟矩阵用例逐项脚本化（参照旧库现有冒烟/回归资产）
-- [ ] 打包产物结构核对清单（resources/app、kernel-dist 落位）
-- [ ] 双版并存运行验证的时长与资源（同机同开）
-- [ ] 旧库/旧产物处置（退役 yfw-kernel 等破坏性操作）——单独逐项征询，不预设
+- [x] 冒烟矩阵用例逐项脚本化（参照旧库现有冒烟/回归资产）——（归 Batch B，2026-09-08）
+- [x] 打包产物结构核对清单（resources/app、kernel-dist 落位）——（归 Batch B，2026-09-08；verify-package-assets.mjs 已就绪，T1）
+- [x] 双版并存运行验证的时长与资源（同机同开）——（归 Batch B，2026-09-08）
+- [x] 旧库/旧产物处置（退役 yfw-kernel 等破坏性操作）——单独逐项征询，不预设（归 Batch B，2026-09-08）
+
+**执行记录（2026-09-08，S6 Batch A 完结）**：S6 Batch A（收编与准备迭代）完结——T0-T6 全过 + T7（本 commit）完结勾选（计划见 `docs/superpowers/plans/2026-09-08-s6-packaging-prep.md`；范围 = 模板收编/版本身份/脚本与文档清洗批/测试面补齐/注释一致性）。出包实跑、四层审计产物面、GUI 冒烟、双版并存、破坏性 ops 不在本批执行，遗留交接见文末 Batch B 清单。
+- **Commit 链**：`a502665`（T0 计划入库）→ `b51e787`（T1 内置模板收编）→ `d169b6b`（T2 版本身份落位）→ `f56ce5e`（T3 脚本清洗批）→ `cc651ec`（T4 文档清洗批）→ `876def8`（T5 测试面补齐）→ `bbfb346`（T6 S5 minor 注释一致性）→ T7（本 commit，roadmap S6 节完结）。并行 agentloop 计划提交 `ba87c8e`/`917d43b`（`docs(spec)`/`docs(s6-agentloop)`，插于 d169b6b 与 f56ce5e 间、f56ce5e 与 cc651ec 间）为其它子工程工作（本批 range 内插入、非 S6 产物；review 按实际父链复核，零改动）。
+- **Decision 全集（D6-A~E，2026-09-08 用户定案）**：D6-A 版本 = package.json **2.7.5 → 2.8.0**（净室首版，触发 installer.nsh 版本比较覆盖升级语义；version.mjs 不改）；D6-B 产物身份 = **正式替换身份**——appId `com.yfworking.desktop` / productName `YFWorking` 与在售一致，安装形态经 installer.nsh 版本比较覆盖升级；双版并行走便携/dev 目录隔离 + `YFWORKING_HOME` userData 重定向兜底（main.cjs 行为不变，仅注释定案）；D6-C 内置模板源 = agents/memory/tools 收编 `build/templates/`（git 受控），python 与 skills 维持构建期组装 `runtime/`；D6-D 冒烟口径 = Batch B 自动为主 + 授权 manual 行（S5 遗留视觉/注释 minor 随 Batch B GUI 冒烟覆盖）；D6-E ②-08 保持 backlog（产品无热切需求，结论见下）。
+- **S6 backlog ①-⑩ 处置状态**（出处 = §S4「T6 backlog 显式登记」+ §S5 移交）：
+
+| # | 登记项 | 处置（S6 Batch A） |
+|---|---|---|
+| ① | `kernel/cli.mjs:5` spawn 注释措辞统一为净室语义（YFWORKING_KERNEL，D8） | 已处理关闭——现注释即为净室语义（`YFWORKING_KERNEL` 逃生口候选 #1），本批复核确认；kernel 本体零改动原则保持 |
+| ② | installer.nsh 技能数硬编码（65→85 校准后仍为固定计数）与手册版本不一致 | T1 去硬编码：弹窗文案去「85 个」计数、marker `skills`/`deployedCount` → `"bundle"`（随出包机技能库动态变化）；手册版本由 T4 文档清洗统一至 2.8.0 |
+| ③ | build_promo_pdf.py BASE 硬编码路径参数化 | T3 处理：BASE 改 repo 根相对解析，footer/c-foot 版本字面 V2.7.2→V2.8.0；宣传页 logo（`docs/manual/images/logo_新远方数据LOGO横版.png`）已在净室受控，收编确认 |
+| ④ | BUILD.md/docs/manual 旧端口（51309/5173）与旧版本/日期文档引用清洗 | T4 处理：BUILD.md + 产品使用说明书 51309→51517、补 5197/4197、pet 源改接、2.7.2/2026-08-20→2.8.0/2026-09-08；扫描 0 命中（bridge-contract §10 对照表 51309→51517 历史映射行属例外白名单，未触碰） |
+| ⑤ | 产物身份 appId/productName 区分决策 | T2 落位（D6-A/D6-B）：version 2.8.0 + 正式替换身份定案注释/取值同步 electron-builder.yml、main.cjs、bridge-contract §10 |
+| ⑥ | CRLF/.gitattributes 字节复核 | 本轮未处理——归 Batch B 字节复核（出包前字节审计） |
+| ⑦ | 根 diag-yfw.bat（legacy 安装诊断工具，bun 布局）退役 | T3 执行 `git rm` 退役删除——净室运行时 = node（D1），整文件失效且无独有可复用逻辑；净室诊断 = 应用内「诊断」面板 + NSIS 自身机制 |
+| ⑧ | verify-permission-flow.mjs `CLAUDE_CODE_USE_NATIVE_FILE_SEARCH:'true'` env 残留 | T3 删除该行（旧内核 rg 语义，ponos 内核忽略） |
+| ⑨ | electron-builder.yml extraResources 源悬空（runtime/agents 等） | T1 改接（D6-C）：agents/memory/tools 三段源 → `build/templates/` 受控源；python/skills 保持构建期组装源并登记预检；新增 `scripts/verify-package-assets.mjs`（T1）供 Batch B 出包前复用 |
+| ⑩ | electron-builder.yml compression 段注释 bun.exe 残留措辞 | T3 清洗：`(bun.exe, node.exe, Python wheels, embedded CLI bundle)` 去 bun.exe；全文 bun.exe 0 命中（「bun 不随包」否定表述无 bun.exe 字面，保留） |
+
+- **②-08 结论（S5 延后项，D6-E）**：结论草稿由 T6 拟定、T7 落位 roadmap，全文如下。
+  > ②-08 set_effort/switch_provider：内核已支持（kernel/cli.mjs:595/620）；净室 bridge 未透传、GUI 无档位入口（pd 面板属 v3 排除）；产品侧无热切需求 → 保持 backlog，评估触发条件 = 产品明确需要会话内切换 provider/思考深度时，按 pd bridge 语义 diff 最小透传（bridge 分支 + GUI 菜单项），不移植 v3 面板。
+- **S5→S6 backlog 其余移交项**：browser-executor.test isBlockedUrl 环境性失败（真实 home whitelist 污染断言）＝ T5 数据根隔离修复消除（145/145 全绿）；S5 minor = 注释类 T6 就地处理、视觉/纯内存类归 Batch B GUI 冒烟（D6-D，见下）。
+- **S5 minor 处置**：注释类就地处理——T6 在 `src/hooks/useYFWCLI.ts` heartbeatDead 声明前插入 1 行语义注释（S5 r2 minor「heartbeatDead 只写不读」，行为零改动，commit `bbfb346`）；判死兜底 :127 注释经核与实现逐字相符（判死 = 置位 + `s.close()` → onclose → `scheduleReconnect` 指数退避，无额外 taskkill/强杀），条件式授权不成立未改写，r2 minor 消解；LoopStatusBar/CompactingBar 组件注释与视觉类归 Batch B GUI 冒烟覆盖（D6-D）。
+- **回归**：npm test **145/145**（默认 home）、kernel-tests **50/50**、typecheck 0 error、build 成功——T5 修复环境性失败后全量即此值，T7 完结复核同值（verbatim 见 Batch A ledger/report）。
+- **Review 门禁**：T0 N/A（纯文档 commit）；T1-T6 各 1 轮 reviewer 过门（0 blocking；deferred minor 与 ⚠️ 裁决全量记 scratch ledger `.superpowers/sdd/2026-09-08-s6-packaging-prep/progress.md`，随 Batch B 处置）。
+- **Batch B 遗留（交接清单）**：
+  - 打包实跑出包 + 产物结构核对清单定稿（resources/app、kernel-dist 落位）——出包机先跑 `scripts/verify-package-assets.mjs` 预检（T1 已就绪）；构建期组装源 runtime/python、runtime/skills 由 build-installer.mjs 前置生成
+  - 四层零残留审计收口——产物面（安装包内 cli.mjs 标记探测：ponos 标记 > 0 且 anthropic 标记 = 0，对照旧内核 21.9MB/409 命中）为 Batch B 必做项；代码面全库 grep 复核、依赖面（deploy-smoke 断言已入库 T5）、测试面基线（npm test 145/145 + kernel-tests 50/50）Batch A 已具备，出包后全量复核
+  - .gitattributes/CRLF 字节复核（backlog⑥）
+  - 冒烟矩阵用例逐项脚本化 + GUI 全栈功能冒烟（自动为主 + 授权 manual 行，D6-D；S5 视觉/注释 minor 随行覆盖）
+  - 双版并存运行验证（时长与资源、同机同开）
+  - 旧库/旧产物处置（退役 yfw-kernel 等破坏性 ops）——单独逐项征询、不预设
+  - 文档面 manual 行：说明书/宣传页 PDF 重建（版本字面已随 T3/T4 落 2.8.0）；package-lock.json root version 2.7.5 与 package.json 2.8.0 drift（t2-minor1）后续清洗
 
 ---
 
