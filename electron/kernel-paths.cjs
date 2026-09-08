@@ -12,6 +12,7 @@
 const { existsSync } = require('fs')
 const { join } = require('path')
 const os = require('os')
+const { resolveYfwHome } = require('../server/yfw-home.cjs')
 
 /**
  * 解析内核/bun 路径。
@@ -25,7 +26,7 @@ const os = require('os')
  * }}
  */
 function resolveKernelPaths({ appDir } = {}) {
-  const yfwHome = join(os.homedir(), '.yfworking')
+  const yfwHome = resolveYfwHome()
   const cachedKernel = join(yfwHome, 'runtime', 'kernel', 'cli.mjs')
   const cachedBun = join(yfwHome, 'runtime', 'bun', 'bun.exe')
 

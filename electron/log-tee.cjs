@@ -15,7 +15,7 @@
 'use strict'
 const { existsSync, statSync, mkdirSync, renameSync, readFileSync, appendFileSync } = require('fs')
 const { join } = require('path')
-const os = require('os')
+const { resolveYfwHome } = require('../server/yfw-home.cjs')
 
 const ts = () => new Date().toISOString()
 
@@ -26,7 +26,7 @@ function createTee(writeFn) {
   }
 }
 
-function initLogTee({ logDir = join(os.homedir(), '.yfworking', 'logs') } = {}) {
+function initLogTee({ logDir = join(resolveYfwHome(), 'logs') } = {}) {
   mkdirSync(logDir, { recursive: true })
   const logPath = join(logDir, 'app.log')
 

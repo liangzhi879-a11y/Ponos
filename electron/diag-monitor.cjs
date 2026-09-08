@@ -1,10 +1,10 @@
 'use strict'
 const { existsSync, readFileSync, accessSync, mkdirSync, writeFileSync, rmSync, appendFileSync, statSync } = require('fs')
 const { join } = require('path')
-const os = require('os')
 const http = require('http')
 const { spawn, spawnSync } = require('child_process')
 const { resolveKernelPaths } = require('./kernel-paths.cjs')
+const { resolveYfwHome } = require('../server/yfw-home.cjs')
 
 const GROUPS = ['core', 'session', 'browser', 'doc', 'extras', 'config', 'network', 'render']
 
@@ -38,7 +38,7 @@ const CHECKS = [
   { id: 'render-health', group: 'render', label: 'diagnostic.check.renderHealth' },
 ]
 
-const YFW_HOME = join(os.homedir(), '.yfworking')
+const YFW_HOME = resolveYfwHome()
 
 // 探针 stderr 落盘（与 bridge.mjs 同款环形策略，共用同一文件）：诊断探针
 // 失败（如 EPERM）时 stderr 原文必须可见，否则 kernel-stderr 检查项永远

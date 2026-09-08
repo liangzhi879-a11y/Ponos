@@ -14,6 +14,7 @@ const fs = require('fs')
 const os = require('os')
 const http = require('http')
 const WebSocket = require('ws')
+const { resolveYfwHome } = require('../server/yfw-home.cjs')
 
 // 个人经验库（experience.mjs）+ 导出/导入（packager.mjs）。server/ 为 ESM，
 // Node 22+ 支持 require() ESM（无顶层 await 的模块可被同步加载）。
@@ -83,6 +84,14 @@ if (process.platform === 'win32') {
   try { app.setAppUserModelId('com.yfworking.desktop') } catch {}
 }
 
+// D6：dev 双版 userData 隔离——设置 YFWORKING_HOME 时把 Electron userData
+//（默认 %APPDATA%\yfworking-gui）重定向到 <数据根>/userData，避免净室新版与
+// 在售旧版同机并行时 userData（settings/主题/缓存）互踩；未设 env 时保持
+// Electron 默认行为（单版场景）。安装版产物身份（appId/productName）归 S6。
+if (process.env.YFWORKING_HOME) {
+  try { app.setPath('userData', path.join(resolveYfwHome(), 'userData')) } catch {}
+}
+
 // 旧显卡/驱动不稳的机器上 GPU 进程可能因 TDR 等被系统重置。
 // 默认 Chromium 崩溃重试 3 次后放弃 GPU 进程（整窗黑屏/合成失效），
 // 去掉该上限让 GPU 进程自动拉起；崩溃时由 child-process-gone 兜底转极速模式。
@@ -134,7 +143,7 @@ let doubaoBusy = false          // 生成请求在途标记（空闲销毁不得
 let doubaoLastUse = 0           // 最近一次生成/捕获活动时间戳
 let doubaoIdleTimer = null      // 空闲销毁轮询定时器
 // 豆包会话文件：契约与 server/doubao.mjs 的 sessionFile() 一致
-const DOUBAO_SESSION_FILE = path.join(os.homedir(), '.yfworking', 'doubao-session.json')
+const DOUBAO_SESSION_FILE = path.join(resolveYfwHome(), 'doubao-session.json')
 const DOUBAO_URL = 'https://www.doubao.com/chat/create-image'
 let bridgeProcess = null
 let bridgeAdopted = false           // 端口上跑的是"接入"的外部 bridge（非本进程 spawn）
@@ -678,12 +687,12 @@ function connectBrowserExecutor() {
 // 另一半"消费升级"依赖人工触发——本提醒让积压不至于悄悄烂尾）。
 // ---------------------------------------------------------------------------
 function experienceDir() {
-  const yfw = path.join(os.homedir(), '.yfworking', 'memory', 'skill_experiences')
+  const yfw = path.join(resolveYfwHome(), 'memory', 'skill_experiences')
   if (fs.existsSync(yfw)) return yfw
   return path.join(os.homedir(), '.trae-cn', 'memory', 'skill_experiences')
 }
 function experienceAlertStateFile() {
-  return path.join(os.homedir(), '.yfworking', 'experience-alert.json')
+  return path.join(resolveYfwHome(), 'experience-alert.json')
 }
 const EXPERIENCE_ALERT_INTERVAL_MS = 24 * 60 * 60 * 1000
 
@@ -1324,7 +1333,7 @@ function applyPetConfig(cfg) {
   const prev = { ...petConfig }
   Object.assign(petConfig, cfg)
 
-  const cfgPath = path.join(os.homedir(), '.yfworking', 'pet.json')
+  const cfgPath = path.join(resolveYfwHome(), 'pet.json')
   try {
     if (!fs.existsSync(path.dirname(cfgPath))) fs.mkdirSync(path.dirname(cfgPath), { recursive: true })
     fs.writeFileSync(cfgPath, JSON.stringify({
@@ -1360,7 +1369,7 @@ function applyPetConfig(cfg) {
 // First-run setup — create ~/.yfworking/ and seed skills/config
 // ---------------------------------------------------------------------------
 function ensureYfwHome() {
-  const yfwHome = path.join(os.homedir(), '.yfworking')
+  const yfwHome = resolveYfwHome()
   const yfwSkills = path.join(yfwHome, 'skills')
 
   if (!fs.existsSync(yfwHome)) fs.mkdirSync(yfwHome, { recursive: true })
@@ -1531,7 +1540,7 @@ if (!gotTheLock) {
     connectBrowserExecutor()
 
   // Restore last session's pet state (~/.yfworking/pet.json); skip if absent
-  const petCfgPath = path.join(os.homedir(), '.yfworking', 'pet.json')
+  const petCfgPath = path.join(resolveYfwHome(), 'pet.json')
   if (fs.existsSync(petCfgPath)) {
     try {
       applyPetConfig(JSON.parse(fs.readFileSync(petCfgPath, 'utf8')))

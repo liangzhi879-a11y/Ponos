@@ -108,12 +108,12 @@ const DEFAULT_WHITELIST = [
 const allowed = new Set()
 const fs = require('fs')
 const path = require('path')
-const os = require('os')
+const { resolveYfwHome } = require('../server/yfw-home.cjs')
 let cfgMtime = 0
 let cfgHosts = null
 function whitelistConfigPath() {
-  const home = process.env.YFWORKING_HOME || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.yfworking')
-  return path.join(home, 'browser-whitelist.json')
+  // 数据根解析经共享模块 yfw-home.cjs（原内联解析迁出，单一来源防漂移）。
+  return path.join(resolveYfwHome(), 'browser-whitelist.json')
 }
 // 惰性重读：文件 mtime 变化才重新解析，改配置即时生效，无需重启。
 function refreshConfigHosts() {
