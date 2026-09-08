@@ -53,17 +53,17 @@ extraResources:
     filter:
       - "**/*"
   # Built-in agent templates (installed to ~/.yfworking/agents/ on first run)
-  - from: runtime/agents
+  - from: build/templates/agents
     to: runtime/agents
     filter:
       - "**/*"
   # Built-in memory starter templates (installed to ~/.yfworking/memory/personal/)
-  - from: runtime/memory
+  - from: build/templates/memory
     to: runtime/memory
     filter:
       - "**/*"
   # Built-in CLI tools (installed to ~/.yfworking/tools/)
-  - from: runtime/tools
+  - from: build/templates/tools
     to: runtime/tools
     filter:
       - "**/*"

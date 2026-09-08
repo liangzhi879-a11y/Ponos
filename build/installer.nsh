@@ -152,7 +152,7 @@
       StrCpy $installToolsPack "0"
 
       MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON1 \
-        "是否同时安装技能包（85 个技能）？$\r$\n$\r$\n技能包包含全部申报、文档处理、浏览器自动化等 85 个技能，安装到您的用户技能库（~\.yfworking\skills）。已有内容不会被覆盖（仅新增/更新的文件生效）。$\r$\n$\r$\n点击【是】安装技能包，点击【否】跳过。" \
+        "是否同时安装技能包？$\r$\n$\r$\n技能包包含全部申报、文档处理、浏览器自动化等技能，安装到您的用户技能库（~\.yfworking\skills）。已有内容不会被覆盖（仅新增/更新的文件生效）。$\r$\n$\r$\n点击【是】安装技能包，点击【否】跳过。" \
         IDYES lbl_skillpack_yes
       Goto lbl_skillpack_done
       lbl_skillpack_yes:
@@ -202,7 +202,8 @@
       ExecWait 'cmd /c xcopy /E /I /D /Y "$INSTDIR\resources\runtime\skills\*.*" "$skillTargetDir\"' $skillCopyExit
       ${if} $skillCopyExit == 0
         FileOpen $skillMarkerH "$skillTargetDir\.skillpack.json" w
-        FileWrite $skillMarkerH '{"installedBy":"YFWorking ${VERSION}","installedAt":"${__DATE__}","skills":85,"deployedCount":85}'
+        ; 技能数随出包机技能库动态变化，不再硬编码计数（S6 backlog② 治理）
+        FileWrite $skillMarkerH '{"installedBy":"YFWorking ${VERSION}","installedAt":"${__DATE__}","skills":"bundle","deployedCount":"bundle"}'
         FileClose $skillMarkerH
       ${endIf}
     ${endIf}
