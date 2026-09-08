@@ -145,7 +145,7 @@
   - 冒烟矩阵用例逐项脚本化 + GUI 全栈功能冒烟（自动为主 + 授权 manual 行，D6-D；S5 视觉/注释 minor 随行覆盖）
   - 双版并存运行验证（时长与资源、同机同开）
   - 旧库/旧产物处置（退役 yfw-kernel 等破坏性 ops）——单独逐项征询、不预设
-  - 文档面 manual 行：说明书/宣传页 PDF 重建（版本字面已随 T3/T4 落 2.8.0）；package-lock.json root version 2.7.5 与 package.json 2.8.0 drift（t2-minor1）后续清洗
+  - 文档面 manual 行：说明书/宣传页 PDF 重建——重建前先做 `scripts/build_manual_pdf.py` 清洗（终审 carry-forward：:21 旧库绝对路径 BASE 相对化、:285 V2.7.2/2026-08-20 版本字面同步 2.8.0/2026-09-08，与 T3 promo 同批；T3/T4 已清洗范围 = build_promo_pdf.py + BUILD.md/manual .md，build_manual_pdf.py 不在其内）；`scripts/gen-icons.ps1:47` 旧路径顺带核；package-lock.json root version 2.7.5 与 package.json 2.8.0 drift（t2-minor1）后续清洗
 
 ---
 
