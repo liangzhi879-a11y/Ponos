@@ -7,8 +7,8 @@ import { fileURLToPath } from 'url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP_DIR = resolve(__dirname, '..')
 
-const BRIDGE_PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51309', 10)
-const VITE_PORT = 5173
+const BRIDGE_PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51517', 10)
+const VITE_PORT = parseInt(process.env.YFW_VITE_PORT || '5197', 10)
 
 function log(tag, msg) {
   const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false })

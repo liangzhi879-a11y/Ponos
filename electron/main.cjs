@@ -169,7 +169,7 @@ let petConfig = { enabled: false, size: 50, randomChat: true }
 let petIntentKill = null     // 主动 kill 的宠物进程（区分“用户右键退出”导致的意外退出）
 let petRestartTimer = null   // 宠物配置变更重启的防抖定时器
 const ICON_PATH = path.join(__dirname, '..', 'public', 'icon.png')
-const BRIDGE_PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51309', 10)
+const BRIDGE_PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51517', 10)
 const BRIDGE_READY_URL = `http://localhost:${BRIDGE_PORT}/health`
 
 // ---------------------------------------------------------------------------
@@ -419,7 +419,7 @@ async function startBridgeAndWait() {
       `  • 端口被 Windows WinNAT 或其他程序占用\n` +
       `  • 防火墙/安全软件阻止了网络访问\n\n` +
       `解决方法:\n` +
-      `  1. 设置环境变量 YFW_BRIDGE_PORT 为其他端口 (如 51309)\n` +
+      `  1. 设置环境变量 YFW_BRIDGE_PORT 为其他端口 (如 51517)\n` +
       `  2. 以管理员身份运行: netsh int ipv4 add excludedportrange protocol=tcp startport=${BRIDGE_PORT} numberofports=1\n` +
       `  3. 重启 Windows 后 WinNAT 端口排除范围通常会重新分配`,
     )

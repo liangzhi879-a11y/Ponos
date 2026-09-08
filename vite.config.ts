@@ -8,7 +8,7 @@ const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
 export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
-    __BRIDGE_PORT__: JSON.stringify(process.env.YFW_BRIDGE_PORT || '51309'),
+    __BRIDGE_PORT__: JSON.stringify(process.env.YFW_BRIDGE_PORT || '51517'),
   },
   plugins: [react()],
   base: './',
@@ -39,11 +39,11 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    port: 5173,
+    port: Number(process.env.YFW_VITE_PORT || '5197'),
     strictPort: true,
   },
   preview: {
     host: '0.0.0.0',
-    port: 4173,
+    port: Number(process.env.YFW_VITE_PREVIEW_PORT || '4197'),
   },
 })

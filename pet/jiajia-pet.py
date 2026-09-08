@@ -2,7 +2,7 @@
 """
 jiajia-pet.py — 嘉嘉像素桌面宠物 v3（USAGE.md v2.0 规范重构版）
 
-通过 bridge WebSocket (端口由 YFW_BRIDGE_PORT 环境变量配置，默认 51309) 与 YFWorking 应用实时联动：
+通过 bridge WebSocket (端口由 YFW_BRIDGE_PORT 环境变量配置，默认 51517) 与 YFWorking 应用实时联动：
   - 任务处理中 → think 状态 + think_bubble 附件 + 气泡
   - 工具执行   → tool 状态 + tool_icon 附件 + walk 动画 + 气泡
   - 文本输出   → chat 状态 + chat_bubble 附件 + 气泡
@@ -56,7 +56,7 @@ POS_PATH = YFW_HOME / 'pet-position.json'
 LOG_PATH = YFW_HOME / 'pet.log'
 ASSET_DIR = Path(__file__).resolve().parent / 'assets'
 
-BRIDGE_PORT = os.environ.get('YFW_BRIDGE_PORT', '51309')
+BRIDGE_PORT = os.environ.get('YFW_BRIDGE_PORT', '51517')
 BRIDGE_URL = f'ws://localhost:{BRIDGE_PORT}'
 
 FRAME_W, FRAME_H = 408, 512
