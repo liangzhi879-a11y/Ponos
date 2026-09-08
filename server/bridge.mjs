@@ -734,13 +734,6 @@ export function parseParent(yaml) {
   return m ? m[1].trim().replace(/^["']|["']$/g, '') : ''
 }
 
-// 剥离 description 内嵌版本更新日志（v1.0.0初始版本：…。、v1.1.0新增：…。）
-// 以句号或串尾为界；不匹配不完整版本号（如 v1.0）
-const VERSION_HISTORY_RE = /\bv\d+\.\d+\.\d+[^。]*(?:。|$)/g
-export function stripVersionHistory(text) {
-  return text.replace(VERSION_HISTORY_RE, '').trim()
-}
-
 // subskills 多行列表解析：与 parseTriggers 同构，仅键名不同
 export function parseSubskills(yaml) {
   const m = yaml.match(/^subskills:\s*\n((?:\s*-\s*.+\n?)+)/m)
@@ -764,118 +757,11 @@ export function parseSubskillsOrDeps(yaml) {
     .filter(Boolean)
 }
 
-// 单技能清单条目（spec 5.2）：
-// 有 parent → 不生成条目（返回 null，调用方过滤）
-// 父技能（有 subskills）→ "- {name}：{触发词段截 80}（子：名1、名2…）"
-// 独立技能 → "- {name}：{triggers 或 desc 剥版本，截 80}"
-// 触发词与剥版本后描述均空 → "- {name}"
-const TRIGGER_CHAR_LIMIT = 80
-export function formatSkillEntry({ name, description, triggers, subskills, hasParent }) {
-  if (hasParent) return null
-  let triggerPart = ''
-  if (triggers.length) {
-    triggerPart = triggers.join('、')
-  } else {
-    const stripped = stripVersionHistory(description)
-    if (stripped) triggerPart = stripped
-  }
-  if (triggerPart.length > TRIGGER_CHAR_LIMIT) {
-    triggerPart = triggerPart.slice(0, TRIGGER_CHAR_LIMIT - 1) + '…'
-  }
-  let line = '- ' + name
-  if (triggerPart) line += '：' + triggerPart
-  if (subskills.length) line += '（子：' + subskills.join('、') + '）'
-  return line
-}
-
-// 扫描已安装技能（~/.yfworking/skills 下各 SKILL.md 的 frontmatter），供模型识别并自主调用
-export function listInstalledSkills() {
-  const dir = findSkillRoot()
-  const skills = []
-  try {
-    for (const it of readdirSync(dir, { withFileTypes: true })) {
-      if (it.name.startsWith('_')) continue
-      if (!it.isDirectory() && !it.name.endsWith('.md')) continue
-      const entry = it.isDirectory() ? join(dir, it.name, 'SKILL.md') : join(dir, it.name)
-      if (!existsSync(entry)) continue
-      let name = it.name
-      let desc = ''
-      let triggers = []
-      let parent = ''
-      let subskills = []
-      try {
-        const md = readFileSync(entry, 'utf-8')
-        const yaml = md.match(/^---\r?\n([\s\S]*?)\r?\n---/)
-        if (yaml) {
-          const nm = yaml[1].match(/name:\s*["']?(.+?)["']?\s*$/m)
-          const dm = yaml[1].match(/description:\s*["']?(.+?)["']?\s*$/m)
-          if (nm) name = nm[1].trim()
-          if (dm) desc = dm[1].trim()
-          triggers = parseTriggers(yaml[1])
-          parent = parseParent(yaml[1])
-          subskills = parseSubskillsOrDeps(yaml[1])
-        }
-      } catch {}
-      skills.push({ name, description: desc, triggers, parent, subskills })
-    }
-  } catch {}
-  return skills
-}
-
-// 技能清单缓存：每次 spawn 会话都全量扫描 ~60 个 SKILL.md 并重新拼装清单段落，
-// 白白消耗 CPU 与 token。以目录指纹（技能名 + SKILL.md 的 size/mtime）为键做内存
-// 缓存——技能目录不变则复用上次拼装好的段落，技能增删改时指纹变化自动重建。
-let skillListCache = ''
-let skillListCacheKey = ''
-
-function skillDirFingerprint(dir) {
-  try {
-    const parts = []
-    for (const it of readdirSync(dir, { withFileTypes: true })) {
-      if (it.name.startsWith('_')) continue
-      const entry = it.isDirectory() ? join(dir, it.name, 'SKILL.md') : join(dir, it.name)
-      if (!existsSync(entry)) continue
-      const st = statSync(entry)
-      parts.push(it.name + ':' + st.size + ':' + Math.round(st.mtimeMs))
-    }
-    return parts.sort().join('|')
-  } catch { return '' }
-}
-
-// 把已安装技能清单附加到系统提示词，确保模型知晓可用技能并优先调用 Skill 工具。
-// compact=true 时注入精简清单（技能名 + 至多前 6 个触发词 + 父技能标注），用于 resume
-// 会话：模型本就知晓已装技能，仅需可定位，避免每次恢复重复注入全量描述白耗 token。
-export function appendSkillList(basePrompt, compact = false) {
-  if (compact) return basePrompt + buildCompactSkillSection()
-  const dir = findSkillRoot()
-  const fp = skillDirFingerprint(dir)
-  if (skillListCache && fp === skillListCacheKey) return basePrompt + skillListCache
-  const skills = listInstalledSkills()
-  if (!skills.length) return basePrompt
-  const section = '\n\n【已安装技能清单】当用户任务与以下任一技能匹配时，必须调用 Skill 工具执行（skill 参数填技能名），不得跳过、自行模拟或改用其它方式：\n' +
-    skills
-      .map(s => formatSkillEntry({ name: s.name, description: s.description, triggers: s.triggers, subskills: s.subskills, hasParent: !!s.parent }))
-      .filter(Boolean)
-      .join('\n')
-  skillListCache = section
-  skillListCacheKey = fp
-  return basePrompt + section
-}
-
-// 精简技能清单（resume 专用）：只保留技能名（唯一调用标识）+ 至多前 6 个触发词 +
-// 父技能标注，不再附完整描述与子技能列表。拼装很轻，无需走指纹缓存。
-function buildCompactSkillSection() {
-  const skills = listInstalledSkills()
-  if (!skills.length) return ''
-  const lines = skills
-    .map(s => {
-      const triggers = Array.isArray(s.triggers) ? s.triggers.slice(0, 6).join('/') : ''
-      const parent = s.parent ? `（父:${s.parent}）` : ''
-      return `- ${s.name}${parent}${triggers ? `：${triggers}` : ''}`
-    })
-    .filter(Boolean)
-  return '\n\n【已安装技能清单（精简）】技能名即唯一调用标识，任务匹配时直接用 Skill 工具调用对应技能：\n' + lines.join('\n')
-}
+// 宿主技能清单拼装（appendSkillList/formatSkillEntry/listInstalledSkills/skillDirFingerprint
+// 及缓存全局）已随 S5 ②-03 / D1 停用删除：技能清单唯一来源 = 内核 composeSystemPrompt
+// 【可用技能】块（技能根经 getOrCreateSession 下方 --add-dir 注入发现）。原注入段格式
+// 回归由 server/prompt-skills.test.mjs 与 scripts/verify-skill-listing.mjs 承担；
+// parseTriggers/parseParent/parseSubskillsOrDeps 仍被下方 /skills HTTP 路由消费故保留。
 
 // 经验注入开关/上限：存 ~/.yfworking/config.json（GUI 设置页经 fetchBridgeConfig/saveBridgeConfig 读写）
 function experienceInjectConfig() {
@@ -907,12 +793,13 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
   args.push('--disallowedTools', 'AskUserQuestion')
   if (resumeId) {
     // Resume: restore the original session. 不重复注入身份提示词（避免冲突），
-    // 但必须追加互动格式规范 + 技能清单，否则模型看不到 ASK_USER 唯一提问方式，
-    // 会回退调用已被禁用的 AskUserQuestion 工具。
+    // 但必须追加互动格式规范，否则模型看不到 ASK_USER 唯一提问方式，会回退调用
+    // 已被禁用的 AskUserQuestion 工具。
     args.push('--resume', resumeId)
-    // 精简技能清单默认开启；CLAUDE_CODE_FULL_SKILL_LIST=1 回退全量（不打折保险）
-    const resumeCompact = process.env.CLAUDE_CODE_FULL_SKILL_LIST !== '1'
-    let resumePrompt = appendSkillList(YFW_ASKUSER_FORMAT + YFW_MILESTONE_PROTOCOL, resumeCompact)
+    // P8 双路去重（S5 ②-03 / D1）：技能清单不再经宿主注入——唯一来源 = 内核
+    // 【可用技能】块（经下方 --add-dir 技能根发现）；此处仅追加互动格式 + 里程碑
+    // 协议（+经验注入段），new/resume 两条路径同构。
+    let resumePrompt = YFW_ASKUSER_FORMAT + YFW_MILESTONE_PROTOCOL
     const injectCfg = experienceInjectConfig()
     if (injectCfg.enabled) {
       // 沉积引导同样注入 resume 会话：原实现只进新会话，而应用默认"恢复最新
@@ -934,15 +821,17 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     // 里程碑协议，否则专家 agent 会话收不到 ASK_USER 卡片规范（会回退调用已被
     // 禁用的 AskUserQuestion 工具）与进度协议。
     ensurePersonalDir()
+    // P8 双路去重（S5 ②-03 / D1）：同 resume 分支，技能清单不再经宿主拼装，由内核
+    // 技能块经 --add-dir 技能根统一提供；此处仅身份/互动/里程碑 + 经验注入。
     let effectivePrompt = systemPrompt
-      ? appendSkillList(`${systemPrompt}\n\n${YFW_ASKUSER_FORMAT}\n\n${YFW_MILESTONE_PROTOCOL}`)
-      : appendSkillList(YFW_SYSTEM_PROMPT)
+      ? `${systemPrompt}\n\n${YFW_ASKUSER_FORMAT}\n\n${YFW_MILESTONE_PROTOCOL}`
+      : YFW_SYSTEM_PROMPT
     const injectCfg = experienceInjectConfig()
     if (injectCfg.enabled) {
       effectivePrompt += buildSedimentPrompt()      // 沉积引导仅新会话注入
       effectivePrompt += buildExperienceIndex(injectCfg.maxBytes)
     }
-    // 写入临时文件传入（--append-system-prompt-file）：技能清单可能很长，
+    // 写入临时文件传入（--append-system-prompt-file）：提示词/经验文本可能很长，
     // 命令行直接传会超 cmd.exe 8191 字符限制导致 spawn 失败；文件方式还保留换行，格式示例更清晰。
     const newSessionPromptFile = join(tmpdir(), 'yfw-prompt-' + sid.replace(/[^\w-]/g, '_') + '.txt')
     promptFile = newSessionPromptFile
