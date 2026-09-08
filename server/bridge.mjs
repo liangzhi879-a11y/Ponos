@@ -124,6 +124,7 @@ ${YFW_MILESTONE_PROTOCOL}
 // ---------------------------------------------------------------------------
 const YFW_HOME = resolveYfwHome()
 const YFW_SKILLS_DIR = join(YFW_HOME, 'skills')
+const YFW_TOOLS_DIR = join(YFW_HOME, 'tools')
 const YFW_CONFIG_PATH = join(YFW_HOME, 'config.json')
 
 function ensureYfwHome() {
@@ -163,6 +164,17 @@ const SAMPLE_SKILL_ROOTS = [
   join(process.cwd(), 'sample-skills'),
   join(__dirname, '..', 'public', 'sample-skills'),
   join(__dirname, '..', 'dist', 'sample-skills'),
+]
+
+// 内置 CLI 工具模板候选（F1 对称方）：只覆盖「无安装器领地」的形态——
+// dev（build/templates/tools）与 portable（<app>/runtime/tools）。installed 的
+// resources/runtime/tools 由 installer.nsh 按用户勾选部署（.tools-pack.json
+// marker），此处不纳入候选，避免绕过安装时的"否"选择静默播种。
+const TOOLS_SAMPLE_ROOTS = [
+  join(__dirname, '..', 'runtime', 'tools'),
+  join(process.cwd(), 'runtime', 'tools'),
+  join(__dirname, '..', 'build', 'templates', 'tools'),
+  join(process.cwd(), 'build', 'templates', 'tools'),
 ]
 
 function readSkillIndex(idxPath) {
@@ -1959,7 +1971,11 @@ sweepOrphanPromptFiles()
 // 测试场景（doubao.test.mjs）通过 YFW_BRIDGE_NO_LISTEN 跳过顶层 listen，
 // 由测试自行 httpServer.listen(0) 起随机端口；正式运行保持原有行为。
 if (!process.env.YFW_BRIDGE_NO_LISTEN) {
-  httpServer.listen(PORT, () => { console.log('[bridge] http+ws://localhost:' + PORT); autoInstallSamples() })
+  httpServer.listen(PORT, () => {
+    console.log('[bridge] http+ws://localhost:' + PORT)
+    autoInstallSamples()
+    autoInstallTools()
+  })
 }
 export { httpServer }
 wss.on('connection', (ws, req) => {
@@ -2208,6 +2224,46 @@ function autoInstallSamples() {
     }
   } catch (e) {
     console.log('[bridge] auto-install error:', e.message)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// First-run tools seeding（F1 对称方）：把内置 CLI 工具模板（yfw-helper 等）
+// 铺到 ~/.yfworking/tools，使文档声明的 `~/.yfworking/tools/<name>/` 调用路径
+// 在 portable/dev 首启即存在。幂等：仅补缺省（缺失文件才拷贝，绝不覆盖用户
+// 已有工具文件），成功后写 .tools-pack.json marker（与 installer.nsh 同名，
+// 安装形态已部署时直接跳过）。源仅限无安装器领地的形态——TOOLS_SAMPLE_ROOTS
+// 不含 resources/runtime/tools，installed 由 installer.nsh 按勾选部署。
+// ---------------------------------------------------------------------------
+function autoInstallTools() {
+  try {
+    const src = TOOLS_SAMPLE_ROOTS.find(p => existsSync(p))
+    if (!src) { console.log('[bridge] tools auto-install: source not found'); return }
+    const marker = join(YFW_TOOLS_DIR, '.tools-pack.json')
+    if (existsSync(marker)) return
+    if (!existsSync(YFW_TOOLS_DIR)) mkdirSync(YFW_TOOLS_DIR, { recursive: true })
+    let copied = 0
+    const copyMissing = (from, to) => {
+      for (const entry of readdirSync(from, { withFileTypes: true })) {
+        const s = join(from, entry.name)
+        const d = join(to, entry.name)
+        if (entry.isDirectory()) {
+          if (!existsSync(d)) mkdirSync(d, { recursive: true })
+          copyMissing(s, d)
+        } else if (!existsSync(d)) {
+          writeFileSync(d, readFileSync(s))
+          copied += 1
+        }
+      }
+    }
+    copyMissing(src, YFW_TOOLS_DIR)
+    writeFileSync(marker, JSON.stringify({
+      installedBy: 'bridge-autoinstall', installedAt: new Date().toISOString(),
+      source: src.replace(/\\/g, '/'), copied,
+    }, null, 2), 'utf-8')
+    console.log(`[bridge] tools auto-install complete from ${src} (${copied} files)`)
+  } catch (e) {
+    console.log('[bridge] tools auto-install error:', e.message)
   }
 }
 
