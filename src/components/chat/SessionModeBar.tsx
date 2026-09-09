@@ -1,6 +1,7 @@
 import { useChatStore } from '@/stores/chatStore'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn } from '@/lib/utils'
+import { EffortPicker } from './EffortPicker'
 
 interface Props {
   conversationId: string
@@ -26,7 +27,8 @@ export function SessionModeBar({ conversationId }: Props) {
   const isChat = conversation.mode === 'chat'
 
   return (
-    <div className="flex items-center gap-2 h-7 px-3 shrink-0 select-none">
+    <div className="flex items-center justify-between gap-2 h-7 px-3 shrink-0 select-none">
+      {/* 左：会话模式只读徽标（chat/task 文字 chip） */}
       <span
         className={cn(
           'inline-flex items-center rounded-full px-2.5 h-[18px] text-[11px] font-medium whitespace-nowrap leading-none border',
@@ -37,6 +39,8 @@ export function SessionModeBar({ conversationId }: Props) {
       >
         {t(isChat ? 'sessionMode.chat' : 'sessionMode.task')}
       </span>
+      {/* 右：思考深度热切选择器（Task 13；conversationId 兜底交给 sendEffort） */}
+      <EffortPicker conversationId={conversationId} />
     </div>
   )
 }

@@ -226,14 +226,17 @@ export const enUS: TranslationKeys = {
     refresh: 'Refresh',
   },
 
-  // --- Thinking effort (Task 12: global setting → env at spawn + WS hot-switch) ---
+  // --- Thinking effort (Task 12/13: global setting → env at spawn + WS hot-switch;
+  //      canonical copy + label/mapNote; shared by SettingsView select and SessionModeBar EffortPicker) ---
   effort: {
+    label: 'Thinking depth',
     auto: 'Auto',
     off: 'Off',
-    low: 'Low',
-    medium: 'Medium',
-    high: 'High',
-    max: 'Max',
+    low: 'Light',
+    medium: 'Standard',
+    high: 'Deep',
+    max: 'Maximum',
+    mapNote: 'Standard maps to high on DeepSeek',
   },
 
   settings: {

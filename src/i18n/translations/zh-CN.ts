@@ -230,14 +230,17 @@ export const zhCN = {
     refresh: '刷新',
   },
 
-  // --- 思考深度（Task 12 effort：全局设置 → 新会话 spawn env 注入 + 运行中会话 WS 热切换） ---
+  // --- 思考深度（Task 12/13 effort：全局设置 → 新会话 spawn env 注入 + 运行中会话 WS 热切换；
+  //      规范文案 + label/mapNote；SettingsView select 与 SessionModeBar EffortPicker 共用） ---
   effort: {
+    label: '思考深度',
     auto: '自动',
     off: '关闭',
-    low: '低',
-    medium: '中',
-    high: '高',
-    max: '最高',
+    low: '轻',
+    medium: '标准',
+    high: '深度',
+    max: '最强',
+    mapNote: '标准档 = DeepSeek 映射 high',
   },
 
   // --- 终端 ---
