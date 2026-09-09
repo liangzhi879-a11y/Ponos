@@ -11,7 +11,6 @@ const SHORTCUT_GROUPS = [
     shortcuts: [
       { keys: '⌘K / ⌘⇧P', description: 'Open command palette' },
       { keys: '⌘N', description: 'New conversation' },
-      { keys: '⌘B', description: 'Toggle sidebar' },
       { keys: '⌘,', description: 'Open settings' },
       { keys: '⌘⇧F', description: 'Search conversations' },
       { keys: '⌘[ / ⌘]', description: 'Previous/Next conversation' },

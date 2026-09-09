@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
-  Search, MessageSquarePlus, PanelLeftClose, Settings, Sun,
-  Zap, HelpCircle, History, FolderOpen, Stethoscope
+  Search, MessageSquarePlus, Settings, Sun,
+  Zap, HelpCircle, Stethoscope
 } from 'lucide-react'
 import {
   Dialog, DialogContent,
@@ -25,18 +25,15 @@ interface Command {
 
 const COMMAND_DEFS = [
   { id: 'new-conv', icon: MessageSquarePlus, cat: 'chat', labelKey: 'commandPalette.cmd.newConv', descKey: 'commandPalette.cmd.newConvDesc' },
-  { id: 'toggle-sidebar', icon: PanelLeftClose, cat: 'view', labelKey: 'commandPalette.cmd.toggleSidebar', descKey: 'commandPalette.cmd.toggleSidebarDesc' },
   { id: 'open-settings', icon: Settings, cat: 'nav', labelKey: 'commandPalette.cmd.openSettings', descKey: 'commandPalette.cmd.openSettingsDesc' },
   { id: 'toggle-theme', icon: Sun, cat: 'theme', labelKey: 'commandPalette.cmd.toggleTheme', descKey: 'commandPalette.cmd.toggleThemeDesc' },
   { id: 'shortcuts', icon: HelpCircle, cat: 'help', labelKey: 'commandPalette.cmd.shortcuts', descKey: 'commandPalette.cmd.shortcutsDesc' },
   { id: 'diagnostics', icon: Stethoscope, cat: 'help', labelKey: 'commandPalette.cmd.diagnostics', descKey: 'commandPalette.cmd.diagnosticsDesc' },
   { id: 'cmd-focus', icon: Zap, cat: 'chat', labelKey: 'commandPalette.cmd.focusInput', descKey: 'commandPalette.cmd.focusInputDesc' },
-  { id: 'history', icon: History, cat: 'nav', labelKey: 'commandPalette.cmd.history', descKey: 'commandPalette.cmd.historyDesc' },
-  { id: 'files', icon: FolderOpen, cat: 'file', labelKey: 'commandPalette.cmd.files', descKey: 'commandPalette.cmd.filesDesc' },
 ]
 
 export function CommandPalette() {
-  const { commandPaletteOpen, closeCommandPalette, toggleSidebar, openSettings, openShortcutsHelp, setSidebarTab } = useUIStore()
+  const { commandPaletteOpen, closeCommandPalette, openSettings, openShortcutsHelp } = useUIStore()
   const openDiagnostics = useDiagStore(s => s.openDiagnostics)
   const { createConversation } = useChatStore()
   const { settings, updateSettings } = useSettingsStore()
@@ -48,7 +45,6 @@ export function CommandPalette() {
     const action = () => {
       switch (def.id) {
         case 'new-conv': createConversation(); break
-        case 'toggle-sidebar': toggleSidebar(); break
         case 'open-settings': openSettings(); break
         case 'toggle-theme': {
           const order: Array<'yuanfang' | 'yuanfang-light' | 'dark' | 'light'> = ['yuanfang', 'yuanfang-light', 'dark', 'light']
@@ -60,8 +56,6 @@ export function CommandPalette() {
         case 'shortcuts': openShortcutsHelp(); break
         case 'diagnostics': openDiagnostics(); break
         case 'cmd-focus': setTimeout(() => document.querySelector<HTMLTextAreaElement>('textarea')?.focus(), 50); break
-        case 'history': setSidebarTab('history'); break
-        case 'files': setSidebarTab('files'); break
         default: break
       }
       closeCommandPalette()
