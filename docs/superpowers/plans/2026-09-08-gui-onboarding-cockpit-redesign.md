@@ -1,10 +1,10 @@
-# GUI 交互升级实施计划（boot / login / cockpit / 三段式工作界面）
+# GUI 交互升级实施计划（认证小窗 → 加载屏 boot → 驾驶舱 → 三段式工作界面）
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 把 GUI 一级流程升级为「启动动画 → 本地口令登录 → 驾驶舱(iframe 汇总屏) → 三段式工作界面（对话/任务两模式、effort 接线、现场持久化）」。
+**Goal:** 把 GUI 冷启动与一级导航重排为「**认证先行（独立小登录窗）** → **认证后加载屏(boot)** → **驾驶舱(iframe 汇总屏)** → **三段式工作界面（对话/任务两模式、effort 接线、现场持久化）**」（spec 2026-09-08 增补认证前置 D11-D13，见下方变更记录；登录不再作为主窗口视图）。
 
-**Architecture:** 视图状态机 `boot → login → cockpit → work`（zustand persist）；驾驶舱 = 改造版银河原型（`public/cockpit/index.html`）经 postMessage 注入总览数据/主题并回传 hub-click；工作界面 = rail(lucide) + 二级面板 + 主区；会话加 `mode:'chat'|'task'`，chat 会话在 bridge 侧以受限工具集 spawn 内核；effort 档位由 bridge 注入 env 并支持 WS 热切换。
+**Architecture:** 主进程冷启动**先建独立认证小窗**（`?auth=1`，弹窗级尺寸），首设/登录通过后渲染层发 IPC `auth:granted` → 主进程关小窗并创建主窗口（1100×720）；主窗口视图状态机 **`boot → cockpit → work`（无 login）**，zustand persist 中 view 永不跳过 boot（boot 门禁，spec §7）；驾驶舱 = 改造版银河原型（`public/cockpit/index.html`）经 postMessage 注入总览数据/主题并回传 hub-click；工作界面 = rail(lucide) + 二级面板 + 主区；会话加 `mode:'chat'|'task'`，chat 会话在 bridge 侧以受限工具集 spawn 内核；effort 档位由 bridge 注入 env 并支持 WS 热切换。
 
 **Tech Stack:** React 18 + TS + zustand + Tailwind + framer-motion + lucide-react；Node `node:http` bridge；kernel 不改核心。测试：`node --test`（server `*.test.mjs`；GUI 纯函数 `src/lib/*.test.ts`，Node 24 strip-types，相对导入必须带 `.ts` 扩展）。
 
@@ -15,9 +15,37 @@
 - 新增 UI 图标一律 lucide-react；**同一语义图标全应用内唯一，禁止 emoji 作图标**（对照 Task 15 图标查重表）。
 - 文案进 i18n（`src/i18n/translations/zh-CN.ts` 与 `en-US.ts` 同形）；不硬编码中文到组件。
 - 新样式只吃现有 CSS 变量（`--bg-app/--text-primary/--accent-default/--border-default` 族），不新增独立色板。
-- `settings.speedMode` 为 true 时：跳过启动动画；驾驶舱 iframe 收 `speedMode` 停动画。
+- `settings.speedMode` 为 true 时：主窗口**跳过 boot 直接 cockpit**（认证小窗不受影响）；驾驶舱 iframe 收 `speedMode` 停动画。
 - 测试与构建命令：`npm run typecheck`、`npm run build`、`npm test`（server/electron）；GUI 纯函数手动 `node --test src/lib/<x>.test.ts`。
 - 每 Task 独立可测、独立 commit；commit message 遵循仓库风格（`feat|fix|docs(gui-ux): …`）。
+
+---
+
+## 变更记录（2026-09-08 认证前置 D11-D13 —— Task 6b 实施后为 Task 7-15 的新基线）
+
+用户三项决策已落文（spec D1/D11-D13 与 §1/§2/§7/架构总览，spec commit `b900c2c`）：
+**登录先行**（冷启动先出现登录页，认证过后应用才加载资源）、**boot=认证后的加载屏**（主窗口认证后才创建并以 boot 开场，不再是冷启动首屏）、**独立小登录窗**（弹窗级尺寸独立 BrowserWindow；非主窗口缩放、非主窗内卡片）。主窗口保留 1100×720。
+
+> **裁决**：凡本计划下文（Task 1-6 已提交代码与原文、Task 7-15 步骤）与下列新目标形态冲突，**一律以本变更记录 + spec 为准**。Task 1-6 已提交的「boot→login→cockpit→work 四段机」形态由 **Task 6b** 统一重构（Task 4-6 原文中对 login 视图的依赖视为已被 6b 取代，不逐行回改历史任务文本）。
+
+Task 6b 交付后立即生效、**Task 7-15 必须消费**的新基线：
+
+1. **窗口编排（electron/main.cjs，仅加认证相关 window 能力，非认证主体结构不动）**
+   - 冷启动主进程**先建认证小窗**：独立 BrowserWindow，原生 frame、非透明、固定 ~420×560、主屏居中、`show:false` 等 `ready-to-show`；加载同 dist 的 `?auth=1`（dev `loadURL(devUrl+'?auth=1')` / prod `loadFile(dist,{query:{auth:'1'}})`，仿现有 editorWin `?editor=1` 先例 `main.cjs:876-926`）。**主窗口此时不创建**。
+   - 认证通过：渲染层发 IPC `auth:granted` → 主进程关小窗、调现有 `createWindow()` 建主窗口（透明/主题判定原样复用）。小窗在未放行前被关闭 → 主窗口从未创建则**退出应用**（`app.quit()`，不经 window-all-closed 的 tray 保留分支）。
+   - `bootStartAt` 重置与 `did-finish-load → bootPhase('windowLoad')` 挂接从"启动即 createWindow"（现 `main.cjs:1504-1539`）移到 auth:granted 放行后 `createWindow()` 前/后，保持 60s 启动兜底弹窗窗口语义。
+2. **主窗口视图机收敛（src/lib/viewStore.ts、ViewRouter.tsx）**
+   - `AppView = 'boot' | 'cockpit' | 'work'`（**删 'login'**）。ViewRouter：`boot && !speed` → `<BootScreen onDone={() => useViewStore.getState().setView('cockpit')} />`；`boot && speed` → 同帧渲染 cockpit 分支 + effect 把 view 置 'cockpit'（替换现 LoginView 短路）；`cockpit` → CockpitScreen（Task 8 前仍 CockpitPlaceholder）；`work` → AppShell。login 分支删除。
+   - **boot 门禁（spec §7）**：persist `partialize` 仍只落 'cockpit'|'work' 与 workState；`merge` **恒定 `view: current.view`（即 'boot'）**——persist 的 view 永不跳过 boot（主窗口每次认证后从加载屏起）；workState.rail 恢复逻辑保留（合法 rail union 校验）。`normalizeStoredView` 的 login 归一语义作废：函数删除，改导出纯函数 `sanitizeRail(rail)`（4 个合法值透传，其余→'task'）供单测与 merge 共用；`viewStore.test.ts` 全部改写（原断言 login 归一用例删除）。T5 parked 的「空存储保留 current 'boot'」merge 修正自然并入新语义。
+3. **AuthScreen/SetupWizard 成功路径改 IPC（src/components/auth/）**
+   - 两组件**不再 `useViewStore.setView('cockpit')`**（认证小窗渲染它们，主窗口不再渲染）；成功（login ok / setup 即解锁）→ `window.yfworkingWindow?.authGranted?.()`。preload 在 `yfworkingWindow` 增 `authGranted: () => ipcRenderer.send('auth:granted')`。
+4. **App.tsx 路由（src/lib/authWindow.ts + src/components/auth/AuthWindowRoot.tsx）**
+   - 仿 `isEditorWindow()`（`editorBridge.ts:6-8`）增 `isAuthWindow()`（`?auth=1`），真分支渲染 `<TooltipProvider><AuthWindowRoot/></TooltipProvider>`（内含 AuthScreen，整窗深色品牌底自适应小窗），**不加载 MainApp/ViewRouter**。auth 窗口与主窗同 partition/localStorage，但 auth 窗口不 import viewStore。
+5. **bridge CORS 预检补全（auth 窗口 POST 前置依赖，server/bridge.mjs:1151-1152）**
+   - OPTIONS 现只回 `Access-Control-Allow-Origin`，缺 `Access-Control-Allow-Methods`/`-Headers` → renderer（file:// 或 vite localhost:5173）对 `/api/auth/setup|login` 的 `application/json` POST 预检失败。Task 6b 在 OPTIONS 分支补 `Access-Control-Allow-Methods: GET, POST, OPTIONS`、`Access-Control-Allow-Headers: Content-Type`（白名单式），并加 `server/*.test.mjs` 用例断言预检 204 响应头（沿用 Task 3 端点冒烟的 bridge 启动 recipe）。
+6. **文案/语义微调**：spec §2.1/2.4 已同步——token 仅端点语义预留、GUI 不落盘 token（放行以 IPC 事实为准）、无 remember checkbox（Task 6 已按此实现，勿在后续任务新增自动登录 UI）。
+
+受影响的后续任务步骤（已就地修补）：Task 8 Step 5 冒烟起点（登录）与 Task 15 Step 3 冒烟清单第 1 条已改写为「认证小窗 → 主窗口 boot → cockpit」。Task 14 Step 2 跨重启冒烟的"登录后"表述即指认证小窗放行后，无需改步骤本身。
 
 ---
 
@@ -549,6 +577,218 @@ git commit -m "feat(gui-ux): 登录/首设口令屏——SetupWizard + AuthScree
 
 ---
 
+### Task 6b: 认证小窗编排 + 主窗口视图机收敛（D11-D13 基线）
+
+> 本任务是 spec 2026-09-08 增补 D11-D13 的落点（见文件顶部「变更记录」）。它**重构 Task 5/6 已提交的 boot→login 交棒与 AuthScreen 落点**，交付后即为 Task 7-15 的窗口/视图/认证基线。改动以「变更记录」1-6 条为验收标准；**不得改动 createWindow() 主体逻辑与 kernel/**。
+
+**Files:**
+- Modify: `electron/main.cjs`（认证小窗编排 + 启动顺序 + `auth:granted` IPC；非认证主体结构不动）
+- Modify: `electron/preload.cjs`（`yfworkingWindow.authGranted`）
+- Modify: `server/bridge.mjs:1151-1152`（OPTIONS 预检响应头补全）
+- Create: `server/auth-preflight.test.mjs`（或并入 Task 3 已建的端点冒烟测试族，视其结构复用）
+- Create: `src/lib/authWindow.ts`（`isAuthWindow()`）
+- Create: `src/components/auth/AuthWindowRoot.tsx`
+- Modify: `src/App.tsx`（`?auth=1` 分支，仿 `?editor=1`）
+- Modify: `src/components/auth/AuthScreen.tsx`、`SetupWizard.tsx`（成功→ `authGranted()` IPC，去 useViewStore）
+- Modify: `src/stores/viewStore.ts` + `src/stores/viewStore.test.ts`（AppView 去 login、boot 门禁 merge、`sanitizeRail`）
+- Modify: `src/components/layout/ViewRouter.tsx`（删 login 分支；boot 交棒 cockpit）
+
+**Interfaces:**
+- Consumes: Task 1 logo 资产；Task 2/3 auth 端点；Task 4 authStore/authApi + viewStore（将被本任务重构）；Task 5 BootScreen/ViewRouter；Task 6 AuthScreen/SetupWizard/PasswordField；spec §2.0/§7；本文件「变更记录」。Task 3 的端点冒烟 bridge 启动 recipe 见 `.superpowers/sdd/2026-09-08-gui-onboarding-cockpit-redesign/task-3-report.md`
+- Produces（Task 7-15 消费）:
+  - preload：`yfworkingWindow.authGranted(): void`（send `auth:granted`）
+  - main.cjs：`createAuthWindow()`；启动先建认证小窗、收 `auth:granted` 后建主窗口；冷启动小窗未放行被关 → 退出应用
+  - viewStore：`AppView = 'boot'|'cockpit'|'work'`；`sanitizeRail(rail): RailId`；merge 恒定 `view:'boot'`（boot 门禁），workState.rail 恢复
+  - ViewRouter：无 login 分支；`boot && !speed` → `<BootScreen onDone={() => useViewStore.getState().setView('cockpit')} />`；`boot && speed` → 同帧渲染 cockpit 分支 + effect 置 'cockpit'
+  - bridge：OPTIONS 预检回 `Access-Control-Allow-Methods`/`Access-Control-Allow-Headers`
+
+- [ ] **Step 1（TDD）: bridge OPTIONS 预检响应头 + 测试**
+
+先读 Task 3 端点冒烟测试的 bridge 启动/等待/清理 recipe（`server/auth-endpoint.test.mjs` 或 Task 3 实际产物，路径见 `task-3-report.md`）。写失败测试（无对应文件则新建 `server/auth-preflight.test.mjs`；有可复用 helper 则直接 import）：
+```js
+test('OPTIONS 预检回显 origin + 允许 methods/headers（renderer POST 依赖）', async () => {
+  // 起 bridge（随机 YFW_BRIDGE_PORT + 临时 YFW_AUTH_FILE，避免污染真实 auth.json）
+  // const res = await fetch(`http://127.0.0.1:${port}/api/auth/login`, {
+  //   method: 'OPTIONS', headers: {
+  //     origin: 'http://localhost:5173',
+  //     'access-control-request-method': 'POST',
+  //     'access-control-request-headers': 'content-type',
+  //   } })
+  // 断言：status 204；Access-Control-Allow-Origin 含 localhost；
+  //       Access-Control-Allow-Methods 含 'POST'；Access-Control-Allow-Headers 小写含 'content-type'
+  // finally 清理 bridge 子进程
+})
+```
+Run: `node --test server/auth-preflight.test.mjs`
+Expected: FAIL（现 OPTIONS 分支 `bridge.mjs:1151-1152` 只回 origin，无 methods/headers）。
+
+实现：`bridge.mjs` OPTIONS 分支补头（白名单式，不引入任意来源）：
+```js
+if (req.method === 'OPTIONS') {
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  reply(204, {}); return
+}
+```
+Run 同测试：PASS。
+
+- [ ] **Step 2（TDD）: viewStore 收敛 + boot 门禁 + `sanitizeRail`**
+
+改写 `src/stores/viewStore.ts`：
+```ts
+export type AppView = 'boot' | 'cockpit' | 'work'
+export type RailId = 'chat' | 'task' | 'agents' | 'skills'
+export const RAIL_IDS: readonly RailId[] = ['chat', 'task', 'agents', 'skills']
+
+/** 落盘 rail 清洗：4 合法值透传，非法/缺省 → 'task'（供 merge 与单测）。 */
+export function sanitizeRail(rail: unknown): RailId {
+  return RAIL_IDS.includes(rail as RailId) ? (rail as RailId) : 'task'
+}
+```
+`create` 内 merge 改为：
+```ts
+partialize: (s) => {
+  const out: Partial<ViewState> = { workState: s.workState }
+  if (s.view === 'cockpit' || s.view === 'work') out.view = s.view  // boot 不入 persist（spec §7）
+  return out
+},
+merge: (persisted, current) => {
+  const p = (persisted ?? {}) as { workState?: { rail?: unknown } }
+  // boot 门禁：persist 的 view 永不恢复——主窗口每次认证后从 'boot' 起（spec §7），
+  // 只恢复工作区 rail；persist 的 view 字段（仅 cockpit|work）为信息性记录。
+  return { ...current, view: current.view, workState: { rail: sanitizeRail(p.workState?.rail) } }
+},
+```
+删除 `normalizeStoredView`（login 归一语义作废）。改写 `src/stores/viewStore.test.ts`（原断言删净）：
+```ts
+import { sanitizeRail, RAIL_IDS } from './viewStore.ts'
+test('sanitizeRail：4 合法值透传，非法/缺省回退 task', () => {
+  for (const ok of RAIL_IDS) assert.equal(sanitizeRail(ok), ok)
+  assert.equal(sanitizeRail(undefined), 'task')
+  assert.equal(sanitizeRail('nope'), 'task')
+  assert.equal(sanitizeRail(42), 'task')
+})
+```
+Run: `node --test src/stores/viewStore.test.ts` → PASS。`npm run typecheck` 无 AppView='login' 残留引用（grep 全仓库）。
+
+- [ ] **Step 3: ViewRouter 去 login 分支**
+
+`src/components/layout/ViewRouter.tsx` 目标形态（保留现有主题两个 effect 原样；删 AuthScreen import 与 login 分支；注释头更新为 D11-D13 语义）：
+```tsx
+if (view === 'boot' && speed) return <CockpitPlaceholder />  // effect 同步落 'cockpit'（speed 跳加载屏）
+if (view === 'boot' && !speed) return <BootScreen onDone={() => useViewStore.getState().setView('cockpit')} />
+if (view === 'cockpit') return <CockpitPlaceholder />  // Task 8 替换为 CockpitScreen
+return <AppShell /> // work
+```
+并更新 `useEffect` 里 `view==='boot' && speed` 的 `setView('login')` → `setView('cockpit')`。原注释「boot/login/cockpit 三态」等旧描述一并修正。
+
+- [ ] **Step 4: App.tsx 路由 + authWindow lib + AuthWindowRoot**
+
+`src/lib/authWindow.ts`（仿 `editorBridge.ts`，不引 zustand/UI）：
+```ts
+// 认证小窗（独立 BrowserWindow ?auth=1）：与主应用同 partition/localStorage，
+// 只渲染 AuthScreen 完成首设/登录，成功后经 IPC auth:granted 交主进程开主窗口。
+export function isAuthWindow(): boolean {
+  return typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('auth') === '1'
+}
+```
+`src/components/auth/AuthWindowRoot.tsx`：
+```tsx
+// 认证小窗宿主（?auth=1）：AuthScreen 自带整窗深色品牌底/卡片，按 ~420×560 小窗自适应。
+import { TooltipProvider } from '@/components/ui'
+import { AuthScreen } from './AuthScreen'
+export function AuthWindowRoot() {
+  return (
+    <TooltipProvider>
+      <AuthScreen />
+    </TooltipProvider>
+  )
+}
+```
+`src/App.tsx` 在 `isEditorWindow()` 分支前加：
+```tsx
+if (isAuthWindow()) return <AuthWindowRoot />  // 认证小窗不加载 MainApp/ViewRouter
+```
+（是否需要 TooltipProvider 以 AuthWindowRoot 内已包为准，App 层不必重复。）
+
+- [ ] **Step 5: AuthScreen/SetupWizard 成功路径改 IPC**
+
+两文件**删除 `useViewStore` import 与 setView 调用**；新增放行动作（小窗内唯一语义）：
+```ts
+/** 认证通过（login ok / setup 即解锁）→ 通知主进程关小窗、开主窗口（spec §2.0）。 */
+const grant = () => { window.yfworkingWindow?.authGranted?.() }
+```
+`AuthScreen.tsx` `LoginView.submit` 成功分支 `useViewStore.getState().setView('cockpit')` → `grant()`；`SetupWizard.tsx` `submit` 成功分支同样替换。文件头注释更新为「由 AuthWindowRoot（?auth=1 小窗）渲染；认证通过发 IPC auth:granted，主进程接管窗口切换」。
+
+- [ ] **Step 6: preload 暴露 `authGranted`**
+
+`electron/preload.cjs` `yfworkingWindow` 对象加：
+```js
+// 认证小窗：认证通过 → 主进程关小窗、创建主窗口（spec §2.0 / Task 6b）
+authGranted: () => ipcRenderer.send('auth:granted'),
+```
+
+- [ ] **Step 7: main.cjs 认证窗编排**
+
+先通读 `main.cjs` 窗口相关现状：`createWindow()`（~465-568）、`registerRendererErrorCapture`、`registerIpc()`（内部含 editorWin/doubao 等 `ipcMain` 注册）、`whenReady`（~1504-1553）、`activate`（~1583-1585）。改动点：
+1. 在 `createWindow` 附近加模块级 `let authWin = null`、`let authGranted = false` 与 `createAuthWindow()`：
+```js
+// 认证小窗（spec §2.0/D13；Task 6b）：冷启动先建，主窗口在 auth:granted 后才创建。
+function createAuthWindow() {
+  authWin = new BrowserWindow({
+    width: 420, height: 560, resizable: false, title: 'YFWorking',
+    icon: ICON_PATH, show: false, backgroundColor: '#171109',  // 与 AuthScreen 深色底一致防闪白
+    webPreferences: { preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true, nodeIntegration: false, sandbox: false },
+  })
+  authWin.once('ready-to-show', () => { authWin?.center(); authWin?.show() })
+  authWin.on('closed', () => {
+    authWin = null
+    // 冷启动小窗未放行即被关（主窗口从未创建）→ 退出应用，不经 tray 保留分支
+    if (!authGranted && (!mainWindow || mainWindow.isDestroyed()) && !isQuitting) app.quit()
+  })
+  const devUrl = process.env.VITE_DEV_SERVER_URL
+  if (devUrl) authWin.loadURL(devUrl + '?auth=1')
+  else authWin.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), { query: { auth: '1' } })
+}
+```
+2. `registerIpc()` 内注册（与既有 `ipcMain` 同级）：
+```js
+ipcMain.on('auth:granted', () => {
+  authGranted = true
+  const w = authWin
+  authWin = null
+  if (w && !w.isDestroyed()) w.close()
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    bootStartAt = Date.now()   // 刷新 60s 启动兜底弹窗窗口基线
+    createWindow()
+    mainWindow?.webContents.once('did-finish-load', () => bootPhase('windowLoad'))
+  }
+})
+```
+3. `whenReady` 启动段：`createWindow()` 与其后的 `mainWindow?.webContents.once('did-finish-load', ...)` 两行替换为 `createAuthWindow()`；`createTray()`/pet/browser 接线位置不动。
+4. `activate` handler 改：`if (BrowserWindow.getAllWindows().length === 0) { if (authGranted) createWindow(); else createAuthWindow() }`。
+5. 检查 `app.quit()` 触发 before-quit 会 `killBridge/killPet`（现状即有），认证小窗场景无需额外清扫。
+> 若实际代码结构（如 registerIpc 位置、bootPhase/bootStartAt 可见性）与上述行号有出入，以通读后真实结构为准，保持改动最小。
+
+- [ ] **Step 8: 冒烟 + 提交**
+
+Run: `npm run typecheck`、`npm test`、`node --test src/stores/viewStore.test.ts server/auth-preflight.test.mjs`、`npm run build`。
+手动（`npm run dev` + `npm run electron`，连真实后端）：
+1. 冷启动**只弹认证小窗**（~420×560 原生边框、主屏居中），主窗口不创建；
+2. 首设口令成功 → 小窗关、主窗口开（boot 加载屏 → cockpit 占位）；
+3. 再次启动 → 小窗登录页；错口令抖动、连错 5 次 → 锁定倒计时；**锁定期内关小窗 → 应用整体退出**（进程消失）；
+4. 未放行直接关小窗 → 应用退出；
+5. DevTools：login/setup POST 无 CORS 预检失败；主窗 localStorage `yfworking-view` 无 'boot' 落盘、workState 正常；boot 每次认证后播放（persist 'work' 也不跳过）；
+6. speedMode=true → 主窗跳过 boot 直落 cockpit 占位；托盘开关下关主窗 → 隐藏托盘、恢复照旧。
+
+```bash
+git add electron/main.cjs electron/preload.cjs server/bridge.mjs server/auth-preflight.test.mjs src/lib/authWindow.ts src/components/auth/AuthWindowRoot.tsx src/App.tsx src/components/auth/AuthScreen.tsx src/components/auth/SetupWizard.tsx src/stores/viewStore.ts src/stores/viewStore.test.ts src/components/layout/ViewRouter.tsx
+git commit -m "feat(gui-ux): 认证小窗编排（D11-D13）——?auth=1 独立登录窗 + auth:granted IPC + 主窗口视图机收敛 boot→cockpit→work"
+```
+
+---
+
 ### Task 7: 驾驶舱原型数据驱动改造（public/cockpit/index.html）
 
 **Files:**
@@ -720,7 +960,7 @@ const [morph, setMorph] = useState<{ to: 'work' | 'cockpit'; fromRect: DOMRect }
 
 - [ ] **Step 5: 联调冒烟**
 
-`npm run typecheck`、`npm run build`。dev+electron 手测：登录（或占位跳）→ cockpit iframe 出现且数据 5s 刷新（开 DevTools console 看 overview 消息与渲染）；切主题 → iframe 同步 light/dark；speedMode → iframe 静止动画（`.cockpit-speed`）；点 hub（先关面板场景与直接场景）→ LogoMorph 过渡 → work 屏；work →（Header logo 尚未接 Task 9 前用临时按钮或 DevTools 调 `useViewStore.setView('cockpit')`）回 cockpit，iframe 无重载闪白（保活生效）。
+`npm run typecheck`、`npm run build`。dev+electron 手测：认证小窗放行 → 主窗口 boot 交棒 → cockpit iframe 出现且数据 5s 刷新（开 DevTools console 看 overview 消息与渲染）；切主题 → iframe 同步 light/dark；speedMode → iframe 静止动画（`.cockpit-speed`）；点 hub（先关面板场景与直接场景）→ LogoMorph 过渡 → work 屏；work →（Header logo 尚未接 Task 9 前用临时按钮或 DevTools 调 `useViewStore.setView('cockpit')`）回 cockpit，iframe 无重载闪白（保活生效）。
 
 - [ ] **Step 6: Commit**
 
@@ -1051,7 +1291,7 @@ useEffect(() => {
 
 - [ ] **Step 2: 跨重启现场核对冒烟**
 
-手测：在 work 打开 rail=chat + 某对话 → 关 app 重开 → 登录 → 驾驶舱 → hub 进 work → rail 仍 chat、该会话仍 active（persist 生效）。清 localStorage（或首启）→ 进 work 自动生成一条空白对话出现在 chat 面板，主区为欢迎/空输入。
+手测：在 work 打开 rail=chat + 某对话 → 关 app 重开 → 认证小窗放行 → 主窗口 boot → 驾驶舱 → hub 进 work → rail 仍 chat、该会话仍 active（persist 生效）。清 localStorage（或首启）→ 进 work 自动生成一条空白对话出现在 chat 面板，主区为欢迎/空输入。
 
 - [ ] **Step 3: Commit**
 
@@ -1089,7 +1329,7 @@ Run: `npm run test` → server/electron 既有全绿（`server/*.test.mjs electr
 Run: `node --test src/lib/viewStore.test.ts src/lib/chatModeUi.test.ts src/lib/effortUi.test.ts`（如文件路径存在）→ PASS。
 Run: `npm run build` → 成功。
 dev+electron 冒烟清单（写进 audit md 附注或单独冒烟记录）：
-1. 启动动画出现并可跳过（speedMode）→ 登录（首次设置/以后登录/锁定）→ 驾驶舱数据刷新、主题联动、hub 过渡进 work；
+1. 冷启动认证小窗先现（首设/以后登录/锁定、speedMode 不影响小窗）→ 放行后主窗口 boot 加载屏（speedMode 时跳过）→ 驾驶舱数据刷新、主题联动、hub 过渡进 work；
 2. work：rail 切换、新建对话/任务、chat 会话禁本地工具但可联网与调 effort、task 会话正常执行本地工具；
 3. Header logo 回驾驶舱再回来，现场保留；重启恢复；
 4. 六面板（对话/任务/智能体/技能/文件/历史/用量/工作树）入口齐全、无遗留 Sidebar 死链。
@@ -1109,4 +1349,5 @@ git commit -m "docs+chore(gui-ux): 图标唯一性审计表 + i18n 清理 + 全�
 - **占位扫描**：无 TBD/TODO；Step 4「临时占位组件」为明确交付物并有替换任务。
 - **类型一致性**：`mode:'chat'|'task'`、`AppView/RailId`、`EffortLevel`、auth 四个端点、iframe 消息契约在全部任务中使用同一命名；`createConversation` 三参签名与现调用兼容。
 - **已知时序依赖**（执行注意）：Task 10 依赖 Task 11 的 `mode` 字段语义完整落地（两者建议同一执行批次）；Task 8 依赖 Task 7 契约一致；Task 12 的 DEFAULT_CONFIG `effortLevel` 与 GUI 保存 cfg 同键。
+- **2026-09-08 增补（认证前置 D11-D13）**：新增 **Task 6b**（认证小窗编排 + 视图机收敛），置于 Task 6 之后、Task 7 之前执行；Task 7-15 一律以文件顶部「变更记录」为窗口/视图/认证基线（Task 4/5/6 原文中 login 视图依赖已被 6b 取代）。Task 15 Step 3 冒烟清单第 1 条与 Task 14 Step 2 已就地改写。
 - **资产待办**：boost logo 若自动导出失败，T1 Step 4 用户导出到位前，T5/T6/T8 使用 `logo.png` 占位（Task 1 备注在文件尾，T15 Step 3 复查路径可用）。
