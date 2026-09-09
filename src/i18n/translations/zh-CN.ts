@@ -44,12 +44,27 @@ export const zhCN = {
     toggleSidebar: '切换侧边栏',
   },
 
-  // --- 工作区 rail 列（WorkShell/RailNav 常驻四段导航） ---
+  // --- 工作区 rail 列（WorkShell/RailNav 常驻四段导航；Task 10 起二级面板消费新键） ---
   rail: {
     chat: '对话',
     task: '任务',
     agents: '智能体',
     skills: '技能',
+    chatNew: '新建对话',
+    chatEmpty: '暂无对话，先聊点什么吧',
+    chatEmptyAction: '开始对话',
+    taskNew: '新建任务',
+    taskEmpty: '暂无任务',
+    taskEmptyAction: '新建任务',
+    deleteSetConfirm: '删除会话集「{name}」？会话不会被删除。',
+    newSetDefaultName: '新会话集',
+  },
+
+  // --- 会话列表状态字（TaskListPanel 进度/待回复/计划中；ChatListPanel 复用 running） ---
+  convStatus: {
+    running: '执行中',
+    awaiting: '待回复',
+    planned: '计划中',
   },
 
   // --- 侧边栏 ---

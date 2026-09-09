@@ -1,91 +1,29 @@
+// src/components/rail/TaskListPanel.tsx —— 任务面板（rail==='task' 的二级内容，Task 10）
+// 自旧 Sidebar.tsx chats 分支完整迁移：搜索、整理（Wand2 autoOrganize）、排序（DropdownMenu）、
+// 置顶/会话集/未分组、拖动排序与拖入会话集、行右键菜单（重命名/置顶/移动会话集/导出/删除）、
+// 会话集右键菜单（重命名/导出/删除）、流式会话进度条（conv-progress）、冷启动定位滚动。
+// 变更点：仅任务会话入列（isTaskLike；chat 会话归 ChatListPanel 且无会话集概念）；
+//         exportChats 已迁至 @/lib/chatExport；硬编码中文全部改为 i18n 键。
+// 头部 = PanelToolbar（rail.task 标题 + 计数 + 新建任务 + 次级浮层图标行 files/history/usage/worktree）。
 import { useState, useEffect, useRef, useLayoutEffect, memo } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  MessageSquare, History, FolderTree, Bot, Plus, Search, GitFork, Gauge,
-  Pin, Trash2, Edit3, Puzzle, MessageSquarePlus, CalendarClock,
-  Wand2, ChevronRight, FolderOpen, FolderPlus, Share2, ArrowUpDown, Check,
+  Search, Pin, Trash2, Edit3, Plus, SquareKanban, SquarePlus, FolderOpen,
+  FolderPlus, Share2, ArrowUpDown, Check, Wand2, ChevronRight, History, Gauge, GitFork,
 } from 'lucide-react'
-import { Button } from '@/components/ui'
-import { ScrollArea } from '@/components/ui'
-import { Tooltip } from '@/components/ui'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui'
+import { Button, ScrollArea, Tooltip, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui'
+import { PanelToolbar, type RailToolbarIconAction } from './PanelToolbar'
 import { useChatStore } from '@/stores/chatStore'
-import { fetchTranscript } from '@/lib/transcriptLoader'
 import { useUIStore } from '@/stores/uiStore'
+import { useViewStore, type SecondTabId } from '@/stores/viewStore'
 import { useTranslation } from '@/i18n/useTranslation'
-import { HistoryView } from '@/components/history/HistoryView'
-import { FileBrowser } from '@/components/files/FileBrowser'
-import { AgentsPanel } from '@/components/agents/AgentsPanel'
-import { WorktreePanel } from '@/components/worktree/WorktreePanel'
-import { SkillsPanel } from '@/components/skills/SkillsPanel'
-import { UsagePanel } from '@/components/usage/UsagePanel'
+import { exportChats } from '@/lib/chatExport'
 import { formatDate, cn } from '@/lib/utils'
-import type { Conversation, ConversationProgress, ConversationSet, Message } from '@/types'
+import { isTaskLike } from '@/lib/chatModeUi'
+import type { Conversation, ConversationProgress, ConversationSet } from '@/types'
 
-const TABS = [
-  { id: 'chats' as const, icon: MessageSquare, labelKey: 'sidebar.chats' },
-  { id: 'files' as const, icon: FolderTree, labelKey: 'sidebar.files' },
-  { id: 'worktrees' as const, icon: GitFork, labelKey: 'sidebar.worktrees' },
-  { id: 'history' as const, icon: History, labelKey: 'sidebar.history' },
-  { id: 'agents' as const, icon: Bot, labelKey: 'sidebar.agents' },
-  { id: 'skills' as const, icon: Puzzle, labelKey: 'sidebar.skills' },
-  { id: 'usage' as const, icon: Gauge, labelKey: 'sidebar.usage' },
-]
-
-// 导出会话（单个/整个会话集）为 zip：dev 模式无 preload，直接返回。
-// v2：消息体不再在 localStorage——逐会话从内核 transcript 全量读取（tailFirst=0, crop=false，
-// 完整消息，非展示级裁剪）组装 chatsJson，与旧导出格式兼容（{ state: { conversations, ... } }）。
-const exportChats = async (chatsFilter: { conversationIds?: string[]; setId?: string }) => {
-  if (!window.yfworkingAPI) return
-  const st = useChatStore.getState()
-  const all = st.conversations
-  const picked = chatsFilter?.conversationIds
-    ? all.filter(c => chatsFilter.conversationIds!.includes(c.id))
-    : chatsFilter?.setId
-      ? all.filter(c => c.setId === chatsFilter.setId)
-      : all
-  const withMessages: Conversation[] = []
-  for (const c of picked) {
-    let messages: Message[] = []
-    const ids = c.sessionIds || []
-    const parts: Message[][] = []
-    for (const sid of ids) {
-      const r = await fetchTranscript(sid, c.cwd || '', { tailFirst: false, crop: false })
-      if (r.ok) parts.push(r.messages)
-    }
-    // ext 兜底（导入的无 transcript 会话）合并
-    try {
-      const raw = window.localStorage.getItem('yfworking-chat-ext-' + c.id)
-      if (raw) parts.push(JSON.parse(raw) as Message[])
-    } catch { /* ignore */ }
-    const flat = parts.flat().sort((a, b) => a.timestamp - b.timestamp)
-    const seen = new Set<string>()
-    for (const m of flat) {
-      if (seen.has(m.id)) continue
-      seen.add(m.id)
-      messages.push(m)
-    }
-    withMessages.push({ ...c, messages })
-  }
-  const chatsJson = JSON.stringify({
-    state: {
-      conversations: withMessages.map(c => ({ ...c, messages: c.messages.slice(-100) })),
-      conversationSets: st.conversationSets,
-      activeConversationId: st.activeConversationId,
-      lastCwd: st.lastCwd,
-    },
-  })
-  window.yfworkingAPI.exportExperience({
-    included: ['chats'],
-    chatsJson,
-    chatsFilter,
-    configRedact: true,
-  }).then(res => {
-    if (!res.ok) { /* 静默或 console.warn：取消时不打扰 */ console.warn('导出取消或失败', res.error) }
-  })
-}
-
-export function Sidebar() {
+export function TaskListPanel() {
+  const { t } = useTranslation()
   // 逐个 selector 订阅，避免全量订阅导致任意 store 变化（如消息流式 token）都重渲染
   const conversations = useChatStore(s => s.conversations)
   const activeConversationId = useChatStore(s => s.activeConversationId)
@@ -105,12 +43,9 @@ export function Sidebar() {
   const deleteConversationSet = useChatStore(s => s.deleteConversationSet)
   const autoOrganize = useChatStore(s => s.autoOrganize)
   const reorderConversationSets = useChatStore(s => s.reorderConversationSets)
-  const sidebarTab = useUIStore(s => s.sidebarTab)
-  const setSidebarTab = useUIStore(s => s.setSidebarTab)
-  const setScheduleGuideFor = useUIStore(s => s.setScheduleGuideFor)
   const chatSortMode = useUIStore(s => s.chatSortMode)
   const setChatSortMode = useUIStore(s => s.setChatSortMode)
-  const { t } = useTranslation()
+  const secondTab = useViewStore(s => s.workState.secondTab)
   const [searchQuery, setSearchQuery] = useState('')
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -125,6 +60,22 @@ export function Sidebar() {
   const [moveTarget, setMoveTarget] = useState<string | null>(null)
   const [dragSetId, setDragSetId] = useState<string | null>(null)
   const [dragSetOverId, setDragSetOverId] = useState<string | null>(null)
+
+  // 本面板只渲染任务会话（chat 会话与集合概念隔离，见 ChatListPanel）
+  const tasks = conversations.filter(isTaskLike)
+
+  // 次级浮层：点同 tab 再次点击关闭；其余切换内容
+  const toggleSecondTab = (tab: SecondTabId) => {
+    useViewStore.setState(s => ({
+      workState: { ...s.workState, secondTab: s.workState.secondTab === tab ? null : tab },
+    }))
+  }
+  const secondaryActions: RailToolbarIconAction[] = [
+    { key: 'files', tooltip: t('sidebar.files'), icon: FolderOpen, active: secondTab === 'files', onClick: () => toggleSecondTab('files') },
+    { key: 'history', tooltip: t('sidebar.history'), icon: History, active: secondTab === 'history', onClick: () => toggleSecondTab('history') },
+    { key: 'usage', tooltip: t('sidebar.usage'), icon: Gauge, active: secondTab === 'usage', onClick: () => toggleSecondTab('usage') },
+    { key: 'worktree', tooltip: t('sidebar.worktrees'), icon: GitFork, active: secondTab === 'worktree', onClick: () => toggleSecondTab('worktree') },
+  ]
 
   // Close context menu when clicking outside
   useEffect(() => {
@@ -150,12 +101,10 @@ export function Sidebar() {
   // 2) 常规切换会话：block:'nearest' 仅保证可见，不打断用户主动滚动。
   // 延迟到布局稳定后执行：冷启动时 ScrollArea 内容刚挂载，立即 scrollIntoView 会因
   // 目标元素未布局/视口未就绪而无效（Radix viewport 需要一轮渲染后才可滚动）。
+  // 注：rail 切离 task 时本组件卸载，重进时重新冷定位（didInitialScroll 随之复位）。
   const didInitialScroll = useRef(false)
   useEffect(() => {
     if (!activeConversationId) return
-    // 元素可能因 tab 不在 chats（列表未渲染）或布局未就绪而暂缺：
-    // 短轮询重试（每 150ms，最多 12 次），避免静默丢失定位；切到 chats tab 时
-    // sidebarTab 变化会重新触发本 effect，重试窗口也随之刷新。
     let attempts = 0
     let timer: ReturnType<typeof setTimeout> | null = null
     const tryScroll = () => {
@@ -168,31 +117,21 @@ export function Sidebar() {
         return
       }
       if (!didInitialScroll.current) {
-        // 冷启动首次定位：把最新会话滚到视口底部（聊天记录式——旧会话在上、
-        // 最新会话贴可见区最下沿）。用户明确选择"最新会话停视口底部"。
-        // block:'end' 使元素底边对齐视口底边；当最新会话位置靠上、所需滚动量
-        // 为负时浏览器钳制到 0，天然退化为"停在置顶区正下方、置顶保持可见"。
-        // （此前用 block:'start' 把最新会话顶到视口顶部，用户反馈仍像"定位在
-        // 中间"——顶部一行 + 下方大片旧会话被截断；center 需要负滚动量时同样
-        // 会被钳制静默不滚。）
         didInitialScroll.current = true
         el.scrollIntoView({ block: 'end' })
-        // 定位可感知性：数据顺序下最新会话可能本就无需滚动（钳制为 0），视觉上
-        // 与"未定位"无异，短暂高亮闪现让用户一眼看到定位到了哪一行。
         el.classList.add('locate-flash')
         window.setTimeout(() => el.classList.remove('locate-flash'), 1400)
       } else {
-        // 常规切换：保证可见即可，不打断用户主动滚动
         el.scrollIntoView({ block: 'nearest' })
       }
     }
     timer = setTimeout(tryScroll, 150)
     return () => { if (timer) clearTimeout(timer) }
-  }, [activeConversationId, sidebarTab])
+  }, [activeConversationId])
 
   const filtered = searchQuery
-    ? conversations.filter(c => (c.title || '').toLowerCase().includes(searchQuery.toLowerCase()))
-    : conversations
+    ? tasks.filter(c => (c.title || '').toLowerCase().includes(searchQuery.toLowerCase()))
+    : tasks
 
   const pinned = filtered.filter(c => c.pinned)
   const unpinned = filtered.filter(c => !c.pinned)
@@ -208,7 +147,7 @@ export function Sidebar() {
   // 会话集仅手动顺序（store 顺序），不再按名称排序
   const filteredSets = conversationSets
 
-  const getConvIndex = (id: string) => conversations.findIndex(c => c.id === id)
+  const getConvIndex = (id: string) => tasks.findIndex(c => c.id === id)
 
   const handleDragStart = (convId: string) => {
     // 非手动排序模式下开始拖拽：立即切回手动（列表回到 store 顺序），
@@ -291,7 +230,7 @@ export function Sidebar() {
   }
 
   const handleSetDelete = (s: ConversationSet) => {
-    if (window.confirm(`删除会话集「${s.name}」？会话不会被删除。`)) {
+    if (window.confirm(t('rail.deleteSetConfirm', { name: s.name }))) {
       deleteConversationSet(s.id)
     }
     setSetMenuId(null)
@@ -304,7 +243,7 @@ export function Sidebar() {
   }
 
   const handleNewSetAndMove = (conversationId: string) => {
-    const id = createConversationSet('新会话集')
+    const id = createConversationSet(t('rail.newSetDefaultName'))
     setConversationSet(conversationId, id)
     setMoveTarget(null)
     setContextMenu(null)
@@ -345,206 +284,164 @@ export function Sidebar() {
     />
   )
 
+  const taskModeEmpty = tasks.length === 0
+
   return (
-    <aside className="flex flex-col h-full w-full bg-app border-r">
-      {/* Tab bar */}
-      <div className="flex items-center h-10 border-b px-1">
-        {TABS.map(tab => {
-          const Icon = tab.icon
-          const active = sidebarTab === tab.id
-          return (
-            <Tooltip key={tab.id} content={t(tab.labelKey)}>
-              <button
-                onClick={() => setSidebarTab(tab.id)}
-                aria-label={t(tab.labelKey)}
-                className={cn(
-                  'flex-1 flex items-center justify-center h-8 rounded-md transition-colors',
-                  active ? 'text-primary bg-elevated' : 'text-tertiary hover:text-secondary'
-                )}
-              >
-                <Icon className="w-4 h-4" />
-              </button>
-            </Tooltip>
-          )
-        })}
+    <div className="flex flex-col h-full min-h-0">
+      {/* 面板头部：标题/计数/次级浮层图标行/新建任务 */}
+      <PanelToolbar
+        title={t('rail.task')}
+        count={tasks.length}
+        newIcon={SquarePlus}
+        newLabel={t('rail.taskNew')}
+        onNew={() => createConversation()}
+        secondary={secondaryActions}
+      />
+
+      {/* Search + organize + sort */}
+      <div className="flex items-center gap-2 p-2 border-b shrink-0">
+        <div className="relative flex-1 min-w-0">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-tertiary" />
+          <input
+            type="text"
+            placeholder={t('search.placeholder')}
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            className="w-full h-8 bg-elevated border border rounded-md pl-7 pr-2 text-xs text-primary placeholder:text-tertiary focus:outline-none focus:ring-1 focus:ring-accent"
+          />
+        </div>
+        <Tooltip content={t('sidebar.organize')}>
+          <Button variant="ghost" size="xs" aria-label={t('sidebar.organize')} onClick={() => autoOrganize()}>
+            <Wand2 className="w-3.5 h-3.5" />
+          </Button>
+        </Tooltip>
+        <DropdownMenu>
+          <Tooltip content={t('sidebar.sortBy')}>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="xs" aria-label={t('sidebar.sortBy')}>
+                <ArrowUpDown className="w-3.5 h-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+          </Tooltip>
+          <DropdownMenuContent align="end" sideOffset={6}>
+            {([
+              ['manual', 'sidebar.sortManual'],
+              ['updated', 'sidebar.sortUpdated'],
+              ['created', 'sidebar.sortCreated'],
+              ['title', 'sidebar.sortTitle'],
+            ] as const).map(([mode, labelKey]) => (
+              <DropdownMenuItem key={mode} onClick={() => setChatSortMode(mode)}>
+                <div className="flex-1 text-xs">{t(labelKey)}</div>
+                {chatSortMode === mode && <Check className="w-3.5 h-3.5 text-brand-500" />}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
-      {/* Content by tab */}
-      <div className="flex-1 flex flex-col min-h-0">
-        {sidebarTab === 'chats' && (
-          <>
-            {/* Search + New */}
-            <div className="flex items-center gap-2 p-2 border-b">
-              <div className="relative flex-1">
-                <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-tertiary" />
-                <input
-                  type="text"
-                  placeholder={t('search.placeholder')}
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                  className="w-full h-8 bg-elevated border border rounded-md pl-7 pr-2 text-xs text-primary placeholder:text-tertiary focus:outline-none focus:ring-1 focus:ring-accent"
-                />
+      {/* 会话列表 */}
+      {taskModeEmpty ? (
+        <div className="flex-1 flex flex-col items-center justify-center gap-2.5 px-4 text-center min-h-0">
+          <SquareKanban className="w-6 h-6 text-tertiary" />
+          <span className="text-xs text-secondary leading-relaxed">{t('rail.taskEmpty')}</span>
+          <Button variant="secondary" size="xs" onClick={() => createConversation()}>
+            <SquarePlus className="w-3.5 h-3.5" />
+            {t('rail.taskEmptyAction')}
+          </Button>
+        </div>
+      ) : (
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="p-1">
+            {pinned.length > 0 && (
+              <div className="mb-1">
+                <div className="px-2 py-1 text-[10px] font-semibold text-tertiary uppercase tracking-wider">{t('sidebar.pinned')}</div>
+                {pinned.map(renderItem)}
               </div>
-              <Tooltip content={t('sidebar.organize')}>
-                <Button variant="ghost" size="xs" aria-label={t('sidebar.organize')} onClick={() => autoOrganize()}>
-                  <Wand2 className="w-3.5 h-3.5" />
-                </Button>
-              </Tooltip>
-              <DropdownMenu>
-                <Tooltip content={t('sidebar.sortBy')}>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="xs" aria-label={t('sidebar.sortBy')}>
-                      <ArrowUpDown className="w-3.5 h-3.5" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                </Tooltip>
-                <DropdownMenuContent align="end" sideOffset={6}>
-                  {([
-                    ['manual', 'sidebar.sortManual'],
-                    ['updated', 'sidebar.sortUpdated'],
-                    ['created', 'sidebar.sortCreated'],
-                    ['title', 'sidebar.sortTitle'],
-                  ] as const).map(([mode, labelKey]) => (
-                    <DropdownMenuItem key={mode} onClick={() => setChatSortMode(mode)}>
-                      <div className="flex-1 text-xs">{t(labelKey)}</div>
-                      {chatSortMode === mode && <Check className="w-3.5 h-3.5 text-brand-500" />}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-              <DropdownMenu>
-                <Tooltip content={t('sidebar.newChat') + ' (⌘N)' }>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="primary" size="xs" aria-label={t('sidebar.newChat')}>
-                      <Plus className="w-4 h-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                </Tooltip>
-                <DropdownMenuContent align="end" sideOffset={6}>
-                  <DropdownMenuItem onClick={() => createConversation()}>
-                    <MessageSquarePlus className="w-4 h-4 mr-2 text-tertiary" />
-                    <div>
-                      <div className="text-xs font-medium">常规任务</div>
-                      <div className="text-[10px] text-tertiary mt-0.5">普通对话，一问一答</div>
-                    </div>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => {
-                    const id = createConversation()
-                    setScheduleGuideFor(id)
-                  }}>
-                    <CalendarClock className="w-4 h-4 mr-2 text-brand-500" />
-                    <div>
-                      <div className="text-xs font-medium">定时任务</div>
-                      <div className="text-[10px] text-tertiary mt-0.5">安排指定时间自动执行</div>
-                    </div>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-
-            {/* Conversation list */}
-            <ScrollArea className="flex-1">
-              <div className="p-1">
-                {pinned.length > 0 && (
-                  <div className="mb-1">
-                    <div className="px-2 py-1 text-[10px] font-semibold text-tertiary uppercase tracking-wider">{t('sidebar.pinned')}</div>
-                    {pinned.map(renderItem)}
+            )}
+            {filteredSets.map(s => {
+              const members = sortedUnpinned.filter(c => c.setId === s.id)
+              if (members.length === 0) return null
+              // 搜索时自动展开全部会话集分组
+              const open = !searchQuery ? !collapsed[s.id] : true
+              return (
+                <div key={s.id} className="mb-1">
+                  <div
+                    className={cn(
+                      'flex items-center gap-1 px-2 py-1 rounded-md cursor-pointer hover:bg-elevated group',
+                      dragSetOverId === s.id && 'ring-1 ring-brand-500/50 bg-brand-500/10',
+                      dragSetId === s.id && 'opacity-50',
+                    )}
+                    onClick={() => setCollapsed(prev => ({ ...prev, [s.id]: !prev[s.id] }))}
+                    onContextMenu={(e) => { e.preventDefault(); openSetMenu(e, s.id) }}
+                    draggable
+                    onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; handleSetDragStart(s.id) }}
+                    onDragOver={(e) => handleSetDragOver(e, s.id)}
+                    onDragLeave={() => handleSetDragLeave(s.id)}
+                    onDrop={() => handleSetDrop(s.id)}
+                    onDragEnd={handleSetDragEnd}
+                  >
+                    <ChevronRight className={cn('w-3 h-3 text-tertiary transition-transform', open && 'rotate-90')} />
+                    <FolderOpen className="w-3 h-3 text-brand-500/70 shrink-0" />
+                    {renamingSetId === s.id ? (
+                      <input
+                        autoFocus
+                        value={renamingSetValue}
+                        onChange={e => setRenamingSetValue(e.target.value)}
+                        onBlur={() => handleSetRename(s.id)}
+                        onKeyDown={e => { if (e.key === 'Enter') handleSetRename(s.id); if (e.key === 'Escape') { setRenamingSetId(null); setRenamingSetValue('') } }}
+                        onClick={e => e.stopPropagation()}
+                        onContextMenu={e => e.stopPropagation()}
+                        className="flex-1 min-w-0 bg-input border border-brand-500/60 rounded px-1.5 py-0.5 text-xs text-primary outline-none focus:border-brand-500"
+                      />
+                    ) : (
+                      <span className="flex-1 min-w-0 truncate text-xs text-secondary" title={s.name}>{s.name}</span>
+                    )}
+                    <span className="text-[10px] text-tertiary tabular-nums shrink-0 whitespace-nowrap">{members.length}</span>
                   </div>
-                )}
-                {filteredSets.map(s => {
-                  const members = sortedUnpinned.filter(c => c.setId === s.id)
-                  if (members.length === 0) return null
-                  // 搜索时自动展开全部会话集分组
-                  const open = !searchQuery ? !collapsed[s.id] : true
-                  return (
-                    <div key={s.id} className="mb-1">
-                      <div
-                        className={cn(
-                          'flex items-center gap-1 px-2 py-1 rounded-md cursor-pointer hover:bg-elevated group',
-                          dragSetOverId === s.id && 'ring-1 ring-brand-500/50 bg-brand-500/10',
-                          dragSetId === s.id && 'opacity-50',
-                        )}
-                        onClick={() => setCollapsed(prev => ({ ...prev, [s.id]: !prev[s.id] }))}
-                        onContextMenu={(e) => { e.preventDefault(); openSetMenu(e, s.id) }}
-                        draggable
-                        onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; handleSetDragStart(s.id) }}
-                        onDragOver={(e) => handleSetDragOver(e, s.id)}
-                        onDragLeave={() => handleSetDragLeave(s.id)}
-                        onDrop={() => handleSetDrop(s.id)}
-                        onDragEnd={handleSetDragEnd}
-                      >
-                        <ChevronRight className={cn('w-3 h-3 text-tertiary transition-transform', open && 'rotate-90')} />
-                        <FolderOpen className="w-3 h-3 text-brand-500/70 shrink-0" />
-                        {renamingSetId === s.id ? (
-                          <input
-                            autoFocus
-                            value={renamingSetValue}
-                            onChange={e => setRenamingSetValue(e.target.value)}
-                            onBlur={() => handleSetRename(s.id)}
-                            onKeyDown={e => { if (e.key === 'Enter') handleSetRename(s.id); if (e.key === 'Escape') { setRenamingSetId(null); setRenamingSetValue('') } }}
-                            onClick={e => e.stopPropagation()}
-                            onContextMenu={e => e.stopPropagation()}
-                            className="flex-1 min-w-0 bg-input border border-brand-500/60 rounded px-1.5 py-0.5 text-xs text-primary outline-none focus:border-brand-500"
-                          />
-                        ) : (
-                          <span className="flex-1 min-w-0 truncate text-xs text-secondary" title={s.name}>{s.name}</span>
-                        )}
-                        <span className="text-[10px] text-tertiary tabular-nums shrink-0 whitespace-nowrap">{members.length}</span>
-                      </div>
-                      {open && <div className="ml-2 border-l border-default/60 pl-1">{members.map(renderItem)}</div>}
-                    </div>
-                  )
-                })}
-                {unpinned.length > 0 && (
-                  <div>
-                    <div className="px-2 py-1 text-[10px] font-semibold text-tertiary uppercase tracking-wider">{t('sidebar.ungrouped')}</div>
-                    {sortedUnpinned.filter(c => !c.setId).map(renderItem)}
-                  </div>
-                )}
-                {filtered.length === 0 && (
-                  <div className="p-4 text-center text-xs text-tertiary">
-                    {searchQuery ? t('search.noResults') : t('sidebar.noConversations')}
-                  </div>
-                )}
-              </div>
-            </ScrollArea>
-
-            {/* 会话集右键菜单 — portal 到 body，viewport 定位防滚动区裁剪 */}
-            {setMenuId && setMenuPos && (() => {
-              const s = conversationSets.find(x => x.id === setMenuId)
-              if (!s) return null
-              return createPortal(
-                <div
-                  className="fixed z-[100] w-36 border border glass-context-menu rounded-lg py-1 animate-scale-in"
-                  style={{
-                    left: setMenuPos.left,
-                    top: setMenuPos.top,
-                    backgroundColor: 'var(--popover-bg)',
-                    backdropFilter: 'blur(var(--popover-blur))',
-                    WebkitBackdropFilter: 'blur(var(--popover-blur))',
-                  }}
-                  onClick={e => e.stopPropagation()}
-                >
-                  <button onClick={() => { setRenamingSetId(s.id); setRenamingSetValue(s.name); setSetMenuId(null) }} aria-label={t('sidebar.rename')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><Edit3 className="w-3 h-3" /> {t('sidebar.rename')}</button>
-                  <button onClick={() => { exportChats({ setId: s.id }); setSetMenuId(null) }} aria-label={t('sidebar.exportSet')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><Share2 className="w-3 h-3" /> {t('sidebar.exportSet')}</button>
-                  <div className="border-t my-1" />
-                  <button onClick={() => handleSetDelete(s)} aria-label={t('sidebar.delete')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-error hover:bg-error/10"><Trash2 className="w-3 h-3" /> {t('sidebar.delete')}</button>
-                </div>,
-                document.body,
+                  {open && <div className="ml-2 border-l border-default/60 pl-1">{members.map(renderItem)}</div>}
+                </div>
               )
-            })()}
-          </>
-        )}
+            })}
+            {unpinned.length > 0 && (
+              <div>
+                <div className="px-2 py-1 text-[10px] font-semibold text-tertiary uppercase tracking-wider">{t('sidebar.ungrouped')}</div>
+                {sortedUnpinned.filter(c => !c.setId).map(renderItem)}
+              </div>
+            )}
+            {filtered.length === 0 && (
+              <div className="p-4 text-center text-xs text-tertiary">
+                {searchQuery ? t('search.noResults') : t('sidebar.noConversations')}
+              </div>
+            )}
+          </div>
+        </ScrollArea>
+      )}
 
-        {sidebarTab === 'history' && <HistoryView />}
-
-        {sidebarTab === 'files' && <FileBrowser />}
-        {sidebarTab === 'worktrees' && <WorktreePanel />}
-        {sidebarTab === 'agents' && <AgentsPanel />}
-        {sidebarTab === 'skills' && <SkillsPanel />}
-        {sidebarTab === 'usage' && <UsagePanel />}
-      </div>
-    </aside>
+      {/* 会话集右键菜单 — portal 到 body，viewport 定位防滚动区裁剪 */}
+      {setMenuId && setMenuPos && (() => {
+        const s = conversationSets.find(x => x.id === setMenuId)
+        if (!s) return null
+        return createPortal(
+          <div
+            className="fixed z-[100] w-36 border border glass-context-menu rounded-lg py-1 animate-scale-in"
+            style={{
+              left: setMenuPos.left,
+              top: setMenuPos.top,
+              backgroundColor: 'var(--popover-bg)',
+              backdropFilter: 'blur(var(--popover-blur))',
+              WebkitBackdropFilter: 'blur(var(--popover-blur))',
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <button onClick={() => { setRenamingSetId(s.id); setRenamingSetValue(s.name); setSetMenuId(null) }} aria-label={t('sidebar.rename')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><Edit3 className="w-3 h-3" /> {t('sidebar.rename')}</button>
+            <button onClick={() => { exportChats({ setId: s.id }); setSetMenuId(null) }} aria-label={t('sidebar.exportSet')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><Share2 className="w-3 h-3" /> {t('sidebar.exportSet')}</button>
+            <div className="border-t my-1" />
+            <button onClick={() => handleSetDelete(s)} aria-label={t('sidebar.delete')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-error hover:bg-error/10"><Trash2 className="w-3 h-3" /> {t('sidebar.delete')}</button>
+          </div>,
+          document.body,
+        )
+      })()}
+    </div>
   )
 }
 
@@ -593,7 +490,7 @@ const ConversationItem = memo(function ConversationItem({
   const rowRef = useRef<HTMLDivElement>(null)
   const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null)
 
-  // 导出单个会话为 zip（复用模块级 exportChats，dev 无 preload 时静默返回）
+  // 导出单个会话为 zip（复用 chatExport 模块级 exportChats，dev 无 preload 时静默返回）
   const onExportConversation = (id: string) => exportChats({ conversationIds: [id] })
 
   // Position the context menu in viewport coordinates when it opens,
@@ -658,9 +555,9 @@ const ConversationItem = memo(function ConversationItem({
             <span className="flex-1 min-w-0 truncate text-xs" title={conv.title}>{conv.title}</span>
             <div className="flex items-center gap-1 shrink-0 whitespace-nowrap">
               {isAwaiting ? (
-                <span className="text-[10px] text-warning/90 font-medium">待回复</span>
+                <span className="text-[10px] text-warning/90 font-medium">{t('convStatus.awaiting')}</span>
               ) : isStreaming ? (
-                <span className="text-[10px] text-brand-500/70">执行中</span>
+                <span className="text-[10px] text-brand-500/70">{t('convStatus.running')}</span>
               ) : (
                 <span className="text-[10px] text-tertiary tabular-nums">{formatDate(conv.updatedAt, true)}</span>
               )}
@@ -675,9 +572,9 @@ const ConversationItem = memo(function ConversationItem({
           className={cn('conv-progress', isAwaiting && 'conv-progress-paused')}
           title={progress && progress.total > 0
             ? progress.inProgress
-              ? `执行中 ${progress.names[progress.inProgress - 1] || progress.names[0] || '任务'} ${progress.inProgress}/${progress.total}`
-              : '计划中'
-            : isStreaming ? '执行中' : undefined}
+              ? `${t('convStatus.running')} ${progress.names[progress.inProgress - 1] || progress.names[0] || ''} ${progress.inProgress}/${progress.total}`
+              : t('convStatus.planned')
+            : t('convStatus.running')}
         >
           {progress && progress.total > 0 ? (
             <div

@@ -1,43 +1,42 @@
-// src/components/layout/SecondPanel.tsx —— 工作屏二级面板宿主（Task 9）
+// src/components/layout/SecondPanel.tsx —— 工作屏二级面板宿主（Task 9 → Task 10 内容落位）
 // 常驻 ~240px（SECOND_PANEL_W）竖列，按 viewStore.workState.rail 路由内容：
-//   · agents/skills → 挂载既有真面板 AgentsPanel/SkillsPanel（旧 Sidebar 的唯一入口
-//     本任务被移除，挂载在此保持二者可用而非死代码）；
-//   · chat/task     → 本任务渲染占位（真 ChatListPanel/TaskListPanel 属后续任务范围）。
-// 占位文案只吃 rail.* labelKey（rail 四项唯一新增 i18n 键，无额外硬编码文案）。
+//   · chat/task → ChatListPanel / TaskListPanel（Task 10：旧 Sidebar chats 分支完整迁移，
+//     chat 仅对话、task 全量会话管理 + 次级浮层图标行）；
+//   · agents/skills → 挂载既有真面板 AgentsPanel/SkillsPanel（保持二者可用）。
+// Task 10 结构变更：列本身仍是 overflow-hidden，但外包一层 relative 包裹盒（宽 240）。
+// 次级浮层 FilesHistoryOverlay（420px 抽屉）是包裹盒的 absolute sibling，定位 left:100%，
+// 从本列右缘滑出覆盖主聊天列——不被列内 overflow-hidden 裁剪，z-[40] 低于全局 overlays。
+// rail 离开 task 时 effect 强制复位 secondTab=null（浮层状态不残留，spec §7 往返语义）。
+import { useEffect } from 'react'
 import { AgentsPanel } from '@/components/agents/AgentsPanel'
 import { SkillsPanel } from '@/components/skills/SkillsPanel'
+import { ChatListPanel } from '@/components/rail/ChatListPanel'
+import { TaskListPanel } from '@/components/rail/TaskListPanel'
+import { FilesHistoryOverlay } from '@/components/rail/FilesHistoryOverlay'
 import { useViewStore } from '@/stores/viewStore'
-import { useTranslation } from '@/i18n/useTranslation'
-import { RAIL } from './railMeta'
-import type { RailId } from '@/stores/viewStore'
 
 export const SECOND_PANEL_W = 240
 
 export function SecondPanel() {
   const rail = useViewStore(s => s.workState.rail)
+  const secondTab = useViewStore(s => s.workState.secondTab)
+
+  // rail 离开 task → 关闭浮层（浮层图标只在 task 面板头部；状态不跨 rail 残留）
+  useEffect(() => {
+    if (rail !== 'task' && secondTab) {
+      useViewStore.setState(s => ({ workState: { ...s.workState, secondTab: null } }))
+    }
+  }, [rail, secondTab])
 
   return (
-    <aside
-      className="h-full flex-shrink-0 border-r bg-app flex flex-col min-h-0 overflow-hidden"
-      style={{ width: SECOND_PANEL_W }}
-    >
-      {rail === 'agents' && <AgentsPanel />}
-      {rail === 'skills' && <SkillsPanel />}
-      {(rail === 'chat' || rail === 'task') && <RailPlaceholder rail={rail} />}
-    </aside>
-  )
-}
-
-/** chat/task 占位：等后续任务的 ChatListPanel/TaskListPanel 替换 */
-function RailPlaceholder({ rail }: { rail: RailId }) {
-  const { t } = useTranslation()
-  const meta = RAIL.find(r => r.id === rail)
-  if (!meta) return null
-  const Icon = meta.icon
-  return (
-    <div className="flex-1 flex flex-col items-center justify-center gap-2.5 px-4 text-center">
-      <Icon className="w-6 h-6 text-tertiary" />
-      <span className="text-xs font-medium text-secondary">{t(meta.labelKey)}</span>
+    <div className="relative h-full flex-shrink-0 flex flex-col min-h-0" style={{ width: SECOND_PANEL_W }}>
+      <aside className="w-full h-full bg-app border-r flex flex-col min-h-0 overflow-hidden">
+        {rail === 'chat' && <ChatListPanel />}
+        {rail === 'task' && <TaskListPanel />}
+        {rail === 'agents' && <AgentsPanel />}
+        {rail === 'skills' && <SkillsPanel />}
+      </aside>
+      {rail === 'task' && <FilesHistoryOverlay />}
     </div>
   )
 }

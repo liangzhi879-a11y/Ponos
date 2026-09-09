@@ -50,6 +50,21 @@ export const enUS: TranslationKeys = {
     task: 'Tasks',
     agents: 'Agents',
     skills: 'Skills',
+    chatNew: 'New Chat',
+    chatEmpty: 'No chats yet — start one below',
+    chatEmptyAction: 'Start a Chat',
+    taskNew: 'New Task',
+    taskEmpty: 'No tasks yet',
+    taskEmptyAction: 'New Task',
+    deleteSetConfirm: 'Delete conversation set "{name}"? Conversations are not deleted.',
+    newSetDefaultName: 'New conversation set',
+  },
+
+  // --- Conversation list status words (TaskListPanel progress / awaiting / planned) ---
+  convStatus: {
+    running: 'Running',
+    awaiting: 'Awaiting reply',
+    planned: 'Planned',
   },
 
   sidebar: {

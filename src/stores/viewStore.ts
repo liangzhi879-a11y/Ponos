@@ -13,12 +13,20 @@ import { persist } from 'zustand/middleware'
 
 export type AppView = 'boot' | 'cockpit' | 'work'
 export type RailId = 'chat' | 'task' | 'agents' | 'skills'
-export interface WorkState { rail: RailId }
+/** 次级浮层（Task 10）：任务面板头部四枚次级图标钮 → 420px 抽屉（文件/历史/用量/工作树）。null=关闭。 */
+export type SecondTabId = 'files' | 'history' | 'usage' | 'worktree'
+export interface WorkState { rail: RailId; secondTab: SecondTabId | null }
 export const RAIL_IDS: readonly RailId[] = ['chat', 'task', 'agents', 'skills']
+export const SECOND_TAB_IDS: readonly SecondTabId[] = ['files', 'history', 'usage', 'worktree']
 
 /** 落盘 rail 清洗：4 合法值透传，非法/缺省 → 'task'（供 merge 与单测）。 */
 export function sanitizeRail(rail: unknown): RailId {
   return RAIL_IDS.includes(rail as RailId) ? (rail as RailId) : 'task'
+}
+
+/** 落盘 secondTab 清洗：4 合法值透传，非法/缺省 → null（抽屉关闭态，null 兜底安全往返）。 */
+export function sanitizeSecondTab(secondTab: unknown): SecondTabId | null {
+  return SECOND_TAB_IDS.includes(secondTab as SecondTabId) ? (secondTab as SecondTabId) : null
 }
 
 interface ViewState {
@@ -31,9 +39,10 @@ interface ViewState {
 export const useViewStore = create<ViewState>()(
   persist((set) => ({
     view: 'boot',
-    workState: { rail: 'task' },
+    workState: { rail: 'task', secondTab: null },
     setView: (view) => set({ view }),
-    enterWork: (rail) => set({ view: 'work', workState: { rail: rail ?? 'task' } }),
+    // enterWork 整建 workState：进工作屏总是从浮层关闭态起（secondTab 只在任务 rail 内可开）
+    enterWork: (rail) => set({ view: 'work', workState: { rail: rail ?? 'task', secondTab: null } }),
   }), {
     name: 'yfworking-view',
     partialize: (s) => {
@@ -42,10 +51,14 @@ export const useViewStore = create<ViewState>()(
       return out
     },
     merge: (persisted, current) => {
-      const p = (persisted ?? {}) as { workState?: { rail?: unknown } }
+      const p = (persisted ?? {}) as { workState?: { rail?: unknown; secondTab?: unknown } }
       // boot 门禁：persist 的 view 永不恢复——主窗口每次认证后从 'boot' 起（spec §7），
-      // 只恢复工作区 rail；persist 的 view 字段（仅 cockpit|work）为信息性记录。
-      return { ...current, view: current.view, workState: { rail: sanitizeRail(p.workState?.rail) } }
+      // 只恢复工作区 rail/secondTab；persist 的 view 字段（仅 cockpit|work）为信息性记录。
+      return {
+        ...current,
+        view: current.view,
+        workState: { rail: sanitizeRail(p.workState?.rail), secondTab: sanitizeSecondTab(p.workState?.secondTab) },
+      }
     },
   }),
 )
