@@ -147,7 +147,9 @@ export function TaskListPanel() {
   // 会话集仅手动顺序（store 顺序），不再按名称排序
   const filteredSets = conversationSets
 
-  const getConvIndex = (id: string) => tasks.findIndex(c => c.id === id)
+  // 拖拽目标须在全量 conversations 上取索引：reorderConversations 作用于完整数组
+  // （chat/task 交错），若在 tasks 子数组上取索引，索引空间不一致会导致误移 chat 会话
+  const getConvIndex = (id: string) => conversations.findIndex(c => c.id === id)
 
   const handleDragStart = (convId: string) => {
     // 非手动排序模式下开始拖拽：立即切回手动（列表回到 store 顺序），
