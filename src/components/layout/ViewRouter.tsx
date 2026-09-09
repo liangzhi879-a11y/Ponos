@@ -1,5 +1,5 @@
 // src/components/layout/ViewRouter.tsx —— 顶层视图路由宿主（viewStore 状态机：boot→cockpit→work）
-// Task 5：boot/cockpit 两态；work 分支渲染现 AppShell（Task 9 换 WorkShell）。
+// Task 5：boot/cockpit 两态；work 分支渲染现 WorkShell（Task 9，三段式外壳，取代 AppShell）。
 // Task 6：AuthScreen 曾以 login 视图在主窗内渲染；D11-D13（Task 6b）认证移入独立小窗
 //         （?auth=1，App.tsx isAuthWindow 分支，不经本组件），主窗口视图机删除 login——
 //         boot 只通向 cockpit/work；boot 交棒由 BootScreen onDone → setView('cockpit')。
@@ -8,8 +8,9 @@
 // Task 8：cockpit 分支替换为真实 CockpitScreen（iframe 容器）；驾驶舱层常驻保活——
 //   cockpit↔work 交替时 iframe 不卸载/不重载（active=false 仅 display:none）；
 //   过渡 morph 由本组件持有（LogoMorph over everything），hub 点击 → 动画 → enterWork。
-//   Task 9（work Header logo → cockpit）复用同一 morph 机制：把 AppShell 的 Header
-//   logo rect 传给 playMorph('hub', rect, commit=setView('cockpit')) 即可，无需新原语。
+// Task 9：work Header logo → cockpit 复用同一 morph 机制——WorkShell 经 onGoCockpit 把
+//   Header logo rect 上抛，本组件 playMorph('hub', rect, commit=setView('cockpit')) 完成回切，
+//   与 hub→work 的 playMorph('top-left', hubRect, commit) 互为反向；playMorph 自带并发守卫。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useViewStore } from '@/stores/viewStore'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -17,7 +18,7 @@ import { THEME_CLASS_NAMES, THEMES } from '@/types'
 import { BootScreen } from '@/components/boot/BootScreen'
 import { LogoMorph, type MorphTarget } from '@/components/boot/LogoMorph'
 import { CockpitScreen } from '@/components/cockpit/CockpitScreen'
-import { AppShell } from './AppShell'
+import { WorkShell } from './WorkShell'
 
 // 过渡 Logo：与 Header 品牌 logo 同一资源（end-state 视觉一致）
 const COCKPIT_LOGO = `${import.meta.env.BASE_URL}logo.png`
@@ -50,7 +51,8 @@ export function ViewRouter() {
   // 主题落盘给主进程：下次启动据此决定透明窗口与否（仅 glass 需真透明）。
   // 独立 effect（仅依赖 theme）：原来混在下方样式 effect 里，fontSize/玻璃/极速
   // 等任一设置变化都会连带触发主进程同步写盘（滑块拖动会连发）。
-  // 【自 AppShell 上移（Task 6）】挂在本宿主以保证 boot/cockpit 也有主题变量生效。
+  // 【自 AppShell 上移（Task 6；AppShell 主体 Task 9 起在 WorkShell）】挂在本宿主
+  // 以保证 boot/cockpit 也有主题变量生效。
   useEffect(() => {
     const themeMode = THEMES.find(t => t.id === settings.theme)?.mode ?? 'dark'
     window.yfworkingWindow?.saveTheme?.(settings.theme, themeMode)
@@ -100,6 +102,11 @@ export function ViewRouter() {
     })
   }, [playMorph])
 
+  /** work Header logo 点击 → 过渡回驾驶舱（Task 9：hub→work 的反向 morph） */
+  const handleGoCockpit = useCallback((rect: DOMRect) => {
+    playMorph('hub', rect, () => useViewStore.getState().setView('cockpit'))
+  }, [playMorph])
+
   if (view === 'boot' && !speed) return <BootScreen onDone={() => useViewStore.getState().setView('cockpit')} />
 
   // 到达这里：view ∈ {cockpit, work, boot&&speed}——驾驶舱层常驻，work 时隐藏保活
@@ -108,7 +115,7 @@ export function ViewRouter() {
     <>
       {/* 驾驶舱层：boot&&speed 短路首帧即 active；work 期间保活隐藏（iframe 不卸载） */}
       <CockpitScreen active={!inWork} onEnterWork={handleEnterWork} />
-      {inWork && <AppShell />}
+      {inWork && <WorkShell onGoCockpit={handleGoCockpit} />}
       {morph && (
         <LogoMorph
           src={COCKPIT_LOGO}

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  Menu, Settings, Sun, Moon, Palette, Check, Sparkles,
+  Settings, Sun, Moon, Palette, Check, Sparkles,
   Search, Terminal, ChevronDown, Minus, Square, Copy, X,
 } from 'lucide-react'
 import { Button } from '@/components/ui'
@@ -13,12 +13,24 @@ import { useTranslation } from '@/i18n/useTranslation'
 import { cn } from '@/lib/utils'
 import { THEMES, type ThemeMode, type ThemeMeta } from '@/types'
 
-export function Header() {
-  const { toggleSidebar, openCommandPalette, openSearch } = useUIStore()
+export interface HeaderProps {
+  /** 品牌 logo 点击（返回驾驶舱）：携带 logo 元素 rect，ViewRouter 据此播放 morph */
+  onGoCockpit?: (rect: DOMRect) => void
+}
+
+export function Header({ onGoCockpit }: HeaderProps = {}) {
+  const { openCommandPalette, openSearch } = useUIStore()
   const { settings, updateSettings } = useSettingsStore()
   const { activeConversationId, conversations } = useChatStore()
   const { t } = useTranslation()
   const activeConv = conversations.find(c => c.id === activeConversationId)
+  const logoRef = useRef<HTMLImageElement>(null)
+
+  const handleLogoClick = () => {
+    const el = logoRef.current
+    if (!el) return
+    onGoCockpit?.(el.getBoundingClientRect())
+  }
 
   const activeTheme = THEMES.find(t => t.id === settings.theme) ?? THEMES[0]
   const ThemeIcon = settings.theme === 'light' || settings.theme === 'yuanfang-light' ? Sun : settings.theme === 'dark' ? Moon : Palette
@@ -69,16 +81,21 @@ export function Header() {
   return (
     // titleBarStyle:'hidden' 后系统 1px 边框四边对称（含顶部），不再需要 CSS 补顶线
     <header className="h-11 flex items-center gap-2 px-3 border-b bg-app drag-region shrink-0 relative">
-      {/* Logo + Sidebar toggle */}
-      <div className="flex items-center gap-2">
-        {/* 品牌 Logo：透明底，直接展示不加背景衬套 */}
-        <img src={`${import.meta.env.BASE_URL}logo.png`} alt="YFWorking" className="w-7 h-7 object-contain shrink-0 no-drag glass-logo" />
-        <Tooltip content={t('header.toggleSidebar') + ' (⌘B)'}>
-          <Button variant="ghost" size="xs" onClick={toggleSidebar} className="no-drag" aria-label={t('header.toggleSidebar')}>
-            <Menu className="w-4 h-4" />
-          </Button>
-        </Tooltip>
-      </div>
+      {/* 品牌 Logo：透明底，直接展示不加背景衬套。点击 → 返回驾驶舱
+          （Sidebar Menu 按钮已随侧栏退役移除，logo 成为回驾驶舱入口，Task 9） */}
+      <button
+        type="button"
+        onClick={handleLogoClick}
+        aria-label="YFWorking"
+        className="no-drag group flex items-center rounded-lg p-0.5 -m-0.5 cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+      >
+        <img
+          ref={logoRef}
+          src={`${import.meta.env.BASE_URL}logo.png`}
+          alt="YFWorking"
+          className="w-7 h-7 object-contain shrink-0 no-drag glass-logo cursor-pointer group-hover:opacity-90 transition-opacity"
+        />
+      </button>
 
       {/* Conversation title */}
       <div className="flex-1 min-w-0 text-sm font-medium text-secondary truncate ml-1">

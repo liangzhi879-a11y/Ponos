@@ -44,6 +44,14 @@ export const enUS: TranslationKeys = {
     toggleSidebar: 'Toggle Sidebar',
   },
 
+  // --- Work-screen rail column (persistent four-segment nav of WorkShell/RailNav) ---
+  rail: {
+    chat: 'Chat',
+    task: 'Tasks',
+    agents: 'Agents',
+    skills: 'Skills',
+  },
+
   sidebar: {
     chats: 'Chats',
     history: 'History',

@@ -1,6 +1,18 @@
+// src/components/layout/WorkShell.tsx —— 工作屏三段式外壳（Task 9）
+// 由 ViewRouter 在 view==='work' 分支挂载（原 AppShell 全量迁入本文件：经验提醒/
+// 极速引导/GPU 通知/快捷键/右侧通知卡堆叠/StatusBar/全部 overlays 原样保留）。
+// 布局（task-9 brief Step 3）：
+//   <Header onGoCockpit>                    —— logo 点击 → morph 回驾驶舱
+//   rail 列(48px, RailNav) + 二级面板宿主(240px, SecondPanel) + 中心聊天列(flex-1)
+//   <StatusBar/> + 右下提示卡 + Settings/CommandPalette/…overlays
+// 变更点 vs AppShell：
+//   · Sidebar 渲染与 toggle 移除（rail 常驻替代旧侧栏；Sidebar 文件退役由后续任务处理）；
+//   · ⌘B 快捷键取消绑定（原 toggleSidebar），保留注释说明 rail 已常驻；
+//   · 主题 effect 已在 Task 6 上移 ViewRouter，此处不再有。
 import { useEffect, useCallback, useState } from 'react'
 import { Header } from './Header'
-import { Sidebar } from './Sidebar'
+import { RailNav } from './RailNav'
+import { SecondPanel } from './SecondPanel'
 import { StatusBar } from './StatusBar'
 import { ChatWindow } from '@/components/chat/ChatWindow'
 import { ChatInput } from '@/components/chat/ChatInput'
@@ -27,7 +39,12 @@ const EXPERIENCE_CONSUME_PROMPT = `请执行 gxtz-experience-sync 技能（Code 
 3. 全部完成后按归档流程将已消费经验备份到 _archive 并从全局库移除。
 完成后汇报每条的消费结果。`
 
-export function AppShell() {
+export interface WorkShellProps {
+  /** Header 品牌 logo 点击 → 返回驾驶舱：传入 logo 元素 rect，由 ViewRouter 播放 morph */
+  onGoCockpit?: (rect: DOMRect) => void
+}
+
+export function WorkShell({ onGoCockpit }: WorkShellProps) {
   const { t } = useTranslation()
   const { activeConversationId, createConversation, pendingQuestions, clearPendingQuestion } = useChatStore()
   const { send } = useYFWCLI()
@@ -38,7 +55,7 @@ export function AppShell() {
   // GPU 进程异常（驱动重置/崩溃）→ 自动开启极速形态 + 通知条
   const [gpuCrashNotice, setGpuCrashNotice] = useState(false)
   const pendingQuestion = activeConversationId ? pendingQuestions[activeConversationId] : undefined
-  const { sidebarOpen, sidebarWidth, previewFile, setPreviewFile } = useUIStore()
+  const { previewFile, setPreviewFile } = useUIStore()
 
   // Create initial conversation if needed
   useEffect(() => {
@@ -136,12 +153,7 @@ export function AppShell() {
       return
     }
 
-    // Toggle sidebar
-    if (mod && (e.key === 'b')) {
-      e.preventDefault()
-      useUIStore.getState().toggleSidebar()
-      return
-    }
+    // ⌘B（旧 toggleSidebar）已取消绑定（Task 9）：rail 常驻，不再有可切换的侧边栏。
 
     // Search
     if (mod && e.shiftKey && e.key === 'F') {
@@ -172,26 +184,19 @@ export function AppShell() {
 
   // 注：主题落盘 / 主题变量 / --chat-font / glass vars / speed-mode / html-body 背景
   // 两个 effect 已上移到 ViewRouter.tsx（Task 6）——login/boot/cockpit 也要吃主题系统，
-  // AppShell 只在 work 分支挂载，原有位置会让登录屏缺主题变量。
+  // WorkShell 只在 work 分支挂载，原有位置会让登录屏缺主题变量。
   return (
     <div
       className="h-full flex flex-col bg-app text-primary relative window-frame"
       style={{ boxShadow: 'var(--shadow-window, none)' }}
     >
-      {/* Header */}
-      <Header />
+      {/* Header —— logo 点击 → morph 回驾驶舱（ViewRouter onGoCockpit 接线） */}
+      <Header onGoCockpit={onGoCockpit} />
 
-      {/* Main content area */}
+      {/* 三段式主体：rail 列(48px 常驻) + 二级面板宿主(240px) + 中心聊天列 */}
       <div className="flex-1 flex min-h-0">
-        {/* Sidebar */}
-        {sidebarOpen && (
-          <div
-            className="h-full flex-shrink-0 animate-slide-left"
-            style={{ width: sidebarWidth }}
-          >
-            <Sidebar />
-          </div>
-        )}
+        <RailNav />
+        <SecondPanel />
 
         {/* Center content */}
         <div className="flex-1 flex flex-col min-w-0">

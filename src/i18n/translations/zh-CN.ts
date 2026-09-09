@@ -44,6 +44,14 @@ export const zhCN = {
     toggleSidebar: '切换侧边栏',
   },
 
+  // --- 工作区 rail 列（WorkShell/RailNav 常驻四段导航） ---
+  rail: {
+    chat: '对话',
+    task: '任务',
+    agents: '智能体',
+    skills: '技能',
+  },
+
   // --- 侧边栏 ---
   sidebar: {
     chats: '对话',
