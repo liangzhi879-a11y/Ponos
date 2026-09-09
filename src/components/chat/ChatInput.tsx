@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Send, StopCircle, Paperclip, Sparkles, Mic, MicOff, Command, X, Zap, Repeat, MessageSquarePlus } from 'lucide-react'
+import { Send, StopCircle, Paperclip, Sparkles, Mic, MicOff, Command, X, Zap, Repeat, MessageCirclePlus } from 'lucide-react'
 import { Popover, PopoverTrigger, PopoverContent } from '@radix-ui/react-popover'
 import { DoubaoPanel } from '@/components/doubao/DoubaoPanel'
 import { ScheduleGuide } from './ScheduleGuide'
@@ -726,7 +726,8 @@ export function ChatInput({ conversationId }: Props) {
             {/* 插话按钮 = 排队插话（不打断）：与回车同效，等当前轮结束后处理；打断请用快捷键 */}
             <Tooltip content={t('chat.interjectQueue') + ' · ' + t('chat.sendHintStreaming', { shortcut: formatShortcut(settings.interjectShortcut) })}>
               <Button variant="outline" size="sm" onClick={handleSubmit} disabled={!value.trim() && attachments.length === 0 && !activeSkill} aria-label={t('chat.interject')}>
-                <MessageSquarePlus className="w-4 h-4" />
+                {/* 排队插话=MessageCirclePlus（圆泡+加，圆/方区分）；MessageSquarePlus 已保留给「新建对话」（ChatListPanel/PanelToolbar/CommandPalette），勿跨义复用（§8.2 Task 15 裁决） */}
+                <MessageCirclePlus className="w-4 h-4" />
               </Button>
             </Tooltip>
             <Tooltip content={t('chat.stop') + ' (Esc)'}>

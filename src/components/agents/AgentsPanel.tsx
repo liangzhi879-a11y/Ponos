@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import {
-  Bot, Search, ChevronRight, Plus, Pencil, Trash2, Settings,
+  Bot, Search, ChevronRight, Plus, Pencil, Trash2, RotateCcw,
 } from 'lucide-react'
 import {
   ScrollArea, Badge, Button, Switch,
@@ -216,7 +216,8 @@ export function AgentsPanel() {
             className="p-1 rounded hover:bg-input transition-colors shrink-0"
             title="重置所有 Agent 到默认状态"
           >
-            <Settings className="w-3.5 h-3.5 text-tertiary" />
+            {/* 重置动作=RotateCcw（回退到默认），禁用 Settings 字形——§8.2 Settings 仅 Header 齿轮可用（Task 15 查重裁决） */}
+            <RotateCcw className="w-3.5 h-3.5 text-tertiary" />
           </button>
         </div>
         {resetConfirm && (

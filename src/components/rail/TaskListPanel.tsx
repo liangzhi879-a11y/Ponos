@@ -8,7 +8,7 @@
 import { useState, useEffect, useRef, useLayoutEffect, memo } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  Search, Pin, Trash2, Edit3, Plus, SquareKanban, SquarePlus, FolderOpen,
+  Search, Pin, Trash2, Edit3, Plus, SquareKanban, SquarePlus, Folder, FolderOpen,
   FolderPlus, Share2, ArrowUpDown, Check, Wand2, ChevronRight, History, Gauge, GitFork,
 } from 'lucide-react'
 import { Button, ScrollArea, Tooltip, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui'
@@ -383,7 +383,8 @@ export function TaskListPanel() {
                     onDragEnd={handleSetDragEnd}
                   >
                     <ChevronRight className={cn('w-3 h-3 text-tertiary transition-transform', open && 'rotate-90')} />
-                    <FolderOpen className="w-3 h-3 text-brand-500/70 shrink-0" />
+                    {/* 会话集=容器语义用 Folder（闭合文件夹），不用 FolderOpen（FolderOpen 保留给「文件浏览」次级浮层入口，同面板勿跨义复用，§8.2 Task 15） */}
+                    <Folder className="w-3 h-3 text-brand-500/70 shrink-0" />
                     {renamingSetId === s.id ? (
                       <input
                         autoFocus
@@ -626,7 +627,7 @@ const ConversationItem = memo(function ConversationItem({
             >
               <div className="overflow-y-auto" style={{ maxHeight: '12rem' }}>
                 {conversationSets.map(s => (
-                  <button key={s.id} onClick={() => onMoveToSet(conv.id, s.id)} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><FolderOpen className="w-3 h-3" /> {s.name}</button>
+                  <button key={s.id} onClick={() => onMoveToSet(conv.id, s.id)} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><Folder className="w-3 h-3" /> {s.name}</button>
                 ))}
                 <button onClick={() => onMoveToSet(conv.id, null)} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><span className="w-3 h-3" /> {t('sidebar.ungrouped')}</button>
               </div>

@@ -1,9 +1,15 @@
 // src/components/layout/railMeta.ts —— rail 列常量表（Task 9，三段式 WorkShell 的常驻导航）
 // RailId 合法值见 viewStore（persist merge 经 sanitizeRail 清洗落盘，非法/缺省 → 'task'）。
-// 图标唯一性（Task 15 查重）：MessageSquare 随旧 Sidebar 的 chats tab 退役腾出、
-// SquareKanban 全库首用、Bot/Puzzle 与旧 Sidebar agents/skills tab 单点同义（迁移语义一致）。
+// 图标唯一性（Task 15 终裁，全量表见 docs/superpowers/audits/2026-09-08-gui-icon-uniqueness.md）：
+// 本表四图标=类别入口，域内「同实体」复用允许（见下注释各条目）；异义复用已全部换图标——
+// FolderOpen 会话集行 → Folder；AgentsPanel 重置齿轮 → RotateCcw；ChatInput 插话 → MessageCirclePlus。
 // 设置项不在本表：设置入口常驻 Header 齿轮，rail 底部不放图标避免与 Header 同图标重复
 // （决策见 task-9 brief Step 2）。
+// 各条目的域内允许复用点：
+//  - chat=MessageSquare：ChatListPanel 空态/搜索结果行/History 标题行均指「会话」实体（同语义，允许）。
+//  - task=SquareKanban：TaskListPanel 空态装饰（同「任务」语义，允许）。
+//  - agents=Bot：AgentsPanel 标题/助手与系统角色头像/History 预览行/warning agent_spec 均指「AI 实体」身份（允许）。
+//  - skills=Puzzle：Settings 技能子页/技能设置头（同「技能」语义，允许）。
 import { MessageSquare, SquareKanban, Bot, Puzzle, type LucideIcon } from 'lucide-react'
 import type { RailId } from '@/stores/viewStore'
 

@@ -40,10 +40,6 @@ export const enUS: TranslationKeys = {
     remember: 'Enter the cockpit after signing in',
   },
 
-  header: {
-    toggleSidebar: 'Toggle Sidebar',
-  },
-
   // --- Work-screen rail column (persistent four-segment nav of WorkShell/RailNav) ---
   rail: {
     chat: 'Chat',
@@ -68,14 +64,10 @@ export const enUS: TranslationKeys = {
   },
 
   sidebar: {
-    chats: 'Chats',
     history: 'History',
     files: 'Files',
-    agents: 'Agents',
     worktrees: 'Worktrees',
-    skills: 'Skills',
     usage: 'Usage',
-    newChat: 'New Chat',
     pinned: 'Pinned',
     noConversations: 'No conversations',
     rename: 'Rename',
@@ -307,9 +299,8 @@ export const enUS: TranslationKeys = {
     autoImageBridgeDesc: 'When images are pasted into a conversation and the main model is not multimodal, automatically convert them to text descriptions via the vision model (requires a configured vision model).',
     providerContextWindow: 'Context Window',
     providerContextWindowDesc: 'Maximum context length (tokens)',
-    providerEffortLevel: 'Effort Level',
     // Task 12: global thinking-effort control (migrated from the per-provider select;
-    // providerEffortLevel key kept until T15 cleanup)
+    // providerEffortLevel key was removed in T15 cleanup)
     effortLevel: 'Thinking effort',
     effortLevelDesc: 'Affects new sessions and the current session (hot-switchable in the input bar)',
     addCustomProvider: '+ Custom Provider',

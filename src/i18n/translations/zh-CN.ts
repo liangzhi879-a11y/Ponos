@@ -39,11 +39,6 @@ export const zhCN = {
     remember: '登录后进入驾驶舱',
   },
 
-  // --- Header ---
-  header: {
-    toggleSidebar: '切换侧边栏',
-  },
-
   // --- 工作区 rail 列（WorkShell/RailNav 常驻四段导航；Task 10 起二级面板消费新键） ---
   rail: {
     chat: '对话',
@@ -69,14 +64,10 @@ export const zhCN = {
 
   // --- 侧边栏 ---
   sidebar: {
-    chats: '对话',
     history: '历史',
     files: '文件',
-    agents: '智能体',
     worktrees: '工作树',
-    skills: '技能',
     usage: '用量',
-    newChat: '新建对话',
     pinned: '置顶',
     noConversations: '暂无对话',
     rename: '重命名',
@@ -313,8 +304,7 @@ export const zhCN = {
     autoImageBridgeDesc: '对话中粘贴图片时，若主模型不支持视觉，自动调用视觉模型转成文字描述（需已配置视觉模型）。',
     providerContextWindow: '上下文窗口',
     providerContextWindowDesc: '模型最大上下文长度（tokens）',
-    providerEffortLevel: '推理深度',
-    // Task 12：思考深度全局控制（自 provider 级旧 select 迁移；providerEffortLevel 键保留待 T15 清理）
+    // Task 12：思考深度全局控制（自 provider 级旧 select 迁移；providerEffortLevel 键已于 T15 清理）
     effortLevel: '思考深度',
     effortLevelDesc: '影响新会话与当前会话（输入条可热切）',
     addCustomProvider: '自定义供应商',
