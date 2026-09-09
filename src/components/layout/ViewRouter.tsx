@@ -5,18 +5,43 @@
 //         boot 只通向 cockpit/work；boot 交棒由 BootScreen onDone → setView('cockpit')。
 // settings.speedMode === true 时短路跳过 boot（同帧渲染 cockpit 分支，不挂载 BootScreen），
 // 再经 useEffect 把 store 落为 'cockpit'（下次整页重载不再回 boot）。
-import { useEffect } from 'react'
+// Task 8：cockpit 分支替换为真实 CockpitScreen（iframe 容器）；驾驶舱层常驻保活——
+//   cockpit↔work 交替时 iframe 不卸载/不重载（active=false 仅 display:none）；
+//   过渡 morph 由本组件持有（LogoMorph over everything），hub 点击 → 动画 → enterWork。
+//   Task 9（work Header logo → cockpit）复用同一 morph 机制：把 AppShell 的 Header
+//   logo rect 传给 playMorph('hub', rect, commit=setView('cockpit')) 即可，无需新原语。
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useViewStore } from '@/stores/viewStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { THEME_CLASS_NAMES, THEMES } from '@/types'
 import { BootScreen } from '@/components/boot/BootScreen'
-import { CockpitPlaceholder } from '@/components/boot/PlaceholderScreens'
+import { LogoMorph, type MorphTarget } from '@/components/boot/LogoMorph'
+import { CockpitScreen } from '@/components/cockpit/CockpitScreen'
 import { AppShell } from './AppShell'
+
+// 过渡 Logo：与 Header 品牌 logo 同一资源（end-state 视觉一致）
+const COCKPIT_LOGO = `${import.meta.env.BASE_URL}logo.png`
+
+interface MorphState {
+  to: MorphTarget
+  fromRect: DOMRect
+  /** 动画完成后的视图落点动作（本任务：enterWork(savedRail)） */
+  commit: () => void
+}
+
+/** hub 球所在视口矩形：驾驶舱 hub 位于屏幕中心（92px 圆，LogoMorph to==='hub' 同源） */
+function hubRect(): DOMRect {
+  return new DOMRect(window.innerWidth / 2 - 46, window.innerHeight / 2 - 46, 92, 92)
+}
 
 export function ViewRouter() {
   const view = useViewStore(s => s.view)
   const speed = useSettingsStore(s => s.settings.speedMode)
   const settings = useSettingsStore(s => s.settings)
+
+  const [morph, setMorph] = useState<MorphState | null>(null)
+  // morph 镜像：事件处理器里读最新态（commit 在 onDone 事件中执行，不写渲染期）
+  const morphRef = useRef<MorphState | null>(null)
 
   useEffect(() => {
     if (view === 'boot' && speed) useViewStore.getState().setView('cockpit')
@@ -51,8 +76,47 @@ export function ViewRouter() {
     document.body.style.color = 'var(--text-primary)'
   }, [settings.theme, settings.fontSize, settings.glassOpacity, settings.glassHueShift, settings.glassAurora, settings.speedMode])
 
-  if (view === 'boot' && speed) return <CockpitPlaceholder />  // effect 同步落 'cockpit'（speed 跳加载屏）
+  /** LogoMorph 动画完成：执行落点动作并卸载 overlay */
+  const finishMorph = useCallback(() => {
+    const m = morphRef.current
+    morphRef.current = null
+    setMorph(null)
+    m?.commit()
+  }, [])
+
+  /** 统一过渡入口：Task 9（work Header logo → cockpit）也调它 */
+  const playMorph = useCallback((to: MorphTarget, fromRect: DOMRect, commit: () => void) => {
+    if (morphRef.current) return // 过渡进行中：忽略并发触发
+    const m: MorphState = { to, fromRect, commit }
+    morphRef.current = m
+    setMorph(m)
+  }, [])
+
+  /** cockpit hub 点击 → 过渡到工作屏（保留上次 rail） */
+  const handleEnterWork = useCallback(() => {
+    playMorph('top-left', hubRect(), () => {
+      const st = useViewStore.getState()
+      st.enterWork(st.workState.rail)
+    })
+  }, [playMorph])
+
   if (view === 'boot' && !speed) return <BootScreen onDone={() => useViewStore.getState().setView('cockpit')} />
-  if (view === 'cockpit') return <CockpitPlaceholder />  // Task 8 替换为 CockpitScreen
-  return <AppShell /> // work
+
+  // 到达这里：view ∈ {cockpit, work, boot&&speed}——驾驶舱层常驻，work 时隐藏保活
+  const inWork = view === 'work'
+  return (
+    <>
+      {/* 驾驶舱层：boot&&speed 短路首帧即 active；work 期间保活隐藏（iframe 不卸载） */}
+      <CockpitScreen active={!inWork} onEnterWork={handleEnterWork} />
+      {inWork && <AppShell />}
+      {morph && (
+        <LogoMorph
+          src={COCKPIT_LOGO}
+          fromRect={morph.fromRect}
+          to={morph.to}
+          onDone={finishMorph}
+        />
+      )}
+    </>
+  )
 }
