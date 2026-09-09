@@ -99,7 +99,7 @@ React 渲染层（Electron 主窗口 1100×720，认证后才创建）
   - `uninitialized` → **首设向导**（设口令 ×2 + 强度提示），POST `/api/auth/setup`；
   - `locked` → 显示锁定倒计时；
   - `ok` → 密码表单。登录成功 → IPC `auth:granted`（主进程开主窗口进 boot→cockpit，见 2.0）。
-- 登录 POST `/api/auth/login` `{password, remember}` → 校验通过发 token（token 仅存认证小窗 localStorage，主窗口不依赖——主进程以 IPC 事实为准放行）。
+- 登录 POST `/api/auth/login` `{password}` → 校验通过即放行（bridge 内存 token 仅作端点语义预留、重启失效，见 §2.2；GUI 不落盘 token——主进程以 IPC `auth:granted` 事实为准放行）。
 
 ### 2.2 服务端模块 `server/auth.mjs`（新增，纯函数优先可单测）
 
@@ -115,7 +115,7 @@ React 渲染层（Electron 主窗口 1100×720，认证后才创建）
 
 ### 2.4 登录/首设 UI（认证小窗内，小窗适配）
 
-- 居中玻璃卡片：boost logo + 标题；密码框（可见性切换/回车提交）、错误抖动、锁定提示；「启动自动登录（本次运行）」checkbox 默认开。
+- 居中玻璃卡片：boost logo + 标题；密码框（可见性切换/回车提交）、错误抖动、锁定提示。**每次启动均需口令，无自动登录勾选**（bridge token 重启失效，D6 语义；放行以 IPC `auth:granted` 为准）。
 - 布局按小窗尺寸适配（卡内元素即现有 AuthFrame/auth-card；窗口整体高度 ~560 无需滚动）。
 - 成功后由主进程接管窗口切换（无主窗内 logo 过渡；logo 过渡仅用于 cockpit⇄work，§3.4）。
 
