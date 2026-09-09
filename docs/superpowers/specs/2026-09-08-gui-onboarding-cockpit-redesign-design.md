@@ -1,17 +1,17 @@
 # GUI 交互升级设计：启动动画 / 登录 / 驾驶舱 / 三段式工作界面
 
-> **状态**：已批准（2026-09-08，用户逐轮确认，锚点见下）
-> **范围**：`src/` 前端 + `server/bridge.mjs` 少量端点/会话装配 + `public/cockpit/` 驾驶舱 iframe 素材。
-> **不动**：`kernel/`（对话受限会话仅用现有参数组合 + disallowedTools；effort 内核已实现，只补 GUI→bridge 接线）、`electron/main.cjs` 主体结构。
+> **状态**：已批准（2026-09-08 逐轮确认；2026-09-08 增补认证前置流程 D11-D13，见文）
+> **范围**：`src/` 前端 + `server/bridge.mjs` 少量端点/会话装配 + `public/cockpit/` 驾驶舱 iframe 素材 + `electron/main.cjs` **认证相关 window 编排**（新增独立小登录窗，见 D11）。
+> **不动**：`kernel/`（对话受限会话仅用现有参数组合 + disallowedTools；effort 内核已实现，只补 GUI→bridge 接线）、`electron/main.cjs` 非认证主体结构。
 > **上游参考**：`docs/superpowers/specs/2026-09-08-gui-agentloop-adapt-design.md`（UI 接线 spec 行文风格）
 > **视觉素材**：`YF/驾驶舱原型/驾驶舱原型.html`（913 行银河飞轮演示）、`YF/boost-logo.ai`（PDF 兼容矢量，供导出透明 logo）
 
 ## Goal
 
-把应用启动与一级导航重排为「品牌化四段流程」，并重构工作界面为三段式：
+把应用冷启动与一级导航重排为「认证先行 → 驾驶舱 → 工作界面」流程，并重构工作界面为三段式：
 
-1. **启动动画**：boost 透明 logo + 流光进度条的品牌首屏；
-2. **登录认证**：本地端口 `/api/auth/*` + 首设本机口令向导 + 登录页（后端服务端将来替换）；
+1. **认证小窗（登录先行）**：冷启动先弹 **独立小登录窗口**（弹窗级尺寸），承载首设本机口令向导 / 登录 / 锁定倒计时（本地端口 `/api/auth/*`；后端服务端将来替换）；
+2. **认证后加载屏（boot）**：认证通过后主窗口才创建并以 **boot 加载屏** 开场（boost 透明 logo + 流光进度条 + 资源加载阶段字），资源就绪即放行驾驶舱；
 3. **驾驶舱**：信息汇总屏（iframe 承载改造版银河原型），中央 logo 球为进入工作界面唯一入口；
 4. **工作界面三段式**：左侧 lucide 图标 rail + 二级面板 + 主工作区；会话拆分为 **对话（纯聊）** 与 **任务（可执行）** 两模式；思考深度 GUI 接线补通；界面现场跨重启持久化。
 
@@ -21,7 +21,7 @@
 
 | # | 决策点 | 确认结果 |
 |---|--------|----------|
-| D1 | 四段流程载体 | 同一 Electron 主窗口内 React 视图状态机：`boot → login → cockpit → work` |
+| D1 | 流程载体 | 认证前置：**独立小登录窗先出现**（?auth=1 独立 BrowserWindow，~弹窗尺寸）；认证通过 → 主窗口才创建并以 boot 开场；主窗口视图机 `boot → cockpit → work`（不再含 login 视图） |
 | D2 | 工作界面左列形态 | **三段式 A**：rail（细图标列）+ 二级面板 + 主工作区 |
 | D3 | 驾驶舱定位 | **信息汇总屏**，不承担模块导航；**点中央 logo 球进入工作界面**；工作界面点**左上 logo** 返回驾驶舱 |
 | D4 | 现场保留 | 工作界面保留退出时状态，**跨重启持久化**；无历史默认 = **自动新建一个对话**（空白 chat 会话） |
@@ -31,6 +31,9 @@
 | D8 | 对话纯聊技术路线 | **内核受限会话**：仍走 bridge→内核 agent 循环，不绑业务 cwd、仅保留联网工具（WebSearch/WebFetch）、屏蔽全部本地执行工具 |
 | D9 | 驾驶舱↔工作过渡 | logo 为载体：**logo 球微放大 → 平移至工作界面左上 logo 位 → 目标屏淡入**，不充满全屏；反向同理（~400ms） |
 | D10 | 驾驶舱汇总内容 | 六张信息卡：运行中任务 / 任务进度 / 智能体状态 / 技能与知识库 / 用量统计 / 健康与设置；hover 反馈、点开**只读详情浮层**（不跳转功能界面） |
+| D11 | 登录先后 | **登录先行**：冷启动先出现的是登录页；**认证过后应用才开始加载资源启动**（主窗口/工作资源不在认证前加载） |
+| D12 | boot 位置 | boot = **认证后的加载屏**（登录通过后主窗口以 boot 开场：logo+流光+资源加载阶段字）；不再作为冷启动首屏 |
+| D13 | 登录窗形态 | **独立小登录窗口**（弹窗级尺寸，独立 BrowserWindow；非主窗口缩放、非主窗内卡片）。主窗口保留 1100×720；首设向导/登录/锁定均在认证小窗内完成 |
 
 ## 现状锚点（本 spec 依赖的事实基线）
 
@@ -49,11 +52,14 @@
 ## 架构总览
 
 ```
-React 渲染层（Electron 主窗口）
-  src/lib/viewStore.ts —— view: 'boot'|'login'|'cockpit'|'work'（zustand persist，见 §7）
+认证小窗（独立 BrowserWindow，?auth=1，~弹窗尺寸，D13）
+  src/App.tsx 分支（仿 ?editor=1 先例）→ AuthWindowRoot
+    └─ AuthScreen / SetupWizard（§2）——认证通过 → IPC auth:granted → 主进程关小窗、开主窗口
+
+React 渲染层（Electron 主窗口 1100×720，认证后才创建）
+  src/lib/viewStore.ts —— view: 'boot'|'cockpit'|'work'（zustand persist，见 §7）
   │
-  ├─ BootScreen（§1）→ 动画完成 → LoginScreen（§2）
-  ├─ LoginScreen / SetupWizard（§2）→ 认证通过 → CockpitScreen（§3）
+  ├─ BootScreen（§1，认证后加载屏）→ 资源就绪 → CockpitScreen（§3）
   ├─ CockpitScreen（§3）：全屏 <iframe src=/cockpit/index.html>
   │     postMessage：父→iframe {theme, overview, speedmode}；iframe→父 {ready, hub-click}
   │     hub-click → logo 过渡（§3.4）→ WorkShell
@@ -61,6 +67,7 @@ React 渲染层（Electron 主窗口）
         └─ 会话体系 ChatStore 增 mode（§5）+ effort 接线（§6）
 
 进程边界
+  electron/main.cjs：认证相关 window 编排（D13）——启动先建认证小窗；收 auth:granted 后建主窗口
   bridge.mjs：
     HTTP 新增 /api/auth/* 分支（§2.3）——口令哈希/校验独立模块 server/auth.mjs（纯函数可测）
     getOrCreateSession 按会话 mode 定制 spawn 参数（§5.2）——chat 模式注入禁用工具集、不绑业务 cwd
@@ -70,22 +77,29 @@ React 渲染层（Electron 主窗口）
     effort：内核侧已是既成事实
 ```
 
-## §1 启动动画（BootScreen）
+## §1 认证后加载屏（BootScreen，原"启动动画"改位）
 
-- 位置：AppShell 顶层按 view 状态切换；BootScreen 为全屏居中图层。
-- 视觉：boost 透明 logo（PNG，见 §8.3）居中，呼吸光晕动画；下方**流光进度条**（CSS 渐变往返流动，装饰性非真实进度）；底部阶段小字（bridge health 探测 → 内核就绪）。
-- 时序：最短展示 ~1.2s；`window.yfworkingWindow`/bridge `/health` 就绪或最长 ~2.5s 放行；`settings.speedMode` 为 true 时跳过动画直接到 login。
-- 结束：淡出 logo → 交棒 login（首设未完成）或已认证会话登录页。
+- 位置：主窗口视图机 `view==='boot'` 时渲染的全屏图层（D12：认证通过后主窗口开场即 boot）。
+- 视觉：boost 透明 logo（PNG，见 §8.3）居中，呼吸光晕动画；下方**流光进度条**（CSS 渐变往返流动，装饰性非真实进度）；底部阶段小字（bridge health 探测 → 内核就绪 → 资源就绪）。
+- 时序：主窗口创建后展示；最短 ~1.2s；bridge `/health` 就绪或最长 ~2.5s 放行 → 交棒 cockpit（D3：认证后默认驾驶舱）。`settings.speedMode` 为 true 时跳过 boot 直接 cockpit。
+- 无"boot→login"交棒：登录在小窗完成（§2），boot 只通向 cockpit/work。
 
-## §2 登录认证（本地端口 + UI）
+## §2 登录认证（独立小窗 + 本地端口）
 
-### 2.1 流程
+### 2.0 认证小窗编排（D11/D13，electron/main.cjs 认证相关 window 能力）
+
+- 冷启动：主进程**先建认证小窗**（独立 BrowserWindow，加载同 dist 的 `?auth=1`，~弹窗尺寸如 420×560，可参考现有 `?editor=1` 独立窗先例）——主窗口此时**不创建**（资源认证后才加载）。
+- 认证通过：认证小窗渲染层发 IPC `auth:granted`（preload 暴露）→ 主进程关认证小窗、创建主窗口（1100×720，含透明/主题判定，复用现有 createWindow 逻辑）。
+- 认证失败/取消关窗：仅认证小窗存在时关窗即退出应用（与 window-all-closed 现状一致）。
+- 兜底语义保留：认证端点不可达（dev 无 auth 文件）时 authStatus 宽容返回可放行（Task 4 既有语义），避免开发态卡死。
+
+### 2.1 流程（认证小窗内）
 
 - `GET /api/auth/status` → `{ phase: 'uninitialized' | 'locked' | 'ok', lockedUntil?, remember? }`
   - `uninitialized` → **首设向导**（设口令 ×2 + 强度提示），POST `/api/auth/setup`；
   - `locked` → 显示锁定倒计时；
-  - `ok` + 本地有效 token（localStorage `yfw-auth-token`）→ 可自动放行进 cockpit/work。
-- 登录 POST `/api/auth/login` `{password, remember}` → 校验通过发 token。
+  - `ok` → 密码表单。登录成功 → IPC `auth:granted`（主进程开主窗口进 boot→cockpit，见 2.0）。
+- 登录 POST `/api/auth/login` `{password, remember}` → 校验通过发 token（token 仅存认证小窗 localStorage，主窗口不依赖——主进程以 IPC 事实为准放行）。
 
 ### 2.2 服务端模块 `server/auth.mjs`（新增，纯函数优先可单测）
 
@@ -99,10 +113,11 @@ React 渲染层（Electron 主窗口）
 
 `server/bridge.mjs` if-chain 增分支：`/api/auth/status|setup|login`（+ 退出 `POST /api/auth/logout` 可选）。校验逻辑全部在 `auth.mjs`，bridge 只做薄转发（参考 `/api/usage` 转发范本，注意 keep-alive 与 body 解析小 JSON，沿用现有 body 读取方式）。
 
-### 2.4 登录/首设 UI
+### 2.4 登录/首设 UI（认证小窗内，小窗适配）
 
 - 居中玻璃卡片：boost logo + 标题；密码框（可见性切换/回车提交）、错误抖动、锁定提示；「启动自动登录（本次运行）」checkbox 默认开。
-- 完成后带 logo 过渡进 cockpit（§3.4 反向复用）。
+- 布局按小窗尺寸适配（卡内元素即现有 AuthFrame/auth-card；窗口整体高度 ~560 无需滚动）。
+- 成功后由主进程接管窗口切换（无主窗内 logo 过渡；logo 过渡仅用于 cockpit⇄work，§3.4）。
 
 ## §3 驾驶舱（CockpitScreen · iframe）
 
@@ -196,8 +211,8 @@ Header 左侧 logo（现 `Header.tsx:75` 的 `<img src=logo.png>`）改为点击
 
 ## §7 状态持久化
 
-- `src/lib/viewStore.ts`：`view` + 工作现场 `{ work:{ railTab, activeConversationId, panelContext, … } }`，zustand `persist` → localStorage（沿用 settings/chat 先例）。
-- 恢复语义：启动认证通过后 → 若存在现场 → 回驾驶舱（D3：登录后默认驾驶舱）；点 hub 球按现场恢复工作界面（rail/面板/活动会话）。**无任何历史/首启** → 进入工作界面时自动 `createConversation(mode:'chat')` 生成空白对话（D4"默认新对话"）。
+- `src/lib/viewStore.ts`：`view: 'boot'|'cockpit'|'work'` + 工作现场 `{ work:{ railTab, activeConversationId, panelContext, … } }`，zustand `persist` → localStorage（沿用 settings/chat 先例）。view 落盘仅 'cockpit'|'work'；'boot' 不入 persist（主窗口每次认证后从 boot 起，不因旧落盘跳过加载屏）。
+- 恢复语义：认证小窗通过 → 主窗口 boot 加载屏 → 默认回驾驶舱（D3/D12）；点 hub 球按现场恢复工作界面（rail/面板/活动会话）。**无任何历史/首启** → 进入工作界面时自动 `createConversation(mode:'chat')` 生成空白对话（D4"默认新对话"）。
 - 工作界面往返驾驶舱不改现场（D4 保留退出状态），持久化跨重启。
 
 ## §8 主题 / 图标唯一性 / 素材 / i18n
@@ -217,23 +232,22 @@ Header 左侧 logo（现 `Header.tsx:75` 的 `<img src=logo.png>`）改为点击
 
 ### 8.3 boost logo 素材管线
 
-- 目标：一份透明底 boost logo PNG（浅/深两版可选）供 boot/login/hub/header 复用，替换/新增 `public/logo` 资产。
+- 目标：一份透明底 boost logo PNG（浅/深两版可选）供 boot/认证小窗/hub/header 复用，替换/新增 `public/logo` 资产。
 - 方式：先尝试自动导出 `YF/boost-logo.ai`（检测 pymupdf/ghostscript/mutool；PDF 兼容位图或矢量转 PNG+alpha）。失败 → 请用户用 Illustrator 导出透明底 PNG 放置指定路径。
 - 若自动导出质量不可用（图层/渐变压平差异），同样走用户导出通道。此为本 spec 的**前置资产待办**（不阻塞代码开发，先落地占位 logo）。
 
-### 8.4 工程拆分（供 writing-plans 的 Task 骨架）
+### 8.4 工程拆分（实施计划已细化，供 writing-plans 的 Task 骨架）
 
-| Task | 内容 | 主要落点 |
+> 实施计划：`docs/superpowers/plans/2026-09-08-gui-onboarding-cockpit-redesign.md`（15 任务 TDD）。D11-D13 认证前置在计划中作为独立任务落在 Task 6 之后（认证小窗编排重构，见下），其产物为后续 Task 7-15 的视图机/路由基线。
+
+| 阶段 | 内容 | 主要落点 |
 |------|------|----------|
-| T1 | 资产：boost logo 导出 + public/cockpit 原型改造（数据驱动 + postMessage） | public/ |
-| T2 | viewStore + BootScreen + AppShell 视图路由 + LogoMorph 过渡骨架 | src/lib、src/components |
-| T3 | auth：server/auth.mjs + bridge 端点 + 前端 authApi + Setup/Login 屏 | server、src |
-| T4 | CockpitScreen：iframe 容器 + overview 汇总 + 主题/极速桥接 + hub 过渡接线 | src |
-| T5 | WorkShell 三段式重构：rail + 二级面板拆解 + 现有 Sidebar 退役迁移 | src/components/layout 等 |
-| T6 | chat/task mode：类型 + createConversation + bridge 受限 spawn + 输入区模式徽标 | src、server |
-| T7 | effort 接线：buildChildEnv 注入 + WS 热切换转发 + GUI 档位控件 | server、src |
-| T8 | 持久化现场 + 默认新对话语义 | src |
-| T9 | 主题/i18n/图标查重 + 冒烟回归 + typecheck/test | 全局 |
+| 资产 | boost logo 透明导出管线（T1）；cockpit 原型数据驱动改造（T7） | public/ |
+| 认证 | server/auth.mjs + bridge `/api/auth/*`（T2/T3）；authApi/authStore + viewStore（T4）；BootScreen/ViewRouter（T5）；Setup/Login 屏（T6） | server、src |
+| **认证小窗编排**（D11-D13 增补） | main.cjs 启动先建 `?auth=1` 小窗、收 `auth:granted` 后建主窗口；preload 增 auth channel；App.tsx `?auth=1` 分支 + AuthWindowRoot；AuthScreen 成功路径改发 IPC；ViewRouter/viewStore 去 login（`boot→cockpit→work`） | electron、src |
+| 驾驶舱 | CockpitScreen：iframe 容器 + overview 汇总 + 主题/极速桥接 + hub 过渡接线（T8） | src |
+| 工作界面 | WorkShell 三段式：rail + 二级面板拆解 + Sidebar 退役迁移（T9/T10）；chat/task mode（T11）；effort 接线（T12/T13） | src、server |
+| 收口 | 持久化现场 + 默认新对话（T14）；主题/i18n/图标查重 + 冒烟回归（T15） | src、全局 |
 
 ## 测试策略
 
