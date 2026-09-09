@@ -13,6 +13,7 @@
 //   与 hub→work 的 playMorph('top-left', hubRect, commit) 互为反向；playMorph 自带并发守卫。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useViewStore } from '@/stores/viewStore'
+import { useChatStore } from '@/stores/chatStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { THEME_CLASS_NAMES, THEMES } from '@/types'
 import { BootScreen } from '@/components/boot/BootScreen'
@@ -77,6 +78,17 @@ export function ViewRouter() {
     document.body.style.background = 'var(--bg-app)'
     document.body.style.color = 'var(--text-primary)'
   }, [settings.theme, settings.fontSize, settings.glassOpacity, settings.glassHueShift, settings.glassAurora, settings.speedMode])
+
+  // 无历史默认新对话（spec D4）：进入 work 且本地无任何会话/无活动会话时，
+  // 自动建一个空白 chat 会话（mode='chat'，Task 11 语义），满足"默认新对话"。
+  // 持久化现场已有活动会话 → 不动（恢复由 chatStore rehydrate 负责）。
+  useEffect(() => {
+    if (view !== 'work') return
+    const st = useChatStore.getState()
+    if (!st.activeConversationId || st.conversations.length === 0) {
+      useChatStore.getState().createConversation(undefined, undefined, 'chat')
+    }
+  }, [view])
 
   /** LogoMorph 动画完成：执行落点动作并卸载 overlay */
   const finishMorph = useCallback(() => {

@@ -57,13 +57,9 @@ export function WorkShell({ onGoCockpit }: WorkShellProps) {
   const pendingQuestion = activeConversationId ? pendingQuestions[activeConversationId] : undefined
   const { previewFile, setPreviewFile } = useUIStore()
 
-  // Create initial conversation if needed
-  useEffect(() => {
-    if (!activeConversationId) {
-      createConversation()
-    }
-  }, [])
-
+  // 无历史默认新对话兜底已上移 ViewRouter（Task 14：进 work 空态自动建空白 chat）：
+  // 本组件按 view 分支挂载/卸载，若在此再挂 mount 兜底会先于父组件 effect 触发且
+  // 造出默认 task 会话，抢跑/架空 ViewRouter 的 chat 创建（dev StrictMode 还会双发）。
   // 启动时低配设备检测：CPU 核心 ≤4 或内存 ≤4GB → 引导开启极速形态。
   // 仅在未开启极速形态且未点过"不再提示"时弹一次；检测结果不写入设置。
   useEffect(() => {
