@@ -106,6 +106,9 @@ const defaultSettings: AppSettings = {
   autoImageBridge: true,
   // 视觉模型来源 provider id（空=跟随 activeProvider），视觉模型取自该 provider 的 visionModel
   visionProviderId: '',
+  // 思考深度（全局，Task 12）：'auto' = 内核默认（不注入 env）；非 auto 新会话
+  // spawn 注入 + 运行中会话 WS 热切换
+  effortLevel: 'auto',
 
   minimizeToTray: true,
   notifyMode: 'background' as const,

@@ -1,5 +1,9 @@
 /// <reference types="vite/client" />
 
+// EffortLevel 定义在零依赖纯函数模块 src/lib/effortUi.ts；types → lib 单向依赖，
+// effortUi 不 import 本文件，故无循环。
+import type { EffortLevel } from '@/lib/effortUi'
+
 // ============================================================
 // Core TypeScript types for YFWorking GUI
 // ============================================================
@@ -285,6 +289,10 @@ export interface AppSettings {
   autoImageBridge: boolean
   /** 视觉模型来源 provider id（空=跟随 activeProvider）；视觉模型取自该 provider 的 visionModel 字段 */
   visionProviderId: string
+  /** 思考深度（全局，Task 12）：新会话 spawn 经 CLAUDE_CODE_EFFORT_LEVEL env 注入，
+   *  运行中会话经 WS reasoning_effort 热切换；'auto' = 内核默认（不注入）。
+   *  必填——defaultSettings 恒提供；旧 persist 快照可能缺失，消费点一律 normalizeEffortUi。 */
+  effortLevel: EffortLevel
 
   // UI state
   sidebarOpen: boolean
@@ -331,6 +339,8 @@ export interface YFWorkingConfigV2 {
   autoImageBridge?: boolean
   /** 视觉模型来源 provider id（空=跟随 activeProvider） */
   visionProviderId?: string
+  /** 思考深度（全局顶层，Task 12）：handleSave 恒带上；旧代码路径缺省不报错。 */
+  effortLevel?: string
   /** 新会话注入个人经验的开关（bridge read/save 按透传处理） */
   experienceInjectEnabled?: boolean
   /** 新会话注入个人经验的上限（字符数） */

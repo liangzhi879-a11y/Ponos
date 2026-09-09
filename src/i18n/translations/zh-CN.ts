@@ -230,6 +230,16 @@ export const zhCN = {
     refresh: '刷新',
   },
 
+  // --- 思考深度（Task 12 effort：全局设置 → 新会话 spawn env 注入 + 运行中会话 WS 热切换） ---
+  effort: {
+    auto: '自动',
+    off: '关闭',
+    low: '低',
+    medium: '中',
+    high: '高',
+    max: '最高',
+  },
+
   // --- 终端 ---
   // --- 设置面板 ---
   settings: {
@@ -301,6 +311,9 @@ export const zhCN = {
     providerContextWindow: '上下文窗口',
     providerContextWindowDesc: '模型最大上下文长度（tokens）',
     providerEffortLevel: '推理深度',
+    // Task 12：思考深度全局控制（自 provider 级旧 select 迁移；providerEffortLevel 键保留待 T15 清理）
+    effortLevel: '思考深度',
+    effortLevelDesc: '影响新会话与当前会话（输入条可热切）',
     addCustomProvider: '自定义供应商',
     addCustomProviderDesc: '手动添加其他 Anthropic 兼容 API 供应商',
     deleteProvider: '删除供应商',

@@ -226,6 +226,16 @@ export const enUS: TranslationKeys = {
     refresh: 'Refresh',
   },
 
+  // --- Thinking effort (Task 12: global setting → env at spawn + WS hot-switch) ---
+  effort: {
+    auto: 'Auto',
+    off: 'Off',
+    low: 'Low',
+    medium: 'Medium',
+    high: 'High',
+    max: 'Max',
+  },
+
   settings: {
     title: 'Settings',
 
@@ -295,6 +305,10 @@ export const enUS: TranslationKeys = {
     providerContextWindow: 'Context Window',
     providerContextWindowDesc: 'Maximum context length (tokens)',
     providerEffortLevel: 'Effort Level',
+    // Task 12: global thinking-effort control (migrated from the per-provider select;
+    // providerEffortLevel key kept until T15 cleanup)
+    effortLevel: 'Thinking effort',
+    effortLevelDesc: 'Affects new sessions and the current session (hot-switchable in the input bar)',
     addCustomProvider: '+ Custom Provider',
     addCustomProviderDesc: 'Manually add an Anthropic-compatible API provider',
     deleteProvider: 'Delete Provider',

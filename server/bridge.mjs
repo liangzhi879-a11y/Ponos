@@ -270,6 +270,9 @@ const DEFAULT_CONFIG = {
   autoCapture: true,
   autoImageBridge: true,
   visionProviderId: '',
+  // 思考深度（Task 12）：'auto' = 内核默认（不注入 env）；非 auto 值经 buildChildEnv
+  // 注入 CLAUDE_CODE_EFFORT_LEVEL。旧 config.json 缺此键 → loadConfig merge 默认 auto。
+  effortLevel: 'auto',
   providers: DEFAULT_PROVIDERS,
 }
 
@@ -697,6 +700,11 @@ function buildChildEnv() {
   // 用户环境变量可显式覆盖（如设为 false 关闭）。
   env.CLAUDE_CODE_AGENT_TRIGGERS =
     process.env.CLAUDE_CODE_AGENT_TRIGGERS === 'false' ? 'false' : 'true'
+  // 思考深度（Task 12）：新会话 spawn 兜底 env 注入。'auto'（默认）不注入——
+  // 内核自身默认即 auto，语义等价且干净；运行中会话的即时切换走 WS reasoning_effort
+  //（本文件 effort case），这里只负责每个新 spawn 的初始档位。
+  const effort = cfg.effortLevel || 'auto'
+  if (effort !== 'auto') env.CLAUDE_CODE_EFFORT_LEVEL = effort
   // Inject the active provider's API config as ANTHROPIC_* env vars so the
   // Claude Code kernel actually calls the user-configured endpoint/model
   // with the user's token. Without these the CLI falls back to its built-in
@@ -2129,6 +2137,27 @@ wss.on('connection', (ws, req) => {
           s._cancelTimer.unref?.()
         }
         send({ type: 'cancelled', data: { sessionId: sid } })
+      } else if (msg.type === 'effort') {
+        // 思考深度热切换（Task 12）：GUI 改 effort → 对运行中内核会话注入
+        // reasoning_effort control_request。会话不存在/进程已死/level 为空 → 幂等忽略
+        //（新会话由 buildChildEnv 的 CLAUDE_CODE_EFFORT_LEVEL env 注入兜底）。
+        // 注意：bridge 无 lastSessionId——目标会话由前端解析（conversationId || 前端
+        // lastSessionId || 'default'）后随消息带给本 case，这里只信任 msg.sessionId。
+        const sid = msg.sessionId || 'default'
+        const s = sessions.get(sid)
+        const level = String(msg.level ?? 'auto').trim()
+        console.log('[bridge] effort sid:', sid.slice(0, 8), '| level:', level)
+        if (s && s.proc && !s.proc.killed && level) {
+          try {
+            s.proc.stdin.write(JSON.stringify({
+              type: 'control_request',
+              request_id: 'effort-' + Date.now(),
+              request: { subtype: 'reasoning_effort', payload: { value: level } },
+            }) + '\n')
+          } catch (e) {
+            console.warn('[bridge] effort send failed:', e.message)
+          }
+        }
       } else if (msg.type === 'pet:show-main') {
         // 桌面宠物双击 → 通知所有客户端（主进程监听后打开/聚焦主窗口）
         send({ type: 'pet:show-main', data: {} })

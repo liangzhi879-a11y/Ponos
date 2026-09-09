@@ -234,6 +234,20 @@ export function sendPermissionResponse(sessionId: string, toolUseId: string, app
 }
 
 /**
+ * 思考深度热切换（Task 12）：GUI 设置页选定 effort 后上送 bridge，bridge 对运行中
+ * 内核会话注入 reasoning_effort control_request。conversationId 为空时回退到
+ * 模块级 lastSessionId（最近发送过消息的会话），再无则 'default'——与 stop() 同款
+ * 兜底。无活动会话 / WS 未连接时幂等忽略（新会话由 spawn env CLAUDE_CODE_EFFORT_LEVEL
+ * 注入兜底）。ws-null-guard 与 stop() 一致：仅当已连接才 send，不排队不建连。
+ */
+export function sendEffort(conversationId: string | undefined, level: string) {
+  const target = conversationId || lastSessionId || 'default'
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'effort', sessionId: target, level }))
+  }
+}
+
+/**
  * 构建 WS send payload；会话不存在返回 null。
  * 发送方：send（空闲/排队插话）、dispatchSend（新建轮）、interject（紧急 now）。
  * uuid：排队插话消息的唯一标识，内核处理该消息时经 command_lifecycle 事件回传

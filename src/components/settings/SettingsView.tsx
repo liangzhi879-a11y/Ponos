@@ -8,11 +8,12 @@ import {
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useChatStore } from '@/stores/chatStore'
-import { useYFWCLI } from '@/hooks/useYFWCLI'
+import { useYFWCLI, sendEffort } from '@/hooks/useYFWCLI'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn, formatShortcut, shortcutFromEvent } from '@/lib/utils'
 import { fetchSkills } from '@/lib/skills'
 import { fetchBridgeConfig, saveBridgeConfig, addProvider, deleteProvider, testProviderConnection } from '@/lib/config'
+import { EFFORT_OPTIONS, normalizeEffortUi } from '@/lib/effortUi'
 import { ExperiencePanel } from '@/components/settings/ExperiencePanel'
 import type { AppSettings, ModelProvider, YFWorkingConfigV2 } from '@/types'
 import { THEMES, type ThemeMode, type ThemeMeta, type Language } from '@/types'
@@ -426,6 +427,8 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
           autoCapture: cfg.autoCapture,
           autoImageBridge: cfg.autoImageBridge,
           visionProviderId: cfg.visionProviderId || '',
+          // 顶层 effortLevel 从 bridge config 回读（旧 config 无此键 → normalize 兜底 'auto'）
+          effortLevel: normalizeEffortUi(cfg.effortLevel),
         })
       })
       .catch(() => {})
@@ -529,6 +532,9 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
         autoCapture: settings.autoCapture,
         autoImageBridge: settings.autoImageBridge,
         visionProviderId: settings.visionProviderId || '',
+        // 全局思考深度并入 cfg（Task 12）：bridge saveConfig 整包透传写 config.json，
+        // 新会话 spawn 时 buildChildEnv 读它注入 CLAUDE_CODE_EFFORT_LEVEL
+        effortLevel: normalizeEffortUi(settings.effortLevel),
         providers: settings.providers,
       }
       const saved = await saveBridgeConfig(cfg)
@@ -740,19 +746,26 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
             </button>
             {showAdvanced && (
               <div className="space-y-3 pl-5 border-l-2 border-subtle mb-4">
-                {/* Effort Level */}
+                {/* Effort Level —— 思考深度（全局，Task 12）
+                    旧 provider 级 effortLevel select 已移除（provider 字段保留仅作存储兼容）：
+                    本控制绑定全局 settings.effortLevel → handleSave 并入 cfg（新会话 env 注入），
+                    onChange 同步向运行中会话发 WS reasoning_effort 热切换（sendEffort 无会话幂等）。 */}
                 <div>
-                  <label className="text-xs font-medium text-secondary mb-1 block">{t('settings.providerEffortLevel')}</label>
+                  <label className="text-xs font-medium text-secondary mb-1 block">{t('settings.effortLevel')}</label>
                   <select
-                    value={activeProv.effortLevel}
-                    onChange={e => handleUpdateActiveProvider('effortLevel', e.target.value)}
+                    value={normalizeEffortUi(settings.effortLevel)}
+                    onChange={e => {
+                      const v = normalizeEffortUi(e.target.value)
+                      updateSettings({ effortLevel: v })
+                      sendEffort(useChatStore.getState().activeConversationId ?? undefined, v)
+                    }}
                     className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent"
                   >
-                    <option value="low">low</option>
-                    <option value="medium">medium</option>
-                    <option value="high">high</option>
-                    <option value="max">max</option>
+                    {EFFORT_OPTIONS.map(o => (
+                      <option key={o.value} value={o.value}>{t(o.labelKey)}</option>
+                    ))}
                   </select>
+                  <p className="text-[10px] text-tertiary mt-1">{t('settings.effortLevelDesc')}</p>
                 </div>
 
                 {/* Context Window */}
