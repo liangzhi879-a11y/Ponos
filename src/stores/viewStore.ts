@@ -1,21 +1,24 @@
-// src/stores/viewStore.ts —— 顶层视图状态机（boot→login→cockpit→work）+ 工作区 rail 持久化
-// persist key 'yfworking-view'；partialize { view, workState }。
-// view 落盘值只在 'cockpit'|'work' 间持久；rehydrate 语义（merge）：
-//   · 无历史（localStorage 空/缺 key，p.view===undefined）→ 保留 current 初始 'boot'（首启显示 BootScreen）；
-//   · 有显式落盘值但为 boot/login/未知 → normalizeStoredView 归一到 'login'。
-// 注：GUI 纯函数单测纪律下 normalizeStoredView 放在本文件顶部导出即可测——前提是 node import 本文件时
+// src/stores/viewStore.ts —— 顶层视图状态机（boot→cockpit→work，无 login）+ 工作区 rail 持久化
+// persist key 'yfworking-view'。
+// D11-D13（Task 6b）：登录已移出主窗口视图机——认证在独立小窗（?auth=1）完成，
+// 主窗口认证后才创建并以 'boot' 开场，故 AppView 收敛为 boot|cockpit|work 三态。
+// persist 语义（spec §7）：
+//   · partialize 只落 'cockpit'|'work' 的 view 与 workState——'boot' 不入 persist；
+//   · merge 恒定 view: current.view（即 'boot'）——boot 门禁：persist 的 view 永不恢复，
+//     主窗口每次认证后从加载屏起，只恢复工作区 rail（合法值清洗）。
+// 注：GUI 纯函数单测纪律下 sanitizeRail 放在本文件顶部导出即可测——前提是 node import 本文件时
 // 模块级 zustand create(persist(...)) 可安全执行（无 localStorage 时 persist 自动降级为 noop storage）。
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
-export type AppView = 'boot' | 'login' | 'cockpit' | 'work'
+export type AppView = 'boot' | 'cockpit' | 'work'
 export type RailId = 'chat' | 'task' | 'agents' | 'skills'
 export interface WorkState { rail: RailId }
+export const RAIL_IDS: readonly RailId[] = ['chat', 'task', 'agents', 'skills']
 
-/** 落盘视图归一（只喂「显式已落盘」值，不要喂 undefined——那代表无历史，应保留 current 'boot'）：
- *  只有 'cockpit'|'work' 视为合法，其余（含 boot/login/未知）归一到 'login'。*/
-export function normalizeStoredView(v: unknown): AppView {
-  return v === 'cockpit' || v === 'work' ? v : 'login'
+/** 落盘 rail 清洗：4 合法值透传，非法/缺省 → 'task'（供 merge 与单测）。 */
+export function sanitizeRail(rail: unknown): RailId {
+  return RAIL_IDS.includes(rail as RailId) ? (rail as RailId) : 'task'
 }
 
 interface ViewState {
@@ -33,20 +36,16 @@ export const useViewStore = create<ViewState>()(
     enterWork: (rail) => set({ view: 'work', workState: { rail: rail ?? 'task' } }),
   }), {
     name: 'yfworking-view',
-    partialize: (s) => ({ view: s.view, workState: s.workState }),
+    partialize: (s) => {
+      const out: Partial<ViewState> = { workState: s.workState }
+      if (s.view === 'cockpit' || s.view === 'work') out.view = s.view  // boot 不入 persist（spec §7）
+      return out
+    },
     merge: (persisted, current) => {
-      const p = (persisted ?? {}) as { view?: unknown; workState?: Partial<WorkState> }
-      const rail = p.workState?.rail
-      // 无历史（p.view===undefined，localStorage 空 key/缺 key）→ 保留 current 初始 'boot'；
-      // 只有显式已落盘值才走 normalizeStoredView 归一（否则 'boot' 会被归一成 'login'，首启永远看不到 BootScreen）。
-      const stored = p.view === undefined ? current.view : normalizeStoredView(p.view)
-      return {
-        ...current,
-        view: stored,
-        workState: {
-          rail: rail === 'chat' || rail === 'task' || rail === 'agents' || rail === 'skills' ? rail : 'task',
-        },
-      }
+      const p = (persisted ?? {}) as { workState?: { rail?: unknown } }
+      // boot 门禁：persist 的 view 永不恢复——主窗口每次认证后从 'boot' 起（spec §7），
+      // 只恢复工作区 rail；persist 的 view 字段（仅 cockpit|work）为信息性记录。
+      return { ...current, view: current.view, workState: { rail: sanitizeRail(p.workState?.rail) } }
     },
   }),
 )

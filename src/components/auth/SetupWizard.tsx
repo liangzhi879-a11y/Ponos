@@ -2,7 +2,8 @@
 // 由 AuthScreen 在 phase==='uninitialized' 时渲染（外层 AuthFrame 已给出
 // setupTitle/setupHint 与品牌 logo，本组件只负责两个口令输入框 + 提交）：
 //   · 客户端校验：长度 ≥4、两次一致（mismatch 挂确认框、tooShort 挂口令框）；
-//   · 通过后 authStore.setup(pw) → 成功即"设置即解锁"，直接 setView('cockpit')；
+//   · 通过后 authStore.setup(pw) → 成功即"设置即解锁"，发 IPC auth:granted
+//     （认证小窗语义，见 AuthScreen.tsx 头注释——主进程接管窗口切换，不再 setView）；
 //   · setup 失败：失败文案取 store.error（服务端兜底校验，正常流程不会走到），
 //     "already initialized"（并发窗口已初始化）则重 init() 刷新为登录态。
 // 所有文案走 i18n（auth.*），不硬编码。
@@ -10,8 +11,10 @@ import { useState } from 'react'
 import { Button } from '@/components/ui'
 import { useTranslation } from '@/i18n/useTranslation'
 import { useAuthStore } from '@/stores/authStore'
-import { useViewStore } from '@/stores/viewStore'
 import { PasswordField } from './PasswordField'
+
+/** 认证通过（login ok / setup 即解锁）→ 通知主进程关小窗、开主窗口（spec §2.0）。 */
+const grant = () => { window.yfworkingWindow?.authGranted?.() }
 
 export function SetupWizard() {
   const { t } = useTranslation()
@@ -48,8 +51,8 @@ export function SetupWizard() {
     clearErrors()
     const ok = await setup(pw)
     if (ok) {
-      // setup 即解锁：直接进 cockpit（bridge token 每次启动失效，生产语义见 task-6-brief）
-      useViewStore.getState().setView('cockpit')
+      // setup 即解锁：IPC auth:granted → 主进程关小窗、开主窗口（bridge token 每次启动失效）
+      grant()
       return
     }
     const raw = useAuthStore.getState().error

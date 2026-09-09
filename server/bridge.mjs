@@ -1149,7 +1149,15 @@ const httpServer = createServer(async (req, res) => {
     return
   }
   if (origin) res.setHeader('Access-Control-Allow-Origin', origin)
-  if (req.method === 'OPTIONS') { reply(204, {}); return }
+  if (req.method === 'OPTIONS') {
+    // 预检响应头补全（Task 6b/D11-D13）：认证小窗对 /api/auth/setup|login 的
+    // application/json POST 依赖浏览器预检通过——只回 origin 会让 file:///
+    // （打包）与 localhost:5173（vite dev）的 renderer 预检失败、真实 POST 不发。
+    // 白名单式：方法/头枚举固定值，不引入任意来源反射。
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    reply(204, {}); return
+  }
   const url = new URL(req.url, 'http://localhost:' + PORT)
   try {
     if (url.pathname === '/drives') {

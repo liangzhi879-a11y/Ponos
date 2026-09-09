@@ -1,6 +1,8 @@
-// src/components/boot/PlaceholderScreens.tsx —— 登录/驾驶舱占位壳（无头联调用）
+// src/components/boot/PlaceholderScreens.tsx —— 驾驶舱占位壳（无头联调用）
 // Task 6：AuthPlaceholder 已由 AuthScreen（src/components/auth）替换并删除；
 // CockpitPlaceholder 仍作占位，Task 8 以 CockpitScreen 替换。
+// Task 6b（D11-D13）：登录移入独立认证小窗（?auth=1），主窗口视图机无 login——
+// 原「返回登录」按钮（setView('login')）删除，占位只保留进工作界面单向入口。
 // 占位文案为一次性脚手架，直接中文字面量（许可证见 task-5-brief Step 3），不进 i18n。
 import { Button } from '@/components/ui'
 import { useViewStore } from '@/stores/viewStore'
@@ -15,7 +17,6 @@ export function CockpitPlaceholder() {
       </div>
       <div className="flex items-center gap-3">
         <Button onClick={() => setView('work')}>进入工作界面 →</Button>
-        <Button variant="ghost" onClick={() => setView('login')}>← 返回登录</Button>
       </div>
     </div>
   )

@@ -1,9 +1,10 @@
 // src/components/auth/AuthScreen.tsx —— 登录/锁定/向导路由宿主 + 主题相关登录视觉
-// 按 authStore.phase 分支（Task 5 ViewRouter login 分支替换 AuthPlaceholder）：
+// 由 AuthWindowRoot（?auth=1 独立认证小窗，D11-D13/Task 6b）渲染——不再是主窗口视图：
 //   · mount 即 init() 拉一次 status（占位屏时代从不触发，phase 恒 unknown——Task 5 ledger 修复点）；
 //   · uninitialized → SetupWizard（首设口令向导）；locked → LockedView（lockedForMs 倒计时）；
-//   · ok / setup-done → LoginView。login/setup 成功 → setView('cockpit')（bridge token 每次启动失效，
-//     生产语义每次启动需登录，见 task-6-brief Interfaces）。
+//   · ok / setup-done → LoginView。login 成功 → IPC auth:granted（主进程关小窗、开主窗口），
+//     不再 setView——主窗口视图机由主进程放行后才创建并自 'boot' 开场（bridge token 每次
+//     启动失效，生产语义每次启动需登录，见 task-6-brief Interfaces）。
 // 背景决策：整屏 .auth-bg 与 boot 同族的深色品牌渐变（容器不加 bg-app）——白色 boost 字标只在
 // 深色面上可读，浅色主题下若透出 html/body 浅底会"白上白"；主题跟随由卡内元素（auth-card 用
 // --popover-bg/blur 磨砂玻璃 + text-primary/secondary + 品牌按钮）承载。
@@ -11,11 +12,13 @@ import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 're
 import { Lock, RefreshCw } from 'lucide-react'
 import { useTranslation } from '@/i18n/useTranslation'
 import { useAuthStore } from '@/stores/authStore'
-import { useViewStore } from '@/stores/viewStore'
 import { Button } from '@/components/ui'
 import { BOOST_LOGO_LIGHT } from '@/lib/assets'
 import { SetupWizard } from './SetupWizard'
 import { PasswordField } from './PasswordField'
+
+/** 认证通过（login ok / setup 即解锁）→ 通知主进程关小窗、开主窗口（spec §2.0）。 */
+const grant = () => { window.yfworkingWindow?.authGranted?.() }
 
 /** 认证屏通用外框：深色品牌底 + 白 logo（呼吸）+ 居中磨砂玻璃卡 */
 function AuthFrame({
@@ -74,7 +77,7 @@ function LoginView() {
       setPw('') // 口令错误清空重输
       return
     }
-    useViewStore.getState().setView('cockpit')
+    grant() // 登录成功 → IPC auth:granted：主进程关认证小窗并创建主窗口（boot 开场）
   }
 
   // 服务端失败文案映射：已知 'bad-password' 走 i18n auth.error；其余（网络异常等）原样展示兜底

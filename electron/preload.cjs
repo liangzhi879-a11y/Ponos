@@ -34,6 +34,8 @@ contextBridge.exposeInMainWorld('yfworkingWindow', {
   maximizeToggle: () => ipcRenderer.send('window:maximize-toggle'),
   close: () => ipcRenderer.send('window:close'),
   isMaximized: () => ipcRenderer.invoke('window:is-maximized'),
+  // 认证小窗：认证通过 → 主进程关小窗、创建主窗口（spec §2.0 / Task 6b）
+  authGranted: () => ipcRenderer.send('auth:granted'),
   // 技能经验消费提醒（主进程启动时推送 pending 积压）
   onExperienceAlert: (callback) => {
     const listener = (_event, data) => callback(data)

@@ -135,6 +135,10 @@ for (const stream of [process.stdout, process.stderr]) {
 // State
 // ---------------------------------------------------------------------------
 let mainWindow = null
+// 认证小窗（spec §2.0/D13；Task 6b）：冷启动先建，主窗口在 auth:granted 后才创建；
+// authGranted 记录本次运行是否已放行（防"未放行关窗退出应用"误杀已授权场景）。
+let authWin = null
+let authGranted = false
 let editorWin = null            // 原生文件编辑器独立窗口（可超出主应用界面）
 let pendingEditorFile = null    // 待编辑器窗口拉取的文件（渲染层挂载后 invoke 拉取，规避 IPC 竞态）
 // 豆包图片生成：登录窗口隐藏常驻（persist:doubao 分区），生成请求在页面上下文执行
@@ -565,6 +569,35 @@ function createWindow() {
   })
 
   mainWindow.on('closed', () => { mainWindow = null })
+}
+
+// ---------------------------------------------------------------------------
+// 认证小窗（spec §2.0/D13；Task 6b）
+// 冷启动先建独立登录/首设小窗（?auth=1，原生 frame、非透明、固定 ~420×560、主屏居中），
+// 主窗口此刻不创建——认证经 IPC auth:granted 放行后才由主进程接管创建（见下方注册）。
+// 非认证主体结构不动：只新增本窗能力，createWindow()/kernel 原样。
+// ---------------------------------------------------------------------------
+function createAuthWindow() {
+  authWin = new BrowserWindow({
+    width: 420, height: 560, resizable: false, title: 'YFWorking',
+    icon: ICON_PATH, show: false, backgroundColor: '#171109',  // 与 AuthScreen 深色底一致防闪白
+    autoHideMenuBar: true,   // 弹窗级小窗不显示默认菜单栏（原生 frame 保留）
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  })
+  authWin.once('ready-to-show', () => { authWin?.center(); authWin?.show() })
+  authWin.on('closed', () => {
+    authWin = null
+    // 冷启动小窗未放行即被关（主窗口从未创建）→ 退出应用，不经 tray 保留分支
+    if (!authGranted && (!mainWindow || mainWindow.isDestroyed()) && !isQuitting) app.quit()
+  })
+  const devUrl = process.env.VITE_DEV_SERVER_URL
+  if (devUrl) authWin.loadURL(devUrl + '?auth=1')
+  else authWin.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), { query: { auth: '1' } })
 }
 
 // ---------------------------------------------------------------------------
@@ -1501,6 +1534,21 @@ if (!gotTheLock) {
     win.webContents.on('unresponsive', () => console.error('[render] unresponsive'))
   }
 
+  // 认证放行（spec §2.0/D13；Task 6b）：认证小窗登录/首设成功 → 渲染层发 auth:granted →
+  // 关小窗、创建主窗口（bootStartAt 重置刷新 60s 启动兜底窗口基线，did-finish-load 接 bootPhase）。
+  // 注册在此（而非 registerIpc）：处理器需触及 else 块作用域内 let bootStartAt/bootPhase。
+  ipcMain.on('auth:granted', () => {
+    authGranted = true
+    const w = authWin
+    authWin = null
+    if (w && !w.isDestroyed()) w.close()
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      bootStartAt = Date.now()   // 刷新 60s 启动兜底弹窗窗口基线
+      createWindow()
+      mainWindow?.webContents.once('did-finish-load', () => bootPhase('windowLoad'))
+    }
+  })
+
   app.whenReady().then(async () => {
     bootPhase('mainReady')
     bootStartAt = Date.now()   // 刷新启动基线（60s 兜底弹窗窗口）
@@ -1535,8 +1583,8 @@ if (!gotTheLock) {
     } else {
       await startBridgeAndWait()
     }
-    createWindow()
-    mainWindow?.webContents.once('did-finish-load', () => bootPhase('windowLoad'))
+    // D11-D13：冷启动先建认证小窗（?auth=1），主窗口在 auth:granted 后才创建（资源认证后才加载）
+    createAuthWindow()
     createTray()
     connectPetBridgeListener()
     connectBrowserExecutor()
@@ -1581,6 +1629,10 @@ app.on('will-quit', () => {
 })
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  if (BrowserWindow.getAllWindows().length === 0) {
+    // D11-D13：本次运行已认证放行 → 直接建主窗口；未放行（冷启动小窗被关后 activate）→ 回到认证小窗
+    if (authGranted) createWindow()
+    else createAuthWindow()
+  }
 })
 } // end single-instance lock else block

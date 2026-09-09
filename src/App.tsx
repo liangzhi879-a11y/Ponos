@@ -2,10 +2,15 @@ import { useEffect } from 'react'
 import { TooltipProvider } from '@/components/ui'
 import { ViewRouter } from '@/components/layout/ViewRouter'
 import { EditorWindowRoot } from '@/components/editor/EditorWindowRoot'
+import { AuthWindowRoot } from '@/components/auth/AuthWindowRoot'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { isEditorWindow } from '@/lib/editorBridge'
+import { isAuthWindow } from '@/lib/authWindow'
 
 export default function App() {
+  // 认证小窗（?auth=1，D11-D13）：先于主窗口出现的独立登录窗，只渲染 AuthScreen
+  // 完成首设/登录，不加载 MainApp/ViewRouter（AuthWindowRoot 内已包 TooltipProvider）。
+  if (isAuthWindow()) return <AuthWindowRoot />
   // 独立原生编辑器窗口（?editor=1）：只渲染编辑器根组件，不加载主界面。
   // FileEditor 使用了 Tooltip，必须包 TooltipProvider，否则打开文件渲染保存按钮时报错。
   if (isEditorWindow()) {

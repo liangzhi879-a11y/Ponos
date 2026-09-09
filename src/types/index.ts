@@ -450,6 +450,8 @@ export interface YFWorkingWindowControls {
   saveTheme?: (theme: string, mode: 'light' | 'dark') => void
   /** GPU 进程异常退出（驱动重置/崩溃）→ 渲染层自动开启极速形态 */
   onGpuCrash?: (callback: (data: { reason: string }) => void) => (() => void) | undefined
+  /** 认证小窗（?auth=1）：认证通过 → 主进程关小窗、创建主窗口（spec §2.0 / Task 6b） */
+  authGranted?: () => void
 }
 
 // --- Interactive Question Card / AskUserQuestion replacement ---
