@@ -28,7 +28,7 @@
 | 工作树 | GitFork | 工作树面板头（同「工作树」实体） |
 | 用量 | Gauge | 仅 usage 语境（豁免：条目+面板头同义） |
 | 返回驾驶舱 | Home | 现由 logo 承担；Home 仅文件系统根（FileBrowser/DirectoryPicker） |
-| 设置 | Settings | 仅 Header 齿轮（SettingsView 自标题复用同字面，非旁路入口） |
+| 设置 | Settings | 仅 Header 齿轮 + SettingsView 自标题 + CommandPalette「打开设置」命令行（均同一「打开设置」动作，同动作复用） |
 | 搜索 | Search | 通用检索动作，全库一致（豁免） |
 
 ## 2. 盘点方法
@@ -75,6 +75,7 @@
 - Header 齿轮：`Header.tsx:132`（唯一旁路入口）。
 - `SettingsView.tsx:49` 自标题同字面（面板标题，非第二入口）→ 允许。
 - 其余一律禁用 Settings 字形：原 `AgentsPanel.tsx` 重置全部按钮 → RotateCcw（§5 #3）。
+- CommandPalette.tsx「打开设置」命令行同为 Settings 字形 = 与 Header 齿轮同动作（打开 SettingsView）→ 同动作复用豁免（§4 e）。
 
 ### 3.8 插话（排队）动作
 - `ChatInput.tsx:730` → 本任务 MessageSquarePlus→MessageCirclePlus（§5 #2）。
@@ -82,8 +83,12 @@
 ### 3.9 泛用/豁免字形（不裁决）
 - Search：全库一致（ChatListPanel/TaskListPanel/AgentsPanel/SkillsPanel/UsagePanel/SearchDialog…）。
 - Plus 带文字标签（实体特定新增）：AgentsPanel:139/211、SkillsPanel、SettingsView、TaskListPanel:635 新建会话集子项、WorktreePanel。
-- Chevron（Right/Down）为展开/收起指示；Pin/Trash2/Edit3/Share2/Download/RefreshCw/RotateCcw/
-  ArrowUpDown/Wand2（自动整理）/StopCircle/Zap/Mic/X/Copy/Check 等为各自唯一动作字形，盘点无跨义复用。
+- Chevron（Right/Down）为展开/收起指示；Pin/Trash2/Edit3/Share2/Download/RefreshCw/ArrowUpDown/
+  Wand2（自动整理）/StopCircle/Zap/Mic/X/Copy/Check 等为各自唯一动作字形，盘点无跨义复用。
+- RotateCcw 为「回退/旋转箭头」字形族：MessageBubble:468（重试 regenerate，Tooltip "Retry"）、
+  AgentsPanel:220（重置默认，本任务新增）、AvatarCropDialog:153（重置裁剪视口：scale 归 1、位置归位，
+  非图像旋转）——语义不同但同属 circular-arrow 族，各使用点均带文字/aria/tooltip 标签、无同面歧义；
+  controller 裁决允许共享该字形族，不按「唯一动作字形」对待。
 
 ## 4. Controller scope hotspot 裁决（a-f）
 
@@ -93,7 +98,7 @@
 | b | SquareKanban | rail 入口 + TaskListPanel 空态 | 同「任务」语义 → 允许 |
 | c | Bot（列表 vs 角色） | AgentsPanel 标题/行、MessageBubble 角色头像、HistoryView 统计、SystemWarningStrip agent_spec | 均指「AI 实体身份」同一语义族 → 允许 |
 | d | Gauge | TaskListPanel:76 浮层入口 + UsagePanel:94 面板头 | 仅 usage 语境 → 豁免（usage-only） |
-| e | Settings | Header:132、SettingsView:49 自标题；**AgentsPanel 重置全部按钮 = 冲突** | AgentsPanel → RotateCcw；Header+SettingsView 自标题保留 |
+| e | Settings | Header:132、SettingsView:49 自标题、CommandPalette「打开设置」命令行（与 Header 同动作）；**AgentsPanel 重置全部按钮 = 冲突** | AgentsPanel → RotateCcw；Header+SettingsView+CommandPalette open-settings（同动作复用）保留 |
 | f | Search | 全库检索统一字形 | 通用动作 → 允许 |
 
 ## 5. 图标冲突修正映射表（3 处 + 注释固化）
@@ -131,7 +136,7 @@
 - rail 四切换渲染正确图标；空态任务=square-kanban、空态对话=message-square。
 - 工具栏四枚次级图标文件/历史/用量/工作树齐全。
 - 会话集行 DOM=`lucide-folder`；移动至集子菜单行=Folder。
-- AgentsPanel 重置=`lucide-rotate-ccw`；页面唯一 `lucide-settings`=Header 齿轮。
+- AgentsPanel 重置=`lucide-rotate-ccw`；命令面板关闭态页面唯一 `lucide-settings`=Header 齿轮（面板打开时其「打开设置」命令行同字形 = 同动作复用，§3.7/§4 e）。
 - 排队插话（streamingConversations 模拟）=`lucide-message-circle-plus`。
 - 四浮层（文件/历史/用量/工作树）打开、标题正确。
 - en-US 切换无 raw-key 回退；`sidebar\.|header\.|providerEffortLevel` 正则负检通过。
