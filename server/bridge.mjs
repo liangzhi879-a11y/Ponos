@@ -796,7 +796,12 @@ function experienceInjectConfig() {
   }
 }
 
-function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCount) {
+// chat 模式禁用的本地工具集（Task 11 Conversation.mode）：纯聊会话只保留
+// WebFetch/WebSearch 等联网只读工具，禁一切本地执行/读写/Agent/技能/浏览器。
+// GUI 经 buildSendPayload 透传 conversation.mode，WS 'send' 分支收敛 'chat'|'task'。
+const CHAT_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch']
+
+function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCount, mode = 'task') {
   if (sessions.has(sid)) {
     const s = sessions.get(sid)
     if (s.proc && !s.proc.killed) return s
@@ -811,6 +816,9 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
   args.push('--permission-prompt-tool', 'stdio')
   // GUI 不渲染 AskUserQuestion 工具交互 —— 强制模型使用 <!--ASK_USER--> 注释输出提问卡片
   args.push('--disallowedTools', 'AskUserQuestion')
+  // chat 模式（纯聊受限会话）：追加禁本地工具清单——与 AskUserQuestion 分别 push，
+  // 由内核注册表过滤使 Bash/Read/Write 等不可调用（保留 WebFetch/WebSearch）。
+  if (mode === 'chat') args.push('--disallowedTools', CHAT_DISALLOWED.join(','))
   if (resumeId) {
     // Resume: restore the original session. 不重复注入身份提示词（避免冲突），
     // 但必须追加互动格式规范，否则模型看不到 ASK_USER 唯一提问方式，会回退调用
@@ -859,7 +867,8 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     args.push('--append-system-prompt-file', q(promptFile))
   }
   if (model) args.push('--model', q(model))
-  if (cwd) args.push('--add-dir', q(cwd))
+  // chat 模式不把业务 cwd 注入内核（纯聊会话工作根 = YFW_HOME，见下方 spawn cwd）
+  if (cwd && mode !== 'chat') args.push('--add-dir', q(cwd))
   const skillRoot = findSkillRoot()
   if (existsSync(skillRoot)) args.push('--add-dir', q(skillRoot))
   console.log('[bridge] skill root:', skillRoot)
@@ -882,7 +891,8 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
           ? { YFW_HEALTH_COMPACT_COUNT: String(Number(compactCount)) }
           : {}),
       },
-      cwd: cwd || process.cwd(),
+      // chat 模式：内核工作根 = YFW_HOME（不落到业务目录，transcript 自成一格）
+      cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()),
       shell: true,
     })
   } catch (e) {
@@ -1069,7 +1079,7 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
       console.error(`[bridge] kernel exited abnormal code=${code} (sid ${sid.slice(0, 8)}) after ${el}ms`)
     }
   })
-  const session = { proc, cwd: cwd || process.cwd(), _pendingQuestions: null, _proseProgress: { total: 0, lastIndex: 0, structuredUsed: false }, _pendingApprovals: new Map(), firstTokenAt: null, _lastOutAt: 0, _turnActive: false, _stallWarnedAt: 0, _reaped: false, _cancelPending: false, _cancelAt: 0, _cancelTimer: null }
+  const session = { proc, cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()), mode, _pendingQuestions: null, _proseProgress: { total: 0, lastIndex: 0, structuredUsed: false }, _pendingApprovals: new Map(), firstTokenAt: null, _lastOutAt: 0, _turnActive: false, _stallWarnedAt: 0, _reaped: false, _cancelPending: false, _cancelAt: 0, _cancelTimer: null }
   sessions.set(sid, session)
   return session
 }
@@ -2067,7 +2077,10 @@ wss.on('connection', (ws, req) => {
       } else if (msg.type === 'send') {
         const sid = msg.sessionId || 'default'
         console.log('[bridge] send sid:', sid.slice(0, 8))
-        const session = getOrCreateSession(sid, msg.cwd, msg.resumeId, msg.systemPrompt, msg.model, msg.compactCount)
+        // Conversation.mode 收敛：'chat' 走受限 spawn（禁本地工具 + cwd=YFW_HOME），
+        // 其余（task/undefined 旧会话）维持现状全工具
+        const mode = msg.mode === 'chat' ? 'chat' : 'task'
+        const session = getOrCreateSession(sid, msg.cwd, msg.resumeId, msg.systemPrompt, msg.model, msg.compactCount, mode)
         if (!session) return // spawn failed — error already sent via WebSocket
         session.proc.stdin.write(JSON.stringify({
           type: 'user',

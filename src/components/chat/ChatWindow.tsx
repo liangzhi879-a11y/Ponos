@@ -10,6 +10,7 @@ import { CompressedToast } from './CompressedToast'
 import { LaneCompactionToast } from './LaneCompactionToast'
 import { KernelStallBar } from './KernelStallBar'
 import { SystemWarningStrip } from './SystemWarningStrip'
+import { SessionModeBar } from './SessionModeBar'
 import { LoopStatusBar } from './LoopStatusBar'
 import { CompactingBar } from './CompactingBar'
 import { BrowserStatusBar } from '@/components/browser/BrowserStatusBar'
@@ -243,6 +244,9 @@ export function ChatWindow({ conversationId }: Props) {
       <KernelStallBar conversationId={conversationId} />
       {/* agentloop P3 统一系统提示条（ponos_warning：budget/skill_version/agent_spec/context；文档流元素，无告警不占位） */}
       <SystemWarningStrip conversationId={conversationId} />
+      {/* 会话模式徽标条（chat 纯聊 / task 全工具）：位于系统条之下、消息滚动区之上，
+          不随消息滚动；无活动会话不占位。Task 13 在同一行右侧放 effort 选择器。 */}
+      <SessionModeBar conversationId={conversationId} />
       <ScrollArea ref={scrollRef} className="flex-1 pl-1" onScroll={handleScrollWithPin}>
         {loadingWithHistory ? (
           /* v2 按需加载占位：历史会话消息拉取中 */

@@ -184,6 +184,12 @@ export const enUS: TranslationKeys = {
     title: 'Subtask compacted · round {n}',
   },
 
+  // --- Conversation mode badge (Task 11 SessionModeBar: chat / task) ---
+  sessionMode: {
+    chat: 'Chat · no local access',
+    task: 'Task · full local access',
+  },
+
   // --- Usage / audit (sidebar view) ---
   usage: {
     segmentUsage: 'Usage',

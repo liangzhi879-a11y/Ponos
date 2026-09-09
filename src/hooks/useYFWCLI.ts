@@ -255,6 +255,9 @@ function buildSendPayload(conversationId: string, prompt: string, priority?: 'no
     requestId: generateId(),
     sessionId: conversationId,
     cwd: conversation.cwd,
+    // 会话模式透传：chat = 受限（bridge chat spawn 禁本地工具 + cwd=YFW_HOME）；
+    // undefined 由 bridge 按 task 处理（旧会话/导入数据）
+    mode: conversation.mode,
     // Resume this conversation's own CLI session (if any) — never another conversation's
     resumeId: conversation.sessionId || undefined,
     // 绑定专业 Agent 时注入其专属系统提示词（覆盖默认身份提示词）

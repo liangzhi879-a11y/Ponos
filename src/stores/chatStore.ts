@@ -4,6 +4,7 @@ import type { Conversation, Message, ContentBlock, PermissionRequest, Background
 import { generateId, sanitizeText, repairCorruptedJson, recoverCorruptedChatState } from '@/lib/utils'
 import { getDefaultHome } from '@/lib/config'
 import { useHealthStore } from '@/stores/healthStore'
+import { useSettingsStore } from '@/stores/settingsStore'
 import { loadConversationMessages as loadTranscriptMessages } from '@/lib/transcriptLoader'
 import { pushLaneNote as pushLane, dismissLaneNote as dismissLane } from '@/lib/laneUi'
 import type { LaneNote } from '@/lib/laneUi'
@@ -101,6 +102,9 @@ const MAX_LOADED_CONVERSATIONS = 3
  * 缺字段（partialize 不存 messages）或损坏时下游 `c.messages.length`/`[...c.messages]` 崩。
  * 2026-08-18 修复：启动报 `Cannot read properties of undefined (reading 'length')`
  * 与 `r.messages is not iterable` 根因 = rehydrate 后 messages 字段缺失。
+ * 2026-09-09（mode v3）：会话模式缺省归一——persist 版本 2→3 后旧行 mode 未定义，
+ * 统一补 'task'，保证任何经过本消毒的会话（migrate v2 分支 / rehydrate / getItem 兜底）
+ * 都不会复活 undefined-mode 会话；新建会话恒由 createConversation 显式落 mode。
  */
 function sanitizeConversations(convs: unknown): Conversation[] {
   if (!Array.isArray(convs)) return []
@@ -109,11 +113,17 @@ function sanitizeConversations(convs: unknown): Conversation[] {
   for (const c of convs) {
     if (!c || typeof c !== 'object') { changed = true; continue }
     const obj = c as Record<string, unknown>
-    if (Array.isArray(obj.messages)) {
-      out.push(c as Conversation)
-    } else {
+    const needMessages = !Array.isArray(obj.messages)
+    const needMode = obj.mode === undefined
+    if (needMessages || needMode) {
       changed = true
-      out.push({ ...obj, messages: [] } as unknown as Conversation)
+      out.push({
+        ...obj,
+        messages: needMessages ? [] : obj.messages,
+        mode: needMode ? 'task' : obj.mode,
+      } as unknown as Conversation)
+    } else {
+      out.push(c as Conversation)
     }
   }
   // 全部干净时返回原引用：调用方据此跳过无谓的 setState/写回
@@ -362,7 +372,8 @@ interface ChatState {
   laneNotesBySession: Record<string, LaneNote[]>
 
   // Actions
-  createConversation: (cwd?: string, agentId?: string) => string
+  // mode 缺省 'task'（全工具现状）；'chat' = 纯聊受限会话（禁本地工具，不绑业务 cwd）
+  createConversation: (cwd?: string, agentId?: string, mode?: 'chat' | 'task') => string
   deleteConversation: (id: string) => void
   setActiveConversation: (id: string) => void
   /** 按需加载会话消息体（内核 transcript + ext 兜底），加载完成注入 messages */
@@ -455,23 +466,31 @@ export const useChatStore = create<ChatState>()(
       subAgentTasks: {},
       laneNotesBySession: {},
 
-      createConversation: (cwd?: string, agentId?: string) => {
+      createConversation: (cwd?: string, agentId?: string, mode: 'chat' | 'task' = 'task') => {
         // 新建会话即视为开启全新健康周期：健康状态已按会话隔离存储，
         // 新会话 id 天然无数据（100% 绿），旧会话快照保留供切换回看；
         // 无需全局清空，避免误伤并行会话的健康跟踪。
         const id = generateId()
         const { lastCwd } = get()
-        const fallback = getDefaultHome() || 'C:/'
-        const dir = (cwd || lastCwd || fallback).replace(/\\/g, '/')
-        const name = dir.split('/').filter(Boolean).pop() || dir
+        const isChat = mode === 'chat'
+        // chat 模式：不显式传 cwd → 会话不绑定业务工作目录（cwd 字段不设，
+        // bridge spawn cwd=YFW_HOME 且不 --add-dir），标题走「新对话」语言文案
+        // 而非目录 basename。task 模式维持现状（lastCwd/home 兜底 + 目录名标题）。
+        const dir = isChat
+          ? (cwd || '').replace(/\\/g, '/')
+          : (cwd || lastCwd || getDefaultHome() || 'C:/').replace(/\\/g, '/')
+        const title = isChat && !dir
+          ? (useSettingsStore.getState().settings.language === 'zh-CN' ? '新对话' : 'New chat')
+          : (dir.split('/').filter(Boolean).pop() || dir)
         const conversation: Conversation = {
           id,
-          title: name,
+          title,
           messages: [],
           createdAt: Date.now(),
           updatedAt: Date.now(),
           model: 'deepseek-v4-flash',
-          cwd: dir,
+          mode,
+          ...(dir ? { cwd: dir } : {}),
           agentId: agentId || undefined,
         }
         set(state => ({
@@ -1194,13 +1213,17 @@ export const useChatStore = create<ChatState>()(
     {
       name: 'yfworking-chat',
       storage: resilientChatStorage(),
-      version: 2,
+      version: 3,
       // v1 → v2 迁移（2026-08-17）：消息体剥离（权威源 = 内核 transcript），收集 sessionIds，
       // 旧 41MB 大键备份为 yfworking-chat-v1 供用户确认导出后清理，绝不静默删除。
+      // v2 → v3（2026-09-09）：Conversation.mode 字段——旧行 mode undefined → 'task'。
+      //   · version===2 分支走 sanitizeConversations（mode 归一在消毒中心化处理）；
+      //   · version<2（v1/0/损坏恢复）分支在重建行内补 mode:'task'；
+      //   · 已 v3 的行（未来部分回滚写入）经 rehydrate/getItem 消毒同样归一。
       migrate: (persisted, version) => {
         if (version === 2) {
           // v2 数据可能因 partialize 不存 messages 而缺字段（旧版写入/损坏），
-          // 消毒保证 messages 是数组，避免下游访问崩
+          // 消毒保证 messages 是数组，避免下游访问崩；mode undefined → 'task'（v3）
           const st = (persisted as any) || {}
           return { ...st, conversations: sanitizeConversations(st.conversations) }
         }
@@ -1218,7 +1241,8 @@ export const useChatStore = create<ChatState>()(
             ...(typeof c?.sessionId === 'string' && c.sessionId ? [c.sessionId] : []),
           ].filter(Boolean))]
           const { messages: _drop, ...rest } = c || {}
-          return { ...rest, messages: [], sessionIds, messageCount: msgs.length, tokensTotal: tokens }
+          // v3：旧行无 mode（v1/v0 数据）→ 补 'task'（既有全工具语义）；残留保留
+          return { ...rest, mode: (c && c.mode !== undefined) ? c.mode : 'task', messages: [], sessionIds, messageCount: msgs.length, tokensTotal: tokens }
         })
         return { ...st, conversations: migrated }
       },
@@ -1256,7 +1280,7 @@ export const useChatStore = create<ChatState>()(
         conversations: state.conversations.map(c => ({
           id: c.id, title: c.title, createdAt: c.createdAt, updatedAt: c.updatedAt,
           model: c.model, pinned: c.pinned, tags: c.tags, summary: c.summary,
-          cwd: c.cwd, sessionId: c.sessionId, agentId: c.agentId, setId: c.setId,
+          cwd: c.cwd, mode: c.mode, sessionId: c.sessionId, agentId: c.agentId, setId: c.setId,
           sessionIds: c.sessionIds,
           messageCount: c.messageCount ?? ((c.messages?.length ?? 0) > 0 ? c.messages.length : undefined),
           tokensTotal: c.tokensTotal,

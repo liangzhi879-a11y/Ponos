@@ -188,6 +188,12 @@ export const zhCN = {
     title: '子任务压缩 · 第 {n} 次',
   },
 
+  // --- 会话模式徽标（Task 11 SessionModeBar：chat 纯聊 / task 全工具） ---
+  sessionMode: {
+    chat: '对话 · 纯聊 可联网 · 不执行本地',
+    task: '任务 · 可执行本地操作',
+  },
+
   // --- 用量 / 审计（侧栏视图） ---
   usage: {
     segmentUsage: '用量摘要',

@@ -101,6 +101,9 @@ export interface Conversation {
   tags?: string[]
   summary?: string
   cwd?: string   // Working directory for this conversation
+  /** 会话模式：chat = 纯聊受限（不执行本地，bridge spawn cwd=YFW_HOME + --disallowedTools），
+   *  task = 全工具（默认）。undefined 视为 task（旧数据/导入，migrate 归一）。 */
+  mode?: 'chat' | 'task'
   sessionId?: string   // CLI session id bound to this conversation (used for resume)
   agentId?: string   // Professional agent bound to this conversation (see src/lib/agents.ts)
   setId?: string
