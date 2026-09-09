@@ -621,8 +621,18 @@ function showMainWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.show()
     mainWindow.focus()
-  } else {
+  } else if (authGranted) {
+    // 认证已放行 → 主窗口缺失时重建
     createWindow()
+  } else {
+    // 认证未放行（spec §2.0/D13）：不得预创建主窗口——聚焦已有认证小窗，缺省重建。
+    // 未放行关小窗仍能命中 closed 守卫走 app.quit()（不被预建主窗挡道）。
+    if (authWin && !authWin.isDestroyed()) {
+      authWin.show()
+      authWin.focus()
+    } else {
+      createAuthWindow()
+    }
   }
 }
 
