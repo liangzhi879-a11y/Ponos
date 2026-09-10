@@ -94,14 +94,19 @@ export function SetupWizard() {
         disabled={pending}
         shakeKey={shakeKey}
       />
-      <Button
-        className="w-full"
-        size="lg"
-        loading={pending}
-        onClick={() => void submit()}
-      >
-        {t('common.confirm')}
-      </Button>
+      {/* 主 CTA：cut-btn 切角框 + ci（Button 自带圆角被 ci 的 9px clip 裁成签名斜边） */}
+      <div className="cut-btn w-full">
+        <div className="ci">
+          <Button
+            className="w-full"
+            size="lg"
+            loading={pending}
+            onClick={() => void submit()}
+          >
+            {t('common.confirm')}
+          </Button>
+        </div>
+      </div>
     </>
   )
 }

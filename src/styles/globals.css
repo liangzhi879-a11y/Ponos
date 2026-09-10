@@ -819,32 +819,6 @@ html.speed-mode[class*="light-glass"] {
   --modal-bg:    #ffffff;
 }
 
-/* ============================================================
-   登录 / 首设口令（AuthScreen 家族）—— auth-bg
-   ------------------------------------------------------------
-   · 与 .boot-bg 同族的深色品牌底（无淡出、常驻整屏）：白色
-     boost 字标（boost-logo-light.png）只在深色面上可读，因此
-     登录/锁定/向导整屏强制此渐变（浅色主题下不被 html/body
-     的浅色背景透出），保证 logo 白上白问题不发生。
-   · 文字/输入/按钮仍全部走主题 token，主题跟随通过卡片等
-     局部元素体现；容器不用 bg-app，避免浅色主题露浅底。
-   · speed-mode 下此渐变是纯静态背景（无动画），无需兜底。 */
-.auth-bg {
-  background:
-    radial-gradient(120% 90% at 50% 10%, rgba(255, 138, 61, 0.10), transparent 62%),
-    linear-gradient(165deg, #17110b 0%, #120d09 46%, #0f0b07 100%);
-}
-
-/* 认证卡（登录/向导/锁定共用）：popover-bg 磨砂玻璃语言，
-   文字/输入框走各自主题 token——主题跟随在卡内元素上体现。 */
-.auth-card {
-  background: var(--popover-bg);
-  border: 1px solid var(--border-subtle);
-  box-shadow: var(--shadow-modal);
-  backdrop-filter: blur(var(--popover-blur));
-  -webkit-backdrop-filter: blur(var(--popover-blur));
-}
-
 /* ============ 设计语言（spec 2026-09-10）：单对角切角 / 细线 / 光效白名单 / 微标 ============
    切角 = 单对角（左上+右下）；1px 外层即细线（hairline）；内容放 >.ci 内层。
    不切角：tooltip / chip / 头像 / 开关 / 状态点 / 进度轨道 / 代码块。 */
@@ -877,6 +851,9 @@ html.speed-mode[class*="light-glass"] {
 .cut-pop>.ci{background:var(--popover-bg);}
 /* 输入框容器：聚焦时热边点亮 */
 .cut.focusable:focus-within{background:var(--line-hot);}
+/* 错误态：外层细线点亮为 error 色（口令框等） */
+.cut.err{background:color-mix(in srgb, var(--error) 60%, transparent);}
+.cut.err.focusable:focus-within{background:var(--error);}
 /* 签名：2.5px 品牌渐变顶线（仅登录卡 / 驾驶舱详情面板两处使用） */
 .topline{position:relative;}
 .topline::before{content:"";position:absolute;top:0;left:0;right:0;height:2.5px;

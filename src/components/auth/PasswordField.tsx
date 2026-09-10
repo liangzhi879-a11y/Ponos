@@ -1,12 +1,12 @@
 // src/components/auth/PasswordField.tsx —— 登录/首设口令共用的受控口令输入框
-// 可见性切换（lucide Eye/EyeOff，应用内首次使用 EyeOff）+ 错误红框 + 抖动。
-// 抖动用 globals.css 的 @keyframes shake（.animate-shake，0.3s 水平抖动）：
-// 每次 error 文案变化或 shakeKey 递增（视图在每次提交失败后 +1）都会重播，
+// 设计语言（2026-09-10）：输入框 = .cut.focusable 切角细线框（聚焦热边）+ .ci 内层；
+// 错误态 = .cut.err 红线。不用共享 Input 组件（其自带 border/rounded 会与切角框双线重叠），
+// 直接渲染原生 input。可见性切换（Eye/EyeOff）+ 错误红框 + 抖动（animate-shake，0.3s）：
+// 每次 error 文案变化或 shakeKey 递增（视图在每次提交失败后 +1）都重播，
 // 同文案连续失败也不失效；动画结束 onAnimationEnd 摘掉类，便于下次重加。
 import { useEffect, useState } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { Input } from '@/components/ui'
 import { useTranslation } from '@/i18n/useTranslation'
 
 export interface PasswordFieldProps {
@@ -19,7 +19,7 @@ export interface PasswordFieldProps {
   onEnter?: () => void
   autoFocus?: boolean
   disabled?: boolean
-  /** 每次失败提交递增 → 强制抖动重播（不依赖 error 文案是否变化） */
+  /** 每次失败提交递增 → 强制抖动重播（不依赖 error 文案变化） */
   shakeKey?: number
 }
 
@@ -48,33 +48,42 @@ export function PasswordField({
       className={cn('w-full', error && shaking && 'animate-shake')}
       onAnimationEnd={() => setShaking(false)}
     >
-      <Input
-        type={visible ? 'text' : 'password'}
-        label={label}
-        error={error ?? undefined}
-        value={value}
-        disabled={disabled}
-        autoFocus={autoFocus}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !disabled && !e.nativeEvent.isComposing) {
-            e.preventDefault()
-            onEnter?.()
-          }
-        }}
-        rightIcon={
-          <button
-            type="button"
-            tabIndex={-1}
-            onClick={() => setVisible(v => !v)}
-            className="h-6 w-6 flex items-center justify-center rounded text-tertiary hover:text-secondary transition-colors focus-visible:outline-none"
-            aria-label={visible ? t('auth.hide') : t('auth.show')}
-            title={visible ? t('auth.hide') : t('auth.show')}
-          >
-            {visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-          </button>
-        }
-      />
+      {label && (
+        <label className="block text-xs font-medium text-secondary mb-1.5">
+          {label}
+        </label>
+      )}
+      <div className={cn('cut focusable', error && 'err')}>
+        <div className="ci relative" style={{ background: 'var(--bg-input)' }}>
+          <input
+            type={visible ? 'text' : 'password'}
+            value={value}
+            disabled={disabled}
+            autoFocus={autoFocus}
+            onChange={(e) => onChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !disabled && !e.nativeEvent.isComposing) {
+                e.preventDefault()
+                onEnter?.()
+              }
+            }}
+            className="w-full h-9 bg-transparent px-3 pr-10 text-sm text-primary placeholder:text-tertiary focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+          />
+          <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-tertiary">
+            <button
+              type="button"
+              tabIndex={-1}
+              onClick={() => setVisible(v => !v)}
+              className="h-6 w-6 flex items-center justify-center rounded text-tertiary hover:text-secondary transition-colors focus-visible:outline-none"
+              aria-label={visible ? t('auth.hide') : t('auth.show')}
+              title={visible ? t('auth.hide') : t('auth.show')}
+            >
+              {visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+        </div>
+      </div>
+      {error && <p className="mt-1 text-xs text-error">{error}</p>}
     </div>
   )
 }

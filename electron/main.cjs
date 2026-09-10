@@ -574,9 +574,12 @@ function createWindow() {
 // 非认证主体结构不动：只新增本窗能力，createWindow()/kernel 原样。
 // ---------------------------------------------------------------------------
 function createAuthWindow() {
+  // 防闪白底色跟随主题明暗（与 AuthScreen 的 bg-app 同族），渲染层随后应用完整主题
+  const authThemeMeta = readPersistedTheme()
+  const authBg = authThemeMeta?.mode === 'light' ? '#fdf9f5' : '#0b0e14'
   authWin = new BrowserWindow({
     width: 420, height: 560, resizable: false, title: 'YFWorking',
-    icon: ICON_PATH, show: false, backgroundColor: '#0b0e14',  // 与 AuthScreen 深色底一致防闪白
+    icon: ICON_PATH, show: false, backgroundColor: authBg,  // 与 AuthScreen 主题底一致防闪白
     frame: false,            // 2026-09-10：全界面无边框（含登录小窗）——拖动/关闭由
                              // 渲染层 AuthWindowRoot 的 app-region 拖拽条 + 关闭钮承担
     autoHideMenuBar: true,   // 弹窗级小窗不显示默认菜单栏
@@ -846,11 +849,12 @@ async function registerIpc() {
     const k = kind === 'profile' ? 'profile' : 'settings'
     const existing = utilityWins.get(k)
     if (existing && !existing.isDestroyed()) { existing.show(); existing.focus(); return }
+    const utilThemeMeta = readPersistedTheme()
     const win = new BrowserWindow({
       width: 860, height: 620, minWidth: 560, minHeight: 400,
       title: k === 'profile' ? '个人信息' : '设置',
       icon: ICON_PATH, show: false, frame: false,
-      backgroundColor: '#0b0e14',   // 与主窗深色底一致防闪白；主题由渲染层 main.tsx 应用
+      backgroundColor: utilThemeMeta?.mode === 'light' ? '#fdf9f5' : '#0b0e14',  // 防闪白底色跟随主题；完整主题由渲染层 main.tsx 应用
       webPreferences: {
         preload: path.join(__dirname, 'preload.cjs'),
         contextIsolation: true,
@@ -940,7 +944,7 @@ async function registerIpc() {
         show: false,
         frame: false,
         resizable: true,
-        backgroundColor: '#0b0e14',
+        backgroundColor: readPersistedTheme()?.mode === 'light' ? '#fdf9f5' : '#0b0e14',  // 防闪白底色跟随主题
         webPreferences: {
           preload: path.join(__dirname, 'preload.cjs'),
           contextIsolation: true,

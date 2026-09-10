@@ -5,22 +5,24 @@
 //   · ok / setup-done → LoginView。login 成功 → IPC auth:granted（主进程关小窗、开主窗口），
 //     不再 setView——主窗口视图机由主进程放行后才创建并自 'boot' 开场（bridge token 每次
 //     启动失效，生产语义每次启动需登录，见 task-6-brief Interfaces）。
-// 背景决策：整屏 .auth-bg 与 boot 同族的深色品牌渐变（容器不加 bg-app）——白色 boost 字标只在
-// 深色面上可读，浅色主题下若透出 html/body 浅底会"白上白"；主题跟随由卡内元素（auth-card 用
-// --popover-bg/blur 磨砂玻璃 + text-primary/secondary + 品牌按钮）承载。
+// 背景决策（2026-09-10 GUI 统一）：整屏 bg-app 主题底 + 两枚品牌 orb 光晕；字标按主题明暗
+// 切换（dark/dark-glass → 白字标；light/light-glass → 深字标），不再强制深色底。
+// 卡 = cut hot topline（单对角切角 + 热边 + 签名顶线），磨砂/底色由 ci 的 --bg-elevated 接管
+// （玻璃主题自动半透明）。
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Lock, RefreshCw } from 'lucide-react'
 import { useTranslation } from '@/i18n/useTranslation'
 import { useAuthStore } from '@/stores/authStore'
+import { useSettingsStore } from '@/stores/settingsStore'
 import { Button } from '@/components/ui'
-import { BOOST_LOGO_LIGHT } from '@/lib/assets'
+import { BOOST_LOGO_LIGHT, BOOST_LOGO_DARK } from '@/lib/assets'
 import { SetupWizard } from './SetupWizard'
 import { PasswordField } from './PasswordField'
 
 /** 认证通过（login ok / setup 即解锁）→ 通知主进程关小窗、开主窗口（spec §2.0）。 */
 const grant = () => { window.yfworkingWindow?.authGranted?.() }
 
-/** 认证屏通用外框：深色品牌底 + 白 logo（呼吸）+ 居中磨砂玻璃卡 */
+/** 认证屏通用外框：主题底 + 品牌 orb + 明暗字标（呼吸光晕）+ 居中切角热边卡（签名顶线） */
 function AuthFrame({
   title,
   subtitle,
@@ -32,14 +34,33 @@ function AuthFrame({
   footer?: string
   children: ReactNode
 }) {
+  const theme = useSettingsStore(s => s.settings.theme)
+  const darkTheme = theme === 'dark' || theme === 'dark-glass'
+
   return (
-    <div className="h-full w-full auth-bg flex items-center justify-center overflow-hidden">
-      <div className="w-full max-w-sm flex flex-col items-center px-6 animate-fade-in">
-        <img src={BOOST_LOGO_LIGHT} alt="YFWorking" className="boot-logo mb-8" draggable={false} />
-        <div className="auth-card w-full rounded-2xl p-6 animate-scale-in">
-          {title && <h1 className="text-lg font-semibold text-primary">{title}</h1>}
-          {subtitle && <p className="mt-1.5 text-xs leading-relaxed text-secondary">{subtitle}</p>}
-          <div className="mt-5 flex flex-col gap-4">{children}</div>
+    <div className="h-full w-full bg-app relative flex items-center justify-center overflow-hidden">
+      {/* 品牌光晕 orb（白名单④静态渐变；定位在 420×560 认证小窗内） */}
+      <div className="orb" style={{ width: 340, height: 340, left: -90, top: -70 }} />
+      <div className="orb" style={{ width: 300, height: 300, right: -70, bottom: -70, opacity: 0.7 }} />
+      <div className="w-full max-w-sm flex flex-col items-center px-6 animate-fade-in relative">
+        {/* 字标：按主题明暗切换 + 呼吸光晕（白名单①） */}
+        <div className="relative mb-1">
+          <div
+            className="breath absolute -inset-10 rounded-full pointer-events-none"
+            style={{ background: 'radial-gradient(circle, var(--halo), transparent 62%)' }}
+          />
+          <img src={darkTheme ? BOOST_LOGO_LIGHT : BOOST_LOGO_DARK} alt="YFWorking" className="boot-logo relative" draggable={false} />
+        </div>
+        <div className="micro mb-8">YFWORKING · BOOST</div>
+        <div
+          className="cut hot topline w-full animate-scale-in"
+          style={{ filter: 'drop-shadow(var(--modal-drop))' }}
+        >
+          <div className="ci p-6">
+            {title && <h1 className="text-lg font-semibold text-primary">{title}</h1>}
+            {subtitle && <p className="mt-1.5 text-xs leading-relaxed text-secondary">{subtitle}</p>}
+            <div className="mt-5 flex flex-col gap-4">{children}</div>
+          </div>
         </div>
         {footer && <p className="mt-4 text-[11px] text-tertiary">{footer}</p>}
       </div>
@@ -95,9 +116,14 @@ function LoginView() {
         disabled={pending}
         shakeKey={shakeKey}
       />
-      <Button className="w-full" size="lg" loading={pending} onClick={() => void submit()}>
-        {t('auth.login')}
-      </Button>
+      {/* 主 CTA：cut-btn 切角框 + ci（Button 自带圆角被 ci 的 9px clip 裁成签名斜边） */}
+      <div className="cut-btn w-full">
+        <div className="ci">
+          <Button className="w-full" size="lg" loading={pending} onClick={() => void submit()}>
+            {t('auth.login')}
+          </Button>
+        </div>
+      </div>
     </AuthFrame>
   )
 }
