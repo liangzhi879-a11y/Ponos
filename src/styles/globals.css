@@ -844,3 +844,63 @@ html.speed-mode[class*="light-glass"] {
   backdrop-filter: blur(var(--popover-blur));
   -webkit-backdrop-filter: blur(var(--popover-blur));
 }
+
+/* ============ 设计语言（spec 2026-09-10）：单对角切角 / 细线 / 光效白名单 / 微标 ============
+   切角 = 单对角（左上+右下）；1px 外层即细线（hairline）；内容放 >.ci 内层。
+   不切角：tooltip / chip / 头像 / 开关 / 状态点 / 进度轨道 / 代码块。 */
+.cut{position:relative;padding:1px;background:var(--border-default);
+  clip-path:polygon(12px 0,100% 0,100% calc(100% - 12px),calc(100% - 12px) 100%,0 100%,0 12px);}
+.cut>.ci{
+  clip-path:polygon(11px 0,100% 0,100% calc(100% - 11px),calc(100% - 11px) 100%,0 100%,0 11px);
+  background:var(--bg-elevated);}
+.cut-btn{position:relative;padding:1px;background:var(--border-default);
+  clip-path:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px);}
+.cut-btn>.ci{
+  clip-path:polygon(9px 0,100% 0,100% calc(100% - 9px),calc(100% - 9px) 100%,0 100%,0 9px);
+  background:var(--bg-elevated);}
+.cut-sm{position:relative;padding:1px;background:var(--border-default);
+  clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px);}
+.cut-sm>.ci{
+  clip-path:polygon(7px 0,100% 0,100% calc(100% - 7px),calc(100% - 7px) 100%,0 100%,0 7px);
+  background:var(--bg-elevated);}
+.cut-xs{position:relative;padding:1px;background:var(--border-default);
+  clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px);}
+.cut-xs>.ci{
+  clip-path:polygon(5px 0,100% 0,100% calc(100% - 5px),calc(100% - 5px) 100%,0 100%,0 5px);
+  background:var(--bg-elevated);}
+/* 热边（hover/选中/推荐项）：外层细线点亮为品牌橙 */
+.cut.hot,.cut-btn.hot,.cut-sm.hot,.cut-xs.hot{background:var(--line-hot);}
+/* 浮层背景变体（dialog/dropdown/popover 消费） */
+.cut-modal>.ci{background:var(--bg-modal);}
+.cut-pop>.ci{background:var(--popover-bg);}
+/* 输入框容器：聚焦时热边点亮 */
+.cut.focusable:focus-within{background:var(--line-hot);}
+/* 签名：2.5px 品牌渐变顶线（仅登录卡 / 驾驶舱详情面板两处使用） */
+.topline{position:relative;}
+.topline::before{content:"";position:absolute;top:0;left:0;right:0;height:2.5px;
+  background:linear-gradient(90deg,#ffa268,#ff4200);box-shadow:0 0 14px rgba(255,116,41,.55);z-index:1;}
+/* 微标（8.5px Arial 全大写，固定英文装饰，不进 i18n） */
+.micro{font:600 8.5px/1.5 Arial,Helvetica,sans-serif;letter-spacing:var(--micro-track);
+  text-transform:uppercase;color:var(--text-tertiary);font-variant-numeric:tabular-nums;}
+/* 品牌光晕 orb（auth/boot 背景，尺寸与定位由内联样式给） */
+.orb{position:absolute;border-radius:50%;filter:blur(70px);pointer-events:none;
+  background:radial-gradient(circle,var(--halo),transparent 65%);}
+/* 光效白名单①：logo 呼吸光晕 */
+@keyframes yfw-breath{0%,100%{transform:scale(1);opacity:.55}50%{transform:scale(1.18);opacity:.22}}
+.breath{animation:yfw-breath 4.5s ease-in-out infinite;}
+/* 光效白名单③：运行状态点脉冲 */
+@keyframes yfw-pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.pulse-dot{animation:yfw-pulse 1.5s ease-in-out infinite;}
+/* 光效白名单④：品牌静态渐变 */
+.grad-brand{background:var(--grad-brand);}
+/* .ci 上叠加品牌渐变（发送钮等）：提高优先级压过 .cut*.ci 默认底 */
+.cut>.ci.grad-brand,.cut-btn>.ci.grad-brand,.cut-sm>.ci.grad-brand,.cut-xs>.ci.grad-brand{background:var(--grad-brand);}
+/* 光效白名单②：hover/选中柔光 */
+.glow-hover{transition:box-shadow .2s ease;}
+.glow-hover:hover{box-shadow:var(--glow-hot);}
+/* switch on 态品牌渐变（Tailwind 无法直接输出渐变变量背景） */
+.sw-on{background:var(--grad-brand)!important;}
+input[type="range"]{accent-color:var(--brand-500);}
+/* rail 激活指示条（RailNav，光效白名单②） */
+.rail-ind{position:absolute;left:-6px;top:8px;bottom:8px;width:2.5px;border-radius:2px;
+  background:var(--grad-brand);box-shadow:0 0 8px rgba(255,116,41,.7);}
