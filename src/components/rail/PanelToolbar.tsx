@@ -16,6 +16,8 @@ export interface RailToolbarIconAction {
 
 export interface PanelToolbarProps {
   title: string
+  /** 标题右侧固定英文微标（装饰，不进 i18n，如 TASKS/CHATS） */
+  en?: string
   count?: number
   /** 主操作钮（面板最右） */
   newIcon: LucideIcon
@@ -25,10 +27,13 @@ export interface PanelToolbarProps {
   secondary?: RailToolbarIconAction[]
 }
 
-export function PanelToolbar({ title, count, newIcon: NewIcon, newLabel, onNew, secondary }: PanelToolbarProps) {
+export function PanelToolbar({ title, en, count, newIcon: NewIcon, newLabel, onNew, secondary }: PanelToolbarProps) {
   return (
     <div className="flex items-center gap-1.5 px-2 h-9 border-b shrink-0 bg-app">
-      <span className="flex-1 min-w-0 truncate text-xs font-semibold text-primary">{title}</span>
+      <span className="flex-1 min-w-0 truncate text-xs font-semibold text-primary">
+        {title}
+        {en && <span className="micro ml-1.5">{en}</span>}
+      </span>
       {typeof count === 'number' && count > 0 && (
         <span className="text-[10px] text-tertiary tabular-nums shrink-0">{count}</span>
       )}
@@ -53,8 +58,9 @@ export function PanelToolbar({ title, count, newIcon: NewIcon, newLabel, onNew, 
         </div>
       )}
       <Tooltip content={newLabel} side="bottom">
-        <Button variant="ghost" size="xs" aria-label={newLabel} onClick={onNew} className="text-secondary hover:text-primary shrink-0">
-          <NewIcon className="w-4 h-4" />
+        {/* 设计语言：新建钮 = 6px 单对角切角细线框（.plus 规格） */}
+        <Button variant="ghost" size="icon" aria-label={newLabel} onClick={onNew} className="cut-xs shrink-0 !h-[22px] !w-[22px] hover:text-primary">
+          <NewIcon className="w-3.5 h-3.5" />
         </Button>
       </Tooltip>
     </div>

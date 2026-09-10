@@ -1,6 +1,8 @@
-import { Shield, Cpu, Wifi, WifiOff, Activity } from 'lucide-react'
+import { Shield, Cpu, Wifi, WifiOff, HeartPulse } from 'lucide-react'
+import { useEffect } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { useDiagStore } from '@/stores/diagStore'
 import { useYFWCLI } from '@/hooks/useYFWCLI'
 import { useTranslation } from '@/i18n/useTranslation'
 import { Tooltip } from '@/components/ui'
@@ -20,7 +22,8 @@ function StatusItem({ icon, label, value, color, onClick }: StatusItemProps) {
       <span
         onClick={onClick}
         className={cn(
-          'flex items-center gap-1.5 px-2 py-0.5 text-xs rounded transition-colors select-none',
+          // 设计语言：状态栏微标样式（9.5px / .05em 字距 / 等宽数字），语义色由 color prop 覆盖
+          'flex items-center gap-1.5 px-2 py-0.5 text-[9.5px] tracking-[.05em] tabular-nums rounded transition-colors select-none',
           onClick && 'cursor-pointer hover:bg-elevated',
           'text-tertiary',
           color
@@ -38,15 +41,19 @@ export function StatusBar() {
   // 总和不变 → selector 返回值不变 → 状态栏不会每 token 重渲染
   const backgroundTasks = useChatStore(s => s.backgroundTasks)
   const sessionModel = useChatStore(s => s.sessionModel)
-  // v2：消息体不再常驻内存（按需加载），token 合计改读索引元数据 tokensTotal
-  const totalTokens = useChatStore(s => {
-    let tokens = 0
-    for (const c of s.conversations) tokens += c.tokensTotal || 0
-    return tokens
-  })
   const settings = useSettingsStore(s => s.settings)
   const { connected } = useYFWCLI()
   const { t } = useTranslation()
+  // 内置 doctor 报警（2026-09-10）：主进程 diag 监视器经 onStatusChanged 推送
+  // 快照（首帧主动拉取兜底），本栏最右侧展示正常/警告/严重计数；点击打开诊断面板。
+  const snapshot = useDiagStore(s => s.snapshot)
+  useEffect(() => {
+    window.yfwDiag?.getStatus?.().then(s => useDiagStore.getState().setSnapshot(s)).catch(() => {})
+    const off = window.yfwDiag?.onStatusChanged?.((s) => useDiagStore.getState().setSnapshot(s))
+    return () => { off?.() }
+  }, [])
+  const diagWarn = snapshot?.checks?.filter(c => c.status === 'warn').length ?? 0
+  const diagErr = snapshot?.checks?.filter(c => c.status === 'error').length ?? 0
 
   const runningTasks = backgroundTasks.filter(t => t.status === 'running')
 
@@ -58,12 +65,6 @@ export function StatusBar() {
 
   // Bottom-left badge: "[供应商名称]-[模型名称]" once the provider is known
   const modelLabel = providerName ? `${providerName}-${displayModel}` : displayModel
-
-  function formatTokens(n: number): string {
-    if (n < 1000) return `${n}`
-    if (n < 1000000) return `${(n / 1000).toFixed(0)}K`
-    return `${(n / 1000000).toFixed(1)}M`
-  }
 
   return (
     <footer className="h-7 flex items-center justify-between px-2 border-t bg-app text-xs shrink-0">
@@ -78,32 +79,43 @@ export function StatusBar() {
           label={`${t('settings.modelName')}: ${modelLabel}`}
           value={modelLabel}
         />
-        {settings.showThinking && (
-          <StatusItem
-            icon={<Activity className="w-3 h-3 text-brand-500/80" />}
-            label="Extended Thinking enabled"
-          />
-        )}
+        {/* 2026-09-10：原第三个图标（Extended Thinking 指示）删除——推理面板已有展示 */}
       </div>
 
       <div className="flex items-center gap-1">
         {runningTasks.length > 0 && (
           <StatusItem
-            icon={<Activity className="w-3 h-3 animate-pulse text-warning" />}
+            icon={<HeartPulse className="w-3 h-3 animate-pulse text-warning" />}
             label={`${runningTasks.length} background task(s)`}
             value={`${runningTasks.length} tasks`}
             color="text-warning"
           />
         )}
-        <StatusItem
-          icon={<span className="text-[10px] font-mono font-bold text-tertiary">TK</span>}
-          label={`${t('statusBar.tokens')}: ${totalTokens.toLocaleString()}`}
-          value={formatTokens(totalTokens)}
-        />
+        {/* 2026-09-10：token 记录删除（全面转移到驾驶舱），此位由 doctor 报警接管 */}
         <StatusItem
           icon={<Shield className="w-3 h-3" />}
           label={`${settings.autoApproveBash ? t('statusBar.autoMode') : t('statusBar.manualMode')}`}
           value={settings.autoApproveBash ? 'Auto' : 'Manual'}
+        />
+        {/* 内置 doctor 报警（2026-09-10）：正常/警告/严重计数；点击打开诊断面板。
+            doctor 功能后续完善后配套更新。 */}
+        <StatusItem
+          icon={
+            <HeartPulse
+              className={cn(
+                'w-3 h-3',
+                diagErr > 0 ? 'text-error' : diagWarn > 0 ? 'text-warning' : 'text-success'
+              )}
+            />
+          }
+          label={diagErr > 0
+            ? `${diagErr} 项严重 / ${diagWarn} 项警告`
+            : diagWarn > 0
+              ? `${diagWarn} 项警告`
+              : '全部检查正常'}
+          value={(diagErr > 0 || diagWarn > 0) ? `${diagErr + diagWarn}` : undefined}
+          color={diagErr > 0 ? 'text-error' : diagWarn > 0 ? 'text-warning' : 'text-success'}
+          onClick={() => useDiagStore.getState().openDiagnostics()}
         />
       </div>
     </footer>

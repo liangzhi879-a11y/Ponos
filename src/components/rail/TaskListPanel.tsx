@@ -293,6 +293,7 @@ export function TaskListPanel() {
       {/* 面板头部：标题/计数/次级浮层图标行/新建任务 */}
       <PanelToolbar
         title={t('rail.task')}
+        en="TASKS"
         count={tasks.length}
         newIcon={SquarePlus}
         newLabel={t('rail.taskNew')}
@@ -356,7 +357,7 @@ export function TaskListPanel() {
           <div className="p-1">
             {pinned.length > 0 && (
               <div className="mb-1">
-                <div className="px-2 py-1 text-[10px] font-semibold text-tertiary uppercase tracking-wider">{t('sidebar.pinned')}</div>
+                <div className="micro px-2 py-1">{t('sidebar.pinned')}</div>
                 {pinned.map(renderItem)}
               </div>
             )}
@@ -407,7 +408,7 @@ export function TaskListPanel() {
             })}
             {unpinned.length > 0 && (
               <div>
-                <div className="px-2 py-1 text-[10px] font-semibold text-tertiary uppercase tracking-wider">{t('sidebar.ungrouped')}</div>
+                <div className="micro px-2 py-1">{t('sidebar.ungrouped')}</div>
                 {sortedUnpinned.filter(c => !c.setId).map(renderItem)}
               </div>
             )}
@@ -519,12 +520,12 @@ const ConversationItem = memo(function ConversationItem({
   }, [contextOpen])
 
   return (
-    <div className="relative" ref={rowRef} data-conv-id={conv.id}>
+    <div className="relative mx-1 my-1" ref={rowRef} data-conv-id={conv.id}>
       <div
         className={cn(
-          'group flex items-center gap-1.5 px-2 py-1.5 rounded-md cursor-pointer transition-colors',
-          active ? 'bg-brand-500/15 text-primary' : 'text-tertiary hover:bg-elevated hover:text-primary hover:[box-shadow:inset_2px_0_0_var(--accent-red)]',
-          dragOver && 'ring-1 ring-brand-500/50 bg-brand-500/10',
+          'group cut-sm cursor-pointer transition-all',
+          active && 'hot glow-hover',
+          dragOver && 'hot',
           isDragging && 'opacity-50',
         )}
         onClick={onSelect}
@@ -536,6 +537,7 @@ const ConversationItem = memo(function ConversationItem({
         onDrop={onDrop}
         onDragEnd={onDragEnd}
       >
+        <div className={cn('ci flex items-center gap-1.5 px-2 py-1.5', active ? 'text-primary' : 'text-tertiary hover:text-primary')}>
         {renaming ? (
           <input
             autoFocus
@@ -550,10 +552,10 @@ const ConversationItem = memo(function ConversationItem({
         ) : (
           <>
             {conv.pinned && <Pin className="w-3 h-3 text-warning/70 shrink-0" />}
-            {/* 执行中：pulse 呼吸反馈（2026-08-17 恢复核心反馈动效）；旧 animate-spin 已移除（1s 旋转逐帧全量重绘 ~48% renderer CPU） */}
-            {isStreaming && <span className="w-1.5 h-1.5 rounded-full bg-brand-500 shrink-0 animate-pulse" />}
+            {/* 执行中：品牌橙 + 脉冲光晕（设计语言白名单③；speedMode 全局关动画后退化为静态点） */}
+            {isStreaming && <span className="w-1.5 h-1.5 rounded-full bg-brand-500 shrink-0 pulse-dot" style={{ boxShadow: '0 0 8px rgba(255, 116, 41, 0.8)' }} />}
             {isAwaiting && (
-              <span className="w-1.5 h-1.5 rounded-full bg-warning shrink-0 animate-pulse" />
+              <span className="w-1.5 h-1.5 rounded-full bg-warning shrink-0" />
             )}
             <span className="flex-1 min-w-0 truncate text-xs" title={conv.title}>{conv.title}</span>
             <div className="flex items-center gap-1 shrink-0 whitespace-nowrap">
@@ -567,6 +569,7 @@ const ConversationItem = memo(function ConversationItem({
             </div>
           </>
         )}
+        </div>
       </div>
 
       {/* 背景进度条：执行中显示（待回复时冻结当前宽度），非执行中隐藏 */}

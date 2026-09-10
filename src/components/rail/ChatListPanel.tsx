@@ -29,6 +29,7 @@ export function ChatListPanel() {
     <div className="flex flex-col h-full min-h-0">
       <PanelToolbar
         title={t('rail.chat')}
+        en="CHATS"
         count={chats.length}
         newIcon={MessageSquarePlus}
         newLabel={t('rail.chatNew')}
@@ -76,12 +77,14 @@ const ChatRow = memo(function ChatRow({ conv, active, isStreaming, onSelect }: C
       data-conv-id={conv.id}
       onClick={onSelect}
       className={cn(
-        'group px-2 py-1.5 rounded-md cursor-pointer transition-colors select-none',
-        active ? 'bg-brand-500/15 text-primary' : 'text-tertiary hover:bg-elevated hover:text-primary',
+        'group mx-1 my-1 cut-sm cursor-pointer transition-all select-none',
+        active && 'hot glow-hover',
       )}
     >
+      <div className={cn('ci px-2 py-1.5', active ? 'text-primary' : 'text-tertiary hover:text-primary')}>
       <div className="flex items-center gap-1.5">
-        {isStreaming && <span className="w-1.5 h-1.5 rounded-full bg-brand-500 shrink-0 animate-pulse" />}
+        {/* 执行中：品牌橙 + 脉冲光晕（设计语言白名单③） */}
+        {isStreaming && <span className="w-1.5 h-1.5 rounded-full bg-brand-500 shrink-0 pulse-dot" style={{ boxShadow: '0 0 8px rgba(255, 116, 41, 0.8)' }} />}
         <span className="flex-1 min-w-0 truncate text-xs" title={conv.title}>{conv.title}</span>
         <span className="shrink-0 whitespace-nowrap tabular-nums">
           {isStreaming ? (
@@ -94,6 +97,7 @@ const ChatRow = memo(function ChatRow({ conv, active, isStreaming, onSelect }: C
       {conv.summary ? (
         <div className="mt-0.5 pl-1 text-[10px] text-tertiary truncate" title={conv.summary}>{conv.summary}</div>
       ) : null}
+      </div>
     </div>
   )
 }, (prev, next) =>

@@ -99,6 +99,8 @@ export function Header({ onGoCockpit }: HeaderProps = {}) {
       <div className="flex-1 min-w-0 flex items-baseline gap-2 ml-1 select-none">
         <span className="text-sm font-semibold text-primary truncate">YFWorking</span>
         <span className="text-[10px] font-mono text-tertiary shrink-0">v{typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''}</span>
+        {/* 固定英文微标（装饰，不进 i18n）——窄窗隐藏 */}
+        <span className="micro hidden min-[720px]:inline-block shrink-0">YFWORKING</span>
       </div>
 
       <div className="flex items-center gap-0.5 no-drag shrink-0">
