@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { Send, X } from 'lucide-react'
 import type { QuestionPayload, QuestionAnswer } from '../../types'
+import { cn } from '@/lib/utils'
 
 interface QuestionCardProps {
   payload: QuestionPayload & { raw?: string }
@@ -72,7 +73,8 @@ export default function QuestionCard({ payload, onAnswer, onDismiss, readOnly = 
   }
 
   return (
-    <div className="w-full max-w-[640px] my-4 bg-surface/60 border border-default rounded-lg overflow-hidden animate-slide-up">
+    <div className={cn('w-full max-w-[640px] my-4 cut animate-slide-up', !readOnly && 'hot')}>
+      <div className="ci overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-default/60 bg-elevated/30">
         <div className="flex items-center gap-2">
           <span className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse" />
@@ -121,21 +123,23 @@ export default function QuestionCard({ payload, onAnswer, onDismiss, readOnly = 
                 <span className="text-sm font-medium text-primary">{q.question}</span>
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {q.options.map((opt) => {
+                {q.options.map((opt, i) => {
                   const isSelected = sel.includes(opt.label)
                   if (readOnly) {
                     return (
                       <span
                         key={opt.label}
-                        className="px-3 py-1.5 rounded-md text-xs font-medium bg-elevated text-secondary border border-subtle"
+                        className="cut-xs text-xs font-medium text-secondary"
                         title={opt.description}
                       >
-                        {opt.label}
-                        {opt.description && (
-                          <span className="block text-[10px] font-normal text-tertiary/70 truncate max-w-[120px]">
-                            {opt.description}
-                          </span>
-                        )}
+                        <span className="ci block px-3 py-1.5">
+                          {opt.label}
+                          {opt.description && (
+                            <span className="block text-[10px] font-normal text-tertiary/70 truncate max-w-[120px]">
+                              {opt.description}
+                            </span>
+                          )}
+                        </span>
                       </span>
                     )
                   }
@@ -143,18 +147,21 @@ export default function QuestionCard({ payload, onAnswer, onDismiss, readOnly = 
                     <button
                       key={opt.label}
                       onClick={() => toggleOption(q.id, opt.label, q.multiSelect)}
-                      className={`
-                        group relative px-3 py-1.5 rounded-md text-xs font-medium
-                        transition-all duration-150
-                        ${isSelected
-                          ? 'bg-brand-500/20 text-brand-600 border border-brand-500/40 shadow-sm'
-                          : 'bg-elevated text-secondary border border-transparent hover:border-[var(--accent-red)]/50 hover:text-[var(--accent-red)] hover:bg-[var(--accent-red-soft)]'}
-                      `}
+                      className={cn(
+                        'group relative cut-xs text-xs font-medium transition-all duration-150 hot-hover',
+                        // 首选项 = 推荐项热边；已选项热边（设计语言：单对角切角 + 热边选中）
+                        (i === 0 || isSelected) && 'hot',
+                        isSelected ? 'text-brand-600' : 'text-secondary hover:text-primary',
+                      )}
                       title={opt.description}
                     >
-                      {opt.label}
-                      <span className="block text-[10px] font-normal text-tertiary/70 group-hover:text-tertiary transition-colors truncate max-w-[120px]">
-                        {opt.description}
+                      <span className="ci block px-3 py-1.5">
+                        {opt.label}
+                        {opt.description && (
+                          <span className="block text-[10px] font-normal text-tertiary/70 group-hover:text-tertiary transition-colors truncate max-w-[120px]">
+                            {opt.description}
+                          </span>
+                        )}
                       </span>
                     </button>
                   )
@@ -176,15 +183,12 @@ export default function QuestionCard({ payload, onAnswer, onDismiss, readOnly = 
                         }))
                       }
                     }}
-                    className={`
-                      px-3 py-1.5 rounded-md text-xs font-medium
-                      transition-all duration-150
-                      ${otherSelected
-                        ? 'bg-brand-500/20 text-brand-600 border border-brand-500/40 shadow-sm'
-                        : 'bg-elevated text-secondary border border-transparent hover:border-default hover:text-primary'}
-                    `}
+                    className={cn(
+                      'group relative cut-xs text-xs font-medium transition-all duration-150 hot-hover',
+                      otherSelected ? 'hot text-brand-600' : 'text-secondary hover:text-primary',
+                    )}
                   >
-                    Other
+                    <span className="ci block px-3 py-1.5">Other</span>
                   </button>
                 )}
               </div>
@@ -238,14 +242,17 @@ export default function QuestionCard({ payload, onAnswer, onDismiss, readOnly = 
             <button
               onClick={handleSubmit}
               disabled={!allAnswered}
-              className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium rounded-md bg-brand-500 text-white hover:bg-brand-600 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              className="cut-btn flex items-center text-xs font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-all"
             >
-              <Send className="w-3 h-3" />
-              提交
+              <span className="ci grad-brand flex items-center gap-1.5 px-4 py-1.5 text-white">
+                <Send className="w-3 h-3" />
+                提交
+              </span>
             </button>
           </div>
         </div>
       )}
+      </div>
     </div>
   )
 }

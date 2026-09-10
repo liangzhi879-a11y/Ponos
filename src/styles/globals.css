@@ -870,6 +870,8 @@ html.speed-mode[class*="light-glass"] {
   background:var(--bg-elevated);}
 /* 热边（hover/选中/推荐项）：外层细线点亮为品牌橙 */
 .cut.hot,.cut-btn.hot,.cut-sm.hot,.cut-xs.hot{background:var(--line-hot);}
+/* 悬停热边（v3 无自定义类变体，用独立类；与 .hot 互不冲突） */
+.cut:hover.hot-hover,.cut-btn:hover.hot-hover,.cut-sm:hover.hot-hover,.cut-xs:hover.hot-hover{background:var(--line-hot);}
 /* 浮层背景变体（dialog/dropdown/popover 消费） */
 .cut-modal>.ci{background:var(--bg-modal);}
 .cut-pop>.ci{background:var(--popover-bg);}

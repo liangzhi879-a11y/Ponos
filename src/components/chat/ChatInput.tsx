@@ -1,7 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Send, StopCircle, Paperclip, Sparkles, Mic, MicOff, Command, X, Zap, Repeat, MessageCirclePlus } from 'lucide-react'
-import { Popover, PopoverTrigger, PopoverContent } from '@radix-ui/react-popover'
-import { DoubaoPanel } from '@/components/doubao/DoubaoPanel'
+import { Send, StopCircle, Paperclip, ImagePlus, Mic, MicOff, Command, X, Zap, Repeat, MessageCirclePlus } from 'lucide-react'
 import { ScheduleGuide } from './ScheduleGuide'
 import { HealthMeter } from './HealthMeter'
 import { HealthSuggestCard } from './HealthSuggestCard'
@@ -14,7 +12,7 @@ import { useSettingsStore } from '@/stores/settingsStore'
 import { useYFWCLI } from '@/hooks/useYFWCLI'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn, formatSize, formatShortcut, matchShortcut, generateId } from '@/lib/utils'
-import { getBridgeUrl } from '@/lib/config'
+import { getBridgeUrl, getDefaultHome } from '@/lib/config'
 import { fetchSkills, buildSkillPrompt, type SkillEntry } from '@/lib/skills'
 
 interface Props { conversationId: string }
@@ -88,9 +86,12 @@ export function ChatInput({ conversationId }: Props) {
   const consumePendingResend = useChatStore(s => s.consumePendingResend)
   // 只取 cwd 字符串：会话消息内容（流式 token）变化时该 selector 结果不变，
   // 输入框不会跟着每 token 重渲染（重渲染会重建输入法/撤销栈等本地状态）
-  const projectRoot = useChatStore(s => s.conversations.find(c => c.id === s.activeConversationId)?.cwd || '.')
+  const projectRoot = useChatStore(s => s.conversations.find(c => c.id === s.activeConversationId)?.cwd || getDefaultHome())
   const streamingConversations = useChatStore(s => s.streamingConversations)
   const isStreaming = !!streamingConversations[conversationId]
+  // 2026-09-10 主标签化：chat 会话为纯聊受限形态——技能选择/定时任务等
+  // 任务型输入功能随之隐藏（同步欢迎页移除目录选择的收敛语义）
+  const isChatMode = useChatStore(s => s.conversations.find(c => c.id === conversationId)?.mode === 'chat')
   const settings = useSettingsStore(s => s.settings)
   const [isDragOver, setIsDragOver] = useState(false)
   const { send, stop, interject } = useYFWCLI()
@@ -597,29 +598,34 @@ export function ChatInput({ conversationId }: Props) {
         </div>
       )}
 
-      {/* Input bar — composer card */}
+      {/* 红档"重新发起会话建议"卡片：输入框上方正常流式排版（2026-09-10 修复：
+          卡片改 in-flow 右对齐，挂载于输入条之前——绝不再叠住发送键） */}
+      <HealthSuggestCard
+        conversationId={conversationId}
+        onStopSource={() => { stop(conversationId); stopStreaming(conversationId) }}
+      />
+
+      {/* Input bar — composer card（设计语言：单对角切角框 + 聚焦热边 .focusable） */}
       <div className="px-3 pt-2 pb-1.5">
         <div
           className={cn(
-            'relative flex items-end gap-2 rounded-xl border border bg-surface/80 px-2.5 py-1.5',
-            'transition-all duration-150',
-            'focus-within:border-brand-500/40 focus-within:ring-1 focus-within:ring-brand-500/25',
-            'focus-within:bg-surface',
-            isDragOver && 'border-brand-500/60 ring-1 ring-brand-500/40 bg-brand-500/5'
+            'relative cut focusable transition-all duration-150',
+            isDragOver && 'hot'
           )}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
+        <div className="ci flex items-end gap-2 w-full px-2.5 py-1.5">
         {isDragOver && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-brand-500/10 pointer-events-none">
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-brand-500/10 pointer-events-none">
             <span className="text-sm font-medium text-brand-500">释放以添加附件</span>
           </div>
         )}
         {/* Left toolbar */}
         <div className="flex items-center gap-0.5 pb-0.5">
-          {/* Skill picker button */}
-          {skills.length > 0 && (
+          {/* Skill picker button（chat 纯聊形态隐藏：技能属任务型功能，2026-09-10） */}
+          {!isChatMode && skills.length > 0 && (
             <>
               <Tooltip content={activeSkill ? '切换技能' : '选择技能'}>
                 <Button
@@ -629,54 +635,42 @@ export function ChatInput({ conversationId }: Props) {
                   onClick={() => setShowSkillPicker(v => !v)}
                   aria-label="选择技能"
                 >
-                  <Zap className={cn('w-4 h-4', activeSkill && 'text-brand-500')} />
+                  <Zap className={cn('w-3.5 h-3.5', activeSkill && 'text-brand-500')} />
                 </Button>
               </Tooltip>
             </>
           )}
 
-          {/* 循环 / 定时任务 */}
-          <Tooltip content="循环任务 / 定时任务">
-            <Button
-              variant="ghost"
-              size="xs"
-              className={cn('text-tertiary hover:text-secondary', showScheduleGuide && 'text-brand-500')}
-              onClick={() => setShowScheduleGuide(v => !v)}
-              aria-label="循环任务 / 定时任务"
-            >
-              <Repeat className="w-4 h-4" />
-            </Button>
-          </Tooltip>
+          {/* 循环 / 定时任务（chat 纯聊形态隐藏：定时任务=任务型功能，2026-09-10） */}
+          {!isChatMode && (
+            <Tooltip content="循环任务 / 定时任务">
+              <Button
+                variant="ghost"
+                size="xs"
+                className={cn('text-tertiary hover:text-secondary', showScheduleGuide && 'text-brand-500')}
+                onClick={() => setShowScheduleGuide(v => !v)}
+                aria-label="循环任务 / 定时任务"
+              >
+                <Repeat className="w-3.5 h-3.5" />
+              </Button>
+            </Tooltip>
+          )}
 
           {/* File attachment */}
           <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFilePick} />
           <Tooltip content={t('chat.attachFile')}>
             <Button variant="ghost" size="xs" className="text-tertiary hover:text-secondary" onClick={() => fileInputRef.current?.click()} aria-label={t('chat.attachFile')}>
-              <Paperclip className="w-4 h-4" />
+              <Paperclip className="w-3.5 h-3.5" />
             </Button>
           </Tooltip>
 
-          {/* AI 绘图（替代原附加图片按钮；剪贴板粘贴图片与文件选择能力保留） */}
+          {/* 附加图片（2026-09-10：豆包生图功能已全面移除，恢复普通本地图片选择） */}
           <input ref={imageInputRef} type="file" multiple accept="image/*" className="hidden" onChange={handleImagePick} />
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button variant="ghost" size="xs" className="text-tertiary hover:text-secondary" aria-label={t('chat.attachImage')}>
-                <Sparkles className="w-4 h-4" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent side="top" align="start" className="z-50 w-auto p-0 bg-popover backdrop-blur-xl border border-default rounded-xl shadow-xl">
-              <DoubaoPanel
-                onInsertImage={(att) => {
-                  // 豆包生成图为 bridge 本地去水印图：path 为磁盘绝对路径（旧版/历史项兜底为图片 URL），
-                  // 经 @image:<path> 发内核时 CLI 按本地文件路径解析，preview 用 bridge URL 渲染
-                  setAttachments(prev => [...prev, {
-                    id: generateId(), name: att.name, type: 'image' as const,
-                    content: '', path: att.path, preview: att.preview || att.path,
-                  }])
-                }}
-              />
-            </PopoverContent>
-          </Popover>
+          <Tooltip content={t('chat.attachImage')}>
+            <Button variant="ghost" size="xs" className="text-tertiary hover:text-secondary" onClick={() => imageInputRef.current?.click()} aria-label={t('chat.attachImage')}>
+              <ImagePlus className="w-3.5 h-3.5" />
+            </Button>
+          </Tooltip>
 
           {/* Voice input */}
           <Tooltip content={voiceActive ? t('chat.voiceStop') : t('chat.voiceInput')}>
@@ -687,7 +681,7 @@ export function ChatInput({ conversationId }: Props) {
               onClick={toggleVoice}
               aria-label={voiceActive ? t('chat.voiceStop') : t('chat.voiceInput')}
             >
-              {voiceActive ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+              {voiceActive ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
             </Button>
           </Tooltip>
         </div>
@@ -713,7 +707,7 @@ export function ChatInput({ conversationId }: Props) {
           placeholder={activeSkill ? `输入任务描述，将使用 ${activeSkill} 技能执行...` : (voiceActive ? t('chat.thinking') : t('chat.inputPlaceholder'))}
           rows={1}
           className={cn(
-            'flex-1 bg-transparent border-0 text-sm text-primary placeholder:text-tertiary',
+            'flex-1 bg-transparent border-0 text-[13px] text-primary placeholder:text-tertiary',
             'resize-none focus:outline-none min-h-[28px] max-h-[160px] py-1',
             'font-sans'
           )}
@@ -727,22 +721,31 @@ export function ChatInput({ conversationId }: Props) {
             <Tooltip content={t('chat.interjectQueue') + ' · ' + t('chat.sendHintStreaming', { shortcut: formatShortcut(settings.interjectShortcut) })}>
               <Button variant="outline" size="sm" onClick={handleSubmit} disabled={!value.trim() && attachments.length === 0 && !activeSkill} aria-label={t('chat.interject')}>
                 {/* 排队插话=MessageCirclePlus（圆泡+加，圆/方区分）；MessageSquarePlus 已保留给「新建对话」（ChatListPanel/PanelToolbar/CommandPalette），勿跨义复用（§8.2 Task 15 裁决） */}
-                <MessageCirclePlus className="w-4 h-4" />
+                <MessageCirclePlus className="w-3.5 h-3.5" />
               </Button>
             </Tooltip>
             <Tooltip content={t('chat.stop') + ' (Esc)'}>
               <Button variant="danger" size="sm" onClick={() => { stop(conversationId); stopStreaming(conversationId) }} aria-label={t('chat.stop')}>
-                <StopCircle className="w-4 h-4" />
+                <StopCircle className="w-3.5 h-3.5" />
               </Button>
             </Tooltip>
           </div>
         ) : (
           <Tooltip content={t('chat.send') + ' (Enter)'}>
-            <Button variant="primary" size="sm" onClick={handleSubmit} disabled={!value.trim() && attachments.length === 0 && !activeSkill} className="rounded-lg" aria-label={t('chat.send')}>
-              <Send className="w-4 h-4" />
-            </Button>
+            {/* 发送钮 = cut-btn 切角细线框 + 品牌渐变内层（设计语言：主 CTA） */}
+            <button
+              onClick={handleSubmit}
+              disabled={!value.trim() && attachments.length === 0 && !activeSkill}
+              className="cut-btn h-8 w-8 shrink-0 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              aria-label={t('chat.send')}
+            >
+              <span className="ci grad-brand flex items-center justify-center w-full h-full text-white">
+                <Send className="w-3.5 h-3.5" />
+              </span>
+            </button>
           </Tooltip>
         )}
+        </div>
         </div>
 
         {/* Composer hint — reserved height so it never shifts the layout */}
@@ -775,12 +778,6 @@ export function ChatInput({ conversationId }: Props) {
           onClose={() => setShowScheduleGuide(false)}
         />
       )}
-
-      {/* 红档"重新发起会话建议"卡片：从输入框右下角向上浮出 */}
-      <HealthSuggestCard
-        conversationId={conversationId}
-        onStopSource={() => { stop(conversationId); stopStreaming(conversationId) }}
-      />
 
       {/* Skill picker panel — rendered after input bar, positioned above */}
       {showSkillPicker && (

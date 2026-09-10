@@ -48,20 +48,21 @@ export function EffortPicker({ conversationId }: Props) {
           type="button"
           aria-label={t('effort.label')}
           className={cn(
-            'inline-flex items-center gap-1.5 h-6 px-2 rounded-md text-[11px] whitespace-nowrap',
-            'text-secondary hover:text-primary border border-transparent',
-            'hover:bg-surface hover:border-subtle transition-colors',
+            'inline-flex items-center cut-xs text-[11px] whitespace-nowrap',
+            'text-secondary hover:text-primary transition-colors',
             'outline-none focus-visible:ring-1 focus-visible:ring-accent'
           )}
         >
-          <span
-            aria-hidden
-            className={cn(
-              'w-1.5 h-1.5 rounded-full shrink-0',
-              current === 'auto' ? 'bg-tertiary/60' : 'bg-brand-500'
-            )}
-          />
-          {t('effort.label')} · {t(currentOption.labelKey)}
+          <span className="ci flex items-center gap-1.5 h-5 px-2">
+            <span
+              aria-hidden
+              className={cn(
+                'w-1.5 h-1.5 rounded-full shrink-0',
+                current === 'auto' ? 'bg-tertiary/60' : 'bg-brand-500'
+              )}
+            />
+            {t('effort.label')} · {t(currentOption.labelKey)}
+          </span>
         </button>
       </DropdownMenuTrigger>
 
