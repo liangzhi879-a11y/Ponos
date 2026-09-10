@@ -277,17 +277,14 @@ function ThemeSwitcher({ activeTheme, ThemeIcon, currentThemeId, onChange, t }: 
             right: pos.right,
             width: DROPDOWN_WIDTH,
             zIndex: 100,
-            background: 'var(--popover-bg)',
-            backdropFilter: 'blur(var(--popover-blur))',
-            WebkitBackdropFilter: 'blur(var(--popover-blur))',
+            filter: 'drop-shadow(var(--modal-drop))',
           }}
           className={cn(
-            'origin-top-right rounded-xl overflow-hidden',
-            'border border',
-            'shadow-2xl shadow-black/40',
-            'animate-slide-down backdrop-blur-md',
+            'origin-top-right cut-sm',
+            'animate-slide-down',
           )}
         >
+          <div className="ci" style={{ background: 'var(--popover-bg)', backdropFilter: 'blur(var(--popover-blur))', WebkitBackdropFilter: 'blur(var(--popover-blur))' }}>
           {/* Menu header */}
           <div className="px-3.5 py-3 border-b border bg-elevated">
             <div className="flex items-center gap-2">
@@ -321,6 +318,7 @@ function ThemeSwitcher({ activeTheme, ThemeIcon, currentThemeId, onChange, t }: 
             <div className="text-[10px] text-tertiary leading-snug">
               {t('settings.title')}: <kbd>⌘,</kbd>
             </div>
+          </div>
           </div>
         </div>,
         document.body,

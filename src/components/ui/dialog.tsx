@@ -48,20 +48,27 @@ const DialogContent = React.forwardRef<
         ref={ref}
         className={cn(
           'fixed left-[50%] top-[50%] z-50 translate-x-[-50%] translate-y-[-50%]',
-          'w-full overflow-hidden rounded-xl p-0',
+          'w-full cut cut-modal p-0',
           'data-[state=open]:animate-dialog-in data-[state=closed]:animate-dialog-out',
-          'border border-subtle text-primary backdrop-blur-md',
+          'text-primary',
           sizes[size],
           className
         )}
         style={{
-          boxShadow: 'var(--shadow-modal)',
-          background: 'var(--modal-bg)',
-          backdropFilter: 'blur(var(--popover-blur))',
-          WebkitBackdropFilter: 'blur(var(--popover-blur))',
+          // clip-path 会裁掉 box-shadow → 用 drop-shadow 随切角形
+          filter: 'drop-shadow(var(--modal-drop))',
         }}
         {...props}
       >
+        {/* ci 内层：modal 底 + 磨砂 blur（背景移出根，根只负责切角细线） */}
+        <div
+          className="ci flex flex-col"
+          style={{
+            background: 'var(--modal-bg)',
+            backdropFilter: 'blur(var(--popover-blur))',
+            WebkitBackdropFilter: 'blur(var(--popover-blur))',
+          }}
+        >
         {children}
         <DialogPrimitive.Close
           className={cn(
@@ -74,6 +81,7 @@ const DialogContent = React.forwardRef<
           <X className="h-4 w-4" />
           <span className="sr-only">Close</span>
         </DialogPrimitive.Close>
+        </div>
       </DialogPrimitive.Content>
     </DialogPortal>
   )

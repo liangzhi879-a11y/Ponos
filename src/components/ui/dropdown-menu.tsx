@@ -8,26 +8,34 @@ const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger
 const DropdownMenuContent = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content>
->(({ className, sideOffset = 4, ...props }, ref) => (
+>(({ className, sideOffset = 4, children, ...props }, ref) => (
   <DropdownMenuPrimitive.Portal>
     <DropdownMenuPrimitive.Content
       ref={ref}
       sideOffset={sideOffset}
       className={cn(
-        'z-50 min-w-[180px] overflow-hidden rounded-lg p-1',
-        'border border-default text-primary',
+        'z-50 min-w-[180px] cut-sm p-0 text-primary',
         'data-[state=open]:animate-scale-in data-[state=closed]:animate-scale-out',
-        'backdrop-blur-md',
         className
       )}
       style={{
-        boxShadow: 'var(--shadow-popover)',
-        background: 'var(--popover-bg)',
-        backdropFilter: 'blur(var(--popover-blur))',
-        WebkitBackdropFilter: 'blur(var(--popover-blur))',
+        // clip-path 会裁掉 box-shadow → drop-shadow 随切角形
+        filter: 'drop-shadow(var(--modal-drop))',
       }}
       {...props}
-    />
+    >
+      {/* ci 内层：popover 底 + 磨砂 blur（根只负责切角细线） */}
+      <div
+        className="ci p-1"
+        style={{
+          background: 'var(--popover-bg)',
+          backdropFilter: 'blur(var(--popover-blur))',
+          WebkitBackdropFilter: 'blur(var(--popover-blur))',
+        }}
+      >
+        {children}
+      </div>
+    </DropdownMenuPrimitive.Content>
   </DropdownMenuPrimitive.Portal>
 ))
 DropdownMenuContent.displayName = 'DropdownMenuContent'

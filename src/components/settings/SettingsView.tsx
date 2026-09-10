@@ -938,10 +938,12 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
           <div className="fixed inset-0 z-[60] pointer-events-auto" style={{ background: 'var(--overlay-bg)' }} onClick={() => setShowAddDialog(false)} />
           <div
             ref={addDialogRootRef}
-            className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[61] w-96 bg-surface rounded-xl shadow-modal border border p-5 pointer-events-auto"
+            className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[61] w-96 cut cut-modal pointer-events-auto"
+            style={{ filter: 'drop-shadow(var(--modal-drop))' }}
             onMouseDown={e => e.stopPropagation()}
             onClick={e => e.stopPropagation()}
           >
+            <div className="ci p-5" style={{ background: 'var(--modal-bg)' }}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-sm font-semibold text-primary flex items-center gap-1.5">
                 <Plus className="w-4 h-4 text-accent" />
@@ -992,6 +994,7 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
               <Button variant="primary" size="sm" onClick={handleAddProvider} disabled={!newProvider.name || !newProvider.apiBaseUrl}>
                 {t('common.confirm')}
               </Button>
+            </div>
             </div>
           </div>
         </>,

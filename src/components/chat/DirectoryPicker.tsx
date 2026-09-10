@@ -101,15 +101,18 @@ export function DirectoryPicker({ value, onChange, onClose }: Props) {
       }}
     >
       <div
-        className="w-[520px] border border rounded-xl animate-scale-in overflow-hidden backdrop-blur-md"
-        style={{
-          boxShadow: 'var(--shadow-modal)',
-          background: 'var(--modal-bg)',
-          backdropFilter: 'blur(var(--popover-blur))',
-          WebkitBackdropFilter: 'blur(var(--popover-blur))',
-        }}
+        className="w-[520px] cut cut-modal animate-scale-in"
+        style={{ filter: 'drop-shadow(var(--modal-drop))' }}
         onClick={e => e.stopPropagation()}
       >
+        <div
+          className="ci flex flex-col"
+          style={{
+            background: 'var(--modal-bg)',
+            backdropFilter: 'blur(var(--popover-blur))',
+            WebkitBackdropFilter: 'blur(var(--popover-blur))',
+          }}
+        >
         {/* Header */}
         <div className="flex items-center gap-2 px-4 py-3 border-b">
           <FolderOpen className="w-5 h-5 text-warning/75 shrink-0" />
@@ -198,6 +201,7 @@ export function DirectoryPicker({ value, onChange, onClose }: Props) {
               Select Folder
             </Button>
           </div>
+        </div>
         </div>
       </div>
     </div>

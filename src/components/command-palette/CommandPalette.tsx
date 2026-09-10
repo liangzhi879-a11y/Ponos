@@ -147,8 +147,8 @@ export function CommandPalette() {
                       className={cn(
                         'w-full flex items-center gap-3 px-4 py-2 text-sm text-left transition-colors',
                         idx === selectedIdx
-                          ? 'bg-brand-500/15 text-primary'
-                          : 'text-secondary hover:bg-elevated'
+                          ? 'bg-brand-500/15 text-primary shadow-[inset_2.5px_0_0_0_var(--line-hot)]'
+                          : 'text-secondary hover:bg-elevated hover:shadow-[inset_2.5px_0_0_0_var(--line-hot)]'
                       )}
                     >
                       <Icon className="w-4 h-4 text-tertiary shrink-0" />

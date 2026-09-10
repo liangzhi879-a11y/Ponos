@@ -75,16 +75,24 @@ export function FilePreview({ path, name, onClose }: Props) {
       }}
     >
       <div
-        className="bg-modal border border rounded-xl overflow-hidden animate-scale-in flex flex-col"
+        className="cut cut-modal animate-scale-in flex flex-col"
         style={{
           width: '90vw',
           maxWidth: '1100px',
           height: '85vh',
           maxHeight: '800px',
-          boxShadow: 'var(--shadow-modal)',
+          filter: 'drop-shadow(var(--modal-drop))',
         }}
         onClick={e => e.stopPropagation()}
       >
+        <div
+          className="ci flex flex-col flex-1 min-h-0"
+          style={{
+            background: 'var(--modal-bg)',
+            backdropFilter: 'blur(var(--popover-blur))',
+            WebkitBackdropFilter: 'blur(var(--popover-blur))',
+          }}
+        >
         {/* Header */}
         <div className="flex items-center gap-2 px-4 py-2.5 border-b shrink-0">
           {mode === 'image' ? <FileImage className="w-4 h-4 text-success/80" /> :
@@ -180,6 +188,7 @@ export function FilePreview({ path, name, onClose }: Props) {
               </a>
             </div>
           )}
+        </div>
         </div>
       </div>
     </div>

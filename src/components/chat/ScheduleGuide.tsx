@@ -80,9 +80,10 @@ export function ScheduleGuide({ conversationId, mode, onClose }: Props) {
 
   return (
     <div
-      className="absolute bottom-full left-0 right-0 mb-1 mx-3 bg-popover border border rounded-xl shadow-2xl animate-slide-up z-40 overflow-hidden"
-      style={{ maxHeight: '420px', display: 'flex', flexDirection: 'column' }}
+      className="absolute bottom-full left-0 right-0 mb-1 mx-3 cut-sm animate-slide-up z-40"
+      style={{ filter: 'drop-shadow(var(--modal-drop))' }}
     >
+      <div className="ci overflow-hidden flex flex-col" style={{ maxHeight: '420px', background: 'var(--popover-bg)' }}>
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-subtle bg-elevated">
         <span className="flex items-center gap-1.5 text-xs font-semibold text-primary">
@@ -240,6 +241,7 @@ export function ScheduleGuide({ conversationId, mode, onClose }: Props) {
             提示：任务会持久化保存，重启应用后仍会按时执行。可通过"查看我的任务"确认或取消。
           </p>
         )}
+      </div>
       </div>
     </div>
   )

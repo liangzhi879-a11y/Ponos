@@ -238,7 +238,8 @@ function ExportDialog({ lastCwd, chatsJson, onClose, onDone }: { lastCwd: string
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center" style={{ background: 'var(--overlay-bg)' }}>
-      <div className="w-[420px] bg-surface rounded-xl shadow-modal border border p-5">
+      <div className="w-[420px] cut cut-modal" style={{ filter: 'drop-shadow(var(--modal-drop))' }}>
+        <div className="ci p-5" style={{ background: 'var(--modal-bg)' }}>
         <h4 className="text-sm font-semibold text-primary flex items-center gap-1.5 mb-1"><Package className="w-4 h-4" /> 导出经验/数据</h4>
         <p className="text-[10px] text-tertiary mb-4">选择要打包的类型（zip + manifest.json，可在另一台设备导入）</p>
         <div className="space-y-2 mb-4">
@@ -271,6 +272,7 @@ function ExportDialog({ lastCwd, chatsJson, onClose, onDone }: { lastCwd: string
         <div className="flex justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={onClose}>取消</Button>
           <Button variant="primary" size="sm" onClick={run} disabled={busy}>{busy ? '打包中…' : '导出'}</Button>
+        </div>
         </div>
       </div>
     </div>
@@ -308,7 +310,8 @@ function ImportDialog({ lastCwd, onClose, onDone }: { lastCwd: string | null; on
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center" style={{ background: 'var(--overlay-bg)' }}>
-      <div className="w-[400px] bg-surface rounded-xl shadow-modal border border p-5">
+      <div className="w-[400px] cut cut-modal" style={{ filter: 'drop-shadow(var(--modal-drop))' }}>
+        <div className="ci p-5" style={{ background: 'var(--modal-bg)' }}>
         <h4 className="text-sm font-semibold text-primary flex items-center gap-1.5 mb-1"><Package className="w-4 h-4" /> 导入经验/数据包</h4>
         <p className="text-[10px] text-tertiary mb-4">选择 zip 文件后按 manifest 恢复，冲突处理方式：</p>
         <div className="space-y-2 mb-4">
@@ -323,6 +326,7 @@ function ImportDialog({ lastCwd, onClose, onDone }: { lastCwd: string | null; on
         <div className="flex justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={onClose}>取消</Button>
           <Button variant="primary" size="sm" onClick={run}>选择 zip 并导入</Button>
+        </div>
         </div>
       </div>
     </div>

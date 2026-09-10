@@ -530,7 +530,8 @@ export function ChatInput({ conversationId }: Props) {
     <div className="relative z-0 border-t bg-app">
       {/* Slash command menu */}
       {showCommands && filteredCommands.length > 0 && (
-        <div className="absolute bottom-full left-2 right-2 mb-1 bg-elevated border border rounded-lg shadow-2xl overflow-hidden animate-slide-up z-30 max-h-52 overflow-y-auto">
+        <div className="absolute bottom-full left-2 right-2 mb-1 cut-sm animate-slide-up z-30" style={{ filter: 'drop-shadow(var(--modal-drop))' }}>
+          <div className="ci overflow-y-auto" style={{ maxHeight: '13rem', background: 'var(--bg-elevated)' }}>
           {/* Section header for skills */}
           {filteredCommands.some(c => (c as any).isSkill) && (
             <div className="px-3 py-1.5 text-[10px] font-semibold text-tertiary uppercase tracking-wider border-b border-subtle">
@@ -558,6 +559,7 @@ export function ChatInput({ conversationId }: Props) {
               </button>
             )
           })}
+          </div>
         </div>
       )}
 
@@ -782,9 +784,10 @@ export function ChatInput({ conversationId }: Props) {
       {/* Skill picker panel — rendered after input bar, positioned above */}
       {showSkillPicker && (
         <div
-          className="absolute bottom-full left-0 right-0 mb-1 mx-3 bg-popover border border rounded-xl shadow-2xl animate-slide-up z-40 overflow-hidden"
-          style={{ maxHeight: '240px' }}
+          className="absolute bottom-full left-0 right-0 mb-1 mx-3 cut-sm animate-slide-up z-40"
+          style={{ filter: 'drop-shadow(var(--modal-drop))' }}
         >
+          <div className="ci overflow-hidden" style={{ maxHeight: '240px', background: 'var(--popover-bg)' }}>
           <div className="flex items-center justify-between px-3 py-2 border-b border-subtle bg-elevated">
             <span className="text-xs font-semibold text-primary">常用技能</span>
             <button onClick={() => setShowSkillPicker(false)} className="text-tertiary hover:text-primary">
@@ -826,6 +829,7 @@ export function ChatInput({ conversationId }: Props) {
                 </button>
               ))
             )}
+          </div>
           </div>
         </div>
       )}
