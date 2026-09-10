@@ -895,11 +895,11 @@ html.speed-mode[class*="light-glass"] {
 .grad-brand{background:var(--grad-brand);}
 /* .ci 上叠加品牌渐变（发送钮等）：提高优先级压过 .cut*.ci 默认底 */
 .cut>.ci.grad-brand,.cut-btn>.ci.grad-brand,.cut-sm>.ci.grad-brand,.cut-xs>.ci.grad-brand{background:var(--grad-brand);}
-/* 光效白名单②：hover/选中柔光 */
-.glow-hover{transition:box-shadow .2s ease;}
-.glow-hover:hover{box-shadow:var(--glow-hot);}
-/* switch on 态品牌渐变（Tailwind 无法直接输出渐变变量背景） */
-.sw-on{background:var(--grad-brand)!important;}
+/* 光效白名单②：hover/选中柔光（drop-shadow 随切角形，box-shadow 会被 clip-path 裁掉） */
+.glow-hover{transition:filter .2s ease;}
+.glow-hover:hover{filter:drop-shadow(var(--glow-hot));}
+/* switch on 态品牌渐变（Tailwind v3 变体不支持自定义类，用属性选择器） */
+.sw-track[data-state="checked"]{background:var(--grad-brand)!important;}
 input[type="range"]{accent-color:var(--brand-500);}
 /* rail 激活指示条（RailNav，光效白名单②） */
 .rail-ind{position:absolute;left:-6px;top:8px;bottom:8px;width:2.5px;border-radius:2px;

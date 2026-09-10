@@ -76,6 +76,7 @@ export function SettingsView() {
                     <h3 className="text-sm font-semibold text-primary mb-3 flex items-center gap-2">
                       <Globe className="w-4 h-4" />
                       {t('settings.language')}
+                      <span className="micro ml-1">LANGUAGE</span>
                     </h3>
                     <div className="grid grid-cols-2 gap-2">
                       {([
@@ -114,7 +115,7 @@ export function SettingsView() {
                   <div className="h-px bg-elevated" />
 
                   <div>
-                    <h3 className="text-sm font-semibold text-primary mb-3">{t('settings.appearance')}</h3>
+                    <h3 className="text-sm font-semibold text-primary mb-3">{t('settings.appearance')}<span className="micro ml-1">APPEARANCE</span></h3>
                     <div className="space-y-3">
                       <SettingRow label={t('settings.fontSize')}>
                         <select
@@ -202,7 +203,7 @@ export function SettingsView() {
                   <div className="h-px bg-elevated" />
 
                   <div>
-                    <h3 className="text-sm font-semibold text-primary mb-3">{t('settings.backgroundNotify')}</h3>
+                    <h3 className="text-sm font-semibold text-primary mb-3">{t('settings.backgroundNotify')}<span className="micro ml-1">NOTIFY</span></h3>
                     <div className="space-y-3">
                       <SettingRow label={t('settings.minimizeToTray')}>
                         <Switch
@@ -231,6 +232,7 @@ export function SettingsView() {
                     <h3 className="text-sm font-semibold text-primary mb-3 flex items-center gap-2">
                       <Zap className="w-4 h-4" />
                       {t('settings.interjectShortcut')}
+                      <span className="micro ml-1">SHORTCUT</span>
                     </h3>
                     <label className="flex items-center justify-between py-1">
                       <div>
@@ -1148,30 +1150,20 @@ function ThemePicker({ value, onChange, t }: { value: ThemeMode; onChange: (t: T
       <div className="flex items-baseline justify-between mb-3">
         <h3 className="text-sm font-semibold text-primary">{t('settings.theme')}</h3>
         <span className="text-[10px] text-tertiary uppercase tracking-wider">
-          {activeTheme.name}{activeTheme.variant ? ` · ${activeTheme.variant}` : ''} {activeTheme.isDefault ? `· ${t('common.default')}` : ''} · 6 themes · 1+3+2
+          {activeTheme.name}{activeTheme.variant ? ` · ${activeTheme.variant}` : ''} {activeTheme.isDefault ? `· ${t('common.default')}` : ''} · {t('settings.themeCount')}
         </span>
       </div>
-      {([
-        { key: 'brand' as const, label: t('themeGroup.brand') },
-        { key: 'solid' as const, label: t('themeGroup.solid') },
-        { key: 'glass' as const, label: t('themeGroup.glass') },
-      ]).map(g => (
-        <div key={g.key}>
-          <h4 className="text-[10px] font-semibold text-tertiary uppercase tracking-wider mt-3 mb-2">
-            {g.label} · {THEMES.filter(th => th.category === g.key).length}
-          </h4>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {THEMES.filter(th => th.category === g.key).map(theme => (
-              <ThemePreviewCard
-                key={theme.id}
-                theme={theme}
-                active={value === theme.id}
-                onSelect={() => onChange(theme.id)}
-              />
-            ))}
-          </div>
-        </div>
-      ))}
+      {/* 四主题 2×2（实色/玻璃各二）—— 设计语言统一：单对角切角卡 + 热边选中 */}
+      <div className="grid grid-cols-2 gap-3">
+        {THEMES.map(theme => (
+          <ThemePreviewCard
+            key={theme.id}
+            theme={theme}
+            active={value === theme.id}
+            onSelect={() => onChange(theme.id)}
+          />
+        ))}
+      </div>
     </div>
   )
 }
@@ -1189,14 +1181,13 @@ function ThemePreviewCard({
     <button
       onClick={onSelect}
       className={cn(
-        'group relative text-left rounded-xl overflow-hidden transition-all duration-200',
-        'border focus:outline-none',
-        active
-          ? 'border-brand-500/50 shadow-accent-md'
-          : 'border hover:border hover:shadow-accent-sm',
+        'group relative text-left cut-sm transition-all duration-200 focus:outline-none',
+        active && 'hot glow-hover',
       )}
+      style={active ? { filter: 'drop-shadow(var(--glow-hot))' } : undefined}
       aria-pressed={active}
     >
+      <div className="ci overflow-hidden">
       {/* Preview swatch — miniature "app" rendered with this theme's tokens */}
       <div
         className="relative h-28 overflow-hidden"
@@ -1311,6 +1302,7 @@ function ThemePreviewCard({
         <p className="text-[11px] text-tertiary mt-0.5 leading-snug line-clamp-1">
           {theme.tagline}
         </p>
+      </div>
       </div>
     </button>
   )

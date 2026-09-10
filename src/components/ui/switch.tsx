@@ -12,7 +12,7 @@ const Switch = React.forwardRef<
       'transition-colors duration-150',
       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-app',
       'disabled:cursor-not-allowed disabled:opacity-50',
-      'data-[state=checked]:bg-brand-500 data-[state=unchecked]:bg-active',
+      'sw-track data-[state=unchecked]:bg-active',
       className
     )}
     {...props}
