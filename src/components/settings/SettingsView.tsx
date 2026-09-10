@@ -5,14 +5,13 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
   Button, ScrollArea, Switch,
 } from '@/components/ui'
-import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useYFWCLI, sendEffort } from '@/hooks/useYFWCLI'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn, formatShortcut, shortcutFromEvent } from '@/lib/utils'
 import { fetchSkills } from '@/lib/skills'
-import { fetchBridgeConfig, saveBridgeConfig, addProvider, deleteProvider, testProviderConnection } from '@/lib/config'
+import { fetchBridgeConfig, saveBridgeConfig, addProvider, deleteProvider, testProviderConnection, probeProvider } from '@/lib/config'
 import { EFFORT_OPTIONS, normalizeEffortUi } from '@/lib/effortUi'
 import { ExperiencePanel } from '@/components/settings/ExperiencePanel'
 import type { AppSettings, ModelProvider, YFWorkingConfigV2 } from '@/types'
@@ -21,37 +20,26 @@ import { THEMES, type ThemeMode, type ThemeMeta, type Language } from '@/types'
 type Section = 'general' | 'model' | 'skills' | 'pet' | 'experience' | 'about'
 
 export function SettingsView() {
-  const { settingsOpen, closeSettings } = useUIStore()
   const { settings, updateSettings } = useSettingsStore()
   const { sessionModel } = useChatStore()
   const { connected } = useYFWCLI()
   const { t } = useTranslation()
   const [section, setSection] = useState<Section>('general')
-  // Lifted state: the outer Radix Dialog's outside-click & focus guards must
-  // react synchronously when the inner add-provider dialog opens. Keeping it
-  // here (instead of a module flag) means SettingsView re-renders and
-  // DialogContent receives fresh prop functions on every toggle.
+  // 添加供应商子对话框的打开标志（对话框内部自管 outside-click，无需外层守卫）
   const [showAddProviderDialog, setShowAddProviderDialog] = useState(false)
-  const suppressOuterDismiss = (e: Event) => e.preventDefault()
 
+  // 2026-09-10 页面化重构：原 Radix 弹窗壳退役——独立窗口内的完整页面布局：
+  // 页头（标题）+ 左侧分区导航 + 右侧内容滚动区。窗口关闭由 UtilityWindowShell
+  // 拖拽条上的关闭钮承担。
   return (
-    <Dialog open={settingsOpen} onOpenChange={v => { if (!v && !showAddProviderDialog) closeSettings() }}>
-      <DialogContent
-        size="lg"
-        className="grid grid-rows-[auto_1fr_auto] max-h-[85vh]"
-        onPointerDownOutside={showAddProviderDialog ? suppressOuterDismiss : undefined}
-        onInteractOutside={showAddProviderDialog ? suppressOuterDismiss : undefined}
-        onFocusOutside={showAddProviderDialog ? suppressOuterDismiss : undefined}
-        onEscapeKeyDown={showAddProviderDialog ? suppressOuterDismiss : undefined}
-      >
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Settings className="w-5 h-5" />
-            {t('settings.title')}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="flex min-h-0 overflow-hidden">
-          <nav className="w-40 shrink-0 border-r border py-2 overflow-y-auto">
+    <div className="flex flex-col h-full min-h-0">
+      <header className="h-12 flex items-center gap-2.5 px-5 border-b shrink-0">
+        <Settings className="w-[18px] h-[18px] text-brand-500" />
+        <h1 className="text-sm font-semibold text-primary">{t('settings.title')}</h1>
+        <span className="text-[10px] font-mono text-tertiary mt-px">v{typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''}</span>
+      </header>
+        <div className="flex-1 flex min-h-0">
+          <nav className="w-52 shrink-0 border-r py-3 overflow-y-auto">
             {[
               { id: 'general' as Section, label: t('settings.general'), icon: Monitor },
               { id: 'model' as Section, label: t('settings.model'), icon: Cpu },
@@ -67,9 +55,9 @@ export function SettingsView() {
                   key={item.id}
                   onClick={() => setSection(item.id)}
                   className={cn(
-                    'w-full flex items-center gap-2.5 px-4 py-2 text-sm transition-colors',
+                    'w-full flex items-center gap-2.5 px-4 py-2 mx-2 rounded-lg text-sm transition-colors',
                     active
-                      ? 'text-primary bg-brand-500/15 border-r-2 border-brand-500/50'
+                      ? 'text-primary bg-brand-500/15 font-medium'
                       : 'text-secondary hover:text-primary hover:bg-elevated'
                   )}
                 >
@@ -80,7 +68,7 @@ export function SettingsView() {
             })}
           </nav>
           <ScrollArea className="flex-1 min-w-0">
-            <div className="p-6">
+            <div className="p-6 max-w-3xl">
               {section === 'general' && (
                 <div className="space-y-6">
                   {/* Language */}
@@ -140,8 +128,8 @@ export function SettingsView() {
                         </select>
                       </SettingRow>
 
-                      {/* Glass 磨砂玻璃设置 —— 仅 glass / glass-warm 主题显示 */}
-                      {(settings.theme === 'glass' || settings.theme === 'glass-warm') && (
+                      {/* Glass 磨砂玻璃设置 —— 仅 dark-glass / light-glass 主题显示 */}
+                      {(settings.theme === 'dark-glass' || settings.theme === 'light-glass') && (
                         <>
                           <div>
                             <label className="flex items-center justify-between py-1">
@@ -363,11 +351,7 @@ export function SettingsView() {
             </div>
           </ScrollArea>
         </div>
-        <DialogFooter>
-          <Button variant="ghost" onClick={closeSettings}>{t('common.close')}</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </div>
   )
 }
 
@@ -381,7 +365,7 @@ function SettingRow({ label, children }: { label: string; children: React.ReactN
 }
 
 function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setShowAddDialog }: {
-  t: (key: string) => string
+  t: (key: string, params?: Record<string, string | number>) => string
   settings: AppSettings
   updateSettings: (u: Partial<AppSettings>) => void
   showAddDialog: boolean
@@ -460,7 +444,10 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
       primaryModel: models[0] || '',
       subagentModel: models[0] || '',
       effortLevel: 'max',
-      contextWindow: 1000000,
+      // 0 = 自动（2026-09-10）：保存/激活后探测 /v1/models 回填真实窗口；探测不到
+      // 时内核按内置模型表 / 画像默认（本地 64K、云端 200K）规划。旧默认 1000000
+      // 对本地小窗口模型几乎必然虚高，是切换模型后上下文撑爆的根因之一。
+      contextWindow: 0,
     })
     if (prov) {
       updateSettings({ providers: [...settings.providers, prov], activeProvider: prov.id })
@@ -498,6 +485,25 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
       if (result.reachable && result.authValid !== false) {
         setTestOk(true)
         setTestMsg(t('settings.testSuccess'))
+        // 能力探测异步触发（2026-09-09）：预填充基准可能耗时数十秒，不阻塞保存。
+        // 回填成功后刷新本地 provider 状态，让新字段即时显示在表单里。
+        void (async () => {
+          try {
+            const probe = await probeProvider(settings.activeProvider)
+            if (Object.keys(probe.updates || {}).length) {
+              const cfg = await fetchBridgeConfig()
+              updateSettings({ providers: cfg.providers })
+            }
+            const parts: string[] = []
+            if (probe.notes?.length) parts.push(t('settings.probeAutoTuned', { notes: probe.notes.join('、') }))
+            if (probe.skipped?.length) parts.push(t('settings.probeKeptManual', { fields: probe.skipped.join('、') }))
+            if (probe.fromCache) parts.push(t('settings.probeFromCache'))
+            if (parts.length) {
+              setTestMsg(parts.join('；'))
+              setTimeout(() => setTestMsg(''), 8000)
+            }
+          } catch { /* 探测失败静默——连接测试已通过，不打扰用户 */ }
+        })()
         return true
       } else if (result.reachable && result.authValid === false) {
         setTestOk(false)
@@ -668,6 +674,124 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
                       <option key={m} value={m}>{m}</option>
                     ))}
                   </select>
+                </div>
+
+                {/* Behavior Profile（2026-09-09 本地模型适配） */}
+                <div>
+                  <label className="text-xs font-medium text-secondary mb-1 block">{t('settings.providerProfile')}</label>
+                  <select
+                    value={activeProv.profile || 'auto'}
+                    onChange={e => handleUpdateActiveProvider('profile', e.target.value as ModelProvider['profile'])}
+                    className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent"
+                  >
+                    <option value="auto">{t('settings.providerProfileAuto')}</option>
+                    <option value="cloud">{t('settings.providerProfileCloud')}</option>
+                    <option value="local">{t('settings.providerProfileLocal')}</option>
+                  </select>
+                  <p className="text-[10px] text-tertiary mt-1">{t('settings.providerProfileDesc')}</p>
+                </div>
+
+                {/* Sampling temperature [0,2]；空 = 画像默认 */}
+                <div>
+                  <label className="text-xs font-medium text-secondary mb-1 block">{t('settings.providerTemperature')}</label>
+                  <input
+                    type="number" min={0} max={2} step={0.1}
+                    value={activeProv.temperature ?? ''}
+                    placeholder={t('settings.providerTemperatureDesc')}
+                    onChange={e => {
+                      const raw = e.target.value
+                      if (raw === '') { handleUpdateActiveProvider('temperature', undefined); return }
+                      const n = parseFloat(raw)
+                      if (!Number.isFinite(n)) return
+                      handleUpdateActiveProvider('temperature', Math.min(2, Math.max(0, n)))
+                    }}
+                    className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+                  />
+                  <p className="text-[10px] text-tertiary mt-1">{t('settings.providerTemperatureDesc')}</p>
+                </div>
+
+                {/* Max output tokens；空 = 画像默认 */}
+                <div>
+                  <label className="text-xs font-medium text-secondary mb-1 block">{t('settings.providerMaxOutputTokens')}</label>
+                  <input
+                    type="number" min={1} step={1}
+                    value={activeProv.maxOutputTokens ?? ''}
+                    onChange={e => {
+                      const raw = e.target.value
+                      if (raw === '') { handleUpdateActiveProvider('maxOutputTokens', undefined); return }
+                      const n = parseInt(raw, 10)
+                      if (!Number.isFinite(n) || n < 1) return
+                      handleUpdateActiveProvider('maxOutputTokens', n)
+                    }}
+                    className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+                  />
+                  <p className="text-[10px] text-tertiary mt-1">{t('settings.providerMaxOutputTokensDesc')}</p>
+                </div>
+
+                {/* First-content grace ms；空 = 内核默认 */}
+                <div>
+                  <label className="text-xs font-medium text-secondary mb-1 block">{t('settings.providerFirstByteMs')}</label>
+                  <input
+                    type="number" min={1} step={1000}
+                    value={activeProv.firstByteMs ?? ''}
+                    onChange={e => {
+                      const raw = e.target.value
+                      if (raw === '') { handleUpdateActiveProvider('firstByteMs', undefined); return }
+                      const n = parseInt(raw, 10)
+                      if (!Number.isFinite(n) || n < 1) return
+                      handleUpdateActiveProvider('firstByteMs', n)
+                    }}
+                    className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+                  />
+                  <p className="text-[10px] text-tertiary mt-1">{t('settings.providerFirstByteMsDesc')}</p>
+                </div>
+
+                {/* Generation idle window ms；空 = 内核默认 */}
+                <div>
+                  <label className="text-xs font-medium text-secondary mb-1 block">{t('settings.providerIdleMs')}</label>
+                  <input
+                    type="number" min={1} step={1000}
+                    value={activeProv.idleMs ?? ''}
+                    onChange={e => {
+                      const raw = e.target.value
+                      if (raw === '') { handleUpdateActiveProvider('idleMs', undefined); return }
+                      const n = parseInt(raw, 10)
+                      if (!Number.isFinite(n) || n < 1) return
+                      handleUpdateActiveProvider('idleMs', n)
+                    }}
+                    className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+                  />
+                  <p className="text-[10px] text-tertiary mt-1">{t('settings.providerIdleMsDesc')}</p>
+                </div>
+
+                {/* 思考模式（2026-09-10）：thinking:enabled+budget 注入——MiniMax 等
+                    不认 reasoning_effort 的云端经此才有 thinking_delta 流 */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-xs font-medium text-secondary">{t('settings.providerThinkingEnabled')}</div>
+                      <p className="text-[10px] text-tertiary mt-0.5">{t('settings.providerThinkingEnabledDesc')}</p>
+                    </div>
+                    <Switch
+                      checked={activeProv.thinkingEnabled === true}
+                      onCheckedChange={v => handleUpdateActiveProvider('thinkingEnabled', v || undefined)}
+                    />
+                  </div>
+                  {activeProv.thinkingEnabled && (
+                    <div>
+                      <label className="text-xs font-medium text-secondary mb-1 block">{t('settings.providerThinkingBudget')}</label>
+                      <input
+                        type="number" min={256} step={256}
+                        value={activeProv.thinkingBudget ?? 4096}
+                        onChange={e => {
+                          const n = parseInt(e.target.value, 10)
+                          if (!Number.isFinite(n) || n < 1) return
+                          handleUpdateActiveProvider('thinkingBudget', n)
+                        }}
+                        className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+                      />
+                    </div>
+                  )}
                 </div>
 
                 {/* Vision Provider Source（可指向任意已配置 provider） */}

@@ -7,7 +7,7 @@
  * Electron auto-starts the bridge, then loads the frontend.
  * CommonJS so Electron runs it directly without transpilation.
  */
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell, Tray, Notification, nativeImage, screen, session, clipboard } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, Tray, Notification, nativeImage, screen, clipboard } = require('electron')
 const { spawn } = require('child_process')
 const path = require('path')
 const fs = require('fs')
@@ -86,11 +86,20 @@ if (process.platform === 'win32') {
   try { app.setAppUserModelId('com.yfworking.desktop') } catch {}
 }
 
-// D6：dev 双版 userData 隔离——设置 YFWORKING_HOME 时把 Electron userData
-//（默认 %APPDATA%\yfworking-gui）重定向到 <数据根>/userData，避免净室新版与
-// 在售旧版同机并行时 userData（settings/主题/缓存）互踩；未设 env 时保持
-// Electron 默认行为（单版场景）。安装版产物身份（S6 定案，正式替换身份）：appId com.yfworking.desktop / productName
-// YFWorking 与在售一致——安装形态经 installer.nsh 版本比较（2.8.0）覆盖升级保留数据；
+// 入口兜底数据根隔离（2026-09-09 串配置事故修复）：桌面快捷方式直启 electron.exe /
+// YFWorking.vbs / debug bat 均不携带 env，此前双版全部回落 ~/.yfworking 与在售旧版
+// 互串（config/settings/会话/认证/主题）。兜底默认净室专属根 ~/.yfw；显式设
+// YFWORKING_HOME 仍可覆盖（如临时切回 C:\Users\<you>\.yfworking 读旧会话）。
+// bridge 由本进程 spawn 继承该 env（server/bridge.mjs 的 resolveYfwHome 同源）。
+if (!process.env.YFWORKING_HOME) {
+  process.env.YFWORKING_HOME = path.join(os.homedir(), '.yfw')
+}
+
+// D6：双版 userData 隔离——YFWORKING_HOME 恒设（上方兜底），Electron userData
+// 重定向到 <数据根>/userData，避免与在售旧版（default_app.asar 无 app 名 → 两版
+// 曾共用 %APPDATA%\Electron，theme.json 互踩）同机并行冲突。安装版产物身份（S6
+// 定案，正式替换身份）：appId com.yfworking.desktop / productName YFWorking 与在售
+// 一致——安装形态经 installer.nsh 版本比较（2.8.0）覆盖升级保留数据；
 // 双版并存由便携/dev 目录隔离 + 本 userData 重定向兜底，无需独立 appId。
 if (process.env.YFWORKING_HOME) {
   try { app.setPath('userData', path.join(resolveYfwHome(), 'userData')) } catch {}
@@ -140,19 +149,8 @@ let mainWindow = null
 let authWin = null
 let authGranted = false
 let editorWin = null            // 原生文件编辑器独立窗口（可超出主应用界面）
+let utilityWins = new Map()     // 独立工具窗口（settings/profile），kind → BrowserWindow（2026-09-10）
 let pendingEditorFile = null    // 待编辑器窗口拉取的文件（渲染层挂载后 invoke 拉取，规避 IPC 竞态）
-// 豆包图片生成：登录窗口隐藏常驻（persist:doubao 分区），生成请求在页面上下文执行
-// 失速防护（2026-08-17 卡死调查）：空闲超阈值销毁窗口（doubao.com 重站点持续跑
-// SSE/shared worker/动画 = 持续 GPU/网络负载），下次生成时按需静默重建。
-let doubaoWin = null            // 豆包隐藏常驻窗口（登录成功后 hide，补登录时 show）
-let doubaoLoggedIn = false      // 登录判定防重入守卫
-let doubaoLoginWaiters = []     // 等待登录判定完成的 resolver（静默重建后等 cookie 自动登录）
-let doubaoBusy = false          // 生成请求在途标记（空闲销毁不得打断在途请求）
-let doubaoLastUse = 0           // 最近一次生成/捕获活动时间戳
-let doubaoIdleTimer = null      // 空闲销毁轮询定时器
-// 豆包会话文件：契约与 server/doubao.mjs 的 sessionFile() 一致
-const DOUBAO_SESSION_FILE = path.join(resolveYfwHome(), 'doubao-session.json')
-const DOUBAO_URL = 'https://www.doubao.com/chat/create-image'
 let bridgeProcess = null
 let bridgeAdopted = false           // 端口上跑的是"接入"的外部 bridge（非本进程 spawn）
 let bridgeHealthTimer = null        // 接入外部 bridge 后的健康轮询定时器
@@ -215,7 +213,10 @@ function startBridge() {
 
   bridgeProcess = spawn(resolveNode(), [serverPath], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env },
+    // 父进程监控（2026-09-09 孤儿桥自愈）：electron 被强杀（taskkill/任务管理器，
+    // 不触发 before-quit）时，桥靠本 PID 探活检测父进程消失 → 杀内核会话并退出，
+    // 不再遗留孤儿占用 51517 导致"重启后无法唤醒"。
+    env: { ...process.env, YFW_BRIDGE_PARENT_PID: String(process.pid) },
     windowsHide: true,   // no console window on Windows
   })
 
@@ -251,17 +252,12 @@ function scheduleBridgeRestart() {
   bridgeRestartTimer = setTimeout(async () => {
     bridgeRestartTimer = null
     if (isQuitting) return
-    // 若期间已有健康 bridge 监听同端口（例如用户又启动了另一实例），直接接管并清零退避
-    if (await isBridgeHealthy()) {
-      bridgeRestartAttempts = 0
-      console.log('[main] bridge healthy — adopting, restart counter reset')
-      adoptBridge()
-      return
-    }
-    // 端口被占但不健康（半死/残留 bridge）：回收占用进程后再自起，避免 EADDRINUSE 死循环
+    // 2026-09-09 孤儿桥修复：端口上的"健康桥"也可能是旧构建/旧会话态的孤儿——
+    // 收养它会让应用全程与旧内核通信（"重启后无法唤醒"）。单实例语义下统一回收
+    // 外部桥后自起当前构建（父进程探活已保证孤儿自灭，此处回收兜底竞态窗口）。
     const stalePid = await findPortPid(BRIDGE_PORT)
     if (stalePid && await isBridgeProcess(stalePid)) {
-      console.error('[main] recycling stale bridge pid ' + stalePid)
+      console.warn('[main] recycling external bridge pid ' + stalePid + ' — restarting fresh')
       taskkillPid(stalePid)
       await new Promise((r) => setTimeout(r, 500))
     }
@@ -443,7 +439,7 @@ async function startBridgeAndWait() {
 // 但透明窗口让每个 CSS 动画都走每帧全窗合成路径（旧 GPU 上 ~13% GPU + 放大
 // 渲染进程动画成本）——非 glass 主题改为不透明窗口是纯性能优化、零视觉回归。
 const THEME_FILE = () => path.join(app.getPath('userData'), 'theme.json')
-const GLASS_THEMES = ['glass', 'glass-warm']
+const GLASS_THEMES = ['dark-glass', 'light-glass']
 function readPersistedTheme() {
   try {
     const raw = fs.readFileSync(THEME_FILE(), 'utf-8')
@@ -483,7 +479,7 @@ function createWindow() {
     // 阴影/层次感由页面内玻璃面板的 box-shadow 与内高光补足。
     frame: false,
     transparent: isGlass,
-    backgroundColor: isGlass ? '#00000000' : (themeMeta.mode === 'light' ? '#f7f8fa' : '#100c08'),
+    backgroundColor: isGlass ? '#00000000' : (themeMeta.mode === 'light' ? '#fdf9f5' : '#0b0e14'),
     icon: ICON_PATH,
     show: false,  // wait until ready to prevent white flash
     webPreferences: {
@@ -580,8 +576,10 @@ function createWindow() {
 function createAuthWindow() {
   authWin = new BrowserWindow({
     width: 420, height: 560, resizable: false, title: 'YFWorking',
-    icon: ICON_PATH, show: false, backgroundColor: '#171109',  // 与 AuthScreen 深色底一致防闪白
-    autoHideMenuBar: true,   // 弹窗级小窗不显示默认菜单栏（原生 frame 保留）
+    icon: ICON_PATH, show: false, backgroundColor: '#0b0e14',  // 与 AuthScreen 深色底一致防闪白
+    frame: false,            // 2026-09-10：全界面无边框（含登录小窗）——拖动/关闭由
+                             // 渲染层 AuthWindowRoot 的 app-region 拖拽条 + 关闭钮承担
+    autoHideMenuBar: true,   // 弹窗级小窗不显示默认菜单栏
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -779,23 +777,6 @@ function toYamlString(v) {
   return '"' + String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r?\n/g, ' ') + '"'
 }
 
-// ---------------------------------------------------------------------------
-// 豆包登录会话：写/读 ~/.yfworking/doubao-session.json（契约与 server/doubao.mjs 一致）
-// ---------------------------------------------------------------------------
-function writeDoubaoSession(cookies) {
-  fs.mkdirSync(path.dirname(DOUBAO_SESSION_FILE), { recursive: true })
-  fs.writeFileSync(DOUBAO_SESSION_FILE, JSON.stringify({ exportedAt: Date.now(), cookies }, null, 2), 'utf-8')
-  // 权限收紧：会话 cookie 属敏感凭据，仅属主可读写（Windows 上权限位效果有限但无害，与 server/doubao.mjs 对齐）
-  try { fs.chmodSync(DOUBAO_SESSION_FILE, 0o600) } catch {}
-}
-function readDoubaoStatus() {
-  try {
-    const s = JSON.parse(fs.readFileSync(DOUBAO_SESSION_FILE, 'utf-8'))
-    const loggedIn = Array.isArray(s?.cookies) && s.cookies.some(c => c.name === 'sessionid' && c.value)
-    return { loggedIn, exportedAt: typeof s?.exportedAt === 'number' ? s.exportedAt : null }
-  } catch { return { loggedIn: false, exportedAt: null } }
-}
-
 async function registerIpc() {
   // ---------------------------------------------------------------------------
   // 应用内诊断（Task 5）：monitor 接入主进程 + diag:* IPC。
@@ -859,6 +840,39 @@ async function registerIpc() {
     else mainWindow.maximize()
   })
   ipcMain.on('window:close', () => mainWindow?.close())
+  // 独立工具窗口（2026-09-10 设置/个人外置）：渲染层（rail 齿轮/用户钮）请求
+  // 打开；已开则聚焦。kind ∈ { settings, profile }。
+  ipcMain.on('utility:open', (_e, kind) => {
+    const k = kind === 'profile' ? 'profile' : 'settings'
+    const existing = utilityWins.get(k)
+    if (existing && !existing.isDestroyed()) { existing.show(); existing.focus(); return }
+    const win = new BrowserWindow({
+      width: 860, height: 620, minWidth: 560, minHeight: 400,
+      title: k === 'profile' ? '个人信息' : '设置',
+      icon: ICON_PATH, show: false, frame: false,
+      backgroundColor: '#0b0e14',   // 与主窗深色底一致防闪白；主题由渲染层 main.tsx 应用
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.cjs'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false,
+      },
+    })
+    utilityWins.set(k, win)
+    win.on('closed', () => { if (utilityWins.get(k) === win) utilityWins.delete(k) })
+    const devUrl = process.env.VITE_DEV_SERVER_URL
+    if (devUrl) {
+      win.loadURL(devUrl + `?${k}=1`)
+    } else {
+      win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), { query: { [k]: '1' } })
+    }
+    win.once('ready-to-show', () => { win.show() })
+  })
+  // 工具窗口关闭钮：按 sender 关对应窗口（不碰主窗口）
+  ipcMain.on('utility:close', (e) => {
+    const w = BrowserWindow.fromWebContents(e.sender)
+    if (w && !w.isDestroyed()) w.close()
+  })
   ipcMain.handle('window:is-maximized', () => mainWindow?.isMaximized() ?? false)
 
   // Task-complete system notification
@@ -926,7 +940,7 @@ async function registerIpc() {
         show: false,
         frame: false,
         resizable: true,
-        backgroundColor: '#100c08',
+        backgroundColor: '#0b0e14',
         webPreferences: {
           preload: path.join(__dirname, 'preload.cjs'),
           contextIsolation: true,
@@ -974,194 +988,6 @@ async function registerIpc() {
     const f = pendingEditorFile
     pendingEditorFile = null
     return f
-  })
-
-  // ---------------------------------------------------------------------------
-  // 豆包图片生成登录：独立登录窗口（persist:doubao 分区持久化 cookie）
-  // 登录成功判定：轮询分区 cookie 含 sessionid + 导航事件即时触发 + 关窗兜底
-  // 成功后 hide() 隐藏常驻（不销毁）：页面与字节 fetch 签名劫持器保持存活，
-  // 生成请求靠 executeJavaScript 在页面上下文执行（Task 5）
-  // ---------------------------------------------------------------------------
-  const _doubaoIdleEnv = process.env.YFW_DOUBAO_IDLE_MS
-  const DOUBAO_IDLE_DESTROY_MS = _doubaoIdleEnv === '0' ? 0 : (Number(_doubaoIdleEnv) > 0 ? Number(_doubaoIdleEnv) : 10 * 60 * 1000)
-
-  const createDoubaoWindow = async ({ showOnReady } = {}) => {
-    const ses = session.fromPartition('persist:doubao')
-    const win = new BrowserWindow({
-      width: 1100,
-      height: 780,
-      title: '豆包登录',
-      parent: mainWindow || undefined,
-      modal: false,   // 登录窗不得阻塞主窗口：doubao.com 是重站点，加载慢/挂起时主应用必须仍可交互
-      show: false,
-      webPreferences: { partition: 'persist:doubao', contextIsolation: true, backgroundThrottling: false },
-    })
-    doubaoWin = win
-    let poll = null
-    let pollTimer = null
-    const stopPoll = () => { if (poll) clearInterval(poll); if (pollTimer) clearTimeout(pollTimer); poll = null; pollTimer = null }
-    const trySave = async () => {
-      if (doubaoLoggedIn || !doubaoWin || doubaoWin.isDestroyed()) return   // 防重入
-      try {
-        // cookies.get 的 url 需与 cookie 域名匹配：豆包 sessionid 落在 www.doubao.com
-        const cookies = await ses.cookies.get({ url: DOUBAO_URL })
-        if (cookies.some(c => c.name === 'sessionid')) {
-          writeDoubaoSession(cookies.map(c => ({ name: c.name, value: c.value, domain: c.domain, path: c.path })))
-          doubaoLoggedIn = true
-          stopPoll()
-          doubaoLoginWaiters.splice(0).forEach(w => w(true))
-          const current = doubaoWin
-          setTimeout(() => {
-            // 隐藏而非关闭：保持页面与签名劫持器存活
-            if (current && !current.isDestroyed() && doubaoWin === current) current.hide()
-          }, 800)
-        }
-      } catch (err) {
-        console.warn('[main] doubao session check failed:', err?.message || err)
-      }
-    }
-    win.on('close', () => { trySave() })   // 关窗时最终确认一次
-    win.on('closed', () => {
-      doubaoLoginWaiters.splice(0).forEach(w => w(false))
-      if (doubaoWin === win) { doubaoWin = null; doubaoLoggedIn = false }
-      doubaoBusy = false
-      stopPoll()
-    })
-    win.webContents.on('did-navigate', () => { trySave() })
-    win.webContents.on('did-navigate-in-page', () => { trySave() })
-    poll = setInterval(trySave, 2000)
-    pollTimer = setTimeout(stopPoll, 300000)   // 5 分钟轮询窗口
-    win.once('ready-to-show', () => { if (showOnReady && doubaoWin === win && !win.isDestroyed()) win.show() })
-    try {
-      await win.loadURL(DOUBAO_URL)
-    } catch (err) {
-      console.warn('[main] doubao loadURL failed:', err?.message || err)
-      doubaoLoginWaiters.splice(0).forEach(w => w(false))
-      throw err
-    }
-    return win
-  }
-
-  const waitDoubaoLogin = (timeoutMs) => new Promise((res) => {
-    const t = setTimeout(() => res(false), timeoutMs)
-    doubaoLoginWaiters.push((ok) => { clearTimeout(t); res(ok) })
-  })
-
-  // 生成/捕获前调用：窗口不存在则静默重建（不弹窗）并等 cookie 自动登录；
-  // 超时或未登录返回 false（调用方回 401，前端引导用户点登录）。
-  const ensureDoubaoReady = async () => {
-    if (doubaoLoggedIn && doubaoWin && !doubaoWin.isDestroyed()) return true
-    try {
-      if (!doubaoWin || doubaoWin.isDestroyed()) await createDoubaoWindow({ showOnReady: false })
-      if (doubaoLoggedIn) return true
-      return await waitDoubaoLogin(60000)
-    } catch (err) {
-      return false
-    }
-  }
-
-  const openDoubaoLogin = async () => {
-    if (doubaoWin && !doubaoWin.isDestroyed()) { doubaoWin.show(); doubaoWin.focus(); return { ok: true } }
-    await createDoubaoWindow({ showOnReady: true }).catch(() => null)
-    return { ok: true }   // 不等关闭：登录成功后窗口隐藏常驻，函数立即返回
-  }
-
-  // 空闲销毁：仅当「非在途 + 已登录 + 空闲超阈值」时销毁隐藏窗口，释放
-  // doubao.com 页面的持续 GPU/网络/内存负载；下次生成时 ensureDoubaoReady
-  // 静默重建（cookie 在 persist:doubao 分区持久化，登录态不丢）。
-  const startDoubaoIdleReaper = () => {
-    if (doubaoIdleTimer || DOUBAO_IDLE_DESTROY_MS <= 0) return
-    doubaoIdleTimer = setInterval(() => {
-      if (!doubaoWin || doubaoWin.isDestroyed()) return
-      if (doubaoBusy || !doubaoLoggedIn) return
-      if (doubaoLastUse <= 0 || Date.now() - doubaoLastUse < DOUBAO_IDLE_DESTROY_MS) return
-      console.log('[main] doubao window idle — destroying (recreated silently on next generate)')
-      const win = doubaoWin
-      try { win.destroy() } catch {}
-    }, 60000)
-  }
-  startDoubaoIdleReaper()
-  ipcMain.handle('doubao:open-login', () => openDoubaoLogin())
-
-  ipcMain.handle('doubao:get-status', () => readDoubaoStatus())
-
-  ipcMain.handle('doubao:logout', async () => {
-    doubaoLoggedIn = false   // 重置守卫：登出后重新登录需能再次触发成功判定
-    try { fs.rmSync(DOUBAO_SESSION_FILE, { force: true }) } catch {}
-    try { await session.fromPartition('persist:doubao').clearStorageData({ storages: ['cookies'] }) } catch {}
-    return { ok: true }
-  })
-
-  // ---------------------------------------------------------------------------
-  // 豆包图片生成：生成请求只能在页面上下文执行（字节前端 JS 劫持 window.fetch
-  // 自动注入 a_bogus/msToken 签名）。页面脚本 doubao-page-script.js 动态加载
-  // （ESM：main.cjs 为 CJS，用 await import 引入导出）。
-  // generate（文生图）为完整链路；instant（图生图）上传管道待 P0 校准，首版占位。
-  // capture 供 P0 校准：CAPTURE_HOOK 记录页面内真实 /api/ 请求。
-  // ---------------------------------------------------------------------------
-  const { buildGenerateScript, buildCaptureScript, CAPTURE_HOOK } = await import('./doubao-page-script.js')
-
-  const runPageScript = async (script, timeoutMs = 180000) => {
-    const win = doubaoWin
-    const timer = setTimeout(() => { try { win.webContents.executeJavaScript('null').catch(() => {}) } catch {} }, timeoutMs)
-    try {
-      // executeJavaScript 支持返回 Promise；超时无法取消注入，用竞速兜底
-      return await Promise.race([
-        win.webContents.executeJavaScript(script),
-        new Promise(res => setTimeout(() => res({ code: -1, message: 'generate timeout' }), timeoutMs)),
-      ])
-    } finally { clearTimeout(timer) }
-  }
-
-  ipcMain.handle('doubao:generate', async (_e, payload) => {
-    doubaoLastUse = Date.now()
-    if (!(await ensureDoubaoReady())) return { code: 401, message: 'not logged in' }
-    doubaoBusy = true
-    try {
-      // 确保捕获钩子已挂（挂载后页面内所有 /api/ 请求均会被记录，供 P0 校准）
-      await doubaoWin.webContents.executeJavaScript(CAPTURE_HOOK).catch(() => null)
-      const result = await runPageScript(buildGenerateScript({ prompt: String(payload?.prompt || ''), ratio: payload?.ratio, count: payload?.count, imageFileId: payload?.imageFileId }))
-      if (result && result.code === 401) doubaoLoggedIn = false
-      return result
-    } catch (err) {
-      return { code: -1, message: err?.message || String(err) }
-    } finally {
-      doubaoBusy = false
-      doubaoLastUse = Date.now()
-    }
-  })
-
-  ipcMain.handle('doubao:instant', async (_e, payload) => {
-    doubaoLastUse = Date.now()
-    if (!(await ensureDoubaoReady())) return { code: 401, message: 'not logged in' }
-    doubaoBusy = true
-    try {
-      // 图生图：imageBase64 → 页面上下文原生 FormData/File 上传（fetch 劫持器同样注入签名）
-      const b64 = String(payload?.imageBase64 || '')
-      if (!b64) return { code: -1, message: 'imageBase64 required' }
-      // 设计决定（范围控制）：上传链路（prepare_upload → TOS multipart → file_id）
-      // 的真实字段依赖 P0 实测捕获（CAPTURE_HOOK 会记录页面内真实 upload 请求）。
-      // 首版 instant 返回明确错误而非伪造结果，Task 9 校准后补全完整实现；
-      // generate（文生图）已是完整链路。
-      return { code: -1, message: '图生图上传链路待 P0 校准（CAPTURE_HOOK 捕获真实 upload 请求后补全）' }
-    } catch (err) {
-      return { code: -1, message: err?.message || String(err) }
-    } finally {
-      doubaoBusy = false
-      doubaoLastUse = Date.now()
-    }
-  })
-
-  ipcMain.handle('doubao:capture', async () => {
-    doubaoLastUse = Date.now()
-    if (!(await ensureDoubaoReady())) return { code: 401, message: 'not logged in' }
-    doubaoBusy = true
-    try {
-      return await doubaoWin.webContents.executeJavaScript(buildCaptureScript()).catch(() => ({ code: -1, message: 'capture failed' }))
-    } finally {
-      doubaoBusy = false
-      doubaoLastUse = Date.now()
-    }
   })
 
   // ---------------------------------------------------------------------------
@@ -1532,12 +1358,23 @@ if (!gotTheLock) {
     // 旧版 (event, level, message, line, sourceId)——兼容两者
     win.webContents.on('console-message', (...args) => {
       const d = args[1]
+      let line2
       if (d && typeof d === 'object' && typeof d.message === 'string') {
-        console.log(`[render:console] ${d.message} (${d.sourceId}:${d.lineNumber})`)
+        line2 = `[render:console] ${d.message} (${d.sourceId}:${d.lineNumber})`
       } else {
         const [, , message, line, sourceId] = args
-        console.log(`[render:console] ${message} (${sourceId}:${line})`)
+        line2 = `[render:console] ${message} (${sourceId}:${line})`
       }
+      console.log(line2)
+      // 2026-09-10 排障：渲染层 console 落盘（512KB 轮转）——应用经快捷方式
+      // 启动无终端，渲染层日志此前完全不可见；流式/渲染故障排查靠这份文件。
+      try {
+        const p = path.join(resolveYfwHome(), 'logs', 'renderer-console.log')
+        fs.appendFileSync(p, line2 + '\n', 'utf-8')
+        if (fs.statSync(p).size > 512 * 1024) {
+          fs.writeFileSync(p, fs.readFileSync(p, 'utf-8').slice(-256 * 1024))
+        }
+      } catch (_) {}
     })
     win.webContents.on('preload-error', (_e, p, err) =>
       console.error(`[render] preload-error ${p}: ${err.message}`))
@@ -1547,6 +1384,13 @@ if (!gotTheLock) {
   // 认证放行（spec §2.0/D13；Task 6b）：认证小窗登录/首设成功 → 渲染层发 auth:granted →
   // 关小窗、创建主窗口（bootStartAt 重置刷新 60s 启动兜底窗口基线，did-finish-load 接 bootPhase）。
   // 注册在此（而非 registerIpc）：处理器需触及 else 块作用域内 let bootStartAt/bootPhase。
+  // 认证小窗关闭钮（2026-09-10 无边框登录窗）：关小窗即走 authWin 'closed' 的
+  // 既有语义——未放行且主窗口未创建时退出应用。
+  ipcMain.on('auth:close', () => {
+    const w = authWin
+    if (w && !w.isDestroyed()) w.close()
+  })
+
   ipcMain.on('auth:granted', () => {
     authGranted = true
     const w = authWin
@@ -1575,24 +1419,16 @@ if (!gotTheLock) {
     // 2026-08-22 判据统一：先 netstat 看端口真实监听者，再严格 /health 校验。
     // 端口被健康桥占用 → 接管；被半死/残留 bridge 占用 → 回收后自起；空闲 → 自起。
     // 旧逻辑 isPortInUse（有响应即活）会让"假桥"永久卡住（见 isBridgeHealthy 注释）。
+    // 2026-09-09 孤儿桥修复：不再收养端口上的外部健康桥（旧构建孤儿被收养 =
+    // 应用与旧内核通信，"重启后无法唤醒"）。单实例语义：任何本应用残留桥一律
+    // 回收后自起当前构建；外来进程占位则交给 startBridgeAndWait 的失败路径报错。
     const portPid = await findPortPid(BRIDGE_PORT)
-    if (portPid) {
-      if (await isBridgeHealthy()) {
-        console.log('[main] bridge healthy on :' + BRIDGE_PORT + ' — adopting')
-        adoptBridge()
-        bootPhase('bridgeReady')
-      } else {
-        console.warn('[main] port :' + BRIDGE_PORT + ' occupied but unhealthy — checking owner pid ' + portPid)
-        if (await isBridgeProcess(portPid)) {
-          console.error('[main] recycling stale bridge pid ' + portPid)
-          taskkillPid(portPid)
-          await new Promise((r) => setTimeout(r, 500))
-        }
-        await startBridgeAndWait()
-      }
-    } else {
-      await startBridgeAndWait()
+    if (portPid && await isBridgeProcess(portPid)) {
+      console.warn('[main] recycling external bridge pid ' + portPid + ' — starting fresh')
+      taskkillPid(portPid)
+      await new Promise((r) => setTimeout(r, 500))
     }
+    await startBridgeAndWait()
     // D11-D13：冷启动先建认证小窗（?auth=1），主窗口在 auth:granted 后才创建（资源认证后才加载）
     createAuthWindow()
     createTray()

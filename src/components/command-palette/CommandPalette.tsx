@@ -47,8 +47,8 @@ export function CommandPalette() {
         case 'new-conv': createConversation(); break
         case 'open-settings': openSettings(); break
         case 'toggle-theme': {
-          const order: Array<'yuanfang' | 'yuanfang-light' | 'dark' | 'light'> = ['yuanfang', 'yuanfang-light', 'dark', 'light']
-          const idx = order.indexOf(settings.theme as any)
+          const order = ['dark', 'light', 'dark-glass', 'light-glass'] as const
+          const idx = order.indexOf(settings.theme)
           const next = order[(idx + 1) % order.length]
           updateSettings({ theme: next })
           break

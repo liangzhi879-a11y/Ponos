@@ -188,9 +188,9 @@ textarea::placeholder {
    结构：.health-meter（外框+轨道） > .health-meter-fill（档位渐变填充） > .health-meter-text（压缩次数覆盖文字）。
    扁平基线（普通主题）：无边框、无外阴影，仅低对比度轨道底色，主题令牌 var(--health-tier-{color}) 决定填充色，
    文字色 var(--health-meter-text) 也按主题设定（浅主题更亮、深主题暖白）。换主题即时生效。
-   玻璃态增强（仅 .theme-glass / .theme-glass-warm）：在 .health-meter 上加 .health-meter-glass 类，
+   玻璃态增强（仅 .theme-dark-glass / .theme-light-glass）：在 .health-meter 上加 .health-meter-glass 类，
    自动启用 1px 边框 + 霓虹辉光 + 顶部光泽高光——更通透游戏 HP 风格。
-   注意：不用 html:not([class*="theme-glass"]) 否定选择器——cssnano 压缩会破坏该选择器
+   注意：不用 html:not([class*="-glass"]) 否定选择器——cssnano 压缩会破坏该选择器
    （产物成 `theme-glass]) .xxx` 非法片段整条丢弃）。 */
 .health-meter {
   position: relative;
@@ -357,15 +357,19 @@ kbd {
 }
 
 /* ============================================================
-   Atmospheric — Yuanfang warm-glow accent
+   Atmospheric — 品牌暖光 accent（4 主题统一 Boost 橙）
    ============================================================ */
 
-.theme-yuanfang .accent-glow,
-.theme-yuanfang-light .accent-glow {
+.theme-dark .accent-glow,
+.theme-light .accent-glow,
+.theme-dark-glass .accent-glow,
+.theme-light-glass .accent-glow {
   position: relative;
 }
-.theme-yuanfang .accent-glow::after,
-.theme-yuanfang-light .accent-glow::after {
+.theme-dark .accent-glow::after,
+.theme-light .accent-glow::after,
+.theme-dark-glass .accent-glow::after,
+.theme-light-glass .accent-glow::after {
   content: '';
   position: absolute;
   inset: -1px;
@@ -459,53 +463,53 @@ kbd {
      #root (z:1)             — 应用内容（根容器 bg-app 透明，露出光晕）
      玻璃面板 (.bg-surface…) — 半透明白底 + backdrop-filter 实时模糊
                                （滚动/漂移的内容穿过面板下方时被模糊）
-   主题类用 [class*="theme-glass"] 匹配 .theme-glass 与 .theme-glass-warm
+   主题类用 [class*="-glass"] 匹配 .theme-dark-glass 与 .theme-light-glass
    ============================================================ */
 
 /* ---- 基础定位（两套光晕共享） ---- */
-:root[class*="theme-glass"] body::before,
-:root[class*="theme-glass"] body::after {
+:root[class*="-glass"] body::before,
+:root[class*="-glass"] body::after {
   content: '';
   position: fixed;
   inset: 0;
   z-index: 0;
   pointer-events: none;
 }
-:root[class*="theme-glass"] #root {
+:root[class*="-glass"] #root {
   position: relative;
   z-index: 1;
 }
 /* 光晕漂移动画：两套配色共享；设置关闭动画时暂停（glassAurora=false）。
    幅度刻意收小（≤±1.5% 位移 + 12deg 色相）+ 周期 20s：只保留"活的光晕"，
    不产生整窗背景随光晕移动的晃动感（透明窗口下会误读为桌面在动）。 */
-:root[class*="theme-glass"] body::before {
+:root[class*="-glass"] body::before {
   animation: glass-aurora-drift 20s ease-in-out infinite alternate;
 }
-:root[class*="theme-glass"].glass-aurora-off body::before {
+:root[class*="-glass"].glass-aurora-off body::before {
   animation: none;
 }
 /* plan §3 步骤 7 — 玻璃色调偏移（用户拖动滑块调节）
    应用到 body 而非 body::before：让 keyframe 的 hue-rotate 漂移不受冲突，
    同时极光 + UI 颜色统一响应（拖动 -90° 极光变青、按钮变青、文字变青） */
-:root[class*="theme-glass"] body {
+:root[class*="-glass"] body {
   filter: hue-rotate(var(--glass-hue-shift, 0deg));
   transition: filter 0.4s ease;
 }
 
-/* ---- 冷色光晕 · Glass（靛蓝紫） ----
+/* ---- 暖橙极光 · dark-glass（墨玻璃，Boost 橙主晕 + 冷蓝副晕） ----
    窗口 transparent 透出真实桌面；光晕为半透明叠层（色块提供漂移细节）。
    两个压暗层（顶部整屏 + 底部 160deg 基色）的 alpha 随 --glass-opacity
    透光度设置联动：op=0.3 时背景更透（露出更多桌面），op 拉高时背景
    变暗压住桌面保文字可读。默认 op=0.3 ≈ 顶部 0.15 / 基色 0.33。 */
-.theme-glass body::before {
+.theme-dark-glass body::before {
   background:
-    linear-gradient(rgba(3, 5, 12, calc(var(--glass-opacity, 0.3) * 0.5)), rgba(3, 5, 12, calc(var(--glass-opacity, 0.3) * 0.5))),
-    radial-gradient(34% 42% at 16% 20%, rgba(124, 58, 237, 0.50) 0%, transparent 55%),
-    radial-gradient(28% 36% at 84% 14%, rgba(56, 189, 248, 0.38) 0%, transparent 58%),
-    radial-gradient(40% 48% at 80% 86%, rgba(244, 114, 182, 0.28) 0%, transparent 58%),
-    radial-gradient(26% 32% at 6% 84%, rgba(167, 139, 250, 0.32) 0%, transparent 55%),
-    radial-gradient(20% 26% at 50% 45%, rgba(14, 165, 233, 0.18) 0%, transparent 60%),
-    linear-gradient(160deg, rgba(8, 12, 24, calc(var(--glass-opacity, 0.3) * 1.1)) 0%, rgba(14, 21, 48, calc(var(--glass-opacity, 0.3) * 0.9)) 52%, rgba(10, 14, 30, calc(var(--glass-opacity, 0.3) * 1.1)) 100%);
+    linear-gradient(rgba(5, 7, 12, calc(var(--glass-opacity, 0.3) * 0.5)), rgba(5, 7, 12, calc(var(--glass-opacity, 0.3) * 0.5))),
+    radial-gradient(34% 42% at 16% 20%, rgba(255, 116, 41, 0.50) 0%, transparent 55%),
+    radial-gradient(28% 36% at 84% 14%, rgba(80, 160, 200, 0.35) 0%, transparent 58%),
+    radial-gradient(40% 48% at 80% 86%, rgba(255, 162, 104, 0.24) 0%, transparent 58%),
+    radial-gradient(26% 32% at 6% 84%, rgba(255, 116, 41, 0.28) 0%, transparent 55%),
+    radial-gradient(20% 26% at 50% 45%, rgba(80, 160, 200, 0.16) 0%, transparent 60%),
+    linear-gradient(160deg, rgba(8, 11, 16, calc(var(--glass-opacity, 0.3) * 1.1)) 0%, rgba(13, 16, 24, calc(var(--glass-opacity, 0.3) * 0.9)) 52%, rgba(10, 13, 20, calc(var(--glass-opacity, 0.3) * 1.1)) 100%);
 }
 @keyframes glass-aurora-drift {
   0%   { transform: translate3d(-1.2%, -0.8%, 0) scale(1.02); filter: hue-rotate(0deg); }
@@ -513,21 +517,21 @@ kbd {
   100% { transform: translate3d(1.5%, -0.6%, 0) scale(1.03); filter: hue-rotate(12deg); }
 }
 
-/* ---- 暖色光晕 · Glass Warm（YF 橙） ----
-   压暗层同样随 --glass-opacity 联动（默认 op=0.3 ≈ 顶部 0.18 / 基色 0.33）。 */
-.theme-glass-warm body::before {
+/* ---- 暖金微光 · light-glass（白磨砂，暖金主晕 + 淡青副晕，低饱和） ----
+   提亮层同样随 --glass-opacity 联动（默认 op=0.3 ≈ 顶部 0.16 / 基色 0.30）。 */
+.theme-light-glass body::before {
   background:
-    linear-gradient(rgba(10, 5, 2, calc(var(--glass-opacity, 0.3) * 0.6)), rgba(10, 5, 2, calc(var(--glass-opacity, 0.3) * 0.6))),
-    radial-gradient(36% 44% at 20% 18%, rgba(255, 106, 0, 0.44) 0%, transparent 56%),
-    radial-gradient(30% 38% at 82% 16%, rgba(251, 146, 60, 0.36) 0%, transparent 58%),
-    radial-gradient(42% 50% at 76% 86%, rgba(244, 63, 94, 0.22) 0%, transparent 58%),
-    radial-gradient(28% 34% at 8% 82%, rgba(245, 158, 11, 0.30) 0%, transparent 55%),
-    radial-gradient(22% 28% at 52% 50%, rgba(255, 183, 77, 0.16) 0%, transparent 60%),
-    linear-gradient(160deg, rgba(18, 10, 3, calc(var(--glass-opacity, 0.3) * 1.1)) 0%, rgba(30, 18, 4, calc(var(--glass-opacity, 0.3) * 0.9)) 52%, rgba(14, 8, 3, calc(var(--glass-opacity, 0.3) * 1.1)) 100%);
+    linear-gradient(rgba(253, 249, 245, calc(var(--glass-opacity, 0.3) * 0.55)), rgba(253, 249, 245, calc(var(--glass-opacity, 0.3) * 0.55))),
+    radial-gradient(36% 44% at 20% 18%, rgba(255, 170, 90, 0.35) 0%, transparent 56%),
+    radial-gradient(30% 38% at 82% 16%, rgba(120, 170, 200, 0.25) 0%, transparent 58%),
+    radial-gradient(42% 50% at 76% 86%, rgba(255, 170, 90, 0.20) 0%, transparent 58%),
+    radial-gradient(28% 34% at 8% 82%, rgba(255, 200, 130, 0.24) 0%, transparent 55%),
+    radial-gradient(22% 28% at 52% 50%, rgba(255, 220, 170, 0.18) 0%, transparent 60%),
+    linear-gradient(160deg, rgba(253, 249, 245, calc(var(--glass-opacity, 0.3) * 1.0)) 0%, rgba(255, 253, 251, calc(var(--glass-opacity, 0.3) * 0.9)) 52%, rgba(253, 249, 245, calc(var(--glass-opacity, 0.3) * 1.0)) 100%);
 }
 
 /* ---- SVG 噪点颗粒层：模糊前后对比强烈，玻璃才有"磨"的质感 ---- */
-:root[class*="theme-glass"] body::after {
+:root[class*="-glass"] body::after {
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='180' height='180' filter='url(%23n)' opacity='0.075'/></svg>");
   background-size: 180px 180px;
   opacity: 1;
@@ -540,30 +544,30 @@ kbd {
    用属性包含覆盖全部变体；:not([class*="hover:bg"]) 等排除仅 hover/focus
    才填充的行/按钮，避免未悬停也被永久加模糊（focus-within 变体不排除：
    输入框静态 bg-surface/80 与 focus-within:bg-surface 同元素，需保留）。 */
-:root[class*="theme-glass"] [class*="bg-surface"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
-:root[class*="theme-glass"] [class*="bg-elevated"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
-:root[class*="theme-glass"] [class*="bg-input"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
-:root[class*="theme-glass"] [class*="bg-toolbar"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
-:root[class*="theme-glass"] [class*="bg-hover"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
-:root[class*="theme-glass"] [class*="bg-active"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
-:root[class*="theme-glass"] [class*="bg-prose"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
-:root[class*="theme-glass"] [class*="bg-brand-"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) {
+:root[class*="-glass"] [class*="bg-surface"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="-glass"] [class*="bg-elevated"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="-glass"] [class*="bg-input"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="-glass"] [class*="bg-toolbar"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="-glass"] [class*="bg-hover"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="-glass"] [class*="bg-active"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="-glass"] [class*="bg-prose"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="-glass"] [class*="bg-brand-"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) {
   backdrop-filter: blur(18px) saturate(150%);
   -webkit-backdrop-filter: blur(18px) saturate(150%);
 }
 /* 浮层（popover/modal/tooltip）更重的模糊 */
-:root[class*="theme-glass"] [class*="bg-popover"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
-:root[class*="theme-glass"] [class*="bg-modal"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
-:root[class*="theme-glass"] [class*="bg-tooltip"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) {
+:root[class*="-glass"] [class*="bg-popover"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="-glass"] [class*="bg-modal"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="-glass"] [class*="bg-tooltip"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) {
   backdrop-filter: blur(26px) saturate(165%);
   -webkit-backdrop-filter: blur(26px) saturate(165%);
 }
 /* 主要面板顶部内高光，增强玻璃边缘质感（同样排除 hover/focus 变体） */
-:root[class*="theme-glass"] [class*="bg-surface"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
-:root[class*="theme-glass"] [class*="bg-elevated"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
-:root[class*="theme-glass"] [class*="bg-popover"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
-:root[class*="theme-glass"] [class*="bg-modal"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
-:root[class*="theme-glass"] [class*="bg-toolbar"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) {
+:root[class*="-glass"] [class*="bg-surface"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="-glass"] [class*="bg-elevated"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="-glass"] [class*="bg-popover"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="-glass"] [class*="bg-modal"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]),
+:root[class*="-glass"] [class*="bg-toolbar"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
@@ -575,18 +579,18 @@ kbd {
    故玻璃主题下把面板修饰类固定为完整底色（忽略 /N 数值），品牌淡色选中态
    （bg-brand-500/N）按透光度联动缩放。属性包含匹配覆盖全部 /N 变体，
    hover/focus 等变体排除，避免未悬停就上色。 */
-:root[class*="theme-glass"] [class*="bg-surface/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-surface); }
-:root[class*="theme-glass"] [class*="bg-elevated/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-elevated); }
-:root[class*="theme-glass"] [class*="bg-input/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-input); }
-:root[class*="theme-glass"] [class*="bg-toolbar/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-toolbar); }
-:root[class*="theme-glass"] [class*="bg-app/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-app); }
-:root[class*="theme-glass"] [class*="bg-hover/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-hover); }
-:root[class*="theme-glass"] [class*="bg-active/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-active); }
-:root[class*="theme-glass"] [class*="bg-prose/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-prose); }
-:root[class*="theme-glass"] [class*="bg-code/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-code); }
-:root[class*="theme-glass"] [class*="bg-modal/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-modal); }
-:root[class*="theme-glass"] [class*="bg-popover/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-popover); }
-:root[class*="theme-glass"] [class*="bg-brand-500/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: color-mix(in srgb, var(--brand-500) calc(var(--glass-opacity, 0.3) * 50%), transparent); }
+:root[class*="-glass"] [class*="bg-surface/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-surface); }
+:root[class*="-glass"] [class*="bg-elevated/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-elevated); }
+:root[class*="-glass"] [class*="bg-input/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-input); }
+:root[class*="-glass"] [class*="bg-toolbar/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-toolbar); }
+:root[class*="-glass"] [class*="bg-app/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-app); }
+:root[class*="-glass"] [class*="bg-hover/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-hover); }
+:root[class*="-glass"] [class*="bg-active/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-active); }
+:root[class*="-glass"] [class*="bg-prose/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-prose); }
+:root[class*="-glass"] [class*="bg-code/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-code); }
+:root[class*="-glass"] [class*="bg-modal/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-modal); }
+:root[class*="-glass"] [class*="bg-popover/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: var(--bg-popover); }
+:root[class*="-glass"] [class*="bg-brand-500/"]:not([class*="hover:bg"]):not([class*="focus:bg"]):not([class*="active:bg"]):not([class*="group-hover:bg"]) { background-color: color-mix(in srgb, var(--brand-500) calc(var(--glass-opacity, 0.3) * 50%), transparent); }
 
 /* ---- 玻璃框线统一 — 无显式颜色的边框类取设计边框色 ----
    Tailwind 的 border/border-b/t/r/l 只设宽度，颜色 fallback currentColor
@@ -594,56 +598,56 @@ kbd {
    玻璃主题下把这些无颜色边框统一为 --border-default 设计值（14% 白，柔和），
    显式带色的边框类（border-default/subtle/brand/error/warning/success/accent/
    transparent/dashed/collapse 等）不受影响。 */
-:root[class*="theme-glass"] [class~="border"]:not([class*="border-default"]):not([class*="border-subtle"]):not([class*="border-strong"]):not([class*="border-brand"]):not([class*="border-error"]):not([class*="border-warning"]):not([class*="border-success"]):not([class*="border-accent"]):not([class*="border-transparent"]):not([class*="border-kbd"]):not([class*="border-dashed"]):not([class*="border-collapse"]),
-:root[class*="theme-glass"] [class~="border-t"]:not([class*="border-default"]):not([class*="border-subtle"]):not([class*="border-strong"]):not([class*="border-brand"]):not([class*="border-error"]):not([class*="border-warning"]):not([class*="border-success"]):not([class*="border-accent"]):not([class*="border-transparent"]):not([class*="border-kbd"]):not([class*="border-dashed"]):not([class*="border-collapse"]),
-:root[class*="theme-glass"] [class~="border-b"]:not([class*="border-default"]):not([class*="border-subtle"]):not([class*="border-strong"]):not([class*="border-brand"]):not([class*="border-error"]):not([class*="border-warning"]):not([class*="border-success"]):not([class*="border-accent"]):not([class*="border-transparent"]):not([class*="border-kbd"]):not([class*="border-dashed"]):not([class*="border-collapse"]),
-:root[class*="theme-glass"] [class~="border-r"]:not([class*="border-default"]):not([class*="border-subtle"]):not([class*="border-strong"]):not([class*="border-brand"]):not([class*="border-error"]):not([class*="border-warning"]):not([class*="border-success"]):not([class*="border-accent"]):not([class*="border-transparent"]):not([class*="border-kbd"]):not([class*="border-dashed"]):not([class*="border-collapse"]),
-:root[class*="theme-glass"] [class~="border-l"]:not([class*="border-default"]):not([class*="border-subtle"]):not([class*="border-strong"]):not([class*="border-brand"]):not([class*="border-error"]):not([class*="border-warning"]):not([class*="border-success"]):not([class*="border-accent"]):not([class*="border-transparent"]):not([class*="border-kbd"]):not([class*="border-dashed"]):not([class*="border-collapse"]) {
+:root[class*="-glass"] [class~="border"]:not([class*="border-default"]):not([class*="border-subtle"]):not([class*="border-strong"]):not([class*="border-brand"]):not([class*="border-error"]):not([class*="border-warning"]):not([class*="border-success"]):not([class*="border-accent"]):not([class*="border-transparent"]):not([class*="border-kbd"]):not([class*="border-dashed"]):not([class*="border-collapse"]),
+:root[class*="-glass"] [class~="border-t"]:not([class*="border-default"]):not([class*="border-subtle"]):not([class*="border-strong"]):not([class*="border-brand"]):not([class*="border-error"]):not([class*="border-warning"]):not([class*="border-success"]):not([class*="border-accent"]):not([class*="border-transparent"]):not([class*="border-kbd"]):not([class*="border-dashed"]):not([class*="border-collapse"]),
+:root[class*="-glass"] [class~="border-b"]:not([class*="border-default"]):not([class*="border-subtle"]):not([class*="border-strong"]):not([class*="border-brand"]):not([class*="border-error"]):not([class*="border-warning"]):not([class*="border-success"]):not([class*="border-accent"]):not([class*="border-transparent"]):not([class*="border-kbd"]):not([class*="border-dashed"]):not([class*="border-collapse"]),
+:root[class*="-glass"] [class~="border-r"]:not([class*="border-default"]):not([class*="border-subtle"]):not([class*="border-strong"]):not([class*="border-brand"]):not([class*="border-error"]):not([class*="border-warning"]):not([class*="border-success"]):not([class*="border-accent"]):not([class*="border-transparent"]):not([class*="border-kbd"]):not([class*="border-dashed"]):not([class*="border-collapse"]),
+:root[class*="-glass"] [class~="border-l"]:not([class*="border-default"]):not([class*="border-subtle"]):not([class*="border-strong"]):not([class*="border-brand"]):not([class*="border-error"]):not([class*="border-warning"]):not([class*="border-success"]):not([class*="border-accent"]):not([class*="border-transparent"]):not([class*="border-kbd"]):not([class*="border-dashed"]):not([class*="border-collapse"]) {
   border-color: var(--border-default);
 }
 
 /* ============================================================
    Glass Buttons — 磨砂玻璃主题按钮质感（方案 A：.glass-btn 单一来源）
-   button.tsx 基础类新增 .glass-btn；全部规则限定 :root[class*="theme-glass"]，
+   button.tsx 基础类新增 .glass-btn；全部规则限定 :root[class*="-glass"]，
    其余主题零影响。共享骨架（内高光+微光泽+上浮回落）+ 各变体专属辉光。
    ============================================================ */
 
 /* 共享骨架：顶部内高光、微光泽渐变（叠加于填充色之上）、hover 上浮 / active 回落 */
-:root[class*="theme-glass"] .glass-btn {
+:root[class*="-glass"] .glass-btn {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
   background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 45%);
 }
 /* 填充变体（primary/danger/success/secondary）追加柔和投影 + 略强内高光，
    让按钮从背景"浮起"；否则内高光被 shadow-sm 等类覆盖后小尺寸按钮
    （导航栏 +、发送按钮）静止时显得扁平、只剩 hover 辉光 */
-:root[class*="theme-glass"] .glass-btn[class*="bg-brand-500"],
-:root[class*="theme-glass"] .glass-btn[class*="bg-error"],
-:root[class*="theme-glass"] .glass-btn[class*="bg-success"],
-:root[class*="theme-glass"] .glass-btn[class*="bg-elevated"] {
+:root[class*="-glass"] .glass-btn[class*="bg-brand-500"],
+:root[class*="-glass"] .glass-btn[class*="bg-error"],
+:root[class*="-glass"] .glass-btn[class*="bg-success"],
+:root[class*="-glass"] .glass-btn[class*="bg-elevated"] {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15), 0 1px 2px rgba(2, 6, 23, 0.45);
 }
-:root[class*="theme-glass"] .glass-btn:hover {
+:root[class*="-glass"] .glass-btn:hover {
   transform: translateY(-1px);
 }
-:root[class*="theme-glass"] .glass-btn:active {
+:root[class*="-glass"] .glass-btn:active {
   transform: translateY(0);
 }
-:root[class*="theme-glass"] .glass-btn:disabled {
+:root[class*="-glass"] .glass-btn:disabled {
   transform: none;
 }
 
 /* primary — 半透明品牌玻璃：填充随透光度缩放（op=0.3 → 78%，>100% 钳制为实色），
    排除选中标签等非按钮的 bg-brand-500/15 淡色 */
-:root[class*="theme-glass"] .glass-btn[class*="bg-brand-500"]:not([class*="bg-brand-500/"]) {
+:root[class*="-glass"] .glass-btn[class*="bg-brand-500"]:not([class*="bg-brand-500/"]) {
   background-color: color-mix(in srgb, var(--brand-500) calc(var(--glass-opacity, 0.3) * 260%), transparent);
 }
-:root[class*="theme-glass"] .glass-btn[class*="bg-brand-500"]:not([class*="bg-brand-500/"]):hover {
+:root[class*="-glass"] .glass-btn[class*="bg-brand-500"]:not([class*="bg-brand-500/"]):hover {
   background-color: color-mix(in srgb, var(--brand-500) calc(var(--glass-opacity, 0.3) * 320%), transparent);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.16),
     0 4px 24px -4px color-mix(in srgb, var(--brand-500) 60%, transparent);
 }
-:root[class*="theme-glass"] .glass-btn[class*="bg-brand-500"]:not([class*="bg-brand-500/"]):active {
+:root[class*="-glass"] .glass-btn[class*="bg-brand-500"]:not([class*="bg-brand-500/"]):active {
   background-color: color-mix(in srgb, var(--brand-500) calc(var(--glass-opacity, 0.3) * 280%), transparent);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.12),
@@ -651,19 +655,19 @@ kbd {
 }
 
 /* danger / success — 各自色调辉光 */
-:root[class*="theme-glass"] .glass-btn[class*="bg-error"]:hover {
+:root[class*="-glass"] .glass-btn[class*="bg-error"]:hover {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.12),
     0 4px 20px -4px color-mix(in srgb, var(--error) 45%, transparent);
 }
-:root[class*="theme-glass"] .glass-btn[class*="bg-success"]:hover {
+:root[class*="-glass"] .glass-btn[class*="bg-success"]:hover {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.12),
     0 4px 20px -4px color-mix(in srgb, var(--success) 45%, transparent);
 }
 
 /* ghost / secondary / outline — 中性柔光 */
-:root[class*="theme-glass"] .glass-btn:hover:not([class*="bg-brand-500"]):not([class*="bg-error"]):not([class*="bg-success"]) {
+:root[class*="-glass"] .glass-btn:hover:not([class*="bg-brand-500"]):not([class*="bg-error"]):not([class*="bg-success"]) {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.14),
     0 4px 16px -4px rgba(255, 255, 255, 0.08);
@@ -672,7 +676,7 @@ kbd {
 /* ---- 侧栏会话右键菜单（自定义 portal 菜单，未走 DropdownMenuContent 类体系）----
    补齐玻璃面板语言：顶部内高光 + shadow-popover（含 0 0 0 1px 边缘环），
    与 DropdownMenuContent 同配方；微光泽渐变叠加在内联 popover-bg 之上 */
-:root[class*="theme-glass"] .glass-context-menu {
+:root[class*="-glass"] .glass-context-menu {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), var(--shadow-popover);
   background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0) 40%);
 }
@@ -682,12 +686,12 @@ kbd {
    用户要求磨砂色调只作用于面板/极光背景，不改变关键按钮、Logo、头像的本色：
    这些元素用反方向 hue-rotate(-θ) 抵消 body 的全局旋转——自身填充/文字/辉光
    恢复设计色，背后的磨砂面板仍随滑块变色。filter 过渡时长跟随 body 的 0.4s。 */
-:root[class*="theme-glass"] .glass-logo,
-:root[class*="theme-glass"] .glass-avatar {
+:root[class*="-glass"] .glass-logo,
+:root[class*="-glass"] .glass-avatar {
   filter: hue-rotate(calc(var(--glass-hue-shift, 0deg) * -1));
   transition: filter 0.4s ease;
 }
-:root[class*="theme-glass"] .glass-btn {
+:root[class*="-glass"] .glass-btn {
   filter: hue-rotate(calc(var(--glass-hue-shift, 0deg) * -1));
   /* 覆盖按钮基类 transition-all：filter 用 0.4s 跟随色调过渡，
      其余属性保留 150ms 原过渡（hover 变色/上浮/按下不失效） */
@@ -698,12 +702,12 @@ kbd {
 /* ---- 窗口关闭按钮（右上角 frameless 控制区）— 仅玻璃主题：hover 红色发光 ----
    静止无辉光；hover 时红底（既有 hover:bg-error）叠加红色光晕 + 玻璃内高光，
    过渡含 box-shadow（transition-colors 默认只过渡颜色）；色相同样回正 */
-:root[class*="theme-glass"] .window-close-btn {
+:root[class*="-glass"] .window-close-btn {
   filter: hue-rotate(calc(var(--glass-hue-shift, 0deg) * -1));
   transition-property: color, background-color, box-shadow, filter;
   transition-duration: 0.15s, 0.15s, 0.15s, 0.4s;
 }
-:root[class*="theme-glass"] .window-close-btn:hover {
+:root[class*="-glass"] .window-close-btn:hover {
   box-shadow:
     0 0 12px 2px color-mix(in srgb, var(--error) 45%, transparent),
     inset 0 1px 0 rgba(255, 255, 255, 0.08);
@@ -772,47 +776,47 @@ html.anim-paused *::after {
   }
 }
 /* 极光光晕层 + SVG 噪点层整体移除（两套 glass 主题共用结构） */
-html.speed-mode[class*="theme-glass"] body::before,
-html.speed-mode[class*="theme-glass"] body::after {
+html.speed-mode[class*="-glass"] body::before,
+html.speed-mode[class*="-glass"] body::after {
   display: none !important;
 }
-/* glass 冷色（Glass）实色兜底：取主题表面色系，扁平化后保持可读 */
-html.speed-mode[class*="theme-glass"]:not([class*="theme-glass-warm"]) {
-  --bg-app:      #0e1324;
-  --bg-surface:  #141a30;
-  --bg-elevated: #1a2140;
-  --bg-hover:    #20284e;
-  --bg-active:   #28325f;
-  --bg-input:    #141a30;
-  --bg-toolbar:  #141a30;
-  --bg-modal:    #161c36;
-  --bg-popover:  #1a2140;
-  --bg-tooltip:  #161c36;
-  --bg-code:     #0a0f1e;
-  --bg-prose:    #141a30;
-  --bg-kbd:      #20284e;
-  --popover-bg:  #1a2140;
-  --tooltip-bg:  #161c36;
-  --modal-bg:    #161c36;
+/* dark-glass（墨玻璃）实色兜底：取主题表面色系，扁平化后保持可读 */
+html.speed-mode[class*="-glass"]:not([class*="light-glass"]) {
+  --bg-app:      #0b0e14;
+  --bg-surface:  #11161f;
+  --bg-elevated: #161c28;
+  --bg-hover:    #1e2533;
+  --bg-active:   #262e3d;
+  --bg-input:    #11161f;
+  --bg-toolbar:  #11161f;
+  --bg-modal:    #161c28;
+  --bg-popover:  #1a2130;
+  --bg-tooltip:  #1e2533;
+  --bg-code:     #080a0d;
+  --bg-prose:    #11161f;
+  --bg-kbd:      #1e2533;
+  --popover-bg:  #1a2130;
+  --tooltip-bg:  #11161f;
+  --modal-bg:    #161c28;
 }
-/* glass 暖色（Glass Warm / YF暖色）实色兜底 */
-html.speed-mode[class*="theme-glass-warm"] {
-  --bg-app:      #160e06;
-  --bg-surface:  #1e1308;
-  --bg-elevated: #27180a;
-  --bg-hover:    #2e1e0e;
-  --bg-active:   #382612;
-  --bg-input:    #1e1308;
-  --bg-toolbar:  #1e1308;
-  --bg-modal:    #221408;
-  --bg-popover:  #27180a;
-  --bg-tooltip:  #221408;
-  --bg-code:     #0f0803;
-  --bg-prose:    #1e1308;
-  --bg-kbd:      #2e1e0e;
-  --popover-bg:  #27180a;
-  --tooltip-bg:  #221408;
-  --modal-bg:    #221408;
+/* light-glass（白磨砂）实色兜底 */
+html.speed-mode[class*="light-glass"] {
+  --bg-app:      #fdf9f5;
+  --bg-surface:  #fffdfb;
+  --bg-elevated: #ffffff;
+  --bg-hover:    #fff6ef;
+  --bg-active:   #ffeddd;
+  --bg-input:    #fffdfb;
+  --bg-toolbar:  #fffdfb;
+  --bg-modal:    #ffffff;
+  --bg-popover:  #ffffff;
+  --bg-tooltip:  #24272c;
+  --bg-code:     #24272c;
+  --bg-prose:    #fffdfb;
+  --bg-kbd:      #fff6ef;
+  --popover-bg:  #ffffff;
+  --tooltip-bg:  #24272c;
+  --modal-bg:    #ffffff;
 }
 
 /* ============================================================

@@ -4,7 +4,8 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
-import { THEMES, THEME_CLASS_NAMES, type ThemeMode } from '@/types'
+import { THEME_CLASS_NAMES, type ThemeMode } from '@/types'
+import { migrateThemeId } from './lib/themeMap'
 
 /* ------------------------------------------------------------
    Pre-mount: migrate old localStorage keys, then read the
@@ -27,20 +28,16 @@ import { THEMES, THEME_CLASS_NAMES, type ThemeMode } from '@/types'
   }
 })()
 const THEME_BG: Record<ThemeMode, string> = {
-  'yuanfang':       '#100c08',
-  'yuanfang-light': '#f0f2f5',
-  'dark':           '#0c0e12',
-  'light':          '#f2f4f7',
-  'glass':          '#0b0f1e',
-  'glass-warm':     '#160c05',
+  'dark':         '#0b0e14',
+  'light':        '#fdf9f5',
+  'dark-glass':   '#11161f',   // 玻璃主题取面板基色兜底（首帧由 class 接管）
+  'light-glass':  '#fffdfb',
 }
 const THEME_FG: Record<ThemeMode, string> = {
-  'yuanfang':       '#e8d6b8',
-  'yuanfang-light': '#1e2432',
-  'dark':           '#d8dce3',
-  'light':          '#181d26',
-  'glass':          '#e7ecf5',
-  'glass-warm':     '#f5ead9',
+  'dark':         '#f0e6d8',
+  'light':        '#24272c',
+  'dark-glass':   '#f0e6d8',
+  'light-glass':  '#24272c',
 }
 
 try {
@@ -49,14 +46,13 @@ try {
     const parsed = JSON.parse(raw) as {
       state?: { settings?: { theme?: string } }
     }
-    const theme = parsed?.state?.settings?.theme
-    if (THEMES.some(t => t.id === theme)) {
-      const t = theme as ThemeMode
+    const tid = migrateThemeId(parsed?.state?.settings?.theme)
+    if (THEME_BG[tid]) {
       const root = document.documentElement
       root.classList.remove(...THEME_CLASS_NAMES)
-      root.classList.add(`theme-${t}`)
-      document.body.style.background = THEME_BG[t]
-      document.body.style.color = THEME_FG[t]
+      root.classList.add(`theme-${tid}`)
+      document.body.style.background = THEME_BG[tid]
+      document.body.style.color = THEME_FG[tid]
     }
   }
 } catch {

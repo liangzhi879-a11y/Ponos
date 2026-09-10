@@ -1,14 +1,13 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  Settings, Sun, Moon, Palette, Check, Sparkles,
+  Sun, Moon, Palette, Check, Sparkles,
   Search, Terminal, ChevronDown, Minus, Square, Copy, X,
 } from 'lucide-react'
 import { Button } from '@/components/ui'
 import { Tooltip } from '@/components/ui'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { useChatStore } from '@/stores/chatStore'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn } from '@/lib/utils'
 import { THEMES, type ThemeMode, type ThemeMeta } from '@/types'
@@ -21,9 +20,7 @@ export interface HeaderProps {
 export function Header({ onGoCockpit }: HeaderProps = {}) {
   const { openCommandPalette, openSearch } = useUIStore()
   const { settings, updateSettings } = useSettingsStore()
-  const { activeConversationId, conversations } = useChatStore()
   const { t } = useTranslation()
-  const activeConv = conversations.find(c => c.id === activeConversationId)
   const logoRef = useRef<HTMLImageElement>(null)
 
   const handleLogoClick = () => {
@@ -33,7 +30,7 @@ export function Header({ onGoCockpit }: HeaderProps = {}) {
   }
 
   const activeTheme = THEMES.find(t => t.id === settings.theme) ?? THEMES[0]
-  const ThemeIcon = settings.theme === 'light' || settings.theme === 'yuanfang-light' ? Sun : settings.theme === 'dark' ? Moon : Palette
+  const ThemeIcon = settings.theme === 'light' || settings.theme === 'light-glass' ? Sun : Moon
 
   // Frameless window: track maximized state for the toggle icon
   const [isMax, setIsMax] = useState(false)
@@ -97,9 +94,11 @@ export function Header({ onGoCockpit }: HeaderProps = {}) {
         />
       </button>
 
-      {/* Conversation title */}
-      <div className="flex-1 min-w-0 text-sm font-medium text-secondary truncate ml-1">
-        {activeConv?.title || 'YFWorking'}
+      {/* 品牌名 + 版本号（2026-09-10 UX 重构：会话标题让位给品牌标识，
+          会话信息由列表与聊天区自身承载） */}
+      <div className="flex-1 min-w-0 flex items-baseline gap-2 ml-1 select-none">
+        <span className="text-sm font-semibold text-primary truncate">YFWorking</span>
+        <span className="text-[10px] font-mono text-tertiary shrink-0">v{typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''}</span>
       </div>
 
       <div className="flex items-center gap-0.5 no-drag shrink-0">
@@ -126,12 +125,8 @@ export function Header({ onGoCockpit }: HeaderProps = {}) {
           t={t}
         />
 
-        {/* Settings */}
-        <Tooltip content={t('settings.title') + ' (⌘,)'}>
-          <Button variant="ghost" size="xs" onClick={() => useUIStore.getState().openSettings()} aria-label={t('settings.title')}>
-            <Settings className="w-4 h-4" />
-          </Button>
-        </Tooltip>
+        {/* 设置入口已移至 rail 底端（2026-09-10 UX 重构：独立设置窗口，Header 只留
+            搜索/命令面板/主题/窗口控制） */}
       </div>
 
       {/* Window controls (frameless) — only visible when running inside Electron

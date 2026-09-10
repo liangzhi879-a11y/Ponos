@@ -128,7 +128,7 @@ export interface ConversationSet {
 
 // --- Settings Types ---
 
-export type ThemeMode = 'yuanfang-light' | 'yuanfang' | 'dark' | 'light' | 'glass' | 'glass-warm'
+export type ThemeMode = 'dark' | 'light' | 'dark-glass' | 'light-glass'
 export type Language = 'zh-CN' | 'en-US'
 
 /** Static metadata for each theme (used by the picker UI). */
@@ -152,83 +152,59 @@ export interface ThemeMeta {
   isDefault?: boolean
   /** Dark or light variant — used to group in the picker */
   mode: 'dark' | 'light'
-  /** 主题分组（1 远方 + 3 实色 + 2 玻璃）—— ThemePicker 按此分组渲染 */
-  category: 'brand' | 'solid' | 'glass'
+  /** 主题分组（2 实色 + 2 玻璃）—— ThemePicker 按此分组渲染 */
+  category: 'solid' | 'glass'
 }
 
 export const THEMES: readonly ThemeMeta[] = [
   {
-    id: 'yuanfang-light',
-    name: '远方',
-    variant: '浅色',
-    tagline: '暖色破晓 · 远方的晨光',
-    glyph: '晓',
-    primary: '#ff6a00',
-    deep: '#ea580c',
-    surface: '#f7f8fa',
-    isDefault: true,
-    category: 'brand',
-    mode: 'light',
-  },
-  {
-    id: 'yuanfang',
-    name: '远方',
-    variant: '深色',
-    tagline: '远方的地平线 · 落日与归途',
-    glyph: '远',
-    primary: '#e06b36',
-    deep: '#c45428',
-    surface: '#171109',
-    category: 'brand',
-    mode: 'dark',
-  },
-  {
     id: 'dark',
-    name: 'Graphite',
+    name: '远方',
     variant: '深色',
-    tagline: 'Midnight cyan · cool industrial focus',
-    glyph: 'G',
-    primary: '#0ea5e9',
-    deep: '#0284c7',
-    surface: '#181a20',
+    tagline: '深空墨 · Boost 橙',
+    glyph: '远',
+    primary: '#ff7429',
+    deep: '#f05a0a',
+    surface: '#0b0e14',
+    isDefault: true,
     category: 'solid',
     mode: 'dark',
   },
   {
     id: 'light',
-    name: 'Clean Slate',
+    name: '远方',
     variant: '浅色',
-    tagline: 'Daylight indigo · crisp neutral focus',
-    glyph: 'S',
-    primary: '#4f46e5',
-    deep: '#4338ca',
-    surface: '#f2f4f7',
+    tagline: '暖白 · Boost 橙',
+    glyph: '远',
+    primary: '#ff7429',
+    deep: '#e8590c',
+    surface: '#fdf9f5',
     category: 'solid',
     mode: 'light',
   },
   {
-    id: 'glass',
-    name: 'Glass',
-    variant: '磨砂玻璃 · 冷色',
-    tagline: 'Aurora frost · 靛蓝极光下的磨砂玻璃',
+    id: 'dark-glass',
+    name: '远方',
+    variant: '深色玻璃',
+    tagline: '墨玻璃 · 暖橙极光',
     glyph: '璃',
-    primary: '#a78bfa',
-    deep: '#8b5cf6',
-    surface: '#12172b',
+    primary: '#ff7429',
+    deep: '#f05a0a',
+    surface: '#0b0e14',
     category: 'glass',
     mode: 'dark',
   },
   {
-    id: 'glass-warm',
-    name: 'Glass',
-    variant: '磨砂玻璃 · YF暖色',
-    tagline: 'YF暖橙光晕 · 落日熔金下的磨砂玻璃',
-    glyph: '暖',
-    primary: '#ff6a00',
-    deep: '#ea580c',
-    surface: '#1a1005',
+    id: 'light-glass',
+    name: '远方',
+    variant: '浅色玻璃',
+    tagline: '暖金微光 · 白磨砂',
+    glyph: '璃',
+    primary: '#ff7429',
+    deep: '#e8590c',
+    surface: '#fdf9f5',
     category: 'glass',
-    mode: 'dark',
+    mode: 'light',
   },
 ] as const
 
@@ -248,7 +224,7 @@ export interface AppSettings {
   showThinking: boolean
   autoScroll: boolean
 
-  // Glass 磨砂玻璃主题（仅 glass / glass-warm 生效）
+  // Glass 磨砂玻璃主题（仅 dark-glass / light-glass 生效）
   /** 玻璃面板透光度 0.3~0.9（越低越透明、越透出背后光晕/桌面） */
   glassOpacity: number
   /** 光晕漂移动画开关 */
@@ -328,6 +304,21 @@ export interface ModelProvider {
   authToken: string
   /** 该 provider 下支持视觉的模型名（留空=不启用 VisionTool 与自动桥接） */
   visionModel?: string
+  /** 行为画像（2026-09-09 本地模型适配）：auto=启发式判定；见 server/provider-profile.mjs */
+  profile?: 'auto' | 'cloud' | 'local'
+  /** 采样温度 [0,2]；未设=本地默认 0.6 / 云端 0 */
+  temperature?: number
+  /** 单次输出预算（tokens）；未设=本地 16384 / 云端 64000 */
+  maxOutputTokens?: number
+  /** 首个内容块前的空闲宽限（ms）；未设=内核默认 300000 */
+  firstByteMs?: number
+  /** 内容块间空闲判挂起窗口（ms）；未设=内核默认 120000 */
+  idleMs?: number
+  /** 思考模式（2026-09-10）：true → 请求注入 thinking:enabled+budget——
+   *  MiniMax 等不认 reasoning_effort 的云端经此才有 thinking_delta 流。 */
+  thinkingEnabled?: boolean
+  /** 思考 token 预算（thinkingEnabled 时生效；默认 4096） */
+  thinkingBudget?: number
 }
 
 export interface YFWorkingConfigV2 {
@@ -389,7 +380,7 @@ export interface BackgroundTask {
 
 // --- Permission Types ---
 
-export type PermissionAction = 'file_read' | 'file_write' | 'file_edit' | 'bash' | 'web_fetch' | 'web_search' | 'notebook_edit' | 'skill' | 'mcp'
+export type PermissionAction = 'file_read' | 'file_write' | 'file_edit' | 'bash' | 'web_fetch' | 'web_search' | 'notebook_edit' | 'skill' | 'mcp' | 'browser_whitelist_add'
 
 export interface PermissionRequest {
   id: string
@@ -465,6 +456,11 @@ export interface YFWorkingWindowControls {
   onGpuCrash?: (callback: (data: { reason: string }) => void) => (() => void) | undefined
   /** 认证小窗（?auth=1）：认证通过 → 主进程关小窗、创建主窗口（spec §2.0 / Task 6b） */
   authGranted?: () => void
+  /** 认证小窗关闭钮（2026-09-10 无边框登录窗） */
+  authClose?: () => void
+  /** 独立工具窗口（2026-09-10 设置/个人外置）：打开 settings/profile 小窗 / 关闭本窗 */
+  openUtility?: (kind: 'settings' | 'profile') => void
+  closeUtility?: () => void
 }
 
 // --- Interactive Question Card / AskUserQuestion replacement ---
@@ -515,14 +511,6 @@ declare global {
     yfworkingAPI?: YFWAPI
     yfworkingWindow?: YFWorkingWindowControls
     yfworkingFile?: YFWFileAPI
-    doubao?: {
-      openLogin: () => Promise<{ ok: boolean }>
-      getStatus: () => Promise<DoubaoStatus>
-      logout: () => Promise<{ ok: boolean }>
-      generate: (payload: { prompt: string; ratio?: string; count?: number }) => Promise<{ code: number; data?: { images: string[] }; message?: string; sse?: unknown; diag?: unknown }>
-      instant: (payload: { prompt: string; imageBase64: string }) => Promise<{ code: number; data?: { images: string[] }; message?: string; sse?: unknown; diag?: unknown }>
-      capture?: () => Promise<{ code: number; captured?: unknown; message?: string }>
-    }
     /** 内置浏览器自动化（Task 3 preload IPC：打开窗口/暂停/继续/清空会话/状态） */
     browser?: {
       openWindow: (sessionId: string) => Promise<{ ok: boolean }>
@@ -548,24 +536,6 @@ declare global {
   // Injected by Vite define — bridge port (from YFW_BRIDGE_PORT env or default)
   const __BRIDGE_PORT__: string
 }
-
-// --- 豆包图片生成 ---
-
-export interface DoubaoStatus {
-  loggedIn: boolean
-  exportedAt: number | null
-}
-
-export interface DoubaoResult {
-  id: string
-  prompt: string
-  imageUrl: string      // 本地去水印图（bridge /yfw/doubao/images/<id>）
-  /** 磁盘绝对路径（~/.yfworking/doubao-images/<id>.png），插入聊天时经 @image:<path> 发内核必须用本地路径 */
-  path?: string
-  createdAt: number
-}
-
-export interface DoubaoHistoryItem extends DoubaoResult {}
 
 // --- 内置浏览器自动化 ---
 

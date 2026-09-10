@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware'
 import type { AppSettings, YFWorkingConfig, ModelProvider, YFWorkingConfigV2 } from '@/types'
 import { useChatStore } from './chatStore'
 import { verifyActiveProvider, type ProviderVerifyResult } from '@/lib/config'
+import { migrateThemeId } from '@/lib/themeMap'
 
 /** Show a system notification through Electron's Notification API (cross-platform).
  *  Falls back silently in dev mode (no preload → no yfworkingAPI). */
@@ -34,7 +35,7 @@ async function runVerifyAndNotify() {
 }
 
 const defaultSettings: AppSettings = {
-  theme: 'yuanfang-light',
+  theme: 'dark',
   language: 'zh-CN',
   fontSize: 14,
   fontFamily: 'Inter',
@@ -87,6 +88,8 @@ const defaultSettings: AppSettings = {
       visionModel: '',
       effortLevel: 'max',
       contextWindow: 1000000,
+      // 画像与高级参数缺省（云端：温度 0 / 预算 64000 由内核默认，无注入）
+      profile: 'auto',
     },
     {
       id: 'minimax',
@@ -99,6 +102,7 @@ const defaultSettings: AppSettings = {
       visionModel: '',
       effortLevel: 'max',
       contextWindow: 1000000,
+      profile: 'auto',
     },
   ] as ModelProvider[],
   skillRoot: '',
@@ -138,11 +142,11 @@ export const useSettingsStore = create<SettingsState>()(
         set(state => ({ settings: { ...state.settings, ...updates } }))
         // Only act when the active provider actually changed. The settings
         // panel syncs from the bridge every time it opens, calling this with
-        // activeProvider — acting unconditionally would kill the running
-        // conversation's CLI session and spawn a verify probe on every open.
+        // activeProvider — acting unconditionally would spawn a verify probe
+        // on every open. 会话切换由 bridge 在下次 send 时按 provider 环境
+        // 签名自动收割重启（2026-09-10 模型热切换修复）——前端不再清
+        // sessionId，--resume 历史无缝保留。
         if (updates.activeProvider !== undefined && updates.activeProvider !== prevActiveProvider) {
-          const activeId = useChatStore.getState().activeConversationId
-          if (activeId) useChatStore.getState().invalidateSession(activeId)
           // Probe: spawn a one-shot CLI process to confirm the new provider
           // actually works, then kill it. Frontend gets a system notification.
           void runVerifyAndNotify()
@@ -165,9 +169,8 @@ export const useSettingsStore = create<SettingsState>()(
           }
         })
         // Active provider fields (authToken/baseUrl/primaryModel/etc.) changed —
-        // drop the running CLI session so the next message spawns with new env vars.
-        const activeId = useChatStore.getState().activeConversationId
-        if (activeId) useChatStore.getState().invalidateSession(activeId)
+        // 会话切换由 bridge 下次 send 按 provider 环境签名自动收割重启
+        //（2026-09-10 模型热切换修复），前端保留 sessionId 供 --resume。
         // Probe the new config in the background.
         void runVerifyAndNotify()
       },
@@ -184,9 +187,8 @@ export const useSettingsStore = create<SettingsState>()(
           },
         }))
         // Bridge-saved config may have changed active provider or its model —
-        // invalidate the running CLI session so the next message spawns fresh.
-        const activeId = useChatStore.getState().activeConversationId
-        if (activeId) useChatStore.getState().invalidateSession(activeId)
+        // 会话切换由 bridge 下次 send 按 provider 环境签名自动收割重启
+        //（2026-09-10 模型热切换修复），前端保留 sessionId 供 --resume。
         void runVerifyAndNotify()
       },
       updateActiveProvider: (providerId) => {
@@ -228,6 +230,8 @@ export const useSettingsStore = create<SettingsState>()(
       // Migrate old persisted state to include new fields with defaults
       onRehydrateStorage: () => (state) => {
         if (state?.settings) {
+          // 主题 ID 收敛 6→4 归一（spec §1.1）：旧值/未知值一次性映射
+          state.settings.theme = migrateThemeId(state.settings.theme)
           // Ensure all default keys exist (fill in any missing ones)
           state.settings = { ...defaultSettings, ...state.settings }
           state.settings.glassHueShift ??= 0 // 【plan §3 步骤 7】兜底旧持久化数据
@@ -238,3 +242,12 @@ export const useSettingsStore = create<SettingsState>()(
     }
   )
 )
+
+// 跨窗口设置同步（2026-09-10 设置外置）：独立设置窗修改持久化后，主窗口经
+// storage 事件重灌 store——主题/字号等 UI 设置双窗即时一致（zustand persist
+// 默认不监听跨窗口 storage 变更）。
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key === 'yfworking-settings') useSettingsStore.persist.rehydrate()
+  })
+}
