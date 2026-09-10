@@ -1,9 +1,9 @@
 /* ============================================================
    启动品牌动画（BootScreen）—— task-5 Step 1
    ------------------------------------------------------------
-   · boot 屏为全屏深色品牌底 + 白色 boost 字标，.boot-* 全部使用
-     主题无关的暖色渐变/半透明白（不绑任一主题 token），未来
-     主题兼容可在其上覆盖。
+   · 2026-09-10 GUI 统一：boot 屏全主题跟随——底色 var(--bg-app)
+     （主题 token），orb 光晕/字标明暗切换/流光品牌渐变由
+     BootScreen + 设计语言工具类承载。
    · settings.speedMode === true 时 ViewRouter 直接短路到 login、
      不挂载本屏，因此这里不写任何 .speed-mode 规则。
    · 动画：logo 呼吸光晕 2.4s 脉冲；流光进度条一趟 1.5s；
@@ -11,9 +11,7 @@
    ============================================================ */
 
 .boot-bg {
-  background:
-    radial-gradient(120% 90% at 50% 10%, rgba(255, 138, 61, 0.10), transparent 62%),
-    linear-gradient(165deg, #17110b 0%, #120d09 46%, #0f0b07 100%);
+  background: var(--bg-app);
   animation: boot-fade-out 0.2s ease-in 1.4s both;
 }
 
@@ -41,7 +39,8 @@
   width: 240px;
   height: 3px;
   border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.10);
+  /* 轨道：主题感知中性色（原纯白 10% 在浅色底上不可见） */
+  background: color-mix(in srgb, var(--text-tertiary) 22%, transparent);
   overflow: hidden;
 }
 
@@ -52,7 +51,8 @@
   left: -80%;
   width: 70%;
   border-radius: 9999px;
-  background: linear-gradient(90deg, transparent, #ff8a3d 28%, #ff4200 50%, #ffb27d 72%, transparent);
+  /* 流光填充 → 品牌色阶（设计语言：两端透明保持彗尾形态） */
+  background: linear-gradient(90deg, transparent, var(--brand-400) 28%, var(--brand-600) 50%, var(--brand-300) 72%, transparent);
   animation: boot-shine-sweep 1.5s cubic-bezier(0.4, 0, 0.6, 1) forwards;
 }
 
@@ -61,10 +61,4 @@
   12%  { opacity: 1; }
   88%  { opacity: 1; }
   100% { left: 100%; opacity: 0; }
-}
-
-/* 底部阶段小字（暖灰半透明，三个状态由 BootScreen 400ms 步进） */
-.boot-phase {
-  color: rgba(240, 217, 196, 0.62);
-  letter-spacing: 0.08em;
 }
