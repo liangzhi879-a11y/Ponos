@@ -724,10 +724,13 @@ export async function main(argv) {
           wire.system('workflow_result', { subtype, requestId: msg?.requestId, result: { ok: true, id: saveId, yml, validation } })
         }
       } else {
-        wire.system('workflow_result', { subtype: 'error', error: `未知 /wf 子命令: ${subtype}` })
+        // 必须带 requestId：宿主按 requestId 严格配对；无 requestId 的错误只能靠启发式
+        // 兜底（曾导致"无关错误误杀在途 run"，Task 11 审查 I-1/N-3），根治办法是错误回执
+        // 也带上请求标识。
+        wire.system('workflow_result', { subtype: 'error', requestId: msg?.requestId, error: `未知 /wf 子命令: ${subtype}` })
       }
     } catch (err) {
-      wire.system('workflow_result', { subtype: 'error', error: err?.message || String(err) })
+      wire.system('workflow_result', { subtype: 'error', requestId: msg?.requestId, error: err?.message || String(err) })
     }
   }
 

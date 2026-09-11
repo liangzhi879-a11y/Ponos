@@ -252,3 +252,14 @@ test('workflow_command：save（model → 序列化）/ save-raw（原文回传�
     assert.equal(existsSync(join(root, 'wf', 'bad-wf')), false)
   } finally { cleanup() }
 })
+
+test('N-3 回归：未知子命令的 error 回执必须带 requestId（宿主严格配对，不靠启发式）', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wf-cli-n3-'))
+  try {
+    const { results } = await runCommands(root, [{ requestId: 'req-n3-1', subtype: 'no_such_cmd', payload: {} }])
+    const ev = results.get('req-n3-1')
+    assert.ok(ev, '应回一条带 requestId 的错误回执')
+    assert.equal(ev.subtype, 'error')
+    assert.equal(ev.requestId, 'req-n3-1', 'error 回执必须带 requestId')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
