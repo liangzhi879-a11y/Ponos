@@ -10,7 +10,7 @@
 
 | 层 | 现状 | 缺口 |
 |---|---|---|
-| 内核引擎 `kernel/workflow.mjs`（1037 行） | 自有 YAML DSL（零依赖解析）；19 种节点（start/end/llm/code/template/if/assign/aggregate/http/document/tool/list/classify/extract/memory/store/agent/iterate/loop/confirm）；变量系统 `{{a.b.c}}`；cron 调度；webhook `POST /wf/run/<id>`；confirm 人工审批挂起；节点级审计哈希链 `verifyRun`；工具审批门（Bash 无门 fail-closed） | 执行是**线性单指针**（默认数组顺序 + `next` 跳转），无多入边 join、无并行汇聚、无错误分支、无节点重试；无动态工具注册 |
+| 内核引擎 `kernel/workflow.mjs`（1037 行） | 自有 YAML DSL（零依赖解析）；20 种节点（start/end/llm/code/template/if/assign/aggregate/http/document/tool/list/classify/extract/memory/store/agent/iterate/loop/confirm）；变量系统 `{{a.b.c}}`；cron 调度；webhook `POST /wf/run/<id>`；confirm 人工审批挂起；节点级审计哈希链 `verifyRun`；工具审批门（Bash 无门 fail-closed） | 执行是**线性单指针**（默认数组顺序 + `next` 跳转），无多入边 join、无并行汇聚、无错误分支、无节点重试；无动态工具注册 |
 | 暴露方式 `kernel/tools.mjs:1306` | 仅一个通用 `Workflow{workflow, inputs}` 工具，靠提示词【可用工作流】清单选择 | 无"每工作流一个具名工具"；无绑定/公开三态 |
 | 发现机制 `workflow.mjs:215` | 与技能同根 `~/.yfworking/skills/<id>/workflow.yml`；内置 spec-dev 由 `bridge.mjs:2512` 开机安装 | 与技能混在同一面板；无独立工作流根 |
 | GUI | rail 仅 4 项（`src/stores/viewStore.ts:19`）；无工作流面板、无画布、无运行视图；`bridge.mjs` 有 `/skills` 无 `/workflows`；对话模式禁用 Workflow 工具（`bridge.mjs:861`） | 全部 GUI 能力缺失 |
@@ -57,7 +57,7 @@ bridge server/workflow-store.mjs（磁盘权威 CRUD：扫描/读写/版本/导�
          │  stdin: workflow_command / workflow_confirm / cancel
 内核   kernel/workflow-dsl.mjs（解析+校验+迁移）
        kernel/workflow-dag.mjs（就绪集合调度器：join / 并行 / 条件边 / 错误边 / 重试）
-       kernel/workflow-nodes.mjs（19+4 种节点执行器，由原 execXxx 平移）
+       kernel/workflow-nodes.mjs（20+4 种节点执行器，由原 execXxx 平移）
        kernel/workflow-engine.mjs（引擎装配：审计 / 事件 / 调度器 / webhook / cron / confirm）
        kernel/dyntools.mjs（工作流 → 具名工具动态注册，visibility 三态过滤）
 磁盘   ~/.yfworking/workflows/<id>/workflow.yml        用户工作流（源，权威）
@@ -77,7 +77,8 @@ name: 周报生成
 description: 拉取本周数据并生成周报
 version: 1.0.0
 triggers: [周报, weekly report]                     # 触发词（与 skill 同 schema）
-trigger_config: { manual: true, schedule: "0 18 * * 5", webhook: false }
+trigger_config: { manual: true, schedule: "0 18 * * 5", webhook: false, auto_trigger: false }
+settings: { max_parallel: 4 }                       # 同批可就绪节点的并行度上限
 inputs:
   - { name: week, type: string, required: true, description: 第几周 }
 nodes:
@@ -121,6 +122,17 @@ permissions:                                        # 运行前授权清单（�
    if 的 next_true/next_false → 条件边；迁移前把原文件备份到 `versions/legacy-<ts>.yml`）。
 8. **内置工作流**：`workflows/<id>/workflow.yml` 全量重写为显式连线；`bridge.autoInstallBuiltinWorkflows`
    增强为**按 version 比对覆盖**已安装副本（避免旧格式残留在用户机器上导致启动即失败）。
+9. **触发配置收敛到 `trigger_config`**：`manual`（是否允许手动运行，缺省 true）、
+   `schedule`（cron 表达式，取代旧平铺字段 `schedule`）、`webhook`（是否开放
+   `POST /wf/run/<id>`）、`auto_trigger`（取代旧 `auto_trigger` 平铺字段，命中 `triggers`
+   触发词自动运行）。迁移时把旧 `schedule` / `auto_trigger` 平铺字段搬入 `trigger_config`
+   并删除原字段——调度器与自动触发逻辑改读新位置。
+10. **并发度**：顶层 `settings.max_parallel`（缺省 4）控制同一批可就绪节点的并行数；
+    `iterate` 仍沿用节点级 `parallel_nums`（现有语义不变）；`loop` 恒串行（轮间共享 `var` 状态）。
+11. **返回值合成（工具形态）**：模型调 `run_<slug>` 的返回 = `end` 节点的 `config.outputs`
+    聚合结果；若存在 `answer` 节点，其渲染文本并入返回（多 answer 按拓扑序拼接）。
+    手动运行时同一合成结果渲染到运行面板；`end.outputs` 为空且无 `answer` 时，
+    返回最后一个成功节点的输出（保持与现有 `Workflow` 工具行为的连续性）。
 
 ### §3 内核引擎改造
 
@@ -138,7 +150,7 @@ permissions:                                        # 运行前授权清单（�
 ```
 ready = {start}；settled = {}；skipped = {}
 while (ready ∪ running) 非空:
-    batch = ready 中入边全部 settle 且非 skipped 的节点（受 max_parallel 限制，默认 4）
+    batch = ready 中入边全部 settle 且非 skipped 的节点（受 settings.max_parallel 限制，默认 4）
     并行执行 batch：
         节点失败 且 retry.max 未耗尽        → 退避重试（delay_ms 指数增长，上限 30s）
         节点失败 且 retry.on_error=branch   → 激活 'fail' 出边
@@ -153,7 +165,7 @@ while (ready ∪ running) 非空:
 cron 调度器、webhook 服务、`{ aborted }` 信号取消、`setDeps` 依赖注入契约、工具审批门
 （`checkToolPermission`，含 Bash 无门 fail-closed）。
 
-**节点集补齐**（现有 19 种之上）：
+**节点集补齐**（现有 20 种之上）：
 
 | 新增 | 语义 |
 |---|---|
@@ -192,7 +204,7 @@ agent 身份（在此之前，绑定只能靠 GUI 侧 `systemPrompt`/`skills` �
 ```json
 { "format": "yfworking-workflow", "schemaVersion": 2, "exportedAt": "...",
   "workflow": "<workflow.yml 原文>",
-  "manifest": { "kernelMinVersion": "x.y.z", "requiredTools": ["Bash"], "nodeTypes": ["llm","http"] } }
+  "manifest": { "kernelMinVersion": "0.2", "requiredTools": ["Bash"], "nodeTypes": ["llm","http"] } }
 ```
 
 导入时先校验 `schemaVersion` 与 `requiredTools` 是否满足本机，再落盘并提示缺失依赖（不静默降级）。
