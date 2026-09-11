@@ -101,6 +101,7 @@
 | `approval` | `{ toolUseId, command, requestId, reason, toolName, highRisk }` | 权限审批弹窗 |
 | `approval-resolved` | `{ sessionId, toolUseId }` | 审批已回执 |
 | `pet:show-main` / `pet:quit-app` | `{}` | 宠物双击/退出广播 |
+| `workflow_event` | `{ sessionId, event: { type:'start'\|'node'\|'node_skipped'\|'edge_taken'\|'end', runId, … } }` | 工作流运行事件（§7.1），`sessionId` 通常为宿主会话 `_wfhost` |
 
 背压：单客户端 WS 缓冲 >8MB 标记过载，丢弃低优先级事件（milestones/milestone-*/question-resolved/raw/stderr/task_progress），<2MB 恢复（滞回）。
 
@@ -133,6 +134,62 @@
 | `/config`、`/providers`、`/providers/*` | 配置读写（`~/.yfworking/config.json`，写前备份+迁移） |
 | `/skills`、`/sample-skills`、`/install-skill`、`/uninstall-skill` | 技能管理（写入 `~/.yfworking/skills/`） |
 | `/worktrees`、`/branches` | git worktree/分支管理 |
+| `/workflows`、`/workflows/*` | 工作流模块（CRUD/运行/停止/确认/审计记录/导入导出/绑定，见 §7.1） |
+
+### 7.1 工作流模块（`/workflows`）（2026-09-11，UI Task 12）
+
+实现：`server/workflow-routes.mjs`（`handleWorkflowRoute({url, req, reply, readJsonBody, store, host, root, runsRoot})`）+ `server/workflow-host.mjs`（常驻宿主会话 `_wfhost`）+ `server/workflow-store.mjs`（磁盘权威存储）。
+挂载：`server/bridge.mjs` 在 HTTP 路由链**最前**、且仅 `pathname === '/workflows' || pathname.startsWith('/workflows/')` 时调用；未匹配的路径该函数返回 `false`，交回既有路由链（不吞其他端点）。
+数据落点（`root` / `runsRoot` 由 bridge 注入）：`<YFW_HOME>/workflows/<id>/workflow.yml`、版本 `<id>/versions/<ts>.yml`（保留最近 20）、绑定 `<workflows>/_bindings.json`、审计 `<YFW_HOME>/workflow-runs/<name>/*.jsonl`。
+`id` 由路径段 `decodeURIComponent` 后使用；`assertSafeId` 白名单（`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`，拒 Windows 设备名/尾点/`..`/保留字 `run|stop|confirm|runs|import|export|bindings|verify|validate`），`ts` 亦有白名单——两者违规统一 **400**（不是 500）。
+
+路由表（全部同源 `http://127.0.0.1:51517`，请求/响应均为 JSON）：
+
+| 方法 + 路径 | 请求体 | 响应（成功） |
+|---|---|---|
+| `GET /workflows` | — | `{ workflows: [{id,name,description,version,triggers,expose,nodeCount,edgeCount,legacy,hasEnd,settings,updatedAt,lastRun}], root }` |
+| `POST /workflows` | `{ id, model?, yaml? }` | `{ ok:true, id, backup }`（`id` 必填） |
+| `GET /workflows/:id` | — | `{ ok:true, id, yml, validation, model }`（宿主解析；不存在 → 404） |
+| `PUT /workflows/:id` | `{ model? , yaml? }` | `{ ok:true, id, backup, validation }` |
+| `DELETE /workflows/:id` | — | `{ ok:true, id }` |
+| `POST /workflows/:id/duplicate` | `{ toId }` | `{ ok:true, id, backup }`（`id` = 新 id） |
+| `GET /workflows/:id/validate` | — | `{ ok, errors:[{code,message,node?}], warnings:[] }` |
+| `GET /workflows/:id/versions` | — | `{ versions: [{ ts, path }] }`（新→旧） |
+| `POST /workflows/:id/rollback` | `{ ts }` | `{ ok:true, id, backup }`（回滚 = 用快照覆盖并再快照旧版） |
+| `GET /workflows/:id/export` | — | `{ bundle: { format:'yfworking-workflow', schemaVersion:2, exportedAt, workflow, manifest:{kernelMinVersion,requiredTools,nodeTypes} }, filename:'<id>.yfwflow' }` |
+| `POST /workflows/import` | `{ bundle, id? }` | `{ ok:true, id, warnings:[], meta }` |
+| `GET /workflows/bindings` | — | `{ agents:{<agentId>:[wfId…]}, trusted:[wfId…] }` |
+| `PUT /workflows/bindings`（POST 同义） | `{ agents, trusted }` | `{ ok:true }` |
+| `POST /workflows/run` | `{ id, inputs?, capabilities:{tools,write_dirs,network} }` | `{ ok:true, runId, status, steps, outputs, finalOutput, auditPath }` |
+| `POST /workflows/stop` | `{ runId }` | `{ ok, error? }` |
+| `POST /workflows/confirm` | `{ runId, node, action:'approved'\|'rejected', comment? }` | `{ ok, error? }` |
+| `GET /workflows/runs?name=<wfId>`（兼容 `?id=`） | — | `{ runs: [{ file, path, ts, steps, status }] }`（新→旧，≤20） |
+
+失败态：`PUT/POST` 的内核校验失败 → `400 { ok:false, error:'校验失败', errors:[…], warnings:[…] }`（**不落盘**）；运行失败 → `400 { ok:false, error, code?, node?, errors? }`；`/workflows/*` 未匹配子路由/方法 → `404 { ok:false, error:'not found' }`；**宿主未注入 → `500 { ok:false, error:'工作流宿主未注入' }`**（不静默降级）；存储层入参违规 → `400`；其余异常 → `500 { ok:false, error }`。
+
+**`workflow_event` 事件形状**（WS outbound，§5；由内核 `workflow` 事件转发）：
+
+```
+{ type:'workflow_event', sessionId:'_wfhost' | '<发起会话id>', event: { type:…, runId, … } }
+```
+
+| `event.type` | 字段 | UI 语义 |
+|---|---|---|
+| `start` | `runId, workflow, nodes, mode` | 清空状态，全部节点 `idle` |
+| `node` | `runId, node, node_type, status:'running'\|'done'\|'failed'\|'skipped', dur_ms?, output?, error?, route?, in_body?` | 节点着色 + 输出预览（`status:'skipped'` 与 `node_skipped` 同帧到达） |
+| `node_skipped` | `runId, node, node_type, in_body?` | 节点置灰 `skipped` |
+| `edge_taken` | `runId, edge, state:'active'\|'skipped', in_body?` | 边高亮/淡化 |
+| `end` | `runId, status:'completed'\|'failed'\|'cancelled', steps, error?, node?` | 顶部状态 + 刷新历史 |
+
+事件源：宿主会话（`_wfhost`）的事件由 `server/workflow-host.mjs` 的 `onEvent` 抛出；其他会话（`auto_trigger` 命中的内置触发）由 bridge 在 stdout 分发处直接广播——两者形状一致，只差 `sessionId`。同一帧也会经既有 `event` 通道原样转发一次（`data.type` 为事件名、`data.subtype === 'workflow'`），前端只按 `workflow_event` 消费即可。
+
+**grant 生命周期（授权清单，fail-closed）**：
+1. GUI 运行前必须提交 `capabilities = { tools:[], write_dirs:[], network:false }`；**缺失一律 400 且不运行**（授权清单是运行前置，不是可选参数）。
+2. 宿主 `issueGrant(runId, mergeCapabilities({}, capabilities))` 记账（一次运行有效，键 = `runId`），随 `workflow_command{run}` 的 `grant` 与 `cwd` 注入内核；节点内 `checkToolPermission` 对未列入清单的工具调用**直接失败**（不是事后告警）——摘除项在本次运行内不生效。
+3. 运行结束（成功/失败/停止）`finally revokeGrant(runId)`：grant 不跨运行、不跨工作流复用；`runId` 以内核回执为准回迁（防 id 分叉导致 `stop`/`confirm` 打空）。
+4. `_bindings.json` 的 `trusted` 只影响前端默认勾选，**服务端不因 trusted 跳过 grant 校验**；审计不受影响（每次工具调用仍写哈希链）。
+
+**内核侧通道**（内核 ← 宿主，`workflow_command` / `workflow_confirm`）：`load`、`save`、`save-raw`、`validate`、`run`、`stop`（另沿用 `list`/`verify`/`migrate`/`webhook`/`scheduler`）。`save` 收 `payload.model` → `serializeWorkflow`；`save-raw` 收 `payload.yaml` 原文（保留排版/注释，缺 `yaml` 时回退 `model`）；两者都只做「序列化 → 解析归一 → 校验 → 回传 `{ok, id, yml, validation}`」或 `{ok:false, error:'校验失败', errors}`，**内核绝不写用户工作流目录**（多内核会话 = 多写者会互相覆盖版本快照；写盘唯一写者 = bridge 侧存储层，内核仅 `migrate` 是显式例外）。
 
 ## 8. 会话生命周期
 

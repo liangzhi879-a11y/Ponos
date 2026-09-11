@@ -35,6 +35,9 @@ import { createGraphStore } from './graph.mjs'
 import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
 import { discoverSkills, verifySkillVersions } from './skills.mjs'
 import { createWorkflowEngine, discoverWorkflowsAll, matchAutoTrigger, validateWorkflow } from './workflow.mjs'
+// 画布模型 ↔ YAML 序列化（UI Task 9）：workflow_command 的 save/save-raw 子命令用
+// （workflow.mjs 兼容层未 re-export serializeWorkflow；直接取 DSL 实现，勿重复实现）。
+import { serializeWorkflow, normalizeWorkflow, parseYaml, toModel } from './workflow-dsl.mjs'
 // Task 6：工作流即工具——工作流按 expose 三态注册为具名工具（run_<slug>）注入工具池
 import { buildWorkflowTools, listVisibleWorkflows } from './dyntools.mjs'
 import { loadSettings } from './settings.mjs'
@@ -691,7 +694,9 @@ export async function main(argv) {
         if (!wf) wire.system('workflow_result', { subtype: 'load', requestId: msg?.requestId, result: { ok: false, error: `工作流不存在: ${id}` } })
         else wire.system('workflow_result', {
           subtype: 'load', requestId: msg?.requestId,
-          result: { ok: true, id: wf.id || id, yml: wf.path ? readFileSync(wf.path, 'utf-8') : '', validation: validateWorkflow(wf) },
+          // model：画布模型（toModel 收拢 config）——GUI 打开工作流直接落画布，
+          // 不必在前端重做 DSL 解析（UI Task 13「选中项经 /workflows/:id 取 model」）。
+          result: { ok: true, id: wf.id || id, model: toModel(wf), yml: wf.path ? readFileSync(wf.path, 'utf-8') : '', validation: validateWorkflow(wf) },
         })
       } else if (subtype === 'validate') {
         const wf = wfEngine.load(msg?.payload?.id || '')
@@ -699,6 +704,25 @@ export async function main(argv) {
         wire.system('workflow_result', { subtype: 'validate', requestId: msg?.requestId, result: v })
       } else if (subtype === 'stop') {
         wire.system('workflow_result', { subtype: 'stop', requestId: msg?.requestId, result: wfEngine.stop(msg?.payload?.runId || '') })
+      } else if (subtype === 'save' || subtype === 'save-raw') {
+        // 画布保存（UI Task 9/12）：序列化 → 解析归一 → 校验 → 回传 yml 文本。
+        // **不写用户工作流目录**（单一写者）：落盘由 bridge 侧存储层完成——内核并发多会话，
+        // 多写者会让版本快照与备份互相覆盖；写盘动作只保留 migrate（显式迁移）。
+        //   save      ：payload.model（画布模型）→ serializeWorkflow → yml
+        //   save-raw  ：payload.yaml 原文回传（保留用户排版/注释），缺 yaml 时回退 model
+        // 两种载荷都容忍：宿主 save() 统一发 save-raw，带 model 时以 model 序列化。
+        const saveId = String(msg?.payload?.id || '').trim()
+        const raw = typeof msg?.payload?.yaml === 'string' ? msg.payload.yaml : ''
+        const yml = raw.trim() ? raw : serializeWorkflow(msg?.payload?.model || {})
+        const validation = validateWorkflow(normalizeWorkflow(parseYaml(yml)))
+        if (!validation.ok) {
+          wire.system('workflow_result', {
+            subtype, requestId: msg?.requestId,
+            result: { ok: false, id: saveId, error: '校验失败', errors: validation.errors, warnings: validation.warnings },
+          })
+        } else {
+          wire.system('workflow_result', { subtype, requestId: msg?.requestId, result: { ok: true, id: saveId, yml, validation } })
+        }
       } else {
         wire.system('workflow_result', { subtype: 'error', error: `未知 /wf 子命令: ${subtype}` })
       }

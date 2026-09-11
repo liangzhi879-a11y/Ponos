@@ -103,6 +103,11 @@ test('workflow_command：load 合法工作流 → ok:true（yml 原文 + validat
     assert.equal(ev.result.id, 'demo')
     assert.match(ev.result.yml, /type: template/, 'yml 原文应逐字回读（依赖 loadWorkflow 的 path）')
     assert.equal(ev.result.validation.ok, true, JSON.stringify(ev.result.validation))
+    // UI Task 12：load 回执带画布模型（GUI 打开工作流直接落画布）
+    assert.ok(ev.result.model && Array.isArray(ev.result.model.nodes), `load 应回传 model：${JSON.stringify(ev.result).slice(0, 200)}`)
+    assert.equal(ev.result.model.nodes.length, 3)
+    assert.equal(ev.result.model.edges.length, 2, 'edges 应原样带出（画布连线）')
+    assert.equal(ev.result.model.nodes.find((n) => n.id === 't').config.template, 'hi {{inputs.x}}', 'toModel 应把节点非元字段收拢回 config')
   } finally { cleanup() }
 })
 
@@ -209,5 +214,41 @@ test('workflow_command：migrate 落盘 + versions 备份 + 幂等（M7）', asy
     assert.ok(m2.skipped.some((s) => s.id === 'legacy-demo'), JSON.stringify(m2))
     const list = r2.get('list-after')
     assert.equal(list.workflows.find((w) => w.id === 'legacy-demo').legacy, false, '迁移后不再是 legacy')
+  } finally { cleanup() }
+})
+
+// ============ UI Task 12：save / save-raw（画布保存通道） ============
+
+test('workflow_command：save（model → 序列化）/ save-raw（原文回传）→ 校验回执且不落盘', async () => {
+  const { root, cleanup } = setup()
+  try {
+    const RAW = 'name: raw-wf\nnodes:\n  - { id: start, type: start }\nedges: []\n'
+    const { results, err } = await runCommands(root, [
+      { subtype: 'save', requestId: 'save-1', payload: { id: 'new-wf', model: { name: 'new-wf', nodes: [{ id: 'start', type: 'start' }, { id: 'done', type: 'end' }], edges: [{ id: 'e1', source: 'start', target: 'done' }] } } },
+      { subtype: 'save-raw', requestId: 'save-2', payload: { id: 'raw-wf', yaml: RAW } },
+      { subtype: 'save', requestId: 'save-bad', payload: { id: 'bad-wf', model: { name: 'bad-wf', nodes: [{ id: 'x', type: 'template' }], edges: [] } } },
+    ])
+    const ok = results.get('save-1')
+    assert.ok(ok, `未收到 save 回执（宿主 send() 会超时）；stderr=${err.slice(-500)}`)
+    assert.equal(ok.result.ok, true, JSON.stringify(ok.result))
+    assert.match(ok.result.yml, /^edges:/m, `序列化产物必须含顶层 edges 块：${ok.result.yml}`)
+    assert.equal(ok.result.validation.ok, true, JSON.stringify(ok.result.validation))
+    assert.equal(ok.result.id, 'new-wf')
+
+    const raw = results.get('save-2')
+    assert.ok(raw, '未收到 save-raw 回执')
+    assert.equal(raw.result.ok, true, JSON.stringify(raw.result))
+    assert.equal(raw.result.yml, RAW, 'save-raw 必须逐字回传原文（保留排版/注释）')
+
+    const bad = results.get('save-bad')
+    assert.ok(bad, '未收到失败态回执')
+    assert.equal(bad.result.ok, false)
+    assert.equal(bad.result.error, '校验失败', JSON.stringify(bad.result))
+    assert.ok(bad.result.errors.some((e) => e.code === 'NO_START'), JSON.stringify(bad.result.errors))
+
+    // 单一写者：内核只序列化/校验，绝不写用户工作流目录（落盘归 bridge 存储层）
+    assert.equal(existsSync(join(root, 'wf', 'new-wf')), false)
+    assert.equal(existsSync(join(root, 'wf', 'raw-wf')), false)
+    assert.equal(existsSync(join(root, 'wf', 'bad-wf')), false)
   } finally { cleanup() }
 })

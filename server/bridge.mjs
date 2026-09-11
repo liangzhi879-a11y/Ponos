@@ -15,6 +15,9 @@ import { parseAskUserPayload, extractAskUserBlocks } from './askuser.mjs'
 import { resolveKernelPaths } from '../electron/kernel-paths.cjs'
 import { resolveYfwHome } from './yfw-home.cjs'
 import { installBuiltinWorkflows } from './workflow-install.mjs'
+// 工作流 HTTP 路由（独立模块——bridge 顶层 listen，测试不能 import 本文件）+ 常驻宿主会话
+import { handleWorkflowRoute } from './workflow-routes.mjs'
+import { createWorkflowHost, HOST_SID } from './workflow-host.mjs'
 import { buildExperienceIndex, buildSedimentPrompt, ensurePersonalDir } from './experience.mjs'
 export { ensurePersonalDir, buildExperienceIndex, buildSedimentPrompt } from './experience.mjs'
 import { createTranscriptHandlers } from './transcript.mjs'
@@ -625,6 +628,28 @@ function broadcastGui(msg) {
   for (const c of wsClients) { try { c.send(s) } catch { /* 单个连接失败不影响其余 */ } }
 }
 
+// ---------------------------------------------------------------------------
+// 工作流模块（/workflows，UI Task 12）：宿主会话懒单例 + 存储根。
+// 宿主 = 普通内核会话（sid = _wfhost，mode=task），承载 load/save/validate/run/stop/confirm；
+// 内核回执按 requestId 配对（见 workflow-host.mjs），workflow 事件经 onEvent → GUI 广播。
+// 懒创建：不打开工作流面板就零开销（不 spawn 宿主内核）。
+// ---------------------------------------------------------------------------
+const WF_ROOT = join(YFW_HOME, 'workflows')          // 用户工作流根（与 workflow-install 目标一致）
+const WF_RUNS = join(YFW_HOME, 'workflow-runs')      // 运行审计 jsonl 根
+let _wfHost = null
+function workflowHost() {
+  if (!_wfHost) {
+    _wfHost = createWorkflowHost({
+      sessions,
+      getOrCreateSession,
+      yfwHome: YFW_HOME,
+      model: activeProviderModel(loadConfig()),
+      onEvent: (ev) => broadcastGui({ type: 'workflow_event', sessionId: HOST_SID, event: ev }),
+    })
+  }
+  return _wfHost
+}
+
 // 启动预热状态（2026-09-11 真实 boot 进度）：各模块真实完成后置位——main 轮询
 // /boot-status 转发给 BootScreen 渲染真实步骤，全部就绪才交棒进入主界面。
 const bootState = {
@@ -1181,6 +1206,18 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
       browserRouter.onKernelBridgeRequest(sid, parsed)
       return
     }
+    // 工作流（UI Task 12）：宿主会话（_wfhost）的 system 回执交给宿主按 requestId 配对，
+    // 结清在途命令（load/save/validate/run/stop）；其余会话无在途命令，无需投递。
+    // 内核 `wire.system('workflow', ev)` 的实际形态是 `{type:'system', subtype:'workflow', ...ev}`
+    // ——ev.type（start/node/node_skipped/edge_taken/end）会**覆盖**外层 type，故判定一律按
+    // subtype === 'workflow'，不看 type（宿主 emit 亦只认 subtype）。
+    // 事件广播统一为 workflow_event：宿主会话的事件由 host.onEvent 抛（同一形状），
+    // 其他会话（如 auto_trigger 命中在普通会话里跑）在此直转，避免重复广播。
+    if (parsed && sid === HOST_SID && _wfHost && parsed.type === 'system') {
+      _wfHost.onKernelMessage(parsed)
+    } else if (parsed && parsed.subtype === 'workflow') {
+      broadcastGui({ type: 'workflow_event', sessionId: sid, event: parsed })
+    }
     if (parsed) {
       send({ type: 'event', data: parsed, sessionId: sid })
     } else {
@@ -1301,6 +1338,12 @@ const httpServer = createServer(async (req, res) => {
   }
   const url = new URL(req.url, 'http://localhost:' + PORT)
   try {
+    // 工作流路由链最前：仅 /workflows* 前缀进入（无关请求不必构造宿主单例/读配置），
+    // 命中即 return；路由函数未匹配返回 false → 继续走下方既有路由（不吞其他端点）。
+    // 置于既有 try 内：宿主构造（loadConfig）等意外抛错走统一 400 回执，不打穿 handler。
+    if (url.pathname === '/workflows' || url.pathname.startsWith('/workflows/')) {
+      if (await handleWorkflowRoute({ url, req, reply, readJsonBody, host: workflowHost(), root: WF_ROOT, runsRoot: WF_RUNS })) return
+    }
     if (url.pathname === '/drives') {
       const drives = []
       for (let c = 65; c <= 90; c++) {
