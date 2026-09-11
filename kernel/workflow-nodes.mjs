@@ -404,7 +404,31 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
   // 无门（脱离 engine 独立跑：纯测试/直连）时收敛高危面：Bash fail-closed 拒绝，
   // 其余工具边界仍由工具自身强制（allowDirs 等）。
   let wfToolSeq = 0
+
+  // 运行级授权（UI Task 9）：ctx.grant = { tools: string[], write_dirs: string[], network: boolean }。
+  // 命中授权 → 放行（免除交互审批，但**审计照写**：本函数只管放行/拒绝，run 级审计行由
+  // workflow-engine 的 onNodeSettled → auditAppend 统一落账，放行不绕过审计）；
+  // 未命中 → 拒绝并返回原因（fail-closed，不挂起等待）。
+  // 注意：grant 的存在即"唯一判据"——一旦 ctx.grant 提供，权限不再回落 permissionGate
+  // （授权清单未列出的工具一律拒绝，不会因有审批门而被交互放行）。
+  const WRITE_TOOLS = new Set(['Write', 'Edit'])
+  function grantDecision(grant, name, input) {
+    if (!grant) return null
+    const tools = Array.isArray(grant.tools) ? grant.tools : []
+    if (!tools.includes(name)) return { denied: true, message: `工具 ${name} 不在本次运行的授权清单内（拒绝执行）` }
+    if (WRITE_TOOLS.has(name)) {
+      const dirs = Array.isArray(grant.write_dirs) ? grant.write_dirs.map((d) => String(d).replace(/\\/g, '/').replace(/\/$/, '')) : []
+      const p = String(input?.file_path || '').replace(/\\/g, '/')
+      if (p && dirs.length && !dirs.some((d) => p.startsWith(d + '/'))) {
+        return { denied: true, message: `写入路径不在授权目录内：${input.file_path}（授权目录：${dirs.join('、')}）` }
+      }
+    }
+    return { denied: false }
+  }
+
   async function checkToolPermission(ctx, name, input) {
+    const g = grantDecision(ctx?.grant, name, input)
+    if (g) return g                                   // 有 grant：授权清单为唯一判据
     const gate = ctx?.permissionGate
     if (typeof gate !== 'function') {
       if (name === 'Bash') return { denied: true, message: '当前工作流无审批通道：Bash 工具默认拒绝执行（请在交互会话中运行该工作流，由引擎审批门放行）' }

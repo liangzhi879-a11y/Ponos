@@ -336,6 +336,92 @@ export function normalizeWorkflow(wf) {
   return { ...(wf || {}), nodes: ((wf && wf.nodes) || []).map(normalizeNode), edges: Array.isArray(wf?.edges) ? wf.edges : null }
 }
 
+// ===================== 画布模型 ↔ YAML 序列化（UI Task 9） =====================
+// toModel：wf（摊平后）→ 画布模型；serializeWorkflow：模型/摊平 wf 任一形态 → YAML 文本。
+// 双向契约：normalizeNode（摊平）与 toModel（收拢）互逆，serialize 只认模型形态。
+
+// 节点顶层「非配置」键：保持顶层，其余（prompt/code/...）收拢回 node.config。
+const NODE_META_KEYS = new Set(['id', 'type', 'label', 'position', 'retry', 'on_error', 'body', 'note'])
+const TOP_KEYS = ['name', 'description', 'version', 'triggers', 'trigger_config', 'settings', 'inputs', 'nodes', 'edges', 'expose', 'permissions']
+
+// wf（摊平后）→ 画布模型：非元数据字段收拢回 node.config。
+// 幂等：若节点已是模型形态（已带 config），则把 config 展开后重新收拢，不会丢配置。
+export function toModel(wf) {
+  const nodes = (wf.nodes || []).map((n) => {
+    const { config: existing = {}, ...rest } = n || {}
+    const out = { id: rest.id, type: rest.type }
+    const cfg = { ...existing }
+    for (const [k, v] of Object.entries(rest)) {
+      if (k === 'id' || k === 'type') continue
+      if (NODE_META_KEYS.has(k)) out[k] = v
+      else cfg[k] = v
+    }
+    if (Object.keys(cfg).length) out.config = cfg
+    return out
+  })
+  const model = {}
+  for (const k of TOP_KEYS) if (wf[k] !== undefined) model[k] = wf[k]
+  model.nodes = nodes
+  model.edges = wf.edges || []
+  return model
+}
+
+// —— 极简 YAML 输出（只覆盖 DSL 结构；稳定键序，便于版本 diff）——
+const needsQuote = (s) => /^$|^[\s>|*&!%@`{}\[\],#?:-]|[:#]\s|\n|^\d+(\.\d+)?$|^(true|false|null|~)$/.test(String(s))
+function scalar(v) {
+  if (v === null || v === undefined) return 'null'
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  const s = String(v)
+  return needsQuote(s) ? JSON.stringify(s) : s
+}
+const inlineObj = (o) => `{${Object.entries(o).map(([k, v]) => `${k}: ${typeof v === 'object' && v !== null ? JSON.stringify(v) : scalar(v)}`).join(', ')}}`
+function blockLines(value, indent) {
+  const pad = ' '.repeat(indent)
+  if (Array.isArray(value)) {
+    return value.flatMap((it) => {
+      if (it && typeof it === 'object') {
+        const ent = Object.entries(it)
+        const [k0, v0] = ent[0]
+        const first = `${pad}- ${k0}: ${v0 && typeof v0 === 'object' ? inlineObj(v0) : scalar(v0)}`
+        const rest = ent.slice(1).map(([k, v]) => `${pad}  ${k}: ${v && typeof v === 'object' ? inlineObj(v) : scalar(v)}`)
+        return [first, ...rest]
+      }
+      return [`${pad}- ${scalar(it)}`]
+    })
+  }
+  if (value && typeof value === 'object') {
+    return Object.entries(value).map(([k, v]) => {
+      if (v && typeof v === 'object') {
+        const inner = v
+        if (Array.isArray(inner) && inner.every((x) => x && typeof x === 'object' && !Array.isArray(x))) {
+          return [`${pad}${k}:`, ...blockLines(inner, indent + 2)].join('\n')
+        }
+        if (Array.isArray(inner)) return `${pad}${k}: [${inner.map(scalar).join(', ')}]`
+        return `${pad}${k}: ${inlineObj(inner)}`
+      }
+      return `${pad}${k}: ${scalar(v)}`
+    })
+  }
+  return [`${pad}${scalar(value)}`]
+}
+
+export function serializeWorkflow(input) {
+  // toModel 幂等（见上），因此统一过一遍即可，无需判断输入形态——
+  // 早期版本用启发式判断"是否已是模型"，会静默丢掉已有 config。
+  const model = toModel(input || {})
+  const out = []
+  for (const k of ['name', 'description', 'version']) if (model[k] !== undefined) out.push(`${k}: ${scalar(model[k])}`)
+  if (model.triggers) out.push(`triggers: [${model.triggers.map(scalar).join(', ')}]`)
+  out.push('trigger_config: ' + inlineObj(model.trigger_config || { manual: true }))
+  if (model.settings) out.push('settings: ' + inlineObj(model.settings))
+  if (model.inputs?.length) out.push('inputs:', ...blockLines(model.inputs, 2))
+  out.push('nodes:', ...blockLines(model.nodes, 2))
+  out.push('edges:', ...blockLines(model.edges || [], 2))
+  if (model.expose) out.push('expose: ' + inlineObj(model.expose))
+  if (model.permissions) out.push('permissions: ' + inlineObj(model.permissions))
+  return out.join('\n') + '\n'
+}
+
 // 无向可达性（用于环检测与祖先判定）：edges 视为有向。
 function buildGraph(nodes, edges) {
   const byId = new Map(nodes.map((n) => [n.id, n]))
@@ -632,7 +718,8 @@ export function migrateLegacy(input) {
 
 // ===================== 迁移落盘辅助（CLI `/wf migrate`） =====================
 // 迁移产物落盘采用**最小追加**：只把迁移生成的 edges 块追加到原文末尾（顶层 `edges:`）。
-// 理由：完整重写需要 YAML 序列化器（serializeWorkflow 属画布 Task 交付，此处不引入半成品）；
+// 理由：最小追加不触碰原文（serializeWorkflow 虽已交付，但重写会让迁移 diff 淹没全文、
+// 并可能改写注释/键序，故迁移路径仍走追加）；
 // 执行以 edges 为唯一真相，残留的旧字段无害——schedule/auto_trigger 由 discoverWorkflows
 // 的「trigger_config → 顶层」回退读取（C1 修复），next* 字段不再被任何执行路径消费。
 // 幂等：原文已有非空 edges 时 migrateLegacy 直接返回护栏，不会追加第二块。
