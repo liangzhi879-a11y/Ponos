@@ -14,6 +14,8 @@
 //
 // 节点类型（P1，对标 Dify 15/26）：
 //   start/end/llm/code/template/if/assign/aggregate/http/document/tool/list
+//   classify/extract/memory/store/agent/iterate/loop/confirm + join/answer/subworkflow
+//   （执行实现见 kernel/workflow-nodes.mjs，本文件仅持有引擎）
 //
 // 审计：每节点 {ts,node,type,status,dur_ms,out_hash,prev} 哈希链落盘
 //   ~/.ponos/workflow-runs/<name>/<ts>-<runId>.jsonl，verifyRun 验完整性。
@@ -21,16 +23,14 @@
 import { existsSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
-import { createContext, runInContext } from 'node:vm'
 import { createServer } from 'node:http'
-import { streamMessages } from './api.mjs'
-import { buildRelevantMemory, appendMemoryEntry } from './memory.mjs'
-// DSL 实现已迁至 workflow-dsl.mjs（本文件保留节点执行器/引擎，仍用到这些实现）
-import { discoverWorkflows, loadWorkflow, renderTemplate, resolvePath, evalCondition } from './workflow-dsl.mjs'
+// DSL 实现见 workflow-dsl.mjs；节点执行器见 workflow-nodes.mjs（Task 4 迁出）
+import { discoverWorkflows, loadWorkflow } from './workflow-dsl.mjs'
+import { executeNode, setNodeDeps } from './workflow-nodes.mjs'
 
 // ===================== DSL（解析/变量/条件/发现/加载/校验）：兼容 re-export =====================
 // DSL v2 实现见 kernel/workflow-dsl.mjs；本文件保持既有 import 面不变（cli.mjs / tools.mjs /
-// kernel-tests 无需改动）。节点执行器与引擎仍在本文件内，故同时本地导入所需实现。
+// kernel-tests 无需改动）。
 export {
   DSL_VERSION, parseYaml, renderTemplate, resolvePath, evalCondition,
   discoverWorkflows, discoverWorkflowsAll, matchAutoTrigger, loadWorkflow,
@@ -74,474 +74,10 @@ export function verifyRun(auditPath) {
   return { ok: !tampered, lines: lines.length, tampered, lastHash: prev }
 }
 
-// ===================== 节点执行器 =====================
-
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)) }
-
-// 公共 LLM 文本请求（llm/classify/extract 共用）：模板渲染 prompt → 流式聚合文本 →
-// 可选 JSON 解析。返回聚合文本（json_schema 时可能为解析后的对象）
-async function callLLMText(model, prompt, node, vars, maxTokens = 4096) {
-  const system = node.system ? renderTemplate(node.system, vars) : ''
-  const messages = [
-    ...(system ? [{ role: 'system', content: system }] : []),
-    { role: 'user', content: prompt },
-  ]
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), node.timeout_ms || 60_000)
-  let text = ''
-  try {
-    for await (const chunk of streamMessages({ model, messages, maxTokens, signal: ctrl.signal })) {
-      if (chunk.type === 'text') text += chunk.text
-    }
-  } finally { clearTimeout(timer) }
-  if (node.json_schema) {
-    const m = text.match(/\{[\s\S]*\}/)
-    try { text = JSON.parse(m ? m[0] : text) } catch { /* 非 JSON 保留原文 */ }
-  }
-  return text
-}
-
-// agent 节点：工作流内嵌 ReAct 循环（独立对话，不污染主会话 transcript）。
-// 工具执行走 registry（权限/边界/高危钩子沿用）；tools 白名单可选，缺省全量。
-async function runAgentLoop({ prompt, system = '', tools = [], model, signal, registry, permissionGate = null, maxIters = 8, timeoutMs = 120_000, getToolCtx = () => ({}) }) {
-  if (!model) throw new Error('agent 节点缺少 model（未配置 provider）')
-  const messages = []
-  if (system) messages.push({ role: 'system', content: system })
-  messages.push({ role: 'user', content: prompt })
-  const allSchemas = registry?.toolSchemas ? registry.toolSchemas() : []
-  const schemas = tools && tools.length ? allSchemas.filter((t) => tools.includes(t.name)) : allSchemas
-  let text = ''
-  for (let i = 0; i < maxIters; i++) {
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs)
-    const toolUses = []
-    let roundText = ''
-    try {
-      for await (const chunk of streamMessages({ model, messages, maxTokens: 8192, signal: ctrl.signal, tools: schemas })) {
-        if (chunk.type === 'text') roundText += chunk.text
-        else if (chunk.type === 'tool_use') toolUses.push(chunk)
-      }
-    } finally { clearTimeout(timer) }
-    if (!toolUses.length) return { text: roundText || text, iters: i + 1, tool_uses: i }
-    text = roundText
-    messages.push({
-      role: 'assistant',
-      content: [
-        ...(roundText ? [{ type: 'text', text: roundText }] : []),
-        ...toolUses.map((tu) => ({ type: 'tool_use', id: tu.id, name: tu.name, input: tu.input })),
-      ],
-    })
-    const results = []
-    for (const tu of toolUses) {
-      // agent 内嵌工具同样过审批门（防止工作流 agent 节点旁路主会话高危审批）
-      const gate = await checkToolPermission({ permissionGate, registry }, tu.name, tu.input || {})
-      if (gate.denied) {
-        results.push({ type: 'tool_result', tool_use_id: tu.id, content: gate.message, is_error: true })
-        continue
-      }
-      try {
-        const r = await registry.run({ name: tu.name, input: tu.input }, getToolCtx?.() || {})
-        results.push({ type: 'tool_result', tool_use_id: tu.id, content: String(r?.content ?? '').slice(0, 20000), is_error: r?.isError === true })
-      } catch (err) {
-        results.push({ type: 'tool_result', tool_use_id: tu.id, content: `执行异常: ${err?.message || String(err)}`, is_error: true })
-      }
-    }
-    messages.push({ role: 'user', content: results })
-  }
-  return { text: text || '（达到最大迭代次数）', iters: maxIters, tool_uses: maxIters }
-}
-
-async function execLLM(node, ctx) {
-  const model = node.model || ctx.getModel()
-  if (!model) throw new Error('llm 节点缺少 model（未配置 provider）')
-  const prompt = renderTemplate(node.prompt || '', ctx.vars)
-  const out = await callLLMText(model, prompt, node, ctx.vars, node.max_tokens || 4096)
-  return { output: out, next: node.next }
-}
-
-// classify：LLM 分类 → 输出 category/class_index，可配 routes 按类别路由分支
-async function execClassify(node, ctx) {
-  const model = node.model || ctx.getModel()
-  if (!model) throw new Error('classify 节点缺少 model')
-  const query = renderTemplate(node.query || node.input || '', ctx.vars)
-  const classes = node.classes || []
-  if (!classes.length) throw new Error('classify 节点缺少 classes')
-  const instruction = node.instruction || '将输入分类到最合适的一类'
-  const prompt = `${instruction}\n\n输入：\n${query}\n\n可选类别（只输出类别名本身，不要编号和解释）：\n${classes.map((c, i) => `${i + 1}. ${c}`).join('\n')}`
-  const raw = await callLLMText(model, prompt, node, ctx.vars, 512)
-  let category = String(raw).trim().replace(/^["'\d.\s-]+|["']$/g, '')
-  let idx = classes.findIndex((c) => category === c || category.includes(c) || c.includes(category))
-  if (idx < 0) {
-    const num = parseInt(category, 10)
-    if (Number.isFinite(num) && num >= 1 && num <= classes.length) idx = num - 1
-  }
-  category = idx >= 0 ? classes[idx] : category
-  const routes = node.routes || []
-  const next = idx >= 0 && routes[idx] ? routes[idx] : node.next
-  return { output: { category, class_index: idx, raw }, next }
-}
-
-// extract：LLM 按 JSON schema 提取字段（对标 Dify parameter-extractor）
-async function execExtract(node, ctx) {
-  const model = node.model || ctx.getModel()
-  if (!model) throw new Error('extract 节点缺少 model')
-  const query = renderTemplate(node.query || node.input || '', ctx.vars)
-  const instruction = node.instruction || '从输入中提取指定字段'
-  const params = node.parameters || []
-  if (!params.length) throw new Error('extract 节点缺少 parameters')
-  const schemaDesc = params.map((p) => `- ${p.name}${p.required ? '（必填）' : '（可选）'}: ${p.type || 'string'}${p.description ? ' — ' + p.description : ''}`).join('\n')
-  const prompt = `${instruction}\n\n输入：\n${query}\n\n只输出一个 JSON 对象（不要 markdown 代码块、不要解释），字段定义：\n${schemaDesc}`
-  const raw = await callLLMText(model, prompt, node, ctx.vars, 1024)
-  const m = String(raw).match(/\{[\s\S]*\}/)
-  try {
-    const parsed = JSON.parse(m ? m[0] : String(raw))
-    return { output: { ...parsed, _raw: String(raw).slice(0, 500) }, next: node.next }
-  } catch {
-    return { output: { _raw: String(raw).slice(0, 2000) }, next: node.next }
-  }
-}
-
-// memory：语义检索（复用 buildRelevantMemory 关键词匹配）
-async function execMemory(node, ctx) {
-  const query = renderTemplate(node.query || node.input || '', ctx.vars)
-  const keywords = String(query).split(/[\s,，、;；]+/).filter(Boolean)
-  const root = ctx.memoryRoot || ''
-  const text = root ? buildRelevantMemory({ root, keywords, maxBytes: node.max_bytes || 2048 }) : '（未配置记忆库根目录）'
-  return { output: { text, keywords }, next: node.next }
-}
-
-// store：记忆写入（复用 appendMemoryEntry）
-async function execStore(node, ctx) {
-  const root = ctx.memoryRoot || ''
-  if (!root) throw new Error('store 节点需要记忆库根目录（未注入 memoryRoot）')
-  const theme = renderTemplate(node.theme || node.topic || '', ctx.vars)
-  const summary = renderTemplate(node.summary || '', ctx.vars)
-  const full = renderTemplate(node.full || node.content || '', ctx.vars)
-  const tag = renderTemplate(node.tag || '', ctx.vars)
-  if (!theme || !summary) throw new Error('store 节点缺少 theme/summary')
-  const ok = appendMemoryEntry({ root, theme, tag: tag || null, summary, full })
-  return { output: { ok: !!ok, theme, tag }, next: node.next }
-}
-
-// iterate：数组迭代（is_parallel 并行，parallel_nums 并发度）；每项注入 item/index
-// 执行 body 子图，聚合各次 body 末节点输出
-async function execIterate(node, ctx) {
-  const arr = resolvePath(ctx.vars, node.iterable || node.input || '')
-  if (!Array.isArray(arr)) throw new Error(`iterate 输入不是数组: ${node.iterable}`)
-  const body = node.body || []
-  if (!body.length) throw new Error('iterate 节点缺少 body（子节点 id 列表）')
-  const out = []
-  const parallel = node.is_parallel === true
-  const nums = Math.max(1, Number(node.parallel_nums || 1))
-  const items = arr.map((item, index) => ({ item, index }))
-  const runOne = async ({ item, index }) => {
-    const vars = { ...ctx.vars, item, index }
-    const sub = { ...ctx, vars }
-    return ctx.runBody(sub, body)
-  }
-  if (parallel) {
-    for (let i = 0; i < items.length; i += nums) {
-      const batch = items.slice(i, i + nums)
-      const rs = await Promise.all(batch.map(runOne))
-      out.push(...rs)
-    }
-  } else {
-    for (const it of items) out.push(await runOne(it))
-  }
-  return { output: out, next: node.next }
-}
-
-// loop：循环（count 次数 + while_conditions 轮前检查 + break_conditions 提前终止）；
-// 每轮注入 iter/index 执行 body。count 支持模板渲染（{{var}} / {{inputs.n}} 动态次数）。
-// continue_on_error=true 时单轮失败记录 {__error} 继续；max_duration_ms 为整循环时间预算。
-// 注意：loop 不做并行（轮间共享 var 状态，并行会竞态）——并行迭代用 iterate.is_parallel。
-async function execLoop(node, ctx) {
-  const body = node.body || []
-  if (!body.length) throw new Error('loop 节点缺少 body')
-  const rawCount = Number(renderTemplate(String(node.count ?? 3), ctx.vars))
-  const count = Number.isFinite(rawCount) ? Math.max(1, rawCount) : 3
-  const out = []
-  const contOnErr = node.continue_on_error === true
-  const maxDur = Number(node.max_duration_ms || 0)
-  const t0 = Date.now()
-  const whiles = node.while_conditions || []
-  const breaks = node.break_conditions || []
-  for (let i = 0; i < count && !ctx.signal?.aborted; i++) {
-    if (maxDur > 0 && Date.now() - t0 > maxDur) break
-    // while 条件（轮前检查）：不满足立即终止（对标 while/until 语义）
-    if (whiles.length) {
-      const pass = whiles.every((c) => evalCondition(c, { ...ctx.vars, iter: i, index: i }))
-      if (!pass) break
-    }
-    const vars = { ...ctx.vars, iter: i, index: i }
-    const sub = { ...ctx, vars }
-    let last
-    if (contOnErr) {
-      try { last = await ctx.runBody(sub, body) }
-      catch (err) { last = { __error: err.message || String(err), __iter: i } }
-    } else {
-      last = await ctx.runBody(sub, body)
-    }
-    out.push(last)
-    // break 条件（对标 Dify loop break_conditions）：本轮执行后检查
-    if (breaks.length) {
-      const pass = breaks.every((c) => evalCondition(c, sub.vars))
-      if (pass) return { output: { results: out, iterations: i + 1, broken: true }, next: node.next }
-    }
-  }
-  return { output: { results: out, iterations: Math.min(count, out.length), broken: false }, next: node.next }
-}
-
-// agent：工作流内嵌对话式执行（ReAct 循环，工具白名单可选）
-async function execAgent(node, ctx) {
-  const prompt = renderTemplate(node.prompt || node.query || '', ctx.vars)
-  const system = renderTemplate(node.system || '', ctx.vars)
-  const model = node.model || ctx.getModel()
-  const r = await runAgentLoop({
-    prompt, system, tools: node.tools || [], model,
-    signal: ctx.signal, registry: ctx.registry, permissionGate: ctx.permissionGate,
-    maxIters: node.max_iters || 8, timeoutMs: node.timeout_ms || 120_000,
-    getToolCtx: ctx.getToolCtx,
-  })
-  return { output: { text: r.text, iters: r.iters, tool_uses: r.tool_uses }, next: node.next }
-}
-
-// confirm：人工审批节点（对标 Dify human-input）。发 confirm_request 事件后挂起，
-// 等待外部 resolveConfirm（TUI /wf approve|reject / 协议层 workflow_confirm）或超时。
-// 超时/拒绝走 next_timeout / next_reject 分支；批准走 next_approve / next。
-async function execConfirm(node, ctx) {
-  const message = renderTemplate(node.message || node.prompt || '请确认', ctx.vars)
-  const runId = ctx.runId || ''
-  const nodeId = node.id
-  const timeoutMs = node.timeout_ms || 300_000
-  const waiter = ctx.confirmWaiters?.create ? ctx.confirmWaiters.create(runId, nodeId, timeoutMs) : null
-  ctx.event('confirm_request', { runId, node: nodeId, message, inputs: node.inputs || [], timeout_ms: timeoutMs })
-  if (!waiter) return { output: { action: 'approved', comment: '' }, next: node.next_approve || node.next }
-  const r = await waiter.promise
-  ctx.event('confirm_resolved', { runId, node: nodeId, action: r.action, comment: r.comment, timed_out: r.timed_out })
-  if (r.timed_out) return { output: { action: 'timeout', comment: r.comment || '' }, next: node.next_timeout || node.next }
-  if (r.action === 'rejected') return { output: { action: 'rejected', comment: r.comment || '' }, next: node.next_reject || node.next }
-  return { output: { action: 'approved', comment: r.comment || '' }, next: node.next_approve || node.next }
-}
-
-function execCode(node, ctx) {
-  const code = node.code || ''
-  const inputVars = {}
-  for (const v of node.variables || []) {
-    inputVars[v.variable || v.name] = resolvePath(ctx.vars, v.selector || v.value || '')
-  }
-  const sandbox = createContext({ inputs: inputVars, JSON, Math, Date, console })
-  const result = runInContext(`(function(){ ${code}\n; return typeof main === 'function' ? main(inputs) : inputs })()`, sandbox, {
-    timeout: node.timeout_ms || 10_000,
-  })
-  return { output: result, next: node.next }
-}
-
-function execTemplate(node, ctx) {
-  return { output: renderTemplate(node.template || '', ctx.vars), next: node.next }
-}
-
-function execIf(node, ctx) {
-  const conds = node.conditions || []
-  const logic = node.logical_operator || 'and'
-  const pass = logic === 'or' ? conds.some((c) => evalCondition(c, ctx.vars)) : conds.every((c) => evalCondition(c, ctx.vars))
-  return { output: { pass }, next: pass ? node.next_true || node.next : node.next_false || node.next }
-}
-
-function execAssign(node, ctx) {
-  const items = node.items || []
-  for (const it of items) {
-    const name = it.variable || it.name
-    if (!name) continue
-    const val = resolvePath(ctx.vars, it.value || it.selector || '')
-    const cur = ctx.vars.var[name]
-    const op = it.operation || 'over-write'
-    if (op === 'append') {
-      ctx.vars.var[name] = Array.isArray(cur) ? [...cur, val] : (cur !== undefined ? [cur, val] : [val])
-    } else if (op === 'clear') {
-      ctx.vars.var[name] = null
-    } else {
-      ctx.vars.var[name] = val
-    }
-  }
-  return { output: ctx.vars.var, next: node.next }
-}
-
-function execAggregate(node, ctx) {
-  const vars = node.variables || []
-  const outType = node.output_type || 'string'
-  if (outType === 'array') {
-    return { output: vars.map((v) => resolvePath(ctx.vars, v.selector || v)), next: node.next }
-  }
-  const sep = node.separator ?? '\n'
-  return { output: vars.map((v) => String(resolvePath(ctx.vars, v.selector || v) ?? '')).join(sep), next: node.next }
-}
-
-async function execHttp(node, ctx) {
-  const url = renderTemplate(node.url || '', ctx.vars)
-  if (!url) throw new Error('http 节点缺少 url')
-  const method = (node.method || 'GET').toUpperCase()
-  const headers = {}
-  for (const [k, v] of Object.entries(renderTemplate(node.headers || '', ctx.vars) ? parseHeaderLines(node.headers) : {})) headers[k] = v
-  let body
-  if (node.body) {
-    const bt = node.body.type || 'json'
-    if (bt === 'json') {
-      const data = {}
-      for (const d of node.body.data || []) data[d.key] = renderTemplate(String(d.value ?? ''), ctx.vars)
-      body = JSON.stringify(data)
-      if (!headers['Content-Type']) headers['Content-Type'] = 'application/json'
-    } else if (bt === 'raw') {
-      body = renderTemplate(String(node.body.raw || ''), ctx.vars)
-    }
-  }
-  const auth = node.authorization || {}
-  if (auth.type === 'bearer') headers['Authorization'] = `Bearer ${renderTemplate(String(auth.token || ''), ctx.vars)}`
-  if (auth.type === 'api-key') headers[auth.header || 'X-API-Key'] = renderTemplate(String(auth.token || ''), ctx.vars)
-  const timeout = (node.timeout || {}).read || node.timeout_ms || 60_000
-  const retry = node.retry?.enabled ? Math.max(0, Number(node.retry.max_retries || 1)) : 0
-  let attempt = 0
-  let lastErr
-  while (attempt <= retry) {
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), timeout)
-    try {
-      const res = await fetch(url, { method, headers, body, signal: ctrl.signal })
-      const text = await res.text()
-      let parsed = text
-      try { parsed = JSON.parse(text) } catch { /* 非 JSON */ }
-      return {
-        output: { status_code: res.status, body: parsed, headers: Object.fromEntries(res.headers) },
-        next: node.next,
-      }
-    } catch (err) {
-      lastErr = err
-      attempt++
-      if (attempt <= retry) await sleep(Math.min(500 * Math.pow(2, attempt - 1), 10_000))
-    } finally { clearTimeout(timer) }
-  }
-  throw lastErr || new Error('http 请求失败')
-}
-
-function parseHeaderLines(headersStr) {
-  const out = {}
-  for (const line of String(headersStr || '').split('\n')) {
-    const idx = line.indexOf(':')
-    if (idx > 0) out[line.slice(0, idx).trim()] = line.slice(idx + 1).trim()
-  }
-  return out
-}
-
-// —— 工作流内嵌工具执行前的审批门 ——
-// 工作流 tool/document/agent 节点经 registry 直接跑工具，须与主 agent 会话同等
-// 遵守权限决策（高危 Bash ask 审批 / deny / hooks.preToolUse 否决），避免经
-// Workflow 工具旁路主会话审批（engine 经 setDeps({ permissionGate }) 注入门）。
-// 无门（脱离 engine 独立跑：纯测试/直连）时收敛高危面：Bash fail-closed 拒绝，
-// 其余工具边界仍由工具自身强制（allowDirs 等）。
-let wfToolSeq = 0
-async function checkToolPermission(ctx, name, input) {
-  const gate = ctx?.permissionGate
-  if (typeof gate !== 'function') {
-    if (name === 'Bash') return { denied: true, message: '当前工作流无审批通道：Bash 工具默认拒绝执行（请在交互会话中运行该工作流，由引擎审批门放行）' }
-    return { denied: false }
-  }
-  let d
-  try {
-    d = await gate({ id: `wf-${Date.now().toString(36)}-${(++wfToolSeq).toString(36)}`, name, input })
-  } catch (err) {
-    return { denied: true, message: `工具权限校验异常：${err?.message || String(err)}` }
-  }
-  if (!d?.allowed) return { denied: true, message: d?.message || '该工具调用被拒绝' }
-  return { denied: false }
-}
-
-async function execDocument(node, ctx) {
-  const filePath = renderTemplate(node.input || node.file || '', ctx.vars)
-  if (!filePath) throw new Error('document 节点缺少 input')
-  const gate1 = await checkToolPermission(ctx, 'Read', { file_path: filePath })
-  if (!gate1.denied) {
-    const readRes = await ctx.registry.run({ name: 'Read', input: { file_path: filePath } }, {})
-    if (!readRes.isError) return { output: { text: readRes.content }, next: node.next }
-  }
-  const gate2 = await checkToolPermission(ctx, 'OCR', { file_path: filePath })
-  if (!gate2.denied) {
-    const ocrRes = await ctx.registry.run({ name: 'OCR', input: { file_path: filePath } }, {})
-    if (!ocrRes.isError) return { output: { text: ocrRes.content }, next: node.next }
-  }
-  throw new Error(`document 读取失败: ${filePath}（Read ${gate1.denied ? '被拒绝: ' + gate1.message : '无内容/失败'}，OCR ${gate2.denied ? '被拒绝: ' + gate2.message : '无内容/失败'}）`)
-}
-
-async function execTool(node, ctx) {
-  const name = node.tool || node.name
-  if (!name) throw new Error('tool 节点缺少 tool 字段')
-  const input = {}
-  for (const [k, v] of Object.entries(node.input || {})) input[k] = renderTemplate(String(v), ctx.vars)
-  const gate = await checkToolPermission(ctx, name, input)
-  if (gate.denied) return { output: gate.message, isError: true, next: node.next }
-  const res = await ctx.registry.run({ name, input }, ctx.getToolCtx?.() || {})
-  return { output: res.content, isError: res.isError === true, next: node.next }
-}
-
-function execList(node, ctx) {
-  const arr = resolvePath(ctx.vars, node.variable || '')
-  if (!Array.isArray(arr)) throw new Error(`list 节点输入不是数组: ${node.variable}`)
-  let out = [...arr]
-  if (node.filter_by?.enabled && node.filter_by.key && node.filter_by.op) {
-    out = out.filter((item) => evalCondition({ var: node.filter_by.key, op: node.filter_by.op, value: node.filter_by.value }, { root: item }))
-  }
-  if (node.order_by?.enabled && node.order_by.key) {
-    const key = node.order_by.key
-    out.sort((a, b) => {
-      const av = a?.[key]; const bv = b?.[key]
-      if (node.order_by.order === 'desc') return bv > av ? 1 : bv < av ? -1 : 0
-      return av > bv ? 1 : av < bv ? -1 : 0
-    })
-  }
-  if (node.extract_by?.enabled) {
-    const serial = node.extract_by.serial || 'first'
-    if (serial === 'first') out = out[0]
-    else if (serial === 'last') out = out[out.length - 1]
-  }
-  return { output: out, next: node.next }
-}
-
-async function executeNode(node, ctx) {
-  const t0 = Date.now()
-  try {
-    let result
-    switch (node.type) {
-      case 'start': result = { output: { ...ctx.inputs }, next: node.next }; break
-      case 'end': {
-        const out = {}
-        for (const o of node.outputs || []) out[o.variable || o.name] = resolvePath(ctx.vars, o.selector || o.value || o.variable || '')
-        result = { output: out, next: null }
-        break
-      }
-      case 'llm': result = await execLLM(node, ctx); break
-      case 'code': result = execCode(node, ctx); break
-      case 'template': result = execTemplate(node, ctx); break
-      case 'if': result = execIf(node, ctx); break
-      case 'assign': result = execAssign(node, ctx); break
-      case 'aggregate': result = execAggregate(node, ctx); break
-      case 'http': result = await execHttp(node, ctx); break
-      case 'document': result = await execDocument(node, ctx); break
-      case 'tool': result = await execTool(node, ctx); break
-      case 'list': result = execList(node, ctx); break
-      case 'classify': result = await execClassify(node, ctx); break
-      case 'extract': result = await execExtract(node, ctx); break
-      case 'memory': result = await execMemory(node, ctx); break
-      case 'store': result = await execStore(node, ctx); break
-      case 'agent': result = await execAgent(node, ctx); break
-      case 'iterate': result = await execIterate(node, ctx); break
-      case 'loop': result = await execLoop(node, ctx); break
-      case 'confirm': result = await execConfirm(node, ctx); break
-      default: throw new Error(`未知节点类型: ${node.type}`)
-    }
-    return { ok: true, ...result, dur_ms: Date.now() - t0 }
-  } catch (err) {
-    return { ok: false, error: err.message || String(err), dur_ms: Date.now() - t0 }
-  }
-}
+// ===================== 节点执行器（已迁出本文件） =====================
+// 节点执行器实现迁至 kernel/workflow-nodes.mjs（Task 4）：本文件不再持有 execXxx。
+// 过渡接线：引擎入口/setDeps 调 setNodeDeps 注入依赖，下方 executeNode(node, ctx) 调用点
+// 逐字不变（Task 5 迁引擎到 workflow-engine.mjs 后改用 createNodeExecutor 实例）。
 
 // ===================== 引擎（执行循环 + 审计 + 事件） =====================
 // createWorkflowEngine({ configDir, registry, onEvent, getModel, signal })
@@ -565,6 +101,10 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
   let _getToolCtx = () => ({})
   // confirm 挂起队列：key = runId:nodeId → { resolve, timer }
   const confirmWaiters = new Map()
+
+  // 节点执行器依赖（Task 4 迁出至 workflow-nodes.mjs）：过渡期经模块级注入接线，
+  // 使本引擎内的 executeNode(node, ctx) 调用点逐字不变。engine 待 Task 5 落地后注入。
+  setNodeDeps({ registry: _registry, getModel: _getModel, memoryRoot: _memoryRoot, engine: null })
 
   // 创建挂起项（超时自动 resolve 为 timed_out）
   function createConfirmWaiter(runId, nodeId, timeoutMs) {
@@ -605,6 +145,8 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
     // 2026-09-11 spec-dev：主引擎子 agent 能力注入（懒 getter——engine 的 spawnSubAgent/
     // taskSystem 在 setDeps 调用时尚处 TDZ，调用时才取）
     if (deps.getToolCtx !== undefined) _getToolCtx = deps.getToolCtx
+    // 节点执行器依赖同步（Task 4 过渡接线）：cli/测试在 createWorkflowEngine 之后才 setDeps
+    setNodeDeps({ registry: _registry, getModel: _getModel, memoryRoot: _memoryRoot })
   }
 
   function event(type, payload) {
