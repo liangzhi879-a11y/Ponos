@@ -86,6 +86,36 @@ export function isHiddenLoopInjection(entry) {
 }
 
 /**
+ * 兜底查找：cwd 映射不到 transcript 时（典型=chat 模式会话——GUI 侧会话不存 cwd，
+ * 请求带空 cwd 落到 projects 根目录；而内核 chat 模式 spawn cwd=YFW_HOME 或历史
+ * 版本写入过其它目录），扫描 projects 根目录 + 全部项目子目录寻找 <sessionId>.jsonl。
+ * 多处命中时取 mtime 最新者。只在该目录未命中的低频路径调用。
+ * @returns {string|null} 命中的文件绝对路径；未命中返回 null。
+ */
+export function findTranscriptAnywhere(projectsDir, sessionId) {
+  const target = `${sessionId}.jsonl`
+  let best = null
+  const consider = (fp) => {
+    try {
+      const st = statSync(fp)
+      if (!st.isFile()) return
+      if (!best || st.mtimeMs > best.mtime) best = { fp, mtime: st.mtimeMs }
+    } catch { /* 文件可能并发消失，忽略 */ }
+  }
+  consider(join(projectsDir, target))
+  if (existsSync(projectsDir)) {
+    for (const name of readdirSync(projectsDir)) {
+      const d = join(projectsDir, name)
+      let st
+      try { st = statSync(d) } catch { continue }
+      if (!st.isDirectory()) continue
+      consider(join(d, target))
+    }
+  }
+  return best ? best.fp : null
+}
+
+/**
  * 逐行读取单个 transcript。
  * @param {boolean} tailFirst 默认 true：>5MB 只读尾部最近 5MB（GUI 激活会话展示）；
  *   false 全量读取（导出/搜索用——含自愈注入原文，导出保留完整数据）。
@@ -97,9 +127,13 @@ export function loadTranscript(projectsDir, cwd, sessionId, tailFirst = true) {
   if (!isUuidFile(`${sessionId}.jsonl`)) {
     return { ok: false, error: 'invalid sessionId' }
   }
-  const fp = join(projectsDir, sanitizePathSegment(cwd), `${sessionId}.jsonl`)
+  let fp = join(projectsDir, sanitizePathSegment(cwd), `${sessionId}.jsonl`)
   if (!existsSync(fp)) {
-    return { ok: false, error: 'not found' }
+    // cwd 映射未命中（chat 模式会话 cwd 为空等）：全盘兜底找一次。
+    fp = findTranscriptAnywhere(projectsDir, sessionId)
+    if (!fp) {
+      return { ok: false, error: 'not found' }
+    }
   }
   // 简化实现：readFileSync 全读后按字节 slice 尾部 5MB（超大文件可用 fd + read 偏移更稳，后续可优化）。
   let buf = readFileSync(fp)

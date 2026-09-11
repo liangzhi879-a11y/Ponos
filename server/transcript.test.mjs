@@ -178,6 +178,51 @@ describe('loadTranscript', () => {
     const { root } = makeProjects(t)
     assert.deepEqual(loadTranscript(root, '/x', 'not-a-uuid'), { ok: false, error: 'invalid sessionId' })
   })
+
+  test('chat 模式兜底：空 cwd 未命中时跨项目目录找到 transcript', (t) => {
+    const { root } = makeProjects(t)
+    // 模拟内核 chat 模式：会话写在 YFW_HOME 派生目录，而 GUI 请求带空 cwd
+    const homeLike = join(root, sanitizePathSegment('C:\\Users\\t\\.yfw'))
+    mkdirSync(homeLike, { recursive: true })
+    mk(homeLike, `${UUID}.jsonl`, entry('user', { uuid: 'u1', message: { role: 'user', content: 'chat 历史' } }) + '\n')
+    const r = loadTranscript(root, '', UUID)
+    assert.equal(r.ok, true, '空 cwd 兜底命中')
+    assert.equal(r.entries.length, 1)
+    assert.equal(r.entries[0].uuid, 'u1')
+    // 非空但错误的 cwd 同样兜底
+    const r2 = loadTranscript(root, 'C:\\Users\\t\\other-proj', UUID)
+    assert.equal(r2.ok, true, '错误 cwd 兜底命中')
+    assert.equal(r2.entries.length, 1)
+  })
+
+  test('兜底也覆盖 projects 根目录下的 transcript（cwd 为空串的内核产物）', (t) => {
+    const { root } = makeProjects(t)
+    mk(root, `${UUID}.jsonl`, entry('assistant', { uuid: 'a1', message: { role: 'assistant', content: 'root 级会话' } }) + '\n')
+    const r = loadTranscript(root, '', UUID)
+    assert.equal(r.ok, true)
+    assert.equal(r.entries.length, 1)
+    assert.equal(r.entries[0].uuid, 'a1')
+  })
+
+  test('兜底多处命中取 mtime 最新者', (t) => {
+    const { root, proj } = makeProjects(t)
+    const other = join(root, sanitizePathSegment('D:\\newer\\proj'))
+    mkdirSync(other, { recursive: true })
+    const oldTs = new Date('2026-01-01T00:00:00Z')
+    const newTs = new Date('2026-06-01T00:00:00Z')
+    mk(proj, `${UUID}.jsonl`, entry('user', { uuid: 'old', message: { role: 'user', content: '旧' } }) + '\n')
+    utimesSync(join(proj, `${UUID}.jsonl`), oldTs, oldTs)
+    mk(other, `${UUID}.jsonl`, entry('user', { uuid: 'new', message: { role: 'user', content: '新' } }) + '\n')
+    utimesSync(join(other, `${UUID}.jsonl`), newTs, newTs)
+    const r = loadTranscript(root, 'C:\\nowhere\\else', UUID)
+    assert.equal(r.ok, true)
+    assert.deepEqual(r.entries.map((e) => e.uuid), ['new'], '取 mtime 最新')
+  })
+
+  test('兜底全盘未命中仍返回 not found（含空 cwd）', (t) => {
+    const { root } = makeProjects(t)
+    assert.deepEqual(loadTranscript(root, '', '00000000-0000-4000-8000-000000000000'), { ok: false, error: 'not found' })
+  })
 })
 
 describe('searchTranscripts', () => {
