@@ -451,3 +451,152 @@ export function validateWorkflow(wf) {
   }
   return { ok: errors.length === 0, errors, warnings }
 }
+
+// ===================== 旧格式迁移（DSL v1 → v2） =====================
+// 旧格式 = 数组顺序执行 + next/next_true/next_false + 平铺 schedule/auto_trigger。
+// 迁移**确定性**：边按节点遍历顺序生成，id 由 EDGE_ID 规则派生（无时间/随机成分），
+// 同输入两次调用产出字节等价产物。规则：
+//   ① 显式 next → 无 handle 边；
+//   ② if：next_true → sourceHandle 'true'、next_false → 'false'；字段缺省（含显式 null，
+//      旧引擎里 null 同样回落到 next / 数组顺序）时依次回落 next → 顺延兜底；
+//   ③ classify：routes[i] → sourceHandle 'route:<i>'，next → 'default'（DAG 调度器对
+//      true/false 之外的 handle 用 'default' 兜底，见 workflow-dag 出边激活）；
+//   ④ loop/iterate：body 成员按 **body 数组顺序**补 body[i] → body[i+1]（不依赖 nodes 相邻性）；
+//   ⑤ 其余节点：显式 next 优先；未写/为空则顺延——主图节点顺延到"下一个主图且非条件分支
+//      目标"的节点，body 成员顺延到所属 body 的下一个成员（旧引擎的数组顺序兜底语义）；
+//   ⑥ 绝不补跨子图（主图 ↔ body）边：子图出入由 body 声明 + loop 节点出边表达，补了会触发
+//      BODY_ESCAPE；跳过时在 notes 留下明细；
+//   ⑦ 平铺 schedule / auto_trigger → trigger_config（manual 缺省 true）并删原字段。
+// 刻意不动：confirm 的 next_approve/next_reject/next_timeout（v2 的 handle 名未定，等引擎侧
+// 定名再迁，保留原字段不丢信息）；classify.routes 保留（执行/画布仍读）。
+// 已是 v2（存在非空 edges）→ 原样返回（幂等）。
+
+const EDGE_ID = (source, target, handle, n) => `e${n}_${source}_${target}${handle ? '_' + String(handle).replace(/[^\w]/g, '') : ''}`
+
+export function migrateLegacy(input) {
+  const wf = normalizeWorkflow(input)
+  const nodes = wf.nodes || []
+  if (Array.isArray(wf.edges) && wf.edges.length) {
+    return { workflow: { ...wf }, notes: ['已是 DSL v2（存在 edges），无需迁移'] }
+  }
+  const valid = nodes.filter((n) => n?.id)
+  const ids = new Set(valid.map((n) => n.id))
+  const byId = new Map(valid.map((n) => [n.id, n]))
+  const notes = []
+  const edges = []
+  let seq = 0
+
+  // 子图归属（与 validateWorkflow 同一判定：body 成员 → 所属 loop/iterate）；null = 主图
+  const bodyOf = new Map()
+  for (const n of nodes) {
+    if ((n.type === 'loop' || n.type === 'iterate') && Array.isArray(n.body)) {
+      for (const b of n.body) if (ids.has(b)) bodyOf.set(b, n.id)
+    }
+  }
+  const scopeOf = (id) => (bodyOf.has(id) ? bodyOf.get(id) : null)
+
+  // 条件分支目标是"跳转目的地"，不作顺延后继：否则两个分支会被串成假顺序链
+  // （big → small → out），既不忠实旧语义，也会让分支节点的下游错位。
+  const branchTargets = new Set()
+  for (const n of nodes) {
+    for (const t of [n?.next_true, n?.next_false, ...(Array.isArray(n?.routes) ? n.routes : [])]) {
+      if (typeof t === 'string' && t) branchTargets.add(t)
+    }
+  }
+
+  const push = (source, target, handle) => {
+    if (!ids.has(source) || !ids.has(target) || source === target) return false
+    if (scopeOf(source) !== scopeOf(target)) return false
+    if (edges.some((e) => e.source === source && e.target === target && e.sourceHandle === handle)) return false
+    edges.push({ id: EDGE_ID(source, target, handle, ++seq), source, target, ...(handle ? { sourceHandle: String(handle) } : {}) })
+    return true
+  }
+  const link = (source, target, handle, how) => {
+    if (typeof target !== 'string' || !target) return false
+    if (!ids.has(target)) { notes.push(`节点 ${source}：${how} 指向不存在的节点 ${target}，已跳过`); return false }
+    if (source === target) return false
+    if (scopeOf(source) !== scopeOf(target)) {
+      notes.push(`节点 ${source}：${how} → ${target} 跨越子图边界，已跳过（子图出入由 body 声明与 loop 节点出边表达）`)
+      return false
+    }
+    if (!push(source, target, handle)) return false
+    notes.push(`节点 ${source}：${how} → ${target}${handle ? `（handle ${handle}）` : ''}`)
+    return true
+  }
+
+  // 顺延后继（旧引擎兜底顺序）：body 成员 → 所属 body 的下一个成员；主图节点 → 下一个主图节点
+  const fallthroughOf = (id, i) => {
+    const owner = scopeOf(id) ? byId.get(scopeOf(id)) : null
+    if (owner) {
+      const body = Array.isArray(owner.body) ? owner.body : []
+      const k = body.indexOf(id)
+      return k >= 0 && k < body.length - 1 ? body[k + 1] : null
+    }
+    for (let j = i + 1; j < nodes.length; j++) {
+      const cand = nodes[j]
+      if (!cand?.id) continue
+      if (scopeOf(cand.id)) continue            // body 成员：只由 body 顺序补边
+      if (branchTargets.has(cand.id)) continue  // 条件分支目标：只由条件边进入
+      return cand.id
+    }
+    return null
+  }
+  // 分支目标：字段缺省（含显式 null/空串——旧引擎里同样再回落）时按 keys 顺序取下一个
+  const branchTarget = (n, keys, fb) => {
+    for (const k of keys) {
+      if (!Object.hasOwn(n, k)) continue
+      const v = n[k]
+      if (typeof v === 'string' && v) return v
+    }
+    return fb
+  }
+
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i]
+    if (!n?.id) continue
+    const fb = fallthroughOf(n.id, i) // 显式分支/next 缺失时的兜底后继
+    if (n.type === 'if') {
+      link(n.id, branchTarget(n, ['next_true', 'next'], fb), 'true', 'next_true → 条件边')
+      link(n.id, branchTarget(n, ['next_false', 'next'], fb), 'false', 'next_false → 条件边')
+      continue
+    }
+    if (n.type === 'classify' && Array.isArray(n.routes)) {
+      n.routes.forEach((t, idx) => link(n.id, t, `route:${idx}`, `routes[${idx}] → 条件边`))
+      if (typeof n.next === 'string' && n.next) link(n.id, n.next, 'default', 'next → 默认分支边')
+      continue
+    }
+    // confirm：next 作顺序边；审批三分支（next_approve/next_reject/next_timeout）字段**保留**
+    // ——v2 的 handle 名未定（引擎侧 Task 5 定名后再迁），此处只提示不臆造边。
+    if (n.type === 'confirm') {
+      const kept = ['next_approve', 'next_reject', 'next_timeout'].filter((k) => typeof n[k] === 'string' && n[k])
+      if (kept.length) notes.push(`confirm 节点 ${n.id}：${kept.join('/')} 保留原字段（v2 handle 名待定，暂不生成条件边）`)
+    }
+    if (n.type === 'end' || n.type === 'answer') {
+      // 输出节点：引擎在 end/answer 处收束（end 恒返回 next=null），不补出边
+      if (typeof n.next === 'string' && n.next) notes.push(`节点 ${n.id}：${n.type} 节点的 next（${n.next}）不表达执行顺序，已忽略`)
+      else notes.push(`节点 ${n.id}：输出节点（${n.type}）→ 链尾（不补边）`)
+      continue
+    }
+    const explicit = typeof n.next === 'string' && n.next ? n.next : null
+    const target = explicit || fb
+    if (!target) { notes.push(`节点 ${n.id}：无 next 且无顺延后继 → 链尾（不补边）`); continue }
+    const how = explicit ? 'next → 显式边' : (scopeOf(n.id) ? '按 body 顺序补边' : '按数组顺序补边')
+    link(n.id, target, undefined, how)
+  }
+
+  // 旧 next* 字段（顺序语义）删除——edges 是唯一真相；其余字段原样保留
+  const cleaned = nodes.map((n) => {
+    const { next, next_true, next_false, ...rest } = n
+    return rest
+  })
+  const trigger_config = {
+    manual: true,
+    ...(wf.trigger_config || {}),
+    ...(wf.schedule ? { schedule: wf.schedule } : {}),
+    ...(wf.auto_trigger !== undefined ? { auto_trigger: wf.auto_trigger } : {}),
+  }
+  const { schedule, auto_trigger, ...restWf } = wf
+  if (schedule) notes.push(`schedule → trigger_config.schedule（${schedule}）`)
+  if (auto_trigger !== undefined) notes.push('auto_trigger → trigger_config.auto_trigger')
+  return { workflow: { ...restWf, trigger_config, nodes: cleaned, edges }, notes }
+}

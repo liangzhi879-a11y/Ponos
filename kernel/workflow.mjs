@@ -34,9 +34,8 @@ import { discoverWorkflows, loadWorkflow, renderTemplate, resolvePath, evalCondi
 export {
   DSL_VERSION, parseYaml, renderTemplate, resolvePath, evalCondition,
   discoverWorkflows, discoverWorkflowsAll, matchAutoTrigger, loadWorkflow,
-  normalizeWorkflow, validateWorkflow,
+  normalizeWorkflow, validateWorkflow, migrateLegacy,
 } from './workflow-dsl.mjs'
-// TODO(Task 2): export migrateLegacy from './workflow-dsl.mjs'
 // TODO(Task 5): export createWorkflowEngine, verifyRun from './workflow-engine.mjs'
 
 // ===================== 审计（哈希链） =====================
