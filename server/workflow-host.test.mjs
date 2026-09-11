@@ -2,6 +2,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { createWorkflowHost, mergeCapabilities, HOST_SID } from './workflow-host.mjs'
 
 // 假 kernel：stdin 记命令、stdout 侧把回执投给宿主（真实链路由 bridge 调 host.onKernelMessage）。
@@ -247,4 +249,44 @@ test('N-1 回归：内核回执 runId 分叉时 grant 仍被回收（不泄漏�
   assert.equal(r.runId, 'kernel-42')
   assert.equal(host._grants.size, 0, `分叉路径不得遗留 grant：${JSON.stringify([...host._grants.keys()])}`)
   assert.equal(host.isGranted('kernel-42', 'Read'), false)
+})
+
+// —— 2026-09-12 实测缺陷回归：宿主 cwd 不存在 → spawn ENOENT(-4058) 秒退 → 命令永久挂起 ——
+// 现场证据（用户调试版）：`[bridge] spawn: _wfhost (new) C:\...\.yfw\workflow-runtime`
+//   紧接 `kernel exited abnormal code=-4058 (sid _wfhost) after 255ms`，反复 3 次；
+//   GET /workflows（纯 fs）200 正常，POST /workflows（需宿主）curl 20s 无响应。
+// 手工 mkdir 该目录后同一请求立即 200 → 根因确认为"以不存在的 cwd spawn"。
+test('宿主 cwd 必须先创建：ensure() 不得以不存在的目录 spawn（Windows 上会 ENOENT 秒退）', () => {
+  const home = mkdtempSync(join(tmpdir(), 'wf-host-cwd-'))   // 故意不建 workflow-runtime
+  try {
+    // 用空 sessions 表（fakeKernel 预填了 _wfhost，会走"已存在"分支而不触发 spawn）
+    const sessions = new Map()
+    let spawnedCwd = null
+    const host = createWorkflowHost({
+      sessions,
+      getOrCreateSession: (sid, cwd) => {
+        spawnedCwd = cwd
+        const s = { proc: { stdin: { write: () => {} }, killed: false } }
+        sessions.set(sid, s)
+        return s
+      },
+      yfwHome: home, model: 'm', onEvent: () => {},
+    })
+    host.ensure()
+    const expected = join(home, 'workflow-runtime')
+    assert.equal(spawnedCwd, expected, 'spawn 的 cwd 应为 <yfwHome>/workflow-runtime')
+    assert.ok(existsSync(expected), '宿主 cwd 必须已落盘（否则 Windows spawn 报 ENOENT，宿主秒退）')
+    host.ensure()                                    // 幂等：不重复 spawn
+    assert.equal(sessions.size, 1)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('宿主内核死亡：在途命令立即失败（不得静默挂到超时）', async () => {
+  const k = fakeKernel()
+  const host = mkHost(k)
+  const p = host.send({ subtype: 'never_answered' })
+  await new Promise((r) => setTimeout(r, 5))
+  host.onKernelExit(HOST_SID)                       // bridge 在内核 exit 时通知宿主
+  await assert.rejects(() => p, /宿主|内核|退出/, '内核死亡应立即报错，而非等 120s 超时')
+  assert.equal(host._pendingSize?.() ?? 0, 0, 'pending 必须清空，避免后续 run 误配对')
 })

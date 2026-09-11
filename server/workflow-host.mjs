@@ -9,6 +9,7 @@
 // 约束：本文件只 import `node:*`；**不得** import `kernel/*.mjs`（生产包只带
 // kernel-dist/cli.mjs，dev 下不显现、安装版才崩）。
 import { join } from 'node:path'
+import { mkdirSync } from 'node:fs'
 
 export const HOST_SID = '_wfhost'
 const DEFAULT_TIMEOUT = 120_000
@@ -38,8 +39,14 @@ export function createWorkflowHost({ sessions, getOrCreateSession, yfwHome = '',
   }
 
   // 懒启动：没有宿主会话就起一个（mode=task，工作目录 workflow-runtime）
+  // ⚠️ cwd 必须先落盘：Windows 下以**不存在的目录** spawn 会立刻 ENOENT 退出
+  // （实测退出码 -4058、存活约 250ms），宿主反复重启且命令写进死进程 → 前端永久挂起
+  // （POST /workflows 无响应；GET /workflows 是纯 fs 故看着"正常"，极难自查）。
   function ensure() {
-    if (!sessions.has(HOST_SID)) getOrCreateSession(HOST_SID, cwd, null, '', model, 0, 'task')
+    if (!sessions.has(HOST_SID)) {
+      try { mkdirSync(cwd, { recursive: true }) } catch { /* 已存在/无权限：让 spawn 自己报错 */ }
+      getOrCreateSession(HOST_SID, cwd, null, '', model, 0, 'task')
+    }
     return HOST_SID
   }
 
@@ -58,6 +65,7 @@ export function createWorkflowHost({ sessions, getOrCreateSession, yfwHome = '',
   //    会同时在途——reject 全部会把仍在执行的 run 判失败并连带回收其 grant（Task 11 审查 I-1）；
   // ② 取"最近发出"而非"最早发出"：无名错误只可能来自刚发出的那条命令（长跑的 run 通常是最早
   //    发出的，若按 FIFO 会在 save-raw 失败时被误杀）。
+  /** 内核回执配对失败后的兜底（见 rejectNewestPending 注释）。 */
   function rejectNewestPending(error) {
     let lastKey = null
     for (const k of pending.keys()) lastKey = k
@@ -152,10 +160,26 @@ export function createWorkflowHost({ sessions, getOrCreateSession, yfwHome = '',
     }
   }
 
+  /**
+   * 宿主内核退出（bridge 在进程 exit 时调用）：把在途命令**立即**判失败。
+   * 缺这一步，内核一死，GUI 的创建/保存/运行会静默挂到超时（默认 120s、run 更长达 30min）——
+   * 用户侧表现为"点了没有任何反应"，且界面无任何错误可查（实测就是这个症状）。
+   */
+  function onKernelExit(sid) {
+    if (sid && sid !== HOST_SID) return false
+    if (!pending.size) return true
+    const err = new Error('工作流宿主会话已退出，命令未完成（详见应用日志 kernel-stderr）')
+    for (const [, p] of pending) { clearTimeout(p.timer); p.reject(err) }
+    pending.clear()
+    return true
+  }
+
   return {
     ensure,
     send,
     onKernelMessage,
+    onKernelExit,
+    _pendingSize: () => pending.size,
     onEvent: emit,
     load: (id) => send({ subtype: 'load', payload: { id } }),
     validate: (id) => send({ subtype: 'validate', payload: { id } }),

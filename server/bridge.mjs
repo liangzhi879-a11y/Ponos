@@ -1238,6 +1238,10 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     // 会话结束 → 清理临时系统提示词文件，避免 %TEMP% 堆积
     if (promptFile) { try { rmSync(promptFile, { force: true }) } catch {} }
     sessions.delete(sid)
+    // 工作流宿主内核退出：立即结清在途命令。缺这一步，宿主一死，GUI 的创建/保存/运行会
+    // 静默挂到超时（默认 120s、run 更长达 30min）——用户侧只看到"点了没有任何反应"，
+    // 2026-09-12 实测缺陷（cwd 不存在 → spawn ENOENT 秒退）就是这么被掩盖的。
+    if (sid === HOST_SID) { try { _wfHost?.onKernelExit(sid) } catch { /* 结清失败不阻断退出流程 */ } }
     // 空闲回收触发的退出不广播 closed：前端保留该会话的任务卡等 UI 状态，
     // 下次发消息会以 --resume 无缝重启内核（广播 closed 会让渲染层清空任务卡）。
     if (!session._reaped) send({ type: 'closed', data: {}, sessionId: sid })
