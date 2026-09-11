@@ -246,7 +246,9 @@ export function getBindings(): Promise<ApiResult<WorkflowBindings>> {
 }
 
 export function setBindings(bindings: WorkflowBindings): Promise<ApiResult<Record<string, unknown>>> {
-  return call('/workflows/bindings', { method: 'POST', body: bindings })
+  // 必须是 PUT：路由对 /workflows/bindings 只接受 GET/PUT，其余回 405（2026-09-12 修正——
+  // 此前用 POST，一旦被调用就是 405；setWorkflowTrusted 走 PUT 故未暴露）。
+  return call('/workflows/bindings', { method: 'PUT', body: bindings })
 }
 
 /** 授权卡「信任此工作流」开关：读-改-写绑定文件的 trusted 集合（agents 原样保留）。
