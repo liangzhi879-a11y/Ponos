@@ -270,8 +270,10 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
 
   // confirm：人工审批节点（对标 Dify human-input）。发 confirm_request 事件后挂起，
   // 等待外部 resolveConfirm（TUI /wf approve|reject / 协议层 workflow_confirm）或超时。
-  // 审批结果表达在 output.action（approved/rejected/timeout）；分支由 edges 的 handle 决定
-  // ——v2 的 confirm handle 名待定（Task 5 定名后再生成条件边），故本节点暂不返回 route。
+  // 审批结果表达在 output.action（approved/rejected/timeout），**并同步返回 route**——
+  // handle 定名 approved/rejected/timeout（与 workflow-dsl.CONFIRM_ROUTES 同源），
+  // 调度器按 route === sourceHandle 精确激活对应分支（否则三态回答路由完全相同 =
+  // 审批从"分支"静默退化为"纯挂起点"，M5）。
   async function execConfirm(node, ctx) {
     const message = renderTemplate(node.message || node.prompt || '请确认', ctx.vars)
     const runId = ctx.runId || ''
@@ -279,12 +281,12 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
     const timeoutMs = node.timeout_ms || 300_000
     const waiter = ctx.confirmWaiters?.create ? ctx.confirmWaiters.create(runId, nodeId, timeoutMs) : null
     ctx.event?.('confirm_request', { runId, node: nodeId, message, inputs: node.inputs || [], timeout_ms: timeoutMs })
-    if (!waiter) return { output: { action: 'approved', comment: '' } }
+    if (!waiter) return { output: { action: 'approved', comment: '' }, route: 'approved' }
     const r = await waiter.promise
     ctx.event?.('confirm_resolved', { runId, node: nodeId, action: r.action, comment: r.comment, timed_out: r.timed_out })
-    if (r.timed_out) return { output: { action: 'timeout', comment: r.comment || '' } }
-    if (r.action === 'rejected') return { output: { action: 'rejected', comment: r.comment || '' } }
-    return { output: { action: 'approved', comment: r.comment || '' } }
+    if (r.timed_out) return { output: { action: 'timeout', comment: r.comment || '' }, route: 'timeout' }
+    if (r.action === 'rejected') return { output: { action: 'rejected', comment: r.comment || '' }, route: 'rejected' }
+    return { output: { action: 'approved', comment: r.comment || '' }, route: 'approved' }
   }
 
   function execCode(node, ctx) {

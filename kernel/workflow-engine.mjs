@@ -15,13 +15,16 @@
 //
 // 零外部运行时依赖：只 import node:* 与仓库内相对路径。
 
-import { existsSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
-import { discoverWorkflows, loadWorkflow, validateWorkflow, resolvePath } from './workflow-dsl.mjs'
+import { discoverWorkflows, loadWorkflow, migrateLegacy, appendEdges, validateWorkflow, resolvePath } from './workflow-dsl.mjs'
 import { schedule } from './workflow-dag.mjs'
 import { createNodeExecutor } from './workflow-nodes.mjs'
+// 可见性判定单一来源（M3）：通用 Workflow 工具的闸门与 dyntools 工具池/提示词清单同口径
+// （dyntools 只依赖 workflow-dsl，无循环 import）。
+import { visibilityOf } from './dyntools.mjs'
 
 // ===================== 审计（哈希链） =====================
 function sha256(s) {
@@ -81,8 +84,11 @@ function synthesizeOutput(wf, settled, inputs = {}) {
     out.answer = answers.map((a) => settled.get(a.id)?.output?.answer ?? '').filter(Boolean).join('\n')
   }
   if (!Object.keys(out).length) {
-    // 无 end.outputs 且无 answer：回退"最后一个成功且未跳过节点的输出"（对标工具调用口径）
-    const last = [...settled.entries()].filter(([, r]) => r.ok && !r.skipped).pop()
+    // 无 end.outputs 且无 answer：回退"最后一个成功且未跳过节点的输出"（对标工具调用口径）。
+    // **必须排除 end/answer 自身**（C2）：end 的输出恒为 `{}`（无 outputs 时），
+    // 不排除则兜底恒取到 end → finalOutput 恒为 {result:{}}（工具回执/GUI 运行面板显示空）。
+    const terminals = new Set([...ends, ...answers].map((n) => n.id))
+    const last = [...settled.entries()].filter(([nid, r]) => r.ok && !r.skipped && !terminals.has(nid)).pop()
     if (last) out.result = last[1].output
   }
   return out
@@ -113,7 +119,7 @@ export function mainScope(wf) {
 //   onEvent:   ({type:'start'|'node'|'node_skipped'|'edge_taken'|'end'|...}) 事件回调
 //   getModel:  () => 默认模型名（llm 节点未指定时）
 //   signal:    { aborted } 全局取消标志（与 run 级 stop 合并）
-export function createWorkflowEngine({ configDir = '', registry, onEvent, getModel, signal, memoryRoot = '' } = {}) {
+export function createWorkflowEngine({ configDir = '', registry, onEvent, getModel, signal, memoryRoot = '', agentId = null } = {}) {
   const roots = []
   let _configDir = configDir
   let _registry = registry
@@ -121,6 +127,9 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
   let _getModel = getModel || (() => process.env.ANTHROPIC_MODEL || '')
   let _signal = signal || { aborted: false }
   let _memoryRoot = memoryRoot
+  // 当前会话 agent id（M3）：bound 可见性判定用；与 dyntools 工具池的 agentId 同源
+  // （cli 传 --agent），缺省 null（仅 public 可见）。
+  let _agentId = agentId
   // 审批门（engine 注入 gateToolUse）：内嵌工具节点执行前先经门（高危 ask/deny/
   // hook 否决）；null = 无门 → checkToolPermission 对 Bash fail-closed
   let _permissionGate = null
@@ -172,6 +181,7 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
     if (deps.getModel !== undefined) _getModel = deps.getModel
     if (deps.signal !== undefined) _signal = deps.signal
     if (deps.memoryRoot !== undefined) _memoryRoot = deps.memoryRoot
+    if (deps.agentId !== undefined) _agentId = deps.agentId
     if (deps.permissionGate !== undefined) _permissionGate = deps.permissionGate
     // 2026-09-11 spec-dev：主引擎子 agent 能力注入（懒 getter——engine 的 spawnSubAgent/
     // taskSystem 在 setDeps 调用时尚处 TDZ，调用时才取）
@@ -352,6 +362,77 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
     return server
   }
 
+  // 通用 Workflow 工具的可见性闸门（M3）：与 dyntools 工具池同一口径判定
+  // （visibilityOf：private→不可见、bound 需 bind_agents 命中、缺 expose 默认 private），
+  // 另加 legacy（无 edges）拒绝。不可见即拒绝执行——防模型绕过工具列表直接点名工作流 id。
+  // 复用 api.load（不重复实现发现），load 的 path 缺失不影响判定。
+  function canRun(id) {
+    if (!id) return { ok: false, reason: '工作流 id 为空' }
+    let wf = null
+    try { wf = loadWorkflow({ roots, id }) } catch { wf = null }
+    if (!wf) return { ok: false, reason: `工作流不存在: ${id}` }
+    if (!Array.isArray(wf.edges) || !wf.edges.length) {
+      return { ok: false, reason: `工作流「${id}」为旧 DSL 格式（无 edges），需先迁移再运行`, legacy: true }
+    }
+    const vis = visibilityOf({ ...wf, id: wf.id || id }, _agentId)
+    if (!vis) return { ok: false, reason: `工作流「${id}」不可见（未公开为工具/未绑定到当前 agent）` }
+    return { ok: true, vis }
+  }
+
+  // ===== 旧格式迁移 + 落盘（M7）=====
+  // ⚠️ 这是**唯一的内核写「用户工作流目录」点**，且仅在被显式调用（CLI `/wf migrate`）时发生：
+  // 内核其余路径（发现/加载/运行/调度/工具池）一律只读用户目录。破例理由：迁移的产物必须
+  // 落盘才有生产意义——此前 migrateLegacy 只有单测与 re-export，用户侧"需升级"提示无处落地。
+  // 写盘两件套（顺序固定，备份失败即中止该条、不碰原文件）：
+  //   ① 备份原文 → <工作流目录>/versions/legacy-<ts>.yml（平铺 .yml 形态落在 <root>/<id>/versions/，
+  //      避免同秒内两个工作流互相覆盖）
+  //   ② 追加迁移生成的 edges 块（不重写全文——见 workflow-dsl.appendEdges 注释）
+  // 幂等：已是 v2（有 edges）→ skipped，不写盘。
+  function migrate({ id = null } = {}) {
+    const result = { ok: true, migrated: [], skipped: [], errors: [] }
+    const targets = []
+    if (id) {
+      const wf = loadWorkflow({ roots, id })
+      if (!wf || !wf.path) { result.ok = false; result.errors.push({ id, error: '工作流不存在或无可写路径' }); return result }
+      targets.push({ id, wf })
+    } else {
+      const seen = new Set()
+      for (const root of roots) {
+        for (const m of discoverWorkflows({ root })) {
+          if (seen.has(m.id)) continue
+          seen.add(m.id)
+          const wf = loadWorkflow({ roots, id: m.id })
+          if (wf?.path) targets.push({ id: m.id, wf })
+        }
+      }
+    }
+    for (const t of targets) {
+      try {
+        if (Array.isArray(t.wf.edges) && t.wf.edges.length) {
+          result.skipped.push({ id: t.id, reason: '已是 DSL v2（存在 edges）' })
+          continue
+        }
+        const { workflow, notes } = migrateLegacy(t.wf)
+        // 无产出的迁移不落盘（如仅单节点）：否则会写出空 edges 块，且无法通过"已是 v2"护栏
+        if (!(workflow.edges || []).length) {
+          result.skipped.push({ id: t.id, reason: '迁移未产出任何边（无需落盘）', notes })
+          continue
+        }
+        const raw = readFileSync(t.wf.path, 'utf-8')
+        const dir = basename(t.wf.path).toLowerCase() === 'workflow.yml' ? dirname(t.wf.path) : join(dirname(t.wf.path), t.id)
+        const backup = join(dir, 'versions', `legacy-${new Date().toISOString().replace(/[:.]/g, '-')}.yml`)
+        mkdirSync(dirname(backup), { recursive: true })
+        writeFileSync(backup, raw, 'utf-8')
+        writeFileSync(t.wf.path, appendEdges(raw, workflow.edges), 'utf-8')
+        result.migrated.push({ id: t.id, path: t.wf.path, backup, edges: (workflow.edges || []).length, notes })
+      } catch (err) {
+        result.errors.push({ id: t.id, error: err?.message || String(err) })
+      }
+    }
+    result.ok = result.errors.length === 0
+    return result
+  }
+
   const api = {
     run,
     stop,
@@ -361,6 +442,8 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
     verify: (auditPath) => verifyRun(auditPath),
     addRoot: (root) => { if (root && !roots.includes(root)) roots.push(root) },
     resolveConfirm,
+    canRun,
+    migrate,
     startScheduler,
     createWebhookServer,
     cronMatches,

@@ -236,17 +236,25 @@ export function discoverWorkflows({ root } = {}) {
     const meta = parseFrontmatter(content)
     const parsed = parseYaml(content)
     const firstLine = (content.split('\n')[0] || '').replace(/^#+\s*/, '').trim()
+    // 触发配置读取（C1）：DSL v2 的权威位置是 **trigger_config**（spec §2.9；迁移产物与
+    // 内置 spec-dev 都写这里），顶层平铺 schedule/auto_trigger 是旧格式——保留为回退，
+    // 否则 migrateLegacy 删掉顶层字段后 cron/自动触发会静默失效。
+    const trigCfg = parsed.trigger_config && typeof parsed.trigger_config === 'object' ? parsed.trigger_config : {}
     wfs.push({
       id,
       name: meta.name || parsed.name || id,
       description: (meta.description || parsed.description || firstLine || id).slice(0, 300),
       version: meta.version || parsed.version || '',
-      schedule: parsed.schedule || meta.schedule || '',
+      schedule: trigCfg.schedule || parsed.schedule || meta.schedule || '',
+      // triggers 三种写法并存：数组（`[a, b]` / `- a` 列表）、逗号标量（`a, b, c`）、
+      // frontmatter。逗号标量自旧版起从未被解析（触发词恒为 []），此处补上。
       triggers: Array.isArray(parsed.triggers)
         ? parsed.triggers.map(String)
-        : meta.triggers ? String(meta.triggers).split(/[,，]/).map((s) => s.trim()).filter(Boolean)
-        : [],
-      autoTrigger: parsed.auto_trigger === true || meta.auto_trigger === true,
+        : (typeof parsed.triggers === 'string' || typeof parsed.triggers === 'number')
+          ? String(parsed.triggers).split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+          : meta.triggers ? String(meta.triggers).split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+            : [],
+      autoTrigger: trigCfg.auto_trigger === true || parsed.auto_trigger === true || meta.auto_trigger === true,
       nodes: Array.isArray(parsed.nodes) ? parsed.nodes.length : 0,
       lines: content.split('\n').length,
       // DSL v2：GUI 列表/工具池需要的能力声明 + 版本/旧格式标记
@@ -472,11 +480,17 @@ export function validateWorkflow(wf) {
 //   ⑥ 绝不补跨子图（主图 ↔ body）边：子图出入由 body 声明 + loop 节点出边表达，补了会触发
 //      BODY_ESCAPE；跳过时在 notes 留下明细；
 //   ⑦ 平铺 schedule / auto_trigger → trigger_config（manual 缺省 true）并删原字段。
-// 刻意不动：confirm 的 next_approve/next_reject/next_timeout（v2 的 handle 名未定，等引擎侧
-// 定名再迁，保留原字段不丢信息）；classify.routes 保留（执行/画布仍读）。
+//   ⑧ confirm：审批三分支 next_approve/next_reject/next_timeout →
+//      条件边 handle **approved / rejected / timeout**（与 workflow-nodes.execConfirm 返回的
+//      route 同名；activateOutgoing 按 route === sourceHandle 精确激活），字段随 edges 一并
+//      删除；有分支字段时 next/顺延兜底改为 handle 'default'（= 旧 `A|R|T || next` 语义）。
+// 刻意不动：classify.routes 保留（执行/画布仍读）。
 // 已是 v2（存在非空 edges）→ 原样返回（幂等）。
 
 const EDGE_ID = (source, target, handle, n) => `e${n}_${source}_${target}${handle ? '_' + String(handle).replace(/[^\w]/g, '') : ''}`
+
+// confirm 审批三态：字段 → handle 名（唯一真相——execConfirm 的 route 也取这三个值）。
+export const CONFIRM_ROUTES = [['next_approve', 'approved'], ['next_reject', 'rejected'], ['next_timeout', 'timeout']]
 
 export function migrateLegacy(input) {
   const wf = normalizeWorkflow(input)
@@ -504,7 +518,9 @@ export function migrateLegacy(input) {
   // （big → small → out），既不忠实旧语义，也会让分支节点的下游错位。
   const branchTargets = new Set()
   for (const n of nodes) {
-    for (const t of [n?.next_true, n?.next_false, ...(Array.isArray(n?.routes) ? n.routes : [])]) {
+    const extra = [n?.next_true, n?.next_false, ...(Array.isArray(n?.routes) ? n.routes : []),
+      ...CONFIRM_ROUTES.map(([f]) => n?.[f])]
+    for (const t of extra) {
       if (typeof t === 'string' && t) branchTargets.add(t)
     }
   }
@@ -570,11 +586,19 @@ export function migrateLegacy(input) {
       if (typeof n.next === 'string' && n.next) link(n.id, n.next, 'default', 'next → 默认分支边')
       continue
     }
-    // confirm：next 作顺序边；审批三分支（next_approve/next_reject/next_timeout）字段**保留**
-    // ——v2 的 handle 名未定（引擎侧 Task 5 定名后再迁），此处只提示不臆造边。
+    // confirm：审批三分支 → 条件边（handle approved/rejected/timeout，与 execConfirm 的
+    // route 同名）；字段缺省/为空则不生成该条边（缺失分支不臆造）。有任一分支字段时，
+    // next/顺延兜底改走 handle 'default'（旧语义 = `next_approve|reject|timeout || next`，
+    // 即三态都未命中才顺延；若仍用无 handle 边，"成功即走"会让兜底分支与命中分支同时触发）。
     if (n.type === 'confirm') {
-      const kept = ['next_approve', 'next_reject', 'next_timeout'].filter((k) => typeof n[k] === 'string' && n[k])
-      if (kept.length) notes.push(`confirm 节点 ${n.id}：${kept.join('/')} 保留原字段（v2 handle 名待定，暂不生成条件边）`)
+      const branches = CONFIRM_ROUTES.filter(([field]) => typeof n[field] === 'string' && n[field])
+      for (const [field, handle] of branches) link(n.id, n[field], handle, `${field} → 条件边`)
+      if (branches.length) {
+        const fallback = typeof n.next === 'string' && n.next ? n.next : fb
+        if (fallback) link(n.id, fallback, 'default', 'next → 默认分支边（三态未命中时）')
+        else notes.push(`confirm 节点 ${n.id}：三分支之外无 next/顺延后继 → 未命中即链尾`)
+        continue
+      }
     }
     if (n.type === 'end' || n.type === 'answer') {
       // 输出节点：引擎在 end/answer 处收束（end 恒返回 next=null），不补出边
@@ -589,9 +613,9 @@ export function migrateLegacy(input) {
     link(n.id, target, undefined, how)
   }
 
-  // 旧 next* 字段（顺序语义）删除——edges 是唯一真相；其余字段原样保留
+  // 旧 next* 字段（顺序/审批分支语义）删除——edges 是唯一真相；其余字段原样保留
   const cleaned = nodes.map((n) => {
-    const { next, next_true, next_false, ...rest } = n
+    const { next, next_true, next_false, next_approve, next_reject, next_timeout, ...rest } = n
     return rest
   })
   const trigger_config = {
@@ -604,4 +628,31 @@ export function migrateLegacy(input) {
   if (schedule) notes.push(`schedule → trigger_config.schedule（${schedule}）`)
   if (auto_trigger !== undefined) notes.push('auto_trigger → trigger_config.auto_trigger')
   return { workflow: { ...restWf, trigger_config, nodes: cleaned, edges }, notes }
+}
+
+// ===================== 迁移落盘辅助（CLI `/wf migrate`） =====================
+// 迁移产物落盘采用**最小追加**：只把迁移生成的 edges 块追加到原文末尾（顶层 `edges:`）。
+// 理由：完整重写需要 YAML 序列化器（serializeWorkflow 属画布 Task 交付，此处不引入半成品）；
+// 执行以 edges 为唯一真相，残留的旧字段无害——schedule/auto_trigger 由 discoverWorkflows
+// 的「trigger_config → 顶层」回退读取（C1 修复），next* 字段不再被任何执行路径消费。
+// 幂等：原文已有非空 edges 时 migrateLegacy 直接返回护栏，不会追加第二块。
+// 全部值加引号：`true`/`false`/数字型标量若无引号会被 YAML 解析成布尔/数字，
+// route 与节点 id 的精确匹配（字符串）即失效。
+export function renderEdgesYaml(edges = []) {
+  const q = (v) => `"${String(v)}"`
+  if (!edges || !edges.length) return 'edges: []\n'
+  const lines = ['edges:']
+  for (const e of edges || []) {
+    lines.push(`  - id: ${q(e.id)}`)
+    lines.push(`    source: ${q(e.source)}`)
+    lines.push(`    target: ${q(e.target)}`)
+    if (e.sourceHandle) lines.push(`    sourceHandle: ${q(e.sourceHandle)}`)
+  }
+  return lines.join('\n') + '\n'
+}
+
+// 把 edges 块追加到工作流原文（保证换行分隔）；返回新全文。
+export function appendEdges(originalContent, edges = []) {
+  const base = String(originalContent ?? '')
+  return (base.endsWith('\n') || base === '' ? base : base + '\n') + renderEdgesYaml(edges)
 }

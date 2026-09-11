@@ -1,11 +1,12 @@
 process.env.PONOS_MOCK_API = '1'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { slugToToolName, shortHash, deriveInputSchema, visibilityOf, buildWorkflowTools, listVisibleWorkflows } from '../kernel/dyntools.mjs'
 import { createToolRegistry } from '../kernel/tools.mjs'
+import { createWorkflowEngine } from '../kernel/workflow-engine.mjs'
 import { composeSystemPrompt } from '../kernel/prompt.mjs'
 
 const wfYml = (id, expose) => `name: ${id}
@@ -172,4 +173,40 @@ test('tools.mjs 接线：动态工具进 toolSchemas 且可执行；未初始化
   assert.ok(r2.toolNames.includes('run_demo'), `动态工具应进 toolNames：${r2.toolNames.slice(-5)}`)
   const res = await r2.run({ name: 'run_demo', input: {} })
   assert.equal(res.content, 'ok')
+})
+
+// 终审修复 M3：通用 Workflow 工具是「可见性后门」——隐藏具名工具后仍能靠 id 直接执行。
+// 闸门口径与工具池同源（engine.canRun → dyntools.visibilityOf + legacy 拒绝）。
+test('M3：通用 Workflow 工具不得绕过可见性（private/legacy 拒绝且不执行）', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wf-gate-'))
+  try {
+    const wfRoot = join(root, 'workflows')
+    const mk = (id, expose) => { mkdirSync(join(wfRoot, id), { recursive: true }); writeFileSync(join(wfRoot, id, 'workflow.yml'), wfYml(id, expose), 'utf-8') }
+    mk('weekly-report', '  mode: public\n  tool_name: run_weekly_report')
+    mk('private-one', '  mode: private')
+    mk('bound-one', '  mode: bound\n  bind_agents: [material-writer]')
+    mkdirSync(join(wfRoot, 'legacy-one'), { recursive: true })
+    writeFileSync(join(wfRoot, 'legacy-one', 'workflow.yml'), 'name: legacy-one\nnodes:\n  - { id: start, type: start, next: done }\n  - { id: done, type: end }\n', 'utf-8')
+    const engine = createWorkflowEngine({ configDir: root, registry: createToolRegistry({ cwd: root, addDirs: [root], skipPermissions: true }), getModel: () => 'mock-model' })
+    engine.addRoot(wfRoot)
+    const registry = createToolRegistry({ cwd: root, addDirs: [root], skipPermissions: true, workflow: engine })
+
+    const priv = await registry.run({ name: 'Workflow', input: { workflow: 'private-one', inputs: { topic: 'x' } } })
+    assert.equal(priv.isError, true, `private 必须拒绝：${priv.content}`)
+    assert.match(priv.content, /不可执行/, priv.content)
+    assert.equal(existsSync(join(root, 'workflow-runs')), false, '被拒调用不得执行（无审计落盘）')
+
+    const leg = await registry.run({ name: 'Workflow', input: { workflow: 'legacy-one' } })
+    assert.equal(leg.isError, true, `legacy 必须拒绝：${leg.content}`)
+    const missing = await registry.run({ name: 'Workflow', input: { workflow: 'no-such-wf' } })
+    assert.equal(missing.isError, true, missing.content)
+
+    const pub = await registry.run({ name: 'Workflow', input: { workflow: 'weekly-report', inputs: { topic: '周报' } } })
+    assert.equal(pub.isError, false, `public 应可执行：${pub.content}`)
+    assert.ok(existsSync(join(root, 'workflow-runs')), 'public 工作流应真实执行并落审计')
+
+    engine.setDeps({ agentId: 'material-writer' })
+    const bound = await registry.run({ name: 'Workflow', input: { workflow: 'bound-one', inputs: { topic: 'x' } } })
+    assert.equal(bound.isError, false, `bound 命中当前 agent 应可执行：${bound.content}`)
+  } finally { rmSync(root, { recursive: true, force: true }) }
 })

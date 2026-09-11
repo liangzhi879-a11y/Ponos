@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { migrateLegacy, validateWorkflow, parseYaml } from '../kernel/workflow-dsl.mjs'
+import { migrateLegacy, validateWorkflow, parseYaml, appendEdges, renderEdgesYaml, normalizeWorkflow } from '../kernel/workflow-dsl.mjs'
 
 const LEGACY = {
   name: 'old', schedule: '0 18 * * 5', auto_trigger: true, triggers: ['日报'],
@@ -173,7 +173,7 @@ test('迁移：body 顺序补边按 body 数组（不依赖 nodes 相邻），�
   assert.deepEqual(validateWorkflow(workflow).errors, [], '迁移结果必须自校验通过')
 })
 
-test('迁移：confirm 三分支字段保留（v2 handle 名待定），next 仍作顺序边', () => {
+test('迁移：confirm 三分支 → 条件边 approved/rejected/timeout，next 作 default 兜底', () => {
   const { workflow, notes } = migrateLegacy({
     nodes: [
       { id: 'start', type: 'start', next: 'ok' },
@@ -185,12 +185,59 @@ test('迁移：confirm 三分支字段保留（v2 handle 名待定），next 仍
   })
   const pairs = workflow.edges.map((e) => `${e.source}->${e.target}${e.sourceHandle ? ':' + e.sourceHandle : ''}`)
   assert.ok(pairs.includes('start->ok'), pairs.join(','))
-  assert.ok(pairs.includes('ok->after'), `confirm.next 应生成顺序边：${pairs}`)
-  assert.ok(!pairs.some((p) => p.includes('next_reject') || p.includes('next_timeout')), `审批分支暂不生成条件边：${pairs}`)
+  assert.ok(pairs.includes('ok->after:approved'), `approved 条件边缺失：${pairs}`)
+  assert.ok(pairs.includes('ok->no:rejected'), `rejected 条件边缺失：${pairs}`)
+  assert.ok(pairs.includes('ok->no:timeout'), `timeout 条件边缺失：${pairs}`)
+  assert.ok(pairs.includes('ok->after:default'), `next 应作 default 兜底边（三态未命中才走）：${pairs}`)
+  assert.ok(!pairs.includes('ok->after'), `有分支字段时不得再无 handle 边（会与命中分支同时触发）：${pairs}`)
   const ok = workflow.nodes.find((n) => n.id === 'ok')
-  assert.equal(ok.next_reject, 'no', '审批分支字段必须保留（引擎仍读）')
-  assert.ok(notes.some((s) => s.includes('next_reject')), `应有保留提示：${notes.join('|')}`)
+  assert.equal(ok.next_approve, undefined, '审批分支字段应随 edges 删除')
+  assert.equal(ok.next_reject, undefined)
+  assert.equal(ok.next_timeout, undefined)
+  assert.ok(notes.some((s) => s.includes('next_reject') && s.includes('条件边')), `应留下条件边提示：${notes.join('|')}`)
   assert.deepEqual(validateWorkflow(workflow).errors, [], '迁移结果必须自校验通过')
+})
+
+test('迁移：confirm 只有部分分支字段 → 只生成该分支边（不臆造缺失分支）', () => {
+  const { workflow } = migrateLegacy({
+    nodes: [
+      { id: 'start', type: 'start', next: 'ok' },
+      { id: 'ok', type: 'confirm', next_reject: 'no' },
+      { id: 'no', type: 'llm', prompt: 'N' },
+      { id: 'done', type: 'end' },
+    ],
+  })
+  const pairs = workflow.edges.map((e) => `${e.source}->${e.target}${e.sourceHandle ? ':' + e.sourceHandle : ''}`)
+  assert.ok(pairs.includes('ok->no:rejected'), pairs.join(','))
+  assert.ok(!pairs.some((p) => p.endsWith(':approved') || p.endsWith(':timeout')), `缺失分支不得生成边：${pairs}`)
+  assert.deepEqual(validateWorkflow(workflow).errors, [], '迁移结果必须自校验通过')
+})
+
+test('迁移：无分支字段的 confirm 保持普通顺序边（不引入 default handle）', () => {
+  const { workflow } = migrateLegacy({
+    nodes: [
+      { id: 'start', type: 'start', next: 'ok' },
+      { id: 'ok', type: 'confirm' },
+      { id: 'done', type: 'end' },
+    ],
+  })
+  const pairs = workflow.edges.map((e) => `${e.source}->${e.target}${e.sourceHandle ? ':' + e.sourceHandle : ''}`)
+  assert.ok(pairs.includes('ok->done'), `应保持无 handle 顺序边：${pairs}`)
+  assert.ok(!pairs.some((p) => p.includes(':default')), `无分支字段时不应有 default：${pairs}`)
+})
+
+test('迁移落盘辅助：renderEdgesYaml/appendEdges 产出可回读的 edges（handle 不被解析成布尔）', () => {
+  const raw = 'name: old\nnodes:\n  - { id: start, type: start, next: g }\n  - { id: g, type: if, next_true: a, next_false: b }\n  - { id: a, type: template, template: "A" }\n  - { id: b, type: template, template: "B" }\n  - { id: done, type: end }\n'
+  const { workflow } = migrateLegacy(parseYaml(raw))
+  const text = appendEdges(raw, workflow.edges)
+  assert.ok(text.startsWith(raw), 'appended 文本必须保留原文前缀')
+  assert.ok(renderEdgesYaml(workflow.edges).startsWith('edges:'), 'edges 块必须是顶层键')
+  const re = parseYaml(text)
+  assert.equal(re.edges.length, workflow.edges.length, `edges 应逐条回读：${JSON.stringify(re.edges)}`)
+  const handles = re.edges.map((e) => String(e.sourceHandle ?? ''))
+  assert.deepEqual(handles.filter(Boolean).sort(), ['false', 'true'], `handle 必须回读为字符串（否则 route 精确匹配失效）：${JSON.stringify(re.edges)}`)
+  const reWf = normalizeWorkflow(re)
+  assert.deepEqual(validateWorkflow(reWf).errors, [], '回读后必须自校验通过（旧格式 → v2）')
 })
 
 test('迁移：已是 DSL v2 的模型原样返回（幂等护栏）', () => {

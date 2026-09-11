@@ -16,6 +16,7 @@ import { join } from 'node:path'
 import { discoverWorkflows, loadWorkflow, createWorkflowEngine, verifyRun } from '../kernel/workflow.mjs'
 import { validateWorkflow } from '../kernel/workflow-dsl.mjs'
 import { createToolRegistry } from '../kernel/tools.mjs'
+import { buildWorkflowTools, listVisibleWorkflows } from '../kernel/dyntools.mjs'
 
 const SRC = join(process.cwd().replace(/\\/g, '/'), 'workflows', 'spec-dev', 'workflow.yml')
 
@@ -132,5 +133,24 @@ test('spec-dev 同构 DAG 冒烟（mock）：loop body 子图递归 + 主图 sco
     assert.equal(lines.filter((l) => l.node === 'start').length, 1)
     assert.equal(lines.length, 9, `start + body(2×3) + lp + e = 9 行：${lines.map((l) => l.node).join(',')}`)
     assert.equal(verifyRun(r.auditPath).ok, true, '哈希链应可校验')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+// 终审修复 M4：内置 spec-dev 此前缺 expose → 缺省 private → 模型侧完全不可见
+// （无具名工具、不在提示词清单）；triggers 逗号标量此前恒解析为 []。
+test('spec-dev 可见性与触发词（M4）：expose=public + 具名工具 + 逗号标量 triggers', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wf-specdev-exp-'))
+  try {
+    mkdirSync(join(root, 'spec-dev'), { recursive: true })
+    copyFileSync(SRC, join(root, 'spec-dev', 'workflow.yml'))
+    const [meta] = discoverWorkflows({ root })
+    assert.equal(meta.expose?.mode, 'public', `内置工作流必须显式 expose public：${JSON.stringify(meta.expose)}`)
+    assert.equal(meta.expose?.tool_name, 'run_spec_dev')
+    assert.equal(meta.triggers.length, 5, `triggers 逗号标量须解析为 5 条：${JSON.stringify(meta.triggers)}`)
+    assert.ok(meta.triggers.includes('spec 开发'))
+    const visible = listVisibleWorkflows({ roots: [root] }).map((w) => w.id)
+    assert.deepEqual(visible, ['spec-dev'], `public 工作流应进提示词清单：${visible}`)
+    const tools = buildWorkflowTools({ roots: [root], engine: { run: async () => ({ ok: true, finalOutput: {} }) } })
+    assert.equal(typeof tools.run_spec_dev?.run, 'function', `应注册具名工具 run_spec_dev：${Object.keys(tools)}`)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })

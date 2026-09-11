@@ -7,7 +7,7 @@ process.env.PONOS_MOCK_API = '1'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,6 +28,19 @@ nodes:
 edges:
   - { id: e1, source: start, target: t }
   - { id: e2, source: t, target: done }
+`
+
+// 旧格式（DSL v1）工作流：数组顺序 + next + 平铺 schedule/auto_trigger + 逗号标量 triggers
+const LEGACY_WF = `name: legacy-demo
+version: 1.0.0
+description: 旧格式工作流
+triggers: 旧日报, 旧周报
+schedule: "0 18 * * 5"
+auto_trigger: false
+nodes:
+  - { id: start, type: start, next: t }
+  - { id: t, type: template, template: "hi {{inputs.x}}" }
+  - { id: done, type: end }
 `
 
 // 起内核进程 → 顺序发 workflow_command → 收齐 requestId 对应回执 → 关 stdin 收尾
@@ -74,6 +87,8 @@ function setup() {
   const root = mkdtempSync(join(tmpdir(), 'wf-cli-'))
   mkdirSync(join(root, 'wf', 'demo'), { recursive: true })
   writeFileSync(join(root, 'wf', 'demo', 'workflow.yml'), WF, 'utf-8')
+  mkdirSync(join(root, 'wf', 'legacy-demo'), { recursive: true })
+  writeFileSync(join(root, 'wf', 'legacy-demo', 'workflow.yml'), LEGACY_WF, 'utf-8')
   return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) }
 }
 
@@ -123,5 +138,76 @@ test('workflow_command：stop 空 runId → ok:false（必填）；有 runId →
     const one = results.get('stop-1')
     assert.ok(one)
     assert.equal(one.result.ok, true, JSON.stringify(one.result))
+  } finally { cleanup() }
+})
+
+// ============ 终审修复（M6/M7） ============
+
+test('workflow_command：list/run/verify/scheduler 回执带 requestId + list 补 legacy/expose/dslVersion（M6/M7）', async () => {
+  const { root, cleanup } = setup()
+  try {
+    const { results, err } = await runCommands(root, [
+      { subtype: 'list', requestId: 'list-1' },
+      { subtype: 'run', requestId: 'run-1', payload: { workflow: 'demo', inputs: { x: 1 } } },
+      { subtype: 'scheduler', requestId: 'sched-1' },
+    ])
+    const list = results.get('list-1')
+    assert.ok(list, `list 回执缺 requestId（宿主 send() 按 requestId 配对会超时）；stderr=${err.slice(-300)}`)
+    const demo = list.workflows.find((w) => w.id === 'demo')
+    assert.equal(demo.legacy, false)
+    assert.equal(demo.dslVersion, 2)
+    assert.deepEqual(demo.expose, {})
+    const leg = list.workflows.find((w) => w.id === 'legacy-demo')
+    assert.equal(leg.legacy, true, '旧格式必须带 legacy 标记（需升级通道）')
+    assert.deepEqual(leg.triggers, ['旧日报', '旧周报'], `逗号标量 triggers 应解析：${JSON.stringify(leg.triggers)}`)
+    assert.equal(leg.schedule, '0 18 * * 5', '旧顶层 schedule 需回退读取（C1）')
+    const run = results.get('run-1')
+    assert.ok(run, 'run 回执缺 requestId')
+    assert.equal(run.ok, true, JSON.stringify(run).slice(0, 300))
+    assert.equal(run.finalOutput.result, 'hi 1', `无 end.outputs 的兜底输出（C2）：${JSON.stringify(run.finalOutput)}`)
+    const sched = results.get('sched-1')
+    assert.ok(sched, 'scheduler 回执缺 requestId')
+    assert.equal(sched.ok, true, JSON.stringify(sched))
+    // verify 需真实 auditPath（run 回执给出）
+    const { results: r2, err: e2 } = await runCommands(root, [{ subtype: 'verify', requestId: 'ver-1', payload: { auditPath: run.auditPath } }])
+    const ver = r2.get('ver-1')
+    assert.ok(ver, `verify 回执缺 requestId；stderr=${e2.slice(-300)}`)
+    assert.equal(ver.ok, true, JSON.stringify(ver))
+  } finally { cleanup() }
+})
+
+test('workflow_command：migrate 落盘 + versions 备份 + 幂等（M7）', async () => {
+  const { root, cleanup } = setup()
+  try {
+    const before = readFileSync(join(root, 'wf', 'legacy-demo', 'workflow.yml'), 'utf-8')
+    const { results, err } = await runCommands(root, [{ subtype: 'migrate', requestId: 'mig-1', payload: { id: 'legacy-demo' } }])
+    const m = results.get('mig-1')
+    assert.ok(m, `migrate 回执缺失；stderr=${err.slice(-400)}`)
+    assert.equal(m.ok, true, JSON.stringify(m).slice(0, 400))
+    assert.deepEqual(m.errors, [])
+    assert.deepEqual(m.skipped, [])
+    assert.equal(m.migrated.length, 1, JSON.stringify(m).slice(0, 300))
+    const [one] = m.migrated
+    assert.equal(one.id, 'legacy-demo')
+    assert.match(one.backup.split('\\').join('/'), /\/versions\/legacy-.*\.yml$/, `备份路径：${one.backup}`)
+    assert.equal(readFileSync(one.backup, 'utf-8'), before, '备份必须是原文逐字')
+    const after = readFileSync(one.path, 'utf-8')
+    assert.match(after, /^edges:/m, '迁移产物应含顶层 edges 块')
+    assert.ok(one.edges >= 2, `迁移应生成边：${one.edges}`)
+
+    const { results: r2 } = await runCommands(root, [
+      { subtype: 'run', requestId: 'run-after', payload: { workflow: 'legacy-demo', inputs: { x: 'ok' } } },
+      { subtype: 'migrate', requestId: 'mig-2' },
+      { subtype: 'list', requestId: 'list-after' },
+    ])
+    const run = r2.get('run-after')
+    assert.equal(run.ok, true, `迁移后应可运行：${JSON.stringify(run).slice(0, 300)}`)
+    assert.equal(run.finalOutput.result, 'hi ok')
+    const m2 = r2.get('mig-2')
+    assert.deepEqual(m2.errors, [])
+    assert.equal(m2.migrated.length, 0, '二次迁移必须幂等（不重复写盘）')
+    assert.ok(m2.skipped.some((s) => s.id === 'legacy-demo'), JSON.stringify(m2))
+    const list = r2.get('list-after')
+    assert.equal(list.workflows.find((w) => w.id === 'legacy-demo').legacy, false, '迁移后不再是 legacy')
   } finally { cleanup() }
 })

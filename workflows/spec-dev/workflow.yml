@@ -8,6 +8,9 @@
 name: spec-dev
 description: spec 驱动开发：把模糊需求经 规格(spec)→计划(plan)→任务(tasks)→实现(逐任务派实现者子Agent+审查者子Agent)→收敛(converge) 的状态文件驱动流程执行，适合中大型功能/重构任务
 version: 2.0.0
+# 可见性（spec §4 三态）：public → 进入工具池（具名工具 run_spec_dev）与提示词【可用工作流】
+# 清单；缺 expose 缺省 private（模型侧完全不可见，只能 /wf run）。
+expose: { mode: public, tool_name: run_spec_dev }
 triggers: spec 开发, spec-dev, 按 spec 开发, 规格驱动开发, 规格化开发
 inputs:
   - {name: requirement, type: string, required: true}

@@ -1319,6 +1319,14 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
         const id = String(input?.workflow ?? '').trim()
         if (!id) return { content: 'workflow 参数缺失：请传入工作流 id（提示词【可用工作流】清单）', isError: true }
         if (!workflow) return { content: '工作流引擎未初始化', isError: true }
+        // M3 可见性闸门：本通用工具不得成为私密/未绑定/旧格式工作流的后门——隐藏一个具名
+        // 工具（private 不入 dyntools 工具池）却能靠 id 直接执行，等于绕过工具列表。
+        // 判定口径与工具池同源（engine.canRun → dyntools.visibilityOf + legacy 拒绝），
+        // 不可见即拒绝执行、不落审计。canRun 缺失（测试替身/旧引擎）时跳过闸门。
+        if (typeof workflow.canRun === 'function') {
+          const gate = workflow.canRun(id)
+          if (!gate.ok) return { content: `工作流「${id}」不可执行：${gate.reason}`, isError: true }
+        }
         const mode = input?.mode === 'background' ? 'background' : 'sync'
         const r = await workflow.run({ id, inputs: input?.inputs || {}, mode })
         if (!r.ok) return { content: `工作流「${id}」执行失败: ${r.error}${r.node ? `（节点 ${r.node}）` : ''}`, isError: true }

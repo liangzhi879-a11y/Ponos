@@ -354,6 +354,8 @@ export async function main(argv) {
     onEvent: (ev) => { try { wire.system('workflow', ev) } catch { /* 事件失败不阻断 */ } },
     getModel: () => getProvider().model || model || process.env.ANTHROPIC_MODEL || '',
     memoryRoot: memoryRoot(configDir),
+    // M3：bound 可见性判定用（与 dyntools 工具池同源，同为 --agent）
+    agentId: args.agent || null,
   })
   for (const dir of workflowRoots) wfEngine.addRoot(dir)
   // P4-4：技能发现内核化——每个技能根扫描（技能根目录命中 SKILL.md；项目目录为空集）。
@@ -628,17 +630,26 @@ export async function main(argv) {
     try {
       if (subtype === 'list') {
         const wfs = discoverWorkflowsAll({ roots: workflowRoots })
-        wire.system('workflow_result', { subtype: 'list', workflows: wfs.map((w) => ({ id: w.id, nodes: w.nodes, triggers: w.triggers, description: w.description })) })
+        // 回执补 legacy/expose/dslVersion（M7）：宿主/GUI 需要「需升级」「暴露态」标记；
+        // requestId 全子命令齐备（M6）——宿主 send() 严格按 msg.requestId 配对，缺一个即超时。
+        wire.system('workflow_result', {
+          subtype: 'list', requestId: msg?.requestId,
+          workflows: wfs.map((w) => ({
+            id: w.id, nodes: w.nodes, triggers: w.triggers, description: w.description,
+            legacy: w.legacy === true, expose: w.expose || {}, dslVersion: w.dslVersion,
+            version: w.version || '', schedule: w.schedule || '', autoTrigger: w.autoTrigger === true,
+          })),
+        })
       } else if (subtype === 'run') {
         const r = await wfEngine.run({ id: msg?.payload?.workflow || msg?.payload?.id || '', inputs: msg?.payload?.inputs || {} })
         // 回执补 code/errors（审查 I-3）：宿主只看 ok/error 时无法把"旧 DSL 需迁移"与其他
         // 失败区分开；LEGACY_DSL 另附可操作提示（Task 8 迁移前的唯一自带工作流正走此路径）。
         const legacy = r.code === 'LEGACY_DSL'
         const error = legacy && r.error ? `${r.error}（该工作流为旧 DSL 格式（无 edges），请先迁移）` : r.error
-        wire.system('workflow_result', { subtype: 'run', ok: r.ok, status: r.status, steps: r.steps, outputs: r.outputs, error, ...(r.code ? { code: r.code } : {}), errors: r.errors, node: r.node, runId: r.runId, auditPath: r.auditPath })
+        wire.system('workflow_result', { subtype: 'run', requestId: msg?.requestId, ok: r.ok, status: r.status, steps: r.steps, outputs: r.outputs, finalOutput: r.finalOutput, error, ...(r.code ? { code: r.code } : {}), errors: r.errors, node: r.node, runId: r.runId, auditPath: r.auditPath })
       } else if (subtype === 'verify') {
         const r = wfEngine.verify(msg?.payload?.auditPath || msg?.payload?.path || '')
-        wire.system('workflow_result', { subtype: 'verify', ok: r.ok, lines: r.lines, tampered: r.tampered, error: r.error })
+        wire.system('workflow_result', { subtype: 'verify', requestId: msg?.requestId, ok: r.ok, lines: r.lines, tampered: r.tampered, error: r.error })
       } else if (subtype === 'webhook') {
         // 启动 webhook 服务（幂等）：POST /wf/run/<id>（JSON body=inputs），GET /wf/list
         const port = Number(process.env.PONOS_WF_WEBHOOK_PORT || 51312)
@@ -655,10 +666,16 @@ export async function main(argv) {
         // 启动 cron 调度器（幂等）：扫描 workflows 带 schedule 字段，到点自动 run
         if (!wfSchedulerStop) {
           wfSchedulerStop = wfEngine.startScheduler({ onRun: (id, res) => wire.system('workflow_result', { subtype: 'scheduled_run', workflow: id, ok: res.ok, status: res.status, runId: res.runId, auditPath: res.auditPath }) })
-          wire.system('workflow_result', { subtype: 'scheduler', ok: true, note: 'started (60s tick)' })
+          wire.system('workflow_result', { subtype: 'scheduler', requestId: msg?.requestId, ok: true, note: 'started (60s tick)' })
         } else {
-          wire.system('workflow_result', { subtype: 'scheduler', ok: true, note: 'already running' })
+          wire.system('workflow_result', { subtype: 'scheduler', requestId: msg?.requestId, ok: true, note: 'already running' })
         }
+      } else if (subtype === 'migrate') {
+        // 旧格式一键迁移 + 备份（M7，spec §2.7）：迁移是**唯一的内核写用户工作流目录**动作，
+        // 只在显式收到本子命令时发生（理由与写盘两步见 workflow-engine.migrate 注释）。
+        // payload.id 缺省 = 全部 legacy 工作流；回执三段 migrated/skipped/errors。
+        const info = wfEngine.migrate({ id: String(msg?.payload?.id || msg?.payload?.workflow || '').trim() || null })
+        wire.system('workflow_result', { subtype: 'migrate', requestId: msg?.requestId, ...info })
       } else if (subtype === 'load') {
         // 取工作流原文 + 校验结果（只读，不落盘）
         const id = msg?.payload?.id || ''
