@@ -741,8 +741,12 @@ export async function schedule({ nodes, edges, inputs = {}, runId = '', executeN
         settled.set(id, rec)
         settleEdgesOf(id, rec)
         onSettle?.({ node: id, ...rec })
-        const onError = byId.get(id).retry?.on_error || 'fail'
-        const hardFail = !rec.ok && (onError === 'fail')
+        const node = byId.get(id)
+        const onError = node.retry?.on_error || 'fail'
+        // on_error:'branch' 但没有声明 'fail' 出边 = 错误无人接管 → 视为硬失败
+        //（未处理的错误不允许静默成功，否则该 run 会以 completed 收尾却少了整条分支）。
+        const hasFailEdge = (outgoing.get(id) || []).some((e) => e.sourceHandle === 'fail')
+        const hardFail = !rec.ok && (onError === 'fail' || (onError === 'branch' && !hasFailEdge))
         if (hardFail) return { ok: false, status: 'failed', settled, steps, error: rec.error, node: id }
       }
     }
@@ -829,7 +833,7 @@ test('template/assign/aggregate/list/join 纯计算节点', async () => {
     const lst = await exec({ id: 'l', type: 'list', variable: '{{a}}' }, { inputs: {}, vars: { a: [3, 1, 2] }, var: {} , listRef: true })
     assert.deepEqual(lst.output, [3, 1, 2])
 
-    const jn = await exec({ id: 'j', type: 'join', mode: 'concat', separator: ' | ' }, { inputs: {}, vars: { p: '甲', q: '乙' }, var: {}, joinSelectors: ['{{p}}', '{{q}}'] })
+    const jn = await exec({ id: 'j', type: 'join', mode: 'concat', separator: ' | ', sources: ['{{p}}', '{{q}}'] }, { inputs: {}, vars: { p: '甲', q: '乙' }, var: {} })
     assert.equal(String(jn.output).includes('甲'), true)
   } finally { cleanup() }
 })
@@ -1072,7 +1076,6 @@ test('DAG 运行：条件分支 + end 输出聚合 + 审计落盘可校验', asy
 test('非法工作流：校验失败即拒绝运行并给出 code', async () => {
   const { root, engine, cleanup } = setup()
   try {
-    writeFileSync(join(root, 'wf', 'bad', 'workflow.yml').replace(/bad/, 'bad'), '', 'utf-8')
     mkdirSync(join(root, 'wf', 'bad'), { recursive: true })
     writeFileSync(join(root, 'wf', 'bad', 'workflow.yml'), 'name: bad\nnodes:\n  - { id: a, type: start }\n', 'utf-8')
     const r = await engine.run({ id: 'bad', inputs: {} })
@@ -1610,7 +1613,8 @@ git commit -m "feat(workflow): agent 绑定工作流全链路（frontmatter work
 
 **Files:**
 - Modify: `workflows/spec-dev/workflow.yml`（全量重写为显式 edges）
-- Modify: `server/bridge.mjs:2509-2535`（`autoInstallBuiltinWorkflows` 按 version 覆盖）
+- Create: `server/workflow-install.mjs`（`installBuiltinWorkflows` 独立模块——**不得放在 bridge.mjs**：bridge.mjs 顶层会 `httpServer.listen(PORT)`，测试 import 它会真的起桥，且其 EADDRINUSE 自愈逻辑会 taskkill 用户正在运行的应用进程）
+- Modify: `server/bridge.mjs:2509-2535`（改为从 `workflow-install.mjs` 导入并调用；按 version 覆盖）
 - Modify: `kernel-tests/workflow-specdev.test.mjs`（改写为 DAG 断言）
 - Test: 同上 + `server/workflow-install.test.mjs`（新建）
 
@@ -1688,7 +1692,9 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { installBuiltinWorkflows } from './bridge.mjs'
+// 注意：必须从 workflow-install.mjs 导入，不能 import bridge.mjs
+//（bridge.mjs 顶层会 listen(51517)，测试里会真的起桥并与用户运行中的应用抢端口）。
+import { installBuiltinWorkflows } from './workflow-install.mjs'
 
 test('内置工作流安装：版本不同即覆盖（旧格式残留被升级）', () => {
   const src = mkdtempSync(join(tmpdir(), 'wf-src-'))
@@ -1707,10 +1713,14 @@ test('内置工作流安装：版本不同即覆盖（旧格式残留被升级�
 
 - [ ] **Step 6: 实现安装升级**
 
-把 `server/bridge.mjs:2512-2533` 的 `autoInstallBuiltinWorkflows` 抽出可测函数并导出：
+把 `server/bridge.mjs:2512-2533` 的 `autoInstallBuiltinWorkflows` 抽成**独立模块** `server/workflow-install.mjs`（可被测试直接 import），bridge 侧改为导入调用：
 
 ```js
-// 内置工作流安装：按 version 比对覆盖（旧格式副本必须被升级，否则启动即 LEGACY_DSL 失败）。
+// server/workflow-install.mjs —— 内置工作流安装（独立模块：不得置于 bridge.mjs，
+// 否则测试 import 会连带启动 bridge/http 监听）。
+import { existsSync, mkdirSync, readdirSync, readFileSync, copyFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 export function installBuiltinWorkflows({ srcRoot, dstRoot }) {
   const out = { installed: [], updated: [], skipped: [] }
   if (!existsSync(srcRoot)) return out
@@ -1736,7 +1746,7 @@ export function installBuiltinWorkflows({ srcRoot, dstRoot }) {
 }
 ```
 
-`autoInstallBuiltinWorkflows()` 改为：
+`autoInstallBuiltinWorkflows()` 改为（bridge.mjs 顶部 `import { installBuiltinWorkflows } from './workflow-install.mjs'`）：
 
 ```js
 function autoInstallBuiltinWorkflows() {
@@ -1763,7 +1773,7 @@ Expected: 输出 `[build-kernel] bundled to ...`，无 unresolved import 报错�
 - [ ] **Step 9: Commit**
 
 ```bash
-git add workflows/spec-dev/workflow.yml server/bridge.mjs server/workflow-install.test.mjs kernel-tests/workflow-specdev.test.mjs
+git add workflows/spec-dev/workflow.yml server/workflow-install.mjs server/bridge.mjs server/workflow-install.test.mjs kernel-tests/workflow-specdev.test.mjs
 git commit -m "feat(workflow): spec-dev 重写为显式 DAG + 内置工作流按 version 覆盖安装"
 ```
 

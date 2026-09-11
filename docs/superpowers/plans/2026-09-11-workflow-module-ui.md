@@ -106,8 +106,13 @@ test('toModel：node 的非配置字段不进 config（label/position/retry 保�
   assert.match(yml2, /position: \{x: 240, y: 0\}/)
 })
 
-test('serialize 稳定性：两次序列化字节一致（便于版本 diff）', () => {
+test('serialize 稳定性 + 幂等（已是模型形态时不丢 config）', () => {
   assert.equal(serializeWorkflow(MODEL), serializeWorkflow(MODEL))
+  // 幂等：把 toModel 的产物再喂回去，config 必须原样保留
+  const once = toModel(MODEL)
+  const twice = toModel(once)
+  assert.deepEqual(twice.nodes.find((n) => n.id === 'ask').config, once.nodes.find((n) => n.id === 'ask').config)
+  assert.match(serializeWorkflow(once), /prompt: 回答：\{\{inputs\.q\}\}/)
 })
 ```
 
@@ -163,13 +168,15 @@ Expected: FAIL — `serializeWorkflow is not a function` / grant 未生效
 const NODE_META_KEYS = new Set(['id', 'type', 'label', 'position', 'retry', 'on_error', 'body', 'note'])
 const TOP_KEYS = ['name', 'description', 'version', 'triggers', 'trigger_config', 'settings', 'inputs', 'nodes', 'edges', 'expose', 'permissions']
 
-// wf（摊平后）→ 画布模型：非元数据字段收拢回 node.config
+// wf（摊平后）→ 画布模型：非元数据字段收拢回 node.config。
+// 幂等：若节点已是模型形态（已带 config），则把 config 展开后重新收拢，不会丢配置。
 export function toModel(wf) {
   const nodes = (wf.nodes || []).map((n) => {
-    const out = { id: n.id, type: n.type }
-    const cfg = {}
-    for (const [k, v] of Object.entries(n)) {
-      if (k === 'config') continue
+    const { config: existing = {}, ...rest } = n || {}
+    const out = { id: rest.id, type: rest.type }
+    const cfg = { ...existing }
+    for (const [k, v] of Object.entries(rest)) {
+      if (k === 'id' || k === 'type') continue
       if (NODE_META_KEYS.has(k)) out[k] = v
       else cfg[k] = v
     }
@@ -223,9 +230,9 @@ function blockLines(value, indent) {
 }
 
 export function serializeWorkflow(input) {
-  const model = TOP_KEYS.some((k) => k in (input || {})) && input.nodes && !input.nodes.some((n) => n.config === undefined && Object.keys(n).some((k) => !NODE_META_KEYS.has(k) && k !== 'config'))
-    ? input
-    : toModel(input)
+  // toModel 幂等（见上），因此统一过一遍即可，无需判断输入形态——
+  // 早期版本用启发式判断"是否已是模型"，会静默丢掉已有 config。
+  const model = toModel(input || {})
   const out = []
   for (const k of ['name', 'description', 'version']) if (model[k] !== undefined) out.push(`${k}: ${scalar(model[k])}`)
   if (model.triggers) out.push(`triggers: [${model.triggers.map(scalar).join(', ')}]`)
@@ -945,13 +952,14 @@ git commit -m "feat(workflow): 常驻宿主会话（懒启动/回执配对/grant
 ### Task 12: bridge HTTP 路由与事件转发
 
 **Files:**
-- Modify: `server/bridge.mjs`（挂载 `/workflows*`；`workflow` 事件 → `workflow_event` 广播；`workflow_result` 回执喂给 host）
+- Create: `server/workflow-routes.mjs`（`handleWorkflowRoute` 独立模块——**不得写在 bridge.mjs 里**：bridge.mjs 顶层会 `httpServer.listen(51517)`，测试 import 它会真的起桥并可能 taskkill 用户正在运行的应用）
+- Modify: `server/bridge.mjs`（挂载路由：`if (await handleWorkflowRoute({...})) return`；`workflow` 事件 → `workflow_event` 广播；`workflow_result` 回执喂给 host）
 - Modify: `docs/bridge-contract.md`（新增工作流模块章节）
 - Test: `server/workflow-api.test.mjs`
 
 **Interfaces:**
 - Consumes: Task 10 存储层、Task 11 宿主
-- Produces: `handleWorkflowRoute({ url, req, reply, readJsonBody, store, host }) → Promise<boolean>`（可单测；返回是否已处理）
+- Produces: `handleWorkflowRoute({ url, req, reply, readJsonBody, store, host, root, runsRoot }) → Promise<boolean>`（`host` 为**必需参数**，由 bridge 注入；返回是否已处理）
 
 - [ ] **Step 1: 写失败测试**
 
@@ -963,7 +971,9 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, mkdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { handleWorkflowRoute } from './bridge.mjs'
+// 注意：必须从 workflow-routes.mjs 导入，不能 import bridge.mjs
+//（bridge.mjs 顶层 listen(51517)，测试里会真起桥并可能 taskkill 用户运行中的应用）。
+import { handleWorkflowRoute } from './workflow-routes.mjs'
 import * as store from './workflow-store.mjs'
 
 function mkReply() {
@@ -1048,34 +1058,20 @@ test('未匹配路径返回 false（不吞其他路由）', async () => {
 Run: `node --test server/workflow-api.test.mjs`
 Expected: FAIL — `handleWorkflowRoute is not a function`
 
-- [ ] **Step 3: 实现路由函数（bridge 内导出）**
+- [ ] **Step 3: 实现路由函数（独立模块 `server/workflow-routes.mjs`）**
 
-在 `server/bridge.mjs` 新增加载与函数：
+创建 `server/workflow-routes.mjs`（`host` 为必需参数，由 bridge 注入；模块内不持有 host 单例）：
 
 ```js
+// server/workflow-routes.mjs —— 工作流 HTTP 路由（独立模块，便于单测；
+// 不得置于 bridge.mjs：bridge 顶层会 listen，测试 import 会真起桥）。
 import * as wfStore from './workflow-store.mjs'
-import { createWorkflowHost, HOST_SID } from './workflow-host.mjs'
 
-let _wfHost = null
-function workflowHost() {
-  if (!_wfHost) {
-    _wfHost = createWorkflowHost({
-      sessions, getOrCreateSession,
-      yfwHome: YFW_HOME,
-      model: activeProviderModel(loadConfig()),
-      onEvent: (ev) => broadcastGui({ type: 'workflow_event', sessionId: HOST_SID, event: ev }),
-    })
-  }
-  return _wfHost
-}
-const WF_ROOT = join(YFW_HOME, 'workflows')
-const WF_RUNS = join(YFW_HOME, 'workflow-runs')
-
-// 工作流 HTTP 路由（返回 true = 已处理）。可单测：不依赖 http server 实例。
-export async function handleWorkflowRoute({ url, req, reply, readJsonBody, store = wfStore, host = null, runsRoot = WF_RUNS, root = WF_ROOT }) {
+export async function handleWorkflowRoute({ url, req, reply, readJsonBody, store = wfStore, host, runsRoot = '', root = '' }) {
   const p = url.pathname
   if (p !== '/workflows' && !p.startsWith('/workflows/')) return false
-  const h = host || workflowHost()
+  if (!host) return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: '工作流宿主未注入' })), true
+  const h = host
   const json = (code, obj) => reply(code, { 'Content-Type': 'application/json' }, JSON.stringify(obj))
   try {
     if (p === '/workflows' && req.method === 'GET') {
@@ -1154,10 +1150,32 @@ export async function handleWorkflowRoute({ url, req, reply, readJsonBody, store
 }
 ```
 
+在 `server/bridge.mjs` 顶部新增（宿主单例与路由挂载）：
+
+```js
+import { handleWorkflowRoute } from './workflow-routes.mjs'
+import { createWorkflowHost, HOST_SID } from './workflow-host.mjs'
+
+let _wfHost = null
+function workflowHost() {
+  if (!_wfHost) {
+    _wfHost = createWorkflowHost({
+      sessions, getOrCreateSession,
+      yfwHome: YFW_HOME,
+      model: activeProviderModel(loadConfig()),
+      onEvent: (ev) => broadcastGui({ type: 'workflow_event', sessionId: HOST_SID, event: ev }),
+    })
+  }
+  return _wfHost
+}
+const WF_ROOT = join(YFW_HOME, 'workflows')
+const WF_RUNS = join(YFW_HOME, 'workflow-runs')
+```
+
 在 `httpServer` 的路由链**最前**（`const url = new URL(...)` 之后）插入：
 
 ```js
-    if (await handleWorkflowRoute({ url, req, reply, readJsonBody })) return
+    if (await handleWorkflowRoute({ url, req, reply, readJsonBody, host: workflowHost(), root: WF_ROOT, runsRoot: WF_RUNS })) return
 ```
 
 `workflow` 事件转发：内核事件已由各会话 `wire.system('workflow', ev)` 产生，bridge 处理内核消息处（`sessions` 的 stdout 处理分支）增一条：
@@ -1183,8 +1201,8 @@ Expected: PASS（4 个 test 全绿）
 - [ ] **Step 6: Commit**
 
 ```bash
-git add server/bridge.mjs docs/bridge-contract.md server/workflow-api.test.mjs
-git commit -m "feat(workflow): bridge /workflows 路由（CRUD/运行/停止/确认/记录/导入导出/绑定）+ 事件转发"
+git add server/workflow-routes.mjs server/bridge.mjs docs/bridge-contract.md server/workflow-api.test.mjs
+git commit -m "feat(workflow): /workflows 路由模块（CRUD/运行/停止/确认/记录/导入导出/绑定）+ 事件转发"
 ```
 
 ---
@@ -1490,12 +1508,12 @@ export function subscribeWorkflowEvents(handler: (ev: any) => void): () => void
 
 - [ ] **Step 3: `/workflows/verify` 路由补齐**
 
-bridge 增（host 侧走内核 `workflow_command{subtype:'verify'}`，内核计划已有）：
+在 `server/workflow-routes.mjs` 的匹配链中增（宿主侧走内核 `workflow_command{subtype:'verify'}`，内核计划已实现）：
 
 ```js
       if (id === 'verify' && req.method === 'GET') {
         const p = url.searchParams.get('path') || ''
-        const r = await host.send({ subtype: 'verify', payload: { auditPath: p } }, { timeoutMs: 15_000 })
+        const r = await h.send({ subtype: 'verify', payload: { auditPath: p } }, { timeoutMs: 15_000 })
         return json(200, r), true
       }
 ```
@@ -1532,7 +1550,7 @@ Expected: 全部通过；`build-kernel.mjs` 无 unresolved import。
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/components/workflows src/lib/workflowApi.ts server/bridge.mjs docs/superpowers/specs/2026-09-11-workflow-module-design.md
+git add src/components/workflows src/lib/workflowApi.ts server/workflow-routes.mjs docs/superpowers/specs/2026-09-11-workflow-module-design.md
 git commit -m "feat(workflow): 运行抽屉 + 授权卡 + 事件着色 + 端到端验收记录"
 ```
 
