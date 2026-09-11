@@ -35,6 +35,8 @@ import { createGraphStore } from './graph.mjs'
 import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
 import { discoverSkills, verifySkillVersions } from './skills.mjs'
 import { createWorkflowEngine, discoverWorkflowsAll, matchAutoTrigger, validateWorkflow } from './workflow.mjs'
+// Task 6：工作流即工具——工作流按 expose 三态注册为具名工具（run_<slug>）注入工具池
+import { buildWorkflowTools } from './dyntools.mjs'
 import { loadSettings } from './settings.mjs'
 import { createHooks } from './hooks.mjs'
 import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
@@ -284,6 +286,9 @@ export async function main(argv) {
   // workflow 引擎：与 skill 平权（同一发现/触发机制）。先创建实例（configDir 已知），
   // engine 创建后注入 registry/事件/模型/根目录（setDeps）。
   const wfEngine = createWorkflowEngine({ configDir })
+  // 工作流发现根：技能根（与技能平权，同一发现机制）+ 独立工作流根 <configDir>/workflows
+  // （与 bridge 侧 ~/.yfworking/workflows 安装目录对应；Task 8 把市场工作流装到这里）。
+  const workflowRoots = [...skillRoots, join(configDir, 'workflows')]
   // P3 webhook 服务 / cron 调度器句柄（幂等启动，shutdown 清理）
   let wfHttpServer = null
   let wfSchedulerStop = null
@@ -316,6 +321,11 @@ export async function main(argv) {
     health,
     compactor,
   })
+  // Task 6：动态工具注入——工作流按 expose 三态成为具名工具（run_<slug>），随磁盘增删即时
+  // 生效（视图函数每次求值）。engine.mjs 的 createToolRegistry 调用点不转发 dynamicTools，
+  // 故此处经 registry 的 setDynamicTools 挂钩注入（与构造参数等价，后设覆盖先设）；agentId
+  // 取 --agent（主会话缺省 null → bound 工作流对主会话不可见，仅 public 入池）。
+  engine.tools.setDynamicTools(() => buildWorkflowTools({ roots: workflowRoots, engine: wfEngine, agentId: args.agent || null }))
   // J1：health Judge 注入位——包装 engine.judgeUntil 作健康判定（目标 = 当前会话
   // 健康状态判定：是否建议重置/继续/压缩后继续）。默认关（PONOS_LLM_JUDGE /
   // CLAUDE_CODE_LLM_JUDGE），开时仅红档 + 冷却 300s 触发；异常由 health 侧静默。
@@ -337,7 +347,7 @@ export async function main(argv) {
     getModel: () => getProvider().model || model || process.env.ANTHROPIC_MODEL || '',
     memoryRoot: memoryRoot(configDir),
   })
-  for (const dir of skillRoots) wfEngine.addRoot(dir)
+  for (const dir of workflowRoots) wfEngine.addRoot(dir)
   // P4-4：技能发现内核化——每个技能根扫描（技能根目录命中 SKILL.md；项目目录为空集）。
   // P10-A：roots = skillRoots（显式 --skills-dir > addDirs 叠加默认 <configDir>/skills）
   const skills = []
@@ -359,7 +369,7 @@ export async function main(argv) {
   } catch { /* 版本校验失败不阻断启动 */ }
   // workflow 与 skill 平权：同一技能根发现（workflow.yml / .yml），
   // 共享 triggers 触发词；发现结果入【可用工作流】独立区块（严格输出定位）
-  const workflows = discoverWorkflowsAll({ roots: skillRoots })
+  const workflows = discoverWorkflowsAll({ roots: workflowRoots })
   // L3-2：记忆注入（与 GUI 经验面板同一数据源；settings.memory.inject=false 逃生阀）。
   // 两级注入：graph.search 按当前任务上下文关键词（余弦+关键词混合）从神经图谱抽调
   // 相关经验全文（模型直接可用），buildMemoryIndex 给全量索引指针（模型按需 Read）。
@@ -385,7 +395,7 @@ export async function main(argv) {
   // 提示词组装：内核基础行为规范 + 可用子 Agent 区块（内置 ∪ 用户级）+ AGENTS.md
   // 项目指令 + 技能区块 + 记忆索引 + GUI append 文件（最高优先级，后者覆盖前者）。cwd = addDirs[0]。
   engine.setSystemPrompt(composeSystemPrompt({
-    toolNames: engine.toolNames,
+    toolNames: engine.tools.toolNames,
     subagents: engine.agents,
     agents: discoverAgentsMd({ cwd: args.addDirs[0] || '', addDirs: args.addDirs }),
     append: readPromptFile(args.appendSystemPromptFile),
@@ -409,7 +419,7 @@ export async function main(argv) {
   const prov = getProvider()
   const vision = visionFromEnv()
   wire.system('init', {
-    model, tools: engine.toolNames, session_id: sessionId, name: 'Ponos', version: KERNEL_VERSION, capacity,
+    model, tools: engine.tools.toolNames, session_id: sessionId, name: 'Ponos', version: KERNEL_VERSION, capacity,
     schemaVersion: SCHEMA_VERSION,
     buildId: buildId(),
     provider: prov ? { model: prov.model, version: providerVersion() } : null,
@@ -605,7 +615,7 @@ export async function main(argv) {
     const subtype = msg?.subtype
     try {
       if (subtype === 'list') {
-        const wfs = discoverWorkflowsAll({ roots: skillRoots })
+        const wfs = discoverWorkflowsAll({ roots: workflowRoots })
         wire.system('workflow_result', { subtype: 'list', workflows: wfs.map((w) => ({ id: w.id, nodes: w.nodes, triggers: w.triggers, description: w.description })) })
       } else if (subtype === 'run') {
         const r = await wfEngine.run({ id: msg?.payload?.workflow || msg?.payload?.id || '', inputs: msg?.payload?.inputs || {} })

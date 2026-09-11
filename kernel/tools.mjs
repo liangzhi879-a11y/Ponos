@@ -934,7 +934,7 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
   }
 }
 
-export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null, readAllowFiles = [] }) {
+export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null, readAllowFiles = [], dynamicTools = null }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
   // 记忆只读边界扩展（2026-09-10）：Read 追加个人/项目记忆根——记忆文件是内核
   // 自己维护的知识库（与 MemorySearch 同源），会话目录边界把它们排除在外会让
@@ -1352,21 +1352,37 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
       },
     },
   }
+  // 动态工具（工作流即工具）：视图函数每次求值，磁盘上增删工作流即时生效。
+  // 可传函数（每次求值）或对象（静态快照）；取值/求值异常一律视为空池，不阻断 turn。
+  let dynamicToolsRef = dynamicTools
+  const dynamicView = () => { try { return (typeof dynamicToolsRef === 'function' ? dynamicToolsRef() : dynamicToolsRef) || {} } catch { return {} } }
   return {
     registry,
-    toolNames: Object.keys(registry).filter((n) => !blocked.has(n)),
+    // getter（非快照）：动态工具（工作流即工具）随磁盘增删即时进出名单，故每次读取求值
+    get toolNames() {
+      return [...Object.keys(registry).filter((n) => !blocked.has(n)), ...Object.keys(dynamicView()).filter((n) => !blocked.has(n) && !(n in registry))]
+    },
     // P0-4：只读工具并发安全标记（Bash/Write/Edit/Agent/Task/OCR 等写/执行类串行）
     isConcurrencySafe(name) {
-      return registry[name]?.concurrencySafe === true
+      return registry[name]?.concurrencySafe === true || dynamicView()[name]?.concurrencySafe === true
     },
     // 中立工具 schema 列表（Anthropic/OpenAI 协议字段映射在 api.mjs 完成）
     toolSchemas() {
-      return Object.entries(registry).filter(([name]) => !blocked.has(name)).map(([name, tool]) => ({
+      const statics = Object.entries(registry).filter(([name]) => !blocked.has(name)).map(([name, tool]) => ({
         name,
         description: tool.description,
         input_schema: tool.input_schema,
       }))
+      const dyn = Object.entries(dynamicView()).filter(([name]) => !blocked.has(name) && !(name in registry)).map(([name, tool]) => ({
+        name,
+        description: tool.description,
+        input_schema: tool.input_schema,
+      }))
+      return [...statics, ...dyn]
     },
+    // 动态工具源热替换（engine.mjs 不转发 dynamicTools —— 其调用点不在本任务改动范围，
+    // cli 拿到 engine.tools 后经此注入；与 dynamicTools 构造参数等价，后设覆盖先设）
+    setDynamicTools(fn) { dynamicToolsRef = fn || null },
     // 执行入口：返回归一化 { content, isError }（成功路径可能缺省 isError）；
     // approval 决策由调用方（engine）先行。兜底铁律：任何工具实现抛异常
     // （含审批/hook 内部错误）都不得向上中断 turn——归一化为错误结果返回，
@@ -1374,7 +1390,10 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
     async run(toolUse, ctx) {
       const name = toolUse?.name
       if (blocked.has(name)) return { content: `工具已被禁用：${name}`, isError: true }
-      const tool = registry[name]
+      // 动态工具（工作流即工具）：与静态同名冲突时静态优先（动态名单已排除同名项）；
+      // 被禁/未命中的动态调用同样在此拒绝——防模型绕过工具列表。
+      const dynTool = !(name in registry) ? dynamicView()[name] : null
+      const tool = registry[name] || dynTool
       if (!tool) return { content: `未知工具：${name}`, isError: true }
       let r
       try {
