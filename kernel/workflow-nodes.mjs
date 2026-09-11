@@ -52,7 +52,7 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
 
   // agent 节点：工作流内嵌 ReAct 循环（独立对话，不污染主会话 transcript）。
   // 工具执行走 registry（权限/边界/高危钩子沿用）；tools 白名单可选，缺省全量。
-  async function runAgentLoop({ prompt, system = '', tools = [], model, signal, registry, permissionGate = null, maxIters = 8, timeoutMs = 120_000, getToolCtx = () => ({}) }) {
+  async function runAgentLoop({ prompt, system = '', tools = [], model, signal, registry, permissionGate = null, grant = null, cwd = '', maxIters = 8, timeoutMs = 120_000, getToolCtx = () => ({}) }) {
     if (!model) throw new Error('agent 节点缺少 model（未配置 provider）')
     const messages = []
     if (system) messages.push({ role: 'system', content: system })
@@ -83,7 +83,9 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
       const results = []
       for (const tu of toolUses) {
         // agent 内嵌工具同样过审批门（防止工作流 agent 节点旁路主会话高危审批）
-        const gate = await checkToolPermission({ permissionGate, registry }, tu.name, tu.input || {})
+        // grant 必须透传：否则 agent 节点内的 Read/Write/WebFetch 等工具会绕过运行前
+        // 授权清单（只有 Bash 因无审批通道被拒），与"未授权调用 fail-closed"相矛盾。
+        const gate = await checkToolPermission({ permissionGate, registry, grant, cwd }, tu.name, tu.input || {})
         if (gate.denied) {
           results.push({ type: 'tool_result', tool_use_id: tu.id, content: gate.message, is_error: true })
           continue
@@ -264,6 +266,7 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
     const r = await runAgentLoop({
       prompt, system, tools: node.tools || [], model,
       signal: ctx.signal, registry: ctx.registry || registry, permissionGate: ctx.permissionGate,
+      grant: ctx.grant, cwd: ctx.cwd,
       maxIters: node.max_iters || 8, timeoutMs: node.timeout_ms || 120_000,
       getToolCtx: ctx.getToolCtx,
     })
@@ -443,7 +446,7 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
     const d = cmpPath(dir)
     return t === d || t.startsWith(d + '/')
   }
-  function grantDecision(grant, name, input) {
+  function grantDecision(grant, name, input, baseCwd = '') {
     if (!grant) return null
     const tools = Array.isArray(grant.tools) ? grant.tools : []
     if (!tools.includes(name)) return { denied: true, message: `工具 ${name} 不在本次运行的授权清单内（拒绝执行）` }
@@ -452,8 +455,12 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
       const p = input?.file_path
       // write_dirs 为空 = 不设路径约束（brief 语义；报告顾虑 1 已自陈）
       if (p && rawDirs.length) {
-        const target = resolveReal(p, process.cwd())
-        if (!rawDirs.map((d) => resolveReal(d, process.cwd())).some((d) => isInside(target, d))) {
+        // 判定基：宿主会话 cwd（ctx.cwd，由宿主随 workflow_command 注入），
+        // 否则退回进程 cwd —— 内核进程 cwd 与宿主会话 cwd 未必一致，用错基会让
+        // "相对路径"落到授权目录之外仍被判为在内（Task 9 遗留 / 复审 N-2）。
+        const base = baseCwd || process.cwd()
+        const target = resolveReal(p, base)
+        if (!rawDirs.map((d) => resolveReal(d, base)).some((d) => isInside(target, d))) {
           return { denied: true, message: `写入路径不在授权目录内：${input.file_path}（授权目录：${rawDirs.join('、')}）` }
         }
       }
@@ -462,7 +469,7 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
   }
 
   async function checkToolPermission(ctx, name, input) {
-    const g = grantDecision(ctx?.grant, name, input)
+    const g = grantDecision(ctx?.grant, name, input, ctx?.cwd)
     if (g) return g                                   // 有 grant：授权清单为唯一判据
     const gate = ctx?.permissionGate
     if (typeof gate !== 'function') {

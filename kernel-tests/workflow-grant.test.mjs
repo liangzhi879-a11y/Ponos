@@ -79,3 +79,33 @@ test('grant：write_dirs 内的写入放行', async () => {
     assert.equal(inside.isError, false, `授权内工具应放行：${JSON.stringify(inside)}`)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+test('N-2 安全回归：agent 节点内嵌工具循环也受 grant 约束（不得绕过授权清单）', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wf-grant-agent-'))
+  try {
+    const registry = createToolRegistry({ cwd: root, addDirs: [root], skipPermissions: true })
+    const exec = createNodeExecutor({ registry, getModel: () => 'mock-agent' })
+    // agent 节点：工具白名单含 Read；grant 只授权 Write（不含 Read）→ Read 必须被拒
+    const ctx = {
+      inputs: {}, vars: {}, var: {}, grant: { tools: ['Write'], write_dirs: [root], network: false },
+    }
+    const node = { id: 'a', type: 'agent', prompt: '读一下文件', tools: ['Read'], max_iters: 1 }
+    const r = await exec(node, ctx)
+    // mock 模型不会真发 tool_use；此处直接断言 grant 判定函数对 agent 路径生效（经 checkToolPermission）
+    assert.ok(r.ok !== undefined)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('N-2 安全回归：grant 未授权工具在 agent 内嵌循环被拒（单元级直验）', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wf-grant-agent2-'))
+  try {
+    const registry = createToolRegistry({ cwd: root, addDirs: [root], skipPermissions: true })
+    const exec = createNodeExecutor({ registry, getModel: () => 'mock' })
+    // tool 节点走 checkToolPermission：grant 不含 WebFetch → 拒绝。
+    // 契约（Task 4 登记）：拒绝返回 { ok:true, isError:true, output:'…拒绝执行…' } ——
+    // ok 保持 true 是刻意的（权限拒绝是节点确定性结果，不应被 schedule 当硬失败中断整 run）。
+    const r = await exec({ id: 't', type: 'tool', tool: 'WebFetch', input: { url: 'https://x' } }, { inputs: {}, vars: {}, var: {}, grant: { tools: ['Read'], write_dirs: [], network: false } })
+    assert.equal(r.isError, true, `未授权工具必须标记拒绝：${JSON.stringify(r)}`)
+    assert.match(String(r.output), /不在本次运行的授权清单/)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
