@@ -4,8 +4,9 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { slugToToolName, deriveInputSchema, visibilityOf, buildWorkflowTools } from '../kernel/dyntools.mjs'
+import { slugToToolName, shortHash, deriveInputSchema, visibilityOf, buildWorkflowTools, listVisibleWorkflows } from '../kernel/dyntools.mjs'
 import { createToolRegistry } from '../kernel/tools.mjs'
+import { composeSystemPrompt } from '../kernel/prompt.mjs'
 
 const wfYml = (id, expose) => `name: ${id}
 version: 1.0.0
@@ -73,6 +74,93 @@ test('buildWorkflowTools：只输出当前会话可见的工具，且 run 走引
     const t2 = buildWorkflowTools({ roots: [wfRoot], engine, agentId: 'material-writer' })
     assert.ok(t2.run_bound_one, '绑定 agent 应看到 bound 工具')
     assert.equal(t2.run_private_one, undefined, 'private 永远不入池')
+  } finally { cleanup() }
+})
+
+test('CJK id 去重（I-1）：两个中文目录 → 两个不同工具名且都能调用', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wf-cjk-'))
+  const wfRoot = join(root, 'workflows')
+  const mk = (id, expose) => { mkdirSync(join(wfRoot, id), { recursive: true }); writeFileSync(join(wfRoot, id, 'workflow.yml'), wfYml(id, expose), 'utf-8') }
+  try {
+    mk('周报', '  mode: public')
+    mk('月报', '  mode: public')
+    assert.match(slugToToolName('周报'), /^run_workflow_[0-9a-f]{6}$/)
+    assert.notEqual(slugToToolName('周报'), slugToToolName('月报'))
+    const calls = []
+    const engine = { run: async ({ id, inputs }) => { calls.push(id); return { ok: true, finalOutput: { id, topic: inputs.topic } } } }
+    const tools = buildWorkflowTools({ roots: [wfRoot], engine, agentId: null })
+    const names = Object.keys(tools)
+    assert.equal(names.length, 2, `两个中文工作流应各自成工具：${names}`)
+    assert.notEqual(names[0], names[1])
+    for (const n of names) {
+      const r = await tools[n].run({ topic: 't' })
+      assert.equal(r.isError, false, `${n} 应可调用：${r.content}`)
+    }
+    assert.deepEqual(calls.sort(), ['月报', '周报'].sort(), `run 应命中各自工作流：${calls}`)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('同名工具不覆盖（I-1）：显式 tool_name 冲突 → 追加哈希后缀 + 告警，二者都在', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wf-dup-'))
+  const wfRoot = join(root, 'workflows')
+  const mk = (id, expose) => { mkdirSync(join(wfRoot, id), { recursive: true }); writeFileSync(join(wfRoot, id, 'workflow.yml'), wfYml(id, expose), 'utf-8') }
+  const warns = []
+  const origWarn = console.warn
+  console.warn = (...a) => warns.push(a.join(' '))
+  try {
+    mk('dup-a', '  mode: public\n  tool_name: run_same')
+    mk('dup-b', '  mode: public\n  tool_name: run_same')
+    const engine = { run: async ({ id }) => ({ ok: true, finalOutput: { id } }) }
+    const tools = buildWorkflowTools({ roots: [wfRoot], engine, agentId: null })
+    assert.ok(tools.run_same, '先注册者保留原名')
+    const alt = Object.keys(tools).filter((n) => n.startsWith('run_same_') && n !== 'run_same')
+    assert.equal(alt.length, 1, `冲突者应追加后缀：${Object.keys(tools)}`)
+    assert.equal(tools.nameConflicts.length, 1)
+    assert.equal(tools.nameConflicts[0].resolved, alt[0])
+    assert.ok(warns.some((w) => w.includes('工具名冲突')), `应有告警：${warns}`)
+    assert.deepEqual(Object.keys(tools).sort(), ['run_same', alt[0]].sort())
+    assert.equal(Object.keys(tools).includes('nameConflicts'), false, '冲突明细不得进工具表视图')
+  } finally { console.warn = origWarn; rmSync(root, { recursive: true, force: true }) }
+})
+
+test('public 截断稳定顺序（I-2）：按 id 字节序取前 N（不受 locale 影响）', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wf-limit-'))
+  const wfRoot = join(root, 'workflows')
+  try {
+    for (const id of ['zzz-3', '周报', 'aaa-1', 'mmm-2']) {
+      mkdirSync(join(wfRoot, id), { recursive: true })
+      writeFileSync(join(wfRoot, id, 'workflow.yml'), wfYml(id, '  mode: public'), 'utf-8')
+    }
+    const engine = { run: async () => ({ ok: true, finalOutput: {} }) }
+    const tools = buildWorkflowTools({ roots: [wfRoot], engine, publicLimit: 2 })
+    const ids = listVisibleWorkflows({ roots: [wfRoot], publicLimit: 2 }).map((w) => w.id)
+    // 字节序：'aaa-1'(0x61) < 'mmm-2'(0x6d) < 'zzz-3'(0x7a) < '周报'(0x5468)；localeCompare 会把中文排最前
+    assert.deepEqual(ids, ['aaa-1', 'mmm-2'], `截断应按字节序稳定：${ids}`)
+    assert.equal(Object.keys(tools).length, 2)
+    const toolsAll = buildWorkflowTools({ roots: [wfRoot], engine })
+    assert.equal(Object.keys(toolsAll).length, 4, '缺省上限 20 不截断')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('提示词清单可见性口径（I-3）：private / 未命中 bound / 超限 public 不出现在清单', () => {
+  const { wfRoot, cleanup } = setup()
+  const engine = { run: async () => ({ ok: true, finalOutput: {} }) }
+  try {
+    const pub = listVisibleWorkflows({ roots: [wfRoot], agentId: null })
+    const ids = pub.map((w) => w.id)
+    assert.deepEqual(ids, ['weekly-report'], `主会话只见 public：${ids}`)
+    assert.ok(pub[0].description && pub[0].name, '清单条目需带 name/description 供提示词渲染')
+
+    const bound = listVisibleWorkflows({ roots: [wfRoot], agentId: 'material-writer' }).map((w) => w.id)
+    assert.ok(bound.includes('bound-one') && !bound.includes('private-one'), `bound 命中应入清单：${bound}`)
+    assert.equal(listVisibleWorkflows({ roots: [wfRoot], agentId: null, publicLimit: 0 }).length, 0, '超限 public 不入清单')
+    assert.deepEqual(listVisibleWorkflows({ roots: [wfRoot], agentId: null }), listVisibleWorkflows({ roots: [wfRoot], agentId: null }), '清单稳定可重复')
+    assert.deepEqual(Object.keys(buildWorkflowTools({ roots: [wfRoot], engine, agentId: null })).length, listVisibleWorkflows({ roots: [wfRoot], agentId: null }).length, '清单与工具池同一口径')
+    // 端到端注入面：用可见清单渲染系统提示词，private 的名称/描述不得出现
+    const prompt = composeSystemPrompt({ toolNames: [], agents: [], subagents: [], skills: [], workflows: pub })
+    assert.match(prompt, /weekly-report/)
+    assert.equal(prompt.includes('private-one'), false, 'private 不得进提示词')
+    assert.equal(prompt.includes('bound-one'), false, '未命中 bound 不得进提示词')
   } finally { cleanup() }
 })
 

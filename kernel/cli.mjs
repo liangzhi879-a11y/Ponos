@@ -36,7 +36,7 @@ import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv 
 import { discoverSkills, verifySkillVersions } from './skills.mjs'
 import { createWorkflowEngine, discoverWorkflowsAll, matchAutoTrigger, validateWorkflow } from './workflow.mjs'
 // Task 6：工作流即工具——工作流按 expose 三态注册为具名工具（run_<slug>）注入工具池
-import { buildWorkflowTools } from './dyntools.mjs'
+import { buildWorkflowTools, listVisibleWorkflows } from './dyntools.mjs'
 import { loadSettings } from './settings.mjs'
 import { createHooks } from './hooks.mjs'
 import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
@@ -289,6 +289,10 @@ export async function main(argv) {
   // 工作流发现根：技能根（与技能平权，同一发现机制）+ 独立工作流根 <configDir>/workflows
   // （与 bridge 侧 ~/.yfworking/workflows 安装目录对应；Task 8 把市场工作流装到这里）。
   const workflowRoots = [...skillRoots, join(configDir, 'workflows')]
+  // I-2：public 工作流入池上限——settings.workflow.publicLimit（设置项不存在/非法 → 缺省 20，
+  // 与 dyntools 内 LIMIT_DEFAULT 一致；不为此扩设置系统）。
+  const wfPublicLimitN = Number(settings.merged.workflow?.publicLimit)
+  const wfPublicLimit = Number.isFinite(wfPublicLimitN) && wfPublicLimitN > 0 ? Math.floor(wfPublicLimitN) : 20
   // P3 webhook 服务 / cron 调度器句柄（幂等启动，shutdown 清理）
   let wfHttpServer = null
   let wfSchedulerStop = null
@@ -325,7 +329,7 @@ export async function main(argv) {
   // 生效（视图函数每次求值）。engine.mjs 的 createToolRegistry 调用点不转发 dynamicTools，
   // 故此处经 registry 的 setDynamicTools 挂钩注入（与构造参数等价，后设覆盖先设）；agentId
   // 取 --agent（主会话缺省 null → bound 工作流对主会话不可见，仅 public 入池）。
-  engine.tools.setDynamicTools(() => buildWorkflowTools({ roots: workflowRoots, engine: wfEngine, agentId: args.agent || null }))
+  engine.tools.setDynamicTools(() => buildWorkflowTools({ roots: workflowRoots, engine: wfEngine, agentId: args.agent || null, publicLimit: wfPublicLimit }))
   // J1：health Judge 注入位——包装 engine.judgeUntil 作健康判定（目标 = 当前会话
   // 健康状态判定：是否建议重置/继续/压缩后继续）。默认关（PONOS_LLM_JUDGE /
   // CLAUDE_CODE_LLM_JUDGE），开时仅红档 + 冷却 300s 触发；异常由 health 侧静默。
@@ -370,6 +374,10 @@ export async function main(argv) {
   // workflow 与 skill 平权：同一技能根发现（workflow.yml / .yml），
   // 共享 triggers 触发词；发现结果入【可用工作流】独立区块（严格输出定位）
   const workflows = discoverWorkflowsAll({ roots: workflowRoots })
+  // I-3：提示词【可用工作流】清单改用与工具池同一可见性口径（private / bound 未命中 /
+  // 超限 public / legacy 不注入名字与描述）。注意 workflows（未过滤）仍供 auto_trigger
+  // 与 init 计数使用 —— 可见性与自动触发是两件事，本处只收窄注入面。
+  const visibleWorkflows = listVisibleWorkflows({ roots: workflowRoots, agentId: args.agent || null, publicLimit: wfPublicLimit })
   // L3-2：记忆注入（与 GUI 经验面板同一数据源；settings.memory.inject=false 逃生阀）。
   // 两级注入：graph.search 按当前任务上下文关键词（余弦+关键词混合）从神经图谱抽调
   // 相关经验全文（模型直接可用），buildMemoryIndex 给全量索引指针（模型按需 Read）。
@@ -401,7 +409,7 @@ export async function main(argv) {
     append: readPromptFile(args.appendSystemPromptFile),
     cwd: args.addDirs[0] || '',
     skills,
-    workflows,
+    workflows: visibleWorkflows,
     memory: memoryBlock,
     // 本地弱模型精简纪律段（2026-09-09 适配）：桥按 provider 画像注入
     // PONOS_PROMPT_TIER=lean；未设=full（云端现状，零变化）。
