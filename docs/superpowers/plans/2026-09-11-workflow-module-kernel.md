@@ -592,6 +592,22 @@ test('错误边：on_error=branch 失败 → 只走 fail 边；未配 fail 边�
   assert.equal(r3.node, 'x')
 })
 
+test('classify default 语义：命中 route:i 时 default 不得同时激活；未命中才走 default', async () => {
+  const log = []
+  const nodes = [N('c'), N('a'), N('b'), N('d')]
+  const edges = [E('c', 'a', 'route:0'), E('c', 'b', 'route:1'), E('c', 'd', 'default')]
+
+  const hit = await schedule({ nodes, edges, executeNode: stub({ c: { ok: true, route: 'route:0' } }, log) })
+  assert.equal(hit.ok, true)
+  assert.ok(log.includes('a'), '命中 route:0 应走 a')
+  assert.equal(log.includes('b'), false, 'b 应被跳过')
+  assert.equal(log.includes('d'), false, 'default 分支不得在命中 route:0 时同时激活')
+
+  const miss = await schedule({ nodes, edges, executeNode: stub({ c: { ok: true, route: 'route:9' } }, log) })
+  assert.equal(miss.ok, true)
+  assert.ok(log.includes('d'), '未命中任何条件 handle 时才走 default')
+})
+
 test('retry：失败重试 max 次后成功；耗尽仍失败则按 on_error 收尾', async () => {
   let calls = 0
   const nodes = [N('r', { retry: { max: 2, delay_ms: 1 } })]
@@ -658,17 +674,30 @@ export function buildGraph(nodes, edges) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // 出边激活：无 sourceHandle 的源节点 → 成功时全部 active；有 handle → 按 route 命中。
+// handle 语义（契约）：
+//   'true'/'false'  → 仅当 result.route 精确等于该 handle
+//   'route:<i>'     → 仅当 result.route 精确等于该 handle
+//   'default'       → **仅当没有任何条件 handle 命中时**才 active（classify 的兜底分支）
+//   'fail'          → 仅当 result.ok === false
+// 关键：'default' 不是无条件激活。若写成无条件，classify 命中 route:0 时 default 边会同时
+// 激活，导致两条分支并跑（这正是 Task 2 审查 I-1 指出的缺陷）。
 function activateOutgoing(node, result, outgoing, edgeState) {
   const outs = outgoing.get(node.id) || []
   const branching = outs.some((e) => e.sourceHandle)
+  if (!branching) {
+    for (const e of outs) edgeState.set(e.id, result.ok ? 'active' : 'skipped')
+    return
+  }
+  const route = String(result?.route ?? '')
+  const condHandles = outs.map((e) => e.sourceHandle).filter((h) => h && h !== 'fail' && h !== 'default')
+  const matched = result.ok && route && condHandles.includes(route)
   for (const e of outs) {
-    if (!branching) { edgeState.set(e.id, result.ok ? 'active' : 'skipped'); continue }
     const h = e.sourceHandle
     let active
-    if (!result.ok) active = h === 'fail'
-    else if (h === 'fail') active = false
-    else if (h === 'true' || h === 'false') active = String(result.route || '') === h
-    else active = String(result.route || '') === h || h === 'default'
+    if (!h) active = result.ok                      // 混合图：无 handle 出边按"成功即走"
+    else if (h === 'fail') active = !result.ok
+    else if (h === 'default') active = result.ok && !matched
+    else active = !result.ok ? false : route === h
     edgeState.set(e.id, active ? 'active' : 'skipped')
   }
 }
