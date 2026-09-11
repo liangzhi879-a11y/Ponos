@@ -2513,11 +2513,19 @@ function autoProbeActiveProvider() {
 //   workflowRoots = [...skillRoots, join(configDir, 'workflows')]）。
 // 实现抽到 server/workflow-install.mjs：它可被测试直接 import，而 bridge.mjs 顶层会
 // listen(51517)（EADDRINUSE 自愈还会 taskkill 用户进程），测试 import 它会真起桥。
-// 语义：目标不存在→安装；版本不同→备份 workflow.v<旧版>.bak.yml 后覆盖；相同→跳过。
+// 语义：目标不存在→安装；版本不同（或版本同但正文异）→备份 workflow.v<旧版>.bak.yml 后覆盖；
+//       完全相同→跳过；技能根里的 legacy 同名副本（旧版安装位置）备份为 *.legacy.bak.yml 后删除，
+//       否则它会被内核优先发现、永久遮蔽新版（review C-1）。
 function autoInstallBuiltinWorkflows() {
   try {
-    const r = installBuiltinWorkflows({ srcRoot: join(__dirname, '..', 'workflows'), dstRoot: join(YFW_HOME, 'workflows') })
-    if (r.installed.length || r.updated.length) console.log('[bridge] builtin workflows:', JSON.stringify(r))
+    const r = installBuiltinWorkflows({
+      srcRoot: join(__dirname, '..', 'workflows'),
+      dstRoot: join(YFW_HOME, 'workflows'),
+      legacyRoots: [findSkillRoot()], // 旧版安装器把内置工作流装进技能根 → 需清理
+    })
+    if (r.installed.length || r.updated.length || r.contentUpdated.length || r.legacyRemoved.length) {
+      console.log('[bridge] builtin workflows:', JSON.stringify(r))
+    }
   } catch (e) {
     console.warn('[bridge] autoInstallBuiltinWorkflows failed:', e?.message || e)
   } finally {

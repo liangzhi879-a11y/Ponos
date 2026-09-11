@@ -7,7 +7,7 @@
 #   收进 node.config（画布友好，加载期摊平）；触发/并发等运行参数在 trigger_config/settings。
 name: spec-dev
 description: spec 驱动开发：把模糊需求经 规格(spec)→计划(plan)→任务(tasks)→实现(逐任务派实现者子Agent+审查者子Agent)→收敛(converge) 的状态文件驱动流程执行，适合中大型功能/重构任务
-version: 1.0.0
+version: 2.0.0
 triggers: spec 开发, spec-dev, 按 spec 开发, 规格驱动开发, 规格化开发
 inputs:
   - {name: requirement, type: string, required: true}
