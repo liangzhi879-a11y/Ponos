@@ -30,21 +30,35 @@ export function splitKV(text) {
 
 // 内联流式集合（`[a, b]` / `{k: v, ...}`）的顶层逗号切分：跳过引号内与嵌套括号内的逗号
 // （嵌套感知——`{ outputs: [{ name: text }] }` 才算一项）。
+//
+// 引号规则（两条保险，防“词内撇号”吞项）：
+//   1) `'` 只在 token 起始位置（上一字符非词字符）才被当作引号起始——避免 `don't` / `doesn't` / `it's`
+//      这类词内撇号把后续逗号一起吞进同一项（旧实现 `inner.split(',')` 得 2 项，不能被改成 1 项）。
+//   2) 若扫描结束时引号仍未闭合（不构成合法流式字符串），回退为“不识别引号”再切一次。
 function splitFlow(inner) {
-  const parts = []
-  let depth = 0
-  let quote = ''
-  let cur = ''
-  for (const ch of inner) {
-    if (quote) { cur += ch; if (ch === quote) quote = ''; continue }
-    if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue }
-    if (ch === '[' || ch === '{') depth++
-    else if (ch === ']' || ch === '}') depth--
-    if (ch === ',' && depth === 0) { parts.push(cur); cur = ''; continue }
-    cur += ch
+  const split = (text, respectQuotes) => {
+    const parts = []
+    let depth = 0
+    let quote = ''
+    let cur = ''
+    for (const ch of text) {
+      if (respectQuotes && quote) { cur += ch; if (ch === quote) quote = ''; continue }
+      if (respectQuotes && (ch === '"' || ch === "'")) {
+        // `"` 沿用旧行为（任何位置都可起始）；`'` 仅限 token 起始。
+        const prev = cur ? cur[cur.length - 1] : ''
+        if (ch === '"' || !/[\w\u4e00-\u9fa5]/.test(prev)) { quote = ch; cur += ch; continue }
+      }
+      if (ch === '[' || ch === '{') depth++
+      else if (ch === ']' || ch === '}') depth--
+      if (ch === ',' && depth === 0) { parts.push(cur); cur = ''; continue }
+      cur += ch
+    }
+    if (cur.trim()) parts.push(cur)
+    return { parts: parts.map((p) => p.trim()).filter(Boolean), closed: quote === '' }
   }
-  if (cur.trim()) parts.push(cur)
-  return parts.map((p) => p.trim()).filter(Boolean)
+  let { parts, closed } = split(inner, true)
+  if (!closed) ({ parts } = split(inner, false))
+  return parts
 }
 
 export function unquote(v) {
@@ -56,14 +70,17 @@ export function unquote(v) {
     return splitFlow(inner).map((x) => unquote(x))
   }
   // 内联映射（画布友好：`config: { prompt: xxx }` / `retry: { max: 2 }` / 列表项 `- {id: a, ...}`）。
-  // 任一部分不含 `k: v`（如代码串 `{ return 1 }`）→ 原样返回字符串，保持旧行为。
+  // 任一部分不含顶层 `k: v`（如代码串 `{ return 1 }`、模板串 `{{ask}}`）→ 原样返回**字符串**，
+  // 与旧实现（b2982e1:kernel/workflow.mjs，无内联映射能力）一致：绝不静默改型。
+  // 注意：splitKV 不匹配时返回 [原文, undefined]（k 恒有值），故不能用 `val === undefined` 判定“非 k: v”，
+  // 必须显式检查该部分是否含顶层冒号。
   if (s.startsWith('{') && s.endsWith('}')) {
     const inner = s.slice(1, -1).trim()
     if (!inner) return {}
     const obj = {}
     for (const part of splitFlow(inner)) {
+      if (part.indexOf(':') < 0) return s
       const [k, val] = splitKV(part)
-      if (k === undefined) return s
       obj[k] = val === undefined ? {} : unquote(val)
     }
     return obj
@@ -296,9 +313,15 @@ export function parseWorkflowFile(path) {
 // ===================== DSL v2：归一化 + 校验 =====================
 
 // 节点专属配置写在 node.config（画布友好）；执行器读扁平字段 → 加载期摊平。
+// config 摊平只补缺、不覆盖：节点顶层已写的键优先，避免 config 里误写的 body/retry/label
+// 静默覆盖顶层语义字段（顶层才是权威位置）。
 export function normalizeNode(n) {
   const { config = {}, ...rest } = n || {}
-  return { ...rest, ...config }
+  const out = { ...rest }
+  for (const [k, v] of Object.entries(config || {})) {
+    if (!Object.hasOwn(out, k)) out[k] = v
+  }
+  return out
 }
 
 export function normalizeWorkflow(wf) {

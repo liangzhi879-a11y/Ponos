@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parseYaml, loadWorkflow, validateWorkflow, normalizeWorkflow, DSL_VERSION } from '../kernel/workflow-dsl.mjs'
+import { parseYaml, loadWorkflow, validateWorkflow, normalizeWorkflow, normalizeNode, unquote, DSL_VERSION } from '../kernel/workflow-dsl.mjs'
 
 const GOOD = `name: demo
 version: 1.0.0
@@ -87,4 +87,98 @@ test('校验器：body 越界与跨子图边', () => {
   const codes = validateWorkflow(wf).errors.map((e) => e.code)
   assert.ok(codes.includes('BODY_MEMBER_MISSING'), `应报 body 成员不存在：${codes}`)
   assert.ok(codes.includes('BODY_ESCAPE'), `应报跨子图边：${codes}`)
+})
+
+// ---------- 返工轮 1 补充：解析回退 / 变量校验 / 归一化约定 ----------
+
+test('unquote：{…} 内含无冒号部分 → 保留原字符串（不静默改型为对象）', () => {
+  assert.equal(unquote('{ return 1 }'), '{ return 1 }')
+  assert.equal(unquote('{{ask}}'), '{{ask}}')
+  assert.equal(parseYaml('foo: {{bar}}').foo, '{{bar}}')
+  // 反向：合法的内联映射仍必须被解析成对象
+  assert.deepEqual(unquote('{ max: 2 }'), { max: 2 })
+})
+
+test("unquote：词内撇号（don't）不得吞并流式数组项", () => {
+  assert.equal(unquote("[don't, x]").length, 2)
+  assert.deepEqual(unquote("[don't, x]"), ["don't", "x"])
+  assert.equal(unquote("[doesn't, it's, y]").length, 3)
+  // 引号内逗号仍受保护
+  assert.deepEqual(unquote("[\"it's, ok\", x]"), ["it's, ok", 'x'])
+})
+
+test('校验器：VAR_UNKNOWN / VAR_UNREACHABLE', () => {
+  // 引用不存在的节点 id → VAR_UNKNOWN
+  const unknown = normalizeWorkflow({
+    nodes: [
+      { id: 'start', type: 'start' },
+      { id: 'a', type: 'llm', prompt: '{{ghost.x}}' },
+      { id: 'done', type: 'end' },
+    ],
+    edges: [{ id: 'e1', source: 'start', target: 'a' }, { id: 'e2', source: 'a', target: 'done' }],
+  })
+  const unknownCodes = validateWorkflow(unknown).errors.map((e) => e.code)
+  assert.ok(unknownCodes.includes('VAR_UNKNOWN'), `应报未知变量：${unknownCodes}`)
+
+  // 同作用域内引用非祖先节点（b 与 a 并列，a 引用 b）→ VAR_UNREACHABLE
+  const unreachable = normalizeWorkflow({
+    nodes: [
+      { id: 'start', type: 'start' },
+      { id: 'a', type: 'llm', prompt: '{{b.x}}' },
+      { id: 'b', type: 'llm', prompt: 'y' },
+      { id: 'done', type: 'end' },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'a' },
+      { id: 'e2', source: 'start', target: 'b' },
+      { id: 'e3', source: 'a', target: 'done' },
+      { id: 'e4', source: 'b', target: 'done' },
+    ],
+  })
+  const unreachableCodes = validateWorkflow(unreachable).errors.map((e) => e.code)
+  assert.ok(unreachableCodes.includes('VAR_UNREACHABLE'), `应报非上游引用：${unreachableCodes}`)
+
+  // 正向对照：真祖先引用不得误报 VAR_*
+  const reachable = normalizeWorkflow({
+    nodes: [
+      { id: 'start', type: 'start' },
+      { id: 'a', type: 'llm', prompt: 'x' },
+      { id: 'b', type: 'llm', prompt: '{{a.out}}' },
+      { id: 'done', type: 'end' },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'a' },
+      { id: 'e2', source: 'a', target: 'b' },
+      { id: 'e3', source: 'b', target: 'done' },
+    ],
+  })
+  const reachableCodes = validateWorkflow(reachable).errors.map((e) => e.code)
+  assert.deepEqual(reachableCodes.filter((c) => c.startsWith('VAR_')), [], `祖先引用不应报 VAR_*：${reachableCodes}`)
+})
+
+test('normalizeWorkflow：缺 edges 约定为 null（LEGACY_DSL 依据）', () => {
+  assert.equal(normalizeWorkflow({ nodes: [] }).edges, null)
+  assert.equal(normalizeWorkflow({ nodes: [], edges: null }).edges, null)
+  assert.equal(normalizeWorkflow({ nodes: [], edges: 'x' }).edges, null)
+  assert.deepEqual(normalizeWorkflow({ nodes: [], edges: [] }).edges, [])
+  // legacy 文件加载后 edges === null，且校验器据此报 LEGACY_DSL
+  const legacy = GOOD.replace(/edges:[\s\S]*$/, '')
+  withFile(legacy, (root) => {
+    const wf = loadWorkflow({ roots: [root], id: 'demo' })
+    assert.equal(wf.edges, null, '旧格式（无 edges）加载后 edges 应为 null')
+    assert.ok(validateWorkflow(wf).errors.some((e) => e.code === 'LEGACY_DSL'))
+  })
+})
+
+test('normalizeNode：config 摊平只补缺、不覆盖节点顶层字段', () => {
+  const n = normalizeNode({
+    id: 'a',
+    body: ['real'],
+    retry: { max: 1 },
+    config: { body: ['fake'], retry: { max: 9 }, prompt: 'p' },
+  })
+  assert.deepEqual(n.body, ['real'], 'config.body 不得覆盖顶层 body')
+  assert.deepEqual(n.retry, { max: 1 }, 'config.retry 不得覆盖顶层 retry')
+  assert.equal(n.prompt, 'p', 'config 中的新键应摊平到节点')
+  assert.equal(n.config, undefined, 'config 键应被消费掉')
 })
