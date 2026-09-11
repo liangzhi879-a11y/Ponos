@@ -681,8 +681,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 //   'fail'          → 仅当 result.ok === false
 // 关键：'default' 不是无条件激活。若写成无条件，classify 命中 route:0 时 default 边会同时
 // 激活，导致两条分支并跑（这正是 Task 2 审查 I-1 指出的缺陷）。
+// 跳过传播：被跳过的节点（result.skipped）其**所有**出边一律 skipped——包括无 handle 的顺序边；
+// 否则 skip 会沿顺序边漏成 active，导致"仅依赖被跳过入边的下游"被误执行（跳过必须传播）。
 function activateOutgoing(node, result, outgoing, edgeState) {
   const outs = outgoing.get(node.id) || []
+  if (result?.skipped) {
+    for (const e of outs) edgeState.set(e.id, 'skipped')
+    return
+  }
   const branching = outs.some((e) => e.sourceHandle)
   if (!branching) {
     for (const e of outs) edgeState.set(e.id, result.ok ? 'active' : 'skipped')
@@ -771,6 +777,12 @@ export async function schedule({ nodes, edges, inputs = {}, runId = '', executeN
         settleEdgesOf(id, rec)
         onSettle?.({ node: id, ...rec })
         const node = byId.get(id)
+        // 批内取消：节点执行途中 signal 被置位，或节点自身报告 { cancelled:true } →
+        // 整个 run 以 cancelled 收尾。若不做此判断，批内被取消的节点会落入下方 hardFail
+        // 分支被误判为 status:'failed'，掩盖真实原因（取消 ≠ 失败）。
+        if (r?.cancelled || signal.aborted) {
+          return { ok: false, status: 'cancelled', settled, steps, error: '已取消' }
+        }
         const onError = node.retry?.on_error || 'fail'
         // on_error:'branch' 但没有声明 'fail' 出边 = 错误无人接管 → 视为硬失败
         //（未处理的错误不允许静默成功，否则该 run 会以 completed 收尾却少了整条分支）。
