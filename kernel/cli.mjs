@@ -34,7 +34,7 @@ import { memoryRoot, buildMemoryIndex, captureMemoryCandidates, appendMemoryEntr
 import { createGraphStore } from './graph.mjs'
 import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
 import { discoverSkills, verifySkillVersions } from './skills.mjs'
-import { createWorkflowEngine, discoverWorkflowsAll, matchAutoTrigger } from './workflow.mjs'
+import { createWorkflowEngine, discoverWorkflowsAll, matchAutoTrigger, validateWorkflow } from './workflow.mjs'
 import { loadSettings } from './settings.mjs'
 import { createHooks } from './hooks.mjs'
 import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
@@ -206,7 +206,9 @@ export async function main(argv) {
       let lastErr = null
       const errFile = marker + '.err'
       try { if (existsSync(errFile)) { lastErr = readFileSync(errFile, 'utf-8').slice(0, 4000); rmSync(errFile, { force: true }) } } catch {}
-      log.warn('previous run crashed', { pid: prev.pid, ts: prev.ts, exitCode: prev.exitCode ?? null, err: lastErr })
+      // 字段名用 prevTs 而非 ts：logger 的核心字段 ts 是本次日志时间，同名会被覆盖，
+      // 上次崩溃时刻就丢了（两者都要留——排障要对比"上次何时崩、这次何时发现"）。
+      log.warn('previous run crashed', { pid: prev.pid, prevTs: prev.ts, exitCode: prev.exitCode ?? null, err: lastErr })
       wire.system('crash_recovered', { sessionId })
     }
     mkdirSync(runDir, { recursive: true })
@@ -631,6 +633,21 @@ export async function main(argv) {
         } else {
           wire.system('workflow_result', { subtype: 'scheduler', ok: true, note: 'already running' })
         }
+      } else if (subtype === 'load') {
+        // 取工作流原文 + 校验结果（只读，不落盘）
+        const id = msg?.payload?.id || ''
+        const wf = wfEngine.load(id)
+        if (!wf) wire.system('workflow_result', { subtype: 'load', requestId: msg?.requestId, result: { ok: false, error: `工作流不存在: ${id}` } })
+        else wire.system('workflow_result', {
+          subtype: 'load', requestId: msg?.requestId,
+          result: { ok: true, id: wf.id || id, yml: wf.path ? readFileSync(wf.path, 'utf-8') : '', validation: validateWorkflow(wf) },
+        })
+      } else if (subtype === 'validate') {
+        const wf = wfEngine.load(msg?.payload?.id || '')
+        const v = wf ? validateWorkflow(wf) : { ok: false, errors: [{ code: 'NOT_FOUND', message: '工作流不存在' }], warnings: [] }
+        wire.system('workflow_result', { subtype: 'validate', requestId: msg?.requestId, result: v })
+      } else if (subtype === 'stop') {
+        wire.system('workflow_result', { subtype: 'stop', requestId: msg?.requestId, result: wfEngine.stop(msg?.payload?.runId || '') })
       } else {
         wire.system('workflow_result', { subtype: 'error', error: `未知 /wf 子命令: ${subtype}` })
       }

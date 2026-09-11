@@ -9,11 +9,12 @@
 //
 // 零外部运行时依赖：只 import node:* 与仓库内相对路径。
 //
-// 依赖注入（两种用法）：
-//   ① 工厂：const exec = createNodeExecutor({ registry, getModel, memoryRoot, engine })
-//   ② 模块级默认实例（供尚未搬迁的旧引擎 kernel/workflow.mjs 过渡使用）：
-//      setNodeDeps({ registry, getModel, memoryRoot, engine }); await executeNode(node, ctx)
-//   Task 5 的 createWorkflowEngine 走 ①（deps 形状见 createNodeExecutor 形参）。
+// 依赖注入（唯一用法）：工厂
+//   const exec = createNodeExecutor({ registry, getModel, memoryRoot, engine })
+// kernel/workflow-engine.mjs 的 createWorkflowEngine 持有实例并把 executeNode 交给
+// schedule（Task 4 的 setNodeDeps/模块级默认 executeNode 过渡接线已在 Task 5 删除：
+// 全进程可变 deps 会在多引擎实例与并发 run 之间串台）。
+// 子图（loop/iterate body）递归由本模块自带的 runBody 完成——引擎不注入 ctx.runBody。
 
 import { createContext, runInContext } from 'node:vm'
 import { streamMessages } from './api.mjs'
@@ -168,7 +169,8 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
     return { output: { ok: !!ok, theme, tag } }
   }
 
-  // 子图调度结果判定：schedule 形态带 settled（Map）；旧引擎注入的 runBody 返回裸输出。
+  // 子图调度结果判定：schedule 形态带 settled（Map）。Task 5 后引擎不再注入 runBody，
+  // 子图一律走本模块的调度式子图实现，返回值恒为 schedule 形态；unwrapBody 兼容裸输出。
   const isScheduleResult = (r) => !!r && typeof r === 'object' && r.settled instanceof Map
   const unwrapBody = (r) => (isScheduleResult(r) ? r.output : r)
 
@@ -439,6 +441,11 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
     const input = {}
     for (const [k, v] of Object.entries(node.input || {})) input[k] = renderTemplate(String(v), ctx.vars)
     const gate = await checkToolPermission(ctx, name, input)
+    // 门拒绝的返回形状 = { ok:true, isError:true, output:'…拒绝执行…' }（fail-closed：命令
+    // 确实未执行，已由独立探针以副作用文件取证）。**刻意不改成 { ok:false, error }**：
+    // schedule 会把 ok:false 当硬失败（on_error 缺省 fail）→ 整 run 以 failed 收尾并中断
+    // 其余分支；而"权限门拒绝"是节点的**确定性结果**（模型应读到拒绝原因后换路），
+    // 与"执行出错"不同级。GUI/审计侧据 isError 与 output 文案区分。
     if (gate.denied) return { output: gate.message, isError: true }
     const res = await (ctx.registry || registry).run({ name, input }, ctx.getToolCtx?.() || {})
     return { output: res.content, isError: res.isError === true }
@@ -470,7 +477,9 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
   // join：多分支汇聚（DAG 的 join 语义由调度器保证——全部入边 settle 且至少一条 active
   // 才执行；本节点只负责把各分支输出按 mode 聚合）。
   //   mode='array'  → 原值数组（保持类型，供下游 code/list 节点使用）
-  //   mode='first'  → 第一个非空值
+  //   mode='first'  → 第一个非空值（**与计划示例 `vals[0] ?? null` 的差异已裁定保留**：
+  //                   条件分支下被跳过/无输出的源会给出 undefined，取 vals[0] 会把空值
+  //                   顶给下游；非空兜底更实用。契约以本实现为准）
   //   mode='concat' → 按 separator（默认换行）拼接字符串
   function execJoin(node, ctx) {
     const mode = node.mode || 'concat'
@@ -577,9 +586,9 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
   }
 
   // 归一化包装：抛错自动转 { ok:false, error }（与旧 executeNode 行为一致）。
-  // 未注入 ctx.runBody 时（独立执行/测试）注入本执行器的调度式子图实现。
-  // 注意：runBody 经闭包引用本 const（不得引用模块级同名导出，否则工厂实例的子图
-  // 会串到模块级默认实例的 deps 上）。
+  // 未注入 ctx.runBody 时（引擎/独立执行/测试均如此）注入本执行器的调度式子图实现。
+  // 注意：runBody 经闭包引用本 const（不得引用模块级同名函数，否则工厂实例的子图
+  // 会串到别的实例的 deps 上）。
   const executeNode = async (node, ctx) => {
     const t0 = Date.now()
     const vars = normalizeScope(ctx)
@@ -597,11 +606,3 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
   }
   return executeNode
 }
-
-// ===================== 模块级默认实例（过渡期兼容） =====================
-// 旧引擎（kernel/workflow.mjs，Task 5 才迁到 workflow-engine.mjs）内的 executeNode 调用
-// 迁移期走这里：引擎入口/ setDeps 调 setNodeDeps 注入依赖，其余调用点逐字不变。
-// Task 5 完成后可删（引擎改持 createNodeExecutor 的实例）。
-let _deps = {}
-export function setNodeDeps(deps = {}) { _deps = { ..._deps, ...deps } }
-export async function executeNode(node, ctx) { return createNodeExecutor(_deps)(node, ctx) }
