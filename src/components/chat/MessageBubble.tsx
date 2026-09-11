@@ -400,7 +400,7 @@ function MessageBubbleImpl({ message, isStreaming, onRetry, onEdit }: Props) {
           sessionAgent ? (
             <AgentAvatar agent={sessionAgent} size={28} />
           ) : (
-            <div className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #ff6a00, #ff8c33)' }}>
+            <div className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: 'var(--grad-brand)' }}>
               <img src={`${import.meta.env.BASE_URL}logo.png`} alt="YF" className="w-4 h-4 object-contain" />
             </div>
           )

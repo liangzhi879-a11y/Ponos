@@ -1,6 +1,7 @@
 # GUI 设计语言统一：驾驶舱基线 · 四主题收敛 · 单对角切角
 
-> **状态**：已批准（2026-09-10：4 决策点逐轮确认 + 执行方案 A 确认 + §1-3 设计呈现确认）
+> **状态**：已批准（2026-09-10：4 决策点逐轮确认 + 执行方案 A 确认 + §1-3 设计呈现确认）｜**实施完成 2026-09-11（plan T1-T11 全绿）**
+> **实施验证**：tsc 绿 · vite build 绿（105KB CSS）· npm test 185/185 过 · src/lib 69/69 过 · 构建产物四主题块各 93 变量一致 · 旧主题 ID 零残留（themeMap 迁移表除外）· 驾驶舱 `node --check` 过 · emoji 契约审计全清
 > **范围**：`src/` 样式体系与全部界面重皮（登录/首设/锁定小窗、boot、work shell、设置、命令面板、浮层）+ `public/cockpit/` iframe 令牌桥接 + `src/types`、`src/stores/settingsStore`、`src/main.tsx` 主题迁移
 > **不动**：`kernel/`、`server/`、`cockpit.js` 交互逻辑（仅 token CSS + 主题映射）、`electron/main.cjs` 窗口**编排**逻辑（仅 `GLASS_THEMES` 列表与窗口 backgroundColor 兜底色值更新，见 §2.2）
 > **上游参考**：`docs/superpowers/specs/2026-09-08-gui-onboarding-cockpit-redesign-design.md`（视图机/认证/三段式基线，其 D1-D13 继续有效）
