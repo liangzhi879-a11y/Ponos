@@ -5,12 +5,12 @@
 // DAG 执行 + 节点级审计哈希链）。可互调：skill 脚本中调用 Workflow 工具；工作流
 // tool 节点可调用 Skill 工具加载技能脚本。
 //
-// DSL 结构（YAML 子集，零依赖解析）：
+// DSL v2「edges 即真相」（解析/校验实现见 kernel/workflow-dsl.mjs，本文件 re-export）：
 //   name/description/version/triggers   —— 元数据（triggers 与 skill 同 schema）
 //   inputs: [{name, type, required}]    —— 入口参数（agentic 触发时注入）
-//   nodes:                              —— 节点列表（默认按数组顺序执行）
-//     - id/type/配置...
-//   next 字段显式跳转；if 节点 next_true/next_false 分支；end 终止。
+//   nodes: [{id, type, label, position, config{...}, retry{...}}]
+//   edges: [{id, source, target}]       —— 执行顺序唯一真相（无 edges = 旧格式）
+// 节点专属配置写在 node.config（画布友好），加载期摊平为扁平字段（节点执行器读扁平字段）。
 //
 // 节点类型（P1，对标 Dify 15/26）：
 //   start/end/llm/code/template/if/assign/aggregate/http/document/tool/list
@@ -18,159 +18,26 @@
 // 审计：每节点 {ts,node,type,status,dur_ms,out_hash,prev} 哈希链落盘
 //   ~/.ponos/workflow-runs/<name>/<ts>-<runId>.jsonl，verifyRun 验完整性。
 
-import { existsSync, readFileSync, readdirSync, mkdirSync, appendFileSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { createContext, runInContext } from 'node:vm'
 import { createServer } from 'node:http'
-import { parseFrontmatter } from './skills.mjs'
 import { streamMessages } from './api.mjs'
 import { buildRelevantMemory, appendMemoryEntry } from './memory.mjs'
+// DSL 实现已迁至 workflow-dsl.mjs（本文件保留节点执行器/引擎，仍用到这些实现）
+import { discoverWorkflows, loadWorkflow, renderTemplate, resolvePath, evalCondition } from './workflow-dsl.mjs'
 
-// ===================== 轻量 YAML 子集解析 =====================
-// 支持：map、list（- item）、标量、多行块（key: |）、# 注释、引号、数字/bool。
-// 仅覆盖 workflow DSL 结构（缩进层级树），零依赖。
-
-function splitKV(text) {
-  const m = text.match(/^([^:]+):(?:\s+(.*))?$/)
-  if (!m) return [text, undefined]
-  return [m[1].trim(), m[2] !== undefined ? m[2].trim() : undefined]
-}
-
-function unquote(v) {
-  const s = String(v).trim()
-  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) return s.slice(1, -1)
-  if (s.startsWith('[') && s.endsWith(']')) {
-    const inner = s.slice(1, -1).trim()
-    if (!inner) return []
-    return inner.split(',').map((x) => unquote(x.trim()))
-  }
-  if (s === 'true') return true
-  if (s === 'false') return false
-  if (s === 'null' || s === '~') return null
-  if (/^-?\d+$/.test(s)) return Number(s)
-  if (/^-?\d+\.\d+$/.test(s)) return Number(s)
-  return s
-}
-
-export function parseYaml(text) {
-  const clean = []
-  for (const raw of String(text).split(/\r?\n/)) {
-    if (!raw.trim() || raw.trim().startsWith('#')) continue
-    clean.push({ indent: raw.match(/^\s*/)[0].length, text: raw.trim() })
-  }
-  const root = { indent: -1, text: '', children: [] }
-  const stack = [root]
-  for (const ln of clean) {
-    while (stack.length > 1 && stack[stack.length - 1].indent >= ln.indent) stack.pop()
-    const node = { ...ln, children: [] }
-    stack[stack.length - 1].children.push(node)
-    stack.push(node)
-  }
-  return treeToValue(root).value ?? {}
-}
-
-function treeToValue(node) {
-  const t = node.text
-  // 根节点（text 空）：直接合并 children
-  if (!t) {
-    const obj = {}
-    for (const child of node.children) Object.assign(obj, treeToValue(child).value)
-    return { value: obj }
-  }
-  if (t.startsWith('- ')) {
-    const rest = t.slice(2)
-    if (node.children.length === 0) return { value: unquote(rest) }
-    const [k, v] = splitKV(rest)
-    if (k === undefined) return { value: node.children.map((c) => treeToValue(c).value) }
-    const obj = {}
-    if (v !== undefined) obj[k] = unquote(v)
-    for (const child of node.children) {
-      const cv = treeToValue(child)
-      if (cv.value && typeof cv.value === 'object' && !Array.isArray(cv.value) && Object.keys(cv.value).length === 1) {
-        const [ck, cvv] = Object.entries(cv.value)[0]
-        obj[ck] = cvv
-      } else if (cv.value && typeof cv.value === 'object') {
-        Object.assign(obj, cv.value)
-      } else {
-        obj[k] = cv.value
-      }
-    }
-    return { value: obj }
-  }
-  const [k, v] = splitKV(t)
-  if (v === '|') {
-    // 多行块：递归收集所有后代行（块内代码可能有更深缩进，如
-    // `function main(inputs) {` 6 空格 + `const raw` 8 空格是父子关系）
-    const lines = []
-    const collect = (n) => {
-      for (const c of n.children) { lines.push(c.text); collect(c) }
-    }
-    collect(node)
-    return { value: { [k]: lines.join('\n') } }
-  }
-  if (v !== undefined) return { value: { [k]: unquote(v) } }
-  if (node.children.length === 0) return { value: { [k]: {} } }
-  if (node.children[0].text.startsWith('- ')) {
-    return { value: { [k]: node.children.map((c) => treeToValue(c).value) } }
-  }
-  const obj = {}
-  for (const child of node.children) Object.assign(obj, treeToValue(child).value)
-  return { value: { [k]: obj } }
-}
-
-// ===================== 变量系统 =====================
-// 变量环境：{ inputs: {...}, var: {...}, <nodeId>: {...} }
-// 路径寻址："{{a.b.c}}" 或 "a.b.c"（去掉 {{}} 花括号后按 . 深路径访问）
-
-function resolvePath(vars, selector) {
-  let path = String(selector ?? '').trim()
-  const m = path.match(/^\{\{([\s\S]+)\}\}$/)
-  if (m) path = m[1].trim()
-  if (!path) return undefined
-  // 支持 root.xxx 形式（if/list 局部求值时）
-  const parts = path.split('.')
-  let cur = vars
-  for (const p of parts) {
-    if (cur == null) return undefined
-    cur = cur[p]
-  }
-  return cur
-}
-
-export function renderTemplate(tpl, vars) {
-  return String(tpl ?? '').replace(/\{\{([^}]+)\}\}/g, (m, expr) => {
-    const v = resolvePath(vars, expr.trim())
-    if (v === undefined) return ''
-    return typeof v === 'object' ? JSON.stringify(v) : String(v)
-  })
-}
-
-// ===================== 条件求值（对标 Dify if-else 比较符） =====================
-const OPS = {
-  contains: (a, b) => String(a).includes(String(b)),
-  'not contains': (a, b) => !String(a).includes(String(b)),
-  is: (a, b) => String(a) === String(b),
-  'is not': (a, b) => String(a) !== String(b),
-  empty: (a) => a === undefined || a === null || a === '' || (Array.isArray(a) && a.length === 0),
-  'not empty': (a) => !(a === undefined || a === null || a === '' || (Array.isArray(a) && a.length === 0)),
-  'start with': (a, b) => String(a).startsWith(String(b)),
-  'end with': (a, b) => String(a).endsWith(String(b)),
-  '=': (a, b) => String(a) === String(b),
-  '≠': (a, b) => String(a) !== String(b),
-  '>': (a, b) => Number(a) > Number(b),
-  '<': (a, b) => Number(a) < Number(b),
-  '>=': (a, b) => Number(a) >= Number(b),
-  '<=': (a, b) => Number(a) <= Number(b),
-}
-
-function evalCondition(cond, vars) {
-  const actual = resolvePath(vars, cond.var || cond.variable_selector || '')
-  const op = cond.op || cond.comparison_operator || 'is'
-  const fn = OPS[op]
-  if (!fn) throw new Error(`未知比较符: ${op}`)
-  return fn(actual, cond.value)
-}
+// ===================== DSL（解析/变量/条件/发现/加载/校验）：兼容 re-export =====================
+// DSL v2 实现见 kernel/workflow-dsl.mjs；本文件保持既有 import 面不变（cli.mjs / tools.mjs /
+// kernel-tests 无需改动）。节点执行器与引擎仍在本文件内，故同时本地导入所需实现。
+export {
+  DSL_VERSION, parseYaml, renderTemplate, resolvePath, evalCondition,
+  discoverWorkflows, discoverWorkflowsAll, matchAutoTrigger, loadWorkflow,
+  normalizeWorkflow, validateWorkflow,
+} from './workflow-dsl.mjs'
+// TODO(Task 2): export migrateLegacy from './workflow-dsl.mjs'
+// TODO(Task 5): export createWorkflowEngine, verifyRun from './workflow-engine.mjs'
 
 // ===================== 审计（哈希链） =====================
 function sha256(s) {
@@ -206,99 +73,6 @@ export function verifyRun(auditPath) {
     prev = sha256(lines[i])
   }
   return { ok: !tampered, lines: lines.length, tampered, lastHash: prev }
-}
-
-// ===================== 发现与加载（与 skills.mjs 同构） =====================
-// 目录形态：<root>/<id>/workflow.yml（与 SKILL.md 平级可同名配对）
-// 平铺形态：<root>/<id>.yml（仅独立工作流，不与 skill 配对）
-
-export function discoverWorkflows({ root } = {}) {
-  if (!root || !existsSync(root)) return []
-  let entries = []
-  try { entries = readdirSync(root, { withFileTypes: true }) } catch { return [] }
-  const wfs = []
-  for (const it of entries) {
-    let content = ''
-    let id = ''
-    if (it.isDirectory()) {
-      const ymlPath = join(root, it.name, 'workflow.yml')
-      if (!existsSync(ymlPath)) continue
-      id = it.name
-      try { content = readFileSync(ymlPath, 'utf-8') } catch { continue }
-    } else if (it.isFile() && /\.(yml|yaml)$/.test(it.name)) {
-      id = it.name.replace(/\.(yml|yaml)$/, '')
-      try { content = readFileSync(join(root, it.name), 'utf-8') } catch { continue }
-    } else continue
-    const meta = parseFrontmatter(content)
-    const parsed = parseYaml(content)
-    const firstLine = (content.split('\n')[0] || '').replace(/^#+\s*/, '').trim()
-    wfs.push({
-      id,
-      name: meta.name || parsed.name || id,
-      description: (meta.description || parsed.description || firstLine || id).slice(0, 300),
-      version: meta.version || parsed.version || '',
-      schedule: parsed.schedule || meta.schedule || '',
-      triggers: Array.isArray(parsed.triggers)
-        ? parsed.triggers.map(String)
-        : meta.triggers ? String(meta.triggers).split(/[,，]/).map((s) => s.trim()).filter(Boolean)
-        : [],
-      autoTrigger: parsed.auto_trigger === true || meta.auto_trigger === true,
-      nodes: Array.isArray(parsed.nodes) ? parsed.nodes.length : 0,
-      lines: content.split('\n').length,
-    })
-  }
-  return wfs.sort((a, b) => a.id.localeCompare(b.id))
-}
-
-export function discoverWorkflowsAll({ roots = [] } = {}) {
-  const out = []
-  const seen = new Set()
-  for (const root of roots) {
-    if (!root || !existsSync(root)) continue
-    for (const w of discoverWorkflows({ root })) {
-      if (!seen.has(w.id)) { seen.add(w.id); out.push(w) }
-    }
-  }
-  return out
-}
-
-// 自动触发匹配：用户消息文本命中 auto_trigger 工作流的任一触发词（子串匹配）。
-// 触发词长度 >= 2 防单字误触；按 workflows 顺序返回第一个命中的工作流。
-export function matchAutoTrigger(workflows, text) {
-  if (!text || !Array.isArray(workflows)) return null
-  for (const w of workflows) {
-    if (w.autoTrigger !== true) continue
-    const trigs = (w.triggers || []).map((t) => String(t).trim()).filter((t) => t.length >= 2)
-    if (trigs.some((t) => text.includes(t))) return w
-  }
-  return null
-}
-
-export function loadWorkflow({ roots = [], id } = {}) {
-  if (!id) return null
-  for (const root of roots) {
-    if (!root || !existsSync(root)) continue
-    const dirYml = join(root, id, 'workflow.yml')
-    if (existsSync(dirYml)) {
-      try { return parseWorkflowFile(dirYml) } catch { continue }
-    }
-    for (const ext of ['.yml', '.yaml']) {
-      const flatYml = join(root, `${id}${ext}`)
-      if (existsSync(flatYml)) {
-        try { return parseWorkflowFile(flatYml) } catch { continue }
-      }
-    }
-  }
-  return null
-}
-
-function parseWorkflowFile(path) {
-  const content = readFileSync(path, 'utf-8')
-  const parsed = parseYaml(content)
-  if (!Array.isArray(parsed.nodes) || parsed.nodes.length === 0) {
-    throw new Error(`workflow 缺少 nodes 列表: ${path}`)
-  }
-  return { ...parsed, path }
 }
 
 // ===================== 节点执行器 =====================
