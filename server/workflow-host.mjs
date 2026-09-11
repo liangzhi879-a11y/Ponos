@@ -132,20 +132,23 @@ export function createWorkflowHost({ sessions, getOrCreateSession, yfwHome = '',
     const rid = runId || `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
     const grant = mergeCapabilities({}, capabilities ?? grantArg ?? {})
     issueGrant(rid, grant)
+    let realId = rid
     try {
       // payload.cwd = 宿主会话 cwd：内核侧 grant 相对路径以此为准（Task 9 遗留：内核进程
       // cwd 与宿主会话 cwd 未必一致，宿主显式告知，避免"相对路径判定基"歧义）。
       const r = await send({ subtype: 'run', payload: { workflow: id, inputs, runId: rid, grant, cwd } }, { timeoutMs: RUN_TIMEOUT })
       // I-2：内核（cli.mjs）已转发 payload.runId，故真实运行 id 就是 rid；仍以回执为准并
       // 回迁 grant 键，防止内核版本差异导致 id 分叉（分叉会让 stop/confirm 打空）。
-      const realId = r?.runId || rid
+      realId = r?.runId || rid
       if (realId !== rid && _grants.has(rid)) {
         _grants.set(realId, _grants.get(rid))
         _grants.delete(rid)
       }
       return { ...r, runId: realId }
     } finally {
-      revokeGrant(rid)   // 一次运行有效：结束即失效
+      // 一次运行有效：结束即失效。必须按**回迁后的键**回收，否则分叉路径会遗留
+      // realId 键的 grant（复审 N-1：不可达但泄漏）。
+      revokeGrant(realId)
     }
   }
 

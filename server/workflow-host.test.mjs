@@ -238,3 +238,13 @@ test('M-1：mergeCapabilities 非数组入参不得按字符展开', () => {
   const m = mergeCapabilities({ tools: 'Read' }, { tools: ['Write'] })
   assert.deepEqual(m.tools, ['Write'], `字符串不得被拆成字符：${JSON.stringify(m.tools)}`)
 })
+
+test('N-1 回归：内核回执 runId 分叉时 grant 仍被回收（不泄漏）', async () => {
+  const k = fakeKernel()
+  const host = mkHost(k)
+  k.setReply((msg) => { if (msg.subtype === 'run') k.reply({ type: 'system', subtype: 'run', requestId: msg.requestId, ok: true, runId: 'kernel-42' }) })
+  const r = await host.run({ id: 'demo', capabilities: { tools: ['Read'] }, runId: 'host-rid-1' })
+  assert.equal(r.runId, 'kernel-42')
+  assert.equal(host._grants.size, 0, `分叉路径不得遗留 grant：${JSON.stringify([...host._grants.keys()])}`)
+  assert.equal(host.isGranted('kernel-42', 'Read'), false)
+})
