@@ -56,9 +56,15 @@ export async function handleWorkflowRoute({ url, req, reply, readJsonBody, store
         return json(200, store.importBundle({ root, bundle: body.bundle, id: body.id })), true
       }
       if (id === 'bindings') {
+        // 方法白名单（Task 12 审查 I-2）：非 GET/PUT 必须回 405——此前任意方法都落进
+        // 写分支（DELETE 也会覆盖绑定表），且 405 与「路径不存在」的 404 语义不同，
+        // 前端据 405 判定"路径对、方法错"，不误报找不到路由。
         if (req.method === 'GET') return json(200, store.readBindings({ root })), true
-        const body = await readJsonBody(req)
-        return json(200, store.writeBindings({ root, bindings: body })), true
+        if (req.method === 'PUT') {
+          const body = await readJsonBody(req)
+          return json(200, store.writeBindings({ root, bindings: body })), true
+        }
+        return json(405, { ok: false, error: `方法不允许：/workflows/bindings 只接受 GET/PUT（收到 ${req.method}）` }), true
       }
       if (sub === '' && req.method === 'GET') {
         const r = await h.load(id)

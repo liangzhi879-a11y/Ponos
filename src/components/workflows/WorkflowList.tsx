@@ -8,6 +8,7 @@ import { useState } from 'react'
 import { Plus, Import, Play, Copy, Download, Trash2, AlertTriangle, Clock, GitBranch } from 'lucide-react'
 import { Badge, Button, Input, ScrollArea } from '@/components/ui'
 import { cn } from '@/lib/utils'
+import { checkWorkflowId } from '@/lib/workflowModel'
 import { runStatusOf, type WorkflowMeta } from '@/lib/workflowApi'
 
 export interface WorkflowListProps {
@@ -41,6 +42,16 @@ export function WorkflowList(props: WorkflowListProps) {
   const [importText, setImportText] = useState('')
 
   const kw = q.trim().toLowerCase()
+  /** 新建 id 的前端预校验（Task 12 审查 I-1）：非法即就地提示并禁用「创建」，不把错误推给后端 */
+  const idIssue = newId ? checkWorkflowId(newId) : null
+  const idOk = !!idIssue?.ok
+  const submitNew = () => {
+    if (!newId) return
+    if (idIssue && !idIssue.ok) return
+    props.onCreate(newId)
+    setCreating(false)
+    setNewId('')
+  }
   const filtered = kw
     ? list.filter((m) => `${m.id} ${m.name || ''} ${(m.triggers || []).join(' ')}`.toLowerCase().includes(kw))
     : list
@@ -62,13 +73,13 @@ export function WorkflowList(props: WorkflowListProps) {
             <Input
               autoFocus
               value={newId}
-              placeholder="工作流 id（字母数字-_）"
-              onChange={(e) => setNewId(e.target.value.replace(/[^\w-]/g, ''))}
-              onKeyDown={(e) => { if (e.key === 'Enter' && newId) { props.onCreate(newId); setCreating(false); setNewId('') } }}
-              className="h-7 w-[200px] text-xs"
+              placeholder="工作流 id（字母数字-_ .）"
+              onChange={(e) => setNewId(e.target.value.replace(/[^\w.-]/g, ''))}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitNew() }}
+              className={cn('h-7 w-[200px] text-xs', idIssue && !idIssue.ok && 'border-error')}
             />
-            <Button size="xs" onClick={() => { if (newId) { props.onCreate(newId); setCreating(false); setNewId('') } }}>创建</Button>
-            <Button size="xs" variant="ghost" onClick={() => setCreating(false)}>取消</Button>
+            <Button size="xs" disabled={!idOk} onClick={submitNew}>创建</Button>
+            <Button size="xs" variant="ghost" onClick={() => { setCreating(false); setNewId('') }}>取消</Button>
           </div>
         ) : (
           <Button size="sm" onClick={() => setCreating(true)}><Plus className="w-3.5 h-3.5" />新建</Button>
@@ -78,6 +89,9 @@ export function WorkflowList(props: WorkflowListProps) {
       </div>
 
       {error && <div className="px-4 py-2 text-[11px] text-error border-b">{error}</div>}
+      {creating && idIssue && !idIssue.ok && (
+        <div className="px-4 py-1.5 text-[11px] text-error border-b">{idIssue.error}</div>
+      )}
       {loading && <div className="px-4 py-2 text-[11px] text-tertiary">加载中…</div>}
 
       <ScrollArea className="flex-1">

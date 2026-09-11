@@ -23,7 +23,7 @@ import {
   type RunRecord, type WorkflowMeta,
 } from '@/lib/workflowApi'
 import {
-  deriveCapabilities, emptyModel, summarizeLocal, validateLocal,
+  checkWorkflowId, deriveCapabilities, emptyModel, suggestCopyId, summarizeLocal, validateLocal,
   type Capabilities, type ValidationIssue, type WorkflowModel,
 } from '@/lib/workflowModel'
 import { WorkflowCanvas, type WorkflowCanvasHandle } from './canvas/WorkflowCanvas'
@@ -115,6 +115,9 @@ export function WorkflowsPanel() {
   }, [])
 
   const create = useCallback(async (id: string) => {
+    // 前端预校验（Task 12 审查 I-1）：非法 id 后端会抛 400「非法工作流 id」，此处就地拦下
+    const chk = checkWorkflowId(id)
+    if (!chk.ok) { setNotice({ tone: 'error', text: chk.error }); return }
     const r = await createWorkflow(id, emptyModel(id))
     if (!r.ok) { setNotice({ tone: 'error', text: r.error }); return }
     await refreshList()
@@ -129,10 +132,15 @@ export function WorkflowsPanel() {
   }, [openId, refreshList])
 
   const duplicate = useCallback(async (id: string) => {
-    const r = await duplicateWorkflow(id, `${id}-copy`)
+    // 新 id 由前端推导（`<id>-copy` 在 id 较长时会超 64 字符、撞名或落保留字 → 预校验拦下）
+    const toId = suggestCopyId(id, list.map((m) => m.id))
+    const chk = checkWorkflowId(toId)
+    if (!chk.ok) { setNotice({ tone: 'error', text: chk.error }); return }
+    const r = await duplicateWorkflow(id, toId)
     if (!r.ok) { setNotice({ tone: 'error', text: r.error }); return }
+    setNotice({ tone: 'ok', text: `已复制为 ${toId}` })
     await refreshList()
-  }, [refreshList])
+  }, [list, refreshList])
 
   const doExport = useCallback(async (id: string) => {
     const r = await exportWorkflow(id)

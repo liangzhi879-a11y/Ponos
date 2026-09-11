@@ -503,3 +503,48 @@ export function nextEdgeId(existing: readonly EdgeModel[], source: string, targe
   while (used.has(`${base}_${i}`)) i++
   return `${base}_${i}`
 }
+
+// ===================== 工作流 id 前端预校验（Task 12 审查 I-1；权威在 server/workflow-store.assertSafeId） =====================
+
+/** id 字符集：首字符字母/数字，其余字母数字与 . _ -，总长 ≤64（与 store 的 SAFE_ID 逐字一致） */
+const WF_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+/** 保留字：与 /workflows/<sub> 的动作子路由冲突（用它们建流会永远打不开） */
+export const WF_RESERVED_IDS = ['run', 'stop', 'confirm', 'runs', 'import', 'export', 'bindings', 'verify', 'validate']
+/** Windows 保留设备名（`nul/workflow.yml` 会写进设备，仓库既往有 nul 事故记录） */
+const WF_DEVICE_RE = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/
+
+/**
+ * 新建/复制前的前端预校验：不合法就**就地在 UI 提示**，不发请求（后端 assertSafeId 会抛 400，
+ * 让用户看到"HTTP 400 非法工作流 id"是糟糕体验）。口径与 server/workflow-store.mjs 保持一致——
+ * 前端放宽就等于把错误推给后端，前端收紧则误伤合法 id。
+ */
+export function checkWorkflowId(id: string): { ok: true } | { ok: false; error: string } {
+  const s = String(id ?? '')
+  if (!s) return { ok: false, error: '请输入工作流 id' }
+  if (!WF_ID_RE.test(s) || s.includes('..')) {
+    return { ok: false, error: 'id 只能含字母/数字/._-（首字符须为字母或数字），长度 1-64' }
+  }
+  if (/[. ]$/.test(s)) return { ok: false, error: 'id 不得以点或空格结尾' }
+  const upper = s.toUpperCase()
+  if (WF_DEVICE_RE.test(upper) || WF_DEVICE_RE.test(s.split('.')[0].toUpperCase())) {
+    return { ok: false, error: `「${s}」是 Windows 保留设备名，请换一个 id` }
+  }
+  if (WF_RESERVED_IDS.includes(s)) {
+    return { ok: false, error: `「${s}」是系统保留字（保留：${WF_RESERVED_IDS.join('、')}），请换一个 id` }
+  }
+  return { ok: true }
+}
+
+/** 复制工作流的默认新 id：`<id>-copy`；超长则截断到合法长度，撞名/仍非法则追加 `-2`、`-3`… */
+export function suggestCopyId(id: string, existing: readonly string[] = []): string {
+  const used = new Set(existing.map(String))
+  const base = String(id).replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 59) || 'wf'
+  let cand = `${base}-copy`
+  if (!checkWorkflowId(cand).ok || used.has(cand)) {
+    // 截短到允许 `-N` 后缀（≤64），再逐个试到不撞名且合法
+    const stem = String(id).replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 56) || 'wf'
+    let i = 2
+    do { cand = `${stem}-copy-${i++}` } while (!checkWorkflowId(cand).ok || used.has(cand))
+  }
+  return cand
+}

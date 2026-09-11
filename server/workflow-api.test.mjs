@@ -156,6 +156,18 @@ test('GET/PUT /workflows/bindings：信任清单往返', async () => {
     const again = mkReply()
     await handleWorkflowRoute({ url: new URL('http://x/workflows/bindings'), req: reqOf('GET', '/workflows/bindings'), reply: again.reply, readJsonBody: async () => ({}), store, host, root, runsRoot })
     assert.deepEqual(again.out.body.trusted, ['demo'])
+
+    // 方法白名单（Task 12 审查 I-2）：POST/DELETE 不得落进写分支，且回 405（不是「路由不存在」的 404）
+    for (const method of ['POST', 'DELETE', 'PATCH']) {
+      const no = mkReply()
+      await handleWorkflowRoute({ url: new URL('http://x/workflows/bindings'), req: reqOf(method, '/workflows/bindings', {}), reply: no.reply, readJsonBody: async () => ({}), store, host, root, runsRoot })
+      assert.equal(no.out.code, 405, `${method} /workflows/bindings 应回 405`)
+      assert.match(no.out.body.error, /方法不允许/)
+    }
+    // 405 之后绑定表必须原封不动（非 GET/PUT 不得写盘）
+    const after = mkReply()
+    await handleWorkflowRoute({ url: new URL('http://x/workflows/bindings'), req: reqOf('GET', '/workflows/bindings'), reply: after.reply, readJsonBody: async () => ({}), store, host, root, runsRoot })
+    assert.deepEqual(after.out.body, payload)
   } finally { cleanup() }
 })
 

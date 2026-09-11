@@ -4,7 +4,7 @@
 // 权威校验在内核（kernel/workflow-dsl.validateWorkflow）；此处只做画布即时反馈，口径以内核为准。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { toFlow, fromFlow, deriveCapabilities, validateLocal, defaultConfig, nextNodeId, NODE_TYPES, type WorkflowModel } from './workflowModel.ts'
+import { toFlow, fromFlow, deriveCapabilities, validateLocal, defaultConfig, nextNodeId, NODE_TYPES, checkWorkflowId, suggestCopyId, type WorkflowModel } from './workflowModel.ts'
 
 const MODEL: WorkflowModel = {
   name: 'demo', version: '1.0.0',
@@ -169,7 +169,16 @@ test('守卫：每种节点类型的默认 config 摊平后与内核读取口径
     const contract = KERNEL_CONTRACT[type]
     assert.ok(contract, `${type} 缺内核口径声明——新增节点类型必须同步 KERNEL_CONTRACT`)
     const flat = flattenNode({ id: 'x', type, config: defaultConfig(type) })
-    for (const k of Object.keys(flat.config ?? {})) {
+    // 断言对象必须是**摊平后的顶层键**（= config 的键）。Task 13 复审 Minor-1：
+    // 原写法 `Object.keys(flat.config ?? {})` 恒为空数组——flattenNode 已把 config 解构掉，
+    // 于是键名断言从不执行（守卫是死代码，UI 键名漂移无人拦截）。此处排除节点元数据键
+    // （内核 NODE_META_KEYS 口径：id/type/label/position/retry/body/note），只留 config 摊平项。
+    const META_KEYS = new Set(['id', 'type', 'label', 'position', 'retry', 'body', 'note'])
+    const flatKeys = Object.keys(flat).filter((k) => !META_KEYS.has(k))
+    if (contract.keys.length) {
+      assert.ok(flatKeys.length > 0, `${type} 的 defaultConfig 摊平后无键——守卫失效（应至少有一个受检键）`)
+    }
+    for (const k of flatKeys) {
       assert.ok(contract.keys.includes(k), `${type}.${k} 不在内核读取键清单内（会被内核忽略 → 静默失效）`)
     }
     contract.check?.(flat)
@@ -207,4 +216,21 @@ test('nextNodeId：扫已有 n<数字> 取 max+1（避免与既有 id 撞车）'
   assert.equal(nextNodeId(mk(['start', 'end', 'n2']), ''), 'n3')
   assert.equal(nextNodeId(mk(['a']), 'a2'), 'a2')
   assert.equal(nextNodeId(mk(['a2']), 'a2'), 'n1')
+})
+
+test('checkWorkflowId / suggestCopyId：与 server/workflow-store.assertSafeId 同口径（Task 12 审查 I-1）', () => {
+  // 合法
+  for (const id of ['demo', 'a', 'my.flow', 'a_b-c.1', 'A'.repeat(64)]) assert.ok(checkWorkflowId(id).ok, `应合法: ${id}`)
+  // 非法：字符集 / 首字符 / 超长 / 保留字 / Windows 设备名 / 尾点
+  for (const id of ['', '-bad', '.bad', 'a b', 'a/b', '../x', 'a..b', 'a'.repeat(65), 'run', 'bindings', 'verify', 'nul', 'NUL.yml', 'com1', 'abc.']) {
+    assert.equal(checkWorkflowId(id).ok, false, `应非法: ${id}`)
+  }
+  assert.match((checkWorkflowId('run') as any).error, /保留字/)
+  assert.match((checkWorkflowId('nul.yml') as any).error, /设备名/)
+  // 复制：常规加 -copy；超长 id 截断仍合法；撞名递增
+  assert.equal(suggestCopyId('demo'), 'demo-copy')
+  const long = suggestCopyId('x'.repeat(64))
+  assert.ok(checkWorkflowId(long).ok, `超长 id 的复制名必须仍合法: ${long}`)
+  assert.equal(suggestCopyId('demo', ['demo-copy']), 'demo-copy-2')
+  assert.equal(suggestCopyId('demo', ['demo-copy', 'demo-copy-2']), 'demo-copy-3')
 })
