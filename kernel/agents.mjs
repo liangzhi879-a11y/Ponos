@@ -11,6 +11,7 @@
 //        tools: Bash, Read, ...
 //        model: deepseek-v4-flash
 //        skills: ...
+//        workflows: id1, id2   （可选：绑定的工作流 id，过滤 bound 工作流可见性）
 //        ---
 //        <system prompt body>
 // 解析失败/字段缺失的文件静默跳过（容错，不影响启动）。
@@ -137,6 +138,9 @@ export function parseAgentMarkdown(text) {
       disallowedTools: String(fields.disallowedTools || '').split(',').map((s) => s.trim()).filter(Boolean),
       model: fields.model || '',
       skills: String(fields.skills || '').split(',').map((s) => s.trim()).filter(Boolean),
+      // Task 7：workflows 绑定——逗号分隔的工作流 id 列表（空/缺失 → []）。内核据此
+      // 过滤 expose.mode=bound 工作流的工具与提示词可见性（见 dyntools.visibilityOf）。
+      workflows: String(fields.workflows || '').split(',').map((s) => s.trim()).filter(Boolean),
       effort: fields.effort || '',
       background: String(fields.background || '').toLowerCase() === 'true',
       systemPrompt: (m[2] || '').trim(),
@@ -147,8 +151,10 @@ export function parseAgentMarkdown(text) {
 }
 
 // 扫描用户级 agent 目录：$PONOS_HOME/agents/*.md（跳过隐藏文件与 registry）
-export function discoverUserAgents({ configDir } = {}) {
-  const dir = join(configDir || '', 'agents')
+// root 可直接指定 agent 目录（与 discoverSkills({ root }) 同语义）；configDir 则
+// 按 $PONOS_HOME 语义拼 <configDir>/agents。
+export function discoverUserAgents({ configDir, root } = {}) {
+  const dir = root ? String(root) : join(configDir || '', 'agents')
   if (!existsSync(dir)) return []
   const out = []
   let entries = []

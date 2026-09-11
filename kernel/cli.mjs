@@ -8,7 +8,7 @@
 //   - 解析契约参数（--print --output-format stream-json --input-format
 //     stream-json --verbose --dangerously-skip-permissions
 //     --permission-prompt-tool stdio --disallowedTools AskUserQuestion
-//     [--resume id] [--append-system-prompt-file f] [--model m] [--add-dir d]）
+//     [--resume id] [--append-system-prompt-file f] [--model m] [--add-dir d] [--agent id]）
 //   - spawn 时发出 system(init)（/test-provider 依赖，见 bridge.mjs verifyProvider）
 //   - readline 逐行路由 stdin：user → engine.runTurn 轮次；control_request(cancel)
 //     → engine.abort() 后 '已取消。' + result；control_response → 暂存待里程碑 4
@@ -50,7 +50,7 @@ function usage() {
     'Ponos-turbo kernel: --print --output-format stream-json --input-format stream-json ' +
     '[--verbose] [--dangerously-skip-permissions] [--auto-approve-high-risk] [--permission-prompt-tool stdio] ' +
     '[--disallowedTools <list>] [--resume <id>] [--append-system-prompt-file <file>] ' +
-    '[--model <m>] [--add-dir <dir>] [--allow-outside-dirs]'
+    '[--model <m>] [--add-dir <dir>] [--allow-outside-dirs] [--agent <id>]'
   )
 }
 
@@ -68,6 +68,7 @@ export function parseArgs(argv) {
     resume: null,
     appendSystemPromptFile: null,
     model: null,
+    agent: null,
     addDirs: [],
     skillsDirs: [],
     noDefaultSkills: false,
@@ -98,6 +99,9 @@ export function parseArgs(argv) {
       case '--resume': out.resume = next() ?? null; break
       case '--append-system-prompt-file': out.appendSystemPromptFile = next() ?? null; break
       case '--model': out.model = next() ?? null; break
+      // Task 7：当前会话的 agent 身份——用于 bound 工作流可见性过滤（缺省 null →
+      // 只有 public 工作流入池，bound 工作流对主会话不可见）
+      case '--agent': out.agent = next() ?? null; break
       case '--add-dir': out.addDirs.push(next() ?? ''); break
       case '--skills-dir': out.skillsDirs.push(next() ?? ''); break
       case '--no-default-skills': out.noDefaultSkills = true; break

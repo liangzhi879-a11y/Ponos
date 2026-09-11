@@ -9,6 +9,8 @@ export interface Agent {
   systemPrompt: string
   skills: string[]
   tools: string[]
+  /** 绑定的工作流 id 列表（内核按此过滤 expose.mode=bound 工作流的工具可见性） */
+  workflows?: string[]
   enabled: boolean
   /** 自定义头像（128x128 JPEG dataURL）；缺省时显示默认企业 Logo */
   avatar?: string

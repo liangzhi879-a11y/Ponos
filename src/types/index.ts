@@ -367,6 +367,8 @@ export interface AgentSyncPayload {
   skills: string[]
   tools: string[]
   enabled: boolean
+  /** 绑定的工作流 id 列表（写入 agent .md frontmatter 的 workflows 字段） */
+  workflows?: string[]
 }
 
 // --- Task Types ---
