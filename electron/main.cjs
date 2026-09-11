@@ -1093,6 +1093,9 @@ async function registerIpc() {
         if (Array.isArray(a.tools) && a.tools.length > 0) lines.push(`tools: ${a.tools.join(', ')}`)
         if (a.model) lines.push(`model: ${a.model}`)
         if (Array.isArray(a.skills) && a.skills.length > 0) lines.push(`skills: ${a.skills.join(', ')}`)
+        // 绑定的工作流 id（内核按 agentId 过滤 expose.mode=bound 工作流的工具可见性）；
+        // 空数组/缺失不写该行，与 skills/tools 同策略（parseAgentMarkdown 缺字段 → []）。
+        if (Array.isArray(a.workflows) && a.workflows.length > 0) lines.push(`workflows: ${a.workflows.join(', ')}`)
         lines.push('---', '', body)
         fs.writeFileSync(path.join(agentsDir, `${a.id}.md`), lines.join('\n'), 'utf8')
         written.push(a.id)

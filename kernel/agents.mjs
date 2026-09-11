@@ -138,8 +138,10 @@ export function parseAgentMarkdown(text) {
       disallowedTools: String(fields.disallowedTools || '').split(',').map((s) => s.trim()).filter(Boolean),
       model: fields.model || '',
       skills: String(fields.skills || '').split(',').map((s) => s.trim()).filter(Boolean),
-      // Task 7：workflows 绑定——逗号分隔的工作流 id 列表（空/缺失 → []）。内核据此
-      // 过滤 expose.mode=bound 工作流的工具与提示词可见性（见 dyntools.visibilityOf）。
+      // Task 7：workflows 绑定——逗号分隔的工作流 id 列表（空/缺失 → []）。该字段由
+      // electron/main.cjs（agents:sync）写入 .md frontmatter；内核在给定 agentId 时
+      // 按该 agent 过滤 expose.mode=bound 工作流的工具可见性（调用方以 agent.name 作
+      // agentId，见 dyntools.visibilityOf / buildWorkflowTools）。
       workflows: String(fields.workflows || '').split(',').map((s) => s.trim()).filter(Boolean),
       effort: fields.effort || '',
       background: String(fields.background || '').toLowerCase() === 'true',
