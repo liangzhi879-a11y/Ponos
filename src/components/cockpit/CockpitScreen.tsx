@@ -1,7 +1,8 @@
 // src/components/cockpit/CockpitScreen.tsx —— 驾驶舱 iframe 容器（Task 8）
 // 载荷：Task 7 资产 public/cockpit/index.html（自绘驾驶舱 UI），经 postMessage 双向通信。
-// 消息契约（与资产注释逐条对齐）：
-//   父 → iframe：{type:'yfw:theme', mode:'light'|'dark', speedMode:boolean}
+// 消息契约（与资产注释逐条对齐，2026-09-10 设计语言统一后升级为全量主题 ID）：
+//   父 → iframe：{type:'yfw:theme', theme:'dark'|'light'|'dark-glass'|'light-glass',
+//                  speedMode:boolean, glassOpacity:number}
 //               {type:'yfw:overview', data: overview|null}
 //   iframe → 父：{type:'yfw:ready'}（加载完成，listener 已就绪）
 //               {type:'yfw:hub-click'}（hub 点击且无面板打开；面板开着点击只收起不上报）
@@ -12,7 +13,6 @@
 // src 在首次挂载时定型（把 theme 写进 query 后不可再变，否则 React 会因 src 变化重载 iframe）。
 import { useEffect, useRef, useState } from 'react'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { THEMES, type ThemeMode } from '@/types'
 import { useCockpitOverview, type CockpitOverviewData } from './useCockpitOverview'
 
 export interface CockpitScreenProps {
@@ -22,23 +22,19 @@ export interface CockpitScreenProps {
   onEnterWork: () => void
 }
 
-function themeModeOf(theme: ThemeMode): 'light' | 'dark' {
-  return THEMES.find(t => t.id === theme)?.mode ?? 'dark'
-}
-
 export function CockpitScreen({ active, onEnterWork }: CockpitScreenProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
-  // src 仅挂载时定型：首帧主题经 query 直给（资产 head 即解析，避免就绪前底色错）
+  // src 仅挂载时定型：首帧主题经 query 直给全量主题 ID（资产 head 即解析，避免就绪前底色错）
   const [src] = useState(() => {
-    const mountMode = themeModeOf(useSettingsStore.getState().settings.theme)
-    return `${import.meta.env.BASE_URL}cockpit/index.html?theme=${mountMode}`
+    const mountTheme = useSettingsStore.getState().settings.theme
+    return `${import.meta.env.BASE_URL}cockpit/index.html?theme=${mountTheme}`
   })
 
   const theme = useSettingsStore(s => s.settings.theme)
   const speed = useSettingsStore(s => s.settings.speedMode)
+  const glassOpacity = useSettingsStore(s => s.settings.glassOpacity)
   const overview = useCockpitOverview()
-  const themeMode = themeModeOf(theme)
 
   // ready 状态：收到 yfw:ready 前不下发任何消息（资产侧丢弃早到消息）
   const [ready, setReady] = useState(false)
@@ -48,14 +44,14 @@ export function CockpitScreen({ active, onEnterWork }: CockpitScreenProps) {
   const onEnterWorkRef = useRef(onEnterWork)
   onEnterWorkRef.current = onEnterWork
 
-  // 主题/极速：ready 即推（保活隐藏期间也保持最新，回切驾驶舱不闪主题色）
+  // 主题/极速/玻璃透光度：ready 即推（保活隐藏期间也保持最新，回切驾驶舱不闪主题色）
   useEffect(() => {
     if (!ready) return
     iframeRef.current?.contentWindow?.postMessage(
-      { type: 'yfw:theme', mode: themeMode, speedMode: speed },
+      { type: 'yfw:theme', theme, speedMode: speed, glassOpacity },
       '*',
     )
-  }, [ready, themeMode, speed])
+  }, [ready, theme, speed, glassOpacity])
 
   // overview：ready 且 active 时下发；数据刷新/active 翻转（保活切回）都会重推
   useEffect(() => {
