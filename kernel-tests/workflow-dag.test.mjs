@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { schedule } from '../kernel/workflow-dag.mjs'
+import { buildGraph, schedule } from '../kernel/workflow-dag.mjs'
 
 // 通用执行器桩：按 node.id 返回 { ok, output, route }
 function stub(map, log) {
@@ -119,4 +119,88 @@ test('skip 传播后仍可达的节点照常执行；signal 取消立即停止',
   })
   const r2 = await p
   assert.equal(r2.status, 'cancelled')
+})
+
+// ---------- 返工轮 1 补充守卫：重复边 id / maxParallel 归一化 / 批内取消落账 / continue 语义 / 死锁 ----------
+
+test('重复边 id：buildGraph fail-fast，不静默串台（活跃分支丢失/提前就绪）', async () => {
+  const nodes = [N('a'), N('q'), N('b')]
+  const edges = [
+    { id: 'dup', source: 'a', target: 'b' },
+    { id: 'dup', source: 'q', target: 'b' },
+  ]
+  assert.throws(() => buildGraph(nodes, edges), /重复的边 id: dup/)
+  // schedule 也不得静默跑出"b 被跳过但 run 仍 completed"的结果
+  await assert.rejects(
+    schedule({ nodes, edges, executeNode: stub({}, []) }),
+    /重复的边 id: dup/,
+  )
+})
+
+test('死锁：成环图 → status failed（不得静默 ok:true completed）', async () => {
+  const log = []
+  const nodes = [N('x'), N('y')]
+  const edges = [E('x', 'y'), E('y', 'x')]
+  const r = await schedule({ nodes, edges, executeNode: stub({}, log) })
+  assert.equal(r.ok, false)
+  assert.equal(r.status, 'failed')
+  assert.match(r.error, /死锁/)
+  assert.equal(log.length, 0, `死锁图不得执行任何节点：${log}`)
+})
+
+test('批内取消：整批先落账再返回 cancelled（同批已执行节点有记录、未启动节点不执行）', async () => {
+  const log = []
+  const signal = { aborted: false }
+  const nodes = [N('y'), N('x'), N('later')]
+  const edges = [E('y', 'later')]          // later 依赖 y，只能落到下一批
+  const r = await schedule({
+    nodes, edges, signal, maxParallel: 2,
+    executeNode: async (node) => {
+      log.push(node.id)
+      if (node.id === 'y') await new Promise((res) => setTimeout(res, 30))   // 慢节点在 x 之后完成
+      if (node.id === 'x') signal.aborted = true
+      return { ok: true, output: node.id }
+    },
+  })
+  assert.equal(r.status, 'cancelled')
+  assert.equal(r.ok, false)
+  assert.deepEqual(log, ['y', 'x'], `实际启动的节点：${log}`)
+  assert.equal(r.settled.get('y')?.output, 'y', '同批已执行节点必须落账（先落账再判取消）')
+  assert.equal(r.settled.get('x')?.output, 'x', '同批已执行节点必须落账（先落账再判取消）')
+  assert.equal(r.settled.has('later'), false, '未启动节点不得出现在 settled')
+})
+
+test("on_error:'continue'：失败不终止 run 且下游照常执行；未知取值按硬失败处理", async () => {
+  const log = []
+  const nodes = [N('x', { retry: { max: 0, on_error: 'continue' } }), N('y'), N('z')]
+  const edges = [E('x', 'y'), E('x', 'z')]
+  const r = await schedule({ nodes, edges, executeNode: stub({ x: { ok: false, error: 'boom' } }, log) })
+  assert.equal(r.status, 'completed')
+  assert.equal(r.ok, true, 'continue 不得终止 run')
+  assert.equal(r.settled.get('x').ok, false, '失败必须如实记录 ok:false')
+  assert.equal(r.settled.get('x').error, 'boom')
+  assert.ok(log.includes('y') && log.includes('z'), `continue 的下游应照常执行：${log}`)
+  assert.equal(r.settled.get('y').output, 'y')
+
+  const log2 = []
+  const nodes2 = [N('x', { retry: { max: 0, on_error: 'weird' } }), N('y')]
+  const r2 = await schedule({ nodes: nodes2, edges: [E('x', 'y')], executeNode: stub({ x: { ok: false, error: 'boom' } }, log2) })
+  assert.equal(r2.ok, false, '未知 on_error 必须按默认 fail（硬失败）')
+  assert.equal(r2.status, 'failed')
+  assert.equal(r2.node, 'x')
+  assert.equal(log2.includes('y'), false, '硬失败后下游不得执行')
+})
+
+test('maxParallel 归一化：0 / NaN / 负数 / 小数都不得空转挂死', async () => {
+  for (const mp of [0, NaN, -1, 2.7]) {
+    const log = []
+    const r = await schedule({
+      nodes: [N('a'), N('b'), N('c')],
+      edges: [E('a', 'c'), E('b', 'c')],
+      executeNode: stub({}, log),
+      maxParallel: mp,
+    })
+    assert.equal(r.status, 'completed', `maxParallel=${mp} 应正常完成`)
+    assert.deepEqual([...r.settled.keys()].sort(), ['a', 'b', 'c'], `maxParallel=${mp} 实测：${log}`)
+  }
 })

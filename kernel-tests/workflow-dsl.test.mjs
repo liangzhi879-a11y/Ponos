@@ -66,6 +66,16 @@ test('校验器：环 / 悬空边 / 重复 id / 缺 start', () => {
   const dup = normalizeWorkflow({ nodes: [{ id: 'a', type: 'start' }, { id: 'a', type: 'end' }], edges: [] })
   assert.ok(validateWorkflow(dup).errors.some((e) => e.code === 'DUP_NODE_ID'))
 
+  // 重复边 id（调度器 edgeState 以 edgeId 为键 → 会串台）必须报错，不得静默通过
+  const dupEdge = normalizeWorkflow({
+    nodes: [{ id: 'a', type: 'start' }, { id: 'b', type: 'end' }],
+    edges: [
+      { id: 'e1', source: 'a', target: 'b' },
+      { id: 'e1', source: 'a', target: 'b' },
+    ],
+  })
+  assert.ok(validateWorkflow(dupEdge).errors.some((e) => e.code === 'DUP_EDGE'), '重复边 id 应报 DUP_EDGE')
+
   const nostart = normalizeWorkflow({ nodes: [{ id: 'a', type: 'llm' }], edges: [] })
   assert.ok(validateWorkflow(nostart).errors.some((e) => e.code === 'NO_START'))
 })

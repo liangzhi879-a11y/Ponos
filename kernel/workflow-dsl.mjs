@@ -394,8 +394,13 @@ export function validateWorkflow(wf) {
     warnings.push({ code: 'NO_END', message: '无 end/answer 节点：作为工具调用时回退最后成功节点的输出' })
   }
   const edges = wf.edges
+  // 边 id 必须唯一：调度器（workflow-dag）以 edgeId 为键记录出边状态，重复 id 会让两条边
+  // 串台（同 id 边任一条 settle 即让所有同 id 边"确定"→ 节点提前就绪，或活跃分支被静默跳过）。
+  const edgeIds = new Set()
   for (const e of edges) {
     if (!e?.id) errors.push({ code: 'BAD_EDGE', message: '边缺少 id' })
+    else if (edgeIds.has(e.id)) errors.push({ code: 'DUP_EDGE', edge: e.id, message: `边 id 重复: ${e.id}` })
+    else edgeIds.add(e.id)
     if (e && !ids.has(e.source)) errors.push({ code: 'DANGLING_EDGE', edge: e.id, message: `边 ${e.id} source 不存在: ${e.source}` })
     if (e && !ids.has(e.target)) errors.push({ code: 'DANGLING_EDGE', edge: e.id, message: `边 ${e.id} target 不存在: ${e.target}` })
   }
