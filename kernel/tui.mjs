@@ -854,7 +854,9 @@ function main() {
             pushMessage({ kind: 'system', text: `[工作流] 人工审批请求：${ev.message}${inputs ? '\n' + inputs : ''}\n    → /wf approve [意见] 或 /wf reject [意见]` })
             render()
           } else if (ev.type === 'node') {
-            pushMessage({ kind: 'system', text: `[工作流] 节点 ${ev.node}（${ev.node_type || ev.type}${ev.in_body ? '·子图' : ''}）${ev.status === 'done' ? '完成' : '失败'}` + (ev.dur_ms ? ` ${ev.dur_ms}ms` : '') })
+            // 三态渲染：done=完成 / skipped=跳过（跳过不是失败，审查 I-1）/ 其余=failed
+            const st = ev.status === 'done' ? '完成' : ev.status === 'skipped' ? '跳过' : '失败'
+            pushMessage({ kind: 'system', text: `[工作流] 节点 ${ev.node}（${ev.node_type || ev.type}${ev.in_body ? '·子图' : ''}）${st}` + (ev.dur_ms ? ` ${ev.dur_ms}ms` : '') })
           } else if (ev.type === 'start') {
             pushMessage({ kind: 'system', text: `[工作流] 开始：${ev.workflow}（${ev.nodes} 节点，runId ${ev.runId}）` })
           } else if (ev.type === 'end') {

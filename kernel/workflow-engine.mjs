@@ -231,8 +231,11 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
           : auditState.prev
         // 双事件：`node + status:'skipped'`（既有 node 事件字段契约，GUI 按 type:'node' 收）
         // 与 `node_skipped`（Task 5 新增，UI 侧按 type 灰显）。
-        event('node', { runId, node, status: 'skipped', dur_ms: 0, ...(inBody ? { in_body: true } : {}) })
-        event('node_skipped', { runId, node, ...(inBody ? { in_body: true } : {}) })
+        // node_type：消费端（TUI/GUI）按节点类型渲染——旧引擎即有此字段，Task 5 搬迁时漏带
+        // （审查 I-1）。两类事件都带，node_skipped 单独消费时类型信息不丢。
+        const ntSkipped = nodes.get(node)?.type
+        event('node', { runId, node, node_type: ntSkipped, status: 'skipped', dur_ms: 0, ...(inBody ? { in_body: true } : {}) })
+        event('node_skipped', { runId, node, node_type: ntSkipped, ...(inBody ? { in_body: true } : {}) })
         return
       }
       if (ok && output !== undefined) {
@@ -243,7 +246,7 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
         ? auditAppend(auditPath, nodes.get(node), { ok, output, error, dur_ms }, auditState.prev)
         : auditState.prev
       event('node', {
-        runId, node, status: ok ? 'done' : 'failed', dur_ms,
+        runId, node, node_type: nodes.get(node)?.type, status: ok ? 'done' : 'failed', dur_ms,
         output: ok ? output : undefined, error: ok ? undefined : error, route,
         ...(inBody ? { in_body: true } : {}),
       })

@@ -609,7 +609,11 @@ export async function main(argv) {
         wire.system('workflow_result', { subtype: 'list', workflows: wfs.map((w) => ({ id: w.id, nodes: w.nodes, triggers: w.triggers, description: w.description })) })
       } else if (subtype === 'run') {
         const r = await wfEngine.run({ id: msg?.payload?.workflow || msg?.payload?.id || '', inputs: msg?.payload?.inputs || {} })
-        wire.system('workflow_result', { subtype: 'run', ok: r.ok, status: r.status, steps: r.steps, outputs: r.outputs, error: r.error, node: r.node, runId: r.runId, auditPath: r.auditPath })
+        // 回执补 code/errors（审查 I-3）：宿主只看 ok/error 时无法把"旧 DSL 需迁移"与其他
+        // 失败区分开；LEGACY_DSL 另附可操作提示（Task 8 迁移前的唯一自带工作流正走此路径）。
+        const legacy = r.code === 'LEGACY_DSL'
+        const error = legacy && r.error ? `${r.error}（该工作流为旧 DSL 格式（无 edges），请先迁移）` : r.error
+        wire.system('workflow_result', { subtype: 'run', ok: r.ok, status: r.status, steps: r.steps, outputs: r.outputs, error, ...(r.code ? { code: r.code } : {}), errors: r.errors, node: r.node, runId: r.runId, auditPath: r.auditPath })
       } else if (subtype === 'verify') {
         const r = wfEngine.verify(msg?.payload?.auditPath || msg?.payload?.path || '')
         wire.system('workflow_result', { subtype: 'verify', ok: r.ok, lines: r.lines, tampered: r.tampered, error: r.error })
