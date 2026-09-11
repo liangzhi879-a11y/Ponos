@@ -4,7 +4,7 @@
 // 权威校验在内核（kernel/workflow-dsl.validateWorkflow）；此处只做画布即时反馈，口径以内核为准。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { toFlow, fromFlow, deriveCapabilities, validateLocal, NODE_TYPES, type WorkflowModel } from './workflowModel.ts'
+import { toFlow, fromFlow, deriveCapabilities, validateLocal, defaultConfig, nextNodeId, NODE_TYPES, type WorkflowModel } from './workflowModel.ts'
 
 const MODEL: WorkflowModel = {
   name: 'demo', version: '1.0.0',
@@ -68,4 +68,143 @@ test('NODE_TYPES：分类目录含全部节点类型且每项有中文名', () =
   for (const t of ['start', 'end', 'answer', 'llm', 'classify', 'extract', 'agent', 'code', 'template', 'http', 'document', 'list', 'iterate', 'loop', 'memory', 'store', 'tool', 'subworkflow', 'if', 'join', 'assign', 'aggregate', 'confirm']) {
     assert.ok(all.includes(t as never), `缺节点类型 ${t}`)
   }
+})
+
+// ===================== UI ↔ 内核字段口径守卫（A 项返工） =====================
+// 目的：ConfigPanel/defaultConfig 写出的字段名/形状必须与内核执行器读取口径一致——
+// 漂移一次就会「运行时抛错」或「配置被静默丢弃」，而这两类都躲过 typecheck。
+
+/** 内核 kernel/workflow-dsl.mjs:352 normalizeNode 的摊平口径（config 展开到顶层，已存在的顶层键优先） */
+function flattenNode(node: { id: string; type: string; config?: Record<string, any> }): Record<string, any> {
+  const { config = {}, ...rest } = node as any
+  const out: Record<string, any> = { ...rest }
+  for (const [k, v] of Object.entries(config || {})) if (!Object.prototype.hasOwnProperty.call(out, k)) out[k] = v
+  return out
+}
+
+/** 每类型 = 内核读取口径：[config 允许键清单, 形状断言]（逐条对照 kernel/workflow-nodes.mjs） */
+const KERNEL_CONTRACT: Record<string, { keys: string[]; check?: (n: any) => void }> = {
+  start: { keys: [] },
+  inputs: { keys: [] },
+  llm: { keys: ['prompt', 'system', 'model', 'max_tokens', 'json_schema', 'timeout_ms'] },
+  agent: { keys: ['prompt', 'query', 'system', 'tools', 'max_iters', 'model', 'timeout_ms'] },
+  classify: {
+    keys: ['input', 'query', 'instruction', 'classes', 'model'],
+    check: (n) => {
+      assert.ok(Array.isArray(n.classes) && n.classes.length > 0, 'classify.classes 必须是非空数组（内核缺失即 throw）')
+      assert.ok(n.classes.every((c: any) => typeof c === 'string'), 'classify.classes 必须是字符串数组（内核 classes.map/findIndex）')
+    },
+  },
+  extract: {
+    keys: ['input', 'query', 'instruction', 'parameters', 'model'],
+    check: (n) => {
+      assert.ok(Array.isArray(n.parameters) && n.parameters.length > 0, 'extract.parameters 必须是非空数组（内核缺失即 throw）')
+      assert.ok(n.parameters.every((p: any) => p && typeof p.name === 'string'), 'extract.parameters 每项必须有 name')
+    },
+  },
+  code: { keys: ['code', 'variables', 'timeout_ms'] },
+  template: { keys: ['template'] },
+  http: {
+    keys: ['url', 'method', 'headers', 'body', 'authorization', 'timeout', 'timeout_ms', 'retry'],
+    check: (n) => {
+      assert.equal(typeof n.headers, 'string', 'http.headers 必须是多行文本（parseHeaderLines 只认字符串）')
+      const b = n.body
+      assert.ok(b && typeof b === 'object' && !Array.isArray(b), 'http.body 必须是对象 {type,data[]|raw}（字符串会被静默丢弃）')
+      if (b.type === 'json') assert.ok(Array.isArray(b.data), "body.type='json' 时 data 必须是数组")
+      if (b.type === 'raw') assert.equal(typeof (b.raw ?? ''), 'string', "body.type='raw' 时 raw 必须是字符串")
+    },
+  },
+  document: {
+    keys: ['input', 'file'],
+    check: (n) => assert.equal(typeof (n.input ?? n.file), 'string', 'document 必须有 input（或 file）——内核缺失即 throw「缺少 input」'),
+  },
+  list: { keys: ['variable', 'filter_by', 'order_by', 'extract_by'] },
+  iterate: { keys: ['iterable', 'input', 'is_parallel', 'parallel_nums', 'body'] },
+  loop: { keys: ['count', 'while_conditions', 'break_conditions', 'continue_on_error', 'max_duration_ms', 'body'] },
+  memory: { keys: ['query', 'input', 'max_bytes'] },
+  store: {
+    keys: ['theme', 'topic', 'summary', 'full', 'content', 'tag'],
+    check: (n) => {
+      assert.equal(typeof (n.theme ?? n.topic), 'string', 'store 必须有 theme（内核缺失即 throw）')
+      assert.equal(typeof n.summary, 'string', 'store 必须有 summary（内核缺失即 throw）')
+    },
+  },
+  tool: { keys: ['tool', 'name', 'input'] },
+  subworkflow: { keys: ['workflow', 'inputs'] },
+  if: {
+    keys: ['conditions', 'logical_operator'],
+    check: (n) => {
+      assert.ok(Array.isArray(n.conditions), 'if.conditions 必须是数组')
+      for (const c of n.conditions) {
+        assert.ok(c && typeof c === 'object' && 'var' in c && 'op' in c && 'value' in c, 'if 条件行形状必须是 {var,op,value}（evalCondition 读 cond.var/op/value）')
+      }
+    },
+  },
+  join: { keys: ['mode', 'sources', 'separator'] },
+  assign: {
+    keys: ['items'],
+    check: (n) => {
+      assert.ok(Array.isArray(n.items), 'assign.items 必须是数组（内核 for...of 读 it.variable/it.value）')
+      assert.ok(n.items.every((it: any) => it && typeof it === 'object' && ('variable' in it || 'name' in it)), 'assign.items 每项必须有 variable')
+    },
+  },
+  aggregate: {
+    keys: ['variables', 'output_type', 'separator'],
+    check: (n) => assert.ok(Array.isArray(n.variables), 'aggregate.variables 必须是数组（内核 .map 读 v.selector || v）'),
+  },
+  confirm: { keys: ['message', 'prompt', 'inputs', 'timeout_ms'] },
+  answer: { keys: ['template', 'value', 'variable'] },
+  end: {
+    keys: ['outputs'],
+    check: (n) => {
+      assert.ok(Array.isArray(n.outputs), 'end.outputs 必须是数组（内核 for...of node.outputs，对象会抛 TypeError）')
+      assert.ok(n.outputs.every((o: any) => o && typeof o === 'object' && (o.name || o.variable)), 'end.outputs 每项必须有 name 或 variable')
+    },
+  },
+}
+
+test('守卫：每种节点类型的默认 config 摊平后与内核读取口径一致（键名 + 形状）', () => {
+  const types = NODE_TYPES.flatMap((g) => g.items).map((i) => i.type)
+  for (const type of types) {
+    const contract = KERNEL_CONTRACT[type]
+    assert.ok(contract, `${type} 缺内核口径声明——新增节点类型必须同步 KERNEL_CONTRACT`)
+    const flat = flattenNode({ id: 'x', type, config: defaultConfig(type) })
+    for (const k of Object.keys(flat.config ?? {})) {
+      assert.ok(contract.keys.includes(k), `${type}.${k} 不在内核读取键清单内（会被内核忽略 → 静默失效）`)
+    }
+    contract.check?.(flat)
+  }
+})
+
+test('守卫：ConfigPanel 编辑口径回归（end.outputs 数组 / classify.classes / assign.items / http）', () => {
+  // end 默认模板：数组（不是 KV 对象）
+  assert.deepEqual(defaultConfig('end').outputs, [])
+  // classify/extract/assign/aggregate：内核必填数组
+  assert.ok(Array.isArray(defaultConfig('classify').classes))
+  assert.ok(Array.isArray(defaultConfig('extract').parameters))
+  assert.ok(Array.isArray(defaultConfig('assign').items))
+  assert.ok(Array.isArray(defaultConfig('aggregate').variables))
+  // http：headers 字符串 + body 由 type/data 驱动
+  assert.equal(typeof defaultConfig('http').headers, 'string')
+  assert.equal(defaultConfig('http').body.type, 'json')
+  assert.ok(Array.isArray(defaultConfig('http').body.data))
+  // document：内核读 input/file（无 path/mode）
+  const doc = flattenNode({ id: 'd', type: 'document', config: defaultConfig('document') })
+  assert.equal(typeof doc.input, 'string')
+  assert.ok(!('path' in doc) && !('mode' in doc), 'document 不应再写内核不读的 path/mode')
+  // if：条件行 {var,op,value}
+  const cond = defaultConfig('if').conditions[0]
+  assert.deepEqual(Object.keys(cond).sort(), ['op', 'value', 'var'])
+})
+
+test('nextNodeId：扫已有 n<数字> 取 max+1（避免与既有 id 撞车）', () => {
+  const mk = (ids: string[]): WorkflowModel => ({ ...MODEL, nodes: ids.map((id) => ({ id, type: 'code' })) })
+  assert.equal(nextNodeId(mk([]), ''), 'n1')
+  assert.equal(nextNodeId(mk(['n1', 'n2']), ''), 'n3')
+  // 只存在高位序号时不回填低位（避免与"未回写 model 的旧节点"撞）
+  assert.equal(nextNodeId(mk(['n7']), ''), 'n8')
+  // start/end 等手工 id 不干扰序号；preferred 可用时优先
+  assert.equal(nextNodeId(mk(['start', 'end', 'n2']), ''), 'n3')
+  assert.equal(nextNodeId(mk(['a']), 'a2'), 'a2')
+  assert.equal(nextNodeId(mk(['a2']), 'a2'), 'n1')
 })

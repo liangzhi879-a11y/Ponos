@@ -162,10 +162,21 @@ export function WorkflowsPanel() {
     })
   }, [openId, save])
 
-  /** 运行：flush → 推导能力 → 授权清单确认（Task 14 换成 AuthzDialog） */
+  /** 运行：**先落盘再弹授权卡**（POST /workflows/run 由内核从磁盘 load，未保存就跑旧版本，
+   *  且能力清单会与实跑图不一致）；保存失败 → 中止运行并提示，不静默继续。 */
   const openRunSetup = useCallback(async (id: string) => {
-    let target = model
-    if (openId === id) target = canvasRef.current?.flush() ?? model
+    let target: WorkflowModel | null = openId === id ? model : null   // 列表里跑别的 id：一律从磁盘 load
+    if (openId === id) {
+      if (dirty) {
+        target = await save()   // save() 内部已 flush 画布并带内核校验
+        if (!target) {
+          setNotice({ tone: 'error', text: '运行已中止：画布改动未能保存（内核校验/写入失败，详情见上）' })
+          return
+        }
+      } else {
+        target = canvasRef.current?.flush() ?? model
+      }
+    }
     if (!target) {
       const r = await loadWorkflow(id)
       if (!r.ok) { setNotice({ tone: 'error', text: r.error }); return }
@@ -175,7 +186,7 @@ export function WorkflowsPanel() {
     setCaps(derived)
     setInputs(Object.fromEntries((target.inputs || []).map((i) => [i.name, ''])))
     setRunSetup({ id, model: target })
-  }, [model, openId])
+  }, [dirty, model, openId, save])
 
   const startRun = useCallback(async () => {
     if (!runSetup) return

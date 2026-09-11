@@ -24,7 +24,8 @@ export interface ConfigPanelProps {
   onChange: (next: WorkflowModel) => void
 }
 
-const OPS = ['==', '!=', '>', '>=', '<', '<=', 'contains', 'not_contains', 'matches', 'is_empty', 'not_empty']
+/** 比较符清单 = 内核 `kernel/workflow-dsl.mjs` 的 `OPS` 键（写别的会在 evalCondition 抛「未知比较符」） */
+const OPS = ['is', 'is not', '=', '≠', '>', '<', '>=', '<=', 'contains', 'not contains', 'empty', 'not empty', 'start with', 'end with']
 
 export function ConfigPanel({ model, nodeId, onChange }: ConfigPanelProps) {
   const node = model.nodes.find((n) => n.id === nodeId) || null
@@ -131,43 +132,52 @@ function NodeForm({ node, vars, model, patchConfig, patchNode }: {
         </>
       )
     case 'agent':
+      // 内核 execAgent：prompt（或 query）/system/tools[]/max_iters（不是 max_rounds）
       return (
         <>
           <VarField label="prompt" value={cfg.prompt || ''} onChange={(v) => patchConfig({ prompt: v })} vars={vars} rows={5} />
+          <VarField label="system（可选）" value={cfg.system || ''} onChange={(v) => patchConfig({ system: v })} vars={vars} rows={3} />
           <ListField
             label="tools（可选工具名，逗号分隔）"
             value={Array.isArray(cfg.tools) ? cfg.tools.join(', ') : ''}
             onChange={(v) => patchConfig({ tools: v.split(',').map((s) => s.trim()).filter(Boolean) })}
             placeholder="Read, Write, Bash"
           />
-          <Field label="max_rounds" hint="ReAct 循环上限">
+          <Field label="max_iters" hint="ReAct 循环上限（内核 execAgent 键名）">
             <Input
-              type="number" value={cfg.max_rounds ?? ''} className="h-7 text-xs"
-              onChange={(e) => patchConfig({ max_rounds: e.target.value === '' ? undefined : Number(e.target.value) })}
+              type="number" value={cfg.max_iters ?? ''} className="h-7 text-xs"
+              onChange={(e) => patchConfig({ max_iters: e.target.value === '' ? undefined : Number(e.target.value) })}
             />
           </Field>
         </>
       )
     case 'classify':
+      // 内核 execClassify：读 node.input（或 query）/instruction/**node.classes**（字符串数组，缺失即 throw）
       return (
         <>
           <VarField label="input" value={cfg.input || ''} onChange={(v) => patchConfig({ input: v })} vars={vars} rows={2} />
-          <RoutesEditor routes={Array.isArray(cfg.routes) ? cfg.routes : []} onChange={(routes) => patchConfig({ routes })} />
+          <VarField label="instruction（分类指令，可选）" value={cfg.instruction || ''} onChange={(v) => patchConfig({ instruction: v })} vars={vars} rows={2} />
+          <StringListEditor
+            label="classes（类别名 → route:i 出边）"
+            items={Array.isArray(cfg.classes) ? cfg.classes : []}
+            onChange={(classes) => patchConfig({ classes })}
+            vars={vars}
+            addLabel="类别"
+            placeholder="类别名"
+            hint="下标 i 对应出边 handle route:i；未命中走 default"
+          />
         </>
       )
     case 'extract':
+      // 内核 execExtract：读 node.parameters[]（{name,type?,required?,description?}，缺失即 throw）
       return (
         <>
           <VarField label="input" value={cfg.input || ''} onChange={(v) => patchConfig({ input: v })} vars={vars} rows={3} />
-          <Field label="schema（JSON）" hint="字段名 → 类型/描述">
-            <Textarea
-              value={typeof cfg.schema === 'string' ? cfg.schema : JSON.stringify(cfg.schema || {}, null, 2)}
-              onChange={(e) => patchConfig({ schema: e.target.value })}
-              rows={4}
-              className="text-[11px] font-mono"
-              placeholder={'{\n  "title": "string"\n}'}
-            />
-          </Field>
+          <VarField label="instruction（提取指令，可选）" value={cfg.instruction || ''} onChange={(v) => patchConfig({ instruction: v })} vars={vars} rows={2} />
+          <ParamsEditor
+            items={Array.isArray(cfg.parameters) ? cfg.parameters : []}
+            onChange={(parameters) => patchConfig({ parameters })}
+          />
         </>
       )
     case 'code':
@@ -175,6 +185,8 @@ function NodeForm({ node, vars, model, patchConfig, patchNode }: {
     case 'template':
       return <VarField label="template" value={cfg.template || ''} onChange={(v) => patchConfig({ template: v })} vars={vars} rows={6} />
     case 'http':
+      // 内核 execHttp：headers 走 **parseHeaderLines(多行文本)**（对象会被 String() 成 [object Object] → 全丢）；
+      // body 只认 {type:'json',data:[{key,value}]} 或 {type:'raw',raw}
       return (
         <>
           <Field label="url">
@@ -189,8 +201,42 @@ function NodeForm({ node, vars, model, patchConfig, patchNode }: {
               {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
           </Field>
-          <KVEditor label="headers" value={cfg.headers || {}} onChange={(v) => patchConfig({ headers: v })} vars={vars} />
-          <VarField label="body" value={cfg.body || ''} onChange={(v) => patchConfig({ body: v })} vars={vars} rows={4} mono />
+          <VarField
+            label="headers（每行一条 Name: value）"
+            value={typeof cfg.headers === 'string' ? cfg.headers : ''}
+            onChange={(v) => patchConfig({ headers: v })}
+            vars={vars}
+            rows={3}
+            mono
+            placeholder={'Content-Type: application/json\nAuthorization: Bearer sk-...'}
+          />
+          <BodyEditor value={cfg.body} onChange={(body) => patchConfig({ body })} vars={vars} />
+          <Field label="authorization.type">
+            <select
+              value={cfg.authorization?.type || 'none'}
+              onChange={(e) => patchConfig({ authorization: { ...(cfg.authorization || {}), type: e.target.value } })}
+              className="w-full h-7 text-xs bg-input border rounded px-1.5 text-primary"
+            >
+              <option value="none">none</option>
+              <option value="bearer">bearer</option>
+              <option value="api-key">api-key</option>
+            </select>
+          </Field>
+          {cfg.authorization?.type && cfg.authorization.type !== 'none' && (
+            <>
+              <Field label="authorization.token">
+                <VarField label="" value={cfg.authorization?.token || ''} onChange={(v) => patchConfig({ authorization: { ...(cfg.authorization || {}), token: v } })} vars={vars} />
+              </Field>
+              {cfg.authorization.type === 'api-key' && (
+                <Field label="authorization.header（缺省 X-API-Key）">
+                  <Input
+                    value={cfg.authorization?.header || ''} className="h-7 text-xs"
+                    onChange={(e) => patchConfig({ authorization: { ...(cfg.authorization || {}), header: e.target.value } })}
+                  />
+                </Field>
+              )}
+            </>
+          )}
           <Field label="timeout_ms">
             <Input
               type="number" value={cfg.timeout_ms ?? ''} className="h-7 text-xs"
@@ -200,37 +246,86 @@ function NodeForm({ node, vars, model, patchConfig, patchNode }: {
         </>
       )
     case 'document':
+      // 内核 execDocument：只读 **node.input || node.file**（缺失即 throw「缺少 input」）；
+      // 先 Read，失败再 OCR —— 无 mode 开关
       return (
-        <>
-          <Field label="path">
-            <VarField label="" value={cfg.path || ''} onChange={(v) => patchConfig({ path: v })} vars={vars} />
-          </Field>
-          <Field label="mode" hint="text=纯文本读取；ocr=图片/扫描件">
-            <select
-              value={cfg.mode || 'text'}
-              onChange={(e) => patchConfig({ mode: e.target.value })}
-              className="w-full h-7 text-xs bg-input border rounded px-1.5 text-primary"
-            >
-              <option value="text">text</option>
-              <option value="ocr">ocr</option>
-            </select>
-          </Field>
-        </>
+        <Field label="input（文件路径）" hint="内核先 Read；读不到再走 OCR（图片/扫描件）">
+          <VarField label="" value={cfg.input || cfg.file || ''} onChange={(v) => patchConfig({ input: v })} vars={vars} />
+        </Field>
       )
     case 'list':
+      // 内核 execList：读 node.variable / filter_by{enabled,key,op,value} / order_by{enabled,key,order} / extract_by{enabled,serial}
       return (
         <>
-          <VarField label="input" value={cfg.input || ''} onChange={(v) => patchConfig({ input: v })} vars={vars} />
-          <Field label="op" hint="first/last/filter/sort/slice/join…">
-            <Input value={cfg.op || ''} onChange={(e) => patchConfig({ op: e.target.value })} className="h-7 text-xs" />
-          </Field>
-          <VarField label="field（比较/排序字段，可选）" value={cfg.field || ''} onChange={(v) => patchConfig({ field: v })} vars={vars} />
-          <Field label="value（比较值，可选）">
-            <Input value={cfg.value ?? ''} onChange={(e) => patchConfig({ value: e.target.value })} className="h-7 text-xs" />
-          </Field>
+          <VarField label="variable（数组引用）" value={cfg.variable || ''} onChange={(v) => patchConfig({ variable: v })} vars={vars} />
+          <div className="pt-1 border-t flex flex-col gap-1.5">
+            <label className="flex items-center justify-between text-[11px] text-secondary">
+              filter_by.enabled
+              <Switch checked={cfg.filter_by?.enabled === true} onCheckedChange={(v) => patchConfig({ filter_by: { ...(cfg.filter_by || {}), enabled: v } })} />
+            </label>
+            {cfg.filter_by?.enabled && (
+              <>
+                <Field label="filter_by.key">
+                  <Input value={cfg.filter_by?.key || ''} onChange={(e) => patchConfig({ filter_by: { ...cfg.filter_by, key: e.target.value } })} className="h-7 text-xs" />
+                </Field>
+                <Field label="filter_by.op">
+                  <select
+                    value={cfg.filter_by?.op || 'is'}
+                    onChange={(e) => patchConfig({ filter_by: { ...cfg.filter_by, op: e.target.value } })}
+                    className="w-full h-7 text-xs bg-input border rounded px-1.5 text-primary"
+                  >
+                    {OPS.map((op) => <option key={op} value={op}>{op}</option>)}
+                  </select>
+                </Field>
+                <Field label="filter_by.value">
+                  <Input value={cfg.filter_by?.value ?? ''} onChange={(e) => patchConfig({ filter_by: { ...cfg.filter_by, value: e.target.value } })} className="h-7 text-xs" />
+                </Field>
+              </>
+            )}
+          </div>
+          <div className="pt-1 border-t flex flex-col gap-1.5">
+            <label className="flex items-center justify-between text-[11px] text-secondary">
+              order_by.enabled
+              <Switch checked={cfg.order_by?.enabled === true} onCheckedChange={(v) => patchConfig({ order_by: { ...(cfg.order_by || {}), enabled: v } })} />
+            </label>
+            {cfg.order_by?.enabled && (
+              <>
+                <Field label="order_by.key">
+                  <Input value={cfg.order_by?.key || ''} onChange={(e) => patchConfig({ order_by: { ...cfg.order_by, key: e.target.value } })} className="h-7 text-xs" />
+                </Field>
+                <Field label="order_by.order">
+                  <select
+                    value={cfg.order_by?.order || 'asc'}
+                    onChange={(e) => patchConfig({ order_by: { ...cfg.order_by, order: e.target.value } })}
+                    className="w-full h-7 text-xs bg-input border rounded px-1.5 text-primary"
+                  >
+                    {['asc', 'desc'].map((o) => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </Field>
+              </>
+            )}
+          </div>
+          <div className="pt-1 border-t flex flex-col gap-1.5">
+            <label className="flex items-center justify-between text-[11px] text-secondary">
+              extract_by.enabled
+              <Switch checked={cfg.extract_by?.enabled === true} onCheckedChange={(v) => patchConfig({ extract_by: { ...(cfg.extract_by || {}), enabled: v } })} />
+            </label>
+            {cfg.extract_by?.enabled && (
+              <Field label="extract_by.serial">
+                <select
+                  value={cfg.extract_by?.serial || 'first'}
+                  onChange={(e) => patchConfig({ extract_by: { ...cfg.extract_by, serial: e.target.value } })}
+                  className="w-full h-7 text-xs bg-input border rounded px-1.5 text-primary"
+                >
+                  {['first', 'last'].map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </Field>
+            )}
+          </div>
         </>
       )
     case 'loop':
+      // 内核 execLoop：count / while_conditions[]（轮前）/ break_conditions[]（轮后）/ continue_on_error
       return (
         <>
           <Field label="count（循环次数）">
@@ -239,14 +334,34 @@ function NodeForm({ node, vars, model, patchConfig, patchNode }: {
               onChange={(e) => patchConfig({ count: Number(e.target.value) || 1 })}
             />
           </Field>
-          <VarField label="until（条件，满足即停，可选）" value={cfg.until || ''} onChange={(v) => patchConfig({ until: v })} vars={vars} />
+          <label className="flex items-center justify-between text-[11px] text-secondary">
+            continue_on_error（单轮失败继续）
+            <Switch checked={cfg.continue_on_error === true} onCheckedChange={(v) => patchConfig({ continue_on_error: v })} />
+          </label>
+          <ConditionsEditor
+            label="while_conditions（轮前检查，不满足即停）"
+            conditions={Array.isArray(cfg.while_conditions) ? cfg.while_conditions : []}
+            onChange={(while_conditions) => patchConfig({ while_conditions })}
+            vars={vars}
+          />
+          <ConditionsEditor
+            label="break_conditions（本轮执行后满足即 break）"
+            conditions={Array.isArray(cfg.break_conditions) ? cfg.break_conditions : []}
+            onChange={(break_conditions) => patchConfig({ break_conditions })}
+            vars={vars}
+          />
           <BodyPicker node={node} model={model} patchNode={patchNode} />
         </>
       )
     case 'iterate':
+      // 内核 execIterate：iterable（或 input）为数组引用；is_parallel + parallel_nums 控制并发
       return (
         <>
-          <VarField label="input（数组引用）" value={cfg.input || ''} onChange={(v) => patchConfig({ input: v })} vars={vars} />
+          <VarField label="iterable（数组引用）" value={cfg.iterable || cfg.input || ''} onChange={(v) => patchConfig({ iterable: v })} vars={vars} />
+          <label className="flex items-center justify-between text-[11px] text-secondary">
+            is_parallel（并行迭代）
+            <Switch checked={cfg.is_parallel === true} onCheckedChange={(v) => patchConfig({ is_parallel: v })} />
+          </label>
           <Field label="parallel_nums（并行度，1=串行）">
             <Input
               type="number" value={cfg.parallel_nums ?? 1} className="h-7 text-xs"
@@ -259,16 +374,13 @@ function NodeForm({ node, vars, model, patchConfig, patchNode }: {
     case 'memory':
       return <VarField label="query" value={cfg.query || ''} onChange={(v) => patchConfig({ query: v })} vars={vars} rows={3} />
     case 'store':
+      // 内核 execStore：theme + summary 必填（缺失即 throw），tag/full（或 content）可选
       return (
         <>
-          <VarField label="content" value={cfg.content || ''} onChange={(v) => patchConfig({ content: v })} vars={vars} rows={4} />
-          <Field label="tags（逗号分隔）">
-            <Input
-              value={Array.isArray(cfg.tags) ? cfg.tags.join(', ') : (cfg.tags || '')}
-              onChange={(e) => patchConfig({ tags: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })}
-              className="h-7 text-xs"
-            />
-          </Field>
+          <VarField label="theme（必填，记忆主题）" value={cfg.theme || cfg.topic || ''} onChange={(v) => patchConfig({ theme: v })} vars={vars} />
+          <VarField label="summary（必填，摘要）" value={cfg.summary || ''} onChange={(v) => patchConfig({ summary: v })} vars={vars} rows={3} />
+          <VarField label="tag（可选标签）" value={cfg.tag || ''} onChange={(v) => patchConfig({ tag: v })} vars={vars} />
+          <VarField label="full（可选全文）" value={cfg.full || cfg.content || ''} onChange={(v) => patchConfig({ full: v })} vars={vars} rows={4} />
         </>
       )
     case 'tool':
@@ -290,30 +402,73 @@ function NodeForm({ node, vars, model, patchConfig, patchNode }: {
         </>
       )
     case 'if':
+      // 内核 execIf / evalCondition：conditions 的键是 {var, op, value}（写 left/right 会被当空变量比较）
       return <ConditionsEditor conditions={Array.isArray(cfg.conditions) ? cfg.conditions : []} onChange={(conditions) => patchConfig({ conditions })} vars={vars} />
     case 'join':
-      return (
-        <Field label="mode" hint="concat=拼接文本；array=收集数组；first=取第一个">
-          <select
-            value={cfg.mode || 'concat'}
-            onChange={(e) => patchConfig({ mode: e.target.value })}
-            className="w-full h-7 text-xs bg-input border rounded px-1.5 text-primary"
-          >
-            {['concat', 'array', 'first'].map((m) => <option key={m} value={m}>{m}</option>)}
-          </select>
-        </Field>
-      )
-    case 'assign':
+      // 内核 execJoin：sources[]（选择器）+ mode（concat/array/first）+ separator
       return (
         <>
-          <Field label="var（变量名，写 {{var.名}} 读取）">
-            <Input value={cfg.var || ''} onChange={(e) => patchConfig({ var: e.target.value })} className="h-7 text-xs" />
+          <Field label="mode" hint="concat=拼接文本；array=收集数组；first=第一个非空">
+            <select
+              value={cfg.mode || 'concat'}
+              onChange={(e) => patchConfig({ mode: e.target.value })}
+              className="w-full h-7 text-xs bg-input border rounded px-1.5 text-primary"
+            >
+              {['concat', 'array', 'first'].map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
           </Field>
-          <VarField label="value" value={cfg.value || ''} onChange={(v) => patchConfig({ value: v })} vars={vars} rows={3} />
+          <StringListEditor
+            label="sources（上游输出选择器）"
+            items={Array.isArray(cfg.sources) ? cfg.sources : []}
+            onChange={(sources) => patchConfig({ sources })}
+            vars={vars}
+            addLabel="来源"
+            placeholder="{{node.field}}"
+          />
+          {cfg.mode !== 'first' && cfg.mode !== 'array' && (
+            <Field label="separator（concat 分隔符）">
+              <Input value={cfg.separator ?? '\n'} onChange={(e) => patchConfig({ separator: e.target.value })} className="h-7 text-xs" />
+            </Field>
+          )}
         </>
       )
+    case 'assign':
+      // 内核 execAssign：items[] = [{variable, value, operation?}]（over-write/append/clear）
+      return (
+        <ItemsEditor
+          items={Array.isArray(cfg.items) ? cfg.items : []}
+          onChange={(items) => patchConfig({ items })}
+          vars={vars}
+        />
+      )
     case 'aggregate':
-      return <VarField label="output（聚合模板）" value={cfg.output || ''} onChange={(v) => patchConfig({ output: v })} vars={vars} rows={4} />
+      // 内核 execAggregate：variables[]（选择器数组）+ output_type（string/array）+ separator
+      return (
+        <>
+          <StringListEditor
+            label="variables（待聚合的输出选择器）"
+            items={Array.isArray(cfg.variables) ? cfg.variables : []}
+            onChange={(variables) => patchConfig({ variables })}
+            vars={vars}
+            addLabel="变量"
+            placeholder="{{node.field}}"
+          />
+          <Field label="output_type">
+            <select
+              value={cfg.output_type || 'string'}
+              onChange={(e) => patchConfig({ output_type: e.target.value })}
+              className="w-full h-7 text-xs bg-input border rounded px-1.5 text-primary"
+            >
+              {['string', 'array'].map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </Field>
+          {cfg.output_type !== 'array' && (
+            <Field label="separator（缺省换行）">
+              <Input value={cfg.separator ?? '\n'} onChange={(e) => patchConfig({ separator: e.target.value })} className="h-7 text-xs" />
+            </Field>
+          )}
+        </>
+      )
     case 'confirm':
       return (
         <>
@@ -329,11 +484,14 @@ function NodeForm({ node, vars, model, patchConfig, patchNode }: {
     case 'answer':
       return <VarField label="template（对话型输出）" value={cfg.template || ''} onChange={(v) => patchConfig({ template: v })} vars={vars} rows={5} />
     case 'end':
+      // 内核 end 分支（workflow-nodes.mjs dispatch）与 workflow-engine.synthesizeOutput 都
+      // **for...of node.outputs** —— 必须是数组 [{name, variable?, selector}]，对象会直接抛 TypeError
       return (
-        <>
-          <VarField label="output（整体输出模板，可选）" value={cfg.output || ''} onChange={(v) => patchConfig({ output: v })} vars={vars} rows={3} />
-          <KVEditor label="outputs（具名返回值键值）" value={cfg.outputs || {}} onChange={(v) => patchConfig({ outputs: v })} vars={vars} />
-        </>
+        <OutputsEditor
+          items={Array.isArray(cfg.outputs) ? cfg.outputs : []}
+          onChange={(outputs) => patchConfig({ outputs })}
+          vars={vars}
+        />
       )
     default:
       return (
@@ -456,7 +614,8 @@ function ListField({ label, value, onChange, placeholder }: { label: string; val
   )
 }
 
-/** 键值编辑器（tool.input / headers / end.outputs）：值用 VarField，可插变量 */
+/** 键值编辑器（tool.input / subworkflow.inputs）：值用 VarField，可插变量。
+ *  注意：内核 http.headers 只认**多行文本**（parseHeaderLines），不在此列。 */
 function KVEditor({ label, value, onChange, vars }: {
   label: string
   value: Record<string, any>
@@ -498,61 +657,280 @@ function KVEditor({ label, value, onChange, vars }: {
   )
 }
 
-/** classify 的类别清单（routes[i] → 画布 handle route:i） */
-function RoutesEditor({ routes, onChange }: { routes: any[]; onChange: (r: any[]) => void }) {
-  const set = (i: number, patch: Record<string, any>) => onChange(routes.map((r, idx) => (idx === i ? { ...(r || {}), ...patch } : r)))
+/** 行列表容器（统一标题/加号/空态，与内核字段名一起显示） */
+function RowList({ label, hint, onAdd, addLabel, count, children }: {
+  label: string
+  hint?: string
+  onAdd: () => void
+  addLabel: string
+  count: number
+  children: React.ReactNode
+}) {
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between">
-        <span className="text-[10px] text-tertiary uppercase tracking-wider">routes（类别 → route:i 出边）</span>
-        <Button size="xs" variant="ghost" onClick={() => onChange([...routes, { name: `类别${routes.length + 1}` }])}>
-          <Plus className="w-3 h-3" />类别
+        <span className="text-[10px] text-tertiary uppercase tracking-wider">{label}</span>
+        <Button size="xs" variant="ghost" onClick={onAdd}>
+          <Plus className="w-3 h-3" />{addLabel}
         </Button>
       </div>
-      {routes.map((r, i) => (
-        <div key={i} className="flex items-center gap-1">
-          <span className="text-[10px] font-mono text-tertiary w-[52px] shrink-0 truncate">route:{i}</span>
-          <Input
-            value={r?.name || r?.label || r?.category || ''}
-            onChange={(e) => set(i, { name: e.target.value })}
-            className="h-7 text-xs flex-1 min-w-0"
-            placeholder="类别名"
-          />
-          <Button size="xs" variant="ghost" onClick={() => onChange(routes.filter((_, idx) => idx !== i))} title="删除">
-            <Trash2 className="w-3 h-3" />
-          </Button>
-        </div>
-      ))}
-      {routes.length === 0 && <span className="text-[10px] text-tertiary">无类别：至少加一类</span>}
+      {hint && <span className="text-[10px] text-tertiary leading-tight">{hint}</span>}
+      {children}
+      {count === 0 && <span className="text-[10px] text-tertiary">暂无条目</span>}
     </div>
   )
 }
 
-/** if 的条件行编辑（全部满足走 true，否则 false） */
-function ConditionsEditor({ conditions, onChange, vars }: { conditions: any[]; onChange: (c: any[]) => void; vars: Array<{ path: string; label: string }> }) {
+/** 字符串列表（classify.classes / aggregate.variables / join.sources）：每行一个 VarField */
+function StringListEditor({ label, hint, items, onChange, vars, addLabel, placeholder }: {
+  label: string
+  hint?: string
+  items: any[]
+  onChange: (v: string[]) => void
+  vars: Array<{ path: string; label: string }>
+  addLabel: string
+  placeholder?: string
+}) {
+  const list = items.map((x) => (typeof x === 'string' ? x : ''))
+  return (
+    <RowList label={label} hint={hint} addLabel={addLabel} count={list.length} onAdd={() => onChange([...list, ''])}>
+      {list.map((it, i) => (
+        <div key={i} className="flex items-center gap-1">
+          <div className="flex-1 min-w-0">
+            <VarField label="" value={it} onChange={(v) => onChange(list.map((x, idx) => (idx === i ? v : x)))} vars={vars} placeholder={placeholder} />
+          </div>
+          <Button size="xs" variant="ghost" onClick={() => onChange(list.filter((_, idx) => idx !== i))} title="删除">
+            <Trash2 className="w-3 h-3" />
+          </Button>
+        </div>
+      ))}
+    </RowList>
+  )
+}
+
+/** end.outputs 编辑：内核 for...of 数组，行形状 {name, variable?, selector} */
+function OutputsEditor({ items, onChange, vars }: {
+  items: any[]
+  onChange: (v: Array<Record<string, any>>) => void
+  vars: Array<{ path: string; label: string }>
+}) {
+  const rows = items.map((x) => (x && typeof x === 'object' ? x : {}))
+  const set = (i: number, patch: Record<string, any>) => onChange(rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)))
+  return (
+    <RowList
+      label="outputs（返回值数组）"
+      hint="每行 = 一个具名返回值：输出名 + 取值来源（内核按 {{selector}} 解析后写入 name）"
+      addLabel="返回值"
+      count={rows.length}
+      onAdd={() => onChange([...rows, { name: `out${rows.length + 1}`, selector: '' }])}
+    >
+      {rows.map((r, i) => (
+        <div key={i} className="cut-xs">
+          <div className="ci p-1.5 flex flex-col gap-1">
+            <div className="flex items-center gap-1">
+              <Input
+                value={r.name || ''}
+                onChange={(e) => set(i, { name: e.target.value })}
+                className="h-7 text-xs flex-1 min-w-0 font-mono"
+                placeholder="name（输出键名）"
+              />
+              <Button size="xs" variant="ghost" onClick={() => onChange(rows.filter((_, idx) => idx !== i))} title="删除">
+                <Trash2 className="w-3 h-3" />
+              </Button>
+            </div>
+            <VarField label="selector（取值：{{节点.字段}}）" value={r.selector || r.value || ''} onChange={(v) => set(i, { selector: v })} vars={vars} />
+            <Field label="variable（可选：另存到变量名）">
+              <Input value={r.variable || ''} onChange={(e) => set(i, { variable: e.target.value })} className="h-7 text-xs font-mono" />
+            </Field>
+          </div>
+        </div>
+      ))}
+    </RowList>
+  )
+}
+
+/** extract.parameters 编辑：内核读 {name, type?, required?, description?} 拼 schema 描述 */
+function ParamsEditor({ items, onChange }: { items: any[]; onChange: (v: Array<Record<string, any>>) => void }) {
+  const rows = items.map((x) => (x && typeof x === 'object' ? x : {}))
+  const set = (i: number, patch: Record<string, any>) => onChange(rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)))
+  return (
+    <RowList
+      label="parameters（提取字段）"
+      hint="内核 execExtract 必填：每行一个字段名（type/description 进提示词）"
+      addLabel="字段"
+      count={rows.length}
+      onAdd={() => onChange([...rows, { name: `field${rows.length + 1}`, type: 'string', required: true, description: '' }])}
+    >
+      {rows.map((r, i) => (
+        <div key={i} className="cut-xs">
+          <div className="ci p-1.5 flex flex-col gap-1">
+            <div className="flex items-center gap-1">
+              <Input
+                value={r.name || ''}
+                onChange={(e) => set(i, { name: e.target.value })}
+                className="h-7 text-xs flex-1 min-w-0 font-mono"
+                placeholder="name"
+              />
+              <select
+                value={r.type || 'string'}
+                onChange={(e) => set(i, { type: e.target.value })}
+                className="h-7 text-xs bg-input border rounded px-1 text-primary w-[86px] shrink-0"
+              >
+                {['string', 'number', 'boolean', 'array', 'object'].map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+              <button
+                type="button"
+                title="required"
+                onClick={() => set(i, { required: !r.required })}
+                className={cn('text-[10px] px-1.5 h-7 rounded border shrink-0', r.required ? 'text-brand-500 border-brand-500/40' : 'text-tertiary')}
+              >必填</button>
+              <Button size="xs" variant="ghost" onClick={() => onChange(rows.filter((_, idx) => idx !== i))} title="删除">
+                <Trash2 className="w-3 h-3" />
+              </Button>
+            </div>
+            <Input
+              value={r.description || ''}
+              onChange={(e) => set(i, { description: e.target.value })}
+              className="h-7 text-xs"
+              placeholder="description（可选）"
+            />
+          </div>
+        </div>
+      ))}
+    </RowList>
+  )
+}
+
+/** assign.items 编辑：内核读 [{variable, value, operation}]（operation: over-write/append/clear） */
+function ItemsEditor({ items, onChange, vars }: {
+  items: any[]
+  onChange: (v: Array<Record<string, any>>) => void
+  vars: Array<{ path: string; label: string }>
+}) {
+  const rows = items.map((x) => (x && typeof x === 'object' ? x : {}))
+  const set = (i: number, patch: Record<string, any>) => onChange(rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)))
+  return (
+    <RowList
+      label="items（赋值项：写 {{var.名}} 读取）"
+      hint="内核 execAssign 必填：variable 变量名 + value 取值 + operation"
+      addLabel="赋值"
+      count={rows.length}
+      onAdd={() => onChange([...rows, { variable: '', value: '', operation: 'over-write' }])}
+    >
+      {rows.map((r, i) => (
+        <div key={i} className="cut-xs">
+          <div className="ci p-1.5 flex flex-col gap-1">
+            <div className="flex items-center gap-1">
+              <Input
+                value={r.variable || r.name || ''}
+                onChange={(e) => set(i, { variable: e.target.value })}
+                className="h-7 text-xs flex-1 min-w-0 font-mono"
+                placeholder="variable"
+              />
+              <select
+                value={r.operation || 'over-write'}
+                onChange={(e) => set(i, { operation: e.target.value })}
+                className="h-7 text-xs bg-input border rounded px-1 text-primary w-[104px] shrink-0"
+              >
+                {['over-write', 'append', 'clear'].map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+              <Button size="xs" variant="ghost" onClick={() => onChange(rows.filter((_, idx) => idx !== i))} title="删除">
+                <Trash2 className="w-3 h-3" />
+              </Button>
+            </div>
+            <VarField label="value（取值）" value={r.value || r.selector || ''} onChange={(v) => set(i, { value: v })} vars={vars} />
+          </div>
+        </div>
+      ))}
+    </RowList>
+  )
+}
+
+/** http.body 编辑：内核只认 {type:'json',data:[{key,value}]} 或 {type:'raw',raw} */
+function BodyEditor({ value, onChange, vars }: {
+  value: any
+  onChange: (v: Record<string, any>) => void
+  vars: Array<{ path: string; label: string }>
+}) {
+  // 容错读取：旧版（错误形状）写过的字符串按 raw 展示，不静默丢内容
+  const body = value && typeof value === 'object' && !Array.isArray(value)
+    ? value
+    : (typeof value === 'string' && value ? { type: 'raw', raw: value } : { type: 'json', data: [] })
+  const type = body.type === 'raw' ? 'raw' : 'json'
+  const data: any[] = Array.isArray(body.data) ? body.data : []
+  return (
+    <>
+      <Field label="body.type">
+        <select
+          value={type}
+          onChange={(e) => onChange(e.target.value === 'raw' ? { type: 'raw', raw: body.raw || '' } : { type: 'json', data })}
+          className="w-full h-7 text-xs bg-input border rounded px-1.5 text-primary"
+        >
+          <option value="json">json（data 键值 → JSON 对象）</option>
+          <option value="raw">raw（原始文本）</option>
+        </select>
+      </Field>
+      {type === 'raw' ? (
+        <VarField label="body.raw" value={body.raw || ''} onChange={(v) => onChange({ type: 'raw', raw: v })} vars={vars} rows={4} mono />
+      ) : (
+        <RowList
+          label="body.data（键值）"
+          addLabel="字段"
+          count={data.length}
+          onAdd={() => onChange({ type: 'json', data: [...data, { key: '', value: '' }] })}
+        >
+          {data.map((d, i) => (
+            <div key={i} className="flex items-center gap-1">
+              <Input
+                value={d?.key || ''}
+                onChange={(e) => onChange({ type: 'json', data: data.map((x, idx) => (idx === i ? { ...x, key: e.target.value } : x)) })}
+                className="h-7 text-xs w-[88px] shrink-0 font-mono"
+                placeholder="key"
+              />
+              <div className="flex-1 min-w-0">
+                <VarField
+                  label=""
+                  value={d?.value ?? ''}
+                  onChange={(nv) => onChange({ type: 'json', data: data.map((x, idx) => (idx === i ? { ...x, value: nv } : x)) })}
+                  vars={vars}
+                />
+              </div>
+              <Button size="xs" variant="ghost" onClick={() => onChange({ type: 'json', data: data.filter((_, idx) => idx !== i) })} title="删除">
+                <Trash2 className="w-3 h-3" />
+              </Button>
+            </div>
+          ))}
+        </RowList>
+      )}
+    </>
+  )
+}
+
+/** 条件行编辑（if.conditions / loop.while_conditions / loop.break_conditions）。
+ *  行形状与内核 evalCondition 一致：**{var, op, value}**（写 left/right 会被当空变量比较）。 */
+function ConditionsEditor({ label = 'conditions（全部满足 → true 出边）', conditions, onChange, vars }: {
+  label?: string
+  conditions: any[]
+  onChange: (c: any[]) => void
+  vars: Array<{ path: string; label: string }>
+}) {
   const set = (i: number, patch: Record<string, any>) => onChange(conditions.map((c, idx) => (idx === i ? { ...(c || {}), ...patch } : c)))
   return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] text-tertiary uppercase tracking-wider">conditions（全部满足 → true 出边）</span>
-        <Button size="xs" variant="ghost" onClick={() => onChange([...conditions, { left: '', op: '==', right: '' }])}>
-          <Plus className="w-3 h-3" />条件
-        </Button>
-      </div>
+    <RowList label={label} addLabel="条件" count={conditions.length} onAdd={() => onChange([...conditions, { var: '', op: 'is', value: '' }])}>
       {conditions.map((c, i) => (
         <div key={i} className="cut-xs">
           <div className="ci p-1.5 flex flex-col gap-1">
-            <VarField label="" value={c?.left || ''} onChange={(v) => set(i, { left: v })} vars={vars} />
+            <VarField label="var（取值）" value={c?.var || ''} onChange={(v) => set(i, { var: v })} vars={vars} />
             <div className="flex items-center gap-1">
               <select
-                value={c?.op || '=='}
+                value={c?.op || 'is'}
                 onChange={(e) => set(i, { op: e.target.value })}
-                className="h-7 text-xs bg-input border rounded px-1 text-primary w-[104px] shrink-0"
+                className="h-7 text-xs bg-input border rounded px-1 text-primary w-[110px] shrink-0"
               >
                 {OPS.map((op) => <option key={op} value={op}>{op}</option>)}
               </select>
               <div className="flex-1 min-w-0">
-                <VarField label="" value={c?.right || ''} onChange={(v) => set(i, { right: v })} vars={vars} />
+                <VarField label="" value={c?.value ?? ''} onChange={(v) => set(i, { value: v })} vars={vars} />
               </div>
               <Button size="xs" variant="ghost" onClick={() => onChange(conditions.filter((_, idx) => idx !== i))} title="删除">
                 <Trash2 className="w-3 h-3" />
@@ -561,8 +939,7 @@ function ConditionsEditor({ conditions, onChange, vars }: { conditions: any[]; o
           </div>
         </div>
       ))}
-      {conditions.length === 0 && <span className="text-[10px] text-tertiary">无条件：始终走 true</span>}
-    </div>
+    </RowList>
   )
 }
 

@@ -135,11 +135,18 @@ export function outputHandles(node: NodeModel): Array<{ id: string; label: strin
   if (node.type === 'if') {
     handles.push({ id: 'true', label: '是', tone: 'true' }, { id: 'false', label: '否', tone: 'false' })
   } else if (node.type === 'classify') {
-    const routes = Array.isArray(node.config?.routes) ? node.config!.routes : []
-    routes.forEach((r: any, i: number) => {
-      handles.push({ id: `route:${i}`, label: String(r?.name || r?.label || r?.category || `类别${i + 1}`), tone: 'route' })
+    // 内核 execClassify 读 **node.classes: string[]**（下标 i → 出边 handle route:i）；
+    // legacy 对象数组（旧 UI 写过的 routes:[{name}]）仍兼容展示，避免老文件画布上空白。
+    const cfg = node.config || {}
+    const classes: string[] = Array.isArray(cfg.classes)
+      ? cfg.classes.map((c: any) => String(c ?? ''))
+      : Array.isArray(cfg.routes)
+        ? cfg.routes.map((r: any, i: number) => String(r?.name || r?.label || r?.category || `类别${i + 1}`))
+        : []
+    classes.forEach((c, i) => {
+      handles.push({ id: `route:${i}`, label: c || `类别${i + 1}`, tone: 'route' })
     })
-    if (!routes.length) handles.push({ id: 'route:0', label: '类别1', tone: 'route' })
+    if (!classes.length) handles.push({ id: 'route:0', label: '类别1', tone: 'route' })
     handles.push({ id: 'default', label: '兜底', tone: 'route' })
   } else if (node.type === 'confirm') {
     handles.push({ id: 'approved', label: '通过', tone: 'approve' }, { id: 'rejected', label: '拒绝', tone: 'reject' }, { id: 'timeout', label: '超时', tone: 'timeout' })
@@ -155,30 +162,56 @@ export function retryOnError(node: NodeModel): string {
 
 // ===================== 新节点默认配置（节点面板拖入时用） =====================
 
+/**
+ * 新节点的默认配置（节点面板拖入时用）。
+ *
+ * **键名/形状一律以 `kernel/workflow-nodes.mjs` 的执行器读取口径为准**（摊平后即
+ * `normalizeNode` 产出的扁平 node 字段）；ConfigPanel 的编辑器与这里同源，
+ * `workflowModel.test.ts` 的守卫用例逐类型断言，防止 UI 与内核再次漂移。
+ */
 export function defaultConfig(type: string): Record<string, any> {
   switch (type) {
-    case 'llm': return { prompt: '', model: '' }
-    case 'agent': return { prompt: '', tools: [] }
-    case 'classify': return { input: '', routes: [{ name: '类别1' }, { name: '类别2' }] }
-    case 'extract': return { input: '', schema: {} }
+    case 'llm': return { prompt: '', system: '', model: '' }
+    // execAgent：prompt / system / tools[] / max_iters
+    case 'agent': return { prompt: '', system: '', tools: [], max_iters: 8 }
+    // execClassify：input（或 query）/ instruction / classes: string[]（缺失即 throw）
+    case 'classify': return { input: '', instruction: '', classes: ['类别1', '类别2'] }
+    // execExtract：input（或 query）/ instruction / parameters: [{name,type?,required?,description?}]
+    case 'extract': return { input: '', instruction: '', parameters: [{ name: 'field1', type: 'string', required: true, description: '' }] }
     case 'code': return { code: '' }
     case 'template': return { template: '' }
-    case 'http': return { url: '', method: 'GET', headers: {}, body: '' }
-    case 'document': return { path: '' }
-    case 'list': return { input: '', op: 'first' }
-    case 'iterate': return { input: '', parallel_nums: 1 }
-    case 'loop': return { count: 1 }
-    case 'memory': return { query: '' }
-    case 'store': return { content: '' }
+    // execHttp：headers 是**多行文本**（parseHeaderLines）；body 只认 {type:'json',data[]} | {type:'raw',raw}
+    case 'http': return { url: '', method: 'GET', headers: '', body: { type: 'json', data: [] }, authorization: { type: 'none', token: '', header: '' }, timeout_ms: 60000 }
+    // execDocument：input（回退 file）；先 Read 后 OCR，无 mode
+    case 'document': return { input: '' }
+    // execList：variable / filter_by / order_by / extract_by
+    case 'list': return {
+      variable: '',
+      filter_by: { enabled: false, key: '', op: 'is', value: '' },
+      order_by: { enabled: false, key: '', order: 'asc' },
+      extract_by: { enabled: false, serial: 'first' },
+    }
+    // execIterate：iterable（回退 input）/ is_parallel / parallel_nums（body 由画布 BodyPicker 写）
+    case 'iterate': return { iterable: '', is_parallel: false, parallel_nums: 1 }
+    // execLoop：count / while_conditions / break_conditions / continue_on_error
+    case 'loop': return { count: 1, while_conditions: [], break_conditions: [], continue_on_error: false }
+    case 'memory': return { query: '', max_bytes: 2048 }
+    // execStore：theme + summary 必填（缺失即 throw），tag / full（回退 content）可选
+    case 'store': return { theme: '', summary: '', tag: '', full: '' }
     case 'tool': return { tool: '', input: {} }
-    case 'subworkflow': return { workflow: '' }
-    case 'if': return { conditions: [{ left: '', op: '==', right: '' }] }
-    case 'join': return { mode: 'concat' }
-    case 'assign': return { var: '', value: '' }
-    case 'aggregate': return { output: '' }
-    case 'confirm': return { message: '' }
+    case 'subworkflow': return { workflow: '', inputs: {} }
+    // execIf / evalCondition：conditions 行形状 {var, op, value}
+    case 'if': return { conditions: [{ var: '', op: 'is', value: '' }], logical_operator: 'and' }
+    // execJoin：sources[]（选择器）+ mode + separator
+    case 'join': return { mode: 'concat', sources: [], separator: '\n' }
+    // execAssign：items: [{variable, value, operation}]
+    case 'assign': return { items: [{ variable: '', value: '', operation: 'over-write' }] }
+    // execAggregate：variables[] + output_type(string|array) + separator
+    case 'aggregate': return { variables: [], output_type: 'string', separator: '\n' }
+    case 'confirm': return { message: '', inputs: [] }
     case 'answer': return { template: '' }
-    case 'end': return { outputs: {} }
+    // end：**数组**（{name, variable?, selector}）——内核 for...of，对象会抛 TypeError
+    case 'end': return { outputs: [] }
     default: return {}
   }
 }
@@ -303,14 +336,16 @@ export function ancestorsOf(model: WorkflowModel, id: string): Set<string> {
   return seen
 }
 
-/** 变量选择器候选：上游可达节点 + inputs（ConfigPanel 消费） */
+/** 变量选择器候选：上游可达节点 + inputs（ConfigPanel 消费）。
+ *  每个上游节点固定给一条 `{{<id>}}`（整输出——内核 scalar 输出节点如 llm/template 的正确引用），
+ *  再按 suggestFields 给字段级候选。 */
 export function reachableVars(model: WorkflowModel, nodeId: string): Array<{ path: string; label: string }> {
   const out: Array<{ path: string; label: string }> = []
   const anc = ancestorsOf(model, nodeId)
   for (const n of model.nodes || []) {
     if (n.id === nodeId || !anc.has(n.id)) continue
-    const fields = suggestFields(n)
-    for (const f of fields) out.push({ path: `{{${n.id}.${f}}}`, label: `${n.label || n.id} · ${f}` })
+    out.push({ path: `{{${n.id}}}`, label: `${n.label || n.id} · 整输出` })
+    for (const f of suggestFields(n)) out.push({ path: `{{${n.id}.${f}}}`, label: `${n.label || n.id} · ${f}` })
   }
   for (const inp of model.inputs || []) {
     out.push({ path: `{{inputs.${inp.name}}}`, label: `输入 · ${inp.name}` })
@@ -318,28 +353,26 @@ export function reachableVars(model: WorkflowModel, nodeId: string): Array<{ pat
   return out
 }
 
-/** 节点输出的常见字段名（画布侧的启发式；内核输出为任意 JSON，取不到就整体引用） */
+/** 节点输出字段名（按 kernel/workflow-nodes.mjs 各 exec* 的 return 形状；取不到就整体引用） */
 export function suggestFields(node: NodeModel): string[] {
   switch (node.type) {
-    case 'llm': case 'answer': case 'template': case 'memory': return ['text', 'output']
-    case 'agent': return ['text', 'result']
-    case 'code': return ['result', 'output']
-    case 'http': return ['body', 'status', 'json']
-    case 'extract': return ['data']
-    case 'classify': return ['route', 'category']
-    case 'list': return ['items', 'value']
-    case 'document': return ['text', 'path']
-    case 'iterate': case 'loop': return ['items', 'output']
-    case 'tool': return ['result', 'output']
-    case 'subworkflow': return ['output']
-    case 'aggregate': case 'join': return ['value']
-    case 'assign': return ['var', 'value']
-    case 'if': return ['result']
+    case 'llm': case 'template': case 'answer': case 'tool': case 'code': case 'join': case 'aggregate': case 'iterate': return []
+    case 'memory': return ['text', 'keywords']
+    case 'agent': return ['text', 'iters', 'tool_uses']
+    case 'http': return ['status_code', 'body', 'headers']
+    case 'extract': return ['_raw']
+    case 'classify': return ['category', 'class_index', 'raw']
+    case 'list': return []
+    case 'document': return ['text']
+    case 'loop': return ['results', 'iterations', 'broken']
+    case 'subworkflow': return []
+    case 'assign': return ['var']
+    case 'if': return ['pass']
     case 'confirm': return ['action', 'comment']
-    case 'store': return ['ok']
+    case 'store': return ['ok', 'theme', 'tag']
     case 'start': return []
     case 'end': return []
-    default: return ['output']
+    default: return []
   }
 }
 
@@ -446,11 +479,17 @@ export function emptyModel(name: string): WorkflowModel {
   }
 }
 
-/** 画布中新节点的 id：n1/n2…（避开已占用与保留字） */
+/** 画布中新节点的 id：扫已有 `n<数字>` 取 **max+1**（不复用低位序号 → 与已有/历史 id 都不撞车）；
+ *  preferred 可用时优先用（NodePalette 传空串，走序号路径）。 */
 export function nextNodeId(model: WorkflowModel, preferred: string): string {
   const used = new Set((model.nodes || []).map((n) => n.id))
   if (preferred && !used.has(preferred)) return preferred
-  let i = 1
+  let max = 0
+  for (const id of used) {
+    const m = /^n(\d+)$/.exec(String(id))
+    if (m) max = Math.max(max, Number(m[1]))
+  }
+  let i = max + 1
   while (used.has(`n${i}`)) i++
   return `n${i}`
 }
