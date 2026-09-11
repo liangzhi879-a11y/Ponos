@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import {
   parseWorkflowMeta, listWorkflowMetas, writeWorkflowYml, listVersions, rollbackVersion,
   createWorkflow, deleteWorkflow, duplicateWorkflow, exportBundle, importBundle, readBindings, writeBindings,
+  recentRuns, assertSafeId,
 } from './workflow-store.mjs'
 
 const YML = `name: 周报生成
@@ -118,4 +119,85 @@ test('绑定与信任态读写', () => {
     writeBindings({ root, bindings: { agents: { 'material-writer': ['demo'] }, trusted: ['demo'] } })
     assert.deepEqual(readBindings({ root }).agents['material-writer'], ['demo'])
   } finally { cleanup() }
+})
+
+// —— 返工轮 1 新增断言 ——
+
+// 含 inputs: 里的 type: string、prompt 正文里的 "type: foo"、subagent_type、以及行内字符串字面量里的 type:
+const ANCHOR_YML = `name: 锚定
+triggers: 甲, 乙，丙
+inputs:
+  - {name: q, type: string, required: true}
+nodes:
+  - { id: n1, type: agent, label: "用 type: end 表示结束", config: { inputs: [{name:q,type:string}], prompt: "正文里的 type: foo 不算" } }
+  - id: n2
+    type: loop
+    label: 循环
+    config:
+      prompt: |
+        这里 type: fake 只是模板正文
+        subagent_type: implementer
+  - { id: n3, type: end }
+edges:
+  - { id: e1, source: n1, target: n2 }
+  - { id: e2, source: n2, target: n3 }
+`
+
+test('C1 nodeTypes 锚定 nodes 块：inputs/模板正文/config 里的 type: 不误报', () => {
+  const { root, cleanup } = mk()
+  try {
+    createWorkflow({ root, id: 'anchor', yml: ANCHOR_YML })
+    const { bundle } = exportBundle({ root, id: 'anchor' })
+    assert.deepEqual(bundle.manifest.nodeTypes, ['agent', 'loop', 'end'])
+    for (const bad of ['string', 'foo', 'fake', 'implementer', 'agent_type', 'subagent_type']) {
+      assert.ok(!bundle.manifest.nodeTypes.includes(bad), `nodeTypes 不得包含 ${bad}`)
+    }
+  } finally { cleanup() }
+})
+
+test('I1 triggers：逗号标量（CSV）与块列表均可解析', () => {
+  assert.deepEqual(parseWorkflowMeta(ANCHOR_YML).triggers, ['甲', '乙', '丙'])
+  assert.deepEqual(parseWorkflowMeta('name: x\ntriggers:\n  - a\n  - b\nnodes:\n  - { id: s, type: start }\n').triggers, ['a', 'b'])
+  assert.deepEqual(parseWorkflowMeta('name: x\ntriggers: [a, b]\nnodes:\n  - { id: s, type: start }\n').triggers, ['a', 'b'])
+  assert.deepEqual(parseWorkflowMeta('name: x\nnodes:\n  - { id: s, type: start }\n').triggers, [])
+})
+
+test('I2 recentRuns：缺 runsRoot 不抛，目录不存在返回空', () => {
+  assert.deepEqual(recentRuns({ id: 'a' }), [])
+  assert.deepEqual(recentRuns({ runsRoot: '', id: 'a' }), [])
+  const { home, cleanup } = mk()
+  try {
+    const runsRoot = join(home, 'workflow-runs')
+    assert.deepEqual(recentRuns({ runsRoot, id: 'a' }), [])
+    mkdirSync(join(runsRoot, 'a'), { recursive: true })
+    writeFileSync(join(runsRoot, 'a', '2026-09-11T10-00-00-000Z-run1.jsonl'), '{"status":"ok"}\n')
+    const runs = recentRuns({ runsRoot, id: 'a' })
+    assert.equal(runs.length, 1)
+    assert.equal(runs[0].status, 'ok')
+    assert.equal(runs[0].steps, 1)
+  } finally { cleanup() }
+})
+
+test('I3 rollbackVersion：ts 白名单校验挡住路径穿越', () => {
+  const { root, cleanup } = mk()
+  try {
+    createWorkflow({ root, id: 'demo', yml: YML })
+    writeWorkflowYml({ root, id: 'demo', yml: YML.replace('1.0.0', '2.0.0') })
+    assert.throws(() => rollbackVersion({ root, id: 'demo', ts: '../../..' }), /非法版本号/)
+    assert.throws(() => rollbackVersion({ root, id: 'demo', ts: '..' }), /非法版本号/)
+    assert.throws(() => rollbackVersion({ root, id: 'demo', ts: 'a/b' }), /非法版本号/)
+    const vers = listVersions({ root, id: 'demo' })
+    assert.equal(rollbackVersion({ root, id: 'demo', ts: vers[0].ts }).ok, true)
+  } finally { cleanup() }
+})
+
+test('I4 assertSafeId：Windows 设备名/尾点/尾空格被拒，非设备名前缀放行', () => {
+  for (const bad of ['nul', 'CON', 'aux', 'prn', 'com1', 'LPT9', 'nul.yml', 'a.']) {
+    assert.throws(() => assertSafeId(bad), /非法工作流 id/, `应拒绝 ${bad}`)
+  }
+  assert.throws(() => assertSafeId('a '), /非法工作流 id/)
+  assert.equal(assertSafeId('console'), 'console') // 不误伤 con 前缀
+  assert.equal(assertSafeId('spec-dev_v2'), 'spec-dev_v2')
+  const { root, cleanup } = mk()
+  try { assert.throws(() => createWorkflow({ root, id: 'com1', yml: YML }), /非法工作流 id/) } finally { cleanup() }
 })

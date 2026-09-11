@@ -15,13 +15,28 @@ const wfFile = (root, id) => join(wfDir(root, id), 'workflow.yml')
 const versionsDir = (root, id) => join(wfDir(root, id), 'versions')
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+const SAFE_TS = /^[0-9A-Za-z._-]{1,64}$/
+// Windows 保留设备名：`nul\workflow.yml` 会写进 NUL 设备或静默失写（仓库既往有 nul 事故记录）。
+// Windows 按「首个点之前」判名，故 `nul` 与 `nul.yml` 同样拒绝。
+const WINDOWS_DEVICE = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/
 // 保留字：这些 id 与 /workflows/<sub> 的动作子路由冲突（如 /workflows/run、/workflows/verify），
 // 必须禁止创建工作流时使用，否则该工作流永远打不开。
 export const RESERVED_IDS = new Set(['run', 'stop', 'confirm', 'runs', 'import', 'export', 'bindings', 'verify', 'validate'])
 export function assertSafeId(id) {
   const s = String(id || '')
   if (!SAFE_ID.test(s) || s.includes('..')) throw new Error(`非法工作流 id: ${id}`)
+  if (WINDOWS_DEVICE.test(s.toUpperCase()) || WINDOWS_DEVICE.test(s.split('.')[0].toUpperCase())) {
+    throw new Error(`非法工作流 id: ${id}（Windows 保留设备名）`)
+  }
+  if (/[. ]$/.test(s)) throw new Error(`非法工作流 id: ${id}（不得以点或空格结尾）`)
   if (RESERVED_IDS.has(s)) throw new Error(`工作流 id 不能使用保留字: ${id}（保留：${[...RESERVED_IDS].join('、')}）`)
+  return s
+}
+
+// 版本快照 ts 白名单：挡 `ts='../../..'` 拼出的穿越路径（Task 11 若把 HTTP 参数直传 ts 即成穿越读取）。
+export function assertSafeTs(ts) {
+  const s = String(ts || '')
+  if (!SAFE_TS.test(s) || s.includes('..')) throw new Error(`非法版本号: ${ts}`)
   return s
 }
 
@@ -39,6 +54,90 @@ function sectionCount(text, key) {
   return (body.match(/^\s*-\s*(\{)?\s*id:/gm) || []).length
 }
 
+// 按「深度 0 逗号」切分（跳过引号与括号嵌套）；用于内联映射 / 内联列表。
+function splitTopLevel(body) {
+  const parts = []
+  let depth = 0
+  let q = ''
+  let cur = ''
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i]
+    if (q) {
+      cur += c
+      if (c === '\\') { cur += body[++i] || ''; continue }
+      if (c === q) q = ''
+      continue
+    }
+    if (c === '"' || c === "'") { q = c; cur += c; continue }
+    if ('{[('.includes(c)) depth++
+    else if ('}])'.includes(c)) depth--
+    if (c === ',' && depth === 0) { parts.push(cur); cur = ''; continue }
+    cur += c
+  }
+  parts.push(cur)
+  return parts
+}
+
+// 内联映射 `{ id: x, type: y, ... }` 取 type 值；只认深度 0 的键，
+// 因此 `config: { inputs: [{name:q, type:string}] }` 里的 type 不会被误认。
+function inlineMapType(body) {
+  for (const p of splitTopLevel(String(body).replace(/^\s*\{|\}\s*$/g, ''))) {
+    const m = p.match(/^\s*([A-Za-z_][\w-]*)\s*:\s*(.+?)\s*$/)
+    if (m && m[1] === 'type') return m[2].replace(/^["']|["']$/g, '').split(/[\s,]/)[0]
+  }
+  return ''
+}
+
+// 从 nodes: 块提取节点类型。只认「节点条目的直接键」：内联 `- { id: x, type: y }`，
+// 或块式条目里与 `id:` 同缩进的 `type: y`（更深缩进的都属节点 config / 子块）。
+// 顶层或节点内 inputs: 块、config 里的块标量正文（prompt/system）、字符串字面量里的
+// "type:" 一律不认——manifest.nodeTypes 是导入侧兼容性门禁（Task 11/12）的输入，
+// 误报会把合法包判成需要不存在类型的节点。
+function nodeTypesOf(text) {
+  const lines = String(text).split(/\r?\n/)
+  const out = []
+  const start = lines.findIndex((l) => /^nodes:\s*$/.test(l))
+  if (start < 0) {
+    const one = lines.find((l) => /^nodes:\s*\[/.test(l))
+    if (one) {
+      for (const item of splitTopLevel(one.replace(/^nodes:\s*\[/, '').replace(/\]\s*(?:#.*)?$/, ''))) {
+        const t = inlineMapType(item)
+        if (t) out.push(t)
+      }
+    }
+    return [...new Set(out)]
+  }
+  let keyIndent = -1
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line.trim() || /^\s*#/.test(line)) continue
+    if (/^[A-Za-z_][A-Za-z0-9_-]*\s*:/.test(line)) break // 回到顶层键 → nodes 块结束
+    const ind = line.match(/^\s*/)[0].length
+    const dash = line.match(/^(\s*)-\s+/)
+    if (dash) {
+      const entry = line.slice(dash[0].length)
+      keyIndent = dash[0].length
+      const inline = entry.match(/^\{(.*)\}\s*$/)
+      if (inline) {
+        const t = inlineMapType(inline[1])
+        if (t) out.push(t)
+        keyIndent = -1
+        continue
+      }
+      const key = entry.match(/^([A-Za-z_][\w-]*)\s*:\s*(.*)$/)
+      if (!key || (key[1] !== 'id' && key[1] !== 'name')) keyIndent = -1
+      if (key && key[1] === 'type') { const v = key[2].trim().split(/[\s,]/)[0].replace(/^["']|["']$/g, ''); if (v) out.push(v) }
+      continue
+    }
+    if (keyIndent < 0) continue
+    if (ind < keyIndent) { keyIndent = -1; continue }
+    if (ind !== keyIndent) continue // 更深缩进 = 节点子块（config/inputs/块标量正文）
+    const k = line.trim().match(/^type\s*:\s*(.+?)\s*$/)
+    if (k) { const v = k[1].split(/[\s,]/)[0].replace(/^["']|["']$/g, ''); if (v) out.push(v) }
+  }
+  return [...new Set(out)]
+}
+
 // 轻量元数据（仅列表展示；valid 由宿主 validate 覆盖，缺省 true）
 export function parseWorkflowMeta(yml) {
   const text = String(yml || '')
@@ -51,13 +150,19 @@ export function parseWorkflowMeta(yml) {
     const m = text.match(new RegExp('^' + key + ':\\s*\\n((?:\\s*-\\s*.+\\n?)+)', 'm'))
     return m ? m[1].split('\n').map((l) => l.replace(/^\s*-\s*/, '').trim()).filter(Boolean) : []
   }
+  // DSL v2 裸标量写法：`triggers: spec 开发, spec-dev`（逗号分隔，中英文逗号均可）
+  const csvList = (key) => {
+    const m = text.match(new RegExp('^' + key + ':[ \\t]*([^\\[\\n]+)', 'm'))
+    if (!m) return []
+    return m[1].replace(/\s*$/, '').split(/[,，]/).map((s) => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean)
+  }
   const exposeMode = (text.match(/^expose:\s*\{\s*mode:\s*([a-z]+)/m) || text.match(/^expose:\s*\n(?:.*\n)*?\s+mode:\s*([a-z]+)/m) || [])[1]
   const toolName = (text.match(/tool_name:\s*(\S+)/) || [])[1] || ''
   return {
     name: grab(text, 'name'),
     description: grab(text, 'description'),
     version: grab(text, 'version'),
-    triggers: inlineList('triggers').length ? inlineList('triggers') : nlList('triggers'),
+    triggers: inlineList('triggers').length ? inlineList('triggers') : (nlList('triggers').length ? nlList('triggers') : csvList('triggers')),
     expose: { mode: exposeMode || 'private', ...(toolName ? { tool_name: toolName.replace(/["',}]/g, '') } : {}) },
     nodeCount: sectionCount(text, 'nodes'),
     edgeCount: sectionCount(text, 'edges'),
@@ -149,6 +254,8 @@ export function listVersions({ root, id }) {
 }
 
 export function rollbackVersion({ root, id, ts }) {
+  assertSafeId(id)
+  assertSafeTs(ts)
   const p = join(versionsDir(root, id), `${ts}.yml`)
   if (!existsSync(p)) return { ok: false, error: `版本不存在: ${ts}` }
   const yml = readFileSync(p, 'utf-8')
@@ -163,7 +270,7 @@ export function exportBundle({ root, id }) {
     schemaVersion: SCHEMA_VERSION,
     exportedAt: new Date().toISOString(),
     workflow: yml,
-    manifest: { kernelMinVersion: '0.2', requiredTools: [], nodeTypes: [...new Set((yml.match(/type:\s*([a-z_]+)/g) || []).map((s) => s.split(':')[1].trim()))] },
+    manifest: { kernelMinVersion: '0.2', requiredTools: [], nodeTypes: nodeTypesOf(yml) },
   }
   return { bundle, filename: `${id}.yfwflow` }
 }
@@ -196,8 +303,9 @@ export function writeBindings({ root, bindings }) {
 }
 
 export function recentRuns({ runsRoot, id, name = '', limit = 20 }) {
-  const dir = join(runsRoot, name || id)
+  if (!runsRoot) return []
   try {
+    const dir = join(runsRoot, name || id)
     return readdirSync(dir).filter((f) => f.endsWith('.jsonl')).sort().reverse().slice(0, limit)
       .map((f) => {
         const p = join(dir, f)
