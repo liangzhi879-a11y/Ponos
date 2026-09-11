@@ -15,6 +15,7 @@ import { RailNav } from './RailNav'
 import { SecondPanel } from './SecondPanel'
 import { AgentsPanel } from '@/components/agents/AgentsPanel'
 import { SkillsPanel } from '@/components/skills/SkillsPanel'
+import { WorkflowsPanel } from '@/components/workflows/WorkflowsPanel'
 import { StatusBar } from './StatusBar'
 import { ChatWindow } from '@/components/chat/ChatWindow'
 import { ChatInput } from '@/components/chat/ChatInput'
@@ -171,6 +172,9 @@ export function WorkShell({ onGoCockpit }: WorkShellProps) {
           <AgentsPanel />
         ) : rail === 'skills' ? (
           <SkillsPanel />
+        ) : rail === 'workflows' ? (
+          // Task 13：第五 rail —— 工作流列表 ⇄ 画布编辑器（占满 work 区，不经 SecondPanel）
+          <WorkflowsPanel />
         ) : (
           <>
         <SecondPanel />

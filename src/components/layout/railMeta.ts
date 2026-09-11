@@ -10,7 +10,9 @@
 //  - task=SquareKanban：TaskListPanel 空态装饰（同「任务」语义，允许）。
 //  - agents=Bot：AgentsPanel 标题/助手与系统角色头像/History 预览行/warning agent_spec 均指「AI 实体」身份（允许）。
 //  - skills=Puzzle：Settings 技能子页/技能设置头（同「技能」语义，允许）。
-import { MessageSquare, SquareKanban, Bot, Puzzle, type LucideIcon } from 'lucide-react'
+//  - workflows=Workflow（Task 13 第五 rail）：图标选 lucide 的 Workflow（节点图语义），
+//    与既有四图标不重复；WorkflowsPanel/画布节点卡片不重复用图标（只用文字徽标）。
+import { MessageSquare, SquareKanban, Bot, Puzzle, Workflow, type LucideIcon } from 'lucide-react'
 import type { RailId } from '@/stores/viewStore'
 
 export interface RailMeta {
@@ -24,6 +26,7 @@ export const RAIL: readonly RailMeta[] = [
   { id: 'task', icon: SquareKanban, labelKey: 'rail.task' },
   { id: 'agents', icon: Bot, labelKey: 'rail.agents' },
   { id: 'skills', icon: Puzzle, labelKey: 'rail.skills' },
+  { id: 'workflows', icon: Workflow, labelKey: 'rail.workflows' },
 ]
 
 /** 非法/未知 rail id 兜底 → 'task'（与 viewStore.sanitizeRail 同策略，供宿主路由防护） */
