@@ -50,5 +50,61 @@ test('serialize 稳定性 + 幂等（已是模型形态时不丢 config）', () 
   const once = toModel(MODEL)
   const twice = toModel(once)
   assert.deepEqual(twice.nodes.find((n) => n.id === 'ask').config, once.nodes.find((n) => n.id === 'ask').config)
-  assert.match(serializeWorkflow(once), /prompt: 回答：\{\{inputs\.q\}\}/)
+  // 含 `{}` 的值必加引号（流式上下文中 `{{...}}` 是括号，裸写会被当嵌套结构）
+  assert.match(serializeWorkflow(once), /prompt: "回答：\{\{inputs\.q\}\}"/)
+})
+
+// —— 复杂值往返（C1/C2）：ASCII 逗号、中文引号、`{{inputs.x}}`、换行、Windows 路径、
+// 含 `:` 与 `#` 的值、数字/布尔型字符串、空容器、嵌套对象 —— 一次性踩完引号与转义。
+const PROMPT = '你好：「世界」, 第二行\n{{inputs.q}} 与 #注释, 结尾\nWindows 路径 D:\\a\\b\n含冒号: 值\t尾 '
+const COMPLEX = {
+  name: 'complex, demo', description: 'a: b # c', version: '2.0.0',
+  triggers: ['每日报表', 'a,b', ' 留白 '],
+  trigger_config: { manual: true, note: 'x, y' },
+  settings: { max_parallel: 4, flags: [], env: {} },
+  inputs: [{ name: 'q', type: 'string', required: true, description: '问题, 含逗号' }],
+  nodes: [
+    { id: 'start', type: 'start', label: '开始' },
+    { id: 'ask', type: 'llm', label: '逗号, 与「引号」', position: { x: 240, y: 0 }, prompt: PROMPT,
+      note: 'a: b', answer: 'say "hi", ok', path: 'D:\\a\\b', num: '42', boolText: 'true', empty: '',
+      retry: { max: 2, delay_ms: 500, on_error: 'fail' },
+      http: { url: 'http://x/?a=1,2', headers: { 'X-Test': 'a: b', 'X,Comma': '[x]' } },
+      tags: [], opts: {},
+      outputs: [{ name: 'text', selector: '{{ask}}' }] },
+    { id: 'done', type: 'end', label: '结束', position: { x: 480, y: 0 } },
+  ],
+  edges: [{ id: 'e1', source: 'start', target: 'ask' }, { id: 'e2', source: 'ask', target: 'done' }],
+  expose: { mode: 'public', tool_name: 'run_demo' },
+  permissions: { tools: ['Read'], network: false },
+}
+
+test('serialize → parse 往返：复杂值深比较（逗号/引号/换行/路径/冒号井号/空容器）', () => {
+  const yml = serializeWorkflow(COMPLEX)
+  const back = normalizeWorkflow(parseYaml(yml))
+  assert.deepEqual(back, normalizeWorkflow(COMPLEX), `往返失真：\n${yml}`)
+  const ask = back.nodes.find((n) => n.id === 'ask')
+  assert.equal(ask.prompt, PROMPT, '多行 prompt 的换行必须还原（非字面 \\n）')
+  assert.equal(ask.answer, 'say "hi", ok')
+  assert.equal(ask.path, 'D:\\a\\b', 'Windows 路径的反斜杠必须还原')
+  assert.equal(ask.note, 'a: b')
+  assert.equal(ask.num, '42', '数字型字符串不得被解析成数字')
+  assert.equal(ask.boolText, 'true', '布尔型字符串不得被解析成布尔')
+  assert.equal(ask.empty, '')
+  assert.deepEqual(ask.http, { url: 'http://x/?a=1,2', headers: { 'X-Test': 'a: b', 'X,Comma': '[x]' } })
+  assert.deepEqual(ask.tags, [])
+  assert.deepEqual(ask.opts, {})
+  assert.deepEqual(back.edges.map((e) => `${e.source}->${e.target}`), ['start->ask', 'ask->done'])
+  assert.deepEqual(validateWorkflow(back).errors, [])
+})
+
+test('serialize → parse 往返：空数组/空对象不丢型（I2）', () => {
+  const model = { name: 'empty', trigger_config: {}, settings: {}, inputs: [], nodes: [{ id: 'a', type: 'start' }], edges: [] }
+  const yml = serializeWorkflow(model)
+  assert.match(yml, /^inputs: \[\]$/m)
+  assert.match(yml, /^edges: \[\]$/m)
+  const back = normalizeWorkflow(parseYaml(yml))
+  assert.deepEqual(back.inputs, [], 'inputs: [] 须还原为数组')
+  assert.deepEqual(back.edges, [], 'edges: [] 须还原为数组（裸 `edges:` 会被解析成 {} → LEGACY_DSL）')
+  assert.deepEqual(back.settings, {})
+  assert.deepEqual(validateWorkflow(back).errors.filter((e) => e.code === 'LEGACY_DSL'), [])
 })

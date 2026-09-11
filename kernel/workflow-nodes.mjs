@@ -17,6 +17,8 @@
 // 子图（loop/iterate body）递归由本模块自带的 runBody 完成——引擎不注入 ctx.runBody。
 
 import { createContext, runInContext } from 'node:vm'
+import { realpathSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import { streamMessages } from './api.mjs'
 import { buildRelevantMemory, appendMemoryEntry } from './memory.mjs'
 import { renderTemplate, resolvePath, evalCondition } from './workflow-dsl.mjs'
@@ -412,15 +414,48 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
   // 注意：grant 的存在即"唯一判据"——一旦 ctx.grant 提供，权限不再回落 permissionGate
   // （授权清单未列出的工具一律拒绝，不会因有审批门而被交互放行）。
   const WRITE_TOOLS = new Set(['Write', 'Edit'])
+  // 写入落点归一化（I1）：朴素前缀比较只看字面串，`<授权目录>/../evil.txt` 会被判为
+  // "在授权目录之下"而放行（真实落点已越界）。这里 resolve 消解 `..`/相对段，再取
+  // realpath（消解符号链接）；目标尚不存在时用最近存在祖先的 realpath 拼余段，
+  // 保证"新建文件"同样可比。
+  function resolveReal(p, base) {
+    const abs = resolve(base, String(p).replace(/\\/g, '/'))
+    let cur = abs
+    const tail = []
+    for (let i = 0; i < 64; i++) {
+      try { const real = realpathSync(cur); return tail.length ? join(real, ...tail) : real } catch { /* 不存在：上溯 */ }
+      const parent = dirname(cur)
+      if (parent === cur) break
+      tail.unshift(basename(cur))
+      cur = parent
+    }
+    return abs
+  }
+  // 比较用归一化：统一 `/`、去尾斜杠、Windows 下不区分大小写
+  const cmpPath = (p) => {
+    const s = String(p).replace(/\\/g, '/').replace(/\/+$/, '')
+    return process.platform === 'win32' ? s.toLowerCase() : s
+  }
+  // isInside：目标等于授权目录或在其次级之下（前缀比较必须按 **目录段** 边界，避免
+  // `<dir>2` 误判为在 `<dir>` 之下）
+  const isInside = (target, dir) => {
+    const t = cmpPath(target)
+    const d = cmpPath(dir)
+    return t === d || t.startsWith(d + '/')
+  }
   function grantDecision(grant, name, input) {
     if (!grant) return null
     const tools = Array.isArray(grant.tools) ? grant.tools : []
     if (!tools.includes(name)) return { denied: true, message: `工具 ${name} 不在本次运行的授权清单内（拒绝执行）` }
     if (WRITE_TOOLS.has(name)) {
-      const dirs = Array.isArray(grant.write_dirs) ? grant.write_dirs.map((d) => String(d).replace(/\\/g, '/').replace(/\/$/, '')) : []
-      const p = String(input?.file_path || '').replace(/\\/g, '/')
-      if (p && dirs.length && !dirs.some((d) => p.startsWith(d + '/'))) {
-        return { denied: true, message: `写入路径不在授权目录内：${input.file_path}（授权目录：${dirs.join('、')}）` }
+      const rawDirs = Array.isArray(grant.write_dirs) ? grant.write_dirs.map((d) => String(d)) : []
+      const p = input?.file_path
+      // write_dirs 为空 = 不设路径约束（brief 语义；报告顾虑 1 已自陈）
+      if (p && rawDirs.length) {
+        const target = resolveReal(p, process.cwd())
+        if (!rawDirs.map((d) => resolveReal(d, process.cwd())).some((d) => isInside(target, d))) {
+          return { denied: true, message: `写入路径不在授权目录内：${input.file_path}（授权目录：${rawDirs.join('、')}）` }
+        }
       }
     }
     return { denied: false }

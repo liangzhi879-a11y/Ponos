@@ -9,7 +9,7 @@
 process.env.PONOS_MOCK_API = '1'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, existsSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createNodeExecutor } from '../kernel/workflow-nodes.mjs'
@@ -42,6 +42,30 @@ test('grant：write_dirs 约束写入落点', async () => {
     assert.equal(outside.isError, true, '越界写入应被拒绝')
     assert.equal(outside.ok, true)
     assert.match(String(outside.error ?? outside.output), /授权目录/)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('grant：write_dirs 归一化后拒 `..` 穿越（<dir>/../evil.txt 不得落盘）', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wf-grant4-'))
+  const okDir = join(root, 'ok')
+  try {
+    mkdirSync(okDir, { recursive: true })
+    const registry = createToolRegistry({ cwd: root, addDirs: [root], skipPermissions: true })
+    const exec = createNodeExecutor({ registry, getModel: () => 'mock' })
+    const grant = { tools: ['Write'], write_dirs: [okDir], network: false }
+    // 朴素前缀比较会把它判为"在 ok 之下"而放行；归一化后落点是 <root>/evil.txt（越界）
+    const escaped = await exec({ id: 'w', type: 'tool', tool: 'Write', input: { file_path: join(okDir, '..', 'evil.txt'), content: 'x' } }, { inputs: {}, vars: {}, var: {}, grant })
+    assert.equal(escaped.isError, true, '`<dir>/../evil.txt` 必须被拒绝')
+    assert.equal(escaped.ok, true)
+    assert.match(String(escaped.error ?? escaped.output), /授权目录/)
+    assert.equal(existsSync(join(root, 'evil.txt')), false, '越界文件不得真的落盘')
+    // 归一化后仍在授权目录之内 → 放行（且真写了）
+    const inside = await exec({ id: 'w2', type: 'tool', tool: 'Write', input: { file_path: join(okDir, 'sub', '..', 'ok.txt'), content: 'y' } }, { inputs: {}, vars: {}, var: {}, grant })
+    assert.equal(inside.isError, false, `授权目录内的写入应放行：${JSON.stringify(inside)}`)
+    assert.equal(existsSync(join(okDir, 'ok.txt')), true, '授权目录内写入须真的落盘')
+    // 同前缀兄弟目录仍须拒绝（目录段边界，不能退化成纯字符串前缀）
+    const sibling = await exec({ id: 'w3', type: 'tool', tool: 'Write', input: { file_path: join(root, 'ok2', 'x.txt'), content: 'z' } }, { inputs: {}, vars: {}, var: {}, grant })
+    assert.equal(sibling.isError, true, '同前缀兄弟目录 ok2 不得被判为在 ok 之下')
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 

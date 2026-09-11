@@ -40,13 +40,22 @@ function splitFlow(inner) {
     const parts = []
     let depth = 0
     let quote = ''
+    let esc = false
     let cur = ''
     for (const ch of text) {
-      if (respectQuotes && quote) { cur += ch; if (ch === quote) quote = ''; continue }
+      if (respectQuotes && quote) {
+        cur += ch
+        // 双引号内的 `\` 转义：`\"` 是内容而非引号收尾（序列化侧产出 JSON 转义串，
+        // 不支持转义会把 `a\"b, c` 里的逗号当成流式分隔符 → 值被切碎）。
+        if (esc) { esc = false; continue }
+        if (quote === '"' && ch === '\\') { esc = true; continue }
+        if (ch === quote) quote = ''
+        continue
+      }
       if (respectQuotes && (ch === '"' || ch === "'")) {
         // `"` 沿用旧行为（任何位置都可起始）；`'` 仅限 token 起始。
         const prev = cur ? cur[cur.length - 1] : ''
-        if (ch === '"' || !/[\w\u4e00-\u9fa5]/.test(prev)) { quote = ch; cur += ch; continue }
+        if (ch === '"' || !/[\w\u4e00-\u9fa5]/.test(prev)) { quote = ch; esc = false; cur += ch; continue }
       }
       if (ch === '[' || ch === '{') depth++
       else if (ch === ']' || ch === '}') depth--
@@ -61,9 +70,24 @@ function splitFlow(inner) {
   return parts
 }
 
+// YAML 双引号标量的转义还原（C2）：序列化侧用 JSON.stringify 产出 `"a\nb"`，
+// 只做首尾切片会把 `\n` 当字面量留下 → 多行 prompt / Windows 路径 `D:\a\b` 往返失真。
+// JSON 字符串是 YAML 双引号标量的子集，故优先 JSON.parse（正确处理 \uXXXX 与代理对），
+// 非合法 JSON 串（含裸控制字符/未知转义）再退化为手写还原。
+function unescapeDouble(s) {
+  try { return JSON.parse(s) } catch { /* 回退手写还原 */ }
+  return s.slice(1, -1).replace(/\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|[\s\S])/g, (_, e) => {
+    const c = e[0]
+    if (c === 'u' || c === 'x') return String.fromCharCode(parseInt(e.slice(1), 16))
+    return { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', v: '\v', '0': '\0', '"': '"', "'": "'", '\\': '\\', '/': '/' }[c] ?? c
+  })
+}
+
 export function unquote(v) {
   const s = String(v).trim()
-  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) return s.slice(1, -1)
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    return s.startsWith('"') ? unescapeDouble(s) : s.slice(1, -1)
+  }
   if (s.startsWith('[') && s.endsWith(']')) {
     const inner = s.slice(1, -1).trim()
     if (!inner) return []
@@ -81,7 +105,9 @@ export function unquote(v) {
     for (const part of splitFlow(inner)) {
       if (part.indexOf(':') < 0) return s
       const [k, val] = splitKV(part)
-      obj[k] = val === undefined ? {} : unquote(val)
+      // 键也可能被引号包裹（`{"a b": 1}`）：同样按标量规则还原，否则键名带引号往返丢键
+      const key = /^["']/.test(k) ? unquote(k) : k
+      obj[key] = val === undefined ? {} : unquote(val)
     }
     return obj
   }
@@ -367,23 +393,42 @@ export function toModel(wf) {
 }
 
 // —— 极简 YAML 输出（只覆盖 DSL 结构；稳定键序，便于版本 diff）——
-const needsQuote = (s) => /^$|^[\s>|*&!%@`{}\[\],#?:-]|[:#]\s|\n|^\d+(\.\d+)?$|^(true|false|null|~)$/.test(String(s))
+// 裸标量安全性：**上下文感知**（C1）。同一份输出去处有两种上下文——块（`k: v` / `- v`）
+// 与流式（`[a, b]` / `{k: v}`），取交集判定：凡含 `,[]{}`（流式切分与括号嵌套）、
+// `:`/`#`（键值分隔与注释起始）、`'`/`"`/`\`（引号与转义歧义）、换行/制表符、
+// 首尾空白，或整体会被解析成数字/布尔的，一律加引号。旧实现只看**首字符**，
+// 于是 `Hello, world`、`a, b` 之类进流式容器即被切成多项、值被判成对象/字符串。
+const PLAIN_UNSAFE = /[,\[\]{}:#'"\\]|[\n\r\t]|^\s|\s$/
+const needsQuote = (s) => s === '' || PLAIN_UNSAFE.test(s) || /^[>|*&!%@`-]/.test(s)
+  || /^(true|false|null|~)$/i.test(s) || /^[-+]?\d+(\.\d+)?([eE][-+]?\d+)?$/.test(s)
 function scalar(v) {
   if (v === null || v === undefined) return 'null'
   if (typeof v === 'number' || typeof v === 'boolean') return String(v)
   const s = String(v)
   return needsQuote(s) ? JSON.stringify(s) : s
 }
-const inlineObj = (o) => `{${Object.entries(o).map(([k, v]) => `${k}: ${typeof v === 'object' && v !== null ? JSON.stringify(v) : scalar(v)}`).join(', ')}}`
+// 键：标识符形态裸写（与旧输出一致，diff 友好），否则加引号（解析侧 unquote 还原键名）
+const flowKey = (k) => (/^[A-Za-z_$][\w$.-]*$/.test(String(k)) ? String(k) : JSON.stringify(String(k)))
+// 流式值：递归输出嵌套集合——旧实现对嵌套对象直接 JSON.stringify，其引号键
+// （`{"max":2}`）会被解析成字面键名 `"max"`，往返即丢键。
+function flowValue(v) {
+  if (Array.isArray(v)) return `[${v.map(flowValue).join(', ')}]`
+  if (v && typeof v === 'object') {
+    return `{${Object.entries(v).map(([k, x]) => `${flowKey(k)}: ${flowValue(x)}`).join(', ')}}`
+  }
+  return scalar(v)
+}
+const inlineObj = (o) => flowValue(o)
 function blockLines(value, indent) {
   const pad = ' '.repeat(indent)
   if (Array.isArray(value)) {
     return value.flatMap((it) => {
       if (it && typeof it === 'object') {
         const ent = Object.entries(it)
+        if (!ent.length) return [`${pad}- {}`]
         const [k0, v0] = ent[0]
-        const first = `${pad}- ${k0}: ${v0 && typeof v0 === 'object' ? inlineObj(v0) : scalar(v0)}`
-        const rest = ent.slice(1).map(([k, v]) => `${pad}  ${k}: ${v && typeof v === 'object' ? inlineObj(v) : scalar(v)}`)
+        const first = `${pad}- ${flowKey(k0)}: ${flowValue(v0)}`
+        const rest = ent.slice(1).map(([k, v]) => `${pad}  ${flowKey(k)}: ${flowValue(v)}`)
         return [first, ...rest]
       }
       return [`${pad}- ${scalar(it)}`]
@@ -394,12 +439,14 @@ function blockLines(value, indent) {
       if (v && typeof v === 'object') {
         const inner = v
         if (Array.isArray(inner) && inner.every((x) => x && typeof x === 'object' && !Array.isArray(x))) {
-          return [`${pad}${k}:`, ...blockLines(inner, indent + 2)].join('\n')
+          if (!inner.length) return `${pad}${flowKey(k)}: []`
+          return [`${pad}${flowKey(k)}:`, ...blockLines(inner, indent + 2)].join('\n')
         }
-        if (Array.isArray(inner)) return `${pad}${k}: [${inner.map(scalar).join(', ')}]`
-        return `${pad}${k}: ${inlineObj(inner)}`
+        if (Array.isArray(inner)) return `${pad}${flowKey(k)}: ${flowValue(inner)}`
+        if (!Object.keys(inner).length) return `${pad}${flowKey(k)}: {}`
+        return `${pad}${flowKey(k)}: ${flowValue(inner)}`
       }
-      return `${pad}${k}: ${scalar(v)}`
+      return `${pad}${flowKey(k)}: ${scalar(v)}`
     })
   }
   return [`${pad}${scalar(value)}`]
@@ -414,9 +461,16 @@ export function serializeWorkflow(input) {
   if (model.triggers) out.push(`triggers: [${model.triggers.map(scalar).join(', ')}]`)
   out.push('trigger_config: ' + inlineObj(model.trigger_config || { manual: true }))
   if (model.settings) out.push('settings: ' + inlineObj(model.settings))
-  if (model.inputs?.length) out.push('inputs:', ...blockLines(model.inputs, 2))
-  out.push('nodes:', ...blockLines(model.nodes, 2))
-  out.push('edges:', ...blockLines(model.edges || [], 2))
+  // 空数组显式写成 `k: []`（I2）：裸 `k:` 会被解析成 `{}`，`edges` 就此被误判旧格式
+  // （validateWorkflow → LEGACY_DSL），`inputs` 则丢型成对象。
+  if (Array.isArray(model.inputs)) {
+    if (model.inputs.length) out.push('inputs:', ...blockLines(model.inputs, 2))
+    else out.push('inputs: []')
+  }
+  if (model.nodes.length) out.push('nodes:', ...blockLines(model.nodes, 2))
+  else out.push('nodes: []')
+  if (model.edges.length) out.push('edges:', ...blockLines(model.edges, 2))
+  else out.push('edges: []')
   if (model.expose) out.push('expose: ' + inlineObj(model.expose))
   if (model.permissions) out.push('permissions: ' + inlineObj(model.permissions))
   return out.join('\n') + '\n'
