@@ -60,9 +60,9 @@ export function DiagnosticPanel() {
 
   return (
     <Dialog open={diagOpen} onOpenChange={v => !v && closeDiagnostics()}>
-      {/* 4 个直接子节点：头部/状态条/滚动区/工具栏，grid 需 4 行（brief 为 3 行会把
-          状态条塞进 1fr 行导致布局错位，已适配为 auto_auto_1fr_auto） */}
-      <DialogContent size="lg" className="grid grid-rows-[auto_auto_1fr_auto] max-h-[85vh]">
+      {/* 布局由 .ci（flex-col）承担：头部/状态条/滚动区(flex-1)/工具栏 4 段，
+          高度超限时滚动区内部滚动，footer 不被 clip-path 裁掉 */}
+      <DialogContent size="lg" className="max-h-[85vh]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Activity className="w-5 h-5" />

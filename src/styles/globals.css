@@ -821,24 +821,32 @@ html.speed-mode[class*="light-glass"] {
 
 /* ============ 设计语言（spec 2026-09-10）：单对角切角 / 细线 / 光效白名单 / 微标 ============
    切角 = 单对角（左上+右下）；1px 外层即细线（hairline）；内容放 >.ci 内层。
-   不切角：tooltip / chip / 头像 / 开关 / 状态点 / 进度轨道 / 代码块。 */
-.cut{position:relative;padding:1px;background:var(--border-default);
+   不切角：tooltip / chip / 头像 / 开关 / 状态点 / 进度轨道 / 代码块。
+   position:relative 单独成条且仅作兜底（承载 .ci 与其内 absolute 子元素）：
+   元素自带 fixed/absolute/sticky/static 工具类时必须让位——否则会覆盖 Tailwind
+   的 .fixed/.absolute（同特异度、本文件在 utilities 之后 → 源序靠后获胜），
+   导致所有 Radix Dialog 与 fixed/absolute 浮层失去定位、渲染到视口外。 */
+.cut{padding:1px;background:var(--border-default);
   clip-path:polygon(12px 0,100% 0,100% calc(100% - 12px),calc(100% - 12px) 100%,0 100%,0 12px);}
+.cut:not(.fixed):not(.absolute):not(.sticky):not(.static){position:relative;}
 .cut>.ci{
   clip-path:polygon(11px 0,100% 0,100% calc(100% - 11px),calc(100% - 11px) 100%,0 100%,0 11px);
   background:var(--bg-elevated);}
-.cut-btn{position:relative;padding:1px;background:var(--border-default);
+.cut-btn{padding:1px;background:var(--border-default);
   clip-path:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px);}
+.cut-btn:not(.fixed):not(.absolute):not(.sticky):not(.static){position:relative;}
 .cut-btn>.ci{
   clip-path:polygon(9px 0,100% 0,100% calc(100% - 9px),calc(100% - 9px) 100%,0 100%,0 9px);
   background:var(--bg-elevated);}
-.cut-sm{position:relative;padding:1px;background:var(--border-default);
+.cut-sm{padding:1px;background:var(--border-default);
   clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px);}
+.cut-sm:not(.fixed):not(.absolute):not(.sticky):not(.static){position:relative;}
 .cut-sm>.ci{
   clip-path:polygon(7px 0,100% 0,100% calc(100% - 7px),calc(100% - 7px) 100%,0 100%,0 7px);
   background:var(--bg-elevated);}
-.cut-xs{position:relative;padding:1px;background:var(--border-default);
+.cut-xs{padding:1px;background:var(--border-default);
   clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px);}
+.cut-xs:not(.fixed):not(.absolute):not(.sticky):not(.static){position:relative;}
 .cut-xs>.ci{
   clip-path:polygon(5px 0,100% 0,100% calc(100% - 5px),calc(100% - 5px) 100%,0 100%,0 5px);
   background:var(--bg-elevated);}

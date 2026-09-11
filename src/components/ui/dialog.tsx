@@ -48,7 +48,9 @@ const DialogContent = React.forwardRef<
         ref={ref}
         className={cn(
           'fixed left-[50%] top-[50%] z-50 translate-x-[-50%] translate-y-[-50%]',
-          'w-full cut cut-modal p-0',
+          // 默认 85vh 上限：内容超高时由 .ci（max-height:inherit）+ DialogBody 滚动兜住，
+          // 否则 clip-path 会把超出部分连同 footer 一起裁掉
+          'w-full max-h-[85vh] cut cut-modal p-0',
           'data-[state=open]:animate-dialog-in data-[state=closed]:animate-dialog-out',
           'text-primary',
           sizes[size],
@@ -60,13 +62,15 @@ const DialogContent = React.forwardRef<
         }}
         {...props}
       >
-        {/* ci 内层：modal 底 + 磨砂 blur（背景移出根，根只负责切角细线） */}
+        {/* ci 内层：modal 底 + 磨砂 blur（背景移出根，根只负责切角细线）；
+            max-height:inherit 承接根的 85vh 上限，使 flex 子项（滚动区）获得确定高度 */}
         <div
-          className="ci flex flex-col"
+          className="ci flex flex-col min-h-0"
           style={{
             background: 'var(--modal-bg)',
             backdropFilter: 'blur(var(--popover-blur))',
             WebkitBackdropFilter: 'blur(var(--popover-blur))',
+            maxHeight: 'inherit',
           }}
         >
         {children}
@@ -120,7 +124,9 @@ const DialogDescription = React.forwardRef<
 DialogDescription.displayName = 'DialogDescription'
 
 const DialogBody = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-  <div className={cn('px-6 py-4', className)} {...props} />
+  // flex-1 + min-h-0：内容超高时由 body 内部滚动，header/footer 保持可见
+  // （.ci 承接 max-height 上限，clip-path 不会裁掉 footer）
+  <div className={cn('flex-1 min-h-0 overflow-y-auto px-6 py-4', className)} {...props} />
 )
 
 const DialogFooter = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
