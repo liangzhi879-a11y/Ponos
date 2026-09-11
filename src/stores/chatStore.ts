@@ -7,6 +7,7 @@ import { getDefaultHome } from '@/lib/config'
 import { useHealthStore } from '@/stores/healthStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { loadConversationMessages as loadTranscriptMessages } from '@/lib/transcriptLoader'
+import { generateChatTitle, truncateTitle } from '@/lib/titleGen'
 import { pushLaneNote as pushLane, dismissLaneNote as dismissLane } from '@/lib/laneUi'
 import type { LaneNote } from '@/lib/laneUi'
 
@@ -28,6 +29,10 @@ const MIRROR_KEY = 'yfworking-chat-mirror'
 // 模块级冲刷钩子：resilientChatStorage 闭包内赋值，供 importLegacyChatState 调用。
 // 直接暴露 flush 会破坏"持久化只经 store"的封装；外部一律通过 store action 进入。
 let chatPersistFlush: (() => void) | null = null
+
+// chat 模式自动标题（模型概括）已尝试过的会话——内存级一次性去重，
+// 不落盘（标题动作只做一次；titleAuto 标记负责"手动重命名后不再自动覆盖"）。
+const autoTitledConversations = new Set<string>()
 
 /** 深度清洗：所有字符串剥掉脏控制字符（保留 \t \n \r）。无变化时返回原引用。 */
 function deepSanitize(value: unknown): unknown {
@@ -405,6 +410,8 @@ interface ChatState {
 
   // Internal API methods (used by useChat hook)
   _addMessage: (conversationId: string, message: Message) => void
+  /** 自动标题（chat/task 通用）：系统自动改写标题（首条消息截断/模型概括），不动 updatedAt（列表不重排） */
+  _applyAutoTitle: (conversationId: string, title: string) => void
   _insertMessageBefore: (conversationId: string, beforeMessageId: string, message: Message) => void
   _moveMessageToEnd: (conversationId: string, messageId: string) => void
   setMessagePending: (conversationId: string, messageId: string, pending: boolean) => void
@@ -479,8 +486,9 @@ export const useChatStore = create<ChatState>()(
         const { lastCwd } = get()
         const isChat = mode === 'chat'
         // chat 模式：不显式传 cwd → 会话不绑定业务工作目录（cwd 字段不设，
-        // bridge spawn cwd=YFW_HOME 且不 --add-dir），标题走「新对话」语言文案
-        // 而非目录 basename。task 模式维持现状（lastCwd/home 兜底 + 目录名标题）。
+        // bridge spawn cwd=YFW_HOME 且不 --add-dir），标题先走「新对话」占位文案
+        // （首条用户消息到达后由系统改写为内容概括标题，见 titleGen）。
+        // task 模式维持现状（lastCwd/home 兜底 + 目录名标题）。
         const dir = isChat
           ? (cwd || '').replace(/\\/g, '/')
           : (cwd || lastCwd || getDefaultHome() || 'C:/').replace(/\\/g, '/')
@@ -495,6 +503,10 @@ export const useChatStore = create<ChatState>()(
           updatedAt: Date.now(),
           model: 'deepseek-v4-flash',
           mode,
+          // 标题由系统自动管理（chat: 占位→内容概括；task: 目录名→内容概括）；
+          // 用户手动重命名后置 false（renameConversation），此后不再自动覆盖。
+          // 注意：一键整理（autoOrganize）按 cwd 归集，不依赖 title，不受影响
+          titleAuto: true,
           ...(dir ? { cwd: dir } : {}),
           agentId: agentId || undefined,
         }
@@ -554,6 +566,28 @@ export const useChatStore = create<ChatState>()(
             ),
             conversationLoading: { ...state.conversationLoading, [id]: false },
           }))
+          // 历史回填（chat/task 通用）：标题仍是占位（chat「新对话」/ task「目录名」）
+          // 的旧会话，加载成功后用模型把标题升级为内容概括（≤12 字）。每会话仅尝试一次。
+          const cNow = get().conversations.find(c => c.id === id)
+          const dirBase = (cNow?.cwd || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || ''
+          const isPlaceholderTitle = cNow
+            ? (cNow.title === '新对话' || cNow.title === 'New chat' || (dirBase !== '' && cNow.title === dirBase))
+            : false
+          if (
+            loaded.length > 0 && cNow
+            && cNow.titleAuto !== false
+            && !autoTitledConversations.has(id)
+            && isPlaceholderTitle
+          ) {
+            const blockText = (m?: Message) =>
+              (m?.content || []).filter((b) => b.type === 'text').map((b) => b.content).join('\n')
+            const userText = blockText(loaded.find((m) => m.role === 'user'))
+            const asstText = blockText(loaded.find((m) => m.role === 'assistant'))
+            void generateChatTitle(userText, asstText).then((title) => {
+              autoTitledConversations.add(id)
+              if (title) get()._applyAutoTitle(id, title)
+            }).catch(() => { /* 静默：保持原标题 */ })
+          }
           // 卸载超出驻留上限的会话（保留激活 + 流式），控制内存
           evictLoadedConversations()
         } catch {
@@ -564,7 +598,9 @@ export const useChatStore = create<ChatState>()(
       renameConversation: (id, title) => {
         set(state => ({
           conversations: state.conversations.map(c =>
-            c.id === id ? { ...c, title, updatedAt: Date.now() } : c
+            c.id === id
+              ? { ...c, title, updatedAt: Date.now(), titleAuto: false }
+              : c
           ),
         }))
       },
@@ -800,6 +836,18 @@ export const useChatStore = create<ChatState>()(
         }))
       },
 
+      _applyAutoTitle: (conversationId, title) => {
+        if (!title) return
+        set(state => ({
+          conversations: state.conversations.map(c =>
+            // 标题仍为系统托管（titleAuto!==false）时改写；手动重命名后不覆盖
+            c.id === conversationId && c.titleAuto !== false
+              ? { ...c, title }
+              : c
+          ),
+        }))
+      },
+
       // 排队插话插入会话序列的指定位置（流式 assistant 消息之前）——插话是
       // 当前任务进行中的补充信息，应位列于该轮回复之前而非序列末端。
       // beforeMessageId 不存在时退化为按 timestamp 二分插入到正确时序位置，
@@ -972,6 +1020,30 @@ export const useChatStore = create<ChatState>()(
       },
 
       _finishStreaming: (messageId, usage) => {
+        // 首轮回复完成（chat/task 通用）→ 异步升级标题为模型概括（≤12 字）。
+        // 非阻塞、失败静默（保留首条消息截断标题）；每会话仅尝试一次。
+        {
+          const st0 = get()
+          const entry0 = Object.entries(st0.streamingConversations).find(([, mid]) => mid === messageId)
+          const convId0 = entry0?.[0]
+          const conv0 = convId0 ? st0.conversations.find(c => c.id === convId0) : undefined
+          if (
+            convId0 && conv0 && conv0.titleAuto !== false
+            && !autoTitledConversations.has(convId0)
+            // 首轮判定：消息体 = 1 user + 1 assistant（resume 旧会话必然 >2，不会误触发）
+            && (conv0.messages?.length ?? 0) <= 2
+          ) {
+            const msgs = asMessages(conv0.messages)
+            const blockText = (m?: Message) =>
+              (m?.content || []).filter((b) => b.type === 'text').map((b) => b.content).join('\n')
+            const userText = blockText(msgs.find((m) => m.role === 'user'))
+            const asstText = blockText(msgs.find((m) => m.id === messageId))
+            void generateChatTitle(userText, asstText).then((title) => {
+              autoTitledConversations.add(convId0)
+              if (title) get()._applyAutoTitle(convId0, title)
+            }).catch(() => { /* 静默：标题保持首条消息截断值 */ })
+          }
+        }
         set(state => {
           // Find which conversation owns this streaming message, then clear only that one
           const entry = Object.entries(state.streamingConversations).find(([, mid]) => mid === messageId)
@@ -1321,7 +1393,7 @@ export const useChatStore = create<ChatState>()(
         conversations: state.conversations.map(c => ({
           id: c.id, title: c.title, createdAt: c.createdAt, updatedAt: c.updatedAt,
           model: c.model, pinned: c.pinned, tags: c.tags, summary: c.summary,
-          cwd: c.cwd, mode: c.mode, sessionId: c.sessionId, agentId: c.agentId, setId: c.setId,
+          cwd: c.cwd, mode: c.mode, titleAuto: c.titleAuto, sessionId: c.sessionId, agentId: c.agentId, setId: c.setId,
           sessionIds: c.sessionIds,
           messageCount: c.messageCount ?? ((c.messages?.length ?? 0) > 0 ? c.messages.length : undefined),
           tokensTotal: c.tokensTotal,

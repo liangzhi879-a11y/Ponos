@@ -10,6 +10,7 @@ import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { generateId, sanitizeText } from '@/lib/utils'
 import { parseAskUserPayload } from '@/lib/askUser'
+import { truncateTitle } from '@/lib/titleGen'
 import { getWsUrl, fetchBridgeConfig } from '@/lib/config'
 import { getAgentById } from '@/lib/agents'
 import { useAgentStore } from '@/stores/agentStore'
@@ -417,12 +418,19 @@ export function useYFWCLI() {
     }
 
     // 空闲发送：普通用户消息，立即入列并开启流式
+    const isFirstUserMessage = (conversation.messages?.length ?? 0) === 0
     store._addMessage(conversationId, {
       id: generateId(),
       role: 'user',
       content: [{ id: generateId(), type: 'text', content: clean }],
       timestamp: Date.now(),
     })
+    // 自动标题（chat/task 通用）：首条用户消息 → 立即以内容概括为标题（≤12 字）；
+    // 首轮回复完成后由 chatStore 调模型升级为更精炼的概括（见 _finishStreaming）
+    if (isFirstUserMessage && conversation.titleAuto !== false) {
+      const autoTitle = truncateTitle(clean)
+      if (autoTitle) store._applyAutoTitle(conversationId, autoTitle)
+    }
     dispatchSend(conversationId, userContent)
   }, [])
 

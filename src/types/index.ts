@@ -108,6 +108,9 @@ export interface Conversation {
   /** 会话模式：chat = 纯聊受限（不执行本地，bridge spawn cwd=YFW_HOME + --disallowedTools），
    *  task = 全工具（默认）。undefined 视为 task（旧数据/导入，migrate 归一）。 */
   mode?: 'chat' | 'task'
+  /** chat 模式自动标题标记：true=标题由系统自动管理（首条消息截断/模型概括），
+   *  用户手动重命名后置 false，此后不再自动覆盖。仅 chat 模式使用。 */
+  titleAuto?: boolean
   sessionId?: string   // CLI session id bound to this conversation (used for resume)
   agentId?: string   // Professional agent bound to this conversation (see src/lib/agents.ts)
   setId?: string
