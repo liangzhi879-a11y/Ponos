@@ -184,3 +184,57 @@ test('workflow 事件转发给 onEvent（GUI 广播），非 workflow 类 system
   host.onKernelMessage({ type: 'system', subtype: 'init' })
   assert.deepEqual(seen.map((m) => m.subtype), ['workflow', 'auto_triggered'])
 })
+
+test('I-1 回归：无 requestId 的 error 只结清队头，不得误杀在途的 run', async () => {
+  const k = fakeKernel()
+  const host = mkHost(k)
+  // run 长跑不答；随后一条无关命令报 error（无 requestId）
+  const pendingRun = host.run({ id: 'demo', capabilities: { tools: ['Read'] }, runId: 'run-long' })
+  const other = host.send({ subtype: 'save-raw', payload: { id: 'x', yaml: 'name: x' } }).catch((e) => e.message)
+  await new Promise((r) => setTimeout(r, 5))
+  // 无关 error 到达：应只 reject save-raw（队头之外的 run 必须仍在等）
+  host.onKernelMessage({ type: 'system', subtype: 'error', error: 'unknown subtype' })
+  const otherMsg = await other
+  assert.match(String(otherMsg), /unknown subtype|宿主命令失败/)
+  assert.equal(host._grants.has('run-long'), true, 'run 的 grant 不得被无关 error 连带回收')
+  // run 随后正常回执 → 仍能成功收敛
+  const sent = k.written.find((m) => m.subtype === 'run')
+  k.reply({ type: 'system', subtype: 'run', requestId: sent.requestId, ok: true, status: 'completed', runId: 'run-long' })
+  const r = await pendingRun
+  assert.equal(r.ok, true)
+  assert.equal(r.runId, 'run-long')
+})
+
+test('I-2 回归：内核回执的 runId 被保留（stop/confirm 打得到真实运行）', async () => {
+  const k = fakeKernel()
+  const host = mkHost(k)
+  k.setReply((msg) => {
+    if (msg.subtype === 'run') {
+      // 内核以宿主传入的 runId 为准（cli.mjs 已转发）；此处模拟内核回执带回该 id
+      k.reply({ type: 'system', subtype: 'run', requestId: msg.requestId, ok: true, status: 'completed', runId: msg.payload.runId })
+    }
+    if (msg.subtype === 'stop') {
+      k.reply({ type: 'system', subtype: 'stop', requestId: msg.requestId, ok: true })
+    }
+  })
+  const r = await host.run({ id: 'demo', capabilities: { tools: ['Read'] }, runId: 'run-real' })
+  assert.equal(r.runId, 'run-real', '宿主返回的 runId 必须与内核回执一致（否则 stop 打空）')
+  await host.stop(r.runId)
+  const stopMsg = k.written.find((m) => m.subtype === 'stop')
+  assert.equal(stopMsg.payload.runId, 'run-real', 'stop 必须带真实 runId')
+})
+
+test('M-2：run 接受 grant 别名（GUI 侧叫法），不静默退化为空权限', async () => {
+  const k = fakeKernel()
+  const host = mkHost(k)
+  k.setReply((msg) => { if (msg.subtype === 'run') k.reply({ type: 'system', subtype: 'run', requestId: msg.requestId, ok: true, runId: msg.payload.runId }) })
+  await host.run({ id: 'demo', grant: { tools: ['Bash'], network: true } })
+  const sent = k.written.find((m) => m.subtype === 'run')
+  assert.deepEqual(sent.payload.grant.tools, ['Bash'])
+  assert.equal(sent.payload.grant.network, true)
+})
+
+test('M-1：mergeCapabilities 非数组入参不得按字符展开', () => {
+  const m = mergeCapabilities({ tools: 'Read' }, { tools: ['Write'] })
+  assert.deepEqual(m.tools, ['Write'], `字符串不得被拆成字符：${JSON.stringify(m.tools)}`)
+})

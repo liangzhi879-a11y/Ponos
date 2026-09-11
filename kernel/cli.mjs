@@ -641,7 +641,15 @@ export async function main(argv) {
           })),
         })
       } else if (subtype === 'run') {
-        const r = await wfEngine.run({ id: msg?.payload?.workflow || msg?.payload?.id || '', inputs: msg?.payload?.inputs || {} })
+        // runId/grant/cwd 必须转发：宿主用 runId 作为 grant 键与 stop/confirm 的目标；
+        // 不转发时引擎自生 runId，宿主拿到的 id 与真实运行错位 → stop 打空、审计无法关联。
+        const r = await wfEngine.run({
+          id: msg?.payload?.workflow || msg?.payload?.id || '',
+          inputs: msg?.payload?.inputs || {},
+          runId: msg?.payload?.runId || undefined,
+          grant: msg?.payload?.grant || null,
+          cwd: msg?.payload?.cwd || '',
+        })
         // 回执补 code/errors（审查 I-3）：宿主只看 ok/error 时无法把"旧 DSL 需迁移"与其他
         // 失败区分开；LEGACY_DSL 另附可操作提示（Task 8 迁移前的唯一自带工作流正走此路径）。
         const legacy = r.code === 'LEGACY_DSL'

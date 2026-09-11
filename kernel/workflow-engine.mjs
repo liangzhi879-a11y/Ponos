@@ -203,7 +203,7 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
     return { ok: true }
   }
 
-  async function run({ id, inputs = {}, mode = 'sync', depth = 0, runId: presetRunId } = {}) {
+  async function run({ id, inputs = {}, mode = 'sync', depth = 0, runId: presetRunId, grant = null, cwd = '' } = {}) {
     const wf = loadWorkflow({ roots, id })
     if (!wf) return { ok: false, error: `工作流不存在: ${id}` }
     // 校验进生产路径（Task 1 交接 I-5）：loadWorkflow 只解析不校验，旧格式（无 edges）
@@ -228,6 +228,10 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
       getModel: _getModel, memoryRoot: _memoryRoot, runId, depth, maxParallel,
       event, confirmWaiters: { create: createConfirmWaiter }, permissionGate: _permissionGate,
       getToolCtx: _getToolCtx, nodeRuns: {},
+      // 运行级授权（宿主经 workflow_command.run 注入）：节点执行器的 checkToolPermission
+      // 以它为准（命中放行、未命中 fail-closed）。cwd 是相对路径判定基——宿主会话 cwd
+      // 未必等于内核进程 cwd，必须显式传入（Task 9 遗留 / Task 11 审查 I-2 配套）。
+      grant, cwd,
     }
     // 节点落账（主图与子图统一入口）：审计一行 + 事件 + 变量作用域写入。
     // 跳过的节点也落账（verifyRun 行数与 GUI 对账一致：settled 里的每个节点都有一行），
