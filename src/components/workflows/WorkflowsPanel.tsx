@@ -3,30 +3,33 @@
 // 三段式：列表 ⇄ 画布编辑器；工具栏 = 返回 / 保存 / 校验 / 运行 / YAML / 版本 / 导出。
 // 单一真相：`model` 由本组件持有，画布节流回写（300ms）+ 保存前 flush（brief 风险③）。
 //
-// 运行链路（Task 13 交付到「授权清单确认」为止；**Task 14 接手** RunDrawer/AuthzDialog）：
-//   flush → deriveCapabilities(model) → 本文件内的 RunSetup 对话框（逐项可勾除；勾除项 fail-closed）
-//   → runWorkflow(id, inputs, capabilities) → runId 落到徽标 → stopRun。
-//   **Task 14 注入点**：
-//     · 顶部 runId 徽标 → 换成 <RunDrawer runId={runId} events={events} onStop onConfirm />；
-//     · 事件订阅回调里 setNodeStatus(map)/setEdgeState(map) —— 画布经 withRunState 着色，
-//       字段形状见任务报告「对 Task 14 的接口交接」；
-//     · 本文件的 RunSetup 对话框 → 换成 <AuthzDialog capabilities onConfirm onCancel />。
+// 运行链路（Task 13 交付到「授权清单确认」为止；**Task 14 已接手** RunDrawer/AuthzDialog）：
+//   flush → deriveCapabilities(model) → AuthzDialog（逐项可勾除；勾除项 fail-closed）
+//   → runWorkflow(id, inputs, capabilities) → runId 落到顶部徽标 + RunDrawer。
+//   **Task 14 接线点**：
+//     · 事件订阅 subscribeWorkflowEvents → 只留本次 runId 的事件（其它会话/子工作流丢弃），
+//       逐条增量归约到 `runView`（RunDrawer.applyRunEvent，每事件 O(1)）；
+//     · `runView.nodeStatus` / `runView.edgeState` 传给画布（withRunState 消费），
+//       抽屉拿同一份 runView —— 面板、画布、抽屉共用一套着色语义，不重复实现；
+//     · 顶部 runId 徽标 → 打开 <RunDrawer>；停止 / 审批回执（confirm 节点）都在抽屉里发起。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Save, ShieldCheck, Play, Download, FileCode2, History, X } from 'lucide-react'
-import { Badge, Button, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle, Input, Switch, Textarea } from '@/components/ui'
+import { Activity, ArrowLeft, Save, ShieldCheck, Play, Download, FileCode2, History, X } from 'lucide-react'
+import { Badge, Button, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle, Textarea } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import {
-  createWorkflow, deleteWorkflow, duplicateWorkflow, exportWorkflow, importWorkflow,
+  confirmNode, createWorkflow, deleteWorkflow, duplicateWorkflow, exportWorkflow, importWorkflow,
   listRuns, listVersions, listWorkflows, loadWorkflow, rollbackWorkflow,
-  runWorkflow, saveWorkflow, saveWorkflowYaml, stopRun, validateWorkflow,
+  runWorkflow, saveWorkflow, saveWorkflowYaml, stopRun, subscribeWorkflowEvents, validateWorkflow,
   type RunRecord, type WorkflowMeta,
 } from '@/lib/workflowApi'
 import {
   deriveCapabilities, emptyModel, summarizeLocal, validateLocal,
-  type Capabilities, type NodeRunStatus, type ValidationIssue, type WorkflowModel,
+  type Capabilities, type ValidationIssue, type WorkflowModel,
 } from '@/lib/workflowModel'
 import { WorkflowCanvas, type WorkflowCanvasHandle } from './canvas/WorkflowCanvas'
 import { WorkflowList } from './WorkflowList'
+import { AuthzDialog } from './AuthzDialog'
+import { RUN_PHASE_TEXT, RunDrawer, applyRunEvent, emptyRunView, type RunView, type WorkflowRunEvent } from './RunDrawer'
 
 export function WorkflowsPanel() {
   const [list, setList] = useState<WorkflowMeta[]>([])
@@ -48,15 +51,29 @@ export function WorkflowsPanel() {
   /** 画布重挂载序号：重新加载同一 id（YAML 保存/版本回滚）时必须让画布丢弃旧 state */
   const [canvasEpoch, setCanvasEpoch] = useState(0)
 
-  // —— 运行态（Task 14 注入点，见文件头注释）——
+  // —— 运行态（Task 14）——
   const [runId, setRunId] = useState<string | null>(null)
-  const [nodeStatus, setNodeStatus] = useState<Record<string, NodeRunStatus>>({})
-  const [edgeState, setEdgeState] = useState<Record<string, 'active' | 'skipped'>>({})
+  /** 本次运行归属的工作流 id（历史 Tab 的查询键；列表态直接运行时 openId 为空） */
+  const [runWfId, setRunWfId] = useState('')
+  /** 本次运行的归约结果（nodeStatus/edgeState/steps/phase 的唯一真相，画布与抽屉共用） */
+  const [runView, setRunView] = useState<RunView>(emptyRunView)
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const [runSetup, setRunSetup] = useState<{ id: string; model: WorkflowModel } | null>(null)
   const [inputs, setInputs] = useState<Record<string, string>>({})
   const [caps, setCaps] = useState<Capabilities>({ tools: [], write_dirs: [], network: false })
+  /** 订阅回调里判归属用的当前 runId（回调只挂一次，不能读 state 闭包） */
+  const runIdRef = useRef<string | null>(null)
 
   const canvasRef = useRef<WorkflowCanvasHandle | null>(null)
+
+  /** 边 id → 目标节点：active 边的下游标 running（内核不发 running 事件） */
+  const edgeTargets = useMemo(
+    () => Object.fromEntries((model?.edges || []).map((e) => [e.id, e.target])),
+    [model],
+  )
+  /** 事件回调只挂一次 → 用 ref 读最新边表（回调里读 state 会拿到首帧闭包） */
+  const edgeTargetsRef = useRef(edgeTargets)
+  useEffect(() => { edgeTargetsRef.current = edgeTargets }, [edgeTargets])
 
   const refreshList = useCallback(async () => {
     setLoading(true)
@@ -66,6 +83,18 @@ export function WorkflowsPanel() {
   }, [])
 
   useEffect(() => { void refreshList() }, [refreshList])
+
+  // 运行事件订阅（复用既有桥接 WS；只认本次 runId 的事件，其它会话/子工作流事件一律丢弃）
+  // 归约是**增量**的（每事件 O(1)），长循环工作流不会因事件累积而卡顿。
+  useEffect(() => {
+    const unsubscribe = subscribeWorkflowEvents((ev: WorkflowRunEvent) => {
+      const cur = runIdRef.current
+      if (!cur || !ev || ev.runId !== cur) return
+      setRunView((v) => applyRunEvent(v, ev, edgeTargetsRef.current))
+      if (ev.type === 'end') void refreshList()   // brief：end → 刷新历史列表（列表态 lastRun 同步）
+    })
+    return unsubscribe
+  }, [refreshList])
 
   const openWorkflow = useCallback(async (id: string) => {
     const r = await loadWorkflow(id)
@@ -78,9 +107,11 @@ export function WorkflowsPanel() {
     setDirty(false)
     setBackendIssues([])
     setNotice(null)
+    runIdRef.current = null
     setRunId(null)
-    setNodeStatus({})
-    setEdgeState({})
+    setRunWfId('')
+    setRunView(emptyRunView())   // 切工作流丢弃上一轮着色（事件归属由 runIdRef 判定）
+    setDrawerOpen(false)
   }, [])
 
   const create = useCallback(async (id: string) => {
@@ -188,22 +219,33 @@ export function WorkflowsPanel() {
     setRunSetup({ id, model: target })
   }, [dirty, model, openId, save])
 
-  const startRun = useCallback(async () => {
+  /** 授权卡确认 → 真正运行（清单即用户在 AuthzDialog 里勾除后的能力，宿主按此 fail-closed 放行） */
+  const startRun = useCallback(async (confirmed: Capabilities) => {
     if (!runSetup) return
-    setNodeStatus({})
-    setEdgeState({})
-    const r = await runWorkflow(runSetup.id, inputs, caps)
+    setCaps(confirmed)
+    setRunView(emptyRunView())   // 清空上一轮着色（start 事件到达时同样会清空，此处先清避免残留）
+    const r = await runWorkflow(runSetup.id, inputs, confirmed)
     if (!r.ok) { setNotice({ tone: 'error', text: `运行失败：${r.error}` }); return }
-    setRunId(r.runId)
+    const rid = String(r.runId || '')
+    if (!rid) { setNotice({ tone: 'error', text: '运行失败：宿主未返回 runId' }); return }
+    runIdRef.current = rid
+    setRunId(rid)
+    setRunWfId(runSetup.id)
     setRunSetup(null)
-    setNotice({ tone: 'ok', text: `已启动：${r.runId}` })
-  }, [caps, inputs, runSetup])
+    setDrawerOpen(true)
+    setNotice({ tone: 'ok', text: `已启动：${rid}` })
+  }, [inputs, runSetup])
 
-  const doStop = useCallback(async () => {
-    if (!runId) return
-    const r = await stopRun(runId)
-    setNotice(r.ok ? { tone: 'ok', text: '已请求停止' } : { tone: 'error', text: r.error })
-  }, [runId])
+  const doStop = useCallback(async (id: string) => {
+    const r = await stopRun(id)
+    setNotice(r.ok ? { tone: 'ok', text: '已请求停止（等待内核回 end(cancelled)）' } : { tone: 'error', text: r.error })
+  }, [])
+
+  /** 抽屉审批卡回执（POST /workflows/confirm {runId,node,action,comment}） */
+  const doConfirm = useCallback(async (p: { runId: string; node: string; action: 'approved' | 'rejected'; comment?: string }) => {
+    const r = await confirmNode(p)
+    if (!r.ok) setNotice({ tone: 'error', text: `审批回执失败：${r.error}` })
+  }, [])
 
   const openVersions = useCallback(async () => {
     if (!openId) return
@@ -220,6 +262,34 @@ export function WorkflowsPanel() {
     setNotice({ tone: 'ok', text: 'YAML 已保存' })
     await openWorkflow(openId)
   }, [openId, openWorkflow, yamlText])
+
+  // ===================== 运行抽屉 + 授权卡（两个态共用） =====================
+  const runDrawer = (
+    <RunDrawer
+      open={drawerOpen}
+      runId={runId}
+      workflowId={runWfId || openId || runSetup?.id || ''}
+      workflowName={model?.name}
+      view={runView}
+      edgeTargets={edgeTargets}
+      onStop={(id) => void doStop(id)}
+      onConfirm={(p) => void doConfirm(p)}
+      onClose={() => setDrawerOpen(false)}
+    />
+  )
+
+  const authzDialog = runSetup ? (
+    <AuthzDialog
+      id={runSetup.id}
+      name={runSetup.model.name || runSetup.id}
+      capabilities={caps}
+      inputs={runSetup.model.inputs || []}
+      values={inputs}
+      onValuesChange={setInputs}
+      onConfirm={(confirmed) => void startRun(confirmed)}
+      onCancel={() => setRunSetup(null)}
+    />
+  ) : null
 
   // ===================== 列表态 =====================
   if (!openId || !model) {
@@ -238,17 +308,8 @@ export function WorkflowsPanel() {
           onDelete={(id) => void remove(id)}
           onImport={(b) => void doImport(b)}
         />
-        {runSetup && (
-          <RunSetup
-            model={runSetup.model}
-            caps={caps}
-            setCaps={setCaps}
-            inputs={inputs}
-            setInputs={setInputs}
-            onConfirm={() => void startRun()}
-            onCancel={() => setRunSetup(null)}
-          />
-        )}
+        {authzDialog}
+        {runDrawer}
       </div>
     )
   }
@@ -273,10 +334,17 @@ export function WorkflowsPanel() {
           </span>
         )}
         {runId && (
-          <span className="flex items-center gap-1 text-[10px] text-brand-500">
-            运行中 <span className="font-mono">{runId}</span>
-            <button className="underline" onClick={() => void doStop()}>停止</button>
-          </span>
+          <button
+            onClick={() => setDrawerOpen((v) => !v)}
+            className={cn('flex items-center gap-1 text-[10px]', drawerOpen ? 'text-brand-500' : 'text-tertiary hover:text-primary')}
+            title="打开/收起运行抽屉（实时着色、输出、审批、停止、历史）"
+          >
+            <Activity className="w-3.5 h-3.5" />
+            <span className={cn(runView.phase === 'running' ? 'text-brand-500' : runView.phase === 'failed' ? 'text-error' : runView.phase === 'cancelled' ? 'text-warning' : 'text-success')}>
+              {RUN_PHASE_TEXT[runView.phase]}
+            </span>
+            <span className="font-mono">{runId.slice(0, 12)}</span>
+          </button>
         )}
 
         <Button size="xs" variant="secondary" onClick={() => setYamlOpen((v) => !v)}><FileCode2 className="w-3.5 h-3.5" />YAML</Button>
@@ -317,22 +385,13 @@ export function WorkflowsPanel() {
           ref={canvasRef}
           model={model}
           onChange={(next) => { setModel(next); setDirty(true) }}
-          nodeStatus={nodeStatus}
-          edgeState={edgeState}
+          nodeStatus={runView.nodeStatus}
+          edgeState={runView.edgeState}
         />
       )}
 
-      {runSetup && (
-        <RunSetup
-          model={runSetup.model}
-          caps={caps}
-          setCaps={setCaps}
-          inputs={inputs}
-          setInputs={setInputs}
-          onConfirm={() => void startRun()}
-          onCancel={() => setRunSetup(null)}
-        />
-      )}
+      {authzDialog}
+      {runDrawer}
 
       <Dialog open={versionsOpen} onOpenChange={setVersionsOpen}>
         <DialogContent size="md">
@@ -378,92 +437,4 @@ function NoticeBar({ notice, onClose }: { notice: { tone: 'ok' | 'error'; text: 
       <button onClick={onClose} className="text-tertiary hover:text-primary"><X className="w-3 h-3" /></button>
     </div>
   )
-}
-
-/**
- * 运行前授权清单（Task 13 的临时形态；**Task 14 用 AuthzDialog 替换**）：
- * 逐项可勾除，勾除项本次运行内 fail-closed（宿主 mergeCapabilities 后按清单放行）。
- * 审计不受影响——授权只免除交互打断，每次工具调用仍写哈希链。
- */
-function RunSetup({ model, caps, setCaps, inputs, setInputs, onConfirm, onCancel }: {
-  model: WorkflowModel
-  caps: Capabilities
-  setCaps: (c: Capabilities) => void
-  inputs: Record<string, string>
-  setInputs: (v: Record<string, string>) => void
-  onConfirm: () => void
-  onCancel: () => void
-}) {
-  const inputsDef = model.inputs || []
-  return (
-    <Dialog open onOpenChange={(o) => { if (!o) onCancel() }}>
-      <DialogContent size="md">
-        <DialogHeader><DialogTitle>运行前授权：{model.name}</DialogTitle></DialogHeader>
-        <DialogBody>
-          <div className="text-[11px] text-tertiary mb-3">
-            勾除的项在本次运行内一律拒绝（fail-closed），不会中断整轮；每次工具调用仍写审计哈希链。
-          </div>
-
-          {inputsDef.length > 0 && (
-            <div className="mb-3 flex flex-col gap-2">
-              <div className="text-[11px] font-semibold text-tertiary uppercase tracking-wider">输入参数</div>
-              {inputsDef.map((i) => (
-                <div key={i.name} className="flex items-center gap-2">
-                  <span className="text-[11px] text-secondary w-[120px] shrink-0 truncate font-mono">
-                    {i.name}{i.required ? ' *' : ''}
-                  </span>
-                  <Input value={inputs[i.name] ?? ''} onChange={(e) => setInputs({ ...inputs, [i.name]: e.target.value })} className="h-7 text-xs" />
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="flex flex-col gap-1.5">
-            <div className="text-[11px] font-semibold text-tertiary uppercase tracking-wider">能力清单（deriveCapabilities 推导）</div>
-            <label className="flex items-center justify-between text-[11px] text-secondary">
-              访问网络
-              <Switch checked={caps.network} onCheckedChange={(v) => setCaps({ ...caps, network: v })} />
-            </label>
-            <div className="text-[11px] text-secondary">调用工具（{caps.tools.length}）</div>
-            <div className="flex flex-wrap gap-1.5">
-              {caps.tools.length === 0 && <span className="text-[10px] text-tertiary">本工作流未用到工具</span>}
-              {caps.tools.map((t) => {
-                const on = true
-                return (
-                  <button
-                    key={t}
-                    onClick={() => setCaps({ ...caps, tools: caps.tools.filter((x) => x !== t) })}
-                    className={cn('text-[10px] px-1.5 py-0.5 rounded border font-mono', on ? 'text-brand-500 border-brand-500/30 bg-brand-500/10' : 'text-tertiary')}
-                    title="点击移除（本次运行内拒绝该工具）"
-                  >{t} ×</button>
-                )
-              })}
-            </div>
-            <div className="text-[11px] text-secondary mt-1">写入目录（{caps.write_dirs.length}）</div>
-            <div className="flex flex-wrap gap-1.5">
-              {caps.write_dirs.length === 0 && <span className="text-[10px] text-tertiary">无（写类工具将按工作目录相对路径判定）</span>}
-              {caps.write_dirs.map((d) => (
-                <button
-                  key={d}
-                  onClick={() => setCaps({ ...caps, write_dirs: caps.write_dirs.filter((x) => x !== d) })}
-                  className="text-[10px] px-1.5 py-0.5 rounded border border-brand-500/30 bg-brand-500/10 text-brand-500 font-mono"
-                  title="点击移除（写入将被拒绝）"
-                >{d} ×</button>
-              ))}
-            </div>
-          </div>
-        </DialogBody>
-        <DialogFooter>
-          <Button size="sm" variant="ghost" onClick={onCancel}>取消</Button>
-          <Button size="sm" onClick={onConfirm}><Play className="w-3.5 h-3.5" />按此清单运行</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-/** 供 Task 14 复用：事件订阅回调要写的两个 setter 形状（画布着色的唯一入口） */
-export interface RunStateSetters {
-  setNodeStatus: (m: Record<string, NodeRunStatus>) => void
-  setEdgeState: (m: Record<string, 'active' | 'skipped'>) => void
 }

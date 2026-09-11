@@ -19,6 +19,7 @@
 // 错误统一**结构化返回**（{ ok:false, error }），不 throw 到调用方——路由的 400/500 都要能在
 // 面板里显示成一行提示（与 usageApi 的 throw 风格并存：这里调用点都在交互回调里，需就地展示）。
 import { getBridgeUrl } from '@/lib/config'
+import { getOrCreateWS } from '@/hooks/useYFWCLI'
 import type { WorkflowModel, LocalValidation } from '@/lib/workflowModel'
 
 const TIMEOUT_MS = 20_000
@@ -156,6 +157,88 @@ export function listRuns(id: string): Promise<ApiResult<{ runs: RunRecord[] }>> 
   return call(`/workflows/runs?id=${enc(id)}`)
 }
 
+/** 审计完整性校验（内核 verifyRun：逐行复算哈希链）。审计文件不存在/被篡改 → { ok:false, error } */
+export function verifyRun(auditPath: string): Promise<ApiResult<{ lines?: number; lastHash?: string }>> {
+  return call(`/workflows/verify?path=${enc(auditPath)}`, { timeoutMs: SAVE_TIMEOUT_MS })
+}
+
+/** 单次运行的审计步骤（历史瀑布用）：审计 jsonl 每行 = 一个 settled 节点
+ *  { ts, node, type, status:'done'|'failed'|'skipped', dur_ms, out_hash, prev }。
+ *  复用 bridge 既有 /read-file（≤512KB），只读不写。 */
+export interface RunStepRecord { ts?: string; node: string; type?: string; status?: string; dur_ms?: number; out_hash?: string }
+
+export async function loadRunSteps(auditPath: string): Promise<ApiResult<{ steps: RunStepRecord[] }>> {
+  if (!auditPath) return { ok: false, error: '缺少审计文件路径' }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
+  try {
+    const res = await fetch(`${getBridgeUrl()}/read-file?path=${enc(auditPath)}`, { signal: controller.signal })
+    const data = await res.json().catch(() => ({} as any))
+    if (!res.ok) return { ok: false, error: String(data?.error || `HTTP ${res.status}`) }
+    const steps: RunStepRecord[] = []
+    for (const line of String(data?.content || '').split('\n')) {
+      if (!line.trim()) continue
+      try { steps.push(JSON.parse(line)) } catch { /** 末行截断等脏行跳过，不让整份瀑布失败 */ }
+    }
+    return { ok: true, steps }
+  } catch (e: any) {
+    return { ok: false, error: e?.name === 'AbortError' ? '读取审计文件超时' : (e?.message || String(e)) }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// —— WS 事件订阅（运行态着色 / 抽屉的唯一事件源） ——
+
+/**
+ * 工作流运行事件订阅。桥接侧统一广播为
+ * `{ type:'workflow_event', sessionId:'_wfhost'|会话id, event }`，`event.type ∈
+ * start|node|node_skipped|edge_taken|end`（另有 confirm 节点的 `confirm_request` /
+ * `confirm_resolved`，见 kernel/workflow-nodes.execConfirm）。
+ *
+ * **不自建连接**：复用既有桥接 WS（useYFWCLI.getOrCreateWS，自带心跳/指数退避重连），
+ * 只在同一 socket 上挂 message 监听——与内核流式事件的 onmessage 分发并存，互不干扰。
+ * 断线时 useYFWCLI 会重建新 socket，旧实例上的监听随之失效，故此处轮询重挂（1.5s，
+ * 仅在有订阅者时运行）。返回值即取消订阅函数。
+ */
+const wfEventListeners = new Set<(ev: any) => void>()
+let wfSocket: WebSocket | null = null
+let wfRebindTimer: ReturnType<typeof setInterval> | null = null
+
+function onWfSocketMessage(raw: MessageEvent) {
+  let msg: any
+  try { msg = JSON.parse(String((raw as any)?.data ?? '')) } catch { return }
+  if (!msg || msg.type !== 'workflow_event') return
+  const ev = msg.event
+  if (!ev || typeof ev !== 'object') return
+  for (const fn of [...wfEventListeners]) {
+    // 单个订阅者抛错不拖垮其余订阅者与 WS 分发
+    try { fn(ev) } catch (e) { console.error('[workflow] event handler error:', e) }
+  }
+}
+
+function rebindWfSocket() {
+  const sock = getOrCreateWS()
+  if (!sock || sock === wfSocket) return
+  if (wfSocket) { try { wfSocket.removeEventListener('message', onWfSocketMessage) } catch { /* 旧 socket 可能已销毁 */ } }
+  wfSocket = sock
+  sock.addEventListener('message', onWfSocketMessage)
+}
+
+export function subscribeWorkflowEvents(handler: (ev: any) => void): () => void {
+  wfEventListeners.add(handler)
+  rebindWfSocket()
+  if (!wfRebindTimer) wfRebindTimer = setInterval(rebindWfSocket, 1500)
+  return () => {
+    wfEventListeners.delete(handler)
+    if (wfEventListeners.size === 0) {
+      if (wfRebindTimer) { clearInterval(wfRebindTimer); wfRebindTimer = null }
+      if (wfSocket) { try { wfSocket.removeEventListener('message', onWfSocketMessage) } catch { /* 同上 */ } }
+      wfSocket = null
+    }
+  }
+}
+
 // —— 绑定 / 信任 ——
 
 export function getBindings(): Promise<ApiResult<WorkflowBindings>> {
@@ -164,6 +247,19 @@ export function getBindings(): Promise<ApiResult<WorkflowBindings>> {
 
 export function setBindings(bindings: WorkflowBindings): Promise<ApiResult<Record<string, unknown>>> {
   return call('/workflows/bindings', { method: 'POST', body: bindings })
+}
+
+/** 授权卡「信任此工作流」开关：读-改-写绑定文件的 trusted 集合（agents 原样保留）。
+ *  信任只免除运行前的交互打断（下次运行仍会弹出授权卡但默认放行），**不豁免审计**。 */
+export async function setWorkflowTrusted(id: string, trusted: boolean): Promise<ApiResult<WorkflowBindings>> {
+  const cur = await getBindings()
+  if (!cur.ok) return { ok: false, error: cur.error }
+  const set = new Set(cur.trusted || [])
+  if (trusted) set.add(id)
+  else set.delete(id)
+  const next: WorkflowBindings = { agents: cur.agents || {}, trusted: [...set] }
+  const r = await call<Record<string, unknown>>('/workflows/bindings', { method: 'PUT', body: next })
+  return r.ok ? { ok: true, ...next } : { ok: false, error: r.error }
 }
 
 /** 列表项视觉态（列表行左侧色条/状态字用；空 lastRun 视为未运行） */
