@@ -1,12 +1,11 @@
 // spec-dev 内置工作流（2026-09-11 系统化升级 Phase 1）：发现/解析 + 引擎接线冒烟
 // ---------------------------------------------------------------------------
-// ① discoverWorkflows 发现 workflow.yml；节点链（specify→plan→tasks→impl_loop
-//   [implement→converge]×3→end）解析正确；
-// ② **Task 5 起**：`workflows/spec-dev/workflow.yml` 仍是旧格式（无 edges），引擎按
-//   LEGACY_DSL 拒绝执行——这是校验进生产路径后的**正确**行为（旧引擎的"数组顺序 + next"
-//   语义在 DAG 引擎下不存在）。spec-dev 重写为显式 edges 由计划 Task 8 完成，届时本
-//   测试应恢复「r.ok === true」断言（迁移器产物已由 workflow-migrate.test.mjs 断言自校验通过）；
-// ③ 引擎接线冒烟（与 spec-dev 同构的 DAG 冒烟件）：loop body 子图递归、body 成员不进主
+// ① discoverWorkflows 发现 workflow.yml；DSL v2 **edges 显式连线**（Task 8 重写后）：
+//   start→specify→plan→tasks→impl_loop[implement→converge]×3→end；
+// ② **Task 8 起**：`workflows/spec-dev/workflow.yml` 已是 DAG（有 edges），引擎在生产
+//   校验路径（validateWorkflow）下正常执行 → 恢复「r.ok === true」断言（Task 5 期间该测试
+//   曾断言 LEGACY_DSL 拒绝：旧格式"数组顺序 + next"语义在 DAG 引擎下不存在，是被拒的正确行为）；
+// ③ 引擎接线冒烟（与 spec-dev 同构的最小 DAG 冒烟件）：loop body 子图递归、body 成员不进主
 //   调度（scoping）、逐节点审计落盘可校验、事件齐全、end 聚合。
 process.env.PONOS_MOCK_API = '1'
 import { test } from 'node:test'
@@ -15,12 +14,13 @@ import { mkdtempSync, rmSync, mkdirSync, copyFileSync, writeFileSync, readFileSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { discoverWorkflows, loadWorkflow, createWorkflowEngine, verifyRun } from '../kernel/workflow.mjs'
+import { validateWorkflow } from '../kernel/workflow-dsl.mjs'
 import { createToolRegistry } from '../kernel/tools.mjs'
 
 const SRC = join(process.cwd().replace(/\\/g, '/'), 'workflows', 'spec-dev', 'workflow.yml')
 
-// spec-dev 结构的**DAG 等价冒烟件**（Task 8 落盘前，用它在同一引擎上验证接线）：
-// 主链 start → lp → e（edges 显式），body 内 b1 → b2（跨边界边由 BODY_ESCAPE 禁止）。
+// spec-dev 结构的**DAG 等价冒烟件**：主链 start → lp → e（edges 显式），
+// body 内 b1 → b2（跨边界边由 BODY_ESCAPE 禁止）。
 const SPECDEV_DAG = `name: spec-dev-dag
 version: 1.0.0
 inputs:
@@ -37,7 +37,7 @@ edges:
   - { id: e3, source: b1, target: b2 }
 `
 
-test('spec-dev 发现与解析：节点链/loop body/断点条件齐全', () => {
+test('spec-dev 发现与解析：edges 显式连线 + loop body + 断点条件齐全', () => {
   const root = mkdtempSync(join(tmpdir(), 'wf-specdev-'))
   try {
     mkdirSync(join(root, 'spec-dev'), { recursive: true })
@@ -45,12 +45,19 @@ test('spec-dev 发现与解析：节点链/loop body/断点条件齐全', () => 
     const wfs = discoverWorkflows({ root })
     assert.equal(wfs.length, 1)
     assert.equal(wfs[0].name, 'spec-dev')
+    assert.equal(wfs[0].legacy, false, 'DSL v2：有 edges 即非旧格式')
     const wf = loadWorkflow({ roots: [root], id: 'spec-dev' }) // 节点详情经 loadWorkflow（discover 只给计数）
     assert.ok(wf, 'loadWorkflow 应解析成功')
     const ids = wf.nodes.map((n) => n.id)
     for (const id of ['start', 'specify', 'plan', 'tasks', 'impl_loop', 'implement', 'converge', 'end']) {
       assert.ok(ids.includes(id), `应有节点 ${id}`)
     }
+    const pairs = wf.edges.map((e) => `${e.source}->${e.target}`)
+    for (const p of ['start->specify', 'specify->plan', 'plan->tasks', 'tasks->impl_loop', 'impl_loop->end']) {
+      assert.ok(pairs.includes(p), `应有边 ${p}：${pairs.join(',')}`)
+    }
+    const inner = wf.edges.filter((e) => e.source === 'implement' || e.source === 'converge').map((e) => `${e.source}->${e.target}`)
+    assert.ok(inner.includes('implement->converge'), `loop body 内应有 implement->converge：${inner}`)
     const loop = wf.nodes.find((n) => n.id === 'impl_loop')
     assert.equal(loop.type, 'loop')
     assert.deepEqual(loop.body, ['implement', 'converge'])
@@ -61,10 +68,12 @@ test('spec-dev 发现与解析：节点链/loop body/断点条件齐全', () => 
     const impl = wf.nodes.find((n) => n.id === 'implement')
     assert.match(String(impl.prompt), /implementer/, '实现节点派 implementer')
     assert.match(String(impl.prompt), /reviewer/, '实现节点派 reviewer')
+    const v = validateWorkflow(wf)
+    assert.equal(v.ok, true, JSON.stringify(v.errors))
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
-test('spec-dev 仍属旧格式：引擎按 LEGACY_DSL 拒绝执行（Task 8 重写 edges 后恢复 r.ok===true 断言）', async () => {
+test('spec-dev 已重写为 DAG：引擎在生产校验路径下正常执行（r.ok === true）', async () => {
   const root = mkdtempSync(join(tmpdir(), 'wf-specdev-run-'))
   try {
     mkdirSync(join(root, 'spec-dev'), { recursive: true })
@@ -74,10 +83,19 @@ test('spec-dev 仍属旧格式：引擎按 LEGACY_DSL 拒绝执行（Task 8 重�
     engine.setDeps({ registry, getModel: () => 'mock-model' })
     engine.addRoot(root)
     const r = await engine.run({ id: 'spec-dev', inputs: { requirement: '测试需求', slug: 'demo' } })
-    // 校验进生产路径（内核计划 Task 5，交接项 I-5）：无 edges 的旧格式不再被静默加载执行。
-    // 这不是回归——旧语义（数组顺序 + next）在 DAG 引擎下已不存在，静默执行会产出错误结果。
-    assert.equal(r.ok, false, `旧格式必须被拒绝：${JSON.stringify(r).slice(0, 200)}`)
-    assert.equal(r.code, 'LEGACY_DSL')
+    // Task 8 前该断言是 `r.ok === false` + `r.code === 'LEGACY_DSL'`（旧格式被拒）。现 spec-dev
+    // 已是显式 DAG → 校验通过、mock 下跑完全链（agent 节点走 mock 回显，"已收敛"未命中 →
+    // loop 跑满 3 轮的 count 上限）。
+    assert.equal(r.ok, true, `DAG 版应可执行：${JSON.stringify(r).slice(0, 300)}`)
+    assert.equal(r.status, 'completed')
+    for (const id of ['start', 'specify', 'plan', 'tasks', 'impl_loop', 'end']) {
+      assert.ok(r.settled.has(id), `主链节点应 settled：${id}（${[...r.settled.keys()].join(',')}）`)
+    }
+    // body 成员不进主图 settled（loop 内子图递归执行）
+    assert.equal(r.settled.has('implement'), false, 'body 成员不得出现在主 settled')
+    assert.equal(r.settled.has('converge'), false, 'body 成员不得出现在主 settled')
+    // steps 为调度步数（workflow-dag 计数，非数组）：主链 start/specify/plan/tasks + loop(3 轮×2 body) + end
+    assert.ok(r.steps > 0, `应产出调度步数：${r.steps}`)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 

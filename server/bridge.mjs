@@ -14,6 +14,7 @@ import { matchesHighRisk } from './highrisk.mjs'
 import { parseAskUserPayload, extractAskUserBlocks } from './askuser.mjs'
 import { resolveKernelPaths } from '../electron/kernel-paths.cjs'
 import { resolveYfwHome } from './yfw-home.cjs'
+import { installBuiltinWorkflows } from './workflow-install.mjs'
 import { buildExperienceIndex, buildSedimentPrompt, ensurePersonalDir } from './experience.mjs'
 export { ensurePersonalDir, buildExperienceIndex, buildSedimentPrompt } from './experience.mjs'
 import { createTranscriptHandlers } from './transcript.mjs'
@@ -2506,27 +2507,17 @@ function autoProbeActiveProvider() {
   setInterval(probeOnce, 12 * 3600 * 1000).unref?.()
 }
 
-// 内置工作流自动安装（2026-09-11 spec-dev）：<appRoot>/workflows/<id>/workflow.yml →
-// <skillsRoot>/<id>/workflow.yml（工作流与技能共用发现根）。幂等：已存在跳过；
-// 升级需手动删除目标目录重装。
+// 内置工作流自动安装（2026-09-11 spec-dev；Task 8 改为按 version 覆盖升级）：
+// <appRoot>/workflows/<id>/workflow.yml → <YFW_HOME>/workflows/<id>/workflow.yml
+// （内核工作流发现根 <configDir>/workflows，configDir === YFW_HOME，见 kernel/cli.mjs
+//   workflowRoots = [...skillRoots, join(configDir, 'workflows')]）。
+// 实现抽到 server/workflow-install.mjs：它可被测试直接 import，而 bridge.mjs 顶层会
+// listen(51517)（EADDRINUSE 自愈还会 taskkill 用户进程），测试 import 它会真起桥。
+// 语义：目标不存在→安装；版本不同→备份 workflow.v<旧版>.bak.yml 后覆盖；相同→跳过。
 function autoInstallBuiltinWorkflows() {
   try {
-    const skillRoot = findSkillRoot()
-    const srcRoot = join(__dirname, '..', 'workflows')
-    if (!existsSync(srcRoot)) { console.log('[bridge] builtin workflows: source dir not found'); return }
-    let dirs = []
-    try { dirs = readdirSync(srcRoot, { withFileTypes: true }).filter(d => d.isDirectory() && existsSync(join(srcRoot, d.name, 'workflow.yml'))) } catch { return }
-    for (const d of dirs) {
-      const target = join(skillRoot, d.name)
-      if (existsSync(target)) continue
-      try {
-        mkdirSync(target, { recursive: true })
-        copyWithRewrite(join(srcRoot, d.name), target, '{{YFW_SKILLS}}', skillRoot.replace(/\\/g, '/'))
-        console.log('[bridge] builtin workflow installed:', d.name)
-      } catch (e) {
-        console.warn('[bridge] builtin workflow install failed:', d.name, '-', e?.message || e)
-      }
-    }
+    const r = installBuiltinWorkflows({ srcRoot: join(__dirname, '..', 'workflows'), dstRoot: join(YFW_HOME, 'workflows') })
+    if (r.installed.length || r.updated.length) console.log('[bridge] builtin workflows:', JSON.stringify(r))
   } catch (e) {
     console.warn('[bridge] autoInstallBuiltinWorkflows failed:', e?.message || e)
   } finally {
