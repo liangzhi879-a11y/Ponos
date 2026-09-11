@@ -18,6 +18,20 @@ test('classifyApiError（P0-1）：错误码结构化分类 + 可重试标记', 
   assert.deepEqual(classifyApiError(authErr), { kind: 'auth', retryable: false })
   const quotaErr = new Error('insufficient_quota: 余额不足')
   assert.deepEqual(classifyApiError(quotaErr), { kind: 'quota', retryable: false })
+  // 模型不存在/已下线（2026-09-11 改名适配）：单独分类，engine 落重新探测引导
+  const mnf1 = new Error('404 {"error":{"message":"Model deepseek-chat not found"}}')
+  mnf1.status = 404
+  assert.deepEqual(classifyApiError(mnf1), { kind: 'model-not-found', retryable: false })
+  const mnf2 = new Error('400 invalid model: old-name')
+  mnf2.status = 400
+  assert.equal(classifyApiError(mnf2).kind, 'model-not-found')
+  const mnf3 = new Error('unknown model qwen-x')
+  mnf3.status = 404
+  assert.equal(classifyApiError(mnf3).kind, 'model-not-found')
+  // 非模型语义的 404 不误判
+  const notFound = new Error('404 page not found')
+  notFound.status = 404
+  assert.equal(classifyApiError(notFound).kind, 'unknown')
   // rate-limit / transient 可退避重试
   const rateErr = new Error('rate limit exceeded')
   rateErr.status = 429

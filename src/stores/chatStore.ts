@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { persist, createJSONStorage, type PersistStorage, type StorageValue } from 'zustand/middleware'
 import type { Conversation, Message, ContentBlock, PermissionRequest, BackgroundTask, QuestionPayload, ConversationProgress, SubAgentTask, ConversationSet, LoopState } from '@/types'
 import { generateId, sanitizeText, repairCorruptedJson, recoverCorruptedChatState } from '@/lib/utils'
+import { appendStreamingBlock } from '@/lib/chatParts'
 import { getDefaultHome } from '@/lib/config'
 import { useHealthStore } from '@/stores/healthStore'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -410,6 +411,10 @@ interface ChatState {
   _addStreamingMessage: (conversationId: string) => string
   _appendStreamingBlock: (messageId: string, block: ContentBlock) => void
   _updateStreamingBlock: (messageId: string, blockId: string, updates: Partial<ContentBlock>) => void
+  /** 流式 text/thinking 追加（2026-09-09：替换旧 upsert 整块覆盖语义） */
+  _appendStreamingContent: (messageId: string, kind: 'text' | 'thinking', delta: string) => void
+  /** 工具结果 live 回填（2026-09-09）：按 toolUseId 找到 tool_use 块挂 result/isError */
+  _updateToolResult: (messageId: string, toolUseId: string, result: string, isError: boolean) => void
   _resumeStreaming: (conversationId: string, messageId: string) => void
   _updateMessageMeta: (messageId: string, meta: { model?: string; tokensUsed?: number }) => void
   _finishStreaming: (messageId: string, usage: { inputTokens: number; outputTokens: number }) => void
@@ -876,6 +881,42 @@ export const useChatStore = create<ChatState>()(
             messages: asMessages(c.messages).map(m =>
               m.id === messageId
                 ? { ...m, content: [...m.content, block] }
+                : m
+            ),
+          })),
+        }))
+      },
+
+      // 流式内容追加（2026-09-09 会话 UI 标准化）：内核 wire 是分段增量发射，
+      // 旧 upsert 整块替换语义会让屏幕只剩最新片段（"看不到过往输出"根因）。
+      // text/thinking 走本 action 追加到同类型最后一块（appendStreamingBlock）。
+      _appendStreamingContent: (messageId, kind: 'text' | 'thinking', delta: string) => {
+        set(state => ({
+          conversations: state.conversations.map(c => ({
+            ...c,
+            messages: asMessages(c.messages).map(m =>
+              m.id === messageId
+                ? { ...m, content: appendStreamingBlock(m.content, kind, delta) }
+                : m
+            ),
+          })),
+        }))
+      },
+
+      _updateToolResult: (messageId, toolUseId, result, isError) => {
+        set(state => ({
+          conversations: state.conversations.map(c => ({
+            ...c,
+            messages: asMessages(c.messages).map(m =>
+              m.id === messageId
+                ? {
+                    ...m,
+                    content: m.content.map(b =>
+                      b.type === 'tool_use' && b.metadata?.toolUseId === toolUseId
+                        ? { ...b, result: { content: result, isError } }
+                        : b
+                    ),
+                  }
                 : m
             ),
           })),

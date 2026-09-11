@@ -9,16 +9,17 @@ rem 无需外部 CLI；home 重定向只为 YFWorking 自身数据根隔离。
 rem
 rem 解析序：
 rem   1. YFWORKING_HOME 已定义 → 透传（隔离 home / 双版并行场景）
-rem   2. 未定义 → 设默认 home ~/.yfworking（并建 skills 派生目录）
+rem   2. 未定义 → 设默认 home ~/.yfw（2026-09-09 串配置事故修复：净室专属根，
+rem      与在售旧版 ~/.yfworking 互不串；并建 skills 派生目录）
 rem   3. where node 兜底定位 node → node "%~dp0cli.mjs" %*
 rem ===========================================================================
 
-rem Compute ~/.yfworking (USERPROFILE works on Windows; HOME for git-bash)
+rem Compute ~/.yfw (USERPROFILE works on Windows; HOME for git-bash)
 if not defined YFWORKING_HOME (
   if defined HOME (
-    set "YFWORKING_HOME=%HOME%\.yfworking"
+    set "YFWORKING_HOME=%HOME%\.yfw"
   ) else (
-    set "YFWORKING_HOME=%USERPROFILE%\.yfworking"
+    set "YFWORKING_HOME=%USERPROFILE%\.yfw"
   )
 )
 if not exist "%YFWORKING_HOME%" mkdir "%YFWORKING_HOME%"

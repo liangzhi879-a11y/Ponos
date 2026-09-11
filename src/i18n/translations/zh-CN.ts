@@ -19,6 +19,13 @@ export const zhCN = {
     phaseBridge: '正在启动桥接…',
     phaseEnv: '校验运行环境…',
     phaseReady: '准备就绪',
+    // 真实预热步骤（2026-09-11：与 bridge bootState 模块一一对应，实际完成才打勾）
+    stepBridge: '桥接服务就绪',
+    stepKernel: '内核自举缓存同步',
+    stepSkills: '技能与工作流安装',
+    stepProvider: '供应商实测探测（含欠费检测）',
+    warming: '正在预热：{step}…',
+    ready: '预热完成，正在进入…',
   },
 
   // --- 登录 / 首设口令（SetupWizard + AuthScreen） ---
@@ -323,7 +330,7 @@ export const zhCN = {
     autoImageBridge: '自动图片桥接',
     autoImageBridgeDesc: '对话中粘贴图片时，若主模型不支持视觉，自动调用视觉模型转成文字描述（需已配置视觉模型）。',
     providerContextWindow: '上下文窗口',
-    providerContextWindowDesc: '模型最大上下文长度（tokens）。0 = 自动：保存后探测服务端真实窗口，探测不到时按内置模型表/画像默认（本地 64K、云端 200K）',
+    providerContextWindowDesc: '模型最大上下文长度（tokens）。0 = 自动：以服务端实测为准——探测 /v1/models 元数据与端点返回值自适应填写，应用启动/定时自动复探；接口报错时按模型返回的真实上限自动校正',
     providerProfile: '行为画像',
     providerProfileAuto: '自动判定（推荐）',
     providerProfileCloud: '云端',

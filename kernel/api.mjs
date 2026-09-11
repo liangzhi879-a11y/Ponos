@@ -63,7 +63,14 @@ function mergeCumulativeUsage(a, b) {
 
 // Anthropic Messages 事件流纯解析器（闭包状态：tool 累积/textBuf/usage）
 export function createAnthropicParser() {
-  let tool = null // { id, name, inputJson }
+  // 【2026-09-11 DeepSeek 适配】并发/交错安全的工具块累积：按 content_block 的 index
+  // 分槽（Anthropic 语义：每个 content_block_* 事件都带 index）。旧实现只有单一
+  // `tool` 变量——兼容端点若"多个 tool_use 先 start、input_json_delta 交错下发"，
+  // 会发生：后块覆盖前块（前块丢失）+ 两块的 partial_json 拼进同一 inputJson
+  // （JSON.parse 失败 → 空参 {} 执行）。缺 index 的旧式端点回退"最后一个未收尾块"
+  // （等价原单槽语义，保持向后兼容）。
+  const toolSlots = new Map() // key(index|'__last') -> { id, name, inputJson, inline }
+  let lastToolKey = null
   let textBuf = ''
   let usage = { input_tokens: 0, output_tokens: 0 }
   let lastUsageKey = null // 最近一次已 push 的 usage 快照指纹（同值快照去重）
@@ -72,22 +79,49 @@ export function createAnthropicParser() {
     feed(payload) {
       const out = []
       const dt = payload.delta
-      if (payload.type === 'content_block_start' && payload.content_block?.type === 'tool_use') {
-        tool = { id: payload.content_block.id, name: payload.content_block.name, inputJson: '' }
+      const hasIdx = Number.isInteger(payload.index)
+      if (payload.type === 'content_block_start') {
+        const cb = payload.content_block
+        if (cb?.type === 'tool_use') {
+          const key = hasIdx ? payload.index : '__last'
+          toolSlots.set(key, {
+            id: cb.id,
+            name: cb.name,
+            inputJson: '',
+            // 兼容端点可能把完整参数内联在 content_block.input（不发 input_json_delta）
+            inline: cb.input === undefined || cb.input === null ? undefined : cb.input,
+          })
+          lastToolKey = key
+        }
       } else if (payload.type === 'content_block_delta' && dt) {
         if (dt.type === 'text_delta' && dt.text) {
           textBuf += dt.text
           for (const seg of segmentText(textBuf)) { textBuf = ''; out.push(seg) }
         } else if (dt.type === 'thinking_delta' && dt.thinking) {
           out.push({ type: 'thinking', text: dt.thinking })
-        } else if (dt.type === 'input_json_delta' && tool && dt.partial_json) {
-          tool.inputJson += dt.partial_json
+        } else if (dt.type === 'input_json_delta' && dt.partial_json) {
+          // 按 index 落槽；缺 index 回退最后一个未收尾块
+          const key = hasIdx ? payload.index : lastToolKey
+          const slot = key === null ? undefined : toolSlots.get(key)
+          if (slot) slot.inputJson += dt.partial_json
         }
-      } else if (payload.type === 'content_block_stop' && tool) {
-        let input = {}
-        try { input = tool.inputJson ? JSON.parse(tool.inputJson) : {} } catch {}
-        out.push({ type: 'tool_use', id: tool.id, name: tool.name, input })
-        tool = null
+      } else if (payload.type === 'content_block_stop') {
+        // 只对"该 index 上确实有 tool_use 槽"才产出——文本/思考块的 stop 不再误触发
+        const key = hasIdx ? payload.index : lastToolKey
+        const slot = key === null ? undefined : toolSlots.get(key)
+        if (slot) {
+          let input
+          if (slot.inputJson) {
+            try { input = JSON.parse(slot.inputJson) } catch { input = {} }
+          } else if (slot.inline !== undefined) {
+            input = slot.inline
+          } else {
+            input = {}
+          }
+          out.push({ type: 'tool_use', id: slot.id, name: slot.name, input })
+          toolSlots.delete(key)
+          if (lastToolKey === key) lastToolKey = null
+        }
       } else if (payload.type === 'message_start' && payload.message?.usage) {
         usage = normalizeUsage(payload.message.usage)
       } else if (payload.type === 'message_delta') {
@@ -239,6 +273,52 @@ async function* mockStream({ messages, signal }) {
   const lastText = typeof lastContent === 'string'
     ? lastContent
     : (Array.isArray(lastContent) ? lastContent.filter((b) => b?.type === 'text').map((b) => b.text).join('\n') : '')
+  // 无进展停滞守卫测试（守卫⑥，2026-09-10）：每次请求产注释文本 + Browser js
+  // 只读测量（表达式逐次微变），模拟"测量打转"循环——文本/工具键都不同，
+  // ③b/⑤ 抓不到；engine 的 LOOP_STALL_MS 停滞守卫应在超时后收尾。
+  // 必须放在 tool_result 回显分支之前：测量轮的 tool_result 回合交回显会让
+  // 循环一轮即结束。历史门控用内联 some（historyHas 定义在本分支之后，TDZ）。
+  if ((messages || []).some((m) => m?.role === 'user' && (
+    typeof m?.content === 'string'
+      ? m.content.includes('[mock:loop-measure]')
+      : (Array.isArray(m?.content) && m.content.some((b) => b?.type === 'text' && String(b?.text ?? '').includes('[mock:loop-measure]')))
+  ))) {
+    // 自愈分支（PONOS_MOCK_STALL_HEAL='1' 显式开启，once 语义）：历史已含守卫⑥
+    // 推进指令 → 模拟模型改做实质工作（成功 Bash，刷新进展信号 → 愈合计数清零）。
+    // 已愈合后的后续请求走"恢复完成"纯文本分支收尾（见下），不再产测量——
+    // once + 终态双门控防"愈合标记残留 → 每轮都产工具"的死循环。
+    if (process.env.PONOS_MOCK_STALL_HEAL === '1' && process.env.PONOS_MOCK_STALL_HEAL_CONSUMED !== '1' &&
+        (messages || []).some((m) => m?.role === 'user' && typeof m?.content === 'string' && m.content.includes('【系统】检测到你长时间没有实质进展'))) {
+      process.env.PONOS_MOCK_STALL_HEAL_CONSUMED = '1'
+      if (signal?.aborted) throw abortError()
+      await sleep(MOCK_SLEEP_MS)
+      yield {
+        type: 'tool_use',
+        id: `tool_use_stall_healed_${Math.floor(Math.random() * 1e9)}`,
+        name: 'Bash',
+        input: { command: 'echo stall-healed-real-work' },
+      }
+      yield { type: 'usage', usage: MOCK_USAGE }
+      return
+    }
+    // 愈合完成终态：Bash 已落地（实质进展）→ 模型以最终结论收尾（正常完成，不停摆）
+    if (process.env.PONOS_MOCK_STALL_HEAL === '1' && process.env.PONOS_MOCK_STALL_HEAL_CONSUMED === '1') {
+      yield* streamText('任务已按新方向推进完成 [mock:stall-healed-done]', signal)
+      yield { type: 'usage', usage: MOCK_USAGE }
+      return
+    }
+    const n = (Number(process.env.PONOS_MOCK_MEASURE_N) || 0) + 1
+    process.env.PONOS_MOCK_MEASURE_N = String(n)
+    yield* streamText(`第 ${n} 次测量：这次再换个角度看一下结果。`, signal)
+    yield {
+      type: 'tool_use',
+      id: `tool_use_measure_${n}_${Math.floor(Math.random() * 1e9)}`,
+      name: 'Browser',
+      input: { action: 'js', params: { expression: `measure_${n}()` } },
+    }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // 工具结果回合：仅当"最后一条消息"为 tool_result 轮才报告执行结果（引擎工具
   // 循环第二轮）。不得用"历史中任意 tool_result"判定——跨轮连续调用 [mock:tool]
   // 时，上一轮被拒绝的 tool_result 残留在历史里，会让 mock 误走结果回显分支而
@@ -766,12 +846,27 @@ async function fetchWithConnectTimeout(url, { method, headers, body, signal }, c
 
 // Anthropic SSE 流：统一产出归一化 chunk。
 export async function* protocolStream({ url, body, headers, signal }) {
-  const connectTimeoutMs = Math.max(0, Number(process.env.CLAUDE_CODE_CONNECT_TIMEOUT_MS || 30_000))
+  // 连接/首字节超时（2026-09-09 挂起事故根因修复）：默认从 30s 提到 600s。
+  // 实测网关在 HTTP 层缓冲整个排队+思考阶段（复杂请求响应头 207s 才到），30s
+  // 超时会在排队期间反复掐断请求——服务器侧仍在生成（孤儿占用槽位），重试
+  // 制造更多孤儿，形成"越重试越挂"的死亡螺旋（实测 8 分钟 19 次重试全灭）。
+  // 真正的挂起守卫是 engine 的首字节看门狗（447/480s，abort 信号传导到 fetch）；
+  // TCP 连接失败（拒绝/RST）由系统栈秒级报错，不需要 30s 兜底。
+  const connectTimeoutMs = Math.max(0, Number(process.env.CLAUDE_CODE_CONNECT_TIMEOUT_MS || 600_000))
   const extSignal = toAbortSignal(signal)
+  // connection: close（2026-09-09 挂起事故修复）：远程网关对半开/复用连接有隐性
+  // 限流——kernel 连接堆积（ESTABLISHED+CLOSE_WAIT）后新请求被静默丢弃（实测：
+  // 同请求连续多次 447s 零数据，旁路新连接秒回；重试换新连接后才恢复）。undici
+  // 默认 keep-alive 池让连接长期驻留，累积后命中网关上限。逐请求关闭连接、
+  // 即用即弃，杜绝堆积（代价：每请求一次 TCP 握手，远端 RTT 量级可忽略）。
+  // D 观测：请求体尺寸落 stderr（kernel-stderr.log 诊断项可见）——挂起排查时
+  // 可当场确认"请求发出去了多大"，与 usage 对账守卫互补（对账只在响应到达时生效）。
+  const rawBody = JSON.stringify(body)
+  console.error(`[api] POST ${url} body=${rawBody.length}B msgs=${Array.isArray(body.messages) ? body.messages.length : '-'}`)
   const res = await fetchWithConnectTimeout(url, {
     method: 'POST',
-    headers,
-    body: JSON.stringify(body),
+    headers: { ...headers, connection: 'close' },
+    body: rawBody,
     signal: extSignal,
   }, connectTimeoutMs)
   if (!res.ok || !res.body) {
@@ -786,9 +881,25 @@ export async function* protocolStream({ url, body, headers, signal }) {
   let buf = ''
   let usagePushed = false
   let eventCount = 0 // 已成功解析的 SSE 事件数——空流判据：HTTP 200 后 0 事件即上游无产出
+  let sseEventName = '' // 当前 SSE `event:` 名（error/ping 判定用；空行/新 event 行覆盖）
   const parser = createAnthropicParser()
-  // P1-6：单次流读空闲看门狗（默认 300s，同 deepseek-harness）
-  const idleTimeoutMs = Number(process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS || 300_000)
+  // P1-6：单次流读空闲看门狗。默认 300s，但必须跟随首内容宽限校准——若
+  // PONOS_STREAM_FIRST_BYTE_MS（provider firstByteMs 注入，如 447s）长于 300s，
+  // 本层仍按 300s 掐断会在慢 prefill（实测 362KB 上下文排队 >5min）时形成
+  // "每 300s 重发同一请求"的失速循环（2026-09-10 实测 881s 静默告警根因：
+  // engine 首字节看门狗 447/600s 还没到，流读先被 300s 掐死 → zeroEvents
+  // 无限重试）。大请求（>200K 字符，engine adaptiveFirstByteMs 同门槛）放宽
+  // 到 600s 封顶。显式 CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS 仍权威（测试/用户覆盖）。
+  const idleTimeoutMs = (() => {
+    const explicit = Number(process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS)
+    if (Number.isFinite(explicit) && explicit > 0) return explicit
+    const fb = Number(process.env.PONOS_STREAM_FIRST_BYTE_MS)
+    // 大请求：对齐 engine adaptiveFirstByteMs（>200K 字符 → 600s 上限）
+    if (rawBody.length > 200_000) return 600_000
+    // 普通请求：对齐 engine FIRST_BYTE_HARD_CAP_MS（480s），下限 300s
+    const floor = Math.max(300_000, Number.isFinite(fb) && fb > 0 ? fb : 0)
+    return Math.min(480_000, floor)
+  })()
   // R1-1 流中断识别：读阶段 transient 错误（网络断/fetch failed/流空闲超时）包装为
   // StreamInterrupted，供 anthropicStream 外层重发判定；abort/非 transient 原样抛
   async function readWithRecover() {
@@ -810,11 +921,23 @@ export async function* protocolStream({ url, body, headers, signal }) {
       buf = lines.pop()
       for (const line of lines) {
         const t = line.trim()
+        if (!t) continue
+        // SSE 事件名行（`event: error` / `event: ping`）。Anthropic 兼容端点在流中途
+        // 报错时发 `event: error` + data {type:'error',error:{type,message}}；
+        // 旧实现只看 data 行，这类错误被 JSON.parse 后交 parser.feed 静默忽略
+        // （无 error 分支）→ 用户侧表现为"回答突然截断/空回复且无任何报错"，极难排查。
+        if (t.startsWith('event:')) { sseEventName = t.slice(6).trim(); continue }
         if (!t.startsWith('data:')) continue
         const payload = t.slice(5).trim()
         if (!payload || payload === '[DONE]') continue
         let ev
         try { ev = JSON.parse(payload) } catch { continue }
+        // 流内错误：显式抛出，交 classifyApiError 判定可重试（overloaded/429/5xx）
+        // 或终局（invalid_request），复用既有 retryStream 重发链路
+        if (sseEventName === 'error' || ev?.type === 'error') throw apiStreamError(ev, sseEventName)
+        // 心跳不计入有效事件：否则"只发 ping 后 EOF"的空流不会被 DeadStream 快速判定
+        // （engine 只能等空闲看门狗 300s 收尾）
+        if (ev?.type === 'ping') continue
         eventCount++
         for (const c of parser.feed(ev)) {
           if (c.type === 'usage') usagePushed = true
@@ -842,7 +965,7 @@ export async function* protocolStream({ url, body, headers, signal }) {
     //      0 事件（上游持续空流）由 engine retryStream 的 streak 计数升级为 DeadStream。
     //   ③ AbortError（用户取消 / engine 空闲看门狗 abort）原样抛出——由 engine 的
     //      signal.aborted / watchdog.tripped 分支处理。
-    if (err?.name !== 'DeadStreamError' && eventCount === 0 && err?.name !== 'AbortError') {
+    if (err?.name !== 'DeadStreamError' && err?.name !== 'ApiStreamError' && eventCount === 0 && err?.name !== 'AbortError') {
       if (classifyApiError(err).kind === 'transient' || err?.kind === 'transient') err.zeroEvents = true
       else throw deadStreamError(err)
     }
@@ -858,6 +981,25 @@ export function streamInterrupted(err) {
   const e = new Error('stream interrupted: ' + (err?.message || String(err)))
   e.name = 'StreamInterrupted'
   e.kind = 'transient'
+  return e
+}
+
+// 【2026-09-11 DeepSeek 适配】流内 SSE 错误事件（Anthropic 语义 `event: error` +
+// data {type:'error',error:{type,message}}）→ 结构化错误，带上 status 让既有
+// classifyApiError 正确分流：
+//   overloaded_error / server_error / internal → 529 → transient（retryStream 重发）
+//   rate_limit_error / too_many_requests        → 429 → rate-limit（可重试）
+//   invalid_request_error / 其它                → 400 → unknown（终局，不空耗重试）
+export function apiStreamError(ev, eventName = '') {
+  const info = (ev && typeof ev.error === 'object' && ev.error) || ev || {}
+  const ptype = String(info.type || info.code || (eventName === 'error' ? 'stream_error' : eventName) || 'stream_error')
+  const msg = String(info.message || '流内错误事件')
+  const e = new Error(`${ptype}: ${msg}`)
+  e.name = 'ApiStreamError'
+  e.providerType = ptype
+  if (/overloaded|server_error|internal|unavailable|temporarily/i.test(ptype)) e.status = 529
+  else if (/rate.?limit|too_many/i.test(ptype)) e.status = 429
+  else e.status = 400
   return e
 }
 
@@ -883,6 +1025,14 @@ function isCacheRejection(err) {
 // 发，避免 DeepSeek #1397 的 400）。auto/未知 → {}（模型原生自适应，不注入）。
 export function effortParam(effort) {
   if (effort === 'off') return { thinking: { type: 'disabled' } }
+  // provider 思考模式（2026-09-10）：MiniMax 等不认 reasoning_effort 的云端，
+  // 显式 thinking:enabled+budget 后流内才有 thinking_delta（实测无参数时思考
+  // 完全不可见——思考混进 text_delta 或整段隐藏）。auto 档位走本分支。
+  if (process.env.CLAUDE_CODE_THINKING_ENABLED === '1') {
+    const budget = Number(process.env.CLAUDE_CODE_THINKING_BUDGET || 4096)
+    const n = Number.isFinite(budget) && budget > 0 ? Math.floor(budget) : 4096
+    return { thinking: { type: 'enabled', budget_tokens: n } }
+  }
   if (effort === 'low' || effort === 'high' || effort === 'max') return { reasoning_effort: effort }
   return {}
 }
@@ -983,6 +1133,9 @@ export function classifyApiError(err) {
   const status = err?.status || 0
   // context_window_exceeded 以 message 关键词判定（provider 不一定带 status，如 mock）
   if (/context_window_exceeded/.test(msg)) return { kind: 'context-window', retryable: false }
+  // 模型不存在/已下线（2026-09-11 改名适配）：404/400 + model not found / invalid model
+  // → 单独分类，engine 落"重新探测模型清单"引导（桥探测已按服务端清单自动适配旧名）
+  if ((status === 404 || status === 400) && /(invalid model|unknown model|model[\w\s.:'"-]{0,80}\b(not[ -]?found|not[ -]?exist|does not exist))/i.test(msg)) return { kind: 'model-not-found', retryable: false }
   // vLLM/OpenAI 等非 Anthropic 端点：400 + "maximum context length is N tokens"
   // （prompt+max_tokens 超过 max_model_len）同样判上下文超限，engine 走压缩自愈
   if (status === 400 && /maximum context length is \d+\s*tokens?/i.test(msg)) return { kind: 'context-window', retryable: false }

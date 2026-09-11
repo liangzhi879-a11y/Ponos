@@ -16,11 +16,12 @@ import { resolveKernelPaths } from '../electron/kernel-paths.cjs'
 import { resolveYfwHome } from './yfw-home.cjs'
 import { buildExperienceIndex, buildSedimentPrompt, ensurePersonalDir } from './experience.mjs'
 export { ensurePersonalDir, buildExperienceIndex, buildSedimentPrompt } from './experience.mjs'
-import * as doubao from './doubao.mjs'
 import { createTranscriptHandlers } from './transcript.mjs'
 import { makeBrowserRouter } from './browser-routing.mjs'
 import { kernelReadonlySync } from './kernel-readonly.mjs'
-import { getAuthStatus, setupPassword, checkPassword } from './auth.mjs'
+import { getAuthStatus, setupPassword, checkPassword, changePassword } from './auth.mjs'
+import { MANAGED_KEYS, providerProfileEnv, buildIdentityPrompt, activeProviderModel, resolveProviderProfile } from './provider-profile.mjs'
+import { probeProviderCapabilities, applyProbeResults, resolveWindowFromProbe, maybeAdoptWindowFromEvent } from './provider-probe.mjs'
 
 const PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51517', 10)
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -91,31 +92,8 @@ const YFW_MILESTONE_PROTOCOL = `【任务里程碑进度协议】
   子代理的标记同样计入总进度，不得省略。
 - 以上标记仅用于进度展示，不要向用户解释标记本身，不要在对话中展示里程碑清单。`
 
-const YFW_SYSTEM_PROMPT = `你是 YFWorking（远方工作台），一款自主研发的桌面应用内置 AI 助手。你的底层框架基于 YFWorking Agent SDK，模型由用户配置的第三方 API 提供（当前为 deepseek-v4-flash）。
-
-【身份回答模板】当用户询问"你是谁"或类似问题时，严格使用以下回答：
-"我是 YFWorking（远方工作台），基于 YFWorking Agent SDK 构建的 AI 助手，当前由 deepseek-v4-flash 模型驱动。我可以帮你处理编程、企业咨询材料、系统诊断等各类任务。"
-
-【禁止】你的代码框架借鉴了业界成熟的 Agent 架构设计，但这不意味你就是那个产品。禁止声称自己是任何其他 AI 产品（包括但不限于 Claude、ChatGPT、Copilot、Gemini），禁止使用任何其他公司的品牌名称来描述你的身份。
-
-你好！我是 **YFWorking**（远方工作台），是你桌面应用中的内置 AI 助手，专注于企业咨询项目服务和应用开发。
-
-我可以协助你完成以下类型的工作：
-- **企业咨询**：核心表格处理、材料整理、报告撰写、审计核对、申报打包等
-- **系统诊断**：磁盘分析、性能监控、进程管理、事件日志检查、网络诊断等
-- **开发辅助**：代码编写、文件管理、项目规划等
-
-
-## 文件操作审批铁律（最高优先级）
-- 移动（移动/重命名）任何文件：必须先向用户说明源路径与目标路径，获得用户明确同意后方可执行。
-- 删除任何文件：必须先向用户确认将被删除的完整路径与用途，获得用户明确同意后方可执行。
-- 未经用户明确审批，禁止执行任何移动或删除文件的操作（包括临时文件、缓存与备份文件）。
-
-${YFW_ASKUSER_FORMAT}
-
-${YFW_MILESTONE_PROTOCOL}
-
-使用简体中文与用户交流，回答直接、专业、简洁。`;
+// YFWorking 身份提示词（2026-09-09 动态化）：模型名经 buildIdentityPrompt(model)
+// 插值（见 server/provider-profile.mjs），不再硬编码 deepseek-v4-flash。
 
 // ---------------------------------------------------------------------------
 // YFWorking home directory — STRICTLY ISOLATED from Claude.
@@ -126,6 +104,8 @@ ${YFW_MILESTONE_PROTOCOL}
 // buildChildEnv 注入解析后的 home）。
 // ---------------------------------------------------------------------------
 const YFW_HOME = resolveYfwHome()
+// 用户档案文件（2026-09-10 个人信息窗）：昵称/头像/简介
+const PROFILE_PATH = join(YFW_HOME, 'userData', 'profile.json')
 const YFW_SKILLS_DIR = join(YFW_HOME, 'skills')
 const YFW_TOOLS_DIR = join(YFW_HOME, 'tools')
 const YFW_CONFIG_PATH = join(YFW_HOME, 'config.json')
@@ -470,12 +450,22 @@ function syncKernelSettings() {
       ANTHROPIC_DEFAULT_SONNET_MODEL: model,
       ANTHROPIC_DEFAULT_OPUS_MODEL: model,
       ANTHROPIC_DEFAULT_HAIKU_MODEL: sub,
-      CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(provider.contextWindow || 1000000),
+      // 本地画像上下文窗口钳制（同 buildChildEnv 规则，2026-09-09 容器适配）。
+      // contextWindow=0/未设（2026-09-10：GUI 新建 provider 默认 0 = 自动探测）时
+      // 不注入任何值——内核回落 内置模型表 → 画像默认（local 64K / cloud 200K），
+      // 探测回填后下一 spawn 生效真实窗口。
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: resolveProviderProfile(provider) === 'local' && Number(provider.contextWindow) > 500_000
+        ? ''
+        : (Number(provider.contextWindow) > 0 ? String(provider.contextWindow) : ''),
       YFW_VISION_BASE_URL: visionProvider.apiBaseUrl || '',
       YFW_VISION_AUTH_TOKEN: visionProvider.authToken || '',
       YFW_VISION_MODEL: visionProvider.visionModel || '',
       YFW_AUTO_IMAGE_BRIDGE: cfg.autoImageBridge === false ? '0' : '1',
     }
+    // provider 画像 env（2026-09-09 本地模型适配）：先剔除受管键旧值（防切回
+    // 云端时本地残留 0.6/lean 经 settings.json"缺失键才兜底"泄漏），再并入画像值
+    for (const k of MANAGED_KEYS) delete existing.env[k]
+    Object.assign(existing.env, providerProfileEnv(provider))
     safeWriteJsonWithBak(YFW_SETTINGS_PATH, JSON.stringify(existing, null, 2))
     console.log('[bridge] kernel settings synced ->', provider.id, '| model:', model)
   } catch (e) {
@@ -609,7 +599,7 @@ function findYFWorking() {
   const rp = resolveKernelPaths({ appDir: join(__dirname, '..') })
   if (rp.install.kernel) {
     // 缓存同步失败不阻断：install 候选仍可直接 spawn（node 读 cli.mjs 无 EPERM）
-    try { bootstrapKernelToUserDir(rp.install.kernel) } catch { }
+    try { bootstrapKernelToUserDir(rp.install.kernel); bootState.kernelBootstrapped = true } catch { }
     return `"${node}" "${rp.install.kernel}"`
   }
   // 3) 罕见兜底：安装/源码路径消失但 home 缓存仍在（升级/卸载残留）→ 直接用缓存
@@ -626,6 +616,22 @@ console.log('[bridge] YFWorking home:', YFW_HOME)
 
 const sessions = new Map()
 const wsClients = new Set()
+
+// GUI 广播（2026-09-11 供应商实时更新）：探测回填后广播 provider_updated，
+// 设置窗口实时刷新；无 GUI 连接时静默。
+function broadcastGui(msg) {
+  const s = JSON.stringify(msg)
+  for (const c of wsClients) { try { c.send(s) } catch { /* 单个连接失败不影响其余 */ } }
+}
+
+// 启动预热状态（2026-09-11 真实 boot 进度）：各模块真实完成后置位——main 轮询
+// /boot-status 转发给 BootScreen 渲染真实步骤，全部就绪才交棒进入主界面。
+const bootState = {
+  kernelBootstrapped: false,  // 内核自举缓存同步完成（findYFWorking 路径）
+  samplesInstalled: false,    // 内置示例技能安装完成
+  workflowsInstalled: false,  // 内置工作流（spec-dev）安装完成
+  probeDone: false,           // 活跃供应商实测探测完成（含欠费检测）
+}
 
 // 登录 token 占位表：token -> expiry（24h）。重启即清空 → 每次启动都要口令；
 // /api/auth/status 不做 token 免密判定，token 仅作为未来服务端会话换用的占位。
@@ -681,6 +687,19 @@ const q = (s) => '"' + String(s).replace(/"/g, '') + '"'
 // Build the isolated environment for spawned CLI processes.
 // CLAUDE_CONFIG_DIR redirects Claude Code's config dir to ~/.yfworking so
 // the agent's sessions, memory, and skills never collide with ~/.claude.
+// 内核 provider 环境签名（2026-09-10 模型热切换修复）：spawn 时冻结内核收到的
+// provider 环境（baseUrl/model/auth），后续 send 携带的新配置与冻结签名不一致 →
+// 收割旧内核、以 --resume + 新配置重启（同一聊天内切换模型真正生效，历史经
+// --resume 无缝保留）。此前 getOrCreateSession 无条件复用活内核，前端发的
+// model 字段永远到不了内核——切换模型必须换对话才生效的根因。
+export function providerEnvSig(env = process.env) {
+  return JSON.stringify({
+    baseUrl: env.ANTHROPIC_BASE_URL || '',
+    model: env.ANTHROPIC_MODEL || '',
+    auth: env.ANTHROPIC_AUTH_TOKEN || '',
+  })
+}
+
 function buildChildEnv() {
   const cfg = loadConfig()
   const provider = (cfg.providers || []).find(p => p.id === cfg.activeProvider) || cfg.providers?.[0]
@@ -712,20 +731,52 @@ function buildChildEnv() {
   if (provider && provider.apiBaseUrl && provider.authToken) {
     env.ANTHROPIC_BASE_URL = provider.apiBaseUrl
     env.ANTHROPIC_AUTH_TOKEN = provider.authToken
-    const model = provider.primaryModel || (provider.models && provider.models[0]) || ''
+    // 模型改名适配（2026-09-11）：spawn 时对配置模型名做清单校验——提供方升级
+    // 改名后（如 deepseek-chat → deepseek-v4-flash），已配置的旧模型名不在探测
+    // 清单内 → 自动落到当前服务端首项，会话不再因旧名 404。清单来自探测回填的
+    // provider.models（启动自动探测/定时复探保持新鲜）。
+    const servedModels = (Array.isArray(provider.models) ? provider.models : []).map(String).filter(Boolean)
+    let model = provider.primaryModel || servedModels[0] || ''
+    if (model && servedModels.length && !servedModels.includes(model)) {
+      console.warn(`[bridge] provider ${provider.id} primaryModel ${model} 不在服务端清单（已下线/改名）→ 自动适配 ${servedModels[0]}`)
+      model = servedModels[0]
+    }
+    let sub = provider.subagentModel || model
+    if (sub && servedModels.length && !servedModels.includes(sub)) {
+      sub = servedModels[0]
+    }
     if (model) {
       env.ANTHROPIC_MODEL = model
       env.ANTHROPIC_DEFAULT_SONNET_MODEL = model
       env.ANTHROPIC_DEFAULT_OPUS_MODEL = model
-      env.ANTHROPIC_DEFAULT_HAIKU_MODEL = provider.subagentModel || model
+      env.ANTHROPIC_DEFAULT_HAIKU_MODEL = sub || model
+    }
+    // provider 思考模式（2026-09-10）：thinkingEnabled → 内核请求注入
+    // thinking:enabled+budget（MiniMax 等不认 reasoning_effort 的云端经此才有
+    // thinking_delta 流，否则思考在流内完全不可见）
+    if (provider.thinkingEnabled) {
+      env.CLAUDE_CODE_THINKING_ENABLED = '1'
+      env.CLAUDE_CODE_THINKING_BUDGET = String(provider.thinkingBudget || 4096)
     }
     if (provider.contextWindow) {
-      env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(provider.contextWindow)
+      // 本地画像上下文窗口钳制（2026-09-09 容器适配）：GUI 添加 provider 的默认
+      // contextWindow=1000000 对本地 vLLM 模型几乎必然虚高（真实窗口=服务端
+      // max_model_len，如 Qwen3.8-27B 的 180k）——内核按虚高窗口规划永不主动压缩，
+      // 上下文滚到真实窗口附近后请求挂起/撞线。>500k 的虚高值不注入，内核回退
+      // 模型表/默认 200k 窗口规划（正确触发压缩）；显式设 ≤500k 的真实值仍生效。
+      const isLocal = resolveProviderProfile(provider) === 'local'
+      if (isLocal && Number(provider.contextWindow) > 500_000) {
+        console.warn(`[bridge] provider ${provider.id} contextWindow ${provider.contextWindow} looks inflated for a local model — not injecting (kernel falls back to model table default)`)
+      } else {
+        env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(provider.contextWindow)
+      }
     }
-    // Raise the kernel's max output token ceiling (default 32k). 64k is within
-    // the native limit of current sonnet/opus models; older models with lower
-    // caps are safely clamped by the kernel. Explicit user env still wins.
-    env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || '64000'
+    // provider 画像 env（2026-09-09 本地模型适配）：温度/提示词分级/输出预算等按
+    // 画像注入（云端产出空映射=现状，内核默认 64000 预算与 0 温度不变；本地吃默认
+    // 表或显式字段）。用户进程 env 已有同键时不覆盖（providerProfileEnv 语义）。
+    for (const [k, v] of Object.entries(providerProfileEnv(provider, { env }))) {
+      env[k] ??= v
+    }
     console.log('[bridge] active provider:', provider.id, '| model:', model, '| baseUrl:', provider.apiBaseUrl)
   } else if (provider) {
     console.warn('[bridge] provider', provider.id, 'missing apiBaseUrl or authToken — using CLI defaults')
@@ -809,11 +860,50 @@ function experienceInjectConfig() {
 // GUI 经 buildSendPayload 透传 conversation.mode，WS 'send' 分支收敛 'chat'|'task'。
 const CHAT_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch']
 
+// 浏览器白名单写入（2026-09-10）：内核 Browser 工具白名单审批通过后，把域名
+// 追加进 {YFW_HOME}/browser-whitelist.json 的 allow 数组。执行器（browser-common.cjs
+// whitelistConfigPath）按 mtime 热重载，写入即时生效无需重启。导出供测试。
+export function addBrowserWhitelist(host) {
+  const h = String(host || '').trim().toLowerCase()
+  if (!h || !/^[a-z0-9.-]+$/.test(h)) return false
+  const p = join(YFW_HOME, 'browser-whitelist.json')
+  let cfg = { allow: [] }
+  try { cfg = JSON.parse(readFileSync(p, 'utf-8')) } catch { /* 文件不存在/损坏 → 重建 */ }
+  const allow = Array.isArray(cfg.allow) ? cfg.allow.map(String) : []
+  if (allow.some((x) => x.toLowerCase() === h)) return true // 已存在，幂等
+  allow.push(h)
+  try {
+    mkdirSync(YFW_HOME, { recursive: true })
+    writeFileSync(p, JSON.stringify({ allow }, null, 2), 'utf-8')
+    console.log(`[bridge] browser whitelist added: ${h}`)
+    return true
+  } catch (e) {
+    console.warn('[bridge] browser whitelist write failed:', e?.message || e)
+    return false
+  }
+}
+
 function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCount, mode = 'task') {
   if (sessions.has(sid)) {
     const s = sessions.get(sid)
-    if (s.proc && !s.proc.killed) return s
-    sessions.delete(sid)
+    if (s.proc && !s.proc.killed) {
+      // 模型/端点热切换（2026-09-10）：当前 provider 环境签名与 spawn 冻结签名
+      // 不一致 → 收割旧内核、新 spawn 以 --resume 新配置续跑。用户切模型后发
+      // 消息即为"用新模型继续"的明确意图；旧内核在跑轮次也一并终止（transcript
+      // 已落盘，--resume 无缝续）。先清运行 marker 防误报"previous run crashed"，
+      // _reaped 抑制 closed 广播（前端状态无缝过渡）。
+      if (s._spawnEnvSig && s._spawnEnvSig !== providerEnvSig(buildChildEnv())) {
+        console.log(`[bridge] provider/model changed — reaping kernel sid ${sid.slice(0, 8)} to respawn with new env`)
+        if (resumeId) { try { rmSync(join(YFW_HOME, 'runs', resumeId + '.running'), { force: true }) } catch {} }
+        s._reaped = true
+        try { execSync(`taskkill -F -T -PID ${s.proc.pid}`, { timeout: 5000, stdio: 'ignore' }) } catch { try { s.proc.kill() } catch {} }
+        sessions.delete(sid)
+      } else {
+        return s
+      }
+    } else {
+      sessions.delete(sid)
+    }
   }
   // 系统提示词临时文件：会话进程退出后删除，避免在 %TEMP% 长期堆积
   let promptFile = null
@@ -837,11 +927,13 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     // 协议（+经验注入段），new/resume 两条路径同构。
     let resumePrompt = YFW_ASKUSER_FORMAT + YFW_MILESTONE_PROTOCOL
     const injectCfg = experienceInjectConfig()
-    if (injectCfg.enabled) {
-      // 沉积引导同样注入 resume 会话：原实现只进新会话，而应用默认"恢复最新
-      // 会话"、日常调试几乎全在 resume 会话里 → 内核收不到沉积指令，个人经验库
-      // 在迁移后零新增（2026-08-15 后实测无写入）。resume 一并携带后恢复的
-      // 会话也能正常沉淀经验。
+    // 沉积引导同样注入 resume 会话（任务模式）：原实现只进新会话，而应用默认
+    // "恢复最新会话"、日常调试几乎全在 resume 会话里 → 内核收不到沉积指令，
+    // 个人经验库在迁移后零新增（2026-08-15 后实测无写入）。resume 一并携带后
+    // 恢复的会话也能正常沉淀经验。chat 模式除外（2026-09-09 截断事故修复）：
+    // Write/Edit 在 chat 被禁，沉积指令与工具集冲突令弱模型（实测 Qwen3.8-27B）
+    // 思考后提前 end_turn（注入时 225 tokens 截断 / 移除后 3923 chars 完整）。
+    if (injectCfg.enabled && mode === 'task') {
       resumePrompt += buildSedimentPrompt()
       resumePrompt += buildExperienceIndex(injectCfg.maxBytes)
     }
@@ -861,9 +953,18 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     // 技能块经 --add-dir 技能根统一提供；此处仅身份/互动/里程碑 + 经验注入。
     let effectivePrompt = systemPrompt
       ? `${systemPrompt}\n\n${YFW_ASKUSER_FORMAT}\n\n${YFW_MILESTONE_PROTOCOL}`
-      : YFW_SYSTEM_PROMPT
+      // 身份提示词动态插值当前模型名（2026-09-09）：model 参数来自 GUI WS send
+      //（activeProv.primaryModel）；缺失时回退 config 活跃 provider
+      : buildIdentityPrompt(model || activeProviderModel(loadConfig()), {
+          askuserFormat: YFW_ASKUSER_FORMAT,
+          milestoneProtocol: YFW_MILESTONE_PROTOCOL,
+        })
     const injectCfg = experienceInjectConfig()
-    if (injectCfg.enabled) {
+    // 经验沉积段仅任务模式注入（2026-09-09 截断事故修复）：沉积指令要求模型
+    // 用 Write/Edit 写经验文件，chat 模式这些工具全部被禁（CHAT_DISALLOWED）——
+    // 指令与工具集冲突令弱模型（实测 Qwen3.8-27B）思考后提前 end_turn 截断。
+    // 纯聊会话本就不应沉淀经验，chat 跳过语义无损。
+    if (injectCfg.enabled && mode === 'task') {
       effectivePrompt += buildSedimentPrompt()      // 沉积引导仅新会话注入
       effectivePrompt += buildExperienceIndex(injectCfg.maxBytes)
     }
@@ -913,6 +1014,7 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     if (!t) return
     session._lastOutAt = Date.now()
     session._stallWarnedAt = 0
+    clearFirstBytePending(session) // 内核有任何输出即解除"等待首字节"提示
     // 首 token 计时探针：首个非空 stdout 行到达时记录距 spawn 的耗时。
     if (!session.firstTokenAt) {
       session.firstTokenAt = Date.now()
@@ -937,6 +1039,26 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     // 轮次活跃跟踪（供内核空闲回收判定）：assistant 开启轮次，result 结束轮次。
     if (parsed && parsed.type === 'assistant') session._turnActive = true
     else if (parsed && parsed.type === 'result') session._turnActive = false
+    // 轮内每一步都可能静默（服务端缓冲的思考/prefill 阶段）——任何输出帧到达即
+    // 重新武装首字节等待提示，让等待条覆盖发消息后第一步之外的后续步骤；
+    // result 收尾（_turnActive=false）不重武装（2026-09-09 反馈覆盖缺口修复）。
+    if (session._turnActive) armFirstBytePending(session, sid)
+    // 内核 400 窗口学习回流（2026-09-09）：真实窗口 < 配置值 → 只下调持久回填
+    // config（此前学习仅进程内存、重启即丢）。云端同样受益——真实窗口只可能更小。
+    if (parsed && parsed.type === 'system' && parsed.subtype === 'context_window_adopted') {
+      const learned = Number(parsed.window)
+      if (Number.isFinite(learned) && learned > 0) {
+        const cfg = loadConfig()
+        const prov = (cfg.providers || []).find(p => p.id === cfg.activeProvider)
+        if (prov) {
+          const adopted = maybeAdoptWindowFromEvent(prov, learned)
+          if (adopted !== null) {
+            console.warn(`[bridge] adopting real context window ${adopted} for provider ${prov.id} (was ${prov.contextWindow})`)
+            saveConfig({ providers: (cfg.providers || []).map(p => (p.id === prov.id ? { ...p, contextWindow: adopted } : p)) })
+          }
+        }
+      }
+    }
     // Intercept assistant text/thinking containing milestone marks and
     // <!--ASK_USER...--> blocks (text only — thinking is model reasoning).
     if (parsed && parsed.type === 'assistant') {
@@ -1087,7 +1209,7 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
       console.error(`[bridge] kernel exited abnormal code=${code} (sid ${sid.slice(0, 8)}) after ${el}ms`)
     }
   })
-  const session = { proc, cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()), mode, _pendingQuestions: null, _proseProgress: { total: 0, lastIndex: 0, structuredUsed: false }, _pendingApprovals: new Map(), firstTokenAt: null, _lastOutAt: 0, _turnActive: false, _stallWarnedAt: 0, _reaped: false, _cancelPending: false, _cancelAt: 0, _cancelTimer: null }
+  const session = { proc, cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()), mode, _pendingQuestions: null, _proseProgress: { total: 0, lastIndex: 0, structuredUsed: false }, _pendingApprovals: new Map(), firstTokenAt: null, _lastOutAt: 0, _turnActive: false, _stallWarnedAt: 0, _reaped: false, _cancelPending: false, _cancelAt: 0, _cancelTimer: null, _turnStartAt: 0, _fbpTimer: null, _fbpFirstTimer: null, _spawnEnvSig: providerEnvSig(buildChildEnv()) }
   sessions.set(sid, session)
   return session
 }
@@ -1350,6 +1472,11 @@ const httpServer = createServer(async (req, res) => {
     if (url.pathname === '/health') {
       return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ status: 'ok', pid: process.pid }))
     }
+    // 启动预热状态（2026-09-11 真实 boot 进度）：main 轮询本端点转发给 BootScreen——
+    // 各模块真实完成后置位，渲染层按真实步骤渲染、全部就绪才交棒
+    if (url.pathname === '/boot-status') {
+      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, ...bootState }))
+    }
 
     // 登录屏口令端点（GUI 专用）：本地 scrypt 口令（server/auth.mjs），token 仅占位
     if (url.pathname === '/api/auth/status') {
@@ -1374,6 +1501,37 @@ const httpServer = createServer(async (req, res) => {
       const { token } = await readJsonBody(req).catch(() => ({}))
       if (token) authTokens.delete(token)
       return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true }))
+    }
+    // 修改密码（2026-09-10 个人信息窗）：验证旧密 → 新盐新哈希；未初始化时直接设置。
+    if (url.pathname === '/api/auth/change-password' && req.method === 'POST') {
+      const { oldPassword, newPassword } = await readJsonBody(req).catch(() => ({}))
+      try {
+        const r = await changePassword(oldPassword, newPassword)
+        if (!r.ok) {
+          const code = r.lockedForMs != null ? 423 : 401
+          return reply(code, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: r.reason, lockedForMs: r.lockedForMs ?? null }))
+        }
+        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, wasUninitialized: r.wasUninitialized === true }))
+      } catch (e) { return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: e?.message || String(e) })) }
+    }
+    // 用户档案（2026-09-10 个人信息窗）：昵称/头像(dataURL)/简介，落盘
+    // <YFW_HOME>/userData/profile.json；头像上限 400KB 防单文件膨胀。
+    if (url.pathname === '/api/profile' && req.method === 'GET') {
+      try {
+        return reply(200, { 'Content-Type': 'application/json' }, readFileSync(PROFILE_PATH, 'utf-8'))
+      } catch { return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ nickname: '', avatar: '', bio: '' })) }
+    }
+    if (url.pathname === '/api/profile' && req.method === 'POST') {
+      const body = await readJsonBody(req).catch(() => ({}))
+      const nickname = String(body.nickname ?? '').slice(0, 64)
+      const bio = String(body.bio ?? '').slice(0, 500)
+      const avatar = String(body.avatar ?? '')
+      if (avatar.length > 400_000) return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: 'avatar too large' }))
+      try {
+        mkdirSync(dirname(PROFILE_PATH), { recursive: true })
+        writeFileSync(PROFILE_PATH, JSON.stringify({ nickname, avatar, bio }, null, 2), 'utf-8')
+        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true }))
+      } catch (e) { return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: String(e?.message || e) })) }
     }
 
     // U1 只读子命令薄转发：query → kernel 只读子命令 → 透传 stdout JSON（schema A.1/A.2）
@@ -1414,72 +1572,6 @@ const httpServer = createServer(async (req, res) => {
       const query = url.searchParams.get('query') || ''
       const limit = parseInt(url.searchParams.get('limit') || '50', 10) || 50
       return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, results: transcriptApi.searchTranscripts(query, limit) }))
-    }
-
-    // 豆包图片生成端点（会话/历史/限速见 doubao.mjs；下载去水印走 watermark_remove.py）
-    if (url.pathname.startsWith('/yfw/doubao/')) {
-      if (url.pathname === '/yfw/doubao/status') {
-        const s = doubao.readSessionMeta()
-        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ loggedIn: doubao.isLoggedIn(), exportedAt: s?.exportedAt || null }))
-      }
-      if (url.pathname === '/yfw/doubao/history' && req.method === 'GET') {
-        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ items: doubao.listHistory() }))
-      }
-      if (url.pathname === '/yfw/doubao/history' && req.method === 'POST') {
-        const b = await readJsonBody(req)
-        if (!b.id || !b.prompt) return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ code: 400, message: 'id and prompt required' }))
-        doubao.addHistory({ id: b.id, prompt: b.prompt, imageUrl: b.imageUrl || '', path: b.path || '', createdAt: b.createdAt || Date.now() })
-        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true }))
-      }
-      if (url.pathname.startsWith('/yfw/doubao/history/') && req.method === 'DELETE') {
-        const id = decodeURIComponent(url.pathname.split('/').pop())
-        doubao.removeHistory(id)
-        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true }))
-      }
-      if (url.pathname === '/yfw/doubao/download' && req.method === 'POST') {
-        if (doubao.rateLimitHit()) return reply(429, { 'Content-Type': 'application/json' }, JSON.stringify({ code: 429, message: 'rate limited' }))
-        const b = await readJsonBody(req)
-        if (!b.url) return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ code: 400, message: 'url required' }))
-        const { nanoid } = await import('nanoid')
-        const id = nanoid(12)
-        const dir = doubao.imagesDir()
-        mkdirSync(dir, { recursive: true })
-        const tmpRaw = join(dir, `${id}.raw`)
-        try {
-          const r = await fetch(b.url, { signal: AbortSignal.timeout(30000) })
-          if (!r.ok) throw new Error(`upstream ${r.status}`)
-          writeFileSync(tmpRaw, Buffer.from(await r.arrayBuffer()))
-        } catch (e) {
-          return reply(502, { 'Content-Type': 'application/json' }, JSON.stringify({ code: 502, message: 'download failed: ' + (e?.message || e) }))
-        }
-        const outPng = join(dir, `${id}.png`)
-        const mode = b.mode === 'crop' ? 'crop' : 'auto'
-        const proc = spawn(findPythonExe(), [join(__dirname, 'watermark_remove.py'), tmpRaw, '--mode', mode, '--output', outPng], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000 })
-        let so = '', se = ''
-        proc.stdout.on('data', d => { so += d })
-        proc.stderr.on('data', d => { se += d })
-        const code = await new Promise(res => {
-          proc.on('error', err => { try { rmSync(tmpRaw, { force: true }) } catch {}; res(127) })
-          proc.on('close', res)
-        })
-        try { rmSync(tmpRaw, { force: true }) } catch {}
-        if (code !== 0) {
-          return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ code: 500, message: 'watermark remove failed: ' + se.slice(0, 200) }))
-        }
-        let meta
-        try { meta = JSON.parse(so.trim().split(/\r?\n/).pop()) } catch { meta = null }
-        if (!meta || !meta.ok) {
-          return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ code: 500, message: 'watermark remove bad output' }))
-        }
-        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, id, mode: meta.mode, url: `/yfw/doubao/images/${id}`, path: outPng }))
-      }
-      if (url.pathname.startsWith('/yfw/doubao/images/') && req.method === 'GET') {
-        const id = decodeURIComponent(url.pathname.split('/').pop())
-        const fp = join(doubao.imagesDir(), `${id}.png`)
-        if (!existsSync(fp)) return reply(404, { 'Content-Type': 'application/json' }, JSON.stringify({ error: 'not found' }))
-        return reply(200, { 'Content-Type': 'image/png' }, readFileSync(fp))
-      }
-      return reply(404, { 'Content-Type': 'application/json' }, JSON.stringify({ error: 'unknown doubao endpoint' }))
     }
 
     // Test provider connectivity before saving. Body: { apiBaseUrl, authToken, model? }
@@ -1536,7 +1628,12 @@ const httpServer = createServer(async (req, res) => {
           // API and it responded — credentials/format issue, not connectivity.
           // 0 = network failure (couldn't reach host).
           if (result.status > 0) {
-            const ok = result.status === 200 || result.status === 400 || result.status === 401 || result.status === 403 || result.status === 404 || result.status === 429
+            // 欠费/计费异常检测（2026-09-11）：402 或响应体含余额不足语义 → billing
+            // 标记（连测时即检验，不等到正式调用才发现）
+            const billing = result.status === 402 || /insufficient balance|余额不足|not enough balance/i.test(result.body)
+              ? 'insufficient_balance'
+              : undefined
+            const ok = billing ? false : (result.status === 200 || result.status === 400 || result.status === 401 || result.status === 403 || result.status === 404 || result.status === 429)
             let detail = ''
             try { detail = JSON.parse(result.body)?.error?.message || result.body.slice(0, 200) } catch { detail = result.body.slice(0, 200) }
             return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({
@@ -1545,6 +1642,7 @@ const httpServer = createServer(async (req, res) => {
               httpStatus: result.status,
               endpoint: target,
               detail,
+              billing,
               authValid: result.status !== 401 && result.status !== 403,
             }))
           }
@@ -1554,6 +1652,21 @@ const httpServer = createServer(async (req, res) => {
         }
       }
       return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, reachable: false, error: lastErr }))
+    }
+
+    // API 能力探测 + 自动回填（2026-09-09）：provider 保存/激活后由 GUI 异步触发。
+    // 探测 /v1/models 元数据 + 1-token TTFT + ~8k tokens 预填充基准 → 只填空位
+    // 回填 contextWindow/firstByteMs/maxOutputTokens（用户手配值优先）；24h 缓存
+    // 跳过元数据与基准（重复探测不烧 GPU）。
+    if (url.pathname === '/probe-provider' && req.method === 'POST') {
+      const body = await readJsonBody(req)
+      const r = await runProbeFor(body.providerId || null)
+      if (r.error) return reply(404, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: r.error }))
+      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({
+        ok: r.probe.ok, updates: r.updates, notes: r.notes, skipped: r.skipped,
+        ttftMs: r.probe.ttftMs ?? null, latencyMs: r.probe.latencyMs ?? null,
+        prefillTokPerSec: r.probe.prefillTokPerSec ?? null, fromCache: !!r.probe.fromCache,
+      }))
     }
 
     // Spawn a one-shot CLI process with the CURRENT active provider's env vars,
@@ -1644,7 +1757,10 @@ const httpServer = createServer(async (req, res) => {
           primaryModel: body.primaryModel || (body.models && body.models[0]) || '',
           subagentModel: body.subagentModel || (body.models && body.models[0]) || '',
           effortLevel: body.effortLevel || 'high',
-          contextWindow: body.contextWindow || 1000000,
+          // contextWindow 不再默认 1000000（2026-09-09）：虚高默认是本地模型
+          // 永不压缩的根因之一。新 provider 交由能力探测回填真实窗口（/probe-provider），
+          // 探测前由 buildChildEnv 的 local 虚高钳制 + 内核模型表/默认 200k 兜底。
+          ...(body.contextWindow ? { contextWindow: Number(body.contextWindow) } : {}),
           authToken: body.authToken || '',
         }
         const providers = [...(cfg.providers || []), newProvider]
@@ -2027,7 +2143,15 @@ if (KERNEL_IDLE_REAP_MS > 0) setInterval(reapIdleKernels, 60000).unref?.()
 // YFW_KERNEL_STALL_MS 覆盖阈值（毫秒），设 0 关闭。
 // ---------------------------------------------------------------------------
 const _stallEnv = process.env.YFW_KERNEL_STALL_MS
-const KERNEL_STALL_WARN_MS = _stallEnv === '0' ? 0 : (Number(_stallEnv) > 0 ? Number(_stallEnv) : 10 * 60 * 1000)
+// 失速告警阈值：10min → 420s（2026-09-09 三次校准）——90s 会在每次健康思考步
+// （实测 35-260s，服务端缓冲不流式）误报失速。420s 略低于内核首字节硬上限
+// 480s：健康思考+prefill 只触发温和的等待条，真挂起在 watchdog abort 前 1 分钟
+// 升级为失速告警（分级衔接：first_byte_pending 5s → stall 420s → abort 480s）。
+const KERNEL_STALL_WARN_MS = _stallEnv === '0' ? 0 : (Number(_stallEnv) > 0 ? Number(_stallEnv) : 420 * 1000)
+// 首字节等待提示：轮次活跃后静默 firstMs 即发 first_byte_pending，此后每 intervalMs
+// 重发（带累计静默时长），内核任何输出即清除（2026-09-09：prefill 阶段 UI 零反馈）。
+const FIRST_BYTE_PENDING_MS = Number(process.env.YFW_FIRST_BYTE_PENDING_MS) > 0 ? Number(process.env.YFW_FIRST_BYTE_PENDING_MS) : 5000
+const FIRST_BYTE_PENDING_INTERVAL_MS = 30 * 1000
 function warnStalledKernels() {
   const now = Date.now()
   for (const [sid, s] of sessions) {
@@ -2042,15 +2166,87 @@ function warnStalledKernels() {
   }
 }
 if (KERNEL_STALL_WARN_MS > 0) setInterval(warnStalledKernels, 60000).unref?.()
+
+// 首字节等待提示（2026-09-09 事故修复）：轮次活跃、内核静默 FIRST_BYTE_PENDING_MS
+// 后发 first_byte_pending（携带静默时长），此后每 30s 重发；内核任何输出即清除。
+// UI 据此渲染"等待首字节 Xs"，替代 prefill 阶段零反馈；超 90s 由失速告警分级接管。
+function armFirstBytePending(session, sid) {
+  clearFirstBytePending(session)
+  session._turnStartAt = Date.now()
+  const first = setTimeout(() => {
+    const fire = () => {
+      const s = sessions.get(sid)
+      if (!s || !s.proc || s.proc.killed || !s._turnActive || !s._turnStartAt) { clearFirstBytePending(s); return }
+      try { send({ type: 'event', data: { type: 'system', subtype: 'first_byte_pending', silentMs: Date.now() - s._turnStartAt }, sessionId: sid }) } catch {}
+    }
+    fire()
+    session._fbpTimer = setInterval(fire, FIRST_BYTE_PENDING_INTERVAL_MS)
+    if (session._fbpTimer?.unref) session._fbpTimer.unref()
+  }, FIRST_BYTE_PENDING_MS)
+  if (first.unref) first.unref()
+  session._fbpFirstTimer = first
+}
+function clearFirstBytePending(session) {
+  if (!session) return
+  if (session._fbpFirstTimer) { clearTimeout(session._fbpFirstTimer); session._fbpFirstTimer = null }
+  if (session._fbpTimer) { clearInterval(session._fbpTimer); session._fbpTimer = null }
+  session._turnStartAt = 0
+}
 sweepOrphanPromptFiles()
-// 测试场景（doubao.test.mjs）通过 YFW_BRIDGE_NO_LISTEN 跳过顶层 listen，
+// 测试场景通过 YFW_BRIDGE_NO_LISTEN 跳过顶层 listen，
 // 由测试自行 httpServer.listen(0) 起随机端口；正式运行保持原有行为。
+// 端口冲突自愈（2026-09-09 孤儿桥修复）：51517 被遗留 yfworking 孤儿进程占用时
+// EADDRINUSE 会让新桥启动失败（渲染器连上孤儿旧桥 = "重启后无法唤醒"）。识别占用者：
+// 本应用残留（命令行含 yfworking/bridge.mjs）→ 强杀后重试绑定；外来进程 → 报错退出。
+function findPidOnPort(port) {
+  try {
+    const out = execSync('netstat -ano -p tcp', { timeout: 5000 }).toString()
+    for (const line of out.split(/\r?\n/)) {
+      const m = line.match(new RegExp(`:${port}\\s+\\S+\\s+LISTENING\\s+(\\d+)`))
+      if (m) return Number(m[1])
+    }
+  } catch { /* netstat 不可用则放弃识别 */ }
+  return null
+}
+function isYfworkingProcess(pid) {
+  try {
+    const out = execSync(
+      `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine"`,
+      { timeout: 8000 },
+    ).toString()
+    return /yfworking|bridge\.mjs/i.test(out)
+  } catch { return false }
+}
 if (!process.env.YFW_BRIDGE_NO_LISTEN) {
-  httpServer.listen(PORT, () => {
-    console.log('[bridge] http+ws://localhost:' + PORT)
-    autoInstallSamples()
-    autoInstallTools()
-  })
+  let reclaimAttempts = 0
+  const listenWithReclaim = () => {
+    httpServer.once('error', (err) => {
+      if (err.code !== 'EADDRINUSE' || reclaimAttempts >= 3) {
+        console.error('[bridge] listen failed:', err.code || err.message)
+        process.exit(1)
+      }
+      const pid = findPidOnPort(PORT)
+      console.warn(`[bridge] port ${PORT} held by pid ${pid} (EADDRINUSE)`)
+      if (pid && pid !== process.pid && isYfworkingProcess(pid)) {
+        try { execSync(`taskkill -F -T -PID ${pid}`, { timeout: 5000, stdio: 'ignore' }) } catch {}
+        console.warn('[bridge] killed orphan bridge pid', pid, '- reclaiming port')
+      } else {
+        console.error('[bridge] port occupied by foreign process - exiting')
+        process.exit(1)
+      }
+      reclaimAttempts++
+      setTimeout(listenWithReclaim, 800)
+    })
+    httpServer.listen(PORT, () => {
+      console.log('[bridge] http+ws://localhost:' + PORT)
+      autoInstallSamples()
+      bootState.samplesInstalled = true // 预热就绪信号（同步函数，返回即完成/尽力）
+      autoInstallBuiltinWorkflows()
+      autoProbeActiveProvider()
+      autoInstallTools()
+    })
+  }
+  listenWithReclaim()
 }
 export { httpServer }
 wss.on('connection', (ws, req) => {
@@ -2097,6 +2293,7 @@ wss.on('connection', (ws, req) => {
           ...(msg.uuid ? { uuid: msg.uuid } : {}),
         }) + '\n')
         session._turnActive = true
+        armFirstBytePending(session, sid)
         send({ type: 'ack', data: { requestId: msg.requestId, sessionId: sid } })
       } else if (msg.type === 'cancel') {
         const sid = msg.sessionId || 'default'
@@ -2207,6 +2404,13 @@ wss.on('connection', (ws, req) => {
         if (session && session.proc && !session.proc.killed && toolUseId) {
           const pending = session._pendingApprovals?.get(toolUseId)
           if (pending && pending.requestId) {
+            // 白名单审批写入（2026-09-10）：内核 Browser 工具被域名白名单拦截时发起
+            // toolUseId='whitelist:<domain>' 审批——批准即写入 browser-whitelist.json
+            // 的 allow 数组（执行器 mtime 热重载，即时生效无需重启），内核随后提示
+            // 模型重试同一操作。
+            if (approved && String(toolUseId).startsWith('whitelist:')) {
+              addBrowserWhitelist(String(toolUseId).slice('whitelist:'.length))
+            }
             const response = {
               type: 'control_response',
               response: {
@@ -2253,6 +2457,83 @@ wss.on('connection', (ws, req) => {
 // only when EVERY sample skill installs cleanly (partial failure retries on
 // next launch).
 // ---------------------------------------------------------------------------
+// 供应商能力探测 + 实测回填 + 实时广播（2026-09-11）：/probe-provider 路由与启动
+// 自动探测共用。服务端实测值覆盖预置（contextWindow/models），保存后广播
+// provider_updated 让设置窗口实时刷新；运行中的内核会话由既有 env 签名收割机制
+// 在下次发送时自然接管新配置。
+async function runProbeFor(providerId = null) {
+  const cfg = loadConfig()
+  const provider = (cfg.providers || []).find(p => p.id === (providerId || cfg.activeProvider)) || (cfg.providers || [])[0]
+  if (!provider) return { error: 'provider not found' }
+  const model = provider.primaryModel || (provider.models && provider.models[0]) || ''
+  const cache = provider.probeResult
+  const cacheFresh = !!(cache && cache.at && (Date.now() - cache.at < 24 * 3600 * 1000) && cache.baseUrl === provider.apiBaseUrl && cache.model === model)
+  let probe
+  if (cacheFresh) {
+    probe = {
+      ok: true, fromCache: true, ttftMs: null, latencyMs: null,
+      modelsMeta: cache.maxModelLen ? [{ id: model, maxModelLen: cache.maxModelLen }] : null,
+      prefillTokPerSec: cache.prefillTokPerSec ?? null,
+    }
+  } else {
+    probe = await probeProviderCapabilities({ apiBaseUrl: provider.apiBaseUrl, authToken: provider.authToken, model })
+  }
+  const { updates, notes, skipped } = applyProbeResults(provider, probe, { profile: resolveProviderProfile(provider) })
+  const learnedWindow = resolveWindowFromProbe(provider, probe)
+  const nextProvider = {
+    ...provider,
+    ...updates,
+    probeResult: { at: Date.now(), baseUrl: provider.apiBaseUrl, model, maxModelLen: learnedWindow, prefillTokPerSec: probe.prefillTokPerSec ?? null },
+  }
+  saveConfig({ providers: (cfg.providers || []).map(p => (p.id === provider.id ? nextProvider : p)) })
+  if (Object.keys(updates).length) {
+    console.log('[bridge] probe auto-tuned provider', provider.id, JSON.stringify(updates))
+    broadcastGui({ type: 'provider_updated', data: { providerId: provider.id, updates, notes } })
+  }
+  return { probe, updates, notes, skipped }
+}
+
+// 启动自动探测（2026-09-11 实时更新）：应用启动即用实测值校正活跃供应商配置
+// （模型清单/上下文窗口/预算），无需用户操作也保持配置新鲜。异步静默，失败不阻断。
+// 每 12 小时复探一次：提供方改名/升级窗口等变化在长时运行中也能自动跟随。
+function autoProbeActiveProvider() {
+  const probeOnce = () => {
+    runProbeFor(null)
+      .catch((e) => console.warn('[bridge] auto-probe failed:', e?.message || e))
+      .finally(() => { bootState.probeDone = true }) // 预热就绪信号（含欠费检测完成）
+  }
+  setTimeout(probeOnce, 8000) // 稍等启动稳定（网络/认证就绪）
+  setInterval(probeOnce, 12 * 3600 * 1000).unref?.()
+}
+
+// 内置工作流自动安装（2026-09-11 spec-dev）：<appRoot>/workflows/<id>/workflow.yml →
+// <skillsRoot>/<id>/workflow.yml（工作流与技能共用发现根）。幂等：已存在跳过；
+// 升级需手动删除目标目录重装。
+function autoInstallBuiltinWorkflows() {
+  try {
+    const skillRoot = findSkillRoot()
+    const srcRoot = join(__dirname, '..', 'workflows')
+    if (!existsSync(srcRoot)) { console.log('[bridge] builtin workflows: source dir not found'); return }
+    let dirs = []
+    try { dirs = readdirSync(srcRoot, { withFileTypes: true }).filter(d => d.isDirectory() && existsSync(join(srcRoot, d.name, 'workflow.yml'))) } catch { return }
+    for (const d of dirs) {
+      const target = join(skillRoot, d.name)
+      if (existsSync(target)) continue
+      try {
+        mkdirSync(target, { recursive: true })
+        copyWithRewrite(join(srcRoot, d.name), target, '{{YFW_SKILLS}}', skillRoot.replace(/\\/g, '/'))
+        console.log('[bridge] builtin workflow installed:', d.name)
+      } catch (e) {
+        console.warn('[bridge] builtin workflow install failed:', d.name, '-', e?.message || e)
+      }
+    }
+  } catch (e) {
+    console.warn('[bridge] autoInstallBuiltinWorkflows failed:', e?.message || e)
+  } finally {
+    bootState.workflowsInstalled = true // 预热就绪信号（失败也已尽力，不阻塞 boot）
+  }
+}
+
 function autoInstallSamples() {
   try {
     const skillRoot = findSkillRoot()
@@ -2382,6 +2663,27 @@ function killAllSessions() {
 }
 process.on('SIGINT', () => { killAllSessions(); process.exit(0) })
 process.on('SIGTERM', () => { killAllSessions(); process.exit(0) })
+
+// 父进程探活（2026-09-09 孤儿桥自愈）：electron 被强杀时不触发 before-quit，
+// 桥成为孤儿继续占用 51517——新实例的桥绑定失败、渲染器连上孤儿旧桥（旧内核
+// 代码、旧会话态），表现为"重启后无法唤醒"。桥每 5s 探活父 PID（main.cjs spawn
+// 时经 YFW_BRIDGE_PARENT_PID 注入）；父进程消失 → 杀内核会话并退出，端口立即释放。
+if (process.platform === 'win32' && process.env.YFW_BRIDGE_PARENT_PID) {
+  const parentPid = Number(process.env.YFW_BRIDGE_PARENT_PID)
+  if (Number.isFinite(parentPid) && parentPid > 0) {
+    setInterval(() => {
+      try {
+        process.kill(parentPid, 0)
+      } catch (e) {
+        if (e && e.code === 'ESRCH') {
+          console.log(`[bridge] parent pid ${parentPid} gone — shutting down orphan bridge`)
+          killAllSessions()
+          process.exit(0)
+        }
+      }
+    }, 5000).unref?.()
+  }
+}
 
 // 兜底：任何未捕获异常/未处理的 Promise 拒绝都不应让整个后端进程退出——
 // 记录日志后继续服务，由前端自动重连与主进程重启策略共同保证可用性。

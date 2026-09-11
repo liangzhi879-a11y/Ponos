@@ -37,6 +37,29 @@ export function getDefaultHome(): string {
 // YFWorking bridge config
 // ---------------------------------------------------------------------------
 
+export interface ProbeProviderResult {
+  ok: boolean
+  updates: Partial<ModelProvider>
+  notes: string[]
+  skipped: string[]
+  ttftMs?: number | null
+  latencyMs?: number | null
+  prefillTokPerSec?: number | null
+  fromCache?: boolean
+  error?: string
+}
+
+/** API 能力探测 + 自动回填（2026-09-09）：/probe-provider 路由，保存/激活后异步触发。 */
+export async function probeProvider(providerId?: string): Promise<ProbeProviderResult> {
+  const res = await fetch(`${getBridgeUrl()}/probe-provider`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ providerId }),
+  })
+  if (!res.ok) return { ok: false, updates: {}, notes: [], skipped: [], error: `HTTP ${res.status}` }
+  return res.json()
+}
+
 export async function fetchBridgeConfig(): Promise<YFWorkingConfigV2> {
   const res = await fetch(`${getBridgeUrl()}/config`)
   if (!res.ok) throw new Error('Failed to fetch config')

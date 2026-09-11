@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { getAuthStatus, setupPassword, checkPassword } from './auth.mjs'
+import { getAuthStatus, setupPassword, checkPassword, changePassword } from './auth.mjs'
 
 function freshFile(t) {
   const dir = mkdtempSync(join(tmpdir(), 'yfw-auth-'))
@@ -49,4 +49,25 @@ test('setupPassword 非字符串口令（undefined/12345）拒绝，phase 保持
   await assert.rejects(setupPassword(12345), /auth: password too short/)
   assert.deepEqual(await getAuthStatus(), { phase: 'uninitialized' })
   assert.equal(existsSync(process.env.YFW_AUTH_FILE), false)
+})
+
+// 修改密码（2026-09-10 个人信息窗）
+test('changePassword：旧密验证 → 新密生效；未初始化时直接设置', async (t) => {
+  freshFile(t)
+  await setupPassword('oldpass')
+  const bad = await changePassword('wrong', 'newpass')
+  assert.equal(bad.ok, false)
+  assert.equal((await checkPassword('oldpass')).ok, true, '旧密未变')
+  const good = await changePassword('oldpass', 'newpass')
+  assert.equal(good.ok, true)
+  assert.equal((await checkPassword('newpass')).ok, true)
+  assert.equal((await checkPassword('oldpass')).ok, false)
+})
+
+test('changePassword：未初始化 → 直接设置新密码', async (t) => {
+  freshFile(t)
+  const r = await changePassword('', 'firstpass')
+  assert.equal(r.ok, true)
+  assert.equal(r.wasUninitialized, true)
+  assert.equal((await checkPassword('firstpass')).ok, true)
 })

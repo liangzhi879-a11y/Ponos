@@ -129,7 +129,6 @@
 | `/convert-office`、`/read-sheet`、`/write-sheet`、`/read-docx`、`/write-docx` | Office 读写（调 python 脚本 `convert_docx.py`/`convert_xls.py`/`docx_edit.py`/`sheet_edit.py`） |
 | `/transcript/list`、`/transcript/load`、`/transcript/search` | 会话转录（内核 transcript 为权威源，GUI 只读索引） |
 | `/health`、`/diag/info` | 健康/诊断 |
-| `/yfw/doubao/*` | 豆包抓取/下载/水印去除（调 `watermark_remove.py`） |
 | `/test-provider`、`/verify-provider` | provider 连通性 |
 | `/config`、`/providers`、`/providers/*` | 配置读写（`~/.yfworking/config.json`，写前备份+迁移） |
 | `/skills`、`/sample-skills`、`/install-skill`、`/uninstall-skill` | 技能管理（写入 `~/.yfworking/skills/`） |
@@ -175,11 +174,12 @@ S4 把 bridge 内核解析/构建/bootstrap 全指向本库内核，并落地在
 | 内核运行时 | bun 布局（legacy） | **node**（D1：bridge = `process.execPath`；Electron main = bundled node.exe 或 PATH `node`） | 由调用方定位 |
 | bridge HTTP+WS 端口 | 51309 | **51517** | `YFW_BRIDGE_PORT` |
 | vite dev / preview 端口 | 5173 / 4173 | **5197 / 4197** | `YFW_VITE_PORT` / `YFW_VITE_PREVIEW_PORT` |
-| 数据根 home | `~/.yfworking`（在售） | 默认同 `~/.yfworking`；隔离双版/测试时经 `YFWORKING_HOME` 指向专用目录 | 解析序 `YFWORKING_HOME \|\| CLAUDE_CONFIG_DIR \|\| ~/.yfworking`（server/yfw-home.cjs） |
+| 数据根 home | `~/.yfworking`（在售） | 默认 `~/.yfw`（净室专属根，2026-09-09 串配置事故修复：各启动入口兜底注入 `YFWORKING_HOME=~/.yfw`——electron/main.cjs 模块头、dev start.bat、bin/yfworking.cmd；显式设 `YFWORKING_HOME=~/.yfworking` 可临时切回读旧会话） | 解析序 `YFWORKING_HOME \|\| CLAUDE_CONFIG_DIR \|\| ~/.yfworking`（server/yfw-home.cjs，模块默认不变，仅入口接线兜底） |
+| provider 行为画像 | 无 | config.json provider 可选字段 `profile`（'auto'\|'cloud'\|'local'，auto 启发式：私有网段→local、云域名→cloud、http 公网 IP→local）+ 显式覆盖 `temperature`/`maxOutputTokens`/`firstByteMs`/`idleMs`。本地默认：温度 0.6、提示词 lean 精简纪律段（`PONOS_PROMPT_TIER`）、输出预算 16384；云端零注入（=现状）。唯一决策点 `server/provider-profile.mjs`，经 buildChildEnv/syncKernelSettings 注入 env；syncKernelSettings 先剔除受管键再并入（防切回云端残留） | 2026-09-09 本地模型系统性适配；身份提示词同批动态化（`buildIdentityPrompt(model)`，不再硬编码 deepseek-v4-flash） |
 | 内核缓存落地目录 | `~/.yfworking/runtime/kernel`（cli.mjs + vendor/ripgrep，在售使用中，**绝不可覆写**） | `<home>/runtime/ponos-kernel`（多文件源码整目录镜像，专用目录名不互覆，D3） | 2026-09-08 覆写事故固化为专用目录 |
 | 内核来源 | yfw-kernel 分支（legacy） | 本库 `kernel/`（源，node 直跑）→ `kernel-dist/cli.mjs`（bundle，D7 产物） | `YFWORKING_KERNEL` 唯一逃生口（D8，值无效即抛错，不静默回退） |
 | 内核 API | — | `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL`（第三方 provider） | 实测：云端 ds 与本地 Qwen 均通（2026-09-08） |
 | 浏览器 CDP | — | 进程内 `webContents.debugger.attach('1.3')`，**无网络端口**（D5） | 隔离矩阵原 52319/9223 行修订为 N/A |
-| App 身份 / userData | 在售 appId/productName | S6 定案（正式替换身份）：与在售同 appId `com.yfworking.desktop` / productName `YFWorking`，版本 2.8.0；userData = main.cjs:95-97 现行为（设 `YFWORKING_HOME` 重定向 `<数据根>/userData`，否则 Electron 默认） | 安装形态走 `build/installer.nsh` 版本比较（2.8.0）覆盖升级保留数据；双版并存由便携/dev 目录隔离 + userData 重定向兜底，无需独立 appId |
+| App 身份 / userData | 在售 appId/productName | S6 定案（正式替换身份）：与在售同 appId `com.yfworking.desktop` / productName `YFWorking`，版本 2.8.0；userData 恒重定向 `<数据根>/userData`（入口兜底注入 `YFWORKING_HOME` 后 D6 恒成立；2026-09-09 前两版曾共用 `%APPDATA%\Electron`——default_app.asar 无 app 名——theme.json 互串） | 安装形态走 `build/installer.nsh` 版本比较（2.8.0）覆盖升级保留数据；双版并存由便携/dev 目录隔离 + userData 重定向兜底，无需独立 appId |
 
 双版冒烟（2026-09-08，Task 6）：旧版 51309（在售运行中）与新版 51517（隔离 home）同机同时 healthy；隔离 home 下 bootstrap 落地 `runtime/ponos-kernel`，在售 `runtime/kernel` 前后 md5 不变（`86697d84…`）；bridge 级 mock 会话、真实云端 ds、真实本地 Qwen 三态全通。产物身份/userData 区分 S6 定案落位（正式替换身份 = 与在售同 appId/productName，版本 2.8.0，userData 规则 = main.cjs:95-97 现行为），本节后续项仅剩文档面旧值清洗（S6）。

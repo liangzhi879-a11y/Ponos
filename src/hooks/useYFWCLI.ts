@@ -10,7 +10,7 @@ import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { generateId, sanitizeText } from '@/lib/utils'
 import { parseAskUserPayload } from '@/lib/askUser'
-import { getWsUrl } from '@/lib/config'
+import { getWsUrl, fetchBridgeConfig } from '@/lib/config'
 import { getAgentById } from '@/lib/agents'
 import { useAgentStore } from '@/stores/agentStore'
 import { useHealthStore, type HealthInfo } from '@/stores/healthStore'
@@ -392,7 +392,14 @@ export function useYFWCLI() {
       // 而不是追加到最末端——插话是当前任务进行中的补充信息，应位列于该轮
       // 回复之前；若内核最终按新轮处理（started 时已无流式），
       // settlePendingInterject 会再把它移回末端。
+      // 锚点必须是"当前正在流式"的 assistant（2026-09-10 修复）：sessionState 的
+      // assistantId 在轮次结束后不清理——新轮仍在内核思考/prefill（首块未到、
+      // 流式消息未建）时它指向上一轮旧 assistant，插话会被插到旧回复之前
+      // （表现为排在用户最先输入的气泡下）。旧锚点失效 → 追加序列末端，
+      // 新轮的回复自然排在其后，时序正确。
       const anchorId = sessionState.get(conversationId)?.assistantId
+      const streamingId = useChatStore.getState().streamingConversations[conversationId]
+      const effectiveAnchor = anchorId && anchorId === streamingId ? anchorId : undefined
       const interjectMsg: Message = {
         id: messageId,
         role: 'user',
@@ -400,7 +407,7 @@ export function useYFWCLI() {
         timestamp: Date.now(),
         pending: true,
       }
-      if (anchorId) store._insertMessageBefore(conversationId, anchorId, interjectMsg)
+      if (effectiveAnchor) store._insertMessageBefore(conversationId, effectiveAnchor, interjectMsg)
       else store._addMessage(conversationId, interjectMsg)
       const uuid = generateId()
       registerPendingInterject(uuid, conversationId, messageId)
@@ -488,9 +495,11 @@ function flushStreamEvents() {
       const bt = block.type as string
       const suffix = bt === 'tool_use' ? (block.id as string || 'tool') : msgId
       if (bt === 'thinking' && block.thinking) {
-        upsertBlock(store, st!, aid, 'thinking-' + suffix, { id: '', type: 'thinking', content: sanitizeText(block.thinking as string) })
+        // 内核 wire 分段增量发射：text/thinking 追加累积（旧 upsert 整块替换会让
+        // 屏幕只剩最新片段——"看不到过往输出"根因，2026-09-09 会话 UI 标准化修复）
+        store._appendStreamingContent(aid, 'thinking', sanitizeText(block.thinking as string))
       } else if (bt === 'text' && block.text) {
-        upsertBlock(store, st!, aid, 'text-' + suffix, { id: '', type: 'text', content: sanitizeText(block.text as string) })
+        store._appendStreamingContent(aid, 'text', sanitizeText(block.text as string))
       } else if (bt === 'tool_use') {
         const toolInput = (block as any).input || {}
         if (block.name === 'Agent' && block.id) {
@@ -596,6 +605,7 @@ function handleMessage(msg: Record<string, unknown>) {
   if (msg.type === 'kernel-stall') {
     const d = msg.data as { silentMs?: unknown } | undefined
     useUIStore.getState().setKernelStall(sid, Number(d?.silentMs) || 0)
+    useUIStore.getState().clearFirstByteWait(sid) // 升级为失速告警，等待提示退场
     return
   }
 
@@ -603,11 +613,20 @@ function handleMessage(msg: Record<string, unknown>) {
     const event = msg.data as Record<string, unknown>
     const type = event.type as string
     const aid = st?.assistantId
-    // 任何内核事件帧都是 stdout 输出 → 失速自愈，先清看门狗告警
+    // 首字节等待提示（2026-09-09）：桥在轮次活跃且静默时发 system/first_byte_pending，
+    // 置位等待状态；此分支先于"任何事件帧即清"的自愈逻辑——该事件自身也是事件帧
+    if (type === 'system' && event.subtype === 'first_byte_pending') {
+      useUIStore.getState().setFirstByteWait(sid, Number(event.silentMs) || 0)
+      return
+    }
+    // 任何内核事件帧都是 stdout 输出 → 失速自愈，先清看门狗告警 + 等待提示
     useUIStore.getState().clearKernelStall(sid)
+    useUIStore.getState().clearFirstByteWait(sid)
 
-    if (type === 'yfw_health') {
-      // 按会话隔离存储：sid 即发送该事件的内核进程所属会话（conversationId）
+    if (type === 'ponos_health' || type === 'yfw_health') {
+      // 按会话隔离存储：sid 即发送该事件的内核进程所属会话（conversationId）。
+      // 2026-09-10 连通修复：净室内核实际发射 ponos_health（protocol.mjs wire.health），
+      // 此前只监听 yfw_health → 上下文余量条从未收到数据；两名字都收兼容旧内核。
       useHealthStore.getState().update(sid, event as unknown as HealthInfo)
       return
     }
@@ -620,6 +639,16 @@ function handleMessage(msg: Record<string, unknown>) {
       // agentloop P3 告警统一系统条：budget/skill_version/agent_spec（context 顺带覆盖）。
       // 按会话隔离；同 level 后到覆盖（内核侧各 level 已单次/低频，无刷屏路径）。
       useWarningStore.getState().set(sid, normalizeWarning(event as Record<string, unknown>))
+      return
+    }
+    if (type === 'tool_result') {
+      // 工具结果 live 回传（2026-09-09 会话 UI 标准化）：回填流式消息内对应
+      // tool_use 块的 result/isError——内联工具卡片"执行中/完成/失败"状态机来源
+      const tr = event as Record<string, any>
+      const toolUseId = String(tr.tool_use_id ?? '')
+      if (aid && toolUseId) {
+        store._updateToolResult(aid, toolUseId, String(tr.content ?? ''), tr.is_error === true)
+      }
       return
     }
     if (type === 'command_lifecycle') {
@@ -766,14 +795,13 @@ function handleMessage(msg: Record<string, unknown>) {
     if (type === 'result' && aid) {
       const usage = (event.usage || {}) as Record<string, number>
       const interjected = pendingInterject.has(sid)
-      // 若该会话仍有待回答的提问卡片，说明 CLI 只是结束当前轮次等待用户回答
-      // —— 不能结束流式状态，否则会出现“后端在跑但前端显示空闲/有输出无状态”。
-      // 回答注入后由 sendAnswer 恢复流式，直到下一条 result 再结束。
-      if (!store.pendingQuestions[sid]) {
-        store._finishStreaming(aid, { inputTokens: usage.input_tokens || 0, outputTokens: usage.output_tokens || 0 })
-        // 本轮响应结束 → 释放串行锁
-        streamingSessions.delete(sid)
-      }
+      // 无条件结束流式状态（2026-09-09 状态残留修复）：原 pendingQuestions 门控
+      // 在"提问卡片残留/中止-愈合路径"下会让流式状态永远清不掉——UI 显示
+      // 执行中而内核早已收尾。"后端在等回答"的信号由「待回复」徽标
+      // （pendingQuestions[conv.id]）承担，不靠流式状态硬撑。
+      store._finishStreaming(aid, { inputTokens: usage.input_tokens || 0, outputTokens: usage.output_tokens || 0 })
+      // 本轮响应结束 → 释放串行锁
+      streamingSessions.delete(sid)
       // Keep sessionState alive — subagent may still be running and producing output
       store._updateSessionMeta({ totalCost: event.total_cost_usd as number, duration: event.duration_ms as number })
 
@@ -862,6 +890,14 @@ function handleMessage(msg: Record<string, unknown>) {
     useChatStore.getState().setCompacting(sid, false) // 压缩指示同随进程终止复位，防悬挂
   }
 
+  if (msg.type === 'question-resolved') {
+    // 桥侧提问已解决（回答注入 / 其他路径清除）→ 前端同步清除待回复卡片。
+    // 此前从不处理该事件——提问残留会让「待回复」徽标与 pendingQuestions 门控
+    // 双双泄漏（2026-09-09 状态残留修复）。
+    useChatStore.getState().clearPendingQuestion(sid)
+    return
+  }
+
   if (msg.type === 'question') {
     // 数据形状：{ questions: [...] }（bridge 已解析成功）或 { raw: string }（bridge
     // 解析失败，前端再尝试一次容错解析；仍失败则降级为“直接回复”卡，避免用户面对
@@ -919,6 +955,28 @@ function handleMessage(msg: Record<string, unknown>) {
     return
   }
 
+  if (msg.type === 'provider_updated') {
+    // 供应商配置实时更新（2026-09-11）：bridge 探测回填后广播（models/contextWindow
+    // 等实测值）——重拉配置刷新设置页，无需用户手动保存/重启；运行中会话由
+    // bridge env 签名收割机制在下次发送时接管。
+    const d = msg.data as { providerId?: string; updates?: Record<string, unknown> } | undefined
+    fetchBridgeConfig()
+      .then(cfg => {
+        const st = useSettingsStore.getState()
+        st.updateSettings({
+          activeProvider: cfg.activeProvider,
+          providers: cfg.providers,
+          skillRoot: cfg.skillRoot,
+          autoCapture: cfg.autoCapture,
+          autoImageBridge: cfg.autoImageBridge,
+          visionProviderId: cfg.visionProviderId || '',
+        })
+      })
+      .catch(() => { /* 拉取失败静默：下次打开设置页仍会全量刷新 */ })
+    void d
+    return
+  }
+
   if (msg.type === 'approval') {
     // 内核 can_use_tool 权限请求（高风险命令等）：入队 PermissionDialog。
     // id 用 toolUseId（bridge 已按 toolUseId 记录 request_id 映射，审批结果
@@ -930,12 +988,15 @@ function handleMessage(msg: Record<string, unknown>) {
     if (d && typeof d.toolUseId === 'string' && d.toolUseId) {
       const store = useChatStore.getState()
       if (store.pendingPermissions.some(p => p.id === d.toolUseId)) return
+      // 白名单审批（2026-09-10）：内核 Browser 工具域名拦截时的加白申请
+      // （toolName=browser_whitelist_add）——低风险动作，专用文案渲染
+      const isWhitelist = d.toolName === 'browser_whitelist_add'
       store.addPermissionRequest({
         id: d.toolUseId,
-        action: 'bash',
+        action: isWhitelist ? 'browser_whitelist_add' : 'bash',
         target: d.command || '',
         details: d.reason || undefined,
-        risk: d.highRisk ? 'high' : 'medium',
+        risk: isWhitelist ? 'low' : (d.highRisk ? 'high' : 'medium'),
         timestamp: Date.now(),
         sessionId: sid,
         toolUseId: d.toolUseId,

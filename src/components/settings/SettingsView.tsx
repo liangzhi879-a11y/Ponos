@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from 'react'
-import { createPortal } from 'react-dom'
 import { Settings, Monitor, Cpu, Info, Check, Sparkles, Globe, Save, Database, FolderOpen, Brain, ChevronDown, Plus, X, Trash2, Puzzle, ChevronRight, HardDrive, RefreshCw, Wifi, Zap } from 'lucide-react'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -376,32 +375,11 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState('')
   const [saveOk, setSaveOk] = useState(true)
-  const [showProviderConfig, setShowProviderConfig] = useState(true)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [newProvider, setNewProvider] = useState({ name: '', apiBaseUrl: '', modelList: '' })
   const [testing, setTesting] = useState(false)
   const [testMsg, setTestMsg] = useState('')
   const [testOk, setTestOk] = useState<boolean | null>(null)
-  const addDialogRootRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!showAddDialog) return
-    const root = addDialogRootRef.current
-    if (!root) return
-    const isInside = (el: EventTarget | null) => el instanceof Node && root.contains(el)
-    const onFocusIn = (e: FocusEvent) => {
-      if (isInside(e.target)) e.stopPropagation()
-    }
-    const onFocusOut = (e: FocusEvent) => {
-      if (isInside(e.relatedTarget)) e.stopPropagation()
-    }
-    document.addEventListener('focusin', onFocusIn, true)
-    document.addEventListener('focusout', onFocusOut, true)
-    return () => {
-      document.removeEventListener('focusin', onFocusIn, true)
-      document.removeEventListener('focusout', onFocusOut, true)
-    }
-  }, [showAddDialog])
 
   useEffect(() => {
     fetchBridgeConfig()
@@ -420,10 +398,10 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
       .catch(() => {})
   }, [])
 
-  const activeProv = settings.providers.find(p => p.id === settings.activeProvider)
+  const activeProv = (settings.providers || []).find(p => p.id === settings.activeProvider)
   const isBuiltin = (id: string) => id === 'deepseek' || id === 'minimax'
   /** 视觉模型来源 provider：显式指定 visionProviderId 则用该 provider，否则跟随 activeProvider */
-  const visionProv = settings.providers.find(p => p.id === settings.visionProviderId) || activeProv
+  const visionProv = (settings.providers || []).find(p => p.id === settings.visionProviderId) || activeProv
 
   const handleSwitchProvider = (providerId: string) => {
     updateSettings({ activeProvider: providerId })
@@ -431,7 +409,7 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
 
   const handleUpdateActiveProvider = (field: keyof ModelProvider, value: string | number | boolean | string[] | undefined) => {
     if (!activeProv) return
-    const updated = settings.providers.map(p =>
+    const updated = (settings.providers || []).map(p =>
       p.id === activeProv.id ? { ...p, [field]: value } : p
     )
     updateSettings({ providers: updated as ModelProvider[] })
@@ -460,7 +438,7 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
 
   const handleDeleteProvider = async (providerId: string) => {
     if (isBuiltin(providerId)) return
-    if (!confirm(t('settings.deleteProviderConfirm').replace('{name}', settings.providers.find(p => p.id === providerId)?.name || ''))) return
+    if (!confirm(t('settings.deleteProviderConfirm').replace('{name}',  (settings.providers || []).find(p => p.id === providerId)?.name || ''))) return
     const ok = await deleteProvider(providerId)
     if (ok) {
       updateSettings({
@@ -583,7 +561,7 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
                 onChange={e => handleSwitchProvider(e.target.value)}
                 className="w-full h-8 rounded-md border border bg-surface px-3 pr-8 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent appearance-none"
               >
-                {settings.providers.map(p => (
+                { (settings.providers || []).map(p => (
                   <option key={p.id} value={p.id}>
                     {p.name} {isBuiltin(p.id) ? `[${t('settings.providerBuiltin')}]` : ''}
                   </option>
@@ -603,16 +581,16 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
 
         {activeProv && (
           <>
-            {/* Provider Configuration — collapsible */}
-            <button
-              onClick={() => setShowProviderConfig(!showProviderConfig)}
-              className="flex items-center gap-2 w-full text-left py-2 mb-2 hover:text-primary transition-colors"
-            >
-              <ChevronRight className={cn('w-3.5 h-3.5 transition-transform', showProviderConfig && 'rotate-90')} />
+            {/* Provider Configuration —— 恒展开（2026-09-11：折叠入口发现性差，用户
+                找不到"已配置供应商的更新入口"；下拉选中即编辑，标题明示当前对象） */}
+            <div className="flex items-center gap-2 py-2 mb-2">
               <span className="text-xs font-semibold text-secondary">{t('settings.providerConfig')}</span>
-              <span className="text-[10px] text-tertiary ml-auto">{showProviderConfig ? t('common.collapse') : t('common.expand')}</span>
-            </button>
-            {showProviderConfig && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-brand-500/30 bg-brand-500/10 text-brand-500 font-medium">
+                {activeProv.name}
+              </span>
+              {isBuiltin(activeProv.id) && <span className="text-[10px] text-tertiary">[内置]</span>}
+            </div>
+            {(
               <div className="space-y-3 pl-5 border-l-2 border-subtle mb-4">
                 {/* Provider Name */}
                 <div>
@@ -658,7 +636,7 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
                     onChange={e => handleUpdateActiveProvider('primaryModel', e.target.value)}
                     className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent font-mono"
                   >
-                    {activeProv.models.map(m => (
+                    { (activeProv.models || []).map(m => (
                       <option key={m} value={m}>{m}</option>
                     ))}
                   </select>
@@ -672,7 +650,7 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
                     onChange={e => handleUpdateActiveProvider('subagentModel', e.target.value)}
                     className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent font-mono"
                   >
-                    {activeProv.models.map(m => (
+                    { (activeProv.models || []).map(m => (
                       <option key={m} value={m}>{m}</option>
                     ))}
                   </select>
@@ -804,7 +782,7 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
                     onChange={e => updateSettings({ visionProviderId: e.target.value === settings.activeProvider ? '' : e.target.value })}
                     className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent"
                   >
-                    {settings.providers.map(p => (
+                    { (settings.providers || []).map(p => (
                       <option key={p.id} value={p.id}>{p.name}</option>
                     ))}
                   </select>
@@ -818,7 +796,7 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
                     <select
                       value={visionProv.visionModel || ''}
                       onChange={e => {
-                        const updated = settings.providers.map(p =>
+                        const updated = (settings.providers || []).map(p =>
                           p.id === visionProv.id ? { ...p, visionModel: e.target.value || undefined } : p
                         )
                         updateSettings({ providers: updated as ModelProvider[] })
@@ -826,7 +804,7 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
                       className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent font-mono"
                     >
                       <option value="">{t('settings.providerVisionModelNone')}</option>
-                      {visionProv.models.map(m => (
+                      { (visionProv.models || []).map(m => (
                         <option key={m} value={m}>{m}</option>
                       ))}
                     </select>
@@ -932,62 +910,86 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
         )}
       </div>
 
-      {/* Add Custom Provider Dialog */}
-      {showAddDialog && createPortal(
+      {/* Add Custom Provider Dialog（2026-09-11 修复 v2：Radix Dialog 在独立设置窗口
+          实测仅遮罩可见（动画/切角/变量组合异常）——改用内联样式模态，全部颜色走
+          var(--x, 兜底) 双保险，零动画零 clip-path，任何主题/极速形态下必然可见。
+          【设计语言例外】此弹窗按上述修复结论刻意不套 .cut 切角，避免复发不可见。） */}
+      {showAddDialog && (
         <>
-          <div className="fixed inset-0 z-[60] pointer-events-auto" style={{ background: 'var(--overlay-bg)' }} onClick={() => setShowAddDialog(false)} />
           <div
-            ref={addDialogRootRef}
-            className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[61] w-96 cut cut-modal pointer-events-auto"
-            style={{ filter: 'drop-shadow(var(--modal-drop))' }}
-            onMouseDown={e => e.stopPropagation()}
-            onClick={e => e.stopPropagation()}
+            className="fixed inset-0 z-[80]"
+            style={{ background: 'var(--overlay-bg, rgba(0,0,0,0.45))', backdropFilter: 'blur(var(--overlay-blur, 4px))' }}
+            onClick={() => setShowAddDialog(false)}
+          />
+          <div
+            className="fixed left-1/2 top-1/2 z-[81] w-[420px] max-w-[calc(100vw-32px)] rounded-xl p-5"
+            style={{
+              transform: 'translate(-50%, -50%)',
+              background: 'var(--modal-bg, var(--bg-elevated, #161c28))',
+              border: '1px solid var(--border-default, rgba(255,255,255,0.14))',
+              color: 'var(--text-primary, #e8e4dd)',
+              boxShadow: 'var(--shadow-window, 0 16px 48px rgba(0,0,0,0.5))',
+            }}
           >
-            <div className="ci p-5" style={{ background: 'var(--modal-bg)' }}>
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-primary flex items-center gap-1.5">
-                <Plus className="w-4 h-4 text-accent" />
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold flex items-center gap-1.5" style={{ color: 'var(--text-primary, #e8e4dd)' }}>
+                <Plus className="w-4 h-4" style={{ color: 'var(--text-accent, #ff7a45)' }} />
                 {t('settings.addCustomProvider')}
               </h3>
-              <button onClick={() => setShowAddDialog(false)} className="p-1 hover:bg-elevated rounded-md">
-                <X className="w-4 h-4 text-tertiary" />
+              <button onClick={() => setShowAddDialog(false)} className="p-1 rounded-md hover:opacity-70" style={{ color: 'var(--text-tertiary, #8a8f98)' }}>
+                <X className="w-4 h-4" />
               </button>
             </div>
-            <p className="text-[10px] text-tertiary mb-4">{t('settings.addCustomProviderDesc')}</p>
+            <p className="text-[10px] mb-4" style={{ color: 'var(--text-tertiary, #8a8f98)' }}>{t('settings.addCustomProviderDesc')}</p>
             <div className="space-y-3">
               <div>
-                <label className="text-xs font-medium text-secondary mb-1 block">{t('settings.providerName')}</label>
+                <label className="text-xs font-medium mb-1 block" style={{ color: 'var(--text-secondary, #b8bcc4)' }}>{t('settings.providerName')}</label>
                 <input
                   type="text"
                   value={newProvider.name}
                   onChange={e => setNewProvider({ ...newProvider, name: e.target.value })}
                   placeholder="e.g. Moonshot"
-                  className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent"
+                  className="w-full h-8 rounded-md border px-3 text-xs focus:outline-none"
+                  style={{
+                    background: 'var(--bg-surface, #1e2635)',
+                    borderColor: 'var(--border-default, rgba(255,255,255,0.14))',
+                    color: 'var(--text-primary, #e8e4dd)',
+                  }}
                 />
               </div>
               <div>
-                <label className="text-xs font-medium text-secondary mb-1 block">{t('settings.providerApiBaseUrl')}</label>
+                <label className="text-xs font-medium mb-1 block" style={{ color: 'var(--text-secondary, #b8bcc4)' }}>{t('settings.providerApiBaseUrl')}</label>
                 <input
                   type="text"
                   value={newProvider.apiBaseUrl}
                   onChange={e => setNewProvider({ ...newProvider, apiBaseUrl: e.target.value })}
                   placeholder="https://api.example.com/anthropic"
-                  className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+                  className="w-full h-8 rounded-md border px-3 text-xs focus:outline-none font-mono"
+                  style={{
+                    background: 'var(--bg-surface, #1e2635)',
+                    borderColor: 'var(--border-default, rgba(255,255,255,0.14))',
+                    color: 'var(--text-primary, #e8e4dd)',
+                  }}
                 />
               </div>
               <div>
-                <label className="text-xs font-medium text-secondary mb-1 block">{t('settings.providerModelList')}</label>
+                <label className="text-xs font-medium mb-1 block" style={{ color: 'var(--text-secondary, #b8bcc4)' }}>{t('settings.providerModelList')}</label>
                 <input
                   type="text"
                   value={newProvider.modelList}
                   onChange={e => setNewProvider({ ...newProvider, modelList: e.target.value })}
-                  placeholder="model-v1, model-v2-light"
-                  className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+                  placeholder="model-v1, model-v2-light（留空 = 保存后自动从服务端探测）"
+                  className="w-full h-8 rounded-md border px-3 text-xs focus:outline-none font-mono"
+                  style={{
+                    background: 'var(--bg-surface, #1e2635)',
+                    borderColor: 'var(--border-default, rgba(255,255,255,0.14))',
+                    color: 'var(--text-primary, #e8e4dd)',
+                  }}
                 />
-                <p className="text-[10px] text-tertiary mt-1">{t('settings.providerModelListDesc')}</p>
+                <p className="text-[10px] mt-1" style={{ color: 'var(--text-tertiary, #8a8f98)' }}>{t('settings.providerModelListDesc')}</p>
               </div>
             </div>
-            <div className="flex justify-end gap-2 mt-4 pt-3 border-t border-subtle">
+            <div className="flex justify-end gap-2 mt-4 pt-3" style={{ borderTop: '1px solid var(--border-subtle, rgba(255,255,255,0.08))' }}>
               <Button variant="ghost" size="sm" onClick={() => setShowAddDialog(false)}>
                 {t('common.cancel')}
               </Button>
@@ -995,10 +997,8 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
                 {t('common.confirm')}
               </Button>
             </div>
-            </div>
           </div>
-        </>,
-        document.body
+        </>
       )}
     </div>
   )
@@ -1083,7 +1083,8 @@ function SkillsPanel({ t, settings, updateSettings }: {
               <HardDrive className="w-3 h-3" />
               {t('settings.installedSkills')}
             </h4>
-            <div className="rounded-lg border border bg-surface p-4">
+            <div className="cut-sm">
+              <div className="ci p-4">
               <div className="flex items-center justify-between">
                 <div>
                   <span className="text-sm font-semibold text-primary">{skillCount}</span>
@@ -1091,6 +1092,7 @@ function SkillsPanel({ t, settings, updateSettings }: {
                 </div>
               </div>
               <p className="text-[10px] text-tertiary mt-2">{t('settings.skillsManageHint')}</p>
+              </div>
             </div>
           </div>
         </div>

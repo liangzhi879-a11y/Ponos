@@ -47,6 +47,7 @@ function unquote(v) {
   }
   if (s === 'true') return true
   if (s === 'false') return false
+  if (s === 'null' || s === '~') return null
   if (/^-?\d+$/.test(s)) return Number(s)
   if (/^-?\d+\.\d+$/.test(s)) return Number(s)
   return s
@@ -329,7 +330,7 @@ async function callLLMText(model, prompt, node, vars, maxTokens = 4096) {
 
 // agent 节点：工作流内嵌 ReAct 循环（独立对话，不污染主会话 transcript）。
 // 工具执行走 registry（权限/边界/高危钩子沿用）；tools 白名单可选，缺省全量。
-async function runAgentLoop({ prompt, system = '', tools = [], model, signal, registry, permissionGate = null, maxIters = 8, timeoutMs = 120_000 }) {
+async function runAgentLoop({ prompt, system = '', tools = [], model, signal, registry, permissionGate = null, maxIters = 8, timeoutMs = 120_000, getToolCtx = () => ({}) }) {
   if (!model) throw new Error('agent 节点缺少 model（未配置 provider）')
   const messages = []
   if (system) messages.push({ role: 'system', content: system })
@@ -366,7 +367,7 @@ async function runAgentLoop({ prompt, system = '', tools = [], model, signal, re
         continue
       }
       try {
-        const r = await registry.run({ name: tu.name, input: tu.input }, {})
+        const r = await registry.run({ name: tu.name, input: tu.input }, getToolCtx?.() || {})
         results.push({ type: 'tool_result', tool_use_id: tu.id, content: String(r?.content ?? '').slice(0, 20000), is_error: r?.isError === true })
       } catch (err) {
         results.push({ type: 'tool_result', tool_use_id: tu.id, content: `执行异常: ${err?.message || String(err)}`, is_error: true })
@@ -527,6 +528,7 @@ async function execAgent(node, ctx) {
     prompt, system, tools: node.tools || [], model,
     signal: ctx.signal, registry: ctx.registry, permissionGate: ctx.permissionGate,
     maxIters: node.max_iters || 8, timeoutMs: node.timeout_ms || 120_000,
+    getToolCtx: ctx.getToolCtx,
   })
   return { output: { text: r.text, iters: r.iters, tool_uses: r.tool_uses }, next: node.next }
 }
@@ -703,7 +705,7 @@ async function execTool(node, ctx) {
   for (const [k, v] of Object.entries(node.input || {})) input[k] = renderTemplate(String(v), ctx.vars)
   const gate = await checkToolPermission(ctx, name, input)
   if (gate.denied) return { output: gate.message, isError: true, next: node.next }
-  const res = await ctx.registry.run({ name, input }, {})
+  const res = await ctx.registry.run({ name, input }, ctx.getToolCtx?.() || {})
   return { output: res.content, isError: res.isError === true, next: node.next }
 }
 
@@ -787,6 +789,7 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
   // 审批门（engine 注入 gateToolUse）：内嵌工具节点执行前先经门（高危 ask/deny/
   // hook 否决）；null = 无门 → checkToolPermission 对 Bash fail-closed
   let _permissionGate = null
+  let _getToolCtx = () => ({})
   // confirm 挂起队列：key = runId:nodeId → { resolve, timer }
   const confirmWaiters = new Map()
 
@@ -826,6 +829,9 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
     if (deps.signal !== undefined) _signal = deps.signal
     if (deps.memoryRoot !== undefined) _memoryRoot = deps.memoryRoot
     if (deps.permissionGate !== undefined) _permissionGate = deps.permissionGate
+    // 2026-09-11 spec-dev：主引擎子 agent 能力注入（懒 getter——engine 的 spawnSubAgent/
+    // taskSystem 在 setDeps 调用时尚处 TDZ，调用时才取）
+    if (deps.getToolCtx !== undefined) _getToolCtx = deps.getToolCtx
   }
 
   function event(type, payload) {
@@ -905,7 +911,7 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
       visited.add(nextId)
       const node = nodes.get(nextId)
       if (!node) return { ok: false, error: `未知节点: ${nextId}`, runId, auditPath }
-      const ctx = { vars, results, inputs, registry: _registry, signal: _signal, getModel: _getModel, nodes, auditState, memoryRoot: _memoryRoot, runBody, runId, event, confirmWaiters: { create: createConfirmWaiter }, permissionGate: _permissionGate }
+      const ctx = { vars, results, inputs, registry: _registry, signal: _signal, getModel: _getModel, nodes, auditState, memoryRoot: _memoryRoot, runBody, runId, event, confirmWaiters: { create: createConfirmWaiter }, permissionGate: _permissionGate, getToolCtx: _getToolCtx }
       const r = await executeNode(node, ctx)
       results[node.id] = r
       if (r.ok) {

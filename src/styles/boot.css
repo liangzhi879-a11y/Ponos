@@ -1,22 +1,21 @@
 /* ============================================================
-   启动品牌动画（BootScreen）—— task-5 Step 1
+   启动品牌动画（BootScreen）—— task-5 Step 1 / 2026-09-11 修复
    ------------------------------------------------------------
    · 2026-09-10 GUI 统一：boot 屏全主题跟随——底色 var(--bg-app)
      （主题 token），orb 光晕/字标明暗切换/流光品牌渐变由
      BootScreen + 设计语言工具类承载。
-   · settings.speedMode === true 时 ViewRouter 直接短路到 login、
+   · settings.speedMode === true 时 ViewRouter 直接短路跳过 boot、
      不挂载本屏，因此这里不写任何 .speed-mode 规则。
-   · 动画：logo 呼吸光晕 2.4s 脉冲；流光进度条一趟 1.5s；
-     整屏在 1.42s 起淡出收尾，1.6s onDone 时与下一屏无缝交棒。
+   · 【2026-09-11 空白期修复】原 `.boot-bg` 带 `boot-fade-out 0.2s 1.4s both`
+     硬编码淡出：新 BootScreen 改为"等真实预热完成（桥接→内核→技能→供应商）
+     才 onDone 交棒"后，预热常 >1.4s，屏已淡到 opacity 0 却尚未交棒、且驾驶舱
+     iframe 当时还未挂载 → 整窗空白数秒。淡出必须由"真实交棒"驱动而非定时，
+     故在此移除该动画（ViewRouter 已预挂载驾驶舱，交棒即已就绪，直切无闪烁）。
+   · 动画：logo 呼吸光晕 2.4s 脉冲；流光进度条循环扫光（预热期间持续表示"进行中"）。
    ============================================================ */
 
 .boot-bg {
   background: var(--bg-app);
-  animation: boot-fade-out 0.2s ease-in 1.4s both;
-}
-
-@keyframes boot-fade-out {
-  to { opacity: 0; }
 }
 
 /* 白色 boost 字标：drop-shadow 沿 alpha 轮廓做呼吸光晕（宽 ≤180px） */
@@ -53,7 +52,7 @@
   border-radius: 9999px;
   /* 流光填充 → 品牌色阶（设计语言：两端透明保持彗尾形态） */
   background: linear-gradient(90deg, transparent, var(--brand-400) 28%, var(--brand-600) 50%, var(--brand-300) 72%, transparent);
-  animation: boot-shine-sweep 1.5s cubic-bezier(0.4, 0, 0.6, 1) forwards;
+  animation: boot-shine-sweep 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
 @keyframes boot-shine-sweep {

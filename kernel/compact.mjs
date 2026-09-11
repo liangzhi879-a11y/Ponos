@@ -2,8 +2,12 @@
 // ---------------------------------------------------------------------------
 // 阶段① 免模型结构感知裁剪（ToolResultPruner）：表格采样/代码行边界/JSON 键名+错误行
 // 阶段② 主模型摘要：前缀对齐主请求（KV 缓存复用）+ <compacted-summary> 9 节 checkpoint
+//   ②b 分块摘要（2026-09-10 小窗口模型切换适配）：covered 超出摘要请求容量时按 turn
+//      边界切成多段滚动合并（map-reduce），单发必 400 的"covered ≫ 窗口"场景也能落地。
 // 切点纪律：只切 turn 边界；tool-call/result 配对不可拆；open tail 返回 null。
 // 日志锁：compaction/start（占位）→ compaction/summary（落地）；孤儿 start 加载回滚。
+// 免费收缩（阶段0 老化 + 阶段① 裁剪）在 maybeCompact（阈值触发）与 forceCompact
+// （溢出兜底）共用——小窗口模型切换后的溢出路径同样先零成本收缩再摘要。
 import { statSync, readFileSync } from 'node:fs'
 import { streamMessages } from './api.mjs'
 import { countCjk } from './context.mjs'
@@ -62,6 +66,16 @@ export const COMPACTION_INSTRUCTION =
   '系统压缩指令：请将以下旧对话内容压缩为一份 <compacted-summary> 结构化检查点，' +
   '包含 9 节：Goal / Progress / Blockers / Next Steps / Key Facts / Decisions / Artifacts / Open Questions / Continuation。' +
   '只输出 <compacted-summary> 与 </compacted-summary> 之间的内容，尽可能简短但保留全部关键事实、数字与决策。'
+
+// 分块摘要中间段指令（阶段②b）：把本段内容合并进已有滚动摘要，输出合并后的完整
+// 检查点——与单发指令同构（含"系统压缩指令"关键字，mock 摘要检测依赖），只多一段
+// 分段说明与合并要求。末段用完整 COMPACTION_INSTRUCTION（含 keyInfo/会话记忆注入）。
+export function chunkMergeInstruction(i, n) {
+  return '系统压缩指令：你正在对一段很长的对话历史进行分段压缩（第 ' + i + '/' + n + ' 段）。' +
+    '请把本段内容合并进请求开头的 <compacted-summary>（已有摘要），输出合并后的完整 <compacted-summary> 结构化检查点，' +
+    '包含 9 节：Goal / Progress / Blockers / Next Steps / Key Facts / Decisions / Artifacts / Open Questions / Continuation。' +
+    '只输出 <compacted-summary> 与 </compacted-summary> 之间的内容，尽可能简短但保留全部关键事实、数字与决策。'
+}
 
 // —— 结构感知裁剪（确定性零成本；按行操作天然不切行中）——
 function detectKind(lines) {
@@ -155,6 +169,40 @@ export function pruneToolResult(content, { budget = 20000 } = {}) {
   return { text: out, truncated: true, note, kind }
 }
 
+// 工具结果裁剪预算解析（2026-09-10 窗口感知）：env 显式值优先（含 resolveCompactSettings
+// 写入的 BYTES）；未显式时按窗口缩放——小窗口本地模型（32K → 4K 字符/条）单条工具结果
+// 不再吃掉半个窗口，大窗口（1M）封顶 24K 防过度裁剪。`CLAUDE_CODE_TOOL_RESULT_BUDGET=true`
+// 布尔形态（bridge 旧注入）Number 为 NaN → 视为未显式，落入窗口缩放（安全侧）。
+export function resolveToolResultBudget(env = process.env, window = 200_000) {
+  const explicit = Number(env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES || env.CLAUDE_CODE_TOOL_RESULT_BUDGET)
+  if (Number.isFinite(explicit) && explicit > 0) return explicit
+  const w = Number.isFinite(window) && window > 0 ? window : 200_000
+  return Math.max(4000, Math.min(24000, Math.floor(w / 8)))
+}
+
+// 免费收缩（阶段0 老化清除 + 阶段① 结构裁剪）——零模型成本、确定性。maybeCompact
+// （阈值触发）与 forceCompact（溢出兜底）共用：小窗口模型切换后的溢出路径同样先
+// 免费收缩再摘要，covered 体量最小化（分块摘要段数随之减少）。age=false 时只裁剪
+// 不清除（maybeCompact 老化需 est ≥ clearRatio 门控，见调用方）。
+export function freeShrink(messages, { window = 200_000, env = process.env, age = true } = {}) {
+  let cleared = 0
+  if (age) cleared = ageOutToolResults(messages, { keepRecent: Number(env.CLAUDE_CODE_TOOL_RESULT_KEEP_RECENT || 2) })
+  const budget = resolveToolResultBudget(env, window)
+  let prunedAny = false
+  for (const m of messages) {
+    if (!Array.isArray(m?.content)) continue
+    for (const b of m.content) {
+      if (b?.type !== 'tool_result' || typeof b.content !== 'string') continue
+      const r = pruneToolResult(b.content, { budget })
+      if (r.truncated) {
+        b.content = r.text + '\n\n' + r.note
+        prunedAny = true
+      }
+    }
+  }
+  return { cleared, prunedAny, budget }
+}
+
 // —— 切点纪律 ——
 // messages = deriveMessages() 结果（不含 system）。切点 start 处必须是真实 user 消息
 // （保留尾巴从新 turn 开始，遮蔽 [0, start) 结束于完整 turn 回复之后）。
@@ -182,9 +230,69 @@ export function findCutPoint({ messages, retainTokens, estimateMessage }) {
   return { start, covered: messages.slice(0, start) }
 }
 
+// —— 阶段②b：分块摘要（map-reduce；2026-09-10 小窗口模型切换适配）——
+// 切换小窗口模型 / 超长会话时 covered 远超摘要请求容量（limit − 输出预算 − 余量）：
+// 单发摘要在新窗口下自身必 400（A4 限幅最多翻倍 4 次仍装不下）→ 压缩永不落地，
+// 每轮撞 400 被迫 forceCompact（用户侧表现：切换本地模型后任务不可续）。分块把
+// covered 按 turn 边界切成每块 ≤ chunkBudget 的段落逐块滚动合并（前块摘要作为
+// <compacted-summary> 前缀注入下一块请求），压缩请求恒装得下小窗口。
+// 切块纪律：新块永远从真实 user turn 起点开始（与 findCutPoint 同纪律，tool 配对
+// 不可拆）；单条消息/单个 turn 超预算时自成一块（不拆消息——该块请求面超限由
+// 400 自愈兜底，优于撕裂消息链）。返回的块保序且并集 = covered。
+export function splitCoveredIntoChunks({ covered = [], chunkBudget, estimateMessage }) {
+  if (!Array.isArray(covered) || covered.length === 0) return []
+  const budget = Number.isFinite(chunkBudget) && chunkBudget > 0 ? chunkBudget : 4096
+  const chunks = []
+  let cur = []
+  let curTokens = 0
+  for (const m of covered) {
+    const t = estimateMessage ? Math.max(1, estimateMessage(m)) : 100
+    // 已达预算且下一条是 turn 起点 → 收块（下一块从完整 turn 开始，不拆配对）
+    if (cur.length && curTokens + t > budget && isTurnStart(m)) {
+      chunks.push(cur)
+      cur = []
+      curTokens = 0
+    }
+    cur.push(m)
+    curTokens += t
+  }
+  if (cur.length) chunks.push(cur)
+  return chunks
+}
+
 // —— L1-1 关键信息保留：摘要请求注入结构化提示（零成本确定性提取）——
 // TodoWrite 整表重写 → 最后调用即权威清单；Write/Edit 记录文件变更；
 // 最近 assistant 文本作为决策上下文。todo 取最后 3、文件取最后 8 防溢出。
+
+// 行内思考清洗（2026-09-09 记忆污染修复）：弱模型（vLLM Qwen 等）把思考作为
+// 行内文本输出，随 assistant 文本进入 decisions → 写入会话工作记忆 → 压缩时读回
+// 注入。思考原文（尤其 </think> 标签）会令弱模型模仿"想完即停"，必须清洗。
+// 两种形态（实测 Qwen3.8-27B 均有）：
+//   a. 成对 <think>...</think>：整块删除（未闭合截断形态删到末尾）
+//   b. 孤儿 </think>（无开头标签，思考文字直接起头、以 </think> 收尾）：从头删到
+//      该 </think>（含）——此形态的 </think> 前全是思考，正文在其后
+// 无标签快路径原样返回；清洗后 trim。
+export function stripInlineThink(text) {
+  const s = String(text ?? '')
+  if (!s.includes('<think') && !s.includes('</think>')) return s
+  let out = s
+  let idx = out.indexOf('<think')
+  while (idx >= 0) {
+    const end = out.indexOf('</think>', idx + 6)
+    if (end < 0) return out.slice(0, idx).trim() // 未闭合：截断形态，删到末尾
+    out = out.slice(0, idx) + out.slice(end + 8)
+    idx = out.indexOf('<think')
+  }
+  // 孤儿 </think>（无开头标签）：以最后一个 </think> 为界，之前视为思考正文
+  // 一并删除（实测形态：思考文字直接起头、以 </think> 收尾、正文在其后）。
+  // 取舍：若真实正文里引用 </think> 字面量且位于末尾，会一并被删——清洗优先于
+  // 保留（记忆污染对弱模型的伤害大于丢一句引用）。
+  if (out.includes('</think>')) {
+    const last = out.lastIndexOf('</think>')
+    out = out.slice(last + 8)
+  }
+  return out.trim()
+}
 export function extractKeyInfo(messages = []) {
   const todos = []
   const files = []
@@ -210,6 +318,8 @@ export function extractKeyInfo(messages = []) {
       if (Array.isArray(m.content)) return m.content.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join(' ')
       return ''
     })
+    // 行内思考清洗在过滤前：纯思考条清洗后为空即丢弃，slice(-2) 取"最近 2 条非空决策"
+    .map((t) => stripInlineThink(t))
     .filter((t) => t.trim())
     .slice(-2)
   return { todos, files, decisions }
@@ -288,6 +398,25 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
   // 免模型 pruner 不受熔断影响（零成本）；forceCompact（溢出兜底）熔断后直接拒绝，
   // engine 侧收到 'overflow-compact-failed' 收尾而非无限重试。
   const CIRCUIT_LIMIT = 3
+  // A3 熔断冷却复位（2026-09-09 事故修复）：熔断原为"永久"——摘要失败 3 次后
+  // 模型压缩被禁用到底，上下文从此失控（当天实测 0 条 compaction 落地、请求
+  // 膨胀到 17 万 token、每步 5-13 分钟）。冷却制：每 5 次 pre-step 或上下文较
+  // 熔断时增长 20% 即复位重试一次；成功摘要照旧清零。
+  let circuitOpenedAt = 0
+  let preStepCallsSinceOpen = 0
+  let contextEstAtOpen = 0
+  function circuitGate(currentEst) {
+    if (consecutiveFailures < CIRCUIT_LIMIT) return true
+    if (!circuitOpenedAt) { circuitOpenedAt = Date.now(); contextEstAtOpen = Number(currentEst) || 0; preStepCallsSinceOpen = 0 }
+    preStepCallsSinceOpen++
+    const grown = contextEstAtOpen > 0 && Number(currentEst) > 0 && Number(currentEst) >= contextEstAtOpen * 1.2
+    if (preStepCallsSinceOpen >= 5 || grown) {
+      consecutiveFailures = 0
+      circuitOpenedAt = 0
+      return true
+    }
+    return false
+  }
 
   // —— 窗口真实化（频繁压缩根因修复）——
   // 400 溢出（"maximum context length is N"）揭示端点真实 max_model_len 后下调
@@ -327,6 +456,41 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
     return out
   }
 
+  // 摘要模型单次调用（单发与分块共用）。A1 首字节看门狗（2026-09-09 事故修复）：
+  // 摘要请求原无任何守卫——上游挂起时压缩整轮消失数分钟，连熔断计数都等不到。
+  // 超 firstByteMs 无首块即 abort，快速失败计入 consecutiveFailures，让熔断/冷却
+  // 机制接管而不是无限等待。
+  // 2026-09-11 窗口对齐：旧固定 300s 在慢 prefill 端点（362KB 上下文实测 >5min）上
+  // 令摘要请求必死 → 熔断 → 压缩永不落地 → 溢出自愈链耗尽"放弃执行"。对齐
+  // api.mjs 同款校准——跟随 PONOS_STREAM_FIRST_BYTE_MS（provider firstByteMs 注入），
+  // 大 body（>200K 字符）放宽 600s 封顶；显式 PONOS_COMPACT_FIRST_BYTE_MS 仍权威。
+  async function callSummaryBody({ body, maxOut }) {
+    let buf = ''
+    let usage = {}
+    const firstByteMs = (() => {
+      const explicit = Number(env.PONOS_COMPACT_FIRST_BYTE_MS)
+      if (Number.isFinite(explicit) && explicit > 0) return Math.min(600_000, explicit)
+      const fb = Number(env.PONOS_STREAM_FIRST_BYTE_MS)
+      const floor = Math.max(300_000, Number.isFinite(fb) && fb > 0 ? fb : 0)
+      const cap = JSON.stringify(body).length > 200_000 ? 600_000 : 480_000
+      return Math.min(cap, floor)
+    })()
+    const ctrl = new AbortController()
+    let gotData = false
+    const timer = setTimeout(() => { if (!gotData) ctrl.abort() }, firstByteMs)
+    if (timer.unref) timer.unref()
+    try {
+      for await (const chunk of streamMessages({ model, messages: body, maxTokens: maxOut, signal: signal || ctrl.signal, tools: [] })) {
+        gotData = true
+        if (chunk.type === 'text') buf += chunk.text
+        else if (chunk.type === 'usage') usage = addUsage(usage, chunk.usage)
+      }
+    } finally {
+      clearTimeout(timer)
+    }
+    return { text: buf, usage }
+  }
+
   async function runSummarizer({ system, messages, cut, maxOut = maxTokens }) {
     const keyInfo = keyInfoBlock(extractKeyInfo(messages))
     // P9-3：会话工作记忆注入摘要请求（事实来源，辅助收敛与关键信息保留）
@@ -335,13 +499,7 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
       system, messages, cut, lastSummary, keyInfo,
       sessionMemory: sm || undefined,
     })
-    let buf = ''
-    let usage = {}
-    for await (const chunk of streamMessages({ model, messages: req, maxTokens: maxOut, signal, tools: [] })) {
-      if (chunk.type === 'text') buf += chunk.text
-      else if (chunk.type === 'usage') usage = addUsage(usage, chunk.usage)
-    }
-    return { text: buf, usage }
+    return callSummaryBody({ body: req, maxOut })
   }
 
   async function summarize({ system, messages, limit, retainHint }) {
@@ -353,13 +511,39 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
     let compactEmitted = false
     let compactOk = false
     let usage = {} // M2：摘要调用用量累计（含收敛重试多次调用；异常路径也要能带出已发生调用）
+    // 摘要落地（单发与分块共用）：日志锁（start 占位 → summary 落地 replace）+ 内存锁释放。
+    // covered 来自 deriveMessages()（对象引用一致），经 session 反查真实 seq。
+    // 契约：seqs 必须与 covered 一一对应（数量/顺序）——反查失败必须显式报错，
+    // 不得静默提交空/残缺 coveredSeqs（否则压缩"看似成功实则丢消息"）。
+    // 单通道（FIX R1）：压缩成功后 ponos_summary 只发一次——装配 health 时由
+    // health.recordCompaction 代发（并记录 lastSummary），未装配时保留 wire.summary 兜底。
+    // 两路互斥，杜绝 ponos_summary 双发（spec §6：compact 成功后 health.recordCompaction 为权威调用点）。
+    function landSummary(summary, c, coveredTk) {
+      const coveredSeqs = session.seqsForMessages(c.covered)
+      if (!Array.isArray(coveredSeqs) || coveredSeqs.length === 0 || coveredSeqs.length !== c.covered.length) {
+        throw new Error(
+          `内核：压缩遮蔽区间 seq 反查失败（covered ${c.covered.length} 条 → seqs ${coveredSeqs?.length ?? 0} 条）——` +
+          'covered 必须来自同一 surface 代的 deriveMessages() 结果'
+        )
+      }
+      session.appendCompactionStart(coveredSeqs)
+      session.appendCompactionSummary({ summary, coveredSeqs })
+      lastSummary = summary
+      compactOk = true
+      if (health) health.recordCompaction?.(summary, session.compactCount())
+      else wire.summary?.(summary, session.compactCount())
+      return { action: 'summarized', summary, compactCount: session.compactCount(), usage, coveredTokens: coveredTk }
+    }
     try {
       const window = context.window ?? 200_000
       // 溢出兜底（limit = 端点真实窗口）：摘要请求 = 保留输入 + 输出预算 + 系统/注入
       // 余量，必须 ≤ 真实窗口，否则压缩请求自身也会 400（配置窗口虚高时必现）。输出
       // 预算压到 16K 上限，保留输入按 真实窗口 − 输出预算 − 32K 余量 封顶。
       const hasLimit = Number.isFinite(limit) && limit > 0
-      const summarizerMaxOut = hasLimit ? Math.min(maxTokens, 16384) : maxTokens
+      // 小窗口摘要输出预算（2026-09-10 小窗口模型切换适配）：limit < 64K 时按窗口
+      // 比例收窄（32K → 8K）——摘要请求 = 输入 + max_tokens 一起对端点 max_model_len
+      // 校验（vLLM），大输出预算会令摘要请求自身 400、压缩永不落地。
+      const summarizerMaxOut = hasLimit ? Math.min(maxTokens, 16384, Math.max(2048, Math.floor(limit * 0.25))) : maxTokens
       let retainTokens = hasLimit
         ? Math.max(1024, Math.floor(Math.min(window * (context.retainRatio ?? 0.16), limit - summarizerMaxOut - 32768)))
         : Math.floor(window * (context.retainRatio ?? 0.16))
@@ -368,9 +552,78 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
       // 压到主请求能装下的水平，让贴近端点硬限的上下文也能真正裁切（否则只能靠收窄
       // 输出预算，模型回答质量与耗时双损）。
       if (Number.isFinite(retainHint) && retainHint > 0) retainTokens = Math.min(retainTokens, Math.floor(retainHint))
-      const cut = findCutPoint({ messages, retainTokens, estimateMessage: context.estimateMessage })
+      let cut = findCutPoint({ messages, retainTokens, estimateMessage: context.estimateMessage })
       if (!cut) return { action: 'none', reason: 'no-cut-point' }
-      const coveredTokens = context.estimateHistory ? context.estimateHistory(cut.covered) : cut.covered.length * 100
+      let coveredTokens = context.estimateHistory ? context.estimateHistory(cut.covered) : cut.covered.length * 100
+      // —— 阶段②b 分块摘要（A4 限幅之前判定，用原始 cut）——
+      // covered 超出单块容量（limit − 输出预算 − 余量）→ 单发摘要请求自身必超窗
+      // （A4 限幅最多把保留预算翻倍 4 次，covered ≫ 窗口时仍装不下）→ 按 turn 边界
+      // 分块滚动合并。切小窗口模型的会话（1M/200K 历史 → 32K 本地模型）与超长会话
+      // 的首次压缩都走此路径——否则压缩永不落地、每轮撞 400。
+      const chunkBudget = hasLimit ? Math.max(2048, limit - summarizerMaxOut - 4096) : 0
+      if (hasLimit && coveredTokens > chunkBudget && cut.covered.length > 1) {
+        const sealed = cut.covered.filter((m) => !(m?.role === 'assistant' && typeof m?.content === 'string'))
+        const chunks = splitCoveredIntoChunks({ covered: sealed, chunkBudget, estimateMessage: context.estimateMessage })
+        if (chunks.length > 1) {
+          wire?.system?.('compaction', { state: 'start', covered: cut.covered.length, coveredTokens, mode: 'chunked', chunks: chunks.length })
+          compactEmitted = true
+          const keyInfo = keyInfoBlock(extractKeyInfo(messages))
+          const sm = readSessionMemoryFile()
+          let rolling = ''
+          let chunksOk = 0
+          for (let ci = 0; ci < chunks.length; ci++) {
+            const isLast = ci === chunks.length - 1
+            const body = []
+            if (rolling) body.push({ role: 'user', content: `<compacted-summary>${rolling}</compacted-summary>` })
+            body.push(...patchOrphanToolUses(chunks[ci]))
+            body.push({
+              role: 'user',
+              content: isLast
+                ? COMPACTION_INSTRUCTION + (system ? `\n\n（系统提示开头：${String(system).slice(0, 200)}…）` : '') +
+                    (keyInfo && keyInfo.trim() ? `\n\n${keyInfo}` : '') +
+                    (sm && sm.trim() ? `\n\n（会话工作记忆——保留其中所有未过时事实：）\n<session-memory>\n${sm.trim().slice(0, 5000)}\n</session-memory>` : '')
+                : chunkMergeInstruction(ci + 1, chunks.length),
+            })
+            const { text, usage: callUsage } = await callSummaryBody({ body, maxOut: summarizerMaxOut })
+            usage = addUsage(usage, callUsage)
+            // A2 标签缺失降级（同单发）：弱模型不吐标签时清洗行内思考后整体作摘要
+            let s = extractSummary(text)
+            if (!s) s = stripInlineThink(text).trim()
+            if (!s) { consecutiveFailures++; break }
+            rolling = s
+            chunksOk++
+          }
+          if (chunksOk === chunks.length && rolling) {
+            // 收敛口径与 coveredTokens 对齐（CJK 感知，同单发路径）
+            const cjkN = countCjk(rolling)
+            const summaryTokens = cjkN + Math.ceil((rolling.length - cjkN) / 4)
+            if (summaryTokens < coveredTokens) {
+              consecutiveFailures = 0
+              return { ...landSummary(rolling, cut, coveredTokens), mode: 'chunked', chunks: chunks.length }
+            }
+            consecutiveFailures++
+          }
+          return { action: 'none', reason: 'no-convergence', failures: consecutiveFailures, usage }
+        }
+        // sealed 过滤后仅剩 1 块（covered 估算偏差）→ 落入单发路径（A4 限幅兜底）
+      }
+      // A4 摘要请求自身限幅：covered 按"真实窗口 − 输出预算 − 32K 余量"封顶。
+      // 真实 token 数可能高于启发式估算（CJK/代码密度偏差），摘要请求超限会被
+      // 端点 400/挂起——宁可多保留原样内容，也不让压缩请求自身装不下（2026-09-09）。
+      if (hasLimit) {
+        const overhead = summarizerMaxOut + 32768
+        let guard = 0
+        while (guard++ < 4 && coveredTokens + overhead > limit) {
+          const totalEst = context.estimateHistory ? context.estimateHistory(messages) : messages.length * 100
+          const next = Math.min(retainTokens * 2, totalEst)
+          if (next <= retainTokens) break
+          retainTokens = next
+          const nextCut = findCutPoint({ messages, retainTokens, estimateMessage: context.estimateMessage })
+          if (!nextCut || nextCut.start <= cut.start) break
+          cut = nextCut
+          coveredTokens = context.estimateHistory ? context.estimateHistory(cut.covered) : cut.covered.length * 100
+        }
+      }
       wire?.system?.('compaction', { state: 'start', covered: cut.covered.length, coveredTokens })
       compactEmitted = true
       const retries = Number(env.CLAUDE_CODE_COMPACTION_RETRIES || 3)
@@ -379,7 +632,11 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
       for (let attempt = 0; attempt < retries; attempt++) {
         const { text, usage: callUsage } = await runSummarizer({ system, messages, cut, maxOut: summarizerMaxOut })
         usage = addUsage(usage, callUsage)
-        const s = extractSummary(text)
+        // A2 标签缺失降级：弱模型不吐 <compacted-summary> 标签时，清洗行内思考
+        // 后把整体响应当作摘要（只有空文本才计失败）——防"标签格式问题"让压缩
+        // 永不落地（2026-09-09 实测全天 0 条 compaction 条目）。
+        let s = extractSummary(text)
+        if (!s) s = stripInlineThink(text).trim()
         if (!s) { consecutiveFailures++; continue }
         // 收敛口径与 coveredTokens 对齐（CJK 感知）：中文摘要按字计，避免低估摘要
         // 体量 → 巨大摘要被误判"已收敛"仍照单全收
@@ -387,7 +644,22 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
         const summaryTokens = cjkN + Math.ceil((s.length - cjkN) / 4)
         if (summaryTokens < coveredTokens) { summary = s; converged = true; break }
         consecutiveFailures++
-        // 收敛失败：下一次重试靠 COMPACTION_INSTRUCTION 已内嵌"尽可能简短"；此处不再追加
+        // A2 收敛失败自愈：covered 减半重摘（保留预算翻倍）；末次仍不收敛时截断
+        // 摘要按头 60% 落地——压缩必须落地（宁可有损，不无限重试烧时间）。
+        if (attempt === retries - 1) {
+          const cap = Math.floor(s.length * 0.6)
+          summary = s.slice(0, cap) + '\n…（摘要过长，已截断落地）'
+          converged = true
+          break
+        }
+        const totalEst = context.estimateHistory ? context.estimateHistory(messages) : messages.length * 100
+        const next = Math.min(retainTokens * 2, totalEst)
+        if (next <= retainTokens) break
+        retainTokens = next
+        const nextCut = findCutPoint({ messages, retainTokens, estimateMessage: context.estimateMessage })
+        if (!nextCut || nextCut.start <= cut.start) break
+        cut = nextCut
+        coveredTokens = context.estimateHistory ? context.estimateHistory(cut.covered) : cut.covered.length * 100
       }
       if (!converged || !summary) {
         consecutiveFailures++
@@ -395,27 +667,7 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
         return { action: 'none', reason: 'no-convergence', failures: consecutiveFailures, usage }
       }
       consecutiveFailures = 0
-      // 落地：日志锁（start 占位 → summary 落地 replace）+ 内存锁释放
-      // covered 来自 deriveMessages()（对象引用一致），经 session 反查真实 seq。
-      // 契约：seqs 必须与 covered 一一对应（数量/顺序）——反查失败必须显式报错，
-      // 不得静默提交空/残缺 coveredSeqs（否则压缩"看似成功实则丢消息"）。
-      const coveredSeqs = session.seqsForMessages(cut.covered)
-      if (!Array.isArray(coveredSeqs) || coveredSeqs.length === 0 || coveredSeqs.length !== cut.covered.length) {
-        throw new Error(
-          `内核：压缩遮蔽区间 seq 反查失败（covered ${cut.covered.length} 条 → seqs ${coveredSeqs?.length ?? 0} 条）——` +
-          'covered 必须来自同一 surface 代的 deriveMessages() 结果'
-        )
-      }
-      session.appendCompactionStart(coveredSeqs)
-      session.appendCompactionSummary({ summary, coveredSeqs })
-      lastSummary = summary
-      compactOk = true
-      // 单通道（FIX R1）：压缩成功后 ponos_summary 只发一次——装配 health 时由
-      // health.recordCompaction 代发（并记录 lastSummary），未装配时保留 wire.summary 兜底。
-      // 两路互斥，杜绝 ponos_summary 双发（spec §6：compact 成功后 health.recordCompaction 为权威调用点）。
-      if (health) health.recordCompaction?.(summary, session.compactCount())
-      else wire.summary?.(summary, session.compactCount())
-      return { action: 'summarized', summary, compactCount: session.compactCount(), usage }
+      return landSummary(summary, cut, coveredTokens)
     } catch (e) {
       // L0-c：摘要模型调用/落地异常 → 计为熔断失败并对称降级返回（不抛穿调用方）。
       // 抛穿后果：preStep 无 catch，异常会穿透成整轮"内部错误"；forceCompact 虽被
@@ -432,47 +684,39 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
   return {
     // pre-step 测压：先裁剪（阶段①），仍超再摘要（阶段②）
     async maybeCompact({ system, messages, outputBudget }) {
-      // P1-5：熔断后仍可跑免模型 pruner（零成本），但跳过主模型摘要
-      const circuitOpen = consecutiveFailures >= CIRCUIT_LIMIT
       const window = context.window ?? 200_000
       const threshold = resolveThreshold({ window, outputBudget })
       const est = context.estimate ? context.estimate({ system, messages }) : { total: 0 }
       if (est.total < threshold) return { action: 'none', reason: 'below-threshold' }
-      // P9-1 阶段0：老化清除（阈值前防线）——上下文超过 clearRatio 时先零模型
-      // 成本清旧工具结果；清除后回落到 threshold 之下则本轮免摘要（压缩次数↓）
+      // 阶段0+① 免费收缩（老化清除 + 结构裁剪）：零模型成本先压上下文。
+      // 老化清除（P9-1）——上下文超过 clearRatio 时清可重放旧工具结果；清除后回落
+      // 到 threshold 之下则本轮免摘要（压缩次数↓）。裁剪预算随窗口缩放（32K 窗口 →
+      // 4K 字符/条），小窗口本地模型单条大文件读取不再吃掉半个窗口。
       const clearRatio = Number(env.CLAUDE_CODE_TOOL_RESULT_CLEAR_RATIO || 0.5)
-      if (est.total >= Math.floor(window * clearRatio)) {
-        const cleared = ageOutToolResults(messages, { keepRecent: Number(env.CLAUDE_CODE_TOOL_RESULT_KEEP_RECENT || 2) })
-        if (cleared > 0) {
-          const est1 = context.estimate({ system, messages })
-          if (est1.total < threshold) return { action: 'aged', reason: `tool-results-aged-${cleared}`, cleared }
-        }
+      const shrink = freeShrink(messages, { window, env, age: est.total >= Math.floor(window * clearRatio) })
+      if (shrink.cleared > 0) {
+        const est1 = context.estimate({ system, messages })
+        if (est1.total < threshold) return { action: 'aged', reason: `tool-results-aged-${shrink.cleared}`, cleared: shrink.cleared }
       }
-      // 阶段① 免模型裁剪（对超大 tool_result 就地替换为结构采样）
-      const budget = Number(env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES || env.CLAUDE_CODE_TOOL_RESULT_BUDGET || 20000)
-      let prunedAny = false
-      for (const m of messages) {
-        if (!Array.isArray(m.content)) continue
-        for (const b of m.content) {
-          if (b?.type !== 'tool_result' || typeof b.content !== 'string') continue
-          const r = pruneToolResult(b.content, { budget })
-          if (r.truncated) {
-            b.content = r.text + '\n\n' + r.note
-            prunedAny = true
-          }
-        }
-      }
-      if (prunedAny) {
+      if (shrink.prunedAny) {
         const est2 = context.estimate({ system, messages })
         if (est2.total < threshold) return { action: 'pruned', reason: 'tool-result-pruned' }
       }
-      if (circuitOpen) return { action: 'none', reason: 'circuit-open', failures: consecutiveFailures }
-      // 阶段② 主模型摘要
-      return summarize({ system, messages })
+      // A3：熔断后仍可跑免模型 pruner（零成本），模型摘要经冷却门控（见 circuitGate）
+      if (!circuitGate(context.estimate ? context.estimate({ system, messages }).total : 0)) {
+        return { action: 'none', reason: 'circuit-open', failures: consecutiveFailures }
+      }
+      // 阶段② 主模型摘要（A4：传真实窗口 limit——摘要请求自身按窗口限幅，防压缩
+      // 请求超端点硬限被 400/挂起，压缩永不落地）
+      return summarize({ system, messages, limit: window })
     },
-    // 溢出兜底：跳过阈值判定直接强制压缩；仅当 replaceGeneration 前进（调用方校验）才 retry
+    // 溢出兜底：跳过阈值判定直接强制压缩；仅当 replaceGeneration 前进（调用方校验）才 retry。
+    // 摘要前先免费收缩（阶段0+①）：小窗口模型切换后 covered 巨大（1M/200K 历史 → 32K
+    // 窗口），先清可重放旧结果/裁剪超大结果把 covered 压到最小，分块摘要段数随之减少。
     async forceCompact({ system, messages, limit, retainHint }) {
-      if (consecutiveFailures >= CIRCUIT_LIMIT) return { action: 'none', reason: 'circuit-open', failures: consecutiveFailures }
+      if (!circuitGate(0)) return { action: 'none', reason: 'circuit-open', failures: consecutiveFailures }
+      const w = context.window ?? 200_000
+      freeShrink(messages, { window: w, env, age: true })
       return summarize({ system, messages, limit, retainHint })
     },
     lastSummary: () => lastSummary,

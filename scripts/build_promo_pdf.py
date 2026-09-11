@@ -235,11 +235,6 @@ P3 = """
       <div class="sc-desc">可见窗口自动化、人工接管、域名白名单；支撑政策抓取、在线填表、企业信息核验。</div>
     </div>
     <div class="scene-card glass">
-      <div class="sc-tag">AI DRAWING</div>
-      <div class="sc-name">AI 绘图（豆包）</div>
-      <div class="sc-desc">应用内文生图 / 图生图，自动去水印，一键插入对话。</div>
-    </div>
-    <div class="scene-card glass">
       <div class="sc-tag">LOOP &amp; SCHEDULE</div>
       <div class="sc-name">循环与定时任务</div>
       <div class="sc-desc">/loop 循环执行、一次性定时提醒，界面化引导创建。</div>

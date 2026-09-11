@@ -12,6 +12,9 @@ if not defined YFW_BRIDGE_PORT set "YFW_BRIDGE_PORT=51517"
 REM Vite dev port — can be overridden via YFW_VITE_PORT env var
 REM (D4 净室新版独立默认 5197；与在售旧版默认 5173 无交集)
 if not defined YFW_VITE_PORT set "YFW_VITE_PORT=5197"
+REM 数据根兜底隔离（2026-09-09 串配置事故修复）：dev 形态默认净室专属根 ~/.yfw，
+REM 与在售旧版 ~/.yfworking 互不串；YFWORKING_HOME 已定义时透传（双版隔离主开关）。
+if not defined YFWORKING_HOME set "YFWORKING_HOME=%USERPROFILE%\.yfw"
 
 REM Stop any leftover vite/bridge from a previous run (best-effort).
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R "LISTENING" ^| findstr ":%YFW_VITE_PORT% "') do (

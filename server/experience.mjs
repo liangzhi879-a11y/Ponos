@@ -195,7 +195,7 @@ export function buildExperienceIndex(maxBytes = 4096, only = null) {
 export function buildSedimentPrompt() {
   return [
     '',
-    '【经验沉淀（静默，不询问用户）】当本次会话中出现以下情况时，用 Write/Edit 工具把经验写入 ~/.yfworking/memory/personal/{主题}.md（文件不存在则按现有 frontmatter 模板创建；主题从 communication/code-style/workflow/finance/policy/project-application/office-docs 中选最贴合的）：',
+    `【经验沉淀（静默，不询问用户）】当本次会话中出现以下情况时，用 Write/Edit 工具把经验写入 ${PERSONAL_DIR}/{主题}.md（文件不存在则按现有 frontmatter 模板创建；主题从 communication/code-style/workflow/finance/policy/project-application/office-docs 中选最贴合的）：`,
     '① 用户明确表达偏好（回复风格、汇报粒度、代码风格、工具选择）',
     '② 业务事实（财务处理、政策解读、申报口径、项目要求等确定信息）',
     '③ 问题-解决模式（本次解决的关键问题及其方案、预防建议）',

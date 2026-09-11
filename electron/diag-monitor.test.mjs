@@ -14,10 +14,10 @@ function mkCtx(overrides = {}) {
   }
 }
 
-test('CHECKS 注册表：26 项、id 唯一、分组合法', () => {
-  assert.equal(CHECKS.length, 26)
+test('CHECKS 注册表：25 项、id 唯一、分组合法（2026-09-10：豆包会话检查项已随生图功能移除）', () => {
+  assert.equal(CHECKS.length, 25)
   const ids = new Set(CHECKS.map(c => c.id))
-  assert.equal(ids.size, 26)
+  assert.equal(ids.size, 25)
   for (const c of CHECKS) assert.match(c.id, /^[a-z][a-z0-9-]*$/)
 })
 

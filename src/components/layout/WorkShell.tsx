@@ -13,77 +13,62 @@ import { useEffect, useCallback, useState } from 'react'
 import { Header } from './Header'
 import { RailNav } from './RailNav'
 import { SecondPanel } from './SecondPanel'
+import { AgentsPanel } from '@/components/agents/AgentsPanel'
+import { SkillsPanel } from '@/components/skills/SkillsPanel'
 import { StatusBar } from './StatusBar'
 import { ChatWindow } from '@/components/chat/ChatWindow'
 import { ChatInput } from '@/components/chat/ChatInput'
-import QuestionCard from '@/components/chat/QuestionCard'
+import { FloatingQuestionCard } from '@/components/chat/FloatingQuestionCard'
+import { RightStatusRail } from '@/components/chat/RightStatusRail'
+import { TaskStartCard } from '@/components/rail/TaskStartCard'
 import { FilePreview } from '@/components/files/FilePreview'
 import { SettingsView } from '@/components/settings/SettingsView'
 import { CommandPalette } from '@/components/command-palette/CommandPalette'
 import { DiagnosticPanel } from '@/components/diagnostic/DiagnosticPanel'
-import { DiagnosticBanner } from '@/components/diagnostic/DiagnosticBanner'
 import { PermissionDialog } from '@/components/permissions/PermissionDialog'
 import { SearchDialog } from '@/components/search/SearchDialog'
 import { ShortcutsHelp } from '@/components/shortcuts/ShortcutsHelp'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { useViewStore } from '@/stores/viewStore'
 import { sendAnswer, dismissQuestion, useYFWCLI } from '@/hooks/useYFWCLI'
 import { useTranslation } from '@/i18n/useTranslation'
 
-// 一键消费的预设指令：让 agent 按 gxtz-experience-sync 的 Code 流程
-// 逐条消费全局经验库的 pending 经验并升级技能
-const EXPERIENCE_CONSUME_PROMPT = `请执行 gxtz-experience-sync 技能（Code 模式）：
-1. 运行 python C:/Users/T203-15/.yfworking/skills/_common/project_context_manager.py skill-loop 查看全局经验库待消费清单；
-2. 逐条消费 pending 经验：升级对应技能的 SKILL.md 与 CHANGELOG（逐条回应如何解决、在哪个版本解决）、沉淀技能包 experience.json、标记 status=consumed；
-3. 全部完成后按归档流程将已消费经验备份到 _archive 并从全局库移除。
-完成后汇报每条的消费结果。`
-
 export interface WorkShellProps {
-  /** Header 品牌 logo 点击 → 返回驾驶舱：传入 logo 元素 rect，由 ViewRouter 播放 morph */
-  onGoCockpit?: (rect: DOMRect) => void
+  /** Header 品牌 logo 点击 → 返回驾驶舱（2026-09-10 morph 退役：直切，无需 rect） */
+  onGoCockpit?: () => void
 }
 
 export function WorkShell({ onGoCockpit }: WorkShellProps) {
   const { t } = useTranslation()
+  const rail = useViewStore(s => s.workState.rail)
   const { activeConversationId, createConversation, pendingQuestions, clearPendingQuestion } = useChatStore()
-  const { send } = useYFWCLI()
-  // 技能经验消费提醒：主进程启动时检测到 pending 积压会推送
-  const [experienceAlert, setExperienceAlert] = useState<{ total: number; bySkill: { skill: string; count: number }[] } | null>(null)
-  // 低配设备检测 → 极速形态引导提示（一次性，可关闭/不再提示）
-  const [showSpeedModePrompt, setShowSpeedModePrompt] = useState(false)
-  // GPU 进程异常（驱动重置/崩溃）→ 自动开启极速形态 + 通知条
-  const [gpuCrashNotice, setGpuCrashNotice] = useState(false)
-  const pendingQuestion = activeConversationId ? pendingQuestions[activeConversationId] : undefined
+  const conversations = useChatStore(s => s.conversations)
+
+  // 2026-09-10 主标签化：chat/task 是两个独立标签页——切 tab 时若当前活动会话
+  // 模式不匹配，自动激活该模式最近会话；该模式无会话则保持不动，中心由
+  // displayConvId 判空显示对应空态。
+  useEffect(() => {
+    const st = useChatStore.getState()
+    const key = rail === 'chat' ? 'chat' : 'task'
+    const cur = st.conversations.find(c => c.id === st.activeConversationId)
+    if (cur && (cur.mode ?? 'task') === key) return
+    const target = st.conversations.find(c => (c.mode ?? 'task') === key)
+    if (target) st.setActiveConversation(target.id)
+  }, [rail])
+
+  // 中心列只显示与当前 rail 模式匹配的活动会话（不匹配 → 该标签空态）
+  const displayConvId = (() => {
+    const cur = conversations.find(c => c.id === activeConversationId)
+    if (!cur) return null
+    const key = rail === 'chat' ? 'chat' : 'task'
+    return (cur.mode ?? 'task') === key ? activeConversationId : null
+  })()
+  const pendingQuestion = displayConvId ? pendingQuestions[displayConvId] : undefined
   const { previewFile, setPreviewFile } = useUIStore()
 
-  // 无历史默认新对话兜底已上移 ViewRouter（Task 14：进 work 空态自动建空白 chat）：
-  // 本组件按 view 分支挂载/卸载，若在此再挂 mount 兜底会先于父组件 effect 触发且
-  // 造出默认 task 会话，抢跑/架空 ViewRouter 的 chat 创建（dev StrictMode 还会双发）。
-  // 启动时低配设备检测：CPU 核心 ≤4 或内存 ≤4GB → 引导开启极速形态。
-  // 仅在未开启极速形态且未点过"不再提示"时弹一次；检测结果不写入设置。
-  useEffect(() => {
-    const s = useSettingsStore.getState().settings
-    if (s.speedMode || s.speedModePromptDismissed) return
-    const cores = navigator.hardwareConcurrency ?? 8
-    const mem = (navigator as unknown as { deviceMemory?: number }).deviceMemory ?? 8
-    if (cores <= 4 || mem <= 4) setShowSpeedModePrompt(true)
-  }, [])
-
-  // GPU 进程异常兜底：主进程 child-process-gone 通知 → 自动开启极速形态
-  // （关全部动画/特效），防止驱动重置后的恢复阶段再次把图形负载压垮。
-  // 通知条 12s 后自动消失；关闭按钮在 UI 底部。
-  useEffect(() => {
-    const win = window.yfworkingWindow
-    if (!win?.onGpuCrash) return
-    const off = win.onGpuCrash(() => {
-      useSettingsStore.getState().updateSettings({ speedMode: true, speedModePromptDismissed: true })
-      setGpuCrashNotice(true)
-      setTimeout(() => setGpuCrashNotice(false), 12000)
-      // 通知条生命周期与本次崩溃提示一致，无需在卸载时清理 timer
-    })
-    return () => { off?.() }
-  }, [])
+  // 低配引导/GPU 兜底/经验提醒均已迁入 RightStatusRail（2026-09-10 右侧折叠状态栏）
 
   // 后台/最小化时暂停全部 CSS 动画：webPreferences.backgroundThrottling 已关闭
   // （保证 WS 心跳/任务完成通知后台可靠），但动画在后台仍会全速跑白烧 GPU——
@@ -97,16 +82,6 @@ export function WorkShell({ onGoCockpit }: WorkShellProps) {
     return () => document.removeEventListener('visibilitychange', onVis)
   }, [])
 
-  // 监听主进程推送的技能经验消费提醒
-  useEffect(() => {
-    const win = window.yfworkingWindow
-    if (!win?.onExperienceAlert) return
-    const off = win.onExperienceAlert((data) => {
-      if (data && data.total > 0) setExperienceAlert(data)
-    })
-    return () => { off?.() }
-  }, [])
-
   // 原生编辑器窗口拖动/缩放后回传边界 → 同步 uiStore.editorRect 缓存（下次打开沿用）
   useEffect(() => {
     const win = window.yfworkingWindow
@@ -117,15 +92,12 @@ export function WorkShell({ onGoCockpit }: WorkShellProps) {
     return () => { off?.() }
   }, [])
 
-  // 一键消费：新建会话并自动发送消费指令
-  const startExperienceConsume = useCallback(() => {
-    const id = createConversation()
-    send(id, EXPERIENCE_CONSUME_PROMPT)
-    setExperienceAlert(null)
-  }, [createConversation, send])
-
   // Global keyboard shortcuts
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    // 【2026-09-11】预热期守卫：WorkShell 会在驾驶舱可见时被空闲预挂载（hidden），
+    // 此时仍挂在 window 上的监听器不得生效——只有 work 视图才响应全局快捷键，
+    // 避免在驾驶舱/启动屏按 ⌘K/⌘N 误触发主界面动作。
+    if (useViewStore.getState().view !== 'work') return
     const mod = e.metaKey || e.ctrlKey
 
     // Command palette
@@ -135,10 +107,10 @@ export function WorkShell({ onGoCockpit }: WorkShellProps) {
       return
     }
 
-    // Settings
+    // Settings（2026-09-10：独立设置窗口）
     if (mod && e.key === ',') {
       e.preventDefault()
-      useUIStore.getState().openSettings()
+      window.yfworkingWindow?.openUtility?.('settings')
       return
     }
 
@@ -189,37 +161,60 @@ export function WorkShell({ onGoCockpit }: WorkShellProps) {
       {/* Header —— logo 点击 → morph 回驾驶舱（ViewRouter onGoCockpit 接线） */}
       <Header onGoCockpit={onGoCockpit} />
 
-      {/* 三段式主体：rail 列(48px 常驻) + 二级面板宿主(240px) + 中心聊天列 */}
+      {/* 三段式主体：rail 列(48px 常驻主标签栏) + 右侧内容页。
+          rail 即主标签栏：chat/task 渲染「二级面板(240px)+中心聊天列」，
+          agents/skills 渲染全主界面卡片浏览（2026-09-10 主标签化）——右侧内容
+          页随 rail 切换整片进入对应标签，不再常驻聊天列。 */}
       <div className="flex-1 flex min-h-0">
         <RailNav />
+        {rail === 'agents' ? (
+          <AgentsPanel />
+        ) : rail === 'skills' ? (
+          <SkillsPanel />
+        ) : (
+          <>
         <SecondPanel />
 
-        {/* Center content */}
+        {/* Center content：只渲染与当前 rail 模式匹配的会话（2026-09-10 主标签化） */}
         <div className="flex-1 flex flex-col min-w-0">
-          {activeConversationId ? (
+          {displayConvId ? (
             <>
-              <ChatWindow conversationId={activeConversationId} />
-              {pendingQuestion && (
-                <div className="px-3 flex justify-center">
-                  <QuestionCard
-                    // 新问题到达（载荷对象替换）时强制重挂载，清空旧卡的选择/备注状态，
-                    // 避免自动生成的 q1..qN id 与旧卡重叠导致 allAnswered 被旧选中项满足
-                    key={`${activeConversationId}:${pendingQuestion.questions.map(q => `${q.id}|${q.question.slice(0, 24)}`).join('&') || 'raw'}`}
-                    payload={pendingQuestion}
-                    onAnswer={(response) => {
-                      sendAnswer(activeConversationId, response.answers, response.notes)
-                      clearPendingQuestion(activeConversationId)
-                    }}
-                    onDismiss={() => {
-                      clearPendingQuestion(activeConversationId)
-                      // 通知桥接端广播“提问已处理”，嘉嘉等外部监听者撤销提问提示
-                      dismissQuestion(activeConversationId)
-                    }}
-                  />
+              {/* 两种模式分开（2026-09-10）：chat = 纯净对话（无目录条、无右侧状态栏）；
+                  task = 工作台（工作目录收敛到右侧状态栏顶部固定卡片，折叠态以
+                  文件夹图标提示目录是否已设置；欢迎页 logo 下方亦有目录入口，
+                  2026-09-11 自聊天面板上方 TaskCwdBar 迁出） */}
+              <div className="flex-1 flex min-h-0">
+                <div className="flex-1 min-w-0 flex flex-col">
+                  <ChatWindow conversationId={displayConvId} />
                 </div>
+                {rail === 'task' && <RightStatusRail conversationId={displayConvId} />}
+              </div>
+              {pendingQuestion && (
+                // 2026-09-10 悬浮折叠：默认收成 chip，展开态 max-h 内滚，
+                // 不再内联占满消息可视区
+                <FloatingQuestionCard
+                  conversationId={displayConvId}
+                  // 新问题到达（载荷对象替换）时强制重挂载，清空旧卡的选择/备注状态，
+                  // 避免自动生成的 q1..qN id 与旧卡重叠导致 allAnswered 被旧选中项满足
+                  cardKey={`${displayConvId}:${pendingQuestion.questions.map(q => `${q.id}|${q.question.slice(0, 24)}`).join('&') || 'raw'}`}
+                  payload={pendingQuestion}
+                  onAnswer={(response) => {
+                    sendAnswer(displayConvId, response.answers, response.notes)
+                    clearPendingQuestion(displayConvId)
+                  }}
+                  onDismiss={() => {
+                    clearPendingQuestion(displayConvId)
+                    // 通知桥接端广播“提问已处理”，嘉嘉等外部监听者撤销提问提示
+                    dismissQuestion(displayConvId)
+                  }}
+                />
               )}
-              <ChatInput conversationId={activeConversationId} />
+              <ChatInput conversationId={displayConvId} />
             </>
+          ) : rail === 'task' ? (
+            // 任务标签空态：起始卡片（目录选择必选 + 新建任务，2026-09-10；
+            // 会话标签保持无目录选择的现状）
+            <TaskStartCard />
           ) : (
             <div className="flex-1 flex items-center justify-center text-tertiary">
               <div className="text-center">
@@ -229,146 +224,16 @@ export function WorkShell({ onGoCockpit }: WorkShellProps) {
             </div>
           )}
         </div>
-      </div>
-
-      {/* 右下角提示卡堆叠容器：经验提醒/极速引导/GPU 兜底三个弹窗统一纵向堆叠，
-          避免同时出现时三者同位置重叠遮挡（各自可独立关闭） */}
-      <div className="fixed bottom-12 right-4 z-[90] w-80 flex flex-col gap-3">
-      {/* 技能经验消费提醒条：pending 积压提示 + 一键消费 */}
-      {experienceAlert && (
-        <div
-          className="border rounded-xl p-4 animate-scale-in"
-          style={{
-            background: 'var(--popover-bg)',
-            borderColor: 'var(--border-subtle)',
-            boxShadow: 'var(--shadow-modal)',
-            backdropFilter: 'blur(var(--popover-blur))',
-            WebkitBackdropFilter: 'blur(var(--popover-blur))',
-          }}
-        >
-          <div className="flex items-start justify-between gap-2">
-            <div className="text-sm font-semibold text-primary">技能经验待消费</div>
-            <button
-              onClick={() => setExperienceAlert(null)}
-              className="text-tertiary hover:text-secondary text-lg leading-none"
-              aria-label="关闭"
-            >
-              ×
-            </button>
-          </div>
-          <p className="text-xs text-secondary mt-1.5 leading-relaxed">
-            全局经验库有 <span className="text-warning font-medium">{experienceAlert.total}</span> 条经验等待消费升级：
-            {experienceAlert.bySkill.map(s => ` ${s.skill}（${s.count}条）`).join('、')}。
-          </p>
-          <button
-            onClick={startExperienceConsume}
-            className="mt-3 w-full py-1.5 rounded-lg text-xs font-medium text-white transition-colors"
-            style={{ background: 'linear-gradient(135deg, #ff6a00, #ff8c33)' }}
-          >
-            一键发起消费升级
-          </button>
-        </div>
-      )}
-
-      {/* 低配设备检测 → 极速形态引导（一次，可关闭/不再提示） */}
-      {showSpeedModePrompt && (
-        <div
-          className="border rounded-xl p-4 animate-scale-in"
-          style={{
-            background: 'var(--popover-bg)',
-            borderColor: 'var(--border-subtle)',
-            boxShadow: 'var(--shadow-modal)',
-            backdropFilter: 'blur(var(--popover-blur))',
-            WebkitBackdropFilter: 'blur(var(--popover-blur))',
-          }}
-        >
-          <div className="flex items-start justify-between gap-2">
-            <div className="text-sm font-semibold text-primary">{t('settings.speedModePromptTitle')}</div>
-            <button
-              onClick={() => setShowSpeedModePrompt(false)}
-              className="text-tertiary hover:text-secondary text-lg leading-none"
-              aria-label="关闭"
-            >
-              ×
-            </button>
-          </div>
-          <p className="text-xs text-secondary mt-1.5 leading-relaxed">
-            {t('settings.speedModePromptBody')}
-          </p>
-          <div className="mt-3 flex items-center gap-2">
-            <button
-              onClick={() => {
-                useSettingsStore.getState().updateSettings({ speedMode: true, speedModePromptDismissed: true })
-                setShowSpeedModePrompt(false)
-              }}
-              className="flex-1 py-1.5 rounded-lg text-xs font-medium text-white transition-colors"
-              style={{ background: 'linear-gradient(135deg, var(--brand-500), var(--brand-600))' }}
-            >
-              {t('settings.speedModePromptEnable')}
-            </button>
-            <button
-              onClick={() => setShowSpeedModePrompt(false)}
-              className="px-3 py-1.5 rounded-lg text-xs text-secondary border border-subtle hover:bg-surface transition-colors"
-            >
-              {t('settings.speedModePromptLater')}
-            </button>
-          </div>
-          <button
-            onClick={() => {
-              useSettingsStore.getState().updateSettings({ speedModePromptDismissed: true })
-              setShowSpeedModePrompt(false)
-            }}
-            className="mt-2 text-[10px] text-tertiary hover:text-secondary underline underline-offset-2"
-          >
-            {t('settings.speedModePromptNever')}
-          </button>
-        </div>
-      )}
-
-      {/* GPU 进程异常自动兜底提示（自动开启极速形态后展示，12s 自动消失） */}
-      {gpuCrashNotice && (
-        <div
-          className="border rounded-xl p-4 animate-scale-in"
-          style={{
-            background: 'var(--popover-bg)',
-            borderColor: 'var(--border-subtle)',
-            boxShadow: 'var(--shadow-modal)',
-            backdropFilter: 'blur(var(--popover-blur))',
-            WebkitBackdropFilter: 'blur(var(--popover-blur))',
-          }}
-        >
-          <div className="flex items-start justify-between gap-2">
-            <div className="text-sm font-semibold text-primary">{t('settings.gpuCrashNoticeTitle')}</div>
-            <button
-              onClick={() => setGpuCrashNotice(false)}
-              className="text-tertiary hover:text-secondary text-lg leading-none"
-              aria-label="关闭"
-            >
-              ×
-            </button>
-          </div>
-          <p className="text-xs text-secondary mt-1.5 leading-relaxed">
-            {t('settings.gpuCrashNoticeBody')}
-          </p>
-          <button
-            onClick={() => setGpuCrashNotice(false)}
-            className="mt-3 w-full py-1.5 rounded-lg text-xs font-medium text-white transition-colors"
-            style={{ background: 'linear-gradient(135deg, var(--brand-500), var(--brand-600))' }}
-          >
-            {t('settings.gpuCrashNoticeOk')}
-          </button>
-        </div>
-      )}
+          </>
+        )}
       </div>
 
       {/* Status bar */}
       <StatusBar />
 
-      {/* Overlays */}
-      <SettingsView />
+      {/* Overlays（2026-09-10：设置面板已外置独立窗口，SettingsView 不再挂主窗口） */}
       <CommandPalette />
       <DiagnosticPanel />
-      <DiagnosticBanner />
       <PermissionDialog />
       <SearchDialog />
       <ShortcutsHelp />

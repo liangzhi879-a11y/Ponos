@@ -179,11 +179,12 @@ function resolvePath(p, cwd) {
 // 的往返与 token（T003 上轮 Read 6 次中部分为重复读）。
 const READ_STUB_PREFIX = '文件自上次读取后未变化'
 
-function readFile(filePath, allowDirs, input = {}, cwd, readCache, skipBoundary) {
+function readFile(filePath, allowDirs, input = {}, cwd, readCache, skipBoundary, allowFiles) {
   try {
     if (!filePath) return { content: 'file_path 缺失', isError: true }
     const resolved = resolvePath(filePath, cwd)
-    if (!skipBoundary && !withinBoundary(resolved, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${resolved}）`, isError: true }
+    const fileAllowed = allowFiles && allowFiles.has(resolved.toLowerCase())
+    if (!skipBoundary && !withinBoundary(resolved, allowDirs) && !fileAllowed) return { content: `拒绝访问：路径超出会话目录边界（${resolved}）`, isError: true }
     if (!existsSync(resolved)) return { content: `文件不存在：${resolved}（当前工作目录：${cwd || process.cwd()}；可用 Glob 定位候选文件或用绝对路径）`, isError: true }
     const st = statSync(resolved)
     if (st.isDirectory()) return { content: `是目录：${resolved}`, isError: true }
@@ -933,8 +934,17 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
   }
 }
 
-export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null }) {
+export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null, readAllowFiles = [] }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
+  // 记忆只读边界扩展（2026-09-10）：Read 追加个人/项目记忆根——记忆文件是内核
+  // 自己维护的知识库（与 MemorySearch 同源），会话目录边界把它们排除在外会让
+  // 模型"引用记忆原文"被拒（用户实证：memory/personal/workflow.md 无法 Read）。
+  // 只扩只读工具：Write/Edit 仍锁会话目录（记忆写入走 memory.mjs 工具链与
+  // 会话工作记忆维护，不允许任意覆盖）。
+  const readAllowDirs = [...allowDirs, memoryRoot, projectMemoryRoot].filter(Boolean)
+  // 只读文件白名单（2026-09-11 渐进式披露）：会话 transcript 文件放行 Read——
+  // 硬适配索引化后模型按行号展开历史细节；仅精确文件匹配，不放宽任何目录。
+  const readAllowFilesSet = new Set((readAllowFiles || []).map((f) => resolve(String(f)).toLowerCase()))
   // P10-A：技能加载根 = 显式 skillsDirs（发现根，含默认 <configDir>/skills）优先，
   // 缺省回退 allowDirs——Skill 工具与提示词【可用技能】块同一数据源（cli 发现用同 roots）。
   // 注意：skillsDirs 不并入 allowDirs，避免扩大 Bash/Read 等工具的文件边界。
@@ -962,7 +972,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
       isHighRisk: (input) => matchesHighRisk(String(input?.command ?? '')),
     },
     Read: {
-      description: `读取文本文件内容。一次读全文（上限 ${READ_MAX_LINES} 行 / ${READ_MAX_BYTES / 1024 / 1024}MB），默认应读全文而非分段取样；超大文件用 offset/limit 定向读取，结果会提示续读位置。重复读取未变化的文件会返回"文件自上次读取后未变化"提示——直接引用此前结果即可，勿重复发起。优先用本工具而非 Bash cat/sed 读文件；路径用绝对路径，或相对当前工作目录的相对路径。边界限制：仅可读取当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标文件位于会话目录内，否则改用 Bash 或让用户放入会话目录。`,
+      description: `读取文本文件内容。一次读全文（上限 ${READ_MAX_LINES} 行 / ${READ_MAX_BYTES / 1024 / 1024}MB），默认应读全文而非分段取样；超大文件用 offset/limit 定向读取，结果会提示续读位置。重复读取未变化的文件会返回"文件自上次读取后未变化"提示——直接引用此前结果即可，勿重复发起。优先用本工具而非 Bash cat/sed 读文件；路径用绝对路径，或相对当前工作目录的相对路径。边界限制：仅可读取当前会话目录及其挂载目录（--add-dir）内的文件，以及个人记忆/项目记忆目录（memory/personal）中的记忆文件；其余会话外路径会被拒绝——调用前先确认目标文件位于会话目录或记忆目录内，否则改用 Bash 或让用户放入会话目录。`,
       // concurrencySafe：只读工具可并发执行（P0-4 只读批并行）
       concurrencySafe: true,
       input_schema: {
@@ -975,7 +985,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
         },
         required: ['file_path'],
       },
-      run: (input) => readFile(String(input?.file_path ?? ''), allowDirs, input, cwd, readCache, skipBoundary),
+      run: (input) => readFile(String(input?.file_path ?? ''), readAllowDirs, input, cwd, readCache, skipBoundary, readAllowFilesSet),
     },
     Write: {
       description: '写入文本文件（覆盖整个文件）。注意是整体覆盖语义——必须携带完整新内容，遗漏会导致文件被清空或内容丢失；改动范围超过半个文件时优先考虑本工具而非多次 Edit。边界限制：仅可写入当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标路径位于会话目录内。',
@@ -1041,16 +1051,17 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
     },
     // 子代理分发：执行体在 engine（ctx.spawnSubAgent）。子 lane 内禁止嵌套。
     Agent: {
-      description: '将子任务委派给子 Agent 执行（按优势场景选择 subagent_type）；前台同步回填结果，或 run_in_background 后台异步执行；可基于既有后台任务会话续跑（resume_task_id）',
+      description: '将子任务委派给子 Agent 执行（按优势场景选择 subagent_type）；前台同步回填结果，或 run_in_background 后台异步执行；可基于既有后台任务会话续跑（resume_task_id）；context 控制主会话上下文继承（none 不继承/summary 继承摘要+最近轮次/full 继承全量历史——长会话推荐 summary 档）',
       input_schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          subagent_type: { type: 'string', description: '子 Agent 类型（general-purpose / researcher 或用户注册的 agent id）' },
+          subagent_type: { type: 'string', description: '子 Agent 类型（general-purpose / researcher / implementer / reviewer / explorer / planner 或用户注册的 agent id）' },
           prompt: { type: 'string', description: '委派给子 Agent 的完整任务说明；resume 模式下为续跑指令' },
-          run_in_background: { type: 'boolean', description: '可选：true 时后台异步执行，立即返回 task_id（Task 工具查询/中止/续跑）' },
+          run_in_background: { type: 'boolean', description: '可选：true 时后台异步执行，立即返回 task_id（Task 工具查询/中止/续跑/投递消息）' },
           description: { type: 'string', description: '可选：任务描述（展示用）' },
           resume_task_id: { type: 'string', description: '可选：基于既有后台子任务会话继续执行（复用其 lane 会话，prompt 作为续跑指令追加；任务须已结束且进程存活）' },
+          context: { type: 'string', description: '可选：主会话上下文继承档 none（默认）| summary（主会话压缩摘要+最近 20 轮文本）| full（最近 200 条全量文本，可能撑爆子任务上下文，谨慎使用）' },
         },
         required: ['subagent_type', 'prompt'],
       },
@@ -1062,14 +1073,15 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
     },
     // 后台子 Agent 任务管理（查询/中止/续跑）
     Task: {
-      description: '管理后台子 Agent 任务：list 列出全部（层级缩进）、status/output 查询单个、stop 中止、resume 续跑（基于既有会话继续）',
+      description: '管理后台子 Agent 任务：list 列出全部（层级缩进）、status/output 查询单个、stop 中止、resume 续跑（基于既有会话继续）、send_message 向运行中任务投递消息（其当前工具轮结束后接收）、followup 投递消息（对已结束任务自动续跑）',
       input_schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          command: { type: 'string', description: 'list | status | output | stop | resume' },
-          task_id: { type: 'string', description: '可选：status/output/stop/resume 时的任务 id' },
-          prompt: { type: 'string', description: '可选：resume 时的续跑指令（追加到既有会话；缺省「（任务继续）」）' },
+          command: { type: 'string', description: 'list | status | output | stop | resume | send_message | followup' },
+          task_id: { type: 'string', description: '可选：status/output/stop/resume/send_message/followup 时的任务 id' },
+          prompt: { type: 'string', description: '可选：resume/followup 时的续跑指令（追加到既有会话；缺省「（任务继续）」）' },
+          message: { type: 'string', description: '可选：send_message/followup 时投递的消息内容' },
         },
         required: ['command'],
       },
@@ -1083,7 +1095,9 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
         if (cmd === 'output') return sys.output(id)
         if (cmd === 'stop') return sys.stop(id)
         if (cmd === 'resume') return sys.resume(id, input?.prompt)
-        return { content: `未知 command：${cmd}（支持 list/status/output/stop/resume）`, isError: true }
+        if (cmd === 'send_message') return sys.sendMessage(id, input?.message)
+        if (cmd === 'followup') return sys.followup(id, input?.message || input?.prompt)
+        return { content: `未知 command：${cmd}（支持 list/status/output/stop/resume/send_message/followup）`, isError: true }
       },
     },
     // 任务规划清单（覆盖式更新，返回当前清单）
@@ -1318,7 +1332,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
     // （docs/bridge-contract.md §4 bridge_request；bridge 的 browserRouter 已接线）。
     // 执行体在 engine（ctx.browserDriver 挂起等 bridge 回写 browser_response 解除）。
     Browser: {
-      description: '驱动内置浏览器执行页面操作（快照驱动：先 snapshot 查看页面结构与可交互元素 ref，再按 ref 操作）。支持动作：goto 导航 / back 后退 / forward 前进 / refresh 刷新 / snapshot 页面快照 / click 点击 / type 输入 / select 选择 / scroll 滚动 / hover 悬停 / wait 等待 / js 页面内执行 JS。元素 ref 随页面变化失效——操作失败时重新 snapshot 获取最新 ref，勿沿用旧 ref 重试。',
+      description: '驱动内置浏览器执行页面操作（快照驱动：先 snapshot 查看页面结构与可交互元素 ref，再按 ref 操作）。支持动作：goto 导航 / back 后退 / forward 前进 / refresh 刷新 / snapshot 页面快照 / click 点击 / type 输入 / select 选择 / scroll 滚动 / hover 悬停 / wait 等待 / js 页面内执行 JS。元素 ref 随页面变化失效——操作失败时重新 snapshot 获取最新 ref，勿沿用旧 ref 重试。域名白名单限制：goto 访问非白名单域名会被拦截（默认放行政务 *.gov.cn / 搜索 / 企业查询 / 邮箱等站点）。被拦截时系统会向用户请求批准——若用户批准，该域名即自动写入白名单并即时生效，你直接重试同一操作即可；若用户拒绝，改用 WebFetch/WebSearch 等其他途径，勿反复重试。',
       input_schema: {
         type: 'object',
         additionalProperties: false,

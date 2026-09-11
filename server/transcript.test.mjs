@@ -145,6 +145,29 @@ describe('loadTranscript', () => {
     assert.equal(r.entries.length, 1) // 大 filler 行也完整保留（无损坏）
   })
 
+  test('自愈注入过滤（2026-09-11）：展示路径隐藏【系统】/【提示】user 注入，导出路径保留原文', (t) => {
+    const { root, proj } = makeProjects(t)
+    const l1 = entry('user', { uuid: 'u1', message: { role: 'user', content: '你好' } })
+    const heal = entry('user', { uuid: 'h1', message: { role: 'user', content: '【系统】检测到你长时间没有实质进展…' } })
+    const remind = entry('user', { uuid: 'h2', message: { role: 'user', content: '【提示】你已连续 3 次调用同一工具…' } })
+    const toolResult = entry('user', { uuid: 'tr1', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] } })
+    const stopText = entry('assistant', { parentUuid: 'h2', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: '【检测到…已自动收尾】' }] } })
+    mk(proj, `${UUID}.jsonl`, [l1, heal, remind, toolResult, stopText].join('\n') + '\n')
+
+    // 展示路径（默认）：自愈注入被隐藏，其余保留（含最后的可见收尾说明）
+    const r = loadTranscript(root, 'C:\\Users\\t\\demo-project', UUID)
+    assert.equal(r.ok, true)
+    assert.equal(r.hidden, 2, '【系统】+【提示】注入各 1 条被隐藏')
+    assert.equal(r.entries.length, 3)
+    assert.deepEqual(r.entries.map((e) => e.uuid), ['u1', 'tr1', 'a1'], '用户消息/tool_result/assistant 收尾说明保留')
+    // tool_result 为数组 content 不受前缀规则影响；assistant 收尾说明保持可见
+
+    // 导出路径（tailFirst=false）：全量原文（含自愈注入）
+    const full = loadTranscript(root, 'C:\\Users\\t\\demo-project', UUID, false)
+    assert.equal(full.hidden, 0)
+    assert.equal(full.entries.length, 5)
+  })
+
   test('文件不存在返回 { ok:false, error:not found }', (t) => {
     const { root } = makeProjects(t)
     const r = loadTranscript(root, 'C:\\Users\\t\\demo-project', '00000000-0000-4000-8000-000000000000')

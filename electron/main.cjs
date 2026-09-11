@@ -207,6 +207,46 @@ function resolveNode() {
   return fs.existsSync(bundled) ? bundled : 'node'
 }
 
+// 真实 boot 进度（2026-09-11）：桥接/内核自举/技能安装/供应商探测的就绪状态经
+// bridge /boot-status 轮询 → 渲染层 BootScreen 渲染真实步骤；全部就绪发 boot:ready。
+// 主窗口就绪前事件暂存，did-finish-load 时冲刷（BootScreen 挂载即可见完整进度）。
+let bootProgressEvents = []
+let bootProgressPollTimer = null
+const bootProgressSent = { bridge: false, kernel: false, skills: false, provider: false }
+function emitBootProgress(msg) {
+  bootProgressEvents.push(msg)
+  try {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isLoading()) {
+      for (const m of bootProgressEvents) mainWindow.webContents.send('boot:progress', m)
+      bootProgressEvents = []
+    }
+  } catch { /* 窗口未就绪：留待冲刷 */ }
+}
+function flushBootProgress() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  for (const m of bootProgressEvents) { try { mainWindow.webContents.send('boot:progress', m) } catch { /* 单条失败不阻断 */ } }
+  bootProgressEvents = []
+}
+function startBootProgressPoll() {
+  if (bootProgressPollTimer) return
+  bootProgressPollTimer = setInterval(async () => {
+    try {
+      const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/boot-status`)
+      if (!res.ok) return
+      const st = await res.json()
+      if (!bootProgressSent.bridge) { bootProgressSent.bridge = true; emitBootProgress({ step: 'bridge', done: true }) }
+      if (st.kernelBootstrapped && !bootProgressSent.kernel) { bootProgressSent.kernel = true; emitBootProgress({ step: 'kernel', done: true }) }
+      if (st.samplesInstalled && st.workflowsInstalled && !bootProgressSent.skills) { bootProgressSent.skills = true; emitBootProgress({ step: 'skills', done: true }) }
+      if (st.probeDone && !bootProgressSent.provider) { bootProgressSent.provider = true; emitBootProgress({ step: 'provider', done: true }) }
+      if (bootProgressSent.bridge && bootProgressSent.kernel && bootProgressSent.skills && bootProgressSent.provider) {
+        emitBootProgress({ step: 'ready', done: true })
+        clearInterval(bootProgressPollTimer)
+        bootProgressPollTimer = null
+      }
+    } catch { /* 桥未就绪/瞬断：静默，下轮再试 */ }
+  }, 300)
+}
+
 function startBridge() {
   const serverPath = path.join(__dirname, '..', 'server', 'bridge.mjs')
   console.log('[main] starting bridge:', serverPath)
@@ -1403,7 +1443,7 @@ if (!gotTheLock) {
     if (!mainWindow || mainWindow.isDestroyed()) {
       bootStartAt = Date.now()   // 刷新 60s 启动兜底弹窗窗口基线
       createWindow()
-      mainWindow?.webContents.once('did-finish-load', () => bootPhase('windowLoad'))
+      mainWindow?.webContents.once('did-finish-load', () => { bootPhase('windowLoad'); flushBootProgress() })
     }
   })
 
@@ -1433,6 +1473,7 @@ if (!gotTheLock) {
       await new Promise((r) => setTimeout(r, 500))
     }
     await startBridgeAndWait()
+    startBootProgressPoll() // 真实预热进度：桥已就绪，轮询其模块级就绪状态转发渲染层
     // D11-D13：冷启动先建认证小窗（?auth=1），主窗口在 auth:granted 后才创建（资源认证后才加载）
     createAuthWindow()
     createTray()

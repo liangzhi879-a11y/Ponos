@@ -49,3 +49,19 @@ export async function checkPassword(password) {
   if (!ok && failCount >= MAX_FAILS) return { ok: false, reason: 'bad-password', lockedForMs: LOCK_MS }
   return ok ? { ok: true } : { ok: false, reason: 'bad-password', lockedForMs: null }
 }
+
+/** 修改密码（2026-09-10 个人信息窗）：验证旧密 → 新盐新哈希落盘。
+ *  未初始化（无密码）时允许直接设置新密码；失败计数沿用 checkPassword 语义。 */
+export async function changePassword(oldPassword, newPassword) {
+  const st = readState()
+  if (!st || !st.hash) {
+    await setupPassword(newPassword)
+    return { ok: true, wasUninitialized: true }
+  }
+  if (typeof newPassword !== 'string' || String(newPassword).length < 4) throw new Error('auth: password too short')
+  const cur = await checkPassword(oldPassword)
+  if (!cur.ok) return cur
+  const salt = randomBytes(16).toString('hex')
+  writeState({ ...st, salt, hash: hashOf(newPassword, salt), failCount: 0, lockedUntil: 0 })
+  return { ok: true }
+}

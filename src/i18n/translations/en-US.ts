@@ -20,6 +20,12 @@ export const enUS: TranslationKeys = {
     phaseBridge: 'Starting bridge…',
     phaseEnv: 'Checking runtime…',
     phaseReady: 'Ready',
+    stepBridge: 'Bridge service ready',
+    stepKernel: 'Kernel bootstrap cache synced',
+    stepSkills: 'Skills & workflows installed',
+    stepProvider: 'Provider probed (incl. billing check)',
+    warming: 'Warming up: {step}…',
+    ready: 'Warm-up complete, entering…',
   },
 
   // --- Login / first-time password setup (SetupWizard + AuthScreen) ---
@@ -318,7 +324,7 @@ export const enUS: TranslationKeys = {
     autoImageBridge: 'Auto image bridging',
     autoImageBridgeDesc: 'When images are pasted into a conversation and the main model is not multimodal, automatically convert them to text descriptions via the vision model (requires a configured vision model).',
     providerContextWindow: 'Context Window',
-    providerContextWindowDesc: 'Maximum context length (tokens). 0 = auto: probed from the endpoint after save; falls back to the built-in model table / profile default (local 64K, cloud 200K)',
+    providerContextWindowDesc: 'Maximum context length (tokens). 0 = auto: measured from the endpoint (/v1/models metadata & API responses), re-probed at startup and periodically; auto-corrected to the real limit the API reports',
     providerProfile: 'Behavior profile',
     providerProfileAuto: 'Auto-detect (recommended)',
     providerProfileCloud: 'Cloud',

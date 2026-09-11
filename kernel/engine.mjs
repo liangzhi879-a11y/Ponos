@@ -14,7 +14,7 @@
 // health/result/stats 三个消费者共用；result 事件由 engine 发出（cli 不再重复）。
 import { streamMessages, classifyApiError, deadStreamError } from './api.mjs'
 import { abortError } from './protocol.mjs'
-import { countCjk } from './context.mjs'
+import { countCjk, estimateRequest, estimateMessage, clampOutputBudgetForWindow } from './context.mjs'
 import { costOf } from './cost.mjs'
 import { decideToolPermission } from './permissions.mjs'
 import { createToolRegistry, killActiveChildren } from './tools.mjs'
@@ -29,14 +29,29 @@ import { createCompactor } from './compact.mjs'
 // —— agent loop 兜底（本地模型死循环防护）——
 // 参考 claude-code/pi/dsh：三者主循环均默认无全局硬上限（靠 Esc 中断/可选 maxTurns/上下文
 // 自愈）；dsh 独有 repeat-tool-reminder（连续同工具调用达阈值注入提醒）。本地模型（vLLM
-// Qwen 等）死循环两大形态：① 工具调用不断但无进展（反复同工具/全失败重试/无限续轮）；
+// Qwen 等）死循环两大形态：① 工具调用不断但无进展（反复同工具/全失败重试/无限续轮，
+// 含"测量打转"——只读测量参数微变、守卫③b/⑤抓不到，由守卫⑥无进展停滞兜底）；
 // ② 生成环节打转（thinking/文本重复打转、流式无数据挂起、单轮拖超时）。本引擎按本地
 // 模型场景默认开启以下守卫，全部可用 PONOS_* 环境变量调（0 = 关），PONOS_LOOP_GUARD=0
 // 一键全关（对齐参考实现"无硬上限"语义）。到限一律优雅收尾：附说明文本 + result 闭轮，
 // 会话上下文保留，用户可发「继续」让模型接续，不烧死 token 也不丢任务。
+// 无感愈合原则（2026-09-10）：模型异常（重复/停滞/连续失败/中断/空流）优先注入
+// 指令自愈续跑，用户无感知（guard_heal 事件可观测），恢复即清零愈合计数；耗尽
+// 各形态愈合预算（PONOS_*_HEAL_MAX）才落可见收尾——硬停是最后防线，非默认路径。
+// 轮次墙钟（守卫①）默认关闭（2026-09-10 用户要求取消 30 分钟上限）——长任务正常形态
+// 由守卫⑥（无进展停滞，10 分钟）承担"循环但无进展"的兜底，互不冲突。
 function envNonNeg(name, def) {
   const v = Number(process.env[name])
   return Number.isFinite(v) && v >= 0 ? Math.floor(v) : def
+}
+// 愈合预算解析（2026-09-11 持久自愈）：-1 = 持久无限自愈（安全网 = 守卫⑥
+// 无进展停滞——纯循环无工具进展，⑥ 兜底收尾）；>0 = 有限预算（耗尽落可见收尾）；
+// 0 = 关闭该形态自愈（回到旧行为：命中即收尾）。LOOP_GUARD=0 时全部关闭。
+function envHealMax(name, def) {
+  const raw = process.env[name]
+  if (raw === undefined) return def
+  const v = Number(raw)
+  return Number.isFinite(v) ? Math.floor(v) : def
 }
 const LOOP_GUARD_OFF = process.env.PONOS_LOOP_GUARD === '0'
 // 单轮工具迭代上限：默认不限（0）——应用需要长任务能力，单轮几十次工具调用是正常
@@ -50,10 +65,48 @@ const MAX_TOOL_ITERATIONS = LOOP_GUARD_OFF ? 0
   : (Number.isFinite(LEGACY_MAX_TOOL_ITER) && LEGACY_MAX_TOOL_ITER > 0)
     ? Math.floor(LEGACY_MAX_TOOL_ITER)
     : envNonNeg('PONOS_LOOP_MAX_ITERATIONS', 0)
-// 轮次墙钟（主 loop 每轮 + 子 lane）：边界检查（工具批执行后有 300s deadline 粒度）
-const TURN_TIMEOUT_MS = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_TURN_TIMEOUT_MS', 1_800_000)  // 30min
-// 流式生成空闲看门狗：单次模型流内间隔超时判挂起（防 fetch 永不回块）
-const STREAM_IDLE_MS = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_STREAM_IDLE_MS', 120_000)      // 2min
+// 轮次墙钟（主 loop 每轮 + 子 lane）：默认关闭（2026-09-10 取消 30 分钟单轮时长
+// 上限——长任务（咨询材料整包处理等）单轮超 30 分钟是正常形态，误杀表现为
+// "已达单轮时长上限…已自动收尾"，任务半途中断）。挂起防护由空闲看门狗
+// （STREAM_IDLE_MS/首内容宽限）、生成重复守卫与工具 deadline 承担，不再靠
+// 轮次总时长一刀切。需要硬上限时可显式设 PONOS_TURN_TIMEOUT_MS（>0，分钟级）。
+const TURN_TIMEOUT_MS = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_TURN_TIMEOUT_MS', 0)
+// 流式生成空闲看门狗：单次模型流内间隔超时判挂起（防 fetch 永不回块）。
+// 默认 5min（2026-09-10 云端校准）：MiniMax M3 等云端模型在"思考→正文"阶段切换
+// 或服务拥塞时，中段停顿可超 2 分钟（实测 120s 窗口误杀一次健康轮，落
+// "120 秒无数据…已按挂起自动收尾"）。中段容忍与首字节窗口（480s）同量级——
+// 真挂起的代价由 300s 界定，误杀代价（整段已产出内容作废+重试）更贵。
+const STREAM_IDLE_MS = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_STREAM_IDLE_MS', 300_000)      // 5min
+// 首内容宽限窗口（2026-09-09 长任务挂起事故修复）：自建/共享服务的 prefill 时长随
+// 上下文线性增长（实测 27B 空闲端 85k tokens 冷 prefill = 45.7s 零事件，排队/并发
+// 会话下轻松超 2min）——message_start/content_block_start 不产生内核可见 chunk，
+// 首个内容 delta 前"零数据"是 prefill 的正常形态，不是死连接。故首个 chunk 前用
+// 更宽窗口（默认 5min），首个 chunk 后回到 STREAM_IDLE_MS 的 2min 判生成停顿。
+// 硬上限 8min（2026-09-09 事故三次校准）：首内容前"零数据"的真实构成 =
+// prefill + 模型隐藏思考（tools 触发工具规划推理，服务端缓冲不流式——实测
+// 35-260s，kernel 实际步频 100-260s）。300s 上限曾把健康长思考步假 abort
+// （300+3+300+3+301=907s 三步重试链即此形态），480s 覆盖最坏思考+prefill，
+// 又封死病态宽限（settings 旧值 447s 自动钳制；超 20 万字符由 adaptive 升 600s）。
+const FIRST_BYTE_HARD_CAP_MS = 480_000
+const STREAM_FIRST_BYTE_MS = LOOP_GUARD_OFF ? 0 : Math.min(envNonNeg('PONOS_STREAM_FIRST_BYTE_MS', 300_000), FIRST_BYTE_HARD_CAP_MS)
+// 上游零数据挂起（prefill 超首内容宽限）的自动重试上限：真死服务重试无益，但
+// 排队/瞬态负载场景一次重试常能恢复。0 = 关闭（直接按挂起收尾）。
+// 2026-09-10 无感愈合原则：预算 2 → 3（多一轮静默重试才落可见收尾）。
+const IDLE_DEAD_RETRY_MAX = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_IDLE_DEAD_RETRIES', 3)
+const IDLE_DEAD_RETRY_BACKOFF_MS = 3000 // 零数据挂起重试前的小幅退避（让排队窗口错开）
+
+// 首内容窗口自适应（2026-09-09 本地 vLLM 容器适配）：prefill 时长随输入规模线性
+// 增长（实测空闲端 85k tokens ≈ 46s，排队/并发下轻松翻倍），固定宽限对大上下文
+// 会话会误杀（输入 100k+ 的长任务实测 300s 零响应被收尾）。输入体量超阈值时放宽
+// 到 600s（大上下文 prefill 266s + 思考 300s ≈ 566s 的正常形态，600s 封顶）。
+export function adaptiveFirstByteMs(messagesProvider, baseMs) {
+  if (!baseMs || baseMs <= 0) return 0
+  try {
+    const chars = JSON.stringify(messagesProvider()).length
+    if (chars > 200_000) return Math.min(Math.max(baseMs, 600_000), 600_000)
+  } catch { /* 估算失败保持默认窗口 */ }
+  return baseMs
+}
 // 连续工具失败熔断：一轮内连续全部失败的迭代达上限即收尾（成功一次即复位）
 const MAX_ERROR_ITERATIONS = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_LOOP_MAX_ERROR_ITERATIONS', 6)
 // 同工具重复提醒注入阈值（dsh repeat-tool-reminder 语义；仅提醒不 veto，硬性由
@@ -86,8 +139,32 @@ const NEAR_REPEAT_CODE_SKIP = LOOP_GUARD_OFF ? false : process.env.PONOS_NEAR_RE
 // 生成重复守卫内部自愈上限（P1）：③/③b 命中先"注入推进指令续跑"而不是直接收尾把报错
 // 说明喂给用户（本地模型一次性打转 / 探测器误判时一轮注入即恢复，用户无感）。真死循环
 // 模型会持续复现 → 耗尽上限才落回收尾说明（仍保证不死循环烧 token）。=0 关闭自愈
-// （回到旧行为：命中即收尾 + 可见说明）。
-const REPEAT_HEAL_MAX = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_REPEAT_HEAL_MAX', 2)
+// （回到旧行为：命中即收尾 + 可见说明）。2026-09-11 持久自愈：默认 -1 = 无限预算——
+// 愈合后出现一轮"无命中的干净迭代"即清零；真循环每轮必命中、预算不耗尽，安全网 =
+// 守卫⑥（纯文本循环无工具进展，10 分钟无进展停滞接管收尾）。设 >0 恢复有限预算语义。
+const REPEAT_HEAL_MAX = LOOP_GUARD_OFF ? 0 : envHealMax('PONOS_REPEAT_HEAL_MAX', -1)
+// 无感愈合预算族（2026-09-10 模型异常愈合原则；2026-09-11 持久化）：模型异常优先注入
+// 指令自愈续跑（用户无感知），恢复即清零；默认 -1 = 持久无限自愈（安全网 = 守卫⑥），
+// 设 >0 恢复有限预算（耗尽落可见收尾）。各形态独立计数：连续失败熔断（④）/
+// 空闲中断（已产出后停顿）/ 上游空流（vLLM 加载中，基础设施型保持有限默认）。
+const MELTDOWN_HEAL_MAX = LOOP_GUARD_OFF ? 0 : envHealMax('PONOS_MELTDOWN_HEAL_MAX', -1)
+const IDLE_HEAL_MAX = LOOP_GUARD_OFF ? 0 : envHealMax('PONOS_IDLE_HEAL_MAX', -1)
+const UPSTREAM_DEAD_HEAL_MAX = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_UPSTREAM_DEAD_HEAL_MAX', 2)
+const UPSTREAM_DEAD_HEAL_BACKOFF_MS = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_UPSTREAM_DEAD_HEAL_BACKOFF_MS', 30_000)
+// 守卫⑥：无进展停滞（2026-09-10 循环未拦截事故；同月改自愈优先）。"测量打转"循环——
+// 模型每轮用微变参数对同一目标做只读测量（Browser js/snapshot）+ 注释文本，同工具键
+// 窗口（⑤）与文本近重复（③b）都抓不到（每轮键/措辞都不同），轮次墙钟默认关闭后无
+// 任何守卫能停。本守卫在迭代边界检查"距上次实质进展的时长"：进展信号 = 成功且非只读
+// 测量的工具结果（Write/Edit/Read/Grep/Bash/Browser goto/click 等）；Browser js/snapshot
+// 与失败结果不算。纯文本轮次本来即收尾，无需计入。默认 600s（0=关闭；LOOP_GUARD=0 同关）。
+// 命中时**先注入推进指令自愈续跑**（用户无感知，与③/③b 自愈同哲学）——恢复实质进展
+// 即清零愈合计数；耗尽 STALL_HEAL_MAX 仍无进展才落可见收尾（硬停是最后防线，非默认路径）。
+const LOOP_STALL_MS = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_LOOP_STALL_MS', 600_000)
+const STALL_HEAL_MAX = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_STALL_HEAL_MAX', 2)
+// B3 子 agent 后台并发槽（2026-09-11）：同时运行的后台 lane 上限（默认 4，对齐
+// Codex multi_agent_v2 max_concurrent_threads_per_session）；超限派发排队（FIFO），
+// 槽位释放自动启动。0 = 不限（既有行为）。
+const LANE_MAX_CONCURRENT = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_LANE_MAX_CONCURRENT', 4)
 
 // usage 逐次累加（input/output/cache 各字段），修复"多次 API 调用只记最后一次"
 function addUsage(acc, u = {}) {
@@ -193,18 +270,24 @@ function rawAbortSignal(s) {
 // 流式空闲看门狗工厂：ms>0 时开启，流内块间隔超 ms → tripped=true 并 abort
 // controller（下层 fetch 随即拒绝 → 调用方按"内部挂起"收尾）；ms<=0（守卫关闭）
 // 时全 no-op。调用方须在流结束后 stop()（防 timer 泄漏）。
-function makeIdleWatchdog(ms) {
+// 两阶段窗口（2026-09-09）：首个 chunk 前按 firstByteMs 宽限（prefill 正常形态），
+// 首个 chunk 后按 ms 判生成停顿。firstByteMs 缺省退化为 ms（行为与旧版一致）。
+function makeIdleWatchdog(ms, firstByteMs) {
   if (!ms || ms <= 0) return { controller: null, tripped: false, tick() {}, stop() {} }
+  const firstMs = (firstByteMs && firstByteMs > 0) ? firstByteMs : ms
   const controller = new AbortController()
-  const state = { tripped: false, last: Date.now() }
+  const state = { tripped: false, gotData: false, last: Date.now() }
   const timer = setInterval(() => {
-    if (!state.tripped && Date.now() - state.last >= ms) { state.tripped = true; controller.abort() }
-  }, Math.min(ms, 5000))
+    if (!state.tripped && Date.now() - state.last >= (state.gotData ? ms : firstMs)) {
+      state.tripped = true
+      controller.abort()
+    }
+  }, Math.min(ms, firstMs, 5000))
   if (timer.unref) timer.unref()
   return {
     controller,
     get tripped() { return state.tripped },
-    tick() { state.last = Date.now() },
+    tick() { state.gotData = true; state.last = Date.now() },
     stop() { clearInterval(timer) },
   }
 }
@@ -212,30 +295,151 @@ function makeIdleWatchdog(ms) {
 // P1-8：孤儿 tool_use 补丁——压缩/恢复破坏消息链时，为无配对 tool_result 的
 // tool_use 追加合成 is_error tool_result（保 API 请求消息链合法，防 400）。
 // 纯派生（不入日志）：每次请求前重建，日志保持权威。
+// 终局裁剪（2026-09-10 长输出锁死修复）：单条超长消息（模型把成果直接写在
+// 输出里）逼近/超过端点窗口时，压缩按轮次边界切不动最新一条巨消息、预算收窄
+// 也无解。请求面裁剪最长内容块（头尾各 30% + 标记）——只作用于本次请求的
+// 深拷贝，不污染 transcript/派生缓存。返回裁剪后的消息副本，无可裁内容 → null。
+export function trimOversizedRequestCopy(msgs) {
+  let biggest = null
+  let biggestChars = 0
+  for (const m of msgs) {
+    if (!m || !Array.isArray(m.content)) continue
+    for (const b of m.content) {
+      const field = b?.type === 'thinking' ? 'thinking' : b?.type === 'text' ? 'text' : b?.type === 'tool_result' ? 'content' : null
+      if (!field) continue
+      const s = String(b[field] ?? '')
+      if (s.length > biggestChars) { biggestChars = s.length; biggest = { b, field, s } }
+    }
+  }
+  if (!biggest || biggestChars < 100_000) return null
+  try {
+    const copy = JSON.parse(JSON.stringify(msgs))
+    let target = null
+    let maxChars = 0
+    for (const m of copy) {
+      if (!m || !Array.isArray(m.content)) continue
+      for (const b of m.content) {
+        const field = b?.type === 'thinking' ? 'thinking' : b?.type === 'text' ? 'text' : b?.type === 'tool_result' ? 'content' : null
+        if (!field) continue
+        const s = String(b[field] ?? '')
+        if (s.length > maxChars) { maxChars = s.length; target = { b, field, s } }
+      }
+    }
+    if (!target) return null
+    const keep = Math.floor(target.s.length * 0.3)
+    target.b[target.field] = target.s.slice(0, keep) + '\n…【中间内容过长，已裁剪】…\n' + target.s.slice(-keep)
+    return copy
+  } catch {
+    return null
+  }
+}
+
+// 渐进式披露索引（2026-09-11）：压缩不动时的兜底——把超窗历史替换为紧凑索引
+// （每条一行：行号 + 角色 + 内容前 60 字符），模型保留"全局地图"，需要细节时
+// Read transcript 文件按行号展开（transcript 已入 Read 白名单，见 createEngine）。
+// 行号 = 消息在派生历史中的序号（与 transcript 文件行序近似对齐）。
+export function buildHistoryIndex(msgs) {
+  const lines = []
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i]
+    let head = ''
+    if (typeof m?.content === 'string') {
+      head = m.content
+    } else if (Array.isArray(m?.content)) {
+      for (const b of m.content) {
+        if (b?.type === 'tool_use') { head = `[工具 ${b.name}] ${JSON.stringify(b.input ?? {}).slice(0, 50)}`; break }
+        if (b?.type === 'tool_result') { head = String(b.content ?? '').slice(0, 60); break }
+        if (b?.type === 'text' && b.text) head = b.text
+      }
+    }
+    head = String(head || '(空)').replace(/\s+/g, ' ').slice(0, 60)
+    lines.push(`${i + 1} ${m?.role === 'assistant' ? '助手' : '用户'} ${head}`)
+  }
+  return lines.join('\n')
+}
+
+// 请求面硬适配（2026-09-11 持续稳定运行；同日升级渐进式披露）：压缩/收窄/裁剪均
+// 无解时，把请求硬裁到窗口内——系统提示恒保留，其余只保留"最近一个完整 turn"
+// （从尾部回退到真实 user turn 起点，tool_result 不拆散）。更早的历史**优先索引化
+// 而非丢弃**：替换为一条 <history-index> 消息（每行主题 + 行号），模型按需 Read
+// transcript 展开细节——视野收窄但全局地图不丢；索引化仍超窗才真丢弃。
+// 孤儿 tool_use 由 patchOrphanToolUses 合成错误结果补齐消息链。单 turn 仍超时复用
+// trimOversizedRequestCopy 裁最长块。返回新请求数组（纯请求面拷贝，transcript 不动）。
+// 连末轮本身都放不下（病态单条超窗）返回 null（调用方落放弃执行文案，最终防线）。
+export function fitRequestToWindow(msgs, { window, outputBudget = 2048, estimateMessage: estMsg, transcriptPath = '' }) {
+  const w = Number(window)
+  if (!Array.isArray(msgs) || msgs.length === 0 || !Number.isFinite(w) || w <= 0) return null
+  const budget = Math.max(1024, Math.floor(w) - Math.max(1024, Number(outputBudget) || 1024) - 4096)
+  const est = (list) => list.reduce((s, m) => s + (estMsg ? Math.max(1, estMsg(m)) : 100), 0)
+  if (est(msgs) <= budget) return msgs
+  const system = msgs[0]?.role === 'system' ? msgs[0] : null
+  let rest = system ? msgs.slice(1) : [...msgs]
+  // 保留最近一个完整 turn：从尾部回退到最后一个真实 user turn 起点
+  let cut = 0
+  for (let i = rest.length - 1; i >= 0; i--) {
+    const m = rest[i]
+    if (m?.role === 'user' && !(Array.isArray(m?.content) && m.content.some((b) => b?.type === 'tool_result'))) { cut = i; break }
+  }
+  const dropped = rest.slice(0, cut)
+  rest = rest.slice(cut)
+  // 渐进式披露（2026-09-11）：被裁历史优先索引化（全局地图保留、可按行展开），
+  // 索引化仍超窗才退回纯丢弃。
+  if (dropped.length) {
+    const indexText = `<history-index>\n历史索引（共 ${dropped.length} 条；需要细节时用 Read 读取 transcript 文件按行号展开${transcriptPath ? `：${transcriptPath}` : ''}）：\n${buildHistoryIndex(dropped)}\n</history-index>`
+    const withIndex = system
+      ? [system, { role: 'user', content: indexText }, ...rest]
+      : [{ role: 'user', content: indexText }, ...rest]
+    if (est(withIndex) <= budget) return patchOrphanToolUses(withIndex)
+  }
+  const base = system ? [system, ...rest] : rest
+  if (est(base) <= budget) return patchOrphanToolUses(base)
+  const trimmed = trimOversizedRequestCopy(base)
+  if (trimmed && est(trimmed) <= budget) return trimmed
+  return null
+}
+
+// 历史消息 → 纯文本投影（B1 上下文继承用，2026-09-11）：只带 text 块，剥离
+// tool_use/tool_result（半截消息链会破坏 API 合法性；子任务只需知道"发生过什么"）。
+function messageTextOf(m) {
+  if (typeof m?.content === 'string') return m.content
+  if (Array.isArray(m?.content)) {
+    return m.content.filter((b) => b?.type === 'text').map((b) => String(b?.text ?? '')).filter(Boolean).join('\n').trim()
+  }
+  return ''
+}
+
 export function patchOrphanToolUses(msgs) {
   const out = []
-  const unpaired = new Map()
+  const unpaired = new Map() // tool_use id → { block, outIdx }
   for (const m of msgs) {
     // 防御：派生历史可能含 undefined 条目（旧格式 transcript 恢复），m?. 防护
+    out.push(m)
+    const idx = out.length - 1
     if (m?.role === 'assistant' && Array.isArray(m.content)) {
-      for (const b of m.content) if (b?.type === 'tool_use') unpaired.set(b.id, b)
+      for (const b of m.content) if (b?.type === 'tool_use') unpaired.set(b.id, { block: b, outIdx: idx })
     } else if (m?.role === 'user' && Array.isArray(m.content)) {
       for (const b of m.content) if (b?.type === 'tool_result') unpaired.delete(b.tool_use_id)
     }
-    out.push(m)
   }
-  if (unpaired.size) {
-    out.push({
+  if (!unpaired.size) return out
+  // 2026-09-10 修复：合成 tool_result 必须紧跟 tool_use 所在消息的下一条
+  //（Anthropic API 硬约束"tool_result blocks immediately after"）。旧实现补在
+  // 数组末尾——崩溃残留的历史中段孤儿补不上，818 条消息处直接 400。
+  // 按位置从后往前插入，索引不受前面插入影响。
+  const entries = [...unpaired.values()].sort((a, b) => b.outIdx - a.outIdx)
+  const result = [...out]
+  for (const { block, outIdx } of entries) {
+    result.splice(outIdx + 1, 0, {
       role: 'user',
-      content: [...unpaired.values()].map((b) => ({
+      content: [{
         type: 'tool_result',
-        tool_use_id: b.id,
+        tool_use_id: block.id,
         content: '（该工具调用因上下文压缩/恢复丢失，未执行，标记为错误）',
         is_error: true,
-      })),
+      }],
     })
   }
-  return out
+  return result
 }
 
 // R3-2 计划尾检测：模型以"计划/承诺"措辞收尾但未执行工具调用（计划尾巴）。
@@ -247,6 +451,19 @@ export function isPlanTail(text) {
   const tail = String(text ?? '').slice(-120)
   if (PLAN_TAIL_DONE_RE.test(tail)) return false
   return PLAN_TAIL_RE.test(tail)
+}
+
+// 思考型模型早停判定（2026-09-09 截断事故）：模型以 end_turn 正常收尾、但正文
+// 最后一段思考标签闭合后没有实质回答内容（"想完即停"）。Qwen3.8-27B 等弱模型
+// 在复杂 system prompt 下偶发此形态——由回合守卫注入续写指令自愈，不把半截思考
+// 当答案展示给用户。判定口径保守：仅当文本末尾存在 </think> 且其后再无实质内容
+// （<10 非空白字符）才命中，正常"思考+完整回答"不受影响。
+export function isThinkOnly(text) {
+  const t = String(text ?? '').trim()
+  if (!t) return false
+  const i = t.lastIndexOf('</think>')
+  if (i < 0) return false
+  return t.slice(i + '</think>'.length).trim().length < 10
 }
 
 // —— 生成死循环检测（思考/文本重复打转）——
@@ -384,13 +601,20 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     : (opts.configDir && opts.addDirs?.[0])
       ? join(opts.configDir, 'projects', sanitizeSegment(opts.addDirs[0]), 'tool-results')
       : null
-  const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: toolResultsDir ? [...(opts.addDirs || []), toolResultsDir] : opts.addDirs, skillsDirs: opts.skillsDirs, skipPermissions: opts.skipPermissions, allowOutsideDirs: opts.allowOutsideDirs, disallowedTools: opts.disallowedTools, workflow: opts.workflow, memoryRoot: opts.memoryRoot || null, projectMemoryRoot: opts.projectMemoryRoot || null })
+  const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: toolResultsDir ? [...(opts.addDirs || []), toolResultsDir] : opts.addDirs, skillsDirs: opts.skillsDirs, skipPermissions: opts.skipPermissions, allowOutsideDirs: opts.allowOutsideDirs, disallowedTools: opts.disallowedTools, workflow: opts.workflow, memoryRoot: opts.memoryRoot || null, projectMemoryRoot: opts.projectMemoryRoot || null, readAllowFiles: session?.file ? [session.file] : [] })
   // 审批门注入工作流引擎：wfEngine 内嵌 tool/document/agent 节点的工具调用须经
   // 与主 agent 会话同等的权限决策（gateToolUse 含 ask 审批挂起 / hook 否决），
   // 杜绝模型经 Workflow 工具旁路高危命令审批。cli 后续 setDeps（registry/事件）
   // 是合并语义，不影响本门。engine 直连测试无 opts.workflow 时跳过。
   if (opts.workflow && typeof opts.workflow.setDeps === 'function') {
-    try { opts.workflow.setDeps({ permissionGate: gateToolUse }) } catch { /* 注入失败不阻断主 loop */ }
+    try {
+      opts.workflow.setDeps({
+        permissionGate: gateToolUse,
+        // 2026-09-11 spec-dev：工作流 tool/agent 节点可派发子 agent（懒 getter——
+        // spawnSubAgent/taskSystem 声明在下方，调用时才解析）
+        getToolCtx: () => ({ spawnSubAgent, taskSystem }),
+      })
+    } catch { /* 注入失败不阻断主 loop */ }
   }
   // agent 表（内置 ∪ 用户级 $PONOS_HOME/agents/*.md）：Agent 工具路由依据
   const agents = resolveAgents({ configDir: opts.configDir })
@@ -410,6 +634,25 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // laneStore/sysPrompt（laneOptions 保白名单沿用）；S1 级联取消查
   // lineage.parentTaskId；进程退出即失（非持久化，spec 边界）
   const pendingSubAgents = new Map()
+  // B3 排队任务 FIFO（2026-09-11）：{ taskId, start }——槽位释放时按派发顺序启动
+  const pendingQueuedLanes = []
+  function runningCount() {
+    let n = 0
+    for (const [, t] of pendingSubAgents) if (t.status === 'running') n++
+    return n
+  }
+  // 槽位释放启动：任务终态（runLaneExecution 落 status 后）调用；FIFO 逐个补位
+  function drainQueuedLanes() {
+    if (LANE_MAX_CONCURRENT <= 0) return
+    while (pendingQueuedLanes.length && runningCount() < LANE_MAX_CONCURRENT) {
+      const q = pendingQueuedLanes.shift()
+      const t = pendingSubAgents.get(q.taskId)
+      if (!t || t.status !== 'queued') continue
+      t.status = 'running'
+      t.promise = q.start()
+      try { wire.taskStarted({ taskId: q.taskId, toolUseId: '', prompt: '（排队任务启动）', parentTaskId: t.lineage?.parentTaskId ?? null, depth: t.lineage?.depth ?? 0 }) } catch { /* 事件失败不影响主流程 */ }
+    }
+  }
   // turnStats 记录器（内存 append-only）：health / result / stats 三个消费者共用
   const turnStats = []
   // P2-1③：lane 压缩可选开关 + 主会话 context（engineCtx.estimate 供 lane 压缩器阈值判定）
@@ -480,13 +723,26 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     // 发消息报"本轮执行出现内部错误"）。
     // —— agent loop 兜底状态（每轮重置）：守卫命中即优雅收尾（见文件头 PONOS_* 注释）——
     const turnT0 = Date.now()
+    // 守卫⑥ 进展时间戳：成功且非只读测量的工具结果落地即刷新（见 LOOP_STALL_MS 注释）
+    let lastProgressAt = turnT0
     let loopStop = null    // { reason, message }：重复/挂起/墙钟/熔断的收尾说明
     let iterCapHit = false // 单轮迭代硬上限耗尽（无文本时补说明）
     let errorStreak = 0    // 连续全部失败的工具迭代链
     let repeatStreak = 0   // 连续相同工具调用链（主调用规范键）
     let lastToolKey = ''   // 上一迭代主工具规范键
     let remindedAt = new Set() // 已注入提醒的重复次数（防同一阈值重复轰炸）
-    let repeatHeals = 0    // ③/③b 命中后注入"推进指令"续跑次数（内部消化，上限 REPEAT_HEAL_MAX）
+    let repeatHeals = 0    // ③/③b 命中后注入"推进指令"续跑次数（干净迭代清零，上限 REPEAT_HEAL_MAX）
+    let healedLastIter = false // 上一迭代是否触发③/③b自愈注入（干净迭代后清零 repeatHeals 的判据）
+    let stallHeals = 0     // ⑥ 命中后注入"推进指令"续跑次数（恢复实质进展即清零，上限 STALL_HEAL_MAX）
+    let meltdownHeals = 0  // ④ 熔断前注入"排查失败原因"次数（工具成功即清零，上限 MELTDOWN_HEAL_MAX）
+    let idleHeals = 0      // 空闲中断（已产出后停顿）续写注入次数（实质进展即清零，上限 IDLE_HEAL_MAX）
+    let upstreamDeadHeals = 0 // 上游空流退避重试次数（收到任意块即清零，上限 UPSTREAM_DEAD_HEAL_MAX）
+    let tinyLandings = 0     // 压缩"落地但释放过小"连续计数（≥3 熔断压缩循环，直走裁剪/索引适配，2026-09-11）
+    let usageAnomalyWarned = false // D1 usage 对账：本轮已告警过异常放大（每轮至多一次）
+    let overflowTrimmed = null  // 终局裁剪副本（2026-09-10）：压缩/预算均无解时请求面用裁剪版
+    // 上游零数据挂起（首内容宽限耗尽仍无 chunk）自动重试计数：排队/瞬态负载一次重试
+    // 常能恢复（2026-09-09 长任务挂起事故）。上限 IDLE_DEAD_RETRY_MAX，重试前小幅退避。
+    let idleDeadRetries = 0
     // 请求消息 = system 前缀（api.mjs 抽顶层）+ 派生历史；session/memory 两模式一致。
     // 孤儿 tool_use 补丁（P1-8）在派生后执行（纯派生不入日志，请求面永远合法）
     const requestMessages = () => {
@@ -516,6 +772,21 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           wire.warning?.({ level: 'context', chars: total, budget, message: '上下文接近压缩阈值，长会话即将触发自动压缩' })
         }
       }
+      // —— 调用时输出预算钳制（2026-09-10 小窗口本地模型适配；pi clampMaxTokensToContext 语义）——
+      // 窗口在每次模型调用时生效：est(input) + max_tokens 超窗即收窄，保证请求恒可
+      // 装下——本地小窗口模型（32K-64K）配大默认预算（64K/16K）不再必然撞 400。
+      // resolveThreshold 对"预算近乎占满窗口"的异常配置退化回纯比例，本钳制补上
+      // 该退化形态的缺口（est 低于比例阈值但请求 input+max_tokens 必 400）。
+      const w = engineCtx?.window
+      if (Number.isFinite(w) && w > 0) {
+        let estIn = 0
+        try { estIn = estimateRequest({ system: systemPrompt, messages: requestMessages() }).total } catch { estIn = 0 }
+        const clamped = clampOutputBudgetForWindow({ window: w, inputEst: estIn, budget: attemptMaxTokens })
+        if (clamped !== null && clamped < attemptMaxTokens) {
+          attemptMaxTokens = clamped
+          try { wire?.system?.('output_budget_clamped', { window: w, estInputTokens: estIn, maxTokens: clamped }) } catch { /* 事件失败不影响主流程 */ }
+        }
+      }
     }
     // 本轮已写最后一条 assistant 条目（M1 空文本收尾轮把 usage 挂到它上面）
     let lastAssistantEntry = null
@@ -535,9 +806,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       }
     }
     for (let iter = 0; ; iter++) {
-      // 守卫①：轮次墙钟——单轮累计时长超限即优雅收尾（边界检查：工具批内部有
-      // 300s deadline 粒度，长耗时工具的剩余时长由各工具兜底，这里拦的是"轮次
-      // 整体拖超时"的无限续轮/挂起残余）。
+      // 守卫①：轮次墙钟——默认关闭（2026-09-10 取消 30 分钟上限，见 TURN_TIMEOUT_MS
+      // 注释）；显式设 PONOS_TURN_TIMEOUT_MS>0 时单轮累计时长超限即优雅收尾。
       if (TURN_TIMEOUT_MS > 0 && Date.now() - turnT0 >= TURN_TIMEOUT_MS) {
         loopStop = {
           reason: 'timeout',
@@ -547,7 +817,30 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       }
       // 守卫②：迭代硬上限——耗尽即收尾（无文本时补说明，见轮末 iterCapHit）
       if (MAX_TOOL_ITERATIONS > 0 && iter >= MAX_TOOL_ITERATIONS) { iterCapHit = true; break }
+      // 守卫⑥：无进展停滞（自愈优先，2026-09-10）——距上次实质进展超限时先注入
+      // "推进指令"续跑（用户无感知）；恢复实质进展即清零愈合计数；耗尽
+      // STALL_HEAL_MAX 仍无进展才落可见收尾（硬停是最后防线，非默认路径）。
+      if (LOOP_STALL_MS > 0 && Date.now() - lastProgressAt >= LOOP_STALL_MS) {
+        if (stallHeals < STALL_HEAL_MAX) {
+          stallHeals++
+          lastProgressAt = Date.now() // 注入后重开一个完整观察窗
+          const inject = '【系统】检测到你长时间没有实质进展（连续只读测量/重复调用、无新结果或文件变更）。请停止测量与重复尝试，直接执行下一步实质操作（修改文件/执行命令/完成剩余步骤），或向用户明确汇报当前卡点与结论。'
+          pushMemory({ role: 'user', content: inject })
+          if (session) session.appendUser(inject)
+          try { wire?.system?.('guard_heal', { reason: 'loop-stall', attempt: stallHeals, max: STALL_HEAL_MAX }) } catch { /* 事件失败不影响主流程 */ }
+          continue
+        }
+        loopStop = {
+          reason: 'loop-stall',
+          message: `【检测到长时间无实质进展（${Math.max(1, Math.round(LOOP_STALL_MS / 60000))} 分钟内只有只读测量/重复调用、无新结果或文件变更），已自动收尾以防循环。可发送「继续」让模型换一种方式推进，或补充更明确的指令。】`,
+        }
+        break
+      }
       if (loopStop) break
+      // ③/③b 愈合计数清零：上一迭代未触发自愈注入（干净迭代 = 已恢复）→ 重新获得
+      // 完整愈合预算；真循环每轮必命中（healedLastIter 恒 true），预算照常耗尽。
+      if (!healedLastIter) repeatHeals = 0
+      healedLastIter = false
       await preStep()
       // P8 排队插话注入（工具边界）：每次 API 调用前吸收 pendingNext 进当前轮
       // （appendUser 落 transcript，请求面 deriveMessages 自动包含；模型下一轮
@@ -574,7 +867,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // 流式空闲看门狗：单次模型流内无块间隔超 STREAM_IDLE_MS 判挂起。挂起时 abort
       // 内部 controller → 下层 fetch 拒绝 → catch 分支按"内部挂起"优雅收尾（区别于
       // 用户取消；用户取消走外层 signal）。守卫关闭（STREAM_IDLE_MS=0）时全为 no-op。
-      const watchdog = makeIdleWatchdog(STREAM_IDLE_MS)
+      const watchdog = makeIdleWatchdog(STREAM_IDLE_MS, adaptiveFirstByteMs(requestMessages, STREAM_FIRST_BYTE_MS))
       // P1-11 本流是否产出过内容：区分"上游空转挂起（0 产出）"与"模型推理中途停顿
       // （已产出内容后卡住）"，给不同收尾提示；也用于 dead-stream 快速失败分支判定。
       let attemptData = false
@@ -582,10 +875,15 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       const combinedSignal = watchdog.controller && typeof AbortSignal.any === 'function'
         ? (outerSig ? AbortSignal.any([outerSig, watchdog.controller.signal]) : watchdog.controller.signal)
         : signal
+      // D1 请求规模对账基线：启发式估算本请求输入 token（与压缩同口径）。
+      // usage 到达时与服务端报告值比对——3 倍以上偏差说明请求组装层存在放大
+      //（2026-09-09 曾出现 307 万 token 请求，正常应为 ~17 万）。
+      let estInputTokens = 0
+      try { estInputTokens = estimateRequest({ system: systemPrompt, messages: requestMessages() }).total } catch { estInputTokens = 0 }
       try {
         for await (const chunk of retryStream({
           model,
-          messages: requestMessages(),
+          messages: overflowTrimmed || requestMessages(),
           maxTokens: attemptMaxTokens,
           signal: combinedSignal,
           tools: tools.toolSchemas(),
@@ -594,6 +892,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           if (signal.aborted) throw abortError()
           watchdog.tick()
           attemptData = true // 收到任意 chunk（含 thinking/usage）即视上游在产出
+          upstreamDeadHeals = 0 // 上游活过来了 → 空流愈合计数清零
           if (chunk.type === 'text') {
             textBuf += chunk.text
             genWindow = (genWindow + chunk.text).slice(-400)
@@ -611,10 +910,20 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
             wire.assistant([{ type: 'tool_use', id: chunk.id, name: chunk.name, input: chunk.input }])
           } else if (chunk.type === 'usage') {
             usage = addUsage(usage, chunk.usage)
+            // D1 usage 对账：服务端报告 input_tokens 远超本端估算（3 倍且绝对量
+            // 超 50 万）→ 请求组装疑似放大。落 stderr（kernel-stderr.log 诊断项
+            // 可见）+ UI 告警条，供当场定位（每轮至多一次，防刷屏）。
+            if (!usageAnomalyWarned && estInputTokens > 0 && Number(chunk.usage?.input_tokens) > Math.max(estInputTokens * 3, 500_000)) {
+              usageAnomalyWarned = true
+              const msg = `内核：usage 对账异常——服务端报告 input_tokens=${chunk.usage.input_tokens}，本端估算 ${estInputTokens}（超 3 倍），疑似请求组装放大，请检查 compact/derive 管线`
+              console.error(msg)
+              wire.warning?.({ level: 'usage', message: msg })
+            }
           } else if (chunk.type === 'stop_reason') {
             stopReason = chunk.reason
           }
-          // 守卫①b：墙钟（流内版）——覆盖"块持续流动但整体久拖不完"形态（iteration
+          // 守卫①b：墙钟（流内版）——默认关闭（同守卫①，2026-09-10）；显式设
+          // PONOS_TURN_TIMEOUT_MS>0 时覆盖"块持续流动但整体久拖不完"形态（iteration
           // 边界的墙钟检查拦不住单次超长生成）。命中即中断流，说明文本见轮末 finalize。
           if (!loopStop && TURN_TIMEOUT_MS > 0 && Date.now() - turnT0 >= TURN_TIMEOUT_MS) {
             loopStop = {
@@ -657,9 +966,33 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         if (loopStop) {
           // no-op：轮末 finalize 输出说明文本
         } else if (watchdog.tripped) {
-          // 内部空闲看门狗触发：不是网络/API 错误，也不是用户取消——按挂起优雅收尾。
-          // P1-11 区分两种形态给不同提示：全程 0 产出（上游空转/未就绪，引导查 provider）
-          // vs 已产出后停顿（疑似模型推理卡住，保留"可继续重试"语义）。
+          // 内部空闲看门狗触发：不是网络/API 错误，也不是用户取消。
+          // P1-11 区分两种形态：全程 0 产出（上游空转/未就绪）vs 已产出后停顿
+          // （疑似模型推理卡住）。2026-09-09：零数据形态优先自动重试——自建/共享
+          // 服务 prefill 排队超时常见（首内容宽限耗尽≠服务已死），小幅退避后重发
+          // 一次常能恢复；重试耗尽才按挂起收尾引导检查 provider。
+          if (!attemptData && idleDeadRetries < IDLE_DEAD_RETRY_MAX) {
+            idleDeadRetries++
+            watchdog.stop() // 旧看门狗定时器回收（新迭代会重建）
+            await sleep(IDLE_DEAD_RETRY_BACKOFF_MS)
+            continue // 新迭代重建 watchdog（首内容窗口重新计时）
+          }
+          // 无感愈合（2026-09-10）：已产出后停顿（疑似推理中断）→ 保留已产出内容、
+          // 注入续写指令静默续跑（用户看到无缝续写）；耗尽 IDLE_HEAL_MAX 才可见收尾。
+          if (attemptData && (IDLE_HEAL_MAX < 0 || idleHeals < IDLE_HEAL_MAX)) {
+            idleHeals++
+            watchdog.stop()
+            if (textBuf.trim()) {
+              pushMemory({ role: 'assistant', content: [{ type: 'text', text: textBuf }] })
+              if (session) session.appendAssistant([{ type: 'text', text: textBuf }], { model })
+            }
+            const inject = '【系统】检测到你的回复在中途停顿（疑似推理中断）。请从上一条回复的断点处直接继续输出剩余内容——不要从头复述，不要重新解释已完成的部分。'
+            pushMemory({ role: 'user', content: inject })
+            if (session) session.appendUser(inject)
+            try { wire?.system?.('guard_heal', { reason: 'idle-interrupted', attempt: idleHeals, max: IDLE_HEAL_MAX }) } catch { /* 事件失败不影响主流程 */ }
+            textBuf = ''
+            continue
+          }
           loopStop = attemptData
             ? {
                 reason: 'idle',
@@ -667,12 +1000,26 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
               }
             : {
                 reason: 'upstream-dead',
-                message: `【模型输出中断（连接建立后 ${Math.max(1, Math.round(STREAM_IDLE_MS / 1000))} 秒未收到任何数据——上游疑似未就绪/空转），已按挂起自动收尾。可发送「继续」重试，或检查 provider 对应模型服务是否正常后换一种方式继续。】`,
+                message: `【模型输出中断（连接建立后 ${Math.max(1, Math.round(STREAM_FIRST_BYTE_MS / 1000))} 秒未收到任何数据——上游疑似未就绪/空转），已按挂起自动收尾。可发送「继续」重试，或检查 provider 对应模型服务是否正常后换一种方式继续。】`,
               }
+        } else if (classifyApiError(err).kind === 'model-not-found') {
+          // 模型不存在/已下线（2026-09-11 改名适配）：配置级错误——引导用户重新探测
+          // 模型清单（桥探测按服务端清单自动适配旧名），不盲目重试
+          loopStop = {
+            reason: 'model-not-found',
+            message: `【当前模型「${model}」不存在（可能已被提供方下线或改名）。请到设置 → 模型 → 点「探测」重新获取可用模型清单（旧模型名会自动适配到新模型），或手动切换模型后继续。】`,
+          }
         } else if (classifyApiError(err).kind === 'dead-stream') {
           // P1-11 空流：请求已受理（HTTP 200）但 0 事件即断/EOF（vLLM 引擎加载中/崩溃
-          // 的典型形态）。retryStream 已做 1 次快速重试仍空 → 快速收尾并引导检查
-          // provider（不空等 STREAM_IDLE_MS、不把死服务器当"模型挂起"反复重试）。
+          // 的典型形态）。无感愈合（2026-09-10）：引擎加载中常见，退避后静默重试
+          // UPSTREAM_DEAD_HEAL_MAX 次才可见收尾（retryStream 的 1 次快重试仍保留，
+          // 本层是更长的退避重试）。
+          if (upstreamDeadHeals < UPSTREAM_DEAD_HEAL_MAX) {
+            upstreamDeadHeals++
+            try { wire?.system?.('guard_heal', { reason: 'upstream-dead', attempt: upstreamDeadHeals, max: UPSTREAM_DEAD_HEAL_MAX }) } catch { /* 事件失败不影响主流程 */ }
+            await sleep(UPSTREAM_DEAD_HEAL_BACKOFF_MS)
+            continue
+          }
           loopStop = {
             reason: 'upstream-dead',
             message: `【上游服务空流：请求已被受理但未返回任何数据（疑似模型服务未就绪、加载中或已崩溃），已自动收尾。请检查 provider 对应服务是否正常，或切换 provider 后重试。】`,
@@ -710,26 +1057,60 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           }
           let r = null
           let compactErr = null
-          try {
-            r = await compactor.forceCompact({
-              system: systemPrompt,
-              messages: session.deriveMessages(),
-              limit: limit || undefined,
-              // 输出预算已定时的保留预算上限：retain ≤ 真实窗口 − 当前输出预算 − 余量。
-              // 配置窗口（GUI 设 256k/1M）虚高于端点真实 max_model_len 时，默认 retain
-              // 预算 > 整段对话 → 压缩永无可裁切点；按真实窗口反推保留上限，才能让压缩
-              // 在贴近端点硬限时真正落地（否则只能靠输出收窄，质量与耗时双损）。
-              retainHint: limit > 0 ? Math.max(4096, limit - attemptMaxTokens - 32768) : undefined,
-            })
-          } catch (ce) { compactErr = ce } // 压缩请求自身失败：降级走输出预算收窄，不让压缩异常杀掉自愈
+          // 压缩空转熔断（2026-09-11 补）：连续 3 次"落地但释放过小"后跳过 forceCompact，
+          // 直走预算收窄/裁剪/硬适配——否则每轮溢出仍付 70s+ 摘要成本空转（实测
+          // 180K 会话循环形态：retainHint 过大 → covered 仅 1-2 条 → 摘要落地不释放）。
+          if (tinyLandings < 3) {
+            try {
+              r = await compactor.forceCompact({
+                system: systemPrompt,
+                messages: session.deriveMessages(),
+                limit: limit || undefined,
+                // 输出预算已定时的保留预算上限：retain ≤ 真实窗口 − 当前输出预算 − 余量。
+                // 配置窗口（GUI 设 256k/1M）虚高于端点真实 max_model_len 时，默认 retain
+                // 预算 > 整段对话 → 压缩永无可裁切点；按真实窗口反推保留上限，才能让压缩
+                // 在贴近端点硬限时真正落地（否则只能靠输出收窄，质量与耗时双损）。
+                retainHint: limit > 0 ? Math.max(4096, limit - attemptMaxTokens - 32768) : undefined,
+              })
+            } catch (ce) { compactErr = ce } // 压缩请求自身失败：降级走输出预算收窄，不让压缩异常杀掉自愈
+          }
           const genAfter = session.getSurface().replaceGeneration
           // M2：溢出路径的摘要调用同样是完整 API 请求，usage 并入本轮
           if (r?.usage) usage = addUsage(usage, r.usage)
           if (genAfter > genBefore) {
-            // 压缩真实落地 → 上下文已变小，保持全量输出预算重试（不叠加收窄，避免浪费）
-            overflowRetries++
-            overflowed = true
-          } else {
+            // 压缩真实落地 → 上下文已变小，保持全量输出预算重试（不叠加收窄，避免浪费）。
+            // 2026-09-10 压缩打转修复：落地但释放空间过小（超长消息在保留区裁不到，
+            // 每次只摘走 1 条小消息 → 无限重压循环）→ 同轮立即尝试终局裁剪，
+            // 一步到位（400 → 压缩 → 裁剪 → 重试成功），不再多轮打转。
+            const freedEst = Number(r?.coveredTokens) || 0
+            const reqEst = session ? estimateRequest({ system: systemPrompt, messages: session.deriveMessages() }).total : 0
+            const freedFloor = Math.max(20_000, (reqEst || 0) * 0.05)
+            if (freedEst > 0 && freedEst < freedFloor) {
+              // 压缩空转熔断（2026-09-11）：retainHint 过大时 covered 只有 1-2 条消息，
+              // 摘要落地但主请求几乎不缩——每次溢出都重压一遍（实测 70s/次空转循环）。
+              // 连续 3 次"落地但释放 < floor"即跳过压缩，直走裁剪/预算收窄/索引适配。
+              tinyLandings++
+              if (tinyLandings >= 3) {
+                try { wire?.system?.('compaction', { state: 'stalled', tinyLandings }) } catch { /* 事件失败不影响主流程 */ }
+                overflowed = false
+              } else {
+                const trimmed = trimOversizedRequestCopy(requestMessages())
+                if (trimmed) {
+                  overflowTrimmed = trimmed
+                  overflowRetries++
+                  overflowed = true
+                  try { wire?.system?.('request_trimmed', { reason: 'compaction-insufficient' }) } catch { /* 事件异常不影响主流程 */ }
+                } else {
+                  overflowed = false
+                }
+              }
+            } else {
+              tinyLandings = 0
+              overflowRetries++
+              overflowed = true
+            }
+          }
+          if (!overflowed) {
             // 收窄输出预算到"当前 prompt 装得下"再试。prompt 优先取服务端实测数（精确，
             // 余量 2048 兜 tokenizer 偏差与 system 抖动）；解析不到时输出预算折半兜底
             // （半衰收敛，无需精确 prompt 数）。预算已到下限 2048 仍装不下且压缩不可裁
@@ -743,7 +1124,36 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
               attemptMaxTokens = nextBudget
               overflowRetries++
               overflowed = true
-            } else {
+            } else if (!overflowTrimmed) {
+              // 终局兜底（2026-09-10 长输出锁死修复）：单条超长消息（模型把成果
+              // 直接写在输出里）逼近/超过窗口，压缩按轮次边界切不动、预算已到
+              // 下限 → 请求面裁剪最长消息重试一次，保回合可继续。
+              const trimmed = trimOversizedRequestCopy(requestMessages())
+              if (trimmed) {
+                overflowTrimmed = trimmed
+                overflowRetries++
+                overflowed = true
+                try { wire?.system?.('request_trimmed', { reason: 'oversized-single-message' }) } catch { /* 事件异常不影响主流程 */ }
+              }
+            }
+            if (!overflowed) {
+              // 终局硬适配（2026-09-11 持续稳定运行）：压缩/收窄/裁剪均无解时，把请求面
+              // 硬裁到窗口内（只留系统提示 + 最近一个完整 turn，transcript 不动）——
+              // 轮次继续而非"放弃执行"；连末轮都放不下才落放弃文案（最终防线）。
+              const fitted = fitRequestToWindow(requestMessages(), {
+                window: limit || (engineCtx?.window ?? 200_000),
+                outputBudget: attemptMaxTokens,
+                estimateMessage,
+                transcriptPath: session?.file || '',
+              })
+              if (fitted !== null) {
+                overflowTrimmed = fitted
+                overflowRetries++
+                overflowed = true
+                try { wire?.system?.('request_trimmed', { reason: 'hard-fit' }) } catch { /* 事件失败不影响主流程 */ }
+              }
+            }
+            if (!overflowed) {
               const errText = `【系统】上下文已超出模型窗口${limit ? `（端点上限 ${limit} tokens）` : ''}，自动压缩与输出预算收窄均无法腾出空间${compactErr ? `（压缩失败：${String(compactErr?.message || compactErr).slice(0, 120)}）` : ''}，本轮已放弃执行。可开新会话，或让我先清理上下文再继续。`
               pushMemory({ role: 'assistant', content: errText })
               if (session) lastAssistantEntry = session.appendAssistant([{ type: 'text', text: errText }], { model })
@@ -759,14 +1169,18 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         }
       }
       watchdog.stop()
-      if (overflowed) continue // 压缩落地 → 重试同一轮（deriveHistory 已含摘要条目）
+      if (overflowed) {
+        overflowTrimmed = null // 裁过的请求面只用于当次重试；下一迭代重新从 transcript 派生（2026-09-11 硬适配）
+        continue // 压缩落地/预算收窄/硬适配 → 重试同一轮
+      }
       // P1 生成重复守卫内部自愈：③/③b（gen-repeat/near-repeat）命中不直接收尾报给用户
       // ——先丢弃退化流，注入"推进指令"续跑（上限 REPEAT_HEAL_MAX）。一次性打转/探测器
       // 误判 → 一轮注入即恢复，用户无感（无收尾说明进会话、无报错体感）；真死循环模型
       // 持续复现 → 耗尽上限后走下方 break 收尾（说明文本仍兜底，不烧死 token）。
-      if (loopStop && REPEAT_HEAL_MAX > 0 && repeatHeals < REPEAT_HEAL_MAX &&
+      if (loopStop && REPEAT_HEAL_MAX !== 0 && (REPEAT_HEAL_MAX < 0 || repeatHeals < REPEAT_HEAL_MAX) &&
           (loopStop.reason === 'gen-repeat' || loopStop.reason === 'near-repeat')) {
         repeatHeals++
+        healedLastIter = true // 本迭代触发自愈注入（干净迭代清零的判据，见迭代起点）
         const healReason = loopStop.reason
         loopStop = null
         textBuf = '' // 退化部分内容不落模型输入（与收尾路径"不落退化内容"同哲学）
@@ -779,7 +1193,9 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       if (loopStop) break // 生成重复/挂起已优雅收尾 → 本轮结束（说明文本见轮末 finalize）
       // P0-2：输出被 max_tokens 截断且已产出工具调用 → 不执行残缺参数，注入
       // 错误 tool_result 提示模型补全重发（pi 机制，消灭"执行参数残缺的调用"）
-      if (blocks.length > 0 && stopReason === 'length') {
+      // 【2026-09-11 适配】Anthropic/DeepSeek 官方语义用 'max_tokens'，旧判据只认
+      // 'length'（mock 用法）→ 真端点截断时守卫不触发、残缺工具被当正常调用执行。
+      if (blocks.length > 0 && (stopReason === 'length' || stopReason === 'max_tokens')) {
         const assistantBlocks = [...(textBuf.trim() ? [{ type: 'text', text: textBuf }] : []), ...blocks]
         pushMemory({ role: 'assistant', content: assistantBlocks })
         if (session) lastAssistantEntry = session.appendAssistant(assistantBlocks, { model })
@@ -814,6 +1230,17 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           textBuf = ''
           continue
         }
+        // 思考型模型早停自愈（2026-09-09 截断事故）：模型"想完即停"（文本只到
+        // </think> 即 end_turn）时注入续写指令重跑，而不是把半截思考当答案收尾。
+        // 与计划尾守卫同受 guardInjections 上限约束，防自愈本身失控。
+        if (guardInjections < maxGuardInjections && isThinkOnly(textBuf)) {
+          guardInjections++
+          const inject = '【系统】检测到你的回复只包含思考过程、未输出回答正文就结束了。请直接、完整地输出对用户最新问题的回答正文，不要重复思考过程。'
+          pushMemory({ role: 'user', content: inject })
+          if (session) session.appendUser(inject)
+          textBuf = ''
+          continue
+        }
         break
       }
       // 该轮 assistant 历史：文本块 + tool_use 块（Anthropic API 要求）
@@ -831,6 +1258,14 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         content: executed[i]?.content ?? '',
         is_error: executed[i]?.isError === true,
       }))
+      // 工具结果 live 回传（2026-09-09 会话 UI 标准化）：wire 新增 tool_result 通道，
+      // bridge 转发给 GUI 回填内联工具卡片的"完成/失败"状态与结果。事件失败静默——
+      // 结果仍按 transcript 落盘（历史回放挂接），live 回传只是增量体验。
+      if (wire && typeof wire.toolResult === 'function') {
+        for (let i = 0; i < blocks.length; i++) {
+          try { wire.toolResult({ toolUseId: blocks[i].id, content: toolResults[i].content, isError: toolResults[i].is_error }) } catch { /* 事件失败不阻断主流程 */ }
+        }
+      }
       // R3-2 失败自愈：记录本轮工具错误（模型下一轮若认错即停，守卫会强制重试）；
       // 工具成功执行后重置（错误已恢复，不再触发守卫）
       if (toolResults.some((r) => r.is_error)) hadToolError = true
@@ -840,11 +1275,22 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // 时的兜底，二者同源但用途相反。
       const allFailed = toolResults.length > 0 && toolResults.every((r) => r.is_error)
       if (allFailed) errorStreak++
-      else if (toolResults.length) errorStreak = 0
+      else if (toolResults.length) { errorStreak = 0; meltdownHeals = 0 } // 工具成功 → 熔断愈合计数清零
       if (toolResults.length) {
         pushMemory({ role: 'user', content: toolResults })
         if (session) session.appendToolResults(toolResults)
       }
+      // 守卫⑥ 进展刷新：成功且非只读测量的工具结果 = 实质进展（Write/Edit/Read/
+      // Grep/Bash/goto 等）；Browser js/snapshot（只读测量）与失败结果不刷新——
+      // "测量打转"循环因此被 LOOP_STALL_MS 停滞守卫拦下（见常量注释）。
+      // 恢复进展即清零愈合计数：自愈成功的轮次重新获得完整愈合预算。
+      const madeProgress = blocks.some((b, i) => {
+        if (toolResults[i]?.is_error) return false
+        if (b.name !== 'Browser') return true
+        const a = String(b.input?.action || '')
+        return !(a === 'js' || a === 'snapshot')
+      })
+      if (madeProgress) { lastProgressAt = Date.now(); stallHeals = 0 }
       // 守卫⑤：连续同工具提醒（dsh repeat-tool-reminder 语义：仅提醒不否决，硬性
       // 由迭代上限兜底）。以每轮首个 tool_use 的规范键（name+参数深排序）为基准；
       // 键变化视为换了方向，链复位。到阈值把提示并入下一条 user 消息——顺序为
@@ -867,6 +1313,18 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         }
       }
       if (MAX_ERROR_ITERATIONS > 0 && errorStreak >= MAX_ERROR_ITERATIONS) {
+        // 无感愈合（2026-09-10）：连续全败达阈值先注入"排查失败原因"指令静默续跑
+        // （重开失败预算）；耗尽 MELTDOWN_HEAL_MAX 才落可见收尾。
+        if (MELTDOWN_HEAL_MAX < 0 || meltdownHeals < MELTDOWN_HEAL_MAX) {
+          meltdownHeals++
+          errorStreak = 0 // 重开失败预算（愈合窗口内再给一轮完整容错）
+          const inject = '【系统】检测到连续多轮工具调用全部失败。请停止原样重试：先读取最新失败的具体错误信息（Read 相关文件/日志，或查看上一轮 tool_result 的 stderr），分析失败原因（权限/环境/参数/路径），改用修正后的调用重试；仍无法推进时向用户说明阻塞原因。'
+          pushMemory({ role: 'user', content: inject })
+          if (session) session.appendUser(inject)
+          try { wire?.system?.('guard_heal', { reason: 'error-meltdown', attempt: meltdownHeals, max: MELTDOWN_HEAL_MAX }) } catch { /* 事件失败不影响主流程 */ }
+          textBuf = ''
+          continue
+        }
         loopStop = {
           reason: 'error-meltdown',
           message: `【连续 ${errorStreak} 轮工具调用全部失败，已自动收尾停止重试。请检查失败原因（权限/环境/参数）后重新发起，或明确告知用户无法推进。】`,
@@ -1074,6 +1532,35 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
 
   // —— 内置浏览器驱动（bridge_request(browser) → 主进程执行器）——
   const BROWSER_TIMEOUT_MS = 120_000
+  // 白名单审批（2026-09-10）：浏览器访问被域名白名单拦截（执行器回
+  // code='whitelist-blocked' + data.domain）时，向用户请求批准把域名加入
+  // 白名单——经既有 can_use_tool 审批通道（GUI 弹窗 / TUI y/n）。批准后
+  // bridge 写入 browser-whitelist.json（执行器 mtime 热重载即时生效），
+  // 本工具返回"请重试"引导；拒绝/超时返回明确引导，模型改用其他途径。
+  async function requestWhitelistApproval(domain) {
+    const toolUseId = 'whitelist:' + String(domain || '').toLowerCase()
+    try {
+      wire.controlRequest({
+        requestId: 'req-' + toolUseId,
+        toolName: 'browser_whitelist_add',
+        toolUseId,
+        input: { command: `加入浏览器白名单：${domain}` },
+        reason: `浏览器访问 ${domain} 被域名白名单拦截。批准后该域名将写入白名单（即时生效），随后重试浏览器操作即可。`,
+      })
+    } catch { return { approved: false, reason: 'control-request-failed' } }
+    const approvalTimeoutMs = Math.max(1000, Number(process.env.PONOS_APPROVAL_TIMEOUT_MS || 600_000))
+    const decision = await new Promise((resolvePromise) => {
+      const t = setTimeout(() => {
+        approvalWaiters.delete(toolUseId)
+        resolvePromise({ behavior: 'timeout' })
+      }, approvalTimeoutMs)
+      approvalWaiters.set(toolUseId, (d) => { clearTimeout(t); resolvePromise(d) })
+    })
+    return decision?.behavior === 'allow'
+      ? { approved: true }
+      : { approved: false, reason: decision?.behavior ?? 'unknown' }
+  }
+
   async function runBrowser(action, params) {
     const requestId = 'br-' + randomUUID()
     let timer
@@ -1089,6 +1576,22 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       wire.bridgeRequest({ route: 'browser', requestId, payload: { action, params } })
     })
     clearTimeout(timer)
+    // 白名单拦截 → 用户批准流（2026-09-10）：批准即提示重试，未批准给替代途径
+    if (!resp?.ok && resp?.code === 'whitelist-blocked') {
+      const domain = String(resp?.data?.domain || '').trim()
+      const d = domain || '该域名'
+      const appr = await requestWhitelistApproval(d)
+      if (appr.approved) {
+        return {
+          content: `浏览器访问 ${d} 被域名白名单拦截，用户已批准将「${d}」加入白名单（即时生效）。请重试刚才的浏览器操作。`,
+          isError: false,
+        }
+      }
+      return {
+        content: `浏览器访问 ${d} 被域名白名单拦截，且用户未批准加入白名单（${appr.reason === 'timeout' ? '审批等待超时' : '用户拒绝'}）。请改用其他途径（WebFetch / WebSearch），或向用户说明访问目的后重新发起浏览器操作。`,
+        isError: true,
+      }
+    }
     if (resp?.ok) {
       const body = resp.snapshot ?? resp.data ?? { ok: true }
       return { content: typeof body === 'string' ? body : JSON.stringify(body), isError: false }
@@ -1107,6 +1610,10 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     let textBuf = ''
     let toolUses = 0
     const subT0 = Date.now()
+    // 守卫⑥ 进展时间戳（子 lane 镜像主循环）：成功且非只读测量的工具结果落地即刷新
+    let subLastProgressAt = subT0
+    let subStallHeals = 0 // ⑥ 愈合计数（恢复实质进展即清零，上限 STALL_HEAL_MAX）
+    let subMeltdownHeals = 0 // ④ 熔断愈合计数（工具成功即清零，上限 MELTDOWN_HEAL_MAX）
     // P2-1①/AS1：lane 级参数（model/tools/skills 白名单）。options 未定义/空 =
     // 全量（零回归锁①）。loopModel 在 retryStream 与落盘（appendAssistant）统一使用。
     const loopModel = options?.model || model
@@ -1137,6 +1644,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     let subRepeatStreak = 0
     let lastSubToolKey = ''
     let subRemindedAt = new Set()
+    // 子 lane 上游零数据挂起自动重试计数（同主 loop 2026-09-09 长任务挂起修复）
+    let subIdleDeadRetries = 0
     // P2-1③：lane 压缩（可选，PONOS_LANE_COMPACT=1 且主会话提供 context）。复用主
     // loop 压缩语义（compact.mjs 两阶段 + 熔断），摘要落地到 laneStore（独立 transcript，
     // 主会话零污染）。wire 摘要经 laneWire 转发为 system('lane_compaction') 事件带 taskId。
@@ -1159,10 +1668,31 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       } catch { laneCompactor = null } // lane 压缩器装配失败 → 该 lane 不压缩（静默降级）
     }
     for (let iter = 0; ; iter++) {
-      // 守卫（子 lane 同主 loop）：墙钟 + 迭代上限——命中即附说明收尾（防子任务
-      // 拖死整个后台任务；同主任务守卫共用同一组 PONOS_* 阈值）
+      // 守卫（子 lane 同主 loop）：墙钟默认关闭（2026-09-10，见 TURN_TIMEOUT_MS
+      // 注释）+ 迭代上限——命中即附说明收尾（同主任务守卫共用同一组 PONOS_* 阈值）
       if (TURN_TIMEOUT_MS > 0 && Date.now() - subT0 >= TURN_TIMEOUT_MS) {
         return guardStop(stopNotice('运行超时', `超过 ${Math.round(TURN_TIMEOUT_MS / 60000)} 分钟`))
+      }
+      // 守卫⑥ 无进展停滞（子 lane 镜像，自愈优先）：先注入推进指令续跑（后台
+      // lane 无用户可见面，注入即唯一干预），耗尽 STALL_HEAL_MAX 才 guardStop。
+      if (LOOP_STALL_MS > 0 && Date.now() - subLastProgressAt >= LOOP_STALL_MS) {
+        if (subStallHeals < STALL_HEAL_MAX) {
+          subStallHeals++
+          subLastProgressAt = Date.now()
+          store.appendUser('【系统】检测到你长时间没有实质进展（连续只读测量/重复调用、无新结果或文件变更）。请停止测量与重复尝试，直接执行下一步实质操作（修改文件/执行命令/完成剩余步骤），或输出最终结论。')
+          continue
+        }
+        return guardStop(stopNotice(
+          '长时间无实质进展',
+          `超过 ${Math.max(1, Math.round(LOOP_STALL_MS / 60000))} 分钟只有只读测量/重复调用、无新结果或文件变更，疑似陷入循环`,
+        ))
+      }
+      // B2 主 Agent 消息投递（2026-09-11）：Task send_message/followup 进 inbox，
+      // 工具边界吸收（镜像主循环 P8 pendingNext）
+      const laneInbox = options?.inbox
+      if (Array.isArray(laneInbox) && laneInbox.length) {
+        const msgs = laneInbox.splice(0)
+        for (const m of msgs) store.appendUser(`【主 Agent 消息】${m}`)
       }
       if (MAX_TOOL_ITERATIONS > 0 && iter >= MAX_TOOL_ITERATIONS) {
         return guardStop(stopNotice('达到迭代上限', `连续 ${MAX_TOOL_ITERATIONS} 轮工具循环`))
@@ -1185,7 +1715,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       const nearRep = NEAR_REPEAT_RECENT > 0
         ? createNearRepeatDetector({ back: NEAR_REPEAT_BACK, sim: NEAR_REPEAT_SIM, recent: NEAR_REPEAT_RECENT, avg: NEAR_REPEAT_AVG, codeSkip: NEAR_REPEAT_CODE_SKIP })
         : null
-      const watchdog = makeIdleWatchdog(STREAM_IDLE_MS)
+      const watchdog = makeIdleWatchdog(STREAM_IDLE_MS, adaptiveFirstByteMs(() => patchOrphanToolUses(store.deriveMessages()), STREAM_FIRST_BYTE_MS))
       const laneSig = rawAbortSignal(subSignal)
       const streamSignal = watchdog.controller && typeof AbortSignal.any === 'function'
         ? (laneSig ? AbortSignal.any([laneSig, watchdog.controller.signal]) : watchdog.controller.signal)
@@ -1197,7 +1727,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // 须用本标志，否则"只产 thinking 后停"的 lane 会被误报"上游服务空流（未收到任何数据）"。
       let streamProduced = false
       try {
-        for await (const chunk of retryStream({ model: loopModel, messages: msgs(), maxTokens: attemptMaxTokens, signal: streamSignal, tools: laneToolSchemas ?? tools.toolSchemas() })) {
+        for await (const chunk of retryStream({ model: loopModel, messages: msgs(), maxTokens: attemptMaxTokens, signal: streamSignal, tools: laneToolSchemas ?? tools.toolSchemas(), reasoningEffort: normalizeEffort(options?.effort || 'auto') })) {
           if (signal.aborted || subSignal.aborted) throw abortError()
           watchdog.tick()
           streamProduced = true
@@ -1245,9 +1775,15 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           // 已产出后停顿 → 推理中途停顿语义（保留 resume 续跑提示）。判别用 streamProduced
           // （镜像主循环 attemptData，收到任意 chunk 即上游在产出）而非 textBuf.length——
           // #8 后 textBuf 仅 text，thinking 不入（thinking 只进 genWindow，见上方分流）。
+          // 2026-09-09：零数据形态先自动重试（同主 loop 长任务挂起修复）。
+          if (!streamProduced && subIdleDeadRetries < IDLE_DEAD_RETRY_MAX) {
+            subIdleDeadRetries++
+            await sleep(IDLE_DEAD_RETRY_BACKOFF_MS)
+            continue
+          }
           return guardStop(`${textBuf.trim()} ${streamProduced
             ? stopNotice('输出中断', `超过 ${Math.max(1, Math.round(STREAM_IDLE_MS / 1000))} 秒无数据（此前已产出部分内容——疑似推理中途停顿）`)
-            : stopNotice('上游服务空流', `连接建立后 ${Math.max(1, Math.round(STREAM_IDLE_MS / 1000))} 秒未收到任何数据——疑似模型服务未就绪/空转，请检查 provider`)}`.trim())
+            : stopNotice('上游服务空流', `连接建立后 ${Math.max(1, Math.round(STREAM_FIRST_BYTE_MS / 1000))} 秒未收到任何数据——疑似模型服务未就绪/空转，请检查 provider`)}`.trim())
         }
         else if (classifyApiError(err).kind === 'dead-stream') {
           // P1-11（子 lane 镜像）：HTTP 200 后 0 事件即断/EOF → 快速收尾（不空等不狂重试）
@@ -1290,7 +1826,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       }
       // P0-2（子 lane 镜像）：输出被 max_tokens 截断且已产出工具调用 → 不执行残缺参数，
       // 注入 is_error tool_result 提示模型补全重发（主循环同款保护，防子 lane 复活缺陷）
-      if (blocks.length > 0 && subStopReason === 'length') {
+      if (blocks.length > 0 && (subStopReason === 'length' || subStopReason === 'max_tokens')) {
         const assistantBlocks = [...(textBuf.trim() ? [{ type: 'text', text: textBuf }] : []), ...blocks]
         store.appendAssistant(assistantBlocks, { model: loopModel })
         const errorResults = blocks.map((b) => ({
@@ -1336,6 +1872,15 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         onTool?.(blocks[i], executed[i], toolUses)
       }
       store.appendToolResults(toolResults)
+      // 守卫⑥ 进展刷新（子 lane 镜像主循环）：成功且非只读测量的工具结果 = 实质进展；
+      // 恢复进展即清零愈合计数（自愈成功重新获得完整愈合预算）
+      const laneProgress = blocks.some((b, i) => {
+        if (toolResults[i]?.is_error) return false
+        if (b.name !== 'Browser') return true
+        const a = String(b.input?.action || '')
+        return !(a === 'js' || a === 'snapshot')
+      })
+      if (laneProgress) { subLastProgressAt = Date.now(); subStallHeals = 0 }
       // 审计 #10 守卫⑤（子 lane 镜像）：连续同工具提醒（dsh repeat-tool-reminder 语义：
       // 仅提醒不 veto，硬性由迭代上限兜底）。以每轮首个 tool_use 的规范键（name+参数深排序）
       // 为基准；键变化视为换了方向，链复位。位置在工具结果落 store 后、守卫④熔断判定前，
@@ -1362,8 +1907,16 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // 不回来"的底（审计 #4：子 lane 此前无此守卫，连续全败会一路空转到迭代上限）。
       const allLaneFailed = toolResults.length > 0 && toolResults.every((r) => r.is_error)
       if (allLaneFailed) subErrorStreak++
-      else if (toolResults.length) subErrorStreak = 0
+      else if (toolResults.length) { subErrorStreak = 0; subMeltdownHeals = 0 }
       if (MAX_ERROR_ITERATIONS > 0 && subErrorStreak >= MAX_ERROR_ITERATIONS) {
+        // 无感愈合（子 lane 镜像主循环 2026-09-10）：先注入排查指令静默续跑，
+        // 耗尽 MELTDOWN_HEAL_MAX 才 guardStop（后台 lane 注入即唯一干预）
+        if (MELTDOWN_HEAL_MAX < 0 || subMeltdownHeals < MELTDOWN_HEAL_MAX) {
+          subMeltdownHeals++
+          subErrorStreak = 0
+          store.appendUser('【系统】检测到连续多轮工具调用全部失败。请停止原样重试：先读取最新失败的具体错误信息，分析失败原因（权限/环境/参数/路径），改用修正后的调用重试；仍无法推进时输出阻塞说明。')
+          continue
+        }
         const meltdownNotice = stopNotice(
           '连续工具调用全部失败',
           `连续 ${subErrorStreak} 轮工具调用全部失败，已自动收尾停止重试。请检查失败原因（权限/环境/参数）后重新发起。`,
@@ -1386,23 +1939,25 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         const p = String(b.input?.file_path || '')
         if (p) writePaths.push(p)
       }
-      wire.taskProgress({
-        taskId,
-        lastToolName: b.name,
-        description: r.isError ? `${b.name} 失败：${String(r.content || '').slice(0, 120)}` : `${b.name} 完成`,
-        usage: { tool_uses: count, total_tokens: 0, duration_ms: Date.now() - t0 },
-      })
+      try {
+        wire.taskProgress({
+          taskId,
+          lastToolName: b.name,
+          description: r.isError ? `${b.name} 失败：${String(r.content || '').slice(0, 120)}` : `${b.name} 完成`,
+          usage: { tool_uses: count, total_tokens: 0, duration_ms: Date.now() - t0 },
+        })
+      } catch { /* wire 缺 taskProgress 通道不影响 lane 执行 */ }
     }
   }
 
   // 子 lane 执行体（spawn 与 resume 共用）：跑完整子循环 → 登记更新 + 终态通知。
   // resume 复用同一 laneStore（历史经 deriveMessages 原样保留，无副作用重放）
-  async function runLaneExecution({ taskId, laneStore, sysPrompt, signal: subSignal, writePaths, t0, onTool, laneOptions }) {
+  async function runLaneExecution({ taskId, laneStore, sysPrompt, signal: subSignal, writePaths, t0, onTool, laneOptions, inbox }) {
     let text = ''
     let status = 'completed'
     let usage = {}
     try {
-      const r = await runSubAgentLoop({ store: laneStore, sysPrompt, signal: subSignal, onTool, options: laneOptions, taskId })
+      const r = await runSubAgentLoop({ store: laneStore, sysPrompt, signal: subSignal, onTool, options: { ...(laneOptions || {}), inbox }, taskId })
       text = String(r.text || '').trim()
       usage = r.usage
       // 守卫停（防死循环自动中止）→ 与取消同态登记为 stopped（可 resume 续跑）
@@ -1425,6 +1980,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     const entry = pendingSubAgents.get(taskId)
     if (entry) Object.assign(entry, { status, summary: text, outputFile, usage: notifUsage })
     wire.taskNotification({ taskId, status, summary: text, outputFile, usage: notifUsage, outputs: [...writePaths] })
+    drainQueuedLanes() // B3：槽位释放 → 启动最早排队任务
     return { status, text, usage, outputFile }
   }
 
@@ -1467,18 +2023,22 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       target.promise = runLaneExecution({
         taskId: resumeTaskId, laneStore: target.laneStore, sysPrompt: target.sysPrompt,
         signal: subController.signal, writePaths, t0, onTool, laneOptions: target.laneOptions,
+        inbox: target.inbox || [],
       })
       return { content: `子 Agent 任务已续跑（task_id: ${resumeTaskId}）。完成时收到通知，可用 Task 工具查询/中止。`, isError: false }
     }
     const agent = resolveAgent(agents, type)
     if (!agent) return { content: `未知子 Agent：${type}。可用：${agents.map((a) => a.id).join(', ')}`, isError: true }
     if (!prompt) return { content: 'prompt 缺失：请说明要委派给子 Agent 的任务', isError: true }
-    // AS1：agent spec 三字段接线（P2-1① 签名扩展的消费方）。tools/skills 引用未知项 →
+    // AS1：agent spec 字段接线（P2-1① 签名扩展的消费方）。tools/skills 引用未知项 →
     // wire.warning（level:'agent_spec'）提示不拦截；空/未定义 = 全量（零回归锁①）。
+    // 2026-09-11：disallowedTools/effort 入 laneOptions（对齐 CC agent frontmatter）。
     const laneOptions = {
       model: agent.model || '',
       allowedTools: Array.isArray(agent.tools) && agent.tools.length ? agent.tools : undefined,
       allowedSkills: Array.isArray(agent.skills) && agent.skills.length ? agent.skills : undefined,
+      disallowedTools: Array.isArray(agent.disallowedTools) && agent.disallowedTools.length ? agent.disallowedTools : undefined,
+      effort: agent.effort || '',
     }
     // 空 schema 守卫：tools 名单无一命中已注册工具名时，toolSchemas().filter 结果为空集
     // ——空集（非 null）会让 retryStream 收到 tools:[]（lane 无工具可用）。此时视为
@@ -1488,8 +2048,15 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       const knownToolNames = new Set(tools.toolNames)
       if (!laneOptions.allowedTools.some((t) => knownToolNames.has(t))) laneOptions.allowedTools = undefined
     }
+    // disallowedTools → 白名单收窄（2026-09-11）：只禁不白的定义自动补齐白名单 =
+    // 全量工具 − 禁用集（reviewer/planner 等只读 agent 用）
+    if (Array.isArray(laneOptions.disallowedTools) && laneOptions.disallowedTools.length) {
+      const disSet = new Set(laneOptions.disallowedTools)
+      laneOptions.allowedTools = (laneOptions.allowedTools || tools.toolNames).filter((t) => !disSet.has(t))
+    }
     warnUnknownAgentRefs(agent)
-    const runInBackground = input?.run_in_background === true
+    // agent 定义 background:true 恒后台（对齐 CC frontmatter background 字段）
+    const runInBackground = input?.run_in_background === true || agent.background === true
     const taskId = newSessionId()
     // S1 血缘：主 agent 派发 depth 0 / parent null；子 lane 派发（S4 预留）经 ctx.lane 透传
     const lineage = {
@@ -1499,26 +2066,55 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     }
     wire.taskStarted({ taskId, toolUseId, prompt, parentTaskId: lineage.parentTaskId, depth: lineage.depth })
     const laneStore = createSessionStore({ configDir: opts.configDir, cwd: opts.addDirs?.[0] || '', sessionId: taskId })
+    // B1 上下文继承档（2026-09-11）：none（默认，现状）| summary（压缩摘要 + 最近
+    // 20 轮文本）| full（最近 200 条全量文本）。继承内容为纯文本投影（剥离
+    // tool_use/tool_result 块，避免半截消息链破坏 API 合法性），先于任务指令入 lane。
+    const inherit = String(input?.context || 'none')
+    if (inherit !== 'none' && session) {
+      const hist = session.deriveMessages()
+      const src = inherit === 'full' ? hist.slice(-200) : hist.slice(-20)
+      if (inherit === 'summary') {
+        const last = compactor?.lastSummary?.()
+        if (last) laneStore.appendUser(`<compacted-summary>${String(last).slice(0, 4000)}</compacted-summary>\n（主会话历史摘要；需要细节时向主 Agent 询问或 Read 相关文件）`)
+      }
+      for (const m of src) {
+        const text = messageTextOf(m)
+        if (!text) continue
+        if (m.role === 'user') laneStore.appendUser(text)
+        else laneStore.appendAssistant([{ type: 'text', text }], { model })
+      }
+    }
     // 子任务指令入子 lane（子循环 deriveMessages 的起点；与主 runTurn appendUser 对齐）
     laneStore.appendUser(prompt)
     const sysPrompt = agent.systemPrompt || `你是 Ponos 的子 Agent「${agent.name}」：${agent.description}。使用简体中文。`
     const subController = new AbortController()
     const t0 = Date.now()
     const writePaths = []
+    const inbox = [] // B2 主 Agent 消息投递队列（lane 工具边界吸收；后台/前台共用同一引用）
     const onTool = makeLaneOnTool({ taskId, writePaths, t0 })
     const exec = () => runLaneExecution({
       taskId, laneStore, sysPrompt,
-      signal: subController.signal, writePaths, t0, onTool, laneOptions,
+      signal: subController.signal, writePaths, t0, onTool, laneOptions, inbox,
     })
     if (runInBackground) {
-      const promise = exec()
-      // 登记含 sysPrompt/laneStore/lineage/laneOptions：resume 复用会话与血缘
-      // （laneOptions 保证续跑沿用同一 tools/skills 白名单），级联取消查 parent
-      pendingSubAgents.set(taskId, {
-        status: 'running', promise, laneStore, sysPrompt, lineage, laneOptions,
+      // 登记含 sysPrompt/laneStore/lineage/laneOptions/inbox：resume 复用会话与血缘
+      // （laneOptions 保证续跑沿用同一 tools/skills 白名单），级联取消查 parent；
+      // inbox = B2 主 Agent 消息投递队列（lane 工具边界吸收）
+      // B3 并发槽（2026-09-11）：初始 queued（不计入 runningCount，防自计数恒满），
+      // 通过并发检查后置 running 启动；超限则入 FIFO 队列，槽位释放自动启动。
+      const entry = {
+        status: 'queued', promise: null, laneStore, sysPrompt, lineage, laneOptions,
+        inbox, // B2 投递队列（与 exec 闭包同引用，resume 复用）
         stop: () => subController.abort(), // Task stop 中止该子任务（独立信号）
-      })
-      return { content: `子 Agent「${agent.id}」任务已后台启动（task_id: ${taskId}）。完成时收到通知，可用 Task 工具查询/中止/续跑。`, isError: false }
+      }
+      pendingSubAgents.set(taskId, entry)
+      if (LANE_MAX_CONCURRENT <= 0 || runningCount() < LANE_MAX_CONCURRENT) {
+        entry.status = 'running'
+        entry.promise = exec()
+        return { content: `子 Agent「${agent.id}」任务已后台启动（task_id: ${taskId}）。完成时收到通知，可用 Task 工具查询/中止/续跑/投递消息。`, isError: false }
+      }
+      pendingQueuedLanes.push({ taskId, start: () => exec() })
+      return { content: `子 Agent「${agent.id}」任务已排队（task_id: ${taskId}，当前后台并发已满 ${LANE_MAX_CONCURRENT}，槽位释放后自动启动）。可用 Task 工具查询/取消。`, isError: false }
     }
     const r = await exec()
     if (r.status === 'stopped') return { content: '子 Agent 任务已取消', isError: true }
@@ -1593,9 +2189,42 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     stop(taskId) {
       const t = pendingSubAgents.get(String(taskId || ''))
       if (!t) return { content: `任务不存在：${taskId}`, isError: true }
+      // B3：排队中任务直接出队取消（不进终态通知队列）
+      if (t.status === 'queued') {
+        const qi = pendingQueuedLanes.findIndex((q) => q.taskId === String(taskId))
+        if (qi >= 0) pendingQueuedLanes.splice(qi, 1)
+        t.status = 'stopped'
+        try { wire.taskNotification({ taskId: String(taskId), status: 'stopped', summary: '（排队任务已取消）', outputFile: '', usage: {}, outputs: [] }) } catch { /* 事件失败不影响主流程 */ }
+        return { content: `已取消排队任务 ${taskId}`, isError: false }
+      }
       if (t.status !== 'running') return { content: `任务已结束（${t.status}）`, isError: false }
       stopSubTree(String(taskId || '')) // 级联中止（含后代；当前无嵌套场景等价单中止）
       return { content: `已请求中止任务 ${taskId}（含其后代）`, isError: false }
+    },
+    // B2 消息投递（2026-09-11）：运行中任务投递进 inbox（其当前工具轮结束后接收）；
+    // followup 对已停止任务自动 resume 续跑（等价 resume_task_id 语义 + 消息）
+    sendMessage(taskId, message) {
+      const id = String(taskId || '')
+      const t = pendingSubAgents.get(id)
+      if (!t) return { content: `任务不存在：${id}`, isError: true }
+      const msg = String(message || '').trim()
+      if (!msg) return { content: 'message 缺失：请提供要投递的消息内容', isError: true }
+      if (t.status !== 'running') return { content: `任务已结束（${t.status}）——用 followup 可自动续跑并投递消息`, isError: false }
+      ;(t.inbox ||= []).push(msg)
+      return { content: `已投递消息给任务 ${id}（将在其当前工具轮结束后被接收）`, isError: false }
+    },
+    async followup(taskId, message) {
+      const id = String(taskId || '')
+      const t = pendingSubAgents.get(id)
+      if (!t) return { content: `任务不存在：${id}`, isError: true }
+      const msg = String(message || '').trim()
+      if (t.status === 'running') {
+        if (msg) { (t.inbox ||= []).push(msg); return { content: `已投递消息给运行中的任务 ${id}`, isError: false } }
+        return { content: `任务 ${id} 正在运行（消息将排队接收）`, isError: false }
+      }
+      if (!t.laneStore) return { content: `任务 ${id} 无可恢复的会话`, isError: true }
+      // 已结束任务：自动 resume 续跑并追加消息（复用 spawnSubAgent resume 分支）
+      return spawnSubAgent({ resume_task_id: id, prompt: msg || '（主 Agent 要求继续）' })
     },
     // S2 可继续：基于既有后台任务会话续跑（复用 laneStore；prompt 为续跑指令）
     async resume(taskId, prompt) {

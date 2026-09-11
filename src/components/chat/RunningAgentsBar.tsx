@@ -19,8 +19,8 @@ export function RunningAgentsBar({ conversationId }: Props) {
   const running = tasks.filter(t => t.status === 'running')
   if (running.length === 0) return null
   return (
-    <div className="absolute bottom-0 left-0 right-0 z-20 flex flex-col items-center px-4 pb-3 pointer-events-none">
-      <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-1.5 max-w-[900px]">
+    <div className="relative w-full flex flex-col items-start gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5 w-full">
         {running.map(t => {
           const agent = getAgentById(agents, t.name) ?? { avatar: undefined, name: t.name }
           return (

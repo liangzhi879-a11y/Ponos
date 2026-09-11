@@ -19,6 +19,7 @@
     "test": "node --test \"server/*.test.mjs\" \"electron/*.test.mjs\""
   },
   "dependencies": {
+    "@assistant-ui/react": "^0.15.18",
     "@codemirror/commands": "^6.10.4",
     "@codemirror/lang-cpp": "^6.0.3",
     "@codemirror/lang-css": "^6.3.1",

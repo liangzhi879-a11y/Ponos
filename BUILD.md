@@ -37,6 +37,11 @@ cp -r dist/* release/YFWorking/dist/
 cp -r server/* release/YFWorking/server/
 cp -r public/* release/YFWorking/public/
 cp -r pet/* release/YFWorking/pet/
+# 内核 + 逃逸依赖（2026-09-10 补）：kernel/*.mjs 以 ../version.mjs 相对 import
+#（cli/settings/tui 三处），version.mjs 必须落在 release/YFWorking/ 根——
+# 缺失会 ERR_MODULE_NOT_FOUND 内核直接挂。
+cp -r kernel/* release/YFWorking/kernel/
+cp version.mjs release/YFWorking/version.mjs
 ```
 
 ### 打包安装包

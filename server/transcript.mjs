@@ -76,11 +76,22 @@ export function listSessions(projectsDir, cwd) {
   return sessions
 }
 
+// 自愈注入过滤（2026-09-11）：内核自愈指令（【系统】/【提示】开头的 user 消息）留在
+// agent loop 内——transcript 原文不动（内核 resume 时模型仍可见，loop 语义完整），
+// 但 GUI 会话展示过滤掉，用户可见历史不出现系统自愈噪声。
+const HIDDEN_INJECT_PREFIX = /^(【系统】|【提示】)/
+export function isHiddenLoopInjection(entry) {
+  const m = entry?.message
+  return entry?.type === 'user' && typeof m?.content === 'string' && HIDDEN_INJECT_PREFIX.test(String(m.content).trim())
+}
+
 /**
  * 逐行读取单个 transcript。
  * @param {boolean} tailFirst 默认 true：>5MB 只读尾部最近 5MB（GUI 激活会话展示）；
- *   false 全量读取（导出/搜索用）。截断时返回 truncated: true。
- * @returns {object} { ok, entries, truncated, skipped }；文件不存在返回 { ok: false, error: 'not found' }。
+ *   false 全量读取（导出/搜索用——含自愈注入原文，导出保留完整数据）。
+ *   展示路径（tailFirst!==false）过滤内核自愈注入（见 isHiddenLoopInjection），
+ *   返回 hidden 计数；截断时返回 truncated: true。
+ * @returns {object} { ok, entries, truncated, skipped, hidden }；文件不存在返回 { ok: false, error: 'not found' }。
  */
 export function loadTranscript(projectsDir, cwd, sessionId, tailFirst = true) {
   if (!isUuidFile(`${sessionId}.jsonl`)) {
@@ -107,16 +118,23 @@ export function loadTranscript(projectsDir, cwd, sessionId, tailFirst = true) {
   }
   const entries = []
   let skipped = 0
+  let hidden = 0
   for (const line of text.split('\n')) {
     const t = line.trim()
     if (!t) continue
     try {
-      entries.push(JSON.parse(t))
+      const entry = JSON.parse(t)
+      // 展示路径过滤自愈注入（导出/搜索 tailFirst===false 保留全量原文）
+      if (tailFirst !== false && isHiddenLoopInjection(entry)) {
+        hidden += 1
+        continue
+      }
+      entries.push(entry)
     } catch {
       skipped += 1
     }
   }
-  return { ok: true, entries, truncated, skipped }
+  return { ok: true, entries, truncated, skipped, hidden }
 }
 
 /**

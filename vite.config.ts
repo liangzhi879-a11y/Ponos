@@ -25,13 +25,21 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (id.includes('node_modules')) {
-            if (id.includes('react-dom') || id.includes('scheduler')) return 'vendor-react'
-            if (id.includes('react/') || id.includes('react/jsx')) return 'vendor-react'
-            if (id.includes('@radix-ui')) return 'vendor-radix'
-            if (id.includes('framer-motion')) return 'vendor-framer'
-            if (id.includes('react-markdown') || id.includes('remark-gfm') || id.includes('unified') || id.includes('micromark') || id.includes('mdast') || id.includes('hast') || id.includes('unist') || id.includes('vfile') || id.includes('bail') || id.includes('is-plain-obj') || id.includes('trough')) return 'vendor-markdown'
-            if (id.includes('lucide-react')) return 'vendor-icons'
-            if (id.includes('zustand')) return 'vendor-store'
+            // 按 node_modules 之后的相对路径精确匹配（2026-09-09 修复）：旧规则用
+            // 全路径子串匹配，`@assistant-ui/react/*` 与 `@assistant-ui/core/dist/react/*`
+            // 因含 "react/" 子串被误分进 vendor-react，assistant-ui 横跨 vendor-react/
+            // vendor-radix 两 chunk 与 radix 循环引用 → 模块初始化时 React 绑定
+            // undefined → 全应用黑屏（reading 'forwardRef'）。
+            const rel = id.slice(id.indexOf('node_modules') + 'node_modules'.length + 1)
+            if (rel.startsWith('react/') || rel.startsWith('react-dom/') || rel.startsWith('scheduler/')) return 'vendor-react'
+            // 'radix-ui'（assistant-ui 依赖的整合包装包）与 @radix-ui 子模块同组
+            if (rel.includes('@radix-ui') || rel.includes('radix-ui')) return 'vendor-radix'
+            // assistant-ui 独立成组：内部跨包互相引用，与 react/radix 仅单向依赖
+            if (rel.includes('@assistant-ui')) return 'vendor-assistant'
+            if (rel.includes('framer-motion')) return 'vendor-framer'
+            if (rel.includes('react-markdown') || rel.includes('remark-gfm') || rel.includes('unified') || rel.includes('micromark') || rel.includes('mdast') || rel.includes('hast') || rel.includes('unist') || rel.includes('vfile') || rel.includes('bail') || rel.includes('is-plain-obj') || rel.includes('trough')) return 'vendor-markdown'
+            if (rel.includes('lucide-react')) return 'vendor-icons'
+            if (rel.includes('zustand')) return 'vendor-store'
           }
         },
       },

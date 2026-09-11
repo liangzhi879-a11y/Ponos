@@ -5,11 +5,15 @@
 // 销毁（undici "terminated"）。两者都应归一为 DeadStreamError（engine 据此快速失败
 // 提示检查 provider），而正常流（有 message_start + 文本增量）不受影响。
 // 本文件不设 PONOS_MOCK_API：直连本地 http server 走真实 anthropicStream 路径。
+// 2026-09-10：上游空流无感愈合（UPSTREAM_DEAD_HEAL_MAX 默认 2×30s 退避）由
+// engine-guard-heal.test.mjs 覆盖；本文件验证"快速失败"机制本身，显式关闭愈合层。
+// 需在 engine.mjs 求值前设 env（engine 常量模块期冻结）→ 用动态 import。
+process.env.PONOS_UPSTREAM_DEAD_HEAL_MAX = '0'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { classifyApiError, deadStreamError, streamMessages } from '../kernel/api.mjs'
-import { createEngine } from '../kernel/engine.mjs'
+const { createEngine } = await import('../kernel/engine.mjs')
 import { createSessionStore } from '../kernel/session.mjs'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -95,10 +99,11 @@ test('classifyApiError：DeadStreamError 与普通 transient 区分', () => {
   assert.equal(classifyApiError(netErr).kind, 'transient', 'fetch failed 仍按瞬态网络错误处理（重发语义不变）')
 })
 
-test('engine 层：每次 200 已送达即被销毁（0 事件）→ dead-stream 限次重试后快速收尾', async () => {
+test('engine 层：每次 200 已送达即被销毁（0 事件）→ dead-stream 限次重试后快速收尾（愈合层已显式关闭）', async () => {
   // 持久 200+即断 = 典型死上游形态（vLLM 引擎加载/崩溃窗口）：每次都受理但 0 事件。
   // engine retryStream 对 dead-stream 只放行 1 次重试（deadCap），连续 2 次即抛
   // DeadStreamError → 主循环 dead-stream 分支快速落"上游空流 + 检查 provider"提示。
+  // （默认的无感愈合层 2×30s 退避已由本文件头部 PONOS_UPSTREAM_DEAD_HEAL_MAX=0 关闭）
   await withServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' })
     res.flushHeaders()

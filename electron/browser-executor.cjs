@@ -735,7 +735,17 @@ class BrowserExecutor {
       if (result && result.data !== undefined) out.data = result.data
       return out
     } catch (e) {
-      return { ok: false, snapshot: await this.withTimeout('snapshot', () => this.snapshot(win), 10000).catch(() => null), error: String(e && e.message || e) }
+      const resp = {
+        ok: false,
+        snapshot: await this.withTimeout('snapshot', () => this.snapshot(win), 10000).catch(() => null),
+        error: String(e && e.message || e),
+      }
+      // 白名单拦截结构化回传（2026-09-10）：内核按 code/data 走白名单审批流
+      if (e && e.code === 'whitelist-blocked') {
+        resp.code = 'whitelist-blocked'
+        resp.data = { domain: e.domain }
+      }
+      return resp
     } finally {
       this.busy = false
     }
@@ -796,7 +806,16 @@ class BrowserExecutor {
   async goto(win, params) {
     const url = String(params && params.url || '')
     if (!url) throw new Error('goto 缺少 url')
-    if (!isWhitelisted(url)) throw new Error('目标域名不在白名单（默认 *.gov.cn/localhost），已拒绝导航: ' + url)
+    if (!isWhitelisted(url)) {
+      // 白名单拦截（2026-09-10）：结构化 code/data 回传——内核据此向用户请求
+      // 批准写入白名单（批准后 mtime 热重载即时生效，模型重试同一操作即可）
+      let host = url
+      try { host = new URL(url).hostname } catch {}
+      const err = new Error('目标域名不在白名单（默认 *.gov.cn/localhost），已拒绝导航: ' + url)
+      err.code = 'whitelist-blocked'
+      err.domain = host
+      throw err
+    }
     try {
       await win.loadURL(url)
     } catch (err) {

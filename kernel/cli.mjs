@@ -200,11 +200,31 @@ export async function main(argv) {
   try {
     if (existsSync(marker)) {
       const prev = JSON.parse(readFileSync(marker, 'utf-8') || '{}')
-      log.warn('previous run crashed', { pid: prev.pid, ts: prev.ts })
+      // E1 崩溃原因捕获（2026-09-09 事故修复）：旧日志只有 pid/ts，崩溃根因不可见。
+      // 上次进程退出时把 uncaughtException 原文与退出码落进 marker(.err)，本次
+      // resume 读回并写入结构化日志——下次崩溃当场可定位，不再靠猜。
+      let lastErr = null
+      const errFile = marker + '.err'
+      try { if (existsSync(errFile)) { lastErr = readFileSync(errFile, 'utf-8').slice(0, 4000); rmSync(errFile, { force: true }) } } catch {}
+      log.warn('previous run crashed', { pid: prev.pid, ts: prev.ts, exitCode: prev.exitCode ?? null, err: lastErr })
       wire.system('crash_recovered', { sessionId })
     }
     mkdirSync(runDir, { recursive: true })
     writeFileSync(marker, JSON.stringify({ pid: process.pid, ts: new Date().toISOString() }), 'utf-8')
+    // 崩溃自描述：未捕获异常原文 + 退出码落盘（供下次 resume 读回日志）。
+    // 优雅退出（shutdown）先删 marker 再 exit，exit 钩子里 marker 已不存在 → 不写。
+    process.on('uncaughtException', (e) => {
+      try {
+        writeFileSync(marker + '.err', JSON.stringify({ message: String(e?.message || e), stack: String(e?.stack || '').slice(0, 4000), ts: new Date().toISOString() }), 'utf-8')
+      } catch {}
+    })
+    process.on('exit', (code) => {
+      try {
+        if (!existsSync(marker)) return
+        const cur = JSON.parse(readFileSync(marker, 'utf-8') || '{}')
+        writeFileSync(marker, JSON.stringify({ ...cur, exitCode: code }), 'utf-8')
+      } catch {}
+    })
   } catch { /* marker 不可写不致命 */ }
   // 统一退出：杀活跃子进程 → 清 marker → 退出
   function shutdown(code) {
@@ -371,6 +391,9 @@ export async function main(argv) {
     skills,
     workflows,
     memory: memoryBlock,
+    // 本地弱模型精简纪律段（2026-09-09 适配）：桥按 provider 画像注入
+    // PONOS_PROMPT_TIER=lean；未设=full（云端现状，零变化）。
+    tier: process.env.PONOS_PROMPT_TIER === 'lean' ? 'lean' : 'full',
   }))
   // system(init)：spawn 即发。bridge /test-provider 判定 CLI 加载成功并读取
   // model/tools；GUI 从 session_id 绑定会话（usePonosCLI.ts handleMessage）。
@@ -660,8 +683,13 @@ export async function main(argv) {
         const { provider, version } = setProvider(payload)
         model = provider.model
         // 上下文窗口：bridge 显式下发 contextWindow（setProvider 已持久化）则尊重之，
-        // 自定义窗口在热切换时不丢失；未下发（0）才按模型表重算
+        // 自定义窗口在热切换时不丢失；未下发（0）才按模型表/画像默认重算。
+        // 切换后窗口重定向（2026-09-10 小窗口模型切换适配）：立即上行事件供
+        // TUI/GUI 提示；压缩阈值与每轮请求的预算钳制（engine preStep）都现读
+        // context.window——云端大窗口切本地小窗口后，下一轮请求即按新窗口规划，
+        // covered 超单块容量时走分块摘要（compact.mjs 阶段②b）。
         context.window = provider.contextWindow > 0 ? provider.contextWindow : contextWindowFor(provider.model)
+        wire.system('context_window_retargeted', { model: provider.model, window: context.window })
         // 顺带同步思考深度档位（bridge 下发 payload.effortLevel；空值不动）
         if (payload.effortLevel) {
           const r = engine.setReasoningEffort(payload.effortLevel)

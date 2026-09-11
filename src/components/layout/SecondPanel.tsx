@@ -2,14 +2,13 @@
 // 常驻 ~240px（SECOND_PANEL_W）竖列，按 viewStore.workState.rail 路由内容：
 //   · chat/task → ChatListPanel / TaskListPanel（Task 10：旧 Sidebar chats 分支完整迁移，
 //     chat 仅对话、task 全量会话管理 + 次级浮层图标行）；
-//   · agents/skills → 挂载既有真面板 AgentsPanel/SkillsPanel（保持二者可用）。
+//   · agents/skills → 2026-09-10 主标签化：已上移 WorkShell 全主界面卡片浏览，
+//     本宿主只保留 chat/task 分支。
 // Task 10 结构变更：列本身仍是 overflow-hidden，但外包一层 relative 包裹盒（宽 240）。
 // 次级浮层 FilesHistoryOverlay（420px 抽屉）是包裹盒的 absolute sibling，定位 left:100%，
 // 从本列右缘滑出覆盖主聊天列——不被列内 overflow-hidden 裁剪，z-[40] 低于全局 overlays。
 // rail 离开 task 时 effect 强制复位 secondTab=null（浮层状态不残留，spec §7 往返语义）。
 import { useEffect } from 'react'
-import { AgentsPanel } from '@/components/agents/AgentsPanel'
-import { SkillsPanel } from '@/components/skills/SkillsPanel'
 import { ChatListPanel } from '@/components/rail/ChatListPanel'
 import { TaskListPanel } from '@/components/rail/TaskListPanel'
 import { FilesHistoryOverlay } from '@/components/rail/FilesHistoryOverlay'
@@ -33,8 +32,6 @@ export function SecondPanel() {
       <aside className="w-full h-full bg-app border-r flex flex-col min-h-0 overflow-hidden">
         {rail === 'chat' && <ChatListPanel />}
         {rail === 'task' && <TaskListPanel />}
-        {rail === 'agents' && <AgentsPanel />}
-        {rail === 'skills' && <SkillsPanel />}
       </aside>
       {rail === 'task' && <FilesHistoryOverlay />}
     </div>

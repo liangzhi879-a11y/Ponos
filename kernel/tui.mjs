@@ -908,6 +908,10 @@ function main() {
         initInfo.model = ev.model || initInfo.model
         pushMessage({ kind: 'result', text: `模型已切换：${ev.model}` })
         render(); break
+      case 'context_window_retargeted':
+        // 小窗口模型切换提示（2026-09-10）：后续每轮按新窗口规划压缩/预算
+        pushMessage({ kind: 'system', text: `上下文窗口重定向：${ev.model || ''} → ${Math.round((Number(ev.window) || 0) / 1000)}K（压缩阈值与输出预算按新窗口生效）` })
+        render(); break
       case 'provider_switch_rejected':
         pushMessage({ kind: 'error', text: `模型切换被拒：${ev.reason || '未知原因'}` })
         render(); break

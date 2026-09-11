@@ -87,7 +87,10 @@ const defaultSettings: AppSettings = {
       subagentModel: 'deepseek-v4-flash',
       visionModel: '',
       effortLevel: 'max',
-      contextWindow: 1000000,
+      // 0 = 自动（2026-09-11）：内核按模型表解析——v4-flash=200K / v4-pro=1M。
+      // 旧固定 1M 在 flash 上虚高（真实 200K），压缩阈值按 1M 算永不触发，
+      // 大会话每轮全量重发 1MB 请求（实测"切 DS 也卡"根因）。
+      contextWindow: 0,
       // 画像与高级参数缺省（云端：温度 0 / 预算 64000 由内核默认，无注入）
       profile: 'auto',
     },

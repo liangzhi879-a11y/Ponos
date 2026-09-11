@@ -18,11 +18,18 @@ import { useCockpitOverview, type CockpitOverviewData } from './useCockpitOvervi
 export interface CockpitScreenProps {
   /** 视图当前是否正展示驾驶舱；false = 保活隐藏（不卸载 iframe） */
   active: boolean
+  /**
+   * 预热态（2026-09-11 空白期修复）：boot 启动屏期间挂载 iframe 提前加载/绘帧。
+   * 与 active=false 的区别——预热态用 visibility:hidden（保留布局，iframe 视口非 0，
+   * 驾驶舱 canvas 首次 layout 即为正确尺寸并在屏后完成首帧绘制），而 active=false
+   * 用 display:none（work 期间保活，回切时靠 resize 重排）。二者都不卸载 iframe。
+   */
+  preload?: boolean
   /** hub 点击（且无面板开启）→ 通知 ViewRouter 播放 LogoMorph 并进入工作屏 */
   onEnterWork: () => void
 }
 
-export function CockpitScreen({ active, onEnterWork }: CockpitScreenProps) {
+export function CockpitScreen({ active, preload = false, onEnterWork }: CockpitScreenProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
   // src 仅挂载时定型：首帧主题经 query 直给全量主题 ID（资产 head 即解析，避免就绪前底色错）
@@ -80,8 +87,16 @@ export function CockpitScreen({ active, onEnterWork }: CockpitScreenProps) {
     return () => window.removeEventListener('message', onMessage)
   }, [])
 
+  // 三态容器类：active=可见；preload=布局保留但不可见（boot 期预热）；
+  // 其余=display:none 保活（work 期，iframe 不卸载）
+  const shellClass = active
+    ? 'h-full w-full relative bg-app'
+    : preload
+      ? 'h-full w-full relative invisible'
+      : 'hidden'
+
   return (
-    <div className={active ? 'h-full w-full relative bg-app' : 'hidden'} aria-hidden={!active}>
+    <div className={shellClass} aria-hidden={!active}>
       <iframe
         ref={iframeRef}
         title="Cockpit"

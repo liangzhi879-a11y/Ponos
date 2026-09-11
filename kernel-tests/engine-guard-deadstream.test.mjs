@@ -12,9 +12,17 @@
 //   ② 空闲看门狗按"本流是否产出过内容"分流：0 产出 → 上游空转/未就绪提示；已产出
 //      后停顿 → 推理中途停顿（保留"可继续重试"）。
 // 测试把 STREAM_IDLE_MS 压到 400ms 加速。注意：STREAM_IDLE_MS 在 engine 模块求值期
-// 冻结 → env 必须在 import 前设定。
+// 冻结 → env 必须在 import 前设定。2026-09-09 起看门狗分两阶段窗口（首内容前按
+// PONOS_STREAM_FIRST_BYTE_MS 宽限），零数据挂起默认自动重试（PONOS_IDLE_DEAD_RETRIES）——
+// 本文件聚焦"收尾路径"断言，显式关掉重试并同步压缩首内容窗口（重试行为另见
+// engine-guard-idle-retry.test.mjs）。
 process.env.PONOS_MOCK_API = '1'
 process.env.PONOS_STREAM_IDLE_MS = '400'
+process.env.PONOS_STREAM_FIRST_BYTE_MS = '400'
+process.env.PONOS_IDLE_DEAD_RETRIES = '0'
+// 2026-09-10：上游空流无感愈合（UPSTREAM_DEAD_HEAL_MAX 默认 2×30s 退避）由
+// engine-guard-heal.test.mjs 覆盖；本文件验证"快速失败"机制本身，显式关闭愈合层
+process.env.PONOS_UPSTREAM_DEAD_HEAL_MAX = '0'
 const { createEngine } = await import('../kernel/engine.mjs')
 import { classifyApiError, deadStreamError } from '../kernel/api.mjs'
 import { test } from 'node:test'
@@ -100,8 +108,10 @@ test('[mock:agent-lane-stall-think] 子 lane 只产 thinking 后停顿 → 判"�
       `lane 仅产 thinking 后停应收"推理中途停顿"语义，实际：${notifText.slice(0, 400)}`)
     assert.ok(!notifText.includes('未收到任何数据'), `不应误报"未收到任何数据"，实际：${notifText.slice(0, 400)}`)
     assert.ok(!notifText.includes('上游服务空流'), `不应误报"上游服务空流"，实际：${notifText.slice(0, 400)}`)
-    // 由空闲看门狗（400ms）中止：既非死流快速失败（<100ms），也非 mock 兜底 1.5s 正常返回
-    assert.ok(elapsed >= 300 && elapsed < 1500, `应 ~400ms 由看门狗中止，实际耗时 ${elapsed}ms`)
+    // 由空闲看门狗（400ms）中止：既非死流快速失败（<100ms），也非 mock 兜底正常返回。
+    // 上界放宽到 2500ms：全量套件并行跑时 CPU 争抢拉伸计时器（单跑 ~900ms，实测
+    // 并行下 1596ms）——语义断言（"推理中途停顿"文案只来自看门狗路径）才是硬判别。
+    assert.ok(elapsed >= 300 && elapsed < 2500, `应 ~400ms 由看门狗中止，实际耗时 ${elapsed}ms`)
     assert.ok(typeof result.text === 'string' && result.text.length > 0, '主线程正常收尾')
   } finally {
     rmSync(dir, { recursive: true, force: true })

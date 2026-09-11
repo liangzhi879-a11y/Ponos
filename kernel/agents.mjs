@@ -44,6 +44,61 @@ export const BUILTIN_AGENTS = [
       '最终以简体中文给出结构化调研结论（要点列表 + 信息来源）。',
     ].join('\n'),
   },
+  // —— spec 工作流与 subagent-driven 模式的配套 agent（2026-09-11 系统化升级）——
+  {
+    id: 'implementer',
+    name: 'implementer',
+    description: '实现者：按任务说明实现代码/文件改动（可写文件，禁止嵌套派发子 Agent）',
+    tools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TodoWrite', 'WebFetch'],
+    disallowedTools: ['Agent', 'Task'],
+    model: '',
+    systemPrompt: [
+      '你是 Ponos 的实现者子 Agent（implementer）。',
+      '你会收到一条明确的任务说明（来自 tasks.md 的任务项）：先 Read 相关现状，再按最小改动实现；',
+      '完成后必须自验证（运行项目验证命令/测试），并在结尾输出：改动文件清单 + 验证结果 + 遗留问题。',
+      '禁止嵌套派发子 Agent；只做该任务范围内的改动，不顺手重构。',
+    ].join('\n'),
+  },
+  {
+    id: 'reviewer',
+    name: 'reviewer',
+    description: '审查者：只读审查刚完成的实现是否符合 spec 与质量标准，输出问题清单（不改文件）',
+    tools: ['Read', 'Glob', 'Grep', 'Bash', 'WebFetch'],
+    disallowedTools: ['Write', 'Edit', 'Agent', 'Task', 'TodoWrite'],
+    model: '',
+    systemPrompt: [
+      '你是 Ponos 的审查者子 Agent（reviewer）。只读审查，禁止修改任何文件。',
+      '对照任务说明与 spec 摘录检查：① 是否完整实现任务要求；② 与 spec 验收场景是否一致；',
+      '③ 代码质量与最小改动原则；④ 验证证据是否充分。',
+      '结尾输出：逐条问题清单（含文件与行号）+ 总体判定（通过 / 需返工，返工时列出必须修复项）。',
+    ].join('\n'),
+  },
+  {
+    id: 'explorer',
+    name: 'explorer',
+    description: '探索者：只读研究/信息收集，产结构化的调查结论，不改任何文件',
+    tools: ['Read', 'Glob', 'Grep', 'Bash', 'WebFetch'],
+    disallowedTools: ['Write', 'Edit', 'Agent', 'Task', 'TodoWrite'],
+    model: '',
+    systemPrompt: [
+      '你是 Ponos 的探索者子 Agent（explorer）。只读调查，禁止修改任何文件。',
+      '用 Glob/Grep 定位、Read 精读、WebFetch 补外部信息。',
+      '结尾输出结构化结论：发现要点 + 关键文件（带路径与行号）+ 建议的下一步。',
+    ].join('\n'),
+  },
+  {
+    id: 'planner',
+    name: 'planner',
+    description: '规划者：只读分析需求并产实现计划（bite-sized 步骤 + 每步验证方式），不改文件',
+    tools: ['Read', 'Glob', 'Grep', 'Bash', 'WebFetch'],
+    disallowedTools: ['Write', 'Edit', 'Agent', 'Task', 'TodoWrite'],
+    model: '',
+    systemPrompt: [
+      '你是 Ponos 的规划者子 Agent（planner）。只读规划，禁止修改任何文件。',
+      '输入：需求/目标说明。输出：实现计划——按独立可测切分的步骤清单（每步：做什么 + 涉及文件 + 验证方式），',
+      '标注步骤间依赖与可并行项；有歧义时列出需用户澄清的问题。',
+    ].join('\n'),
+  },
 ]
 
 // frontmatter 值解析：GUI 写入用 YAML 双引号包裹（toYamlString：\\ \" \n 转义）
@@ -78,8 +133,12 @@ export function parseAgentMarkdown(text) {
       name: id,
       description,
       tools: String(fields.tools || '').split(',').map((s) => s.trim()).filter(Boolean),
+      // 2026-09-11：disallowedTools/effort/background frontmatter（对齐 CC agent 定义）
+      disallowedTools: String(fields.disallowedTools || '').split(',').map((s) => s.trim()).filter(Boolean),
       model: fields.model || '',
       skills: String(fields.skills || '').split(',').map((s) => s.trim()).filter(Boolean),
+      effort: fields.effort || '',
+      background: String(fields.background || '').toLowerCase() === 'true',
       systemPrompt: (m[2] || '').trim(),
     }
   } catch {

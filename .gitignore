@@ -21,6 +21,9 @@ scratch/
 .DS_Store
 Thumbs.db
 
+# 设计源文件工作区（YF/ 含 .ai 源稿与日志，42MB，非运行时资源；产物在 public/ 与 src/lib/assets）
+YF/
+
 # S3 合并自 cg（2026-09-07）：构建产物 / 运行时 / 调试残留 / SDD 工作区
 dist-electron
 /node.exe

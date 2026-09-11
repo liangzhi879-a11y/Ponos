@@ -18,9 +18,9 @@ jiajia-pet.py — 嘉嘉像素桌面宠物 v3（USAGE.md v2.0 规范重构版）
   - 鼠标拖动：grabbed → 跟随光标 → release → idle
 
 依赖：Python 3.12 + tkinter + Pillow + websocket-client
-配置：~/.yfworking/pet.json  {enabled, size, aiInteraction, randomChat}
-位置：~/.yfworking/pet-position.json
-日志：~/.yfworking/pet.log
+配置：$YFWORKING_HOME/pet.json（默认 ~/.yfw，与 GUI 数据根一致）  {enabled, size, aiInteraction, randomChat}
+位置：$YFWORKING_HOME/pet-position.json
+日志：$YFWORKING_HOME/pet.log
 """
 import json
 import os
@@ -50,7 +50,9 @@ IS_WINDOWS = sys.platform == 'win32'
 MAGIC = '#010203'
 MAGIC_RGB = (1, 2, 3)
 
-YFW_HOME = Path(os.path.expanduser('~')) / '.yfworking'
+# 数据根随 GUI 走（2026-09-09 串配置事故修复）：YFWORKING_HOME 由 Electron main
+# spawn 时注入（默认 ~/.yfw），不再与在售旧版 ~/.yfworking 互串。
+YFW_HOME = Path(os.environ.get('YFWORKING_HOME') or os.path.expanduser('~/.yfw'))
 CONFIG_PATH = YFW_HOME / 'pet.json'
 POS_PATH = YFW_HOME / 'pet-position.json'
 LOG_PATH = YFW_HOME / 'pet.log'

@@ -5,19 +5,47 @@
 // 无模型调用；engine/compact/health 消费。
 export const DEFAULT_WINDOW = 200_000
 
-// 模型窗口表（可扩展）：deepseek-v4-flash=200K / deepseek-v4-pro=1M
+// 本地画像保守默认窗口（2026-09-10 小窗口本地模型适配）：探测/手配/内置表均未命中
+// 时使用。偏小不偏大——低估只多压几次（可接受），高估会让 32K 级本地模型反复撞
+// 400（云端 400 学习只下调不上调，高估无法自愈）。一手来源 = 探测（vLLM /v1/models
+// 的 max_model_len）与 provider.contextWindow；本默认仅兜底两者都不可用场景。
+export const LOCAL_DEFAULT_WINDOW = 65_536
+
+// 模型窗口表（可扩展）：deepseek-v4-flash=200K / deepseek-v4-pro=1M / MiniMax-M3=256K
 export const MODEL_CONTEXT_WINDOWS = {
   'deepseek-v4-flash': 200_000,
   'deepseek-v4-pro': 1_000_000,
+  'MiniMax-M3': 262_144,
 }
 
-// contextWindow 来源优先级：CLAUDE_CODE_AUTO_COMPACT_WINDOW（bridge 注入）→ 模型表 → 默认
+// contextWindow 来源优先级：内置模型表 → CLAUDE_CODE_AUTO_COMPACT_WINDOW（bridge
+// 注入 provider 手配值）→ 画像默认（PONOS_PROVIDER_PROFILE=local → 64K 保守，
+// cloud/未知 → 200K）。
+// 2026-09-11 表优先于注入：表是模型的"事实窗口"，注入值是 provider 级声明——对
+// 已知模型以事实为准（实测 deepseek provider 手配 1M 在 v4-flash（真实 200K）上
+// 虚高 → 压缩阈值按 1M 算永不触发 → 大会话每轮全量重发 1MB 请求"切 DS 也卡"）。
+// 未知模型仍注入优先（表无依据时尊重用户声明）；带后缀模型（MiniMax-M3[1m]）不
+// 命中表条目 → 注入 1M 正常生效。
 export function contextWindowFor(model, env = process.env) {
-  const injected = Number(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW)
-  if (Number.isFinite(injected) && injected > 0) return injected
   const byModel = MODEL_CONTEXT_WINDOWS[String(model || '')]
   if (byModel) return byModel
-  return DEFAULT_WINDOW
+  const injected = Number(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW)
+  if (Number.isFinite(injected) && injected > 0) return injected
+  return env.PONOS_PROVIDER_PROFILE === 'local' ? LOCAL_DEFAULT_WINDOW : DEFAULT_WINDOW
+}
+
+// 调用时输出预算钳制（pi clampMaxTokensToContext 语义；2026-09-10 小窗口本地模型适配）：
+// 每次模型调用前按 window − 输入估算 − 余量 收窄 max_tokens，保证 input+max_tokens
+// 恒 ≤ 窗口——本地小窗口模型（32K-64K）配大默认预算（64K/16K）不再必然撞 400。
+// cap 低于 floor 时返回 floor（宁可小预算尝试，也不放大请求；仍装不下由 400 自愈路径
+// 兜底——且 400 能揭示端点真实窗口供采纳学习）。预算/窗口非法返回 null（调用方跳过）。
+export function clampOutputBudgetForWindow({ window, inputEst, budget, reserve = 2048, floor = 1024 }) {
+  if (!Number.isFinite(window) || window <= 0) return null
+  if (!Number.isFinite(budget) || budget <= 0) return null
+  const est = Number.isFinite(inputEst) && inputEst > 0 ? inputEst : 0
+  const cap = Math.floor(window - est - reserve)
+  if (cap < floor) return Math.floor(floor)
+  return Math.min(budget, cap)
 }
 
 // 密度系数（默认 text=4 / code=3 / cjk=1，可经 env 校准）。CJK（汉字/假名/谚文/

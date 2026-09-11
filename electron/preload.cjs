@@ -36,6 +36,11 @@ contextBridge.exposeInMainWorld('yfworkingWindow', {
   isMaximized: () => ipcRenderer.invoke('window:is-maximized'),
   // 认证小窗：认证通过 → 主进程关小窗、创建主窗口（spec §2.0 / Task 6b）
   authGranted: () => ipcRenderer.send('auth:granted'),
+  // 认证小窗关闭钮（2026-09-10 无边框登录窗）
+  authClose: () => ipcRenderer.send('auth:close'),
+  // 独立工具窗口（2026-09-10 设置/个人外置）：打开 settings/profile 小窗 / 关闭本窗
+  openUtility: (kind) => ipcRenderer.send('utility:open', kind),
+  closeUtility: () => ipcRenderer.send('utility:close'),
   // 技能经验消费提醒（主进程启动时推送 pending 积压）
   onExperienceAlert: (callback) => {
     const listener = (_event, data) => callback(data)
@@ -69,14 +74,13 @@ contextBridge.exposeInMainWorld('yfworkingFile', {
   openSkillPackage: () => ipcRenderer.invoke('dialog:open-skill-package'),
 })
 
-// 豆包图片生成（main 侧 doubao:* ipcMain.handle 配对；生成请求需经主进程页面上下文）
-contextBridge.exposeInMainWorld('doubao', {
-  openLogin: () => ipcRenderer.invoke('doubao:open-login'),
-  getStatus: () => ipcRenderer.invoke('doubao:get-status'),
-  logout: () => ipcRenderer.invoke('doubao:logout'),
-  generate: (payload) => ipcRenderer.invoke('doubao:generate', payload),
-  instant: (payload) => ipcRenderer.invoke('doubao:instant', payload),
-  capture: () => ipcRenderer.invoke('doubao:capture'),
+// 启动预热进度（2026-09-11：main 轮询 bridge /boot-status 后转发真实模块就绪事件）
+contextBridge.exposeInMainWorld('yfwBoot', {
+  onProgress: (callback) => {
+    const listener = (_event, data) => { try { callback(data) } catch {} }
+    ipcRenderer.on('boot:progress', listener)
+    return () => ipcRenderer.removeListener('boot:progress', listener)
+  },
 })
 
 // 内置浏览器自动化（main 侧 browser:* ipcMain.handle 配对；供状态条打开窗口/暂停/继续/清空会话）

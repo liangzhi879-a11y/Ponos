@@ -97,6 +97,13 @@ interface UIState {
   kernelStalls: Record<string, number>
   setKernelStall: (id: string, ms: number) => void
   clearKernelStall: (id: string) => void
+
+  // 首字节等待提示（2026-09-09 长任务挂起事故）：轮次活跃但内核静默时，桥发
+  // system/first_byte_pending（silentMs）。与 kernelStalls 分级：5s 起等待提示、
+  // 90s 升级失速告警（升级时桥侧先发 kernel-stall，此处状态被清除）。瞬时态，不入 partialize。
+  firstByteWait: Record<string, number>
+  setFirstByteWait: (id: string, ms: number) => void
+  clearFirstByteWait: (id: string) => void
 }
 
 export const useUIStore = create<UIState>()(
@@ -124,6 +131,7 @@ export const useUIStore = create<UIState>()(
       pendingAutoSend: false,
       scheduleGuideFor: null,
       kernelStalls: {},
+      firstByteWait: {},
 
       toggleSidebar: () => set(s => ({ sidebarOpen: !s.sidebarOpen })),
       toggleEditor: () => set(s => ({ editorOpen: !s.editorOpen })),
@@ -212,6 +220,13 @@ export const useUIStore = create<UIState>()(
         const next = { ...s.kernelStalls }
         delete next[id]
         return { kernelStalls: next }
+      }),
+      setFirstByteWait: (id, ms) => set(s => ({ firstByteWait: { ...s.firstByteWait, [id]: ms } })),
+      clearFirstByteWait: (id) => set(s => {
+        if (!(id in s.firstByteWait)) return {} // delete 幂等：无键不动作
+        const next = { ...s.firstByteWait }
+        delete next[id]
+        return { firstByteWait: next }
       }),
       pinnedSkills: [],
       togglePinSkill: (id) => {

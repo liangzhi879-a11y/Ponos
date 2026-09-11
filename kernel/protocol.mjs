@@ -63,6 +63,17 @@ export function makeWire(stream = process.stdout) {
     summary(text, compactCount) {
       writeLine(stream, { type: 'ponos_summary', text: String(text ?? ''), compactCount })
     },
+    // 工具结果 live 回传（2026-09-09 会话 UI 标准化）：此前 wire 只发
+    // tool_use、结果仅落盘 transcript（GUI 历史回放才可见）——内联工具卡片的
+    // "执行中/完成/失败"状态机依赖本事件。bridge 转发、GUI 回填对应 part。
+    toolResult({ toolUseId, content, isError = false }) {
+      writeLine(stream, {
+        type: 'tool_result',
+        tool_use_id: toolUseId,
+        content: String(content ?? ''),
+        is_error: isError === true,
+      })
+    },
     // —— subagent 生命周期事件（shape 对齐 release 内核，GUI usePonosCLI task_* 分支消费）——
     // S1 血缘：task_started 携带 parent_task_id/depth（主 agent 派发为 null/0，
     // GUI 可依此渲染任务树；子 lane 嵌套预留，见 subagent-collaboration-upgrade）

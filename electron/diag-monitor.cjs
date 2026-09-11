@@ -25,7 +25,6 @@ const CHECKS = [
   { id: 'python-runtime', group: 'doc', label: 'diagnostic.check.pythonRuntime' },
   { id: 'office-ocr', group: 'doc', label: 'diagnostic.check.officeOcr' },
   { id: 'pet-alive', group: 'extras', label: 'diagnostic.check.petAlive' },
-  { id: 'doubao-session', group: 'extras', label: 'diagnostic.check.doubaoSession' },
   { id: 'editor-available', group: 'extras', label: 'diagnostic.check.editorAvailable' },
   { id: 'config-valid', group: 'config', label: 'diagnostic.check.configValid' },
   { id: 'provider-valid', group: 'config', label: 'diagnostic.check.providerValid' },
@@ -231,11 +230,6 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
     return { status: ctx.petAlive() ? 'ok' : 'warn', detail: ctx.petAlive() ? '宠物进程存活' : '宠物未启用' }
   }
 
-  async function checkDoubaoSession() {
-    const p = join(YFW_HOME, 'doubao-session.json')
-    try { JSON.parse(readFileSync(p, 'utf-8')); return { status: 'ok', detail: p } } catch (_) { return { status: 'warn', detail: '无豆包会话文件（未使用过）' } }
-  }
-
   async function checkEditorAvailable() {
     // 编辑器依赖原生窗口；仅做基础资源存在性检查
     return { status: 'ok', detail: '编辑器窗口能力正常（随主进程）' }
@@ -297,7 +291,7 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
     'transcript-dir': checkTranscriptDir, 'transcript-index': checkTranscriptIndex,
     'executor-connected': checkExecutorConnected, 'executor-window': checkExecutorWindow, 'browser-whitelist': checkBrowserWhitelist,
     'python-runtime': checkPythonRuntime, 'office-ocr': checkOfficeOcr, 'pet-alive': checkPetAlive,
-    'doubao-session': checkDoubaoSession, 'editor-available': checkEditorAvailable, 'config-valid': checkConfigValid,
+    'editor-available': checkEditorAvailable, 'config-valid': checkConfigValid,
     'provider-valid': checkProviderValid, 'data-dirs': checkDataDirs, 'skills-index': checkSkillsIndex,
     'last-boot': checkLastBoot, 'provider-reach': checkProviderReach, 'gpu-health': checkGpuHealth,
     'render-health': checkRenderHealth,
