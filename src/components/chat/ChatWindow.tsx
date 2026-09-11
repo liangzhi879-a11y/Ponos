@@ -1,30 +1,22 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { ArrowDown, FolderOpen, Lightbulb } from 'lucide-react'
+import { ArrowDown, Lightbulb, FolderOpen } from 'lucide-react'
 import { Button } from '@/components/ui'
-import { ScrollArea } from '@/components/ui'
-import { MessageBubble } from './MessageBubble'
-import { DirectoryPicker } from './DirectoryPicker'
-import { RunningAgentsBar } from './RunningAgentsBar'
+import { DirectoryPicker } from '@/components/chat/DirectoryPicker'
+import { ThreadPrimitive } from '@assistant-ui/react'
 import { HealthGlow } from './HealthGlow'
-import { CompressedToast } from './CompressedToast'
-import { LaneCompactionToast } from './LaneCompactionToast'
-import { KernelStallBar } from './KernelStallBar'
-import { SystemWarningStrip } from './SystemWarningStrip'
 import { SessionModeBar } from './SessionModeBar'
 import { LoopStatusBar } from './LoopStatusBar'
-import { CompactingBar } from './CompactingBar'
-import { BrowserStatusBar } from '@/components/browser/BrowserStatusBar'
+import { ChatRuntimeProvider } from '@/lib/chatRuntime'
+import { ChatContext } from './MarkdownText'
+import { AssistantMessageView, UserMessageView, SystemMessageView } from './AssistantMessageView'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn } from '@/lib/utils'
-import { getDefaultHome } from '@/lib/config'
 import { getAgentById } from '@/lib/agents'
 import { useAgentStore } from '@/stores/agentStore'
 import { AgentAvatar } from '@/components/agents/AgentAvatar'
-import type { ContentBlock } from '@/types'
-import { useVirtualizer } from '@tanstack/react-virtual'
 
 interface Props {
   conversationId: string
@@ -63,23 +55,18 @@ function pickRandomTip(pool: readonly string[], exclude?: string): string {
 }
 
 export function ChatWindow({ conversationId }: Props) {
-  // 选择器订阅（非整 store）：流式风暴下每事件 set() 只重建 conversations 等受影响
-  // 切片，避免 pendingPermissions/backgroundTasks 等无关字段变化连带重渲染本组件。
   const conversations = useChatStore(s => s.conversations)
-  const streamingConversations = useChatStore(s => s.streamingConversations)
-  const retryMessage = useChatStore(s => s.retryMessage)
-  const editMessage = useChatStore(s => s.editMessage)
   const { setPendingInput } = useUIStore()
-  const { settings } = useSettingsStore()
   const { t, lang } = useTranslation()
   const subAgentTasks = useChatStore(s => s.subAgentTasks[conversationId])
   // v2 按需加载：切换会话时消息异步从内核 transcript 拉取，加载中显示轻量占位而非空态
   const conversationLoading = useChatStore(s => !!s.conversationLoading[conversationId])
-  // 响应式订阅 agents：修改头像后徽章即时更新
   const allAgents = useAgentStore(s => s.agents)
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const viewportRef = useRef<HTMLDivElement>(null)
   const [showScrollButton, setShowScrollButton] = useState(false)
   const [highlightId, setHighlightId] = useState<string | null>(null)
+  // 任务目录选择（2026-09-11）：任务模式欢迎页 logo 下方的目录入口
+  const [showDirPicker, setShowDirPicker] = useState(false)
   // 使用提示：空态单条展示。切换会话/语言时重抽一条
   const [tip, setTip] = useState<string>(() => pickRandomTip(TIPS_POOL[lang] ?? TIPS_POOL['zh-CN']))
   useEffect(() => {
@@ -89,9 +76,19 @@ export function ChatWindow({ conversationId }: Props) {
   const conversation = conversations.find(c => c.id === conversationId)
   const messages = conversation?.messages || []
   const isEmpty = messages.length === 0
+  // 任务模式（mode 缺省 'task'）：欢迎页展示目录入口；chat 纯聊不绑业务目录
+  const isTaskMode = (conversation?.mode ?? 'task') === 'task'
+  const cwd = conversation?.cwd || ''
+  // 更换目录 = 切换工作根：更新会话 cwd 并使会话失效（下次发送以新目录重 spawn
+  // 内核会话；与 TaskCwdBar 原语义一致，2026-09-11 目录入口收敛）
+  const changeCwd = (path: string) => {
+    const st = useChatStore.getState()
+    st.setConversationCwd(conversationId, path)
+    st.invalidateSession(conversationId)
+    setShowDirPicker(false)
+  }
   // 加载中但历史非空（索引里 messageCount>0）：显示占位，不闪"新对话"空态
   const loadingWithHistory = conversationLoading && isEmpty && (conversation?.messageCount ?? 0) > 0
-  const [showDirPicker, setShowDirPicker] = useState(false)
   // 空态停留时缓慢轮换单条 tips（10s/条、去重），让储备池内容逐步露出
   useEffect(() => {
     if (!isEmpty) return
@@ -101,126 +98,24 @@ export function ChatWindow({ conversationId }: Props) {
     return () => clearInterval(id)
   }, [isEmpty, conversationId, lang])
 
-  // Virtualized message list: only the visible window is rendered inside the
-  // radix ScrollArea viewport (the real scroll container), so a 10k-message
-  // conversation no longer forces a full `messages.map` DOM tree.
-  const virtualizer = useVirtualizer({
-    count: messages.length,
-    // Re-query on every call so the viewport is picked up after mount (refs are
-    // attached before this layout effect runs); a captured render-time value
-    // would be null on the first pass and never observe the scroller.
-    getScrollElement: () =>
-      (scrollRef.current?.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null) ?? null,
-    estimateSize: () => 96, // lower bound for dynamic content; corrected by measureElement
-    overscan: 6,
-    getItemKey: (index) => messages[index]?.id ?? index,
-  })
-  // Latest values for the once-registered search listener (HistoryView event).
-  const messagesRef = useRef(messages)
-  messagesRef.current = messages
-  const virtualizerRef = useRef(virtualizer)
-  virtualizerRef.current = virtualizer
-
-  // Smart auto-scroll: only follow when the user is pinned to the bottom.
-  // Once the user scrolls up to read history, stop forcing — the "scroll to
-  // bottom" button appears and they can re-engage by clicking it (which also
-  // re-pins).  A new message arriving (new turn) also re-pins automatically.
-  const isPinnedRef = useRef(true)
-  const prevMessageCountRef = useRef(messages.length)
-  const convIdRef = useRef(conversationId)
-  const sigRef = useRef('')
-  const subTasksRef = useRef(subAgentTasks)
-
-  // Track whether the user is pinned to the bottom via scroll events.
-  // Must use a ref (not state) so the effect below reads the live value
-  // synchronously — setState is batched and would be stale inside the effect.
-  const handleScrollWithPin = useCallback(() => {
-    const el = scrollRef.current?.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null
+  // 滚动贴底跟踪：assistant-ui Viewport 内建 autoScroll 负责跟随；这里只维护
+  // "用户已上翻 → 显示回底按钮"的展示态。
+  const handleViewportScroll = useCallback(() => {
+    const el = viewportRef.current
     if (!el) return
-    const { scrollTop, scrollHeight, clientHeight } = el
-    const distanceFromBottom = scrollHeight - scrollTop - clientHeight
-    isPinnedRef.current = distanceFromBottom < 50
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
     setShowScrollButton(distanceFromBottom > 100)
   }, [])
 
-  // Signature of THIS conversation's visible content. Other conversations
-  // streaming updates produce a new `messages` array reference without
-  // changing this signature — so we don't yank the user's scroll position
-  // while they're reading a different conversation.
-  const lastMsg = messages[messages.length - 1]
-  const lastBlocks = lastMsg?.content as ContentBlock[] | undefined
-  const lastTextLen = lastBlocks?.[lastBlocks.length - 1]?.content?.length ?? 0
-  const signature = `${messages.length}:${lastMsg?.id || ''}:${lastBlocks?.length ?? 0}:${lastTextLen}`
-
-  // 贴底定位：虚拟列表真实高度随 measureElement 逐项测量后增长（初始按
-  // estimateSize 96px 估算）。若只用 scrollToIndex 按估算值定位一次，测量撑高
-  // 列表后视口会停在历史中间（用户反馈"定位在不知道哪个中间的对话"）。
-  // 改为直接读真实 scrollHeight 贴底，并用 rAF 多轮追赶直到高度稳定，
-  // 保证冷启动/切换会话/新消息时最终都落在真实底部（最新消息贴视口底边）。
-  const settleToBottom = useCallback(() => {
-    if (messages.length === 0) return
-    let prev = -1
-    let guard = 0
-    const tick = () => {
-      if (++guard > 30) return
-      const el = scrollRef.current?.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null
-      if (!el) {
-        requestAnimationFrame(tick)
-        return
-      }
-      if (el.scrollHeight !== prev) {
-        prev = el.scrollHeight
-        el.scrollTop = el.scrollHeight - el.clientHeight
-      }
-      requestAnimationFrame(tick)
-    }
-    tick()
-  }, [messages.length])
-
-  useEffect(() => {
-    const el = scrollRef.current?.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null
-    if (!el) return
-
-    const convChanged = convIdRef.current !== conversationId
-    convIdRef.current = conversationId
-
-    // New message arrives: re-pin so the user sees the assistant's first reply
-    const isNewMessageTurn = messages.length > prevMessageCountRef.current
-    prevMessageCountRef.current = messages.length
-    if (isNewMessageTurn) {
-      isPinnedRef.current = true
-    }
-
-    const subTasksChanged = subAgentTasks !== subTasksRef.current
-    subTasksRef.current = subAgentTasks
-    const contentChanged = convChanged || signature !== sigRef.current || subTasksChanged
-    sigRef.current = signature
-    if (!contentChanged) return
-
-    // Switching conversation: jump to the bottom of the freshly rendered one
-    if (convChanged) {
-      isPinnedRef.current = true
-      settleToBottom()
-      return
-    }
-
-    // Only auto-scroll when pinned to the bottom
-    if (settings.autoScroll && isPinnedRef.current) {
-      settleToBottom()
-    }
-  }, [signature, messages.length, conversationId, settings.autoScroll, subAgentTasks, virtualizer, settleToBottom])
-
-  // Scroll to message id triggered from HistoryView
+  // HistoryView 跳转：按 data-message-id 定位（元素已在 DOM，scrollIntoView 即可）
   useEffect(() => {
     const handler = () => {
       const id = (window as any).__scrollToMessageId
       if (!id) return
       delete (window as any).__scrollToMessageId
-      // Virtualized: locate by index (the target may not be rendered yet),
-      // scroll it into the viewport center, then flash a highlight.
-      const index = messagesRef.current.findIndex((m) => m.id === id)
-      if (index === -1) return
-      virtualizerRef.current.scrollToIndex(index, { align: 'center' })
+      const el = viewportRef.current?.querySelector(`[data-message-id="${id}"]`)
+      if (!el) return
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' })
       setHighlightId(id)
       setTimeout(() => setHighlightId((cur) => (cur === id ? null : cur)), 1500)
     }
@@ -229,178 +124,148 @@ export function ChatWindow({ conversationId }: Props) {
   }, [])
 
   const scrollToBottom = () => {
-    isPinnedRef.current = true
-    if (messages.length > 0) {
-      virtualizer.scrollToIndex(messages.length - 1, { align: 'end', behavior: 'smooth' })
-    }
+    const el = viewportRef.current
+    if (el) el.scrollTop = el.scrollHeight
   }
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 relative">
-      <HealthGlow conversationId={conversationId} />
-      {/* 内置浏览器自动化精简状态条（消息区上方；无事件不占位） */}
-      <BrowserStatusBar conversationId={conversationId} />
-      {/* 内核失速守卫条（bridge 看门狗 kernel-stall 告警；无告警不占位，BrowserStatusBar 在时自动下移） */}
-      <KernelStallBar conversationId={conversationId} />
-      {/* agentloop P3 统一系统提示条（ponos_warning：budget/skill_version/agent_spec/context；文档流元素，无告警不占位） */}
-      <SystemWarningStrip conversationId={conversationId} />
-      {/* 会话模式徽标条（chat 纯聊 / task 全工具）：位于系统条之下、消息滚动区之上，
-          不随消息滚动；无活动会话不占位。Task 13 在同一行右侧放 effort 选择器。 */}
-      <SessionModeBar conversationId={conversationId} />
-      <ScrollArea ref={scrollRef} className="flex-1 pl-1" onScroll={handleScrollWithPin}>
-        {loadingWithHistory ? (
-          /* v2 按需加载占位：历史会话消息拉取中 */
-          <div className="flex-1 flex flex-col items-center justify-center h-full px-6 py-8 select-none">
-            <div className="w-8 h-8 rounded-full border-2 border-subtle border-t-brand-500 animate-spin" />
-            <p className="mt-4 text-sm text-tertiary">加载会话中…</p>
-          </div>
-        ) : isEmpty ? (
-          /* YFWorking branded empty state */
-          <div className="flex-1 flex flex-col items-center justify-center h-full px-6 py-8 animate-fade-in select-none">
-            {/* Brand hero：boost-logo 横版整标（纯图形；品牌字标由下方 h1 承担，与 Header 图文分工一致） */}
-            <img
-              src={`${import.meta.env.BASE_URL}logo.png`}
-              alt="YFWorking"
-              draggable={false}
-              className="w-44 h-auto object-contain mb-10 select-none"
-            />
+    <ChatRuntimeProvider conversationId={conversationId}>
+      <ChatContext.Provider value={{ cwd: conversation?.cwd || '', conversationId }}>
+        <div className="flex-1 flex flex-col min-h-0 relative">
+          <HealthGlow conversationId={conversationId} />
+          {/* 浏览器状态条/失速守卫/首字节等待/系统告警已全部收进右侧折叠状态栏（2026-09-10） */}
+          {/* 会话模式徽标条（chat 纯聊 / task 全工具）：位于系统条之下、消息滚动区之上，
+              不随消息滚动；无活动会话不占位。Task 13 在同一行右侧放 effort 选择器。 */}
+          <SessionModeBar conversationId={conversationId} />
 
-            {/* Working directory selector */}
-            <div className="mb-8 w-full max-w-md">
-              <label className="block text-[11px] text-tertiary mb-2 font-semibold uppercase tracking-wider">
-                {t('chat.workingDirectory')}
-              </label>
-              <div className="relative">
-                <button
-                  onClick={() => setShowDirPicker(!showDirPicker)}
-                  className="w-full flex items-center gap-3 h-10 bg-elevated border border hover:border rounded-lg px-4 text-sm text-secondary font-mono transition-all duration-200 hover:shadow-sm"
-                >
-                  <FolderOpen className="w-4 h-4 text-brand-500/70 shrink-0" />
-                  <span className="truncate">{conversation?.cwd || getDefaultHome()}</span>
-                  <span className="text-[10px] text-brand-500/70 ml-auto shrink-0 font-medium">{t('chat.browse')}</span>
-                </button>
-                {showDirPicker && (
-                  <div
-                    className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in"
-                    onClick={() => setShowDirPicker(false)}
-                    style={{
-                      backgroundColor: 'var(--overlay-bg)',
-                      backdropFilter: `blur(var(--overlay-blur))`,
-                      WebkitBackdropFilter: `blur(var(--overlay-blur))`,
-                    }}
-                  >
-                    <div className="w-[420px] max-h-[450px]" onClick={e => e.stopPropagation()}>
-                      <DirectoryPicker
-                        value={conversation?.cwd || getDefaultHome()}
-                        onChange={(path) => {
-                          useChatStore.getState().setConversationCwd(conversationId, path)
-                          setShowDirPicker(false)
-                        }}
-                        onClose={() => setShowDirPicker(false)}
-                      />
-                    </div>
+          {/* 消息区：assistant-ui ThreadPrimitive.Viewport（内建 autoScroll 贴底与
+              锚定，替换原 ScrollArea+虚拟列表+rAF 追赶逻辑） */}
+          <ThreadPrimitive.Viewport
+            ref={viewportRef}
+            autoScroll
+            turnAnchor="bottom"
+            onScroll={handleViewportScroll}
+            className="flex-1 min-h-0 overflow-y-auto pl-1"
+          >
+            {loadingWithHistory ? (
+              /* v2 按需加载占位：历史会话消息拉取中 */
+              <div className="flex flex-col items-center justify-center h-full px-6 py-8 select-none">
+                <div className="w-8 h-8 rounded-full border-2 border-subtle border-t-brand-500 animate-spin" />
+                <p className="mt-4 text-sm text-tertiary">{t('chat.loadingHistory')}</p>
+              </div>
+            ) : isEmpty ? (
+              /* YFWorking branded empty state */
+              <div className="flex flex-col items-center justify-center h-full px-6 py-8 animate-fade-in select-none">
+                {/* Brand hero：boost-logo 横版整标（纯图形；品牌字标由下方 h1 承担，与 Header 图文分工一致） */}
+                <img
+                  src={`${import.meta.env.BASE_URL}logo.png`}
+                  alt="YFWorking"
+                  draggable={false}
+                  className="w-44 h-auto object-contain mb-6 select-none"
+                />
+
+                {/* 任务模式：任务目录选择（2026-09-11）——欢迎页 logo 下方直接放目录
+                    入口，首条消息发送前即可定目录；消息开始后会话内改目录走右侧
+                    状态栏固定目录卡片 */}
+                {isTaskMode && (
+                  <div className="mb-6 w-full max-w-md">
+                    <label className="block text-[11px] text-tertiary mb-2 font-semibold uppercase tracking-wider text-center">
+                      {t('chat.workingDirectory')}
+                    </label>
+                    <button
+                      onClick={() => setShowDirPicker(true)}
+                      title={cwd || t('chat.workingDirNotSet')}
+                      className="w-full h-9 cut-btn hot-hover"
+                    >
+                      <span className="ci flex items-center gap-2.5 px-3.5 h-full !bg-elevated/50">
+                        <FolderOpen className="w-4 h-4 text-brand-500/70 shrink-0" />
+                        <span className={cn('flex-1 min-w-0 truncate text-left text-[12px] font-mono', cwd ? 'text-secondary' : 'text-tertiary')}>
+                          {cwd || t('chat.workingDirNotSet')}
+                        </span>
+                        <span className="text-[10px] text-brand-500/70 shrink-0 font-medium">{t('chat.browse')}</span>
+                      </span>
+                    </button>
                   </div>
                 )}
-              </div>
-            </div>
 
-            {/* Active professional agent */}
-            {(() => {
-              const activeAgent = getAgentById(allAgents, conversation?.agentId)
-              if (!activeAgent) return null
-              return (
-                <div className="mb-8 w-full max-w-md">
-                  <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-brand-500/30 bg-brand-500/10 text-[11px] font-medium text-brand-500">
-                    <AgentAvatar agent={activeAgent} size={16} />
-                    Agent：{activeAgent.name}
+                {/* Active professional agent */}
+                {(() => {
+                  const activeAgent = getAgentById(allAgents, conversation?.agentId)
+                  if (!activeAgent) return null
+                  return (
+                    <div className="mb-8 w-full max-w-md">
+                      <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-brand-500/30 bg-brand-500/10 text-[11px] font-medium text-brand-500">
+                        <AgentAvatar agent={activeAgent} size={16} />
+                        Agent：{activeAgent.name}
+                      </div>
+                    </div>
+                  )
+                })()}
+
+                {/* 使用提示：非推荐任务——储备池随机单条展示（10s 轮换），引导建立正确使用心智 */}
+                <div className="mb-2 w-full max-w-md">
+                  <p className="text-[11px] text-tertiary mb-2 font-semibold uppercase tracking-wider text-center">
+                    {t('chat.usageTips')}
+                  </p>
+                  {/* 2026-09-11 设计语言统一：提示卡 rounded-lg → 单对角切角 */}
+                  <div className="cut-sm">
+                    <div className="ci flex items-start gap-2 px-3.5 py-2.5 !bg-elevated/30">
+                      <Lightbulb className="w-3.5 h-3.5 shrink-0 mt-px text-brand-500/50" />
+                      <span className="text-[13px] leading-relaxed text-tertiary">{tip}</span>
+                    </div>
                   </div>
                 </div>
-              )
-            })()}
 
-            {/* 使用提示：非推荐任务——储备池随机单条展示（10s 轮换），引导建立正确使用心智 */}
-            <div className="mb-2 w-full max-w-md">
-              <p className="text-[11px] text-tertiary mb-2 font-semibold uppercase tracking-wider text-center">
-                {t('chat.usageTips')}
-              </p>
-              <div className="flex items-start gap-2 px-3.5 py-2.5 rounded-lg border border-subtle bg-elevated/30">
-                <Lightbulb className="w-3.5 h-3.5 shrink-0 mt-px text-brand-500/50" />
-                <span className="text-[13px] leading-relaxed text-tertiary">{tip}</span>
+                {/* Footer hint */}
+                <p className="text-[11px] text-tertiary mt-8 text-center">
+                  {t('chat.welcomeFooterHint')}
+                </p>
               </div>
-            </div>
+            ) : (
+              /* 消息流：assistant-ui ThreadPrimitive.Messages children render。
+                 data-message-id 供 HistoryView 跳转定位与高亮。 */
+              <ThreadPrimitive.Messages>
+                {({ message }) => {
+                  const view = message.role === 'user'
+                    ? <UserMessageView />
+                    : message.role === 'assistant'
+                      ? <AssistantMessageView />
+                      : <SystemMessageView />
+                  return (
+                    <div
+                      data-message-id={message.id}
+                      className={cn('pb-1 min-w-0', highlightId === message.id && 'animate-pulse')}
+                    >
+                      {view}
+                    </div>
+                  )
+                }}
+              </ThreadPrimitive.Messages>
+            )}
+          </ThreadPrimitive.Viewport>
 
-            {/* Footer hint */}
-            <p className="text-[11px] text-tertiary mt-8 text-center">
-              {t('chat.welcomeFooterHint')}
-            </p>
-          </div>
-        ) : (
-          /* Messages (virtualized: only the visible window is rendered) */
-          <div
-            className="pb-2 min-w-0 overflow-hidden"
-            style={{ height: virtualizer.getTotalSize(), position: 'relative' }}
-          >
-            {virtualizer.getVirtualItems().map((vi) => {
-              const msg = messages[vi.index]
-              return (
-                <div
-                  key={msg.id}
-                  ref={virtualizer.measureElement}
-                  data-index={vi.index}
-                  data-message-id={msg.id}
-                  className={cn(highlightId === msg.id && 'animate-pulse')}
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    width: '100%',
-                    transform: `translateY(${vi.start}px)`,
-                  }}
-                >
-                  <MessageBubble
-                    message={msg}
-                    isStreaming={streamingConversations[conversationId] === msg.id}
-                    onRetry={msg.role === 'assistant' ? () => retryMessage(conversationId, msg.id) : undefined}
-                    onEdit={msg.role === 'user' ? () => {
-                      const textBlocks = msg.content.filter(b => b.type === 'text')
-                      const text = textBlocks.map(b => b.content).join('\n')
-                      editMessage(conversationId, msg.id, msg.content)
-                      setPendingInput(text)
-                    } : undefined}
-                  />
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </ScrollArea>
+          {/* Scroll to bottom button */}
+          {showScrollButton && (
+            <Button
+              variant="secondary"
+              size="xs"
+              onClick={scrollToBottom}
+              className="absolute bottom-2 right-4 z-10 rounded-full shadow-lg animate-slide-up"
+            >
+              <ArrowDown className="w-4 h-4" />
+            </Button>
+          )}
 
-      {/* Scroll to bottom button */}
-      {showScrollButton && (
-        <Button
-          variant="secondary"
-          size="xs"
-          onClick={scrollToBottom}
-          className="absolute bottom-2 right-4 z-10 rounded-full shadow-lg animate-slide-up"
-        >
-          <ArrowDown className="w-4 h-4" />
-        </Button>
-      )}
+          {/* 多轮 loop 轮次状态条（消息流/输入上方；非 active 不占位）。
+              子 Agent 悬浮条/压缩指示族已移入右侧折叠状态栏（2026-09-10） */}
+          <LoopStatusBar conversationId={conversationId} />
 
-      {/* 运行中子 Agent 悬浮条（终态后由消息下方嵌入面板承接） */}
-      <RunningAgentsBar conversationId={conversationId} />
-
-      {/* 多轮 loop 轮次状态条（消息流/输入上方；非 active 不占位） */}
-      <LoopStatusBar conversationId={conversationId} />
-
-      {/* 压缩进行中指示条（②-02；底部状态族最高一格，非压缩期不占位） */}
-      <CompactingBar conversationId={conversationId} />
-
-      {/* 压缩提醒：右下角轻量 toast，2.4s 自动消失 */}
-      <CompressedToast conversationId={conversationId} />
-
-      {/* 子任务压缩提示（lane_compaction 轻量胶囊；与主压缩 toast 错位，5s 自消） */}
-      <LaneCompactionToast conversationId={conversationId} />
-    </div>
+          {/* 任务目录选择器（欢迎页入口；会话内入口 = 右侧状态栏固定目录卡片） */}
+          {showDirPicker && (
+            <DirectoryPicker value={cwd} onChange={changeCwd} onClose={() => setShowDirPicker(false)} />
+          )}
+        </div>
+      </ChatContext.Provider>
+    </ChatRuntimeProvider>
   )
 }

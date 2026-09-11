@@ -11,7 +11,9 @@ export function ThinkingBlock({ content, collapsed: initialCollapsed = true }: T
   const [collapsed, setCollapsed] = useState(initialCollapsed)
 
   return (
-    <div className="my-2 relative rounded-lg border border bg-elevated/40 overflow-hidden">
+    // 2026-09-11 设计语言统一：thinking 容器 rounded-lg → 单对角切角（ci 内层承载底/边）
+    <div className="my-2 cut-sm">
+      <div className="ci relative overflow-hidden !bg-elevated/40">
       {/* Subtle brand accent strip on the left — keeps the "thinking"
           identity without a loud full border. */}
       <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-brand-500/50" />
@@ -35,6 +37,7 @@ export function ThinkingBlock({ content, collapsed: initialCollapsed = true }: T
           {content}
         </div>
       )}
+      </div>
     </div>
   )
 }

@@ -60,7 +60,9 @@ export function PanelToolbar({ title, en, count, newIcon: NewIcon, newLabel, onN
       <Tooltip content={newLabel} side="bottom">
         {/* 设计语言：新建钮 = 6px 单对角切角细线框（.plus 规格） */}
         <Button variant="ghost" size="icon" aria-label={newLabel} onClick={onNew} className="cut-xs shrink-0 !h-[22px] !w-[22px] hover:text-primary">
-          <NewIcon className="w-3.5 h-3.5" />
+          <span className="ci !bg-transparent flex items-center justify-center w-full h-full">
+            <NewIcon className="w-3.5 h-3.5" />
+          </span>
         </Button>
       </Tooltip>
     </div>

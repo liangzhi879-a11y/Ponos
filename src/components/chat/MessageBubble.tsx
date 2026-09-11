@@ -275,7 +275,9 @@ function MessageBubbleImpl({ message, isStreaming, onRetry, onEdit }: Props) {
           const isLong = typeof toolContent === 'string' && toolContent.length > 500
           const isCollapsed = collapsedTools[block.id] ?? isLong
           return (
-            <div key={block.id} className="my-1.5 rounded-lg border border bg-elevated/40 overflow-hidden">
+            // 2026-09-11 设计语言统一：工具块容器 rounded-lg → 单对角切角（ci 内层承载底/边）
+            <div key={block.id} className="my-1.5 cut-sm">
+              <div className="ci overflow-hidden !bg-elevated/40">
               <button
                 onClick={() => toggleTool(block.id)}
                 className="w-full flex items-center gap-2 px-3 py-1.5 bg-elevated border-b border text-left hover:bg-hover transition-colors"
@@ -311,6 +313,7 @@ function MessageBubbleImpl({ message, isStreaming, onRetry, onEdit }: Props) {
                   {typeof toolContent === 'string' ? `${toolContent.length} ${t('chat.characters')} · ${t('chat.expand')}` : `... · ${t('chat.expand')}`}
                 </div>
               )}
+              </div>
             </div>
           )
         }
@@ -324,10 +327,9 @@ function MessageBubbleImpl({ message, isStreaming, onRetry, onEdit }: Props) {
           const isLong = typeof resultContent === 'string' && resultContent.length > 800
           const isCollapsed = collapsedTools[block.id] ?? isLong
           return (
-            <div key={block.id} className={cn(
-              'my-1.5 rounded-lg border overflow-hidden',
-              resultBlock.isError ? 'border-error/30 bg-error/10' : 'border bg-elevated/30'
-            )}>
+            // 2026-09-11 设计语言统一：结果块 rounded-lg → 单对角切角（错误态走 danger 语义细边）
+            <div key={block.id} className={cn('my-1.5 cut-sm', resultBlock.isError && 'danger')}>
+              <div className={cn('ci overflow-hidden', resultBlock.isError ? '!bg-error/10' : '!bg-elevated/30')}>
               <button
                 onClick={() => toggleTool(block.id)}
                 className={cn(
@@ -367,6 +369,7 @@ function MessageBubbleImpl({ message, isStreaming, onRetry, onEdit }: Props) {
                   {typeof resultContent === 'string' ? `${resultContent.length} ${t('chat.characters')} · ${t('chat.expand')}` : `... · ${t('chat.expand')}`}
                 </div>
               )}
+              </div>
             </div>
           )
         }
@@ -438,10 +441,13 @@ function MessageBubbleImpl({ message, isStreaming, onRetry, onEdit }: Props) {
           </span>
         </div>
 
-        {/* Body — 排队插话悬浮态：虚线悬浮容器 + 轻微浮动动画，内核接收后落位 */}
+        {/* Body — 排队插话悬浮态：切角容器 + 虚线语义边 + 轻微浮动动画，内核接收后落位
+            （2026-09-11 设计语言统一：rounded-xl → 单对角切角；外框透明，虚线随 ci 内层切角走） */}
         {isPendingInterject ? (
-          <div className="space-y-1 min-w-0 overflow-hidden rounded-xl border border-dashed border-brand-500/40 bg-brand-500/5 px-3 py-2 shadow-sm animate-floating-bubble">
-            {renderContent()}
+          <div className="min-w-0 cut-sm !bg-transparent animate-floating-bubble">
+            <div className="ci space-y-1 px-3 py-2 border border-dashed border-brand-500/40 !bg-brand-500/5">
+              {renderContent()}
+            </div>
           </div>
         ) : (
           <div className="space-y-1 min-w-0 overflow-hidden">

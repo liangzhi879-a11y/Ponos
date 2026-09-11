@@ -32,19 +32,18 @@ export function LaneCompactionToast({ conversationId }: Props) {
     <div
       role="status"
       aria-live="polite"
-      className="fixed bottom-14 right-4 z-50 pointer-events-none animate-slide-up"
+      className="relative w-full animate-slide-up"
     >
-      <div
-        className="flex items-center gap-2 max-w-[380px] rounded-xl border bg-popover/95 px-3 py-2 shadow-2xl backdrop-blur-xl"
-        style={{ borderColor: 'color-mix(in srgb, var(--brand-500) 28%, transparent)' }}
-      >
-        <Layers className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--brand-500)' }} />
-        <span className="text-[11px] font-semibold text-primary whitespace-nowrap">
-          {t('laneCompact.title', { n: note.compactCount })}
-        </span>
-        <span className="text-[11px] text-tertiary truncate min-w-0" title={note.text}>
-          {note.text}
-        </span>
+      <div className="cut-sm cut-pop brand max-w-full">
+        <div className="ci flex items-center gap-2 px-3 py-2">
+          <Layers className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--brand-500)' }} />
+          <span className="text-[11px] font-semibold text-primary whitespace-nowrap">
+            {t('laneCompact.title', { n: note.compactCount })}
+          </span>
+          <span className="text-[11px] text-tertiary truncate min-w-0" title={note.text}>
+            {note.text}
+          </span>
+        </div>
       </div>
     </div>
   )

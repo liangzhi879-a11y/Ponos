@@ -121,20 +121,28 @@ export function UsagePanel() {
           ) : (
             <div className="space-y-2">
               <div className="grid grid-cols-2 gap-1.5">
-                <div className="rounded-lg border border-subtle bg-elevated/40 px-2.5 py-2">
+                <div className="cut-xs">
+                  <div className="ci px-2.5 py-2 !bg-elevated/40">
                   <StatRow label={t('usage.cost')} value={`$${fmtUsd(view.costUsd)}`} strong={view.overBudget} />
                   {view.budgetUsd > 0 && <StatRow label={t('usage.budget')} value={`$${fmtUsd(view.budgetUsd)}`} />}
+                  </div>
                 </div>
-                <div className="rounded-lg border border-subtle bg-elevated/40 px-2.5 py-2">
+                <div className="cut-xs">
+                  <div className="ci px-2.5 py-2 !bg-elevated/40">
                   <StatRow label={t('usage.inputTokens')} value={fmtTokens(view.input)} />
                   <StatRow label={t('usage.outputTokens')} value={fmtTokens(view.output)} />
+                  </div>
                 </div>
-                <div className="rounded-lg border border-subtle bg-elevated/40 px-2.5 py-2">
+                <div className="cut-xs">
+                  <div className="ci px-2.5 py-2 !bg-elevated/40">
                   <StatRow label={t('usage.cacheRead')} value={fmtTokens(view.cacheRead)} />
                   <StatRow label={t('usage.cacheRate')} value={`${view.cacheRatePct.toFixed(1)}%`} />
+                  </div>
                 </div>
-                <div className="rounded-lg border border-subtle bg-elevated/40 px-2.5 py-2">
+                <div className="cut-xs">
+                  <div className="ci px-2.5 py-2 !bg-elevated/40">
                   <StatRow label={t('usage.turns')} value={String(view.turns)} />
+                  </div>
                 </div>
               </div>
 

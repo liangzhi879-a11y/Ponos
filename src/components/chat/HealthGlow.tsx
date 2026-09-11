@@ -10,7 +10,7 @@ export function HealthGlow({ conversationId }: { conversationId: string }) {
   if (!shouldShowRedAlert(health, dismissedUntil)) return null
   return (
     <div
-      className="pointer-events-none absolute inset-0 z-0 rounded-lg animate-pulse"
+      className="pointer-events-none absolute inset-0 z-0 clip-sm animate-pulse"
       style={{
         boxShadow:
           'inset 0 0 24px 4px color-mix(in srgb, var(--health-tier-red) 22%, transparent)',

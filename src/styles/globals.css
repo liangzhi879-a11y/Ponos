@@ -854,6 +854,21 @@ html.speed-mode[class*="light-glass"] {
 /* 错误态：外层细线点亮为 error 色（口令框等） */
 .cut.err{background:color-mix(in srgb, var(--error) 60%, transparent);}
 .cut.err.focusable:focus-within{background:var(--error);}
+/* 语义色细边变体（警示卡/提示卡/成功卡）：保留语义色语义，边线随切角 */
+.cut.warn,.cut-sm.warn,.cut-btn.warn,.cut-xs.warn{background:color-mix(in srgb, var(--warning) 50%, transparent);}
+.cut.danger,.cut-sm.danger,.cut-btn.danger,.cut-xs.danger{background:color-mix(in srgb, var(--error) 50%, transparent);}
+.cut.ok,.cut-sm.ok,.cut-btn.ok,.cut-xs.ok{background:color-mix(in srgb, var(--success) 50%, transparent);}
+.cut.info,.cut-sm.info,.cut-btn.info,.cut-xs.info{background:color-mix(in srgb, var(--info) 50%, transparent);}
+/* 品牌色细边变体（工作目录 / 浏览器自动化等品牌卡） */
+.cut.brand,.cut-sm.brand,.cut-btn.brand,.cut-xs.brand{background:color-mix(in srgb, var(--brand-500) 30%, transparent);}
+/* 纯裁剪工具（不改背景/边框）：叠加层、已自带背景的浮层菜单复用同一轮廓 */
+.clip-sm{clip-path:polygon(7px 0,100% 0,100% calc(100% - 7px),calc(100% - 7px) 100%,0 100%,0 7px);}
+.clip-pop{clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px);}
+/* popover 底变体（浮层菜单）：ci 自带磨砂 */
+.cut-pop>.ci{background:var(--popover-bg);backdrop-filter:blur(var(--popover-blur));-webkit-backdrop-filter:blur(var(--popover-blur));}
+/* 语义色浮层底（警示卡/提示卡用 popover 底） */
+.cut-sm.warn>.ci,.cut-sm.danger>.ci,.cut-sm.ok>.ci,.cut-sm.info>.ci,
+.cut.warn>.ci,.cut.danger>.ci,.cut.ok>.ci,.cut.info>.ci{background:var(--bg-popover);}
 /* 签名：2.5px 品牌渐变顶线（仅登录卡 / 驾驶舱详情面板两处使用） */
 .topline{position:relative;}
 .topline::before{content:"";position:absolute;top:0;left:0;right:0;height:2.5px;

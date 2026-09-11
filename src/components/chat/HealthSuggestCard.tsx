@@ -42,13 +42,13 @@ export function HealthSuggestCard({ conversationId, onStopSource }: { conversati
 
   const detail = `${t('health.remainingPct', { pct: health.remainingPct })} · ${t('health.remainingTurns', { turns: health.remainingTurns })}`
 
-  // 最小化：右下角警示小胶囊（fixed 定位，避开 CompressedToast 的 bottom-4 与回到底部按钮）
+  // 最小化：警示小胶囊（2026-09-10 修复：同 bottom-full 锚点，悬浮输入框上方）
   if (minimized) {
     return (
       <button
         onClick={() => setMinimized(false)}
         title={`${t('health.restore')} · ${detail}`}
-        className="fixed bottom-16 right-4 z-50 flex items-center gap-2 max-w-[300px] rounded-full border bg-popover/95 px-3 py-1.5 shadow-2xl backdrop-blur animate-slide-up"
+        className="absolute bottom-full right-2 mb-2 z-50 flex items-center gap-2 max-w-[300px] rounded-full border bg-popover/95 px-3 py-1.5 shadow-2xl backdrop-blur animate-slide-up"
         style={{ borderColor: 'color-mix(in srgb, var(--health-tier-red) 28%, transparent)' }}
       >
         <span
@@ -64,9 +64,15 @@ export function HealthSuggestCard({ conversationId, onStopSource }: { conversati
 
   return (
     <div
-      className="absolute bottom-full right-2 left-auto mb-2 z-40 w-[320px] max-w-[calc(100vw-2rem)] rounded-xl border bg-popover/95 backdrop-blur-xl shadow-2xl p-3 animate-slide-up"
-      style={{ borderColor: 'color-mix(in srgb, var(--health-tier-red) 28%, transparent)' }}
+      // 2026-09-10 修复：锚定 ChatInput 根（relative）的 bottom-full——悬浮在
+      // 聊天区底部、输入框上方，不占布局高度（聊天窗口高度不受挤压）、不叠输入条
+      // （此前 in-flow 版占位导致聊天窗卡在卡片上缘；fixed 版叠住发送键）
+      // 2026-09-11 设计语言统一：rounded-xl+语义色 border → cut-sm danger 切角 +
+      // 语义色细边（--health-tier-red 与 --error 四主题同值），磨砂底走 ci
+      className="absolute bottom-full right-2 mb-2 z-40 w-[320px] max-w-[calc(100vw-2rem)] cut-sm danger animate-slide-up"
+      style={{ filter: 'drop-shadow(var(--modal-drop))' }}
     >
+      <div className="ci p-3" style={{ backdropFilter: 'blur(var(--popover-blur))', WebkitBackdropFilter: 'blur(var(--popover-blur))' }}>
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm font-medium" style={{ color: 'var(--health-tier-red)' }}>
           {health.reason || t('health.redTitle')}
@@ -111,6 +117,7 @@ export function HealthSuggestCard({ conversationId, onStopSource }: { conversati
             {t('health.dismiss')}
           </button>
         </div>
+      </div>
       </div>
     </div>
   )

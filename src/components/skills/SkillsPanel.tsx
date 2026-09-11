@@ -3,6 +3,7 @@ import { Zap, Search, ChevronRight, ArrowRight, Plus, Download, Trash2, FolderOp
 import { ScrollArea, Badge, Button } from '@/components/ui'
 import { useUIStore } from '@/stores/uiStore'
 import { useChatStore } from '@/stores/chatStore'
+import { useViewStore } from '@/stores/viewStore'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn } from '@/lib/utils'
 import { getBridgeUrl } from '@/lib/config'
@@ -68,10 +69,14 @@ export function SkillsPanel() {
 
   const quickRun = (skillId: string) => {
     setPendingInput(buildSkillPrompt(skillsDir, skillId), true)
+    // 2026-09-10 主标签化：技能页为全主界面浏览，一键运行需切回 chat rail
+    // 让输入落进对话（无会话时由 ViewRouter 兜底建空会话）
+    useViewStore.setState(s => ({ workState: { ...s.workState, rail: 'chat' } }))
   }
 
   const insertSkill = (skillId: string) => {
     setPendingInput('/' + skillId + ' ')
+    useViewStore.setState(s => ({ workState: { ...s.workState, rail: 'chat' } }))
   }
 
   const loadSkills = async () => {
@@ -208,11 +213,20 @@ export function SkillsPanel() {
   const renderSkillItem = (skill: SkillEntry, isParent = false, isExpanded = false, onToggle?: () => void) => {
     const isPinned = pinnedSkills.includes(skill.id)
     return (
-      <div key={skill.id} className={cn('group relative', isPinned && 'bg-warning/10')}>
+      <div
+        key={skill.id}
+        className={cn(
+          // 2026-09-10 设计语言统一：单对角切角卡 + 选中热边 / 固定项警示边 + hover 柔光
+          'group relative cut-sm transition-all',
+          isPinned && selected !== skill.id && 'warn',
+          selected === skill.id && 'hot glow-hover'
+        )}
+      >
+        <div className="ci">
         <button
           onClick={() => { if (isParent && onToggle) onToggle(); setSelected(selected === skill.id ? null : skill.id) }}
           className={cn(
-            'w-full flex items-start gap-2 px-3 py-2 text-left transition-colors',
+            'w-full flex items-start gap-2 px-3 py-2.5 text-left transition-colors',
             selected === skill.id
               ? 'bg-brand-500/10'
               : 'hover:bg-elevated'
@@ -283,9 +297,11 @@ export function SkillsPanel() {
             </button>
             {folderPickerSkillId === skill.id && (
               <div
-                className="absolute right-0 top-full mt-1 w-32 bg-popover border border rounded-lg shadow-xl z-50 py-1 animate-scale-in origin-top-right"
+                className="absolute right-0 top-full mt-1 w-32 cut-sm cut-pop z-50 animate-scale-in origin-top-right"
+                style={{ filter: 'drop-shadow(var(--modal-drop))' }}
                 onMouseDown={e => e.stopPropagation()}
               >
+                <div className="ci py-1">
                 {skillFolders.map(f => (
                   <button
                     key={f}
@@ -315,6 +331,7 @@ export function SkillsPanel() {
                   <FolderPlus className="w-3 h-3" />
                   <span>新建分类…</span>
                 </button>
+                </div>
               </div>
             )}
           </div>
@@ -333,6 +350,7 @@ export function SkillsPanel() {
             <ArrowRight className="w-3 h-3" />
           </button>
         </div>
+        </div>
       </div>
     )
   }
@@ -348,7 +366,7 @@ export function SkillsPanel() {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="px-3 py-2 border-b border-subtle">
+      <div className="px-4 py-3 border-b border-subtle">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
             <Zap className="w-4 h-4 text-brand-500" />
@@ -416,23 +434,23 @@ export function SkillsPanel() {
         )}
       </div>
 
-      {/* List */}
+      {/* List（2026-09-10 全主界面卡片化：响应式卡片网格，分组标题占满整行） */}
       <ScrollArea className="flex-1">
-        <div className="py-1">
+        <div className="p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 content-start">
           {/* Frequently-used skills pinned to the top */}
           {pinnedList.length > 0 && (
-        <div key="pinned">
+        <div key="pinned" className="contents">
           <div
-            className="h-px mx-3 my-1"
+            className="col-span-full h-px my-1"
             style={{ background: 'linear-gradient(to right, transparent, var(--warning) 15%, var(--warning) 85%, transparent)' }}
           />
-          <div className="px-3 py-1.5 text-[10px] font-semibold text-warning/90 uppercase tracking-wider flex items-center gap-1">
+          <div className="col-span-full py-1.5 text-[11px] font-semibold text-warning/90 uppercase tracking-wider flex items-center gap-1">
             <Star className="w-3 h-3 fill-warning text-warning" />
             {t('skills.pinnedSkillsTitle')}
           </div>
           {pinnedList.map(s => renderSkillItem(s))}
           <div
-            className="h-px mx-3 my-1"
+            className="col-span-full h-px my-1"
             style={{ background: 'linear-gradient(to right, transparent, var(--warning) 15%, var(--warning) 85%, transparent)' }}
           />
         </div>
@@ -440,8 +458,8 @@ export function SkillsPanel() {
           {Object.entries(folderGroups).map(([folderName, items]) => {
             const isEditing = editingFolder === folderName
             return (
-              <div key={folderName}>
-                <div className="px-3 py-1.5 text-[10px] font-semibold text-tertiary uppercase tracking-wider flex items-center justify-between group/folder">
+              <div key={folderName} className="contents">
+                <div className="col-span-full pt-2 pb-1 text-[11px] font-semibold text-tertiary uppercase tracking-wider flex items-center justify-between group/folder">
                   {isEditing ? (
                     <div className="flex items-center gap-1 flex-1">
                       <input
@@ -485,9 +503,11 @@ export function SkillsPanel() {
                         </button>
                         {folderMenuId === folderName && (
                           <div
-                            className="absolute right-0 top-full mt-0.5 w-28 bg-popover border border rounded-lg shadow-xl z-50 py-1 animate-scale-in origin-top-right"
+                            className="absolute right-0 top-full mt-0.5 w-28 cut-sm cut-pop z-50 animate-scale-in origin-top-right"
+                            style={{ filter: 'drop-shadow(var(--modal-drop))' }}
                             onMouseDown={e => e.stopPropagation()}
                           >
+                            <div className="ci py-1">
                             <button
                               onClick={e => {
                                 e.stopPropagation()
@@ -515,6 +535,7 @@ export function SkillsPanel() {
                                 删除
                               </button>
                             )}
+                            </div>
                           </div>
                         )}
                       </div>

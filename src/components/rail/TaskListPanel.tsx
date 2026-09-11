@@ -427,20 +427,20 @@ export function TaskListPanel() {
         if (!s) return null
         return createPortal(
           <div
-            className="fixed z-[100] w-36 border border glass-context-menu rounded-lg py-1 animate-scale-in"
+            className="fixed z-[100] w-36 cut-sm cut-pop animate-scale-in"
             style={{
               left: setMenuPos.left,
               top: setMenuPos.top,
-              backgroundColor: 'var(--popover-bg)',
-              backdropFilter: 'blur(var(--popover-blur))',
-              WebkitBackdropFilter: 'blur(var(--popover-blur))',
+              filter: 'drop-shadow(var(--modal-drop))',
             }}
             onClick={e => e.stopPropagation()}
           >
+            <div className="ci glass-context-menu py-1">
             <button onClick={() => { setRenamingSetId(s.id); setRenamingSetValue(s.name); setSetMenuId(null) }} aria-label={t('sidebar.rename')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><Edit3 className="w-3 h-3" /> {t('sidebar.rename')}</button>
             <button onClick={() => { exportChats({ setId: s.id }); setSetMenuId(null) }} aria-label={t('sidebar.exportSet')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><Share2 className="w-3 h-3" /> {t('sidebar.exportSet')}</button>
             <div className="border-t my-1" />
             <button onClick={() => handleSetDelete(s)} aria-label={t('sidebar.delete')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-error hover:bg-error/10"><Trash2 className="w-3 h-3" /> {t('sidebar.delete')}</button>
+            </div>
           </div>,
           document.body,
         )
@@ -598,37 +598,35 @@ const ConversationItem = memo(function ConversationItem({
       {contextOpen && menuPos && createPortal(
         <>
           <div
-            className="fixed z-[100] w-36 border border glass-context-menu rounded-lg py-1 animate-scale-in"
+            className="fixed z-[100] w-36 cut-sm cut-pop animate-scale-in"
             style={{
               left: menuPos.left,
               top: menuPos.top,
-              backgroundColor: 'var(--popover-bg)',
-              backdropFilter: 'blur(var(--popover-blur))',
-              WebkitBackdropFilter: 'blur(var(--popover-blur))',
+              filter: 'drop-shadow(var(--modal-drop))',
             }}
             onClick={e => e.stopPropagation()}
           >
+            <div className="ci glass-context-menu py-1">
             <button onClick={onRenameStart} aria-label={t('sidebar.rename')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><Edit3 className="w-3 h-3" /> {t('sidebar.rename')}</button>
             <button onClick={onPin} aria-label={conv.pinned ? t('sidebar.unpin') : t('sidebar.pin')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><Pin className="w-3 h-3" /> {conv.pinned ? t('sidebar.unpin') : t('sidebar.pin')}</button>
             <button onClick={() => onMoveTargetChange(conv.id)} aria-label={t('sidebar.moveToSet')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><FolderPlus className="w-3 h-3" /> {t('sidebar.moveToSet')}</button>
             <button onClick={() => onExportConversation(conv.id)} aria-label={t('sidebar.exportShare')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><Share2 className="w-3 h-3" /> {t('sidebar.exportShare')}</button>
             <div className="border-t my-1" />
             <button onClick={onDelete} aria-label={t('sidebar.delete')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-error hover:bg-error/10"><Trash2 className="w-3 h-3" /> {t('sidebar.delete')}</button>
+            </div>
           </div>
           {/* 移动到会话集子菜单 — 与右键菜单同级渲染，偏移 40px；会话集多时滚动 */}
           {moveTarget === conv.id && (
             <div
-              className="fixed z-[100] w-44 border border glass-context-menu rounded-lg py-1 animate-scale-in max-h-72 overflow-y-auto"
+              className="fixed z-[100] w-44 cut-sm cut-pop animate-scale-in max-h-72 overflow-y-auto"
               style={{
                 left: menuPos.left,
                 top: (menuPos.top || 0) + 40,
-                backgroundColor: 'var(--popover-bg)',
-                backdropFilter: 'blur(var(--popover-blur))',
-                WebkitBackdropFilter: 'blur(var(--popover-blur))',
+                filter: 'drop-shadow(var(--modal-drop))',
               }}
               onClick={e => e.stopPropagation()}
             >
-              <div className="overflow-y-auto" style={{ maxHeight: '12rem' }}>
+              <div className="ci glass-context-menu py-1 overflow-y-auto" style={{ maxHeight: '12rem' }}>
                 {conversationSets.map(s => (
                   <button key={s.id} onClick={() => onMoveToSet(conv.id, s.id)} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><Folder className="w-3 h-3" /> {s.name}</button>
                 ))}

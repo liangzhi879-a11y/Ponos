@@ -79,7 +79,8 @@ export function ExperiencePanel() {
         </p>
 
         {/* 注入设置 */}
-        <div className="rounded-lg border border bg-surface p-4 mb-4 space-y-3">
+        <div className="cut-sm mb-4">
+          <div className="ci p-4 space-y-3">
           <label className="flex items-center justify-between py-1">
             <div>
               <span className="text-sm text-secondary">新会话注入经验</span>
@@ -100,6 +101,7 @@ export function ExperiencePanel() {
               className="w-28 h-8 rounded-md border border bg-surface px-2 text-xs text-primary text-right font-mono focus:outline-none focus:ring-1 focus:ring-accent"
             />
           </label>
+          </div>
         </div>
 
         {/* 导出/导入 */}
@@ -130,7 +132,8 @@ export function ExperiencePanel() {
               const isExpanded = expanded.has(x.theme)
               const visibleEntries = isExpanded ? x.entries : x.entries.slice(0, 6)
               return (
-                <div key={x.theme} className="rounded-lg border border bg-surface p-3">
+                <div key={x.theme} className="cut-sm">
+                  <div className="ci p-3">
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-semibold text-primary">{x.theme}</span>
                     <span className="text-[10px] text-tertiary">{x.entryCount} 条</span>
@@ -181,6 +184,7 @@ export function ExperiencePanel() {
                   {!isExpanded && x.entries.length > 6 && (
                     <div className="mt-1.5 text-[10px] text-tertiary">…另有 {x.entries.length - 6} 条未显示</div>
                   )}
+                </div>
                 </div>
               )
             })}

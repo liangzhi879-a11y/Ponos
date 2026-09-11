@@ -25,6 +25,8 @@ const ACTION_KEYS: Record<string, string> = {
   notebook_edit: 'permissions.fileWrite',
   skill: 'permissions.bash',
   mcp: 'permissions.bash',
+  // 浏览器白名单加白申请（2026-09-10）
+  browser_whitelist_add: 'permissions.browserWhitelistAdd',
 }
 
 const RISK_KEYS = {
@@ -94,18 +96,22 @@ export function PermissionDialog() {
 
             {/* Risk warning */}
             {risk === 'high' && (
-              <div className="flex items-start gap-2 p-3 rounded-lg bg-error/15 border border-error/30">
-                <AlertTriangle className="w-4 h-4 text-error shrink-0 mt-0.5" />
-                <div className="text-xs text-error">
-                  {t('permissions.highRiskWarning')}
+              <div className="cut-xs danger">
+                <div className="ci flex items-start gap-2 p-3 !bg-error/15">
+                  <AlertTriangle className="w-4 h-4 text-error shrink-0 mt-0.5" />
+                  <div className="text-xs text-error">
+                    {t('permissions.highRiskWarning')}
+                  </div>
                 </div>
               </div>
             )}
             {risk === 'medium' && (
-              <div className="flex items-start gap-2 p-3 rounded-lg bg-warning/15 border border-warning/30">
-                <Info className="w-4 h-4 text-warning shrink-0 mt-0.5" />
-                <div className="text-xs text-warning">
-                  {t('permissions.mediumWarning')}
+              <div className="cut-xs warn">
+                <div className="ci flex items-start gap-2 p-3 !bg-warning/15">
+                  <Info className="w-4 h-4 text-warning shrink-0 mt-0.5" />
+                  <div className="text-xs text-warning">
+                    {t('permissions.mediumWarning')}
+                  </div>
                 </div>
               </div>
             )}

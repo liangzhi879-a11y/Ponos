@@ -38,18 +38,15 @@ export function CompressedToast({ conversationId }: { conversationId: string }) 
     <div
       role="status"
       aria-live="polite"
-      className="fixed bottom-4 right-4 z-50 pointer-events-none animate-slide-up"
+      className="relative w-full animate-slide-up"
     >
-      <div
-        className="flex items-center gap-2 rounded-xl border bg-popover/95 px-3 py-2 shadow-2xl backdrop-blur-xl"
-        style={{
-          borderColor: 'color-mix(in srgb, var(--brand-500) 28%, transparent)',
-        }}
-      >
-        <Minimize2 className="w-3.5 h-3.5" style={{ color: 'var(--brand-500)' }} />
-        <span className="text-xs font-medium text-primary">
-          {t('health.toastCompressed', { n: shown })}
-        </span>
+      <div className="cut-sm cut-pop brand">
+        <div className="ci flex items-center gap-2 px-3 py-2">
+          <Minimize2 className="w-3.5 h-3.5" style={{ color: 'var(--brand-500)' }} />
+          <span className="text-xs font-medium text-primary">
+            {t('health.toastCompressed', { n: shown })}
+          </span>
+        </div>
       </div>
     </div>
   )

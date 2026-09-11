@@ -202,9 +202,11 @@ export function FileBrowser() {
       {/* Context Menu */}
       {ctxMenu && (
         <div
-          className="fixed z-[100] w-44 bg-elevated border border rounded-lg shadow-2xl py-1 animate-scale-in"
-          style={{ left: Math.min(ctxMenu.x, window.innerWidth - 200), top: Math.min(ctxMenu.y, window.innerHeight - 160) }}
+          // 2026-09-11 设计语言统一：右键菜单 rounded-lg → cut-sm 切角浮层（与 DropdownMenuContent 同构）
+          className="fixed z-[100] w-44 cut-sm animate-scale-in"
+          style={{ left: Math.min(ctxMenu.x, window.innerWidth - 200), top: Math.min(ctxMenu.y, window.innerHeight - 160), filter: 'drop-shadow(var(--modal-drop))' }}
         >
+          <div className="ci py-1">
           <div className="px-3 py-1.5 text-[10px] text-tertiary font-mono truncate border-b">
             {ctxMenu.entry.name}
           </div>
@@ -247,6 +249,7 @@ export function FileBrowser() {
           >
             <FileText className="w-3.5 h-3.5 text-tertiary" /> {t('fileBrowser.copyPath')}
           </button>
+          </div>
         </div>
       )}
     </div>

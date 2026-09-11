@@ -22,12 +22,13 @@ export function CompactingBar({ conversationId }: Props) {
   if (!compacting) return null
 
   return (
-    <div className="absolute bottom-0 left-0 right-0 z-20 flex justify-center px-4 pb-[88px] pointer-events-none">
+    <div className="relative w-full">
       <div
         role="status"
         aria-live="polite"
-        className="pointer-events-auto flex items-center gap-2 max-w-[900px] rounded-full border border-brand-500/30 bg-elevated/90 px-3 py-1.5 shadow-lg backdrop-blur animate-slide-up"
+        className="pointer-events-auto w-full cut-sm brand animate-slide-up"
       >
+        <div className="ci flex items-center gap-2 px-3 py-1.5">
         {/* 轻量 spinner（CSS 边框旋转，与空态加载占位同款；不依赖图标字体命名） */}
         <span className="w-3.5 h-3.5 rounded-full border-2 border-subtle border-t-brand-500 animate-spin shrink-0" />
         <span className="text-[11px] font-semibold whitespace-nowrap text-primary">
@@ -36,6 +37,7 @@ export function CompactingBar({ conversationId }: Props) {
         <span className="text-[10px] text-tertiary whitespace-nowrap max-w-[280px] truncate hidden sm:inline">
           {t('compacting.hint')}
         </span>
+        </div>
       </div>
     </div>
   )

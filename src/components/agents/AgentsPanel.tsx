@@ -10,7 +10,7 @@ import {
 import { cn } from '@/lib/utils'
 import { useAgentStore } from '@/stores/agentStore'
 import { useChatStore } from '@/stores/chatStore'
-import { useUIStore } from '@/stores/uiStore'
+import { useViewStore } from '@/stores/viewStore'
 import type { Agent } from '@/lib/agents'
 import { AgentAvatar } from './AgentAvatar'
 import { AvatarCropDialog } from './AvatarCropDialog'
@@ -105,16 +105,22 @@ export function AgentsPanel() {
 
   const createAgentConversation = (agentId: string) => {
     useChatStore.getState().createConversation(undefined, agentId)
-    useUIStore.getState().setSidebarTab('chats')
+    // 2026-09-10 主标签化：新建会话后落到 chat rail（旧 sidebarTab 已退役）
+    useViewStore.setState(s => ({ workState: { ...s.workState, rail: 'chat' } }))
   }
 
   const renderAgentRow = (agent: Agent) => (
-    <div key={agent.id} className="border-b border-default">
+    <div
+      key={agent.id}
+      className={cn(
+        // 2026-09-10 设计语言统一：单对角切角卡 + 选中热边 + hover 柔光（原 rounded-xl+brand 描边）
+        'cut-sm transition-all',
+        selectedId === agent.id && 'hot glow-hover'
+      )}
+    >
+      <div className="ci">
       <div
-        className={cn(
-          'flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors',
-          selectedId === agent.id ? 'bg-brand-500/15' : 'hover:bg-elevated'
-        )}
+        className="flex items-center gap-2 px-3 py-2.5 cursor-pointer transition-colors"
         onClick={() => setSelectedId(selectedId === agent.id ? null : agent.id)}
       >
         <AgentAvatar agent={agent} size={28} />
@@ -181,12 +187,13 @@ export function AgentsPanel() {
           </button>
         </div>
       )}
+      </div>
     </div>
   )
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-3 py-2 border-b">
+      <div className="px-4 py-3 border-b">
         <div className="flex items-center gap-2 mb-2">
           <Bot className="w-4 h-4 text-brand-500" />
           <span className="text-sm font-semibold text-primary">Agents</span>
@@ -243,13 +250,14 @@ export function AgentsPanel() {
       </div>
 
       <ScrollArea className="flex-1">
-        <div className="py-1">
+        {/* 2026-09-10 全主界面卡片化：响应式卡片网格（1/2/3 列），分组标题占满整行 */}
+        <div className="p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 content-start">
           {TYPE_ORDER.map(type => {
             const list = grouped.get(type)
             if (!list || list.length === 0) return null
             return (
-              <div key={type}>
-                <div className="px-3 py-1.5 text-[10px] font-semibold text-tertiary uppercase tracking-wider">
+              <div key={type} className="contents">
+                <div className="col-span-full pt-2 pb-1 text-[11px] font-semibold text-tertiary uppercase tracking-wider">
                   {TYPE_LABELS[type]}
                 </div>
                 {list.map(renderAgentRow)}

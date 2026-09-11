@@ -48,7 +48,8 @@ function SubAgentCard({ task }: CardProps) {
   const meta = STATUS_META[task.status]
   const metaText = fmtMeta(task)
   return (
-    <div className="rounded-xl border border overflow-hidden bg-surface/80 shadow-sm">
+    <div className="cut-sm">
+      <div className="ci">
       {/* head */}
       <div className="flex items-center gap-2 px-3.5 py-2 border-b border-subtle">
         <AgentAvatar agent={agent} size={18} />
@@ -119,6 +120,7 @@ function SubAgentCard({ task }: CardProps) {
           </button>
         </div>
       )}
+      </div>
     </div>
   )
 }
