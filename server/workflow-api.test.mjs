@@ -306,3 +306,83 @@ test('真实宿主（假内核会话）接线：PUT 走 save-raw 配对 → 内�
     assert.equal(bad.out.body.errors[0].code, 'NO_NODES')
   } finally { cleanup() }
 })
+
+// —— 2026-09-12 实测缺陷回归：`GET /workflows/verify` 路由从未实现 ——
+// 现场证据（对运行中的调试版）：`GET /workflows/verify?path=...` → 404
+//   （前端 RunDrawer「校验完整性」按钮直接失败；内核 subtype:'verify' 早已就绪）。
+test('GET /workflows/verify：审计哈希链校验（路由补齐）', async () => {
+  const { runsRoot, host, cleanup } = setup()
+  try {
+    const p = join(runsRoot, 'demo', 'x.jsonl')
+    let seen = null
+    const h = { ...host, send: async (cmd) => { seen = cmd; return { ok: true, lines: 3, tampered: null } } }
+    const { out, reply } = mkReply()
+    const url = new URL('http://x/workflows/verify?path=' + encodeURIComponent(p))
+    const handled = await handleWorkflowRoute({ url, req: reqOf('GET', '/workflows/verify'), reply, readJsonBody: async () => ({}), store, host: h, runsRoot })
+    assert.equal(handled, true)
+    assert.equal(out.code, 200)
+    assert.equal(out.body.ok, true)
+    assert.equal(out.body.lines, 3)
+    assert.equal(seen?.subtype, 'verify', '应转发到宿主 verify 子命令')
+    assert.equal(seen?.payload?.auditPath, p)
+  } finally { cleanup() }
+})
+
+test('GET /workflows/verify：path 必填且必须落在 runsRoot 内（不得当任意文件探测器）', async () => {
+  const { runsRoot, host, cleanup } = setup()
+  try {
+    const h = { ...host, send: async () => ({ ok: true }) }
+    const bad = mkReply()
+    await handleWorkflowRoute({ url: new URL('http://x/workflows/verify'), req: reqOf('GET', '/workflows/verify'), reply: bad.reply, readJsonBody: async () => ({}), store, host: h, runsRoot })
+    assert.equal(bad.out.code, 400, '缺 path → 400')
+
+    const outside = mkReply()
+    const url = new URL('http://x/workflows/verify?path=' + encodeURIComponent(join(runsRoot, '..', 'secret.txt')))
+    await handleWorkflowRoute({ url, req: reqOf('GET', '/workflows/verify'), reply: outside.reply, readJsonBody: async () => ({}), store, host: h, runsRoot })
+    assert.equal(outside.out.code, 400, 'runsRoot 之外的路径必须拒绝')
+  } finally { cleanup() }
+})
+
+// —— 路由覆盖守卫（2026-09-12 教训）——
+// 两个真实缺陷都是「前端调了、后端没实现」，而当时的核验只把计划文本与路由做了文字对照：
+//   · GET /workflows/verify      → 从未实现（RunDrawer「校验完整性」恒 404）
+//   · POST /workflows/bindings   → setBindings() 用 POST（路由只收 GET/PUT）→ 405
+// 这条守卫把**每条前端调用**逐一打到真实路由函数上，要求"不得 404"（路径必须存在）。
+// 新增前端调用时若忘了补路由，这里立刻变红。
+test('路由覆盖守卫：workflowApi 的每条调用都不得 404（路径必须存在）', async () => {
+  const { root, runsRoot, host, cleanup } = setup()
+  try {
+    store.createWorkflow({ root, id: 'demo', yml: YML })
+    const h = { ...host, send: async () => ({ ok: true }) }
+    // 与 src/lib/workflowApi.ts 的调用面一一对应（method, path）
+    const callers = [
+      ['GET', '/workflows'],
+      ['GET', '/workflows/demo'],
+      ['PUT', '/workflows/demo'],
+      ['POST', '/workflows'],
+      ['POST', '/workflows/demo/duplicate'],
+      ['GET', '/workflows/demo/validate'],
+      ['GET', '/workflows/demo/versions'],
+      ['POST', '/workflows/demo/rollback'],
+      ['GET', '/workflows/demo/export'],
+      ['POST', '/workflows/import'],
+      ['POST', '/workflows/run'],
+      ['POST', '/workflows/stop'],
+      ['POST', '/workflows/confirm'],
+      ['GET', '/workflows/runs'],
+      ['GET', '/workflows/verify'],
+      ['GET', '/workflows/bindings'],
+      ['PUT', '/workflows/bindings'],
+      ['DELETE', '/workflows/demo'],   // 破坏性调用放最后：先删了后面就没得测了
+    ]
+    const missing = []
+    for (const [method, path] of callers) {
+      const { out, reply } = mkReply()
+      const body = { capabilities: { tools: [] } }
+      await handleWorkflowRoute({ url: new URL('http://x' + path), req: reqOf(method, path, method === 'GET' ? undefined : body), reply, readJsonBody: async () => body, store, host: h, root, runsRoot })
+      // 404 = 路径不存在（未实现）；400/405 等业务性拒绝说明路由存在
+      if (out.code === 404) missing.push(`${method} ${path}`)
+    }
+    assert.deepEqual(missing, [], `以下前端调用无对应路由实现：${missing.join(' | ')}`)
+  } finally { cleanup() }
+})
