@@ -62,3 +62,17 @@
 1. **`server/` 不 import `kernel/*`**：设计时未预见生产包只带 `kernel-dist/cli.mjs` 单文件 bundle（`electron-builder.yml` 的 files 不含 `kernel/**`）。因此 DSL 解析/校验/序列化一律经宿主会话（内核），bridge 侧只做轻量正则元数据。
 2. **路由与安装器为独立模块**（`workflow-routes.mjs`/`workflow-install.mjs`/`workflow-events.mjs`）：bridge.mjs 顶层会 `listen(51517)` 且其 EADDRINUSE 自愈逻辑会 taskkill 用户进程，测试不能 import 它。
 3. **`save`/`save-raw` 由内核序列化 + 校验并回传 yml，落盘仍在 bridge 侧**：单一写者原则；内核唯一写盘点是显式 `migrate`。
+
+### 调试期缺陷修复（2026-09-12，人工测试阶段发现）
+
+用户实测报告："创建无任何响应，只有输入工作流名及导入，没有创建面板"。系统化调试定位到**三个此前自动化测试与逐任务审查都未覆盖的真实缺陷**：
+
+| # | 现象 | 根因 | 证据 | 修复 |
+|---|---|---|---|---|
+| 1 | 创建/保存/运行**永久无响应**（界面零反馈） | 宿主会话 `_wfhost` 以**不存在的 cwd** `<YFW_HOME>/workflow-runtime` spawn → Windows 报 ENOENT（退出码 -4058）、存活约 250ms 即退；bridge 反复重启宿主，命令写进死进程后**静默挂到超时**（默认 120s、run 30min） | 日志：`spawn: _wfhost (new) C:\...\.yfw\workflow-runtime` 紧接 `kernel exited abnormal code=-4058 (sid _wfhost) after 255ms`（连续 3 次）；`GET /workflows`（纯 fs）200 正常而 `POST /workflows` curl 20s 无响应；手工 `mkdir` 该目录后同请求**立即 200** | `116e2d6`：`ensure()` 先 `mkdirSync(cwd,{recursive:true})` 再 spawn；新增 `onKernelExit()`——bridge 在内核退出时**立即**把在途命令判失败（不再静默挂 120s） |
+| 2 | 运行抽屉「校验完整性」恒失败 | `GET /workflows/verify` **路由从未实现**（内核 `subtype:'verify'` 早已就绪） | 对运行中的应用实测 → 404 | `6a56d93`：补路由 + `path` 必须落在 `runsRoot` 内（否则成为任意文件探测器）+ 「路由覆盖守卫测试」 |
+| 3 | 绑定写入潜在 405 | `setBindings()` 用 POST，而路由只收 GET/PUT（`setWorkflowTrusted` 走 PUT 故未暴露） | 路由方法白名单实测 405 | `f9445b3`：改用 PUT |
+
+**流程教训（已固化为守卫）**：Task 12/14 的"URL 全对齐"核验只做了**计划文本与路由的文字对照**，未把前端每条调用真正打到路由函数上——两个缺陷由此漏过（守卫测试若当时存在会立刻变红）。现已在 `server/workflow-api.test.mjs` 增加 `路由覆盖守卫`：18 条前端调用逐一打到真实路由，任一 404 即失败（破坏性调用排最后，避免自造误报）。
+
+**同时确认的健壮性缺口**：宿主会话是**共享单例**，`HOST_SID` 冲突会静默复用（cosmetic）；`kernel/workflow-dag.mjs` 等模块级可变状态（`setNodeDeps` 已移除）等既往 Minor 项不受影响。
