@@ -8,7 +8,7 @@
 //   ④ 老内核（无 distortion 字段）→ 无角标无卡（向后兼容）
 // 做法：esbuild 打包"真组件 + 真 store"，electron 无头加载，读回 computed style 与 innerText。
 // 临时文件全部生成在系统 temp 目录，不污染仓库。
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,7 +16,7 @@ import { spawn } from 'node:child_process'
 import { readdirSync } from 'node:fs'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const ELECTRON = join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'electron.exe')
+const ELECTRON = join(findNodeModules(REPO_ROOT), 'electron', 'dist', 'electron.exe')
 const TMP = mkdtempSync(join(tmpdir(), 'yfw-gui-verify-'))
 /** 截图输出目录（放 release/ 下，仓库 gitignore，便于人工眼见为实） */
 const SHOT_DIR = process.env.GUI_VERIFY_SHOT_DIR || join(REPO_ROOT, 'release', '_gui-fidelity-shots')
@@ -48,6 +48,12 @@ const CASES = [
   { key: 'amber-distortion', desc: '失真琥珀（2 条证据）+ 压力绿', health: { ...pressure('green'), distortion: dist('amber', [issue(1, 'coherence', 'stale_ref', 'medium'), issue(2, 'coherence', 'contradiction', 'medium')]) } },
   { key: 'red-pressure-only', desc: '压力红 + 失真绿（关键：不得弹卡/角标）', health: { ...pressure('red'), distortion: dist('green', []) } },
   { key: 'legacy-no-distortion', desc: '老内核：完全无 distortion 字段', health: pressure('green') },
+  {
+    key: 'recurred-distortion', desc: '同源复发（此前处理过 → 应重现并提示升级）',
+    health: { ...pressure('green'), distortion: dist('red', [{ ...issue(1, 'coherence', 'stale_ref', 'strong'), recurred: true }]) },
+    // 模拟"用户已处理过该证据"：首次抑制键已登记（复发态用 #recurred 键，故仍应弹卡）
+    shownIds: ['c:stale_ref:1'],
+  },
 ]
 
 // ---- 生成 harness（真组件 + 真 store，按键位夹具渲染） ----
@@ -73,7 +79,7 @@ window.__render = (i) => {
     healthBySession: { c1: fx.health },
     summaryCompactCountBySession: { c1: 0 },
     dismissedUntilBySession: {},
-    distortionShownIdsBySession: { c1: [] },
+    distortionShownIdsBySession: { c1: fx.shownIds || [] },
     dismissedDistortionUntilBySession: {},
   })
   root.render(
@@ -114,6 +120,8 @@ const EXTRACT = \`(() => {
     text: document.body.innerText,
     buttons: [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim()).filter(Boolean),
     hasGlow: !!glow,
+    // 复发提示（"锚定未根治"）：按可见文本判定，不依赖具体文案
+    recurredNotice: /再次出现|came back/.test(document.body.innerText),
     htmlLen: document.getElementById('root').innerHTML.length,
     errors: window.__ERRORS__ || [],
   }
@@ -150,12 +158,25 @@ app.whenReady().then(async () => {
 writeFileSync(join(TMP, 'harness.tsx'), harness)
 writeFileSync(join(TMP, 'main.cjs'), mainCjs)
 // 夹具经脚本全局注入（页内切换，避免 file:// query 体积限制）
-writeFileSync(join(TMP, 'fixtures.js'), `window.__FIXTURES__ = ${JSON.stringify(CASES.map((c) => ({ health: c.health })))};`)
+writeFileSync(join(TMP, 'fixtures.js'), `window.__FIXTURES__ = ${JSON.stringify(CASES.map((c) => ({ health: c.health, shownIds: c.shownIds || [] })))};`)
 writeFileSync(join(TMP, 'index.html'), `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="${builtCssPath().replace(/\\/g, '/')}"></head>
 <body style="background: var(--bg-primary)"><div id="root"></div>
 <script>window.__ERRORS__=[];window.addEventListener('error',e=>window.__ERRORS__.push(String(e.message||e.error)));window.addEventListener('unhandledrejection',e=>window.__ERRORS__.push('reject: '+String(e.reason)));</script>
 <script src="./fixtures.js"></script><script src="./bundle.js"></script></body></html>`)
+
+/** 就近查找 node_modules：从仓库根向上走（worktree 自身没有，依赖在主仓库/上层）。 */
+function findNodeModules(from) {
+  let dir = from
+  for (let i = 0; i < 6; i++) {
+    const cand = join(dir, 'node_modules')
+    if (existsSync(cand)) return cand
+    const up = resolve(dir, '..')
+    if (up === dir) break
+    dir = up
+  }
+  return join(from, 'node_modules')
+}
 
 // ---- esbuild：打包真组件（别名 @ → src；用 JS API 避免 shell 引号/Windows 路径转义） ----
 const { build } = await import('esbuild')
@@ -167,7 +188,7 @@ await build({
   jsx: 'automatic',
   alias: { '@': join(REPO_ROOT, 'src') },
   // harness 在系统 temp 下，Node 解析不到仓库依赖 → 显式给出 node_modules 搜索路径
-  nodePaths: [join(REPO_ROOT, 'node_modules')],
+  nodePaths: [findNodeModules(REPO_ROOT)],
   // iife 下 import.meta 为空对象；config.ts 只在函数体内用它（非加载期），
   // 这里显式给个空 env 以免运行期读到 undefined。
   define: { 'import.meta.env': '{}', 'process.env.NODE_ENV': '"production"' },
@@ -206,7 +227,7 @@ const rowsOf = (text) => (String(text).match(/第 \d+ 轮 ·/g) || []).length
 const REANCHOR = '重新锚定'
 const NEW_SESSION = '新建会话'
 
-const A = byKey['red-distortion'], B = byKey['amber-distortion'], C = byKey['red-pressure-only'], D = byKey['legacy-no-distortion']
+const A = byKey['red-distortion'], B = byKey['amber-distortion'], C = byKey['red-pressure-only'], D = byKey['legacy-no-distortion'], E = byKey['recurred-distortion']
 
 check(!!A?.hasMeter && !!D?.hasMeter, '血条应始终渲染（两个被测量中它是常驻仪表）')
 check(A && rowsOf(A.text) === 3, `失真红应逐条列出 3 条证据，实测 ${A ? rowsOf(A.text) : '缺失'}`)
@@ -224,6 +245,11 @@ check(A && D && A.fillBg === D.fillBg, `失真红不得改变血条颜色（失�
 check(D && rowsOf(D.text) === 0 && !/×\s*\d/.test(D.text), '老内核（无 distortion 字段）：不得弹卡/角标')
 check(!B?.hasGlow && !C?.hasGlow && !D?.hasGlow, '泛光应只在失真红出现（琥珀/压力红/老内核都不泛光）')
 check(!!A && A.hasGlow, '失真红应出现泛光（泛光已换轴到失真）')
+// 复发：即使该证据已展示过也必须重新提醒，并给出"锚定没根治"提示（spec 验收项 6）
+check(E && rowsOf(E.text) === 1, `同源复发应重现卡片，实测证据行 ${E ? rowsOf(E.text) : '缺失'}`)
+check(E && E.buttons.some((b) => b.includes(REANCHOR)) && E.buttons.some((b) => b.includes(NEW_SESSION)), '复发卡片应仍提供两级动作')
+check(!!E && E.recurredNotice, '复发卡片应显示"锚定未根治"提示')
+check(B && !B.recurredNotice && A && !A.recurredNotice, '非复发不得显示复发提示')
 
 console.log('\n失真 GUI 渲染验证：')
 for (const r of results) console.log(`  · ${r.key.padEnd(22)} fillBg=${r.fillBg} 证据行=${rowsOf(r.text)} 角标=${/×\s*\d/.test(r.text) ? 'on' : 'off'} 泛光=${r.hasGlow ? 'on' : 'off'} 按钮=[${r.buttons.join(', ')}] rootHtml=${r.htmlLen}`)

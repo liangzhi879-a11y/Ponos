@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import {
   meterState,
   distortionOf, distortionBadge, shouldShowDistortionAlert, anchorTextFrom, mergeIssues,
+  isRecurred, distortionSuppressKey,
 } from './healthUi.ts'
 import type { DistortionInfo, DistortionIssue } from './healthUi.ts'
 import type { HealthInfo } from '../stores/healthStore.ts'
@@ -82,6 +83,31 @@ test('shouldShowDistortionAlert：仅 red + 未冷却 + 去抖键未展示过', 
 test('shouldShowDistortionAlert：观察期（red 但 trigger 为 null）不弹卡', () => {
   const observing = h({ distortion: d({ tier: 'red', trigger: null, observeUntilTurn: 12 }) })
   assert.equal(shouldShowDistortionAlert(observing, 0, []), false, '观察期只显示角标')
+})
+
+test('shouldShowDistortionAlert：同源复发（recurred）必须重新提醒，动作可升级为新建会话', () => {
+  // 内核语义：markResolved 后同源证据再现 → 打 recurred 标记（fidelity.mjs）。
+  // 前端必须放行，否则用户处理过的失真再次复发时被静默吞掉（spec 验收项 6）。
+  const rec = i('m:1', { recurred: true })
+  const x = h({ distortion: d({ tier: 'red', trigger: 'm:1', issues: [rec] }) })
+  assert.equal(shouldShowDistortionAlert(x, 0, ['m:1']), true, '复发应重新弹卡（即使该 id 已展示过）')
+  assert.equal(isRecurred(distortionOf(x)), true, '复发态需可判定（卡片据此升级动作）')
+  // 非复发且已展示过 → 仍不重复弹
+  const y = h({ distortion: d({ tier: 'red', trigger: 'm:1', issues: [i('m:1')] }) })
+  assert.equal(shouldShowDistortionAlert(y, 0, ['m:1']), false)
+  // 复发只该弹一次：同一复发态的抑制键必须可区分于首次展示
+  const key1 = distortionSuppressKey(distortionOf(y))
+  const key2 = distortionSuppressKey(distortionOf(x))
+  assert.ok(key1 && key2, '有 trigger 时抑制键不应为空')
+  assert.notEqual(key1, key2, `复发态需用不同抑制键（首次=${key1} 复发=${key2}）`)
+  assert.equal(shouldShowDistortionAlert(x, 0, [key1, key2]), false, '同一复发态不得反复弹卡（否则无限循环）')
+})
+
+test('shouldShowDistortionAlert：冷却只由显式关闭（dismiss）设置，不因处理过证据而闷掉新失真', () => {
+  // 处理（重新锚定/新建会话）只按 id 抑制"已处理的证据"；新的、不同的证据必须立刻可提醒——
+  // 红档意味着上下文已失真，静默 5 分钟等于让会话带着错误继续跑。
+  const fresh = h({ distortion: d({ tier: 'red', trigger: 'c:9', issues: [i('c:9')] }) })
+  assert.equal(shouldShowDistortionAlert(fresh, 0, ['m:1']), true, '新证据不受其它 id 的抑制影响')
 })
 
 test('distortionBadge：amber/red 显示角标并带证据条数，green 不显示', () => {

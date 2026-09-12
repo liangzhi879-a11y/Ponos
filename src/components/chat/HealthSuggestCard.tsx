@@ -5,7 +5,7 @@ import { useTranslation } from '@/i18n/useTranslation'
 import { useHealthStore } from '@/stores/healthStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
-import { distortionOf, shouldShowDistortionAlert, anchorTextFrom, type DistortionAxis } from '@/lib/healthUi'
+import { distortionOf, shouldShowDistortionAlert, anchorTextFrom, isRecurred, distortionSuppressKey, type DistortionAxis } from '@/lib/healthUi'
 import { Button } from '@/components/ui'
 
 /** 轴标签 key 用字面量映射（保证 t() 的 key 是字面量类型，避免动态拼接失去类型检查） */
@@ -64,13 +64,26 @@ export function HealthSuggestCard({ conversationId, onStopSource, onAnchorApplie
 
   const issues = distortion.issues
   const anchorText = anchorTextFrom(health)
+  const recurred = isRecurred(distortion)
   const title = `${t('health.distortion.redTitle', { n: issues.length })} · ${t(AXIS_LABEL_KEY[primaryAxis(distortion.axes)])}`
   const visible = issues.slice(0, MAX_EVIDENCE_ROWS)
   const moreCount = Math.max(0, issues.length - visible.length)
 
-  /** 弹出后即登记去抖键：同一证据键不再重复弹（用户已在冷却内处理过） */
+  /** 该展示抑制键（复发态用独立键）——处理/关闭后登记，避免同一证据反复弹卡。 */
+  const suppressKey = distortionSuppressKey(distortion) ?? distortion.trigger
+
+  /**
+   * 已处理：只**按证据键抑制**，不设时间冷却。
+   * 时间冷却留给显式「关闭」——否则处理后 5 分钟内新出现的、不同的失真会被静默吞掉，
+   * 而红档意味着上下文已失真，静默等于让会话带着错误继续跑。
+   */
   const markHandled = () => {
-    if (distortion.trigger) markDistortionShown(conversationId, distortion.trigger)
+    if (suppressKey) markDistortionShown(conversationId, suppressKey)
+  }
+
+  /** 显式关闭：按证据键抑制 + 进入冷却（用户明确表示"别再打扰我一会儿"）。 */
+  const handleDismiss = () => {
+    if (suppressKey) markDistortionShown(conversationId, suppressKey)
     dismissDistortion(conversationId)
   }
 
@@ -92,6 +105,7 @@ export function HealthSuggestCard({ conversationId, onStopSource, onAnchorApplie
     createConversation(undefined, current?.agentId)
     const parts = [anchorText, carrySummary ? summary : ''].filter(Boolean)
     if (parts.length) {
+      // autoSend=false：让新会话输入框先显示"将要发送的锚点+摘要"，由用户确认后发送
       useUIStore.getState().setPendingInput(parts.join('\n\n'), false)
     }
     markHandled()
@@ -136,6 +150,18 @@ export function HealthSuggestCard({ conversationId, onStopSource, onAnchorApplie
         </span>
         <span className="text-xs text-tertiary shrink-0">{detail}</span>
       </div>
+      {/* 同源复发：用户此前处理过、证据又再现 → 明示"锚定没根治"，动作升级 */}
+      {recurred && (
+        <div
+          className="mt-2 rounded-lg px-2 py-1 text-[11px]"
+          style={{
+            background: 'color-mix(in srgb, var(--health-tier-red) 12%, transparent)',
+            color: 'color-mix(in srgb, var(--health-tier-red) 85%, var(--text-primary))',
+          }}
+        >
+          {t('health.distortion.recurredNotice')}
+        </div>
+      )}
       {/* 证据清单（本卡片的核心价值）：逐条可核对，最多 5 条，更多折叠 */}
       <div className="mt-2 max-h-28 overflow-y-auto flex flex-col gap-1">
         {visible.map(it => (
@@ -183,18 +209,19 @@ export function HealthSuggestCard({ conversationId, onStopSource, onAnchorApplie
           {anchorPreview === null ? (
             <Button
               onClick={() => setAnchorPreview(anchorText || t('health.distortion.reanchor'))}
-              variant="danger"
+              variant={recurred ? 'secondary' : 'danger'}
               size="sm"
               disabled={!anchorText}
             >
               {t('health.distortion.reanchor')}
             </Button>
           ) : (
-            <Button onClick={confirmReanchor} variant="danger" size="sm">
+            <Button onClick={confirmReanchor} variant={recurred ? 'secondary' : 'danger'} size="sm">
               {t('health.distortion.sendAnchor')}
             </Button>
           )}
-          <Button onClick={handleNewSession} variant="secondary" size="sm">
+          {/* 复发时动作升级：上一轮「重新锚定」没根治 → 把「新建会话」提为主行动 */}
+          <Button onClick={handleNewSession} variant={recurred ? 'danger' : 'secondary'} size="sm">
             {t('health.distortion.newSessionWithSummary')}
           </Button>
           <button
@@ -207,7 +234,7 @@ export function HealthSuggestCard({ conversationId, onStopSource, onAnchorApplie
             <Minimize2 className="w-3.5 h-3.5" />
           </button>
           <button
-            onClick={() => dismissDistortion(conversationId)}
+            onClick={handleDismiss}
             className="text-xs hover:opacity-80"
             style={{ color: 'color-mix(in srgb, var(--health-tier-red) 70%, var(--text-primary))' }}
             aria-label={t('health.dismiss')}

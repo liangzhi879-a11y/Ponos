@@ -184,6 +184,7 @@ export const zhCN = {
       evidenceLine: '第 {turn} 轮 · {axis} · {evidence}',
       moreEvidence: '另有 {n} 条更早证据',
       evidenceCount: '{n} 条失真证据',
+      recurredNotice: '此前处理过的失真再次出现 —— 重新锚定未能根治，建议新建会话重开',
       reanchor: '重新锚定',
       reanchorPreview: '确认将发送给模型的锚定内容（可编辑）',
       sendAnchor: '发送锚定',

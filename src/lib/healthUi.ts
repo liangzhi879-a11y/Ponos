@@ -39,6 +39,8 @@ export interface DistortionIssue {
   turn: number
   evidence: string
   at: string
+  /** 同源复发（用户处理过 → 内核标记 resolved → 同样证据再现）：需重新提醒并升级动作 */
+  recurred?: boolean
 }
 
 export interface DistortionInfo {
@@ -85,7 +87,11 @@ export function distortionOf(health: HealthInfo | null): DistortionInfo {
       coherence: axisScore(d.axes?.coherence),
       goal: axisScore(d.axes?.goal),
     },
-    issues: Array.isArray(d.issues) ? d.issues.filter(x => x && typeof x.id === 'string') : [],
+    issues: Array.isArray(d.issues)
+      ? d.issues
+        .filter(x => x && typeof x.id === 'string')
+        .map(x => (x.recurred === true ? { ...x, recurred: true } : x))
+      : [],
     trigger: typeof d.trigger === 'string' && d.trigger ? d.trigger : null,
     observeUntilTurn: typeof d.observeUntilTurn === 'number' ? d.observeUntilTurn : null,
     anchorAvailable: d.anchorAvailable === true,
@@ -101,8 +107,29 @@ export function distortionBadge(health: HealthInfo | null): { show: boolean; cou
 }
 
 /**
+ * 复发态判定：去抖键指向的那条证据被内核标记 recurred（用户处理过又再现）。
+ * 卡片据此升级主行动（重新锚定 → 新建会话），见 spec §8 验收项 6。
+ */
+export function isRecurred(d: DistortionInfo): boolean {
+  if (!d.trigger) return false
+  const hit = d.issues.find(x => x.id === d.trigger)
+  return hit?.recurred === true
+}
+
+/**
+ * 展示抑制键：与"已展示过"清单比对用。
+ * 复发态用独立键（`<id>#recurred`）——① 复发必须能再提醒一次；② 该键被记录后
+ * 同一复发态不再重复弹，避免"处理→内核仍报 red→再弹"的死循环。
+ */
+export function distortionSuppressKey(d: DistortionInfo): string | null {
+  if (!d.trigger) return null
+  return isRecurred(d) ? `${d.trigger}#recurred` : d.trigger
+}
+
+/**
  * 是否弹失真建议卡：要求 distortion.tier=red（amber 只显示角标）+ 有去抖键
- * （观察期 trigger=null 时不弹）+ 未在冷却期内 + 该去抖键未展示过。
+ * （观察期 trigger=null 时不弹）+ 未在冷却期内（冷却只由显式"关闭"设置）+
+ * 该展示抑制键未展示过（复发态用独立键，允许再提醒一次）。
  */
 export function shouldShowDistortionAlert(
   health: HealthInfo | null,
@@ -111,9 +138,10 @@ export function shouldShowDistortionAlert(
 ): boolean {
   const d = distortionOf(health)
   if (d.tier !== 'red') return false
-  if (!d.trigger) return false
+  const key = distortionSuppressKey(d)
+  if (!key) return false
   if (Date.now() < dismissedUntil) return false
-  if (Array.isArray(shownIds) && shownIds.includes(d.trigger)) return false
+  if (Array.isArray(shownIds) && shownIds.includes(key)) return false
   return true
 }
 

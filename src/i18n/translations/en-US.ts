@@ -181,6 +181,7 @@ export const enUS: TranslationKeys = {
       evidenceLine: 'Turn {turn} · {axis} · {evidence}',
       moreEvidence: '{n} earlier piece(s) of evidence',
       evidenceCount: '{n} distortion evidence',
+      recurredNotice: 'A distortion you already handled came back — re-anchoring did not fix it; starting a new session is recommended',
       reanchor: 'Re-anchor',
       reanchorPreview: 'Confirm the anchor text to send to the model (editable)',
       sendAnchor: 'Send anchor',
