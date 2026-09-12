@@ -52,19 +52,53 @@ function sleepAbortable(ms, signal) {
 // 调到 1 即"每 delta 一帧"（最大流式粒度，帧数最多）。设 0/非法值回落默认。
 const TEXT_FLUSH_CHARS = () => Math.max(1, Number(process.env.PONOS_TEXT_FLUSH_CHARS) || 16)
 
-function* segmentText(buffer) {
+// 【2026-09-12 标记完整性】未闭合的 HTML 注释（`<!--` 尚无配对 `-->`）不得在中间切帧。
+// 依据：ASK_USER 提问卡与 MILESTONE 进度标记**都是 HTML 注释**，而桥侧是**逐帧**正则
+// 提取、要求同一帧内闭合（bridge.mjs 的 extractAskUserBlocks / extractMilestoneMarks
+// 都用 `[\s\S]*?-->`）。按字符数切帧会把 93 字的 ASK_USER 标记切成 7 帧 ⇒ 卡片 0 命中、
+// 且原始 `<!--ASK_USER {...` 原样漏进气泡（探针实证：切帧数 7、命中 0、7 帧全原样转发）。
+// 此处只做纯语法判定、不认知任何具体标记名（渲染层 markdown 同样不再见到半截注释）。
+// 上限兜底：模型写出永不闭合的 `<!--` 时不得把整段扣住（那恰是"卡住几个字"的病根），
+// 超过上限即放弃押后、照常吐帧。0 = 关闭押后（退回纯长度切分）。
+const MARKER_HOLD_MAX = () => {
+  const raw = process.env.PONOS_TEXT_MARKER_HOLD_MAX
+  if (raw === undefined || raw === '') return 2048
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? n : 2048
+}
+
+// 返回"必须押后的起点"：无未闭合注释时 = buf.length（可自由切分）
+function holdStart(buf) {
+  const max = MARKER_HOLD_MAX()
+  if (!max) return buf.length
+  const i = buf.lastIndexOf('<!--')
+  if (i < 0 || buf.indexOf('-->', i + 4) !== -1) return buf.length
+  return buf.length - i > max ? buf.length : i // 超上限 = 放弃押后（防坏标记扣住整段）
+}
+
+// 切点 pos 是否落在某个 HTML 注释**内部**。判据必须是"注释内部"而非"当前押后区内"：
+// 注释一旦闭合押后就释放了，若只看押后区，载荷内的 `\n\n` 会在闭合的瞬间变回合法
+// 切点、把已完整的标记重新切成两帧（夹具实证：`<!--MILESTONE-OK 1/3 读代码\n\n继续跑-->`
+// 在 `-->` 到达后被从 `\n\n` 处切开）。取"最后一个 `<!--` 是否晚于最后一个 `-->`"。
+function insideComment(s, pos) {
+  const head = s.slice(0, pos)
+  return head.lastIndexOf('<!--') > head.lastIndexOf('-->')
+}
+
+function* segmentText(buffer, kind = 'text') {
   let rest = buffer
   while (rest) {
+    const holdAt = holdStart(rest)
     const idx = rest.indexOf('\n\n')
-    if (idx >= 0) {
+    if (idx >= 0 && !insideComment(rest, idx + 2)) {
       const seg = rest.slice(0, idx + 2)
       rest = rest.slice(idx + 2)
-      if (seg.trim()) yield { type: 'text', text: seg }
+      if (seg.trim()) yield { type: kind, text: seg }
       continue
     }
     // 无段界但已够长：先吐，避免整段被扣到流末（帧数仍远少于逐 delta 直发）
-    if (rest.length >= TEXT_FLUSH_CHARS()) {
-      yield { type: 'text', text: rest }
+    if (rest.length >= TEXT_FLUSH_CHARS() && holdAt === rest.length) {
+      yield { type: kind, text: rest }
       rest = ''
     }
     break
@@ -114,6 +148,12 @@ export function createAnthropicParser() {
   const toolSlots = new Map() // key(index|'__last') -> { id, name, inputJson, inline }
   let lastToolKey = null
   let textBuf = ''
+  // 思考块同样要成帧：旧实现逐 delta 直发（`out.push({type:'thinking', ...})`），
+  // 而推理模型（deepseek 系）常把 MILESTONE 标记写在 thinking 里——桥虽"text 与
+  // thinking 都提取里程碑"，但 delta 边界几乎必然落在标记中间 ⇒ 思考块内的进度标记
+  // **从未**解析成功过（这正是桥侧"散文兜底"存在的原因）。与 text 共用同一切分器，
+  // 标记不再被切开；模型耗时/推理内容本身不变，只是帧粒度变粗（默认 16 字）。
+  let thinkBuf = ''
   let usage = { input_tokens: 0, output_tokens: 0 }
   let lastUsageKey = null // 最近一次已 push 的 usage 快照指纹（同值快照去重）
   let stopReason = null
@@ -145,7 +185,11 @@ export function createAnthropicParser() {
           while (!n.done) { out.push(n.value); n = it.next() }
           textBuf = typeof n.value === 'string' ? n.value : ''
         } else if (dt.type === 'thinking_delta' && dt.thinking) {
-          out.push({ type: 'thinking', text: dt.thinking })
+          thinkBuf += dt.thinking
+          const it = segmentText(thinkBuf, 'thinking')
+          let n = it.next()
+          while (!n.done) { out.push(n.value); n = it.next() }
+          thinkBuf = typeof n.value === 'string' ? n.value : ''
         } else if (dt.type === 'input_json_delta' && dt.partial_json) {
           // 按 index 落槽；缺 index 回退最后一个未收尾块
           const key = hasIdx ? payload.index : lastToolKey
@@ -185,6 +229,10 @@ export function createAnthropicParser() {
     },
     finish() {
       const out = []
+      // 思考块的押后尾巴同样要收口（旧实现逐 delta 直发、无缓冲，故此前不需要这一步；
+      // 加了缓冲就必须在流末吐净，否则是"新造一条丢字路径"）。
+      if (thinkBuf) out.push({ type: 'thinking', text: thinkBuf })
+      thinkBuf = ''
       if (textBuf.trim()) out.push({ type: 'text', text: textBuf })
       textBuf = ''
       return out

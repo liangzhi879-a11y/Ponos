@@ -209,6 +209,75 @@ test('Anthropic 解析器：PONOS_TEXT_FLUSH_CHARS=1 → 每 delta 一帧（最�
   }
 })
 
+// 【2026-09-12 标记完整性】按字符数切帧打碎了两个 HTML 注释标记族：
+// ASK_USER 提问卡与 MILESTONE 进度标记都是 HTML 注释，而桥**逐帧**正则提取、要求
+// 同一帧内闭合（server/bridge.mjs 的 extractAskUserBlocks / extractMilestoneMarks）。
+// 探针实证：93 字标记被 16 字阈值切成 7 帧 ⇒ 卡片 0 命中 + 7 帧原始标记全漏进气泡。
+const TH = (text) => ({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: text } })
+const MARK = '<!--ASK_USER {"questions":[{"question":"选哪个方案？"}]}-->'
+
+test('Anthropic 解析器：HTML 注释标记不得被切帧（桥逐帧提取的前提）', () => {
+  const p = createAnthropicParser()
+  const full = `请确认：${MARK} 收到请回复。`
+  const frames = []
+  for (const ch of full) frames.push(...p.feed(TD(ch))) // 逐字喂 = 最大切分压力
+  frames.push(...p.finish())
+  const texts = frames.filter((c) => c.type === 'text').map((c) => c.text)
+  assert.equal(texts.join(''), full, '拼接必须与原文逐字一致')
+  for (const t of texts) {
+    if (t.includes('<!--')) assert.ok(t.includes('-->'), `帧内出现未闭合注释（桥无法提取）：${JSON.stringify(t)}`)
+  }
+  assert.ok(texts.some((t) => t.includes(MARK)), '完整标记必须整帧到达，否则卡片 0 命中')
+})
+
+test('Anthropic 解析器：注释载荷内含空行（\\n\\n）同样不得被切开', () => {
+  const p = createAnthropicParser()
+  const full = '进度：<!--MILESTONE-OK 1/3 读代码\n\n继续跑--> 完'
+  const frames = []
+  for (const ch of full) frames.push(...p.feed(TD(ch)))
+  frames.push(...p.finish())
+  const texts = frames.filter((c) => c.type === 'text').map((c) => c.text)
+  assert.equal(texts.join(''), full)
+  for (const t of texts) {
+    if (t.includes('<!--')) assert.ok(t.includes('-->'), `段界落在注释内被切开：${JSON.stringify(t)}`)
+  }
+})
+
+test('Anthropic 解析器：永不闭合的 <!-- 不得扣住整段（超上限放弃押后）', () => {
+  const prev = process.env.PONOS_TEXT_MARKER_HOLD_MAX
+  process.env.PONOS_TEXT_MARKER_HOLD_MAX = '32'
+  try {
+    const p = createAnthropicParser()
+    const seen = []
+    for (const ch of `开头<!-- 注释永不闭合 ${'x'.repeat(80)}`) seen.push(...p.feed(TD(ch)))
+    assert.ok(
+      seen.filter((c) => c.type === 'text').length >= 1,
+      '超上限必须照常吐帧——否则"坏标记"把整段扣到流末，正是"卡住几个字"的病根',
+    )
+  } finally {
+    if (prev === undefined) delete process.env.PONOS_TEXT_MARKER_HOLD_MAX
+    else process.env.PONOS_TEXT_MARKER_HOLD_MAX = prev
+  }
+})
+
+test('Anthropic 解析器：thinking 块内的标记不得被切帧（旧实现逐 delta 直发 ⇒ 从未解析成功）', () => {
+  const p = createAnthropicParser()
+  const marker = '<!--MILESTONE-START 1/3 读代码-->'
+  const full = `先规划一下。${marker}现在开始。`
+  const frames = []
+  for (const ch of full) frames.push(...p.feed(TH(ch)))
+  frames.push(...p.finish())
+  const th = frames.filter((c) => c.type === 'thinking').map((c) => c.text)
+  assert.equal(th.join(''), full, '思考内容逐字一致')
+  assert.ok(th.some((t) => t.includes(marker)), '标记必须整帧到达（桥也从 thinking 提取里程碑）')
+})
+
+test('Anthropic 解析器：思考尾巴由 finish() 收口（新增缓冲不得引入丢字）', () => {
+  const p = createAnthropicParser()
+  const seen = [...p.feed(TH('短思考')), ...p.finish()] // 3 字 < 阈值 16 ⇒ 留在缓冲里
+  assert.equal(seen.filter((c) => c.type === 'thinking').map((c) => c.text).join(''), '短思考')
+})
+
 test('protocolStream：Anthropic 完整事件序列（content_block_start→delta→stop→message_delta）仅产出一个 usage chunk', async () => {
   const events = [
     JSON.stringify({ type: 'message_start', message: { usage: { input_tokens: 5, output_tokens: 1 } } }),
