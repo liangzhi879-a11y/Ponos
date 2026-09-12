@@ -122,3 +122,17 @@ test('缺 distortion 字段 = green 的语义前提：老内核不发字段时�
   assert.ok(s.distortion, 'snapshot 总带 distortion（新内核）')
   assert.equal(GREEN_DIST(s.distortion), true)
 })
+
+test('压缩次数 seed：PONOS_ 与 YFW_ 双名都能读（bridge 注入名不一致的兼容）', () => {
+  // 背景：bridge 注入 YFW_HEALTH_COMPACT_COUNT，内核曾只读 PONOS_HEALTH_COMPACT_COUNT，
+  // 导致进程回收后 resume 的血条压缩史从未恢复。双名读取兼容已装旧桥与未来新桥。
+  const { wire } = mk()
+  const a = createHealth({ wire, env: { PONOS_HEALTH_COMPACT_COUNT: '3' } })
+  assert.equal(a.getState().compactCount, 3)
+  const b = createHealth({ wire, env: { YFW_HEALTH_COMPACT_COUNT: '5' } })
+  assert.equal(b.getState().compactCount, 5, 'YFW_ 旧名必须生效')
+  const c = createHealth({ wire, env: { PONOS_HEALTH_COMPACT_COUNT: '2', YFW_HEALTH_COMPACT_COUNT: '7' } })
+  assert.equal(c.getState().compactCount, 7, '两名并存时两者取 max（不因旧名较小而丢历史）')
+  assert.equal(createHealth({ wire, env: {} }).getState().compactCount, 0)
+  assert.equal(createHealth({ wire, env: { PONOS_HEALTH_COMPACT_COUNT: 'abc' } }).getState().compactCount, 0, '非法值回落 0')
+})

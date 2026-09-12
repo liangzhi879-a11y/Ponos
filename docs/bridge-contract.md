@@ -56,7 +56,7 @@
 | `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_SONNET/OPUS/HAIKU_MODEL` | provider 主/子模型 | 模型路由 |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | contextWindow | 自动压缩窗口 |
 | `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | 64000（可覆盖） | 输出 token 上限 |
-| `YFW_HEALTH_COMPACT_COUNT` | 历史压缩次数（有值才注入） | 健康血条恢复 |
+| `YFW_HEALTH_COMPACT_COUNT` | 历史压缩次数（有值才注入） | 健康血条恢复。**内核读双名**（`PONOS_HEALTH_COMPACT_COUNT` / `YFW_HEALTH_COMPACT_COUNT`）并取两者较大值，非法值回落 0——此前只读 `PONOS_` 前缀导致该 seed 从未生效（2026-09-12 修） |
 
 系统提示词注入：**不通过命令行传长文本**（cmd.exe 8191 字符限制），而是写入 `%TEMP%/yfw-prompt-<sid>.txt`（新会话）或 `.resume.txt`（resume），经 `--append-system-prompt-file` 传入；会话进程退出时删除。内容 = 身份提示词（或自定义 agent systemPrompt）+ 互动问答格式（ASK_USER 卡片规范）+ 里程碑协议 + 技能清单（resume 用精简版）+ 经验注入（沉积引导+摘要索引，可配置）。
 
@@ -67,6 +67,7 @@
 | `user` | `{ message:{role:'user',content}, priority?, uuid? }` | 投递一轮用户消息（队列化；`uuid` 用于生命周期追踪） |
 | `control_request` | `{ request_id, request:{subtype} }` | 中断/取消。`subtype:'cancel'`（bridge 的优雅停止）、`'interrupt'`（abort 主查询）等 |
 | `control_response` | `{ response:{ request_id, subtype:'success', response:{ behavior:'allow'/'deny', updatedInput, toolUseID, decisionClassification } } }` | 权限审批回执，解除 `can_use_tool` 挂起 |
+| `anchor_applied` | `{ issueIds: string[] }` | 上下文失真「重新锚定」已生效（2026-09-12）：用户在 GUI 确认并发送锚点后，把这些失真证据标记为 resolved → 失真档**立即回绿**并进入观察期（`observeTurns` 轮）。**不是真值来源**：只表达"用户已处理"；内核按 id 匹配，未知 id 静默忽略。上报路径：GUI → `POST /session/anchor-applied`（§7）→ 内核对目标会话 stdin 写本消息 |
 
 注：内核 CLI 还支持从 stdin 读取 agents JSON、systemPrompt 等（绕过 ARG_MAX）；`structuredIO.structuredInput` 为逐行解析器（print.ts:2834 起）。
 
@@ -83,6 +84,32 @@
 | `bridge_request` | `route:'browser', …` | 内置浏览器自动化请求 → **bridge 直连浏览器执行器，不转发 GUI**（防敏感载荷泄漏） |
 | `stream_event` / `keep_alive` / `streamlined_text` / `prompt_suggestion` | — | 流式/保活/精简输出/建议（SDK 消费者用） |
 | `error` | `{message}` | 错误 |
+| `ponos_health` | `score/tier/compactCount/remainingPct/remainingTurns/suggestNewSession/reason/…` + `distortion?{}` | 上下文健康事件（档位变化才发；初始即绿不发）。**bridge 无需改动**：整包经 `event` 原样透传 GUI，`distortion` 为纯增量可选字段（缺省即 green）。字段语义见 §4.1 |
+| `ponos_summary` | `{summary, compactCount}` | 压缩摘要落地事件（`yfw_summary` 同义转发），血条压缩脉冲与建议卡摘要来源 |
+
+### 4.1 上下文健康：两个独立被测量（2026-09-12）
+
+**压力**（还能装多少）与**失真**（还准不准）是两个被测量，统计上近乎不相关，**严禁互相赋值**：
+`tier` 是压力语义，`distortion.tier` 是失真语义。血条宽度/颜色只读 `tier`；**一切建议弹窗与泛光只读 `distortion.tier`**
+（压力档已降级为纯仪表，不再触发任何提醒）。
+
+`ponos_health.distortion`（**可选字段，缺省一律按 green**——老内核/老快照不显示任何失真提示）：
+
+| 字段 | 类型 | 语义 |
+|---|---|---|
+| `score` | number | 0–100。三轴**各自归一**后取最大值（不跨轴求和，避免不同性质的证据互相稀释） |
+| `tier` | `green`/`amber`/`red` | 失真档。**强证据直通 red**；仅中证据时封顶 65（< red 阈值 70）只到 amber |
+| `axes` | `{memory, coherence, goal}` | 三轴分数：记忆（压缩丢/改事实）、自洽（自相矛盾/陈旧引用）、目标（漂移） |
+| `issues[]` | `{id, axis, kind, strength, turn, evidence, at}` | 证据清单（最多 10 条，强证据在前）。`id` 即去抖键；`strength` ∈ `strong`/`medium` |
+| `trigger` | string \| null | 去抖键（前端据此"同一证据只弹一次"）。**仅 red 且存在最强证据时非空**；观察期/无证据为 `null` |
+| `observeUntilTurn` | number \| null | 回绿后的观察期截止轮次：期内复发才重新上报（防"刚关掉又弹"） |
+| `anchorAvailable` | boolean | 是否可重新锚定（仅 red 为 true） |
+| `anchorText` | string（**仅 red 附带**） | 确定性拼接的权威事实（首条真实任务 + 会话工作记忆 + 硬约束，≤4KB，不调用模型），供「重新锚定」直接注入。非 red 不带（省流量） |
+
+真值优先级：**用户纠错 > 工具记录/文件系统/实体覆盖 > 模型自评**（LLM 保真审计上限 medium，绝不作结论来源）。
+误报控制：无信号恒 green；用户显式改需求＝合法转向（锚点跟随、清目标轴）；显式演进语（改为/已修正/换成/弃用）不计矛盾。
+可修复性：失真**有回绿路径**（`anchor_applied` → 证据 resolved → 立即回绿 + 观察期 3 轮），这点与压力红档不同（后者只有 5 分钟 dismiss 冷却）。
+env 调参：`PONOS_FIDELITY`（`0` 总开关关）、`_WINDOW`（默认 12 轮）、`_DECAY`（0.85）、`_RED`（70）、`_AMBER`（40）、`_LLM_AUDIT`（默认开，每次压缩至多 1 次调用、`maxOut=512`、失败不计熔断）。
 
 ## 5. WebSocket：bridge → GUI（outbound 事件）
 
@@ -130,6 +157,7 @@
 | `/convert-office`、`/read-sheet`、`/write-sheet`、`/read-docx`、`/write-docx` | Office 读写（调 python 脚本 `convert_docx.py`/`convert_xls.py`/`docx_edit.py`/`sheet_edit.py`） |
 | `/transcript/list`、`/transcript/load`、`/transcript/search` | 会话转录（内核 transcript 为权威源，GUI 只读索引） |
 | `/health`、`/diag/info` | 健康/诊断 |
+| `/session/anchor-applied`（POST） | 上下文失真「重新锚定」上报（2026-09-12）：body `{sessionId, issueIds[]}` → 校验后向该会话内核 stdin 写 `anchor_applied`（§3）。`sessionId` 缺失/空白 → **400** `{ok:false,error:'sessionId required'}`（不允许无主消息落进某个会话）；`issueIds` 非数组/含脏值 → 清洗（去重、剔非字符串、单条限长 120、封顶 50）后照常 **200** `{ok:true}`。路由只做校验+转发，**判定永远在内核** |
 | `/test-provider`、`/verify-provider` | provider 连通性 |
 | `/config`、`/providers`、`/providers/*` | 配置读写（`~/.yfworking/config.json`，写前备份+迁移） |
 | `/skills`、`/sample-skills`、`/install-skill`、`/uninstall-skill` | 技能管理（写入 `~/.yfworking/skills/`） |

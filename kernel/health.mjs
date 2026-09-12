@@ -59,9 +59,16 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
   // transcript 恢复的 compactCount 走 record() 取 max 兜底，env 为双保险 seed。
   // 兼容 YFW_ 前缀：bridge 曾注入 YFW_HEALTH_COMPACT_COUNT，与读取名不一致导致
   // seed 从未生效（2026-09-12 发现）；双名读取可兼容已装旧桥。
-  let compactCount = Math.max(0, Number(
-    env.PONOS_HEALTH_COMPACT_COUNT ?? env.YFW_HEALTH_COMPACT_COUNT,
-  ) || 0)
+  // seed 双名取 max：compactCount 单调递增，"取大"语义安全（两个名字同时存在时
+  // 不因较小的一方而丢掉历史压缩次数）；非法值一律回落 0。
+  const seedCount = (v) => {
+    const n = Number(v)
+    return Number.isFinite(n) && n > 0 ? n : 0
+  }
+  let compactCount = Math.max(
+    seedCount(env.PONOS_HEALTH_COMPACT_COUNT),
+    seedCount(env.YFW_HEALTH_COMPACT_COUNT),
+  )
   let lastSummary = ''
   // 初始即绿：green 档不发 ponos_health（首轮即绿不打扰；档位转黄/红时才通知）
   let lastTier = 'green'

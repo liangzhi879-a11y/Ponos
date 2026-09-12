@@ -251,6 +251,40 @@ test('静默降级：undefined/null/超长输入不抛；总开关关时恒 gree
   assert.equal(off.snapshot().tier, 'green', '总开关关：不做失真判定')
 })
 
+// 注：上方「假红回归：压缩刚落地（159×场景）」锁"压缩本身不是失真"；
+// 下面这条补锁**前端可见契约**——非红档不得携带去抖键、不预生成锚点文本
+//（否则前端会误弹卡、或"重新锚定"按钮带着空/过期锚点可点）。
+test('假红回归：压缩落地 + 该轮一切正常 → 非红档且不带去抖键/不预生成锚点', () => {
+  const f = mkFid()
+  // 压缩落地：摘要完整覆盖关键实体（missing 为空 → 无 memory 证据）
+  f.recordCompactionAudit({ entities: [], missing: [], total: 4, ratio: 0 })
+  // 紧接着正常一轮：工具全成功、助手未引用任何失踪路径、目标覆盖充足
+  f.recordTurn({
+    user: '继续按计划实现 src/a.ts，把阈值改成 120',
+    assistant: '已按计划改完 src/a.ts 的阈值 120，接下来补测试。',
+    toolDigest: [{ name: 'Read', path: 'src/a.ts', isError: false }, { name: 'Edit', path: 'src/a.ts', isError: false }],
+  })
+  const s = f.snapshot()
+  assert.notEqual(s.tier, 'red', `刚压缩完的正常轮不得判红（score=${s.score} issues=${JSON.stringify(s.issues)}）`)
+  assert.equal(s.trigger, null, '非红档不得携带去抖键（前端据此不弹卡）')
+  assert.equal(s.anchorAvailable, false, '非红档不应生成锚点文本')
+})
+
+test('假绿回归：连续 20 轮纯问答（无工具/无压缩/无纠错）恒 green 且零证据', () => {
+  const f = mkFid()
+  for (let i = 0; i < 20; i++) {
+    f.recordTurn({
+      user: `第 ${i + 1} 个问题：Node 的事件循环分几个阶段？`,
+      assistant: '六个阶段：timers、pending callbacks、idle/prepare、poll、check、close callbacks。',
+      toolDigest: [],
+    })
+    const s = f.snapshot()
+    assert.equal(s.tier, 'green', `第 ${i + 1} 轮不应有失真信号：${JSON.stringify(s.issues)}`)
+    assert.equal(s.issues.length, 0)
+    assert.equal(s.score, 0)
+  }
+})
+
 test('性能红线：单轮 20 万字符输入的处理耗时 < 200ms（轮尾同步调用，不能拖慢对话）', () => {
   const f = mkFid()
   const big = ('必须保留 src/a.ts 与阈值 120，模型用 deepseek-v4-flash。' + 'x'.repeat(80)).repeat(2000)
