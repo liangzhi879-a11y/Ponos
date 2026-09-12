@@ -37,9 +37,18 @@ const RISK_KEYS = {
 }
 
 export function PermissionDialog() {
-  const { pendingPermissions, resolvePermission } = useChatStore()
+  const { pendingPermissions, resolvePermission, activeConversationId } = useChatStore()
   const { t } = useTranslation()
-  const active = pendingPermissions[0]
+  // 当前会话的审批优先（2026-09-12）：pendingPermissions 是不分会话的扁平数组，
+  // 直接取 [0] 会让别的会话/后台通道的审批顶到最前——用户看到一条与自己当前进度
+  // 无关的弹窗（"审批与会话进度不一致"的成因之一）。**只排序不隐藏**：隐藏会让
+  // 那里真正在等待的审批找不到人签，内核只能干等到超时，比显示错序更糟。
+  const active = pendingPermissions.find(p => p.sessionId === activeConversationId) ?? pendingPermissions[0]
+  // 并发计数：多个审批同时在等时，收起当前这条不能让人以为"批完了"（后到的仍在阻塞）
+  const others = active ? pendingPermissions.filter(p => p.id !== active.id).length : 0
+  const othersOtherSessions = active
+    ? pendingPermissions.filter(p => p.id !== active.id && p.sessionId !== activeConversationId).length
+    : 0
 
   if (!active) return null
 
@@ -104,6 +113,14 @@ export function PermissionDialog() {
                 {t(RISK_KEYS[risk])}
               </span>
             </div>
+
+            {/* 并发审批计数：多个审批同时在等时，收起当前这条不等于批完了 */}
+            {others > 0 && (
+              <p className="text-[11px] text-tertiary" data-testid="permission-pending-others">
+                {t('permissions.pendingOthers', { count: others })}
+                {othersOtherSessions > 0 && t('permissions.pendingOthersCross', { count: othersOtherSessions })}
+              </p>
+            )}
 
             {/* Target：固定高度，命令过长时内部滚动 */}
             <div>

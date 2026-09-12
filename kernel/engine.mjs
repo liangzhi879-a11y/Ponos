@@ -691,6 +691,20 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // P8 排队插话（priority:'next'）：cli 吸收入队，引擎在工具调用边界注入当前轮；
   // 纯文本生成阶段不注入，轮末由 cli 作为新轮处理（前端方案 A 兜底语义）
   const pendingNext = []
+  // ── ASK_USER 阻塞等待（2026-09-12）────────────────────────────────────────
+  // 病灶：内核对提问标记**零感知**——模型写完问题即继续跑完整个回合，用户看到卡片
+  // 时模型早已跑远，"审批/提问总是与会话进度不一致、消息已过期"的用户实证即此。
+  // 语义与审批同构（用户选定方案）：挂起 → 作答经 cli 注入当前轮（queueNext 吸收，
+  // 工具边界进模型上下文）→ 继续同一步；超时则收尾本轮（作答仍可在下一轮补答，
+  // 与"审批超时=未执行但不阻塞后续"同待遇）。
+  // 仅认**已闭合**的标记（与桥的提取口径一致，见 server/askuser.mjs）；写在本仓
+  // 文档/代码里的"示例标记"若被模型原样复述会误触发，故留 kill switch：
+  // PONOS_ASK_USER_BLOCK=0 关闭阻塞（默认开）。
+  const ASK_USER_BLOCK = process.env.PONOS_ASK_USER_BLOCK !== '0'
+  const ASK_USER_RE = /<!--\s*ASK_USER\b[\s\S]*?-->/
+  const asksUser = (t) => ASK_USER_BLOCK && ASK_USER_RE.test(String(t ?? ''))
+  let answerWaiter = null // (content) => void：cli 注入作答时唤醒
+  let awaitingAnswer = false
   // R1-1 防重放（轮级）：已执行 tool_use id → 结果。runTurn 开头重置，
   // 同轮重复 id（重连重放）回填不重执行；跨轮自动失效（新轮新 map）
   let executedToolIds = new Map()
@@ -883,6 +897,33 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     // 仅带 model。空文本收尾轮（tool-only / 溢出后置分支）恰好一个带 usage 的
     // assistant 条目——把 usage 挂到本轮最后一条已写条目；无已写条目则跳过
     // （无用量可计，且不追加空内容条目以免破坏 API 消息流）。
+    // 提问挂起：等 cli 把用户作答注入当前轮（queueNext）或超时。返回 true = 已作答。
+    // 硬看门狗展期必须有配对的 begin/end——漏掉 end 会让等待窗口变成常态（见 protocol.mjs）。
+    async function waitForAnswer() {
+      const timeoutMs = Math.max(1000, Number(process.env.PONOS_ASK_USER_TIMEOUT_MS || process.env.PONOS_APPROVAL_TIMEOUT_MS || 600_000))
+      awaitingAnswer = true
+      beginAwaitingUser()
+      try {
+        const answered = await new Promise((resolvePromise) => {
+          const timer = setTimeout(() => { answerWaiter = null; resolvePromise(false) }, timeoutMs)
+          answerWaiter = (content) => { clearTimeout(timer); resolvePromise(true) }
+        })
+        // 超时无作答：不是错误，也不注入任何"没人回答"的合成消息——直接收尾本轮，
+        // 用户稍后作答仍是同一上下文里的下一轮（避免在 transcript 里留假对话）
+        if (!answered) {
+          try { console.error(`[engine] ASK_USER 等待作答复超时（${timeoutMs}ms）→ 收尾本轮，作答可在下一轮补上`) } catch {}
+        }
+        // 取消/打断唤醒（rejectAllWaiters）后不得继续跑：抛 AbortError 走既有取消
+        // 收尾路径（cli 输出「已取消。」+ result，Stop 按钮体验依赖该路径）。
+        if (signal.aborted) throw abortError()
+        return answered
+      } finally {
+        answerWaiter = null
+        awaitingAnswer = false
+        endAwaitingUser()
+      }
+    }
+
     const finalizeUsage = () => {
       if (!session) return
       if (textBuf.trim()) {
@@ -1385,6 +1426,22 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           textBuf = ''
           continue
         }
+        // ── ASK_USER 阻塞等待（2026-09-12）：提问即"停下来等" ─────────────────
+        // 位置讲究：在全部自愈守卫之后、break 之前。纯文本步是提问的常见形态，
+        // 若在此继续跑完回合，用户看到卡片时模型早已越过该步。
+        if (asksUser(textBuf)) {
+          const answered = await waitForAnswer()
+          if (answered) {
+            // 本步文本已定稿：先落盘为独立 assistant 条目再置空——否则下一轮（作答
+            // 之后的回复）会与问题拼成同一条消息（截断续写路径同款处理，见上方
+            // output_continued）。不带 usage：M1 约定 usage 只写轮次最终条目。
+            const askText = textBuf
+            textBuf = ''
+            pushMemory({ role: 'assistant', content: [{ type: 'text', text: askText }] })
+            if (session) lastAssistantEntry = session.appendAssistant([{ type: 'text', text: askText }], { model })
+            continue // 作答已在 pendingNext，迭代起点吸收进模型上下文
+          }
+        }
         break
       }
       // 该轮 assistant 历史：文本块 + tool_use 块（Anthropic API 要求）
@@ -1508,6 +1565,10 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         break
       }
       // 继续下一轮 API 调用（模型看到 tool_result 后产出新回复）
+      // 提问与工具调用同期（模型边问边做）：工具已执行，仍在下一轮 API 调用前挂起等待
+      // ——不这么做就等于"问题还没被回答，模型已经基于工具结果继续推理"（原病灶）。
+      // 超时不做特殊处理：继续跑（有人在等工具结果，收尾反而丢工作），与审批一致。
+      if (asksUser(textBuf)) await waitForAnswer()
       textBuf = ''
     }
     // 守卫收尾：命中任一守卫（迭代上限/重复打转/挂起/墙钟/熔断）时，用收尾说明
@@ -2367,6 +2428,13 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       browserWaiters.delete(id)
       resolve({ ok: false, error: '已取消' })
     }
+    // 提问挂起同样要解除：漏掉这一步，取消/打断时 waitForAnswer 会一直挂到超时，
+    // 表现为"按了停止键，内核却要等到提问超时才真的收尾"。
+    if (answerWaiter) {
+      const w = answerWaiter
+      answerWaiter = null
+      w('')
+    }
   }
 
   const taskSystem = {
@@ -2529,8 +2597,18 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     queueNext(content, uuid) {
       pendingNext.push({ content: String(content ?? ''), uuid })
       if (uuid) wire.commandLifecycle(uuid, 'started')
+      // 提问挂起中收到作答 → 立即唤醒（内容同时留在 pendingNext，迭代起点吸收进
+      // 当前轮上下文）。两条路都要走：唤醒只解除挂起，注入才让模型真的看到作答。
+      if (answerWaiter) {
+        const w = answerWaiter
+        answerWaiter = null
+        w(String(content ?? ''))
+      }
       return pendingNext.length
     },
+    // 是否正挂起等用户作答（cli 用：挂起期间的普通消息必须注入当前轮唤醒等待，
+    // 而不是排队等下一轮——否则用户答了却像没答，内核一直挂到超时）
+    isAwaitingAnswer() { return awaitingAnswer },
     pendingNextCount() { return pendingNext.length },
     drainNextPending() { return pendingNext.splice(0) },
     getTurnStats() { return turnStats },

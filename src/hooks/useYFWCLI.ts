@@ -1067,6 +1067,14 @@ function handleMessage(msg: Record<string, unknown>) {
     return
   }
 
+  if (msg.type === 'question' || msg.type === 'approval') {
+    // 时序修复（2026-09-12）：assistant 流式帧走 rAF / 250ms 批处理，而审批与提问帧是
+    // **同步**应用的 ⇒ 卡片会抢跑到"产出它的那条消息"前面，用户看到"审批内容和会话进度
+    // 对不上、消息已过期"。落卡/落弹窗前同步冲一次待处理流事件即恢复正确时序
+    // （flushStreamEvents 幂等：已排的 rAF 回调随后拿到空队列即返回）。
+    flushStreamEvents()
+  }
+
   if (msg.type === 'question') {
     // 数据形状：{ questions: [...] }（bridge 已解析成功）或 { raw: string }（bridge
     // 解析失败，前端再尝试一次容错解析；仍失败则降级为“直接回复”卡，避免用户面对
@@ -1183,10 +1191,23 @@ function handleMessage(msg: Record<string, unknown>) {
   }
 
   if (msg.type === 'approval-resolved') {
-    // bridge 已把审批结果注入内核——无论批准/拒绝都收起弹窗
-    const d = msg.data as { toolUseId?: string } | undefined
+    // bridge 已把审批结果注入内核——无论批准/拒绝都收起弹窗。
+    // approved 必须取自 bridge（2026-09-12 修复）：此前渲染侧硬编码 true，使
+    // "[permission] resolved: … approved" 日志既不能当批准证据、也区分不出"过期 no-op"。
+    const d = msg.data as { toolUseId?: string; approved?: boolean; stale?: boolean } | undefined
     if (d?.toolUseId) {
-      useChatStore.getState().resolvePermission(d.toolUseId, true)
+      useChatStore.getState().resolvePermission(d.toolUseId, d.approved === true, { stale: d.stale === true })
+    }
+    return
+  }
+
+  if (msg.type === 'approval-expired') {
+    // 内核已回吐该工具结果 = 这条审批在内核侧已经结束（放行后执行完，或等待超时放弃）。
+    // 必须无条件收起弹窗：留下的就是一个"点了没反应"的死弹窗（内核 resolveApproval
+    // 查不到 waiter ⇒ 静默 no-op），这正是"审批时消息已过期"的实证形态。
+    const d = msg.data as { toolUseId?: string; reason?: string } | undefined
+    if (d?.toolUseId) {
+      useChatStore.getState().resolvePermission(d.toolUseId, false, { expired: true })
     }
     return
   }

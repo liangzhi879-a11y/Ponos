@@ -438,7 +438,8 @@ interface ChatState {
   _updateSessionMeta: (meta: { conversationId?: string; sessionId?: string; model?: string; tools?: string[]; totalCost?: number; duration?: number }) => void
 
   addPermissionRequest: (request: PermissionRequest) => void
-  resolvePermission: (id: string, approved: boolean) => void
+  /** opts.stale：bridge 回执标明内核已放弃等待（本条未生效）；opts.expired：内核已收口该工具 */
+  resolvePermission: (id: string, approved: boolean, opts?: { stale?: boolean; expired?: boolean }) => void
   clearPermissions: () => void
   clearPermissionsForSession: (sessionId: string) => void
 
@@ -1168,9 +1169,20 @@ export const useChatStore = create<ChatState>()(
       addPermissionRequest: (request) => {
         set(state => ({ pendingPermissions: [...state.pendingPermissions, request] }))
       },
-      resolvePermission: (id, approved) => {
+      resolvePermission: (id, approved, opts) => {
         const byId = get().pendingPermissions.find(p => p.id === id)
-        console.log('[permission] resolved:', byId?.action, byId?.target, approved ? 'approved' : 'denied')
+        // 日志必须能当证据用（2026-09-12）：此前两处误导——① id 不在待批表时打出
+        // "undefined undefined"，看着像身份丢失，实为"已本地收起"或"内核早已放弃"；
+        // ② approved 由调用方硬编码 true（approval-resolved 帧此前不带该字段），
+        // 使这一行无法区分"真批准"与"过期 no-op"。
+        if (!byId) {
+          console.log(`[permission] noop: id 不在待批表（${opts?.expired ? '内核已收口' : '已处理过'}）approved=${approved}`)
+        } else {
+          console.log(
+            '[permission] resolved:', byId.action, byId.target, approved ? 'approved' : 'denied',
+            opts?.stale ? '(stale：内核已放弃等待，未生效)' : '',
+          )
+        }
         set(state => ({
           pendingPermissions: state.pendingPermissions.filter(p => p.id !== id),
         }))

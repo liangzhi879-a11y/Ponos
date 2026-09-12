@@ -120,6 +120,10 @@ test('审批产生时无 GUI 连接（帧广播给 0 个客户端）→ 新客�
     assert.equal(replayed.data.toolUseId, 'tool_use_mock_catastrophic', '重放必须携带原 toolUseId 才能回填 control_response')
     assert.equal(replayed.data.command, 'rm -rf /', '重放帧需完整重建弹窗所需字段（命令文本）')
     assert.ok(replayed.data.requestId, '重放帧必须带 requestId（回执要靠它匹配内核挂起项）')
+    // 年龄透传（2026-09-12）：重放的是"已等待 N 秒"的老弹窗，UI 需据此区分新请求；
+    // 超过阈值的项已在重放前丢弃（见 approval-lifecycle.test.mjs 的 B2）
+    assert.ok(typeof replayed.data.ageMs === 'number' && replayed.data.ageMs >= 0,
+      `重放帧必须带 ageMs（实际 ${JSON.stringify(replayed.data.ageMs)}）`)
     // 回执仍能命中登记项 → 内核解除挂起
     ws2.send(JSON.stringify({ type: 'approval-response', sessionId: 'replay-sess', toolUseId: replayed.data.toolUseId, approved: false }))
     const deadline = Date.now() + 5000

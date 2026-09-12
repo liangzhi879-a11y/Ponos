@@ -402,6 +402,23 @@ async function* mockStream({ messages, signal }) {
   const lastText = typeof lastContent === 'string'
     ? lastContent
     : (Array.isArray(lastContent) ? lastContent.filter((b) => b?.type === 'text').map((b) => b.text).join('\n') : '')
+  // ASK_USER 阻塞语义模拟（2026-09-12）：历史含 [mock:ask-user] 即扮演"问完就停"的
+  // 模型——产出带提问标记的文本后由引擎挂起；作答（桥的格式以"用户回答："开头）到达
+  // 后本分支让位给下面的普通回显，于是"挂起 → 作答注入当前轮 → 继续同一步"可被断言。
+  // 关键：未作答时必须每轮都只问不推进（模拟真模型的"停下来等"），否则测试无从判定
+  // 内核是否真的停住了。
+  const askSeen = (messages || []).some((m) => m?.role === 'user' && (
+    typeof m?.content === 'string'
+      ? m.content.includes('[mock:ask-user]')
+      : (Array.isArray(m?.content) && m.content.some((b) => b?.type === 'text' && String(b?.text ?? '').includes('[mock:ask-user]')))
+  ))
+  if (askSeen && !String(lastText).includes('用户回答')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield* streamText('需要你确认方案：<!--ASK_USER {"questions":[{"question":"继续吗？","options":[{"label":"继续"},{"label":"停下"}]}]}-->', signal)
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // 无进展停滞守卫测试（守卫⑥，2026-09-10）：每次请求产注释文本 + Browser js
   // 只读测量（表达式逐次微变），模拟"测量打转"循环——文本/工具键都不同，
   // ③b/⑤ 抓不到；engine 的 LOOP_STALL_MS 停滞守卫应在超时后收尾。

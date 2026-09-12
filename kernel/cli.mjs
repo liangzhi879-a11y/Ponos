@@ -255,10 +255,15 @@ export async function main(argv) {
     // **不写 result/error 帧**——桥只看到 close，用户的作答落空（GUI 甚至还在等弹窗回执）。
     // 展期而非"暂停判定"：GUI 永不回执时窗口也有界（超出审批上限后照杀）。
     const approvalGraceMs = Math.max(0, Number(process.env.PONOS_APPROVAL_TIMEOUT_MS) || 600_000)
+    // 提问挂起用的是同一个 isAwaitingUser 标志（engine.waitForAnswer）：展期窗口取
+    // 审批与提问两者的较大值，否则把 PONOS_ASK_USER_TIMEOUT_MS 调大于审批窗口时，
+    // 提问等待会被看门狗在展期用尽后误杀。
+    const askGraceMs = Math.max(0, Number(process.env.PONOS_ASK_USER_TIMEOUT_MS) || 0)
+    const userGraceMs = Math.max(approvalGraceMs, askGraceMs)
     const hardTimer = setInterval(() => {
       const idle = Date.now() - wireLastWriteAt()
       const awaiting = isAwaitingUser()
-      const limit = hardTimeoutMs + (awaiting ? approvalGraceMs : 0)
+      const limit = hardTimeoutMs + (awaiting ? userGraceMs : 0)
       if (isTurnActive() && idle > limit) {
         try {
           // 现场指纹（2026-09-12 异步链失活排查）：失活形态无 JS 栈可抓，句柄清单是
@@ -909,6 +914,14 @@ export async function main(argv) {
       // 插话实际退化为"排队等新轮"（方案 A 兜底语义），command_lifecycle 也因此
       // 滞后到轮末才发出（前端气泡 30s 兜底落位）。
       if (state.turnActive && parsed.priority !== 'next' && parsed.priority !== 'now') {
+        // 提问挂起中的作答必须注入当前轮唤醒等待（engine.isAwaitingAnswer）：桥的作答
+        // 通道（bridge.mjs 的 answer 分支）写的是**无 priority** 的 user 消息，若照常
+        // 排队，内核会一直挂到提问超时——用户答了却像没答（2026-09-12 实测形态）。
+        if (engine.isAwaitingAnswer?.()) {
+          if (parsed.uuid) wire.commandLifecycle(parsed.uuid, 'started')
+          engine.queueNext(extractContent(parsed), parsed.uuid)
+          return
+        }
         state.queue.push(parsed)
       } else {
         void handleUser(parsed)

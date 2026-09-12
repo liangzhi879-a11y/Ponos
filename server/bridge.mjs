@@ -1198,11 +1198,19 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     // delete（且只删本次回执的那个 id）：用户点了审批但内核已超时、工具从未执行、
     // 或审批帧发给 0 个客户端（WS 空窗）等情形全部残留，残留项又让回收器无条件豁免
     // 该会话 ⇒ 内核泄漏（pid 6736 静默 53min / pid 21196 静默 13min 即此形态）。
-    if (parsed && parsed.type === 'user' && Array.isArray(parsed.message?.content) && session._pendingApprovals?.size) {
-      for (const blk of parsed.message.content) {
-        if (blk && blk.type === 'tool_result' && blk.tool_use_id && session._pendingApprovals.delete(blk.tool_use_id)) {
-          clearSessionAwaiting(session)
-        }
+    // 【2026-09-12 修正】旧判据要求 `{type:'user',message:{content:[{type:'tool_result'}]}}`
+    // ——内核**从不产出**这个形状（真实帧见 kernel/protocol.mjs 的 wire.toolResult：
+    // 顶层 `{type:'tool_result', tool_use_id, content, is_error}`），故这段此前是**死代码**：
+    // 用户点了审批但内核已超时、工具从未执行等情形全部残留，残留项又让回收器无条件豁免
+    // 该会话（内核泄漏 pid 6736/21196 的同源机制）。
+    if (parsed && parsed.type === 'tool_result' && parsed.tool_use_id && session._pendingApprovals?.size) {
+      if (session._pendingApprovals.delete(parsed.tool_use_id)) {
+        clearSessionAwaiting(session)
+        // 内核已回吐该工具结果 = 这条审批在内核侧已经结束（放行后执行完 / 超时放弃）。
+        // 必须显式通知 GUI 收起弹窗：否则用户面对一个"点了没反应"的过期弹窗
+        // ——内核早已放弃等待，回执只会静默 no-op（resolveApproval 查不到 waiter）。
+        send({ type: 'approval-expired', sessionId: sid, data: { toolUseId: parsed.tool_use_id, reason: 'tool-result' } })
+        console.log(`[bridge] approval closed by tool_result sid=${sid.slice(0, 8)} toolUseId=${parsed.tool_use_id}`)
       }
     }
     // 轮次收尾即清空等待态：result 到达说明内核不再挂起任何提问/审批（挂起时它不会
@@ -2602,7 +2610,19 @@ wss.on('connection', (ws, req) => {
       if (!s || !s.proc || s.proc.killed) continue
       if (s._pendingQuestions) sendToThis({ type: 'question', sessionId: sid, data: s._pendingQuestions })
       if (s._pendingApprovals && s._pendingApprovals.size > 0) {
-        for (const [toolUseId, p] of s._pendingApprovals) {
+        // 超过内核审批窗口（PONOS_APPROVAL_TIMEOUT_MS，默认 600s，全仓无覆盖点）
+        // 的未决审批**不得重放**：内核侧早已放弃等待，回执会被静默丢弃（resolveApproval
+        // 查不到 waiter），用户点下去只会"没反应"——这正是"审批时消息已过期"的实证形态。
+        // 直接清掉并解除等待豁免（否则残留项继续豁免回收器 → 内核泄漏）。
+        const staleMs = Number(process.env.YFW_APPROVAL_STALE_MS) > 0 ? Number(process.env.YFW_APPROVAL_STALE_MS) : 630_000
+        for (const [toolUseId, p] of [...s._pendingApprovals]) {
+          const age = Date.now() - (p.at || Date.now())
+          if (age > staleMs) {
+            s._pendingApprovals.delete(toolUseId)
+            clearSessionAwaiting(s)
+            console.log(`[bridge] dropped stale approval on replay sid=${sid.slice(0, 8)} age=${Math.round(age / 1000)}s toolUseId=${toolUseId}`)
+            continue
+          }
           sendToThis({
             type: 'approval',
             sessionId: sid,
@@ -2616,6 +2636,9 @@ wss.on('connection', (ws, req) => {
               hard: p.hard,
               mode: effectiveApprovalMode(sid),
               replayed: true,
+              // 年龄透传：重放时 UI 可显示"该审批等待 N 分钟"，
+              // 而不是把一条老弹窗当新请求（用户据此判断是否已被模型绕过）
+              ageMs: age,
             },
           })
         }
@@ -2796,9 +2819,11 @@ wss.on('connection', (ws, req) => {
         const session = sessions.get(sid)
         const toolUseId = msg.toolUseId
         const approved = !!msg.approved
+        let resolvedPending = false
         if (session && session.proc && !session.proc.killed && toolUseId) {
           const pending = session._pendingApprovals?.get(toolUseId)
           if (pending && pending.requestId) {
+            resolvedPending = true
             // 白名单审批写入（2026-09-10）：内核 Browser 工具被域名白名单拦截时发起
             // toolUseId='whitelist:<domain>' 审批——批准即写入 browser-whitelist.json
             // 的 allow 数组（执行器 mtime 热重载，即时生效无需重启），内核随后提示
@@ -2821,10 +2846,13 @@ wss.on('connection', (ws, req) => {
             clearSessionAwaiting(session)
             console.log(`[bridge] approval-response sid=${sid.slice(0, 8)} toolUseId=${toolUseId} approved=${approved}`)
           } else {
-            console.warn(`[bridge] approval-response: no pending approval for toolUseId=${toolUseId}`)
+            console.warn(`[bridge] approval-response: no pending approval for toolUseId=${toolUseId}（内核已超时放弃或已收口 ⇒ 本条回执不生效）`)
           }
         }
-        send({ type: 'approval-resolved', sessionId: sid, data: { toolUseId } })
+        // 回执必须带**真实** approved：渲染侧此前只能硬编码 true（approval-resolved 无该
+        // 字段），导致"[permission] resolved: … approved"日志既不能当批准证据、也无法区分
+        // 过期 no-op。stale=true 明确告诉 UI"这条没能生效"（内核已放弃等待）。
+        send({ type: 'approval-resolved', sessionId: sid, data: { toolUseId, approved, ...(resolvedPending ? {} : { stale: true }) } })
       }
       else if (msg.type === 'browser_control') {
         // GUI 暂停/继续执行器 → 转发 executor（bridge 仅路由，不解释语义）

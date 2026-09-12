@@ -602,6 +602,8 @@ export const enUS: TranslationKeys = {
     riskLow: 'LOW RISK',
     riskMedium: 'MEDIUM RISK',
     riskHigh: 'HIGH RISK',
+    pendingOthers: '{count} more pending approval(s)',
+    pendingOthersCross: ' ({count} from other sessions)',
   },
 
   // --- Skills Management ---

@@ -614,6 +614,8 @@ export const zhCN = {
     riskLow: '低风险',
     riskMedium: '中风险',
     riskHigh: '高风险',
+    pendingOthers: '另有 {count} 条待审批',
+    pendingOthersCross: '（其中 {count} 条来自其他会话）',
   },
 
   // --- 技能管理 ---
