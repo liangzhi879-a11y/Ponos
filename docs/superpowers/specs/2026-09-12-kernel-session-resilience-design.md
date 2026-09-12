@@ -204,6 +204,8 @@ electron/main.cjs ──spawn──► node server/bridge.mjs ──spawn──�
 - **阶段 C 的门未开**：`release/YFWorking` 同步要求"并行 WIP 已 commit 且相关文件 mtime 稳定 ≥10min"，当前不满足（`release/YFWorking/dist/index.html` 17:52 刚被**别人**重新同步过 ⇒ 该目录正在多方手中热动）⇒ 构建与部署暂缓（**严禁 `package-portable.cjs`**；覆盖前逐文件备份 + `cmp`）。
 - **T8 前端产物未构建**：`src/` 改动只落源码与测试，未 `npm run build`（理由同上：避免把他人半成品打进用户正在跑的 app）。
 
+> ⚠️ 本节"**本轮结论：不提交**"与"**阶段 C 的门未开**"两条已被 **§8.8** 推翻：同日 18:50 静默门实测满足，用户在 18:3x 明确指示"统合一起提交"并"等所有写入停下来再一起系统性同步"，两项均已执行。本节保留为当时的事实快照。
+
 ### 8.7 活体观察快照（2026-09-12 18:15–18:30 本地 / 10:15–10:30Z）
 
 用户报"当前好像又卡住"期间，runaway 会话 **17891871 仍在运行**（内核 pid 21720，08:47Z 起）。现场四组证据：
@@ -214,3 +216,28 @@ electron/main.cjs ──spawn──► node server/bridge.mjs ──spawn──�
 2. **"全过程 0 次压缩"需修正为"拖到崩边才压缩"**：日志三连 `10:05:39Z body=501913B msgs=905` → `10:05:45Z body=330640B msgs=593`（先收缩）→ **`10:06:29Z body=13460B msgs=1`（这就是摘要调用本身：单条消息 13KB 压缩指令）→ `msgs=316`**。压缩发生在 18:06 本地、峰值 ~490KB 处，即 T1 阈值从未生效、最终靠上下文撞墙/自愈路径兜底。压缩后仍在跑：`10:15:03Z msgs=404 body=231936B`，约每步 +2 条 / 76 秒内 +6KB。
 3. **内核静默死亡是沉默窗口的主因（不是"内核卡住"）**：`previous run crashed` 标记今日 **16 条，`exitCode` 全为 `null`、`err` 全为 `null`**（= 未经 exit 处理器、未留 marker.err 的外部终止）。相邻两条的 `prevTs→ts` 差即"无内核窗口"，最大一条为 **07:24:38 → 08:47:20 = 82m42s（4962s）**，比 H 行记录的 2911s/2006s 更长。⇒ 长静默的主形态是**内核已死且无人重启**，桥不告知 UI；T9 的回收器/重放与 T8 的等待条对症，T10 的硬看门狗治的是"内核活着但失活"的另一半。
 4. **进程账**：四个内核仍存活（pid 4532 15:58 / 6736 16:28 / 21720 16:47 / 21196 16:50 本地），均未被回收；其中 **21720 是用户正在用的会话**，6736/21196 是泄漏件。**处置权在用户**（遵守既定约束：我不动用户进程）。
+
+### 8.8 阶段 C 落地记录（2026-09-12 18:50–18:56 本地）
+
+**前置：静默门实测满足（不是"估计停了"）。** 有界观察窗每 60s 采样 `kernel/server/src/electron/scripts/release` 的 mtime，连续 **843s** 无写入后放行：最后三次写入为 `kernel/fidelity.mjs`(18:40:35)、`scripts/verify-gui-fidelity.mjs`(18:36)、`release/YFWorking/dist/sample-skills/_common/project_types_config.json`(18:35)，且 `git status` 无新增未跟踪项。⇒ 用户"等所有写入停下来再一起系统性同步"的条件客观成立。
+
+**先提交、再同步。** 109 项未提交（61 改 + 48 未跟踪）统合提交为 **`6b3e2df`**（101 文件，+9936/−517）：T8/T9/T10 + 并行线的日志持久化/审批档/工作流 DSL v2/provider/失真健康。**该批次此前曾以 `3199ed7`/`fc24221` 提交，被并行会话的 `git reset` 移出 main 可达历史**（`git reflog`: `reset: moving to dc0aa1b → 5e1c371 → 5c851a1`）——内容始终在工作树，未丢失；提交后另打分支引用 **`wip/consolidated-20260912`** 以防再次被顶掉。
+
+**同步清单（逐文件 `cmp` → 备份 → 覆盖 → 逐字节复检）**
+- 备份：`release/_backup_before_kernel_resilience_2026-09-12T18-51-43/`（9 个被覆盖文件 + `MANIFEST.md5` + `HEAD.txt` + `dist-stale-assets/` 内 12 个旧哈希产物）。
+- 内核 5 件（**尺寸全部变化**，顺带规避"仅比尺寸"镜像同步的漏刷风险）：`api.mjs 80136→82544`、`cli.mjs 57729→58930`、`engine.mjs 172552→173959`、`fidelity.mjs 32237→33990`、`protocol.mjs 6827→8241`。
+- 桥 1 件：`server/bridge.mjs 167011→175625`（T9 全量）。
+- 测试 7 件：`ws-heartbeat.test.mjs`（更新）+ 6 新增（`cancel-corpse` / `fidelity-chain` / `health-anchor` / `health-anchor-route` / `pending-replay` / `reap-guard`）。同步前逐文件核过 import 来源：只依赖 `node:*` 与 `./health-anchor.mjs`，**无一引用 `src/` 或 `kernel-tests/`**（正是"发布目录跨树导入必炸"那条坑）；同步后**在 release 树内实跑 15/15 全绿**，不是只看源码树结果。
+- GUI：`npm run build`（11.54s）后 `diff -rq dist release/YFWorking/dist` 得 **0 个内容不同文件**——18:35 那波别人已用同源代码构建同步过，本次产出与之一致。release 侧多出的 **12 个孤儿哈希产物**经查是**闭环死簇**（8 个旧 `index-*.js` 互相引用旧 `vendor-icons-DydXn5r3.js`，而它们均不被 `index.html` 引用）⇒ 移入备份的 `dist-stale-assets/`，未硬删。清理后 `diff -rq` **0 行差异（含文件集）**，`index.html` 的 8 个引用全部可解析。
+- 最终全树复检：`kernel`/`server`/`public`/`workflows`/`pet`/`dist` **全部 0 差异**；`electron` 仅 release 侧 21 个 Electron 运行时二进制（预期，非源码）；`release/server` 无源码侧已删除的陈旧文件。关键文件 md5 源=release：`cli b2cb8c345ae7`、`engine 5358baf2968f`、`api 514cc229c8e6`、`protocol 7f2f5d85b758`、`fidelity 5476e3bc61ad`、`bridge 1456f725f5c3`。
+- **未跑 `scripts/package-portable.cjs`**（既定约束，它会 `rmSync` 整个 `release/YFWorking`）。
+
+**验证**：`npm test` **831 / 830 pass / 1 skip / 0 fail**（exit 0）、`npm run typecheck` exit 0。⚠️ 期间有一次全量跑出现 `kernel-tests/fidelity.test.mjs` 假红——并行会话 18:40:28/35 正在写该文件及其测试，我的进程导入到中间态；单独重跑 **30/30 全绿**，非真红。
+
+**重启语义（按代码核对，非惯例推断）**
+1. `kernel/`：bridge 每次 spawn **直接用 install 路径** `<app>/kernel/cli.mjs`（`bridge.mjs:720` 返回 `rp.install.kernel`，home 镜像只是 install 缺失时的兜底）⇒ **下一次新内核进程即吃到 T10，无需重启应用**；已在运行的内核仍是进程内旧代码。
+2. `~/.yfw/runtime/ponos-kernel/` 镜像：刷新发生在 **bridge 启动时**（`bridge.mjs:728` 模块级 `findYFWorking()` → `bootstrapKernelToUserDir`），当前镜像仍是旧版（api 80136B / cli 57330B / engine 172552B / fidelity 31701B / protocol 6827B）；因这 5 件尺寸均已变化，下次 bridge 启动必刷新，不会被"仅比尺寸"漏掉。
+3. `server/bridge.mjs`：T9 需**重启应用**才生效（运行中的 bridge 已把旧代码载入内存）。
+4. `dist/`：渲染层重载后才拿得到含 T8 的新构建（`index-h_xIyZCW.js`）。§8.7 观察期用户看到的静态"思考中"来自旧构建（`index-DsiUFV7e.js`），即"有帧、有告警、无出口"的 F 缺陷。
+
+**仍开着**：① runaway 会话 17891871 的存活与处置权在用户（我不动进程）；② T1 消息数阈值与并行线 `context.mjs` 估算修复仍未合入——`compact.mjs` 中目前**仍不存在任何消息数判据**；③ `engine.mjs` 轮次级绝对期限（T10③）仍按 §8.5 记录为暂缓，不变量 10 暂由 T9 的桥侧 `_turnActive` 时限承担。
