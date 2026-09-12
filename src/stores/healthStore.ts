@@ -1,8 +1,8 @@
 // src/stores/healthStore.ts
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
-import { mergeIssues } from '../lib/healthUi'
-import type { DistortionInfo } from '../lib/healthUi'
+import { mergeIssues } from '../lib/healthUi.ts'
+import type { DistortionInfo } from '../lib/healthUi.ts'
 
 export type HealthTier = 'green' | 'amber' | 'red'
 
@@ -42,6 +42,13 @@ interface HealthState {
   dismissDistortion: (sessionId: string) => void
   /** 内核新进程启动（会话重新计分）时清空该会话健康状态，防止旧红档横幅复活 */
   reset: (sessionId: string) => void
+  /**
+   * 丢弃该会话的**失真**快照与失真 UI 状态（压力快照保留）。
+   * 用于"内核进程换了"的时刻：失真证据只存在于内核进程内（不落盘），新进程失真态是空的
+   * （green），而它只在档位变化时发事件 → 不清理的话，旧的红色卡片/角标/泛光会永久赖着
+   * （"关闭"也只冷却 5 分钟，到期又冒出来），且 anchorText 是上一个进程的过期文本。
+   */
+  clearDistortion: (sessionId: string) => void
 }
 
 const RED_DISMISS_MS = 5 * 60 * 1000
@@ -105,6 +112,22 @@ export const useHealthStore = create<HealthState>()(
             [sessionId]: Date.now() + DISTORTION_DISMISS_MS,
           },
         })),
+      clearDistortion: (sessionId) =>
+        set((s) => {
+          const distortionShownIdsBySession = { ...s.distortionShownIdsBySession }
+          const dismissedDistortionUntilBySession = { ...s.dismissedDistortionUntilBySession }
+          delete distortionShownIdsBySession[sessionId]
+          delete dismissedDistortionUntilBySession[sessionId]
+          const cur = s.healthBySession[sessionId]
+          if (!cur) return { distortionShownIdsBySession, dismissedDistortionUntilBySession }
+          // 只摘掉 distortion 字段（血条继续用恢复的压力档，避免刚 resume 就回满）
+          const { distortion: _dropped, ...rest } = cur
+          return {
+            healthBySession: { ...s.healthBySession, [sessionId]: rest as HealthInfo },
+            distortionShownIdsBySession,
+            dismissedDistortionUntilBySession,
+          }
+        }),
       reset: (sessionId) =>
         set((s) => {
           const healthBySession = { ...s.healthBySession }

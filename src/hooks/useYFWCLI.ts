@@ -686,6 +686,13 @@ function handleMessage(msg: Record<string, unknown>) {
       if (!conv?.sessionId) {
         useHealthStore.getState().reset(sid)
         useWarningStore.getState().reset(sid)
+      } else {
+        // 恢复旧会话：压力快照保留（避免血条瞬间回满），但**失真快照必须丢弃**。
+        // 失真证据只存在于内核进程内（不落盘），新进程的失真态是空的（green），而它只在
+        // 档位变化时才发 yfw_health（初始 lastDistortionTier='green'）→ 不清理的话，上一个
+        // 进程留下的红色卡片/角标/泛光会永久赖着，"关闭"也只冷却 5 分钟、到期又冒出来，
+        // 成为清不掉的假警报（与 15811 假红同族），anchorText 亦是过期文本。
+        useHealthStore.getState().clearDistortion(sid)
       }
       store._updateSessionMeta({
         // sid is the bridge's session id, which the frontend sends as conversationId
