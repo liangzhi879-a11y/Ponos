@@ -360,6 +360,15 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // 上下文失真观测测试用（2026-09-12）：产出一次必然失败的 Read（相对路径不存在）
+  // → 引擎轮尾工具摘要应收录 { name:'Read', isError:true }，供 fidelity 陈旧引用检测。
+  if (lastText.includes('[mock:fidelity-read-fail]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_mock_fid_read', name: 'Read', input: { file_path: '__yfw_fidelity_missing__.md' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // 子 lane 截断测试（审计 #1）：触发 Agent 工具，子任务 prompt 内嵌 [mock:lane-trunc]
   if (lastText.includes('[mock:agent-lane-trunc]')) {
     if (signal?.aborted) throw abortError()

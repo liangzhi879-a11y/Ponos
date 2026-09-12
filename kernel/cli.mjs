@@ -30,6 +30,7 @@ import { createHealth } from './health.mjs'
 import { createCompactor, extractKeyInfo, buildSessionMemoryText } from './compact.mjs'
 import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
 import { resolveCompactSettings } from './compact.mjs'
+import { extractConstraints } from './fidelity.mjs'
 import { memoryRoot, buildMemoryIndex, captureMemoryCandidates, appendMemoryEntry } from './memory.mjs'
 import { createGraphStore } from './graph.mjs'
 import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
@@ -281,7 +282,22 @@ export async function main(argv) {
     estimateMessage,
     estimateHistory,
   }
-  const health = createHealth({ wire, model, contextWindow, env: process.env })
+  // 失真轴锚点源（2026-09-12 spec §5.1）：重新锚定所需的权威事实必须**确定性拼接**，
+  // 不做额外模型调用——首条真实 user 任务（目标真值）+ 会话工作记忆（任务清单/文件
+  // 变更/最近决策）+ 记忆里的硬约束。读取失败一律静默（锚点缺失不影响健康主流程）。
+  const anchorMemoryPath = join(configDir, 'memory', 'session', sessionId + '.md')  // 与下方 sessionMemoryPath 同值（此处需先于 createHealth 求值）
+  const getAnchorSource = () => {
+    let task = ''
+    try {
+      const first = store.deriveMessages().find((m) => m?.role === 'user' &&
+        !(Array.isArray(m.content) && m.content.some((b) => b?.type === 'tool_result')))
+      if (typeof first?.content === 'string') task = first.content.slice(0, 1000)
+    } catch { /* 静默 */ }
+    let memoryText = ''
+    try { memoryText = readFileSync(anchorMemoryPath, 'utf-8').slice(0, 4000) } catch { /* 无记忆文件 */ }
+    return { task, memoryText, constraints: extractConstraints(memoryText) }
+  }
+  const health = createHealth({ wire, model, contextWindow, env: process.env, getAnchorSource })
   // P9-3：会话工作记忆文件路径（<configDir>/memory/session/<sessionId>.md）。
   // 轮末写入关键状态，压缩时 compactor 读文件注入摘要请求（可选能力，读失败静默降级）
   const sessionMemoryPath = join(configDir, 'memory', 'session', sessionId + '.md')

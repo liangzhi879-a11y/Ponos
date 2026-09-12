@@ -702,6 +702,10 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     model = opts.model || getProvider().model || ''
     let usage = {}
     let textBuf = ''
+    // 失真观测（2026-09-12 spec §4.2）：本轮"内容侧"证据。轮尾交给 health.recordTurnContent，
+    // 供 fidelity 判定陈旧引用/矛盾/目标漂移。只留截断摘要，不留结果正文。
+    const turnToolDigest = []
+    const turnTexts = []
     let overflowRetries = 0
     // 溢出自愈可变输出预算：默认全量 maxTokens；上下文 400 揭示真实窗口后，把单次
     // 输出压到"当前 prompt 装得下"再重试（压缩无果时唯一可行解——vLLM 真实
@@ -1160,7 +1164,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
               try { wire.assistant([{ type: 'text', text: errText }]) } catch { /* 事件流异常不再掩盖原错误 */ }
               watchdog.stop()
               finalizeUsage()
-              return { usage, model, text: errText, error: 'overflow-compact-failed' }
+              return { usage, model, text: errText, error: 'overflow-compact-failed', toolDigest: turnToolDigest, assistantTexts: turnTexts }
             }
           }
         } else {
@@ -1258,6 +1262,22 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         content: executed[i]?.content ?? '',
         is_error: executed[i]?.isError === true,
       }))
+      // 失真观测（2026-09-12 spec §4.2）：工具结果摘要 = 陈旧引用检测的可信真值源。
+      // 只保留"路径 + 是否失败 + 错误文本（截断）"，不复制结果正文（体积与隐私）。
+      try {
+        turnTexts.push(String(textBuf || '').slice(0, 4000))
+        if (turnTexts.length > 16) turnTexts.shift()
+        for (let i = 0; i < blocks.length; i++) {
+          const inp = blocks[i]?.input || {}
+          turnToolDigest.push({
+            name: String(blocks[i]?.name || ''),
+            path: String(inp.file_path ?? inp.path ?? inp.pattern ?? inp.notebook_path ?? '').slice(0, 300),
+            isError: toolResults[i]?.is_error === true,
+            errorText: String(typeof toolResults[i]?.content === 'string' ? toolResults[i].content : '').slice(0, 200),
+          })
+        }
+        if (turnToolDigest.length > 40) turnToolDigest.splice(0, turnToolDigest.length - 40)
+      } catch { /* 观测数据采集失败不影响工具主流程 */ }
       // 工具结果 live 回传（2026-09-09 会话 UI 标准化）：wire 新增 tool_result 通道，
       // bridge 转发给 GUI 回填内联工具卡片的"完成/失败"状态与结果。事件失败静默——
       // 结果仍按 transcript 落盘（历史回放挂接），live 回传只是增量体验。
@@ -1346,7 +1366,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       pushMemory({ role: 'assistant', content: textBuf })
     }
     finalizeUsage()
-    return { usage, model, text: textBuf }
+    return { usage, model, text: textBuf, toolDigest: turnToolDigest, assistantTexts: turnTexts }
   }
 
   // P0-3：大工具结果磁盘持久化 + 预览替换——超阈值全文落盘
@@ -2336,8 +2356,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       else pushMemory({ role: 'user', content: String(content ?? '') })
       let outcome
       try {
-        const { usage, model: turnModel, text } = await runTurnInternal({ content })
-        outcome = { usage, model: turnModel, text }
+        const { usage, model: turnModel, text, toolDigest, assistantTexts } = await runTurnInternal({ content })
+        outcome = { usage, model: turnModel, text, toolDigest, assistantTexts }
       } catch (e) {
         // 用户取消（Stop 按钮/打断插入，契约 §8）原样上抛 → cli 输出「已取消。」+ result
         // 收尾、进程保留可续聊。不落入下方"内部错误"兜底——AbortError 是有意信号，
@@ -2374,6 +2394,19 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         } catch { /* 预算计算异常静默 */ }
       }
       health?.record(turnStats[turnStats.length - 1])
+      // 失真观测上报（2026-09-12 spec §4.2）：轮尾把内容侧证据交给 health —— 必须
+      // 在 health.record 之后（压力与失真是两个独立被测量）。异常静默：失真检测是
+      // 侧路，绝不允许影响轮次结果。
+      try {
+        const assistantText = String(outcome?.text ?? '') +
+          (Array.isArray(outcome?.assistantTexts) && outcome.assistantTexts.length
+            ? '\n' + outcome.assistantTexts.join('\n') : '')
+        health?.recordTurnContent?.({
+          user: String(content ?? ''),
+          assistant: assistantText,
+          toolDigest: Array.isArray(outcome?.toolDigest) ? outcome.toolDigest : [],
+        })
+      } catch { /* 失真观测失败不得影响轮次 */ }
       // J1：LLM-as-Judge 低频抽检（shouldRunJudge = 红档 + 冷却 300s；默认关零行为）。
       // judge 失败/抛异常一律静默——判定不得影响主流程（spec：Judge 为新增侧路）。
       // health.runJudge 为可选数据属性（cli 装配 engine.judgeUntil 包装，见 Task5 Step 3）
