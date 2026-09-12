@@ -69,6 +69,24 @@ async function waitReady(b, port) {
   throw new Error(`bridge ready timeout; stdout: ${b.stdoutText().slice(-400)}; stderr: ${b.stderrTail()}`)
 }
 
+/**
+ * 等桥启动收尾：以"启动日志静止"为就绪代理。
+ * 不用 bridge_hello（那是桥侧未提交的握手特性，本测试不能依赖未入库代码）；也不只靠
+ * waitReady——它只保证 listen 那行已打印，之后桥还在做技能自举等初始化，过早 send 可能丢包。
+ */
+async function waitStartupSettled(b, quietMs = 800, maxMs = 20_000) {
+  const deadline = Date.now() + maxMs
+  let lastLen = b.stdoutText().length
+  let lastChange = Date.now()
+  while (Date.now() < deadline) {
+    if (b.state.exitInfo) throw new Error(`bridge exited during startup: ${JSON.stringify(b.state.exitInfo)}; stderr: ${b.stderrTail()}`)
+    const n = b.stdoutText().length
+    if (n !== lastLen) { lastLen = n; lastChange = Date.now() }
+    else if (Date.now() - lastChange >= quietMs) return
+    await sleep(50)
+  }
+}
+
 function connectWS(port) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}`)
@@ -109,9 +127,8 @@ test('全链路：桥→内核→ponos_health(失真红) → 锚定上报 → �
     ws = await connectWS(port)
 
     const msgs = collect(ws)
-    // 等一份 hello，确认通道就绪（后续断言都基于 msgs 全量）
-    const h = await waitFor(msgs, (m) => m?.type === 'bridge_hello', 5000)
-    assert.ok(h, `未收到 bridge_hello：${JSON.stringify(msgs.slice(0, 3))}`)
+    // 等桥启动收尾，确认已完成初始化（不依赖未入库的 bridge_hello 握手）
+    await waitStartupSettled(b)
 
     const send = (prompt) => ws.send(JSON.stringify({ type: 'send', sessionId: SID, cwd: workDir, prompt }))
 
