@@ -582,8 +582,11 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
   }
 
   function buildAnchor() {
+    // 锚点源（会话工作记忆/首条任务）读取失败时必须回退到内部已知事实，
+    // 而不是整体返回空串——空锚点等于"重新锚定"按钮点了没反应。
+    let src = {}
+    try { src = (typeof getAnchorSource === 'function' ? getAnchorSource() : null) || {} } catch { src = {} }
     try {
-      const src = (typeof getAnchorSource === 'function' ? getAnchorSource() : null) || {}
       return buildAnchorText({
         task: src.task || task,
         memoryText: src.memoryText || '',
