@@ -246,6 +246,69 @@ test('中证据累积：两个**不同轴**各 1 点也达「≥2 点中证据�
   assert.equal(s.trigger, null, 'amber 不弹窗')
 })
 
+test('目标漂移：连续离题到阈值后，目标轴独自即达 amber（spec §4.3 中证据 2 点）', () => {
+  // spec §4.3：连续 goalWindow(6) 轮覆盖率 < goalCoverageMin(0.15) → **中证据 2 点**；
+  // §3.2：「≥2 点 → amber」。故目标漂移必须能独自点亮角标（amber，不弹窗）。
+  // 若只计 1 点（30 分 < amber 40），这一整轴在一期实际上永不产生任何界面信号。
+  const f = mkFid()
+  f.recordTurn({ user: '实现文件删除交互，必须保留原有 API 契约', assistant: '好的，先看现有实现', toolDigest: [] })
+  for (let i = 0; i < 7; i++) f.recordTurn({ user: '今天天气不错，聊点别的', assistant: '好，随便聊聊', toolDigest: [] })
+  const s = f.snapshot()
+  assert.ok(s.issues.some((i) => i.kind === 'goal-drift'), '应产生目标漂移证据')
+  assert.ok(s.axes.goal >= 40, `目标轴分数须达 amber 阈值（实得 ${s.axes.goal}）`)
+  assert.equal(s.tier, 'amber', '目标漂移独自 → amber（只点亮角标）')
+  assert.equal(s.trigger, null, 'amber 不弹窗')
+  assert.ok(!s.issues.some((i) => i.strength === 'strong'), '目标漂移属中证据，不得升为强证据（否则会直通红档）')
+})
+
+test('目标漂移：任务相关轮次把连续计数清零（误报控制）', () => {
+  const f = mkFid()
+  f.recordTurn({ user: '实现文件删除交互，必须保留原有 API 契约', assistant: '好的', toolDigest: [] })
+  for (let i = 0; i < 5; i++) f.recordTurn({ user: '天气不错', assistant: '嗯', toolDigest: [] })
+  f.recordTurn({ user: '继续做文件删除交互的实现', assistant: '正在实现删除交互', toolDigest: [] }) // 回归主线 → 清零
+  for (let i = 0; i < 3; i++) f.recordTurn({ user: '天气不错', assistant: '嗯', toolDigest: [] })
+  const s = f.snapshot()
+  assert.ok(!s.issues.some((i) => i.kind === 'goal-drift'), '中途回归主线后，连续轮数须重新计数')
+})
+
+test('锚点只采纳确定性审计的遗漏实体：LLM 审计的散文不得覆盖（避免锚点退化）', () => {
+  // 确定性审计给的是精确实体（路径/数字），锚点据此把事实灌回上下文；
+  // LLM 审计给的是散文式描述，且为 fire-and-forget 后到（会覆盖）。
+  // 覆盖会让锚点从"src/deleted.ts"退化成"模型认为某句结论被改写了"，
+  // 同时使 S1 用户纠错门控的参照清单丢掉确定性实体。
+  const f = mkFid({ getAnchorSource: () => ({ task: '实现删除交互' }) })
+  const d = [{ name: 'Read', path: 'src/gone.ts', isError: true, errorText: 'ENOENT' }]
+  const hit = () => f.recordTurn({ user: '引用 src/gone.ts', assistant: '读 src/gone.ts', toolDigest: d })
+  hit()
+  f.recordCompactionAudit({ entities: ['src/a.ts', 'src/b.ts', 'src/c.ts'], missing: ['src/deleted.ts'], ratio: 0.33 })
+  hit() // 第二轮 → 强证据 → red（red 才附 anchorText）
+  const s1 = f.snapshot()
+  assert.equal(s1.tier, 'red')
+  assert.match(s1.anchorText || '', /src\/deleted\.ts/, '确定性实体应进入锚点')
+
+  // LLM 审计（fire-and-forget 后到）：只带 missing、无 entities、ratio 0
+  f.recordCompactionAudit({ entities: [], missing: ['模型认为某句结论被改写了'], ratio: 0, llm: { ok: true, missing: ['模型认为某句结论被改写了'], rewritten: [] } })
+  const s2 = f.snapshot()
+  assert.match(s2.anchorText || '', /src\/deleted\.ts/, 'LLM 审计不得把确定性实体挤出锚点')
+  assert.ok(!/模型认为某句结论被改写了/.test(s2.anchorText || ''), 'LLM 散文不该出现在锚点（它是证据，不是权威事实）')
+  assert.ok(s2.issues.some((i) => i.kind === 'summary-missing-entity' && i.evidence.includes('模型认为某句结论被改写了')),
+    'LLM 的发现仍须作为证据呈现（不因不进锚点而丢失）')
+})
+
+test('压缩审计去重：确定性分支已上报的条目，LLM 再报同一项不重复入账', () => {
+  // 去重的本意是不双报；但去重对象必须是"已实际上报的条目"，不能是入参 missing
+  // （LLM payload 把同一列表同时放进 missing 与 llm.missing，用它去重会恒空 → LLM 发现全丢）。
+  const f = mkFid()
+  f.recordTurn({ user: 'u', assistant: 'a', toolDigest: [] })
+  const out = f.recordCompactionAudit({
+    entities: ['src/a.ts', 'src/b.ts', 'src/c.ts'], missing: ['src/c.ts'], ratio: 0.33,
+    llm: { ok: true, missing: ['src/c.ts'], rewritten: [] }, // 同一项：应由去重拦掉
+  })
+  const ids = out.map((i) => i.id)
+  assert.ok(ids.some((id) => id.startsWith('m:summary:')), '确定性分支应上报 src/c.ts')
+  assert.ok(!ids.some((id) => id.startsWith('m:llm-missing:')), 'LLM 重复报告同一项不得二次入账')
+})
+
 test('假红回归：压缩刚落地（159×场景）不得弹失真红档', () => {
   const f = mkFid()
   f.recordTurn({ user: '实现 A', assistant: '开始实现 A', toolDigest: [] })

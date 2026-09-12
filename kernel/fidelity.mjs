@@ -402,11 +402,14 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
     return it
   }
 
-  function mkIssue({ id, axis, kind, strength, turn: t, evidence, detail }) {
+  function mkIssue({ id, axis, kind, strength, turn: t, evidence, detail, points }) {
     return {
       id, axis, kind, strength, turn: t,
       evidence: String(evidence || '').slice(0, 120),
       detail: detail || undefined, at: clock().toISOString(),
+      // 中证据点数（spec §3.2 的"点"）：默认 1 点，个别信号按 spec 明确指定 2 点。
+      // 内部字段：不进 evidence 契约（前端不需要，点数只影响档位判定）。
+      ...(strength !== 'strong' && Number.isFinite(points) ? { points } : {}),
     }
   }
 
@@ -496,6 +499,7 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
           if (goalMissStreak >= cfg.goalWindow) {
             produced.push(push(mkIssue({
               id: 'g:coverage', axis: 'goal', kind: 'goal-drift', strength: 'medium', turn,
+              points: 2, // spec §4.3：连续离题 = 中证据 **2 点**（故能独自达 amber）
               evidence: `已连续 ${goalMissStreak} 轮与最初任务（${task.slice(0, 40)}…）无明显关联`,
               detail: { coverage: cov, streak: goalMissStreak },
             })))
@@ -550,14 +554,23 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
         ? Number(audit.ratio)
         : (entities.length ? missing.length / entities.length : 0)
       compressedTurnCeiling = turn || 1 // 压缩影响到的轮次上界
-      if (missing.length) lastAuditMissing = missing.slice(0, 30)
+      // 锚点素材只采纳**带实体的确定性审计**结果：LLM 审计（fire-and-forget 后到，
+      // entities 为空、missing 是散文）若覆盖，会把锚点从"src/deleted.ts"这类精确实体
+      // 退化成"模型认为某句结论被改写了"，并让 S1 用户纠错门控的参照清单丢掉精确实体。
+      // LLM 的发现不因此丢失——它照常作为证据入账（见下 applyLlmAudit）。
+      if (entities.length && missing.length) lastAuditMissing = missing.slice(0, 30)
       if (entities.length) lastAuditEntities = entities.slice(0, 60)
 
       const out = []
+      // 已由确定性分支上报的条目（供 LLM 结果去重）。**不能**用入参 missing 去重：
+      // LLM 审计的 payload 把同一份列表同时放在 missing 与 llm.missing 里（见 compact.mjs），
+      // 若拿入参 missing 去重，差集恒空 → LLM 的遗漏发现被静默丢弃、永远不成证据。
+      const reported = []
       const enough = entities.length >= cfg.minEntities
       if (enough && missing.length && ratio >= cfg.summaryMissingStrong) {
         // S2 强证据：关键实体成片丢失
         for (const m of missing.slice(0, 3)) {
+          reported.push(m)
           out.push(push(mkIssue({
             id: `m:summary:${normalizeEntity(m)}`, axis: 'memory', kind: 'summary-missing-entity',
             strength: 'strong', turn,
@@ -567,6 +580,7 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
         }
       } else if (enough && missing.length && ratio >= cfg.summaryMissingMedium) {
         for (const m of missing.slice(0, 2)) {
+          reported.push(m)
           out.push(push(mkIssue({
             id: `m:summary:${normalizeEntity(m)}`, axis: 'memory', kind: 'summary-missing-entity',
             strength: 'medium', turn,
@@ -579,7 +593,7 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
       const llm = audit.llm
       if (llm && typeof llm === 'object') {
         const extra = (Array.isArray(llm.missing) ? llm.missing.filter(Boolean) : [])
-          .filter((m) => !missing.some((x) => normalizeEntity(x) === normalizeEntity(m)))
+          .filter((m) => !reported.some((x) => normalizeEntity(x) === normalizeEntity(m)))
         out.push(...applyLlmAudit({ ...llm, missing: extra }))
       }
       return out
@@ -621,7 +635,9 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
       for (const it of issues.values()) {
         if (it.resolved) continue
         if (it.turn <= floor) continue // 窗口外：半衰期到期，退出计分
-        const w = it.strength === 'strong' ? STRONG_WEIGHT : MEDIUM_WEIGHT
+        const w = it.strength === 'strong'
+          ? STRONG_WEIGHT
+          : MEDIUM_WEIGHT * (Number.isFinite(it.points) ? it.points : 1) // 中证据按点数加权
         axes[it.axis] = (axes[it.axis] || 0) + w * Math.pow(cfg.decay, Math.max(0, turn - it.turn))
         if (it.strength === 'strong') hasStrongByAxis[it.axis] = true
         active.push(it)
@@ -636,10 +652,16 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
       }
       const score = Math.max(norm.memory, norm.coherence, norm.goal)
       const hasStrong = active.some((i) => i.strength === 'strong')
-      const mediumCount = active.filter((i) => i.strength !== 'strong').length
+      // 「≥2 点中证据 → amber」（spec §3.2）按**点数**而非条数计：
+      // 个别信号本身就值 2 点（如目标漂移，spec §4.3 明确"中证据 2 点"），
+      // 若按条数计，它独自永远到不了 amber → 整条轴不产生任何界面信号。
+      const mediumPoints = active.reduce(
+        (s, i) => (i.strength === 'strong' ? s : s + (Number.isFinite(i.points) ? i.points : 1)),
+        0,
+      )
       let tier = 'green'
       if (hasStrong) tier = 'red'
-      else if (score >= cfg.amber || mediumCount >= MEDIUM_FOR_AMBER) tier = 'amber'
+      else if (score >= cfg.amber || mediumPoints >= MEDIUM_FOR_AMBER) tier = 'amber'
 
       active.sort((a, b) => (a.strength === b.strength ? b.turn - a.turn : a.strength === 'strong' ? -1 : 1))
       const strongest = active.find((i) => i.strength === 'strong') || active[0] || null
