@@ -16,6 +16,31 @@ const http = require('http')
 const WebSocket = require('ws')
 const { resolveYfwHome } = require('../server/yfw-home.cjs')
 
+// 入口兜底数据根隔离（2026-09-09 串配置事故修复）：桌面快捷方式直启 electron.exe /
+// YFWorking.vbs / debug bat 均不携带 env，此前双版全部回落 ~/.yfworking 与在售旧版
+// 互串（config/settings/会话/认证/主题）。兜底默认净室专属根 ~/.yfw；显式设
+// YFWORKING_HOME 仍可覆盖（如临时切回 C:\Users\<you>\.yfworking 读旧会话）。
+// bridge 由本进程 spawn 继承该 env（server/bridge.mjs 的 resolveYfwHome 同源）。
+//
+// ⚠️ 位置约束（2026-09-12 修复）：必须早于下方 initLogTee()。initLogTee 的 logDir
+// 默认值 `join(resolveYfwHome(), 'logs')` 在**调用期**求值，早于本注入就会落到旧根
+// `${os.homedir()}/.yfworking/logs/app.log`（实测存量 4.78MB）；而 renderer-console.log
+// 是在 /logs 路由请求期才解析 home（本文件 :1424）故一直写在新根 ⇒ 只有 app.log 错位，
+// 按新根找日志的内置查看器看不到它。
+if (!process.env.YFWORKING_HOME) {
+  process.env.YFWORKING_HOME = path.join(os.homedir(), '.yfw')
+}
+
+// D6：双版 userData 隔离——YFWORKING_HOME 恒设（上方兜底），Electron userData
+// 重定向到 <数据根>/userData，避免与在售旧版（default_app.asar 无 app 名 → 两版
+// 曾共用 %APPDATA%\Electron，theme.json 互踩）同机并行冲突。安装版产物身份（S6
+// 定案，正式替换身份）：appId com.yfworking.desktop / productName YFWorking 与在售
+// 一致——安装形态经 installer.nsh 版本比较（2.8.0）覆盖升级保留数据；
+// 双版并存由便携/dev 目录隔离 + 本 userData 重定向兜底，无需独立 appId。
+if (process.env.YFWORKING_HOME) {
+  try { app.setPath('userData', path.join(resolveYfwHome(), 'userData')) } catch {}
+}
+
 // 个人经验库（experience.mjs）+ 导出/导入（packager.mjs）。server/ 为 ESM，
 // Node 22+ 支持 require() ESM（无顶层 await 的模块可被同步加载）。
 const { listExperiences, setThemeActive, deleteThemeEntry, refreshIndex } = require('../server/experience.mjs')
@@ -90,24 +115,10 @@ if (process.platform === 'win32') {
   try { app.setAppUserModelId('com.yfworking.desktop') } catch {}
 }
 
-// 入口兜底数据根隔离（2026-09-09 串配置事故修复）：桌面快捷方式直启 electron.exe /
-// YFWorking.vbs / debug bat 均不携带 env，此前双版全部回落 ~/.yfworking 与在售旧版
-// 互串（config/settings/会话/认证/主题）。兜底默认净室专属根 ~/.yfw；显式设
-// YFWORKING_HOME 仍可覆盖（如临时切回 C:\Users\<you>\.yfworking 读旧会话）。
-// bridge 由本进程 spawn 继承该 env（server/bridge.mjs 的 resolveYfwHome 同源）。
-if (!process.env.YFWORKING_HOME) {
-  process.env.YFWORKING_HOME = path.join(os.homedir(), '.yfw')
-}
+// 数据根兜底注入 + userData 重定向已上移至文件顶部 require 之后（2026-09-12）：
+// initLogTee 的 logDir 默认值在调用期求值，必须让 YFWORKING_HOME 先就位，否则
+// app.log 落旧根 ~/.yfworking/logs。理由与实测数据见顶部同段注释。
 
-// D6：双版 userData 隔离——YFWORKING_HOME 恒设（上方兜底），Electron userData
-// 重定向到 <数据根>/userData，避免与在售旧版（default_app.asar 无 app 名 → 两版
-// 曾共用 %APPDATA%\Electron，theme.json 互踩）同机并行冲突。安装版产物身份（S6
-// 定案，正式替换身份）：appId com.yfworking.desktop / productName YFWorking 与在售
-// 一致——安装形态经 installer.nsh 版本比较（2.8.0）覆盖升级保留数据；
-// 双版并存由便携/dev 目录隔离 + 本 userData 重定向兜底，无需独立 appId。
-if (process.env.YFWORKING_HOME) {
-  try { app.setPath('userData', path.join(resolveYfwHome(), 'userData')) } catch {}
-}
 
 // 旧显卡/驱动不稳的机器上 GPU 进程可能因 TDR 等被系统重置。
 // 默认 Chromium 崩溃重试 3 次后放弃 GPU 进程（整窗黑屏/合成失效），

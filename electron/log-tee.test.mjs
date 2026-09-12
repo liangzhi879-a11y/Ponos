@@ -118,3 +118,18 @@ test('崩溃：落盘 + 清理回调执行 + 非零退出 + stderr 可见', () =
   assert.ok(existsSync(marker))                       // 清理回调已执行
   rmSync(dir, { recursive: true, force: true })
 })
+
+// 2026-09-12 修复回归：main.cjs 里数据根兜底注入必须早于 initLogTee()。
+// initLogTee 的 logDir 默认值 `join(resolveYfwHome(), 'logs')` 在**调用期**求值——
+// 顺序颠倒时 app.log 落到旧根 ~/.yfworking/logs（实测存量 4.78MB），而
+// renderer-console.log 走 /logs 路由在请求期才解析 home、一直在新根 ⇒ 只有 app.log
+// 错位，按新根找日志的内置查看器看不到它。该不变量只能由源码顺序保证，故在此锁死。
+test('main.cjs：YFWORKING_HOME 兜底注入必须早于 initLogTee()（app.log 落错根回归）', () => {
+  const src = readFileSync(new URL('./main.cjs', import.meta.url), 'utf-8')
+  // 锚点用完整语句而非裸符号：顶部注释里也含 "initLogTee()" 字样，裸 indexOf 会先命中注释
+  const atInject = src.indexOf("process.env.YFWORKING_HOME = path.join(os.homedir(), '.yfw')")
+  const atTee = src.indexOf('const logTee = initLogTee(')
+  assert.ok(atInject > -1, 'main.cjs 必须有 YFWORKING_HOME 兜底注入')
+  assert.ok(atTee > -1, 'main.cjs 必须调用 initLogTee()')
+  assert.ok(atInject < atTee, `兜底注入（偏移 ${atInject}）必须早于 initLogTee()（偏移 ${atTee}）`)
+})
