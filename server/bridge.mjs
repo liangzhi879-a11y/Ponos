@@ -12,6 +12,7 @@ import { randomBytes } from 'node:crypto'
 import { extractMilestoneMarks, extractProseStages } from './milestones.mjs'
 import { matchesHighRisk } from './highrisk.mjs'
 import { parseAskUserPayload, extractAskUserBlocks } from './askuser.mjs'
+import { buildAnchorApplied } from './health-anchor.mjs'
 import { resolveKernelPaths } from '../electron/kernel-paths.cjs'
 import { resolveYfwHome } from './yfw-home.cjs'
 import { installBuiltinWorkflows } from './workflow-install.mjs'
@@ -1583,6 +1584,17 @@ const httpServer = createServer(async (req, res) => {
         writeFileSync(PROFILE_PATH, JSON.stringify({ nickname, avatar, bio }, null, 2), 'utf-8')
         return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true }))
       } catch (e) { return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: String(e?.message || e) })) }
+    }
+
+    // 上下文失真：用户「重新锚定」后上报（GUI → 内核 stdin control 消息）
+    // 内核把对应证据标记 resolved → 失真档立即回绿 + 进入观察期。前端上报只是
+    // "用户已处理"的信号，不是真值来源（判定永远在内核）；失败不阻塞前端本地回绿。
+    if (url.pathname === '/session/anchor-applied' && req.method === 'POST') {
+      const body = await readJsonBody(req).catch(() => ({}))
+      const built = buildAnchorApplied(body?.sessionId, body?.issueIds)
+      if (!built) return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: 'sessionId required' }))
+      writeControlRequest(built.sessionId, built.message)
+      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true }))
     }
 
     // U1 只读子命令薄转发：query → kernel 只读子命令 → 透传 stdout JSON（schema A.1/A.2）

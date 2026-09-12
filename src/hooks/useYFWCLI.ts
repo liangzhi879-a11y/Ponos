@@ -11,7 +11,7 @@ import { useSettingsStore } from '@/stores/settingsStore'
 import { generateId, sanitizeText } from '@/lib/utils'
 import { parseAskUserPayload } from '@/lib/askUser'
 import { truncateTitle } from '@/lib/titleGen'
-import { getWsUrl, fetchBridgeConfig } from '@/lib/config'
+import { getWsUrl, getBridgeUrl, fetchBridgeConfig } from '@/lib/config'
 import { getAgentById } from '@/lib/agents'
 import { useAgentStore } from '@/stores/agentStore'
 import { useHealthStore, type HealthInfo } from '@/stores/healthStore'
@@ -471,7 +471,18 @@ export function useYFWCLI() {
     else doSend()
   }, [])
 
-  return { send, stop, interject, browserControl, connected }
+  // 上下文失真：用户「重新锚定」并已发送锚点后上报内核（bridge HTTP 路由 →
+  // 内核 stdin anchor_applied → health.markFidelityResolved → 失真档回绿 + 观察期）。
+  // 静默失败：本地已按用户操作回绿/冷却，上报只是让内核侧同步，不阻塞交互。
+  const applyAnchor = useCallback((conversationId: string, issueIds: string[]) => {
+    void fetch(`${getBridgeUrl()}/session/anchor-applied`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: conversationId, issueIds }),
+    }).catch(() => { /* 上报失败不影响本地回绿 */ })
+  }, [])
+
+  return { send, stop, interject, browserControl, applyAnchor, connected }
 }
 
 // ---------------------------------------------------------------------------

@@ -94,7 +94,7 @@ export function ChatInput({ conversationId }: Props) {
   const isChatMode = useChatStore(s => s.conversations.find(c => c.id === conversationId)?.mode === 'chat')
   const settings = useSettingsStore(s => s.settings)
   const [isDragOver, setIsDragOver] = useState(false)
-  const { send, stop, interject } = useYFWCLI()
+  const { send, stop, interject, applyAnchor } = useYFWCLI()
   const pendingAttachments = useUIStore(s => s.pendingAttachments)
   const clearPendingAttachments = useUIStore(s => s.clearPendingAttachments)
   const pendingInput = useUIStore(s => s.pendingInput)
@@ -600,11 +600,13 @@ export function ChatInput({ conversationId }: Props) {
         </div>
       )}
 
-      {/* 红档"重新发起会话建议"卡片：输入框上方正常流式排版（2026-09-10 修复：
-          卡片改 in-flow 右对齐，挂载于输入条之前——绝不再叠住发送键） */}
+      {/* 失真"证据 + 两级动作"卡片：输入框上方正常流式排版（2026-09-10 修复：
+          卡片改 in-flow 右对齐，挂载于输入条之前——绝不再叠住发送键）
+          触发已换轴：只有上下文失真红档才弹（压力档只作血条仪表） */}
       <HealthSuggestCard
         conversationId={conversationId}
         onStopSource={() => { stop(conversationId); stopStreaming(conversationId) }}
+        onAnchorApplied={(ids) => applyAnchor(conversationId, ids)}
       />
 
       {/* Input bar — composer card（设计语言：单对角切角框 + 聚焦热边 .focusable） */}

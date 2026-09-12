@@ -848,6 +848,10 @@ export async function main(argv) {
       }
     } else if (parsed.type === 'control_request') {
       handleControlRequest(parsed)
+    } else if (parsed.type === 'anchor_applied') {
+      // 上下文失真：用户在 GUI 点了「重新锚定」并已发送锚点 → 把这些证据标记为
+      // 已解决（失真档立即回绿 + 进入观察期）。静默降级：上报失败不得影响轮次。
+      try { health.markFidelityResolved(Array.isArray(parsed.issueIds) ? parsed.issueIds : []) } catch { /* 静默 */ }
     } else if (parsed.type === 'control_response') {
       // 权限审批回执：解除对应 tool_use 的挂起（engine 继续执行工具）
       const inner = parsed.response?.response
