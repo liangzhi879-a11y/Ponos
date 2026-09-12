@@ -17,10 +17,11 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { WorkflowNode } from './nodes/WorkflowNode'
+import { WorkflowEdge } from './edges/WorkflowEdge'
 import { NodePalette, NODE_DND_MIME } from './NodePalette'
 import { ConfigPanel } from './ConfigPanel'
 import {
-  defaultConfig, fromFlow, nextEdgeId, nextNodeId, toFlow, withRunState,
+  defaultConfig, fromFlow, nextEdgeId, nextNodeId, removeEdgesFromModel, removeNodesFromModel, toFlow, withRunState,
   type FlowEdge, type FlowNode, type NodeRunStatus, type WorkflowModel,
 } from '@/lib/workflowModel'
 
@@ -41,8 +42,9 @@ export interface WorkflowCanvasProps {
   onSelectNode?: (id: string | null) => void
 }
 
-/** ReactFlow 要求 nodeTypes 表稳定引用（每次 render 新建对象会导致整图重挂载） */
+/** ReactFlow 要求 nodeTypes/edgeTypes 表稳定引用（每次 render 新建对象会导致整图重挂载） */
 const nodeTypes = { yfw: WorkflowNode }
+const edgeTypes = { yfw: WorkflowEdge }
 const WRITEBACK_MS = 300
 
 export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, WorkflowCanvasProps>(function WorkflowCanvas(props, ref) {
@@ -159,14 +161,62 @@ function CanvasInner({ model, onChange, nodeStatus, edgeState, onSelectNode, can
     onChangeRef.current(merged)
   }, [setNodes, signature])
 
+  // —— 删除（三个入口：节点 × / 连线 × / Delete·Backspace 键）——
+  // 关键：删除必须做**语义清理**（相连边 / loop·iterate 的 body 成员 / 他处悬空变量引用）。
+  // 只从画布移除是不够的：删掉被引用的节点后，其他节点 config 里的 {{id.x}} 会悬空，
+  // 保存会被内核 VAR_UNREACHABLE 拒绝 → "删了却存不了"（2026-09-12 人工测试暴露的缺口）。
+  const [notices, setNotices] = useState<string[]>([])
+  useEffect(() => {
+    if (!notices.length) return
+    const t = setTimeout(() => setNotices([]), 5000)
+    return () => clearTimeout(t)
+  }, [notices])
+
+  /** 用清理后的模型覆盖画布并**立即**回写（不走 300ms 节流：破坏性操作不留中间态） */
+  const applyModel = useCallback((next: WorkflowModel) => {
+    const f = toFlow(next)
+    setNodes(f.nodes)
+    setEdges(f.edges)
+    baselineRef.current = signature(f.nodes, f.edges)
+    onChangeRef.current(next)
+  }, [setNodes, setEdges, signature])
+
+  const deleteNodes = useCallback((ids: string[]) => {
+    if (!ids.length) return
+    const base = fromFlow(nodesRef.current, edgesRef.current, modelRef.current)
+    const { model: cleaned, warnings } = removeNodesFromModel(base, ids)
+    // removeNodesFromModel 会保留 start（不可删）→ applyModel 顺带把它"恢复"回画布
+    applyModel(cleaned)
+    if (warnings.length) setNotices(warnings)
+  }, [applyModel])
+
+  const deleteEdges = useCallback((ids: string[]) => {
+    if (!ids.length) return
+    const base = fromFlow(nodesRef.current, edgesRef.current, modelRef.current)
+    applyModel(removeEdgesFromModel(base, ids))
+  }, [applyModel])
+
   const view = useMemo(() => withRunState(nodes, edges, nodeStatus, edgeState), [nodes, edges, nodeStatus, edgeState])
-  // 运行态高亮的边：active 实线加亮 / skipped 虚线淡化
+
+  // 删除入口注入：nodeTypes/edgeTypes 表必须保持稳定引用，故回调走 data 下发
+  const viewNodes = useMemo(() => view.nodes.map((n) => ({
+    ...n,
+    data: {
+      ...n.data,
+      // start 不可删（内核要求唯一入口）；按钮不渲染，Delete 键由 model 层 blocked 兜底
+      canDelete: (n.data as { nodeType?: string }).nodeType !== 'start',
+      onDelete: deleteNodes,
+    },
+  })), [view.nodes, deleteNodes])
+
+  // 运行态高亮的边：active 实线加亮 / skipped 虚线淡化（叠加删除回调与自定义边类型）
   const styledEdges = useMemo(() => view.edges.map((e) => {
+    const base = { ...e, type: 'yfw' as const, data: { ...(e.data || {}), onDelete: deleteEdges } }
     const state = e.data?.state
-    if (state === 'active') return { ...e, style: { stroke: 'var(--brand-500)', strokeWidth: 2 } }
-    if (state === 'skipped') return { ...e, style: { stroke: 'var(--text-tertiary)', strokeDasharray: '4 4' } }
-    return e
-  }), [view.edges])
+    if (state === 'active') return { ...base, style: { stroke: 'var(--brand-500)', strokeWidth: 2 } }
+    if (state === 'skipped') return { ...base, style: { stroke: 'var(--text-tertiary)', strokeDasharray: '4 4' } }
+    return base
+  }), [view.edges, deleteEdges])
 
   const nodeSel = model.nodes.find((n) => n.id === selected) || null
 
@@ -176,9 +226,13 @@ function CanvasInner({ model, onChange, nodeStatus, edgeState, onSelectNode, can
 
       <div className="flex-1 min-w-0 relative bg-app/40" onDrop={onDrop} onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' }}>
         <ReactFlow
-          nodes={view.nodes}
+          nodes={viewNodes}
           edges={styledEdges}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          deleteKeyCode={['Delete', 'Backspace']}
+          onNodesDelete={(ds) => deleteNodes((ds as FlowNode[]).map((n) => n.id))}
+          onEdgesDelete={(es) => deleteEdges((es as FlowEdge[]).map((e) => e.id))}
           onNodesChange={onNodesChange as (c: NodeChange<FlowNode>[]) => void}
           onEdgesChange={onEdgesChange as (c: EdgeChange<FlowEdge>[]) => void}
           onConnect={onConnect}
@@ -192,6 +246,18 @@ function CanvasInner({ model, onChange, nodeStatus, edgeState, onSelectNode, can
           <Controls />
           <MiniMap pannable zoomable nodeStrokeWidth={2} />
         </ReactFlow>
+
+        {/* 删除结果提示（清了几条边、清空了哪些悬空引用——破坏性操作必须说清动了什么） */}
+        {notices.length > 0 && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 max-w-[560px] px-3 py-1.5 rounded text-[11px] bg-elevated/95 border border-default text-secondary shadow">
+            {notices.join(' · ')}
+          </div>
+        )}
+
+        {/* 操作提示（删除入口的可发现性：此前完全没有可见入口，用户只能猜） */}
+        <div className="absolute bottom-9 left-3 text-[10px] text-tertiary bg-elevated/80 rounded px-2 py-1 pointer-events-none">
+          拖动节点连线 · 选中后按 Delete 删除 · 节点/连线上的 × 可直接删除
+        </div>
 
         {/* 条件边图例（分色语义与 WorkflowNode handle 同源） */}
         <div className="absolute bottom-3 left-3 flex items-center gap-2 text-[10px] text-tertiary bg-elevated/80 rounded px-2 py-1 pointer-events-none">

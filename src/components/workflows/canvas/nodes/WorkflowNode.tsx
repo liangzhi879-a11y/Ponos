@@ -41,22 +41,46 @@ const STATUS_TEXT: Record<NodeRunStatus, string> = {
   skipped: '已跳过',
 }
 
-export function WorkflowNode({ data, selected }: NodeProps) {
-  const d = data as { label?: string; nodeType?: string; config?: Record<string, any>; status?: NodeRunStatus }
+export function WorkflowNode({ id, data, selected }: NodeProps) {
+  const d = data as {
+    label?: string; nodeType?: string; config?: Record<string, any>; status?: NodeRunStatus
+    /** 删除入口（WorkflowCanvas 注入）：start 节点为 false（内核要求唯一入口，删了不可运行） */
+    canDelete?: boolean
+    onDelete?: (id: string) => void
+  }
   const nodeType = String(d.nodeType || 'code')
   const status: NodeRunStatus = d.status ?? 'idle'
   const label = d.label || nodeTypeLabel(nodeType)
   const handles = outputHandles({ id: 'x', type: nodeType, config: d.config || {} })
   const summary = configSummary(nodeType, d.config || {})
+  const deletable = d.canDelete !== false
 
   return (
     <div
-      className={cn('cut-sm min-w-[168px] max-w-[220px] transition-[background] duration-200', selected && 'hot')}
+      className={cn('cut-sm min-w-[168px] max-w-[220px] transition-[background] duration-200 relative group', selected && 'hot')}
       style={{
         background: STATUS_LINE[status],
         ...(status === 'skipped' ? { opacity: 0.6 } : {}),
       }}
     >
+      {/* 删除按钮：hover 或选中时显示（常显会让画布过吵；完全隐藏则用户找不到删除入口） */}
+      {deletable && (
+        <button
+          type="button"
+          title="删除节点"
+          aria-label="删除节点"
+          onClick={(e) => { e.stopPropagation(); d.onDelete?.(String(id)) }}
+          className={cn(
+            // nodrag：防止按下时变成拖动节点；nopan 防止连带平移画布
+            'nodrag nopan absolute -top-1.5 -right-1.5 z-10 w-4 h-4 rounded-full text-[11px] leading-none',
+            'flex items-center justify-center border transition-opacity',
+            'bg-elevated border-default text-tertiary hover:text-error hover:border-error',
+            selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100',
+          )}
+        >
+          ×
+        </button>
+      )}
       <div className="ci px-2.5 py-2">
         <div className="flex items-center gap-1.5">
           {/* 类型徽标：中文名（图标域内复用会与 rail 撞语义，故只用文字微标） */}

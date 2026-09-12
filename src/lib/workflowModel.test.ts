@@ -4,7 +4,7 @@
 // 权威校验在内核（kernel/workflow-dsl.validateWorkflow）；此处只做画布即时反馈，口径以内核为准。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { toFlow, fromFlow, deriveCapabilities, validateLocal, defaultConfig, nextNodeId, NODE_TYPES, checkWorkflowId, suggestCopyId, type WorkflowModel } from './workflowModel.ts'
+import { toFlow, fromFlow, deriveCapabilities, validateLocal, defaultConfig, nextNodeId, removeNodesFromModel, removeEdgesFromModel, NODE_TYPES, checkWorkflowId, suggestCopyId, type WorkflowModel } from './workflowModel.ts'
 
 const MODEL: WorkflowModel = {
   name: 'demo', version: '1.0.0',
@@ -233,4 +233,75 @@ test('checkWorkflowId / suggestCopyId：与 server/workflow-store.assertSafeId �
   assert.ok(checkWorkflowId(long).ok, `超长 id 的复制名必须仍合法: ${long}`)
   assert.equal(suggestCopyId('demo', ['demo-copy']), 'demo-copy-2')
   assert.equal(suggestCopyId('demo', ['demo-copy', 'demo-copy-2']), 'demo-copy-3')
+})
+
+// —— 节点/连线删除（2026-09-12 人工测试反馈：画布"没有删除选项"）——
+// 三条可见入口（节点 × / 边 × / Delete 键）之外，**语义清理**才是关键：
+// 删掉被引用的节点后，其他节点 config 里的 {{被删节点.x}} 会悬空 → 保存被内核
+// VAR_UNREACHABLE 拒绝。所以删除必须连带清理引用，并把清理内容告诉用户。
+test('removeNodesFromModel：删节点同时删相连边，并清理他处悬空引用', () => {
+  const m: WorkflowModel = {
+    name: 'd', version: '1.0.0',
+    nodes: [
+      { id: 'start', type: 'start' },
+      { id: 'a', type: 'template', config: { template: 'A' } },
+      { id: 'b', type: 'llm', config: { prompt: '用 {{a}} 与 {{a.output}} 生成' } },
+      { id: 'c', type: 'end', config: { outputs: [{ name: 'r', selector: '{{b}}' }] } },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'a' },
+      { id: 'e2', source: 'a', target: 'b' },
+      { id: 'e3', source: 'b', target: 'c' },
+    ],
+  }
+  const { model, blocked, warnings } = removeNodesFromModel(m, ['a'])
+  assert.deepEqual(model.nodes.map((n) => n.id), ['start', 'b', 'c'], '节点 a 应被移除')
+  assert.deepEqual(model.edges.map((e) => e.id), ['e3'], '与 a 相连的边应一并移除')
+  const prompt = String(model.nodes.find((n) => n.id === 'b')!.config?.prompt)
+  assert.equal(prompt.includes('{{a}}'), false, '悬空引用必须被清理（否则保存会被内核拒绝）')
+  assert.equal(prompt.includes('{{a.output}}'), false)
+  assert.equal(blocked.length, 0)
+  assert.ok(warnings.some((w) => w.includes('引用')), `应提示引用清理：${JSON.stringify(warnings)}`)
+  assert.equal(m.nodes.length, 4, '不得原地修改入参')
+})
+
+test('removeNodesFromModel：start 不可删（否则工作流不可运行）', () => {
+  const m: WorkflowModel = { name: 'd', nodes: [{ id: 'start', type: 'start' }, { id: 'b', type: 'llm' }], edges: [{ id: 'e1', source: 'start', target: 'b' }] }
+  const r = removeNodesFromModel(m, ['start'])
+  assert.deepEqual(r.blocked, ['start'])
+  assert.equal(r.model.nodes.length, 2, '拒绝删除时模型不变')
+  assert.equal(r.model.edges.length, 1)
+  assert.ok(r.warnings.some((w) => w.includes('开始')), `应说明原因：${JSON.stringify(r.warnings)}`)
+})
+
+test('removeNodesFromModel：从 loop/iterate 的 body 中摘除', () => {
+  const m: WorkflowModel = {
+    name: 'd',
+    nodes: [
+      { id: 'start', type: 'start' },
+      { id: 'lp', type: 'loop', body: ['x', 'y'] },
+      { id: 'x', type: 'template' }, { id: 'y', type: 'template' },
+      { id: 'c', type: 'end' },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'lp' },
+      { id: 'e2', source: 'lp', target: 'c' },
+      { id: 'e3', source: 'x', target: 'y' },
+    ],
+  }
+  const { model } = removeNodesFromModel(m, ['x'])
+  assert.deepEqual(model.nodes.find((n) => n.id === 'lp')!.body, ['y'], 'body 应摘除被删成员')
+  assert.deepEqual(model.edges.map((e) => e.id), ['e1', 'e2'], '子图内的边也应移除')
+})
+
+test('removeEdgesFromModel：只删边，节点与其它边不受影响', () => {
+  const m: WorkflowModel = {
+    name: 'd',
+    nodes: [{ id: 'a', type: 'start' }, { id: 'b', type: 'llm' }],
+    edges: [{ id: 'e1', source: 'a', target: 'b' }, { id: 'e2', source: 'b', target: 'a' }],
+  }
+  const next = removeEdgesFromModel(m, ['e1'])
+  assert.deepEqual(next.edges.map((e) => e.id), ['e2'])
+  assert.equal(next.nodes.length, 2, '节点不受影响')
+  assert.equal(m.edges.length, 2, '不得原地修改入参')
 })

@@ -509,9 +509,110 @@ export function nextEdgeId(existing: readonly EdgeModel[], source: string, targe
 /** id 字符集：首字符字母/数字，其余字母数字与 . _ -，总长 ≤64（与 store 的 SAFE_ID 逐字一致） */
 const WF_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 /** 保留字：与 /workflows/<sub> 的动作子路由冲突（用它们建流会永远打不开） */
-export const WF_RESERVED_IDS = ['run', 'stop', 'confirm', 'runs', 'import', 'export', 'bindings', 'verify', 'validate']
+/** 节点不可删除的守卫：start 是内核要求的唯一入口（删了工作流不可运行）。 */
+function isProtectedNode(node: NodeModel): boolean {
+  return node.type === 'start'
+}
+
+const REF_RE = /\{\{\s*([^}]+?)\s*\}\}/g
+
+/** 递归清空"引用了已删节点"的模板片段，返回清理处数（只动字符串，保留其余结构）。 */
+function scrubRefsDeep(value: unknown, gone: ReadonlySet<string>): { value: unknown; scrubbed: number } {
+  if (typeof value === 'string') {
+    let scrubbed = 0
+    const next = value.replace(REF_RE, (whole, path) => {
+      const root = String(path).trim().split('.')[0]
+      if (!gone.has(root)) return whole
+      scrubbed++
+      return ''
+    })
+    return { value: next, scrubbed }
+  }
+  if (Array.isArray(value)) {
+    let scrubbed = 0
+    const out = value.map((v) => { const r = scrubRefsDeep(v, gone); scrubbed += r.scrubbed; return r.value })
+    return { value: out, scrubbed }
+  }
+  if (value && typeof value === 'object') {
+    let scrubbed = 0
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const r = scrubRefsDeep(v, gone)
+      scrubbed += r.scrubbed
+      out[k] = r.value
+    }
+    return { value: out, scrubbed }
+  }
+  return { value, scrubbed: 0 }
+}
+
+export interface RemoveNodesResult {
+  model: WorkflowModel
+  /** 被拒绝删除的节点 id（start） */
+  blocked: string[]
+  /** 清理说明（UI 展示给用户；删除是破坏性操作，必须说清动了什么） */
+  warnings: string[]
+}
+
+/**
+ * 删除节点并做**语义清理**：相连边、loop/iterate 的 body 成员、他处悬空变量引用。
+ * 悬空引用必须清空——内核校验对 `{{已删节点.x}}` 报 VAR_UNREACHABLE 会**拒绝保存**，
+ * 只警告不清会变成"删了却存不了"（2026-09-12 人工测试暴露的体验缺口）。
+ * 纯函数：返回新对象，不原地修改入参。
+ */
+export function removeNodesFromModel(model: WorkflowModel, ids: readonly string[]): RemoveNodesResult {
+  const wanted = new Set(ids.filter(Boolean))
+  const blocked = model.nodes.filter((n) => wanted.has(n.id) && isProtectedNode(n)).map((n) => n.id)
+  const gone = new Set([...wanted].filter((id) => !blocked.includes(id)))
+  const blockedNote = blocked.length ? ['开始节点不可删除（工作流必须有唯一入口）'] : []
+  if (!gone.size) return { model, blocked, warnings: blockedNote }
+
+  const keptNodes: NodeModel[] = []
+  let bodyCleaned = 0
+  for (const n of model.nodes) {
+    if (gone.has(n.id)) continue
+    if (Array.isArray(n.body) && n.body.some((b) => gone.has(b))) {
+      const kept = n.body.filter((b) => !gone.has(b))
+      bodyCleaned += n.body.length - kept.length
+      keptNodes.push({ ...n, body: kept })
+      continue
+    }
+    keptNodes.push(n)
+  }
+  const keptEdges = model.edges.filter((e) => !gone.has(e.source) && !gone.has(e.target))
+  const edgesRemoved = model.edges.length - keptEdges.length
+
+  let scrubbed = 0
+  const cleanedNodes = keptNodes.map((n) => {
+    const r = scrubRefsDeep(n, gone)
+    scrubbed += r.scrubbed
+    return r.value as NodeModel
+  })
+
+  const names = model.nodes.filter((n) => gone.has(n.id)).map((n) => `「${n.label || n.id}」`)
+  const warnings: string[] = [`已删除 ${names.join('、')}`]
+  if (edgesRemoved) warnings.push(`移除相连连线 ${edgesRemoved} 条`)
+  if (bodyCleaned) warnings.push(`从 ${bodyCleaned} 处子图成员中摘除`)
+  if (scrubbed) warnings.push(`清空 ${scrubbed} 处悬空变量引用（否则保存会被内核拒绝）`)
+  warnings.push(...blockedNote)
+
+  return { model: { ...model, nodes: cleanedNodes, edges: keptEdges }, blocked, warnings }
+}
+
+/** 删除连线（节点不受影响；纯函数）。 */
+export function removeEdgesFromModel(model: WorkflowModel, ids: readonly string[]): WorkflowModel {
+  const gone = new Set(ids.filter(Boolean))
+  if (!gone.size) return model
+  return { ...model, edges: model.edges.filter((e) => !gone.has(e.id)) }
+}
+
+
 /** Windows 保留设备名（`nul/workflow.yml` 会写进设备，仓库既往有 nul 事故记录） */
 const WF_DEVICE_RE = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/
+
+/**
+/** 系统保留字：与 /workflows/<子路由> 冲突（用了会导致该工作流永远打不开） */
+export const WF_RESERVED_IDS = ['run', 'stop', 'confirm', 'runs', 'import', 'export', 'bindings', 'verify', 'validate']
 
 /**
  * 新建/复制前的前端预校验：不合法就**就地在 UI 提示**，不发请求（后端 assertSafeId 会抛 400，
