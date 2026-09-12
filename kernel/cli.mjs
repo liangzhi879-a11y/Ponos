@@ -301,7 +301,7 @@ export async function main(argv) {
   // P9-3：会话工作记忆文件路径（<configDir>/memory/session/<sessionId>.md）。
   // 轮末写入关键状态，压缩时 compactor 读文件注入摘要请求（可选能力，读失败静默降级）
   const sessionMemoryPath = join(configDir, 'memory', 'session', sessionId + '.md')
-  const compactor = createCompactor({ session: store, context, model, maxTokens, wire, health, signal: undefined, env: process.env, sessionMemoryPath })
+  const compactor = createCompactor({ session: store, context, model, maxTokens, wire, health, signal: undefined, env: process.env, sessionMemoryPath, onCompactionAudit: (a) => { try { health.recordCompactionAudit?.(a) } catch { /* 静默 */ } } })
 
   // P4-2 hooks：settings.hooks 规则装配（无规则 = count 0，run 恒 matched=false）
   const hooks = createHooks({ rules: settings.merged.hooks || [] })

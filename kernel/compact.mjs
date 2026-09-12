@@ -11,6 +11,7 @@
 import { statSync, readFileSync } from 'node:fs'
 import { streamMessages } from './api.mjs'
 import { countCjk } from './context.mjs'
+import { extractEntities, missingEntities } from './fidelity.mjs'
 import { patchOrphanToolUses } from './engine.mjs'
 
 // P9-1：工具结果老化清除（microcompact 语义，对照 claude-code microCompact.ts）
@@ -334,6 +335,72 @@ export function keyInfoBlock(key) {
   return '（关键信息提示——摘要必须保留以下内容：）\n<key-info>\n' + lines.join('\n') + '\n</key-info>'
 }
 
+// 压缩点保真审计（2026-09-12 spec §4.1：docs/superpowers/specs/2026-09-12-context-fidelity-health-design.md）
+// ---------------------------------------------------------------------------
+// 摘要落地时核对"关键事实有没有丢"——丢事实是失真的最隐蔽形式（摘要读起来通顺，
+// 但后续推理建立在错误前提上）。方法 A 确定性（零模型成本，只发现字面丢失），
+// 方法 B LLM 审计（发现"被改写"，如 MySQL→PostgreSQL，最高只计 medium）。
+// 只读不写：审计结论经 onCompactionAudit 交给 health，落地流程不受其影响。
+export function auditSummaryFidelity({ covered, summary, minEntities = 3 } = {}) {
+  try {
+    const list = Array.isArray(covered) ? covered : []
+    const texts = []
+    for (const m of list) {
+      if (!m) continue
+      if (typeof m.content === 'string') { texts.push(m.content); continue }
+      if (Array.isArray(m.content)) {
+        for (const b of m.content) {
+          if (typeof b?.content === 'string') texts.push(b.content)
+          else if (typeof b?.text === 'string') texts.push(b.text)
+        }
+      }
+    }
+    // 只取"高信号实体"（路径/数字/反引号/常量/模型名）：通用词会把缺失率稀释掉，
+    // 而缺失率是本信号的判定依据
+    const entities = extractEntities(texts.join('\n'), { max: 120, kinds: 'key' })
+    const miss = missingEntities(entities, summary)
+    if (miss.total < minEntities) {
+      return { entities, missing: [], total: miss.total, ratio: 0, skipped: true }
+    }
+    return { entities, missing: miss.missing, total: miss.total, ratio: miss.ratio }
+  } catch { return { entities: [], missing: [], total: 0, ratio: 0, skipped: true } }
+}
+
+const FIDELITY_AUDIT_INSTRUCTION = [
+  '你是事实保真审计器。对比下面的【原文摘录】与【摘要】，只报告"原文里有、摘要丢了或被改写"的关键事实。',
+  '只输出 JSON，不要任何其他文字：',
+  '{"ok":true,"missing":["原文有而摘要完全丢失的关键事实（路径/数字/约束/决策）"],"rewritten":["被改写的事实，格式 原值→新值"]}',
+  '若没有丢失或改写，输出 {"ok":true,"missing":[],"rewritten":[]}。不要报告措辞差异。',
+].join('\n')
+
+export function buildFidelityAuditRequest({ excerpt, summary } = {}) {
+  const ex = String(excerpt ?? '').slice(0, 12_000)
+  const sm = String(summary ?? '').slice(0, 6_000)
+  return [{
+    role: 'user',
+    content: `${FIDELITY_AUDIT_INSTRUCTION}\n\n【原文摘录】\n${ex}\n\n【摘要】\n${sm}`,
+  }]
+}
+
+export function parseFidelityAudit(text) {
+  const empty = { ok: false, missing: [], rewritten: [] }
+  try {
+    let t = String(text ?? '')
+    if (!t.trim()) return empty
+    const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(t)
+    if (fence) t = fence[1]
+    else {
+      const start = t.indexOf('{')
+      const end = t.lastIndexOf('}')
+      if (start >= 0 && end > start) t = t.slice(start, end + 1)
+    }
+    const obj = JSON.parse(t)
+    if (!obj || typeof obj !== 'object') return empty
+    const arr = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim().slice(0, 200)).slice(0, 10) : [])
+    return { ok: obj.ok === true, missing: arr(obj.missing), rewritten: arr(obj.rewritten) }
+  } catch { return empty }
+}
+
 // P9-3：会话工作记忆（session memory，对照 claude-code sessionMemoryCompact.ts）
 // ---------------------------------------------------------------------------
 // 轮末把关键状态（todo/文件变更/最近决策）增量写入独立文件；压缩时读文件作为
@@ -376,7 +443,7 @@ export function extractSummary(text) {
 }
 
 // —— 压缩器编排（pre-step 测压 / forceCompact 溢出兜底）——
-export function createCompactor({ session, context, model, maxTokens, wire, health, signal, env = process.env, sessionMemoryPath = null }) {
+export function createCompactor({ session, context, model, maxTokens, wire, health, signal, env = process.env, sessionMemoryPath = null, onCompactionAudit = null }) {
   // P9-3：压缩时读取会话工作记忆文件，注入摘要请求作为事实来源（文件不存在/读失败静默降级）
   let sessionMemoryCache = ''
   let sessionMemoryReadAt = 0
@@ -502,6 +569,38 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
     return callSummaryBody({ body: req, maxOut })
   }
 
+  // 压缩点保真审计（2026-09-12 spec §4.1 方法 B）——**fire-and-forget**：
+  // ①每次压缩最多 1 次调用（auditInFlight 门）；②maxOut 512；③失败绝不触碰
+  // consecutiveFailures/熔断计数（审计是附产物，绝不能拖垮压缩或阻塞轮次时延）。
+  let auditInFlight = false
+  async function auditFidelityAsync(summary, covered) {
+    try {
+      if (auditInFlight) return
+      if (env.PONOS_FIDELITY_LLM_AUDIT === '0') return
+      if (!summary || !Array.isArray(covered) || !covered.length) return
+      auditInFlight = true
+      const texts = []
+      for (const m of covered) {
+        if (typeof m?.content === 'string') texts.push(m.content)
+        else if (Array.isArray(m?.content)) {
+          for (const b of m.content) if (typeof b?.content === 'string') texts.push(b.content)
+        }
+      }
+      const first = texts.slice(0, 6).join('\n').slice(0, 6000)
+      const last = texts.slice(-4).join('\n').slice(0, 6000)
+      const info = keyInfoBlock(extractKeyInfo(covered))
+      const excerpt = `${info}\n${first}\n…\n${last}`.slice(0, 12_000)
+      const { text } = await callSummaryBody({
+        body: buildFidelityAuditRequest({ excerpt, summary }),
+        maxOut: 512,
+      })
+      const parsed = parseFidelityAudit(text)
+      if (parsed.missing.length || parsed.rewritten.length) {
+        try { onCompactionAudit?.({ entities: [], missing: parsed.missing, ratio: 0, llm: parsed }) } catch { /* 静默 */ }
+      }
+    } catch { /* 审计失败静默：不计熔断、不影响压缩落地 */ } finally { auditInFlight = false }
+  }
+
   async function summarize({ system, messages, limit, retainHint }) {
     if (summaryInFlight) return { action: 'none', reason: 'lock' } // 内存锁：拒绝并发压缩
     summaryInFlight = true
@@ -532,6 +631,13 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
       compactOk = true
       if (health) health.recordCompaction?.(summary, session.compactCount())
       else wire.summary?.(summary, session.compactCount())
+      // 保真审计（spec §4.1）：必须在压缩落地之后。确定性审计同步做（零模型成本），
+      // LLM 审计 fire-and-forget（不进 await 链，绝不拖慢压缩落地与轮次时延）。
+      try {
+        const audit = auditSummaryFidelity({ covered: c.covered, summary })
+        if (!audit.skipped) onCompactionAudit?.({ ...audit })
+      } catch { /* 审计失败不影响压缩落地 */ }
+      void auditFidelityAsync(summary, c.covered)
       return { action: 'summarized', summary, compactCount: session.compactCount(), usage, coveredTokens: coveredTk }
     }
     try {
