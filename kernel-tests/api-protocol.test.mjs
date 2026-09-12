@@ -161,6 +161,54 @@ test('Anthropic 解析器：text/tool_use/usage 归一化 chunk 形状', () => {
   assert.equal(usage.cache_creation_input_tokens, 1)
 })
 
+// 【2026-09-12 流式观感 + 丢字回归】原实现只在 "\n\n" 处产出文本 chunk（整段被扣到
+// 流末 finish() 才一次性吐出 ⇒ 观感"卡住几个字、不是流式输出"），且调用方用
+// `for (const seg of segmentText(textBuf)) { textBuf = '' }` 丢弃了生成器的
+// `return rest` 尾巴 ⇒ 同一 delta 内段落界之后的文字永久丢失（含引擎落盘消息）。
+const TD = (text) => ({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } })
+
+test('Anthropic 解析器：无空行长文本不得被扣到流末（非流式观感回归）', () => {
+  const p = createAnthropicParser()
+  const full = '这是一段没有空行的正文，模型逐字吐出来。'
+  const seen = []
+  for (const ch of full) seen.push(...p.feed(TD(ch)))
+  const before = seen.filter((c) => c.type === 'text')
+  assert.ok(before.length >= 1, 'finish() 之前必须已有帧产出，否则整段扣到流末 = 观感"卡住几个字"')
+  const joined = [...seen, ...p.finish()].filter((c) => c.type === 'text').map((c) => c.text).join('')
+  assert.equal(joined, full, '增量拼接必须与原文逐字一致（既不丢也不重）')
+})
+
+test('Anthropic 解析器：同 delta 内"段落界 + 后续文字"的尾巴不得丢失', () => {
+  const p = createAnthropicParser()
+  const seen = [
+    ...p.feed(TD('第一段\n\n第二段开始')), // 旧实现：只吐 '第一段\n\n'，'第二段开始' 永久丢失
+    ...p.feed(TD('，继续写。')),
+    ...p.finish(),
+  ]
+  assert.equal(seen.filter((c) => c.type === 'text').map((c) => c.text).join(''), '第一段\n\n第二段开始，继续写。')
+})
+
+test('Anthropic 解析器：单块多段 SSE 不得只活下第一段', () => {
+  const p = createAnthropicParser()
+  const full = '## 标题\n\n正文第一句。\n\n正文第二句。'
+  const seen = [...p.feed(TD(full)), ...p.finish()]
+  assert.equal(seen.filter((c) => c.type === 'text').map((c) => c.text).join(''), full)
+})
+
+test('Anthropic 解析器：PONOS_TEXT_FLUSH_CHARS=1 → 每 delta 一帧（最大流式粒度）', () => {
+  const prev = process.env.PONOS_TEXT_FLUSH_CHARS
+  process.env.PONOS_TEXT_FLUSH_CHARS = '1'
+  try {
+    const p = createAnthropicParser()
+    const seen = []
+    for (const ch of '今天天气不错') seen.push(...p.feed(TD(ch)))
+    assert.equal(seen.filter((c) => c.type === 'text').length, 6, '阈值 1 时应逐字成帧')
+  } finally {
+    if (prev === undefined) delete process.env.PONOS_TEXT_FLUSH_CHARS
+    else process.env.PONOS_TEXT_FLUSH_CHARS = prev
+  }
+})
+
 test('protocolStream：Anthropic 完整事件序列（content_block_start→delta→stop→message_delta）仅产出一个 usage chunk', async () => {
   const events = [
     JSON.stringify({ type: 'message_start', message: { usage: { input_tokens: 5, output_tokens: 1 } } }),

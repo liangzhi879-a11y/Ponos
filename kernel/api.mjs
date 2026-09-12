@@ -37,16 +37,39 @@ function sleepAbortable(ms, signal) {
   })
 }
 
-// 将 SSE 文本增量累积并按段落边界切分：产出 1..n 个 {type:'text'} chunk
+// 将 SSE 文本增量累积并按段落边界切分：产出 1..n 个 {type:'text'} chunk。
+// 【2026-09-12 流式观感与丢字修复】两处缺陷（均已用探针实证）：
+//   ① 只在 "\n\n" 处产出 ⇒ 模型写整段无空行时，该段被扣到步末 finish() 才一次性
+//      吐出，观感是"卡住几个字、不是流式输出"（用户实测语），而本会话每步可见文本
+//      中位数仅 51B ⇒ 每步只蹦几个字再冻结数秒。超阈值即先吐，段落边界仍优先。
+//   ② `return rest` 的尾巴不进 for...of（生成器返回值不参与迭代），而调用方又在
+//      首轮就 textBuf='' ⇒ 同一 delta 内 "\n\n" 之后的文字**永久丢失**（实证：喂
+//      '第一段\n\n第二段开始' 只吐 '第一段\n\n'；喂整块 '## 标题\n\n正文一。\n\n
+//      正文二。' 只活下第一段）。丢失不止是显示：引擎自己的 textBuf 同源累积
+//      （engine.mjs 用它落盘 assistant 消息并作下一轮上下文），故模型会"忘掉"自己
+//      刚说过的话。⇒ 改为"产出段 + 返回尾巴"，尾巴由调用方留在缓冲里。
+// 默认 16 字：本仓实测慢模型（qwen/vLLM 约 15 B/s）下 ≈1s 一跳，观感接近连续；
+// 调到 1 即"每 delta 一帧"（最大流式粒度，帧数最多）。设 0/非法值回落默认。
+const TEXT_FLUSH_CHARS = () => Math.max(1, Number(process.env.PONOS_TEXT_FLUSH_CHARS) || 16)
+
 function* segmentText(buffer) {
   let rest = buffer
-  while (true) {
+  while (rest) {
     const idx = rest.indexOf('\n\n')
-    if (idx < 0) return rest
-    const seg = rest.slice(0, idx + 2)
-    rest = rest.slice(idx + 2)
-    if (seg.trim()) yield { type: 'text', text: seg }
+    if (idx >= 0) {
+      const seg = rest.slice(0, idx + 2)
+      rest = rest.slice(idx + 2)
+      if (seg.trim()) yield { type: 'text', text: seg }
+      continue
+    }
+    // 无段界但已够长：先吐，避免整段被扣到流末（帧数仍远少于逐 delta 直发）
+    if (rest.length >= TEXT_FLUSH_CHARS()) {
+      yield { type: 'text', text: rest }
+      rest = ''
+    }
+    break
   }
+  return rest
 }
 
 // 协议检测：仅 Anthropic 兼容协议（deepseek 等 provider 的 /anthropic 端点）。
@@ -115,7 +138,12 @@ export function createAnthropicParser() {
       } else if (payload.type === 'content_block_delta' && dt) {
         if (dt.type === 'text_delta' && dt.text) {
           textBuf += dt.text
-          for (const seg of segmentText(textBuf)) { textBuf = ''; out.push(seg) }
+          // 手工消费以拿到生成器的返回值：for...of 只迭代 yield，`return rest` 的
+          // 尾巴会被静默丢弃（旧写法），故必须显式取 n.value 留回缓冲。
+          const it = segmentText(textBuf)
+          let n = it.next()
+          while (!n.done) { out.push(n.value); n = it.next() }
+          textBuf = typeof n.value === 'string' ? n.value : ''
         } else if (dt.type === 'thinking_delta' && dt.thinking) {
           out.push({ type: 'thinking', text: dt.thinking })
         } else if (dt.type === 'input_json_delta' && dt.partial_json) {
