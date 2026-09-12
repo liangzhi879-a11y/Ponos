@@ -124,6 +124,15 @@ nodes:
     type: end
     label: 结束
     position: {x: 1200, y: 240}
+    # 终审修复（P0-2）：end 缺 outputs ⇒ finalOutput 恒为 {}，工作流跑完交不出任何结果。
+    # 聚合三段状态文本 + 收敛轮数/结论，调用方（模型）无需再读盘即可判断结果。
+    config:
+      outputs:
+        - { name: spec, selector: "{{specify.text}}" }
+        - { name: plan, selector: "{{plan.text}}" }
+        - { name: tasks, selector: "{{tasks.text}}" }
+        - { name: iterations, selector: "{{impl_loop.iterations}}" }
+        - { name: converged, selector: "{{impl_loop.broken}}" }
 
 # 执行顺序唯一真相（nodes 数组顺序无语义）：主图 5 条 + impl_loop 子图内 1 条。
 # 子图边（e6）不得跨 body 边界（validateWorkflow 的 BODY_ESCAPE 会拦）。

@@ -97,6 +97,15 @@ test('spec-dev 已重写为 DAG：引擎在生产校验路径下正常执行（r
     assert.equal(r.settled.has('converge'), false, 'body 成员不得出现在主 settled')
     // steps 为调度步数（workflow-dag 计数，非数组）：主链 start/specify/plan/tasks + loop(3 轮×2 body) + end
     assert.ok(r.steps > 0, `应产出调度步数：${r.steps}`)
+    // 终审修复：end 节点此前**无 outputs** ⇒ finalOutput 恒为 {}（工作流跑完、状态为 completed，
+    // 调用方却拿不到 spec/plan/tasks 与收敛状态——"优化了但看不到效果"的机械成因之一）。
+    assert.ok(r.finalOutput && typeof r.finalOutput === 'object', 'finalOutput 应为对象')
+    for (const k of ['spec', 'plan', 'tasks']) {
+      assert.ok(typeof r.finalOutput[k] === 'string' && r.finalOutput[k].length > 0,
+        `finalOutput.${k} 必须非空（实际 ${JSON.stringify(r.finalOutput[k])}）`)
+    }
+    assert.equal(typeof r.finalOutput.iterations, 'number', `finalOutput.iterations 应为轮数（实际 ${JSON.stringify(r.finalOutput.iterations)}）`)
+    assert.equal(typeof r.finalOutput.converged, 'boolean', `finalOutput.converged 应为收敛标记（实际 ${JSON.stringify(r.finalOutput.converged)}）`)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
