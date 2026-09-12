@@ -831,6 +831,12 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // outputBudget = 本轮输出预算：maybeCompact 据此把阈值收窄到 window−预算−余量，
       // 防"估算低于比例阈值、但请求 input+max_tokens 已超端点真实窗口"的溢出
       const r = await compactor.maybeCompact({ system: systemPrompt || '', messages: msgs, outputBudget: attemptMaxTokens })
+      // 压缩决策显式落 stderr（2026-09-12 T1 诊断项）：此前"究竟有没有压缩、被哪条
+      // 判据挡下"只能从 [api] POST 的 msgs 跳变反推（关键词 grep 全仓 0 命中）。
+      // 只记非默认决策，避免每轮刷屏（常态 below-threshold 不落）。
+      if (r?.action !== 'none' || (r?.reason && r.reason !== 'below-threshold')) {
+        try { console.error(`[compact] action=${r?.action || '-'} reason=${r?.reason || '-'} msgs=${r?.msgs ?? msgs.length} est=${r?.est ?? '-'} maxMessages=${r?.maxMessages ?? '-'}`) } catch { /* 日志失败不影响主流程 */ }
+      }
       // M2：摘要调用是一次完整 API 请求（prefill 含被遮蔽历史数万 token），
       // 其 usage 并入本轮（再进 turnStats/result/最终条目）
       if (r?.usage) usage = addUsage(usage, r.usage)

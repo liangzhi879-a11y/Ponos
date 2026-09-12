@@ -324,6 +324,7 @@ export async function main(argv) {
     window: contextWindow,
     thresholdRatio: compactCfg.thresholdRatio,
     retainRatio: compactCfg.retainRatio,
+    maxMessages: compactCfg.maxMessages,
     estimate: ({ system, messages }) => estimateRequest({ system, messages }),
     estimateMessage,
     estimateHistory,
