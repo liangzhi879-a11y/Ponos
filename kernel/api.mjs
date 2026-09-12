@@ -18,6 +18,25 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
 }
 
+// 可中断退避（2026-09-12）：重发退避期间收到取消/abort 必须立刻结束等待。旧实现
+// 睡满 1/2/4s 才醒——用户按下停止键后内核仍攥着定时器装死，且取消路径"检查点"直到
+// 退避结束才被求值，观感即"停止键不灵"。无 signal 或非标准 signal 时退化为普通 sleep。
+function sleepAbortable(ms, signal) {
+  if (!signal || typeof signal.addEventListener !== 'function') return sleep(ms)
+  if (signal.aborted) return Promise.resolve()
+  return new Promise((resolve) => {
+    let timer = null
+    const onAbort = () => done()
+    const done = () => {
+      if (timer) clearTimeout(timer)
+      try { signal.removeEventListener('abort', onAbort) } catch { /* 忽略 */ }
+      resolve()
+    }
+    try { signal.addEventListener('abort', onAbort, { once: true }) } catch { /* 退化 */ }
+    timer = setTimeout(done, ms)
+  })
+}
+
 // 将 SSE 文本增量累积并按段落边界切分：产出 1..n 个 {type:'text'} chunk
 function* segmentText(buffer) {
   let rest = buffer
@@ -179,6 +198,40 @@ async function* mockStream({ messages, signal }) {
     }
     yield { type: 'usage', usage: MOCK_USAGE }
     return
+  }
+  // 输出截断自愈模拟（2026-09-12 engine-continue-heal 测试）：PONOS_MOCK_TRUNCATE_CONT=1 →
+  // 历史无续写指令时产出部分文本 + max_tokens 截断 stop_reason；续写指令出现后产出
+  // 剩余文本 + 正常收尾。调用次数写 PONOS_MOCK_TRUNCATE_CONT_N 供断言有界。
+  if (process.env.PONOS_MOCK_TRUNCATE_CONT === '1') {
+    const healMark = (messages || []).some((m) => m?.role === 'user' && typeof m?.content === 'string' &&
+      m.content.includes('【系统】你的上一条回复因输出上限被截断'))
+    process.env.PONOS_MOCK_TRUNCATE_CONT_N = String(Number(process.env.PONOS_MOCK_TRUNCATE_CONT_N || 0) + 1)
+    if (signal?.aborted) throw abortError()
+    if (!healMark) {
+      yield* streamText('这是被截断的前半段', signal)
+      yield { type: 'usage', usage: MOCK_USAGE }
+      yield { type: 'stop_reason', reason: 'max_tokens' }
+      return
+    }
+    yield* streamText('这是续写的后半段 [mock:truncate-cont-done]', signal)
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // PONOS_MOCK_OVERFLOW=too-big[:BYTES] → 请求体 JSON 字节数 > BYTES（默认 50000）即抛
+  // vLLM 原文 400。**必须放摘要检测分支之前**：端点不会因为请求是"压缩用的"就放宽
+  // 窗口，线上事故的真实形态就是摘要请求自身超窗（估算口径 vs 端点真实计费口径背离，
+  // 报文里窗口数 40000 刻意取小 → 沿用估算口径的压缩器算出分块照样被拒）。
+  // 该形态下唯一能过的请求是硬适配副本（fitRequestToWindow：系统提示 + 最近一轮 +
+  // <history-index>，≈10KB）——钉死"瘦身副本必须被当次重试真正用上"。
+  // 抛错次数写 PONOS_MOCK_OVERFLOW_COUNT（含未抛的放行调用）供断言调用次数有界。
+  const tooBig = /^too-big(?::(\d+))?$/.exec(String(process.env.PONOS_MOCK_OVERFLOW || ''))
+  if (tooBig) {
+    process.env.PONOS_MOCK_OVERFLOW_COUNT = String(Number(process.env.PONOS_MOCK_OVERFLOW_COUNT || 0) + 1)
+    if (Buffer.byteLength(JSON.stringify(messages || [])) > Number(tooBig[1] || 50_000)) {
+      const e = new Error('内核：API 请求失败 400 {"type":"error","error":{"type":"BadRequestError","message":"This model\'s maximum context length is 40000 tokens. However, you requested 8192 output tokens and your prompt contains at least 41000 input tokens, for a total of at least 49192 tokens. Please reduce the length of the input prompt or max_tokens."}}')
+      e.status = 400
+      throw e
+    }
   }
   // 压缩摘要调用检测（前移：须先于 [mock:lane-melt]/[mock:lane-iter] 历史门控——
   // lane 压缩开启后摘要请求的 covered 历史含 [mock:lane-iter] 标记，被门控抢先会产
@@ -344,11 +397,27 @@ async function* mockStream({ messages, signal }) {
     else {
       if (overflowMode === 'once') process.env.PONOS_MOCK_OVERFLOW_CONSUMED = '1'
       if (overflowMode === 'always') {
+        process.env.PONOS_MOCK_OVERFLOW_COUNT = String(Number(process.env.PONOS_MOCK_OVERFLOW_COUNT || 0) + 1)
         const e = new Error('内核：API 请求失败 400 {"type":"error","error":{"type":"BadRequestError","message":"This model\'s maximum context length is 131072 tokens. However, you requested 64000 output tokens and your prompt contains at least 70000 input tokens, for a total of at least 134000 tokens. Please reduce the length of the input prompt or max_tokens."}}')
         e.status = 400
         throw e
       }
       throw new Error('context_window_exceeded: 请求超出模型上下文窗口')
+    }
+  }
+  // 溢出无限重发模拟（2026-09-12 长会话 UI 压缩条闪烁事故）：
+  // PONOS_MOCK_OVERFLOW=when-large[:N] → 请求面 messages 条数 ≥ N（默认 8）抛 vLLM 原文
+  // context-window 400（报文里的窗口数刻意取小，让小夹具也能触发"硬裁到窗口内"），
+  // 条数 < N 则正常作答。线上形态就是"带全量历史的请求必 400、只有瘦身副本能过"——
+  // 钉死"瘦身副本必须被当次重试真正用上"（旧实现在 continue 前清空副本 → 同一超窗
+  // 请求无限重发、runTurn 永不返回）。抛错次数写 PONOS_MOCK_OVERFLOW_COUNT 供断言有界。
+  const largeAt = /^when-large(?::(\d+))?$/.exec(String(process.env.PONOS_MOCK_OVERFLOW || ''))
+  if (largeAt) {
+    process.env.PONOS_MOCK_OVERFLOW_COUNT = String(Number(process.env.PONOS_MOCK_OVERFLOW_COUNT || 0) + 1)
+    if ((messages || []).length >= Number(largeAt[1] || 8)) {
+      const e = new Error('内核：API 请求失败 400 {"type":"error","error":{"type":"BadRequestError","message":"This model\'s maximum context length is 8000 tokens. However, you requested 8192 output tokens and your prompt contains at least 9000 input tokens, for a total of at least 17192 tokens. Please reduce the length of the input prompt or max_tokens."}}')
+      e.status = 400
+      throw e
     }
   }
   // 安全工具请求回合：[mock:tool-safe] 触发非高危 Bash tool_use（echo）。
@@ -366,6 +435,15 @@ async function* mockStream({ messages, signal }) {
     if (signal?.aborted) throw abortError()
     await sleep(MOCK_SLEEP_MS)
     yield { type: 'tool_use', id: 'tool_use_mock_fid_read', name: 'Read', input: { file_path: '__yfw_fidelity_missing__.md' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // 硬黑名单回合：[mock:tool-catastrophic] 触发灾难级 Bash（rm -rf /）——任何审批档位
+  // 下都必须挂起等用户确认（2026-09-12 四档化：hard ask 跳过度降级计数）。
+  if (lastText.includes('[mock:tool-catastrophic]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_mock_catastrophic', name: 'Bash', input: { command: 'rm -rf /' } }
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
@@ -422,6 +500,24 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // 子 lane 工具能力未开启（2026-09-12，镜像 [mock:agent-lane-overflow]）：主 loop 侧
+  // 触发 Agent tool_use，子任务 prompt 内嵌 [mock:lane-notools]；lane 侧（下方历史门控）
+  // 每次请求都抛 400 —— 服务端没开工具调用时子任务重试无意义，engine 应立刻 guardStop。
+  if (lastText.includes('[mock:agent-lane-notools]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_mock_agent_lane_notools', name: 'Agent',
+      input: { subagent_type: 'general-purpose', prompt: '子任务：请针对 [mock:lane-notools] 输出确认' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // 子 lane 工具能力未开启模拟：lane 会话历史含 [mock:lane-notools] → 每次请求抛
+  // tools-unsupported 400（历史门控保证不影响主会话/其它 lane）
+  if ((messages || []).some((m) => m?.role === 'user' && (
+    typeof m?.content === 'string'
+      ? m.content.includes('[mock:lane-notools]')
+      : (Array.isArray(m?.content) && m.content.some((b) => b?.type === 'text' && String(b?.text ?? '').includes('[mock:lane-notools]')))
+  ))) throw toolsUnsupportedError('mock:lane-notools')
   // 子 lane 溢出模拟（审计 #5）：lane 会话历史含 [mock:lane-overflow] → 首次请求抛上下文
   // 溢出 400（带端点真实窗口 + prompt 用量，供 engine 按主循环公式收窄输出预算），此后请求
   // 产出成功 Bash（echo mock-lane-overflow-ok）——模拟"收窄输出预算后同轮重试成功"。放
@@ -790,6 +886,10 @@ async function* mockStream({ messages, signal }) {
   // 事件即断/EOF，vLLM 引擎未就绪形态）。engine 应快速失败（不空等 STREAM_IDLE_MS）
   // 并输出"检查 provider"提示。
   if (lastText.includes('[mock:deadstream]')) throw deadStreamError(new Error('mock:deadstream'))
+  // 工具能力未开启模拟：[mock:tools-unsupported] 首个请求即抛 400（provider 未以
+  // --enable-auto-tool-choice 启动，任何带 tools 的请求都被拒）。engine 应快速失败
+  // 并落"补启动参数 / 换 provider"的可操作引导（不得重试、不得静默去掉 tools）。
+  if (lastText.includes('[mock:tools-unsupported]')) throw toolsUnsupportedError('mock:tools-unsupported')
   // 零数据挂起模拟：[mock:stall0] 与 [mock:stall] 同构但不产出开头文本——整个流一个
   // 块都没有就被空闲看门狗 abort。engine 据此区分"连接空转（上游无产出）"与"推理
   // 中途停顿（已产出内容后卡住）"，给不同的收尾提示。
@@ -801,6 +901,14 @@ async function* mockStream({ messages, signal }) {
       if (t.unref) t.unref()
     })
     if (signal?.aborted) throw abortError()
+    return
+  }
+  // 异步链失活模拟（2026-09-12 事故形态）：[mock:hang-forever] 永久挂起且无视
+  // abort——引擎请求层看门狗 abort 后本分支不响应（真实事故里续体彻底丢失、
+  // 请求级定时器已清理）。只有 cli 级硬看门狗（PONOS_KERNEL_HARD_TIMEOUT_MS）
+  // 能救。仅用于进程级 spawn 测试；engine 单测不得使用（会真挂）。
+  if (lastText.includes('[mock:hang-forever]')) {
+    await new Promise(() => {}) // 永不 resolve
     return
   }
   // 流式挂起模拟：[mock:stall] 输出开头后不再产生任何块（连接挂着不回数据），仅
@@ -838,12 +946,24 @@ export function toAbortSignal(s) {
 // T003 评测实测 "stream interrupted: ... timeout"）。外部取消仍经 extSignal 传导：
 // abort → fetch reject AbortError（不重试）；连接超时 → TimeoutError（transient 重发）
 async function fetchWithConnectTimeout(url, { method, headers, body, signal }, connectTimeoutMs) {
-  const p = fetch(url, { method, headers, body, signal })
+  // 内部 AbortController 与外部取消信号合并（2026-09-12 异步链失活/孤儿请求修复）：
+  // 旧实现超时只 reject——底层 fetch 仍挂在 undici 池里继续跑，服务器侧照常生成
+  // （孤儿占用槽位），重试再叠一层，正是上面注释记的"越重试越挂"死亡螺旋的请求侧成因。
+  // 合并后：超时 abort 底层；外部 abort 仍穿透到**响应体读取**（engine 空闲看门狗
+  // 依赖这条，故监听器须随响应体生命周期存活，不在 fetch resolve 时摘除）。
+  const ctrl = new AbortController()
+  const onExtAbort = () => { try { ctrl.abort(signal?.reason) } catch { try { ctrl.abort() } catch {} } }
+  if (signal) {
+    if (signal.aborted) onExtAbort()
+    else { try { signal.addEventListener('abort', onExtAbort, { once: true }) } catch { /* 非标准 signal：忽略 */ } }
+  }
+  const p = fetch(url, { method, headers, body, signal: ctrl.signal })
   if (!connectTimeoutMs || connectTimeoutMs <= 0) return p
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => {
       const e = new Error('连接超时: The operation was aborted due to timeout')
       e.name = 'TimeoutError'
+      try { ctrl.abort(e) } catch {}
       reject(e)
     }, connectTimeoutMs)
     p.then(
@@ -915,6 +1035,11 @@ export async function* protocolStream({ url, body, headers, signal }) {
     try {
       return await withIdleTimeout(reader.read(), idleTimeoutMs)
     } catch (err) {
+      // 空闲超时/读错误：必须先 cancel 底层 reader（2026-09-12）。旧实现只 releaseLock()，
+      // 那个挂起的 read() 永不完成、响应体不释放——连接与服务器槽位一起泄漏，重试又开
+      // 新连接叠加（实测静默窗口里同一请求被反复重发）。cancel 让底层流真正收口，
+      // 之后再走既有 transient 重发语义。
+      try { await reader.cancel(err) } catch { /* 已关闭/已 errored：忽略 */ }
       const cls = classifyApiError(err)
       if (cls.kind === 'transient') throw streamInterrupted(err)
       throw err
@@ -1022,6 +1147,15 @@ export function deadStreamError(cause) {
   return e
 }
 
+// 工具能力未开启错误（2026-09-12）：端点对带 tools 的请求回 400（vLLM 未以
+// --enable-auto-tool-choice --tool-call-parser 启动时的原文）。构造器保证 status=400
+// 与线上报文同形，供引擎/mock/测试共用同一文本（改文案即改这里，不会多处漂移）。
+export function toolsUnsupportedError(detail = '') {
+  const e = new Error(`内核：API 请求失败 400 {"type":"error","error":{"type":"BadRequestError","message":""auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set"}}${detail ? `（${String(detail).slice(0, 120)}）` : ''}`)
+  e.status = 400
+  return e
+}
+
 // 是否因 cache_control 被端点拒绝（400/422 或缓存相关 message）→ 回退重发判断
 function isCacheRejection(err) {
   const status = err?.status || 0
@@ -1102,9 +1236,13 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
       // transient 可重发；abort（用户取消）/非 transient 直接抛
       const retryable = (err?.name === 'StreamInterrupted' || err?.name === 'TimeoutError') && !err?.zeroEvents
       if (retryable && !signal?.aborted && attempt < maxReconnect) {
-        await sleep(1000 * Math.pow(2, attempt))   // 1s / 2s / 4s
+        await sleepAbortable(1000 * Math.pow(2, attempt), signal)   // 1s / 2s / 4s（取消即刻中断）
         continue
       }
+      // 工具能力未开启是终局配置错误：去缓存标记/去思考深度字段都不会改变"服务端
+      // 没开工具调用"这一事实（isCacheRejection 对任意 400 都成立，会把同一个 400
+      // 原样重发一次）→ 先于两个降级兜底直接上抛。
+      if (classifyApiError(err).kind === 'tools-unsupported') throw err
       if (useCache && isCacheRejection(err)) {
         // 缓存标记被拒：去掉后重发一次（body 恢复纯字符串 system）
         yield* protocolStream({ url: base + '/v1/messages', body: { ...body, ...(system ? { system } : {}) }, headers, signal })
@@ -1128,7 +1266,14 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
 //   quota          —— 配额/计费耗尽（insufficient_quota 类），快速失败
 //   rate-limit     —— 429 / rate limit，可退避重试
 //   transient      —— 5xx / 网络 / 流空闲超时，可退避重试（连接层瞬时错误）
+//   tools-unsupported —— 端点未开启工具调用（vLLM 缺 --enable-auto-tool-choice 等），
+//                        配置级终局错误：重试/去字段/收窄预算全部无效，快速失败报引导
 //   unknown        —— 其余，保守不重试
+// 工具能力未开启的报文形态（2026-09-12 实测：vLLM + Qwen3 未带启动参数时，任何带
+// tools 的请求必 400）。第一段是 vLLM 原话；第二段覆盖同类端点把"模型不支持工具"
+// 表述为否定句的情形（Ollama/llama.cpp 等）。两段都要求出现 tools/tool calling/
+// tool_choice 字样，避免误伤无关的 "xxx not supported" 报文。
+const TOOLS_UNSUPPORTED_RE = /enable-auto-tool-choice|tool-call-parser|\btools?(?![a-z0-9])[^.\n]{0,40}(?:not supported|unsupported|not enabled|not available|disabled)|\bnot support(?:s|ed)?\b[^.\n]{0,20}\btools?(?![a-z0-9])/i
 export function classifyApiError(err) {
   if (err?.name === 'AbortError') return { kind: 'abort', retryable: false }
   // R1-2 超时分级：连接/首字节超时（AbortSignal.timeout）→ transient 可重试，
@@ -1145,6 +1290,11 @@ export function classifyApiError(err) {
   // 模型不存在/已下线（2026-09-11 改名适配）：404/400 + model not found / invalid model
   // → 单独分类，engine 落"重新探测模型清单"引导（桥探测已按服务端清单自动适配旧名）
   if ((status === 404 || status === 400) && /(invalid model|unknown model|model[\w\s.:'"-]{0,80}\b(not[ -]?found|not[ -]?exist|does not exist))/i.test(msg)) return { kind: 'model-not-found', retryable: false }
+  // 工具能力未开启（2026-09-12）：端点收到 tools 后按 tool_choice 语义校验，而 vLLM
+  // 类服务未以 --enable-auto-tool-choice --tool-call-parser 启动 → 带 tools 的请求必
+  // 400（实测 6 种请求组合里只有"不带 tools"与 tool_choice:none 能过）。配置级终局
+  // 错误——换字段/去缓存/缩预算重发都是同一个 400，故 retryable:false 由 engine 落引导。
+  if ((status === 400 || status === 422) && TOOLS_UNSUPPORTED_RE.test(msg)) return { kind: 'tools-unsupported', retryable: false }
   // vLLM/OpenAI 等非 Anthropic 端点：400 + "maximum context length is N tokens"
   // （prompt+max_tokens 超过 max_model_len）同样判上下文超限，engine 走压缩自愈
   if (status === 400 && /maximum context length is \d+\s*tokens?/i.test(msg)) return { kind: 'context-window', retryable: false }

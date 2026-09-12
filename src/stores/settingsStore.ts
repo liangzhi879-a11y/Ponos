@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { AppSettings, YFWorkingConfig, ModelProvider, YFWorkingConfigV2 } from '@/types'
+import { DEFAULT_APPROVAL_MODE, normalizeApprovalMode } from '@/lib/approvalModeUi'
+import { DEFAULT_LOG_POLICY, normalizeLogPolicyUi } from '@/lib/logUi'
 import { useChatStore } from './chatStore'
 import { verifyActiveProvider, type ProviderVerifyResult } from '@/lib/config'
 import { migrateThemeId } from '@/lib/themeMap'
@@ -116,6 +118,15 @@ const defaultSettings: AppSettings = {
   // 思考深度（全局，Task 12）：'auto' = 内核默认（不注入 env）；非 auto 新会话
   // spawn 注入 + 运行中会话 WS 热切换
   effortLevel: 'auto',
+
+  // 审批放行档位（全局，2026-09-12）：'loose' = 应用今天的真实行为（桥硬编码
+  // --dangerously-skip-permissions）→ 存量用户零行为变化。设置页改这里（持久化 +
+  // saveBridgeConfig 落盘）；状态栏改的是本会话临时覆盖，不进这个字段。
+  approvalMode: DEFAULT_APPROVAL_MODE,
+
+  // 运行日志持久化策略（全局，2026-09-12）：与 server/log-policy.cjs 的默认值同源
+  // （parity 测试钉住）；写入端读桥 config.json，这里是 GUI 的显示与编辑副本。
+  logPolicy: DEFAULT_LOG_POLICY,
 
   minimizeToTray: true,
   notifyMode: 'background' as const,
@@ -240,6 +251,11 @@ export const useSettingsStore = create<SettingsState>()(
           state.settings.glassHueShift ??= 0 // 【plan §3 步骤 7】兜底旧持久化数据
           state.settings.autoImageBridge ??= true // 自动图片桥接默认开启
           state.settings.visionProviderId ??= '' // 视觉来源默认跟随 activeProvider
+          // 审批档位 / 日志策略（2026-09-12）：旧快照无键 → 落默认档（loose = 等价旧
+          // 行为；日志 5MB×3+14 天）。**用归一而非 ??=**：脏值（手改 localStorage、
+          // 旧版本残留）不能带着越界数字进轮转器，否则轮转器按坏参数运行。
+          state.settings.approvalMode = normalizeApprovalMode(state.settings.approvalMode)
+          state.settings.logPolicy = normalizeLogPolicyUi(state.settings.logPolicy)
         }
       },
     }

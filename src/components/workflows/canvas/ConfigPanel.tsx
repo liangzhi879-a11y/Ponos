@@ -14,8 +14,8 @@ import { Plus, Trash2, Braces, ChevronDown, ChevronRight } from 'lucide-react'
 import { Badge, Button, Input, Switch, Textarea } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import {
-  nodeTypeLabel, reachableVars, retryOnError,
-  type NodeModel, type WorkflowModel,
+  asTriggerList, describeDataFlow, nodeTypeLabel, reachableVars, retryOnError,
+  type NodeModel, type WorkflowInput, type WorkflowModel,
 } from '@/lib/workflowModel'
 
 export interface ConfigPanelProps {
@@ -68,7 +68,7 @@ export function ConfigPanel({ model, nodeId, onChange }: ConfigPanelProps) {
               />
             </Field>
 
-            <NodeForm node={node} vars={vars} model={model} patchConfig={patchConfig} patchNode={patchNode} />
+            <NodeForm node={node} vars={vars} model={model} onChange={onChange} patchConfig={patchConfig} patchNode={patchNode} />
 
             {/* 错误策略（内核 retry.on_error；branch 时画布多一个 fail 出口） */}
             <div className="pt-1 border-t">
@@ -94,25 +94,30 @@ export function ConfigPanel({ model, nodeId, onChange }: ConfigPanelProps) {
 
 // ===================== 各节点类型表单 =====================
 
-function NodeForm({ node, vars, model, patchConfig, patchNode }: {
+function NodeForm({ node, vars, model, onChange, patchConfig, patchNode }: {
   node: NodeModel
   vars: Array<{ path: string; label: string }>
   model: WorkflowModel
+  /** 工作流级字段（inputs 等）的写入口——start 节点直接编辑输入参数，见下 */
+  onChange: (next: WorkflowModel) => void
   patchConfig: (p: Record<string, any>) => void
   patchNode: (p: Partial<NodeModel>) => void
 }) {
   const cfg = node.config || {}
   switch (node.type) {
     case 'start':
-      return (
-        <div className="text-[11px] text-tertiary leading-relaxed">
-          工作流入口。可用输入在下方「工作流设置」里定义（<span className="font-mono">{'{{inputs.x}}'}</span>）。
-        </div>
-      )
+      // 开始节点 = 工作流的**输入口**。此前这里只有一句说明、inputs 藏在「工作流设置」里，
+      // 用户看不到"数据从哪进"（2026-09-12 UX 反馈）。现在就地编辑工作流级 inputs，
+      // 并给出每个参数的引用写法与"谁在用它"的使用情况（describeDataFlow）。
+      return <StartPanel model={model} onChange={onChange} />
     case 'inputs':
       return (
-        <div className="text-[11px] text-tertiary leading-relaxed">
-          输入参数在工作流级定义，见「工作流设置 → 输入参数」。本节点仅作画布标注，运行时不执行。
+        <div className="flex flex-col gap-2">
+          <div className="text-[11px] text-tertiary leading-relaxed">
+            输入参数在工作流级定义（与开始节点同源，两处编辑的是同一份数据）。
+            本节点仅作画布标注，运行时不执行。
+          </div>
+          <InputsEditor model={model} onChange={onChange} />
         </div>
       )
     case 'llm':
@@ -486,13 +491,7 @@ function NodeForm({ node, vars, model, patchConfig, patchNode }: {
     case 'end':
       // 内核 end 分支（workflow-nodes.mjs dispatch）与 workflow-engine.synthesizeOutput 都
       // **for...of node.outputs** —— 必须是数组 [{name, variable?, selector}]，对象会直接抛 TypeError
-      return (
-        <OutputsEditor
-          items={Array.isArray(cfg.outputs) ? cfg.outputs : []}
-          onChange={(outputs) => patchConfig({ outputs })}
-          vars={vars}
-        />
-      )
+      return <EndPanel model={model} node={node} vars={vars} patchConfig={patchConfig} />
     default:
       return (
         <div className="text-[11px] text-tertiary">
@@ -708,44 +707,163 @@ function StringListEditor({ label, hint, items, onChange, vars, addLabel, placeh
   )
 }
 
-/** end.outputs 编辑：内核 for...of 数组，行形状 {name, variable?, selector} */
-function OutputsEditor({ items, onChange, vars }: {
+/** end.outputs 编辑：内核 for...of 数组，行形状 {name, variable?, selector}。
+ *  marks（可选）：与行下标对齐的数据流标记（来源节点是否可达）——由 EndPanel 注入。 */
+function OutputsEditor({ items, onChange, vars, marks }: {
   items: any[]
   onChange: (v: Array<Record<string, any>>) => void
   vars: Array<{ path: string; label: string }>
+  marks?: Array<{ from: string | null; ok: boolean; warn?: string } | undefined>
 }) {
   const rows = items.map((x) => (x && typeof x === 'object' ? x : {}))
   const set = (i: number, patch: Record<string, any>) => onChange(rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)))
   return (
     <RowList
       label="outputs（返回值数组）"
-      hint="每行 = 一个具名返回值：输出名 + 取值来源（内核按 {{selector}} 解析后写入 name）"
+      hint="每行 = 一个具名返回值：输出名 + 取值来源。来源写 {{节点}}（该节点整个输出）或 {{节点.字段}}（输出为对象时取字段）"
       addLabel="返回值"
       count={rows.length}
       onAdd={() => onChange([...rows, { name: `out${rows.length + 1}`, selector: '' }])}
     >
-      {rows.map((r, i) => (
-        <div key={i} className="cut-xs">
-          <div className="ci p-1.5 flex flex-col gap-1">
-            <div className="flex items-center gap-1">
-              <Input
-                value={r.name || ''}
-                onChange={(e) => set(i, { name: e.target.value })}
-                className="h-7 text-xs flex-1 min-w-0 font-mono"
-                placeholder="name（输出键名）"
-              />
-              <Button size="xs" variant="ghost" onClick={() => onChange(rows.filter((_, idx) => idx !== i))} title="删除">
-                <Trash2 className="w-3 h-3" />
-              </Button>
+      {rows.map((r, i) => {
+        const mark = marks?.[i]
+        return (
+          <div key={i} className="cut-xs">
+            <div className="ci p-1.5 flex flex-col gap-1">
+              <div className="flex items-center gap-1">
+                <Input
+                  value={r.name || ''}
+                  onChange={(e) => set(i, { name: e.target.value })}
+                  className="h-7 text-xs flex-1 min-w-0 font-mono"
+                  placeholder="name（输出键名）"
+                />
+                <Button size="xs" variant="ghost" onClick={() => onChange(rows.filter((_, idx) => idx !== i))} title="删除">
+                  <Trash2 className="w-3 h-3" />
+                </Button>
+              </div>
+              <VarField label="selector（取值：{{节点}} 取整输出；{{节点.字段}} 取字段）" value={r.selector || r.value || ''} onChange={(v) => set(i, { selector: v })} vars={vars} />
+              <Field label="variable（可选：另存到变量名）">
+                <Input value={r.variable || ''} onChange={(e) => set(i, { variable: e.target.value })} className="h-7 text-xs font-mono" />
+              </Field>
+              {/* 数据流回读：这条输出"接到没有"——空 selector / 非上游引用都会被内核拒（VAR_UNREACHABLE） */}
+              <div className="text-[10px] leading-tight">
+                {!mark || !mark.from
+                  ? <span className="text-warning/90">未接取值源（运行时会取到空值）</span>
+                  : mark.ok
+                    ? <span className="text-success/90">← {mark.from}（上游可达）</span>
+                    : <span className="text-error">{mark.from} 不是本节点的上游，保存会被内核拒绝</span>}
+              </div>
+              {/* 写法陷阱（能过校验、运行期却取不到值）：{{节点.output}} —— 实测踩过，静默丢键 */}
+              {mark?.warn && <div className="text-[10px] leading-tight text-warning/90">⚠ {mark.warn}</div>}
             </div>
-            <VarField label="selector（取值：{{节点.字段}}）" value={r.selector || r.value || ''} onChange={(v) => set(i, { selector: v })} vars={vars} />
-            <Field label="variable（可选：另存到变量名）">
-              <Input value={r.variable || ''} onChange={(e) => set(i, { variable: e.target.value })} className="h-7 text-xs font-mono" />
-            </Field>
           </div>
-        </div>
-      ))}
+        )
+      })}
     </RowList>
+  )
+}
+
+// ===================== 开始 / 结束：输入输出的唯一编辑入口（2026-09-12 UX）=====================
+//
+// 反馈："开始及结束增加输入输出配置，明确数据流传输"。
+// 此前：inputs 只在「工作流设置」里编辑、outputs 只在 end 的 config 里编辑，两处都没有
+// "这条数据接到哪去了"的回读——用户定义完输入不知道有没有节点在用，定义完输出不知道
+// 取值源能不能解析。现在两个端点各自成面板：就地编辑 + 引用写法 + 上图实际引用者清单。
+
+/** 工作流级输入参数编辑（start 节点面板与「工作流设置」共用同一份 model.inputs） */
+function InputsEditor({ model, onChange }: { model: WorkflowModel; onChange: (m: WorkflowModel) => void }) {
+  const inputs = model.inputs || []
+  const flow = useMemo(() => describeDataFlow(model), [model])
+  const usedBy = new Map(flow.inputs.map((i) => [i.name, i.usedBy]))
+  const setInput = (i: number, patch: Partial<WorkflowInput>) => onChange({ ...model, inputs: inputs.map((x, idx) => (idx === i ? { ...x, ...patch } : x)) })
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] text-tertiary uppercase tracking-wider">输入参数（{inputs.length}）</span>
+        <Button size="xs" variant="ghost" onClick={() => onChange({ ...model, inputs: [...inputs, { name: `arg${inputs.length + 1}`, type: 'string' }] })}>
+          <Plus className="w-3 h-3" />参数
+        </Button>
+      </div>
+      {inputs.map((inp, i) => {
+        const users = usedBy.get(String(inp.name || '')) || []
+        return (
+          <div key={i} className="cut-xs">
+            <div className="ci p-1.5 flex flex-col gap-1">
+              <div className="flex items-center gap-1">
+                <Input value={inp.name} onChange={(e) => setInput(i, { name: e.target.value })} className="h-7 text-xs flex-1 min-w-0 font-mono" placeholder="name" />
+                <select
+                  value={inp.type || 'string'}
+                  onChange={(e) => setInput(i, { type: e.target.value })}
+                  className="h-7 text-xs bg-input border rounded px-1 text-primary w-[76px] shrink-0"
+                >
+                  {['string', 'number', 'boolean', 'array', 'object'].map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <button
+                  type="button"
+                  title="必填"
+                  onClick={() => setInput(i, { required: !inp.required })}
+                  className={cn('text-[10px] px-1.5 h-7 rounded border shrink-0', inp.required ? 'text-brand-500 border-brand-500/40' : 'text-tertiary')}
+                >必填</button>
+                <Button size="xs" variant="ghost" onClick={() => onChange({ ...model, inputs: inputs.filter((_, idx) => idx !== i) })}>
+                  <Trash2 className="w-3 h-3" />
+                </Button>
+              </div>
+              <div className="flex items-center gap-1.5 text-[10px]">
+                <code className="px-1 py-0.5 rounded bg-elevated text-secondary font-mono truncate">{`{{inputs.${inp.name || '…'}}}`}</code>
+                {users.length
+                  ? <span className="text-tertiary truncate" title={`被引用于：${users.join('、')}`}>← {users.join('、')}</span>
+                  : <span className="text-warning/90">未被任何节点引用</span>}
+              </div>
+            </div>
+          </div>
+        )
+      })}
+      {inputs.length === 0 && <span className="text-[10px] text-tertiary">无输入参数（工作流将不接收外部入参）</span>}
+    </div>
+  )
+}
+
+/** 开始面板 = 输入口：输入参数 + 它们流向哪些节点 */
+function StartPanel({ model, onChange }: { model: WorkflowModel; onChange: (m: WorkflowModel) => void }) {
+  return (
+    <>
+      <div className="text-[11px] text-tertiary leading-relaxed">
+        工作流入口 = <span className="text-secondary">数据入口</span>。这里声明的每个参数，
+        运行时由用户在「运行前授权」卡里填写；节点里用 <span className="font-mono">{'{{inputs.名}}'}</span> 引用。
+      </div>
+      <InputsEditor model={model} onChange={onChange} />
+    </>
+  )
+}
+
+/** 结束面板 = 输出口：返回值定义 + 取值源可达性（本地先把内核 VAR_UNREACHABLE 挡住） */
+function EndPanel({ model, node, vars, patchConfig }: {
+  model: WorkflowModel
+  node: NodeModel
+  vars: Array<{ path: string; label: string }>
+  patchConfig: (p: Record<string, any>) => void
+}) {
+  const flow = useMemo(() => describeDataFlow(model), [model])
+  const outOf = useMemo(() => new Map(flow.outputs.map((o, i) => [i, o])), [flow])
+  const rows = Array.isArray(node.config?.outputs) ? node.config!.outputs : []
+  return (
+    <>
+      <div className="text-[11px] text-tertiary leading-relaxed">
+        结束节点 = <span className="text-secondary">数据出口</span>。每个返回值都会被写进工作流的最终输出
+        （模型调用工作流时读到的就是这个对象的键）。
+      </div>
+      <OutputsEditor
+        items={rows}
+        onChange={(outputs) => patchConfig({ outputs })}
+        vars={vars}
+        marks={rows.map((_, i) => outOf.get(i))}
+      />
+      {rows.length === 0 && (
+        <div className="text-[10px] text-warning/90 leading-tight">
+          未定义返回值：作为工具被调用时将回退到最后一个成功节点的输出（不稳定，建议显式声明）。
+        </div>
+      )}
+    </>
   )
 }
 
@@ -983,8 +1101,6 @@ function BodyPicker({ node, model, patchNode }: { node: NodeModel; model: Workfl
 // ===================== 工作流级设置 =====================
 
 function WorkflowSettings({ model, onChange }: { model: WorkflowModel; onChange: (m: WorkflowModel) => void }) {
-  const inputs = model.inputs || []
-  const setInput = (i: number, patch: Record<string, any>) => onChange({ ...model, inputs: inputs.map((x, idx) => (idx === i ? { ...x, ...patch } : x)) })
   return (
     <>
       <Field label="名称（name）">
@@ -998,41 +1114,16 @@ function WorkflowSettings({ model, onChange }: { model: WorkflowModel; onChange:
       </Field>
       <Field label="触发词（逗号分隔）" hint="命中触发词自动运行（trigger_config.auto_trigger）">
         <Input
-          value={(model.triggers || []).join(', ')}
-          onChange={(e) => onChange({ ...model, triggers: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })}
+          value={asTriggerList(model.triggers).join(', ')}
+          onChange={(e) => onChange({ ...model, triggers: asTriggerList(e.target.value) })}
           className="h-7 text-xs"
         />
       </Field>
 
       <div className="pt-1 border-t flex flex-col gap-1">
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] text-tertiary uppercase tracking-wider">输入参数（{inputs.length}）</span>
-          <Button size="xs" variant="ghost" onClick={() => onChange({ ...model, inputs: [...inputs, { name: `arg${inputs.length + 1}`, type: 'string' }] })}>
-            <Plus className="w-3 h-3" />参数
-          </Button>
-        </div>
-        {inputs.map((inp, i) => (
-          <div key={i} className="flex items-center gap-1">
-            <Input value={inp.name} onChange={(e) => setInput(i, { name: e.target.value })} className="h-7 text-xs flex-1 min-w-0" placeholder="name" />
-            <select
-              value={inp.type || 'string'}
-              onChange={(e) => setInput(i, { type: e.target.value })}
-              className="h-7 text-xs bg-input border rounded px-1 text-primary w-[76px] shrink-0"
-            >
-              {['string', 'number', 'boolean', 'array', 'object'].map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
-            <button
-              type="button"
-              title="必填"
-              onClick={() => setInput(i, { required: !inp.required })}
-              className={cn('text-[10px] px-1.5 h-7 rounded border shrink-0', inp.required ? 'text-brand-500 border-brand-500/40' : 'text-tertiary')}
-            >必填</button>
-            <Button size="xs" variant="ghost" onClick={() => onChange({ ...model, inputs: inputs.filter((_, idx) => idx !== i) })}>
-              <Trash2 className="w-3 h-3" />
-            </Button>
-          </div>
-        ))}
-        {inputs.length === 0 && <span className="text-[10px] text-tertiary">无输入参数</span>}
+        {/* 输入参数与「开始节点」面板编辑的是同一份 model.inputs（单一真相，两处入口同源） */}
+        <div className="text-[10px] text-tertiary leading-tight">输入参数（也可在画布上点「开始」节点就地编辑）</div>
+        <InputsEditor model={model} onChange={onChange} />
       </div>
 
       <div className="pt-1 border-t flex flex-col gap-1">

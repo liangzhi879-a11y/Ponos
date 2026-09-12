@@ -142,3 +142,59 @@ test('maybeAdoptWindowFromEvent：只下调（采纳窗口小于配置值才采�
   assert.equal(maybeAdoptWindowFromEvent({}, 0), null)
   assert.equal(maybeAdoptWindowFromEvent({}, 'abc'), null)
 })
+
+// —— 工具能力探测（2026-09-12 线上 400 事故）——
+// 事故：自建 vLLM + Qwen3.8-27B 未以 --enable-auto-tool-choice --tool-call-parser
+// 启动 → 内核任何带 tools 的请求回 400。旧探测只发不带 tools 的 ping → 端点全绿，
+// 用户直到首个回合才看到裸英文 400。本组钉死：①判定三态（接受/明确拒绝/不确定），
+// 不确定不猜；②与内核分类器同源语义（交叉校验防正则漂移）；③只报告不改行为。
+import { classifyApiError, toolsUnsupportedError } from '../kernel/api.mjs'
+import { classifyToolProbeResult } from './provider-probe.mjs'
+
+const LIVE_DETAIL = '{"type":"error","error":{"type":"BadRequestError","message":""auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set"}}'
+
+test('classifyToolProbeResult：接受 → true；vLLM 缺启动参数 → false；其余不确定 → null', () => {
+  assert.equal(classifyToolProbeResult({ ok: true }), true)
+  assert.equal(classifyToolProbeResult({ ok: false, status: 400, detail: LIVE_DETAIL }), false)
+  assert.equal(classifyToolProbeResult({ ok: false, status: 422, detail: 'tool calling is not enabled' }), false)
+  // 不确定不猜：无关 400（模型名/字段错误）、5xx、超时、网络失败都不得报"不支持工具"
+  assert.equal(classifyToolProbeResult({ ok: false, status: 400, detail: '{"error":{"message":"model not found"}}' }), null)
+  assert.equal(classifyToolProbeResult({ ok: false, status: 503, detail: LIVE_DETAIL }), null, '5xx 是瞬时故障，与工具能力无关')
+  assert.equal(classifyToolProbeResult({ ok: false }), null)
+  assert.equal(classifyToolProbeResult(undefined), null)
+})
+
+test('与内核分类器同源：同一报文两边结论一致（防两处正则漂移）', () => {
+  const corpus = [
+    LIVE_DETAIL,
+    'This model does not support tools',
+    'tools are not supported by this model',
+    'tool calling is not enabled for this deployment',
+    'tool_choice is not available',
+    'response_format json_schema is not supported',
+  ]
+  for (const detail of corpus) {
+    const kernelErr = new Error(`内核：API 请求失败 400 ${detail}`)
+    kernelErr.status = 400
+    const kernelSays = classifyApiError(kernelErr).kind === 'tools-unsupported'
+    const probeSays = classifyToolProbeResult({ ok: false, status: 400, detail }) === false
+    assert.equal(probeSays, kernelSays, `内核/探测判定须一致：${detail}`)
+  }
+  // 内核错误构造器产出的报文，探测侧必须同样判 false（同一事故两种观测路径）
+  assert.equal(classifyToolProbeResult({ ok: false, status: 400, detail: toolsUnsupportedError().message }), false)
+})
+
+test('applyProbeResults：工具能力只报告不改行为（false 出警示，true/未知不出警示）', () => {
+  const bad = applyProbeResults({}, { ok: true, toolsSupported: false }, { profile: 'cloud' })
+  const warn = bad.notes.find((n) => String(n).includes('未开启工具调用'))
+  assert.ok(warn, `应出工具能力警示，实际：${JSON.stringify(bad.notes)}`)
+  assert.ok(warn.includes('--enable-auto-tool-choice') && warn.includes('--tool-call-parser'), '警示须给出可操作启动参数')
+  assert.ok(!Object.keys(bad.updates).some((k) => /tool/i.test(k)), '不得因工具能力写任何配置项（无自动降级）')
+
+  const good = applyProbeResults({}, { ok: true, toolsSupported: true }, { profile: 'cloud' })
+  assert.ok(good.notes.some((n) => String(n).includes('工具调用可用')), '可用时报告实测结论')
+  assert.ok(!good.notes.some((n) => String(n).includes('未开启')), '可用时不得出警示')
+
+  const unknown = applyProbeResults({}, { ok: true, toolsSupported: null }, { profile: 'cloud' })
+  assert.ok(!unknown.notes.some((n) => String(n).includes('工具调用')), '不确定时保持沉默（不猜）')
+})

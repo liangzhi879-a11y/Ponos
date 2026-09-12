@@ -13,10 +13,11 @@
 // 观测：每轮尾部产出 turnStats（usage/durationMs/model/ts/compactCount），
 // health/result/stats 三个消费者共用；result 事件由 engine 发出（cli 不再重复）。
 import { streamMessages, classifyApiError, deadStreamError } from './api.mjs'
-import { abortError } from './protocol.mjs'
-import { countCjk, estimateRequest, estimateMessage, clampOutputBudgetForWindow } from './context.mjs'
+import { abortError, beginAwaitingUser, endAwaitingUser } from './protocol.mjs'
+import { countCjk, estimateRequest, estimateMessage, clampOutputBudgetForWindow, requestTokens, DEFAULT_WINDOW } from './context.mjs'
 import { costOf } from './cost.mjs'
 import { decideToolPermission } from './permissions.mjs'
+import { normalizeApprovalMode, deriveApprovalMode } from './approval-mode.mjs'
 import { createToolRegistry, killActiveChildren } from './tools.mjs'
 import { createSessionStore, newSessionId, sanitizeSegment } from './session.mjs'
 import { resolveAgent, resolveAgents } from './agents.mjs'
@@ -71,6 +72,13 @@ const MAX_TOOL_ITERATIONS = LOOP_GUARD_OFF ? 0
 // （STREAM_IDLE_MS/首内容宽限）、生成重复守卫与工具 deadline 承担，不再靠
 // 轮次总时长一刀切。需要硬上限时可显式设 PONOS_TURN_TIMEOUT_MS（>0，分钟级）。
 const TURN_TIMEOUT_MS = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_TURN_TIMEOUT_MS', 0)
+// 溢出重试上限（2026-09-12 长会话 UI 闪烁事故）：溢出自愈的每次重试都是一次完整 API
+// 请求（贴窗口的长会话请求体可达 1MB）。线上事故实测：7 分钟内同一份 985KB 请求被
+// 重发 240 次、摘要请求 200 次，用户侧看到压缩条 ~1Hz 闪烁、服务端被持续轰炸。根因是
+// 瘦身副本在 continue 前被无条件清空（见下方 request_trimmed 分支）→ 修掉之后仍有
+// "瘦身后依旧装不下"的极端形态（估算与真实 token 偏差数倍）→ 达上限直接落终局可见
+// 文案（会话保留、原因可见），不再无界空转。0 = 不设上限（仅调试用）。
+const MAX_OVERFLOW_RETRIES = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_OVERFLOW_MAX_RETRIES', 12)
 // 流式生成空闲看门狗：单次模型流内间隔超时判挂起（防 fetch 永不回块）。
 // 默认 5min（2026-09-10 云端校准）：MiniMax M3 等云端模型在"思考→正文"阶段切换
 // 或服务拥塞时，中段停顿可超 2 分钟（实测 120s 窗口误杀一次健康轮，落
@@ -143,6 +151,12 @@ const NEAR_REPEAT_CODE_SKIP = LOOP_GUARD_OFF ? false : process.env.PONOS_NEAR_RE
 // 愈合后出现一轮"无命中的干净迭代"即清零；真循环每轮必命中、预算不耗尽，安全网 =
 // 守卫⑥（纯文本循环无工具进展，10 分钟无进展停滞接管收尾）。设 >0 恢复有限预算语义。
 const REPEAT_HEAL_MAX = LOOP_GUARD_OFF ? 0 : envHealMax('PONOS_REPEAT_HEAL_MAX', -1)
+// 输出截断自愈（2026-09-12 四家对标：CC 8K 撞顶升档 64K 重试 / pi 可恢复截断重试）：
+// 文本收尾被 max_tokens 截断 → 不再让用户发「继续」，内部按档位升输出预算续写、
+// 拼进同一回复（8K/16K/32K/64K，最多升 2 档）；64K 再截断才按普通收尾处理
+// （用户可发「继续」）。=0 关闭（旧行为：截断即收尾）。
+const CONTINUE_HEAL_MAX = LOOP_GUARD_OFF ? 0 : envHealMax('PONOS_CONTINUE_HEAL_MAX', 2)
+const OUTPUT_TIERS = [8192, 16384, 32768, 65536]
 // 无感愈合预算族（2026-09-10 模型异常愈合原则；2026-09-11 持久化）：模型异常优先注入
 // 指令自愈续跑（用户无感知），恢复即清零；默认 -1 = 持久无限自愈（安全网 = 守卫⑥），
 // 设 >0 恢复有限预算（耗尽落可见收尾）。各形态独立计数：连续失败熔断（④）/
@@ -181,6 +195,25 @@ function hasUsage(u = {}) {
 }
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)) }
+
+// 可中断退避（2026-09-12）：重试退避 0.5/1/2/4s（见 retryDelayMs）期间收到取消必须
+// 立刻结束等待——旧实现睡满才醒，用户按停止键后内核仍攥着定时器，取消要等整个退避
+// 走完才可见（观感：停止键不灵）。非标准 signal / 无 signal 退化为普通 sleep。
+function sleepAbortable(ms, signal) {
+  if (!signal || typeof signal.addEventListener !== 'function') return sleep(ms)
+  if (signal.aborted) return Promise.resolve()
+  return new Promise((resolve) => {
+    let timer = null
+    const onAbort = () => done()
+    const done = () => {
+      if (timer) clearTimeout(timer)
+      try { signal.removeEventListener('abort', onAbort) } catch { /* 忽略 */ }
+      resolve()
+    }
+    try { signal.addEventListener('abort', onAbort, { once: true }) } catch { /* 退化 */ }
+    timer = setTimeout(done, ms)
+  })
+}
 
 // 思考深度档位规范化（导出供测试）：对齐 Claude Code /effort 档位体系。
 // off/low/high/max 原样；medium → high（DeepSeek 旧映射，规避端点不识 medium）；
@@ -237,7 +270,7 @@ async function* retryStream({ model, messages, maxTokens, signal, tools, reasoni
         (cls.kind === 'dead-stream' && attempt < deadCap)
       if (!allowed || attempt >= maxRetries) throw err
       attempt++
-      await sleep(retryDelayMs(attempt))
+      await sleepAbortable(retryDelayMs(attempt), signal)
     }
   }
 }
@@ -256,6 +289,34 @@ export function withToolDeadline(promise, ms) {
       (e) => { clearTimeout(t); reject(e) },
     )
   })
+}
+
+// P0-3b 单消息聚合预算（2026-09-12 四家对标：CC 单消息 200K token 聚合 / pi 双上限
+// 50KB+2000 行）。纯函数：不改入参；持久化动作由调用方注入（persist(content, idx)
+// 返回替换 stub）。按大小降序替换，直到合计 ≤ budget；Read（toolNames[i]==='Read'）
+// 豁免（模型显式索要的文件内容不 stub，同 P0-3 语义）。
+export function applyAggregateResultBudget(results, toolNames, { budgetChars, persist }) {
+  const budget = Number(budgetChars) > 0 ? Number(budgetChars) : Infinity
+  const total = results.reduce((s, r) => s + String(r?.content ?? '').length, 0)
+  if (total <= budget) return results
+  const out = results.map((r) => ({ ...r }))
+  let excess = total - budget
+  let replaced = false
+  const order = out.map((_, i) => i)
+    .sort((a, b) => String(out[b]?.content ?? '').length - String(out[a]?.content ?? '').length)
+  for (const i of order) {
+    if (excess <= 0) break
+    if (toolNames && toolNames[i] === 'Read') continue
+    const before = String(out[i]?.content ?? '').length
+    const stub = persist(String(out[i]?.content ?? ''), i)
+    const after = String(stub ?? '').length
+    if (after < before) {
+      excess -= before - after
+      out[i] = { ...out[i], content: stub }
+      replaced = true
+    }
+  }
+  return replaced ? out : results
 }
 
 // 取真实 AbortSignal：engine 的轮次级 signal 是自定义包装对象（rawSignal getter
@@ -602,6 +663,10 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       ? join(opts.configDir, 'projects', sanitizeSegment(opts.addDirs[0]), 'tool-results')
       : null
   const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: toolResultsDir ? [...(opts.addDirs || []), toolResultsDir] : opts.addDirs, skillsDirs: opts.skillsDirs, skipPermissions: opts.skipPermissions, allowOutsideDirs: opts.allowOutsideDirs, disallowedTools: opts.disallowedTools, workflow: opts.workflow, memoryRoot: opts.memoryRoot || null, projectMemoryRoot: opts.projectMemoryRoot || null, readAllowFiles: session?.file ? [session.file] : [] })
+  // 审批放行档位（2026-09-12 四档化）：闭包变量而非 opts 字段——运行中可经
+  // setApprovalMode 热切换（cli control_request），下一轮工具调用即按新档判定。
+  // 未传档位时按旧 flag 派生（= 今天的真实行为，见 approval-mode.mjs 文件头）。
+  let approvalMode = normalizeApprovalMode(opts.approvalMode || deriveApprovalMode({ skipPermissions: opts.skipPermissions, autoApproveHighRisk: opts.autoApproveHighRisk }))
   // 审批门注入工作流引擎：wfEngine 内嵌 tool/document/agent 节点的工具调用须经
   // 与主 agent 会话同等的权限决策（gateToolUse 含 ask 审批挂起 / hook 否决），
   // 杜绝模型经 Workflow 工具旁路高危命令审批。cli 后续 setDeps（registry/事件）
@@ -701,6 +766,11 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     // P4-5：provider 热切换后每轮重解析模型（下一轮立即生效，无需重建 engine）
     model = opts.model || getProvider().model || ''
     let usage = {}
+    // H2：当前迭代"单次请求" usage（health 水位信号）。usage 是轮级合计（本回合
+    // 全部 API 调用之和，多工具步 agent 轮可达真实上下文的十几倍），不能代表
+    // "当前上下文有多大"；最近一次单请求是其最接近的近似。每迭代 API 调用前
+    // 重置，经 outcome.lastUsage → turnStats.lastUsage 供 health 消费。
+    let callUsage = {}
     let textBuf = ''
     // 失真观测（2026-09-12 spec §4.2）：本轮"内容侧"证据。轮尾交给 health.recordTurnContent，
     // 供 fidelity 判定陈旧引用/矛盾/目标漂移。只留截断摘要，不留结果正文。
@@ -717,6 +787,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     // guardInjections 记录本轮已注入的"继续执行"提示次数（防模型拒不配合时死循环）
     let hadToolError = false
     let guardInjections = 0
+    let continueHeals = 0 // 输出截断自愈升档次数（本轮内累计，上限 CONTINUE_HEAL_MAX）
     const maxGuardInjections = Number(process.env.PONOS_GUARD_MAX || 3)
     // R1-1：每轮重置防重放集合（跨轮固定 id 不误判）
     executedToolIds = new Map()
@@ -763,17 +834,28 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // M2：摘要调用是一次完整 API 请求（prefill 含被遮蔽历史数万 token），
       // 其 usage 并入本轮（再进 turnStats/result/最终条目）
       if (r?.usage) usage = addUsage(usage, r.usage)
-      // R3-1 窗口余量预警：未触发压缩但消息体积已接近阈值（>=75% 窗口，字符粗估）
-      // 时发 warning 事件（每轮至多一次；GUI/TUI 渲染警示条，提醒长会话即将压缩）
-      if (r?.action === 'none' && !contextWarned) {
-        const budget = Number(process.env.PONOS_CONTEXT_WARNING_BUDGET || 150_000)
-        const total = msgs.reduce((a, m) => {
-          const c = m?.content
-          return a + (typeof c === 'string' ? c.length : (Array.isArray(c) ? JSON.stringify(c).length : 0))
-        }, 0)
-        if (total >= budget) {
+      // 本轮请求面估算（口径唯一：estimateRequest）。pre-step 里两个守卫都要它——
+      // 一次算好复用，既避免同一份 1MB 历史被重复扫两遍，也保证两处判定同源
+      //（历史教训：并行维护的第二个计数口径必然漂移，见 context.mjs estimateTokens 注释）
+      const w = engineCtx?.window
+      const needsWarn = r?.action === 'none' && !contextWarned
+      const needsClamp = Number.isFinite(w) && w > 0
+      let estIn = 0
+      if (needsWarn || needsClamp) {
+        try { estIn = estimateRequest({ system: systemPrompt, messages: requestMessages() }).total } catch { estIn = 0 }
+      }
+      // R3-1 窗口余量预警：未触发压缩但估算已达阈值线（默认 75% 窗口）时发
+      // ponos_warning（每会话至多一次；GUI 渲染警示条，提醒长会话即将压缩）。
+      // 2026-09-12 修：旧实现按**字符数**与 150_000 比较（≈4 万 token ≈ 20% 窗口），
+      // 比注释宣称的 75% 早 4 倍误报，且与压缩判定用的是两套口径——本次卡顿事故中
+      // 它一路显示"即将触发自动压缩"而压缩实际 0 次（估算漏计 tool_use.input）。
+      // 现与压缩/钳制同源同单位（token），默认随窗口缩放；env 显式设置时按绝对 token 覆盖。
+      const warnWindow = Number.isFinite(w) && w > 0 ? w : DEFAULT_WINDOW
+      if (needsWarn) {
+        const budget = Number(process.env.PONOS_CONTEXT_WARNING_BUDGET) || Math.floor(warnWindow * 0.75)
+        if (estIn >= budget) {
           contextWarned = true
-          wire.warning?.({ level: 'context', chars: total, budget, message: '上下文接近压缩阈值，长会话即将触发自动压缩' })
+          wire.warning?.({ level: 'context', tokens: estIn, budget, message: '上下文接近压缩阈值，长会话即将触发自动压缩' })
         }
       }
       // —— 调用时输出预算钳制（2026-09-10 小窗口本地模型适配；pi clampMaxTokensToContext 语义）——
@@ -781,10 +863,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // 装下——本地小窗口模型（32K-64K）配大默认预算（64K/16K）不再必然撞 400。
       // resolveThreshold 对"预算近乎占满窗口"的异常配置退化回纯比例，本钳制补上
       // 该退化形态的缺口（est 低于比例阈值但请求 input+max_tokens 必 400）。
-      const w = engineCtx?.window
       if (Number.isFinite(w) && w > 0) {
-        let estIn = 0
-        try { estIn = estimateRequest({ system: systemPrompt, messages: requestMessages() }).total } catch { estIn = 0 }
         const clamped = clampOutputBudgetForWindow({ window: w, inputEst: estIn, budget: attemptMaxTokens })
         if (clamped !== null && clamped < attemptMaxTokens) {
           attemptMaxTokens = clamped
@@ -884,10 +963,17 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       //（2026-09-09 曾出现 307 万 token 请求，正常应为 ~17 万）。
       let estInputTokens = 0
       try { estInputTokens = estimateRequest({ system: systemPrompt, messages: requestMessages() }).total } catch { estInputTokens = 0 }
+      callUsage = {} // H2：本迭代单请求 usage 重置（retryStream 内部瞬时重试重发同请求，累加仍≈1 倍）
+      // 请求面：优先用溢出分支瘦身后的副本重试，**取用即消费**（下一迭代无论成败都重新
+      // 从 transcript 派生——失败时溢出分支会按最新历史重新瘦身，新落地的工具结果不丢）。
+      // 2026-09-12 事故修复：副本原先在 continue 前被无条件清空 → 瘦身成功的副本从未被
+      // 真正用上，同一个超窗请求被无限重发（长会话 UI 压缩条闪烁 + 400 风暴）。
+      const reqFace = overflowTrimmed || requestMessages()
+      overflowTrimmed = null
       try {
         for await (const chunk of retryStream({
           model,
-          messages: overflowTrimmed || requestMessages(),
+          messages: reqFace,
           maxTokens: attemptMaxTokens,
           signal: combinedSignal,
           tools: tools.toolSchemas(),
@@ -914,12 +1000,19 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
             wire.assistant([{ type: 'tool_use', id: chunk.id, name: chunk.name, input: chunk.input }])
           } else if (chunk.type === 'usage') {
             usage = addUsage(usage, chunk.usage)
+            callUsage = addUsage(callUsage, chunk.usage) // H2：单请求水位信号
             // D1 usage 对账：服务端报告 input_tokens 远超本端估算（3 倍且绝对量
             // 超 50 万）→ 请求组装疑似放大。落 stderr（kernel-stderr.log 诊断项
             // 可见）+ UI 告警条，供当场定位（每轮至多一次，防刷屏）。
-            if (!usageAnomalyWarned && estInputTokens > 0 && Number(chunk.usage?.input_tokens) > Math.max(estInputTokens * 3, 500_000)) {
+            // 2026-09-12：对账口径改为 requestTokens（input + cache_read + cache_write）。
+            // 旧实现只取 input_tokens，而 KV 前缀缓存端点上 input_tokens 只是"本轮新增
+            // 的未缓存尾部"（实测本会话 ~5K，而整请求面 ~30 万），与"整请求估算"根本
+            // 不可比 → 在 DeepSeek/Anthropic 这类端点上此守卫恒不触发、形同虚设
+            //（恰是本次卡顿事故中该报警却全程沉默的原因之一）。
+            const reported = requestTokens(chunk.usage)
+            if (!usageAnomalyWarned && estInputTokens > 0 && reported > Math.max(estInputTokens * 3, 500_000)) {
               usageAnomalyWarned = true
-              const msg = `内核：usage 对账异常——服务端报告 input_tokens=${chunk.usage.input_tokens}，本端估算 ${estInputTokens}（超 3 倍），疑似请求组装放大，请检查 compact/derive 管线`
+              const msg = `内核：usage 对账异常——服务端报告请求面 ${reported}（input=${Number(chunk.usage?.input_tokens) || 0} + cache_read=${Number(chunk.usage?.cache_read_input_tokens) || 0}），本端估算 ${estInputTokens}（超 3 倍），疑似请求组装放大，请检查 compact/derive 管线`
               console.error(msg)
               wire.warning?.({ level: 'usage', message: msg })
             }
@@ -1013,6 +1106,18 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
             reason: 'model-not-found',
             message: `【当前模型「${model}」不存在（可能已被提供方下线或改名）。请到设置 → 模型 → 点「探测」重新获取可用模型清单（旧模型名会自动适配到新模型），或手动切换模型后继续。】`,
           }
+        } else if (classifyApiError(err).kind === 'tools-unsupported') {
+          // 工具能力未开启（2026-09-12）：vLLM 类端点收到 tools 后要求 tool_choice 可用，
+          // 而服务未以 --enable-auto-tool-choice --tool-call-parser 启动 → 带工具的请求
+          // 必 400（实测：该形态下只有"不带 tools"的请求能过）。配置级错误——重试、去缓存、
+          // 收窄预算全是同一个 400，故在此落可操作引导，不做任何自动降级（本应用靠工具执行
+          // 任务，静默去掉 tools 只会让模型空谈不干活，比报错更难排查）。
+          // 注意文案含"先确认端口/代理指向"：实测存在服务端已开参数、但应用连的是另一个
+          // 未开启的后端（代理/端口指向别的容器）的情形——只让用户改启动参数会白折腾。
+          loopStop = {
+            reason: 'tools-unsupported',
+            message: `【当前 provider 未开启工具调用：服务端以"未启用 tool_choice"拒绝了带工具定义的请求。若服务端已用 --enable-auto-tool-choice --tool-call-parser <解析器>（Qwen3.x 常见 qwen3_xml / hermes，按模型族选）启动，请先确认本应用配置的 API 地址/端口确实指向该服务（代理或端口可能转到了另一个未开启工具调用的后端）；未开启时请补齐这两个启动参数后重启服务。也可到设置 → 模型换一个支持工具调用的 provider。本应用靠工具执行任务，未开启时无法工作。】`,
+          }
         } else if (classifyApiError(err).kind === 'dead-stream') {
           // P1-11 空流：请求已受理（HTTP 200）但 0 事件即断/EOF（vLLM 引擎加载中/崩溃
           // 的典型形态）。无感愈合（2026-09-10）：引擎加载中常见，退避后静默重试
@@ -1061,10 +1166,13 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           }
           let r = null
           let compactErr = null
+          // 重试预算耗尽标志：置位后本迭代不再付摘要成本（每次摘要都是一次完整 API
+          // 请求，窗口装不下时必然失败），也不再瘦身/收窄——直落终局可见文案。
+          const retryBudgetOut = MAX_OVERFLOW_RETRIES > 0 && overflowRetries >= MAX_OVERFLOW_RETRIES
           // 压缩空转熔断（2026-09-11 补）：连续 3 次"落地但释放过小"后跳过 forceCompact，
           // 直走预算收窄/裁剪/硬适配——否则每轮溢出仍付 70s+ 摘要成本空转（实测
           // 180K 会话循环形态：retainHint 过大 → covered 仅 1-2 条 → 摘要落地不释放）。
-          if (tinyLandings < 3) {
+          if (!retryBudgetOut && tinyLandings < 3) {
             try {
               r = await compactor.forceCompact({
                 system: systemPrompt,
@@ -1115,46 +1223,50 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
             }
           }
           if (!overflowed) {
-            // 收窄输出预算到"当前 prompt 装得下"再试。prompt 优先取服务端实测数（精确，
-            // 余量 2048 兜 tokenizer 偏差与 system 抖动）；解析不到时输出预算折半兜底
-            // （半衰收敛，无需精确 prompt 数）。预算已到下限 2048 仍装不下且压缩不可裁
-            // = 双路皆绝 → 终局可见文本（空结果会让 GUI 静默卡死，见下）。
-            const nextBudget = limit > 0
-              ? (promptN
-                  ? Math.max(2048, Math.min(attemptMaxTokens, limit - Number(promptN[1]) - 2048))
-                  : Math.max(2048, Math.floor(attemptMaxTokens / 2)))
-              : attemptMaxTokens
-            if (nextBudget < attemptMaxTokens) {
-              attemptMaxTokens = nextBudget
-              overflowRetries++
-              overflowed = true
-            } else if (!overflowTrimmed) {
-              // 终局兜底（2026-09-10 长输出锁死修复）：单条超长消息（模型把成果
-              // 直接写在输出里）逼近/超过窗口，压缩按轮次边界切不动、预算已到
-              // 下限 → 请求面裁剪最长消息重试一次，保回合可继续。
-              const trimmed = trimOversizedRequestCopy(requestMessages())
-              if (trimmed) {
-                overflowTrimmed = trimmed
+            // 重试预算耗尽 → 跳过收窄/裁剪/硬适配（每次都只是再发一次超窗请求），
+            // 直接落下方终局可见文案。
+            if (!retryBudgetOut) {
+              // 收窄输出预算到"当前 prompt 装得下"再试。prompt 优先取服务端实测数（精确，
+              // 余量 2048 兜 tokenizer 偏差与 system 抖动）；解析不到时输出预算折半兜底
+              // （半衰收敛，无需精确 prompt 数）。预算已到下限 2048 仍装不下且压缩不可裁
+              // = 双路皆绝 → 终局可见文本（空结果会让 GUI 静默卡死，见下）。
+              const nextBudget = limit > 0
+                ? (promptN
+                    ? Math.max(2048, Math.min(attemptMaxTokens, limit - Number(promptN[1]) - 2048))
+                    : Math.max(2048, Math.floor(attemptMaxTokens / 2)))
+                : attemptMaxTokens
+              if (nextBudget < attemptMaxTokens) {
+                attemptMaxTokens = nextBudget
                 overflowRetries++
                 overflowed = true
-                try { wire?.system?.('request_trimmed', { reason: 'oversized-single-message' }) } catch { /* 事件异常不影响主流程 */ }
+              } else if (!overflowTrimmed) {
+                // 终局兜底（2026-09-10 长输出锁死修复）：单条超长消息（模型把成果
+                // 直接写在输出里）逼近/超过窗口，压缩按轮次边界切不动、预算已到
+                // 下限 → 请求面裁剪最长消息重试一次，保回合可继续。
+                const trimmed = trimOversizedRequestCopy(requestMessages())
+                if (trimmed) {
+                  overflowTrimmed = trimmed
+                  overflowRetries++
+                  overflowed = true
+                  try { wire?.system?.('request_trimmed', { reason: 'oversized-single-message' }) } catch { /* 事件异常不影响主流程 */ }
+                }
               }
-            }
-            if (!overflowed) {
-              // 终局硬适配（2026-09-11 持续稳定运行）：压缩/收窄/裁剪均无解时，把请求面
-              // 硬裁到窗口内（只留系统提示 + 最近一个完整 turn，transcript 不动）——
-              // 轮次继续而非"放弃执行"；连末轮都放不下才落放弃文案（最终防线）。
-              const fitted = fitRequestToWindow(requestMessages(), {
-                window: limit || (engineCtx?.window ?? 200_000),
-                outputBudget: attemptMaxTokens,
-                estimateMessage,
-                transcriptPath: session?.file || '',
-              })
-              if (fitted !== null) {
-                overflowTrimmed = fitted
-                overflowRetries++
-                overflowed = true
-                try { wire?.system?.('request_trimmed', { reason: 'hard-fit' }) } catch { /* 事件失败不影响主流程 */ }
+              if (!overflowed) {
+                // 终局硬适配（2026-09-11 持续稳定运行）：压缩/收窄/裁剪均无解时，把请求面
+                // 硬裁到窗口内（只留系统提示 + 最近一个完整 turn，transcript 不动）——
+                // 轮次继续而非"放弃执行"；连末轮都放不下才落放弃文案（最终防线）。
+                const fitted = fitRequestToWindow(requestMessages(), {
+                  window: limit || (engineCtx?.window ?? 200_000),
+                  outputBudget: attemptMaxTokens,
+                  estimateMessage,
+                  transcriptPath: session?.file || '',
+                })
+                if (fitted !== null) {
+                  overflowTrimmed = fitted
+                  overflowRetries++
+                  overflowed = true
+                  try { wire?.system?.('request_trimmed', { reason: 'hard-fit' }) } catch { /* 事件失败不影响主流程 */ }
+                }
               }
             }
             if (!overflowed) {
@@ -1164,7 +1276,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
               try { wire.assistant([{ type: 'text', text: errText }]) } catch { /* 事件流异常不再掩盖原错误 */ }
               watchdog.stop()
               finalizeUsage()
-              return { usage, model, text: errText, error: 'overflow-compact-failed', toolDigest: turnToolDigest, assistantTexts: turnTexts }
+              return { usage, model, text: errText, error: 'overflow-compact-failed', lastUsage: callUsage, toolDigest: turnToolDigest, assistantTexts: turnTexts }
             }
           }
         } else {
@@ -1174,8 +1286,10 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       }
       watchdog.stop()
       if (overflowed) {
-        overflowTrimmed = null // 裁过的请求面只用于当次重试；下一迭代重新从 transcript 派生（2026-09-11 硬适配）
-        continue // 压缩落地/预算收窄/硬适配 → 重试同一轮
+        // 压缩落地/预算收窄/瘦身重试 → 重试同一轮。瘦身副本在请求面取用时已消费
+        //（见上方 reqFace），此处**不得**再清空：2026-09-12 事故就是在这里无条件清空，
+        // 让"硬适配成功但装不下"的形态退化成无限重发同一超窗请求。
+        continue
       }
       // P1 生成重复守卫内部自愈：③/③b（gen-repeat/near-repeat）命中不直接收尾报给用户
       // ——先丢弃退化流，注入"推进指令"续跑（上限 REPEAT_HEAL_MAX）。一次性打转/探测器
@@ -1218,6 +1332,26 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // 或文本带"计划/承诺"尾巴（先…/接下来…/开始…），注入引导继续执行——
       // 消灭"认错即停"与"只计划不执行"两类中断（注入 user 文本，保持 API 消息链合法）
       if (blocks.length === 0) {
+        // 输出截断自愈（2026-09-12）：文本被 max_tokens 截断 → 内部升档续写，用户无感。
+        // 部分文本先落盘为独立条目（不带 usage，M1 只写轮次最终条目），续写指令注入后
+        // 重跑；续写文本仍经 wire.assistant 流式追加到同一回复（GUI 同轮块自动挂接）。
+        // 放在计划尾/思考守卫之前——截断文本是有用产出，不得被这两个守卫丢弃。
+        if ((stopReason === 'length' || stopReason === 'max_tokens') && textBuf.trim() && continueHeals < CONTINUE_HEAL_MAX) {
+          const nextTier = OUTPUT_TIERS.find(t => t > attemptMaxTokens)
+          if (nextTier) {
+            continueHeals++
+            const partial = textBuf
+            textBuf = ''
+            pushMemory({ role: 'assistant', content: [{ type: 'text', text: partial }] })
+            if (session) lastAssistantEntry = session.appendAssistant([{ type: 'text', text: partial }], { model })
+            const inject = '【系统】你的上一条回复因输出上限被截断。请直接从截断处继续输出剩余内容——不要重复已输出的部分，不要道歉，不要总结前文。'
+            pushMemory({ role: 'user', content: inject })
+            if (session) session.appendUser(inject)
+            attemptMaxTokens = nextTier
+            try { wire?.system?.('output_continued', { budget: nextTier, attempt: continueHeals }) } catch { /* 事件异常不影响主流程 */ }
+            continue
+          }
+        }
         if (hadToolError && guardInjections < maxGuardInjections) {
           guardInjections++
           const inject = '【系统】检测到上一轮存在失败/被取消的工具调用，任务尚未完成。请立即重试或补发正确的工具调用，不要停留在文本说明。'
@@ -1255,7 +1389,9 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // P0-4：只读工具批并发、写/执行类串行，结果按模型调用顺序收集。tool_result
       // 必须合并进同一条 user 消息（Anthropic 要求同一 assistant 的多个 tool_use 的
       // tool_result 紧随其后且同消息，拆多条会 400）——先收集再一次性落盘。
-      const executed = await runToolBatch(blocks, { spawnSubAgent, taskSystem })
+      // signal 下传工具层（Grep/Glob 等长遍历据此在让出点判定取消，见 tools.mjs
+      // walkForSearch）——轮次取消时 Stop 键能真正中断扫描，而非等它自己跑完。
+      const executed = await runToolBatch(blocks, { spawnSubAgent, taskSystem, signal: rawAbortSignal(signal) })
       const toolResults = blocks.map((b, i) => ({
         type: 'tool_result',
         tool_use_id: b.id,
@@ -1278,6 +1414,20 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         }
         if (turnToolDigest.length > 40) turnToolDigest.splice(0, turnToolDigest.length - 40)
       } catch { /* 观测数据采集失败不影响工具主流程 */ }
+      // P0-3b 单消息聚合预算（2026-09-12 四家对标：CC 单消息 200K token 聚合 /
+      // pi 双上限）：单条 20K 落盘挡不住"一轮几十次工具调用"的聚合膨胀（实测一轮
+      // 67 次 → 请求面 317KB、292 条消息——长会话 DS 流反复中断的温床）。同一 user
+      // 消息内 tool_result 合计超预算时，把最大的几条落盘替换为 preview+path
+      // （Read 例外同 P0-3：模型显式索要的文件内容不 stub），直到合计低于预算。
+      const aggBudget = Math.max(20_000, Number(process.env.CLAUDE_CODE_TOOL_RESULT_BATCH_BUDGET || 100_000))
+      const aggResults = applyAggregateResultBudget(toolResults, blocks.map((b) => b.name), {
+        budgetChars: aggBudget,
+        persist: (content, idx) => persistToolResult(store || session, blocks[idx]?.id, content, 5000),
+      })
+      if (aggResults !== toolResults) {
+        toolResults.length = 0
+        toolResults.push(...aggResults)
+      }
       // 工具结果 live 回传（2026-09-09 会话 UI 标准化）：wire 新增 tool_result 通道，
       // bridge 转发给 GUI 回填内联工具卡片的"完成/失败"状态与结果。事件失败静默——
       // 结果仍按 transcript 落盘（历史回放挂接），live 回传只是增量体验。
@@ -1366,15 +1516,15 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       pushMemory({ role: 'assistant', content: textBuf })
     }
     finalizeUsage()
-    return { usage, model, text: textBuf, toolDigest: turnToolDigest, assistantTexts: turnTexts }
+    return { usage, model, text: textBuf, lastUsage: callUsage, toolDigest: turnToolDigest, assistantTexts: turnTexts }
   }
 
   // P0-3：大工具结果磁盘持久化 + 预览替换——超阈值全文落盘
   // <sessionDir>/tool-results/<toolUseId>.json，模型输入只留 <persisted-output>
   // 预览 + 路径（可 Read 补读，无损恢复；参考 claude toolResultStorage）
-  function persistToolResult(target, toolUseId, content) {
+  function persistToolResult(target, toolUseId, content, limitOverride) {
     if (!target || typeof content !== 'string') return content
-    const limit = Number(process.env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES || 20000)
+    const limit = Number(limitOverride ?? process.env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES ?? 20000)
     if (content.length <= limit) return content
     try {
       const dir = join(dirname(target.file), 'tool-results')
@@ -1448,15 +1598,23 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // agent 节点经 registry 直接执行工具时不得旁路主会话审批（高危 Bash/越权操作须
   // 同样 ask/deny/hook 拦截），门返回 { allowed:true } 放行 / { allowed:false, message }。
   async function gateToolUse(toolUse) {
-    const perm = decideToolPermission({ toolName: toolUse.name, input: toolUse.input, skipPermissions: opts.skipPermissions, autoApproveHighRisk: opts.autoApproveHighRisk, rules: opts.permissionRules })
+    // 被 --disallowedTools 禁用的工具（chat 模式清单等）直接放行给注册表：
+    // 由注册表回自己的"工具已被禁用"错误，而不是在 manual/auto 档弹一个"批准了
+    // 也用不了"的空窗（2026-09-12 档位化：档位越严，这种无意义弹窗越容易出现）。
+    if (Array.isArray(opts.disallowedTools) && opts.disallowedTools.includes(toolUse.name)) {
+      return { allowed: true }
+    }
+    const perm = decideToolPermission({ toolName: toolUse.name, input: toolUse.input, mode: approvalMode, skipPermissions: opts.skipPermissions, autoApproveHighRisk: opts.autoApproveHighRisk, rules: opts.permissionRules })
     if (perm.decision === 'deny') {
       denialStreak++
       denialTotal++
       return { allowed: false, message: '用户拒绝执行该操作' }
     }
     if (perm.decision === 'ask') {
-      // 降级检查：拒绝过多 → 直接 deny（不挂起弹窗）
-      if (denialStreak >= DENIAL_STREAK_LIMIT || denialTotal >= DENIAL_TOTAL_LIMIT) {
+      // 降级检查：拒绝过多 → 直接 deny（不挂起弹窗）。**硬黑名单豁免**：灾难命令
+      // 必须每次都问，否则用户连拒 3 次后再发普通高危命令会被连带自动拒绝（文案
+      // 还会谎称"用户已连续拒绝"）。硬黑名单的拒绝也不计入 streak（见下）。
+      if (!perm.hard && (denialStreak >= DENIAL_STREAK_LIMIT || denialTotal >= DENIAL_TOTAL_LIMIT)) {
         denialTotal++
         return {
           allowed: false,
@@ -1464,12 +1622,16 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         }
       }
       // 发 can_use_tool control_request 挂起，等 cli 经 control_response 解除
+      // 标记"正在等人"：硬看门狗等待期内展期（cli.mjs 消费）
+      beginAwaitingUser()
       wire.controlRequest({
         requestId: 'req-' + toolUse.id,
         toolName: toolUse.name,
         toolUseId: toolUse.id,
         input: toolUse.input,
         reason: perm.reason || '',
+        mode: approvalMode,
+        ...(perm.hard ? { hard: true } : {}),
       })
       // 审批等待 deadline（L0-a）：GUI 应答缺失（弹窗丢失/前端未响应）且无 cancel 信号时，
       // waiter 永不 resolve → 工具批挂死在权限边界（TURN_TIMEOUT 在迭代边界检查，进不了
@@ -1487,8 +1649,13 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         }, approvalTimeoutMs)
         approvalWaiters.set(toolUse.id, (d) => { clearTimeout(timer); resolvePromise(d) })
       })
+      // 等待结束（应答/拒绝/超时/取消四条路都经上面的 promise resolve）→ 撤销展期。
+      // 必须成对：漏掉 end 会让硬看门狗被永久展期（等待窗口变成常态），反而更不设防。
+      endAwaitingUser()
       if (decision?.behavior !== 'allow') {
-        if (decision?.behavior !== 'timeout') {
+        // 硬黑名单不计入拒绝计数（与超时同待遇）：它不是"用户在拒绝高危操作"这一
+        // 可学习信号，而是底线拦截；计数会让后续普通请求被降级静默拒绝。
+        if (decision?.behavior !== 'timeout' && !perm.hard) {
           denialStreak++
           denialTotal++
         }
@@ -1559,6 +1726,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // 本工具返回"请重试"引导；拒绝/超时返回明确引导，模型改用其他途径。
   async function requestWhitelistApproval(domain) {
     const toolUseId = 'whitelist:' + String(domain || '').toLowerCase()
+    beginAwaitingUser()
     try {
       wire.controlRequest({
         requestId: 'req-' + toolUseId,
@@ -1567,7 +1735,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         input: { command: `加入浏览器白名单：${domain}` },
         reason: `浏览器访问 ${domain} 被域名白名单拦截。批准后该域名将写入白名单（即时生效），随后重试浏览器操作即可。`,
       })
-    } catch { return { approved: false, reason: 'control-request-failed' } }
+    } catch { endAwaitingUser(); return { approved: false, reason: 'control-request-failed' } }
     const approvalTimeoutMs = Math.max(1000, Number(process.env.PONOS_APPROVAL_TIMEOUT_MS || 600_000))
     const decision = await new Promise((resolvePromise) => {
       const t = setTimeout(() => {
@@ -1576,6 +1744,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       }, approvalTimeoutMs)
       approvalWaiters.set(toolUseId, (d) => { clearTimeout(t); resolvePromise(d) })
     })
+    endAwaitingUser()
     return decision?.behavior === 'allow'
       ? { approved: true }
       : { approved: false, reason: decision?.behavior ?? 'unknown' }
@@ -1805,6 +1974,14 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
             ? stopNotice('输出中断', `超过 ${Math.max(1, Math.round(STREAM_IDLE_MS / 1000))} 秒无数据（此前已产出部分内容——疑似推理中途停顿）`)
             : stopNotice('上游服务空流', `连接建立后 ${Math.max(1, Math.round(STREAM_FIRST_BYTE_MS / 1000))} 秒未收到任何数据——疑似模型服务未就绪/空转，请检查 provider`)}`.trim())
         }
+        else if (classifyApiError(err).kind === 'tools-unsupported') {
+          // 工具能力未开启（子 lane 镜像，2026-09-12）：子任务同样靠工具执行，服务端没开
+          // 工具调用时重试无意义 —— 直接收尾并把可操作引导写进 lane 转录（同主循环文案）
+          return guardStop(stopNotice(
+            '上游未开启工具调用',
+            '服务端以"未启用 tool_choice"拒绝了带工具的请求（需 --enable-auto-tool-choice --tool-call-parser <解析器>；若服务端已开，请确认应用配置的 API 地址/端口确实指向该服务），子任务靠工具执行、无法降级继续；请补齐启动参数或切换 provider',
+          ))
+        }
         else if (classifyApiError(err).kind === 'dead-stream') {
           // P1-11（子 lane 镜像）：HTTP 200 后 0 事件即断/EOF → 快速收尾（不空等不狂重试）
           return guardStop(stopNotice('上游服务空流', '请求已被受理但未返回任何数据——疑似模型服务未就绪、加载中或已崩溃，请检查 provider'))
@@ -1877,7 +2054,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       const assistantBlocks = [...(textBuf.trim() ? [{ type: 'text', text: textBuf }] : []), ...blocks]
       store.appendAssistant(assistantBlocks, { model: loopModel })
       // P0-4：子 lane 同样走只读并发批；结果按模型顺序收集
-      const executed = await runToolBatch(blocks, { lane: true, store, laneOptions: options })
+      const executed = await runToolBatch(blocks, { lane: true, store, laneOptions: options, signal: rawAbortSignal(subSignal) || rawAbortSignal(signal) })
       const toolResults = blocks.map((b, i) => ({
         tool_use_id: b.id,
         content: executed[i]?.content ?? '',
@@ -2306,6 +2483,10 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     },
     // 思考深度热设置（cli control_request reasoning_effort）：返回规范化档位 + 生效 effort
     setReasoningEffort(value) { return applyReasoningEffort(value) },
+    // 审批档位热设置（cli control_request approval_mode）：返回生效档位（非法值回落默认档）。
+    // 下一轮工具调用的 gateToolUse 即读取新值；已挂起的审批不受影响。
+    setApprovalMode(value) { approvalMode = normalizeApprovalMode(value); return approvalMode },
+    getApprovalMode() { return approvalMode },
     abort() {
       rejectAllWaiters()
       signal.aborted = true
@@ -2356,8 +2537,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       else pushMemory({ role: 'user', content: String(content ?? '') })
       let outcome
       try {
-        const { usage, model: turnModel, text, toolDigest, assistantTexts } = await runTurnInternal({ content })
-        outcome = { usage, model: turnModel, text, toolDigest, assistantTexts }
+        const { usage, model: turnModel, text, lastUsage, toolDigest, assistantTexts } = await runTurnInternal({ content })
+        outcome = { usage, model: turnModel, text, lastUsage, toolDigest, assistantTexts }
       } catch (e) {
         // 用户取消（Stop 按钮/打断插入，契约 §8）原样上抛 → cli 输出「已取消。」+ result
         // 收尾、进程保留可续聊。不落入下方"内部错误"兜底——AbortError 是有意信号，
@@ -2377,8 +2558,9 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         outcome = { usage: null, model: opts.model || process.env.ANTHROPIC_MODEL || '', text: errText }
       }
       const durationMs = Date.now() - t0
-      // turnStats 每轮尾部产出（health/result/stats 共用）
-      turnStats.push({ usage: outcome.usage, durationMs, model: outcome.model, ts: new Date().toISOString(), compactCount: session ? session.compactCount() : 0 })
+      // turnStats 每轮尾部产出（health/result/stats 共用）。lastUsage = 本轮最后一次
+      // 单请求 usage（health 水位信号；usage 为轮级合计，仅成本/计费口径）
+      turnStats.push({ usage: outcome.usage, lastUsage: outcome.lastUsage ?? null, durationMs, model: outcome.model, ts: new Date().toISOString(), compactCount: session ? session.compactCount() : 0 })
       // P2-2：会话级用量累计（四字段）→ costOf 单价 env → 跨 PONOS_BUDGET_USD 阈值
       // 发 budget 告警（每会话单次 crossing，防刷屏）。usage null（内部错误轮）不累计。
       if (outcome.usage) {
@@ -2398,13 +2580,13 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // 在 health.record 之后（压力与失真是两个独立被测量）。异常静默：失真检测是
       // 侧路，绝不允许影响轮次结果。
       try {
-        const assistantText = String(outcome?.text ?? '') +
-          (Array.isArray(outcome?.assistantTexts) && outcome.assistantTexts.length
+        const assistantText = String(outcome.text ?? '') +
+          (Array.isArray(outcome.assistantTexts) && outcome.assistantTexts.length
             ? '\n' + outcome.assistantTexts.join('\n') : '')
         health?.recordTurnContent?.({
           user: String(content ?? ''),
           assistant: assistantText,
-          toolDigest: Array.isArray(outcome?.toolDigest) ? outcome.toolDigest : [],
+          toolDigest: Array.isArray(outcome.toolDigest) ? outcome.toolDigest : [],
         })
       } catch { /* 失真观测失败不得影响轮次 */ }
       // J1：LLM-as-Judge 低频抽检（shouldRunJudge = 红档 + 冷却 300s；默认关零行为）。

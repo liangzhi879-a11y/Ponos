@@ -11,10 +11,13 @@ import { tmpdir } from 'os'
 import { randomBytes } from 'node:crypto'
 import { extractMilestoneMarks, extractProseStages } from './milestones.mjs'
 import { matchesHighRisk } from './highrisk.mjs'
+import { approvalSpawnArgs, DEFAULT_APPROVAL_MODE, isValidApprovalMode, normalizeApprovalMode, resolveEffectiveApprovalMode } from './approval-mode.mjs'
 import { parseAskUserPayload, extractAskUserBlocks } from './askuser.mjs'
 import { buildAnchorApplied } from './health-anchor.mjs'
 import { resolveKernelPaths } from '../electron/kernel-paths.cjs'
 import { resolveYfwHome } from './yfw-home.cjs'
+import { writeLogLine, readLogPolicyCached, enforceLogPolicy, normalizeLogPolicy, DEFAULT_LOG_POLICY } from './log-policy.cjs'
+import { handleLogsRoute } from './logs-routes.mjs'
 import { installBuiltinWorkflows } from './workflow-install.mjs'
 // 工作流 HTTP 路由（独立模块——bridge 顶层 listen，测试不能 import 本文件）+ 常驻宿主会话
 import { handleWorkflowRoute } from './workflow-routes.mjs'
@@ -259,6 +262,15 @@ const DEFAULT_CONFIG = {
   // 思考深度（Task 12）：'auto' = 内核默认（不注入 env）；非 auto 值经 buildChildEnv
   // 注入 CLAUDE_CODE_EFFORT_LEVEL。旧 config.json 缺此键 → loadConfig merge 默认 auto。
   effortLevel: 'auto',
+  // 审批档位（2026-09-12 四档化）：全局持久化档位，manual|auto|loose|bypass 逐级放宽。
+  // 默认 loose = 应用今天的真实行为（内核 spawn 一直硬编码 --dangerously-skip-permissions），
+  // 存量 config.json 缺此键 → loadConfig 合并默认 loose → 升级零行为变化。
+  // 会话级临时覆盖另存 sessionApprovalModes（仅内存），不写本文件。
+  approvalMode: DEFAULT_APPROVAL_MODE,
+  // 本地日志持久化策略（2026-09-12）：persist / level / maxFileBytes / maxFiles / maxAgeDays。
+  // 缺此键 → loadConfig 合并默认档；写入一律经 sanitizeConfigPatch 钳制（手改 config.json
+  // 填 {maxFileBytes:-1} 会拿回 5MB，而不是得到一个坏掉的轮转器）。
+  logPolicy: { ...DEFAULT_LOG_POLICY },
   providers: DEFAULT_PROVIDERS,
 }
 
@@ -386,6 +398,97 @@ function pruneStampedBackups(targetPath, keepDays) {
   } catch { /* best-effort */ }
 }
 
+// ---------------------------------------------------------------------------
+// 审批档位（2026-09-12 四档化）：全局档位存 config.json；**会话级临时覆盖仅存内存**
+// （状态栏徽标改的是"本会话"，会话进程退出即回落全局档——用户决策，不落盘）。
+// 覆盖在 getOrCreateSession 时被读取一次（决定 spawn 参数），活跃期经 control_request
+// 热切换；全局档位变化对"无覆盖"的活会话立即热生效（否则设置页会显得点了没反应）。
+// ---------------------------------------------------------------------------
+const sessionApprovalModes = new Map() // sid -> mode（仅内存，进程退出即消失）
+
+function globalApprovalMode() {
+  try { return normalizeApprovalMode(loadConfig().approvalMode) } catch { return DEFAULT_APPROVAL_MODE }
+}
+
+// 生效档位 = 会话覆盖 || 全局档位（_wfhost 工作流宿主不接受覆盖，恒用全局）
+function effectiveApprovalMode(sid) {
+  const override = sid && sid !== HOST_SID ? (sessionApprovalModes.get(sid) || null) : null
+  return resolveEffectiveApprovalMode({ sessionOverride: override, configMode: globalApprovalMode() })
+}
+
+// 热切换：对活内核注入 approval_mode control_request（与 effort 同一控制通道）
+function pushApprovalModeToKernel(sid, mode) {
+  const s = sessions.get(sid)
+  if (!s || !s.proc || s.proc.killed) return false
+  try {
+    s.proc.stdin.write(JSON.stringify({
+      type: 'control_request',
+      request_id: 'approval-mode-' + Date.now(),
+      request: { subtype: 'approval_mode', payload: { value: mode } },
+    }) + '\n')
+    return true
+  } catch (e) {
+    console.warn('[bridge] approval-mode send failed:', e.message)
+    return false
+  }
+}
+
+function broadcastApprovalMode(sid, scope) {
+  broadcastGui({
+    type: 'approval-mode-changed',
+    sessionId: sid,
+    data: {
+      mode: effectiveApprovalMode(sid),
+      // override = **布尔**（是否存在会话级临时覆盖），供状态栏显示「临时」标记。
+      // 不必再带覆盖值本身：覆盖存在时 mode 就是它（无覆盖时 mode === global）。
+      override: sessionApprovalModes.has(sid),
+      global: globalApprovalMode(),
+      scope,
+    },
+  })
+}
+
+// 会话结束（内核进程退出/重建）：清掉仅内存的会话覆盖并广播回落，徽标可见地弹回全局档
+function clearSessionApprovalMode(sid) {
+  if (!sessionApprovalModes.has(sid)) return false
+  sessionApprovalModes.delete(sid)
+  broadcastApprovalMode(sid, 'cleared')
+  return true
+}
+
+// 全局档位热生效：所有"无会话覆盖"的活会话（含工作流宿主）就地切档。
+function applyGlobalApprovalMode(mode) {
+  const m = normalizeApprovalMode(mode)
+  for (const [sid, s] of sessions) {
+    if (sessionApprovalModes.has(sid)) continue
+    if (!s || !s.proc || s.proc.killed) continue
+    if (pushApprovalModeToKernel(sid, m)) broadcastApprovalMode(sid, 'global')
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 配置写入钳制：POST /config（GUI 设置页）与手改 config.json 的路径都要过这道闸——
+// 非法值（如 approvalMode: 'yolo'）落盘后会让内核/桥的判定静默走别的分支。
+// 只规范化"新增且易填错"的键，其余键原样透传（非破坏）。
+// ---------------------------------------------------------------------------
+function sanitizeConfigPatch(patch) {
+  const out = { ...(patch || {}) }
+  if ('approvalMode' in out && !isValidApprovalMode(out.approvalMode)) {
+    console.warn(`[bridge] approvalMode 非法值 ${JSON.stringify(out.approvalMode)} → 钳制为 ${DEFAULT_APPROVAL_MODE}`)
+    out.approvalMode = DEFAULT_APPROVAL_MODE
+  }
+  if ('logPolicy' in out) {
+    const raw = out.logPolicy
+    // 局部补丁语义：只发 { maxFiles: 5 } 时其余键应保持现值，而不是被默认档重置
+    const merged = { ...(loadConfig().logPolicy || DEFAULT_LOG_POLICY), ...(raw && typeof raw === 'object' ? raw : {}) }
+    out.logPolicy = normalizeLogPolicy(merged)
+    if (JSON.stringify(raw) !== JSON.stringify(out.logPolicy)) {
+      console.warn(`[bridge] logPolicy 已钳制：${JSON.stringify(raw)} → ${JSON.stringify(out.logPolicy)}`)
+    }
+  }
+  return out
+}
+
 function loadConfig() {
   ensureYfwHome()
   if (!existsSync(YFW_CONFIG_PATH)) {
@@ -472,6 +575,10 @@ function syncKernelSettings() {
     // 云端时本地残留 0.6/lean 经 settings.json"缺失键才兜底"泄漏），再并入画像值
     for (const k of MANAGED_KEYS) delete existing.env[k]
     Object.assign(existing.env, providerProfileEnv(provider))
+    // 审批档位兜底：桥的 spawn 走 --approval-mode flag（优先级最高），此处落 settings.json
+    // 是给"不带 flag 的 spawn 路径"（外部脚本 / 工作流宿主直连内核）用同一档位。
+    // 仅当值合法才写——非法/缺失时保留原文件，让内核按 flag 派生（不会无谓改写用户 settings）。
+    if (isValidApprovalMode(cfg.approvalMode)) existing.approvalMode = normalizeApprovalMode(cfg.approvalMode)
     safeWriteJsonWithBak(YFW_SETTINGS_PATH, JSON.stringify(existing, null, 2))
     console.log('[bridge] kernel settings synced ->', provider.id, '| model:', model)
   } catch (e) {
@@ -481,10 +588,14 @@ function syncKernelSettings() {
 
 function saveConfig(updates) {
   const current = loadConfig()
-  const next = { ...current, ...updates }
+  const patch = sanitizeConfigPatch(updates)
+  const next = { ...current, ...patch }
   safeWriteJsonWithBak(YFW_CONFIG_PATH, JSON.stringify(next, null, 2))
   // Keep the kernel's settings.json in sync so auth works without login.
   syncKernelSettings()
+  // 全局档位热生效（无会话覆盖的活会话就地切档 + 广播）：否则设置页改档要等下一个
+  // 会话才见效。会话临时覆盖优先，不会被全局切换抹掉。
+  applyGlobalApprovalMode(next.approvalMode)
   return next
 }
 
@@ -666,27 +777,33 @@ const bootState = {
 const authTokens = new Map() // token -> expiry（重启清空）
 function issueToken() { const t = randomBytes(24).toString('hex'); authTokens.set(t, Date.now() + 86_400_000); return t }
 
+// 桥进程实例 id（2026-09-12 桥树杀事故的无感愈合）：随进程启动生成、进程存续期
+// 恒定——GUI 用它区分"重连到同一桥"（瞬时闪断，无需动作）与"换了个新桥"
+// （旧会话已随旧桥消亡，需静默自动续接）。
+const BRIDGE_INSTANCE_ID = randomBytes(12).toString('hex')
+
 // 诊断埋点：供主进程 diag-monitor 查询（只读内存统计，跨会话累计，仅统计最近 7 天）
 const diagInfo = { firstTokenOk: 0, firstTokenTotal: 0, kernelCrashCount: 0, lastApiSuccessAt: null }
 
-// 内核 stderr 落盘（环形）：崩溃时 bridge 只把 stderr 转发 GUI，不写任何本地
-// 日志 → 跨机器故障（如 10s 后 exit 1）完全看不到错误原文，只能盲猜。现在：
+// 内核 stderr 落盘：崩溃时 bridge 只把 stderr 转发 GUI，不写任何本地日志 → 跨机器
+// 故障（如 10s 后 exit 1）完全看不到错误原文，只能盲猜。现在：
 // ① console.error 进 bridge 所在进程日志（app.log / 诊断报告 log tail 可见）；
-// ② 追加到 ~/.yfworking/logs/kernel-stderr.log，超 512KB 时截断保留尾部 256KB，
-//    供 diag-monitor kernel-stderr 检查项直接展示最近一次内核错误。
+// ② 追加到 <home>/logs/kernel-stderr.log（**路径不变**：diag-monitor 的 kernel-stderr
+//    检查项仍读同一文件，最新内容仍在主文件）。
+// 2026-09-12 起统一走 log-policy（原 512KB/256KB 私有截断删除）：轮转份数/保留天数/
+// 关闭开关由用户在设置页控制，与其他三类日志同口径。
 const KERNEL_STDERR_LOG = join(YFW_HOME, 'logs', 'kernel-stderr.log')
+// 启动一次性把策略落到该文件（裁剪存量超大文件 + 年龄清理 + 超限轮转）。主进程负责
+// app.log / renderer-console.log（initLogTee 里同样调用），两边各管自己写的文件，
+// 互不重复删除对方的历史。失败不阻断启动。
+try { enforceLogPolicy(KERNEL_STDERR_LOG, readLogPolicyCached({ home: YFW_HOME })) } catch { /* ignore */ }
 function logKernelStderr(sid, line) {
   try {
-    const entry = `[${new Date().toISOString()}] [sid ${String(sid || '?').slice(0, 8)}] ${line}\n`
-    mkdirSync(dirname(KERNEL_STDERR_LOG), { recursive: true })
-    appendFileSync(KERNEL_STDERR_LOG, entry)
-    let st
-    try { st = statSync(KERNEL_STDERR_LOG) } catch { return }
-    if (st.size > 512 * 1024) {
-      const data = readFileSync(KERNEL_STDERR_LOG, 'utf-8')
-      writeFileSync(KERNEL_STDERR_LOG, data.slice(-256 * 1024))
-    }
-  } catch {}
+    const entry = `[${new Date().toISOString()}] [sid ${String(sid || '?').slice(0, 8)}] ${line}`
+    // 按 error 级写：内核 stderr 是崩溃原文，任何等级门槛下都**不得**被丢弃
+    // （等级只用来过滤 app.log 的常规啰嗦行；诊断证据永远保留）
+    writeLogLine(KERNEL_STDERR_LOG, entry, readLogPolicyCached({ home: YFW_HOME }), 'error')
+  } catch { /* 日志失败绝不影响会话 */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -752,6 +869,12 @@ function buildChildEnv() {
   //（本文件 effort case），这里只负责每个新 spawn 的初始档位。
   const effort = cfg.effortLevel || 'auto'
   if (effort !== 'auto') env.CLAUDE_CODE_EFFORT_LEVEL = effort
+  // 内核日志等级（2026-09-12 日志策略）：仅在非 info 时注入 CLAUDE_CODE_LOG_LEVEL
+  //（info = 内核默认，语义等价且干净）。刻意**不**进入 providerEnvSig：改等级只影响
+  // 新 spawn 的日志啰嗦度，不该像换模型那样触发收割重建内核。debug 会把内核 stderr
+  // 逐行推给 GUI（很吵），设置页文案已提醒。
+  const logLevel = normalizeLogPolicy(cfg.logPolicy).level
+  if (logLevel !== 'info') env.CLAUDE_CODE_LOG_LEVEL = logLevel
   // Inject the active provider's API config as ANTHROPIC_* env vars so the
   // Claude Code kernel actually calls the user-configured endpoint/model
   // with the user's token. Without these the CLI falls back to its built-in
@@ -812,14 +935,10 @@ function buildChildEnv() {
   // 内核 Grep/Glob 为原生 node 递归实现（本库 ponos 内核，kernel/tools.mjs），
   // 无 ripgrep/vendor 依赖（F3）→ CLAUDE_CODE_USE_NATIVE_FILE_SEARCH 注入不再
   // 必要（旧 claude-code 内核 vendor rg 语义不适用；内核忽略未知 env）。
-  // 内核工具结果预算（opt-in：显式 true 才开启，20KB 保守截断；未设置 = 现状。
-  // 批次 3 A/B 验收通过后再改为默认开启。）
-  if (process.env.CLAUDE_CODE_TOOL_RESULT_BUDGET === 'true') {
-    env.CLAUDE_CODE_TOOL_RESULT_BUDGET = 'true'
-    if (!process.env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES) {
-      env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES = '20000'
-    }
-  }
+  // 工具结果字节预算（2026-09-12 起改由 provider.toolResultBudgetBytes 经
+  // providerProfileEnv 注入 CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES；旧布尔开关
+  // CLAUDE_CODE_TOOL_RESULT_BUDGET=true 对内核是 no-op——compact.mjs 将布尔形态
+  // 视为未显式（Number('true')=NaN），已移除，勿回退）。
   return env
 }
 
@@ -935,7 +1054,14 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
   }
   // 系统提示词临时文件：会话进程退出后删除，避免在 %TEMP% 长期堆积
   let promptFile = null
-  const args = ['--print', '--output-format', 'stream-json', '--input-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
+  const args = ['--print', '--output-format', 'stream-json', '--input-format', 'stream-json', '--verbose']
+  // 审批档位（2026-09-12 四档化）：原先是硬编码的 --dangerously-skip-permissions
+  //（等价默认档 loose）。现按"会话覆盖 || 全局档位"决定：显式 --approval-mode 在 cli
+  // 三级优先级里最高（flag > settings.json > 旧 flag 派生），loose/bypass 仍附带旧 skip
+  // flag，好让不认识新 flag 的旧缓存内核优雅停在 loose 而非掉进"ask 退化 deny"。
+  // 注意：--permission-prompt-tool stdio 必须保留，否则非交互 print 模式下 ask 直接
+  // 变 deny（弹窗根本没有机会出现）。
+  args.push(...approvalSpawnArgs(effectiveApprovalMode(sid)))
   // 权限审批走内核 can_use_tool control_request/control_response 协议：
   // 没有 --permission-prompt-tool stdio 时，非交互 print 模式下 ask 决策会直接
   // 退化为自动 deny（实证发现，spec §4.2），高风险命令将无法被用户批准。
@@ -1067,10 +1193,48 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     // 轮次活跃跟踪（供内核空闲回收判定）：assistant 开启轮次，result 结束轮次。
     if (parsed && parsed.type === 'assistant') session._turnActive = true
     else if (parsed && parsed.type === 'result') session._turnActive = false
+    // 审批收口（2026-09-12）：内核把工具执行结果回吐为 user/tool_result 帧——这是
+    // "该审批已不再挂起"的**协议层真信号**。此前全代码只有 approval-response 里一处
+    // delete（且只删本次回执的那个 id）：用户点了审批但内核已超时、工具从未执行、
+    // 或审批帧发给 0 个客户端（WS 空窗）等情形全部残留，残留项又让回收器无条件豁免
+    // 该会话 ⇒ 内核泄漏（pid 6736 静默 53min / pid 21196 静默 13min 即此形态）。
+    if (parsed && parsed.type === 'user' && Array.isArray(parsed.message?.content) && session._pendingApprovals?.size) {
+      for (const blk of parsed.message.content) {
+        if (blk && blk.type === 'tool_result' && blk.tool_use_id && session._pendingApprovals.delete(blk.tool_use_id)) {
+          clearSessionAwaiting(session)
+        }
+      }
+    }
+    // 轮次收尾即清空等待态：result 到达说明内核不再挂起任何提问/审批（挂起时它不会
+    // 发 result）。不清则 _awaitingSince 把上一个等待期的豁免无限延续到轮后。
+    if (parsed && parsed.type === 'result') {
+      if (session._pendingQuestions) session._pendingQuestions = null
+      if (session._pendingApprovals?.size) session._pendingApprovals.clear()
+      session._awaitingSince = 0
+    }
     // 轮内每一步都可能静默（服务端缓冲的思考/prefill 阶段）——任何输出帧到达即
     // 重新武装首字节等待提示，让等待条覆盖发消息后第一步之外的后续步骤；
     // result 收尾（_turnActive=false）不重武装（2026-09-09 反馈覆盖缺口修复）。
     if (session._turnActive) armFirstBytePending(session, sid)
+    // 内核启动回显比对（2026-09-12 档位化）：system/init 会带上真正生效的 approval_mode。
+    // 与桥期望的档位不一致 = 跑的是不认识 --approval-mode 的旧缓存内核（旧内核忽略未知
+    // flag，靠 --dangerously-skip-permissions 停在 loose）。此时如实广播降级告警，别让
+    // 用户以为自己选的 manual 生效了。回显缺失（更老的内核）不告警——无从判断。
+    if (parsed && parsed.type === 'system' && parsed.subtype === 'init') {
+      const echoed = parsed.approval_mode
+      const expected = effectiveApprovalMode(sid)
+      if (echoed && normalizeApprovalMode(echoed) !== expected) {
+        console.warn(`[bridge] kernel approval_mode mismatch: expected ${expected}, kernel reports ${echoed} (old cached kernel? run scripts/build-kernel.mjs)`)
+        send({
+          type: 'approval-mode-degraded', sessionId: sid,
+          // message 是给用户看的**技术细节**（悬停展开），标题由 GUI 按 level 本地化
+          data: {
+            expected, actual: normalizeApprovalMode(echoed),
+            message: `内核回显 approval_mode=${echoed}，期望 ${expected}。可能运行的是旧缓存内核（打包前请跑 scripts/build-kernel.mjs）。`,
+          },
+        })
+      }
+    }
     // 内核 400 窗口学习回流（2026-09-09）：真实窗口 < 配置值 → 只下调持久回填
     // config（此前学习仅进程内存、重启即丢）。云端同样受益——真实窗口只可能更小。
     if (parsed && parsed.type === 'system' && parsed.subtype === 'context_window_adopted') {
@@ -1154,11 +1318,19 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
                 const qdata = parseAskUserPayload(b.payloadText)
                 if (qdata) {
                   session._pendingQuestions = qdata
+                  noteSessionAwaiting(session)
                   send({ type: 'question', sessionId: sid, data: qdata })
                 } else {
                   // 解析失败：带 raw 载荷让前端尝试容错解析；仍无法解析时由
                   // 前端渲染层用内联只读卡兜底，用户至少能看到问题内容直接回复。
-                  console.warn('[bridge] ASK_USER payload parse failed, forwarding raw:', b.payloadText.slice(0, 160))
+                  // 必须同样登记 _pendingQuestions：2026-09-12 实证 raw 分支漏登记 ⇒
+                  // 提问期间内核不被等待豁免保护 ⇒ 04:43:51 被当空闲回收，用户
+                  // 04:46:47 的作答落空。日志带长度 + 首尾片段：截断（长度异常/尾部
+                  // 半截 JSON）与校验不过（完整 JSON 但字段不合规）此前都只表现为
+                  // 同一行"parse failed"，无法判因。
+                  session._pendingQuestions = { raw: b.payloadText }
+                  noteSessionAwaiting(session)
+                  console.warn(`[bridge] ASK_USER payload parse failed (len=${b.payloadText.length}) sid=${sid.slice(0, 8)} head=${JSON.stringify(b.payloadText.slice(0, 120))} tail=${JSON.stringify(b.payloadText.slice(-48))}`)
                   send({ type: 'question', sessionId: sid, data: { raw: b.payloadText } })
                 }
               }
@@ -1180,12 +1352,19 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
       if (isToolReq) {
         const toolUseId = req.tool_use_id || ('req-' + (parsed.request_id || 'unknown'))
         const command = typeof req.input?.command === 'string' ? req.input.command : ''
+        // hard = 内核判定的灾难级硬黑名单（四档都要问、且不参与拒绝降级计数）；
+        // mode = 内核发起本次询问时生效的档位。二者供弹窗显示"为什么问 / 是不是硬黑名单"，
+        // 旧内核不传 → undefined，GUI 按普通审批渲染（向后兼容）。
+        const hard = req.hard === true
         session._pendingApprovals.set(toolUseId, {
           requestId: parsed.request_id,
           command,
           reason: req.decision_reason || '',
           toolName: req.tool_name || '',
+          hard,
+          at: Date.now(),
         })
+        noteSessionAwaiting(session)
         send({
           type: 'approval',
           sessionId: sid,
@@ -1196,6 +1375,8 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
             reason: req.decision_reason || '',
             toolName: req.tool_name || '',
             highRisk: matchesHighRisk(command),
+            hard,
+            mode: req.mode || effectiveApprovalMode(sid),
           },
         })
       }
@@ -1234,11 +1415,14 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     logKernelStderr(sid, l)
     send({ type: 'stderr', data: l, sessionId: sid })
   })
-  proc.on('error', (e) => { if (promptFile) { try { rmSync(promptFile, { force: true }) } catch {} }; send({ type: 'error', data: { message: e.message }, sessionId: sid }); sessions.delete(sid) })
+  proc.on('error', (e) => { if (promptFile) { try { rmSync(promptFile, { force: true }) } catch {} }; send({ type: 'error', data: { message: e.message }, sessionId: sid }); sessions.delete(sid); clearSessionApprovalMode(sid) })
   proc.on('close', (code) => {
     // 会话结束 → 清理临时系统提示词文件，避免 %TEMP% 堆积
     if (promptFile) { try { rmSync(promptFile, { force: true }) } catch {} }
     sessions.delete(sid)
+    // 会话级临时审批档位随会话消亡（仅内存）：清掉覆盖并广播，徽标可见地弹回全局档。
+    // 内核进程已退出，无需注入。_reaped（切模型重建）也算一次会话结束 → 同样回落全局。
+    clearSessionApprovalMode(sid)
     // 工作流宿主内核退出：立即结清在途命令。缺这一步，宿主一死，GUI 的创建/保存/运行会
     // 静默挂到超时（默认 120s、run 更长达 30min）——用户侧只看到"点了没有任何反应"，
     // 2026-09-12 实测缺陷（cwd 不存在 → spawn ENOENT 秒退）就是这么被掩盖的。
@@ -1255,7 +1439,9 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
       console.error(`[bridge] kernel exited abnormal code=${code} (sid ${sid.slice(0, 8)}) after ${el}ms`)
     }
   })
-  const session = { proc, cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()), mode, _pendingQuestions: null, _proseProgress: { total: 0, lastIndex: 0, structuredUsed: false }, _pendingApprovals: new Map(), firstTokenAt: null, _lastOutAt: 0, _turnActive: false, _stallWarnedAt: 0, _reaped: false, _cancelPending: false, _cancelAt: 0, _cancelTimer: null, _turnStartAt: 0, _fbpTimer: null, _fbpFirstTimer: null, _spawnEnvSig: providerEnvSig(buildChildEnv()) }
+  // _awaitingSince = 首次登记"有未决等待（提问/审批）"的时刻（0 = 当前无等待）。回收器
+  // 据此给等待豁免设时限：豁免无条件 ⇒ 内核挂死或 GUI 永不回执时永远收不掉（T9）。
+  const session = { proc, cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()), mode, _pendingQuestions: null, _proseProgress: { total: 0, lastIndex: 0, structuredUsed: false }, _pendingApprovals: new Map(), firstTokenAt: null, _lastOutAt: 0, _turnActive: false, _stallWarnedAt: 0, _reaped: false, _cancelPending: false, _cancelAt: 0, _cancelTimer: null, _turnStartAt: 0, _fbpTimer: null, _fbpFirstTimer: null, _awaitingSince: 0, _spawnEnvSig: providerEnvSig(buildChildEnv()) }
   sessions.set(sid, session)
   return session
 }
@@ -1340,7 +1526,13 @@ const httpServer = createServer(async (req, res) => {
     // application/json POST 依赖浏览器预检通过——只回 origin 会让 file:///
     // （打包）与 localhost:5173（vite dev）的 renderer 预检失败、真实 POST 不发。
     // 白名单式：方法/头枚举固定值，不引入任意来源反射。
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    // 2026-09-12（人工测试缺陷）：补 PUT/PATCH/DELETE——工作流模块的保存
+    // （PUT /workflows/:id）、信任清单（PUT /workflows/bindings）、删除（DELETE
+    // /workflows/:id）都是带 application/json 的**非简单请求**，预检未声明该方法，
+    // 浏览器即拦下、真实请求永不发出：用户侧表现为「信任清单写入失败：Failed to
+    // fetch」与整片 fetch 报错。curl 与直调路由的单测都不发预检，故此前 52 项
+    // 自动化全绿也照不出来；auth-preflight.test.mjs 已把该方法白名单锁成契约。
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
     reply(204, {}); return
   }
@@ -1523,6 +1715,15 @@ const httpServer = createServer(async (req, res) => {
     }
     if (url.pathname === '/health') {
       return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ status: 'ok', pid: process.pid }))
+    }
+    // --- 运行日志（2026-09-12 本地持久化策略）：设置页的日志面板 ---
+    // 逻辑抽在 server/logs-routes.mjs（可单测：不必起桥，避免测试误杀正在运行的应用）
+    const logsRes = handleLogsRoute({
+      method: req.method, pathname: url.pathname, searchParams: url.searchParams,
+      home: YFW_HOME, policy: readLogPolicyCached({ home: YFW_HOME }),
+    })
+    if (logsRes) {
+      return reply(logsRes.status, { 'Content-Type': 'application/json' }, JSON.stringify(logsRes.body))
     }
     // 启动预热状态（2026-09-11 真实 boot 进度）：main 轮询本端点转发给 BootScreen——
     // 各模块真实完成后置位，渲染层按真实步骤渲染、全部就绪才交棒
@@ -2181,21 +2382,77 @@ heartbeatTimer.unref?.()
 // ---------------------------------------------------------------------------
 const _idleEnv = process.env.YFW_KERNEL_IDLE_MS
 const KERNEL_IDLE_REAP_MS = _idleEnv === '0' ? 0 : (Number(_idleEnv) > 0 ? Number(_idleEnv) : 10 * 60 * 1000)
+// 轮次活跃豁免的时限（2026-09-12 死锁修复）：`_turnActive` 只由 result 帧解除，而挂死
+// 内核永不发 result ⇒ 无条件豁免 = 回收器永不动手（pid 6736 静默 53min、pid 21196 静默
+// 13min 全靠用户手杀）。健康内核的硬看门狗不会让它静默超过默认 600s（T10 抬到 900s），
+// 留足余量后仍无输出的"活跃轮次"只能是挂死。设 0 = 关闭该判定（回到旧的无条件豁免）。
+const _turnReapEnv = process.env.YFW_KERNEL_TURN_REAP_MS
+const KERNEL_TURN_REAP_MS = _turnReapEnv === '0' ? 0 : (Number(_turnReapEnv) > 0 ? Number(_turnReapEnv) : 20 * 60 * 1000)
+// 未决等待（提问/审批）豁免的上限：等的是人不该被回收，但 GUI 永不回执时豁免必须失效，
+// 否则同样是泄漏（审批帧发给了 0 个客户端 = 永远不会有人答复）。设 0 = 无限豁免。
+const _waitEnv = process.env.YFW_KERNEL_WAIT_EXEMPT_MS
+const KERNEL_WAIT_EXEMPT_MS = _waitEnv === '0' ? 0 : (Number(_waitEnv) > 0 ? Number(_waitEnv) : 30 * 60 * 1000)
+// 等待态登记/结清：_awaitingSince = 本等待期的起点，供上面的时限判定。结清是"提问已答/
+// 已忽略、审批已回执或工具已回吐结果、轮次已 result"——任何一处漏清都会把豁免无限延续。
+function noteSessionAwaiting(session) {
+  if (!session) return
+  if (!session._awaitingSince) session._awaitingSince = Date.now()
+}
+function clearSessionAwaiting(session) {
+  if (!session) return
+  if (session._pendingQuestions) return
+  if (session._pendingApprovals && session._pendingApprovals.size > 0) return
+  session._awaitingSince = 0
+}
+function reapKernel(sid, s, message) {
+  console.log(`[bridge] ${message}`)
+  s._reaped = true
+  try { execSync(`taskkill -F -T -PID ${s.proc.pid}`, { timeout: 5000, stdio: 'ignore' }) } catch { try { s.proc.kill() } catch {} }
+  sessions.delete(sid)
+}
 function reapIdleKernels() {
   const now = Date.now()
   for (const [sid, s] of sessions) {
     if (!s || !s.proc || s.proc.killed) continue
-    if (s._turnActive) continue
-    if (s._pendingQuestions) continue
-    if (s._pendingApprovals && s._pendingApprovals.size > 0) continue
-    if (s._lastOutAt > 0 && now - s._lastOutAt < KERNEL_IDLE_REAP_MS) continue
-    console.log(`[bridge] idle kernel reaped: sid ${sid.slice(0, 8)} (idle ${s._lastOutAt ? Math.round((now - s._lastOutAt) / 60000) : 0}m)`)
-    s._reaped = true
-    try { execSync(`taskkill -F -T -PID ${s.proc.pid}`, { timeout: 5000, stdio: 'ignore' }) } catch { try { s.proc.kill() } catch {} }
-    sessions.delete(sid)
+    // 工作流宿主（_wfhost）是**常驻会话**：它从不发 assistant/result（_turnActive 恒 false），
+    // "空闲"正是它的常态——按通用阈值回收会把"下次用工作流"变成一次冷启动，而冷启动窗口
+    // （内核首行输出前 _lastOutAt===0）还会被下面的判定**立即回收**，在途的创建/保存/运行
+    // 命令随之被 onKernelExit 判失败（2026-09-12 实测：首个 /workflows/verify 偶发
+    // 「工作流宿主会话已退出，命令未完成」，第二次请求即正常）。故宿主不参与空闲回收。
+    if (sid === HOST_SID) continue
+    // 从未产出过任何 stdout 的会话（刚 spawn、内核尚未启动完）不得判定为空闲：
+    // 旧写法 `s._lastOutAt > 0 && ...` 在 _lastOutAt===0 时短路为 false，直接落进回收分支，
+    // 刚起来的会话会被秒杀（与上面的宿主冷启动竞态同源，一并按"启动中"豁免）。
+    // 注意此判定必须排在所有"按静默时长"的判定之前：now-0 是天文数字，会秒判超时。
+    // 但"轮次已开始却一行输出都没有"不能无限豁免（spawn 后崩在启动路径/事件循环未起 =
+    // 用户面对一个永不响应的会话）：改用 _turnStartAt（发消息时刻）计时，超轮次上限即回收。
+    if (!s._lastOutAt) {
+      if (s._turnActive && s._turnStartAt > 0 && KERNEL_TURN_REAP_MS > 0 && now - s._turnStartAt >= KERNEL_TURN_REAP_MS) {
+        reapKernel(sid, s, `stuck turn reaped: sid ${sid.slice(0, 8)} (turn active, no output ever, ${Math.round((now - s._turnStartAt) / 60000)}m)`)
+      }
+      continue
+    }
+    const idleMs = now - s._lastOutAt
+    const awaiting = !!(s._pendingQuestions || (s._pendingApprovals && s._pendingApprovals.size > 0))
+    if (awaiting) {
+      const waitedMs = now - (s._awaitingSince || s._lastOutAt)
+      if (KERNEL_WAIT_EXEMPT_MS === 0 || waitedMs < KERNEL_WAIT_EXEMPT_MS) continue
+      reapKernel(sid, s, `waiting kernel reaped: sid ${sid.slice(0, 8)} (no answer in ${Math.round(waitedMs / 60000)}m, 等待豁免超上限)`)
+      continue
+    }
+    if (s._turnActive) {
+      if (KERNEL_TURN_REAP_MS === 0 || idleMs < KERNEL_TURN_REAP_MS) continue
+      reapKernel(sid, s, `stuck turn reaped: sid ${sid.slice(0, 8)} (turn active but silent ${Math.round(idleMs / 60000)}m, 疑异步链失活)`)
+      continue
+    }
+    if (idleMs < KERNEL_IDLE_REAP_MS) continue
+    reapKernel(sid, s, `idle kernel reaped: sid ${sid.slice(0, 8)} (idle ${Math.round(idleMs / 60000)}m)`)
   }
 }
-if (KERNEL_IDLE_REAP_MS > 0) setInterval(reapIdleKernels, 60000).unref?.()
+// 扫描周期（默认 60s）：阈值都可用 env 缩小，周期同样需要能缩小——否则任何回收测试都要
+// 真等一分钟。YFW_KERNEL_REAP_TICK_MS 主要给测试与短化复现用。
+const _reapTickEnv = Number(process.env.YFW_KERNEL_REAP_TICK_MS)
+if (KERNEL_IDLE_REAP_MS > 0) setInterval(reapIdleKernels, _reapTickEnv > 0 ? _reapTickEnv : 60000).unref?.()
 
 // ---------------------------------------------------------------------------
 // 内核失速看门狗：轮次活跃（assistant 已开启、result 未到）但内核 stdout 长期
@@ -2236,15 +2493,20 @@ if (KERNEL_STALL_WARN_MS > 0) setInterval(warnStalledKernels, 60000).unref?.()
 function armFirstBytePending(session, sid) {
   clearFirstBytePending(session)
   session._turnStartAt = Date.now()
+  // 计时器只操作它自己武装的那个 session 对象（2026-09-12 修复）：旧写法在 fire 里取
+  // `sessions.get(sid)`，同名会话被回收重建后拿到的是**新对象**——守卫判假时清掉的是新
+  // 会话的计时器（把当前轮的心跳永久关掉），而自己这个僵尸 interval 永不解除、每 30s
+  // 继续空转，新会话又被自己的 arm 武装一次 ⇒ 重复帧/心跳中断交替出现。
+  const own = session
+  const stillCurrent = () => sessions.get(sid) === own && own.proc && !own.proc.killed && own._turnActive && !!own._turnStartAt
   const first = setTimeout(() => {
     const fire = () => {
-      const s = sessions.get(sid)
-      if (!s || !s.proc || s.proc.killed || !s._turnActive || !s._turnStartAt) { clearFirstBytePending(s); return }
-      try { send({ type: 'event', data: { type: 'system', subtype: 'first_byte_pending', silentMs: Date.now() - s._turnStartAt }, sessionId: sid }) } catch {}
+      if (!stillCurrent()) { clearFirstBytePending(own); return }
+      try { send({ type: 'event', data: { type: 'system', subtype: 'first_byte_pending', silentMs: Date.now() - own._turnStartAt }, sessionId: sid }) } catch {}
     }
     fire()
-    session._fbpTimer = setInterval(fire, FIRST_BYTE_PENDING_INTERVAL_MS)
-    if (session._fbpTimer?.unref) session._fbpTimer.unref()
+    own._fbpTimer = setInterval(fire, FIRST_BYTE_PENDING_INTERVAL_MS)
+    if (own._fbpTimer?.unref) own._fbpTimer.unref()
   }, FIRST_BYTE_PENDING_MS)
   if (first.unref) first.unref()
   session._fbpFirstTimer = first
@@ -2324,7 +2586,45 @@ wss.on('connection', (ws, req) => {
   browserRouter.addGuiClient(ws)
   ws.isAlive = true
   ws.on('pong', () => { ws.isAlive = true })
+  // 桥身份握手（2026-09-12 桥树杀事故的无感愈合）：GUI 首包即收 bridge_hello。
+  // 前端对比身份 id——换桥重连时旧会话已随旧桥消亡，据此静默自动续接
+  // （--resume 无缝）；同一桥瞬时闪断则 id 不变，不做多余动作。
+  try { ws.send(JSON.stringify({ type: 'bridge_hello', id: BRIDGE_INSTANCE_ID })) } catch {}
   console.log('[bridge] GUI connected')
+  // 未决等待重放（2026-09-12）：审批/提问帧此前只在产生的那一刻广播一次——若那一刻恰好
+  // 没有 GUI 连接（WS 空窗）或连接刚被心跳判死，帧就永久丢失，内核在等一个没人看得见的
+  // 答复（实测 17891979 的审批帧发给了 0 个客户端，此后 13 分钟无人回收）。新客户端接入
+  // 即重放当前未决项；另补一帧 first_byte_pending，让"内核静默中"这类纯周期信号不必
+  // 再等下一个 30s tick（重连后 UI 立刻有话说）。
+  try {
+    const sendToThis = (msg) => { try { ws.send(JSON.stringify(msg)) } catch {} }
+    for (const [sid, s] of sessions) {
+      if (!s || !s.proc || s.proc.killed) continue
+      if (s._pendingQuestions) sendToThis({ type: 'question', sessionId: sid, data: s._pendingQuestions })
+      if (s._pendingApprovals && s._pendingApprovals.size > 0) {
+        for (const [toolUseId, p] of s._pendingApprovals) {
+          sendToThis({
+            type: 'approval',
+            sessionId: sid,
+            data: {
+              toolUseId,
+              command: p.command,
+              requestId: p.requestId,
+              reason: p.reason,
+              toolName: p.toolName,
+              highRisk: matchesHighRisk(p.command),
+              hard: p.hard,
+              mode: effectiveApprovalMode(sid),
+              replayed: true,
+            },
+          })
+        }
+      }
+      if (s._turnActive && s._lastOutAt > 0 && Date.now() - s._lastOutAt >= FIRST_BYTE_PENDING_MS) {
+        sendToThis({ type: 'event', data: { type: 'system', subtype: 'first_byte_pending', silentMs: Date.now() - (s._turnStartAt || s._lastOutAt) }, sessionId: sid })
+      }
+    }
+  } catch (e) { console.warn('[bridge] pending replay failed:', e.message) }
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw.toString())
@@ -2385,9 +2685,20 @@ wss.on('connection', (ws, req) => {
             try { execSync(`taskkill -F -T -PID ${s.proc.pid}`, { timeout: 5000 }) } catch { try { s.proc.kill() } catch {} }
             sessions.delete(sid)
           }
+          // 取消即作废未决等待：内核收到 cancel 会 abort 当前轮，挂起的提问/审批不会再有
+          // 答复，残留只会让回收器继续豁免该会话（T9.1）。GUI 侧由 cancelled 帧同步清空。
+          s._pendingQuestions = null
+          if (s._pendingApprovals?.size) s._pendingApprovals.clear()
+          s._awaitingSince = 0
           s._cancelTimer = setTimeout(() => {
-            if (sessions.get(sid) === s && s._cancelPending && s._lastOutAt > s._cancelAt) {
-              console.warn('[bridge] cancel fallback: kernel still producing after interrupt, hard kill')
+            // 未确认即强杀（2026-09-12 尸体事故修复）：旧判据 `_lastOutAt > _cancelAt`
+            // 只杀"仍在产出"的内核——失活尸体（零输出、事件循环无任务排程）永远
+            // 不会被强杀，用户点停止面对的就是一个永不响应的进程。新判据：
+            // cancel 注入 6s 后仍未确认（result 未到 → _cancelPending 未清、进程
+            // 未退）即判尸体，taskkill 强杀。健康内核 abort 传导秒级应答，
+            // 6s 无应答者必为尸体（硬看门狗 10 分钟兜底之前人工即可回收）。
+            if (sessions.get(sid) === s && s._cancelPending) {
+              console.warn('[bridge] cancel fallback: kernel not acknowledged cancel in 6s, hard kill')
               try { execSync(`taskkill -F -T -PID ${s.proc.pid}`, { timeout: 5000 }) } catch { try { s.proc.kill() } catch {} }
               sessions.delete(sid)
             }
@@ -2418,6 +2729,27 @@ wss.on('connection', (ws, req) => {
             console.warn('[bridge] effort send failed:', e.message)
           }
         }
+      } else if (msg.type === 'approval-mode') {
+        // 审批档位切换（2026-09-12 四档化）：状态栏徽标 = 本会话临时覆盖（仅内存），
+        // 设置页改的是全局持久化档位（走 POST /config）。两种语义共用本 case：
+        //   mode = 'manual'|'auto'|'loose'|'bypass' → 写会话覆盖；mode = null/'' → 清除覆盖。
+        const sid = msg.sessionId || 'default'
+        const raw = msg.mode === null || msg.mode === undefined || msg.mode === '' ? null : String(msg.mode)
+        if (sid === HOST_SID) {
+          // 工作流宿主不接受会话覆盖（GUI 不渲染它的状态栏，覆盖了没人能撤销）
+          send({ type: 'approval-mode-rejected', sessionId: sid, data: { reason: '工作流宿主会话不支持临时覆盖', mode: effectiveApprovalMode(sid) } })
+        } else if (raw !== null && !isValidApprovalMode(raw)) {
+          console.warn(`[bridge] approval-mode 非法值 ${JSON.stringify(raw)} sid=${sid.slice(0, 8)}`)
+          send({ type: 'approval-mode-rejected', sessionId: sid, data: { reason: `非法档位 ${JSON.stringify(raw)}`, mode: effectiveApprovalMode(sid) } })
+        } else {
+          if (raw === null) sessionApprovalModes.delete(sid)
+          else sessionApprovalModes.set(sid, normalizeApprovalMode(raw))
+          const mode = effectiveApprovalMode(sid)
+          console.log(`[bridge] approval-mode sid: ${sid.slice(0, 8)} | ${raw === null ? 'clear(→global)' : raw} → ${mode}`)
+          // 活会话就地热切换（无进程则下次 spawn 时按 effectiveApprovalMode 参数生效）
+          pushApprovalModeToKernel(sid, mode)
+          broadcastApprovalMode(sid, raw === null ? 'cleared' : 'session')
+        }
       } else if (msg.type === 'pet:show-main') {
         // 桌面宠物双击 → 通知所有客户端（主进程监听后打开/聚焦主窗口）
         send({ type: 'pet:show-main', data: {} })
@@ -2445,7 +2777,7 @@ wss.on('connection', (ws, req) => {
           console.log('[bridge] answer injected for session:', sid.slice(0, 8))
         }
         // 提问已被回答——广播撤销外部监听者（如桌面宠物嘉嘉）的提问提示
-        if (session) session._pendingQuestions = null
+        if (session) { session._pendingQuestions = null; clearSessionAwaiting(session) }
         send({ type: 'question-resolved', sessionId: sid })
       }
       else if (msg.type === 'question-dismiss') {
@@ -2453,7 +2785,7 @@ wss.on('connection', (ws, req) => {
         // 但向嘉嘉等监听者广播”提问已处理”，撤销待回答提示
         const sid = msg.sessionId || 'default'
         const session = sessions.get(sid)
-        if (session) session._pendingQuestions = null
+        if (session) { session._pendingQuestions = null; clearSessionAwaiting(session) }
         send({ type: 'question-resolved', sessionId: sid })
       }
       else if (msg.type === 'approval-response') {
@@ -2486,6 +2818,7 @@ wss.on('connection', (ws, req) => {
             }
             session.proc.stdin.write(JSON.stringify(response) + '\n')
             session._pendingApprovals.delete(toolUseId)
+            clearSessionAwaiting(session)
             console.log(`[bridge] approval-response sid=${sid.slice(0, 8)} toolUseId=${toolUseId} approved=${approved}`)
           } else {
             console.warn(`[bridge] approval-response: no pending approval for toolUseId=${toolUseId}`)
@@ -2530,13 +2863,17 @@ async function runProbeFor(providerId = null) {
   if (!provider) return { error: 'provider not found' }
   const model = provider.primaryModel || (provider.models && provider.models[0]) || ''
   const cache = provider.probeResult
-  const cacheFresh = !!(cache && cache.at && (Date.now() - cache.at < 24 * 3600 * 1000) && cache.baseUrl === provider.apiBaseUrl && cache.model === model)
+  // toolsSupported !== undefined：旧版缓存（2026-09-12 前写入）没有工具能力结论 →
+  // 视为不新鲜，复探一次（一次性成本，换来"探测结论完整"的一致语义；否则升级后
+  // 最长 24h 内探测不报工具能力）
+  const cacheFresh = !!(cache && cache.at && (Date.now() - cache.at < 24 * 3600 * 1000) && cache.baseUrl === provider.apiBaseUrl && cache.model === model && cache.toolsSupported !== undefined)
   let probe
   if (cacheFresh) {
     probe = {
       ok: true, fromCache: true, ttftMs: null, latencyMs: null,
       modelsMeta: cache.maxModelLen ? [{ id: model, maxModelLen: cache.maxModelLen }] : null,
       prefillTokPerSec: cache.prefillTokPerSec ?? null,
+      toolsSupported: cache.toolsSupported ?? null,
     }
   } else {
     probe = await probeProviderCapabilities({ apiBaseUrl: provider.apiBaseUrl, authToken: provider.authToken, model })
@@ -2546,10 +2883,16 @@ async function runProbeFor(providerId = null) {
   const nextProvider = {
     ...provider,
     ...updates,
-    probeResult: { at: Date.now(), baseUrl: provider.apiBaseUrl, model, maxModelLen: learnedWindow, prefillTokPerSec: probe.prefillTokPerSec ?? null },
+    probeResult: { at: Date.now(), baseUrl: provider.apiBaseUrl, model, maxModelLen: learnedWindow, prefillTokPerSec: probe.prefillTokPerSec ?? null, toolsSupported: probe.toolsSupported ?? null },
   }
   saveConfig({ providers: (cfg.providers || []).map(p => (p.id === provider.id ? nextProvider : p)) })
-  if (Object.keys(updates).length) {
+  // 工具能力为 false 时无条件落一条 warn（诊断日志可查；GUI 侧经 notes/设置页可见）
+  if (probe.toolsSupported === false) {
+    console.warn('[bridge] provider 未开启工具调用（带 tools 的请求被服务端拒绝）:', provider.id, '→ 需以 --enable-auto-tool-choice --tool-call-parser 启动模型服务')
+  }
+  // 广播条件含 notes：工具能力警示可能不伴随任何 updates（配置无需变更），
+  // 但结论必须让设置页刷新时可见（旧实现只按 updates 判定会吞掉纯提示型结论）
+  if (Object.keys(updates).length || notes.length) {
     console.log('[bridge] probe auto-tuned provider', provider.id, JSON.stringify(updates))
     broadcastGui({ type: 'provider_updated', data: { providerId: provider.id, updates, notes } })
   }

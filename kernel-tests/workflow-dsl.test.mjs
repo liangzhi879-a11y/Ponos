@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parseYaml, loadWorkflow, validateWorkflow, normalizeWorkflow, normalizeNode, unquote, DSL_VERSION } from '../kernel/workflow-dsl.mjs'
+import { parseYaml, loadWorkflow, validateWorkflow, normalizeWorkflow, normalizeNode, unquote, toModel, serializeWorkflow, normalizeTriggers, DSL_VERSION } from '../kernel/workflow-dsl.mjs'
 
 const GOOD = `name: demo
 version: 1.0.0
@@ -191,4 +191,39 @@ test('normalizeNode：config 摊平只补缺、不覆盖节点顶层字段', () 
   assert.deepEqual(n.retry, { max: 1 }, 'config.retry 不得覆盖顶层 retry')
   assert.equal(n.prompt, 'p', 'config 中的新键应摊平到节点')
   assert.equal(n.config, undefined, 'config 键应被消费掉')
+})
+
+// —— 2026-09-12 实测崩溃回归：triggers 裸逗号标量在两条路径上形状不一致 ——
+// 现场证据：spec-dev 的 workflow.yml 写 `triggers: spec 开发, spec-dev, …`（裸标量），
+//   discoverWorkflows（列表）归一成数组、toModel（编辑器模型）原样透传成字符串，
+//   GUI 编辑器 `(model.triggers || []).join(', ')` 抛 `join is not a function` → 打开画布整页白屏；
+//   保存路径 `model.triggers.map(...)` 同样会抛。修法：normalizeTriggers 单一归一器，三处共用。
+test('triggers 形状契约：裸逗号标量在列表与编辑器模型上必须都是 string[]', () => {
+  const yml = [
+    'name: demo',
+    'version: 1.0.0',
+    'triggers: 甲, 乙，丙',            // 中英文逗号混合的裸标量
+    'trigger_config: { manual: true }',
+    'nodes:',
+    '  - { id: start, type: start }',
+    'edges: []',
+  ].join('\n')
+  withFile(yml, (root) => {
+    const wf = loadWorkflow({ roots: [root], id: 'demo' })
+    assert.deepEqual(wf.triggers, ['甲', '乙', '丙'], 'loadWorkflow 应归一出数组')
+
+    const model = toModel(wf)
+    assert.ok(Array.isArray(model.triggers), `编辑器模型 triggers 必须是数组（实际 ${typeof model.triggers}）`)
+    assert.deepEqual(model.triggers, ['甲', '乙', '丙'], '编辑器模型应与加载结果同形')
+    assert.equal(typeof model.triggers.join, 'function', 'GUI 会对它调 .join/.map，字符串形状即白屏')
+
+    // 保存路径：serializeWorkflow 内部先 toModel，不应抛
+    const text = serializeWorkflow(model)
+    assert.match(text, /^triggers: \[甲, 乙, 丙\]$/m, '序列化应写回数组写法')
+
+    // 已是数组 / 缺失 / 数字等形态都要稳
+    assert.deepEqual(normalizeTriggers(['a', ' a ', '']), ['a', 'a'], '数组形态应去空去重空白')
+    assert.deepEqual(normalizeTriggers(undefined), [], '缺失 → 空数组而非 undefined（避免下游 ?? [] 失效）')
+    assert.deepEqual(toModel({ name: 'x', nodes: [], edges: [] }).triggers, [], '无 triggers 的模型也应为空数组')
+  })
 })

@@ -37,7 +37,9 @@
 ```
 "<node>" "<kernel>" \
   --print --output-format stream-json --input-format stream-json \
-  --verbose --dangerously-skip-permissions \
+  --verbose \
+  --approval-mode <manual|auto|loose|bypass> \
+  [--dangerously-skip-permissions]        # 仅 loose/bypass 传（见下表）\
   --permission-prompt-tool stdio \
   --disallowedTools AskUserQuestion \
   [--resume <sessionId>] \
@@ -45,6 +47,30 @@
   [--model <provider 主模型>] \
   [--add-dir <会话 cwd>] [--add-dir <技能根目录>]
 ```
+
+### 2.1 审批放行档位（`--approval-mode`，2026-09-12）
+
+档位由 `server/approval-mode.mjs` 决定 spawn 参数（`approvalSpawnArgs`）；会话级临时覆盖
+（仅内存，进程退出即清）优先于 config.json 的全局档（`resolveEffectiveApprovalMode`）。
+
+| 档位 | 传 `--dangerously-skip-permissions` | 语义（谁还会问） |
+|---|---|---|
+| `manual` | 否 | 普通 Bash 也问 |
+| `auto` | 否 | 工具层写文件（Write/Edit/…）、联网、子 Agent 问 |
+| `loose`（**默认**） | 是 | 只问高危 Bash（`server/highrisk.mjs`）与灾难命令 = 应用此前的真实行为 |
+| `bypass` | 是 | 除灾难命令外都不问 |
+
+硬约束（**不随档位变化**，内核侧 `kernel/blacklist.mjs`）：
+`rm -rf /`、`rm -rf ~`、`mkfs*`、`format X:`、`diskpart`、`dd of=/dev/…`、`shutdown/reboot/halt/poweroff`。
+命中时四档**都发 `can_use_tool`（带 `hard:true`）**——即仍弹窗、可单次放行，但：
+① 不参与拒绝降级连击计数；② 弹窗文案为「本次放行」，**不存在"总是允许"记忆**
+（回执固定 `decisionClassification:'user_temporary'`，内核仅在本次 tool_use 生效）。
+`opts.disallowedTools` 里的工具在闸门处提前放行（如 chat 模式禁用的本地工具），
+由注册表自己回"工具已被禁用"，避免 manual/auto 下弹无意义的窗。
+
+旧内核兼容：忽略未知 flag（`cli.mjs parseArgs` 的 `default:` 分支），且因
+`--dangerously-skip-permissions` 仍在而停在 `loose`；bridge 经 §4 的 `init.approval_mode`
+回显比对发现不一致时报 `approval-mode-degraded`（§5）。打包前须跑 `node scripts/build-kernel.mjs`。
 
 环境变量（`buildChildEnv()`，解析序统一 `YFWORKING_HOME || CLAUDE_CONFIG_DIR || ~/.yfworking`，见 server/yfw-home.cjs）：
 | 变量 | 值 | 作用 |
@@ -66,7 +92,9 @@
 |---|---|---|
 | `user` | `{ message:{role:'user',content}, priority?, uuid? }` | 投递一轮用户消息（队列化；`uuid` 用于生命周期追踪） |
 | `control_request` | `{ request_id, request:{subtype} }` | 中断/取消。`subtype:'cancel'`（bridge 的优雅停止）、`'interrupt'`（abort 主查询）等 |
-| `control_response` | `{ response:{ request_id, subtype:'success', response:{ behavior:'allow'/'deny', updatedInput, toolUseID, decisionClassification } } }` | 权限审批回执，解除 `can_use_tool` 挂起 |
+| `control_request` | `{ request_id, request:{ subtype:'reasoning_effort', payload:{value} } }` | 思考深度热切换（Task 12） |
+| `control_request` | `{ request_id, request:{ subtype:'approval_mode', payload:{value} } }` | 审批档位热切换（2026-09-12）。`value` ∈ `manual/auto/loose/bypass`；非法值**不报错不崩**，回落默认档并回 `system/approval_mode_rejected`（§4）。生效后内核侧记 `appendMeta('approval_mode')` 审计 |
+| `control_response` | `{ response:{ request_id, subtype:'success', response:{ behavior:'allow'/'deny', updatedInput, toolUseID, decisionClassification } } }` | 权限审批回执，解除 `can_use_tool` 挂起。`decisionClassification` 恒为 `'user_temporary'`（一次性，无"总是允许"记忆） |
 | `anchor_applied` | `{ issueIds: string[] }` | 上下文失真「重新锚定」已生效（2026-09-12）：用户在 GUI 确认并发送锚点后，把这些失真证据标记为 resolved → 失真档**立即回绿**并进入观察期（`observeTurns` 轮）。**不是真值来源**：只表达"用户已处理"；内核按 id 匹配，未知 id 静默忽略。上报路径：GUI → `POST /session/anchor-applied`（§7）→ 内核对目标会话 stdin 写本消息 |
 
 注：内核 CLI 还支持从 stdin 读取 agents JSON、systemPrompt 等（绕过 ARG_MAX）；`structuredIO.structuredInput` 为逐行解析器（print.ts:2834 起）。
@@ -77,10 +105,10 @@
 
 | type | 关键字段 | 语义 / bridge 处理 |
 |---|---|---|
-| `system` | `subtype`（init/status/session_state_changed/task_notification/task_started/task_progress/post_turn_summary/rate_limit…） | 生命周期与系统事件；`task_progress` 视为低优先级可丢弃 |
+| `system` | `subtype`（init/status/session_state_changed/task_notification/task_started/task_progress/post_turn_summary/rate_limit/approval_mode_updated/approval_mode_rejected…） | 生命周期与系统事件；`task_progress` 视为低优先级可丢弃。`init` 携带 `approval_mode`（内核此刻**实际生效**档位，供 bridge 做旧内核检测）；`approval_mode_updated` 带 `{value}`，`approval_mode_rejected` 带 `{reason, value}` |
 | `assistant` | `message.content[]`（text/thinking/tool_use 块）、`uuid` | 模型回复。bridge 从中**提取并剥离**里程碑标记与 `<!--ASK_USER-->` 卡片 |
 | `result` | `usage{input_tokens,output_tokens}` | 一轮结束；cancel 生效确认点；`_turnActive` 复位 |
-| `control_request` | `request{ subtype:'can_use_tool', request_id, tool_use_id, tool_name, input, decision_reason }` | 权限审批弹窗触发源（bridge 转发为 `approval`，GUI 批准后回 `control_response`） |
+| `control_request` | `request{ subtype:'can_use_tool', request_id, tool_use_id, tool_name, input, decision_reason, hard?, mode? }` | 权限审批弹窗触发源（bridge 转发为 `approval`，GUI 批准后回 `control_response`）。`hard:true` = 命中灾难级硬黑名单（§2.1，四档都问、不计入降级连击）；`mode` = 发起询问时生效的档位。二者缺省省略（旧载荷逐字节不变） |
 | `bridge_request` | `route:'browser', …` | 内置浏览器自动化请求 → **bridge 直连浏览器执行器，不转发 GUI**（防敏感载荷泄漏） |
 | `stream_event` / `keep_alive` / `streamlined_text` / `prompt_suggestion` | — | 流式/保活/精简输出/建议（SDK 消费者用） |
 | `error` | `{message}` | 错误 |
@@ -125,8 +153,11 @@ env 调参：`PONOS_FIDELITY`（`0` 总开关关）、`_WINDOW`（默认 12 轮�
 | `milestones` / `milestone-start` / `milestone-ok` | 解析出的标记数据 | 从 assistant text/thinking 提取的结构化进度（散文兜底：`阶段 X/Y` 叙述驱动） |
 | `question` | 解析后的 ASK_USER 卡片数据（或 `{raw}` 容错） | 提问卡片；解析失败带 raw 让前端兜底 |
 | `question-resolved` | `{ sessionId }` | 提问已被回答/跳过（撤销嘉嘉等监听者提示） |
-| `approval` | `{ toolUseId, command, requestId, reason, toolName, highRisk }` | 权限审批弹窗 |
+| `approval` | `{ toolUseId, command, requestId, reason, toolName, highRisk, hard, mode }` | 权限审批弹窗。`hard:true` = 灾难级（弹窗显示灾难级警示条，「本次放行」一次性）；`mode` = 内核发起询问时生效的档位 |
 | `approval-resolved` | `{ sessionId, toolUseId }` | 审批已回执 |
+| `approval-mode-changed` | `{ sessionId, data:{ mode, override, global, scope } }` | 生效档位变更（2026-09-12）。`mode` = 本会话**实际**生效档位；`override` = 是否存在会话级临时覆盖（**布尔**；为 true 时 GUI 显示「临时」，其值即 `mode`）；`global` = 全局档；`scope` ∈ `session`（用户切档）/`cleared`（覆盖被清，回落全局）/`global`（全局热生效推到本会话）。GUI 一律以此为准渲染，**不做本地乐观写** |
+| `approval-mode-degraded` | `{ sessionId, data:{ expected, actual, message } }` | 内核回显的档位与 bridge 期望不符（跑的是忽略 `--approval-mode` 的旧缓存内核）→ GUI 弹系统提示条。**必须让用户看见**：否则他会以为选的 `manual` 生效了 |
+| `approval-mode-rejected` | `{ sessionId, data:{ reason, mode } }` | 档位切换被 bridge 拒绝（非法值 / 工作流宿主会话 `_wfhost` 不支持临时覆盖）→ GUI 弹同一条提示条 |
 | `pet:show-main` / `pet:quit-app` | `{}` | 宠物双击/退出广播 |
 | `workflow_event` | `{ sessionId, event: { type:'start'\|'node'\|'node_skipped'\|'edge_taken'\|'end', runId, … } }` | 工作流运行事件（§7.1），`sessionId` 通常为宿主会话 `_wfhost` |
 
@@ -141,6 +172,7 @@ env 调参：`PONOS_FIDELITY`（`0` 总开关关）、`_WINDOW`（默认 12 轮�
 | `answer` | `{ sessionId, data:{ answers[], notes } }` | 卡片回答 → 拼装成用户消息注入内核 stdin，广播 `question-resolved` |
 | `question-dismiss` | `{ sessionId }` | 跳过卡片（CLI 保持等待，广播 `question-resolved`） |
 | `approval-response` | `{ sessionId, toolUseId, approved }` | 审批结果 → `control_response` 注入内核 |
+| `approval-mode` | `{ sessionId, mode }` | 会话级档位临时覆盖（2026-09-12，状态栏徽标）：`mode` ∈ 四档 → 记入内存 Map 并热切活内核；`mode:null` → 清覆盖回落全局。**不写 config.json**（全局档只在 `/config`）。非法值/`_wfhost` → `approval-mode-rejected`；成功后广播 `approval-mode-changed` |
 | `browser_control` | `{ sessionId, command }` | 暂停/继续浏览器执行器（纯路由） |
 | `executor:hello` | — | 主进程浏览器执行器注册（从 GUI 广播列表摘除） |
 | `browser:exec:response` | `{ requestId, … }` | 执行器完成 → 回写内核 stdin |
@@ -159,7 +191,8 @@ env 调参：`PONOS_FIDELITY`（`0` 总开关关）、`_WINDOW`（默认 12 轮�
 | `/health`、`/diag/info` | 健康/诊断 |
 | `/session/anchor-applied`（POST） | 上下文失真「重新锚定」上报（2026-09-12）：body `{sessionId, issueIds[]}` → 校验后向该会话内核 stdin 写 `anchor_applied`（§3）。`sessionId` 缺失/空白 → **400** `{ok:false,error:'sessionId required'}`（不允许无主消息落进某个会话）；`issueIds` 非数组/含脏值 → 清洗（去重、剔非字符串、单条限长 120、封顶 50）后照常 **200** `{ok:true}`。路由只做校验+转发，**判定永远在内核** |
 | `/test-provider`、`/verify-provider` | provider 连通性 |
-| `/config`、`/providers`、`/providers/*` | 配置读写（`~/.yfworking/config.json`，写前备份+迁移） |
+| `/config`、`/providers`、`/providers/*` | 配置读写（`~/.yfworking/config.json`，写前备份+迁移）。新字段（2026-09-12）：`approvalMode`（全局审批档，非法值被 `sanitizeConfigPatch` 钳回默认 `loose`）、`logPolicy`（日志策略，见 §7.2 与 `server/log-policy.cjs` 的 `normalizeLogPolicy` 钳制） |
+| `/logs/list`、`/logs/tail`、`/logs/prune` | 运行日志端点（2026-09-12，见 §7.2） |
 | `/skills`、`/sample-skills`、`/install-skill`、`/uninstall-skill` | 技能管理（写入 `~/.yfworking/skills/`） |
 | `/worktrees`、`/branches` | git worktree/分支管理 |
 | `/workflows`、`/workflows/*` | 工作流模块（CRUD/运行/停止/确认/审计记录/导入导出/绑定，见 §7.1） |
@@ -175,25 +208,33 @@ env 调参：`PONOS_FIDELITY`（`0` 总开关关）、`_WINDOW`（默认 12 轮�
 
 | 方法 + 路径 | 请求体 | 响应（成功） |
 |---|---|---|
-| `GET /workflows` | — | `{ workflows: [{id,name,description,version,triggers,expose,nodeCount,edgeCount,legacy,hasEnd,settings,updatedAt,lastRun}], root }` |
+| `GET /workflows` | — | `{ ok:true, workflows: [{id,name,description,version,triggers,expose,nodeCount,edgeCount,legacy,hasEnd,settings,updatedAt,lastRun}], root }` |
 | `POST /workflows` | `{ id, model?, yaml? }` | `{ ok:true, id, backup }`（`id` 必填） |
 | `GET /workflows/:id` | — | `{ ok:true, id, yml, validation, model }`（宿主解析；不存在 → 404） |
 | `PUT /workflows/:id` | `{ model? , yaml? }` | `{ ok:true, id, backup, validation }` |
 | `DELETE /workflows/:id` | — | `{ ok:true, id }` |
 | `POST /workflows/:id/duplicate` | `{ toId }` | `{ ok:true, id, backup }`（`id` = 新 id） |
 | `GET /workflows/:id/validate` | — | `{ ok, errors:[{code,message,node?}], warnings:[] }` |
-| `GET /workflows/:id/versions` | — | `{ versions: [{ ts, path }] }`（新→旧） |
+| `GET /workflows/:id/versions` | — | `{ ok:true, versions: [{ ts, path }] }`（新→旧） |
 | `POST /workflows/:id/rollback` | `{ ts }` | `{ ok:true, id, backup }`（回滚 = 用快照覆盖并再快照旧版） |
-| `GET /workflows/:id/export` | — | `{ bundle: { format:'yfworking-workflow', schemaVersion:2, exportedAt, workflow, manifest:{kernelMinVersion,requiredTools,nodeTypes} }, filename:'<id>.yfwflow' }` |
+| `GET /workflows/:id/export` | — | `{ ok:true, bundle: { format:'yfworking-workflow', schemaVersion:2, exportedAt, workflow, manifest:{kernelMinVersion,requiredTools,nodeTypes} }, filename:'<id>.yfwflow' }` |
 | `POST /workflows/import` | `{ bundle, id? }` | `{ ok:true, id, warnings:[], meta }` |
-| `GET /workflows/bindings` | — | `{ agents:{<agentId>:[wfId…]}, trusted:[wfId…] }` |
+| `GET /workflows/bindings` | — | `{ ok:true, agents:{<agentId>:[wfId…]}, trusted:[wfId…] }` |
 | `PUT /workflows/bindings`（POST 同义） | `{ agents, trusted }` | `{ ok:true }` |
-| `POST /workflows/run` | `{ id, inputs?, capabilities:{tools,write_dirs,network} }` | `{ ok:true, runId, status, steps, outputs, finalOutput, auditPath }` |
+| `POST /workflows/run` | `{ id, inputs?, capabilities:{tools,write_dirs,network} }` | `{ ok:true, runId, status, steps, outputs, finalOutput, unresolved?, error?, node?, auditPath }`（**同步等待跑完**才回执，见下「运行回执」） |
 | `POST /workflows/stop` | `{ runId }` | `{ ok, error? }` |
 | `POST /workflows/confirm` | `{ runId, node, action:'approved'\|'rejected', comment? }` | `{ ok, error? }` |
-| `GET /workflows/runs?name=<wfId>`（兼容 `?id=`） | — | `{ runs: [{ file, path, ts, steps, status }] }`（新→旧，≤20） |
+| `GET /workflows/runs?name=<wfId>`（兼容 `?id=`） | — | `{ ok:true, runs: [{ file, path, ts, steps, status }] }`（新→旧，≤20） |
 
 失败态：`PUT/POST` 的内核校验失败 → `400 { ok:false, error:'校验失败', errors:[…], warnings:[…] }`（**不落盘**）；运行失败 → `400 { ok:false, error, code?, node?, errors? }`；`/workflows/*` 未匹配子路由/方法 → `404 { ok:false, error:'not found' }`；**宿主未注入 → `500 { ok:false, error:'工作流宿主未注入' }`**（不静默降级）；存储层入参违规 → `400`；其余异常 → `500 { ok:false, error }`。
+
+**成功回执一律带 `ok:true`（契约，2026-09-12 修）**：客户端 `workflowApi.call()` 的失败判定是「HTTP 非 2xx」+「`body.ok === false`」，而消费方一律写 `const r = await listWorkflows(); if (!r.ok) …`。store 的纯数据回执原本**没有 ok 字段** → 成功被当失败，表现为**工作流列表恒显「暂无工作流」**（实际有数据）、运行前授权卡报 **「读取信任清单失败：undefined」**、运行历史恒空 —— 后端日志干净、curl 正常、单测全绿（单测只断言 `body.runs`/`body.trusted`，从不看 `ok`），因此极难自查。现由路由层 `json()` 助手统一补全（`obj.ok === undefined ? { ok:true, ...obj } : obj`；已有 `ok` 的内核/宿主回执原样保留），并加「ok 契约守卫」测试枚举全部路由断言 **2xx 必带 ok**。
+
+**运行回执（`POST /workflows/run`）是同步的**：宿主 `h.run` 等内核 `end` 事件后返回完整结果（`status/steps/outputs/finalOutput/auditPath`），**不是"只回 runId"**。前端 `startRun` 必须把它当权威兜底（合成 node/end 事件补进运行视图）——只认 WS 事件流的界面在丢事件时会永远停在「等待事件…」，用户观感即"点了运行没反应"。
+
+**`unresolved`（取值失败的返回值）**：内核变量作用域是 `{ inputs, var, <nodeId>: <该节点 output> }`——**节点 id 直接就是输出值**。故 `{{t.output}}` 在 t 输出为标量（template/llm/code/answer 均为字符串）时解析成 `undefined`，而 `JSON.stringify` 会把值为 `undefined` 的键**整条丢掉** → 上层只看到 `finalOutput:{}`，无从自查（实测：`{{t}}` → `"hello world"`，`{{t.output}}` → 丢键）。现 `end` 节点与 `synthesizeOutput` 均**保留键并置 `null`**，并把解析失败的项收集为 `unresolved: ["<outName> ← {{selector}}"]` 透传到回执与 `end` 事件；GUI 在 end 面板与运行前授权卡对 `{{x.output}}` 写法给出告警。
+
+**CORS 预检（renderer 跨源调用必需）**：`OPTIONS` 由 bridge 统一应答 `204` + `Access-Control-Allow-Origin`（回显请求来源）+ `Access-Control-Allow-Headers: Content-Type` + `Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS`。**白名单必须含 `PUT/PATCH/DELETE`**：保存（`PUT /workflows/:id`）、信任清单（`PUT /workflows/bindings`）、删除（`DELETE`）都是带 `application/json` 的**非简单请求**，预检未声明该方法则**真实请求根本不发出** → 前端只收到 `TypeError: Failed to fetch`（用户现象即"信任清单无法写入"）。curl 与直调路由的单测都不走预检，此类缺陷须靠浏览器真实 origin 回归或预检契约测试（`server/auth-preflight.test.mjs`）捕获。
 
 **`workflow_event` 事件形状**（WS outbound，§5；由内核 `workflow` 事件转发）：
 
@@ -207,7 +248,7 @@ env 调参：`PONOS_FIDELITY`（`0` 总开关关）、`_WINDOW`（默认 12 轮�
 | `node` | `runId, node, node_type, status:'running'\|'done'\|'failed'\|'skipped', dur_ms?, output?, error?, route?, in_body?` | 节点着色 + 输出预览（`status:'skipped'` 与 `node_skipped` 同帧到达） |
 | `node_skipped` | `runId, node, node_type, in_body?` | 节点置灰 `skipped` |
 | `edge_taken` | `runId, edge, state:'active'\|'skipped', in_body?` | 边高亮/淡化 |
-| `end` | `runId, status:'completed'\|'failed'\|'cancelled', steps, error?, node?` | 顶部状态 + 刷新历史 |
+| `end` | `runId, status:'completed'\|'failed'\|'cancelled', steps, error?, node?, unresolved?` | 顶部状态 + 刷新历史（`unresolved` 非空时 GUI 显式提示"N 个返回值取不到值"） |
 
 事件源：宿主会话（`_wfhost`）的事件由 `server/workflow-host.mjs` 的 `onEvent` 抛出；其他会话（`auto_trigger` 命中的内置触发）由 bridge 在 stdout 分发处直接广播——两者形状一致，只差 `sessionId`。同一帧也会经既有 `event` 通道原样转发一次（`data.type` 为事件名、`data.subtype === 'workflow'`），前端只按 `workflow_event` 消费即可。
 
@@ -219,6 +260,25 @@ env 调参：`PONOS_FIDELITY`（`0` 总开关关）、`_WINDOW`（默认 12 轮�
 
 **内核侧通道**（内核 ← 宿主，`workflow_command` / `workflow_confirm`）：`load`、`save`、`save-raw`、`validate`、`run`、`stop`（另沿用 `list`/`verify`/`migrate`/`webhook`/`scheduler`）。`save` 收 `payload.model` → `serializeWorkflow`；`save-raw` 收 `payload.yaml` 原文（保留排版/注释，缺 `yaml` 时回退 `model`）；两者都只做「序列化 → 解析归一 → 校验 → 回传 `{ok, id, yml, validation}`」或 `{ok:false, error:'校验失败', errors}`，**内核绝不写用户工作流目录**（多内核会话 = 多写者会互相覆盖版本快照；写盘唯一写者 = bridge 侧存储层，内核仅 `migrate` 是显式例外）。
 
+### 7.2 运行日志端点（`/logs/*`）（2026-09-12，UI 设置页「日志」）
+
+实现：`server/logs-routes.mjs`（`handleLogsRoute({method, pathname, searchParams, home, policy})` → `{status, body}`，未命中返回 `null` 交回路由链）；
+策略与文件操作真源：`server/log-policy.cjs`（CJS，桥与 Electron 主进程共用；GUI 侧 `src/lib/logUi.ts` 与之逐位一致，由 `server/log-policy-parity.test.mjs` 钉住）。
+落点：`<YFW_HOME>/logs/{app.log, kernel-stderr.log, renderer-console.log}`（+ `.1`、`.2`… 轮转份）。
+默认策略（`DEFAULT_LOG_POLICY`）：`{ persist:true, level:'info', maxFileBytes:5MB, maxFiles:3, maxAgeDays:14 }`；钳制 `LOG_POLICY_LIMITS`：单文件 64KB–100MB、份数 0–20、天数 1–365、`level ∈ debug|info|warn|error`。**只有显式 `persist:false` 才关闭**（字段缺失/拼错/字符串 `'false'` 一律保持开启）。
+
+| 方法 + 路径 | 请求 | 响应（成功） |
+|---|---|---|
+| `GET /logs/list` | — | `{ ok:true, dir, persist, policy, limits, levels, files:[{name,base,index,size,mtimeMs}] }`（新→旧；`persist:false` 时 `files` 仍返回历史） |
+| `GET /logs/tail?file=app.log&lines=200` | `lines` 钳 1–500（默认 200，非法→200） | `{ ok:true, file, lines:[…] }` |
+| `POST /logs/prune` | — | `{ ok:true, removed, freedBytes, files:[…] }` |
+
+失败态：文件名不合规（穿越/非白名单/`k > maxFiles`）→ `400 { ok:false, error }`；`/logs/prune` 用 GET → `405`；`/logs/*` 其他子路径 → `404`。
+文件名校验三重（`assertLogFileName` + 基名白名单 `{app.log, kernel-stderr.log, renderer-console.log}` + `resolve(join(dir,name)).startsWith(dir+sep)`）——`../config.json` 之类一律 400，**绝不读到日志目录以外的文件**。
+`persist:false` = 只停止写入：**绝不删除已有日志**，`/logs/tail` 与 `/logs/prune` 照常可用。
+`[立即清理]`（prune）只删轮转份（`.1`、`.2`…）并把当前主文件轮转成 `.1`——主文件从不被直接 `unlink`（`kernel-stderr.log` 的崩溃原文可能正被诊断读取）；不受 `persist` 开关影响（用户主动点清理即明确意图）。
+**明确不在日志策略管辖内**：`projects/**/*.jsonl`（内核 transcript = 权威对话档案）、`sessions/**`、`chats/**`、`runs/*.running|.err`、`config.json(.bak*)`、`memory/ skills/ workflows/ browser-whitelist.json auth.json`。
+
 ## 8. 会话生命周期
 
 - 会话以 `sessionId` 为键存于 bridge 内存；一个会话 = 一个内核进程。
@@ -226,12 +286,16 @@ env 调参：`PONOS_FIDELITY`（`0` 总开关关）、`_WINDOW`（默认 12 轮�
 - 轮次活跃跟踪：`assistant` 事件开轮、`result` 事件闭轮；空闲 10min → `taskkill` 回收（`_reaped` 置位，不广播 `closed`）。
 - 取消语义：`control_request(cancel)` → 内核 abort 主查询（ShellCommand 真杀 bash）+ killAllRunningAgentTasks（子 agent 逐个 abort）；6s 内持续输出则回退 `taskkill -F -T`。内核进程保留，会话可无缝续聊。
 - 崩溃统计：非零退出码且非主动取消 → `diagInfo.kernelCrashCount++`。
+- 档位覆盖生命周期（2026-09-12）：会话级临时覆盖（§6 `approval-mode`）只存 bridge 内存 Map；
+  进程 `close`/`error`（含 provider 切换重建进程、空闲回收）即清并广播 `approval-mode-changed{scope:'cleared'}`，
+  徽标可见地弹回全局档。⇒ **进程重建后生效的必是全局档**（这也是 GUI 把 `init.approval_mode` 回显
+  一律标 `override:false` 的依据）。
 
 ## 9. 净室重建的契约边界（替换内核时）
 
 **必须保持**（GUI 零改动的前提）：
-1. 内核 spawn 参数与 env 契约（§2）——尤其 `stream-json` 输入/输出格式与 `--permission-prompt-tool stdio`、`--disallowedTools AskUserQuestion`。
-2. 内核 stdin/stdout NDJSON 语义（§3、§4）——`user`/`control_request`/`control_response` 输入；`system`/`assistant`/`result`/`control_request`/`bridge_request` 输出。
+1. 内核 spawn 参数与 env 契约（§2、§2.1）——尤其 `stream-json` 输入/输出格式与 `--permission-prompt-tool stdio`、`--disallowedTools AskUserQuestion`、`--approval-mode`（替换内核时必须同样识别该 flag 并回显，否则 bridge 会报 `approval-mode-degraded`）、**灾难级硬黑名单底线**（§2.1，四档都不放开）。
+2. 内核 stdin/stdout NDJSON 语义（§3、§4）——`user`/`control_request`/`control_response` 输入；`system`/`assistant`/`result`/`control_request`/`bridge_request` 输出；`can_use_tool` 的 `hard`/`mode` 字段与 `system/init` 的 `approval_mode` 回显。
 3. 里程碑标记与 ASK_USER 卡片在 assistant 文本中的**输出格式**（bridge 提取/剥离依赖其结构）。
 4. HTTP REST 端点与响应形状（§7，GUI 直接调用）。
 5. WS 事件/消息形状（§5、§6）。

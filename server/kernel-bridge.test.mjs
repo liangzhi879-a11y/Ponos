@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { sanitizeSegment } from '../kernel/session.mjs'
+import { approvalSpawnArgs, DEFAULT_APPROVAL_MODE } from './approval-mode.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = join(__dirname, '..')
@@ -44,10 +45,15 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)) }
 // —— 真实内核子进程会话封装 ——
 // spawn `node kernel/cli.mjs` + bridge 会话契约参数（F8 最小必要集），stdout 逐行
 // NDJSON 收集（坏行忽略），提供 collect/send/endInput/stop 原语。
-function spawnKernel({ home, workDir, resume }) {
+function spawnKernel({ home, workDir, resume, approvalMode }) {
   const args = [
     '--print', '--output-format', 'stream-json', '--input-format', 'stream-json',
-    '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool', 'stdio',
+    '--verbose',
+    // 档位参数与 server/bridge.mjs getOrCreateSession 同源（approvalSpawnArgs）：
+    // 缺省 loose = 原硬编码 --dangerously-skip-permissions 的等价物（今天的行为），
+    // 显式传值才能测 manual/auto/bypass（见下方"档位端到端"用例）。
+    ...approvalSpawnArgs(approvalMode ?? DEFAULT_APPROVAL_MODE),
+    '--permission-prompt-tool', 'stdio',
     '--disallowedTools', 'AskUserQuestion',
   ]
   if (resume) args.push('--resume', resume)
@@ -169,8 +175,8 @@ function transcriptPath(home, cwd, sessionId) {
 }
 
 // system(init) 事件：会话身份（session_id）由内核生成并经 init 携带
-async function spawnAndInit({ home, workDir, resume }) {
-  const k = spawnKernel({ home, workDir, resume })
+async function spawnAndInit({ home, workDir, resume, approvalMode }) {
+  const k = spawnKernel({ home, workDir, resume, approvalMode })
   const init = await k.collect((m) => m.type === 'system' && m.subtype === 'init')
   return { k, init }
 }
@@ -249,6 +255,106 @@ test('审批闭环：高危 Bash 触发 can_use_tool control_request → control
     // 工具结果回合 mock 回显 → 本轮正常 result
     const { text } = await k.collectTurn()
     assert.match(text, /工具执行完成：/)
+    const info = await k.stop()
+    assert.ok(info)
+    assert.equal(info.code, 0)
+  } finally {
+    if (k) await k.stop()
+    rmSyncRetry(workDir)
+    rmSyncRetry(home)
+  }
+})
+
+test('档位端到端：manual 档下普通 Bash 也触发 can_use_tool（档位确实传进了内核）', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'yfw-kb-home-'))
+  const workDir = mkdtempSync(join(tmpdir(), 'yfw-kb-work-'))
+  let k
+  try {
+    const { k: kk, init } = await spawnAndInit({ home, workDir, approvalMode: 'manual' })
+    k = kk
+    // init 回显生效档位（桥据此比对旧缓存内核是否忽略了新 flag）
+    assert.equal(init.approval_mode, 'manual', 'init 应回显内核真正生效的档位')
+
+    await k.send({ type: 'user', message: { role: 'user', content: '[mock:tool-safe] 看一眼' } })
+    // manual = 连普通命令都要问（loose 档不会出现这条 control_request）
+    const req = await k.collect((m) => m.type === 'control_request' && m.request?.subtype === 'can_use_tool')
+    assert.equal(req.request.tool_name, 'Bash')
+    assert.match(String(req.request.input?.command ?? ''), /echo mock-safe/)
+    assert.equal(req.request.hard, undefined, '普通命令不应带硬黑名单标记')
+    assert.equal(req.request.mode, 'manual', '载荷应回带生效档位')
+
+    await k.send({
+      type: 'control_response',
+      response: {
+        request_id: req.request_id,
+        subtype: 'success',
+        response: { behavior: 'allow', updatedInput: {}, toolUseID: req.request.tool_use_id, decisionClassification: 'user_temporary' },
+      },
+    })
+    const { result } = await k.collectTurn()
+    assert.equal(result.subtype, 'success', '批准后本轮应正常收尾')
+    const info = await k.stop()
+    assert.ok(info)
+    assert.equal(info.code, 0)
+  } finally {
+    if (k) await k.stop()
+    rmSyncRetry(workDir)
+    rmSyncRetry(home)
+  }
+})
+
+test('档位端到端：bypass 档下高危 Bash 不发 can_use_tool，轮次正常收尾', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'yfw-kb-home-'))
+  const workDir = mkdtempSync(join(tmpdir(), 'yfw-kb-work-'))
+  let k
+  try {
+    const { k: kk, init } = await spawnAndInit({ home, workDir, approvalMode: 'bypass' })
+    k = kk
+    assert.equal(init.approval_mode, 'bypass')
+    // [mock:tool] 的 rm -rf /tmp/ponos-mock-target 是"高危但非灾难"——bypass 下应直接执行
+    await k.send({ type: 'user', message: { role: 'user', content: '[mock:tool] 清理' } })
+    // 并发监听审批请求：一旦弹出即使本轮挂住也能立刻判失败（而不是等 collect 超时）
+    const asked = k.collect(
+      (m) => m.type === 'control_request' && m.request?.subtype === 'can_use_tool',
+      { timeoutMs: 1500 },
+    ).then(() => true, () => false)
+    const { result } = await k.collectTurn()
+    assert.equal(await asked, false, 'bypass 档不应发 can_use_tool（高危命令应自动放行）')
+    assert.equal(result.subtype, 'success')
+    const info = await k.stop()
+    assert.ok(info)
+    assert.equal(info.code, 0)
+  } finally {
+    if (k) await k.stop()
+    rmSyncRetry(workDir)
+    rmSyncRetry(home)
+  }
+})
+
+test('档位端到端：硬黑名单（rm -rf /）在 bypass 档仍触发 can_use_tool 且带 hard 标记', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'yfw-kb-home-'))
+  const workDir = mkdtempSync(join(tmpdir(), 'yfw-kb-work-'))
+  let k
+  try {
+    const { k: kk } = await spawnAndInit({ home, workDir, approvalMode: 'bypass' })
+    k = kk
+    await k.send({ type: 'user', message: { role: 'user', content: '[mock:tool-catastrophic] 清空' } })
+    const req = await k.collect((m) => m.type === 'control_request' && m.request?.subtype === 'can_use_tool')
+    // ⚠️ 绝不能批准：这条 tool_use 真的是 rm -rf /（GNU rm 的 --preserve-root 是唯一防线）
+    assert.equal(req.request.input?.command, 'rm -rf /')
+    assert.equal(req.request.hard, true, '灾难命令应带硬黑名单标记')
+    assert.match(String(req.request.decision_reason ?? ''), /硬黑名单/)
+    // 拒绝 → 本轮收尾（模型收到"未执行"回填），进程仍可优雅退出
+    await k.send({
+      type: 'control_response',
+      response: {
+        request_id: req.request_id,
+        subtype: 'success',
+        response: { behavior: 'deny', message: '测试拒绝：灾难命令', toolUseID: req.request.tool_use_id, decisionClassification: 'user_reject' },
+      },
+    })
+    const { result } = await k.collectTurn()
+    assert.equal(result.subtype, 'success')
     const info = await k.stop()
     assert.ok(info)
     assert.equal(info.code, 0)

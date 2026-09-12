@@ -4,7 +4,7 @@
 // 权威校验在内核（kernel/workflow-dsl.validateWorkflow）；此处只做画布即时反馈，口径以内核为准。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { toFlow, fromFlow, deriveCapabilities, validateLocal, defaultConfig, nextNodeId, removeNodesFromModel, removeEdgesFromModel, NODE_TYPES, checkWorkflowId, suggestCopyId, type WorkflowModel } from './workflowModel.ts'
+import { toFlow, fromFlow, deriveCapabilities, validateLocal, defaultConfig, nextNodeId, removeNodesFromModel, removeEdgesFromModel, describeRemoval, describeDataFlow, asTriggerList, NODE_TYPES, checkWorkflowId, suggestCopyId, type WorkflowModel } from './workflowModel.ts'
 
 const MODEL: WorkflowModel = {
   name: 'demo', version: '1.0.0',
@@ -304,4 +304,102 @@ test('removeEdgesFromModel：只删边，节点与其它边不受影响', () => 
   assert.deepEqual(next.edges.map((e) => e.id), ['e2'])
   assert.equal(next.nodes.length, 2, '节点不受影响')
   assert.equal(m.edges.length, 2, '不得原地修改入参')
+})
+
+// —— 元素删除选择（2026-09-12 UX：批量删除前先摊开影响面）——
+test('describeRemoval：与 removeNodesFromModel 同源的清理计数（供批量删除确认框）', () => {
+  const m: WorkflowModel = {
+    name: 'd',
+    nodes: [
+      { id: 'start', type: 'start' },
+      { id: 'a', type: 'template', config: { template: 'A' } },
+      { id: 'b', type: 'llm', config: { prompt: '{{a}} 与 {{a.output}}' } },
+      { id: 'c', type: 'end', config: { outputs: [{ name: 'r', selector: '{{b}}' }] } },
+      { id: 'lp', type: 'loop', body: ['a'] },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'a' },
+      { id: 'e2', source: 'a', target: 'b' },
+      { id: 'e3', source: 'b', target: 'c' },
+    ],
+  }
+  const imp = describeRemoval(m, ['a'])
+  assert.equal(imp.edgesRemoved, 2, '与 a 相连的 e1/e2 计入')
+  assert.equal(imp.refsScrubbed, 2, 'b.prompt 里的两处 {{a…}} 计入')
+  assert.equal(imp.bodyCleanups, 1, 'loop.body 里的 a 计入')
+  assert.deepEqual(imp.refDetails.sort(), ['b ← {{a.output}}', 'b ← {{a}}'])
+  assert.deepEqual(imp.blocked, [])
+  assert.equal(m.nodes.length, 5, '只统计不修改')
+
+  const withStart = describeRemoval(m, ['start', 'b'])
+  assert.deepEqual(withStart.blocked, ['start'], 'start 会被拒绝删除（须如实告知）')
+  assert.equal(withStart.edgesRemoved, 2, '只统计真正会删的 b 的影响（start 被保住）：e2+e3')
+  assert.equal(withStart.refsScrubbed, 1, 'end.outputs 里的 {{b}} 会被清空')
+  assert.deepEqual(withStart.refDetails, ['c ← {{b}}'])
+  assert.deepEqual(describeRemoval(m, []), { edgesRemoved: 0, bodyCleanups: 0, refsScrubbed: 0, blocked: [], refDetails: [] })
+})
+
+// —— 数据流明确化（2026-09-12 UX：开始/结束的输入输出配置与"接到哪去"）——
+test('describeDataFlow：输入的使用者清单 + 未使用/未声明的引用', () => {
+  const m: WorkflowModel = {
+    name: 'd',
+    inputs: [{ name: 'q' }, { name: 'unused' }],
+    nodes: [
+      { id: 'start', type: 'start' },
+      { id: 'a', type: 'llm', config: { prompt: '{{inputs.q}} 以及 {{inputs.ghost}}' } },
+      { id: 'b', type: 'template', config: { template: '也用到 {{ inputs.q }}' } },
+      { id: 'c', type: 'end', config: { outputs: [{ name: 'r', selector: '{{b}}' }] } },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'a' },
+      { id: 'e2', source: 'a', target: 'b' },
+      { id: 'e3', source: 'b', target: 'c' },
+    ],
+  }
+  const flow = describeDataFlow(m)
+  const q = flow.inputs.find((i) => i.name === 'q')!
+  assert.equal(q.ref, '{{inputs.q}}', '给出可直接复制的引用写法')
+  assert.deepEqual(q.usedBy.sort(), ['a', 'b'], '带空格的 {{ inputs.q }} 也应被识别')
+  assert.deepEqual(flow.unusedInputs, ['unused'], '声明却没人用的输入要能报出来')
+  assert.deepEqual(flow.unknownInputRefs, [{ node: 'a', ref: 'inputs.ghost' }], '引用了未声明的输入')
+  assert.deepEqual(flow.outputs, [{ name: 'r', selector: '{{b}}', from: 'b', ok: true }])
+})
+
+test('describeDataFlow：输出取值源非上游 / 空 selector 都要标出来', () => {
+  const m: WorkflowModel = {
+    name: 'd',
+    inputs: [],
+    nodes: [
+      { id: 'start', type: 'start' },
+      { id: 'a', type: 'llm' },
+      { id: 'b', type: 'template' },
+      { id: 'c', type: 'end', config: { outputs: [{ name: 'ok', selector: '{{a}}' }, { name: 'bad', selector: '{{b}}' }, { name: 'empty', selector: '' }] } },
+    ],
+    // a → end，b 不在 end 的上游（悬空引用，内核会 VAR_UNREACHABLE）
+    edges: [
+      { id: 'e1', source: 'start', target: 'a' },
+      { id: 'e2', source: 'a', target: 'c' },
+      { id: 'e3', source: 'start', target: 'b' },
+    ],
+  }
+  const outs = describeDataFlow(m).outputs
+  assert.deepEqual(outs.map((o) => [o.name, o.from, o.ok]), [['ok', 'a', true], ['bad', 'b', false], ['empty', null, false]])
+  // 本地作用域（var/item/index…）由运行期提供，不算"未接上"
+  const scoped = describeDataFlow({ ...m, nodes: m.nodes.map((n) => (n.id === 'c' ? { ...n, config: { outputs: [{ name: 'x', selector: '{{var.x}}' }] } } : n)) })
+  assert.equal(scoped.outputs[0].ok, true)
+})
+
+// —— 2026-09-12 白屏崩溃回归：triggers 裸逗号标量（YAML `triggers: a, b, c`）——
+// 后端列表入口归一出数组、编辑器模型曾原样透传成字符串，GUI `(m.triggers||[]).join` 抛
+// `join is not a function` → 打开画布整页白屏。后端已修；前端 asTriggerList 兜底防白屏。
+test('asTriggerList：字符串/数组/数字/缺失四种形状都要能安全转成 string[]', () => {
+  assert.deepEqual(asTriggerList('甲, 乙，丙'), ['甲', '乙', '丙'], '中英文逗号都要切')
+  assert.deepEqual(asTriggerList(['a', ' a ', '', null as any]), ['a', 'a'], '数组去空、去空白')
+  assert.deepEqual(asTriggerList(42 as any), ['42'], '数字容错')
+  assert.deepEqual(asTriggerList(undefined), [], '缺失 → 空数组')
+  assert.deepEqual(asTriggerList({} as any), [], '异常形状 → 空数组（不抛）')
+  // 崩溃点复现：无论何种形状，`.join` 都必须可用
+  for (const bad of ['a, b', ['a'], undefined, 3, {}]) {
+    assert.equal(typeof asTriggerList(bad as any).join, 'function', `形状 ${JSON.stringify(bad)} 不得让 .join 缺失`)
+  }
 })

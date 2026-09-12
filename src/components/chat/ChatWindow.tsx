@@ -6,6 +6,7 @@ import { ThreadPrimitive } from '@assistant-ui/react'
 import { HealthGlow } from './HealthGlow'
 import { SessionModeBar } from './SessionModeBar'
 import { LoopStatusBar } from './LoopStatusBar'
+import { WaitStatusBar } from './WaitStatusBar'
 import { ChatRuntimeProvider } from '@/lib/chatRuntime'
 import { ChatContext } from './MarkdownText'
 import { AssistantMessageView, UserMessageView, SystemMessageView } from './AssistantMessageView'
@@ -255,6 +256,12 @@ export function ChatWindow({ conversationId }: Props) {
               <ArrowDown className="w-4 h-4" />
             </Button>
           )}
+
+          {/* 等待态常显条（2026-09-12 卡在思考界面事故）：内核静默/失速/等审批/
+              等回答/压缩时在此内联显示（chat 与 task 两条 rail 都可见，不悬浮不
+              遮挡）；无等待态不占位。此前这些状态只在右侧折叠状态栏可见，chat
+              模式下零出口，UI 只能显示静态「思考中…」。 */}
+          <WaitStatusBar conversationId={conversationId} />
 
           {/* 多轮 loop 轮次状态条（消息流/输入上方；非 active 不占位）。
               子 Agent 悬浮条/压缩指示族已移入右侧折叠状态栏（2026-09-10） */}

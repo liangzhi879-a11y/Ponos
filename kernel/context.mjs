@@ -86,18 +86,62 @@ export function isCodeLike(text) {
   return /(?:^|\n)[\t ]*(?:const|let|var|function|class|import|export|def|func|echo|SELECT|INSERT|UPDATE|DELETE|require|if\s*\()/i.test(String(text))
 }
 
-// 块级计价：text/thinking 按 text 密度，代码特征或 tool_result 按 code 密度，
-// 中文字段先按 cjk 密度（每字 ~1 token）单独计价、ASCII 余量按原密度，防 CJK 主体
-// 内容少计 ~4 倍；image/二进制固定 4800 当量；每块 +4。纯 ASCII 文本估值不变。
+// 载荷取文（2026-09-12 卡顿事故的根因面）：取块内**所有会进请求体**的文本/结构化载荷。
+// 旧实现按字段名猜 `text ?? thinking ?? content`——tool_use 的载荷在 `input`，三个字段
+// 全无 → raw='' → 每个 tool_use 块恒计 4 token（"每块 +4"里的 +4）。实测某 11.5h 会话：
+// 1523 条消息 / 1.0MB 请求体，772 个 tool_use 携带 0.55MB（Write 180KB / Agent 143KB /
+// Bash 141KB / Edit 84KB）只被计成 3,088 token（真实约 14.4 万，少算 14.1 万）→ pre-step
+// est 75K < 阈值 132K → maybeCompact 永远 below-threshold → **压缩 0 次**，而模型每轮实收
+// 1.0MB，表现为每轮 3s（缓存命中）到 65s（未命中）的"思考卡顿"且随会话单调恶化。
+// 故改为三段式：①登记字段逐一取文 ②未登记的**自有属性通用兜底** ③数组内容递归——
+// 新增块类型/新增载荷字段不可能再静默变 4 token（这正是旧实现被绕过的方式）。
+const PAYLOAD_KEYS = ['text', 'thinking', 'content', 'input', 'output', 'data']
+// 结构/控制字段：随请求体传输但不承载"内容量"，不计文本（image 的 source 走当量分支）。
+// 刻意排除 id/tool_use_id（每块 40 字符 UUID，772 块 ≈ 2 万 token 纯噪声——估算器判的是
+// "该不该压缩"，1-2% 的偏保守优于被 id 长度扰动）；name 是语义载荷故不排除。
+const META_KEYS = new Set([
+  'type', 'id', 'tool_use_id', 'cache_control', 'index', 'role', 'is_error',
+  'source', 'usage', 'stop_reason', 'stop_sequence', 'model',
+])
+
+function payloadText(block) {
+  const parts = []
+  const push = (v) => {
+    if (typeof v === 'string') { if (v) parts.push(v); return }
+    if (v == null) return
+    if (typeof v === 'object') { try { parts.push(JSON.stringify(v)) } catch { /* 循环引用/含 BigInt：跳过不炸 */ } }
+  }
+  for (const k of PAYLOAD_KEYS) push(block[k])
+  for (const [k, v] of Object.entries(block)) {
+    if (META_KEYS.has(k) || PAYLOAD_KEYS.includes(k)) continue
+    push(v)
+  }
+  return parts.join('\n')
+}
+
+// 块级计价：text/thinking 按 text 密度，代码特征 / tool_result / tool_use 按 code 密度
+//（tool_use 载荷是 JSON，且 JSON 转义后 `\n` 不是真换行——isCodeLike 的行首匹配必然失效，
+// 故按类型显式归类，不依赖内容嗅探）；中文字段先按 cjk 密度（每字 ~1 token）单独计价、
+// ASCII 余量按原密度，防 CJK 主体内容少计 ~4 倍；image/二进制/base64 附件固定 4800
+// 当量；每块 +4。纯 ASCII 的 text/tool_result 估值与旧实现一致（零回归）。
 export function estimateTokens(block = {}, opts = {}) {
   const { env = process.env } = opts
   const density = densityOf(env)
+  // 防御：数组内容里的裸字符串（旧格式/外部 transcript）不按对象遍历（会把每个字符
+  // 当成一个自有属性，'abc' → 'a\nb\nc' 长度翻倍）
+  if (typeof block === 'string') block = { type: 'text', text: block }
+  if (block == null || typeof block !== 'object') return 4
+  // 数组内容（tool_result/document 均可为块数组）：逐块递归——否则其中的
+  // image 块会被 JSON.stringify 成 base64 当文本计价（1MB 图 ≈ 33 万 token vs 实际 ~4800）
+  if (Array.isArray(block.content)) {
+    return 4 + block.content.reduce((s, b) => s + estimateTokens(b, opts), 0)
+  }
   if (block.type === 'image' || block.type === 'binary') return 4800 + 4
-  const raw =
-    block.type === 'tool_result'
-      ? String(block.content ?? '')
-      : String(block.text ?? block.thinking ?? block.content ?? '')
-  const per = block.type === 'tool_result' || isCodeLike(raw) ? density.code : density.text
+  // base64 附件当量（非 image 类型但带二进制 source 的块，如 document）
+  const src = block.source
+  if (src && typeof src === 'object' && src.type !== 'text' && typeof src.data === 'string' && src.data) return 4800 + 4
+  const raw = payloadText(block)
+  const per = block.type === 'tool_result' || block.type === 'tool_use' || isCodeLike(raw) ? density.code : density.text
   const cjk = countCjk(raw)
   const ascii = raw.length - cjk
   return Math.ceil(cjk / density.cjk) + Math.ceil(ascii / per) + 4
@@ -184,15 +228,29 @@ export function makeUsageAnchor() {
   }
 }
 
+// 完整请求面 token 数 = input + 缓存读 + 缓存写。KV 前缀缓存端点（Anthropic/
+// DeepSeek 等）input_tokens 只计本轮新增，cache_read 才是上下文主体——单看
+// input 会把水位低估一个量级；非缓存端点（vLLM 等本地）缓存字段为 0，等价 input_tokens。
+export function requestTokens(u = {}) {
+  return (Number(u?.input_tokens) || 0) + (Number(u?.cache_read_input_tokens) || 0) + (Number(u?.cache_creation_input_tokens) || 0)
+}
+
 // —— L4-1 上下文预测：token 增长速率 → 预测到达阈值轮数 ——
-// recent 形状与 health 一致：[{ usage: { input_tokens } }]；k = 参与均值计算的最近轮数。
+// recent 形状与 health 一致：[{ lastUsage?, usage }]。每轮水位取"最近一次单请求"
+// 完整规模（lastUsage = 该轮最后一次 API 调用的 usage；旧 turnStats 无此字段时回退
+// 轮级合计 usage——合计偏大，仅兼容旧数据/测试）。k = 参与均值计算的最近轮数。
 export function predictTurns({ recent = [], window = 200_000, thresholdRatio = 0.8, k = 5 } = {}) {
-  const usages = (Array.isArray(recent) ? recent : []).map((t) => Number(t?.usage?.input_tokens ?? 0))
-  const lastInput = usages.length ? usages[usages.length - 1] : 0
+  const sizes = (Array.isArray(recent) ? recent : []).map((t) => requestTokens(t?.lastUsage ?? t?.usage))
+  const lastInput = sizes.length ? sizes[sizes.length - 1] : 0
   const threshold = Math.floor(window * thresholdRatio)
   const deltas = []
-  for (let i = usages.length - 1; i > 0 && deltas.length < k; i--) deltas.push(usages[i] - usages[i - 1])
-  const growthPerTurn = deltas.length ? Math.max(1, Math.round(deltas.reduce((s, d) => s + d, 0) / deltas.length)) : 1000
-  const predictedTurns = Math.max(0, Math.floor((threshold - lastInput) / growthPerTurn))
+  for (let i = sizes.length - 1; i > 0 && deltas.length < k; i--) deltas.push(sizes[i] - sizes[i - 1])
+  // 增长下限按窗口相对化（旧 Math.max(1, ·)：上下文持平时 delta≈0，growth 被钳到
+  // 1 token/轮 → predictedTurns = (阈值−水位)/1 爆出"剩余 15811 轮"类荒谬值）。
+  // 0.05% 窗口/轮（200K 窗 ≈ 100 token/轮）为保守下限；负增长（压缩后回落）取下限。
+  const floor = Math.max(1, Math.floor(window * 0.0005))
+  const growthPerTurn = deltas.length ? Math.max(floor, Math.round(deltas.reduce((s, d) => s + d, 0) / deltas.length)) : 1000
+  // 封顶 999：更远不需要精度（评分只区分 <5/<10 两档，展示取可读近似）。
+  const predictedTurns = Math.min(999, Math.max(0, Math.floor((threshold - lastInput) / growthPerTurn)))
   return { growthPerTurn, predictedTurns, threshold, lastInput }
 }

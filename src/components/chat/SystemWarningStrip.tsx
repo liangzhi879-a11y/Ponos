@@ -1,4 +1,4 @@
-import { AlertTriangle, RefreshCcw, Bot, Info, X, type LucideIcon } from 'lucide-react'
+import { AlertTriangle, RefreshCcw, Bot, Info, ShieldAlert, X, type LucideIcon } from 'lucide-react'
 import { useWarningStore } from '@/stores/warningStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useYFWCLI } from '@/hooks/useYFWCLI'
@@ -12,6 +12,9 @@ const LEVEL_STYLE: Record<string, { text: string; border: string; icon: LucideIc
   budget: { text: 'text-red-500', border: 'border-red-500/40', icon: AlertTriangle },
   skill_version: { text: 'text-amber-500', border: 'border-amber-500/40', icon: RefreshCcw },
   agent_spec: { text: 'text-amber-500', border: 'border-amber-500/40', icon: Bot },
+  // 审批档位未生效（旧缓存内核忽略 --approval-mode / 桥拒绝非法覆盖）：amber 警示，
+  // 因为用户会误以为"我选了 manual 就安全了"，实际内核可能停在 loose 全放行。
+  approval_mode: { text: 'text-amber-500', border: 'border-amber-500/40', icon: ShieldAlert },
 }
 const FALLBACK_STYLE = { text: 'text-amber-500', border: 'border-amber-500/40', icon: Info }
 
@@ -38,6 +41,8 @@ export function SystemWarningStrip({ conversationId }: Props) {
     title = t('warnings.budget', { usd: warning.usd.toFixed(4), budgetUsd: warning.budgetUsd.toFixed(4) })
   } else if (warning.level === 'skill_version') {
     title = t('warnings.skillVersion', { n: warning.outdated?.length ?? 0 })
+  } else if (warning.level === 'approval_mode') {
+    title = t('warnings.approvalMode')
   } else if (warning.message) {
     title = warning.message
   } else {
@@ -51,9 +56,12 @@ export function SystemWarningStrip({ conversationId }: Props) {
   const onClose = () => useWarningStore.getState().dismiss(conversationId)
 
   // skill_version 明细（id: lock → disk）合入 title 悬停；agent_spec message 本身可能是长句
+  // approval_mode：标题是本地化文案，桥给的技术细节（期望/实际档位、拒绝原因）作悬停
   const detail = warning.level === 'skill_version' && warning.outdated
     ? warning.outdated.map(o => `${o.id}: ${o.lock} → ${o.disk}`).join('；')
-    : undefined
+    : warning.level === 'approval_mode'
+      ? warning.message
+      : undefined
 
   return (
     <div className="flex justify-center px-4 pt-3" role="status" aria-live="polite">

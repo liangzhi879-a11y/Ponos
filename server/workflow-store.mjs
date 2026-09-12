@@ -21,7 +21,7 @@ const SAFE_TS = /^[0-9A-Za-z._-]{1,64}$/
 const WINDOWS_DEVICE = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/
 // 保留字：这些 id 与 /workflows/<sub> 的动作子路由冲突（如 /workflows/run、/workflows/verify），
 // 必须禁止创建工作流时使用，否则该工作流永远打不开。
-export const RESERVED_IDS = new Set(['run', 'stop', 'confirm', 'runs', 'import', 'export', 'bindings', 'verify', 'validate'])
+export const RESERVED_IDS = new Set(['run', 'run-status', 'stop', 'confirm', 'runs', 'import', 'export', 'bindings', 'verify', 'validate'])
 export function assertSafeId(id) {
   const s = String(id || '')
   if (!SAFE_ID.test(s) || s.includes('..')) throw new Error(`非法工作流 id: ${id}`)

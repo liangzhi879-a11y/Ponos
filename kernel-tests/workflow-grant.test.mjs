@@ -33,6 +33,25 @@ test('grant：命中授权清单放行，未命中 fail-closed 且不挂起', as
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
+test('grant：授权清单含 Bash 也不放开灾难级硬黑名单（rm -rf /）', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wf-grant-blacklist-'))
+  try {
+    const registry = createToolRegistry({ cwd: root, addDirs: [root], skipPermissions: true })
+    const exec = createNodeExecutor({ registry, getModel: () => 'mock' })
+    const grant = { tools: ['Bash'], write_dirs: [], network: false }
+    // ⚠️ 一律不能真的执行：断言的是"被拒"，不是"执行失败"
+    for (const command of ['rm -rf /', 'rm -rf ~', 'sudo rm -rf /', 'shutdown -h now', 'dd if=/dev/zero of=/dev/sda']) {
+      const r = await exec({ id: 't', type: 'tool', tool: 'Bash', input: { command } }, { inputs: {}, vars: {}, var: {}, grant })
+      assert.equal(r.isError, true, `${command} 在 grant 下必须被拒`)
+      assert.match(String(r.error ?? r.output), /硬黑名单/, `${command} 的拒绝理由应指明硬黑名单`)
+    }
+    // 同一条授权下的普通命令仍放行（黑名单是追加的底线，不改 grant 原有语义）
+    const ok = await exec({ id: 't2', type: 'tool', tool: 'Bash', input: { command: 'echo grant-ok' } }, { inputs: {}, vars: {}, var: {}, grant })
+    assert.equal(ok.isError, false, `普通命令应仍放行：${JSON.stringify(ok)}`)
+    assert.equal(String(ok.output).includes('grant-ok'), true)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
 test('grant：write_dirs 约束写入落点', async () => {
   const root = mkdtempSync(join(tmpdir(), 'wf-grant2-'))
   try {

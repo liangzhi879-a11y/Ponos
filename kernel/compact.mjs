@@ -496,6 +496,9 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
     const current = context.window ?? 200_000
     if (n >= current) return { adopted: false, window: current }
     context.window = Math.floor(n)
+    // H3：真实窗口同步到 health 水位基准——否则配置窗口虚高被修正后，health 仍按
+    // 虚高窗口测水位（压缩已触发、健康度却显示充足，系统性低估压力）
+    try { health?.setWindow?.(Math.floor(n)) } catch { /* 静默降级 */ }
     return { adopted: true, from: current, window: context.window }
   }
 
@@ -598,7 +601,7 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
       if (parsed.missing.length || parsed.rewritten.length) {
         try { onCompactionAudit?.({ entities: [], missing: parsed.missing, ratio: 0, llm: parsed }) } catch { /* 静默 */ }
       }
-    } catch { /* 审计失败静默：不计熔断、不影响压缩落地 */ } finally { auditInFlight = false }
+    } catch { /* 审计失败静默：不计熔断、不影响压落地 */ } finally { auditInFlight = false }
   }
 
   async function summarize({ system, messages, limit, retainHint }) {

@@ -197,6 +197,7 @@ export const zhCN = {
   warnings: {
     budget: '预算超支：累计 {usd} USD，超过限额 {budgetUsd} USD',
     skillVersion: '{n} 个技能与 skills.lock.json 版本不一致',
+    approvalMode: '审批档位未生效：本次会话仍按旧档位运行',
     stopTask: '停止任务',
     dismiss: '关闭',
     unknown: '{level} 系统告警',
@@ -212,6 +213,11 @@ export const zhCN = {
   firstByteWait: {
     title: '等待首字节…已 {secs} 秒',
     hint: '模型正在思考/规划工具调用（服务端缓冲，通常 1-4 分钟），输出到达后自动消失',
+    // 等待态常显条（T8，2026-09-12 卡在思考界面事故）：等模型/等内核带秒数；
+    // 等人（审批/提问）不带秒数——秒数只说明"我们还在等"，不说明对方还会不会动
+    waitingModel: '等待模型 · {secs}s',
+    waitingApproval: '等待授权：请在弹窗中确认本次操作',
+    waitingAnswer: '等待你的回答：请在上方提问卡中选择或输入',
   },
   loopStatus: {
     round: '循环轮次',
@@ -275,6 +281,80 @@ export const zhCN = {
     mapNote: '标准档 = DeepSeek 映射 high',
   },
 
+  // --- 审批放行档位（2026-09-12）---
+  // 文案纪律：不得过度承诺。auto 档只约束**工具层**写文件，Bash 里 `cat > f` 照样写盘；
+  // bypass 档仍拦灾难级命令。撒谎的 UI 比没有 UI 更危险。
+  approvalMode: {
+    label: '审批',
+    manual: '逐项审批',
+    manualDesc: '普通命令也要逐次批准（最严档）',
+    auto: '自动',
+    autoDesc: '写文件、联网、调用子 Agent 需批准',
+    loose: '宽松',
+    looseDesc: '只在高危命令与灾难命令时询问（此前的默认行为）',
+    bypass: '全放行',
+    bypassDesc: '除灾难级命令外一律不询问',
+    temporary: '临时',
+    followGlobal: '跟随全局（{mode}）',
+    scopeNote: '此处只改本会话——会话结束或重启即回落全局档位；全局档位在设置 → 权限',
+    noSession: '当前没有活动会话：临时切档只作用于运行中的会话，请到设置 → 权限改全局档位',
+    openSettings: '打开设置（权限）…',
+    legacyBadge: '旧版遗留字段（autoApproveBash）已不再驱动任何行为',
+    autoHonest: '「自动」档只约束工具层写文件——Bash 里用 cat > 文件 仍可写盘',
+    hardTitle: '灾难级命令：四档都不放行',
+    hardList: 'rm -rf / · rm -rf ~ · 格式化与分区（mkfs / format / diskpart）· dd 覆写磁盘 · 关机与重启',
+    hardNote: '命中时**仍会弹窗询问**：可「本次放行」一次，但绝不会被记成「总是允许」，也不计入自动拒绝的连击数。',
+    globalTitle: '全局档位',
+    globalDesc: '对所有新会话生效，写入配置文件持久保存。',
+    effectiveNow: '当前生效：{mode}',
+    current: '当前',
+    confirmTitle: '确认放宽到「{mode}」？',
+    confirmBody: '{desc}。放宽意味着更少的询问次数——确认后保存即生效。',
+    confirmOk: '确认放宽',
+    confirmCancel: '取消',
+    dialogHardTitle: '灾难级命令',
+    dialogHardBody: '此命令可能毁坏系统或数据。放行只对本次执行有效，不会记住。',
+    dialogAllowOnce: '本次放行',
+    dialogModeHint: '当前档位：{mode}',
+  },
+
+  // --- 运行日志持久化（2026-09-12）---
+  logs: {
+    sectionTitle: '运行日志',
+    sectionDesc: '本地日志文件的持久化策略：超过上限即轮转，超期自动清理，也可完全关闭。',
+    persist: '本地持久化（写入日志文件）',
+    persistDesc: '关闭后不再写入日志文件；**已存在的日志会保留**，不会被删除。',
+    persistOffBanner: '已关闭本地持久化：当前运行不产生新日志文件（查看历史、清理磁盘仍可用）',
+    level: '日志等级',
+    levelDesc: 'debug 会把内核 stderr 逐行推给界面，非常吵；排查问题时可临时调低。',
+    levelDebug: 'debug（最详细）',
+    levelInfo: 'info（默认）',
+    levelWarn: 'warn',
+    levelError: 'error（只留错误）',
+    maxFile: '单文件上限（MB）',
+    maxFileDesc: '超过即轮转（{min} – {max} MB）',
+    maxFiles: '保留份数',
+    maxFilesDesc: '0 = 只留当前文件；上限 {max} 份',
+    maxAge: '超期清理（天）',
+    maxAgeDesc: '按修改时间删除轮转文件（当前文件永不按时间删除）；上限 {max} 天',
+    openDir: '打开日志目录',
+    prune: '立即清理',
+    pruneDesc: '删除全部轮转历史，并把当前文件归档一份（现场变干净，历史仍留一份）',
+    pruneDone: '已清理 {n} 个文件，释放 {size}',
+    pruneNone: '没有可清理的轮转文件',
+    viewer: '日志查看器',
+    viewerHint: '最近 {n} 行（只读）',
+    refresh: '刷新',
+    copy: '复制',
+    copied: '已复制',
+    file: '文件',
+    size: '大小',
+    modified: '修改于',
+    empty: '（暂无内容）',
+    dirLabel: '目录',
+    dirHint: '日志文件不会包含对话内容；对话档案在 sessions/ 与 projects/ 下另行保存。',
+  },
+
   // --- 终端 ---
   // --- 设置面板 ---
   settings: {
@@ -313,6 +393,8 @@ export const zhCN = {
     about: '关于',
     skillsTab: '技能',
     skillsTabDesc: '管理技能包安装和自动经验捕获',
+    permissionsTab: '权限',
+    logsTab: '日志',
     providerConfig: '供应商配置',
     advanced: '高级设置',
     installedSkills: '已安装技能',
@@ -354,7 +436,9 @@ export const zhCN = {
     providerTemperature: '采样温度',
     providerTemperatureDesc: '0-2，留空=按画像默认（本地 0.6 / 云端 0）',
     providerMaxOutputTokens: '单次输出预算',
-    providerMaxOutputTokensDesc: '留空=按画像默认（本地 16384 / 云端 64000）',
+    providerMaxOutputTokensDesc: '留空=按画像默认（本地 8192 / 云端 16384）。大预算会按预分配占用上下文并拖慢首字延迟；截断后可发「继续」接续',
+    providerToolResultBudget: '单条工具结果上限（字符）',
+    providerToolResultBudgetDesc: '留空=默认 20000。超限内容落盘为文件、上下文只留预览+路径（模型可 Read 补读），防止长会话被工具输出撑爆',
     providerFirstByteMs: '首内容宽限（毫秒）',
     providerFirstByteMsDesc: '首个内容块前等待时长，留空=默认 300000（5 分钟）',
     providerIdleMs: '生成空闲窗口（毫秒）',
@@ -417,8 +501,9 @@ export const zhCN = {
   statusBar: {
     connected: '已连接',
     disconnected: '已断开',
-    manualMode: '手动模式',
-    autoMode: '自动模式',
+    // 2026-09-12：原 manualMode/autoMode 随假徽标一起删除——它们描述的是
+    // settings.autoApproveBash，一个从未被写入、也从不发给桥/内核的字段。
+    // 档位文案统一在 approvalMode.* 下。
     tokens: 'tokens',
   },
 

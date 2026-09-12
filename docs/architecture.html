@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YFWorking 应用架构图 · v2.8.0</title>
+<style>
+  :root{
+    --bg:#080b12; --panel:#111827; --panel2:#161f33; --line:#26324b;
+    --text:#e7edf9; --muted:#8d9dbb; --dim:#64748b;
+    --l1:#38bdf8; --l2:#a78bfa; --l3:#4fd1c5; --l4:#f472b6; --l5:#f0a35e;
+    --ok:#34d399; --warn:#fbbf24;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:32px 28px 60px;
+    background:
+      radial-gradient(1200px 600px at 12% -10%, #16233c 0%, transparent 60%),
+      radial-gradient(900px 500px at 95% 0%, #1d1b3a 0%, transparent 55%),
+      var(--bg);
+    color:var(--text);
+    font-family:"Segoe UI","Microsoft YaHei",-apple-system,system-ui,sans-serif;
+    font-size:14px; line-height:1.5;
+  }
+  header{max-width:1400px;margin:0 auto 26px}
+  h1{margin:0 0 8px;font-size:26px;letter-spacing:.5px}
+  h1 span{background:linear-gradient(90deg,var(--l1),var(--l3) 45%,var(--l2));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .meta{color:var(--muted);font-size:13px}
+  .meta code{color:var(--l3);background:#0e1626;border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  .wrap{max-width:1400px;margin:0 auto}
+
+  .band{
+    position:relative;border:1px solid var(--line);border-radius:14px;
+    background:linear-gradient(180deg,rgba(22,31,51,.92),rgba(17,24,39,.92));
+    padding:16px 18px 16px 66px;margin:0;
+    box-shadow:0 10px 30px rgba(0,0,0,.35);
+  }
+  .band::before{
+    content:attr(data-n);position:absolute;left:16px;top:16px;
+    width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
+    font-weight:700;font-size:15px;color:#06121f;background:var(--c);
+  }
+  .band[data-c="l1"]{--c:var(--l1)} .band[data-c="l2"]{--c:var(--l2)}
+  .band[data-c="l3"]{--c:var(--l3)} .band[data-c="l4"]{--c:var(--l4)}
+  .band[data-c="l5"]{--c:var(--l5)}
+  .band > .bt{font-size:15px;font-weight:700;margin:0 0 2px;color:var(--c)}
+  .band > .bs{color:var(--dim);font-size:12px;margin:0 0 12px;font-family:Consolas,monospace}
+
+  .grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+  .card{
+    border:1px solid var(--line);border-left:3px solid var(--c,var(--line));
+    border-radius:10px;background:var(--panel2);padding:9px 11px;
+    transition:transform .12s ease,border-color .12s ease;
+  }
+  .card:hover{transform:translateY(-2px);border-color:var(--c)}
+  .card h4{margin:0 0 5px;font-size:13px;color:var(--text)}
+  .card ul{margin:0;padding-left:15px;color:var(--muted);font-size:12px}
+  .card li{margin:1px 0}
+  .card .tag{
+    display:inline-block;margin:4px 4px 0 0;padding:1px 6px;border-radius:999px;
+    background:#0d1728;border:1px solid var(--line);color:var(--muted);font-size:11px;
+    font-family:Consolas,monospace;
+  }
+  .card.span{grid-column:1/-1}
+  .kv{display:flex;flex-wrap:wrap;gap:6px 14px;font-family:Consolas,monospace;font-size:12px;color:var(--muted)}
+  .kv b{color:var(--text);font-weight:600}
+
+  .flow{
+    display:flex;align-items:center;justify-content:center;gap:10px;
+    padding:8px 0;color:var(--dim);font-size:12px;font-family:Consolas,monospace;
+  }
+  .flow .arrow{
+    display:flex;flex-direction:column;align-items:center;color:var(--c,var(--l3));line-height:1
+  }
+  .flow .arrow i{font-style:normal;font-size:16px}
+  .flow .pill{
+    border:1px dashed var(--line);border-radius:999px;padding:2px 10px;
+    background:#0c1421;color:var(--muted);
+  }
+
+  .notes{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin-top:26px}
+  .note{border:1px solid var(--line);border-radius:12px;background:var(--panel);padding:13px 15px}
+  .note h3{margin:0 0 9px;font-size:14px;color:var(--l3)}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:5px 6px;border-bottom:1px solid #1e2942;vertical-align:top}
+  th{color:var(--dim);font-weight:600}
+  td{color:var(--muted)}
+  td code,p code,li code,span code{color:var(--l3);font-family:Consolas,monospace}
+  .yes{color:var(--ok)} .no{color:#f87171} .mid{color:var(--warn)}
+  /* 连接形态：两跳不同 */
+  .hopline{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:center;padding:9px 0}
+  .hnode{border:1px solid var(--line);border-radius:10px;padding:7px 13px;background:var(--panel2);text-align:center;font-size:12px}
+  .hnode b{display:block;font-size:13px;color:var(--text)}
+  .hnode span{color:var(--dim);font-family:Consolas,monospace;font-size:11px}
+  .hnode.l1{border-color:var(--l1)} .hnode.l3{border-color:var(--l3)} .hnode.l4{border-color:var(--l4)}
+  .hlink{display:flex;flex-direction:column;align-items:center;color:var(--l3);font-family:Consolas,monospace;font-size:11px;min-width:168px;text-align:center}
+  .hlink i{font-style:normal;font-size:17px;line-height:1}
+  .hlink.bad{color:#f87171}
+  .hsep{border-top:1px dashed #33405c;margin:6px 0 2px}
+
+  footer{max-width:1400px;margin:28px auto 0;color:var(--dim);font-size:12px}
+  footer code{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1><span>YFWorking 应用架构图</span></h1>
+  <div class="meta">
+    YFWorking Desktop <code>v2.8.0</code> · Electron 43 + React 18/Vite 5 + Node bridge + Ponos-turbo 内核 ·
+    架构真源：<code>electron/main.cjs</code> / <code>server/bridge.mjs</code> / <code>kernel/cli.mjs</code> / <code>docs/bridge-contract.md</code> · 2026-09-12
+  </div>
+</header>
+
+<!-- ① 表现层 -->
+<section class="band" data-c="l1" data-n="1">
+  <p class="bt">表现层 · Electron 渲染进程</p>
+  <p class="bs">React 18 + TypeScript + Vite 5（base './'，产物 dist/）</p>
+  <div class="grid">
+    <div class="card">
+      <h4>主窗口 GUI</h4>
+      <ul>
+        <li>ViewRouter 状态机：<b>boot → login → cockpit → work</b></li>
+        <li>AppShell / WorkShell（预热保活双渲染）</li>
+        <li>Header · StatusBar · RailNav · SecondPanel</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>业务组件域</h4>
+      <ul>
+        <li>chat（消息流 / 思考块 / 提问卡片 / 健康血条）</li>
+        <li>workflows（@xyflow DAG 画布 · 运行视图）</li>
+        <li>browser · files · editor · skills · cockpit · diagnostic</li>
+      </ul>
+      <span class="tag">@assistant-ui/react</span><span class="tag">CodeMirror 6</span><span class="tag">Radix UI</span>
+    </div>
+    <div class="card">
+      <h4>状态层（zustand ×11）</h4>
+      <div class="kv">
+        <span>chatStore</span><span>viewStore</span><span>authStore</span><span>healthStore</span>
+        <span>browserStore</span><span>settingsStore</span><span>diagStore</span><span>uiStore</span>
+      </div>
+    </div>
+    <div class="card">
+      <h4>独立窗口 & 桌面宠物</h4>
+      <ul>
+        <li>?editor=1 · ?settings=1 · ?profile=1 · ?auth=1</li>
+        <li>pet/jiajia-pet.py（Python Tkinter）</li>
+      </ul>
+      <span class="tag">WS 直连 bridge</span>
+    </div>
+  </div>
+</section>
+
+<div class="flow" style="--c:var(--l2)">
+  <span class="arrow"><i>▼</i></span>
+  <span class="pill">WebSocket（事件流 / 控制流）+ HTTP REST（:51517）</span>
+  <span class="arrow"><i>▲</i></span>
+</div>
+
+<!-- ② 宿主层 -->
+<section class="band" data-c="l2" data-n="2">
+  <p class="bt">宿主层 · Electron 主进程</p>
+  <p class="bs">electron/main.cjs（CommonJS，Electron 直接执行无需转译）</p>
+  <div class="grid">
+    <div class="card">
+      <h4>窗口与生命周期</h4>
+      <ul>
+        <li>主窗口 / 托盘 / 单实例锁 / 原生对话框</li>
+        <li>userData 重定向 <code>&lt;home&gt;/userData</code></li>
+        <li>启动时兜底注入 <code>YFWORKING_HOME=~/.yfw</code></li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>IPC 桥</h4>
+      <ul>
+        <li>preload.cjs → <code>window.yfworkingAPI</code></li>
+        <li>托盘行为 / 宠物配置 / 子窗口开合</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>日志与自愈</h4>
+      <ul>
+        <li>log-tee.cjs：启动第一行即入盘</li>
+        <li>按 logPolicy 清理与轮转（曾涨至 76MB）</li>
+        <li>崩溃清扫：回收 bridge / pet / 浏览器</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>浏览器执行器</h4>
+      <ul>
+        <li>browser-executor.cjs（WS 客户端注册）</li>
+        <li>CDP <code>debugger.attach('1.3')</code>，<b>无网络端口</b></li>
+        <li>快照 / 点击 / 人工接管 / 下载</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>spawn 子进程</h4>
+      <ul>
+        <li><code>node server/bridge.mjs</code></li>
+        <li>运行时定位：打包 <code>&lt;app&gt;/node.exe</code>，dev 回退 PATH</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<div class="flow" style="--c:var(--l3)">
+  <span class="arrow"><i>▼</i></span>
+  <span class="pill">HTTP REST + WebSocket Hub（唯一中枢）</span>
+  <span class="arrow"><i>▲</i></span>
+</div>
+
+<!-- ③ 桥接层 -->
+<section class="band" data-c="l3" data-n="3">
+  <p class="bt">桥接层 · server/bridge.mjs（HTTP + WebSocket）</p>
+  <p class="bs">端口 51517（YFW_BRIDGE_PORT 可覆盖；在售旧版 51309，可同机并行）</p>
+  <div class="grid">
+    <div class="card">
+      <h4>WebSocket Hub</h4>
+      <ul>
+        <li>outbound：event / raw / stderr / ack / closed / cancelled</li>
+        <li>解析件：milestones · question · approval · workflow_event · approval-mode-changed</li>
+        <li>心跳保活 + 8MB 背压丢弃（&lt;2MB 恢复）</li>
+        <li>来源白名单：无 Origin / file: / localhost / 127.0.0.1 / ::1</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>会话管理器</h4>
+      <ul>
+        <li><b>1 会话 = 1 内核进程</b>（sessionId 为键，内存 Map）</li>
+        <li>新会话 spawn + 注入提示词文件；resume 用 <code>--resume</code></li>
+        <li>空闲 10min taskkill 回收 → 下次无缝续聊</li>
+        <li>cancel：control_request + 6s 超时 taskkill 兜底</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>HTTP REST 路由链</h4>
+      <ul>
+        <li>文件：/drives /list-dir /read-file /write-file /raw-file</li>
+        <li>Office：/convert-office /read-sheet /read-docx /write-docx</li>
+        <li>会话：/transcript/list|load|search</li>
+        <li>配置：/config /providers/* /test-provider</li>
+        <li>其他：/skills /worktrees /logs/* /health /diag/info</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>工作流模块</h4>
+      <ul>
+        <li>workflow-routes.mjs（CRUD / 校验 / 导入导出 / 绑定）</li>
+        <li>workflow-host.mjs 常驻宿主会话 <code>_wfhost</code></li>
+        <li>workflow-store.mjs 磁盘权威存储（唯一写者）</li>
+        <li>运行前 grant 授权清单，fail-closed</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>横切能力</h4>
+      <ul>
+        <li>experience.mjs 个人经验库 + 索引</li>
+        <li>packager.mjs 经验导出 / 导入</li>
+        <li>provider-profile.mjs 云端/本地行为画像</li>
+        <li>approval-mode.mjs 四档 + highrisk.mjs 高危命令</li>
+        <li>log-policy.cjs 日志策略（与 GUI 逐位一致）</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>Python 文档转换</h4>
+      <ul>
+        <li>convert_docx.py / convert_xls.py</li>
+        <li>docx_edit.py / sheet_edit.py</li>
+      </ul>
+      <span class="tag">runtime/python 便携解释器</span>
+    </div>
+  </div>
+</section>
+
+<div class="flow" style="--c:var(--l4)">
+  <span class="arrow"><i>▼</i></span>
+  <span class="pill">stdin/stdout NDJSON（stream-json）· 每会话一个内核进程 · 隔离环境变量</span>
+  <span class="arrow"><i>▲</i></span>
+</div>
+
+<!-- ④ 内核层 -->
+<section class="band" data-c="l4" data-n="4">
+  <p class="bt">内核层 · Ponos-turbo（零 npm 依赖，node 直跑）</p>
+  <p class="bs">kernel/cli.mjs 源码 · kernel-dist/cli.mjs bundle · 镜像落地 &lt;home&gt;/runtime/ponos-kernel/</p>
+  <div class="grid">
+    <div class="card">
+      <h4>入口与协议</h4>
+      <ul>
+        <li>cli.mjs 参数解析 + structuredIO 逐行 NDJSON</li>
+        <li>protocol.mjs · approval-mode.mjs · dyntools.mjs</li>
+        <li>in：user / control_request / control_response</li>
+        <li>out：system / assistant / result / control_request / bridge_request</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>Agent 循环</h4>
+      <ul>
+        <li>engine.mjs：消息 → 模型 → 工具 → 继续，直到纯文本</li>
+        <li>循环守卫（防本地模型死循环）+ 无感自愈续跑</li>
+        <li>compact.mjs / context.mjs：自动压缩与 token 预算</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>模型接入</h4>
+      <ul>
+        <li>api.mjs 流式调用 + 错误分类 + 死流检测</li>
+        <li>provider.mjs 多 provider / 模型路由</li>
+        <li>cost.mjs 计费 · stats.mjs 统计</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>工具与权限</h4>
+      <ul>
+        <li>tools.mjs 注册表 + 子进程管理</li>
+        <li>permissions.mjs / readonly.mjs 判定</li>
+        <li>highrisk.mjs + blacklist.mjs 灾难级硬底线</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>会话与知识</h4>
+      <ul>
+        <li>session.mjs：transcript 为权威源，消息派生</li>
+        <li>agents.mjs 子 Agent 派发 · skills.mjs 技能体系</li>
+        <li>memory.mjs · memory-search.mjs 经验注入</li>
+        <li>hooks.mjs 钩子 · prompt.mjs 提示词装配</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>工作流引擎</h4>
+      <ul>
+        <li>workflow-engine.mjs 运行器 · workflow-dsl.mjs 解析</li>
+        <li>workflow-dag.mjs 拓扑 · workflow-nodes.mjs 节点实现</li>
+        <li>变量作用域 <code>{inputs, var, &lt;nodeId&gt;: output}</code></li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>观测与合规</h4>
+      <ul>
+        <li>audit.mjs 哈希链审计</li>
+        <li>health.mjs 健康 · fidelity.mjs 保真 · redact.mjs 脱敏</li>
+        <li>log.mjs · config.mjs / settings.mjs 分层配置</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<div class="flow" style="--c:var(--l5)">
+  <span class="arrow"><i>▼</i></span>
+  <span class="pill">HTTPS 调用 · 文件系统读写 · 子进程执行</span>
+  <span class="arrow"><i>▲</i></span>
+</div>
+
+<!-- ⑤ 外部 -->
+<section class="band" data-c="l5" data-n="5">
+  <p class="bt">外部依赖与数据落点</p>
+  <p class="bs">全部本地优先，仅模型调用出网</p>
+  <div class="grid">
+    <div class="card">
+      <h4>LLM Provider（出网唯一出口）</h4>
+      <div class="kv">
+        <span>ANTHROPIC_BASE_URL</span><span>ANTHROPIC_AUTH_TOKEN</span><span>ANTHROPIC_MODEL</span>
+      </div>
+      <ul><li>云端 / 本地 vLLM 均可，profile 自动画像</li></ul>
+    </div>
+    <div class="card">
+      <h4>运行时</h4>
+      <ul>
+        <li>node（打包内置 node.exe / dev 用 PATH）</li>
+        <li>内置便携 Python（runtime/python）</li>
+        <li>内置 Chromium（CDP 驱动，无端口）</li>
+      </ul>
+    </div>
+    <div class="card span">
+      <h4>数据根 <code>YFWORKING_HOME</code>（默认 <code>~/.yfw</code>；在售旧版 <code>~/.yfworking</code>）</h4>
+      <div class="kv">
+        <span><b>config.json</b> 配置 / 全局审批档 / 日志策略</span>
+        <span><b>auth.json</b> 凭据</span>
+        <span><b>projects/&lt;cwd&gt;/*.jsonl</b> 对话档案（权威源）</span>
+        <span><b>runtime/ponos-kernel/</b> 内核镜像</span>
+        <span><b>skills/</b> 用户技能</span>
+        <span><b>workflows/&lt;id&gt;/workflow.yml + versions/</b></span>
+        <span><b>workflow-runs/*.jsonl</b> 运行审计</span>
+        <span><b>logs/</b> app · kernel-stderr · renderer-console</span>
+        <span><b>memory/</b> 个人+项目经验库</span>
+        <span><b>userData/</b> Electron 数据</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 连接形态 -->
+<section class="band" data-c="l3" data-n="⇄">
+  <p class="bt">连接形态 · 两跳不同（前端与内核无直连）</p>
+  <p class="bs">① 跨进程网络连接（TCP 环回） · ② 进程内管道（stdio NDJSON）</p>
+
+  <div class="hopline">
+    <div class="hnode l1"><b>渲染进程</b><span>React GUI（浏览器沙箱）</span></div>
+    <div class="hlink"><i>⇒</i><span>① WS / HTTP REST<br/>TCP 环回 localhost:51517</span></div>
+    <div class="hnode l3"><b>bridge 进程</b><span>node server/bridge.mjs</span></div>
+    <div class="hlink"><i>⇒</i><span>② stdio NDJSON<br/>管道 stdin/stdout（无 TTY）</span></div>
+    <div class="hnode l4"><b>内核进程</b><span>node kernel/cli.mjs</span></div>
+  </div>
+
+  <div class="hsep"></div>
+
+  <div class="hopline">
+    <div class="hnode l1"><b>渲染进程</b><span>React GUI</span></div>
+    <div class="hlink bad"><i>⇢</i><span>✗ 不存在这一跳<br/>（形态上不可能直连）</span></div>
+    <div class="hnode l4"><b>内核进程</b><span>node kernel/cli.mjs</span></div>
+  </div>
+
+  <div class="grid" style="margin-top:14px">
+    <div class="card">
+      <h4>①&nbsp;前端 → bridge</h4>
+      <ul>
+        <li>形态：<b>跨进程网络连接</b>（TCP 环回）</li>
+        <li>协议：WebSocket <code>ws://localhost:51517</code> + HTTP REST 同端口</li>
+        <li>代码：<code>src/lib/config.ts:14</code> · <code>server/bridge.mjs:2314</code></li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>②&nbsp;bridge → 内核</h4>
+      <ul>
+        <li>形态：<b>进程内管道</b> <code>stdio: ['pipe','pipe','pipe']</code></li>
+        <li>协议：NDJSON 双向流（一行一个 JSON）</li>
+        <li>代码：<code>server/bridge.mjs:1145</code> · <code>kernel/cli.mjs</code></li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>进程归属</h4>
+      <ul>
+        <li>内核是 <b>bridge 的子进程</b>，不是 Electron 的子进程</li>
+        <li>GUI · 桌面宠物 · 浏览器执行器 · Electron 主进程<br/>四者都只是 bridge 的 WS 客户端</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>三点澄清（非「壳到壳」）</h4>
+      <ul>
+        <li>前端那侧<b>没有壳</b>：浏览器沙箱只能走网络协议</li>
+        <li>内核那侧<b>不是终端会话</b>：无 PTY / TTY / 回显</li>
+        <li>仅「启动动作」借 <code>cmd.exe</code>（<code>shell:true</code>，<code>server/bridge.mjs:1158</code>）拉起后即退，与协议无关</li>
+      </ul>
+    </div>
+    <div class="card span">
+      <h4>为什么设计成这样</h4>
+      <div class="kv" style="gap:8px 18px">
+        <span><b>内核可替换</b>：bridge 是唯一知晓内核协议的一侧，GUI 零改动即可换内核</span>
+        <span><b>安全收敛</b>：Origin 白名单（外部 403）· 审批弹窗 · 浏览器请求由 bridge 直连执行器不转发 GUI</span>
+        <span><b>生命周期托管</b>：空闲 10min 回收 · <code>--resume</code> 重启 · 6s 超时 taskkill，前端只持 sessionId</span>
+        <span><b>多端复用</b>：宠物 / 执行器 / 独立小窗共享同一中枢</span>
+        <span><b>出网唯一出口</b>：模型调用发生在内核侧，前端永不直连 LLM</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 要点 -->
+<div class="notes">
+  <div class="note">
+    <h3>三层协议契约（bridge 是唯一中枢）</h3>
+    <table>
+      <tr><th>通道</th><th>语义</th></tr>
+      <tr><td>GUI ⇄ bridge <code>WS</code></td><td>send / cancel / answer / approval-response / approval-mode ⇄ event / approval / question / milestones</td></tr>
+      <tr><td>GUI → bridge <code>HTTP</code></td><td>文件、Office、transcript、config、skills、workflows、logs、diag</td></tr>
+      <tr><td>bridge ⇄ 内核 <code>NDJSON</code></td><td>替换内核时<b>必须逐条保持</b>的契约边界</td></tr>
+    </table>
+  </div>
+
+  <div class="note">
+    <h3>审批四档（--approval-mode）</h3>
+    <table>
+      <tr><th>档位</th><th>skip-perms</th><th>仍会问</th></tr>
+      <tr><td><code>manual</code></td><td class="no">否</td><td>普通 Bash 也问</td></tr>
+      <tr><td><code>auto</code></td><td class="no">否</td><td>写文件 / 联网 / 子 Agent</td></tr>
+      <tr><td><code>loose</code> 默认</td><td class="yes">是</td><td>高危 Bash + 灾难命令</td></tr>
+      <tr><td><code>bypass</code></td><td class="yes">是</td><td>仅灾难命令</td></tr>
+    </table>
+    <p style="color:var(--muted);font-size:12px;margin:8px 0 0">
+      硬黑名单四档都不放开：<code>rm -rf /</code> · <code>mkfs*</code> · <code>format X:</code> · <code>diskpart</code> ·
+      <code>dd of=/dev/…</code> · <code>shutdown/reboot</code>；弹窗仅「本次放行」，无「总是允许」记忆。
+    </p>
+  </div>
+
+  <div class="note">
+    <h3>端口与版本隔离</h3>
+    <table>
+      <tr><th>资源</th><th>在售旧版</th><th>当前版</th><th>覆盖变量</th></tr>
+      <tr><td>bridge HTTP+WS</td><td>51309</td><td class="yes">51517</td><td><code>YFW_BRIDGE_PORT</code></td></tr>
+      <tr><td>vite dev / preview</td><td>5173 / 4173</td><td class="yes">5197 / 4197</td><td><code>YFW_VITE_PORT</code></td></tr>
+      <tr><td>数据根 home</td><td><code>~/.yfworking</code></td><td class="yes"><code>~/.yfw</code></td><td><code>YFWORKING_HOME</code></td></tr>
+      <tr><td>内核运行时</td><td>bun 布局</td><td class="yes">node</td><td><code>YFWORKING_KERNEL</code></td></tr>
+      <tr><td>内核落地目录</td><td>runtime/kernel</td><td class="yes">runtime/ponos-kernel</td><td>—</td></tr>
+    </table>
+  </div>
+
+  <div class="note">
+    <h3>一轮消息的主链路</h3>
+    <ol style="margin:0;padding-left:18px;color:var(--muted);font-size:12px">
+      <li>GUI <code>WS send</code> → bridge（无会话则 spawn 内核并注入系统提示词文件）</li>
+      <li>bridge 写内核 stdin <code>user</code> → engine Agent 循环 → 模型流式返回</li>
+      <li>工具调用经权限判定；需人工时 <code>can_use_tool</code> ⇄ GUI 弹窗回执</li>
+      <li>内核 stdout 事件 → bridge 提取里程碑 / 提问卡片 / 审批 → GUI 渲染</li>
+      <li><code>result</code> 事件闭轮；空闲 10min 回收进程，续聊走 <code>--resume</code></li>
+    </ol>
+  </div>
+
+  <div class="note">
+    <h3>构建与发布</h3>
+    <ul style="margin:0;padding-left:18px;color:var(--muted);font-size:12px">
+      <li><code>npm run build</code> → <code>dist/</code>（tsc + vite）</li>
+      <li><code>scripts/build-kernel.mjs</code> → <code>kernel-dist/cli.mjs</code></li>
+      <li><code>npm run build:electron</code> → <code>release/installer/</code>（electron-builder/NSIS）</li>
+      <li class="mid">⚠ <code>release/YFWorking/</code> 为手动维护的调试便携版，禁止 <code>rm -rf</code>，勿在 <code>release/</code> 根跑 electron-builder</li>
+    </ul>
+  </div>
+
+  <div class="note">
+    <h3>可替换面（净室边界）</h3>
+    <ul style="margin:0;padding-left:18px;color:var(--muted);font-size:12px">
+      <li><b>必须保持</b>：spawn 参数与 env、NDJSON 语义、里程碑/ASK_USER 文本格式、REST 与 WS 形状</li>
+      <li><b>可自由替换</b>：浏览器执行器、<code>server/</code> 全部模块、<code>pet/</code>、GUI、技能体系</li>
+      <li><b>替换面核心</b>：内核的 stream-json 语义实现（Agent 循环 / 工具执行 / 权限协议 / 会话持久化）</li>
+    </ul>
+  </div>
+</div>
+
+<footer>
+  文本版（可 diff / 可评审，Mermaid 可渲染）：<code>docs/architecture.md</code> ·
+  可视化版：<code>docs/architecture.html</code>（本页，离线自包含）
+</footer>
+
+</div>
+</body>
+</html>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Settings, Monitor, Cpu, Info, Check, Sparkles, Globe, Save, Database, FolderOpen, Brain, ChevronDown, Plus, X, Trash2, Puzzle, ChevronRight, HardDrive, RefreshCw, Wifi, Zap } from 'lucide-react'
+import { Settings, Monitor, Cpu, Info, Check, Sparkles, Globe, Save, Database, FolderOpen, Brain, ChevronDown, Plus, X, Trash2, Puzzle, ChevronRight, HardDrive, RefreshCw, Wifi, Zap, ShieldCheck, FileText } from 'lucide-react'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
   Button, ScrollArea, Switch,
@@ -12,11 +12,15 @@ import { cn, formatShortcut, shortcutFromEvent } from '@/lib/utils'
 import { fetchSkills } from '@/lib/skills'
 import { fetchBridgeConfig, saveBridgeConfig, addProvider, deleteProvider, testProviderConnection, probeProvider } from '@/lib/config'
 import { EFFORT_OPTIONS, normalizeEffortUi } from '@/lib/effortUi'
+import { normalizeApprovalMode } from '@/lib/approvalModeUi'
+import { normalizeLogPolicyUi } from '@/lib/logUi'
 import { ExperiencePanel } from '@/components/settings/ExperiencePanel'
+import { PermissionsPanel } from '@/components/settings/PermissionsPanel'
+import { LogsPanel } from '@/components/settings/LogsPanel'
 import type { AppSettings, ModelProvider, YFWorkingConfigV2 } from '@/types'
 import { THEMES, type ThemeMode, type ThemeMeta, type Language } from '@/types'
 
-type Section = 'general' | 'model' | 'skills' | 'pet' | 'experience' | 'about'
+type Section = 'general' | 'model' | 'permissions' | 'logs' | 'skills' | 'pet' | 'experience' | 'about'
 
 export function SettingsView() {
   const { settings, updateSettings } = useSettingsStore()
@@ -42,6 +46,9 @@ export function SettingsView() {
             {[
               { id: 'general' as Section, label: t('settings.general'), icon: Monitor },
               { id: 'model' as Section, label: t('settings.model'), icon: Cpu },
+              // 权限档位 / 日志策略（2026-09-12）：两个新分区的全局设置入口
+              { id: 'permissions' as Section, label: t('settings.permissionsTab'), icon: ShieldCheck },
+              { id: 'logs' as Section, label: t('settings.logsTab'), icon: FileText },
               { id: 'skills' as Section, label: t('settings.skillsTab'), icon: Puzzle },
               { id: 'pet' as Section, label: t('settings.petTab'), icon: Sparkles },
               { id: 'experience' as Section, label: t('settings.experienceTab'), icon: Brain },
@@ -258,6 +265,10 @@ export function SettingsView() {
                 />
               )}
 
+              {section === 'permissions' && <PermissionsPanel />}
+
+              {section === 'logs' && <LogsPanel />}
+
               {section === 'skills' && (
                 <SkillsPanel t={t} settings={settings} updateSettings={updateSettings} />
               )}
@@ -393,6 +404,12 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
           visionProviderId: cfg.visionProviderId || '',
           // 顶层 effortLevel 从 bridge config 回读（旧 config 无此键 → normalize 兜底 'auto'）
           effortLevel: normalizeEffortUi(cfg.effortLevel),
+          // 审批档位（2026-09-12）：磁盘 config.json 是全局档的唯一真源——桥侧 spawn
+          // 与 WS 热切都读它，GUI 打开设置页时回读，避免"上次改完重启又变回来"。
+          // 旧 config 无此键 → normalize 兜底 loose（= 等价旧行为）。
+          approvalMode: normalizeApprovalMode(cfg.approvalMode),
+          // 日志策略：同样以磁盘为准（写入端读的就是它）
+          logPolicy: normalizeLogPolicyUi(cfg.logPolicy),
         })
       })
       .catch(() => {})
@@ -521,6 +538,12 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
         // 全局思考深度并入 cfg（Task 12）：bridge saveConfig 整包透传写 config.json，
         // 新会话 spawn 时 buildChildEnv 读它注入 CLAUDE_CODE_EFFORT_LEVEL
         effortLevel: normalizeEffortUi(settings.effortLevel),
+        // 全局审批档位（2026-09-12）：bridge 侧 sanitizeConfigPatch 再钳一次后落盘，
+        // 并对无覆盖的活会话热切（否则"设置页点了没反应"）。落盘后新会话 spawn 用
+        // approvalSpawnArgs(档位) 决定是否传 --dangerously-skip-permissions。
+        approvalMode: normalizeApprovalMode(settings.approvalMode),
+        // 日志策略：桥/主进程的写入端按 TTL(5s) 重读 config.json，无需重启即生效
+        logPolicy: normalizeLogPolicyUi(settings.logPolicy),
         providers: settings.providers,
       }
       const saved = await saveBridgeConfig(cfg)
@@ -706,6 +729,24 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
                     className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent font-mono"
                   />
                   <p className="text-[10px] text-tertiary mt-1">{t('settings.providerMaxOutputTokensDesc')}</p>
+                </div>
+
+                {/* Tool result byte budget；空 = 内核默认 20000（落盘+预览替换） */}
+                <div>
+                  <label className="text-xs font-medium text-secondary mb-1 block">{t('settings.providerToolResultBudget')}</label>
+                  <input
+                    type="number" min={1000} step={1000}
+                    value={activeProv.toolResultBudgetBytes ?? ''}
+                    onChange={e => {
+                      const raw = e.target.value
+                      if (raw === '') { handleUpdateActiveProvider('toolResultBudgetBytes', undefined); return }
+                      const n = parseInt(raw, 10)
+                      if (!Number.isFinite(n) || n < 1000) return
+                      handleUpdateActiveProvider('toolResultBudgetBytes', n)
+                    }}
+                    className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+                  />
+                  <p className="text-[10px] text-tertiary mt-1">{t('settings.providerToolResultBudgetDesc')}</p>
                 </div>
 
                 {/* First-content grace ms；空 = 内核默认 */}

@@ -20,6 +20,29 @@ const STOP_TIMEOUT = 15_000
 // network 采用或运算——任一侧要求即为 true；write_dirs/tools 去重。
 // M-1：非数组入参不得按字符展开（'Read' → ['R','e','a','d']）。
 const asList = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x) : [])
+
+/** 可安全自动重试的**幂等**子命令。run 刻意不在列：重试＝把工作流重跑一遍，
+ *  必须由用户显式决定（读取/保存/校验/查询类重试无副作用）。 */
+const RETRIABLE_SUBTYPES = new Set(['load', 'validate', 'save-raw', 'list', 'verify', 'migrate'])
+
+/** 会话条目是否已死（进程退出/被杀/stdin 已销毁）：写进死进程只会得到 EPIPE。
+ *  注意 `exitCode/signalCode` 在 Node 的 ChildProcess 上默认是 null，但测试替身可能
+ *  干脆没有这两个属性——必须区分"属性为 null（活）"与"undefined（未知，不判死）"，
+ *  否则会把活会话误判成死的。 */
+function isSessionDead(s) {
+  const p = s?.proc
+  if (!p) return true
+  if (p.killed) return true
+  if (p.exitCode !== null && p.exitCode !== undefined) return true
+  if (p.signalCode) return true
+  return !p.stdin || p.stdin.destroyed === true
+}
+
+/** 错误是否属于"宿主进程没了"（供幂等命令自动重试判定）。 */
+function isHostGoneError(e) {
+  if (e?.hostGone === true) return true
+  return /EPIPE|ERR_STREAM_DESTROYED|write after end|socket hang up|宿主会话/i.test(String(e?.message || e || ''))
+}
 export function mergeCapabilities(declared = {}, requested = {}) {
   const tools = [...new Set([...asList(declared.tools), ...asList(requested.tools)])]
   const write_dirs = [...new Set([...asList(declared.write_dirs), ...asList(requested.write_dirs)])]
@@ -42,7 +65,14 @@ export function createWorkflowHost({ sessions, getOrCreateSession, yfwHome = '',
   // ⚠️ cwd 必须先落盘：Windows 下以**不存在的目录** spawn 会立刻 ENOENT 退出
   // （实测退出码 -4058、存活约 250ms），宿主反复重启且命令写进死进程 → 前端永久挂起
   // （POST /workflows 无响应；GET /workflows 是纯 fs 故看着"正常"，极难自查）。
+  //
+  // 会话条目"还在但进程已死"（被回收杀 / 崩溃 / ENOENT 秒退）时先清掉再重建：
+  // 否则 ensure() 以为宿主健在，命令写进死进程只会得到 EPIPE（用户侧仍是一次失败）。
   function ensure() {
+    const cur = sessions.get(HOST_SID)
+    if (cur && isSessionDead(cur)) {
+      try { sessions.delete(HOST_SID) } catch { /* 并发删除：忽略，下方按"无会话"重建 */ }
+    }
     if (!sessions.has(HOST_SID)) {
       try { mkdirSync(cwd, { recursive: true }) } catch { /* 已存在/无权限：让 spawn 自己报错 */ }
       getOrCreateSession(HOST_SID, cwd, null, '', model, 0, 'task')
@@ -84,10 +114,10 @@ export function createWorkflowHost({ sessions, getOrCreateSession, yfwHome = '',
     return rest
   }
 
-  function send(cmd = {}, { timeoutMs = DEFAULT_TIMEOUT } = {}) {
+  function send(cmd = {}, { timeoutMs = DEFAULT_TIMEOUT, retried = false } = {}) {
     const subtype = cmd.subtype || ''
     const requestId = `wf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
-    return new Promise((resolve, reject) => {
+    const attempt = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(requestId)
         reject(new Error(`宿主命令超时（${subtype}）`))
@@ -102,6 +132,14 @@ export function createWorkflowHost({ sessions, getOrCreateSession, yfwHome = '',
         pending.delete(requestId)
         reject(e)
       }
+    })
+    // 宿主进程消失（被回收/崩溃/冷启动竞态）→ 重建宿主后**重试一次**：
+    // 旧行为是第一次请求直接失败（用户侧"运行/保存失败：工作流宿主会话已退出"，
+    // 必须手动再点一次），而这类失败与请求本身无关，重试即可自愈。
+    // 只对幂等子命令生效；run 重试＝重跑工作流，交回用户决定。
+    return attempt.catch((e) => {
+      if (retried || !RETRIABLE_SUBTYPES.has(subtype) || !isHostGoneError(e)) throw e
+      return send(cmd, { timeoutMs, retried: true })
     })
   }
 
@@ -134,29 +172,115 @@ export function createWorkflowHost({ sessions, getOrCreateSession, yfwHome = '',
     return !!g && Array.isArray(g.tools) && g.tools.includes(tool)
   }
 
-  async function run({ id, inputs = {}, capabilities = null, grant: grantArg = null, runId = '' } = {}) {
+  function newRunId() {
+    return `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+  }
+
+  /** 客户端预生成的 runId 只在格式合法时采用（非法即丢弃改用随机 id，避免注入到审计文件名/
+   *  stop/confirm 匹配键上）。前端必须在**提交前**认领 runId：异步后宿主回执到达前内核就已
+   *  开始发事件（start/confirm_request），回执后才认领会丢掉最早的事件。 */
+  const RUN_ID_OK = /^[A-Za-z0-9_-]{1,64}$/
+  function adoptRunIdFromClient(runId) {
+    const s = String(runId || '')
+    return RUN_ID_OK.test(s) ? s : ''
+  }
+
+  /** 运行命令的载荷（run 与 startRun 共用，避免两处漂移）。
+   *  payload.cwd = 宿主会话 cwd：内核侧 grant 相对路径以此为准（Task 9 遗留：内核进程
+   *  cwd 与宿主会话 cwd 未必一致，宿主显式告知，避免"相对路径判定基"歧义）。 */
+  function runPayload({ id, inputs = {}, grant, rid }) {
+    return { subtype: 'run', payload: { workflow: id, inputs, runId: rid, grant, cwd } }
+  }
+
+  /** I-2：内核（cli.mjs）已转发 payload.runId，故真实运行 id 就是 rid；仍以回执为准并
+   *  回迁 grant 键，防止内核版本差异导致 id 分叉（分叉会让 stop/confirm 打空）。 */
+  function adoptRunId(rid, realId) {
+    if (realId === rid || !_grants.has(rid)) return realId
+    _grants.set(realId, _grants.get(rid))
+    _grants.delete(rid)
+    return realId
+  }
+
+  /** 后台运行结束后的结果缓存：容量有限（FIFO 淘汰）。
+   *  异步化后 POST /workflows/run 立即返回，结果的三条出口是
+   *  ① WS workflow_event（start/node/edge_taken/end，主通道）
+   *  ② 运行审计 jsonl（历史记录）
+   *  ③ 本缓存（GET /workflows/run-status 兜底：丢事件/重连后仍能拿到终态与最终输出）。 */
+  const RUN_RESULT_KEEP = 50
+  const runResults = new Map()   // runId → 终态结果（含 finished:true）
+  /** 在途运行（缓存未命中时用于区分"还在跑"与"未知 runId"，避免前端轮询永不收敛） */
+  const inflight = new Set()
+
+  function rememberRun(runId, res) {
+    inflight.delete(runId)
+    runResults.set(runId, { ...res, finished: true })
+    while (runResults.size > RUN_RESULT_KEEP) {
+      const oldest = runResults.keys().next().value
+      if (oldest === runId) break
+      runResults.delete(oldest)
+    }
+  }
+
+  /**
+   * 异步启动（GUI 主通道）：**立即**返回 runId，工作流在后台跑完。
+   * 原同步版 run() 让 POST /workflows/run 阻塞整个运行时长（spec-dev 实测 80–110 秒），
+   * 界面在等待期零反馈 → 用户重复点击 → 同一工作流并行多份重跑（2026-09-12 实测：
+   * 20 秒内 3 份 spec-dev 同时在跑）。异步化后 UI 立即拿到 runId 并开抽屉，
+   * 过程由事件流驱动，终态可经 runResult 查询兜底。
+   */
+  function startRun({ id, inputs = {}, capabilities = null, grant: grantArg = null, runId = '' } = {}) {
+    const rid = adoptRunIdFromClient(runId) || newRunId()
+    const grant = mergeCapabilities({}, capabilities ?? grantArg ?? {})
+    issueGrant(rid, grant)
+    runResults.delete(rid)   // 同 id 重跑：旧结果作废，避免轮询读到上一轮终态
+    inflight.add(rid)
+    let finalId = rid
+    send(runPayload({ id, inputs, grant, rid }), { timeoutMs: RUN_TIMEOUT })
+      .then((r) => {
+        finalId = adoptRunId(rid, r?.runId || rid)
+        const { runId: _ignored, ...rest } = r || {}
+        rememberRun(rid, rest)
+        if (finalId !== rid) rememberRun(finalId, rest)   // 分叉时两个键都能查到
+      })
+      .catch((e) => {
+        // 宿主退出/超时/内核报错：必须落一条失败结果——否则前端只能等 run-status 报"未知"，
+        // 观感仍是"点了没反应"。error 文案与 onKernelExit 的判失败口径一致。
+        rememberRun(rid, { ok: false, status: 'failed', error: e?.message || String(e) })
+      })
+      .finally(() => {
+        // 一次运行有效：结束即失效。必须按**回迁后的键**回收（复审 N-1）。
+        revokeGrant(rid)
+        if (finalId !== rid) revokeGrant(finalId)
+      })
+    return { ok: true, runId: rid, status: 'running', started: true }
+  }
+
+  /** 运行状态查询（兜底通道）：in-flight → 运行中；有终态结果 → 原样返回；
+   *  两者都没有 → ok:false + unknown（宿主重启/超出缓存/非法 runId），调用方据此停止轮询。 */
+  function runResult(runId) {
+    const id = String(runId || '')
+    if (!id) return { ok: false, error: 'runId 必填' }
+    if (inflight.has(id)) return { ok: true, runId: id, status: 'running', finished: false }
+    const r = runResults.get(id)
+    if (r) return { ok: true, runId: id, ...r }
+    return { ok: false, runId: id, unknown: true, error: '未知 runId（可能已结束且超出缓存，或宿主已重启）' }
+  }
+
+  /** 同步运行（保留给内核工具 / 既有调用方）：等待跑完再返回完整结果。 */
+  async function run(opts = {}) {
     // M-2：`capabilities` 与 `grant` 两个名字都接受（GUI/宿主两侧叫法不同），
     // 否则 GUI 传 grant 时会静默得到空工具集（fail-closed 但无任何报错）。
-    const rid = runId || `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
-    const grant = mergeCapabilities({}, capabilities ?? grantArg ?? {})
+    const rid = adoptRunIdFromClient(opts.runId) || newRunId()
+    const grant = mergeCapabilities({}, opts.capabilities ?? opts.grant ?? {})
     issueGrant(rid, grant)
     let realId = rid
     try {
-      // payload.cwd = 宿主会话 cwd：内核侧 grant 相对路径以此为准（Task 9 遗留：内核进程
-      // cwd 与宿主会话 cwd 未必一致，宿主显式告知，避免"相对路径判定基"歧义）。
-      const r = await send({ subtype: 'run', payload: { workflow: id, inputs, runId: rid, grant, cwd } }, { timeoutMs: RUN_TIMEOUT })
-      // I-2：内核（cli.mjs）已转发 payload.runId，故真实运行 id 就是 rid；仍以回执为准并
-      // 回迁 grant 键，防止内核版本差异导致 id 分叉（分叉会让 stop/confirm 打空）。
-      realId = r?.runId || rid
-      if (realId !== rid && _grants.has(rid)) {
-        _grants.set(realId, _grants.get(rid))
-        _grants.delete(rid)
-      }
+      const r = await send(runPayload({ id: opts.id, inputs: opts.inputs || {}, grant, rid }), { timeoutMs: RUN_TIMEOUT })
+      realId = adoptRunId(rid, r?.runId || rid)
       return { ...r, runId: realId }
     } finally {
-      // 一次运行有效：结束即失效。必须按**回迁后的键**回收，否则分叉路径会遗留
-      // realId 键的 grant（复审 N-1：不可达但泄漏）。
       revokeGrant(realId)
+      if (realId !== rid) revokeGrant(rid)
     }
   }
 
@@ -169,6 +293,8 @@ export function createWorkflowHost({ sessions, getOrCreateSession, yfwHome = '',
     if (sid && sid !== HOST_SID) return false
     if (!pending.size) return true
     const err = new Error('工作流宿主会话已退出，命令未完成（详见应用日志 kernel-stderr）')
+    // 标记"宿主没了"：send 据此对幂等子命令自动重建宿主并重试一次（见 send 尾部）。
+    err.hostGone = true
     for (const [, p] of pending) { clearTimeout(p.timer); p.reject(err) }
     pending.clear()
     return true
@@ -180,6 +306,8 @@ export function createWorkflowHost({ sessions, getOrCreateSession, yfwHome = '',
     onKernelMessage,
     onKernelExit,
     _pendingSize: () => pending.size,
+    _inflightSize: () => inflight.size,
+    _runResults: runResults,
     onEvent: emit,
     load: (id) => send({ subtype: 'load', payload: { id } }),
     validate: (id) => send({ subtype: 'validate', payload: { id } }),
@@ -187,6 +315,8 @@ export function createWorkflowHost({ sessions, getOrCreateSession, yfwHome = '',
     // 这里只发命令、不落盘（单一写者：落盘归 store / Task 12）。
     save: ({ id, yaml = '', model: mdl } = {}) => send({ subtype: 'save-raw', payload: mdl ? { id, model: mdl } : { id, yaml } }),
     run,
+    startRun,
+    runResult,
     stop: (runId) => send({ subtype: 'stop', payload: { runId } }, { timeoutMs: STOP_TIMEOUT }),
     // 用户确认直接写宿主 stdin（不配对回执：内核经 workflow 事件回播三态）。
     // M-3：stdin 已 EPIPE / 会话条目残留时 write 会同步抛错，这里兜住并返回失败，

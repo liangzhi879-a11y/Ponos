@@ -24,7 +24,7 @@ import { createEngine } from './engine.mjs'
 import { resolveConfigDir, sharedDirFor } from './config.mjs'
 import { killActiveChildren } from './tools.mjs'
 import { createLogger } from './log.mjs'
-import { makeWire } from './protocol.mjs'
+import { makeWire, wireLastWriteAt, setTurnActive, isTurnActive, isAwaitingUser, wireWriteStats } from './protocol.mjs'
 import { createSessionStore, newSessionId } from './session.mjs'
 import { createHealth } from './health.mjs'
 import { createCompactor, extractKeyInfo, buildSessionMemoryText } from './compact.mjs'
@@ -43,6 +43,7 @@ import { serializeWorkflow, normalizeWorkflow, parseYaml, toModel } from './work
 import { buildWorkflowTools, listVisibleWorkflows } from './dyntools.mjs'
 import { loadSettings } from './settings.mjs'
 import { createHooks } from './hooks.mjs'
+import { normalizeApprovalMode, deriveApprovalMode } from './approval-mode.mjs'
 import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
 import { runReadonly } from './readonly.mjs'
 import { KERNEL_VERSION, SCHEMA_VERSION, buildId } from '../version.mjs'
@@ -52,7 +53,7 @@ const REQUIRED_FORMAT = 'stream-json'
 function usage() {
   console.error(
     'Ponos-turbo kernel: --print --output-format stream-json --input-format stream-json ' +
-    '[--verbose] [--dangerously-skip-permissions] [--auto-approve-high-risk] [--permission-prompt-tool stdio] ' +
+    '[--verbose] [--dangerously-skip-permissions] [--auto-approve-high-risk] [--approval-mode <manual|auto|loose|bypass>] [--permission-prompt-tool stdio] ' +
     '[--disallowedTools <list>] [--resume <id>] [--append-system-prompt-file <file>] ' +
     '[--model <m>] [--add-dir <dir>] [--allow-outside-dirs] [--agent <id>]'
   )
@@ -67,6 +68,7 @@ export function parseArgs(argv) {
     verbose: false,
     skipPermissions: false,
     autoApproveHighRisk: false,
+    approvalMode: null,
     permissionPromptTool: null,
     disallowedTools: [],
     resume: null,
@@ -96,6 +98,7 @@ export function parseArgs(argv) {
       case '--verbose': out.verbose = true; break
       case '--dangerously-skip-permissions': out.skipPermissions = true; break
       case '--auto-approve-high-risk': out.autoApproveHighRisk = true; break
+      case '--approval-mode': out.approvalMode = next() ?? null; break
       case '--permission-prompt-tool': out.permissionPromptTool = next(); break
       case '--permission-rules-file': out.permissionRulesFile = next() ?? null; break
       case '--disallowedTools':
@@ -230,6 +233,49 @@ export async function main(argv) {
         writeFileSync(marker + '.err', JSON.stringify({ message: String(e?.message || e), stack: String(e?.stack || '').slice(0, 4000), ts: new Date().toISOString() }), 'utf-8')
       } catch {}
     })
+    // stdout/stderr 管道断裂兜底（2026-09-12 EPIPE 事故）：bridge 侧关闭管道后，
+    // 流上的异步 'error' 事件无监听者会以未处理异常杀死进程（writeLine 的 try/catch
+    // 只覆盖同步写异常）。EPIPE = 上游已离开、输出无意义 → 优雅退出（exit 钩子把
+    // exitCode 写进 marker；bridge 的 close 事件广播 closed，GUI 收口解锁）。
+    process.stdout.on('error', (e) => { if (e?.code === 'EPIPE') process.exit(0) })
+    process.stderr.on('error', (e) => { if (e?.code === 'EPIPE') process.exit(0) })
+    // 进程级硬看门狗（2026-09-12 异步链失活事故）：请求层空闲看门狗随迭代创建/
+    // 清理——请求异常终止（fetch 套接字消失、定时器清零、续体永不被调度）时，
+    // 内核会"活着但永远空等"（inspector 实证：仅剩 stdio 三句柄、零定时器）。
+    // 本看门狗独立于请求生命周期：wire 无输出超过阈值即硬退出（bridge 收 close
+    // → 广播 closed → GUI 解锁），把不可观测的永久挂起变成可恢复的可见失败。
+    // 默认 15 分钟（2026-09-12 调整）：必须严格大于"自适应首字节上限 600s"
+    // （engine.mjs 大请求恒取 600s）加一个自愈周期——旧默认同为 600s，大请求健康
+    // 慢 prefill 恰好在同一秒与看门狗撞车，谁先到看 tick 相位（见下）。600s→
+    // 900s 的分离让"健康慢"与"真失活"不再共用一个数。
+    // 不设下限钳制——env 显式值权威（测试用小值），与其它守卫 env 语义一致。
+    const hardTimeoutMs = Math.max(1, Number(process.env.PONOS_KERNEL_HARD_TIMEOUT_MS) || 900_000)
+    // 等待用户期间的展期窗口（2026-09-12）：审批/提问挂起时内核本来就零 wire 输出，
+    // 等的是人。旧行为下用户思考超过 hardTimeoutMs 就被 exit(7) 杀掉，而且自杀前
+    // **不写 result/error 帧**——桥只看到 close，用户的作答落空（GUI 甚至还在等弹窗回执）。
+    // 展期而非"暂停判定"：GUI 永不回执时窗口也有界（超出审批上限后照杀）。
+    const approvalGraceMs = Math.max(0, Number(process.env.PONOS_APPROVAL_TIMEOUT_MS) || 600_000)
+    const hardTimer = setInterval(() => {
+      const idle = Date.now() - wireLastWriteAt()
+      const awaiting = isAwaitingUser()
+      const limit = hardTimeoutMs + (awaiting ? approvalGraceMs : 0)
+      if (isTurnActive() && idle > limit) {
+        try {
+          // 现场指纹（2026-09-12 异步链失活排查）：失活形态无 JS 栈可抓，句柄清单是
+          // 唯一现场证据——"stdio-only + 零定时器"即失活签名；下次复发无需外部
+          // inspector attach，marker.err 自带指纹。另记 wire 写失败计数：写失败=stdout
+          // 实际已断，"静默时长"不再可信（那种情形该由桥侧 close 处理）。
+          let fingerprint = {}
+          try {
+            const hs = (process._getActiveHandles() || []).map((h) => h?.constructor?.name || '?')
+            fingerprint = { handles: hs.reduce((a, c) => ((a[c] = (a[c] || 0) + 1), a), {}), idleMs: idle, awaitingUser: awaiting, wireWrite: wireWriteStats() }
+          } catch {}
+          writeFileSync(marker + '.err', JSON.stringify({ message: `硬看门狗：wire 无输出 ${Math.round(idle / 1000)}s（>${Math.round(limit / 1000)}s${awaiting ? '，含等待用户展期' : ''}），疑似异步链失活`, stack: '(hard-watchdog, no JS stack)', fingerprint, ts: new Date().toISOString() }), 'utf-8')
+        } catch {}
+        process.exit(7)
+      }
+    }, Math.min(30_000, hardTimeoutMs))
+    if (hardTimer.unref) hardTimer.unref()
     process.on('exit', (code) => {
       try {
         if (!existsSync(marker)) return
@@ -285,7 +331,7 @@ export async function main(argv) {
   // 失真轴锚点源（2026-09-12 spec §5.1）：重新锚定所需的权威事实必须**确定性拼接**，
   // 不做额外模型调用——首条真实 user 任务（目标真值）+ 会话工作记忆（任务清单/文件
   // 变更/最近决策）+ 记忆里的硬约束。读取失败一律静默（锚点缺失不影响健康主流程）。
-  const anchorMemoryPath = join(configDir, 'memory', 'session', sessionId + '.md')  // 与下方 sessionMemoryPath 同值（此处需先于 createHealth 求值）
+  const anchorMemoryPath = join(configDir, 'memory', 'session', sessionId + '.md')
   const getAnchorSource = () => {
     let task = ''
     try {
@@ -332,6 +378,11 @@ export async function main(argv) {
       verbose: args.verbose,
       skipPermissions: args.skipPermissions,
       autoApproveHighRisk: args.autoApproveHighRisk === true || settings.merged.autoApproveHighRisk === true,
+      // 审批档位优先级：显式 --approval-mode > 内核 settings.json > 旧 flag 派生。
+      // 放在 settings 之上是刻意的——settings.json 里残留的 autoApproveHighRisk:true
+      // 不得把用户选定的 manual/auto 档悄悄放宽（engine 侧缺省才回落派生）。
+      approvalMode: normalizeApprovalMode(args.approvalMode || settings.merged.approvalMode
+        || deriveApprovalMode({ skipPermissions: args.skipPermissions, autoApproveHighRisk: args.autoApproveHighRisk === true || settings.merged.autoApproveHighRisk === true })),
       disallowedTools: [...args.disallowedTools, ...(settings.merged.disallowedTools || [])],
       permissionRules,
       hooks,
@@ -460,6 +511,9 @@ export async function main(argv) {
     skills: skills.length,
     workflows: workflows.length,
     settings: { hooks: hooks.count },
+    // 生效审批档位回显（2026-09-12 四档化）：桥据此校准状态栏徽标；也是"跑的是旧内核
+    // （不认 --approval-mode）"的检测点——旧内核不会带这个字段。
+    approval_mode: engine.getApprovalMode(),
   })
   // --resume：从 transcript 恢复（load 为 async 流式；同文件即 GUI 读取的权威源）。
   // 历史由 session.deriveMessages() 派生，engine 无需 seedHistory（seedHistory 已随
@@ -500,6 +554,7 @@ export async function main(argv) {
   }
 
   async function handleUser(msg) {
+    setTurnActive(true) // 硬看门狗武装（result 事件经 writeLine 自动解除）
     const content = extractContent(msg)
     const priority = msg?.priority
     const uuid = msg?.uuid
@@ -673,7 +728,7 @@ export async function main(argv) {
         // 失败区分开；LEGACY_DSL 另附可操作提示（Task 8 迁移前的唯一自带工作流正走此路径）。
         const legacy = r.code === 'LEGACY_DSL'
         const error = legacy && r.error ? `${r.error}（该工作流为旧 DSL 格式（无 edges），请先迁移）` : r.error
-        wire.system('workflow_result', { subtype: 'run', requestId: msg?.requestId, ok: r.ok, status: r.status, steps: r.steps, outputs: r.outputs, finalOutput: r.finalOutput, error, ...(r.code ? { code: r.code } : {}), errors: r.errors, node: r.node, runId: r.runId, auditPath: r.auditPath })
+        wire.system('workflow_result', { subtype: 'run', requestId: msg?.requestId, ok: r.ok, status: r.status, steps: r.steps, outputs: r.outputs, finalOutput: r.finalOutput, error, ...(r.code ? { code: r.code } : {}), errors: r.errors, node: r.node, runId: r.runId, auditPath: r.auditPath, ...(r.unresolved ? { unresolved: r.unresolved } : {}) })
       } else if (subtype === 'verify') {
         const r = wfEngine.verify(msg?.payload?.auditPath || msg?.payload?.path || '')
         wire.system('workflow_result', { subtype: 'verify', requestId: msg?.requestId, ok: r.ok, lines: r.lines, tampered: r.tampered, error: r.error })
@@ -823,6 +878,17 @@ export async function main(argv) {
       const r = engine.setReasoningEffort(String(value).trim())
       store.appendMeta('reasoning_effort', { value: r.value, effort: r.effort })
       wire.system('reasoning_effort_updated', { value: r.value, effort: r.effort })
+      return
+    }
+    // 审批档位热切换（2026-09-12）：四档 manual|auto|loose|bypass，下一轮工具调用生效。
+    // 非法值不静默放宽——回落默认档（loose）并上行 rejected 事件，桥/GUI 可提示用户。
+    if (subtype === 'approval_mode') {
+      const raw = req?.request?.payload?.value
+      const mode = engine.setApprovalMode(raw)
+      const valid = normalizeApprovalMode(raw) === String(raw ?? '').trim().toLowerCase()
+      store.appendMeta('approval_mode', { value: mode, source: valid ? 'user' : 'fallback' })
+      if (valid) wire.system('approval_mode_updated', { value: mode })
+      else wire.system('approval_mode_rejected', { reason: `非法档位 ${JSON.stringify(raw)}，已回落默认档`, value: mode })
       return
     }
     // 其余 control_request（interrupt 等）骨架阶段忽略

@@ -20,9 +20,13 @@ import { WorkflowNode } from './nodes/WorkflowNode'
 import { WorkflowEdge } from './edges/WorkflowEdge'
 import { NodePalette, NODE_DND_MIME } from './NodePalette'
 import { ConfigPanel } from './ConfigPanel'
+import { Button, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui'
+import { Copy, Maximize2, MousePointer2, Trash2, Undo2, Unlink } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import {
-  defaultConfig, fromFlow, nextEdgeId, nextNodeId, removeEdgesFromModel, removeNodesFromModel, toFlow, withRunState,
-  type FlowEdge, type FlowNode, type NodeRunStatus, type WorkflowModel,
+  defaultConfig, describeRemoval, fromFlow, nextEdgeId, nextNodeId,
+  removeEdgesFromModel, removeNodesFromModel, toFlow, withRunState,
+  type FlowEdge, type FlowNode, type NodeRunStatus, type RemovalImpact, type WorkflowModel,
 } from '@/lib/workflowModel'
 
 export interface WorkflowCanvasHandle {
@@ -58,10 +62,22 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, WorkflowCanvasPro
 function CanvasInner({ model, onChange, nodeStatus, edgeState, onSelectNode, canvasRef }: WorkflowCanvasProps & {
   canvasRef: React.Ref<WorkflowCanvasHandle>
 }) {
-  const initial = useMemo(() => toFlow(model), [])
-  const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(initial.nodes)
-  const [edges, setEdges, onEdgesChange] = useEdgesState<FlowEdge>(initial.edges)
+  const initials = useMemo(() => toFlow(model), [])
+  const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(initials.nodes)
+  const [edges, setEdges, onEdgesChange] = useEdgesState<FlowEdge>(initials.edges)
   const [selected, setSelected] = useState<string | null>(null)
+  /** 画布选择集（节点 + 连线）：框选 / Ctrl·Shift 点选 / ReactFlow 原生多选均落在这里。
+   *  配置面板仍只看单选节点 `selected`；删除走选择集，支持"选中多个一起删"（2026-09-12 UX）。 */
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [selectedEdgeIds, setSelectedEdgeIds] = useState<string[]>([])
+  /** 待确认的删除（节点 id 列表）：破坏性且在图上"看不见后果"，故先给影响面再删 */
+  const [pendingDelete, setPendingDelete] = useState<string[] | null>(null)
+  /** 右键菜单（节点/连线/空白三态；坐标用 clientX/Y + fixed 定位，免去容器换算） */
+  const [menu, setMenu] = useState<null | { x: number; y: number; kind: 'node' | 'edge' | 'pane'; id?: string }>(null)
+  /** 删除撤销栈：破坏性操作前压入快照（上限 50），撤销即回放（2026-09-12 UX"删除后可撤销"）。
+   *  用 state 计数驱动按钮显隐（ref 本身不引发渲染）。 */
+  const historyRef = useRef<WorkflowModel[]>([])
+  const [undoCount, setUndoCount] = useState(0)
   const rf = useReactFlow()
 
   // 最新 model 引用：节流回调与 flush 都基于它派生（避免闭包读到旧 model 丢字段）
@@ -78,7 +94,7 @@ function CanvasInner({ model, onChange, nodeStatus, edgeState, onSelectNode, can
     n: ns.map((n) => [n.id, n.data.nodeType, n.position.x, n.position.y, n.data.label]),
     e: es.map((e) => [e.id, e.source, e.target, e.sourceHandle ?? '']),
   }), [])
-  const baselineRef = useRef(signature(initial.nodes, initial.edges))
+  const baselineRef = useRef(signature(initials.nodes, initials.edges))
 
   // —— 节流回写：300ms 内多次拖动只提交一次（brief 风险③）——
   useEffect(() => {
@@ -181,20 +197,100 @@ function CanvasInner({ model, onChange, nodeStatus, edgeState, onSelectNode, can
     onChangeRef.current(next)
   }, [setNodes, setEdges, signature])
 
-  const deleteNodes = useCallback((ids: string[]) => {
+  /** 画布当前内容（确认框与执行都以它为准，而非落后 300ms 的父组件 model） */
+  const currentModel = useCallback(() => fromFlow(nodesRef.current, edgesRef.current, modelRef.current), [])
+
+  /** 破坏性操作前留档（撤销用）。只记"删除前"的快照——拖拽/配置编辑有 300ms 节流回写，
+   *  把它们也入栈会让 Ctrl+Z 的语义变得不可预期（撤销到底退到哪一步说不清）。 */
+  const pushHistory = useCallback(() => {
+    historyRef.current = [...historyRef.current, currentModel()].slice(-50)
+    setUndoCount(historyRef.current.length)
+  }, [currentModel])
+
+  const undo = useCallback(() => {
+    const h = historyRef.current
+    if (!h.length) return
+    const prev = h[h.length - 1]
+    historyRef.current = h.slice(0, -1)
+    setUndoCount(historyRef.current.length)
+    applyModel(prev)
+    setNotices(['已撤销上一步删除'])
+  }, [applyModel])
+
+  // Ctrl/Cmd+Z 撤销删除。输入控件内不接管（那里应走浏览器原生撤销，否则会吞掉用户的文字撤销）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || String(e.key).toLowerCase() !== 'z') return
+      const t = e.target as HTMLElement | null
+      const tag = t?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || t?.isContentEditable) return
+      if (!historyRef.current.length) return
+      e.preventDefault()
+      undo()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [undo])
+
+  const commitDeleteNodes = useCallback((ids: string[]) => {
     if (!ids.length) return
-    const base = fromFlow(nodesRef.current, edgesRef.current, modelRef.current)
-    const { model: cleaned, warnings } = removeNodesFromModel(base, ids)
+    pushHistory()
+    const { model: cleaned, warnings } = removeNodesFromModel(currentModel(), ids)
     // removeNodesFromModel 会保留 start（不可删）→ applyModel 顺带把它"恢复"回画布
     applyModel(cleaned)
     if (warnings.length) setNotices(warnings)
-  }, [applyModel])
+    setSelectedIds([])
+    setSelected(null)
+    onSelectNode?.(null)
+  }, [applyModel, currentModel, onSelectNode, pushHistory])
+
+  const deleteNodes = useCallback((ids: string[]) => {
+    if (!ids.length) return
+    // 一律二次确认（2026-09-12 UX 明确要求）：删除会改动**别的**节点的配置（清空悬空引用）、
+    // 摘除子图成员、连带删边——这些后果在画布上看不见，必须知情后再动手。
+    // 有撤销栈兜底，但撤销不该替代"先说清再删"。
+    setPendingDelete(ids)
+  }, [])
+
+  /** 复制节点（右键菜单）：新 id + 位移，配置深拷（避免两个节点共享同一 config 对象） */
+  const duplicateNode = useCallback((id: string) => {
+    const src = nodesRef.current.find((n) => String(n.id) === id)
+    if (!src) return
+    pushHistory()
+    const newId = nextNodeId({ ...modelRef.current, nodes: [...modelRef.current.nodes, ...nodesRef.current.map((n) => ({ id: n.id, type: n.data.nodeType }))] }, '')
+    setNodes((ns) => [...ns, {
+      ...src,
+      id: newId,
+      selected: false,
+      position: { x: src.position.x + 40, y: src.position.y + 40 },
+      data: { ...src.data, config: JSON.parse(JSON.stringify(src.data.config ?? {})) },
+    } as FlowNode])
+    setSelected(newId)
+    onSelectNode?.(newId)
+  }, [onSelectNode, pushHistory, setNodes])
+
+  /** 断开某节点的全部连线（右键菜单；节点本身保留） */
+  const detachNode = useCallback((id: string) => {
+    const ids = edgesRef.current.filter((e) => String(e.source) === id || String(e.target) === id).map((e) => String(e.id))
+    if (!ids.length) return
+    pushHistory()
+    applyModel(removeEdgesFromModel(currentModel(), ids))
+    setNotices([`已断开 ${ids.length} 条连线`])
+  }, [applyModel, currentModel, pushHistory])
 
   const deleteEdges = useCallback((ids: string[]) => {
     if (!ids.length) return
-    const base = fromFlow(nodesRef.current, edgesRef.current, modelRef.current)
-    applyModel(removeEdgesFromModel(base, ids))
-  }, [applyModel])
+    applyModel(removeEdgesFromModel(currentModel(), ids))
+    setSelectedEdgeIds([])
+  }, [applyModel, currentModel])
+
+  /** 批量删除（工具栏）：节点与连线一并处理，节点走确认（若需要） */
+  const deleteSelection = useCallback(() => {
+    const nodeIds = selectedIds
+    const edgeIds = selectedEdgeIds
+    if (edgeIds.length) deleteEdges(edgeIds)
+    if (nodeIds.length) deleteNodes(nodeIds)
+  }, [deleteEdges, deleteNodes, selectedEdgeIds, selectedIds])
 
   const view = useMemo(() => withRunState(nodes, edges, nodeStatus, edgeState), [nodes, edges, nodeStatus, edgeState])
 
@@ -220,6 +316,33 @@ function CanvasInner({ model, onChange, nodeStatus, edgeState, onSelectNode, can
 
   const nodeSel = model.nodes.find((n) => n.id === selected) || null
 
+  /** 删除变更统一由 onNodesDelete / onEdgesDelete → deleteNodes/deleteEdges 处理：
+   *  那里会做语义清理（连带边、子图成员、悬空引用）并按需弹确认。若在 onNodesChange 里
+   *  直接应用 remove，画布会先出现"节点没了但引用还在"的中间态，还可能绕过确认框。 */
+  const handleNodesChange = useCallback((changes: NodeChange<FlowNode>[]) => {
+    onNodesChange(changes.filter((c) => c.type !== 'remove') as NodeChange<FlowNode>[])
+  }, [onNodesChange])
+  const handleEdgesChange = useCallback((changes: EdgeChange<FlowEdge>[]) => {
+    onEdgesChange(changes.filter((c) => c.type !== 'remove') as EdgeChange<FlowEdge>[])
+  }, [onEdgesChange])
+
+  /** 选择集同步（框选 / Ctrl·Shift 点选 / 原生多选都走这里）：批量删除的依据 */
+  const onSelectionChange = useCallback(({ nodes: ns, edges: es }: { nodes: FlowNode[]; edges: FlowEdge[] }) => {
+    setSelectedIds(ns.map((n) => String(n.id)))
+    setSelectedEdgeIds(es.map((e) => String(e.id)))
+  }, [])
+
+  /** 待确认删除的影响面（删除会改动别的节点的配置时必须先说清） */
+  const pendingImpact = useMemo<RemovalImpact | null>(
+    () => (pendingDelete ? describeRemoval(currentModel(), pendingDelete) : null),
+    [pendingDelete, currentModel],
+  )
+  const pendingNames = useMemo(() => {
+    if (!pendingDelete) return []
+    const byId = new Map(nodesRef.current.map((n) => [String(n.id), String(n.data.label || n.data.nodeType || n.id)]))
+    return pendingDelete.map((id) => `${byId.get(id) || id}（${id}）`)
+  }, [pendingDelete])
+
   return (
     <div className="flex-1 flex min-h-0 min-w-0">
       <NodePalette onAdd={(t) => addNode(t)} />
@@ -233,11 +356,21 @@ function CanvasInner({ model, onChange, nodeStatus, edgeState, onSelectNode, can
           deleteKeyCode={['Delete', 'Backspace']}
           onNodesDelete={(ds) => deleteNodes((ds as FlowNode[]).map((n) => n.id))}
           onEdgesDelete={(es) => deleteEdges((es as FlowEdge[]).map((e) => e.id))}
-          onNodesChange={onNodesChange as (c: NodeChange<FlowNode>[]) => void}
-          onEdgesChange={onEdgesChange as (c: EdgeChange<FlowEdge>[]) => void}
+          onNodesChange={handleNodesChange}
+          onEdgesChange={handleEdgesChange}
+          onSelectionChange={onSelectionChange}
           onConnect={onConnect}
           onNodeClick={(_, n) => { setSelected(n.id); onSelectNode?.(n.id) }}
-          onPaneClick={() => { setSelected(null); onSelectNode?.(null) }}
+          onPaneClick={() => { setSelected(null); onSelectNode?.(null); setMenu(null) }}
+          // 右键菜单（2026-09-12 UX 明确要求）：节点/连线/空白三态，动作见菜单渲染处
+          onNodeContextMenu={(e, n) => { e.preventDefault(); setSelected(n.id); onSelectNode?.(n.id); setMenu({ x: e.clientX, y: e.clientY, kind: 'node', id: n.id }) }}
+          onEdgeContextMenu={(e, ed) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, kind: 'edge', id: ed.id }) }}
+          onPaneContextMenu={(e) => { e.preventDefault(); setMenu({ x: (e as MouseEvent).clientX, y: (e as MouseEvent).clientY, kind: 'pane' }) }}
+          // 多选删除（2026-09-12 UX："元素删除选择"）：左键拖 = 框选（与白板/Figma 同手感），
+          // 平移改由中键/右键或空格+拖承担——否则左键被平移占用，框选无从触发。
+          selectionOnDrag
+          panOnDrag={[1, 2]}
+          panActivationKeyCode="Space"
           fitView
           minZoom={0.2}
           proOptions={{ hideAttribution: true }}
@@ -246,6 +379,76 @@ function CanvasInner({ model, onChange, nodeStatus, edgeState, onSelectNode, can
           <Controls />
           <MiniMap pannable zoomable nodeStrokeWidth={2} />
         </ReactFlow>
+
+        {/* 选择工具条：选中即出现，给出"已选什么 / 一起删 / 取消选择"（批量删除的唯一入口） */}
+        {(selectedIds.length > 0 || selectedEdgeIds.length > 0 || undoCount > 0) && (
+          <div className="absolute top-3 left-3 z-20 flex items-center gap-2 px-2 py-1.5 rounded border border-default bg-elevated/95 text-[11px] text-secondary shadow">
+            {(selectedIds.length > 0 || selectedEdgeIds.length > 0) && (
+              <>
+                <span>
+                  已选 {selectedIds.length} 个节点{selectedEdgeIds.length ? ` · ${selectedEdgeIds.length} 条连线` : ''}
+                </span>
+                <Button size="xs" variant="ghost" className="text-error" onClick={deleteSelection} title="删除已选（删除前会先确认影响面）">
+                  <Trash2 className="w-3 h-3" />删除已选
+                </Button>
+              </>
+            )}
+            {/* 撤销删除：删除是破坏性且在图上不可见后果，必须给后悔药（Ctrl/Cmd+Z 同效） */}
+            {undoCount > 0 && (
+              <Button size="xs" variant="ghost" onClick={undo} title={`撤销上一步删除（Ctrl+Z，可撤销 ${undoCount} 步）`}>
+                <Undo2 className="w-3 h-3" />撤销
+              </Button>
+            )}
+            <Button size="xs" variant="ghost" onClick={() => { rf.setNodes((ns) => ns.map((n) => ({ ...n, selected: false }))); rf.setEdges((es) => es.map((e) => ({ ...e, selected: false }))); setSelectedIds([]); setSelectedEdgeIds([]); setSelected(null); onSelectNode?.(null) }}>
+              取消选择
+            </Button>
+          </div>
+        )}
+
+        {/* 右键菜单（节点 / 连线 / 空白）：删除、复制、断开、全选、适应视图 */}
+        {menu && (
+          <>
+            {/* 点击任意处关闭：透明遮罩放在菜单下层，避免菜单自身点击被吞 */}
+            <div className="fixed inset-0 z-30" onClick={() => setMenu(null)} onContextMenu={(e) => { e.preventDefault(); setMenu(null) }} />
+            <div className="fixed z-40 min-w-[168px] py-1 rounded border border-default bg-elevated shadow-lg text-[11px] text-secondary" style={{ left: menu.x, top: menu.y }}>
+              {menu.kind === 'node' && menu.id && (
+                <>
+                  <MenuItem icon={Copy} label="复制节点" onClick={() => { setMenu(null); duplicateNode(menu.id!) }} />
+                  <MenuItem icon={Unlink} label="断开全部连线" onClick={() => { setMenu(null); detachNode(menu.id!) }} />
+                  <MenuItem icon={Trash2} label="删除节点" danger onClick={() => { setMenu(null); deleteNodes([menu.id!]) }} />
+                </>
+              )}
+              {menu.kind === 'edge' && menu.id && (
+                <>
+                  <MenuItem icon={Unlink} label="删除连线" onClick={() => { setMenu(null); const id = menu.id!; pushHistory(); applyModel(removeEdgesFromModel(currentModel(), [id])) }} />
+                  <MenuItem icon={Trash2} label="删除源节点" danger onClick={() => {
+                    const ed = edgesRef.current.find((e) => String(e.id) === menu.id)
+                    setMenu(null)
+                    if (ed) deleteNodes([String(ed.source)])
+                  }} />
+                  <MenuItem icon={Trash2} label="删除目标节点" danger onClick={() => {
+                    const ed = edgesRef.current.find((e) => String(e.id) === menu.id)
+                    setMenu(null)
+                    if (ed) deleteNodes([String(ed.target)])
+                  }} />
+                </>
+              )}
+              {menu.kind === 'pane' && (
+                <>
+                  <MenuItem icon={MousePointer2} label="全选" onClick={() => {
+                    setMenu(null)
+                    setNodes((ns) => ns.map((n) => ({ ...n, selected: true })))
+                    setEdges((es) => es.map((e) => ({ ...e, selected: true })))
+                    setSelectedIds(nodesRef.current.map((n) => String(n.id)))
+                    setSelectedEdgeIds(edgesRef.current.map((e) => String(e.id)))
+                  }} />
+                  <MenuItem icon={Maximize2} label="适应视图" onClick={() => { setMenu(null); void rf.fitView({ padding: 0.2 }) }} />
+                  {undoCount > 0 && <MenuItem icon={Undo2} label="撤销上一步删除" onClick={() => { setMenu(null); undo() }} />}
+                </>
+              )}
+            </div>
+          </>
+        )}
 
         {/* 删除结果提示（清了几条边、清空了哪些悬空引用——破坏性操作必须说清动了什么） */}
         {notices.length > 0 && (
@@ -256,7 +459,7 @@ function CanvasInner({ model, onChange, nodeStatus, edgeState, onSelectNode, can
 
         {/* 操作提示（删除入口的可发现性：此前完全没有可见入口，用户只能猜） */}
         <div className="absolute bottom-9 left-3 text-[10px] text-tertiary bg-elevated/80 rounded px-2 py-1 pointer-events-none">
-          拖动节点连线 · 选中后按 Delete 删除 · 节点/连线上的 × 可直接删除
+          拖动节点连线 · 左键框选 / Ctrl·Shift 点选多选 · 右键菜单（复制 / 断开 / 删除） · Delete 删除（可 Ctrl+Z 撤销）
         </div>
 
         {/* 条件边图例（分色语义与 WorkflowNode handle 同源） */}
@@ -267,6 +470,42 @@ function CanvasInner({ model, onChange, nodeStatus, edgeState, onSelectNode, can
             </span>
           ))}
         </div>
+
+        {/* 批量删除确认：把"会动什么"摊开——多删一个节点往往连带清掉别处的引用，图上不可见 */}
+        <Dialog open={!!pendingDelete} onOpenChange={(o) => { if (!o) setPendingDelete(null) }}>
+          <DialogContent size="sm">
+            <DialogHeader><DialogTitle>删除 {pendingDelete?.length ?? 0} 个节点？</DialogTitle></DialogHeader>
+            <DialogBody>
+              <div className="text-[11px] text-secondary flex flex-col gap-2">
+                <div className="flex flex-wrap gap-1">
+                  {pendingNames.map((n) => <span key={n} className="px-1.5 py-0.5 rounded bg-elevated font-mono text-[10px]">{n}</span>)}
+                </div>
+                {pendingImpact && (
+                  <ul className="flex flex-col gap-0.5 text-[11px] text-tertiary">
+                    <li>· 一并移除相连连线 {pendingImpact.edgesRemoved} 条</li>
+                    {pendingImpact.bodyCleanups > 0 && <li>· 从循环/迭代子图成员中摘除 {pendingImpact.bodyCleanups} 处</li>}
+                    {pendingImpact.refsScrubbed > 0 && (
+                      <li className="text-warning">
+                        · 清空他处悬空变量引用 {pendingImpact.refsScrubbed} 处（不清则保存会被内核拒绝）
+                        <div className="mt-0.5 flex flex-col gap-0.5 text-[10px] font-mono">
+                          {pendingImpact.refDetails.slice(0, 8).map((d) => <span key={d}>{d}</span>)}
+                          {pendingImpact.refDetails.length > 8 && <span>…另有 {pendingImpact.refDetails.length - 8} 处</span>}
+                        </div>
+                      </li>
+                    )}
+                    {pendingImpact.blocked.length > 0 && <li className="text-warning">· 开始节点不可删除，将被保留</li>}
+                  </ul>
+                )}
+              </div>
+            </DialogBody>
+            <DialogFooter>
+              <Button size="sm" variant="ghost" onClick={() => setPendingDelete(null)}>取消</Button>
+              <Button size="sm" className="text-error" onClick={() => { const ids = pendingDelete || []; setPendingDelete(null); commitDeleteNodes(ids) }}>
+                <Trash2 className="w-3.5 h-3.5" />确认删除
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
 
       <ConfigPanel
@@ -280,3 +519,21 @@ function CanvasInner({ model, onChange, nodeStatus, edgeState, onSelectNode, can
 
 /** 供父组件按需获取视口实例（导出以便扩展；当前未使用） */
 export type { ReactFlowInstance }
+
+/** 右键菜单项（图标 + 文案 + 危险态着色）；点击后由调用方负责关闭菜单 */
+function MenuItem({ icon: Icon, label, onClick, danger }: {
+  icon: React.ComponentType<{ className?: string }>
+  label: string
+  onClick: () => void
+  danger?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn('w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-hover', danger ? 'text-error' : 'text-secondary')}
+    >
+      <Icon className="w-3.5 h-3.5 shrink-0" />{label}
+    </button>
+  )
+}

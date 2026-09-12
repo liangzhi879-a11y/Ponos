@@ -17,19 +17,19 @@ import { Activity, ArrowLeft, Save, ShieldCheck, Play, Download, FileCode2, Hist
 import { Badge, Button, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle, Textarea } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import {
-  confirmNode, createWorkflow, deleteWorkflow, duplicateWorkflow, exportWorkflow, importWorkflow,
-  listRuns, listVersions, listWorkflows, loadWorkflow, rollbackWorkflow,
+  confirmNode, createWorkflow, deleteWorkflow, duplicateWorkflow, exportWorkflow, getRunStatus, importWorkflow,
+  listRuns, listVersions, listWorkflows, loadWorkflow, newRunId, rollbackWorkflow,
   runWorkflow, saveWorkflow, saveWorkflowYaml, stopRun, subscribeWorkflowEvents, validateWorkflow,
   type RunRecord, type WorkflowMeta,
 } from '@/lib/workflowApi'
 import {
-  checkWorkflowId, deriveCapabilities, emptyModel, suggestCopyId, summarizeLocal, validateLocal,
+  checkWorkflowId, deriveCapabilities, describeDataFlow, emptyModel, suggestCopyId, summarizeLocal, validateLocal,
   type Capabilities, type ValidationIssue, type WorkflowModel,
 } from '@/lib/workflowModel'
 import { WorkflowCanvas, type WorkflowCanvasHandle } from './canvas/WorkflowCanvas'
 import { WorkflowList } from './WorkflowList'
 import { AuthzDialog } from './AuthzDialog'
-import { RUN_PHASE_TEXT, RunDrawer, applyRunEvent, emptyRunView, type RunView, type WorkflowRunEvent } from './RunDrawer'
+import { RUN_PHASE_TEXT, RunDrawer, applyRunEvent, emptyRunView, isTerminalPhase, type RunView, type WorkflowRunEvent } from './RunDrawer'
 
 export function WorkflowsPanel() {
   const [list, setList] = useState<WorkflowMeta[]>([])
@@ -63,6 +63,9 @@ export function WorkflowsPanel() {
   const [caps, setCaps] = useState<Capabilities>({ tools: [], write_dirs: [], network: false })
   /** 订阅回调里判归属用的当前 runId（回调只挂一次，不能读 state 闭包） */
   const runIdRef = useRef<string | null>(null)
+  /** runView 最新值镜像（兜底轮询的定时器同样只挂一次，不能读 state 闭包） */
+  const runViewRef = useRef<RunView>(emptyRunView())
+  useEffect(() => { runViewRef.current = runView }, [runView])
 
   const canvasRef = useRef<WorkflowCanvasHandle | null>(null)
 
@@ -227,22 +230,97 @@ export function WorkflowsPanel() {
     setRunSetup({ id, model: target })
   }, [dirty, model, openId, save])
 
-  /** 授权卡确认 → 真正运行（清单即用户在 AuthzDialog 里勾除后的能力，宿主按此 fail-closed 放行） */
-  const startRun = useCallback(async (confirmed: Capabilities) => {
-    if (!runSetup) return
+  /**
+   * 授权卡确认 → **提交**运行（清单即用户在 AuthzDialog 里勾除后的能力，宿主按此 fail-closed 放行）。
+   *
+   * 2026-09-12 改造（「点击运行无反应」根因）：原实现 await runWorkflow 等整个运行结束
+   * （spec-dev 实测 80–110 秒），等待期界面零反馈 + 失败只 setNotice（被 Dialog 遮罩挡住看不见）
+   * → 用户重复点击 → 同一工作流并行多份重跑（实测 20 秒内 3 份）。
+   * 现在：提交毫秒级返回 → 立即开抽屉并置 running；失败**返回给授权卡**就地显示（卡片不关）。
+   */
+  const startRun = useCallback(async (confirmed: Capabilities): Promise<{ ok: boolean; error?: string }> => {
+    if (!runSetup) return { ok: false, error: '运行参数已失效，请重新点击运行' }
+    const target = runSetup
     setCaps(confirmed)
     setRunView(emptyRunView())   // 清空上一轮着色（start 事件到达时同样会清空，此处先清避免残留）
-    const r = await runWorkflow(runSetup.id, inputs, confirmed)
-    if (!r.ok) { setNotice({ tone: 'error', text: `运行失败：${r.error}` }); return }
-    const rid = String(r.runId || '')
-    if (!rid) { setNotice({ tone: 'error', text: '运行失败：宿主未返回 runId' }); return }
+    // **提交前认领 runId**：提交返回前内核就在发事件（start 节点/confirm_request），
+    // 事件归属靠 runIdRef 判定——等回执才认领会把最早的事件全丢掉（2026-09-12 实测：
+    // 抽屉里没有首个节点、审批卡不弹）。故这里预生成并先赋值。
+    const want = newRunId()
+    runIdRef.current = want
+    const r = await runWorkflow(target.id, inputs, confirmed, want)
+    if (!r.ok) {
+      if (runIdRef.current === want) runIdRef.current = null   // 未启动成功：撤销认领
+      return { ok: false, error: r.error }
+    }
+    const rid = String(r.runId || want)
     runIdRef.current = rid
     setRunId(rid)
-    setRunWfId(runSetup.id)
+    setRunWfId(target.id)
     setRunSetup(null)
     setDrawerOpen(true)
-    setNotice({ tone: 'ok', text: `已启动：${rid}` })
+    // 提交即视为运行开始：不依赖首个 WS 事件（丢了就会停在"等待事件…"），终态由兜底轮询收敛。
+    // 注意：若事件已先到（started/步骤已累积），保持现状——用 start 清空会把已到的节点抹掉。
+    setRunView((v) => (v.started || v.steps.length > 0 || Object.keys(v.nodeStatus).length > 0 ? v : applyRunEvent(v, { type: 'start' })))
+    setNotice({ tone: 'ok', text: `已提交运行：${rid}` })
+    return { ok: true }
   }, [inputs, runSetup])
+
+  /**
+   * 终态兜底轮询：事件流是主通道，但 WS 丢事件/断连会让界面永远停在"运行中"（＝用户眼中
+   * "点了没反应"）。运行期间每 3s 查一次 run-status，拿到终态就合成结束事件收敛视图。
+   * 查询失败（网络抖动）不终止；unknown（宿主重启/超缓存）才停，并提示改看历史记录。
+   */
+  useEffect(() => {
+    if (!runId || isTerminalPhase(runViewRef.current.phase)) return
+    let stopped = false
+    let polls = 0
+    const MAX_POLLS = 600   // ≈30 分钟，与宿主 RUN_TIMEOUT 同量级
+    const tick = async () => {
+      if (stopped || ++polls > MAX_POLLS) { stopped = true; return }
+      const r = await getRunStatus(runId)
+      if (stopped) return
+      if (!r.ok) {
+        if (r.unknown) {
+          stopped = true
+          setNotice({ tone: 'error', text: `无法确认运行状态：${r.error}；请到「历史记录」查看该次运行` })
+        }
+        return   // 其它错误（网络抖动/宿主忙）继续下一轮
+      }
+      if (!r.finished) return
+      stopped = true
+      // 合成终态（已有更细的实时事件时不覆盖；未收到事件的节点在此补齐，避免"跑完了画布还是灰的"）
+      setRunView((v) => {
+        if (isTerminalPhase(v.phase)) return v
+        let next = v
+        for (const [node, rec] of Object.entries(r.outputs || {})) {
+          if (next.nodeStatus[node]) continue
+          next = applyRunEvent(next, {
+            type: rec.skipped ? 'node_skipped' : 'node',
+            node,
+            status: rec.ok === false ? 'failed' : rec.skipped ? 'skipped' : 'done',
+            output: rec.output,
+            ...(rec.error ? { error: rec.error } : {}),
+          })
+        }
+        return applyRunEvent(next, {
+          type: 'end',
+          status: String(r.status || 'completed'),
+          steps: Number(r.steps || 0),
+          ...(r.error ? { error: r.error } : {}),
+          ...(r.unresolved?.length ? { unresolved: r.unresolved } : {}),
+        })
+      })
+      if (r.unresolved?.length) {
+        setNotice({ tone: 'error', text: `运行结束（${runId}）：${r.unresolved.length} 个返回值取不到值——${r.unresolved.join('、')}` })
+      } else if (r.status && r.status !== 'completed') {
+        setNotice({ tone: 'error', text: `运行结束（${runId}）：${r.status}${r.error ? ` — ${r.error}` : ''}` })
+      }
+      void refreshList()
+    }
+    const timer = setInterval(() => void tick(), 3000)
+    return () => { stopped = true; clearInterval(timer) }
+  }, [runId, runView.phase, refreshList])
 
   const doStop = useCallback(async (id: string) => {
     const r = await stopRun(id)
@@ -294,7 +372,8 @@ export function WorkflowsPanel() {
       inputs={runSetup.model.inputs || []}
       values={inputs}
       onValuesChange={setInputs}
-      onConfirm={(confirmed) => void startRun(confirmed)}
+      outputs={describeDataFlow(runSetup.model).outputs}
+      onConfirm={startRun}
       onCancel={() => setRunSetup(null)}
     />
   ) : null

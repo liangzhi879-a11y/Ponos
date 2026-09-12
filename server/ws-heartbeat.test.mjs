@@ -107,6 +107,10 @@ test('WS 应用层心跳：bridge 收 {type:ping} → 回 {type:pong} 且 t 为�
   try {
     await waitReady(b, port)
     ws = await connectWS(port)
+    // 连接后首包 = bridge_hello（2026-09-12 桥身份握手），跳过再验心跳
+    const hello = await nextMessage(ws)
+    assert.equal(hello.type, 'bridge_hello')
+    assert.ok(hello.id && typeof hello.id === 'string', 'hello 应携带桥实例 id')
     ws.send(JSON.stringify({ type: 'ping' }))
     const reply = await nextMessage(ws)
     assert.equal(reply.type, 'pong')

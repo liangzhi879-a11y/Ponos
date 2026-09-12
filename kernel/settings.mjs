@@ -76,6 +76,10 @@ export const SETTINGS_DEFAULTS = {
   model: '',
   maxOutputTokens: 64000,
   autoApproveHighRisk: false,
+  // 审批档位（2026-09-12 四档化）：'' = 未设置 → 由 --approval-mode / 旧 flag 派生。
+  // 刻意不动 SCHEMA_VERSION、不加迁移：缺键本就是"走派生"，迁移会无谓改写所有用户的
+  // settings.json（且这类写盘会触发 .bak 轮转）。
+  approvalMode: '',
   disallowedTools: [],
   env: {},
   compact: { thresholdTokens: 0, reserveTokens: 0, maxToolResults: 0 },

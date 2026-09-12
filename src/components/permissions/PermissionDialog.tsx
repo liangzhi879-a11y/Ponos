@@ -6,6 +6,7 @@ import {
 import { useChatStore } from '@/stores/chatStore'
 import { sendPermissionResponse } from '@/hooks/useYFWCLI'
 import { useTranslation } from '@/i18n/useTranslation'
+import { APPROVAL_MODE_OPTIONS } from '@/lib/approvalModeUi'
 import { cn } from '@/lib/utils'
 
 const RISK_COLORS = {
@@ -48,27 +49,53 @@ export function PermissionDialog() {
     active.risk === 'low' || active.risk === 'high' ? active.risk : 'medium'
   const riskColor = RISK_COLORS[risk]
   const actionLabel = t(ACTION_KEYS[active.action] || 'permissions.bash')
+  // 灾难级硬黑名单（2026-09-12）：内核在四档下都会问，这里必须让人一眼看懂：
+  // ① 这不是普通高危（可能毁盘/毁系统）；② 放行**只对本次执行**有效、绝不记忆
+  //   （桥回传 decisionClassification:'user_temporary'，没有"总是允许"）。
+  // 因此按钮文案也从「同意」改成「本次放行」——"同意"听起来像记住选择。
+  const hard = active.hard === true
+  const modeLabel = active.mode
+    ? t(APPROVAL_MODE_OPTIONS.find(o => o.value === active.mode)?.labelKey ?? 'approvalMode.loose')
+    : ''
 
   return (
     <Dialog open={!!active} onOpenChange={() => {}}>
       <DialogContent size="sm">
         <DialogHeader>
           <div className="flex items-center gap-2 mb-1">
-            <Shield className="w-5 h-5 text-brand-500" />
-            <DialogTitle>{t('permissions.title')}</DialogTitle>
+            {hard
+              ? <AlertTriangle className="w-5 h-5 text-error" />
+              : <Shield className="w-5 h-5 text-brand-500" />}
+            <DialogTitle className={cn(hard && 'text-error')}>
+              {hard ? t('approvalMode.dialogHardTitle') : t('permissions.title')}
+            </DialogTitle>
           </div>
           <DialogDescription>
-            {t('permissions.description')}
+            {hard ? t('approvalMode.dialogHardBody') : t('permissions.description')}
+            {modeLabel && <span className="block mt-0.5 text-[10px] text-tertiary">{t('approvalMode.dialogModeHint', { mode: modeLabel })}</span>}
           </DialogDescription>
         </DialogHeader>
 
         <DialogBody>
           <div className="space-y-3">
+            {/* 灾难级警示条：置于目标区域之**上**（先警告后看内容），红色不可滚动 */}
+            {hard && (
+              <div className="cut-xs danger">
+                <div className="ci flex items-start gap-2 p-3 !bg-error/20">
+                  <AlertTriangle className="w-4 h-4 text-error shrink-0 mt-0.5" />
+                  <div className="text-xs text-error space-y-1">
+                    <p className="font-medium">{t('approvalMode.hardTitle')}</p>
+                    <p className="text-[11px] leading-snug opacity-90">{t('approvalMode.hardList')}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Action */}
             <div className="flex items-center gap-2">
               <span className="text-xs text-tertiary">{t('permissions.action')}:</span>
               <Badge variant={
-                risk === 'high' ? 'danger' :
+                hard || risk === 'high' ? 'danger' :
                 risk === 'medium' ? 'warning' : 'info'
               }>
                 {actionLabel}
@@ -94,8 +121,8 @@ export function PermissionDialog() {
               </div>
             )}
 
-            {/* Risk warning */}
-            {risk === 'high' && (
+            {/* Risk warning（灾难级已在上方单独警示，不重复刷屏） */}
+            {risk === 'high' && !hard && (
               <div className="cut-xs danger">
                 <div className="ci flex items-start gap-2 p-3 !bg-error/15">
                   <AlertTriangle className="w-4 h-4 text-error shrink-0 mt-0.5" />
@@ -132,7 +159,7 @@ export function PermissionDialog() {
             {t('permissions.deny')}
           </Button>
           <Button
-            variant="primary"
+            variant={hard ? 'danger' : 'primary'}
             size="sm"
             onClick={() => {
               if (active.sessionId && active.toolUseId) {
@@ -141,7 +168,8 @@ export function PermissionDialog() {
               resolvePermission(active.id, true)
             }}
           >
-            {t('permissions.approve')}
+            {/* 灾难级：文案必须是「本次放行」——「同意」容易被读成"以后都同意" */}
+            {hard ? t('approvalMode.dialogAllowOnce') : t('permissions.approve')}
           </Button>
         </DialogFooter>
       </DialogContent>

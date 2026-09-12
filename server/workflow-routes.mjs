@@ -28,7 +28,21 @@ export async function handleWorkflowRoute({ url, req, reply, readJsonBody, store
   if (p !== '/workflows' && !p.startsWith('/workflows/')) return false
   if (!host) return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: '工作流宿主未注入' })), true
   const h = host
-  const json = (code, obj) => reply(code, { 'Content-Type': 'application/json' }, JSON.stringify(obj))
+  // 回执统一补 `ok`（2026-09-12 实测缺陷，影响面极大）：
+  // 客户端 workflowApi.call() 的判定是「HTTP 非 2xx → 失败」+「body.ok === false → 失败」，
+  // 而**成功回执没有 ok 字段**时消费方（AuthzDialog / WorkflowsPanel 等）会走 `if (!r.ok)`
+  // 的失败分支 —— 表现为：
+  //   · 工作流列表恒空（"暂无工作流"，其实 GET 返回了数据）；
+  //   · 运行前授权卡「读取信任清单失败：undefined」（GET /workflows/bindings 回 {agents,trusted}）；
+  // 即 store 的纯数据回执（list/bindings/runs/versions/duplicate/stop…）在 UI 里全部"失败"。
+  // 在此一处补全，胜于逐个路由手改（store 函数返回形状各异，且未来新增路由同样受益）。
+  // 已有 ok 的回执（内核/宿主回执多为 {ok:false,error}）**原样保留**，不覆盖。
+  const json = (code, obj) => {
+    const payload = obj && typeof obj === 'object' && !Array.isArray(obj) && obj.ok === undefined
+      ? { ok: true, ...obj }
+      : obj
+    return reply(code, { 'Content-Type': 'application/json' }, JSON.stringify(payload))
+  }
   try {
     if (p === '/workflows' && req.method === 'GET') {
       return json(200, { workflows: store.listWorkflowMetas({ root, runsRoot }), root: root.replace(/\\/g, '/') }), true
@@ -48,8 +62,27 @@ export async function handleWorkflowRoute({ url, req, reply, readJsonBody, store
       if (id === 'run' && req.method === 'POST') {
         const body = await readJsonBody(req)
         if (!body?.capabilities) return json(400, { ok: false, error: '缺少 capabilities：运行前必须提供授权清单' }), true
-        const r = await h.run({ id: body.id, inputs: body.inputs || {}, capabilities: body.capabilities })
+        const args = { id: body.id, inputs: body.inputs || {}, capabilities: body.capabilities }
+        // 客户端可**预生成 runId**（异步后必须：宿主回执到达前，内核已开始发事件——含
+        // start 与 confirm_request；前端以 runId 判事件归属，回执后才认领会丢掉最早的事件，
+        // 表现为抽屉里没有首个节点/审批卡不弹）。宿主对非法格式会自行改用随机 id。
+        if (body.runId) args.runId = String(body.runId)
+        // **异步启动**（2026-09-12）：此路由原先同步等待内核跑完才回执，spec-dev 实测
+        // 80–110 秒；客户端在等待期零反馈（授权卡按钮回调已返回、抽屉未开、失败提示被
+        // 遮罩挡住）→ 用户重复点击 → 同一工作流并行多份重跑（实测 20 秒内 3 份）。
+        // 现在立即回 { runId, status:'running' }，过程经 WS workflow_event 实时推送，
+        // 终态可经 GET /workflows/run-status?runId= 兜底查询（丢事件/重连场景）。
+        if (typeof h.startRun === 'function') return json(200, h.startRun(args)), true
+        // 宿主未实现 startRun（旧注入/测试替身）→ 回退同步语义，不静默失败。
+        const r = await h.run(args)
         return json(r.ok === false ? 400 : 200, r), true
+      }
+      if (id === 'run-status' && req.method === 'GET') {
+        // 运行状态/终态查询（异步运行的兜底通道）。path 参数与 /workflows/runs 同风格。
+        const runId = url.searchParams.get('runId') || ''
+        if (!runId) return json(400, { ok: false, error: 'runId 必填' }), true
+        const r = typeof h.runResult === 'function' ? await h.runResult(runId) : { ok: false, error: '宿主不支持运行状态查询' }
+        return json(r?.ok === false && r?.unknown !== true ? 400 : 200, r), true
       }
       if (id === 'stop' && req.method === 'POST') {
         const body = await readJsonBody(req)

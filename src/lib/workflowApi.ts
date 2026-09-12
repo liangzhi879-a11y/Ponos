@@ -9,11 +9,16 @@
 //   GET  /workflows/:id/versions        POST /workflows/:id/rollback { ts }
 //   GET  /workflows/:id/export          .yfwflow 分享包
 //   POST /workflows/import              { bundle, id? }
-//   POST /workflows/run                 **必带 capabilities**（缺 → 400）
+//   POST /workflows/run                 **必带 capabilities**（缺 → 400）；返回 runId（异步）
+//   GET  /workflows/run-status?runId=   运行态/终态查询（丢事件兜底）
 //   POST /workflows/stop                { runId }
 //   POST /workflows/confirm             { runId, node, action, comment }
 //   GET  /workflows/runs?id=<id>        历史运行
 //   GET/POST /workflows/bindings        agent 绑定 + 信任清单
+//   GET/POST /workflows/bindings        agent 绑定 + 信任清单
+//
+// 运行是**异步**的（2026-09-12）：POST /workflows/run 只做提交（立即回 { runId, status:'running' }），
+// 过程经 WS `workflow_event` 推送，终态用 GET /workflows/run-status?runId= 兜底查询。
 //
 // 风格沿 authApi/config.ts 既有写法（@ alias + getBridgeUrl + fetch）：
 // 错误统一**结构化返回**（{ ok:false, error }），不 throw 到调用方——路由的 400/500 都要能在
@@ -24,7 +29,9 @@ import type { WorkflowModel, LocalValidation } from '@/lib/workflowModel'
 
 const TIMEOUT_MS = 20_000
 const SAVE_TIMEOUT_MS = 40_000   // 保存/校验走内核会话，冷启动首帧可能拉起子进程
-const RUN_TIMEOUT_MS = 120_000
+/** 运行**提交**超时（异步化后只等"已受理"，宿主 startRun 毫秒级；30s 覆盖宿主冷启动）。
+ *  注意：这不是运行时长上限——运行在后台继续，终态以事件流/run-status 为准。 */
+const RUN_SUBMIT_TIMEOUT_MS = 30_000
 
 /** 列表项（store.listWorkflowMetas 的形态，字段名照抄，勿自创） */
 export interface WorkflowMeta {
@@ -48,8 +55,10 @@ export interface RunRecord { file?: string; runId?: string; status?: string; ste
 
 export interface WorkflowBindings { agents: Record<string, string[]>; trusted: string[] }
 
-/** 统一返回：路由的 4xx/5xx 都归一成 { ok:false, error }，调用方只判 ok */
-export type ApiResult<T> = ({ ok: true } & T) | { ok: false; error: string; errors?: LocalValidation['errors'] }
+/** 统一返回：路由的 4xx/5xx 都归一成 { ok:false, error }，调用方只判 ok。
+ *  `unknown` 仅为 run-status 的语义标记：查不到该 runId（宿主重启/超出缓存/非法），
+ *  与"网络/服务失败"必须区分——前者要停止轮询，后者要继续重试。 */
+export type ApiResult<T> = ({ ok: true } & T) | { ok: false; error: string; errors?: LocalValidation['errors']; unknown?: boolean }
 
 interface CallOpts { method?: string; body?: unknown; timeoutMs?: number }
 
@@ -68,7 +77,7 @@ async function call<T>(path: string, { method = 'GET', body, timeoutMs = TIMEOUT
       const errs = Array.isArray(data?.errors) ? data.errors : undefined
       return { ok: false, error: String(data?.error || `HTTP ${res.status}`), ...(errs ? { errors: errs } : {}) }
     }
-    if (data && data.ok === false) return { ok: false, error: String(data.error || '操作失败'), ...(Array.isArray(data.errors) ? { errors: data.errors } : {}) }
+    if (data && data.ok === false) return { ok: false, error: String(data.error || '操作失败'), ...(Array.isArray(data.errors) ? { errors: data.errors } : {}), ...(data.unknown ? { unknown: true as const } : {}) }
     return (data ?? {}) as ApiResult<T>
   } catch (e: any) {
     const msg = e?.name === 'AbortError' ? `请求超时（${Math.round(timeoutMs / 1000)}s）` : (e?.message || String(e))
@@ -138,11 +147,56 @@ export function importWorkflow(bundle: unknown, id?: string): Promise<ApiResult<
 // —— 运行 / 停止 / 确认 / 历史 ——
 
 /**
- * 运行。capabilities **必传**（路由缺则 400）：由 deriveCapabilities(model) 得出后再经
- * AuthzDialog 由用户逐项确认——本函数不做授权决策，只负责把已确认清单送达宿主。
+ * 运行（**异步提交**）。capabilities **必传**（路由缺则 400）：由 deriveCapabilities(model)
+ * 得出后再经 AuthzDialog 由用户逐项确认——本函数不做授权决策，只负责把已确认清单送达宿主。
+ *
+ * 语义（2026-09-12 改）：**只提交，不等运行结束**——立即回 `{ runId, status:'running' }`。
+ * 原实现是同步等待内核跑完才回执（spec-dev 实测 80–110 秒），等待期界面零反馈 →
+ * 用户重复点击 → 同一工作流并行多份重跑（实测 20 秒内 3 份）。
+ *
+ * `runId` **应由调用方预先生成并在调用前认领**（`runIdRef.current = runId`）：
+ * 异步提交后宿主回执到达前，内核已经开始发事件（含 start 节点与 confirm_request），
+ * 而事件归属是用 runId 判定的——等回执才认领会丢掉最早的事件，表现为抽屉里没有首个节点、
+ * 审批卡不弹出。宿主对非法格式会自行改用随机 id（调用方需用回执里的 runId 兜底）。
+ *
+ * 调用方其余职责：
+ *   · 过程靠 `subscribeWorkflowEvents`（start/node/edge_taken/end）；
+ *   · 终态靠 `getRunStatus(runId)` 兜底（丢事件/WS 重连不至于永远停在运行中）。
  */
-export function runWorkflow(id: string, inputs: Record<string, unknown>, capabilities: { tools: string[]; write_dirs: string[]; network: boolean }): Promise<ApiResult<{ runId: string }>> {
-  return call('/workflows/run', { method: 'POST', body: { id, inputs, capabilities }, timeoutMs: RUN_TIMEOUT_MS })
+export interface RunSubmit {
+  runId: string
+  status?: string
+  started?: boolean
+}
+
+/** 前端生成 runId（格式须与宿主 RUN_ID_OK 一致：^[A-Za-z0-9_-]{1,64}$） */
+export function newRunId(): string {
+  return `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+}
+
+export function runWorkflow(id: string, inputs: Record<string, unknown>, capabilities: { tools: string[]; write_dirs: string[]; network: boolean }, runId?: string): Promise<ApiResult<RunSubmit>> {
+  return call('/workflows/run', { method: 'POST', body: { id, inputs, capabilities, ...(runId ? { runId } : {}) }, timeoutMs: RUN_SUBMIT_TIMEOUT_MS })
+}
+
+/** 运行态查询回执：未结束 `finished:false`；已结束带完整结果；`unknown` = 查不到（宿主重启/超出缓存）。 */
+export interface RunStatusResult {
+  runId: string
+  finished?: boolean
+  status?: string
+  steps?: number
+  /** 节点 id → { ok, output, skipped, error } */
+  outputs?: Record<string, { ok?: boolean; output?: unknown; skipped?: boolean; error?: string }>
+  finalOutput?: Record<string, unknown>
+  /** 取值失败的返回值（selector 解析不到值 → 该键为 null），见内核 synthesizeOutput */
+  unresolved?: string[]
+  error?: string
+  auditPath?: string
+  unknown?: boolean
+}
+
+/** 运行状态/终态查询（异步运行的兜底通道；与 /workflows/runs 同风格的只读路由） */
+export function getRunStatus(runId: string): Promise<ApiResult<RunStatusResult>> {
+  return call(`/workflows/run-status?runId=${enc(runId)}`)
 }
 
 export function stopRun(runId: string): Promise<ApiResult<Record<string, unknown>>> {

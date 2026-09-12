@@ -5,6 +5,7 @@ const http = require('http')
 const { spawn, spawnSync } = require('child_process')
 const { resolveKernelPaths } = require('./kernel-paths.cjs')
 const { resolveYfwHome } = require('../server/yfw-home.cjs')
+const { writeLogLine, readLogPolicyCached } = require('../server/log-policy.cjs')
 
 const GROUPS = ['core', 'session', 'browser', 'doc', 'extras', 'config', 'network', 'render']
 
@@ -38,21 +39,16 @@ const CHECKS = [
 
 const YFW_HOME = resolveYfwHome()
 
-// 探针 stderr 落盘（与 bridge.mjs 同款环形策略，共用同一文件）：诊断探针
-// 失败（如 EPERM）时 stderr 原文必须可见，否则 kernel-stderr 检查项永远
-// unknown、崩溃原文丢失。行首 [probe:tag] 与 bridge 会话记录区分来源。
+// 探针 stderr 落盘（与 bridge.mjs 共用同一文件与同一策略）：诊断探针失败（如 EPERM）
+// 时 stderr 原文必须可见，否则 kernel-stderr 检查项永远 unknown、崩溃原文丢失。
+// 行首 [probe:tag] 与 bridge 会话记录区分来源。2026-09-12 起走 log-policy 统一策略
+//（原先自带 512KB/256KB 私有截断，与 bridge 侧口径重复且不一致）。
 const KERNEL_STDERR_LOG = join(YFW_HOME, 'logs', 'kernel-stderr.log')
 function appendKernelStderr(tag, text) {
   try {
-    mkdirSync(join(YFW_HOME, 'logs'), { recursive: true })
-    const entry = `[${new Date().toISOString()}] [${tag}] ${text.replace(/\r?\n/g, ' | ').slice(0, 2000)}\n`
-    appendFileSync(KERNEL_STDERR_LOG, entry)
-    try {
-      if (statSync(KERNEL_STDERR_LOG).size > 512 * 1024) {
-        const data = readFileSync(KERNEL_STDERR_LOG, 'utf-8')
-        writeFileSync(KERNEL_STDERR_LOG, data.slice(-256 * 1024))
-      }
-    } catch {}
+    const entry = `[${new Date().toISOString()}] [${tag}] ${text.replace(/\r?\n/g, ' | ').slice(0, 2000)}`
+    // error 级：诊断证据在任何等级门槛下都不得被丢（等级只过滤 app.log 的常规行）
+    writeLogLine(KERNEL_STDERR_LOG, entry, readLogPolicyCached({ home: YFW_HOME }), 'error')
   } catch {}
 }
 

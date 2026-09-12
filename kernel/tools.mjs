@@ -337,36 +337,145 @@ function shouldSkipDir(dirname, explicit) {
   return IGNORE_DIR_NAMES.has(dirname) && !explicit.has(dirname)
 }
 
+// ---------------------------------------------------------------------------
+// 搜索扫描：预算 + 协作式让出（2026-09-11 全树挂起事故修复）
+// 旧实现用同步 readdir/readFile 递归遍历 allowDirs 全集。--add-dir 一旦指向大目录
+// （实测用户主目录 83 万文件），单次 Grep 独占事件循环数十分钟：stdin 的 cancel
+// 读不到（GUI Stop 键完全失效）、engine 的 withToolDeadline 永不触发（它只包住
+// 返回值，同步执行早已跑完）、bridge 失速看门狗只能告警不能救。遍历改为每
+// SCAN_YIELD_EVERY 个条目 setImmediate 让出一次（取消/超时得以插入事件循环），
+// 并施加时间/条目双预算——超预算返回已得结果 + 收窄提示，而非空手失败。
+// ---------------------------------------------------------------------------
+const SCAN_YIELD_EVERY = 128
+function scanBudgetMs() {
+  const v = Number(process.env.YFW_TOOL_SCAN_BUDGET_MS)
+  return Number.isFinite(v) && v > 0 ? v : 10_000
+}
+function scanBudgetEntries() {
+  const v = Number(process.env.YFW_TOOL_SCAN_BUDGET_ENTRIES)
+  return Number.isFinite(v) && v > 0 ? v : 300_000
+}
+
+// 路径收窄（Grep/Glob 的 path 参数）：把遍历根从"全部 allowDirs"收窄到指定的一处。
+// 越界/不存在一律拒绝并给出可行动提示——静默忽略正是旧实现把"只搜这一个文件"
+// 变成"全树扫描"的根因；拒绝也比静默降级为全树扫描安全。
+function resolveScanScope(scopePath, allowDirs, { cwd, skipBoundary } = {}) {
+  const raw = scopePath == null ? '' : String(scopePath).trim()
+  if (!raw) return { roots: allowDirs }
+  const resolved = resolvePath(raw, cwd)
+  let st
+  try { st = statSync(resolved) } catch {
+    return { error: `路径不存在：${resolved}（path 需为已存在的文件或目录；省略 path 则遍历全部会话目录）` }
+  }
+  if (!st.isFile() && !st.isDirectory()) return { error: `path 既不是文件也不是目录：${resolved}` }
+  if (!skipBoundary && !withinBoundary(resolved, allowDirs)) {
+    return { error: `拒绝访问：路径超出会话目录边界（${resolved}）。可用根目录：${allowDirs.join('、')}` }
+  }
+  return { roots: [resolved] }
+}
+
+// 共享异步遍历：roots 内每个条目交 onFile 判定；onFile 返回 false 表示"已够，停"。
+// 目录判定走 Dirent（不额外 stat），仅根节点按 stat 区分文件/目录——与旧实现的
+// 系统调用量级一致。回报截断原因供上层做渐进式披露。
+async function walkForSearch(roots, { explicit, signal, onFile }) {
+  const startedAt = Date.now()
+  const maxMs = scanBudgetMs()
+  const maxEntries = scanBudgetEntries()
+  let entries = 0
+  let sinceYield = 0
+  let truncation = null
+
+  const hit = () => {
+    if (signal?.aborted) return 'aborted'
+    if (entries > maxEntries) return 'budget-entries'
+    if (Date.now() - startedAt > maxMs) return 'budget-time'
+    return null
+  }
+  const step = async () => {
+    entries++
+    const reason = hit()
+    if (reason) { truncation ||= reason; return false }
+    if (++sinceYield >= SCAN_YIELD_EVERY) {
+      sinceYield = 0
+      // 宏任务让出：微任务（await 链）不足以让 stdin/timer 插队，必须走 setImmediate
+      await new Promise((r) => setImmediate(r))
+      const late = hit()
+      if (late) { truncation ||= late; return false }
+    }
+    return true
+  }
+
+  const walkDir = async (dir) => {
+    let list
+    try { list = readdirSync(dir, { withFileTypes: true }) } catch { return true }
+    for (const ent of list) {
+      if (!(await step())) return false
+      if (ent.name.startsWith('.') && ent.name !== '.' && ent.name !== '..') continue
+      const full = join(dir, ent.name)
+      if (ent.isDirectory()) {
+        if (shouldSkipDir(ent.name, explicit)) continue
+        if (!(await walkDir(full))) return false
+      } else if (!(await onFile(full))) return false
+    }
+    return true
+  }
+
+  for (const root of roots) {
+    let st
+    try { st = statSync(root) } catch { continue }
+    const ok = st.isDirectory() ? await walkDir(root) : st.isFile() ? await onFile(root) : true
+    if (!ok) break
+  }
+  return { truncation, entries, elapsedMs: Date.now() - startedAt }
+}
+
+const SCAN_TRUNCATION_TEXT = {
+  'budget-time': '扫描超出时间预算，已中止',
+  'budget-entries': '扫描超出条目预算，已中止',
+  aborted: '扫描被取消，已中止',
+}
+
+// 渐进式披露兜底：截断时不吞掉已得结果，而是附上"为何停 + 下一步怎么收窄"。
+// 无 path 时首要建议是加 path（这正是本次事故的触发面），已有 path 则建议缩小
+// 该 path 或收紧 pattern/glob。
+function scanNotice(stats, { hasPath }) {
+  if (!stats.truncation) return ''
+  const why = SCAN_TRUNCATION_TEXT[stats.truncation] || '扫描被中断'
+  const head = `\n\n⚠ ${why}——结果可能不完整（已扫 ${stats.entries} 个条目 / ${stats.elapsedMs}ms）。`
+  if (stats.truncation === 'aborted') return head
+  return head + (hasPath
+    ? '该 path 范围仍然过大，请进一步收窄 path，或用更精确的 pattern/glob 缩小搜索面。'
+    : '请用 path 参数限定到具体目录或文件（如 path: "kernel"），或用 glob 过滤（如 **/*.mjs）——在全量会话目录上大范围搜索代价极高。')
+}
+
 // Glob：在会话目录边界内递归匹配文件名/路径（pattern 支持 * ? 和 **）。
 // 匹配前把路径归一化为正斜杠，Windows 反斜杠路径与 pattern 里的 / 均能命中。
-function globSearch(pattern, allowDirs, { maxResults = 200 } = {}) {
+async function globSearch(pattern, allowDirs, { maxResults = 200, path: scopePath, cwd, signal, skipBoundary } = {}) {
   try {
     if (!pattern) return { content: 'pattern 缺失', isError: true }
     const re = globToRegExp(String(pattern).replace(/\\/g, '/'))
     const explicit = explicitIgnoreDirs(pattern)
+    const scope = resolveScanScope(scopePath, allowDirs, { cwd, skipBoundary })
+    if (scope.error) return { content: scope.error, isError: true }
     const results = []
     const seen = new Set()
-    const walk = (dir) => {
-      if (results.length >= maxResults) return
-      let entries
-      try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
-      for (const ent of entries) {
-        if (results.length >= maxResults) break
-        if (ent.name.startsWith('.') && ent.name !== '.' && ent.name !== '..') continue // 跳过隐藏项
-        const full = join(dir, ent.name)
-        if (ent.isDirectory()) {
-          if (shouldSkipDir(ent.name, explicit)) continue // 剪枝依赖/构建目录
-          walk(full)
-        } else {
-          const normalized = full.replace(/\\/g, '/')
-          if (re.test(normalized) && !seen.has(full)) { seen.add(full); results.push(full) }
-        }
-      }
+    const stats = await walkForSearch(scope.roots, {
+      explicit,
+      signal,
+      onFile: async (full) => {
+        const normalized = full.replace(/\\/g, '/')
+        if (re.test(normalized) && !seen.has(full)) { seen.add(full); results.push(full) }
+        return results.length < maxResults
+      },
+    })
+    const notice = scanNotice(stats, { hasPath: !!String(scopePath ?? '').trim() })
+    if (results.length === 0) {
+      // 截断导致的"零结果"不等于"不存在"——不得回"无匹配"误导模型收手
+      if (stats.truncation) return { content: `未扫到匹配文件，但扫描已提前中止，不能据此判定不存在。${notice}`, isError: true }
+      return { content: `无匹配文件（pattern: ${pattern}）。依赖/构建目录（node_modules 等）默认剪枝——若目标在其中，请用含目录段的 pattern（如 **/node_modules/**）；否则用更精确的 pattern，勿反复全树试探` }
     }
-    for (const base of allowDirs) walk(base)
-    if (results.length === 0) return { content: `无匹配文件（pattern: ${pattern}）。依赖/构建目录（node_modules 等）默认剪枝——若目标在其中，请用含目录段的 pattern（如 **/node_modules/**）；否则用更精确的 pattern，勿反复全树试探` }
     const truncated = results.length >= maxResults ? `\n（已达 ${maxResults} 条上限，结果截断）` : ''
-    return { content: results.join('\n') + truncated }
+    return { content: results.join('\n') + truncated + notice }
   } catch (e) {
     return { content: `搜索失败：${e.message}`, isError: true }
   }
@@ -428,7 +537,7 @@ function globToRegExp(pattern) {
 }
 
 // Grep：在边界内按正则搜索文件内容，返回 file:line 匹配行（含上下文）
-function grepSearch(pattern, allowDirs, { glob, context = 0, maxResults = 200 } = {}) {
+async function grepSearch(pattern, allowDirs, { glob, context = 0, maxResults = 200, path: scopePath, cwd, signal, skipBoundary } = {}) {
   try {
     if (!pattern) return { content: 'pattern 缺失', isError: true }
     let re
@@ -437,46 +546,45 @@ function grepSearch(pattern, allowDirs, { glob, context = 0, maxResults = 200 } 
     const globRe = glob ? globToRegExp(String(glob).replace(/\\/g, '/')) : null
     // 显式引用忽略目录（glob 或 pattern 含 node_modules 等）→ 该目录不剪枝
     const explicit = new Set([...explicitIgnoreDirs(glob), ...explicitIgnoreDirs(pattern)])
+    const scope = resolveScanScope(scopePath, allowDirs, { cwd, skipBoundary })
+    if (scope.error) return { content: scope.error, isError: true }
     const results = []
     const MAX_BYTES = 2 * 1024 * 1024
-    const walk = (dir) => {
-      if (results.length >= maxResults) return
-      let entries
-      try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
-      for (const ent of entries) {
-        if (results.length >= maxResults) break
-        if (ent.name.startsWith('.')) continue
-        const full = join(dir, ent.name)
-        if (ent.isDirectory()) {
-          if (shouldSkipDir(ent.name, explicit)) continue // 剪枝依赖/构建目录
-          walk(full)
-        } else if (!globRe || globRe.test(full.replace(/\\/g, '/'))) {
-          let st
-          try { st = statSync(full) } catch { continue }
-          if (!st.isFile() || st.size > MAX_BYTES) continue
-          // 单文件读取失败（权限/占用/编码）跳过，不中断整个搜索；
-          // 含 NUL 字节视为二进制跳过（避免乱码误匹配）
-          let content
-          try { content = readFileSync(full, 'utf-8') } catch { continue }
-          if (content.includes('\0')) continue
-          const lines = content.split('\n')
-          for (let i = 0; i < lines.length; i++) {
-            if (re.test(lines[i])) {
-              const from = Math.max(0, i - ctx)
-              const to = Math.min(lines.length, i + ctx + 1)
-              const block = []
-              for (let j = from; j < to; j++) block.push(`${j + 1}:${lines[j]}`)
-              results.push(`—— ${full}（行 ${i + 1}）\n${block.join('\n')}`)
-              if (results.length >= maxResults) break
-            }
+    const stats = await walkForSearch(scope.roots, {
+      explicit,
+      signal,
+      onFile: async (full) => {
+        if (globRe && !globRe.test(full.replace(/\\/g, '/'))) return true
+        let st
+        try { st = statSync(full) } catch { return true }
+        if (!st.isFile() || st.size > MAX_BYTES) return true
+        // 单文件读取失败（权限/占用/编码）跳过，不中断整个搜索；
+        // 含 NUL 字节视为二进制跳过（避免乱码误匹配）
+        let content
+        try { content = readFileSync(full, 'utf-8') } catch { return true }
+        if (content.includes('\0')) return true
+        const lines = content.split('\n')
+        for (let i = 0; i < lines.length; i++) {
+          if (re.test(lines[i])) {
+            const from = Math.max(0, i - ctx)
+            const to = Math.min(lines.length, i + ctx + 1)
+            const block = []
+            for (let j = from; j < to; j++) block.push(`${j + 1}:${lines[j]}`)
+            results.push(`—— ${full}（行 ${i + 1}）\n${block.join('\n')}`)
+            if (results.length >= maxResults) return false
           }
         }
-      }
+        return true
+      },
+    })
+    const notice = scanNotice(stats, { hasPath: !!String(scopePath ?? '').trim() })
+    if (results.length === 0) {
+      // 截断导致的"零结果"不等于"不存在"——不得回"无匹配"误导模型收手
+      if (stats.truncation) return { content: `未搜到匹配行，但扫描已提前中止，不能据此判定不存在。${notice}`, isError: true }
+      return { content: `无匹配行（pattern: ${pattern}${glob ? `, glob: ${glob}` : ''}）。依赖/构建目录默认剪枝——若目标在其中，glob 需含目录段（如 **/node_modules/**）显式放行；否则核对正则，勿反复试探` }
     }
-    for (const base of allowDirs) walk(base)
-    if (results.length === 0) return { content: `无匹配行（pattern: ${pattern}${glob ? `, glob: ${glob}` : ''}）。依赖/构建目录默认剪枝——若目标在其中，glob 需含目录段（如 **/node_modules/**）显式放行；否则核对正则，勿反复试探` }
     const truncated = results.length >= maxResults ? `\n（已达 ${maxResults} 条上限，结果截断）` : ''
-    return { content: results.join('\n\n') + truncated }
+    return { content: results.join('\n\n') + truncated + notice }
   } catch (e) {
     return { content: `搜索失败：${e.message}`, isError: true }
   }
@@ -1016,37 +1124,45 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
       run: (input) => editFile(String(input?.file_path ?? ''), String(input?.old_string ?? ''), String(input?.new_string ?? ''), input?.replace_all === true, allowDirs, cwd, readCache, skipBoundary),
     },
     Glob: {
-      description: '在会话目录内递归搜索文件路径（pattern 支持 * ? 和 ** 通配）。先 Glob 定位候选文件再 Read，避免无目标 ls。依赖/构建产物目录（node_modules/dist/build/release/vendors/workspace 等）默认剪枝不搜索——若目标在其中，pattern 需显式含目录名（如 **/node_modules/**）；无匹配时按返回提示换更精确的 pattern，勿反复全树试探（代价高）。',
+      description: '在会话目录内递归搜索文件路径（pattern 支持 * ? 和 ** 通配）。先 Glob 定位候选文件再 Read，避免无目标 ls。已知大致位置时务必传 path 收窄范围——省略 path 会遍历全部会话目录，代价极高。依赖/构建产物目录（node_modules/dist/build/release/vendors/workspace 等）默认剪枝不搜索——若目标在其中，pattern 需显式含目录名（如 **/node_modules/**）；无匹配时按返回提示换更精确的 pattern，勿反复全树试探。',
       concurrencySafe: true,
       input_schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
           pattern: { type: 'string', description: '文件路径通配模式，如 **/*.mjs' },
+          path: { type: 'string', description: '可选：限定搜索的目录或文件（绝对路径，或相对会话目录）。强烈建议传——省略则遍历全部会话目录' },
           maxResults: { type: 'number', description: '可选：最大结果数（默认 200）' },
         },
         required: ['pattern'],
       },
-      run: (input) => globSearch(String(input?.pattern ?? ''), allowDirs, { maxResults: Number(input?.maxResults) || 200 }),
+      run: (input, ctx) => globSearch(String(input?.pattern ?? ''), allowDirs, {
+        maxResults: Number(input?.maxResults) || 200,
+        path: input?.path ? String(input.path) : undefined,
+        cwd, signal: ctx?.signal, skipBoundary,
+      }),
     },
     Grep: {
-      description: '在会话目录内按正则搜索文件内容，返回 file:line 匹配行。带精确 pattern 与 glob 过滤；需要上下文时用 context 参数；结果最多 200 条（超出截断并标注）。依赖/构建产物目录默认剪枝（同 Glob，显式引用可放行）。无匹配时按返回提示调整，避免试探性重复搜索。',
+      description: '在会话目录内按正则搜索文件内容，返回 file:line 匹配行。带精确 pattern 与 glob 过滤；需要上下文时用 context 参数；结果最多 200 条（超出截断并标注）。已知大致位置时务必传 path 收窄范围——省略 path 会遍历全部会话目录，代价极高。依赖/构建产物目录默认剪枝（同 Glob，显式引用可放行）。无匹配时按返回提示调整，避免试探性重复搜索。',
       concurrencySafe: true,
       input_schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
           pattern: { type: 'string', description: '正则表达式' },
+          path: { type: 'string', description: '可选：限定搜索的目录或文件（绝对路径，或相对会话目录）。强烈建议传——省略则遍历全部会话目录' },
           glob: { type: 'string', description: '可选：文件路径通配过滤，如 **/*.mjs' },
           context: { type: 'number', description: '可选：匹配行上下文件数（0-10，默认 0）' },
           maxResults: { type: 'number', description: '可选：最大结果数（默认 200）' },
         },
         required: ['pattern'],
       },
-      run: (input) => grepSearch(String(input?.pattern ?? ''), allowDirs, {
+      run: (input, ctx) => grepSearch(String(input?.pattern ?? ''), allowDirs, {
         glob: input?.glob ? String(input.glob) : undefined,
         context: Number(input?.context) || 0,
         maxResults: Number(input?.maxResults) || 200,
+        path: input?.path ? String(input.path) : undefined,
+        cwd, signal: ctx?.signal, skipBoundary,
       }),
     },
     // 子代理分发：执行体在 engine（ctx.spawnSubAgent）。子 lane 内禁止嵌套。

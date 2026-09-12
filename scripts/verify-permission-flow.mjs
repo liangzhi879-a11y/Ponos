@@ -1,9 +1,15 @@
 // 实证验证内核高风险命令审批链路（spec §11.1 → §4.2 固化格式）
-// 用法: node scripts/verify-permission-flow.mjs [allow|deny] [--dump]
+// 用法: node scripts/verify-permission-flow.mjs [allow|deny] [--dump] [--mode=<档位>]
 //   - 用 stream-json 模式拉起 dev 内核，指示 agent 用 Bash 删除一个临时文件
 //   - 观察 stdout 上 can_use_tool control_request（挂起）
 //   - 注入 control_response（allow: 批准执行 / deny: 拒绝），观察 tool_result
 //   - --dump 时把所有关键行完整打印（不截断），用于固化协议格式
+//   - --mode=manual|auto|loose|bypass：按**桥的真实 spawn 参数**拉起内核
+//     （server/approval-mode.mjs 的 approvalSpawnArgs），用于观察四档下谁弹窗。
+//     不传 --mode= 时保持历史行为：固定 --dangerously-skip-permissions（= loose）。
+//     ⚠ 注意 `--mode=` 指的是**审批档位**；位置参数 [allow|deny] 是**本次回答**。
+//       manual 档下即使"删单个文件"（无 -rf）也会弹窗（普通 Bash 属 ask 类）；
+//       bypass 档下不弹窗、agent 直接删掉临时文件 → 走 PASS(结果级)。
 // 退出码: 0 = 观察到 control_request 且收到符合预期的 tool_result；1 = 失败/超时
 import { spawn, execSync } from 'child_process'
 import { createInterface } from 'readline'
@@ -11,6 +17,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { readFileSync, writeFileSync, rmSync, existsSync } from 'fs'
 import { resolveYfwHome } from '../server/yfw-home.cjs'
+import { APPROVAL_MODES, approvalSpawnArgs } from '../server/approval-mode.mjs'
 
 // 运行时 = node（D1）：与 bridge 实际 spawn 方式一致——净室零 bun（D1 不随包）。
 const RUNTIME = process.execPath
@@ -19,10 +26,22 @@ const RUNTIME = process.execPath
 const KERNEL = join(process.cwd(), 'kernel-dist', 'cli.mjs')
 const YFW_HOME = resolveYfwHome()
 
-const mode = (process.argv[2] || 'allow').toLowerCase()
-const dump = process.argv.includes('--dump')
-if (mode !== 'allow' && mode !== 'deny') {
-  console.error('用法: node scripts/verify-permission-flow.mjs [allow|deny] [--dump]')
+// 先分离 flag 与位置参数：`--mode=manual` 若当位置参数解析会误判成非法决策值
+const USAGE = '用法: node scripts/verify-permission-flow.mjs [allow|deny] [--dump] [--mode=manual|auto|loose|bypass]'
+const argv = process.argv.slice(2)
+const flags = argv.filter(a => a.startsWith('--'))
+const positional = argv.filter(a => !a.startsWith('--'))
+const decision = (positional[0] || 'allow').toLowerCase()
+const dump = flags.includes('--dump')
+if (decision !== 'allow' && decision !== 'deny') {
+  console.error(USAGE)
+  process.exit(1)
+}
+// 未传 = null = 历史行为（固定 skip flag），传了就必须是合法档位（不静默回退）
+const modeFlag = flags.find(a => a.startsWith('--mode='))
+const approvalMode = modeFlag ? modeFlag.slice('--mode='.length).toLowerCase() : null
+if (approvalMode !== null && !APPROVAL_MODES.includes(approvalMode)) {
+  console.error(`${USAGE}\n  非法档位: ${approvalMode}（可选 ${APPROVAL_MODES.join('/')}）`)
   process.exit(1)
 }
 
@@ -55,12 +74,17 @@ const env = {
 // 退化为 deny，没有任何批准途径——实证发现，见 spec §11.1）
 const args = [
   '--print', '--output-format', 'stream-json', '--input-format', 'stream-json',
-  '--verbose', '--dangerously-skip-permissions', '--disallowedTools', 'AskUserQuestion',
+  '--verbose',
+  // 档位 flag 与桥**同一实现**（approvalSpawnArgs）：loose/bypass 带 skip flag，
+  // manual/auto 不带 —— 若在这里手写一份，脚本验证的就不是桥真正发出的东西了。
+  ...(approvalMode ? approvalSpawnArgs(approvalMode) : ['--dangerously-skip-permissions']),
+  '--disallowedTools', 'AskUserQuestion',
   '--permission-prompt-tool', 'stdio',
   '--add-dir', tmpDir,
 ]
 
-console.log(`[flow] mode=${mode} kernel=${KERNEL}`)
+console.log(`[flow] decision=${decision} approvalMode=${approvalMode ?? '(未传 → 历史 skip flag = loose)'} kernel=${KERNEL}`)
+console.log(`[flow] spawn args: ${args.join(' ')}`)
 console.log(`[flow] testFile=${posixFile}`)
 const proc = spawn(`"${RUNTIME}" "${KERNEL}"`, args, {
   stdio: ['pipe', 'pipe', 'pipe'], env, cwd: tmpDir, shell: true,
@@ -108,6 +132,9 @@ createInterface({ input: proc.stdout, crlfDelay: Infinity }).on('line', (line) =
       tool_name: parsed.request.tool_name,
       tool_use_id: parsed.request.tool_use_id,
       decision_reason: parsed.request.decision_reason,
+      // hard/mode 是 2026-09-12 新增字段（硬黑名单 / 生效档位），一并固化进摘要
+      hard: parsed.request.hard === true,
+      mode: parsed.request.mode,
       command: parsed.request.input?.command,
     }))
     const req = parsed.request
@@ -116,14 +143,14 @@ createInterface({ input: proc.stdout, crlfDelay: Infinity }).on('line', (line) =
       response: {
         request_id: parsed.request_id,
         subtype: 'success',
-        response: mode === 'allow'
+        response: decision === 'allow'
           ? { behavior: 'allow', updatedInput: {}, toolUseID: req.tool_use_id, decisionClassification: 'user_temporary' }
           : { behavior: 'deny', message: 'User denied the high-risk operation', toolUseID: req.tool_use_id },
       },
     }
     const payload = JSON.stringify(response) + '\n'
     if (dump) logLine('INJECT', payload.trim())
-    else logLine('INJECT', `control_response ${mode} request_id=${parsed.request_id}`)
+    else logLine('INJECT', `control_response ${decision} request_id=${parsed.request_id}`)
     proc.stdin.write(payload)
     return
   }
@@ -170,11 +197,13 @@ const poll = setInterval(() => {
   if (!toolResult && !resultMsg) return
   clearInterval(poll)
   clearTimeout(globalTimeout)
-  if (mode === 'allow') {
+  if (decision === 'allow') {
     if (toolResult && !toolResult.is_error) {
       finish(0, `[flow] PASS: 批准后命令执行，tool_result 非错误`)
     } else if (resultMsg) {
-      finish(0, `[flow] PASS(结果级): 批准流程完整走通`)
+      // bypass 档到这里是正常路径：压根没弹窗、没有 tool_result 事件，
+      // agent 直接执行完收尾（此时文件已被删除，见下方 else 分支的对照）。
+      finish(0, `[flow] PASS(结果级): 批准流程完整走通${approvalMode === 'bypass' && !controlRequest ? '（bypass 未弹窗，符合预期）' : ''}`)
     } else {
       finish(1, `[flow] FAIL: 批准后 tool_result 仍为 is_error`)
     }

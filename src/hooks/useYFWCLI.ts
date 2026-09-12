@@ -19,6 +19,7 @@ import { useWarningStore } from '@/stores/warningStore'
 import { normalizeWarning } from '@/lib/warningUi'
 import { makeLaneNote } from '@/lib/laneUi'
 import { useBrowserStore } from '@/stores/browserStore'
+import { parseApprovalModeReport, type ApprovalMode } from '@/lib/approvalModeUi'
 import type { ContentBlock, Message, QuestionAnswer, BrowserEvent, LoopState } from '@/types'
 
 const WS_URL = getWsUrl()
@@ -33,6 +34,13 @@ function shortenText(text: string, max: number): string {
 // Module-level WebSocket state (persists across hook instances)
 let ws: WebSocket | null = null
 let wsReady = false
+// 桥身份（2026-09-12 桥树杀事故的无感愈合）：lastBridgeId = 上次 hello 的桥实例 id；
+// bridgeLostSessions = WS 断开时正在流式的会话（重连后由 hello 判明是否换桥）。
+let lastBridgeId: string | null = null
+const bridgeLostSessions = new Set<string>()
+// 换桥自动续接提示（无感：不建用户气泡，内核 --resume 从 transcript 断点继续；
+// 措辞覆盖"任务已完成但 result 丢失"的边界——模型简短收尾而非重复劳动）。
+const REVIVE_PROMPT = '【系统自动续接】连接中断后已恢复。若任务尚未完成，请直接从上次断点继续推进剩余工作；若已完成，请给出简短收尾。不要重复已完成的部分。'
 let pendingQueue: Array<() => void> = []
 // Per-conversation streaming state — supports parallel sessions
 const sessionState = new Map<string, { assistantId: string; blockIds: Record<string, string> }>()
@@ -171,6 +179,25 @@ export function getOrCreateWS(): WebSocket | null {
       wsReady = false
       ws = null
       stopHeartbeat() // 关闭/重连等待期间心跳停转，onopen 时再启
+      // 孤儿会话无感收口（2026-09-12 桥树杀事故）：先静默定稿所有流式会话
+      // （UI 立即解锁、不留可见告警），并记入 bridgeLostSessions——重连后
+      // 由 bridge_hello 判明"同一桥闪断"（无需动作）还是"换新桥"（自动续接）。
+      pendingStreamEvents.length = 0
+      streamFlushScheduled = false
+      const store = useChatStore.getState()
+      const ui = useUIStore.getState()
+      for (const sid of [...streamingSessions]) {
+        streamingSessions.delete(sid)
+        sessionState.delete(sid)
+        store.stopStreaming(sid)
+        bridgeLostSessions.add(sid)
+        // 断连期间等待条/失速告警只会无限往上数秒，无信息量，先复位。提问卡与审批
+        // 弹窗**刻意不动**：WS 闪断时内核通常还活着并在等待回答，bridge_hello 会判明
+        // "同一桥闪断（无需动作）/换新桥（自动续接）"；真正要清的是内核已死那三条
+        // 路径（error/cancelled/closed），见 clearSessionWaitState（T8，2026-09-12）。
+        ui.clearKernelStall(sid)
+        ui.clearFirstByteWait(sid)
+      }
       scheduleReconnect()
     }
     ws.onerror = () => { wsReady = false }
@@ -249,6 +276,20 @@ export function sendEffort(conversationId: string | undefined, level: string) {
 }
 
 /**
+ * 审批放行档位热切换（2026-09-12）：状态栏徽标选定档位后上送 bridge，bridge 记入
+ * **会话级临时覆盖**（仅内存）并向运行中内核注入 approval_mode control_request。
+ * mode=null 表示"跟随全局"（清掉本会话覆盖）。
+ * 与 effort 的关键差异：**不写 config.json**——状态栏改的是本会话（会话结束回落全局），
+ * 全局档位只在设置页改。conversationId 兜底、WS 未连接幂等忽略同 sendEffort。
+ */
+export function sendApprovalMode(conversationId: string | undefined, mode: ApprovalMode | null) {
+  const target = conversationId || lastSessionId || 'default'
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'approval-mode', sessionId: target, mode }))
+  }
+}
+
+/**
  * 构建 WS send payload；会话不存在返回 null。
  * 发送方：send（空闲/排队插话）、dispatchSend（新建轮）、interject（紧急 now）。
  * uuid：排队插话消息的唯一标识，内核处理该消息时经 command_lifecycle 事件回传
@@ -287,6 +328,21 @@ function buildSendPayload(conversationId: string, prompt: string, priority?: 'no
     ...(compactCount > 0 ? { compactCount } : {}),
     ...(priority ? { priority } : {}),
     ...(uuid ? { uuid } : {}),
+  }
+}
+
+// 换桥自动续接（2026-09-12 桥树杀事故的无感愈合）：直接发 WS send payload——
+// 不建用户气泡、不打断界面；内核以 --resume 恢复 transcript 后把 REVIVE_PROMPT
+// 当新轮处理，续接内容经"新轮自动建块"以 assistant 消息呈现，用户全程无感。
+function reviveSession(sid: string) {
+  const conv = useChatStore.getState().conversations.find((c) => c.id === sid)
+  if (!conv || !conv.sessionId) return
+  const payload = buildSendPayload(sid, REVIVE_PROMPT)
+  if (!payload) return
+  const socket = getOrCreateWS()
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(payload))
+    console.log('[WS] auto-resume sent for', sid.slice(0, 8))
   }
 }
 
@@ -500,10 +556,15 @@ const toolUseAgentMap = new Map<string, string>()
 type StreamEvent = { sid: string; st: { assistantId: string; blockIds: Record<string, string> }; aid: string; event: Record<string, unknown> }
 const pendingStreamEvents: StreamEvent[] = []
 let streamFlushScheduled = false
+// 自适应降频（2026-09-12 渲染空转事故）：长消息每帧全量重渲染 ReactMarkdown，
+// 单帧 >50ms 时进入 250ms 节流（4fps），防止渲染进程空转 → UI 冻结 → WS/管道
+// 反压整链卡死。流结束（result/cancelled/closed）时复位。
+let streamHeavyMode = false
 
 function flushStreamEvents() {
   streamFlushScheduled = false
   if (pendingStreamEvents.length === 0) return
+  const t0 = performance.now()
   const batch = pendingStreamEvents.splice(0)
   const store = useChatStore.getState()
   for (const { st, aid, event } of batch) {
@@ -531,11 +592,19 @@ function flushStreamEvents() {
       }
     }
   }
+  // 自适应降频判定：单帧渲染成本 >50ms 进入节流（4fps），<20ms 恢复满速（自愈）
+  const cost = performance.now() - t0
+  if (cost > 50) streamHeavyMode = true
+  else if (cost < 20) streamHeavyMode = false
 }
 
 function scheduleStreamFlush() {
   if (streamFlushScheduled) return
   streamFlushScheduled = true
+  if (streamHeavyMode) {
+    setTimeout(flushStreamEvents, 250)
+    return
+  }
   requestAnimationFrame(flushStreamEvents)
 }
 
@@ -583,6 +652,21 @@ function dropPendingTaskProgress(sid: string) {
   }
 }
 
+// 内核侧等待态镜像的复位（T8，2026-09-12「卡在思考界面」事故）
+//
+// 内核已应答/已死时，firstByteWait（等待条）、待回复提问、未决审批都是幽灵状态：
+// 此前 error/cancelled/closed 三条路径只清 kernelStall，于是内核被杀后等待条会
+// 一直往上数秒、权限弹窗永不消失（PermissionDialog 取 pendingPermissions[0] 且
+// 无 stale 判定）。此处把同一病根的四个镜像一次性收口。
+function clearSessionWaitState(sid: string) {
+  const ui = useUIStore.getState()
+  ui.clearKernelStall(sid)
+  ui.clearFirstByteWait(sid)
+  const store = useChatStore.getState()
+  store.clearPendingQuestion(sid)
+  store.clearPermissionsForSession(sid)
+}
+
 // ---------------------------------------------------------------------------
 // 孤儿子代理任务超时清理
 // ---------------------------------------------------------------------------
@@ -618,6 +702,24 @@ function handleMessage(msg: Record<string, unknown>) {
   // Exact match only — never fallback to another session to prevent cross-project contamination
   let st = sessionState.get(sid)
 
+  // 桥身份握手（2026-09-12 桥树杀事故的无感愈合）：换桥重连 → 旧会话已随旧桥
+  // 消亡，静默自动续接（不产生用户可见的告警/消息气泡——续接内容经新轮自动
+  // 建块以 assistant 消息呈现）。同一桥闪断 → id 不变，仅清理标记无副作用。
+  if (msg.type === 'bridge_hello') {
+    const bridgeId = String(msg.id || '')
+    if (bridgeId) {
+      if (lastBridgeId !== null && lastBridgeId !== bridgeId && bridgeLostSessions.size > 0) {
+        console.log('[WS] bridge replaced — auto-resuming', bridgeLostSessions.size, 'session(s)')
+        for (const lostSid of [...bridgeLostSessions]) {
+          reviveSession(lostSid)
+        }
+      }
+      lastBridgeId = bridgeId
+    }
+    bridgeLostSessions.clear()
+    return
+  }
+
   // S5 ②-05 守卫接线：bridge 失速看门狗告警（顶层 kernel-stall，非内核事件）。
   // data.silentMs = 距上次内核 stdout 的静默毫秒（bridge 只告警不杀进程）。
   // 任何内核输出（event/error/cancelled/closed）到达即视为已自愈 → clearKernelStall。
@@ -625,6 +727,35 @@ function handleMessage(msg: Record<string, unknown>) {
     const d = msg.data as { silentMs?: unknown } | undefined
     useUIStore.getState().setKernelStall(sid, Number(d?.silentMs) || 0)
     useUIStore.getState().clearFirstByteWait(sid) // 升级为失速告警，等待提示退场
+    return
+  }
+
+  // 审批档位变更（2026-09-12，顶层帧非内核事件）：桥是唯一权威——它上报什么就存什么。
+  // scope='cleared' = 本会话临时覆盖已消失（内核进程退出/用户选「跟随全局」）→ 删记录，
+  // 徽标回落全局档；其余（session/global）= 写入上报值（override 决定是否显示「临时」）。
+  if (msg.type === 'approval-mode-changed') {
+    const d = msg.data as Record<string, unknown> | undefined
+    if (String(d?.scope ?? '') === 'cleared') {
+      useChatStore.getState().setSessionApprovalMode(sid, null)
+    } else {
+      // 脏帧返回 null → 保留旧值（不被畸形帧清空）
+      const report = parseApprovalModeReport(d)
+      if (report) useChatStore.getState().setSessionApprovalMode(sid, report)
+    }
+    return
+  }
+
+  // 档位未生效告警（旧缓存内核忽略 --approval-mode / 桥拒绝非法覆盖）：
+  // 复用统一系统提示条（amber 级，标题本地化、message 是技术细节悬停展开）。
+  // 必须让用户看见——否则他会以为 manual 已生效，而实际内核停在 loose 全放行。
+  if (msg.type === 'approval-mode-degraded' || msg.type === 'approval-mode-rejected') {
+    const d = msg.data as Record<string, unknown> | undefined
+    useWarningStore.getState().set(sid, normalizeWarning({
+      level: 'approval_mode',
+      message: typeof d?.message === 'string' ? d.message
+        : typeof d?.reason === 'string' ? d.reason
+          : `期望 ${String(d?.expected ?? '?')}，实际 ${String(d?.actual ?? '?')}`,
+    }))
     return
   }
 
@@ -701,6 +832,13 @@ function handleMessage(msg: Record<string, unknown>) {
         model: event.model as string,
         tools: event.tools as string[],
       })
+      // 审批档位回显（2026-09-12）：init 带的是**内核进程此刻实际在跑的**档位
+      // （旧内核没有该字段 → 不动作，桥另有 approval-mode-degraded 告警）。
+      // override 恒 false：进程刚起来时桥侧的会话覆盖已被 close/error 清空，
+      // 此刻生效的必是全局档——若标成"临时"，徽标会在重启后错误地显示临时覆盖。
+      const echoedMode = (event as Record<string, unknown>).approval_mode
+      const echoed = parseApprovalModeReport({ mode: echoedMode, override: false })
+      if (echoed) useChatStore.getState().setSessionApprovalMode(sid, echoed)
       return
     }
 
@@ -868,7 +1006,7 @@ function handleMessage(msg: Record<string, unknown>) {
   if (msg.type === 'error') {
     // 先 flush 待批的 assistant 事件，保证失败路径下块顺序不变
     flushStreamEvents()
-    useUIStore.getState().clearKernelStall(sid) // 出错回执 = 内核已应答，失速自愈
+    clearSessionWaitState(sid) // 出错回执 = 内核已应答：失速/等待条/提问卡/审批弹窗一并复位
     dropPendingTaskProgress(sid)
     pendingInterject.delete(sid)
     settlePendingInterjectsBySession(sid)
@@ -887,7 +1025,7 @@ function handleMessage(msg: Record<string, unknown>) {
   if (msg.type === 'cancelled') {
     // 先 flush 待批的 assistant 事件，保证取消路径下块顺序不变
     flushStreamEvents()
-    useUIStore.getState().clearKernelStall(sid) // 取消回执 = 内核已应答，失速自愈
+    clearSessionWaitState(sid) // 取消回执 = 内核已应答：失速/等待条/提问卡/审批弹窗一并复位
     dropPendingTaskProgress(sid)
     pendingInterject.delete(sid)
     settlePendingInterjectsBySession(sid)
@@ -904,13 +1042,18 @@ function handleMessage(msg: Record<string, unknown>) {
   if (msg.type === 'closed') {
     // 先 flush 待批的 assistant 事件，保证关闭路径下块顺序不变
     flushStreamEvents()
-    useUIStore.getState().clearKernelStall(sid) // 进程已退出，失速告警一并清除
+    clearSessionWaitState(sid) // 进程已退出：失速/等待条/提问卡/审批弹窗一并清除
     dropPendingTaskProgress(sid)
     pendingInterject.delete(sid)
     settlePendingInterjectsBySession(sid)
     // CLI process has exited — clean up any lingering session state
     streamingSessions.delete(sid)
     sessionState.delete(sid)
+    // 流式消息定稿（2026-09-12 卡死事故修复）：此前缺失——内核死亡（EPIPE 等）时
+    // bridge 发 closed，但 chatStore.streamingConversations 不清 → UI 恒显示
+    // "执行中"、输入条锁排队态、用户以为输入框坏了。result 路径有 _finishStreaming，
+    // closed 路径必须对称补齐。
+    useChatStore.getState().stopStreaming(sid)
     useChatStore.getState().clearSubAgentTasks(sid)
     useChatStore.getState().clearLoopState(sid) // loop 随内核进程终止，防悬挂 active
     useChatStore.getState().setCompacting(sid, false) // 压缩指示同随进程终止复位，防悬挂
@@ -1010,6 +1153,10 @@ function handleMessage(msg: Record<string, unknown>) {
     const d = msg.data as {
       toolUseId?: string; command?: string; reason?: string;
       highRisk?: boolean; toolName?: string;
+      /** 灾难级硬黑名单（四档都问；弹窗须显示灾难级警示条，放行仅本次有效） */
+      hard?: boolean;
+      /** 内核发起本次询问时生效的档位（弹窗显示"当前 X 档"） */
+      mode?: string;
     } | undefined
     if (d && typeof d.toolUseId === 'string' && d.toolUseId) {
       const store = useChatStore.getState()
@@ -1022,10 +1169,14 @@ function handleMessage(msg: Record<string, unknown>) {
         action: isWhitelist ? 'browser_whitelist_add' : 'bash',
         target: d.command || '',
         details: d.reason || undefined,
-        risk: isWhitelist ? 'low' : (d.highRisk ? 'high' : 'medium'),
+        risk: isWhitelist ? 'low' : (d.highRisk || d.hard ? 'high' : 'medium'),
         timestamp: Date.now(),
         sessionId: sid,
         toolUseId: d.toolUseId,
+        // 灾难级标记必须**透传**到弹窗：丢了它就只剩一个普通高风险弹窗，
+        // 用户不知道这是"可能毁盘、且不会被记住"的一次性放行（安全关键路径）。
+        hard: d.hard === true,
+        mode: parseApprovalModeReport({ mode: d.mode })?.mode,
       })
     }
     return

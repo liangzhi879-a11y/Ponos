@@ -103,6 +103,9 @@ async function runWithRetry(node, ctx) {
 }
 
 export async function schedule({ nodes, edges, inputs = {}, runId = '', executeNode, maxParallel = 4, signal = { aborted: false }, onSettle, onEdge, ctxExtra = {} }) {
+  // null 归一化（2026-09-12 探针 P11）：默认值只覆盖 undefined，显式传 null 时
+  // 循环内 signal.aborted 直读会 TypeError——与缺省语义一致地兜底。
+  signal = signal ?? { aborted: false }
   const { byId, incoming, outgoing } = buildGraph(nodes, edges || [])
   // maxParallel 归一化：0 / 负数 / NaN / 小数都不得让切批循环原地踏步。
   // 若 mp 为 0 或 NaN（`i += mp` 永不推进），批切出的空批 Promise.all([]) 会反复 resolve

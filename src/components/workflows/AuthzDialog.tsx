@@ -16,7 +16,7 @@ import { Play, ShieldCheck } from 'lucide-react'
 import { Button, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle, Input, Switch } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { getBindings, setWorkflowTrusted } from '@/lib/workflowApi'
-import type { Capabilities, WorkflowInput } from '@/lib/workflowModel'
+import type { Capabilities, DataFlowOutput, WorkflowInput } from '@/lib/workflowModel'
 
 const READ_TOOLS = ['Read', 'OCR']
 const SHELL_TOOLS = ['Bash', 'BashOutput', 'KillShell']
@@ -31,12 +31,17 @@ export interface AuthzDialogProps {
   inputs?: WorkflowInput[]
   values?: Record<string, string>
   onValuesChange?: (v: Record<string, string>) => void
-  /** 确认 → 已勾除后的清单（宿主唯一认得的形状） */
-  onConfirm: (capabilities: Capabilities) => void
+  /** 结束节点声明的返回值（describeDataFlow(model).outputs）——运行前先让用户知道会拿到什么 */
+  outputs?: DataFlowOutput[]
+  /** 确认 → 已勾除后的清单（宿主唯一认得的形状）。
+   *  返回 { ok:false } 表示**提交未成功**：卡片保持打开并就地显示原因——
+   *  原先把失败只丢到面板顶部 notice，会被 Dialog 遮罩挡住（用户看不到 → 反复点击 →
+   *  同一工作流并行多份重跑，2026-09-12「点击运行无反应」实测）。 */
+  onConfirm: (capabilities: Capabilities) => void | Promise<{ ok: boolean; error?: string } | void>
   onCancel: () => void
 }
 
-export function AuthzDialog({ id, name, capabilities, inputs = [], values = {}, onValuesChange, onConfirm, onCancel }: AuthzDialogProps) {
+export function AuthzDialog({ id, name, capabilities, inputs = [], values = {}, onValuesChange, outputs = [], onConfirm, onCancel }: AuthzDialogProps) {
   const all = useMemo(() => capabilities.tools || [], [capabilities])
   const [tools, setTools] = useState<string[]>(all)
   const [dirs, setDirs] = useState<string[]>(capabilities.write_dirs || [])
@@ -45,6 +50,8 @@ export function AuthzDialog({ id, name, capabilities, inputs = [], values = {}, 
   const [trustedNow, setTrustedNow] = useState(false)
   const [trustMsg, setTrustMsg] = useState('')
   const [busy, setBusy] = useState(false)
+  /** 提交失败原因（就地显示，卡片不关；清空时机 = 再次提交） */
+  const [submitErr, setSubmitErr] = useState('')
 
   // 勾选框反映落盘真值（避免「看着没勾、其实已在信任清单」）
   useEffect(() => {
@@ -72,16 +79,23 @@ export function AuthzDialog({ id, name, capabilities, inputs = [], values = {}, 
 
   const others = all.filter((t) => !READ_TOOLS.includes(t) && !SHELL_TOOLS.includes(t))
 
-  /** 确认：先落信任开关（失败不成阻断——授权清单本身已可用），再交付清单 */
+  /** 确认：先落信任开关（失败不成阻断——授权清单本身已可用），再交付清单。
+   *  提交期间 busy 保持到 Promise 解决（按钮「提交中…」+ 禁用）——防重复点击是异步化后
+   *  的主要防线（运行本身在后台跑，界面不再被阻塞，用户很容易再点一次）。 */
   const confirm = async () => {
+    if (busy) return
     setBusy(true)
+    setSubmitErr('')
     if (trust !== trustedNow) {
       const r = await setWorkflowTrusted(id, trust)
       if (!r.ok) setTrustMsg(`信任清单写入失败：${r.error}`)
       else { setTrustedNow(trust); setTrustMsg(trust ? '已加入信任清单' : '已移出信任清单') }
     }
-    setBusy(false)
-    onConfirm({ tools, write_dirs: dirs, network })
+    const res = await onConfirm({ tools, write_dirs: dirs, network })
+    if (res && res.ok === false) {
+      setSubmitErr(res.error || '提交失败')
+      setBusy(false)   // 失败 → 卡片留着，用户可改清单后重试（成功时本卡片已被父组件卸载）
+    }
   }
 
   return (
@@ -94,13 +108,15 @@ export function AuthzDialog({ id, name, capabilities, inputs = [], values = {}, 
             每次工具调用仍写审计哈希链，授权只免除交互打断。
           </div>
 
+          {/* 数据入口：填进去的值在节点里以 {{inputs.x}} 引用（提示写法，免得用户猜变量名） */}
           {inputs.length > 0 && (
             <div className="mb-3 flex flex-col gap-2">
               <div className="text-[11px] font-semibold text-tertiary uppercase tracking-wider">输入参数</div>
               {inputs.map((i) => (
                 <div key={i.name} className="flex items-center gap-2">
-                  <span className="text-[11px] text-secondary w-[120px] shrink-0 truncate font-mono">
+                  <span className="text-[11px] text-secondary w-[120px] shrink-0 truncate font-mono" title={`节点内引用：{{inputs.${i.name}}}`}>
                     {i.name}{i.required ? ' *' : ''}
+                    {i.type && i.type !== 'string' && <span className="text-tertiary"> : {i.type}</span>}
                   </span>
                   <Input
                     value={values[i.name] ?? ''}
@@ -109,8 +125,38 @@ export function AuthzDialog({ id, name, capabilities, inputs = [], values = {}, 
                   />
                 </div>
               ))}
+              <div className="text-[10px] text-tertiary leading-tight">
+                * 为必填；节点内以 <span className="font-mono">{'{{inputs.名}}'}</span> 引用，留空即传空串。
+              </div>
             </div>
           )}
+
+          {/* 数据出口：结束节点声明的返回值＝运行结束后 RunDrawer 里读到的键
+              （未声明则回退最后一个成功节点的输出——就在这里说清，别让用户运行完才发现） */}
+          <div className="mb-3 flex flex-col gap-1">
+            <div className="text-[11px] font-semibold text-tertiary uppercase tracking-wider">输出（运行结束后返回）</div>
+            {outputs.length > 0 ? (
+              <div className="flex flex-col gap-0.5">
+                {outputs.map((o) => (
+                  <div key={o.name} className="flex flex-col">
+                    <div className="flex items-center gap-2 text-[11px]">
+                      <span className="font-mono text-secondary">{o.name}</span>
+                      {o.from ? (
+                        <span className={cn('text-[10px]', o.ok ? 'text-tertiary' : 'text-error')}>
+                          ← {o.from}{o.ok ? '' : '（非上游，运行时会取空）'}
+                        </span>
+                      ) : <span className="text-[10px] text-warning/90">未接取值源</span>}
+                    </div>
+                    {o.warn && <span className="text-[10px] text-warning/90">⚠ {o.warn}</span>}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-[10px] text-tertiary leading-tight">
+                工作流未声明返回值：将回退为最后一个成功节点的输出（键名不稳定，建议在结束节点显式声明）。
+              </div>
+            )}
+          </div>
 
           <div className="flex flex-col gap-2">
             <div className="text-[11px] font-semibold text-tertiary uppercase tracking-wider">能力清单（deriveCapabilities 推导，逐项可勾除）</div>
@@ -186,9 +232,10 @@ export function AuthzDialog({ id, name, capabilities, inputs = [], values = {}, 
           </div>
         </DialogBody>
         <DialogFooter>
-          <Button size="sm" variant="ghost" onClick={onCancel}>取消</Button>
+          {submitErr && <span className="text-[11px] text-error mr-auto truncate" title={submitErr}>提交失败：{submitErr}</span>}
+          <Button size="sm" variant="ghost" onClick={onCancel} disabled={busy}>取消</Button>
           <Button size="sm" onClick={() => void confirm()} disabled={busy}>
-            <Play className="w-3.5 h-3.5" />按此清单运行
+            <Play className="w-3.5 h-3.5" />{busy ? '提交中…' : '按此清单运行'}
           </Button>
         </DialogFooter>
       </DialogContent>

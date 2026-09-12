@@ -22,6 +22,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { streamMessages } from './api.mjs'
 import { buildRelevantMemory, appendMemoryEntry } from './memory.mjs'
 import { renderTemplate, resolvePath, evalCondition } from './workflow-dsl.mjs'
+import { matchesCatastrophic, CATASTROPHIC_REASON } from './blacklist.mjs'
 import { schedule } from './workflow-dag.mjs'
 
 export function createNodeExecutor({ registry = null, getModel = () => '', memoryRoot = '', engine = null } = {}) {
@@ -448,6 +449,12 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
   }
   function grantDecision(grant, name, input, baseCwd = '') {
     if (!grant) return null
+    // 灾难级硬黑名单（2026-09-12）：grant 是"运行前授权"，不是"灾难许可"——授权清单
+    // 列出 Bash 也不等于授权 `rm -rf /`。刻意**追加**在最前、不改下方任何判据次序：
+    // grant 存在时仍然替换审批门（原有语义不变），只是先过一道底线。
+    if (name === 'Bash' && matchesCatastrophic(String(input?.command ?? ''))) {
+      return { denied: true, message: `${CATASTROPHIC_REASON}（工作流运行授权同样不放开灾难级命令）：${String(input?.command ?? '').slice(0, 80)}` }
+    }
     const tools = Array.isArray(grant.tools) ? grant.tools : []
     if (!tools.includes(name)) return { denied: true, message: `工具 ${name} 不在本次运行的授权清单内（拒绝执行）` }
     if (WRITE_TOOLS.has(name)) {
@@ -612,7 +619,17 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
       case 'start': return { output: { ...ctx.inputs } }
       case 'end': {
         const out = {}
-        for (const o of node.outputs || []) out[o.variable || o.name] = resolvePath(ctx.vars, o.selector || o.value || o.variable || '')
+        for (const o of node.outputs || []) {
+          const key = o.variable || o.name
+          // 未解析到值时必须**保留键并置 null**，绝不能让它变成 undefined：
+          // 节点作用域里 `<nodeId>` 直接就是该节点的 output（见下方归一化注释），
+          // 所以 `{{t.output}}` 这类写法在 t 输出为标量时解析成 undefined，
+          // 而 JSON.stringify 会把值为 undefined 的键**整条丢掉** → 上层看到
+          // finalOutput/end.output 为 {}，用户完全无法自查（2026-09-12 实测：
+          // 画布提示写的是「{{节点.字段}}」，用户照此写 {{t.output}} 即中招）。
+          const v = resolvePath(ctx.vars, o.selector || o.value || o.variable || '')
+          out[key] = v === undefined ? null : v
+        }
         return { output: out }
       }
       case 'llm': return execLLM(node, ctx)

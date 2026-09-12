@@ -71,14 +71,25 @@ export function verifyRun(auditPath) {
 // settled 的值是 {ok,output,skipped,error,...} **记录**；变量作用域必须是
 // "节点 id → 节点输出值"，直接摊平会把记录对象塞进模板（{{node}} 渲染成记录）——
 // 务必取 .output。
-function synthesizeOutput(wf, settled, inputs = {}) {
+// unresolved：取值失败的输出（selector 解析成 undefined）——回填给调用方，让
+// "接了但取不到值"在回执里可见（此前静默丢键，用户只能看到 finalOutput:{}）。
+function synthesizeOutput(wf, settled, inputs = {}, unresolved = []) {
   const ends = (wf.nodes || []).filter((n) => n.type === 'end')
   const answers = (wf.nodes || []).filter((n) => n.type === 'answer')
   const scope = { inputs, var: {} }
   for (const [nid, rec] of settled) scope[nid] = rec.output
   const out = {}
   for (const e of ends) {
-    for (const o of e.outputs || []) out[o.variable || o.name] = resolvePath(scope, o.selector || o.value || '')
+    for (const o of e.outputs || []) {
+      const key = o.variable || o.name
+      const sel = o.selector || o.value || ''
+      const v = resolvePath(scope, sel)
+      // 键必须保留（置 null）：值为 undefined 时 JSON.stringify 会丢键，上层就只能
+      // 看到 {}，连"有哪几个输出"都看不出来（2026-09-12 实测根因，详见 nodes end 分支）。
+      out[key] = v === undefined ? null : v
+      // selector 原文可能已自带花括号（`{{t}}`），不能无条件再包一层（会出现 `{{{{t}}}}`）
+      if (v === undefined && sel) unresolved.push(`${key} ← ${/^\{\{/.test(sel) ? sel : `{{${sel}}}`}`)
+    }
   }
   if (answers.length) {
     out.answer = answers.map((a) => settled.get(a.id)?.output?.answer ?? '').filter(Boolean).join('\n')
@@ -280,11 +291,12 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
       onEdge: onEdgeSettled,
     })
     const outputs = {}
+    const unresolved = []
     for (const [nid, rec] of r.settled) outputs[nid] = { ok: rec.ok, output: rec.output, skipped: rec.skipped, error: rec.error }
-    const finalOutput = synthesizeOutput(wf, r.settled, inputs)
+    const finalOutput = synthesizeOutput(wf, r.settled, inputs, unresolved)
     const status = r.status
-    event('end', { runId, status, steps: r.steps, error: r.error, ...(r.node ? { node: r.node } : {}) })
-    return { ok: r.ok, status, outputs, finalOutput, steps: r.steps, error: r.error, node: r.node, runId, auditPath, settled: r.settled }
+    event('end', { runId, status, steps: r.steps, error: r.error, ...(r.node ? { node: r.node } : {}), ...(unresolved.length ? { unresolved } : {}) })
+    return { ok: r.ok, status, outputs, finalOutput, steps: r.steps, error: r.error, node: r.node, runId, auditPath, settled: r.settled, ...(unresolved.length ? { unresolved } : {}) }
   }
 
   // cron 表达式匹配（5 段：分 时 日 月 周；* / 数字 逗号）

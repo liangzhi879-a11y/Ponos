@@ -30,6 +30,10 @@ const { BrowserExecutor } = require('./browser-executor.cjs')
 // browserExecutor 同理（connectBrowserExecutor 前为 null，可选链兜底）。
 // ---------------------------------------------------------------------------
 const { initLogTee } = require('./log-tee.cjs')
+const { readLogPolicyCached, writeLogLine } = require('../server/log-policy.cjs')
+// 本地持久化策略在此落地（2026-09-12）：initLogTee 内部 ①按策略清理历史（存量超大的
+// app.log 首次启动即裁剪，不再无上限增长）②每行写入都经 writeLogLine，超限当场轮转——
+// 原先 rotateIfNeeded 被返回却从无调用者（死代码），app.log 曾涨到 76MB。
 const logTee = initLogTee()
 logTee.onCrash(() => {
   try { killBridge() } catch {}
@@ -1413,14 +1417,12 @@ if (!gotTheLock) {
         line2 = `[render:console] ${message} (${sourceId}:${line})`
       }
       console.log(line2)
-      // 2026-09-10 排障：渲染层 console 落盘（512KB 轮转）——应用经快捷方式
-      // 启动无终端，渲染层日志此前完全不可见；流式/渲染故障排查靠这份文件。
+      // 2026-09-10 排障：渲染层 console 落盘——应用经快捷方式启动无终端，渲染层日志
+      // 此前完全不可见；流式/渲染故障排查靠这份文件。2026-09-12 起统一走 log-policy
+      // （原先的 512KB 私有截断删除：与其余三处口径不一致、且无年龄清理）。
       try {
         const p = path.join(resolveYfwHome(), 'logs', 'renderer-console.log')
-        fs.appendFileSync(p, line2 + '\n', 'utf-8')
-        if (fs.statSync(p).size > 512 * 1024) {
-          fs.writeFileSync(p, fs.readFileSync(p, 'utf-8').slice(-256 * 1024))
-        }
+        writeLogLine(p, line2, readLogPolicyCached({ home: resolveYfwHome() }), 'info')
       } catch (_) {}
     })
     win.webContents.on('preload-error', (_e, p, err) =>

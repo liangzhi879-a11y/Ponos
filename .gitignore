@@ -35,3 +35,10 @@ runtime/
 .cli_*.mjs
 .cdp_*.mjs
 .yfw_*.mjs
+
+# 误重定向产物与临时工作区（2026-09-12 清点：nul/err/out 为 `> nul` `2> err` 类误写）
+.tmp-*
+.yfw-harness/
+nul
+out
+err

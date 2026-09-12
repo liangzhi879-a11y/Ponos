@@ -109,6 +109,106 @@ test('grant 生命周期：运行结束即失效', async () => {
   assert.equal(runId, undefined, '运行结束应回收全部 grant')
 })
 
+// —— 异步启动（2026-09-12）：POST /workflows/run 同步等待是"点击运行无反应"的直接成因 ——
+// 原实现让该路由阻塞整个运行时长（spec-dev 实测 80–110 秒），界面在等待期零反馈 → 用户重复
+// 点击 → 同一工作流并行多份重跑（实测 20 秒内 3 份）。startRun 改成"提交即回 runId"。
+
+test('startRun：立即返回 runId（不等运行结束）+ 后台回执落 runResults', async () => {
+  const k = fakeKernel()
+  let replyFn = null
+  k.setReply((msg) => { if (msg.subtype === 'run') replyFn = msg })   // 先不答：模拟长跑
+  const host = mkHost(k)
+  host.ensure()
+
+  const t0 = Date.now()
+  const started = host.startRun({ id: 'demo', inputs: { q: 1 }, capabilities: { tools: ['Read'] } })
+  assert.equal(started.ok, true)
+  assert.equal(started.status, 'running')
+  assert.ok(started.runId)
+  assert.ok(Date.now() - t0 < 100, 'startRun 必须立即返回，不得等待运行结束')
+
+  const sent = k.written.find((m) => m.subtype === 'run')
+  assert.deepEqual(sent.payload.grant.tools, ['Read'], 'grant 应随命令注入')
+  assert.equal(sent.payload.runId, started.runId, 'payload.runId 必须转发（stop/confirm 与审计以此为目标）')
+
+  // 运行中：run-status 报 running、finished:false；grant 仍在（运行期有效）
+  assert.deepEqual(host.runResult(started.runId), { ok: true, runId: started.runId, status: 'running', finished: false })
+  assert.equal(host._grants.has(started.runId), true)
+
+  // 后台回执到达 → 终态进缓存，grant 回收
+  k.reply({ type: 'system', subtype: 'workflow_result', requestId: replyFn.requestId, ok: true, status: 'completed', steps: 3, finalOutput: { msg: 'hi' }, runId: started.runId })
+  await new Promise((r) => setTimeout(r, 0))
+  const done = host.runResult(started.runId)
+  assert.equal(done.finished, true)
+  assert.equal(done.status, 'completed')
+  assert.equal(done.steps, 3)
+  assert.deepEqual(done.finalOutput, { msg: 'hi' })
+  assert.equal(done.runId, started.runId, '回执不应把 runId 顶掉（前端的 runId 归属判定依赖它）')
+  assert.equal(host._grants.has(started.runId), false, '运行结束应回收 grant')
+})
+
+test('startRun：宿主退出 → 结果落 failed（不让前端永远等 run-status）', async () => {
+  const k = fakeKernel()
+  k.setReply(() => {})   // 永不回执
+  const host = mkHost(k)
+  host.ensure()
+  const started = host.startRun({ id: 'demo', inputs: {}, capabilities: { tools: [] } })
+  assert.equal(host.runResult(started.runId).finished, false)
+  host.onKernelExit(HOST_SID)
+  await new Promise((r) => setTimeout(r, 0))
+  const res = host.runResult(started.runId)
+  assert.equal(res.finished, true)
+  assert.equal(res.status, 'failed')
+  assert.match(String(res.error), /宿主会话已退出/)
+  assert.equal(host._inflightSize(), 0)
+})
+
+test('startRun：采用客户端预生成 runId，非法格式拒用（改随机 id）', async () => {
+  const k = fakeKernel()
+  k.setReply(() => {})   // 不回执，只看命令载荷
+  const host = mkHost(k)
+  host.ensure()
+  const a = host.startRun({ id: 'demo', inputs: {}, capabilities: { tools: [] }, runId: 'run-mine-1' })
+  assert.equal(a.runId, 'run-mine-1', '合法 runId 必须原样采用（前端已在提交前认领它判事件归属）')
+  assert.equal(k.written.find((m) => m.subtype === 'run').payload.runId, 'run-mine-1')
+  // 非法（路径穿越/超长）→ 弃用，改用随机 id；不得把任意字符串塞进审计文件名与 stop/confirm 匹配键
+  for (const bad of ['../evil', 'a/b', 'x'.repeat(65), 'run id']) {
+    const r = host.startRun({ id: 'demo', inputs: {}, capabilities: { tools: [] }, runId: bad })
+    assert.match(r.runId, /^run-[a-z0-9]+-[a-z0-9]{4}$/, `非法 runId 应被拒用：${bad}`)
+  }
+  // 本用例故意不回执（只验载荷）→ 会留下在途命令与 30 分钟超时定时器，
+  // 必须显式收尾，否则 node --test 进程不退出（表现为整体超时）。
+  host.onKernelExit(HOST_SID)
+})
+
+test('runResult：未知 runId 回 unknown（区分"仍在跑"与"查不到"）', () => {
+  const k = fakeKernel()
+  const host = mkHost(k)
+  const r = host.runResult('nope')
+  assert.equal(r.ok, false)
+  assert.equal(r.unknown, true)
+  assert.equal(host.runResult('').ok, false)
+})
+
+test('startRun：同 runId 重跑清掉上一轮终态（避免轮询读到旧结果）', async () => {
+  const k = fakeKernel()
+  let n = 0
+  k.setReply((msg) => {
+    if (msg.subtype !== 'run') return
+    n += 1
+    k.reply({ type: 'system', subtype: 'workflow_result', requestId: msg.requestId, ok: true, status: 'completed', steps: n, runId: msg.payload.runId })
+  })
+  const host = mkHost(k)
+  host.ensure()
+  const a = host.startRun({ id: 'demo', inputs: {}, capabilities: { tools: [] }, runId: 'fixed' })
+  await new Promise((r) => setTimeout(r, 0))
+  assert.equal(host.runResult('fixed').steps, 1)
+  host.startRun({ id: 'demo', inputs: {}, capabilities: { tools: [] }, runId: 'fixed' })
+  assert.equal(host.runResult('fixed').finished, false, '重跑期间应回到 running，不得读到上一轮终态')
+  await new Promise((r) => setTimeout(r, 0))
+  assert.equal(host.runResult('fixed').steps, 2)
+})
+
 // ============ 补测（brief 未覆盖） ============
 
 test('ensure：无会话时按宿主参数懒启动（cwd=<yfwHome>/workflow-runtime、mode=task）', () => {
@@ -289,4 +389,72 @@ test('宿主内核死亡：在途命令立即失败（不得静默挂到超时�
   host.onKernelExit(HOST_SID)                       // bridge 在内核 exit 时通知宿主
   await assert.rejects(() => p, /宿主|内核|退出/, '内核死亡应立即报错，而非等 120s 超时')
   assert.equal(host._pendingSize?.() ?? 0, 0, 'pending 必须清空，避免后续 run 误配对')
+})
+
+// —— 2026-09-12 实测缺陷回归：宿主被空闲回收/崩溃 → 首条命令失败且无重试 ——
+// 现场证据：bridge 的 reapIdleKernels 曾把**常驻宿主**一并 taskkill（宿主不发
+//   assistant/result，_turnActive 恒 false；且刚 spawn 时 _lastOutAt===0 会直接落进
+//   回收分支）→ 冷启动窗口内的第一条命令被 onKernelExit 判失败：
+//   `curl /workflows/verify` 返回「工作流宿主会话已退出，命令未完成」，第二次请求即正常。
+// 期望：幂等命令（读取/保存/校验/查询）自动重建宿主并重试一次，用户不必手点第二次；
+//       run 不自动重试（重试＝把工作流重跑一遍，必须由用户决定）。
+// 假内核：按"第几代 spawn"脚本化行为——第一代吞掉命令（模拟宿主已死），第二代正常回执。
+function scriptedHost() {
+  const state = { gen: 0, written: [], sessions: new Map(), reply: {}, host: null }
+  const spawnSession = (sid) => {
+    state.gen++
+    const gen = state.gen
+    const s = {
+      proc: {
+        stdin: {
+          write: (line) => {
+            const msg = JSON.parse(line)
+            state.written.push({ gen, msg })
+            state.reply[gen]?.(msg)
+          },
+        },
+        killed: false,
+      },
+    }
+    state.sessions.set(sid, s)
+    return s
+  }
+  state.host = createWorkflowHost({
+    sessions: state.sessions, getOrCreateSession: spawnSession, yfwHome: '/tmp/x', model: 'm', onEvent: () => {},
+  })
+  return state
+}
+
+test('宿主退出：幂等命令自动重建宿主并重试一次（save/load/list 不必用户手点第二次）', async () => {
+  const st = scriptedHost()
+  // 第二代（重建后）正常回执；第一代不答（命令进了已死的宿主）
+  st.reply[2] = (msg) => st.host.onKernelMessage({ type: 'system', subtype: 'load', requestId: msg.requestId, result: { ok: true, id: 'demo', yml: 'name: demo' } })
+  const p = st.host.load('demo')
+  await new Promise((r) => setTimeout(r, 5))
+  st.sessions.delete(HOST_SID)          // bridge 的 close 处理器先删条目
+  st.host.onKernelExit(HOST_SID)        // 再通知宿主：在途命令立即失败
+  const r = await p
+  assert.equal(r.ok, true, '重试后应拿到第二代宿主的正常回执')
+  assert.equal(r.yml, 'name: demo')
+  assert.equal(st.gen, 2, `应恰好重建一次宿主后重试（实际 spawn ${st.gen} 代）`)
+  assert.equal(st.written.filter((w) => w.msg.subtype === 'load').length, 2, '同一命令应发出两次（首次失败 + 重试）')
+})
+
+test('宿主退出：run 不自动重试（重试＝重跑工作流，必须由用户决定）', async () => {
+  const st = scriptedHost()
+  const p = st.host.run({ id: 'demo', capabilities: { tools: ['Read'] } })
+  await new Promise((r) => setTimeout(r, 5))
+  st.sessions.delete(HOST_SID)
+  st.host.onKernelExit(HOST_SID)
+  await assert.rejects(() => p, /宿主会话已退出|宿主命令失败/, '宿主死亡应立即报错，而不是悄悄重跑一遍')
+  assert.equal(st.gen, 1, 'run 不得触发重建/重试')
+})
+
+test('ensure：条目残留但进程已死（killed/exitCode）→ 清掉重建，不写进死进程', () => {
+  const st = scriptedHost()
+  st.gen = 1                                              // 先占一代：视作残留条目
+  st.sessions.set(HOST_SID, { proc: { stdin: { write: () => { throw new Error('write EPIPE') } }, killed: true } })
+  st.host.ensure()
+  assert.equal(st.gen, 2, '死条目应被清掉并重新 spawn')
+  assert.equal(st.sessions.get(HOST_SID).proc.killed, false, '重建后的会话必须是活进程')
 })

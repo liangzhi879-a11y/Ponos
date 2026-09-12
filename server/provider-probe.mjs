@@ -75,12 +75,17 @@ function fetchModelsMeta({ baseUrl, authToken, timeoutMs }) {
 /** 单次 messages 请求（可带 padding），返回 { ok, ttftMs, latencyMs, billing }。
  *  欠费检测（2026-09-11）：402 或响应体含 Insufficient Balance / 余额不足 →
  *  billing='insufficient_balance'（探测即检验计费异常，不只在调用失败时才发现）。 */
-function postMessages({ baseUrl, authToken, model, padding, timeoutMs }) {
+function postMessages({ baseUrl, authToken, model, padding, timeoutMs, tools }) {
   const candidates = [String(baseUrl).replace(/\/+$/, '') + '/v1/messages', String(baseUrl).replace(/\/+$/, '') + '/messages']
   const body = JSON.stringify({
     model,
     max_tokens: 1,
     messages: [{ role: 'user', content: padding ? `${padding}\n\n请回答：1+1等于几？` : 'ping' }],
+    // 工具能力探测（2026-09-12）：**刻意不带 tool_choice**——与内核真实请求同形
+    // （kernel/api.mjs anthropicStream 只发 tools，tool_choice 走服务端默认）。
+    // 带 tool_choice 的探测会掩盖"服务端默认 tool_choice 不可用"这类失败（实测
+    // vLLM 未开 --enable-auto-tool-choice 时 tool_choice:'none' 能过、默认必 400）。
+    ...(Array.isArray(tools) && tools.length ? { tools } : {}),
   })
   return new Promise((resolve) => {
     const tryCandidate = (i) => {
@@ -141,9 +146,10 @@ function buildPrefillPadding(seed) {
  *  1. /v1/models 元数据（max_model_len/模型清单）
  *  2. 1-token ping（TTFT + 总延迟）
  *  3. ~8k tokens 预填充基准（非流式 max_tokens=1，总时长 ≈ prefill 时长 → 吞吐）
+ *  4. 工具能力（带最小工具定义、不带 tool_choice 的请求——与内核真实请求同形）
  */
 export async function probeProviderCapabilities({ apiBaseUrl, authToken, model, timeoutMs = 60000 }) {
-  const result = { ok: false, modelsMeta: null, ttftMs: null, latencyMs: null, prefillTokPerSec: null, billing: null }
+  const result = { ok: false, modelsMeta: null, ttftMs: null, latencyMs: null, prefillTokPerSec: null, billing: null, toolsSupported: null }
   if (!apiBaseUrl || !model) return result
 
   const ping = await postMessages({ baseUrl: apiBaseUrl, authToken, model, timeoutMs })
@@ -162,8 +168,36 @@ export async function probeProviderCapabilities({ apiBaseUrl, authToken, model, 
       const prefillTokens = Math.round(padding.length / 2) // 中文≈每字 1 token 上界的一半，粗估 8k
       result.prefillTokPerSec = Math.round(prefillTokens / (padded.latencyMs / 1000))
     }
+    // 工具能力（2026-09-12）：**排在预填充之后**——预填充吞吐靠单请求时长测量，
+    // 并发请求会污染计时。不带 tools 的 ping 能过 ≠ 带 tools 能过（实测 vLLM 未开
+    // --enable-auto-tool-choice 时正是此形态：探测全绿、首个回合 400）。
+    result.toolsSupported = await probeToolSupport({ apiBaseUrl, authToken, model, timeoutMs })
   }
   return result
+}
+
+/** 工具能力探测：发一个带最小工具定义（不带 tool_choice）的请求。
+ *  返回 true=端点接受了带工具的请求；false=端点明确以"工具调用未启用"拒绝；
+ *  null=不确定（网络/超时/其它错误）——**不确定不猜**，只在 false 时报警告，
+ *  避免把无关故障说成"该 provider 不支持工具调用"。只探测不改变任何配置。 */
+export async function probeToolSupport({ apiBaseUrl, authToken, model, timeoutMs = 60000 }) {
+  const res = await postMessages({
+    baseUrl: apiBaseUrl, authToken, model, timeoutMs,
+    tools: [{ name: 'probe_noop', description: '探测用占位工具，请勿调用。', input_schema: { type: 'object', properties: {} } }],
+  })
+  return classifyToolProbeResult(res)
+}
+
+/** 工具探测结果判定（导出供单测与内核分类器交叉校验，防两处正则漂移）。
+ *  与 kernel/api.mjs 的 TOOLS_UNSUPPORTED_RE 同源语义：vLLM 的启动参数原话，或
+ *  "tools ... not supported/disabled" 类否定句。 */
+export const TOOLS_REJECT_RE = /enable-auto-tool-choice|tool-call-parser|\btools?(?![a-z0-9])[^.\n]{0,40}(?:not supported|unsupported|not enabled|not available|disabled)|\bnot support(?:s|ed)?\b[^.\n]{0,20}\btools?(?![a-z0-9])/i
+
+export function classifyToolProbeResult(res) {
+  if (res?.ok === true) return true
+  const status = Number(res?.status) || 0
+  if (status !== 400 && status !== 422) return null // 5xx/超时/连接失败：与工具能力无关，不猜
+  return TOOLS_REJECT_RE.test(String(res?.detail || '')) ? false : null
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +213,16 @@ export function applyProbeResults(provider = {}, probe = {}, { profile = 'cloud'
 
   if (probe?.billing === 'insufficient_balance') {
     notes.push('⚠ 检测到欠费/额度不足：该 provider 计费异常，请先充值后再使用')
+  }
+
+  // 工具能力（2026-09-12）：**只报告、不改行为**——不自动去掉 tools、不自动切 provider
+  // （本应用靠工具执行任务，静默降级只会让模型空谈不干活，比报错更难排查）。探测已
+  // 实测该端点是否接受带 tools 的请求；运行期同一问题由内核 tools-unsupported 分类
+  // 落可操作提示（kernel/api.mjs → engine loopStop）。
+  if (probe?.toolsSupported === false) {
+    notes.push('⚠ 该 provider 未开启工具调用：服务端拒绝了带工具定义的请求（需以 --enable-auto-tool-choice --tool-call-parser <解析器> 启动，Qwen3.x 常见 qwen3_xml / hermes）——若服务端已开该参数，请核对本应用配置的 API 地址/端口是否指向该服务（代理或端口可能转到另一个未开启工具调用的后端）；未开启时本应用无法执行任务')
+  } else if (probe?.toolsSupported === true) {
+    notes.push('工具调用可用（探测实测）')
   }
 
   const window = resolveWindowFromProbe(provider, probe)

@@ -8,7 +8,7 @@ import { useState } from 'react'
 import { Plus, Import, Play, Copy, Download, Trash2, AlertTriangle, Clock, GitBranch } from 'lucide-react'
 import { Badge, Button, Input, ScrollArea } from '@/components/ui'
 import { cn } from '@/lib/utils'
-import { checkWorkflowId } from '@/lib/workflowModel'
+import { asTriggerList, checkWorkflowId } from '@/lib/workflowModel'
 import { runStatusOf, type WorkflowMeta } from '@/lib/workflowApi'
 
 export interface WorkflowListProps {
@@ -53,7 +53,7 @@ export function WorkflowList(props: WorkflowListProps) {
     setNewId('')
   }
   const filtered = kw
-    ? list.filter((m) => `${m.id} ${m.name || ''} ${(m.triggers || []).join(' ')}`.toLowerCase().includes(kw))
+    ? list.filter((m) => `${m.id} ${m.name || ''} ${asTriggerList(m.triggers).join(' ')}`.toLowerCase().includes(kw))
     : list
   const mine = filtered.filter((m) => m.expose?.mode !== 'public')
   const published = filtered.filter((m) => m.expose?.mode === 'public')
@@ -171,9 +171,9 @@ function Row({ meta, onOpen, onRun, onDuplicate, onExport, onDelete }: { meta: W
           {typeof meta.version === 'string' && <span className="px-1 py-0.5 rounded bg-elevated">v{meta.version}</span>}
         </div>
 
-        {(meta.triggers || []).length > 0 && (
+        {asTriggerList(meta.triggers).length > 0 && (
           <div className="flex flex-wrap gap-1">
-            {(meta.triggers || []).slice(0, 4).map((t) => (
+            {asTriggerList(meta.triggers).slice(0, 4).map((t) => (
               <span key={t} className="text-[9px] px-1.5 py-0.5 rounded bg-brand-500/10 text-brand-500/85">{t}</span>
             ))}
           </div>

@@ -1,4 +1,4 @@
-import { Shield, Cpu, Wifi, WifiOff, HeartPulse } from 'lucide-react'
+import { Cpu, Wifi, WifiOff, HeartPulse } from 'lucide-react'
 import { useEffect } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -6,6 +6,7 @@ import { useDiagStore } from '@/stores/diagStore'
 import { useYFWCLI } from '@/hooks/useYFWCLI'
 import { useTranslation } from '@/i18n/useTranslation'
 import { Tooltip } from '@/components/ui'
+import { ApprovalModePicker } from '@/components/layout/ApprovalModePicker'
 import { cn } from '@/lib/utils'
 
 interface StatusItemProps {
@@ -41,6 +42,8 @@ export function StatusBar() {
   // 总和不变 → selector 返回值不变 → 状态栏不会每 token 重渲染
   const backgroundTasks = useChatStore(s => s.backgroundTasks)
   const sessionModel = useChatStore(s => s.sessionModel)
+  // 审批档位选择器的目标会话（无活动会话时其内部禁用临时切档）
+  const activeConversationId = useChatStore(s => s.activeConversationId)
   const settings = useSettingsStore(s => s.settings)
   const { connected } = useYFWCLI()
   const { t } = useTranslation()
@@ -92,11 +95,11 @@ export function StatusBar() {
           />
         )}
         {/* 2026-09-10：token 记录删除（全面转移到驾驶舱），此位由 doctor 报警接管 */}
-        <StatusItem
-          icon={<Shield className="w-3 h-3" />}
-          label={`${settings.autoApproveBash ? t('statusBar.autoMode') : t('statusBar.manualMode')}`}
-          value={settings.autoApproveBash ? 'Auto' : 'Manual'}
-        />
+        {/* 2026-09-12：此处原是**假徽标**——它读 settings.autoApproveBash，而该字段
+            全仓库无人写入、也从不发给桥或内核，所以显示什么与真实行为无关（真实行为
+            由桥硬编码的 --dangerously-skip-permissions 决定）。现换成真的档位选择器：
+            显示以桥上报为准，点击可切本会话临时档（= 需求里"界面下方的 manual 处"）。 */}
+        <ApprovalModePicker conversationId={activeConversationId} />
         {/* 内置 doctor 报警（2026-09-10）：正常/警告/严重计数；点击打开诊断面板。
             doctor 功能后续完善后配套更新。 */}
         <StatusItem

@@ -16,6 +16,8 @@
 const { existsSync, statSync, mkdirSync, renameSync, readFileSync, appendFileSync } = require('fs')
 const { join } = require('path')
 const { resolveYfwHome } = require('../server/yfw-home.cjs')
+// 本地持久化策略单一真源（server/log-policy.cjs）：轮转/保留份数/保留天数/等级门槛/关闭开关
+const { DEFAULT_LOG_POLICY, readLogPolicyCached, writeLogLine, rotateLog, enforceLogPolicy, getLogTail: tailOf } = require('../server/log-policy.cjs')
 
 const ts = () => new Date().toISOString()
 
@@ -26,20 +28,29 @@ function createTee(writeFn) {
   }
 }
 
-function initLogTee({ logDir = join(resolveYfwHome(), 'logs') } = {}) {
+// logDir：日志目录；policy：显式策略（缺省按 home 的 config.json 走 TTL 缓存）；
+// home：策略来源（测试用）。
+function initLogTee({ logDir = join(resolveYfwHome(), 'logs'), policy = null, home = resolveYfwHome() } = {}) {
   mkdirSync(logDir, { recursive: true })
   const logPath = join(logDir, 'app.log')
+  // 策略在每行写入时现取：桥与主进程是两个进程，改策略后靠 TTL（默认 5s）生效，无需重启。
+  const currentPolicy = () => policy || readLogPolicyCached({ home })
 
-  const tee = createTee((line) => appendFileSync(logPath, line + '\n'))
+  const tee = createTee((line) => { writeLogLine(logPath, line, currentPolicy(), 'info') })
 
   for (const level of ['log', 'error', 'warn', 'info']) {
     const orig = console[level]?.bind(console)
     if (!orig) continue
     console[level] = (...args) => {
-      tee[level === 'log' ? 'log' : 'error'](args.map(String).join(' '))
+      if (level === 'error') tee.error(args.map(String).join(' '))
+      else tee.log(args.map(String).join(' '))
       orig(...args) // 原输出行为不变（终端/管道）
     }
   }
+
+  // 启动一次性落地策略：年龄清理 + 存量超大 app.log 裁剪（历史遗留文件曾达 76MB）+ 超限轮转。
+  // 这是"轮转是死代码"的修复点之一——原 rotateIfNeeded 只被返回、从未被调用（另一个在 main.cjs）。
+  try { enforceLogPolicy(logPath, currentPolicy()) } catch (_) { /* 策略执行失败不阻断启动 */ }
 
   const crashCleanups = []
   function runCrashCleanups() {
@@ -67,20 +78,19 @@ function initLogTee({ logDir = join(resolveYfwHome(), 'logs') } = {}) {
     throw reason instanceof Error ? reason : new Error(String(reason))
   })
 
+  // 委托给策略模块（超限才轮转；保留份数/年龄由策略决定）。保留方法名与语义：
+  // main.cjs 与 log-tee.test.mjs 依赖它。
   function rotateIfNeeded() {
     try {
       if (!existsSync(logPath)) return
-      if (statSync(logPath).size <= 5 * 1024 * 1024) return
-      const bak = join(logDir, 'app.log.1')
-      try { renameSync(logPath, bak) } catch (_) { /* 目标被占用则跳过 */ }
+      const p = currentPolicy()
+      if (statSync(logPath).size <= p.maxFileBytes) return
+      rotateLog(logPath, p)
     } catch (_) {}
   }
 
   function getLogTail(n = 100) {
-    try {
-      const lines = readFileSync(logPath, 'utf-8').split(/\r?\n/).filter(Boolean)
-      return lines.slice(-n)
-    } catch (_) { return [] }
+    return tailOf(logPath, n)
   }
 
   return { getLogPath: () => logPath, getLogTail, rotateIfNeeded, onCrash }

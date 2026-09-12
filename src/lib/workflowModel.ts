@@ -606,13 +606,169 @@ export function removeEdgesFromModel(model: WorkflowModel, ids: readonly string[
   return { ...model, edges: model.edges.filter((e) => !gone.has(e.id)) }
 }
 
+/**
+ * 删除前的**影响面预览**（破坏性操作必须先说清将动什么）。
+ * 与 removeNodesFromModel 的清理规则同源（边 / body 成员 / 悬空引用），但只统计不修改——
+ * 用于删除确认框：用户确认的应该是"真的会发生的后果"，而不是一个空泛的"确定删除吗"。
+ */
+export interface RemovalImpact {
+  /** 将被一并移除的连线数 */
+  edgesRemoved: number
+  /** 会被摘除 body 成员的位置数（loop/iterate 子图） */
+  bodyCleanups: number
+  /** 会被清空的悬空变量引用处数（不清空则保存被内核 VAR_UNREACHABLE 拒绝） */
+  refsScrubbed: number
+  /** 被拒绝删除的节点（start） */
+  blocked: string[]
+  /** 将被清理的具体引用（`节点 id ← {{路径}}`，供确认框逐条展示） */
+  refDetails: string[]
+}
+
+export function describeRemoval(model: WorkflowModel, ids: readonly string[]): RemovalImpact {
+  const wanted = new Set(ids.filter(Boolean))
+  const blocked = model.nodes.filter((n) => wanted.has(n.id) && isProtectedNode(n)).map((n) => n.id)
+  const gone = new Set([...wanted].filter((id) => !blocked.includes(id)))
+  const impact: RemovalImpact = { edgesRemoved: 0, bodyCleanups: 0, refsScrubbed: 0, blocked, refDetails: [] }
+  if (!gone.size) return impact
+
+  impact.edgesRemoved = model.edges.filter((e) => gone.has(e.source) || gone.has(e.target)).length
+  for (const n of model.nodes) {
+    if (gone.has(n.id)) continue
+    if (Array.isArray(n.body)) impact.bodyCleanups += n.body.filter((b) => gone.has(b)).length
+    for (const ref of collectRefs(n)) {
+      if (!gone.has(ref.split('.')[0])) continue
+      impact.refsScrubbed++
+      impact.refDetails.push(`${n.id} ← {{${ref}}}`)
+    }
+  }
+  return impact
+}
+
+/**
+ * triggers 归一（前端侧防御，2026-09-12）。
+ *
+ * 触发词在后端有两种形状来源：列表入口（`discoverWorkflows`）归一成数组，而编辑器模型
+ * （`toModel`）早期是**原样透传**——于是 YAML 写 `triggers: a, b`（裸逗号标量）时列表拿到数组、
+ * 编辑器拿到字符串，`(model.triggers || []).join(', ')` 直接抛 `join is not a function`
+ * → 打开画布整页白屏（实测）。后端已修（kernel normalizeTriggers），这里再兜一层：
+ * UI 不该因脏数据白屏。
+ */
+export function asTriggerList(v: unknown): string[] {
+  if (Array.isArray(v)) return v.filter((t) => t !== null && t !== undefined).map((t) => String(t).trim()).filter(Boolean)
+  if (typeof v === 'string' || typeof v === 'number') return String(v).split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+  return []
+}
+
+// ===================== 数据流摘要（开始 → 处理 → 结束 的引用闭环，spec §6） =====================
+
+export interface DataFlowInput {
+  name: string
+  type?: string
+  required?: boolean
+  /** 引用写法（`{{inputs.<name>}}`）——面板给出可复制/可插入的确定文本 */
+  ref: string
+  /** 引用该输入的节点 id（空 = 声明了但没人用） */
+  usedBy: string[]
+}
+
+export interface DataFlowOutput {
+  name: string
+  /** 内核 end.outputs 的取值字段（selector 优先，兼容旧写法的 value） */
+  selector: string
+  /** selector 里解析出的来源节点 id（null = 未填/非节点引用） */
+  from: string | null
+  /** 来源是否为上游可达节点（false → 保存时内核会拒） */
+  ok: boolean
+  /** 写法可疑（能过校验但运行期大概率取不到值）——见 detectRefPitfall */
+  warn?: string
+}
+
+/**
+ * 引用写法陷阱检测（2026-09-12 实测根因，极高价值）。
+ *
+ * 内核的变量作用域是 `{ inputs, var, <nodeId>: <该节点的 output> }`——**节点 id 直接就是输出值**
+ * （workflow-engine.synthesizeOutput / nodes.dispatch 的作用域归一化）。
+ * 因此 `{{t.output}}` 在 t 的输出为**标量**（template/llm/code/answer… 都是字符串）时会解析成
+ * undefined，而 JSON 序列化把值为 undefined 的键整条丢掉 → 用户看到 `finalOutput: {}`，
+ * 完全无从自查。实测对照：`{{t}}` → "hello world"，`{{t.output}}` → 丢键。
+ *
+ * 而画布此前的提示写的是「{{节点.字段}}」，恰好诱导用户写出 `{{节点.output}}`。
+ * 这里把它标出来（不阻断，因为输出本身含 output 字段时该写法合法）。
+ */
+export function detectRefPitfall(selector: string, from: string | null): string | undefined {
+  const m = /\{\{\s*([^}]+?)\s*\}\}/.exec(selector || '')
+  if (!m) return undefined
+  const parts = m[1].split('.').filter(Boolean)
+  if (parts.length >= 2 && parts[1] === 'output') {
+    return `${from || parts[0]} 是节点时，{{${parts[0]}}} 已经就是它的输出值——加上 .output 通常取不到（除非该节点输出本身含 output 字段），取不到时该键会是 null`
+  }
+  return undefined
+}
+
+export interface DataFlowSummary {
+  inputs: DataFlowInput[]
+  outputs: DataFlowOutput[]
+  /** 声明了但没有任何节点引用（"输入了却没进数据流"，通常是漏接线） */
+  unusedInputs: string[]
+  /** 引用了未声明的输入（`{{inputs.x}}` 但 inputs 里没有 x）→ 运行期取到空值 */
+  unknownInputRefs: Array<{ node: string; ref: string }>
+}
+
+/**
+ * 数据流摘要：把"工作流怎么吃进输入、又吐出什么"摊平成一张可检查的表。
+ *
+ * 目的（2026-09-12 UX 反馈"明确数据流传输"）：开始/结束两个节点此前只有说明文字，
+ * 输入定义藏在"工作流设置"、输出定义藏在 end 的 config 里，用户看不到两头是否接上。
+ * 本函数纯读不写，供 ConfigPanel 的 start/end 面板与保存前提示共用。
+ */
+export function describeDataFlow(model: WorkflowModel): DataFlowSummary {
+  const inputs = (model.inputs || []).map((i) => ({ name: String(i.name || ''), type: i.type, required: i.required, ref: `{{inputs.${i.name}}}`, usedBy: [] as string[] }))
+  const byName = new Map(inputs.map((i) => [i.name, i]))
+  const unknownInputRefs: Array<{ node: string; ref: string }> = []
+
+  for (const n of model.nodes || []) {
+    if (!n?.id) continue
+    for (const ref of collectRefs(n)) {
+      if (ref.split('.')[0] !== 'inputs') continue
+      const name = ref.split('.').slice(1).join('.')
+      const hit = byName.get(name)
+      if (hit) { if (!hit.usedBy.includes(n.id)) hit.usedBy.push(n.id) }
+      else if (!unknownInputRefs.some((u) => u.node === n.id && u.ref === ref)) unknownInputRefs.push({ node: n.id, ref })
+    }
+  }
+
+  const outputs: DataFlowOutput[] = []
+  for (const n of model.nodes || []) {
+    if (n.type !== 'end') continue
+    const rows = Array.isArray(n.config?.outputs) ? n.config!.outputs : []
+    const anc = ancestorsOf(model, n.id)
+    rows.forEach((o: any, i: number) => {
+      const selector = String(o?.selector ?? o?.value ?? '')
+      const m = /\{\{\s*([^}]+?)\s*\}\}/.exec(selector)
+      const source = m ? m[1].trim().split('.')[0] : ''
+      const warn = detectRefPitfall(selector, source || null)
+      outputs.push({
+        name: String(o?.name ?? o?.variable ?? `out${i + 1}`),
+        selector,
+        from: source || null,
+        // 本地作用域（var/item/index…）由运行期提供，不算"未接上"；空 selector 才是没接
+        ok: !!source && (LOCAL_SCOPES.has(source) || anc.has(source) || source === 'inputs'),
+        // 无条件挂 warn:undefined 会让消费方拿到"存在但为空"的键（deepEqual/序列化都别扭）
+        ...(warn ? { warn } : {}),
+      })
+    })
+  }
+
+  return { inputs, outputs, unusedInputs: inputs.filter((i) => i.usedBy.length === 0).map((i) => i.name), unknownInputRefs }
+}
+
 
 /** Windows 保留设备名（`nul/workflow.yml` 会写进设备，仓库既往有 nul 事故记录） */
 const WF_DEVICE_RE = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/
 
 /**
 /** 系统保留字：与 /workflows/<子路由> 冲突（用了会导致该工作流永远打不开） */
-export const WF_RESERVED_IDS = ['run', 'stop', 'confirm', 'runs', 'import', 'export', 'bindings', 'verify', 'validate']
+export const WF_RESERVED_IDS = ['run', 'run-status', 'stop', 'confirm', 'runs', 'import', 'export', 'bindings', 'verify', 'validate']
 
 /**
  * 新建/复制前的前端预校验：不合法就**就地在 UI 提示**，不发请求（后端 assertSafeId 会抛 400，

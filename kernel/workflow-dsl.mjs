@@ -274,12 +274,9 @@ export function discoverWorkflows({ root } = {}) {
       schedule: trigCfg.schedule || parsed.schedule || meta.schedule || '',
       // triggers 三种写法并存：数组（`[a, b]` / `- a` 列表）、逗号标量（`a, b, c`）、
       // frontmatter。逗号标量自旧版起从未被解析（触发词恒为 []），此处补上。
-      triggers: Array.isArray(parsed.triggers)
-        ? parsed.triggers.map(String)
-        : (typeof parsed.triggers === 'string' || typeof parsed.triggers === 'number')
-          ? String(parsed.triggers).split(/[,，]/).map((s) => s.trim()).filter(Boolean)
-          : meta.triggers ? String(meta.triggers).split(/[,，]/).map((s) => s.trim()).filter(Boolean)
-            : [],
+      triggers: Array.isArray(parsed.triggers) || typeof parsed.triggers === 'string' || typeof parsed.triggers === 'number'
+        ? normalizeTriggers(parsed.triggers)
+        : meta.triggers ? normalizeTriggers(meta.triggers) : [],
       autoTrigger: trigCfg.auto_trigger === true || parsed.auto_trigger === true || meta.auto_trigger === true,
       nodes: Array.isArray(parsed.nodes) ? parsed.nodes.length : 0,
       lines: content.split('\n').length,
@@ -359,7 +356,14 @@ export function normalizeNode(n) {
 }
 
 export function normalizeWorkflow(wf) {
-  return { ...(wf || {}), nodes: ((wf && wf.nodes) || []).map(normalizeNode), edges: Array.isArray(wf?.edges) ? wf.edges : null }
+  return {
+    ...(wf || {}),
+    // 顶层 triggers 归一（2026-09-12）：loadWorkflow → parseWorkflowFile → 这里，
+    // 是**加载路径的统一收口**，GUI 编辑器模型即来自它（不再经过 toModel）。
+    triggers: normalizeTriggers(wf?.triggers),
+    nodes: ((wf && wf.nodes) || []).map(normalizeNode),
+    edges: Array.isArray(wf?.edges) ? wf.edges : null,
+  }
 }
 
 // ===================== 画布模型 ↔ YAML 序列化（UI Task 9） =====================
@@ -372,6 +376,23 @@ const TOP_KEYS = ['name', 'description', 'version', 'triggers', 'trigger_config'
 
 // wf（摊平后）→ 画布模型：非元数据字段收拢回 node.config。
 // 幂等：若节点已是模型形态（已带 config），则把 config 展开后重新收拢，不会丢配置。
+/**
+ * triggers 归一（单一真相，2026-09-12 修）。
+ *
+ * 触发词有三种写法并存：数组（`[a, b]` / `- a` 列表）、逗号标量（`a, b, c`）、frontmatter。
+ * 此前只有 `discoverWorkflows`（列表入口）做了归一，`toModel`（编辑器模型）与 `toYaml`
+ * 是**原样透传**，于是同一份 YAML 在两条路径上形状不一致：列表拿到数组、编辑器拿到字符串。
+ * 后果（实测崩溃）：GUI 编辑器 `(model.triggers || []).join(', ')` → `join is not a function`
+ * → 打开画布整页白屏；保存路径 `model.triggers.map(...)` 同样会抛。
+ * 归一放在这里，供三处共用（列表 / toModel / serialize），后续新增入口也应走它。
+ */
+export function normalizeTriggers(v) {
+  // null/undefined 元素要先剔除：直接 String() 会得到字面量 "null"/"undefined" 触发词
+  if (Array.isArray(v)) return v.filter((t) => t !== null && t !== undefined).map((t) => String(t).trim()).filter(Boolean)
+  if (typeof v === 'string' || typeof v === 'number') return String(v).split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+  return []
+}
+
 export function toModel(wf) {
   const nodes = (wf.nodes || []).map((n) => {
     const { config: existing = {}, ...rest } = n || {}
@@ -387,6 +408,8 @@ export function toModel(wf) {
   })
   const model = {}
   for (const k of TOP_KEYS) if (wf[k] !== undefined) model[k] = wf[k]
+  // 形状归一：编辑器/序列化都假定 triggers 是 string[]（见 normalizeTriggers 注释）
+  model.triggers = normalizeTriggers(model.triggers)
   model.nodes = nodes
   model.edges = wf.edges || []
   return model

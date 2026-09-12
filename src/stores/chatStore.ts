@@ -10,6 +10,7 @@ import { loadConversationMessages as loadTranscriptMessages } from '@/lib/transc
 import { generateChatTitle, truncateTitle } from '@/lib/titleGen'
 import { pushLaneNote as pushLane, dismissLaneNote as dismissLane } from '@/lib/laneUi'
 import type { LaneNote } from '@/lib/laneUi'
+import type { SessionApprovalMode } from '@/lib/approvalModeUi'
 
 // ---------------------------------------------------------------------------
 // 防御性持久化（2026-08-13 事故修复）
@@ -371,6 +372,11 @@ interface ChatState {
   // 压缩进行中标志（S5 ②-02）—— per-conversation, runtime-only (not persisted)
   compactingBySession: Record<string, boolean>
 
+  // 审批放行档位（2026-09-12）——per-conversation，**权威来源是桥**（approval-mode-changed
+  // 上报什么就存什么）。运行时瞬态不持久化：临时覆盖仅内存，应用重启即回落全局档，
+  // 这正是用户要的语义（状态栏改的是本会话，设置页改的才是全局）。
+  sessionApprovalModes: Record<string, SessionApprovalMode>
+
   // 子 agent 任务（二级面板数据源，运行时瞬态不持久化）
   subAgentTasks: Record<string, SubAgentTask[]>
 
@@ -378,6 +384,10 @@ interface ChatState {
   laneNotesBySession: Record<string, LaneNote[]>
 
   // Actions
+  /** 写入桥上报的会话档位；report=null → 删除该会话记录（回落全局档）。
+   *  只由 bridge 事件驱动（approval-mode-changed），**不做本地乐观写**：
+   *  单权威来源，避免"界面显示 bypass、内核其实还在 loose"的错位。 */
+  setSessionApprovalMode: (id: string, report: SessionApprovalMode | null) => void
   // mode 缺省 'task'（全工具现状）；'chat' = 纯聊受限会话（禁本地工具，不绑业务 cwd）
   createConversation: (cwd?: string, agentId?: string, mode?: 'chat' | 'task') => string
   deleteConversation: (id: string) => void
@@ -430,6 +440,7 @@ interface ChatState {
   addPermissionRequest: (request: PermissionRequest) => void
   resolvePermission: (id: string, approved: boolean) => void
   clearPermissions: () => void
+  clearPermissionsForSession: (sessionId: string) => void
 
   addBackgroundTask: (task: BackgroundTask) => void
   updateBackgroundTask: (id: string, updates: Partial<BackgroundTask>) => void
@@ -475,6 +486,7 @@ export const useChatStore = create<ChatState>()(
       conversationProgress: {},
       loopStates: {},
       compactingBySession: {},
+      sessionApprovalModes: {},
       subAgentTasks: {},
       laneNotesBySession: {},
 
@@ -535,7 +547,10 @@ export const useChatStore = create<ChatState>()(
           delete compactingBySession[id]
           const subAgentTasks = { ...state.subAgentTasks }
           delete subAgentTasks[id]
-          return { conversations: filtered, activeConversationId: nextActive, conversationProgress, loopStates, compactingBySession, subAgentTasks }
+          // 会话级审批覆盖随会话一起消失（内核进程也随会话关闭，桥侧同步清理）
+          const sessionApprovalModes = { ...state.sessionApprovalModes }
+          delete sessionApprovalModes[id]
+          return { conversations: filtered, activeConversationId: nextActive, conversationProgress, loopStates, compactingBySession, subAgentTasks, sessionApprovalModes }
         })
       },
 
@@ -1161,6 +1176,12 @@ export const useChatStore = create<ChatState>()(
         }))
       },
       clearPermissions: () => set({ pendingPermissions: [] }),
+      // 内核进程终止/取消时的定向清理（T8，2026-09-12）：pendingPermissions 是不
+      // 分会话的扁平数组，整表清空会误伤其它仍在跑的会话——那条会话的审批弹窗会
+      // 凭空消失、其内核随后等满审批超时才回填，用户以为"点了没反应"。
+      clearPermissionsForSession: (sessionId) => set(state => ({
+        pendingPermissions: state.pendingPermissions.filter(p => p.sessionId !== sessionId),
+      })),
 
       addBackgroundTask: (task) => {
         set(state => ({ backgroundTasks: [...state.backgroundTasks, task] }))
@@ -1234,6 +1255,19 @@ export const useChatStore = create<ChatState>()(
         delete next[id]
         return { loopStates: next }
       }),
+      setSessionApprovalMode: (id, report) => set(state => {
+        const cur = state.sessionApprovalModes[id]
+        if (report === null) {
+          if (!cur) return {}
+          const next = { ...state.sessionApprovalModes }
+          delete next[id]
+          return { sessionApprovalModes: next }
+        }
+        // 幂等：同值短路（避免每帧上报产生新引用 → 状态栏无谓重渲染）
+        if (cur && cur.mode === report.mode && cur.override === report.override) return {}
+        return { sessionApprovalModes: { ...state.sessionApprovalModes, [id]: report } }
+      }),
+
       setCompacting: (id, value) => set(state => {
         // 幂等：同值短路不动作（start 已 true 不重置、done 非 true 不写），
         // 也避免同值重写产生新引用触发无关重渲染

@@ -62,14 +62,33 @@ const CASES = [
   },
 ]
 
+// ---- 等待态常显条用例（T8，2026-09-12 卡在思考界面事故）----
+// 验的是本次事故的**直接现象**：内核静默时 UI 只有静态「思考中…」。旧出口
+//（RightStatusRail）限 task 模式、默认折叠、秒数只在 hover tooltip 里。
+const GREEN_HEALTH = { ...pressure('green'), distortion: dist('green', []) }
+const WAIT_CASES = [
+  { key: 'wait-firstbyte', desc: '首字节等待 5s → 常显条带秒数（无需 hover）', wait: { firstByteMs: 5000 } },
+  { key: 'wait-stall', desc: '内核失速 96s → 告警色 + 秒数', wait: { stallMs: 96_000 } },
+  { key: 'wait-approval', desc: '等审批 → 常显且不带秒数（等的是人）；他会话审批不得串台', wait: { approval: true } },
+  { key: 'wait-question', desc: '等回答 → 常显且不带秒数', wait: { question: true } },
+  { key: 'wait-compact', desc: '压缩中 → 常显（无时间基准故无秒数）', wait: { compacting: true } },
+  { key: 'wait-none', desc: '无等待态 → 不占位（元素不存在）', wait: {} },
+  { key: 'wait-priority', desc: '多态并存 → 只出优先级最高的一条（失速 > 首字节）', wait: { stallMs: 96_000, firstByteMs: 5000 } },
+  { key: 'wait-after-close', desc: '内核已死复位 → 等待条/提问卡/审批弹窗不得残留', wait: { firstByteMs: 5000, question: true, approval: true }, clearFirst: true },
+]
+for (const c of WAIT_CASES) CASES.push({ ...c, health: GREEN_HEALTH })
+
 // ---- 生成 harness（真组件 + 真 store，按键位夹具渲染） ----
 const harness = `
 import { createRoot } from 'react-dom/client'
 import { HealthMeter } from '@/components/chat/HealthMeter'
 import { HealthSuggestCard } from '@/components/chat/HealthSuggestCard'
 import { HealthGlow } from '@/components/chat/HealthGlow'
+import { WaitStatusBar } from '@/components/chat/WaitStatusBar'
 import { TooltipProvider } from '@/components/ui'
 import { useHealthStore } from '@/stores/healthStore'
+import { useUIStore } from '@/stores/uiStore'
+import { useChatStore } from '@/stores/chatStore'
 
 // 主题类挂在 <html> 上（themes.css 的 .theme-dark 等定义 --health-tier-* 等令牌），
 // 不设主题则所有主题变量未定义 → 颜色解析为透明、泛光 box-shadow 失效（测量假阴性）。
@@ -88,10 +107,32 @@ window.__render = (i) => {
     distortionShownIdsBySession: { c1: fx.shownIds || [] },
     dismissedDistortionUntilBySession: {},
   })
+  // 等待态夹具（T8）：字段缺省即"无等待"。审批刻意混入一个他会话的条目，
+  // 验"按 sessionId 过滤"——A 会话的审批不得在 B 会话显示。
+  const w = fx.wait || {}
+  useUIStore.setState({
+    kernelStalls: w.stallMs ? { c1: w.stallMs } : {},
+    firstByteWait: w.firstByteMs ? { c1: w.firstByteMs } : {},
+  })
+  useChatStore.setState({
+    pendingPermissions: w.approval
+      ? [
+          { id: 'p1', sessionId: 'c1', action: 'bash', target: 'rm -rf /tmp/x', risk: 'high', timestamp: 0 },
+          { id: 'p2', sessionId: 'other', action: 'bash', target: 'ls', risk: 'low', timestamp: 0 },
+        ]
+      : [],
+    pendingQuestions: w.question ? { c1: { context: '', questions: [] } } : {},
+    compactingBySession: w.compacting ? { c1: true } : {},
+  })
   root.render(
     // 与真实应用一致：Tooltip 必须在 TooltipProvider 内（App.tsx 根部提供）。
     // 卡片是 absolute bottom-full（悬浮在输入框上方）→ 外层留出上方空间，否则截图拍到视口外。
     <TooltipProvider>
+      {/* 等待态常显条（T8）：真实应用里内联在消息滚动区与输入区之间（不悬浮不遮挡）。
+          放最上方是为了截图取得到——放底部会被视口切掉。 */}
+      <div style={{ width: 800, marginLeft: 40, marginTop: 12, background: 'var(--bg-primary)' }}>
+        <WaitStatusBar conversationId="c1" />
+      </div>
       <div className="relative" style={{ width: 800, height: 200, marginTop: 300, marginLeft: 40 }}>
         <HealthGlow conversationId="c1" />
         <HealthMeter conversationId="c1" />
@@ -99,6 +140,15 @@ window.__render = (i) => {
       </div>
     </TooltipProvider>,
   )
+}
+
+// 内核已死路径的镜像复位（与 useYFWCLI.clearSessionWaitState 的四步一致）：
+// 用于验"内核被杀后等待条/提问卡/审批弹窗不得残留"。
+window.__clearWait = () => {
+  useUIStore.getState().clearKernelStall('c1')
+  useUIStore.getState().clearFirstByteWait('c1')
+  useChatStore.getState().clearPendingQuestion('c1')
+  useChatStore.getState().clearPermissionsForSession('c1')
 }
 window.__render(0)
 `
@@ -111,7 +161,7 @@ const RESULT_FILE = ${JSON.stringify(join(TMP, 'result.json'))}
 const SHOT_DIR = ${JSON.stringify(SHOT_DIR)}
 const shotFiles = []
 let shotErr = null
-const FX = ${JSON.stringify(CASES.map((c) => ({ key: c.key })))}
+const FX = ${JSON.stringify(CASES.map((c) => ({ key: c.key, clearFirst: !!c.clearFirst })))}
 
 const EXTRACT = \`(() => {
   const fill = document.querySelector('.health-meter-fill')
@@ -126,6 +176,16 @@ const EXTRACT = \`(() => {
     text: document.body.innerText,
     buttons: [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim()).filter(Boolean),
     hasGlow: !!glow,
+    // 等待态常显条（T8）：kind 取 data-wait-kind；visible 按 boundingRect 判定
+    //（"无需 hover 即可见"正是本次事故的验收点——旧出口的秒数只在 tooltip 里）
+    waitKind: (() => { const el = document.querySelector('[data-wait-kind]'); return el ? el.getAttribute('data-wait-kind') : null })(),
+    waitText: (() => { const el = document.querySelector('[data-wait-kind]'); return el ? (el.textContent || '').trim() : '' })(),
+    waitVisible: (() => {
+      const el = document.querySelector('[data-wait-kind]')
+      if (!el) return false
+      const r = el.getBoundingClientRect()
+      return r.width > 0 && r.height > 0
+    })(),
     // 复发提示（"锚定未根治"）：按可见文本判定，不依赖具体文案
     recurredNotice: /再次出现|came back/.test(document.body.innerText),
     htmlLen: document.getElementById('root').innerHTML.length,
@@ -143,6 +203,16 @@ app.whenReady().then(async () => {
     await win.webContents.executeJavaScript('window.__render(' + i + ')')
     await win.webContents.executeJavaScript('new Promise(r => setTimeout(() => r(1), 300))')
     const data = await win.webContents.executeJavaScript(EXTRACT)
+    // clearFirst 用例：先量"有等待"（waitKind 非 null），再走内核已死路径的复位，
+    // 再量一次——用于验"内核被杀后等待条不得残留"。
+    if (FX[i].clearFirst) {
+      await win.webContents.executeJavaScript('window.__clearWait()')
+      await win.webContents.executeJavaScript('new Promise(r => setTimeout(() => r(1), 250))')
+      const after = await win.webContents.executeJavaScript(EXTRACT)
+      data.waitKindAfterClear = after.waitKind
+      data.waitKindBeforeClear = data.waitKind
+    }
+
     // 截图留证（人工眼见为实）：release/_gui-fidelity-shots/<key>.png
     try {
       const img = await win.webContents.capturePage()
@@ -164,7 +234,7 @@ app.whenReady().then(async () => {
 writeFileSync(join(TMP, 'harness.tsx'), harness)
 writeFileSync(join(TMP, 'main.cjs'), mainCjs)
 // 夹具经脚本全局注入（页内切换，避免 file:// query 体积限制）
-writeFileSync(join(TMP, 'fixtures.js'), `window.__FIXTURES__ = ${JSON.stringify(CASES.map((c) => ({ health: c.health, shownIds: c.shownIds || [] })))};`)
+writeFileSync(join(TMP, 'fixtures.js'), `window.__FIXTURES__ = ${JSON.stringify(CASES.map((c) => ({ health: c.health, shownIds: c.shownIds || [], wait: c.wait || {} })))};`)
 writeFileSync(join(TMP, 'index.html'), `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="${builtCssPath().replace(/\\/g, '/')}"></head>
 <body style="background: var(--bg-primary)"><div id="root"></div>
@@ -259,6 +329,23 @@ check(B && !B.recurredNotice && A && !A.recurredNotice, '非复发不得显示�
 // 第二次复发：首次与第一次复发的抑制键都已登记 → 仍须提醒（键含复发次数）
 check(F && rowsOf(F.text) === 1, `第二次复发应仍弹卡，实测证据行 ${F ? rowsOf(F.text) : '缺失'}`)
 check(!!F && F.recurredNotice, '第二次复发同样提示"锚定未根治"')
+
+// ---- T8 等待态常显条 ----
+const W1 = byKey['wait-firstbyte'], W2 = byKey['wait-stall'], W3 = byKey['wait-approval']
+const W4 = byKey['wait-question'], W5 = byKey['wait-compact'], W6 = byKey['wait-none']
+const W7 = byKey['wait-priority'], W8 = byKey['wait-after-close']
+// 核心验收：无需 hover 即可见 + 带秒数（旧出口正是"秒数只在 tooltip 里"）
+check(!!W1?.waitVisible, '等待模型时必须常显可见（不得只在 hover tooltip 里），实测 ' + JSON.stringify(W1?.waitText))
+check(!!W1 && W1.waitKind === 'firstByte' && /\d/.test(W1.waitText), `等待模型应显示递增秒数，实测 kind=${W1?.waitKind} text=${W1?.waitText}`)
+check(!!W2 && W2.waitKind === 'stall' && W2.waitVisible && /\d/.test(W2.waitText), `失速应常显且带秒数，实测 kind=${W2?.waitKind} text=${W2?.waitText}`)
+check(!!W3 && W3.waitKind === 'approval' && W3.waitVisible, '等审批应常显可见')
+check(!!W3 && !/\d/.test(W3.waitText), `等审批不得显示秒数（等的是人不是模型），实测 ${W3?.waitText}`)
+check(!!W4 && W4.waitKind === 'question' && W4.waitVisible && !/\d/.test(W4.waitText), `等回答应常显且不带秒数，实测 ${W4?.waitText}`)
+check(!!W5 && W5.waitKind === 'compact' && W5.waitVisible, '压缩指示应常显可见')
+check(W6 && W6.waitKind === null, `无等待态不得渲染等待条（不占位），实测 ${W6?.waitKind}`)
+check(!!W7 && W7.waitKind === 'stall', `多态并存应只出优先级最高的一条，实测 ${W7?.waitKind}`)
+check(!!W8 && W8.waitKindBeforeClear === 'approval' && W8.waitKindAfterClear === null,
+  `内核已死复位后等待条不得残留，实测 before=${W8?.waitKindBeforeClear} after=${W8?.waitKindAfterClear}`)
 
 console.log('\n失真 GUI 渲染验证：')
 for (const r of results) console.log(`  · ${r.key.padEnd(22)} fillBg=${r.fillBg} 证据行=${rowsOf(r.text)} 角标=${/×\s*\d/.test(r.text) ? 'on' : 'off'} 泛光=${r.hasGlow ? 'on' : 'off'} 按钮=[${r.buttons.join(', ')}] rootHtml=${r.htmlLen}`)

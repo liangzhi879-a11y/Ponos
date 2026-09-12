@@ -76,3 +76,24 @@
 **流程教训（已固化为守卫）**：Task 12/14 的"URL 全对齐"核验只做了**计划文本与路由的文字对照**，未把前端每条调用真正打到路由函数上——两个缺陷由此漏过（守卫测试若当时存在会立刻变红）。现已在 `server/workflow-api.test.mjs` 增加 `路由覆盖守卫`：18 条前端调用逐一打到真实路由，任一 404 即失败（破坏性调用排最后，避免自造误报）。
 
 **同时确认的健壮性缺口**：宿主会话是**共享单例**，`HOST_SID` 冲突会静默复用（cosmetic）；`kernel/workflow-dag.mjs` 等模块级可变状态（`setNodeDeps` 已移除）等既往 Minor 项不受影响。
+
+### 调试期缺陷修复（2026-09-12 第二轮，浏览器端到端回归发现）
+
+用户实测补充："创建/保存/运行点了长时间无响应"、**"无法测试，目前没有跑通过"**。本轮改用**真机 UI 回归**（隔离全栈：bridge 51999 + vite 5397 + 最小 Electron 壳 + CDP 脚本化驱动，见 §验证方法），定位到**六个根因**（前三个是"整片 fetch 失败/列表空白"级别）：
+
+| # | 现象 | 根因 | 证据 | 修复 |
+|---|---|---|---|---|
+| 1 | 「信任清单无法写入」，整片 `Failed to fetch` | `bridge.mjs` 的 `OPTIONS` 预检只回 `GET, POST, OPTIONS`；而保存（`PUT /workflows/:id`）、信任清单（`PUT /workflows/bindings`）、删除（`DELETE`）都是带 `application/json` 的**非简单请求**，预检未声明该方法 → **真实请求根本不发出** | 对运行中应用发 `OPTIONS` 实测响应头；curl 与直调路由的单测**都不走预检**，故 52 项自动化全绿仍漏 | 白名单补 `PUT, PATCH, DELETE, OPTIONS`；`auth-preflight.test.mjs` 加预检契约 + 真实 `PUT` 后校验 `_bindings.json` 落盘 |
+| 2 | 创建/保存/运行偶发无响应 | `reapIdleKernels()` 把**常驻宿主 `_wfhost` 当普通会话回收**（宿主不发 `assistant/result`，`_turnActive` 恒 false，"空闲"是常态）；且旧判定 `s._lastOutAt > 0 && …` 在 `_lastOutAt===0`（刚 spawn）时短路为 false，**直接落进回收分支**，冷启动窗口内秒杀 | `/workflows/verify` 偶发「工作流宿主会话已退出」、第二次请求即正常 | 宿主跳过空闲回收；未产出 stdout 的会话按"启动中"豁免；`send()` 对幂等子命令（load/validate/save-raw/list/verify/migrate）在宿主消失时**重建宿主并重试一次**（`run` 不重试）；`ensure()` 清理残留死条目 |
+| 3 | **列表恒显「暂无工作流」**、授权卡「读取信任清单失败：**undefined**」、历史恒空 | 客户端 `call()` 判定含「`body.ok === false` → 失败」，消费方一律 `if (!r.ok)`；而 store 的**纯数据回执没有 ok 字段**（`{workflows,root}` / `{agents,trusted}` / `{runs}`）→ **成功被当失败** | 真机 UI 实测；单测只断言 `body.runs`/`body.trusted`，**从不看 `ok`**，故照不出来 | 路由层 `json()` 助手统一补 `ok:true`（已有 ok 的内核/宿主回执不覆盖）；新增「ok 契约守卫」测试枚举全部 17 条路由断言 **2xx 必带 ok** |
+| 4 | 运行完 `finalOutput: {}`，用户判定为"没跑通" | 内核作用域是 `{inputs, var, <nodeId>: <该节点 output>}`——**节点 id 直接就是输出值**。故 `{{t.output}}` 在输出为标量时解析成 `undefined`，`JSON.stringify` 把该键**整条丢掉**；而画布原提示恰写「{{节点.字段}}」，**诱导**用户写错 | 对照实验：`{{t}}` → `"hello world"` ✅、`{{t.output}}` → 丢键 ❌、`{{inputs.who}}` → `"world"` ✅ | `end` 与 `synthesizeOutput` **保留键并置 `null`** + 收集 `unresolved` 透传到回执/`end` 事件；GUI 三处展示该告警；selector 文案纠正为「写 `{{节点}}` 取整输出 / `{{节点.字段}}` 仅当输出是对象」 |
+| 5 | 运行抽屉永远停在「等待事件…」 | `POST /workflows/run` **同步等待内核跑完才回执**（含完整结果），但前端返回类型只声明 `{runId}`、只取 `runId`，其余全靠 WS 事件流——丢事件即无输出 | 路由与宿主回执实测 | `runWorkflow` 返回类型扩为 `RunResult`；`startRun` 把回执**合成 node/end 事件**补进运行视图（已是终态则不覆盖） |
+| 6 | **打开画布整页白屏**：`(t.triggers \|\| []).join is not a function` | `toModel`（编辑器模型）对顶层 `triggers` **原样透传**，而 `discoverWorkflows`（列表）会归一 → YAML 写裸逗号标量（内置 spec-dev 即如此）时两条路径形状不一致：列表数组、编辑器**字符串**。保存路径 `model.triggers.map` 同样会抛 | `GET /workflows/spec-dev` 实测 `model.triggers` 为 `"spec 开发, spec-dev, …"`（string） | 内核新增 `normalizeTriggers` 单一归一器，三处共用（`normalizeWorkflow` 加载收口 / `toModel` / `serializeWorkflow`）；前端 `asTriggerList` 再兜一层防白屏；两侧加形状契约测试 |
+
+**方法论（本轮最大收获）**：前三个根因**共同的逃逸原因**是"测试不经过真实调用路径"——预检测试不走浏览器、单测直调路由函数、单测只断言字段不看判定键。故新增守卫的核心不是"再写一个测试"，而是**让测试走真实路径**（真机 origin 的预检、枚举全部路由的 ok 契约、把前端每条调用真正打到路由）。真机 UI 回归方法已固化：隔离 bridge（独立端口 + 独立 `YFWORKING_HOME`）+ vite（带 `YFW_BRIDGE_PORT`）+ 最小 Electron 壳（`remote-debugging-port` + 独立 userData）+ CDP 脚本（`ws` 驱动 `Runtime.evaluate`/`Page.captureScreenshot`）。
+
+**本轮同时交付的 UX（用户明确要求）**：元素删除＝框选多选 + 一律二次确认（`describeRemoval` 摊开影响面：连带边/子图成员/他处悬空引用逐条列出）+ 右键菜单（节点/连线/空白三态）+ 删除撤销（快照栈 50 + Ctrl/Cmd+Z，输入框内不接管）；开始/结束＝内联编辑输入参数与返回值 + 变量选择器（仅上游可达）+ 可达性/写法校验（`describeDataFlow`/`detectRefPitfall`）+ 运行前授权卡同时展示输入与"运行结束后返回的键"。
+
+**与 Dify 对照后的已知差异**（未做，待定）：①输出变量无**类型标注**（Dify 支持 string/number/object/array，用作工具返回 schema）；②Dify 禁止多个 Output 节点输出名重复（UI 报 `Output name already exists`），本内核允许多个 `end` 且**同名静默覆盖**，建议在 GUI 校验层禁掉。
+
+**验证**：`kernel-tests/workflow*.test.mjs` 88/88 · `server/*.test.mjs` 236/236 · 前端 `src/lib/*.test.ts` 106/106 · `tsc --noEmit` ✅ · 构建 ✅ · 真机 UI 实测：新建→画布、右键删除→二次确认→撤销恢复、保存（PUT+CORS 实证）、列表 5 条、授权卡、运行 `已完成 2 步` 且输出键保留为 `null`、渲染器 **0 个 fetch 错误**。

@@ -3,6 +3,11 @@
 // EffortLevel 定义在零依赖纯函数模块 src/lib/effortUi.ts；types → lib 单向依赖，
 // effortUi 不 import 本文件，故无循环。
 import type { EffortLevel } from '@/lib/effortUi'
+// 同上：ApprovalMode 在 src/lib/approvalModeUi.ts，LogPolicy/LogLevel 在 src/lib/logUi.ts（均零依赖）。
+import type { ApprovalMode } from '@/lib/approvalModeUi'
+import type { LogPolicy } from '@/lib/logUi'
+
+export type { ApprovalMode, LogPolicy }
 
 // ============================================================
 // Core TypeScript types for YFWorking GUI
@@ -253,11 +258,25 @@ export interface AppSettings {
   streamingEnabled: boolean
 
   // Permission settings
+  /** @deprecated 从未被任何代码写入、也从不发给桥/内核（状态栏那个假徽标读的就是它）。
+   *  权限行为自 2026-09-12 起由 approvalMode 四档统一表达——保留字段只为不炸旧快照。 */
   autoApproveFileRead: boolean
+  /** @deprecated 见 autoApproveFileRead（权限行为已由 approvalMode 接管） */
   autoApproveFileWrite: boolean
+  /** @deprecated 见 autoApproveFileRead（权限行为已由 approvalMode 接管） */
   autoApproveBash: boolean
+  /** @deprecated 见 autoApproveFileRead（权限行为已由 approvalMode 接管） */
   autoApproveWebSearch: boolean
   restrictedDirectories: string[]
+
+  /** 审批放行档位（全局持久化，2026-09-12）：设置页改这里；
+   *  状态栏改的是**本会话临时覆盖**（仅内存，不进持久化）。'loose' = 等价旧行为。
+   *  必填——defaultSettings 恒提供；旧快照缺失时消费点一律 normalizeApprovalMode。 */
+  approvalMode: ApprovalMode
+
+  /** 运行日志本地持久化策略（2026-09-12）：写入端读桥 config.json，
+   *  设置页写这里 + saveBridgeConfig 落盘；旧快照缺失时 normalizeLogPolicyUi 兜底。 */
+  logPolicy: LogPolicy
 
   // YFWorking multi-provider config
   activeProvider: string
@@ -311,8 +330,11 @@ export interface ModelProvider {
   profile?: 'auto' | 'cloud' | 'local'
   /** 采样温度 [0,2]；未设=本地默认 0.6 / 云端 0 */
   temperature?: number
-  /** 单次输出预算（tokens）；未设=本地 16384 / 云端 64000 */
+  /** 单次输出预算（tokens）；未设=本地 16384 / 云端 16384（2026-09-12 起，见 provider-profile） */
   maxOutputTokens?: number
+  /** 单条工具结果字节上限（2026-09-12 四家方案对标：CC 50K 聚合 / pi 50KB / Codex 10K tok）；
+   *  未设=内核默认 20000 字符（落盘+预览替换）。值注入 CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES */
+  toolResultBudgetBytes?: number
   /** 首个内容块前的空闲宽限（ms）；未设=内核默认 300000 */
   firstByteMs?: number
   /** 内容块间空闲判挂起窗口（ms）；未设=内核默认 120000 */
@@ -339,6 +361,11 @@ export interface YFWorkingConfigV2 {
   experienceInjectEnabled?: boolean
   /** 新会话注入个人经验的上限（字符数） */
   experienceInjectMaxBytes?: number
+  /** 审批放行档位（全局，2026-09-12）：bridge 持久化并按此 spawn 内核
+   *  （manual/auto 不传 --dangerously-skip-permissions）；缺省/非法 → bridge 归一为 loose。 */
+  approvalMode?: string
+  /** 运行日志持久化策略（2026-09-12）：bridge 钳制后落盘，写入端（桥/主进程）读同一份。 */
+  logPolicy?: LogPolicy
 }
 
 // --- File System Types ---
@@ -397,6 +424,13 @@ export interface PermissionRequest {
   /** bridge approval 事件携带：用于把审批结果回传内核（approval-response） */
   sessionId?: string
   toolUseId?: string
+  /** 命中灾难级硬黑名单（rm -rf / 等）：四档都问，弹窗须显示灾难级警示条。
+   *  注意：**不是**"拒绝"——用户仍可本次放行（一次性，不记入"总是允许"）。 */
+  hard?: boolean
+  /** 发起本次询问时生效的审批档位（桥上报；用于弹窗显示"当前 X 档"）。 */
+  mode?: ApprovalMode
+  /** 内核给出的询问原因（decision_reason，如 "命中硬黑名单：..."）。 */
+  reason?: string
 }
 
 // --- Experience (个人经验沉积) Types ---

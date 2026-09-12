@@ -112,6 +112,59 @@ test('POST /workflows/run：授权清单透传宿主，未带清单则 400', asy
   } finally { cleanup() }
 })
 
+// —— 异步运行（2026-09-12）——
+// 原实现 POST /workflows/run 同步等待内核跑完（spec-dev 实测 80–110 秒）才回执，界面在等待期
+// 零反馈 → 用户重复点击 → 同一工作流并行多份重跑（实测 20 秒内 3 份）。异步化后本路由只负责
+// **提交**：宿主 startRun 立即回 { runId, status:'running' }，过程走 WS 事件流，终态查 run-status。
+test('POST /workflows/run：异步提交——宿主 startRun 立即回 runId，不等待运行结束', async () => {
+  const { root, runsRoot, host, cleanup } = setup()
+  try {
+    let release = null
+    let seenArgs = null
+    const { out, reply } = mkReply()
+    const slowHost = {
+      ...host,
+      // 后台永不主动 resolve（模拟 spec-dev 这类长跑）：若路由仍在等待运行结果，本测试会超时。
+      startRun: (a) => { release = true; seenArgs = a; return { ok: true, runId: a.runId, status: 'running', started: true } },
+      run: async () => { throw new Error('不应走同步 run（宿主已实现 startRun）') },
+    }
+    const t0 = Date.now()
+    await handleWorkflowRoute({ url: new URL('http://x/workflows/run'), req: reqOf('POST', '/workflows/run'), reply, readJsonBody: async () => ({ id: 'demo', capabilities: { tools: [] }, runId: 'run-mine-1' }), store, host: slowHost, root, runsRoot })
+    assert.equal(out.code, 200)
+    assert.equal(out.body.ok, true)
+    assert.equal(out.body.runId, 'run-mine-1')
+    assert.equal(out.body.status, 'running')
+    assert.equal(release, true)
+    assert.equal(seenArgs.runId, 'run-mine-1', '客户端预生成的 runId 必须透传（前端提交前认领事件归属用）')
+    assert.ok(Date.now() - t0 < 1000, '提交应毫秒级返回，不得等待运行结束')
+  } finally { cleanup() }
+})
+
+test('GET /workflows/run-status：运行中 / 终态 / 未知三态', async () => {
+  const { root, runsRoot, host, cleanup } = setup()
+  try {
+    const running = mkReply()
+    await handleWorkflowRoute({ url: new URL('http://x/workflows/run-status?runId=r1'), req: reqOf('GET', '/workflows/run-status?runId=r1'), reply: running.reply, readJsonBody: async () => ({}), store, host: { ...host, runResult: () => ({ ok: true, runId: 'r1', status: 'running', finished: false }) }, root, runsRoot })
+    assert.equal(running.out.body.finished, false)
+    assert.equal(running.out.body.status, 'running')
+
+    const done = mkReply()
+    await handleWorkflowRoute({ url: new URL('http://x/workflows/run-status?runId=r2'), req: reqOf('GET', '/workflows/run-status?runId=r2'), reply: done.reply, readJsonBody: async () => ({}), store, host: { ...host, runResult: () => ({ ok: true, runId: 'r2', status: 'completed', finished: true, finalOutput: { msg: 'hi' } }) }, root, runsRoot })
+    assert.equal(done.out.body.finished, true)
+    assert.deepEqual(done.out.body.finalOutput, { msg: 'hi' })
+
+    // unknown（宿主重启/超缓存）：2xx 但带 unknown 标记，前端据此停止轮询并提示
+    const unknown = mkReply()
+    await handleWorkflowRoute({ url: new URL('http://x/workflows/run-status?runId=gone'), req: reqOf('GET', '/workflows/run-status?runId=gone'), reply: unknown.reply, readJsonBody: async () => ({}), store, host: { ...host, runResult: () => ({ ok: false, runId: 'gone', unknown: true, error: '未知 runId' }) }, root, runsRoot })
+    assert.equal(unknown.out.body.ok, false)
+    assert.equal(unknown.out.body.unknown, true)
+
+    const noId = mkReply()
+    await handleWorkflowRoute({ url: new URL('http://x/workflows/run-status'), req: reqOf('GET', '/workflows/run-status'), reply: noId.reply, readJsonBody: async () => ({}), store, host, root, runsRoot })
+    assert.equal(noId.out.code, 400, 'runId 必填')
+  } finally { cleanup() }
+})
+
 test('stop / confirm / validate / runs 透传宿主与审计目录', async () => {
   const { root, runsRoot, host, cleanup } = setup()
   try {
@@ -146,7 +199,9 @@ test('GET/PUT /workflows/bindings：信任清单往返', async () => {
   try {
     const empty = mkReply()
     await handleWorkflowRoute({ url: new URL('http://x/workflows/bindings'), req: reqOf('GET', '/workflows/bindings'), reply: empty.reply, readJsonBody: async () => ({}), store, host, root, runsRoot })
-    assert.deepEqual(empty.out.body, { agents: {}, trusted: [] })
+    // ok:true 是契约（2026-09-12）：客户端以 body.ok === false 判失败，成功回执缺 ok 字段时
+    // UI 会走 `if (!r.ok)` 失败分支——实测表现为「列表恒空」+「读取信任清单失败：undefined」。
+    assert.deepEqual(empty.out.body, { ok: true, agents: {}, trusted: [] })
 
     const put = mkReply()
     const payload = { agents: { 'a1': ['demo'] }, trusted: ['demo'] }
@@ -167,7 +222,7 @@ test('GET/PUT /workflows/bindings：信任清单往返', async () => {
     // 405 之后绑定表必须原封不动（非 GET/PUT 不得写盘）
     const after = mkReply()
     await handleWorkflowRoute({ url: new URL('http://x/workflows/bindings'), req: reqOf('GET', '/workflows/bindings'), reply: after.reply, readJsonBody: async () => ({}), store, host, root, runsRoot })
-    assert.deepEqual(after.out.body, payload)
+    assert.deepEqual(after.out.body, { ok: true, ...payload })
   } finally { cleanup() }
 })
 
@@ -367,6 +422,7 @@ test('路由覆盖守卫：workflowApi 的每条调用都不得 404（路径必�
       ['GET', '/workflows/demo/export'],
       ['POST', '/workflows/import'],
       ['POST', '/workflows/run'],
+      ['GET', '/workflows/run-status?runId=r1'],
       ['POST', '/workflows/stop'],
       ['POST', '/workflows/confirm'],
       ['GET', '/workflows/runs'],
@@ -384,5 +440,51 @@ test('路由覆盖守卫：workflowApi 的每条调用都不得 404（路径必�
       if (out.code === 404) missing.push(`${method} ${path}`)
     }
     assert.deepEqual(missing, [], `以下前端调用无对应路由实现：${missing.join(' | ')}`)
+  } finally { cleanup() }
+})
+
+// —— ok 契约守卫（2026-09-12 实测缺陷）——
+// 客户端 workflowApi.call() 的失败判定是「HTTP 非 2xx」+「body.ok === false」，而消费方写的是
+// `const r = await listWorkflows(); if (!r.ok) …`。于是**成功回执缺 ok 字段**时全部被当成失败：
+//   · GET  /workflows           → { workflows, root }        → 列表恒显「暂无工作流」
+//   · GET  /workflows/bindings  → { agents, trusted }        → 授权卡「读取信任清单失败：undefined」
+//   · GET  /workflows/runs      → { runs }                   → 历史记录恒空
+// 这类缺陷单测此前照不出来（单测直接断言 body.runs/body.trusted 字段，不看 ok）。
+// 这条守卫要求：**所有 2xx 回执都必须带 ok 字段**（true/false 皆可，但不能缺）。
+test('ok 契约守卫：所有 2xx 回执必须带 ok 字段（缺则 UI 判为失败）', async () => {
+  const { root, runsRoot, host, cleanup } = setup()
+  try {
+    store.createWorkflow({ root, id: 'demo', yml: YML })
+    const h = { ...host, send: async () => ({ ok: true, lines: 1 }), runResult: () => ({ ok: true, runId: 'r1', status: 'completed', finished: true }) }
+    const callers = [
+      ['GET', '/workflows'],
+      ['GET', '/workflows/demo'],
+      ['PUT', '/workflows/demo'],
+      ['POST', '/workflows'],
+      ['POST', '/workflows/demo/duplicate'],
+      ['GET', '/workflows/demo/validate'],
+      ['GET', '/workflows/demo/versions'],
+      ['POST', '/workflows/demo/rollback'],
+      ['GET', '/workflows/demo/export'],
+      ['POST', '/workflows/import'],
+      ['POST', '/workflows/run'],
+      ['GET', '/workflows/run-status?runId=r1'],
+      ['POST', '/workflows/stop'],
+      ['POST', '/workflows/confirm'],
+      ['GET', '/workflows/runs'],
+      ['GET', '/workflows/verify'],
+      ['GET', '/workflows/bindings'],
+      ['PUT', '/workflows/bindings'],
+    ]
+    const offending = []
+    for (const [method, path] of callers) {
+      const { out, reply } = mkReply()
+      const body = { capabilities: { tools: [] }, path: join(runsRoot, 'demo', 'x.jsonl'), ts: '2026-01-01T00-00-00-000Z', bundle: {}, toId: 'copy', runId: 'r1', node: 'n', action: 'approved', auditPath: join(runsRoot, 'demo', 'x.jsonl') }
+      await handleWorkflowRoute({ url: new URL('http://x' + path + (path === '/workflows/verify' ? `?path=${encodeURIComponent(body.path)}` : '')), req: reqOf(method, path, method === 'GET' ? undefined : body), reply, readJsonBody: async () => body, store, host: h, root, runsRoot })
+      if (out.code >= 200 && out.code < 300 && out.body && typeof out.body === 'object' && out.body.ok === undefined) {
+        offending.push(`${method} ${path} → ${JSON.stringify(out.body).slice(0, 60)}`)
+      }
+    }
+    assert.deepEqual(offending, [], `以下 2xx 回执缺 ok 字段（UI 会当失败处理）：\n${offending.join('\n')}`)
   } finally { cleanup() }
 })

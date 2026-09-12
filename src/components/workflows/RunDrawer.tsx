@@ -71,10 +71,13 @@ export interface RunView {
   pending: { node: string; message: string; timeoutMs?: number } | null
   error: string
   started: boolean
+  /** 取值失败的返回值（内核 unresolved：selector 解析不到值，该键为 null）。
+   *  必须显式展示——它正是"跑完了但输出是空/{}"的可见化（2026-09-12 实测：静默丢键导致无从自查）。 */
+  unresolved: string[]
 }
 
 export function emptyRunView(): RunView {
-  return { phase: 'idle', steps: [], stepCount: 0, nodeStatus: {}, edgeState: {}, pending: null, error: '', started: false }
+  return { phase: 'idle', steps: [], stepCount: 0, nodeStatus: {}, edgeState: {}, pending: null, error: '', started: false, unresolved: [] }
 }
 
 /**
@@ -137,6 +140,7 @@ export function applyRunEvent(s: RunView, ev: WorkflowRunEvent, edgeTargets: Rec
       ...s, phase, pending: null,
       stepCount: typeof ev.steps === 'number' ? ev.steps : s.steps.length,
       ...(ev.error ? { error: String(ev.error) } : {}),
+      ...(Array.isArray(ev.unresolved) ? { unresolved: ev.unresolved.map(String) } : {}),
     }
   }
   return s
@@ -151,6 +155,9 @@ export function reduceRunEvents(events: readonly WorkflowRunEvent[], edgeTargets
 
 /** 相态中文名（面板顶部徽标与抽屉共用，避免两处文案漂移） */
 export const RUN_PHASE_TEXT: Record<RunPhase, string> = { idle: '未开始', running: '运行中', completed: '已完成', failed: '失败', cancelled: '已停止' }
+
+/** 终态判定（面板/抽屉共用）：终态后不再接受兜底轮询覆盖，也不再重复合成结束事件 */
+export const isTerminalPhase = (p: RunPhase) => p === 'completed' || p === 'failed' || p === 'cancelled'
 const PHASE_TONE: Record<RunPhase, string> = {
   idle: 'text-tertiary', running: 'text-brand-500', completed: 'text-success', failed: 'text-error', cancelled: 'text-warning',
 }
@@ -223,6 +230,16 @@ export function RunDrawer({ open, runId, workflowId, workflowName, events = [], 
           </div>
 
           {view.error && <div className="text-[11px] text-error break-all">{view.error}</div>}
+
+          {/* 取值失败的返回值：这是"跑完了但输出为空"的第一手线索（键已保留为 null） */}
+          {view.unresolved.length > 0 && (
+            <div className="text-[11px] text-warning break-all">
+              有 {view.unresolved.length} 个返回值取不到值（已是 null）：{view.unresolved.join('、')}
+              <div className="text-[10px] text-tertiary">
+                节点作用域里 <span className="font-mono">{'{{节点id}}'}</span> 就是该节点的输出本身；仅当输出是对象时才用 <span className="font-mono">{'{{节点id.字段}}'}</span>。
+              </div>
+            </div>
+          )}
 
           {view.pending && (
             <ConfirmCard

@@ -39,6 +39,14 @@ const LOCAL_DEFAULTS = {
   // 看门狗窗口不设：内核默认 300s/120s 已按本地 27B prefill 实测标定（engine.mjs）
 }
 
+// 云端画像默认值（2026-09-12 四家方案对标：CC 默认 8K+升档重试 / pi 默认 16K /
+// deepseek-harness 官方警告"大输出预算按预分配占用上下文、拖慢 TTFT"）。
+// 旧行为：云端不产出任何键 → 内核默认 64000。实测 p99 单轮输出远小于 64K，
+// 64K 预留在 DeepSeek 端点上是纯拖累；截断后用户可发「继续」接续，无损。
+const CLOUD_DEFAULTS = {
+  CLAUDE_CODE_MAX_OUTPUT_TOKENS: '16384', // 单轮 16K（pi 默认档）；显式 maxOutputTokens 优先
+}
+
 const PRIVATE_NET_RE = /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|localhost$|\[?::1\]?$)/i
 const CLOUD_DOMAIN_RE = /(^|\.)(deepseek\.com|minimaxi\.com|anthropic\.com)$/i
 const PUBLIC_IP_RE = /^\d{1,3}(\.\d{1,3}){3}$/
@@ -85,6 +93,10 @@ export function providerProfileEnv(provider = {}, { env = {} } = {}) {
     for (const [k, v] of Object.entries(LOCAL_DEFAULTS)) {
       if (env[k] === undefined) out[k] = v
     }
+  } else {
+    for (const [k, v] of Object.entries(CLOUD_DEFAULTS)) {
+      if (env[k] === undefined) out[k] = v
+    }
   }
   // 显式覆盖字段：任何画像生效（数值非法跳过并告警，宁缺勿崩）
   const t = provider.temperature
@@ -98,6 +110,12 @@ export function providerProfileEnv(provider = {}, { env = {} } = {}) {
     const n = numOrNull(m, { min: 1 })
     if (n === null) console.warn('[provider-profile] invalid maxOutputTokens, skipped:', m)
     else if (env.CLAUDE_CODE_MAX_OUTPUT_TOKENS === undefined) out.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(Math.floor(n))
+  }
+  const tb = provider.toolResultBudgetBytes
+  if (tb !== undefined && tb !== null && tb !== '') {
+    const n = numOrNull(tb, { min: 1000 })
+    if (n === null) console.warn('[provider-profile] invalid toolResultBudgetBytes, skipped:', tb)
+    else if (env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES === undefined) out.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES = String(Math.floor(n))
   }
   const f = provider.firstByteMs
   if (f !== undefined && f !== null && f !== '') {
