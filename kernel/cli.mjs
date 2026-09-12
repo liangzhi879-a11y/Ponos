@@ -374,12 +374,20 @@ export async function main(argv) {
   // workflow 命令执行中标志：stdin EOF 时等待其完成（真实 API llm 调用耗时秒级）
   let wfBusy = 0
 
+  // AS2（2026-09-12）：技能 id 表有两个下游消费点，均在引擎启动后才求值——
+  //   ① 子 lane 提示词补技能目录（engine 的 spawnSubAgent，lane 此前无清单只能猜 id）；
+  //   ② agent 引用未知技能的诊断（engine 的 warnUnknownAgentRefs，此前 opts.skillIds
+  //      恒缺省 ⇒ 该诊断永不触发，悬空技能引用静默通过）。
+  // 故先声明同一数组引用、由下方发现循环就地填充（引用共享，无需重建引擎）。
+  const skills = []
+  const skillIds = []
   const engine = createEngine({
     opts: {
       model: args.model,
       configDir,
       addDirs: args.addDirs,
       skillsDirs: skillRoots,
+      skillIds,
       systemPrompt: '', // 占位，下面三层组装后覆盖
       verbose: args.verbose,
       skipPermissions: args.skipPermissions,
@@ -436,11 +444,10 @@ export async function main(argv) {
   for (const dir of workflowRoots) wfEngine.addRoot(dir)
   // P4-4：技能发现内核化——每个技能根扫描（技能根目录命中 SKILL.md；项目目录为空集）。
   // P10-A：roots = skillRoots（显式 --skills-dir > addDirs 叠加默认 <configDir>/skills）
-  const skills = []
   const seenSkillIds = new Set()
   for (const dir of skillRoots) {
     for (const s of discoverSkills({ root: dir })) {
-      if (!seenSkillIds.has(s.id)) { seenSkillIds.add(s.id); skills.push(s) }
+      if (!seenSkillIds.has(s.id)) { seenSkillIds.add(s.id); skills.push(s); skillIds.push(s.id) }
     }
   }
   // SV1 技能版本守卫：<configDir>/skills.lock.json 存在时校验当前技能表 id/version。

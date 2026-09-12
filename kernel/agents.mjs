@@ -25,7 +25,7 @@ export const BUILTIN_AGENTS = [
     id: 'general-purpose',
     name: 'general-purpose',
     description: '通用子任务执行：当任务可独立委派、需多步研究、或需与主任务并行处理时使用；具备全部基础工具',
-    tools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebFetch', 'TodoWrite'],
+    tools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebFetch', 'TodoWrite', 'Skill'],
     model: '',
     systemPrompt: [
       '你是 Ponos 的子 Agent（general-purpose），由主 Agent 委派执行独立子任务。',
@@ -37,7 +37,7 @@ export const BUILTIN_AGENTS = [
     id: 'researcher',
     name: 'researcher',
     description: '调查与研究类任务：当任务需要检索文件、阅读资料、汇总多方信息时使用',
-    tools: ['Bash', 'Read', 'Glob', 'Grep', 'WebFetch'],
+    tools: ['Bash', 'Read', 'Glob', 'Grep', 'WebFetch', 'Skill'],
     model: '',
     systemPrompt: [
       '你是 Ponos 的子 Agent（researcher），负责调查与资料汇总。',
@@ -50,7 +50,7 @@ export const BUILTIN_AGENTS = [
     id: 'implementer',
     name: 'implementer',
     description: '实现者：按任务说明实现代码/文件改动（可写文件，禁止嵌套派发子 Agent）',
-    tools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TodoWrite', 'WebFetch'],
+    tools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TodoWrite', 'WebFetch', 'Skill'],
     disallowedTools: ['Agent', 'Task'],
     model: '',
     systemPrompt: [
@@ -64,7 +64,7 @@ export const BUILTIN_AGENTS = [
     id: 'reviewer',
     name: 'reviewer',
     description: '审查者：只读审查刚完成的实现是否符合 spec 与质量标准，输出问题清单（不改文件）',
-    tools: ['Read', 'Glob', 'Grep', 'Bash', 'WebFetch'],
+    tools: ['Read', 'Glob', 'Grep', 'Bash', 'WebFetch', 'Skill'],
     disallowedTools: ['Write', 'Edit', 'Agent', 'Task', 'TodoWrite'],
     model: '',
     systemPrompt: [
@@ -78,7 +78,7 @@ export const BUILTIN_AGENTS = [
     id: 'explorer',
     name: 'explorer',
     description: '探索者：只读研究/信息收集，产结构化的调查结论，不改任何文件',
-    tools: ['Read', 'Glob', 'Grep', 'Bash', 'WebFetch'],
+    tools: ['Read', 'Glob', 'Grep', 'Bash', 'WebFetch', 'Skill'],
     disallowedTools: ['Write', 'Edit', 'Agent', 'Task', 'TodoWrite'],
     model: '',
     systemPrompt: [
@@ -91,7 +91,7 @@ export const BUILTIN_AGENTS = [
     id: 'planner',
     name: 'planner',
     description: '规划者：只读分析需求并产实现计划（bite-sized 步骤 + 每步验证方式），不改文件',
-    tools: ['Read', 'Glob', 'Grep', 'Bash', 'WebFetch'],
+    tools: ['Read', 'Glob', 'Grep', 'Bash', 'WebFetch', 'Skill'],
     disallowedTools: ['Write', 'Edit', 'Agent', 'Task', 'TodoWrite'],
     model: '',
     systemPrompt: [

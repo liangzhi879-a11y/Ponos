@@ -181,3 +181,17 @@ export function composeSystemPrompt({ toolNames, agents, subagents = [], append 
   if (append && append.trim()) parts.push(append.trim())
   return parts.join('\n\n')
 }
+
+// 子 lane 系统提示词补齐技能目录（2026-09-12 AS2）。
+// 病灶：lane 的 system prompt 此前只有 agent 正文（engine 的 spawnSubAgent），**没有技能
+// 清单**；而 Skill 工具的 schema 却写着"技能名（与提示词【可用技能】清单中的 id 一致）"
+// ⇒ 子 Agent 无从得知合法 id，只能猜，猜错还会被 allowedSkills 白名单拒绝（engine 的
+// lane 工具边界）——"清单存在但子代理不可用"的断裂点。
+// 口径：agent 自带 skills 白名单时只列白名单（与拒绝闸同源，避免列出必被拒的 id）；
+// 否则列主会话技能全表 id。两者皆空 → 原样返回（不引入空标题行）。
+export function withLaneSkillCatalog(sysPrompt, { agentSkills = [], skillIds = [] } = {}) {
+  const declared = Array.isArray(agentSkills) ? agentSkills.filter(Boolean) : []
+  const ids = declared.length ? declared : (Array.isArray(skillIds) ? skillIds.filter(Boolean) : [])
+  if (!ids.length) return sysPrompt
+  return `${sysPrompt}\n可用技能（Skill 工具，skill 参数填 id）：${ids.join('、')}`
+}

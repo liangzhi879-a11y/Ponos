@@ -18,6 +18,7 @@ import { countCjk, estimateRequest, estimateMessage, clampOutputBudgetForWindow,
 import { costOf } from './cost.mjs'
 import { decideToolPermission } from './permissions.mjs'
 import { normalizeApprovalMode, deriveApprovalMode } from './approval-mode.mjs'
+import { withLaneSkillCatalog } from './prompt.mjs'
 import { createToolRegistry, killActiveChildren } from './tools.mjs'
 import { createSessionStore, newSessionId, sanitizeSegment } from './session.mjs'
 import { resolveAgent, resolveAgents } from './agents.mjs'
@@ -2350,7 +2351,12 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     }
     // 子任务指令入子 lane（子循环 deriveMessages 的起点；与主 runTurn appendUser 对齐）
     laneStore.appendUser(prompt)
-    const sysPrompt = agent.systemPrompt || `你是 Ponos 的子 Agent「${agent.name}」：${agent.description}。使用简体中文。`
+    // AS2（2026-09-12）：lane 提示词补齐技能目录——Skill 工具 schema 声明 id 与
+    // 【可用技能】清单一致，而 lane 此前只有 agent 正文（子 Agent 只能猜 id）。
+    const sysPrompt = withLaneSkillCatalog(
+      agent.systemPrompt || `你是 Ponos 的子 Agent「${agent.name}」：${agent.description}。使用简体中文。`,
+      { agentSkills: agent.skills, skillIds: opts.skillIds },
+    )
     const subController = new AbortController()
     const t0 = Date.now()
     const writePaths = []

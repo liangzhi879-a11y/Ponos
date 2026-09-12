@@ -275,6 +275,20 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // 系统提示探针（2026-09-12 lane 技能目录测试）：PONOS_MOCK_SYS_PROBE=<needle> →
+  // 请求内 system 条目含该子串则回 SYS_PROBE:1，否则回 SYS_PROBE:0。系统提示不落盘
+  // （transcript 只有 user/assistant），这是唯一能端到端断言"系统提示真进了请求"的口子。
+  if (process.env.PONOS_MOCK_SYS_PROBE) {
+    const needle = process.env.PONOS_MOCK_SYS_PROBE
+    const sysText = (messages || [])
+      .filter((m) => m?.role === 'system')
+      .map((m) => (typeof m.content === 'string' ? m.content : (m.content || []).map((b) => b?.text || '').join('')))
+      .join('\n')
+    if (signal?.aborted) throw abortError()
+    yield* streamText(sysText.includes(needle) ? 'SYS_PROBE:1' : 'SYS_PROBE:0', signal)
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // 输出截断自愈模拟（2026-09-12 engine-continue-heal 测试）：PONOS_MOCK_TRUNCATE_CONT=1 →
   // 历史无续写指令时产出部分文本 + max_tokens 截断 stop_reason；续写指令出现后产出
   // 剩余文本 + 正常收尾。调用次数写 PONOS_MOCK_TRUNCATE_CONT_N 供断言有界。
