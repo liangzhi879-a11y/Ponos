@@ -54,6 +54,12 @@ const CASES = [
     // 模拟"用户已处理过该证据"：首次抑制键已登记（复发态用 #recurred 键，故仍应弹卡）
     shownIds: ['c:stale_ref:1'],
   },
+  {
+    key: 'recurred-twice-distortion', desc: '第二次复发（首次+第一次复发都处理过 → 仍应提醒）',
+    health: { ...pressure('green'), distortion: dist('red', [{ ...issue(1, 'coherence', 'stale_ref', 'strong'), recurred: true, recurredCount: 2 }]) },
+    // 首次与第一次复发的键都已登记：抑制键须含次数（#recurred2）才能再提醒
+    shownIds: ['c:stale_ref:1', 'c:stale_ref:1#recurred1'],
+  },
 ]
 
 // ---- 生成 harness（真组件 + 真 store，按键位夹具渲染） ----
@@ -227,7 +233,7 @@ const rowsOf = (text) => (String(text).match(/第 \d+ 轮 ·/g) || []).length
 const REANCHOR = '重新锚定'
 const NEW_SESSION = '新建会话'
 
-const A = byKey['red-distortion'], B = byKey['amber-distortion'], C = byKey['red-pressure-only'], D = byKey['legacy-no-distortion'], E = byKey['recurred-distortion']
+const A = byKey['red-distortion'], B = byKey['amber-distortion'], C = byKey['red-pressure-only'], D = byKey['legacy-no-distortion'], E = byKey['recurred-distortion'], F = byKey['recurred-twice-distortion']
 
 check(!!A?.hasMeter && !!D?.hasMeter, '血条应始终渲染（两个被测量中它是常驻仪表）')
 check(A && rowsOf(A.text) === 3, `失真红应逐条列出 3 条证据，实测 ${A ? rowsOf(A.text) : '缺失'}`)
@@ -250,6 +256,9 @@ check(E && rowsOf(E.text) === 1, `同源复发应重现卡片，实测证据行 
 check(E && E.buttons.some((b) => b.includes(REANCHOR)) && E.buttons.some((b) => b.includes(NEW_SESSION)), '复发卡片应仍提供两级动作')
 check(!!E && E.recurredNotice, '复发卡片应显示"锚定未根治"提示')
 check(B && !B.recurredNotice && A && !A.recurredNotice, '非复发不得显示复发提示')
+// 第二次复发：首次与第一次复发的抑制键都已登记 → 仍须提醒（键含复发次数）
+check(F && rowsOf(F.text) === 1, `第二次复发应仍弹卡，实测证据行 ${F ? rowsOf(F.text) : '缺失'}`)
+check(!!F && F.recurredNotice, '第二次复发同样提示"锚定未根治"')
 
 console.log('\n失真 GUI 渲染验证：')
 for (const r of results) console.log(`  · ${r.key.padEnd(22)} fillBg=${r.fillBg} 证据行=${rowsOf(r.text)} 角标=${/×\s*\d/.test(r.text) ? 'on' : 'off'} 泛光=${r.hasGlow ? 'on' : 'off'} 按钮=[${r.buttons.join(', ')}] rootHtml=${r.htmlLen}`)
