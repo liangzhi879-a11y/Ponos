@@ -299,3 +299,70 @@ electron/main.cjs ──spawn──► node server/bridge.mjs ──spawn──�
 **生效范围**：同 §8.9——只对**新内核进程**生效；用户正在运行的会话内存中仍是切帧版内核，需新开会话或等其结束。
 
 **仍在本批内未做（待用户确认后动）**：① 审批/提问与会话进度不同步的系统修复（见 §8.11 待补：桥侧 `_pendingApprovals` 无"内核已放弃"清理、重连重放已过期审批、弹窗不看 sessionId、审批帧同步应用而流式帧 rAF 批处理、`approval-resolved` 回执硬编码 `approved=true` 使日志不能作为批准证据）；② 提问的"停下来等待"语义（**内核当前对 ASK_USER 零感知、零阻塞**，需新增等待语义而非调超时）；③ T8 渲染节流自愈 + dist 同步。
+
+### 8.11 审批/提问与会话进度不一致：三处独立缺陷的收口（2026-09-12 20:25–21:15 本地）
+
+**用户诉求原文**：「agent 发出的审批、选择询问总是与会话进度不一致，导致审批时消息已过期。建议审批和提问交互时停下来等待」。用户选定提问语义 = **内核真阻塞等待（与审批同构）**；构建同步授权 = 「现在就做，我这边可以接受重载」。
+
+排查确认**不是单点 bug**，而是三处各自独立的缺陷叠加。提交 `a26cf74`（分支引用 `wip/approval-question-sync-2026-09-12`）。
+
+#### 8.11.1 内核：提问此前零感知、零阻塞
+
+模型写出提问标记后**继续跑完整个回合**——用户看到卡片时模型早已跑远（"消息已过期"最直接的成因）。而审批侧其实是真阻塞的（600s，全仓无生产覆盖点）⇒ 观感差异全部来自提问侧。
+
+修法（`kernel/engine.mjs`，全部为插入、无删改）：
+- `waitForAnswer()`：挂起 → 作答经 cli **注入当前轮**（`queueNext` → 迭代起点"工具边界吸收"）→ 继续同一步；超时收尾本轮（作答可在下一轮补上，**不注入任何"没人回答"的合成消息**，避免在 transcript 里留假对话）。
+- 挂起点两处：纯文本步 `break` 之前（提问的常见形态）、工具结果落盘后下一轮 API 调用前（边问边做时不得"问题未答就继续推理"）。
+- **本步文本先落盘为独立 assistant 条目再置空**——否则作答后的回复会与问题拼成同一条（截断续写路径的同款陷阱）。
+- `beginAwaitingUser/endAwaitingUser` 配对展期硬看门狗（复用审批既有原语）；`kernel/cli.mjs` 展期窗口取 `max(审批, 提问)`——否则把 `PONOS_ASK_USER_TIMEOUT_MS` 调大于审批窗口时，提问等待会在展期用尽后被 `exit(7)` 误杀。
+- **cli 路由**：挂起期间的作答必须走 `queueNext` 注入当前轮。桥的作答通道写的是**无 priority** 的 user 消息，若照常排队，内核会一直挂到超时——**用户答了却像没答**（实测形态）。
+- kill switch `PONOS_ASK_USER_BLOCK=0`（仅认已闭合标记；本仓文档/代码里的示例标记被模型原样复述时不会误触发——此开关用于证伪）。
+
+#### 8.11.2 桥：审批收口信号此前是**死代码**
+
+`_pendingApprovals` 全代码只有 `approval-response` 一处 `delete`，而旧判据写的是
+`{type:'user',message:{content:[{type:'tool_result'}]}}`——**内核从不产出该形状**：`kernel/protocol.mjs` 的 `wire.toolResult` 写的是**顶层** `{type:'tool_result',tool_use_id,content,is_error}`。⇒ 用户点了审批但内核已超时、工具从未执行、审批帧发给 0 个客户端等情形**全部残留**，残留项又让回收器无条件豁免该会话 ⇒ 内核泄漏（pid 6736 静默 53min / 21196 静默 13min）。
+
+- **B1**：改按协议真信号删除 + `clearSessionAwaiting` + 广播 `approval-expired{reason:'tool-result'}`（必须显式通知，否则用户面对一个"点了没反应"的过期弹窗）。
+- **B2**：重连重放时丢弃年龄 > 阈值的未决项（默认 **630s > 内核 600s 窗口**，`YFW_APPROVAL_STALE_MS` 可调）并解除等待豁免；未过期项透传 `ageMs`（UI 可显示"已等待 N 秒"，不把老弹窗当新请求）。否则用户是在为一条**已死的审批**签字。
+- **B3**：`approval-resolved` 回传**真实** `approved`（旧实现无该字段 ⇒ 渲染侧只能硬编码 `true`，于是那条 `[permission] resolved: … approved` 日志**既不能当批准证据、也无法区分生效/过期 no-op**），未命中挂起项时标记 `stale:true`；落空留 stderr 告警。
+
+#### 8.11.3 渲染侧：卡片"抢跑"与弹窗不分会话
+
+- `useYFWCLI.ts`：`question`/`approval` 帧到达前先 `flushStreamEvents()`。流式帧走 rAF 批量、卡片同步应用 ⇒ 卡片抢在它所属的消息之前出现（观感上即"审批与会话进度不一致"）。
+- `PermissionDialog.tsx`：按**当前会话优先**排序（`find(p => p.sessionId === activeConversationId) ?? [0]`）——**只排序不隐藏**：隐藏会让真正在等的审批找不到人签，内核只能干等到超时，比显示错序更糟。另加并发计数（`pendingOthers`/`pendingOthersCross`，i18n 双语）。
+- `chatStore.ts`：`resolvePermission` 如实记录 `stale`/`expired` 与落空 no-op（此前那条 `undefined undefined` 日志即"id 不在待批表"时的解构产物，被误读为身份丢失）。
+- `approval-expired` 新处理器：收起对应弹窗。
+
+#### 8.11.4 验证与证伪
+
+| 测试 | 覆盖 | 结果 |
+|---|---|---|
+| `kernel-tests/engine-ask-user.test.mjs`（进程级 3 条） | ①提问即挂起（2.5s 内 0 result、进程存活、作答后**恰 1 个** result、transcript 中提问与作答后回复各恰 1 条独立条目）②硬看门狗展期（2s 硬超时 + 20s 提问上限，静默 5s 不 exit(7)）③等待有界（2.5s 上限 → 恰 1 result + 超时日志） | 3/3；`PONOS_ASK_USER_BLOCK=0` 下 ①③ 失败（证伪成立） |
+| `server/approval-lifecycle.test.mjs`（进程级 3 条） | B1 内核回吐 tool_result 即广播 `approval-expired` 且重连不再重放；B2 超阈值项被丢弃 + 日志；B3 真实 `approved` / 未命中标 `stale` | 3/3；**B1 已用旧判据形状证伪**（旧形状下恰好失败在 `approval-expired` 断言） |
+| 回归 | 内核套件 **414 条 / 413 pass / 1 skip / 0 fail**；`npm test`（server+electron+src）**854 条 / 853 pass / 1 skip / 0 fail**；`tsc --noEmit` 无错 | ✅ |
+
+**release 产物验证**：`YFW_TEST_KERNEL_CLI` 指向 `release/YFWorking/kernel/cli.mjs` 重跑提问 3 条 → **3/3**（发布件本身已验证，不只是源码树）。
+
+#### 8.11.5 同步记录（2026-09-12 21:08–21:12 本地）
+
+覆盖前按 memory 约定逐文件重比：`release/` 侧 4 个文件（`kernel/{api,engine,cli}.mjs`、`server/bridge.mjs`）经 `tr -d '\r'` 归一化后**恰等于 `HEAD~1`**（= 我改动前的已提交状态，无第三方内容）⇒ 可安全覆盖；`dist/` 全树 387 个文件仅 `index.html` + `index-*.js` 两处差异。备份 `release/_backup_before_approval-lifecycle_2026-09-12T21-08-52/`（含 MANIFEST.md5；被取代的 `index-h_xIyZCW.js` 一并留档后再删，避免 release 膨胀）。
+
+归一化 md5（LF 口径；release 侧行尾随源：api/engine/bridge 为 CRLF、cli.mjs 为 LF）：
+
+| 文件 | md5 |
+|---|---|
+| `kernel/engine.mjs` | `7115b3927804bd9199112e7c8a3fa945` |
+| `kernel/cli.mjs` | `6e79bc4db3e3d4cb3797402b194a161b` |
+| `server/bridge.mjs` | `dbf4e7ac8879b605c7750955b2bfaf8b` |
+| `dist/index.html` | `7e6911c5afaa5c5297cdff5e75797704` |
+| `dist/assets/index-DIxsOkbl.js` | `7edd34e4e58003ce3bd0ed2fb434b007` |
+
+逐文件校验一致，`node --check` 通过（bridge + 3 个内核文件），`dist` 文件清单两侧一致。未跑 `scripts/package-portable.cjs`。
+
+**生效范围（关键，决定用户要做什么）**
+- **内核改动：新会话即时生效**，无需重启——桥 spawn 的是 `<app>/kernel/cli.mjs` 本体（`findYFWorking` 的候选 2），`~/.yfw/runtime/ponos-kernel/` 只是安装路径缺失时的兜底缓存（候选 3），启动时按**尺寸**刷新。正在运行的会话内存中仍是旧内核。
+- **渲染侧改动：需重载渲染器**（新产物 hash `index-DIxsOkbl.js`，旧 `index-h_xIyZCW.js` 已删）。
+- **桥改动：需重启应用**——桥是长驻进程、启动时载入。
+
+**遗留（未做，归后续）**：`syncDirToMirror` 的比较口径是**仅比尺寸**（等长改动不会刷新镜像缓存；本轮三文件长度均变化故未受影响）——应改为尺寸+哈希，否则将来一次等长修改会静默生效不了。

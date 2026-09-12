@@ -13,7 +13,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const KERNEL_CLI = fileURLToPath(new URL('../kernel/cli.mjs', import.meta.url))
+// 可用 YFW_TEST_KERNEL_CLI 指向 release 产物（release/YFWorking/kernel/cli.mjs）：
+// 同步门要求验证的正是**线上那份**（CRLF、逐文件覆盖后的真实字节），而非源码树里的同名文件。
+const KERNEL_CLI = process.env.YFW_TEST_KERNEL_CLI || fileURLToPath(new URL('../kernel/cli.mjs', import.meta.url))
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 function spawnKernel(env, dir) {
