@@ -243,7 +243,7 @@ export const zhCN = {
 
   // --- 会话模式徽标（Task 11 SessionModeBar：chat 纯聊 / task 全工具） ---
   sessionMode: {
-    chat: '对话 · 纯聊 可联网 · 不执行本地',
+    chat: '对话 · 联网检索 · 不执行本地',
     task: '任务 · 可执行本地操作',
   },
 

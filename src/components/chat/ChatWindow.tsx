@@ -47,6 +47,24 @@ const TIPS_POOL = {
     'Built-in skills cover documents, web scraping, qualification filing and more — browse them in the Skills view.',
     'Describe the task clearly (goal, scope, output, acceptance) and the agent breaks it into multi-round steps.',
   ],
+}
+// chat 模式（2026-09-12 会话模式隔离）专用提示池：上面那套里的"设定工作目录""技能
+// 面板浏览启用""自动拆解成多轮步骤"在 chat 全是做不到的事（内核侧技能/工作流/本地
+// 工具已关闭，见 kernel/cli.mjs --session-mode chat）——空态却拿它当"正确使用心智"
+// 引导用户，等于让用户按任务模式提问再吃一记"我做不到"。
+const CHAT_TIPS_POOL = {
+  'zh-CN': [
+    '聊天模式只做联网检索与资料整理：查资料、追新闻、比对来源都合适。',
+    '需要读写本机文件或执行命令时，切到任务模式再发——聊天模式没有本地工具。',
+    '涉及时效性内容（版本、价格、政策）我会先联网检索再作答，并附来源链接。',
+    '想让资料成体系：先要一份要点清单，再让我逐条补来源与出处。',
+  ],
+  'en-US': [
+    'Chat mode is web research only — good for looking things up, tracking news, and comparing sources.',
+    'Switch to Task mode to read or modify local files or run commands — chat mode has no local tools.',
+    'For time-sensitive facts (versions, prices, policies) I search the web first and cite sources.',
+    'To build up a topic: ask for an outline first, then have me fill in each point with sources.',
+  ],
 } as const
 function pickRandomTip(pool: readonly string[], exclude?: string): string {
   // 排除当前展示条（去重轮换）；池空时退化为任意一条
@@ -69,16 +87,21 @@ export function ChatWindow({ conversationId }: Props) {
   // 任务目录选择（2026-09-11）：任务模式欢迎页 logo 下方的目录入口
   const [showDirPicker, setShowDirPicker] = useState(false)
   // 使用提示：空态单条展示。切换会话/语言时重抽一条
-  const [tip, setTip] = useState<string>(() => pickRandomTip(TIPS_POOL[lang] ?? TIPS_POOL['zh-CN']))
+  // 会话模式判定提前到此：空态提示池按模式选（下方 isTaskMode 由它派生，单一真源）
+  const isChatMode = (conversations.find(c => c.id === conversationId)?.mode ?? 'task') === 'chat'
+  const tipPool = isChatMode ? CHAT_TIPS_POOL : TIPS_POOL
+  const [tip, setTip] = useState<string>(() => pickRandomTip(tipPool[lang] ?? tipPool['zh-CN']))
   useEffect(() => {
-    setTip(pickRandomTip(TIPS_POOL[lang] ?? TIPS_POOL['zh-CN']))
-  }, [conversationId, lang])
+    setTip(pickRandomTip(tipPool[lang] ?? tipPool['zh-CN']))
+    // tipPool 入依赖：会话内切换 chat/task（SessionModeBar）时提示池必须跟着换，
+    // 否则任务模式的"设定工作目录"会留在 chat 空态里
+  }, [conversationId, lang, tipPool])
 
   const conversation = conversations.find(c => c.id === conversationId)
   const messages = conversation?.messages || []
   const isEmpty = messages.length === 0
   // 任务模式（mode 缺省 'task'）：欢迎页展示目录入口；chat 纯聊不绑业务目录
-  const isTaskMode = (conversation?.mode ?? 'task') === 'task'
+  const isTaskMode = !isChatMode // 与上方空态提示池同源（同一 conversation.mode）
   const cwd = conversation?.cwd || ''
   // 更换目录 = 切换工作根：更新会话 cwd 并使会话失效（下次发送以新目录重 spawn
   // 内核会话；与 TaskCwdBar 原语义一致，2026-09-11 目录入口收敛）
@@ -94,10 +117,10 @@ export function ChatWindow({ conversationId }: Props) {
   useEffect(() => {
     if (!isEmpty) return
     const id = setInterval(() => {
-      setTip(cur => pickRandomTip(TIPS_POOL[lang] ?? TIPS_POOL['zh-CN'], cur))
+      setTip(cur => pickRandomTip(tipPool[lang] ?? tipPool['zh-CN'], cur))
     }, 10_000)
     return () => clearInterval(id)
-  }, [isEmpty, conversationId, lang])
+  }, [isEmpty, conversationId, lang, tipPool])
 
   // 滚动贴底跟踪：assistant-ui Viewport 内建 autoScroll 负责跟随；这里只维护
   // "用户已上翻 → 显示回底按钮"的展示态。

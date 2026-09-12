@@ -22,7 +22,7 @@ import { homedir } from 'node:os'
 import { join, basename } from 'node:path'
 import { createEngine } from './engine.mjs'
 import { resolveConfigDir, sharedDirFor } from './config.mjs'
-import { killActiveChildren } from './tools.mjs'
+import { killActiveChildren, CHAT_MODE_DISALLOWED } from './tools.mjs'
 import { createLogger } from './log.mjs'
 import { makeWire, wireLastWriteAt, setTurnActive, isTurnActive, isAwaitingUser, wireWriteStats } from './protocol.mjs'
 import { createSessionStore, newSessionId } from './session.mjs'
@@ -111,6 +111,10 @@ export function parseArgs(argv) {
       case '--agent': out.agent = next() ?? null; break
       case '--add-dir': out.addDirs.push(next() ?? ''); break
       case '--skills-dir': out.skillsDirs.push(next() ?? ''); break
+      // 会话模式（2026-09-12 chat 隔离）：'chat' = 纯联网会话（无技能/工作流/
+      // 子 Agent/记忆/本地工具）。缺省/未知值 = 'task'（现状，零变化）；旧缓存
+      // 内核不认本 flag（未知 -- 参数静默忽略）→ 退化为 bridge 侧禁工具清单。
+      case '--session-mode': out.sessionMode = next() ?? null; break
       case '--no-default-skills': out.noDefaultSkills = true; break
       case '--allow-outside-dirs': out.allowOutsideDirs = true; break
       case '--agents': out.agents = true; break
@@ -160,6 +164,10 @@ function extractContent(msg) {
 
 export async function main(argv) {
   const args = parseArgs(argv)
+  // 会话模式（2026-09-12 chat 隔离）：'chat' = 纯联网会话，任务模式的资产（技能/
+  // 工作流/子 Agent/记忆/项目指令）与本地工具全部关闭，系统提示走 chat 专用版本。
+  // 缺省（含旧宿主不传 --session-mode）= task ⇒ 现行为零变化。
+  const chatMode = args.sessionMode === 'chat'
   if (args.outputFormat !== REQUIRED_FORMAT || args.inputFormat !== REQUIRED_FORMAT) {
     console.error(`kernel: only ${REQUIRED_FORMAT} I/O format is supported`)
     return 2
@@ -188,11 +196,12 @@ export async function main(argv) {
   // P10-A：技能/工作流发现根——前端（bridge）负责安装注册到技能根，内核只发现使用。
   // 显式 --skills-dir 优先；否则 addDirs（含 bridge 注入技能根）叠加默认根 <configDir>/skills，
   // CLI/benchmark 直跑无 addDirs 技能时内核仍可用（--no-default-skills 可禁用）。
-  const skillRoots = resolveSkillRoots(args, configDir, process.env)
+  // chat 模式：技能根为空 ⇒ 不发现技能、不进提示词清单（Skill 工具亦被禁用）。
+  const skillRoots = chatMode ? [] : resolveSkillRoots(args, configDir, process.env)
   // S5-1 共享目录只读挂载：shared 存在时追加进 addDirs（tools withinBoundary 按
   // 白名单 dir 放行；共享技能/配置多人共用，个人 configDir 保持隔离）
   const sharedDir = sharedDirFor(configDir)
-  if (existsSync(sharedDir)) args.addDirs.push(sharedDir)
+  if (!chatMode && existsSync(sharedDir)) args.addDirs.push(sharedDir)
   const store = createSessionStore({ configDir, cwd: args.addDirs[0] || '', sessionId })
   // P4-1：bridge 落盘的 providers.json → 注册表播种（未激活时生效；激活后固定）
   seedFromFile(join(configDir, 'providers.json'))
@@ -363,7 +372,8 @@ export async function main(argv) {
   const wfEngine = createWorkflowEngine({ configDir })
   // 工作流发现根：技能根（与技能平权，同一发现机制）+ 独立工作流根 <configDir>/workflows
   // （与 bridge 侧 ~/.yfworking/workflows 安装目录对应；Task 8 把市场工作流装到这里）。
-  const workflowRoots = [...skillRoots, join(configDir, 'workflows')]
+  // chat 模式：工作流根为空 ⇒ 无工作流发现，亦无 run_<slug> 动态工具（见下）。
+  const workflowRoots = chatMode ? [] : [...skillRoots, join(configDir, 'workflows')]
   // I-2：public 工作流入池上限——settings.workflow.publicLimit（设置项不存在/非法 → 缺省 20，
   // 与 dyntools 内 LIMIT_DEFAULT 一致；不为此扩设置系统）。
   const wfPublicLimitN = Number(settings.merged.workflow?.publicLimit)
@@ -397,11 +407,19 @@ export async function main(argv) {
       // 不得把用户选定的 manual/auto 档悄悄放宽（engine 侧缺省才回落派生）。
       approvalMode: normalizeApprovalMode(args.approvalMode || settings.merged.approvalMode
         || deriveApprovalMode({ skipPermissions: args.skipPermissions, autoApproveHighRisk: args.autoApproveHighRisk === true || settings.merged.autoApproveHighRisk === true })),
-      disallowedTools: [...args.disallowedTools, ...(settings.merged.disallowedTools || [])],
+      disallowedTools: [
+        ...args.disallowedTools,
+        // chat 隔离（2026-09-12）：禁本地工具表由内核自行套用（宿主漏传也不泄能力）；
+        // 宿主 bridge 另有一份同源拷贝，只为兼容不认 --session-mode 的旧缓存内核。
+        ...(chatMode ? CHAT_MODE_DISALLOWED : []),
+        ...(settings.merged.disallowedTools || []),
+      ],
       permissionRules,
       hooks,
-      // workflow 引擎实例：engine 内部 createToolRegistry 时注入（Workflow 工具）
-      workflow: wfEngine,
+      // workflow 引擎实例：engine 内部 createToolRegistry 时注入（Workflow 工具）。
+      // chat 模式传 null ⇒ 该工具根本不在注册表里（双保险：CHAT_MODE_DISALLOWED
+      // 已含 Workflow，即便漏配此处也不会把工作流暴露给纯聊会话）。
+      workflow: chatMode ? null : wfEngine,
       // MS1：MemorySearch 个人经验根（<configDir>/memory/personal，memoryRoot(configDir)）。
       // projectMemoryRoot 当前无项目记忆写入方，cli 不传 —— tools 侧 null → project scope 0 命中。
       memoryRoot: memoryRoot(configDir),
@@ -417,7 +435,11 @@ export async function main(argv) {
   // 生效（视图函数每次求值）。engine.mjs 的 createToolRegistry 调用点不转发 dynamicTools，
   // 故此处经 registry 的 setDynamicTools 挂钩注入（与构造参数等价，后设覆盖先设）；agentId
   // 取 --agent（主会话缺省 null → bound 工作流对主会话不可见，仅 public 入池）。
-  engine.tools.setDynamicTools(() => buildWorkflowTools({ roots: workflowRoots, engine: wfEngine, agentId: args.agent || null, publicLimit: wfPublicLimit }))
+  // chat 模式跳过（2026-09-12 隔离）：实证病灶 = chat 会话的工具表里赫然出现 run_spec_dev，
+  // 模型据此认为自己能跑工作流并答"Skill 工具在此不可用"，能力声明与实际工具集自相矛盾。
+  if (!chatMode) {
+    engine.tools.setDynamicTools(() => buildWorkflowTools({ roots: workflowRoots, engine: wfEngine, agentId: args.agent || null, publicLimit: wfPublicLimit }))
+  }
   // J1：health Judge 注入位——包装 engine.judgeUntil 作健康判定（目标 = 当前会话
   // 健康状态判定：是否建议重置/继续/压缩后继续）。默认关（PONOS_LLM_JUDGE /
   // CLAUDE_CODE_LLM_JUDGE），开时仅红档 + 冷却 300s 触发；异常由 health 侧静默。
@@ -473,35 +495,42 @@ export async function main(argv) {
   // 任务关键词 = cwd/addDirs 目录名 + 显式任务标签（settings.memory.taskTag / env
   // PONOS_MEMORY_KEYWORDS，逗号分隔可追加）。PONOS_MEMORY_INJECT=index-only 时仅索引（旧行为）。
   const memoryRootDir = memoryRoot(configDir)
-  // 神经图谱：图谱存储（markdown 权威，图谱派生索引；缺失/版本旧/markdown 更新自动重建）
-  const graph = createGraphStore({ root: join(configDir, 'memory', 'graph') })
-  try { await graph.load({ memoryRoot: memoryRootDir }) } catch { /* 图谱故障不影响主流程 */ }
-  const injectMode = process.env.PONOS_MEMORY_INJECT || 'both'
   let memoryBlock = ''
-  if (settings.merged.memory?.inject !== false) {
-    if (injectMode !== 'index-only') {
-      const kw = [
-        ...(args.addDirs || []).map((d) => basename(d)).filter(Boolean),
-        ...(settings.merged.memory?.taskTag || '').split(',').map((s) => s.trim()).filter(Boolean),
-        ...(process.env.PONOS_MEMORY_KEYWORDS || '').split(',').map((s) => s.trim()).filter(Boolean),
-      ]
-      memoryBlock += graph.search({ query: kw.join(' '), keywords: kw })
+  // chat 模式不注入记忆（2026-09-12 隔离）：个人经验/神经图谱是本地任务资产，对
+  // "联网问答"无益，还会引导模型承诺本地动作；顺带跳过图谱加载（省一次磁盘扫描）。
+  if (!chatMode) {
+    // 神经图谱：图谱存储（markdown 权威，图谱派生索引；缺失/版本旧/markdown 更新自动重建）
+    const graph = createGraphStore({ root: join(configDir, 'memory', 'graph') })
+    try { await graph.load({ memoryRoot: memoryRootDir }) } catch { /* 图谱故障不影响主流程 */ }
+    const injectMode = process.env.PONOS_MEMORY_INJECT || 'both'
+    if (settings.merged.memory?.inject !== false) {
+      if (injectMode !== 'index-only') {
+        const kw = [
+          ...(args.addDirs || []).map((d) => basename(d)).filter(Boolean),
+          ...(settings.merged.memory?.taskTag || '').split(',').map((s) => s.trim()).filter(Boolean),
+          ...(process.env.PONOS_MEMORY_KEYWORDS || '').split(',').map((s) => s.trim()).filter(Boolean),
+        ]
+        memoryBlock += graph.search({ query: kw.join(' '), keywords: kw })
+      }
+      memoryBlock += buildMemoryIndex({ root: memoryRootDir })
     }
-    memoryBlock += buildMemoryIndex({ root: memoryRootDir })
   }
   // 提示词组装：内核基础行为规范 + 可用子 Agent 区块（内置 ∪ 用户级）+ AGENTS.md
   // 项目指令 + 技能区块 + 记忆索引 + GUI append 文件（最高优先级，后者覆盖前者）。cwd = addDirs[0]。
   engine.setSystemPrompt(composeSystemPrompt({
     toolNames: engine.tools.toolNames,
-    subagents: engine.agents,
-    agents: discoverAgentsMd({ cwd: args.addDirs[0] || '', addDirs: args.addDirs }),
+    // chat 隔离（2026-09-12）：子 Agent / 项目指令 / cwd 全部不进 chat 提示词
+    // （composeSystemPrompt 的 mode='chat' 分支另有兜底，即便此处漏传也不会注入）。
+    subagents: chatMode ? [] : engine.agents,
+    agents: chatMode ? [] : discoverAgentsMd({ cwd: args.addDirs[0] || '', addDirs: args.addDirs }),
     append: readPromptFile(args.appendSystemPromptFile),
-    cwd: args.addDirs[0] || '',
+    cwd: chatMode ? '' : (args.addDirs[0] || ''),
     skills,
     workflows: visibleWorkflows,
     memory: memoryBlock,
+    mode: chatMode ? 'chat' : 'task',
     // 本地弱模型精简纪律段（2026-09-09 适配）：桥按 provider 画像注入
-    // PONOS_PROMPT_TIER=lean；未设=full（云端现状，零变化）。
+    // PONOS_PROMPT_TIER=lean；未设=full（云端现状，零变化）。chat 用专用提示，与此无关。
     tier: process.env.PONOS_PROMPT_TIER === 'lean' ? 'lean' : 'full',
   }))
   // system(init)：spawn 即发。bridge /test-provider 判定 CLI 加载成功并读取
@@ -523,6 +552,9 @@ export async function main(argv) {
     vision: vision ? { model: vision.model } : null,
     skills: skills.length,
     workflows: workflows.length,
+    // 会话模式回显（2026-09-12 chat 隔离）：宿主/GUI 据此确认内核真的进了隔离分支
+    // （chat 时 skills/workflows 必为 0、tools 不含本地工具，见 kernel-tests/chat-mode.test.mjs）
+    session_mode: chatMode ? 'chat' : 'task',
     settings: { hooks: hooks.count },
     // 生效审批档位回显（2026-09-12 四档化）：桥据此校准状态栏徽标；也是"跑的是旧内核
     // （不认 --approval-mode）"的检测点——旧内核不会带这个字段。

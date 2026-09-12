@@ -1042,6 +1042,14 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
   }
 }
 
+// chat 模式禁用工具表（2026-09-12 会话模式隔离）：chat 是纯联网会话，只留
+// WebFetch/WebSearch 等联网只读工具——禁一切本地执行/读写/搜索/子 Agent/技能/
+// 工作流/浏览器/记忆检索。此表是**唯一权威源**：内核按 --session-mode chat
+// 自行套用（不依赖宿主传参，宿主漏传也不会把本地能力泄进 chat）；bridge 的
+// CHAT_DISALLOWED 是逐项拷贝，仅为"跑的是旧缓存内核（不认 --session-mode）"的
+// 兼容兜底——两者一致性由 kernel-tests/chat-mode.test.mjs 的源码比对守住。
+export const CHAT_MODE_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch']
+
 export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null, readAllowFiles = [], dynamicTools = null }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
   // 记忆只读边界扩展（2026-09-10）：Read 追加个人/项目记忆根——记忆文件是内核

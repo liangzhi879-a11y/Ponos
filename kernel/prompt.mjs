@@ -117,9 +117,48 @@ export function buildBaseSystemPrompt({ toolNames = [], cwd = '', tier = 'full' 
   ].join('\n')
 }
 
+// chat 模式专用系统提示（2026-09-12 隔离）：chat = 联网检索/资料整理助手，
+// **只**有 WebSearch/WebFetch 两件工具。任务模式的基础层（Ponos 身份 + 工具纪律/
+// 任务轮次纪律/探索纪律/改动聚焦/循环防护）在 chat 是纯噪声甚至误导——它教模型
+// "改文件前先 Read""报错必须重试"等本地动作，而 chat 侧这些工具全部被禁，模型
+// 只会反复承诺做不到的事（实证：chat 会话里模型回"Skill 工具在此不可用"、
+// 掏 run_spec_dev 这类根本不该出现的东西）。故此处给一套自洽的身份 + 能力边界 +
+// 检索纪律，与 CHAT_MODE_DISALLOWED（kernel/tools.mjs）同口径。
+export function buildChatSystemPrompt({ toolNames = [] } = {}) {
+  return [
+    '你是 YFWorking（远方工作台）的联网助理，当前处于**聊天模式**：只做网页检索与资料整理——搜索网页、抓取正文，然后基于检索结果回答。除此之外没有本地能力。',
+    '',
+    '【能力边界（必须如实告知，禁止假装）】',
+    `- 可用工具只有：${(toolNames || []).join(', ') || '（无）'}。没有文件读写、没有命令执行、没有子 Agent / 技能 / 工作流。`,
+    '- 看不到用户本机的文件、目录、进程、日志、数据库，也不能运行代码、修改代码、安装环境、连接内网系统。',
+    '- 用户要求本地操作时（读文件/改代码/跑命令/看日志/装依赖）：直接说明聊天模式不含本地能力，建议切到任务模式再发；禁止"我先看看你的项目"这类承诺，也禁止编造本地内容。',
+    '- 工具被拒绝、抓取失败或检索为空时：如实说明发生了什么，不用推测填空。',
+    '',
+    '【检索纪律】',
+    '- 涉及事实、数据、时效的内容（新闻、价格、版本、政策、人物近况、接口用法等）：先 WebSearch 定位来源，再对关键来源 WebFetch 精读；不要直接用可能过期的记忆作答。',
+    '- 优先权威来源（官方文档、机构原文、一手报道）；结论尽量有至少两个独立来源相互印证；来源互相矛盾时并列分歧，不要取"平均值"。',
+    '- 同一 URL 只抓一次；抓取失败就换来源或改用搜索结果摘要，不反复重试同一地址。',
+    '- 检索不到就明说"未检索到可靠来源"，不要把推测写成事实。',
+    '',
+    '【回答规范】',
+    '- 简体中文；结论先行，再给支撑要点；较长内容用小标题、列表或表格组织。',
+    '- 引用外部信息时给出可点击的来源链接，并在末尾列「来源」清单。',
+    '- 区分三类信息：检索所得（标注来源）／模型自身知识（注明"以下为一般性知识，非本次检索结果"）／推断。不确定就说不确定。',
+    '- 回答直接、专业、简洁，不堆寒暄和免责声明。',
+  ].join('\n')
+}
+
 // 三层组装：base + 可用子 Agent 区块 + AGENTS.md（带来源标注）+ append 文件
 // （最后，最高优先级）。subagents 为内置 ∪ 用户级的子 Agent 表（Agent 工具路由依据）。
-export function composeSystemPrompt({ toolNames, agents, subagents = [], append = '', cwd = '', skills = [], workflows = [], memory = '', tier = 'full' }) {
+// mode='chat'（2026-09-12 会话模式隔离）：只走 chat 专用提示 + append，任务模式的
+// 一切区块（子 Agent / 项目指令 / 技能 / 工作流 / 记忆）**一律不注入**——即便调用方
+// 传了也忽略（提示词层与工具层各自独立收口，任一层失效都不至于把任务能力泄进 chat）。
+export function composeSystemPrompt({ toolNames, agents, subagents = [], append = '', cwd = '', skills = [], workflows = [], memory = '', tier = 'full', mode = 'task' }) {
+  if (mode === 'chat') {
+    const chatParts = [buildChatSystemPrompt({ toolNames })]
+    if (append && append.trim()) chatParts.push(append.trim())
+    return chatParts.join('\n\n')
+  }
   const parts = [buildBaseSystemPrompt({ toolNames, cwd, tier })]
   if (subagents && subagents.length > 0) {
     const lines = ['【可用子 Agent】可将独立子任务委派给以下子 Agent（Agent 工具的 subagent_type）：']

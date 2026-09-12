@@ -278,14 +278,18 @@ async function* mockStream({ messages, signal }) {
   // 系统提示探针（2026-09-12 lane 技能目录测试）：PONOS_MOCK_SYS_PROBE=<needle> →
   // 请求内 system 条目含该子串则回 SYS_PROBE:1，否则回 SYS_PROBE:0。系统提示不落盘
   // （transcript 只有 user/assistant），这是唯一能端到端断言"系统提示真进了请求"的口子。
+  // 多探针（2026-09-12 chat 隔离测试）：needle 用 `|` 分隔时逐项判定，
+  // 回 SYS_PROBE:<bit 串>（如 '1100' = 前两项命中）——一次 spawn 可断言多个区块
+  // 的有无，避免"每条断言各跑一个内核进程"。
   if (process.env.PONOS_MOCK_SYS_PROBE) {
-    const needle = process.env.PONOS_MOCK_SYS_PROBE
+    const needles = String(process.env.PONOS_MOCK_SYS_PROBE).split('|')
     const sysText = (messages || [])
       .filter((m) => m?.role === 'system')
       .map((m) => (typeof m.content === 'string' ? m.content : (m.content || []).map((b) => b?.text || '').join('')))
       .join('\n')
     if (signal?.aborted) throw abortError()
-    yield* streamText(sysText.includes(needle) ? 'SYS_PROBE:1' : 'SYS_PROBE:0', signal)
+    const bits = needles.map((n) => (sysText.includes(n) ? '1' : '0')).join('')
+    yield* streamText(`SYS_PROBE:${bits}`, signal)
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }

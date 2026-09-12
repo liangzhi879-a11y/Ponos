@@ -1005,7 +1005,10 @@ function experienceInjectConfig() {
 // chat 模式禁用的本地工具集（Task 11 Conversation.mode）：纯聊会话只保留
 // WebFetch/WebSearch 等联网只读工具，禁一切本地执行/读写/Agent/技能/浏览器。
 // GUI 经 buildSendPayload 透传 conversation.mode，WS 'send' 分支收敛 'chat'|'task'。
-const CHAT_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch']
+// 2026-09-12 会话模式隔离：权威表已迁到内核（kernel/tools.mjs CHAT_MODE_DISALLOWED），
+// 内核按 --session-mode chat 自行套用。本拷贝只为"跑的是旧缓存内核（不认新 flag）"
+// 的兼容兜底；两份一致性由 kernel-tests/chat-mode.test.mjs 的源码比对守住。
+export const CHAT_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch']
 
 // 浏览器白名单写入（2026-09-10）：内核 Browser 工具白名单审批通过后，把域名
 // 追加进 {YFW_HOME}/browser-whitelist.json 的 allow 数组。执行器（browser-common.cjs
@@ -1070,7 +1073,14 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
   args.push('--disallowedTools', 'AskUserQuestion')
   // chat 模式（纯聊受限会话）：追加禁本地工具清单——与 AskUserQuestion 分别 push，
   // 由内核注册表过滤使 Bash/Read/Write 等不可调用（保留 WebFetch/WebSearch）。
-  if (mode === 'chat') args.push('--disallowedTools', CHAT_DISALLOWED.join(','))
+  // chat 模式（2026-09-12 隔离）：--session-mode chat 是权威开关——内核据此不发现
+  // 技能/工作流、不注入子 Agent/记忆/项目指令，系统提示换成联网助理专用版，并自行
+  // 套用禁工具表。下面那条 --disallowedTools 是兼容兜底（旧缓存内核不认新 flag），
+  // 二者并存无副作用：禁工具取并集。
+  if (mode === 'chat') {
+    args.push('--session-mode', 'chat')
+    args.push('--disallowedTools', CHAT_DISALLOWED.join(','))
+  }
   if (resumeId) {
     // Resume: restore the original session. 不重复注入身份提示词（避免冲突），
     // 但必须追加互动格式规范，否则模型看不到 ASK_USER 唯一提问方式，会回退调用
@@ -1080,6 +1090,9 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     // 【可用技能】块（经下方 --add-dir 技能根发现）；此处仅追加互动格式 + 里程碑
     // 协议（+经验注入段），new/resume 两条路径同构。
     let resumePrompt = YFW_ASKUSER_FORMAT + YFW_MILESTONE_PROTOCOL
+    // chat 模式（2026-09-12 隔离）：里程碑协议是任务进度语义（GUI 按它画进度条），
+    // 纯聊问答没有里程碑可言 ⇒ 只保留提问卡片格式（chat 里卡片仍要能用）。
+    if (mode === 'chat') resumePrompt = YFW_ASKUSER_FORMAT
     const injectCfg = experienceInjectConfig()
     // 沉积引导同样注入 resume 会话（任务模式）：原实现只进新会话，而应用默认
     // "恢复最新会话"、日常调试几乎全在 resume 会话里 → 内核收不到沉积指令，
@@ -1113,6 +1126,13 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
           askuserFormat: YFW_ASKUSER_FORMAT,
           milestoneProtocol: YFW_MILESTONE_PROTOCOL,
         })
+    // chat 模式（2026-09-12 隔离）：身份提示词与里程碑协议都不注入——身份由内核
+    // chat 专用提示词提供（buildIdentityPrompt 的能力清单是"编程/系统诊断/企业咨询"，
+    // chat 全做不到，留着即能力虚报）；里程碑协议是任务进度语义（GUI 按它画进度条），
+    // 纯聊问答不适用。提问卡片格式保留（chat 里提问卡片仍要能用）。
+    if (mode === 'chat') {
+      effectivePrompt = systemPrompt ? `${systemPrompt}\n\n${YFW_ASKUSER_FORMAT}` : YFW_ASKUSER_FORMAT
+    }
     const injectCfg = experienceInjectConfig()
     // 经验沉积段仅任务模式注入（2026-09-09 截断事故修复）：沉积指令要求模型
     // 用 Write/Edit 写经验文件，chat 模式这些工具全部被禁（CHAT_DISALLOWED）——

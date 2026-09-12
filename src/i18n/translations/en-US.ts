@@ -240,7 +240,7 @@ export const enUS: TranslationKeys = {
 
   // --- Conversation mode badge (Task 11 SessionModeBar: chat / task) ---
   sessionMode: {
-    chat: 'Chat · no local access',
+    chat: 'Chat · web research · no local access',
     task: 'Task · full local access',
   },
 
