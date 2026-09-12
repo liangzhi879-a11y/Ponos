@@ -42,6 +42,24 @@ test('技能块：skills 为空/缺省 → 不产出【可用技能】块', () =
   assert.ok(!omitted.includes('【可用技能】'), 'skills 缺省（默认 []）时不应产出技能块')
 })
 
+// 【技能与编排】主动性区块（2026-09-12 触发侧修复）：技能"何时该用"的判据此前只存在于
+// SKILL.md 正文（调用后才加载）⇒ 自发触发率≈0。判据必须落在无需调用即可见的位置。
+test('技能与编排：skills/subagents 非空 → 区块出现在清单之前；两者皆空 → 不出现', () => {
+  const both = composeSystemPrompt({ toolNames: [], skills: SAMPLE_SKILLS, subagents: [{ id: 'implementer', description: '实现者' }] })
+  assert.match(both, /【技能与编排】/, '有技能或子 Agent 时应注入主动性区块')
+  assert.ok(both.includes('先用 Skill 工具加载该技能'), '应含技能加载判据')
+  assert.ok(both.includes('用 Agent 工具委派子 Agent'), '应含子 Agent 委派判据')
+  assert.ok(both.indexOf('【技能与编排】') < both.indexOf('【可用技能】'),
+    '区块必须在清单之前（先规则后清单）')
+  // 只有子 Agent（无技能清单）→ 不得出现技能加载指引（chat 隔离的同源判据）
+  const onlyAgents = composeSystemPrompt({ toolNames: [], subagents: [{ id: 'implementer', description: '实现者' }] })
+  assert.match(onlyAgents, /【技能与编排】/)
+  assert.ok(!onlyAgents.includes('先用 Skill 工具加载该技能'), '无技能清单时不得引导 Skill 工具')
+  const neither = composeSystemPrompt({ toolNames: [] })
+  assert.ok(!neither.includes('【技能与编排】'), '两者皆空时不应产出该区块')
+  assert.ok(!neither.includes('Agent 工具委派'), '无子 Agent 时不得引导委派')
+})
+
 // —— lean 纪律段（2026-09-09 本地弱模型适配，P2）——
 // 口径：只剪有引擎守卫兜底的细则；功能协议核心（工具纪律 6 条、回复规范、
 // 可用工具列表、技能块）一字不动。缺省 tier 输出与改动前逐条相等（零回归锁）。

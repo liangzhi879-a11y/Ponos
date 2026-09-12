@@ -1,6 +1,12 @@
 ---
 name: systematic-debugging
 description: Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes
+triggers:
+  - 排查 bug
+  - 测试失败
+  - 行为异常
+  - 定位根因
+  - 提出修复前
 ---
 
 # Systematic Debugging

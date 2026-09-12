@@ -1,6 +1,11 @@
 ---
 name: brainstorming
 description: "You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation."
+triggers:
+  - 需求不清晰
+  - 新功能设计
+  - 方案讨论
+  - 改动行为之前
 ---
 
 # Brainstorming Ideas Into Designs

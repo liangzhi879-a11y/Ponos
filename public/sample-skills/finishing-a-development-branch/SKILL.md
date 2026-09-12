@@ -1,6 +1,10 @@
 ---
 name: finishing-a-development-branch
 description: Use when implementation is complete, all tests pass, and you need to decide how to integrate the work
+triggers:
+  - 收尾开发分支
+  - 合并前清理
+  - 完成分支交付
 ---
 
 # Finishing a Development Branch

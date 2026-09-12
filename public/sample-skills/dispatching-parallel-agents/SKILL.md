@@ -1,6 +1,10 @@
 ---
 name: dispatching-parallel-agents
 description: Use when facing 2+ independent tasks that can be worked on without shared state or sequential dependencies
+triggers:
+  - 多任务并行
+  - 并行探索
+  - 独立子任务并行
 ---
 
 # Dispatching Parallel Agents

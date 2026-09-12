@@ -1,6 +1,9 @@
 ---
 name: receiving-code-review
 description: Use when receiving code review feedback, before implementing suggestions, especially if feedback seems unclear or technically questionable - requires technical rigor and verification, not performative agreement or blind implementation
+triggers:
+  - 收到审查意见
+  - 处理评审反馈
 ---
 
 # Code Review Reception

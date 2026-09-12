@@ -1,6 +1,10 @@
 ---
 name: writing-plans
 description: Use when you have a spec or requirements for a multi-step task, before touching code
+triggers:
+  - 多步实施前
+  - 写实施计划
+  - 拆解任务
 ---
 
 # Writing Plans

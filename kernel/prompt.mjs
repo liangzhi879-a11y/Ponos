@@ -131,6 +131,22 @@ export function composeSystemPrompt({ toolNames, agents, subagents = [], append 
   for (const a of agents || []) {
     parts.push(`# 项目指令（${a.path}）\n\n${a.content.trim()}`)
   }
+  // 【技能与编排】主动性区块（2026-09-12「优化了却看不到效果」的触发侧修复）：
+  // 实证病灶 = 判据只存在于 SKILL.md 正文（**调用之后**才加载），提示词里能看到的仅
+  // 截断描述 ⇒ 模型自发触发率≈0（125 份 transcript：98.7% 的复杂会话直接 Read/Bash
+  // 开场，Skill 自发调用 0 次，唯一跑通的一次是用户手打"执行技能 using-superpowers"）。
+  // 故把"何时该用"的判据放到**无需调用即可见**的位置。条件注入：chat 模式 skills/
+  // subagents 为空 ⇒ 本块不出现（隔离，见 cli.mjs 的 --session-mode chat）。
+  if ((skills && skills.length > 0) || (subagents && subagents.length > 0)) {
+    const lines = ['【技能与编排】']
+    if (skills && skills.length > 0) {
+      lines.push('- 任务与下方【可用技能】清单匹配时，先用 Skill 工具加载该技能、按其步骤执行，不得凭印象替代或自行发挥；判定从宽——只要有适用可能（哪怕 1%）就先加载再决定，加载成本远低于重做成本。')
+    }
+    if (subagents && subagents.length > 0) {
+      lines.push('- 存在独立可并行的子任务（多处探索/多文件实现/独立复核）时，用 Agent 工具委派子 Agent 推进，不要把本该并行的活全部串行手工做。')
+    }
+    parts.push(lines.join('\n'))
+  }
   if (skills && skills.length > 0) {
     // P8 业务适配：技能块带触发词 + 父子结构（父技能条目内联子技能，子技能不单独成条），
     // 与宿主原清单语义对齐；触发词为空时回退描述（截 120）

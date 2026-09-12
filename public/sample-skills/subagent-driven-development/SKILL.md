@@ -1,6 +1,11 @@
 ---
 name: subagent-driven-development
 description: Use when executing implementation plans with independent tasks in the current session
+triggers:
+  - 逐任务派子代理
+  - 中大型实现
+  - 多任务实现
+  - 并行实现
 ---
 
 # Subagent-Driven Development

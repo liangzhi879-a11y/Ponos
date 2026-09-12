@@ -1,6 +1,9 @@
 ---
 name: requesting-code-review
 description: Use when completing tasks, implementing major features, or before merging to verify work meets requirements
+triggers:
+  - 请求代码审查
+  - 提交前复核
 ---
 
 # Requesting Code Review

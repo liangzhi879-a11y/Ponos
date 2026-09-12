@@ -1,6 +1,9 @@
 ---
 name: executing-plans
 description: Use when you have a written implementation plan to execute in a separate session with review checkpoints
+triggers:
+  - 按计划执行
+  - 计划已就绪待落地
 ---
 
 # Executing Plans
