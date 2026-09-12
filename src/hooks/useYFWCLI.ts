@@ -346,6 +346,20 @@ function reviveSession(sid: string) {
   }
 }
 
+// 闪断后的重同步（2026-09-13「应用自己处理任务断掉了」事故的正面修复）。
+// 同桥闪断时内核还活着、丢的只是帧：桥不补投（bridge_hello 只带桥实例 id，bridge.mjs:2595），
+// 而 onclose 又把 pendingStreamEvents 清空 + 所有流式态 stopStreaming ⇒ 断线期间那一段
+// （实证：整轮最终答复 + result）永久缺席屏幕，磁盘里却是完好的。这里按磁盘 transcript 补回。
+// 一律不 reject（补救路径不该反过来打扰用户），返回 Promise 供调用方排序（先补再续接）。
+function resyncSession(sid: string): Promise<void> {
+  return useChatStore.getState().resyncConversation(sid)
+    .then((r) => {
+      if (r.ok) console.log('[WS] resync', sid.slice(0, 8), `netGain=${r.netGain} keptLocal=${r.keptLocal}`)
+      else console.log('[WS] resync skipped', sid.slice(0, 8), r.reason || '')
+    })
+    .catch((e: any) => { console.log('[WS] resync failed', sid.slice(0, 8), e?.message || String(e)) })
+}
+
 /** 该会话的持久压缩次数（GUI persist 快照，双源取 max） */
 function compactCountOf(conversationId: string): number {
   const h = useHealthStore.getState()
@@ -702,21 +716,27 @@ function handleMessage(msg: Record<string, unknown>) {
   // Exact match only — never fallback to another session to prevent cross-project contamination
   let st = sessionState.get(sid)
 
-  // 桥身份握手（2026-09-12 桥树杀事故的无感愈合）：换桥重连 → 旧会话已随旧桥
-  // 消亡，静默自动续接（不产生用户可见的告警/消息气泡——续接内容经新轮自动
-  // 建块以 assistant 消息呈现）。同一桥闪断 → id 不变，仅清理标记无副作用。
+  // 桥身份握手（2026-09-12 桥树杀事故的无感愈合 + 2026-09-13 闪断丢帧修复）：
+  //  · 换桥重连 → 旧会话已随旧桥消亡，静默自动续接（不产生用户可见的告警/消息气泡——
+  //    续接内容经新轮自动建块以 assistant 消息呈现）；续接前先把磁盘尾部补回（断线前
+  //    那一轮若已完成，旧内核写进 transcript 的最终答复只在那里）。
+  //  · 同一桥闪断 → 内核还活着、丢的只是帧，桥握手不补投 ⇒ 必须重同步（见 resyncSession）。
   if (msg.type === 'bridge_hello') {
     const bridgeId = String(msg.id || '')
-    if (bridgeId) {
-      if (lastBridgeId !== null && lastBridgeId !== bridgeId && bridgeLostSessions.size > 0) {
-        console.log('[WS] bridge replaced — auto-resuming', bridgeLostSessions.size, 'session(s)')
-        for (const lostSid of [...bridgeLostSessions]) {
-          reviveSession(lostSid)
-        }
-      }
-      lastBridgeId = bridgeId
-    }
+    const replaced = !!bridgeId && lastBridgeId !== null && lastBridgeId !== bridgeId
+    if (bridgeId) lastBridgeId = bridgeId
+    const lost = [...bridgeLostSessions]
     bridgeLostSessions.clear()
+    if (lost.length > 0) {
+      if (replaced) {
+        console.log('[WS] bridge replaced — resync + auto-resuming', lost.length, 'session(s)')
+        // 先补磁盘尾部再续接：resyncSession 不会 reject，finally 保证续接一定发出
+        for (const lostSid of lost) void resyncSession(lostSid).finally(() => reviveSession(lostSid))
+      } else {
+        console.log('[WS] same-bridge reconnect — resyncing', lost.length, 'session(s)')
+        for (const lostSid of lost) void resyncSession(lostSid)
+      }
+    }
     return
   }
 

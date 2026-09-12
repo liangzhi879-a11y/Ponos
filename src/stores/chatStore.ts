@@ -7,6 +7,7 @@ import { getDefaultHome } from '@/lib/config'
 import { useHealthStore } from '@/stores/healthStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { loadConversationMessages as loadTranscriptMessages } from '@/lib/transcriptLoader'
+import { mergeResyncedMessages } from '@/lib/conversationResync'
 import { generateChatTitle, truncateTitle } from '@/lib/titleGen'
 import { pushLaneNote as pushLane, dismissLaneNote as dismissLane } from '@/lib/laneUi'
 import type { LaneNote } from '@/lib/laneUi'
@@ -328,6 +329,17 @@ function evictLoadedConversations() {
   }))
 }
 
+/** resyncConversation 的结果（纯数据，调用方据此记日志；不抛错） */
+export interface ResyncOutcome {
+  ok: boolean
+  /** ok=false 时的原因：no-conversation | streaming | no-local-messages | empty-transcript | error */
+  reason?: 'no-conversation' | 'streaming' | 'no-local-messages' | 'empty-transcript' | 'error'
+  /** 屏幕净增行数（可负：本地副本被去重），见 lib/conversationResync */
+  netGain?: number
+  /** 末尾保留的本地新增条数 */
+  keptLocal?: number
+}
+
 interface ChatState {
   // Conversations
   conversations: Conversation[]
@@ -394,6 +406,13 @@ interface ChatState {
   setActiveConversation: (id: string) => void
   /** 按需加载会话消息体（内核 transcript + ext 兜底），加载完成注入 messages */
   ensureConversationLoaded: (id: string) => Promise<void>
+  /**
+   * 断线重连后的会话重同步（2026-09-13「应用自己处理任务断掉了」事故的正面修复）：
+   * 以磁盘 transcript 为准重拉一次消息体并合并，补回断线期间丢掉的尾部帧。
+   * 与 ensureConversationLoaded 的分工：那个是「内存为空 → 从磁盘装」（evicted/首次打开），
+   * 本动作面向「内存里已有、但内容停在断线那一刻」——磁盘比本地多出的尾部只有这里能补。
+   */
+  resyncConversation: (id: string) => Promise<ResyncOutcome>
   renameConversation: (id: string, title: string) => void
   setConversationCwd: (id: string, cwd: string) => void
   setConversationAgent: (id: string, agentId: string | null) => void
@@ -609,6 +628,40 @@ export const useChatStore = create<ChatState>()(
         } catch {
           set(state => ({ conversationLoading: { ...state.conversationLoading, [id]: false } }))
         }
+      },
+
+      resyncConversation: async (id) => {
+        const st = get()
+        const conv = st.conversations.find(c => c.id === id)
+        if (!conv) return { ok: false, reason: 'no-conversation' }
+        // 正在流式的会话由本轮的帧自己收口：此刻合并会与新轮的 _addStreamingMessage /
+        // _appendStreamingContent 抢同一个 messages 数组（同刻两条 assistant）
+        if (st.streamingConversations[id]) return { ok: false, reason: 'streaming' }
+        // 内存里没有消息的会话（已卸载/从未加载）不在这里复活：那是 ensureConversationLoaded
+        // 的职责，本动作只补「已有但停在断线那一刻」的视图，避免把卸载策略一脚踢翻
+        if ((conv.messages?.length ?? 0) === 0) return { ok: false, reason: 'no-local-messages' }
+        // extMessages 传 null（不做 ext 兜底）：拉取失败时 loadTranscriptMessages 返回 []，
+        // 合并侧据此原样保留本地视图 —— 绝不允许一次网络失败清屏
+        let fromDisk: Message[]
+        try {
+          fromDisk = await loadTranscriptMessages({ sessionIds: conv.sessionIds, cwd: conv.cwd, extMessages: null })
+        } catch {
+          // loadTranscriptMessages 自身不抛（fetch 已被它吞成 ok:false），这里只兜编程错误：
+          // 重同步是"补救"路径，任何失败都不能反过来伤到已有的本地视图
+          return { ok: false, reason: 'error' }
+        }
+        if (fromDisk.length === 0) return { ok: false, reason: 'empty-transcript' }
+        // 拉取期间可能已有新轮开始流式（await 让出了执行权）→ 再判一次；
+        // 此后到 set() 之间不允许再有 await，保证「读本地 → 合并 → 写回」是原子的
+        if (get().streamingConversations[id]) return { ok: false, reason: 'streaming' }
+        const local = get().conversations.find(c => c.id === id)?.messages ?? []
+        const { messages, netGain, keptLocal } = mergeResyncedMessages(local, fromDisk)
+        set(state => ({
+          conversations: state.conversations.map(c =>
+            c.id === id ? { ...c, messages, messageCount: messages.length } : c
+          ),
+        }))
+        return { ok: true, netGain, keptLocal }
       },
 
       renameConversation: (id, title) => {
