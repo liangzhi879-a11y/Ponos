@@ -177,6 +177,19 @@ export const zhCN = {
     minimize: '最小化到右下角',
     restore: '恢复警示卡片',
     dismiss: '关闭',
+    // 失真档（distortion）：与"压力"是两个被测量——血条=压力仪表，本组文案驱动失真卡
+    distortion: {
+      redTitle: '上下文可能已失真 {n} 处，建议先纠正再继续',
+      axis: { memory: '记忆失真', coherence: '自相矛盾', goal: '目标漂移' },
+      evidenceLine: '第 {turn} 轮 · {axis} · {evidence}',
+      moreEvidence: '另有 {n} 条更早证据',
+      evidenceCount: '{n} 条失真证据',
+      reanchor: '重新锚定',
+      reanchorPreview: '确认将发送给模型的锚定内容（可编辑）',
+      sendAnchor: '发送锚定',
+      newSessionWithSummary: '新建会话（锚点+摘要）',
+      badgeTooltip: '失真 {n} 处',
+    },
   },
 
   // --- 统一系统提示条（agentloop P3 ponos_warning） ---

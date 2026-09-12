@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from '@/i18n/useTranslation'
 import { useHealthStore } from '@/stores/healthStore'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { meterState, type MeterColor } from '@/lib/healthUi'
+import { meterState, distortionOf, distortionBadge, type MeterColor } from '@/lib/healthUi'
 import { Tooltip } from '@/components/ui'
 import { cn } from '@/lib/utils'
 
@@ -55,6 +55,15 @@ export function HealthMeter({ conversationId }: { conversationId: string }) {
     ? `${t('health.remainingPct', { pct: health.remainingPct })} · ${t('health.remainingTurns', { turns: health.remainingTurns })}`
     : ''
 
+  // 失真角标（2026-09-12）：与血条是**两个被测量**——血条宽度/颜色只由压力档决定
+  // （上面 meterState 一行未改）；角标只反映失真档，amber/red 点亮，green 不显示。
+  // 绝对定位挂在血条轨道右端，不参与 flex 布局 → 不改变血条几何与压缩脉冲动画。
+  const badge = distortionBadge(health)
+  const badgeTitle = badge.show
+    ? (distortionOf(health).issues.slice(0, 3).map(x => x.evidence).filter(Boolean).join('\n')
+      || t('health.distortion.badgeTooltip', { n: badge.count }))
+    : ''
+
   return (
     <Tooltip content={label}>
       <div className="absolute left-0 right-0 top-[1.5px] bottom-[1.5px] z-0 flex items-center px-1">
@@ -74,6 +83,19 @@ export function HealthMeter({ conversationId }: { conversationId: string }) {
             {compactCount > 0 && <span className="health-meter-text">{t('health.compactCount', { n: compactCount })}</span>}
           </div>
         </div>
+        {badge.show && (
+          <span
+            className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 rounded-full px-1 text-[9px] leading-[14px] font-medium"
+            style={{
+              background: `color-mix(in srgb, var(--health-tier-${badge.tier}) 20%, transparent)`,
+              color: `var(--health-tier-${badge.tier})`,
+            }}
+            title={badgeTitle}
+          >
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: `var(--health-tier-${badge.tier})` }} />
+            {badge.count > 0 && <span>×{badge.count}</span>}
+          </span>
+        )}
       </div>
     </Tooltip>
   )

@@ -173,6 +173,20 @@ export const enUS: TranslationKeys = {
     minimize: 'Minimize to bottom-right',
     restore: 'Restore warning card',
     dismiss: 'Dismiss',
+    // Distortion axis (distortion): a separate measurement from "pressure" — the meter
+    // shows pressure; these strings drive the distortion card.
+    distortion: {
+      redTitle: 'Context may be distorted in {n} place(s) — fix it before continuing',
+      axis: { memory: 'memory loss', coherence: 'self-contradiction', goal: 'goal drift' },
+      evidenceLine: 'Turn {turn} · {axis} · {evidence}',
+      moreEvidence: '{n} earlier piece(s) of evidence',
+      evidenceCount: '{n} distortion evidence',
+      reanchor: 'Re-anchor',
+      reanchorPreview: 'Confirm the anchor text to send to the model (editable)',
+      sendAnchor: 'Send anchor',
+      newSessionWithSummary: 'New session (anchor + summary)',
+      badgeTooltip: '{n} distortion(s)',
+    },
   },
 
   // --- Unified system warning strip (agentloop P3 ponos_warning) ---

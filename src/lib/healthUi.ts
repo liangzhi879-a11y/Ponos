@@ -16,9 +16,8 @@ export function meterState(health: HealthInfo | null): MeterState {
   return { widthPct, color }
 }
 
-export function shouldShowRedAlert(health: HealthInfo | null, dismissedUntil: number): boolean {
-  return !!health && health.tier === 'red' && Date.now() >= dismissedUntil
-}
+// 注：压力档不再有"弹窗触发器"职责（2026-09-12 spec）——原 shouldShowRedAlert 已删除，
+// 血条只读压力档当仪表，一切提醒都由失真档驱动（见下方 shouldShowDistortionAlert）。
 
 // ---------------------------------------------------------------------------
 // 失真档（distortion）——与压力档并列的**独立被测量**（2026-09-12 spec §7）

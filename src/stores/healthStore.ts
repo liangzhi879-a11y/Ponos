@@ -1,6 +1,7 @@
 // src/stores/healthStore.ts
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
+import { mergeIssues } from '../lib/healthUi'
 import type { DistortionInfo } from '../lib/healthUi'
 
 export type HealthTier = 'green' | 'amber' | 'red'
@@ -48,6 +49,8 @@ const RED_DISMISS_MS = 5 * 60 * 1000
 const DISTORTION_DISMISS_MS = 5 * 60 * 1000
 /** 每会话最多记住的已展示证据键（防止持久化快照无限增长） */
 const MAX_SHOWN_IDS = 50
+/** 每会话最多累积的失真证据条数（超出丢弃最旧的） */
+const MAX_ISSUES = 30
 
 /**
  * 会话健康快照持久化到 localStorage：切换会话/重启应用后血条仍能恢复各会话
@@ -64,7 +67,19 @@ export const useHealthStore = create<HealthState>()(
       distortionShownIdsBySession: {},
       dismissedDistortionUntilBySession: {},
       update: (sessionId, info) =>
-        set((s) => ({ healthBySession: { ...s.healthBySession, [sessionId]: info } })),
+        set((s) => {
+          const prevDist = s.healthBySession[sessionId]?.distortion
+          let next = info
+          if (info.distortion) {
+            // 失真未消除时累积证据：内核窗口滑走后旧证据仍能在卡片里逐条可见
+            //（卡片价值就在"证据可核对"）；回绿即丢弃累积，绝不显示"已消除的旧证据"。
+            const issues = info.distortion.tier === 'green'
+              ? info.distortion.issues
+              : mergeIssues(prevDist?.issues ?? [], info.distortion.issues).slice(-MAX_ISSUES)
+            next = { ...info, distortion: { ...info.distortion, issues } }
+          }
+          return { healthBySession: { ...s.healthBySession, [sessionId]: next } }
+        }),
       setSummary: (sessionId, text, compactCount) =>
         set((s) => ({
           summaryBySession: { ...s.summaryBySession, [sessionId]: text },
