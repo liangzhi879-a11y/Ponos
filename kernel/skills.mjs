@@ -39,7 +39,16 @@ function parseYamlSingle(raw, key) {
   return m ? m[1].trim().replace(/^["']|["']$/g, '') : ''
 }
 
-export function discoverSkills({ root } = {}) {
+// 技能发现（2026-09-12 P2-1 修复：平铺 .md 污染）。
+// 目录形式 <id>/SKILL.md 是技能唯一的**强约定**（bridge 安装、public/sample-skills、
+// ~/.yfw/skills 全用它）；平铺 <id>.md 只是 legacy 兼容，而 .md 后缀本身不含任何约定
+// ⇒ 项目根目录里任意文档都会被当成技能灌进提示词与 Skill 工具清单（实测：仓库根
+// BUILD.md 进了技能块，AGENTS.md 同样中招，而它们连 frontmatter 都没有）。
+// 两道闸：
+//   ① 平铺文件必须带 frontmatter（`---` 块）——纯说明文档不是技能；
+//   ② allowFlat=false 的根（项目目录/addDirs）只认目录形式；技能集合根
+//      （用户显式 --skills-dir、<configDir>/skills）才认平铺（见 cli 的 flatSkillRoots）。
+export function discoverSkills({ root, allowFlat = true } = {}) {
   if (!root || !existsSync(root)) return []
   let entries = []
   try { entries = readdirSync(root, { withFileTypes: true }) } catch { return [] }
@@ -53,8 +62,10 @@ export function discoverSkills({ root } = {}) {
       id = it.name
       try { content = readFileSync(mdPath, 'utf-8') } catch { continue }
     } else if (it.isFile() && it.name.endsWith('.md')) {
-      id = it.name.slice(0, -3)
+      if (!allowFlat) continue
       try { content = readFileSync(join(root, it.name), 'utf-8') } catch { continue }
+      if (!/^---\r?\n/.test(content)) continue // 无 frontmatter 的普通文档不算技能
+      id = it.name.slice(0, -3)
     } else continue
     const meta = parseFrontmatter(content)
     const firstLine = (content.split('\n')[0] || '').replace(/^#+\s*/, '').trim()
@@ -75,12 +86,17 @@ export function discoverSkills({ root } = {}) {
 }
 
 // 跨 root 技能发现（去重）：Skill 工具与提示词技能块共用同一数据源
-export function discoverSkillsAll({ roots = [] } = {}) {
+// flatRoots 缺省 undefined = 全部根都认平铺（direct caller/测试的旧行为，零回归）；
+// 传入数组（cli 的 flatSkillRoots：--skills-dir 与 <configDir>/skills）时按根白名单——
+// 提示词技能清单、Skill 工具的"可用技能"回执、SkillSearch 三处必须同口径，否则又回到
+// "清单里没有、报错里却有"的断裂。
+export function discoverSkillsAll({ roots = [], flatRoots = undefined } = {}) {
   const out = []
   const seen = new Set()
   for (const root of roots) {
     if (!root || !existsSync(root)) continue
-    for (const s of discoverSkills({ root })) {
+    const allowFlat = Array.isArray(flatRoots) ? flatRoots.includes(root) : true
+    for (const s of discoverSkills({ root, allowFlat })) {
       if (!seen.has(s.id)) { seen.add(s.id); out.push(s) }
     }
   }
@@ -88,8 +104,10 @@ export function discoverSkillsAll({ roots = [] } = {}) {
 }
 
 // 技能全文加载（Skill 工具执行体）：按 id 在 roots 中找 <root>/<id>/SKILL.md 或
-// <root>/<id>.md，返回完整内容（含 frontmatter 与操作步骤）；未命中返回 null
-export function loadSkillContent({ roots = [], id } = {}) {
+// <root>/<id>.md，返回完整内容（含 frontmatter 与操作步骤）；未命中返回 null。
+// flatRoots 口径与 discoverSkillsAll 一致（undefined = 全认平铺；数组 = 根白名单）：
+// 提示词里不存在的 id 也不该能经 Skill 工具加载到（否则模型可把项目文档当技能读）。
+export function loadSkillContent({ roots = [], id, flatRoots = undefined } = {}) {
   if (!id) return null
   for (const root of roots) {
     if (!root || !existsSync(root)) continue
@@ -97,6 +115,7 @@ export function loadSkillContent({ roots = [], id } = {}) {
     if (existsSync(dirMd)) {
       try { return readFileSync(dirMd, 'utf-8') } catch { continue }
     }
+    if (Array.isArray(flatRoots) && !flatRoots.includes(root)) continue
     const flatMd = join(root, `${id}.md`)
     if (existsSync(flatMd)) {
       try { return readFileSync(flatMd, 'utf-8') } catch { continue }

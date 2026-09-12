@@ -117,7 +117,9 @@ test('task 模式（缺省，零回归锁）：三张清单与项目指令照常
   assert.equal(r.bits, '11110',
     `task 提示词应含技能/工作流/子 Agent 清单与项目指令，且无 chat 身份；实际 ${r.bits}（针脚顺序 ${NEEDLES.join(' / ')}）`)
   assert.equal(r.init?.session_mode, 'task', 'init 帧应回显 session_mode=task')
-  assert.ok(r.init?.skills >= 1, `task 应发现技能（实际 ${r.init?.skills}）`)
+  // 恰好 1（= fixtures 里唯一的目录形式技能 demo-skill）：平铺的 AGENTS.md 不再是技能
+  // （P2-1 修复的端到端锁——此前这里会数到 2）
+  assert.equal(r.init?.skills, 1, `task 应只发现 fixtures 的目录形式技能（实际 ${r.init?.skills}）`)
   assert.ok(r.init?.workflows >= 1, `task 应发现工作流（实际 ${r.init?.workflows}）`)
 })
 

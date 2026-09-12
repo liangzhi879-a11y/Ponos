@@ -663,7 +663,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     : (opts.configDir && opts.addDirs?.[0])
       ? join(opts.configDir, 'projects', sanitizeSegment(opts.addDirs[0]), 'tool-results')
       : null
-  const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: toolResultsDir ? [...(opts.addDirs || []), toolResultsDir] : opts.addDirs, skillsDirs: opts.skillsDirs, skipPermissions: opts.skipPermissions, allowOutsideDirs: opts.allowOutsideDirs, disallowedTools: opts.disallowedTools, workflow: opts.workflow, memoryRoot: opts.memoryRoot || null, projectMemoryRoot: opts.projectMemoryRoot || null, readAllowFiles: session?.file ? [session.file] : [] })
+  const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: toolResultsDir ? [...(opts.addDirs || []), toolResultsDir] : opts.addDirs, skillsDirs: opts.skillsDirs, flatSkillRoots: opts.flatSkillRoots, skipPermissions: opts.skipPermissions, allowOutsideDirs: opts.allowOutsideDirs, disallowedTools: opts.disallowedTools, workflow: opts.workflow, memoryRoot: opts.memoryRoot || null, projectMemoryRoot: opts.projectMemoryRoot || null, readAllowFiles: session?.file ? [session.file] : [] })
   // 审批放行档位（2026-09-12 四档化）：闭包变量而非 opts 字段——运行中可经
   // setApprovalMode 热切换（cli control_request），下一轮工具调用即按新档判定。
   // 未传档位时按旧 flag 派生（= 今天的真实行为，见 approval-mode.mjs 文件头）。

@@ -198,6 +198,11 @@ export async function main(argv) {
   // CLI/benchmark 直跑无 addDirs 技能时内核仍可用（--no-default-skills 可禁用）。
   // chat 模式：技能根为空 ⇒ 不发现技能、不进提示词清单（Skill 工具亦被禁用）。
   const skillRoots = chatMode ? [] : resolveSkillRoots(args, configDir, process.env)
+  // 平铺 <id>.md 只在"技能集合根"生效（2026-09-12 P2-1）：用户显式 --skills-dir 指定的根，
+  // 以及内核自己的 <configDir>/skills；项目目录/addDirs 根必须用 <id>/SKILL.md 目录形式。
+  // 实证病灶：cwd 根把仓库的 BUILD.md（无 frontmatter 的纯文档）当技能灌进提示词。
+  // 同一白名单下传工具层（Skill 工具回执/SkillSearch 必须与提示词清单同口径）。
+  const flatSkillRoots = new Set([...(args.skillsDirs || []), join(configDir, 'skills')].filter(Boolean))
   // S5-1 共享目录只读挂载：shared 存在时追加进 addDirs（tools withinBoundary 按
   // 白名单 dir 放行；共享技能/配置多人共用，个人 configDir 保持隔离）
   const sharedDir = sharedDirFor(configDir)
@@ -398,6 +403,8 @@ export async function main(argv) {
       addDirs: args.addDirs,
       skillsDirs: skillRoots,
       skillIds,
+      // Skill 工具/SkillSearch 与提示词技能块同口径的平铺根白名单（P2-1）
+      flatSkillRoots: [...flatSkillRoots],
       systemPrompt: '', // 占位，下面三层组装后覆盖
       verbose: args.verbose,
       skipPermissions: args.skipPermissions,
@@ -468,7 +475,7 @@ export async function main(argv) {
   // P10-A：roots = skillRoots（显式 --skills-dir > addDirs 叠加默认 <configDir>/skills）
   const seenSkillIds = new Set()
   for (const dir of skillRoots) {
-    for (const s of discoverSkills({ root: dir })) {
+    for (const s of discoverSkills({ root: dir, allowFlat: flatSkillRoots.has(dir) })) {
       if (!seenSkillIds.has(s.id)) { seenSkillIds.add(s.id); skills.push(s); skillIds.push(s.id) }
     }
   }

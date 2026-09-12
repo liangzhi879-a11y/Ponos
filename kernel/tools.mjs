@@ -1050,7 +1050,7 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
 // 兼容兜底——两者一致性由 kernel-tests/chat-mode.test.mjs 的源码比对守住。
 export const CHAT_MODE_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch']
 
-export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null, readAllowFiles = [], dynamicTools = null }) {
+export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null, readAllowFiles = [], dynamicTools = null, flatSkillRoots = null }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
   // 记忆只读边界扩展（2026-09-10）：Read 追加个人/项目记忆根——记忆文件是内核
   // 自己维护的知识库（与 MemorySearch 同源），会话目录边界把它们排除在外会让
@@ -1065,6 +1065,9 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
   // 缺省回退 allowDirs——Skill 工具与提示词【可用技能】块同一数据源（cli 发现用同 roots）。
   // 注意：skillsDirs 不并入 allowDirs，避免扩大 Bash/Read 等工具的文件边界。
   const skillLoadRoots = (skillsDirs?.length ? skillsDirs : allowDirs).filter(Boolean)
+  // 平铺 <id>.md 的根白名单（2026-09-12 P2-1）：与 cli 提示词发现同口径——项目根里的
+  // BUILD.md 之类不再能被 Skill 工具当技能加载，也不出现在"可用技能"回执里。
+  const flatSkillRootsArg = Array.isArray(flatSkillRoots) ? flatSkillRoots : undefined
   // 会话目录边界开关：--allow-outside-dirs / PONOS_ALLOW_OUTSIDE_DIRS=1 解锁文件工具
   // （Read/Write/Edit/OCR）的目录限制；Glob/Grep 仍限定会话目录内（避免全盘扫描）。
   const skipBoundary = !!allowOutsideDirs || process.env.PONOS_ALLOW_OUTSIDE_DIRS === '1'
@@ -1336,9 +1339,9 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
       run: (input) => {
         const id = String(input?.skill ?? '').trim()
         if (!id) return { content: 'skill 参数缺失：请传入技能名（提示词【可用技能】清单中的 id）', isError: true }
-        const content = loadSkillContent({ roots: skillLoadRoots, id })
+        const content = loadSkillContent({ roots: skillLoadRoots, id, flatRoots: flatSkillRootsArg })
         if (content == null) {
-          const ids = discoverSkillsAll({ roots: skillLoadRoots }).map((s) => s.id)
+          const ids = discoverSkillsAll({ roots: skillLoadRoots, flatRoots: flatSkillRootsArg }).map((s) => s.id)
           return { content: `技能不存在：${id}。可用技能：${ids.join(', ') || '（当前无可用技能）'}`, isError: true }
         }
         return { content: `技能「${id}」已加载，严格按以下指引执行：\n\n${content}`, isError: false }
