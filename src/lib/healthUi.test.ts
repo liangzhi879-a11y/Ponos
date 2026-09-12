@@ -103,6 +103,18 @@ test('shouldShowDistortionAlert：同源复发（recurred）必须重新提醒�
   assert.equal(shouldShowDistortionAlert(x, 0, [key1, key2]), false, '同一复发态不得反复弹卡（否则无限循环）')
 })
 
+test('shouldShowDistortionAlert：第二次复发仍须能提醒（抑制键含复发次数）', () => {
+  // 内核递增 recurredCount。若抑制键不含次数，第一次复发登记后第二次起永远静默。
+  const r2 = h({ distortion: d({ tier: 'red', trigger: 'm:1', issues: [i('m:1', { recurred: true, recurredCount: 2 })] }) })
+  const seen = ['m:1', 'm:1#recurred1'] // 首次 + 第一次复发都已展示过
+  assert.equal(distortionSuppressKey(distortionOf(r2)), 'm:1#recurred2', '键须含复发次数')
+  assert.equal(shouldShowDistortionAlert(r2, 0, seen), true, '第二次复发应能再提醒一次')
+  assert.equal(shouldShowDistortionAlert(r2, 0, [...seen, 'm:1#recurred2']), false, '同一复发态只提醒一次')
+  // 内核没给次数（老内核/字段缺失）时退化为 1 次，不抛错
+  const legacy = h({ distortion: d({ tier: 'red', trigger: 'm:1', issues: [i('m:1', { recurred: true })] }) })
+  assert.equal(distortionSuppressKey(distortionOf(legacy)), 'm:1#recurred1')
+})
+
 test('shouldShowDistortionAlert：冷却只由显式关闭（dismiss）设置，不因处理过证据而闷掉新失真', () => {
   // 处理（重新锚定/新建会话）只按 id 抑制"已处理的证据"；新的、不同的证据必须立刻可提醒——
   // 红档意味着上下文已失真，静默 5 分钟等于让会话带着错误继续跑。

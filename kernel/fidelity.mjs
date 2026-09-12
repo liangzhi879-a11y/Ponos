@@ -386,6 +386,9 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
       if (prev.resolved) {           // 复发：复活 + 打标记（前端据此升级动作为"新建会话"）
         prev.resolved = false
         prev.recurred = true
+        // 复发次数：前端抑制键含次数（<id>#recurred<n>），否则第一次复发登记后，
+        // 第二次及以后的复发会撞同一个键而被静默（用户以为已解决）。
+        prev.recurredCount = (prev.recurredCount || 0) + 1
         prev.strength = issue.strength
         prev.turn = issue.turn
         prev.evidence = issue.evidence
@@ -517,9 +520,11 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
     const out = []
     const rw = Array.isArray(llm.rewritten) ? llm.rewritten.filter(Boolean) : []
     const lm = Array.isArray(llm.missing) ? llm.missing.filter(Boolean) : []
-    rw.slice(0, 2).forEach((r, i) => {
+    // id 只由**内容**决定，不含数组下标：模型每次返回顺序可能不同，若把下标编进 id，
+    // 同一改写主张会以新 id 反复入账（旧的还挂在 active 里），凭空把中证据堆到 amber。
+    rw.slice(0, 2).forEach((r) => {
       out.push(push(mkIssue({
-        id: `m:rewritten:${i}:${normalizeEntity(r)}`, axis: 'memory', kind: 'summary-rewritten',
+        id: `m:rewritten:${normalizeEntity(r)}`, axis: 'memory', kind: 'summary-rewritten',
         strength: 'medium', turn: turn,
         evidence: `摘要疑似改写事实：${r}`,
         detail: { rewritten: rw.slice(0, 5) },
@@ -602,7 +607,7 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
     return {
       id: it.id, axis: it.axis, kind: it.kind, strength: it.strength, turn: it.turn,
       evidence: it.evidence, detail: it.detail, at: it.at,
-      ...(it.recurred ? { recurred: true } : {}),
+      ...(it.recurred ? { recurred: true, recurredCount: it.recurredCount || 1 } : {}),
     }
   }
 

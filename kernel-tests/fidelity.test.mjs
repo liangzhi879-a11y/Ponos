@@ -196,6 +196,56 @@ test('回绿与复发升级：重新锚定后立即回绿，同源复发 → 直
   assert.ok(s2.issues.some((i) => i.recurred), '复发证据带 recurred 标记')
 })
 
+test('反复复发：每次复发都递增次数（否则第二次起永远不再提醒）', () => {
+  // 前端用「抑制键」避免同一证据反复弹卡。若复发标记只是布尔且永不清除，抑制键就恒为
+  // <id>#recurred —— 第一次复发登记后，第二次复发用的还是同一个键 → 静默，用户以为已解决。
+  // 内核须给出次数，前端才能"每次复发各提醒一次"。
+  const f = mkFid()
+  const d = [{ name: 'Read', path: 'src/z.ts', isError: true, errorText: 'ENOENT' }]
+  const hit = () => f.recordTurn({ user: 'u 引用 src/z.ts', assistant: 'a 读 src/z.ts', toolDigest: d })
+  hit(); hit()
+  const s1 = f.snapshot()
+  assert.equal(s1.tier, 'red')
+  assert.ok(s1.issues.every((i) => !i.recurredCount), '首次出现不算复发（次数缺省/0）')
+
+  f.markResolved(s1.issues.map((i) => i.id))
+  hit() // 第一次复发
+  const s2 = f.snapshot()
+  const r2 = s2.issues.find((i) => i.recurred)
+  assert.ok(r2, '第一次复发带 recurred 标记')
+  assert.equal(r2.recurredCount, 1, '首次复发计 1 次')
+  assert.equal(s2.tier, 'red', '复发直通红档')
+
+  f.markResolved(s2.issues.map((i) => i.id))
+  hit() // 第二次复发
+  const s3 = f.snapshot()
+  const r3 = s3.issues.find((i) => i.id === r2.id)
+  assert.ok(r3, '复发证据仍在')
+  assert.equal(r3.recurredCount, 2, '第二次复发次数递增（前端据此用新抑制键再提醒一次）')
+  assert.equal(s3.tier, 'red')
+
+  f.markResolved(s3.issues.map((i) => i.id))
+  hit() // 第三次复发
+  assert.equal(f.snapshot().issues.find((i) => i.id === r2.id).recurredCount, 3, '次数持续递增')
+})
+
+test('中证据累积：两个**不同轴**各 1 点也达「≥2 点中证据」→ amber（spec §1）', () => {
+  // spec §1：「amber 40 ≤ D < 70 **或存在 ≥2 点中证据**」——按点数而非仅按分数，
+  // 且不要求同轴（每轴独立归一的是 score，不是点数）。此测试固化该语义。
+  const f = mkFid()
+  f.recordTurn({ user: '开始做 A', assistant: '好的', toolDigest: [] })
+  // memory 轴 1 点：摘要缺失率 1/3 落在 medium 档（≥0.2 且 <0.4）
+  f.recordCompactionAudit({ entities: ['src/a.ts', 'src/b.ts', 'src/c.ts'], missing: ['src/c.ts'], ratio: 0.33 })
+  // coherence 轴 1 点：单轮内引用工具已报不存在的路径（两次才算强证据）
+  f.recordTurn({ user: 'u 引用 src/z.ts', assistant: 'a 读 src/z.ts', toolDigest: [{ name: 'Read', path: 'src/z.ts', isError: true, errorText: 'ENOENT' }] })
+  const s = f.snapshot()
+  assert.ok(!s.issues.some((i) => i.strength === 'strong'), '本例不得含强证据（否则 red 另有来源）')
+  assert.ok(s.issues.length >= 2, `应至少两条中证据，实得 ${s.issues.length}`)
+  assert.ok(new Set(s.issues.map((i) => i.axis)).size >= 2, '确实跨两个轴')
+  assert.equal(s.tier, 'amber', '跨轴合计 ≥2 点中证据 → amber')
+  assert.equal(s.trigger, null, 'amber 不弹窗')
+})
+
 test('假红回归：压缩刚落地（159×场景）不得弹失真红档', () => {
   const f = mkFid()
   f.recordTurn({ user: '实现 A', assistant: '开始实现 A', toolDigest: [] })

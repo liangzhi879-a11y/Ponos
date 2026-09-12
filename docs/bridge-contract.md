@@ -100,7 +100,7 @@
 | `score` | number | 0–100。三轴**各自归一**后取最大值（不跨轴求和，避免不同性质的证据互相稀释） |
 | `tier` | `green`/`amber`/`red` | 失真档。**强证据直通 red**；仅中证据时封顶 65（< red 阈值 70）只到 amber |
 | `axes` | `{memory, coherence, goal}` | 三轴分数：记忆（压缩丢/改事实）、自洽（自相矛盾/陈旧引用）、目标（漂移） |
-| `issues[]` | `{id, axis, kind, strength, turn, evidence, at}` | 证据清单（最多 10 条，强证据在前）。`id` 即去抖键；`strength` ∈ `strong`/`medium` |
+| `issues[]` | `{id, axis, kind, strength, turn, evidence, at, recurred?, recurredCount?}` | 证据清单（最多 10 条，强证据在前）。`id` 即去抖键；`strength` ∈ `strong`/`medium`。**复发**：证据被「重新锚定」处理后又再现 → 复活并带 `recurred: true`，`recurredCount` 递增（第几次复发）；前端抑制键为 `<id>#recurred<次数>`，故**每次复发各提醒一次**，同一复发态不重复弹 |
 | `trigger` | string \| null | 去抖键（前端据此"同一证据只弹一次"）。**仅 red 且存在最强证据时非空**；观察期/无证据为 `null` |
 | `observeUntilTurn` | number \| null | 回绿后的观察期截止轮次：期内复发才重新上报（防"刚关掉又弹"） |
 | `anchorAvailable` | boolean | 是否可重新锚定（仅 red 为 true） |
