@@ -19,6 +19,8 @@ import { resolveYfwHome } from './yfw-home.cjs'
 import { writeLogLine, readLogPolicyCached, enforceLogPolicy, normalizeLogPolicy, DEFAULT_LOG_POLICY } from './log-policy.cjs'
 import { handleLogsRoute } from './logs-routes.mjs'
 import { installBuiltinWorkflows } from './workflow-install.mjs'
+// 技能安装/更新链（P2-2）：同为可测模块——bridge 顶层 listen，测试不能 import 本文件
+import { copyWithRewrite, readSkillIndex, writeSkillIndex, installBuiltinSkills } from './skill-install.mjs'
 // 工作流 HTTP 路由（独立模块——bridge 顶层 listen，测试不能 import 本文件）+ 常驻宿主会话
 import { handleWorkflowRoute } from './workflow-routes.mjs'
 import { mapKernelMessage } from './workflow-events.mjs'
@@ -169,38 +171,11 @@ const TOOLS_SAMPLE_ROOTS = [
   join(process.cwd(), 'build', 'templates', 'tools'),
 ]
 
-function readSkillIndex(idxPath) {
-  if (!existsSync(idxPath)) return []
-  try {
-    const idx = JSON.parse(readFileSync(idxPath, 'utf-8'))
-    return Array.isArray(idx) ? idx : []
-  } catch {
-    return []
-  }
-}
-
-function writeSkillIndex(idxPath, index) {
-  writeFileSync(idxPath, JSON.stringify(index, null, 2), 'utf-8')
-}
-
-// Recursively copy a skill directory, rewriting {{YFW_SKILLS}} placeholders to
-// the real skill root so the bundled package stays portable across machines.
-// Shared by single-skill install and first-run bulk auto-install.
-const SKILL_TEXT_RE = /\.(md|py|json|txt|yaml|yml|js|mjs|cjs|ts|html|css|sh|bat|cmd|csv)$/i
-function copyWithRewrite(srcDir, destDir, placeholder, yfwRootAbs) {
-  for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
-    const src = join(srcDir, entry.name)
-    const dest = join(destDir, entry.name)
-    if (entry.isDirectory()) {
-      mkdirSync(dest, { recursive: true })
-      copyWithRewrite(src, dest, placeholder, yfwRootAbs)
-    } else {
-      const raw = readFileSync(src)
-      if (SKILL_TEXT_RE.test(entry.name)) writeFileSync(dest, raw.toString('utf-8').split(placeholder).join(yfwRootAbs), 'utf-8')
-      else writeFileSync(dest, raw)
-    }
-  }
-}
+// 技能安装/索引/指纹台账的实现已抽到 server/skill-install.mjs（2026-09-12 P2-2）：
+// 与 workflow-install.mjs 同因——bridge.mjs 顶层会 listen(51517)（EADDRINUSE 自愈还会
+// taskkill 用户进程），测试 import 它会真起桥，抽出去才能直接做单元回归。
+// 导出：copyWithRewrite / readSkillIndex / writeSkillIndex / writeSkillIndexEntry /
+//       installBuiltinSkills（含指纹台账 upsertSkill）。
 
 // Python runtime：优先使用随应用捆绑的运行时（<app>/runtime/python/python.exe，
 // 与 main.cjs 的 findPythonExe 同路径约定），保证打包版离线可用；开发环境回退 PATH。
@@ -2986,74 +2961,24 @@ function autoInstallBuiltinWorkflows() {
   }
 }
 
+// 内置技能播种与更新（P2-2）。装/更新/跳过的决策全在 server/skill-install.mjs
+// （可测模块），这里只负责：解析源根与目标根、把统计打成日志、置 boot 就绪信号。
 function autoInstallSamples() {
   try {
     const skillRoot = findSkillRoot()
-    const marker = join(skillRoot, '.auto-installed.json')
-    if (existsSync(marker)) return
     const candidates = [...SAMPLE_SKILL_ROOTS]
     const src = candidates.find(p => existsSync(p))
     if (!src) { console.log('[bridge] auto-install: sample-skills source not found'); return }
-    const dirs = readdirSync(src, { withFileTypes: true }).filter(d => d.isDirectory() && !d.name.startsWith('_') && existsSync(join(src, d.name, 'SKILL.md')))
-    let okCount = 0
-    let failCount = 0
-    for (const d of dirs) {
-      const target = join(skillRoot, d.name)
-      if (existsSync(target)) { okCount += 1; continue }
-      try {
-        mkdirSync(target, { recursive: true })
-        copyWithRewrite(join(src, d.name), target, '{{YFW_SKILLS}}', skillRoot.replace(/\\/g, '/'))
-        const md = readFileSync(join(target, 'SKILL.md'), 'utf-8')
-        const yamlMatch = md.match(/^---\r?\n([\s\S]*?)\r?\n---/)
-        let ver = ''
-        let desc = ''
-        if (yamlMatch) {
-          const grab = (k) => {
-            const m = yamlMatch[1].match(new RegExp('^' + k + ':\\s*["\']?(.+?)["\']?\\s*$', 'm'))
-            return m ? m[1].trim() : ''
-          }
-          ver = grab('version')
-          desc = grab('description')
-        }
-        const idxPath = join(skillRoot, '_skill_index.json')
-        let index = readSkillIndex(idxPath)
-        const entry = {
-          id: d.name, name: d.name, description: desc || d.name,
-          version: ver || '0.0.0', triggers: [],
-          lines: md.split('\n').length, size_kb: Math.round(md.length / 1024),
-          installed_at: new Date().toISOString(), installed_from: 'builtin',
-          source_path: join(src, d.name).replace(/\\/g, '/'),
-          dependencies: [], enabled: true,
-        }
-        const existing = index.findIndex(s => s.id === d.name)
-        if (existing >= 0) index[existing] = entry
-        else index.push(entry)
-        writeSkillIndex(idxPath, index)
-        okCount += 1
-        console.log('[bridge] auto-installed:', d.name)
-      } catch (e) {
-        failCount += 1
-        console.log('[bridge] auto-install failed:', d.name, '-', e.message)
-      }
-    }
-    const srcCommon = join(src, '_common')
-    const destCommon = join(skillRoot, '_common')
-    if (existsSync(srcCommon) && !existsSync(destCommon)) {
-      try {
-        mkdirSync(destCommon, { recursive: true })
-        copyWithRewrite(srcCommon, destCommon, '{{YFW_SKILLS}}', skillRoot.replace(/\\/g, '/'))
-        console.log('[bridge] auto-installed shared lib: _common')
-      } catch (e) {
-        failCount += 1
-        console.log('[bridge] auto-install _common failed:', e.message)
-      }
-    }
-    if (failCount === 0) {
-      writeFileSync(marker, JSON.stringify({ installedAt: new Date().toISOString(), count: okCount }, null, 2), 'utf-8')
-      console.log('[bridge] auto-install complete: ' + okCount + ' skills')
-    } else {
-      console.log('[bridge] auto-install incomplete: ' + okCount + ' ok, ' + failCount + ' failed - marker not written, retry next launch')
-    }
+    const r = installBuiltinSkills({
+      srcRoot: src,
+      dstRoot: skillRoot,
+      manifestPath: join(skillRoot, '.auto-installed.json'), // 指纹台账（取代"装过即短路"的开关）
+    })
+    for (const id of r.installed) console.log(id === '_common' ? '[bridge] auto-installed shared lib: _common' : `[bridge] auto-installed: ${id}`)
+    for (const id of r.updated) console.log(id === '_common' ? '[bridge] auto-updated shared lib: _common' : `[bridge] auto-updated: ${id}`)
+    for (const id of r.kept) console.log('[bridge] auto-install kept (user-modified):', id)
+    for (const f of r.failed) console.log('[bridge] auto-install failed:', f.id, '-', f.error)
+    console.log(`[bridge] auto-install scan: ${r.installed.length} installed, ${r.updated.length} updated${r.updated.length ? ' (' + r.updated.join(', ') + ')' : ''}, ${r.unchanged} unchanged, ${r.kept.length} kept, ${r.failed.length} failed`)
   } catch (e) {
     console.log('[bridge] auto-install error:', e.message)
   }
