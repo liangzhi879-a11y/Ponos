@@ -12,6 +12,7 @@
 //   出网/浏览器       ask     ask    allow        allow
 //   子 agent/技能/工作流 ask  ask    allow        allow
 //   未识别(MCP 等)    ask     ask    allow        allow
+//   应用智控(app_*)   ask     ask    ask          allow   ← 兜底保守档；read/write 精确区分由显式规则负责
 //   高危 Bash         ask     ask    ask          allow
 //   灾难命令(黑名单)  ask(硬) ask(硬) ask(硬)      ask(硬)   ← 见 blacklist.mjs，永不自动放行
 //
@@ -35,6 +36,7 @@ export const TOOL_CLASS_ALLOW_FROM = {
   net: 'loose',          // 出网 / 浏览器
   agent: 'loose',        // 子 agent / 技能 / 工作流
   unknown: 'loose',      // 未识别工具（MCP、动态工具）→ 与 agent 同级，保持现状
+  appTool: 'bypass',      // 应用智控（app_*）：动态生成、无法静态分级 → 保守从严，默认档不放行
   highRiskBash: 'bypass', // 高危 Bash（highrisk.mjs）
 }
 
@@ -57,6 +59,10 @@ export function normalizeApprovalMode(v) {
 export function classifyTool(toolName) {
   const name = String(toolName || '')
   if (name === 'Bash') return 'exec'
+  // 应用智控：工具名由用户目标动态生成，静态表无法判定 read/write → 一律归入保守类（默认档 ask）。
+  // 精确的 read 放行 / write 询问由内核按 Spec 的 kind 注入显式规则完成；显式规则优先级高于档位表，
+  // 因此 write 在任何档位（含 bypass）都会被询问。
+  if (/^app_/.test(name)) return 'appTool'
   if (READ_TOOLS.has(name)) return 'read'
   if (WRITE_TOOLS.has(name)) return 'write'
   if (NET_TOOLS.has(name)) return 'net'

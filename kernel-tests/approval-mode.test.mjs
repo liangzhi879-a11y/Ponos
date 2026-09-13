@@ -60,6 +60,7 @@ test('档位：语义表逐格展开（含硬黑名单永不自动放行）', ()
     ['agent', false, false, true, true],
     ['unknown', false, false, true, true],
     ['highRiskBash', false, false, false, true],
+    ['appTool', false, false, false, true],
   ]
   for (const [cls, ...row] of TABLE) {
     APPROVAL_MODES.forEach((mode, i) => {
@@ -75,7 +76,7 @@ test('档位：语义表逐格展开（含硬黑名单永不自动放行）', ()
       prev = cur
     }
   }
-  assert.equal(Object.keys(TOOL_CLASS_ALLOW_FROM).length, 7)
+  assert.equal(Object.keys(TOOL_CLASS_ALLOW_FROM).length, 8)
 })
 
 test('档位：旧 flag 派生 = 今天的真实行为', () => {

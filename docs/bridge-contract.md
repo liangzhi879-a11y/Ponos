@@ -60,6 +60,16 @@
 | `loose`（**默认**） | 是 | 只问高危 Bash（`server/highrisk.mjs`）与灾难命令 = 应用此前的真实行为 |
 | `bypass` | 是 | 除灾难命令外都不问 |
 
+**应用智控工具（`app_*`，2026-09-13）**：应用智控按用户提供的目标**动态生成**工具，静态表无法判定
+其是否会改动外部数据，故 `kernel/approval-mode.mjs` 将其单独归入保守类 `appTool`
+（允许档 `bypass`，与 `highRiskBash` 同级）：`manual` / `auto` / `loose` 三档**一律询问**，
+仅 `bypass` 档放行。
+
+> 之所以不能沿用既有的 `unknown`（允许档 `loose`）：默认档恰为 `loose`，`2 >= 2` 会**直接放行**，
+> 等于把应用的写操作变成静默执行。`appTool` 的允许档刻意严于 `write`，确保兜底有效。
+> read 放行 / write 询问的精确区分，由内核按 App Spec 的 `kind` 注入显式规则完成
+> （显式规则优先级高于档位表、命中即定）。
+
 硬约束（**不随档位变化**，内核侧 `kernel/blacklist.mjs`）：
 `rm -rf /`、`rm -rf ~`、`mkfs*`、`format X:`、`diskpart`、`dd of=/dev/…`、`shutdown/reboot/halt/poweroff`。
 命中时四档**都发 `can_use_tool`（带 `hard:true`）**——即仍弹窗、可单次放行，但：
