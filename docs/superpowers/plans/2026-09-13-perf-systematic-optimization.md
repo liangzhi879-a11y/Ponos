@@ -520,11 +520,25 @@ export function perfStep(turn, step)                  // 发一行 + 清账 + �
 
 ### Task 16: R4/R5/R6 渲染层其余三项
 
-**Files:** Modify `src/components/chat/MarkdownText.tsx`、`src/lib/utils.ts`、`src/hooks/useYFWCLI.ts`、`src/components/chat/ChatWindow.tsx`
+**Files:** Modify `src/components/chat/MarkdownText.tsx`、`src/lib/utils.ts`、`src/hooks/useYFWCLI.ts`、`server/bridge.mjs`、`electron/diag-monitor.cjs`；Add `src/lib/markdownStream.ts`、`src/lib/streamPressure.ts`；Tests: `src/lib/markdownStream.test.ts`、`src/lib/utils.test.ts`、`src/lib/streamPressure.test.ts`
 
-- [ ] R4：`{...MD_COMPONENTS, p}` 与 `preprocessBoxDrawingTables` 用 `useMemo`；`sanitizeText` 逐字符拼接 → **正则**；进一步**冻结稳定前缀、只重解析不稳定尾块**
-- [ ] R5：`streamHeavyMode` 判据换成**队列压力**（队列深度 / 最老未处理项年龄 + 滞回），**不用 rAF**（后台/失焦停摆）改 16ms 定时器；按进取档做 100–150ms 合帧
-- [ ] R6：长列表 containment 或虚拟化（**量化 scrollTop + `useSyncExternalStore`**，仅对确定的长会话启用）
+- [x] R4 ①：`MarkdownTextPart` 加 `memo` + **显式比较器**（只比 `text` 与 `status.type`）——`status` 对象是上游每帧新建的，按引用比会让 memo 恒失效；`cwd` 走 context 不受 memo 阻挡。`{...MD_COMPONENTS, p}` 与 `preprocessBoxDrawingTables` 各自 `useMemo`（前者只随 `cwd` 变，后者按 `text`）。
+- [x] R4 ②：**冻结稳定前缀、只重解析不稳定尾块**（新模块 `src/lib/markdownStream.ts`，纯函数）。切分规则与理由：只在**空行**处切（段中切会改变解析结果）、**只认完整行**（末尾半行还可能长内容）、用**围栏奇偶性**判断是否在代码块内（这是位置属性，不必回溯）、文本被截断（半截 ASK_USER 标记）或整体回写时靠**锚点比对**作废重扫、同一文本重复 feed 走快速路径。**只在 running 期切分**：消息完成后整段一次性解析 ⇒ 最终渲染与改动前逐字节一致。
+- [x] R4 ③：`utils.ts` 的 `sanitizeText` 逐字符拼接 → **正则**。实测 1.08M 字符带控制字符：**2.0ms vs 68.4ms（≈34×，best-of-3）**；该函数在**每个流式文本增量**上都会跑（`useYFWCLI.ts:627`）。
+- [x] **R4 有意偏差 1：去掉"先 `test` 再 `replace`"的前置判断**。实测干净串上两者等价（0.60ms vs 0.59ms @880K 字符，且都保持字符串同一性），脏串上 `replace` 无论如何要过一遍全串 ⇒ 那行既不省时间也不改语义。**不留没有实测背书的"优化"**。
+- [x] **R4 有意偏差 2：不做 token 级缓存**（`claude-code/src/components/Markdown.tsx:22-71` 的 `hashContent` 键 + MRU）。前缀冻结已经把重解析面缩到尾块；token 缓存需要哈希全文/增量哈希 + 一个 LRU + 失效判断，收益与复杂度不成比例。若实机仍见 markdown 解析热点再上。
+- [x] **R4 事故与处置**：`sanitizeText` 的正则第一次落盘时变成了**字面控制字节**（Edit 把 ` ` 写成了真 NUL）——`cat -v` 复核时显示 `^@`。改由脚本重建为显式 `\uXXXX` 转义文本，并在 `utils.test.ts` 里立规矩：控制字符一律用 `ch(n)` **运行期构造**，源码里既不留控制字节也不用 `\uXXXX`。这条坑值得记：**不可见字节在编辑器/工具链任一环节都可能被吃掉或改写**。
+- [x] R5：`streamHeavyMode` 判据换成**队列压力**（新模块 `src/lib/streamPressure.ts`，纯状态机）。进档＝深度 ≥8 **或** 最老待处理项年龄 ≥120ms（**立即**，不等观察期）；出档＝深度 ≤2 **且** 年龄 ≤40ms **连续满足 250ms**；中间带维持现状（滞回，防阈值抖动）；阈值与形状取自 codex `tui/src/streaming/chunking.rs:85-116` + `frame_rate_limiter.rs:13,23-36`。
+- [x] R5 调度：**一律走 16ms 定时器，不再用 rAF**——后台/失焦窗口 rAF 是**完全停摆**（不是变慢），流式内容只能等窗口重新可见才追上来；满速期按 pi-main 的 `setTimeout(max(0, 16-elapsed))` 形状补足帧间隔，降频期用**进取档 120ms** 合帧（原实现 250ms 显迟钝）。`flushStreamEvents` 的幂等性未被破坏：同步冲队列后已排的定时器回调拿到空队列即返回。
+- [x] R5 复位点：`result`（本轮收尾）与 WS `onclose`（断线）各 `heavyGate.reset()`——降频态不跨轮继承；旧实现靠"单帧 <20ms 即恢复"自愈，但它压根没进过降频态。
+- [x] R5 观测：`/diag/render-frame` payload 增加 `heavyIn/heavyOut/qMax/qAgeMax/reason`（只报"当时是否降频"回答不了"为什么降/为什么没降"），桥侧白名单同步扩字段（契约纯增量，老 GUI 缺字段按 0 降级），诊断页 detail 追加一行降频说明。
+- [x] **R5 有意偏差：`flushTaskProgress` 仍用 rAF**。它不在 R5 范围（R5 治的是 `streamHeavyMode`）；task_progress 是每工具调用一次的低频事件、且 `visibilitychange` 已有兜底 flush。
+- [x] **R5 的诚实结论（实测校正了预期）**：本应用真实入站流量约 **1 事件/秒**（K0.3 实测帧间隔中位 998ms、每步中位 3 帧）⇒ `depthIn=8` 在正常负载下**不会**触发。这是**有意的**：判据要回答的是"跟不上"而不是"某一帧慢"——3 帧/秒的流量下每帧 60ms 也不叫落后。真正会触发的是**年龄**（主线程被 React 提交占住 ⇒ 排定的 flush 定时器晚点触发 ⇒ 最老一条的等待变长）。故这项的收益是**机制正确**（旧判据从未置位过一次），不是"立刻降频"；能不能降到频要等实机数据说话。
+- [x] 测试 36 条（`markdownStream.test.ts` **15** + `utils.test.ts` **6** + `streamPressure.test.ts` **15**）。三条最关键的：① `markdownStream` 的**差分性质测试**（增量结论 ≡ 每帧从头重算，覆盖围栏开合/截断/回写/列表表格混排，逐帧比对）；② `utils.test.ts` 的**相对性能断言**；③ `streamPressure` 的**滞回状态机**用例（中间带维持现状、退出需连续 250ms、打断即清零）。
+- [x] **一条测试方法论的修正**：`utils.test.ts` 起初用绝对红线 `ms < 200`（1M 字符），变异测试显示**它杀不掉老的拼接实现**（那个老实现只要 68ms，照样过关）⇒ 改为**相对断言**（正则至少比逐字符参考实现快 5 倍）才真正钉住 R4 的结论。**绝对红线在"新旧实现差一个数量级但都很快"的场景下是无效断言**。
+- [x] 变异：`markdownStream` 9 条（**7 杀 + 2 证等价**：M6「变短不重置」与 M9「无快速路径」被差分性质测试证明为等价变异）；`sanitizeText` 7 条**全杀**（含"改回逐字符拼接"——靠相对性能断言杀）；`streamPressure` 10 条**全杀**（滞回/中间带/闭区间/进档观察期/计时清零/reset/调度无视降频/负数延迟/判据 AND 化/出档 OR 化），其中 M5、M10 起初存活 ⇒ **补了两条测试**（"打断后必须重新等满 250ms"用 `+249ms 仍降频` 钉死累计法；"深度低但年龄高＝中间带不是低压力"钉死 OR 化的出档条件），不是放宽断言。
+- [ ] R6：长列表 containment 或虚拟化（**量化 scrollTop + `useSyncExternalStore`**，仅对确定的长会话启用）——**未开始**
+- [ ] **验收（留待用户实机）**：① 流式期不再每帧全量重解析 markdown（尾块以外的内容解析次数归零）；② 降频机制是否/何时触发（诊断页 render-health 一行的「降频 进N/出M 次，队列峰值 …」）；③ 观感：合帧从 250ms 改 120ms 后是否更跟手。回归基线：`npm test` **1381 条 / 1380 pass / 0 fail / 1 skip**（基线 1345 → +36 全是本次新增；`npx tsc --noEmit` 干净）。
 
 ---
 

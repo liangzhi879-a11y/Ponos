@@ -19,6 +19,7 @@ import { useWarningStore } from '@/stores/warningStore'
 import { normalizeWarning } from '@/lib/warningUi'
 import { makeLaneNote } from '@/lib/laneUi'
 import { staleCompactionSids, COMPACT_INDICATOR_MAX_MS } from '@/lib/compactIndicator'
+import { createHeavyModeGate, nextFlushDelay } from '@/lib/streamPressure'
 import { useBrowserStore } from '@/stores/browserStore'
 import { parseApprovalModeReport, type ApprovalMode } from '@/lib/approvalModeUi'
 import type { ContentBlock, Message, QuestionAnswer, BrowserEvent, LoopState } from '@/types'
@@ -190,6 +191,7 @@ export function getOrCreateWS(): WebSocket | null {
       // 由 bridge_hello 判明"同一桥闪断"（无需动作）还是"换新桥"（自动续接）。
       pendingStreamEvents.length = 0
       streamFlushScheduled = false
+      heavyGate.reset()
       const store = useChatStore.getState()
       const ui = useUIStore.getState()
       for (const sid of [...streamingSessions]) {
@@ -447,7 +449,8 @@ export function useYFWCLI() {
     const onVisible = () => {
       if (document.visibilityState === 'visible') getOrCreateWS()
     }
-    // 页面隐藏时立即兜底 flush 待批流式事件，避免 rAF 暂停期间状态滞后
+    // 页面隐藏时立即兜底 flush 待批流式事件：隐藏窗口里定时器会被节流到 ≥1s
+    //（rAF 则是完全停摆），不兜一下这段状态就要等到窗口重新可见才追上
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
         flushStreamEvents()
@@ -587,18 +590,27 @@ const toolUseAgentMap = new Map<string, string>()
 // 每事件语义不变（完整应用），仅降低重渲染频率。
 // st 类型与模块顶部 sessionState 的 value 类型一致：
 // { assistantId: string; blockIds: Record<string, string> }
-type StreamEvent = { sid: string; st: { assistantId: string; blockIds: Record<string, string> }; aid: string; event: Record<string, unknown> }
+// `t` = 入队时刻（performance.now）。R5 的降频判据要用它算"最老一条等了多久"——
+// 单线程下主线程被 React 提交占住时，排定的 flush 定时器会晚点触发，年龄随之变大，
+// 这就是本运行时的队列积压信号（见 src/lib/streamPressure.ts 头部注释）。
+type StreamEvent = { sid: string; st: { assistantId: string; blockIds: Record<string, string> }; aid: string; event: Record<string, unknown>; t: number }
 const pendingStreamEvents: StreamEvent[] = []
 let streamFlushScheduled = false
-// 自适应降频（2026-09-12 渲染空转事故）：长消息每帧全量重渲染 ReactMarkdown，
-// 单帧 >50ms 时进入 250ms 节流（4fps），防止渲染进程空转 → UI 冻结 → WS/管道
-// 反压整链卡死。流结束（result/cancelled/closed）时复位。
-let streamHeavyMode = false
+// 自适应降频（2026-09-12 渲染空转事故 → R5 2026-09-13 换判据）：长消息每帧全量重渲染
+// ReactMarkdown 会让渲染进程空转 → UI 冻结 → WS/管道反压整链卡死，故压力大时降到
+// 120ms 合帧。**旧判据（单帧处理耗时 >50ms）在真实负载下从未置位过**——那个计时只包住
+// store 循环、不含 React 提交；现改为测队列压力（深度 + 最老待处理项年龄）+ 不对称滞回，
+// 阈值与形状取自 codex `streaming/chunking.rs`。流结束（result/cancelled/closed）时复位。
+const heavyGate = createHeavyModeGate()
+// 上一次 flush 的开始时刻：满速期的调度补足到 16ms 目标帧间隔用（pi-main 的
+// `setTimeout(max(0, 16-elapsed))` 形状），替代原先的 rAF——后台/失焦窗口 rAF 会停摆。
+let lastStreamFlushAt = 0
 
 // K0.3 渲染帧指标（2026-09-13「任务运行慢」系统性优化）：流式期渲染进程实测吃满
 // 1.35 核 / 1.5GB，但「每帧到底花了多少、真实帧间隔有没有被拉长」此前没有任何数据
-// ——上面 streamHeavyMode 的计时只包住 store 循环、不含 React 提交，故从未真正置位过。
-// 这里把每帧成本与帧间隔记进内存，每 5s 汇总上报桥侧（/diag/render-frame → 诊断报告）。
+// ——帧成本只包住 store 循环、不含 React 提交，故只能当**观测**，不能当降频判据
+//（R5 据此换了判据，见 heavyGate）。这里把每帧成本与帧间隔记进内存，每 5s 汇总上报
+// 桥侧（/diag/render-frame → 诊断报告），并带上 heavyGate 的进出次数与队列压力峰值。
 // **刻意不落 uiStore**：它是 persist store，每帧写它 = 每帧一次全量 JSON.stringify +
 // localStorage.setItem（R2 根因）。
 const FRAME_SAMPLE_MAX = 400
@@ -611,6 +623,10 @@ function flushStreamEvents() {
   if (pendingStreamEvents.length === 0) return
   const t0 = performance.now()
   const batch = pendingStreamEvents.splice(0)
+  // R5 降频判定：取走批次**之前**的队列压力（深度 + 最老一条已等待的墙钟）。
+  // 必须在 drain 之前取——drain 之后队列恒为空，量不到任何东西。
+  heavyGate.observe(batch.length, t0 - batch[0].t, t0)
+  lastStreamFlushAt = t0
   const store = useChatStore.getState()
   for (const { st, aid, event } of batch) {
     const content = (event.message as any)?.content as Array<Record<string, unknown>> | undefined
@@ -637,10 +653,9 @@ function flushStreamEvents() {
       }
     }
   }
-  // 自适应降频判定：单帧渲染成本 >50ms 进入节流（4fps），<20ms 恢复满速（自愈）
+  // 帧成本照旧采样（K0.3 观测），但**不再当降频判据**：它只包住 store 循环、不含
+  // React 提交，旧实现据此判定，在真实负载下从未置位过一次。降频判据见 heavyGate。
   const cost = performance.now() - t0
-  if (cost > 50) streamHeavyMode = true
-  else if (cost < 20) streamHeavyMode = false
   // K0.3 采样：只进内存环形缓冲（不上报、不落 store、不做字符串拼接）
   frameStats.n++
   if (frameStats.ms.length < FRAME_SAMPLE_MAX) frameStats.ms.push(cost)
@@ -656,13 +671,20 @@ function reportRenderFrames() {
     const s = arr.slice().sort((a, b) => a - b)
     return Math.round(s[Math.min(s.length - 1, Math.floor(q * s.length))] * 10) / 10
   }
+  // R5：降频的成因也要能事后解释——只报"当时是降频态"没法回答"为什么降/为什么没降"。
+  const gate = heavyGate.takeStats()
   const payload = {
     frames: frameStats.n,
     msP50: pct(frameStats.ms, 0.5),
     msP95: pct(frameStats.ms, 0.95),
     gapP50: pct(frameStats.gaps, 0.5),
     gapMax: Math.round(frameStats.gaps.length ? Math.max(...frameStats.gaps) : 0),
-    heavy: streamHeavyMode,
+    heavy: heavyGate.heavy,
+    heavyIn: gate.enters,
+    heavyOut: gate.exits,
+    qMax: gate.maxDepth,
+    qAgeMax: Math.round(gate.maxAgeMs),
+    reason: gate.lastReason,
   }
   frameStats.n = 0
   frameStats.ms.length = 0
@@ -677,11 +699,12 @@ function reportRenderFrames() {
 function scheduleStreamFlush() {
   if (streamFlushScheduled) return
   streamFlushScheduled = true
-  if (streamHeavyMode) {
-    setTimeout(flushStreamEvents, 250)
-    return
-  }
-  requestAnimationFrame(flushStreamEvents)
+  // 一律走定时器，不再用 rAF：后台/失焦窗口 rAF 会**完全停摆**（不是变慢），流式内容
+  // 就只能等窗口重新可见才追上来（pi-main `tui/src/tui.ts:343,806-824` 用
+  // `setTimeout(max(0,16-elapsed))` 正是为规避此坑）。降频期延迟由 gate 给
+  // （120ms 合帧），满速期补足到 16ms。
+  const elapsed = lastStreamFlushAt ? performance.now() - lastStreamFlushAt : 0
+  setTimeout(flushStreamEvents, nextFlushDelay(heavyGate, elapsed))
 }
 
 // 任务进度合并：task_progress 每工具调用一次，直接逐条更新 store 会造成高频
@@ -1061,7 +1084,7 @@ function handleMessage(msg: Record<string, unknown>) {
       st = sessionState.get(sid)
     }
     if (type === 'assistant' && aid) {
-      pendingStreamEvents.push({ sid, st: st!, aid, event })
+      pendingStreamEvents.push({ sid, st: st!, aid, event, t: performance.now() })
       scheduleStreamFlush()
       return
     }
@@ -1076,6 +1099,9 @@ function handleMessage(msg: Record<string, unknown>) {
       store._finishStreaming(aid, { inputTokens: usage.input_tokens || 0, outputTokens: usage.output_tokens || 0 })
       // 本轮响应结束 → 释放串行锁
       streamingSessions.delete(sid)
+      // R5：降频状态不跨轮继承（旧实现靠"单帧 <20ms 即恢复"自愈，但它压根没进过降频态）。
+      // 新一轮从满速起步，若开盘就来一大坨事件，压力判据会在第一帧内重新进档。
+      heavyGate.reset()
       // 压缩指示随回合收口（2026-09-13 常驻事故的**精确**兜底）：压缩在 preStep 内 await，
       // 不可能跨回合边界 ⇒ result 到达即证明本轮压缩的 done 帧本该早已到达；此刻仍为 true
       // 只可能是 done 丢了（闪断/写失败被吞/桥侧跳过）。正常路径 setCompacting 同值短路，无动作。
@@ -1184,10 +1210,10 @@ function handleMessage(msg: Record<string, unknown>) {
   }
 
   if (msg.type === 'question' || msg.type === 'approval') {
-    // 时序修复（2026-09-12）：assistant 流式帧走 rAF / 250ms 批处理，而审批与提问帧是
+    // 时序修复（2026-09-12）：assistant 流式帧走定时器批处理（16ms 满速 / 120ms 降频），而审批与提问帧是
     // **同步**应用的 ⇒ 卡片会抢跑到"产出它的那条消息"前面，用户看到"审批内容和会话进度
     // 对不上、消息已过期"。落卡/落弹窗前同步冲一次待处理流事件即恢复正确时序
-    // （flushStreamEvents 幂等：已排的 rAF 回调随后拿到空队列即返回）。
+    // （flushStreamEvents 幂等：已排的定时器回调随后拿到空队列即返回）。
     flushStreamEvents()
   }
 

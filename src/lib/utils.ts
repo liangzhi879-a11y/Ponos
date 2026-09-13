@@ -447,14 +447,13 @@ export function detectFilePaths(text: string, cwd?: string): FilePathMatch[] {
  */
 export function sanitizeText(s: string): string {
   if (!s) return s
-  let out = ''
-  for (let i = 0; i < s.length; i++) {
-    const code = s.charCodeAt(i)
-    if (code < 0x20 && code !== 9 && code !== 10 && code !== 13) continue
-    if (code === 0x7f) continue
-    out += s[i]
-  }
-  return out
+  // R4（2026-09-13）：逐字符拼接改正则。这个函数在**每个流式文本增量**上都会跑
+  //（`useYFWCLI.ts:627`），也在整份会话落盘前的深清洗里跑。实测 1.08M 字符带控制字符：
+  // 正则 2.0ms vs 拼接 68.4ms（≈34×，best-of-3）。干净串上"先 test 再 return"并不更快
+  //（0.60ms vs 0.59ms @880K 字符，字符串同一性两者都保持）——V8 的无匹配 replace 本来就
+  // 是廉价路径——故不留那行冗余判断；语义等价由 `src/lib/utils.test.ts` 的差分测试锁住。
+  // 保留 \t(09) \n(0A) \r(0D)——消息正文里到处都是换行；C0 其余与 DEL(7F) 一律剥除。
+  return s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
 }
 
 /**

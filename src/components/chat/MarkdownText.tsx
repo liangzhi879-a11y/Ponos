@@ -4,7 +4,7 @@
 // truncatePartialAskUser）+ assistant-ui 的 Text part 渲染组件（MarkdownTextPart）。
 // 原组件流式期重建 components/插件对象会引发 ReactMarkdown 子树全量重挂载，
 // 故保持模块级稳定引用；filePathP 依赖会话 cwd，经 ChatCwdContext 注入。
-import { createContext, useContext, useCallback, type ReactNode } from 'react'
+import { createContext, useContext, useCallback, useMemo, useRef, memo, type ReactNode } from 'react'
 import ReactMarkdown, { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { FolderOpen } from 'lucide-react'
@@ -12,6 +12,7 @@ import { CodeBlock } from './CodeBlock'
 import { BoxdrawTable } from './BoxdrawTable'
 import QuestionCard from './QuestionCard'
 import { extractAskUserCards } from '@/lib/askUser'
+import { createPrefixFreezer } from '@/lib/markdownStream'
 import { preprocessBoxDrawingTables, detectFilePaths, parseBoxDrawingTable } from '@/lib/utils'
 import { openFileInEditor } from '@/lib/editorBridge'
 import type { TextMessagePartProps } from '@assistant-ui/react'
@@ -149,12 +150,45 @@ function makeFilePathP(cwd: string) {
   }
 }
 
+// —— R4（2026-09-13）流式重解析收口 ——
+// react-markdown 的解析是"全量重来"的：正文越长，每帧越贵，而每帧新增的只有末尾一小段。
+// 三层（由外到内）：
+//  ① `MarkdownTextPart` 用 **memo**：消息/部件没变就整块跳过（比较器只看 text 与
+//     status.type——`status` 对象是上游每帧新建的，按引用比会让 memo 恒失效；这正是
+//     "比较器显式豁免"要解决的问题）。cwd 走 context，**context 变化不受 memo 阻挡**。
+//  ② `components` 表用 useMemo 固定：`{...MD_COMPONENTS, p: filePathP}` 每渲染新建对象会
+//     让 react-markdown 整棵子树重挂载（本文件头部注释记的就是这个事故）。
+//  ③ **流式期**把正文切成「稳定前缀 + 增长尾块」：前缀 memo 在字符串上（字符串按值比较）
+//     ⇒ 只在前缀推进时重解析；尾块通常只有一段话，每帧重解析成本可控。
+//     **只在 running 期切分**——消息完成后整段一次性解析，最终渲染与改动前逐字节一致。
+const MarkdownBlocks = memo(function MarkdownBlocks({ text, components }: { text: string; components: Components }) {
+  const pre = useMemo(() => preprocessBoxDrawingTables(text), [text])
+  return <ReactMarkdown remarkPlugins={MD_PLUGINS} components={components}>{pre}</ReactMarkdown>
+})
+
+function StreamingMarkdown({ text, components }: { text: string; components: Components }) {
+  const freezer = useRef(createPrefixFreezer())
+  const cut = freezer.current.feed(text)
+  // 两块用**同一个**组件类型：React 按位置协调，尾块（下标 1）在两态间保持挂载，
+  // 前缀块（下标 0）在首次出现边界时挂载一次——字符串 props 按值比较，故前缀不推进
+  // 的那些帧里它整个跳过解析。
+  return (
+    <>
+      {cut > 0 && <MarkdownBlocks text={text.slice(0, cut)} components={components} />}
+      <MarkdownBlocks text={text.slice(cut)} components={components} />
+    </>
+  )
+}
+
 /** assistant-ui Text part 渲染：ASK_USER 剥离 + 流式半截截断 + markdown + 文件路径链接。 */
-export function MarkdownTextPart({ text }: TextMessagePartProps) {
+export const MarkdownTextPart = memo(function MarkdownTextPart({ text, status }: TextMessagePartProps) {
   const { cwd } = useContext(ChatContext)
   const filePathP = useCallback(makeFilePathP(cwd), [cwd])
   const { cards, clean } = extractAskUserCards(typeof text === 'string' ? text : '')
   const safeText = truncatePartialAskUser(clean)
+  // components 表必须是稳定引用（见上 ②）：只随 cwd 变
+  const components = useMemo<Components>(() => ({ ...MD_COMPONENTS, p: filePathP }), [filePathP])
+  const streaming = status?.type === 'running'
   return (
     <>
       {cards.map((card, i) => (
@@ -162,14 +196,13 @@ export function MarkdownTextPart({ text }: TextMessagePartProps) {
       ))}
       {safeText.trim() ? (
         <div className="prose max-w-none text-primary leading-relaxed break-words [overflow-wrap:break-word] [word-break:break-word]" style={{ fontSize: 'var(--chat-font, 14px)' }}>
-          <ReactMarkdown
-            remarkPlugins={MD_PLUGINS}
-            components={{ ...MD_COMPONENTS, p: filePathP }}
-          >
-            {preprocessBoxDrawingTables(safeText)}
-          </ReactMarkdown>
+          {streaming
+            ? <StreamingMarkdown text={safeText} components={components} />
+            : <MarkdownBlocks text={safeText} components={components} />}
         </div>
       ) : null}
     </>
   )
-}
+  // 只比这两个字段：其余 props（index 等）与 status 对象本身都是上游每帧新建的，
+  // 按引用比会让 memo 永远失效；组件实际用到的输入就是 text 与"是否正在流式"。
+}, (prev, next) => prev.text === next.text && prev.status?.type === next.status?.type)

@@ -280,16 +280,20 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
     const base = { status: c === 0 ? 'ok' : 'warn', detail: `渲染崩溃 ${c} 次` }
     // K0.3 附加渲染帧指标（桥侧 /diag/render-frame，渲染进程每 5s 汇总一次）：
     // **只加 detail、不改 status 判据**——阈值化的 warn 会在长消息流式期常态误报
-    // （降频档本身就是 250ms/帧），诊断页噪音的代价大于收益。数字是给排查用的。
+    // （降频档本身就是 120ms/帧），诊断页噪音的代价大于收益。数字是给排查用的。
     try {
       const info = await bridgeInfo()
       const f = info?.data?.renderFrames
       if (!f?.frames) return base
       const age = Date.now() - (f.at || 0)
       if (age > 60_000) return { ...base, detail: `${base.detail}（帧指标已过期 ${Math.round(age / 1000)}s）` }
+      // R5：降频只有进出次数与队列压力峰值出现时才是值得看的（0/0 说明这一窗没降过频）
+      const heavyDetail = (f.heavyIn || f.heavyOut)
+        ? `，降频 进${f.heavyIn}/出${f.heavyOut} 次，队列峰值 ${f.qMax} 条/${f.qAgeMax}ms${f.reason ? `（${f.reason}）` : ''}`
+        : ''
       return {
         ...base,
-        detail: `${base.detail}；近 5s ${f.frames} 帧，单帧处理 p50/p95 ${f.msP50}/${f.msP95}ms，帧间隔 p50/max ${f.gapP50}/${f.gapMax}ms${f.heavy ? '（降频中）' : ''}`,
+        detail: `${base.detail}；近 5s ${f.frames} 帧，单帧处理 p50/p95 ${f.msP50}/${f.msP95}ms，帧间隔 p50/max ${f.gapP50}/${f.gapMax}ms${f.heavy ? '（降频中）' : ''}${heavyDetail}`,
       }
     } catch (_) { return base }
   }

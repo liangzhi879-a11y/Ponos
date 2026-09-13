@@ -1964,6 +1964,11 @@ const httpServer = createServer(async (req, res) => {
       diagInfo.renderFrames = {
         frames: num(body?.frames), msP50: num(body?.msP50), msP95: num(body?.msP95),
         gapP50: num(body?.gapP50), gapMax: num(body?.gapMax), heavy: body?.heavy === true,
+        // R5：降频成因（进/出次数 + 队列压力峰值 + 上一次触发的理由）。只报"当时是否
+        // 降频"回答不了"为什么降/为什么没降"，而后者才是排查 R 阶段问题时真正要看的。
+        heavyIn: num(body?.heavyIn), heavyOut: num(body?.heavyOut),
+        qMax: num(body?.qMax), qAgeMax: num(body?.qAgeMax),
+        reason: typeof body?.reason === 'string' ? body.reason.slice(0, 40) : '',
         at: Date.now(),
       }
       return reply(200, { 'Content-Type': 'application/json' }, '{"ok":true}')
