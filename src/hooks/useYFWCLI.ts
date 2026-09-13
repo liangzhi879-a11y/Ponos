@@ -176,7 +176,12 @@ export function getOrCreateWS(): WebSocket | null {
       } catch (e) { console.error('[WS] parse error:', e) }
     }
     ws.onclose = (ev) => {
-      console.log('[WS] closed:', ev.code, ev.reason || '')
+      // 断链归因（2026-09-13）：1006 = 无关闭帧的突断。实测 25/25 次断链前 0.0–1.4s 内都刚
+      // 收到过下行帧 ⇒ 不是下面这条 60s 看门狗自杀；而桥侧 20/25 次连 close 事件都没收到
+      // ⇒ 连接是在客户端侧半开掉的。故这里必须把判据一起打出来：idleMs（多久没收到任何
+      // 下行帧，含未记录的 pong）/ selfKill（是否本端看门狗强关）。
+      console.log('[WS] closed:', ev.code, ev.reason || '', `idleMs=${Date.now() - lastWsActivity} selfKill=${heartbeatDead ? 'heartbeat-timeout' : 'no'}`)
+      heartbeatDead = false
       wsReady = false
       ws = null
       stopHeartbeat() // 关闭/重连等待期间心跳停转，onopen 时再启

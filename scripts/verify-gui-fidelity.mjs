@@ -85,6 +85,30 @@ const WAIT_CASES = [
 ]
 for (const c of WAIT_CASES) CASES.push({ ...c, health: GREEN_HEALTH })
 
+// ---- 提问卡到达即展开（2026-09-13：提问帧投递可见性）----
+// 验的是 9 次提问里 3 次等满内核 600s 超时的**直接形态**：卡片默认折叠成输入栏上方的小
+// chip，配合等待条那句静止的"等待你的回答"，用户整段错过。真源：载荷替换（新问题）必须
+// 展开；同一条提问的 WS 重连 hello 重放**不得**把用户手动收起的卡再弹开（cardKey 稳定）。
+const QCARD_TEXT = '要继续吗？'
+// cardKey 与 WorkShell.tsx:207 同形（`${convId}:${q.id}|${q.question.slice(0,24)}`）——
+// 一致性正是这条用例的被测点：同一提问重放时 key 必须逐字符相同，才会走「不重挂载」分支。
+const QCARD_FIX = {
+  key: `c1:q1|${QCARD_TEXT.slice(0, 24)}`,
+  context: '',
+  questions: [{
+    id: 'q1',
+    header: '确认',
+    question: QCARD_TEXT,
+    options: [{ label: '继续', description: '按原计划继续' }, { label: '停止', description: '停下来等你' }],
+    multiSelect: false,
+  }],
+}
+const QCARD_CASES = [
+  { key: 'qcard-new', desc: '新提问到达 → 默认展开（不得只留折叠 chip）', qcard: QCARD_FIX },
+  { key: 'qcard-replay', desc: '同一提问 hello 重放 → 不得把用户收起的卡再弹开', qcard: QCARD_FIX, replayQcard: true },
+]
+for (const c of QCARD_CASES) CASES.push({ ...c, health: GREEN_HEALTH })
+
 // ---- 生成 harness（真组件 + 真 store，按键位夹具渲染） ----
 const harness = `
 import { createRoot } from 'react-dom/client'
@@ -92,6 +116,7 @@ import { HealthMeter } from '@/components/chat/HealthMeter'
 import { HealthSuggestCard } from '@/components/chat/HealthSuggestCard'
 import { HealthGlow } from '@/components/chat/HealthGlow'
 import { WaitStatusBar } from '@/components/chat/WaitStatusBar'
+import { FloatingQuestionCard } from '@/components/chat/FloatingQuestionCard'
 import { TooltipProvider } from '@/components/ui'
 import { useHealthStore } from '@/stores/healthStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -148,6 +173,20 @@ window.__render = (i) => {
         <HealthMeter conversationId="c1" />
         <HealthSuggestCard conversationId="c1" onAnchorApplied={() => {}} onStopSource={() => {}} />
       </div>
+      {/* 提问卡（2026-09-13）：真实应用里挂在 ChatWindow 与输入栏之间的悬浮层（WorkShell.tsx:200）。
+          payload 每次渲染都新建对象（与线上一致：hello 重放时 store 里是新对象），
+          故"重放不弹开"只能靠 cardKey 稳定 + React 不重挂载——正是被测的不变量。 */}
+      {fx.qcard && (
+        <div style={{ width: 800, marginTop: 24, marginLeft: 40, background: 'var(--bg-primary)' }}>
+          <FloatingQuestionCard
+            conversationId="c1"
+            cardKey={fx.qcard.key}
+            payload={{ questions: fx.qcard.questions, context: fx.qcard.context }}
+            onAnswer={() => {}}
+            onDismiss={() => {}}
+          />
+        </div>
+      )}
     </TooltipProvider>,
   )
 }
@@ -172,6 +211,18 @@ window.__sweepCompaction = () => {
   }
 }
 `
+// 折叠头点击脚本：**必须经 JSON.stringify 注入**。直接写进 main.cjs 的模板字符串里，
+// `\n` 会在这一层就被展开成真换行 ⇒ 生成的单引号字符串跨行 ⇒ SyntaxError（electron
+// 加载失败后**不退出**，脚本表现为无限等待）。2026-09-13 实际踩过，故此处显式序列化。
+const QCARD_CLICK_JS = `(() => {
+  const w = document.querySelector('[data-qcard-state="expanded"]')
+  if (!w) return false
+  const btn = [...w.querySelectorAll('button')].find(b => (b.textContent || '').includes('待回答问题'))
+  if (!btn) return false
+  btn.click()
+  return true
+})()`
+
 const mainCjs = `
 const { app, BrowserWindow } = require('electron')
 const { join } = require('node:path')
@@ -179,9 +230,10 @@ const { writeFileSync, mkdirSync } = require('node:fs')
 const HTML = ${JSON.stringify(join(TMP, 'index.html'))}
 const RESULT_FILE = ${JSON.stringify(join(TMP, 'result.json'))}
 const SHOT_DIR = ${JSON.stringify(SHOT_DIR)}
+const QCARD_CLICK_JS = ${JSON.stringify(QCARD_CLICK_JS)}
 const shotFiles = []
 let shotErr = null
-const FX = ${JSON.stringify(CASES.map((c) => ({ key: c.key, clearFirst: !!c.clearFirst, sweepFirst: !!c.sweepFirst })))}
+const FX = ${JSON.stringify(CASES.map((c) => ({ key: c.key, clearFirst: !!c.clearFirst, sweepFirst: !!c.sweepFirst, replayQcard: !!c.replayQcard })))}
 
 const EXTRACT = \`(() => {
   const fill = document.querySelector('.health-meter-fill')
@@ -206,6 +258,8 @@ const EXTRACT = \`(() => {
       const r = el.getBoundingClientRect()
       return r.width > 0 && r.height > 0
     })(),
+    // 提问卡折叠态（2026-09-13）：collapsed = 只剩输入栏上方那个小 chip（用户会整段错过）
+    qcardState: (() => { const el = document.querySelector('[data-qcard-state]'); return el ? el.getAttribute('data-qcard-state') : null })(),
     // 复发提示（"锚定未根治"）：按可见文本判定，不依赖具体文案
     recurredNotice: /再次出现|came back/.test(document.body.innerText),
     htmlLen: document.getElementById('root').innerHTML.length,
@@ -242,6 +296,18 @@ app.whenReady().then(async () => {
       data.waitKindAfterSweep = afterSweep.waitKind
     }
 
+    // replayQcard 用例：模拟「用户手动收起 → WS 重连 hello 重放同一条提问」。
+    // 收起与重放都必须用真交互（点折叠头）与真重渲染，不能靠直接读 store。
+    if (FX[i].replayQcard) {
+      data.qcardCollapseClicked = await win.webContents.executeJavaScript(QCARD_CLICK_JS)
+      await win.webContents.executeJavaScript('new Promise(r => setTimeout(() => r(1), 250))')
+      data.qcardAfterCollapse = (await win.webContents.executeJavaScript(EXTRACT)).qcardState
+      // hello 重放：同一条提问的帧再来一次（载荷新对象、cardKey 不变）
+      await win.webContents.executeJavaScript('window.__render(' + i + ')')
+      await win.webContents.executeJavaScript('new Promise(r => setTimeout(() => r(1), 250))')
+      data.qcardAfterReplay = (await win.webContents.executeJavaScript(EXTRACT)).qcardState
+    }
+
     // 截图留证（人工眼见为实）：release/_gui-fidelity-shots/<key>.png
     try {
       const img = await win.webContents.capturePage()
@@ -263,7 +329,7 @@ app.whenReady().then(async () => {
 writeFileSync(join(TMP, 'harness.tsx'), harness)
 writeFileSync(join(TMP, 'main.cjs'), mainCjs)
 // 夹具经脚本全局注入（页内切换，避免 file:// query 体积限制）
-writeFileSync(join(TMP, 'fixtures.js'), `window.__FIXTURES__ = ${JSON.stringify(CASES.map((c) => ({ health: c.health, shownIds: c.shownIds || [], wait: c.wait || {} })))};`)
+writeFileSync(join(TMP, 'fixtures.js'), `window.__FIXTURES__ = ${JSON.stringify(CASES.map((c) => ({ health: c.health, shownIds: c.shownIds || [], wait: c.wait || {}, qcard: c.qcard || null })))};`)
 writeFileSync(join(TMP, 'index.html'), `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="${builtCssPath().replace(/\\/g, '/')}"></head>
 <body style="background: var(--bg-primary)"><div id="root"></div>
@@ -300,24 +366,36 @@ await build({
   logLevel: 'warning',
 })
 
-/** 跑子进程并收 stdout（shell 关闭以免 Windows 引号转义） */
+/** 跑子进程并收 stdout（shell 关闭以免 Windows 引号转义）。
+ *  timeoutMs 是必需的：electron 在**主进程脚本加载失败**时不退出（打印完
+ *  "App threw an error during load" 就一直等），没有上限就成了无限挂起——
+ *  2026-09-13 实际发生（生成的 main.cjs 语法错误），排查耗时 15 分钟。 */
 function run(cmd, args, opts = {}) {
+  const { timeoutMs = 0, ...spawnOpts } = opts
   return new Promise((res, rej) => {
-    const p = spawn(cmd, args, { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'], ...opts })
-    let out = '', err = ''
+    const p = spawn(cmd, args, { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'], ...spawnOpts })
+    let out = '', err = '', killed = false
+    const timer = timeoutMs > 0 ? setTimeout(() => { killed = true; try { p.kill() } catch {} }, timeoutMs) : null
     p.stdout.on('data', (d) => out += d)
     p.stderr.on('data', (d) => err += d)
-    p.on('close', (code) => code === 0 ? res(out) : rej(new Error(`${cmd} 退出码 ${code}\n${err || out}`)))
+    p.on('close', (code) => {
+      if (timer) clearTimeout(timer)
+      if (killed) return rej(new Error(`${cmd} 超时 ${timeoutMs}ms 未退出（已强杀）\n${err || out}`))
+      code === 0 ? res(out) : rej(new Error(`${cmd} 退出码 ${code}\n${err || out}`))
+    })
   })
 }
 
-// electron.exe 是 GUI 子系统程序（stdout 不可靠）→ 以结果文件为准，忽略其退出码
-try { await run(ELECTRON, [join(TMP, 'main.cjs')], { shell: false }) } catch { /* 见下 */ }
+// electron.exe 是 GUI 子系统程序（stdout 不可靠）→ 以结果文件为准，忽略其退出码；
+// 但**保留错误文本**：加载失败/超时时它是唯一线索，不能吞掉。
+const ELECTRON_TIMEOUT_MS = Number(process.env.GUI_VERIFY_TIMEOUT_MS || 240000)
+let runErr = null
+try { await run(ELECTRON, [join(TMP, 'main.cjs')], { shell: false, timeoutMs: ELECTRON_TIMEOUT_MS }) } catch (e) { runErr = e }
 let payload
 try {
   payload = JSON.parse(readFileSync(join(TMP, 'result.json'), 'utf8'))
 } catch (e) {
-  throw new Error(`未取到结果文件：${e.message}（electron 未完成渲染？）`)
+  throw new Error(`未取到结果文件：${e.message}（electron 未完成渲染？）${runErr ? `\n--- electron 侧 ---\n${runErr.message}` : ''}`)
 }
 if (payload && payload.error) throw new Error(`electron 渲染失败：${payload.error}`)
 const results = payload.results
@@ -385,9 +463,18 @@ check(!!W10 && W10.waitKindBeforeSweep === 'compact' && W10.waitKindAfterSweep =
 const W11 = byKey['wait-compact-clear']
 check(!!W11 && W11.waitKindBeforeClear === 'compact' && W11.waitKindAfterClear === null,
   `内核终态复位（clearSessionWaitState）必须清掉悬挂的压缩指示，实测 before=${W11?.waitKindBeforeClear} after=${W11?.waitKindAfterClear}`)
+// ---- 提问卡到达即展开（2026-09-13）----
+const Q1 = byKey['qcard-new'], Q2 = byKey['qcard-replay']
+check(!!Q1 && Q1.qcardState === 'expanded',
+  `新提问到达必须默认展开（折叠 chip 是"用户整段错过提问"的直接形态），实测 ${Q1?.qcardState}`)
+check(!!Q2 && Q2.qcardState === 'expanded', `重放用例的到达态也应先展开，实测 ${Q2?.qcardState}`)
+check(!!Q2 && Q2.qcardCollapseClicked === true, '重放用例必须真的点到折叠头（否则"不弹开"无从验证）')
+check(!!Q2 && Q2.qcardAfterCollapse === 'collapsed', `点折叠头应收起，实测 ${Q2?.qcardAfterCollapse}`)
+check(!!Q2 && Q2.qcardAfterReplay === 'collapsed',
+  `同一条提问的 hello 重放不得把用户收起的卡再弹开（cardKey 稳定），实测 ${Q2?.qcardAfterReplay}`)
 
 console.log('\n失真 GUI 渲染验证：')
-for (const r of results) console.log(`  · ${r.key.padEnd(22)} fillBg=${r.fillBg} 证据行=${rowsOf(r.text)} 角标=${/×\s*\d/.test(r.text) ? 'on' : 'off'} 泛光=${r.hasGlow ? 'on' : 'off'} 按钮=[${r.buttons.join(', ')}] rootHtml=${r.htmlLen}`)
+for (const r of results) console.log(`  · ${r.key.padEnd(22)} fillBg=${r.fillBg} 证据行=${rowsOf(r.text)} 角标=${/×\s*\d/.test(r.text) ? 'on' : 'off'} 泛光=${r.hasGlow ? 'on' : 'off'}${r.qcardState ? ` 提问卡=${r.qcardState}${r.qcardAfterCollapse ? `→收起=${r.qcardAfterCollapse}` : ''}${r.qcardAfterReplay ? `→重放后=${r.qcardAfterReplay}` : ''}` : ''} 按钮=[${r.buttons.join(', ')}] rootHtml=${r.htmlLen}`)
 const errs = [...new Set(results.flatMap((r) => r.errors || []))]
 if (errs.length) console.log(`\n页内错误：\n  - ${errs.slice(0, 4).join('\n  - ')}`)
 console.log(fails.length ? `\n✖ ${fails.length} 项未通过：\n  - ${fails.join('\n  - ')}` : '\n✔ 全部通过')

@@ -1214,6 +1214,7 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
       if (session._pendingQuestions) session._pendingQuestions = null
       if (session._pendingApprovals?.size) session._pendingApprovals.clear()
       session._awaitingSince = 0
+      session._askBuf = '' // 轮次结束：提问标记的跨帧累积缓冲随之清空（防止跨轮拼接出假标记）
     }
     // 轮内每一步都可能静默（服务端缓冲的思考/prefill 阶段）——任何输出帧到达即
     // 重新武装首字节等待提示，让等待条覆盖发消息后第一步之外的后续步骤；
@@ -1312,17 +1313,36 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
             }
           }
           if (isText) {
-            // 卡片提取与剥离一体化：无论解析是否成功，原始 <!--ASK_USER...--> 标记
-            // 一律从文本剥离，绝不转发给前端（避免气泡里出现原始 HTML）。
-            const extracted = extractAskUserBlocks(block.text)
+            // 卡片提取与剥离：原始 <!--ASK_USER...--> 标记绝不转发给前端（避免气泡里
+            // 出现原始 HTML）。
+            // 【2026-09-13 跨帧切片修复】提取必须走**累积缓冲**，不能只看单帧：内核的
+            // wire 契约是增量文本帧（engine.mjs `textBuf += chunk.text` 后
+            // `wire.assistant([{text: chunk.text}])`），provider 的切片边界一旦落在标记
+            // 内部，单帧里就永远没有完整标记 ⇒ 不登记、不转发，而内核那边**确实在等**
+            // （engine 的 textBuf 是累积的，它的 asksUser 能命中）——用户界面零提示、
+            // 内核空转 600s。实证：04:02:35Z 内核 "ASK_USER 等待作答复超时"，而渲染层
+            // 前 620s 内一个 question 帧都没有（问题卡从未出现在界面上）；本仓 mock 的
+            // streamText 按 1/3 等分切片，必然切碎标记，即该形态的最小复现
+            // （server/stall-watchdog.test.mjs 用例②）。
+            // 复位点只取**轮次/消息**边界（result 帧、新 send）：工具轮与文本轮同属一步，
+            // engine 的 asksUser 在工具执行后仍看整步 textBuf，按 tool_use 复位反而会
+            // 漏掉"边问边做"的提问。
+            session._askBuf = (session._askBuf + block.text).slice(-ASK_BUF_MAX)
+            const extracted = extractAskUserBlocks(session._askBuf)
             if (extracted.blocks.length > 0) {
-              block.text = extracted.clean.trim() || '(Asking...)'
+              // 消费式：提取后即清空，防止同一标记在后续帧里被重复登记/重复弹卡
+              session._askBuf = ''
+              // 展示剥离只在"整块落在本帧内"时可行；跨帧切片的残片由渲染层
+              // truncatePartialAskUser 截断兜底（此前正是它独自在扛）
+              const perFrame = extractAskUserBlocks(block.text)
+              if (perFrame.blocks.length > 0) block.text = perFrame.clean.trim() || '(Asking...)'
               for (const b of extracted.blocks) {
                 const qdata = parseAskUserPayload(b.payloadText)
                 if (qdata) {
                   session._pendingQuestions = qdata
                   noteSessionAwaiting(session)
                   send({ type: 'question', sessionId: sid, data: qdata })
+                  logForwarded('question', sid, ` qs=${qdata.questions?.length ?? '?'} parsed=1`)
                 } else {
                   // 解析失败：带 raw 载荷让前端尝试容错解析；仍无法解析时由
                   // 前端渲染层用内联只读卡兜底，用户至少能看到问题内容直接回复。
@@ -1335,6 +1355,7 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
                   noteSessionAwaiting(session)
                   console.warn(`[bridge] ASK_USER payload parse failed (len=${b.payloadText.length}) sid=${sid.slice(0, 8)} head=${JSON.stringify(b.payloadText.slice(0, 120))} tail=${JSON.stringify(b.payloadText.slice(-48))}`)
                   send({ type: 'question', sessionId: sid, data: { raw: b.payloadText } })
+                  logForwarded('question', sid, ' parsed=0(raw)')
                 }
               }
             }
@@ -1382,6 +1403,7 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
             mode: req.mode || effectiveApprovalMode(sid),
           },
         })
+        logForwarded('approval', sid, ` toolUseId=${toolUseId} hard=${hard}`)
       }
     }
     // 内置浏览器自动化：内核 bridge_request(route=browser) → 主进程执行器。
@@ -1412,6 +1434,9 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
       // （当日 3/3 付费压缩）。本行给出事实依据：桥到底收没收到帧、广播集合里有几个客户端。
       // 只认 compaction 子型（每会话每轮至多两行），不构成日志噪声。
       if (parsed.type === 'system' && parsed.subtype === 'compaction') {
+        // 时间戳供失速看门狗做**有界**豁免（摘要 480–600s 静默 > 失速阈值 420s，见下方
+        // warnStalledKernels）：只记时间、不记布尔态，故不需要在任何终态路径清理。
+        session._lastCompactFrameAt = Date.now()
         console.log(`[bridge] compaction frame state=${parsed.state} sid=${sid} ok=${parsed.ok ?? '-'} covered=${parsed.covered ?? '-'} coveredTokens=${parsed.coveredTokens ?? '-'} clients=${wsClients.size}`)
       }
       send({ type: 'event', data: parsed, sessionId: sid })
@@ -1451,7 +1476,7 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
   })
   // _awaitingSince = 首次登记"有未决等待（提问/审批）"的时刻（0 = 当前无等待）。回收器
   // 据此给等待豁免设时限：豁免无条件 ⇒ 内核挂死或 GUI 永不回执时永远收不掉（T9）。
-  const session = { proc, cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()), mode, _pendingQuestions: null, _proseProgress: { total: 0, lastIndex: 0, structuredUsed: false }, _pendingApprovals: new Map(), firstTokenAt: null, _lastOutAt: 0, _turnActive: false, _stallWarnedAt: 0, _reaped: false, _cancelPending: false, _cancelAt: 0, _cancelTimer: null, _turnStartAt: 0, _fbpTimer: null, _fbpFirstTimer: null, _awaitingSince: 0, _spawnEnvSig: providerEnvSig(buildChildEnv()) }
+  const session = { proc, cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()), mode, _pendingQuestions: null, _proseProgress: { total: 0, lastIndex: 0, structuredUsed: false }, _pendingApprovals: new Map(), firstTokenAt: null, _lastOutAt: 0, _turnActive: false, _stallWarnedAt: 0, _reaped: false, _cancelPending: false, _cancelAt: 0, _cancelTimer: null, _turnStartAt: 0, _fbpTimer: null, _fbpFirstTimer: null, _awaitingSince: 0, _lastCompactFrameAt: 0, _askBuf: '', _spawnEnvSig: providerEnvSig(buildChildEnv()) }
   sessions.set(sid, session)
   return session
 }
@@ -1503,6 +1528,23 @@ function send(msg) {
       console.log('[bridge] WS client drained — full event stream resumed')
     }
   }
+}
+
+// 提问标记跨帧累积缓冲上限（2026-09-13）：正常标记 1–2KB（含 JSON 载荷），8KB 足够
+// 容纳"当前帧之前尚未闭合的残片"；超限丢最旧的，保证单会话内存有界。
+const ASK_BUF_MAX = 8192
+
+// 转发留痕（2026-09-13）：提问/审批帧此前是**静默**广播，"发给了 0 个客户端"与"发失败"
+// 都无迹可查。实证代价：9 次提问里有 5 次的帧只在 WS 重连的 hello 重放时才到达渲染器
+// （最久一次内核 10:46:19 提问、帧 10:53:13 才到，7 分钟内 UI 既无卡片也无任何解释），
+// 期间内核在等、用户在等、日志里一个字都没有。与压缩帧同款记法（clients 计数），
+// 让"帧到底发出去没有"在下一次事故里一眼可判；0 客户端时明确告警——那种帧只能靠
+// 下一次 hello 重放兜底（见 pending replay）。
+function logForwarded(kind, sid, extra = '') {
+  const n = wsClients.size
+  const tail = `sid=${String(sid).slice(0, 8)} clients=${n}${extra}`
+  if (n === 0) console.warn(`[bridge] ${kind} forwarded ${tail} — 无客户端，只能靠下次 hello 重放`)
+  else console.log(`[bridge] ${kind} forwarded ${tail}`)
 }
 
 // 本地桥接服务只应答本机可信来源：
@@ -2367,14 +2409,45 @@ ${bodyContent}
 const wss = new WebSocketServer({ server: httpServer })
 // Heartbeat：定期 ping，客户端（浏览器/ws 库自动回复 pong）未应答即判定死亡并回收，
 // 防止长时间空闲连接被系统/安全软件清理后，服务端仍持有僵尸客户端。
-const HEARTBEAT_MS = 30000
+//
+// 【2026-09-13 判据收窄】旧判据只看 pong：一个 tick 没回 pong 就 terminate。取证（app.log*
+// 全量 26 次 heartbeat timeout 与 25 次渲染器 [WS] closed 对齐）显示：其中 21 次踢的是
+// **渲染器已经不认、桥却仍持有的僵尸 socket**（20 次渲染器侧断链桥侧连 close 事件都没收到，
+// 即半开连接）——那是正确回收；但另有 5 次踢的是**活客户端**（渲染器 0–1.4s 前还在正常收帧），
+// 因为 pong 是 Blink 在主线程上回的，渲染器一忙（长会话流式渲染/大消息）就排不上队，
+// 被误判为死；随后就是用户可见的 1006 + 2s 重连 + resync（界面跳变）。
+// 现改为两级证据：pong 超期 **且**（发送缓冲堆积 **或** 超硬上限）才回收：
+//   · bufferedAmount 堆积 = 对端真的不读了（半开/已死）——比 pong 更可靠的死证；
+//   · 硬上限兜底"忙到长时间不回 pong"的渲染器（真卡死就该断开，由 GUI 自愈重连+resync）。
+// 日志同时给出身份与证据（role / noPongFor / buffered），断链可直接归因——此前无任何身份信息。
+const _hbEnv = Number(process.env.YFW_WS_HEARTBEAT_MS)
+const HEARTBEAT_MS = _hbEnv > 0 ? _hbEnv : 30000
+const _pongGraceEnv = Number(process.env.YFW_WS_PONG_GRACE_MS)
+const PONG_GRACE_MS = _pongGraceEnv > 0 ? _pongGraceEnv : 3 * HEARTBEAT_MS
+const _pongHardEnv = Number(process.env.YFW_WS_PONG_HARD_MS)
+const PONG_HARD_MS = _pongHardEnv > 0 ? _pongHardEnv : 5 * 60 * 1000
 const heartbeatTimer = setInterval(() => {
+  const now = Date.now()
   for (const c of wsClients) {
-    if (c.isAlive === false) {
-      console.log('[bridge] heartbeat timeout — dropping stale client')
-      wsClients.delete(c)
-      try { c.terminate() } catch {}
-      continue
+    if (c.isAlive !== false) {
+      c._yfwPongWarned = false // 上一 tick 的 pong 已回 ⇒ 一切正常
+    } else {
+      const since = now - (c._yfwLastPongAt || c._yfwConnectedAt || now)
+      if (since >= PONG_GRACE_MS) {
+        const buffered = c.bufferedAmount || 0
+        const role = c._yfwRole || 'unknown'
+        if (buffered > WS_OVERLOAD_CLEAR_BYTES || since >= PONG_HARD_MS) {
+          console.warn(`[bridge] heartbeat timeout — dropping stale client role=${role} noPongFor=${Math.round(since / 1000)}s buffered=${(buffered / 1048576).toFixed(2)}MB clients=${wsClients.size}`)
+          wsClients.delete(c)
+          try { c.terminate() } catch {}
+          continue
+        }
+        // 半开但仍在读 ⇒ 多半是渲染器主线程忙（pong 排队），不是死：保留。只留一次痕。
+        if (!c._yfwPongWarned) {
+          c._yfwPongWarned = true
+          console.warn(`[bridge] WS client pong overdue ${Math.round(since / 1000)}s but socket healthy (role=${role} buffered=${(buffered / 1048576).toFixed(2)}MB) — keeping`)
+        }
+      }
     }
     c.isAlive = false
     try { c.ping() } catch {}
@@ -2482,11 +2555,26 @@ const KERNEL_STALL_WARN_MS = _stallEnv === '0' ? 0 : (Number(_stallEnv) > 0 ? Nu
 // 重发（带累计静默时长），内核任何输出即清除（2026-09-09：prefill 阶段 UI 零反馈）。
 const FIRST_BYTE_PENDING_MS = Number(process.env.YFW_FIRST_BYTE_PENDING_MS) > 0 ? Number(process.env.YFW_FIRST_BYTE_PENDING_MS) : 5000
 const FIRST_BYTE_PENDING_INTERVAL_MS = 30 * 1000
+// 压缩豁免上限（15min > 摘要最长 600s + 余量）；YFW_KERNEL_COMPACT_EXEMPT_MS 覆盖，0=关闭豁免。
+const _compactExemptEnv = Number(process.env.YFW_KERNEL_COMPACT_EXEMPT_MS)
+const KERNEL_COMPACT_EXEMPT_MS = Number.isFinite(_compactExemptEnv) && _compactExemptEnv >= 0 ? _compactExemptEnv : 900 * 1000
 function warnStalledKernels() {
   const now = Date.now()
   for (const [sid, s] of sessions) {
     if (!s || !s.proc || s.proc.killed) continue
     if (!s._turnActive) continue
+    // 等待用户（提问/审批）是内核的**正常阻塞态**，不是失速：waitForAnswer/resolveApproval
+    // 期间内核刻意零 stdout，静默是设计。不豁免则告警恰好落在用户犹豫的窗口里，文案还是
+    // 「疑似 AV/驱动卡死，建议取消/重启」——2026-09-13 取证：14 次失速告警中 9 次可证为等人
+    // （4 次审批挂起 207–463s、5 次提问等待），用户据此以为内核已死，这正是"不清楚内核是否
+    // 正常运转"的来源。病理等待（GUI 永不回执）不由本函数兜底：回收器的
+    // KERNEL_WAIT_EXEMPT_MS（默认 30min）会收掉，故豁免不会变成无界。
+    if (s._pendingQuestions) continue
+    if (s._pendingApprovals && s._pendingApprovals.size > 0) continue
+    // 压缩在途同理：摘要是一次 480–600s 级完整请求，期间内核**故意**静默，而失速阈值
+    // 420s < 600s ⇒ 任何一次真摘要都必然误报。用"最后一条压缩帧时刻"做**有界**豁免
+    // （15min 上限）：done 帧即使丢失，豁免也会自行过期，不需要在终态路径清理。
+    if (s._lastCompactFrameAt > 0 && now - s._lastCompactFrameAt < KERNEL_COMPACT_EXEMPT_MS) continue
     if (s._lastOutAt <= 0 || now - s._lastOutAt < KERNEL_STALL_WARN_MS) continue
     if (s._stallWarnedAt > 0 && now - s._stallWarnedAt < KERNEL_STALL_WARN_MS) continue
     s._stallWarnedAt = now
@@ -2495,7 +2583,10 @@ function warnStalledKernels() {
     try { send({ type: 'kernel-stall', data: { sessionId: sid, silentMs: now - s._lastOutAt }, sessionId: sid }) } catch {}
   }
 }
-if (KERNEL_STALL_WARN_MS > 0) setInterval(warnStalledKernels, 60000).unref?.()
+// 扫描周期：阈值可用 env 缩小，周期也必须能缩小，否则任何失速判定测试都要真等一分钟
+// （与 YFW_KERNEL_REAP_TICK_MS 同款约定；既有 60s 为默认值不变）。
+const _stallTickEnv = Number(process.env.YFW_KERNEL_STALL_TICK_MS)
+if (KERNEL_STALL_WARN_MS > 0) setInterval(warnStalledKernels, _stallTickEnv > 0 ? _stallTickEnv : 60000).unref?.()
 
 // 首字节等待提示（2026-09-09 事故修复）：轮次活跃、内核静默 FIRST_BYTE_PENDING_MS
 // 后发 first_byte_pending（携带静默时长），此后每 30s 重发；内核任何输出即清除。
@@ -2595,7 +2686,15 @@ wss.on('connection', (ws, req) => {
   wsClients.add(ws)
   browserRouter.addGuiClient(ws)
   ws.isAlive = true
-  ws.on('pong', () => { ws.isAlive = true })
+  // 身份与 pong 台账（2026-09-13）：断链归因缺的正是"哪个客户端、多久没回 pong、
+  // 发送缓冲是否堆积"。role 默认 gui（执行器在 executor:hello 处改写）；首包类型另记一笔
+  // ——pet/浏览器等非 GUI 客户端此前在日志里完全不可分辨。
+  ws._yfwRole = 'gui'
+  ws._yfwConnectedAt = Date.now()
+  ws._yfwLastPongAt = Date.now()
+  ws._yfwFirstMsgType = ''
+  ws._yfwPongWarned = false
+  ws.on('pong', () => { ws.isAlive = true; ws._yfwLastPongAt = Date.now() })
   // 桥身份握手（2026-09-12 桥树杀事故的无感愈合）：GUI 首包即收 bridge_hello。
   // 前端对比身份 id——换桥重连时旧会话已随旧桥消亡，据此静默自动续接
   // （--resume 无缝）；同一桥瞬时闪断则 id 不变，不做多余动作。
@@ -2653,12 +2752,17 @@ wss.on('connection', (ws, req) => {
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw.toString())
+      if (!ws._yfwFirstMsgType) {
+        ws._yfwFirstMsgType = String(msg.type || '')
+        console.log(`[bridge] WS client first message type=${ws._yfwFirstMsgType} role=${ws._yfwRole}`)
+      }
       if (msg.type === 'executor:hello') {
         // 主进程执行器客户端（Electron 主进程 WS）首条消息注册。执行器不是
         // GUI 广播目标：从 wsClients 摘除（不接收 GUI 事件、不参与心跳）。
         wsClients.delete(ws)
         browserRouter.removeGuiClient(ws)
         browserRouter.registerExecutor(ws)
+        ws._yfwRole = 'executor'
         console.log('[bridge] executor connected (browser automation)')
       } else if (msg.type === 'browser:exec:response') {
         // 执行器完成 → 回写内核 stdin（control_request/browser_response）
@@ -2681,6 +2785,7 @@ wss.on('connection', (ws, req) => {
           ...(msg.uuid ? { uuid: msg.uuid } : {}),
         }) + '\n')
         session._turnActive = true
+        session._askBuf = '' // 新用户消息：上一条消息残留的标记残片不得与本次文本拼接
         armFirstBytePending(session, sid)
         send({ type: 'ack', data: { requestId: msg.requestId, sessionId: sid } })
       } else if (msg.type === 'cancel') {

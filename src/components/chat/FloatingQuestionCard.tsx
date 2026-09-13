@@ -18,18 +18,24 @@ interface Props {
 }
 
 export function FloatingQuestionCard({ conversationId, payload, onAnswer, onDismiss, cardKey }: Props) {
-  const [expanded, setExpanded] = useState(false)
+  // 新问题到达即展开（2026-09-13）：原先默认折叠成输入栏上方的小 chip，配合等待条那句
+  // 静止的"等待你的回答"，用户极易整段错过——实证代价：9 次提问里 3 次等满内核 600s 超时
+  // （内核空转 30 分钟），而其中 5 次的帧还只在 WS 重连时才到（最长迟到 7 分钟）。
+  // 到达这一下必须显眼；折叠态仍可一键收起（不推翻 2026-09-10 的"不占满消息区"决策：
+  // 展开态仍是 max-h-50vh 内滚的悬浮卡）。
+  const [expanded, setExpanded] = useState(true)
 
-  // 载荷替换 → 折叠回 chip（新问题默认收起，不遮挡阅读）
+  // 载荷替换 → 新问题同样自动展开（cardKey 对同一问题稳定、仅新问题变化 ⇒
+  // WS 重连的 hello 重放不会把用户手动收起的卡再弹开）
   const [lastKey, setLastKey] = useState(cardKey)
   if (lastKey !== cardKey) {
     setLastKey(cardKey)
-    setExpanded(false)
+    setExpanded(true)
   }
 
   if (!expanded) {
     return (
-      <div className="px-3 pb-1 flex justify-center shrink-0">
+      <div className="px-3 pb-1 flex justify-center shrink-0" data-qcard-state="collapsed">
         <button
           onClick={() => setExpanded(true)}
           className="flex items-center gap-1.5 px-3 py-1 rounded-full border border-brand-500/30 bg-brand-500/10 text-brand-500 text-xs font-medium hover:bg-brand-500/20 transition-colors shadow-sm animate-slide-up"
@@ -43,7 +49,7 @@ export function FloatingQuestionCard({ conversationId, payload, onAnswer, onDism
   }
 
   return (
-    <div className="px-3 pb-1 flex justify-center shrink-0 animate-slide-up">
+    <div className="px-3 pb-1 flex justify-center shrink-0 animate-slide-up" data-qcard-state="expanded">
       {/* 浮层卡：单对角切角中性框；内层 QuestionCard 自带 hot 卡（层级：外中性 / 内热边） */}
       <div
         className="relative w-full max-w-2xl cut overflow-hidden"
