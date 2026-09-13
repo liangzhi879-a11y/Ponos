@@ -266,3 +266,20 @@ staleness 会自动吸收。实施上**不得**为了"触发"而新增内核 op 
 | D2 | 下载形态 | **zip**（自研 `shared/pack-zip.mjs`，`node:zlib` + 自算 CRC32；仓库无 zip 直接依赖，`jszip`/`unzipper`/`tar` 全是传递依赖，不可当契约） | 请指示改用 tarball |
 | D3 | 更新检查 | **仅手动**：无后台定时器，仅在用户打开知识包市场/点"检查更新"时拉一次清单，不缓存到磁盘 | 请指示加启动检查 |
 | D4 | 非 md 资产 | **允许**（图片/PDF/CSV 等纯数据资产），走**扩展名白名单 + 单文件 ≤2MB/总 ≤50MB/文件数 ≤2000**，**禁可执行与脚本类**（§11.4 第 1 条） | 请指示收紧为"仅 md" |
+
+### 11.6 实施期偏差补记（S4 落地后，2026-09-13）
+
+本节记录**实施期**（Task 1-7 实跑）与上面 §11.1-11.5 不一致或上面未写清的事实，供后续维护与 S5 参考。
+格式沿 S2/S3 的偏差补记：只记"实际是什么"，不记"应该是什么"。
+
+| # | §11 原表述 | 实施期实测 | 处置 |
+|---|---|---|---|
+| 1 | §11.1「视图集合 `KNOWLEDGE_VIEWS`（4 值）」 | S4 起为 **5 值**（新增 `'market'`）：`['read','edit','graph','search','market']` | **有意的功能扩展**（知识包市场视图，与"当前空间"无关）。同步改了 `src/stores/knowledgeStore.test.ts` 的期望与 `scripts/verify-knowledge-gui.mjs` 的白名单（白名单仍是逐字比对，只是加入新的合法值，**不是放宽阈值**） |
+| 2 | §7「入口两处：左栏 + 设置 → 知识库设置」 | 实施只落**一处**（左栏底部「发现知识包」）；设置页入口**未做** | 市场入口在左栏已足够（§7 是"最小可用"清单，不是硬验收项）；设置页入口留待 S5，已在报告中列为人工走查项之一 |
+| 3 | §3.1/§11.3 R3 的"三选"措辞 | 三选在**前端**是 `PackConflictOption`（`lib/knowledgeMarket.ts` 定义），在**API 层**只是 `options: string[]`（后端原样回传） | 联合类型与白名单归前端展示层：API 层不该替后端做枚举裁决；GUI 只渲染白名单内的按钮（点了没实现的 mode 后端会 400） |
+| 4 | 未写明（实施期发现） | `PackInstallResult` **不含** `to-my-space` 的落点路径（只有 `spaceId`）；`PackExportResult.manifestEntry` 是**对象**不是字符串 | GUI 文案改用 `spaces/{id}`、片段用 `JSON.stringify` 后展示；**"另存为我的空间"后用户看不到具体落点**已记为 UX 疑虑（报告 §疑虑） |
+| 5 | 未写明（实施期发现） | 市场视图**必须排在 `!space` 空态之前** | 否则"一个空间都没有"的用户永远进不去市场，而"没有空间"恰恰是装第一个知识包的最常见时机；`KnowledgePanel.tsx` 已按此排序，`verify-knowledge-gui.mjs` 加了静态断言守着 |
+| 6 | §6「安装写入用户目录属高危操作」 | 前端写操作超时窗口为 **180s**（不是 knowledgeApi 的 30s） | 安装 = 解压 + 全量校验 + （覆盖时）整目录备份 + 落盘，30s 在慢盘/大包上会稳定误报超时 |
+| 7 | §5「导出…产出清单条目片段」 | 导出物落在 `knowledge/exports/<id>-<version>.zip`，**再次导出直接覆盖**上一次产物 | 导出物是**生成产物**（不是用户数据），不适用"不静默覆盖"那条 |
+| 8 | §11.1 的备份路径措辞 `.backups/` | 实际是 `knowledge/pack-backups/<id>-<ts>` | 以实现为准（`backupsRoot()`）；台账 `backupPath` 记录真实路径 |
+| 9 | 计划 Task 6「README 用 react-markdown」 | 实测复用 `src/components/chat/MarkdownText.tsx` 的 `MD_PLUGINS/MD_COMPONENTS` | README 是**不可信输入**（任意人可提交的包）：只走 react-markdown，全仓仍无 `rehype-raw`/`dangerouslySetInnerHTML`（§6 的渲染注入防护未破） |
