@@ -457,13 +457,16 @@ export function resolveLinkTarget({ fromRel = '', to = '', spaceId = '', docIds 
 // 与 inverted.jsonl 的 postings 下标强耦合，二者绝不可分批写。
 // tags 是单个 JSON 对象（不是 JSONL）：按 tag 聚合后一次性写入，无逐行追加需求。
 // 空数组产出空串而非"\n"：避免 parseJsonl 之外的下游把空行当半截行报警。
-export function serializeIndex({ docs = [], inverted = [], links = [], tags = {} } = {}) {
+export function serializeIndex({ docs = [], inverted = [], links = [], tags = {}, related = [] } = {}) {
   const jsonl = (arr) => (arr.length ? arr.map((x) => JSON.stringify(x)).join('\n') + '\n' : '')
   return {
     docs: jsonl(docs),
     inverted: jsonl(inverted),
     links: jsonl(links),
     tags: JSON.stringify(tags),
+    // S5 Task 4：`related.jsonl`（隐式派生的关联锚点）与 links（显式 md 链接）**分文件**，
+    // 但共用这里的 JSONL 序列化规则（空集产出空串、末行也带 \n）——两处各写一份必然漂移。
+    related: jsonl(related),
   }
 }
 

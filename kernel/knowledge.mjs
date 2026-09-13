@@ -13,6 +13,8 @@ import {
   countGrams, buildIdf, vectorizeText, blockIndexText, blockTagBoost, relationContent,
   serializeIndex, parseJsonl, resolveLinkTarget,
   cosine, keywordScore, structBoostOf, fuseScore, makeSnippet, toBlockId,
+  // S5 关联锚点（Task 1 的纯函数层）：物化只用这几个，判定逻辑一律留在 shared
+  relatedCandidates, blockContentSig, MIN_LEN, SIM_THRESHOLD,
 } from '../shared/knowledge-core.mjs'
 
 /** 空间根：<configDir>/knowledge（configDir 由调用方给，本模块不自解析 home） */
@@ -155,7 +157,33 @@ function indexTextOf(b) {
   return blockIndexText({ kind: b.kind, text: relationContent(b), entryTag: b.tag })
 }
 
-export function createKnowledgeStore({ configDir, root = null } = {}) {
+/**
+ * `knowledgeRelateMode`（S5 §10）：'on'（缺省）| 'off'。
+ * 优先级：显式构造参数（测试/调用方注入）→ env `PONOS_KNOWLEDGE_RELATE_MODE` →
+ * `<configDir>/config.json` 的 `knowledgeRelateMode` → 'on'。
+ *
+ * **why 读 config.json**：与 `knowledgeInjectMode` 同款落点（server/bridge.mjs 的
+ * `experienceInjectConfig()` 也读 config.json），配置项集中在用户可见的那一个文件里；
+ * 判定权威在内核，server 只透传。
+ * **why configDir 为空时不读盘**：服务端测试用 `createKnowledgeStore({ root })` 构造
+ * （没有 configDir），此时若去读相对路径的 config.json，会误取启动 cwd 里的文件；
+ * 缺省一律 'on' —— 缺省值必须等于"新能力开启"（spec §10）。
+ */
+function resolveRelateMode(configDir, explicit = null) {
+  const norm = (v) => (String(v ?? '').trim().toLowerCase() === 'off' ? 'off' : 'on')
+  if (explicit !== null && explicit !== undefined && String(explicit).trim() !== '') return norm(explicit)
+  const env = process.env.PONOS_KNOWLEDGE_RELATE_MODE
+  if (env !== undefined && String(env).trim() !== '') return norm(env)
+  if (configDir) {
+    try {
+      const cfg = JSON.parse(readFileSync(join(configDir, 'config.json'), 'utf-8'))
+      if (cfg && cfg.knowledgeRelateMode !== undefined) return norm(cfg.knowledgeRelateMode)
+    } catch { /* 无 config.json / 损坏 → 缺省 on（缺省必须等于既有行为之上"开启"） */ }
+  }
+  return 'on'
+}
+
+export function createKnowledgeStore({ configDir, root = null, relateMode = null } = {}) {
   const kroot = root || knowledgeRoot(configDir)
   const idxDir = join(kroot, '.index')
   let spaces = []
@@ -169,6 +197,12 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
   // 增量更新的共享状态。**唯一写入口是 persist()**（全量/增量共用），避免两套写盘逻辑漂移。
   let lastFiles = {}
   let lastLinkRows = []
+  // 关联物化行（S5 Task 4）：`related.jsonl` 的内存镜像。**唯一写入口仍是 persist()**
+  // ——全量（buildIndex）与增量（updateDoc）共用同一份序列化/原子落盘逻辑，
+  // 避免"全量写了 related、增量忘了写"这种静默陈旧（S1 截断事故的同类故障模式）。
+  let relEdges = []
+  const _relateMode = resolveRelateMode(configDir, relateMode)
+  const relateOn = () => _relateMode !== 'off'
 
   const file = (name) => join(idxDir, name)
 
@@ -242,6 +276,9 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
     idf = nextIdf
     inverted = nextInv
     linkOut = out
+    // 关联物化必须在 `idf` 落定之后（relatedCandidates 用全库 idf 加权 shared 特征）；
+    // 与 docs/inverted 同批落盘 → 与 `docs.jsonl`/`inverted.jsonl`/`links.jsonl` 同生命周期。
+    buildRelations()
     persist(nextLinks)
   }
 
@@ -251,6 +288,7 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
    * ——两条路径共用同一份序列化与原子落盘逻辑，不各写一套。
    */
   function persist(linkRows = lastLinkRows) {
+    const on = relateOn() // 关联开关（每次读：config 机制单点判定，见 resolveRelateMode）
     const rows = docs.map((d, i) => ({
       i, id: d.id, spaceId: d.spaceId, rel: d.rel, title: d.title, tags: d.tags,
       hash: d.hash, mtime: d.mtime, size: d.size, lines: d.lines,
@@ -274,10 +312,16 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
       // 索引是派生物，宁可判定损坏后重建，也不要拿着残缺索引装正常。
       docLines: rows.length,
       invLines: inv.length,
+      // S5 §4.2：`related.jsonl` 的行数指纹。**为什么必须有**：S1 实测 inverted.jsonl 被
+      // 截断后，解析仍是"合法但更少"的 postings —— 不报错，却让检索静默返回空集且永不重建。
+      // 关联同理：少几行边不会报错，只会静默少锚点。off 模式**不写这个键**
+      // （spec §10：off 等价 S4 行为，manifest 里不该出现关联痕迹，也不做校验）。
+      ...(on ? { relLines: relEdges.length } : {}),
     }
     const tags = {}
     for (const d of docs) for (const t of d.tags) (tags[t] ||= []).push(d.id)
-    const ser = serializeIndex({ docs: rows, inverted: inv, links: linkRows, tags })
+    const ser = serializeIndex({ docs: rows, inverted: inv, links: linkRows, tags, related: relEdges })
+    const relNames = ['docs.jsonl', 'inverted.jsonl', 'links.jsonl', 'tags.json', 'manifest.json']
     try {
       mkdirSync(idxDir, { recursive: true })
       // 原子替换：先写 .tmp 再 rename（同 graph.mjs 手法）。
@@ -287,7 +331,13 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
       writeFileSync(file('links.jsonl.tmp'), ser.links, 'utf-8')
       writeFileSync(file('tags.json.tmp'), ser.tags, 'utf-8')
       writeFileSync(file('manifest.json.tmp'), JSON.stringify(manifest, null, 2), 'utf-8')
-      for (const n of ['docs.jsonl', 'inverted.jsonl', 'links.jsonl', 'tags.json', 'manifest.json']) {
+      // related.jsonl 只在 on 模式写：off 时**不落盘**（否则"不写文件"这句话就成了假的，
+      // 半截文件还会活得像个有效物化）。
+      if (on) {
+        writeFileSync(file('related.jsonl.tmp'), ser.related, 'utf-8')
+        relNames.push('related.jsonl')
+      }
+      for (const n of relNames) {
         renameSync(file(`${n}.tmp`), file(n))
       }
       builtAt = built
@@ -295,6 +345,7 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
       lastLinkRows = linkRows
       indexBytes = Buffer.byteLength(ser.docs, 'utf-8') + Buffer.byteLength(ser.inverted, 'utf-8')
         + Buffer.byteLength(ser.links, 'utf-8') + Buffer.byteLength(ser.tags, 'utf-8')
+        + (on ? Buffer.byteLength(ser.related, 'utf-8') : 0)
     } catch { /* 磁盘不可写不致命：内存索引仍可用（对齐 graph.mjs 纪律） */ }
   }
 
@@ -310,6 +361,16 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
     if (typeof manifest.docLines === 'number' && docs.length < manifest.docLines) return false
     const invRows = parseJsonl(raw('inverted.jsonl'))
     if (typeof manifest.invLines === 'number' && invRows.length < manifest.invLines) return false
+    // S5 §4.2：related.jsonl 的行数指纹检查（与 docLines/invLines 同等对待）。
+    // 判定条件刻意写成"指纹缺失 或 实际行数 < 记录值 → 重建"：
+    //  - 实际行数 < 记录值：半写/截断（S1 的 inverted 截断事故同款）
+    //  - 指纹缺失：off→on 切换、上一版索引、文件被误删 —— 无从证明文件完整，宁可重算
+    // 用 `<` 而非 `!==` 与 docLines 同理（多出只可能是未来的增量追加，不算损坏）。
+    if (relateOn()) {
+      const relRows = parseJsonl(raw('related.jsonl'))
+      if (typeof manifest.relLines !== 'number' || relRows.length < manifest.relLines) return false
+      relEdges = relRows
+    }
     const inv = new Map()
     for (const e of invRows) inv.set(e.g, { g: e.g, df: e.df, p: e.p })
     inverted = inv
@@ -332,6 +393,7 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
     lastLinkRows = linkRows
     indexBytes = ['docs.jsonl', 'inverted.jsonl', 'links.jsonl', 'tags.json']
       .reduce((s, n) => s + Buffer.byteLength(raw(n), 'utf-8'), 0)
+      + (relateOn() ? Buffer.byteLength(raw('related.jsonl'), 'utf-8') : 0)
     return true
   }
 
@@ -535,6 +597,79 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
     lastLinkRows = rows
   }
 
+  // ── 关联物化（S5 Task 4；spec §4/§5/§6）─────────────────────────────────────
+  // 派生数据，只落 `.index/related.jsonl`：**绝不改用户 .md**（全局约束 1）。
+
+  /** 边的主键：`from`/`to` 里可能含任意字符，用 NUL 分隔避免拼接歧义。 */
+  const relKey = (from, to) => `${from}\u0000${to}`
+
+  /**
+   * 参与集（spec §5.1）：`kind === 'entry'` 且 `relationContent` 长度 ≥ `MIN_LEN`。
+   * 顺带预计算 `relContent` / `gramCounts`：`relatedCandidates` 对同一个块会被 pool 里
+   * 每个成员各取用一次，不预计算就是 O(N²) 次切词（真实库 76 条 ≈ 5776 次，纯浪费）。
+   * 存量垃圾条目（模板化空内容）在这里被挡掉——源头修复（Task 3）只防"新产生"。
+   */
+  function relatablePool() {
+    const out = []
+    for (const d of docs) {
+      for (const b of d.blocks) {
+        if (b.kind !== 'entry') continue
+        const content = relationContent(b)
+        if (content.length < MIN_LEN) continue
+        out.push({
+          blockId: toBlockId(d.id, b.n), docId: d.id, n: b.n, tag: b.tag || null,
+          text: b.text, full: b.full || null, spaceId: d.spaceId,
+          relContent: content, gramCounts: countGrams(content),
+        })
+      }
+    }
+    return out
+  }
+
+  /**
+   * 全量物化（spec §6.1 全量）：算参与集里每条条目的锚点，再补镜像，最后落 `relEdges`。
+   *
+   * **why 双向**：`related(blockId)` 是"给我这条的**所有**锚点"，有向图会让这个查询退化
+   * 成全表扫描（spec §3）。镜像单独一轮（而不是边算边加）是为了让**正向算出的 why 优先**
+   * ——同一对若两个方向都算出来，保留先到的那行，结果与迭代顺序绑定但完全可复现
+   * （物化要求：同一库两次重建产出同一份 related.jsonl）。
+   */
+  function buildRelations() {
+    if (!relateOn()) { relEdges = []; return }
+    const pool = relatablePool()
+    const sig = new Map(pool.map((b) => [b.blockId, blockContentSig(b)]))
+    // 关联只在**同空间**内建立（spec 非目标：不做跨空间隐式关联）
+    const bySpace = new Map()
+    for (const b of pool) {
+      const arr = bySpace.get(b.spaceId)
+      if (arr) arr.push(b)
+      else bySpace.set(b.spaceId, [b])
+    }
+    const rows = []
+    const seen = new Set()
+    const add = (from, to, why) => {
+      const k = relKey(from, to)
+      if (seen.has(k)) return
+      if (!sig.has(from) || !sig.has(to)) return // 端点必须仍在参与集内
+      seen.add(k)
+      rows.push({ from, to, why, sigFrom: sig.get(from), sigTo: sig.get(to) })
+    }
+    for (const b of pool) {
+      for (const c of relatedCandidates(b, bySpace.get(b.spaceId) || [], {
+        idf, topN: 5, minScore: SIM_THRESHOLD,
+      })) add(b.blockId, c.to, c.why)
+    }
+    // 镜像轮：`from→to` 与 `to→from` 各一行（why 对称：tag/content/duplicate 三类都只用
+    // 两端共有的信息，故原样复制；sig 互换方向）
+    for (const r of rows.slice()) {
+      const k = relKey(r.to, r.from)
+      if (seen.has(k)) continue
+      seen.add(k)
+      rows.push({ from: r.to, to: r.from, why: r.why, sigFrom: r.sigTo, sigTo: r.sigFrom })
+    }
+    relEdges = rows
+  }
+
   /**
    * 增量更新单个文档（唯一写入口仍是 persist()）。
    * **docIdx 必须保持不变**：原地替换 `docs[i]` + 摘除该 `di` 的 postings 后重插。
@@ -581,6 +716,7 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
     for (const g of touched) inverted.get(g).p.sort((a, b) => a[0] - b[0])
 
     relinkDoc(parsed.doc, new Set(docs.map((d) => d.id)))
+    // 关联增量：必须在 docs[i] 与 inverted 都已更新之后（出边依赖新索引与新块集）
     persist()
     return { updated: true }
   }
@@ -678,6 +814,8 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
     getIdf() { return idf },
     getInverted() { return inverted },
     getLinkOut() { return linkOut },
+    /** `knowledgeRelateMode` 的生效值（'on'|'off'）——Task 6/10 的读写口都以此为准 */
+    getRelateMode() { return _relateMode },
     stats() {
       const sorted = [...searchTimes].sort((a, b) => a - b)
       return {
