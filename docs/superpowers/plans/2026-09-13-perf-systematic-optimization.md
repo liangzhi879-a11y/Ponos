@@ -450,7 +450,7 @@ export function perfStep(turn, step)                  // 发一行 + 清账 + �
 
 ### Task 12: K3.1–K3.3 推理预算分级
 
-**状态：待实施（形状已按 Task 11 实测校正）**
+**状态：部分完成 —— 「保行为 + 消静默」部分已提交（`550cfdf`）；「策略」部分待用户决策后再落**（`PONOS_EFFORT_POLICY` 默认 `off`，见下方最后一条）
 
 **Files:** Modify `kernel/engine.mjs`、`kernel/api.mjs`、`server/bridge.mjs`；Create `kernel-tests/effort-policy.test.mjs`、`kernel-tests/effort-wire.test.mjs`
 
@@ -460,9 +460,10 @@ export function perfStep(turn, step)                  // 发一行 + 清账 + �
 - [ ] 运行时启发式只保留两条**升档**：上一步 `tool_result` 为 `is_error` → `on`；紧跟压缩/溢出瘦身后的第一步 → `on`
 - [ ] **只降不升 + 用户优先**：用户 `effortLevel: 'off'` 时策略**不得**开；策略只能把 `on` 变 `off`
 - [ ] 解析层放**一处**：合法值/别名/未知值降级全写死在解析函数里
-- [ ] 落点：`engine.mjs` 档位状态 + 主路径/lane 两个消费点；`api.mjs:effortParam` **明确优先级**（off → `thinking:{type:'disabled'}`；否则按 provider 的 thinkingEnabled → enabled+budget），**消除"用户档位被静默丢弃"**（Task 11 结论 6——这条即使策略永不开启也该修）
+- [x] 落点：`api.mjs:effortParam` **明确优先级**（① `thinkingMode==='off'` 或用户 `off` → `thinking:{type:'disabled'}`；② provider 的 thinkingEnabled → enabled+budget；③ 其余档位 → `reasoning_effort`；旋钮二选一，绝不并发），**消除"用户档位被静默丢弃"**（Task 11 结论 6——这条即使策略永不开启也该修）。`thinkingMode` 已贯穿 `streamMessages → anthropicStream → 请求体`（默认 `null`，现状行为逐字节不变），**策略层入口就位但尚无调用方**。诊断由纯函数 `effortDroppedNotice(effort,{thinkingEnabled,budget})` 给出，每进程落一行（`auto`/未知档位不提示，避免误报）。
+- [ ] 落点（策略，未做）：`engine.mjs` 档位状态 + 主路径/lane 两个消费点传入 `thinkingMode`；`server/bridge.mjs` 增加策略字段（与 `thinkingBudget` 同区）
 - [ ] `PONOS_EFFORT_POLICY=graded|off`，**默认 `off`**：Task 11 已有数据，但"改变模型行为"这一档要用户**看过 A/B 表再开**
-- [ ] 测试：判据表（纯函数）+ `PONOS_MOCK_API=1` 断言不同步真的换了请求字段
+- [x] 测试：`kernel-tests/effort-wire.test.mjs`（**18 例，全绿；五个变异全被杀**）。**修正原计划的做法**：`PONOS_MOCK_API=1` **断言不了请求字段**——mock 在 `anthropicStream` 之前短路，`body` 根本不会构造，而本 bug 恰恰在请求字段上。改为直连本地 `http.createServer` 抓真实 body（范式 `kernel-tests/api-empty-stream.test.mjs` 的 `withServer`），断言 (env, 档位) 整张矩阵 + 两旋钮互斥不变量 + 「档位以外的字段逐字段不变」。判据表（`kernel-tests/effort-policy.test.mjs`）随策略一起落。
 - [ ] **仍不做**：`adaptive` 分支（结论 4：无优势）、budget 钳制（不选 budget 即无需那个 `-1`）
 
 ---
