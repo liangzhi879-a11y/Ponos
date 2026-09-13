@@ -45,7 +45,8 @@ agent 检索命中后能按需**一跳**继续阅读 → 经验体系化。
 - `sharedFeatures(tfA, tfB, { idf, topN })` → 按 `idf × min(tf)` 取 top-N 共有 gram
 - `relatedCandidates(block, pool, { idf, topN, minScore })` → `[{ to, why }]`
 - `validateRelation(edge, lookup)` → `boolean`（三条检查：端点存在 / tag 相等 / 内容指纹一致）
-- 常量：`SIM_THRESHOLD=0.32`、`DUP_COS=0.95`、`MIN_LEN=20`、
+- 常量：`SIM_THRESHOLD=0.15`（二次校准，spec §13.5：按文档 idf 下跨 tag 最高 0.312，
+  0.32→0 对 = 功能失效）、`DUP_COS=0.95`、`MIN_LEN=20`、
   `MAX_RELATED=8`、`MAX_TAG_RELATED=5`、`MAX_CONTENT_RELATED=5`、`INDEX_VERSION=2`
 
 **实现要点**
@@ -112,6 +113,10 @@ agent 检索命中后能按需**一跳**继续阅读 → 经验体系化。
 - **`relLines` 必须参与一致性检查**：`related.jsonl` 行数与 manifest 不符 → 视为损坏 → 重建
   （照 `docLines`/`invLines` 的既有做法）
 - 参与集过滤：`kind==='entry'` 且 `relationContent.length >= MIN_LEN`
+- **关联层用独立的一份「按文档 idf」**（`buildRelIdf()`：每篇文档聚合全部块的
+  `countGrams(relationContent(b))` 成一个样本，一次 O(块数)），**不复用检索那份按块 idf**：
+  按块统计会把常见词权重抬高、压低区分度，实测跨 tag 对最高 cos 0.238（按块，≥0.15 仅 2 对）
+  vs 0.312（按文档，≥0.15 有 16 对）；检索 idf 不动 ⇒ 零检索回归（spec §13.5）。
 
 **验证**
 - 新增：物化后 `relLines` 正确；**人为截断 `related.jsonl` → 检测到并重建**（S1 教训的回归测试）

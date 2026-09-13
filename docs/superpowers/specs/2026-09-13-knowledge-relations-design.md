@@ -115,13 +115,21 @@
 
 ### 5.3 覆盖层
 
-- 文本表示：`countGrams(content)` → `vectorizeText(content, { tagBoost: 1, idf })`
+- 文本表示：`countGrams(content)` → `vectorizeText(content, { tagBoost: 1, idf: relIdf })`
   → `cosine(a, b)`
-- **`tagBoost` 必须为 1**（校准发现，非随手选）：`vectorizeText` 的 boost 在**归一化之后**乘，
-  故带 boost 的返回值范数 = boost、点积可达 9（**不是度量余弦**）；更要紧的是
-  `tagBoost=3` 会让**同 tag 对全面压过跨 tag 对**，使覆盖层**退化成骨架层的重复**，
-  把"跨主题同问题"这一最想要的信号淹没。**tag 关系由骨架层负责，覆盖层只按内容算。**
-- 阈值 `SIM_THRESHOLD = **0.32**`（校准依据见 §13：0.5 仅 1 对 ≈ 功能失效；0.32 兼顾覆盖与精度）
+- **关联层用独立的「按文档 idf」（`relIdf`）**：每篇文档聚合全部块的 gram 成一个样本 →
+  `buildIdf([...])`（**不是每块一个样本**）。检索那份 idf（按块）**一行不动**——口径换了会让
+  既有检索排序/`score` 全部漂移，而关联只是派生数据。两种口径的实测差异见 §13.5：
+  按块最高 cos=0.238（跨 tag 对 ≥0.15 仅 2 对、覆盖 4/69），按文档最高 cos=0.312
+  （≥0.15 有 16 对、覆盖 18/69）；按块统计会把常见词权重抬高 → 向量平均化 → 区分度下降。
+- **`tagBoost` 必须为 1**（校准发现，非随手选）：`vectorizeText` 的 boost 在**归一化之后**乘
+  （返回值 = 归一化向量 × boost → `cosine` 被放大 boost² 倍，**不是度量余弦**）。
+  二次校准（按文档 idf）实测：=1 时跨 tag 对最高 cos=0.312；=3 时同一批对最高 cos=**0.950**
+  （=9×真实余弦），会直接撞上 `DUP_COS` 被误判成 duplicate。更要紧的是 `tagBoost=3` 会让
+  **同 tag 对全面压过跨 tag 对**，使覆盖层**退化成骨架层的重复**，把"跨主题同问题"淹没。
+  **tag 关系由骨架层负责，覆盖层只按内容算。**
+- 阈值 `SIM_THRESHOLD = **0.15**`（二次校准，依据见 §13.5：按文档 idf 下跨 tag 对最高 0.312，
+  0.32→**0 对（功能失效）**、0.18→3 对、0.15→16 对且覆盖 18/69 含无 tag 的 5/9）
 - 排除 `cos >= DUP_COS`(0.95) 的对（归入 `duplicate`，§5.5）
 - 单块上限 `MAX_CONTENT_RELATED`（**5**），按 `score` 降序
 - 单块锚点总数上限 `MAX_RELATED`（**8**）：骨架 + 覆盖去重后截断
@@ -129,8 +137,10 @@
 ### 5.4 可解释性硬约束
 
 1. 每条边必须有 `why`
-2. **content 边必须有非空 `shared`**：`sharedFeatures(a, b, {idf, topN:5})` 按 idf×min(tf) 取 top-5 共有 gram；
-   **若 `shared` 为空 → 丢弃该边**（只有分数、无法解释 = 宁缺勿滥）
+2. **content 边必须有非空 `shared`**：`sharedFeatures(a, b, {idf: relIdf, topN:5})` 按 idf×min(tf) 取 top-5 共有 gram；
+   **若 `shared` 为空 → 丢弃该边**（只有分数、无法解释 = 宁缺勿滥）。
+   这里的 `idf` 与打分**同一份**（关联层的按文档 idf，§13.5）——否则"打分用一套权重、解释用另一套"，
+   展示出来的 shared 未必是真正贡献分数的 gram
 3. `score` 与 `shared` 都要能展示给用户/agent
 
 ### 5.5 duplicate
@@ -182,7 +192,7 @@
 - `relatedCandidates(block, pool, { idf, topN, minScore })` → `[{to, why}]`
 - `sharedFeatures(tfA, tfB, { idf, topN })`
 - `validateRelation(edge, lookup)` → `boolean`
-- 常量：`SIM_THRESHOLD(0.32)` / `DUP_COS(0.95)` / `MIN_LEN(20)` / `MAX_RELATED(8)` /
+- 常量：`SIM_THRESHOLD(0.15)` / `DUP_COS(0.95)` / `MIN_LEN(20)` / `MAX_RELATED(8)` /
   `MAX_TAG_RELATED(5)` / `MAX_CONTENT_RELATED(5)` / `INDEX_VERSION(2)`
 - `blockContentSig(block)`
 
@@ -294,13 +304,17 @@ GET /knowledge/related?id=<blockId>&limit=<N>
 
 | 风险 | 缓解 |
 |---|---|
-| 覆盖层噪声（实测有 1/5 噪声对，如"该用户偏好↔企微外部群"） | 阈值 0.32 + `shared` 必填 + 默认折叠 + 上限 5 |
+| 覆盖层噪声（二次校准实测：Top 7 真相关，第 8 起出现通用工程词对） | 阈值 0.15 + `shared` 必填 + 默认折叠 + 上限 5 |
 | 索引口径变更影响 S1 检索 | `INDEX_VERSION` bump；全量回归 + 真实 query 前后对比 |
 | 「索引用 full」可能让长文档命中偏移 | 保留 `mode='full'` 返回 `full`；`snippet` 仍取 `text`（行为不变） |
 | 增量入边延迟 | 已明示并由用户确认；读时校验保证"不显示已失效的边" |
 | 关联规模增长 | 单块上限 8；`related.jsonl` 行数上限 = 参与条目数 × 8 |
 
 ## 13. 附录：校准证据（真实库 76 条）
+
+> ⚠️ §13.1–13.3 是**首轮**校准（口径③，idf 用 `blockIndexText` 的 gram、**按块**统计）。
+> Task 2 落地后线上改用 `relationContent`，且 Task 1 的 idf 是**按块**建的 —— 与首轮不同源，
+> 故首轮数字（0.437 / 阈值 0.32）**不等于线上可复现的分数**。线上实测与二次修正见 **§13.5**。
 
 ### 13.1 三轮对照（口径修正的由来）
 
@@ -335,3 +349,41 @@ GET /knowledge/related?id=<blockId>&limit=<N>
 - 参与 69 条 = 76 − 7（垃圾：`full` 10 字空模板）
 - 精确重复 2 条（`cos=1.000`）
 - `text` vs `full`：实测 45 vs 471 字、31 vs 485 字（**10 倍信息差**）
+
+### 13.5 二次校准修正（线上实测：覆盖层曾产出 0 条边）
+
+**背景**：Task 4/5 落地后实测 `related.jsonl` 里 `tag` 边 258 / `duplicate` 2 /
+**`content` 边 0 条** —— 覆盖层完全空转。追溯为两处校准失误的叠加。
+
+① **idf 口径不同源（首轮校准的失误）**：首轮用 `blockIndexText` 的 gram 建 idf，
+   而 Task 2 落地后线上用 `relationContent`（去类型前缀的 full）。idf 变 → 向量权重变 →
+   首轮定下的阈值不可搬。
+
+② **线上 idf 是「按块」统计**（`kernel/knowledge.mjs` buildIndex，每块一个 gramCounts）：
+   同一篇文档的内容被切成多块后，高频词的 df 增长快于文档数 N → **常见词权重被抬高** →
+   向量平均化 → **区分度下降**。
+
+**实测表**（同一真实库：69 条参与条目、跨 tag 对 2072 个；同 tag 对走骨架层不计）：
+
+| idf 口径 | 跨 tag 对最高 cos | ≥0.32 命中 | ≥0.15 命中 | ≥0.15 覆盖条目 |
+|---|---|---|---|---|
+| **按块**（检索口径 / 线上原状） | **0.238** | 0 | 2 | 4/69（无 tag 的 2/9） |
+| **按文档**（经典 TF-IDF，本修正） | **0.312** | 0 | **16** | **18/69（无 tag 的 5/9）** |
+
+→ **0.32 在两种口径下都是 0 对**（功能失效，已由真实库复现：content 边 0 条）。
+按文档口径的候选质量（人工核对）：0.312 知识库S1实施↔知识库全四期实施 ✅ /
+0.212 驾驶舱原型↔驾驶舱页面（均无 tag）✅ / 0.192 工作流删除交互↔工作流端到端排查 ✅ /
+0.180 工作流端到端排查↔端到端UI验证 ✅ / 0.173 工作流删除交互↔端到端UI验证 ✅ /
+0.170 知识库方案设计↔知识库S1实施 ✅ / 0.170 工作流第五模块↔应用智控 ~ /
+0.167 应用智控↔知识库S1实施 ❌（通用工程词噪声）——**Top 7 真相关，第 8 起开始出现噪声**。
+
+**结论**：
+1. **关联层独立用「按文档 idf」**（`kernel/knowledge.mjs` 的 `buildRelIdf()`：每篇文档聚合
+   全部块的 gram 成一个 `gramCounts` 样本）；**检索那份按块 idf 一行不动** → 零检索回归风险。
+2. **阈值 `SIM_THRESHOLD` 0.32 → 0.15**：0.18 只剩 3 对、0.15 才有 16 对且无 tag 条目被覆盖；
+   噪声由 `MAX_CONTENT_RELATED=5` + `shared` 非空必填 + GUI 默认折叠共同约束。
+3. ⚠️ **阈值与语料规模相关**（69 条时最高 0.312）；语料显著增长/换库后必须重新校准。
+
+**真实库验证（2026-09-13，临时目录只读副本 + `--knowledge reindex --force`）**：
+`relLines=292` = 文件实际行数 292（一致）、content **32 行 / 16 无向对**（>0 ✅）、
+tag 258、duplicate 2、每条 content 边 `shared` 非空。修复前为 content **0 条**。

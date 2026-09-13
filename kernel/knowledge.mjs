@@ -637,6 +637,37 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
   }
 
   /**
+   * 关联层**专用**的 IDF（S5 二次校准修正，spec §13.5）：按**文档**聚合，不是按块。
+   *
+   * **为什么不复用检索那份 `idf`（kernel 里 buildIndex 的 `nextIdf`）**：那份是按**块**统计
+   * （每块一个 gramCounts）。按块统计时同一篇文档的内容被切成多份，高频词的 df 增长快于
+   * 文档数 N → 常见词权重被抬高 → 向量平均化 → 区分度下降。实测同一真实库（69 条参与条目、
+   * 跨 tag 对）两种口径下的最高 cos：
+   *   | idf 口径            | 跨 tag 最高 cos | ≥0.32 命中 | ≥0.15 命中 | 覆盖条目 |
+   *   | 按块（检索口径）    | **0.238**       | 0          | 2          | 4/69     |
+   *   | 按文档（本函数）    | **0.312**       | 0          | 16         | 18/69    |
+   * 首轮校准用的是 `blockIndexText` 的 gram 建 idf（与 Task 2 落地后的线上口径
+   * `relationContent` 不同源），把阈值定在 0.32 —— 两种口径下 0.32 都命中 **0 对**
+   * （覆盖层空转 = 功能失效），这就是本函数存在的原因。
+   *
+   * **检索的 idf 一行都不改**（buildIndex 里那份保持按块）：口径换了会让既有检索排序/
+   * `score` 全部漂移，而关联只是派生数据。两边独立 → 零检索回归风险。
+   *
+   * 性能：一次 O(块数) 扫描（与 `relatablePool` 同阶），无重复扫描。
+   */
+  function buildRelIdf() {
+    const perDoc = []
+    for (const d of docs) {
+      const m = new Map()
+      for (const b of d.blocks) {
+        for (const [g, c] of countGrams(relationContent(b))) m.set(g, (m.get(g) || 0) + c)
+      }
+      perDoc.push({ gramCounts: m }) // 每篇文档一个样本（不是每块一个）
+    }
+    return buildIdf(perDoc)
+  }
+
+  /**
    * 全量物化（spec §6.1 全量）：算参与集里每条条目的锚点，再补镜像，最后落 `relEdges`。
    *
    * **why 双向**：`related(blockId)` 是"给我这条的**所有**锚点"，有向图会让这个查询退化
@@ -647,6 +678,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
   function buildRelations() {
     if (!relateOn()) { relEdges = []; return }
     const pool = relatablePool()
+    const relIdf = buildRelIdf() // 关联层独立口径（按文档，见 buildRelIdf 的 why）
     const sig = new Map(pool.map((b) => [b.blockId, blockContentSig(b)]))
     // 关联只在**同空间**内建立（spec 非目标：不做跨空间隐式关联）
     const bySpace = new Map()
@@ -666,7 +698,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     }
     for (const b of pool) {
       for (const c of relatedCandidates(b, bySpace.get(b.spaceId) || [], {
-        idf, topN: 5, minScore: SIM_THRESHOLD,
+        idf: relIdf, topN: 5, minScore: SIM_THRESHOLD,
       })) add(b.blockId, c.to, c.why)
     }
     // 镜像轮：`from→to` 与 `to→from` 各一行（why 对称：tag/content/duplicate 三类都只用
@@ -701,6 +733,9 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
   function relateIncremental(newDocId) {
     if (!relateOn()) { relEdges = []; return }
     const pool = relatablePool()
+    // 与全量路径**同一份口径**（按文档 idf）：增量若用检索那份按块 idf，同一条目在
+    // 改文件前后会算出不同分数，出现"改一个文档 → 锚点分数跳变"的诡异现象（spec §13.5）
+    const relIdf = buildRelIdf()
     const sig = new Map(pool.map((b) => [b.blockId, blockContentSig(b)]))
     const byTag = new Map() // tag -> block[]（本次增量共用的一份内存缓存）
     for (const b of pool) {
@@ -732,7 +767,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     const ownSpace = (docs.find((d) => d.id === newDocId) || {}).spaceId
     const spaceMates = pool.filter((b) => b.spaceId === ownSpace)
     for (const b of own) {
-      for (const c of relatedCandidates(b, spaceMates, { idf, topN: 5, minScore: SIM_THRESHOLD })) {
+      for (const c of relatedCandidates(b, spaceMates, { idf: relIdf, topN: 5, minScore: SIM_THRESHOLD })) {
         add(b.blockId, c.to, c.why)
       }
     }

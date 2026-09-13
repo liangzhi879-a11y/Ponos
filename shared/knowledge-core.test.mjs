@@ -509,7 +509,10 @@ test('builtinSpaceSpecs 每项字段齐备（GUI 与 collectTags 依赖），且
 
 test('S5 Task1：常量与 spec §7.1 一致（阈值改动必须重跑校准）', () => {
   assert.equal(INDEX_VERSION, 2) // 1→2：索引文本口径 b.text → relationContent(b)
-  assert.equal(SIM_THRESHOLD, 0.32) // 0.5 → 全库仅 1 对 ≈ 功能失效；0.32 兼顾覆盖与精度
+  // 二次校准（spec §13.5）：首轮 0.32 的 idf 口径与线上不同源（blockIndexText vs relationContent），
+  // 且线上按块统计 → 0.32 在两种口径下都命中 0 对（覆盖层空转）。修正为按文档 idf 后实测
+  // 跨 tag 对最高 0.312，0.15 命中 16 对（18/69 条获得锚点，含无 tag 的 5/9）。改前请重跑校准。
+  assert.equal(SIM_THRESHOLD, 0.15)
   assert.equal(DUP_COS, 0.95)
   assert.equal(MIN_LEN, 20)
   assert.equal(MAX_RELATED, 8)
