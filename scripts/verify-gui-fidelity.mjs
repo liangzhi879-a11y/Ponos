@@ -109,6 +109,19 @@ const QCARD_CASES = [
 ]
 for (const c of QCARD_CASES) CASES.push({ ...c, health: GREEN_HEALTH })
 
+// ---- R6 长列表 containment（2026-09-13）----
+// 本脚本此前**没有任何 timing**。这条用例补两件在别处验不了的事：
+//   ① **接线**：长会话时滚动容器必须真的拿到 `.msg-contain`。组件是 `.tsx`，而 Node 的类型
+//      擦除不认 `.tsx`（`Unknown file extension`）⇒ `npm test` 结构上够不着这一行，只能在这儿验。
+//   ② **量化**：两臂 DOM **逐字节相同**，只改 store 里上报的 `messageCount`（59 ⇒ 不挂类），
+//      差的就是那一个类带来的排版开销。量的是"内容变化后强制重排"——与 R6 立项时的 Electron
+//      探针同一个操作（探针：400 条 0.311ms → 0.003ms；探针是手搓 DOM，这里是**真 ChatWindow**）。
+const CHAT_COUNT = 200
+CASES.push(
+  { key: 'chat-long-contained', desc: `长会话 ${CHAT_COUNT} 条 · 上报条数 ≥60 ⇒ containment 生效`, chat: { count: CHAT_COUNT, reportedCount: CHAT_COUNT }, health: GREEN_HEALTH },
+  { key: 'chat-long-baseline', desc: `长会话 ${CHAT_COUNT} 条 · 上报条数 <60 ⇒ 对照（DOM 相同，仅少一个类）`, chat: { count: CHAT_COUNT, reportedCount: 59 }, health: GREEN_HEALTH },
+)
+
 // ---- 生成 harness（真组件 + 真 store，按键位夹具渲染） ----
 const harness = `
 import { createRoot } from 'react-dom/client'
@@ -117,6 +130,7 @@ import { HealthSuggestCard } from '@/components/chat/HealthSuggestCard'
 import { HealthGlow } from '@/components/chat/HealthGlow'
 import { WaitStatusBar } from '@/components/chat/WaitStatusBar'
 import { FloatingQuestionCard } from '@/components/chat/FloatingQuestionCard'
+import { ChatWindow } from '@/components/chat/ChatWindow'
 import { TooltipProvider } from '@/components/ui'
 import { useHealthStore } from '@/stores/healthStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -159,6 +173,54 @@ window.__render = (i) => {
     // 压缩起始时刻（2026-09-13 收口）：兜底巡检按它判新旧；缺省 = 无时间基准（判陈旧）
     compactingSinceBySession: w.compactingSinceAgoMs ? { c1: Date.now() - w.compactingSinceAgoMs } : {},
   })
+  // R6 长列表用例：真 ChatWindow + 真 store。消息按真实形态造（助手消息带多段正文与
+  // 行内 code，用户消息短）——高度差本身就是被测量的一部分（containment 的代价与收益都来自它）。
+  if (fx.chat) {
+    // 正文长度按**应用形态**造：助手条目明显高于 120px 的估算值（实测真实均值 ~113px 的
+    // 短正文会让估算反而偏大，"离屏按估算计高"的方向就反了——估算误差的方向取决于夹具）。
+    // 注意：本段是**外层模板字符串**的正文，换行转义必须写双反斜杠、反引号必须转义——
+    // 否则生成的 harness.tsx 里是**真换行**（单引号字符串跨行 ⇒ SyntaxError），
+    // 或提前闭合外层模板（2026-09-13 两种都实际踩过）。
+    const mk = (i) => ({
+      id: 'm' + i,
+      role: i % 4 === 0 ? 'user' : 'assistant',
+      timestamp: 1757000000000 + i * 1000,
+      content: [{
+        type: 'text',
+        id: 'b' + i,
+        content: i % 4 === 0
+          ? '看一下这个。'.repeat(1 + (i % 2))
+          : [
+              '第 ' + i + ' 条正文：这里是一段会折行的说明文字，用来撑出真实高度——离屏条目的真实高度要明显超过 contain-intrinsic-size 的估算值（120px），否则"离屏按估算计高"这条证据的方向会反过来。',
+              '要点 ' + (i % 7) + '：先把目标、范围、产出写清楚，验收标准要能一条条勾；不要顺手扩大范围。接下来按顺序执行，每步结束回报一次进展；需要决策的地方停下来问。',
+              '排查记录：入口在 kernel/cli.mjs，桥在 server/bridge.mjs，渲染层在 src/components/chat/。先把可复现的最小样本固定下来，再逐层加日志，避免在噪声里猜。',
+              '结论与下一步：把上面的观察写成可验证的断言，再决定是否改代码；每一步都要能单独回退，避免把两处改动混在一起导致归因不清。',
+              '补充说明：长会话下滚动条的估算误差会累计，观感是否可接受要看真实任务形态；不能接受就把阈值调高或去掉这个类（一行改动）。',
+            ].join('\\n\\n'),
+      }],
+    })
+    useChatStore.setState({
+      conversations: [{
+        id: 'c1', mode: 'task', cwd: '', messageCount: fx.chat.reportedCount,
+        messages: Array.from({ length: fx.chat.count }, (_, i) => mk(i)),
+      }],
+      streamingConversations: {},
+      pendingPermissions: [],
+      pendingQuestions: {},
+      compactingBySession: {},
+    })
+    root.render(
+      <TooltipProvider>
+        {/* 必须给出真正的**高度链**：ChatWindow 根是 flex-1 flex-col min-h-0，父层若只是块级
+            容器，flex-1 不生效 ⇒ 滚动区被内容撑高（实测 clientHeight === scrollHeight 24700px，
+            根本没在滚），量到的就不是应用里的那个滚动容器。display:flex + 固定高度 = 应用形态。 */}
+        <div style={{ width: 900, height: 520, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)' }}>
+          <ChatWindow conversationId="c1" />
+        </div>
+      </TooltipProvider>,
+    )
+    return
+  }
   root.render(
     // 与真实应用一致：Tooltip 必须在 TooltipProvider 内（App.tsx 根部提供）。
     // 卡片是 absolute bottom-full（悬浮在输入框上方）→ 外层留出上方空间，否则截图拍到视口外。
@@ -223,6 +285,76 @@ const QCARD_CLICK_JS = `(() => {
   return true
 })()`
 
+// R6 长列表用例的量测脚本。滚动/让步在**计时之外**，每个计时循环**整段同步**跑完：
+// 中间一旦让出事件循环，浏览器自己先排完版，读数就失真（探针 v3 第一版正是这么废掉的）。
+// 同样经 JSON.stringify 注入（模板字符串会吃掉反斜杠与反引号）。
+const CHAT_BENCH_JS = `(async () => {
+  const frame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)))
+  const all = [...document.querySelectorAll('[data-message-id]')]
+  // 外层的 data-message-id 是 ChatWindow 自己挂的（HistoryView 跳转定位用）；assistant-ui 的
+  // MessagePrimitive.Root 会**再挂一个**（同一 id），故节点数是消息数的两倍——数外层才是
+  // "渲染了几条消息"，也才是 CSS 规则命中的那批（嵌套命中无害）。
+  const outer = all.filter((n) => !(n.parentElement && n.parentElement.closest('[data-message-id]')))
+  const first = outer[0]
+  // 滚动容器：从消息节点往上找第一个 overflow-y 非 visible 的祖先。两臂**同一条取法**——
+  // 用 .msg-contain 去找容器只对生效臂成立，会把"接线错了"伪装成"没测到"。
+  let scroller = null
+  for (let el = first && first.parentElement; el; el = el.parentElement) {
+    const oy = getComputedStyle(el).overflowY
+    if (oy === 'auto' || oy === 'scroll') { scroller = el; break }
+  }
+  if (!scroller) return { chatNodes: all.length, chatNodesOuter: outer.length, chatError: '未找到滚动容器' }
+  const sample = outer[outer.length - 1]
+  const first0 = outer[0]
+  const cs = first ? getComputedStyle(first) : null
+  // ① 顶部 + 让出两帧再强排：贴底时尾部若干条是"已排版"的（auto 会记住真实高度），
+  //    不归零会污染估算证据。读数即"跳过排版"的直接证据——离屏条目按估算计高。
+  scroller.scrollTop = 0
+  await frame(); await frame()
+  void scroller.scrollHeight
+  const scrollHeightAtTop = scroller.scrollHeight
+  const clientHeight = scroller.clientHeight
+  // ② 贴底 + 让出两帧：把尾部变成"真的可见、真的排过版"的状态——这才是流式的现场
+  //    （应用里滚动贴底，增量写在可见的最后一条上）。
+  scroller.scrollTop = scroller.scrollHeight
+  await frame(); await frame()
+  // 计时循环整段同步（预热 10 次丢弃：否则后跑的臂白拿 JIT 优化，两臂不可比）。
+  // N=100：Chromium 的 performance.now() 分辨率约 0.1ms，30 次在生效臂上量不到（实测读成 0）。
+  const N = 100
+  const timeN = (n, fn) => { const t = performance.now(); for (let k = 0; k < n; k++) fn(k); return performance.now() - t }
+  const bench = (fn) => { timeN(10, fn); return Math.round(timeN(N, fn) * 1000) / 1000 }
+  // 四种操作分开量（2026-09-13 真 ChatWindow，200 条，贴底后）：
+  //   ① 改**远离视口**的条目 —— R6 声称的那件事（离屏条目跳过 style/layout）。实测
+  //      生效臂 ~2µs/次 vs 对照臂 ~530µs/次（~265×），**被断言的就是这条**。
+  //   ② 改**可见**的尾条（流式现场）—— 只报不判：两次运行符号相反（生效臂 557 vs 对照 725，
+  //      另一次 662 vs 584），即差值在噪声内 ⇒ **不声称**流式路径有收益。
+  //   ③ 容器字号变化后强排 —— 也是只报不判：实测两臂相当（183 vs 185µs），没分离出全量重排成本
+  //      （夹具的正文有自己固定的字号类，容器字号变化未必真的失效整棵子树）。
+  //   ④ 纯读高度 —— 底噪参照。
+  const benches = [
+    { name: 'append离屏首(远离视口)', ms: bench(() => { first0.appendChild(document.createTextNode('x')); void scroller.scrollHeight }), asserted: true },
+    { name: 'append可见尾(流式形态)', ms: bench(() => { sample.appendChild(document.createTextNode('x')); void scroller.scrollHeight }), asserted: false },
+    { name: '字号失效强排(全量重排)', ms: bench((k) => { scroller.style.fontSize = (k % 2 ? '13px' : '13.5px'); void scroller.scrollHeight }), asserted: false },
+    { name: '纯读高度', ms: bench(() => { void scroller.scrollHeight }), asserted: false },
+  ]
+  const appendTotalMs = benches[0].ms
+  return {
+    chatNodes: all.length,
+    chatNodesOuter: outer.length,
+    chatScrollerIsContain: scroller.classList.contains('msg-contain'),
+    hasContainClass: !!document.querySelector('.msg-contain'),
+    contentVisibility: cs ? cs.contentVisibility : null,
+    containIntrinsicSize: cs ? (cs.containIntrinsicSize || cs.containIntrinsicWidth || null) : null,
+    scrollHeightAtTop,
+    clientHeight,
+    appendTotalMs,
+    appendPerIterUs: Math.round((appendTotalMs / N) * 1000),
+    appendIterations: N,
+    timerFloorMs: 0.1,
+    benches,
+  }
+})()`
+
 const mainCjs = `
 const { app, BrowserWindow } = require('electron')
 const { join } = require('node:path')
@@ -231,9 +363,10 @@ const HTML = ${JSON.stringify(join(TMP, 'index.html'))}
 const RESULT_FILE = ${JSON.stringify(join(TMP, 'result.json'))}
 const SHOT_DIR = ${JSON.stringify(SHOT_DIR)}
 const QCARD_CLICK_JS = ${JSON.stringify(QCARD_CLICK_JS)}
+const CHAT_BENCH_JS = ${JSON.stringify(CHAT_BENCH_JS)}
 const shotFiles = []
 let shotErr = null
-const FX = ${JSON.stringify(CASES.map((c) => ({ key: c.key, clearFirst: !!c.clearFirst, sweepFirst: !!c.sweepFirst, replayQcard: !!c.replayQcard })))}
+const FX = ${JSON.stringify(CASES.map((c) => ({ key: c.key, clearFirst: !!c.clearFirst, sweepFirst: !!c.sweepFirst, replayQcard: !!c.replayQcard, chat: !!c.chat })))}
 
 const EXTRACT = \`(() => {
   const fill = document.querySelector('.health-meter-fill')
@@ -277,6 +410,9 @@ app.whenReady().then(async () => {
     await win.webContents.executeJavaScript('window.__render(' + i + ')')
     await win.webContents.executeJavaScript('new Promise(r => setTimeout(() => r(1), 300))')
     const data = await win.webContents.executeJavaScript(EXTRACT)
+    // R6 长列表用例：接在通用 EXTRACT 之后（EXTRACT 里的 innerText 会先逼出一次排版，
+    // 两臂同等；量测脚本自己会重新归零滚动位置）。放在截图之前，避免截图开销掺进读数。
+    if (FX[i].chat) Object.assign(data, await win.webContents.executeJavaScript(CHAT_BENCH_JS))
     // clearFirst 用例：先量"有等待"（waitKind 非 null），再走内核已死路径的复位，
     // 再量一次——用于验"内核被杀后等待条不得残留"。
     if (FX[i].clearFirst) {
@@ -329,7 +465,7 @@ app.whenReady().then(async () => {
 writeFileSync(join(TMP, 'harness.tsx'), harness)
 writeFileSync(join(TMP, 'main.cjs'), mainCjs)
 // 夹具经脚本全局注入（页内切换，避免 file:// query 体积限制）
-writeFileSync(join(TMP, 'fixtures.js'), `window.__FIXTURES__ = ${JSON.stringify(CASES.map((c) => ({ health: c.health, shownIds: c.shownIds || [], wait: c.wait || {}, qcard: c.qcard || null })))};`)
+writeFileSync(join(TMP, 'fixtures.js'), `window.__FIXTURES__ = ${JSON.stringify(CASES.map((c) => ({ health: c.health, shownIds: c.shownIds || [], wait: c.wait || {}, qcard: c.qcard || null, chat: c.chat || null })))};`)
 writeFileSync(join(TMP, 'index.html'), `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="${builtCssPath().replace(/\\/g, '/')}"></head>
 <body style="background: var(--bg-primary)"><div id="root"></div>
@@ -362,7 +498,10 @@ await build({
   nodePaths: [findNodeModules(REPO_ROOT)],
   // iife 下 import.meta 为空对象；config.ts 只在函数体内用它（非加载期），
   // 这里显式给个空 env 以免运行期读到 undefined。
-  define: { 'import.meta.env': '{}', 'process.env.NODE_ENV': '"production"' },
+  // __BRIDGE_PORT__ / __APP_VERSION__ 是 vite.config.ts 的 define——esbuild 侧必须补上，
+  // 否则用到它们的模块**在求值期**就抛 ReferenceError（useYFWCLI.ts:27 顶层就调
+  // getWsUrl() → config.ts:15 直接引用该标识符），表现为整包加载失败、所有用例一起红。
+  define: { 'import.meta.env': '{}', 'process.env.NODE_ENV': '"production"', __BRIDGE_PORT__: '"51517"', __APP_VERSION__: '"0.0.0"' },
   logLevel: 'warning',
 })
 
@@ -473,8 +612,49 @@ check(!!Q2 && Q2.qcardAfterCollapse === 'collapsed', `点折叠头应收起，�
 check(!!Q2 && Q2.qcardAfterReplay === 'collapsed',
   `同一条提问的 hello 重放不得把用户收起的卡再弹开（cardKey 稳定），实测 ${Q2?.qcardAfterReplay}`)
 
+// ---- R6 长列表 containment：接线 + 计时（2026-09-13）----
+// 这里补的是**别处验不了**的两件事：① 挂类的调用点在 ChatWindow 里（.tsx，npm test 结构上够不着）；
+// ② 一个类到底省了多少 —— 两臂 DOM 逐字节相同，只差 store 上报的 messageCount。
+const R6C = byKey['chat-long-contained'], R6B = byKey['chat-long-baseline']
+check(!!R6C && R6C.chatNodesOuter === CHAT_COUNT, `containment 臂应渲染 ${CHAT_COUNT} 条消息，实测 ${R6C?.chatNodesOuter}`)
+check(!!R6B && R6B.chatNodesOuter === CHAT_COUNT, `对照臂应渲染 ${CHAT_COUNT} 条消息（两臂 DOM 必须相同），实测 ${R6B?.chatNodesOuter}`)
+check(!!R6C && !!R6B && R6C.chatNodes === R6B.chatNodes, `两臂 DOM 必须逐节点相同（只差一个类），实测 ${R6C?.chatNodes} vs ${R6B?.chatNodes}`)
+check(!!R6C && R6C.hasContainClass === true, '长会话（上报条数 ≥60）滚动容器必须挂 .msg-contain——这一行没有单测覆盖，只有此处能验')
+check(!!R6B && R6B.hasContainClass === false, `短会话不得挂 .msg-contain（阈值失效会让所有会话都吃估算误差），实测 ${R6B?.hasContainClass}`)
+check(!!R6C && R6C.chatScrollerIsContain === true, '取到的滚动容器必须就是挂类的那一个（否则后面的读数不是这个类的效果）')
+check(!!R6C && R6C.contentVisibility === 'auto', `CSS 规则必须真的命中消息节点（"改名忘改 CSS"是静默失效路径），实测 content-visibility=${R6C?.contentVisibility}`)
+check(!!R6B && R6B.contentVisibility !== 'auto', `对照臂不得是 auto，实测 ${R6B?.contentVisibility}`)
+const r6Ci = R6C?.containIntrinsicSize
+check(r6Ci == null || /auto\s+\d+(\.\d+)?px/i.test(r6Ci), `contain-intrinsic-size 应为 auto + 正数 px，实测 ${r6Ci}`)
+// 跳过排版的直接证据：离屏消息按 120px 估算计入总高（探针实测估算/真实 ≈ 0.74）。
+// 方向由夹具决定：正文短于 120px 时估算反而偏大 ⇒ 这条断言会反过来——故夹具按应用形态造长正文。
+check(!!R6C && !!R6B && R6C.scrollHeightAtTop > 0 && R6C.scrollHeightAtTop <= R6B.scrollHeightAtTop * 0.9,
+  `离屏消息应按估算计入总高：containment 臂 ${R6C?.scrollHeightAtTop}px 应显著小于对照臂 ${R6B?.scrollHeightAtTop}px`)
+check(!!R6C && !!R6B && R6C.clientHeight > 0 && R6C.clientHeight < R6C.scrollHeightAtTop,
+  `量到的必须是真滚动容器（否则量的是被内容撑高的块，读数无意义），实测 clientHeight=${R6C?.clientHeight} scrollHeight=${R6C?.scrollHeightAtTop}`)
+// 计时：两臂操作完全相同（在**远离视口**的条目上追加文本 → 读 scrollHeight 强排），只差那一个
+// 类。噪声底线：对照臂合计低于时间戳分辨率（0.1ms）时比值断言无意义。
+const R6_NOISE_MS = 0.5
+const tC = R6C?.appendTotalMs, tB = R6B?.appendTotalMs
+check(typeof tC === 'number' && typeof tB === 'number', `两臂都应取到"改离屏条目"计时，实测 ${tC} / ${tB}`)
+if (typeof tC === 'number' && typeof tB === 'number') {
+  check(tC <= tB, `containment 臂改离屏条目不得慢于对照臂，实测 ${tC}ms vs ${tB}ms`)
+  if (tB >= R6_NOISE_MS) check(tC <= tB * 0.5, `containment 应显著降低"改离屏条目后强制重排"（离屏子树跳过 style/layout），实测 ${tC}ms vs ${tB}ms`)
+  else console.log(`\n（R6 对照臂合计仅 ${tB}ms < 噪声阈 ${R6_NOISE_MS}ms：只校验方向，比值断言跳过）`)
+  if (tC > 0 && tC < (R6C?.timerFloorMs || 0.1)) console.log(`（R6 生效臂合计 ${tC}ms 低于时间戳分辨率，按"低于 ${R6C?.timerFloorMs || 0.1}ms 量不出"理解）`)
+}
+
 console.log('\n失真 GUI 渲染验证：')
-for (const r of results) console.log(`  · ${r.key.padEnd(22)} fillBg=${r.fillBg} 证据行=${rowsOf(r.text)} 角标=${/×\s*\d/.test(r.text) ? 'on' : 'off'} 泛光=${r.hasGlow ? 'on' : 'off'}${r.qcardState ? ` 提问卡=${r.qcardState}${r.qcardAfterCollapse ? `→收起=${r.qcardAfterCollapse}` : ''}${r.qcardAfterReplay ? `→重放后=${r.qcardAfterReplay}` : ''}` : ''} 按钮=[${r.buttons.join(', ')}] rootHtml=${r.htmlLen}`)
+for (const r of results) {
+  // R6 用例的 text 是 200 条消息的正文、buttons 里还混着每条消息的复制按钮 →
+  // 走通用那行会把控制台刷爆，故单独一行报量测字段。
+  if (r.chatNodes !== undefined) {
+    console.log(`  · ${r.key.padEnd(22)} 消息=${r.chatNodesOuter}(节点 ${r.chatNodes}) .msg-contain=${r.hasContainClass ? 'on' : 'off'} content-visibility=${r.contentVisibility} 总高@顶=${r.scrollHeightAtTop}px 视口=${r.clientHeight}px${r.chatError ? ` ⚠ ${r.chatError}` : ''}`)
+    for (const b of (r.benches || [])) console.log(`      ${b.name.padEnd(22)} ${String(b.ms).padStart(8)}ms / ${r.appendIterations} 次 = ${Math.round((b.ms / r.appendIterations) * 1000)}µs/次`)
+    continue
+  }
+  console.log(`  · ${r.key.padEnd(22)} fillBg=${r.fillBg} 证据行=${rowsOf(r.text)} 角标=${/×\s*\d/.test(r.text) ? 'on' : 'off'} 泛光=${r.hasGlow ? 'on' : 'off'}${r.qcardState ? ` 提问卡=${r.qcardState}${r.qcardAfterCollapse ? `→收起=${r.qcardAfterCollapse}` : ''}${r.qcardAfterReplay ? `→重放后=${r.qcardAfterReplay}` : ''}` : ''} 按钮=[${r.buttons.join(', ')}] rootHtml=${r.htmlLen}`)
+}
 const errs = [...new Set(results.flatMap((r) => r.errors || []))]
 if (errs.length) console.log(`\n页内错误：\n  - ${errs.slice(0, 4).join('\n  - ')}`)
 console.log(fails.length ? `\n✖ ${fails.length} 项未通过：\n  - ${fails.join('\n  - ')}` : '\n✔ 全部通过')
