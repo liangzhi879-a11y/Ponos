@@ -42,12 +42,19 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '' } = {}
           output: store.search({
             query: String(args.query || ''),
             keywords: Array.isArray(args.keywords) ? args.keywords : [],
-            // 空间过滤：数组 `--spaces a,b`（本模块直接调）优先；单数 `--space x`
-            // 兼容（parseArgs 收的就是单数，Task 11 的路由表也按单数转发）——不兼容
-            // 会让 `--knowledge search --space experience` 静默不过滤。
-            spaces: Array.isArray(args.spaces) && args.spaces.length
-              ? args.spaces
-              : (args.space ? [String(args.space)] : null),
+            // 空间过滤。三种入参都要支持，缺一即静默失效（返回未过滤或全空）：
+            //   - `args.spaces` 数组（本模块直接调用）
+            //   - `args.space` 单值（parseArgs 收的单数形式）
+            //   - `args.space` 逗号串（HTTP `?spaces=a,b` 经路由转发的形式）
+            // 逗号分隔与 `--keywords` 的既有约定一致。原实现只把 `--space` 当**单个**
+            // id，于是 `--space a,b` 匹配不到任何空间 → 过滤掉全部结果、静默 0 命中。
+            spaces: (() => {
+              if (Array.isArray(args.spaces) && args.spaces.length) return args.spaces
+              const raw = String(args.space || '').trim()
+              if (!raw) return null
+              const parts = raw.split(',').map((s) => s.trim()).filter(Boolean)
+              return parts.length ? parts : null
+            })(),
             topK: Number(args.topK) || 5,
             maxBytes: Number(args.maxBytes) || 2048,
             mode: args.mode === 'full' ? 'full' : 'snippet',

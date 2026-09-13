@@ -515,3 +515,35 @@ test('getDoc / listTree / getLinks / getGraph 形状正确', async () => {
     for (const n of g.nodes) assert.ok(n.id && n.label)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+test('listTree 拒绝读侧目录穿越（与写侧同一套判定）', async () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    store.load({ force: true })
+    // 正常列举仍工作
+    assert.deepEqual(store.listTree({ space: 'my-notes' }).map((x) => x.name).sort(), ['a.md', 'b.md'])
+    // 各类穿越一律返回空（不得列出空间根之外的目录内容）
+    assert.deepEqual(store.listTree({ space: 'my-notes', path: '../packs' }), [])
+    assert.deepEqual(store.listTree({ space: 'my-notes', path: '../../knowledge' }), [])
+    assert.deepEqual(store.listTree({ space: 'my-notes', path: '/etc' }), [])
+    assert.deepEqual(store.listTree({ space: 'my-notes', path: 'C:/Windows' }), [])
+    // `.` 是空操作（= 当前目录 = 空间根），应正常返回根列表而非空
+    assert.deepEqual(store.listTree({ space: 'my-notes', path: '.' }).map((x) => x.name).sort(), ['a.md', 'b.md'])
+    // 前导/尾随斜杠是正常的（GUI 树拼接会产生），不应被误拒
+    assert.deepEqual(store.listTree({ space: 'my-notes', path: './' }).map((x) => x.name).sort(), ['a.md', 'b.md'])
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('search 支持逗号串空间过滤（HTTP ?spaces=a,b 的形式）', async () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    store.load({ force: true })
+    // 多空间：两个空间都有内容时都应返回
+    const both = store.search({ query: '内容', spaces: ['experience', 'my-notes'], topK: 20 })
+    assert.ok(both.items.some((x) => x.spaceId === 'experience') || both.items.some((x) => x.spaceId === 'my-notes'))
+    // 限定到不存在的空间必须 0 命中（证明过滤真的生效，而非静默忽略）
+    assert.equal(store.search({ query: '内容', spaces: ['不存在'], topK: 20 }).count, 0)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

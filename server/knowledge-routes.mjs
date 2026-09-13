@@ -122,7 +122,10 @@ export async function handleKnowledgeRoute({
       if (q('keywords')) args.push('--keywords', q('keywords'))
       if (q('topK')) args.push('--topK', q('topK'))
       if (q('mode')) args.push('--mode', q('mode'))
-      if (q('spaces')) args.push('--space', q('spaces').split(',')[0])
+      // `spaces` 是**列表**（HTTP 契约）。原实现取 split(',')[0] 只保留第一个空间，
+      // 于是 `?spaces=a,b` 静默只按 a 过滤——调用方以为限定在两个空间，实际少了一半结果。
+      // 逗号串原样透传，由内核侧拆分（与 `--keywords` 同约定）。
+      if (q('spaces')) args.push('--space', q('spaces'))
       return ok((await callJson(callKernel, args)).value)
     }
     if (isPost && p === '/knowledge/reindex') return ok((await callJson(callKernel, ['--knowledge', 'reindex', '--force'])).value)

@@ -109,3 +109,18 @@ test('parseArgs 缺省时 knowledge 为 null（不影响既有路径）', () => 
   const a = parseArgs(['--print'])
   assert.equal(a.knowledge, null)
 })
+
+test('op=search 的逗号串空间过滤（路由转发形式，需真正生效）', async () => {
+  const { dir } = fixture()
+  try {
+    // 单数逗号串：explore 两个空间
+    const one = await runKnowledgeCommand({ op: 'search', configDir: dir, args: { query: '文件传输助手', space: 'experience' } })
+    assert.ok(one.output.count > 0, '单空间命中')
+    // 逗号串含 experience → 仍应命中
+    const two = await runKnowledgeCommand({ op: 'search', configDir: dir, args: { query: '文件传输助手', space: 'experience,session-memory' } })
+    assert.ok(two.output.count > 0, '逗号串含有效空间应命中（原实现会因匹配不到 id 而全空）')
+    // 逗号串全为无效空间 → 0 命中（证明过滤生效而非被忽略）
+    const bad = await runKnowledgeCommand({ op: 'search', configDir: dir, args: { query: '文件传输助手', space: 'x,y' } })
+    assert.equal(bad.output.count, 0)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

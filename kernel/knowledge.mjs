@@ -538,12 +538,27 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
     }))
   }
 
-  /** 单层目录列举（GUI 文件树用）：跳过隐藏项与符号链接，只列 dir 与 .md 文件。 */
+  /**
+   * 单层目录列举（GUI 文件树用）：跳过隐藏项与符号链接，只列 dir 与 .md 文件。
+   *
+   * 读侧穿越防护（与写侧 safeRelPath 对称）：`path` 来自 HTTP 查询串，若原样 join，
+   * `?path=../secret` 能列出空间根**之外**的目录内容（实测可读到兄弟空间的 .md 文件名）。
+   * "只是读、不算漏洞"是错的——文件名本身就是信息（空间划分、他人笔记标题）。
+   * 故此处拒绝绝对路径与任何 `.`/`..` 段，与写侧保持同一套判定，不做例外。
+   */
   function listTree({ space, path = '' } = {}) {
     const sp = spaces.find((s) => s.id === space)
     if (!sp) return []
-    const sub = String(path || '').replace(/^\/+|\/+$/g, '')
-    const root = sub ? join(sp.root, ...sub.split('/')) : sp.root
+    const raw = String(path || '').replace(/\\/g, '/')
+    // 绝对路径与盘符直接拒（不可能在空间根内）
+    if (raw.startsWith('/') || /^[a-zA-Z]:/.test(raw)) return []
+    // `.` 段是空操作（`./` = 当前目录 = 空间根），剔除而非拒绝——拒它会让 GUI 树
+    // 在某条拼接路径上静默空白，是比它防的风险更坏的故障模式。
+    const segs = raw.split('/').filter((s) => s && s !== '.')
+    // `..` 才能真正逃出空间根，必须拒
+    if (segs.some((s) => s === '..')) return []
+    const sub = segs.join('/')
+    const root = segs.length ? join(sp.root, ...segs) : sp.root
     let entries = []
     try { entries = readdirSync(root, { withFileTypes: true }) } catch { return [] }
     const out = []
