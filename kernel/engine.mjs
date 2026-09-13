@@ -689,6 +689,11 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // 浏览器桥挂起队列：requestId → resolve（bridge 回写 browser_response 解除；
   // 内核发 bridge_request(browser) → 主进程执行器 → 响应回写 stdin）
   const browserWaiters = new Map()
+  // 应用桥挂起队列（Task 4.x「应用即工具」）：requestId → resolve（bridge 回写
+  // app_response 解除）。与 browserWaiters 完全同构，只是路由不同——内核发
+  // bridge_request(route=app) → bridge → 主进程执行器（复用 electron/app-ipc.cjs 的
+  // app:run 执行逻辑）→ 响应经 stdin control_request(app_response) 回写。
+  const appWaiters = new Map()
   // P8 排队插话（priority:'next'）：cli 吸收入队，引擎在工具调用边界注入当前轮；
   // 纯文本生成阶段不注入，轮末由 cli 作为新轮处理（前端方案 A 兜底语义）
   const pendingNext = []
@@ -1755,11 +1760,12 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       return { content: `子 Agent 技能白名单不含「${String(toolUse.input?.skill ?? '')}」（允许：${lo.allowedSkills.join(', ')}），已拒绝加载`, isError: true }
     }
     // ctx：工具执行上下文——主循环注入 spawnSubAgent/taskSystem/browserDriver
-    // （Agent/Task/Browser 工具依赖），子 agent 循环注入 lane:true（禁嵌套分发）
+    // （Agent/Task/Browser 工具依赖）与 appRunner（应用工具 app_* 的执行能力，
+    // Task 4.x），子 agent 循环注入 lane:true（禁嵌套分发）
     const { store, ...toolCtx } = ctx
     // P1-9：统一执行 deadline（兜"永不返回"的工具；各工具自身超时负责 kill）
     const toolDeadlineMs = Number(process.env.CLAUDE_CODE_TOOL_TIMEOUT_MS || 300_000)
-    const r = await withToolDeadline(tools.run(toolUse, { ...toolCtx, toolUseId: toolUse.id, browserDriver: runBrowser }), toolDeadlineMs)
+    const r = await withToolDeadline(tools.run(toolUse, { ...toolCtx, toolUseId: toolUse.id, browserDriver: runBrowser, appRunner: runApp }), toolDeadlineMs)
     // P0-3：大结果落盘到目标会话目录（子 lane 独立 store）。Read 例外：Read 返回的
     // 就是模型显式索要的文件内容（≤2000 行/2MB，超界文件已由 Read 自身引导 offset/
     // limit），落盘替换成 stub 会让"读大源文件"只见预览 + 引导补读，模型被迫小段
@@ -1854,6 +1860,36 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       return { content: typeof body === 'string' ? body : JSON.stringify(body), isError: false }
     }
     return { content: `浏览器操作失败：${resp?.error || '未知错误'}`, isError: true }
+  }
+
+  // —— 应用命令执行（Task 4.x「应用即工具」）：bridge_request(app) → 主进程执行器 ——
+  // 与 runBrowser 同构（发起 + 挂起 + 超时 + 桥异常兜底），差别只在路由名与回执
+  // 形状：应用命令的执行结果就是 electron/app-ipc.cjs 的 app:run 回执
+  //（{ok,data,error,kind,durationMs}），内核**原样**交给 app-tools.mjs 渲染成工具结果。
+  // 执行侧负责留痕（browser 路径 runCommand 内建 history；desktop 路径显式 appendHistory）。
+  const APP_TIMEOUT_MS = Number(process.env.PONOS_APP_TIMEOUT_MS || 300_000)
+  async function runApp({ appId, action, args = {}, sessionId = null } = {}) {
+    const requestId = 'ap-' + randomUUID()
+    let timer
+    const resp = await new Promise((resolve) => {
+      appWaiters.set(requestId, resolve)
+      // 超时远大于 browser（120s）：desktop/process 命令可含多步 CLI（单步 30s 上限）
+      timer = setTimeout(() => {
+        appWaiters.delete(requestId)
+        resolve({ ok: false, data: null, error: `应用命令超时（${appId || '?'}/${action || '?'}，${APP_TIMEOUT_MS}ms）`, kind: 'unknown', durationMs: APP_TIMEOUT_MS })
+      }, APP_TIMEOUT_MS)
+      if (timer.unref) timer.unref()
+      try {
+        wire.bridgeRequest({ route: 'app', requestId, payload: { appId, action, args: args || {}, sessionId } })
+      } catch (e) {
+        // 写 stdout 失败（桥已断）不得把挂起留到超时：立即以失败回执解除
+        appWaiters.delete(requestId)
+        clearTimeout(timer)
+        resolve({ ok: false, data: null, error: `应用命令请求发送失败：${e?.message || String(e)}`, kind: 'unknown', durationMs: 0 })
+      }
+    })
+    clearTimeout(timer)
+    return resp || { ok: false, data: null, error: '应用命令无响应', kind: 'unknown', durationMs: 0 }
   }
 
   // —— 子 agent（subagent）执行：进程内 lane ——
@@ -2434,6 +2470,11 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       browserWaiters.delete(id)
       resolve({ ok: false, error: '已取消' })
     }
+    // 应用命令挂起同款处理：取消/打断必须立刻解除，否则模型侧工具边界要等到超时
+    for (const [id, resolve] of [...appWaiters]) {
+      appWaiters.delete(id)
+      resolve({ ok: false, data: null, error: '已取消', kind: 'unknown', durationMs: 0 })
+    }
     // 提问挂起同样要解除：漏掉这一步，取消/打断时 waitForAnswer 会一直挂到超时，
     // 表现为"按了停止键，内核却要等到提问超时才真的收尾"。
     if (answerWaiter) {
@@ -2599,6 +2640,19 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         w(resp)
       }
     },
+    // cli 的 app_response 路由（bridge 回写）：解除应用命令挂起。回执形状 = app:run
+    // 回执 {ok,data,error,kind,durationMs}，由 app-tools.mjs 渲染成工具结果
+    resolveApp(requestId, resp) {
+      const w = appWaiters.get(requestId)
+      if (w) {
+        appWaiters.delete(requestId)
+        w(resp)
+      }
+    },
+    // 应用命令执行能力对外暴露：kernel/cli.mjs 的 app-tools runner 需要它
+    //（与 Browser 工具经 ctx.browserDriver 拿 runBrowser 同理，只是应用工具在
+    //  cli 侧建表，故走引擎实例方法而不是工具 ctx）。
+    runApp,
     // P8 排队插话：cli 在 turnActive 时吸收 next 消息入队并回发 command_lifecycle
     queueNext(content, uuid) {
       pendingNext.push({ content: String(content ?? ''), uuid })

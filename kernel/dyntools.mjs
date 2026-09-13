@@ -72,7 +72,8 @@ export function filterToolNames(names, tools) {
   return out
 }
 
-const LIMIT_DEFAULT = 20
+// 动态工具总量上限（buildWorkflowTools 与 kernel/app-tools.mjs 共用同一口径）
+export const LIMIT_DEFAULT = 20
 
 // public 截断的稳定顺序：全部带 updatedAt 时按更新时间降序（最近优先），否则按 id
 // 字节序（不用 localeCompare——其顺序随 locale 变化，实测中文会排在英文前）。

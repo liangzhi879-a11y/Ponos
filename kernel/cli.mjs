@@ -50,6 +50,8 @@ import { KERNEL_VERSION, SCHEMA_VERSION, buildId } from '../version.mjs'
 // 应用智控：内核侧 Spec 读取（纯函数）与权限规则注入
 import { getBoundApp, loadSpec } from './app-spec.mjs'
 import { syncAppPermissionRules } from './app-permissions.mjs'
+// 应用智控：应用即工具（绑定到本会话的应用命令 → app_* 具名工具，Task 4.x）
+import { buildAppTools } from './app-tools.mjs'
 
 const REQUIRED_FORMAT = 'stream-json'
 
@@ -464,7 +466,23 @@ export async function main(argv) {
       } catch (err) {
         log.warn('apps: 权限规则注入失败（本轮继续）', err)
       }
-      return buildWorkflowTools({ roots: workflowRoots, engine: wfEngine, agentId: args.agent || null, publicLimit: wfPublicLimit })
+      return {
+        ...buildWorkflowTools({ roots: workflowRoots, engine: wfEngine, agentId: args.agent || null, publicLimit: wfPublicLimit }),
+        // 应用智控（Task 4.x）：绑定到本会话的应用命令 → app_* 工具。
+        //   · 可见性/截断全在 app-tools.mjs（console 仅本会话绑定可见，public 恒可见，
+        //     private 永不可见）——与上面注入的权限规则同一时点求值，故「进入/离开控制台」
+        //     即时反映到工具池；
+        //   · runner 走 engine.runApp：内核只发起 bridge_request(route=app)，
+        //     真正的执行在 Electron 主进程（electron/app-ipc.cjs 的 app:run 逻辑），
+        //     回执经 stdin app_response → engine.resolveApp；
+        //   · 未绑定/未注入 runner 时不会静默成功（app-tools 侧对缺 runner 明确报错）。
+        ...buildAppTools({
+          roots: appRoots,
+          agentId: args.agent || null,
+          sessionId,
+          runner: (p) => engine.runApp(p),
+        }),
+      }
     })
   }
   // J1：health Judge 注入位——包装 engine.judgeUntil 作健康判定（目标 = 当前会话
@@ -908,6 +926,12 @@ export async function main(argv) {
     // 浏览器桥响应（bridge 回写，browser-routing.mjs）：解除 engine 浏览器挂起
     if (subtype === 'browser_response') {
       engine.resolveBrowser(req?.request?.requestId, req?.request)
+      return
+    }
+    // 应用桥响应（bridge 回写，server/app-routing.mjs，Task 4.x）：解除应用命令挂起。
+    // 与 browser_response 同构，只是 subtype 与回执形状不同（app:run 回执）。
+    if (subtype === 'app_response') {
+      engine.resolveApp(req?.request?.requestId, req?.request)
       return
     }
     // P4-5 热切换：空闲切换 / busy 拒绝 / 校验失败拒绝；成功落审计 meta 条目

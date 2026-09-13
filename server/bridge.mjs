@@ -29,6 +29,8 @@ import { buildExperienceIndex, buildSedimentPrompt, ensurePersonalDir } from './
 export { ensurePersonalDir, buildExperienceIndex, buildSedimentPrompt } from './experience.mjs'
 import { createTranscriptHandlers } from './transcript.mjs'
 import { makeBrowserRouter } from './browser-routing.mjs'
+// 应用即工具（Task 4.x）：内核 bridge_request(route=app) → 主进程执行器 → app_response
+import { makeAppRouter } from './app-routing.mjs'
 import { kernelReadonlySync } from './kernel-readonly.mjs'
 import { getAuthStatus, setupPassword, checkPassword, changePassword } from './auth.mjs'
 import { MANAGED_KEYS, providerProfileEnv, buildIdentityPrompt, activeProviderModel, resolveProviderProfile } from './provider-profile.mjs'
@@ -798,6 +800,8 @@ function writeControlRequest(sessionId, msg) {
   }
 }
 const browserRouter = makeBrowserRouter({ writeKernel: writeControlRequest })
+// 应用路由与浏览器路由共用同一个 executor WS（registerExecutor 在 executor:hello 处一并调用）
+const appRouter = makeAppRouter({ writeKernel: writeControlRequest })
 
 // Windows cmd.exe requires shell-wrapped arguments: values containing spaces
 // must be enclosed in double quotes (Node does not escape args when shell is
@@ -1412,6 +1416,13 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     // 泄漏给 GUI。
     if (parsed && parsed.type === 'bridge_request' && parsed.route === 'browser') {
       browserRouter.onKernelBridgeRequest(sid, parsed)
+      return
+    }
+    // 应用即工具（Task 4.x）：内核 bridge_request(route=app) → 主进程执行器。
+    // 与 browser 同构（bridge 只路由不解析，执行/留痕全在主进程 app-ipc 侧）；
+    // return 短路，理由同上——载荷含 cmd 参数，不落 GUI 转发。
+    if (parsed && parsed.type === 'bridge_request' && parsed.route === 'app') {
+      appRouter.onKernelBridgeRequest(sid, parsed)
       return
     }
     // 分类规则抽到 workflow-events.mjs（UI Task 14b / Task 12 审查 I-3，单测可覆盖）：
@@ -2762,11 +2773,15 @@ wss.on('connection', (ws, req) => {
         wsClients.delete(ws)
         browserRouter.removeGuiClient(ws)
         browserRouter.registerExecutor(ws)
+        appRouter.registerExecutor(ws)
         ws._yfwRole = 'executor'
-        console.log('[bridge] executor connected (browser automation)')
+        console.log('[bridge] executor connected (browser automation + app commands)')
       } else if (msg.type === 'browser:exec:response') {
         // 执行器完成 → 回写内核 stdin（control_request/browser_response）
         browserRouter.onExecutorResponse(msg.requestId, msg)
+      } else if (msg.type === 'app:exec:response') {
+        // 应用命令执行完成 → 回写内核 stdin（control_request/app_response，Task 4.x）
+        appRouter.onExecutorResponse(msg.requestId, msg)
       } else if (msg.type === 'browser:event') {
         // 执行器事件（状态/进度等）→ 广播给所有 GUI 客户端
         browserRouter.broadcast(msg.sessionId, msg.event)
@@ -2977,6 +2992,7 @@ wss.on('connection', (ws, req) => {
     wsClients.delete(ws)
     browserRouter.removeGuiClient(ws)
     browserRouter.unregisterExecutor(ws)
+    appRouter.unregisterExecutor(ws)
     console.log('[bridge] GUI disconnected')
   })
 })
