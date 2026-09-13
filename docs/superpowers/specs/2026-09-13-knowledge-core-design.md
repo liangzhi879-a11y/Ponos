@@ -187,9 +187,10 @@ searchKnowledge({ query, keywords, spaces, topK = 5, maxBytes = 2048, mode = 'sn
 | `shared/knowledge-core.mjs` | **纯函数**：frontmatter 解析、块切分、gram 分词、向量化、打分融合、索引序列化/反序列化、snippet 生成 | 共享 |
 | `shared/knowledge-core.test.mjs` | 上述纯函数的单测（fixture 驱动，无需文件系统） | 共享 |
 | `kernel/knowledge.mjs` | 空间发现、文档读写、索引构建/加载、`searchKnowledge()`、经验适配器 | kernel（权威） |
-| `kernel/knowledge.test.mjs` | 以 `YFWORKING_HOME` 指向临时目录隔离测试 | kernel |
+| `kernel-tests/knowledge.test.mjs` | 以临时 `configDir` 隔离测试（**kernel 测试必须放 `kernel-tests/`**：`package.json` 的 test glob 不含 `kernel/*.test.mjs`） | kernel |
 | `kernel/knowledge-search.mjs` | `KnowledgeSearch` 工具的检索实现 | kernel |
-| `kernel/cli.mjs` | 新增 `--knowledge-search` / `--knowledge-reindex` / `--knowledge-stats` | kernel |
+| `kernel/knowledge-cli.mjs` | `--knowledge <op>` 聚合实现（op：spaces/tree/doc/entries/search/links/graph/stats/reindex/update-doc），stdout JSON | kernel |
+| `kernel/cli.mjs` | `parseArgs` 增 `--knowledge`/`--space`/`--path`/`--id`/`--query`/`--keywords`/`--topK`/`--limit`/`--mode`/`--force` + 短路分支 | kernel |
 | `server/knowledge-routes.mjs` | `/knowledge/*` 路由，`handleKnowledgeRoute()` 契约 | server |
 | `server/knowledge-routes.test.mjs` | 直调 handler（**不启动 bridge**） | server |
 | `server/bridge.mjs` | 接一行路由（对齐 `bridge.mjs:1652` 的 workflows 接法） | server |
@@ -203,20 +204,19 @@ searchKnowledge({ query, keywords, spaces, topK = 5, maxBytes = 2048, mode = 'sn
 
 **依赖方向**：`shared ← kernel`、`shared ← server`，`kernel ⊥ server`（双向禁止）。
 
-### §5.6 经验适配器（S1 必做）
+### §5.6 经验适配（S1 必做）
 
-`kernel/knowledge.mjs` 暴露：
+**适配是"隐式"的，不需要单独的数据结构**——经验文件就是普通 md 文档，`splitBlocks` 天然把
+`- [会话|标签] 摘要 -- 全文` 整行识别为 `kind:'entry'` 块，`space.source === 'experience'`
+时文件名主题自动进 `Doc.tags`。S1 只需在此之上补**读侧**接口：
 
 ```js
-experienceAdapter = {
-  root: PERSONAL_DIR,           // ~/.yfw/memory/personal
-  toDoc(themeFile, raw),        // 每个经验条目 → kind:'entry' 块，tag 入 Doc.tags
-  toEntryLine(block),           // 反向：块 → `- [会话|标签] 摘要 -- 全文`（写入用）
-}
+store.listEntries(docId) → [{ blockId, tag, summary, full, line }]   // 条目级读接口
 ```
 
 约束：
-- **只读为主**：S1 不改变经验的写入路径（`appendMemoryEntry` 仍是唯一写入者），适配器只做解析与检索；
+- **只读为主**：S1 不改变经验的写入路径（`appendMemoryEntry` 仍是唯一写入者）；
+  反向序列化（block → 条目行）**推迟到 S3**——现在没有任何调用方需要它（YAGNI）。
 - **检索粒度到条目**：一次查询返回"某主题文件的第 N 条经验"，而非整篇；
 - **与 `graph.jsonl` 共存**：`graph.jsonl` 继续服务 `MemorySearch` 的 local 后端；
   `KnowledgeSearch` 是新工具，二者并存不互斥（S3 再统一）。
@@ -230,7 +230,8 @@ experienceAdapter = {
 | GET | `/knowledge/spaces` | 空间列表 + 文档数 + 索引年龄 |
 | GET | `/knowledge/tree?space=&path=` | 目录树（懒加载，对齐 `/list-dir` 形状） |
 | GET | `/knowledge/doc?id=` | 文档 + blocks（供预览/编辑器） |
-| POST | `/knowledge/doc` | 写入文档（仅 `writable` 空间；成功即标脏） |
+| GET | `/knowledge/entries?id=` | 文档的条目级清单（经验文件用；GUI 与 AI 的公共读接口） |
+| POST | `/knowledge/doc` | 写入文档（仅 `writable` 空间；落盘后立即增量更新索引） |
 | GET | `/knowledge/search?q=&spaces=&topK=` | 检索（snippet 模式） |
 | GET | `/knowledge/links?id=` | 出链 + 反链 |
 | GET | `/knowledge/graph?space=&limit=` | 图谱数据（nodes/edges，S2 用） |
@@ -259,16 +260,17 @@ experienceAdapter = {
 
 **② 检索**：`query` → 倒排候选 → 图扩展 → `scoreFusion()`（shared）→ topK → snippet 或注入串。
 
-**③ 写入（写文档）**：server 校验空间可写 → 落盘 → 标脏 → 下次检索前增量重建该文档。
+**③ 写入（写文档）**：server 校验空间可写 → 落盘 → 调 `--knowledge update-doc --id <docId>`
+**立即增量更新该文档**（不是"标脏后等下次重建"——否则"刚保存就搜不到"）。
 
 ## 7. 测试策略
 
 | 层 | 文件 | 要点 |
 |---|---|---|
 | 纯函数 | `shared/knowledge-core.test.mjs` | 块切分边界（围栏代码/表格/列表/经验条目）、frontmatter、snippet 截断、评分单调性 |
-| kernel | `kernel/knowledge.test.mjs` | 临时 `YFWORKING_HOME` 隔离；空间发现、增量重建、经验适配器 |
+| kernel | `kernel-tests/knowledge.test.mjs` | 临时 `configDir` 隔离；空间发现、增量重建、条目级接口 |
 | server | `server/knowledge-routes.test.mjs` | 直调 handler（**严禁起 bridge**——本仓库有"测试起桥误杀运行中应用"的前车之鉴） |
-| **对拍** | `kernel-tests/knowledge-parity.test.mjs` | 同一 fixture 目录，kernel 与 server 两侧检索 top-5 的 `docId+blockId` 序列**必须一致** |
+| **对拍** | `kernel-tests/knowledge-parity.test.mjs` | 内核直调 vs `node kernel/cli.mjs --knowledge search` 子进程（**server 实际走的通道**）：top-5 `blockId` 序列必须逐位一致 |
 
 对拍测试是把"双端实现"从负债变成资产的手段：任何一侧打分漂移立即红灯。
 
