@@ -62,7 +62,9 @@ test('op=entries 返回条目级清单', async () => {
 test('op=update-doc 触发增量更新', async () => {
   const { dir, personal } = fixture()
   try {
-    writeFileSync(join(personal, 'workflow.md'), '- [会话|新] 增量条目 -- 内容\n', 'utf-8')
+    // 正文（' -- ' 之后）就是 S5 §8 之后的索引文本，故把待检索词直接写进正文——
+    // 摘要与正文不同文时，只有正文进索引（summary 仍只作 snippet 展示）。
+    writeFileSync(join(personal, 'workflow.md'), '- [会话|新] 增量条目 -- 增量条目，内容\n', 'utf-8')
     const { output } = await runKnowledgeCommand({
       op: 'update-doc', configDir: dir, args: { id: 'experience/workflow.md' },
     })

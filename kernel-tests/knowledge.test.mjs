@@ -267,21 +267,24 @@ test('search 中文查询有效（bigram 命中，非关键词路）', async () 
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('search 条目 full 未进倒排：仅全文命中时靠 keywords 召回（记录性用例）', async () => {
+test('search 条目全文（full）进倒排：无 keywords 也能按正文召回（S5 §8 口径修正）', async () => {
   const { dir } = makeFixture()
   try {
     const store = createKnowledgeStore({ configDir: dir })
     await store.load({ force: true })
-    // '沟通渠道' 只存在于 entry 的 full（摘要与标签里都没有）→ 倒排路 0 命中，
-    // 无 keywords 时查不到（degraded + 无内容信号被剔除，不能只靠 struct 造结果）；
-    // 传 keywords 后关键词路把它召回来。这是已知取舍，S2 若要求"全文可检索"需另行裁定。
+    // '沟通渠道' 只存在于 entry 的 full 里（摘要 '只发文件传输助手' 与标签都没有）。
+    // S5 §8 把索引文本从 `b.text`（60 字截断摘要）改为 `relationContent(b)`（full 去类型前缀）
+    // 之后，正文词**直接进倒排** → 不传 keywords 也能召回。
+    // 旧行为（S1/S2 的记录性用例）：正文不进倒排，不传 keywords 时 count=0（已知取舍，
+    // 当时结论是"S2 若要求全文可检索需另行裁定"——S5 §8 裁定为：要）。
     const bare = store.search({ query: '沟通渠道', topK: 5 })
-    assert.equal(bare.degraded, true, '无倒排命中 → 降级')
-    assert.equal(bare.count, 0, '纯 struct 分不构成命中（否则降级路会把全库条目捞回来）')
+    assert.equal(bare.degraded, false, '倒排命中正文 gram → 不降级')
+    assert.ok(bare.count >= 1, '正文命中即可召回')
+    assert.equal(bare.items[0].docId, 'experience/workflow.md')
+    assert.equal(bare.items[0].kind, 'entry')
+    // 关键词路同样指向它（两条路径口径一致，不会互相矛盾）
     const kw = store.search({ query: '沟通渠道', keywords: ['沟通渠道'], topK: 5 })
-    assert.equal(kw.count, 1)
-    assert.equal(kw.items[0].docId, 'experience/workflow.md')
-    assert.equal(kw.items[0].kind, 'entry')
+    assert.equal(kw.items[0].blockId, bare.items[0].blockId)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -439,7 +442,10 @@ test('updateDoc 增量更新：新内容可检索，且其他文档 docIdx 不�
     const r = await store.updateDoc('experience/workflow.md')
     assert.equal(r.updated, true)
     assert.deepEqual(store.getDocs().map((d) => d.id), before, 'docIdx 顺序不变')
-    const hit = store.search({ query: '全新的条目内容', topK: 3 })
+    // 查询词只出现在 full（正文）里，不在摘要/标签里 —— S5 §8 把索引文本改为
+    // relationContent(b) 后，正文即索引文本，增量更新后的正文立即可检索；
+    // 而 snippet 仍取 `b.text`（摘要），故下面仍断言 snippet 是"全新的条目内容"（行为不变）。
+    const hit = store.search({ query: '增量更新后立即可检索', topK: 3 })
     assert.ok(hit.count > 0, '同一会话内立即可检索（无需重启）')
     assert.match(hit.items[0].snippet, /全新的条目内容/)
     assert.equal(store.listEntries('experience/workflow.md').length, 2, '条目清单同步更新')

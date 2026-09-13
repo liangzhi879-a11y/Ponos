@@ -10,7 +10,7 @@ import { join, relative, sep, basename } from 'node:path'
 import {
   INDEX_VERSION, builtinSpaceSpecs, parseFrontmatter, splitBlocks, extractLinks,
   toDocId, hashLine,
-  countGrams, buildIdf, vectorizeText, blockIndexText, blockTagBoost,
+  countGrams, buildIdf, vectorizeText, blockIndexText, blockTagBoost, relationContent,
   serializeIndex, parseJsonl, resolveLinkTarget,
   cosine, keywordScore, structBoostOf, fuseScore, makeSnippet, toBlockId,
 } from '../shared/knowledge-core.mjs'
@@ -134,6 +134,27 @@ const PRUNE_DF_RATIO = 0.5     // 出现在超半数文档里的 gram 近似停�
 /** 检索耗时采样窗口（环形缓冲上限）：100 次足够看 P95，也不会无界增长 */
 const SEARCH_SAMPLES = 100
 
+/**
+ * 索引文本的**唯一口径**（S5 Task 2 / spec §8）：内容部分取 `relationContent(b)`
+ * （= `stripTypePrefix(full || text)`），不再取 `b.text`。
+ *
+ * **why**：`b.text` 是 `kernel/memory.mjs:186` 生成的 `类型前缀 + t.slice(0,60)` 截断摘要，
+ * 实测同一条目 text=45 字 vs full=471 字（10 倍信息差）。而检索的向量/gram 路与关联物化
+ * （`shared/knowledge-core.mjs` 的 `relatedCandidates`，同样按 relationContent 算 cos）
+ * **共用同一份索引语料**——两边口径不一致时，同一对块在"检索排序"与"关联分数"里会给出
+ * 互相矛盾的相关度，用户看到的 `score` 与 `related[].why.score` 对不上。
+ * 统一到"去前缀 full"还顺带修掉截断摘要丢失语义细节的问题：落在 60 字之后的内容
+ * 以前**根本进不了索引**（查不到），现在能查到。
+ *
+ * 类型标签前缀与 tagBoost 仍走 `blockIndexText`/`blockTagBoost`（entry 块 tag 加 3 倍权）：
+ * 那是 S1 的 tag 命中语义，S5 不动。
+ *
+ * 反过来说，**不要**在这里改回 `b.text`：改了就会退回"两条路径信息量不一致"的老问题。
+ */
+function indexTextOf(b) {
+  return blockIndexText({ kind: b.kind, text: relationContent(b), entryTag: b.tag })
+}
+
 export function createKnowledgeStore({ configDir, root = null } = {}) {
   const kroot = root || knowledgeRoot(configDir)
   const idxDir = join(kroot, '.index')
@@ -174,7 +195,7 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
     const gramDocs = []
     for (const d of nextDocs) {
       for (const b of d.blocks) {
-        gramDocs.push({ gramCounts: countGrams(blockIndexText({ kind: b.kind, text: b.text, entryTag: b.tag })) })
+        gramDocs.push({ gramCounts: countGrams(indexTextOf(b)) })
       }
     }
     const nextIdf = buildIdf(gramDocs)
@@ -183,8 +204,8 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
     const tagMap = {}
     nextDocs.forEach((d, i) => {
       for (const b of d.blocks) {
-        const text = blockIndexText({ kind: b.kind, text: b.text, entryTag: b.tag })
-        const boost = blockTagBoost({ kind: b.kind, entryTag: b.tag })
+        const text = indexTextOf(b)
+        const boost = blockTagBoost(b)
         for (const [g, w] of vectorizeText(text, { tagBoost: boost, idf: nextIdf })) {
           const e = inv.get(g) || { g, docs: new Set(), p: [] }
           e.docs.add(i)
@@ -302,7 +323,7 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
     const gramDocs = []
     for (const d of docs) {
       for (const b of d.blocks) {
-        gramDocs.push({ gramCounts: countGrams(blockIndexText({ kind: b.kind, text: b.text, entryTag: b.tag })) })
+        gramDocs.push({ gramCounts: countGrams(indexTextOf(b)) })
       }
     }
     idf = buildIdf(gramDocs)
@@ -343,11 +364,13 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
 
   /** 块级评分。degraded=true 时跳过向量路（查询 gram 全部落空，只能靠关键词）。 */
   function scoreBlock(doc, b, qvec, qtext, kws, degraded) {
-    const shape = { kind: b.kind, text: b.text, entryTag: b.tag }
     const cos = degraded ? 0 : cosine(
-      vectorizeText(blockIndexText(shape), { tagBoost: blockTagBoost(shape), idf }), qvec,
+      vectorizeText(indexTextOf(b), { tagBoost: blockTagBoost(b), idf }), qvec,
     )
-    const kw = keywordScore({ tag: b.tag || '', summary: b.text, full: b.full || '', theme: doc.title }, kws)
+    // 关键词路的 summary 与向量路**同一口径**（S5 §8：relationContent）——两条路径喂给融合
+    // 评分的必须同源，否则"向量说近、关键词说远"会在同一查询内互相抵消。
+    // `full: b.full` 保持原样：它是 `mode='full'` 的正文来源，也是"内容落在摘要截断之外"的兜底信号。
+    const kw = keywordScore({ tag: b.tag || '', summary: relationContent(b), full: b.full || '', theme: doc.title }, kws)
     const struct = structBoostOf({ block: { kind: b.kind }, doc, query: qtext, keywords: kws })
     return { cos, kw, struct }
   }
@@ -543,8 +566,10 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
     }
     const touched = new Set()
     for (const b of parsed.doc.blocks) {
-      const shape = { kind: b.kind, text: b.text, entryTag: b.tag }
-      for (const [g, w] of vectorizeText(blockIndexText(shape), { tagBoost: blockTagBoost(shape), idf })) {
+      // 增量路必须与全量构建同口径（indexTextOf）：否则同一个库"改过一个文件"后，
+      // 被改文档的 postings 与其余文档口径不同，检索排序会随"是否增量过"漂移，
+      // 且下次全量重建结果又不一致（幂等性被打破）。
+      for (const [g, w] of vectorizeText(indexTextOf(b), { tagBoost: blockTagBoost(b), idf })) {
         const e = inverted.get(g) || { g, df: 0, p: [] }
         if (!e.p.some(([di]) => di === i)) e.df += 1
         e.p.push([i, Math.round(w * 10000) / 10000])
