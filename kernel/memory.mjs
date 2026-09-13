@@ -1,19 +1,20 @@
 // kernel/memory.mjs —— 跨会话记忆内核化（L3-1/L3-2）
 // 与 GUI 层 server/experience.mjs 同一数据源/格式/去重算法：
 //   <configDir>/memory/personal/{theme}.md，条目 `- [会话|标签] 摘要 -- 全文`
+// hashLine / parseEntryLine / keywordScore 的权威实现在 shared/knowledge-core.mjs
+// （2026-09-13 S1 Task 4 去重），本模块 re-export 保持既有导入点可用。
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { hashLine, parseEntryLine, keywordScore } from '../shared/knowledge-core.mjs'
+
+export { hashLine, parseEntryLine, keywordScore }
 
 export function memoryRoot(configDir) {
   return join(configDir || '', 'memory', 'personal')
 }
 
-export function hashLine(text) {
-  let h = 0
-  for (let i = 0; i < text.length; i++) h = ((h << 5) - h + text.charCodeAt(i)) | 0
-  return (h >>> 0).toString(16).padStart(8, '0')
-}
-
+// 本模块保留自己的 parseFrontmatter（返回形状与 shared 版不同——不要 bodyStartLine），
+// 语义与 shared 版一致（同一正则），有意不复用：改它会牵动 readTheme 的返回形状。
 function parseFrontmatter(raw) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(raw)
   if (!m) return { front: {}, body: raw }
@@ -39,21 +40,6 @@ function readTheme(root, theme) {
     return { text, hash: hashLine(text), ...parseEntryLine(text) }
   })
   return { front, entries }
-}
-
-export function parseEntryLine(line) {
-  const text = String(line).trim()
-  const m = /^- \[([^\]]*)\]\s*(.*)$/.exec(text)
-  const inner = m ? m[1] : ''
-  let src = m ? m[2].trim() : text.replace(/^- /, '')
-  let tag = null
-  const bar = inner.lastIndexOf('|')
-  if (bar >= 0) tag = inner.slice(bar + 1).trim() || null
-  const sep = src.indexOf(' -- ')
-  let summary, full
-  if (sep >= 0) { summary = src.slice(0, sep).trim(); full = src.slice(sep + 4).trim() }
-  else { summary = src; full = src }
-  return { tag, summary: summary || full, full }
 }
 
 export function readMemoryEntries({ root = '', theme = '' } = {}) {
@@ -111,24 +97,6 @@ export function buildMemoryIndex({ root = '', maxBytes = 4096 } = {}) {
     out += line + '\n'
   }
   return out
-}
-
-// 从 buildRelevantMemory 抽取，供图谱检索复用（评分不变）
-export function keywordScore({ tag = '', summary = '', full = '', theme = '' }, keywords = []) {
-  const kws = keywords.map((k) => String(k).toLowerCase()).filter((k) => k.length >= 2)
-  if (!kws.length) return 0
-  const tagL = String(tag || '').toLowerCase()
-  const sumL = String(summary || '').toLowerCase()
-  const fullL = String(full || '').toLowerCase()
-  const themeL = String(theme || '').toLowerCase()
-  let score = 0
-  for (const k of kws) {
-    if (tagL.includes(k)) score += 3
-    if (themeL.includes(k)) score += 2
-    if (sumL.includes(k)) score += 2
-    if (fullL.includes(k)) score += 1
-  }
-  return score
 }
 
 // 关键词触发抽调（M4）：按当前任务上下文关键词，从经验库匹配高相关条目并注入
