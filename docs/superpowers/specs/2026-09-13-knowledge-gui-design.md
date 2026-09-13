@@ -137,3 +137,64 @@ persist key `yfworking-knowledge`；`merge` 时清洗非法 `view`/`spaceId`（�
 | D3 | 编辑能力 | **内置编辑**（`CodeEditor` markdown 模式；只读空间禁用） |
 | D4 | 经验面板处置 | **简化为"知识库设置"**：保留注入开关/上限/导入导出/重建索引，移除重复条目列表，加"在知识模块中打开"入口 |
 | D5 | 搜索快捷键 | **`Ctrl/Cmd+F`**（知识模块内，无冲突；不动 `SearchDialog` 的 `Ctrl/Cmd+K`） |
+
+---
+
+## 11. 修订记录（S2 实施前源码复核，2026-09-13）
+
+复核依据：对 `src/` 全量的实际阅读与 grep（worktree `knowledge-s1`）。
+以下修正本文档中基于早期核对的表述；**实施以本节为准**。
+
+### 11.1 事实修正（原表述有误）
+
+| 原表述 | 实际情况 | 影响 |
+|---|---|---|
+| §6「骨架屏用 `--shimmer`（原型已有 `.shimmer`）」 | `globals.css:153-156` 只有 `@keyframes shimmer`，**无 `--shimmer` 变量、无 `.shimmer` 类**，全 `src/` 零消费点 | 骨架屏需**自写**（切角块 + `animate-pulse`） |
+| §2.3「抽屉/浮层用既有 `ui/` 组件」 | `ui/` 共 10 文件，**无** Panel/Resizable/Tree/ContextMenu/Skeleton/EmptyState/Chip/Toast | 右键菜单照 `FileBrowser.tsx:180-225` 手写 fixed 定位；空态用既有内联惯例（`py-8 text-center text-tertiary text-xs`） |
+| §2.4「`SkillsPanel` **曾**用过 `BookOpen`」 | **仍在使用**（`SkillsPanel.tsx:382,412`），语义=读文档 | 知识 rail 改用 **`Library`**（全库零占用）；`NotebookPen` 备选 |
+| §1「图谱库/文档渲染已装」 | **低估**：两者均有完整先例——`@xyflow/react` 见 `WorkflowCanvas.tsx` + `nodes/` + `edges/` 三文件范式（含 `dist/style.css` 导入）；`react-markdown` 见 `MarkdownText.tsx` 且**已导出** `MD_COMPONENTS`/`MD_PLUGINS` | **直接复用，勿重造** |
+| §1「rail 宽 48px…依据 `RailNav.tsx:31-56`」 | 激活指示条实现在 `globals.css:907-908`，`RailNav.tsx:50` 引用 | 定位修正，无行为影响 |
+| §10 D5「不动 `SearchDialog` 的 `Ctrl/Cmd+K`」 | `Ctrl/Cmd+K` 是**命令面板**（`WorkShell.tsx:112`）；`SearchDialog` 是 `Ctrl/Cmd+Shift+F`（`:136`） | 两者都不动，此处仅澄清 |
+
+### 11.2 接入点补全（原 §1 未列全）
+
+加第 7 rail 需**同步改 4 处**，漏任一处即静默故障：
+
+1. `src/stores/viewStore.ts:19` —— `RailId` 联合类型
+2. `src/stores/viewStore.ts:23` —— `RAIL_IDS`（`sanitizeRail` 据此清洗；**漏加会让用户选中知识 rail 后**刷新/重启**回退到 `task`**）
+3. `src/components/layout/railMeta.ts:29` —— `RAIL` 表
+4. `src/components/layout/WorkShell.tsx:151-176` —— 面板三元链（该处是 `rail === 'x' ? <X/> : …` 串联，非 ViewRouter）
+
+另需 i18n 键 `rail.knowledge` 加在 `src/i18n/translations/zh-CN.ts:50` 与 `en-US.ts:50`
+（**漏加不报错**：`t()` 对缺键回退为 key 字面，界面直接显示 `rail.knowledge`）。
+
+`src/components/layout/railMeta.test.ts:11-30` 会自动守 1/3（id 唯一、icon 存在、`labelKey` 形如 `rail.*`）。
+
+### 11.3 能力约束与对策
+
+| 约束（实测） | 对策 |
+|---|---|
+| `CodeEditor` **无 `readOnly` 支持**；非受控（`EditorState.create` 仅挂载时执行一次） | 只读空间**不渲染编辑视图**：视图 tab 禁用 + 提示「知识包为只读」。既满足 §8「UI 禁用」，又不改 `CodeEditor` 接口（§7 约定） |
+| `CodeEditor` 挂载期内容固定，靠 diff 同步外部变更 | 必须传 `key={docId}`，否则切换文档内容不刷新 |
+| `CodeEditor` 根节点无高度，且自带 `searchKeymap` 抢占 `Ctrl+F` | 宿主提供确定高度（`flex-1 min-h-0`）；`Ctrl+F` 处理器在 `view === 'edit'` 时**让位**给编辑器 |
+| 仓库**无数据请求库**（无 react-query/SWR） | `useKnowledge.ts` 手写 fetch + 缓存 + 失效，照 `src/lib/workflowApi.ts` 范式：`getBridgeUrl()` + `AbortController` 超时 + **不 throw**（返回结构化 `{ok,error}`） |
+| 无「禁裸 hex」校验脚本 | 验收时人工 grep：`grep -n '#[0-9a-fA-F]\{3,6\}' src/components/knowledge` 应为空（`themes.css` 才是 hex 定义处） |
+| 无文件行数约束脚本 | 验收时 `wc -l` 人工核对（§8 的 200/400 行标准） |
+
+### 11.4 S1 裁定对本期的约束（必须遵守）
+
+- **经验条目卡片渲染规则**：`- [ ] Step N` 这类复选框行会被内核计为 `entry` 块。
+  S1 已裁定**不改内核正则**（改动会牵动经验系统兼容契约），改由渲染层解决。
+  故 **S2 必须以 `tag !== null` 判定是否渲染为经验卡片**；`tag === null` 的 `entry` 块按普通段落渲染。
+  **验收**：含 `- [ ]` 行的任务清单类文档，在阅读视图**不得**出现经验卡片。
+- **`keywords` 传参**：内核 `keywordScore` 对 `null` 取防御分支返回 0（S1 裁定保留）。
+  前端 hook **不得传 `null`**，统一 `keywords?.length ? keywords : undefined`。
+- 后端契约以 S1 实施为准（`/knowledge/*` 10 端点；`POST /doc` 同时接受 `space` 与 `spaceId`）。
+- 本模块须端到端走查一条链路：搜索命中 → 点击 → 阅读视图定位到 `line` 并高亮。
+
+### 11.5 设计语言补充（复核 `globals.css`/`themes.css` 后）
+
+- 切角刻度：`.cut`(12/11) / `.cut-btn`(10/9) / `.cut-sm`(8/7) / `.cut-xs`(6/5)，内容须放内层 `>.ci`
+- 光效白名单**仅 5 项**：`.breath` / `.glow-hover:hover` / `.rail-ind` / `.pulse-dot` / `.grad-brand` / `.topline`（后两项属渐变类）
+- 主题切换 = `documentElement` 加 class `theme-<id>`（`ViewRouter.tsx:56-60`）
+- 所有颜色变量定义在 `src/styles/themes.css` 的四个主题类下；`.cut` 已用 `:not(.fixed):not(.absolute)…` 兜住定位冲突，新组件沿用即可
