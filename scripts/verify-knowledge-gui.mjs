@@ -77,6 +77,15 @@ if (existsSync(expPath)) {
   check(n <= PANEL_LINE_LIMIT, `ExperiencePanel.tsx ≤ ${PANEL_LINE_LIMIT} 行（实际 ${n} 行）`)
 }
 
+// 布局 / 视图契约（spec §3、§8 验收 2、3）——**静态 grep**：只证明"写法在位"，
+// 真实渲染宽度与切换手感仍需人工走查。加它的价值是防回归：谁把 shrink-0 删了、
+// 把四视图白名单改成三值，这里立刻红，不必等用户报"中栏被撑破"。
+const readRel = (...p) => readFileSync(join(ROOT, ...p), 'utf-8')
+check(/w-\[236px\] shrink-0/.test(readRel('src/components/knowledge/KnowledgeSidebar.tsx')), '左栏 236px + shrink-0（KnowledgeSidebar）')
+check(/w-\[212px\] shrink-0/.test(readRel('src/components/knowledge/KnowledgeInspector.tsx')), '右栏 212px + shrink-0（KnowledgeInspector）')
+check(/flex-1 min-w-0/.test(readRel('src/components/knowledge/KnowledgePanel.tsx')), '中栏 flex-1 min-w-0（KnowledgePanel）')
+check(/KNOWLEDGE_VIEWS[^\n]*\['read', 'edit', 'graph', 'search'\]/.test(readRel('src/stores/knowledgeStore.ts')), '四视图白名单 read/edit/graph/search')
+
 // 数据层纪律：知识组件不得自己 fetch —— 必须走 src/lib/knowledgeApi.ts / src/hooks/useKnowledge.ts
 // （超时、错误整形、缓存失效都在那两处；组件里裸 fetch 会绕过它们，是重复实现的开端）
 for (const f of files) {
