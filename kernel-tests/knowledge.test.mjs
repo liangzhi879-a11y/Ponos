@@ -98,7 +98,7 @@ test('load(force) 全量构建索引：三份 JSONL + manifest 落盘，字段�
     assert.ok(existsSync(join(idx, 'tags.json')), 'tags 落盘')
 
     const manifest = JSON.parse(readFileSync(join(idx, 'manifest.json'), 'utf-8'))
-    assert.equal(manifest.version, 1)
+    assert.equal(manifest.version, 2) // S5：INDEX_VERSION 1→2（索引文本口径改 relationContent，spec §8）
     // experience(workflow.md) + my-notes(a,b) + pack(p.md) = 4 篇
     assert.equal(manifest.docs, 4)
     assert.ok(manifest.blocks >= 6)
@@ -149,7 +149,7 @@ test('索引版本不符时自动重建（防旧格式误用）', async () => {
     writeFileSync(mf, JSON.stringify(m), 'utf-8')
     const s2 = createKnowledgeStore({ configDir: dir })
     await s2.load()
-    assert.equal(s2.stats().version ?? 1, 1, '重建回当前版本')
+    assert.equal(s2.stats().version ?? 1, 2, '重建回当前版本（S5 起为 2）')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

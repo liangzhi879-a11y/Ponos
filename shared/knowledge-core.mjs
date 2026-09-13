@@ -6,8 +6,9 @@
 // 同时被 bun 内联（打进 bundle）与 server/bridge.mjs:619 mirrorKernelParentDeps
 // （镜像到 <home>/runtime/）支持，先例 ../version.mjs。
 //
-// 依赖纪律（不可破）：本文件只许 import 'node:path'（纯字符串）。禁止 node:fs /
-// node:child_process / 第三方包——内核运行在无 node_modules 的镜像目录。
+// 依赖纪律（不可破）：本文件只许 import node 内置模块（'node:path' 纯字符串、'node:crypto'
+// 仅用于内容指纹 sha1）。禁止 node:fs / node:child_process / 第三方包——内核运行在无
+// node_modules 的镜像目录，且以 `--external=node:*` 打包（node 内置模块在两端都恒存在）。
 //
 // 迁移说明：gramTokens/vectorizeText/cosine/buildIdf 与 hashLine 原在
 // kernel/graph.mjs 与 kernel/memory.mjs（且 server/experience.mjs 有一份重复）；
@@ -21,9 +22,13 @@
 // docs/superpowers/specs/2026-09-13-knowledge-core-design.md §5.1/§5.2 与 Task 5-8 的
 // 调用形状为准：docId = "spaceId/relPath"（POSIX 分隔符，跨平台稳定）。
 
-import { join } from 'node:path' // 本模块唯一的 node 依赖（纯字符串拼接，无 IO 副作用）
+import { join } from 'node:path' // 纯字符串拼接，无 IO 副作用
+import { createHash } from 'node:crypto' // 仅内容指纹（sha1），无 IO
 
-export const INDEX_VERSION = 1
+// 1 → 2（S5）：索引文本口径由 `b.text`（60 字截断摘要，实测 45 字 vs full 471 字）
+// 改为 `relationContent(b)`（full 去类型前缀，spec §8）。口径变了，**旧索引必须整体重建**
+// ——kernel/knowledge.mjs 靠版本号不等触发重建（不得报错或返回空集，S5 全局约束 5）。
+export const INDEX_VERSION = 2
 
 // ── 基础：行指纹 ──────────────────────────────────────────────────────────
 // 与 kernel/memory.mjs:13 / server/experience.mjs:24 现行算法逐字相同。
@@ -500,4 +505,220 @@ export function builtinSpaceSpecs(configDir) {
       root: join(base, 'memory', 'skill_experiences'), writable: true, source: 'skill_exp',
     },
   ]
+}
+
+// ── 关联锚点（S5 Task 1，spec §5/§7.1）─────────────────────────────────────
+// 为什么这些函数在 shared：关联计算要与检索共用同一套切块/向量/IDF/指纹口径，
+// 且必须能在无 IO 的纯函数层单测（阈值行为是"回归易碎区"，见下方校准注释）。
+// 本节所有阈值**来自真实经验库（76 条）实测校准**（spec §13），不是设计偏好：
+// 改任何一个数字前请先重跑校准，否则覆盖层会静默失效（见 SIM_THRESHOLD 注释）。
+
+// 覆盖层相似度门槛。实测扫描（spec §13.2，口径③ `full` 去前缀、69 条参与、2345 非重复对）：
+//   0.50 → 仅 1 对（跨 tag 1 对）≈ **功能失效**；0.40 → 3 对；0.30 → 25 对（含噪声）。
+// ≥0.36 的候选实测 4/5 真相关（0.437 跨 tag 同项目两阶段、0.408 同 tag 同工作族…）。
+// 取 0.32 兼顾覆盖与精度。**不要凭直觉改成 0.5/0.6**——那会让"跨主题同问题"（本能力
+// 最想要的信号）全库只剩 1 对；也不要降到 0.30 以下，噪声对（0.370 "该用户偏好↔企微外部群"）会成片涌入。
+export const SIM_THRESHOLD = 0.32
+// 精确重复判据：实测正库存在 cos=1.000 的重复对（spec §9.2）。重复项**没有阅读价值**，
+// 若混进 related 会挤占锚点预算，故单独归类为 duplicate（GUI 独立提示，不计入 MAX_RELATED）。
+export const DUP_COS = 0.95
+// 参与集最小内容长度。实测 7 条垃圾条目（`kernel/memory.mjs` 模板化写入，形如
+// `流程要点：用户回答：`、`业务要点（请注意）：`）两两内容全同 → cos=1.000，会灌入
+// "完美相似但零信息"的边。20 字以下的内容里 bigram 噪声占主导（判别力≈0），故设 20 作为
+// 参与集门槛（Task 3 在源头也不再产生这类条目，两头都防）。
+export const MIN_LEN = 20
+// 单块锚点总预算（骨架 + 覆盖去重后截断）与两层各自的上限：防 GUI/agent 上下文膨胀
+// （related.jsonl 行数上限 = 参与条目数 × 8）。骨架层必然非空且零噪声，**先占预算**。
+export const MAX_RELATED = 8
+export const MAX_TAG_RELATED = 5
+export const MAX_CONTENT_RELATED = 5
+
+// 覆盖层的 tagBoost **必须为 1**（校准结论，不是随手选；spec §5.3）：
+//  ① `vectorizeText` 的 boost 在**归一化之后**乘 → 带 boost 的返回值范数 = boost、
+//     点积可达 9，**已经不是度量余弦**（校准轮① 实测最高分 3.2，阈值失去意义）；
+//  ② 更要紧的是实测 `tagBoost=3` 时**同 tag 对全面压过跨 tag 对**，覆盖层退化成骨架层的
+//     重复，把"跨主题同问题"淹没（校准：=3 最高分 3.2 / =1 最高分 0.358 / 改用 full 去前缀后 0.437）。
+// tag 关系由**骨架层**负责，覆盖层只按内容算。
+export const RELATION_TAG_BOOST = 1
+
+// 剥掉"类型前缀"：开头至首个中文冒号（含）。
+// 前缀由 kernel/memory.mjs:183-187 生成（`流程要点：` / `用户偏好（x）：` / `业务要点（x）：` /
+// `用户纠正（x）：`），它只标条目类型、**同类型条目共有**，属纯噪声：实测不去前缀时，
+// 高分对的 `shared` 全是"流程/程要/要点"这类前缀自身的字（spec §13.1 轮②）。
+export function stripTypePrefix(s) {
+  const t = String(s ?? '')
+  const i = t.indexOf('：')
+  return i < 0 ? t : t.slice(i + 1)
+}
+
+// 关联/索引的统一正文口径：`stripTypePrefix(full || text)`。
+// **必须优先 full**：kernel/memory.mjs:184-186 生成条目时 `text = 类型前缀 + t.slice(0,60)`、
+// `full = t.slice(0,500)`，实测同一条目 text=45 字 vs full=471 字（**10 倍信息差**）——
+// 在截断摘要上算相似度必然测不出语义关系（spec §13.4）。
+export function relationContent(block) {
+  const b = block || {}
+  return stripTypePrefix(b.full || b.text || '')
+}
+
+// 内容指纹：sha1 前 12 位（spec §6.2）。读时校验靠它判断"边两端的内容还是不是物化时那份"，
+// 内容被改 → 该边剔除（保守：宁可少连也不错连）。48 bit 在单库规模下碰撞可忽略。
+export function blockContentSig(block) {
+  return createHash('sha1').update(relationContent(block), 'utf8').digest('hex').slice(0, 12)
+}
+
+function toTfMap(tf) {
+  if (tf instanceof Map) return tf
+  if (tf && typeof tf === 'object') return new Map(Object.entries(tf))
+  return new Map()
+}
+
+// 共有特征词：按 `idf × min(tf_a, tf_b)` 取 top-N（spec §5.4）。
+// 为什么用 min：两边都得"说得出"这个词才算共同证据（用 a 的 tf 会把只在 a 里高频的词拉进来）。
+// 为什么乘 idf：满库皆有的高频 gram（"流程/要点"这类）idf 低，会被压下去，留下的才可读、可解释。
+// 同权重按 gram 字典序 —— 关联物化要求可复现（同一库两次全量重建必须产出同一份 related.jsonl）。
+export function sharedFeatures(tfA, tfB, { idf = null, topN = 5 } = {}) {
+  const a = toTfMap(tfA)
+  const b = toTfMap(tfB)
+  const out = []
+  for (const [gram, countA] of a) {
+    const countB = b.get(gram)
+    if (!countB) continue
+    out.push([gram, (idf?.get?.(gram) ?? 1) * Math.min(countA, countB)])
+  }
+  out.sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0))
+  return out.slice(0, Math.max(0, topN)).map(([gram]) => gram)
+}
+
+// 块 id 取用顺序：索引里的块用 `blockId`（kernel/knowledge.mjs:570），raw splitBlocks 块用 `id`
+function blockIdOf(block) {
+  const id = block?.blockId ?? block?.id
+  return id ? String(id) : ''
+}
+
+// 条目标签字段：索引块是 `tag`（kernel/knowledge.mjs:122/237），raw 块是 `entryTag`
+function blockTagOf(block) {
+  return block?.tag ?? block?.entryTag ?? null
+}
+
+// 关联正文：优先用调用方预计算的 `relContent`（Task 4 全量物化时避免对同一块重复切词），
+// 否则现算。两者语义完全相同（都是 relationContent）。
+function blockContentOf(block) {
+  const pre = block?.relContent
+  return typeof pre === 'string' ? pre : relationContent(block)
+}
+
+function gramCountsOf(block, content) {
+  const pre = block?.gramCounts
+  return pre instanceof Map ? pre : countGrams(content)
+}
+
+// 块在文档中的位置：优先取显式字段，否则从 "<docId>#<n>" 反解（两种块形态都能用）
+function posOf(block) {
+  const id = blockIdOf(block)
+  const i = id.lastIndexOf('#')
+  const doc = block?.docId ? String(block.docId) : (i < 0 ? id : id.slice(0, i))
+  let n = Number(block?.n)
+  if (!Number.isFinite(n)) n = i < 0 ? Number.MAX_SAFE_INTEGER : Number(id.slice(i + 1))
+  if (!Number.isFinite(n)) n = Number.MAX_SAFE_INTEGER
+  return { doc, n }
+}
+
+function cmpStr(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+// 骨架层排序键（spec §5.2，定死以免实现者猜）：
+//   ① 同文档：按 |n_a - n_b| 升序（经验文件的同主题条目多集中在一处、位置相邻即最相关）
+//   ② 跨文档：排在所有同文档条目之后，之间按 (docId, n) 字典序（跨文档缺乏可靠顺序信号，
+//      用稳定字典序而非随机序 → 结果可复现）
+function cmpSkeleton(a, b, base) {
+  const sameA = a.doc === base.doc
+  const sameB = b.doc === base.doc
+  if (sameA && sameB) return Math.abs(a.n - base.n) - Math.abs(b.n - base.n)
+  if (sameA !== sameB) return sameA ? -1 : 1
+  return cmpStr(a.doc, b.doc) || a.n - b.n
+}
+
+/**
+ * 一条条目的关联候选（spec §5/§7.1）：骨架层（同 tag）+ 覆盖层（内容相似）+ 重复标记。
+ * @param block 条目块 `{blockId|id, tag, text, full}`；可带预计算 `relContent`/`gramCounts`
+ * @param pool  同空间的全部条目块（**调用方先按空间过滤**——spec 非目标：不做跨空间隐式关联）
+ * @param idf   `buildIdf` 的产物（为 null 时权重退化为 1，仍可用）
+ * @returns `[{ to, why }]`，why 形态：`{kind:'tag',tag}` / `{kind:'content',score,shared}` /
+ *          `{kind:'duplicate',score}`。duplicate **不计入** MAX_RELATED，附在末尾。
+ */
+export function relatedCandidates(block, pool = [], { idf = null, topN = 5, minScore = SIM_THRESHOLD } = {}) {
+  const from = blockIdOf(block)
+  const content = blockContentOf(block)
+  // 参与集门槛（spec §5.1）：非 entry 由调用方保证，这里管长度——垃圾条目（去前缀后很短）不参与
+  if (!from || content.length < MIN_LEN) return []
+  const tfA = gramCountsOf(block, content)
+  // tagBoost=RELATION_TAG_BOOST(=1)：理由见该常量上方注释（校准结论，勿改）
+  const vecA = vectorizeText(content, { tagBoost: RELATION_TAG_BOOST, idf })
+  const tagA = blockTagOf(block)
+  const posA = posOf(block)
+
+  const tagHits = []
+  const contentHits = []
+  const dups = []
+  for (const p of pool) {
+    const to = blockIdOf(p)
+    if (!to || to === from) continue
+    // 每条边各自判参与集：**存量垃圾条目靠这里防御**（源头修复只防"新产生"，spec §9.1 两步都要）
+    const pc = blockContentOf(p)
+    if (pc.length < MIN_LEN) continue
+    const cos = cosine(vecA, vectorizeText(pc, { tagBoost: RELATION_TAG_BOOST, idf }))
+    // duplicate 先判：它对"这两个是同一份东西"最有断言力，且必须独立于 related 预算（spec §5.5）
+    if (cos >= DUP_COS) { dups.push({ to, why: { kind: 'duplicate', score: round4(cos) } }); continue }
+    const tagB = blockTagOf(p)
+    if (tagA && tagB === tagA) { tagHits.push({ to, why: { kind: 'tag', tag: tagA }, pos: posOf(p) }); continue }
+    if (cos < minScore) continue
+    const shared = sharedFeatures(tfA, gramCountsOf(p, pc), { idf, topN })
+    // 硬约束：content 边必须带非空 shared（只有分数、无法解释 = 宁缺勿滥，spec §5.4）
+    // （cos>0 时理论上必有共有 gram，此分支是给 topN=0 / idf 异常兜底的保险）
+    if (!shared.length) continue
+    contentHits.push({ to, why: { kind: 'content', score: round4(cos), shared }, score: cos })
+  }
+
+  tagHits.sort((x, y) => cmpSkeleton(x.pos, y.pos, posA) || cmpStr(x.to, y.to))
+  contentHits.sort((x, y) => y.score - x.score || cmpStr(x.to, y.to))
+  dups.sort((x, y) => y.why.score - x.why.score || cmpStr(x.to, y.to))
+  const pub = ({ to, why }) => ({ to, why })
+  // 骨架层先占预算（必然非空、零噪声），覆盖层按分数降序补位，总预算 MAX_RELATED 截断
+  const kept = [...tagHits.slice(0, MAX_TAG_RELATED), ...contentHits.slice(0, MAX_CONTENT_RELATED)]
+    .slice(0, MAX_RELATED)
+    .map(pub)
+  // duplicate 不计入 MAX_RELATED：它们不是"关联"（无阅读价值），必须独立呈现（spec §5.5/§3）
+  return [...kept, ...dups.map(pub)]
+}
+
+function round4(x) {
+  return Number(Number(x).toFixed(4))
+}
+
+/**
+ * 读时校验（spec §6.2）：三条检查全过才 true。校验是**只读语义**——只返回视图，不改文件。
+ * @param edge   `{from,to,why:{kind},sigFrom,sigTo}`（related.jsonl 的一行）
+ * @param lookup 块查询：函数 `(blockId)=>block` | Map | 普通对象（kernel 侧给 Map/函数均可）
+ */
+export function validateRelation(edge, lookup) {
+  const get = typeof lookup === 'function'
+    ? lookup
+    : lookup instanceof Map
+      ? (id) => lookup.get(id)
+      : (id) => (lookup ? lookup[id] : null)
+  const a = get(edge?.from)
+  const b = get(edge?.to)
+  if (!a || !b) return false // ① 端点仍存在（文档/块被删 → 剔除）
+  const kind = edge?.why?.kind
+  if (kind === 'tag') {
+    const ta = blockTagOf(a)
+    // ② 同 tag 关系当前仍成立（字段比较，O(1)）
+    return !!ta && ta === blockTagOf(b)
+  }
+  if (kind === 'content' || kind === 'duplicate') {
+    // ③ 两端内容指纹仍等于物化时那份（内容被改 → 剔除；保守：宁可少连也不错连）
+    return blockContentSig(a) === edge.sigFrom && blockContentSig(b) === edge.sigTo
+  }
+  return false // 未知 kind 一律不认（保守）
 }

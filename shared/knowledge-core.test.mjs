@@ -4,7 +4,18 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   hashLine, parseFrontmatter, parseEntryLine, splitBlocks, ENTRY_LINE_RE,
+  // S5 Task 1 追加：关联锚点纯函数层
+  INDEX_VERSION, SIM_THRESHOLD, DUP_COS, MIN_LEN, MAX_RELATED, MAX_TAG_RELATED,
+  MAX_CONTENT_RELATED, RELATION_TAG_BOOST, stripTypePrefix, relationContent, blockContentSig,
+  sharedFeatures, relatedCandidates, validateRelation, // vectorizeText/cosine/countGrams 沿用下方 Task 2 的既有 import
 } from './knowledge-core.mjs'
+
+// 造条目块的测试辅助：blockId = "<docId>#<n>"（与 kernel 侧 toBlockId 同构），
+// 同时给全显式 docId/n 字段（骨架层排序键优先取显式字段，其次才反解 blockId）。
+function entry(blockId, tag, full) {
+  const i = blockId.lastIndexOf('#')
+  return { blockId, docId: blockId.slice(0, i), n: Number(blockId.slice(i + 1)), tag, text: full.slice(0, 30), full }
+}
 
 test('hashLine 与既有实现逐字相同（钉住稳定 ID）', () => {
   // 期望值取自 kernel/memory.mjs 现行算法：h=((h<<5)-h+c)|0，无符号 hex 8 位
@@ -490,4 +501,211 @@ test('builtinSpaceSpecs 每项字段齐备（GUI 与 collectTags 依赖），且
   assert.equal(b[0].writable, true)
   assert.notEqual(a[0], b[0])
   assert.equal(new Set(b.map((s) => s.id)).size, 3)
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// S5 Task 1：关联锚点纯函数层（spec §5/§7.1；阈值来自 spec §13 真实库校准）
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('S5 Task1：常量与 spec §7.1 一致（阈值改动必须重跑校准）', () => {
+  assert.equal(INDEX_VERSION, 2) // 1→2：索引文本口径 b.text → relationContent(b)
+  assert.equal(SIM_THRESHOLD, 0.32) // 0.5 → 全库仅 1 对 ≈ 功能失效；0.32 兼顾覆盖与精度
+  assert.equal(DUP_COS, 0.95)
+  assert.equal(MIN_LEN, 20)
+  assert.equal(MAX_RELATED, 8)
+  assert.equal(MAX_TAG_RELATED, 5)
+  assert.equal(MAX_CONTENT_RELATED, 5)
+  assert.equal(RELATION_TAG_BOOST, 1) // 覆盖层必须 tagBoost=1（见常量注释）
+})
+
+test('S5 Task1：stripTypePrefix 剥掉开头到首个中文冒号的类型前缀', () => {
+  assert.equal(stripTypePrefix('流程要点：先备份再改'), '先备份再改')
+  assert.equal(stripTypePrefix('用户偏好（以后都）：用 pnpm 装依赖'), '用 pnpm 装依赖')
+  assert.equal(stripTypePrefix('业务要点（请注意）：导出要写绝对路径'), '导出要写绝对路径')
+  assert.equal(stripTypePrefix('用户纠正（不要再）：以后不要用 npm'), '以后不要用 npm')
+  assert.equal(stripTypePrefix('没有前缀的正文'), '没有前缀的正文') // 无中文冒号 → 原样
+  assert.equal(stripTypePrefix('结论：A：B'), 'A：B') // 只认**首个**中文冒号，余下的真实内容保留
+  assert.equal(stripTypePrefix(''), '')
+  assert.equal(stripTypePrefix(null), '')
+  assert.equal(stripTypePrefix(undefined), '')
+  assert.equal(stripTypePrefix(42), '42') // 非字符串字段不得抛（块字段可能为 null/数字）
+})
+
+test('S5 Task1：relationContent 优先 full（实测 text 45 字 vs full 471 字）并去前缀', () => {
+  const long = '提交并实现目录任务，知识库实施阶段一完成切块与向量索引构建，'.repeat(5)
+  const block = { text: '流程要点：短摘要', full: '流程要点：' + long }
+  assert.equal(relationContent(block), long) // 用 full，不用 60 字截断的 text
+  assert.ok(long.length > block.text.length * 5, '两条路径信息量差 10 倍，必须用 full')
+  assert.equal(relationContent({ text: '流程要点：摘要', full: null }), '摘要') // full 缺失回落 text
+  assert.equal(relationContent({ text: '用户纠正（不要再）：以后不要用 npm' }), '以后不要用 npm')
+  assert.equal(relationContent({}), '')
+  assert.equal(relationContent(null), '')
+})
+
+test('S5 Task1：blockContentSig = sha1 前 12 位（对 relationContent，用于读时校验）', () => {
+  const a = { text: '流程要点：短', full: '流程要点：' + '正文甲'.repeat(12) }
+  const same = { text: '流程要点：短', full: '流程要点：' + '正文甲'.repeat(12) }
+  const changed = { text: '流程要点：短', full: '流程要点：' + '正文甲'.repeat(12) + '改动一处' }
+  assert.equal(blockContentSig(a), blockContentSig(same))
+  assert.match(blockContentSig(a), /^[0-9a-f]{12}$/)
+  assert.notEqual(blockContentSig(a), blockContentSig(changed))
+  // 只改 text（full 优先）不影响指纹；只改 full 才影响 —— 读时校验的语义正依赖这条
+  assert.equal(blockContentSig(a), blockContentSig({ full: a.full, text: '完全不同的摘要' }))
+})
+
+test('S5 Task1：sharedFeatures 按 idf×min(tf) 取 topN，且同权重按字典序稳定', () => {
+  const tfA = new Map([['甲甲', 3], ['乙乙', 1], ['丙丙', 2]])
+  const tfB = new Map([['甲甲', 1], ['乙乙', 1], ['丁丁', 5]])
+  const idf = new Map([['甲甲', 1], ['乙乙', 9]])
+  // 甲甲：1×min(3,1)=1；乙乙：9×min(1,1)=9 → 乙乙在前
+  assert.deepEqual(sharedFeatures(tfA, tfB, { idf, topN: 5 }), ['乙乙', '甲甲'])
+  assert.deepEqual(sharedFeatures(tfA, tfB, { idf, topN: 1 }), ['乙乙'])
+  assert.deepEqual(sharedFeatures(tfA, tfB, { idf, topN: 0 }), []) // 上限 0 → 空（用于验证丢弃分支）
+  assert.deepEqual(sharedFeatures(tfA, new Map(), { idf }), []) // 无共有 gram
+  // idf=null → 权重退化为 min(tf)：甲甲 min(3,1)=1、乙乙 min(1,1)=1 同权重，
+  // 按 gram 字典序 = UTF-16 码位序（乙 U+4E59 < 甲 U+7532）——**期望值以实跑为准**
+  assert.deepEqual(sharedFeatures(tfA, tfB, {}), ['乙乙', '甲甲'])
+  const tfC = new Map([['aaa', 1], ['bbb', 1], ['ccc', 1]])
+  const tfD = new Map([['ccc', 1], ['bbb', 1], ['aaa', 1]])
+  assert.deepEqual(sharedFeatures(tfC, tfD, {}), ['aaa', 'bbb', 'ccc']) // 同权重 → gram 字典序
+  // 普通对象形态的词频表也可用（调用方可能落盘成 JSON 再读回）
+  assert.deepEqual(sharedFeatures({ 甲甲: 1 }, { 甲甲: 1 }, {}), ['甲甲'])
+})
+
+test('S5 Task1：tagBoost=1 时 cosine ∈ [0,1]（钉住校准结论）；=3 自点积溢出到 9', () => {
+  const t = '提交实现目录任务git流程说明，知识库实施阶段一完成切块与向量索引构建'
+  const v1 = vectorizeText(t, { tagBoost: 1 })
+  const self = cosine(v1, v1)
+  assert.ok(self <= 1 + 1e-9, `tagBoost=1 的余弦上限必须是 1，实测 ${self}`)
+  assert.ok(self > 0.99)
+  const other = vectorizeText('提交实现目录任务git流程说明，关联锚点设计完成阈值校准与覆盖层验证', { tagBoost: 1 })
+  const c = cosine(v1, other)
+  assert.ok(c >= 0 && c <= 1, `相似度必须落在 [0,1]，实测 ${c}`)
+  // 对照（说明为什么必须用 1）：boost 在归一化之后乘 → 范数=boost、自点积=boost²，非度量余弦
+  const v3 = vectorizeText(t, { tagBoost: 3 })
+  assert.ok(Math.abs(cosine(v3, v3) - 9) < 1e-6)
+})
+
+test('S5 Task1：MIN_LEN=20 过滤——10 字空模板条目两端都不参与关联', () => {
+  const g0 = entry('experience/a.md#0', null, '流程要点：用户回答：')
+  const g1 = entry('experience/a.md#1', null, '流程要点：用户回答：')
+  assert.equal(relationContent(g0).length, 5) // 实测存量垃圾：去前缀后只剩模板词
+  assert.ok(relationContent(g0).length < MIN_LEN)
+  // ① 作为发起方：内容 < MIN_LEN → 直接无候选
+  assert.deepEqual(relatedCandidates(g0, [g1], {}), [])
+  // ② 作为候选方：垃圾条目两两文本全同（cos=1.000，会灌入"完美相似但零信息"的边）也必须被过滤
+  const good = entry('experience/a.md#2', null, '提交实现目录任务git流程说明，知识库实施阶段一完成切块与向量索引构建')
+  assert.deepEqual(relatedCandidates(good, [g0, g1], {}), [])
+})
+
+test('S5 Task1：cos>=DUP_COS 归 duplicate，且不计入 MAX_RELATED 预算', () => {
+  const text = '提交实现目录任务git流程说明，知识库实施阶段一完成切块与向量索引构建'
+  const from = entry('experience/a.md#0', null, text)
+  // 9 条同文本条目（实测精确重复形态 cos=1.000）：全部 duplicate，不被 8 条预算截断
+  const pool = Array.from({ length: MAX_RELATED + 1 }, (_, i) => entry(`experience/b.md#${i}`, null, text))
+  const out = relatedCandidates(from, pool, {})
+  assert.equal(out.length, MAX_RELATED + 1)
+  assert.ok(out.every((x) => x.why.kind === 'duplicate'))
+  assert.ok(out.every((x) => x.why.score >= DUP_COS))
+  assert.ok(out.every((x) => !('shared' in x.why))) // duplicate 不要求 shared（不是"关联"）
+})
+
+test('S5 Task1：DUP_COS 边界——实测 0.9393（略低于 0.95）的对归 content 而非 duplicate', () => {
+  const a = '提交实现目录任务git流程说明，知识库实施阶段一完成切块与向量索引构建'
+  const near = a + '新增内容'
+  const cosNear = cosine(vectorizeText(a, { tagBoost: 1 }), vectorizeText(near, { tagBoost: 1 }))
+  assert.ok(cosNear < DUP_COS, `本对必须落在 0.95 之下，实测 ${cosNear}`)
+  assert.ok(cosNear >= SIM_THRESHOLD)
+  const from = entry('experience/a.md#0', null, a)
+  const to = entry('experience/b.md#1', null, near)
+  const out = relatedCandidates(from, [to], {})
+  assert.equal(out.length, 1)
+  assert.equal(out[0].why.kind, 'content') // 不是 duplicate（只有精确重复才归它）
+  assert.equal(out[0].why.score, Number(cosNear.toFixed(4)))
+  assert.ok(out[0].why.shared.length > 0)
+  // minScore 边界是 `>=`：等于实测 cos 时保留，略高即剔除（钉住比较符，防后人改 > 或加偏移）
+  assert.equal(relatedCandidates(from, [to], { minScore: cosNear }).length, 1)
+  assert.equal(relatedCandidates(from, [to], { minScore: cosNear + 0.0001 }).length, 0)
+})
+
+test('S5 Task1：content 边 shared 为空 → 丢弃（硬约束：只有分数无法解释 = 宁缺勿滥）', () => {
+  const a = '提交实现目录任务git流程说明，知识库实施阶段一完成切块与向量索引构建'
+  const near = a + '新增内容'
+  const from = entry('experience/a.md#0', null, a)
+  const to = entry('experience/b.md#1', null, near)
+  // topN=0 → sharedFeatures 恒空；这对 cos 已过阈值，但拿不出可解释的共有特征词 → 必须丢弃
+  assert.deepEqual(relatedCandidates(from, [to], { topN: 0 }), [])
+  // 同 tag 时骨架边不受影响（tag 边不依赖 shared，骨架层零噪声）
+  const tagOut = relatedCandidates(entry('experience/a.md#0', 'T', a), [entry('experience/b.md#1', 'T', near)], { topN: 0 })
+  assert.equal(tagOut.length, 1)
+  assert.equal(tagOut[0].why.kind, 'tag')
+  assert.equal(tagOut[0].why.tag, 'T')
+})
+
+test('S5 Task1：骨架层排序——同文档按 |Δn| 升序，跨文档次之并按 (docId,n) 字典序（可复现）', () => {
+  const body = '提交实现目录任务git流程说明，知识库实施阶段一完成切块与向量索引构建'
+  const from = entry('experience/b-workflow.md#5', '应用智控', body)
+  const pool = [
+    entry('experience/a-first.md#7', '应用智控', '第一段完全无关的正文'.repeat(3)), // 跨文档
+    entry('experience/b-workflow.md#6', '应用智控', '第二段无关正文'.repeat(3)), // 同文档 |Δn|=1
+    entry('experience/b-workflow.md#2', '应用智控', '第三段无关正文'.repeat(3)), // 同文档 |Δn|=3
+    entry('experience/a-first.md#1', '应用智控', '第四段无关正文'.repeat(3)), // 跨文档（docId 字典序在前）
+  ]
+  const out = relatedCandidates(from, pool, {})
+  assert.deepEqual(out.map((x) => x.to), [
+    'experience/b-workflow.md#6', 'experience/b-workflow.md#2', // 同文档：|Δn| 1 < 3
+    'experience/a-first.md#1', 'experience/a-first.md#7', // 跨文档：按 (docId, n)
+  ])
+  assert.ok(out.every((x) => x.why.kind === 'tag'))
+  assert.deepEqual(relatedCandidates(from, pool, {}), out) // 同输入两次同序（物化可复现）
+})
+
+test('S5 Task1：单块上限——骨架 5 / 覆盖 5 / 总数 8（骨架先占预算）', () => {
+  const LONG = '提交实现目录任务git流程说明，知识库实施阶段一完成切块与向量索引构建'
+  const from = entry('experience/a.md#0', 'T', LONG)
+  const sameTag = Array.from({ length: 8 }, (_, i) => entry(`experience/a.md#${i + 1}`, 'T', `第${i}段同标签无关正文`.repeat(3)))
+  const tagOut = relatedCandidates(from, sameTag, {})
+  assert.equal(tagOut.length, MAX_TAG_RELATED)
+  assert.ok(tagOut.every((x) => x.why.kind === 'tag'))
+  // 跨 tag 但内容近（cos≈0.93 < DUP_COS）→ 覆盖层，只取分数最高的 5 条
+  const cross = Array.from({ length: 8 }, (_, i) => entry(`experience/b.md#${i}`, `X${i}`, LONG + '新增内容' + i))
+  const cOut = relatedCandidates(from, cross, {}).filter((x) => x.why.kind === 'content')
+  assert.equal(cOut.length, MAX_CONTENT_RELATED)
+  assert.deepEqual([...cOut].sort((a, b) => b.why.score - a.why.score), cOut) // 按 score 降序
+  const mixed = relatedCandidates(from, [...sameTag, ...cross], {})
+  assert.equal(mixed.length, MAX_RELATED)
+  assert.equal(mixed.filter((x) => x.why.kind === 'tag').length, MAX_TAG_RELATED)
+  assert.equal(mixed.filter((x) => x.why.kind === 'content').length, MAX_RELATED - MAX_TAG_RELATED)
+})
+
+test('S5 Task1：relatedCandidates 排除自身，且池里带预计算 relContent/gramCounts 时口径不变', () => {
+  const LONG = '提交实现目录任务git流程说明，知识库实施阶段一完成切块与向量索引构建'
+  const near = LONG + '新增内容'
+  const from = entry('experience/a.md#0', null, LONG)
+  const to = entry('experience/b.md#1', null, near)
+  const plain = relatedCandidates(from, [from, to], {})
+  assert.equal(plain.length, 1) // 自身不入候选
+  // 预计算钩子（Task 4 全量物化用）：relContent 与 relationContent 同义，结果必须逐字段一致
+  const cached = { ...to, relContent: relationContent(to), gramCounts: countGrams(relationContent(to)) }
+  assert.deepEqual(relatedCandidates({ ...from, relContent: relationContent(from), gramCounts: countGrams(relationContent(from)) }, [cached], {}), plain)
+})
+
+test('S5 Task1：validateRelation 三条检查（端点存在 / tag 相等 / 内容指纹一致）', () => {
+  const a = entry('experience/a.md#0', 'T1', '提交实现目录任务git流程说明，知识库实施阶段一完成切块与向量索引构建')
+  const b = entry('experience/b.md#1', 'T1', '关联锚点设计完成阈值校准与覆盖层验证，含真实库实测证据')
+  const tagEdge = { from: a.blockId, to: b.blockId, why: { kind: 'tag', tag: 'T1' }, sigFrom: blockContentSig(a), sigTo: blockContentSig(b) }
+  const byMap = new Map([[a.blockId, a], [b.blockId, b]])
+  assert.equal(validateRelation(tagEdge, byMap), true)
+  assert.equal(validateRelation(tagEdge, new Map([[a.blockId, a]])), false) // ① 端点被删
+  assert.equal(validateRelation(tagEdge, new Map([[a.blockId, a], [b.blockId, { ...b, tag: 'T2' }]])), false) // ② tag 变更
+  assert.equal(validateRelation(tagEdge, new Map([[a.blockId, { ...a, tag: null }], [b.blockId, b]])), false) // 一端无 tag
+  const cEdge = { from: a.blockId, to: b.blockId, why: { kind: 'content', score: 0.44, shared: ['提交'] }, sigFrom: blockContentSig(a), sigTo: blockContentSig(b) }
+  assert.equal(validateRelation(cEdge, byMap), true)
+  assert.equal(validateRelation(cEdge, new Map([[a.blockId, { ...a, full: '内容被改写之后完全不同的一段正文'.repeat(2) }], [b.blockId, b]])), false) // ③ 内容被改
+  assert.equal(validateRelation({ ...cEdge, sigTo: 'deadbeef0000' }, byMap), false)
+  // lookup 三种形态等价：函数 / Map / 普通对象（kernel 侧可任选）
+  const byObj = { [a.blockId]: a, [b.blockId]: b }
+  assert.equal(validateRelation(tagEdge, byObj), true)
+  assert.equal(validateRelation(tagEdge, (id) => byObj[id] || null), true)
+  assert.equal(validateRelation({ ...tagEdge, why: { kind: 'unknown' } }, byObj), false) // 未知 kind 保守判否
 })
