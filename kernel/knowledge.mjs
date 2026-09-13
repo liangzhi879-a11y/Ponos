@@ -597,11 +597,21 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     lastLinkRows = rows
   }
 
-  // ── 关联物化（S5 Task 4；spec §4/§5/§6）─────────────────────────────────────
+  // ── 关联物化（S5 Task 4/5；spec §4/§5/§6）──────────────────────────────────
   // 派生数据，只落 `.index/related.jsonl`：**绝不改用户 .md**（全局约束 1）。
 
   /** 边的主键：`from`/`to` 里可能含任意字符，用 NUL 分隔避免拼接歧义。 */
   const relKey = (from, to) => `${from}\u0000${to}`
+
+  /**
+   * blockId → 所属 docId。blockId = `<docId>#<n>`，docId 自身不含 '#'（spaceId/relPath），
+   * 故取**最后一个** '#' 之前的部分（与 shared 的 posOf 同款口径，别改成 indexOf）。
+   */
+  function docIdOfBlockId(bid) {
+    const s = String(bid ?? '')
+    const i = s.lastIndexOf('#')
+    return i < 0 ? s : s.slice(0, i)
+  }
 
   /**
    * 参与集（spec §5.1）：`kind === 'entry'` 且 `relationContent` 长度 ≥ `MIN_LEN`。
@@ -671,6 +681,80 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
   }
 
   /**
+   * 增量（S5 Task 5，spec §6.1 折中方案）：只重算**本文档**条目的出边 + 同 tag 的入边。
+   *
+   * ① 旧行沿用：只丢"本文档的出边"（要重算）与"端点已消失"的边（块被删 → 物化侧不保留
+   *    已消失的端点）；**其余原样保留（含物化时的 sigFrom/sigTo）**——绝不能借 add() 把
+   *    指纹刷成当前内容，那会让"内容已改但边还在"的陈旧边看起来是新鲜的，
+   *    读时校验（Task 6）就再也拦不住它了。
+   * ② 出边：`relatedCandidates` 现算（索引已更新，旧出边可能失效）。
+   * ③ 入边：只补**同 tag** 的（这些必然是 tag 边，同 tag 关系在文档更新后仍成立）。
+   *    content 类入边不即时重算 —— 已知取舍（spec §6.1，用户已确认）：最坏到下次全量重建
+   *    才补齐。换来的是"改一个文件不必扫全库内容相似度"。
+   * ④ 反向封闭：物化的不变量是"行集对反向封闭"（全量路径的镜像轮保证同一件事），
+   *    补完新边后跑一次闭包，两个方向才都查得到。
+   *
+   * tag→块 的查找：本地一次遍历建 `Map<tag, block[]>`（O(块数)），随后只对**本文档**的
+   * tag 做查表（O(本文档条目数 × 同 tag 条目数)）。**禁止**对每个 tag 各扫一遍全库
+   * （O(tags × blocks)）。
+   */
+  function relateIncremental(newDocId) {
+    if (!relateOn()) { relEdges = []; return }
+    const pool = relatablePool()
+    const sig = new Map(pool.map((b) => [b.blockId, blockContentSig(b)]))
+    const byTag = new Map() // tag -> block[]（本次增量共用的一份内存缓存）
+    for (const b of pool) {
+      if (!b.tag) continue
+      const arr = byTag.get(b.tag)
+      if (arr) arr.push(b)
+      else byTag.set(b.tag, [b])
+    }
+    const own = pool.filter((b) => b.docId === newDocId)
+    const rows = []
+    const seen = new Set()
+    const add = (from, to, why) => {
+      const k = relKey(from, to)
+      if (seen.has(k)) return
+      if (!sig.has(from) || !sig.has(to)) return
+      seen.add(k)
+      rows.push({ from, to, why, sigFrom: sig.get(from), sigTo: sig.get(to) })
+    }
+    // ① 旧行沿用（含物化时的原始指纹，见本函数 why 的①）
+    for (const r of relEdges) {
+      if (docIdOfBlockId(r.from) === newDocId) continue
+      if (!sig.has(r.from) || !sig.has(r.to)) continue
+      const k = relKey(r.from, r.to)
+      if (seen.has(k)) continue
+      seen.add(k)
+      rows.push(r)
+    }
+    // ② 本文档条目的出边重算（池 = 同空间参与集）
+    const ownSpace = (docs.find((d) => d.id === newDocId) || {}).spaceId
+    const spaceMates = pool.filter((b) => b.spaceId === ownSpace)
+    for (const b of own) {
+      for (const c of relatedCandidates(b, spaceMates, { idf, topN: 5, minScore: SIM_THRESHOLD })) {
+        add(b.blockId, c.to, c.why)
+      }
+    }
+    // ③ 同 tag 入边补充：同 tag 的**其它条目** → 本文档条目（必然 tag 边）
+    for (const b of own) {
+      if (!b.tag) continue
+      for (const other of byTag.get(b.tag) || []) {
+        if (other.blockId === b.blockId) continue
+        add(other.blockId, b.blockId, { kind: 'tag', tag: b.tag })
+      }
+    }
+    // ④ 反向封闭（沿用各行的原始指纹，别用现算的——见①的 why）
+    for (const r of rows.slice()) {
+      const k = relKey(r.to, r.from)
+      if (seen.has(k)) continue
+      seen.add(k)
+      rows.push({ from: r.to, to: r.from, why: r.why, sigFrom: r.sigTo, sigTo: r.sigFrom })
+    }
+    relEdges = rows
+  }
+
+  /**
    * 增量更新单个文档（唯一写入口仍是 persist()）。
    * **docIdx 必须保持不变**：原地替换 `docs[i]` + 摘除该 `di` 的 postings 后重插。
    * 若改成"删了重加"，其后所有文档下标位移，`inverted.jsonl` 立即失效。
@@ -716,7 +800,9 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     for (const g of touched) inverted.get(g).p.sort((a, b) => a[0] - b[0])
 
     relinkDoc(parsed.doc, new Set(docs.map((d) => d.id)))
-    // 关联增量：必须在 docs[i] 与 inverted 都已更新之后（出边依赖新索引与新块集）
+    // 关联增量：必须在 docs[i] 与 inverted 都已更新之后（出边依赖新索引与新块集），
+    // 且在 persist() 之前（persist 是唯一写入口，relLines 由它回写）。
+    relateIncremental(docId)
     persist()
     return { updated: true }
   }
