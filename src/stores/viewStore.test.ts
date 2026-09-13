@@ -23,3 +23,10 @@ test('sanitizeSecondTab：4 合法值透传，非法/缺省/历史无字段回�
   assert.equal(sanitizeSecondTab('nope'), null)
   assert.equal(sanitizeSecondTab(42), null)
 })
+
+// Task 1.1（应用智控）：'apps' 入 rail 白名单。
+// sanitizeRail 是 persist merge 的唯一落盘恢复 guard——漏加会让 reload 后 rail 被回退 'task'。
+test('sanitizeRail：apps 为合法 rail（应用智控）', () => {
+  assert.equal(sanitizeRail('apps'), 'apps')
+  assert.ok((RAIL_IDS as readonly string[]).includes('apps'))
+})

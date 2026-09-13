@@ -12,7 +12,9 @@
 //  - skills=Puzzle：Settings 技能子页/技能设置头（同「技能」语义，允许）。
 //  - workflows=Workflow（Task 13 第五 rail）：图标选 lucide 的 Workflow（节点图语义），
 //    与既有四图标不重复；WorkflowsPanel/画布节点卡片不重复用图标（只用文字徽标）。
-import { MessageSquare, SquareKanban, Bot, Puzzle, Workflow, type LucideIcon } from 'lucide-react'
+//  - apps=LayoutGrid（Task 1.1 第六 rail「应用智控」）：图标选 lucide 的 LayoutGrid
+//    （应用清单/网格语义），与既有五图标不重复；后续 AppsPanel 卡片网格不重复用图标。
+import { MessageSquare, SquareKanban, Bot, Puzzle, Workflow, LayoutGrid, type LucideIcon } from 'lucide-react'
 import type { RailId } from '@/stores/viewStore'
 
 export interface RailMeta {
@@ -27,6 +29,7 @@ export const RAIL: readonly RailMeta[] = [
   { id: 'agents', icon: Bot, labelKey: 'rail.agents' },
   { id: 'skills', icon: Puzzle, labelKey: 'rail.skills' },
   { id: 'workflows', icon: Workflow, labelKey: 'rail.workflows' },
+  { id: 'apps', icon: LayoutGrid, labelKey: 'rail.apps' },
 ]
 
 /** 非法/未知 rail id 兜底 → 'task'（与 viewStore.sanitizeRail 同策略，供宿主路由防护） */

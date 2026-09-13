@@ -53,6 +53,7 @@ export const zhCN = {
     agents: '智能体',
     skills: '技能',
     workflows: '工作流',
+    apps: '应用智控',
     chatNew: '新建对话',
     chatEmpty: '暂无对话，先聊点什么吧',
     chatEmptyAction: '开始对话',

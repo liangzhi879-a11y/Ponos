@@ -175,6 +175,12 @@ export function WorkShell({ onGoCockpit }: WorkShellProps) {
         ) : rail === 'workflows' ? (
           // Task 13：第五 rail —— 工作流列表 ⇄ 画布编辑器（占满 work 区，不经 SecondPanel）
           <WorkflowsPanel />
+        ) : rail === 'apps' ? (
+          // Task 1.1：第六 rail「应用智控」最小占位——真实 AppsPanel（应用卡片列表 +
+          // 新增卡位）由 Task 1.6 建出后，把本 div 替换为 <AppsPanel />（import 同步补上）。
+          <div className="flex-1 flex items-center justify-center text-tertiary">
+            <p className="text-lg">{t('rail.apps')}</p>
+          </div>
         ) : (
           <>
         <SecondPanel />

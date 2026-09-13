@@ -53,6 +53,7 @@ export const enUS: TranslationKeys = {
     agents: 'Agents',
     skills: 'Skills',
     workflows: 'Workflows',
+    apps: 'App Console',
     chatNew: 'New Chat',
     chatEmpty: 'No chats yet — start one below',
     chatEmptyAction: 'Start a Chat',

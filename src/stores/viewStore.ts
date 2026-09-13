@@ -12,14 +12,15 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
 export type AppView = 'boot' | 'cockpit' | 'work'
-export type RailId = 'chat' | 'task' | 'agents' | 'skills' | 'workflows'
+// Task 1.1（应用智控）：第六 rail 'apps'，与会话/任务/智能体/技能/工作流平级。
+export type RailId = 'chat' | 'task' | 'agents' | 'skills' | 'workflows' | 'apps'
 /** 次级浮层（Task 10）：任务面板头部四枚次级图标钮 → 420px 抽屉（文件/历史/用量/工作树）。null=关闭。 */
 export type SecondTabId = 'files' | 'history' | 'usage' | 'worktree'
 export interface WorkState { rail: RailId; secondTab: SecondTabId | null }
-export const RAIL_IDS: readonly RailId[] = ['chat', 'task', 'agents', 'skills', 'workflows']
+export const RAIL_IDS: readonly RailId[] = ['chat', 'task', 'agents', 'skills', 'workflows', 'apps']
 export const SECOND_TAB_IDS: readonly SecondTabId[] = ['files', 'history', 'usage', 'worktree']
 
-/** 落盘 rail 清洗：5 合法值透传，非法/缺省 → 'task'（供 merge 与单测）。 */
+/** 落盘 rail 清洗：6 合法值透传，非法/缺省 → 'task'（供 merge 与单测）。 */
 export function sanitizeRail(rail: unknown): RailId {
   return RAIL_IDS.includes(rail as RailId) ? (rail as RailId) : 'task'
 }
