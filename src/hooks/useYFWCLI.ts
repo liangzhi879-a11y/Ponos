@@ -237,16 +237,19 @@ export function sendAnswer(sessionId: string, answers: QuestionAnswer[], notes: 
     type: 'answer',
     sessionId,
     data: { answers, notes },
+    // 内核若已被空闲回收（提问卡片挂很久），桥要用这些字段以 --resume 重启内核再注入
+    // 回答；不带这些字段时桥只能把回答丢掉（会话续不起来）。
+    ...(conversationSpawnFields(sessionId) || {}),
   }))
-  // 用户已回答提问 → 清除待回复标记，并把会话恢复为流式状态
-  // （CLI 处理回答期间会继续输出，状态应从“待回复”切回“执行中”，
-  // 直到本轮回应的 result 事件到达后再结束）。
-  const store = useChatStore.getState()
-  store.clearPendingQuestion(sessionId)
-  const st = sessionState.get(sessionId)
-  if (st?.assistantId) {
-    store._resumeStreaming(sessionId, st.assistantId)
-  }
+  // 用户已回答提问 → 清除待回复标记。
+  // **不再**在这里乐观置流式态（2026-09-14）：桥随即回的 question-resolved 带 sameTurn
+  // 告诉我们这是"同一轮继续"（内核仍挂在等待上，该复用上一轮的 assistant 块）还是"新轮"
+  // （等待超时收尾 / 内核被回收后重启，上一轮已 result 收尾——这时把**旧块**标成"执行中"
+  // 就是假徽标，落在一件已经做完的事上）。旧实现无条件 _resumeStreaming 且当时的桥在
+  // "回答送不出去"时**不回任何 error**，于是那次乐观写入永远无人解除：会话停在「执行中」、
+  // 输入条锁死——正是「卡片放很久，再处理时会话拉不起来」的表象。新桥保证"送达或回 error"
+  // 二选一，但状态该由事实（sameTurn）驱动，不该由发送方乐观预判。
+  useChatStore.getState().clearPendingQuestion(sessionId)
 }
 
 /**
@@ -306,26 +309,20 @@ export function sendApprovalMode(conversationId: string | undefined, mode: Appro
 }
 
 /**
- * 构建 WS send payload；会话不存在返回 null。
- * 发送方：send（空闲/排队插话）、dispatchSend（新建轮）、interject（紧急 now）。
- * uuid：排队插话消息的唯一标识，内核处理该消息时经 command_lifecycle 事件回传
- * （'started'=已接收处理），供前端解除气泡悬浮态。
+ * 会话的 spawn/resume 字段集——bridge 侧 getOrCreateSession 的原样入参。
+ * buildSendPayload 与 sendAnswer **同源**（2026-09-14）：回答路径也需要它——提问卡片
+ * 放很久后内核已被空闲回收，回答要靠这些字段才能触发"以 --resume 重启内核"，
+ * 否则桥只能把回答丢掉（会话再也续不起来）。会话不存在返回 null。
  */
-// 构建 WS send payload；会话不存在返回 null
-function buildSendPayload(conversationId: string, prompt: string, priority?: 'now' | 'next' | 'later', uuid?: string): Record<string, unknown> | null {
+function conversationSpawnFields(conversationId: string): Record<string, unknown> | null {
   const store = useChatStore.getState()
   const conversation = store.conversations.find(c => c.id === conversationId)
   if (!conversation) return null
-  lastSessionId = conversationId
   const agent = getAgentById(useAgentStore.getState().agents, conversation.agentId)
   const sState = useSettingsStore.getState().settings
   const activeProv = sState.providers.find(p => p.id === sState.activeProvider)
   const compactCount = compactCountOf(conversationId)
   return {
-    type: 'send',
-    prompt,
-    requestId: generateId(),
-    sessionId: conversationId,
     cwd: conversation.cwd,
     // 会话模式透传：chat = 受限（bridge chat spawn 禁本地工具 + cwd=YFW_HOME）；
     // undefined 由 bridge 按 task 处理（旧会话/导入数据）
@@ -342,6 +339,20 @@ function buildSendPayload(conversationId: string, prompt: string, priority?: 'no
     // 双数据源取 max：healthBySession 为最近健康事件快照，summaryCompactCountBySession
     // 为压缩事件计数（yfw_summary 可能先于 yfw_health 到达，二者都可能较新）。
     ...(compactCount > 0 ? { compactCount } : {}),
+  }
+}
+
+// 构建 WS send payload；会话不存在返回 null
+function buildSendPayload(conversationId: string, prompt: string, priority?: 'now' | 'next' | 'later', uuid?: string): Record<string, unknown> | null {
+  const fields = conversationSpawnFields(conversationId)
+  if (!fields) return null
+  lastSessionId = conversationId
+  return {
+    type: 'send',
+    prompt,
+    requestId: generateId(),
+    sessionId: conversationId,
+    ...fields,
     ...(priority ? { priority } : {}),
     ...(uuid ? { uuid } : {}),
   }
@@ -1206,6 +1217,17 @@ function handleMessage(msg: Record<string, unknown>) {
     // 此前从不处理该事件——提问残留会让「待回复」徽标与 pendingQuestions 门控
     // 双双泄漏（2026-09-09 状态残留修复）。
     useChatStore.getState().clearPendingQuestion(sid)
+    // sameTurn（2026-09-14）：内核仍挂在提问等待上 ⇒ 作答是同一轮的继续，恢复流式态让
+    // 后续输出接进上一轮的 assistant 块（原来的行为，语义正确）。否则作答开启**新轮**
+    // （等待超时收尾 / 内核被回收后重启），**不复用**旧块。注意新轮的输出归属本来就有兜底：
+    // result 已把会话移出 streamingSessions，新轮首个 assistant 事件会走"新轮自动建块"
+    // 路径（见上方 assistant 分支的 setupStreamingState）——本判据管的是这段窗口里的
+    // 状态徽标（别把已收尾的旧块标成"执行中"）与由此带来的输入条锁。
+    const sameTurn = (msg.data as { sameTurn?: boolean } | undefined)?.sameTurn
+    if (sameTurn) {
+      const st = sessionState.get(sid)
+      if (st?.assistantId) useChatStore.getState()._resumeStreaming(sid, st.assistantId)
+    }
     return
   }
 

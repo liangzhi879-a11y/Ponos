@@ -366,3 +366,43 @@ electron/main.cjs ──spawn──► node server/bridge.mjs ──spawn──�
 - **桥改动：需重启应用**——桥是长驻进程、启动时载入。
 
 **遗留（未做，归后续）**：`syncDirToMirror` 的比较口径是**仅比尺寸**（等长改动不会刷新镜像缓存；本轮三文件长度均变化故未受影响）——应改为尺寸+哈希，否则将来一次等长修改会静默生效不了。
+
+### 8.12 家族 J 的第二个形态：提问卡片久挂后作答，"会话拉不起来"（2026-09-14）
+
+**用户诉求原文**：「提问卡片抛出后很长时间不处理，再处理时会话便会拉不起来」。
+
+§8.1 的 J 记的是**内核还在等、却被回收**（回答落空）；本次是它的兄弟形态——**内核先于用户作答离场**，而 answer 分支只认"活的会话"。两条离场路径都必然发生（不是边角情形）：
+
+1. 内核侧 `waitForAnswer()` 提问等待超时（`PONOS_ASK_USER_TIMEOUT_MS`，默认 10min）→ 按设计**收尾本轮**（"作答可在下一轮补上"）→ 会话回归普通空闲 → 再 10min 后被空闲回收；
+2. 或桥侧"提问等待豁免"（`YFW_KERNEL_WAIT_EXEMPT_MS`，默认 30min）到期被 `reapKernel()` 强杀。
+
+旧 `answer` 分支 `if (session && session.proc && !session.proc.killed)` 判空后**什么都不做**，只补一帧 `question-resolved` ⇒ **回答被静默丢弃**；而渲染侧 `sendAnswer` 当时又乐观地 `_resumeStreaming` 把会话标成"执行中" ⇒ 输入条锁死、永远等不到输出。用户看到的「拉不起来」= **回答进了黑洞 + UI 自己把门锁上**。
+
+#### 8.12.1 修法（契约与 `send` 同源）
+
+| 侧 | 改动 |
+|---|---|
+| `server/bridge.mjs` answer 分支 | 无活内核时：`resumeId` 有 ⇒ **以 `--resume` 原会话 ID 重启内核再注入回答**（`getOrCreateSession` 的入参整集由前端随报文带来，与 `buildSendPayload` 同源）——这正是 `reapIdleKernels` 注释早已承诺的"下次发消息以 --resume 无缝重启"语义，只是 answer 路径此前没兑现；`resumeId` 也没有（老前端）⇒ 显式回 `error`（前端据此从"执行中"解锁），**绝不静默丢弃** |
+| 同上 | 回答注入后补 `armFirstBytePending(session, sid)`，与 `send` 同构——重启路径要等 spawn+首字节、同轮路径要等内核继续产出，否则作答后到首帧之间是一段无提示的静默 |
+| 同上（新增判定） | `sameTurn = 活内核 && _turnActive`（`_turnActive` 恰好只在"内核阻塞在 `waitForAnswer`"期间为真），随 `question-resolved` 的 `data.sameTurn` 回传 |
+| `src/hooks/useYFWCLI.ts` | 抽 `conversationSpawnFields()`（`send` 与 `answer` **同源**，杜绝两处字段集漂移）；`sendAnswer` 带上该字段集且**去掉乐观 `_resumeStreaming`**（送达失败时不再自己锁门）；`question-resolved` 处理器仅在 `sameTurn === true` 时 `_resumeStreaming`，否则走既有"新轮自动开块"路径 |
+| 同上（第三阶硬化） | `proc.on('close')` 加**身份守卫**：`sessions.has(sid) && sessions.get(sid) !== session` 即"登记已被替换"（provider 热切换、回答重启、取消强杀后立刻再发消息三条路径都会在同一个 sid 上先杀旧后起新，而旧进程的 close 要到下一轮事件循环才派发）⇒ 不 `delete`、不广播 `closed`。否则一次 `answer` 重启就会被旧内核的 close 抹掉登记：内核沦为孤儿（回收器按 `sessions` 遍历 ⇒ pid 泄漏），前端还会把正在干活的新内核当已死（清任务卡、停流式）。判据**必须**是 `has(sid) && !==`：条目 absent（已被回收器/取消路径删掉）不算替换，保持旧语义——`server/cancel-corpse.test.mjs:134` 钉死了"强杀后仍须广播 closed" |
+
+#### 8.12.2 验证
+
+新增 `server/answer-resume.test.mjs`（进程级 2 例，真桥 + `PONOS_MOCK_API=1` + 临时 home + 随机端口；豁免阈值压到 2.5s）：
+
+| 用例 | 断言 | 结果 |
+|---|---|---|
+| 久挂后作答（带 resume 字段） | `question-resolved.data.sameTurn === false`、无 `answer undeliverable`、桥日志 `spawn: ans-reap (resume <id8>)` + `answer injected for session: ans-reap (new turn)`，**且 mock 回显 `(turn=2)`**——只有"`--resume` 恢复了历史(1 条) + 本次回答(1 条)"才可能出现，是本修复最强的端到端证据 | ✅ |
+| 作答缺 resume 信息 | 必回 `error`（含"回答未能送达"）+ stderr `answer undeliverable`，且 `question-resolved` 仍须广播（卡片要能收起） | ✅ |
+
+两条用例各自做了**变异证伪**（改回旧行为 → 对应用例必红），恢复后 `cmp` 逐字节一致（md5 `22608636bc25df527830413f955150a7`）。桥相关 server 套件 36 例全绿；全量 `server/*.test.mjs` 374/375——唯一那条是 `diag-info.test.mjs` 的**既有假红**（把 `loopDriftMs` 这种**实时测量**当计数器断言"恰为 0"，忙机器上必红，实测 83ms），本次一并改为"字段集 + 非负有限"断言。
+
+#### 8.12.3 生效范围与遗留
+
+- **桥改动：需重启应用**（长驻进程，启动时载入）；**渲染侧改动：需重载渲染器**（`src/hooks/useYFWCLI.ts`）。
+- **两半的权重不对等（诚实标注，逐条核对过渲染侧时序）**：**桥那一半单独就能修掉用户报的症状**——回答要么被 --resume 重启的内核接住、要么以 `error` 帧解锁，两条路都不再"黑洞 + 锁门"。渲染侧那一半管的是**这段窗口里的状态徽标**：旧实现无条件 `_resumeStreaming`，会在"内核已收尾本轮、作答其实开了新轮"时把**已完成的旧块**标成"执行中"；新轮的输出归属本来就有兜底（`result` 已把会话移出 `streamingSessions`，新轮首个 assistant 事件走"新轮自动建块"路径），所以拼错块**不会**发生。⇒ 渲染侧未同步 = 观感瑕疵，不是功能缺失。
+- **部署实况**：`server/bridge.mjs` + 两个测试文件已逐文件 `cmp` 后覆盖到 `release/YFWorking/`（备份 `_backup_before_answer_resume_2026-09-14T06-45-39/`），并在 release 树内重跑用例 **2/2**。**渲染侧产物未重建**——`node_modules` 当时只剩 `ws`（并行会话的 `npm install` 因 `@xmldom/xmldom@0.8.14` ENOTCACHED 失败后留下），无 vite/typescript ⇒ `dist` 停在 01:14 那份旧构建，本次 `useYFWCLI.ts` 改动**不在已部署的 bundle 里**，须等工具链恢复后重新 `npm run build` + 同步 `dist`。内核未改动 ⇒ 不涉 `~/.yfw/runtime/ponos-kernel/` 镜像刷新（该镜像**仅比尺寸**的老问题与本次无关）。
+- 未做：内核自身 `waitForAnswer` 超时后的行为不变（仍是"收尾本轮、作答下一轮补"）——本次只保证**作答一定送达到**并让前端知道该开新块；若将来要让卡片久挂也**保留内核存活**，属于"等待豁免与内核等待上限对齐"的另一件事（两个上限 10min/30min 目前刻意不等）。
+

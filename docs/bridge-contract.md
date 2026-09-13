@@ -158,11 +158,11 @@ env 调参：`PONOS_FIDELITY`（`0` 总开关关）、`_WINDOW`（默认 12 轮�
 | `stderr` | `{ data }` | 内核 stderr 行 |
 | `ack` | `{ requestId, sessionId }` | `send` 已受理 |
 | `error` | `{ message }` | spawn 失败等 |
-| `closed` | `{}` | 内核退出（空闲回收退出不广播，保留 UI 状态） |
+| `closed` | `{}` | 内核退出。两种"退出但不广播"的情形（保留 UI 状态）：① `_reaped`（空闲/等待豁免回收）；② **会话已被顶替**——close 事件到达时 `sessions` 里登记的已不是该内核（provider 切换重建、回收后作答 `--resume` 重启等），此时旧内核的退出与用户看到的会话无关，广播反而是假信号（2026-09-14 身份守卫） |
 | `cancelled` | `{ sessionId }` | cancel 已受理 |
 | `milestones` / `milestone-start` / `milestone-ok` | 解析出的标记数据 | 从 assistant text/thinking 提取的结构化进度（散文兜底：`阶段 X/Y` 叙述驱动） |
 | `question` | 解析后的 ASK_USER 卡片数据（或 `{raw}` 容错） | 提问卡片；解析失败带 raw 让前端兜底 |
-| `question-resolved` | `{ sessionId }` | 提问已被回答/跳过（撤销嘉嘉等监听者提示） |
+| `question-resolved` | `{ sessionId, data:{ sameTurn } }` | 提问已被回答/跳过（撤销嘉嘉等监听者提示）。`sameTurn:true` = 内核仍在原轮次里等这次回答（前端复用上一 assistant 块，输出接着长）；`false`/缺省 = 内核已离场、回答以 `--resume` 起了**新轮**（前端须新建消息块）。老前端忽略该字段即退化为"新轮"语义（安全侧） |
 | `approval` | `{ toolUseId, command, requestId, reason, toolName, highRisk, hard, mode }` | 权限审批弹窗。`hard:true` = 灾难级（弹窗显示灾难级警示条，「本次放行」一次性）；`mode` = 内核发起询问时生效的档位 |
 | `approval-resolved` | `{ sessionId, toolUseId }` | 审批已回执 |
 | `approval-mode-changed` | `{ sessionId, data:{ mode, override, global, scope } }` | 生效档位变更（2026-09-12）。`mode` = 本会话**实际**生效档位；`override` = 是否存在会话级临时覆盖（**布尔**；为 true 时 GUI 显示「临时」，其值即 `mode`）；`global` = 全局档；`scope` ∈ `session`（用户切档）/`cleared`（覆盖被清，回落全局）/`global`（全局热生效推到本会话）。GUI 一律以此为准渲染，**不做本地乐观写** |
@@ -179,7 +179,7 @@ env 调参：`PONOS_FIDELITY`（`0` 总开关关）、`_WINDOW`（默认 12 轮�
 |---|---|---|
 | `send` | `{ sessionId, cwd, resumeId, systemPrompt, model, compactCount, prompt, requestId, priority, uuid }` | 发消息；无会话则 spawn（`resumeId` 有 → `--resume` 恢复，无 → 新会话注入 systemPrompt） |
 | `cancel` | `{ sessionId }` | 优雅停止（`control_request(cancel)` + 6s 超时后 taskkill 兜底） |
-| `answer` | `{ sessionId, data:{ answers[], notes } }` | 卡片回答 → 拼装成用户消息注入内核 stdin，广播 `question-resolved` |
+| `answer` | `{ sessionId, data:{ answers[], notes }, cwd?, resumeId?, mode?, systemPrompt?, model?, compactCount? }` | 卡片回答 → 拼装成用户消息注入内核 stdin，广播 `question-resolved`。尾部的 spawn 字段集与 `send` 同源（2026-09-14）：提问卡片挂久了内核会先离场（等待超时收尾→空闲回收／等待豁免超上限），此时**凭 `resumeId` 以 `--resume` 重启内核再注入回答**——否则回答会被静默丢弃、GUI 永远停在"执行中"；连 `resumeId` 都没有（老前端）则回 `error` 让前端解锁，绝不静默丢弃 |
 | `question-dismiss` | `{ sessionId }` | 跳过卡片（CLI 保持等待，广播 `question-resolved`） |
 | `approval-response` | `{ sessionId, toolUseId, approved }` | 审批结果 → `control_response` 注入内核 |
 | `approval-mode` | `{ sessionId, mode }` | 会话级档位临时覆盖（2026-09-12，状态栏徽标）：`mode` ∈ 四档 → 记入内存 Map 并热切活内核；`mode:null` → 清覆盖回落全局。**不写 config.json**（全局档只在 `/config`）。非法值/`_wfhost` → `approval-mode-rejected`；成功后广播 `approval-mode-changed` |

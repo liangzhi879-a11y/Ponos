@@ -1514,17 +1514,28 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
   proc.on('close', (code) => {
     // 会话结束 → 清理临时系统提示词文件，避免 %TEMP% 堆积
     if (promptFile) { try { rmSync(promptFile, { force: true }) } catch {} }
-    sessions.delete(sid)
-    // 会话级临时审批档位随会话消亡（仅内存）：清掉覆盖并广播，徽标可见地弹回全局档。
-    // 内核进程已退出，无需注入。_reaped（切模型重建）也算一次会话结束 → 同样回落全局。
-    clearSessionApprovalMode(sid)
+    // 「登记已被替换」判定（2026-09-14）：三条路径会在**同一个 sid 上先杀旧、后起新**
+    // —— provider 热切换与回答重启（getOrCreateSession）、取消强杀后用户立刻再发消息。
+    // 而旧进程的 close 要到下一轮事件循环才派发，那时新会话**已经登记好了**：无条件
+    // sessions.delete(sid) 会把刚登记的新会话抹掉 ⇒ 内核沦为无人持有的孤儿（回收器
+    // 按 sessions 遍历，永远看不见它 ⇒ pid 泄漏），closed 广播还会让前端把"正在干活的
+    // 新内核"当成已死（清任务卡、停流式）。判据必须是"条目存在且不是本对象"：条目
+    // 已被回收器/取消路径删掉时（absent）不算替换，保持原有语义（见 cancel-corpse 用例——
+    // 强杀后仍须广播 closed）。
+    const superseded = sessions.has(sid) && sessions.get(sid) !== session
+    if (!superseded) {
+      sessions.delete(sid)
+      // 会话级临时审批档位随会话消亡（仅内存）：清掉覆盖并广播，徽标可见地弹回全局档。
+      // 内核进程已退出，无需注入。_reaped（切模型重建）也算一次会话结束 → 同样回落全局。
+      clearSessionApprovalMode(sid)
+    }
     // 工作流宿主内核退出：立即结清在途命令。缺这一步，宿主一死，GUI 的创建/保存/运行会
     // 静默挂到超时（默认 120s、run 更长达 30min）——用户侧只看到"点了没有任何反应"，
     // 2026-09-12 实测缺陷（cwd 不存在 → spawn ENOENT 秒退）就是这么被掩盖的。
     if (sid === HOST_SID) { try { _wfHost?.onKernelExit(sid) } catch { /* 结清失败不阻断退出流程 */ } }
     // 空闲回收触发的退出不广播 closed：前端保留该会话的任务卡等 UI 状态，
     // 下次发消息会以 --resume 无缝重启内核（广播 closed 会让渲染层清空任务卡）。
-    if (!session._reaped) send({ type: 'closed', data: {}, sessionId: sid })
+    if (!superseded && !session._reaped) send({ type: 'closed', data: {}, sessionId: sid })
     // 诊断埋点：非零退出码且非主动取消 → 计为内核异常退出（崩溃）。
     // 主动取消（cancel）会 kill 内核但 _cancelPending 置位，不计入崩溃。
     if (code !== 0 && code !== null && !session._cancelPending) {
@@ -3042,7 +3053,36 @@ wss.on('connection', (ws, req) => {
       }
       else if (msg.type === 'answer') {
         const sid = msg.sessionId || 'default'
-        const session = sessions.get(sid)
+        let session = sessions.get(sid)
+        const live = !!(session && session.proc && !session.proc.killed)
+        // 本回答是否落在**同一个轮次**里（内核仍挂在 engine.waitForAnswer 上）：前端据此
+        // 决定作答时是否把会话重新标成"执行中"并复用上一轮的 assistant 块。提问等待超时
+        // 收尾 / 内核被回收后重启都属于新轮——上一轮已 result 收尾，此时再把**旧块**标成
+        // 执行中就是假状态（"执行中"落在一条已完成的回复上）。新轮输出本身由渲染侧既有的
+        // "新轮自动建块"路径负责（result 已把会话移出 streamingSessions），不依赖本字段。
+        const sameTurn = live && !!session._turnActive
+        if (!live) {
+          // 内核已被回收，而提问卡片还挂在 GUI 上（回收器语义见 reapIdleKernels）：
+          //   ① 内核侧提问等待超时（PONOS_ASK_USER_TIMEOUT_MS，默认 10min）→ 收尾本轮 →
+          //      会话回归普通空闲 → 再 10min 后按空闲回收；
+          //   ② 或"提问等待豁免"（YFW_KERNEL_WAIT_EXEMPT_MS，默认 30min）到期被强制回收。
+          // 旧实现只广播 question-resolved、**把回答丢进黑洞**：没有内核接收，前端又被
+          // sendAnswer 的 _resumeStreaming 标成"执行中"（输入条锁排队态）⇒ 用户看到的正是
+          // 「提问卡片放很久，再处理时会话拉不起来」。契约与 send 一致（reapIdleKernels 的
+          // 注释早已承诺该语义）：以 --resume 原会话 ID 重启内核，再把回答当用户消息注入。
+          sessions.delete(sid)
+          session = null
+          const resumeId = msg.resumeId
+          if (resumeId) {
+            console.log(`[bridge] answer on reaped session ${sid.slice(0, 8)} — respawning kernel (resume ${String(resumeId).slice(0, 8)})`)
+            // cwd/mode/systemPrompt/model/compactCount 与 send 同源（前端 buildSendPayload
+            // 的字段集）⇒ 重启出来的内核与"用户再发一条消息"完全等价，历史经 --resume 无缝续
+            session = getOrCreateSession(sid, msg.cwd, resumeId, msg.systemPrompt, msg.model, msg.compactCount, msg.mode === 'chat' ? 'chat' : 'task')
+            if (session) session._askBuf = ''
+          } else {
+            console.warn(`[bridge] answer undeliverable — session ${sid.slice(0, 8)} was reaped and payload carries no resumeId`)
+          }
+        }
         if (session && session.proc && !session.proc.killed) {
           const answers = (msg.data && msg.data.answers) || []
           const notes = (msg.data && msg.data.notes) || ''
@@ -3056,11 +3096,19 @@ wss.on('connection', (ws, req) => {
           response += `\n\n请继续推进任务。`
           session.proc.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: response } }) + '\n')
           session._turnActive = true
-          console.log('[bridge] answer injected for session:', sid.slice(0, 8))
+          // 与 send 同构：等待条重新武装（重启路径要等 spawn+首字节，同轮路径要等内核
+          // 继续产出），否则作答后到首帧之间是一段无提示的静默
+          armFirstBytePending(session, sid)
+          console.log('[bridge] answer injected for session:', sid.slice(0, 8), sameTurn ? '(same turn)' : '(new turn)')
+        } else if (!live && !msg.resumeId) {
+          // 送达失败必须**显式回执**：静默丢弃 = 前端停在"执行中"（本次事故的形态本身）。
+          // spawn 失败那条路径由 getOrCreateSession 自行广播 error（该函数内唯一 return null 处），
+          // 此处只兜"根本没有内核可重启"（前端没带 resume 信息）这一种。
+          send({ type: 'error', data: { message: '回答未能送达：该会话的内核已被回收，且缺少 resume 信息，无法重启内核。请直接发送一条消息继续——会以原会话历史重启。' }, sessionId: sid })
         }
         // 提问已被回答——广播撤销外部监听者（如桌面宠物嘉嘉）的提问提示
         if (session) { session._pendingQuestions = null; clearSessionAwaiting(session) }
-        send({ type: 'question-resolved', sessionId: sid })
+        send({ type: 'question-resolved', sessionId: sid, data: { sameTurn } })
       }
       else if (msg.type === 'question-dismiss') {
         // 用户跳过/关闭了提问卡片：CLI 保持等待（由新消息解除阻塞），
