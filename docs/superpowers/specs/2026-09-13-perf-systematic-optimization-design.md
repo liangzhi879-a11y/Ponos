@@ -189,7 +189,13 @@
   - **单线程 JS 的"队列压力"是什么**：事件到达与渲染同线程，队列不会在渲染期间继续变长 ⇒ 深度＝批次条数，年龄＝最老一条从入队到本次 flush 的墙钟。主线程被 React 提交占住时，排定的 flush 定时器晚点触发，年龄随之变大——这就是本运行时的积压信号。判据必须在 **drain 之前**取（drain 后队列恒空，什么都量不到）。
   - **诚实结论**：本应用真实入站流量约 **1 事件/秒**（K0.3 实测帧间隔中位 998ms、每步中位 3 帧）⇒ 深度 8 正常负载下不触发，这是**有意**的（判据要答的是"跟不上"而非"某帧慢"）；真正会触发的是年龄。故本项收益是**机制正确**（旧判据从未置位过），"何时降频"要等实机数据。观测字段已进 `/diag/render-frame`（`heavyIn/heavyOut/qMax/qAgeMax/reason`），诊断页会写一行降频说明。
   - **有意偏差**：`flushTaskProgress` 仍用 rAF——不在本项范围（治的是 `streamHeavyMode`），且 task_progress 是每工具调用一次的低频事件、`visibilitychange` 已有兜底 flush。
-- **R6 长列表**：虚拟化或 containment；做法照「量化 scrollTop + `useSyncExternalStore`」+ `memo` 比较器显式豁免回调 props。
+- **R6 长列表**（**已落地**）：**只做 containment，不做虚拟化**。`content-visibility:auto` + `contain-intrinsic-size:auto 120px` 经容器类名 `.msg-contain` 生效（CSS 在 `src/styles/globals.css`），**仅当消息条数 ≥60**（阈值/类名/拼装在新模块 `src/lib/longListContainment.ts`，纯函数）。离屏消息跳过 style/layout/paint，滚到附近才排版。
+  - **先测再写**：真 Chromium（Electron 无头探针，400 条 × 约 40 元素/条）实测**首屏首排**：400 条 **146.5ms → 2.8ms**、200 条 62.4→1.8、100 条 33.2→0.7、60 条 20.8→0.6ms（20/40 条已在噪声区 ⇒ 阈值取 60）。**每次追加后强排**：0.311ms → 0.003ms @400 条。生效证据：离屏末条高度 341px（真实）→ 133px（=估算值）、容器 scrollHeight 109,770 → 53,752。
+  - **代价就是估算误差，已量化**：从未排版过的离屏消息按 120px 计入总高。应用形态混合样本（短/中/含代码块，中位真实高 198px）实测**估算总高 = 真实总高的 0.742**（低估，非高估）。低估方向更安全：上翻时未排版的内容只会**变高**，Chromium 的 scroll anchoring（`overflow-anchor` 默认 `auto`，已核对）保持视口内容不跳；某条消息排版过一次后，`auto` 就记住它的真实高度。**这条代价是本项唯一的 UX 风险，写在此处以免后人当成 bug 去修**。
+  - **上线前提是先验证它不会改坏既有功能**：`ChatWindow` 的 HistoryView 跳转 = `querySelector([data-message-id])` + `scrollIntoView({block:'center'})`，而目标在跳转前**正处于跳过态**（高度=估算 133px）。实测：跳转后就地排版为真实 261px、居中偏差 1px、目标可见、跳转后继续滚动正常 ⇒ 功能不受影响。
+  - **原计划的另一半（`useVirtualScroll + useSyncExternalStore` 快照 store）实测无价值，故不做**：真 React 探针显示，一次滚动事件里 `setState` 一个**同值**布尔值，跨 100 个独立 task 只产生 **1 次**渲染（React 自身对同值的 bailout）；换成快照 store 只降到 **0 次**。原计划的前提"普通滚轮 tick 会触发 commit"**不成立** ⇒ 省下这 1 次渲染不值得引入整条快照链路。
+  - **阈值挂在"条数"而非"高度"**：首排开销随条数线性、100 条起才有感知；而条数在 `ChatWindow` 已有现成的原始值选择器（`conversation.messageCount`），不引入新的测量与订阅。
+  - **接线的静默失效路径**（本设计唯一的"无声"故障）：改类名忘改 CSS，不报错、无外观差异，只有性能悄悄退回去。故测试从 `globals.css` 反查"选择器同时含类名与 `[data-message-id]`、且两处声明齐全"；类名拼装抽成纯函数 `viewportClassName(base, count)`，因为组件是 `.tsx` 而 Node 的类型擦除**不认 `.tsx`**（实测 `Unknown file extension ".tsx"`，本仓不引打包器跑单测）⇒ 留在 JSX 里的表达式任何单测都够不着。变异 11 条全杀（模块 4 + CSS 5 + 拼装 2）。
 
 ---
 

@@ -906,3 +906,9 @@ input[type="range"]{accent-color:var(--brand-500);}
 /* rail 激活指示条（RailNav，光效白名单②） */
 .rail-ind{position:absolute;left:-6px;top:8px;bottom:8px;width:2.5px;border-radius:2px;
   background:var(--grad-brand);box-shadow:0 0 8px rgba(255,116,41,.7);}
+/* R6（2026-09-13）长会话消息 containment：`.msg-contain` 由 ChatWindow 在消息条数 ≥60 时
+   挂到滚动容器上（类名常量与阈值在 src/lib/longListContainment.ts，改名两边要同步）。
+   离屏消息跳过 style/layout/paint——真 Chromium 实测：首屏首排 400 条 147ms → 2.8ms，
+   每次追加后强排 0.31ms → 0.003ms。代价是**从未排版过**的消息按 120px 估算计入总高
+   （应用形态混合样本实测 估算/真实 ≈ 0.742，偏低估；某条排版过一次后 `auto` 记住其真实高度）。 */
+.msg-contain [data-message-id]{content-visibility:auto;contain-intrinsic-size:auto 120px;}

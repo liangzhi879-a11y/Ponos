@@ -13,6 +13,7 @@ import { AssistantMessageView, UserMessageView, SystemMessageView } from './Assi
 import { useChatStore } from '@/stores/chatStore'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn } from '@/lib/utils'
+import { viewportClassName } from '@/lib/longListContainment'
 import { getAgentById } from '@/lib/agents'
 import { useAgentStore } from '@/stores/agentStore'
 import { AgentAvatar } from '@/components/agents/AgentAvatar'
@@ -81,6 +82,13 @@ export function ChatWindow({ conversationId }: Props) {
   const cwd = useChatStore(s => s.conversations.find(c => c.id === conversationId)?.cwd ?? '')
   const convAgentId = useChatStore(s => s.conversations.find(c => c.id === conversationId)?.agentId)
   const convMessageCount = useChatStore(s => s.conversations.find(c => c.id === conversationId)?.messageCount ?? 0)
+  // R6（2026-09-13）：长会话给滚动容器挂 containment（离屏消息跳过 style/layout/paint）。
+  // 门槛、类名与拼装都在 src/lib/longListContainment.ts（实测依据与代价也写在那一处）；挂在
+  // **容器**上、由 CSS 后代选择器命中消息节点 ⇒ 不碰 renderMessage 的依赖，也不会逐条改内联样式。
+  const viewportClass = useMemo(
+    () => viewportClassName('flex-1 min-h-0 overflow-y-auto pl-1', convMessageCount),
+    [convMessageCount],
+  )
   // 空态只看**条数**（boolean），看数组本身又会被每帧的流式追加带动重渲染
   const isEmpty = useChatStore(s => ((s.conversations.find(c => c.id === conversationId)?.messages.length ?? 0) === 0))
   const { t, lang } = useTranslation()
@@ -195,7 +203,7 @@ export function ChatWindow({ conversationId }: Props) {
             autoScroll
             turnAnchor="bottom"
             onScroll={handleViewportScroll}
-            className="flex-1 min-h-0 overflow-y-auto pl-1"
+            className={viewportClass}
           >
             {loadingWithHistory ? (
               /* v2 按需加载占位：历史会话消息拉取中 */

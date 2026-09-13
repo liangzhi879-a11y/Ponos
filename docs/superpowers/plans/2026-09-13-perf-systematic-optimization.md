@@ -520,7 +520,7 @@ export function perfStep(turn, step)                  // 发一行 + 清账 + �
 
 ### Task 16: R4/R5/R6 渲染层其余三项
 
-**Files:** Modify `src/components/chat/MarkdownText.tsx`、`src/lib/utils.ts`、`src/hooks/useYFWCLI.ts`、`server/bridge.mjs`、`electron/diag-monitor.cjs`；Add `src/lib/markdownStream.ts`、`src/lib/streamPressure.ts`；Tests: `src/lib/markdownStream.test.ts`、`src/lib/utils.test.ts`、`src/lib/streamPressure.test.ts`
+**Files:** Modify `src/components/chat/MarkdownText.tsx`、`src/lib/utils.ts`、`src/hooks/useYFWCLI.ts`、`server/bridge.mjs`、`electron/diag-monitor.cjs`、`src/components/chat/ChatWindow.tsx`、`src/styles/globals.css`；Add `src/lib/markdownStream.ts`、`src/lib/streamPressure.ts`、`src/lib/longListContainment.ts`；Tests: `src/lib/markdownStream.test.ts`、`src/lib/utils.test.ts`、`src/lib/streamPressure.test.ts`、`src/lib/longListContainment.test.ts`
 
 - [x] R4 ①：`MarkdownTextPart` 加 `memo` + **显式比较器**（只比 `text` 与 `status.type`）——`status` 对象是上游每帧新建的，按引用比会让 memo 恒失效；`cwd` 走 context 不受 memo 阻挡。`{...MD_COMPONENTS, p}` 与 `preprocessBoxDrawingTables` 各自 `useMemo`（前者只随 `cwd` 变，后者按 `text`）。
 - [x] R4 ②：**冻结稳定前缀、只重解析不稳定尾块**（新模块 `src/lib/markdownStream.ts`，纯函数）。切分规则与理由：只在**空行**处切（段中切会改变解析结果）、**只认完整行**（末尾半行还可能长内容）、用**围栏奇偶性**判断是否在代码块内（这是位置属性，不必回溯）、文本被截断（半截 ASK_USER 标记）或整体回写时靠**锚点比对**作废重扫、同一文本重复 feed 走快速路径。**只在 running 期切分**：消息完成后整段一次性解析 ⇒ 最终渲染与改动前逐字节一致。
@@ -537,8 +537,15 @@ export function perfStep(turn, step)                  // 发一行 + 清账 + �
 - [x] 测试 36 条（`markdownStream.test.ts` **15** + `utils.test.ts` **6** + `streamPressure.test.ts` **15**）。三条最关键的：① `markdownStream` 的**差分性质测试**（增量结论 ≡ 每帧从头重算，覆盖围栏开合/截断/回写/列表表格混排，逐帧比对）；② `utils.test.ts` 的**相对性能断言**；③ `streamPressure` 的**滞回状态机**用例（中间带维持现状、退出需连续 250ms、打断即清零）。
 - [x] **一条测试方法论的修正**：`utils.test.ts` 起初用绝对红线 `ms < 200`（1M 字符），变异测试显示**它杀不掉老的拼接实现**（那个老实现只要 68ms，照样过关）⇒ 改为**相对断言**（正则至少比逐字符参考实现快 5 倍）才真正钉住 R4 的结论。**绝对红线在"新旧实现差一个数量级但都很快"的场景下是无效断言**。
 - [x] 变异：`markdownStream` 9 条（**7 杀 + 2 证等价**：M6「变短不重置」与 M9「无快速路径」被差分性质测试证明为等价变异）；`sanitizeText` 7 条**全杀**（含"改回逐字符拼接"——靠相对性能断言杀）；`streamPressure` 10 条**全杀**（滞回/中间带/闭区间/进档观察期/计时清零/reset/调度无视降频/负数延迟/判据 AND 化/出档 OR 化），其中 M5、M10 起初存活 ⇒ **补了两条测试**（"打断后必须重新等满 250ms"用 `+249ms 仍降频` 钉死累计法；"深度低但年龄高＝中间带不是低压力"钉死 OR 化的出档条件），不是放宽断言。
-- [ ] R6：长列表 containment 或虚拟化（**量化 scrollTop + `useSyncExternalStore`**，仅对确定的长会话启用）——**未开始**
-- [ ] **验收（留待用户实机）**：① 流式期不再每帧全量重解析 markdown（尾块以外的内容解析次数归零）；② 降频机制是否/何时触发（诊断页 render-health 一行的「降频 进N/出M 次，队列峰值 …」）；③ 观感：合帧从 250ms 改 120ms 后是否更跟手。回归基线：`npm test` **1381 条 / 1380 pass / 0 fail / 1 skip**（基线 1345 → +36 全是本次新增；`npx tsc --noEmit` 干净）。
+- [x] R6：长列表 —— **只做 containment，不做虚拟化**。`content-visibility:auto` + `contain-intrinsic-size:auto 120px` 经容器类名 `.msg-contain` 生效（CSS 落 `src/styles/globals.css`），**仅当消息条数 ≥60**；阈值/类名/拼装在**新模块 `src/lib/longListContainment.ts`**（纯函数，配 `longListContainment.test.ts`）。挂在**容器**上、由 CSS 后代选择器命中 `[data-message-id]` ⇒ 不碰 `renderMessage` 的依赖，也不会逐条改内联样式。
+  - **实测（真 Chromium / Electron 探针，400 条 ×~40 元素）**：**首屏首排** 400 条 **146.5ms → 2.8ms**、200 条 62.4→1.8、100 条 33.2→0.7、60 条 20.8→0.6（20/40 条已在噪声区 ⇒ 阈值取 60）；**每次追加后强排** 0.311ms → 0.003ms @400 条（100 条 0.141→0.004）。生效证据：离屏末条高度 341px→133px（=估算值）、scrollHeight 109,770→53,752。
+  - **代价量化（本项唯一 UX 风险，写在此处以免后人当 bug 修）**：从未排版过的离屏消息按 120px 计总高。应用形态混合样本（短/中/含代码块，中位真实 198px）实测 **估算总高 = 真实的 0.742**（低估）。低估更安全：上翻时内容只变高，Chromium scroll anchoring（`overflow-anchor:auto` 已核对）兜住视口不跳；某条排版过一次后 `auto` 记住其真实高度。
+  - **先验证不改坏既有功能（R6 的上线前提）**：HistoryView 跳转 = `querySelector([data-message-id]) + scrollIntoView({block:'center'})`，目标跳转前正是**跳过态**（133px 估算）。实测跳转后就地排版为真实 261px、居中偏差 1px、目标可见、之后继续滚动正常 ⇒ 不受影响。
+  - **原计划的另一半（`useSyncExternalStore` 快照 store）实测无价值 ⇒ 不做**：真 React 探针，一次滚动事件里 `setState(同值布尔)` 跨 100 个**独立 task** 只产生 **1 次**渲染（React 同值 bailout），换快照 store 仅降到 **0 次**。原计划前提"普通滚轮 tick 会触发 commit"不成立，省这 1 次不值得引入整条快照链路。（探针第一版把 100 次调用挤在同一个 task 里 ⇒ 量到的是批处理而非滚动，得出"两者都是 1 次"的假结论；改成每 tick 独占 task 后才见到真数字。）
+  - **测试 6 条**：门槛边界（59 不挂 / 60 挂）、NaN 与 0 不启用、类名拼装（短会话**原样返回 base**，逐字符相同 ⇒ React 侧不写 DOM）、**CSS 接线反查**（从 `globals.css` 里找出选择器同时含类名与 `[data-message-id]` 的规则体，断言 `content-visibility:auto` 与 `contain-intrinsic-size:auto <N>px` 齐全且 N>0）。最后一条针对本设计**唯一的静默失效路径**：改名忘改 CSS —— 不报错、无外观差异、只有性能悄悄退回去。
+  - **变异 11 条全杀**（`r6-mutate.mjs`，模块+CSS 两文件、末尾逐字节还原校验）：门槛开区间 / 恒真 / 恒假 / 类名与 CSS 脱钩 / CSS 去 `content-visibility` / 去 `contain-intrinsic-size` / 选择器不再命中消息节点 / 估算换非 px 单位 / 估算归零 / 拼装恒不追加 / 拼装恒追加。
+  - **为什么把拼装抽成 `viewportClassName(base, count)`**：组件是 `.tsx`，Node 的类型擦除**不认 `.tsx`**（实测 `Unknown file extension ".tsx"`，本仓不引打包器跑单测）⇒ 留在 JSX 里的表达式任何单测都够不着。抽出后"挂没挂、几条才算长"全部被钉住；**残留**：`ChatWindow` 里那一处调用（`cn(viewportClassName(base, convMessageCount))`）仍无单测覆盖——它的失败形态只可能是"这一行被删"，留给交付清单里的 GUI 计时用例（见下）。
+- [ ] **验收（留待用户实机）**：① 流式期不再每帧全量重解析 markdown（尾块以外的内容解析次数归零）；② 降频机制是否/何时触发（诊断页 render-health 一行的「降频 进N/出M 次，队列峰值 …」）；③ 观感：合帧从 250ms 改 120ms 后是否更跟手；④ 长会话（≥60 条）滚动：滚动条尺寸会随新排版到的消息**小幅漂移**（估算 120px ⇒ 实测约 0.74 倍于真实总高），内容因 scroll anchoring 不跳——这是**已知代价**，观感不能接受就把阈值调高或直接去掉 `.msg-contain` 类（一行）。回归基线：`npm test` **1387 条 / 1386 pass / 0 fail / 1 skip**（R4/R5 后 1381 → R6 +6 全是新增；`npx tsc --noEmit` 干净）。
 
 ---
 
