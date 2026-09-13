@@ -24,6 +24,7 @@ import { KnowledgeSidebar } from './KnowledgeSidebar'
 import { KnowledgeDocView } from './KnowledgeDocView'
 import { KnowledgeEditorView } from './KnowledgeEditorView'
 import { KnowledgeSearchView } from './KnowledgeSearchView'
+import { KnowledgeGraphView } from './KnowledgeGraphView'
 
 export function KnowledgePanel() {
   const { t } = useTranslation()
@@ -97,8 +98,8 @@ export function KnowledgePanel() {
             // 搜索视图（Task 7）：自持 q/keywords/范围三态，命中的定位通过 store 三连写回
             <KnowledgeSearchView />
           ) : (
-            // graph：Task 8 填充
-            <KnowledgeEmpty title={t('knowledge.emptyPending')} className="m-auto" />
+            // 图谱视图（Task 8）：节点=文档、边=已解析的相对链接；点节点打开该文档
+            <KnowledgeGraphView />
           )}
         </div>
 

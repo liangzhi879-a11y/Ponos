@@ -819,5 +819,11 @@ export const enUS: TranslationKeys = {
     relevance: 'Relative relevance',
     indexDegraded: 'Index degraded',
     degradedHint: 'The query matched no inverted gram, so the vector path was skipped — results come from keywords only and may be sparse',
+    // —— Task 8 graph view ——
+    graphDocCount: '{n} docs',
+    graphLinkCount: '{n} links',
+    graphEmpty: 'No indexed document in this scope',
+    graphSingle: 'Only one document — no links between documents yet',
+    graphHint: 'Graph edges come from relative links between documents (`[x](y.md)`)',
   },
 }

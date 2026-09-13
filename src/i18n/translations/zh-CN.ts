@@ -832,6 +832,12 @@ export const zhCN = {
     relevance: '相对相关度',
     indexDegraded: '索引降级',
     degradedHint: '查询词未命中任何倒排 gram，向量路被跳过——结果只来自关键词匹配，可能偏少',
+    // —— Task 8 图谱视图 ——
+    graphDocCount: '{n} 篇文档',
+    graphLinkCount: '{n} 条链接',
+    graphEmpty: '这个范围内还没有已索引的文档',
+    graphSingle: '只有一篇文档，还没有互相引用的链接',
+    graphHint: '图谱的边来自文档之间的相对链接（`[x](y.md)`）',
   },
 }
 
