@@ -42,7 +42,12 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '' } = {}
           output: store.search({
             query: String(args.query || ''),
             keywords: Array.isArray(args.keywords) ? args.keywords : [],
-            spaces: Array.isArray(args.spaces) && args.spaces.length ? args.spaces : null,
+            // 空间过滤：数组 `--spaces a,b`（本模块直接调）优先；单数 `--space x`
+            // 兼容（parseArgs 收的就是单数，Task 11 的路由表也按单数转发）——不兼容
+            // 会让 `--knowledge search --space experience` 静默不过滤。
+            spaces: Array.isArray(args.spaces) && args.spaces.length
+              ? args.spaces
+              : (args.space ? [String(args.space)] : null),
             topK: Number(args.topK) || 5,
             maxBytes: Number(args.maxBytes) || 2048,
             mode: args.mode === 'full' ? 'full' : 'snippet',

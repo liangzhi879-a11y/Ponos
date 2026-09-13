@@ -74,6 +74,18 @@ test('op=update-doc 触发增量更新', async () => {
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('op=search 支持单数 --space 空间过滤（Task 11 路由按单数转发）', async () => {
+  const { dir } = fixture()
+  try {
+    const q = { op: 'search', configDir: dir, args: { query: '文件传输助手', space: 'experience' } }
+    assert.ok((await runKnowledgeCommand(q)).output.count > 0, '单数 --space 应生效')
+    const miss = { op: 'search', configDir: dir, args: { query: '文件传输助手', space: 'nope' } }
+    assert.equal((await runKnowledgeCommand(miss)).output.count, 0, '限定不存在的空间应 0 命中')
+    const multi = { op: 'search', configDir: dir, args: { query: '文件传输助手', spaces: ['experience'] } }
+    assert.ok((await runKnowledgeCommand(multi)).output.count > 0, '复数 spaces 仍生效')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('未知 op 返回 code=1 与 error 文案（不抛异常给调用方）', async () => {
   const { dir } = fixture()
   try {
