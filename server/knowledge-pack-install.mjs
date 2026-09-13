@@ -166,7 +166,18 @@ function validateEntries(entries) {
 function finishInspect(files, { expectId, appVersion, versions }) {
   const errors = []
   const warnings = []
-  const mf = files.find((f) => f.name === 'pack.json')
+  // 外层目录容错：导出物布局是 `<id>/pack.json`（spec §11.3 R1），而"包 = zip 根"也是常见形态。
+  // 两种都收——否则自家导出物装不回去（完成定义 #7 的 round-trip 直接破），用户下载的包也常带一层目录。
+  let list = files
+  if (!files.some((f) => f.name === 'pack.json')) {
+    const dirs = new Set(files.filter((f) => /^[^/]+\/pack\.json$/.test(f.name)).map((f) => f.name.split('/')[0]))
+    if (dirs.size === 1) {
+      const d = [...dirs][0]
+      list = files.filter((f) => f.name.startsWith(`${d}/`)).map((f) => ({ ...f, name: f.name.slice(d.length + 1) }))
+      warnings.push(`已忽略包外层目录「${d}/」（导出物/手工打包常见形态）`)
+    }
+  }
+  const mf = list.find((f) => f.name === 'pack.json')
   if (!mf) {
     errors.push('包根缺少 pack.json（知识包必须自述 id/name/version/license/source）')
     return { ok: false, errors, warnings, files: [], manifest: null }
@@ -182,7 +193,7 @@ function finishInspect(files, { expectId, appVersion, versions }) {
   if (!vr.ok) return { ok: false, errors, warnings, files: [], manifest: null }
 
   const prefix = `${vr.pack.source}/`
-  const payload = files.filter((f) => f.name.startsWith(prefix))
+  const payload = list.filter((f) => f.name.startsWith(prefix))
   if (!payload.length) {
     // 空间根为空 = 装完什么都搜不到，属"跳过"而非"成功"（第五态由 installPack 判）
     warnings.push(`pack.json 的 source「${vr.pack.source}」下没有文件`)
@@ -193,7 +204,7 @@ function finishInspect(files, { expectId, appVersion, versions }) {
     manifest: vr.pack,
     /** 版本兼容判定的结果（`current` / `fallback`），路由据此告诉前端"装的是回退版" */
     version: vr.version,
-    files,
+    files: list,
     payload,
     contentBytes: payload.reduce((n, f) => n + f.size, 0),
     docCount: payload.filter((f) => f.kind === 'doc').length,
@@ -304,7 +315,9 @@ export function installPack({
   const { manifest, payload } = ins
   const packId = manifest.id
   const spaceId = packSpaceId(packId)
-  const incoming = Object.fromEntries(payload.map((f) => [f.name.slice(manifest.source.length + 1), f.sha]))
+  // 指纹表覆盖**包目录内全部文件**（pack.json/README.md 也记）：只比 source 下的 payload
+  // 会漏掉"用户手改了 pack.json 的 version/name"这类改动，kernel 读的就是这个文件。
+  const incoming = Object.fromEntries(ins.files.map((f) => [f.name, f.sha]))
 
   if (!payload.length) {
     // 空包：装进用户目录只会多出一个搜不到东西的空间，属"跳过"（不落盘、无残留）
@@ -320,7 +333,9 @@ export function installPack({
     }
     try {
       withStaging(home, (staging) => {
-        materialize(payload, staging)
+        // 只落 **payload**（source 下的内容，前缀剥掉）：另存为的是"我的空间"，空间根 = 内容根；
+        // 把 pack.json/README.md 一起搬进去会让它们被 walkMd 当成空间文档（正文无关的元数据）
+        materialize(payload.map((f) => ({ ...f, name: f.name.slice(manifest.source.length + 1) })), staging)
         mkdirSync(dirname(destRoot), { recursive: true })
         renameSync(staging, destRoot)
       })
@@ -377,7 +392,9 @@ export function installPack({
 
   try {
     withStaging(home, (staging) => {
-      materialize(payload, staging)
+      // 落**全部**文件（pack.json/README.md/content/**）——pack.json 少一个字节，内核
+      // `discoverSpaces` 就读不到 name/version/source（空间名与只读挂载点都会退化成目录名）
+      materialize(ins.files, staging)
       renameSync(staging, target)
     })
   } catch (e) {
@@ -389,7 +406,7 @@ export function installPack({
   }
 
   const status = prev ? 'updated' : 'installed'
-  const files = Object.fromEntries(payload.map((f) => [`${packId}/${f.name.slice(manifest.source.length + 1)}`, f.sha]))
+  const files = Object.fromEntries(ins.files.map((f) => [`${packId}/${f.name}`, f.sha]))
   const entry = buildLedgerEntry({
     id: packId,
     version: ins.version?.version || manifest.version,
@@ -711,6 +728,12 @@ export function buildDownloadUrl({ registry = '', id = '', version = '', file = 
   const rel = file || `packs/${id}/${id}-${version}.zip`
   const sp = sanitizePackEntryPath(rel)
   if (!sp.ok) throw Object.assign(new Error(`下载路径不合法：${sp.error}`), { code: 'bad-path' })
+  // 显式拦"绝对 URL 形态"的 file：`sanitizePackEntryPath` 只看路径段，`https://evil/x` 里的
+  // `https:` 是个"看起来合法的路径段"，会被当相对路径拼到基址下——虽拼不出跨源（见下方断言），
+  // 但这属于把清单里的任意 URL 当输入，语义上必须直接拒。
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(sp.path)) {
+    throw Object.assign(new Error(`下载路径不得是绝对 URL：${file}`), { code: 'bad-path' })
+  }
   const url = new URL(`${baseUrl.pathname.replace(/[\/]+$/, '')}/${sp.path}`.replace(/\/{2,}/g, '/'), baseUrl.origin)
   if (url.origin !== baseUrl.origin) {
     throw Object.assign(new Error(`下载 URL 与 registry 不同源：${url.origin} ≠ ${baseUrl.origin}`), { code: 'registry-origin' })
