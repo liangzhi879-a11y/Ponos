@@ -16,6 +16,7 @@ import { SecondPanel } from './SecondPanel'
 import { AgentsPanel } from '@/components/agents/AgentsPanel'
 import { SkillsPanel } from '@/components/skills/SkillsPanel'
 import { WorkflowsPanel } from '@/components/workflows/WorkflowsPanel'
+import { AppsPanel } from '@/components/apps/AppsPanel'
 import { StatusBar } from './StatusBar'
 import { ChatWindow } from '@/components/chat/ChatWindow'
 import { ChatInput } from '@/components/chat/ChatInput'
@@ -176,11 +177,8 @@ export function WorkShell({ onGoCockpit }: WorkShellProps) {
           // Task 13：第五 rail —— 工作流列表 ⇄ 画布编辑器（占满 work 区，不经 SecondPanel）
           <WorkflowsPanel />
         ) : rail === 'apps' ? (
-          // Task 1.1：第六 rail「应用智控」最小占位——真实 AppsPanel（应用卡片列表 +
-          // 新增卡位）由 Task 1.6 建出后，把本 div 替换为 <AppsPanel />（import 同步补上）。
-          <div className="flex-1 flex items-center justify-center text-tertiary">
-            <p className="text-lg">{t('rail.apps')}</p>
-          </div>
+          // 第六 rail：应用智控（Task 1.6 卡片列表 + 新增；控制台在 AppsPanel 内部切换）
+          <AppsPanel />
         ) : (
           <>
         <SecondPanel />

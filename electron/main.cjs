@@ -47,6 +47,9 @@ const { listExperiences, setThemeActive, deleteThemeEntry, refreshIndex } = requ
 const { exportPackage, importPackage } = require('../server/packager.mjs')
 // 内置浏览器自动化执行器（窗口/CDP/快照/人工接管/下载）
 const { BrowserExecutor } = require('./browser-executor.cjs')
+// 应用智控（第六 rail「应用智控」）：app:* IPC 通道集中注册在 app-ipc.cjs，
+// 本文件只留这一行接线（11 条通道 + 目标分发逻辑集中一处才好审计）。
+const { registerAppHandlers } = require('./app-ipc.cjs')
 
 // ---------------------------------------------------------------------------
 // 应用内诊断（Task 2）：日志 tee 最早期接入——启动序列第一行日志即入盘。
@@ -1074,6 +1077,13 @@ async function registerIpc() {
     if (browserExecutor) browserExecutor.onControl('resume')
     return { ok: true }
   })
+
+  // ---------------------------------------------------------------------------
+  // 应用智控：列表/CRUD/Spec/控制台绑定/探测/执行（实现见 electron/app-ipc.cjs）。
+  // getExecutor 传**取值函数**而非实例：browserExecutor 在 connectBrowserExecutor
+  // 之后才存在，注册时可能还是 null（与上方 browser:* 通道同款处理）。
+  // ---------------------------------------------------------------------------
+  registerAppHandlers({ ipcMain, getExecutor: () => browserExecutor })
 
   // 编辑器窗口内关闭按钮 / 标签全关闭后的自动收起
   ipcMain.on('editor:close-window', () => {

@@ -1,0 +1,229 @@
+// Task 1.5~2.3 接线集成测试：用一个假 ipcMain 把 app:* 全部通道跑一遍
+//
+// 为什么需要它：单测各自覆盖了 profiler / runner / bindings，但"主进程注册层"的
+// 组装错误（roots 传错、driver 分发漏分支、留痕漏调用）只在集成层面暴露。
+// 这里不依赖 Electron：假 ipcMain 收下 handler 直接调用，数据根指向临时目录。
+process.env.PONOS_MOCK_API = '1'
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createRequire } from 'node:module'
+const require = createRequire(import.meta.url)
+
+const home = mkdtempSync(join(tmpdir(), 'appipc-'))
+process.env.YFWORKING_HOME = home
+delete process.env.CLAUDE_CONFIG_DIR
+
+const { registerAppHandlers } = require('../electron/app-ipc.cjs')
+
+/** 假 ipcMain：收集 handler，暴露 invoke 便于按渠道调用 */
+function fakeIpcMain() {
+  const handlers = new Map()
+  return {
+    handle: (ch, fn) => handlers.set(ch, fn),
+    invoke: (ch, ...args) => {
+      const fn = handlers.get(ch)
+      if (!fn) throw new Error(`未注册渠道：${ch}`)
+      return fn({}, ...args)
+    },
+    channels: () => [...handlers.keys()],
+  }
+}
+
+const fakeExecutor = (calls) => ({
+  exec: async (_s, act, params) => {
+    calls.push([act, params])
+    if (act === 'goto' && params.url === 'https://bad.example') return { ok: false, error: '页面打不开' }
+    return { ok: true, snapshot: { title: '示例站', url: params?.url, text: 'body' } }
+  },
+})
+
+const SPEC = {
+  specVersion: 1, appId: 'demo', name: '演示站',
+  driver: 'browser', target: { type: 'web', url: 'https://example.com' },
+  expose: { mode: 'console' },
+  commands: [
+    { action: 'query', title: '查单', kind: 'read',
+      params: [{ name: 'orderId', required: true }],
+      steps: [{ act: 'goto', url: '/o/${orderId}' }, { act: 'snapshot', save: 'result' }] },
+    { action: 'submit', title: '提交', kind: 'write', params: [], steps: [{ act: 'click', selector: '#ok' }] },
+  ],
+}
+
+test('app:* 11 条通道全部注册', () => {
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => fakeExecutor([]) })
+  assert.equal(ipc.channels().length, 11)
+})
+
+test('CRUD → Spec → 自检 全链路（数据落在 YFWORKING_HOME/apps）', async () => {
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => fakeExecutor([]) })
+
+  assert.deepEqual(await ipc.invoke('app:list'), [])
+  await ipc.invoke('app:upsert', { id: 'demo', name: '演示站', targetType: 'web', enabled: true })
+  const list = await ipc.invoke('app:list')
+  assert.equal(list.length, 1)
+  assert.ok(existsSync(join(home, 'apps', 'registry.json')))
+
+  await ipc.invoke('app:write-spec', { appId: 'demo', spec: SPEC })
+  assert.ok(existsSync(join(home, 'apps', 'demo', 'spec.json')))
+  const spec = await ipc.invoke('app:read-spec', 'demo')
+  assert.equal(spec.name, '演示站')
+
+  assert.equal((await ipc.invoke('app:check', 'demo')).status, 'healthy')
+})
+
+test('app:probe（web）真实走执行器并回传 driver/title', async () => {
+  const calls = []
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => fakeExecutor(calls) })
+  const r = await ipc.invoke('app:probe', { target: { type: 'web', url: 'https://example.com' } })
+  assert.equal(r.driver, 'browser')
+  assert.equal(r.reachable, true)
+  assert.equal(r.title, '示例站')
+  assert.deepEqual(calls.map((c) => c[0]), ['goto', 'snapshot'])
+})
+
+test('app:probe（web）不可达：ok=true 但 reachable=false 且带错误（不抛给渲染层）', async () => {
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => fakeExecutor([]) })
+  const r = await ipc.invoke('app:probe', { target: { type: 'web', url: 'https://bad.example' } })
+  assert.equal(r.ok, true)
+  assert.equal(r.reachable, false)
+  assert.ok(r.error.includes('打不开'))
+})
+
+test('app:probe 无执行器：明确报"未就绪"（不伪装成功）', async () => {
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => null })
+  const r = await ipc.invoke('app:probe', { target: { type: 'web', url: 'https://example.com' } })
+  assert.equal(r.reachable, false)
+  assert.ok(r.error.includes('未就绪'))
+})
+
+test('app:probe（desktop）目标无 CLI/脚本接口 → 降级 uia 且不报可达', async () => {
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => null })
+  // 造一个"看起来是可执行文件但其实跑不起来"的目标（空文件 + .exe 后缀）：
+  // process 探测会因为无法执行而失败，script 探测因同级目录无脚本目录而失败 → uia
+  const stubDir = mkdtempSync(join(tmpdir(), 'stub-'))
+  const stub = join(stubDir, 'nope.exe')
+  writeFileSync(stub, '', 'utf-8')
+  try {
+    const r = await ipc.invoke('app:probe', { target: { type: 'desktop', exePath: stub } })
+    assert.equal(r.driver, 'uia')
+    assert.equal(r.reachable, false, 'uia 后端未接入，不得报可达')
+  } finally { rmSync(stubDir, { recursive: true, force: true }) }
+})
+
+test('app:probe（desktop）目标自带 CLI → process（真实跑了一次 --help）', async () => {
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => null })
+  const r = await ipc.invoke('app:probe', { target: { type: 'desktop', exePath: process.execPath } })
+  assert.equal(r.driver, 'process')
+  assert.equal(r.reachable, true, 'process 层可直接执行，视为可达')
+  assert.ok(String(r.evidence?.help || '').length > 0, '应带回 --help 输出作为证据')
+})
+
+test('app:probe（desktop）系统目录目标被守卫拦下（不去拉系统进程）', async () => {
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => null })
+  const sysExe = process.platform === 'win32'
+    ? (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\cmd.exe'
+    : '/bin/sh'
+  const r = await ipc.invoke('app:probe', { target: { type: 'desktop', exePath: sysExe } })
+  assert.equal(r.driver, 'uia', '守卫拒绝后应降级而非报错')
+  assert.equal(r.reachable, false)
+})
+
+test('app:run（browser）执行 + 留痕；缺参不执行', async () => {
+  const calls = []
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => fakeExecutor(calls) })
+
+  const ok = await ipc.invoke('app:run', { appId: 'demo', action: 'query', args: { orderId: 'A1' }, sessionId: 's1' })
+  assert.equal(ok.ok, true)
+  assert.equal(ok.kind, 'read')
+  assert.equal(calls[0][1].url, '/o/A1')
+
+  const before = calls.length
+  const bad = await ipc.invoke('app:run', { appId: 'demo', action: 'query', args: {}, sessionId: 's1' })
+  assert.equal(bad.ok, false)
+  assert.equal(calls.length, before, '缺参不得发起任何浏览器动作')
+
+  const hist = join(home, 'apps', 'demo', 'history')
+  assert.ok(existsSync(hist), '执行必须留痕')
+})
+
+test('app:run（browser）无执行器 → 结构化错误', async () => {
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => null })
+  const r = await ipc.invoke('app:run', { appId: 'demo', action: 'query', args: { orderId: 'A1' }, sessionId: 's1' })
+  assert.equal(r.ok, false)
+  assert.ok(r.error.includes('未就绪'))
+})
+
+test('app:run（desktop, process 驱动）走 desktopRunner 并留痕', async () => {
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => fakeExecutor([]) })
+  // 造一个真实可执行目标：node 自身 + --version（cli 步骤跑真进程，验证端到端）
+  await ipc.invoke('app:write-spec', {
+    appId: 'cli-app',
+    spec: { specVersion: 1, appId: 'cli-app', name: 'CLI', driver: 'process',
+            target: { type: 'desktop', exePath: process.execPath },
+            expose: { mode: 'console' },
+            commands: [{ action: 'ver', kind: 'read', params: [], steps: [{ act: 'cli', argv: ['--version'], save: 'out' }] }] },
+  })
+  const r = await ipc.invoke('app:run', { appId: 'cli-app', action: 'ver', args: {}, sessionId: 's1' })
+  assert.equal(r.ok, true)
+  assert.ok(String(r.data).includes('v'), '应回传 node 版本')
+  assert.ok(existsSync(join(home, 'apps', 'cli-app', 'history')), 'desktop 执行同样留痕')
+})
+
+test('控制台绑定：进入/查询/离开 + 严格单开', async () => {
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => fakeExecutor([]) })
+  assert.equal(await ipc.invoke('app:console-bound', 's1'), null)
+  await ipc.invoke('app:console-enter', { sessionId: 's1', appId: 'demo' })
+  assert.equal(await ipc.invoke('app:console-bound', 's1'), 'demo')
+  await ipc.invoke('app:console-enter', { sessionId: 's1', appId: 'cli-app' })
+  assert.equal(await ipc.invoke('app:console-bound', 's1'), 'cli-app')
+  // 迟到的 A 离开事件不得清掉当前的 cli-app
+  await ipc.invoke('app:console-leave', { sessionId: 's1', appId: 'demo' })
+  assert.equal(await ipc.invoke('app:console-bound', 's1'), 'cli-app')
+  await ipc.invoke('app:console-leave', { sessionId: 's1', appId: 'cli-app' })
+  assert.equal(await ipc.invoke('app:console-bound', 's1'), null)
+})
+
+test('内核侧能读到完全相同的绑定文件（跨层口径一致）', async () => {
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => fakeExecutor([]) })
+  await ipc.invoke('app:console-enter', { sessionId: 'kernel-sid', appId: 'demo' })
+  const raw = JSON.parse(readFileSync(join(home, 'apps', 'binding.json'), 'utf-8'))
+  assert.equal(raw['kernel-sid'].appId, 'demo')
+})
+
+test('app:remove 删除条目（列表随之清空）', async () => {
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => fakeExecutor([]) })
+  await ipc.invoke('app:remove', 'cli-app')
+  const list = await ipc.invoke('app:list')
+  assert.ok(!list.some((a) => a.id === 'cli-app'))
+})
+
+test('app:check 对损坏 Spec → broken（不让用户进空壳控制台）', async () => {
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => fakeExecutor([]) })
+  writeFileSync(join(home, 'apps', 'demo', 'spec.json'), JSON.stringify({
+    specVersion: 1, appId: 'demo', name: '坏', driver: 'browser',
+    target: { type: 'web', url: 'not-a-url' }, commands: [],
+  }), 'utf-8')
+  const c = await ipc.invoke('app:check', 'demo')
+  assert.equal(c.status, 'broken')
+  assert.ok(c.issues.length >= 2)
+})
+
+test.after(() => { rmSync(home, { recursive: true, force: true }) })

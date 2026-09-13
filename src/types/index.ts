@@ -446,6 +446,109 @@ export interface ExperienceTheme {
 
 // --- Window API (Electron) ---
 
+// ===== 应用智控（第六 rail）类型：与 electron/app-registry.cjs / app-profiler.cjs 的
+// JSON 口径一一对应（spec.json 的字段名不可随意改——内核侧 kernel/app-spec.mjs 也读它）=====
+
+/** 目标类型：网站 / 桌面应用 */
+export type AppTargetType = 'web' | 'desktop'
+
+/** 驱动：浏览器自动化 / 目标自带 CLI / 目标脚本接口 / UI 自动化兜底 */
+export type AppDriver = 'browser' | 'process' | 'script' | 'uia'
+
+/** 注册表条目（$YFW_HOME/apps/registry.json 的一项） */
+export interface AppItem {
+  id: string
+  name: string
+  desc?: string
+  logo?: string
+  targetType: AppTargetType
+  enabled?: boolean
+}
+
+export interface AppTarget {
+  type: AppTargetType
+  url?: string
+  exePath?: string
+}
+
+/** 命令参数声明 */
+export interface AppSpecParam {
+  name: string
+  type?: string
+  required?: boolean
+  desc?: string
+}
+
+/** 执行步骤：act 与浏览器执行器动作同名（goto/click/type/select/scroll/js/wait/snapshot） */
+export interface AppSpecStep {
+  act: string
+  url?: string
+  selector?: string
+  ref?: string
+  value?: string
+  text?: string
+  key?: string
+  expression?: string
+  direction?: string
+  ms?: number
+  mode?: string
+  /** 桌面驱动专用 */
+  argv?: string[]
+  lang?: string
+  file?: string
+  code?: string
+  timeout?: number
+  /** 命中该步时把结果作为命令返回值 */
+  save?: string
+}
+
+export interface AppSpecCommand {
+  action: string
+  title?: string
+  /** read 只读；write 有副作用（内核侧受审批约束，控制台侧二次确认） */
+  kind: 'read' | 'write'
+  params?: AppSpecParam[]
+  steps: AppSpecStep[]
+  returns?: { type?: string; from?: string }
+}
+
+/** 应用规格（$YFW_HOME/apps/<appId>/spec.json） */
+export interface AppSpec {
+  specVersion: number
+  appId: string
+  name: string
+  driver?: AppDriver
+  target: AppTarget
+  expose?: { mode: 'private' | 'console' | 'public' }
+  commands: AppSpecCommand[]
+}
+
+/** 进入控制台前的自检结果 */
+export interface AppCheckResult {
+  status: 'healthy' | 'drifted' | 'broken'
+  issues: string[]
+}
+
+/** 探测结果 */
+export interface AppProbeResult {
+  ok: boolean
+  driver: AppDriver | null
+  evidence: unknown
+  reachable: boolean
+  title?: string | null
+  snapshot?: { url?: string | null; title?: string | null; text?: string; interactiveCount?: number } | null
+  error?: string
+}
+
+/** 命令执行结果 */
+export interface AppRunResult {
+  ok: boolean
+  data: unknown
+  error: string | null
+  kind: string
+  durationMs: number
+}
+
 export interface YFWAPI {
   setTrayBehavior: (enabled: boolean) => void
   notifyTaskComplete: (payload: { title: string; body: string; onlyBackground: boolean }) => Promise<{ shown: boolean }>
@@ -471,6 +574,30 @@ export interface YFWAPI {
   exportExperience: (opts: { included: string[]; sensitiveWords?: string[]; chatsJson?: string | null; projectCwd?: string | null; configRedact?: boolean; chatsFilter?: { conversationIds?: string[]; setId?: string } | null }) => Promise<{ ok: boolean; outPath?: string; skipped?: { type: string; reason: string }[]; error?: string; canceled?: boolean }>
   /** 个人经验：导入 zip（选择文件；取消返回 {ok:false, canceled:true}） */
   importExperience: (opts: { conflict: 'skip' | 'overwrite' | 'merge'; projectCwd?: string | null }) => Promise<{ ok: boolean; restored?: string[]; chatStoreJson?: string | null; chats?: { sets: ConversationSet[]; conversations: Conversation[] } | null; conflicts?: number; error?: string; canceled?: boolean }>
+
+  // ---- 应用智控（electron/app-ipc.cjs，11 条 app:* 通道）----
+  /** 应用清单（读 $YFW_HOME/apps/registry.json） */
+  appList: () => Promise<AppItem[]>
+  /** 新增或更新一个应用条目（按 id 覆盖） */
+  appUpsert: (app: AppItem) => Promise<AppItem>
+  /** 删除应用（连同其目录；主进程不做恢复） */
+  appRemove: (appId: string) => Promise<{ ok: boolean }>
+  /** 读取 App Spec（不存在返回 null） */
+  appReadSpec: (appId: string) => Promise<AppSpec | null>
+  /** 写入 App Spec（写前自动备份旧版到 versions/） */
+  appWriteSpec: (payload: { appId: string; spec: AppSpec }) => Promise<{ ok: boolean; path?: string }>
+  /** 进入应用控制台：把该应用绑定到当前内核会话（严格单开） */
+  appEnterConsole: (payload: { sessionId: string; appId: string }) => Promise<{ ok: boolean }>
+  /** 离开应用控制台：仅当当前绑定正是该 appId 时才解绑（防迟到事件误清） */
+  appLeaveConsole: (payload: { sessionId: string; appId: string }) => Promise<{ ok: boolean }>
+  /** 查询当前会话绑定的 appId（未绑定返回 null） */
+  appBound: (sessionId: string) => Promise<string | null>
+  /** 探测目标：判定 driver（browser/process/script/uia）并真实试连 */
+  appProbe: (payload: { target: AppTarget; sessionId?: string }) => Promise<AppProbeResult>
+  /** 进入控制台前的自检（Spec 结构 + 目标可达性） */
+  appCheck: (appId: string) => Promise<AppCheckResult>
+  /** 执行一条应用命令（read 直接跑；控制台的 write 由 UI 二次确认） */
+  appRun: (payload: { appId: string; action: string; args?: Record<string, unknown>; sessionId?: string }) => Promise<AppRunResult>
 }
 
 /** File dialogs (skill install) — exposed by preload as `yfworkingFile` */
