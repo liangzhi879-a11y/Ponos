@@ -1277,14 +1277,48 @@ function isCacheRejection(err) {
 // 思考深度 → 请求体字段（对齐 Claude Code 档位 + DeepSeek Anthropic 兼容端点：
 // 深度走 reasoning_effort（low/high/max），关闭走 thinking:disabled；两者不并发生
 // 发，避免 DeepSeek #1397 的 400）。auto/未知 → {}（模型原生自适应，不注入）。
-export function effortParam(effort) {
-  if (effort === 'off') return { thinking: { type: 'disabled' } }
+//
+// **优先级是显式的，且经实测确定（Task 11 探针，2026-09-13，n=8/臂/题）**：
+//   ① 策略关思考（thinkingMode==='off'）或用户 off 档 → thinking:{type:'disabled'}
+//      —— 唯一被实测证明能压掉思考量的手段：中位墙钟 3.1× / 1.5×，且 16/16 全对
+//   ② provider 开了思考模式（CLAUDE_CODE_THINKING_ENABLED=1）→ thinking:{enabled,budget}
+//      —— 唯一真正控制思考量的旋钮（MiniMax 等不显式开启则思考完全不可见）
+//   ③ 其余档位 → reasoning_effort
+// 关键实测（决定了②必须排在③之前，而不是"两害相权"）：在本端点 `reasoning_effort`
+// **不控思考量**——low/high/max 两轮采样方向相反（low 545/710 vs max 594/423 字符），
+// 且同设置内跑次间方差极大（budget4096 一次跑到 2987 字符，另一次 279，=10.7×）。
+// 故"两个旋钮都不发"和"发 reasoning_effort"在效果上无法区分，二选一只为避免 400。
+//
+// thinkingMode 由**策略层**（engine 的阶段判断）传入：'off' = 本步强制关思考；
+// 其余值（含 null）一律视为"不干预"，保持上面的既有行为——这样策略永不启用时本函数
+// 的行为与 2026-09-13 之前逐字节相同。
+// 「用户显式档位被 provider 的思考开关吃掉」的提示文案（纯函数 ⇒ 可整表单测，
+// 不受"每进程只提示一次"这个模块级状态影响）。null = 没有话要说。
+export function effortDroppedNotice(effort, { thinkingEnabled = false, budget = 4096 } = {}) {
+  if (!thinkingEnabled) return null
+  if (effort !== 'low' && effort !== 'high' && effort !== 'max') return null // auto/未知本就不注入，不算"被吃掉"
+  return `[api] effort=${effort} 未随请求发出：该 provider 走 thinking 开关`
+    + `（实发 thinking:{enabled,budget_tokens:${budget}}）。实测本端点 reasoning_effort 不控思考量；`
+    + `要真正降思考请用 off 档或 PONOS_EFFORT_POLICY（见 docs/superpowers/specs 2026-09-13 §6）`
+}
+
+let effortDiagDone = false
+export function effortParam(effort, thinkingMode = null) {
+  if (thinkingMode === 'off' || effort === 'off') return { thinking: { type: 'disabled' } }
   // provider 思考模式（2026-09-10）：MiniMax 等不认 reasoning_effort 的云端，
   // 显式 thinking:enabled+budget 后流内才有 thinking_delta（实测无参数时思考
   // 完全不可见——思考混进 text_delta 或整段隐藏）。auto 档位走本分支。
   if (process.env.CLAUDE_CODE_THINKING_ENABLED === '1') {
     const budget = Number(process.env.CLAUDE_CODE_THINKING_BUDGET || 4096)
     const n = Number.isFinite(budget) && budget > 0 ? Math.floor(budget) : 4096
+    // 诊断不降级：旧实现对此**完全静默**——用户在设置面板把档位从 low 拉到 max，
+    // 线上请求一字未变却无从察觉。落一行（每进程一次）到内核 stderr，可经
+    // kernel-stderr.log 追查。文案由纯函数给，这里只管"只说一次"。
+    const notice = effortDroppedNotice(effort, { thinkingEnabled: true, budget: n })
+    if (notice && !effortDiagDone) {
+      effortDiagDone = true
+      try { console.error(notice) } catch { /* 日志失败不影响请求 */ }
+    }
     return { thinking: { type: 'enabled', budget_tokens: n } }
   }
   if (effort === 'low' || effort === 'high' || effort === 'max') return { reasoning_effort: effort }
@@ -1302,7 +1336,7 @@ function isEffortRejection(err) {
 // prompt cache 显式化：PONOS_PROMPT_CACHE=1 且 system 非空时，system 改数组形态并
 // 打 ephemeral 缓存标记（Anthropic 官方端点依赖显式标记命中缓存；DeepSeek 兼容
 // 端点自动缓存，显式标记无害）。端点拒绝该字段时自动去掉标记重发一次（兼容兜底）。
-async function* anthropicStream({ model, messages, system, tools, maxTokens, signal, reasoningEffort = null }) {
+async function* anthropicStream({ model, messages, system, tools, maxTokens, signal, reasoningEffort = null, thinkingMode = null }) {
   // P4-5：注册表解析（setProvider 激活后固定；未激活 getProvider 现读 env，行为不变）
   const p = getProvider()
   const base = p.baseUrl
@@ -1324,7 +1358,7 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
     max_tokens: maxTokens,
     ...(Number.isFinite(temperature) ? { temperature } : {}),
     ...(seedEnv ? { seed: Number(seedEnv) } : {}),
-    ...effortParam(reasoningEffort),
+    ...effortParam(reasoningEffort, thinkingMode),
     ...(system ? (useCache ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] } : { system }) : {}),
     messages,
     stream: true,
@@ -1442,7 +1476,7 @@ function withIdleTimeout(promise, ms) {
 }
 
 // 消息流入口：mock / 真实 Anthropic 协议分流。tools = 中立 [{name, description, input_schema}]
-export async function* streamMessages({ model, messages, maxTokens, signal, tools = [], reasoningEffort = null }) {
+export async function* streamMessages({ model, messages, maxTokens, signal, tools = [], reasoningEffort = null, thinkingMode = null }) {
   const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n')
   const rest = messages.filter((m) => m.role !== 'system')
   if (process.env.PONOS_MOCK_API === '1') {
@@ -1450,5 +1484,5 @@ export async function* streamMessages({ model, messages, maxTokens, signal, tool
     return
   }
   if (!detectProtocol()) throw new Error('内核：未检测到可用协议（需 ANTHROPIC_BASE_URL）')
-  yield* anthropicStream({ model, messages: rest, system, tools, maxTokens, signal, reasoningEffort })
+  yield* anthropicStream({ model, messages: rest, system, tools, maxTokens, signal, reasoningEffort, thinkingMode })
 }
