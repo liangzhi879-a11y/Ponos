@@ -2,10 +2,11 @@
 // 纪律：不起 bridge、不起内核子进程（本仓库有"测试起桥误杀运行中应用"的前车之鉴）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { handleKnowledgeRoute, safeRelPath } from './knowledge-routes.mjs'
+import { writeZip } from '../shared/pack-zip.mjs'
 
 function ctx({ method = 'GET', url = '/knowledge/spaces', body = null, callKernel } = {}) {
   const u = new URL(`http://x${url}`)
@@ -207,4 +208,218 @@ test('POST /knowledge/doc 接受 `space` 字段（与 GET 路由的 ?space= 命�
     assert.equal(res.status, 200, `${JSON.stringify(field)} 应被接受`)
   }
   assert.equal(writes.length, 2, '两次写入都应触发增量更新')
+})
+
+// ── S4 Task 4：知识包生态路由（市场/详情/安装/卸载/导出）─────────────────────
+// 纪律同前：**注入 home（临时目录）+ 假 fetcher**，不起 bridge、不真联网。
+// 前 210 行是 S1/S2/S3 的既有用例，它们**不注入** home/fetcher —— 那批必须继续全绿，
+// 这才是"既有路由行为不变"的守卫（新注入点只被 /knowledge/packs* 消费）。
+
+function packsCtx({ method = 'GET', url = '/knowledge/packs', body = null, home, fetcher, config, appVersion, callKernel } = {}) {
+  const u = new URL(`http://x${url}`)
+  return {
+    method, pathname: u.pathname, searchParams: u.searchParams,
+    readJsonBody: async () => body,
+    callKernel: callKernel || (async () => '{}'),
+    home,   // 必须注入：缺省是真实 resolveYfwHome()，测试绝不碰真实 home
+    fetcher, config, appVersion,
+  }
+}
+
+const packZipBuf = (id = 'gaoqi-2026', version = '1.0.0', extra = {}) => writeZip([
+  { name: 'pack.json', data: JSON.stringify({ id, name: '高企包', version, license: 'MIT', source: 'content', ...extra }) },
+  { name: 'README.md', data: '# 读我\n' },
+  { name: 'content/a.md', data: '# 研发费用占比\n' },
+])
+
+function fakeFetch(routes) {
+  const calls = []
+  const fn = async (url) => {
+    calls.push(String(url))
+    const hit = routes[String(url)]
+    if (hit === undefined) return new Response('nope', { status: 404 })
+    if (hit instanceof Uint8Array) return new Response(hit, { status: 200 })
+    return new Response(typeof hit === 'string' ? hit : JSON.stringify(hit), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  fn.calls = calls
+  return fn
+}
+
+test('GET /knowledge/packs：清单不可用仍返回已装列表（离线可用）+ 在线安装缺清单 → 502', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'ponos-kr-packs-'))
+  try {
+    let r = await handleKnowledgeRoute(packsCtx({ home, fetcher: fakeFetch({}) }))
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual(r.body.packs, [])
+    assert.ok(r.body.indexError, '清单拉不到要显式告知（市场仍可本地安装）')
+    // 没有本地清单时 source='remote'（尝试过远程并失败）；失败原因在 indexError 里
+    assert.equal(r.body.source, 'remote')
+
+    r = await handleKnowledgeRoute(packsCtx({
+      method: 'POST', url: '/knowledge/packs/install', home, fetcher: fakeFetch({}), body: { id: 'gaoqi-2026' },
+    }))
+    assert.equal(r.status, 502, '在线安装但清单不可用 → 502（不是 500：上游不可用）')
+
+    const zipPath = join(home, 'p.zip')
+    writeFileSync(zipPath, packZipBuf())
+    r = await handleKnowledgeRoute(packsCtx({
+      method: 'POST', url: '/knowledge/packs/install', home, fetcher: fakeFetch({}), body: { localPath: zipPath },
+    }))
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.equal(r.body.status, 'installed')
+
+    r = await handleKnowledgeRoute(packsCtx({ home, fetcher: fakeFetch({}) }))
+    assert.deepEqual(r.body.packs.map((p) => p.id), ['gaoqi-2026'])
+    assert.equal(r.body.packs[0].onDisk, true)
+    assert.equal(r.body.packs[0].installedVersion, '1.0.0')
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('GET /knowledge/packs：清单条目 + 已装 → installedVersion / updateAvailable', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'ponos-kr-packs2-'))
+  try {
+    const zipPath = join(home, 'p.zip')
+    writeFileSync(zipPath, packZipBuf('gaoqi-2026', '1.0.0'))
+    await handleKnowledgeRoute(packsCtx({ method: 'POST', url: '/knowledge/packs/install', home, fetcher: fakeFetch({}), body: { localPath: zipPath } }))
+
+    const reg = 'https://registry.invalid/kp'
+    const fetcher = fakeFetch({ [`${reg}/index.json`]: { packs: [{ id: 'gaoqi-2026', name: '高企包', version: '1.2.0', tags: ['政策'] }, { id: 'other-pack', name: '别的', version: '0.1.0' }] } })
+    const r = await handleKnowledgeRoute(packsCtx({ home, fetcher, config: { knowledgePackRegistry: reg } }))
+    assert.equal(r.status, 200)
+    assert.equal(r.body.source, 'remote')
+    assert.equal(r.body.registryOrigin, 'config')
+    const mine = r.body.packs.find((p) => p.id === 'gaoqi-2026')
+    assert.equal(mine.installedVersion, '1.0.0')
+    assert.equal(mine.updateAvailable, true)
+    assert.equal(r.body.packs.find((p) => p.id === 'other-pack').onDisk, false)
+    assert.equal(r.body.packs.find((p) => p.id === 'other-pack').updateAvailable, false)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('POST /knowledge/packs/install：本地 zip 安装 / kept-user-modified(403) / overwrite / 卸载', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'ponos-kr-packs3-'))
+  try {
+    const zip = join(home, 'p.zip')
+    writeFileSync(zip, packZipBuf())
+    let r = await handleKnowledgeRoute(packsCtx({ method: 'POST', url: '/knowledge/packs/install', home, fetcher: fakeFetch({}), body: { localPath: zip } }))
+    assert.equal(r.status, 200)
+    assert.equal(r.body.spaceId, 'pack-gaoqi-2026')
+
+    // 用户改过包内文件 → 403（未写盘），错误码供前端弹三选
+    writeFileSync(join(home, 'knowledge', 'packs', 'gaoqi-2026', 'content', 'a.md'), '# 我改的\n')
+    writeFileSync(zip, packZipBuf('gaoqi-2026', '1.1.0'))
+    r = await handleKnowledgeRoute(packsCtx({ method: 'POST', url: '/knowledge/packs/install', home, fetcher: fakeFetch({}), body: { localPath: zip } }))
+    assert.equal(r.status, 403)
+    assert.equal(r.body.error, 'kept-user-modified')
+    assert.deepEqual(r.body.conflicts, ['content/a.md'])
+    assert.equal(readFileSync(join(home, 'knowledge', 'packs', 'gaoqi-2026', 'content', 'a.md'), 'utf-8'), '# 我改的\n', '冲突态不写盘')
+
+    r = await handleKnowledgeRoute(packsCtx({ method: 'POST', url: '/knowledge/packs/install', home, fetcher: fakeFetch({}), body: { localPath: zip, mode: 'overwrite' } }))
+    assert.equal(r.status, 200)
+    assert.equal(r.body.status, 'updated')
+
+    // 参数校验：路径不存在 / 非 zip
+    r = await handleKnowledgeRoute(packsCtx({ method: 'POST', url: '/knowledge/packs/install', home, fetcher: fakeFetch({}), body: { localPath: join(home, 'nope.zip') } }))
+    assert.equal(r.status, 400)
+    writeFileSync(join(home, 'a.md'), '# a\n')
+    r = await handleKnowledgeRoute(packsCtx({ method: 'POST', url: '/knowledge/packs/install', home, fetcher: fakeFetch({}), body: { localPath: join(home, 'a.md') } }))
+    assert.equal(r.status, 400)
+
+    // 卸载
+    r = await handleKnowledgeRoute(packsCtx({ method: 'POST', url: '/knowledge/packs/uninstall', home, fetcher: fakeFetch({}), body: { id: 'gaoqi-2026' } }))
+    assert.equal(r.status, 200)
+    assert.equal(r.body.removedCount, 3)
+    r = await handleKnowledgeRoute(packsCtx({ method: 'POST', url: '/knowledge/packs/uninstall', home, fetcher: fakeFetch({}), body: { id: '../x' } }))
+    assert.equal(r.status, 400)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('POST /knowledge/packs/install：恶意 zip（条目名含 ../）→ 400 且不留残留', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'ponos-kr-packs4-'))
+  try {
+    const zip = join(home, 'evil.zip')
+    // `writeZip` 自己会净化条目名，造不出 `../`——故在合法包的字节里把名字等长替换成 `../`，
+    // 模拟"用户从网上抓到的恶意包"。本地头与中央目录两处都要改（否则 CRC 校验先拦，测不到穿越）。
+    const buf = packZipBuf('evil-pack', '1.0.0')
+    const from = Buffer.from('content/a.md', 'utf-8')
+    const to = Buffer.from('../////a.md', 'utf-8')   // 12 字节，等长
+    let idx = 0
+    let hits = 0
+    while ((idx = buf.indexOf(from, idx)) >= 0) { to.copy(buf, idx); hits += 1; idx += from.length }
+    assert.ok(hits >= 2, '本地头与中央目录都要改')
+    writeFileSync(zip, buf)
+
+    const r = await handleKnowledgeRoute(packsCtx({ method: 'POST', url: '/knowledge/packs/install', home, fetcher: fakeFetch({}), body: { localPath: zip } }))
+    assert.equal(r.status, 400)
+    assert.ok(r.body.errors.some((e) => e.includes('上跳路径段')), JSON.stringify(r.body.errors))
+    assert.equal(existsSync(join(home, 'knowledge', 'packs', 'evil-pack')), false)
+    const leftovers = existsSync(join(home, 'knowledge')) ? readdirSync(join(home, 'knowledge')).filter((n) => n.startsWith('.packs-staging-')) : []
+    assert.deepEqual(leftovers, [], 'staging 必须清理干净')
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('GET /knowledge/packs/detail：详情 / 版本不兼容 409 / 非法 id 400 / 未知 id 404', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'ponos-kr-packs5-'))
+  try {
+    const reg = 'https://registry.invalid/kp'
+    const fetcher = fakeFetch({
+      [`${reg}/index.json`]: { packs: [{ id: 'ok-pack', version: '1.0.0' }, { id: 'new-app', version: '2.0.0' }] },
+      [`${reg}/packs/ok-pack/pack.json`]: { id: 'ok-pack', name: '好包', version: '1.0.0', license: 'MIT', source: 'content' },
+      [`${reg}/packs/new-app/pack.json`]: { id: 'new-app', name: '新包', version: '2.0.0', license: 'MIT', source: 'content', minAppVersion: '9.0.0' },
+    })
+    const base = { home, fetcher, config: { knowledgePackRegistry: reg }, appVersion: '3.0.0' }
+    let r = await handleKnowledgeRoute(packsCtx({ ...base, url: '/knowledge/packs/detail?id=ok-pack' }))
+    assert.equal(r.status, 200)
+    assert.equal(r.body.pack.id, 'ok-pack')
+    assert.equal(r.body.installed, null)
+
+    r = await handleKnowledgeRoute(packsCtx({ ...base, url: '/knowledge/packs/detail?id=new-app' }))
+    assert.equal(r.status, 409, '版本不兼容且无回退 → 409（可换版本/需升级，不是坏包）')
+    assert.equal(r.body.code, 'needs-higher-app')
+
+    assert.equal((await handleKnowledgeRoute(packsCtx({ ...base, url: '/knowledge/packs/detail?id=../etc' }))).status, 400)
+    assert.equal((await handleKnowledgeRoute(packsCtx({ ...base, url: '/knowledge/packs/detail?id=ghost' }))).status, 404)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('POST /knowledge/packs/export：只允许可写空间（只读包空间 403），产出 zip + 清单片段', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'ponos-kr-packs6-'))
+  const spaceRoot = mkdtempSync(join(tmpdir(), 'ponos-kr-space-'))
+  try {
+    writeFileSync(join(spaceRoot, 'a.md'), '# 政策\n')
+    const callKernel = fakeKernel({ spaces: { spaces: [
+      { id: 'my-space', root: spaceRoot, writable: true, source: 'user' },
+      { id: 'pack-x', root: spaceRoot, writable: false, source: 'pack' },
+    ] } })
+    let r = await handleKnowledgeRoute(packsCtx({
+      method: 'POST', url: '/knowledge/packs/export', home, fetcher: fakeFetch({}), callKernel,
+      body: { spaceId: 'my-space', id: 'my-space-pack', version: '1.0.0', license: 'MIT', author: '张三' },
+    }))
+    assert.equal(r.status, 200)
+    assert.equal(r.body.ok, true)
+    assert.equal(existsSync(r.body.zipPath), true)
+    assert.equal(r.body.packJson.source, 'content')
+    assert.equal(r.body.manifestEntry.id, 'my-space-pack')
+
+    r = await handleKnowledgeRoute(packsCtx({
+      method: 'POST', url: '/knowledge/packs/export', home, fetcher: fakeFetch({}), callKernel,
+      body: { spaceId: 'pack-x', id: 'x', version: '1.0.0', license: 'MIT' },
+    }))
+    assert.equal(r.status, 403, '只读包空间不能导出')
+
+    r = await handleKnowledgeRoute(packsCtx({
+      method: 'POST', url: '/knowledge/packs/export', home, fetcher: fakeFetch({}), callKernel,
+      body: { spaceId: 'ghost', id: 'x', version: '1.0.0', license: 'MIT' },
+    }))
+    assert.equal(r.status, 404)
+
+    r = await handleKnowledgeRoute(packsCtx({
+      method: 'POST', url: '/knowledge/packs/export', home, fetcher: fakeFetch({}), callKernel,
+      body: { spaceId: 'my-space', id: 'my-space-pack2', version: '1.0.0' },
+    }))
+    assert.equal(r.status, 400, '缺 license → 400')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(spaceRoot, { recursive: true, force: true })
+  }
 })

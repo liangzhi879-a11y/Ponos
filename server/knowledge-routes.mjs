@@ -8,12 +8,20 @@
 // 契约与 server/logs-routes.mjs 一致：命中返回 { status, body }，未命中返回 null。
 // `callKernel` 可注入（默认 server/kernel-readonly.mjs 的 kernelReadonly）——测试用假实现，
 // 绝不起 bridge、不起真实内核子进程。
-import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
-import { dirname, resolve, sep } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve, sep } from 'node:path'
 import { kernelReadonly } from './kernel-readonly.mjs'
+import { resolveYfwHome } from './yfw-home.cjs'
+import { PACK_ID_RE, compareSemver } from '../shared/knowledge-pack.mjs'
+import {
+  installPack, uninstallPack, listInstalledPacks, exportSpaceAsPack, readIndex, fetchPackDetail,
+  fetchPackArchive, resolveRegistry, packsRoot,
+} from './knowledge-pack-install.mjs'
 
 // 单文档体积上限（2MB）：超过即拒，防一次 HTTP 写入把索引/内存打爆
 const MAX_DOC_BYTES = 2 * 1024 * 1024
+/** 离线 zip 上传上限：与包总解压上限同值（超过连读都别读，先拒） */
+const MAX_PACK_ZIP_BYTES = 50 * 1024 * 1024
 
 /** 路径净化：只允许"空间根内的相对 .md 路径"。这是穿越防护的第一、二道。 */
 export function safeRelPath(rel) {
@@ -88,13 +96,187 @@ async function handleWriteDoc({ readJsonBody, callKernel }) {
   return ok({ ok: true, docId, updated: upd.value?.updated ?? false })
 }
 
+// ── 知识包生态（S4 Task 4）───────────────────────────────────────────────────
+// 全部是新路径（`/knowledge/packs*`），既有读路由的响应逐字节不变。这一层只做
+// 「参数校验 + 调 Task 3 引擎 + 折成状态码」，判定规则/安全防护一律在 server/knowledge-pack-install.mjs
+// 与 shared/knowledge-pack.mjs —— 路由层复制一份判定必然漂移。
+
+/**
+ * 应用版本（版本兼容判定用）。**为什么不是根 `version.mjs` 的 APP_VERSION**：该文件不在
+ * `electron-builder.yml` 的 files 里（只收 dist/electron/server/shared/public/package.json），
+ * server 侧 import 它在打包后就是 import 失败。`package.json.version` 是打包唯一可见的版本源，
+ * 且与 APP_VERSION 由 `scripts/bump-version.mjs` 同步。
+ */
+function defaultAppVersion() {
+  if (process.env.PONOS_APP_VERSION) return process.env.PONOS_APP_VERSION
+  try {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8'))
+    return pkg?.version ? `dev ${pkg.version}` : ''
+  } catch { return '' }
+}
+
+/** `config` 允许是对象或懒取函数（函数形态让 bridge 不在每个请求上都读 config.json） */
+const cfgOf = (config) => (typeof config === 'function' ? (config() || {}) : (config || {}))
+
+/** 已装台账 vs 清单条目：`updateAvailable` 用 semver 比（清单版本更高才算"可更新"） */
+function mergeInstalled(item, inst) {
+  return {
+    ...item,
+    installedVersion: inst?.version || '',
+    onDisk: !!inst,
+    updateAvailable: !!(inst && item.version && compareSemver(item.version, inst.version) === 1),
+  }
+}
+
+/** 市场列表：清单 ∪ 已装（安装失败/离线装过的包也必须列出来，否则用户看不到自己装了什么） */
+async function packsList({ home, fetcher, config, appVersion }) {
+  const reg = resolveRegistry({ home, config: cfgOf(config) })
+  const idx = await readIndex({ home, fetcher, registry: reg.registry })
+  const installed = listInstalledPacks(home)
+  const seen = new Set()
+  const packs = idx.packs.map((item) => { seen.add(item.id); return mergeInstalled(item, installed.find((i) => i.id === item.id)) })
+  for (const inst of installed) {
+    if (seen.has(inst.id)) continue
+    packs.push(mergeInstalled({ id: inst.id, name: inst.name, description: '', author: '', repo: '', version: inst.version, tags: [], docCount: 0, sizeBytes: 0, official: false }, inst))
+  }
+  return ok({
+    ok: true,
+    // 清单拉不到（断网/内网）**不是**请求失败：市场仍要能展示已装列表与"从本地文件安装"
+    source: idx.source, registry: reg.registry, registryOrigin: reg.origin, hasLocalIndex: reg.hasLocalIndex,
+    updatedAt: idx.updatedAt || null, indexError: idx.ok ? null : idx.error,
+    warnings: idx.warnings || [], appVersion: appVersion || defaultAppVersion(), packs,
+  })
+}
+
+/** 包详情：pack.json + README + 版本兼容判定（离线已装的包也能看：localPath 回落本地目录） */
+async function packsDetail({ home, fetcher, config, appVersion, id }) {
+  const reg = resolveRegistry({ home, config: cfgOf(config) })
+  const idx = await readIndex({ home, fetcher, registry: reg.registry })
+  const item = idx.packs.find((p) => p.id === id) || null
+  const inst = listInstalledPacks(home).find((p) => p.id === id) || null
+  if (!item && !inst) {
+    return { status: 404, body: { error: `清单中找不到知识包「${id}」`, errors: [idx.error || '未在清单中找到该 id'] } }
+  }
+  const localPath = item?.localPath || (inst ? join(packsRoot(home), id) : null)
+  const d = await fetchPackDetail({ fetcher, registry: reg.registry, id, appVersion, localPath })
+  if (!d.ok) {
+    // 版本不兼容（可换版本/需升级应用）≠ 坏包：409 vs 400/502
+    const status = d.code === 'needs-higher-app' ? 409 : (d.code === 'invalid-manifest' ? 400 : 502)
+    return { status, body: { error: d.error, errors: d.errors || [d.error], code: d.code || 'fetch-failed', version: d.version || null } }
+  }
+  const installed = inst ? { version: inst.version, files: inst.files, onDisk: inst.onDisk, source: inst.source } : null
+  return ok({
+    ok: true, pack: d.pack, readme: d.readme, versions: d.versions, version: d.version,
+    warnings: d.warnings || [], installed,
+    updateAvailable: !!(inst && d.pack.version && compareSemver(d.pack.version, inst.version) === 1),
+    registry: reg.registry, registryOrigin: reg.origin, source: idx.source,
+  })
+}
+
+/** 安装结果 → HTTP 状态码（人类可读的 errors 一律带上，UI 直接显示） */
+function packResultToHttp(r) {
+  if (r.status === 'installed' || r.status === 'updated' || r.status === 'unchanged' || r.status === 'to-my-space') {
+    return ok({ ok: true, ...r })
+  }
+  const errors = r.errors || []
+  if (r.status === 'kept-user-modified') {
+    // 403：用户改过包内文件，未指定 mode 前**一个字节都没写**，前端据此弹三选
+    return { status: 403, body: { ok: false, error: 'kept-user-modified', ...r } }
+  }
+  const tooLarge = errors.some((e) => /超过(单文件)?上限|声明解压尺寸|超过上限/.test(e))
+  const needsHigherApp = errors.some((e) => e.includes('需要应用版本'))
+  if (r.status === 'skipped-empty') return { status: 400, body: { ok: false, error: 'skipped-empty', ...r } }
+  return { status: needsHigherApp ? 409 : (tooLarge ? 413 : 400), body: { ok: false, error: errors[0] || 'install rejected', ...r } }
+}
+
+/** 安装：`localPath`（离线 zip/目录）优先；否则按 id(+version) 从 registry 下载 */
+async function packsInstall({ home, fetcher, config, appVersion, readJsonBody }) {
+  const body = (await readJsonBody()) || {}
+  const mode = String(body.mode || 'safe')
+  const wantId = String(body.id || '')
+  const localPath = body.localPath ? String(body.localPath) : ''
+  const av = appVersion || defaultAppVersion()
+  let archiveBuffer = null
+  let srcDir = null
+  let source = 'offline'
+  let expectId = wantId || null
+
+  if (localPath) {
+    // localPath 是用户本机路径（Electron 对话框选的），但仍按**不可信输入**处理：
+    // 内容一律走完整校验；这里只做"存在/形态/大小"三道便宜的前置检查。
+    if (!existsSync(localPath)) return { status: 400, body: { error: `本地路径不存在：${localPath}` } }
+    let st
+    try { st = statSync(localPath) } catch (e) { return { status: 400, body: { error: `本地路径不可读：${e?.message || e}` } } }
+    if (st.isDirectory()) {
+      srcDir = localPath
+    } else {
+      if (!/\.zip$/i.test(localPath)) return { status: 400, body: { error: '仅支持 .zip 文件或目录' } }
+      if (st.size > MAX_PACK_ZIP_BYTES) return { status: 413, body: { error: `zip 体积 ${st.size} 字节，超过上限 ${MAX_PACK_ZIP_BYTES}` } }
+      archiveBuffer = readFileSync(localPath)
+    }
+  } else {
+    if (!PACK_ID_RE.test(wantId)) return { status: 400, body: { error: `包 id 不合法：${wantId || '(空)'}` } }
+    const reg = resolveRegistry({ home, config: cfgOf(config) })
+    const idx = await readIndex({ home, fetcher, registry: reg.registry })
+    const item = idx.packs.find((p) => p.id === wantId) || null
+    if (!item) {
+      return idx.ok
+        ? { status: 404, body: { error: `清单中找不到知识包「${wantId}」` } }
+        : { status: 502, body: { error: `清单不可用，无法在线安装：${idx.error}` } }
+    }
+    const version = String(body.version || item.version || '')
+    if (!version) return { status: 400, body: { error: '缺少版本号（清单条目无 version，请求也未指定）' } }
+    const dl = await fetchPackArchive({ fetcher, registry: reg.registry, id: wantId, version })
+    if (!dl.ok) return { status: dl.tooLarge ? 413 : 502, body: { error: dl.error, url: dl.url || null } }
+    archiveBuffer = dl.buffer
+    source = 'registry'
+  }
+
+  const r = installPack({ home, archiveBuffer, srcDir, source, mode, appVersion: av, expectId })
+  return packResultToHttp(r)
+}
+
+/** 卸载：只删 `packs/<id>` + 清台账（不碰用户空间/备份，见 Task 3） */
+async function packsUninstall({ home, readJsonBody }) {
+  const body = (await readJsonBody()) || {}
+  const id = String(body.id || '')
+  if (!PACK_ID_RE.test(id)) return { status: 400, body: { error: `包 id 不合法：${id || '(空)'}` } }
+  const r = uninstallPack({ home, packId: id })
+  if (!r.ok) return { status: 400, body: { error: r.error } }
+  return ok({ ok: true, ...r })
+}
+
+/** 导出：**只允许可写空间**（只读的包空间导出无意义：它本身就是别人的包，再导一次只会混淆来源） */
+async function packsExport({ home, readJsonBody, callKernel }) {
+  const body = (await readJsonBody()) || {}
+  const spaceId = String(body.spaceId || '')
+  if (!spaceId) return { status: 400, body: { error: '缺少 spaceId' } }
+  const sres = await callJson(callKernel, ['--knowledge', 'spaces'])
+  const space = (sres.value?.spaces || []).find((s) => s.id === spaceId)
+  if (!space) return { status: 404, body: { error: 'space not found' } }
+  if (!space.writable) return { status: 403, body: { error: 'space is read-only（只读包空间不能导出）' } }
+  const r = exportSpaceAsPack({ home, spaceId, spaceRoot: space.root, meta: body })
+  if (!r.ok) return { status: 400, body: { error: r.errors.join('；'), errors: r.errors } }
+  return ok({ ok: true, ...r })
+}
+
 /**
  * 路由入口。`callKernel` 可注入（测试用假实现，避免起进程）。
  * 返回 { status, body } 或 null（未命中，交后续路由）。
+ *
+ * S4 Task 4 新增可选参（**只被 `/knowledge/packs*` 消费，既有路由行为逐字节不变**）：
+ *   · `home`     —— 数据目录（缺省 `resolveYfwHome()`）。缺省值让生产链路零配置；
+ *                   测试注入 `mkdtempSync` 目录，绝不碰真实 `~/.yfworking`。
+ *   · `fetcher`  —— 网络出口（缺省 `globalThis.fetch`）。**测试注入假 fetcher**，绝不真联网。
+ *   · `config`   —— `config.json` 内容或取它的函数（缺省 `{}`；函数形态让 bridge 能懒读，
+ *                   不在高频读路由上白白多一次文件 IO）。
+ *   · `appVersion` —— 当前应用版本（版本兼容判定用；缺省走 `defaultAppVersion()`，
+ *                   且**懒求值**，不在高频读路由上多一次文件 IO）。
  */
 export async function handleKnowledgeRoute({
   method = 'GET', pathname = '', searchParams = new URLSearchParams(),
   readJsonBody = async () => ({}), callKernel = kernelReadonly,
+  home = resolveYfwHome(), fetcher = globalThis.fetch, config = {}, appVersion = null,
 } = {}) {
   if (!pathname.startsWith('/knowledge')) return null
   const p = pathname.replace(/\/+$/, '') || '/knowledge'
@@ -133,6 +315,19 @@ export async function handleKnowledgeRoute({
     }
     if (isPost && p === '/knowledge/reindex') return ok((await callJson(callKernel, ['--knowledge', 'reindex', '--force'])).value)
     if (isPost && p === '/knowledge/doc') return await handleWriteDoc({ readJsonBody, callKernel })
+
+    // ── 知识包生态（S4）：市场列表 / 详情 / 安装 / 卸载 / 导出 ──────────────
+    // 纯新增路径，且**只有**这里消费 home/fetcher/config/appVersion 四个新注入点，
+    // 既有路由的参数与响应一律不变（server/knowledge-routes.test.mjs 既有用例是这道守卫）。
+    if (!isPost && p === '/knowledge/packs') return await packsList({ home, fetcher, config, appVersion })
+    if (!isPost && p === '/knowledge/packs/detail') {
+      const id = q('id')
+      if (!PACK_ID_RE.test(id)) return { status: 400, body: { error: `包 id 不合法：${id || '(空)'}` } }
+      return await packsDetail({ home, fetcher, config, appVersion, id })
+    }
+    if (isPost && p === '/knowledge/packs/install') return await packsInstall({ home, fetcher, config, appVersion, readJsonBody })
+    if (isPost && p === '/knowledge/packs/uninstall') return await packsUninstall({ home, readJsonBody })
+    if (isPost && p === '/knowledge/packs/export') return await packsExport({ home, readJsonBody, callKernel })
     return null
   } catch (e) {
     if (e?.code === 502) return { status: 502, body: { error: e.message } }

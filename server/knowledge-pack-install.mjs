@@ -653,10 +653,15 @@ export async function fetchPackDetail({ fetcher = globalThis.fetch, registry = '
       } catch { versions = null }
     }
     const vr = validatePackManifest(json, { expectId: id, appVersion, versions })
-    if (!vr.ok) return { ok: false, error: vr.errors.join('；'), errors: vr.errors, warnings: vr.warnings }
+    if (!vr.ok) {
+      // 区分"版本不兼容"与"其余校验失败"：前者路由要回 409（可换版本，不是坏包），
+      // 后者是坏包（400）。靠文案匹配太脆，故在这里给结构化 code。
+      const needsHigherApp = !!(vr.version && vr.version.reason === 'needs-higher-app')
+      return { ok: false, error: vr.errors.join('；'), errors: vr.errors, warnings: vr.warnings, code: needsHigherApp ? 'needs-higher-app' : 'invalid-manifest', version: vr.version || null }
+    }
     return { ok: true, pack: vr.pack, versions, readme, version: vr.version, warnings: vr.warnings }
   } catch (e) {
-    return { ok: false, error: `包详情读取失败：${e?.message || e}` }
+    return { ok: false, error: `包详情读取失败：${e?.message || e}`, code: 'fetch-failed' }
   }
 }
 

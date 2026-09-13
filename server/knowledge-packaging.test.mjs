@@ -51,3 +51,39 @@ test('bridge 只在 unified 时才传 mode（缺省不传 = 老用户行为不�
   const m = /c\.injectMode === 'unified' \? \{ PONOS_KNOWLEDGE_INJECT_MODE: 'unified' \} : \{\}/.exec(src)
   assert.ok(m, '透传必须条件化：仅 unified 时注入 env')
 })
+
+// ── S4 Task 4：知识包生态的接线守卫（源码级，不起任何进程）────────────────────
+// 只断言"新注入点确实被传给 handleKnowledgeRoute"，防"实现写了但没接上"——这类漏接在
+// 单测里永远绿（单测自己传 home），只有真机点一下市场的安装才会炸成 500。
+test('bridge 把 home/config/fetcher 透传给 handleKnowledgeRoute（且只被 packs 路由消费）', () => {
+  const src = read('server/bridge.mjs')
+  assert.match(src, /home: YFW_HOME,/, 'home 必须显式透传（否则路由回落到 resolveYfwHome 再解析一次 env）')
+  assert.match(src, /config: knowledgePackConfig,/, 'config 必须传懒读函数（高频读路由上不白读 config.json）')
+  assert.match(src, /fetcher: globalThis\.fetch,/, 'fetcher 必须可注入（测试不得真联网）')
+  assert.match(src, /function knowledgePackConfig\(\)/, 'knowledgePackConfig 定义必须存在')
+})
+
+test('knowledge-routes 的新路由表齐（市场/详情/安装/卸载/导出）且既有路由未被改写', () => {
+  const src = read('server/knowledge-routes.mjs')
+  for (const p of ['/knowledge/packs', '/knowledge/packs/detail', '/knowledge/packs/install', '/knowledge/packs/uninstall', '/knowledge/packs/export']) {
+    assert.ok(src.includes(`'${p}'`), `路由表缺少 ${p}`)
+  }
+  // 既有读路由的路径与状态码语义不得改动（"纯增量"）：逐个仍是薄转发
+  for (const p of ['/knowledge/spaces', '/knowledge/tree', '/knowledge/doc', '/knowledge/entries', '/knowledge/search', '/knowledge/links', '/knowledge/graph', '/knowledge/stats', '/knowledge/reindex']) {
+    assert.ok(src.includes(`p === '${p}'`), `既有路由 ${p} 不得被改写/删除`)
+  }
+})
+
+test('knowledge-routes 不 import kernel/*（kernel ⊥ server 双向禁止）', () => {
+  const src = read('server/knowledge-routes.mjs')
+  assert.ok(!/from '\.\.\/kernel\//.test(src), 'server 侧不得 import kernel/')
+  assert.match(src, /from '\.\.\/shared\/knowledge-pack\.mjs'/, '判定规则来自中性层 shared/')
+  assert.match(src, /from '\.\/knowledge-pack-install\.mjs'/, '安装引擎必须是独立可测模块')
+})
+
+test('安装引擎不 import kernel/，也不 import bridge（测试可独立 import）', () => {
+  const src = read('server/knowledge-pack-install.mjs')
+  assert.ok(!/from '\.\.\/kernel\//.test(src), '安装引擎不得 import kernel/')
+  assert.ok(!/from '\.\/bridge\.mjs'/.test(src), '不得 import bridge（其顶层 listen 会让测试挂）')
+  assert.match(src, /from '\.\.\/shared\/pack-zip\.mjs'/, 'zip 编解码用 Task 1 的自研实现（零新依赖）')
+})

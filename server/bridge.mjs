@@ -1012,8 +1012,15 @@ function experienceInjectConfig() {
   }
 }
 
-// chat 模式禁用的本地工具集（Task 11 Conversation.mode）：纯聊会话只保留
-// WebFetch/WebSearch 等联网只读工具，禁一切本地执行/读写/Agent/技能/浏览器。
+// 知识包市场配置（S4 Task 4）：只读 `config.json` 的 `knowledgePackRegistry`（内网镜像/自建清单）。
+// **为什么传函数而不是传对象**：路由层每次请求都会拿到 config，若在这里先读一遍 config.json，
+// 那么 /knowledge/spaces|search|doc 这些高频读路由也要白白多一次文件 IO（它们根本不看这个值）。
+// 传函数 = 只有 /knowledge/packs* 真的用到时才读。
+function knowledgePackConfig() {
+  try { return JSON.parse(readFileSync(join(YFW_HOME, 'config.json'), 'utf-8')) || {} } catch { return {} }
+}
+
+// chat 模式禁用的本地工具集（Task 11 Conversation.mode）：纯聊会话只保留// WebFetch/WebSearch 等联网只读工具，禁一切本地执行/读写/Agent/技能/浏览器。
 // GUI 经 buildSendPayload 透传 conversation.mode，WS 'send' 分支收敛 'chat'|'task'。
 // 2026-09-12 会话模式隔离：权威表已迁到内核（kernel/tools.mjs CHAT_MODE_DISALLOWED），
 // 内核按 --session-mode chat 自行套用。本拷贝只为"跑的是旧缓存内核（不认新 flag）"
@@ -1859,6 +1866,13 @@ const httpServer = createServer(async (req, res) => {
         pathname: url.pathname,
         searchParams: url.searchParams,
         readJsonBody: () => readJsonBody(req),
+        // S4 Task 4：知识包市场/安装/导出用（**只被 `/knowledge/packs*` 消费**；既有读路由
+        // 一个参数都不看，故它们的行为逐字节不变——server/knowledge-routes.test.mjs 既有
+        // 用例是这道守卫）。home 显式透传 bridge 已解析的 YFW_HOME（不再让路由解析一遍 env）；
+        // config 传懒读函数；fetcher 走 globalThis.fetch（测试注入假实现，绝不真联网）。
+        home: YFW_HOME,
+        config: knowledgePackConfig,
+        fetcher: globalThis.fetch,
       })
       if (knowledgeRes) {
         return reply(knowledgeRes.status, { 'Content-Type': 'application/json' }, JSON.stringify(knowledgeRes.body))
