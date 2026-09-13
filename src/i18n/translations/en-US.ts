@@ -910,5 +910,22 @@ export const enUS: TranslationKeys = {
     graphEmpty: 'No indexed document in this scope',
     graphSingle: 'Only one document — no links between documents yet',
     graphHint: 'Graph edges come from relative links between documents (`[x](y.md)`)',
+    // —— S5 Task 9: related anchors / graph layer / duplicate notice ——
+    related: 'Related',
+    relatedEmpty: 'No implicit relations',
+    relatedHint: 'Derived automatically (by tag and content, not hand-written references)',
+    relatedThemed: 'Same topic',
+    relatedSimilar: 'Similar',
+    relatedWhyTag: 'Same topic · {tag}',
+    relatedWhyContent: 'Similarity {score}',
+    relatedWhyContentPlain: 'Similar content',
+    relatedSharedMore: '+{n}',
+    // `duplicate` is a **dedupe notice**, not a relation (spec §5.5) — the copy avoids "related"
+    duplicateHint: '{n} possible duplicate(s)',
+    duplicateHintScore: '{n} possible duplicate(s) · cos {score}',
+    graphLayerRelated: 'Related layer',
+    graphLayerRelatedHint: 'Only explicit links are drawn by default; implicit relations (from tags/content) must be turned on',
+    graphRelatedCount: '{n} related',
+    graphRelatedLoading: 'Loading relations…',
   },
 }

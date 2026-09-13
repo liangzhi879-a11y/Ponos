@@ -12,6 +12,11 @@
 // 方向恒定"从左往右"：节点布局是左→右（source 在右 Handle、target 在左 Handle，见 KnowledgeNode），
 // 贝塞尔曲线无论怎么绕，都是从左向右进入 target 的左侧 Handle，所以箭头画在 target 端朝右永远成立。
 //
+// S5 Task 9：边分两层（显式链接 / 隐式关联），**视觉必须可区分**（spec §7.5）。线的样式（实线/虚线 +
+// 颜色）由视图层通过 `style` 下发，箭头颜色按 `data.layer` 跟随（否则虚线边配实线色箭头，两层糊成一层）。
+// 仍然只用 token（`var(--border-default)` / `var(--border-strong)`）——SVG 呈现属性里的 var() 在已知
+// 的 Chromium 漏洞上不可靠（见下），而这里是**普通 CSS 属性 borderLeft**，token 一定生效。
+//
 // 边上不常驻文字标签：200 条边各挂一个标签会让画布糊成一片。选中时才显示链接目标末段名
 // （用户点一条边就是在问"这条线通到哪"）。线的颜色/粗细由视图层通过 `style` 下发，本组件不重算。
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from '@xyflow/react'
@@ -20,6 +25,11 @@ import { shortRef } from '@/lib/knowledgeGraph'
 export interface KnowledgeEdgeData extends Record<string, unknown> {
   /** 链接目标 docId（内核 getGraph 的 `target` 字段） */
   target: string
+  /**
+   * 边所属图层（S5 Task 9）：'link' 显式链接 / 'related' 隐式关联。
+   * 箭头颜色必须随层变 —— 线是虚线、箭头却和实线边同色时，视觉上会把两层读成一层。
+   */
+  layer?: 'link' | 'related'
 }
 
 export function KnowledgeEdge({
@@ -27,7 +37,10 @@ export function KnowledgeEdge({
   style, selected, data,
 }: EdgeProps) {
   const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition })
-  const target = String((data as KnowledgeEdgeData | undefined)?.target ?? '')
+  const edgeData = data as KnowledgeEdgeData | undefined
+  const target = String(edgeData?.target ?? '')
+  // 关联层用 --border-strong（不新造颜色，也不写裸 hex）：线的虚线样式由视图层下发 strokeDasharray
+  const arrowColor = edgeData?.layer === 'related' ? 'var(--border-strong)' : 'var(--border-default)'
 
   return (
     <>
@@ -41,7 +54,7 @@ export function KnowledgeEdge({
             transform: `translate(-50%, -50%) translate(${targetX - 3}px, ${targetY}px)`,
             borderTop: '3.5px solid transparent',
             borderBottom: '3.5px solid transparent',
-            borderLeft: '6px solid var(--border-default)',
+            borderLeft: `6px solid ${arrowColor}`,
             opacity: selected ? 1 : 0.75,
             pointerEvents: 'none',
           }}

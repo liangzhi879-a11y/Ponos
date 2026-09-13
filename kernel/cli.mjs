@@ -103,6 +103,8 @@ export function parseArgs(argv) {
     space: null,
     path: null,
     id: null,
+    doc: null,
+    related: false,
     query: null,
     keywords: [],
     topK: null,
@@ -161,6 +163,13 @@ export function parseArgs(argv) {
       // 未知 `--` 参数是**静默忽略**的，漏了这个 case 时 `--no-validate` 会被无声吞掉、
       // 输出与正常路径一模一样，用户会以为"开关没作用"（而不是"参数没生效"）。
       case '--no-validate': out.noValidate = true; break
+      // S5 Task 9：`related --doc <docId>`（GUI 条目卡片/Inspector 的批量口）与
+      // `graph --related`（图谱关联图层）。两者同样**必须在此显式登记**：本 CLI 对未知
+      // `--` 参数静默忽略，漏登记就会让"图层开了但没有任何边"看起来像数据问题。
+      // 与 `--id` 分开命名（不合并成一个 flag）：blockId 与 docId 形状不同，
+      // 混用会让"给了 docId 却按 blockId 查"变成静默空数组（最贵的假阴性）。
+      case '--doc': out.doc = next() ?? null; break
+      case '--related': out.related = true; break
       case '--mode': out.mode = next() ?? null; break
       // 显式强制重建索引（reindex 本身恒 force；本 flag 供其它 op 复用同一语义）
       case '--force': out.force = true; break

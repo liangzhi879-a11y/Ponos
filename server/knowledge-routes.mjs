@@ -304,10 +304,25 @@ export async function handleKnowledgeRoute({
     // 形状合法但库里没有的 id：仍按 links 的既有约定 —— 200 + 空数组，**不 404**。
     // 理由：内核视图里"库中没有这个块"与"这个块没有锚点"不可区分，凑 404 得另发一次存在性
     // 查询（两条口径必然漂移），且与 links/entries/graph 的"空集即空集"约定冲突。
+    // S5 Task 9（GUI 批量口）：`/knowledge/related?doc=<docId>` —— 一篇文档内所有条目块的
+    // 锚点。为什么在**同一个**端点上加参数而不是新开路由：语义仍是"关联锚点查询"，
+    // 只是聚合粒度从块变成文档；新开一条路由会让两处的 400/200 约定各写一份（必然漂移）。
+    // 形状校验：docId 不得为空、不得含 '#'（含 '#' 是 blockId 的形状 —— 参数用错了要报错，
+    // 不能让它在内核里被当成"不存在的文档"静默返回空数组，这正是 §7.4 那条 400 的理由）。
     if (!isPost && p === '/knowledge/related') {
-      const id = String(q('id') || '').trim()
+      const docId = String(q('doc') || '').trim()
+      const rawId = String(q('id') || '').trim()
+      if (docId && !rawId) {
+        if (docId.includes('#')) {
+          return { status: 400, body: { error: `invalid doc: ${docId}（docId 不含 '#'；blockId 请用 ?id=）` } }
+        }
+        const docArgs = ['--knowledge', 'related', '--doc', docId]
+        if (q('limit')) docArgs.push('--limit', q('limit'))
+        return ok((await callJson(callKernel, docArgs)).value)
+      }
+      const id = rawId
       if (!isBlockId(id)) {
-        return { status: 400, body: { error: `invalid id: ${id || '(空)'}（须为 <docId>#<n>）` } }
+        return { status: 400, body: { error: `invalid id: ${id || '(空)'}（须为 <docId>#<n>；或改用 ?doc=<docId> 取整篇）` } }
       }
       const args = ['--knowledge', 'related', '--id', id]
       // limit 仅在给了的时候透传（同 /knowledge/graph）；非法值由内核 parseArgs 归一为缺省，
@@ -319,6 +334,10 @@ export async function handleKnowledgeRoute({
       const args = ['--knowledge', 'graph']
       if (q('space')) args.push('--space', q('space'))
       if (q('limit')) args.push('--limit', q('limit'))
+      // S5 Task 9：`?related=1` 才附隐式关联层（图谱图层开关，缺省关 —— spec §7.5 的
+      // "第一印象不被噪声淹没"）。**逐字判 '1'**：`related=0`/`related=false` 一律视为不带，
+      // 免得"关着的图层"因参数写法不同而打开。
+      if (q('related') === '1') args.push('--related')
       return ok((await callJson(callKernel, args)).value)
     }
     if (!isPost && p === '/knowledge/stats') return ok((await callJson(callKernel, ['--knowledge', 'stats'])).value)

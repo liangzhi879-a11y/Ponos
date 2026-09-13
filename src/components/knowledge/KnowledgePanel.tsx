@@ -34,6 +34,8 @@ export function KnowledgePanel() {
   const spaceId = useKnowledgeStore(s => s.spaceId)
   const docId = useKnowledgeStore(s => s.docId)
   const targetLine = useKnowledgeStore(s => s.targetLine)
+  // 关联锚点的块级定位目标（S5 Task 9）；与 targetLine 是同一件事的两条通道（见知识 store 注释）
+  const targetBlockId = useKnowledgeStore(s => s.targetBlockId)
   const view = useKnowledgeStore(s => s.view)
   const setSpace = useKnowledgeStore(s => s.setSpace)
   const setView = useKnowledgeStore(s => s.setView)
@@ -93,7 +95,7 @@ export function KnowledgePanel() {
               : <KnowledgeEmpty title={t('knowledge.spaceEmpty')} className="m-auto" />
           ) : view === 'read' ? (
             docLoading ? <KnowledgeSkeleton lines={10} />
-              : doc ? <KnowledgeDocView doc={doc} targetLine={targetLine} />
+              : doc ? <KnowledgeDocView doc={doc} targetLine={targetLine} targetBlockId={targetBlockId} />
                 : <KnowledgeEmpty title={t('knowledge.emptyNoDoc')} className="m-auto" />
           ) : view === 'edit' ? (
             // 只读空间不渲染编辑视图（spec §11.3：CodeEditor 无 readOnly，编辑器内容非受控）

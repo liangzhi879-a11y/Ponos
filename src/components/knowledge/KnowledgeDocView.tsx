@@ -12,11 +12,21 @@
 // 行定位：接收 targetLine（来自 knowledgeStore，检索命中/大纲点击时置入）→ 用 pickTargetIndex
 // 找到落点块 → scrollIntoView + 高亮 1.5s（spec §6「滚动到 line 并高亮 1.5s」）。
 // 高亮只用 token 底色 bg-accent-subtle + clip-sm 轮廓，**不动光效白名单**（`.breath` 等留给激活态）。
+//
+// S5 Task 9 增**块级**定位（targetBlockId）：关联锚点只带 blockId（内核 relSummary 的字段集合
+// 被 spec §7.2 钉死，不许为跳转方便加 line），故按块匹配渲染项 —— 同样零额外请求，复用下面
+// 同一套 scrollIntoView + 高亮。两条通道共用 targetIndex，故高亮/滚动只有一份实现。
+// 关联锚点数据在这里**按文档一次**拉取（useRelatedDoc），再按 blockId 分发给条目卡片：
+// 卡片自己拉会变成"每张卡一次内核进程"，见内核 getRelatedForDoc 的 why。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import type { KnowledgeDoc } from '@/lib/knowledgeApi'
 import { MD_COMPONENTS, MD_PLUGINS } from '@/components/chat/MarkdownText'
-import { normalizeTags, pickTargetIndex, planBlockRender } from '@/lib/knowledgeBlocks'
+import { normalizeTags, pickTargetIndex, pickTargetIndexByBlock, planBlockRender } from '@/lib/knowledgeBlocks'
+import { indexByBlock } from '@/lib/knowledgeRelations'
+import type { KnowledgeRelatedAnchor } from '@/lib/knowledgeApi'
+import { useRelatedDoc } from '@/hooks/useKnowledge'
+import { useKnowledgeStore } from '@/stores/knowledgeStore'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/i18n/useTranslation'
 import { KnowledgeEntryCard } from './KnowledgeEntryCard'
@@ -42,13 +52,22 @@ export interface KnowledgeDocViewProps {
   doc: KnowledgeDoc
   /** 目标行号（knowledgeStore.targetLine）；null = 不做定位 */
   targetLine?: number | null
+  /** 目标块 id（knowledgeStore.targetBlockId，关联锚点跳转）；给了就优先按块定位 */
+  targetBlockId?: string | null
 }
 
-export function KnowledgeDocView({ doc, targetLine = null }: KnowledgeDocViewProps) {
+export function KnowledgeDocView({ doc, targetLine = null, targetBlockId = null }: KnowledgeDocViewProps) {
   const { t } = useTranslation()
-  const renders = useMemo(() => planBlockRender(doc.blocks), [doc.blocks])
+  // docId 下传是为了让条目渲染项带上 blockId（锚点定位的键）；不给 docId 时渲染计划与 S2 逐字相同
+  const renders = useMemo(() => planBlockRender(doc.blocks, doc.id), [doc.blocks, doc.id])
   const tags = useMemo(() => normalizeTags(doc.tags), [doc.tags])
-  const targetIndex = useMemo(() => pickTargetIndex(renders, targetLine), [renders, targetLine])
+  const { data: relatedBlocks } = useRelatedDoc(doc.id)
+  const anchorsByBlock = useMemo(() => indexByBlock(relatedBlocks), [relatedBlocks])
+  // 块级通道优先：store 的 openAtBlock 会同时清掉 targetLine，故正常不会两者都非空
+  const targetIndex = useMemo(
+    () => (pickTargetIndexByBlock(renders, targetBlockId) ?? pickTargetIndex(renders, targetLine)),
+    [renders, targetLine, targetBlockId],
+  )
 
   const itemRefs = useRef<(HTMLDivElement | null)[]>([])
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -69,6 +88,10 @@ export function KnowledgeDocView({ doc, targetLine = null }: KnowledgeDocViewPro
     const timer = setTimeout(() => setActiveLine(null), HIGHLIGHT_MS)
     return () => clearTimeout(timer)
   }, [targetIndex, renders])
+
+  // 点锚点 = 打开目标文档 + 切阅读视图 + 按块定位，三件事一次写完（store.openAtBlock）。
+  // 本视图**不开第二条跳转通道**：偏移/高亮逻辑只有上面那一个 effect。
+  const openAnchor = (a: KnowledgeRelatedAnchor) => useKnowledgeStore.getState().openAtBlock(a.docId, a.blockId)
 
   return (
     <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto px-4 py-3">
@@ -100,7 +123,12 @@ export function KnowledgeDocView({ doc, targetLine = null }: KnowledgeDocViewPro
           >
             {r.type === 'entryCard' ? (
               <div className="py-1">
-                <KnowledgeEntryCard tag={r.tag} summary={r.summary} full={r.full} />
+                {/* 锚点数据按块分发；没锚点的卡片拿到空数组 → 卡片自己不渲染关联行（不留空壳） */}
+                <KnowledgeEntryCard
+                  tag={r.tag} summary={r.summary} full={r.full}
+                  related={r.blockId ? anchorsByBlock.get(r.blockId) : undefined}
+                  onOpenAnchor={openAnchor}
+                />
               </div>
             ) : r.type === 'heading' ? (
               // 标题自己渲染（不再回填 `# ` 交给 markdown）：级别已知、锚点可控，

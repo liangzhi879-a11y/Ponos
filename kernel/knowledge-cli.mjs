@@ -115,6 +115,22 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '' } = {}
       case 'links':
         return { output: store.getLinks(String(args.id || '')), code: 0 }
       case 'related': {
+        // S5 Task 9：`related --doc <docId> [--limit N]` —— 一篇文档内**所有条目块**的锚点。
+        // 为什么另开一支而不是让 GUI 逐块问：HTTP 路径每次调用都是一次新内核进程
+        // （约 50–70MB RSS），一篇文档几十条条目 = 几十次 spawn（详见内核 getRelatedForDoc）。
+        // 与 `--id` 互斥：两个都给了按 `--id`（既有语义优先，不静默改道）。
+        const docArg = String(args.doc ?? '').trim()
+        if (docArg && !String(args.id ?? '').trim()) {
+          const lim = parseLimit(args.limit)
+          if (!lim.ok) return { output: { error: lim.error }, code: 1 }
+          const validate = args.noValidate !== true
+          const blocks = store.getRelatedForDoc(docArg, { validate, limit: lim.value })
+          // 只给锚点摘要（同 --id 支）：卡片所需的一切都在 why 里，正文由 /knowledge/doc 给
+          return {
+            output: { docId: docArg, validate, limit: lim.value, count: blocks.length, blocks },
+            code: 0,
+          }
+        }
         // S5 §7.3：`related --id <blockId> [--no-validate] [--limit N]`。
         // 与 `links` 的差别：links 的 id 是 docId（不存在 ⇒ 空出/入边，本身自洽）；
         // 这里的 id 是 **blockId**，形状错了（含缺省空串）必须报错——否则 `--id` 写漏
@@ -139,6 +155,9 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '' } = {}
           output: store.getGraph({
             space: args.space ? String(args.space) : null,
             limit: Number(args.limit) || 200,
+            // S5 Task 9：`--related` 才附隐式关联层（显式 `=== true`；缺省/字符串一律不带，
+            // 宁可少带也不因参数解析意外把 258 条隐式边灌进图谱）
+            related: args.related === true,
           }),
           code: 0,
         }

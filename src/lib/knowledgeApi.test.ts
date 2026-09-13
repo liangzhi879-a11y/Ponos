@@ -8,7 +8,7 @@ import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   listSpaces, listTree, getDoc, listEntries, search, getLinks, getGraph, getStats, reindex, writeDoc,
-  clearKnowledgeInflight,
+  getRelated, getRelatedDoc, getGraphRelated, clearKnowledgeInflight,
 } from './knowledgeApi.ts'
 
 const BASE = 'http://localhost:51517'
@@ -141,6 +141,54 @@ test('getLinks / getGraph / getStats / reindex：路径与动词（POST 重建�
   assert.equal(url().pathname, '/knowledge/reindex')
   assert.equal(calls[0].init?.body, undefined, 'reindex 无请求体')
   assert.equal(re.ok, true)
+})
+
+test('getRelated：GET /knowledge/related?id=&limit=&，拆包 {related}（CLI 包装层）', async () => {
+  const related = [{ blockId: 'a.md#1', docId: 'a.md', title: 'A', why: { kind: 'tag', tag: '应用智控' }, score: null }]
+  mockFetch(() => json({ blockId: 'a.md#0', validate: true, limit: 8, count: 1, related }))
+  const r = await getRelated('a.md#0', {}, { baseUrl: BASE })
+  assert.equal(calls[0].init?.method, 'GET')
+  assert.equal(url().pathname, '/knowledge/related')
+  assert.equal(url().searchParams.get('id'), 'a.md#0')
+  assert.equal(url().searchParams.has('limit'), false, 'limit 缺省交给内核 MAX_RELATED，前端不硬编码')
+  assert.deepEqual(r, { ok: true, data: related })
+
+  // 空集是**成功**（"没有锚点"不是错误）——UI 据此不渲染关联行，而不是显示加载失败
+  mockFetch(() => json({ blockId: 'a.md#9', count: 0, related: [] }))
+  assert.deepEqual(await getRelated('a.md#9', { limit: 3 }, { baseUrl: BASE }), { ok: true, data: [] })
+  assert.equal(url(0).searchParams.get('limit'), '3', 'mockFetch 每次重置 calls：这里第 0 条就是本次请求')
+
+  // 400（非法 blockId 形状）必须原样透出 status，UI 才区分得开"参数错"与"没数据"
+  mockFetch(() => json({ error: 'invalid id: a.md' }, 400))
+  const bad = await getRelated('a.md', {}, { baseUrl: BASE })
+  assert.deepEqual(bad, { ok: false, error: 'invalid id: a.md', status: 400 })
+})
+
+test('getRelatedDoc：GET /knowledge/related?doc=&limit=，拆包 {blocks}（GUI 批量口）', async () => {
+  const blocks = [{ blockId: 'a.md#0', related: [{ blockId: 'b.md#2', docId: 'b.md', title: 'B', why: { kind: 'content', score: 0.21, shared: ['功能'] }, score: 0.21 }] }]
+  mockFetch(() => json({ docId: 'a.md', validate: true, limit: 8, count: 1, blocks }))
+  const r = await getRelatedDoc('a.md', {}, { baseUrl: BASE })
+  assert.equal(url().pathname, '/knowledge/related')
+  assert.equal(url().searchParams.get('doc'), 'a.md', 'doc 参数名必须与路由一致（写错=静默空数组）')
+  assert.equal(url().searchParams.has('id'), false, '批量口不得带 id（两个都给时路由按 id 走）')
+  assert.deepEqual(r, { ok: true, data: blocks })
+  const warn = await getRelatedDoc('b.md', { limit: 2 }, { baseUrl: BASE })
+  assert.equal(url(1).searchParams.get('limit'), '2')
+  assert.equal(warn.ok, true)
+})
+
+test('getGraphRelated：GET /knowledge/graph?related=1，只取 related 数组（图层开关专用）', async () => {
+  const related = [{ from: 'a.md', to: 'b.md', kind: 'tag', score: null, count: 3 }]
+  mockFetch(() => json({ nodes: [], edges: [], related }))
+  const r = await getGraphRelated('notes', undefined, { baseUrl: BASE })
+  assert.equal(url().pathname, '/knowledge/graph')
+  assert.equal(url().searchParams.get('related'), '1', '图层必须显式 related=1（缺省关，spec §7.5）')
+  assert.equal(url().searchParams.get('space'), 'notes')
+  assert.deepEqual(r, { ok: true, data: related })
+
+  mockFetch(() => json({ nodes: [], edges: [] }))
+  const all = await getGraphRelated(undefined, undefined, { baseUrl: BASE })
+  assert.deepEqual(all, { ok: true, data: [] }, '缺 related 字段 → 空数组（不抛）')
 })
 
 test('writeDoc：POST /knowledge/doc，请求体用 `space` 字段（非 spaceId），不含多余字段', async () => {

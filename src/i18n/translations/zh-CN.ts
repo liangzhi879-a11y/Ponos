@@ -923,6 +923,23 @@ export const zhCN = {
     graphEmpty: '这个范围内还没有已索引的文档',
     graphSingle: '只有一篇文档，还没有互相引用的链接',
     graphHint: '图谱的边来自文档之间的相对链接（`[x](y.md)`）',
+    // —— S5 Task 9：关联锚点 / 图谱图层 / 重复提示 ——
+    related: '关联',
+    relatedEmpty: '暂无隐式关联',
+    relatedHint: '自动派生（按标签与内容算出来的，不是手工引用）',
+    relatedThemed: '同主题',
+    relatedSimilar: '相似',
+    relatedWhyTag: '同主题 · {tag}',
+    relatedWhyContent: '相似 {score}',
+    relatedWhyContentPlain: '内容相似',
+    relatedSharedMore: '+{n}',
+    // duplicate 是**去重提示**，不是关联（spec §5.5）——文案里不出现"关联"二字
+    duplicateHint: '疑似重复 {n} 条',
+    duplicateHintScore: '疑似重复 {n} 条 · cos {score}',
+    graphLayerRelated: '关联图层',
+    graphLayerRelatedHint: '默认只画文档之间的显式链接；隐式关联（标签/内容算出来的）需要手动打开',
+    graphRelatedCount: '{n} 条关联',
+    graphRelatedLoading: '关联加载中…',
   },
 }
 

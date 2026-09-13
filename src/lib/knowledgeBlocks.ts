@@ -35,7 +35,10 @@ export interface BlockLike {
 }
 
 export type BlockRender =
-  | { type: 'entryCard'; key: string; line: number; tag: string; summary: string; full: string }
+  // `blockId`（S5 Task 9）只在 planBlockRender 收到 docId 时出现：关联锚点跳转要按块定位
+  // （锚点摘要只带 blockId，不带 line——spec §7.2 钉死了字段集合）。缺省不带该键，
+  // 既有调用方（不传 docId）的渲染计划逐字不变。
+  | { type: 'entryCard'; key: string; line: number; tag: string; summary: string; full: string; blockId?: string }
   | { type: 'heading'; key: string; line: number; level: number; text: string }
   | { type: 'markdown'; key: string; line: number; text: string }
 
@@ -74,7 +77,7 @@ export function normalizeTags(tags?: readonly unknown[] | null): string[] {
  * 空文本块直接丢弃：react-markdown 渲染空串只会留下一个吃掉间距的空 div，
  * 而它也不可能是跳转目标（无内容可看）。
  */
-export function planBlockRender(blocks: readonly BlockLike[]): BlockRender[] {
+export function planBlockRender(blocks: readonly BlockLike[], docId?: string | null): BlockRender[] {
   const out: BlockRender[] = []
   blocks.forEach((b, i) => {
     const key = `b${b.n ?? i}`
@@ -82,7 +85,13 @@ export function planBlockRender(blocks: readonly BlockLike[]): BlockRender[] {
     if (isEntryCard(b)) {
       const summary = String(b.text ?? '').trim()
       const full = String(b.full ?? '').trim()
-      out.push({ type: 'entryCard', key, line, tag: String(b.tag).trim(), summary, full: full || summary })
+      // blockId 口径与内核 `toBlockId`（kernel/knowledge.mjs）一致：`<docId>#<n>`；
+      // 缺 n（脏数据）时用下标兜底 — 与 key 的兜底同源，两处不一致会让锚点永远匹配不上
+      const n = typeof b.n === 'number' && Number.isFinite(b.n) ? b.n : i
+      out.push({
+        type: 'entryCard', key, line, tag: String(b.tag).trim(), summary, full: full || summary,
+        ...(docId ? { blockId: `${docId}#${n}` } : {}),
+      })
       return
     }
     const text = String(b.text ?? '')
@@ -94,6 +103,20 @@ export function planBlockRender(blocks: readonly BlockLike[]): BlockRender[] {
     out.push({ type: 'markdown', key, line, text })
   })
   return out
+}
+
+/**
+ * 目标**块 id** → 渲染计划里的下标（S5 Task 9 关联锚点跳转用）。
+ *
+ * 为什么不用行号：锚点摘要只给 `blockId`（spec §7.2 的字段集合被验收项钉死，不许加 `line`），
+ * 而阅读视图本来就按块渲染 —— 直接比 blockId 是零额外请求的定位方式。
+ * 返回 null 的两种情况：没给 blockId，或该块不在本篇的渲染计划里（锚点陈旧/块被删）。
+ * 后者**不回落**到别的块：宁可不高亮，也不要把用户带到一段无关内容上（误导比不动作更贵）。
+ */
+export function pickTargetIndexByBlock(renders: readonly BlockRender[], blockId?: string | null): number | null {
+  if (!blockId) return null
+  const i = renders.findIndex(r => r.type === 'entryCard' && r.blockId === blockId)
+  return i < 0 ? null : i
 }
 
 /**

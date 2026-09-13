@@ -13,9 +13,11 @@
 // 后端保存即增量索引，不失效就会出现"刚保存却搜不到"（S2 验收第 6 项）。
 import { useCallback, useEffect, useReducer, useRef } from 'react'
 import {
-  getDoc, getGraph, getLinks, getStats, listEntries, listSpaces, listTree, search, writeDoc,
+  getDoc, getGraph, getGraphRelated, getLinks, getRelatedDoc, getStats, listEntries, listSpaces, listTree,
+  search, writeDoc,
   type ApiResult, type KnowledgeCallOpts, type KnowledgeDoc, type KnowledgeEntry,
-  type KnowledgeGraph, type KnowledgeLinks, type KnowledgeSearchParams, type KnowledgeSearchResult,
+  type KnowledgeGraph, type KnowledgeGraphRelatedEdge, type KnowledgeLinks,
+  type KnowledgeRelatedBlock, type KnowledgeSearchParams, type KnowledgeSearchResult,
   type KnowledgeSpace, type KnowledgeStats, type KnowledgeTreeEntry, type KnowledgeWriteInput,
 } from '@/lib/knowledgeApi'
 
@@ -32,6 +34,10 @@ export const knowledgeKeys = {
   graph: (space: string | null, limit?: number) => `graph:${space ?? '*'}|${limit ?? ''}`,
   /** 出边 + 反链（右栏 Inspector，Task 9）；键按文档 id，故前缀失效用 `links:` */
   links: (id: string) => `links:${id}`,
+  /** 整篇文档的关联锚点（S5 Task 9：条目卡片关联行 / Inspector 关联段） */
+  relatedDoc: (id: string) => `relatedDoc:${id}`,
+  /** 图谱的隐式关联层（S5 Task 9：图层开关打开时才请求）；分隔符 `|` 同 graph 键 */
+  graphRelated: (space: string | null, limit?: number) => `graphRelated:${space ?? '*'}|${limit ?? ''}`,
   stats: 'stats',
 }
 
@@ -179,6 +185,28 @@ export function useLinks(id: string | null): KnowledgeResource<KnowledgeLinks> {
   })
 }
 
+/**
+ * 整篇文档的关联锚点（S5 Task 9）。**按文档一次拉完**，绝不按块循环：
+ * 每次 HTTP 调用在 bridge 侧 = 一次新内核进程（约 50–70MB RSS），一篇文档几十条条目
+ * 就是几十次 spawn —— 卡片关联行是默认可见的，这个代价不能接受（见内核 getRelatedForDoc）。
+ */
+export function useRelatedDoc(id: string | null): KnowledgeResource<KnowledgeRelatedBlock[]> {
+  const key = id ? knowledgeKeys.relatedDoc(id) : null
+  return useResource<KnowledgeRelatedBlock[]>(key, async () => {
+    if (!id) return { ok: false, error: 'no doc' }
+    return getRelatedDoc(id)
+  })
+}
+
+/**
+ * 图谱的隐式关联层。`enabled=false`（**默认**）时 key 为 null ⇒ 一个请求都不发：
+ * 图层关着时既不该有网络/进程开销，也不该让"关着的开关"看起来在工作（spec §7.5）。
+ */
+export function useGraphRelated(space: string | null, limit?: number, enabled = false): KnowledgeResource<KnowledgeGraphRelatedEdge[]> {
+  const key = enabled ? knowledgeKeys.graphRelated(space, limit) : null
+  return useResource<KnowledgeGraphRelatedEdge[]>(key, () => getGraphRelated(space ?? undefined, limit))
+}
+
 export function useStats(): KnowledgeResource<KnowledgeStats> {
   const key = knowledgeKeys.stats
   return useResource<KnowledgeStats>(key, () => getStats())
@@ -191,6 +219,8 @@ export function useStats(): KnowledgeResource<KnowledgeStats> {
  * 否则"刚保存搜不到"会在编辑视图里复现）。
  * 失效范围：该 doc（内容变了）、所在 tree 前缀（新建会多节点）、全部 search（增量索引已生效）、
  * 全部 links（正文里的相对链接变了 → 出边/反链两边都要重取，Task 9 右栏消费）、
+ * 全部 relatedDoc/graphRelated（S5 Task 9：保存后内容指纹变了，内容层锚点在**读时**会被
+ * 内核校验剔除；前端缓存若不同步失效，界面会抱着已消失的锚点继续显示）、
  * stats（indexAge/indexBytes 变了）。
  */
 export async function saveDoc(
@@ -205,6 +235,8 @@ export async function saveDoc(
   invalidateKnowledge(`tree:${input.space}|`)
   invalidateKnowledge('search:')
   invalidateKnowledge('links:')
+  invalidateKnowledge('relatedDoc:')
+  invalidateKnowledge('graphRelated:')
   invalidateKnowledge(knowledgeKeys.stats)
   return r
 }

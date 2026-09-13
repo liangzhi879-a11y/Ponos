@@ -81,6 +81,17 @@ export function sanitizeTargetLine(line: unknown): number | null {
   return typeof line === 'number' && Number.isFinite(line) && line >= 1 ? Math.floor(line) : null
 }
 
+/**
+ * 落盘/写入侧的 blockId 清洗（S5 Task 9）：形状必须是 `<docId>#<n>`（含 '#'、两段都非空），
+ * 其余（null/空串/无 '#'/只有 '#'）→ null。**不抛**（同上面几个 sanitize：读侧脏数据不能把界面弄崩）。
+ */
+export function sanitizeTargetBlockId(blockId: unknown): string | null {
+  if (typeof blockId !== 'string') return null
+  const s = blockId.trim()
+  const i = s.lastIndexOf('#')
+  return i > 0 && i < s.length - 1 ? s : null
+}
+
 export interface KnowledgeState {
   /** 当前空间 id（null = 尚未选择，面板空态） */
   spaceId: string | null
@@ -98,12 +109,23 @@ export interface KnowledgeState {
    * **不落盘**（见 partialize）：高亮是一次性跳转意图，重启后回到原地高亮一个旧行号只会让人困惑。
    */
   targetLine: number | null
+  /**
+   * 关联锚点的**块级定位目标**（S5 Task 9；`<docId>#<n>`，null = 不定位）。
+   * 为什么不复用 targetLine：锚点摘要只带 blockId（内核 relSummary 的字段集合被 spec §7.2
+   * 钉死，不许为图方便加 line），把它换成行号需要在点击时额外取一次目标文档（= 一次内核进程）；
+   * 而阅读视图本来就按块渲染，直接按 blockId 找渲染下标是**零额外请求**的做法。
+   * **不落盘**（同 targetLine：一次性跳转意图）。
+   */
+  targetBlockId: string | null
   view: KnowledgeView
   /** 扁平 map：路径 → { entries, loaded, expanded } */
   tree: KnowledgeTreeMap
   setSpace: (spaceId: string | null) => void
   setDocId: (docId: string | null) => void
   setTargetLine: (line: number | null) => void
+  setTargetBlockId: (blockId: string | null) => void
+  /** 关联锚点跳转的唯一入口：打开文档 + 切阅读视图 + 置块级定位（一次写完，无中间态） */
+  openAtBlock: (docId: string, blockId: string) => void
   setView: (view: KnowledgeView) => void
   toggleExpanded: (path: string) => void
   setTreeEntries: (path: string, entries: KnowledgeTreeEntry[]) => void
@@ -114,6 +136,7 @@ export const useKnowledgeStore = create<KnowledgeState>()(
     spaceId: null,
     docId: null,
     targetLine: null,
+    targetBlockId: null,
     view: 'read',
     tree: {},
 
@@ -124,7 +147,7 @@ export const useKnowledgeStore = create<KnowledgeState>()(
     setSpace: (spaceId) => {
       const next = sanitizeSpaceId(spaceId)
       if (next === get().spaceId) return
-      set({ spaceId: next, docId: null, targetLine: null, tree: {} })
+      set({ spaceId: next, docId: null, targetLine: null, targetBlockId: null, tree: {} })
     },
 
     // 换文档顺带清 targetLine：行号只在**同一篇文档**内有意义，留着它会让新文档里一行无关内容被点亮。
@@ -132,13 +155,33 @@ export const useKnowledgeStore = create<KnowledgeState>()(
     setDocId: (docId) => {
       const next = sanitizeDocId(docId)
       if (next === get().docId) return
-      set({ docId: next, targetLine: null })
+      // 块级定位目标（targetBlockId）同理必须一起清：它的 `<docId>#<n>` 里编码了**上一篇**文档，
+      // 留着它会让新文档的渲染层去匹配一个不存在的块（最坏是没有任何高亮，看起来像点了没反应）。
+      set({ docId: next, targetLine: null, targetBlockId: null })
     },
 
     setTargetLine: (line) => {
       const next = sanitizeTargetLine(line)
       if (next === get().targetLine) return
       set({ targetLine: next })
+    },
+
+    setTargetBlockId: (blockId) => {
+      const next = sanitizeTargetBlockId(blockId)
+      if (next === get().targetBlockId) return
+      set({ targetBlockId: next })
+    },
+
+    // 关联锚点点击（条目卡片 / Inspector 关联段 / 图谱节点悬停）：
+    // ① 必须切到 'read'——在 graph/search 视图下只换 docId，用户看到的还是原视图（"点了没反应"）；
+    // ② 必须清 targetLine——上一次检索命中的行号与新锚点无关，留着会点亮无关行；
+    // ③ 一次 set 写完（三次写会经过"已换文档、定位目标还是旧的"的中间态，那一帧里阅读视图的
+    //    effect 可能拿着旧 targetBlockId 去匹配新文档的块）。
+    openAtBlock: (docId, blockId) => {
+      const id = sanitizeDocId(docId)
+      const bid = sanitizeTargetBlockId(blockId)
+      if (!id || !bid) return
+      set({ docId: id, view: 'read', targetLine: null, targetBlockId: bid })
     },
 
     setView: (view) => {

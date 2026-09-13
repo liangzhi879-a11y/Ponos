@@ -925,6 +925,79 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
   }
 
   /**
+   * 一篇文档内**所有条目块**的锚点（S5 Task 9：GUI 条目卡片关联行 / Inspector 关联段）。
+   *
+   * 为什么必须批量（而不是让 GUI 按块逐条调 `getRelated`）：`/knowledge/related` 一次只答
+   * 一个 blockId，而每次 HTTP 调用在 bridge 侧都是一次**新内核进程**（约 50–70MB RSS）。
+   * 一篇经验文档常有几十条条目，逐块问就是几十次进程 spawn —— 打开一篇文档把机器拖住，
+   * 这是不可接受的默认代价。故在这里按文档聚合：一次进程答完，前端按 blockId 取用。
+   *
+   * 排序/上限/校验口径**完全复用 `relatedOf`**（不另写一套）：快由物化负责、对由校验负责，
+   * 两边排序若各写一份必然漂移（`related --id` 与卡片上的顺序不一致 = 查不出来的 bug）。
+   * 只回锚点摘要（同 `relSummary`，**不含正文**）；空锚点的块不出现在结果里（不产空壳）。
+   */
+  function getRelatedForDoc(docId, { validate = true, limit = MAX_RELATED } = {}) {
+    const id = String(docId ?? '')
+    if (!id) return []
+    const doc = docs.find((d) => d.id === id)
+    if (!doc) return []      // 文档不存在 ⇒ 空数组（与 links 的"空集即空集"惯例一致）
+    const table = validate ? readView().blocks : null
+    const out = []
+    for (const b of doc.blocks) {
+      const blockId = toBlockId(id, b.n)
+      const related = relatedOf(blockId, { validate, limit, lookup: table })
+      if (related.length) out.push({ blockId, related })
+    }
+    return out
+  }
+
+  /**
+   * 文档级隐式关联（S5 Task 9：GUI 图谱的「关联图层」）。
+   *
+   * 为什么需要它：spec §7.5 要求图谱区分"显式链接 / 隐式关联"两层，但 §7.2 只给了**块级**
+   * `getRelated`。图谱问的是"这篇文档和谁相关"，逐块问等于 N 篇 × 每篇几十次内核进程
+   * （见 `getRelatedForDoc` 的 why）。故在这里把块级边归并成文档对。
+   *
+   * 归并口径（与块级同源，不另造口径）：
+   *   · 来源 = `relEdges`（物化行）+ `validateRelation` 读时校验（快由物化、对由校验）
+   *   · 只收 `tag` / `content`：`duplicate` **不是关联**（spec §5.5），图谱上画它只会误导
+   *   · 同文档内的块间关联 → 图谱上是自环，丢弃（自环没有导航价值）
+   *   · 无序对去重：`tag` 优先于 `content`（骨架层比覆盖层可信），同类取最高分；
+   *     `count` = 该对背后的块级边数（"为什么连上"的旁证量，供悬停/报告用）
+   *   · 排序：层序 → 分降序 → docId 升序（最后两项保证同一库的两次输出逐字相同）
+   */
+  function relatedDocEdges({ space = null } = {}) {
+    if (!relEdges.length) return []
+    const ids = new Set((space ? docs.filter((d) => d.spaceId === space) : docs).map((d) => d.id))
+    const table = readView().blocks
+    const merged = new Map()
+    for (const r of relEdges) {
+      const kind = r?.why?.kind
+      if (kind !== 'tag' && kind !== 'content') continue
+      const a = docIdOfBlockId(r.from)
+      const b = docIdOfBlockId(r.to)
+      if (!a || !b || a === b) continue
+      if (!ids.has(a) || !ids.has(b)) continue
+      if (validateRelation(r, table) !== true) continue
+      const rank = kind === 'tag' ? 0 : 1
+      const score = typeof r.why.score === 'number' ? r.why.score : null
+      const key = a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`
+      const cur = merged.get(key)
+      if (!cur) { merged.set(key, { from: a, to: b, kind, score, rank, count: 1 }); continue }
+      cur.count += 1
+      if (rank < cur.rank || (rank === cur.rank && (score ?? -1) > (cur.score ?? -1))) {
+        cur.kind = kind
+        cur.score = score
+        cur.rank = rank
+      }
+    }
+    return [...merged.values()]
+      .sort((x, y) => x.rank - y.rank || (y.score ?? -1) - (x.score ?? -1)
+        || x.from.localeCompare(y.from) || x.to.localeCompare(y.to))
+      .map(({ rank, ...e }) => e)   // rank 是内部排序键，不进输出（同 relRank 的处理）
+  }
+
+  /**
    * 增量更新单个文档（唯一写入口仍是 persist()）。
    * **docIdx 必须保持不变**：原地替换 `docs[i]` + 摘除该 `di` 的 postings 后重插。
    * 若改成"删了重加"，其后所有文档下标位移，`inverted.jsonl` 立即失效。
@@ -1033,8 +1106,15 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     return { out, in: inb }
   }
 
-  /** 文档级图谱（GUI 可视化用）：只保留空间内且**已解析**的边。 */
-  function getGraph({ space = null, limit = 200 } = {}) {
+  /**
+   * 文档级图谱（GUI 可视化用）：只保留空间内且**已解析**的显式链接边。
+   *
+   * `related`（S5 Task 9）：**只在显式要求时**附加隐式关联层（`relatedDocEdges`），
+   * 缺省不带该字段 ⇒ 既有调用方（`/knowledge/graph` 不带参、既有测试的 deepEqual）零变化。
+   * 为什么默认不带：spec §7.5 —— 实测真实库当前只有 1 条显式链接，若默认把关联层也返回并画上，
+   * 图谱会从 1 条边骤增到几百条，第一印象被噪声淹没；图层要用户主动开。
+   */
+  function getGraph({ space = null, limit = 200, related = false } = {}) {
     const pool = space ? docs.filter((d) => d.spaceId === space) : docs
     const ids = new Set(pool.map((d) => d.id))
     const nodes = pool.slice(0, limit).map((d) => ({ id: d.id, label: d.title, spaceId: d.spaceId, kind: 'doc' }))
@@ -1045,7 +1125,12 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
         if (l.target && ids.has(l.target)) edges.push({ from, to: l.target, target: l.target })
       }
     }
-    return { nodes, edges }
+    const base = { nodes, edges }
+    // 显式要求 `related` 时：节点被 `limit` 截断 ⇒ 关联边也必须按**实际在场的节点**过滤，
+    // 否则会出现"边指向画布上不存在的节点"（xyflow 直接丢弃，图上看是缺边 = 像索引坏了）
+    if (related !== true) return base
+    const present = new Set(nodes.map((n) => n.id))
+    return { ...base, related: relatedDocEdges({ space }).filter((e) => present.has(e.from) && present.has(e.to)) }
   }
 
   return {
@@ -1068,6 +1153,8 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     search,
     /** 该块的关联锚点（读时校验视图；spec §7.1/§7.2）。Task 7/8 的 CLI/路由直接转发本口。 */
     getRelated,
+    /** 一篇文档内所有条目块的锚点（S5 Task 9 GUI 专用批量口；见 getRelatedForDoc 的 why） */
+    getRelatedForDoc,
     updateDoc, getDoc, listEntries, listTree, getLinks, getGraph,
     getDocs() { return docs },
     getIdf() { return idf },

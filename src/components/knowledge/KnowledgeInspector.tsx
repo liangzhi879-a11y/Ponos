@@ -4,10 +4,15 @@
 // （与 chat/RightStatusRail.tsx:178 的 `text-[11px] font-semibold text-tertiary uppercase tracking-wider`
 // 同一套视觉，两栏并排时不打架）。
 //
-// 数据来源（三段各一路，全部走 Task 2 的缓存层，不额外发明通道）：
+// 数据来源（四段各一路，全部走 Task 2 的缓存层，不额外发明通道）：
 //   · 大纲    ← 宿主已有的 `doc.blocks`（props 下传，不重复请求；挑 heading 的判定在 lib）
 //   · 反链    ← `useLinks(doc.id)` 的 `in`（后端 kernel/knowledge.mjs:589-592 给出"谁引用了我"）
+//   · 关联    ← `useRelatedDoc(doc.id)`（S5 Task 9）
 //   · 元信息  ← `doc` 的 spaceId/title/tags/块数 + `useStats()` 的 `indexAgeMs`
+//
+// **关联与反链必须分成两段**（spec §7.5 的硬要求）：语义相反——反链是别人**手写引用**了本文
+// （显式、用户意图明确），关联是内核**自动派生**的相似/同主题（隐式、可能过时、要读解释）。
+// 合成一栏会让用户以为关联也是手工建立的，进而在删文档时误判"这些引用不用管"。
 //
 // 反链为空是**常态**：知识库里绝大多数文档没有任何入链，不是错误、不是加载失败。
 // 所以空态文案是中性陈述（"暂无其他文档引用它"），既不用 error 色也不给重试钮——
@@ -16,14 +21,16 @@
 // 大纲点击复用 Task 5 的行定位能力：写 `targetLine` → 阅读视图的 effect 滚动并高亮 1.5s
 // （锚点就是块上的 `data-line`）。这里**不自己实现一套滚动**，否则高亮与滚动会各走各的。
 import { useMemo } from 'react'
-import { CornerDownRight } from 'lucide-react'
-import { useLinks, useStats } from '@/hooks/useKnowledge'
+import { CornerDownRight, Tag } from 'lucide-react'
+import { useLinks, useRelatedDoc, useStats } from '@/hooks/useKnowledge'
 import { useKnowledgeStore } from '@/stores/knowledgeStore'
 import { useTranslation } from '@/i18n/useTranslation'
 import { normalizeTags } from '@/lib/knowledgeBlocks'
 import type { KnowledgeDoc } from '@/lib/knowledgeApi'
 import { shortRef } from '@/lib/knowledgeGraph'
 import { ageParts, buildOutline, dedupeSources, outlineIndent } from '@/lib/knowledgeInspector'
+import { collectAnchors, formatScore, trimShared } from '@/lib/knowledgeRelations'
+import type { KnowledgeRelatedAnchor } from '@/lib/knowledgeApi'
 import { cn } from '@/lib/utils'
 import { KnowledgeEmpty } from './KnowledgeEmpty'
 
@@ -37,11 +44,14 @@ export function KnowledgeInspector({ doc }: KnowledgeInspectorProps) {
   // stats 是全局索引统计（与选中文档无关）；后端不给 indexAgeMs 时为 null → 显示"—"
   const { data: stats } = useStats()
   const { data: links } = useLinks(doc?.id ?? null)
+  const { data: relatedBlocks } = useRelatedDoc(doc?.id ?? null)
 
   const outline = useMemo(() => buildOutline(doc?.blocks), [doc])
   const tags = useMemo(() => normalizeTags(doc?.tags), [doc])
   // 去重：同一文档在一篇文里链接两次 → 后端 `in` 会给两条同 from 的记录（见 lib 注释）
   const backlinks = useMemo(() => dedupeSources(links?.in), [links])
+  // 整篇锚点汇总：按目标块去重、剔除 duplicate（去重提示不是关联，spec §5.5）
+  const relatedAnchors = useMemo(() => collectAnchors(relatedBlocks), [relatedBlocks])
 
   const gotoLine = (line: number) => {
     const st = useKnowledgeStore.getState()
@@ -58,6 +68,10 @@ export function KnowledgeInspector({ doc }: KnowledgeInspectorProps) {
     st.setDocId(docId)      // 换文档顺带清 targetLine（行号只对上一篇有意义）
     st.setView('read')
   }
+
+  // 关联锚点跳转：与条目卡片走**同一个** store 动作（打开文档 + 切阅读视图 + 按块定位）。
+  // 右栏不自己实现导航——两处各写一遍，"跳到哪一行/要不要切视图"必然漂移。
+  const openAnchor = (a: KnowledgeRelatedAnchor) => useKnowledgeStore.getState().openAtBlock(a.docId, a.blockId)
 
   const age = ageParts(stats?.indexAgeMs)
 
@@ -110,6 +124,34 @@ export function KnowledgeInspector({ doc }: KnowledgeInspectorProps) {
               )}
             </Section>
 
+            <Section title={t('knowledge.related')} count={relatedAnchors.length}>
+              {relatedAnchors.length ? relatedAnchors.map(a => (
+                <button
+                  key={a.blockId}
+                  type="button"
+                  onClick={() => openAnchor(a)}
+                  title={a.blockId}
+                  className="w-full flex items-start gap-1.5 px-2 py-[3px] text-left transition-colors hover:bg-hover"
+                >
+                  {/* 图标区分两层：同主题（tag）用 Tag，内容相似用 CornerDownRight —— 只靠文字层级
+                      在 212px 里不容易分辨，形状差异是零成本的第二编码 */}
+                  {a.why?.kind === 'tag'
+                    ? <Tag className="w-3 h-3 shrink-0 mt-px text-tertiary" />
+                    : <CornerDownRight className="w-3 h-3 shrink-0 mt-px text-tertiary" />}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[11px] text-secondary">{String(a.title ?? '').trim() || shortRef(a.docId)}</span>
+                    <span className="block truncate text-[10px] text-tertiary">{whyLine(a, t)}</span>
+                  </span>
+                </button>
+              )) : (
+                // 中性陈述：内核判定的隐式关联，没有就是没有（多数条目本就孤立），不是加载失败
+                <Hint>{t('knowledge.relatedEmpty')}</Hint>
+              )}
+              {/* 语义提示：关联是**自动派生**的，与上面"反链"（别人手写的引用）不是一回事。
+                  这行文字是 spec §7.5「两段语义不同」在界面上的落点（用户据此判断删文档时该不该管它） */}
+              {relatedAnchors.length > 0 && <Hint>{t('knowledge.relatedHint')}</Hint>}
+            </Section>
+
             <Section title={t('knowledge.meta')}>
               <MetaRow label={t('knowledge.metaSpace')} value={doc.spaceId} />
               <MetaRow label={t('knowledge.metaPath')} value={doc.rel} />
@@ -131,6 +173,22 @@ export function KnowledgeInspector({ doc }: KnowledgeInspectorProps) {
       </div>
     </div>
   )
+}
+
+/**
+ * 关联一行的"为什么"（列宽只有 212px，故 shared 词裁到 2 个）：
+ * `同主题 · <tag>` / `相似 0.21 · 功能 / 原型`。解释性文字是关联段的**主要价值**——
+ * 只给一个标题的关联列表与随机推荐无异（用户无法判断该不该点）。
+ */
+// 参数类型必须与 i18n 的 `t` 签名一致（`Record<string, string | number>`）：写成 `unknown`
+// 会因函数参数逆变而无法把 `t` 传进来（tsc TS2345）。
+function whyLine(a: KnowledgeRelatedAnchor, t: (k: string, p?: Record<string, string | number>) => string): string {
+  if (a.why?.kind === 'tag') return t('knowledge.relatedWhyTag', { tag: a.why.tag })
+  const score = formatScore(a.score)
+  const shared = trimShared(a.why?.kind === 'content' ? a.why.shared : [], 2)
+  const head = score ? t('knowledge.relatedWhyContent', { score }) : t('knowledge.relatedWhyContentPlain')
+  const words = shared.words.length ? ` · ${shared.words.join(' / ')}${shared.more > 0 ? ` +${shared.more}` : ''}` : ''
+  return head + words
 }
 
 /** 小节：`.micro`-风标题 + 分隔线（视觉与 RightStatusRail 的折叠小节一致） */

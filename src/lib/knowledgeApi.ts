@@ -8,6 +8,7 @@
 //   GET  /knowledge/entries?id=                  条目级清单（经验文件；非经验文档 → []）
 //   GET  /knowledge/search?q=&keywords=&topK=&mode=&spaces=
 //   GET  /knowledge/links?id=                    出边 + 反链
+//   GET  /knowledge/related?id=&doc=&limit=      关联锚点（块级 / 整篇；S5）
 //   GET  /knowledge/graph?space=&limit=          文档级图谱
 //   GET  /knowledge/stats                        索引统计
 //   POST /knowledge/reindex                     强制重建索引
@@ -114,6 +115,46 @@ export interface KnowledgeSearchResult {
 
 export interface KnowledgeLinkOut { to: string; target?: string | null }
 export interface KnowledgeLinks { out: KnowledgeLinkOut[]; in: Array<{ from: string }> }
+
+// —— 关联锚点（S5 §7.4）——
+
+/**
+ * 锚点的 `why`：**解释性字段，不是可选装饰**（spec §4）。
+ *   · `tag`      骨架层（同主题）：两端 tag 当前相等 → 零噪声，GUI 默认展开
+ *   · `content`  覆盖层（内容相似）：`shared` 必非空（无解释的边内核直接丢弃），GUI 默认折叠
+ *   · `duplicate` 疑似重复（cos ≥ 0.95）：**不是关联**（spec §5.5），GUI 独立提示
+ */
+export type KnowledgeRelatedWhy =
+  | { kind: 'tag'; tag: string }
+  | { kind: 'content'; score: number; shared: string[] }
+  | { kind: 'duplicate'; score: number }
+
+/** 锚点摘要（内核 relSummary）：**绝不含正文**——只有指路所需的最小信息 */
+export interface KnowledgeRelatedAnchor {
+  /** 目标**块** id（`<docId>#<n>`）：跳转要定位到条目，不是文档开头 */
+  blockId: string
+  docId: string
+  title: string
+  why: KnowledgeRelatedWhy
+  /** tag 边恒 null（内核不编造分数）；content/duplicate 有 */
+  score: number | null
+}
+
+/** `/knowledge/related?doc=` 的一项：某条目块的锚点（S5 Task 9 批量口） */
+export interface KnowledgeRelatedBlock {
+  blockId: string
+  related: KnowledgeRelatedAnchor[]
+}
+
+/** 图谱的隐式关联边（文档级；duplicate 不在其中——它不是关联） */
+export interface KnowledgeGraphRelatedEdge {
+  from: string
+  to: string
+  kind: 'tag' | 'content'
+  score: number | null
+  /** 该文档对背后的块级边数（关联"有多实"的旁证） */
+  count: number
+}
 
 export interface KnowledgeGraphNode { id: string; label: string; spaceId: string; kind: string }
 export interface KnowledgeGraphEdge { from: string; to: string; target: string }
@@ -298,6 +339,46 @@ export function search(params: KnowledgeSearchParams, opts?: KnowledgeCallOpts):
 export function getLinks(id: string, opts?: KnowledgeCallOpts): Promise<ApiResult<KnowledgeLinks>> {
   const query = qs({ id })
   return dedupe(`links:${query}`, () => call<KnowledgeLinks>(`/knowledge/links${query}`, { opts }))
+}
+
+/**
+ * 单个块的关联锚点（spec §7.4）。响应体是 CLI 包装对象 `{blockId, validate, limit, count, related}`，
+ * 故与 listTree/listEntries 一样**拆包**取 `related`（上游改成裸数组也兼容）。
+ * 空数组是**常态**（多数条目没有锚点），不是错误——UI 不得把空集渲染成加载失败。
+ */
+export function getRelated(id: string, params: { limit?: number } = {}, opts?: KnowledgeCallOpts): Promise<ApiResult<KnowledgeRelatedAnchor[]>> {
+  const query = qs({ id, limit: params.limit })
+  return dedupe(`related:${query}`, async () => {
+    const r = await call<unknown>(`/knowledge/related${query}`, { opts })
+    return r.ok ? { ok: true as const, data: unwrapList<KnowledgeRelatedAnchor>(r.data, 'related') } : r
+  })
+}
+
+/**
+ * **整篇文档**所有条目块的锚点（S5 Task 9 GUI 批量口，`?doc=<docId>`）。
+ * 为什么不循环调 `getRelated`：每次 HTTP 调用在 bridge 侧是一次新内核进程（约 50–70MB RSS），
+ * 一篇文档几十条条目 = 几十次 spawn；卡片行是**默认可见**的，这个代价不能接受（详见内核
+ * getRelatedForDoc 的 why）。返回只含"有锚点"的块，故前端无需过滤空壳。
+ */
+export function getRelatedDoc(docId: string, params: { limit?: number } = {}, opts?: KnowledgeCallOpts): Promise<ApiResult<KnowledgeRelatedBlock[]>> {
+  const query = qs({ doc: docId, limit: params.limit })
+  return dedupe(`relatedDoc:${query}`, async () => {
+    const r = await call<unknown>(`/knowledge/related${query}`, { opts })
+    return r.ok ? { ok: true as const, data: unwrapList<KnowledgeRelatedBlock>(r.data, 'blocks') } : r
+  })
+}
+
+/**
+ * 图谱的隐式关联层（仅当图层开关打开时调；`?related=1`）。**单独一个函数**而不是给
+ * `getGraph` 加参：图层默认关，缺省路径的请求与响应形状必须与 S2 完全一致（纯增量），
+ * 不给既有调用方留"多传一个参就变形状"的坑。此处只取 `related` 字段，节点/边由 getGraph 给。
+ */
+export function getGraphRelated(space?: string, limit?: number, opts?: KnowledgeCallOpts): Promise<ApiResult<KnowledgeGraphRelatedEdge[]>> {
+  const query = qs({ space, limit, related: 1 })
+  return dedupe(`graphRel:${query}`, async () => {
+    const r = await call<unknown>(`/knowledge/graph${query}`, { opts })
+    return r.ok ? { ok: true as const, data: unwrapList<KnowledgeGraphRelatedEdge>(r.data, 'related') } : r
+  })
 }
 
 /** `limit` 省略 = 后端默认 200（kernel/knowledge.mjs:596），前端不要硬编码更小的值 */
