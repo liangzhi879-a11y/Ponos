@@ -156,10 +156,10 @@ buildKnowledgeInjection({
 embedding 语义检索、跨库自动摘要、模型自主决定"该记什么"（仍走启发式 + 显式提示词）、
 注入内容的多轮衰减策略、知识质量自动评分、图表/代码块的特殊注入格式。
 
-## 10. 待确认决策点
+## 10. 决策记录（2026-09-13 已确认）
 
-| # | 决策 | 选项 |
+| # | 决策 | 确认结果 |
 |---|---|---|
-| D1 | 注入策略切换方式 | 直接替换（简单）／灰度（配置位 `knowledgeInjectMode: legacy\|unified`，可回退） |
-| D2 | 会话模式是否放行 `KnowledgeSearch` | 放行（只读，推荐）／沿用 `CHAT_DISALLOWED` 禁用 |
-| D3 | 抽调层粒度 | 块级摘要（省预算，推荐）／块级全文（信息全但费预算）／自适应（按预算动态） |
+| D1 | 注入策略切换方式 | **灰度**：配置位 `knowledgeInjectMode: 'legacy' \| 'unified'`，默认 `legacy`，验证后切 `unified`；出问题一键回退 |
+| D2 | 会话模式是否放行 `KnowledgeSearch` | **放行**（只读操作；与 `MemorySearch` 现状一致，`CHAT_DISALLOWED` 不含它） |
+| D3 | 抽调层粒度 | **自适应**：优先摘要（省预算），预算有余量时对高分块升级为全文 |
