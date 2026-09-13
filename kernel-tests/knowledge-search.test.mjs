@@ -57,8 +57,31 @@ test('searchKnowledge 索引不可用时不抛异常（降级为无命中）', (
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('S1：KnowledgeSearch 与 MemorySearch 同列 chat 禁用表', () => {
-  assert.ok(CHAT_MODE_DISALLOWED.includes('KnowledgeSearch'))
+// S3 D2（**有意的语义变更**）：chat 模式放行 KnowledgeSearch。S1 阶段它与 MemorySearch 同列
+// 禁用表；放行理由是"只读、不写盘、不执行、不出网"——chat 隔离要防的是本地执行/写盘能力
+// 泄漏，只读检索不构成该风险。MemorySearch **保持禁用**（O(N) 全量扫描，chat 无收益），
+// 故本条同时锁住"放行只针对这一项"。
+test('S3：KnowledgeSearch 已出 chat 禁用表，MemorySearch 仍在表内（放行只针对知识检索）', () => {
+  assert.ok(!CHAT_MODE_DISALLOWED.includes('KnowledgeSearch'), 'D2 决策：chat 放行 KnowledgeSearch')
+  assert.ok(CHAT_MODE_DISALLOWED.includes('MemorySearch'), 'MemorySearch 不在 D2 范围内，保持禁用')
+})
+
+// 假放行排查：工具在表内 ≠ 真能用。KnowledgeSearch 的 configDir 由 memoryRoot 上溯两级推导，
+// 若 chat 路径不传 memoryRoot，工具会恒回"检索不可用"——那等于放行了也白放。
+// 实测 kernel/cli.mjs:487 的 memoryRoot 是**无条件**传的（不随 chat 收窄），此条把它锁住。
+test('S3：chat 会话的 KnowledgeSearch 真的可用（非"放行但无 configDir"的假放行）', async () => {
+  const dir = fixture()
+  try {
+    const tools = createToolRegistry({
+      cwd: dir, addDirs: [], skipPermissions: true,
+      disallowedTools: CHAT_MODE_DISALLOWED,      // 复刻 chat 会话的注册参数
+      memoryRoot: join(dir, 'memory', 'personal'), // 复刻 kernel/cli.mjs:487 的无条件传参
+    })
+    assert.ok(tools.toolNames.includes('KnowledgeSearch'), 'chat 工具表应含 KnowledgeSearch')
+    const r = await tools.run({ name: 'KnowledgeSearch', input: { query: '四表联动', topK: 3 } }, {})
+    assert.equal(r.isError, false)
+    assert.match(r.content, /四表联动交叉校验/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 // ── 注册表接线（锁 configDir 的推导：memoryRoot = <configDir>/memory/personal）───

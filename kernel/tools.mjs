@@ -1050,7 +1050,15 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
 // 自行套用（不依赖宿主传参，宿主漏传也不会把本地能力泄进 chat）；bridge 的
 // CHAT_DISALLOWED 是逐项拷贝，仅为"跑的是旧缓存内核（不认 --session-mode）"的
 // 兼容兜底——两者一致性由 kernel-tests/chat-mode.test.mjs 的源码比对守住。
-export const CHAT_MODE_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch', 'KnowledgeSearch']
+//
+// S3 D2（2026-09-13，**有意的语义变更**）：KnowledgeSearch 出表 = chat 放行它。
+// S1 时它与 MemorySearch 同列，语义是"chat 禁一切本地能力"；D2 把该语义**收窄**为
+// "chat 禁本地执行/写盘/出网执行类能力"。理由：KnowledgeSearch 是只读检索——不写盘、
+// 不执行命令、不出网，隔离要防的风险（本地执行与文件改写的泄漏）它一项都不构成；
+// 而"知识库里以前记过什么"是纯聊场景的自然追问（问完仍需 Read 才能看全文，那条路仍禁）。
+// MemorySearch **不随之放行**：它每次都全量读文件 + 现算向量（O(N)），chat 场景无收益，
+// 放行只会让"同一能力两个入口、一个快一个慢"的口径更乱（S3 只对 D2 这一项做决策）。
+export const CHAT_MODE_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch']
 
 export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null, readAllowFiles = [], dynamicTools = null, flatSkillRoots = null }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
