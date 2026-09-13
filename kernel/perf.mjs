@@ -104,14 +104,16 @@ const ms1 = (key) => {
 
 /**
  * 单步汇总行（单行、定长字段名，便于 grep/awk）：
- *   [perf] turn=3 step=7 ms=6421 pre=24.1/1 req=6/3.9 est=4/341.2 tools=6/131.4 dynHit=0 ttfb=2840 gen=6120 tail=41.3
- * pre/req/est/tools = 「次数/毫秒」；ttfb/gen/tail = 毫秒；dynHit = 动态工具缓存命中次数。
+ *   [perf] turn=3 step=7 ms=6421 pre=24.1/1 req=6/3.9 reqHit=4 est=4/341.2 tools=6/131.4 dynHit=0 ttfb=2840 gen=6120 tail=41.3
+ * pre/req/est/tools = 「次数/毫秒」；ttfb/gen/tail = 毫秒；dynHit = 动态工具缓存命中次数；
+ * reqHit = 请求面记忆化命中次数（K1.4）。**命中数的意义**：没有它，"缓存被静默关掉/失效键
+ * 写错导致恒 miss" 与 "优化生效" 在 `req=` 的毫秒上长得一样（都是 3.9ms），无法区分。
  */
 export function perfLine(turn, step) {
   if (!perfOn()) return ''
   const ms = 'step' in marks ? (now() - marks.step).toFixed(0) : '-'
   return `[perf] turn=${turn} step=${step} ms=${ms}` +
-    ` pre=${pair('pre')} req=${pair('req')} est=${pair('est')} tools=${pair('tools')}` +
+    ` pre=${pair('pre')} req=${pair('req')} reqHit=${acc.get('reqHit')?.[0] ?? 0} est=${pair('est')} tools=${pair('tools')}` +
     ` dynHit=${acc.get('dynHit')?.[0] ?? 0} ttfb=${ms1('ttfb')} gen=${ms1('gen')} tail=${ms1('tail')}`
 }
 

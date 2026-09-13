@@ -14,7 +14,7 @@
 // health/result/stats 三个消费者共用；result 事件由 engine 发出（cli 不再重复）。
 import { streamMessages, classifyApiError, deadStreamError } from './api.mjs'
 import { abortError, beginAwaitingUser, endAwaitingUser } from './protocol.mjs'
-import { countCjk, estimateRequest, estimateMessage, clampOutputBudgetForWindow, requestTokens, DEFAULT_WINDOW } from './context.mjs'
+import { countCjk, estimateRequest, estimateMessage, clampOutputBudgetForWindow, requestTokens, DEFAULT_WINDOW, contentEpoch } from './context.mjs'
 import { costOf } from './cost.mjs'
 import { decideToolPermission } from './permissions.mjs'
 import { normalizeApprovalMode, deriveApprovalMode } from './approval-mode.mjs'
@@ -27,7 +27,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { createCompactor } from './compact.mjs'
-import { perfTime, perfTimeAsync, perfMark, perfSpan, perfStep, perfBegin } from './perf.mjs'
+import { perfTime, perfTimeAsync, perfMark, perfSpan, perfStep, perfBegin, perfCount } from './perf.mjs'
 
 // —— agent loop 兜底（本地模型死循环防护）——
 // 参考 claude-code/pi/dsh：三者主循环均默认无全局硬上限（靠 Esc 中断/可选 maxTurns/上下文
@@ -99,6 +99,10 @@ const STREAM_IDLE_MS = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_STREAM_IDLE_MS', 30
 // 又封死病态宽限（settings 旧值 447s 自动钳制；超 20 万字符由 adaptive 升 600s）。
 const FIRST_BYTE_HARD_CAP_MS = 480_000
 const STREAM_FIRST_BYTE_MS = LOOP_GUARD_OFF ? 0 : Math.min(envNonNeg('PONOS_STREAM_FIRST_BYTE_MS', 300_000), FIRST_BYTE_HARD_CAP_MS)
+// K1.4 请求面记忆化开关（默认 on）。**必须惰性读**：cli.mjs 的 settings.env 注入发生在
+// 所有 ESM 模块求值之后，写成模块级常量会永远读到 undefined（同 perf.mjs 头注 1）。
+let requestFaceCacheOn = null
+const isRequestFaceCacheOn = () => (requestFaceCacheOn === null ? (requestFaceCacheOn = process.env.PONOS_REQUEST_FACE_CACHE !== '0') : requestFaceCacheOn)
 // 上游零数据挂起（prefill 超首内容宽限）的自动重试上限：真死服务重试无益，但
 // 排队/瞬态负载场景一次重试常能恢复。0 = 关闭（直接按挂起收尾）。
 // 2026-09-10 无感愈合原则：预算 2 → 3（多一轮静默重试才落可见收尾）。
@@ -533,6 +537,68 @@ export function patchOrphanToolUses(msgs) {
   return result
 }
 
+// K1.4 请求面记忆化（2026-09-13 系统性优化）：`requestMessages()` 在一步内被调用 4–5 次
+// （估算 ×2、看门狗提供者、`reqFace`、溢出分支的裁剪/硬适配各一次），每次都要重跑
+// `patchOrphanToolUses(deriveHistory())` + 拼 system 前缀。实测 0.77ms/次 ⇒ ~3.9ms/步；
+// 更关键的是**同一数组身份**能让下游 K1.1 的估算记忆化整段命中（否则每步至少两次全量估算）。
+//
+// 失效键 = `(session.revision, historySkip, systemPrompt 引用, contentEpoch)`：
+//   · `revision` —— session 的派生纪元（见 session.mjs `deriveRev`），覆盖 append/压缩/恢复；
+//   · `historySkip` —— `loop --fresh` 窗口起点，只影响请求面、不入日志，故必须入键；
+//   · systemPrompt 存**字符串本身**、用 `===` 比（实测：V8 驻留字面量 + `===` 先比身份、
+//     不等再比内容 ⇒ 实为"内容比较 + 身份快路径"）。**绝不**把它拼进键**串**——那等于每次
+//     求值都付一遍 20KB 拼接成本，等于没优化。副作用是同内容的等值新串不误判为变
+//     （`setSystemPrompt` 传 `a + b` 不白付重建），代价仅命中路径上一次 ~20KB memcmp；
+//   · `contentEpoch` —— 保险丝：compact 的原地改写（`freeShrink`/`ageOutToolResults`）改的是
+//     块内容而非数组结构，理论上数组身份不变、内容已变。此处刻意不依赖"已证明无第三处改写
+//     点"这一结论，多一枚纪元即多一层保证（多失效一次只多算、不会错算）。
+//
+// **求值顺序有意为之**：先 `getBase()` 再 `getRevision()`。`revision` 在 `deriveMessages()`
+// 真实重建时才 +1，若反序，遇到"nodes 变了但还没重建"的窗口会先读到旧纪元、再拿到新数组
+// ⇒ 把新结果存在旧键下（不会错算，但白丢一次命中）。
+//
+// **唯一别名点**（人工确认，PR 须点名）：`fitRequestToWindow` 在装得下时 `return msgs`
+// 原样返回入参引用（engine.mjs 早退分支），被 `engine-fit-request.test.mjs` 的
+// `assert.equal(r, msgs)` 钉死。命中缓存后该引用会跨调用共享，故下游**必须**只读——
+// 已逐点审计：主循环 `reqFace` → `retryStream` → `api.streamMessages`（只 `filter`
+// 拆 system/rest）+ `JSON.stringify`；`estimateRequest` 只读；`trimOversizedRequestCopy`
+// 走 `JSON.parse(JSON.stringify(...))` 深拷贝。全仓 `messages` 无任何原地写。
+const REQUEST_FACE_FIELDS = ['getBase', 'getRevision', 'getSystem', 'getSkip']
+export function createRequestFace(opts = {}) {
+  for (const f of REQUEST_FACE_FIELDS) {
+    if (typeof opts[f] !== 'function') throw new TypeError(`createRequestFace: ${f} 必须是函数`)
+  }
+  const {
+    getBase, getRevision, getSystem, getSkip,
+    patch = patchOrphanToolUses,
+    epoch = contentEpoch,
+    on = isRequestFaceCacheOn,
+  } = opts
+  let cache = null
+  return function requestFace() {
+    if (!on()) {
+      cache = null // 关缓存时不留残留（重新打开不会命中陈旧项）
+      return build(getBase(), getSystem())
+    }
+    const base = getBase()               // 先派生（可能触发 revision 变更，见上）
+    const rev = getRevision()
+    const skip = getSkip()
+    const sys = getSystem()
+    const ep = epoch()
+    if (cache && cache.rev === rev && cache.skip === skip && cache.sys === sys && cache.epoch === ep) {
+      perfCount('reqHit')                // K0：命中率——「缓存没生效」与「缓存关了」的区别
+      return cache.face
+    }
+    const face = build(base, sys)
+    cache = { rev, skip, sys, epoch: ep, face }
+    return face
+  }
+  function build(base, sys) {
+    const msgs = patch(base)
+    return [{ role: 'system', content: sys }].filter((m) => m.content).concat(msgs)
+  }
+}
+
 // R3-2 计划尾检测：模型以"计划/承诺"措辞收尾但未执行工具调用（计划尾巴）。
 // 匹配文本尾部 120 字符内的计划词；完成语（完成/结束/以上就是/无需…）优先否决，
 // 避免误伤正常收尾。中英双语覆盖。
@@ -786,6 +852,10 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
 
   // 历史优先走 session.deriveMessages()；无 session 时退化为内存数组（测试直连场景）
   const memoryHistory = []
+  // K1.4 内存模式（无 session）的派生纪元：`memoryHistory.filter()` **每次新建数组**
+  // （身份天然不稳），但记忆化要的是"内容变没变"，故用一枚与**唯一写入点**同址的计数器
+  // 替代身份比较——计数器紧贴上面的数组声明，改历史而不 bump 在结构上不可能。
+  let memoryRev = 0
   // systemPrompt 默认可变：cli 在 createEngine 后经 setSystemPrompt 注入三层组装
   // 提示词（基础行为规范 + AGENTS.md + append），直连测试可经 opts.systemPrompt 预置
   let systemPrompt = opts.systemPrompt || ''
@@ -809,7 +879,11 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   function setFreshWindow() {
     historySkip = session ? session.deriveMessages().length : memoryHistory.length
   }
-  function pushMemory(m) { if (!session) memoryHistory.push(m) }
+  function pushMemory(m) {
+    if (session) return
+    memoryHistory.push(m)
+    memoryRev++ // 与 push 同址：唯一写入点即唯一 bump 点（K1.4）
+  }
 
   async function runTurnInternal({ content }) {
     // P4-5：provider 热切换后每轮重解析模型（下一轮立即生效，无需重建 engine）
@@ -869,10 +943,15 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     let idleDeadRetries = 0
     // 请求消息 = system 前缀（api.mjs 抽顶层）+ 派生历史；session/memory 两模式一致。
     // 孤儿 tool_use 补丁（P1-8）在派生后执行（纯派生不入日志，请求面永远合法）
-    const requestMessages = () => perfTime('req', () => {
-      const msgs = patchOrphanToolUses(deriveHistory())
-      return [{ role: 'system', content: systemPrompt }].filter((m) => m.content).concat(msgs)
+    // K1.4：按 (派生纪元, fresh 窗口, systemPrompt 引用, contentEpoch) 记忆化，一步内
+    // 多次求值只构造一次（无 session 的直连测试走同址 bump 的 memoryRev）
+    const requestFace = createRequestFace({
+      getBase: deriveHistory,
+      getRevision: () => (session ? session.revision() : memoryRev),
+      getSkip: () => historySkip,
+      getSystem: () => systemPrompt,
     })
+    const requestMessages = () => perfTime('req', requestFace)
     // pre-step 测压检查点：每轮请求前（工具结果/上轮产物已落日志之后）
     async function preStep() {
       if (!compactor || !session) return

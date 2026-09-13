@@ -30,7 +30,7 @@
 
 | 文件 | 动作 | 职责 |
 |---|---|---|
-| `kernel/perf.mjs` | 新建 | 观测内核：`perfCount`/`perfAdd`/`perfTime`/`perfMark`/`perfSpan`/`perfStep`/`perfLine`，`PONOS_PERF` 惰性开关 + **按 key** 重入保护 |
+| `kernel/perf.mjs` | 新建 | 观测内核：`perfCount`/`perfAdd`/`perfTime`/`perfMark`/`perfSpan`/`perfStep`/`perfLine`，`PONOS_PERF` 惰性开关 + **按 key** 重入保护（K1.4 增 `reqHit` 字段） |
 | `kernel-tests/engine-perf-log.test.mjs` | 新建 | K0 契约：行数=步数、step 连续、字段齐全、关开关时零输出、settings.json 通道也生效 |
 | `server/diag-info.test.mjs` | 改 | K0.2 契约测试补 `loopDriftMs`/`loopDriftMaxMs` 初值 + 埋点存在性断言 |
 | `electron/diag-monitor.cjs` | 改 | K0.3 `checkRenderHealth` 附渲染帧指标（**只加 detail，不改 status 判据**） |
@@ -38,7 +38,7 @@
 | `kernel-tests/context-cache.test.mjs` | 新建 | K1.1 命中/反例（`freeShrink` 后必失效）/密度 env/性能红线 |
 | `kernel/compact.mjs` | 改 | K1.1 `freeShrink` 内 `bumpContentEpoch()`（两处原地改写点） |
 | `kernel/engine.mjs` | 改 | K0 埋点、K1.3 惰性 firstByte、K1.4 `createRequestFace`、K3 档位状态与消费点 |
-| `kernel-tests/engine-request-face.test.mjs` | 新建 | K1.4 同 revision 同引用 / `rev+1` 重建 / `contentEpoch+1` 保险丝 |
+| `kernel-tests/engine-request-face.test.mjs` | 新建 | K1.4 同 revision 同引用 / `rev+1` 重建 / `contentEpoch+1` 保险丝 / 顺序不变式 / session 写路径 bump |
 | `kernel-tests/engine-adaptive-firstbyte-lazy.test.mjs` | 新建 | K1.3 惰性提供者调用次数与语义等价 |
 | `kernel/session.mjs` | 改 | K1.4 `revision`、K1.5 `dirEnsured`、K2.3 写队列 + `flushSession()`、K2.5 尾部修复 |
 | `kernel/cli.mjs` | 改 | K1.2 视图闭包内工具表缓存（`syncAppPermissionRules` 仍在缓存外） |
@@ -186,14 +186,35 @@ export function perfStep(turn, step)                  // 发一行 + 清账 + �
 
 ### Task 5: K1.4 `requestMessages()` 记忆化（第四）
 
-**Files:** Modify `kernel/engine.mjs`、`kernel/session.mjs`；Create `kernel-tests/engine-request-face.test.mjs`
+**Files:** Modify `kernel/engine.mjs`、`kernel/session.mjs`、`kernel/perf.mjs`、`kernel-tests/engine-perf-log.test.mjs`；Create `kernel-tests/engine-request-face.test.mjs`
 
-- [ ] 抽 `createRequestFace({getBase, getSkip, getSystem, getRevision})` 工厂并**导出**（纯逻辑可单测）
-- [ ] 键 = `(session.revision, historySkip, systemPrompt 引用)`——**绝不把 20KB systemPrompt 拼进 key 字符串**
-- [ ] `session.mjs` 增 `revision`，与 `invalidate()` **同址**（结构上不可能不同步）
-- [ ] **唯一别名点人工确认**：`fitRequestToWindow` 早退原样返回入参引用，被 `engine-fit-request.test.mjs` 的 `assert.equal(r, msgs)` 钉死 → **PR 描述里必须点名**
-- [ ] `PONOS_REQUEST_FACE_CACHE` 开关（默认 **on**）
-- [ ] 测试：同 revision 返回**同一数组引用**且计数版 `patch` 只被调 1 次；`rev+1` 必重建；`contentEpoch+1` 即使 `rev` 不变也必须重建；注入"每次返回新对象"的 patch → 断言重建后是新值
+- [x] 抽 `createRequestFace({getBase, getSkip, getSystem, getRevision})` 工厂并**导出**（纯逻辑可单测）
+- [x] 键 = `(session.revision, historySkip, systemPrompt 引用)`——**绝不把 20KB systemPrompt 拼进 key 字符串**
+- [x] `session.mjs` 增 `revision`，与 `invalidate()` **同址**（结构上不可能不同步）
+- [x] **唯一别名点人工确认**：`fitRequestToWindow` 早退原样返回入参引用，被 `engine-fit-request.test.mjs:21-22` 的 `assert.equal(r, msgs)` 钉死 → **PR 描述里必须点名**
+- [x] `PONOS_REQUEST_FACE_CACHE` 开关（默认 **on**）
+- [x] 测试：同 revision 返回**同一数组引用**且计数版 `patch` 只被调 1 次；`rev+1` 必重建；`contentEpoch+1` 即使 `rev` 不变也必须重建；注入"每次返回新对象"的 patch → 断言重建后是新值
+
+**实测**（261 条 / 102KB 合成历史 + 20KB 系统提示，一步按真实调用次数 5 次求值）：
+
+| | 请求面 5 次求值 | 含 5 次全量 `estimateRequest` |
+|---|---|---|
+| 关缓存 | 1.02ms | 5.15ms |
+| 开缓存 | **0.04ms** | **1.23ms** |
+
+直接收益 ~1ms/步（25×），联动收益 ~3.9ms/步——**同一数组身份让下游 K1.1 的估算从"每步 5 次冷算"塌缩为"1 次冷算 + 4 次命中"**（残余 1.23ms 即那次冷算，含刻意不缓存的 ~20KB system 段）。
+
+**有意偏差（2 处）**：
+1. **`revision` 有两处 +1 而非一处**：除 `invalidate()` 外，`deriveMessages()` 的**真实重建**分支也 +1。原计划「与 `invalidate()` 同址」只覆盖"写路径记得调 invalidate"的假设；加第二处后，任何**忘记** invalidate 却改了 `nodes` 的路径也会因 `nodes.join` 键变化触发重建 ⇒ 必然 +1。两处都触发时最多多失效一次（只多算、不会错算）。同时把 `rebuildSurface` 里直接 `deriveCache = null` 改为调 `invalidate()`，使「置空缓存」全仓仅一处。
+2. **新增 `[perf]` 字段 `reqHit=`**（同步改 `engine-perf-log.test.mjs` 的 `LINE_RE` 与断言，加 `reqBuilds ≤ 步数+1` 护栏）。理由：没有它，「缓存被静默关掉 / 失效键写错导致恒 miss」与「优化生效」在 `req=` 的毫秒上长得一样（都是 ~1ms/3.9ms），无法在真实任务里区分——而 K0 的全部意义就是让每项 K1 改动有前后数据背书。范式同 K1.2 的 `dynHit`。
+
+**两个实测澄清（都改写了测试的写法）**：
+- **systemPrompt 的键比较实际是「内容比较 + 身份快路径」**：V8 会驻留相同的字符串字面量，`===` 在字符串上先比身份、不等时再比内容。故测试里"同内容不同对象"**仍命中**——这比原计划设想的纯引用比**更好**（`setSystemPrompt` 传等值新串不白付重建），代价只是命中路径上一次 ~20KB memcmp（µs 级）。测试改为断言两个真实方向：内容变必重建 / 同内容不误判。
+- **`memoryRev`（无 session 的直连模式）必须有**：`deriveHistory()` 在无 session 时走 `memoryHistory.filter(...)`，**每次新建数组** ⇒ 身份天然不稳，且 `session.revision()` 不存在。故在 `memoryHistory` 声明旁加 `memoryRev`，并让**唯一写入点** `pushMemory` 同址 bump（与 session 侧同一手法）。
+
+**范围决策（有意不做）**：lane 路径的 `msgs()`（`engine.mjs` 内 `patchOrphanToolUses(store.deriveMessages())` + 拼前缀）**不套工厂**——全文件仅 `retryStream({messages: msgs()})` **一处调用**，一步只求值一次，记忆化零收益。少一处改动、少一处风险。
+
+**顺序不变式（最容易写错的一处，已单测钉死）**：工厂**先 `getBase()` 再 `getRevision()`**。因为 `revision` 在重建时才 +1，若反序，遇到"已 invalidate 但尚未重建"的窗口会先读到旧纪元、再拿到新数组 ⇒ 把新结果存在旧键下，白丢一次命中（第二次求值仍 miss，第三次才命中）。`顺序不变式：写入后首次求值即建档，同行第二次求值就命中` 用例即为此设。
 
 ---
 

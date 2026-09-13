@@ -29,10 +29,10 @@ const KERNEL_CLI = fileURLToPath(new URL('../kernel/cli.mjs', import.meta.url))
 // → iter1 回填 tool_result 收尾。恰 2 迭代/轮 = 恰 2 行 `[perf]`（step=0、step=1）。
 const FIXTURE = '[mock:tool-safe] 跑一次安全命令'
 
-// 单行形状：[perf] turn=1 step=0 ms=123 pre=1/12.3 req=5/3.9 est=2/4.1 tools=6/131.4 dynHit=0 ttfb=284 gen=612 tail=41
+// 单行形状：[perf] turn=1 step=0 ms=123 pre=1/12.3 req=5/3.9 reqHit=4 est=2/4.1 tools=6/131.4 dynHit=0 ttfb=284 gen=612 tail=41
 const LINE_RE = new RegExp(
   '^\\[perf\\] turn=(\\d+) step=(\\d+) ms=(\\d+|-)' +
-  ' pre=(\\d+)/(\\d+(?:\\.\\d+)?) req=(\\d+)/(\\d+(?:\\.\\d+)?)' +
+  ' pre=(\\d+)/(\\d+(?:\\.\\d+)?) req=(\\d+)/(\\d+(?:\\.\\d+)?) reqHit=(\\d+)' +
   ' est=(\\d+)/(\\d+(?:\\.\\d+)?) tools=(\\d+)/(\\d+(?:\\.\\d+)?)' +
   ' dynHit=(\\d+) ttfb=(\\d+(?:\\.\\d+)?) gen=(\\d+(?:\\.\\d+)?) tail=(\\d+(?:\\.\\d+)?)$',
 )
@@ -120,11 +120,12 @@ test('PONOS_PERF=1：行数 = 步数、step 连续、字段齐全', async () => 
 
     const steps = []
     let rebuilds = 0
+    let reqBuilds = 0
     for (const line of r.lines) {
       const m = LINE_RE.exec(line)
       assert.ok(m, `行形状不符（字段缺失/改名/分隔符变化）：${line}`)
-      const [, turn, step, , preN, , reqN, , estN, , toolsN] = m
-      const dynHitN = Number(m[12])
+      const [, turn, step, , preN, , reqN, , reqHit, estN, , toolsN] = m
+      const dynHitN = Number(m[13])
       assert.equal(turn, '1', `单轮用例 turn 应为 1：${line}`)
       steps.push(Number(step))
       // 每步都应真实走到这三条路径（est 是 K1.1 的主指标，req 是 K1.4、tools 是 K1.2）：
@@ -134,13 +135,19 @@ test('PONOS_PERF=1：行数 = 步数、step 连续、字段齐全', async () => 
       assert.ok(Number(estN) >= 1, `est 次数应 ≥1：${line}`)
       assert.ok(Number(toolsN) >= 1, `tools 次数应 ≥1：${line}`)
       assert.ok(dynHitN <= Number(toolsN), `命中数不可能超过求值次数：${line}`)
+      assert.ok(Number(reqHit) <= Number(reqN), `请求面命中数不可能超过求值次数：${line}`)
       // 每个非命中的求值 = 一次工具表构建（K1.2 前是 22.2ms/次 × 6 次/步）
       rebuilds += Number(toolsN) - dynHitN
+      // 每个非命中的请求面求值 = 一次 patchOrphanToolUses + 拼前缀（K1.4 前是 0.77ms × 4–5）
+      reqBuilds += Number(reqN) - Number(reqHit)
     }
     // K1.2 端到端护栏：缓存真的在服务请求（被静默关掉 / 键一直在变 → 这里的构建数会飙升）。
     // 上界 2 = 首轮"签名补上文件集"的固有代价（未开帐时点，见 dyntools.toolSourceSignature）；
     // 稳态下每步都该是 0 次构建。不设缓存时这个数 ≈ 步数 × 6。
     assert.ok(rebuilds <= 2, `稳定盘面整轮至多 2 次构建（实际 ${rebuilds}）：\n${r.lines.join('\n')}`)
+    // K1.4 端到端护栏：同理。reqN 每步通常 4–5，稳态下非命中数应只剩"每步首次"——即 ≤ 步数。
+    // 不设缓存时这个数 = ΣreqN（每步 4–5 倍）。上界放宽到"步数 + 1"以容忍首步的边界形态。
+    assert.ok(reqBuilds <= steps.length + 1, `每步至多 1 次请求面构建（实际 ${reqBuilds}，步数 ${steps.length}）：\n${r.lines.join('\n')}`)
     // 不重不漏：emit 在迭代头 + 轮末补最后一步 ⇒ 恰 0..N-1
     assert.deepEqual(steps, steps.map((_, i) => i), `step 号应连续 0..N-1（实际 ${JSON.stringify(steps)}）\n${r.lines.join('\n')}`)
   } finally { r.cleanup() }

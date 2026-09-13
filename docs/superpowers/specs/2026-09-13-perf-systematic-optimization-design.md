@@ -105,7 +105,15 @@
   - **实测**（真机请求面口径）：中位 273KB/208 条 = **1.19ms/请求**、最大 295KB/224 条 = **1.90ms/请求**、长历史 1.32MB/1835 条 = **9.22ms/请求**；惰性化后正常首字节路径 **0 次求值**（原计划记的 16.7ms 出自另一份 tool_result 更密的夹具）。省 1–2ms/步、几十 ms/轮——**量级不大但代价为零**（不引入任何新状态），历史越长收益越大。
   - **唯一差异在时机不在结果**：提供者调用从「每请求恒 1 次」变为「仅 prefill 超 `ms` 零数据时 1 次，常态 0 次」；返回值不变（`adaptiveFirstByteMs` 自带 try/catch，watchdog 侧再兜一层为 `ms`，两层同指一个宽限值）。回退 = 调用点改回传值（1 行）。
   - **有意偏差**：`makeIdleWatchdog` 由私有改为**导出**（纯增量）——否则「提供者是否真被惰性调用」无法直接测，只能间接推断。
-- **K1.4 `requestMessages()` 记忆化**：抽 `createRequestFace(...)` 工厂并导出。键用**引用比较**而非把 20KB systemPrompt 拼进字符串。**唯一别名点**：`fitRequestToWindow` 早退时原样返回入参引用，且被 `engine-fit-request.test.mjs` 的 `assert.equal(r, msgs)` 钉死。
+- **K1.4 `requestMessages()` 记忆化**：抽 `createRequestFace(...)` 工厂并导出。键用**引用比较**而非把 20KB systemPrompt 拼进字符串。**唯一别名点**：`fitRequestToWindow` 早退时原样返回入参引用，且被 `engine-fit-request.test.mjs:21-22` 的 `assert.equal(r, msgs)` 钉死。
+  - **键四分量** = `(session.revision, historySkip, systemPrompt, contentEpoch)`。`revision` 是 session 的派生纪元（每次 `deriveMessages()` **真实重建**即 +1）；`contentEpoch` 是保险丝（compact 原地改写只改块内容、不改数组结构）。
+  - **`revision` 有两处 +1**：`invalidate()`（写路径立即生效）与 `deriveMessages()` 的重建分支（兜住"忘了 invalidate 却改了 nodes"）。同时把 `rebuildSurface` 的 `deriveCache = null` 改为调 `invalidate()` ⇒ 全仓"置空缓存"仅一处。两处同触发只多失效一次（只多算、不会错算）。
+  - **工厂必须先 `getBase()` 再 `getRevision()`**（顺序不变式）：`revision` 在重建时才 +1，反序会在"已失效未重建"的窗口里把新结果存到旧键下，白丢一次命中。已单测钉死。
+  - **systemPrompt 的键比较实测是「内容比较 + 身份快路径」**（V8 驻留字面量 + `===` 先比身份再比内容），比纯引用比更好：传等值新串不白付重建，代价仅一次 ~20KB memcmp。
+  - **内存模式（无 session）需独立计数器 `memoryRev`**：`deriveHistory()` 走 `memoryHistory.filter()` **每次新建数组**，身份不可用；在数组声明旁加计数器、让唯一写入点 `pushMemory` 同址 bump。
+  - **实测**（261 条 / 102KB + 20KB 系统提示，一步 5 次求值）：请求面 1.02ms → **0.04ms**；含 5 次全量估算 5.15ms → **1.23ms**（联动 K1.1：数组身份稳定 ⇒ 4/5 次估算命中）。
+  - **范围**：lane 路径的 `msgs()` 一步只求值 **1 次**（仅 `retryStream` 一处），记忆化零收益，**不套工厂**。
+  - 观测：新增 `[perf]` 字段 `reqHit=`——否则「缓存被静默关掉/失效键写错恒 miss」与「优化生效」在 `req=` 的毫秒上无法区分。开关 `PONOS_REQUEST_FACE_CACHE=0`。
 - **K1.5 append**：`mkdirSync` 去重。**硬约束：不得改成常驻 fd**——`setEntryUsage` 用 `writeFileSync(tmp)+renameSync` 整体替换文件，常驻 fd 会指向被 unlink 的旧 inode → **静默丢写**。
 - **K1.6 估算锚定（二期，默认关）**：以最近一条带 usage 的条目为锚，只估尾部（参考 claude-code `tokens.ts` / codex `history.rs`）。**风险在方向**：低估 → 压缩触发过晚 → 溢出 ⇒ 必须先量化误差（>5% 不上线）；**压缩落地即作废锚点**。
 
@@ -185,7 +193,8 @@
 | 风险 | 缓解 / 回退 |
 |---|---|
 | **缓存陈旧**（最大正确性风险） | 原地改写仅两处（已 grep 证明）→ `bumpContentEpoch()` 写在 `freeShrink` 内且同 PR；反例测试必红；每项独立 env 开关，一次只开一个 |
-| `requestMessages()` 共享数组被下游写 | 已逐点审计；唯一别名点 `fitRequestToWindow` 被现有测试钉死 —— **PR 描述必须点名** |
+| `requestMessages()` 共享数组被下游写 | 已逐点审计（`messages` 全仓无原地写）；唯一别名点 `fitRequestToWindow` 早退返回入参引用，被 `engine-fit-request.test.mjs:21-22` 钉死 —— **PR 描述必须点名** |
+| 请求面缓存的 `revision` 与派生缓存**脱钩** | 两处 +1（`invalidate()` + 重建分支）+ 唯一置空点收拢到 `invalidate()` ⇒ 结构上不可能不同步；内存模式另有同址 bump 的 `memoryRev`；反例测试（append/压缩/load/epoch 各向）全覆盖 |
 | 工具表缓存漏掉 Spec/工作流改动 | 名字列表入键（增删改名 100% 正确）+ **发现层实际读过的文件** `(mtime,size)` 覆盖编辑 + 检测不到变化一律不缓存；权限规则因每次跑 `syncAppPermissionRules` 而不受影响 |
 | 工具表缓存的**已知残留**：既存目录内新增 `<dir>/workflow.yml` | 名字列表看不见（父目录名未变）⇒ 等该根条目增删/已知文件编辑/重启内核。三态可测；常见写入路径均不受影响；二期 `tools_dirty` 收口 |
 | **Windows mtime 粒度**（15.6ms） | `size` 与名字列表双入键；等长改写用例显式 `sleep(30)` 暴露；粒度不可靠则默认关 |

@@ -56,6 +56,14 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
   let compactCount = 0
   let nextSeq = 1
   let deriveCache = null // { key, messages, seqs }
+  // 派生纪元（K1.4 请求面记忆化的失效键，2026-09-13 系统性优化）。语义 = 「deriveMessages()
+  // 再调一次会不会给出**同一个数组**」。两处 +1，是为让它与 deriveCache 身份**结构上**不可能
+  // 不同步：① invalidate()（写路径显式失效，立即生效——否则"已失效但尚未重建"的窗口里
+  // 读到的还是旧值，而键的另一半 getBase() 却已拿到新数组 ⇒ 拿旧数组当新结果缓存）；
+  // ② deriveMessages() 真实重建分支（兜住任何**忘记**调 invalidate() 就改了 nodes 的路径
+  // ——正是"枚举所有写点"最容易漏的那类）。两边都 +1 时最多多失效一次，只多算、不会错算。
+  let deriveRev = 0
+  const bumpRev = () => { deriveRev++ }
 
   // 逐行流式读取（分段加载：超大 transcript 不整文件进内存；损坏行跳过）
   function readLines() {
@@ -119,7 +127,9 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
       const cut = nodes.length - maxEntries
       nodes.splice(0, cut)
     }
-    deriveCache = null
+    // 走 invalidate() 而非直接置空：这是**唯一**能让 deriveCache 变 null 的第二处，
+    // 收拢成一处后「置空 deriveCache」与「deriveRev+1」在结构上不可能分家（K1.4）
+    invalidate()
   }
 
   async function load() {
@@ -132,7 +142,7 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
     return { entries, surface: { nodes, replaceGeneration }, compactCount, metaVersion: metaEntry ? Number(metaEntry.schemaVersion) : 1, foreign }
   }
 
-  function invalidate() { deriveCache = null }
+  function invalidate() { deriveCache = null; bumpRev() }
 
   function append(entry) {
     try {
@@ -303,8 +313,11 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
         messages.push(entry.message)
       }
       deriveCache = { key, messages, seqs }
+      bumpRev() // 真实重建 ⇒ 派生数组身份已变（K1.4 纪元，见 deriveRev 声明处）
       return messages
     },
+    // 派生纪元（K1.4）：值本身无意义，**变化**才有意义——单调不减，每次派生结果换身份即变。
+    revision() { return deriveRev },
     // 由 deriveMessages() 返回的消息对象反查其 seq（对象引用一致；供压缩遮蔽区间落盘）
     seqsForMessages(covered) {
       if (!deriveCache) this.deriveMessages()
