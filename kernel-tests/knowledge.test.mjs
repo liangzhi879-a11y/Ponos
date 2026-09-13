@@ -547,3 +547,26 @@ test('search 支持逗号串空间过滤（HTTP ?spaces=a,b 的形式）', async
     assert.equal(store.search({ query: '内容', spaces: ['不存在'], topK: 20 }).count, 0)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+test('截断的 inverted.jsonl 触发重建而非静默返回空集', async () => {
+  const { dir } = makeFixture()
+  try {
+    const idx = join(dir, 'knowledge', '.index')
+    const s1 = createKnowledgeStore({ configDir: dir })
+    s1.load({ force: true })
+    const before = s1.search({ query: '文件传输助手', topK: 5 })
+    assert.ok(before.count > 0, '基线应有命中')
+    // 模拟半写：把 inverted.jsonl 截掉一半（解析仍"合法"，只是 postings 变少）
+    const f = join(idx, 'inverted.jsonl')
+    const txt = readFileSync(f, 'utf-8')
+    writeFileSync(f, txt.slice(0, Math.floor(txt.length / 2)), 'utf-8')
+    // 新 store 加载：必须判定为损坏并重建，结果与截断前一致
+    const s2 = createKnowledgeStore({ configDir: dir })
+    s2.load()
+    assert.equal(s2.search({ query: '文件传输助手', topK: 5 }).count, before.count, '截断后应重建并恢复命中')
+    // 重建后写盘的 manifest 指纹应与实际行数一致
+    const man = JSON.parse(readFileSync(join(idx, 'manifest.json'), 'utf-8'))
+    const invLines = readFileSync(join(idx, 'inverted.jsonl'), 'utf-8').split('\n').filter(Boolean).length
+    assert.equal(man.invLines, invLines)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

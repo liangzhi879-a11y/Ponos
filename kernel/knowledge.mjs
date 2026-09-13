@@ -246,6 +246,11 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
       blocks: docs.reduce((s, d) => s + d.blocks.length, 0),
       spaces: Object.fromEntries(Object.entries(spaceCount).map(([k, v]) => [k, { docs: v }])),
       files,
+      // 完整性指纹：加载时用来识别「半写/截断」的索引。没有它，被截断的 inverted.jsonl
+      // 会解析成「合法但更少」的 postings——不报错，却让检索静默返回空集（实测 count 0）。
+      // 索引是派生物，宁可判定损坏后重建，也不要拿着残缺索引装正常。
+      docLines: rows.length,
+      invLines: inv.length,
     }
     const tags = {}
     for (const d of docs) for (const t of d.tags) (tags[t] ||= []).push(d.id)
@@ -277,8 +282,13 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
     if ((manifest.version ?? 0) !== INDEX_VERSION) return false
     docs = parseJsonl(raw('docs.jsonl'))
     if (!docs.length && (manifest.docs || 0) > 0) return false
+    // 截断检测（见 persist 里 docLines/invLines 的注释）：实际条数少于记录值即为半写，
+    // 判定损坏让上层重建。用 `<` 而非 `!==`——多出条目只可能是未来的增量追加，不算损坏。
+    if (typeof manifest.docLines === 'number' && docs.length < manifest.docLines) return false
+    const invRows = parseJsonl(raw('inverted.jsonl'))
+    if (typeof manifest.invLines === 'number' && invRows.length < manifest.invLines) return false
     const inv = new Map()
-    for (const e of parseJsonl(raw('inverted.jsonl'))) inv.set(e.g, { g: e.g, df: e.df, p: e.p })
+    for (const e of invRows) inv.set(e.g, { g: e.g, df: e.df, p: e.p })
     inverted = inv
     const linkRows = parseJsonl(raw('links.jsonl'))
     linkOut = new Map()
