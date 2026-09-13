@@ -53,8 +53,40 @@ function readPriceEnv(env = process.env) {
   }
 }
 
-export function runUsage({ configDir = '', sessionId = '', project = '', from = '', to = '', scope = 'all' } = {}) {
-  const entries = collectTranscriptFiles({ configDir, sessionId, project, from, to })
+// 今日窗口的 UTC 日界（K2.0，2026-09-13 系统性优化）。**三处必须同源**：transcript 的
+// timestamp 由 session.mjs 的 `new Date().toISOString()` 写入，stats.mjs byDate 按
+// `ts.slice(0,10)` 分桶，日期过滤也按 `ts.slice(0,10)` 比较（见上）⇒ 同一个 UTC 日界。
+// **不可改成本地日界**：本地 from 配 UTC 切片，会把「本地今天 00:00–08:00（UTC+8 的上午）」
+// 的条目当成昨天而漏掉——错误方向是**静默少算**，比现在的多算更隐蔽。now 可注
+// （测试用，避开跨零点抖动）。
+export function todayFrom(now = new Date()) {
+  return now.toISOString().slice(0, 10)
+}
+
+export function runUsage({ configDir = '', sessionId = '', project = '', from = '', to = '', scope = 'all', now } = {}) {
+  // K2.0 日期下推（现存 bug 修复）：`scope` 此前**只**驱动 bySession 开关（:58 的
+  // `scope === 'session'`），from/to 恒取自 args ⇒ `scope='today'` 与 `'all'` 的计算量完全
+  // 相同（都是全量历史聚合），而唯一的调用方把它当「今日」用：驾驶舱卡
+  // （useCockpitOverview.ts:141 `fetchUsage({scope:'today'})`，每 5s 轮询、GUI 侧超时也正好
+  // 5s）与卡片文案「今日 / requests=今日 turns」。故把 today 真正下推成日期过滤。
+  // **收益边界（实测，勿高估）**：过滤发生在 collectTranscriptFiles 的**逐行 parse 之后**
+  // （见上 `ts.slice(0,10)` 比较），故省掉的是**聚合**（48000 条 557.6ms → 477.3ms，14%），
+  // **解析一分未省**（470.7ms，占绝对大头）。本改动的价值是**正确性**（数字与「今日」文案
+  // 终于对得上），性能大头在 K2.2 的剪枝与水位线缓存（只解析当天文件 ≈ 14.2ms）。
+  // scope 的两类语义（文档化的 2026-09-08 spec:65 只有 session|project|all，today 是 GUI 引入的）：
+  //   session|project|all = **分组维度**（bySession 开关），过滤靠独立的 sessionId/project 参数；
+  //   today               = **时间窗口**，是本函数新支持的语义。
+  // 窗口取**闭区间** [今天, 今天]，from 与 to 都要推导——只给 from 会让窗口变成
+  // `[今天, ∞)`，机器时钟回跳/NTP 校正写出的"未来条目"会被算进「今日」（静默多算，
+  // 正是本次要修的病灶方向）。显式传入的 from/to 各自优先于推导值（它们是文档化契约里
+  // 更具体的参数；实际没有调用方与 scope=today 同时传）。
+  const isToday = scope === 'today'
+  const day = isToday ? todayFrom(now) : ''
+  const entries = collectTranscriptFiles({
+    configDir, sessionId, project,
+    from: from || day,
+    to: to || day,
+  })
   const agg = aggregateUsage(entries, { bySession: scope === 'session' })
   const prices = readPriceEnv()
   const byModelCostUsd = {}

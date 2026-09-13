@@ -46,10 +46,10 @@
 | `kernel-tests/dyntools-cache.test.mjs` | 新建 | K1.2 命中/失效/权限副作用/异常不缓存 |
 | `kernel/dyntools.mjs` | 改 | K1.2 `toolSourceSignature()` + `createToolsViewCache()`（LRU≤8）；`buildWorkflowTools` 挂非枚举 `sourcePaths` |
 | `kernel/workflow-dsl.mjs` | 改 | K1.2 `discoverWorkflows` 元数据补 `path`（文件级签名的输入集 = 发现层实际读过的文件） |
-| `kernel/readonly.mjs` | 改 | K2.0 `scope=today` 日期下推；K2.2 `(mtime,size)` 剪枝；K2.5 尾部修复 |
+| `kernel/readonly.mjs` | 改 | **K2.0 已完成**（`todayFrom()` + 闭区间 `[今天,今天]`）；K2.2 `(mtime,size)` 剪枝；K2.5 尾部修复 |
 | `server/kernel-readonly.mjs` | 改 | K2.1 异步 spawn 版（照 `bridge.mjs` 的 `spawn`+Promise 写法） |
 | `server/bridge.mjs` | 改 | K0.2 耗时日志、K2.1 `await`、K2.2 水位线缓存 + 单飞锁 |
-| `kernel-tests/usage-scope.test.mjs` | 新建 | K2.0 日期下推正确性（今日 vs 全量口径） |
+| `kernel-tests/usage-scope.test.mjs` | 新建 | **K2.0 已完成**（10 条：今日口径/UTC 零点边界/闭区间/`session` 不回归/入口透传/变异验证） |
 | `src/hooks/useYFWCLI.ts` | 改 | K0.3 帧指标采集（内存环形缓冲 + 5s 上报）、R1 日志门控、R5 队列压力判据 + 16ms 调度 |
 | `electron/main.cjs` | 改 | R1 单一咽喉的前缀采样/限流 |
 | `src/stores/uiStore.ts` | 改 | R2 瞬时态 action「调用 `set` 之前提前 return」 |
@@ -242,11 +242,33 @@ export function perfStep(turn, step)                  // 发一行 + 清账 + �
 
 ### Task 7: K2.0 `scope=today` 日期下推（第一优先，现存 bug）
 
-**Files:** Modify `kernel/readonly.mjs`（必要时 `src/lib/usageUi.ts`）；Create `kernel-tests/usage-scope.test.mjs`
+**状态：已完成（commit `K2.0`，测试 `kernel-tests/usage-scope.test.mjs` 10 条全绿，变异测试 7/10 转红）**
 
-- [ ] `runUsage` 里 `scope==='today'` 时推导 `from = new Date().toISOString().slice(0,10)`（复用现成的 `ts.slice(0,10)` 比较）
-- [ ] 改动前对照 `docs/superpowers/plans/2026-09-08-agentloop-prod-upgrade.md:267-272,598` 的 `runReadonly` 契约
-- [ ] 测试：造跨越两天的 transcript → `scope=today` 只统计今天；`scope=all` 口径不变
+**Files:** Modify `kernel/readonly.mjs`（`src/lib/usageUi.ts` **未改**——修在内核侧，一处覆盖 CLI 与 bridge 两条入口）；Create `kernel-tests/usage-scope.test.mjs`
+
+- [x] `runUsage` 里 `scope==='today'` 时推导日期窗口（复用现成的 `ts.slice(0,10)` 比较）
+- [x] 改动前对照 `docs/superpowers/plans/2026-09-08-agentloop-prod-upgrade.md:267-272,598` 的 `runReadonly` 契约
+- [x] 测试：造跨越两天的 transcript → `scope=today` 只统计今天；`scope=all` 口径不变
+
+**实施中的两处修正（与本任务原描述不同，均有测试/契约背书）**
+
+1. **`to` 必须一起推导（闭区间）**，原描述只推导 `from`。只给 `from` 会让窗口变成 `[今天, ∞)`：机器时钟回跳/NTP 校正写出的"未来条目"会被算进「今日」——**静默多算**，正是本次要修的病灶方向。实测用的跨天夹具直接把这条暴露成了红测（`6 !== 2`，把次日条目也算了进来）。
+2. **`scope` 实为两类语义**，文档化契约（`specs/2026-09-08-agentloop-prod-upgrade-design.md:65`）里只有 `session|project|all` 且它们是**分组维度**（`bySession` 开关，过滤靠独立的 `sessionId`/`project` 参数），`today` 是 GUI 引入的**时间窗口**。故新增「不回归」测试：`scope='session'` 的多天总量必须与 `'all'` 逐字节相等。`today` 不在原契约内 ⇒ 本次是纯增量，无破坏面。
+
+**实测（240 文件 / 33.4MB / 48000 条夹具；中位值）**
+
+| 项 | 实测 |
+|---|---|
+| `collectTranscriptFiles` 全量解析 | 470.7ms |
+| `runUsage` all | 557.6ms |
+| `runUsage` today（本次改动后） | 477.3ms |
+| **聚合侧净省** | **80ms = 14%** |
+| 真实 CLI 全进程 `--usage`（`execFileSync`） | 809ms（其中纯启动+模块加载 150ms = 19%） |
+| 只解析"当天写过"的文件（K2.2 剪枝后模拟） | **14.2ms** |
+
+**结论（与原计划判断相反，须据此调整后续优先级）**：K2.0 的价值是**正确性**（UI 文案与数字终于对得上），**不是性能**——`from`/`to` 在 `collectTranscriptFiles:33-40` 里是**逐行 parse 之后**才比较的，故它省掉的是聚合（14%），解析（84%）一分未省。**K2 的性能大头在 K2.2 的剪枝与水位线缓存**（470ms → 14ms 的空间），其次 K2.1（150ms 固定底 + 阻塞桥事件循环）。
+
+**另有一项决定性发现（改变 K2.2 的设计重心）**：同 57MB 夹具下，**文件数**才是乘数而非字节数——240 文件 731ms vs 4800 文件 **3271ms**（4.5×），其中仅 `statSync` 就 218.8ms。这解释了真机 `/api/usage` 的 10.8–19.6s（合成 34MB 夹具只复现出 0.81s，故真机必是**数万个小 transcript 文件**的量级）。⇒ K2.2 的重心是**水位线缓存（命中即零扫描）**，而非"每次轮询都 stat 一遍再剪枝"——4800 文件光 stat 就 219ms，5s 轮询下仍然不够。
 
 ---
 
@@ -262,12 +284,17 @@ export function perfStep(turn, step)                  // 发一行 + 清账 + �
 
 ### Task 9: K2.2 只读聚合剪枝 + 日期水位线缓存
 
+> **重心已按 Task 7 的实测调整（先读那段再动手）**：真机的乘数是**文件数**（同 57MB：240 文件 731ms vs 4800 文件 3271ms），
+> 而**光 `statSync` 4800 个文件就要 218.8ms** ⇒ 「每次轮询都 stat 一遍再剪枝」在 5s 轮询下**仍然不够**。
+> 故顺序是 **① 水位线缓存（命中即零扫描）必须先做**，② `(mtime,size)` 剪枝作为缓存未命中时的补救。
+
 **Files:** Modify `kernel/readonly.mjs`、`server/bridge.mjs`
 
-- [ ] 按 `(mtimeMs,size)` 跳过没变的文件（transcript 是 append-only）
-- [ ] 桥侧落带**版本号 + 日期水位线**的聚合缓存，只重算水位线之后那一段再合并
+- [ ] **①（先做）** 桥侧落带**版本号 + 日期水位线**的聚合缓存，只重算水位线之后那一段再合并（`{version, lastComputedDate, daily…}`）
+- [ ] **②（后做）** 按 `(mtimeMs,size)` 跳过没变的文件（transcript 是 append-only）；注意它是**逐文件 `statSync`**，故只在缓存未命中时才付这份钱
 - [ ] **单飞锁** + `inFlight` 去重 ⇒ 并发查询只扫一次（驾驶舱 5s 轮询与 5s 超时同值，慢时必然堆积）
 - [ ] `version` 不匹配整体重算
+- [ ] **实测验收**：真机（非合成夹具）跑 `/api/usage?scope=today` 连续两次，第二次应 ≈ 0 扫描；对照 Task 7 的 809ms / 470ms 基线
 
 ---
 
