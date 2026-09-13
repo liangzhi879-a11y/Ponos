@@ -570,3 +570,14 @@ test('截断的 inverted.jsonl 触发重建而非静默返回空集', async () =
     assert.equal(man.invLines, invLines)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+test('knowledgeRoot：<configDir>/knowledge，且 configDir 缺省不抛错', () => {
+  // 直接测而不是只靠间接覆盖：这个函数决定"知识库放哪"，是发布版与调试版共同的落点，
+  // 写错会让索引写到别处而表现为"检索永远为空"。函数刻意不自解析 home（由调用方给），
+  // 所以 configDir 为空的退化输入也应稳定返回相对路径而非抛错。
+  assert.equal(knowledgeRoot('/home/u/.yfworking'), join('/home/u/.yfworking', 'knowledge'))
+  assert.equal(knowledgeRoot(''), join('', 'knowledge'))
+  assert.equal(knowledgeRoot(undefined), join('', 'knowledge'))
+  const winPath = ['C:', 'Users', 'u'].join(String.fromCharCode(92))
+  assert.equal(knowledgeRoot(winPath), join(winPath, 'knowledge'))
+})
