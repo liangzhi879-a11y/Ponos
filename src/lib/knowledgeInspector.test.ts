@@ -1,7 +1,7 @@
 // src/lib/knowledgeInspector.test.ts —— 右栏纯逻辑（node --test，S2 Task 9）
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ageParts, buildOutline, outlineIndent } from './knowledgeInspector.ts'
+import { ageParts, buildOutline, dedupeSources, outlineIndent } from './knowledgeInspector.ts'
 import type { BlockLike } from './knowledgeBlocks.ts'
 
 const b = (over: Partial<BlockLike> & { line: number }): BlockLike => ({ kind: 'paragraph', text: 'x', ...over })
@@ -57,4 +57,10 @@ test('ageParts：null / 非数 / 负数 → null（"没数据"不许显示成"�
   assert.equal(ageParts(undefined), null)
   assert.equal(ageParts(Number.NaN), null)
   assert.equal(ageParts(-1), null)
+})
+
+test('dedupeSources：同一来源出现多次只留一条（后端 in 是逐链接推出来的）', () => {
+  assert.deepEqual(dedupeSources([{ from: 'a/x.md' }, { from: 'a/x.md' }, { from: 'b/y.md' }]), ['a/x.md', 'b/y.md'])
+  assert.deepEqual(dedupeSources([{ from: '  ' }, {}, { from: 'ok.md' }]), ['ok.md'])
+  assert.deepEqual(dedupeSources(undefined), [])
 })

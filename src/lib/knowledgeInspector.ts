@@ -42,6 +42,25 @@ export function buildOutline(blocks: readonly BlockLike[] | undefined): OutlineE
 const INDENT_BASE = 6
 const INDENT_STEP = 9
 
+/**
+ * 反链来源去重 → 来源 docId 列表。
+ * **必须去重**：后端 `getLinks().in` 是"逐条链接"推出来的（kernel/knowledge.mjs:589-592
+ * 对每条出边 push 一次），同一个文档在一篇文里链接了两次就会出现两条同 `from` 的记录——
+ * 直接拿去 map 会得到重复 React key（控制台告警）和两行一模一样的反链。
+ * 顺带丢掉空 from（脏数据）。
+ */
+export function dedupeSources(list: readonly { from?: string }[] | undefined): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const it of list ?? []) {
+    const from = String(it?.from ?? '').trim()
+    if (!from || seen.has(from)) continue
+    seen.add(from)
+    out.push(from)
+  }
+  return out
+}
+
 /** 级别 → 左内边距。封顶 5 级（md 虽到 6 级，但 6 级在本宽度下已无可读缩进余量） */
 export function outlineIndent(level: number): number {
   const l = Math.min(Math.max(clampLevel(level), 1), 5)

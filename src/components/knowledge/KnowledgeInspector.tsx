@@ -23,7 +23,7 @@ import { useTranslation } from '@/i18n/useTranslation'
 import { normalizeTags } from '@/lib/knowledgeBlocks'
 import type { KnowledgeDoc } from '@/lib/knowledgeApi'
 import { shortRef } from '@/lib/knowledgeGraph'
-import { ageParts, buildOutline, outlineIndent } from '@/lib/knowledgeInspector'
+import { ageParts, buildOutline, dedupeSources, outlineIndent } from '@/lib/knowledgeInspector'
 import { cn } from '@/lib/utils'
 import { KnowledgeEmpty } from './KnowledgeEmpty'
 
@@ -40,7 +40,8 @@ export function KnowledgeInspector({ doc }: KnowledgeInspectorProps) {
 
   const outline = useMemo(() => buildOutline(doc?.blocks), [doc])
   const tags = useMemo(() => normalizeTags(doc?.tags), [doc])
-  const backlinks = links?.in ?? []
+  // 去重：同一文档在一篇文里链接两次 → 后端 `in` 会给两条同 from 的记录（见 lib 注释）
+  const backlinks = useMemo(() => dedupeSources(links?.in), [links])
 
   const gotoLine = (line: number) => {
     const st = useKnowledgeStore.getState()
@@ -92,16 +93,16 @@ export function KnowledgeInspector({ doc }: KnowledgeInspectorProps) {
             </Section>
 
             <Section title={t('knowledge.backlinks')} count={backlinks.length}>
-              {backlinks.length ? backlinks.map(b => (
+              {backlinks.length ? backlinks.map(from => (
                 <button
-                  key={b.from}
+                  key={from}
                   type="button"
-                  onClick={() => openDoc(b.from)}
-                  title={b.from}
+                  onClick={() => openDoc(from)}
+                  title={from}
                   className="w-full flex items-center gap-1.5 px-2 py-[3px] text-left text-[11px] text-secondary hover:bg-hover transition-colors"
                 >
                   <CornerDownRight className="w-3 h-3 shrink-0 text-tertiary" />
-                  <span className="truncate">{shortRef(b.from)}</span>
+                  <span className="truncate">{shortRef(from)}</span>
                 </button>
               )) : (
                 // 中性陈述：多数文档没有入链是常态，不是错误（见文件头）
