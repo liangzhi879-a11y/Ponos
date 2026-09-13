@@ -51,7 +51,12 @@ export function KnowledgeDocView({ doc, targetLine = null }: KnowledgeDocViewPro
   const targetIndex = useMemo(() => pickTargetIndex(renders, targetLine), [renders, targetLine])
 
   const itemRefs = useRef<(HTMLDivElement | null)[]>([])
+  const scrollRef = useRef<HTMLDivElement>(null)
   const [activeLine, setActiveLine] = useState<number | null>(null)
+
+  // 换文档把阅读位置归零：滚动容器是同一个 DOM 节点，不显式重置会留着上一篇的滚动位置
+  // （表现为"点开新文档却停在中段"）。本 effect 声明在定位 effect 之前，故定位总是最后生效。
+  useEffect(() => { scrollRef.current?.scrollTo({ top: 0 }) }, [doc.id])
 
   useEffect(() => {
     // 目标变了（或无目标）先把上一次的高亮清掉：否则连点两条检索结果会同时亮两块
@@ -66,7 +71,7 @@ export function KnowledgeDocView({ doc, targetLine = null }: KnowledgeDocViewPro
   }, [targetIndex, renders])
 
   return (
-    <div className="flex-1 min-h-0 overflow-auto px-4 py-3">
+    <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto px-4 py-3">
       <header>
         <h2 className="text-sm font-semibold text-primary truncate">{doc.title}</h2>
         <p className="mt-0.5 text-[10px] text-tertiary truncate">{doc.rel}</p>

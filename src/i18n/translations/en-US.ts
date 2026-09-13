@@ -800,5 +800,13 @@ export const enUS: TranslationKeys = {
     docEmpty: 'This document has no body blocks to show',
     entryExpand: 'Expand',
     entryCollapse: 'Collapse',
+    save: 'Save',
+    saveHint: 'Save (Ctrl+S)',
+    saving: 'Saving…',
+    saved: 'Saved',
+    unsaved: 'Unsaved',
+    saveFailed: 'Save failed: {msg}',
+    rawFailed: 'Failed to read the source: {msg}',
+    readonlyTooltip: 'This knowledge pack is read-only',
   },
 }

@@ -22,6 +22,7 @@ import { KnowledgeEmpty } from './KnowledgeEmpty'
 import { KnowledgeSkeleton } from './KnowledgeSkeleton'
 import { KnowledgeSidebar } from './KnowledgeSidebar'
 import { KnowledgeDocView } from './KnowledgeDocView'
+import { KnowledgeEditorView } from './KnowledgeEditorView'
 
 export function KnowledgePanel() {
   const { t } = useTranslation()
@@ -50,6 +51,13 @@ export function KnowledgePanel() {
 
   const refreshAll = () => { refreshSpaces(); refreshStats() }
   const loading = spacesLoading || statsLoading
+
+  // 只读空间不可停留编辑视图（spec §11.3）：CodeEditor 无 readOnly，只能靠"不渲染"实现。
+  // 两种进入路径都要兜住——① 落盘 view='edit' 冷启动后空间已变只读；
+  // ② 用户正在编辑别的空间，切到只读空间。否则会出现"tab 已禁用、人还在编辑器里"的错位。
+  useEffect(() => {
+    if (readonly && view === 'edit') setView('read')
+  }, [readonly, view, setView])
 
   return (
     <div className="flex-1 min-w-0 flex flex-col">
@@ -81,7 +89,9 @@ export function KnowledgePanel() {
           ) : view === 'edit' ? (
             // 只读空间不渲染编辑视图（spec §11.3：CodeEditor 无 readOnly，编辑器内容非受控）
             readonly ? <KnowledgeEmpty title={t('knowledge.emptyEditReadonly')} className="m-auto" />
-              : <KnowledgeEmpty title={t('knowledge.emptyPending')} hint={doc?.title} className="m-auto" />
+              : docLoading ? <KnowledgeSkeleton lines={12} />
+                : doc ? <KnowledgeEditorView doc={doc} spaceId={space.id} spaceRoot={space.root} />
+                  : <KnowledgeEmpty title={t('knowledge.emptyNoDoc')} className="m-auto" />
           ) : (
             // graph / search：Task 7-8 填充
             <KnowledgeEmpty title={t('knowledge.emptyPending')} className="m-auto" />

@@ -39,17 +39,22 @@ export function KnowledgeViewTabs({ value, onChange, readonly = false }: Knowled
           const { icon: Icon, labelKey } = VIEW_META[v]
           const label = t(labelKey)
           const disabled = v === 'edit' && readonly
+          const trigger = (
+            <TabsTrigger
+              value={v}
+              disabled={disabled}
+              aria-label={label}
+              className="clip-sm h-[22px] rounded-none px-2.5 gap-1.5 text-[11px] font-medium text-tertiary hover:text-secondary data-[state=active]:bg-active data-[state=active]:text-primary data-[state=active]:shadow-none"
+            >
+              <Icon className="w-3 h-3" />
+              <span>{label}</span>
+            </TabsTrigger>
+          )
+          // 禁用态必须包一层 span 当 tooltip 的 trigger：disabled 元素在 Chromium 下不派发指针事件，
+          // 直接挂在 trigger 上提示永远不弹（"为什么编辑是灰的"就没人回答了）。
           return (
-            <Tooltip key={v} content={label} side="bottom">
-              <TabsTrigger
-                value={v}
-                disabled={disabled}
-                aria-label={label}
-                className="clip-sm h-[22px] rounded-none px-2.5 gap-1.5 text-[11px] font-medium text-tertiary hover:text-secondary data-[state=active]:bg-active data-[state=active]:text-primary data-[state=active]:shadow-none"
-              >
-                <Icon className="w-3 h-3" />
-                <span>{label}</span>
-              </TabsTrigger>
+            <Tooltip key={v} content={disabled ? t('knowledge.readonlyTooltip') : label} side="bottom">
+              {disabled ? <span className="inline-flex">{trigger}</span> : trigger}
             </Tooltip>
           )
         })}

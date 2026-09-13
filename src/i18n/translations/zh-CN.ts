@@ -813,6 +813,14 @@ export const zhCN = {
     docEmpty: '这篇文档没有可显示的正文',
     entryExpand: '展开',
     entryCollapse: '收起',
+    save: '保存',
+    saveHint: '保存（Ctrl+S）',
+    saving: '保存中…',
+    saved: '已保存',
+    unsaved: '未保存',
+    saveFailed: '保存失败：{msg}',
+    rawFailed: '读取原文失败：{msg}',
+    readonlyTooltip: '知识包为只读',
   },
 }
 

@@ -317,3 +317,28 @@ export async function writeDoc(input: KnowledgeWriteInput, opts?: KnowledgeCallO
   if (!r.ok) return r
   return { ok: true, data: { docId: String(r.data?.docId ?? ''), updated: r.data?.updated === true } }
 }
+
+/**
+ * 读**原始 md 正文**（编辑视图专用，S2 Task 6）。
+ *
+ * 为什么不复用 `/knowledge/doc`：内核 parseDocFile（kernel/knowledge.mjs:104-125）只回块数组，
+ * 入参原文已不可得——条目行的 `- [ ]` 标记、勾选状态、缩进都在块层被丢掉。编辑器若拿 blocks
+ * 拼回正文再保存，会把用户原文件里的这些标记**永久写坏**（数据损坏级风险，不可接受），
+ * 所以编辑视图必须读原始字节。
+ *
+ * 通道：bridge 既有 `GET /read-file`（server/bridge.mjs:1688-1693，≤512KB；同上位先例
+ * workflowApi.ts:221-229）。错误（文件不存在/超 512KB/非 UTF-8 文本）由 bridge 抛错 →
+ * 这里归一成 `{ok:false,error}`，不抛。
+ * 路径 = 空间根 `spaces[].root`（后端给的绝对路径）+ 文档 `rel`，前端不做别的心思：
+ * 拼接只在两段之间补一个 `/`，尾/首多余分隔符去掉（Windows 下 root 可能带反斜杠）。
+ */
+export function readRawDoc(root: string, rel: string, opts?: KnowledgeCallOpts): Promise<ApiResult<string>> {
+  const abs = `${String(root).replace(/[\/]+$/, '')}/${String(rel).replace(/^[\/]+/, '')}`
+  return dedupe(`raw:${abs}`, async () => {
+    const r = await call<{ content?: unknown }>(`/read-file?path=${encodeURIComponent(abs)}`, { opts })
+    if (!r.ok) return r
+    return typeof r.data?.content === 'string'
+      ? { ok: true as const, data: r.data.content }
+      : { ok: false as const, error: 'read-file: 响应缺少 content' }
+  })
+}
