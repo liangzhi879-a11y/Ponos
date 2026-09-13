@@ -13,6 +13,9 @@ import { dirname, join, resolve, sep } from 'node:path'
 import { kernelReadonly } from './kernel-readonly.mjs'
 import { resolveYfwHome } from './yfw-home.cjs'
 import { PACK_ID_RE, compareSemver } from '../shared/knowledge-pack.mjs'
+// `isBlockId` 走 shared 中性层：形状判定内核 CLI 用的是同一个函数（server ⊥ kernel
+// 双向禁止 import，shared 是唯一不会漂移的落点）。
+import { isBlockId } from '../shared/knowledge-core.mjs'
 import {
   installPack, uninstallPack, listInstalledPacks, exportSpaceAsPack, readIndex, fetchPackDetail,
   fetchPackArchive, resolveRegistry, packsRoot,
@@ -293,6 +296,25 @@ export async function handleKnowledgeRoute({
     if (!isPost && p === '/knowledge/doc') return ok((await callJson(callKernel, ['--knowledge', 'doc', '--id', q('id')])).value)
     if (!isPost && p === '/knowledge/entries') return ok((await callJson(callKernel, ['--knowledge', 'entries', '--id', q('id')])).value)
     if (!isPost && p === '/knowledge/links') return ok((await callJson(callKernel, ['--knowledge', 'links', '--id', q('id')])).value)
+    // S5 §7.4：关联锚点（`?id=<blockId>&limit=<N>`）。薄转发 + 与 links 同款的错误路径
+    // （内核抛错 → 500、非 JSON → 502，都由本函数末尾的 try/catch 兜）。
+    // 比 links 多的一道：`id` 形状校验（400）。links 的 id 是 docId，写错最多返回空出/入边；
+    // 这里的 id 是 **blockId**，形状错时内核视图同样只给空数组 → 调用方会把"参数写错"读成
+    // "这个块没有关联"（假阴性最贵，本项目反复踩的"静默空集"）。**形状缺省即 400，绝不静默**。
+    // 形状合法但库里没有的 id：仍按 links 的既有约定 —— 200 + 空数组，**不 404**。
+    // 理由：内核视图里"库中没有这个块"与"这个块没有锚点"不可区分，凑 404 得另发一次存在性
+    // 查询（两条口径必然漂移），且与 links/entries/graph 的"空集即空集"约定冲突。
+    if (!isPost && p === '/knowledge/related') {
+      const id = String(q('id') || '').trim()
+      if (!isBlockId(id)) {
+        return { status: 400, body: { error: `invalid id: ${id || '(空)'}（须为 <docId>#<n>）` } }
+      }
+      const args = ['--knowledge', 'related', '--id', id]
+      // limit 仅在给了的时候透传（同 /knowledge/graph）；非法值由内核 parseArgs 归一为缺省，
+      // 不在这一层再写一套数字校验——两套口径必然漂移，而 limit 非法只是"取缺省"而非危险操作。
+      if (q('limit')) args.push('--limit', q('limit'))
+      return ok((await callJson(callKernel, args)).value)
+    }
     if (!isPost && p === '/knowledge/graph') {
       const args = ['--knowledge', 'graph']
       if (q('space')) args.push('--space', q('space'))
