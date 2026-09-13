@@ -5,7 +5,7 @@
 // （2026-09-13 S1 Task 4 去重），本模块 re-export 保持既有导入点可用。
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { hashLine, parseEntryLine, keywordScore, toDocId } from '../shared/knowledge-core.mjs'
+import { hashLine, parseEntryLine, keywordScore, toDocId, relationContent } from '../shared/knowledge-core.mjs'
 
 export { hashLine, parseEntryLine, keywordScore }
 
@@ -174,18 +174,42 @@ export function captureMemoryCandidates({ userText = '', tag = null, markers = n
   const t = String(userText || '')
   const m = { ...DEFAULT_MARKERS, ...(markers || {}) }
   const out = []
+  // 统一出口：所有候选都过"空模板"闸（S5 Task 3）。模板化的条目对检索与关联都无价值，
+  // 入库只会变成噪声，故**不再产生新的**（存量靠关联侧 MIN_LEN 过滤，读取兼容性不动）。
+  const push = (theme, summary, full, marker) => {
+    if (isEmptyTemplateContent(relationContent({ full, text: summary }), marker)) return
+    out.push({ theme, tag, summary, full })
+  }
   const correction = (m.correction || []).find((x) => t.includes(x))
-  if (correction) out.push({ theme: 'workflow', tag, summary: `用户纠正（${correction}）：${t.slice(0, 60)}`, full: t.slice(0, 500) })
+  if (correction) push('workflow', `用户纠正（${correction}）：${t.slice(0, 60)}`, t.slice(0, 500), correction)
   const preference = (m.preference || []).find((x) => t.includes(x))
-  if (preference) out.push({ theme: 'communication', tag, summary: `用户偏好（${preference}）：${t.slice(0, 60)}`, full: t.slice(0, 500) })
+  if (preference) push('communication', `用户偏好（${preference}）：${t.slice(0, 60)}`, t.slice(0, 500), preference)
   const fact = (m.fact || []).find((x) => t.includes(x))
-  if (fact) out.push({ theme: inferTheme(tag, t), tag, summary: `业务要点（${fact}）：${t.slice(0, 60)}`, full: t.slice(0, 500) })
+  if (fact) push(inferTheme(tag, t), `业务要点（${fact}）：${t.slice(0, 60)}`, t.slice(0, 500), fact)
   // 流程要点：强信号词（流程是/标准做法/推荐做法）直接捕获；弱信号词（先/再/最后）
   // 要求文本足够长（≥30 字符）才捕获，防泛化词误伤。
   const workflow = (m.workflow || []).find((x) => t.includes(x))
   const strongFlow = /流程是|标准做法|推荐做法|步骤是/.test(t)
-  if (workflow && !fact && (strongFlow || t.length > 30)) out.push({ theme: 'workflow', tag, summary: `流程要点：${t.slice(0, 60)}`, full: t.slice(0, 500) })
+  if (workflow && !fact && (strongFlow || t.length > 30)) {
+    push('workflow', `流程要点：${t.slice(0, 60)}`, t.slice(0, 500), workflow)
+  }
   return out
+}
+
+// 内容为空的模板判定（S5 Task 3，spec §9.1）。**why**：真实库实测 7 条垃圾条目
+// （full 仅 10 字：`流程要点：用户回答：`、`业务要点（请注意）：`）就是上面模板的产物；
+// 它们两两文本全同 → 关联层 cos=1.000，会灌入"完美相似但零信息"的边。
+// 判断标准**复用 relationContent**（= stripTypePrefix(full || text)）——与索引/关联侧同一口径，
+// 否则源头与下游各判一套（口径分叉正是 S1 的老问题）。
+// 三条判据（去前缀后为空 / 只剩空白标点 / 内容恰是触发词本身），而**不是** MIN_LEN 阈值：
+// 阈值会把「记住：导出目录必须用绝对路径」这类**真实但简短**的偏好一起丢掉（源头丢数据不可逆）；
+// 较长样本的噪声由关联侧 MIN_LEN 负责过滤（spec §9.1「修源头 + 关联侧防御」两步都要）。
+function isEmptyTemplateContent(content, marker) {
+  const c = String(content ?? '').trim()
+  if (!c) return true // ① 去类型前缀后为空（实测形态：`流程要点：用户回答：`）
+  if (!c.replace(/[\s\p{P}\p{S}]/gu, '')) return true // ② 只剩空白/标点，无实义字符
+  const m = String(marker ?? '').trim()
+  return !!m && c === m // ③ 内容恰是触发词本身（实测形态：`业务要点（请注意）：`）
 }
 
 // 从任务标签/文本推断主题：申报/政策/财务关键词 → 业务主题；否则 workflow
