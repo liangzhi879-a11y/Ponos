@@ -1,6 +1,6 @@
 // 应用智控 IPC 注册（Task 1.5 / 1.7 / 2.1 / 2.3）
 //
-// 为什么单独成文件而不写进 main.cjs：main.cjs 已 1500+ 行，本模块有 11 条通道与
+// 为什么单独成文件而不写进 main.cjs：main.cjs 已 1500+ 行，本模块有 16 条通道与
 // 目标分发逻辑；集中在一处才能一眼看全"渲染层能做什么"。main.cjs 只留一行调用。
 //
 // ★ 数据根唯一真源：server/yfw-home.cjs 的 resolveYfwHome()。它与内核侧
@@ -14,8 +14,9 @@ const appRegistry = require('./app-registry.cjs')
 const appBindings = require('./app-bindings.cjs')
 const profiler = require('./app-profiler.cjs')
 const { runCommand, appendHistory, desktopRunner } = require('./app-runner.cjs')
-const { generateSpec, verifySpec, snapshotForPrompt } = require('./app-generate.cjs')
+const { generateSpec, verifySpec, snapshotForPrompt, validateSpecBasic } = require('./app-generate.cjs')
 const { callLlmStream } = require('./app-llm.cjs')
+const appValidator = require('./app-validator.cjs')
 
 /** 探测专用浏览器会话：与用户会话隔开，避免探测把用户正在看的页面导航走 */
 const PROBE_SESSION = 'app-probe'
@@ -63,6 +64,36 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     const { appId, spec } = payload || {}
     const path = appRegistry.writeSpec({ roots: roots(), appId, spec })
     return { ok: true, path }
+  })
+
+  // ---- Spec 备份与回滚（Task 3.3） ----
+  ipcMain.handle('app:list-backups', (_e, appId) => appRegistry.listBackups({ roots: roots(), appId }))
+  ipcMain.handle('app:restore-spec', (_e, payload) => {
+    const { appId, backupName } = payload || {}
+    try {
+      const spec = appRegistry.restoreSpec({ roots: roots(), appId, backupName })
+      return { ok: true, spec }
+    } catch (e) {
+      // 备份名不合法 / 备份损坏都要给出人话原因，不能静默失败
+      return { ok: false, error: String(e?.message || e) }
+    }
+  })
+  /**
+   * 对「手里的 spec」做结构校验（保存前拦截非法内容）。
+   * 说明：内核 kernel/app-spec.mjs 的 validateSpec 是 Spec 结构的定义真源，但它当前**没有调用点**
+   * （cli.mjs 挂载工具时不校验；且打包产物不含 kernel/ 源码，主进程 require 不到），
+   * 故「Spec 是否合法」实际由本地实现 validateSpecBasic 把关。
+   * allowPublic 只在用户于界面上显式选择「全局可用」时为 true。
+   */
+  ipcMain.handle('app:check-spec', (_e, payload) => (
+    // allowPublic 由界面在用户显式选择「全局可用」时传入；不传即按默认拒绝 public
+    validateSpecBasic(payload?.spec, { allowPublic: payload?.allowPublic === true })
+  ))
+
+  // ---- 漂移修复（Task 3.4）：只修失败命令、先备份、必回报 ----
+  ipcMain.handle('app:repair', async (_e, payload) => {
+    const { appId, maxRepair } = payload || {}
+    return appValidator.repairApp({ roots: roots(), appId, maxRepair, deps: { callLlm } })
   })
 
   // ---- 控制台绑定（严格单开） ----

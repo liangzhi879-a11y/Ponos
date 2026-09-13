@@ -517,6 +517,8 @@ export interface AppSpec {
   specVersion: number
   appId: string
   name: string
+  /** 可选描述（生成提示词会产出；内核校验对额外字段宽松） */
+  desc?: string
   driver?: AppDriver
   target: AppTarget
   expose?: { mode: 'private' | 'console' | 'public' }
@@ -538,6 +540,36 @@ export interface AppProbeResult {
   title?: string | null
   snapshot?: { url?: string | null; title?: string | null; text?: string; interactiveCount?: number } | null
   error?: string
+}
+
+/** Spec 备份条目 */
+export interface AppBackupInfo {
+  /** 备份文件名（白名单格式 spec.bak.<时间戳>.json） */
+  name: string
+  /** 时间戳（毫秒） */
+  ts: number
+}
+
+/** 修复明细：必须能看出"改了什么"（不得静默改） */
+export interface AppRepairItem {
+  action: string
+  from: { title: string; kind: string; steps: number; params: number }
+  to: { title: string; kind: string; steps: number; params: number }
+  /** 触发修复的真实执行报错 */
+  reason: string
+}
+
+/** 修复结果 */
+export interface AppRepairResult {
+  ok: boolean
+  reason: string | null
+  repaired: AppRepairItem[]
+  /** 未能修复的命令及原因 */
+  failed: { action: string; reason: string }[]
+  /** 写盘前产生的备份名（无写盘时为 null） */
+  backup: string | null
+  /** 修复前的应用状态（broken 时直接拒绝修复） */
+  status?: string
 }
 
 /**
@@ -648,6 +680,14 @@ export interface YFWAPI {
   appGenerate: (payload: { target: AppTarget; appId?: string; sessionId?: string; maxRounds?: number }) => Promise<AppGenerateResult>
   /** 订阅生成进度（如实阶段事件）；返回取消订阅函数（组件卸载必须调用） */
   onAppGenerateProgress: (callback: (p: AppGenerateProgress) => void) => () => void
+  /** Spec 备份列表（新→旧） */
+  appListBackups: (appId: string) => Promise<AppBackupInfo[]>
+  /** 回滚到某个备份（恢复前会自动再备份当前版本，故可再回滚） */
+  appRestoreSpec: (payload: { appId: string; backupName: string }) => Promise<{ ok: boolean; spec?: AppSpec; error?: string }>
+  /** 保存前校验 spec 结构（非法不保存） */
+  appCheckSpec: (payload: { spec: AppSpec; allowPublic?: boolean }) => Promise<{ ok: boolean; errors: string[] }>
+  /** 漂移修复：只修执行失败的命令，写盘前自动备份，返回 repaired 明细 */
+  appRepair: (payload: { appId: string; maxRepair?: number }) => Promise<AppRepairResult>
 }
 
 /** File dialogs (skill install) — exposed by preload as `yfworkingFile` */

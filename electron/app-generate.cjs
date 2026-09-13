@@ -96,11 +96,14 @@ function extractSpec(llmText) {
 }
 
 /**
- * 结构自检（打包产物里不含 kernel/ 源码，故不能引内核 validateSpec；
- * 内核的 validateSpec 在「工具挂载时」仍是唯一真源，此处只做必要的落脚校验）。
+ * 结构自检。
+ * ★ 诚实说明：内核 kernel/app-spec.mjs 的 validateSpec 是 Spec 结构的**定义真源**，
+ *   但截至本次实现，全仓库**没有任何调用点**（cli.mjs 挂载工具时并不校验），
+ *   所以「Spec 是否合法」当前实际由本函数把关。
+ *   另外打包产物不含 kernel/ 源码（electron-builder 的 files 白名单），主进程也 require 不到它。
  * @returns {{ok:boolean, errors:string[]}}
  */
-function validateSpecBasic(spec) {
+function validateSpecBasic(spec, { allowPublic = false } = {}) {
   const errors = []
   if (!spec || typeof spec !== 'object') return { ok: false, errors: ['Spec 不是对象'] }
   if (spec.specVersion !== 1) errors.push('specVersion 必须为 1')
@@ -119,7 +122,11 @@ function validateSpecBasic(spec) {
   } else {
     errors.push(`target.type 不合法：${String(t.type)}`)
   }
-  if (spec.expose?.mode === 'public') errors.push('expose.mode 不允许为 public（需在界面上显式开启全局可用）')
+  // allowPublic 默认 false：LLM 生成路径不得写出 public（否则该应用的工具在所有会话可见，绕过绑定机制）。
+  // 只有用户在界面上显式选择「全局可用」时才由调用方传 true。
+  if (spec.expose?.mode === 'public' && !allowPublic) {
+    errors.push('expose.mode=public 需在界面上显式开启「全局可用」（默认不允许，避免绕过控制台绑定机制）')
+  }
   if (!Array.isArray(spec.commands)) errors.push('commands 必须是数组')
   else if (spec.commands.length === 0) errors.push('commands 不能为空（至少 1 条命令）')
   else {

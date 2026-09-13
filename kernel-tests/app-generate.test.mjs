@@ -234,3 +234,20 @@ test('verifySpec：runCommand 抛错被吞成失败项（不冒泡）', async ()
   assert.equal(r.ok, false)
   assert.ok(r.failures[0].error.includes('执行器炸了'))
 })
+
+// ---------- public 的显式放行 ----------
+
+test('validateSpecBasic：默认拒绝 expose=public（LLM 生成路径不得开全局）', () => {
+  const pub = { ...GOOD_SPEC, expose: { mode: 'public' } }
+  const r = validateSpecBasic(pub)
+  assert.equal(r.ok, false)
+  assert.ok(r.errors.some((e) => e.includes('public')))
+})
+
+test('validateSpecBasic：用户在界面显式选「全局可用」时放行（allowPublic）', () => {
+  const pub = { ...GOOD_SPEC, expose: { mode: 'public' } }
+  assert.equal(validateSpecBasic(pub, { allowPublic: true }).ok, true)
+  // 显式放行只针对 public，其它错误照旧要拦住
+  const broken = { ...pub, commands: [] }
+  assert.equal(validateSpecBasic(broken, { allowPublic: true }).ok, false)
+})

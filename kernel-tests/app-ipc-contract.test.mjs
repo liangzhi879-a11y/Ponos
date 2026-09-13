@@ -32,6 +32,10 @@ const CHANNELS = {
   'app:run': 'appRun',
   'app:check': 'appCheck',
   'app:generate': 'appGenerate',
+  'app:list-backups': 'appListBackups',
+  'app:restore-spec': 'appRestoreSpec',
+  'app:check-spec': 'appCheckSpec',
+  'app:repair': 'appRepair',
 }
 
 // 主进程侧 handler 落在独立模块（app-ipc.cjs），main.cjs 只调用其注册函数——
@@ -77,7 +81,7 @@ function loadExposed() {
   return { exposed, calls }
 }
 
-test('preload 真加载：11 个 app 方法都暴露在 yfworkingAPI 上', () => {
+test('preload 真加载：清单里的 app 方法都暴露在 yfworkingAPI 上', () => {
   const { exposed } = loadExposed()
   const api = exposed.yfworkingAPI
   assert.ok(api, 'preload 必须暴露 yfworkingAPI')
@@ -107,7 +111,7 @@ test('preload 真加载：调用方法确实发出对应渠道（名对名）', 
   }
 })
 
-test('主进程侧：11 条渠道全部注册（文本层面）', () => {
+test('主进程侧：清单里的渠道全部注册（文本层面）', () => {
   const main = readMainSide()
   for (const ch of Object.keys(CHANNELS)) {
     assert.ok(main.includes(`'${ch}'`), `main 缺少渠道 ${ch}`)

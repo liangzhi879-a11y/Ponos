@@ -8,10 +8,11 @@
 // ★ 为什么写操作要二次确认：控制台是人工点按的路径，没有内核侧审批链兜底
 //   （内核侧审批只覆盖 AI 调用）。漏了这一步，用户点一下就可能真的提交/删除数据。
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, Play, ShieldCheck } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, Play, Settings2, ShieldCheck, Wrench } from 'lucide-react'
 import { Button, Input } from '@/components/ui'
 import { useTranslation } from '@/i18n/useTranslation'
-import type { AppCheckResult, AppItem, AppRunResult, AppSpec, AppSpecCommand } from '@/types'
+import { SpecEditor } from './SpecEditor'
+import type { AppCheckResult, AppItem, AppRepairResult, AppRunResult, AppSpec, AppSpecCommand } from '@/types'
 
 export function AppConsole({ app, sessionId, onBack }: {
   app: AppItem
@@ -28,6 +29,9 @@ export function AppConsole({ app, sessionId, onBack }: {
   const [running, setRunning] = useState<string | null>(null)
   const [result, setResult] = useState<{ action: string; r: AppRunResult } | null>(null)
   const [bound, setBound] = useState<string | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [repairing, setRepairing] = useState(false)
+  const [repair, setRepair] = useState<AppRepairResult | null>(null)
 
   // ---- 绑定生命周期：进入即绑、离开即解绑、依赖 sessionId 变化重绑 ----
   useEffect(() => {
@@ -58,6 +62,25 @@ export function AppConsole({ app, sessionId, onBack }: {
   }, [api, app.id])
 
   useEffect(() => { void runCheck() }, [runCheck])
+
+  /**
+   * 漂移修复：只修"最近一次执行失败"的命令（后端按 history 判定），
+   * 写盘前自动备份、修完整体再校验，不合法就整体放弃。
+   * 无论成功失败都把返回结果原样展示——不得静默。
+   */
+  const onRepair = useCallback(async () => {
+    setRepairing(true)
+    setRepair(null)
+    try {
+      const r = await api?.appRepair?.({ appId: app.id })
+      setRepair(r ?? null)
+      if (r?.ok) await runCheck()
+    } catch (e) {
+      setRepair({ ok: false, reason: String((e as Error)?.message || e), repaired: [], failed: [], backup: null })
+    } finally {
+      setRepairing(false)
+    }
+  }, [api, app.id, runCheck])
 
   const commands = useMemo(() => spec?.commands ?? [], [spec])
 
@@ -111,11 +134,52 @@ export function AppConsole({ app, sessionId, onBack }: {
             <span className="flex items-center gap-1 text-error"><AlertTriangle className="w-3.5 h-3.5" />{t('apps.checkBroken')}</span>
           )}
           <Button size="sm" variant="ghost" onClick={() => void runCheck()}>{t('apps.recheck')}</Button>
+          <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
+            <Settings2 className="w-3 h-3" />{t('apps.editSpec')}
+          </Button>
+          {(check?.status === 'drifted' || check?.status === 'broken' || (check?.issues?.length ?? 0) > 0) && (
+            <Button size="sm" variant="ghost" disabled={repairing || check?.status === 'broken'}
+              title={check?.status === 'broken' ? t('apps.repairBroken') : undefined}
+              onClick={() => void onRepair()}>
+              {repairing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wrench className="w-3 h-3" />}{t('apps.repair')}
+            </Button>
+          )}
         </div>
         {!!check?.issues?.length && (
           <ul className="flex flex-col gap-1 px-3 py-2 rounded bg-warning/10">
             {check.issues.map((i, idx) => <li key={idx} className="text-[10px] text-warning">{i}</li>)}
           </ul>
+        )}
+
+        {/* 修复结果：改动明细必须展示出来，不能"修了但不说改了啥" */}
+        {repair && (
+          <div className={'rounded-lg border p-3 flex flex-col gap-1.5 ' + (repair.ok ? 'border-success/40 bg-success/10' : 'border-warning/40 bg-warning/10')}>
+            <div className={'text-[11px] ' + (repair.ok ? 'text-success' : 'text-warning')}>
+              {repair.ok
+                ? t('apps.repairDone', { n: repair.repaired.length })
+                : (repair.reason || t('apps.repairNone'))}
+            </div>
+            {repair.ok && !!repair.repaired.length && (
+              <div className="flex flex-col gap-0.5">
+                <div className="text-[10px] text-tertiary">{t('apps.repairDetail')}</div>
+                {repair.repaired.map((x) => (
+                  <div key={x.action} className="text-[10px] text-secondary">
+                    <span className="font-mono">{x.action}</span>
+                    {'：'}{x.from.title || '(无标题)'}{' → '}{x.to.title || '(无标题)'}
+                    <span className="text-tertiary">{'（'}{x.reason}{'）'}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!!repair.failed.length && (
+              <div className="text-[10px] text-warning">
+                {t('apps.repairFailed', { n: repair.failed.length })}
+                {'：'}{repair.failed.map((f) => `${f.action}（${f.reason}）`).join('；')}
+              </div>
+            )}
+            {repair.backup && <div className="text-[10px] text-tertiary">{t('apps.repairBackup', { name: repair.backup })}</div>}
+            {!repair.ok && <div className="text-[10px] text-tertiary">{t('apps.repairNotRun')}</div>}
+          </div>
         )}
         {!sessionId && <div className="text-[10px] text-tertiary">{t('apps.noSession')}</div>}
 
@@ -177,6 +241,12 @@ export function AppConsole({ app, sessionId, onBack }: {
         )}
 
         {/* 写操作二次确认 */}
+        {editing && (
+          <SpecEditor appId={app.id} appName={app.name}
+            onClose={() => setEditing(false)}
+            onSaved={() => void runCheck()} />
+        )}
+
         {pending && (
           <div className="rounded-lg border border-warning/40 bg-warning/10 p-3 flex flex-col gap-2">
             <div className="flex items-center gap-2 text-[11px] text-warning">

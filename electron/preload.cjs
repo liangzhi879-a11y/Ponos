@@ -45,6 +45,14 @@ const yfworkingAPI = {
    * 生成 App Spec（探测 → LLM → 校验 → read 试跑）。**不落盘**，需用户确认后另行保存。
    */
   appGenerate: (payload) => ipcRenderer.invoke('app:generate', payload),
+  /** Spec 备份列表（新→旧） */
+  appListBackups: (appId) => ipcRenderer.invoke('app:list-backups', appId),
+  /** 回滚到某个备份（恢复前会自动再备份当前版本，故可再回滚） */
+  appRestoreSpec: (payload) => ipcRenderer.invoke('app:restore-spec', payload),
+  /** 保存前校验 spec 结构（非法不保存） */
+  appCheckSpec: (payload) => ipcRenderer.invoke('app:check-spec', payload),
+  /** 漂移修复：只修执行失败的命令，写盘前自动备份，返回 repaired 明细 */
+  appRepair: (payload) => ipcRenderer.invoke('app:repair', payload),
   /**
    * 订阅生成进度（如实阶段事件）。返回取消订阅函数——
    * 组件卸载必须调用，否则渲染层会残留监听（与 onExperienceAlert 同款约定）。
