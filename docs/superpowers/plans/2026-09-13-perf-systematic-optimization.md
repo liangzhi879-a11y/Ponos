@@ -159,10 +159,28 @@ export function perfStep(turn, step)                  // 发一行 + 清账 + �
 
 **Files:** Modify `kernel/engine.mjs`；Create `kernel-tests/engine-adaptive-firstbyte-lazy.test.mjs`
 
-- [ ] 把 firstByteMs 从**值**改成**惰性提供者**：`makeIdleWatchdog` 只在「已等到 baseMs」时才求值（返回值只可能是 `{0, baseMs, 600_000}` 三者之一）
-- [ ] 语义等价：新阈值 ≥ 旧阈值 ⇒ 只可能**延后** trip，不可能提前掐断
-- [ ] 现有 `engine-adaptive-firstbyte.test.mjs` 签名不变，必须全绿
-- [ ] 测试：立即 `stop()` → 提供者调用次数 0；阈值放宽后 `tripped===false` 且只求值一次（真实 `sleep(30)`，无假时钟）
+- [x] 把 firstByteMs 从**值**改成**惰性提供者**：`makeIdleWatchdog` 只在「已等到 baseMs」时才求值（返回值只可能是 `{0, baseMs, 600_000}` 三者之一）
+- [x] 语义等价：新阈值 ≥ 旧阈值 ⇒ 只可能**延后** trip，不可能提前掐断
+- [x] 现有 `engine-adaptive-firstbyte.test.mjs` 签名不变，必须全绿
+- [x] 测试：立即 `stop()` → 提供者调用次数 0；阈值放宽后 `tripped===false` 且只求值一次（真实 `sleep(30)`，无假时钟）
+
+**实现要点**：`gateMs = lazy ? ms : Math.min(ms, constMs)`——提供者形态下检查门槛取 `ms`，靠「引擎侧提供者恒 ≥ ms」保证不早于应有阈值；`firstThreshold()` 把求值结果**缓存**（含抛错兜底为 `ms`，避免每个 timer 周期重试）；常量形态三者（阈值/门槛/timer 周期）仍全按常量算，**与旧版逐字一致**，故 `firstByteMs < ms` 的历史用法不受影响。
+
+**实测**（本机 Windows / Node 24，合成历史按块结构对齐真机请求面）：
+
+| 请求面 | 消息数 | JSON 大小 | 旧：每请求无条件求值 | 新：正常首字节 |
+|---|---|---|---|---|
+| 中位 273KB | 208 | 145KB | **1.19ms** | **0** |
+| 最大 295KB | 224 | 157KB | **1.90ms** | **0** |
+| 长历史（原计划的 16.7ms 档） | 1835 | 1.32MB | **9.22ms** | **0** |
+
+计划里写的 16.7ms 出自另一份夹具（tool_result 块更多）；按**真机实际请求面**（`[perf]` 采到的中位 273KB）应记 **1.2–1.9ms/请求**，即每步省 ~1–2ms、每轮省几十毫秒——**量级不大但代价为零**（惰性化不引入任何新状态），且历史越长收益越大。
+
+**唯一行为差异在时机，不在结果**：提供者被调用的**时点**从「每请求一次（在 `makeIdleWatchdog` 之外，调用点求值）」变成「仅当 prefill 超 `ms` 仍零数据时一次」，调用**次数**也从恒 1 变成常态 0。返回值路径不变——`adaptiveFirstByteMs` 自带 try/catch（抛错返回 `baseMs`），而 `makeIdleWatchdog` 侧对提供者抛错再加一层兜底为 `ms`，两层都指向同一宽限值。惰性化**不引入任何新状态**，回退 = 把调用点改回 `adaptiveFirstByteMs(requestMessages, STREAM_FIRST_BYTE_MS)`（1 行）。
+
+**有意偏差**：`makeIdleWatchdog` 由模块内私有**改为导出**（供测试直接驱动 timer 语义）。原计划的测试清单（`stop()` → 0 次、放宽 → 只求值 1 次）若只测 `adaptiveFirstByteMs` 无法覆盖"提供者是否真被惰性调用"，故导出。纯增量导出，无消费者变化。
+
+**未覆盖的形态（测试未钉、代码已处理）**：`state.gotData` 为真后**不再**求值（测试 `有数据后按 ms 判生成停顿` 钉住 `calls === 0`）；提供者返回小于 `ms` 的值仍会 trip（`提供者返回 < ms` 用例）；`ms <= 0` 的 no-op 形态下连 timer 都不起（`守卫关闭` 用例）。
 
 ---
 

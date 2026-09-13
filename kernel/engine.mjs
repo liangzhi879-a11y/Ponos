@@ -335,17 +335,45 @@ function rawAbortSignal(s) {
 // 时全 no-op。调用方须在流结束后 stop()（防 timer 泄漏）。
 // 两阶段窗口（2026-09-09）：首个 chunk 前按 firstByteMs 宽限（prefill 正常形态），
 // 首个 chunk 后按 ms 判生成停顿。firstByteMs 缺省退化为 ms（行为与旧版一致）。
-function makeIdleWatchdog(ms, firstByteMs) {
+//
+// K1.3 惰性首字节窗口（2026-09-13 系统性优化）：`firstByteMs` 允许传**提供者**（函数），
+// 只在「已等到 ms」时才求值——正常首字节（绝大多数请求）永不触发那次
+// `JSON.stringify(requestMessages())`（实测 1.2–1.9ms/次 @ 真机请求面 273–295KB；
+// 长历史 1.3MB ⇒ 9.2ms；随历史线性增长，故历史越长越值得省）。
+//   · 语义等价的依据：engine 侧提供者 = `adaptiveFirstByteMs(...)`，其返回值只可能是
+//     `baseMs`（= STREAM_FIRST_BYTE_MS = ms = STREAM_IDLE_MS）或 `600_000`，**恒 ≥ ms**
+//     ⇒ 「等到 ms 再求值」只可能**延后** trip，不可能提前掐断。
+//   · 传常量时（含 `firstByteMs < ms` 的历史用法）行为与旧版**逐字一致**：阈值、
+//     检查门槛、timer 周期三者都仍按常量算。
+//   · 提供者抛错 ⇒ 退回 ms（不给底层 setInterval 抛穿的机会——那会变成进程级异常）。
+export function makeIdleWatchdog(ms, firstByteMs) {
   if (!ms || ms <= 0) return { controller: null, tripped: false, tick() {}, stop() {} }
-  const firstMs = (firstByteMs && firstByteMs > 0) ? firstByteMs : ms
+  const lazy = typeof firstByteMs === 'function'
+  const constFirst = lazy ? null : firstByteMs
+  const constMs = (constFirst && constFirst > 0) ? constFirst : ms
+  // 「何时才需要知道真实阈值」：常量直接取 min（与旧版一致）；提供者则等到 ms——
+  // 由上面的恒 ≥ ms 保证不早于应有阈值。
+  const gateMs = lazy ? ms : Math.min(ms, constMs)
+  let resolved = lazy ? null : constMs
+  const firstThreshold = () => {
+    if (resolved !== null) return resolved
+    try {
+      const v = Number(firstByteMs())
+      resolved = (v && v > 0) ? v : ms
+    } catch { resolved = ms }
+    return resolved
+  }
   const controller = new AbortController()
   const state = { tripped: false, gotData: false, last: Date.now() }
   const timer = setInterval(() => {
-    if (!state.tripped && Date.now() - state.last >= (state.gotData ? ms : firstMs)) {
-      state.tripped = true
-      controller.abort()
+    if (state.tripped) return
+    const elapsed = Date.now() - state.last
+    if (state.gotData) {
+      if (elapsed >= ms) { state.tripped = true; controller.abort() }
+      return
     }
-  }, Math.min(ms, firstMs, 5000))
+    if (elapsed >= gateMs && elapsed >= firstThreshold()) { state.tripped = true; controller.abort() }
+  }, lazy ? Math.min(ms, 5000) : Math.min(ms, constMs, 5000))
   if (timer.unref) timer.unref()
   return {
     controller,
@@ -1016,7 +1044,9 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // 流式空闲看门狗：单次模型流内无块间隔超 STREAM_IDLE_MS 判挂起。挂起时 abort
       // 内部 controller → 下层 fetch 拒绝 → catch 分支按"内部挂起"优雅收尾（区别于
       // 用户取消；用户取消走外层 signal）。守卫关闭（STREAM_IDLE_MS=0）时全为 no-op。
-      const watchdog = makeIdleWatchdog(STREAM_IDLE_MS, adaptiveFirstByteMs(requestMessages, STREAM_FIRST_BYTE_MS))
+      // K1.3：自适应窗口传**提供者**——首内容窗口只在"等到 STREAM_IDLE_MS 仍无数据"时
+      // 才求值，正常首字节不再付那次 16.7ms 的 JSON.stringify（见 makeIdleWatchdog 头注）
+      const watchdog = makeIdleWatchdog(STREAM_IDLE_MS, () => adaptiveFirstByteMs(requestMessages, STREAM_FIRST_BYTE_MS))
       // P1-11 本流是否产出过内容：区分"上游空转挂起（0 产出）"与"模型推理中途停顿
       // （已产出内容后卡住）"，给不同收尾提示；也用于 dead-stream 快速失败分支判定。
       let attemptData = false
@@ -2027,7 +2057,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       const nearRep = NEAR_REPEAT_RECENT > 0
         ? createNearRepeatDetector({ back: NEAR_REPEAT_BACK, sim: NEAR_REPEAT_SIM, recent: NEAR_REPEAT_RECENT, avg: NEAR_REPEAT_AVG, codeSkip: NEAR_REPEAT_CODE_SKIP })
         : null
-      const watchdog = makeIdleWatchdog(STREAM_IDLE_MS, adaptiveFirstByteMs(() => patchOrphanToolUses(store.deriveMessages()), STREAM_FIRST_BYTE_MS))
+      // K1.3：同主 loop，惰性提供者（lane 路径）
+      const watchdog = makeIdleWatchdog(STREAM_IDLE_MS, () => adaptiveFirstByteMs(() => patchOrphanToolUses(store.deriveMessages()), STREAM_FIRST_BYTE_MS))
       const laneSig = rawAbortSignal(subSignal)
       const streamSignal = watchdog.controller && typeof AbortSignal.any === 'function'
         ? (laneSig ? AbortSignal.any([laneSig, watchdog.controller.signal]) : watchdog.controller.signal)

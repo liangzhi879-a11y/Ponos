@@ -101,6 +101,10 @@
   - **唯一残留（已登记）**：在**既存目录**内新增 `<dir>/workflow.yml`——父目录名未变（名字列表看不见）、又不在已知文件集 ⇒ 需等该根条目增删/已知文件被编辑/重启内核。常见写入路径（新建=新目录名、编辑=文件指纹、绑定/解绑=binding.json）均不受影响。二期由桥侧 `tools_dirty` 显式失效信号收口。
   - 开关 `PONOS_DYNTOOLS_CACHE=0` 单独关（默认 on，惰性读）。
 - **K1.3 `adaptiveFirstByteMs` 惰性化**：不必缓存——**根本不必算**。返回值只可能是 `{0, baseMs, 600_000}` 三者之一，改为惰性提供者后正常首字节永不触发那次 stringify。语义等价（新阈值 ≥ 旧阈值，只会**延后** trip）。
+  - **实现**：`makeIdleWatchdog(ms, firstByteMs)` 的 `firstByteMs` 允许为函数。`gateMs = lazy ? ms : Math.min(ms, constMs)`——提供者形态下检查门槛取 `ms`，靠「引擎侧提供者恒 ≥ ms」保证不早于应有阈值；求值结果**缓存**（含抛错兜底为 `ms`，不每周期重试）。常量形态阈值/门槛/timer 周期三者仍按常量算，**与旧版逐字一致** ⇒ `firstByteMs < ms` 的历史用法不受影响。
+  - **实测**（真机请求面口径）：中位 273KB/208 条 = **1.19ms/请求**、最大 295KB/224 条 = **1.90ms/请求**、长历史 1.32MB/1835 条 = **9.22ms/请求**；惰性化后正常首字节路径 **0 次求值**（原计划记的 16.7ms 出自另一份 tool_result 更密的夹具）。省 1–2ms/步、几十 ms/轮——**量级不大但代价为零**（不引入任何新状态），历史越长收益越大。
+  - **唯一差异在时机不在结果**：提供者调用从「每请求恒 1 次」变为「仅 prefill 超 `ms` 零数据时 1 次，常态 0 次」；返回值不变（`adaptiveFirstByteMs` 自带 try/catch，watchdog 侧再兜一层为 `ms`，两层同指一个宽限值）。回退 = 调用点改回传值（1 行）。
+  - **有意偏差**：`makeIdleWatchdog` 由私有改为**导出**（纯增量）——否则「提供者是否真被惰性调用」无法直接测，只能间接推断。
 - **K1.4 `requestMessages()` 记忆化**：抽 `createRequestFace(...)` 工厂并导出。键用**引用比较**而非把 20KB systemPrompt 拼进字符串。**唯一别名点**：`fitRequestToWindow` 早退时原样返回入参引用，且被 `engine-fit-request.test.mjs` 的 `assert.equal(r, msgs)` 钉死。
 - **K1.5 append**：`mkdirSync` 去重。**硬约束：不得改成常驻 fd**——`setEntryUsage` 用 `writeFileSync(tmp)+renameSync` 整体替换文件，常驻 fd 会指向被 unlink 的旧 inode → **静默丢写**。
 - **K1.6 估算锚定（二期，默认关）**：以最近一条带 usage 的条目为锚，只估尾部（参考 claude-code `tokens.ts` / codex `history.rs`）。**风险在方向**：低估 → 压缩触发过晚 → 溢出 ⇒ 必须先量化误差（>5% 不上线）；**压缩落地即作废锚点**。
@@ -185,7 +189,7 @@
 | 工具表缓存漏掉 Spec/工作流改动 | 名字列表入键（增删改名 100% 正确）+ **发现层实际读过的文件** `(mtime,size)` 覆盖编辑 + 检测不到变化一律不缓存；权限规则因每次跑 `syncAppPermissionRules` 而不受影响 |
 | 工具表缓存的**已知残留**：既存目录内新增 `<dir>/workflow.yml` | 名字列表看不见（父目录名未变）⇒ 等该根条目增删/已知文件编辑/重启内核。三态可测；常见写入路径均不受影响；二期 `tools_dirty` 收口 |
 | **Windows mtime 粒度**（15.6ms） | `size` 与名字列表双入键；等长改写用例显式 `sleep(30)` 暴露；粒度不可靠则默认关 |
-| 惰性 watchdog 改变挂起语义 | 只可能**延后** trip，不可能提前掐断；双向测试；回退 1 行 |
+| 惰性 watchdog 改变挂起语义 | 只可能**延后** trip（提供者恒 ≥ `ms`），不可能提前掐断；双向测试（放宽态 `tripped===false` + 常量小阈值仍按小阈值 trip）；回退 1 行。**残留**：求值时机由「每请求」变为「仅超 `ms` 零数据时」，故该路径上的异常显影更晚——但 `adaptiveFirstByteMs` 本就自带 try/catch（抛错返回 `baseMs`），外部语义不变 |
 | K1.6 锚点法低估 → 溢出 | 默认 off；先量化误差（>5% 不上线）；压缩后作废锚点 |
 | 写盘正确性 | **禁止**常驻 fd；缓冲另加显式 flush 屏障 + 关键条目同步写 |
 | 推理降档损伤质量 | 默认 off；A/B 实测后再开；一键回退 |
