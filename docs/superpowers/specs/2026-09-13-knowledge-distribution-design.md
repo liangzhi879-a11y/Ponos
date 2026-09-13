@@ -176,3 +176,93 @@
 | D2 | 下载形态 | **zip** *(默认，解压校验路径成熟)*／tarball／逐文件 raw 下载 |
 | D3 | 更新检查 | **仅手动** *(默认，无后台网络与隐私成本)*／启动时后台检查一次 |
 | D4 | 知识包是否允许含非 md 资产 | **允许**（图片/PDF 附件，受 §6 体积限制） *(默认)*／仅 md（最简最安全） |
+
+---
+
+## 11. 修订记录（S4 实施前源码复核，2026-09-13）
+
+复核依据：worktree `knowledge-s1`（S1+S2+S3 已落地）对 `kernel/` `server/` `shared/` `src/` 逐条 grep + 读码。
+S2 实测发现 12 处漂移、S3 发现 14 处，本次发现 **16 处**（5 处一致 / 11 处偏差，其中 **4 处会返工**）。
+**本节与正文冲突时，以本节为准。**
+
+### 11.1 事实修正（行号与命名）
+
+| 原表述 | 实际情况 |
+|---|---|
+| §3.1「复用 `server/skill-install.mjs:135` 的既有范式」 | 范式在 **`:135` 的 `upsertSkill()`**，返回 **5** 个值（`installed` / `updated` / `unchanged` / `kept-user-modified` / `skipped-empty`）+ `manifest.files` 指纹表（`id/相对路径 → sha256 前 16 位`），且**文本类内容先做行尾归一（CRLF→LF）再哈希**（`:92` `textHash`）。台账 schema 直接对齐它 |
+| §7 实现落点 `src/components/knowledge/KnowledgeMarketView.tsx`、路由 `/knowledge/packs*` | 文件**不存在**（新建）；S2 **没有前端 URL 路由**——第 7 rail 是全屏面板 + **四视图条件渲染**（`KnowledgePanel.tsx:88-104`，视图集合 `KNOWLEDGE_VIEWS` 在 `src/stores/knowledgeStore.ts:22`） |
+| §8「`npm test` 全绿」 | `package.json` 的 test glob = `shared/**/*.test.mjs` + `server/*.test.mjs` + `electron/*.test.mjs` + `kernel-tests/*.test.mjs` + `src/**/*.test.ts`。**`kernel/*.test.mjs` 与子目录形态的 server 测试都不在 glob 内**（S1 教训） |
+| §2.1 中央清单 `knowledge-packs.json` | 该文件**当前不存在**（S1 只实现 `packs/` 扫描 + `pack.json` 读取，`kernel/knowledge.mjs:73-89`）。S4 新建，落点见 §11.3 D1 |
+| §1/§5 知识包落盘位置 | ✅ 一致：`join(resolveYfwHome(), 'knowledge', 'packs', <packId>)`（`server/yfw-home.cjs` 解析序 `YFWORKING_HOME > CLAUDE_CONFIG_DIR > ~/.yfworking`；bridge spawn 时注入 `CLAUDE_CONFIG_DIR = YFW_HOME`，`server/bridge.mjs:859`，故 kernel 的 `knowledgeRoot(configDir)` 与 server 同根） |
+| §1 空间 id `pack-<id>` / `writable:false` | ✅ 一致：`kernel/knowledge.mjs:82-88` 逐字为 `{ id: 'pack-' + 目录名, root: join(dir, meta.source), writable: false, source: 'pack', packVersion: meta.version }` |
+
+### 11.2 已确认一致的前提（可直接依赖，勿再"顺手改"）
+
+1. **只读挂载语义**：`packs/` 下的空间 `writable:false`，写入一律 403（`server/knowledge-routes.mjs:66`）。
+   安装**不碰 `spaces/` 用户数据**这一约束成立。
+2. **渲染注入防护已满足**：`src/components/knowledge/KnowledgeDocView.tsx:110` 只用
+   `react-markdown` + `remarkPlugins`，全仓无 `rehype-raw`、无 `dangerouslySetInnerHTML`。
+   S4 只需**不引入**它们。
+3. **无需"注册空间"**：`discoverSpaces` 每次扫盘；`store.load()` 的 staleness 逐文件比
+   size/mtime 并检测"磁盘新增/已删"（`kernel/knowledge.mjs:318-321`）→ 安装/卸载后**下一次
+   检索自动吸收**新空间，不需要任何内核调用（正文 §3.2 第 5 步作废，见 §11.3 R4）。
+4. **server 侧不复制内核逻辑的边界**：安装/卸载/导出操作的是**数据目录**（`knowledge/packs`），
+   与 `server/skill-install.mjs` 同类，**不需要经 `kernelReadonly`**；只有"读空间清单"这类
+   知识库查询才走 `--knowledge spaces`。
+5. **两份 chat 禁用表**：S4 **不新增内核工具**（安装器全在 server 侧），故
+   `kernel/tools.mjs` 的 `CHAT_MODE_DISALLOWED` 与 `server/bridge.mjs` 的 `CHAT_DISALLOWED`
+   **无需改动**，`kernel-tests/chat-mode.test.mjs` 的逐项比对不受影响。
+
+### 11.3 会导致返工的前提错误（四条，必须按本节实施）
+
+**R1 —— ❌ §2.2 的 `spaces: [{ id, name, path }]` 内核根本不读。**
+`kernel/knowledge.mjs:80` 只用**单根** `meta.source`：`base = meta.source ? join(dir, source) : dir`。
+即"一个知识包 = 一个空间"，多空间包**不支持**（要支持必须改内核 `discoverSpaces`）。
+→ S4 口径：`pack.json` 的 **`source` 必填**、必须是包内**已存在的子目录**、**不得为 `.`**
+（若为 `.`，`pack.json` / `README.md` 会被 `walkMd` 当成文档混进空间——实测 `walkMd` 收包根下所有 `.md`）。
+`spaces[]` 字段**忽略**（不解析不校验），在 schema 校验里只在**导出**侧不产出。
+**示例矛盾也要一起修**：§2.2 同节里 `"source": "knowledge/packs/gaoqi-2026"`（仓库根视角）与
+`"path": "docs/gaoqi"`（包内视角）自相矛盾；实施以**包目录为基准**（内核 `join(dir, source)`）。
+导出包布局固定为：`<id>/pack.json` + `<id>/README.md` + `<id>/content/**` + `"source": "content"`。
+
+**R2 —— ❌ §4 的"下载走既有浏览器/网络白名单机制"指错了模块，且默认清单 URL 无落地常量。**
+① `server/browser-whitelist.test.mjs` 是**测试文件**不是真源（真源在 `electron/browser-common.cjs`
++ `~/.yfw/browser-whitelist.json`），服务的是**浏览器工具执行器**；知识包下载走 server 侧 `fetch`，
+不经浏览器通道，硬套白名单只会造出一个"配了却不生效"的假开关。
+② `repo` 字段形态（`https://github.com/<owner>/<repo>`）不可直接下载：raw 与 release 资产 URL
+另有一套拼法。
+→ S4 口径：**下载 URL 由 `registry 基址 + id + version` 唯一组装**，并对组装结果做
+**origin 断言**（与基址同源）；清单里的 `repo` 只作展示与人工溯源。测试**注入可替换 fetcher**，
+**绝不在测试里请求真实 URL**。
+
+**R3 —— ⚠️ §3.1 表头写"四态决策"但表体是 5 项。** 按 **5 态**实现（与 `upsertSkill` 返回值
+逐字一致）；另外补上正文没写清的一点：`kept-user-modified` 的"三选"（覆盖/保留/另存为我的空间）
+必须**默认不写盘**——只返回冲突清单与可选项，由调用方显式指定 `mode` 才动盘。
+
+**R4 —— ⚠️ §3.2 第 5 步「触发索引增量（新空间注册，S1 端点）」不存在。** 见 §11.2 第 3 条：
+staleness 会自动吸收。实施上**不得**为了"触发"而新增内核 op 或调用 `reindex`（全量重建在
+企业库上很贵，且非必要）。
+
+### 11.4 硬约束补强（正文未列，实施必须照做）
+
+1. **禁止可执行/脚本类扩展名**。正文 §1 的安全模型建立在"内容包无代码执行面"之上；若允许
+   `.js/.mjs/.cjs/.exe/.dll/.bat/.cmd/.ps1/.sh/.py/.jar` 等落入用户目录，该模型即失效
+   （用户或模型后续都可能误执行）。S4 对包内每个条目做**扩展名白名单**（md 与图片/PDF 等
+   纯数据资产），命中黑名单即整包拒绝。
+2. **体积上限在"解压前"就要用声明值挡一次**（zip 中央目录的 uncompressed size）——
+   只在解压后统计等于允许 zip bomb 先吃满内存。
+3. **完整性**：逐条目校验 CRC32 + 实际解压字节数 == 声明值；`pack.json` 必须能被解析且
+   `id` 与安装目标目录名一致（防"清单说 A、内容其实是 B"）。
+4. **按 §6 的体积/文件数上限之外**，另需限制条目数（含目录）——只限制"文件数"挡不住
+   十万个空目录条目。
+5. **D4 生效后**，`pack.json` 的 `license` 必填且非空（§6 已列），S4 把它做成**校验不过即拒绝**
+   的硬失败（而非警告）。
+
+### 11.5 本轮四项待决策的生效默认值
+
+| # | 决策 | **生效默认值（实施口径）** | 如需变更 |
+|---|---|---|---|
+| D1 | 官方清单托管位置 | **并入现有仓库子目录** `knowledge-packs/`（含 `index.json` + `README.md` 提交说明）；默认 registry 常量指向该目录的 raw 地址，**owner/repo 为占位值待确认**，可经 `config.json` 的 `knowledgePackRegistry` 覆盖；**本地离线清单优先**（`~/.yfw/knowledge/packs-index.local.json` 存在时不再联网） | 请指示 owner/repo 或改为"暂不做官方清单" |
+| D2 | 下载形态 | **zip**（自研 `shared/pack-zip.mjs`，`node:zlib` + 自算 CRC32；仓库无 zip 直接依赖，`jszip`/`unzipper`/`tar` 全是传递依赖，不可当契约） | 请指示改用 tarball |
+| D3 | 更新检查 | **仅手动**：无后台定时器，仅在用户打开知识包市场/点"检查更新"时拉一次清单，不缓存到磁盘 | 请指示加启动检查 |
+| D4 | 非 md 资产 | **允许**（图片/PDF/CSV 等纯数据资产），走**扩展名白名单 + 单文件 ≤2MB/总 ≤50MB/文件数 ≤2000**，**禁可执行与脚本类**（§11.4 第 1 条） | 请指示收紧为"仅 md" |
