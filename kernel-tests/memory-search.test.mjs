@@ -72,3 +72,59 @@ test('工具注册：MemorySearch 进 toolNames/toolSchemas，执行无命中返
     assert.match(String(r.content), /经验库无/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+// ── S3 §4.2：MemorySearch 转发到知识库块级检索（老签名不变）────────────────────
+// 判别性用例：块级检索能命中**非条目块**（标题/正文段落），而 legacy 的 searchLocalMemory
+// 只认 `- [` 开头的行。这条在改造前必然失败，是"确实换成了新实现"的证据。
+test('S3：MemorySearch 能命中非条目块（正文段落），不再只认 - [ 行', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-ms1s3-'))
+  try {
+    const personal = join(dir, 'memory', 'personal')
+    mkdirSync(personal, { recursive: true })
+    writeFileSync(join(personal, 'notes.md'), [
+      '---', 'name: notes', 'description: 笔记', '---',
+      '## 供应商对账', '每月 5 日前必须完成供应商对账，逾期会影响付款计划与账期评级。',
+    ].join('\n') + '\n', 'utf-8')
+    const tools = createToolRegistry({ cwd: dir, addDirs: [dir], memoryRoot: personal })
+    const r = await tools.run({ name: 'MemorySearch', input: { query: '供应商对账 付款计划' } }, {})
+    assert.equal(r.isError, false)
+    assert.match(String(r.content), /供应商对账/, `块级检索应命中正文段落（实际：${r.content}）`)
+    assert.match(String(r.content), /【经验库命中 \d+ 条/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// 老格式零改动：输出头 `【经验库命中 N 条，取前 M】` + `- [主题|标签] 摘要 -- 全文（score · 文件）`
+// —— 老提示词里"看到空提示就换关键词"的策略依赖这套措辞，换实现不得换措辞。
+test('S3：转发后输出仍是老格式（老提示词/老会话无需重学）', async () => {
+  const { dir, personal } = makeRoots()
+  try {
+    const tools = createToolRegistry({ cwd: dir, addDirs: [dir], memoryRoot: personal })
+    const r = await tools.run({ name: 'MemorySearch', input: { query: 'PS材料 压缩', scope: 'personal' } }, {})
+    assert.equal(r.isError, false)
+    assert.match(String(r.content), /【经验库命中 \d+ 条，取前 \d+】/)
+    assert.match(String(r.content), /- \[workflow\|PS材料\] .+ -- .+（score [\d.]+ · .+）/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// 命中里的文件路径必须是**可用于 Read 的绝对路径**：legacy 给的是绝对路径（Read 白名单含
+// memoryRoot），若新实现改吐 `experience/workflow.md` 这类 docId，模型拿它 Read 会直接失败。
+test('S3：命中条目给出可 Read 的绝对路径（相对 docId 会让 Read 失败）', async () => {
+  const { dir, personal } = makeRoots()
+  try {
+    const tools = createToolRegistry({ cwd: dir, addDirs: [dir], memoryRoot: personal })
+    const r = await tools.run({ name: 'MemorySearch', input: { query: 'PS材料 压缩', scope: 'personal' } }, {})
+    assert.ok(String(r.content).includes(join(personal, 'workflow.md')), `命中行须带绝对路径（实际：${r.content}）`)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// 规格 §4.2 把 scope='project' 映射到 spaces=['project-*']，但知识库里**没有** project 空间
+// （见 spec §11.3 N2）：该档恒 0 命中，与现状（cli 不传 projectMemoryRoot）语义等价。
+test('S3：scope=project 映射到不存在的 project-* 空间 ⇒ 恒 0 命中且不报错', async () => {
+  const { dir, personal } = makeRoots()
+  try {
+    const tools = createToolRegistry({ cwd: dir, addDirs: [dir], memoryRoot: personal })
+    const r = await tools.run({ name: 'MemorySearch', input: { query: 'PS材料', scope: 'project' } }, {})
+    assert.equal(r.isError, false)
+    assert.match(String(r.content), /经验库无/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

@@ -364,6 +364,10 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
       title: doc.title, heading: headingAt(doc, b.line),
       snippet: mode === 'full' ? (b.full || b.text) : makeSnippet(b.text),
       score, line: b.line, kind: b.kind,
+      // S3 §4.2 增补（纯增量，老消费方不受影响）：tag/text/full 让"条目级"消费方
+      // （MemorySearch 转发的适配层）能原样渲染 `- [主题|标签] 摘要 -- 全文`，
+      // 而不必为了拿 tag/full 再回调 getDoc 做一次块查询。
+      tag: b.tag || null, text: b.text, full: b.full || null,
     }
   }
 

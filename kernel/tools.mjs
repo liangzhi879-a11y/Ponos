@@ -16,7 +16,7 @@ import { matchesHighRisk } from './highrisk.mjs'
 import { discoverSkillsAll, loadSkillContent } from './skills.mjs'
 import { searchSkills } from './skill-search.mjs'
 import { searchLocalMemory } from './memory-search.mjs'
-import { searchKnowledge } from './knowledge-search.mjs'
+import { searchKnowledge, searchKnowledgeItems } from './knowledge-search.mjs'
 import { getProvider } from './provider.mjs'
 import { perfTime } from './perf.mjs'
 
@@ -1357,11 +1357,12 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
         return { content: `技能「${id}」已加载，严格按以下指引执行：\n\n${content}`, isError: false }
       },
     },
-    // MS1 个人/项目经验检索：本地无模型向量匹配（cosine，无网络）。与神经图谱同源
-    //（memory/personal *.md 条目 `- [会话|标签] 摘要 -- 全文`），输出条目含 file 供
+    // MS1 个人/项目经验检索。S3 §4.2：**签名不变、内部转发**到知识库块级检索（老提示词/
+    // 老会话零改动即获块级能力），索引不可用时回落 legacy 直检。输出条目含文件绝对路径供
     // Read 追全文。无命中返回明确提示（勿盲目换词重试——可先确认经验库是否有沉淀）。
+    // 保留本工具而非直接改名：老提示词/老技能仍在引用它（契约纯增量，见 spec §2.6）。
     MemorySearch: {
-      description: '检索个人/项目经验库（本地无模型向量匹配）：按 query 找过往沉淀经验条目（主题/标签/摘要/全文余弦相似度）。命中返回条目清单（含主题/标签/摘要/所在文件，score 排序），需全文用 Read 读 file。适合"以前处理过类似问题吗"类查询。scope：personal=个人经验；project=项目经验（需项目库存在）；all=全部（默认）。',
+      description: '检索个人/项目经验库（本地检索，无网络）：按 query 找过往沉淀的经验条目与知识块。命中返回条目清单（含主题/标签/摘要/全文/所在文件，score 排序），需全文用 Read 读给出的文件路径。适合"以前处理过类似问题吗"类查询。scope：personal=个人经验；project=项目经验（需项目库存在）；all=全部（默认）。**新会话推荐改用 KnowledgeSearch**（支持限定空间、块级粒度与可选全文，速度更快）。',
       concurrencySafe: true,
       input_schema: {
         type: 'object',
@@ -1376,12 +1377,43 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
       run: (input) => {
         const q = String(input?.query ?? '').trim()
         if (!q) return { content: 'query 参数缺失：请描述想检索的经验主题', isError: true }
+        const scope = String(input?.scope || 'all')
+        const topK = Math.min(Math.max(1, Number(input?.topK) || 5), 10)
+        // S3 §4.2：**签名不变，内部转发**到知识库块级检索（老提示词/老会话零改动即获块级能力）。
+        // scope 映射：personal → ['experience']；project → ['project-*']（知识库里没有该空间，
+        // 恒 0 命中 —— 与现状"cli 不传 projectMemoryRoot"等价，见 S3 spec §11.3 N2）；
+        // all → null（全部可读空间）。configDir 推导同 KnowledgeSearch（memoryRoot 上溯两级）。
+        if (memoryRoot) {
+          const r = searchKnowledgeItems({
+            configDir: resolve(memoryRoot, '..', '..'),
+            query: q,
+            topK,
+            spaces: scope === 'personal' ? ['experience'] : scope === 'project' ? ['project-*'] : null,
+          })
+          if (r.ok) {
+            if (!r.items.length) {
+              return { content: `经验库无「${q}」相关命中。可换关键词，或确认该主题尚未沉淀过经验。`, isError: false }
+            }
+            const lines = [`【经验库命中 ${r.items.length} 条，取前 ${r.items.length}】`]
+            for (const it of r.items) {
+              // 来源给**绝对路径**（而不是 docId）：Read 的白名单只含 memoryRoot 等目录，
+              // 喂相对 docId 会让模型 Read 失败（legacy 实现本来就给绝对路径）。
+              const rel = it.docId.slice(it.spaceId.length + 1)
+              const sp = r.spaces.find((s) => s.id === it.spaceId)
+              const file = sp ? join(sp.root, ...rel.split('/')) : it.docId
+              const theme = rel.replace(/\.md$/i, '')
+              lines.push(`- [${theme}${it.tag ? '|' + it.tag : ''}] ${it.text} -- ${it.full || it.text}（score ${it.score} · ${file}）`)
+            }
+            return { content: lines.join('\n'), isError: false }
+          }
+          // r.ok === false（索引不可用）：回落下面的 legacy 直检——工具能力不得因索引故障缩水。
+        }
         const { items, count } = searchLocalMemory({
           personalRoot: memoryRoot,
           projectRoot: projectMemoryRoot,
           query: q,
-          topK: Number(input?.topK) || 5,
-          scope: String(input?.scope || 'all'),
+          topK,
+          scope,
         })
         if (!items.length) {
           const why = count > 0 ? '（均未达相似度阈值）' : ''
