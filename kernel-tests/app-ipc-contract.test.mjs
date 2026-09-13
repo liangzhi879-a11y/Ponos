@@ -1,42 +1,114 @@
-// 应用智控 IPC 契约：preload 与 main 侧声明的 app:* 渠道必须完全一致
+// 应用智控 IPC 契约：preload 实际暴露的 API ↔ 主进程注册的通道，必须完全一致
 //
-// 为什么要有这个测试：preload 用 `ipcRenderer.invoke('app:x')`，主进程用
-// `ipcMain.handle('app:x')` —— 两侧各写一遍字符串，任一侧改名/漏写就变成
-// "点了没反应"（invoke 永不返回 → 前端 Promise 挂起，且没有任何报错）。
-// 这类漂移在 tsc 与功能测试里都照不出来（渠道名只是普通字符串），故单独锁契约。
+// 为什么要有这个测试（真实事故）：preload 与主进程各写一遍渠道名字符串，任一侧改名/漏写
+// 就变成"点了没反应"（invoke 永不返回 → 前端 Promise 挂起，且没有任何报错）。
 //
-// 渠道清单按任务递增（本文件是唯一真源）：
-//   Task 1.5：8 条（列表 / CRUD / Spec / 控制台绑定）
-//   Task 1.7：+ app:probe（驱动探测）
-//   Task 2.1：+ app:run（解释执行）
-//   Task 2.3：+ app:check（进入控制台前的自检）
+// ★ 教训：最初版本只用 `grep` 断言"文件里出现过 'app:list'"——结果 11 个方法被插进了
+//   隔壁的 yfworkingWindow 对象（而不是 yfworkingAPI），文本断言照样通过，症状是
+//   "点新增应用毫无反应"。所以现在改为**用 mock electron 真加载 preload.cjs**，
+//   直接枚举 contextBridge 暴露出来的键，并断言它们落在 yfworkingAPI 上。
 process.env.PONOS_MOCK_API = '1'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
+const require = createRequire(import.meta.url)
 
-const EXPECTED = [
-  'app:list', 'app:upsert', 'app:remove', 'app:read-spec', 'app:write-spec',
-  'app:console-enter', 'app:console-leave', 'app:console-bound',
-  'app:probe', 'app:run', 'app:check',
-]
+// ★ 必须 fileURLToPath：Windows 上 URL.pathname 会带前导斜杠（/C:/...），require 解析不了
+const PRELOAD = fileURLToPath(new URL('../electron/preload.cjs', import.meta.url))
+
+/** 渠道 → 渲染层方法名（本文件是唯一真源，按任务递增） */
+const CHANNELS = {
+  'app:list': 'appList',
+  'app:upsert': 'appUpsert',
+  'app:remove': 'appRemove',
+  'app:read-spec': 'appReadSpec',
+  'app:write-spec': 'appWriteSpec',
+  'app:console-enter': 'appEnterConsole',
+  'app:console-leave': 'appLeaveConsole',
+  'app:console-bound': 'appBound',
+  'app:probe': 'appProbe',
+  'app:run': 'appRun',
+  'app:check': 'appCheck',
+}
 
 // 主进程侧 handler 落在独立模块（app-ipc.cjs），main.cjs 只调用其注册函数——
 // 故"主进程侧声明"= 两个文件合并看，与 preload 对称。
 const MAIN_FILES = ['../electron/main.cjs', '../electron/app-ipc.cjs']
-
 // 既有非应用智控的 app:* 通道（托盘/通知/主题落盘），不属于本模块
 const PRE_EXISTING = new Set(['app:set-tray-behavior', 'app:notify-task', 'app:save-theme'])
 
-function readMainSide() {
-  return MAIN_FILES.map((f) => readFileSync(new URL(f, import.meta.url), 'utf-8')).join('\n')
+const readMainSide = () =>
+  MAIN_FILES.map((f) => readFileSync(new URL(f, import.meta.url), 'utf-8')).join('\n')
+
+/**
+ * 用 mock 的 electron 模块加载 preload.cjs，返回 contextBridge 真正暴露的全部键值。
+ * 这是唯一能证明"渲染层拿得到"的方式——文本匹配证明不了对象层级。
+ */
+function loadExposed() {
+  const Module = require('node:module')
+  const exposed = {}
+  const calls = []
+  const ipcRenderer = {
+    invoke: (ch, ...a) => { const r = { ch, a, value: null }; calls.push(r); return Promise.resolve(r) },
+    send: () => {}, on: () => {}, once: () => {}, removeListener: () => {}, removeAllListeners: () => {},
+  }
+  const orig = Module._load
+  Module._load = function (req) {
+    if (req === 'electron') {
+      return {
+        ipcRenderer,
+        contextBridge: { exposeInMainWorld: (k, v) => { exposed[k] = v } },
+        ipcMain: { handle: () => {} },
+        app: { getPath: () => require('node:os').homedir() },
+        shell: {},
+      }
+    }
+    return orig.apply(this, arguments)
+  }
+  try {
+    delete require.cache[require.resolve(PRELOAD)]
+    require(PRELOAD)
+  } finally {
+    Module._load = orig
+  }
+  return { exposed, calls }
 }
 
-test('preload 与 main 声明的 app:* 渠道完全一致', () => {
-  const preload = readFileSync(new URL('../electron/preload.cjs', import.meta.url), 'utf-8')
+test('preload 真加载：11 个 app 方法都暴露在 yfworkingAPI 上', () => {
+  const { exposed } = loadExposed()
+  const api = exposed.yfworkingAPI
+  assert.ok(api, 'preload 必须暴露 yfworkingAPI')
+  for (const [ch, method] of Object.entries(CHANNELS)) {
+    assert.equal(typeof api[method], 'function', `yfworkingAPI.${method} 缺失（渠道 ${ch}）`)
+  }
+})
+
+test('preload 真加载：app 方法不得错位到其它 world 对象（本轮真实事故的回归）', () => {
+  const { exposed } = loadExposed()
+  for (const [world, obj] of Object.entries(exposed)) {
+    if (world === 'yfworkingAPI') continue
+    for (const method of Object.values(CHANNELS)) {
+      assert.notEqual(typeof obj?.[method], 'function', `${method} 错位暴露在 ${world} 上`)
+    }
+  }
+})
+
+test('preload 真加载：调用方法确实发出对应渠道（名对名）', async () => {
+  const { exposed, calls } = loadExposed()
+  const api = exposed.yfworkingAPI
+  for (const [ch, method] of Object.entries(CHANNELS)) {
+    calls.length = 0
+    await api[method]('payload')
+    assert.equal(calls.length, 1, `${method} 未发出调用`)
+    assert.equal(calls[0].ch, ch, `${method} 发出的是 ${calls[0].ch}，应为 ${ch}`)
+  }
+})
+
+test('主进程侧：11 条渠道全部注册（文本层面）', () => {
   const main = readMainSide()
-  for (const ch of EXPECTED) {
-    assert.ok(preload.includes(`'${ch}'`), `preload 缺少渠道 ${ch}`)
+  for (const ch of Object.keys(CHANNELS)) {
     assert.ok(main.includes(`'${ch}'`), `main 缺少渠道 ${ch}`)
   }
 })
@@ -46,15 +118,12 @@ test('main 侧不得出现未在清单中的 app: 渠道（防漏登记）', () 
   const found = new Set([...main.matchAll(/ipcMain\.handle\(\s*'(app:[^']+)'/g)].map((m) => m[1]))
   for (const ch of found) {
     if (PRE_EXISTING.has(ch)) continue
-    assert.ok(EXPECTED.includes(ch), `main 注册了未登记渠道 ${ch}（请同步 EXPECTED 与 preload）`)
+    assert.ok(Object.keys(CHANNELS).includes(ch), `main 注册了未登记渠道 ${ch}（请同步 CHANNELS 与 preload）`)
   }
 })
 
-test('preload 不得出现 main 未注册的 app:* 渠道（反向防漏登记）', () => {
-  const preload = readFileSync(new URL('../electron/preload.cjs', import.meta.url), 'utf-8')
-  const found = new Set([...preload.matchAll(/ipcRenderer\.invoke\(\s*'(app:[^']+)'/g)].map((m) => m[1]))
-  for (const ch of found) {
-    if (PRE_EXISTING.has(ch)) continue
-    assert.ok(EXPECTED.includes(ch), `preload 调用了未登记渠道 ${ch}`)
-  }
+test('main.cjs 真的调用了 registerAppHandlers（否则通道永不注册）', () => {
+  const main = readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf-8')
+  assert.match(main, /registerAppHandlers\(\{/, 'main.cjs 未调用 registerAppHandlers')
+  assert.match(main, /require\('\.\/app-ipc\.cjs'\)/, 'main.cjs 未引入 app-ipc.cjs')
 })

@@ -24,6 +24,23 @@ const yfworkingAPI = {
   importExperience: (opts) => ipcRenderer.invoke('experience:import', opts),
 
   userHome,
+
+  // 应用智控（app-ipc.cjs / app-registry.cjs / app-bindings.cjs）
+  // ★ 必须留在 yfworkingAPI 内：渲染层（src/components/apps/*、src/stores/appsStore.ts）
+  //   读的是 window.yfworkingAPI，插到隔壁 yfworkingWindow 里会变成"点了没反应"
+  //   且不报错（可选链静默短路）。kernel-tests/app-ipc-contract.test.mjs 用 mock
+  //   electron 真加载本文件、断言暴露键，正是为了挡住这类错位。
+  appList: () => ipcRenderer.invoke('app:list'),
+  appUpsert: (app) => ipcRenderer.invoke('app:upsert', app),
+  appRemove: (appId) => ipcRenderer.invoke('app:remove', appId),
+  appReadSpec: (appId) => ipcRenderer.invoke('app:read-spec', appId),
+  appWriteSpec: (payload) => ipcRenderer.invoke('app:write-spec', payload),
+  appEnterConsole: (payload) => ipcRenderer.invoke('app:console-enter', payload),
+  appLeaveConsole: (payload) => ipcRenderer.invoke('app:console-leave', payload),
+  appBound: (sessionId) => ipcRenderer.invoke('app:console-bound', sessionId),
+  appProbe: (payload) => ipcRenderer.invoke('app:probe', payload),
+  appCheck: (appId) => ipcRenderer.invoke('app:check', appId),
+  appRun: (payload) => ipcRenderer.invoke('app:run', payload),
 }
 
 contextBridge.exposeInMainWorld('yfworkingAPI', yfworkingAPI)
@@ -61,19 +78,6 @@ contextBridge.exposeInMainWorld('yfworkingWindow', {
   // 主题落盘：main 创建窗口前读取 theme.json 决定 transparent 窗口与否
   // （仅 glass 主题需要真透明；非 glass 主题透明合成是纯性能放大器）
   saveTheme: (theme, mode) => ipcRenderer.send('app:save-theme', { theme, mode }),
-  // 应用智控（app-ipc.cjs / app-registry.cjs / app-bindings.cjs）
-  appList: () => ipcRenderer.invoke('app:list'),
-  appUpsert: (app) => ipcRenderer.invoke('app:upsert', app),
-  appRemove: (appId) => ipcRenderer.invoke('app:remove', appId),
-  appReadSpec: (appId) => ipcRenderer.invoke('app:read-spec', appId),
-  appWriteSpec: (payload) => ipcRenderer.invoke('app:write-spec', payload),
-  appEnterConsole: (payload) => ipcRenderer.invoke('app:console-enter', payload),
-  appLeaveConsole: (payload) => ipcRenderer.invoke('app:console-leave', payload),
-  appBound: (sessionId) => ipcRenderer.invoke('app:console-bound', sessionId),
-  appProbe: (payload) => ipcRenderer.invoke('app:probe', payload),
-  appCheck: (appId) => ipcRenderer.invoke('app:check', appId),
-  appRun: (payload) => ipcRenderer.invoke('app:run', payload),
-
   // GPU 进程异常退出（驱动重置/崩溃）→ 渲染层自动开启极速形态
   onGpuCrash: (callback) => {
     const listener = (_event, data) => callback(data)

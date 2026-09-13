@@ -49,16 +49,22 @@ export function createAppsStore({ api }: { api: AppsApi }) {
   }))
 }
 
-/** preload 未注入（浏览器内直开 dist/ 预览）时给出空实现，避免整页崩 */
+/**
+ * 真实 API：从 window.yfworkingAPI 取。
+ * ★ 缺方法时**必须显式报错**，不能静默返回空结果：
+ *   本轮真实事故——11 个方法被 preload 错位暴露在 yfworkingWindow 上，若这里静默兜底成
+ *   空列表，界面就表现为"列表空 + 点新增毫无反应"且零报错，排查成本极高。
+ *   宁可红条报错，也不要静默空白。
+ */
+const MISSING_API_MSG = '应用智控 API 未注入：window.yfworkingAPI 缺少 app* 方法（preload.cjs 未同步或应用未重启）'
 const realApi: AppsApi = (() => {
   const w = typeof window !== 'undefined' ? (window as unknown as { yfworkingAPI?: Partial<AppsApi> }) : undefined
   const api = w?.yfworkingAPI
   if (api?.appList && api?.appUpsert && api?.appRemove) return api as AppsApi
-  return {
-    appList: async () => [],
-    appUpsert: async (a) => a,
-    appRemove: async () => ({ ok: false }),
-  }
+  const fail = async () => { throw new Error(MISSING_API_MSG) }
+  return { appList: fail as unknown as AppsApi['appList'], appUpsert: fail as unknown as AppsApi['appUpsert'], appRemove: fail as unknown as AppsApi['appRemove'] }
 })()
+
+export { MISSING_API_MSG }
 
 export const useAppsStore = createAppsStore({ api: realApi })
