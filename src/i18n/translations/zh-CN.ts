@@ -821,6 +821,17 @@ export const zhCN = {
     saveFailed: '保存失败：{msg}',
     rawFailed: '读取原文失败：{msg}',
     readonlyTooltip: '知识包为只读',
+    // —— Task 7 搜索视图 ——
+    searchPlaceholder: '搜索知识库…',
+    searchKeywords: '关键词（逗号分隔，可选）',
+    searchHint: '输入查询串或关键词开始检索（Ctrl+F 可随时回到这里）',
+    searchEmpty: '没有命中任何块',
+    searchCount: '{n} 条命中',
+    scopeAll: '全部空间',
+    scopeSpace: '本空间',
+    relevance: '相对相关度',
+    indexDegraded: '索引降级',
+    degradedHint: '查询词未命中任何倒排 gram，向量路被跳过——结果只来自关键词匹配，可能偏少',
   },
 }
 

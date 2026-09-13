@@ -35,6 +35,8 @@ import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useViewStore } from '@/stores/viewStore'
+import { useKnowledgeStore } from '@/stores/knowledgeStore'
+import { KB_FOCUS_SEARCH_EVENT } from '@/lib/knowledgeSearch'
 import { sendAnswer, dismissQuestion, useYFWCLI } from '@/hooks/useYFWCLI'
 import { useTranslation } from '@/i18n/useTranslation'
 
@@ -137,6 +139,28 @@ export function WorkShell({ onGoCockpit }: WorkShellProps) {
     if (mod && e.shiftKey && e.key === 'F') {
       e.preventDefault()
       useUIStore.getState().openSearch()
+      return
+    }
+
+    // 知识库内检索（S2 Task 7）：⌘/Ctrl+F **仅当当前 rail 是 knowledge** 时拦截——
+    // 其他 rail 完全不碰（浏览器/Electron 的 find-in-page 在其它面板仍按原样走）。
+    // 让位规则（spec §11.3）：`view === 'edit'` 或焦点在 CodeMirror 内时**不拦**，
+    // 把 Mod-f 留给 CodeEditor 自带的 `searchKeymap`——在编辑器里按 Ctrl+F，用户要的是
+    // "在当前文档里找"，不是"切到知识库搜索"；编辑器内查找是更近的意图。
+    // 与 ⌘⇧F（SearchDialog）互不干扰：上面那支要求 shiftKey，本支要求 !shiftKey。
+    if (mod && !e.shiftKey && (e.key === 'f' || e.key === 'F') && useViewStore.getState().workState.rail === 'knowledge') {
+      const kb = useKnowledgeStore.getState()
+      // activeElement 判定：CodeMirror 6 的焦点节点是 contenteditable 的 `.cm-content`，
+      // 不是 INPUT/TEXTAREA ⇒ 判 tagName 会漏。用 closest('.cm-editor') 上溯到编辑器根，
+      // 顺带覆盖编辑器内的搜索面板/工具提示等子节点。
+      const active = document.activeElement as HTMLElement | null
+      const inEditor = !!active?.closest?.('.cm-editor')
+      if (kb.view !== 'edit' && !inEditor) {
+        e.preventDefault()
+        kb.setView('search')
+        // 视图是条件渲染，此刻搜索框还没挂载 ⇒ 下一帧再发信号（订阅方在搜索视图里 focus+select）
+        requestAnimationFrame(() => window.dispatchEvent(new CustomEvent(KB_FOCUS_SEARCH_EVENT)))
+      }
       return
     }
 

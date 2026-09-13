@@ -23,6 +23,7 @@ import { KnowledgeSkeleton } from './KnowledgeSkeleton'
 import { KnowledgeSidebar } from './KnowledgeSidebar'
 import { KnowledgeDocView } from './KnowledgeDocView'
 import { KnowledgeEditorView } from './KnowledgeEditorView'
+import { KnowledgeSearchView } from './KnowledgeSearchView'
 
 export function KnowledgePanel() {
   const { t } = useTranslation()
@@ -92,8 +93,11 @@ export function KnowledgePanel() {
               : docLoading ? <KnowledgeSkeleton lines={12} />
                 : doc ? <KnowledgeEditorView doc={doc} spaceId={space.id} spaceRoot={space.root} />
                   : <KnowledgeEmpty title={t('knowledge.emptyNoDoc')} className="m-auto" />
+          ) : view === 'search' ? (
+            // 搜索视图（Task 7）：自持 q/keywords/范围三态，命中的定位通过 store 三连写回
+            <KnowledgeSearchView />
           ) : (
-            // graph / search：Task 7-8 填充
+            // graph：Task 8 填充
             <KnowledgeEmpty title={t('knowledge.emptyPending')} className="m-auto" />
           )}
         </div>

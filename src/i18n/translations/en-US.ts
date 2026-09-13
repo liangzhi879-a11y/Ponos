@@ -808,5 +808,16 @@ export const enUS: TranslationKeys = {
     saveFailed: 'Save failed: {msg}',
     rawFailed: 'Failed to read the source: {msg}',
     readonlyTooltip: 'This knowledge pack is read-only',
+    // —— Task 7 search view ——
+    searchPlaceholder: 'Search the knowledge base…',
+    searchKeywords: 'Keywords (comma separated, optional)',
+    searchHint: 'Type a query or keywords to search (Ctrl+F returns here)',
+    searchEmpty: 'No block matched',
+    searchCount: '{n} hits',
+    scopeAll: 'All spaces',
+    scopeSpace: 'This space',
+    relevance: 'Relative relevance',
+    indexDegraded: 'Index degraded',
+    degradedHint: 'The query matched no inverted gram, so the vector path was skipped — results come from keywords only and may be sparse',
   },
 }
