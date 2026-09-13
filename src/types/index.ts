@@ -627,7 +627,11 @@ export interface AppGenerateResult {
   probe?: AppProbeInfo
   rounds?: number
   issues?: string[]
+  /** 封装质量提示（不拦交付，但要在界面上让用户看到"哪里还不够"） */
+  warnings?: string[]
   verify?: AppVerifyResult
+  /** 自主探索概况：模型自己调了哪些工具、几轮收敛（用于让用户看懂"生成过程做了什么"） */
+  agent?: { turns: number; toolCalls: number; verified: boolean; stoppedBy?: string; trace?: unknown[] }
   error?: string
   elapsedMs?: number
 }

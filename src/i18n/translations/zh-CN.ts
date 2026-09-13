@@ -732,6 +732,7 @@ export const zhCN = {
     verifyFail: '试跑未通过',
     verifyNotRun: '写操作命令未试跑（避免产生真实改动）：{list}',
     verifySkipped: '需参数、无法自动试跑：{list}',
+    qualityWarn: '封装质量提示（不阻塞保存，建议核对）：',
     confirmSave: '确认并保存',
     confirmBlocked: '试跑未通过，不能保存——请点「重新生成」，或改为手工调整 Spec JSON',
     genFailed: '生成失败',

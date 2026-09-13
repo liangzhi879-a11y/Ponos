@@ -326,6 +326,19 @@ export function AddAppDialog({ onClose, onDone }: { onClose: () => void; onDone:
                   </div>
                 )}
 
+                {/* 封装质量提示：不拦交付，但必须让用户知道"覆盖度/说明"哪里还不够
+                    （真实反馈就是"命令很少/漏了主要功能"——默默放过等于让用户踩同一个坑） */}
+                {!!gen.warnings?.length && (
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center gap-1 text-[11px] text-warning">
+                      <AlertCircle className="w-3.5 h-3.5" />{t('apps.qualityWarn')}
+                    </div>
+                    {[...new Set(gen.warnings)].map((w) => (
+                      <div key={w} className="text-[10px] text-tertiary">{w}</div>
+                    ))}
+                  </div>
+                )}
+
                 {showJson ? (
                   <Textarea value={jsonDraft} onChange={(e) => setJsonDraft(e.target.value)}
                     className="w-full text-[11px] font-mono bg-input border rounded p-2 text-primary min-h-[160px]" />

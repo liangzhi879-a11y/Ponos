@@ -718,6 +718,7 @@ export const enUS: TranslationKeys = {
     verifyFail: 'Trial run failed',
     verifyNotRun: 'Write commands not trial-run (to avoid real changes): {list}',
     verifySkipped: 'Needs arguments, cannot auto-verify: {list}',
+    qualityWarn: 'Packaging quality notes (does not block saving; please review):',
     confirmSave: 'Confirm & save',
     confirmBlocked: 'Trial run failed — cannot save. Regenerate, or edit the Spec JSON manually.',
     genFailed: 'Generation failed',
