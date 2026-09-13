@@ -52,10 +52,10 @@ const SPEC = {
   ],
 }
 
-test('app:* 11 条通道全部注册', () => {
+test('app:* 12 条通道全部注册', () => {
   const ipc = fakeIpcMain()
   registerAppHandlers({ ipcMain: ipc, getExecutor: () => fakeExecutor([]) })
-  assert.equal(ipc.channels().length, 11)
+  assert.equal(ipc.channels().length, 12)
 })
 
 test('CRUD → Spec → 自检 全链路（数据落在 YFWORKING_HOME/apps）', async () => {

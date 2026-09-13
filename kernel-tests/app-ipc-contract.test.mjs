@@ -31,6 +31,7 @@ const CHANNELS = {
   'app:probe': 'appProbe',
   'app:run': 'appRun',
   'app:check': 'appCheck',
+  'app:generate': 'appGenerate',
 }
 
 // 主进程侧 handler 落在独立模块（app-ipc.cjs），main.cjs 只调用其注册函数——

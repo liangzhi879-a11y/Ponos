@@ -41,6 +41,19 @@ const yfworkingAPI = {
   appProbe: (payload) => ipcRenderer.invoke('app:probe', payload),
   appCheck: (appId) => ipcRenderer.invoke('app:check', appId),
   appRun: (payload) => ipcRenderer.invoke('app:run', payload),
+  /**
+   * 生成 App Spec（探测 → LLM → 校验 → read 试跑）。**不落盘**，需用户确认后另行保存。
+   */
+  appGenerate: (payload) => ipcRenderer.invoke('app:generate', payload),
+  /**
+   * 订阅生成进度（如实阶段事件）。返回取消订阅函数——
+   * 组件卸载必须调用，否则渲染层会残留监听（与 onExperienceAlert 同款约定）。
+   */
+  onAppGenerateProgress: (callback) => {
+    const listener = (_event, data) => callback(data)
+    ipcRenderer.on('app:generate-progress', listener)
+    return () => ipcRenderer.removeListener('app:generate-progress', listener)
+  },
 }
 
 contextBridge.exposeInMainWorld('yfworkingAPI', yfworkingAPI)

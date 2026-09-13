@@ -540,6 +540,49 @@ export interface AppProbeResult {
   error?: string
 }
 
+/**
+ * 生成进度事件。阶段由主进程真实代码路径触发：
+ * probe 探测 → round 请求模型 → stream 流式接收 → parse 解析 → invalid 回喂 →
+ * parsed 结构通过 → verify 试跑 → done 结束 / error 失败。
+ * chars 是真实累计字符数（不是估算百分比）。
+ */
+export interface AppGenerateProgress {
+  appId?: string | null
+  at?: number
+  phase: 'probe' | 'round' | 'stream' | 'parse' | 'invalid' | 'parsed' | 'verify' | 'done' | 'error'
+  round?: number
+  maxRounds?: number
+  chars?: number
+  /** 真实流式增量文本（已节流，用于界面展示实时输出） */
+  delta?: string
+  detail?: string
+  issues?: string[]
+  done?: boolean
+}
+
+/** 试跑验证结果（只跑 read；write 绝不试跑） */
+export interface AppVerifyResult {
+  ok: boolean
+  tried: string[]
+  failures: { action: string; error: string }[]
+  /** 未试跑的 write 命令 */
+  notRun: string[]
+  /** 因需要参数而无法自动试跑的 read 命令 */
+  skipped: string[]
+}
+
+/** 生成结果 */
+export interface AppGenerateResult {
+  ok: boolean
+  spec?: AppSpec
+  driver?: AppDriver
+  rounds?: number
+  issues?: string[]
+  verify?: AppVerifyResult
+  error?: string
+  elapsedMs?: number
+}
+
 /** 命令执行结果 */
 export interface AppRunResult {
   ok: boolean
@@ -598,6 +641,13 @@ export interface YFWAPI {
   appCheck: (appId: string) => Promise<AppCheckResult>
   /** 执行一条应用命令（read 直接跑；控制台的 write 由 UI 二次确认） */
   appRun: (payload: { appId: string; action: string; args?: Record<string, unknown>; sessionId?: string }) => Promise<AppRunResult>
+  /**
+   * 生成 App Spec（探测 → LLM → 结构校验 → read 试跑）。**不落盘**：
+   * 必须由用户确认后另行调用 appWriteSpec 保存。
+   */
+  appGenerate: (payload: { target: AppTarget; appId?: string; sessionId?: string; maxRounds?: number }) => Promise<AppGenerateResult>
+  /** 订阅生成进度（如实阶段事件）；返回取消订阅函数（组件卸载必须调用） */
+  onAppGenerateProgress: (callback: (p: AppGenerateProgress) => void) => () => void
 }
 
 /** File dialogs (skill install) — exposed by preload as `yfworkingFile` */

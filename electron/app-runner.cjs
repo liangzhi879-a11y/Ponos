@@ -49,15 +49,17 @@ function stepParams(step, args) {
  * @param {{roots:any, appId:string, action:string, args?:object, executor:object, sessionId:string}} p
  * @returns {Promise<{ok:boolean, data:any, error:string|null, kind:string, durationMs:number}>}
  */
-async function runCommand({ roots, appId, action, args = {}, executor, sessionId }) {
+async function runCommand({ roots, appId, action, args = {}, executor, sessionId, spec: specOverride, persist = true }) {
   const startedAt = Date.now()
-  const spec = registry.readSpec({ roots, appId })
+  // specOverride：生成阶段的"试跑"用——此时 Spec 还没落盘（用户尚未确认），
+  // 配套 persist=false 不写 history，避免给一个还不存在的应用留下执行记录。
+  const spec = specOverride || registry.readSpec({ roots, appId })
   const cmd = spec?.commands?.find((c) => c.action === action)
   const base = { appId, action, args, kind: cmd?.kind ?? 'unknown', at: new Date().toISOString() }
 
   const fail = (error) => {
     const r = { ok: false, data: null, error, kind: base.kind, durationMs: Date.now() - startedAt }
-    appendHistory({ roots, appId, entry: { ...base, ok: false, error } })
+    if (persist) appendHistory({ roots, appId, entry: { ...base, ok: false, error } })
     return r
   }
 
@@ -76,7 +78,7 @@ async function runCommand({ roots, appId, action, args = {}, executor, sessionId
       if (step.save) saved = step.act === 'snapshot' ? (res.snapshot?.text ?? res.snapshot) : (res.data ?? res)
     }
     const durationMs = Date.now() - startedAt
-    appendHistory({ roots, appId, entry: { ...base, ok: true, durationMs } })
+    if (persist) appendHistory({ roots, appId, entry: { ...base, ok: true, durationMs } })
     return { ok: true, data: saved, error: null, kind: cmd.kind, durationMs }
   } catch (e) {
     return fail(String(e?.message || e))
