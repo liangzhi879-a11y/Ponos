@@ -250,14 +250,19 @@ export function discoverWorkflows({ root } = {}) {
   for (const it of entries) {
     let content = ''
     let id = ''
+    // K1.2：记录**本函数实际读过的文件**——工具视图缓存的文件级签名（mtimeMs,size）以
+    // 此为准，故被 legacy/可见性/超限过滤掉的文件同样在案（它们一样决定工具池）。
+    let filePath = ''
     if (it.isDirectory()) {
       const ymlPath = join(root, it.name, 'workflow.yml')
       if (!existsSync(ymlPath)) continue
       id = it.name
+      filePath = ymlPath
       try { content = readFileSync(ymlPath, 'utf-8') } catch { continue }
     } else if (it.isFile() && /\.(yml|yaml)$/.test(it.name)) {
       id = it.name.replace(/\.(yml|yaml)$/, '')
-      try { content = readFileSync(join(root, it.name), 'utf-8') } catch { continue }
+      filePath = join(root, it.name)
+      try { content = readFileSync(filePath, 'utf-8') } catch { continue }
     } else continue
     const meta = parseFrontmatter(content)
     const parsed = parseYaml(content)
@@ -268,6 +273,7 @@ export function discoverWorkflows({ root } = {}) {
     const trigCfg = parsed.trigger_config && typeof parsed.trigger_config === 'object' ? parsed.trigger_config : {}
     wfs.push({
       id,
+      path: filePath,
       name: meta.name || parsed.name || id,
       description: (meta.description || parsed.description || firstLine || id).slice(0, 300),
       version: meta.version || parsed.version || '',

@@ -40,7 +40,7 @@ import { createWorkflowEngine, discoverWorkflowsAll, matchAutoTrigger, validateW
 // （workflow.mjs 兼容层未 re-export serializeWorkflow；直接取 DSL 实现，勿重复实现）。
 import { serializeWorkflow, normalizeWorkflow, parseYaml, toModel } from './workflow-dsl.mjs'
 // Task 6：工作流即工具——工作流按 expose 三态注册为具名工具（run_<slug>）注入工具池
-import { buildWorkflowTools, listVisibleWorkflows } from './dyntools.mjs'
+import { buildWorkflowTools, listVisibleWorkflows, toolSourceSignature, createToolsViewCache } from './dyntools.mjs'
 import { loadSettings } from './settings.mjs'
 import { createHooks } from './hooks.mjs'
 import { normalizeApprovalMode, deriveApprovalMode } from './approval-mode.mjs'
@@ -49,6 +49,8 @@ import { runReadonly } from './readonly.mjs'
 import { KERNEL_VERSION, SCHEMA_VERSION, buildId } from '../version.mjs'
 // 应用智控：内核侧 Spec 读取（纯函数）与权限规则注入
 import { getBoundApp, loadSpec } from './app-spec.mjs'
+// K0 观测 + K1.2 缓存命中计数（默认关：关闭时只付一次布尔判断，见 kernel/perf.mjs）
+import { perfCount } from './perf.mjs'
 import { syncAppPermissionRules } from './app-permissions.mjs'
 // 应用智控：应用即工具（绑定到本会话的应用命令 → app_* 具名工具，Task 4.x）
 import { buildAppTools } from './app-tools.mjs'
@@ -453,12 +455,23 @@ export async function main(argv) {
   // chat 模式跳过（2026-09-12 隔离）：实证病灶 = chat 会话的工具表里赫然出现 run_spec_dev，
   // 模型据此认为自己能跑工作流并答"Skill 工具在此不可用"，能力声明与实际工具集自相矛盾。
   if (!chatMode) {
+    // K1.2 工具视图缓存（签名语义/残留风险见 kernel/dyntools.mjs 的 toolSourceSignature 头注）：
+    //   · 缓存**只包工具表构造**（132ms/步 → 命中 ~0.4ms/步）；
+    //   · 键 = 盘面签名（各根名字列表 + 已知工作流文件 + 应用 registry/binding/spec）；
+    //   · 容量上限 ≤8 + LRU——教训见 claude-code utils/memoize.ts：无上限会话级 Map 曾涨到 300MB+；
+    //   · 签名不可判定（stat 异常）或构造抛错 ⇒ 不缓存，退化为原「每次求值」行为；
+    //   · `PONOS_DYNTOOLS_CACHE=0` 一键回退。**必须惰性读**：cli.mjs 的 settings.env 注入
+    //     发生在所有 ESM 模块求值之后，写成模块级常量必然读不到。
+    const viewCache = createToolsViewCache({ max: 8 })   // 容量上限 + LRU（见 dyntools 头注）
+    let viewSources = []                 // 上一轮发现实际读过的文件（签名的文件级输入）
     engine.tools.setDynamicTools(() => {
       // 应用智控：按「当前会话绑定的应用」注入 read/write 权限规则（安全双保险的主机制）。
       // 与工具注入同处一个视图函数（每次求值），故「进入控制台 → 绑定 → 规则生效」
       // 「离开 → 回收旧规则」都无需重启内核、无需跨进程消息。
       // 规则注入失败不得中断本轮 turn（与 dynamicTools 求值失败的容错策略一致）。
       // 详见 kernel/app-permissions.mjs。
+      // **K1.2 硬约束：本段有副作用（改 rules.allow/ask），是"进/离控制台即生效"的主机制，
+      // 故必须在缓存判定之前、每次求值都跑——绝不进缓存，也不受签名命中影响。**
       try {
         const boundAppId = getBoundApp({ roots: appRoots, sessionId })
         const boundSpec = boundAppId ? loadSpec({ roots: appRoots, appId: boundAppId }) : null
@@ -466,8 +479,18 @@ export async function main(argv) {
       } catch (err) {
         log.warn('apps: 权限规则注入失败（本轮继续）', err)
       }
-      return {
-        ...buildWorkflowTools({ roots: workflowRoots, engine: wfEngine, agentId: args.agent || null, publicLimit: wfPublicLimit }),
+      const sig = process.env.PONOS_DYNTOOLS_CACHE === '0'
+        ? null
+        : toolSourceSignature({ workflowRoots, workflowFiles: viewSources, appRoots })
+      const hit = viewCache.get(sig)     // sig=null（关缓存/不可判定）时恒 null
+      if (hit) {
+        perfCount('dynHit')
+        return hit
+      }
+      const wfTools = buildWorkflowTools({ roots: workflowRoots, engine: wfEngine, agentId: args.agent || null, publicLimit: wfPublicLimit })
+      viewSources = wfTools.sourcePaths || []   // 展开前取（非枚举属性不进 `{...}`）
+      const view = {
+        ...wfTools,
         // 应用智控（Task 4.x）：绑定到本会话的应用命令 → app_* 工具。
         //   · 可见性/截断全在 app-tools.mjs（console 仅本会话绑定可见，public 恒可见，
         //     private 永不可见）——与上面注入的权限规则同一时点求值，故「进入/离开控制台」
@@ -483,6 +506,8 @@ export async function main(argv) {
           runner: (p) => engine.runApp(p),
         }),
       }
+      viewCache.set(sig, view)           // 超上限由容器按 LRU 自行淘汰
+      return view
     })
   }
   // J1：health Judge 注入位——包装 engine.judgeUntil 作健康判定（目标 = 当前会话
