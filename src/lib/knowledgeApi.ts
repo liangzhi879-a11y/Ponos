@@ -303,14 +303,17 @@ export function reindex(opts?: KnowledgeCallOpts): Promise<ApiResult<KnowledgeSt
 }
 
 /**
- * 写文档（新建与保存共用）。成功回执 = `{ ok, docId, updated }`；后端已做落盘 + 增量索引，
- * 故调用方**仍需**失效 doc/tree/search 缓存（见 useKnowledge.saveDoc）。
+ * 写文档（新建与保存共用）。后端回执 = `{ ok, docId, updated }`——`ok` 由本层归一成
+ * `ApiResult.ok`，data 只透出 `docId`/`updated`（两处同名字段会让调用方判错层）。
+ * 后端已做落盘 + 增量索引，故调用方**仍需**失效 doc/tree/search 缓存（见 useKnowledge.saveDoc）。
  * 错误码：400（非法路径/非 md）/ 403（空间只读或越界）/ 404（空间不存在）/ 413（>2MB）。
  */
-export function writeDoc(input: KnowledgeWriteInput, opts?: KnowledgeCallOpts): Promise<ApiResult<{ docId: string; updated: boolean }>> {
-  return call<{ docId: string; updated: boolean }>('/knowledge/doc', {
+export async function writeDoc(input: KnowledgeWriteInput, opts?: KnowledgeCallOpts): Promise<ApiResult<{ docId: string; updated: boolean }>> {
+  const r = await call<{ docId?: unknown; updated?: unknown }>('/knowledge/doc', {
     method: 'POST',
     body: { space: input.space, path: input.path, content: input.content },
     opts: { timeoutMs: WRITE_TIMEOUT_MS, ...opts },
   })
+  if (!r.ok) return r
+  return { ok: true, data: { docId: String(r.data?.docId ?? ''), updated: r.data?.updated === true } }
 }
