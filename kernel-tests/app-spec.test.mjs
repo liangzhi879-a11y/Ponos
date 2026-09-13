@@ -16,7 +16,8 @@ import {
   MAX_COMMANDS_PER_APP,
 } from '../kernel/app-spec.mjs'
 
-function fixture() {
+/** 造 root；overrides 用于让不同 root 的 spec 内容可区分（验证"首个命中优先"必须内容不同） */
+function fixture(overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'appspec-'))
   mkdirSync(join(root, 'app-a'), { recursive: true })
   writeFileSync(join(root, 'registry.json'), JSON.stringify({
@@ -32,6 +33,7 @@ function fixture() {
       params: [{ name: 'orderId', type: 'string', required: true, description: '订单号' }],
       steps: [{ act: 'goto', url: '/o' }],
     }],
+    ...overrides,
   }), 'utf-8')
   return root
 }
@@ -39,6 +41,15 @@ function fixture() {
 const withFixture = (fn) => {
   const root = fixture()
   try { return fn(root) } finally { rmSync(root, { recursive: true, force: true }) }
+}
+
+const withTwo = (fn) => {
+  const r1 = fixture({ desc: '来自-ROOT1' })
+  const r2 = fixture({ desc: '来自-ROOT2' })
+  try { return fn(r1, r2) } finally {
+    rmSync(r1, { recursive: true, force: true })
+    rmSync(r2, { recursive: true, force: true })
+  }
 }
 
 test('常量：expose 三态与命令上限', () => {
@@ -54,10 +65,30 @@ test('listApps 读 registry.json 的 apps 数组', () => {
   })
 })
 
-test('listApps 容忍缺失/损坏的 registry.json（返回空数组不抛）', () => {
+test('listApps 容忍缺失的 registry.json（返回空数组不抛）', () => {
   assert.deepEqual(listApps({ roots: ['/definitely/not/exist'] }), [])
   assert.deepEqual(listApps({}), [])
   assert.deepEqual(listApps(), [])
+})
+
+test('listApps 容忍损坏的 registry.json（坏 JSON → 空数组，不抛）', () => {
+  withFixture((root) => {
+    writeFileSync(join(root, 'registry.json'), '{ 这不是 JSON', 'utf-8')
+    assert.deepEqual(listApps({ roots: [root] }), [])
+  })
+})
+
+test('listApps 跨 root 按 id 去重（与 loadSpec 首命中的口径一致）', () => {
+  withTwo((r1, r2) => {
+    assert.equal(listApps({ roots: [r1, r2] }).length, 1, '同一 id 不应产出两份')
+  })
+})
+
+test('listApps 兼容裸数组形状的 registry.json', () => {
+  withFixture((root) => {
+    writeFileSync(join(root, 'registry.json'), JSON.stringify([{ id: 'app-a', name: '甲' }]), 'utf-8')
+    assert.equal(listApps({ roots: [root] }).length, 1)
+  })
 })
 
 test('loadSpec 读单应用 spec.json；不存在返回 null', () => {
@@ -65,6 +96,30 @@ test('loadSpec 读单应用 spec.json；不存在返回 null', () => {
     assert.equal(loadSpec({ roots: [root], appId: 'app-a' }).appId, 'app-a')
     assert.equal(loadSpec({ roots: [root], appId: 'nope' }), null)
     assert.equal(loadSpec({ roots: [root] }), null)
+  })
+})
+
+test('loadSpec 容忍损坏的 spec.json（坏 JSON → null，不抛）', () => {
+  withFixture((root) => {
+    writeFileSync(join(root, 'app-a', 'spec.json'), '{ 坏 JSON', 'utf-8')
+    assert.equal(loadSpec({ roots: [root], appId: 'app-a' }), null)
+  })
+})
+
+test('loadSpec：spec.appId 与目录 appId 不一致 → 返回 null（防静默错配）', () => {
+  withFixture((root) => {
+    const p = join(root, 'app-a', 'spec.json')
+    writeFileSync(p, JSON.stringify({
+      specVersion: 1, appId: 'app-OTHER', name: '甲', target: { type: 'web' }, commands: [],
+    }), 'utf-8')
+    assert.equal(loadSpec({ roots: [root], appId: 'app-a' }), null)
+  })
+})
+
+test('★ 多 root：首个命中优先（两侧内容不同，才能真正验证顺序）', () => {
+  withTwo((r1, r2) => {
+    assert.equal(loadSpec({ roots: [r1, r2], appId: 'app-a' }).desc, '来自-ROOT1')
+    assert.equal(loadSpec({ roots: [r2, r1], appId: 'app-a' }).desc, '来自-ROOT2')
   })
 })
 
@@ -166,6 +221,32 @@ test('validateSpec：缺 steps 被捕获', () => {
   assert.ok(r.errors.some((e) => e.includes('steps')))
 })
 
+test('★ validateSpec 默认拒绝 expose.mode=public（防线：不得绕过控制台绑定）', () => {
+  const base = { specVersion: 1, appId: 'x', name: 'x', target: { type: 'web' }, commands: [] }
+  const r = validateSpec({ ...base, expose: { mode: 'public' } })
+  assert.equal(r.ok, false, 'LLM 生成的 public 必须被拒')
+  assert.ok(r.errors.some((e) => e.includes('public')), `实际错误：${r.errors}`)
+  // 用户显式开启时才放行
+  assert.equal(validateSpec({ ...base, expose: { mode: 'public' } }, { allowPublic: true }).ok, true)
+})
+
+test('validateSpec：未知 expose.mode 被捕获', () => {
+  const r = validateSpec({
+    specVersion: 1, appId: 'x', name: 'x', target: { type: 'web' },
+    expose: { mode: 'wat' }, commands: [],
+  })
+  assert.equal(r.ok, false)
+  assert.ok(r.errors.some((e) => e.includes('expose.mode')))
+})
+
+test('validateSpec：expectAppId 可挡下 id 错配', () => {
+  const spec = { specVersion: 1, appId: 'app-a', name: 'x', target: { type: 'web' }, commands: [] }
+  assert.equal(validateSpec(spec, { expectAppId: 'app-a' }).ok, true)
+  const bad = validateSpec(spec, { expectAppId: 'app-b' })
+  assert.equal(bad.ok, false)
+  assert.ok(bad.errors.some((e) => e.includes('不一致')))
+})
+
 test('validateSpec 通过合法 Spec（含 params 数组）', () => {
   withFixture((root) => {
     const r = validateSpec(loadSpec({ roots: [root], appId: 'app-a' }))
@@ -185,22 +266,22 @@ test('getBoundApp 读 binding.json（严格单开）', () => {
   })
 })
 
-test('getBoundApp 容忍缺失/损坏的 binding.json', () => {
+test('getBoundApp 容忍缺失与损坏的 binding.json', () => {
   withFixture((root) => {
-    assert.equal(getBoundApp({ roots: [root], sessionId: 's1' }), null)
+    assert.equal(getBoundApp({ roots: [root], sessionId: 's1' }), null, '缺失')
     writeFileSync(join(root, 'binding.json'), '{ 坏 JSON', 'utf-8')
-    assert.equal(getBoundApp({ roots: [root], sessionId: 's1' }), null)
+    assert.equal(getBoundApp({ roots: [root], sessionId: 's1' }), null, '损坏')
   })
 })
 
-test('多 root：首个命中优先', () => {
-  const r1 = fixture()
-  const r2 = fixture()
-  try {
-    assert.equal(listApps({ roots: [r1, r2] }).length, 2)
-    assert.equal(loadSpec({ roots: [r2, r1], appId: 'app-a' }).appId, 'app-a')
-  } finally {
-    rmSync(r1, { recursive: true, force: true })
-    rmSync(r2, { recursive: true, force: true })
-  }
+test('端到端小闭环：绑定 → 可见 → 解绑 → 不可见', () => {
+  withFixture((root) => {
+    const spec = loadSpec({ roots: [root], appId: 'app-a' })
+    const bp = join(root, 'binding.json')
+    assert.equal(isAppVisible(spec, { boundApp: getBoundApp({ roots: [root], sessionId: 's1' }) }), false)
+    writeFileSync(bp, JSON.stringify({ s1: { appId: 'app-a' } }), 'utf-8')
+    assert.equal(isAppVisible(spec, { boundApp: getBoundApp({ roots: [root], sessionId: 's1' }) }), true)
+    writeFileSync(bp, JSON.stringify({}), 'utf-8')
+    assert.equal(isAppVisible(spec, { boundApp: getBoundApp({ roots: [root], sessionId: 's1' }) }), false)
+  })
 })

@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { sanitizeRail, RAIL_IDS, sanitizeSecondTab, SECOND_TAB_IDS } from './viewStore.ts'
 
-test('sanitizeRail：5 合法值透传，非法/缺省回退 task', () => {
+test('sanitizeRail：6 合法值透传，非法/缺省回退 task', () => {
   for (const ok of RAIL_IDS) assert.equal(sanitizeRail(ok), ok)
   // Task 13：第五 rail「工作流」入白名单（持久化后重启仍在 workflows rail）
   assert.equal(sanitizeRail('workflows'), 'workflows')
