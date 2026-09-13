@@ -41,6 +41,7 @@
 | `kernel-tests/engine-request-face.test.mjs` | 新建 | K1.4 同 revision 同引用 / `rev+1` 重建 / `contentEpoch+1` 保险丝 / 顺序不变式 / session 写路径 bump |
 | `kernel-tests/engine-adaptive-firstbyte-lazy.test.mjs` | 新建 | K1.3 惰性提供者调用次数与语义等价 |
 | `kernel/session.mjs` | 改 | K1.4 `revision`、K1.5 `dirEnsured`、K2.3 写队列 + `flushSession()`、K2.5 尾部修复 |
+| `kernel-tests/session-append-dir.test.mjs` | 新建 | K1.5 只建一次目录 + **目录被删后不得静默丢写**（含变异验证）+ 不得常驻 fd 的反向守卫 |
 | `kernel/cli.mjs` | 改 | K1.2 视图闭包内工具表缓存（`syncAppPermissionRules` 仍在缓存外） |
 | `kernel-tests/dyntools-cache.test.mjs` | 新建 | K1.2 命中/失效/权限副作用/异常不缓存 |
 | `kernel/dyntools.mjs` | 改 | K1.2 `toolSourceSignature()` + `createToolsViewCache()`（LRU≤8）；`buildWorkflowTools` 挂非枚举 `sourcePaths` |
@@ -220,11 +221,22 @@ export function perfStep(turn, step)                  // 发一行 + 清账 + �
 
 ### Task 6: K1.5 `session.append` 的 `mkdirSync` 去重
 
-**Files:** Modify `kernel/session.mjs`
+**Files:** Modify `kernel/session.mjs`；Create `kernel-tests/session-append-dir.test.mjs`
 
-- [ ] `dirEnsured` 标志（与构造期重复的 `mkdirSync` 去掉）
-- [ ] **不得改成常驻 fd**（`setEntryUsage` 会换 inode → 静默丢写）——写进代码注释
-- [ ] 回归：`npm test` + `node --test "kernel-tests/*.test.mjs"`
+- [x] `dirEnsured` 标志（与构造期重复的 `mkdirSync` 去掉）
+- [x] **不得改成常驻 fd**（`setEntryUsage` 会换 inode → 静默丢写）——写进代码注释
+- [x] 回归：`npm test` + `node --test "kernel-tests/*.test.mjs"`
+
+**实测**（交替先后测量同一行代码，抵消磁盘缓存/杀软扫描的时序偏置，400 次取中位）：`mkdirSync(递归, 目录已存在)` + `appendFileSync` = **0.401ms/条** → 仅 `appendFileSync` = **0.221ms/条**，省 **0.181ms/条**（近半）⇒ 按 1–3 条/步 = **0.18–0.54ms/步**。
+
+**有意偏差：新增测试文件 `kernel-tests/session-append-dir.test.mjs`**（原计划只有"回归：npm test"，无新文件）。理由：省掉"每次都 mkdir"会**删掉旧实现的一条隐含自愈语义**——目录在运行期被删时（用户清理 `~/.yfw`、测试夹具 `rmSync`），旧实现靠每次都 mkdir 自愈，新实现若只省不补，`appendFileSync` 抛的 ENOENT 会被 `catch` 静默吞掉 ⇒ **内存里有这条消息、磁盘上没有**。这正是最该被测试钉住的一类静默丢写，故：
+- 补 `ENOENT` 分支：清标志、重建目录、**重试一次**（只重试一次，其余错误与旧实现一致地吞掉）；
+- 6 个用例：常态落盘顺序、**删除目录后新写入必须真的落盘**（不静默丢写）、反复删除每次都能恢复（标志正确复位，非一次性）、磁盘不可写时不抛且内存可用、`setEntryUsage` 换 inode 后仍写进新文件（"不得常驻 fd"的反向守卫）、恢复会话是追加而非截断。
+- **已做变异验证**：把 ENOENT 分支短路（`if (false && …)`）后，恰好两个自愈用例转红、其余四个仍绿 ⇒ 用例非空转。
+
+**测试自身的边界（写测试时踩到）**：删 `projects` 目录等于连 transcript 文件一起删掉，**旧内容必然没了**（旧实现同样如此）。故断言写的是"新写入落盘"而非"内容复活"——第一版断言 `['删除前','删除后']` 是错的。
+
+**二期未做（计划原列，仍延后）**：`setEntryUsage` 的行反查快路径（先看末行，未命中再全量扫）——每轮 ≤1 次，收益小、风险在正确性，留待 K2.4。
 
 ---
 

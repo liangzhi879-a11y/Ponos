@@ -115,6 +115,9 @@
   - **范围**：lane 路径的 `msgs()` 一步只求值 **1 次**（仅 `retryStream` 一处），记忆化零收益，**不套工厂**。
   - 观测：新增 `[perf]` 字段 `reqHit=`——否则「缓存被静默关掉/失效键写错恒 miss」与「优化生效」在 `req=` 的毫秒上无法区分。开关 `PONOS_REQUEST_FACE_CACHE=0`。
 - **K1.5 append**：`mkdirSync` 去重。**硬约束：不得改成常驻 fd**——`setEntryUsage` 用 `writeFileSync(tmp)+renameSync` 整体替换文件，常驻 fd 会指向被 unlink 的旧 inode → **静默丢写**。
+  - **实测**：`mkdirSync(递归,已存在)+appendFileSync` 0.401ms/条 → 仅 `appendFileSync` **0.221ms/条**（省 0.181ms/条 ≈ 近半）⇒ 0.18–0.54ms/步。
+  - **省 mkdir 会删掉一条隐含自愈语义**：目录运行期被删时旧实现靠"每次都 mkdir"自愈，只省不补会让 ENOENT 被 catch 吞掉 ⇒ 内存有、磁盘无（静默丢写）。故补 ENOENT 分支：清标志 → 重建目录 → **重试一次**。已做变异验证（短路该分支后恰好两个自愈用例转红）。
+  - **测试边界**：删目录等于连 transcript 文件一起删，旧内容必然没了（旧实现同样如此）⇒ 断言"新写入落盘"而非"内容复活"。
 - **K1.6 估算锚定（二期，默认关）**：以最近一条带 usage 的条目为锚，只估尾部（参考 claude-code `tokens.ts` / codex `history.rs`）。**风险在方向**：低估 → 压缩触发过晚 → 溢出 ⇒ 必须先量化误差（>5% 不上线）；**压缩落地即作废锚点**。
 
 ---

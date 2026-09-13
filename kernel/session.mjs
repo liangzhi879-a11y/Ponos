@@ -41,8 +41,14 @@ export function newSessionId() {
 export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }) {
   const dir = join(configDir, 'projects', sanitizeSegment(cwd))
   const file = join(dir, `${sessionId}.jsonl`)
+  // K1.5 落盘目录只建一次（2026-09-13 系统性优化）：`append()` 此前每条都重复
+  // `mkdirSync`——实测 0.401ms/条 → 0.221ms/条（省 0.181ms，近半；交替先后取中位），
+  // 按 1–3 条/步 = 0.18–0.54ms/步。
+  // 但**不能**只图快：旧实现的"每次都 mkdir"在目录被运行期删除时（用户清理 ~/.yfw、
+  // 测试夹具 rmSync）是自愈的，故 append 侧必须在 ENOENT 时清标志重来一次（见下）。
+  let dirEnsured = false
   // 构造即确保落盘目录存在（旧 transcript 直写 store.file、后续 append 均可用）
-  try { mkdirSync(dir, { recursive: true }) } catch { /* 目录不可建不致命 */ }
+  try { mkdirSync(dir, { recursive: true }); dirEnsured = true } catch { /* 目录不可建不致命 */ }
   // D2-2：新会话落盘 meta 首行（版本标记；不占 seq、不投影）。旧文件/恢复会话不写。
   if (!existsSync(file)) {
     try {
@@ -144,12 +150,26 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
 
   function invalidate() { deriveCache = null; bumpRev() }
 
+  // K1.5：常态不再重复 mkdir（构造期已建 ⇒ `dirEnsured`）。**硬约束：不得改成常驻 fd。**
+  // `setEntryUsage` 走 `writeFileSync(tmp) + renameSync(tmp, file)` **整体替换**文件，持有
+  // fd 会指向被 unlink 的旧 inode ⇒ 之后所有写入落在一个不可达的 inode 上（静默丢写，
+  // 磁盘上永远看不到）。故这里只能省「建目录」，不能省「重新打开文件」。
+  function writeEntry(entry) {
+    // S2-1 磁盘脱敏：落盘内容打码（内存 entriesBySeq 保留原文，模型输入不受影响）
+    appendFileSync(file, JSON.stringify(redactEntry(entry)) + '\n', 'utf-8')
+  }
   function append(entry) {
     try {
-      mkdirSync(dir, { recursive: true })
-      // S2-1 磁盘脱敏：落盘内容打码（内存 entriesBySeq 保留原文，模型输入不受影响）
-      appendFileSync(file, JSON.stringify(redactEntry(entry)) + '\n', 'utf-8')
-    } catch { /* 磁盘不可写不致命：内存状态仍可用 */ }
+      if (!dirEnsured) { mkdirSync(dir, { recursive: true }); dirEnsured = true }
+      writeEntry(entry)
+    } catch (err) {
+      // 目录被运行期删除（ENOENT）= 唯一需要重建的形态。清标志重建后重试**一次**，
+      // 保住旧实现"每次都 mkdir"的自愈语义；其余错误与旧实现一致：吞掉（磁盘不可写不致命）。
+      if (err?.code === 'ENOENT' && dirEnsured) {
+        dirEnsured = false
+        try { mkdirSync(dir, { recursive: true }); dirEnsured = true; writeEntry(entry) } catch { /* 仍失败：内存状态仍可用 */ }
+      }
+    }
     return entry
   }
 
