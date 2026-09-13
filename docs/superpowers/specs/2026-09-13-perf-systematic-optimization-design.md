@@ -155,7 +155,9 @@
   **bug 级附带发现**：`provider.thinkingEnabled=true` 时桥恒注入 `THINKING_ENABLED=1` ⇒ **每一步都思考**（含摘要/压缩步），而用户设的 `effortLevel: max` 永远发不出去（`api.mjs:1280` 的 thinking 分支先 `return`）——这条即使策略永不开启也该修。
   **范围限定**：仅该模型 + 两道小题 ⇒ 其余 provider 需各跑一次同一脚本；也**不足以**证明 off 在长任务上无损。
 - **K3.1 判据（按实测改为二值）**：`pickStepThinking → 'on'|'off'`。`off` **只给已知安全的阶段**（摘要/压缩步，范式 `compact.ts:1305`），其余维持现状；运行时只留两条**升档**（上一步工具报错 / 压缩后第一步）。**只降不升**，用户 `effortLevel:'off'` 时策略不得开。原计划的"工具步降一档"**删除**——无档可降。
-- **K3.2/K3.3 落点与回退**：解析层放一处（把"用户档位被静默丢弃"这个 bug 一并修掉：off → `thinking:{type:'disabled'}`，否则按 provider 的 `thinkingEnabled` → enabled+budget）；`PONOS_EFFORT_POLICY=graded|off`，**默认 `off`**——Task 11 的数据已到，但"改变模型行为"这一档要用户看过 A/B 表再开。
+- **K3.2/K3.3 落点与回退**：解析层放一处（把"用户档位被静默丢弃"这个 bug 一并修掉：off → `thinking:{type:'disabled'}`，否则按 provider 的 `thinkingEnabled` → enabled+budget；旋钮二选一，解释器为 `effortParam(effort, thinkingMode)`，优先级 ①策略关思考 ②provider 思考开关 ③`reasoning_effort`）；`PONOS_EFFORT_POLICY=graded|off`，**默认 `off`**——Task 11 的数据已到，但"改变模型行为"这一档要用户看过 A/B 表再开。
+  - **已落地（`550cfdf`，保行为部分）**：`effortParam` 优先级显式化 + `thinkingMode` 贯穿 `streamMessages → anthropicStream → 请求体`（默认 `null`，现状逐字节不变）+ 显式档位被吃掉时每进程落一行诊断（纯函数 `effortDroppedNotice`，`auto`/未知不误报）。**策略本身未启用**：`engine` 侧尚无调用方。
+  - **测试做法的修正（值得记下）**：原计划写的是「`PONOS_MOCK_API=1` + mock `api.bodies` 断言请求字段」——**做不到**。mock 在 `anthropicStream` 之前就短路了，`body` 根本不会构造；而本 bug 恰恰只在请求字段上可见。改为 `http.createServer` 起本地端点抓**真实**请求体（范式 `api-empty-stream.test.mjs` 的 `withServer`）。18 例覆盖 (env × 档位) 整张矩阵、两旋钮互斥不变量、档位以外字段逐字段不变；五个变异（删优先级 / 排回旧序 / budget 不回落 / 去掉每进程一次 / 诊断误报）**全部被杀**。教训：**观测点必须选在「事实发生的那一层」**，mock 层看不到的东西不要指望它断言。
 
 ---
 
