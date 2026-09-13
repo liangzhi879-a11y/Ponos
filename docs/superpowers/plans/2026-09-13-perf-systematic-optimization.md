@@ -412,27 +412,58 @@ export function perfStep(turn, step)                  // 发一行 + 清账 + �
 
 ---
 
-### Task 11: K3.0 旋钮 A/B 探针（必做前置，默认关）
+### Task 11: K3.0 旋钮 A/B 探针（必做前置）
 
-**Files:** 探针脚本（临时，不入库）+ 结论写入 `docs/bridge-contract.md` 或 spec
+**状态：已完成（结论推翻了本阶段的前提，并改变了 Task 12 的形状）**
 
-- [ ] 三臂探针：① `thinking:{type:'adaptive'}`（**不带 budget**）② `{enabled,budget_tokens:1024/2048/4096}` ③ `reasoning_effort: low/high/max`
-- [ ] 量「推理 token 数 / 可见正文长度 / TTFB / 总时长 / 是否 400」，产出 A/B 表
-- [ ] **旋钮二选一，绝不两个同时传**；若选 budget 必须钳到 `min(maxOutputTokens-1, budget)`
-- [ ] 凭据只从 `~/.yfw/config.json` 读，**绝不回显或落盘**
+**Files:** 探针脚本（临时，不入库，落在 `%TEMP%`）；结论写入本文件 + spec §6
+
+- [x] 三臂探针：① `thinking:{type:'adaptive'}`（**不带 budget**，`effortParam` 产生不了 ⇒ 直连）② `{enabled,budget_tokens:1024/2048/4096}` ③ `reasoning_effort: low/high/max`
+- [x] 量「思考字符数 / 正文长度 / TTFB / 总时长 / 是否 400 / **答对与否**」，产出 A/B 表
+- [x] ②③ 两臂走**真实** `kernel/api.mjs`（`setProvider()` + `streamMessages`），只有①直连
+- [x] 凭据只从 `~/.yfw/config.json` 现读进本进程内存，**未回显、未落盘**
+- [x] 三轮共 ~59 次调用：轮 1 每设置 1 次（噪声盖过效应）→ 轮 2 每设置 4 次 → 轮 3 每设置 8 次 × 2 题（含一道**可判对错**的陷阱题）
+
+**A/B 表（deepseek-v4-flash，temperature=0，n=8/臂/题，两题合计）**
+
+| 设置 | P1 箱子题 思考中位（极值） | P1 总中位 | P2 均速陷阱 思考中位 | P2 总中位 | 答对 | 400? |
+|---|---|---|---|---|---|---|
+| `thinking:{type:'disabled'}` **（off）** | 0 | **1014 ms** | 0 | **703 ms** | **16/16** | 否 |
+| `{enabled,budget_tokens:1024}` | 525（174–1246） | 2456 ms | 305（198–367） | 1178 ms | 16/16 | 否 |
+| `{enabled,budget_tokens:4096}`（**现状**） | 893（279–2987） | 3120 ms | 287（184–333） | 1064 ms | 16/16 | 否 |
+| `thinking:{type:'adaptive'}` | 1360（340–2305） | 2904 ms | 311（196–352） | 1200 ms | 16/16 | 否 |
+| `reasoning_effort: low / max`（轮 1+2） | 710 / 423（**两轮方向相反**） | 2334 / 2000 ms | — | — | 8/8 | 否 |
+
+**结论（六条，全部有数）**
+
+1. **唯一真正管用的旋钮是 thinking 的 on/off**：中位墙钟 P1 **3.1×**（1014 → 3120 ms）、P2 **1.5×**（703 → 1064 ms），且 **16/16 全对**。
+2. **budget 不是节流阀**：1024 vs 4096 在 P2 上思考量几乎相同（305 vs 287），P1 上区间大幅重叠（174–1246 vs 279–2987）；轮 1 的单样本里 1024 甚至**多于** 4096（2091 vs 1462）⇒ **非单调**。
+3. **`reasoning_effort` 在该端点不可用**：轮 1（low 545 / high 1473 / max 594）与轮 2（low 710 / max 423）方向相反，无单调性。讽刺的是它是当前代码里**唯一被静默丢弃**的字段。
+4. **`adaptive` 端点认**（本计划担心的 400 **未出现**）但**无优势**：P1 思考 1360 字符 / 总 2904 ms，不优于 4096。⇒ 不必为它加分支。
+5. **同一设置内的跑次间方差极大**（budget4096 × P1：279–2987 字符 = **10.7×**）⇒ **任何"逐步微调档位"的策略都会被噪声吞掉**。这正是四套参考实现里**一个运行时启发式都没有**的原因——本仓若做，只能是**阶段边界**。
+6. **bug 级附带发现**：`provider.thinkingEnabled=true` 时桥恒注入 `THINKING_ENABLED=1`（`bridge.mjs:914-915`）⇒ **每一步都思考**（含摘要/压缩步），而用户设的 `effortLevel: max` 永远发不出去（`api.mjs:1280` 的 thinking 分支先 `return`）。
+   中性副作用：off 臂的正文**更简短也更听指令**（P2 的 out=3 token 就是「4 km/h」；开思考时 out≈114 token = 额外解释）。
+
+**范围限定（不许外推）**：仅 **deepseek-v4-flash** 一个模型、两道小题、每臂 n=8。其余 provider（minimax / vLLM Qwen）**必须各跑一次同一脚本**才能下同样结论——尤其 MiniMax 按 `api.mjs:1284` 的注释「不显式 `thinking:enabled` 则思考完全不可见」，其 off 臂语义可能与 deepseek 不同。质量信号也仅限这两题：**不足以**证明 off 在长任务（多文件改动/规划）上同样无损。
 
 ---
 
 ### Task 12: K3.1–K3.3 推理预算分级
 
+**状态：待实施（形状已按 Task 11 实测校正）**
+
 **Files:** Modify `kernel/engine.mjs`、`kernel/api.mjs`、`server/bridge.mjs`；Create `kernel-tests/effort-policy.test.mjs`、`kernel-tests/effort-wire.test.mjs`
 
-- [ ] `pickStepEffort(input)` 纯函数：**先按阶段边界**（摘要/压缩步 → `off`；首步 → 用户档；工具步 → 降一档），运行时只留「上一步工具报错」「压缩后第一步」两条
-- [ ] **用户显式 pin 档位时策略只降不升**；档位与上下文窗口世代绑定（压缩成功后允许重定档）
+**形状变更（数据驱动，非偏好）**：原计划的四档阶梯（`medium/low/high/max`）**在本 provider 上不可实现**——budget 与 `reasoning_effort` 两个旋钮实测都不控思考量（Task 11 结论 2/3），而唯一有量级效应的旋钮是 **thinking 的 on/off**（结论 1：3.1× / 1.5×，16/16 全对）。故判据降为**二值** `pickStepThinking(input) → 'on' | 'off'`，同时更贴近四套参考实现（阶段边界 + 配置，**零运行时启发式**）。用户原话「常规步 medium / 疑难步 max」的**意图**（常规步少思考）保留，但载体不得不换成开关。
+
+- [ ] `pickStepThinking(input)` 纯函数：`off` **只给已知安全的阶段**——摘要/压缩步（范式 `claude-code/src/services/compact/compact.ts:1305`：其产出是结构化摘要，不需要探索性推理）；**其余一律 `on`（= 维持现状）**，不做"工具步降一档"（无档可降）
+- [ ] 运行时启发式只保留两条**升档**：上一步 `tool_result` 为 `is_error` → `on`；紧跟压缩/溢出瘦身后的第一步 → `on`
+- [ ] **只降不升 + 用户优先**：用户 `effortLevel: 'off'` 时策略**不得**开；策略只能把 `on` 变 `off`
 - [ ] 解析层放**一处**：合法值/别名/未知值降级全写死在解析函数里
-- [ ] 落点：`engine.mjs` 档位状态 + 主路径/lane 两个消费点；若选 budget 则改 `effortParam` 并**明确 thinking 与 effort 的优先级**（消除现有静默短路）
-- [ ] `PONOS_EFFORT_POLICY=graded|off`，**默认 `off`**，直到 Task 11 有实测数据
+- [ ] 落点：`engine.mjs` 档位状态 + 主路径/lane 两个消费点；`api.mjs:effortParam` **明确优先级**（off → `thinking:{type:'disabled'}`；否则按 provider 的 thinkingEnabled → enabled+budget），**消除"用户档位被静默丢弃"**（Task 11 结论 6——这条即使策略永不开启也该修）
+- [ ] `PONOS_EFFORT_POLICY=graded|off`，**默认 `off`**：Task 11 已有数据，但"改变模型行为"这一档要用户**看过 A/B 表再开**
 - [ ] 测试：判据表（纯函数）+ `PONOS_MOCK_API=1` 断言不同步真的换了请求字段
+- [ ] **仍不做**：`adaptive` 分支（结论 4：无优势）、budget 钳制（不选 budget 即无需那个 `-1`）
 
 ---
 

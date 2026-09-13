@@ -149,9 +149,13 @@
 
 **链路实测（决定实现方式）**：`normalizeEffort` 只认 `off|low|high|max`（**`medium` 会被映射成 `high`**）；`api.mjs` 的 `effortParam` **把 thinking-enabled 分支排在 `reasoning_effort` 映射之前并直接 return** ⇒ 当前每请求只带 `thinking:{budget_tokens:4096}`，**用户设的 `effortLevel: max` 实际从未发出去**。
 
-- **K3.0 先定「哪个旋钮真的管用」**（必做前置）：三臂探针（adaptive 不带 budget / 带 budget / `reasoning_effort`）。**成熟实现是「旋钮二选一、由模型能力决定，绝不两个同时传」**；若选 budget 必须钳到 `min(maxOutputTokens-1, budget)`（那个 `-1` 照抄，否则 API 400）。凭据只从 `~/.yfw/config.json` 读、绝不回显/落盘。
-- **K3.1 判据**：**先按阶段边界定档，运行时启发式只作辅助**——四套成熟实现里**都没有任何运行时探测**。① 摘要/压缩步 → `off`（几无质量风险）② 首步 → 用户档 ③ 工具步 → 降一档 ④ 运行时只留「上一步工具报错」「压缩后第一步」两条。**用户显式 pin 档位时策略只降不升**。
-- **K3.2/K3.3 落点与回退**：档位解析层放一处（别名与降级写死）；`PONOS_EFFORT_POLICY=graded|off`，**默认 `off`**，直到 K3.0 有实测数据。
+- **K3.0 先定「哪个旋钮真的管用」（已完成，结论推翻本阶段前提）**：三臂探针（adaptive 不带 budget / 带 budget 1024·2048·4096 / `reasoning_effort` low·high·max），②③ 两臂走**真实** `kernel/api.mjs`，共 ~59 次调用（n=8/臂/题 × 2 题，含一道可判对错的陷阱题）。凭据只从 `~/.yfw/config.json` 读、绝不回显/落盘。
+  **实测（deepseek-v4-flash）**：唯一真正管用的旋钮是 **thinking 的 on/off**——中位墙钟 **3.1×**（1014 → 3120ms）与 **1.5×**（703 → 1064ms），且 **16/16 全对**；`budget_tokens` **不是节流阀**（1024 vs 4096 在 P2 上思考量 305 vs 287，P1 上区间大幅重叠 174–1246 vs 279–2987，轮 1 单样本里 1024 甚至**多于** 4096 ⇒ 非单调）；`reasoning_effort` 两轮方向相反 ⇒ 不可用；`adaptive` 端点**认**（担心的 400 未出现）但**无优势**（1360 字符/2904ms，不优于 4096）。
+  **最关键的一条**：同设置内**跑次间方差极大**（budget4096 × P1 思考量 279–2987 字符 = **10.7×**）⇒ **任何"逐步微调档位"的策略都会被噪声吞掉**，这正是四套参考实现里**一个运行时启发式都没有**的原因。
+  **bug 级附带发现**：`provider.thinkingEnabled=true` 时桥恒注入 `THINKING_ENABLED=1` ⇒ **每一步都思考**（含摘要/压缩步），而用户设的 `effortLevel: max` 永远发不出去（`api.mjs:1280` 的 thinking 分支先 `return`）——这条即使策略永不开启也该修。
+  **范围限定**：仅该模型 + 两道小题 ⇒ 其余 provider 需各跑一次同一脚本；也**不足以**证明 off 在长任务上无损。
+- **K3.1 判据（按实测改为二值）**：`pickStepThinking → 'on'|'off'`。`off` **只给已知安全的阶段**（摘要/压缩步，范式 `compact.ts:1305`），其余维持现状；运行时只留两条**升档**（上一步工具报错 / 压缩后第一步）。**只降不升**，用户 `effortLevel:'off'` 时策略不得开。原计划的"工具步降一档"**删除**——无档可降。
+- **K3.2/K3.3 落点与回退**：解析层放一处（把"用户档位被静默丢弃"这个 bug 一并修掉：off → `thinking:{type:'disabled'}`，否则按 provider 的 `thinkingEnabled` → enabled+budget）；`PONOS_EFFORT_POLICY=graded|off`，**默认 `off`**——Task 11 的数据已到，但"改变模型行为"这一档要用户看过 A/B 表再开。
 
 ---
 
