@@ -591,7 +591,10 @@ class BrowserExecutor {
       height: 780,
       title: 'YFWorking 浏览器自动化',
       icon: path.join(__dirname, '..', 'public', 'icon.png'),
-      show: true,
+      // 默认**不弹出**：应用智控/AI 调用命令时只做后台操作，不该打扰用户
+      //（用户要求"能不弹出就不要弹出"）。用户主动打开浏览器面板时，
+      // openWindow() 会显式 win.show()+focus()，交互行为完全不变。
+      show: false,
       webPreferences: {
         partition,
         contextIsolation: true,

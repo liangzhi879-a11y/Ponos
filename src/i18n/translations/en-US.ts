@@ -690,7 +690,7 @@ export const enUS: TranslationKeys = {
     generate: 'Generate commands',
     regenerating: 'Regenerate',
     generating: 'Generating…',
-    genHint: 'Generate first fetches the target page in the background, then lets the model write runnable commands from that material (no browser needed)',
+    genHint: 'Generate fetches the site material in the background (no browser window will pop up), then lets the model write runnable commands from it. This can take 1–2 minutes: the model tries to cover every controllable entry point and trial-runs the commands before handing them to you.',
     genPhase: 'Phase',
     genChars: 'Received',
     genElapsed: 'Elapsed',

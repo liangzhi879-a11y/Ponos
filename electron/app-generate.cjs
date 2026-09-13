@@ -10,8 +10,13 @@
 'use strict'
 
 const MAX_ROUNDS = 3
+/**
+ * 素材喂给模型的字符上限。用户明确"不要期望 llm 分析生成很快完成，要让模型尽可能充分
+ * 获取所有能控制的接口信息"——多页素材本身就更大，上限太小会把后面的页面截掉，模型又只能瞎猜。
+ * 20k 字节约 6~8k token，对现代模型完全可接受。
+ */
 const SNAPSHOT_CHAR_CAP = 20000
-const VERIFY_MAX_READS = 2
+const VERIFY_MAX_READS = 3
 
 /** Spec 里允许的步骤动作（写进提示词，避免模型编造 act） */
 const WEB_ACTS = ['goto', 'click', 'type', 'select', 'scroll', 'hover', 'js', 'wait', 'snapshot']
@@ -94,7 +99,8 @@ const SYSTEM_RULES = [
   '· 拿不准 ref 时，**优先改用 js 表达式**直接操作最稳（例：{"act":"js","expression":"document.querySelector(\'#submit\').click()"}）；',
   '· 纯读取类命令首选 {"act":"goto"} + {"act":"snapshot","save":"r"}，或 {"act":"js","expression":"document.body.innerText"} —— 两者都不依赖 ref。',
   '命令参数在步骤里的写法固定为 ${参数名}（例：url:"/orders?id=${orderId}"、text:"${keyword}"），不要用 {{参数名}} 或其它写法。',
-  '给出 1 到 5 条最有价值的命令；至少 1 条 read 命令，且该 read 命令最好**不需要参数**（便于系统自动试跑验证）。',
+  '给出 3 到 8 条最有价值的命令，**尽量覆盖素材里出现的主要功能入口**（不同页面/不同表单都算）；',
+  '其中至少 2 条 read 命令，且至少 1 条 read 命令**不需要参数**（便于系统自动试跑验证）。',
   '绝对不要写入口令、令牌、密钥、身份证号等敏感信息。',
 ].join('\n')
 
@@ -141,8 +147,15 @@ function buildPrompt({ target, probeMaterial, previousErrors, probeMode } = {}) 
   const noMaterial = !probeMaterial || (typeof probeMaterial === 'object' && Object.keys(probeMaterial).length === 0)
   const mode = probeMode || (noMaterial ? 'none' : 'browser')
   if (mode === 'browser') parts.push(`探测素材（JSON，来自真实页面的 DOM 快照）：\n${JSON.stringify(material).slice(0, SNAPSHOT_CHAR_CAP)}`)
-  else if (mode === 'http') parts.push(`探测素材（JSON，来自页面 HTML 的静态解析；页面若有 JS 渲染可能不完整）：\n${JSON.stringify(material).slice(0, SNAPSHOT_CHAR_CAP)}`)
-  else if (mode === 'http-thin') parts.push(`探测素材（JSON，来自页面 HTML，但该页面疑似**前端渲染的空壳**，素材很少，仅供参考）：\n${JSON.stringify(material).slice(0, SNAPSHOT_CHAR_CAP)}`)
+  else if (mode === 'http') {
+    const pages = Array.isArray(material.pages) ? material.pages.length : 0
+    parts.push(
+      `探测素材（JSON，来自 ${pages ? `${pages + 1} 个` : ''}页面的 HTML 静态解析${
+        pages ? '，已覆盖首页与同源主要页面' : '；页面若有 JS 渲染可能不完整'
+      }）：\n${JSON.stringify(material).slice(0, SNAPSHOT_CHAR_CAP)}`,
+    )
+    if (pages) parts.push(`请**优先覆盖这些页面里暴露的主要功能入口**（表单/按钮/导航），而不是只写首页能做的事。`)
+  } else if (mode === 'http-thin') parts.push(`探测素材（JSON，来自页面 HTML，但该页面疑似**前端渲染的空壳**，素材很少，仅供参考）：\n${JSON.stringify(material).slice(0, SNAPSHOT_CHAR_CAP)}`)
   else parts.push('探测素材：（无）')
   if (Array.isArray(previousErrors) && previousErrors.length) {
     parts.push(`上一轮结果有问题（结构校验或试跑失败），错误如下：\n${previousErrors.map((e, i) => `${i + 1}. ${e}`).join('\n')}\n请针对这些错误修正后，仅输出修正完的完整 JSON。`)

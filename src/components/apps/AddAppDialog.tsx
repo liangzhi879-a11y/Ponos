@@ -26,6 +26,21 @@ const ID_RE = /^[a-zA-Z0-9_-]+$/
 /** 阶段顺序（用于把"已到达"的阶段点亮；只是展示顺序，不代表会全部发生） */
 const PHASE_ORDER: AppGenerateProgress['phase'][] = ['fetch', 'probe', 'round', 'stream', 'parse', 'invalid', 'parsed', 'verify', 'done']
 
+/**
+ * 网址归一：用户从地址栏复制的常常不带协议头（`kimi.com`），而取素材与域名授权都要能解析它——
+ * 不补协议头，两步都会静默降级（素材空 + 未授权），表现就是"生成了但完全没效果"。
+ * 主进程还会再归一一次（权威），这里只为让**界面上显示的就是实际会访问的地址**。
+ * 规则与 electron/app-util.cjs 的 normalizeUrl 保持一致。
+ */
+function normalizeWebUrl(input: string): string {
+  const s = input.trim()
+  if (!s) return ''
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) return s
+  if (/^(mailto|javascript|data|tel|ftp|about|chrome):/i.test(s)) return s
+  const host = s.split(/[/?#]/)[0]
+  return /^(localhost|127\.0\.0\.1|\[?::1\]?)(:\d+)?$/i.test(host) ? `http://${s}` : `https://${s}`
+}
+
 function skeletonSpec({ id, name, type, url, exePath }: {
   id: string; name: string; type: AppTargetType; url: string; exePath: string
 }): AppSpec {
@@ -69,8 +84,8 @@ export function AddAppDialog({ onClose, onDone }: { onClose: () => void; onDone:
   const streamBuf = useRef('')
 
   const api = window.yfworkingAPI
-  const target = type === 'web' ? { type, url: url.trim() } : { type, exePath: exePath.trim() }
-  const targetReady = type === 'web' ? !!url.trim() : !!exePath.trim()
+  const target = type === 'web' ? { type, url: normalizeWebUrl(url) } : { type, exePath: exePath.trim() }
+  const targetReady = type === 'web' ? !!normalizeWebUrl(url) : !!exePath.trim()
 
   // ---- 订阅真实进度事件；卸载必须退订（否则渲染层残留监听）----
   useEffect(() => {
@@ -107,6 +122,12 @@ export function AddAppDialog({ onClose, onDone }: { onClose: () => void; onDone:
     setError(''); setGen(null); setVerify(null); setProg(null); setSeen([]); setTail(''); setChars(0); setShowJson(false); setForceSave(false)
     streamBuf.current = ''
     startedAt.current = Date.now(); setElapsed(0)
+    // 顺手把输入框里的网址补全（kimi.com → https://kimi.com/）：让用户看到系统实际访问的地址，
+    // 而不是让他以为"填了却什么都没发生"（真实反馈：输入不带协议头 → 抓取与授权双双静默失败）
+    if (type === 'web') {
+      const normalized = normalizeWebUrl(url)
+      if (normalized && normalized !== url) setUrl(normalized)
+    }
     try {
       const r = await api?.appGenerate?.({ target, appId: id || undefined })
       if (!r) { setError(t('apps.genFailed')); return }
@@ -131,7 +152,7 @@ export function AddAppDialog({ onClose, onDone }: { onClose: () => void; onDone:
     } else if (gen?.spec) {
       spec = gen.spec
     } else {
-      spec = skeletonSpec({ id, name: name.trim(), type, url: url.trim(), exePath: exePath.trim() })
+      spec = skeletonSpec({ id, name: name.trim(), type, url: normalizeWebUrl(url), exePath: exePath.trim() })
       if (probe?.driver) spec.driver = probe.driver as AppSpec['driver']
     }
     spec = { ...spec, appId: id, name: spec.name || name.trim() }

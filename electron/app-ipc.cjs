@@ -18,12 +18,18 @@ const { generateSpec, verifySpec, snapshotForPrompt, validateSpecBasic } = requi
 const { callLlmStream } = require('./app-llm.cjs')
 const appValidator = require('./app-validator.cjs')
 const httpProbe = require('./app-http-probe.cjs')
+const { normalizeUrl } = require('./app-util.cjs')
 // 浏览器自动化白名单（*.gov.cn / localhost / 127.0.0.1 + {YFW_HOME}/browser-whitelist.json）。
 // 只用来决定"要不要用浏览器增强探测"；生成命令本身**不依赖**它（见 app-http-probe.cjs 头部说明）。
 const { isWhitelisted } = require('./browser-common.cjs')
 
 /** 探测专用浏览器会话：与用户会话隔开，避免探测把用户正在看的页面导航走 */
 const PROBE_SESSION = 'app-probe'
+/**
+ * 生成时最多抓取多少页面。用户明确表示可以慢，但要求"尽可能充分获取所有能控制的接口信息"，
+ * 所以宁可多抓几页（含列表/搜索/设置等）给模型，也不要只凭一个首页就写命令。
+ */
+const MAX_HARVEST_PAGES = 6
 
 /** Spec 里没写 driver 时的推定：web → browser，desktop → uia（最保守的兜底） */
 function inferDriver(spec) {
@@ -149,7 +155,9 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
   // ---- 生成（Task 3.1/3.2）：取素材 → LLM 生成 → 结构校验 → read 试跑 ----
   // 注意：本通道**只返回结果、不落盘**。必须由用户在界面上确认后才写（计划 Task 3.2 硬要求）。
   ipcMain.handle('app:generate', async (_e, payload = {}) => {
-    const { target, appId, sessionId, maxRounds } = payload
+    // target 用 let：web 目标会先做网址归一（kimi.com → https://kimi.com/）再往下走
+    let { target } = payload
+    const { appId, sessionId, maxRounds } = payload
     const t0 = Date.now()
     const done = (extra) => ({ elapsedMs: Date.now() - t0, ...extra })
     if (!target || (target.type !== 'web' && target.type !== 'desktop')) {
@@ -168,13 +176,43 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     let probeTitle = null
     if (target.type === 'web') {
       driver = 'browser'
+      // ①′ 网址归一：用户常填不带协议头的写法（kimi.com）。不补全的话，取素材与授权都会
+      //    因 new URL() 抛错而**静默降级**（素材空 + 域名未授权）→ 用户看到"生成了但完全没效果"。
+      //    归一结果如实告知，用户才知道系统实际访问的是哪个地址。
+      const webUrl = normalizeUrl(target.url) || target.url
+      if (webUrl !== target.url) {
+        target = { ...target, url: webUrl }
+        emitProgress(appId, { phase: 'fetch', detail: `网址已补全为 ${webUrl}（原输入 ${String(payload?.target?.url)}）` })
+      }
       // 顺序要紧：**先**判定"是不是白名单站点"（决定要不要浏览器增强），**再**做显式授权。
       // 反过来的话 authorize 会让 isWhitelisted 恒真 → 每个站点都去开浏览器，违背"用户无感"。
-      const whitelisted = isWhitelisted(target.url)
+      const whitelisted = isWhitelisted(webUrl)
       // 用户在界面上填的网址 = 显式授权（供后续试跑/执行通过；agent 自主浏览仍受原白名单约束）
       authorizeAppTarget(target)
       emitProgress(appId, { phase: 'fetch', detail: '正在后台获取页面内容（无需浏览器）…' })
-      const fetched = await httpProbe.fetchPageMaterial({ url: target.url, fetchImpl })
+      // **尽可能摸全**：首页 + 若干同源主要页面（列表/搜索/设置/详情…），让模型看到站点
+      // 真正可控的入口，而不是只凭一个首页瞎猜（用户要求：宁可慢，也要把接口信息取充分）
+      const harvested = await httpProbe.harvestSite({ url: webUrl, fetchImpl, maxPages: MAX_HARVEST_PAGES })
+      const fetched = harvested.ok
+        ? { ok: true, material: harvested.material, finalUrl: harvested.finalUrl, spa: harvested.spa, bytes: harvested.bytes }
+        : { ok: false, error: harvested.error, status: harvested.status }
+      if (harvested.ok) {
+        const sit = harvested.material?.site || {}
+        emitProgress(appId, {
+          phase: 'fetch',
+          detail: `已取得 ${sit.pagesFetched || 1} 个页面素材（共 ${sit.interactiveTotal || 0} 个可交互线索${harvested.failed?.length ? `，${harvested.failed.length} 个页面抓取失败` : ''}）`,
+        })
+      }
+      // 跳转落点也要授权：网站常在 apex↔www 之间跳转（kimi.com → www.kimi.com），
+      // 而白名单是精确主机名匹配——不追加授权的话，模型照素材里跳转后的真实地址写出的命令
+      // 会在试跑阶段被拦（真机第二轮就是这个现象）。
+      if (fetched.finalUrl) {
+        const extraHosts = authorizeAppTarget(target, { extraUrls: [fetched.finalUrl] })
+        if (fetched.finalUrl !== webUrl) {
+          emitProgress(appId, { phase: 'fetch', detail: `页面跳转到 ${fetched.finalUrl}，已一并授权其域名` })
+        }
+        void extraHosts
+      }
       if (fetched.ok && httpProbe.isMaterialRich(fetched.material)) {
         probeMode = 'http'
         probeMaterial = fetched.material
@@ -226,7 +264,9 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     }
 
     // ③ 试跑验证（只跑 read，最多 2 条；write 绝不试跑）
-    let specWithDriver = { ...gen.spec, driver }
+    // target 以用户填写的（已归一的）为准：模型可能照抄原样或改写成子页，
+    // 而 target 决定"授权哪个域名"与相对路径怎么解析，必须是用户真正想要的那个地址。
+    let specWithDriver = { ...gen.spec, driver, target: { ...(gen.spec.target || {}), ...target } }
     const runForVerify = (spec) => ({ action, args, sessionId: sid }) => (
       driver === 'browser'
         ? runCommand({ roots: roots(), appId, action, args, executor: getExecutor(), sessionId: sid, spec, persist: false })
@@ -241,36 +281,41 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     let genRounds = gen.rounds
     let corrected = false
 
-    // ③′ 试跑未通过 → **回喂失败原因让模型自我修正一次**，再试跑。
-    // 为什么必须有这一步：结构校验只能查"字段写没写对"，而"选择器/ref 在真实页面上点不点得动"
-    // 只有试跑才知道（用户实测就是这么卡住的：生成的命令结构合法、一跑就报错）。
-    // 只修正一次，且只在"失败数变少或全通过"时才采纳，避免反复烧模型还不一定更好。
-    if (!verify.ok) {
+    // ③′ 试跑未通过 → **回喂失败原因让模型自我修正**，再试跑；只要还在改善就继续。
+    // 为什么必须有这一步：结构校验只能查"字段写没写对"，而"ref/选择器在真实页面上点不点得动"
+    // 只有试跑才知道（用户实测就是这么卡住的：命令结构合法、一跑就报错）。
+    // 用户要求"测试完善后才能交付用户使用"，所以允许**最多 2 轮**修正（默认不在未通过时就收工），
+    // 但只在"全通过 或 失败数确实减少"时采纳结果——否则就是白烧模型。
+    const CORRECT_ATTEMPTS = 2
+    let corrections = 0
+    for (let attempt = 1; attempt <= CORRECT_ATTEMPTS && !verify.ok; attempt++) {
       const failed = verify.failures.map((f) => `命令 ${f.action} 试跑失败：${f.error}`)
       emitProgress(appId, {
         phase: 'round',
-        detail: `试跑未通过：${verify.failures.map((f) => `${f.action}（${String(f.error).slice(0, 120)}）`).join('；')}；把失败原因回喂模型让它修正…`,
+        detail: `试跑未通过：${verify.failures.map((f) => `${f.action}（${String(f.error).slice(0, 120)}）`).join('；')}；第 ${attempt} 次回喂模型修正…`,
       })
       const retry = await generateSpec({
         target, probeMaterial, probeMode, maxRounds: 1, seedErrors: failed, callLlm,
         onProgress: (p) => emitProgress(appId, p),
       })
       genRounds += retry.rounds || 0
-      if (retry.ok) {
-        const retrySpec = { ...retry.spec, driver }
-        const v2 = await verifyOnce(retrySpec)
-        if (v2.ok || v2.failures.length < verify.failures.length) {
-          specWithDriver = retrySpec
-          verify = v2
-          corrected = true
-        }
+      if (!retry.ok) {
+        emitProgress(appId, { phase: 'round', detail: `第 ${attempt} 次修正未产出合法 Spec，停止修正` })
+        break
       }
+      const retrySpec = { ...retry.spec, driver, target: { ...(retry.spec.target || {}), ...target } }
+      const v2 = await verifyOnce(retrySpec)
+      const improved = v2.ok || v2.failures.length < verify.failures.length
+      if (improved) { specWithDriver = retrySpec; verify = v2; corrected = true; corrections = attempt }
       emitProgress(appId, {
         phase: 'round',
-        detail: corrected
-          ? (verify.ok ? '修正后试跑全部通过' : `修正后仍有 ${verify.failures.length} 条未通过`)
-          : '模型修正未带来改善，保留原结果',
+        detail: v2.ok
+          ? `第 ${attempt} 次修正后试跑全部通过`
+          : improved
+            ? `第 ${attempt} 次修正后未通过数降到 ${v2.failures.length} 条，继续修正…`
+            : `第 ${attempt} 次修正未带来改善，保留${corrected ? '上一版' : '原'}结果`,
       })
+      if (!improved) break
     }
 
     // probeMode 如实回传：界面据此提示"命令未经验证、需人工核对"（不假装探测过）
@@ -278,11 +323,11 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     emitProgress(appId, {
       phase: 'done',
       detail: verify.ok
-        ? `生成完成：${specWithDriver.commands.length} 条命令，试跑 ${verify.tried.length} 条查询命令全部通过${corrected ? '（经一次修正）' : ''}`
-        : `生成完成：${specWithDriver.commands.length} 条命令；试跑未通过：${verify.failures.map((f) => f.action).join('、')}`,
+        ? `生成完成：${specWithDriver.commands.length} 条命令，试跑 ${verify.tried.length} 条查询命令全部通过${corrections ? `（经 ${corrections} 次修正）` : ''}`
+        : `生成完成：${specWithDriver.commands.length} 条命令；试跑仍有 ${verify.failures.length} 条未通过（已修正 ${corrections} 次）：${verify.failures.map((f) => f.action).join('、')}`,
       issues: verify.failures.map((f) => `${f.action}：${f.error}`),
     })
-    return done({ ok: true, spec: specWithDriver, driver, probe: probeInfo, rounds: genRounds, issues: gen.issues, verify, corrected })
+    return done({ ok: true, spec: specWithDriver, driver, probe: probeInfo, rounds: genRounds, issues: gen.issues, verify, corrected, corrections })
   })
 
   // ---- 执行（Task 2.1/2.2）：按 driver 分发 ----
@@ -341,6 +386,13 @@ async function runAppCommand({ appId, action, args = {}, sessionId, getExecutor,
   return res
 }
 
+/** 同一站点的常见两种写法：apex 与 www（网站几乎都会在两者间跳转） */
+function hostVariants(host) {
+  const h = String(host || '').toLowerCase()
+  if (!h) return []
+  return h.startsWith('www.') ? [h, h.slice(4)] : [h, `www.${h}`]
+}
+
 /**
  * 显式授权应用目标域名（运行时白名单，进程内有效、**不落盘**）。
  *
@@ -351,21 +403,31 @@ async function runAppCommand({ appId, action, args = {}, sessionId, getExecutor,
  *
  * 真机验收（2026-09-13，kimi.com）证明不这么做功能等于不可用：
  *   生成走的是后台 HTTP（已不受白名单约束），但生成后的**试跑**与**执行**（含 AI 工具调用）
- *   都会经 BrowserExecutor → 白名单拦下，全部报「目标域名不在白名单…已拒绝导航」，
- *   于是"生成命令 + AI 可调用"这条价值链在非白名单站点上依旧是断的。
+ *   都会经 BrowserExecutor → 白名单拦下，全部报「目标域名不在白名单…已拒绝导航」。
  *
- * 边界：只授权目标 URL 的**精确主机名**（不扩散到子域、不扩散到同站其它域），
- * 不改全局默认白名单、不写任何配置文件；agent 自主浏览仍走原白名单。
- * @returns {string|null} 被授权的主机名（无法解析则为 null）
+ * 真机第二轮暴露的补充（务必保留）：网站常在 apex 与 www 之间**跳转**
+ * （kimi.com → www.kimi.com）。白名单是**精确主机名匹配**，只授权 `kimi.com` 时，
+ * 模型按素材里跳转后的真实地址写出的 `https://www.kimi.com/...` 依然被拦，
+ * 试跑再次全红。所以：① 同时授权 host 与它的 www/apex 变体；
+ * ② 额外授权**后台抓取观察到的最终地址（跳转落点）**——那是用户这个网址的真实去向。
+ *
+ * 边界：不扩散到子域（`sub.X` 不因授权 `X` 而放行）、不改全局默认白名单、不写任何配置文件。
+ * @param {{type?:string,url?:string}} target
+ * @param {{extraUrls?: Array<string|null|undefined>}} [opts] 追加授权（如跳转落点）
+ * @returns {string[]} 实际被授权的主机名
  */
-function authorizeAppTarget(target) {
-  if (!target || target.type !== 'web') return null
-  try {
-    const host = new URL(String(target.url || '')).hostname.toLowerCase()
-    if (!host) return null
-    isWhitelisted.allow(host)
-    return host
-  } catch { return null }
+function authorizeAppTarget(target, { extraUrls = [] } = {}) {
+  if (!target || target.type !== 'web') return []
+  const hosts = new Set()
+  for (const raw of [target.url, ...extraUrls]) {
+    const normalized = normalizeUrl(raw)
+    if (!normalized) continue
+    try {
+      for (const h of hostVariants(new URL(normalized).hostname)) hosts.add(h)
+    } catch { /* 忽略无法解析的输入 */ }
+  }
+  for (const h of hosts) isWhitelisted.allow(h)
+  return [...hosts]
 }
 
 /** 探测快照裁剪：只留 title/url/文本摘要，避免把整棵可交互树灌进渲染层 */
@@ -381,4 +443,4 @@ function profiledSnapshot(snap) {
   }
 }
 
-module.exports = { registerAppHandlers, runAppCommand, handleAppExecMessage, inferDriver, appRoots, PROBE_SESSION, profiledSnapshot, authorizeAppTarget }
+module.exports = { registerAppHandlers, runAppCommand, handleAppExecMessage, inferDriver, appRoots, PROBE_SESSION, profiledSnapshot, authorizeAppTarget, hostVariants }

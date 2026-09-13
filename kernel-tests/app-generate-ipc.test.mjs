@@ -121,19 +121,32 @@ test('app:generate：非白名单站点 → 用户填的网址被显式授权，
   assert.equal(isWhitelisted('https://app-not-whitelisted.example/'), true, '授权后该精确主机名可通过')
 })
 
-test('显式授权只覆盖精确主机名：不扩散到同域其它主机，也不改默认白名单', async () => {
+test('显式授权：覆盖 apex↔www（站点会互跳），但不扩散到子域/其它域名/伪造后缀', async () => {
   const { isWhitelisted, authorizeAppTarget } = (() => {
     const common = require('../electron/browser-common.cjs')
     const ipc = require('../electron/app-ipc.cjs')
     return { ...common, authorizeAppTarget: ipc.authorizeAppTarget }
   })()
-  assert.equal(authorizeAppTarget({ type: 'web', url: 'https://only-this-host-check.example/a/b?c=1' }), 'only-this-host-check.example')
+  // apex 与 www 都授权：网站几乎都会在两者间跳转（真机第二轮：kimi.com → www.kimi.com，
+  // 只授权 apex 时模型按跳转后地址写出的命令仍被拦 → 试跑全红）
+  const hosts = authorizeAppTarget({ type: 'web', url: 'https://only-this-host-check.example/a/b?c=1' })
+  assert.deepEqual(hosts.sort(), ['only-this-host-check.example', 'www.only-this-host-check.example'])
   assert.equal(isWhitelisted('https://only-this-host-check.example/other'), true, '路径不同仍属同一主机 → 授权')
+  assert.equal(isWhitelisted('https://www.only-this-host-check.example/'), true, 'www 变体要一并授权（跳转落点）')
   assert.equal(isWhitelisted('https://sub.only-this-host-check.example/'), false, '不扩散到子域')
   assert.equal(isWhitelisted('https://another-host.example/'), false, '不扩散到其它域名')
   assert.equal(isWhitelisted('https://evil.gov.cn.attacker.com/'), false, 'gov.cn 后缀伪造仍须被拒')
-  assert.equal(authorizeAppTarget({ type: 'desktop', exePath: 'C:/x.exe' }), null, '桌面目标不动白名单')
-  assert.equal(authorizeAppTarget({ type: 'web', url: '不是网址' }), null, '不合法网址不授权')
+  assert.deepEqual(authorizeAppTarget({ type: 'desktop', exePath: 'C:/x.exe' }), [], '桌面目标不动白名单')
+  assert.deepEqual(authorizeAppTarget({ type: 'web', url: '不是网址' }), [], '不合法网址不授权')
+})
+
+test('显式授权：额外授权跳转落点（extraUrls）', async () => {
+  const { isWhitelisted } = require('../electron/browser-common.cjs')
+  const { authorizeAppTarget } = require('../electron/app-ipc.cjs')
+  const hosts = authorizeAppTarget({ type: 'web', url: 'https://landing-target.example/' }, { extraUrls: ['https://cdn-assets.example/x', null, '不是网址'] })
+  assert.ok(hosts.includes('landing-target.example'))
+  assert.ok(hosts.includes('cdn-assets.example'), '跳转落点要一并授权')
+  assert.equal(isWhitelisted('https://cdn-assets.example/y'), true)
 })
 
 test('app:generate：取素材失败 → **不再中止**，降级为"靠常识推断"并如实标注', async () => {
@@ -227,7 +240,7 @@ test('app:generate：试跑失败 → 自动回喂失败原因修正，修正后
   assert.equal(r.verify.ok, true, '修正后试跑应通过')
   assert.equal(llmCalls, 2, '原生成 1 次 + 修正 1 次')
   assert.ok(t.details().some((d) => d.includes('回喂模型')), `进度里要如实说明在回喂修正：${t.details().join(' | ')}`)
-  assert.ok(t.details().some((d) => d.includes('经一次修正')), '完成文案要标注经过修正')
+  assert.ok(t.details().some((d) => /经 \d+ 次修正/.test(d)), '完成文案要标注经过修正')
 })
 
 test('app:generate：修正没有改善 → 保留原结果（不假装修好了）', async () => {

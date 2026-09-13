@@ -18,6 +18,8 @@
 //   · 有超时、有体积上限、只认 http/https（避免 file:// 之类被塞进来）。
 'use strict'
 
+const { normalizeUrl } = require('./app-util.cjs')
+
 const DEFAULT_TIMEOUT_MS = 15000
 const MAX_HTML_BYTES = 1_500_000
 const MAX_TEXT_CHARS = 3000
@@ -110,9 +112,13 @@ function looksLikeSpaShell(html) {
  * @returns {Promise<{ok:boolean, status?:number, finalUrl?:string, material?:object, spa?:boolean, bytes?:number, error?:string}>}
  */
 async function fetchPageMaterial({ url, fetchImpl, timeoutMs = DEFAULT_TIMEOUT_MS, headers } = {}) {
-  let u
-  try { u = new URL(String(url)) } catch { return { ok: false, error: `网址不合法：${String(url)}` } }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false, error: `只支持 http/https：${u.protocol}` }
+  // 归一网址：用户常填不带协议头的写法（kimi.com）——直接 new URL() 会抛错，
+  // 结果素材为空、生成只能靠猜（真实故障见 app-util.normalizeUrl 注释）
+  const normalized = normalizeUrl(url)
+  if (!normalized) {
+    return { ok: false, error: `网址不合法：${String(url)}（只支持 http/https，请填完整网址，例如 https://example.com/）` }
+  }
+  const u = new URL(normalized)
 
   const f = fetchImpl || globalThis.fetch
   if (typeof f !== 'function') return { ok: false, error: '当前运行环境没有 fetch' }
@@ -144,7 +150,69 @@ async function fetchPageMaterial({ url, fetchImpl, timeoutMs = DEFAULT_TIMEOUT_M
   }
 }
 
+/** 从一批链接里挑"值得再去抓一页"的（导航类页面通常能揭示更多可控接口） */
+function pickFollowLinks(material, baseUrl, max) {
+  const skipRe = /\/(logout|signout|sign-out|exit|delete|remove|cancel|unsubscribe)(\/|$|\?)/i
+  const keepRe = /(list|index|search|query|order|item|product|setting|config|manage|admin|report|export|dashboard|home|about|help|profile|account|user|task|job|record|history|detail)/i
+  let base = null
+  try { base = new URL(baseUrl) } catch { return [] }
+  const scored = []
+  for (const l of material?.links || []) {
+    let u
+    try { u = new URL(l.href, baseUrl) } catch { continue }
+    if (u.origin !== base.origin) continue                      // 只跟同源：跨域属别的应用
+    const path = u.pathname + u.search
+    if (!path || path === '/' || path === base.pathname + base.search) continue
+    if (skipRe.test(path)) continue                             // 退出/删除类绝不自动访问
+    const score = (keepRe.test(path) ? 2 : 0) + (l.text && l.text.length <= 12 ? 1 : 0)
+    scored.push({ url: u.toString(), score })
+  }
+  const seen = new Set()
+  return scored
+    .sort((a, b) => b.score - a.score)
+    .filter((x) => (seen.has(x.url) ? false : (seen.add(x.url), true)))
+    .slice(0, max)
+    .map((x) => x.url)
+}
+
+/**
+ * **尽可能充分**地取回一个站点的素材：首页 + 若干同源主要页面。
+ *
+ * 为什么需要（用户要求）：只抓首页时，模型看得到的可控制接口非常有限，生成的命令自然单薄
+ *（"要让模型尽可能充分的获取所有能控制的接口信息"）。多抓几页导航/列表/设置页，模型就能
+ * 把整个站点的可控入口摸出来，写出的命令更完整、更有用。用户明确表示可以慢，但要求摸全。
+ *
+ * 安全：只跟**同源**链接；跳过 logout/delete 等破坏性路径；页数有上限；任何一页失败都不影响整体。
+ * @returns {Promise<{ok:boolean, material?:object, pages?:Array, pagesFetched?:number, failed?:Array, error?:string}>}
+ */
+async function harvestSite({ url, fetchImpl, maxPages = 5, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  const first = await fetchPageMaterial({ url, fetchImpl, timeoutMs })
+  if (!first.ok) return { ok: false, error: first.error, status: first.status }
+  const main = first.material
+  const follow = pickFollowLinks(main, first.finalUrl, Math.max(0, maxPages - 1))
+  const pages = []
+  const failed = []
+  // 并发抓取（同源、页数小，压力可控）
+  const results = await Promise.all(follow.map(async (u) => ({ u, r: await fetchPageMaterial({ url: u, fetchImpl, timeoutMs }) })))
+  for (const { u, r } of results) {
+    if (r.ok) pages.push(r.material)
+    else failed.push({ url: u, error: r.error })
+  }
+  // 素材体积上限：多页时给更宽的上限（用户明确"可以慢，但要摸全"），但仍要有界
+  const interactiveTotal = [main, ...pages].reduce((n, m) => n + (m?.interactives || 0), 0)
+  return {
+    ok: true,
+    material: { ...main, pages, site: { pagesFetched: 1 + pages.length, interactiveTotal, followSkipped: Math.max(0, (main.links || []).length - follow.length) } },
+    pages,
+    pagesFetched: 1 + pages.length,
+    failed,
+    finalUrl: first.finalUrl,
+    spa: first.spa,
+    bytes: first.bytes,
+  }
+}
+
 module.exports = {
-  fetchPageMaterial, extractPageMaterial, isMaterialRich, looksLikeSpaShell, stripTags,
+  fetchPageMaterial, harvestSite, extractPageMaterial, isMaterialRich, looksLikeSpaShell, stripTags, pickFollowLinks,
   DEFAULT_TIMEOUT_MS, MAX_HTML_BYTES, RICH_MIN_INTERACTIVES,
 }

@@ -72,4 +72,50 @@ function checkRequired(params = [], args = {}) {
   return { ok: errors.length === 0, errors }
 }
 
-module.exports = { interpolate, checkRequired, snapshotToText, SNAPSHOT_TEXT_CAP }
+/** 带 "://" 的协议前缀（http/https/ftp…）／不带 "//" 的协议（mailto/data…，明确拒绝） */
+const SCHEME_WITH_SLASHES = /^([a-z][a-z0-9+.-]*):\/\//i
+const SCHEME_WITHOUT_SLASHES = /^(mailto|javascript|data|tel|ftp|about|chrome):/i
+/** 本机地址：本地服务几乎都不会上 https，补 http 更可能连得上 */
+const LOOPBACK = /^(localhost|127\.0\.0\.1|\[?::1\]?)(:\d+)?$/i
+/**
+ * 明显不像主机名的字符（空格、!、<>、"、^、|、\、{}、%、反引号）。
+ * 用于挡住"给垃圾输入硬补协议头"（如 `ht!tp://x` → `https://ht!tp://x`）：宁可不解析，
+ * 也不要编出一个看起来合法、实际必然失败的地址。
+ * 用黑名单而非白名单，是为了不误伤中文域名（如 `例子.com`）等合法写法。
+ */
+const BAD_HOST_CHARS = /[\s!<>"^`|\\{}%]/
+
+/**
+ * 把用户填的网址**归一成可解析的 URL**。
+ *
+ * 为什么需要（真实故障）：生成按钮只校验"网址非空"，用户从地址栏复制常得到不带协议头的写法
+ * （`kimi.com`、`www.kimi.com`、`kimi.com/chat?x=1`）。而下游两处都用 `new URL()` 直接解析：
+ *   · app-http-probe 取页面素材 → 抛错 → **素材为空**（probeMode=none）→ 模型只能靠猜写命令
+ *   · app-ipc.authorizeAppTarget 授权 → 抛错 → **域名未授权** → 执行时被浏览器白名单拦下
+ * 两步都静默降级，用户看到的就是"生成了但完全没效果"。在入口处补全协议头，比在下游到处兜底可靠。
+ *
+ * @returns {string|null} 归一后的 URL（不可解析/不支持的协议 → null）
+ */
+function normalizeUrl(input, { defaultScheme = 'https' } = {}) {
+  if (typeof input !== 'string') return null
+  let s = input.trim()
+  if (!s) return null
+  if (!SCHEME_WITH_SLASHES.test(s)) {
+    if (SCHEME_WITHOUT_SLASHES.test(s)) return null
+    const hostish = s.split(/[/?#]/)[0]
+    if (BAD_HOST_CHARS.test(hostish)) return null
+    // 没写协议头时，要求它看起来确实是个主机名（带点，或本机地址）：
+    // 否则 `不是网址` 这类输入会被补成 `https://不是网址` 去真发请求，用户只会看到"什么都没发生"。
+    if (!LOOPBACK.test(hostish) && !hostish.includes('.')) return null
+    const scheme = LOOPBACK.test(hostish) ? 'http' : defaultScheme
+    s = `${scheme}://${s}`
+  }
+  try {
+    const u = new URL(s)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+    if (!u.hostname) return null
+    return u.toString()
+  } catch { return null }
+}
+
+module.exports = { interpolate, checkRequired, snapshotToText, normalizeUrl, SNAPSHOT_TEXT_CAP }
