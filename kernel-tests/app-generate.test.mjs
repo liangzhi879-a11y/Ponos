@@ -6,7 +6,7 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 const {
   buildPrompt, extractSpec, generateSpec, verifySpec, validateSpecBasic, snapshotForPrompt,
-  MAX_ROUNDS, VERIFY_MAX_READS,
+  MAX_ROUNDS, VERIFY_MAX_READS, ACT_CONTRACT, actContractLines, WEB_ACTS, DESKTOP_ACTS, SYSTEM_RULES,
 } = require('../electron/app-generate.cjs')
 
 const GOOD_SPEC = {
@@ -16,7 +16,7 @@ const GOOD_SPEC = {
   commands: [
     { action: 'queryOrder', title: '查单', kind: 'read', params: [{ name: 'id', type: 'string', required: true }], steps: [{ act: 'goto', url: '/o/${id}' }, { act: 'snapshot', save: 'result' }] },
     { action: 'listRecent', title: '最近列表', kind: 'read', params: [], steps: [{ act: 'goto', url: '/recent' }, { act: 'snapshot', save: 'result' }] },
-    { action: 'submit', title: '提交', kind: 'write', params: [], steps: [{ act: 'click', selector: '#ok' }] },
+    { action: 'submit', title: '提交', kind: 'write', params: [], steps: [{ act: 'goto', url: '/new' }, { act: 'snapshot' }, { act: 'click', ref: 1 }] },
   ],
 }
 const llmReturning = (text) => async () => ({ ok: true, text, error: null, chars: text.length })
@@ -63,9 +63,11 @@ test('buildPrompt：禁止 public、含 act 白名单、禁止敏感信息', () 
   assert.ok(/不要写入口令/.test(system))
 })
 
-test('buildPrompt：有 previousErrors 时追加回喂段与错误清单', () => {
+test('buildPrompt：有 previousErrors 时追加回喂段与错误清单（含试跑失败）', () => {
   const { user } = buildPrompt({ target: {}, probeMaterial: {}, previousErrors: ['输出不是合法 JSON', '缺少 name'] })
-  assert.ok(user.includes('上一轮输出不合法'))
+  // 措辞要对"两类错误"都成立：结构校验失败 与 试跑失败（试跑失败也会走这条回喂通道）
+  assert.ok(user.includes('上一轮结果有问题'))
+  assert.ok(user.includes('试跑'))
   assert.ok(user.includes('输出不是合法 JSON'))
   assert.ok(user.includes('缺少 name'))
 })
@@ -253,4 +255,83 @@ test('validateSpecBasic：用户在界面显式选「全局可用」时放行（
   // 显式放行只针对 public，其它错误照旧要拦住
   const broken = { ...pub, commands: [] }
   assert.equal(validateSpecBasic(broken, { allowPublic: true }).ok, false)
+})
+
+// ---------- 步骤字段契约（真实故障驱动的补充） ----------
+//
+// 背景（用户实测）：生成出来的命令试跑报 `步骤 js 失败：js 缺少 expression`。
+// 根因是校验只查 "steps 非空"、提示词也只列 act 名字 —— 缺字段的步骤能过校验，直到试跑才炸。
+// 下面这组用例把契约钉住：坏步骤必须在校验轮被拦下（生成循环才有机会回喂模型改正）。
+
+const specWith = (steps, kind = 'read') => ({
+  ...GOOD_SPEC, driver: 'browser',
+  commands: [{ action: 'x', title: 'x', kind, params: [], steps }],
+})
+
+test('validateSpecBasic：js 缺 expression 必须被拦下，并点名正确的字段名', () => {
+  const r = validateSpecBasic(specWith([{ act: 'goto', url: '/' }, { act: 'js' }]))
+  assert.equal(r.ok, false)
+  assert.ok(r.errors.some((e) => e.includes('expression')), `实际：${r.errors}`)
+})
+
+test('validateSpecBasic：js 把表达式写在 code/script/value 里 → 提示改名为 expression', () => {
+  for (const alias of ['code', 'script', 'value', 'expr']) {
+    const r = validateSpecBasic(specWith([{ act: 'js', [alias]: 'document.title' }]))
+    assert.equal(r.ok, false, `${alias} 不该被当作合法写法`)
+    assert.ok(r.errors.some((e) => e.includes(`"${alias}"`) && e.includes('expression')), `实际：${r.errors}`)
+  }
+})
+
+test('validateSpecBasic：js 写了 expression → 通过', () => {
+  assert.equal(validateSpecBasic(specWith([{ act: 'js', expression: 'document.title' }])).ok, true)
+})
+
+test('validateSpecBasic：click/type/select/hover 要的是 ref，写成 selector 会被拦并说明改法', () => {
+  const r = validateSpecBasic(specWith([{ act: 'click', selector: '#ok' }]))
+  assert.equal(r.ok, false)
+  const msg = r.errors.join(' ')
+  assert.ok(msg.includes('ref') && msg.includes('selector'), `实际：${r.errors}`)
+  assert.ok(msg.includes('snapshot') || msg.includes('js'), '错误信息要给出可操作改法')
+})
+
+test('validateSpecBasic：ref 类动作给了 ref → 通过（ref 可为数字或数字字符串）', () => {
+  assert.equal(validateSpecBasic(specWith([{ act: 'click', ref: 3 }, { act: 'type', ref: '4', text: '${q}' }])).ok, true)
+})
+
+test('validateSpecBasic：goto 缺 url、wait 既无 ms 也无 ref、未知 act 都要被拦', () => {
+  assert.ok(validateSpecBasic(specWith([{ act: 'goto' }])).errors.some((e) => e.includes('url')))
+  assert.ok(validateSpecBasic(specWith([{ act: 'wait' }])).errors.some((e) => e.includes('ms')))
+  const unknown = validateSpecBasic(specWith([{ act: 'launchMissiles' }]))
+  assert.equal(unknown.ok, false)
+  assert.ok(unknown.errors.some((e) => e.includes('不合法') && e.includes('launchMissiles')), `实际：${unknown.errors}`)
+})
+
+test('validateSpecBasic：desktop 步骤按 desktop 契约校验（script 需 lang + file|code）', () => {
+  const d = (steps) => ({ ...GOOD_SPEC, target: { type: 'desktop', exePath: 'C:/x.exe' }, driver: 'desktop', commands: [{ action: 'x', title: 'x', kind: 'read', params: [], steps }] })
+  assert.equal(validateSpecBasic(d([{ act: 'cli', argv: ['--version'] }])).ok, true)
+  assert.equal(validateSpecBasic(d([{ act: 'script', lang: 'js', code: 'console.log(1)' }])).ok, true)
+  assert.ok(validateSpecBasic(d([{ act: 'script', code: 'x' }])).errors.some((e) => e.includes('lang')), 'script 缺 lang 应被拦')
+  assert.ok(validateSpecBasic(d([{ act: 'cli' }])).errors.some((e) => e.includes('argv')), 'cli 缺 argv 应被拦')
+  // web 的 act 不许混进 desktop
+  assert.ok(validateSpecBasic(d([{ act: 'goto', url: '/' }])).errors.some((e) => e.includes('goto')))
+})
+
+test('ACT_CONTRACT 覆盖全部允许的 act（新增 act 忘了写契约会被这条挡住）', () => {
+  for (const act of WEB_ACTS) assert.ok(ACT_CONTRACT.web[act], `web act 缺契约：${act}`)
+  for (const act of DESKTOP_ACTS) assert.ok(ACT_CONTRACT.desktop[act], `desktop act 缺契约：${act}`)
+  // type/wait 两侧语义不同，必须各有一份（web 用 ref+text，desktop 用 value）
+  assert.ok(ACT_CONTRACT.web.type.required.includes('text'))
+  assert.ok(ACT_CONTRACT.desktop.type.required.includes('value'))
+})
+
+test('actContractLines：每个 act 都带字段要求，js 明写 expression（提示词与校验同源）', () => {
+  const lines = actContractLines()
+  for (const act of [...WEB_ACTS, ...DESKTOP_ACTS]) assert.ok(lines.includes(act), `提示词缺 ${act}`)
+  assert.ok(/js：必填 "expression"/.test(lines), `js 的字段要求要写清：${lines.split('\n').find((l) => l.includes('js：'))}`)
+  assert.ok(lines.includes('"ref"'), 'ref 要求要写进提示词')
+  // 二选一的字段要渲染成"或"，不能写成"且"（曾因此把 script 的 file|code 写成两者都要）
+  assert.ok(/"file" 或 "code"/.test(lines), `script 应渲染为 file 或 code：${lines.split('\n').find((l) => l.includes('· script'))}`)
+  assert.ok(/"ms" 或 "ref"/.test(lines), 'wait 应渲染为 ms 或 ref')
+  assert.ok(SYSTEM_RULES.includes('expression'), 'SYSTEM_RULES 要包含契约说明')
+  assert.ok(SYSTEM_RULES.includes('不是 CSS 选择器'), 'SYSTEM_RULES 要明确 ref ≠ 选择器')
 })

@@ -226,26 +226,63 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     }
 
     // ③ 试跑验证（只跑 read，最多 2 条；write 绝不试跑）
-    const specWithDriver = { ...gen.spec, driver }
-    const verify = await verifySpec({
-      spec: specWithDriver, sessionId,
-      runCommand: ({ action, args, sessionId: sid }) => (
-        driver === 'browser'
-          ? runCommand({ roots: roots(), appId, action, args, executor: getExecutor(), sessionId: sid, spec: specWithDriver, persist: false })
-          : desktopRunner({ appId, action, args, spec: specWithDriver })
-      ),
+    let specWithDriver = { ...gen.spec, driver }
+    const runForVerify = (spec) => ({ action, args, sessionId: sid }) => (
+      driver === 'browser'
+        ? runCommand({ roots: roots(), appId, action, args, executor: getExecutor(), sessionId: sid, spec, persist: false })
+        : desktopRunner({ appId, action, args, spec })
+    )
+    const verifyOnce = (spec) => verifySpec({
+      spec, sessionId,
+      runCommand: runForVerify(spec),
       onProgress: (p) => emitProgress(appId, p),
     })
+    let verify = await verifyOnce(specWithDriver)
+    let genRounds = gen.rounds
+    let corrected = false
+
+    // ③′ 试跑未通过 → **回喂失败原因让模型自我修正一次**，再试跑。
+    // 为什么必须有这一步：结构校验只能查"字段写没写对"，而"选择器/ref 在真实页面上点不点得动"
+    // 只有试跑才知道（用户实测就是这么卡住的：生成的命令结构合法、一跑就报错）。
+    // 只修正一次，且只在"失败数变少或全通过"时才采纳，避免反复烧模型还不一定更好。
+    if (!verify.ok) {
+      const failed = verify.failures.map((f) => `命令 ${f.action} 试跑失败：${f.error}`)
+      emitProgress(appId, {
+        phase: 'round',
+        detail: `试跑未通过：${verify.failures.map((f) => `${f.action}（${String(f.error).slice(0, 120)}）`).join('；')}；把失败原因回喂模型让它修正…`,
+      })
+      const retry = await generateSpec({
+        target, probeMaterial, probeMode, maxRounds: 1, seedErrors: failed, callLlm,
+        onProgress: (p) => emitProgress(appId, p),
+      })
+      genRounds += retry.rounds || 0
+      if (retry.ok) {
+        const retrySpec = { ...retry.spec, driver }
+        const v2 = await verifyOnce(retrySpec)
+        if (v2.ok || v2.failures.length < verify.failures.length) {
+          specWithDriver = retrySpec
+          verify = v2
+          corrected = true
+        }
+      }
+      emitProgress(appId, {
+        phase: 'round',
+        detail: corrected
+          ? (verify.ok ? '修正后试跑全部通过' : `修正后仍有 ${verify.failures.length} 条未通过`)
+          : '模型修正未带来改善，保留原结果',
+      })
+    }
+
     // probeMode 如实回传：界面据此提示"命令未经验证、需人工核对"（不假装探测过）
     const probeInfo = { mode: probeMode, title: probeTitle, url: target.type === 'web' ? target.url : null, note: probeNote || null }
     emitProgress(appId, {
       phase: 'done',
       detail: verify.ok
-        ? `生成完成：${gen.spec.commands.length} 条命令，试跑 ${verify.tried.length} 条查询命令全部通过`
-        : `生成完成：${gen.spec.commands.length} 条命令；试跑未通过：${verify.failures.map((f) => f.action).join('、')}`,
+        ? `生成完成：${specWithDriver.commands.length} 条命令，试跑 ${verify.tried.length} 条查询命令全部通过${corrected ? '（经一次修正）' : ''}`
+        : `生成完成：${specWithDriver.commands.length} 条命令；试跑未通过：${verify.failures.map((f) => f.action).join('、')}`,
       issues: verify.failures.map((f) => `${f.action}：${f.error}`),
     })
-    return done({ ok: true, spec: specWithDriver, driver, probe: probeInfo, rounds: gen.rounds, issues: gen.issues, verify })
+    return done({ ok: true, spec: specWithDriver, driver, probe: probeInfo, rounds: genRounds, issues: gen.issues, verify, corrected })
   })
 
   // ---- 执行（Task 2.1/2.2）：按 driver 分发 ----

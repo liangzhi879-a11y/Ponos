@@ -120,3 +120,73 @@ test('执行器缺失 → 结构化错误（不抛）', async () => {
     assert.ok(r.error.includes('执行器'))
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+// ---------- 步骤字段契约（真实故障：`步骤 js 失败：js 缺少 expression`） ----------
+
+/** 造一个只含指定命令的 app，便于单独跑某个步骤写法 */
+function specWith(steps, { kind = 'read', params = [] } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'appstep-'))
+  mkdirSync(join(root, 'app-a'), { recursive: true })
+  writeFileSync(join(root, 'app-a', 'spec.json'), JSON.stringify({
+    specVersion: 1, appId: 'app-a', name: '甲', target: { type: 'web', url: 'https://example.com' }, expose: { mode: 'console' },
+    commands: [{ action: 'run', title: '跑', kind, params, steps }],
+  }), 'utf-8')
+  return root
+}
+
+test('js 步骤：字段名是 expression（正确写法能跑）', async () => {
+  const root = specWith([{ act: 'goto', url: '/' }, { act: 'js', expression: 'document.title', save: 'r' }])
+  try {
+    const seen = []
+    const executor = { exec: async (_s, act, p) => { seen.push({ act, p }); return { ok: true, data: '标题', snapshot: {} } } }
+    const r = await runCommand({ roots: [root], appId: 'app-a', action: 'run', args: {}, executor, sessionId: 's1' })
+    assert.equal(r.ok, true)
+    assert.equal(seen[1].p.expression, 'document.title', 'expression 必须原样传给执行器')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('js 步骤：表达式被写进 code/script/value 时兜底仍能跑（旧 Spec 不该因字段别名失效）', async () => {
+  for (const alias of ['code', 'script', 'value', 'expr']) {
+    const root = specWith([{ act: 'js', [alias]: 'document.title' }])
+    try {
+      const seen = []
+      const executor = { exec: async (_s, act, p) => { seen.push({ act, p }); return { ok: true, data: 'x' } } }
+      const r = await runCommand({ roots: [root], appId: 'app-a', action: 'run', args: {}, executor, sessionId: 's1' })
+      assert.equal(r.ok, true, `${alias} 应被兜底为 expression`)
+      assert.equal(seen[0].p.expression, 'document.title', `${alias} → expression 的映射要生效`)
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  }
+})
+
+test('js 步骤：参数插值同样作用于别名写法', async () => {
+  const root = specWith([{ act: 'js', code: 'document.title + "${q}"' }], { params: [{ name: 'q', type: 'string', required: true }] })
+  try {
+    const seen = []
+    const executor = { exec: async (_s, act, p) => { seen.push({ act, p }); return { ok: true, data: 'x' } } }
+    await runCommand({ roots: [root], appId: 'app-a', action: 'run', args: { q: 'Z' }, executor, sessionId: 's1' })
+    assert.equal(seen[0].p.expression, 'document.title + "Z"')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('click/type 写成 selector（而非 ref）→ 报可操作的错误，而不是执行器的原始报错', async () => {
+  const root = specWith([{ act: 'click', selector: '#ok' }], { kind: 'write' })
+  try {
+    const executor = { exec: async () => ({ ok: true }) }
+    const r = await runCommand({ roots: [root], appId: 'app-a', action: 'run', args: {}, executor, sessionId: 's1' })
+    assert.equal(r.ok, false)
+    assert.ok(r.error.includes('ref'), `应点名 ref：${r.error}`)
+    assert.ok(r.error.includes('#ok'), '要带上用户写的选择器，便于定位')
+    assert.ok(r.error.includes('js') || r.error.includes('snapshot'), '要给出改法')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('ref 类动作给了 ref 就照常执行（不误报）', async () => {
+  const root = specWith([{ act: 'goto', url: '/' }, { act: 'click', ref: 2 }], { kind: 'write' })
+  try {
+    const seen = []
+    const executor = { exec: async (_s, act, p) => { seen.push({ act, p }); return { ok: true } } }
+    const r = await runCommand({ roots: [root], appId: 'app-a', action: 'run', args: {}, executor, sessionId: 's1' })
+    assert.equal(r.ok, true)
+    assert.equal(seen[1].p.ref, 2)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})

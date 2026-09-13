@@ -12,6 +12,9 @@ const { appendFileSync, mkdirSync } = require('node:fs')
 const { join } = require('node:path')
 const registry = require('./app-registry.cjs')
 const { interpolate, checkRequired, snapshotToText } = require('./app-util.cjs')
+
+/** 需要 ref（元素编号）而不是 CSS 选择器的动作 —— 用于给出可操作的错误提示 */
+const REF_ACTS = new Set(['click', 'type', 'select', 'hover'])
 const { desktopRunner } = require('./app-runner-desktop.cjs')
 
 const rootOf = (roots) => (Array.isArray(roots) ? roots[0] : roots)
@@ -28,7 +31,13 @@ function appendHistory({ roots, appId, entry }) {
   }
 }
 
-/** 把 step 映射为浏览器执行器的 params（只取该 act 需要的字段，避免把未知字段灌进执行器） */
+/**
+ * 把 step 映射为浏览器执行器的 params（只取该 act 需要的字段，避免把未知字段灌进执行器）。
+ *
+ * js 步骤的字段名宽容处理：契约字段是 expression，但模型常写成 code/script/value/expr
+ * （真机故障：`步骤 js 失败：js 缺少 expression`）。校验层已经会拦下并让模型改正，
+ * 这里再兜一层——已经生成好、用户手工改过的旧 Spec 不该因为字段别名就跑不通。
+ */
 function stepParams(step, args) {
   const p = {}
   if (step.url != null) p.url = interpolate(step.url, args)
@@ -41,6 +50,11 @@ function stepParams(step, args) {
   if (step.direction != null) p.direction = step.direction
   if (step.ms != null) p.ms = step.ms
   if (step.mode != null) p.mode = step.mode
+  // js 字段别名兜底（契约字段是 expression）
+  if (step.act === 'js' && p.expression == null) {
+    const alias = ['code', 'script', 'value', 'expr', 'javascript'].find((k) => step[k] != null)
+    if (alias) p.expression = interpolate(step[alias], args)
+  }
   return p
 }
 
@@ -73,6 +87,11 @@ async function runCommand({ roots, appId, action, args = {}, executor, sessionId
   try {
     let saved = null
     for (const step of cmd.steps || []) {
+      // ref 类动作误写成 CSS 选择器是最常见的错法：直接给可操作的提示，
+      // 而不是把执行器的 "click 缺少 ref" 原样抛给用户（真机故障：js 缺 expression / click 缺 ref）
+      if (REF_ACTS.has(step?.act) && step.ref == null && step.selector != null) {
+        return fail(`步骤 ${step.act} 需要 ref（元素编号，来自同一条命令内前一步的 snapshot），而不是 CSS 选择器 "${step.selector}"；改成 js 步骤（如 {"act":"js","expression":"document.querySelector('${step.selector}').click()"}）或先 snapshot 再按 ref 操作`)
+      }
       const res = await executor.exec(sessionId, step.act, stepParams(step, args))
       if (!res?.ok) return fail(`步骤 ${step.act} 失败：${res?.error || '未知错误'}`)
       // snapshot 动作用 snapshotToText 归一（真实快照没有顶层 text；原先直接读 text 会让

@@ -17,6 +17,67 @@ const VERIFY_MAX_READS = 2
 const WEB_ACTS = ['goto', 'click', 'type', 'select', 'scroll', 'hover', 'js', 'wait', 'snapshot']
 const DESKTOP_ACTS = ['cli', 'script', 'focus', 'type', 'key', 'wait']
 
+/**
+ * 各 act 的**字段契约 —— 唯一事实来源**，同时驱动「提示词」与「结构校验」。
+ *
+ * 为什么必须有它（真实故障）：用户实测生成命令，试跑报 `步骤 js 失败：js 缺少 expression`。
+ * 根因是提示词只列了 act 名字、从不说每个 act 要什么字段，校验也只查 steps 非空 → 模型写出
+ * `{act:'js'}`（或把表达式塞进 code/script）也能过校验，直到试跑才炸。
+ * 更严重的是：提示词此前让模型"用探测素材里的选择器"，但执行器的 click/type/select/hover
+ * 要的是 **ref**（快照里的元素编号）而不是 CSS 选择器 —— 契约写错，模型再聪明也写不对。
+ *
+ * 字段来源（已逐个核对实现）：
+ *   electron/browser-executor.cjs —— goto.url / click.ref / type.ref+text / select.ref+value /
+ *   scroll.ref|delta / hover.ref / js.expression / wait.ms|ref
+ *   electron/app-runner-desktop.cjs —— cli.argv / script.lang+(file|code) / focus·type·key·wait
+ * 注意 type/wait 在两侧**语义不同**（web 用 ref+text，desktop 用 value），所以按驱动分表。
+ *
+ * 表达法：required=全部必填（且）；anyOf=若干"组"，每组内部是"或"、组之间是"且"
+ * （所以"有 a 或 b"要写成 anyOf: [['a','b']]）。
+ */
+const WEB_CONTRACT = {
+  goto: { required: ['url'], note: 'url 可写绝对地址或相对路径（相对 target.url 解析）' },
+  click: { required: ['ref'], note: 'ref 是**同一条命令内、前一个 snapshot 步骤**给出的元素编号；不要沿用生成时的编号' },
+  type: { required: ['ref', 'text'], optional: ['clear'], note: 'text 里可用 ${参数名} 插值' },
+  select: { required: ['ref', 'value'] },
+  scroll: { anyOf: [['ref', 'delta']], note: 'ref（滚到某元素）或 delta（像素数，正数向下）二选一' },
+  hover: { required: ['ref'] },
+  js: { required: ['expression'], note: '**字段名就是 expression**（不是 code / script / value）；表达式在页面上下文求值，返回值即命令结果' },
+  wait: { anyOf: [['ms', 'ref']], note: 'ms（毫秒）或 ref（等某元素出现）二选一' },
+  snapshot: { optional: ['save'], note: '命令步骤里用 save:"键名" 把快照文本作为该命令的返回结果（读取类命令的标准写法）' },
+}
+
+const DESKTOP_CONTRACT = {
+  cli: { required: ['argv'], note: 'argv 为字符串数组，如 ["--version"]' },
+  script: { required: ['lang'], anyOf: [['file', 'code']], note: 'lang 如 powershell/js，并用 file 或 code 提供脚本内容' },
+  focus: { optional: ['ref'] },
+  type: { required: ['value'], note: '向当前焦点窗口输入文本' },
+  key: { required: ['value'], note: '如 "^s"、"Enter"' },
+  wait: { anyOf: [['ms', 'ref']] },
+}
+
+const ACT_CONTRACT = { web: WEB_CONTRACT, desktop: DESKTOP_CONTRACT }
+const contractFor = (act, driver) => (driver === 'desktop' ? DESKTOP_CONTRACT : WEB_CONTRACT)[act]
+
+/** 把契约渲染成提示词条目（模型照着写，就不会再缺字段） */
+function actContractLines() {
+  const render = (act, table) => {
+    const c = table[act]
+    if (!c) return `· ${act}`
+    const parts = []
+    const req = (c.required || []).map((f) => `"${f}"`).join(' + ')
+    if (req) parts.push(req)
+    for (const g of c.anyOf || []) parts.push(g.map((f) => `"${f}"`).join(' 或 '))
+    return `· ${act}：必填 ${parts.join('，并且 ') || '（无）'}${c.optional?.length ? `（可选 ${c.optional.map((f) => `"${f}"`).join('/')}）` : ''}${c.note ? ` —— ${c.note}` : ''}`
+  }
+  return [
+    'web 步骤字段契约（**严格照这个写，字段名不能自创**）：',
+    ...WEB_ACTS.map((a) => render(a, WEB_CONTRACT)),
+    'desktop 步骤字段契约：',
+    ...DESKTOP_ACTS.map((a) => render(a, DESKTOP_CONTRACT)),
+  ].join('\n')
+}
+
 const SYSTEM_RULES = [
   '你是「应用即工具」的规格撰写器。用户会给你一个目标（网站或桌面应用）以及真实探测素材，你要产出**一个 JSON 对象**作为 App Spec。',
   '只输出 JSON 本体，不要解释、不要 Markdown 说明文字。',
@@ -27,8 +88,12 @@ const SYSTEM_RULES = [
   'params **必须是数组**（没有参数就写 []）；每个参数都要说明用途，方便用户填写。',
   'kind 判定：只读/查询/导出/查看 → "read"；提交/保存/修改/删除/发送/下发 → "write"。拿不准一律按 "write"（更保守）。',
   `web 的 steps.act 只能取：${WEB_ACTS.join(', ')}；desktop 的 steps.act 只能取：${DESKTOP_ACTS.join(', ')}。`,
-  '步骤里用到的选择器要来自探测素材中的真实元素；**选择器不确定就干脆不要写这条命令**，不要编造。',
-  '命令参数在步骤里的写法固定为 ${参数名}（例：url:"/orders?id=${orderId}"、value:"${orderNo}"），不要用 {{参数名}} 或其它写法。',
+  actContractLines(),
+  '**元素引用规则（最容易写错，务必遵守）**：click/type/select/hover 要的是 ref（元素编号），**不是 CSS 选择器**；ref 只能由**同一条命令内前一步的 snapshot** 产生（快照按顺序从 1 编号，每次快照都会变），所以：',
+  '· 命令内若要用 ref，steps 必须先有一步 {"act":"snapshot"}，再用该次快照里的 ref；',
+  '· 拿不准 ref 时，**优先改用 js 表达式**直接操作最稳（例：{"act":"js","expression":"document.querySelector(\'#submit\').click()"}）；',
+  '· 纯读取类命令首选 {"act":"goto"} + {"act":"snapshot","save":"r"}，或 {"act":"js","expression":"document.body.innerText"} —— 两者都不依赖 ref。',
+  '命令参数在步骤里的写法固定为 ${参数名}（例：url:"/orders?id=${orderId}"、text:"${keyword}"），不要用 {{参数名}} 或其它写法。',
   '给出 1 到 5 条最有价值的命令；至少 1 条 read 命令，且该 read 命令最好**不需要参数**（便于系统自动试跑验证）。',
   '绝对不要写入口令、令牌、密钥、身份证号等敏感信息。',
 ].join('\n')
@@ -80,7 +145,7 @@ function buildPrompt({ target, probeMaterial, previousErrors, probeMode } = {}) 
   else if (mode === 'http-thin') parts.push(`探测素材（JSON，来自页面 HTML，但该页面疑似**前端渲染的空壳**，素材很少，仅供参考）：\n${JSON.stringify(material).slice(0, SNAPSHOT_CHAR_CAP)}`)
   else parts.push('探测素材：（无）')
   if (Array.isArray(previousErrors) && previousErrors.length) {
-    parts.push(`上一轮输出不合法，错误如下：\n${previousErrors.map((e, i) => `${i + 1}. ${e}`).join('\n')}\n请仅输出修正后的完整 JSON。`)
+    parts.push(`上一轮结果有问题（结构校验或试跑失败），错误如下：\n${previousErrors.map((e, i) => `${i + 1}. ${e}`).join('\n')}\n请针对这些错误修正后，仅输出修正完的完整 JSON。`)
   }
   parts.push('请产出完整 App Spec JSON。')
   const system = mode === 'none' || mode === 'http-thin' ? `${SYSTEM_RULES}\n${NO_PROBE_RULES}` : SYSTEM_RULES
@@ -126,6 +191,41 @@ function extractSpec(llmText) {
  *   另外打包产物不含 kernel/ 源码（electron-builder 的 files 白名单），主进程也 require 不到它。
  * @returns {{ok:boolean, errors:string[]}}
  */
+const actSetFor = (driver) => (driver === 'desktop' ? DESKTOP_ACTS : WEB_ACTS)
+
+/** 字段"有值"的判定：字符串非空、数组非空、其它非 null/undefined */
+const hasField = (v) => (Array.isArray(v) ? v.length > 0 : typeof v === 'string' ? v.trim() !== '' : v != null)
+
+/**
+ * 逐步骤校验字段契约。真实故障驱动的补充（见 ACT_CONTRACT 注释）：
+ * 此前只查 "steps 不能为空"，于是缺 expression 的 js 步骤、把 ref 写成 selector 的点击步骤
+ * 都能通过校验，一路走到试跑才报错——用户看到的就是"试跑未通过"。
+ */
+function validateStepFields(step, at, driver, errors) {
+  if (!step || typeof step !== 'object') { errors.push(`${at} 不是对象`); return }
+  const act = step.act
+  if (!act || typeof act !== 'string') { errors.push(`${at} 缺少 act`); return }
+  const acts = actSetFor(driver)
+  if (!acts.includes(act)) {
+    errors.push(`${at}.act 不合法：${act}（${driver === 'desktop' ? 'desktop' : 'web'} 只允许 ${acts.join(' / ')}）`)
+    return
+  }
+  const c = contractFor(act, driver) || {}
+  for (const f of c.required || []) {
+    if (hasField(step[f])) continue
+    // js 专治：模型常把表达式塞进 code/script/value —— 点名告诉它改哪个字段名
+    const alias = act === 'js' ? ['code', 'script', 'value', 'expr'].find((k) => hasField(step[k])) : undefined
+    errors.push(`${at}（${act}）缺少必填字段 "${f}"${alias ? `——内容写在了 "${alias}"，请改名为 "${f}"` : ''}`)
+  }
+  for (const g of c.anyOf || []) {
+    if (!g.some((f) => hasField(step[f]))) errors.push(`${at}（${act}）至少要有其中一个字段：${g.map((f) => `"${f}"`).join(' 或 ')}`)
+  }
+  // ref 误写成 selector 是最常见的错法（执行器要元素编号，不要 CSS 选择器），直接点名纠正
+  if ((c.required || []).includes('ref') && !hasField(step.ref) && hasField(step.selector)) {
+    errors.push(`${at}（${act}）要的是 "ref"（元素编号，来自同一条命令内前一步的 snapshot），不是 CSS 选择器 "selector"；若想按选择器操作请改用 js 步骤`)
+  }
+}
+
 function validateSpecBasic(spec, { allowPublic = false } = {}) {
   const errors = []
   if (!spec || typeof spec !== 'object') return { ok: false, errors: ['Spec 不是对象'] }
@@ -153,6 +253,8 @@ function validateSpecBasic(spec, { allowPublic = false } = {}) {
   if (!Array.isArray(spec.commands)) errors.push('commands 必须是数组')
   else if (spec.commands.length === 0) errors.push('commands 不能为空（至少 1 条命令）')
   else {
+    // driver 决定可用 act 集合：spec.driver 优先（已生成过的 spec 可能带），否则按 target.type
+    const driver = spec.driver === 'desktop' || t?.type === 'desktop' ? 'desktop' : 'web'
     const seen = new Set()
     for (const [i, c] of spec.commands.entries()) {
       const at = `commands[${i}]`
@@ -162,6 +264,7 @@ function validateSpecBasic(spec, { allowPublic = false } = {}) {
       if (c?.kind !== 'read' && c?.kind !== 'write') errors.push(`${at} kind 必须是 read 或 write`)
       if (c?.params !== undefined && !Array.isArray(c.params)) errors.push(`${at} params 必须是数组`)
       if (!Array.isArray(c?.steps) || c.steps.length === 0) errors.push(`${at} steps 不能为空`)
+      else c.steps.forEach((s, j) => validateStepFields(s, `${at}.steps[${j}]`, driver, errors))
     }
   }
   return { ok: errors.length === 0, errors }
@@ -172,9 +275,14 @@ function validateSpecBasic(spec, { allowPublic = false } = {}) {
  * @param {{target:object, probeMaterial:object, callLlm:Function, maxRounds?:number, onProgress?:Function, validate?:Function}} p
  * @returns {Promise<{ok:boolean, spec:object|null, rounds:number, issues:string[], raw:string}>}
  */
-async function generateSpec({ target, probeMaterial, probeMode, callLlm, maxRounds = MAX_ROUNDS, onProgress, validate } = {}) {
+/**
+ * @param {object} p
+ * @param {string[]} [p.seedErrors] 外部先验错误（典型：上一份 Spec 的**试跑失败原因**）。
+ *   有它才能做到"试跑不过 → 回喂失败原因让模型改 → 再试跑"，而不是把跑不通的命令丢给用户。
+ */
+async function generateSpec({ target, probeMaterial, probeMode, callLlm, maxRounds = MAX_ROUNDS, onProgress, validate, seedErrors } = {}) {
   const check = validate || validateSpecBasic
-  const issues = []
+  const issues = Array.isArray(seedErrors) ? seedErrors.slice() : []
   let raw = ''
   let round = 0
   // 流式增量节流：模型可能几十 token/秒，逐 token 发 IPC 会把渲染层刷爆。
@@ -260,15 +368,23 @@ async function verifySpec({ spec, runCommand, sessionId, maxReads = VERIFY_MAX_R
     onProgress?.({ phase: 'verify', detail: `试跑查询命令 ${c.action}…` })
     try {
       const r = await runCommand({ action: c.action, args: {}, sessionId })
-      if (!r?.ok) failures.push({ action: c.action, error: String(r?.error || '执行失败') })
+      if (!r?.ok) {
+        const error = String(r?.error || '执行失败')
+        failures.push({ action: c.action, error })
+        // 失败原因必须立刻上报：用户看到的就是"试跑未通过"，不给出原因等于让他猜
+        onProgress?.({ phase: 'verify', detail: `试跑失败 ${c.action}：${error.slice(0, 200)}` })
+      }
     } catch (e) {
-      failures.push({ action: c.action, error: String(e?.message || e) })
+      const error = String(e?.message || e)
+      failures.push({ action: c.action, error })
+      onProgress?.({ phase: 'verify', detail: `试跑失败 ${c.action}：${error.slice(0, 200)}` })
     }
   }
   return { ok: failures.length === 0, tried, failures, notRun, skipped: needsArgs.map((c) => c.action) }
 }
 
 module.exports = {
-  buildPrompt, extractSpec, generateSpec, verifySpec, validateSpecBasic, snapshotForPrompt,
+  buildPrompt, extractSpec, generateSpec, verifySpec, validateSpecBasic, validateStepFields, snapshotForPrompt,
   MAX_ROUNDS, VERIFY_MAX_READS, SNAPSHOT_CHAR_CAP, SYSTEM_RULES, NO_PROBE_RULES, WEB_ACTS, DESKTOP_ACTS,
+  ACT_CONTRACT, WEB_CONTRACT, DESKTOP_CONTRACT, contractFor, actContractLines,
 }

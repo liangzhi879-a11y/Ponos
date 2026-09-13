@@ -20,7 +20,7 @@ const SPEC_TEXT = JSON.stringify({
   expose: { mode: 'console' },
   commands: [
     { action: 'listRecent', title: '最近列表', kind: 'read', params: [], steps: [{ act: 'goto', url: '/recent' }, { act: 'snapshot', save: 'result' }] },
-    { action: 'submit', title: '提交', kind: 'write', params: [], steps: [{ act: 'click', selector: '#ok' }] },
+    { action: 'submit', title: '提交', kind: 'write', params: [], steps: [{ act: 'goto', url: '/new' }, { act: 'snapshot' }, { act: 'click', ref: 1 }] },
   ],
 })
 
@@ -200,6 +200,74 @@ test('app:generate：模型返回非法 JSON → 回喂多轮后失败，轮数�
   assert.equal(calls, 3, '最多 3 轮')
   assert.equal(r.rounds, 3)
   assert.ok(r.issues.some((i) => i.includes('不是合法 JSON')))
+})
+
+// ---------- 试跑失败 → 回喂模型自我修正（真实故障驱动） ----------
+//
+// 用户实测：生成的命令结构合法，但试跑报 `步骤 js 失败：js 缺少 expression`。
+// 结构校验只能查"字段写没写对"，"在真实页面上跑不跑得动"只有试跑才知道，
+// 所以试跑失败必须能回喂模型改一次，而不是把跑不通的命令丢给用户。
+
+test('app:generate：试跑失败 → 自动回喂失败原因修正，修正后试跑通过', async () => {
+  let llmCalls = 0
+  let gotoCalls = 0
+  const t = setup({
+    llm: async () => { llmCalls += 1; return { ok: true, text: SPEC_TEXT, error: null, chars: SPEC_TEXT.length } },
+    exec: async (_s, act, p) => {
+      if (act === 'goto') {
+        gotoCalls += 1
+        if (gotoCalls === 1) return { ok: false, error: 'js 缺少 expression' }   // 首轮试跑失败
+      }
+      return { ok: true, snapshot: { page: { title: 'T', url: p?.url }, info: [] } }
+    },
+  })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com' }, appId: 'x', sessionId: 's1' })
+  assert.equal(r.ok, true)
+  assert.equal(r.corrected, true, '应当经过一次修正')
+  assert.equal(r.verify.ok, true, '修正后试跑应通过')
+  assert.equal(llmCalls, 2, '原生成 1 次 + 修正 1 次')
+  assert.ok(t.details().some((d) => d.includes('回喂模型')), `进度里要如实说明在回喂修正：${t.details().join(' | ')}`)
+  assert.ok(t.details().some((d) => d.includes('经一次修正')), '完成文案要标注经过修正')
+})
+
+test('app:generate：修正没有改善 → 保留原结果（不假装修好了）', async () => {
+  let llmCalls = 0
+  const t = setup({
+    llm: async () => { llmCalls += 1; return { ok: true, text: SPEC_TEXT, error: null, chars: SPEC_TEXT.length } },
+    exec: async (_s, act, p) => (act === 'goto' ? { ok: false, error: '元素不存在' } : { ok: true, snapshot: { page: {}, info: [] } }),
+  })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com' }, appId: 'x', sessionId: 's1' })
+  assert.equal(r.ok, true)
+  assert.equal(r.corrected, false, '没改善就不采纳')
+  assert.equal(r.verify.ok, false, '要如实保留"试跑未通过"')
+  assert.equal(llmCalls, 2, '只修正一次，不反复烧模型')
+  assert.ok(t.details().some((d) => d.includes('未带来改善')), t.details().join(' | '))
+})
+
+test('app:generate：js 缺 expression 的坏 Spec 会在校验轮被拦下并回喂（不再等到试跑）', async () => {
+  const bad = JSON.stringify({
+    specVersion: 1, appId: 'x', name: 'n', target: { type: 'web', url: 'https://example.com' }, expose: { mode: 'console' },
+    commands: [{ action: 'readPageText', title: '读正文', kind: 'read', params: [], steps: [{ act: 'goto', url: '/' }, { act: 'js', code: 'document.body.innerText' }] }],
+  })
+  const good = JSON.stringify({
+    specVersion: 1, appId: 'x', name: 'n', target: { type: 'web', url: 'https://example.com' }, expose: { mode: 'console' },
+    commands: [{ action: 'readPageText', title: '读正文', kind: 'read', params: [], steps: [{ act: 'goto', url: '/' }, { act: 'js', expression: 'document.body.innerText', save: 'r' }] }],
+  })
+  let llmCalls = 0
+  const seen = []
+  const t = setup({
+    llm: async (p) => {
+      llmCalls += 1
+      seen.push(p?.user || '')
+      return { ok: true, text: llmCalls === 1 ? bad : good, error: null }
+    },
+    exec: async () => ({ ok: true, snapshot: { page: { title: 'T' }, info: [] }, data: '正文' }),
+  })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com' }, appId: 'x', sessionId: 's1' })
+  assert.equal(r.ok, true)
+  assert.equal(llmCalls, 2, '第一轮的坏 Spec 应被校验拦下 → 回喂 → 第二轮修好')
+  assert.ok(seen[1].includes('"code"') && seen[1].includes('expression'), `回喂内容要点名 code→expression：${seen[1].slice(-400)}`)
+  assert.equal(r.spec.commands[0].steps[1].expression, 'document.body.innerText')
 })
 
 test.after(() => { rmSync(home, { recursive: true, force: true }) })
