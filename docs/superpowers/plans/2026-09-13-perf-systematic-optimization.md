@@ -271,6 +271,8 @@ export function perfStep(turn, step)                  // 发一行 + 清账 + �
 
 **另有一项决定性发现（改变 K2.2 的设计重心）**：同 57MB 夹具下，**文件数**才是乘数而非字节数——240 文件 731ms vs 4800 文件 **3271ms**（4.5×），其中仅 `statSync` 就 218.8ms。这解释了真机 `/api/usage` 的 10.8–19.6s（合成 34MB 夹具只复现出 0.81s，故真机必是**数万个小 transcript 文件**的量级）。⇒ K2.2 的重心是**水位线缓存（命中即零扫描）**，而非"每次轮询都 stat 一遍再剪枝"——4800 文件光 stat 就 219ms，5s 轮询下仍然不够。
 
+> **⚠️ 对上一段末句的事后更正（Task 9 实测推翻）**：「真机必是数万个小 transcript 文件的量级」**是错的推论**。Task 9 直接量了真机 `~/.yfw`：**134 个文件 / 36.8MB / 7 个项目目录**；真 CLI `--usage --scope today` 稳定在 **520–579ms**。故 10.8–19.6s 不是单次扫描的代价，最可能是**同步 spawn 阻塞 × 轮询/调用堆积**的复合值（正是 K2.1 修掉的那部分）。教训：夹具测出的敏感性只说明「文件数是敏感维度」，**不能反推真机规模**——下这种判断前必须先量真机。**4.5× 的文件数敏感性本身仍然成立**（那是夹具实测）。
+
 ---
 
 ### Task 8: K2.1 `/api/usage` 异步化（现存 bug）
@@ -295,19 +297,50 @@ export function perfStep(turn, step)                  // 发一行 + 清账 + �
 
 ---
 
-### Task 9: K2.2 只读聚合剪枝 + 日期水位线缓存
+### Task 9: K2.2 只读聚合剪枝 + 桥侧缓存
 
-> **重心已按 Task 7 的实测调整（先读那段再动手）**：真机的乘数是**文件数**（同 57MB：240 文件 731ms vs 4800 文件 3271ms），
-> 而**光 `statSync` 4800 个文件就要 218.8ms** ⇒ 「每次轮询都 stat 一遍再剪枝」在 5s 轮询下**仍然不够**。
-> 故顺序是 **① 水位线缓存（命中即零扫描）必须先做**，② `(mtime,size)` 剪枝作为缓存未命中时的补救。
+**状态：已完成（测试 `server/readonly-cache.test.mjs` 13 条 + `kernel-tests/readonly-mtime-prune.test.mjs` 5 条全绿；变异 5/5 与 3/3 全部被预期用例杀死）**
 
-**Files:** Modify `kernel/readonly.mjs`、`server/bridge.mjs`
+**Files:** Create `server/readonly-cache.mjs`、`server/readonly-cache.test.mjs`、`kernel-tests/readonly-mtime-prune.test.mjs`；Modify `server/bridge.mjs`、`kernel/readonly.mjs`
 
-- [ ] **①（先做）** 桥侧落带**版本号 + 日期水位线**的聚合缓存，只重算水位线之后那一段再合并（`{version, lastComputedDate, daily…}`）
-- [ ] **②（后做）** 按 `(mtimeMs,size)` 跳过没变的文件（transcript 是 append-only）；注意它是**逐文件 `statSync`**，故只在缓存未命中时才付这份钱
-- [ ] **单飞锁** + `inFlight` 去重 ⇒ 并发查询只扫一次（驾驶舱 5s 轮询与 5s 超时同值，慢时必然堆积）
-- [ ] `version` 不匹配整体重算
-- [ ] **实测验收**：真机（非合成夹具）跑 `/api/usage?scope=today` 连续两次，第二次应 ≈ 0 扫描；对照 Task 7 的 809ms / 470ms 基线
+- [x] 桥侧 TTL + **stale-while-revalidate** + 单飞（`readonly-cache.mjs`），`/api/usage|/api/audit` 改走缓存
+- [x] 内核侧 **mtime 下界剪枝**（`collectTranscriptFiles`）：把日期窗口下推成"太旧的文件根本不读"
+- [x] 实测验收：真机连续两次 `--scope today`，第二次 **0 扫描**（缓存命中，连子进程都不 spawn）
+- [ ] 验收（**留待用户实机**）：驾驶舱连看 5s 轮询不再出现用量卡片失败
+
+**与原计划的两处偏离（均有实测背书）**
+
+1. **顺序：先做"命中即零扫描"的**桥侧缓存**，而不是"版本号 + 日期水位线 + 增量合并"**。水位线那条路（范式 `claude-code/src/utils/statsCache.ts`）隐含一个与 K2.0 同款的陷阱：**它省的是聚合，不是解析**——transcript 不是按天分文件的，要找出"水位线之后"的条目仍得**把每个文件读一遍再逐行 parse**。它只有在配上**逐文件持久化聚合**（`{path → (mtime,size) → agg}`）时才有解析收益，那是一个有状态、要版本号/合并/失效的更大改动。而 K2.0 已证明解析占 84% ⇒ 先做**无状态的 mtime 剪枝**（见 2）性价比高一个量级。
+2. **②的形态：把"跳过没变的文件"换成"跳过窗口前的文件"。** 两个都无状态，但后者更强也更简单：`scope=today` 下它直接砍掉**全部历史**；前者对"没变过的历史文件"同样只能省解析。`(mtime,size)` 缓存那份"上次扫过的文件清单"仍列为**二期**（它才是 `scope=all` 的真正解法，见文末）。
+
+**内核侧：mtime 下界剪枝（`kernel/readonly.mjs`）**
+
+- 单边剪枝：只跳过 mtime **早于**窗口起点的文件；**绝不按 `to` 反向剪**——append-only 只保证不重写、不保证按日期分文件，一个今天写过的文件完全可能含上个月的条目（已单列测试：跨窗口文件的窗口外条目必须仍在无 `from` 查询里出现）。
+- **可靠性论证**（写进了代码注释）：transcript 是 append-only，每行 `timestamp` = 写入时刻，而 mtime = **最后一次**写入时刻 ≥ 任意一行的写入时刻 ⇒ mtime 早于 from 零点则每行写入都早于 from 零点 ⇒ 无合格行。唯一破绽是「取 ts」与「落盘」之间发生**时钟回跳**，故再加 `MTIME_SAFETY_MS`（1 小时）边距。**残余风险已明示**：回跳 > 1 小时且恰好跨 UTC 零点仍会**静默少算**（方向与 K2.0 修掉的"多算"相反）⇒ 留 `PONOS_USAGE_MTIME_PRUNE=0` 一键回退。
+- `from` **只认严格 `YYYY-MM-DD`**（正则），其余一律不剪。实测 `Date.parse` 会宽松吃掉 `'2019'`/`'2020'`/`'2020-01'`——其中 **`'2020-01'` 会真的造成分歧**（字符串比较当它是"2020-01 之后"，日期解析却回退到 1 月 1 日零点 ⇒ 剪掉 mtime 在 2019 年末的文件，而里面的 `2020-01-15` 条目本该保留）。故正则不是装饰：去掉它，两条用例立刻转红（已变异验证）。
+- `statSync` 失败一律**不剪**（退化为现状行为，宁可多读不可漏算）。
+
+**桥侧：TTL + stale-while-revalidate + 单飞（`server/readonly-cache.mjs`）**
+
+- 四种态：`fresh`（TTL 内命中）/ `stale`（过期：**立即回旧值**，后台刷新）/ `computing`（冷启动未就绪：立刻 503，刷新留后台跑完 ⇒ **自愈**）/ `failed`（等待期间真的失败：**透出原始错误**，绝不伪装成"计算中"——否则 502 退化成含糊的诊断降级）。
+- 冷启动只等 `firstWaitMs`（默认 3000ms），**硬约束 < GUI 的 5s 超时**（`src/lib/usageApi.ts`）——等到了也没人接就是白等。该不变量由跨模块测试锁死（测试直接读 `usageApi.ts` 的 `FETCH_TIMEOUT_MS` 常量比对）。
+- **后台刷新的 rejection 一律自己接住**：未处理的 rejection 会掀掉整个桥，比单次返回错值严重得多（用例挂了进程级 `unhandledRejection` 监听器断言零外泄，而不是只断言返回值）。
+- 键 = 子命令 + flags；env 不必入键（`buildChildEnv()` 里唯一影响聚合结果的是 `CLAUDE_CONFIG_DIR ← YFW_HOME`，模块级常量；已在注释里写明"若 YFW_HOME 变成可热改则必须入键"）。
+- 驾驶舱实际只发**一个**键（`fetchUsage({scope:'today'})`，见 `useCockpitOverview.ts:141`）⇒ 命中率就是轮询命中率。TTL 10s = 轮询间隔 2 倍 ⇒ 稳态下**扫描频率降到约 1/3**（每 ~15s 一次全量），其余轮询零扫描。
+
+**实测（真机 `~/.yfw`，非夹具）**
+
+| 项 | 实测 |
+|---|---|
+| 真机规模 | 134 文件 / 36.8MB / 7 个项目目录；其中**今天写过**的只有 **10 个（5.7MB）** ⇒ 可剪 **92.5% 字节** |
+| `statSync` 134 文件 | 8ms（对比 4800 文件夹具的 218.8ms——真机负担小得多） |
+| 真 CLI `--usage --scope today`（剪枝前） | 520 / 526 / 579 ms |
+| 真 CLI `--usage --scope today`（剪枝后） | **272 / 259 / 238 ms（2.1×）**；余下主要是 ~150ms 进程启动地板 |
+| `--usage`（all，无 from ⇒ 不剪） | 不改（约 557ms）——**未动无窗口查询的行为** |
+| 剪枝开/关 结果一致性 | `today`/`all`/`session`/`project`/`audit` **五种查询逐字节相同**（sha256 比对） |
+| 桥侧缓存命中 | **0 扫描、0 子进程 spawn** |
+
+**二期（本次未做，方案已明确）**：逐文件持久化聚合 `{version, files: {path → {mtimeMs, size, agg}}}`——它才是 `scope=all`/`session` 的真正解法（只解析变过的文件再合并），但需要版本号、合并、失效与并发写保护，且要有一个"内核是短命子进程"下仍然有效的落盘点（`<home>/runtime/` 之类）。届时**不可把水位线当成解析收益**（见偏离 1），必须以**文件级**为单位。
 
 ---
 

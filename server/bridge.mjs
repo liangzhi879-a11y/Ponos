@@ -32,6 +32,7 @@ import { makeBrowserRouter } from './browser-routing.mjs'
 // 应用即工具（Task 4.x）：内核 bridge_request(route=app) → 主进程执行器 → app_response
 import { makeAppRouter } from './app-routing.mjs'
 import { kernelReadonly } from './kernel-readonly.mjs'
+import { createReadonlyCache } from './readonly-cache.mjs'
 import { getAuthStatus, setupPassword, checkPassword, changePassword } from './auth.mjs'
 import { MANAGED_KEYS, providerProfileEnv, buildIdentityPrompt, activeProviderModel, resolveProviderProfile } from './provider-profile.mjs'
 import { probeProviderCapabilities, applyProbeResults, resolveWindowFromProbe, maybeAdoptWindowFromEvent } from './provider-probe.mjs'
@@ -1599,6 +1600,25 @@ function isAllowedOrigin(origin) {
   } catch { return false }
 }
 
+// K2.2 只读聚合缓存（/api/usage、/api/audit）。**惰性建**：一是 TTL 允许用 env 覆盖
+// （PONOS_USAGE_CACHE_TTL_MS），而 env 有可能在模块求值之后才被上层补齐（内核侧 perf.mjs
+// 踩过同一个坑：cli.mjs 的 settings.env 注入晚于所有 ESM 求值）；二是本进程若只是被测试
+// import 而没起服务，也不该白建一份状态。
+let _readonlyCache = null
+function getReadonlyCache() {
+  if (_readonlyCache) return _readonlyCache
+  const ttlMs = Number(process.env.PONOS_USAGE_CACHE_TTL_MS) || undefined
+  _readonlyCache = createReadonlyCache({
+    ttlMs: ttlMs || 10_000,
+    // 后台刷新失败**只记日志**：绝不能外抛（未处理的 rejection 会掀掉整个桥），也绝不能
+    // 让本次请求失败——本次已回旧值，用户无感。
+    onWarn: (e) => {
+      try { console.error(`[bridge][readonly] 后台刷新失败: ${(e && e.message) || String(e)}`) } catch { /* 日志失败不影响服务 */ }
+    },
+  })
+  return _readonlyCache
+}
+
 const httpServer = createServer(async (req, res) => {
   let sent = false
   const reply = (code, headers, body) => { if (!sent) { sent = true; res.writeHead(code, headers); res.end(body) } }
@@ -1902,19 +1922,31 @@ const httpServer = createServer(async (req, res) => {
       // loopDriftMaxMs（K0.2 探针）——异步化后它应显著回落。
       // 异步化**创造了并发**（同步版反而天然串行），故同参请求由 kernelReadonly 内部单飞合并，
       // 在飞的只读子进程数恒 ≤ 参数量级（见该模块 inFlight）。
+      // K2.2：桥侧 TTL + stale-while-revalidate（见 server/readonly-cache.mjs）。真机一次
+      // 全量聚合 10.8–19.6s，而缓存命中即**零扫描**——这是 K2 里唯一能把"每次轮询都全量扫"
+      // 变成"偶尔才扫"的一处。三种非失败态：fresh（命中且新）/ stale（命中但旧：立即回旧值，
+      // 后台刷新）/ computing（冷启动未就绪：立刻 503，刷新留后台跑完 ⇒ 下次轮询即有值）。
+      // 键 = 子命令 + 全部影响结果的 flags。env 不必入键：buildChildEnv() 每次重读 config，
+      // 但其中**唯一影响聚合结果**的是 CLAUDE_CONFIG_DIR ← YFW_HOME，而它是模块级常量
+      // （:120 resolveYfwHome()），进程内恒定；其余注入项（provider / effort / 日志等级）
+      // 只作用于会话运行，不改历史记录。将来若 YFW_HOME 变成可热改，这里必须一并入键。
       const t0 = Date.now()
-      try {
-        const out = await kernelReadonly([sub, ...flags], { env: buildChildEnv(), cwd: process.cwd() })
-        try {
-          console.error(`[bridge][readonly] ${sub} ms=${Date.now() - t0} ${(out || '').length}B args=${flags.join(' ') || '-'}`)
-        } catch { /* 日志失败不影响响应 */ }
-        return reply(200, { 'Content-Type': 'application/json' }, out)
-      } catch (e) {
-        try {
-          console.error(`[bridge][readonly] ${sub} ms=${Date.now() - t0} FAILED args=${flags.join(' ') || '-'}: ${e?.message || String(e)}`)
-        } catch { /* 日志失败不影响响应 */ }
-        return reply(502, { 'Content-Type': 'application/json' }, JSON.stringify({ error: e?.message || String(e) }))
+      const key = `${sub}|${flags.join(' ')}`
+      const got = await getReadonlyCache().get(key, () => kernelReadonly([sub, ...flags], { env: buildChildEnv(), cwd: process.cwd() }))
+      const ms = Date.now() - t0
+      if (got.state === 'computing') {
+        try { console.error(`[bridge][readonly] ${sub} ms=${ms} COMPUTING(cold) args=${flags.join(' ') || '-'}`) } catch { /* 日志失败不影响响应 */ }
+        return reply(503, { 'Content-Type': 'application/json' }, JSON.stringify({ error: '用量聚合首次计算中，请稍后重试' }))
       }
+      if (got.state === 'failed') {
+        const msg = got.error?.message || String(got.error)
+        try { console.error(`[bridge][readonly] ${sub} ms=${ms} FAILED args=${flags.join(' ') || '-'}: ${msg}`) } catch { /* 日志失败不影响响应 */ }
+        return reply(502, { 'Content-Type': 'application/json' }, JSON.stringify({ error: msg }))
+      }
+      try {
+        console.error(`[bridge][readonly] ${sub} ms=${ms} ${(got.payload || '').length}B state=${got.state} args=${flags.join(' ') || '-'}`)
+      } catch { /* 日志失败不影响响应 */ }
+      return reply(200, { 'Content-Type': 'application/json' }, got.payload)
     }
 
     // 诊断信息端点：diag-monitor 定期轮询（只读内存统计，见 diagInfo 定义）

@@ -184,8 +184,13 @@ test('结构性守卫：/api/usage 路由必须走异步版（不启桥，故只
   const src = readFileSync(join(SERVER_DIR, 'bridge.mjs'), 'utf8')
   const at = src.indexOf("url.pathname === '/api/usage'")
   assert.ok(at > 0, '必须仍存在 /api/usage 路由')
-  const block = src.slice(at, at + 2000)
-  assert.match(block, /await kernelReadonly\(/, '/api/usage 必须 await 异步版')
+  const block = src.slice(at, at + 3000)
+  // K2.2 起路由经 `getReadonlyCache().get(key, () => kernelReadonly(...))` 取数：异步调用被
+  // 挪进了取数回调，但**仍是 await 的**（且只有缓存未命中时才真的 spawn）。故断言改成
+  // 「await 的那条链上必须有 kernelReadonly」——保住本守卫的职责（不许退回同步），
+  // 同时不把结构钉死成 K2.1 当时的形状。
+  assert.match(block, /await getReadonlyCache\(\)\.get\(/, '/api/usage 必须 await 缓存取数（异步链）')
+  assert.match(block, /kernelReadonly\(\[sub, \.\.\.flags\]/, '缓存未命中时取数必须走 kernelReadonly')
   assert.doesNotMatch(block, /kernelReadonlySync\(/, '/api/usage 不得再用同步版（会阻塞桥事件循环）')
   assert.doesNotMatch(src, /import \{[^}]*kernelReadonlySync[^}]*\} from '\.\/kernel-readonly\.mjs'/, 'bridge 不应再导入同步版')
   // 同步版仍须存在（现有测试与离线脚本在用）
