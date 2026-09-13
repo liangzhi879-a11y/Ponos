@@ -75,6 +75,9 @@ const WAIT_CASES = [
   { key: 'wait-none', desc: '无等待态 → 不占位（元素不存在）', wait: {} },
   { key: 'wait-priority', desc: '多态并存 → 只出优先级最高的一条（失速 > 首字节）', wait: { stallMs: 96_000, firstByteMs: 5000 } },
   { key: 'wait-after-close', desc: '内核已死复位 → 等待条/提问卡/审批弹窗不得残留', wait: { firstByteMs: 5000, question: true, approval: true }, clearFirst: true },
+  // 终态复位（error/cancelled/closed → clearSessionWaitState）也必须清压缩指示：exception 收尾
+  // 恰是最容易丢 done 帧的场景，此前该路径够不到这个镜像（cancelled/closed 靠各自内联补丁）。
+  { key: 'wait-compact-clear', desc: '内核终态复位 → 悬挂的压缩指示必须一并清除', wait: { compacting: true, compactingSinceAgoMs: 21 * 60 * 1000 }, clearFirst: true },
   // 压缩指示常驻收口（2026-09-13）：done 帧丢一次即常驻 ⇒ 兜底必须复位**陈旧**指示，
   // 且**不得误清**仍在跑的新压缩。哨兵取真实判定用的数据（21min > 20min 上限；1min 远小）。
   { key: 'wait-compact-stale', desc: '压缩指示挂起 21min（超兜底上限）→ 巡检复位，条必须消失', wait: { compacting: true, compactingSinceAgoMs: 21 * 60 * 1000 }, sweepFirst: true },
@@ -149,11 +152,12 @@ window.__render = (i) => {
   )
 }
 
-// 内核已死路径的镜像复位（与 useYFWCLI.clearSessionWaitState 的四步一致）：
-// 用于验"内核被杀后等待条/提问卡/审批弹窗不得残留"。
+// 内核已死路径的镜像复位（与 useYFWCLI.clearSessionWaitState 的五个镜像一致）：
+// 用于验"内核被杀后等待条/提问卡/审批弹窗/压缩指示不得残留"。
 window.__clearWait = () => {
   useUIStore.getState().clearKernelStall('c1')
   useUIStore.getState().clearFirstByteWait('c1')
+  useChatStore.getState().setCompacting('c1', false)
   useChatStore.getState().clearPendingQuestion('c1')
   useChatStore.getState().clearPermissionsForSession('c1')
 }
@@ -378,6 +382,9 @@ check(!!W9 && W9.waitKindAfterSweep === null,
   `done 帧丢失的陈旧压缩指示必须被兜底复位（不得常驻），实测 after=${W9?.waitKindAfterSweep}`)
 check(!!W10 && W10.waitKindBeforeSweep === 'compact' && W10.waitKindAfterSweep === 'compact',
   `仍在跑的新压缩不得被误清，实测 before=${W10?.waitKindBeforeSweep} after=${W10?.waitKindAfterSweep}`)
+const W11 = byKey['wait-compact-clear']
+check(!!W11 && W11.waitKindBeforeClear === 'compact' && W11.waitKindAfterClear === null,
+  `内核终态复位（clearSessionWaitState）必须清掉悬挂的压缩指示，实测 before=${W11?.waitKindBeforeClear} after=${W11?.waitKindAfterClear}`)
 
 console.log('\n失真 GUI 渲染验证：')
 for (const r of results) console.log(`  · ${r.key.padEnd(22)} fillBg=${r.fillBg} 证据行=${rowsOf(r.text)} 角标=${/×\s*\d/.test(r.text) ? 'on' : 'off'} 泛光=${r.hasGlow ? 'on' : 'off'} 按钮=[${r.buttons.join(', ')}] rootHtml=${r.htmlLen}`)

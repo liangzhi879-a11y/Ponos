@@ -682,11 +682,22 @@ function dropPendingTaskProgress(sid: string) {
 // 此前 error/cancelled/closed 三条路径只清 kernelStall，于是内核被杀后等待条会
 // 一直往上数秒、权限弹窗永不消失（PermissionDialog 取 pendingPermissions[0] 且
 // 无 stale 判定）。此处把同一病根的四个镜像一次性收口。
+//
+// 2026-09-13 补第五个镜像 **压缩指示**：与上面四个同源——只由内核帧复位，done 帧丢一次
+// 即常驻（见 src/lib/compactIndicator.ts）。此前 cancelled/closed 两条路径各自内联补了一行
+// setCompacting，error 路径漏了（它只调本函数），于是"内核对压缩异常收尾"这一种最可能丢
+// done 帧的场景恰好不复位。现统一收口到这里，删掉两处内联重复，避免同一病根再漏第四处。
+// WS 闪断另有 onclose 处理（提问/审批刻意保留，压缩不保留），墙钟兜底在 sweepStaleCompaction。
 function clearSessionWaitState(sid: string) {
   const ui = useUIStore.getState()
   ui.clearKernelStall(sid)
   ui.clearFirstByteWait(sid)
   const store = useChatStore.getState()
+  // 内核已应答/已死 ⇒ 压缩不可能还在跑（kill/异常收尾时 finally 的 done 帧未必发得出来）
+  if (store.compactingBySession[sid]) {
+    console.warn(`[compact] 终态路径复位压缩指示 sid=${sid.slice(0, 8)} — done 帧未达或内核已终止`)
+    store.setCompacting(sid, false)
+  }
   store.clearPendingQuestion(sid)
   store.clearPermissionsForSession(sid)
 }
@@ -1079,7 +1090,7 @@ function handleMessage(msg: Record<string, unknown>) {
   if (msg.type === 'cancelled') {
     // 先 flush 待批的 assistant 事件，保证取消路径下块顺序不变
     flushStreamEvents()
-    clearSessionWaitState(sid) // 取消回执 = 内核已应答：失速/等待条/提问卡/审批弹窗一并复位
+    clearSessionWaitState(sid) // 取消回执 = 内核已应答：失速/等待条/提问卡/审批弹窗/压缩指示一并复位
     dropPendingTaskProgress(sid)
     pendingInterject.delete(sid)
     settlePendingInterjectsBySession(sid)
@@ -1089,8 +1100,7 @@ function handleMessage(msg: Record<string, unknown>) {
     sessionState.delete(sid)
     // 进程已销毁，loop 不可能再推进 → 清守卫状态（内核 cancel 通常已先发 loop end）
     useChatStore.getState().clearLoopState(sid)
-    // 压缩指示同随复位：kill 打断压缩时内核 finally 未必执行，不清理会悬挂指示条
-    useChatStore.getState().setCompacting(sid, false)
+    // 压缩指示已在上面 clearSessionWaitState 内复位（kill 打断压缩时内核 finally 未必执行）
   }
 
   if (msg.type === 'closed') {
@@ -1110,7 +1120,7 @@ function handleMessage(msg: Record<string, unknown>) {
     useChatStore.getState().stopStreaming(sid)
     useChatStore.getState().clearSubAgentTasks(sid)
     useChatStore.getState().clearLoopState(sid) // loop 随内核进程终止，防悬挂 active
-    useChatStore.getState().setCompacting(sid, false) // 压缩指示同随进程终止复位，防悬挂
+    // 压缩指示已在上面 clearSessionWaitState 内复位（同随进程终止）
   }
 
   if (msg.type === 'question-resolved') {
