@@ -1002,9 +1002,13 @@ function experienceInjectConfig() {
     return {
       enabled: cfg.experienceInjectEnabled !== false,
       maxBytes: Number(cfg.experienceInjectMaxBytes) > 0 ? Number(cfg.experienceInjectMaxBytes) : 4096,
+      // S3 D1 注入灰度（知识库 AI 集成）：'legacy'（缺省）| 'unified'。**默认值必须等于既有行为**，
+      // 老用户升级后不写这个键就是旧行为。这里只做"读 + 透传 env"，注入策略的权威在内核
+      // （kernel/knowledge-inject.mjs 的 resolveInjectMode）——server 不复制判定逻辑。
+      injectMode: cfg.knowledgeInjectMode === 'unified' ? 'unified' : 'legacy',
     }
   } catch {
-    return { enabled: true, maxBytes: 4096 }
+    return { enabled: true, maxBytes: 4096, injectMode: 'legacy' }
   }
 }
 
@@ -1181,6 +1185,15 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
         ...(Number.isFinite(Number(compactCount)) && Number(compactCount) > 0
           ? { YFW_HEALTH_COMPACT_COUNT: String(Number(compactCount)) }
           : {}),
+        // S3 D1 注入灰度透传（只传值，判定在内核）：unified 才传 mode（缺省 = 内核默认 legacy，
+        // 不传即等价于"没开"，避免给旧内核塞它不认识的变量）；预算只在被显式改过时才传。
+        ...(() => {
+          const c = experienceInjectConfig()
+          return {
+            ...(c.injectMode === 'unified' ? { PONOS_KNOWLEDGE_INJECT_MODE: 'unified' } : {}),
+            ...(c.maxBytes !== 4096 ? { PONOS_KNOWLEDGE_INJECT_MAX_BYTES: String(c.maxBytes) } : {}),
+          }
+        })(),
       },
       // chat 模式：内核工作根 = YFW_HOME（不落到业务目录，transcript 自成一格）
       cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()),

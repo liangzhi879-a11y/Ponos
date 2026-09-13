@@ -361,6 +361,10 @@ export interface YFWorkingConfigV2 {
   experienceInjectEnabled?: boolean
   /** 新会话注入个人经验的上限（字符数） */
   experienceInjectMaxBytes?: number
+  /** S3 D1 知识注入策略灰度：'legacy'（缺省 = 既有行为）| 'unified'（块级抽调）。
+   *  bridge 读它并透传 env PONOS_KNOWLEDGE_INJECT_MODE，判定权威在内核
+   *  （kernel/knowledge-inject.mjs resolveInjectMode）。本期不加 GUI 控件（手工改 config.json）。 */
+  knowledgeInjectMode?: 'legacy' | 'unified'
   /** 审批放行档位（全局，2026-09-12）：bridge 持久化并按此 spawn 内核
    *  （manual/auto 不传 --dangerously-skip-permissions）；缺省/非法 → bridge 归一为 loose。 */
   approvalMode?: string

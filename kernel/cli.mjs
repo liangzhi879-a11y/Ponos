@@ -31,7 +31,8 @@ import { createCompactor, extractKeyInfo, buildSessionMemoryText } from './compa
 import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
 import { resolveCompactSettings } from './compact.mjs'
 import { extractConstraints } from './fidelity.mjs'
-import { memoryRoot, buildMemoryIndex, captureMemoryCandidates, appendMemoryEntry } from './memory.mjs'
+import { memoryRoot, captureMemoryCandidates, appendMemoryEntry } from './memory.mjs'
+import { buildKnowledgeInjection, resolveInjectMode, resolveInjectBudget } from './knowledge-inject.mjs'
 import { createGraphStore } from './graph.mjs'
 import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
 import { discoverSkills, verifySkillVersions } from './skills.mjs'
@@ -606,29 +607,51 @@ export async function main(argv) {
   // 与 init 计数使用 —— 可见性与自动触发是两件事，本处只收窄注入面。
   const visibleWorkflows = listVisibleWorkflows({ roots: workflowRoots, agentId: args.agent || null, publicLimit: wfPublicLimit })
   // L3-2：记忆注入（与 GUI 经验面板同一数据源；settings.memory.inject=false 逃生阀）。
-  // 两级注入：graph.search 按当前任务上下文关键词（余弦+关键词混合）从神经图谱抽调
-  // 相关经验全文（模型直接可用），buildMemoryIndex 给全量索引指针（模型按需 Read）。
+  // S3 双策略（D1 灰度，缺省 legacy = 既有行为）：
+  //   legacy  —— graph.search 按当前任务上下文关键词从神经图谱抽调经验全文 + buildMemoryIndex
+  //              给全量索引指针（模型按需 Read）。**逐字节等于改动前**（灰度开关可信的前提）。
+  //   unified —— kernel/knowledge-inject.mjs：一次 store.load() 喂两层，索引层沿用同一
+  //              buildMemoryIndex（零格式变化），抽调层换成块级结果（粒度自适应，D3）。
   // 任务关键词 = cwd/addDirs 目录名 + 显式任务标签（settings.memory.taskTag / env
   // PONOS_MEMORY_KEYWORDS，逗号分隔可追加）。PONOS_MEMORY_INJECT=index-only 时仅索引（旧行为）。
   const memoryRootDir = memoryRoot(configDir)
   let memoryBlock = ''
+  const injectOpts = {
+    mode: resolveInjectMode({ settings: settings.merged }),
+    budget: resolveInjectBudget({ settings: settings.merged }),
+  }
+  // 图谱句柄提到注入段之外：轮末沉淀（下方 finally）要用它同步图谱索引。原来它声明在
+  // `if (!chatMode)` 块内，而沉淀段在该块之外 —— 跨块引用会抛 `graph is not defined`，
+  // 又被沉淀段的 catch 静默吞掉，导致**启发式捕获从未落盘**（实测报告见 S3 报告"自审发现"）。
+  let graphStore = null
   // chat 模式不注入记忆（2026-09-12 隔离）：个人经验/神经图谱是本地任务资产，对
   // "联网问答"无益，还会引导模型承诺本地动作；顺带跳过图谱加载（省一次磁盘扫描）。
   if (!chatMode) {
     // 神经图谱：图谱存储（markdown 权威，图谱派生索引；缺失/版本旧/markdown 更新自动重建）
-    const graph = createGraphStore({ root: join(configDir, 'memory', 'graph') })
-    try { await graph.load({ memoryRoot: memoryRootDir }) } catch { /* 图谱故障不影响主流程 */ }
+    graphStore = createGraphStore({ root: join(configDir, 'memory', 'graph') })
+    try { await graphStore.load({ memoryRoot: memoryRootDir }) } catch { /* 图谱故障不影响主流程 */ }
     const injectMode = process.env.PONOS_MEMORY_INJECT || 'both'
     if (settings.merged.memory?.inject !== false) {
-      if (injectMode !== 'index-only') {
-        const kw = [
-          ...(args.addDirs || []).map((d) => basename(d)).filter(Boolean),
-          ...(settings.merged.memory?.taskTag || '').split(',').map((s) => s.trim()).filter(Boolean),
-          ...(process.env.PONOS_MEMORY_KEYWORDS || '').split(',').map((s) => s.trim()).filter(Boolean),
-        ]
-        memoryBlock += graph.search({ query: kw.join(' '), keywords: kw })
+      const kw = [
+        ...(args.addDirs || []).map((d) => basename(d)).filter(Boolean),
+        ...(settings.merged.memory?.taskTag || '').split(',').map((s) => s.trim()).filter(Boolean),
+        ...(process.env.PONOS_MEMORY_KEYWORDS || '').split(',').map((s) => s.trim()).filter(Boolean),
+      ]
+      const inj = buildKnowledgeInjection({
+        configDir, memoryRootDir,
+        query: kw.join(' '), keywords: kw,
+        totalBudget: injectOpts.budget,
+        mode: injectOpts.mode,
+        // index-only = 只要索引指针（既有逃生阀），unified 下同样跳过抽调层——
+        // 不跳过的话该开关在 unified 下会静默失效（用户设了却仍在抽调）。
+        recall: injectMode !== 'index-only',
+      })
+      // 顺序与改动前一致：先抽调层（legacy 的 graph.search / unified 的块级），再索引层。
+      if (injectMode !== 'index-only' && injectOpts.mode === 'legacy') {
+        memoryBlock += graphStore.search({ query: kw.join(' '), keywords: kw })
       }
-      memoryBlock += buildMemoryIndex({ root: memoryRootDir })
+      memoryBlock += inj.recallSection
+      memoryBlock += inj.indexSection
     }
   }
   // 提示词组装：内核基础行为规范 + 可用子 Agent 区块（内置 ∪ 用户级）+ AGENTS.md
@@ -798,9 +821,12 @@ export async function main(argv) {
       // skipMemoryCapture：插话统一不捕获——工具边界注入路径（engine 内 appendUser）
       // 本就不经 cli 捕获，兜底成新轮的插话带标记跳过，两条路径行为一致。
       try {
-        if (settings.merged.memory?.capture !== false && content.trim() && !msg?.skipMemoryCapture) {
+        // chat 守卫是**行为等价**补丁：原来 `graph` 跨块引用必然抛错（见 injectOpts 处的注释），
+        // 于是 chat 下这条路径碰巧也不写盘。修好作用域后必须显式守卫，否则 chat 会话会开始
+        // 往本地 memory/personal 写文件——那破了 S1 的"纯聊不落本地资产"隔离语义。
+        if (!chatMode && settings.merged.memory?.capture !== false && content.trim() && !msg?.skipMemoryCapture) {
           for (const c of captureMemoryCandidates({ userText: content, tag: settings.merged.memory?.taskTag || null, markers: settings.merged.memory?.markers || null })) {
-            appendMemoryEntry({ root: memoryRootDir, theme: c.theme, tag: c.tag, summary: c.summary, full: c.full, graphStore: graph })
+            appendMemoryEntry({ root: memoryRootDir, theme: c.theme, tag: c.tag, summary: c.summary, full: c.full, graphStore: graphStore })
           }
         }
       } catch { /* 记忆捕获失败不影响主流程 */ }

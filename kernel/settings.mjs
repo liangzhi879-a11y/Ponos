@@ -83,6 +83,11 @@ export const SETTINGS_DEFAULTS = {
   disallowedTools: [],
   env: {},
   compact: { thresholdTokens: 0, reserveTokens: 0, maxToolResults: 0 },
+  // memory 的两个 S3 灰度位（injectMode / injectMaxBytes）**不在这里声明默认值**：
+  // SETTINGS_DEFAULTS 的消费方 diffFromDefault 是"整键 JSON 相等"比较，多两个键会让
+  // "只设了 memory.inject" 的用户被误报为配置漂移；且默认值放两处就必然漂移。
+  // 它们的单一权威在 kernel/knowledge-inject.mjs 的 resolveInjectMode / resolveInjectBudget
+  // （缺省 legacy / 4096 = 既有行为），settings.json 里可缺、可写（validateSettings 不校验子键）。
   memory: { inject: true, capture: true },
   hooks: [],
 }

@@ -65,7 +65,7 @@ const countLines = (s) => String(s || '').split('\n').filter((l) => l.startsWith
  */
 export function buildKnowledgeInjection({
   configDir = '', memoryRootDir = null, query = '', keywords = [], spaces = null,
-  totalBudget = DEFAULT_TOTAL_BUDGET, mode = 'legacy',
+  totalBudget = DEFAULT_TOTAL_BUDGET, mode = 'legacy', recall = true,
 } = {}) {
   const t0 = Date.now()
   const total = Number(totalBudget) > 0 ? Math.floor(Number(totalBudget)) : DEFAULT_TOTAL_BUDGET
@@ -93,6 +93,13 @@ export function buildKnowledgeInjection({
 
   let recallSection = ''
   let stat = { strategy, indexLines: countLines(indexSection), recallBlocks: 0, spaces: [], elapsedMs: 0, indexAgeMs: null, degraded: null }
+  // recall=false：`PONOS_MEMORY_INJECT=index-only` 逃生阀（只要索引指针）。unified 下若不短路，
+  // 该开关会静默失效——用户设了"仅索引"却仍在抽调，是比"少个功能"更坏的故障模式。
+  if (!recall) {
+    stat.elapsedMs = Date.now() - t0
+    record(stat, { queried: false })
+    return { indexSection, recallSection: '', stats: stat }
+  }
   try {
     // configDir 推导：memoryRootDir = <configDir>/memory/personal ⇒ 上溯两级。
     // 与 kernel/tools.mjs 的 KnowledgeSearch 同一套推导（少一级会指向空空间清单）。
