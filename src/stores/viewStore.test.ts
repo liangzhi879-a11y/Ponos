@@ -5,7 +5,7 @@
 // Task 6b（D11-D13）：login 视图删除后原 normalizeStoredView 归一用例作废，改为 sanitizeRail 清洗断言。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { sanitizeRail, RAIL_IDS, sanitizeSecondTab, SECOND_TAB_IDS } from './viewStore.ts'
+import { sanitizeRail, RAIL_IDS, sanitizeSecondTab, SECOND_TAB_IDS, railFromStoragePayload } from './viewStore.ts'
 
 test('sanitizeRail：6 合法值透传，非法/缺省回退 task', () => {
   for (const ok of RAIL_IDS) assert.equal(sanitizeRail(ok), ok)
@@ -29,4 +29,16 @@ test('sanitizeSecondTab：4 合法值透传，非法/缺省/历史无字段回�
 test('sanitizeRail：apps 为合法 rail（应用智控）', () => {
   assert.equal(sanitizeRail('apps'), 'apps')
   assert.ok((RAIL_IDS as readonly string[]).includes('apps'))
+})
+
+// S2 Task 10：设置窗「在知识面板中打开」经 storage 事件把主窗口切到知识 rail。
+// 事件本身属 DOM，测不了；测它的载荷解析——脏 JSON/未知 rail 必须返回 null（不许改成 task，
+// 否则任何一次别窗写入都会把用户从当前 rail 踢走）。
+test('railFromStoragePayload：只认合法 rail，脏载荷一律 null', () => {
+  assert.equal(railFromStoragePayload(JSON.stringify({ state: { workState: { rail: 'knowledge', secondTab: null } } })), 'knowledge')
+  assert.equal(railFromStoragePayload(JSON.stringify({ state: { workState: { rail: 'task' } } })), 'task')
+  assert.equal(railFromStoragePayload(JSON.stringify({ state: { workState: { rail: 'nope' } } })), null)
+  assert.equal(railFromStoragePayload(JSON.stringify({ state: {} })), null)
+  assert.equal(railFromStoragePayload('{'), null)
+  assert.equal(railFromStoragePayload(null), null)
 })

@@ -66,3 +66,32 @@ export const useViewStore = create<ViewState>()(
     },
   }),
 )
+
+/**
+ * 跨窗口 storage 载荷 → rail（S2 Task 10）。
+ * 独立设置窗的「在知识面板中打开」写的是同一份 localStorage（'yfworking-view'），
+ * 主窗口需要据此切 rail——但不能照抄 persisted.view（boot 门禁，见上方 merge）。
+ * 只取 rail 且过一遍 sanitizeRail：脏 JSON/未知值一律 null（调用方不改状态）。
+ * 抽成纯函数是为了能被 node --test 直接守（storage 事件本身无 DOM 测不了）。
+ */
+export function railFromStoragePayload(payload: string | null): RailId | null {
+  try {
+    const p = JSON.parse(payload ?? '') as { state?: { workState?: { rail?: unknown } } }
+    const rail = p?.state?.workState?.rail
+    return typeof rail === 'string' && RAIL_IDS.includes(rail as RailId) ? (rail as RailId) : null
+  } catch { return null }
+}
+
+// 跨窗口 rail 同步（2026-09-13 S2 Task 10）：设置窗独立 BrowserWindow 后，zustand persist
+// 默认不监听别窗写入（同 settingsStore.ts:268 的跨窗口同步）；不补这段，设置页那个
+// 「在知识面板中打开」就是"点了没反应"的假按钮。storage 事件只在**其他**窗口触发，
+// 故不会自我回环；只同步 rail，secondTab 与 view 仍归各窗自理。
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key !== 'yfworking-view') return
+    const rail = railFromStoragePayload(e.newValue)
+    if (rail && useViewStore.getState().workState.rail !== rail) {
+      useViewStore.setState((s) => ({ workState: { ...s.workState, rail } }))
+    }
+  })
+}

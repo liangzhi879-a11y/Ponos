@@ -468,7 +468,8 @@ export const enUS: TranslationKeys = {
 
     // --- Tray / Notifications / Desktop Pet / Experience (new) ---
     petTab: 'Pet',
-    experienceTab: 'Experience',
+    // S2 Task 10: the page is now a knowledge-settings subpage; entry browsing moved to the Knowledge panel
+    experienceTab: 'Experience & Knowledge',
     minimizeToTray: 'Minimize to tray on close',
     minimizeToTrayDesc: 'Hide to system tray on close and keep running tasks in background',
     notifyMode: 'Task notification timing',

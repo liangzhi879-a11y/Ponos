@@ -5,7 +5,7 @@
 // markdown 渲染复用 src/components/chat/MarkdownText.tsx 导出的 MD_PLUGINS/MD_COMPONENTS
 // （spec §11.1：已导出，勿重造）。
 //
-// ⚠️ components 表**必须是模块级稳定引用**：MarkdownText.tsx 头部注释记着那起事故——
+// 注意 components 表**必须是模块级稳定引用**：MarkdownText.tsx 头部注释记着那起事故——
 // 每渲染新建 `{...MD_COMPONENTS}` 会让 react-markdown 整棵子树重挂载（输入抖动、滚动跳动）。
 // 故 KB_COMPONENTS 在模块顶层建好，只补一个 p（默认表没有 p 规则，段落会吃浏览器 1em 边距）。
 //

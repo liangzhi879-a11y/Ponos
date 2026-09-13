@@ -3,7 +3,7 @@
 // 范式照 `workflows/canvas/edges/WorkflowEdge.tsx`：`BaseEdge` + `EdgeLabelRenderer`，
 // 自定义只为补一件内置边做不到的事。
 //
-// 🔴 本组件存在的**唯一**理由：给边一个**方向指示**。知识图谱的边有语义（from 引用 to），
+// 本组件存在的**唯一**理由：给边一个**方向指示**。知识图谱的边有语义（from 引用 to），
 // 内置边只是一条线，"谁指向谁"完全看不出来。两条实现路径：
 //   ① xyflow 的 `markerEnd`（SVG `<marker>`）：颜色得写进 `fill`——而 SVG 呈现属性里的
 //      `var(--…)` 在部分 Chromium 版本上不生效，会退化成黑色箭头（既丑又违反"只用 token"）；

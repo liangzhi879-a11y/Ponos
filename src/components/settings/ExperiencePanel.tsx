@@ -1,101 +1,143 @@
+// src/components/settings/ExperiencePanel.tsx —— 设置 → 经验与知识库（S2 Task 10 简化：338 → 200 行内）
+//
+// 简化依据 spec §10 D4 + §7：本页从"经验浏览器"收窄为**知识库设置子页**，只留三类东西：
+//   ① 注入设置（开关 / 上限）—— 落 ~/.yfworking/config.json，全库无第二个入口
+//   ② 经验空间路径 + 索引状态与重建（/knowledge/spaces + /knowledge/stats + /knowledge/reindex）
+//   ③ 主题"激活"开关 + 导入/导出 —— 数据维护操作，同样无其他 GUI 入口
+//
+// **被移除功能的去向（对照表见 .superpowers/sdd/2026-09-13-knowledge-core-S1/s2-task-10-report.md）**：
+//   经验条目列表 / 主题搜索 / 展开"查看全部" / 逐条删除 → **知识 面板**。经验主题就是
+//   `~/.yfworking/memory/personal/*.md`，而它正是知识库的内置空间「个人经验」
+//   （shared/knowledge-core.mjs:builtinSpaceSpecs）——同一份文件在知识面板按文档阅读/编辑/删除，
+//   `- [会话|标签] 摘要 -- 全文` 行渲染为经验卡片。本页再放一套浏览 UI 只会造成"两个入口改哪个才生效"的困惑。
+//
+// 保留"激活"开关的理由：frontmatter `active: false` 让该主题整篇退出注入（server/experience.mjs
+// buildExperienceIndex 过滤 active），是相关性控制；知识面板里只能在编辑视图手改 frontmatter。
 import { useEffect, useMemo, useState } from 'react'
-import { Brain, Search, Trash2, Download, Upload, RefreshCw, Package, AlertTriangle } from 'lucide-react'
-import { Button, Switch, ScrollArea } from '@/components/ui'
+import { Brain, Database, Download, Library, RefreshCw, Upload } from 'lucide-react'
+import { Button, Switch } from '@/components/ui'
 import { useChatStore } from '@/stores/chatStore'
+import { useViewStore } from '@/stores/viewStore'
 import { fetchBridgeConfig, saveBridgeConfig } from '@/lib/config'
+import { getStats, listSpaces, reindex, type KnowledgeStats } from '@/lib/knowledgeApi'
 import { cn, CHAT_STORAGE_KEY } from '@/lib/utils'
 import type { ExperienceTheme } from '@/types'
+import { ExportDialog, ImportDialog } from './ExperienceDataDialogs'
+import { fmtAge, fmtBytes, normalizeInjectMax } from './experienceFormat'
 
-// preload 注入的 window.yfworkingAPI 仅存在于 Electron 渲染进程；
-// dev 模式（纯 Vite、无 preload）下为 undefined，所有调用点必须守卫，避免挂载即崩溃。
+// preload 注入的 window.yfworkingAPI 仅存在于 Electron 渲染进程；dev 模式（纯 Vite、无 preload）
+// 下为 undefined，所有调用点必须守卫，避免挂载即崩溃。索引一段走 HTTP 桥接（knowledgeApi），
+// 无 preload 也能用——dev 下本页至少还能看索引状态。
 const api = window.yfworkingAPI
 
-const TYPE_LABELS: Record<string, string> = {
-  personal: '个人记忆', skill_exp: '技能经验库', skills: '技能库',
-  config: '全局配置', chats: '会话历史', project: '项目数据',
-}
-
 export function ExperiencePanel() {
-  const [themes, setThemes] = useState<ExperienceTheme[]>([])
-  const [query, setQuery] = useState('')
-  const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null)
   const [injectEnabled, setInjectEnabled] = useState(true)
   const [injectMax, setInjectMax] = useState(4096)
+  const [themes, setThemes] = useState<ExperienceTheme[]>([])
+  const [stats, setStats] = useState<KnowledgeStats | null>(null)
+  const [spacePath, setSpacePath] = useState<string | null>(null)
+  const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null)
+  const [busy, setBusy] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
-  // 每主题展开状态：set 形式按主题 key 记录是否查看全部
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const lastCwd = useChatStore(s => s.lastCwd)
-
-  const load = () => {
-    if (!api) {
-      setMsg({ text: '未检测到桌面环境（dev 模式无 preload）', ok: false })
-      return
-    }
-    api.experienceList().then(r => {
-      if (r.ok && r.themes) { setThemes(r.themes); return }
-      setMsg({ text: r.error || '读取失败', ok: false })
-    })
-  }
-
-  useEffect(() => {
-    load()
-    fetchBridgeConfig().then(cfg => {
-      setInjectEnabled(cfg.experienceInjectEnabled !== false)
-      setInjectMax(Number(cfg.experienceInjectMaxBytes) > 0 ? Number(cfg.experienceInjectMaxBytes) : 4096)
-    }).catch(() => {})
-  }, [])
 
   const flash = (text: string, ok = true) => {
     setMsg({ text, ok })
     setTimeout(() => setMsg(null), 5000)
   }
 
+  const loadThemes = () => {
+    if (!api) return
+    api.experienceList().then(r => {
+      if (r.ok && r.themes) setThemes(r.themes)
+      else flash(r.error || '读取经验主题失败', false)
+    })
+  }
+
+  // 索引状态与空间路径都来自 S1 的 HTTP 端点：桌面环境与否都能看（dev 下不再是一片"未检测到桌面环境"）
+  const loadIndex = () => {
+    getStats().then(r => { if (r.ok) setStats(r.data); else flash(r.error, false) })
+    listSpaces().then(r => {
+      if (!r.ok) return
+      const exp = r.data.spaces.find(s => s.source === 'experience' || s.id === 'experience')
+      setSpacePath(exp?.root ?? null)
+    })
+  }
+
+  useEffect(() => {
+    loadThemes()
+    loadIndex()
+    fetchBridgeConfig().then(cfg => {
+      setInjectEnabled(cfg.experienceInjectEnabled !== false)
+      setInjectMax(normalizeInjectMax(cfg.experienceInjectMaxBytes))
+    }).catch(() => {})
+  }, [])
+
   const saveInject = (enabled: boolean, maxBytes: number) => {
     fetchBridgeConfig().then(cfg => {
-      saveBridgeConfig({ ...cfg, experienceInjectEnabled: enabled, experienceInjectMaxBytes: maxBytes }).then(() => flash('注入设置已保存'))
+      saveBridgeConfig({ ...cfg, experienceInjectEnabled: enabled, experienceInjectMaxBytes: maxBytes })
+        .then(() => flash('注入设置已保存'))
     }).catch(() => flash('保存失败', false))
   }
 
-  const totalEntries = useMemo(() => themes.reduce((s, x) => s + x.entryCount, 0), [themes])
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return themes.filter(x => !q || x.theme.includes(q) || x.entries.some(e => e.text.toLowerCase().includes(q)))
-  }, [themes, query])
-
-  const chatsJson = () => {
-    try { return window.localStorage.getItem(CHAT_STORAGE_KEY) } catch { return null }
+  const rebuildIndex = async () => {
+    setBusy(true)
+    const r = await reindex()
+    setBusy(false)
+    if (!r.ok) { flash(r.error || '重建失败', false); return }
+    setStats(r.data)
+    flash('索引已重建')
   }
+
+  // 打开知识面板：设置窗与主窗共享同一份 localStorage（'yfworking-view'），写入 rail 后由
+  // viewStore 的 storage 监听把主窗口切到「知识」（见 viewStore.ts 末尾）。view 字段不影响它。
+  const openKnowledge = () => {
+    useViewStore.getState().enterWork('knowledge')
+    flash('已请求主窗口打开「知识」面板（主窗口未运行时请先打开）')
+  }
+
+  // 导出会话数据用：localStorage 在隐私模式/配额异常下会抛，捕获后按"没有会话数据"处理
+  const chatsJson = () => { try { return window.localStorage.getItem(CHAT_STORAGE_KEY) } catch { return null } }
+
+  const totalEntries = useMemo(() => themes.reduce((s, x) => s + x.entryCount, 0), [themes])
+  // 激活开关的两种"没得选"状态给同一处文案位：dev 无 preload 时 IPC 不可用，空库时没主题
+  const themeHint = !api
+    ? '未检测到桌面环境（dev 模式无 preload）：激活开关不可用'
+    : themes.length === 0 ? '暂无经验主题，多用 YFWorking 工作会自动沉淀' : null
 
   return (
     <div className="space-y-6">
       <div>
         <h3 className="text-sm font-semibold text-primary mb-1 flex items-center gap-2">
           <Brain className="w-4 h-4" />
-          个人经验
+          个人经验与知识库
         </h3>
+        <p className="text-xs text-tertiary mb-1">
+          经验全自动静默沉积于 <span className="font-mono text-secondary">{spacePath || '~/.yfworking/memory/personal'}</span>，
+          新会话按相关性注入（上限 {injectMax} 字符）。共 {themes.length} 个主题 / {totalEntries} 条经验。
+        </p>
+        {/* 去向说明：原"条目列表/搜索/删除"被移除，用户必须能一眼看到该去哪找（spec §10 D4） */}
         <p className="text-xs text-tertiary mb-4">
-          全自动静默沉积于 ~/.yfworking/memory/personal/，新会话按相关性注入（上限 {injectMax} 字符）。共 {themes.length} 个主题 / {totalEntries} 条经验。
+          浏览、搜索、编辑或删除具体经验条目请到 <span className="text-secondary">知识</span> 面板左栏的「个人经验」空间
+          （就是上面这个目录，同一份 md 文件，条目会渲染成卡片）。
         </p>
 
-        {/* 注入设置 */}
+        {/* ① 注入设置 */}
         <div className="cut-sm mb-4">
           <div className="ci p-4 space-y-3">
-          <label className="flex items-center justify-between py-1">
-            <div>
-              <span className="text-sm text-secondary">新会话注入经验</span>
-              <p className="text-[10px] text-tertiary mt-0.5">开启后每次会话自动携带已激活经验（含沉积引导）</p>
-            </div>
+          <label className="flex items-center justify-between gap-3 py-1">
+            <span className="text-sm text-secondary">新会话注入经验
+              <span className="block text-[10px] text-tertiary mt-0.5">开启后每次会话自动携带已激活经验（含沉积引导）</span>
+            </span>
             <Switch checked={injectEnabled} onCheckedChange={v => { setInjectEnabled(v); saveInject(v, injectMax) }} />
           </label>
-          <label className="flex items-center justify-between py-1">
-            <div>
-              <span className="text-sm text-secondary">注入上限（字符）</span>
-              <p className="text-[10px] text-tertiary mt-0.5">超出部分按最近更新截断</p>
-            </div>
+          <label className="flex items-center justify-between gap-3 py-1">
+            <span className="text-sm text-secondary">注入上限（字符）
+              <span className="block text-[10px] text-tertiary mt-0.5">超出部分按最近更新截断</span>
+            </span>
             <input
-              type="number" min={512} max={16384} step={512}
-              value={injectMax}
+              type="number" min={512} max={16384} step={512} value={injectMax}
               onChange={e => setInjectMax(Number(e.target.value) || 4096)}
               onBlur={() => saveInject(injectEnabled, injectMax)}
               className="w-28 h-8 rounded-md border border bg-surface px-2 text-xs text-primary text-right font-mono focus:outline-none focus:ring-1 focus:ring-accent"
@@ -104,235 +146,54 @@ export function ExperiencePanel() {
           </div>
         </div>
 
-        {/* 导出/导入 */}
-        <div className="flex items-center gap-2 mb-4">
-          <Button variant="primary" size="sm" leftIcon={<Download className="w-3.5 h-3.5" />} onClick={() => setExportOpen(true)}>导出</Button>
+        {/* ② 索引状态 + 重建（spec §7：本页保留"索引状态与重建入口"） */}
+        <div className="cut-sm mb-4">
+          <div className="ci p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <Database className="w-3.5 h-3.5 text-tertiary" />
+              <span className="text-sm text-secondary">知识索引</span>
+              <span className="ml-auto text-[10px] text-tertiary">{stats ? `${fmtAge(stats.indexAgeMs)}构建 · ${fmtBytes(stats.indexBytes)}` : '读取中…'}</span>
+              <Button variant="outline" size="sm" disabled={busy} leftIcon={<RefreshCw className={cn('w-3.5 h-3.5', busy && 'animate-spin')} />} onClick={rebuildIndex}>
+                {busy ? '重建中…' : '重建索引'}
+              </Button>
+            </div>
+            <p className="text-[10px] text-tertiary">
+              {stats ? `${stats.docs} 篇文档 / ${stats.blocks} 块 · ${stats.spaces} 个空间 · 倒排 ${stats.grams} gram` : '尚未读到索引统计（桥接服务未启动？）'}
+              　内容改动后通常自动增量更新；检索结果缺漏时点「重建索引」全量重扫。
+            </p>
+          </div>
+        </div>
+
+        {/* ③ 主题激活（frontmatter active）——注入相关性控制，全库唯一入口 */}
+        <div className="cut-sm mb-4">
+          <div className="ci p-4">
+            <div className="text-sm text-secondary mb-1">注入哪些主题</div>
+            <p className="text-[10px] text-tertiary mb-2">关闭即把该主题 md 的 frontmatter 写成 active: false，整篇退出注入（条目仍在，不被删除）。</p>
+            {themeHint ? <p className="text-[10px] text-tertiary">{themeHint}</p> : (
+              <div className="flex flex-wrap gap-x-4 gap-y-1.5 pr-1">
+                {themes.map(x => (
+                  <label key={x.theme} className="flex items-center gap-1.5 text-xs text-secondary">
+                    <Switch checked={x.active} onCheckedChange={v => { api?.setExperienceActive(x.theme, v).then(r => { if (r.ok) loadThemes() }) }} />
+                    <span>{x.theme} <span className="text-[10px] text-tertiary">{x.entryCount}</span></span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ④ 数据搬运 + 刷新 + 跳知识面板 */}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="primary" size="sm" leftIcon={<Library className="w-3.5 h-3.5" />} onClick={openKnowledge}>在知识面板中打开</Button>
+          <Button variant="outline" size="sm" leftIcon={<Download className="w-3.5 h-3.5" />} onClick={() => setExportOpen(true)}>导出</Button>
           <Button variant="outline" size="sm" leftIcon={<Upload className="w-3.5 h-3.5" />} onClick={() => setImportOpen(true)}>导入</Button>
-          <Button variant="ghost" size="sm" leftIcon={<RefreshCw className="w-3.5 h-3.5" />} onClick={load}>刷新</Button>
+          <Button variant="ghost" size="sm" leftIcon={<RefreshCw className="w-3.5 h-3.5" />} onClick={() => { loadThemes(); loadIndex() }}>刷新</Button>
           {msg && <span className={cn('text-xs', msg.ok ? 'text-success' : 'text-error')}>{msg.text}</span>}
         </div>
-
-        {/* 搜索 */}
-        <div className="relative mb-3">
-          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-tertiary" />
-          <input
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            placeholder="搜索主题或经验内容…"
-            className="w-full h-8 bg-elevated border border rounded-md pl-7 pr-2 text-xs text-primary placeholder:text-tertiary focus:outline-none focus:ring-1 focus:ring-accent"
-          />
-        </div>
-
-        {/* 主题列表 — 嵌套 ScrollArea 用 max-h-full flex-1 min-h-0 依赖外层 flex 高度，
-            修复设置-经验无法滚到底：原 max-h-[46vh] 与外层 Dialog 嵌套冲突导致溢出/被截断。
-            每主题"查看全部"按钮控制 expanded Set，点开展示所有 entries 并提供每条删除按钮。 */}
-        <ScrollArea className="max-h-full flex-1 min-h-0">
-          <div className="space-y-3">
-            {filtered.map(x => {
-              const isExpanded = expanded.has(x.theme)
-              const visibleEntries = isExpanded ? x.entries : x.entries.slice(0, 6)
-              return (
-                <div key={x.theme} className="cut-sm">
-                  <div className="ci p-3">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-primary">{x.theme}</span>
-                    <span className="text-[10px] text-tertiary">{x.entryCount} 条</span>
-                    <div className="ml-auto flex items-center gap-2">
-                      {x.entries.length > 6 && (
-                        <button
-                          className="text-[10px] text-brand-500 hover:underline"
-                          onClick={() => {
-                            setExpanded(prev => {
-                              const next = new Set(prev)
-                              if (next.has(x.theme)) next.delete(x.theme)
-                              else next.add(x.theme)
-                              return next
-                            })
-                          }}
-                        >
-                          {isExpanded ? '收起' : `查看全部 ${x.entries.length} 条`}
-                        </button>
-                      )}
-                      <label className="flex items-center gap-1 text-[10px] text-tertiary">
-                        激活
-                        <Switch
-                          checked={x.active}
-                          onCheckedChange={v => {
-                            api?.setExperienceActive(x.theme, v).then(r => { if (r.ok) load() })
-                          }}
-                        />
-                      </label>
-                    </div>
-                  </div>
-                  {visibleEntries.map(e => (
-                    <div key={e.hash} className="group flex items-start gap-2 mt-1.5 text-xs text-secondary">
-                      <span className="flex-1 min-w-0 leading-relaxed">{e.text}</span>
-                      <button
-                        className="opacity-0 group-hover:opacity-100 p-0.5 text-tertiary hover:text-error transition-opacity"
-                        title="删除该经验"
-                        onClick={() => {
-                          if (!confirm(`删除这条经验？\n${e.text.slice(0, 60)}…`)) return
-                          api?.deleteExperienceEntry(x.theme, e.hash).then(r => {
-                            if (r.ok) { load(); flash('已删除') } else flash(r.error || '删除失败', false)
-                          })
-                        }}
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </div>
-                  ))}
-                  {!isExpanded && x.entries.length > 6 && (
-                    <div className="mt-1.5 text-[10px] text-tertiary">…另有 {x.entries.length - 6} 条未显示</div>
-                  )}
-                </div>
-                </div>
-              )
-            })}
-            {filtered.length === 0 && <div className="p-4 text-center text-xs text-tertiary">暂无经验，多用 YFWorking 工作会自动沉淀</div>}
-          </div>
-        </ScrollArea>
       </div>
 
-      {exportOpen && (
-        <ExportDialog
-          lastCwd={lastCwd}
-          chatsJson={chatsJson}
-          onClose={() => setExportOpen(false)}
-          onDone={m => { flash(m); load() }}
-        />
-      )}
-      {importOpen && (
-        <ImportDialog
-          lastCwd={lastCwd}
-          onClose={() => setImportOpen(false)}
-          onDone={m => { flash(m); load() }}
-        />
-      )}
-    </div>
-  )
-}
-
-function ExportDialog({ lastCwd, chatsJson, onClose, onDone }: { lastCwd: string | null; chatsJson: () => string | null; onClose: () => void; onDone: (m: string) => void }) {
-  const [sel, setSel] = useState<Record<string, boolean>>({ personal: true, skill_exp: true, chats: true })
-  const [words, setWords] = useState('密码,password,apiKey,secret')
-  const [busy, setBusy] = useState(false)
-  const [chatsScope, setChatsScope] = useState('all')
-  const conversationSets = useChatStore(s => s.conversationSets)
-
-  const run = async () => {
-    if (!api) { onDone('未检测到桌面环境（dev 模式无 preload）'); onClose(); return }
-    const included = Object.entries(sel).filter(([, v]) => v).map(([k]) => k)
-    if (!included.length) return
-    setBusy(true)
-    let chatsFilter: { conversationIds?: string[]; setId?: string } | null = null
-    if (sel.chats && chatsScope.startsWith('set:')) chatsFilter = { setId: chatsScope.slice(4) }
-    const res = await api.exportExperience({
-      included,
-      sensitiveWords: words.split(/[,，]/).map(s => s.trim()).filter(Boolean),
-      chatsJson: sel.chats ? chatsJson() : null,
-      projectCwd: sel.project ? (lastCwd || null) : null,
-      configRedact: true,
-      chatsFilter,
-    })
-    setBusy(false)
-    if (!res.ok) { onDone(res.error || '导出失败（可能已取消）'); onClose(); return }
-    onDone(`已导出到 ${res.outPath}${res.skipped?.length ? `，跳过 ${res.skipped.length} 项：${res.skipped.map(s => s.reason).join('；')}` : ''}`)
-    onClose()
-  }
-
-  return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center" style={{ background: 'var(--overlay-bg)' }}>
-      <div className="w-[420px] cut cut-modal" style={{ filter: 'drop-shadow(var(--modal-drop))' }}>
-        <div className="ci p-5" style={{ background: 'var(--modal-bg)' }}>
-        <h4 className="text-sm font-semibold text-primary flex items-center gap-1.5 mb-1"><Package className="w-4 h-4" /> 导出经验/数据</h4>
-        <p className="text-[10px] text-tertiary mb-4">选择要打包的类型（zip + manifest.json，可在另一台设备导入）</p>
-        <div className="space-y-2 mb-4">
-          {Object.entries(TYPE_LABELS).map(([id, label]) => (
-            <label key={id} className="flex items-center gap-2 text-xs text-secondary">
-              <input type="checkbox" checked={!!sel[id]} onChange={e => setSel({ ...sel, [id]: e.target.checked })} className="accent-brand-500" />
-              {label}
-            </label>
-          ))}
-        </div>
-        {sel.chats && (
-          <div className="mb-4 space-y-1">
-            <label className="block text-[10px] text-tertiary mb-1">chats 范围</label>
-            <select
-              value={chatsScope}
-              onChange={e => setChatsScope(e.target.value)}
-              className="w-full h-8 rounded-md border border bg-surface px-2 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent"
-            >
-              <option value="all">全部会话</option>
-              {conversationSets.map(s => <option key={s.id} value={`set:${s.id}`}>会话集：{s.name}</option>)}
-            </select>
-          </div>
-        )}
-        <label className="block text-[10px] text-tertiary mb-1">敏感词过滤（命中条目不导出，逗号分隔）</label>
-        <input
-          value={words} onChange={e => setWords(e.target.value)}
-          className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary font-mono focus:outline-none focus:ring-1 focus:ring-accent mb-1"
-        />
-        <p className="text-[10px] text-warning/80 mb-4 flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> 全局配置导出自动脱敏（不含 authToken）</p>
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={onClose}>取消</Button>
-          <Button variant="primary" size="sm" onClick={run} disabled={busy}>{busy ? '打包中…' : '导出'}</Button>
-        </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function ImportDialog({ lastCwd, onClose, onDone }: { lastCwd: string | null; onClose: () => void; onDone: (m: string) => void }) {
-  const [conflict, setConflict] = useState<'skip' | 'overwrite' | 'merge'>('merge')
-
-  const run = async () => {
-    if (!api) { onDone('未检测到桌面环境（dev 模式无 preload）'); onClose(); return }
-    const res = await api.importExperience({ conflict, projectCwd: lastCwd })
-    if (!res.ok) { onDone(res.error || '导入失败（可能已取消）'); onClose(); return }
-    let note = ''
-    if (res.chats) {
-      // 新格式：逐会话合并写回（按 id 去重 + 100 条截断 + 4MB 估算裁剪）
-      // zustand persist 写 localStorage 遇到配额不足会 rethrow；捕获后本地数据未变，
-      // 错误不能成为 unhandled rejection
-      try {
-        const r = useChatStore.getState().mergeImportedChats(res.chats)
-        note = `新增会话 ${r.addedConversations}${r.droppedOldest ? `，因体积裁剪最旧 ${r.droppedOldest} 个` : ''}`
-      } catch {
-        note = '，写回失败（体积过大或配额不足），本地会话未变'
-      }
-    } else if (res.chatStoreJson) {
-      // 旧格式：整体接管。不能直写 localStorage——chatStore 的防抖持久化
-      // 会在随后用内存旧快照覆盖掉导入数据；必须经 store action 冲刷落盘。
-      try {
-        if (!useChatStore.getState().importLegacyChatState(res.chatStoreJson)) throw new Error('invalid state')
-      } catch (e) { note = '，写回失败（体积过大或配额不足），本地会话未变' }
-    }
-    onDone(`导入完成：恢复 ${res.restored?.length ?? 0} 项${res.conflicts ? `，跳过冲突 ${res.conflicts} 项` : ''}${note}`)
-    onClose()
-  }
-
-  return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center" style={{ background: 'var(--overlay-bg)' }}>
-      <div className="w-[400px] cut cut-modal" style={{ filter: 'drop-shadow(var(--modal-drop))' }}>
-        <div className="ci p-5" style={{ background: 'var(--modal-bg)' }}>
-        <h4 className="text-sm font-semibold text-primary flex items-center gap-1.5 mb-1"><Package className="w-4 h-4" /> 导入经验/数据包</h4>
-        <p className="text-[10px] text-tertiary mb-4">选择 zip 文件后按 manifest 恢复，冲突处理方式：</p>
-        <div className="space-y-2 mb-4">
-          {([['merge', '合并（条目级去重）'], ['overwrite', '覆盖已有'], ['skip', '跳过已有']] as const).map(([id, label]) => (
-            <label key={id} className="flex items-center gap-2 text-xs text-secondary">
-              <input type="radio" name="conflict" checked={conflict === id} onChange={() => setConflict(id)} className="accent-brand-500" />
-              {label}
-            </label>
-          ))}
-        </div>
-        <p className="text-[10px] text-warning/80 mb-4 flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> 导入的个人经验将自动注入后续会话，请仅从可信来源导入</p>
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={onClose}>取消</Button>
-          <Button variant="primary" size="sm" onClick={run}>选择 zip 并导入</Button>
-        </div>
-        </div>
-      </div>
+      {exportOpen && <ExportDialog lastCwd={lastCwd} chatsJson={chatsJson} onClose={() => setExportOpen(false)} onDone={m => flash(m)} />}
+      {importOpen && <ImportDialog lastCwd={lastCwd} onClose={() => setImportOpen(false)} onDone={m => flash(m)} />}
     </div>
   )
 }

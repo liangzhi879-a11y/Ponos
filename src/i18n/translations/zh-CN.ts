@@ -474,7 +474,8 @@ export const zhCN = {
 
     // --- 托盘 / 通知 / 桌面宠物 / 经验（新增） ---
     petTab: '桌面宠物',
-    experienceTab: '经验',
+    // S2 Task 10：本页简化为「知识库设置子页」（注入/索引/激活/导入导出），条目浏览改由知识面板承接
+    experienceTab: '经验与知识库',
     minimizeToTray: '关闭时最小化到托盘',
     minimizeToTrayDesc: '启用后点击关闭将隐藏到系统托盘，应用在后台继续运行任务',
     notifyMode: '任务完成通知时机',
