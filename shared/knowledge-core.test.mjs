@@ -242,6 +242,18 @@ test('structBoostOf：标题全等查询最重，heading 有底价，条目次�
   assert.equal(structBoostOf({ block: { kind: 'para' }, doc, query: '无' }), 0)
 })
 
+// Task 7 验收项：检索把**整串**用户查询传进 query（如 'PS表 RD表 交叉校验'），
+// 若标题判定只做 title.includes(整串)，标题 'PS表' 永远命不中 → 结构加权（0.15）静默失效。
+test('structBoostOf：标题按词元逐一判定，整串查询也能命中单词元标题', () => {
+  assert.equal(structBoostOf({ doc: { title: 'PS表' }, query: 'PS表 RD表 交叉校验' }), 1)
+  // 词元顺序无关、大小写无关
+  assert.equal(structBoostOf({ doc: { title: '企微CLI化' }, query: 'rd表 企微cli化 校验' }), 1)
+  // 任一标题词元命中整串查询同样算（双向：标题更长、查询是其中一个词）
+  assert.equal(structBoostOf({ doc: { title: 'PS表 RD表' }, query: 'RD表' }), 1)
+  // 无任何词元命中 → 仍为 0（不退化成"凡有查询就加分"）
+  assert.equal(structBoostOf({ doc: { title: 'PS表' }, query: 'RD表 交叉校验' }), 0)
+})
+
 test('fuseScore 三路权重正确，图扩展打 0.9 折扣', () => {
   const s = fuseScore({ cos: 1, kw: 8, struct: 1 })
   assert.ok(Math.abs(s - (W_VECTOR * 1 + W_KEYWORD * 1 + W_STRUCT * 1)) < 1e-9)

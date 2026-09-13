@@ -300,15 +300,29 @@ export const W_KEYWORD = 0.25
 export const W_STRUCT = 0.15
 export const GRAPH_DECAY = 0.9
 
+// 查询分词：按空白/标点切词元（与 gramTokens 的"空白/标点分词"同源），丢空串、统一小写。
+// 只用于标题判定，**不参与向量化**（向量仍走 gramTokens 的 bigram 语义）。
+function queryTokens(q) {
+  return String(q ?? '').split(/[^\p{L}\p{N}]+/u).filter(Boolean).map((t) => t.toLowerCase())
+}
+
 // 结构加权：文档标题被查询命中是最强信号（1.0），文档标签次之（0.67——标签是稀疏人工
 // 标注，命中即强相关），heading 有底价（0.5——标题本身就是高信息块），条目块 0.4
 // （经验条目是高信息密度单元），普通段落 0（结构上无信号）。
+//
+// 标题判定是"整串 OR 逐词元"（Task 7 验收项）：
+// 检索把**整串用户查询**（如 'PS表 RD表 交叉校验'）传进 query，若只做 title.includes(整串)，
+// 标题 'PS表' 永远命不中，0.15 的结构权重静默失效（Task 2 评审实测）。故保留整串判定
+// （单字符查询等旧行为不变），并追加"任一词元（≥2 字符）被标题包含即命中"。
 export function structBoostOf({ block = null, doc = null, query = '', keywords = [] } = {}) {
   const q = String(query || '').trim().toLowerCase()
   const kws = (keywords || []).map((k) => String(k).toLowerCase()).filter((k) => k.length >= 2)
   let s = 0
   const title = String(doc?.title || '').toLowerCase()
-  if (title && q && title.includes(q)) s = 1
+  if (title && q) {
+    if (title.includes(q)) s = 1
+    else if (queryTokens(q).some((t) => t.length >= 2 && title.includes(t))) s = 1
+  }
   const tags = (doc?.tags || []).map((t) => String(t).toLowerCase())
   // 双向包含匹配：查询"企微"要能命中标签"企微CLI化"，反之亦然
   if (tags.length && kws.length && tags.some((t) => kws.some((k) => t.includes(k) || k.includes(t)))) {

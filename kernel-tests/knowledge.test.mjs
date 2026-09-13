@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { knowledgeRoot, discoverSpaces, walkMd, parseDocFile } from '../kernel/knowledge.mjs'
 import { createKnowledgeStore } from '../kernel/knowledge.mjs'
+import { GRAPH_DECAY } from '../shared/knowledge-core.mjs'
 
 /** 造一个隔离的 configDir：含 personal 经验目录 + 一个用户空间 + 一个只读包 */
 export function makeFixture() {
@@ -217,5 +218,300 @@ test('索引目录不可写时降级为内存索引（不抛错，检索仍可�
     assert.ok(store.getInverted().size > 0, '倒排表已建好')
     assert.equal(store.stats().builtAt, null, '未落盘 → 无 builtAt')
     assert.equal(store.stats().indexBytes, 0)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ── Task 7：检索（4 路融合 + 双层预算截断）────────────────────────────────────
+
+test('search 命中经验条目，粒度为单条（blockId 指向条目块）', async () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    const r = store.search({ query: '只发文件传输助手', keywords: ['企微CLI化'], topK: 5 })
+    assert.equal(typeof r.then, 'undefined', 'search 必须是同步契约（Task 10 的 run() 为同步）')
+    assert.ok(r.count > 0, '有命中')
+    const top = r.items[0]
+    assert.equal(top.spaceId, 'experience')
+    assert.equal(top.kind, 'entry')
+    assert.equal(top.title, 'workflow')
+    assert.match(top.blockId, /^experience\/workflow\.md#\d+$/)
+    assert.ok(top.line > 0, 'line 可回溯原文行号')
+    assert.match(top.snippet, /文件传输助手/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('search 结果按分数降序，且不含零分项', async () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    const r = store.search({ query: '步骤字段契约', keywords: [], topK: 10 })
+    for (let i = 1; i < r.items.length; i++) assert.ok(r.items[i - 1].score >= r.items[i].score)
+    assert.ok(r.items.every((x) => x.score > 0.001))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('search 中文查询有效（bigram 命中，非关键词路）', async () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    // 期望值修正：原简报用 '沟通渠道'，但该串在 fixture 里**只出现在条目 full**（未进倒排，
+    // 见 blockIndexText 只取 tag+text）→ 必然走降级路且 snippet 不含该串。改用同样"存在于
+    // index 文本的中文短语"，保持本用例的意图（验证 bigram 中文查询走倒排路、非降级）。
+    const r = store.search({ query: '乙的正文', topK: 5 })
+    assert.ok(r.count > 0)
+    assert.equal(r.degraded, false, '走倒排向量路，未降级')
+    assert.match(r.items[0].snippet, /乙的正文/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('search 条目 full 未进倒排：仅全文命中时靠 keywords 召回（记录性用例）', async () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    // '沟通渠道' 只存在于 entry 的 full（摘要与标签里都没有）→ 倒排路 0 命中，
+    // 无 keywords 时查不到（degraded + 无内容信号被剔除，不能只靠 struct 造结果）；
+    // 传 keywords 后关键词路把它召回来。这是已知取舍，S2 若要求"全文可检索"需另行裁定。
+    const bare = store.search({ query: '沟通渠道', topK: 5 })
+    assert.equal(bare.degraded, true, '无倒排命中 → 降级')
+    assert.equal(bare.count, 0, '纯 struct 分不构成命中（否则降级路会把全库条目捞回来）')
+    const kw = store.search({ query: '沟通渠道', keywords: ['沟通渠道'], topK: 5 })
+    assert.equal(kw.count, 1)
+    assert.equal(kw.items[0].docId, 'experience/workflow.md')
+    assert.equal(kw.items[0].kind, 'entry')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('search spaces 过滤只返回指定空间', async () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    const r = store.search({ query: '文档', spaces: ['my-notes'], topK: 10 })
+    assert.ok(r.items.length > 0, '该空间内有命中')
+    assert.ok(r.items.every((x) => x.spaceId === 'my-notes'))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('search 出链图扩展：出链目标经图路进入结果并带 0.9 折扣', async () => {
+  const { dir, notes } = makeFixture()
+  try {
+    // 造一个"与查询零 gram 交集"的链接目标：它不可能作为倒排候选出现，只能靠图扩展进来。
+    writeFileSync(join(notes, 'a.md'), '# 甲文档\n\n见 [[d]]。\n\n正文内容。\n', 'utf-8')
+    writeFileSync(join(notes, 'd.md'), '# 无关零散\n\n离题内容。\n', 'utf-8')
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    const r = store.search({ query: '甲文档', keywords: ['甲文档'], topK: 10 })
+    const a = r.items.find((x) => x.docId === 'my-notes/a.md')
+    assert.ok(a, '命中甲文档自身')
+    const d = r.items.find((x) => x.docId === 'my-notes/d.md')
+    assert.ok(d, '出链目标 d.md 经图扩展进入结果（它无任何查询 gram 命中）')
+    assert.equal(d.kind, 'heading')
+    // 折扣生效：该 heading 无向量/关键词信号，只有 struct 底价 0.5 → base = 0.15×0.5，图路再 ×0.9
+    assert.ok(Math.abs(d.score - 0.15 * 0.5 * GRAPH_DECAY) < 1e-9, `图扩展 ×0.9 折扣，score=${d.score}`)
+    assert.ok(d.score < a.score, '图扩展项分数低于直接命中项')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('search topK 与 maxBytes 双层截断', async () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    const r1 = store.search({ query: '文档', topK: 1 })
+    assert.equal(r1.items.length, 1)
+    const r2 = store.search({ query: '文档', topK: 100, maxBytes: 1 })
+    assert.ok(r2.items.length <= 1, 'maxBytes 极小也至少给 1 条（否则前端永远空白）')
+    assert.equal(r2.items.length, 1)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('search mode=full 返回条目全文，snippet 模式截断', async () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    const short = store.search({ query: '文件传输助手', mode: 'snippet' })
+    const full = store.search({ query: '文件传输助手', mode: 'full' })
+    assert.ok(full.items[0].snippet.length >= short.items[0].snippet.length)
+    assert.match(full.items[0].snippet, /涉及真实沟通渠道/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('search 空查询返回空结果且不报错', async () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    const r = store.search({ query: '', keywords: [] })
+    assert.deepEqual(r.items, [])
+    assert.equal(r.count, 0)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('search 无倒排命中时降级为关键词路（degraded=true，不抛错）', async () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    const r = store.search({ query: 'zzzzz', keywords: ['zzzzz'] })
+    assert.equal(r.degraded, true)
+    assert.equal(r.count, 0)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('search 不做原地排序：docs 序（docIdx 定义）与 postings 下标保持稳定', async () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    const before = store.getDocs().map((d) => d.id)
+    store.search({ query: '文档 契约 条目', keywords: ['文档'], topK: 10 })
+    assert.deepEqual(store.getDocs().map((d) => d.id), before, '检索不得打乱 docs.jsonl 行序')
+    for (const e of store.getInverted().values()) {
+      for (let i = 1; i < e.p.length; i++) assert.ok(e.p[i - 1][0] <= e.p[i][0], 'postings 按 docIdx 升序')
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('search 结构加权生效：标题按词元命中（多词元查询也能吃到 0.15）', async () => {
+  const { dir, notes } = makeFixture()
+  try {
+    writeFileSync(join(notes, 'PS表.md'), ['---', 'name: PS表', '---', '重合词内容。'].join('\n') + '\n', 'utf-8')
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    // 查询与正文零 gram 交集（向量分 0、降级路），kw 只有 keywords 命中（2 分 → 0.0625），
+    // 剩下的分数只能来自标题结构加权；若标题判定退化为 includes(整串)，则只有 0.0625。
+    const r = store.search({
+      query: 'PS表 RD表 交叉校验', keywords: ['重合词'], spaces: ['my-notes'], topK: 3,
+    })
+    assert.equal(r.items.length, 1, '只有 PS表.md 有内容信号，其余文档纯 struct 分被剔除')
+    assert.equal(r.items[0].docId, 'my-notes/PS表.md')
+    const structPart = 0.15 // W_STRUCT × struct(=1)
+    assert.ok(
+      Math.abs(r.items[0].score - (0.25 * (2 / 8) + structPart)) < 1e-9,
+      `标题结构加权生效（0.15 未被静默吞掉），score=${r.items[0].score}`,
+    )
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ── Task 8：增量更新与条目级读接口 ───────────────────────────────────────────
+
+test('listEntries 返回条目级清单（GUI 与 AI 的公共读接口）', async () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    const entries = store.listEntries('experience/workflow.md')
+    assert.equal(entries.length, 2)
+    assert.equal(entries[0].tag, '企微CLI化')
+    assert.equal(entries[0].summary, '只发文件传输助手')
+    assert.match(entries[0].full, /真实沟通渠道/)
+    assert.match(entries[0].blockId, /^experience\/workflow\.md#\d+$/)
+    assert.ok(entries[0].line > 0)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('listEntries 对非经验文档返回空数组（无条目块）', async () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    assert.deepEqual(store.listEntries('my-notes/b.md'), [])
+    assert.deepEqual(store.listEntries('不存在的文档'), [])
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('updateDoc 增量更新：新内容可检索，且其他文档 docIdx 不变', async () => {
+  const { dir, personal } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    const before = store.getDocs().map((d) => d.id)
+    writeFileSync(join(personal, 'workflow.md'), [
+      '---', 'name: workflow', '---',
+      '- [会话|企微CLI化] 只发文件传输助手 -- 涉及真实沟通渠道的测试一律只发文件传输助手',
+      '- [会话|新增标签] 全新的条目内容 -- 增量更新后立即可检索',
+    ].join('\n') + '\n', 'utf-8')
+    const r = await store.updateDoc('experience/workflow.md')
+    assert.equal(r.updated, true)
+    assert.deepEqual(store.getDocs().map((d) => d.id), before, 'docIdx 顺序不变')
+    const hit = store.search({ query: '全新的条目内容', topK: 3 })
+    assert.ok(hit.count > 0, '同一会话内立即可检索（无需重启）')
+    assert.match(hit.items[0].snippet, /全新的条目内容/)
+    assert.equal(store.listEntries('experience/workflow.md').length, 2, '条目清单同步更新')
+    // 落盘也要同步：postings 下标仍受 docs 行序保护
+    const idx = join(dir, 'knowledge', '.index')
+    const docsRows = readFileSync(join(idx, 'docs.jsonl'), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    const invRows = readFileSync(join(idx, 'inverted.jsonl'), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    assert.equal(docsRows.length, before.length)
+    for (const e of invRows) for (const [di] of e.p) assert.ok(di >= 0 && di < docsRows.length, 'postings 下标仍在范围内')
+    assert.match(readFileSync(join(idx, 'docs.jsonl'), 'utf-8'), /全新的条目内容/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('updateDoc 对不存在的 docId 返回 not-found 且不崩', async () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    const r = await store.updateDoc('experience/nope.md')
+    assert.equal(r.updated, false)
+    assert.equal(r.reason, 'not-found')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('updateDoc 对已删除的文件返回 file-missing 且不崩', async () => {
+  const { dir, notes } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    rmSync(join(notes, 'a.md'))
+    const r = await store.updateDoc('my-notes/a.md')
+    assert.equal(r.updated, false)
+    assert.equal(r.reason, 'file-missing')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('增量更新后 load() 不再触发全量重建（staleness 以 per-file mtime 判定）', async () => {
+  const { dir, personal } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    writeFileSync(join(personal, 'workflow.md'), '# 改过了\n\n新正文。\n', 'utf-8')
+    await store.updateDoc('experience/workflow.md')
+    const s2 = createKnowledgeStore({ configDir: dir })
+    await s2.load()
+    assert.equal(s2.stats().builtAt, store.stats().builtAt, '复用增量结果，未全量重建')
+    assert.equal(s2.search({ query: '新正文', topK: 1 }).count, 1)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('getDoc / listTree / getLinks / getGraph 形状正确', async () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    assert.equal(store.getDoc('my-notes/a.md').title, '甲文档')
+    assert.equal(store.getDoc('不存在'), null)
+
+    const tree = store.listTree({ space: 'my-notes' })
+    assert.deepEqual(tree.map((x) => x.name).sort(), ['a.md', 'b.md'])
+    assert.ok(tree.every((x) => x.type === 'file' && x.docId))
+    assert.deepEqual(store.listTree({ space: '不存在' }), [])
+
+    const links = store.getLinks('my-notes/a.md')
+    assert.equal(links.out[0].target, 'my-notes/b.md')
+    assert.equal(links.in.length, 0)
+    const bin = store.getLinks('my-notes/b.md')
+    assert.equal(bin.in[0].from, 'my-notes/a.md', '反向链接')
+
+    const g = store.getGraph({ space: 'my-notes' })
+    assert.equal(g.nodes.length, 2)
+    assert.equal(g.edges.filter((e) => e.target).length, 1)
+    for (const n of g.nodes) assert.ok(n.id && n.label)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

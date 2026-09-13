@@ -12,6 +12,7 @@ import {
   toDocId, hashLine,
   countGrams, buildIdf, vectorizeText, blockIndexText, blockTagBoost,
   serializeIndex, parseJsonl, resolveLinkTarget,
+  cosine, keywordScore, structBoostOf, fuseScore, makeSnippet, toBlockId,
 } from '../shared/knowledge-core.mjs'
 
 /** 空间根：<configDir>/knowledge（configDir 由调用方给，本模块不自解析 home） */
@@ -325,6 +326,262 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
     return false
   }
 
+  // ── 检索（Task 7）───────────────────────────────────────────────────────
+  const docIndexById = () => { const m = new Map(); docs.forEach((d, i) => m.set(d.id, i)); return m }
+
+  /** 块级评分。degraded=true 时跳过向量路（查询 gram 全部落空，只能靠关键词）。 */
+  function scoreBlock(doc, b, qvec, qtext, kws, degraded) {
+    const shape = { kind: b.kind, text: b.text, entryTag: b.tag }
+    const cos = degraded ? 0 : cosine(
+      vectorizeText(blockIndexText(shape), { tagBoost: blockTagBoost(shape), idf }), qvec,
+    )
+    const kw = keywordScore({ tag: b.tag || '', summary: b.text, full: b.full || '', theme: doc.title }, kws)
+    const struct = structBoostOf({ block: { kind: b.kind }, doc, query: qtext, keywords: kws })
+    return { cos, kw, struct }
+  }
+
+  /** 块所属 heading（取该行之前的最后一个 heading）——卡片与行内结果都要展示归属小节。 */
+  function headingAt(doc, line) {
+    let h = null
+    for (const b of doc.blocks) { if (b.line > line) break; if (b.kind === 'heading') h = b.text }
+    return h
+  }
+
+  function toItem(doc, b, sc, mode, graph) {
+    const score = fuseScore({ ...sc, graph })
+    return {
+      docId: doc.id, blockId: toBlockId(doc.id, b.n), spaceId: doc.spaceId,
+      title: doc.title, heading: headingAt(doc, b.line),
+      snippet: mode === 'full' ? (b.full || b.text) : makeSnippet(b.text),
+      score, line: b.line, kind: b.kind,
+    }
+  }
+
+  /**
+   * 4 路融合检索（spec §5.4）：倒排候选 → 块级重排（向量 0.60 + 关键词 0.25 + 结构 0.15）
+   * → 出链图扩展（×0.9）→ topK / maxBytes 双层截断。**同步**函数（Task 10 的 run() 是同步契约）。
+   * 全程不原地排序 `docs` / `inverted` 内部数组：`getDocs()` 返回的是内部引用，
+   * 一旦被 sort，`docs.jsonl` 行序（即 docIdx 定义）就被永久打乱，postings 下标全部失效。
+   */
+  function search({ query = '', keywords = [], spaces: only = null, topK = 5, maxBytes = 2048, mode = 'snippet' } = {}) {
+    const q = String(query || '').trim()
+    const kws = (keywords || []).map((k) => String(k).trim()).filter(Boolean)
+    const qtext = q || kws.join(' ')
+    const age = builtAt ? Date.now() - Date.parse(builtAt) : null
+    if (!qtext) return { items: [], count: 0, indexAge: age, degraded: false }
+    const allow = Array.isArray(only) && only.length ? new Set(only) : null
+    const qvec = vectorizeText(qtext, { idf })
+
+    // 1) 倒排候选：只遍历查询 gram 的 postings，成本 ∝ 命中量（不是全库 × 全 gram）
+    const acc = new Map()
+    for (const [g, wq] of qvec) {
+      const e = inverted.get(g)
+      if (!e) continue
+      for (const [di, wd] of e.p) acc.set(di, (acc.get(di) || 0) + wq * wd)
+    }
+    let degraded = false
+    let cand = [...acc.keys()]
+    if (!cand.length) {
+      // 查询 gram 全落空（被剪枝/语料太小/纯生僻词）→ 退化为关键词路，绝不返回空而不给机会
+      degraded = true
+      cand = docs.map((_, i) => i)
+    }
+    cand = cand
+      .filter((i) => docs[i] && (!allow || allow.has(docs[i].spaceId)))
+      .map((i) => ({ i, s: acc.get(i) || 0 }))
+      .sort((a, b) => b.s - a.s)
+      .slice(0, Math.max(topK * 4, 20))
+      .map((x) => x.i)
+
+    // 降级路额外要求"内容信号"（向量或关键词）：struct 是**放大器**，不能单独造出结果。
+    // 否则降级路会把全库的 heading/entry 以纯 struct 底价（0.5/0.4）捞回来——查 'zzzzz'
+    // 这种零相关查询也返回一堆条目，用户会以为"搜到了"。
+    const isHit = (sc, score) => score > 0.001 && (!degraded || sc.cos > 0 || sc.kw > 0)
+
+    // 2) 块级重排：只在候选文档内逐块打分（块级才是精度的来源）
+    const items = []
+    for (const i of cand) {
+      const doc = docs[i]
+      let best = null
+      let bestSc = null
+      for (const b of doc.blocks) {
+        const sc = scoreBlock(doc, b, qvec, qtext, kws, degraded)
+        const it = toItem(doc, b, sc, mode, false)
+        if (!best || it.score > best.score) { best = it; bestSc = sc }
+      }
+      if (best && isHit(bestSc, best.score)) items.push(best)
+    }
+
+    // 3) 图扩展：已命中文档的出链目标，取 heading/entry 块参与（×0.9 折扣）
+    const idxById = docIndexById()
+    const seen = new Set(items.map((x) => x.blockId))
+    for (const it of items.slice(0, Math.max(topK, 1))) {
+      for (const l of linkOut.get(it.docId) || []) {
+        if (!l.target) continue
+        const ti = idxById.get(l.target)
+        if (ti === undefined) continue
+        const tdoc = docs[ti]
+        if (allow && !allow.has(tdoc.spaceId)) continue
+        for (const b of tdoc.blocks) {
+          if (b.kind !== 'heading' && b.kind !== 'entry') continue
+          const bid = toBlockId(tdoc.id, b.n)
+          if (seen.has(bid)) continue
+          const sc2 = scoreBlock(tdoc, b, qvec, qtext, kws, degraded)
+          const cand2 = toItem(tdoc, b, sc2, mode, true)
+          if (isHit(sc2, cand2.score)) { seen.add(bid); items.push(cand2) }
+        }
+      }
+    }
+
+    items.sort((a, b) => b.score - a.score)
+    // 4) 双层截断：topK 控条数，maxBytes 控上下文预算。
+    //    第一条无条件放入——否则预算极小时前端永远空白，用户看到"搜不到"。
+    const out = []
+    let used = 0
+    for (const it of items) {
+      if (out.length >= topK) break
+      const bytes = Buffer.byteLength(it.snippet, 'utf-8') + 160
+      if (out.length > 0 && used + bytes > maxBytes) break
+      used += bytes
+      out.push(it)
+    }
+    return { items: out, count: out.length, indexAge: age, degraded }
+  }
+
+  // ── 增量更新与条目级读接口（Task 8）─────────────────────────────────────
+
+  /** docId → 磁盘绝对路径（space.root + rel）。空间未挂载（如包被移除）返回 null。 */
+  function absPathOf(doc) {
+    const space = spaces.find((s) => s.id === doc.spaceId)
+    if (!space) return null
+    return join(space.root, ...doc.rel.split('/'))
+  }
+
+  /**
+   * 重算**单个文档**的链接行（增量路径专用）：其余文档的 links 行沿用 lastLinkRows，
+   * 不必为了改一个文件把全库重读一遍。同时同步 linkOut 里该文档的出边。
+   */
+  function relinkDoc(doc, ids) {
+    const rows = lastLinkRows.filter((r) => r.from !== doc.id)
+    const out = []
+    const abs = absPathOf(doc)
+    if (abs && existsSync(abs)) {
+      let raw = ''
+      try { raw = readFileSync(abs, 'utf-8') } catch { raw = '' }
+      for (const l of extractLinks(raw)) {
+        const target = resolveLinkTarget({ fromRel: doc.rel, to: l.to, spaceId: doc.spaceId, docIds: ids })
+        rows.push({ from: doc.id, to: l.to, target })
+        out.push({ to: l.to, target })
+      }
+    }
+    linkOut.delete(doc.id)
+    if (out.length) linkOut.set(doc.id, out)
+    lastLinkRows = rows
+  }
+
+  /**
+   * 增量更新单个文档（唯一写入口仍是 persist()）。
+   * **docIdx 必须保持不变**：原地替换 `docs[i]` + 摘除该 `di` 的 postings 后重插。
+   * 若改成"删了重加"，其后所有文档下标位移，`inverted.jsonl` 立即失效。
+   *
+   * 已知取舍：idf 不重算（单文档更新不重扫全库；idf 漂移量级远小于检索排序噪声，
+   * 需要精确时走 load({force:true}) 全量重建）。同步函数——`await` 非 Promise 值合法。
+   */
+  function updateDoc(docId) {
+    const i = docs.findIndex((d) => d.id === docId)
+    if (i < 0) return { updated: false, reason: 'not-found' }
+    const doc = docs[i]
+    const abs = absPathOf(doc)
+    if (!abs || !existsSync(abs)) return { updated: false, reason: 'file-missing' }
+    const space = spaces.find((s) => s.id === doc.spaceId)
+    let parsed
+    try { parsed = parseDocFile({ absPath: abs, space, relPath: doc.rel }) } catch { return { updated: false, reason: 'parse-error' } }
+    if (parsed.doc.blocks.length > MAX_BLOCKS_PER_DOC) {
+      parsed.doc.blocks = parsed.doc.blocks.slice(0, MAX_BLOCKS_PER_DOC)
+    }
+    docs[i] = parsed.doc
+
+    // 该文档的全部 postings 重算：先从既有倒排中摘除 di === i，再按新块重新插入。
+    // df 用"该 gram 覆盖的文档数"（块级 posting 可能同文档多条，故去重后计数）。
+    for (const [g, e] of [...inverted]) {
+      const p = e.p.filter(([di]) => di !== i)
+      if (!p.length) inverted.delete(g)
+      else { e.p = p; e.df = new Set(p.map(([di]) => di)).size }
+    }
+    const touched = new Set()
+    for (const b of parsed.doc.blocks) {
+      const shape = { kind: b.kind, text: b.text, entryTag: b.tag }
+      for (const [g, w] of vectorizeText(blockIndexText(shape), { tagBoost: blockTagBoost(shape), idf })) {
+        const e = inverted.get(g) || { g, df: 0, p: [] }
+        if (!e.p.some(([di]) => di === i)) e.df += 1
+        e.p.push([i, Math.round(w * 10000) / 10000])
+        inverted.set(g, e)
+        touched.add(g)
+      }
+    }
+    // postings 保持 docIdx 升序（与全量构建、检索候选累加的顺序假设一致）
+    for (const g of touched) inverted.get(g).p.sort((a, b) => a[0] - b[0])
+
+    relinkDoc(parsed.doc, new Set(docs.map((d) => d.id)))
+    persist()
+    return { updated: true }
+  }
+
+  function getDoc(docId) { return docs.find((d) => d.id === docId) || null }
+
+  /** 条目级清单：**只**返回 `kind === 'entry'` 的块（经验文件用），非经验文档返回 []。 */
+  function listEntries(docId) {
+    const d = getDoc(docId)
+    if (!d) return []
+    return d.blocks.filter((b) => b.kind === 'entry').map((b) => ({
+      blockId: toBlockId(d.id, b.n), tag: b.tag, summary: b.text, full: b.full, line: b.line,
+    }))
+  }
+
+  /** 单层目录列举（GUI 文件树用）：跳过隐藏项与符号链接，只列 dir 与 .md 文件。 */
+  function listTree({ space, path = '' } = {}) {
+    const sp = spaces.find((s) => s.id === space)
+    if (!sp) return []
+    const sub = String(path || '').replace(/^\/+|\/+$/g, '')
+    const root = sub ? join(sp.root, ...sub.split('/')) : sp.root
+    let entries = []
+    try { entries = readdirSync(root, { withFileTypes: true }) } catch { return [] }
+    const out = []
+    for (const e of entries) {
+      if (e.isSymbolicLink() || e.name.startsWith('.')) continue
+      const rel = sub ? `${sub}/${e.name}` : e.name
+      if (e.isDirectory()) {
+        if (!SKIP_DIRS.has(e.name)) out.push({ name: e.name, path: rel, type: 'dir' })
+      } else if (/\.md$/i.test(e.name)) {
+        out.push({ name: e.name, path: rel, type: 'file', docId: toDocId(sp.id, rel) })
+      }
+    }
+    return out.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1))
+  }
+
+  /** 出边 + 反向链接（GUI 面包屑与"谁引用了我"用）。 */
+  function getLinks(docId) {
+    const out = (linkOut.get(docId) || []).map((l) => ({ to: l.to, target: l.target }))
+    const inb = []
+    for (const [from, arr] of linkOut) for (const l of arr) if (l.target === docId) inb.push({ from })
+    return { out, in: inb }
+  }
+
+  /** 文档级图谱（GUI 可视化用）：只保留空间内且**已解析**的边。 */
+  function getGraph({ space = null, limit = 200 } = {}) {
+    const pool = space ? docs.filter((d) => d.spaceId === space) : docs
+    const ids = new Set(pool.map((d) => d.id))
+    const nodes = pool.slice(0, limit).map((d) => ({ id: d.id, label: d.title, spaceId: d.spaceId, kind: 'doc' }))
+    const edges = []
+    for (const [from, arr] of linkOut) {
+      if (!ids.has(from)) continue
+      for (const l of arr) {
+        if (l.target && ids.has(l.target)) edges.push({ from, to: l.target, target: l.target })
+      }
+    }
+    return { nodes, edges }
+  }
+
   return {
     /**
      * 加载或构建索引。**非 async**：内部全同步（无任何 await），因为 KnowledgeSearch
@@ -342,6 +599,8 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
       for (const d of docs) count[d.spaceId] = (count[d.spaceId] || 0) + 1
       return spaces.map((s) => ({ ...s, docCount: count[s.id] || 0 }))
     },
+    search,
+    updateDoc, getDoc, listEntries, listTree, getLinks, getGraph,
     getDocs() { return docs },
     getIdf() { return idf },
     getInverted() { return inverted },
