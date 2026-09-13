@@ -198,3 +198,35 @@ persist key `yfworking-knowledge`；`merge` 时清洗非法 `view`/`spaceId`（�
 - 光效白名单**仅 5 项**：`.breath` / `.glow-hover:hover` / `.rail-ind` / `.pulse-dot` / `.grad-brand` / `.topline`（后两项属渐变类）
 - 主题切换 = `documentElement` 加 class `theme-<id>`（`ViewRouter.tsx:56-60`）
 - 所有颜色变量定义在 `src/styles/themes.css` 的四个主题类下；`.cut` 已用 `:not(.fixed):not(.absolute)…` 兜住定位冲突，新组件沿用即可
+
+### 11.6 实施期偏差补记（S2 Task 10 全量验收后，2026-09-13）
+
+复核方式：`npm test`（1645 项）/ `npm run typecheck` / `npm run build` / `node scripts/verify-knowledge-gui.mjs` 全量跑通后回填。
+
+| # | §11 原表述 / 隐含前提 | 实施期实际 | 处置 |
+|---|---|---|---|
+| 1 | §11.3「无『禁裸 hex』校验脚本，验收时人工 grep」 | 已落地为脚本：`scripts/verify-knowledge-gui.mjs`（裸 hex / emoji / 行数 400、宿主 200 / 知识组件不裸 `fetch` / 布局与四视图静态契约，共 77 项） | 缺口关闭；人工 grep 不必再做 |
+| 2 | §5「禁 emoji」被理解为 UI 文案约束 | 校验脚本按 Unicode 范围全文件扫描，**注释里的图形符号同样命中**：实测 2 处违规（`KnowledgeDocView.tsx` 注释 `⚠️`、`graph/KnowledgeEdge.tsx` 注释 `🔴`） | 已改为文字；注释里用箭头（`← → ⇒`）不算 emoji，脚本显式排除 2190-21FF 区间，理由写在脚本注释 |
+| 3 | §7 / D4「移除重复的条目列表 UI，加『在知识模块中打开』」 | 条目列表一删，**连带**丢掉「逐条删除」与「主题搜索」；同时「主题激活」开关无法用知识面板等价替换（`active: false` 才是注入过滤开关，知识面板只能改 frontmatter） | 删除项去向=知识面板「个人经验」空间（内置空间 `root=~/.yfworking/memory/personal`，`source=experience`、`writable`，见 `shared/knowledge-core.mjs:builtinSpaceSpecs`），页内文案与文件头注释均写明；**「激活」开关保守保留**（少删优先，见 Task 10 报告对照表） |
+| 4 | §7「加『在知识模块中打开』入口」未说明实现路径 | 设置是独立 `BrowserWindow`，而 `viewStore` 的 persist **此前没有**跨窗 storage 监听（`settingsStore.ts:268` 有，`viewStore` 没有）→ 入口会变成"点了没反应"的假按钮 | `viewStore.ts` 末尾补 `storage` 监听 + 纯函数 `railFromStoragePayload`（脏载荷一律不动状态，**不**回退 `task`），并在 `viewStore.test.ts` 加用例 |
+| 5 | 假定的「激活」语义（D4 保留开关的前提） | **两处口径不一致**：GUI 启动路径 `server/bridge.mjs` → `server/experience.mjs:buildExperienceIndex` **按 `active` 过滤**；CLI 路径 `kernel/cli.mjs:631` → `kernel/memory.mjs:buildMemoryIndex` **不读 `active`** | S2 禁改 `kernel/`，**未修**；记为遗留问题（纯 CLI 会话里被"关闭"的主题仍可能注入） |
+| 6 | 「行数」口径未定义 | 脚本按 `wc -l`（末尾换行不计一行） | 实测：`KnowledgePanel.tsx` 113 行（< 200 ✅）；`src/components/knowledge/**` 最大 185 行（`KnowledgeSearchView.tsx`，< 400 ✅）；`ExperiencePanel.tsx` 338 → 199 行（≤ 200 ✅，导出/导入浮层拆到 `Settings/ExperienceDataDialogs.tsx`） |
+| 7 | §8 验收标准全部写成 checklist，未区分"机器可判/只能人看" | 本仓库**无 DOM 测试环境**（计划 §节奏），UI 类只能人工走查 | 13 项中 3 项纯自动（12/13 + 行数）；其余 10 项为"自动（纯逻辑单测/静态契约）+ 人工"双层，逐项结论见 `.superpowers/sdd/2026-09-13-knowledge-core-S1/s2-task-10-report.md`；**未为凑"达标"写无 DOM 的假测试** |
+
+---
+
+## 12. 补充：编辑视图的原始字节通道（主控复核）
+
+**数据损坏级发现**：`/knowledge/doc` 只返回 `blocks`，**不返回原始 md 正文**；内核
+`parseDocFile` 在块层丢掉了条目行的 `- [ ]` 标记、勾选状态与缩进。若编辑器拿 `blocks`
+拼回正文保存，会把用户原文件里这些标记**永久写坏**。
+**处置**：编辑视图经 bridge 既有 `GET /read-file` 读**原始字节**（≤512KB），
+保存仍走 `POST /knowledge/doc`（内核做增量索引）。
+
+**遗留观察（非 S2 引入，登记备查）**：`GET /read-file` 的路径取值为
+`resolve(String(path))`，**无范围限制** —— 可读本机任意 ≤512KB 文件。该端点是 bridge
+既有能力（`src/lib/workflowApi.ts` 亦在用），S1/S2 均未触碰，威胁模型依赖 localhost 隔离。
+**建议**：后续单开任务加"允许根目录白名单"，**不在 S2 范围改**（会触及 `server/`）。
+
+**S1 裁定验收已自动化**：`- [ ]` 行判定抽为 `src/lib/knowledgeBlocks.ts` 的
+`planBlockRender()` + `knowledgeBlocks.test.ts`，从人工走查升级为自动断言。
