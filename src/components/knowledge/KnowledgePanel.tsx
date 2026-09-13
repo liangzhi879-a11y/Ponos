@@ -25,6 +25,7 @@ import { KnowledgeDocView } from './KnowledgeDocView'
 import { KnowledgeEditorView } from './KnowledgeEditorView'
 import { KnowledgeSearchView } from './KnowledgeSearchView'
 import { KnowledgeGraphView } from './KnowledgeGraphView'
+import { KnowledgeInspector } from './KnowledgeInspector'
 
 export function KnowledgePanel() {
   const { t } = useTranslation()
@@ -103,22 +104,9 @@ export function KnowledgePanel() {
           )}
         </div>
 
-        <div className="w-[212px] shrink-0 border-l border-default flex flex-col min-w-0">
-          <div className="h-8 shrink-0 flex items-center px-2 border-b border-default">
-            <span className="micro">{t('knowledge.outline')}</span>
-          </div>
-          <div className="flex-1 min-h-0 overflow-auto">
-            {doc ? (
-              <div className="px-2 py-2 space-y-1">
-                <p className="text-[11px] text-secondary truncate">{doc.title}</p>
-                <p className="text-[10px] text-tertiary truncate">{doc.rel}</p>
-              </div>
-            ) : (
-              <KnowledgeEmpty title={t('knowledge.emptyNoDoc')} className="!py-6" />
-            )}
-            <p className="px-2 py-2 text-[10px] text-tertiary opacity-70">{t('knowledge.emptyPending')}</p>
-          </div>
-        </div>
+        {/* 右栏：大纲 / 反链 / 元信息（Task 9）。宽度与空态都归 Inspector 自己管——
+            宿主只管"放在三栏的最右"，这样 Task 9 只需替换一个组件（见文件头拆分原则） */}
+        <KnowledgeInspector doc={doc} />
       </div>
     </div>
   )

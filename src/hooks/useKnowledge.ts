@@ -13,10 +13,10 @@
 // 后端保存即增量索引，不失效就会出现"刚保存却搜不到"（S2 验收第 6 项）。
 import { useCallback, useEffect, useReducer, useRef } from 'react'
 import {
-  getDoc, getGraph, getStats, listEntries, listSpaces, listTree, search, writeDoc,
+  getDoc, getGraph, getLinks, getStats, listEntries, listSpaces, listTree, search, writeDoc,
   type ApiResult, type KnowledgeCallOpts, type KnowledgeDoc, type KnowledgeEntry,
-  type KnowledgeGraph, type KnowledgeSearchParams, type KnowledgeSearchResult, type KnowledgeSpace,
-  type KnowledgeStats, type KnowledgeTreeEntry, type KnowledgeWriteInput,
+  type KnowledgeGraph, type KnowledgeLinks, type KnowledgeSearchParams, type KnowledgeSearchResult,
+  type KnowledgeSpace, type KnowledgeStats, type KnowledgeTreeEntry, type KnowledgeWriteInput,
 } from '@/lib/knowledgeApi'
 
 /** 缓存键（跨组件共享的稳定标识；失效用前缀匹配，见 invalidateKnowledge） */
@@ -30,6 +30,8 @@ export const knowledgeKeys = {
   entries: (id: string) => `entries:${id}`,
   search: (p: KnowledgeSearchParams) => `search:${[p.q, csv(p.keywords), p.topK ?? '', p.mode ?? '', csv(p.spaces)].join('|')}`,
   graph: (space: string | null, limit?: number) => `graph:${space ?? '*'}|${limit ?? ''}`,
+  /** 出边 + 反链（右栏 Inspector，Task 9）；键按文档 id，故前缀失效用 `links:` */
+  links: (id: string) => `links:${id}`,
   stats: 'stats',
 }
 
@@ -168,6 +170,15 @@ export function useGraph(space: string | null = null, limit?: number): Knowledge
   return useResource<KnowledgeGraph>(key, () => getGraph(space ?? undefined, limit))
 }
 
+/** 出边 + 反链（右栏 Inspector 用 `in`：谁引用了我）；未选中文档时不发请求 */
+export function useLinks(id: string | null): KnowledgeResource<KnowledgeLinks> {
+  const key = id ? knowledgeKeys.links(id) : null
+  return useResource<KnowledgeLinks>(key, async () => {
+    if (!id) return { ok: false, error: 'no doc' }
+    return getLinks(id)
+  })
+}
+
 export function useStats(): KnowledgeResource<KnowledgeStats> {
   const key = knowledgeKeys.stats
   return useResource<KnowledgeStats>(key, () => getStats())
@@ -179,6 +190,7 @@ export function useStats(): KnowledgeResource<KnowledgeStats> {
  * 保存/新建文档 + **缓存失效**（唯一写入口，调用方不要直接调 api.writeDoc，
  * 否则"刚保存搜不到"会在编辑视图里复现）。
  * 失效范围：该 doc（内容变了）、所在 tree 前缀（新建会多节点）、全部 search（增量索引已生效）、
+ * 全部 links（正文里的相对链接变了 → 出边/反链两边都要重取，Task 9 右栏消费）、
  * stats（indexAge/indexBytes 变了）。
  */
 export async function saveDoc(
@@ -192,6 +204,7 @@ export async function saveDoc(
   invalidateKnowledge(knowledgeKeys.doc(`${input.space}/${input.path}`))
   invalidateKnowledge(`tree:${input.space}|`)
   invalidateKnowledge('search:')
+  invalidateKnowledge('links:')
   invalidateKnowledge(knowledgeKeys.stats)
   return r
 }
