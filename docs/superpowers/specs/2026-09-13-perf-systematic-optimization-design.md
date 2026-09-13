@@ -136,8 +136,10 @@
   **测试重心 = 「不再阻塞」而非「返回值能解析」**：核心用例在异步调用期间挂 10ms 定时器，断言照常触发（≥3 次）并对照断言同步版 0 次。变异验证：把异步版退化成「同步跑 + 包一层 Promise」⇒ 6/8 红，其中 `maxBuffer` 用例 105ms → **55.5s**（证明 kill 是真杀）。
   **同类隐患（未动）**：`bridge.mjs` 尚有 `git worktree list`/`git branch -a`/`netstat -ano -p tcp` 等同步 `execSync`（同属"HTTP 路由里同步 spawn"）；`taskkill` 系列是刻意短阻塞。K0.2 的 `loopDriftMaxMs` 保留，专职盯这些剩余路径。
 - **K2.2 只读聚合剪枝 + 日期水位线缓存**：①（先做）桥侧落带**版本号 + 日期水位线**的聚合缓存，只重算水位线之后那一段再合并（参考 claude-code `statsCache`），配**单飞锁** + `inFlight` 去重；②（后做）按 `(mtimeMs,size)` 跳过没变的文件——它是逐文件 `statSync`，只在缓存未命中时才付这笔钱。
-- **K2.3 `session.append` 批量写**：缓冲 + 定时 flush，`result`/控制类保持同步写。**必须有显式 flush 屏障**（轮末/压缩前/退出/异常路径）。**不是常驻 fd**（见 K1.5）。
-- **K2.4/K2.5（低优先）**：`setEntryUsage` 复用写队列；追加型 transcript 的**撕裂尾部修复**（加载时校验最后一行、重写有效前缀 + 补 `\n`）。
+- **K2.3 `session.append` 批量写（不做——实测否决）**：缓冲 + 定时 flush，`result`/控制类保持同步写。**必须有显式 flush 屏障**（轮末/压缩前/退出/异常路径）。**不是常驻 fd**（见 K1.5）。
+  **否决依据（真机/本机实测）**：`appendFileSync` 一条 4.6KB 行 = **0.40–0.44ms，且三个文件量级完全一致**（0.9MB / 5.5MB / 34.1MB 的 p50 同为 0.41ms）⇒ 追加写是 **O(1)**，"历史越大写越慢"这个前提不成立；按每步 1–3 条算，省下的是 **1.2ms/步 ≈ 步墙钟的 0.04%**（中位步 2.9s）。而代价是**三条写路径必须协同**：带缓冲的 `append` 之外，`setEntryUsage` 是**整文件 temp+rename**、`repairTornTail` 是 **truncate**——任一条在缓冲非空时落盘都会**静默丢掉尚未 flush 的内存条目**（rename 换掉整个 inode，与 K1.5 禁常驻 fd 同类但更隐蔽），再加 5 处屏障（退出三路 + 轮末 + 压缩前）与最长 250ms 崩溃丢失窗口。**复活条件**：每步数十条写入的真实场景 / append 不再是 O(1) / 会话层整体改成"有界队列 + 后台刷盘"并把另两条写路径一并纳入同一队列。
+- **K2.4（已完成）**：`setEntryUsage` **尾部优先反查** + **幂等早退**。实测病灶是"自头 `findIndex` + 逐行 `JSON.parse`"——对唯一调用点（终轮补 usage，补的正是最后一条）就是整文件（真机最大 transcript 5.05MB/1155 行：全量反查 31.4ms）。现在尾部最多扫 8 条非空行、未命中逐字回退，**回退路径语义不变**（用 parse 次数验证：末条 ≤8 次 vs 中部 750+ 次，≥50×）。**原子性刻意保留** temp+rename：可选的"原地 patch"能再省 33ms/轮，但把"崩溃=文件完好"降级成"崩溃=该行损坏"，与 K2.3 同判。
+- **K2.5（已完成）**：撕裂尾部修复。病灶**不是"读不了"**——`readLines` 与 `server/transcript.mjs:156-171` 本就逐行 try/catch 跳过坏行并计 `skipped`，故「加载不报错」在修复前也是绿的（空跑）；真病灶是**残行缺尾换行 ⇒ 下次 `appendFileSync` 与之黏连 ⇒ 新条目整行 parse 失败、静默丢失**。修法：末尾非 `\n` 时，完整 JSON 尾行**只补 `\n`**（零字节损失，`dropped=0`），真·半行则 `truncateSync` 到最后一个 `\n` 之后并按字节数留痕；健康文件走 1 字节探针、**内容与 mtime 逐字节不变**。验证必须走「制造撕裂 → 加载 → 再 append → 重载后新条目仍在」。
 
 ---
 
@@ -181,8 +183,8 @@
 | 不用 inode 做失效键（Windows 不可靠） | `claude-code/.../markdownConfigLoader.ts:159-170` | 反证 K1.2 的 `(mtime,size)` 选择 |
 | TTL + stale-while-revalidate + 单飞 | `claude-code/src/utils/memoize.ts:40-107,120-220` | K2.2 |
 | 磁盘缓存 = 版本号 + 日期水位线 + 增量合并 + 单飞锁 | `claude-code/src/utils/statsCache.ts:17,27-50,57,147,214,260+` | **K2.2 升级版** |
-| 落盘 = 有界队列 + 后台刷盘 + **显式 flush 屏障** | codex `rollout/src/recorder.rs:979,1031,1052`；deepseek `session-persistence/.../coordinator.ts:1325` | K2.3 |
-| 追加型日志撕裂尾部修复 | `pi-main/.../session/jsonl/storage.ts:38-41,89-105` | K2.5 |
+| 落盘 = 有界队列 + 后台刷盘 + **显式 flush 屏障** | codex `rollout/src/recorder.rs:979,1031,1052`；deepseek `session-persistence/.../coordinator.ts:1325` | K2.3（**实测否决**：省 0.04%/步 却引入三类静默丢写，见 §5） |
+| 追加型日志撕裂尾部修复 | `pi-main/.../session/jsonl/storage.ts:38-41,89-105` | K2.5（**已完成**；病灶是"黏连"而非"读不了"，见 §5） |
 | 先门控短路、再缓冲 | `claude-code/src/utils/debug.ts:104-125`、`utils/bufferedWriter.ts:9-21,60-80` | R1 次序 |
 | 数据层不节流、渲染层 16ms 节流；**不用 rAF** | `claude-code/src/ink/ink.tsx:213`；`pi-main/packages/tui/src/tui.ts:343,806-824` | R5 |
 | 自适应降频测**队列压力**（深度/最老年龄 + 滞回） | codex `tui/src/streaming/chunking.rs:85-116` | R5 判据 |
