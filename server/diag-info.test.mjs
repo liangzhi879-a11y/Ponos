@@ -26,20 +26,26 @@ after(() => {
 })
 
 // 行为测试：真实 HTTP 请求 /diag/info，断言初始零值结构（埋点只在真实内核
-// 会话中触发，本测试环境无会话，故为全零初值）。
+// 会话中触发，本测试环境无会话，故计数类为全零初值）。
 test('GET /diag/info 返回初始零值结构', async () => {
   const res = await fetch(`http://127.0.0.1:${port}/diag/info`)
   assert.equal(res.status, 200)
   const body = await res.json()
-  assert.deepEqual(body, {
-    ok: true,
-    // loopDriftMs/loopDriftMaxMs = K0.2 事件循环漂移探针初值（2026-09-13 系统性优化）：
-    // 契约纯增量，老 GUI 忽略；这里断言初值形态（无阻塞行为 0）。
-    data: {
-      firstTokenOk: 0, firstTokenTotal: 0, kernelCrashCount: 0, lastApiSuccessAt: null,
-      loopDriftMs: 0, loopDriftMaxMs: 0,
-    },
-  })
+  assert.equal(body.ok, true)
+  const d = body.data
+  // loopDriftMs/loopDriftMaxMs = K0.2 事件循环漂移探针（2026-09-13 系统性优化）：
+  // 它们是**实时测量**而非计数器——探针按周期采样，机器一有负载（同机并发跑别的
+  // 测试/内核）首帧就可能非零（2026-09-14 实测 83ms）。此前断言"恰为 0"，在忙机器上
+  // 必红：一个偶然的假红会把真正的回归埋掉。这里改为断言**字段集 + 下界**。
+  assert.deepEqual(Object.keys(d).sort(), [
+    'firstTokenOk', 'firstTokenTotal', 'kernelCrashCount', 'lastApiSuccessAt', 'loopDriftMaxMs', 'loopDriftMs',
+  ])
+  assert.equal(d.firstTokenOk, 0)
+  assert.equal(d.firstTokenTotal, 0)
+  assert.equal(d.kernelCrashCount, 0)
+  assert.equal(d.lastApiSuccessAt, null)
+  assert.ok(Number.isFinite(d.loopDriftMs) && d.loopDriftMs >= 0, `loopDriftMs 应为非负数，实际 ${d.loopDriftMs}`)
+  assert.ok(Number.isFinite(d.loopDriftMaxMs) && d.loopDriftMaxMs >= 0, `loopDriftMaxMs 应为非负数，实际 ${d.loopDriftMaxMs}`)
 })
 
 // 结构断言：diagInfo 各埋点触发点只在真实内核会话生命周期中出现（首 token /
