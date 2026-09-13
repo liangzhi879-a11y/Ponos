@@ -13,8 +13,15 @@
 // kernel/graph.mjs 与 kernel/memory.mjs（且 server/experience.mjs 有一份重复）；
 // 本模块是唯一权威实现，原处改为 re-export（Task 4），行为逐字不变。
 // 本文件已落地的函数（Task 1：切块/frontmatter/条目解析；Task 2：向量/IDF/关键词分/
-// 结构加权/融合评分/snippet）——凡标注"迁移自"的，函数体都是从原处**逐字复制**，
-// 不要在此"优化"：偏差会在 Task 13 的双端对拍里变成真实检索分数漂移。
+// 结构加权/融合评分/snippet；Task 3：标识/链接解析/索引序列化/内置空间规格）——
+// 凡标注"迁移自"的，函数体都是从原处**逐字复制**，不要在此"优化"：偏差会在 Task 13
+// 的双端对拍里变成真实检索分数漂移。
+//
+// Task 3 的部分是**全新契约**（kernel 侧无对应实现），语义以
+// docs/superpowers/specs/2026-09-13-knowledge-core-design.md §5.1/§5.2 与 Task 5-8 的
+// 调用形状为准：docId = "spaceId/relPath"（POSIX 分隔符，跨平台稳定）。
+
+import { join } from 'node:path' // 本模块唯一的 node 依赖（纯字符串拼接，无 IO 副作用）
 
 export const INDEX_VERSION = 1
 
@@ -324,4 +331,159 @@ export function makeSnippet(text, { maxLen = 160 } = {}) {
   const s = String(text ?? '').replace(/\s+/g, ' ').trim()
   if (s.length <= maxLen) return s
   return s.slice(0, Math.max(1, maxLen - 1)) + '…'
+}
+
+// ── 标识（Task 3）────────────────────────────────────────────────────────
+// docId = "spaceId/relPath"，分隔符一律 **POSIX 正斜杠**（spec §5.2）：Windows 下
+// node:path.relative 产出反斜杠，若原样入 ID，同一文件在两端会得到不同 ID、索引与
+// 图谱都会错位。故所有入口统一归一：反斜杠 → 正斜杠、连续/首尾分隔符收敛。
+export function toDocId(spaceId, relPath) {
+  const rel = String(relPath ?? '').split(/[\\/]+/).filter(Boolean).join('/')
+  return `${String(spaceId ?? '')}/${rel}`
+}
+
+// 逆运算：按**首个**斜杠切分（空间 id 的约定是不含斜杠，见 spec §5.1 各 spaceId 取值）
+export function docIdToParts(docId) {
+  const s = String(docId ?? '')
+  const i = s.indexOf('/')
+  return i < 0 ? { spaceId: s, relPath: '' } : { spaceId: s.slice(0, i), relPath: s.slice(i + 1) }
+}
+
+// 块 ID = "<docId>#<n>"（spec §5.2 Block.id）；n 是 splitBlocks 给出的块序号，从 0 起。
+export function toBlockId(docId, n) {
+  return `${docId}#${n}`
+}
+
+// ── 链接（Task 3）────────────────────────────────────────────────────────
+// 只认两类站内引用：[[wiki]]（含 `[[目标|别名]]`，别名作 anchor）与相对路径 md 链接。
+// 外链（含协议）与纯锚点不算边——它们连不到本文档集内的任何文档，进图只会是噪声。
+// 去重按 `to`（同一目标多次出现只留首次，anchor 取首次出现的别名）：
+// links.jsonl 与图扩展都按目标聚合，重复边只会放大同一文档的权重。
+export function extractLinks(text) {
+  const wikiRe = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g
+  const mdRe = /\[([^\]]*)\]\(([^)\s]+)\)/g
+  const out = []
+  const seen = new Set()
+  const push = (to, anchor) => {
+    const t = String(to ?? '').trim()
+    if (!t || seen.has(t)) return
+    seen.add(t)
+    out.push({ to: t, anchor: anchor || '' })
+  }
+  const src = String(text ?? '')
+  let m
+  while ((m = wikiRe.exec(src))) push(m[1], m[2] || '')
+  while ((m = mdRe.exec(src))) {
+    const href = String(m[2] || '')
+    if (/^[a-z]+:\/\//i.test(href) || href.startsWith('#')) continue
+    push(href)
+  }
+  return out
+}
+
+// 相对路径段归一：`.` 跳过、`..` 回退一级；**越出根部的 `..` 原样保留**——它必然匹配
+// 不到 docIds（docId 只由空间内真实 relPath 构成），于是顺带成了链接层的穿越防护
+// （`../../etc/passwd.md` 不可能解析成任何文档）。
+// 不引入 node:path 的 normalize/join：本模块要的是 POSIX 语义的纯字符串处理，
+// 用 node:path 会把 Windows 分隔符与盘符语义混进来。
+function normalizeRelPath(p) {
+  const out = []
+  for (const seg of String(p ?? '').replace(/\\/g, '/').split('/')) {
+    if (!seg || seg === '.') continue
+    if (seg === '..' && out.length && out[out.length - 1] !== '..') out.pop()
+    else out.push(seg)
+  }
+  return out.join('/')
+}
+
+// 把原始链接目标解析成**同空间**的 docId；解析不到（断链）返回 null。
+// 候选顺序（刻意如此，别"优化"）：
+//   ① 原样   ② 加 .md   ③ 相对当前文档目录   ④ 相对目录加 .md
+// ①② 在前是因为 wiki 链接（`[[workflow]]`）按**库根**语义解析（Obsidian 同为
+// vault-wide），带路径的写法（`[[sub/a]]`）由 ①② 直接命中；③④ 兜住 `./x.md`、`../x.md`
+// 这类相对当前文档目录的 md 链接（候选串先做 `.`/`..` 段归一，否则
+// `rules/../customization.md` 这种字符串永远等不上真实 docId——仓库实测 4 条父目录
+// 相对链接：shadcn/rules/styling.md、subagent-driven-development/SKILL.md、
+// writing-skills/SKILL.md×2）。
+//
+// `#fragment` 在匹配前剥掉：`[x](./SKILL.md#updating-components)` 是**指向文档**的有效
+// 链接（只多指定了章节）。仓库实测 3 条（shadcn/cli.md:128,287、shadcn/customization.md:209、
+// shadcn/rules/forms.md:150 按 `to` 去重后 3 条）；不剥会让它们全被误判为断链，
+// 图扩展少掉真实邻居。
+// 注意 `to` 本身存原文（links.jsonl 落原文，`--knowledge links` 展示不丢信息）；
+// 纯锚点（`#sec`）依旧一律 null——它连不到本文档集内的任何文档。
+export function resolveLinkTarget({ fromRel = '', to = '', spaceId = '', docIds = null } = {}) {
+  const src = String(to ?? '').trim()
+  if (!src || /^[a-z]+:\/\//i.test(src) || src.startsWith('#')) return null
+  const raw = src.replace(/#.*$/, '').replace(/^\.\//, '')
+  if (!raw) return null
+  const dir = String(fromRel ?? '').split(/[\\/]+/).filter(Boolean).slice(0, -1).join('/')
+  const cands = []
+  const add = (s) => { const t = normalizeRelPath(s); if (t && !cands.includes(t)) cands.push(t) }
+  add(raw)
+  if (!/\.md$/i.test(raw)) add(`${raw}.md`)
+  if (dir) {
+    add(`${dir}/${raw}`)
+    if (!/\.md$/i.test(raw)) add(`${dir}/${raw}.md`)
+  }
+  for (const c of cands) {
+    const id = toDocId(spaceId, c)
+    if (!docIds || docIds.has(id)) return id
+  }
+  return null
+}
+
+// ── 索引序列化（Task 3）──────────────────────────────────────────────────
+// 三份 JSONL 共用同一批次写入（同一原子替换）：docs.jsonl 的行序**就是** docIdx 的定义，
+// 与 inverted.jsonl 的 postings 下标强耦合，二者绝不可分批写。
+// tags 是单个 JSON 对象（不是 JSONL）：按 tag 聚合后一次性写入，无逐行追加需求。
+// 空数组产出空串而非"\n"：避免 parseJsonl 之外的下游把空行当半截行报警。
+export function serializeIndex({ docs = [], inverted = [], links = [], tags = {} } = {}) {
+  const jsonl = (arr) => (arr.length ? arr.map((x) => JSON.stringify(x)).join('\n') + '\n' : '')
+  return {
+    docs: jsonl(docs),
+    inverted: jsonl(inverted),
+    links: jsonl(links),
+    tags: JSON.stringify(tags),
+  }
+}
+
+// 容错解析：半截行（进程被杀/磁盘满导致的截断）与损坏行一律跳过。
+// 索引是**派生物**（spec §4.1"删掉 .index/ 毫发无损"），容错即降级，绝不因一行坏数据
+// 让整个检索不可用（对齐 kernel/graph.mjs:145 的既有纪律）。
+export function parseJsonl(text) {
+  const out = []
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    const t = line.trim()
+    if (!t) continue
+    try { out.push(JSON.parse(t)) } catch { /* 半截行/损坏行跳过 */ }
+  }
+  return out
+}
+
+// ── 内置空间（Task 3）────────────────────────────────────────────────────
+// root 一律外挂既有目录（**物理不动**，spec §5.1）：经验文件留在 ~/.yfw/memory/personal，
+// 知识库只是把它注册成一个空间——"统一为同一后端"是能力统一，不是搬迁。
+// source 取值被下游依赖：Task 5 的 collectTags 用 source==='experience'/'memory' 决定
+// 文件名是否进 tags，路由把整个 spec 透出给 GUI 区分空间来源，**改动会静默改变检索结果**。
+// 迁移（spec §12）是独立后续任务，届时只改这里三行 root。
+export function builtinSpaceSpecs(configDir) {
+  const base = String(configDir ?? '')
+  return [
+    {
+      id: 'experience', name: '个人经验',
+      description: '跨会话沉淀的个人经验条目',
+      root: join(base, 'memory', 'personal'), writable: true, source: 'experience',
+    },
+    {
+      id: 'session-memory', name: '会话记忆',
+      description: '各会话轮末写入的工作记忆',
+      root: join(base, 'memory', 'session'), writable: true, source: 'memory',
+    },
+    {
+      id: 'skill-experience', name: '技能经验库',
+      description: '技能执行中沉淀的经验（预留）',
+      root: join(base, 'memory', 'skill_experiences'), writable: true, source: 'skill_exp',
+    },
+  ]
 }

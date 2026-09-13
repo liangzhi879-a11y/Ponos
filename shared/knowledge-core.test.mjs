@@ -265,3 +265,217 @@ test('blockIndexText 只对经验条目加标签前缀；blockTagBoost 只给它
   assert.equal(blockIndexText(para), '正文')
   assert.equal(blockTagBoost(para), 1)
 })
+
+// ── Task 3: 标识 / 链接 / 索引序列化 / 内置空间 ────────────────────────────
+// 本组全部是新增契约（无 kernel 侧参照），期望值判据 = spec §5.1/§5.2 的形状与
+// 后续任务（Task 5-8）的实际调用方式，已逐条实跑核对。
+import {
+  toDocId, docIdToParts, toBlockId, extractLinks, resolveLinkTarget,
+  serializeIndex, parseJsonl, builtinSpaceSpecs,
+} from './knowledge-core.mjs'
+import { join } from 'node:path'
+
+test('toDocId 反斜杠归一为正斜杠（跨平台稳定 ID）', () => {
+  assert.equal(toDocId('experience', 'workflow.md'), 'experience/workflow.md')
+  assert.equal(toDocId('experience', 'a\\b\\c.md'), 'experience/a/b/c.md')
+})
+
+test('toDocId 收敛连续分隔符与首尾分隔符（relPath 的脏形态不产生双斜杠 docId）', () => {
+  assert.equal(toDocId('notes', 'sub//a.md'), 'notes/sub/a.md')
+  assert.equal(toDocId('notes', '\\sub\\a.md'), 'notes/sub/a.md')
+  assert.equal(toDocId('notes', 'sub\\\\a.md'), 'notes/sub/a.md')
+})
+
+test('docIdToParts 与 toDocId 互逆（含空间 id 内无斜杠的约定）', () => {
+  assert.deepEqual(docIdToParts('my-notes/a/b.md'), { spaceId: 'my-notes', relPath: 'a/b.md' })
+  // 空间 id 约定不含斜杠（spec §5.1）→ 无斜杠的裸 id 整体即 spaceId、relPath 为空
+  assert.deepEqual(docIdToParts('notes'), { spaceId: 'notes', relPath: '' })
+  assert.deepEqual(docIdToParts(toDocId('notes', 'sub\\a.md')), { spaceId: 'notes', relPath: 'sub/a.md' })
+})
+
+test('toBlockId 拼接', () => {
+  assert.equal(toBlockId('experience/workflow.md', 3), 'experience/workflow.md#3')
+  // n 从 0 起（splitBlocks 的块序号），首块也不能少拼
+  assert.equal(toBlockId('a/b.md', 0), 'a/b.md#0')
+})
+
+test('extractLinks 取 wiki 链接与相对 md 链接，忽略外链与纯锚点', () => {
+  const md = [
+    '见 [[code-style]] 与 [[workflow|工作流]]。',
+    '也见 [说明](./docs/policy.md) 与外链 [站点](https://example.com) 与 [锚](#sec)。',
+  ].join('\n')
+  const links = extractLinks(md)
+  const tos = links.map((l) => l.to)
+  assert.ok(tos.includes('code-style'))
+  assert.ok(tos.includes('workflow'))
+  assert.ok(tos.includes('./docs/policy.md'))
+  assert.ok(!tos.some((t) => t.startsWith('http')))
+  assert.ok(!tos.some((t) => t.startsWith('#')))
+  assert.equal(links.find((l) => l.to === 'workflow').anchor, '工作流')
+})
+
+test('extractLinks 无别名的 wiki 链接 anchor 为空串（不是 undefined，落盘要能 JSON 化）', () => {
+  const links = extractLinks('[[code-style]]')
+  assert.deepEqual(links, [{ to: 'code-style', anchor: '' }])
+  assert.equal(typeof links[0].anchor, 'string')
+})
+
+test('extractLinks 去重（同一目标只出现一次）', () => {
+  const links = extractLinks('[[a]] 和 [[a]]')
+  assert.equal(links.length, 1)
+})
+
+test('extractLinks 去重按 to：同一目标的不同别名只留首次出现的 anchor', () => {
+  assert.deepEqual(extractLinks('[[a|甲]] 与 [[a|乙]]'), [{ to: 'a', anchor: '甲' }])
+})
+
+test('extractLinks 对空/无链接文本返回空数组', () => {
+  assert.deepEqual(extractLinks(''), [])
+  assert.deepEqual(extractLinks('纯文本，没有链接。'), [])
+})
+
+test('resolveLinkTarget 相对当前文档目录解析并补 .md 后缀', () => {
+  const docIds = new Set(['notes/sub/policy.md', 'notes/root.md'])
+  assert.equal(
+    resolveLinkTarget({ fromRel: 'sub/note.md', to: './policy.md', spaceId: 'notes', docIds }),
+    'notes/sub/policy.md',
+  )
+  assert.equal(
+    resolveLinkTarget({ fromRel: 'sub/note.md', to: 'root', spaceId: 'notes', docIds }),
+    'notes/root.md',
+  )
+})
+
+test('resolveLinkTarget 根目录文档（无目录）按「原样 → 加 .md」解析，不产出多余候选', () => {
+  const both = new Set(['notes/b', 'notes/b.md'])
+  // 原样候选优先于补后缀候选（顺序契约：原样 → .md → 相对目录 → 相对目录+.md）
+  assert.equal(resolveLinkTarget({ fromRel: 'a.md', to: 'b', spaceId: 'notes', docIds: both }), 'notes/b')
+  // 只有补后缀命中
+  assert.equal(
+    resolveLinkTarget({ fromRel: 'a.md', to: 'b', spaceId: 'notes', docIds: new Set(['notes/b.md']) }),
+    'notes/b.md',
+  )
+  // docIds 未给（null）时不校验存在性，返回第一候选——Task 6 建链时总是传集合，这里是兜底契约
+  assert.equal(resolveLinkTarget({ fromRel: 'a.md', to: 'b', spaceId: 'notes' }), 'notes/b')
+  // 根目录文档的断链
+  assert.equal(resolveLinkTarget({ fromRel: 'a.md', to: '不存在', spaceId: 'notes', docIds: both }), null)
+})
+
+test('resolveLinkTarget 对断链/外链返回 null', () => {
+  const docIds = new Set(['notes/a.md'])
+  assert.equal(resolveLinkTarget({ fromRel: 'a.md', to: '不存在', spaceId: 'notes', docIds }), null)
+  assert.equal(resolveLinkTarget({ fromRel: 'a.md', to: 'https://x.com', spaceId: 'notes', docIds }), null)
+  assert.equal(resolveLinkTarget({ fromRel: 'a.md', to: '#sec', spaceId: 'notes', docIds }), null)
+  assert.equal(resolveLinkTarget({ fromRel: 'a.md', to: '', spaceId: 'notes', docIds }), null)
+})
+
+test('resolveLinkTarget 剥掉 #fragment 后匹配文档，纯锚点仍为 null（仓库真实形状）', () => {
+  // 仓库内真实出现：public/sample-skills/shadcn/cli.md:128 `[..](./SKILL.md#updating-components)`
+  const docIds = new Set(['notes/sub/SKILL.md'])
+  assert.equal(
+    resolveLinkTarget({ fromRel: 'sub/note.md', to: './SKILL.md#updating-components', spaceId: 'notes', docIds }),
+    'notes/sub/SKILL.md',
+  )
+  assert.equal(
+    resolveLinkTarget({ fromRel: 'rules/forms.md', to: './base-vs-radix.md#togglegroup', spaceId: 'notes', docIds: new Set(['notes/rules/base-vs-radix.md']) }),
+    'notes/rules/base-vs-radix.md',
+  )
+  // 纯锚点（如 gxtz-achievement-materials/SKILL.md:330 的 `[..](#v1330-..)`）不是边
+  assert.equal(resolveLinkTarget({ fromRel: 'a.md', to: '#v1330-新增章节', spaceId: 'notes', docIds }), null)
+  // 剥完只剩空串（`./#x`）不得拼出脏 docId
+  assert.equal(resolveLinkTarget({ fromRel: 'a.md', to: './#x', spaceId: 'notes', docIds }), null)
+})
+
+test('resolveLinkTarget 候选串做 . / .. 段归一：父目录相对链接可解析（仓库真实形状）', () => {
+  // 仓库实测 4 条：public/sample-skills/shadcn/rules/styling.md -> ../customization.md 等
+  assert.equal(
+    resolveLinkTarget({ fromRel: 'rules/forms.md', to: '../customization.md', spaceId: 'notes', docIds: new Set(['notes/customization.md']) }),
+    'notes/customization.md',
+  )
+  // Windows 写法（`..\x.md`）等价
+  assert.equal(
+    resolveLinkTarget({ fromRel: 'rules/forms.md', to: '..\\customization.md', spaceId: 'notes', docIds: new Set(['notes/customization.md']) }),
+    'notes/customization.md',
+  )
+  // `./x.md` 归一后仍落同目录（不是仅靠字符串前缀匹配）
+  const docIds = new Set(['notes/rules/base-vs-radix.md'])
+  assert.equal(
+    resolveLinkTarget({ fromRel: 'rules/forms.md', to: './base-vs-radix.md', spaceId: 'notes', docIds }),
+    'notes/rules/base-vs-radix.md',
+  )
+  // 越出空间根的 `..` 不算穿越：解析不到（docId 只由空间内真实 relPath 构成）
+  assert.equal(
+    resolveLinkTarget({ fromRel: 'a.md', to: '../../etc/passwd.md', spaceId: 'notes', docIds: new Set(['etc/passwd.md']) }),
+    null,
+  )
+})
+
+test('serializeIndex 产出 JSONL 行数与 parseJsonl 往返一致', () => {
+  const s = serializeIndex({
+    docs: [{ i: 0, id: 'a/x.md' }, { i: 1, id: 'a/y.md' }],
+    inverted: [{ g: 'deadbeef', df: 2, p: [[0, 0.5], [1, 0.25]] }],
+    links: [{ from: 'a/x.md', to: 'a/y.md' }],
+    tags: { 标签: ['a/x.md'] },
+  })
+  assert.equal(parseJsonl(s.docs).length, 2)
+  assert.equal(parseJsonl(s.inverted).length, 1)
+  assert.equal(parseJsonl(s.links).length, 1)
+  assert.deepEqual(JSON.parse(s.tags), { 标签: ['a/x.md'] })
+})
+
+test('serializeIndex 行序即 docIdx 定义（postings 下标强耦合，往返后顺序不变）', () => {
+  const docs = [{ i: 0, id: 'a.md' }, { i: 1, id: 'b.md' }, { i: 2, id: 'c.md' }]
+  const s = serializeIndex({ docs })
+  assert.deepEqual(parseJsonl(s.docs).map((d) => d.i), [0, 1, 2])
+  assert.ok(s.docs.endsWith('\n'), '每行以 \\n 收尾（末行也有，便于原子替换后追加）')
+  assert.ok(!s.docs.endsWith('\n\n'), '不产出空行')
+})
+
+test('serializeIndex 空输入产出空串（不产出半截行）', () => {
+  const s = serializeIndex({})
+  assert.equal(s.docs, '')
+  assert.equal(s.inverted, '')
+  assert.equal(s.links, '')
+  assert.equal(s.tags, '{}')
+})
+
+test('parseJsonl 跳过半截行与空行', () => {
+  assert.deepEqual(parseJsonl('{"a":1}\n{"bad"\n\n{"b":2}\n'), [{ a: 1 }, { b: 2 }])
+})
+
+test('parseJsonl 支持 CRLF、保留合法非对象行，空输入不崩', () => {
+  assert.deepEqual(parseJsonl('{"a":1}\r\n[1,2]\r\n'), [{ a: 1 }, [1, 2]])
+  assert.deepEqual(parseJsonl(''), [])
+  assert.deepEqual(parseJsonl('   \n  \n'), [])
+  assert.deepEqual(parseJsonl(null), [])
+})
+
+test('builtinSpaceSpecs 给出三个内置空间，root 挂在 configDir 下', () => {
+  const specs = builtinSpaceSpecs('/tmp/home')
+  assert.deepEqual(specs.map((s) => s.id), ['experience', 'session-memory', 'skill-experience'])
+  const exp = specs[0]
+  assert.equal(exp.root, join('/tmp/home', 'memory', 'personal'))
+  assert.equal(exp.writable, true)
+  assert.equal(exp.source, 'experience')
+  assert.equal(specs[2].root, join('/tmp/home', 'memory', 'skill_experiences'))
+})
+
+test('builtinSpaceSpecs 每项字段齐备（GUI 与 collectTags 依赖），且每次返回全新对象', () => {
+  const a = builtinSpaceSpecs('/home')
+  // source 必须与 spec §5.1 表格一致：Task 5 的 collectTags 靠 source==='memory' 决定文件名进 tags
+  assert.deepEqual(a.map((s) => s.source), ['experience', 'memory', 'skill_exp'])
+  for (const s of a) {
+    assert.equal(typeof s.name, 'string')
+    assert.ok(s.name.length > 0)
+    assert.equal(typeof s.description, 'string')
+    assert.ok(s.description.length > 0)
+    assert.equal(typeof s.root, 'string')
+    assert.equal(s.writable, true)
+  }
+  // 纯函数：就地改写返回值不得污染下一次调用（discoverSpaces 会把它 push 进结果集）
+  a[0].writable = false
+  const b = builtinSpaceSpecs('/home')
+  assert.equal(b[0].writable, true)
+  assert.notEqual(a[0], b[0])
+  assert.equal(new Set(b.map((s) => s.id)).size, 3)
+})
