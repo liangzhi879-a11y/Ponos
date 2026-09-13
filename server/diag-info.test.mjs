@@ -33,7 +33,12 @@ test('GET /diag/info 返回初始零值结构', async () => {
   const body = await res.json()
   assert.deepEqual(body, {
     ok: true,
-    data: { firstTokenOk: 0, firstTokenTotal: 0, kernelCrashCount: 0, lastApiSuccessAt: null },
+    // loopDriftMs/loopDriftMaxMs = K0.2 事件循环漂移探针初值（2026-09-13 系统性优化）：
+    // 契约纯增量，老 GUI 忽略；这里断言初值形态（无阻塞行为 0）。
+    data: {
+      firstTokenOk: 0, firstTokenTotal: 0, kernelCrashCount: 0, lastApiSuccessAt: null,
+      loopDriftMs: 0, loopDriftMaxMs: 0,
+    },
   })
 })
 
@@ -50,4 +55,11 @@ test('bridge.mjs 含首 token 与 usage 埋点', () => {
   assert.match(src, /diagInfo\.firstTokenTotal/)
   assert.match(src, /diagInfo\.firstTokenOk/)
   assert.match(src, /diagInfo\.lastApiSuccessAt/)
+})
+
+// K0.2/K0.3 埋点落地（2026-09-13 系统性优化）：漂移探针与只读端点耗时日志都只在
+// 真实阻塞/真实轮询中出现，单测触发不到，故断言源码存在（与上面两条同策略）。
+test('bridge.mjs 含事件循环漂移探针与只读端点耗时日志', () => {
+  assert.match(src, /diagInfo\.loopDriftMaxMs/)
+  assert.match(src, /\[bridge\]\[readonly\]/)
 })

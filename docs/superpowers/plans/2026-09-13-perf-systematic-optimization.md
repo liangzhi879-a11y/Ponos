@@ -1,0 +1,306 @@
+# 任务运行慢 · 系统性优化 · 实施计划（内核优先 → 渲染层）
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 把「每步 420–680ms 的内核固定开销」压到 5–8ms/步，消掉桥侧同步 spawn 尖峰，并在内核之后修掉渲染层「每帧同步 IO + 整店订阅 → 整树重建」两个吃满一个核的根因。**不改产品语义。**
+
+**Architecture:** 观测先行（K0）→ 内核每步只算一次（K1，靠对象身份 + `contentEpoch` 双计数器保证可证不陈旧）→ 磁盘/只读路径剪枝与水位线缓存（K2）→ 推理预算分级（K3，默认关）→ 渲染层（R）。
+
+**Tech Stack:** 内核 Node ESM（零外部依赖，仅 `node:*` 与仓内相对路径）；测试 `node --test`（Node 24，`.mjs`/`.ts` 可直跑）；前端 React 18 + zustand + Tailwind；**无新依赖**。
+
+**设计依据：** `docs/superpowers/specs/2026-09-13-perf-systematic-optimization-design.md`（本计划逐节对应其 §1–§10）
+
+**上游：** `C:\Users\T203-15\.claude\plans\snug-kindling-fog.md`（含实测表、参考实现对照全表）
+
+## Global Constraints
+
+- **内核零外部依赖**：`kernel/**` 只能 import `node:*` 与仓内相对路径；`scripts/build-kernel.mjs` 打包仍需成功。
+- **请求面语义冻结**：`patchOrphanToolUses` 补孤儿 tool_result 的位置硬约束、溢出瘦身副本「取用即消费」、`freeShrink` 老化语义——一律不改。
+- **契约纯增量**：新增字段/事件必须可选；老 GUI 忽略、老内核缺字段时前端按默认。
+- **静默降级**：优化与观测的异常一律 try/catch，**不得抛穿 `runTurn`**。
+- **缓存可证不陈旧**：只缓存「本步窗口内不可变」的数据；每项缓存独立 env 开关（`PONOS_ESTIMATE_CACHE` / `PONOS_DYNTOOLS_CACHE` / `PONOS_REQUEST_FACE_CACHE`），**一次只开一个**。
+- **禁止**把 `session.append` 改成常驻 fd：`setEntryUsage` 的 `writeFileSync+renameSync` 会换 inode → **静默丢写**。
+- **测试 hermetic**：`env: {}` 隔离 + `PONOS_MOCK_API=1`；**新增测试全放新文件**（避开并行 WIP 的 `fidelity.test.mjs` / `app-*.test.mjs`）。
+- **回归基线**：`npm test`（1061 条 / 1 skip）+ `npm run typecheck`；除本计划新增用例不得有新增失败。
+- **不新增 npm 依赖**、不跑 `scripts/package-portable.cjs`、`release/` 覆盖前先 `diff -rq`。
+
+---
+
+## 文件结构（本计划锁定）
+
+| 文件 | 动作 | 职责 |
+|---|---|---|
+| `kernel/perf.mjs` | 新建 | 观测内核：`perfCount`/`perfAdd`/`perfTime`/`perfMark`/`perfSpan`/`perfStep`/`perfLine`，`PONOS_PERF` 惰性开关 + **按 key** 重入保护 |
+| `kernel-tests/engine-perf-log.test.mjs` | 新建 | K0 契约：行数=步数、step 连续、字段齐全、关开关时零输出、settings.json 通道也生效 |
+| `server/diag-info.test.mjs` | 改 | K0.2 契约测试补 `loopDriftMs`/`loopDriftMaxMs` 初值 + 埋点存在性断言 |
+| `electron/diag-monitor.cjs` | 改 | K0.3 `checkRenderHealth` 附渲染帧指标（**只加 detail，不改 status 判据**） |
+| `kernel/context.mjs` | 改 | K1.1 估算器记忆化 + `contentEpoch`（`bumpContentEpoch()` / `contentEpoch()`） |
+| `kernel-tests/context-cache.test.mjs` | 新建 | K1.1 命中/反例（`freeShrink` 后必失效）/密度 env/性能红线 |
+| `kernel/compact.mjs` | 改 | K1.1 `freeShrink` 内 `bumpContentEpoch()`（两处原地改写点） |
+| `kernel/engine.mjs` | 改 | K0 埋点、K1.3 惰性 firstByte、K1.4 `createRequestFace`、K3 档位状态与消费点 |
+| `kernel-tests/engine-request-face.test.mjs` | 新建 | K1.4 同 revision 同引用 / `rev+1` 重建 / `contentEpoch+1` 保险丝 |
+| `kernel-tests/engine-adaptive-firstbyte-lazy.test.mjs` | 新建 | K1.3 惰性提供者调用次数与语义等价 |
+| `kernel/session.mjs` | 改 | K1.4 `revision`、K1.5 `dirEnsured`、K2.3 写队列 + `flushSession()`、K2.5 尾部修复 |
+| `kernel/cli.mjs` | 改 | K1.2 视图闭包内工具表缓存（`syncAppPermissionRules` 仍在缓存外） |
+| `kernel-tests/dyntools-cache.test.mjs` | 新建 | K1.2 命中/失效/权限副作用/异常不缓存 |
+| `kernel/dyntools.mjs` | 改 | K1.2 `toolSourceSignature()` + `createToolsViewCache()`（LRU≤8）；`buildWorkflowTools` 挂非枚举 `sourcePaths` |
+| `kernel/workflow-dsl.mjs` | 改 | K1.2 `discoverWorkflows` 元数据补 `path`（文件级签名的输入集 = 发现层实际读过的文件） |
+| `kernel/readonly.mjs` | 改 | K2.0 `scope=today` 日期下推；K2.2 `(mtime,size)` 剪枝；K2.5 尾部修复 |
+| `server/kernel-readonly.mjs` | 改 | K2.1 异步 spawn 版（照 `bridge.mjs` 的 `spawn`+Promise 写法） |
+| `server/bridge.mjs` | 改 | K0.2 耗时日志、K2.1 `await`、K2.2 水位线缓存 + 单飞锁 |
+| `kernel-tests/usage-scope.test.mjs` | 新建 | K2.0 日期下推正确性（今日 vs 全量口径） |
+| `src/hooks/useYFWCLI.ts` | 改 | K0.3 帧指标采集（内存环形缓冲 + 5s 上报）、R1 日志门控、R5 队列压力判据 + 16ms 调度 |
+| `electron/main.cjs` | 改 | R1 单一咽喉的前缀采样/限流 |
+| `src/stores/uiStore.ts` | 改 | R2 瞬时态 action「调用 `set` 之前提前 return」 |
+| `src/components/layout/WorkShell.tsx` | 改 | R3 整店订阅 → 选择器 |
+| `src/lib/chatRuntime.tsx`、`src/components/chat/ChatWindow.tsx` | 改 | R3 按身份增量转换、稳定 render prop、`memo` |
+| `src/components/chat/MarkdownText.tsx`、`src/lib/utils.ts` | 改 | R4 `useMemo` 稳定表 + 前缀冻结 + `sanitizeText` 改正则 |
+| `docs/bridge-contract.md` | 改 | 仅当 K3 新增可选字段时增补 |
+
+依赖顺序：Task 1（K0）**必须先落地并采一轮基线** → Task 2–6（K1，每项独立可提交）→ Task 7–10（K2）→ Task 11（K3.0 探针，独立）→ Task 12–16（R）。
+
+---
+
+### Task 1: K0 观测基线（内核 + 桥 + 渲染帧）
+
+**Files:**
+- Create: `kernel/perf.mjs`、`kernel-tests/engine-perf-log.test.mjs`
+- Modify: `kernel/engine.mjs`（埋点）、`kernel/context.mjs`（`est=` 计数）、`kernel/tools.mjs`（`dynHit=`）、`server/bridge.mjs`（K0.2 + K0.3 上报端点）、`src/hooks/useYFWCLI.ts`（K0.3）、`electron/diag-monitor.cjs`（K0.3）、`server/diag-info.test.mjs`（契约测试补新字段）
+
+**Interfaces（后续任务依赖，不得改名）:**
+```js
+export function perfOn()                              // 惰性读 PONOS_PERF
+export function perfCount(key, n = 1)                 // 计数
+export function perfAdd(key, ms)                      // 累计一次调用 + 毫秒
+export function perfTime(key, fn)                     // 包一层，返回 fn() 结果（同键重入只记最外层）
+export function perfTimeAsync(key, fn)                // 同上，await 段
+export function perfMark(name) / perfSpan(key, from)  // 异步边界打点；perfSpan 取用即消费
+export function perfBegin() / perfReset()
+export function perfLine(turn, step)                  // → '[perf] turn=… step=… ms=… pre=… est=… …'
+export function perfStep(turn, step)                  // 发一行 + 清账 + 给新步打起点
+```
+
+- [x] 写 `kernel/perf.mjs`：`let on = null; const perfOn = () => (on === null ? (on = process.env.PONOS_PERF === '1') : on)`（**必须惰性**：`cli.mjs` 的 `settings.env` 注入在所有 ESM 求值之后）
+- [x] 关闭时 `perfTime` 直接 `fn()`，**零 `performance.now()` 调用**
+- [x] ~~重入保护：嵌套时 `depth>0` 只计数~~ → **有意偏差**：改为**按 key 的重入保护**（`active: Set<key>`）。原设计的全局 `depth` 是错的——`preStep`（key=`pre`，异步）内部就调用 `est`/`req`/`tools`，全局 depth 会让这三个真正的头号指标在每轮里**全部漏记**（实测会退化成 `est=0`）。按 key 保护达到同样的「一次 88ms 不被记 5 遍」效果，且不误伤。
+- [x] `kernel/engine.mjs` 主循环迭代开头（`iter` 之后、`await preStep()` 之前）发**上一步**汇总；轮末补最后一步（**选迭代头是为了一处覆盖十余处 `continue` 出口**）
+- [x] 挂点：`pre=` 包 `preStep()`；`est=` 在 `estimateRequest` 导出层；`req=` 包 `requestMessages`；`tools=` 包 `dynamicView`；`ttfb=`/`gen=`/`tail=` 用 `perfMark`/`perfSpan`（异常出口同样打 `genEnd`，否则本步 tail 段缺失）。`dynHit=` 留待 K1.2 填。
+- [x] K0.2 `server/bridge.mjs`：只读端点（`/api/usage`、`/api/audit`）加 `ms=` 耗时日志 + 事件循环漂移探针（`diagInfo.loopDriftMs/loopDriftMaxMs`，>50ms 才记，探针 expose 于 `/diag/info`）
+- [x] K0.3 渲染帧指标（帧数/单帧 ms p50,p95/真实帧间隔 p50,max/是否降频）→ 每 5s POST `/diag/render-frame` → `diagInfo.renderFrames` → `checkRenderHealth` 的 `detail`。**不落 uiStore**；**只加 detail 不改 status 判据**（阈值化 warn 会在长消息流式期常态误报）
+- [x] 测试 `kernel-tests/engine-perf-log.test.mjs`：三用例——默认关（零 `[perf]` 且轮次照常收尾）、`PONOS_PERF=1`（行数=步数、step 连续 0..N-1、字段形状、`est/req/tools≥1`）、`settings.json` 的 `env.PONOS_PERF='1'` 通道（锁惰性读）
+- [ ] **采一轮真实基线并记录**（后续每项改动都要有前后数据背书）——**待用户在应用内跑**：把 `PONOS_PERF=1` 放进 `~/.yfw/settings.json` 的 `env`（或启动前设环境变量），跑一个真实长会话任务，`[perf]` 行落 `~/.yfw/logs/kernel-stderr.log`
+
+**K0 已产出的实测样例**（mock 两迭代回合，验证链路通）：
+```
+[perf] turn=1 step=0 ms=123 pre=1/3.5 req=4/0.4 est=3/2.7 tools=2/2.2 dynHit=0 ttfb=35 gen=0 tail=83
+[perf] turn=1 step=1 ms=117 pre=1/0.6 req=4/0.1 est=3/0.6 tools=1/0.8 dynHit=0 ttfb=39 gen=77 tail=0
+```
+（`est=3`/步与外部探针"3–6 次/步"吻合；`tail` 含工具执行时长；末步 `tail=0` 属设计——轮末无下一迭代头。）
+
+**验收**：`[perf]` 行能回答「每步 pre/gen/tail 各占多少、估算与工具表各付了几次几毫秒」。
+
+---
+
+### Task 2: K1.1 估算器记忆化（最大头）
+
+**Files:** Modify `kernel/context.mjs`、`kernel/compact.mjs`；Create `kernel-tests/context-cache.test.mjs`
+
+- [x] `context.mjs` 增 `contentEpoch()` / `bumpContentEpoch()`（进程内计数器，模块级）
+- [x] `estimateTokens`/`estimateMessage`/`estimateHistory`/`estimateRequest` 按**对象身份** WeakMap 记忆化，键 = `身份 + contentEpoch + 密度指纹`
+- [x] **同时做消息级与块级**：string 分支与 system 项每次都新建字面量对象，只做块级会**恒 miss**。string 分支走 `estimateTokensUncached`（新字面量不可能命中，不往 WeakMap 塞垃圾）；`system` 段**刻意不缓存**（`systemPrompt` 是字符串且可被 `setSystemPrompt` 整体替换，一次 ~20KB，收益小风险大）。
+- [x] `compact.mjs` **两处原地改写点各自紧邻**调 `bumpContentEpoch()`（`:59` `ageOutToolResults` + `:199` `freeShrink`）。**有意偏差**：原计划"写在 `freeShrink` 内"不够——`ageOutToolResults` 是导出函数、会被独立调用（`compact-safety.test.mjs:83` 就单独调它），写在 `freeShrink` 里会漏掉这条路径 → 陈旧。
+- [x] `PONOS_ESTIMATE_CACHE` 开关（默认 **on**，可单独关）；**容量不需要 LRU**（键是活着的对象，随 GC 回收；参考实现里涨到 300MB 的是字符串键的会话级 Map）
+- [x] 测试 `kernel-tests/context-cache.test.mjs`（8 用例）：两次估算逐字段相等且第二次 < 首次 1/5；**反例**——老化清除 / 结构裁剪两条改写路径后估值必须下降（**不 bump epoch 必红**）+ 纪元保险丝；密度 env 进键（改系数重算、恢复回原值）；关缓存值不变；2.5MB 连调 3 次 < 200ms；边界输入零回归
+
+**K1.1 前后实测**（1.75MB / 1500 条合成历史，同夹具 `PONOS_ESTIMATE_CACHE=0` vs 默认）：
+
+| | 第 1 次 | 第 2 次 | 第 3 次 |
+|---|---|---|---|
+| 关缓存 | 24.9ms | 18.7ms | 18.2ms |
+| 开缓存 | 20.3ms | **0.71ms** | **1.39ms** |
+
+每步是「1 次冷算 + 2–5 次命中」⇒ 每步估算成本 `3–6 × 20ms ≈ 60–120ms` → `~22ms`；跨步也命中（`deriveMessages()` 推的是 `entry.message` 引用，只有新增的几条冷算）。
+
+---
+
+### Task 3: K1.2 工具视图缓存（第二）
+
+**Files:** Modify `kernel/cli.mjs`、`kernel/dyntools.mjs`、`kernel/workflow-dsl.mjs`；Create `kernel-tests/dyntools-cache.test.mjs`
+
+- [x] `toolSourceSignature()`：各 root 的 `readdirSync` **名字列表** + 已知工具文件 `(mtimeMs,size)`（**不要逐项 stat**）
+- [x] 缓存只包**工具表构造**；**`syncAppPermissionRules` 必须每次求值都跑**（有副作用，是"进/离控制台即生效"的主机制）——测试里既从**行为侧**（绑定/解绑后 `rules.ask` 必须变化）也从**结构侧**（`cli.mjs` 里该调用必须早于 `viewCache.get(sig)`）钉死
+- [x] 缓存**带容量上限（≤8）+ LRU**（教训：无上限 Map 曾涨到 300MB+）→ 抽出 `createToolsViewCache({max:8})`，命中重插队尾（否则退化成 FIFO）
+- [x] 异常/无法 stat 一律不缓存 → 退化为现状行为；保留 `dynamicView` 的 try/catch
+- [x] `PONOS_DYNTOOLS_CACHE` 开关（默认 **on**，惰性读）
+- [x] 测试 16 条：同盘面连续 5 次签名逐字相同；新增/删除目录（**不加 sleep**）；名字↔目录互转；改文件改字节数；**等长改写 + `sleep(30)`**（暴露 Windows mtime 粒度）；**权限副作用**；不可 stat 文件 → `null` 不抛；读不到的根 → 与发现层同口径；ENOENT 合法稳定；应用侧 registry/binding/spec 四态；`sourcePaths` 含 legacy 且非枚举；LRU 容器；结构护栏
+- [x] 端到端护栏加进 `engine-perf-log.test.mjs`：`rebuilds = Σ(tools − dynHit) ≤ 2`（不设缓存时 ≈ 步数 × 6，被静默关掉即红）
+
+**「不要逐项 stat」被实测证实**（本机 Windows / Node 24，真实 home）：
+
+| 签名方案 | 实测 | 结论 |
+|---|---|---|
+| 名字列表（技能根 64 项 + 工作流根 2 项） | 0.217ms + 0.121ms | 采用 |
+| 逐项 stat（62 目录的 `<dir>/workflow.yml`） | **4.44ms** | 弃——接近发现层本身 6.13ms，会吃掉全部收益 |
+| 递归 `readdirSync(recursive:true)`（483 项） | **35.4ms** | 弃（曾以为一条 syscall 走完子树会便宜） |
+| **最终签名**（各根名字列表 + 已知文件 stat + 应用 registry/binding/spec） | **0.68ms/次** | 采用；× 6 次求值/步 ≈ **4.1ms/步**（原 132ms） |
+
+端到端实测（mock 两迭代）：step0 `tools=2/2.1 dynHit=2`、step1 `tools=1/1.1 dynHit=1` ⇒ **稳态构建 0 次**；启动期头两次求值各构建一次（首轮签名尚无文件集，属固有代价，`dynHit` 的 2 次构建落在未开帐时点）。
+
+**有意偏差（3 处，均已记入 spec）**：
+1. **多一个导出**：`createToolsViewCache`（原计划只写「dyntools 新增一个导出」）。理由：容量上限/LRU 埋在 cli 闭包里等于零测试覆盖，而它挡的正是 300MB 那类事故。
+2. **`kernel/workflow-dsl.mjs` 也改**（原文件结构表列为「不改」）：`discoverWorkflows` 的元数据增加 `path`，使文件级签名的输入集**恰好等于发现层实际读过的文件**（含 legacy/不可见/超限者）。纯增量字段：两个消费者（`cli.mjs:574` 提示词、`:801` `workflow_result`）都按显式字段取值，不序列化它。
+3. **失败语义有意不对称**：根 readdir 失败 → `-`（与 `discoverWorkflows`「读不到即空」同口径，故**稳定可缓存**，否则"尚未创建工作流目录"这个常见态永远不可缓存）；文件 stat 非 ENOENT 失败 → `null`（不缓存）。测试把两者都钉住。
+
+**残留（计划原本只登记了「同刻度同字节数改写」，此处补第二条）**：在**既存目录**内新增 `<dir>/workflow.yml` —— 父目录名没变（名字列表看不见）、又不在已知文件集里 ⇒ 需等该根条目增删、某已知文件被编辑、或重启内核。常见写入路径均不受影响：新建工作流 = 新增目录名、编辑已有工作流 = 文件条目、绑定/解绑 = `binding.json`。二期由桥侧 `tools_dirty` 显式失效信号收口。
+
+---
+
+### Task 4: K1.3 `adaptiveFirstByteMs` 惰性化（第三）
+
+**Files:** Modify `kernel/engine.mjs`；Create `kernel-tests/engine-adaptive-firstbyte-lazy.test.mjs`
+
+- [ ] 把 firstByteMs 从**值**改成**惰性提供者**：`makeIdleWatchdog` 只在「已等到 baseMs」时才求值（返回值只可能是 `{0, baseMs, 600_000}` 三者之一）
+- [ ] 语义等价：新阈值 ≥ 旧阈值 ⇒ 只可能**延后** trip，不可能提前掐断
+- [ ] 现有 `engine-adaptive-firstbyte.test.mjs` 签名不变，必须全绿
+- [ ] 测试：立即 `stop()` → 提供者调用次数 0；阈值放宽后 `tripped===false` 且只求值一次（真实 `sleep(30)`，无假时钟）
+
+---
+
+### Task 5: K1.4 `requestMessages()` 记忆化（第四）
+
+**Files:** Modify `kernel/engine.mjs`、`kernel/session.mjs`；Create `kernel-tests/engine-request-face.test.mjs`
+
+- [ ] 抽 `createRequestFace({getBase, getSkip, getSystem, getRevision})` 工厂并**导出**（纯逻辑可单测）
+- [ ] 键 = `(session.revision, historySkip, systemPrompt 引用)`——**绝不把 20KB systemPrompt 拼进 key 字符串**
+- [ ] `session.mjs` 增 `revision`，与 `invalidate()` **同址**（结构上不可能不同步）
+- [ ] **唯一别名点人工确认**：`fitRequestToWindow` 早退原样返回入参引用，被 `engine-fit-request.test.mjs` 的 `assert.equal(r, msgs)` 钉死 → **PR 描述里必须点名**
+- [ ] `PONOS_REQUEST_FACE_CACHE` 开关（默认 **on**）
+- [ ] 测试：同 revision 返回**同一数组引用**且计数版 `patch` 只被调 1 次；`rev+1` 必重建；`contentEpoch+1` 即使 `rev` 不变也必须重建；注入"每次返回新对象"的 patch → 断言重建后是新值
+
+---
+
+### Task 6: K1.5 `session.append` 的 `mkdirSync` 去重
+
+**Files:** Modify `kernel/session.mjs`
+
+- [ ] `dirEnsured` 标志（与构造期重复的 `mkdirSync` 去掉）
+- [ ] **不得改成常驻 fd**（`setEntryUsage` 会换 inode → 静默丢写）——写进代码注释
+- [ ] 回归：`npm test` + `node --test "kernel-tests/*.test.mjs"`
+
+---
+
+### Task 7: K2.0 `scope=today` 日期下推（第一优先，现存 bug）
+
+**Files:** Modify `kernel/readonly.mjs`（必要时 `src/lib/usageUi.ts`）；Create `kernel-tests/usage-scope.test.mjs`
+
+- [ ] `runUsage` 里 `scope==='today'` 时推导 `from = new Date().toISOString().slice(0,10)`（复用现成的 `ts.slice(0,10)` 比较）
+- [ ] 改动前对照 `docs/superpowers/plans/2026-09-08-agentloop-prod-upgrade.md:267-272,598` 的 `runReadonly` 契约
+- [ ] 测试：造跨越两天的 transcript → `scope=today` 只统计今天；`scope=all` 口径不变
+
+---
+
+### Task 8: K2.1 `/api/usage` 异步化（现存 bug）
+
+**Files:** Modify `server/kernel-readonly.mjs`、`server/bridge.mjs`
+
+- [ ] 增加异步版（照抄 `bridge.mjs:1700-1712` 的 `spawn` + Promise 写法），保留同步版给现有调用点
+- [ ] `bridge.mjs:1873` 改 `await`（route handler 已是 `async`，`reply()` 现成，**不改签名**）
+- [ ] 验收：用量面板改前 5s 超时失败 → 改后正常返回
+
+---
+
+### Task 9: K2.2 只读聚合剪枝 + 日期水位线缓存
+
+**Files:** Modify `kernel/readonly.mjs`、`server/bridge.mjs`
+
+- [ ] 按 `(mtimeMs,size)` 跳过没变的文件（transcript 是 append-only）
+- [ ] 桥侧落带**版本号 + 日期水位线**的聚合缓存，只重算水位线之后那一段再合并
+- [ ] **单飞锁** + `inFlight` 去重 ⇒ 并发查询只扫一次（驾驶舱 5s 轮询与 5s 超时同值，慢时必然堆积）
+- [ ] `version` 不匹配整体重算
+
+---
+
+### Task 10: K2.3 批量写 + flush 屏障（含 K2.4/K2.5）
+
+**Files:** Modify `kernel/session.mjs`、`kernel/readonly.mjs`
+
+- [ ] `session.append` 缓冲 + 定时 flush（100–250ms）；`result`/控制类条目**保持同步写**；**不是常驻 fd**
+- [ ] **显式 flush 屏障**：轮末、压缩前、退出前（含异常路径）调 `await flushSession()`
+- [ ] K2.4（低优先）：`setEntryUsage` 复用写队列
+- [ ] K2.5（低优先）：加载时校验最后一行能否 parse，不能则**重写有效前缀 + 补 `\n`**；测试 `kernel-tests/session-tail-repair.test.mjs`
+
+---
+
+### Task 11: K3.0 旋钮 A/B 探针（必做前置，默认关）
+
+**Files:** 探针脚本（临时，不入库）+ 结论写入 `docs/bridge-contract.md` 或 spec
+
+- [ ] 三臂探针：① `thinking:{type:'adaptive'}`（**不带 budget**）② `{enabled,budget_tokens:1024/2048/4096}` ③ `reasoning_effort: low/high/max`
+- [ ] 量「推理 token 数 / 可见正文长度 / TTFB / 总时长 / 是否 400」，产出 A/B 表
+- [ ] **旋钮二选一，绝不两个同时传**；若选 budget 必须钳到 `min(maxOutputTokens-1, budget)`
+- [ ] 凭据只从 `~/.yfw/config.json` 读，**绝不回显或落盘**
+
+---
+
+### Task 12: K3.1–K3.3 推理预算分级
+
+**Files:** Modify `kernel/engine.mjs`、`kernel/api.mjs`、`server/bridge.mjs`；Create `kernel-tests/effort-policy.test.mjs`、`kernel-tests/effort-wire.test.mjs`
+
+- [ ] `pickStepEffort(input)` 纯函数：**先按阶段边界**（摘要/压缩步 → `off`；首步 → 用户档；工具步 → 降一档），运行时只留「上一步工具报错」「压缩后第一步」两条
+- [ ] **用户显式 pin 档位时策略只降不升**；档位与上下文窗口世代绑定（压缩成功后允许重定档）
+- [ ] 解析层放**一处**：合法值/别名/未知值降级全写死在解析函数里
+- [ ] 落点：`engine.mjs` 档位状态 + 主路径/lane 两个消费点；若选 budget 则改 `effortParam` 并**明确 thinking 与 effort 的优先级**（消除现有静默短路）
+- [ ] `PONOS_EFFORT_POLICY=graded|off`，**默认 `off`**，直到 Task 11 有实测数据
+- [ ] 测试：判据表（纯函数）+ `PONOS_MOCK_API=1` 断言不同步真的换了请求字段
+
+---
+
+### Task 13: R1 停掉每帧日志双写
+
+**Files:** Modify `electron/main.cjs`、`src/hooks/useYFWCLI.ts`
+
+- [ ] **先门控短路**：未开 perf / 级别不够时**直接 return，不构造字符串、不调 console**
+- [ ] 再上缓冲（`flushIntervalMs=1000`、`maxBufferSize=100`、溢出走 `setImmediate`、退出强制 flush）
+- [ ] 在 `main.cjs:1445-1461` 这条**单一咽喉**按前缀采样/限流（error 与慢帧全量），一处改动覆盖所有调用点
+
+---
+
+### Task 14: R2 uiStore 瞬时态（务必与 R3 一起修）
+
+**Files:** Modify `src/stores/uiStore.ts`
+
+- [ ] 五个瞬时态 action 全部改为**在调用 `set` 之前提前 return**（在 action 里 `set(() => ({}))` **不是短路**）
+- [ ] 首选方案：把 `kernelStalls`/`firstByteWait` **移出 persist store**（persist 用白名单）
+- [ ] 验收：流式期不再每帧写 localStorage
+
+---
+
+### Task 15: R3 拆「整店 → 整树」链
+
+**Files:** Modify `src/components/layout/WorkShell.tsx`、`src/lib/chatRuntime.tsx`、`src/components/chat/ChatWindow.tsx`
+
+- [ ] `WorkShell` 的两处整店订阅改**选择器**
+- [ ] `chatRuntime` 的 `?? []` 与每帧重算改为**按 message 身份增量转换**
+- [ ] 内联 render prop 换稳定 `useCallback`；`AssistantMessageView` 加 `memo`；比较器**显式豁免回调 props**、内容按数组逐项比
+- [ ] 内联 `components={{...}}` 提为模块级常量；注意 `MessageBubble.tsx` 已是**死代码**，不要复活
+
+---
+
+### Task 16: R4/R5/R6 渲染层其余三项
+
+**Files:** Modify `src/components/chat/MarkdownText.tsx`、`src/lib/utils.ts`、`src/hooks/useYFWCLI.ts`、`src/components/chat/ChatWindow.tsx`
+
+- [ ] R4：`{...MD_COMPONENTS, p}` 与 `preprocessBoxDrawingTables` 用 `useMemo`；`sanitizeText` 逐字符拼接 → **正则**；进一步**冻结稳定前缀、只重解析不稳定尾块**
+- [ ] R5：`streamHeavyMode` 判据换成**队列压力**（队列深度 / 最老未处理项年龄 + 滞回），**不用 rAF**（后台/失焦停摆）改 16ms 定时器；按进取档做 100–150ms 合帧
+- [ ] R6：长列表 containment 或虚拟化（**量化 scrollTop + `useSyncExternalStore`**，仅对确定的长会话启用）
+
+---
+
+## 验证与交付
+
+- [ ] `npm test`（基线 1061 / 1 skip）+ `npm run typecheck`：除新增用例无新增失败
+- [ ] 每 Task 独立提交、独立可回退；提交信息用 `perf(kernel): …` / `perf(ui): …`
+- [ ] K1 全部落地后跑同一会话同一任务，比 `[perf]` 的每步字段（目标：内核固定开销从 420–680ms/步 → 5–8ms/步）
+- [ ] `scripts/verify-gui-fidelity.mjs` 增加「长会话 N 条消息」计时用例（该脚本现无任何 timing）
+- [ ] release 同步：先 `diff -rq` 再逐文件覆盖，备份到 `release/_backup_before_perf_<时间戳>/`；**不跑 `scripts/package-portable.cjs`**
+- [ ] 更新 `docs/manual/YFWorking产品使用说明书.md`（仅当有用户可见行为变化：合帧观感、用量口径修正）

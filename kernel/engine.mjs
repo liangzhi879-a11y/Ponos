@@ -27,6 +27,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { createCompactor } from './compact.mjs'
+import { perfTime, perfTimeAsync, perfMark, perfSpan, perfStep, perfBegin } from './perf.mjs'
 
 // —— agent loop 兜底（本地模型死循环防护）——
 // 参考 claude-code/pi/dsh：三者主循环均默认无全局硬上限（靠 Esc 中断/可选 maxTurns/上下文
@@ -840,10 +841,10 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     let idleDeadRetries = 0
     // 请求消息 = system 前缀（api.mjs 抽顶层）+ 派生历史；session/memory 两模式一致。
     // 孤儿 tool_use 补丁（P1-8）在派生后执行（纯派生不入日志，请求面永远合法）
-    const requestMessages = () => {
+    const requestMessages = () => perfTime('req', () => {
       const msgs = patchOrphanToolUses(deriveHistory())
       return [{ role: 'system', content: systemPrompt }].filter((m) => m.content).concat(msgs)
-    }
+    })
     // pre-step 测压检查点：每轮请求前（工具结果/上轮产物已落日志之后）
     async function preStep() {
       if (!compactor || !session) return
@@ -941,7 +942,19 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         session.setEntryUsage(lastAssistantEntry, usage)
       }
     }
+    // K0 观测：轮序号（turnStats 每轮尾 push 一条 ⇒ 本轮序号 = 已完成轮数 + 1）
+    const perfTurn = turnStats.length + 1
+    let perfIter = 0 // 末次迭代号（循环外结算最后一步用：迭代变量出不了 for 作用域）
     for (let iter = 0; ; iter++) {
+      perfIter = iter
+      // K0 观测：结算**上一步**。放迭代头而非各出口——continue 出口有十余处
+      // （967/1345/1362/1382/1405/1414/1422/1433/1448…），此处一处覆盖全部出口。
+      if (iter > 0) {
+        perfSpan('tail', 'genEnd') // 生成结束 → 本迭代头
+        perfStep(perfTurn, iter - 1)
+      } else {
+        perfBegin() // 首迭代只开账，无上一步可发
+      }
       // 守卫①：轮次墙钟——默认关闭（2026-09-10 取消 30 分钟上限，见 TURN_TIMEOUT_MS
       // 注释）；显式设 PONOS_TURN_TIMEOUT_MS>0 时单轮累计时长超限即优雅收尾。
       if (TURN_TIMEOUT_MS > 0 && Date.now() - turnT0 >= TURN_TIMEOUT_MS) {
@@ -977,7 +990,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // 完整愈合预算；真循环每轮必命中（healedLastIter 恒 true），预算照常耗尽。
       if (!healedLastIter) repeatHeals = 0
       healedLastIter = false
-      await preStep()
+      await perfTimeAsync('pre', () => preStep())
       // P8 排队插话注入（工具边界）：每次 API 调用前吸收 pendingNext 进当前轮
       // （appendUser 落 transcript，请求面 deriveMessages 自动包含；模型下一轮
       // 请求即见补充信息）。started 确认已在 queueNext 吸收时经 command_lifecycle
@@ -1023,6 +1036,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // 真正用上，同一个超窗请求被无限重发（长会话 UI 压缩条闪烁 + 400 风暴）。
       const reqFace = overflowTrimmed || requestMessages()
       overflowTrimmed = null
+      perfMark('streamStart') // K0：TTFB 段起点（请求面组装完 → 首个 chunk）
       try {
         for await (const chunk of retryStream({
           model,
@@ -1034,6 +1048,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         })) {
           if (signal.aborted) throw abortError()
           watchdog.tick()
+          if (!attemptData) { perfSpan('ttfb', 'streamStart'); perfMark('firstChunk') } // K0：首字节
           attemptData = true // 收到任意 chunk（含 thinking/usage）即视上游在产出
           upstreamDeadHeals = 0 // 上游活过来了 → 空流愈合计数清零
           if (chunk.type === 'text') {
@@ -1109,7 +1124,10 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
             }
           }
         }
+        perfSpan('gen', 'firstChunk') // K0：首 chunk → 生成结束
+        perfMark('genEnd')
       } catch (err) {
+        perfMark('genEnd') // K0：异常出口同样打点（否则本步 tail 段缺失）
         // 用户取消永远优先于守卫收尾（同一时刻双触发时按取消语义上报）
         if (signal.aborted) { watchdog.stop(); throw abortError() }
         // 守卫自身 abort 引发的拒绝：墙钟/重复已在流内设 loopStop → 吞掉按守卫收尾
@@ -1577,6 +1595,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       if (asksUser(textBuf)) await waitForAnswer()
       textBuf = ''
     }
+    perfStep(perfTurn, perfIter) // K0：轮末结算最后一步（break 与正常退出都要发）
     // 守卫收尾：命中任一守卫（迭代上限/重复打转/挂起/墙钟/熔断）时，用收尾说明
     // 取代残留的部分文本——部分流式内容 GUI 实时已见，但模型输入面不落退化内容，
     // 保持会话上下文干净可续聊（用户可发「继续」接续）。

@@ -17,6 +17,7 @@ import { discoverSkillsAll, loadSkillContent } from './skills.mjs'
 import { searchSkills } from './skill-search.mjs'
 import { searchLocalMemory } from './memory-search.mjs'
 import { getProvider } from './provider.mjs'
+import { perfTime } from './perf.mjs'
 
 // R2-1 活跃子进程登记：Bash/OCR spawn 的子进程统一登记，内核退出（SIGINT/TERM）
 // 时 killActiveChildren 兜底清理，防孤儿进程。child 'close' 后自动移除。
@@ -1490,7 +1491,11 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
   // 动态工具（工作流即工具）：视图函数每次求值，磁盘上增删工作流即时生效。
   // 可传函数（每次求值）或对象（静态快照）；取值/求值异常一律视为空池，不阻断 turn。
   let dynamicToolsRef = dynamicTools
-  const dynamicView = () => { try { return (typeof dynamicToolsRef === 'function' ? dynamicToolsRef() : dynamicToolsRef) || {} } catch { return {} } }
+  // K0 观测：`tools=` = 视图求值次数/毫秒。静态名单 getter（toolNames 等）实际被
+  // engine 每迭代 + 每次工具调用各读一次，是 K1.2 工具表缓存的核心指标。
+  const dynamicView = () => perfTime('tools', () => {
+    try { return (typeof dynamicToolsRef === 'function' ? dynamicToolsRef() : dynamicToolsRef) || {} } catch { return {} }
+  })
   return {
     registry,
     // getter（非快照）：动态工具（工作流即工具）随磁盘增删即时进出名单，故每次读取求值

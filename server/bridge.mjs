@@ -762,6 +762,29 @@ const BRIDGE_INSTANCE_ID = randomBytes(12).toString('hex')
 // 诊断埋点：供主进程 diag-monitor 查询（只读内存统计，跨会话累计，仅统计最近 7 天）
 const diagInfo = { firstTokenOk: 0, firstTokenTotal: 0, kernelCrashCount: 0, lastApiSuccessAt: null }
 
+// K0.2 事件循环漂移探针（2026-09-13「任务运行慢」系统性优化）：
+// 桥是**单线程事件循环**，而 /api/usage 走 execFileSync 同步 spawn 整个内核进程 + 全量
+// 历史聚合（实测 10.8 / 12.7 / 19.6s）——这十几秒里所有 WS 帧、HTTP 响应、控制请求
+// 一起停摆。route 自身的 `ms=` 只能说明「调用方等了多久」，说明不了「别人被连累多久」；
+// 采样定时器的漂移（实际触发时刻 − 应触发时刻）才是后者的直接度量。
+// 判据：只有漂移 > 50ms 才记录（Windows 定时器固有抖动为 0–15ms，不设阈值会全程噪声）。
+// 消费方：/diag/info（diag-monitor 每 5s 轮询，进诊断报告）。
+const LOOP_PROBE_MS = 100
+const LOOP_BLOCK_MIN_MS = 50
+diagInfo.loopDriftMs = 0
+diagInfo.loopDriftMaxMs = 0
+let loopProbeAt = Date.now() + LOOP_PROBE_MS
+setInterval(() => {
+  const nowMs = Date.now()
+  const drift = nowMs - loopProbeAt
+  // 基准每 tick 重置：一次长阻塞后不重置的话，后续每次都相对旧基准算出虚高漂移
+  loopProbeAt = nowMs + LOOP_PROBE_MS
+  if (drift > LOOP_BLOCK_MIN_MS) {
+    diagInfo.loopDriftMs = drift
+    if (drift > diagInfo.loopDriftMaxMs) diagInfo.loopDriftMaxMs = drift
+  }
+}, LOOP_PROBE_MS).unref?.()
+
 // 内核 stderr 落盘：崩溃时 bridge 只把 stderr 转发 GUI，不写任何本地日志 → 跨机器
 // 故障（如 10s 后 exit 1）完全看不到错误原文，只能盲猜。现在：
 // ① console.error 进 bridge 所在进程日志（app.log / 诊断报告 log tail 可见）；
@@ -1869,10 +1892,21 @@ const httpServer = createServer(async (req, res) => {
         const v = url.searchParams.get(k)
         if (v) flags.push(`--${k}`, v)
       }
+      // K0.2：本端点是**同步** spawn（见 server/kernel-readonly.mjs），耗时即事件循环
+      // 被阻塞的时长——GUI 侧超时 5s（src/lib/usageApi.ts）而实测 10.8–19.6s，且驾驶舱
+      // 每 5s 轮询一次（同值 ⇒ 必然重叠堆积）。`ms=` 是调用方等待，被连累的时长看
+      // /diag/info 的 loopDriftMaxMs（探针在解除阻塞后才跑得到，故不在这行日志里取）。
+      const t0 = Date.now()
       try {
         const out = kernelReadonlySync([sub, ...flags], { env: buildChildEnv(), cwd: process.cwd() })
+        try {
+          console.error(`[bridge][readonly] ${sub} ms=${Date.now() - t0} ${(out || '').length}B args=${flags.join(' ') || '-'}`)
+        } catch { /* 日志失败不影响响应 */ }
         return reply(200, { 'Content-Type': 'application/json' }, out)
       } catch (e) {
+        try {
+          console.error(`[bridge][readonly] ${sub} ms=${Date.now() - t0} FAILED args=${flags.join(' ') || '-'}: ${e?.message || String(e)}`)
+        } catch { /* 日志失败不影响响应 */ }
         return reply(502, { 'Content-Type': 'application/json' }, JSON.stringify({ error: e?.message || String(e) }))
       }
     }
@@ -1880,6 +1914,21 @@ const httpServer = createServer(async (req, res) => {
     // 诊断信息端点：diag-monitor 定期轮询（只读内存统计，见 diagInfo 定义）
     if (url.pathname === '/diag/info') {
       return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, data: diagInfo }))
+    }
+
+    // K0.3 渲染帧指标上报（2026-09-13「任务运行慢」系统性优化）：渲染进程每 5s 汇总
+    // 一次（帧数 / 单帧处理 ms p50,p95 / 真实帧间隔 p50,max）。只存内存、不落盘，
+    // 供 diag-monitor 的 render-health 读取。契约纯增量：老 GUI 不上报 → 字段缺失，
+    // 读取方按"无数据"降级。
+    if (url.pathname === '/diag/render-frame' && req.method === 'POST') {
+      const body = await readJsonBody(req).catch(() => ({}))
+      const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : 0)
+      diagInfo.renderFrames = {
+        frames: num(body?.frames), msP50: num(body?.msP50), msP95: num(body?.msP95),
+        gapP50: num(body?.gapP50), gapMax: num(body?.gapMax), heavy: body?.heavy === true,
+        at: Date.now(),
+      }
+      return reply(200, { 'Content-Type': 'application/json' }, '{"ok":true}')
     }
 
     // 内核 transcript 读取端点（实现见 transcript.mjs；GUI 会话系统改造第一步）

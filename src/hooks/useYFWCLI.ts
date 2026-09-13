@@ -431,6 +431,11 @@ export function useYFWCLI() {
     getOrCreateWS()
     const interval = setInterval(() => {
       setConnected(wsReady)
+      // K0.3：每 5s 汇总一次渲染帧指标（本 tick 无帧时 reportRenderFrames 直接返回）
+      if (Date.now() - frameReportAt >= RENDER_FRAME_REPORT_MS) {
+        frameReportAt = Date.now()
+        reportRenderFrames()
+      }
       // 孤儿子代理任务清理（节流）：taskkill/崩溃的内核发不出终态通知，靠心跳超时兜底
       if (Date.now() - lastTaskSweepAt > STALE_TASK_SWEEP_MS) {
         lastTaskSweepAt = Date.now()
@@ -590,6 +595,17 @@ let streamFlushScheduled = false
 // 反压整链卡死。流结束（result/cancelled/closed）时复位。
 let streamHeavyMode = false
 
+// K0.3 渲染帧指标（2026-09-13「任务运行慢」系统性优化）：流式期渲染进程实测吃满
+// 1.35 核 / 1.5GB，但「每帧到底花了多少、真实帧间隔有没有被拉长」此前没有任何数据
+// ——上面 streamHeavyMode 的计时只包住 store 循环、不含 React 提交，故从未真正置位过。
+// 这里把每帧成本与帧间隔记进内存，每 5s 汇总上报桥侧（/diag/render-frame → 诊断报告）。
+// **刻意不落 uiStore**：它是 persist store，每帧写它 = 每帧一次全量 JSON.stringify +
+// localStorage.setItem（R2 根因）。
+const FRAME_SAMPLE_MAX = 400
+const RENDER_FRAME_REPORT_MS = 5000
+const frameStats = { n: 0, ms: [] as number[], gaps: [] as number[], lastAt: 0 }
+let frameReportAt = 0
+
 function flushStreamEvents() {
   streamFlushScheduled = false
   if (pendingStreamEvents.length === 0) return
@@ -625,6 +641,37 @@ function flushStreamEvents() {
   const cost = performance.now() - t0
   if (cost > 50) streamHeavyMode = true
   else if (cost < 20) streamHeavyMode = false
+  // K0.3 采样：只进内存环形缓冲（不上报、不落 store、不做字符串拼接）
+  frameStats.n++
+  if (frameStats.ms.length < FRAME_SAMPLE_MAX) frameStats.ms.push(cost)
+  if (frameStats.lastAt && frameStats.gaps.length < FRAME_SAMPLE_MAX) frameStats.gaps.push(t0 - frameStats.lastAt)
+  frameStats.lastAt = t0
+}
+
+/** K0.3 每 5s 汇总一次帧指标 → 桥侧 /diag/render-frame。静默降级：桥未起/失败一律忽略。 */
+function reportRenderFrames() {
+  if (frameStats.n === 0) return
+  const pct = (arr: number[], q: number) => {
+    if (!arr.length) return 0
+    const s = arr.slice().sort((a, b) => a - b)
+    return Math.round(s[Math.min(s.length - 1, Math.floor(q * s.length))] * 10) / 10
+  }
+  const payload = {
+    frames: frameStats.n,
+    msP50: pct(frameStats.ms, 0.5),
+    msP95: pct(frameStats.ms, 0.95),
+    gapP50: pct(frameStats.gaps, 0.5),
+    gapMax: Math.round(frameStats.gaps.length ? Math.max(...frameStats.gaps) : 0),
+    heavy: streamHeavyMode,
+  }
+  frameStats.n = 0
+  frameStats.ms.length = 0
+  frameStats.gaps.length = 0
+  try {
+    fetch(`${getBridgeUrl()}/diag/render-frame`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    }).catch(() => { /* 观测失败不影响 UI */ })
+  } catch { /* fetch 本身同步抛（极端环境）同样忽略 */ }
 }
 
 function scheduleStreamFlush() {
