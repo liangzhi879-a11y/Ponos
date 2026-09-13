@@ -124,3 +124,17 @@ test('op=search 的逗号串空间过滤（路由转发形式，需真正生效�
     assert.equal(bad.output.count, 0)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+// S3 §6 观测：stats op 必须带上注入指标 sidecar（缺失时为 null，不得报错）。
+// 为什么要在 CLI 这一层锁：`--knowledge stats` 是新进程，进程内累加器恒为初值，
+// 只有读 sidecar 这条路能让 HTTP/CLI 看到指标 —— 这条链断了，指标就等于不存在。
+test('S3：op=stats 输出含 metrics（无 sidecar 时为 null）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-kcli-s3-'))
+  try {
+    const { output, code } = await runKnowledgeCommand({ op: 'stats', configDir: dir })
+    assert.equal(code, 0)
+    assert.ok('metrics' in output, 'stats 必须带 metrics 字段（可为 null）')
+    assert.equal(output.metrics, null)
+    assert.deepEqual(output.search, { count: 0, elapsedP50: null, elapsedP95: null })
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

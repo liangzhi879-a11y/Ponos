@@ -131,6 +131,8 @@ export function parseDocFile({ absPath, space, relPath }) {
 const MAX_BLOCKS_PER_DOC = 200
 const PRUNE_MIN_DOCS = 50      // 少于 50 篇不做高频剪枝（小库剪枝会误伤）
 const PRUNE_DF_RATIO = 0.5     // 出现在超半数文档里的 gram 近似停用词
+/** 检索耗时采样窗口（环形缓冲上限）：100 次足够看 P95，也不会无界增长 */
+const SEARCH_SAMPLES = 100
 
 export function createKnowledgeStore({ configDir, root = null } = {}) {
   const kroot = root || knowledgeRoot(configDir)
@@ -377,7 +379,7 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
    * 全程不原地排序 `docs` / `inverted` 内部数组：`getDocs()` 返回的是内部引用，
    * 一旦被 sort，`docs.jsonl` 行序（即 docIdx 定义）就被永久打乱，postings 下标全部失效。
    */
-  function search({ query = '', keywords = [], spaces: only = null, topK = 5, maxBytes = 2048, mode = 'snippet' } = {}) {
+  function searchInner({ query = '', keywords = [], spaces: only = null, topK = 5, maxBytes = 2048, mode = 'snippet' } = {}) {
     const q = String(query || '').trim()
     const kws = (keywords || []).map((k) => String(k).trim()).filter(Boolean)
     const qtext = q || kws.join(' ')
@@ -461,6 +463,23 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
     }
     return { items: out, count: out.length, indexAge: age, degraded }
   }
+
+  /**
+   * 检索耗时采样（S3 §6 观测）：环形缓冲保留最近 SEARCH_SAMPLES 次，`stats()` 出 P50/P95。
+   * 为什么包一层而不是在 searchInner 里逐点打表：searchInner 有多处 return，逐点埋点必然
+   * 漏一处（漏掉的那条路就永远不进样本，指标悄悄失真）。
+   * 进程内不落盘：CLI 每次 `--knowledge stats` 都是新进程，样本自然为空——跨进程可见的那份
+   * 由 kernel/knowledge-inject.mjs 落盘成 .index/metrics.json（会话启动时写一次）。
+   */
+  const searchTimes = []
+  function search(opts = {}) {
+    const t0 = Date.now()
+    const r = searchInner(opts)
+    searchTimes.push(Date.now() - t0)
+    if (searchTimes.length > SEARCH_SAMPLES) searchTimes.shift()
+    return r
+  }
+  const pct = (sorted, p) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] : null)
 
   // ── 增量更新与条目级读接口（Task 8）─────────────────────────────────────
 
@@ -635,12 +654,15 @@ export function createKnowledgeStore({ configDir, root = null } = {}) {
     getInverted() { return inverted },
     getLinkOut() { return linkOut },
     stats() {
+      const sorted = [...searchTimes].sort((a, b) => a - b)
       return {
         version: INDEX_VERSION, docs: docs.length,
         blocks: docs.reduce((s, d) => s + d.blocks.length, 0),
         grams: inverted.size, spaces: spaces.length,
         builtAt, indexAgeMs: builtAt ? Date.now() - Date.parse(builtAt) : null,
         indexBytes,
+        // S3 §6：检索耗时分布（进程内样本；跨进程见 .index/metrics.json）
+        search: { count: sorted.length, elapsedP50: pct(sorted, 0.5), elapsedP95: pct(sorted, 0.95) },
       }
     },
   }

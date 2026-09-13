@@ -128,6 +128,19 @@ export interface KnowledgeStats {
   builtAt: string | null
   indexAgeMs: number | null
   indexBytes: number
+  /** S3：本进程内的检索耗时分布（CLI/HTTP 通道下恒为 0 样本——跨进程看下面的 metrics） */
+  search?: { count: number; elapsedP50: number | null; elapsedP95: number | null }
+  /** S3：上次会话注入落盘的指标 sidecar（.index/metrics.json）；无记录为 null。
+   *  GUI 暂不展示（S3 非目标含"图表/特殊注入格式"），先补类型以便后续面板消费。 */
+  metrics?: {
+    updatedAt: string
+    inject: {
+      calls: number; strategy: string; indexLines: number; recallBlocks: number
+      elapsedMs: number; indexAgeMs: number | null; degraded: string | null
+      queries: number; hitQueries: number; hitRate: number
+    }
+    search: { count: number; elapsedP50: number | null; elapsedP95: number | null } | null
+  } | null
 }
 
 export interface KnowledgeSearchParams {

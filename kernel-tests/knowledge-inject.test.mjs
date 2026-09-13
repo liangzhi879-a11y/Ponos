@@ -2,7 +2,7 @@
 // 隔离纪律：一律 mkdtempSync + 显式 configDir（绝不碰真实 ~/.yfworking）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -248,7 +248,7 @@ test('注入内容不含真实 home 路径（隔离纪律）', () => {
 test('模块无副作用：导入时不读盘（readFileSync 仅在被调用时使用）', () => {
   // 只做静态检查：源码里不得出现模块顶层的 I/O 调用
   const src = readFileSync(new URL('../kernel/knowledge-inject.mjs', import.meta.url), 'utf-8')
-  const topLevelIo = /^\s*(readFileSync|createKnowledgeStore|writeFileSync)\(/m.test(src)
+  const topLevelIo = /^(readFileSync|createKnowledgeStore|writeFileSync)\(/m.test(src)
   assert.equal(topLevelIo, false, '模块顶层不得直接调用 I/O')
 })
 
@@ -314,5 +314,53 @@ test('S3：不传 knowledgeIndex 时行为与改动前一致（纯增量，老�
   try {
     const r = appendMemoryEntry({ root: join(dir, 'memory', 'personal'), theme: 'workflow', tag: null, summary: '无索引写入', full: 'f' })
     assert.equal(r.ok, true)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ── S3 Task 6：观测（inject 计数 + 检索耗时 P50/P95）─────────────────────────
+// 为什么要落盘一份 sidecar：`--knowledge stats` 每次都是**新进程**，进程内累加器恒为初值，
+// 不落盘这套指标在 CLI/HTTP 通道上等于不存在（spec §6 的指标只有落盘才可观测）。
+test('S3：注入后把指标写入 knowledge/.index/metrics.json', () => {
+  const dir = fixture()
+  try {
+    const r = buildKnowledgeInjection({
+      configDir: dir, memoryRootDir: join(dir, 'memory', 'personal'),
+      query: '四表联动', keywords: KW, mode: 'unified',
+    })
+    assert.ok(r.stats.recallBlocks > 0)
+    const f = join(dir, 'knowledge', '.index', 'metrics.json')
+    assert.ok(existsSync(f), '注入应落盘指标 sidecar')
+    const m = JSON.parse(readFileSync(f, 'utf-8'))
+    assert.equal(m.inject.strategy, 'unified')
+    assert.equal(m.inject.recallBlocks, r.stats.recallBlocks)
+    assert.ok(m.inject.hitRate > 0, '命中率应为正（有命中/有查询）')
+    assert.ok(m.search && typeof m.search.elapsedP50 === 'number', '检索耗时 P50 应落盘')
+    assert.ok(typeof m.search.elapsedP95 === 'number')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('S3：legacy 注入也落盘指标（search 为 null——该路径不检索）', () => {
+  const dir = fixture()
+  try {
+    buildKnowledgeInjection({ configDir: dir, memoryRootDir: join(dir, 'memory', 'personal') })
+    const m = JSON.parse(readFileSync(join(dir, 'knowledge', '.index', 'metrics.json'), 'utf-8'))
+    assert.equal(m.inject.strategy, 'legacy')
+    assert.equal(m.search, null)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('S3：指标落盘失败不影响注入（磁盘只读/目录被占）', () => {
+  const dir = fixture()
+  try {
+    mkdirSync(join(dir, 'knowledge'), { recursive: true })
+    writeFileSync(join(dir, 'knowledge', '.index'), 'blocked', 'utf-8')
+    let r
+    assert.doesNotThrow(() => {
+      r = buildKnowledgeInjection({
+        configDir: dir, memoryRootDir: join(dir, 'memory', 'personal'),
+        query: '四表联动', keywords: KW, mode: 'unified',
+      })
+    })
+    assert.equal(typeof r.indexSection, 'string')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

@@ -7,7 +7,22 @@
 // 失败策略（本模块的硬契约）：**永不把异常抛给调用方**——未知 op 与内部异常一律
 // 折成 `{ output: { error }, code: 1 }`。CLI 子命令是旁路能力，它的故障不得打断
 // 调用方（server/bridge 后续经 kernel-readonly 薄转发，见 Task 11）。
-import { createKnowledgeStore } from './knowledge.mjs'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { createKnowledgeStore, knowledgeRoot } from './knowledge.mjs'
+
+/**
+ * 读取注入指标 sidecar（S3 §6）：由 kernel/knowledge-inject.mjs 在会话启动注入时写一次。
+ * 为什么必须读盘而不是进程内取数：`--knowledge stats` 每次都是新进程，进程内累加器
+ * 永远是初值 —— 不读 sidecar 的话 CLI/HTTP 通道上这些指标"恒为 0"，等于没做。
+ * 文件缺失/损坏一律返回 null（指标是观测旁路，不能让它把 stats 弄成错误）。
+ */
+function readMetrics(configDir) {
+  if (!configDir) return null
+  try {
+    return JSON.parse(readFileSync(join(knowledgeRoot(configDir), '.index', 'metrics.json'), 'utf-8'))
+  } catch { return null }
+}
 
 const OPS = new Set([
   'spaces', 'tree', 'doc', 'entries', 'search', 'links', 'graph', 'stats', 'reindex', 'update-doc',
@@ -72,7 +87,8 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '' } = {}
           code: 0,
         }
       case 'stats':
-        return { output: store.stats(), code: 0 }
+        // 索引统计 + 上次会话的注入指标（inject.indexLines/recallBlocks/hitRate、search P50/P95）
+        return { output: { ...store.stats(), metrics: readMetrics(configDir) }, code: 0 }
       case 'reindex':
         return { output: { ok: true, ...store.stats() }, code: 0 }
       case 'update-doc':

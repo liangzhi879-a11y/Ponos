@@ -11,8 +11,9 @@
 //
 // 同步契约：与 kernel/knowledge-search.mjs 同款——store.load()/search() 都是同步函数，
 // 故这里**全程同步、不写 await**（调用点 kernel/cli.mjs 的注入段也在同步上下文里）。
-import { resolve } from 'node:path'
-import { createKnowledgeStore } from './knowledge.mjs'
+import { resolve, join } from 'node:path'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { createKnowledgeStore, knowledgeRoot } from './knowledge.mjs'
 import { buildMemoryIndex, memoryRoot } from './memory.mjs'
 
 /** 总预算默认值与 server 侧 experienceInjectMaxBytes 的默认一致（4096，见 spec §11.3 N6）。 */
@@ -54,6 +55,22 @@ export function getInjectStats() {
 
 export function resetInjectStats() { acc = freshStats() }
 
+/**
+ * 指标落盘（S3 §6）：`--knowledge stats` 每次都是新进程，进程内累加器恒为初值 —— 不落盘
+ * 这套指标在 CLI/HTTP 通道上等于不存在。故在**会话启动注入时**写一次 sidecar
+ * （`.index/metrics.json`），内容是"上一次注入的计数 + 检索耗时分布"。
+ * 只写一次/会话（不是每次检索写）：观测不该给热路径加 I/O；失败一律吞掉（观测是旁路）。
+ */
+function persistMetrics({ configDir, inject, search }) {
+  if (!configDir) return
+  try {
+    const idxDir = join(knowledgeRoot(configDir), '.index')
+    mkdirSync(idxDir, { recursive: true })
+    writeFileSync(join(idxDir, 'metrics.json'),
+      JSON.stringify({ updatedAt: new Date().toISOString(), inject, search }, null, 2), 'utf-8')
+  } catch { /* 观测旁路：落盘失败绝不影响注入本身 */ }
+}
+
 const byteLen = (s) => Buffer.byteLength(String(s || ''), 'utf-8')
 const countLines = (s) => String(s || '').split('\n').filter((l) => l.startsWith('- [')).length
 
@@ -83,6 +100,7 @@ export function buildKnowledgeInjection({
       spaces: [], elapsedMs: Date.now() - t0, indexAgeMs: null, degraded: null,
     }
     record(stats, { queried: false })
+    persistMetrics({ configDir, inject: getInjectStats(), search: null })
     return { indexSection, recallSection: '', stats }
   }
 
@@ -92,12 +110,14 @@ export function buildKnowledgeInjection({
   const idxBytes = byteLen(indexSection)
 
   let recallSection = ''
+  let storeRef = null   // 供指标 sidecar 读检索耗时（legacy 路径为 null）
   let stat = { strategy, indexLines: countLines(indexSection), recallBlocks: 0, spaces: [], elapsedMs: 0, indexAgeMs: null, degraded: null }
   // recall=false：`PONOS_MEMORY_INJECT=index-only` 逃生阀（只要索引指针）。unified 下若不短路，
   // 该开关会静默失效——用户设了"仅索引"却仍在抽调，是比"少个功能"更坏的故障模式。
   if (!recall) {
     stat.elapsedMs = Date.now() - t0
     record(stat, { queried: false })
+    persistMetrics({ configDir, inject: getInjectStats(), search: null })
     return { indexSection, recallSection: '', stats: stat }
   }
   try {
@@ -107,6 +127,7 @@ export function buildKnowledgeInjection({
     // 调用方可注入一个已 load 的 store（kernel/cli.mjs 把同一实例复用给轮末沉淀的增量更新）——
     // 一处 load 两处用，免得同一进程里为注入和写入各建一次全库索引。
     const store = knowledgeIndex || createKnowledgeStore({ configDir: cfg })
+    storeRef = store
     store.load({})
     const recallCap = Math.max(0, total - idxBytes)
     const r = store.search({
@@ -147,6 +168,11 @@ export function buildKnowledgeInjection({
     stat.recallBlocks = 0
   }
   record(stat, { queried: true })
+  persistMetrics({
+    configDir,
+    inject: getInjectStats(),
+    search: storeRef ? storeRef.stats().search : null,
+  })
   return { indexSection, recallSection, stats: stat }
 }
 

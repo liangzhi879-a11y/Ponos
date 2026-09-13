@@ -581,3 +581,21 @@ test('knowledgeRoot：<configDir>/knowledge，且 configDir 缺省不抛错', ()
   const winPath = ['C:', 'Users', 'u'].join(String.fromCharCode(92))
   assert.equal(knowledgeRoot(winPath), join(winPath, 'knowledge'))
 })
+
+// S3 §6 观测：store.stats() 增检索耗时（进程内环形缓冲，最近 100 次）。
+test('S3：stats().search 记录检索耗时 P50/P95（进程内）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-kstats-'))
+  try {
+    const personal = join(dir, 'memory', 'personal')
+    mkdirSync(personal, { recursive: true })
+    writeFileSync(join(personal, 'workflow.md'), '---\nname: workflow\n---\n- [会话|x] 检索耗时观测 -- 正文\n', 'utf-8')
+    const store = createKnowledgeStore({ configDir: dir })
+    store.load({})
+    assert.deepEqual(store.stats().search, { count: 0, elapsedP50: null, elapsedP95: null }, '未检索时无样本')
+    for (let i = 0; i < 5; i++) store.search({ query: '检索耗时观测' })
+    const s = store.stats().search
+    assert.equal(s.count, 5)
+    assert.ok(typeof s.elapsedP50 === 'number' && s.elapsedP50 >= 0)
+    assert.ok(typeof s.elapsedP95 === 'number' && s.elapsedP95 >= s.elapsedP50, 'P95 不得小于 P50')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
