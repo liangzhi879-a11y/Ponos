@@ -37,6 +37,28 @@ test('merge：损坏的落盘负载被白名单清洗（不抛），view/spaceId
   assert.deepEqual(st().tree, {}, '损坏 tree 必须兜底 {}')
 })
 
+test('merge（有效负载路径）：恢复 spaceId/view 与展开态，折叠分支丢弃，actions 保留', () => {
+  // 上一条只覆盖"损坏负载"；这里直接调 persist 的 merge，钉住"合法负载能恢复展开态"
+  // —— 那才是持久化的目的（重启后展开的目录自动重取）。
+  const opts = useKnowledgeStore.persist.getOptions()
+  const merged = opts.merge!(
+    {
+      spaceId: 'notes',
+      view: 'graph',
+      tree: {
+        'notes/a': { entries: [], loaded: false, expanded: true },
+        'notes/b': { entries: [], loaded: false, expanded: false },
+      },
+    },
+    st(),
+  )
+  assert.equal(merged.spaceId, 'notes')
+  assert.equal(merged.view, 'graph')
+  assert.deepEqual(merged.tree, { 'notes/a': { entries: [], loaded: false, expanded: true } })
+  assert.equal(typeof merged.setSpace, 'function', 'merge 必须保留 actions')
+  assert.equal(typeof merged.toggleExpanded, 'function')
+})
+
 test('sanitizeView：4 合法值原样透传，其余（含缺省/数字/null）兜底 read', () => {
   for (const v of KNOWLEDGE_VIEWS) assert.equal(sanitizeView(v), v)
   assert.deepEqual([...KNOWLEDGE_VIEWS], ['read', 'edit', 'graph', 'search'], '四视图集合固定')
