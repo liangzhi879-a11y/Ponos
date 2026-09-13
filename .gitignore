@@ -14,6 +14,9 @@ kernel-dist/
 .ponos-repro/
 zz-smoke/
 zz-bench/
+
+# git worktree 工作区（隔离实施用；禁止把整棵树提交进仓库）
+.worktrees/
 # 冒烟 scratch 工作区（截图/隔离 home 可能含敏感 config 拷贝，禁入 git）
 scratch/
 
