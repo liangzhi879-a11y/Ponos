@@ -58,12 +58,19 @@ const { registerAppHandlers, handleAppExecMessage } = require('./app-ipc.cjs')
 // browserExecutor 同理（connectBrowserExecutor 前为 null，可选链兜底）。
 // ---------------------------------------------------------------------------
 const { initLogTee } = require('./log-tee.cjs')
-const { readLogPolicyCached, writeLogLine } = require('../server/log-policy.cjs')
+// R1 后主进程只剩这一个 log-policy 入口（渲染器落盘整条路径收进 sink；app.log 由 log-tee 自理）
+const { createRendererConsoleSink } = require('../server/log-policy.cjs')
 // 本地持久化策略在此落地（2026-09-12）：initLogTee 内部 ①按策略清理历史（存量超大的
 // app.log 首次启动即裁剪，不再无上限增长）②每行写入都经 writeLogLine，超限当场轮转——
 // 原先 rotateIfNeeded 被返回却从无调用者（死代码），app.log 曾涨到 76MB。
 const logTee = initLogTee()
+// R1（2026-09-13）：渲染器 console 落盘的单一咽喉——高频行（[WS] recv:）按前缀采样、
+// 异常全量、写盘走缓冲（1s / 100 行 / 溢出 setImmediate）。此前每帧一行、**两次**
+// statSync+appendFileSync（app.log + renderer-console.log），22 小时 17MB。
+// 全量还原：PONOS_RENDER_LOG_FULL=1（或 PONOS_RENDER_LOG_WINDOW_MS=0）。
+const renderConsoleSink = createRendererConsoleSink()
 logTee.onCrash(() => {
+  try { renderConsoleSink.flush() } catch {} // 崩溃路径也要把缓冲里的行落盘
   try { killBridge() } catch {}
   try { killPet() } catch {}
   if (browserExecutor) {
@@ -1441,24 +1448,20 @@ if (!gotTheLock) {
       console.error(`[render] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`)
     })
     // console-message：Electron ≥32 新签名 (event, {level,message,lineNumber,sourceId})，
-    // 旧版 (event, level, message, line, sourceId)——兼容两者
+    // 旧版 (event, level, message, line, sourceId)——兼容两者。
+    // 2026-09-10 排障：渲染层 console 落盘——应用经快捷方式启动无终端，渲染层日志
+    // 此前完全不可见；流式/渲染故障排查靠这份文件。2026-09-12 起统一走 log-policy
+    // （原先的 512KB 私有截断删除：与其余三处口径不一致、且无年龄清理）。
+    // 2026-09-13（R1）：门控 + 缓冲收进 createRendererConsoleSink（server/log-policy.cjs）
+    // ——采样判据与落盘策略同为可测的纯逻辑；此处只做签名归一。
     win.webContents.on('console-message', (...args) => {
       const d = args[1]
-      let line2
       if (d && typeof d === 'object' && typeof d.message === 'string') {
-        line2 = `[render:console] ${d.message} (${d.sourceId}:${d.lineNumber})`
+        renderConsoleSink.handle(d.message, d.sourceId, d.lineNumber)
       } else {
         const [, , message, line, sourceId] = args
-        line2 = `[render:console] ${message} (${sourceId}:${line})`
+        renderConsoleSink.handle(message, sourceId, line)
       }
-      console.log(line2)
-      // 2026-09-10 排障：渲染层 console 落盘——应用经快捷方式启动无终端，渲染层日志
-      // 此前完全不可见；流式/渲染故障排查靠这份文件。2026-09-12 起统一走 log-policy
-      // （原先的 512KB 私有截断删除：与其余三处口径不一致、且无年龄清理）。
-      try {
-        const p = path.join(resolveYfwHome(), 'logs', 'renderer-console.log')
-        writeLogLine(p, line2, readLogPolicyCached({ home: resolveYfwHome() }), 'info')
-      } catch (_) {}
     })
     win.webContents.on('preload-error', (_e, p, err) =>
       console.error(`[render] preload-error ${p}: ${err.message}`))
@@ -1549,6 +1552,8 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   // 启动打点汇总落盘（成功/失败都写；writeBootSummary 内部 try/catch 兜底）
   writeBootSummary()
+  // R1：渲染器 console 缓冲强制落盘（最多丢一个 1s/100 行窗口，但正常退出不该丢）
+  try { renderConsoleSink.flush() } catch { /* 静默：退出路径不因日志设施失败而改变 */ }
   // 残留清扫兜底（幂等，防御性）：before-quit 已清扫，此处再清一次，
   // 覆盖 before-quit 之后新增的残留（bridge/宠物/浏览器执行器窗口）
   try { killBridge() } catch {}

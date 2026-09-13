@@ -176,6 +176,142 @@ function writeLogLine(logPath, line, policy, level = 'info') {
   }
 }
 
+// 批量写：语义与逐行 writeLogLine 完全等价（每行一个 '\n'），但只 stat/append **一次**。
+// 与 writeLogLine 共用轮转与等级门槛 ⇒ 缓冲不引入第二条写路径（R1，2026-09-13）。
+function writeLogLines(logPath, lines, policy, level = 'info') {
+  if (!Array.isArray(lines) || !lines.length) return 0
+  const p = normalizeLogPolicy(policy)
+  if (!p.persist) return 0
+  const lv = LEVEL_RANK[String(level)] ?? LEVEL_RANK.info
+  if (lv < LEVEL_RANK[p.level]) return 0
+  try {
+    const text = lines.map((l) => String(l).replace(/\n+$/, '')).join('\n') + '\n'
+    const incoming = Buffer.byteLength(text, 'utf-8')
+    fs.mkdirSync(path.dirname(logPath), { recursive: true })
+    let size = 0
+    try { size = fs.statSync(logPath).size } catch (_) { /* 尚不存在 */ }
+    if (size > 0 && size + incoming > p.maxFileBytes) rotateLog(logPath, p)
+    fs.appendFileSync(logPath, text)
+    return lines.length
+  } catch (_) {
+    return 0
+  }
+}
+
+// —— R1（2026-09-13）渲染器高频行闸门 + 缓冲写 ——
+// 病根：渲染层 `[WS] recv:` 每个下行帧一行 → 主进程 console-message → **两次**
+// statSync+appendFileSync（app.log 经 log-tee 一份 + renderer-console.log 一份）。
+// 实测 22 小时写掉 17MB，全是这一行。
+// 判据是「按**帧级**特征采样 + 异常全量」而不是整类丢弃：流式排障要的是**帧的分布**
+// （有没有在流、什么类型），不是每一帧的逐字复本；被采样掉多少行会记在下一个放行行
+// 上（`(+N 条同类被采样)`），所以"什么都没记"这种最坏情况不会出现。
+//
+// 判据为什么长这样（2026-09-13 用**真实日志回放**定，不是拍脑袋）：
+//   · 唯一发射点 `src/hooks/useYFWCLI.ts:174` = `[WS] recv: <msg.type> <sid> <data.type>`；
+//   · 全量 4 个日志文件里 `event` 129,694 行（98.5%），其中 `assistant` 127,833 行（98.6%）
+//     ——**逐帧正文复本**，就是全部噪声；到达间隔 p50=76ms、p10=22ms（峰值 45 行/秒）；
+//   · **不能**写成 `[WS] recv:` 或 `[WS] recv: event `：真实回放显示前者会连带采样掉
+//     今天 487 行 kernel-stderr 转发行里的 396 行（81%），后者会吃掉紧邻 assistant 帧到达
+//     的 `tool_result`(975)/`result`(24)/`ponos_warning`(10) —— 这些是状态迁移与告警，不是噪声。
+//   ⇒ 只认「帧级正文复本」这一种形状，其余一律全量。
+const RENDER_CHATTER_PATTERNS = Object.freeze([
+  /^\[WS\] recv: event \S+ assistant\b/,
+])
+// 命中即**永不采样**（帧里的异常才是要留的证据）。刻意宽松：误判只会多留几行，
+// 漏判会丢掉仅有的异常证据。`warn` 不设词边界——`ponos_warning` 里的 `warn` 后面
+// 接的是词字符，`\bwarn\b` 匹配不到（真实日志里就是这么写的）。
+const RENDER_ALERT_RE = /\b(error|failed?|exception|crash|timeout|timed out|unresponsive|parse error)\b|warn/i
+const RENDER_GATE_WINDOW_MS = 2000
+
+// 闸门（纯状态机，可注入时钟）。allow(msg) → { allow, suppressed }：allow=false 时调用方
+// **不得构造字符串、不得落盘**；suppressed>0 表示"这一段被吃掉了多少同类行"。
+// patterns 里**不得带 /g 标志**（lastIndex 会让 .test 有状态）。
+function createLineGate({ patterns = RENDER_CHATTER_PATTERNS, windowMs = RENDER_GATE_WINDOW_MS, now = () => Date.now() } = {}) {
+  const last = new Map()       // pattern -> 上次放行的时刻
+  const suppressed = new Map() // pattern -> 期间被吃掉的条数
+  const full = () => process.env.PONOS_RENDER_LOG_FULL === '1'
+  const windowMsNow = () => {
+    const raw = process.env.PONOS_RENDER_LOG_WINDOW_MS
+    if (raw === undefined || raw === '') return windowMs
+    const n = Number(raw)
+    return Number.isFinite(n) && n >= 0 ? n : windowMs   // 0 = 全量放行（同 FULL）
+  }
+  return {
+    allow(msg) {
+      const text = String(msg)
+      if (full()) return { allow: true, suppressed: 0 }
+      const hit = patterns.find((re) => re.test(text))
+      if (!hit) return { allow: true, suppressed: 0 }        // 非帧级噪声：全量保留
+      if (RENDER_ALERT_RE.test(text)) return { allow: true, suppressed: 0 }
+      const win = windowMsNow()
+      const t = now()
+      const prev = last.get(hit)
+      if (prev === undefined || win === 0 || t - prev >= win) {
+        last.set(hit, t)
+        const n = suppressed.get(hit) || 0
+        suppressed.set(hit, 0)
+        return { allow: true, suppressed: n }
+      }
+      suppressed.set(hit, (suppressed.get(hit) || 0) + 1)
+      return { allow: false, suppressed: 0 }
+    },
+    pendingSuppressed: () => [...suppressed.values()].reduce((a, b) => a + b, 0),
+  }
+}
+
+// 缓冲写（形状照 claude-code utils/bufferedWriter.ts）：到点或到量才落盘，溢出走
+// setImmediate 解耦（不阻塞当前 tick）。**必须显式 flush**（退出/崩溃路径），否则最多
+// 丢一个窗口的行——诊断可接受，业务日志不走这条路。
+function createBufferedWriter({ write, flushIntervalMs = 1000, maxBufferSize = 100, setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout } = {}) {
+  let buf = []
+  let timer = null
+  function clearTimer() { if (timer) { clearTimeoutFn(timer); timer = null } }
+  function flush() {
+    clearTimer()
+    if (!buf.length) return 0
+    const batch = buf
+    buf = []
+    try { write(batch) } catch (_) { /* 日志设施自身出错绝不影响主流程 */ }
+    return batch.length
+  }
+  return {
+    push(line) {
+      buf.push(line)
+      if (buf.length >= maxBufferSize) { setImmediate(flush); return }
+      if (!timer) {
+        timer = setTimeoutFn(flush, flushIntervalMs)
+        if (timer && typeof timer.unref === 'function') timer.unref()
+      }
+    },
+    flush,
+    size: () => buf.length,
+  }
+}
+
+// 渲染器 console 落盘的**单一咽喉**：门控 → 组装 → 原输出 + 缓冲落盘。抽到本模块
+// （而非留在 main.cjs 内联）是因为 main.cjs 没有测试载体，而这条路径正是 R1 的全部改动。
+function createRendererConsoleSink({ home = resolveYfwHome, gate = createLineGate(), buffer = null, log = console.log } = {}) {
+  const homeFn = typeof home === 'function' ? home : () => home
+  const pathOf = () => path.join(homeFn(), 'logs', 'renderer-console.log')
+  const buf = buffer || createBufferedWriter({
+    write: (lines) => writeLogLines(pathOf(), lines, readLogPolicyCached({ home: homeFn() }), 'info'),
+  })
+  return {
+    handle(message, sourceId = '', lineNumber = 0) {
+      const text = String(message ?? '')
+      const verdict = gate.allow(text)
+      if (!verdict.allow) return false      // 门控在最前：不构造字符串、不调 console、不落盘
+      let line = `[render:console] ${text} (${sourceId}:${lineNumber})`
+      if (verdict.suppressed) line += ` (+${verdict.suppressed} 条同类被采样)`
+      try { log(line) } catch (_) {}        // 原输出行为不变（终端/管道 + log-tee → app.log）
+      try { buf.push(line) } catch (_) {}
+      return true
+    },
+    flush: () => buf.flush(),
+    size: () => buf.size(),
+  }
+}
+
 // 启动一次性落地策略：年龄清理 + 存量超大文件裁剪 + 超限轮转。
 // 必须处理"历史遗留的 76MB app.log"：只轮转不裁剪 = 得到一个活满 maxAgeDays 的巨型 .1。
 function enforceLogPolicy(logPath, policy, now = Date.now()) {
@@ -265,6 +401,12 @@ module.exports = {
   rotateLog,
   pruneByAge,
   writeLogLine,
+  writeLogLines,
+  RENDER_CHATTER_PATTERNS,
+  RENDER_GATE_WINDOW_MS,
+  createLineGate,
+  createBufferedWriter,
+  createRendererConsoleSink,
   enforceLogPolicy,
   getLogTail,
   assertLogFileName,

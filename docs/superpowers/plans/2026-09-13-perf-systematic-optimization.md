@@ -471,11 +471,17 @@ export function perfStep(turn, step)                  // 发一行 + 清账 + �
 
 ### Task 13: R1 停掉每帧日志双写
 
-**Files:** Modify `electron/main.cjs`、`src/hooks/useYFWCLI.ts`
+**Files:** Modify `electron/main.cjs`、`server/log-policy.cjs`（**新增三个可测原语**）; Add `server/render-log-throttle.test.mjs`
 
-- [ ] **先门控短路**：未开 perf / 级别不够时**直接 return，不构造字符串、不调 console**
-- [ ] 再上缓冲（`flushIntervalMs=1000`、`maxBufferSize=100`、溢出走 `setImmediate`、退出强制 flush）
-- [ ] 在 `main.cjs:1445-1461` 这条**单一咽喉**按前缀采样/限流（error 与慢帧全量），一处改动覆盖所有调用点
+- [x] **先门控短路**：门控在 `createRendererConsoleSink.handle()` **最前面**——被采样行既不构造 `[render:console] … (file:line)` 字符串、也不调 `console.log`、不落盘（变异 M6 钉死）。原先计划的"未开 perf / 级别不够直接 return"由既有的 `writeLogLine` 等级门槛 + 本次的门控共同满足。
+- [x] 再上缓冲（`flushIntervalMs=1000`、`maxBufferSize=100`、溢出走 `setImmediate`、`exit`/`onCrash`/`will-quit` 强制 flush）。**批量写与逐行写字节级等价**（`writeLogLines` 与 `writeLogLine` 共用轮转与等级门槛，M5 钉死换行数）。
+- [x] 在 `main.cjs` 这条**单一咽喉**采样，一处改动覆盖所有调用点。**落地时按真实日志回放把判据改窄了**（见下），渲染器侧发射点 `useYFWCLI.ts:174` **刻意不动**（单一咽喉的设计意图；实测 IPC 量仅 ~1.5 条/秒，主进程侧才是双写所在）。
+- [x] **实现位置**：三个原语（闸门/缓冲/sink）落在 `server/log-policy.cjs` 并导出，而非 `main.cjs` 内联——`main.cjs` 没有测试载体，而这条路径正是 R1 的全部改动。`main.cjs` 只剩 `createRendererConsoleSink()` 一行 + `console-message` 的**签名归一**（Electron 新版传对象、旧版传位置参数，两种都吃）。
+- [x] **判据用真实日志回放定，不是拍脑袋（本次最大的一次设计修正）**：`[WS] recv: <msg.type> <sid> <data.type>` 里 `event` 占 98.5%、其中 `assistant` 占 98.6%（4 个日志文件合计 129,694 / 127,833 行），到达间隔 **p50=76ms、p10=22ms（峰值 45 行/秒）**。初版判据写成前缀 `[WS] recv:`，回放显示它**会连带采样掉当天 487 行诊断里的 396 行（81%）**——kernel-stderr 转发（唯一的内核诊断入口）与紧随 assistant 帧到达的 `tool_result`/`result`/`ponos_warning`。⇒ 判据收窄成形状匹配 `/^\[WS\] recv: event \S+ assistant\b/`（只认"帧级正文复本"这一种噪声形状），并补了两条测试钉死窄度（变异 M9/M10）。
+- [x] **实测（真实回放同一段 15,344 行 / 2.83h，新旧两套实现各跑一遍）**：日志路径墙钟 **14,198ms → 1,634ms（−88.5%）**；落盘 **1,974KB → 501KB（−74.6%）**；append **30,688 → ~3,170 + 批量**；每行主进程**同步**耗时 0.93ms → 0.11ms（按 45 行/秒峰值折合 42ms/s → 5ms/s 的主进程阻塞）。放行率 20.7%（998 行非判据行全量 + 2,172 行窗口放行）。按同负载折算 17MB/天 → ≈4MB/天。
+- [x] `RENDER_ALERT_RE` 是**第二道防线**（异常行即使命中判据也永不采样）：实测在现行窄判据下命中 0 次（窄形状里不可能出现异常词），它的价值是将来判据被放宽时仍然有效——用"放宽后的判据"写的测试钉死（M2）。注意 `warn` **不能设词边界**：`ponos_warning` 的 `_` 与 `w` 之间没有 `\b`，`\bwarn\b` 匹配不到（初版就这么写错了）。
+- [x] 排障开关：`PONOS_RENDER_LOG_FULL=1` 全量还原、`PONOS_RENDER_LOG_WINDOW_MS=0` 等价全量、`PONOS_RENDER_LOG_WINDOW_MS=非法值` 回落默认 2000ms（三者**全部惰性读**，改环境变量立即生效，各有用例）。
+- [x] 测试：`server/render-log-throttle.test.mjs`（**12 例**）+ 变异 10 条全杀（含 M9「判据放宽到 `[WS] recv:`」、M10「放宽到 event 任意子类型」——这两条正是回放抓出来的缺陷形态）。
 
 ---
 
