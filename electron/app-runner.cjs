@@ -37,10 +37,24 @@ function appendHistory({ roots, appId, entry }) {
  * js 步骤的字段名宽容处理：契约字段是 expression，但模型常写成 code/script/value/expr
  * （真机故障：`步骤 js 失败：js 缺少 expression`）。校验层已经会拦下并让模型改正，
  * 这里再兜一层——已经生成好、用户手工改过的旧 Spec 不该因为字段别名就跑不通。
+ *
+ * ★ 相对网址必须在这里补全（真机故障）：Spec 里写 `/protected`、`/list?page=2` 是非常自然的写法，
+ * 但白名单是按**主机名**判定的，拿 "/protected" 去判会被当成"不在白名单"直接拒绝导航
+ *（真机报错：`已拒绝导航: /protected`），于是"命令看着没问题、一跑就失败"。
+ * 基准取**应用自己的 target.url**（而不是上一个页面的地址）——这才是用户配置的那个站点。
  */
-function stepParams(step, args) {
+function resolveStepUrl(rawUrl, spec) {
+  const u = String(rawUrl ?? '').trim()
+  if (!u) return u
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) return u          // 已是绝对地址
+  const base = spec?.target?.type === 'web' ? spec.target.url : ''
+  if (!base) return u
+  try { return new URL(u, base).toString() } catch { return u }
+}
+
+function stepParams(step, args, spec) {
   const p = {}
-  if (step.url != null) p.url = interpolate(step.url, args)
+  if (step.url != null) p.url = resolveStepUrl(interpolate(step.url, args), spec)
   if (step.selector != null) p.selector = interpolate(step.selector, args)
   if (step.ref != null) p.ref = step.ref
   if (step.value != null) p.value = interpolate(step.value, args)
@@ -92,7 +106,7 @@ async function runCommand({ roots, appId, action, args = {}, executor, sessionId
       if (REF_ACTS.has(step?.act) && step.ref == null && step.selector != null) {
         return fail(`步骤 ${step.act} 需要 ref（元素编号，来自同一条命令内前一步的 snapshot），而不是 CSS 选择器 "${step.selector}"；改成 js 步骤（如 {"act":"js","expression":"document.querySelector('${step.selector}').click()"}）或先 snapshot 再按 ref 操作`)
       }
-      const res = await executor.exec(sessionId, step.act, stepParams(step, args))
+      const res = await executor.exec(sessionId, step.act, stepParams(step, args, spec))
       if (!res?.ok) return fail(`步骤 ${step.act} 失败：${res?.error || '未知错误'}`)
       // snapshot 动作用 snapshotToText 归一（真实快照没有顶层 text；原先直接读 text 会让
       // save 拿到整坨快照对象——真机验收记录见 electron/app-util.cjs 的 snapshotToText 注释）
@@ -106,4 +120,4 @@ async function runCommand({ roots, appId, action, args = {}, executor, sessionId
   }
 }
 
-module.exports = { runCommand, interpolate, checkRequired, appendHistory, desktopRunner }
+module.exports = { runCommand, interpolate, checkRequired, appendHistory, desktopRunner, stepParams, resolveStepUrl }

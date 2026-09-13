@@ -83,7 +83,7 @@ export function AppsPanel() {
         )}
       </div>
 
-      {adding && <AddAppDialog onClose={() => setAdding(false)} onDone={() => { setAdding(false); void load() }} />}
+      {adding && <AddAppDialog sessionId={sessionId} onClose={() => setAdding(false)} onDone={() => { setAdding(false); void load() }} />}
     </div>
   )
 }

@@ -19,7 +19,7 @@ const appAgent = require('./app-agent.cjs')
 const { callLlmStream } = require('./app-llm.cjs')
 const appValidator = require('./app-validator.cjs')
 const httpProbe = require('./app-http-probe.cjs')
-const { normalizeUrl } = require('./app-util.cjs')
+const { normalizeUrl, snapshotToText } = require('./app-util.cjs')
 // 浏览器自动化白名单（*.gov.cn / localhost / 127.0.0.1 + {YFW_HOME}/browser-whitelist.json）。
 // 只用来决定"要不要用浏览器增强探测"；生成命令本身**不依赖**它（见 app-http-probe.cjs 头部说明）。
 const { isWhitelisted } = require('./browser-common.cjs')
@@ -294,6 +294,29 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
      * 安全边界：run_command 只允许 read 命令——write 会在用户的目标应用里产生真实改动，
      * 绝不能因为"模型想试试"就执行（这一点比让模型调试重要）。
      */
+    /**
+     * 浏览器探索（用户允许"自动点击/翻页探索"与"带登录态探索"）：
+     * 用**真实浏览器执行器 + 应用自己的会话**打开页面，因此
+     *   ① 能看到 JS 渲染出来的内容（HTTP 抓取看不到）；
+     *   ② **带上该应用已有的登录态**（分区 persist:automation-<sessionId>，cookie 落盘持久化）；
+     *   ③ 能点击展开菜单/翻页/进详情，看到 HTTP 永远看不到的页面。
+     * 窗口仍是隐藏的（show:false），不会弹出来打扰用户。
+     */
+    let lastInteractives = []
+    const exploreBrowse = async (act, params) => {
+      if (driver !== 'browser') return { ok: false, summary: '这是桌面应用，没有浏览器页面可浏览；请直接用 run_command 试跑或 submit_spec。' }
+      const executor = getExecutor()
+      if (!executor) return { ok: false, summary: '浏览器执行器未就绪（应用可能尚未完成初始化）' }
+      const sid = sessionId || PROBE_SESSION
+      const r = await executor.exec(sid, act, params)
+      if (!r?.ok) return { ok: false, summary: `${act} 失败：${r?.error || '未知错误'}` }
+      const snap = r.snapshot || {}
+      lastInteractives = Array.isArray(snap.interactives) ? snap.interactives : []
+      const pageUrl = snap?.page?.url
+      if (pageUrl) visited.set(pageUrl, { url: pageUrl, title: snap.page.title, interactives: lastInteractives.length, forms: 0 })
+      return { ok: true, summary: snapshotToText(snap, { cap: AGENT_TOOL_MATERIAL_CAP }) }
+    }
+
     const runTool = async ({ tool, args, draft } = {}) => {
       if (tool === 'list_pages') {
         if (!visited.size) return { ok: true, summary: '还没有抓过任何页面（可能是桌面应用）。可以直接 submit_spec。' }
@@ -317,6 +340,29 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
           summary: `抓取成功：${m.title || '(无标题)'}｜${m.interactives} 个可交互线索｜表单 ${m.forms?.length || 0} 个${r.finalUrl && r.finalUrl !== url ? `｜跳转到 ${r.finalUrl}` : ''}\n素材：${JSON.stringify(m).slice(0, AGENT_TOOL_MATERIAL_CAP)}`,
         }
       }
+      if (tool === 'browse') {
+        const url = normalizeUrl(args?.url)
+        if (!url) return { ok: false, summary: `网址不合法：${String(args?.url)}（要写完整地址，如 https://example.com/foo）` }
+        authorizeAppTarget({ type: 'web', url }, { extraUrls: [url] })
+        emitProgress(appId, { phase: 'explore', detail: `用浏览器打开（带登录态、不弹窗）${url}…` })
+        return exploreBrowse('goto', { url })
+      }
+      if (tool === 'click') {
+        // 先把 ref/text 解析成快照里的具体元素——解析不了要**列出可选目标**，让模型自己纠正
+        const resolved = appAgent.resolveClickTarget(lastInteractives, { ref: args?.ref, text: args?.text })
+        if (!resolved.ok) return { ok: false, summary: resolved.error }
+        const label = String(resolved.target?.label || resolved.target?.tag || '')
+        // 安全闸：用户允许的是"探索性点击"，不是"替用户删数据/下单"
+        if (appAgent.isDestructiveLabel(label)) {
+          return { ok: false, summary: `拒绝点击「${label}」：这看起来是删除/支付/退出这类破坏性操作。探索阶段不会执行它；如果这确实是用户目标里的动作，请把它写成 kind:"write" 的命令让用户自己触发。` }
+        }
+        emitProgress(appId, { phase: 'explore', detail: `点击「${label}」（探索性，不弹窗）…` })
+        return exploreBrowse('click', { ref: resolved.target.ref })
+      }
+      if (tool === 'back') {
+        emitProgress(appId, { phase: 'explore', detail: '返回上一页…' })
+        return exploreBrowse('back', {})
+      }
       if (tool === 'run_command') {
         const action = String(args?.action || '')
         const cmd = (draft?.commands || []).find((c) => c.action === action)
@@ -332,7 +378,7 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
           ? { ok: true, summary: `试跑成功（${r.durationMs || 0}ms）：${String(typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? '')).slice(0, 1200) || '(无输出)'}` }
           : { ok: false, summary: `试跑失败：${String(r?.error || '未知错误')}` }
       }
-      return { ok: false, summary: `未知工具「${tool}」。可用工具：fetch_page / list_pages / run_command / submit_spec。` }
+      return { ok: false, summary: `未知工具「${tool}」。可用工具：fetch_page / list_pages / browse / click / back / run_command / submit_spec。` }
     }
 
     const agent = await appAgent.runAgentLoop({
@@ -376,6 +422,32 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
   //      bridge 转 executor/主进程 → 本文件同一函数 → app:exec:response 回写内核。
   // 抽成模块级函数的唯一目的是让两侧执行语义/留痕**逐字节一致**（两套实现必漂移）。
   ipcMain.handle('app:run', (_e, payload) => runAppCommand({ ...(payload || {}), roots: roots(), getExecutor }))
+
+  // 打开**可见**登录窗口：这是"带登录态探索/执行"的入口。
+  //
+  // 为什么需要它：浏览器自动化用的是分区 `persist:automation-<sessionId>`，cookie 落盘、可持久复用；
+  // 但自动化窗口本身是隐藏的（用户要求"能不弹就不弹"），所以用户没有任何地方可以登录。
+  // 这里提供一个**用户主动触发**的可见窗口（与命令/探索共用同一个会话），登录一次之后：
+  //   · 命令执行（app:run / 内核调用）直接复用该登录态；
+  //   · 模型探索时 browse/click 看到的也是登录后的页面。
+  // 注意：这不是"弹窗打扰"——它是用户点击后才打开的工具窗口。
+  ipcMain.handle('app:login', async (_e, payload = {}) => {
+    const url = normalizeUrl(payload.url)
+    if (!url) return { ok: false, error: `网址不合法：${String(payload.url)}` }
+    const executor = getExecutor()
+    if (!executor) return { ok: false, error: '浏览器执行器未就绪' }
+    const sid = payload.sessionId || PROBE_SESSION
+    // 显式授权该域名（与取素材/探索同源），否则导航会被白名单拦下
+    authorizeAppTarget({ type: 'web', url })
+    try {
+      await executor.openWindow(sid)          // 用户主动要登录 → 这里显式显示窗口（内部 show+focus）
+      const r = await executor.exec(sid, 'goto', { url })
+      if (!r?.ok) return { ok: false, error: r?.error || '打开登录页面失败', sessionId: sid }
+      return { ok: true, sessionId: sid, url: r?.snapshot?.page?.url || url }
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) }
+    }
+  })
 }
 
 /**

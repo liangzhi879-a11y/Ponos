@@ -42,6 +42,11 @@ const yfworkingAPI = {
   appCheck: (appId) => ipcRenderer.invoke('app:check', appId),
   appRun: (payload) => ipcRenderer.invoke('app:run', payload),
   /**
+   * 打开可见的登录窗口（与应用命令/模型探索**共用同一个浏览器会话**）。
+   * 登录一次后，命令执行与模型探索都带上该登录态——这是"带登录态探索"的入口。
+   */
+  appLogin: (payload) => ipcRenderer.invoke('app:login', payload),
+  /**
    * 生成 App Spec（探测 → LLM → 校验 → read 试跑）。**不落盘**，需用户确认后另行保存。
    */
   appGenerate: (payload) => ipcRenderer.invoke('app:generate', payload),

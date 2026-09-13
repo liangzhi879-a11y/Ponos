@@ -807,8 +807,21 @@ class BrowserExecutor {
   // ---------- 动作实现 ----------
 
   async goto(win, params) {
-    const url = String(params && params.url || '')
+    let url = String(params && params.url || '')
     if (!url) throw new Error('goto 缺少 url')
+    // 相对网址按**当前页面地址**补全：Spec 里写 `/protected` 很自然，而白名单是按主机名判定的，
+    // 拿相对路径去判会被误当作"不在白名单"（真机报错：`已拒绝导航: /protected`）。
+    // app-runner 已按应用 target 补全过一层，这里再兜一层，让所有调用方（含内核浏览器工具）都受益。
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
+      let base = ''
+      try { base = win?.webContents?.getURL?.() || '' } catch { /* 忽略 */ }
+      if (base) {
+        try { url = new URL(url, base).toString() } catch { /* 保底用原值，走下面的白名单报错 */ }
+      }
+      if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
+        throw new Error(`goto 需要完整网址（含 http/https），无法从相对地址 "${url}" 推断站点`)
+      }
+    }
     if (!isWhitelisted(url)) {
       // 白名单拦截（2026-09-10）：结构化 code/data 回传——内核据此向用户请求
       // 批准写入白名单（批准后 mtime 热重载即时生效，模型重试同一操作即可）

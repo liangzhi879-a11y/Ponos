@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
-const { runCommand, interpolate, checkRequired } = require('../electron/app-runner.cjs')
+const { runCommand, interpolate, checkRequired, resolveStepUrl } = require('../electron/app-runner.cjs')
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'apprun-'))
@@ -48,7 +48,10 @@ test('read 命令按 steps 顺序执行并返回快照', async () => {
     assert.equal(r.ok, true)
     assert.equal(r.kind, 'read')
     assert.deepEqual(calls.map((c) => c[0]), ['goto', 'snapshot'])
-    assert.equal(calls[0][1].url, '/o/A1', 'goto 步骤应完成插值')
+    // 相对路径要做两件事：插值 + 按应用 target 补成绝对地址。
+    // 补全不是锦上添花——白名单按主机名判定，相对路径会被误判为"不在白名单"而拒绝导航
+    //（真机故障：`已拒绝导航: /protected`），表现就是"命令看着没问题、一跑就失败"。
+    assert.equal(calls[0][1].url, 'https://example.com/o/A1', 'goto 步骤应完成插值并按 target 补成绝对地址')
     assert.equal(r.data, 'ok')
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
@@ -188,5 +191,39 @@ test('ref 类动作给了 ref 就照常执行（不误报）', async () => {
     const r = await runCommand({ roots: [root], appId: 'app-a', action: 'run', args: {}, executor, sessionId: 's1' })
     assert.equal(r.ok, true)
     assert.equal(seen[1].p.ref, 2)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+// ---------- 相对网址补全（真机故障：相对路径被白名单误判为"不在白名单"） ----------
+//
+// Spec 里写 `/protected`、`/list?page=2` 是非常自然的写法，但白名单按**主机名**判定，
+// 拿 "/protected" 去判会被当成"不在白名单"而直接拒绝导航（真机报：`已拒绝导航: /protected`），
+// 表现就是"命令看着没问题、一跑就失败"。基准必须取应用自己的 target.url。
+
+test('resolveStepUrl：相对路径按应用 target 补全，绝对地址原样保留', () => {
+  const spec = { target: { type: 'web', url: 'https://example.com/app/' } }
+  assert.equal(resolveStepUrl('/protected', spec), 'https://example.com/protected')
+  assert.equal(resolveStepUrl('list?page=2', spec), 'https://example.com/app/list?page=2')
+  assert.equal(resolveStepUrl('https://other.com/x', spec), 'https://other.com/x', '绝对地址不动')
+  assert.equal(resolveStepUrl('http://localhost:8080/y', spec), 'http://localhost:8080/y')
+  assert.equal(resolveStepUrl('', spec), '', '空值不编')
+  assert.equal(resolveStepUrl('/x', { target: { type: 'desktop', exePath: 'C:/a.exe' } }), '/x', '没有 web target 时不硬猜')
+  assert.equal(resolveStepUrl('/x', {}), '/x')
+})
+
+test('runCommand：步骤里的相对路径会被补成绝对地址后才交给执行器', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'yfw-runner-rel-'))
+  try {
+    mkdirSync(join(root, 'app-a'), { recursive: true })
+    writeFileSync(join(root, 'app-a', 'spec.json'), JSON.stringify({
+      specVersion: 1, appId: 'app-a', name: 'A', target: { type: 'web', url: 'https://example.com/app/' }, expose: { mode: 'console' },
+      commands: [{ action: 'readIt', title: '读取', kind: 'read', params: [], steps: [{ act: 'goto', url: '/protected' }, { act: 'snapshot', save: 'r' }] }],
+    }))
+    const seen = []
+    const executor = { exec: async (_s, act, p) => { seen.push({ act, p }); return { ok: true, snapshot: { info: [] } } } }
+    const r = await runCommand({ roots: [root], appId: 'app-a', action: 'readIt', args: {}, executor, sessionId: 's1' })
+    assert.equal(r.ok, true, r.error)
+    assert.equal(seen[0].act, 'goto')
+    assert.equal(seen[0].p.url, 'https://example.com/protected', `相对路径必须补全后再交给执行器：${JSON.stringify(seen[0].p)}`)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })

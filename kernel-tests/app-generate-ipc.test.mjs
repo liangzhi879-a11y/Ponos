@@ -369,3 +369,135 @@ test('app:generate：js 缺 expression 的坏 Spec 会在校验轮被拦下并�
 })
 
 test.after(() => { rmSync(home, { recursive: true, force: true }) })
+
+// ---------- 浏览器探索工具：browse / click / back（用户放开"自动点击/翻页"与"登录态"） ----------
+//
+// 用户选择放开这两项能力。这里守住两端：**探索真能用**（模型点得动、拿得到新页面），
+// 且**破坏性动作绝不替用户做**（探索 ≠ 可以替用户删数据/下单）。
+
+/** 假执行器：按 act 返回不同快照，用于验证 browse/click/back 的真实反馈链路 */
+const exploreExecutor = (calls) => ({
+  exec: async (sessionId, act, params) => {
+    calls.push({ sessionId, act, params })
+    if (act === 'goto') {
+      return {
+        ok: true,
+        snapshot: {
+          page: { url: params.url, title: '订单系统', logged_in: true },
+          interactives: [
+            { ref: 1, tag: 'a', label: '订单列表', path_hint: 'nav' },
+            { ref: 2, tag: 'button', label: '下一页', path_hint: 'list' },
+            { ref: 3, tag: 'button', label: '删除该订单', path_hint: 'row1' },
+          ],
+          info: ['共 128 条订单'],
+        },
+      }
+    }
+    if (act === 'click') {
+      return { ok: true, snapshot: { page: { url: 'https://example.com/orders?page=2', title: '订单系统 第2页', logged_in: true }, interactives: [{ ref: 1, tag: 'a', label: '订单详情 A-100', path_hint: 'row1' }], info: ['共 128 条订单'] } }
+    }
+    return { ok: true, snapshot: { page: { url: 'https://example.com/', title: '订单系统', logged_in: true }, interactives: [{ ref: 1, tag: 'a', label: '订单列表', path_hint: 'nav' }] } }
+  },
+})
+
+const exploreTurn = (tool, args) => JSON.stringify({ thought: '探索一下', tool, args })
+
+test('browse：用浏览器打开（带登录态），快照与 ref 编号回喂给模型', async () => {
+  const calls = []
+  const seenUsers = []
+  const script = [exploreTurn('browse', { url: 'https://example.com/orders' }), submitTurn(JSON.parse(SPEC_TEXT))]
+  let i = 0
+  const t = setup({
+    executor: exploreExecutor(calls),
+    llm: async (p) => { seenUsers.push(p?.user || ''); const text = script[Math.min(i, script.length - 1)]; i += 1; return { ok: true, text, error: null, chars: text.length } },
+  })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com/' }, appId: 'x', sessionId: 's1' })
+  assert.equal(r.ok, true)
+  assert.equal(calls[0].act, 'goto')
+  assert.equal(calls[0].sessionId, 's1', '探索必须用应用自己的会话（登录态就存在这个分区里）')
+  const ctx = seenUsers[1] || ''
+  assert.ok(ctx.includes('订单列表'), `快照要回喂给模型：${ctx.slice(-400)}`)
+  assert.ok(ctx.includes('下一步') || ctx.includes('1'), '要带上 ref 编号供模型点击')
+  assert.ok(t.details().some((d) => d.includes('登录态')), `进度要如实说明用的是带登录态的浏览器：${t.details().join(' | ')}`)
+})
+
+test('click：模型按文字点「下一页」（翻页探索）→ 拿到新页面快照', async () => {
+  const calls = []
+  const seenUsers = []
+  const script = [
+    exploreTurn('browse', { url: 'https://example.com/orders' }),
+    exploreTurn('click', { text: '下一页' }),
+    submitTurn(JSON.parse(SPEC_TEXT)),
+  ]
+  let i = 0
+  const t = setup({
+    executor: exploreExecutor(calls),
+    llm: async (p) => { seenUsers.push(p?.user || ''); const text = script[Math.min(i, script.length - 1)]; i += 1; return { ok: true, text, error: null, chars: text.length } },
+  })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com/' }, appId: 'x', sessionId: 's1' })
+  assert.equal(r.ok, true)
+  const click = calls.find((c) => c.act === 'click')
+  assert.ok(click, '应真的执行了点击')
+  assert.equal(click.params.ref, 2, '按文字解析出的 ref 要正确')
+  assert.ok(seenUsers.some((u) => u.includes('第2页')), '翻页后的新页面要回喂给模型')
+  assert.ok(t.details().some((d) => d.includes('下一页')), t.details().join(' | '))
+})
+
+test('click：破坏性按钮被拒绝（探索不等于替用户删数据）', async () => {
+  const calls = []
+  const seenUsers = []
+  const script = [
+    exploreTurn('browse', { url: 'https://example.com/orders' }),
+    exploreTurn('click', { text: '删除该订单' }),
+    submitTurn(JSON.parse(SPEC_TEXT)),
+  ]
+  let i = 0
+  const t = setup({
+    executor: exploreExecutor(calls),
+    llm: async (p) => { seenUsers.push(p?.user || ''); const text = script[Math.min(i, script.length - 1)]; i += 1; return { ok: true, text, error: null, chars: text.length } },
+  })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com/' }, appId: 'x', sessionId: 's1' })
+  assert.equal(r.ok, true)
+  assert.ok(!calls.some((c) => c.act === 'click'), '破坏性按钮绝不能被真的点到')
+  assert.ok(seenUsers.some((u) => u.includes('拒绝点击')), `要把拒绝原因回喂给模型：${seenUsers.map((u) => u.slice(-200)).join(' || ')}`)
+})
+
+test('click：ref 失效时如实报错并列出可选目标（模型能自己纠正）', async () => {
+  const seenUsers = []
+  const script = [exploreTurn('browse', { url: 'https://example.com/orders' }), exploreTurn('click', { ref: 99 }), submitTurn(JSON.parse(SPEC_TEXT))]
+  let i = 0
+  const t = setup({
+    executor: exploreExecutor([]),
+    llm: async (p) => { seenUsers.push(p?.user || ''); const text = script[Math.min(i, script.length - 1)]; i += 1; return { ok: true, text, error: null, chars: text.length } },
+  })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com/' }, appId: 'x', sessionId: 's1' })
+  assert.equal(r.ok, true)
+  assert.ok(seenUsers.some((u) => u.includes('没有 ref=99') && u.includes('订单列表')), '要把可选元素列给模型')
+})
+
+test('back：探索完分支可以退回上一页', async () => {
+  const calls = []
+  const script = [exploreTurn('browse', { url: 'https://example.com/orders' }), exploreTurn('click', { text: '下一页' }), exploreTurn('back', {}), submitTurn(JSON.parse(SPEC_TEXT))]
+  let i = 0
+  const t = setup({
+    executor: exploreExecutor(calls),
+    llm: async () => { const text = script[Math.min(i, script.length - 1)]; i += 1; return { ok: true, text, error: null, chars: text.length } },
+  })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com/' }, appId: 'x', sessionId: 's1' })
+  assert.equal(r.ok, true)
+  assert.ok(calls.some((c) => c.act === 'back'), '应真的执行返回')
+})
+
+test('桌面应用不该出现浏览器探索（如实拒绝，而不是静默失败）', async () => {
+  const calls = []
+  const seenUsers = []
+  const script = [exploreTurn('browse', { url: 'https://example.com/' }), submitTurn(JSON.parse(SPEC_TEXT))]
+  let i = 0
+  const t = setup({
+    executor: exploreExecutor(calls),
+    llm: async (p) => { seenUsers.push(p?.user || ''); const text = script[Math.min(i, script.length - 1)]; i += 1; return { ok: true, text, error: null, chars: text.length } },
+  })
+  await t.invoke('app:generate', { target: { type: 'desktop', exePath: 'C:/x.exe' }, appId: 'x', sessionId: 's1' })
+  assert.equal(calls.length, 0, '桌面应用不该去动浏览器执行器')
+  assert.ok(seenUsers.some((u) => u.includes('桌面应用')), '要如实告诉模型这条路走不通')
+})

@@ -11,6 +11,7 @@ const require = createRequire(import.meta.url)
 
 const {
   runAgentLoop, parseTurn, checkSpecQuality, renderLog, buildAgentSystem, buildAgentSeed,
+  resolveClickTarget, isDestructiveLabel,
   toolResultText, describeToolCall, DEFAULT_BUDGET,
 } = require('../electron/app-agent.cjs')
 
@@ -286,4 +287,70 @@ test('buildAgentSystem：把工具协议与封装质量要求都写进提示词�
   const seed = buildAgentSeed({ target: { type: 'web', url: 'https://x/' }, driver: 'browser', probeMode: 'http', probeMaterial: { title: 'T' }, seedSummary: '已预取 2 个页面' })
   assert.ok(seed.includes('已预取 2 个页面'), '种子素材要交代清楚')
   assert.ok(seed.includes('JSON'), '要说明输出格式')
+})
+
+// ---------- 点击/翻页探索 + 登录态（用户明确放开的两项能力） ----------
+//
+// 用户选择放开：「允许自动点击/翻页探索」「允许带登录态探索」。这里的用例守住底线：
+// 探索能用（模型点得动、进得去新页面），但**破坏性动作绝不替用户做**。
+
+const INTERACTIVES = [
+  { ref: 1, tag: 'a', label: '订单列表', path_hint: 'nav' },
+  { ref: 2, tag: 'a', label: '下一页', path_hint: 'list' },
+  { ref: 3, tag: 'button', label: '删除', path_hint: 'row1' },
+  { ref: 4, tag: 'button', label: 'Submit Order', path_hint: 'form' },
+  { ref: 5, tag: 'button', label: '查询' },
+]
+
+test('resolveClickTarget：按 ref 命中；ref 失效时列出可选目标（让模型自己纠正）', () => {
+  const ok = resolveClickTarget(INTERACTIVES, { ref: 2 })
+  assert.equal(ok.ok, true)
+  assert.equal(ok.target.label, '下一页')
+  const miss = resolveClickTarget(INTERACTIVES, { ref: 99 })
+  assert.equal(miss.ok, false)
+  assert.ok(miss.error.includes('没有 ref=99'), miss.error)
+  assert.ok(miss.error.includes('下一页'), `报错要列出当前可选元素：${miss.error}`)
+  assert.ok(miss.error.includes('编号都会重排'), '要提醒模型用最新快照的编号')
+})
+
+test('resolveClickTarget：按文字命中（精确优先、其次包含），命中不了要列出可选', () => {
+  const exact = resolveClickTarget(INTERACTIVES, { text: '下一页' })
+  assert.equal(exact.ok, true)
+  assert.equal(exact.target.ref, 2)
+  const fuzzy = resolveClickTarget(INTERACTIVES, { text: '订单' })
+  assert.equal(fuzzy.ok, true)
+  assert.equal(fuzzy.target.ref, 1)
+  const miss = resolveClickTarget(INTERACTIVES, { text: '不存在的按钮' })
+  assert.equal(miss.ok, false)
+  assert.ok(miss.error.includes('查询'), miss.error)
+  assert.equal(resolveClickTarget(INTERACTIVES, {}).ok, false, '既不给 ref 也不给 text 要报错')
+  assert.equal(resolveClickTarget([], { ref: 1 }).ok, false, '空快照要报错（提醒先 browse）')
+})
+
+test('isDestructiveLabel：破坏性动作必须被识别（探索≠替用户删数据/下单）', () => {
+  for (const s of ['删除', '删除本条', '清空购物车', '退出登录', '注销账号', 'Delete', 'Remove item', 'Logout', 'Sign out', 'Place Order', '立即支付', '结算', '退款']) {
+    assert.equal(isDestructiveLabel(s), true, `「${s}」应被判为破坏性`)
+  }
+  for (const s of ['订单列表', '下一页', '查看详情', '查询', '导出', '首页', 'Next page', 'Search', 'View details', '我的订单']) {
+    assert.equal(isDestructiveLabel(s), false, `「${s}」是正常导航，不该被拦`)
+  }
+  assert.equal(isDestructiveLabel(''), false)
+  assert.equal(isDestructiveLabel(undefined), false)
+})
+
+test('agentToolDocs：浏览器驱动才有 browse/click/back，桌面驱动不给（避免模型乱试）', () => {
+  const web = buildAgentSystem({ target: { type: 'web', url: 'https://x/' }, driver: 'browser' })
+  for (const k of ['browse', 'click', 'back', '登录态']) assert.ok(web.includes(k), `浏览器提示词缺少 ${k}`)
+  assert.ok(web.includes('破坏性') || web.includes('删除/支付'), '必须写明破坏性按钮不能点')
+  const desk = buildAgentSystem({ target: { type: 'desktop', exePath: 'C:/x.exe' }, driver: 'desktop' })
+  assert.ok(!desk.includes('"tool":"browse"'), '桌面应用不该出现 browse 工具（会误导模型）')
+  assert.ok(desk.includes('submit_spec'), '桌面驱动仍要有基本工具')
+})
+
+test('describeToolCall：探索类工具要说人话（界面据此展示模型在做什么）', () => {
+  assert.ok(describeToolCall('browse', { url: 'https://a/b' }).includes('https://a/b'))
+  assert.ok(describeToolCall('browse', { url: 'https://a/b' }).includes('登录态'))
+  assert.ok(describeToolCall('click', { text: '下一页' }).includes('下一页'))
+  assert.ok(describeToolCall('click', { ref: 3 }).includes('3'))
+  assert.ok(describeToolCall('back', {}).includes('返回'))
 })

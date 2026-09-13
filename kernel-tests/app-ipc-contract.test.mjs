@@ -36,6 +36,8 @@ const CHANNELS = {
   'app:restore-spec': 'appRestoreSpec',
   'app:check-spec': 'appCheckSpec',
   'app:repair': 'appRepair',
+  // 打开可见登录窗口（用户主动触发）——自动化窗口平时隐藏，这是"带登录态探索"的唯一入口
+  'app:login': 'appLogin',
 }
 
 // 主进程侧 handler 落在独立模块（app-ipc.cjs），main.cjs 只调用其注册函数——

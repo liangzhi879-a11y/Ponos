@@ -17,7 +17,7 @@
 //   · 未取得素材时**明说**"命令是推断的、需核对"，不假装探测过。
 'use client'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AlertCircle, ArrowRight, CheckCircle2, FileJson, Loader2, RefreshCw, Sparkles } from 'lucide-react'
+import { AlertCircle, ArrowRight, CheckCircle2, FileJson, Loader2, LogIn, RefreshCw, Sparkles } from 'lucide-react'
 import { Button, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle, Input, Textarea } from '@/components/ui'
 import { useTranslation } from '@/i18n/useTranslation'
 import type { AppGenerateProgress, AppGenerateResult, AppProbeResult, AppSpec, AppTargetType, AppVerifyResult } from '@/types'
@@ -55,9 +55,11 @@ function skeletonSpec({ id, name, type, url, exePath }: {
   }
 }
 
-export function AddAppDialog({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+export function AddAppDialog({ onClose, onDone, sessionId }: { onClose: () => void; onDone: () => void; sessionId?: string | null }) {
   const { t } = useTranslation()
   const [id, setId] = useState('')
+  const [loggingIn, setLoggingIn] = useState(false)
+  const [loginMsg, setLoginMsg] = useState<string | null>(null)
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
   const [type, setType] = useState<AppTargetType>('web')
@@ -86,6 +88,22 @@ export function AddAppDialog({ onClose, onDone }: { onClose: () => void; onDone:
   const api = window.yfworkingAPI
   const target = type === 'web' ? { type, url: normalizeWebUrl(url) } : { type, exePath: exePath.trim() }
   const targetReady = type === 'web' ? !!normalizeWebUrl(url) : !!exePath.trim()
+
+  /**
+   * 先登录（可选）：该站点若需要登录才看得到功能，先在这里登录再生成——登录态与命令执行、
+   * 模型探索共用同一个浏览器会话（自动化窗口平时隐藏，不点这个按钮就不会弹窗）。
+   */
+  const onLogin = async () => {
+    const u = normalizeWebUrl(url)
+    if (!u) { setLoginMsg(t('apps.loginNoUrl')); return }
+    setLoggingIn(true); setLoginMsg(null)
+    try {
+      const r = await api?.appLogin?.({ url: u, sessionId: sessionId || undefined })
+      setLoginMsg(r?.ok ? t('apps.loginOpened') : (r?.error || t('apps.loginFail')))
+    } catch (e) {
+      setLoginMsg(String((e as Error)?.message || e))
+    } finally { setLoggingIn(false) }
+  }
 
   // ---- 订阅真实进度事件；卸载必须退订（否则渲染层残留监听）----
   useEffect(() => {
@@ -204,6 +222,17 @@ export function AddAppDialog({ onClose, onDone }: { onClose: () => void; onDone:
               <Field label={t('apps.exePath')}>
                 <Input value={exePath} onChange={(e) => setExePath(e.target.value)} placeholder="C:\..." className="h-7 text-xs flex-1" />
               </Field>
+            )}
+
+            {/* 需要登录才能看到内容的站点：先登录，再让模型探索（登录态与命令/探索共用同一会话） */}
+            {type === 'web' && (
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="ghost" disabled={!targetReady || loggingIn} title={t('apps.loginHint')} onClick={() => void onLogin()}>
+                  {loggingIn ? <Loader2 className="w-3 h-3 animate-spin" /> : <LogIn className="w-3 h-3" />}
+                  {t('apps.login')}
+                </Button>
+                <span className="text-[10px] text-tertiary">{loginMsg || t('apps.loginAside')}</span>
+              </div>
             )}
 
             {/* 动作条：探测 / 生成 */}

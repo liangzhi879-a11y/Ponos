@@ -695,6 +695,11 @@ export interface YFWAPI {
   /** 执行一条应用命令（read 直接跑；控制台的 write 由 UI 二次确认） */
   appRun: (payload: { appId: string; action: string; args?: Record<string, unknown>; sessionId?: string }) => Promise<AppRunResult>
   /**
+   * 打开**可见**的登录窗口（与应用命令、模型探索共用同一浏览器会话）。
+   * 登录一次后命令执行与模型探索都会带上该登录态（这是"带登录态探索"的入口）。
+   */
+  appLogin: (payload: { url: string; sessionId?: string }) => Promise<{ ok: boolean; sessionId?: string; url?: string; error?: string }>
+  /**
    * 生成 App Spec（探测 → LLM → 结构校验 → read 试跑）。**不落盘**：
    * 必须由用户确认后另行调用 appWriteSpec 保存。
    */

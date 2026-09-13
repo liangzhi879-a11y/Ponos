@@ -43,18 +43,76 @@ const isPlaceholder = (s) => PLACEHOLDER.test(String(s || '').trim())
 const cjkLen = (s) => String(s || '').trim().length
 
 /** 模型每轮可用的工具说明（渲染进 system，字段名必须与 parseTurn/主进程 runTool 一致） */
-function agentToolDocs() {
-  return [
+function agentToolDocs(driver = 'browser') {
+  const lines = [
     '【你可以调用的工具】每轮**只输出一个 JSON 对象**，不要输出解释性文字、不要输出多个对象：',
-    '· 抓取任意页面看结构（后台 HTTP 抓取，不会弹出窗口）：',
+    '· 抓取任意页面看结构（后台 HTTP 抓取，不会弹出窗口）。适合无需登录、静态渲染的页面：',
     '  {"thought":"为什么要抓它","tool":"fetch_page","args":{"url":"https://…"}}',
     '· 看你已经抓过哪些页面、有哪些线索（避免重复抓）：',
     '  {"thought":"…","tool":"list_pages","args":{}}',
+  ]
+  if (driver === 'browser') {
+    lines.push(
+      '· 用**真实浏览器**打开页面（不弹窗，但**会带上登录态**、能执行 JS）。当 HTTP 抓取只能看到登录页、',
+      '  空壳页、或内容明显不全时，改用这个（返回快照，含每个可交互元素的 ref 编号）：',
+      '  {"thought":"…","tool":"browse","args":{"url":"https://…"}}',
+      '· 在当前页**点击**某个元素（按 ref 或按可见文字），用来展开菜单、翻页、进入列表/详情页：',
+      '  {"thought":"…","tool":"click","args":{"ref":3}} 或 {"thought":"…","tool":"click","args":{"text":"下一页"}}',
+      '  返回新页面的快照。**删除/支付/提交订单/退出登录这类破坏性按钮会被拒绝**，别试。',
+      '· 返回上一页（配合 click 连续探索）：',
+      '  {"thought":"…","tool":"back","args":{}}',
+    )
+  }
+  lines.push(
     '· 试跑你草稿里的某条命令，看真实结果或真实报错（**只允许 read 命令**；write 会被拒绝，因为那会真的改动用户的数据）：',
     '  {"thought":"…","tool":"run_command","args":{"action":"命令名","args":{}}}',
     '· 提交一版 Spec（系统会做结构校验 + 封装质量校验 + **真实试跑**，不通过就把具体问题回给你继续改）：',
     '  {"thought":"…","tool":"submit_spec","spec":{…完整 Spec…}}',
-  ].join('\n')
+  )
+  return lines.join('\n')
+}
+
+/**
+ * 明显是破坏性动作的按钮文字。**为什么必须有这道闸**：用户允许了"自动点击/翻页探索"，
+ * 但"探索"不等于"可以替用户删数据/下单"。模型看到一个写着「删除」的按钮时不该去点。
+ * 只挡最危险的几类（删除/清空/退出/支付/下单…），不追求穷尽——过宽会误伤正常导航。
+ */
+const DESTRUCTIVE_LABEL = /(删除|清除|清空|移除|注销|退出登录|退出|解绑|取消订阅|退订|支付|付款|下单|购买|结算|提交订单|确认收货|退款|delete|remove|clear|logout|sign out|signout|unsubscribe|pay|purchase|checkout|place order|refund)/i
+
+function isDestructiveLabel(label) {
+  return DESTRUCTIVE_LABEL.test(String(label || ''))
+}
+
+/**
+ * 把 `{ref}` 或 `{text}` 解析成快照里那个可交互元素。
+ * 为什么两种都要支持：ref 精准但会随页面变化失效（模型容易拿旧快照的编号）；文字模糊但稳定，
+ * 模型读素材后往往记得"有个叫下一页的链接"。两者都给，命中不了就如实报错并**列出可选目标**，
+ * 让模型能自己纠正（比笼统的"元素不存在"有用得多）。
+ * @returns {{ok:true, target:object}|{ok:false, error:string}}
+ */
+function resolveClickTarget(interactives, { ref, text } = {}) {
+  const list = Array.isArray(interactives) ? interactives : []
+  if (list.length === 0) return { ok: false, error: '当前页面快照里没有任何可交互元素（可能还没 browse 过，或页面是空壳）' }
+  if (ref !== undefined && ref !== null && ref !== '') {
+    const n = Number(ref)
+    const hit = list.find((x) => Number(x?.ref) === n)
+    if (!hit) {
+      const sample = list.slice(0, 12).map((x) => `${x.ref}:${String(x.label || x.tag || '').slice(0, 14)}`).join('、')
+      return { ok: false, error: `快照里没有 ref=${ref} 的元素。当前可选：${sample}（每张新快照的编号都会重排，请用最新一次 browse/click 返回的编号）` }
+    }
+    return { ok: true, target: hit }
+  }
+  const want = String(text || '').trim()
+  if (!want) return { ok: false, error: '要给出 ref（快照编号）或 text（元素上的可见文字）' }
+  const lower = want.toLowerCase()
+  const exact = list.filter((x) => String(x?.label || '').trim().toLowerCase() === lower)
+  const fuzzy = list.filter((x) => String(x?.label || '').toLowerCase().includes(lower))
+  const hit = exact[0] || fuzzy[0]
+  if (!hit) {
+    const sample = list.slice(0, 12).map((x) => `${x.ref}:${String(x.label || x.tag || '').slice(0, 14)}`).join('、')
+    return { ok: false, error: `页面上没有文字含「${want}」的可点击元素。当前可选：${sample}` }
+  }
+  return { ok: true, target: hit }
 }
 
 /**
@@ -74,16 +132,26 @@ function buildAgentSystem({ target, driver = 'browser' } = {}) {
     `目标：${JSON.stringify(target || {})}`,
     `驱动：${driver}（${driver === 'desktop' ? '桌面应用：命令走本机脚本/CLI' : '网站：命令走浏览器自动化'}）`,
     '',
-    agentToolDocs(),
+    agentToolDocs(driver),
     '',
     '【工作方式（强烈建议遵循）】',
     '1) 先探索：至少用 fetch_page 看清楚主要功能入口（导航、列表页、表单、详情页）。',
     '   抓哪些页面**由你自己判断**——不要只抓首页。多级入口、需要先搜索/筛选才能到达的页面，',
     '   都值得抓一次；必要时反复抓、抓更多。list_pages 可以帮你避免重复。',
-    '2) 再写草稿：用 submit_spec 提交。第一版不要求完美——它会被真实试跑，报错会原样回给你。',
-    '3) 然后调试：根据回给你的**真实报错**修改。你可以用 run_command 单独试跑某条命令快速验证，',
-    '   也可以用 fetch_page 再看一眼页面结构（比如确认某个按钮的位置、表单字段名）。',
-    '4) 反复做到：试跑全部通过、且命令覆盖了目标的主要功能入口。',
+    ...(driver === 'browser' ? [
+      '2) **页面抓不到内容时不要放弃**：HTTP 抓取看不到 JS 渲染的内容，也看不到登录后的页面。',
+      '   这时候改用 browse（真实浏览器 + 登录态）打开它；如果页面里的入口**需要点击**才能展开',
+      '   （折叠菜单、列表翻页、"下一页"、进入详情），就用 click 点进去再看快照。',
+      '   探索完一个分支可以用 back 退回来继续看别的入口。用户允许你做这类探索性点击，',
+      '   但**不要点删除/支付/提交订单/退出登录这类破坏性按钮**（会被系统拒绝）。',
+      '3) 再写草稿：用 submit_spec 提交。第一版不要求完美——它会被真实试跑，报错会原样回给你。',
+      '4) 然后调试：根据回给你的**真实报错**修改。你可以用 run_command 单独试跑某条命令快速验证，',
+      '   也可以用 fetch_page / browse 再看一眼页面结构（比如确认某个按钮的位置、表单字段名）。',
+      '5) 反复做到：试跑全部通过、且命令覆盖了目标的主要功能入口。',
+    ] : [
+      '2) 再写草稿：用 submit_spec 提交。第一版不要求完美——它会被真实试跑，报错会原样回给你。',
+      '3) 然后调试：根据回给你的**真实报错**修改，直到试跑全部通过、且命令覆盖主要功能入口。',
+    ]),
     '',
     '【封装质量要求（不达标会被打回，请一次就写好）】',
     '将来调用这些命令的模型，只能看到「命令标题」和「参数说明」两样东西。所以：',
@@ -244,6 +312,9 @@ function toolResultText(tool, out, cap = DEFAULT_BUDGET.perToolChars) {
 function describeToolCall(tool, args) {
   if (tool === 'fetch_page') return `抓取页面 ${args?.url || ''}`
   if (tool === 'list_pages') return '查看已抓页面'
+  if (tool === 'browse') return `用浏览器打开（带登录态）${args?.url || ''}`
+  if (tool === 'click') return `点击页面元素 ${args?.text ? `「${args.text}」` : `ref=${args?.ref ?? ''}`}`
+  if (tool === 'back') return '返回上一页'
   if (tool === 'run_command') return `试跑命令 ${args?.action || ''}`
   return `${tool}`
 }
@@ -426,5 +497,6 @@ async function runAgentLoop({
 module.exports = {
   runAgentLoop, buildAgentSystem, buildAgentSeed, parseTurn, checkSpecQuality,
   renderLog, toolResultText, describeToolCall, agentToolDocs,
+  resolveClickTarget, isDestructiveLabel, DESTRUCTIVE_LABEL,
   DEFAULT_BUDGET, PLACEHOLDER, isPlaceholder,
 }

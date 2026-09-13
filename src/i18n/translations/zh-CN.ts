@@ -741,6 +741,12 @@ export const zhCN = {
 
     // --- Spec 编辑与回滚（Task 3.3） ---
     editSpec: '编辑 Spec',
+    login: '登录此应用',
+    loginAside: '需要登录的站点可先登录，登录态会被生成与命令复用',
+    loginHint: '打开一个可见窗口，用该应用自己的浏览器会话登录。登录一次后，命令执行与模型生成时的探索都会带上这个登录态（平时自动化窗口是隐藏的，不会弹出来打扰你）。',
+    loginOpened: '已打开登录窗口：在其中登录后关掉即可，登录态会被命令与模型探索复用。',
+    loginFail: '打开登录窗口失败',
+    loginNoUrl: '这个应用没有可登录的网址',
     specEditorTitle: '编辑应用 Spec',
     tabForm: '表单',
     tabJson: 'JSON',

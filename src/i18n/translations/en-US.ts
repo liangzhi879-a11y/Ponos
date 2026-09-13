@@ -727,6 +727,12 @@ export const enUS: TranslationKeys = {
 
     // --- Spec editor & rollback (Task 3.3) ---
     editSpec: 'Edit Spec',
+    login: 'Log in to this app',
+    loginAside: 'For sites that need a login, sign in first — the state is reused for generation and commands',
+    loginHint: 'Opens a visible window using this app’s own browser session. Log in once and both command execution and the model’s exploration will reuse that login state (automation windows stay hidden otherwise, so nothing pops up on you).',
+    loginOpened: 'Login window opened: sign in there and close it — the login state will be reused by commands and exploration.',
+    loginFail: 'Failed to open the login window',
+    loginNoUrl: 'This app has no URL to log in to',
     specEditorTitle: 'Edit app Spec',
     tabForm: 'Form',
     tabJson: 'JSON',

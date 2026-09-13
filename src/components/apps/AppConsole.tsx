@@ -8,7 +8,7 @@
 // ★ 为什么写操作要二次确认：控制台是人工点按的路径，没有内核侧审批链兜底
 //   （内核侧审批只覆盖 AI 调用）。漏了这一步，用户点一下就可能真的提交/删除数据。
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, Play, Settings2, ShieldCheck, Wrench } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, LogIn, Play, Settings2, ShieldCheck, Wrench } from 'lucide-react'
 import { Button, Input } from '@/components/ui'
 import { useTranslation } from '@/i18n/useTranslation'
 import { SpecEditor } from './SpecEditor'
@@ -32,6 +32,8 @@ export function AppConsole({ app, sessionId, onBack }: {
   const [editing, setEditing] = useState(false)
   const [repairing, setRepairing] = useState(false)
   const [repair, setRepair] = useState<AppRepairResult | null>(null)
+  const [loggingIn, setLoggingIn] = useState(false)
+  const [loginMsg, setLoginMsg] = useState<string | null>(null)
 
   // ---- 绑定生命周期：进入即绑、离开即解绑、依赖 sessionId 变化重绑 ----
   useEffect(() => {
@@ -62,6 +64,26 @@ export function AppConsole({ app, sessionId, onBack }: {
   }, [api, app.id])
 
   useEffect(() => { void runCheck() }, [runCheck])
+
+  /**
+   * 打开登录窗口（用户主动触发，与应用命令/模型探索共用同一浏览器会话）。
+   * 自动化窗口平时是隐藏的，没有这个入口用户就无处登录，登录态探索也就无从谈起。
+   * 无论成功失败都给出反馈——不得静默。
+   */
+  const openLogin = useCallback(async () => {
+    const url = spec?.target?.type === 'web' ? spec.target.url : ''
+    if (!url) { setLoginMsg(t('apps.loginNoUrl')); return }
+    setLoggingIn(true)
+    setLoginMsg(null)
+    try {
+      const r = await api?.appLogin?.({ url, sessionId: sessionId || undefined })
+      setLoginMsg(r?.ok ? t('apps.loginOpened') : (r?.error || t('apps.loginFail')))
+    } catch (e) {
+      setLoginMsg(String((e as Error)?.message || e))
+    } finally {
+      setLoggingIn(false)
+    }
+  }, [api, spec, sessionId, t])
 
   /**
    * 漂移修复：只修"最近一次执行失败"的命令（后端按 history 判定），
@@ -137,6 +159,19 @@ export function AppConsole({ app, sessionId, onBack }: {
           <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
             <Settings2 className="w-3 h-3" />{t('apps.editSpec')}
           </Button>
+          {/* 登录入口：自动化窗口是隐藏的，没有它就无处可登录；登录后命令与模型探索都带上该登录态 */}
+          {spec?.target?.type === 'web' && (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={loggingIn}
+              title={t('apps.loginHint')}
+              onClick={() => void openLogin()}
+            >
+              {loggingIn ? <Loader2 className="w-3 h-3 animate-spin" /> : <LogIn className="w-3 h-3" />}
+              {t('apps.login')}
+            </Button>
+          )}
           {(check?.status === 'drifted' || check?.status === 'broken' || (check?.issues?.length ?? 0) > 0) && (
             <Button size="sm" variant="ghost" disabled={repairing || check?.status === 'broken'}
               title={check?.status === 'broken' ? t('apps.repairBroken') : undefined}
@@ -149,6 +184,11 @@ export function AppConsole({ app, sessionId, onBack }: {
           <ul className="flex flex-col gap-1 px-3 py-2 rounded bg-warning/10">
             {check.issues.map((i, idx) => <li key={idx} className="text-[10px] text-warning">{i}</li>)}
           </ul>
+        )}
+
+        {/* 登录反馈：无论成功失败都要说清（登录态探索依赖它） */}
+        {loginMsg && (
+          <div className="px-3 py-2 rounded bg-info/10 text-[10px] text-secondary">{loginMsg}</div>
         )}
 
         {/* 修复结果：改动明细必须展示出来，不能"修了但不说改了啥" */}

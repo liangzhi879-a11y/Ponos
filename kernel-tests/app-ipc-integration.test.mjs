@@ -33,10 +33,12 @@ function fakeIpcMain() {
 }
 
 const fakeExecutor = (calls) => ({
+  openedWindows: [],
+  async openWindow(sessionId) { this.openedWindows.push(sessionId); return { ok: true } },
   exec: async (_s, act, params) => {
     calls.push([act, params])
-    if (act === 'goto' && params.url === 'https://bad.example') return { ok: false, error: '页面打不开' }
-    return { ok: true, snapshot: { title: '示例站', url: params?.url, text: 'body' } }
+    if (act === 'goto' && String(params.url).includes('bad.example')) return { ok: false, error: '页面打不开' }
+    return { ok: true, snapshot: { title: '示例站', url: params?.url, text: 'body', page: { url: params?.url, title: '示例站' } } }
   },
 })
 
@@ -52,10 +54,10 @@ const SPEC = {
   ],
 }
 
-test('app:* 16 条通道全部注册', () => {
+test('app:* 17 条通道全部注册（新增 app:login 打开登录窗口）', () => {
   const ipc = fakeIpcMain()
   registerAppHandlers({ ipcMain: ipc, getExecutor: () => fakeExecutor([]) })
-  assert.equal(ipc.channels().length, 16)
+  assert.equal(ipc.channels().length, 17)
 })
 
 test('CRUD → Spec → 自检 全链路（数据落在 YFWORKING_HOME/apps）', async () => {
@@ -147,7 +149,8 @@ test('app:run（browser）执行 + 留痕；缺参不执行', async () => {
   const ok = await ipc.invoke('app:run', { appId: 'demo', action: 'query', args: { orderId: 'A1' }, sessionId: 's1' })
   assert.equal(ok.ok, true)
   assert.equal(ok.kind, 'read')
-  assert.equal(calls[0][1].url, '/o/A1')
+  // 相对路径必须补成绝对地址（白名单按主机名判定，相对路径会被误判为"不在白名单"）
+  assert.equal(calls[0][1].url, 'https://example.com/o/A1')
 
   const before = calls.length
   const bad = await ipc.invoke('app:run', { appId: 'demo', action: 'query', args: {}, sessionId: 's1' })
@@ -227,3 +230,44 @@ test('app:check 对损坏 Spec → broken（不让用户进空壳控制台）', 
 })
 
 test.after(() => { rmSync(home, { recursive: true, force: true }) })
+
+// ---------- app:login：可见登录窗口（"带登录态探索"的入口） ----------
+//
+// 自动化窗口平时是隐藏的（用户要求"能不弹就不弹"），于是用户没有任何地方可以登录。
+// app:login 提供一个**用户主动触发**的可见窗口，并且必须与应用命令/模型探索共用同一个会话
+//   —— 否则登录了也对命令没用（cookie 是按 persist:automation-<sessionId> 分区存的）。
+
+test('app:login：用应用自己的会话打开可见窗口并导航到目标网址', async () => {
+  const calls = []
+  const exec = fakeExecutor(calls)
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => exec })
+  const r = await ipc.invoke('app:login', { url: 'kimi.com', sessionId: 'sess-42' })
+  assert.equal(r.ok, true)
+  assert.equal(r.sessionId, 'sess-42', '必须复用应用会话，否则登录态对命令无效')
+  assert.deepEqual(exec.openedWindows, ['sess-42'], '要显式打开（显示）窗口——这是用户主动要的')
+  assert.deepEqual(calls[0], ['goto', { url: 'https://kimi.com/' }], '不带协议头的网址要被归一')
+})
+
+test('app:login：网址不合法/执行器未就绪 → 如实报错（不静默）', async () => {
+  const ipc1 = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc1, getExecutor: () => fakeExecutor([]) })
+  const bad = await ipc1.invoke('app:login', { url: '不是网址' })
+  assert.equal(bad.ok, false)
+  assert.ok(String(bad.error).includes('不合法'), bad.error)
+
+  const ipc2 = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc2, getExecutor: () => null })
+  const noExec = await ipc2.invoke('app:login', { url: 'https://example.com/' })
+  assert.equal(noExec.ok, false)
+  assert.ok(String(noExec.error).includes('未就绪'), noExec.error)
+})
+
+test('app:login：导航被拒时如实返回失败原因', async () => {
+  const exec = fakeExecutor([])
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => exec })
+  const r = await ipc.invoke('app:login', { url: 'https://bad.example/' })
+  assert.equal(r.ok, false)
+  assert.ok(String(r.error).includes('打不开'), r.error)
+})
