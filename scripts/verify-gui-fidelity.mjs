@@ -75,6 +75,10 @@ const WAIT_CASES = [
   { key: 'wait-none', desc: '无等待态 → 不占位（元素不存在）', wait: {} },
   { key: 'wait-priority', desc: '多态并存 → 只出优先级最高的一条（失速 > 首字节）', wait: { stallMs: 96_000, firstByteMs: 5000 } },
   { key: 'wait-after-close', desc: '内核已死复位 → 等待条/提问卡/审批弹窗不得残留', wait: { firstByteMs: 5000, question: true, approval: true }, clearFirst: true },
+  // 压缩指示常驻收口（2026-09-13）：done 帧丢一次即常驻 ⇒ 兜底必须复位**陈旧**指示，
+  // 且**不得误清**仍在跑的新压缩。哨兵取真实判定用的数据（21min > 20min 上限；1min 远小）。
+  { key: 'wait-compact-stale', desc: '压缩指示挂起 21min（超兜底上限）→ 巡检复位，条必须消失', wait: { compacting: true, compactingSinceAgoMs: 21 * 60 * 1000 }, sweepFirst: true },
+  { key: 'wait-compact-fresh', desc: '压缩指示挂起 1min（未超上限）→ 巡检不得误清', wait: { compacting: true, compactingSinceAgoMs: 60 * 1000 }, sweepFirst: true },
 ]
 for (const c of WAIT_CASES) CASES.push({ ...c, health: GREEN_HEALTH })
 
@@ -89,6 +93,7 @@ import { TooltipProvider } from '@/components/ui'
 import { useHealthStore } from '@/stores/healthStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useChatStore } from '@/stores/chatStore'
+import { staleCompactionSids } from '@/lib/compactIndicator'
 
 // 主题类挂在 <html> 上（themes.css 的 .theme-dark 等定义 --health-tier-* 等令牌），
 // 不设主题则所有主题变量未定义 → 颜色解析为透明、泛光 box-shadow 失效（测量假阴性）。
@@ -123,6 +128,8 @@ window.__render = (i) => {
       : [],
     pendingQuestions: w.question ? { c1: { context: '', questions: [] } } : {},
     compactingBySession: w.compacting ? { c1: true } : {},
+    // 压缩起始时刻（2026-09-13 收口）：兜底巡检按它判新旧；缺省 = 无时间基准（判陈旧）
+    compactingSinceBySession: w.compactingSinceAgoMs ? { c1: Date.now() - w.compactingSinceAgoMs } : {},
   })
   root.render(
     // 与真实应用一致：Tooltip 必须在 TooltipProvider 内（App.tsx 根部提供）。
@@ -151,6 +158,15 @@ window.__clearWait = () => {
   useChatStore.getState().clearPermissionsForSession('c1')
 }
 window.__render(0)
+// 压缩指示兜底巡检的镜像（与 useYFWCLI.sweepStaleCompaction 同一份判定：真实纯函数
+// staleCompactionSids + 真实 store 动作）。验的是本次事故的可观测语义：
+// done 帧丢失后指示条不得常驻，而仍在跑的新压缩不得被误清。
+window.__sweepCompaction = () => {
+  const store = useChatStore.getState()
+  for (const sid of staleCompactionSids(store.compactingBySession, store.compactingSinceBySession, Date.now())) {
+    store.setCompacting(sid, false)
+  }
+}
 `
 const mainCjs = `
 const { app, BrowserWindow } = require('electron')
@@ -161,7 +177,7 @@ const RESULT_FILE = ${JSON.stringify(join(TMP, 'result.json'))}
 const SHOT_DIR = ${JSON.stringify(SHOT_DIR)}
 const shotFiles = []
 let shotErr = null
-const FX = ${JSON.stringify(CASES.map((c) => ({ key: c.key, clearFirst: !!c.clearFirst })))}
+const FX = ${JSON.stringify(CASES.map((c) => ({ key: c.key, clearFirst: !!c.clearFirst, sweepFirst: !!c.sweepFirst })))}
 
 const EXTRACT = \`(() => {
   const fill = document.querySelector('.health-meter-fill')
@@ -211,6 +227,15 @@ app.whenReady().then(async () => {
       const after = await win.webContents.executeJavaScript(EXTRACT)
       data.waitKindAfterClear = after.waitKind
       data.waitKindBeforeClear = data.waitKind
+    }
+    // sweepFirst 用例：先量"有指示"（应为 compact），再走兜底巡检，再量一次——
+    // 验"done 帧丢失的陈旧指示必须消失 / 新鲜压缩不得被误清"。
+    if (FX[i].sweepFirst) {
+      data.waitKindBeforeSweep = data.waitKind
+      await win.webContents.executeJavaScript('window.__sweepCompaction()')
+      await win.webContents.executeJavaScript('new Promise(r => setTimeout(() => r(1), 250))')
+      const afterSweep = await win.webContents.executeJavaScript(EXTRACT)
+      data.waitKindAfterSweep = afterSweep.waitKind
     }
 
     // 截图留证（人工眼见为实）：release/_gui-fidelity-shots/<key>.png
@@ -346,6 +371,13 @@ check(W6 && W6.waitKind === null, `无等待态不得渲染等待条（不占位
 check(!!W7 && W7.waitKind === 'stall', `多态并存应只出优先级最高的一条，实测 ${W7?.waitKind}`)
 check(!!W8 && W8.waitKindBeforeClear === 'approval' && W8.waitKindAfterClear === null,
   `内核已死复位后等待条不得残留，实测 before=${W8?.waitKindBeforeClear} after=${W8?.waitKindAfterClear}`)
+// ---- 压缩指示常驻收口（2026-09-13）----
+const W9 = byKey['wait-compact-stale'], W10 = byKey['wait-compact-fresh']
+check(!!W9 && W9.waitKindBeforeSweep === 'compact', `兜底前应先看到压缩指示，实测 ${W9?.waitKindBeforeSweep}`)
+check(!!W9 && W9.waitKindAfterSweep === null,
+  `done 帧丢失的陈旧压缩指示必须被兜底复位（不得常驻），实测 after=${W9?.waitKindAfterSweep}`)
+check(!!W10 && W10.waitKindBeforeSweep === 'compact' && W10.waitKindAfterSweep === 'compact',
+  `仍在跑的新压缩不得被误清，实测 before=${W10?.waitKindBeforeSweep} after=${W10?.waitKindAfterSweep}`)
 
 console.log('\n失真 GUI 渲染验证：')
 for (const r of results) console.log(`  · ${r.key.padEnd(22)} fillBg=${r.fillBg} 证据行=${rowsOf(r.text)} 角标=${/×\s*\d/.test(r.text) ? 'on' : 'off'} 泛光=${r.hasGlow ? 'on' : 'off'} 按钮=[${r.buttons.join(', ')}] rootHtml=${r.htmlLen}`)
