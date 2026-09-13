@@ -784,7 +784,6 @@ export const zhCN = {
   // --- 知识库面板（S2；Task 3 起逐任务补齐内容） ---
   knowledge: {
     title: '知识库',
-    spaceLabel: '空间',
     spaceNone: '未选择空间',
     spaceChoose: '选择空间',
     spaceEmpty: '没有可用空间',
@@ -795,6 +794,14 @@ export const zhCN = {
     viewSearch: '搜索',
     actionRefresh: '刷新',
     actionNewNote: '新建笔记',
+    actionCreate: '创建',
+    newNoteTitle: '新建笔记',
+    newNoteName: '文件名',
+    newNoteHint: '在空间根目录创建 .md（自动补后缀）',
+    newNoteEmpty: '请输入文件名',
+    newNoteInvalid: '文件名不合法：不能含 / \\ : * ? " < > | ，也不能以 . 开头',
+    newNoteFailed: '新建失败：{msg}',
+    readonlyHint: '该空间为只读：不能新建笔记，编辑视图已停用',
     statDocs: '文档',
     statBlocks: '块',
     outline: '大纲',

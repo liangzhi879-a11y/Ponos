@@ -20,6 +20,7 @@ import { KnowledgeToolbar } from './KnowledgeToolbar'
 import { KnowledgeViewTabs } from './KnowledgeViewTabs'
 import { KnowledgeEmpty } from './KnowledgeEmpty'
 import { KnowledgeSkeleton } from './KnowledgeSkeleton'
+import { KnowledgeSidebar } from './KnowledgeSidebar'
 
 export function KnowledgePanel() {
   const { t } = useTranslation()
@@ -61,17 +62,7 @@ export function KnowledgePanel() {
 
       {/* 三栏：左 236px（空间+树）/ 中 flex-1（四视图）/ 右 212px（大纲·反链·元信息） */}
       <div className="flex-1 flex min-h-0 min-w-0">
-        {/* Task 4 把这里换成 <KnowledgeSidebar/>（空间切换 + 懒加载树 + 新建） */}
-        <div className="w-[236px] shrink-0 border-r border-default flex flex-col">
-          <div className="h-8 shrink-0 flex items-center px-2 border-b border-default">
-            <span className="micro">{t('knowledge.spaceLabel')}</span>
-          </div>
-          <div className="flex-1 min-h-0 overflow-auto">
-            {spaces?.length
-              ? spaces.map(s => <p key={s.id} className="px-2 py-1 text-[11px] text-secondary truncate">{s.name}</p>)
-              : <KnowledgeEmpty title={t('knowledge.emptyPending')} className="!py-6" />}
-          </div>
-        </div>
+        <KnowledgeSidebar spaces={spaces} spacesLoading={spacesLoading} />
 
         <div className="flex-1 min-w-0 flex flex-col">
           {spacesError ? (

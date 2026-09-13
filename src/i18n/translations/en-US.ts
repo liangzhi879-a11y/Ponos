@@ -771,7 +771,6 @@ export const enUS: TranslationKeys = {
   // --- Knowledge panel (S2; filled in task by task from Task 3) ---
   knowledge: {
     title: 'Knowledge',
-    spaceLabel: 'Space',
     spaceNone: 'No space selected',
     spaceChoose: 'Choose a space',
     spaceEmpty: 'No spaces available',
@@ -782,6 +781,14 @@ export const enUS: TranslationKeys = {
     viewSearch: 'Search',
     actionRefresh: 'Refresh',
     actionNewNote: 'New note',
+    actionCreate: 'Create',
+    newNoteTitle: 'New note',
+    newNoteName: 'File name',
+    newNoteHint: 'Created at the space root as .md (suffix auto-added)',
+    newNoteEmpty: 'Enter a file name',
+    newNoteInvalid: 'Invalid name: no / \\ : * ? " < > | and no leading dot',
+    newNoteFailed: 'Create failed: {msg}',
+    readonlyHint: 'This space is read-only: no new notes, edit view disabled',
     statDocs: 'docs',
     statBlocks: 'blocks',
     outline: 'Outline',
