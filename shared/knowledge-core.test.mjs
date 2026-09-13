@@ -160,3 +160,108 @@ test('splitBlocks 对 BOM 开头的无 frontmatter 文本正常工作', () => {
   const blocks = splitBlocks('\uFEFF# 标题\n\n正文\n', { startLine: 1 })
   assert.deepEqual(blocks.map((b) => b.kind), ['heading', 'para'])
 })
+
+// ── Task 2: 向量与打分 ────────────────────────────────────────────────────
+// 期望值一律以 kernel/graph.mjs、kernel/memory.mjs 的**实跑输出**为准：Task 4 会把那些
+// 函数改成 re-export 本模块，任何"看起来更合理"的偏差都会在双端对拍时暴露。
+import {
+  gramTokens, vectorizeText, vectorizeRaw, cosine, buildIdf, countGrams,
+  keywordScore, structBoostOf, fuseScore, makeSnippet, blockIndexText, blockTagBoost,
+  W_VECTOR, W_KEYWORD, W_STRUCT, GRAPH_DECAY,
+} from './knowledge-core.mjs'
+
+test('gramTokens 与 kernel/graph.mjs 逐字一致（含跨界 bigram 特例）', () => {
+  // 权威示例取自 kernel/graph.mjs:21-26 注释（已实跑核对）
+  assert.deepEqual([...gramTokens('ps 表与 rd 表')], ['ps', '表与', '与r', 'rd', 'rd表'])
+  // word -> 末段 cjk：孤立尾字**不**单独产出，而是与词并成跨界 bigram 'rd表'
+  assert.deepEqual([...gramTokens('rd表')], ['rd', 'rd表'])
+  assert.deepEqual([...gramTokens('PS 表')], ['ps', 'ps表'])
+  // 中文段内部滑动 bigram；空白/标点作分隔不参与
+  assert.deepEqual([...gramTokens('知识库')], ['知识', '识库'])
+  assert.deepEqual([...gramTokens('')], [])
+  assert.deepEqual([...gramTokens('   ')], [])
+})
+
+test('vectorizeRaw 给出归一化前的范数', () => {
+  const { raw, norm } = vectorizeRaw('知识库 知识库')
+  assert.ok(raw.length > 0)
+  assert.ok(norm > 0)
+  const manual = Math.sqrt(raw.reduce((s, [, w]) => s + w * w, 0))
+  assert.ok(Math.abs(manual - norm) < 1e-9)
+})
+
+test('vectorizeText 归一化后乘 tagBoost（既有语义：结果非单位范数）', () => {
+  const a = vectorizeText('知识库', { tagBoost: 1 })
+  const b = vectorizeText('知识库', { tagBoost: 3 })
+  assert.equal(a.length, b.length)
+  for (const [g, wa] of a) {
+    const wb = new Map(b).get(g)
+    assert.ok(Math.abs(wb - wa * 3) < 1e-9, 'tagBoost 应在归一化之后整体放大')
+  }
+})
+
+test('vectorizeText 对空串返回空数组（不产生 NaN）', () => {
+  assert.deepEqual(vectorizeText(''), [])
+  assert.deepEqual(vectorizeText('   '), [])
+  assert.deepEqual(vectorizeText('', { tagBoost: 3 }), [])
+  assert.deepEqual(vectorizeText('   ', { tagBoost: 3 }), [])
+})
+
+test('cosine 对相同文本为 1、无关文本接近 0', () => {
+  const v = vectorizeText('知识库检索')
+  assert.ok(Math.abs(cosine(v, v) - 1) < 1e-9)
+  const u = vectorizeText('完全不同的内容 xyz')
+  assert.ok(cosine(v, u) < 0.2)
+})
+
+test('buildIdf 高频 gram 的 idf 低于低频 gram', () => {
+  const docs = [countGrams('知识库'), countGrams('知识库'), countGrams('罕见词条目')]
+    .map((gramCounts) => ({ gramCounts }))
+  const idf = buildIdf(docs)
+  // 注意用 '罕见'（真实产出的 bigram），单字 '罕' 不在 gramTokens 输出里（查不到 → undefined）
+  assert.ok(idf.get('知识') < idf.get('罕见'))
+  assert.equal(idf.size, 6) // 知识/识库/罕见/见词/词条/条目
+})
+
+test('keywordScore 标签命中(3) > 主题(2) = 摘要(2) > 全文(1)', () => {
+  const e = { tag: 'PS材料', theme: 'workflow', summary: 'PS材料整理', full: 'PS材料整理的做法' }
+  // theme 'workflow' 不含 'ps材料' → 主题项不计分：3(标签) + 2(摘要) + 1(全文) = 6
+  assert.equal(keywordScore(e, ['ps材料']), 6)
+  // 主题命中确实 +2（钉住 theme 分支，避免上面那条断言因"分支失效"而恒真）
+  assert.equal(keywordScore({ theme: 'workflow' }, ['workflow']), 2)
+  assert.equal(keywordScore(e, ['流程']), 0)     // 关键词须 ≥2 字符且需命中
+  assert.equal(keywordScore(e, ['x']), 0)        // 单字符关键词被过滤
+})
+
+test('structBoostOf：标题全等查询最重，heading 有底价，条目次之', () => {
+  const doc = { title: 'workflow.md', tags: ['企微CLI化'] }
+  assert.equal(structBoostOf({ block: { kind: 'para' }, doc, query: 'workflow.md' }), 1)
+  assert.equal(structBoostOf({ block: { kind: 'para' }, doc, query: '无', keywords: ['企微CLI化'] }), 0.67)
+  assert.equal(structBoostOf({ block: { kind: 'heading' }, doc, query: '无' }), 0.5)
+  assert.equal(structBoostOf({ block: { kind: 'entry' }, doc, query: '无' }), 0.4)
+  assert.equal(structBoostOf({ block: { kind: 'para' }, doc, query: '无' }), 0)
+})
+
+test('fuseScore 三路权重正确，图扩展打 0.9 折扣', () => {
+  const s = fuseScore({ cos: 1, kw: 8, struct: 1 })
+  assert.ok(Math.abs(s - (W_VECTOR * 1 + W_KEYWORD * 1 + W_STRUCT * 1)) < 1e-9)
+  assert.ok(Math.abs(fuseScore({ cos: 1, kw: 8, struct: 1, graph: true }) - s * GRAPH_DECAY) < 1e-9)
+  // kw 超过 8 分被截到 1（防标签多次命中把分数推爆）
+  assert.equal(fuseScore({ kw: 80 }), fuseScore({ kw: 8 }))
+})
+
+test('makeSnippet 压平空白并按上限截断加省略号', () => {
+  assert.equal(makeSnippet('  a\n\n b  '), 'a b')
+  const long = makeSnippet('x'.repeat(200), { maxLen: 10 })
+  assert.equal(long.length, 10)
+  assert.ok(long.endsWith('…'))
+})
+
+test('blockIndexText 只对经验条目加标签前缀；blockTagBoost 只给它 3 倍', () => {
+  const entry = { kind: 'entry', text: '摘要', entryTag: '企微CLI化' }
+  assert.equal(blockIndexText(entry), '企微CLI化 摘要')
+  assert.equal(blockTagBoost(entry), 3)
+  const para = { kind: 'para', text: '正文', entryTag: 'x' }
+  assert.equal(blockIndexText(para), '正文')
+  assert.equal(blockTagBoost(para), 1)
+})

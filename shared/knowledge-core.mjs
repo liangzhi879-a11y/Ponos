@@ -12,6 +12,9 @@
 // 迁移说明：gramTokens/vectorizeText/cosine/buildIdf 与 hashLine 原在
 // kernel/graph.mjs 与 kernel/memory.mjs（且 server/experience.mjs 有一份重复）；
 // 本模块是唯一权威实现，原处改为 re-export（Task 4），行为逐字不变。
+// 本文件已落地的函数（Task 1：切块/frontmatter/条目解析；Task 2：向量/IDF/关键词分/
+// 结构加权/融合评分/snippet）——凡标注"迁移自"的，函数体都是从原处**逐字复制**，
+// 不要在此"优化"：偏差会在 Task 13 的双端对拍里变成真实检索分数漂移。
 
 export const INDEX_VERSION = 1
 
@@ -169,4 +172,156 @@ export function blockIndexText(block) {
 // 条目块的向量化用 tagBoost=3（同 kernel/graph.mjs:120 的既有语义：标签命中额外加权）
 export function blockTagBoost(block) {
   return block?.kind === 'entry' && block.entryTag ? 3 : 1
+}
+
+// ── 分词与向量 ────────────────────────────────────────────────────────────
+// 迁移自 kernel/graph.mjs:20-88，逐字保持（含注释里的边界语义，测试断言依赖它）。
+const CJK = /[\u4e00-\u9fff]/
+const WORD = /[A-Za-z0-9]/
+
+// 切分：中文段字符 bigram + 英文/数字段单词小写。
+// 段边界语义（对齐 test 断言 ['ps','表与','与r','rd','rd表']）：
+//   - word 段 -> 整体小写；cjk 段 -> 内部滑动 bigram
+//   - cjk->word 边界 -> 末 cjk 字 + 首词字（小写）组成的跨界 bigram
+//   - word->末段 cjk 边界 -> 整体小写词 + 首 cjk 字（避免孤立尾字丢失）
+export function* gramTokens(text) {
+  const s = String(text ?? '').trim()
+  const runs = [] // { type: 'word' | 'cjk', text }
+  let cur = ''
+  let curType = null
+  const flush = (type) => {
+    if (cur) runs.push({ type: curType, text: cur })
+    cur = ''
+    curType = type
+  }
+  for (const ch of s) {
+    const t = CJK.test(ch) ? 'cjk' : WORD.test(ch) ? 'word' : null
+    if (t === null) { flush(null); continue } // 空白/标点分词，不参与 n-gram
+    if (t !== curType) flush(t)
+    cur += ch
+  }
+  flush(null)
+  for (let i = 0; i < runs.length; i++) {
+    const r = runs[i]
+    const next = runs[i + 1]
+    if (r.type === 'word') {
+      yield r.text.toLowerCase()
+      if (next && next.type === 'cjk' && i + 1 === runs.length - 1) {
+        yield r.text.toLowerCase() + [...next.text][0] // word->末段 cjk 边界
+      }
+    } else {
+      const chars = [...r.text]
+      for (let j = 0; j + 1 < chars.length; j++) yield chars[j] + chars[j + 1]
+      if (next && next.type === 'word') {
+        yield chars[chars.length - 1] + next.text[0].toLowerCase() // cjk->word 边界
+      }
+    }
+  }
+}
+
+// gram -> 词频。索引构建与 IDF 统计都用"文本键"，因为哈希 id 查不到 idf
+// （见 kernel/graph.mjs:108 的踩坑注释）。
+export function countGrams(text) {
+  const tf = new Map()
+  for (const g of gramTokens(text)) tf.set(g, (tf.get(g) || 0) + 1)
+  return tf
+}
+
+// 归一化**前**的向量与范数（索引构建要把未归一化权重落进 postings，查询时点积才是真余弦）。
+// tagBoost 不在此处参与：它按 graph.mjs 的既有语义在归一化之后乘，见 vectorizeText。
+export function vectorizeRaw(text, { idf = null } = {}) {
+  const tf = countGrams(text)
+  const raw = []
+  for (const [gram, count] of tf) {
+    const w = (1 + Math.sqrt(count)) * (idf?.get(gram) ?? 1)
+    raw.push([hashLine(gram), w])
+  }
+  const norm = Math.sqrt(raw.reduce((s, [, w]) => s + w * w, 0))
+  return { raw, norm }
+}
+
+export function vectorizeText(text, { tagBoost = 1, idf = null } = {}) {
+  const { raw, norm } = vectorizeRaw(text, { idf })
+  // tagBoost 在归一化之后乘（kernel/graph.mjs 的既有测试断言依赖此顺序，勿改）
+  const boost = tagBoost || 1
+  return norm > 0 ? raw.map(([id, w]) => [id, (w / norm) * boost]) : []
+}
+
+// 两个向量都已归一化 → 点积即余弦。参数顺序无关（都是求交）。
+export function cosine(a, b) {
+  const bm = new Map(b)
+  let dot = 0
+  for (const [id, wa] of a) { const wb = bm.get(id); if (wb) dot += wa * wb }
+  return dot
+}
+
+export function buildIdf(docs) {
+  const df = new Map()
+  const N = docs.length
+  for (const d of docs) for (const gram of d.gramCounts.keys()) df.set(gram, (df.get(gram) || 0) + 1)
+  const idf = new Map()
+  // 标准 IDF：ln((N+1)/(df+1)) + 1，df 高者 idf 低
+  for (const [gram, count] of df) idf.set(gram, Math.log((N + 1) / (count + 1)) + 1)
+  return idf
+}
+
+// ── 关键词精确分 ──────────────────────────────────────────────────────────
+// 迁移自 kernel/memory.mjs:117-132，权重不变：标签命中 3 > 主题 2 = 摘要 2 > 全文 1。
+// 单字关键词（长度 < 2）被过滤：中文单字命中噪声过大，会把无关条目拉上榜。
+export function keywordScore({ tag = '', summary = '', full = '', theme = '' }, keywords = []) {
+  const kws = (keywords || []).map((k) => String(k).toLowerCase()).filter((k) => k.length >= 2)
+  if (!kws.length) return 0
+  const tagL = String(tag || '').toLowerCase()
+  const sumL = String(summary || '').toLowerCase()
+  const fullL = String(full || '').toLowerCase()
+  const themeL = String(theme || '').toLowerCase()
+  let score = 0
+  for (const k of kws) {
+    if (tagL.includes(k)) score += 3
+    if (themeL.includes(k)) score += 2
+    if (sumL.includes(k)) score += 2
+    if (fullL.includes(k)) score += 1
+  }
+  return score
+}
+
+// ── 打分融合（spec §5.4）──────────────────────────────────────────────────
+// 三路权重之和为 1：向量（语义召回主路）压倒关键词与结构分，避免"精确命中关键词的
+// 无关长文"挤掉语义最相关的块。
+export const W_VECTOR = 0.60
+export const W_KEYWORD = 0.25
+export const W_STRUCT = 0.15
+export const GRAPH_DECAY = 0.9
+
+// 结构加权：文档标题被查询命中是最强信号（1.0），文档标签次之（0.67——标签是稀疏人工
+// 标注，命中即强相关），heading 有底价（0.5——标题本身就是高信息块），条目块 0.4
+// （经验条目是高信息密度单元），普通段落 0（结构上无信号）。
+export function structBoostOf({ block = null, doc = null, query = '', keywords = [] } = {}) {
+  const q = String(query || '').trim().toLowerCase()
+  const kws = (keywords || []).map((k) => String(k).toLowerCase()).filter((k) => k.length >= 2)
+  let s = 0
+  const title = String(doc?.title || '').toLowerCase()
+  if (title && q && title.includes(q)) s = 1
+  const tags = (doc?.tags || []).map((t) => String(t).toLowerCase())
+  // 双向包含匹配：查询"企微"要能命中标签"企微CLI化"，反之亦然
+  if (tags.length && kws.length && tags.some((t) => kws.some((k) => t.includes(k) || k.includes(t)))) {
+    s = Math.max(s, 0.67)
+  }
+  if (block?.kind === 'heading') s = Math.max(s, 0.5)
+  if (block?.kind === 'entry') s = Math.max(s, 0.4)
+  return s
+}
+
+// 关键词分除以 8 折到 [0,1] 再参与加权：标签+摘要+全文全命中约 8 分即满格，
+// 防止"同一关键词在标签与摘要里重复命中"把总分推过向量分（会被截断）。
+export function fuseScore({ cos = 0, kw = 0, struct = 0, graph = false } = {}) {
+  const base = W_VECTOR * cos + W_KEYWORD * Math.min(kw / 8, 1) + W_STRUCT * struct
+  return graph ? base * GRAPH_DECAY : base
+}
+
+// 检索结果摘要：压平换行/连续空白（行内条目与卡片都需要单行），超长按上限截断加省略号。
+export function makeSnippet(text, { maxLen = 160 } = {}) {
+  const s = String(text ?? '').replace(/\s+/g, ' ').trim()
+  if (s.length <= maxLen) return s
+  return s.slice(0, Math.max(1, maxLen - 1)) + '…'
 }
