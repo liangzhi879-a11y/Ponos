@@ -7,7 +7,7 @@
 // 同步契约：run() 不返回 Promise，故这里全程同步——store.load() 是同步函数（Task 6
 // 的契约，内部无任何 await），此处**不写 await**。
 import { createKnowledgeStore } from './knowledge.mjs'
-import { makeSnippet } from '../shared/knowledge-core.mjs'
+import { makeSnippet, isBlockId } from '../shared/knowledge-core.mjs'
 
 /**
  * 结构化检索（S3 §4.2 起为 KnowledgeSearch / MemorySearch 两个工具**共用的唯一入口**）。
@@ -58,6 +58,93 @@ export function searchKnowledge({ configDir, query, keywords = [], spaces = null
   })
   return {
     content: `【相关知识检索】${r.count} 条命中（${new Set(r.items.map((i) => i.docId)).size} 篇文档）：
+${lines.join('\n')}`,
+    isError: false,
+  }
+}
+
+// ── S5 Task 10：`related` 参数（给定 blockId 展开**一跳**锚点）────────────────────
+/**
+ * 一跳展开的条数上限。
+ *
+ * **why 5，而不是复用注入侧的 3 或内核的 MAX_RELATED(8)**：
+ *   - 注入侧取 3 是因为那是**每次请求**都要付的固定成本；本工具是模型**主动发起的一次**调用，
+ *     可以略宽——模型想要"多几条候选路径"时不该被迫连调好几次；
+ *   - 但必须**明显小于 8**：模型极易把返回的 blockId 再喂回来继续展开，露出条数就是链式膨胀的
+ *     底数（连展开 3 跳 = 5³ 条）。5 在"够选"与"抗链式膨胀"之间取平衡，且与骨架层/覆盖层各自的
+ *     上限 `MAX_TAG_RELATED`/`MAX_CONTENT_RELATED`（都是 5）同阶，便于解释；
+ *   - `duplicate` 不占该预算（内核 `getRelated` 口径，spec §5.5）：疑似重复要在 agent 侧
+ *     **独立**呈现，不能被关联预算饿死。
+ */
+export const RELATED_EXPAND_LIMIT = 5
+
+/** 锚点的理由文案（tag 给标签值；content/duplicate 给分数）。与注入层的紧凑写法**有意不同**：
+ *  这里是"一行一条"，不必像注入层那样把多条挤成一行。只读 `why`/`score`，绝不取正文。 */
+function whyLabel(x) {
+  const why = x?.why
+  if (why?.kind === 'tag') return `同标签:${why.tag}`
+  if (why?.kind === 'duplicate') return `疑似重复（同一份内容，不用重复读）`
+  if (why?.kind === 'content') return `内容相似${typeof x.score === 'number' ? x.score.toFixed(2) : ''}`
+  return String(why?.kind ?? '未知')
+}
+
+/**
+ * 一跳展开的数据层：`blockId → getRelated(blockId, {validate, limit})`。
+ *
+ * **只一跳**：这里只调一次 `getRelated`，**绝不**对返回的锚点再展开（spec §7.6 明确"不自动多跳"）。
+ * 多跳自动扩散会让一次工具调用变成不可控的上下文成本（而且模型的兴趣点会漂移）。
+ *
+ * `exists` 与 `related` 分开报：both「blockId 写错」与「条目确实孤立」都表现为空数组，
+ * 但给模型的下一步动作完全不同（前者去重新检索拿 id，后者换关键词/换角度）。
+ */
+export function expandRelatedItems({ configDir, blockId, limit = RELATED_EXPAND_LIMIT } = {}) {
+  const id = String(blockId || '').trim()
+  if (!id) return { ok: true, blockId: '', related: [], count: 0, exists: false, missingBlockId: true }
+  try {
+    const store = createKnowledgeStore({ configDir })
+    store.load({})
+    // 块号取**最后**一个 `#` 之后的部分（docId 自身可能含 `#`，见 shared 的 isBlockId）；
+    // 形状校验复用 shared 的 isBlockId，不在这里自造一套切法（少一处口径就少一处漂移）。
+    const exists = isBlockId(id) && Boolean(
+      store.getDoc(id.slice(0, id.lastIndexOf('#')))
+        ?.blocks?.some((b) => b.n === Number(id.slice(id.lastIndexOf('#') + 1))),
+    )
+    const related = store.getRelated(id, { validate: true, limit })
+    return { ok: true, blockId: id, related, count: related.length, exists }
+  } catch (e) {
+    // 与 searchKnowledge 同一纪律：检索侧故障不打断会话，折成 ok:false 让调用方降级
+    return { ok: false, error: e?.message || String(e), blockId: id, related: [], count: 0, exists: false }
+  }
+}
+
+/**
+ * 一跳展开的渲染层（`KnowledgeSearch` 的 `related` 参数）。
+ * 回执只给 **blockId + 标题 + 理由**：要正文让模型自己 Read（`docId` 就在 blockId 里）——
+ * 把正文预装进来等于让"展开一跳"变成"再注入一遍全文"。
+ */
+export function expandRelated({ configDir, blockId, limit = RELATED_EXPAND_LIMIT } = {}) {
+  const r = expandRelatedItems({ configDir, blockId, limit })
+  if (r.missingBlockId) {
+    return { content: 'related 参数缺失：请给出要展开的 blockId（形如 experience/workflow.md#2，取自命中行的括号内）', isError: true }
+  }
+  if (!r.ok) {
+    return { content: `知识库关联暂不可用（${r.error}）。可直接用 Read 打开记忆文件。`, isError: false }
+  }
+  if (!r.exists) {
+    return {
+      content: `未找到条目「${r.blockId}」：blockId 需为「文件#块号」形态，且该块仍在索引中。先用 query 检索一次，拿最新回执里的 blockId。`,
+      isError: false,
+    }
+  }
+  if (!r.count) {
+    return {
+      content: `条目「${r.blockId}」暂无关联锚点（关联在入库时派生：孤立条目没有可继续阅读的路径）。可换个关键词用 query 检索。`,
+      isError: false,
+    }
+  }
+  const lines = r.related.map((x) => `- [${x.blockId}]${x.title ? `「${x.title}」` : ''} ${whyLabel(x)}`)
+  return {
+    content: `【一跳关联】「${r.blockId}」可继续阅读 ${r.count} 条（已按关联强度排序，最多 ${limit} 条；只给位置与理由，需正文用 Read 打开对应文件，不再自动多跳）：
 ${lines.join('\n')}`,
     isError: false,
   }

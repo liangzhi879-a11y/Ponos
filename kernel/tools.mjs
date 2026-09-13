@@ -16,7 +16,7 @@ import { matchesHighRisk } from './highrisk.mjs'
 import { discoverSkillsAll, loadSkillContent } from './skills.mjs'
 import { searchSkills } from './skill-search.mjs'
 import { searchLocalMemory } from './memory-search.mjs'
-import { searchKnowledge, searchKnowledgeItems } from './knowledge-search.mjs'
+import { searchKnowledge, searchKnowledgeItems, expandRelated, RELATED_EXPAND_LIMIT } from './knowledge-search.mjs'
 import { getProvider } from './provider.mjs'
 import { perfTime } from './perf.mjs'
 
@@ -1429,7 +1429,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
     // S1 知识检索：走已建索引的块级检索（比 MemorySearch 的 O(N) 全量扫描快得多），
     // 支持按空间过滤与 snippet/full 两档。S1 阶段与 MemorySearch 并存，S3 收敛。
     KnowledgeSearch: {
-      description: '在知识库中做块级检索（本地索引，无网络）：可跨"个人经验/会话记忆/我的笔记/知识包"等空间，按语义+关键词命中到**单个知识块**（一条经验、一个标题段、一段正文）。返回命中清单（空间/文件/标题/行号/分数/摘要），需全文用 Read 读对应文件行。适合"知识库里有没有关于 X 的内容"类查询。spaces 可选限定空间；mode=full 返回整块原文。',
+      description: '在知识库中做块级检索（本地索引，无网络）：可跨"个人经验/会话记忆/我的笔记/知识包"等空间，按语义+关键词命中到**单个知识块**（一条经验、一个标题段、一段正文）。返回命中清单（空间/文件/标题/行号/分数/摘要），需全文用 Read 读对应文件行。适合"知识库里有没有关于 X 的内容"类查询。spaces 可选限定空间；mode=full 返回整块原文。命中行括号内是 blockId；给 related=该 blockId 可展开这条的**一跳**关联锚点（只回 blockId/标题/理由，不做多跳扩散）。',
       concurrencySafe: true,
       input_schema: {
         type: 'object',
@@ -1440,12 +1440,19 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
           spaces: { type: 'array', items: { type: 'string' }, description: '可选：限定空间 id 列表（见 /knowledge/spaces）' },
           topK: { type: 'number', description: '可选：返回条数上限（1-10，默认 5）' },
           mode: { type: 'string', description: "可选：'snippet'（默认，省上下文）| 'full'（整块原文）" },
+          related: { type: 'string', description: '可选：给一个命中行的 blockId（形如 experience/workflow.md#2），返回该条目的**一跳**关联锚点（最多 5 条，只给 blockId/标题/理由；需正文用 Read）。与 query 二选一或并用。' },
         },
-        required: ['query'],
+        // S5 Task 10：`required` 由 ['query'] 放宽为二者皆可（至少给一个，由 run() 判）。
+        // **why 必须放宽**：API 层会校验 required，若仍强制 query，"只想展开一跳"的调用会被
+        // 直接 400 掉 —— 新参数就成了摆设。既有调用方一律带 query，行为不受影响。
+        required: [],
       },
       run: (input) => {
+        const relId = String(input?.related ?? '').trim()
         const q = String(input?.query ?? '').trim()
-        if (!q) return { content: 'query 参数缺失：请描述想检索的知识主题', isError: true }
+        if (!q && !relId) {
+          return { content: 'query 参数缺失：请描述想检索的知识主题（或给 related 指定 blockId 展开一跳关联）', isError: true }
+        }
         // configDir 推导：createToolRegistry 收到的 memoryRoot = <configDir>/memory/personal
         // （kernel/cli.mjs 的 memoryRoot(configDir)），故 <configDir> = memoryRoot 上溯两级。
         // memoryRoot 缺失（部分测试/嵌入场景不传）时**不猜路径**——用相对路径探知识根会
@@ -1453,8 +1460,12 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
         if (!memoryRoot) {
           return { content: '知识库检索不可用（未配置知识根 memoryRoot）。可直接用 Read 打开记忆文件。', isError: false }
         }
+        const configDir = resolve(memoryRoot, '..', '..')
+        // related 分支优先：给了 blockId 就是"展开这条往哪读"，与 query 检索互不干扰
+        // （同一工具的两个查询维度；两条路都只读、都不含正文）。
+        if (relId) return expandRelated({ configDir, blockId: relId, limit: RELATED_EXPAND_LIMIT })
         return searchKnowledge({
-          configDir: resolve(memoryRoot, '..', '..'),
+          configDir,
           query: q,
           keywords: Array.isArray(input?.keywords) ? input.keywords : [],
           spaces: Array.isArray(input?.spaces) && input.spaces.length ? input.spaces : null,

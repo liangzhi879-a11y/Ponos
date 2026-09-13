@@ -24,6 +24,16 @@ const SLOW_MS = 500
 const RECALL_CANDIDATES = 8
 /** 同一文档最多贡献的块数（防单文档刷屏，spec §3.2）。 */
 const MAX_BLOCKS_PER_DOC = 2
+/**
+ * 每条命中最多附几个锚点摘要（S5 Task 10 / spec §7.6）。
+ *
+ * **why 是 3**：与 `kernel/knowledge.mjs` 的 `SEARCH_RELATED_TOPN` 同值。注入语料是**每次请求
+ * 都要付的固定成本**（S3 的核心教训：顺手多带一点就把上下文预算吃光），而锚点还只是
+ * "这条能往哪读"的指路牌——真正的正文由模型按需 Read。
+ * 这里**再截一次**而不是直接信 `it.related` 的长度：上游上限是工具侧的选择，注入侧不该
+ * 被动跟着膨胀（两道闸门各守各的预算；将来放开工具侧上限也不会连带撑爆每次请求）。
+ */
+const INJECT_RELATED_TOPN = 3
 
 // ── 灰度开关解析（D1）───────────────────────────────────────────────────────
 // 优先级：env > settings > 缺省。**缺省必须是 legacy**——老用户升级后行为不得突变
@@ -181,8 +191,11 @@ export function buildKnowledgeInjection({
  * 顺序即 store.search 的分数降序——升级只改渲染文本、**不重新检索**，避免"两套排序"漂移。
  */
 function renderRecall(items, { store, cap }) {
-  const header = '\n\n【相关知识抽调】根据当前任务上下文，以下知识块与任务直接相关，可直接引用（格式：-[空间|标题] 摘要 -- 文件 › 小节 · 第 N 行 (块id)）：\n'
-  if (!Array.isArray(items) || !items.length || cap <= byteLen(header)) return { section: '', count: 0 }
+  const head = '\n\n【相关知识抽调】根据当前任务上下文，以下知识块与任务直接相关，可直接引用（格式：-[空间|标题] 摘要 -- 文件 › 小节 · 第 N 行 (块id)）：\n'
+  // 锚点说明只在**确有锚点**时才追加（见下方 rows.some）：off 模式与无关联的库因此与 S4
+  // 逐字节一致——"新能力可回滚"这句话必须体现在输出上，而不只是体现在代码分支上。
+  const anchorHint = '（行尾 ` ↵关联：文件#块号「标题」[理由]` 是这条还能往哪读的一跳锚点，只给位置与理由；需正文用 Read 打开该文件）\n'
+  if (!Array.isArray(items) || !items.length || cap <= byteLen(head)) return { section: '', count: 0 }
 
   // 复选框行（`- [ ] Step N`）是无标签的 entry 块：它们是任务清单而非沉淀知识。
   // S1 裁定"经验条目 = 有 tag 的 entry 块"，S2 据此定渲染规则，注入层沿用同一判定
@@ -209,40 +222,84 @@ function renderRecall(items, { store, cap }) {
     if (it.kind === 'entry' && !meta.tag) continue     // 无标签 entry = 清单行，不是知识
     seen.add(it.blockId)
     perDoc.set(it.docId, n + 1)
-    rows.push({ it, text: it.snippet, full: meta.full })
+    rows.push({ it, text: it.snippet, full: meta.full, anchorText: anchorTextOf(it) })
   }
+
+  // 表格头之后的总预算里，锚点说明也算进去（`used` 从 byteLen(header) 起算）——
+  // 预算必须按**实际装入的字节**记账，否则"新增一行说明"就是超预算的隐形入口。
+  const header = head + (rows.some((r) => r.anchorText) ? anchorHint : '')
 
   // 第一遍：全按摘要贪心装入（省预算）。第一条无条件放入——否则预算极小时抽调层恒空，
   // 用户看到"注入失效"（与 store.search 首条无条件放入的既有纪律一致）。
   const included = []
   let used = byteLen(header)
   for (const row of rows) {
-    const line = renderLine(row, false)
+    // 锚点是**锦上添花**：装不下就先丢锚点、保住命中行本身。否则在紧预算下"附锚点"会挤掉
+    // 既有命中块 —— 那是行为退化，而本任务是纯增量（命中块才是模型真正要读的东西）。
+    const withAnchor = renderLine(row, false, true)
+    let useAnchors = Boolean(row.anchorText)
+    if (useAnchors && used + byteLen(withAnchor) + 1 > cap) useAnchors = false
+    row.useAnchors = useAnchors
+    const line = renderLine(row, false, useAnchors)
     const lb = byteLen(line) + 1
     if (included.length && used + lb > cap) break
+    row.summaryLine = line   // 第二遍算升级成本时要拿"实际装入的那一行"做基准
     included.push(row)
     used += lb
   }
 
   // 第二遍：预算有余量 → 按分数从高到低（included 已是分数序）把块升级为全文。
-  // 升级成本 = 全文比摘要多出的字节；装不下就停（不跳过低分块去升级更低分的，保持单调）。
+  // 升级成本 = 全文行比摘要行多出的字节（含 ` ·全文` 标记本身）；装不下就停
+  // （不跳过低分块去升级更低分的，保持单调）。
   let leftover = cap - used
   for (const row of included) {
     if (!row.full || row.full === row.text) continue
-    const cost = byteLen(row.full) - byteLen(row.text)
+    const cost = byteLen(renderLine(row, true, row.useAnchors)) - byteLen(row.summaryLine)
     if (cost <= leftover) { row.upgraded = true; leftover -= cost }
   }
 
   if (!included.length) return { section: '', count: 0 }
-  return { section: header + included.map((r) => renderLine(r, true)).join('\n') + '\n', count: included.length }
+  return { section: header + included.map((r) => renderLine(r, true, r.useAnchors)).join('\n') + '\n', count: included.length }
 }
 
-function renderLine(row, withMarker) {
+/**
+ * 命中项的锚点摘要文本（S5 Task 10）：`文件#块号「标题」[理由]` —— 只回答"这条还能往哪读"。
+ *
+ * **绝不含正文**：`it.related` 本身就只有 `{blockId,docId,title,why,score}`（Task 6 契约），
+ * 这里也只挑这几个字段拼串，**不**回 store 取目标块的 text/full：注入一次请求的成本要恒定，
+ * 锚点带正文就等于把 topK 之外的内容偷偷塞进每一次请求。
+ *
+ * **duplicate 一律剔除**：它是"这条与那条疑似同一份内容"的**去重提示**，不是阅读路径——
+ * 混进锚点列表既白耗预算，又会诱导模型把重复内容当新知识再读一遍（spec §5.5 也要求它独立呈现）。
+ *
+ * off 模式（`knowledgeRelateMode: 'off'`）下 `search()` **不带** `related` 字段（Task 6 契约），
+ * 这里自然得到空串 ⇒ 注入输出与 S4 等价，无需在本模块再判一次开关（少一处开关就少一处漂移）。
+ */
+function anchorTextOf(it) {
+  const rel = Array.isArray(it.related) ? it.related : []
+  const keep = rel.filter((r) => r?.why?.kind !== 'duplicate').slice(0, INJECT_RELATED_TOPN)
+  if (!keep.length) return ''
+  return keep.map((r) => {
+    const why = r.why?.kind === 'tag'
+      ? `同标签:${r.why.tag}`
+      : r.why?.kind === 'content'
+        ? `内容相似${typeof r.score === 'number' ? r.score.toFixed(2) : ''}`
+        : String(r.why?.kind ?? '')
+    return `${r.blockId}${r.title ? `「${r.title}」` : ''}[${why}]`
+  }).join(' ；')
+}
+
+function renderLine(row, withMarker, useAnchors = false) {
   const it = row.it
   const text = row.upgraded ? row.full : row.text
   const where = `${it.docId}${it.heading ? ` › ${it.heading}` : ''} · 第 ${it.line} 行 (${it.blockId})`
   // `·全文` 标记让模型知道"这条已给全，不必再 Read"——正是 D3 升级的收益所在。
-  return `- [${it.spaceId}|${it.title}] ${text} -- ${where}${row.upgraded && withMarker ? ' ·全文' : ''}`
+  const marker = row.upgraded && withMarker ? ' ·全文' : ''
+  // 锚点一律追加在**行尾**：既不打乱既有 `(块id)` 的位置（现有测试与模型习惯都按它取 id），
+  // 也让"命中行"与"可继续阅读的指路牌"视觉上分得开。理由标签用 `[...]` 而非 `(...)`，
+  // 避免引入第二个圆括号组去干扰按 `(...)` 取 blockId 的既有解析。
+  const rel = useAnchors && row.anchorText ? ` ↵关联：${row.anchorText}` : ''
+  return `- [${it.spaceId}|${it.title}] ${text} -- ${where}${marker}${rel}`
 }
 
 function record(stat, { queried }) {
