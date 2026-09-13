@@ -28,8 +28,19 @@ const SYSTEM_RULES = [
   'kind 判定：只读/查询/导出/查看 → "read"；提交/保存/修改/删除/发送/下发 → "write"。拿不准一律按 "write"（更保守）。',
   `web 的 steps.act 只能取：${WEB_ACTS.join(', ')}；desktop 的 steps.act 只能取：${DESKTOP_ACTS.join(', ')}。`,
   '步骤里用到的选择器要来自探测素材中的真实元素；**选择器不确定就干脆不要写这条命令**，不要编造。',
+  '命令参数在步骤里的写法固定为 ${参数名}（例：url:"/orders?id=${orderId}"、value:"${orderNo}"），不要用 {{参数名}} 或其它写法。',
   '给出 1 到 5 条最有价值的命令；至少 1 条 read 命令，且该 read 命令最好**不需要参数**（便于系统自动试跑验证）。',
   '绝对不要写入口令、令牌、密钥、身份证号等敏感信息。',
+].join('\n')
+
+/** 没有探测素材时追加的补充规则：明确告诉模型"你在靠公开知识推断"，并要求保守 */
+const NO_PROBE_RULES = [
+  '注意：本次**没有拿到页面/程序的探测素材**（可能是登录后才可见、纯前端渲染或抓取被拒）。',
+  '请基于该站点/程序的公开常识推断最常见的操作路径，并遵守：',
+  '· 优先用「导航到某个 URL + snapshot 取快照」这类**不依赖具体选择器**的命令；',
+  '· 万不得已才用选择器，且只用最保守的写法（如 input[type=search]、button[type=submit]、form 等通用选择器）；',
+  '· commands 数量取小（1~3 条），不要编造细节参数；',
+  '· 每条命令的 title 里不必标注，但不要假装你看到过页面。',
 ].join('\n')
 
 /** 把浏览器快照裁成适合塞进提示词的形状（真实字段：page/interactives[{ref,tag,label,path_hint}]） */
@@ -40,6 +51,9 @@ function snapshotForPrompt(snap) {
       ? { url: snap.page.url, title: snap.page.title, readyState: snap.page.readyState, loading: snap.page.loading, captcha: snap.page.captcha, logged_in: snap.page.logged_in }
       : undefined,
     text: typeof snap.text === 'string' ? snap.text.slice(0, 4000) : undefined,
+    // info：页面上的非交互文本（label/value，如表格数据与状态文案）。真实快照的正文在这里，
+    // 而它此前没进提示词——模型只看得到可点元素，看不到"页面里有什么内容"。
+    info: Array.isArray(snap.info) ? snap.info.slice(0, 80) : undefined,
     interactives: Array.isArray(snap.interactives)
       ? snap.interactives.slice(0, 120).map((e) => ({ ref: e.ref, tag: e.tag, label: e.label, path_hint: e.path_hint, href: e.href }))
       : undefined,
@@ -49,19 +63,28 @@ function snapshotForPrompt(snap) {
 
 /**
  * 组装提示词。纯函数——同一入参必得同一出参，便于测试与排障。
+ * @param {{target:object, probeMaterial:object, previousErrors?:string[], probeMode?:'browser'|'http'|'http-thin'|'none'}} p
+ *   probeMode 决定素材可信度：browser（真实 DOM 快照）> http（后台抓取的静态 HTML）> http-thin（页面是 JS 壳）
+ *   > none（没拿到素材 → 追加 NO_PROBE_RULES，让模型靠公开知识保守推断）
  * @returns {{system:string, user:string}}
  */
-function buildPrompt({ target, probeMaterial, previousErrors } = {}) {
+function buildPrompt({ target, probeMaterial, previousErrors, probeMode } = {}) {
   const parts = []
   parts.push(`目标：${JSON.stringify(target || {})}`)
   const material = { ...(probeMaterial || {}) }
   if (Array.isArray(previousErrors) && previousErrors.length) material.previousErrors = previousErrors
-  parts.push(`探测素材（JSON，来自真实页面/程序的探测结果）：\n${JSON.stringify(material).slice(0, SNAPSHOT_CHAR_CAP)}`)
+  const noMaterial = !probeMaterial || (typeof probeMaterial === 'object' && Object.keys(probeMaterial).length === 0)
+  const mode = probeMode || (noMaterial ? 'none' : 'browser')
+  if (mode === 'browser') parts.push(`探测素材（JSON，来自真实页面的 DOM 快照）：\n${JSON.stringify(material).slice(0, SNAPSHOT_CHAR_CAP)}`)
+  else if (mode === 'http') parts.push(`探测素材（JSON，来自页面 HTML 的静态解析；页面若有 JS 渲染可能不完整）：\n${JSON.stringify(material).slice(0, SNAPSHOT_CHAR_CAP)}`)
+  else if (mode === 'http-thin') parts.push(`探测素材（JSON，来自页面 HTML，但该页面疑似**前端渲染的空壳**，素材很少，仅供参考）：\n${JSON.stringify(material).slice(0, SNAPSHOT_CHAR_CAP)}`)
+  else parts.push('探测素材：（无）')
   if (Array.isArray(previousErrors) && previousErrors.length) {
     parts.push(`上一轮输出不合法，错误如下：\n${previousErrors.map((e, i) => `${i + 1}. ${e}`).join('\n')}\n请仅输出修正后的完整 JSON。`)
   }
   parts.push('请产出完整 App Spec JSON。')
-  return { system: SYSTEM_RULES, user: parts.join('\n\n') }
+  const system = mode === 'none' || mode === 'http-thin' ? `${SYSTEM_RULES}\n${NO_PROBE_RULES}` : SYSTEM_RULES
+  return { system, user: parts.join('\n\n') }
 }
 
 /** 从模型输出里抠出 Spec；三种格式都试，全失败返回 null（不抛错） */
@@ -149,7 +172,7 @@ function validateSpecBasic(spec, { allowPublic = false } = {}) {
  * @param {{target:object, probeMaterial:object, callLlm:Function, maxRounds?:number, onProgress?:Function, validate?:Function}} p
  * @returns {Promise<{ok:boolean, spec:object|null, rounds:number, issues:string[], raw:string}>}
  */
-async function generateSpec({ target, probeMaterial, callLlm, maxRounds = MAX_ROUNDS, onProgress, validate } = {}) {
+async function generateSpec({ target, probeMaterial, probeMode, callLlm, maxRounds = MAX_ROUNDS, onProgress, validate } = {}) {
   const check = validate || validateSpecBasic
   const issues = []
   let raw = ''
@@ -159,7 +182,7 @@ async function generateSpec({ target, probeMaterial, callLlm, maxRounds = MAX_RO
   let lastEmitAt = 0
   let pendingDelta = ''
   for (round = 1; round <= maxRounds; round++) {
-    const { system, user } = buildPrompt({ target, probeMaterial, previousErrors: issues.length ? issues.slice() : undefined })
+    const { system, user } = buildPrompt({ target, probeMaterial, probeMode, previousErrors: issues.length ? issues.slice() : undefined })
     onProgress?.({ phase: 'round', round, maxRounds, detail: `第 ${round}/${maxRounds} 轮：请求模型生成 Spec…` })
     lastEmitAt = 0
     pendingDelta = ''
@@ -247,5 +270,5 @@ async function verifySpec({ spec, runCommand, sessionId, maxReads = VERIFY_MAX_R
 
 module.exports = {
   buildPrompt, extractSpec, generateSpec, verifySpec, validateSpecBasic, snapshotForPrompt,
-  MAX_ROUNDS, VERIFY_MAX_READS, SNAPSHOT_CHAR_CAP, SYSTEM_RULES, WEB_ACTS, DESKTOP_ACTS,
+  MAX_ROUNDS, VERIFY_MAX_READS, SNAPSHOT_CHAR_CAP, SYSTEM_RULES, NO_PROBE_RULES, WEB_ACTS, DESKTOP_ACTS,
 }

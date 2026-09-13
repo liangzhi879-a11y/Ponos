@@ -75,10 +75,13 @@ test('buildPrompt：探测素材超长要截断（20k 上限）', () => {
   assert.ok(user.length < 30000, `提示词过长：${user.length}`)
 })
 
-test('snapshotForPrompt：只保留 page/text/interactives 三个字段', () => {
-  const s = snapshotForPrompt({ page: { url: 'u', title: 't', readyState: 'complete', loading: false, captcha: false, logged_in: true }, text: 'body', interactives: [{ ref: 'e1', tag: 'button', label: '查询', path_hint: 'div>button' }], secret: '不该出现' })
-  assert.deepEqual(Object.keys(s).sort(), ['interactives', 'page', 'text'])
+test('snapshotForPrompt：只保留 page/text/info/interactives 四个字段', () => {
+  // info = 真实快照的页面正文（label/value，见 browser-common.cjs 的 buildSnapshot）；
+  // 它必须进素材，否则模型只知道"能点什么"、不知道"页面里有什么"（真机验收补入）
+  const s = snapshotForPrompt({ page: { url: 'u', title: 't', readyState: 'complete', loading: false, captcha: false, logged_in: true }, text: 'body', info: [{ label: 'A1', value: '已支付' }], interactives: [{ ref: 'e1', tag: 'button', label: '查询', path_hint: 'div>button' }], secret: '不该出现' })
+  assert.deepEqual(Object.keys(s).sort(), ['info', 'interactives', 'page', 'text'])
   assert.equal(s.interactives[0].ref, 'e1')
+  assert.deepEqual(s.info, [{ label: 'A1', value: '已支付' }])
   assert.equal(snapshotForPrompt(null), null)
 })
 

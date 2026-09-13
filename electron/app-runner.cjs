@@ -11,7 +11,7 @@
 const { appendFileSync, mkdirSync } = require('node:fs')
 const { join } = require('node:path')
 const registry = require('./app-registry.cjs')
-const { interpolate, checkRequired } = require('./app-util.cjs')
+const { interpolate, checkRequired, snapshotToText } = require('./app-util.cjs')
 const { desktopRunner } = require('./app-runner-desktop.cjs')
 
 const rootOf = (roots) => (Array.isArray(roots) ? roots[0] : roots)
@@ -75,7 +75,9 @@ async function runCommand({ roots, appId, action, args = {}, executor, sessionId
     for (const step of cmd.steps || []) {
       const res = await executor.exec(sessionId, step.act, stepParams(step, args))
       if (!res?.ok) return fail(`步骤 ${step.act} 失败：${res?.error || '未知错误'}`)
-      if (step.save) saved = step.act === 'snapshot' ? (res.snapshot?.text ?? res.snapshot) : (res.data ?? res)
+      // snapshot 动作用 snapshotToText 归一（真实快照没有顶层 text；原先直接读 text 会让
+      // save 拿到整坨快照对象——真机验收记录见 electron/app-util.cjs 的 snapshotToText 注释）
+      if (step.save) saved = step.act === 'snapshot' ? snapshotToText(res.snapshot) : (res.data ?? res)
     }
     const durationMs = Date.now() - startedAt
     if (persist) appendHistory({ roots, appId, entry: { ...base, ok: true, durationMs } })

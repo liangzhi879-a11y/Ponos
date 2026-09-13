@@ -45,7 +45,10 @@ async function probeWeb({ url, executor, sessionId }) {
   const nav = await executor.exec(sessionId, 'goto', { url })
   if (!nav?.ok) throw new Error(`导航失败：${nav?.error || '未知'}`)
   const snap = await executor.exec(sessionId, 'snapshot', {})
-  return { url, snapshot: snap?.snapshot ?? null, title: snap?.snapshot?.title ?? null }
+  const snapshot = snap?.snapshot ?? null
+  // 真实快照把页级字段放在 page 下（browser-common.cjs 的 buildSnapshot）；
+  // 早期写成 snapshot.title 会恒为 null（真机验收发现探测结果标题为空）。
+  return { url, snapshot, title: snapshot?.page?.title ?? snapshot?.title ?? null }
 }
 
 /**

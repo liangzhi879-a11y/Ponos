@@ -1,13 +1,20 @@
 // 新增应用对话框（Task 1.6 表单 + Task 3.1/3.2 生成与试跑 + 如实进度展示）
 //
-// 流程：填目标 → 「生成命令」（真实探测 → LLM ≤3 轮 → 结构校验 → read 试跑）
-//      → 预览确认（试跑未通过则**不允许保存**）→ 保存 / 重新生成 / 手工改 JSON
+// 流程：填目标 → 「生成命令」（**后台取页面素材** → LLM ≤3 轮 → 结构校验 → read 试跑）
+//      → 预览确认（试跑未通过默认不允许保存，可显式选择「仍要保存（未验证）」）
+//      → 保存 / 重新生成 / 手工改 JSON
+//
+// ★ 素材获取不需要打开浏览器（2026-09-13 真实反馈后的调整）：
+//   原先必须先经内置浏览器探测，而它受自动化白名单保护（默认 *.gov.cn/localhost）；
+//   给 kimi.com 这类站点生成命令会直接失败。现在主进程在**后台用普通 HTTP** 取页面素材，
+//   用户无感；只有"静态素材不足且域名在白名单内"时才额外用浏览器取真实 DOM（可选增强）。
 //
 // ★ 进度展示的原则是「如实」：
-//   · 阶段（探测/请求模型/接收/解析/回喂/试跑）全部来自主进程真实代码路径的事件；
+//   · 阶段（取素材/浏览器探测/请求模型/接收/解析/回喂/试跑）全部来自主进程真实代码路径的事件；
 //   · 字符数与耗时是真实计数，**没有百分比进度条**（百分比只能靠编）；
 //   · 模型输出实时尾部是**真实流式内容**（不是假打字机效果）；
-//   · 失败时显示模型说的真实原因，并把"收到一半就断了"的部分文本一并展示。
+//   · 失败时显示模型说的真实原因，并把"收到一半就断了"的部分文本一并展示；
+//   · 未取得素材时**明说**"命令是推断的、需核对"，不假装探测过。
 'use client'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertCircle, ArrowRight, CheckCircle2, FileJson, Loader2, RefreshCw, Sparkles } from 'lucide-react'
@@ -17,7 +24,7 @@ import type { AppGenerateProgress, AppGenerateResult, AppProbeResult, AppSpec, A
 
 const ID_RE = /^[a-zA-Z0-9_-]+$/
 /** 阶段顺序（用于把"已到达"的阶段点亮；只是展示顺序，不代表会全部发生） */
-const PHASE_ORDER: AppGenerateProgress['phase'][] = ['probe', 'round', 'stream', 'parse', 'invalid', 'parsed', 'verify', 'done']
+const PHASE_ORDER: AppGenerateProgress['phase'][] = ['fetch', 'probe', 'round', 'stream', 'parse', 'invalid', 'parsed', 'verify', 'done']
 
 function skeletonSpec({ id, name, type, url, exePath }: {
   id: string; name: string; type: AppTargetType; url: string; exePath: string
@@ -56,6 +63,8 @@ export function AddAppDialog({ onClose, onDone }: { onClose: () => void; onDone:
   const [jsonDraft, setJsonDraft] = useState('')
   const [showJson, setShowJson] = useState(false)
   const [verify, setVerify] = useState<AppVerifyResult | null>(null)
+  /** 用户显式选择"未验证也保存"——默认关闭，避免糊里糊涂存下不可用命令 */
+  const [forceSave, setForceSave] = useState(false)
   const startedAt = useRef<number | null>(null)
   const streamBuf = useRef('')
 
@@ -95,7 +104,7 @@ export function AddAppDialog({ onClose, onDone }: { onClose: () => void; onDone:
   }, [api, target])
 
   async function onGenerate() {
-    setError(''); setGen(null); setVerify(null); setProg(null); setSeen([]); setTail(''); setChars(0); setShowJson(false)
+    setError(''); setGen(null); setVerify(null); setProg(null); setSeen([]); setTail(''); setChars(0); setShowJson(false); setForceSave(false)
     streamBuf.current = ''
     startedAt.current = Date.now(); setElapsed(0)
     try {
@@ -137,7 +146,10 @@ export function AddAppDialog({ onClose, onDone }: { onClose: () => void; onDone:
   }
 
   const generating = startedAt.current != null
-  const canSave = !generating && !saving && (!gen || (gen.ok && (verify?.ok ?? false)))
+  // 试跑未通过默认禁止保存；但允许用户**显式**选择"仍要保存（未验证）"——
+  // 无探测素材时试跑大概率不通过，若不给出口，用户就被卡死在对话框里（真实反馈）
+  const verifyOk = verify?.ok ?? false
+  const canSave = !generating && !saving && (!gen || (gen.ok && (verifyOk || forceSave)))
   const phaseLabel = (p: AppGenerateProgress['phase']) => t(`apps.phase${p.charAt(0).toUpperCase()}${p.slice(1)}`)
 
   return (
@@ -264,6 +276,17 @@ export function AddAppDialog({ onClose, onDone }: { onClose: () => void; onDone:
                   </Button>
                 </div>
 
+                {/* 素材来源如实告知：没拿到素材/素材很薄时必须明说，不能让用户以为已探测过 */}
+                {gen.probe && gen.probe.mode !== 'browser' && gen.probe.mode !== 'http' && (
+                  <div className="flex items-start gap-1.5 rounded border border-warning/30 bg-warning/10 px-2.5 py-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 text-warning shrink-0 mt-0.5" />
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-[10px] text-warning">{gen.probe.mode === 'none' ? t('apps.probeUntrusted') : t('apps.probeThin')}</span>
+                      {gen.probe.note && <span className="text-[10px] text-tertiary">{gen.probe.note}</span>}
+                    </div>
+                  </div>
+                )}
+
                 {/* 试跑结论（真实结果） */}
                 {verify && (
                   <div className="flex flex-col gap-1">
@@ -298,7 +321,17 @@ export function AddAppDialog({ onClose, onDone }: { onClose: () => void; onDone:
                     ))}
                   </div>
                 )}
-                {!verify?.ok && <div className="text-[10px] text-warning">{t('apps.confirmBlocked')}</div>}
+                {!verify?.ok && (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[10px] text-warning">{t('apps.confirmBlocked')}</span>
+                    <label className="flex items-center gap-1 cursor-pointer select-none">
+                      <input type="checkbox" checked={forceSave} className="accent-warning"
+                        onChange={(e) => setForceSave(e.target.checked)} />
+                      <span className="text-[10px] text-warning underline decoration-dotted">{t('apps.confirmForce')}</span>
+                    </label>
+                    {forceSave && <span className="text-[10px] text-error">{t('apps.confirmForceWarn')}</span>}
+                  </div>
+                )}
               </div>
             )}
 

@@ -581,7 +581,8 @@ export interface AppRepairResult {
 export interface AppGenerateProgress {
   appId?: string | null
   at?: number
-  phase: 'probe' | 'round' | 'stream' | 'parse' | 'invalid' | 'parsed' | 'verify' | 'done' | 'error'
+  /** fetch：后台抓取页面素材（无需浏览器）；probe：浏览器探测（仅白名单站点增强用） */
+  phase: 'fetch' | 'probe' | 'round' | 'stream' | 'parse' | 'invalid' | 'parsed' | 'verify' | 'done' | 'error'
   round?: number
   maxRounds?: number
   chars?: number
@@ -603,11 +604,21 @@ export interface AppVerifyResult {
   skipped: string[]
 }
 
+/** 生成时拿到的素材来源（如实回传，界面据此提示是否需人工核对） */
+export interface AppProbeInfo {
+  /** browser=真实 DOM 快照；http=后台抓取的静态 HTML；http-thin=页面疑似 JS 空壳；none=没拿到素材 */
+  mode: 'browser' | 'http' | 'http-thin' | 'none'
+  title?: string | null
+  url?: string | null
+  note?: string | null
+}
+
 /** 生成结果 */
 export interface AppGenerateResult {
   ok: boolean
   spec?: AppSpec
   driver?: AppDriver
+  probe?: AppProbeInfo
   rounds?: number
   issues?: string[]
   verify?: AppVerifyResult
