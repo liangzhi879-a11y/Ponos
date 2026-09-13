@@ -137,12 +137,33 @@ test('setSpace：切空间清空 tree（路径是空间内相对路径，跨空�
   assert.equal(st().spaceId, null)
 })
 
+test('docId：切空间一并清空（docId 编码了 space 前缀），setDocId 做非空字符串清洗', () => {
+  st().setSpace('notes')
+  st().setDocId('notes/a.md')
+  assert.equal(st().docId, 'notes/a.md')
+  st().setSpace('experience')
+  assert.equal(st().docId, null, '切空间后不得留着别的空间的文档')
+
+  st().setDocId('notes/a.md')
+  st().setDocId('notes/a.md')
+  const same = st()
+  st().setDocId('notes/a.md')
+  assert.equal(st(), same, '同值 setDocId 不换引用')
+  st().setDocId('')
+  assert.equal(st().docId, null, '空串 → null（未选文档）')
+  st().setDocId(undefined as unknown as string)
+  assert.equal(st().docId, null, '非法输入 → null，不抛')
+  // 复位：后续 persist 用例断言"落盘的 spaceId 为 null"，用例间不能留状态（单文件顺序执行）
+  st().setSpace(null)
+})
+
 test('persist 负载：只落 spaceId/view/展开态，树里的 entries 不进盘', () => {
   writes.length = 0
   st().setView('graph')
   const payload = JSON.parse(writes[writes.length - 1]) as { state: Record<string, unknown> }
   assert.equal(payload.state.view, 'graph', 'view 必须落盘（重启回到上次视图）')
   assert.equal(payload.state.spaceId, null)
+  assert.ok('docId' in payload.state, 'docId 必须进落盘负载（重启回到上次打开的文档）')
   const tree = payload.state.tree as Record<string, { entries: unknown[]; loaded: boolean }>
   for (const [path, node] of Object.entries(tree)) {
     assert.deepEqual(node.entries, [], `${path} 的 entries 不得落盘（易失数据）`)

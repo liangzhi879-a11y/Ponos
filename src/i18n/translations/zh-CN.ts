@@ -781,9 +781,28 @@ export const zhCN = {
     noSpecYet: '这个应用还没有 Spec（回到卡片点「生成命令」或手工写入）',
   },
 
-  // --- 知识库面板（S2；Task 3 起逐任务补齐内容，此处只有 Task 1 的占位文案） ---
+  // --- 知识库面板（S2；Task 3 起逐任务补齐内容） ---
   knowledge: {
-    placeholder: '知识库面板骨架已接入：空间/文件树与阅读、编辑、图谱、搜索四视图将在后续任务填充。',
+    title: '知识库',
+    spaceLabel: '空间',
+    spaceNone: '未选择空间',
+    spaceChoose: '选择空间',
+    spaceEmpty: '没有可用空间',
+    readonly: '只读',
+    viewRead: '阅读',
+    viewEdit: '编辑',
+    viewGraph: '图谱',
+    viewSearch: '搜索',
+    actionRefresh: '刷新',
+    actionNewNote: '新建笔记',
+    statDocs: '文档',
+    statBlocks: '块',
+    outline: '大纲',
+    emptyNoDoc: '从左栏选择一篇文档开始阅读',
+    emptyEditReadonly: '该知识空间为只读，编辑视图已停用',
+    emptyPending: '该视图将在后续任务填充',
+    loadFailed: '加载失败',
+    treeEmpty: '这个目录是空的',
   },
 }
 

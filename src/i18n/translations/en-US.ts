@@ -768,8 +768,27 @@ export const enUS: TranslationKeys = {
     noSpecYet: 'No Spec yet for this app (go back and click Generate commands, or write one manually)',
   },
 
-  // --- Knowledge panel (S2; filled in task by task from Task 3 — only the Task 1 placeholder here) ---
+  // --- Knowledge panel (S2; filled in task by task from Task 3) ---
   knowledge: {
-    placeholder: 'Knowledge panel scaffold is wired up: the space/file tree and the read, edit, graph and search views land in later tasks.',
+    title: 'Knowledge',
+    spaceLabel: 'Space',
+    spaceNone: 'No space selected',
+    spaceChoose: 'Choose a space',
+    spaceEmpty: 'No spaces available',
+    readonly: 'Read-only',
+    viewRead: 'Read',
+    viewEdit: 'Edit',
+    viewGraph: 'Graph',
+    viewSearch: 'Search',
+    actionRefresh: 'Refresh',
+    actionNewNote: 'New note',
+    statDocs: 'docs',
+    statBlocks: 'blocks',
+    outline: 'Outline',
+    emptyNoDoc: 'Select a document in the left column to start reading',
+    emptyEditReadonly: 'This space is read-only, so the edit view is disabled',
+    emptyPending: 'This view lands in a later task',
+    loadFailed: 'Failed to load',
+    treeEmpty: 'This folder is empty',
   },
 }

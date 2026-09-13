@@ -1,6 +1,6 @@
 // src/stores/knowledgeStore.ts —— 知识库面板的**持久化 UI 态**（S2 Task 1）
 //
-// 为什么单独一个 store：知识面板的「当前空间 / 当前视图 / 树展开态」要在刷新与重启后保留。
+// 为什么单独一个 store：知识面板的「当前空间 / 当前文档 / 当前视图 / 树展开态」要在刷新与重启后保留。
 // 塞进 viewStore 会让每次展开目录都写一遍全局 workState——语义被污染，且所有 viewStore
 // 订阅者（RailNav/WorkShell…）跟着重建。
 //
@@ -29,6 +29,11 @@ export function sanitizeView(view: unknown): KnowledgeView {
 /** 落盘 spaceId 清洗：非空字符串透传，其余（null/数字/空串/对象）→ null（= 未选空间） */
 export function sanitizeSpaceId(spaceId: unknown): string | null {
   return typeof spaceId === 'string' && spaceId.trim() ? spaceId : null
+}
+
+/** 落盘 docId 清洗：与 spaceId 同规则（非空字符串，其余 → null）；单列一个函数让调用点自解释 */
+export function sanitizeDocId(docId: unknown): string | null {
+  return sanitizeSpaceId(docId)
 }
 
 export interface KnowledgeTreeState {
@@ -69,10 +74,18 @@ export function toPersistedTree(tree: KnowledgeTreeMap): KnowledgeTreeMap {
 export interface KnowledgeState {
   /** 当前空间 id（null = 尚未选择，面板空态） */
   spaceId: string | null
+  /**
+   * 当前打开的文档 id（= `${spaceId}/${rel}`，null = 未选文档）。
+   * 为什么进 store 而不是面板 state：左栏树、中栏阅读/编辑、右栏元信息、搜索命中列表
+   * 四个互不相邻的子树都要读它，props 逐层穿透会在 Task 5-9 变成链式传参；
+   * store 里它与 view 同属"当前工作位置"，一并持久化后刷新仍停在同一篇文档。
+   */
+  docId: string | null
   view: KnowledgeView
   /** 扁平 map：路径 → { entries, loaded, expanded } */
   tree: KnowledgeTreeMap
   setSpace: (spaceId: string | null) => void
+  setDocId: (docId: string | null) => void
   setView: (view: KnowledgeView) => void
   toggleExpanded: (path: string) => void
   setTreeEntries: (path: string, entries: KnowledgeTreeEntry[]) => void
@@ -81,15 +94,24 @@ export interface KnowledgeState {
 export const useKnowledgeStore = create<KnowledgeState>()(
   persist((set, get) => ({
     spaceId: null,
+    docId: null,
     view: 'read',
     tree: {},
 
-    // 切空间**必须清树**：tree 的键是「空间内相对路径」，跨空间复用会把 A 空间的目录列表
-    // （含 docId）挂到 B 空间的同路径节点上，点开就是另一个空间的文档。同值切换 no-op（不换引用）。
+    // 切空间**必须清树 + 清 docId**：tree 的键是「空间内相对路径」，跨空间复用会把 A 空间的目录列表
+    // （含 docId）挂到 B 空间的同路径节点上，点开就是另一个空间的文档。docId 同理——它编码了
+    // spaceId 前缀，不清就会出现"当前打开的是 A 空间的文档，左栏却显示 B 空间"的错配。
+    // 同值切换 no-op（不换引用）。
     setSpace: (spaceId) => {
       const next = sanitizeSpaceId(spaceId)
       if (next === get().spaceId) return
-      set({ spaceId: next, tree: {} })
+      set({ spaceId: next, docId: null, tree: {} })
+    },
+
+    setDocId: (docId) => {
+      const next = sanitizeDocId(docId)
+      if (next === get().docId) return
+      set({ docId: next })
     },
 
     setView: (view) => {
@@ -127,12 +149,13 @@ export const useKnowledgeStore = create<KnowledgeState>()(
     },
   }), {
     name: 'yfworking-knowledge',
-    partialize: (s) => ({ spaceId: s.spaceId, view: s.view, tree: toPersistedTree(s.tree) }),
+    partialize: (s) => ({ spaceId: s.spaceId, docId: s.docId, view: s.view, tree: toPersistedTree(s.tree) }),
     merge: (persisted, current) => {
-      const p = (persisted ?? {}) as { spaceId?: unknown; view?: unknown; tree?: unknown }
+      const p = (persisted ?? {}) as { spaceId?: unknown; docId?: unknown; view?: unknown; tree?: unknown }
       return {
         ...current,
         spaceId: sanitizeSpaceId(p.spaceId),
+        docId: sanitizeDocId(p.docId),
         view: sanitizeView(p.view),
         tree: sanitizeTree(p.tree),
       }
