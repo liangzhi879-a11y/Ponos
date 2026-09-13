@@ -6,7 +6,7 @@
 // 只读空间（`writable === false`）：新建钮禁用（由 KnowledgeNewMenu 内部判定）+ 一行显式说明。
 // 只提示不解释会让用户以为面板坏了；后端 403 是最后一道兜底（spec §8 双保险）。
 import { useMemo } from 'react'
-import { ChevronDown, Library } from 'lucide-react'
+import { ChevronDown, Library, PackageSearch } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
 } from '@/components/ui'
@@ -28,6 +28,7 @@ export function KnowledgeSidebar({ spaces, spacesLoading }: KnowledgeSidebarProp
   const { t } = useTranslation()
   const spaceId = useKnowledgeStore(s => s.spaceId)
   const setSpace = useKnowledgeStore(s => s.setSpace)
+  const setView = useKnowledgeStore(s => s.setView)
 
   const space = useMemo(() => spaces?.find(s => s.id === spaceId) ?? null, [spaces, spaceId])
   const readonly = space?.writable === false
@@ -72,6 +73,19 @@ export function KnowledgeSidebar({ spaces, spacesLoading }: KnowledgeSidebarProp
           : spacesLoading || !spaces
             ? <KnowledgeSkeleton lines={5} className="!px-2" />
             : <KnowledgeEmpty title={t('knowledge.spaceEmpty')} className="!py-6" />}
+      </div>
+
+      {/* 市场入口放在**固定底栏**（原型 §1 的"空间列表底部"）：它不属于任何空间，
+          更不能只在"选中了空间"时才出现——没空间的人最需要装一个知识包。 */}
+      <div className="shrink-0 px-2 py-1 border-t border-default">
+        <button
+          type="button"
+          onClick={() => setView('market')}
+          className="w-full flex items-center gap-1.5 py-0.5 text-[11px] text-tertiary hover:text-primary transition-colors"
+        >
+          <PackageSearch className="w-3 h-3 shrink-0" />
+          <span className="truncate">{t('knowledge.marketDiscover')}</span>
+        </button>
       </div>
 
       {space && (

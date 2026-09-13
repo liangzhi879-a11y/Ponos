@@ -901,6 +901,16 @@ async function registerIpc() {
     return dir
   })
 
+  // 知识包离线安装：只收 .zip（S4 D2：下载/分发形态固定为 zip，目录安装走 GUI 之外的路径）
+  ipcMain.handle('dialog:open-knowledge-pack', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      filters: [{ name: 'Knowledge Pack', extensions: ['zip'] }],
+      title: 'Select Knowledge Pack (.zip)',
+    })
+    return result.canceled ? null : result.filePaths[0]
+  })
+
   ipcMain.handle('dialog:open-skill-package', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory'],

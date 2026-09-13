@@ -17,11 +17,16 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { KnowledgeTreeEntry } from '@/lib/knowledgeApi'
 
-/** 四视图（阅读/编辑/图谱/搜索）；'edit' 在只读空间由视图层拒绝进入，store 不做权限判断 */
-export type KnowledgeView = 'read' | 'edit' | 'graph' | 'search'
-export const KNOWLEDGE_VIEWS: readonly KnowledgeView[] = ['read', 'edit', 'graph', 'search']
+/**
+ * 五视图（阅读/编辑/图谱/搜索/**市场**）；'edit' 在只读空间由视图层拒绝进入，store 不做权限判断。
+ * `market`（S4 Task 6 新增）是**有意的功能扩展**：知识包市场与当前空间**无关**
+ * （离线安装 / 在线清单都不需要先选空间），故它在 KnowledgePanel 里排在 `!space` 空态之前短路。
+ * 它同样可持久化——用户上次停在市场，重启后应回到市场，而不是被踢回阅读视图。
+ */
+export type KnowledgeView = 'read' | 'edit' | 'graph' | 'search' | 'market'
+export const KNOWLEDGE_VIEWS: readonly KnowledgeView[] = ['read', 'edit', 'graph', 'search', 'market']
 
-/** 落盘 view 清洗：4 合法值透传，非法/缺省 → 'read'（最安全的只读入口） */
+/** 落盘 view 清洗：5 合法值透传，非法/缺省 → 'read'（最安全的只读入口） */
 export function sanitizeView(view: unknown): KnowledgeView {
   return KNOWLEDGE_VIEWS.includes(view as KnowledgeView) ? (view as KnowledgeView) : 'read'
 }

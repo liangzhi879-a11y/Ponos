@@ -112,9 +112,11 @@ contextBridge.exposeInMainWorld('yfworkingWindow', {
   },
 })
 
-// File dialogs (skill install)
+// File dialogs (skill install / knowledge pack install)
 contextBridge.exposeInMainWorld('yfworkingFile', {
   openSkillPackage: () => ipcRenderer.invoke('dialog:open-skill-package'),
+  // S4：知识包市场"从本地文件安装"（.zip）。缺 IPC 时前端给"仅桌面版"提示并禁用按钮
+  openKnowledgePack: () => ipcRenderer.invoke('dialog:open-knowledge-pack'),
 })
 
 // 启动预热进度（2026-09-11：main 轮询 bridge /boot-status 后转发真实模块就绪事件）

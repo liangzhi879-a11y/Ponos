@@ -84,7 +84,13 @@ const readRel = (...p) => readFileSync(join(ROOT, ...p), 'utf-8')
 check(/w-\[236px\] shrink-0/.test(readRel('src/components/knowledge/KnowledgeSidebar.tsx')), '左栏 236px + shrink-0（KnowledgeSidebar）')
 check(/w-\[212px\] shrink-0/.test(readRel('src/components/knowledge/KnowledgeInspector.tsx')), '右栏 212px + shrink-0（KnowledgeInspector）')
 check(/flex-1 min-w-0/.test(readRel('src/components/knowledge/KnowledgePanel.tsx')), '中栏 flex-1 min-w-0（KnowledgePanel）')
-check(/KNOWLEDGE_VIEWS[^\n]*\['read', 'edit', 'graph', 'search'\]/.test(readRel('src/stores/knowledgeStore.ts')), '四视图白名单 read/edit/graph/search')
+// S4 Task 6：视图白名单由 4 → 5（新增 'market'）。这是**有意的功能扩展**（知识包市场视图），
+// 不是放宽阈值——白名单仍是逐字比对，只是把新的合法值加进去（与 knowledgeStore.test.ts 同步改）。
+check(/KNOWLEDGE_VIEWS[^\n]*\['read', 'edit', 'graph', 'search', 'market'\]/.test(readRel('src/stores/knowledgeStore.ts')), '五视图白名单 read/edit/graph/search/market')
+// 市场视图不依赖当前空间，必须排在 `!space` 空态之前——顺序写反 = 没有空间的用户永远进不去市场
+const panelSrc = readRel('src/components/knowledge/KnowledgePanel.tsx')
+check(panelSrc.includes("view === 'market'") , 'KnowledgePanel 含 market 分支')
+check(panelSrc.indexOf("view === 'market'") < panelSrc.indexOf('!space ?'), 'market 分支在 !space 空态之前')
 
 // 数据层纪律：知识组件不得自己 fetch —— 必须走 src/lib/knowledgeApi.ts / src/hooks/useKnowledge.ts
 // （超时、错误整形、缓存失效都在那两处；组件里裸 fetch 会绕过它们，是重复实现的开端）

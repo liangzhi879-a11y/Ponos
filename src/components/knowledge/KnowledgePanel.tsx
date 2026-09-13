@@ -26,6 +26,7 @@ import { KnowledgeEditorView } from './KnowledgeEditorView'
 import { KnowledgeSearchView } from './KnowledgeSearchView'
 import { KnowledgeGraphView } from './KnowledgeGraphView'
 import { KnowledgeInspector } from './KnowledgeInspector'
+import { KnowledgeMarketView } from './KnowledgeMarketView'
 
 export function KnowledgePanel() {
   const { t } = useTranslation()
@@ -80,6 +81,11 @@ export function KnowledgePanel() {
         <div className="flex-1 min-w-0 flex flex-col">
           {spacesError ? (
             <KnowledgeEmpty title={t('knowledge.loadFailed')} hint={spacesError} className="m-auto" />
+          ) : view === 'market' ? (
+            // 市场视图（S4 Task 6）**不依赖当前空间**（离线安装/在线清单都无需先选空间），
+            // 故必须排在 `!space` 空态之前——否则"一个空间都没有"的用户永远进不去市场，
+            // 而"没有空间"恰恰是装第一个知识包的最常见时机。
+            <KnowledgeMarketView />
           ) : !space ? (
             // !space 覆盖两类：空间列表尚未到位（骨架屏），或列表为空（真空态）
             spacesLoading || !spaces

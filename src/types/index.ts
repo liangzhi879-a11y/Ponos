@@ -720,9 +720,11 @@ export interface YFWAPI {
   appRepair: (payload: { appId: string; maxRepair?: number }) => Promise<AppRepairResult>
 }
 
-/** File dialogs (skill install) — exposed by preload as `yfworkingFile` */
+/** File dialogs (skill install / knowledge pack install) — exposed by preload as `yfworkingFile` */
 export interface YFWFileAPI {
   openSkillPackage: () => Promise<string | null>
+  /** S4：知识包市场"从本地文件安装"（只收 .zip）。可选——浏览器 dev 下该 API 不存在 */
+  openKnowledgePack?: () => Promise<string | null>
 }
 
 export interface YFWorkingWindowControls {

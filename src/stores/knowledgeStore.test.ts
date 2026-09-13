@@ -59,9 +59,11 @@ test('merge（有效负载路径）：恢复 spaceId/view 与展开态，折叠�
   assert.equal(typeof merged.toggleExpanded, 'function')
 })
 
-test('sanitizeView：4 合法值原样透传，其余（含缺省/数字/null）兜底 read', () => {
+// S4 Task 6：视图集合由 4 → 5（新增 'market'）是**有意的功能扩展**（知识包市场视图），
+// 不是期望值笔误——市场视图与"当前空间"无关，需要独立入口（左栏底部"发现知识包"）。
+test('sanitizeView：5 合法值原样透传，其余（含缺省/数字/null）兜底 read', () => {
   for (const v of KNOWLEDGE_VIEWS) assert.equal(sanitizeView(v), v)
-  assert.deepEqual([...KNOWLEDGE_VIEWS], ['read', 'edit', 'graph', 'search'], '四视图集合固定')
+  assert.deepEqual([...KNOWLEDGE_VIEWS], ['read', 'edit', 'graph', 'search', 'market'], '五视图集合（S4 起含 market）')
   assert.equal(sanitizeView('edit2'), 'read')
   assert.equal(sanitizeView(undefined), 'read')
   assert.equal(sanitizeView(null), 'read')
