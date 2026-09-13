@@ -48,7 +48,10 @@ async function callJson(callKernel, argsList) {
 // 写文档：四重防护 + 落盘 + 触发增量索引。**不复制任何检索/切块逻辑**。
 async function handleWriteDoc({ readJsonBody, callKernel }) {
   const body = (await readJsonBody()) || {}
-  const spaceId = String(body.spaceId ?? '')
+  // 字段名兼容：GET 系列路由一律用 `?space=`，POST 请求体若只认 `spaceId` 就与前者不一致，
+  // S2 前端按 GET 的习惯发 `{space}` 会拿到 404「space not found」且难定位（字段名写错
+  // 不像路径穿越那样有明确报错）。两者都收，以 `spaceId` 为主（对齐内部 Doc 模型命名）。
+  const spaceId = String(body.spaceId ?? body.space ?? '')
   const content = String(body.content ?? '')
   const rel = safeRelPath(body.path)
   if (!rel) return { status: 400, body: { error: 'invalid path（须为空间内相对 .md 路径）' } }

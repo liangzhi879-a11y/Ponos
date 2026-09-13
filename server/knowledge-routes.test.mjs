@@ -186,3 +186,25 @@ test('POST /knowledge/reindex 走 force', async () => {
   assert.equal(r.status, 200)
   assert.deepEqual(callKernel.calls[0], ['--knowledge', 'reindex', '--force'])
 })
+
+test('POST /knowledge/doc 接受 `space` 字段（与 GET 路由的 ?space= 命名一致）', async () => {
+  // 契约歧义防护：GET 系列一律用 `space=`，若 POST 请求体只认 `spaceId`，S2 前端按 GET 的
+  // 习惯发 `{space}` 会得到 404「space not found」——报错文本指向"空间不存在"而非"字段名写错"，
+  // 极难定位。两种命名都应可用（`spaceId` 为主，对齐内部 Doc 模型）。
+  const writes = []
+  const fake = async (args) => {
+    if (args.includes('spaces')) {
+      return JSON.stringify({ spaces: [{ id: 'notes', root: tmpdir(), writable: true, source: 'user' }] })
+    }
+    if (args.includes('update-doc')) { writes.push(args); return JSON.stringify({ updated: true }) }
+    return '{}'
+  }
+  for (const field of [{ space: 'notes' }, { spaceId: 'notes' }]) {
+    const res = await handleKnowledgeRoute(ctx({
+      method: 'POST', url: '/knowledge/doc', callKernel: fake,
+      body: { ...field, path: 'ok.md', content: '# ok\n' },
+    }))
+    assert.equal(res.status, 200, `${JSON.stringify(field)} 应被接受`)
+  }
+  assert.equal(writes.length, 2, '两次写入都应触发增量更新')
+})

@@ -238,6 +238,18 @@ store.listEntries(docId) → [{ blockId, tag, summary, full, line }]   // 条目
 | GET | `/knowledge/stats` | 诊断：块数/索引体积/构建耗时 |
 | POST | `/knowledge/reindex` | 手动全量重建 |
 
+**`POST /knowledge/doc` 请求体**（S1 修订：明确契约，消除命名歧义）：
+
+```json
+{ "space": "<spaceId>", "path": "<空间内相对 .md 路径>", "content": "<全文>" }
+```
+
+- `space` 与 GET 系列路由的 `?space=` 同名；后端亦接受 `spaceId`（对齐内部 Doc 模型）。
+  两者都收是为了不让"字段名不一致"表现为 404「space not found」这种指向错误的报错。
+- 响应：`{ ok, docId, updated }`；`updated` 表示增量索引是否已更新（false 时需 `reindex`）。
+- 错误：`400` 路径非法 / `403` 越界或只读空间 / `404` 空间不存在 / `413` 超 2MB。
+- 落盘后**立即增量更新**索引（写入即可检索，不需重建/重启）。
+
 **只读实现优先**：S1 的 server 侧优先走 `kernel-readonly` 薄转发范式（`server/kernel-readonly.mjs`，
 对齐 `/api/usage`、`/api/audit` 的 `bridge.mjs:1910` 接法），避免在 server 侧复制索引逻辑；
 仅"写文档"这类需要落盘的动作走 server 直写 + 标脏。
