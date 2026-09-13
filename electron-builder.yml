@@ -24,6 +24,11 @@ files:
   - dist/**/*
   - electron/**/*
   - server/**/*
+  # 知识库 S1：仓库根的 shared/ 是内核与 bridge 的共同纯函数层（kernel/*.mjs 里
+  # `import ... from '../shared/knowledge-core.mjs'`）。kernel-paths 的首选内核候选
+  # 就是 <appRoot>/kernel/cli.mjs（源码布局）——那条路径下没有 app/shared/ 会直接
+  # import 失败；kernel-dist 单文件 bundle 形态虽已内联，但源码候选仍在解析表里。
+  - shared/**/*
   - public/**/*
   # sample-skills 仅打包 dist 内那份（vite 已把 public 复制进 dist）；
   # 排除 public/sample-skills，避免安装包内出现 35M 的双份。

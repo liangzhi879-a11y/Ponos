@@ -18,6 +18,7 @@ import { resolveKernelPaths } from '../electron/kernel-paths.cjs'
 import { resolveYfwHome } from './yfw-home.cjs'
 import { writeLogLine, readLogPolicyCached, enforceLogPolicy, normalizeLogPolicy, DEFAULT_LOG_POLICY } from './log-policy.cjs'
 import { handleLogsRoute } from './logs-routes.mjs'
+import { handleKnowledgeRoute } from './knowledge-routes.mjs'
 import { installBuiltinWorkflows } from './workflow-install.mjs'
 // 技能安装/更新链（P2-2）：同为可测模块——bridge 顶层 listen，测试不能 import 本文件
 import { copyWithRewrite, readSkillIndex, writeSkillIndex, installBuiltinSkills } from './skill-install.mjs'
@@ -1832,6 +1833,21 @@ const httpServer = createServer(async (req, res) => {
     })
     if (logsRes) {
       return reply(logsRes.status, { 'Content-Type': 'application/json' }, JSON.stringify(logsRes.body))
+    }
+    // --- 知识库（S1，2026-09-13）：/knowledge/* ---
+    // 读操作经 server/knowledge-routes.mjs **薄转发**给内核（kernel-readonly 单飞/超时/
+    // 限流），server 不复制任何切块/检索逻辑；写文档由该模块落盘并立即触发增量索引。
+    // 同样抽成独立模块——可单测，不必起桥（本仓库有"测试起桥误杀运行中应用"的前车之鉴）。
+    {
+      const knowledgeRes = await handleKnowledgeRoute({
+        method: req.method,
+        pathname: url.pathname,
+        searchParams: url.searchParams,
+        readJsonBody: () => readJsonBody(req),
+      })
+      if (knowledgeRes) {
+        return reply(knowledgeRes.status, { 'Content-Type': 'application/json' }, JSON.stringify(knowledgeRes.body))
+      }
     }
     // 启动预热状态（2026-09-11 真实 boot 进度）：main 轮询本端点转发给 BootScreen——
     // 各模块真实完成后置位，渲染层按真实步骤渲染、全部就绪才交棒
