@@ -10,6 +10,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { effortDroppedNotice, effortParam, streamMessages } from '../kernel/api.mjs'
+import { createCompactor } from '../kernel/compact.mjs'
+import { estimateHistory, estimateMessage, estimateRequest } from '../kernel/context.mjs'
+import { createSessionStore } from '../kernel/session.mjs'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const MSG = [{ role: 'user', content: 'hi' }]
 
@@ -151,4 +157,121 @@ test('旋钮之外请求体不变：不同档位只改这两个字段（缓存�
   const c = await withServer(() => ask({ reasoningEffort: 'off' }))
   assert.deepEqual(strip(b), strip(a), 'low/high/max 档位不得改动档位以外的任何字段')
   assert.deepEqual(strip(c), strip(a), 'off 档位不得改动档位以外的任何字段')
+})
+
+// ---------------------------------------------------------------------------
+// 第二层：策略 → 压缩器 → 真实请求体（端到端）
+// 判据表（effort-policy.test.mjs）证明"该关"，这里证明"真的关了"——起本地 http server
+// 驱动真 compactor，抓它发出的摘要请求。夹具照 kernel-tests/compact-chunked.test.mjs。
+// ---------------------------------------------------------------------------
+const CJK = '这是一段用于撑满上下文的压缩测试文本内容，包含足够多的汉字来让估算器按中文字符密度计价。'
+
+function makeCompactorEnv({ limit = 32768, turns = 6 } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'effort-wire-'))
+  const store = createSessionStore({ configDir: dir, cwd: dir, sessionId: 'effort-wire' })
+  for (let i = 0; i < turns; i++) {
+    store.appendUser(`第 ${i} 轮任务：${CJK.repeat(10)}`)
+    store.appendAssistant([{ type: 'text', text: `第 ${i} 轮回答：${CJK.repeat(10)}` }])
+  }
+  const context = {
+    window: limit, thresholdRatio: 0.8, retainRatio: 0.16,
+    estimate: ({ system, messages }) => estimateRequest({ system, messages }),
+    estimateMessage, estimateHistory,
+  }
+  const compactor = createCompactor({
+    session: store, context, model: 'test-model', maxTokens: 8192,
+    wire: { system: () => {}, summary: () => {} },
+    health: undefined, signal: undefined, env: process.env, sessionMemoryPath: null,
+  })
+  return { store, compactor, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+}
+
+// 跑一次真实压缩，返回上游收到的全部请求体（最后一条 = 保真审计）
+// expectBodies(r)：要等几条（审计是 fire-and-forget，不进 await 链，必须轮询等它发出）
+async function runCompaction({ expectBodies = () => 2, ...envOpts } = {}) {
+  const h = makeCompactorEnv(envOpts)
+  try {
+    let result = null
+    await withServer(async () => {
+      result = await h.compactor.forceCompact({
+        system: 'sys', messages: h.store.deriveMessages(), limit: envOpts.limit ?? 32768,
+      })
+      assert.equal(result.action, 'summarized', `压缩应落地：${JSON.stringify(result).slice(0, 300)}`)
+      const need = expectBodies(result)
+      const t0 = Date.now()
+      while (captured.length < need && Date.now() - t0 < 5000) await new Promise((r2) => setTimeout(r2, 20))
+    })
+    return { bodies: [...captured], result }
+  } finally { h.cleanup() }
+}
+
+test('端到端：策略生效 → 摘要步真的不带思考（provider 开着 thinking 也一样）', async () => {
+  delete process.env.PONOS_EFFORT_POLICY // 默认 graded
+  process.env.CLAUDE_CODE_THINKING_ENABLED = '1'
+  process.env.CLAUDE_CODE_THINKING_BUDGET = '4096'
+  try {
+    const bodies = (await runCompaction()).bodies
+    assert.ok(bodies.length >= 1, '摘要请求必须真的发出去')
+    assert.deepEqual(knobs(bodies[0]), {
+      thinking: { type: 'disabled' },
+      reasoning_effort: undefined,
+    }, '摘要/压缩步应显式 thinking:disabled（K3.1 唯一启用点）')
+  } finally {
+    delete process.env.CLAUDE_CODE_THINKING_ENABLED
+    delete process.env.CLAUDE_CODE_THINKING_BUDGET
+  }
+})
+
+test('端到端：回退开关 PONOS_EFFORT_POLICY=off → 摘要步回到现状（enabled+budget）', async () => {
+  process.env.PONOS_EFFORT_POLICY = 'off'
+  process.env.CLAUDE_CODE_THINKING_ENABLED = '1'
+  process.env.CLAUDE_CODE_THINKING_BUDGET = '4096'
+  try {
+    const bodies = (await runCompaction()).bodies
+    assert.deepEqual(knobs(bodies[0]), enabled(4096), '一键回退：策略不干预，走 provider 思考开关')
+  } finally {
+    delete process.env.PONOS_EFFORT_POLICY
+    delete process.env.CLAUDE_CODE_THINKING_ENABLED
+    delete process.env.CLAUDE_CODE_THINKING_BUDGET
+  }
+})
+
+test('端到端：分块摘要（map-reduce）的每一块也都降思考', async () => {
+  // covered 超单块容量时走分块路径（夹具照 compact-chunked.test.mjs：35 轮 ≈29K > 20.5K）。
+  // 这条单列，是因为决策漏在分块分支上时**只有这类会话**（小窗口模型 / 大 covered）会继续
+  // 思考——单发路径的用例抓不到它（首版就是这么漏的，变异 M2 存活才发现）。
+  delete process.env.PONOS_EFFORT_POLICY
+  process.env.CLAUDE_CODE_THINKING_ENABLED = '1'
+  process.env.CLAUDE_CODE_THINKING_BUDGET = '4096'
+  try {
+    const { bodies, result } = await runCompaction({
+      limit: 32768, turns: 35,
+      expectBodies: (r) => r.chunks + 1, // 每块一次摘要调用 + 末尾一次审计
+    })
+    assert.equal(result.mode, 'chunked', `夹具应走分块路径：${JSON.stringify(result).slice(0, 200)}`)
+    assert.ok(result.chunks >= 2, `应分 ≥2 块（实际 ${result.chunks}）`)
+    assert.equal(bodies.length, result.chunks + 1, `请求数应 = 块数 + 审计（实际 ${bodies.length}）`)
+    for (const [i, b] of bodies.entries()) {
+      const want = i === bodies.length - 1 ? enabled(4096) : { thinking: { type: 'disabled' }, reasoning_effort: undefined }
+      assert.deepEqual(knobs(b), want, `第 ${i} 次请求（共 ${bodies.length}）旋钮不符`)
+    }
+  } finally {
+    delete process.env.CLAUDE_CODE_THINKING_ENABLED
+    delete process.env.CLAUDE_CODE_THINKING_BUDGET
+  }
+})
+
+test('端到端：保真审计步不受策略影响（抓坏摘要的安全网不得被悄悄削弱）', async () => {
+  delete process.env.PONOS_EFFORT_POLICY // graded：摘要步已降
+  process.env.CLAUDE_CODE_THINKING_ENABLED = '1'
+  process.env.CLAUDE_CODE_THINKING_BUDGET = '4096'
+  try {
+    const bodies = (await runCompaction()).bodies
+    assert.ok(bodies.length >= 2, `应有摘要 + 审计两次请求（实际 ${bodies.length}）`)
+    assert.deepEqual(knobs(bodies[0]), { thinking: { type: 'disabled' }, reasoning_effort: undefined })
+    assert.deepEqual(knobs(bodies[1]), enabled(4096), '审计步是判断步：必须保留思考')
+  } finally {
+    delete process.env.CLAUDE_CODE_THINKING_ENABLED
+    delete process.env.CLAUDE_CODE_THINKING_BUDGET
+  }
 })

@@ -154,10 +154,10 @@
   **最关键的一条**：同设置内**跑次间方差极大**（budget4096 × P1 思考量 279–2987 字符 = **10.7×**）⇒ **任何"逐步微调档位"的策略都会被噪声吞掉**，这正是四套参考实现里**一个运行时启发式都没有**的原因。
   **bug 级附带发现**：`provider.thinkingEnabled=true` 时桥恒注入 `THINKING_ENABLED=1` ⇒ **每一步都思考**（含摘要/压缩步），而用户设的 `effortLevel: max` 永远发不出去（`api.mjs:1280` 的 thinking 分支先 `return`）——这条即使策略永不开启也该修。
   **范围限定**：仅该模型 + 两道小题 ⇒ 其余 provider 需各跑一次同一脚本；也**不足以**证明 off 在长任务上无损。
-- **K3.1 判据（按实测改为二值）**：`pickStepThinking → 'on'|'off'`。`off` **只给已知安全的阶段**（摘要/压缩步，范式 `compact.ts:1305`），其余维持现状；运行时只留两条**升档**（上一步工具报错 / 压缩后第一步）。**只降不升**，用户 `effortLevel:'off'` 时策略不得开。原计划的"工具步降一档"**删除**——无档可降。
-- **K3.2/K3.3 落点与回退**：解析层放一处（把"用户档位被静默丢弃"这个 bug 一并修掉：off → `thinking:{type:'disabled'}`，否则按 provider 的 `thinkingEnabled` → enabled+budget；旋钮二选一，解释器为 `effortParam(effort, thinkingMode)`，优先级 ①策略关思考 ②provider 思考开关 ③`reasoning_effort`）；`PONOS_EFFORT_POLICY=graded|off`，**默认 `off`**——Task 11 的数据已到，但"改变模型行为"这一档要用户看过 A/B 表再开。
-  - **已落地（`550cfdf`，保行为部分）**：`effortParam` 优先级显式化 + `thinkingMode` 贯穿 `streamMessages → anthropicStream → 请求体`（默认 `null`，现状逐字节不变）+ 显式档位被吃掉时每进程落一行诊断（纯函数 `effortDroppedNotice`，`auto`/未知不误报）。**策略本身未启用**：`engine` 侧尚无调用方。
-  - **测试做法的修正（值得记下）**：原计划写的是「`PONOS_MOCK_API=1` + mock `api.bodies` 断言请求字段」——**做不到**。mock 在 `anthropicStream` 之前就短路了，`body` 根本不会构造；而本 bug 恰恰只在请求字段上可见。改为 `http.createServer` 起本地端点抓**真实**请求体（范式 `api-empty-stream.test.mjs` 的 `withServer`）。18 例覆盖 (env × 档位) 整张矩阵、两旋钮互斥不变量、档位以外字段逐字段不变；五个变异（删优先级 / 排回旧序 / budget 不回落 / 去掉每进程一次 / 诊断误报）**全部被杀**。教训：**观测点必须选在「事实发生的那一层」**，mock 层看不到的东西不要指望它断言。
+- **K3.1 判据（按实测改为二值，范围经用户决策收窄）**：`pickStepThinking → 'on'|'off'`，落在新模块 `kernel/effort-policy.mjs`。`off` **只给摘要/压缩步**（范式 `compact.ts:1305`），其余一律 `'on'`＝**不干预**。**用户 2026-09-13 决策：接受这一档**（"常规步也 off"因质量证据只有两道小题的 16/16 而被否）。原计划的"工具步降一档"**删除**——无档可降；两条运行时**升档**启发式**刻意不写**（在"只降摘要步"范围下永远不可能触发＝死代码，文件顶部写明将来扩大范围时必须与"用户 off 时策略不得开"一起实现）。**保真审计步显式 `'on'`**：它的产出是"摘要漏了什么"的判断本身，关掉思考＝悄悄削弱"抓坏摘要"的唯一自动安全网。
+- **K3.2/K3.3 落点与回退**：解析层放一处（把"用户档位被静默丢弃"这个 bug 一并修掉：off → `thinking:{type:'disabled'}`，否则按 provider 的 `thinkingEnabled` → enabled+budget；旋钮二选一，解释器为 `effortParam(effort, thinkingMode)`，优先级 ①策略关思考 ②provider 思考开关 ③`reasoning_effort`）；`PONOS_EFFORT_POLICY=graded|off`，**默认 `graded`**（用户已看过 A/B 表并选定范围；回退＝设 `off`，惰性读 env 保证 `settings.env` 通道生效）。
+  - **已落地（两笔）**：① `550cfdf` 保行为部分——`effortParam` 优先级显式化 + `thinkingMode` 贯穿 `streamMessages → anthropicStream → 请求体` + 显式档位被吃掉时每进程落一行诊断（纯函数 `effortDroppedNotice`，`auto`/未知不误报）；② 策略部分——`effort-policy.mjs` + `compact.mjs:callSummaryBody({ thinking })`（单发与**分块**两处传 `summaryThinking()`，审计传 `'on'`）。**`engine.mjs`/`bridge.mjs` 刻意不改**：主路径/lane 是常规步（超出授权范围），而策略 env 经 `settings.json` 的 `env` 直达内核，桥不需要新字段。
+  - **测试做法的修正（值得记下）**：原计划写的是「`PONOS_MOCK_API=1` + mock `api.bodies` 断言请求字段」——**做不到**。mock 在 `anthropicStream` 之前就短路了，`body` 根本不会构造；而本 bug 恰恰只在请求字段上可见。改为 `http.createServer` 起本地端点抓**真实**请求体（范式 `api-empty-stream.test.mjs` 的 `withServer`），并用它驱动**真 compactor** 抓摘要/分块/审计三类请求。共 27 例（判据表 5 + 线协议 22）、**八个变异全部被杀**。**其中最值钱的一条**：首版端到端只覆盖了单发摘要路径，变异「分块路径不传 thinking」**存活**——分块夹具需要 35 轮 × 32768 窗口，而默认夹具只有 6 轮。教训两条：**观测点必须选在「事实发生的那一层」**（mock 看不到的东西别指望它断言）；**「策略生效」的测试必须覆盖该策略的每一条分支**，否则漏掉的正是小窗口/大 covered 会话那条路。
 
 ---
 
@@ -219,7 +219,7 @@
 | 惰性 watchdog 改变挂起语义 | 只可能**延后** trip（提供者恒 ≥ `ms`），不可能提前掐断；双向测试（放宽态 `tripped===false` + 常量小阈值仍按小阈值 trip）；回退 1 行。**残留**：求值时机由「每请求」变为「仅超 `ms` 零数据时」，故该路径上的异常显影更晚——但 `adaptiveFirstByteMs` 本就自带 try/catch（抛错返回 `baseMs`），外部语义不变 |
 | K1.6 锚点法低估 → 溢出 | 默认 off；先量化误差（>5% 不上线）；压缩后作废锚点 |
 | 写盘正确性 | **禁止**常驻 fd；缓冲另加显式 flush 屏障 + 关键条目同步写 |
-| 推理降档损伤质量 | 默认 off；A/B 实测后再开；一键回退 |
+| 推理降档损伤质量 | **范围收窄到摘要/压缩步**（产出是结构化摘要，质量风险几乎为零，有 `compact.ts:1305` 先例），常规步一律不干预；用户看过 A/B 表后 2026-09-13 决策启用；一键回退 `PONOS_EFFORT_POLICY=off`。**保真审计步不降**（它是"抓坏摘要"的唯一自动安全网）。**已知残留**：用户全局 `effortLevel:'off'` 时审计步仍会思考（一次 512 token 调用），未纳入本次范围 |
 | 合帧渲染改变观感 | 已选进取档；保留开关回退 |
 | 日志采样降低诊断密度 | 错误与慢路径全量；`[perf]` 默认关、采样率可配 |
 

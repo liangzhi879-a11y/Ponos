@@ -59,7 +59,7 @@
 | `src/components/chat/MarkdownText.tsx`、`src/lib/utils.ts` | 改 | R4 `useMemo` 稳定表 + 前缀冻结 + `sanitizeText` 改正则 |
 | `docs/bridge-contract.md` | 改 | 仅当 K3 新增可选字段时增补 |
 
-依赖顺序：Task 1（K0）**必须先落地并采一轮基线** → Task 2–6（K1，每项独立可提交）→ Task 7–10（K2）→ Task 11（K3.0 探针，独立）→ Task 12–16（R）。
+依赖顺序：Task 1（K0）**必须先落地并采一轮基线** → Task 2–6（K1，每项独立可提交）→ Task 7–10（K2）→ Task 11（K3.0 探针，独立）→ Task 12（K3.1–K3.3）→ Task 13–16（R）。
 
 ---
 
@@ -450,21 +450,22 @@ export function perfStep(turn, step)                  // 发一行 + 清账 + �
 
 ### Task 12: K3.1–K3.3 推理预算分级
 
-**状态：部分完成 —— 「保行为 + 消静默」部分已提交（`550cfdf`）；「策略」部分待用户决策后再落**（`PONOS_EFFORT_POLICY` 默认 `off`，见下方最后一条）
+**状态：已完成（范围经用户 2026-09-13 决策收窄为「只降摘要/压缩步」）**。分两笔：「保行为 + 消静默」= `550cfdf`；「策略 + 接线 + 端到端验证」= 本次提交。
 
-**Files:** Modify `kernel/engine.mjs`、`kernel/api.mjs`、`server/bridge.mjs`；Create `kernel-tests/effort-policy.test.mjs`、`kernel-tests/effort-wire.test.mjs`
+**Files:** Create `kernel/effort-policy.mjs`；Modify `kernel/api.mjs`、`kernel/compact.mjs`；Create `kernel-tests/effort-policy.test.mjs`、`kernel-tests/effort-wire.test.mjs`（`engine.mjs`/`bridge.mjs` 经决策**不改**，理由见下）
 
 **形状变更（数据驱动，非偏好）**：原计划的四档阶梯（`medium/low/high/max`）**在本 provider 上不可实现**——budget 与 `reasoning_effort` 两个旋钮实测都不控思考量（Task 11 结论 2/3），而唯一有量级效应的旋钮是 **thinking 的 on/off**（结论 1：3.1× / 1.5×，16/16 全对）。故判据降为**二值** `pickStepThinking(input) → 'on' | 'off'`，同时更贴近四套参考实现（阶段边界 + 配置，**零运行时启发式**）。用户原话「常规步 medium / 疑难步 max」的**意图**（常规步少思考）保留，但载体不得不换成开关。
 
-- [ ] `pickStepThinking(input)` 纯函数：`off` **只给已知安全的阶段**——摘要/压缩步（范式 `claude-code/src/services/compact/compact.ts:1305`：其产出是结构化摘要，不需要探索性推理）；**其余一律 `on`（= 维持现状）**，不做"工具步降一档"（无档可降）
-- [ ] 运行时启发式只保留两条**升档**：上一步 `tool_result` 为 `is_error` → `on`；紧跟压缩/溢出瘦身后的第一步 → `on`
-- [ ] **只降不升 + 用户优先**：用户 `effortLevel: 'off'` 时策略**不得**开；策略只能把 `on` 变 `off`
-- [ ] 解析层放**一处**：合法值/别名/未知值降级全写死在解析函数里
-- [x] 落点：`api.mjs:effortParam` **明确优先级**（① `thinkingMode==='off'` 或用户 `off` → `thinking:{type:'disabled'}`；② provider 的 thinkingEnabled → enabled+budget；③ 其余档位 → `reasoning_effort`；旋钮二选一，绝不并发），**消除"用户档位被静默丢弃"**（Task 11 结论 6——这条即使策略永不开启也该修）。`thinkingMode` 已贯穿 `streamMessages → anthropicStream → 请求体`（默认 `null`，现状行为逐字节不变），**策略层入口就位但尚无调用方**。诊断由纯函数 `effortDroppedNotice(effort,{thinkingEnabled,budget})` 给出，每进程落一行（`auto`/未知档位不提示，避免误报）。
-- [ ] 落点（策略，未做）：`engine.mjs` 档位状态 + 主路径/lane 两个消费点传入 `thinkingMode`；`server/bridge.mjs` 增加策略字段（与 `thinkingBudget` 同区）
-- [ ] `PONOS_EFFORT_POLICY=graded|off`，**默认 `off`**：Task 11 已有数据，但"改变模型行为"这一档要用户**看过 A/B 表再开**
-- [x] 测试：`kernel-tests/effort-wire.test.mjs`（**18 例，全绿；五个变异全被杀**）。**修正原计划的做法**：`PONOS_MOCK_API=1` **断言不了请求字段**——mock 在 `anthropicStream` 之前短路，`body` 根本不会构造，而本 bug 恰恰在请求字段上。改为直连本地 `http.createServer` 抓真实 body（范式 `kernel-tests/api-empty-stream.test.mjs` 的 `withServer`），断言 (env, 档位) 整张矩阵 + 两旋钮互斥不变量 + 「档位以外的字段逐字段不变」。判据表（`kernel-tests/effort-policy.test.mjs`）随策略一起落。
-- [ ] **仍不做**：`adaptive` 分支（结论 4：无优势）、budget 钳制（不选 budget 即无需那个 `-1`）
+- [x] `pickStepThinking(input)` 纯函数：`off` **只给已知安全的阶段**——摘要/压缩步（范式 `claude-code/src/services/compact/compact.ts:1305`：其产出是结构化摘要，不需要探索性推理）；**其余一律 `on`（= 维持现状）**，不做"工具步降一档"（无档可降）。落在新模块 `kernel/effort-policy.mjs`（内核零外部依赖不变；`build-kernel.mjs` 打包已复验通过）。
+- [x] ~~运行时启发式只保留两条**升档**~~ → **刻意不实现**：在「只降摘要步」这个范围内两条升档**永远不可能触发**（常规步本就不干预），写了就是死代码；文件顶部已写明"若将来扩大到常规步，必须与「用户 off 时策略不得开」一起实现，并有实测数据背书"。
+- [x] **只降不升 + 用户优先**：`'on'` 的语义定义为「**不干预**」而非"强制开思考"⇒ 策略在结构上不可能把用户关掉的思考打开（用户 `off` 档由 `api.effortParam` 的 ① 分支独立生效，且优先级最高）。测试断言：返回值只有 `on|off`，且 `summary` 是唯一的 `off` 来源。
+- [x] 解析层放**一处**：`resolveEffortPolicy` 吃掉合法值/别名（`on|true|1|enabled`→graded，`0|false|disabled|none`→off）/未知值（→默认，绝不抛）；调用点不做 `if`。**惰性读 env**：`effortPolicyFromEnv()` 在调用时读（`cli.mjs` 的 `settings.env` 注入在所有 ESM 模块求值之后 ⇒ 模块级常量必然拿不到，这条单独有测试）。
+- [x] 落点：`api.mjs:effortParam` **明确优先级**（① `thinkingMode==='off'` 或用户 `off` → `thinking:{type:'disabled'}`；② provider 的 thinkingEnabled → enabled+budget；③ 其余档位 → `reasoning_effort`；旋钮二选一，绝不并发），**消除"用户档位被静默丢弃"**（Task 11 结论 6——这条即使策略永不开启也该修）。`thinkingMode` 已贯穿 `streamMessages → anthropicStream → 请求体`（默认 `null`）。诊断由纯函数 `effortDroppedNotice(effort,{thinkingEnabled,budget})` 给出，每进程落一行（`auto`/未知档位不提示，避免误报）。
+- [x] 落点（策略）：`compact.mjs:callSummaryBody` 增加 `thinking` 参数并透传到 `streamMessages`；单发摘要与**分块 map-reduce 摘要**两处都传 `summaryThinking()`（同一次压缩共用同一判据）。**保真审计步显式传 `'on'`**——它的产出是"摘要漏了什么"的判断本身，关掉思考等于悄悄削弱"抓坏摘要"的唯一自动安全网。**刻意不碰** `engine.mjs` 主路径/lane 两个消费点（那是常规步，超出本次授权范围）⇒ `bridge.mjs` 也无需改动（`PONOS_EFFORT_POLICY` 经 `settings.json` 的 `env` 直达内核，已被上面的惰性读覆盖）。
+- [x] `PONOS_EFFORT_POLICY=graded|off`，**默认 `graded`**：用户已看过 A/B 表并选定「只对摘要/压缩步 off」（2026-09-13）。一键回退 = 设 `off`。
+- [x] 测试：`kernel-tests/effort-policy.test.mjs`（5 例，判据表 + 只降不升不变量 + 惰性 env）+ `kernel-tests/effort-wire.test.mjs`（**22 例**：(env, 档位) 整张矩阵、两旋钮互斥不变量、档位以外字段逐字段不变，以及**端到端**：真 compactor + 本地 server 抓摘要/分块/审计三类请求的真实 body）。**修正原计划的做法**：`PONOS_MOCK_API=1` **断言不了请求字段**——mock 在 `anthropicStream` 之前短路，`body` 根本不会构造，而本 bug 恰恰在请求字段上 ⇒ 直连本地 `http.createServer`（范式 `kernel-tests/api-empty-stream.test.mjs` 的 `withServer`）。
+  **一条值得记下的教训**：首版端到端用例只覆盖了单发摘要路径，变异「分块路径不传 thinking」**存活**（分块夹具需要 35 轮 × 32768 窗口，而我默认只建了 6 轮）⇒ 补了分块用例后才被杀。**"策略生效"的测试必须覆盖该策略的每一条分支**，否则漏的那条正是小窗口/大 covered 会话的路径。
+- [x] **仍不做**：`adaptive` 分支（结论 4：无优势）、budget 钳制（不选 budget 即无需那个 `-1`）。**已知残留**：用户全局 `effortLevel:'off'` 时，保真审计步仍会思考（该步的档位来自策略而非用户档位；影响仅限一次 512 token 的审计调用）——记在此处，不扩大本次范围。
 
 ---
 

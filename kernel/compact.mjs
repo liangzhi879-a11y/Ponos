@@ -10,6 +10,7 @@
 // （溢出兜底）共用——小窗口模型切换后的溢出路径同样先零成本收缩再摘要。
 import { statSync, readFileSync } from 'node:fs'
 import { streamMessages } from './api.mjs'
+import { pickStepThinking } from './effort-policy.mjs'
 import { countCjk, bumpContentEpoch } from './context.mjs'
 import { extractEntities, missingEntities } from './fidelity.mjs'
 import { patchOrphanToolUses } from './engine.mjs'
@@ -536,7 +537,16 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
   // 令摘要请求必死 → 熔断 → 压缩永不落地 → 溢出自愈链耗尽"放弃执行"。对齐
   // api.mjs 同款校准——跟随 PONOS_STREAM_FIRST_BYTE_MS（provider firstByteMs 注入），
   // 大 body（>200K 字符）放宽 600s 封顶；显式 PONOS_COMPACT_FIRST_BYTE_MS 仍权威。
-  async function callSummaryBody({ body, maxOut }) {
+  // 摘要/压缩步的思考档位（本文件唯一"降思考"的地方）。判据与启用范围见
+  // kernel/effort-policy.mjs；此处只取一次，同一次压缩的单发与分块共用同一判据。
+  const summaryThinking = () => pickStepThinking({ kind: 'summary' })
+
+  // thinking 由**策略层**给（'off' = 本步关思考；'on' = 不干预，照旧走用户档位与 provider
+  // 开关）。摘要/压缩步传 'off'（该步产出是结构化摘要，不需要探索性推理，范式
+  // claude-code compact.ts:1305）；**保真审计步显式传 'on'**——审计的产出是"摘要漏了什么"
+  // 的判断本身，把它的思考关掉等于悄悄削弱"抓坏摘要"的安全网，而它是压缩质量的唯一自动
+  // 兜底。见 kernel/effort-policy.mjs 顶部的范围说明。
+  async function callSummaryBody({ body, maxOut, thinking = 'on' }) {
     let buf = ''
     let usage = {}
     const firstByteMs = (() => {
@@ -552,7 +562,7 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
     const timer = setTimeout(() => { if (!gotData) ctrl.abort() }, firstByteMs)
     if (timer.unref) timer.unref()
     try {
-      for await (const chunk of streamMessages({ model, messages: body, maxTokens: maxOut, signal: signal || ctrl.signal, tools: [] })) {
+      for await (const chunk of streamMessages({ model, messages: body, maxTokens: maxOut, signal: signal || ctrl.signal, tools: [], thinkingMode: thinking })) {
         gotData = true
         if (chunk.type === 'text') buf += chunk.text
         else if (chunk.type === 'usage') usage = addUsage(usage, chunk.usage)
@@ -571,7 +581,7 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
       system, messages, cut, lastSummary, keyInfo,
       sessionMemory: sm || undefined,
     })
-    return callSummaryBody({ body: req, maxOut })
+    return callSummaryBody({ body: req, maxOut, thinking: summaryThinking() })
   }
 
   // 压缩点保真审计（2026-09-12 spec §4.1 方法 B）——**fire-and-forget**：
@@ -598,6 +608,7 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
       const { text } = await callSummaryBody({
         body: buildFidelityAuditRequest({ excerpt, summary }),
         maxOut: 512,
+        thinking: pickStepThinking({ kind: 'audit' }), // 显式：审计步**不**降思考（见上）
       })
       const parsed = parseFidelityAudit(text)
       if (parsed.missing.length || parsed.rewritten.length) {
@@ -695,7 +706,7 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
                     (sm && sm.trim() ? `\n\n（会话工作记忆——保留其中所有未过时事实：）\n<session-memory>\n${sm.trim().slice(0, 5000)}\n</session-memory>` : '')
                 : chunkMergeInstruction(ci + 1, chunks.length),
             })
-            const { text, usage: callUsage } = await callSummaryBody({ body, maxOut: summarizerMaxOut })
+            const { text, usage: callUsage } = await callSummaryBody({ body, maxOut: summarizerMaxOut, thinking: summaryThinking() })
             usage = addUsage(usage, callUsage)
             // A2 标签缺失降级（同单发）：弱模型不吐标签时清洗行内思考后整体作摘要
             let s = extractSummary(text)
