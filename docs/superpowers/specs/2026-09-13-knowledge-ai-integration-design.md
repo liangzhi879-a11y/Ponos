@@ -245,3 +245,23 @@ bridge 的索引缓存另有 TTL）。S1 已把增量写入口 `store.updateDoc(
   `server/bridge.mjs:1174`）。
 - 测试纪律沿用 S1/S2：`mkdtempSync` + 显式 `configDir` 隔离，**不启动 bridge**（server 侧测试注入假
   `callKernel`，见 `server/knowledge-routes.test.mjs`）。
+
+### 11.5 实施期偏差补记（S3 Task 7 全量验收后，2026-09-13）
+
+复核方式：各段全量 `node --test`（kernel-tests 967 / server 330 / electron 50 / src 281 /
+shared 47，0 fail）+ `npm run typecheck` + `npm run build` 全跑通后回填。
+
+| # | §11 原表述 / 隐含前提 | 实施期实际 | 处置 |
+|---|---|---|---|
+| 1 | §11.2 R1：`graph.search` 在主链路 | ✅ 实测确认；E2E 探针证明 legacy 提示词含 `【相关经验抽调】`、unified 下消失 | 按 R1 执行：`unified` 才替换，legacy 分支逐字节保持 |
+| 2 | §11.2 R2：两份禁用表都含 `KnowledgeSearch` | ✅ 实测确认（`kernel/tools.mjs` + `server/bridge.mjs` 各一处，`server/knowledge-packaging.test.mjs` 有断言守着） | 两份同步删；该测试断言方向**反转**（必须含 → 不得含）；语义变更（chat 从"禁一切本地能力"收窄为"禁本地执行/写盘/出网执行类能力"）写进两份表的头注 |
+| 3 | §11.2 R3：写入后"立即可检索"现状已成立 | ✅ 确认；但实施中发现更严重的问题：`kernel/cli.mjs` 的沉淀段引用了**块外**的 `const graph`（声明在 `if (!chatMode)` 内）→ 运行时 `graph is not defined`，异常被该段 `catch {}` 静默吞掉 ⇒ **启发式记忆捕获（`captureMemoryCandidates` → `appendMemoryEntry`）从未落盘**。实测证据：spawn mock 内核跑一轮"记住：…"，`memory/personal/*.md` 无任何新增（`kernel-tests/knowledge-inject-e2e.test.mjs`） | 图谱句柄提到注入段外（`let graphStore`）修复；同时补 `!chatMode` 守卫——原先 chat 下这条路径碰巧也抛错，修好作用域后若不守卫，chat 会开始往本地写文件（破 S1 纯聊隔离语义）。**这是行为变更，已在报告"自审发现"里单列** |
+| 4 | §11.3 N1：两层"同一次 `searchKnowledge()`" | 仍按 N1 执行：索引层复用 `buildMemoryIndex`（零格式变化），收敛点为**同一 store 实例 + 一次 load**；`cli` 把该实例复用给轮末沉淀，一处 load 两处用 | 已落地 |
+| 5 | §3.1 的 `buildKnowledgeInjection` 签名 | 实际多两个可选参数：`recall`（`PONOS_MEMORY_INJECT=index-only` 逃生阀在 unified 下也要生效——不短路就等于开关静默失效）、`knowledgeIndex`（注入方复用已 load 的 store，供沉淀增量更新共用） | 采纳为最终签名 |
+| 6 | §8 验收「`KnowledgeSearch` 与注入抽调 top-3 `blockId` 一致」 | 需要限定：注入层有意过滤①无标签 `entry`（`- [ ] Step N` 任务清单，依 S1 裁定"经验条目 = 有 tag 的 entry"）②同文档第 3 块起 | 断言改为"**同序子集 + 首名一致**"（注入只做文档化过滤与预算裁剪，绝不能出现工具检不出的块） |
+| 7 | §3.3「总预算 = `experienceInjectMaxBytes`」 | 内核侧读不到该键（它是 server 的 `config.json` 键）；内核新增 `settings.memory.injectMaxBytes` + env `PONOS_KNOWLEDGE_INJECT_MAX_BYTES`（默认 4096），bridge 把既有键透传过来 | 已落地；另注：注入层预算按**字节**计量，而索引层复用的 `buildMemoryIndex` 内部按其既有约定按**字符数**比较 `maxBytes`——极小预算下索引层固定串头（约 400 字节）可能自身超限，此时抽调层置空（单测按 `max(budget, 索引层单层字节)` 断言） |
+| 8 | §6 指标 | 实施发现：`--knowledge stats`（含 HTTP 转发）**每次都是新进程**，进程内累加器恒为初值，不落盘则指标在 CLI/HTTP 上等于不存在 | 增补**落盘 sidecar** `.index/metrics.json`（会话启动注入时写一次，内容是上次注入计数 + 检索 P50/P95）；`stats` op 合并为 `metrics` 字段（缺失/损坏 → `null`，不报错）；同时 `store.stats().search` 保留**进程内**样本（测试可断言真实行为）。两者语义在代码注释里写清，避免"指标准确性"误读 |
+| 9 | 计划 Task 3「`SETTINGS_DEFAULTS.memory` 加 `injectMode`/`injectMaxBytes`」 | 实施时放弃：`diffFromDefault` 是"整键 JSON 相等"比较，多两键会让"只设了 `memory.inject`"的用户被误报漂移；且默认值放两处必然漂移 | 灰度位默认值**单一权威**= `kernel/knowledge-inject.mjs` 的 `resolveInjectMode`/`resolveInjectBudget`；`settings.mjs` 只留一行注释指引（`validateSettings` 不校验子键，用户写这两个键仍然生效） |
+| 10 | §4.2「老签名零改动即获块级能力」 | 输出**格式保留**（`【经验库命中 N 条，取前 M】` + `- [主题\|标签] 摘要 -- 全文（score · 文件）`），但 `N` 的语义从 legacy 的"总命中条目数"变为"返回条数"（块级检索一行 = 一个块）；来源给**绝对路径**（不是 docId）——Read 的白名单只含 memoryRoot 等目录，喂相对 docId 会让模型 Read 直接失败 | 已按此实现并在注释里写明；`searchLocalMemory` 保留为索引不可用时的回落 |
+| 11 | §5「`appendMemoryEntry` 是唯一写入点」 | 会话工作记忆（`kernel/cli.mjs` 的 `writeFileSync(memory/session/<id>.md)`）**不走**该函数（整文件覆盖写，非 append 语义） | 该处单独调 `syncKnowledgeIndex(...)`；workflow 节点调用点不传 `knowledgeIndex`（无 configDir，不猜路径），由 staleness 全量重建兜底（注释已记） |
+| 12 | 未做（本期明确不做，非遗漏） | ① `active: false` 主题的注入过滤（索引不解析 `active`，N4）；② `PONOS_GRAPH_BACKEND` 预留位（N9，从未实现）；③ GUI 控件（spec §3.3"不新增用户可见配置"）；④ 会话记忆命中的 **Read 可达性**：`session-memory` 空间的文件不在 Read 白名单内，工具给了绝对路径但 `Read` 仍会被边界拒绝（S1 遗留，`readAllowFiles`/`readAllowDirs` 未含 `<configDir>/memory/session`） | 全部记入 S3 报告的"遗留问题 / 需人工走查" |
