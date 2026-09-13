@@ -47,6 +47,9 @@ import { normalizeApprovalMode, deriveApprovalMode } from './approval-mode.mjs'
 import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
 import { runReadonly } from './readonly.mjs'
 import { KERNEL_VERSION, SCHEMA_VERSION, buildId } from '../version.mjs'
+// 应用智控：内核侧 Spec 读取（纯函数）与权限规则注入
+import { getBoundApp, loadSpec } from './app-spec.mjs'
+import { syncAppPermissionRules } from './app-permissions.mjs'
 
 const REQUIRED_FORMAT = 'stream-json'
 
@@ -379,6 +382,9 @@ export async function main(argv) {
   // （与 bridge 侧 ~/.yfworking/workflows 安装目录对应；Task 8 把市场工作流装到这里）。
   // chat 模式：工作流根为空 ⇒ 无工作流发现，亦无 run_<slug> 动态工具（见下）。
   const workflowRoots = chatMode ? [] : [...skillRoots, join(configDir, 'workflows')]
+  // 应用智控数据根：<configDir>/apps（与 electron/app-registry.cjs 的 roots 对应）。
+  // chat 模式与工作流同处理：根为空 ⇒ 不注入应用规则。
+  const appRoots = chatMode ? [] : [join(configDir, 'apps')]
   // I-2：public 工作流入池上限——settings.workflow.publicLimit（设置项不存在/非法 → 缺省 20，
   // 与 dyntools 内 LIMIT_DEFAULT 一致；不为此扩设置系统）。
   const wfPublicLimitN = Number(settings.merged.workflow?.publicLimit)
@@ -445,7 +451,21 @@ export async function main(argv) {
   // chat 模式跳过（2026-09-12 隔离）：实证病灶 = chat 会话的工具表里赫然出现 run_spec_dev，
   // 模型据此认为自己能跑工作流并答"Skill 工具在此不可用"，能力声明与实际工具集自相矛盾。
   if (!chatMode) {
-    engine.tools.setDynamicTools(() => buildWorkflowTools({ roots: workflowRoots, engine: wfEngine, agentId: args.agent || null, publicLimit: wfPublicLimit }))
+    engine.tools.setDynamicTools(() => {
+      // 应用智控：按「当前会话绑定的应用」注入 read/write 权限规则（安全双保险的主机制）。
+      // 与工具注入同处一个视图函数（每次求值），故「进入控制台 → 绑定 → 规则生效」
+      // 「离开 → 回收旧规则」都无需重启内核、无需跨进程消息。
+      // 规则注入失败不得中断本轮 turn（与 dynamicTools 求值失败的容错策略一致）。
+      // 详见 kernel/app-permissions.mjs。
+      try {
+        const boundAppId = getBoundApp({ roots: appRoots, sessionId })
+        const boundSpec = boundAppId ? loadSpec({ roots: appRoots, appId: boundAppId }) : null
+        syncAppPermissionRules({ rules: permissionRules, spec: boundSpec })
+      } catch (err) {
+        log.warn('apps: 权限规则注入失败（本轮继续）', err)
+      }
+      return buildWorkflowTools({ roots: workflowRoots, engine: wfEngine, agentId: args.agent || null, publicLimit: wfPublicLimit })
+    })
   }
   // J1：health Judge 注入位——包装 engine.judgeUntil 作健康判定（目标 = 当前会话
   // 健康状态判定：是否建议重置/继续/压缩后继续）。默认关（PONOS_LLM_JUDGE /
