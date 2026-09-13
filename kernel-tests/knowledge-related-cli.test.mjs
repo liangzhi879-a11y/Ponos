@@ -172,3 +172,42 @@ test('parseArgs：--no-validate 必须被显式识别（未知 -- 参数是静�
   assert.equal(a.limit, 3)
   assert.equal(parseArgs(['--knowledge', 'related', '--id', `${DOC}#0`]).noValidate, undefined)
 })
+
+// —— S5 Task 9：GUI 批量口（`related --doc`）与图谱图层（`graph --related`）——
+
+test('op=related --doc：整篇锚点（字段集合钉死）+ 坏 limit 明确报错', async () => {
+  const { dir } = fixture()
+  const { output, code } = await runKnowledgeCommand({ op: 'related', configDir: dir, args: { doc: DOC } })
+  assert.equal(code, 0)
+  assert.equal(output.docId, DOC, '回显 docId：CLI 是新进程调试口，不回显无法确认参数真的生效')
+  assert.equal(output.validate, true)
+  assert.equal(output.limit, MAX_RELATED)
+  assert.ok(output.count >= 1, `同 tag 的邻居应给出锚点，实得 ${output.count}`)
+  assert.equal(output.count, output.blocks.length)
+  for (const bl of output.blocks) {
+    assert.deepEqual(Object.keys(bl), ['blockId', 'related'], '块级只回 blockId + related')
+    assert.ok(bl.related.length > 0, '没有锚点的块不该出现（GUI 据此不留空壳）')
+    for (const x of bl.related) assert.deepEqual(Object.keys(x).sort(), SUMMARY_KEYS, '绝不含正文')
+  }
+  // 不存在的文档 → 空数组（与 links 的空集惯例一致），不是错误码
+  const miss = await runKnowledgeCommand({ op: 'related', configDir: dir, args: { doc: 'experience/nope.md' } })
+  assert.equal(miss.code, 0)
+  assert.deepEqual(miss.output.blocks, [])
+
+  // 坏 limit 必须报错（静默取缺省会把"参数写错"读成"只有这么多锚点"）
+  const bad = await runKnowledgeCommand({ op: 'related', configDir: dir, args: { doc: DOC, limit: -1 } })
+  assert.equal(bad.code, 1)
+  assert.match(bad.output.error, /limit/)
+})
+
+test('op=graph --related：显式 true 才附相关层；缺省/字符串一律不带（图层默认关）', async () => {
+  const { dir } = fixture()
+  const off = await runKnowledgeCommand({ op: 'graph', configDir: dir, args: {} })
+  assert.equal('related' in off.output, false, '缺省不得带 related（S2 响应形状逐字不变）')
+  const offStr = await runKnowledgeCommand({ op: 'graph', configDir: dir, args: { related: 'true' } })
+  assert.equal('related' in offStr.output, false, "字符串 'true' 不算（显式 === true，宁可少带）")
+  const on = await runKnowledgeCommand({ op: 'graph', configDir: dir, args: { related: true } })
+  assert.deepEqual(on.output.nodes, off.output.nodes)
+  assert.ok(Array.isArray(on.output.related), 'related:true 时必须给数组')
+  assert.deepEqual(on.output.related, [], '单文档库里没有文档对（自环已丢），空数组而不是缺失')
+})

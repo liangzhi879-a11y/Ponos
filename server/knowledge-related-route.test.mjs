@@ -103,3 +103,54 @@ test('错误路径与 links 同款：内核抛错 → 500、非 JSON → 502、P
   assert.equal(r502.status, 502)
   assert.equal(await handleKnowledgeRoute(ctx({ method: 'POST', url: '/knowledge/related?id=a.md%230' })), null)
 })
+
+// —— S5 Task 9：GUI 批量口（?doc=）与图谱图层（/knowledge/graph?related=1）——
+
+test('?doc=<docId>：薄转发为 `--knowledge related --doc`，且不与 ?id= 混用', async () => {
+  const blocks = [{ blockId: 'experience/workflow.md#1', related: [ANCHOR] }]
+  const callKernel = fakeKernel({ related: { docId: 'experience/workflow.md', validate: true, limit: 8, count: 1, blocks } })
+  const r = await handleKnowledgeRoute(ctx({ url: '/knowledge/related?doc=experience%2Fworkflow.md', callKernel }))
+  assert.equal(r.status, 200)
+  assert.deepEqual(callKernel.calls[0], ['--knowledge', 'related', '--doc', 'experience/workflow.md'])
+  assert.equal(r.body.count, 1)
+  assert.deepEqual(r.body.blocks, blocks)
+
+  // limit 只在给了的时候透传（同 /knowledge/graph 的既有约定）
+  const a = fakeKernel({ related: { blocks: [] } })
+  await handleKnowledgeRoute(ctx({ url: '/knowledge/related?doc=a.md&limit=3', callKernel: a }))
+  assert.deepEqual(a.calls[0], ['--knowledge', 'related', '--doc', 'a.md', '--limit', '3'])
+
+  // 两个参数都给时按 ?id=（既有语义优先，不静默改道到另一条口径）
+  const b = fakeKernel({ related: RESULT })
+  await handleKnowledgeRoute(ctx({ url: '/knowledge/related?id=experience%2Fworkflow.md%230&doc=experience%2Fworkflow.md', callKernel: b }))
+  assert.deepEqual(b.calls[0], ['--knowledge', 'related', '--id', 'experience/workflow.md#0'])
+})
+
+test('?doc= 的形状校验：含 \'#\' 是 blockId（参数用错）→ 400，且不白跑一次内核进程', async () => {
+  const callKernel = fakeKernel({ related: { blocks: [] } })
+  const r = await handleKnowledgeRoute(ctx({ url: '/knowledge/related?doc=experience%2Fworkflow.md%230', callKernel }))
+  assert.equal(r.status, 400, '把 blockId 填进 doc 会被内核当"文档不存在"吞成空数组——最贵的假阴性')
+  assert.match(String(r.body.error), /invalid doc/)
+  assert.equal(callKernel.calls.length, 0)
+
+  // 两个参数都没有：错误文案要同时给出两条正确写法（不然用户不知道还能按文档问）
+  const empty = await handleKnowledgeRoute(ctx({ url: '/knowledge/related', callKernel: fakeKernel({}) }))
+  assert.equal(empty.status, 400)
+  assert.match(String(empty.body.error), /invalid id/)
+  assert.match(String(empty.body.error), /doc=/)
+})
+
+test('图谱图层：?related=1 才带 --related（逐字判 1），缺省与 falsy 写法一律不带', async () => {
+  const mk = () => fakeKernel({ graph: { nodes: [{ id: 'a.md', label: 'A', spaceId: 'notes', kind: 'doc' }], edges: [] } })
+  const on = mk()
+  const r = await handleKnowledgeRoute(ctx({ url: '/knowledge/graph?space=notes&related=1', callKernel: on }))
+  assert.equal(r.status, 200)
+  assert.deepEqual(on.calls[0], ['--knowledge', 'graph', '--space', 'notes', '--related'])
+
+  for (const u of ['/knowledge/graph?space=notes', '/knowledge/graph?space=notes&related=0',
+    '/knowledge/graph?space=notes&related=false', '/knowledge/graph?space=notes&related=']) {
+    const k = mk()
+    await handleKnowledgeRoute(ctx({ url: u, callKernel: k }))
+    assert.equal(k.calls[0].includes('--related'), false, `${u} 不得打开图层（默认关是 spec §7.5 的硬要求）`)
+  }
+})

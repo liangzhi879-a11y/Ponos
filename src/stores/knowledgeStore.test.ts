@@ -25,7 +25,7 @@ mem.set(KEY, JSON.stringify({
   version: 0,
 }))
 
-const { useKnowledgeStore, sanitizeView, sanitizeTree, toPersistedTree, KNOWLEDGE_VIEWS } =
+const { useKnowledgeStore, sanitizeView, sanitizeTree, toPersistedTree, sanitizeTargetBlockId, KNOWLEDGE_VIEWS } =
   await import('./knowledgeStore.ts')
 await new Promise((r) => setImmediate(r))   // 等 persist 水合落定
 
@@ -192,4 +192,42 @@ test('targetLine：正整数透传、非法兜底 null，换文档即清（行�
   assert.equal(st().targetLine, null, '换文档必须清定位（否则新文档里无关行被点亮）')
   // 复位：后续 persist 用例断言"落盘的 spaceId 为 null"，用例间不能留状态（单文件顺序执行）
   st().setSpace(null)
+})
+test('openAtBlock(S5 Task 9 关联锚点跳转): 一次写完 docId/view/块级定位, 并清掉行定位', () => {
+  st().setDocId('notes/a.md')
+  st().setTargetLine(12)
+  st().setView('graph')
+  st().openAtBlock('notes/b.md', 'notes/b.md#3')
+  assert.equal(st().docId, 'notes/b.md')
+  assert.equal(st().view, 'read', '非阅读视图下必须先切回 read, 否则点了锚点看不到目标条目')
+  assert.equal(st().targetBlockId, 'notes/b.md#3')
+  assert.equal(st().targetLine, null, '行定位与新锚点无关, 必须清(否则点亮无关行)')
+
+  // 形状非法(无 # / 空 docId / 空块段) -> 整次跳转 no-op: 宁可不动, 也不要跳到匹配不上的目标
+  st().openAtBlock('notes/c.md', 'notes/c.md')
+  assert.equal(st().docId, 'notes/b.md')
+  st().openAtBlock('', 'notes/b.md#1')
+  assert.equal(st().docId, 'notes/b.md')
+  st().openAtBlock('notes/c.md', '#1')
+  assert.equal(st().docId, 'notes/b.md')
+
+  // 换文档 / 切空间同样清块级定位: docId 前缀只对上一篇有意义
+  st().setDocId('notes/d.md')
+  assert.equal(st().targetBlockId, null)
+  st().openAtBlock('notes/d.md', 'notes/d.md#2')
+  // 切空间：spaceId **变化**才走清理路径（同值 no-op 是 setSpace 的既有语义，不是这里的漏洞）
+  st().setSpace('experience')
+  assert.equal(st().targetBlockId, null, '切空间必须清块级定位')
+  st().setSpace(null)
+})
+
+test('sanitizeTargetBlockId: 只认 <docId>#<n> 形状, 其余落 null(不抛)', () => {
+  assert.equal(sanitizeTargetBlockId('notes/a.md#0'), 'notes/a.md#0')
+  assert.equal(sanitizeTargetBlockId('  notes/a.md#12  '), 'notes/a.md#12', '两端空白剥掉(HTTP 参数常有)')
+  assert.equal(sanitizeTargetBlockId('notes/a.md'), null, '无 # -- 那是 docId 不是 blockId')
+  assert.equal(sanitizeTargetBlockId('#3'), null, '缺 docId 段')
+  assert.equal(sanitizeTargetBlockId('notes/a.md#'), null, '缺块序号段')
+  assert.equal(sanitizeTargetBlockId(''), null)
+  assert.equal(sanitizeTargetBlockId(null), null)
+  assert.equal(sanitizeTargetBlockId(3 as unknown as string), null)
 })

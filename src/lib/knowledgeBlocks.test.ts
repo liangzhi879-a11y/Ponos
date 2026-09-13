@@ -9,7 +9,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  clampLevel, isEntryCard, normalizeTags, pickTargetIndex, planBlockRender,
+  clampLevel, isEntryCard, normalizeTags, pickTargetIndex, pickTargetIndexByBlock, planBlockRender,
   type BlockLike,
 } from './knowledgeBlocks.ts'
 
@@ -119,4 +119,38 @@ test('normalizeTags：trim、去空、去重、忽略非字符串', () => {
     ['经验', 'workflow'])
   assert.deepEqual(normalizeTags(undefined), [])
   assert.deepEqual(normalizeTags(null), [])
+})
+
+// —— S5 Task 9：块级定位（关联锚点跳转）——
+
+test('planBlockRender(docId)：条目渲染项带 blockId（`<docId>#<n>`），不给 docId 时一个键都不多', () => {
+  const blocks = [
+    { n: 0, kind: 'entry', text: '摘要', line: 7, tag: '经验', full: '全文' },
+    { n: 5, kind: 'entry', text: '摘要二', line: 9, tag: '经验', full: null },
+  ]
+  const withId = planBlockRender(blocks, 'notes/a.md')
+  assert.equal((withId[0] as { blockId?: string }).blockId, 'notes/a.md#0')
+  assert.equal((withId[1] as { blockId?: string }).blockId, 'notes/a.md#5', '序号取块的 n，不是数组下标')
+
+  // 缺省（S2 既有调用方）不得多出 blockId 键：deepEqual 的既有断言据此保持逐字可比
+  assert.deepEqual(planBlockRender(blocks), [
+    { type: 'entryCard', key: 'b0', line: 7, tag: '经验', summary: '摘要', full: '全文' },
+    { type: 'entryCard', key: 'b5', line: 9, tag: '经验', summary: '摘要二', full: '摘要二' },
+  ])
+  // 缺 n 的脏数据：blockId 用下标兜底（与 key 的兜底同源，否则锚点永远匹配不上）
+  const noN = planBlockRender([{ kind: 'entry', text: 'x', line: 1, tag: '经验' }], 'notes/a.md')
+  assert.equal((noN[0] as { blockId?: string }).blockId, 'notes/a.md#0')
+})
+
+test('pickTargetIndexByBlock：命中块 id → 下标；未给/不在本篇 → null（绝不回落别处）', () => {
+  const plan = planBlockRender([
+    { n: 0, kind: 'heading', text: '标题', line: 1, level: 1 },
+    { n: 1, kind: 'entry', text: '摘要', line: 3, tag: '经验', full: null },
+    { n: 2, kind: 'para', text: '正文', line: 5 },
+  ], 'notes/a.md')
+  assert.equal(pickTargetIndexByBlock(plan, 'notes/a.md#1'), 1)
+  assert.equal(pickTargetIndexByBlock(plan, 'notes/a.md#2'), null, '锚点只会指向条目块；指向非条目块 → 不定位')
+  assert.equal(pickTargetIndexByBlock(plan, 'notes/b.md#1'), null, '别的文档的块 id 不属于本篇')
+  assert.equal(pickTargetIndexByBlock(plan, null), null)
+  assert.equal(pickTargetIndexByBlock([], 'notes/a.md#1'), null)
 })
