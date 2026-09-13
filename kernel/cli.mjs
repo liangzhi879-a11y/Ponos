@@ -157,6 +157,10 @@ export function parseArgs(argv) {
       case '--keywords': out.keywords = String(next() ?? '').split(',').map((s) => s.trim()).filter(Boolean); break
       case '--topK': out.topK = Number(next()) || null; break
       case '--limit': out.limit = Number(next()) || null; break
+      // S5 §7.3：`related --no-validate` —— 关掉读时校验（调试用）。必须在此显式登记：
+      // 未知 `--` 参数是**静默忽略**的，漏了这个 case 时 `--no-validate` 会被无声吞掉、
+      // 输出与正常路径一模一样，用户会以为"开关没作用"（而不是"参数没生效"）。
+      case '--no-validate': out.noValidate = true; break
       case '--mode': out.mode = next() ?? null; break
       // 显式强制重建索引（reindex 本身恒 force；本 flag 供其它 op 复用同一语义）
       case '--force': out.force = true; break
@@ -235,7 +239,7 @@ export async function main(argv) {
       args: {
         space: args.space, path: args.path, id: args.id, query: args.query,
         keywords: args.keywords, topK: args.topK, limit: args.limit, mode: args.mode,
-        force: args.force,
+        force: args.force, noValidate: args.noValidate,
       },
     })
     console.log(JSON.stringify(output))

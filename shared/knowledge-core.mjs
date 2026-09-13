@@ -373,6 +373,21 @@ export function toBlockId(docId, n) {
   return `${docId}#${n}`
 }
 
+/**
+ * `toBlockId` 的**形状**逆校验（S5 §7.3/§7.4 的 CLI/路由共用一处口径）。
+ * 切分口径照 `kernel/knowledge.mjs` 的 `docIdOfBlockId`：取**最后**一个 '#'，而不是
+ * "唯一 '#' 或首个 '#'"——文件名里带 '#' 是合法的（`space/a#1.md#0`），按首个 '#' 判定会把它
+ * 判成非法：明明查得到的 id 却回 400，比不校验更糟（假阴性最贵）。
+ * 只判形状、不判存在性：**参数写错**当场暴露，"库里没有"交给内核视图（空数组）。
+ * 放在 shared 而非各写一份：kernel 与 server 双向禁止 import，shared 是唯一不漂移的落点。
+ */
+export function isBlockId(value) {
+  const s = String(value ?? '')
+  const i = s.lastIndexOf('#')
+  if (i <= 0) return false // 无 '#' 或 docId 部分为空
+  return /^\d+$/.test(s.slice(i + 1))
+}
+
 // ── 链接（Task 3）────────────────────────────────────────────────────────
 // 只认两类站内引用：[[wiki]]（含 `[[目标|别名]]`，别名作 anchor）与相对路径 md 链接。
 // 外链（含协议）与纯锚点不算边——它们连不到本文档集内的任何文档，进图只会是噪声。

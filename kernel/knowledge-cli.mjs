@@ -10,6 +10,10 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createKnowledgeStore, knowledgeRoot } from './knowledge.mjs'
+// MAX_RELATED 从 shared 中性层取（不另写一个字面量 8）：CLI 的缺省必须与内核缺省同源，
+// 抄一份数字的话，将来调阈值时 CLI 会静默停在旧值（`--limit` 缺失路径）——那是查不出来的漂移。
+// `isBlockId` 同理由 shared 提供：路由侧（server）也要判同一件事，各写一份必然漂移。
+import { MAX_RELATED, isBlockId } from '../shared/knowledge-core.mjs'
 
 /**
  * 读取注入指标 sidecar（S3 §6）：由 kernel/knowledge-inject.mjs 在会话启动注入时写一次。
@@ -25,8 +29,40 @@ function readMetrics(configDir) {
 }
 
 const OPS = new Set([
-  'spaces', 'tree', 'doc', 'entries', 'search', 'links', 'graph', 'stats', 'reindex', 'update-doc',
+  'spaces', 'tree', 'doc', 'entries', 'search', 'links', 'related', 'graph', 'stats', 'reindex', 'update-doc',
 ])
+
+/**
+ * `--limit` 解析（S5 §7.3）：非负整数照收（0 合法——只想要 duplicate 标记时用得上）；
+ * 空/缺失 → 内核缺省 `MAX_RELATED`；其余（负数/小数/非数字）→ 明确报错。
+ * 为什么**报错而不静默取缺省**：`--limit 20` 被静默当 8 时，调用方会以为"这个块只有 8 条锚点"
+ * ——把参数错误读成数据事实，正是本项目反复踩的"静默空集/静默截断"病灶。
+ * @returns {{ ok: true, value: number } | { ok: false, error: string }}
+ */
+function parseLimit(raw) {
+  if (raw === undefined || raw === null || raw === '') return { ok: true, value: MAX_RELATED }
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n < 0) {
+    return { ok: false, error: `related: --limit 必须是非负整数（收到 ${JSON.stringify(raw)}）` }
+  }
+  return { ok: true, value: n }
+}
+
+/**
+ * `related` 的参数校验：**空 id / 形状错 / 坏 limit 一律明确报错**，不通融成空数组。
+ * 形状判定用 shared 的 `isBlockId`（路由侧同用，避免两套口径漂移）。
+ * 只判形状、不判存在性："库里没这条"与"没有锚点"在内核视图里本就是一回事（空数组），
+ * 拿形状错当空数组返回，会让调用方把"参数写错"读成"这个块没有关联"——最贵的那种假阴性。
+ * @returns {{ ok: true, id: string, limit: number } | { ok: false, error: string }}
+ */
+function relatedParams(args) {
+  const id = String(args.id ?? '').trim()
+  if (!id) return { ok: false, error: 'related: missing --id (blockId 形如 <docId>#<n>)' }
+  if (!isBlockId(id)) return { ok: false, error: `related: invalid blockId: ${id}（须为 <docId>#<n>）` }
+  const lim = parseLimit(args.limit)
+  if (!lim.ok) return lim
+  return { ok: true, id, limit: lim.value }
+}
 
 export async function runKnowledgeCommand({ op, args = {}, configDir = '' } = {}) {
   const name = String(op || '').trim()
@@ -78,6 +114,26 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '' } = {}
         }
       case 'links':
         return { output: store.getLinks(String(args.id || '')), code: 0 }
+      case 'related': {
+        // S5 §7.3：`related --id <blockId> [--no-validate] [--limit N]`。
+        // 与 `links` 的差别：links 的 id 是 docId（不存在 ⇒ 空出/入边，本身自洽）；
+        // 这里的 id 是 **blockId**，形状错了（含缺省空串）必须报错——否则 `--id` 写漏
+        // 会返回空数组，看起来像"这个块没有关联"，把参数错误伪装成数据事实。
+        const p = relatedParams(args)
+        if (!p.ok) return { output: { error: p.error }, code: 1 }
+        // `--no-validate`：关掉读时校验，返回物化里**原样存着**的边（调试用：看存量边
+        // 为何在正常视图里消失）。缺省 true 是正常路径（陈旧边必须剔除，spec §6.2）。
+        // 显式 `!== true`：只有解析到 true 才关校验，undefined/'false' 都按"开着"处理
+        // （宁可多校验，不可因参数解析意外而静默放宽）。
+        const validate = args.noValidate !== true
+        const related = store.getRelated(p.id, { validate, limit: p.limit })
+        // 回显 validate/limit：CLI 是新进程调试口，不回显就没法确认"关校验有没有真的生效"。
+        // 只给锚点摘要（blockId/title/why/score/shared），**不含正文**（spec §7.2 防上下文膨胀）。
+        return {
+          output: { blockId: p.id, validate, limit: p.limit, count: related.length, related },
+          code: 0,
+        }
+      }
       case 'graph':
         return {
           output: store.getGraph({
