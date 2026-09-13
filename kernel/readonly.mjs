@@ -3,12 +3,50 @@
 // --usage / --audit / --agents 的聚合实现。数据源 = kernel 自身 transcript
 // （<configDir>/projects/<cwd-san>/<sessionId>.jsonl）。纯本地只读，由 cli.mjs
 // 在进入 loop 前短路调用（stdout JSON）。bridge 只做 HTTP 薄转发，不做跨模块 import。
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { aggregateUsage } from './stats.mjs'
 import { buildAuditReport } from './audit.mjs'
 import { costOf } from './cost.mjs'
 import { resolveAgents, discoverUserAgents } from './agents.mjs'
+
+// ── K2.2 文件级剪枝：把日期窗口下推成 **mtime 下界**（2026-09-13 系统性优化 Task 9）───────
+// 病灶：下方循环是**先整文件 readFileSync + 逐行 JSON.parse，最后才按 ts 过滤**（原实现连
+// statSync 都没有）。于是 `--scope today` 的代价 = 全量历史，实测真机 36.8MB/134 文件
+// 520ms，而其中只有 10 个文件（5.7MB）沾今天——**92.5% 的字节是白读白解的**。
+// 剪枝是**单边**的（只剪"早于窗口起点"的文件）：晚于窗口的文件**不能**剪——append-only 只
+// 保证不重写，不保证按日期分文件，一个今天写过的文件完全可能包含上个月的条目。
+//
+// **可靠性论证**（为什么「mtime < 窗口起点 ⇒ 无合格条目」成立）：
+//   1. transcript 是 append-only：`session.mjs` 只 append；`setEntryUsage` 的整文件重写
+//      （writeFileSync(tmp)+renameSync）只会把 mtime 推**后**，不会提前。
+//   2. 每行的 `timestamp` = 写入时刻的 `new Date().toISOString()` ⇒ ts ≈ 该行的写入时刻；
+//      而 mtime = **最后一次**写入时刻 ≥ 任意一行的写入时刻。
+//   3. 故「某行 ts 的日期 ≥ from」⇒ 该行写入时刻 ≥ from 的 UTC 零点。取逆否：mtime 早于
+//      from 零点 ⇒ 每一行的写入时刻都早于 from 零点 ⇒（**在时钟单调的前提下**）无合格行。
+//   4. 破坏第 3 条的唯一途径 = 在「取 ts」与「落盘」之间发生**时钟回跳**（NTP/手动校时）：
+//      ts 落在窗口内、落盘却发生在窗口之前 ⇒ mtime 早于窗口起点，该行被漏掉。这个窗口只有
+//      微秒级，且必须恰好跨过 UTC 零点。故再加 `MTIME_SAFETY_MS`（1 小时）边距，把"零点前后
+//      一小时"整段排除在剪枝之外（这一段的文件一律照读）。代价可忽略（一天里 1/24 的文件）。
+//   5. **残余风险（诚实标注）**：回跳幅度 > 1 小时且恰好跨零点 ⇒ 仍会**静默少算**。方向与
+//      K2.0 修掉的「多算」相反，故保留一键开关 `PONOS_USAGE_MTIME_PRUNE=0`（默认开：真机
+//      每次 520ms → 剪枝后约 2 倍收益，且只多付一次 stat，134 文件实测 8ms）。
+//   **env 必须在此处惰性读**：cli.mjs 的 settings.env 注入发生在所有 ESM 模块求值之后
+//   （同 perf.mjs 的坑），写成模块级常量会拿不到。
+const MTIME_SAFETY_MS = 3_600_000
+
+/** from（YYYY-MM-DD）→ mtime 下界（毫秒）；不可用/开关关闭时返回 0 = 不剪枝
+ *  （导出给测试直接锁住"哪些输入才允许剪枝"——这是**安全关键**的判据，必须可单测） */
+export function mtimeCutoff(from) {
+  if (process.env.PONOS_USAGE_MTIME_PRUNE === '0') return 0
+  // 严格日期格式才剪。实测 Date.parse 的宽松解析能吃掉 '2019' / '2020' 这类年份前缀
+  // （→ 该年 1 月 1 日）；当前它们算出的 cutoff 恰好偏**早**（= 保守，行为不变），但把
+  // 正确性寄托在"宽松解析的落点恰好更保守"上太脆 —— 故用正则把非严格日期整类挡在
+  // 不剪枝的一侧（宁可多读，不可漏算）。见 readonly-mtime-prune.test.mjs 的直接断言。
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) return 0
+  const t = Date.parse(`${from}T00:00:00.000Z`)
+  return Number.isNaN(t) ? 0 : t - MTIME_SAFETY_MS
+}
 
 // 遍历 <configDir>/projects/<dir>/*.jsonl，逐行读 transcript 并注入 e.sessionId
 // （文件名去 .jsonl）与 e.project（子目录名）；from/to 按 entry.timestamp 前 10 位
@@ -17,6 +55,7 @@ export function collectTranscriptFiles({ configDir = '', sessionId = '', project
   const entries = []
   const root = join(configDir, 'projects')
   if (!existsSync(root)) return entries
+  const cutoff = mtimeCutoff(from)
   let dirs = []
   try { dirs = readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()) } catch { return entries }
   for (const d of dirs) {
@@ -28,8 +67,15 @@ export function collectTranscriptFiles({ configDir = '', sessionId = '', project
     for (const f of files) {
       const sid = f.slice(0, -'.jsonl'.length)
       if (sessionId && sid !== sessionId) continue
+      const abs = join(dirPath, f)
+      if (cutoff) {
+        // stat 失败一律**不剪**（退化为现状行为，绝不因剪枝而漏数据）
+        let st = null
+        try { st = statSync(abs) } catch { st = null }
+        if (st && st.mtimeMs < cutoff) continue
+      }
       let text = ''
-      try { text = readFileSync(join(dirPath, f), 'utf-8') } catch { continue }
+      try { text = readFileSync(abs, 'utf-8') } catch { continue }
       for (const line of text.split('\n')) {
         const t = line.trim()
         if (!t) continue
