@@ -5,7 +5,7 @@
 // （2026-09-13 S1 Task 4 去重），本模块 re-export 保持既有导入点可用。
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { hashLine, parseEntryLine, keywordScore } from '../shared/knowledge-core.mjs'
+import { hashLine, parseEntryLine, keywordScore, toDocId } from '../shared/knowledge-core.mjs'
 
 export { hashLine, parseEntryLine, keywordScore }
 
@@ -47,7 +47,27 @@ export function readMemoryEntries({ root = '', theme = '' } = {}) {
   return readTheme(root, theme).entries
 }
 
-export function appendMemoryEntry({ root = '', theme = '', tag = null, summary = '', full = '', graphStore = null } = {}) {
+/**
+ * 把一次 markdown 写入同步进知识索引（S3 §5 写入闭环）。
+ * 增量优先：`updateDoc` 只重切该文档 + 摘插它的 postings（S1 已实现，成本 ∝ 单文档）；
+ * 文档**不在索引里**时（首次沉淀的新主题、会话记忆新文件）回落一次 `load({})`——由
+ * staleness 自己发现新文件并重建。缺了这步回落就会出现"刚记下就查不到"（GUI 侧的真实隐患）。
+ * 全程吞异常：索引是派生物，它坏了不该让**权威写入**（markdown）看起来失败。
+ * @returns {{updated:boolean, reason?:string, reloaded?:boolean}} 诊断用，调用方无需处理
+ */
+export function syncKnowledgeIndex(knowledgeIndex, docId) {
+  if (!knowledgeIndex || !docId) return { updated: false, reason: 'no-index' }
+  try {
+    const r = knowledgeIndex.updateDoc(docId)
+    if (r?.updated) return r
+    knowledgeIndex.load({})
+    return { updated: false, reason: r?.reason || 'not-found', reloaded: true }
+  } catch (e) {
+    return { updated: false, reason: e?.message || String(e) }
+  }
+}
+
+export function appendMemoryEntry({ root = '', theme = '', tag = null, summary = '', full = '', graphStore = null, knowledgeIndex = null } = {}) {
   if (!root || !theme || !summary) return { ok: false, error: 'root/theme/summary required' }
   try { mkdirSync(root, { recursive: true }) } catch {}
   const { front, entries } = readTheme(root, theme)
@@ -60,6 +80,11 @@ export function appendMemoryEntry({ root = '', theme = '', tag = null, summary =
   writeFileSync(themePath(root, theme), `---\n${head}\n---\n` + body.join('\n') + '\n', 'utf-8')
   // 神经图谱：markdown 权威写入成功后同步派生索引（graphStore 内部去重）
   if (graphStore) graphStore.append({ theme, tag, summary, full })
+  // 知识索引增量更新（S3 §5）：同一会话的下一轮即可检索到刚沉淀的内容，不再等下次启动重建。
+  // docId 固定为 `experience/<theme>.md`：本函数的 root 恒等于 experience 空间根
+  // （kernel/cli.mjs 传 memoryRoot(configDir)），与 kernel/knowledge.mjs 的
+  // toDocId(space.id, relPath) 同构。**传了才做**——不传时行为与改动前逐字节一致。
+  if (knowledgeIndex) syncKnowledgeIndex(knowledgeIndex, toDocId('experience', `${theme}.md`))
   return { ok: true, deduped: false }
 }
 

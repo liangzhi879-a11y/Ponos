@@ -9,7 +9,7 @@ import {
   buildKnowledgeInjection, resolveInjectMode, resolveInjectBudget,
   getInjectStats, resetInjectStats,
 } from '../kernel/knowledge-inject.mjs'
-import { buildMemoryIndex } from '../kernel/memory.mjs'
+import { buildMemoryIndex, appendMemoryEntry } from '../kernel/memory.mjs'
 import { createKnowledgeStore } from '../kernel/knowledge.mjs'
 
 /** 造一个含个人经验库的临时 configDir（experience 是内置空间，root=memory/personal）。 */
@@ -250,4 +250,69 @@ test('模块无副作用：导入时不读盘（readFileSync 仅在被调用时�
   const src = readFileSync(new URL('../kernel/knowledge-inject.mjs', import.meta.url), 'utf-8')
   const topLevelIo = /^\s*(readFileSync|createKnowledgeStore|writeFileSync)\(/m.test(src)
   assert.equal(topLevelIo, false, '模块顶层不得直接调用 I/O')
+})
+
+// ── S3 Task 5：写入闭环（增量更新，同一会话下一轮即可检索到）──────────────────
+test('S3：appendMemoryEntry 写入后调 updateDoc（增量），成功时不触发全量 load', () => {
+  const dir = fixture()
+  try {
+    const calls = []
+    const ki = {
+      updateDoc: (id) => { calls.push(['updateDoc', id]); return { updated: true } },
+      load: () => { calls.push(['load']) },
+    }
+    const r = appendMemoryEntry({
+      root: join(dir, 'memory', 'personal'), theme: 'workflow', tag: '新标签',
+      summary: '新的沉淀摘要', full: '新的沉淀全文', knowledgeIndex: ki,
+    })
+    assert.equal(r.ok, true)
+    assert.deepEqual(calls, [['updateDoc', 'experience/workflow.md']],
+      '只调一次增量更新（docId = <spaceId>/<relPath>），不得无谓全量 load')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('S3：文档不在索引里（首次沉淀的新主题）→ 回落一次 load 重建', () => {
+  const dir = fixture()
+  try {
+    const calls = []
+    const ki = {
+      updateDoc: (id) => { calls.push(['updateDoc', id]); return { updated: false, reason: 'not-found' } },
+      load: (o) => { calls.push(['load', o]) },
+    }
+    appendMemoryEntry({
+      root: join(dir, 'memory', 'personal'), theme: 'brand-new', tag: null,
+      summary: '全新主题', full: '全新主题全文', knowledgeIndex: ki,
+    })
+    assert.deepEqual(calls, [['updateDoc', 'experience/brand-new.md'], ['load', {}]],
+      'updateDoc 未命中必须回落 load（否则"刚记下就查不到"）')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('S3：真实 store 集成 —— 写入后同一实例立即可检索到（已有主题 + 新主题两条路）', () => {
+  const dir = fixture()
+  try {
+    const mroot = join(dir, 'memory', 'personal')
+    const store = createKnowledgeStore({ configDir: dir })
+    store.load({})
+    // ① 已有主题（走增量）
+    appendMemoryEntry({
+      root: mroot, theme: 'workflow', tag: '增量验证',
+      summary: '增量写入的独特短语 蓝鲸协议', full: '正文：蓝鲸协议要求三日内回执', knowledgeIndex: store,
+    })
+    assert.ok(store.search({ query: '蓝鲸协议' }).count > 0, '增量路径写入后应立即可检索')
+    // ② 新主题（走 load 回落）
+    appendMemoryEntry({
+      root: mroot, theme: 'brand-new', tag: '新主题验证',
+      summary: '新主题的独特短语 长颈鹿工单', full: '正文：长颈鹿工单走单独审批', knowledgeIndex: store,
+    })
+    assert.ok(store.search({ query: '长颈鹿工单' }).count > 0, '新主题首次写入后也应立即可检索')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('S3：不传 knowledgeIndex 时行为与改动前一致（纯增量，老调用方无感）', () => {
+  const dir = fixture()
+  try {
+    const r = appendMemoryEntry({ root: join(dir, 'memory', 'personal'), theme: 'workflow', tag: null, summary: '无索引写入', full: 'f' })
+    assert.equal(r.ok, true)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })

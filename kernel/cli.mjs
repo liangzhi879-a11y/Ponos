@@ -31,8 +31,9 @@ import { createCompactor, extractKeyInfo, buildSessionMemoryText } from './compa
 import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
 import { resolveCompactSettings } from './compact.mjs'
 import { extractConstraints } from './fidelity.mjs'
-import { memoryRoot, captureMemoryCandidates, appendMemoryEntry } from './memory.mjs'
+import { memoryRoot, captureMemoryCandidates, appendMemoryEntry, syncKnowledgeIndex } from './memory.mjs'
 import { buildKnowledgeInjection, resolveInjectMode, resolveInjectBudget } from './knowledge-inject.mjs'
+import { createKnowledgeStore } from './knowledge.mjs'
 import { createGraphStore } from './graph.mjs'
 import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
 import { discoverSkills, verifySkillVersions } from './skills.mjs'
@@ -624,6 +625,21 @@ export async function main(argv) {
   // `if (!chatMode)` 块内，而沉淀段在该块之外 —— 跨块引用会抛 `graph is not defined`，
   // 又被沉淀段的 catch 静默吞掉，导致**启发式捕获从未落盘**（实测报告见 S3 报告"自审发现"）。
   let graphStore = null
+  // 知识索引句柄（S3 §5 写入闭环）：**惰性**创建——legacy 注入不碰它，只在
+  // ① unified 注入要检索、② 轮末沉淀要增量更新 时才 load 一次，避免给"从不沉淀"的
+  // 会话白付一次全库加载。`tried` 标记保证 load 抛错后不再反复重试。
+  let knowledgeIndex = null
+  let knowledgeIndexTried = false
+  const ensureKnowledgeIndex = () => {
+    if (knowledgeIndexTried) return knowledgeIndex
+    knowledgeIndexTried = true
+    try {
+      const s = createKnowledgeStore({ configDir })
+      s.load({})
+      knowledgeIndex = s
+    } catch { knowledgeIndex = null /* 索引不可用不影响会话（工具侧另有降级） */ }
+    return knowledgeIndex
+  }
   // chat 模式不注入记忆（2026-09-12 隔离）：个人经验/神经图谱是本地任务资产，对
   // "联网问答"无益，还会引导模型承诺本地动作；顺带跳过图谱加载（省一次磁盘扫描）。
   if (!chatMode) {
@@ -642,6 +658,9 @@ export async function main(argv) {
         query: kw.join(' '), keywords: kw,
         totalBudget: injectOpts.budget,
         mode: injectOpts.mode,
+        // unified 复用同一个 store 实例给后面的轮末沉淀（一次 load 两处用）；
+        // legacy 传 null：不建索引（零回归 + 不为死路径付加载成本）。
+        knowledgeIndex: injectOpts.mode === 'unified' ? ensureKnowledgeIndex() : null,
         // index-only = 只要索引指针（既有逃生阀），unified 下同样跳过抽调层——
         // 不跳过的话该开关在 unified 下会静默失效（用户设了却仍在抽调）。
         recall: injectMode !== 'index-only',
@@ -826,7 +845,10 @@ export async function main(argv) {
         // 往本地 memory/personal 写文件——那破了 S1 的"纯聊不落本地资产"隔离语义。
         if (!chatMode && settings.merged.memory?.capture !== false && content.trim() && !msg?.skipMemoryCapture) {
           for (const c of captureMemoryCandidates({ userText: content, tag: settings.merged.memory?.taskTag || null, markers: settings.merged.memory?.markers || null })) {
-            appendMemoryEntry({ root: memoryRootDir, theme: c.theme, tag: c.tag, summary: c.summary, full: c.full, graphStore: graphStore })
+            appendMemoryEntry({
+              root: memoryRootDir, theme: c.theme, tag: c.tag, summary: c.summary, full: c.full,
+              graphStore: graphStore, knowledgeIndex: ensureKnowledgeIndex(),
+            })
           }
         }
       } catch { /* 记忆捕获失败不影响主流程 */ }
@@ -837,6 +859,9 @@ export async function main(argv) {
           if (key.todos.length || key.files.length || key.decisions.length) {
             mkdirSync(join(configDir, 'memory', 'session'), { recursive: true })
             writeFileSync(sessionMemoryPath, buildSessionMemoryText(key), 'utf-8')
+            // 会话工作记忆不走 appendMemoryEntry（整文件覆盖写，非 append 语义），故这里
+            // 单独同步索引：否则"跨会话检索历史工作记忆"要等到下次启动重建才生效（S3 §5）。
+            syncKnowledgeIndex(ensureKnowledgeIndex(), `session-memory/${basename(sessionMemoryPath)}`)
           }
         }
       } catch { /* 工作记忆写失败不影响主流程 */ }

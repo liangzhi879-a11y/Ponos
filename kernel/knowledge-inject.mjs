@@ -65,7 +65,7 @@ const countLines = (s) => String(s || '').split('\n').filter((l) => l.startsWith
  */
 export function buildKnowledgeInjection({
   configDir = '', memoryRootDir = null, query = '', keywords = [], spaces = null,
-  totalBudget = DEFAULT_TOTAL_BUDGET, mode = 'legacy', recall = true,
+  totalBudget = DEFAULT_TOTAL_BUDGET, mode = 'legacy', recall = true, knowledgeIndex = null,
 } = {}) {
   const t0 = Date.now()
   const total = Number(totalBudget) > 0 ? Math.floor(Number(totalBudget)) : DEFAULT_TOTAL_BUDGET
@@ -104,7 +104,9 @@ export function buildKnowledgeInjection({
     // configDir 推导：memoryRootDir = <configDir>/memory/personal ⇒ 上溯两级。
     // 与 kernel/tools.mjs 的 KnowledgeSearch 同一套推导（少一级会指向空空间清单）。
     const cfg = configDir || (mroot ? resolve(mroot, '..', '..') : '')
-    const store = createKnowledgeStore({ configDir: cfg })
+    // 调用方可注入一个已 load 的 store（kernel/cli.mjs 把同一实例复用给轮末沉淀的增量更新）——
+    // 一处 load 两处用，免得同一进程里为注入和写入各建一次全库索引。
+    const store = knowledgeIndex || createKnowledgeStore({ configDir: cfg })
     store.load({})
     const recallCap = Math.max(0, total - idxBytes)
     const r = store.search({

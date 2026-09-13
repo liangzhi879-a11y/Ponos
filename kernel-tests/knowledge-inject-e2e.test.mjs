@@ -9,7 +9,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -133,5 +133,22 @@ test('轮末沉淀：命中捕获模式时写入经验文件（修 graph 作用�
     const files = readdirSync(personal).filter((f) => f.endsWith('.md'))
     const hit = files.find((f) => /业务要点|流程要点|用户纠正|用户偏好/.test(readFileSync(join(personal, f), 'utf-8')))
     assert.ok(hit, `轮末捕获应落盘至少一条经验（实际文件：${files.join(', ') || '无'}）`)
+  } finally { rmSync(r.dir, { recursive: true, force: true }) }
+})
+
+// S3 §5：沉淀闭环必须在**同一进程内**把新经验同步进索引（否则"刚记下就查不到"）。
+// 断言口子：磁盘索引 docs.jsonl（权威派生物）应包含刚捕获的主题文档。
+test('S3 Task 5：轮末沉淀后索引里立刻有该文档（unified 模式下复用同一 store）', async () => {
+  const r = await runTurn({
+    env: { PONOS_KNOWLEDGE_INJECT_MODE: 'unified' },
+    userText: '记住：以后申报材料一律先做四表联动交叉校验',
+  })
+  try {
+    const docs = join(r.dir, 'knowledge', '.index', 'docs.jsonl')
+    assert.ok(existsSync(docs), `索引文件应存在（实际目录：${join(r.dir, 'knowledge', '.index')}）`)
+    const rows = readFileSync(docs, 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    const ids = rows.map((d) => d.id)
+    assert.ok(ids.some((id) => id.startsWith('experience/')), `索引应含个人经验空间文档（实际 ${ids.join(', ')}）`)
+    assert.ok(rows.some((d) => JSON.stringify(d).includes('四表联动交叉校验')), '刚捕获的内容应已进索引')
   } finally { rmSync(r.dir, { recursive: true, force: true }) }
 })
