@@ -3,6 +3,8 @@
 // 零依赖纯函数：token 启发式计价（块级密度系数）、模型窗口表、pre-step 压力
 // 判定、tokenLedger 四区记账、usage 锚点优化（KV 前缀缓存近似）。全部确定性，
 // 无模型调用；engine/compact/health 消费。
+import { perfTime } from './perf.mjs'
+
 export const DEFAULT_WINDOW = 200_000
 
 // 本地画像保守默认窗口（2026-09-10 小窗口本地模型适配）：探测/手配/内置表均未命中
@@ -119,22 +121,46 @@ function payloadText(block) {
   return parts.join('\n')
 }
 
-// 块级计价：text/thinking 按 text 密度，代码特征 / tool_result / tool_use 按 code 密度
-//（tool_use 载荷是 JSON，且 JSON 转义后 `\n` 不是真换行——isCodeLike 的行首匹配必然失效，
-// 故按类型显式归类，不依赖内容嗅探）；中文字段先按 cjk 密度（每字 ~1 token）单独计价、
-// ASCII 余量按原密度，防 CJK 主体内容少计 ~4 倍；image/二进制/base64 附件固定 4800
-// 当量；每块 +4。纯 ASCII 的 text/tool_result 估值与旧实现一致（零回归）。
-export function estimateTokens(block = {}, opts = {}) {
-  const { env = process.env } = opts
-  const density = densityOf(env)
-  // 防御：数组内容里的裸字符串（旧格式/外部 transcript）不按对象遍历（会把每个字符
-  // 当成一个自有属性，'abc' → 'a\nb\nc' 长度翻倍）
-  if (typeof block === 'string') block = { type: 'text', text: block }
-  if (block == null || typeof block !== 'object') return 4
+// —— K1.1 估算记忆化（2026-09-13「任务运行慢」系统性优化，最大头）———————
+// 实测（2.5MB / 1482 条历史）：`estimateRequest` **88.5ms/次 × 3–6 次/步 = 260–530ms/步**，
+// 是每步固定开销的头号来源。热点**不是遍历次数**，而是每个块都重做
+// `JSON.stringify(入参)` + 逐字符 `countCjk` + 正则 `isCodeLike`——同一份历史一步内被
+// 扫了 3–6 遍，且逐步骤重复（历史只增不改）。
+//
+// 三条「可证不陈旧」依据（设计真源 §4.1）：
+// 1) **块/消息对象身份稳定**：`session.deriveMessages()` 缓存的是 `entry.message` 本身
+//    （`session.mjs:303` 直接 push 引用，重建缓存也复用同一批对象）；`deriveHistory()`
+//    只换数组不换元素；`patchOrphanToolUses` 无孤儿时原样推原对象。故 WeakMap 键有效。
+// 2) **摘要落地是换对象而非改内容**（`appendCompactionSummary` → nodes.splice + invalidate）：
+//    旧对象不再可达 → WeakMap 条目随 GC 回收，读取方**结构性不可能**读到摘要前的历史。
+// 3) **唯一的原地改写是 compact.mjs 的两处 `b.content = …`**（`ageOutToolResults:59` /
+//    `freeShrink:199`；全仓 grep 仅此两命中，`Object.assign`/`delete` 无命中）。两处都
+//    **紧邻**调用 `bumpContentEpoch()` ⇒ 一次改写即让进程内全部估算记忆失效，可证无遗漏。
+// 另：密度系数（CLAUDE_CODE_TOKEN_DENSITY_*）进键——env 变化必须重算。
+//
+// 容量：WeakMap 键是「活着的历史对象」，条目数被历史体量天然限制且随对象回收，
+// 故不需要 LRU 上限（参考实现里涨到 300MB 的是**字符串键的会话级 Map**，形状不同）。
+let _contentEpoch = 0
+/** 内容纪元：任何**原地改写**历史内容后必须 +1（估算记忆的唯一失效源） */
+export const contentEpoch = () => _contentEpoch
+export function bumpContentEpoch() { _contentEpoch++ }
+
+const NO_CACHE = '' // 关缓存时的哨兵（densityKey 永远非空）
+const cacheOn = () => process.env.PONOS_ESTIMATE_CACHE !== '0' // 默认 on，可单独关
+const densityKey = (d) => d.text + '/' + d.code + '/' + d.cjk
+const BLK_CACHE = new WeakMap() // 块对象 → { epoch, dk, tokens }
+const MSG_CACHE = new WeakMap() // 消息对象 → { epoch, dk, tokens }
+
+// 块级计价（纯计算，不查/不写缓存）：text/thinking 按 text 密度，代码特征 / tool_result /
+// tool_use 按 code 密度（tool_use 载荷是 JSON，且 JSON 转义后 `\n` 不是真换行——isCodeLike
+// 的行首匹配必然失效，故按类型显式归类，不依赖内容嗅探）；中文字段先按 cjk 密度（每字
+// ~1 token）单独计价、ASCII 余量按原密度，防 CJK 主体内容少计 ~4 倍；image/二进制/base64
+// 附件固定 4800 当量；每块 +4。纯 ASCII 的 text/tool_result 估值与旧实现一致（零回归）。
+function estimateTokensUncached(block, density, dk) {
   // 数组内容（tool_result/document 均可为块数组）：逐块递归——否则其中的
   // image 块会被 JSON.stringify 成 base64 当文本计价（1MB 图 ≈ 33 万 token vs 实际 ~4800）
   if (Array.isArray(block.content)) {
-    return 4 + block.content.reduce((s, b) => s + estimateTokens(b, opts), 0)
+    return 4 + block.content.reduce((s, b) => s + tokensFor(b, density, dk), 0)
   }
   if (block.type === 'image' || block.type === 'binary') return 4800 + 4
   // base64 附件当量（非 image 类型但带二进制 source 的块，如 document）
@@ -147,23 +173,69 @@ export function estimateTokens(block = {}, opts = {}) {
   return Math.ceil(cjk / density.cjk) + Math.ceil(ascii / per) + 4
 }
 
-// 消息级：role +4 + 各块合计（string content 视为单 text 块）
-export function estimateMessage(m = {}, opts) {
-  // m?. 防御：旧格式恢复的派生历史可能含 undefined/null 条目（默认参只兜 undefined）
+/** 块级：命中需同时满足「对象身份 + 纪元 + 密度指纹」 */
+function tokensFor(block, density, dk) {
+  if (block == null || typeof block !== 'object') return 4
+  if (!dk) return estimateTokensUncached(block, density, dk)
+  const hit = BLK_CACHE.get(block)
+  if (hit && hit.epoch === _contentEpoch && hit.dk === dk) return hit.tokens
+  const tokens = estimateTokensUncached(block, density, dk)
+  BLK_CACHE.set(block, { epoch: _contentEpoch, dk, tokens })
+  return tokens
+}
+
+export function estimateTokens(block = {}, opts = {}) {
+  // 防御：数组内容里的裸字符串（旧格式/外部 transcript）不按对象遍历（会把每个字符
+  // 当成一个自有属性，'abc' → 'a\nb\nc' 长度翻倍）
+  if (typeof block === 'string') block = { type: 'text', text: block }
+  if (block == null || typeof block !== 'object') return 4
+  const density = densityOf(opts?.env || process.env)
+  return tokensFor(block, density, cacheOn() ? densityKey(density) : NO_CACHE)
+}
+
+// 消息级：role +4 + 各块合计（string content 视为单 text 块）。
+// 消息级缓存是必需的、不是锦上添花：string 分支与 system 项每次都新建字面量对象
+// （摘要条目 content 就是字符串），只做块级缓存会**恒 miss**。
+function estimateMessageUncached(m, density, dk) {
   const content = m?.content
-  if (typeof content === 'string') return 4 + estimateTokens({ type: 'text', text: content }, opts)
-  if (Array.isArray(content)) return 4 + content.reduce((s, b) => s + estimateTokens(b, opts), 0)
+  if (typeof content === 'string') {
+    // 新字面量不可能命中块级缓存 → 直接走纯计算（避免往 WeakMap 塞一次性垃圾）
+    return 4 + estimateTokensUncached({ type: 'text', text: content }, density, dk)
+  }
+  if (Array.isArray(content)) return 4 + content.reduce((s, b) => s + tokensFor(b, density, dk), 0)
   return 4
 }
 
-// 全量启发式
-export function estimateHistory(msgs = [], opts) {
-  return msgs.reduce((s, m) => s + estimateMessage(m, opts), 0)
+function tokensForMessage(m, density, dk) {
+  // m?. 防御：旧格式恢复的派生历史可能含 undefined/null 条目（默认参只兜 undefined）
+  if (m == null || typeof m !== 'object') return 4
+  if (!dk) return estimateMessageUncached(m, density, dk)
+  const hit = MSG_CACHE.get(m)
+  if (hit && hit.epoch === _contentEpoch && hit.dk === dk) return hit.tokens
+  const tokens = estimateMessageUncached(m, density, dk)
+  MSG_CACHE.set(m, { epoch: _contentEpoch, dk, tokens })
+  return tokens
+}
+
+export function estimateMessage(m = {}, opts = {}) {
+  const density = densityOf(opts?.env || process.env)
+  return tokensForMessage(m, density, cacheOn() ? densityKey(density) : NO_CACHE)
+}
+
+// 全量启发式（密度/纪元在入口算一次，逐条走消息级缓存）
+export function estimateHistory(msgs = [], opts = {}) {
+  const density = densityOf(opts?.env || process.env)
+  const dk = cacheOn() ? densityKey(density) : NO_CACHE
+  let sum = 0
+  for (let i = 0; i < msgs.length; i++) sum += tokensForMessage(msgs[i], density, dk)
+  return sum
 }
 
 // 四区记账：system（顶层提示）/ task（本轮 user 输入）/ tool_result / history（其余历史）
 // 返回 { total, sections }，供 pre-step 测压与 tokenLedger 入账。
-export function estimateRequest({ system = '', messages = [], opts }) {
+function estimateRequestUncached({ system = '', messages = [], opts }) {
+  const density = densityOf(opts?.env || process.env)
+  const dk = cacheOn() ? densityKey(density) : NO_CACHE
   let task = 0
   let toolResult = 0
   let history = 0
@@ -173,23 +245,30 @@ export function estimateRequest({ system = '', messages = [], opts }) {
     // 防御：外部传入的 messages 可能含 undefined 条目（旧格式 transcript 恢复等），
     // 直接访问 m.role/m.content 会抛 "reading 'content'"（2026-08-22 G.content 根因）
     if (i === arr.length - 1 && m?.role === 'user') {
-      task += estimateMessage(m, opts)
+      task += tokensForMessage(m, density, dk)
       continue
     }
     if (Array.isArray(m?.content) && m.content.some((b) => b?.type === 'tool_result')) {
-      toolResult += estimateMessage(m, opts)
+      toolResult += tokensForMessage(m, density, dk)
       continue
     }
-    history += estimateMessage(m, opts)
+    history += tokensForMessage(m, density, dk)
   }
   const sections = {
     // system 前缀同样走 CJK 感知计价（中文系统提示按字计，与块级口径一致）
-    system: estimateTokens({ type: 'text', text: String(system) }, opts),
+    system: estimateTokensUncached({ type: 'text', text: String(system) }, density, dk),
     task,
     tool_result: toolResult,
     history,
   }
   return { total: sections.system + task + toolResult + history, sections }
+}
+
+// K0 观测（2026-09-13）：只统计**入口**耗时与调用次数。内部的 estimateMessage →
+// estimateTokens 是同步嵌套，perf.mjs 的**按 key** 重入保护保证一次调用不会被记多遍。
+// 关闭开关时 perfTime 直接 `return fn()`，零 performance.now() 调用。
+export function estimateRequest(input) {
+  return perfTime('est', () => estimateRequestUncached(input))
 }
 
 // tokenLedger：四区累计 + tool_result 占比（喂给 health 分区失衡因子）

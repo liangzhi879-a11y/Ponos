@@ -10,7 +10,7 @@
 // （溢出兜底）共用——小窗口模型切换后的溢出路径同样先零成本收缩再摘要。
 import { statSync, readFileSync } from 'node:fs'
 import { streamMessages } from './api.mjs'
-import { countCjk } from './context.mjs'
+import { countCjk, bumpContentEpoch } from './context.mjs'
 import { extractEntities, missingEntities } from './fidelity.mjs'
 import { patchOrphanToolUses } from './engine.mjs'
 
@@ -57,6 +57,7 @@ export function ageOutToolResults(messages, { keepRecent = 2 } = {}) {
     const b = messages[i].content[j]
     if (typeof b.content === 'string' && b.content !== CLEARED_TOOL_RESULT_MARKER) {
       b.content = CLEARED_TOOL_RESULT_MARKER
+      bumpContentEpoch() // K1.1：原地改写 → 进程内全部估算记忆立即失效（紧邻改写点，可证无遗漏）
       cleared++
     }
   }
@@ -197,6 +198,7 @@ export function freeShrink(messages, { window = 200_000, env = process.env, age 
       const r = pruneToolResult(b.content, { budget })
       if (r.truncated) {
         b.content = r.text + '\n\n' + r.note
+        bumpContentEpoch() // K1.1：同 ageOutToolResults——全仓第二处（也是最后一处）原地改写点
         prunedAny = true
       }
     }
