@@ -1,0 +1,430 @@
+// 应用智控：**自主探索式**生成框架（给 LLM 框架，而不是固定脚本）
+//
+// ★ 为什么要有这个模块（用户真实反馈驱动）：
+//   「网站/应用的构造非常多样，如果你是用的固定脚本，LLM 参与度和自主度很低，那么可以肯定
+//     完成不了普遍性任务。给 LLM 框架，让它自己去充分探索和调试测试。并对封装格式质量提出要求。」
+//
+//   原先的流程是**固定脚本**：`harvestSite()` 按写死的打分规则抓 6 页 → 一次性把素材丢给模型
+//   → 让它一把写出所有命令 → 试跑 → 最多回喂修正两次。问题在于：
+//     · 抓哪些页、抓几页由**我们的固定规则**决定，模型没有选择权 → 站点结构一变（多级菜单、
+//       需要先搜索才能进详情、列表页要翻页…）就抓不到关键页面，模型只能凭猜 → 命令又少又漏。
+//     · 模型看不到"试跑到底报什么错"的完整上下文，只能被动接受我们回喂的两轮摘要。
+//
+//   本模块把控制权交还给模型：给它一组**工具**（抓页面 / 列已抓页面 / 试跑命令 / 提交草稿），
+//   让它自己决定看什么、看几遍、先写什么、怎么调试，直到自认为可以交付。我们只负责：
+//     · 真实执行这些工具并把**真实结果/真实报错**原样回喂（驱动它自我纠错）；
+//     · 守住安全边界（试跑只允许 read；write 绝不自动执行）；
+//     · 用**封装质量门槛**卡住"能跑但没法用"的产物；
+//     · 预算（轮数/工具次数/时间）兜底，并在预算耗尽时**如实**报告进展，绝不假装成功。
+//
+// ★ 与 app-generate.cjs 的分工：
+//   app-generate 负责"契约与校验"（ACT_CONTRACT / validateSpecBasic / 一次成型式 generateSpec）
+//   与本模块共用的提示词素材；本模块只负责**多轮工具驱动的编排**。两者都保持 callLlm/runTool
+//   可注入，于是用假模型就能回归全部编排逻辑（不需要真网络、真模型）。
+'use strict'
+
+const { extractSpec, validateSpecBasic, actContractLines, WEB_ACTS, DESKTOP_ACTS } = require('./app-generate.cjs')
+
+/**
+ * 预算。用户明确"不要期望 llm 分析生成很快完成"，所以给得宽松——但要**有界**：
+ * 无上限的循环会烧钱、会让界面看起来卡死。
+ */
+const DEFAULT_BUDGET = {
+  maxTurns: 24,          // 最多 24 轮模型交互（含工具调用轮）
+  maxToolCalls: 20,      // 最多 20 次真实工具调用（抓页面/试跑）
+  timeBudgetMs: 10 * 60 * 1000,
+  historyChars: 60000,   // 回喂给模型的历史上限（超出丢最早的探索结果，保留摘要）
+  perToolChars: 5000,    // 单次工具结果进历史的字符上限
+}
+
+/** 占位语：产物里出现这些词就等于没写（用户拿到手完全不知道怎么用） */
+const PLACEHOLDER = /(^|\s)(todo|fixme|tbd|待补充|待完善|待定|占位|示例|样例|xxx+|命令\s*\d+|param\d*|foo|bar)($|\s|[:：])/i
+const isPlaceholder = (s) => PLACEHOLDER.test(String(s || '').trim())
+const cjkLen = (s) => String(s || '').trim().length
+
+/** 模型每轮可用的工具说明（渲染进 system，字段名必须与 parseTurn/主进程 runTool 一致） */
+function agentToolDocs() {
+  return [
+    '【你可以调用的工具】每轮**只输出一个 JSON 对象**，不要输出解释性文字、不要输出多个对象：',
+    '· 抓取任意页面看结构（后台 HTTP 抓取，不会弹出窗口）：',
+    '  {"thought":"为什么要抓它","tool":"fetch_page","args":{"url":"https://…"}}',
+    '· 看你已经抓过哪些页面、有哪些线索（避免重复抓）：',
+    '  {"thought":"…","tool":"list_pages","args":{}}',
+    '· 试跑你草稿里的某条命令，看真实结果或真实报错（**只允许 read 命令**；write 会被拒绝，因为那会真的改动用户的数据）：',
+    '  {"thought":"…","tool":"run_command","args":{"action":"命令名","args":{}}}',
+    '· 提交一版 Spec（系统会做结构校验 + 封装质量校验 + **真实试跑**，不通过就把具体问题回给你继续改）：',
+    '  {"thought":"…","tool":"submit_spec","spec":{…完整 Spec…}}',
+  ].join('\n')
+}
+
+/**
+ * 系统提示词：工具协议 + 探索策略 + **封装质量门槛**。
+ *
+ * 质量要求的依据（不是凭空拔高）：命令最终会被 kernel/app-tools.mjs 变成一个工具，模型在对话里
+ * 能看到的只有两个字段 —— `description = "[应用名] " + cmd.title` 和 `input_schema`（由
+ * `cmd.params[].desc` 生成）。所以 title 与 params[].desc 写得潦草，这个工具就等于废掉：
+ * 模型不知道它干什么、也不知道参数该填什么。
+ */
+function buildAgentSystem({ target, driver = 'browser' } = {}) {
+  const acts = driver === 'desktop' ? DESKTOP_ACTS : WEB_ACTS
+  return [
+    '你是「应用即工具」的规格工程师。你的任务**不是**一次成型地写出一份 Spec，而是像一个真正的',
+    '工程师那样工作：**先自主探索目标，再写草稿，再真实试跑，根据真实报错反复调试，直到全部通过**。',
+    '',
+    `目标：${JSON.stringify(target || {})}`,
+    `驱动：${driver}（${driver === 'desktop' ? '桌面应用：命令走本机脚本/CLI' : '网站：命令走浏览器自动化'}）`,
+    '',
+    agentToolDocs(),
+    '',
+    '【工作方式（强烈建议遵循）】',
+    '1) 先探索：至少用 fetch_page 看清楚主要功能入口（导航、列表页、表单、详情页）。',
+    '   抓哪些页面**由你自己判断**——不要只抓首页。多级入口、需要先搜索/筛选才能到达的页面，',
+    '   都值得抓一次；必要时反复抓、抓更多。list_pages 可以帮你避免重复。',
+    '2) 再写草稿：用 submit_spec 提交。第一版不要求完美——它会被真实试跑，报错会原样回给你。',
+    '3) 然后调试：根据回给你的**真实报错**修改。你可以用 run_command 单独试跑某条命令快速验证，',
+    '   也可以用 fetch_page 再看一眼页面结构（比如确认某个按钮的位置、表单字段名）。',
+    '4) 反复做到：试跑全部通过、且命令覆盖了目标的主要功能入口。',
+    '',
+    '【封装质量要求（不达标会被打回，请一次就写好）】',
+    '将来调用这些命令的模型，只能看到「命令标题」和「参数说明」两样东西。所以：',
+    '· action：英文小驼峰、动词开头、全局唯一、≤40 字符（例：listOrders、getOrderById）。',
+    '· title：能独立看懂的动作短语，2~20 字（例「查询待办列表」「按订单号查详情」）。',
+    '  禁止「命令1」「示例」「TODO」「待补充」这类占位语——那等于没写。',
+    '· params[].desc：说清「填什么、什么格式」（例「订单号，形如 SO20250101-001」），≥6 字，',
+    '  同样禁止占位语；required 必须明确写 true/false；没有参数就写 params:[]。',
+    '· returns：read 命令必须说明返回什么，形如 {"type":"text|json","from":"保存键名"}，',
+    '  且 steps 里确实有对应输出（web：snapshot 步骤的 save 键名，或 js 表达式的返回值）。',
+    '· 覆盖度：命令要覆盖你探索到的主要功能入口（不同页面/不同表单/不同查询都算），',
+    '  不要只写首页能做的事。查询类命令（kind:"read"）至少 2 条，其中至少 1 条**不需要参数**。',
+    '· kind：只读/查询/导出/查看 → "read"；提交/保存/修改/删除/发送 → "write"；拿不准按 "write"。',
+    '',
+    '【硬约束】',
+    `· steps.act 只能取：${acts.join(', ')}。`,
+    actContractLines(),
+    '· click/type/select/hover 要的是 **ref（快照里的元素编号）**，不是 CSS 选择器；',
+    '  ref 必须由**同一条命令内前一步的 snapshot** 产生（编号每次快照都会变）。拿不准就改用 js 表达式。',
+    '· 命令参数插值固定写 ${参数名}。',
+    '· expose.mode 固定写 "console"（禁止 "public"）。',
+    '· 绝不写入口令、令牌、密钥、身份证号等敏感信息。',
+    '· 绝不设计"删除/清空/批量修改"这类破坏性命令，除非用户目标明确要求（那种情况 kind 必须是 write）。',
+    '',
+    '只输出 JSON 本体。现在开始按上面的方式工作。',
+  ].join('\n')
+}
+
+/** 首轮 user：把"已经拿到的种子素材 + 预算 + 现状"交代清楚，让模型从探索开始 */
+function buildAgentSeed({ target, driver, probeMode, probeMaterial, seedSummary, budget } = {}) {
+  const parts = []
+  parts.push(`目标：${JSON.stringify(target || {})}`)
+  parts.push(`驱动：${driver}`)
+  const parts2 = []
+  if (seedSummary) parts2.push(`【系统预取的初始素材】\n${seedSummary}`)
+  if (probeMaterial && probeMode && probeMode !== 'none') {
+    parts2.push(`【初始素材明细（JSON，可能不完整——你可以继续抓页面补全）】\n${JSON.stringify(probeMaterial).slice(0, 12000)}`)
+  } else if (probeMode === 'none') {
+    parts2.push('【系统没能预取到素材】可能是登录后才可见、纯前端渲染或抓取被拒。你可以用 fetch_page 自己再试；若确实抓不到，就基于公开常识写**保守**的命令（优先「导航 + snapshot」这类不依赖具体选择器的写法），并如实说明。')
+  }
+  parts.push(parts2.join('\n\n'))
+  parts.push(`预算：最多 ${budget?.maxTurns ?? DEFAULT_BUDGET.maxTurns} 轮交互、${budget?.maxToolCalls ?? DEFAULT_BUDGET.maxToolCalls} 次工具调用。请高效使用：先探索关键页面，再提交草稿，再调试。`)
+  parts.push('现在请输出你的下一步（一个 JSON 对象）。')
+  return parts.filter(Boolean).join('\n\n')
+}
+
+/**
+ * 把回喂历史渲染成文本；超限时**从最旧的开始丢**。
+ * 关键：至少保留最新一条——那通常就是模型眼下最需要的反馈（真实报错、质量打回原因）。
+ * 早先的实现"从头留一条 + 从尾尽量装"会在单条很长时把最新的报错也丢掉，模型于是看不到
+ * 自己为什么失败（真机上表现为"反复犯同一个错"）。
+ */
+function renderLog(log = [], cap = DEFAULT_BUDGET.historyChars) {
+  const items = log.map((x) => (typeof x === 'string' ? x : `【${x.role}】${x.text}`))
+  const text = items.join('\n\n')
+  if (text.length <= cap) return text
+  const tail = []
+  let size = 0
+  for (let i = items.length - 1; i >= 0; i--) {
+    const len = items[i].length
+    if (tail.length && size + len > cap) break   // 已装上更新的一条，装不下更旧的就算了
+    tail.unshift(items[i])
+    size += len
+  }
+  const omitted = items.length - tail.length
+  return [omitted > 0 ? `（更早的 ${omitted} 条探索记录已省略）` : '', ...tail].filter(Boolean).join('\n\n')
+}
+
+/**
+ * 解析模型这一轮的输出。**宽容**朝向"能读懂就继续"：
+ * ① 带 tool 字段 → 工具调用；② 带 spec / 本身就是 Spec → 视为 submit_spec；
+ * ③ 什么都读不出 → bad（回喂纠正提示，而不是判整次生成失败）。
+ */
+function parseTurn(text) {
+  const raw = String(text || '')
+  const j = extractSpec(raw)
+  if (!j) return { kind: 'bad', raw }
+  const thought = typeof j.thought === 'string' ? j.thought : ''
+  const tool = typeof j.tool === 'string' ? j.tool : (typeof j.action === 'string' && (j.args || j.spec) ? j.action : '')
+  if (tool && tool !== 'submit_spec') {
+    return { kind: 'tool', tool, args: j.args && typeof j.args === 'object' ? j.args : {}, thought, raw }
+  }
+  const spec = j.spec && typeof j.spec === 'object' ? j.spec : (j.specVersion || j.commands ? j : null)
+  if (spec) return { kind: 'spec', tool: 'submit_spec', spec, thought, raw }
+  if (tool === 'submit_spec') return { kind: 'spec', tool, spec: null, thought, raw }
+  return { kind: 'bad', raw }
+}
+
+/**
+ * **封装质量校验**（与结构校验互补：结构管"能不能跑"，质量管"能不能用"）。
+ *
+ * 硬错误只留"会让产物直接不可用"的问题：title 空/占位、params 没有说明、read 没有返回说明、
+ * action 命名非法。这些将来会直接体现在模型看到的工具描述里，写砸了工具就是废的。
+ * 「命令数偏少 / 覆盖度不够」属**偏好**，记 warning 并在界面提示用户核对——若把它设成硬拦，
+ * 模型一旦凑不出足够数量就会永远交不出东西（比少几条命令更糟）。
+ * @returns {{ok:boolean, errors:string[], warnings:string[]}}
+ */
+function checkSpecQuality(spec, { driver = 'browser', hasMaterial = true } = {}) {
+  const errors = []
+  const warnings = []
+  const cmds = Array.isArray(spec?.commands) ? spec.commands : []
+  const minCommands = hasMaterial ? 3 : 1
+  if (cmds.length < minCommands) {
+    warnings.push(`命令数偏少：${cmds.length} 条${hasMaterial ? `（有素材时建议至少 ${minCommands} 条）` : ''}——建议覆盖更多功能入口，而不是只写一个页面能做的事`)
+  }
+  const paths = new Set()
+  for (const [i, c] of cmds.entries()) {
+    const at = `commands[${i}]`
+    const action = String(c?.action || '')
+    if (!/^[a-z][A-Za-z0-9]{1,39}$/.test(action)) {
+      errors.push(`${at}.action 不规范：「${action}」——要求英文小驼峰、动词开头、≤40 字符（例：listOrders）`)
+    }
+    const title = String(c?.title || '').trim()
+    if (cjkLen(title) < 2) errors.push(`${at}.title 缺失或过短——title 是将来模型唯一能看到的「这个工具干什么」，必须写清（例「查询待办列表」）`)
+    else if (isPlaceholder(title)) errors.push(`${at}.title 是占位语「${title}」——请换成真实动作描述`)
+    for (const [k, p] of (Array.isArray(c?.params) ? c.params : []).entries()) {
+      const desc = String(p?.desc ?? p?.description ?? '').trim()
+      const name = String(p?.name || `params[${k}]`)
+      if (!desc) errors.push(`${at}.params[${k}]（${name}）缺少 desc——参数说明会直接展示给调用方，必须写`)
+      // 先判占位语再判长度：「待补充」这类词虽然够短，但问题本质是"根本没写"，报错要说准
+      else if (isPlaceholder(desc)) errors.push(`${at}.params[${k}]（${name}）的 desc 是占位语「${desc}」——请写清填什么、什么格式`)
+      else if (cjkLen(desc) < 6) errors.push(`${at}.params[${k}]（${name}）的 desc 过短（「${desc}」）——要说清填什么、什么格式`)
+      if (typeof p?.required !== 'boolean') warnings.push(`${at}.params[${k}]（${name}）未明确 required，建议写成 true/false`)
+    }
+    if (c?.kind === 'read' && !c?.returns?.from) {
+      // returns 当前**没有运行时消费者**（执行结果由 snapshot 的 save 键或 js 返回值决定），
+      // 所以它是"给调用方看的说明"，不达标只提示、不拦交付——否则模型漏写一次就永远交不出东西。
+      warnings.push(`${at}（${action}）建议补 returns.from，说明这条查询命令返回什么`)
+    }
+    // 覆盖度：数一数命令各自落到哪些路径/表达式上（粗略但足够提示）
+    for (const s of (Array.isArray(c?.steps) ? c.steps : [])) {
+      const u = typeof s?.url === 'string' ? s.url : ''
+      if (!u) continue
+      try { paths.add(new URL(u, 'https://x.invalid').pathname) } catch { paths.add(u) }
+    }
+  }
+  if (hasMaterial && cmds.length >= 3 && paths.size === 1) {
+    warnings.push('所有命令都落在同一个页面上，建议覆盖更多功能入口（不同页面/表单/查询）')
+  }
+  const reads = cmds.filter((c) => c?.kind === 'read')
+  if (reads.length === 0) errors.push('至少要有 1 条 read 命令（否则系统无法自动验证，用户也无从查询该应用的状态）')
+  if (reads.length >= 2 && !reads.some((c) => !(c.params || []).some((p) => p?.required))) {
+    warnings.push('没有「无需参数」的 read 命令，系统难以自动验证；建议提供一条（例：列出全部）')
+  }
+  void driver
+  return { ok: errors.length === 0, errors, warnings }
+}
+
+/** 单次工具结果的进历史文本（截断，但要保留报错原文——那是模型调试的唯一依据） */
+function toolResultText(tool, out, cap = DEFAULT_BUDGET.perToolChars) {
+  const head = out?.ok === false ? `【${tool} 失败】` : `【${tool} 结果】`
+  const body = String(out?.summary || '(无摘要)')
+  if (body.length <= cap) return head + body
+  return `${head}${body.slice(0, cap)}\n…（本次结果已截断，共 ${body.length} 字符）`
+}
+
+/** 进度文案：把工具调用说成人话（界面据此展示"模型正在做什么"，如实、不编百分比） */
+function describeToolCall(tool, args) {
+  if (tool === 'fetch_page') return `抓取页面 ${args?.url || ''}`
+  if (tool === 'list_pages') return '查看已抓页面'
+  if (tool === 'run_command') return `试跑命令 ${args?.action || ''}`
+  return `${tool}`
+}
+
+/**
+ * 自主探索生成主循环。
+ * @param {object} p
+ * @param {Function} p.callLlm 单轮模型调用（与 app-llm.callLlmStream 同签名，可注入假模型）
+ * @param {Function} p.runTool ({tool,args,draft}) => {ok, summary}
+ * @param {Function} [p.validate] 结构校验（默认 validateSpecBasic）
+ * @param {Function} [p.verify]  真实试跑：spec => {ok, tried, failures}
+ * @param {Function} [p.onProgress]
+ * @returns {Promise<{ok:boolean, spec:object|null, verified:boolean, turns:number, toolCalls:number,
+ *   trace:Array, issues:string[], warnings:string[], verify:object|null, elapsedMs:number, stoppedBy:string}>}
+ */
+async function runAgentLoop({
+  target, driver = 'browser', probeMode, probeMaterial, seedSummary,
+  callLlm, runTool, validate, verify, onProgress, budget, maxTokens,
+} = {}) {
+  const b = { ...DEFAULT_BUDGET, ...(budget || {}) }
+  const t0 = Date.now()
+  const system = buildAgentSystem({ target, driver })
+  const seedUser = buildAgentSeed({ target, driver, probeMode, probeMaterial, seedSummary, budget: b })
+  const log = []
+  const trace = []
+  const issues = []
+  const warnings = []
+  let spec = null        // **通过结构+质量校验**的 Spec（只有它才可能被交付）
+  let draft = null       // 最近一次提交的草稿（哪怕没通过校验，也留给 run_command 调试用）
+  let verified = false
+  let verifyResult = null
+  let turns = 0
+  let toolCalls = 0
+  let stoppedBy = 'budget'
+  /** 连续"提交了同一批错误"的次数——用于早停（模型原地打转时不要白烧到轮次上限） */
+  let lastErrorSig = ''
+  let stalls = 0
+  /** 连续"输出无法解析"的次数——模型读不懂协议时早点收工 */
+  let badStreak = 0
+  const hasMaterial = !!probeMaterial && probeMode !== 'none'
+  const check = validate || validateSpecBasic
+  /**
+   * 早停判定：模型提交的一版没通过、且**错误清单与上一次完全相同**时计数；连续两次就停。
+   * 为什么需要：轮次/时间预算只为"探索"服务，不该为"原地打转"买单——否则用户要等满 10 分钟
+   * 才看到一句"未通过"，而报错其实第 2 轮就已经说明白了。
+   */
+  const stallCheck = (errs) => {
+    const sig = errs.slice().sort().join('｜')
+    if (sig && sig === lastErrorSig) stalls++
+    else { stalls = 0; lastErrorSig = sig }
+    return stalls >= 2
+  }
+
+  // 流式增量节流（与 generateSpec 同口径：累计 200 字符或 150ms 才发一次 IPC）
+  let lastEmitAt = 0
+  let pendingDelta = ''
+
+  for (turns = 1; turns <= b.maxTurns; turns++) {
+    if (Date.now() - t0 > b.timeBudgetMs) { stoppedBy = 'time'; issues.push(`已达时间预算（${Math.round(b.timeBudgetMs / 1000)}s），停止探索`); break }
+    const user = [seedUser, renderLog(log, b.historyChars), '请输出你的下一步（一个 JSON 对象）。'].filter(Boolean).join('\n\n')
+    onProgress?.({ phase: 'round', turn: turns, maxTurns: b.maxTurns, detail: `第 ${turns}/${b.maxTurns} 轮：${log.length ? '把探索/试跑结果交给模型' : '请求模型开始探索'}…` })
+    lastEmitAt = 0; pendingDelta = ''
+    const r = await callLlm({
+      system, user, maxTokens,
+      onDelta: (d, total) => {
+        pendingDelta += d || ''
+        const now = Date.now()
+        if (now - lastEmitAt >= 150 || pendingDelta.length >= 200) {
+          lastEmitAt = now
+          onProgress?.({ phase: 'stream', turn: turns, maxTurns: b.maxTurns, chars: total, delta: pendingDelta })
+          pendingDelta = ''
+        } else onProgress?.({ phase: 'stream', turn: turns, maxTurns: b.maxTurns, chars: total })
+      },
+    })
+    if (pendingDelta) { onProgress?.({ phase: 'stream', turn: turns, maxTurns: b.maxTurns, chars: (r?.text || '').length, delta: pendingDelta }); pendingDelta = '' }
+    if (!r?.ok) {
+      const why = `模型调用失败：${r?.error || '未知错误'}`
+      issues.push(why); stoppedBy = 'llm-error'
+      onProgress?.({ phase: 'error', detail: why })
+      break
+    }
+    const turn = parseTurn(r.text)
+    if (turn.thought) trace.push({ turn: turns, kind: 'thought', text: turn.thought })
+    onProgress?.({ phase: 'parse', turn: turns, chars: String(r.text || '').length, detail: `已收到 ${String(r.text || '').length} 字符，解析中…` })
+
+    if (turn.kind === 'bad') {
+      log.push({ role: '系统', text: '你的输出无法解析成一个 JSON 对象。请**只输出一个 JSON 对象**：要么是工具调用（{"thought","tool","args"}），要么是 {"thought","tool":"submit_spec","spec":{…}}。' })
+      badStreak++
+      onProgress?.({ phase: 'invalid', turn: turns, detail: `模型输出无法解析（连续 ${badStreak} 次），已回喂纠正` })
+      // 连续读不懂就没必要耗满轮次（模型可能不支持这种协议/输出被截断），早停并如实报告
+      if (badStreak >= 3) {
+        stoppedBy = 'bad-output'
+        issues.push(`模型连续 ${badStreak} 轮输出无法解析为 JSON（最后一段：${String(turn.raw || '').slice(0, 120)}）`)
+        break
+      }
+      continue
+    }
+    badStreak = 0
+
+    if (turn.kind === 'tool') {
+      if (toolCalls >= b.maxToolCalls) {
+        log.push({ role: '系统', text: `工具调用次数已达上限（${b.maxToolCalls}）。请立刻用 submit_spec 提交你目前最好的一版。` })
+        continue
+      }
+      toolCalls++
+      const label = describeToolCall(turn.tool, turn.args)
+      onProgress?.({ phase: 'explore', turn: turns, toolCalls, detail: `第 ${toolCalls}/${b.maxToolCalls} 次工具调用：${label}…` })
+      let out
+      try {
+        out = await runTool?.({ tool: turn.tool, args: turn.args, draft })
+      } catch (e) {
+        out = { ok: false, summary: `工具执行异常：${String(e?.message || e)}` }
+      }
+      if (!out || typeof out !== 'object') out = { ok: false, summary: '工具没有返回结果' }
+      trace.push({ turn: turns, kind: 'tool', tool: turn.tool, args: turn.args, ok: out.ok !== false, summary: String(out.summary || '').slice(0, 400) })
+      log.push({ role: '工具', text: toolResultText(turn.tool, out, b.perToolChars) })
+      onProgress?.({ phase: 'explore', turn: turns, toolCalls, done: true, detail: `${label} → ${out.ok === false ? `失败：${String(out.summary || '').slice(0, 160)}` : `成功：${String(out.summary || '').slice(0, 160)}`}` })
+      continue
+    }
+
+    // submit_spec
+    if (!turn.spec) {
+      log.push({ role: '系统', text: 'submit_spec 缺少 spec 字段。请把完整 Spec 放在 spec 字段里。' })
+      continue
+    }
+    const normalized = { ...turn.spec, expose: { ...(turn.spec.expose || {}), mode: turn.spec.expose?.mode === 'public' ? 'console' : (turn.spec.expose?.mode || 'console') } }
+    const v = check(normalized)
+    if (!v.ok) {
+      issues.push(...v.errors)
+      log.push({ role: '系统', text: `结构校验未通过：\n${v.errors.slice(0, 8).map((e, i) => `${i + 1}. ${e}`).join('\n')}\n请修正后重新 submit_spec。` })
+      onProgress?.({ phase: 'invalid', turn: turns, detail: `草稿结构校验未通过：${v.errors.slice(0, 3).join('；')}` })
+      if (stallCheck(v.errors)) { stoppedBy = 'no-progress'; issues.push(`模型连续提交同一批结构问题，已早停（避免空耗预算）：${v.errors.slice(0, 2).join('；')}`); break }
+      continue
+    }
+    // 草稿先留存（供 run_command 调试），但**只有通过质量校验才算"可交付"**
+    draft = normalized
+    const q = checkSpecQuality(normalized, { driver, hasMaterial })
+    warnings.push(...q.warnings)
+    if (!q.ok) {
+      issues.push(...q.errors)
+      log.push({ role: '系统', text: `封装质量校验未通过（命令将来要变成给模型调用的工具，这几项不达标用户就用不了）：\n${q.errors.slice(0, 8).map((e, i) => `${i + 1}. ${e}`).join('\n')}\n请修正后重新 submit_spec。` })
+      onProgress?.({ phase: 'quality', turn: turns, detail: `草稿质量未达标：${q.errors.slice(0, 3).join('；')}` })
+      if (stallCheck(q.errors)) { stoppedBy = 'no-progress'; issues.push(`模型连续提交同一批质量问题，已早停（避免空耗预算）：${q.errors.slice(0, 2).join('；')}`); break }
+      continue
+    }
+    spec = normalized
+    lastErrorSig = ''; stalls = 0
+    onProgress?.({ phase: 'parsed', turn: turns, detail: `草稿通过结构与质量校验：${normalized.commands.length} 条命令，进入真实试跑…` })
+    verifyResult = verify ? await verify(normalized) : { ok: true, tried: [], failures: [], notRun: [], skipped: [] }
+    if (verifyResult.ok) {
+      verified = true
+      stoppedBy = 'verified'
+      onProgress?.({ phase: 'verify', turn: turns, done: true, detail: `试跑通过：${(verifyResult.tried || []).join('、') || '（无可试跑命令）'}` })
+      break
+    }
+    const fails = (verifyResult.failures || []).map((f) => `${f.action}：${f.error}`)
+    issues.push(...fails)
+    log.push({
+      role: '系统',
+      text: `你提交的这版**真实试跑未通过**（草稿已保留，你可以用 run_command 逐条调试后再 submit_spec）：\n${fails.slice(0, 8).map((e, i) => `${i + 1}. ${e}`).join('\n')}${(verifyResult.skipped || []).length ? `\n（未试跑：${verifyResult.skipped.join('、')}——可试跑的命令都需要参数）` : ''}`,
+    })
+    onProgress?.({ phase: 'verify', turn: turns, detail: `试跑未通过 ${fails.length} 条：${fails.slice(0, 2).join('；')}` })
+  }
+
+  if (turns > b.maxTurns) stoppedBy = 'max-turns'
+  const elapsedMs = Date.now() - t0
+  // 交付判定：只有**结构+质量都过**的草稿才值得给出；试跑未通过时如实标注 verified=false
+  const ok = !!spec
+  onProgress?.({
+    phase: 'done', done: true,
+    detail: ok
+      ? (verified
+        ? `探索完成：${spec.commands.length} 条命令，试跑全部通过（${turns} 轮交互 / ${toolCalls} 次工具调用）`
+        : `探索结束（${stoppedBy}）：${spec.commands.length} 条命令，试跑**未全部通过**，已在界面给出原因`)
+      : `探索结束（${stoppedBy}）：未产出通过校验的 Spec`,
+  })
+  return { ok, spec, verified, turns: Math.min(turns, b.maxTurns), toolCalls, trace, issues, warnings, verify: verifyResult, elapsedMs, stoppedBy }
+}
+
+module.exports = {
+  runAgentLoop, buildAgentSystem, buildAgentSeed, parseTurn, checkSpecQuality,
+  renderLog, toolResultText, describeToolCall, agentToolDocs,
+  DEFAULT_BUDGET, PLACEHOLDER, isPlaceholder,
+}

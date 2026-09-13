@@ -205,56 +205,141 @@ test('app:generate：试跑失败 → 返回失败明细（界面据此禁止保
   assert.ok(t.details().some((d) => d.includes('试跑未通过')), '进度事件应如实说明试跑未通过')
 })
 
-test('app:generate：模型返回非法 JSON → 回喂多轮后失败，轮数与错误都回传', async () => {
+test('app:generate：模型输出始终无法解析 → 早停并如实报告（不耗满预算）', async () => {
   let calls = 0
   const t = setup({ llm: async () => { calls += 1; return { ok: true, text: '不是 JSON', error: null } } })
   const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com' }, appId: 'x', sessionId: 's1' })
   assert.equal(r.ok, false)
-  assert.equal(calls, 3, '最多 3 轮')
+  assert.equal(calls, 3, '连续 3 次读不懂就早停，不空耗 24 轮预算')
   assert.equal(r.rounds, 3)
-  assert.ok(r.issues.some((i) => i.includes('不是合法 JSON')))
+  assert.ok(r.issues.some((i) => i.includes('无法解析')), r.issues.join('｜'))
 })
 
-// ---------- 试跑失败 → 回喂模型自我修正（真实故障驱动） ----------
+// ---------- 自主探索与自我调试（用户要求："给 LLM 框架，让它自己去充分探索和调试测试"） ----------
 //
-// 用户实测：生成的命令结构合法，但试跑报 `步骤 js 失败：js 缺少 expression`。
-// 结构校验只能查"字段写没写对"，"在真实页面上跑不跑得动"只有试跑才知道，
-// 所以试跑失败必须能回喂模型改一次，而不是把跑不通的命令丢给用户。
+// 用户原话：固定脚本 LLM 自主度太低，完成不了普遍性任务；要给框架让它自己探索、自己调试，
+// 并对封装格式质量提要求。下面这几条用例守的就是"框架真的把控制权交给了模型"：
+//   · 模型能自己决定抓哪个页面（fetch_page），我们只如实把素材回喂；
+//   · 模型能自己试跑命令（run_command）看到真实报错；
+//   · 模型改好再提交（submit_spec）→ 真实试跑通过才算完成；
+//   · 质量不达标会被打回；确定改不动时早停，绝不假装成功。
 
-test('app:generate：试跑失败 → 自动回喂失败原因修正，修正后试跑通过', async () => {
+/** 按顺序回放脚本的假模型（用尽后重复最后一个），模拟"模型每轮做什么" */
+const scriptLlm = (script) => {
+  let i = 0
+  return async () => {
+    const text = script[Math.min(i, script.length - 1)]
+    i += 1
+    return { ok: true, text, error: null, chars: text.length }
+  }
+}
+const submitTurn = (spec, thought = '写好了') => JSON.stringify({ thought, tool: 'submit_spec', spec })
+const fetchTurn = (url) => JSON.stringify({ thought: '先看看这个页面', tool: 'fetch_page', args: { url } })
+const runTurn = (action, args = {}) => JSON.stringify({ thought: '试跑一下', tool: 'run_command', args: { action, args } })
+
+test('自主探索：模型自己抓页面 → 提交 → 真实试跑通过', async () => {
+  const seenUsers = []
   let llmCalls = 0
+  const t = setup({
+    llm: async (p) => {
+      seenUsers.push(p?.user || '')
+      llmCalls += 1
+      const script = [fetchTurn('https://example.com/detail/7'), submitTurn(JSON.parse(SPEC_TEXT))]
+      const text = script[Math.min(llmCalls - 1, script.length - 1)]
+      return { ok: true, text, error: null, chars: text.length }
+    },
+    exec: async () => ({ ok: true, snapshot: { page: { title: 'T' }, info: [] }, data: 'ok' }),
+  })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com' }, appId: 'x', sessionId: 's1' })
+  assert.equal(r.ok, true)
+  assert.equal(r.verify.ok, true, '真实试跑应通过')
+  assert.equal(r.agent.toolCalls, 1, '模型应自己发起过 1 次页面抓取')
+  assert.ok(r.agent.trace.some((x) => x.kind === 'tool' && x.tool === 'fetch_page'), '轨迹里要能看到模型的探索动作')
+  // 抓到的素材必须**回喂**给模型（否则"自主探索"就是假的）
+  assert.ok(seenUsers[1].includes('示例站') || seenUsers[1].includes('fetch_page'), `第二轮的上下文里应有抓取结果：${seenUsers[1].slice(-500)}`)
+  assert.ok(t.details().some((d) => d.includes('抓取页面')), `进度里要如实展示模型在抓页面：${t.details().join(' | ')}`)
+})
+
+test('自我调试：试跑报错 → 模型用 run_command 查因 → 提交修订版 → 试跑通过', async () => {
+  // 模拟真实情形：第一版忽略 js 要用 expression 字段，试跑报错；模型据此修正
+  const badSpec = {
+    specVersion: 1, appId: 'x', name: '示例站', target: { type: 'web', url: 'https://example.com' }, expose: { mode: 'console' },
+    commands: [{ action: 'readText', title: '读正文', kind: 'read', params: [], steps: [{ act: 'goto', url: '/' }, { act: 'js', expression: 'document.body.innerText', save: 'r' }] }],
+  }
+  const brokenSpec = { ...badSpec, commands: [{ ...badSpec.commands[0], steps: [{ act: 'goto', url: '/' }, { act: 'js', code: 'document.body.innerText' }] }] }
+  const script = [submitTurn(brokenSpec), runTurn('readText'), submitTurn(JSON.parse(SPEC_TEXT), '按报错修好了')]
   let gotoCalls = 0
   const t = setup({
-    llm: async () => { llmCalls += 1; return { ok: true, text: SPEC_TEXT, error: null, chars: SPEC_TEXT.length } },
-    exec: async (_s, act, p) => {
-      if (act === 'goto') {
-        gotoCalls += 1
-        if (gotoCalls === 1) return { ok: false, error: 'js 缺少 expression' }   // 首轮试跑失败
-      }
-      return { ok: true, snapshot: { page: { title: 'T', url: p?.url }, info: [] } }
+    llm: scriptLlm(script),
+    exec: async (_s, act) => {
+      if (act === 'goto') { gotoCalls += 1; return { ok: true, snapshot: { page: { title: 'T' }, info: [] } } }
+      return { ok: true, snapshot: { page: { title: 'T' }, info: [] }, data: '正文内容' }
     },
   })
   const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com' }, appId: 'x', sessionId: 's1' })
   assert.equal(r.ok, true)
-  assert.equal(r.corrected, true, '应当经过一次修正')
-  assert.equal(r.verify.ok, true, '修正后试跑应通过')
-  assert.equal(llmCalls, 2, '原生成 1 次 + 修正 1 次')
-  assert.ok(t.details().some((d) => d.includes('回喂模型')), `进度里要如实说明在回喂修正：${t.details().join(' | ')}`)
-  assert.ok(t.details().some((d) => /经 \d+ 次修正/.test(d)), '完成文案要标注经过修正')
+  assert.equal(r.verify.ok, true, '修订后试跑应通过')
+  assert.ok(r.agent.toolCalls >= 1, '模型应至少调用过一次工具（run_command 或 fetch_page）')
+  assert.ok(t.details().some((d) => d.includes('试跑未通过') || d.includes('试跑命令')), `进度要如实反映试跑与调试：${t.details().join(' | ')}`)
+  assert.ok(gotoCalls > 0, '应真的执行过试跑')
 })
 
-test('app:generate：修正没有改善 → 保留原结果（不假装修好了）', async () => {
-  let llmCalls = 0
+test('原地打转：模型反复提交同一批问题 → 早停，且如实保留"未通过"', async () => {
+  const noReadSpec = {
+    specVersion: 1, appId: 'x', name: '示例站', target: { type: 'web', url: 'https://example.com' }, expose: { mode: 'console' },
+    commands: [{ action: 'submitForm', title: '提交表单', kind: 'write', params: [], steps: [{ act: 'goto', url: '/new' }, { act: 'snapshot' }, { act: 'click', ref: 1 }] }],
+  }
+  let calls = 0
+  const t = setup({ llm: async () => { calls += 1; return { ok: true, text: submitTurn(noReadSpec), error: null } } })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com' }, appId: 'x', sessionId: 's1' })
+  assert.equal(r.ok, false, '没有 read 命令（质量硬门槛）→ 不产出 Spec')
+  assert.ok(calls <= 4, `同一批问题重复出现应早停，实际调用了 ${calls} 次`)
+  assert.equal(r.stoppedBy, 'no-progress')
+  assert.ok(r.issues.some((i) => i.includes('read 命令')), r.issues.join('｜'))
+})
+
+test('质量门槛：title/参数说明写占位语 → 打回；改对后通过（封装质量要求落地）', async () => {
+  const junk = {
+    specVersion: 1, appId: 'x', name: '示例站', target: { type: 'web', url: 'https://example.com' }, expose: { mode: 'console' },
+    commands: [
+      { action: 'query', title: 'TODO', kind: 'read', params: [{ name: 'q', type: 'string', required: true, desc: '待补充' }], steps: [{ act: 'goto', url: '/list' }, { act: 'snapshot', save: 'r' }] },
+    ],
+  }
+  const seenUsers = []
   const t = setup({
-    llm: async () => { llmCalls += 1; return { ok: true, text: SPEC_TEXT, error: null, chars: SPEC_TEXT.length } },
-    exec: async (_s, act, p) => (act === 'goto' ? { ok: false, error: '元素不存在' } : { ok: true, snapshot: { page: {}, info: [] } }),
+    llm: async (p) => { seenUsers.push(p?.user || ''); return { ok: true, text: submitTurn(junk), error: null } },
+    exec: async () => ({ ok: true, snapshot: { page: { title: 'T' }, info: [] }, data: 'ok' }),
   })
   const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com' }, appId: 'x', sessionId: 's1' })
-  assert.equal(r.ok, true)
-  assert.equal(r.corrected, false, '没改善就不采纳')
-  assert.equal(r.verify.ok, false, '要如实保留"试跑未通过"')
-  assert.equal(llmCalls, 2, '只修正一次，不反复烧模型')
-  assert.ok(t.details().some((d) => d.includes('未带来改善')), t.details().join(' | '))
+  assert.equal(r.ok, false, '占位语标题/参数说明属于不可用产物 → 不应交付')
+  assert.ok(r.issues.some((i) => i.includes('占位语')), r.issues.join('｜'))
+  assert.ok(seenUsers.some((u) => u.includes('封装质量校验未通过')), '要把质量问题回喂给模型去改')
+  assert.ok(t.details().some((d) => d.includes('质量未达标')), t.details().join(' | '))
+})
+
+test('安全边界：write 命令绝不被自动试跑（run_command 只允许 read）', async () => {
+  // 只写 write 命令：先被质量门槛打回（没有 read 命令），此过程中草稿会被留存，
+  // 于是模型能拿到草稿去试跑 —— 而试跑 write 必须被拒（那会在用户的应用里产生真实改动）
+  const writeOnly = {
+    specVersion: 1, appId: 'x', name: '示例站', target: { type: 'web', url: 'https://example.com' }, expose: { mode: 'console' },
+    commands: [
+      { action: 'deleteItem', title: '删除指定条目', kind: 'write', params: [{ name: 'id', type: 'string', required: true, desc: '条目编号，形如 IT-001' }], steps: [{ act: 'goto', url: '/list' }, { act: 'snapshot' }, { act: 'click', ref: 2 }] },
+    ],
+  }
+  const seenUsers = []
+  let calls = 0
+  const t = setup({
+    llm: async (p) => {
+      seenUsers.push(p?.user || '')
+      calls += 1
+      const script = [submitTurn(writeOnly), runTurn('deleteItem', { id: 'IT-001' }), submitTurn(writeOnly)]
+      return { ok: true, text: script[Math.min(calls - 1, script.length - 1)], error: null }
+    },
+    exec: async () => ({ ok: true, snapshot: { page: { title: 'T' }, info: [] }, data: 'ok' }),
+  })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com' }, appId: 'x', sessionId: 's1' })
+  assert.ok(seenUsers.some((u) => u.includes('拒绝试跑')), `模型试跑 write 时必须被拒绝并告知原因：${seenUsers.map((u) => u.slice(-200)).join(' || ')}`)
+  assert.ok(!r.verify || (r.verify.tried || []).every((a) => a !== 'deleteItem'), 'write 命令绝不能被自动执行')
 })
 
 test('app:generate：js 缺 expression 的坏 Spec 会在校验轮被拦下并回喂（不再等到试跑）', async () => {

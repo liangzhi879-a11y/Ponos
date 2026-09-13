@@ -24,7 +24,7 @@ import type { AppGenerateProgress, AppGenerateResult, AppProbeResult, AppSpec, A
 
 const ID_RE = /^[a-zA-Z0-9_-]+$/
 /** 阶段顺序（用于把"已到达"的阶段点亮；只是展示顺序，不代表会全部发生） */
-const PHASE_ORDER: AppGenerateProgress['phase'][] = ['fetch', 'probe', 'round', 'stream', 'parse', 'invalid', 'parsed', 'verify', 'done']
+const PHASE_ORDER: AppGenerateProgress['phase'][] = ['fetch', 'probe', 'round', 'explore', 'stream', 'parse', 'invalid', 'quality', 'parsed', 'verify', 'done']
 
 /**
  * 网址归一：用户从地址栏复制的常常不带协议头（`kimi.com`），而取素材与域名授权都要能解析它——

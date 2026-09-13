@@ -581,10 +581,16 @@ export interface AppRepairResult {
 export interface AppGenerateProgress {
   appId?: string | null
   at?: number
-  /** fetch：后台抓取页面素材（无需浏览器）；probe：浏览器探测（仅白名单站点增强用） */
-  phase: 'fetch' | 'probe' | 'round' | 'stream' | 'parse' | 'invalid' | 'parsed' | 'verify' | 'done' | 'error'
+  /**
+   * fetch：后台抓取页面素材（无需浏览器）；probe：浏览器探测（仅白名单站点增强用）；
+   * explore：模型自主探索（抓页面/试跑命令）——如实展示"模型正在做什么"，不做假进度；
+   * quality：封装质量校验未达标被打回；error：失败（必须带原因）
+   */
+  phase: 'fetch' | 'probe' | 'round' | 'explore' | 'stream' | 'parse' | 'invalid' | 'quality' | 'parsed' | 'verify' | 'done' | 'error'
   round?: number
   maxRounds?: number
+  /** 当前是第几次工具调用（explore 阶段） */
+  toolCalls?: number
   chars?: number
   /** 真实流式增量文本（已节流，用于界面展示实时输出） */
   delta?: string

@@ -15,6 +15,7 @@ const appBindings = require('./app-bindings.cjs')
 const profiler = require('./app-profiler.cjs')
 const { runCommand, appendHistory, desktopRunner } = require('./app-runner.cjs')
 const { generateSpec, verifySpec, snapshotForPrompt, validateSpecBasic } = require('./app-generate.cjs')
+const appAgent = require('./app-agent.cjs')
 const { callLlmStream } = require('./app-llm.cjs')
 const appValidator = require('./app-validator.cjs')
 const httpProbe = require('./app-http-probe.cjs')
@@ -30,6 +31,13 @@ const PROBE_SESSION = 'app-probe'
  * 所以宁可多抓几页（含列表/搜索/设置等）给模型，也不要只凭一个首页就写命令。
  */
 const MAX_HARVEST_PAGES = 6
+/**
+ * 自主探索预算。用户明确"不要期望 llm 分析生成很快完成"，所以给得宽松，但**必须有界**
+ * （无上限会烧钱、界面看起来像卡死）。
+ */
+const AGENT_BUDGET = { maxTurns: 24, maxToolCalls: 20, timeBudgetMs: 10 * 60 * 1000, historyChars: 60000, perToolChars: 5000 }
+/** 单次 fetch_page 回给模型的素材字符上限（它自己读 JSON，给小了看不到表单字段） */
+const AGENT_TOOL_MATERIAL_CAP = 6000
 
 /** Spec 里没写 driver 时的推定：web → browser，desktop → uia（最保守的兜底） */
 function inferDriver(spec) {
@@ -252,21 +260,14 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
       emitProgress(appId, { phase: 'probe', detail: `探测完成：驱动 ${driver}`, done: true })
     }
 
-    // ② 生成（≤3 轮，失败回喂修正）
-    const gen = await generateSpec({
-      target, probeMaterial, probeMode, maxRounds,
-      callLlm,
-      onProgress: (p) => emitProgress(appId, p),
-    })
-    if (!gen.ok) {
-      emitProgress(appId, { phase: 'error', detail: (gen.issues || []).join('；') || '生成失败' })
-      return done({ ok: false, error: (gen.issues || []).join('；') || '生成失败', issues: gen.issues, rounds: gen.rounds, driver })
-    }
-
-    // ③ 试跑验证（只跑 read，最多 2 条；write 绝不试跑）
-    // target 以用户填写的（已归一的）为准：模型可能照抄原样或改写成子页，
-    // 而 target 决定"授权哪个域名"与相对路径怎么解析，必须是用户真正想要的那个地址。
-    let specWithDriver = { ...gen.spec, driver, target: { ...(gen.spec.target || {}), ...target } }
+    // ② 生成 = **自主探索式**（app-agent.cjs）：把控制权交给模型
+    //
+    // ★ 为什么换掉原来的"固定脚本"（用户真实反馈）：
+    //   「网站/应用的构造非常多样，如果你是用的固定脚本，LLM 参与度和自主度很低，那么可以肯定
+    //     完成不了普遍性任务。给 LLM 框架，让它自己去充分探索和调试测试。并对封装格式质量提出要求。」
+    //   原流程按写死的规则抓 6 页 → 一次成型 → 只回喂两次修正；站点结构一变（多级入口、
+    //   要先搜索才能到详情页…）就抓不到关键页面，模型只能凭猜 → 命令又少又漏。
+    //   现在：模型自己决定抓哪些页面、抓几次、先写什么、怎么调试，我们只提供工具与真实反馈。
     const runForVerify = (spec) => ({ action, args, sessionId: sid }) => (
       driver === 'browser'
         ? runCommand({ roots: roots(), appId, action, args, executor: getExecutor(), sessionId: sid, spec, persist: false })
@@ -277,57 +278,95 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
       runCommand: runForVerify(spec),
       onProgress: (p) => emitProgress(appId, p),
     })
-    let verify = await verifyOnce(specWithDriver)
-    let genRounds = gen.rounds
-    let corrected = false
 
-    // ③′ 试跑未通过 → **回喂失败原因让模型自我修正**，再试跑；只要还在改善就继续。
-    // 为什么必须有这一步：结构校验只能查"字段写没写对"，而"ref/选择器在真实页面上点不点得动"
-    // 只有试跑才知道（用户实测就是这么卡住的：命令结构合法、一跑就报错）。
-    // 用户要求"测试完善后才能交付用户使用"，所以允许**最多 2 轮**修正（默认不在未通过时就收工），
-    // 但只在"全通过 或 失败数确实减少"时采纳结果——否则就是白烧模型。
-    const CORRECT_ATTEMPTS = 2
-    let corrections = 0
-    for (let attempt = 1; attempt <= CORRECT_ATTEMPTS && !verify.ok; attempt++) {
-      const failed = verify.failures.map((f) => `命令 ${f.action} 试跑失败：${f.error}`)
-      emitProgress(appId, {
-        phase: 'round',
-        detail: `试跑未通过：${verify.failures.map((f) => `${f.action}（${String(f.error).slice(0, 120)}）`).join('；')}；第 ${attempt} 次回喂模型修正…`,
-      })
-      const retry = await generateSpec({
-        target, probeMaterial, probeMode, maxRounds: 1, seedErrors: failed, callLlm,
-        onProgress: (p) => emitProgress(appId, p),
-      })
-      genRounds += retry.rounds || 0
-      if (!retry.ok) {
-        emitProgress(appId, { phase: 'round', detail: `第 ${attempt} 次修正未产出合法 Spec，停止修正` })
-        break
-      }
-      const retrySpec = { ...retry.spec, driver, target: { ...(retry.spec.target || {}), ...target } }
-      const v2 = await verifyOnce(retrySpec)
-      const improved = v2.ok || v2.failures.length < verify.failures.length
-      if (improved) { specWithDriver = retrySpec; verify = v2; corrected = true; corrections = attempt }
-      emitProgress(appId, {
-        phase: 'round',
-        detail: v2.ok
-          ? `第 ${attempt} 次修正后试跑全部通过`
-          : improved
-            ? `第 ${attempt} 次修正后未通过数降到 ${v2.failures.length} 条，继续修正…`
-            : `第 ${attempt} 次修正未带来改善，保留${corrected ? '上一版' : '原'}结果`,
-      })
-      if (!improved) break
+    // 已经抓过的页面（供 list_pages 与 fetch_page 去重；模型据此规划探索）
+    const visited = new Map()
+    if (probeMaterial && target.type === 'web') {
+      const pages = [{ url: target.url, title: probeMaterial.title, interactives: probeMaterial.interactives, forms: probeMaterial.forms?.length || 0 }, ...(probeMaterial.pages || []).map((p) => ({ url: p.url, title: p.title, interactives: p.interactives, forms: p.forms?.length || 0 }))]
+      for (const p of pages) if (p.url) visited.set(p.url, p)
     }
+    const seedSummary = target.type === 'web' && visited.size
+      ? `已预取 ${visited.size} 个页面：${[...visited.values()].map((p) => `${p.url}（${p.interactives ?? '?'} 个可交互线索）`).join('、')}。你可以直接在此基础上继续抓更多页面，不必重复抓这些。`
+      : null
+
+    /**
+     * 工具执行器：**真实执行**并把真实结果（含真实报错）回给模型。
+     * 安全边界：run_command 只允许 read 命令——write 会在用户的目标应用里产生真实改动，
+     * 绝不能因为"模型想试试"就执行（这一点比让模型调试重要）。
+     */
+    const runTool = async ({ tool, args, draft } = {}) => {
+      if (tool === 'list_pages') {
+        if (!visited.size) return { ok: true, summary: '还没有抓过任何页面（可能是桌面应用）。可以直接 submit_spec。' }
+        return { ok: true, summary: [...visited.values()].map((p) => `${p.url}｜${p.title || '(无标题)'}｜${p.interactives ?? '?'} 个可交互线索｜表单 ${p.forms} 个`).join('\n') }
+      }
+      if (tool === 'fetch_page') {
+        const url = normalizeUrl(args?.url)
+        if (!url) return { ok: false, summary: `网址不合法：${String(args?.url)}（要写完整地址，如 https://example.com/foo）` }
+        // 顺手授权该域名（模型探索到的同站/子域页面，后续试跑才不会因白名单被拦）
+        authorizeAppTarget({ type: 'web', url }, { extraUrls: [url] })
+        emitProgress(appId, { phase: 'explore', detail: `后台抓取 ${url}（不弹窗口）…` })
+        const r = await httpProbe.fetchPageMaterial({ url, fetchImpl })
+        if (!r.ok) return { ok: false, summary: `${url} 抓取失败：${r.error}` }
+        const m = r.material
+        if (r.finalUrl) authorizeAppTarget({ type: 'web', url }, { extraUrls: [r.finalUrl] })
+        const key = r.finalUrl || url
+        visited.set(key, { url: key, title: m.title, interactives: m.interactives, forms: m.forms?.length || 0 })
+        return {
+          ok: true,
+          // 素材原样给模型（JSON 截断），它自己读得懂；摘要用于进度与 list_pages
+          summary: `抓取成功：${m.title || '(无标题)'}｜${m.interactives} 个可交互线索｜表单 ${m.forms?.length || 0} 个${r.finalUrl && r.finalUrl !== url ? `｜跳转到 ${r.finalUrl}` : ''}\n素材：${JSON.stringify(m).slice(0, AGENT_TOOL_MATERIAL_CAP)}`,
+        }
+      }
+      if (tool === 'run_command') {
+        const action = String(args?.action || '')
+        const cmd = (draft?.commands || []).find((c) => c.action === action)
+        if (!cmd) return { ok: false, summary: `草稿里没有名为「${action}」的命令。请先用 submit_spec 提交包含它的草稿，再试跑。` }
+        if (cmd.kind !== 'read') {
+          return { ok: false, summary: `拒绝试跑：命令「${action}」是 write（会在目标应用里产生真实改动），系统不会自动执行 write 命令。你只能试跑 read 命令。` }
+        }
+        if ((cmd.params || []).some((p) => p?.required) && !(args?.args && Object.keys(args.args).length)) {
+          return { ok: false, summary: `命令「${action}」有必填参数，请在 args 里给出参数值再试跑（例：{"tool":"run_command","args":{"action":"${action}","args":{"id":"SO20250101-001"}}}` }
+        }
+        const r = await runForVerify(draft)({ action, args: args?.args || {}, sessionId: sessionId || PROBE_SESSION })
+        return r?.ok
+          ? { ok: true, summary: `试跑成功（${r.durationMs || 0}ms）：${String(typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? '')).slice(0, 1200) || '(无输出)'}` }
+          : { ok: false, summary: `试跑失败：${String(r?.error || '未知错误')}` }
+      }
+      return { ok: false, summary: `未知工具「${tool}」。可用工具：fetch_page / list_pages / run_command / submit_spec。` }
+    }
+
+    const agent = await appAgent.runAgentLoop({
+      target, driver, probeMode, probeMaterial, seedSummary,
+      callLlm, runTool,
+      validate: (s) => validateSpecBasic(s),
+      verify: verifyOnce,
+      onProgress: (p) => emitProgress(appId, p),
+      budget: AGENT_BUDGET,
+    })
+    if (!agent.ok || !agent.spec) {
+      const why = (agent.issues || []).slice(0, 3).join('；') || '模型未产出通过校验的 Spec'
+      emitProgress(appId, { phase: 'error', detail: why })
+      return done({ ok: false, error: why, issues: agent.issues, rounds: agent.turns, turns: agent.turns, toolCalls: agent.toolCalls, driver, stoppedBy: agent.stoppedBy })
+    }
+
+    let specWithDriver = { ...agent.spec, driver, target: { ...(agent.spec.target || {}), ...target } }
+    const verify = agent.verify || { ok: false, tried: [], failures: [], notRun: [], skipped: [] }
+    const genRounds = agent.turns
 
     // probeMode 如实回传：界面据此提示"命令未经验证、需人工核对"（不假装探测过）
     const probeInfo = { mode: probeMode, title: probeTitle, url: target.type === 'web' ? target.url : null, note: probeNote || null }
     emitProgress(appId, {
       phase: 'done',
       detail: verify.ok
-        ? `生成完成：${specWithDriver.commands.length} 条命令，试跑 ${verify.tried.length} 条查询命令全部通过${corrections ? `（经 ${corrections} 次修正）` : ''}`
-        : `生成完成：${specWithDriver.commands.length} 条命令；试跑仍有 ${verify.failures.length} 条未通过（已修正 ${corrections} 次）：${verify.failures.map((f) => f.action).join('、')}`,
-      issues: verify.failures.map((f) => `${f.action}：${f.error}`),
+        ? `生成完成：${specWithDriver.commands.length} 条命令，试跑 ${verify.tried.length} 条查询命令全部通过（探索 ${agent.turns} 轮 / ${agent.toolCalls} 次工具调用）`
+        : `生成完成：${specWithDriver.commands.length} 条命令；试跑仍有 ${(verify.failures || []).length} 条未通过（模型已探索 ${agent.turns} 轮 / ${agent.toolCalls} 次工具调用）：${(verify.failures || []).map((f) => f.action).join('、')}`,
+      issues: (verify.failures || []).map((f) => `${f.action}：${f.error}`),
     })
-    return done({ ok: true, spec: specWithDriver, driver, probe: probeInfo, rounds: genRounds, issues: gen.issues, verify, corrected, corrections })
+    return done({
+      ok: true, spec: specWithDriver, driver, probe: probeInfo, rounds: genRounds,
+      issues: agent.issues, warnings: agent.warnings, verify,
+      agent: { turns: agent.turns, toolCalls: agent.toolCalls, verified: agent.verified, stoppedBy: agent.stoppedBy, trace: agent.trace },
+    })
   })
 
   // ---- 执行（Task 2.1/2.2）：按 driver 分发 ----
