@@ -3321,7 +3321,12 @@ function fixture() {
 }
 
 function runCli(dir, argsList) {
-  const out = execFileSync(process.execPath, [CLI, '--print', '--knowledge', ...argsList], {
+  // 必须带 stream-json 两个标志：`--knowledge` 短路块在 cli.mjs 的格式校验（L203）**之后**，
+  // 缺这两个标志会直接 `kernel: only stream-json I/O format is supported` 退出。
+  // 这也正是 server 侧 kernelReadonly 的实际调用形状（server/kernel-readonly.mjs:41）。
+  const out = execFileSync(process.execPath, [
+    CLI, '--output-format', 'stream-json', '--input-format', 'stream-json', '--knowledge', ...argsList,
+  ], {
     env: { ...process.env, PONOS_HOME: dir, CLAUDE_CONFIG_DIR: '' },
     encoding: 'utf-8',
     timeout: 60000,
@@ -3418,14 +3423,14 @@ node -e "const s=require('fs').readFileSync('kernel-dist/cli.mjs','utf8');if(/fr
 Expected: `bundle OK <N> bytes`（若报错，说明 `shared/knowledge-core.mjs` 未被内联——
 检查它是否被 `--external` 命中，或路径是否写成了一级 `../shared/`）
 
-Run: `PONOS_HOME=<临时目录> node kernel-dist/cli.mjs --print --knowledge stats`
+Run: `PONOS_HOME=<临时目录> node kernel-dist/cli.mjs --output-format stream-json --input-format stream-json --knowledge stats`
 Expected: 输出 `{"version":1,...}` 的 JSON（**这条是 shared/ 进 bundle 的最终证据**）
 
 - [ ] **Step 6: 打包产物验证（可选，需 electron-builder）**
 
 Run: `npm run build:electron:dir`
 Expected: 产物 `<release>/win-unpacked/resources/app/shared/knowledge-core.mjs` 存在
-Run: `node resources/kernel/cli.mjs --print --knowledge stats`（在产物目录内）
+Run: `node resources/kernel/cli.mjs --output-format stream-json --input-format stream-json --knowledge stats`（在产物目录内）
 Expected: 正常输出 JSON（证明 `mirrorKernelParentDeps` 把 `runtime/shared/` 镜像到位）
 
 - [ ] **Step 7: 提交**
