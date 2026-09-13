@@ -211,3 +211,43 @@ test('op=graph --related：显式 true 才附相关层；缺省/字符串一律�
   assert.ok(Array.isArray(on.output.related), 'related:true 时必须给数组')
   assert.deepEqual(on.output.related, [], '单文档库里没有文档对（自环已丢），空数组而不是缺失')
 })
+
+// —— 真进程链路：`--doc` 与 `graph --related` 必须**穿过 cli.mjs 的转发**——
+//
+// 为什么必须用真进程测：命令级用例（上面几条）直接调 `runKnowledgeCommand`，
+// **绕过了 cli.mjs 的 parseArgs→args 转发**，于是漏转发抓不到。实测踩过：
+// `parseArgs` 解析了 `--doc`（:172 有 case）但转发对象里没登记它 → 内核收到空 doc →
+// `related --doc` 退化成 "missing --id" 报错，**GUI 文档内部一片关联都看不到**；
+// `graph --related` 更隐蔽：被静默忽略 → 图谱图层开关打开了却没有边，
+// 看起来像"数据没算出来"而不是"参数没传进来"。
+// 这两个 flag 均由 HTTP 路由以 argv 形式驱动（`['--knowledge','related','--doc',docId]`
+// / `['--knowledge','graph','--related']`），所以命令级测试永远替代不了本用例。
+test('真进程链路：--doc 与 graph --related 必须真的穿过 CLI 管道（漏转发=静默失效）', async () => {
+  const { dir } = fixture()
+  const cli = fileURLToPath(new URL('../kernel/cli.mjs', import.meta.url))
+  try {
+    await runKnowledgeCommand({ op: 'reindex', configDir: dir })
+    const env = { ...process.env, PONOS_HOME: dir }
+    delete env.CLAUDE_CONFIG_DIR
+    const fmt = ['--output-format', 'stream-json', '--input-format', 'stream-json']
+
+    // ① related --doc：GUI「进入文档」后的批量锚点口
+    const docRun = spawnSync(
+      process.execPath, [cli, ...fmt, '--knowledge', 'related', '--doc', DOC], { env, encoding: 'utf-8' },
+    )
+    assert.equal(docRun.status, 0, `--doc 必须在真进程链路可用（漏转发会报 missing --id）stderr=${docRun.stderr}`)
+    const docOut = JSON.parse(docRun.stdout)
+    assert.equal(docOut.docId, DOC)
+    assert.ok(docOut.count > 0, '文档内应能拿到锚点（否则"文档内部没关联"）')
+
+    // ② graph --related：图谱关联图层开关
+    const gRun = spawnSync(
+      process.execPath, [cli, ...fmt, '--knowledge', 'graph', '--related'], { env, encoding: 'utf-8' },
+    )
+    assert.equal(gRun.status, 0, `stderr=${gRun.stderr}`)
+    const gOut = JSON.parse(gRun.stdout)
+    assert.ok(Array.isArray(gOut.related), '--related 必须真的穿过管道（被忽略时该字段不存在）')
+    const plain = spawnSync(process.execPath, [cli, ...fmt, '--knowledge', 'graph'], { env, encoding: 'utf-8' })
+    assert.equal(JSON.parse(plain.stdout).related, undefined, '不开图层时不应返回 related（默认只画显式链接）')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

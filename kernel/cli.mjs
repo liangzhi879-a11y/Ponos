@@ -249,6 +249,14 @@ export async function main(argv) {
         space: args.space, path: args.path, id: args.id, query: args.query,
         keywords: args.keywords, topK: args.topK, limit: args.limit, mode: args.mode,
         force: args.force, noValidate: args.noValidate,
+        // ⚠️ `doc` / `related` 必须在此显式登记——parseArgs 解析出的字段**不会自动**流到
+        // 知识内核，漏一个就等于该 flag 从未存在（**静默失效**，最贵的一类假阴性）。
+        // 实测踩过：`related --doc <docId>`（GUI 文档内条目批量口）与 `graph --related`
+        // （图谱关联图层）都因漏转发而拿不到值 —— 前者退化成 "missing --id" 报错，
+        // 后者被静默忽略（图层开着却没有边，看起来像数据问题而不是参数问题）。
+        // 单测覆盖不到这里：它们直接调 runKnowledgeCommand，绕过了本层管道；
+        // 回归由 kernel-tests/knowledge-cli-flags.test.mjs 以**真进程**钉住。
+        doc: args.doc, related: args.related,
       },
     })
     console.log(JSON.stringify(output))
