@@ -19,9 +19,7 @@ test('parseFrontmatter 分离 front 与 body 并给出 body 起始行号', () =>
   assert.equal(r.front.name, 'workflow')
   assert.equal(r.front.description, '工作流')
   assert.equal(r.body, '- [会话] 甲 -- 乙\n')
-  // 起始行号 = body 首行在**原始文件**中的行号：frontmatter 占 `---`/name/description/`---`
-  // 共 4 行，故条目行是第 5 行。块切分的 line 必须靠它回溯原文做跳转（设计 §5.2）。
-  assert.equal(r.bodyStartLine, 5)
+  assert.equal(r.bodyStartLine, 5) // body 首行（条目行）是原文第 5 行：4 行 frontmatter+分隔 之后
 })
 
 test('parseFrontmatter 无 frontmatter 时 body 原样、起始行为 1', () => {
@@ -89,4 +87,76 @@ test('ENTRY_LINE_RE 只认行首条目形状', () => {
   assert.ok(ENTRY_LINE_RE.test('- [会话] 甲 -- 乙'))
   assert.ok(!ENTRY_LINE_RE.test('  - 普通列表项'))
   assert.ok(!ENTRY_LINE_RE.test('文本 - [会话] 甲'))
+})
+
+test('列表项紧邻经验条目时，条目单独成块并保留 entryTag（真实经验文件形状）', () => {
+  // 真实安装路径（installer.nsh:237 播种 starter + 首次 appendMemoryEntry）产出的文件
+  // 就是「bullet 头部 + 条目行相邻」，若条目被并入 list 块则单条经验检索完全失效。
+  const body = [
+    '**更新记录**：',
+    '- 记录一：做了什么',
+    '- 记录二：为什么这么做',
+    '- [会话|企微CLI化] 只发文件传输助手 -- 真实沟通渠道的测试只发文件传输助手',
+    '- [会话|申报材料] 四表联动 -- 口径必须对齐',
+  ].join('\n')
+  const blocks = splitBlocks(body, { startLine: 1 })
+  const kinds = blocks.map((b) => b.kind)
+  assert.deepEqual(kinds, ['para', 'list', 'entry', 'entry'])
+  const entries = blocks.filter((b) => b.kind === 'entry')
+  assert.equal(entries.length, 2)
+  assert.equal(entries[0].entryTag, '企微CLI化')
+  assert.equal(entries[0].text, '只发文件传输助手')
+  assert.equal(entries[0].line, 4, 'line 指向原文第 4 行')
+  assert.equal(entries[1].entryTag, '申报材料')
+  assert.equal(entries[1].line, 5)
+})
+
+test('纯列表文件 / 有序列表 / 缩进列表仍整体成 list 块（修 list 循环不得破坏这些）', () => {
+  const plain = splitBlocks('- 甲\n- 乙\n- 丙\n')
+  assert.deepEqual(plain.map((b) => b.kind), ['list'])
+  assert.equal(plain[0].text, '- 甲\n- 乙\n- 丙')
+
+  const ordered = splitBlocks('1. 甲\n2. 乙\n')
+  assert.deepEqual(ordered.map((b) => b.kind), ['list'])
+
+  const indented = splitBlocks('  - 甲\n  - 乙\n')
+  assert.deepEqual(indented.map((b) => b.kind), ['list'])
+
+  // 连续多个条目行：必须逐条成块（这是经验文件的主形态，绝不能回归）
+  const entries = splitBlocks('- [会话|A] 甲 -- a\n- [会话|B] 乙 -- b\n- [会话|C] 丙 -- c\n')
+  assert.deepEqual(entries.map((b) => b.kind), ['entry', 'entry', 'entry'])
+  assert.deepEqual(entries.map((b) => b.entryTag), ['A', 'B', 'C'])
+})
+
+test('四反引号围栏整体成一个 code 块（仓库 BUILD.md 大量使用）', () => {
+  const body = [
+    '````md',
+    '```js',
+    'const a = 1',
+    '```',
+    '````',
+  ].join('\n')
+  const blocks = splitBlocks(body, { startLine: 1 })
+  assert.deepEqual(blocks.map((b) => b.kind), ['code'])
+  assert.ok(blocks[0].text.startsWith('````md'))
+  assert.ok(blocks[0].text.endsWith('````'))
+})
+
+test('波浪号围栏与未闭合围栏均不崩', () => {
+  assert.deepEqual(splitBlocks('~~~\n正文\n~~~\n').map((b) => b.kind), ['code'])
+  // 未闭合：吃到文件末尾，不抛错
+  const open = splitBlocks('```js\nconst a = 1\n')
+  assert.deepEqual(open.map((b) => b.kind), ['code'])
+})
+
+test('UTF-8 BOM 开头的文件仍能解析 frontmatter（Windows 记事本场景）', () => {
+  const r = parseFrontmatter('\uFEFF---\nname: workflow\n---\n- [会话] 甲 -- 乙\n')
+  assert.equal(r.front.name, 'workflow')
+  assert.equal(r.body, '- [会话] 甲 -- 乙\n')
+  assert.equal(r.bodyStartLine, 4)
+})
+
+test('splitBlocks 对 BOM 开头的无 frontmatter 文本正常工作', () => {
+  const blocks = splitBlocks('\uFEFF# 标题\n\n正文\n', { startLine: 1 })
+  assert.deepEqual(blocks.map((b) => b.kind), ['heading', 'para'])
 })

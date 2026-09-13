@@ -96,7 +96,7 @@ test('parseFrontmatter 分离 front 与 body 并给出 body 起始行号', () =>
   assert.equal(r.front.name, 'workflow')
   assert.equal(r.front.description, '工作流')
   assert.equal(r.body, '- [会话] 甲 -- 乙\n')
-  assert.equal(r.bodyStartLine, 4)
+  assert.equal(r.bodyStartLine, 5) // body 首行（条目行）是原文第 5 行：4 行 frontmatter+分隔 之后
 })
 
 test('parseFrontmatter 无 frontmatter 时 body 原样、起始行为 1', () => {
@@ -165,6 +165,78 @@ test('ENTRY_LINE_RE 只认行首条目形状', () => {
   assert.ok(!ENTRY_LINE_RE.test('  - 普通列表项'))
   assert.ok(!ENTRY_LINE_RE.test('文本 - [会话] 甲'))
 })
+
+test('列表项紧邻经验条目时，条目单独成块并保留 entryTag（真实经验文件形状）', () => {
+  // 真实安装路径（installer.nsh:237 播种 starter + 首次 appendMemoryEntry）产出的文件
+  // 就是「bullet 头部 + 条目行相邻」，若条目被并入 list 块则单条经验检索完全失效。
+  const body = [
+    '**更新记录**：',
+    '- 记录一：做了什么',
+    '- 记录二：为什么这么做',
+    '- [会话|企微CLI化] 只发文件传输助手 -- 真实沟通渠道的测试只发文件传输助手',
+    '- [会话|申报材料] 四表联动 -- 口径必须对齐',
+  ].join('\n')
+  const blocks = splitBlocks(body, { startLine: 1 })
+  const kinds = blocks.map((b) => b.kind)
+  assert.deepEqual(kinds, ['para', 'list', 'entry', 'entry'])
+  const entries = blocks.filter((b) => b.kind === 'entry')
+  assert.equal(entries.length, 2)
+  assert.equal(entries[0].entryTag, '企微CLI化')
+  assert.equal(entries[0].text, '只发文件传输助手')
+  assert.equal(entries[0].line, 4, 'line 指向原文第 4 行')
+  assert.equal(entries[1].entryTag, '申报材料')
+  assert.equal(entries[1].line, 5)
+})
+
+test('纯列表文件 / 有序列表 / 缩进列表仍整体成 list 块（修 list 循环不得破坏这些）', () => {
+  const plain = splitBlocks('- 甲\n- 乙\n- 丙\n')
+  assert.deepEqual(plain.map((b) => b.kind), ['list'])
+  assert.equal(plain[0].text, '- 甲\n- 乙\n- 丙')
+
+  const ordered = splitBlocks('1. 甲\n2. 乙\n')
+  assert.deepEqual(ordered.map((b) => b.kind), ['list'])
+
+  const indented = splitBlocks('  - 甲\n  - 乙\n')
+  assert.deepEqual(indented.map((b) => b.kind), ['list'])
+
+  // 连续多个条目行：必须逐条成块（这是经验文件的主形态，绝不能回归）
+  const entries = splitBlocks('- [会话|A] 甲 -- a\n- [会话|B] 乙 -- b\n- [会话|C] 丙 -- c\n')
+  assert.deepEqual(entries.map((b) => b.kind), ['entry', 'entry', 'entry'])
+  assert.deepEqual(entries.map((b) => b.entryTag), ['A', 'B', 'C'])
+})
+
+test('四反引号围栏整体成一个 code 块（仓库 BUILD.md 大量使用）', () => {
+  const body = [
+    '````md',
+    '```js',
+    'const a = 1',
+    '```',
+    '````',
+  ].join('\n')
+  const blocks = splitBlocks(body, { startLine: 1 })
+  assert.deepEqual(blocks.map((b) => b.kind), ['code'])
+  assert.ok(blocks[0].text.startsWith('````md'))
+  assert.ok(blocks[0].text.endsWith('````'))
+})
+
+test('波浪号围栏与未闭合围栏均不崩', () => {
+  assert.deepEqual(splitBlocks('~~~\n正文\n~~~\n').map((b) => b.kind), ['code'])
+  // 未闭合：吃到文件末尾，不抛错
+  const open = splitBlocks('```js\nconst a = 1\n')
+  assert.deepEqual(open.map((b) => b.kind), ['code'])
+})
+
+test('UTF-8 BOM 开头的文件仍能解析 frontmatter（Windows 记事本场景）', () => {
+  const r = parseFrontmatter('\uFEFF---\nname: workflow\n---\n- [会话] 甲 -- 乙\n')
+  assert.equal(r.front.name, 'workflow')
+  assert.equal(r.body, '- [会话] 甲 -- 乙\n')
+  assert.equal(r.bodyStartLine, 4)
+})
+
+test('splitBlocks 对 BOM 开头的无 frontmatter 文本正常工作', () => {
+  const blocks = splitBlocks('\uFEFF# 标题\n\n正文\n', { startLine: 1 })
+  assert.deepEqual(blocks.map((b) => b.kind), ['heading', 'para'])
+})
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -224,7 +296,9 @@ export function parseEntryLine(line) {
 // 极简实现（与 kernel/memory.mjs:17 同款语义），但额外给出 body 起始行号——
 // 块切分要把 "行号" 回溯到**原始文件**（含 frontmatter），否则跳转会错位。
 export function parseFrontmatter(raw) {
-  const text = String(raw ?? '')
+  // 去 BOM：Windows 记事本等保存的 md 可能以 \uFEFF 开头，否则 frontmatter 匹配失败、
+  // title/tags 全丢（整段被当正文）。注意只作用于解析，hashLine 的指纹仍基于原始字符串。
+  const text = String(raw ?? '').replace(/^\uFEFF/, '')
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text)
   if (!m) return { front: {}, body: text, bodyStartLine: 1 }
   const front = {}
@@ -241,13 +315,15 @@ export function parseFrontmatter(raw) {
 // 经验条目必须**先于**列表判断（它长得像列表项 `- [...]`）。
 // 代码块整体成块不切分：切开会让 bigram 噪声污染语义（`const` 之类的碎词）。
 export function splitBlocks(body, { startLine = 1 } = {}) {
-  const lines = String(body ?? '').split(/\r?\n/)
+  // 去 BOM：splitBlocks 可能被直接喂原始文本（未经 parseFrontmatter），BOM 会让首行
+  // 的 `# `/``` 匹配失败而降级成段落。BOM 只占首行行首，去除不改变任何行号。
+  const lines = String(body ?? '').replace(/^\uFEFF/, '').split(/\r?\n/)
   const blocks = []
   let n = 0
   let i = 0
   const push = (b) => { blocks.push({ n: n++, level: 0, ...b }) }
   const isHeading = (l) => /^(#{1,6})\s+/.test(l)
-  const isFence = (l) => /^\s*(```|~~~)/.test(l)
+  const isFence = (l) => /^\s*(`{3,}|~{3,})/.test(l)
   const isTable = (l) => /^\s*\|/.test(l)
   const isList = (l) => /^\s*([-*+]|\d+\.)\s+/.test(l)
   const isEntry = (l) => ENTRY_LINE_RE.test(l.trim())
@@ -258,12 +334,29 @@ export function splitBlocks(body, { startLine = 1 } = {}) {
     const lineNo = startLine + i
 
     if (isFence(line)) {
-      const marker = /^\s*(```|~~~)/.exec(line)[1]
+      // CommonMark 闭合规则（开围栏 = 3+ 个同类字符；闭合须同类、长度 >= 开围栏、行内
+      // 只有围栏字符、缩进不比开围栏深 3 格以上）。旧实现只判 startsWith(3 个反引号)，
+      // 三种误闭合都会把单块切成多段（已用 micromark 作 CommonMark 参考实测）：
+      //  ① 四反引号围栏（````md … ````）：仓库 public/sample-skills/writing-skills/
+      //     anthropic-best-practices.md 14 处，旧实现切成 19 段碎片；
+      //  ② 围栏行带 info string（` ```js ` 之类）被当闭合：公开技能模板里的内嵌示例
+      //     即此形状（requesting-code-review/code-reviewer.md）；
+      //  ③ 内层缩进围栏被当外层闭合（同文件的 4 缩进内层块）。
+      const fence = /^\s*(`{3,}|~{3,})/.exec(line)[1]
+      const ch = fence[0]
+      const minLen = fence.length
+      const indent = line.length - line.trimStart().length
+      const isClose = (l) => {
+        const t = l.trim()
+        if (t.length < minLen) return false
+        for (let k = 0; k < t.length; k++) if (t[k] !== ch) return false
+        return l.length - l.trimStart().length <= indent + 3
+      }
       const buf = [line]
       i++
       while (i < lines.length) {
         buf.push(lines[i])
-        const closed = lines[i].trim().startsWith(marker)
+        const closed = isClose(lines[i])
         i++
         if (closed) break
       }
@@ -293,8 +386,11 @@ export function splitBlocks(body, { startLine = 1 } = {}) {
     }
 
     if (isList(line)) {
+      // 续行遇到条目行必须断开：starter 模板播种的经验文件是「3 条 bullet 头部 +
+      // 条目行相邻」的形状，若把条目吞进 list 块，该文件 entry 块数恒为 0、
+      // 单条经验检索整文件失效。
       const buf = []
-      while (i < lines.length && isList(lines[i])) { buf.push(lines[i]); i++ }
+      while (i < lines.length && isList(lines[i]) && !isEntry(lines[i])) { buf.push(lines[i]); i++ }
       push({ kind: 'list', text: buf.join('\n'), line: lineNo })
       continue
     }
@@ -328,7 +424,7 @@ export function blockTagBoost(block) {
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `node --test shared/knowledge-core.test.mjs`
-Expected: PASS —— `# pass 8`（全部用例）
+Expected: PASS —— `# pass 14`（全部用例）
 
 - [ ] **Step 5: 提交**
 
@@ -336,6 +432,13 @@ Expected: PASS —— `# pass 8`（全部用例）
 git add shared/knowledge-core.mjs shared/knowledge-core.test.mjs
 git commit -m "feat(knowledge): shared 纯函数层地基——frontmatter/经验条目/块切分"
 ```
+
+> 修订（评审返工）：原实现有三处缺陷，已修复并被测试钉住 ——
+> ① **列表续行吞掉相邻经验条目**（真实安装路径 starter 模板产出「bullet 头部 + 条目行相邻」，
+> 导致该主题文件 entry 块数恒为 0、单条经验检索整文件失效，P0）；② **四反引号围栏被提前闭合**
+> （单块切成三段）；③ **BOM 开头文件 frontmatter 全丢**（Windows 记事本场景）。围栏闭合已按
+> CommonMark 全规则实现（同类 / 长度 >= 开围栏 / 仅围栏字符 / 缩进不深于开围栏 +3），并以
+> `micromark` 作参考实测对齐；同时修了本文档早先写错的 `bodyStartLine` 期望值（4 → 5）。
 
 ---
 

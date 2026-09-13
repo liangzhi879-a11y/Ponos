@@ -47,7 +47,9 @@ export function parseEntryLine(line) {
 // 极简实现（与 kernel/memory.mjs:17 同款语义），但额外给出 body 起始行号——
 // 块切分要把 "行号" 回溯到**原始文件**（含 frontmatter），否则跳转会错位。
 export function parseFrontmatter(raw) {
-  const text = String(raw ?? '')
+  // 去 BOM：Windows 记事本等保存的 md 可能以 \uFEFF 开头，否则 frontmatter 匹配失败、
+  // title/tags 全丢（整段被当正文）。注意只作用于解析，hashLine 的指纹仍基于原始字符串。
+  const text = String(raw ?? '').replace(/^\uFEFF/, '')
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text)
   if (!m) return { front: {}, body: text, bodyStartLine: 1 }
   const front = {}
@@ -64,13 +66,15 @@ export function parseFrontmatter(raw) {
 // 经验条目必须**先于**列表判断（它长得像列表项 `- [...]`）。
 // 代码块整体成块不切分：切开会让 bigram 噪声污染语义（`const` 之类的碎词）。
 export function splitBlocks(body, { startLine = 1 } = {}) {
-  const lines = String(body ?? '').split(/\r?\n/)
+  // 去 BOM：splitBlocks 可能被直接喂原始文本（未经 parseFrontmatter），BOM 会让首行
+  // 的 `# `/``` 匹配失败而降级成段落。BOM 只占首行行首，去除不改变任何行号。
+  const lines = String(body ?? '').replace(/^\uFEFF/, '').split(/\r?\n/)
   const blocks = []
   let n = 0
   let i = 0
   const push = (b) => { blocks.push({ n: n++, level: 0, ...b }) }
   const isHeading = (l) => /^(#{1,6})\s+/.test(l)
-  const isFence = (l) => /^\s*(```|~~~)/.test(l)
+  const isFence = (l) => /^\s*(`{3,}|~{3,})/.test(l)
   const isTable = (l) => /^\s*\|/.test(l)
   const isList = (l) => /^\s*([-*+]|\d+\.)\s+/.test(l)
   const isEntry = (l) => ENTRY_LINE_RE.test(l.trim())
@@ -81,12 +85,29 @@ export function splitBlocks(body, { startLine = 1 } = {}) {
     const lineNo = startLine + i
 
     if (isFence(line)) {
-      const marker = /^\s*(```|~~~)/.exec(line)[1]
+      // CommonMark 闭合规则（开围栏 = 3+ 个同类字符；闭合须同类、长度 >= 开围栏、行内
+      // 只有围栏字符、缩进不比开围栏深 3 格以上）。旧实现只判 startsWith(3 个反引号)，
+      // 三种误闭合都会把单块切成多段（已用 micromark 作 CommonMark 参考实测）：
+      //  ① 四反引号围栏（````md … ````）：仓库 public/sample-skills/writing-skills/
+      //     anthropic-best-practices.md 14 处，旧实现切成 19 段碎片；
+      //  ② 围栏行带 info string（` ```js ` 之类）被当闭合：公开技能模板里的内嵌示例
+      //     即此形状（requesting-code-review/code-reviewer.md）；
+      //  ③ 内层缩进围栏被当外层闭合（同文件的 4 缩进内层块）。
+      const fence = /^\s*(`{3,}|~{3,})/.exec(line)[1]
+      const ch = fence[0]
+      const minLen = fence.length
+      const indent = line.length - line.trimStart().length
+      const isClose = (l) => {
+        const t = l.trim()
+        if (t.length < minLen) return false
+        for (let k = 0; k < t.length; k++) if (t[k] !== ch) return false
+        return l.length - l.trimStart().length <= indent + 3
+      }
       const buf = [line]
       i++
       while (i < lines.length) {
         buf.push(lines[i])
-        const closed = lines[i].trim().startsWith(marker)
+        const closed = isClose(lines[i])
         i++
         if (closed) break
       }
@@ -116,8 +137,11 @@ export function splitBlocks(body, { startLine = 1 } = {}) {
     }
 
     if (isList(line)) {
+      // 续行遇到条目行必须断开：starter 模板播种的经验文件是「3 条 bullet 头部 +
+      // 条目行相邻」的形状，若把条目吞进 list 块，该文件 entry 块数恒为 0、
+      // 单条经验检索整文件失效。
       const buf = []
-      while (i < lines.length && isList(lines[i])) { buf.push(lines[i]); i++ }
+      while (i < lines.length && isList(lines[i]) && !isEntry(lines[i])) { buf.push(lines[i]); i++ }
       push({ kind: 'list', text: buf.join('\n'), line: lineNo })
       continue
     }
