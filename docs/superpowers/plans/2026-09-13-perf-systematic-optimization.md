@@ -47,8 +47,9 @@
 | `kernel/dyntools.mjs` | 改 | K1.2 `toolSourceSignature()` + `createToolsViewCache()`（LRU≤8）；`buildWorkflowTools` 挂非枚举 `sourcePaths` |
 | `kernel/workflow-dsl.mjs` | 改 | K1.2 `discoverWorkflows` 元数据补 `path`（文件级签名的输入集 = 发现层实际读过的文件） |
 | `kernel/readonly.mjs` | 改 | **K2.0 已完成**（`todayFrom()` + 闭区间 `[今天,今天]`）；K2.2 `(mtime,size)` 剪枝；K2.5 尾部修复 |
-| `server/kernel-readonly.mjs` | 改 | K2.1 异步 spawn 版（照 `bridge.mjs` 的 `spawn`+Promise 写法） |
-| `server/bridge.mjs` | 改 | K0.2 耗时日志、K2.1 `await`、K2.2 水位线缓存 + 单飞锁 |
+| `server/kernel-readonly.mjs` | 改 | **K2.1 已完成**（`kernelReadonly()` 异步 + kill/封顶/单飞；同步版保留给测试） |
+| `server/bridge.mjs` | 改 | K0.2 耗时日志、**K2.1 已完成**（`/api/usage` 改 `await`）、K2.2 水位线缓存 |
+| `server/kernel-readonly-async.test.mjs` | 新建 | **K2.1 已完成**（不阻塞事件循环 / 逐字节对齐同步版 / 超时 kill / maxBuffer / 单飞 / 源码守卫） |
 | `kernel-tests/usage-scope.test.mjs` | 新建 | **K2.0 已完成**（10 条：今日口径/UTC 零点边界/闭区间/`session` 不回归/入口透传/变异验证） |
 | `src/hooks/useYFWCLI.ts` | 改 | K0.3 帧指标采集（内存环形缓冲 + 5s 上报）、R1 日志门控、R5 队列压力判据 + 16ms 调度 |
 | `electron/main.cjs` | 改 | R1 单一咽喉的前缀采样/限流 |
@@ -276,9 +277,21 @@ export function perfStep(turn, step)                  // 发一行 + 清账 + �
 
 **Files:** Modify `server/kernel-readonly.mjs`、`server/bridge.mjs`
 
-- [ ] 增加异步版（照抄 `bridge.mjs:1700-1712` 的 `spawn` + Promise 写法），保留同步版给现有调用点
-- [ ] `bridge.mjs:1873` 改 `await`（route handler 已是 `async`，`reply()` 现成，**不改签名**）
-- [ ] 验收：用量面板改前 5s 超时失败 → 改后正常返回
+**状态：已完成（测试 `server/kernel-readonly-async.test.mjs` 8 条全绿；变异 D 6/8 转红、变异 A 1/8 转红）**
+
+- [x] 增加异步版（`spawn` + Promise，照 `bridge.mjs:1700-1712` 写法），**保留同步版**给现有测试与离线脚本
+- [x] `/api/usage` 路由改 `await`（route handler 本已 `async`，**未改签名**）
+- [ ] 验收（**留待用户实机**）：用量面板改前 5s 超时失败 → 改后正常返回
+
+**异步化自己引入的三道责任（原计划漏了，必须自己实现——`execFileSync` 的 timeout/maxBuffer 是免费的）**
+
+1. **超时必须 kill**：超时只 reject 不 kill 的话，子进程挂死会让路由**永久悬挂**——比同步版更糟（同步版超时必返回）。
+2. **stdout 必须封顶**：跑飞的子进程会把桥的内存吃光。
+3. **同参必须单飞**（把 K2.2 的 `inFlight` 提前到这里）：**同步版把事件循环堵死，反而"天然串行"**；改 async 后 5s 轮询与数秒~数十秒的耗时可以重叠，不设上界就会同时 spawn 好几个内核进程（每个 50–70MB RSS + 全量扫 transcript），在本机（4 核）上比原来的阻塞更糟。同参合并在语义上也正确：同一问题在同一时刻的答案本就该一致。**摘除必须走 settle**（含失败）——否则一次报错会让同参请求永久复用那个 rejection（永久陈旧，比慢严重得多），已单列用例。
+
+**测试的重心是「不再阻塞」而不是「返回值能解析」**：核心用例让异步调用期间挂一个 10ms 定时器，断言**照常触发（≥3 次）**，并对照断言同步版**一次都跑不到（0 次）**——直接度量病灶。变异 D（把异步版退化成「同步跑 + 只包一层 Promise」）让 6/8 转红，其中 `maxBuffer` 用例从 105ms 涨到 **55.5s**，证明 kill 是真杀而不是装饰。
+
+**同类隐患（本次未动，留作后续）**：`server/bridge.mjs` 里仍有同步 `execSync`——`git worktree list`（:2280）、`git branch -a`（:2290）、`netstat -ano -p tcp`（:2693）等，同属"HTTP 路由里同步 spawn ⇒ 阻塞桥事件循环"。`taskkill` 系列是刻意的短阻塞（杀进程路径），可不动。K0.2 的 `loopDriftMaxMs` 探针**保留**，现在专职盯这些剩余路径。
 
 ---
 

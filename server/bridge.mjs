@@ -31,7 +31,7 @@ import { createTranscriptHandlers } from './transcript.mjs'
 import { makeBrowserRouter } from './browser-routing.mjs'
 // 应用即工具（Task 4.x）：内核 bridge_request(route=app) → 主进程执行器 → app_response
 import { makeAppRouter } from './app-routing.mjs'
-import { kernelReadonlySync } from './kernel-readonly.mjs'
+import { kernelReadonly } from './kernel-readonly.mjs'
 import { getAuthStatus, setupPassword, checkPassword, changePassword } from './auth.mjs'
 import { MANAGED_KEYS, providerProfileEnv, buildIdentityPrompt, activeProviderModel, resolveProviderProfile } from './provider-profile.mjs'
 import { probeProviderCapabilities, applyProbeResults, resolveWindowFromProbe, maybeAdoptWindowFromEvent } from './provider-probe.mjs'
@@ -763,10 +763,12 @@ const BRIDGE_INSTANCE_ID = randomBytes(12).toString('hex')
 const diagInfo = { firstTokenOk: 0, firstTokenTotal: 0, kernelCrashCount: 0, lastApiSuccessAt: null }
 
 // K0.2 事件循环漂移探针（2026-09-13「任务运行慢」系统性优化）：
-// 桥是**单线程事件循环**，而 /api/usage 走 execFileSync 同步 spawn 整个内核进程 + 全量
-// 历史聚合（实测 10.8 / 12.7 / 19.6s）——这十几秒里所有 WS 帧、HTTP 响应、控制请求
-// 一起停摆。route 自身的 `ms=` 只能说明「调用方等了多久」，说明不了「别人被连累多久」；
-// 采样定时器的漂移（实际触发时刻 − 应触发时刻）才是后者的直接度量。
+// 桥是**单线程事件循环**，任何同步子进程都会让所有 WS 帧、HTTP 响应、控制请求一起停摆。
+// 原型病灶是 /api/usage（execFileSync 同步 spawn 整个内核进程 + 全量历史聚合，实测
+// 10.8 / 12.7 / 19.6s），**已由 K2.1 改为异步 spawn**；本探针保留下来盯住**其余仍在同步
+// spawn 的路径**（git worktree/branch、netstat、taskkill——后两者是刻意的短阻塞，
+// 前者是同类隐患）。route 自身的 `ms=` 只能说明「调用方等了多久」，说明不了「别人被连累
+// 多久」；采样定时器的漂移（实际触发时刻 − 应触发时刻）才是后者的直接度量。
 // 判据：只有漂移 > 50ms 才记录（Windows 定时器固有抖动为 0–15ms，不设阈值会全程噪声）。
 // 消费方：/diag/info（diag-monitor 每 5s 轮询，进诊断报告）。
 const LOOP_PROBE_MS = 100
@@ -1892,13 +1894,17 @@ const httpServer = createServer(async (req, res) => {
         const v = url.searchParams.get(k)
         if (v) flags.push(`--${k}`, v)
       }
-      // K0.2：本端点是**同步** spawn（见 server/kernel-readonly.mjs），耗时即事件循环
-      // 被阻塞的时长——GUI 侧超时 5s（src/lib/usageApi.ts）而实测 10.8–19.6s，且驾驶舱
-      // 每 5s 轮询一次（同值 ⇒ 必然重叠堆积）。`ms=` 是调用方等待，被连累的时长看
-      // /diag/info 的 loopDriftMaxMs（探针在解除阻塞后才跑得到，故不在这行日志里取）。
+      // K2.1：改**异步** spawn（原为 execFileSync，见 server/kernel-readonly.mjs）。原实现
+      // 把桥的事件循环堵住数秒~数十秒（实测 10.8–19.6s；真机的乘数是 transcript **文件数**
+      // ——同 57MB：240 文件 731ms vs 4800 文件 3271ms），这期间所有 WS 帧、HTTP 响应、
+      // 控制请求一起停摆；GUI 侧超时 5s（src/lib/usageApi.ts）且驾驶舱每 5s 轮询一次
+      // （同值 ⇒ 必然重叠堆积）。`ms=` 是调用方等待；被连累的时长看 /diag/info 的
+      // loopDriftMaxMs（K0.2 探针）——异步化后它应显著回落。
+      // 异步化**创造了并发**（同步版反而天然串行），故同参请求由 kernelReadonly 内部单飞合并，
+      // 在飞的只读子进程数恒 ≤ 参数量级（见该模块 inFlight）。
       const t0 = Date.now()
       try {
-        const out = kernelReadonlySync([sub, ...flags], { env: buildChildEnv(), cwd: process.cwd() })
+        const out = await kernelReadonly([sub, ...flags], { env: buildChildEnv(), cwd: process.cwd() })
         try {
           console.error(`[bridge][readonly] ${sub} ms=${Date.now() - t0} ${(out || '').length}B args=${flags.join(' ') || '-'}`)
         } catch { /* 日志失败不影响响应 */ }
