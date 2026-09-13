@@ -41,7 +41,7 @@ export const TOOL_CLASS_ALLOW_FROM = {
 }
 
 // 注册表全量工具名（kernel/tools.mjs）分类；MultiEdit/NotebookEdit 为兼容外部工具名保留
-const READ_TOOLS = new Set(['Read', 'Glob', 'Grep', 'MemorySearch', 'SkillSearch', 'Vision', 'OCR', 'TodoWrite'])
+const READ_TOOLS = new Set(['Read', 'Glob', 'Grep', 'MemorySearch', 'KnowledgeSearch', 'SkillSearch', 'Vision', 'OCR', 'TodoWrite'])
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
 const NET_TOOLS = new Set(['WebFetch', 'WebSearch'])
 const AGENT_TOOLS = new Set(['Agent', 'Task', 'Skill', 'Workflow', 'Browser'])

@@ -9,9 +9,9 @@ import {
   normalizeApprovalMode, isValidApprovalMode, classifyTool, modeAllows, deriveApprovalMode,
 } from '../kernel/approval-mode.mjs'
 
-// 注册表（kernel/tools.mjs）全量 18 个工具 + 两个兼容名
+// 注册表（kernel/tools.mjs）全量 19 个工具 + 两个兼容名
 const REGISTRY_TOOLS = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite',
-  'WebFetch', 'WebSearch', 'OCR', 'Vision', 'Skill', 'MemorySearch', 'SkillSearch', 'Workflow', 'Browser']
+  'WebFetch', 'WebSearch', 'OCR', 'Vision', 'Skill', 'MemorySearch', 'KnowledgeSearch', 'SkillSearch', 'Workflow', 'Browser']
 
 test('档位：四档顺序固定，rank 单调递增', () => {
   assert.deepEqual(APPROVAL_MODES, ['manual', 'auto', 'loose', 'bypass'])
@@ -36,7 +36,7 @@ test('档位：normalize 落默认档且永不抛', () => {
 test('档位：全部注册工具都有确定性分类', () => {
   const got = Object.fromEntries(REGISTRY_TOOLS.map((n) => [n, classifyTool(n)]))
   assert.equal(got.Bash, 'exec')
-  for (const n of ['Read', 'Glob', 'Grep', 'MemorySearch', 'SkillSearch', 'Vision', 'OCR', 'TodoWrite']) {
+  for (const n of ['Read', 'Glob', 'Grep', 'MemorySearch', 'KnowledgeSearch', 'SkillSearch', 'Vision', 'OCR', 'TodoWrite']) {
     assert.equal(got[n], 'read', `${n} 应为只读`)
   }
   for (const n of ['Write', 'Edit']) assert.equal(got[n], 'write', `${n} 应为写文件`)

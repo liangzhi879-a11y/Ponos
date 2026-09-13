@@ -16,6 +16,7 @@ import { matchesHighRisk } from './highrisk.mjs'
 import { discoverSkillsAll, loadSkillContent } from './skills.mjs'
 import { searchSkills } from './skill-search.mjs'
 import { searchLocalMemory } from './memory-search.mjs'
+import { searchKnowledge } from './knowledge-search.mjs'
 import { getProvider } from './provider.mjs'
 import { perfTime } from './perf.mjs'
 
@@ -1049,7 +1050,7 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
 // 自行套用（不依赖宿主传参，宿主漏传也不会把本地能力泄进 chat）；bridge 的
 // CHAT_DISALLOWED 是逐项拷贝，仅为"跑的是旧缓存内核（不认 --session-mode）"的
 // 兼容兜底——两者一致性由 kernel-tests/chat-mode.test.mjs 的源码比对守住。
-export const CHAT_MODE_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch']
+export const CHAT_MODE_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch', 'KnowledgeSearch']
 
 export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null, readAllowFiles = [], dynamicTools = null, flatSkillRoots = null }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
@@ -1383,6 +1384,43 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
           lines.push(`- [${it.theme}${it.tag ? '|' + it.tag : ''}] ${it.summary} -- ${it.full}（score ${it.score} · ${it.file}）`)
         }
         return { content: lines.join('\n'), isError: false }
+      },
+    },
+    // S1 知识检索：走已建索引的块级检索（比 MemorySearch 的 O(N) 全量扫描快得多），
+    // 支持按空间过滤与 snippet/full 两档。S1 阶段与 MemorySearch 并存，S3 收敛。
+    KnowledgeSearch: {
+      description: '在知识库中做块级检索（本地索引，无网络）：可跨"个人经验/会话记忆/我的笔记/知识包"等空间，按语义+关键词命中到**单个知识块**（一条经验、一个标题段、一段正文）。返回命中清单（空间/文件/标题/行号/分数/摘要），需全文用 Read 读对应文件行。适合"知识库里有没有关于 X 的内容"类查询。spaces 可选限定空间；mode=full 返回整块原文。',
+      concurrencySafe: true,
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          query: { type: 'string', description: '检索意图（自然语言，走向量匹配）' },
+          keywords: { type: 'array', items: { type: 'string' }, description: '可选：精确关键词（走关键词路，适合专有名词/表名）' },
+          spaces: { type: 'array', items: { type: 'string' }, description: '可选：限定空间 id 列表（见 /knowledge/spaces）' },
+          topK: { type: 'number', description: '可选：返回条数上限（1-10，默认 5）' },
+          mode: { type: 'string', description: "可选：'snippet'（默认，省上下文）| 'full'（整块原文）" },
+        },
+        required: ['query'],
+      },
+      run: (input) => {
+        const q = String(input?.query ?? '').trim()
+        if (!q) return { content: 'query 参数缺失：请描述想检索的知识主题', isError: true }
+        // configDir 推导：createToolRegistry 收到的 memoryRoot = <configDir>/memory/personal
+        // （kernel/cli.mjs 的 memoryRoot(configDir)），故 <configDir> = memoryRoot 上溯两级。
+        // memoryRoot 缺失（部分测试/嵌入场景不传）时**不猜路径**——用相对路径探知识根会
+        // 在 cwd 下建 knowledge/.index，故直接降级为明确提示。
+        if (!memoryRoot) {
+          return { content: '知识库检索不可用（未配置知识根 memoryRoot）。可直接用 Read 打开记忆文件。', isError: false }
+        }
+        return searchKnowledge({
+          configDir: resolve(memoryRoot, '..', '..'),
+          query: q,
+          keywords: Array.isArray(input?.keywords) ? input.keywords : [],
+          spaces: Array.isArray(input?.spaces) && input.spaces.length ? input.spaces : null,
+          topK: Math.min(Number(input?.topK) || 5, 10),
+          mode: input?.mode === 'full' ? 'full' : 'snippet',
+        })
       },
     },
     // 联网技能搜索：检索 Claude Code marketplace 生态（Anthropic 官方 + 社区市场），

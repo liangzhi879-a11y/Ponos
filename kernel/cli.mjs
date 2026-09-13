@@ -94,6 +94,19 @@ export function parseArgs(argv) {
     project: null,
     from: null,
     to: null,
+    // 知识内核（S1）：单一聚合子命令 + 子参数（见 kernel/knowledge-cli.mjs）。仅在
+    // args.knowledge 有值时被读取，对既有主链路零影响（这些 flag 名与既有 --model/
+    // --scope/--to 等无冲突）。knowledge=null ⇒ 不作任何知识库 IO。
+    knowledge: null,
+    space: null,
+    path: null,
+    id: null,
+    query: null,
+    keywords: [],
+    topK: null,
+    limit: null,
+    mode: null,
+    force: false,
   }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -132,6 +145,19 @@ export function parseArgs(argv) {
       case '--project': out.project = next() ?? null; break
       case '--from': out.from = next() ?? null; break
       case '--to': out.to = next() ?? null; break
+      // 知识内核子命令（S1）：`--knowledge <op>` + 子参数。op 取值白名单与分发在
+      // kernel/knowledge-cli.mjs（此处不做校验——未知 op 由那边返回 code=1）。
+      case '--knowledge': out.knowledge = next() ?? null; break
+      case '--space': out.space = next() ?? null; break
+      case '--path': out.path = next() ?? null; break
+      case '--id': out.id = next() ?? null; break
+      case '--query': out.query = next() ?? null; break
+      case '--keywords': out.keywords = String(next() ?? '').split(',').map((s) => s.trim()).filter(Boolean); break
+      case '--topK': out.topK = Number(next()) || null; break
+      case '--limit': out.limit = Number(next()) || null; break
+      case '--mode': out.mode = next() ?? null; break
+      // 显式强制重建索引（reindex 本身恒 force；本 flag 供其它 op 复用同一语义）
+      case '--force': out.force = true; break
       case '--help': case '-h': usage(); process.exit(0); break
       default:
         if (a && !a.startsWith('--')) out.positional = a
@@ -192,6 +218,26 @@ export async function main(argv) {
       console.log(JSON.stringify({ error: e?.message || String(e) }))
       return 1
     }
+  }
+
+  // S1 知识内核子命令：--knowledge <op>（stdout JSON，不进 loop）。
+  // 聚合实现 kernel/knowledge-cli.mjs；bridge 通过 kernel-readonly 薄转发（Task 11）。
+  if (args.knowledge) {
+    const configDir = resolveConfigDir(process.env, homedir)
+    // 动态 import 而非顶层静态导入：知识内核（knowledge.mjs + shared 纯函数）只在
+    // `--knowledge` 路径上加载，普通会话启动不为它付模块解析成本（既有 --usage/
+    // --audit 走静态导入，是因为那个模块更轻且启动即用）。
+    const { runKnowledgeCommand } = await import('./knowledge-cli.mjs')
+    const { output, code } = await runKnowledgeCommand({
+      op: args.knowledge, configDir,
+      args: {
+        space: args.space, path: args.path, id: args.id, query: args.query,
+        keywords: args.keywords, topK: args.topK, limit: args.limit, mode: args.mode,
+        force: args.force,
+      },
+    })
+    console.log(JSON.stringify(output))
+    return code
   }
 
   const wire = makeWire()

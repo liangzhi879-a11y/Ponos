@@ -1013,7 +1013,7 @@ function experienceInjectConfig() {
 // 2026-09-12 会话模式隔离：权威表已迁到内核（kernel/tools.mjs CHAT_MODE_DISALLOWED），
 // 内核按 --session-mode chat 自行套用。本拷贝只为"跑的是旧缓存内核（不认新 flag）"
 // 的兼容兜底；两份一致性由 kernel-tests/chat-mode.test.mjs 的源码比对守住。
-export const CHAT_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch']
+export const CHAT_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch', 'KnowledgeSearch']
 
 // 浏览器白名单写入（2026-09-10）：内核 Browser 工具白名单审批通过后，把域名
 // 追加进 {YFW_HOME}/browser-whitelist.json 的 allow 数组。执行器（browser-common.cjs
