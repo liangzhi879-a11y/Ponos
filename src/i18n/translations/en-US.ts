@@ -54,6 +54,9 @@ export const enUS: TranslationKeys = {
     skills: 'Skills',
     workflows: 'Workflows',
     apps: 'App Console',
+    // S2 Task 1: 7th rail. A missing key does NOT throw — t() falls back to the key literal,
+    // so the rail would literally render "rail.knowledge".
+    knowledge: 'Knowledge',
     chatNew: 'New Chat',
     chatEmpty: 'No chats yet — start one below',
     chatEmptyAction: 'Start a Chat',
@@ -763,5 +766,10 @@ export const enUS: TranslationKeys = {
     repairDetail: 'Changes',
     repairNotRun: 'Spec unchanged (file left as-is)',
     noSpecYet: 'No Spec yet for this app (go back and click Generate commands, or write one manually)',
+  },
+
+  // --- Knowledge panel (S2; filled in task by task from Task 3 — only the Task 1 placeholder here) ---
+  knowledge: {
+    placeholder: 'Knowledge panel scaffold is wired up: the space/file tree and the read, edit, graph and search views land in later tasks.',
   },
 }

@@ -17,6 +17,7 @@ import { AgentsPanel } from '@/components/agents/AgentsPanel'
 import { SkillsPanel } from '@/components/skills/SkillsPanel'
 import { WorkflowsPanel } from '@/components/workflows/WorkflowsPanel'
 import { AppsPanel } from '@/components/apps/AppsPanel'
+import { KnowledgePanel } from '@/components/knowledge/KnowledgePanel'
 import { StatusBar } from './StatusBar'
 import { ChatWindow } from '@/components/chat/ChatWindow'
 import { ChatInput } from '@/components/chat/ChatInput'
@@ -186,6 +187,9 @@ export function WorkShell({ onGoCockpit }: WorkShellProps) {
         ) : rail === 'apps' ? (
           // 第六 rail：应用智控（Task 1.6 卡片列表 + 新增；控制台在 AppsPanel 内部切换）
           <AppsPanel />
+        ) : rail === 'knowledge' ? (
+          // 第七 rail：知识库（S2 Task 1 接入 rail；三栏工作台从 Task 3 起逐任务填充）
+          <KnowledgePanel />
         ) : (
           <>
         <SecondPanel />

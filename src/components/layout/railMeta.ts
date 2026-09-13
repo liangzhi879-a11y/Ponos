@@ -14,7 +14,11 @@
 //    与既有四图标不重复；WorkflowsPanel/画布节点卡片不重复用图标（只用文字徽标）。
 //  - apps=LayoutGrid（Task 1.1 第六 rail「应用智控」）：图标选 lucide 的 LayoutGrid
 //    （应用清单/网格语义），与既有五图标不重复；后续 AppsPanel 卡片网格不重复用图标。
-import { MessageSquare, SquareKanban, Bot, Puzzle, Workflow, LayoutGrid, type LucideIcon } from 'lucide-react'
+//  - knowledge=Library（S2 Task 1 第七 rail「知识」）：图标选 lucide 的 Library（知识库/藏书语义）。
+//    **不用 BookOpen**：它已被 SkillsPanel 占用两处（SkillsPanel.tsx:382,412，语义=读文档），
+//    复用会违反图标唯一性审计（docs/superpowers/audits/2026-09-08-gui-icon-uniqueness.md）。
+//    Library 全库零占用；备选 NotebookPen。
+import { MessageSquare, SquareKanban, Bot, Puzzle, Workflow, LayoutGrid, Library, type LucideIcon } from 'lucide-react'
 import type { RailId } from '@/stores/viewStore'
 
 export interface RailMeta {
@@ -30,6 +34,7 @@ export const RAIL: readonly RailMeta[] = [
   { id: 'skills', icon: Puzzle, labelKey: 'rail.skills' },
   { id: 'workflows', icon: Workflow, labelKey: 'rail.workflows' },
   { id: 'apps', icon: LayoutGrid, labelKey: 'rail.apps' },
+  { id: 'knowledge', icon: Library, labelKey: 'rail.knowledge' },
 ]
 
 /** 非法/未知 rail id 兜底 → 'task'（与 viewStore.sanitizeRail 同策略，供宿主路由防护） */
