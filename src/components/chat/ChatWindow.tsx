@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { ArrowDown, Lightbulb, FolderOpen } from 'lucide-react'
 import { Button } from '@/components/ui'
 import { DirectoryPicker } from '@/components/chat/DirectoryPicker'
-import { ThreadPrimitive } from '@assistant-ui/react'
+import { ThreadPrimitive, type MessageState } from '@assistant-ui/react'
 import { HealthGlow } from './HealthGlow'
 import { SessionModeBar } from './SessionModeBar'
 import { LoopStatusBar } from './LoopStatusBar'
@@ -11,8 +11,6 @@ import { ChatRuntimeProvider } from '@/lib/chatRuntime'
 import { ChatContext } from './MarkdownText'
 import { AssistantMessageView, UserMessageView, SystemMessageView } from './AssistantMessageView'
 import { useChatStore } from '@/stores/chatStore'
-import { useUIStore } from '@/stores/uiStore'
-import { useSettingsStore } from '@/stores/settingsStore'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn } from '@/lib/utils'
 import { getAgentById } from '@/lib/agents'
@@ -74,10 +72,18 @@ function pickRandomTip(pool: readonly string[], exclude?: string): string {
 }
 
 export function ChatWindow({ conversationId }: Props) {
-  const conversations = useChatStore(s => s.conversations)
-  const { setPendingInput } = useUIStore()
+  // R3（2026-09-13）：**不订阅 conversations 整个数组**。chatStore 每帧追加流式片段都会
+  // 产出新数组（被追加的那个会话对象已替换），订阅它 = 每来一个 delta 就重渲染整个消息区。
+  // 拆成逐字段选择器：全是原始值，zustand 按 Object.is 比较 ⇒ 只在字段真的变化时重渲染。
+  // 顺带清掉两个**从未被使用**的订阅（`useUIStore()` 整店 + `subAgentTasks`）——它们此前
+  // 让本组件在 uiStore/chatStore 任意写入时都白重渲染一次。
+  const convMode = useChatStore(s => s.conversations.find(c => c.id === conversationId)?.mode ?? 'task')
+  const cwd = useChatStore(s => s.conversations.find(c => c.id === conversationId)?.cwd ?? '')
+  const convAgentId = useChatStore(s => s.conversations.find(c => c.id === conversationId)?.agentId)
+  const convMessageCount = useChatStore(s => s.conversations.find(c => c.id === conversationId)?.messageCount ?? 0)
+  // 空态只看**条数**（boolean），看数组本身又会被每帧的流式追加带动重渲染
+  const isEmpty = useChatStore(s => ((s.conversations.find(c => c.id === conversationId)?.messages.length ?? 0) === 0))
   const { t, lang } = useTranslation()
-  const subAgentTasks = useChatStore(s => s.subAgentTasks[conversationId])
   // v2 按需加载：切换会话时消息异步从内核 transcript 拉取，加载中显示轻量占位而非空态
   const conversationLoading = useChatStore(s => !!s.conversationLoading[conversationId])
   const allAgents = useAgentStore(s => s.agents)
@@ -88,7 +94,7 @@ export function ChatWindow({ conversationId }: Props) {
   const [showDirPicker, setShowDirPicker] = useState(false)
   // 使用提示：空态单条展示。切换会话/语言时重抽一条
   // 会话模式判定提前到此：空态提示池按模式选（下方 isTaskMode 由它派生，单一真源）
-  const isChatMode = (conversations.find(c => c.id === conversationId)?.mode ?? 'task') === 'chat'
+  const isChatMode = convMode === 'chat'
   const tipPool = isChatMode ? CHAT_TIPS_POOL : TIPS_POOL
   const [tip, setTip] = useState<string>(() => pickRandomTip(tipPool[lang] ?? tipPool['zh-CN']))
   useEffect(() => {
@@ -97,12 +103,8 @@ export function ChatWindow({ conversationId }: Props) {
     // 否则任务模式的"设定工作目录"会留在 chat 空态里
   }, [conversationId, lang, tipPool])
 
-  const conversation = conversations.find(c => c.id === conversationId)
-  const messages = conversation?.messages || []
-  const isEmpty = messages.length === 0
   // 任务模式（mode 缺省 'task'）：欢迎页展示目录入口；chat 纯聊不绑业务目录
   const isTaskMode = !isChatMode // 与上方空态提示池同源（同一 conversation.mode）
-  const cwd = conversation?.cwd || ''
   // 更换目录 = 切换工作根：更新会话 cwd 并使会话失效（下次发送以新目录重 spawn
   // 内核会话；与 TaskCwdBar 原语义一致，2026-09-11 目录入口收敛）
   const changeCwd = (path: string) => {
@@ -112,7 +114,7 @@ export function ChatWindow({ conversationId }: Props) {
     setShowDirPicker(false)
   }
   // 加载中但历史非空（索引里 messageCount>0）：显示占位，不闪"新对话"空态
-  const loadingWithHistory = conversationLoading && isEmpty && (conversation?.messageCount ?? 0) > 0
+  const loadingWithHistory = conversationLoading && isEmpty && convMessageCount > 0
   // 空态停留时缓慢轮换单条 tips（10s/条、去重），让储备池内容逐步露出
   useEffect(() => {
     if (!isEmpty) return
@@ -152,9 +154,33 @@ export function ChatWindow({ conversationId }: Props) {
     if (el) el.scrollTop = el.scrollHeight
   }
 
+  // R3：<ThreadPrimitive.Messages> 的 render prop 必须是**稳定引用**。内联箭头每渲染都
+  // 新建 ⇒ 该组件（NamedExoticComponent，memo 过的）props 恒不等 ⇒ 每次都重渲染，并把
+  // 全部 N 条消息的视图重新创建一遍。抽成 useCallback 后只依赖 highlightId（跳转高亮，
+  // 低频）；再配合 AssistantMessageView 侧的 memo，流式期只有变化的那条消息真正重渲染。
+  // R3：ChatContext 的 value 对象同样要 memo——内联字面量每渲染新建，凡用 Context 的
+  // 组件（MarkdownText 的文件路径渲染等）都会被无差别重渲染。
+  const chatContextValue = useMemo(() => ({ cwd, conversationId }), [cwd, conversationId])
+
+  const renderMessage = useCallback(({ message }: { message: MessageState }) => {
+    const view = message.role === 'user'
+      ? <UserMessageView />
+      : message.role === 'assistant'
+        ? <AssistantMessageView />
+        : <SystemMessageView />
+    return (
+      <div
+        data-message-id={message.id}
+        className={cn('pb-1 min-w-0', highlightId === message.id && 'animate-pulse')}
+      >
+        {view}
+      </div>
+    )
+  }, [highlightId])
+
   return (
     <ChatRuntimeProvider conversationId={conversationId}>
-      <ChatContext.Provider value={{ cwd: conversation?.cwd || '', conversationId }}>
+      <ChatContext.Provider value={chatContextValue}>
         <div className="flex-1 flex flex-col min-h-0 relative">
           <HealthGlow conversationId={conversationId} />
           {/* 浏览器状态条/失速守卫/首字节等待/系统告警已全部收进右侧折叠状态栏（2026-09-10） */}
@@ -214,7 +240,7 @@ export function ChatWindow({ conversationId }: Props) {
 
                 {/* Active professional agent */}
                 {(() => {
-                  const activeAgent = getAgentById(allAgents, conversation?.agentId)
+                  const activeAgent = getAgentById(allAgents, convAgentId)
                   if (!activeAgent) return null
                   return (
                     <div className="mb-8 w-full max-w-md">
@@ -248,23 +274,7 @@ export function ChatWindow({ conversationId }: Props) {
             ) : (
               /* 消息流：assistant-ui ThreadPrimitive.Messages children render。
                  data-message-id 供 HistoryView 跳转定位与高亮。 */
-              <ThreadPrimitive.Messages>
-                {({ message }) => {
-                  const view = message.role === 'user'
-                    ? <UserMessageView />
-                    : message.role === 'assistant'
-                      ? <AssistantMessageView />
-                      : <SystemMessageView />
-                  return (
-                    <div
-                      data-message-id={message.id}
-                      className={cn('pb-1 min-w-0', highlightId === message.id && 'animate-pulse')}
-                    >
-                      {view}
-                    </div>
-                  )
-                }}
-              </ThreadPrimitive.Messages>
+              <ThreadPrimitive.Messages>{renderMessage}</ThreadPrimitive.Messages>
             )}
           </ThreadPrimitive.Viewport>
 

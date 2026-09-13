@@ -487,22 +487,34 @@ export function perfStep(turn, step)                  // 发一行 + 清账 + �
 
 ### Task 14: R2 uiStore 瞬时态（务必与 R3 一起修）
 
-**Files:** Modify `src/stores/uiStore.ts`
+**Files:** Modify `src/stores/uiStore.ts`；Add `src/lib/stableStorage.ts`；Tests: `src/stores/uiStore.test.ts`、`src/lib/stableStorage.test.ts`
 
-- [ ] 五个瞬时态 action 全部改为**在调用 `set` 之前提前 return**（在 action 里 `set(() => ({}))` **不是短路**）
-- [ ] 首选方案：把 `kernelStalls`/`firstByteWait` **移出 persist store**（persist 用白名单）
-- [ ] 验收：流式期不再每帧写 localStorage
+- [x] 四条瞬时态 action 全部改为**在调用 `set` 之前提前 return**（在 action 里 `set(() => ({}))` **不是短路**）。**实际是四条不是五条**：`setKernelStall`/`clearKernelStall`/`setFirstByteWait`/`clearFirstByteWait`——其余瞬时态（`previewFile`、编辑器内容、附件）本来就没有"赋值即无变化"的重复写入形态，硬套守卫会变成过度拦截；它们由第 ② 层兜住。
+- [x] **有意偏差：不采用"移出 persist store"**（原首选方案）。理由：`persist` 的 `partialize` 白名单**本来就已经**不含这两个骨架键（`uiStore.ts:317-326` 只留 8 个 UI 偏好键），症状不在"白名单漏了"，而在 zustand 的**无条件 `setItem`**——`middleware.js:500-511` 把 `set` 包成 `void setItem()`，返回 `{}` 也照样跑 `partialize(get())` + `JSON.stringify` + `localStorage.setItem`，**并且照样换掉 state 对象**。移出 store 要动 `useYFWCLI` 的 6 个调用点（跨模块重构），而"set 前提前 return"是同一收益下的最小改动。
+- [x] **两层互补**（缺一层都不完整）：① 提前 return → 连 `partialize`/`stringify` 都不跑，且**不换 state 引用**（这才是 R2×R3 叠加效应的来源：整店订阅者每帧白重建两次）；② 新增 `src/lib/stableStorage.ts` → 包住 `createJSONStorage`，**逐字节相同即跳过写盘**。② 是**结构性兜底**：白名单外键（编辑器内容/`previewFile`/附件）变化时仍会进 `setItem`，①管不到它们；写 ② 之后"这个缺陷再回来"必须显式改掉 storage，而不是靠人记得在每个新 action 里加 return。
+- [x] **冷启动基线**：去重缓存空的时候先读一次盘上现值做基线（惰性，只在该 name 第一次写入时读），否则"冷启动后第一次写入"必然穿透。**这个缺口是在写测试时发现的**（T2 用例暴露出"第一次写总是写"），修在**设计**里而不是把断言改松。
+- [x] `removeItem` 必须**清掉基线**——否则 remove 之后写回同一个值会被当成"没变"而静默丢失。
+- [x] 序列化失败（循环引用）一律**回落到 base.setItem**，不吞写入。
+- [x] 测试 12 条（`uiStore.test.ts` **6** + `stableStorage.test.ts` **6**）。真实 store 用 `node --test` 直接加载（`uiStore.ts` 的 import 改相对路径 + 显式 `.ts`，先例 `conversationResync.ts:26`）：**计数版假 `localStorage` 必须在 `await import('./uiStore.ts')` 之前装好**（`createJSONStorage` 在模块求值时就要取到它）。断言的是**调用次数**与**引用相等**——"少写多少次"就是本优化的全部价值：100 次清空不存在的瞬时态 = **0 次写盘且 state 引用完全没变**；白名单外键变化 = 换引用但 **0 次写盘**；同值重复置位 = 空操作；**反向断言**（守卫不得过度拦截）：不同值照常生效、删除照常生效；白名单内键变化**恰好写一次**且负载仍是 `{state,version}` 且不含瞬时键；回读字节与最后一次写入逐字节相同。
+- [x] 变异 8 条**全杀**（`r2-mutate.mjs`）：M1/M2 两条 clear 回到 `set(()=>{})` 形态、M3 同值守卫移除、M4 persist 不再挂 stableStorage、M5 去重移除（每次都写）、M6 过度拦截（永远不写）、M7 冷启动不读基线、M8 `removeItem` 不清基线。变异脚本末尾自带**还原一致性校验**（逐字节比对 + 还原后 fail=0）。
+- [ ] **验收（留待用户实机）**：流式期不再每帧写 localStorage。静态收益可算：`useYFWCLI.ts:883-884` 对**每个** `event` 帧清一次两个骨架键（帧率 p50≈13 帧/秒、峰值 45 帧/秒）⇒ 改前约 **26–90 次同步全量 `JSON.stringify` + `localStorage.setItem` + 26–90 次整店订阅者重建 / 秒**，改后 **0 次**。
 
 ---
 
 ### Task 15: R3 拆「整店 → 整树」链
 
-**Files:** Modify `src/components/layout/WorkShell.tsx`、`src/lib/chatRuntime.tsx`、`src/components/chat/ChatWindow.tsx`
+**Files:** Modify `src/components/layout/WorkShell.tsx`、`src/lib/chatRuntime.tsx`、`src/components/chat/ChatWindow.tsx`、`src/components/chat/AssistantMessageView.tsx`、`src/lib/chatParts.ts`；Tests: `src/lib/chatParts.test.ts`
 
-- [ ] `WorkShell` 的两处整店订阅改**选择器**
-- [ ] `chatRuntime` 的 `?? []` 与每帧重算改为**按 message 身份增量转换**
-- [ ] 内联 render prop 换稳定 `useCallback`；`AssistantMessageView` 加 `memo`；比较器**显式豁免回调 props**、内容按数组逐项比
-- [ ] 内联 `components={{...}}` 提为模块级常量；注意 `MessageBubble.tsx` 已是**死代码**，不要复活
+- [x] `WorkShell` 的两处整店订阅改**选择器**（`useChatStore()`/`useUIStore()` → 逐字段；`pendingQuestions[displayConvId]` 只订自己那一个对象，别的会话换提问不连坐本组件）
+- [x] `chatRuntime` 的 `?? []` 改**模块级常量** `EMPTY_MESSAGES`（`?? []` 每次新建 ⇒ 选择器结果永不与上次 `Object.is` 相等，"会话还没建好"期间每次 store 写入都连坐重渲染）；每帧全量重算改为**按 message 身份增量转换**
+- [x] 增量转换的**键是 message 对象身份**——成立的前提是**先核实过** `chatStore` 的消息更新是 copy-on-write（`chatStore.ts:1018-1029` 用 `{ ...m, content }` 复制改写、从不原地 mutate）⇒ 未变的消息引用跨帧稳定、被追加的那条必然是新对象。**`statusKey` 必须入键**：`running/complete` 是**按位置**算的，流式结束时最后一条要在**同一个对象**上翻状态，不入键就永远停在 running（`chatParts.test.ts` 有一条专测这条，变异 M1 必红）。WeakMap ⇒ 被替换掉的旧消息随 GC 回收，无泄漏。
+- [x] 内联 render prop 换稳定 `useCallback`（依赖只有 `highlightId`）。`ThreadPrimitive.Messages` 是 `NamedExoticComponent`（`@assistant-ui/core/dist/react/primitives/thread/ThreadMessages.d.ts:107`）⇒ 内联箭头每渲染新建 children ⇒ memo 挡不住，整片消息树重渲染
+- [x] **有意偏差：`memo` 的比较器没有写自定义的**。原计划要求"比较器**显式豁免回调 props**、内容按数组逐项比"——那是 `claude-code/src/components/Messages.tsx` 那个**收 props** 的组件的解法；本仓的 memo 边界（三个视图）**不收任何 props**（内容经 `MessagePrimitive.Root` 的 context 流入），默认浅比较（比较 `{}` 与 `{}`）恰好就是"无需比较"。该模式真正的实质——**别让内联对象/回调击穿 memo**——由"部件表提为模块级常量 + render prop 稳定化"落实。
+- [x] 内联 `components={{...}}` 提为模块级常量（`ASSISTANT_PARTS` / `TEXT_ONLY_PARTS`）。**未复活 `MessageBubble.tsx`**（仍是死代码，未改动）。
+- [x] **额外发现并一并修掉**（都在同一条重渲染链上）：`ChatWindow` 订阅的是 `conversations` **整个数组**（流式每帧换新数组）⇒ 拆成 5 个原始值选择器（`mode`/`cwd`/`agentId`/`messageCount`/`isEmpty`），其中空态只看**条数**（boolean）而非数组；`ChatContext.Provider` 的 `value` 内联字面量 ⇒ `useMemo`；**两个从未被使用的订阅**（`useUIStore()` 整店、`subAgentTasks`）与两个死 import（`useUIStore`/`useSettingsStore`）一并删除——它们此前让本组件在任意 store 写入时白重渲染一次。
+- [x] **memo 的两条语义用真 React 实测过，不靠记忆**（`C:/…/Temp/r3-memo-probe`：Electron 无头窗口 + 官方 UMD React 18.3.1，零新依赖）：父级主动重渲染 ×3 ⇒ 不 memo 的对照组件 1→4 次、**memo 组件恒 1 次**；随后只改 context ⇒ **memo 组件 1→2 次（context 穿透 memo）**。这正是本改动成立的充要条件：父级重渲染被短路，而流式追加的那条消息仍会更新（不会读到旧内容）。
+- [x] 测试：`chatParts.test.ts` 新增 3 条只断言 **`convert` 调用次数**的用例（首帧每条一次 → 只重算被替换的那条 → 未变消息**复用同一个结果对象**，这是下游 memo 能命中的前提）。变异 5 条**全杀**（`r3-mutate.mjs`）：M1 statusKey 不参与命中、M2 不写缓存、M3 键退化成"第一个元素"、M4 命中仍重跑 convert（**返回值对但成本没省**——本条直接钉死"调用次数才是优化本体"）、M5 statusOf 恒传 0。
+- [ ] **验收（留待用户实机）**：流式期渲染器不再随帧重渲染整棵消息树。回归基线：`npm test` **1345 条 / 1344 pass / 0 fail / 1 skip**（另：`npx tsc --noEmit` 干净）。
 
 ---
 

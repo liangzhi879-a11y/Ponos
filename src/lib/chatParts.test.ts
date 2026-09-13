@@ -3,7 +3,10 @@
 //   node --test src/lib/chatParts.test.ts
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { messageToThreadMessageLike, messagesToThreadMessageLikes, appendStreamingBlock } from './chatParts.ts'
+import {
+  messageToThreadMessageLike, messagesToThreadMessageLikes, appendStreamingBlock,
+  createConversionCache, incrementalConvert,
+} from './chatParts.ts'
 import type { Message } from '../types/index.ts'
 
 test('文本/思考块 → text/reasoning parts', () => {
@@ -126,4 +129,58 @@ test('appendStreamingBlock：工具卡片后回到 text → 新建块保持交�
   const merged = appendStreamingBlock(out, 'text', '继续')
   assert.equal(merged.length, 3)
   assert.equal(merged[2].content, '第二步分析继续')
+})
+
+// —— R3：按对象身份增量转换 ——
+// 断言的是 convert 的**调用次数**，不是返回值：这条优化的全部价值就在"少调用"。
+test('incrementalConvert：只对身份变化的项重跑 convert（模拟流式追加最后一条）', () => {
+  const cache = createConversionCache<Message, string>()
+  const calls: string[] = []
+  const convert = (m: Message) => { calls.push(m.id); return `C:${m.id}` }
+
+  const m1: Message = { id: 'm1', role: 'user', timestamp: 0, content: [] }
+  const m2: Message = { id: 'm2', role: 'assistant', timestamp: 0, content: [] }
+  const m2b: Message = { ...m2, content: [{ id: 'b', type: 'text' as const, content: '流式片段' }] }
+
+  const first = incrementalConvert([m1, m2], () => 'complete', convert, cache)
+  assert.deepEqual(calls, ['m1', 'm2'], '首帧每条都转一次')
+  assert.deepEqual(first, ['C:m1', 'C:m2'])
+
+  calls.length = 0
+  const second = incrementalConvert([m1, m2b], () => 'complete', convert, cache)
+  assert.deepEqual(calls, ['m2'], '只有被替换的那一条重转，m1 命中缓存')
+  assert.equal(second[0], first[0], '未变消息复用**同一个**结果对象（下游 memo 才能命中）')
+  assert.deepEqual(second[1], 'C:m2')
+})
+
+test('incrementalConvert：statusKey 变化必须重算（否则流式最后一条永远停在 running）', () => {
+  const cache = createConversionCache<Message, { status: string }>()
+  const m1: Message = { id: 'm1', role: 'user', timestamp: 0, content: [] }
+  const m2: Message = { id: 'm2', role: 'assistant', timestamp: 0, content: [] }
+  // statusOf 与 convert 同源（真实调用点也这么写）：两处都由"是否仍在流式"派生
+  let streaming = true
+  let calls = 0
+  const statusOf = (_m: Message, i: number) => ((streaming && i === 1) ? 'running' : 'complete')
+  const convert = (_m: Message, i: number) => { calls++; return { status: statusOf(_m, i) } }
+
+  incrementalConvert([m1, m2], statusOf, convert, cache)
+  assert.equal(calls, 2)
+  calls = 0
+  incrementalConvert([m1, m2], statusOf, convert, cache)
+  assert.equal(calls, 0, '同 key 全命中')
+  // 流式结束：最后一条翻成 complete ⇒ 只有它重算
+  streaming = false
+  calls = 0
+  const out = incrementalConvert([m1, m2], statusOf, convert, cache)
+  assert.equal(calls, 1, 'key 变化的那一条必须重算')
+  assert.equal(out[1].status, 'complete', '翻状态必须真的落进结果里')
+  assert.equal(out[0].status, 'complete')
+})
+
+test('incrementalConvert：空数组与单元素边界', () => {
+  const cache = createConversionCache<Message, number>()
+  assert.deepEqual(incrementalConvert<Message, number>([], () => 'x', () => 1, cache), [])
+  const m: Message = { id: 'm', role: 'user', timestamp: 0, content: [] }
+  assert.deepEqual(incrementalConvert([m], () => 'x', () => 7, cache), [7])
+  assert.deepEqual(incrementalConvert([m], () => 'x', () => 7, cache), [7], '命中复用')
 })

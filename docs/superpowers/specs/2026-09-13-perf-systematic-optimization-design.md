@@ -170,8 +170,15 @@
   - 采样不是丢弃：被吃掉多少条记在下一个放行行上（`(+N 条同类被采样)`），所以**"什么都没记"这种最坏情况结构上不可能出现**；异常行另有第二道豁免（`RENDER_ALERT_RE`，实测在窄判据下命中 0 次，价值在判据将来被放宽时——`warn` 不设词边界，因为 `ponos_warning` 里 `_w` 之间没有 `\b`）。
   - **实测（同一段真实到达序列 15,344 行 / 2.83h，新旧两套实现各回放一遍）**：墙钟 14,198ms → 1,634ms（**−88.5%**）；落盘 1,974KB → 501KB（**−74.6%**）；append 30,688 → ~3,170 + 批量；每行主进程**同步**耗时 0.93ms → 0.11ms（45 行/秒峰值下 42ms/s → 5ms/s 的主进程阻塞）。放行率 20.7%（非判据行全量 + 窗口放行）。
   - **范围诚实说明**：渲染器**仍然**每帧 `console.log` 并按帧发一条 IPC（实测 ~1.5 条/秒；判据在主进程，IPC 已发生）。R1 消掉的是**主进程侧的双写与字符串构造**；渲染器那个"1.35 核"属于 R3/R4/R5 的战场，不要记在 R1 账上。
-- **R2 uiStore 瞬时态**：已亲证 `zustand@4.5.7` 的 `set` **无条件** `setItem()`（`partialize({...get()})` + `localStorage.setItem`）⇒ 每帧 2 次同步全量序列化。**在 store action 里 `set(() => ({}))` 不是短路**，唯一有效的原地修法是**在调用 `set` 之前提前 return**；更彻底的做法是把瞬时态移出 persist store（deepseek 有直接先例）。
-- **R3 拆「整店 → 整树」链**：`WorkShell` 的 `useChatStore()` / `useUIStore()` **无选择器**，而它直接渲染 `<ChatWindow>` ⇒ 任何写入都重建整棵消息树。**R2×R3 叠加**：即使假短路 `set` 也产生新 state 对象 → 每帧白送 2 次整树重渲染 ⇒ 「提前 return」同时消掉两处，是性价比最高的一处改动。
+- **R2 uiStore 瞬时态**（**已落地**）：已亲证 `zustand@4.5.7` 的 `set` **无条件** `setItem()`（`partialize({...get()})` + `localStorage.setItem`）⇒ 每帧 2 次同步全量序列化。**在 store action 里 `set(() => ({}))` 不是短路**，唯一有效的原地修法是**在调用 `set` 之前提前 return**。
+  - **落地时改了方案**：原首选"把瞬时态移出 persist store"**没做**——`partialize` 白名单本来就不含这两个骨架键，症状不在白名单，而在 zustand 的无条件 `setItem`（移出 store 要动 `useYFWCLI` 的 6 个调用点，是跨模块重构）。改用**两层互补**：① 四条瞬时态 action 在 `set` 前提前 return（连 `partialize`/`stringify` 都不跑，**且不换 state 引用**）；② 新增 `src/lib/stableStorage.ts` 包住 `createJSONStorage`，**逐字节相同即跳过写盘**——这一层是**结构性兜底**，管住 ① 够不着的白名单外键变化（编辑器内容/`previewFile`/附件），也让"缺陷悄悄回来"必须显式改掉 storage 才行。
+  - **落地时补掉的一个设计缺口**：去重缓存冷启动时没有基线 ⇒ 冷启动后的第一次写入必然穿透。修在**设计**里（惰性读一次盘上现值做基线），不是把断言改松。`removeItem` 必须清基线（否则 remove 后写回同值会被当成"没变"而静默丢失）。
+  - 静态收益：`useYFWCLI.ts:883-884` 对**每个** `event` 帧清一次两个骨架键（帧率 p50≈13/秒、峰值 45/秒）⇒ **26–90 次同步全量 `JSON.stringify`+`localStorage.setItem`+整店订阅者重建 / 秒 → 0**。
+- **R3 拆「整店 → 整树」链**（**已落地**）：`WorkShell` 的 `useChatStore()` / `useUIStore()` **无选择器**，而它直接渲染 `<ChatWindow>` ⇒ 任何写入都重建整棵消息树。**R2×R3 叠加**：即使假短路 `set` 也产生新 state 对象 → 每帧白送 2 次整树重渲染 ⇒ 「提前 return」同时消掉两处，是性价比最高的一处改动。
+  - **增量转换的键为什么可以是对象身份**：**先核实过** `chatStore` 的消息更新是 copy-on-write（`{ ...m, content }`），从不原地 mutate ⇒ 未变消息引用跨帧稳定。`statusKey`（`running/complete`，**按位置**算）必须入键，否则流式结束时最后一条会永远停在 running。WeakMap ⇒ 无泄漏。
+  - **memo 的边界在这儿是"不收 props 的组件"**：三个消息视图的内容全部经 `MessagePrimitive.Root` 的 context 流入，所以默认浅比较就是"无需比较"；参考实现里那个"比较器显式豁免回调 props"的写法针对的是**收 props** 的组件，照抄会写出一段没有作用的比较器。该模式的实质（别让内联对象/回调击穿 memo）落在"部件表提为模块级常量 + render prop 用 `useCallback` 稳定"上。
+  - **两条 memo 语义用真 React 实测**（Electron 无头窗口 + 官方 UMD React 18.3.1，零新依赖）：父级重渲染 ×3 ⇒ 对照组 1→4、**memo 组件恒 1**；只改 context ⇒ **memo 组件 1→2（context 穿透 memo）**。前者是收益来源，后者是正确性底线（流式追加的那条必须更新，不能读到旧内容）。
+  - **顺带清掉的同类缺陷**（全在同一条链上）：`ChatWindow` 订阅 `conversations` **整数组**（流式每帧换新数组）→ 拆 5 个原始值选择器；`ChatContext.Provider` 的 `value` 内联字面量 → `useMemo`；两处**从未被使用**的订阅与两个死 import 直接删除。
 - **R4 markdown**：稳定对象 `useMemo` + 逐字符拼接改正则 + **冻结稳定前缀、只重解析不稳定尾块**（参考 `StreamingMarkdown`）。
 - **R5 `streamHeavyMode`**：原判据只包住 store 循环 ⇒ 永不置位。**成熟做法测「队列压力」而非「handler 耗时」**（队列深度 / 最老未渲染项年龄 + 滞回）；**调度不用 rAF**（后台/失焦会停摆），改 16ms 定时器。
 - **R6 长列表**：虚拟化或 containment；做法照「量化 scrollTop + `useSyncExternalStore`」+ `memo` 比较器显式豁免回调 props。

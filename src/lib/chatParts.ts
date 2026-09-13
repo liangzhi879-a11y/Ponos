@@ -80,6 +80,43 @@ export function messagesToThreadMessageLikes(messages: Message[]): ThreadMessage
   return messages.map((m) => ({ ...messageToThreadMessageLike(m), id: m.id }))
 }
 
+// —— R3（2026-09-13）：按对象身份增量转换 ——
+// 病根：流式期每来一个 delta，chatStore 就产出**新的 messages 数组**（只替换被追加的那一条，
+// `chatStore.ts:1018-1029` 用 `{ ...m, content }` 复制改写），而 chatRuntime 的 useMemo 依赖
+// 整个数组 → 每帧把**全部** N 条消息重跑一遍 parts 转换 + fromThreadMessageLike（N 随会话增长）。
+// 键用**对象身份**是成立的：未变的消息引用跨帧稳定（chatStore 从不原地 mutate）。
+//
+// statusKey 必须入键：`running/complete` 是**按位置**算的（只有最后一条 running），流式结束时
+// 最后一条的状态会翻转——同一个消息对象此时**必须**重算，否则会永远停在 running。
+export type ConversionCache<TIn extends object, TOut> = WeakMap<TIn, { statusKey: string; out: TOut }>
+
+export function createConversionCache<TIn extends object, TOut>(): ConversionCache<TIn, TOut> {
+  return new WeakMap()
+}
+
+/**
+ * 逐项转换并缓存：命中（同一对象 + 同一 statusKey）时直接复用上次结果。
+ * `convert` 只在未命中或状态变化时调用——调用次数是**可断言**的（见 chatParts.test.ts）。
+ */
+export function incrementalConvert<TIn extends object, TOut>(
+  items: TIn[],
+  statusOf: (item: TIn, index: number) => string,
+  convert: (item: TIn, index: number) => TOut,
+  cache: ConversionCache<TIn, TOut>,
+): TOut[] {
+  const out = new Array<TOut>(items.length)
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    const statusKey = statusOf(item, i)
+    const hit = cache.get(item)
+    if (hit && hit.statusKey === statusKey) { out[i] = hit.out; continue }
+    const converted = convert(item, i)
+    cache.set(item, { statusKey, out: converted })
+    out[i] = converted
+  }
+  return out
+}
+
 /** 流式追加辅助：把新到达的 text/thinking 片段追加到同类型块（修复"整块替换"缺陷）。
  *  - 找到同类型最后一块 → 追加；无同类型块 → 新建。
  *  - tool_use 块不进此路径（整块一次性）。 */

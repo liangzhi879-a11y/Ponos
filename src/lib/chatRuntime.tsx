@@ -16,7 +16,12 @@ import {
 } from '@assistant-ui/react'
 import { useChatStore } from '../stores/chatStore'
 import { useYFWCLI } from '../hooks/useYFWCLI'
-import { messagesToThreadMessageLikes } from './chatParts'
+import { createConversionCache, messageToThreadMessageLike, incrementalConvert } from './chatParts'
+import type { Message } from '../types'
+
+// 会话内所有消息的转换缓存：跨渲染/跨会话常驻（键是消息对象身份，不会串味），
+// WeakMap ⇒ 消息被替换后旧条目随 GC 回收，无泄漏。
+const threadCache = createConversionCache<Message, ThreadMessage>()
 
 function appendText(app: AppendMessage): string {
   const content = app.content
@@ -27,31 +32,40 @@ function appendText(app: AppendMessage): string {
     .join('\n')
 }
 
+// 会话不存在时的兜底数组必须是**常量**：`?? []` 每次新建 ⇒ 选择器结果永不与上次相等
+// （zustand 按 Object.is 比），"会话还没建好"期间的每一次 store 写入都会连坐本组件重渲染。
+const EMPTY_MESSAGES: Message[] = []
+
 export function ChatRuntimeProvider({ conversationId, children }: { conversationId: string; children: ReactNode }) {
   const messages = useChatStore((s) => {
     const conv = s.conversations.find((c) => c.id === conversationId)
-    return conv?.messages ?? []
+    return conv?.messages ?? EMPTY_MESSAGES
   })
   const isRunning = useChatStore((s) => Boolean(s.streamingConversations[conversationId]))
   const { send } = useYFWCLI()
 
-  // 转换在外部层完成（消息引用不变时 useMemo 命中缓存；流式每 chunk 新引用触发重算）。
+  // 转换在外部层完成，**按消息身份增量**（R3，2026-09-13）：流式每 chunk 只有被追加的那
+  // 一条是新对象，其余 N-1 条直接复用上次结果（旧实现在每帧把所有消息重转一遍，N 随会话增长）。
   // fromThreadMessageLike 归一为严格 ThreadMessage（保留同 id，流式 mutate 稳定键）。
   // 2026-09-10 修复：此前全部消息标记 complete——流式消息被当成"已完成"，ReasoningPanel
   // 的 running 状态恒 false（思考块不自动展开、无进行态），assistant-ui 对 complete
   // 消息的流式渲染语义退化（观感为"消息内容不更新/思考不完整"）。流式期间最后一条
   // 消息标记 running。
-  const threadMessages = useMemo(
-    () => {
-      const likes = messagesToThreadMessageLikes(messages)
-      const lastIdx = likes.length - 1
-      return likes.map((m, i) =>
-        fromThreadMessageLike(m, (m as { id?: string }).id || `msg-${i}`,
-          (isRunning && i === lastIdx) ? { type: 'running' } : { type: 'complete', reason: 'unknown' }),
-      )
-    },
-    [messages, isRunning],
-  ) as ThreadMessage[]
+  const threadMessages = useMemo(() => {
+    // 状态按**位置**算，两处必须同源（statusKey 与真正构造的 status）——否则缓存会
+    // 把"该翻成 complete 的最后一条"永远留在 running。
+    const statusAt = (i: number) => ((isRunning && i === messages.length - 1) ? 'running' : 'complete')
+    return incrementalConvert<Message, ThreadMessage>(
+      messages,
+      (_m, i) => statusAt(i),
+      (m, i) => fromThreadMessageLike(
+        { ...messageToThreadMessageLike(m), id: m.id },
+        m.id || `msg-${i}`,
+        statusAt(i) === 'running' ? { type: 'running' } : { type: 'complete', reason: 'unknown' },
+      ),
+      threadCache,
+    )
+  }, [messages, isRunning])
 
   const runtime = useExternalStoreRuntime({
     messages: threadMessages,

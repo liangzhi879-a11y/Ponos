@@ -45,7 +45,12 @@ export interface WorkShellProps {
 export function WorkShell({ onGoCockpit }: WorkShellProps) {
   const { t } = useTranslation()
   const rail = useViewStore(s => s.workState.rail)
-  const { activeConversationId, createConversation, pendingQuestions, clearPendingQuestion } = useChatStore()
+  // R3（2026-09-13）：**不许整店订阅**。WorkShell 直接渲染 `<ChatWindow>`，整店订阅意味着
+  // chatStore/uiStore 的**任何**写入都重建整棵消息树（流式期每帧都会写）。逐字段选择器 +
+  // 只订自己用得到的那个提问对象（引用稳定 ⇒ 别的会话换提问不会连坐本组件）。
+  const activeConversationId = useChatStore(s => s.activeConversationId)
+  const createConversation = useChatStore(s => s.createConversation)
+  const clearPendingQuestion = useChatStore(s => s.clearPendingQuestion)
   const conversations = useChatStore(s => s.conversations)
 
   // 2026-09-10 主标签化：chat/task 是两个独立标签页——切 tab 时若当前活动会话
@@ -67,8 +72,10 @@ export function WorkShell({ onGoCockpit }: WorkShellProps) {
     const key = rail === 'chat' ? 'chat' : 'task'
     return (cur.mode ?? 'task') === key ? activeConversationId : null
   })()
-  const pendingQuestion = displayConvId ? pendingQuestions[displayConvId] : undefined
-  const { previewFile, setPreviewFile } = useUIStore()
+  const pendingQuestion = useChatStore(s => (displayConvId ? s.pendingQuestions[displayConvId] : undefined))
+  // R3：uiStore 同样不许整店订阅（它是瞬时态最密集的 store——流式期每帧都在写）
+  const previewFile = useUIStore(s => s.previewFile)
+  const setPreviewFile = useUIStore(s => s.setPreviewFile)
 
   // 低配引导/GPU 兜底/经验提醒均已迁入 RightStatusRail（2026-09-10 右侧折叠状态栏）
 

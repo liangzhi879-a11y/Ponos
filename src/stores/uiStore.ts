@@ -1,5 +1,9 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { createJSONStorage, persist } from 'zustand/middleware'
+// 相对导入 + 显式 .ts（同 `conversationResync.ts:26` 的既有写法）：让本文件能被
+// `node --test` 直接加载，使 R2 的成本模型（见 uiStore.test.ts）在真实 store 上可测，
+// 而不是只能测替身。
+import { createStableStorage } from '../lib/stableStorage.ts'
 import type { FileTab } from '@/types'
 
 export interface PendingAttachment {
@@ -214,20 +218,36 @@ export const useUIStore = create<UIState>()(
       clearPendingAttachments: () => set({ pendingAttachments: [] }),
       setPendingInput: (text, autoSend) => set({ pendingInput: text, pendingAutoSend: !!autoSend }),
       setScheduleGuideFor: (id) => set({ scheduleGuideFor: id }),
-      setKernelStall: (id, ms) => set(s => ({ kernelStalls: { ...s.kernelStalls, [id]: ms } })),
-      clearKernelStall: (id) => set(s => {
-        if (!(id in s.kernelStalls)) return {} // delete 幂等：无键不动作
-        const next = { ...s.kernelStalls }
-        delete next[id]
-        return { kernelStalls: next }
-      }),
-      setFirstByteWait: (id, ms) => set(s => ({ firstByteWait: { ...s.firstByteWait, [id]: ms } })),
-      clearFirstByteWait: (id) => set(s => {
-        if (!(id in s.firstByteWait)) return {} // delete 幂等：无键不动作
-        const next = { ...s.firstByteWait }
-        delete next[id]
-        return { firstByteWait: next }
-      }),
+      // —— R2（2026-09-13）：四条瞬时态 action 一律**在调用 set 之前**短路 ——
+      // 在 store action 里 `set(() => ({}))` **不是短路**：zustand 的 persist 把 set 包成
+      // 「无条件 setItem」（middleware.js:500-511），返回 {} 照样 partialize+stringify+
+      // localStorage.setItem，并且**照样换掉 state 对象引用** ⇒ 整店订阅者白重建一次。
+      // 这一组在流式期是每帧 2 次（useYFWCLI.ts:883-884 对每个 event 帧都清一次），
+      // 实测刷屏的正是同一批 `[WS] recv: event … assistant` 帧（13–45 帧/秒）。
+      setKernelStall: (id, ms) => {
+        if (get().kernelStalls[id] === ms) return // 同值不动作（倒计时重挂/重放帧）
+        set(s => ({ kernelStalls: { ...s.kernelStalls, [id]: ms } }))
+      },
+      clearKernelStall: (id) => {
+        if (!(id in get().kernelStalls)) return // delete 幂等：无键**根本不调 set**
+        set(s => {
+          const next = { ...s.kernelStalls }
+          delete next[id]
+          return { kernelStalls: next }
+        })
+      },
+      setFirstByteWait: (id, ms) => {
+        if (get().firstByteWait[id] === ms) return
+        set(s => ({ firstByteWait: { ...s.firstByteWait, [id]: ms } }))
+      },
+      clearFirstByteWait: (id) => {
+        if (!(id in get().firstByteWait)) return
+        set(s => {
+          const next = { ...s.firstByteWait }
+          delete next[id]
+          return { firstByteWait: next }
+        })
+      },
       pinnedSkills: [],
       togglePinSkill: (id) => {
         const cur = get().pinnedSkills
@@ -290,6 +310,10 @@ export const useUIStore = create<UIState>()(
     }),
     {
       name: 'yfworking-ui',
+      // R2：zustand 对每次 set 都无条件 setItem（连只改白名单外键的也算）。这层把
+      // 「序列化结果与上次逐字节相同」的写入挡掉——白名单外键（瞬时态/编辑器内容等）
+      // 变化时不再付 stringify + localStorage 同步写。
+      storage: createStableStorage(createJSONStorage(() => localStorage)),
       partialize: (state) => ({
         sidebarOpen: state.sidebarOpen,
         sidebarWidth: state.sidebarWidth,
