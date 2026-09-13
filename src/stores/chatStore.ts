@@ -384,6 +384,11 @@ interface ChatState {
   // 压缩进行中标志（S5 ②-02）—— per-conversation, runtime-only (not persisted)
   compactingBySession: Record<string, boolean>
 
+  // 压缩开始时刻（毫秒；缺省 = 未在压缩）——只服务墙钟兜底判定
+  //（src/lib/compactIndicator.ts），与 compactingBySession 由 setCompacting 一处同步维护。
+  // 组件只读布尔，不读本表：两表并存是刻意的（改布尔语义会静默打断三个 `=== true` 消费者）。
+  compactingSinceBySession: Record<string, number>
+
   // 审批放行档位（2026-09-12）——per-conversation，**权威来源是桥**（approval-mode-changed
   // 上报什么就存什么）。运行时瞬态不持久化：临时覆盖仅内存，应用重启即回落全局档，
   // 这正是用户要的语义（状态栏改的是本会话，设置页改的才是全局）。
@@ -506,6 +511,7 @@ export const useChatStore = create<ChatState>()(
       conversationProgress: {},
       loopStates: {},
       compactingBySession: {},
+      compactingSinceBySession: {},
       sessionApprovalModes: {},
       subAgentTasks: {},
       laneNotesBySession: {},
@@ -565,12 +571,14 @@ export const useChatStore = create<ChatState>()(
           delete loopStates[id]
           const compactingBySession = { ...state.compactingBySession }
           delete compactingBySession[id]
+          const compactingSinceBySession = { ...state.compactingSinceBySession }
+          delete compactingSinceBySession[id]
           const subAgentTasks = { ...state.subAgentTasks }
           delete subAgentTasks[id]
           // 会话级审批覆盖随会话一起消失（内核进程也随会话关闭，桥侧同步清理）
           const sessionApprovalModes = { ...state.sessionApprovalModes }
           delete sessionApprovalModes[id]
-          return { conversations: filtered, activeConversationId: nextActive, conversationProgress, loopStates, compactingBySession, subAgentTasks, sessionApprovalModes }
+          return { conversations: filtered, activeConversationId: nextActive, conversationProgress, loopStates, compactingBySession, compactingSinceBySession, subAgentTasks, sessionApprovalModes }
         })
       },
 
@@ -1337,7 +1345,12 @@ export const useChatStore = create<ChatState>()(
         // 幂等：同值短路不动作（start 已 true 不重置、done 非 true 不写），
         // 也避免同值重写产生新引用触发无关重渲染
         if ((state.compactingBySession[id] ?? false) === value) return {}
-        return { compactingBySession: { ...state.compactingBySession, [id]: value } }
+        // 时刻表同步维护（唯一写者）：true 记锚点、false 删键。start 的幂等短路意味着
+        // 重复 start **不刷新锚点**——丢 done 后残留的指示只会更早被兜底清掉，不会续命。
+        const compactingSinceBySession = { ...state.compactingSinceBySession }
+        if (value) compactingSinceBySession[id] = Date.now()
+        else delete compactingSinceBySession[id]
+        return { compactingBySession: { ...state.compactingBySession, [id]: value }, compactingSinceBySession }
       }),
 
       setMilestoneStart: (id, index) => set(state => {

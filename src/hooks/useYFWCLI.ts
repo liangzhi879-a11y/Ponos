@@ -18,6 +18,7 @@ import { useHealthStore, type HealthInfo } from '@/stores/healthStore'
 import { useWarningStore } from '@/stores/warningStore'
 import { normalizeWarning } from '@/lib/warningUi'
 import { makeLaneNote } from '@/lib/laneUi'
+import { staleCompactionSids, COMPACT_INDICATOR_MAX_MS } from '@/lib/compactIndicator'
 import { useBrowserStore } from '@/stores/browserStore'
 import { parseApprovalModeReport, type ApprovalMode } from '@/lib/approvalModeUi'
 import type { ContentBlock, Message, QuestionAnswer, BrowserEvent, LoopState } from '@/types'
@@ -197,6 +198,14 @@ export function getOrCreateWS(): WebSocket | null {
         // 路径（error/cancelled/closed），见 clearSessionWaitState（T8，2026-09-12）。
         ui.clearKernelStall(sid)
         ui.clearFirstByteWait(sid)
+        // 压缩指示同断线复位（2026-09-13 常驻事故收口②）：内核**不会**重发压缩态（桥握手
+        // 不补投 frames），闪断时丢的若正是 done 帧，指示条会常驻到下一次压缩。提问卡/审批
+        // 弹窗**仍然刻意保留**（内核通常还活着并在等回答，bridge_hello 会判明同一桥闪断/
+        // 换新桥）——压缩没有这层"等用户动作"的语义，丢了就只能清。
+        if (store.compactingBySession[sid]) {
+          console.warn(`[compact] 断线时压缩指示悬挂 sid=${sid.slice(0, 8)} — 复位（done 帧丢失）`)
+          store.setCompacting(sid, false)
+        }
       }
       scheduleReconnect()
     }
@@ -421,6 +430,7 @@ export function useYFWCLI() {
       if (Date.now() - lastTaskSweepAt > STALE_TASK_SWEEP_MS) {
         lastTaskSweepAt = Date.now()
         sweepStaleSubAgentTasks()
+        sweepStaleCompaction()
       }
     }, 500)
     // 窗口从托盘/后台恢复可见时，若仍未连上则立即发起重连（不等退避定时器）
@@ -710,6 +720,23 @@ function sweepStaleSubAgentTasks() {
   }
 }
 
+// 压缩指示条兜底巡检（2026-09-13「提示/动画常驻不取消」收口③，与上方孤儿任务同节流）。
+// 内核硬看门狗（kernel/cli.mjs，默认 900s）内必然出现 result 或 closed（两者都走正常
+// 复位路径），所以活过 COMPACT_INDICATOR_MAX_MS 仍是 true 的指示必然是 **done 帧丢了**
+// （闪断/写失败被吞/桥侧跳过）。这条 warn 就是"帧丢在哪一段"的现场指纹——比静默复位更
+// 重要：今天现场 3/3 付费压缩在渲染器日志里都没有 system 帧，正是缺这条线索。
+function sweepStaleCompaction() {
+  const store = useChatStore.getState()
+  const stale = staleCompactionSids(store.compactingBySession, store.compactingSinceBySession, Date.now())
+  for (const sid of stale) {
+    store.setCompacting(sid, false)
+    console.warn(
+      `[compact] 指示条兜底复位 sid=${sid.slice(0, 8)} 挂起超过 ${Math.round(COMPACT_INDICATOR_MAX_MS / 1000)}s — `
+      + 'done 帧疑似丢失（内核/桥可能仍在正常压缩，仅指示不可信；下次 start 会重新点亮）',
+    )
+  }
+}
+
 function handleMessage(msg: Record<string, unknown>) {
   const store = useChatStore.getState()
   const sid = (msg.sessionId as string) || 'default'
@@ -986,6 +1013,13 @@ function handleMessage(msg: Record<string, unknown>) {
       store._finishStreaming(aid, { inputTokens: usage.input_tokens || 0, outputTokens: usage.output_tokens || 0 })
       // 本轮响应结束 → 释放串行锁
       streamingSessions.delete(sid)
+      // 压缩指示随回合收口（2026-09-13 常驻事故的**精确**兜底）：压缩在 preStep 内 await，
+      // 不可能跨回合边界 ⇒ result 到达即证明本轮压缩的 done 帧本该早已到达；此刻仍为 true
+      // 只可能是 done 丢了（闪断/写失败被吞/桥侧跳过）。正常路径 setCompacting 同值短路，无动作。
+      if (store.compactingBySession[sid]) {
+        console.warn(`[compact] 回合结束仍挂着压缩指示 sid=${sid.slice(0, 8)} — done 帧丢失，复位`)
+        store.setCompacting(sid, false)
+      }
       // Keep sessionState alive — subagent may still be running and producing output
       store._updateSessionMeta({ totalCost: event.total_cost_usd as number, duration: event.duration_ms as number })
 

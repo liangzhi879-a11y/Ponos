@@ -1407,6 +1407,13 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     }
 
     if (parsed) {
+      // 压缩帧转发留痕（2026-09-13）：现场出现"内核确有压缩落地（stderr 有
+      // [compact] action=summarized）但渲染器一条 system/compaction 都没收到"的未解差异
+      // （当日 3/3 付费压缩）。本行给出事实依据：桥到底收没收到帧、广播集合里有几个客户端。
+      // 只认 compaction 子型（每会话每轮至多两行），不构成日志噪声。
+      if (parsed.type === 'system' && parsed.subtype === 'compaction') {
+        console.log(`[bridge] compaction frame state=${parsed.state} sid=${sid} ok=${parsed.ok ?? '-'} covered=${parsed.covered ?? '-'} coveredTokens=${parsed.coveredTokens ?? '-'} clients=${wsClients.size}`)
+      }
       send({ type: 'event', data: parsed, sessionId: sid })
     } else {
       send({ type: 'raw', data: t, sessionId: sid })
