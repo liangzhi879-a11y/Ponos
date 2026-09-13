@@ -172,3 +172,22 @@ test('persist 负载：只落 spaceId/view/展开态，树里的 entries 不进�
   // 上一条用例的 setSpace 已清树 ⇒ 此处落盘只有空 tree（展开态才占位，折叠分支不落盘）
   assert.deepEqual(tree, {})
 })
+
+test('targetLine：正整数透传、非法兜底 null，换文档即清（行号只对同一篇文档有意义）', () => {
+  st().setTargetLine(42)
+  assert.equal(st().targetLine, 42)
+  st().setTargetLine(0)
+  assert.equal(st().targetLine, null, '0 不是合法行号（内核行号从 1 起）')
+  st().setTargetLine(3.7)
+  assert.equal(st().targetLine, 3, '小数向下取整')
+  st().setTargetLine(Number.NaN)
+  assert.equal(st().targetLine, null)
+  st().setTargetLine('12' as unknown as number)
+  assert.equal(st().targetLine, null, '脏数据不抛也不透传')
+  st().setDocId('notes/a.md')
+  st().setTargetLine(9)
+  st().setDocId('notes/b.md')
+  assert.equal(st().targetLine, null, '换文档必须清定位（否则新文档里无关行被点亮）')
+  // 复位：后续 persist 用例断言"落盘的 spaceId 为 null"，用例间不能留状态（单文件顺序执行）
+  st().setSpace(null)
+})

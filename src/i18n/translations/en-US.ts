@@ -797,5 +797,8 @@ export const enUS: TranslationKeys = {
     emptyPending: 'This view lands in a later task',
     loadFailed: 'Failed to load',
     treeEmpty: 'This folder is empty',
+    docEmpty: 'This document has no body blocks to show',
+    entryExpand: 'Expand',
+    entryCollapse: 'Collapse',
   },
 }

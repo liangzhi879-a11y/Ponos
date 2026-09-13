@@ -71,6 +71,11 @@ export function toPersistedTree(tree: KnowledgeTreeMap): KnowledgeTreeMap {
   return out
 }
 
+/** 落盘 targetLine 清洗：正整数透传，其余（null/0/负数/小数/NaN/字符串）→ null */
+export function sanitizeTargetLine(line: unknown): number | null {
+  return typeof line === 'number' && Number.isFinite(line) && line >= 1 ? Math.floor(line) : null
+}
+
 export interface KnowledgeState {
   /** 当前空间 id（null = 尚未选择，面板空态） */
   spaceId: string | null
@@ -81,11 +86,19 @@ export interface KnowledgeState {
    * store 里它与 view 同属"当前工作位置"，一并持久化后刷新仍停在同一篇文档。
    */
   docId: string | null
+  /**
+   * 阅读视图的**行定位目标**（S2 Task 5；null = 不定位）。
+   * 为什么也要进 store：写入方（Task 7 检索命中列表、Task 9 大纲）与消费方（阅读视图）不相邻，
+   * 且它必须与 docId 一起"原子地"落定——先切 doc 再定位，中途不能有半截状态。
+   * **不落盘**（见 partialize）：高亮是一次性跳转意图，重启后回到原地高亮一个旧行号只会让人困惑。
+   */
+  targetLine: number | null
   view: KnowledgeView
   /** 扁平 map：路径 → { entries, loaded, expanded } */
   tree: KnowledgeTreeMap
   setSpace: (spaceId: string | null) => void
   setDocId: (docId: string | null) => void
+  setTargetLine: (line: number | null) => void
   setView: (view: KnowledgeView) => void
   toggleExpanded: (path: string) => void
   setTreeEntries: (path: string, entries: KnowledgeTreeEntry[]) => void
@@ -95,6 +108,7 @@ export const useKnowledgeStore = create<KnowledgeState>()(
   persist((set, get) => ({
     spaceId: null,
     docId: null,
+    targetLine: null,
     view: 'read',
     tree: {},
 
@@ -105,13 +119,21 @@ export const useKnowledgeStore = create<KnowledgeState>()(
     setSpace: (spaceId) => {
       const next = sanitizeSpaceId(spaceId)
       if (next === get().spaceId) return
-      set({ spaceId: next, docId: null, tree: {} })
+      set({ spaceId: next, docId: null, targetLine: null, tree: {} })
     },
 
+    // 换文档顺带清 targetLine：行号只在**同一篇文档**内有意义，留着它会让新文档里一行无关内容被点亮。
+    // 需要"打开并定位"的调用方请按 setDocId() → setTargetLine() 的顺序调用（Task 7 检索命中）。
     setDocId: (docId) => {
       const next = sanitizeDocId(docId)
       if (next === get().docId) return
-      set({ docId: next })
+      set({ docId: next, targetLine: null })
+    },
+
+    setTargetLine: (line) => {
+      const next = sanitizeTargetLine(line)
+      if (next === get().targetLine) return
+      set({ targetLine: next })
     },
 
     setView: (view) => {

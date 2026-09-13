@@ -21,12 +21,14 @@ import { KnowledgeViewTabs } from './KnowledgeViewTabs'
 import { KnowledgeEmpty } from './KnowledgeEmpty'
 import { KnowledgeSkeleton } from './KnowledgeSkeleton'
 import { KnowledgeSidebar } from './KnowledgeSidebar'
+import { KnowledgeDocView } from './KnowledgeDocView'
 
 export function KnowledgePanel() {
   const { t } = useTranslation()
   // 只订阅自己用得到的字段（仓库纪律：不整店订阅，避免无关写入重建整棵面板树）
   const spaceId = useKnowledgeStore(s => s.spaceId)
   const docId = useKnowledgeStore(s => s.docId)
+  const targetLine = useKnowledgeStore(s => s.targetLine)
   const view = useKnowledgeStore(s => s.view)
   const setSpace = useKnowledgeStore(s => s.setSpace)
   const setView = useKnowledgeStore(s => s.setView)
@@ -74,7 +76,7 @@ export function KnowledgePanel() {
               : <KnowledgeEmpty title={t('knowledge.spaceEmpty')} className="m-auto" />
           ) : view === 'read' ? (
             docLoading ? <KnowledgeSkeleton lines={10} />
-              : doc ? <DocPlaceholder title={doc.title} rel={doc.rel} />
+              : doc ? <KnowledgeDocView doc={doc} targetLine={targetLine} />
                 : <KnowledgeEmpty title={t('knowledge.emptyNoDoc')} className="m-auto" />
           ) : view === 'edit' ? (
             // 只读空间不渲染编辑视图（spec §11.3：CodeEditor 无 readOnly，编辑器内容非受控）
@@ -103,18 +105,6 @@ export function KnowledgePanel() {
           </div>
         </div>
       </div>
-    </div>
-  )
-}
-
-/** read 视图占位：Task 5 会换成 markdown + 经验卡片 + 行定位；此处先让"选中文档"有可辨识的回执 */
-function DocPlaceholder({ title, rel }: { title: string; rel: string }) {
-  const { t } = useTranslation()
-  return (
-    <div className="flex-1 min-h-0 overflow-auto px-4 py-3">
-      <h2 className="text-sm font-semibold text-primary truncate">{title}</h2>
-      <p className="mt-0.5 text-[10px] text-tertiary truncate">{rel}</p>
-      <KnowledgeEmpty title={t('knowledge.emptyPending')} className="!py-6" />
     </div>
   )
 }

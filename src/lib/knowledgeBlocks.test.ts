@@ -1,0 +1,122 @@
+// src/lib/knowledgeBlocks.test.ts
+// 运行：node --test src/lib/knowledgeBlocks.test.ts（Node 原生 TS，相对导入必须带 `.ts` 后缀）
+//
+// 本文件的核心价值：把 S1 §11.4 的**渲染层裁定**变成自动化验收——
+// 「含 `- [ ]` 行的任务清单类文档，阅读视图不得出现经验卡片」。
+// 该裁定无法在组件层测（仓库无 DOM 测试环境），但判定逻辑一旦抽成纯函数就能钉死：
+// 只要 planBlockRender 对这些块不产出 entryCard，界面就不可能画卡片。
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+
+import {
+  clampLevel, isEntryCard, normalizeTags, pickTargetIndex, planBlockRender,
+  type BlockLike,
+} from './knowledgeBlocks.ts'
+
+/** 造 `- [ ] Step N` 形状的块：内核把它判成 entry，但 entryTag 为 null（见 shared/knowledge-core.mjs:39,41-54） */
+const checkItem = (n: number, text: string, line: number): BlockLike =>
+  ({ n, kind: 'entry', text, line, tag: null, full: text })
+
+test('S1 裁定：含 `- [ ]` 的复选框行不得渲染成经验卡片', () => {
+  // 形状照 kernel splitBlocks 实测输出：每条 `- [ ] Step N` 独立成 entry 块，tag=null，text 只剩摘要
+  const blocks: BlockLike[] = [
+    { n: 0, kind: 'heading', level: 2, text: '任务清单', line: 1 },
+    checkItem(1, 'Step 1 读取台账', 2),
+    checkItem(2, 'Step 2 跑 typecheck', 3),
+    checkItem(3, 'Step 3 提交', 4),
+  ]
+  const plan = planBlockRender(blocks)
+  assert.equal(plan.filter(r => r.type === 'entryCard').length, 0, 'task list 里一个经验卡片都不能有')
+  assert.equal(plan.filter(r => r.type === 'markdown').length, 3, '三条复选框行各按普通段落渲染')
+  assert.deepEqual(plan.map(r => r.type), ['heading', 'markdown', 'markdown', 'markdown'])
+  // 行号锚点必须保留（跳转定位依赖它）
+  assert.deepEqual(plan.map(r => r.line), [1, 2, 3, 4])
+})
+
+test('isEntryCard：只有 kind=entry 且 tag 为非空字符串才成立', () => {
+  assert.equal(isEntryCard({ kind: 'entry', text: 's', line: 1, tag: '经验' }), true)
+  assert.equal(isEntryCard({ kind: 'entry', text: 's', line: 1, tag: ' 经验 ' }), true, '两侧空白不影响判定')
+  assert.equal(isEntryCard({ kind: 'entry', text: 's', line: 1, tag: null }), false, 'null → 非卡片（硬约束）')
+  assert.equal(isEntryCard({ kind: 'entry', text: 's', line: 1 }), false, '字段缺失 → 非卡片')
+  assert.equal(isEntryCard({ kind: 'entry', text: 's', line: 1, tag: '   ' }), false, '纯空白 → 非卡片')
+  assert.equal(isEntryCard({ kind: 'para', text: 's', line: 1, tag: '经验' }), false, 'kind 不是 entry → 非卡片')
+})
+
+test('planBlockRender：带 tag 的条目 → entryCard（tag 去空白、full 缺省回落 summary）', () => {
+  const plan = planBlockRender([
+    { n: 0, kind: 'entry', text: ' 企微 CLI 化能省掉 4 个 tab ', line: 7, tag: ' 企微 ', full: ' 完整做法：… ' },
+    { n: 1, kind: 'entry', text: '只有摘要', line: 9, tag: '经验', full: null },
+  ])
+  assert.equal(plan.length, 2)
+  assert.deepEqual(plan[0], {
+    type: 'entryCard', key: 'b0', line: 7, tag: '企微',
+    summary: '企微 CLI 化能省掉 4 个 tab', full: '完整做法：…',
+  })
+  assert.deepEqual(plan[1], {
+    type: 'entryCard', key: 'b1', line: 9, tag: '经验', summary: '只有摘要', full: '只有摘要',
+  }, 'full 为空时回落 summary（卡片展开钮据此隐藏，见 KnowledgeEntryCard）')
+})
+
+test('planBlockRender：heading 归一 level，其余块按 markdown 原样透传', () => {
+  const plan = planBlockRender([
+    { n: 0, kind: 'heading', level: 9, text: '## 越界级别', line: 3 },
+    { n: 1, kind: 'code', text: '```js\nconst a = 1\n```', line: 5 },
+    { n: 2, kind: 'table', text: '| a | b |\n| - | - |', line: 9 },
+    { n: 3, kind: 'list', text: '- a\n- b', line: 12 },
+    { n: 4, kind: 'para', text: '正文', line: 15 },
+  ])
+  assert.deepEqual(plan.map(r => r.type), ['heading', 'markdown', 'markdown', 'markdown', 'markdown'])
+  assert.deepEqual(plan[0], { type: 'heading', key: 'b0', line: 3, level: 6, text: '## 越界级别' },
+    'level 上限 6（md 只有 6 级）；text 是内核给的纯文本，不再带 `#`')
+  assert.equal(plan[1].type === 'markdown' && plan[1].text.includes('```js'), true, '代码块连围栏一起透传，react-markdown 才能高亮')
+})
+
+test('planBlockRender：空文本块被丢弃，key 用块序号（缺 n 时用下标兜底）', () => {
+  const plan = planBlockRender([
+    { n: 0, kind: 'para', text: '   ', line: 1 },
+    { kind: 'para', text: '有内容', line: 2 },
+  ])
+  assert.equal(plan.length, 1, '空白块不产出（否则留一个吃间距的空 div）')
+  assert.equal(plan[0].key, 'b1', '缺 n 时用下标兜底，key 仍唯一')
+})
+
+test('clampLevel：非法级别一律回落到 1', () => {
+  assert.equal(clampLevel(3), 3)
+  assert.equal(clampLevel(6), 6)
+  assert.equal(clampLevel(7), 6)
+  assert.equal(clampLevel(0), 1)
+  assert.equal(clampLevel(-2), 1)
+  assert.equal(clampLevel(Number.NaN), 1)
+  assert.equal(clampLevel(undefined), 1)
+  assert.equal(clampLevel(2.9), 2)
+})
+
+test('pickTargetIndex：目标行落在块内部/边界/范围外都有确定落点', () => {
+  const plan = planBlockRender([
+    { n: 0, kind: 'heading', level: 1, text: '标题', line: 1 },
+    { n: 1, kind: 'para', text: '段落', line: 4 },
+    { n: 2, kind: 'para', text: '末段', line: 20 },
+  ])
+  assert.equal(pickTargetIndex(plan, 4), 1, '精确命中')
+  assert.equal(pickTargetIndex(plan, 6), 1, '落在块内部（4..19）→ 该块')
+  assert.equal(pickTargetIndex(plan, 1), 0)
+  assert.equal(pickTargetIndex(plan, 99), 2, '超出末块 → 末块（跳到最后而不是不动）')
+  assert.equal(pickTargetIndex(plan, 0), null, '0 不是合法行号（内核行号从 1 起）→ 不跳转')
+  assert.equal(pickTargetIndex(plan, -3), null)
+  assert.equal(pickTargetIndex(plan, Number.NaN), null)
+  assert.equal(pickTargetIndex(plan, null), null)
+  assert.equal(pickTargetIndex(plan, undefined), null)
+  assert.equal(pickTargetIndex([], 3), null, '空计划 → null（不能返回 0 让调用方取到 undefined）')
+})
+
+test('pickTargetIndex：targetLine 早于首块 → 0（frontmatter 区命中也要给出落点）', () => {
+  const plan = planBlockRender([{ n: 0, kind: 'para', text: '正文', line: 8 }])
+  assert.equal(pickTargetIndex(plan, 3), 0)
+})
+
+test('normalizeTags：trim、去空、去重、忽略非字符串', () => {
+  assert.deepEqual(normalizeTags([' 经验 ', '经验', '', '   ', 'workflow', 42, null, 'workflow']),
+    ['经验', 'workflow'])
+  assert.deepEqual(normalizeTags(undefined), [])
+  assert.deepEqual(normalizeTags(null), [])
+})

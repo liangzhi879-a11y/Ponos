@@ -810,6 +810,9 @@ export const zhCN = {
     emptyPending: '该视图将在后续任务填充',
     loadFailed: '加载失败',
     treeEmpty: '这个目录是空的',
+    docEmpty: '这篇文档没有可显示的正文',
+    entryExpand: '展开',
+    entryCollapse: '收起',
   },
 }
 
