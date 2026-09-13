@@ -661,7 +661,12 @@ function cmpSkeleton(a, b, base) {
  * @returns `[{ to, why }]`，why 形态：`{kind:'tag',tag}` / `{kind:'content',score,shared}` /
  *          `{kind:'duplicate',score}`。duplicate **不计入** MAX_RELATED，附在末尾。
  */
-export function relatedCandidates(block, pool = [], { idf = null, topN = 5, minScore = SIM_THRESHOLD } = {}) {
+export function relatedCandidates(block, pool = [], { idf = null, topN = 5, minScore = SIM_THRESHOLD, dropped = null } = {}) {
+  // `dropped`（可选，S5 Task 6）：调用方传普通对象，本函数**原地累加**计算期丢弃计数
+  // —— `stats().related.dropped` 要的是"算出来但没留下的候选数"，而截断（三层上限）与
+  // `shared` 为空的丢弃都发生在**本函数内部**，内核无法从返回值反推（返回值只有留下的那些）。
+  // 只接受对象、缺省 null ⇒ 既有调用方与返回值**逐字不变**（纯增量，无行为漂移）。
+  const bump = (k, n = 1) => { if (dropped && typeof dropped === 'object' && n > 0) dropped[k] = (dropped[k] || 0) + n }
   const from = blockIdOf(block)
   const content = blockContentOf(block)
   // 参与集门槛（spec §5.1）：非 entry 由调用方保证，这里管长度——垃圾条目（去前缀后很短）不参与
@@ -690,7 +695,7 @@ export function relatedCandidates(block, pool = [], { idf = null, topN = 5, minS
     const shared = sharedFeatures(tfA, gramCountsOf(p, pc), { idf, topN })
     // 硬约束：content 边必须带非空 shared（只有分数、无法解释 = 宁缺勿滥，spec §5.4）
     // （cos>0 时理论上必有共有 gram，此分支是给 topN=0 / idf 异常兜底的保险）
-    if (!shared.length) continue
+    if (!shared.length) { bump('noShared'); continue }
     contentHits.push({ to, why: { kind: 'content', score: round4(cos), shared }, score: cos })
   }
 
@@ -699,9 +704,14 @@ export function relatedCandidates(block, pool = [], { idf = null, topN = 5, minS
   dups.sort((x, y) => y.why.score - x.why.score || cmpStr(x.to, y.to))
   const pub = ({ to, why }) => ({ to, why })
   // 骨架层先占预算（必然非空、零噪声），覆盖层按分数降序补位，总预算 MAX_RELATED 截断
-  const kept = [...tagHits.slice(0, MAX_TAG_RELATED), ...contentHits.slice(0, MAX_CONTENT_RELATED)]
-    .slice(0, MAX_RELATED)
-    .map(pub)
+  const tagKept = tagHits.slice(0, MAX_TAG_RELATED)
+  const contentKept = contentHits.slice(0, MAX_CONTENT_RELATED)
+  // "超上限被截断"要三层都计：两层各自的上限 + 合并后的总预算（都是"算出来但没留下"）。
+  // duplicate **不计**：它本就不占预算、全部返回（spec §5.5），算进去会虚增 dropped。
+  bump('capped', (tagHits.length - tagKept.length) + (contentHits.length - contentKept.length))
+  const budgeted = [...tagKept, ...contentKept]
+  bump('capped', Math.max(0, budgeted.length - MAX_RELATED))
+  const kept = budgeted.slice(0, MAX_RELATED).map(pub)
   // duplicate 不计入 MAX_RELATED：它们不是"关联"（无阅读价值），必须独立呈现（spec §5.5/§3）
   return [...kept, ...dups.map(pub)]
 }

@@ -13,8 +13,8 @@ import {
   countGrams, buildIdf, vectorizeText, blockIndexText, blockTagBoost, relationContent,
   serializeIndex, parseJsonl, resolveLinkTarget,
   cosine, keywordScore, structBoostOf, fuseScore, makeSnippet, toBlockId,
-  // S5 关联锚点（Task 1 的纯函数层）：物化只用这几个，判定逻辑一律留在 shared
-  relatedCandidates, blockContentSig, MIN_LEN, SIM_THRESHOLD,
+  // S5 关联锚点（Task 1 的纯函数层）：物化 + 读时校验只用这几个，判定逻辑一律留在 shared
+  relatedCandidates, blockContentSig, validateRelation, MIN_LEN, SIM_THRESHOLD, MAX_RELATED,
 } from '../shared/knowledge-core.mjs'
 
 /** 空间根：<configDir>/knowledge（configDir 由调用方给，本模块不自解析 home） */
@@ -135,6 +135,13 @@ const PRUNE_MIN_DOCS = 50      // 少于 50 篇不做高频剪枝（小库剪枝
 const PRUNE_DF_RATIO = 0.5     // 出现在超半数文档里的 gram 近似停用词
 /** 检索耗时采样窗口（环形缓冲上限）：100 次足够看 P95，也不会无界增长 */
 const SEARCH_SAMPLES = 100
+/**
+ * 检索结果每条附带的锚点上限（S5 Task 6）。取 3 而不是 MAX_RELATED(8) 的理由是**体积**：
+ * 检索项本身已是 topK（缺省 5）条，每项 8 条锚点 ⇒ 最多 40 条摘要，而摘要里的 `why.shared`
+ * 还会带 5 个特征字 —— 与 `maxBytes`（缺省 2048）同阶甚至超出，S3 的教训就是"顺手多带一点"
+ * 把注入预算吃光。3 条在"给出多条路径"与"不膨胀"之间取平衡；要全量锚点用 `getRelated(blockId)`。
+ */
+const SEARCH_RELATED_TOPN = 3
 
 /**
  * 索引文本的**唯一口径**（S5 Task 2 / spec §8）：内容部分取 `relationContent(b)`
@@ -201,6 +208,15 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
   // ——全量（buildIndex）与增量（updateDoc）共用同一份序列化/原子落盘逻辑，
   // 避免"全量写了 related、增量忘了写"这种静默陈旧（S1 截断事故的同类故障模式）。
   let relEdges = []
+  // 计算期丢弃计数（S5 Task 6）：`stats().related.dropped` 的**唯一**来源。只在物化计算
+  // （buildRelations / relateIncremental）里被重置并累加 —— 读时校验剔除**绝不**计入，
+  // 否则同一库的 stats 会随查询历史漂移（spec §7.2，不可复现 = 指标失效）。
+  let relDropped = { noShared: 0, missingEnd: 0, capped: 0 }
+  // docs 的"代数"：docs 被整体替换（buildIndex / loadIndexFromDisk）或**原地改写**
+  // （updateDoc 的 `docs[i] = 新doc`）时自增。读路径的缓存（块表 / 标题表）以此作键 ——
+  // 不能用 `docs` 数组引用：updateDoc 原地改，引用不变，按引用缓存会取到已被替换的旧块，
+  // 于是"块是否还存在"答错、读时校验静默失效。
+  let docsGen = 0
   const _relateMode = resolveRelateMode(configDir, relateMode)
   const relateOn = () => _relateMode !== 'off'
 
@@ -273,6 +289,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     }
 
     docs = nextDocs
+    docsGen += 1 // docs 换了 → 读路径缓存（块表/标题表）失效
     idf = nextIdf
     inverted = nextInv
     linkOut = out
@@ -355,6 +372,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     // 版本不符 → 返回 false 让上层重建（不抛错：旧索引是"过期派生物"，不是故障）
     if ((manifest.version ?? 0) !== INDEX_VERSION) return false
     docs = parseJsonl(raw('docs.jsonl'))
+    docsGen += 1 // docs 换源（磁盘→内存）→ 读路径缓存失效
     if (!docs.length && (manifest.docs || 0) > 0) return false
     // 截断检测（见 persist 里 docLines/invLines 的注释）：实际条数少于记录值即为半写，
     // 判定损坏让上层重建。用 `<` 而非 `!==`——多出条目只可能是未来的增量追加，不算损坏。
@@ -546,6 +564,19 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       used += bytes
       out.push(it)
     }
+    // 5) 关联锚点（S5 Task 6 / spec §7.2）：每个 item 增 `related` —— **只有摘要**
+    //    （blockId/docId/title/why/score，见 relSummary），绝不含正文：S3 的教训是
+    //    "顺手多带一点"会把上下文预算吃光（这一层是注入/agent 的直接来源）。
+    //    接在 out（已过 topK/maxBytes）之后：不给被截断掉的候选白算，
+    //    也保证 `related` 只在**真的会返回**的项上出现（附了也白附 = 白花开销）。
+    //    off 模式**不带该字段**（字段形状也回滚到 S4，消费方按 `'related' in it` 判定即可）。
+    if (relateOn() && out.length) {
+      const table = readView().blocks
+      for (const it of out) {
+        // validate 缺省 true：物化必然陈旧（增量只补同 tag 入边），读侧不校验等于拿旧边糊人
+        it.related = relatedOf(it.blockId, { validate: true, limit: SEARCH_RELATED_TOPN, lookup: table })
+      }
+    }
     return { items: out, count: out.length, indexAge: age, degraded }
   }
 
@@ -677,6 +708,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
    */
   function buildRelations() {
     if (!relateOn()) { relEdges = []; return }
+    relDropped = { noShared: 0, missingEnd: 0, capped: 0 } // 本次物化的丢弃计数（见 relDropped 声明）
     const pool = relatablePool()
     const relIdf = buildRelIdf() // 关联层独立口径（按文档，见 buildRelIdf 的 why）
     const sig = new Map(pool.map((b) => [b.blockId, blockContentSig(b)]))
@@ -692,13 +724,13 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     const add = (from, to, why) => {
       const k = relKey(from, to)
       if (seen.has(k)) return
-      if (!sig.has(from) || !sig.has(to)) return // 端点必须仍在参与集内
+      if (!sig.has(from) || !sig.has(to)) { relDropped.missingEnd += 1; return } // 端点必须仍在参与集内
       seen.add(k)
       rows.push({ from, to, why, sigFrom: sig.get(from), sigTo: sig.get(to) })
     }
     for (const b of pool) {
       for (const c of relatedCandidates(b, bySpace.get(b.spaceId) || [], {
-        idf: relIdf, topN: 5, minScore: SIM_THRESHOLD,
+        idf: relIdf, topN: 5, minScore: SIM_THRESHOLD, dropped: relDropped,
       })) add(b.blockId, c.to, c.why)
     }
     // 镜像轮：`from→to` 与 `to→from` 各一行（why 对称：tag/content/duplicate 三类都只用
@@ -732,6 +764,9 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
    */
   function relateIncremental(newDocId) {
     if (!relateOn()) { relEdges = []; return }
+    // 丢弃计数按"本次增量重算了多少候选"重置（spec §7.2 的 dropped 是计算期量，
+    // 增量不重算的那部分自然不计 —— 不重算就不该编造数字）
+    relDropped = { noShared: 0, missingEnd: 0, capped: 0 }
     const pool = relatablePool()
     // 与全量路径**同一份口径**（按文档 idf）：增量若用检索那份按块 idf，同一条目在
     // 改文件前后会算出不同分数，出现"改一个文档 → 锚点分数跳变"的诡异现象（spec §13.5）
@@ -750,7 +785,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     const add = (from, to, why) => {
       const k = relKey(from, to)
       if (seen.has(k)) return
-      if (!sig.has(from) || !sig.has(to)) return
+      if (!sig.has(from) || !sig.has(to)) { relDropped.missingEnd += 1; return }
       seen.add(k)
       rows.push({ from, to, why, sigFrom: sig.get(from), sigTo: sig.get(to) })
     }
@@ -767,7 +802,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     const ownSpace = (docs.find((d) => d.id === newDocId) || {}).spaceId
     const spaceMates = pool.filter((b) => b.spaceId === ownSpace)
     for (const b of own) {
-      for (const c of relatedCandidates(b, spaceMates, { idf: relIdf, topN: 5, minScore: SIM_THRESHOLD })) {
+      for (const c of relatedCandidates(b, spaceMates, { idf: relIdf, topN: 5, minScore: SIM_THRESHOLD, dropped: relDropped })) {
         add(b.blockId, c.to, c.why)
       }
     }
@@ -787,6 +822,106 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       rows.push({ from: r.to, to: r.from, why: r.why, sigFrom: r.sigTo, sigTo: r.sigFrom })
     }
     relEdges = rows
+  }
+
+  // ── 关联读取（S5 Task 6；spec §6.2 / §7.2）──────────────────────────────────
+  // "快"由物化负责（Task 4/5），"对"由**读时校验**负责：增量只补同 tag 入边、content 类入边
+  // 要等下次全量重建才补齐（spec §6.1），所以物化行**必然会陈旧**。读侧逐边校验三条
+  // （端点存在 / tag 相等 / 内容指纹一致）把失效边从**视图**里剔掉。
+  // **只读语义**：不改文件、不改 relEdges、不计入 stats（spec §7.2：否则同一库的 stats 会
+  // 随查询历史漂移，不可复现）。
+
+  /**
+   * 边按 `from` 分组（读路径用）。缓存键取 `relEdges` 的**引用**：所有写路径
+   * （buildIndex / relateIncremental / loadIndexFromDisk）都整体重绑 `relEdges`，
+   * 引用一变缓存即失效 —— 比按行数/内容做键更省，也不会漏。
+   */
+  let relGroupCache = null
+  function relGroupedByFrom() {
+    if (relGroupCache && relGroupCache.edges === relEdges) return relGroupCache.map
+    const map = new Map()
+    for (const r of relEdges) {
+      const arr = map.get(r.from)
+      if (arr) arr.push(r)
+      else map.set(r.from, [r])
+    }
+    relGroupCache = { edges: relEdges, map }
+    return map
+  }
+
+  /** 读路径的块表与文档标题表（缓存键 = docsGen，理由见其声明）。 */
+  let readViewCache = null
+  function readView() {
+    if (readViewCache && readViewCache.gen === docsGen) return readViewCache
+    const blocks = new Map()
+    const titles = new Map()
+    for (const d of docs) {
+      titles.set(d.id, d.title)
+      for (const b of d.blocks) blocks.set(toBlockId(d.id, b.n), b)
+    }
+    readViewCache = { gen: docsGen, blocks, titles }
+    return readViewCache
+  }
+
+  // 排序键：骨架层（tag，必然非空零噪声）→ 覆盖层（content，分数降序）→ 重复（最后）。
+  // 与 `relatedCandidates` 的层序一致；同层内保持物化顺序（sort 稳定 + 物化可复现），
+  // 不另造一套排序口径（两套排序必然漂移）。
+  const relRank = (r) => (r?.why?.kind === 'tag' ? 0 : r?.why?.kind === 'content' ? 1 : 2)
+  const relScore = (r) => (typeof r?.why?.score === 'number' ? r.why.score : 0)
+
+  /** `why` 深一层拷贝：返回值可能被 GUI/agent 改写，不能让它穿到 `relEdges` 内部。 */
+  const whyCopy = (why) => (why && typeof why === 'object'
+    ? { ...why, ...(Array.isArray(why.shared) ? { shared: [...why.shared] } : {}) }
+    : why)
+
+  /**
+   * 边 → 锚点摘要。**绝不含正文**：只有 `{blockId, docId, title, why, score}`（spec §7.2）。
+   * **why 必带**：锚点的价值在"为什么连上"（tag 值 / shared 共有特征字），无 why 的锚点
+   * 与随机跳转无异；`score` 仅 content/duplicate 有，tag 边给 null（不编造分数）。
+   */
+  function relSummary(row, view) {
+    const to = String(row.to || '')
+    const docId = docIdOfBlockId(to)
+    return {
+      blockId: to, docId, title: view.titles.get(docId) || '',
+      why: whyCopy(row.why), score: typeof row.why?.score === 'number' ? row.why.score : null,
+    }
+  }
+
+  /**
+   * `getRelated` 的内核。`lookup` 允许调用方（search）复用同一次块表 —— 一次检索要对多个
+   * item 各查一次，每查各建一张表是 O(items × 块数) 的纯浪费。
+   */
+  function relatedOf(blockId, { validate = true, limit = MAX_RELATED, lookup = null } = {}) {
+    const id = String(blockId ?? '')
+    if (!id) return []
+    // 双向物化（buildRelations 的镜像轮）⇒ 直接按 `from === blockId` 取即可，无需全表扫
+    const rows = relGroupedByFrom().get(id) || []
+    if (!rows.length) return []
+    // ① 读时校验（只读）：端点消失 / tag 变了 / 内容变了 ⇒ 从视图剔除，物化文件与 relEdges 不动
+    const table = validate ? (lookup || readView().blocks) : null
+    const live = table ? rows.filter((r) => validateRelation(r, table)) : rows
+    const n = Number(limit)
+    const lim = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : MAX_RELATED
+    const sorted = [...live].sort((a, b) => relRank(a) - relRank(b) || relScore(b) - relScore(a))
+    const nonDup = sorted.filter((r) => r.why?.kind !== 'duplicate')
+    const dups = sorted.filter((r) => r.why?.kind === 'duplicate')
+    const view = readView()
+    // ② `limit` 只约束"关联"（tag/content）；duplicate **不计入**预算、追加在末尾并保持
+    //    可区分（`why.kind === 'duplicate'`）—— 与 `relatedCandidates` 的 MAX_RELATED 口径
+    //    一致（spec §5.5）：重复项要在 GUI/agent 侧**独立**呈现，不能被关联预算饿死。
+    return [...nonDup.slice(0, lim), ...dups].map((r) => relSummary(r, view))
+  }
+
+  /**
+   * 该块的**全部**锚点（spec §7.1/§7.2）。
+   * @param validate 缺省 true：逐边三校验（端点存在 / tag 相等 / 内容指纹一致）。
+   *   显式传 false 得到"未校验视图"（调试用：看物化里到底存了什么）。
+   * @param limit 关联条数上限（缺省 MAX_RELATED），duplicate 不占该预算（见 relatedOf ②）。
+   * off 模式（`knowledgeRelateMode: 'off'`）下 `relEdges` 恒为空 ⇒ 返回 []（等价 S4：无关联概念）。
+   */
+  function getRelated(blockId, { validate = true, limit = MAX_RELATED } = {}) {
+    return relatedOf(blockId, { validate, limit })
   }
 
   /**
@@ -810,6 +945,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       parsed.doc.blocks = parsed.doc.blocks.slice(0, MAX_BLOCKS_PER_DOC)
     }
     docs[i] = parsed.doc
+    docsGen += 1 // 原地替换也算新代数（见 docsGen 声明处的 why）
 
     // 该文档的全部 postings 重算：先从既有倒排中摘除 di === i，再按新块重新插入。
     // df 用"该 gram 覆盖的文档数"（块级 posting 可能同文档多条，故去重后计数）。
@@ -930,6 +1066,8 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       return spaces.map((s) => ({ ...s, docCount: count[s.id] || 0 }))
     },
     search,
+    /** 该块的关联锚点（读时校验视图；spec §7.1/§7.2）。Task 7/8 的 CLI/路由直接转发本口。 */
+    getRelated,
     updateDoc, getDoc, listEntries, listTree, getLinks, getGraph,
     getDocs() { return docs },
     getIdf() { return idf },
@@ -939,6 +1077,19 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     getRelateMode() { return _relateMode },
     stats() {
       const sorted = [...searchTimes].sort((a, b) => a - b)
+      // S5 §7.2：关联层观测。四个 `*Edges` 一律数 `related.jsonl` 的**物化行数**（按 why.kind
+      // 分类，含镜像行 —— 行数就是文件行数，可比对 `relLines`）；`dropped` 只数**计算期**丢弃
+      // （shared 为空 / 端点消失 / 超上限截断）。
+      // **不含读时校验剔除数**：读侧 validate 返回的是"视图"、属只读行为，计入会让同一库的
+      // stats 随查询历史漂移（不可复现 ⇒ 指标失效）。这条是 spec 定死的，别"顺手补全"。
+      const rc = { edges: 0, tagEdges: 0, contentEdges: 0, dupEdges: 0 }
+      for (const r of relEdges) {
+        rc.edges += 1
+        const k = r?.why?.kind
+        if (k === 'tag') rc.tagEdges += 1
+        else if (k === 'content') rc.contentEdges += 1
+        else if (k === 'duplicate') rc.dupEdges += 1
+      }
       return {
         version: INDEX_VERSION, docs: docs.length,
         blocks: docs.reduce((s, d) => s + d.blocks.length, 0),
@@ -947,6 +1098,8 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
         indexBytes,
         // S3 §6：检索耗时分布（进程内样本；跨进程见 .index/metrics.json）
         search: { count: sorted.length, elapsedP50: pct(sorted, 0.5), elapsedP95: pct(sorted, 0.95) },
+        // off 模式恒为全 0（relEdges 为空）：字段形状保持稳定，消费方不必分支
+        related: { ...rc, dropped: relDropped.noShared + relDropped.missingEnd + relDropped.capped },
       }
     },
   }
