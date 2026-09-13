@@ -258,16 +258,40 @@ GET /knowledge/related?id=<blockId>&limit=<N>
 | 向量 / gram | `kernel/knowledge.mjs:177,186,305,348` | `b.text`（**60 字截断摘要**） |
 | 关键词 | `kernel/knowledge.mjs:350` | `summary: b.text` + **`full: b.full`** |
 
-**修正（口径必须完全统一，否则两条路径会给出互相矛盾的相关度）**：
-索引文本统一取 **`relationContent(b)` = `stripTypePrefix(full || text)`**：
+**修正（两条路径口径必须一致，否则同一次查询里"向量说近、关键词说远"会互相抵消）**：
+索引文本统一取 **`retrievalText(b)` = `stripTypePrefix(text)` ∪ `stripTypePrefix(full)`**（并集）：
 
-- 向量 / gram 路径：`gramCounts` 的来源从 `b.text` 改为 `relationContent(b)`
-- 关键词路径：`summary` 参数同样传 `relationContent(b)`；`full: b.full` **保持**（用于 `mode='full'` 返回正文）
+- 向量 / gram 路径：`gramCounts` 的来源从 `b.text` 改为 `retrievalText(b)`
+- 关键词路径：`summary` 参数同样传 `retrievalText(b)`；`full: b.full` **保持**（用于 `mode='full'` 返回正文）
 - `snippet` 仍取 `b.text`（**行为不变**，避免改动前端高亮与展示逻辑）
+- 摘要已被 full 包含时**不重复拼接**（`memory.mjs` 那类"摘要=正文前 60 字"的条目即如此），
+  避免给倒排灌入重复 gram、也让 df 统计不被自己抬高
 
-收益：**同时改善检索与关联**（二者共用同一索引）
+**⚠️ 为什么是"并集"而不是只取 full（实施后实测修正，原文写的是只取去前缀 full）**：
+
+只取 full 虽修好了"落在 60 字之后的内容查不到"，却引入了**新的召回退化**——
+真实库 76 条中 **59 条（78%）** 的摘要是"人工/agent 另写的抽象摘要"，用词**不落在 full 里**。
+只索引 full 会让这些**摘要独有词整体退出倒排**。真实库 10 个 query 前后对比：
+
+| query | 改前（BASE） | 只取 full | **并集（最终）** |
+|---|---|---|---|
+| `不回显` | #7 (0.667) | **#57 (0.084) ❌ 明显退化** | **#7 (0.169) ✅ 恢复** |
+| `expression` | 0 命中 | #74 ✅ | ✅ 保留 |
+| `keep-alive` | 0 命中 | #11 ✅ | ✅ 保留 |
+| `文件传输助手` | comm#0 | #51（换块） | **comm#0 回到 top-1** ✅ |
+| 其余 6 个 | — | — | 与只取 full 持平 |
+
+即：**并集保住全部收益（正文独有词由 0 命中变可检索），同时找回被丢掉的摘要词召回**，
+且与本仓库既有先例一致——legacy 记忆检索 `kernel/graph.mjs:36` 的索引文本就是
+`` `${theme} ${tagText} ${summary} ${full}` ``（摘要与全文**都在**）。
+
+**关联层不受此影响**：关联相似度仍按 `relationContent`（只 full）算——
+§5.3 的阈值 0.15 是按那个口径校准的，改成并集会让校准失效。
+检索索引文本与关联文本**故意不同口径**，两者共用同一次块遍历但各自取名，**不要合并**。
+
 代价：`INDEX_VERSION` 1→2 → 旧索引整体重建（一次性）
-**回归要求**：S1 检索既有用例必须全过；额外记录若干真实 query 的前后命中对比（写入报告）
+**回归要求**：S1 检索既有用例必须全过；真实 query 前后命中对比见上表，
+并见 `.superpowers/sdd/.../s5-task-2-report.md` 的完整 10 query 表
 
 ## 9. 数据卫生
 

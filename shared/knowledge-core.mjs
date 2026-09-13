@@ -589,6 +589,30 @@ export function relationContent(block) {
   return stripTypePrefix(b.full || b.text || '')
 }
 
+// **检索**索引的文本口径（与 `relationContent` 故意不同，别把两者合并）。
+//
+// 为什么不用 `relationContent` 直接做检索索引：实测真实库 76 条条目里 **59 条（78%）**
+// 的摘要是"人工/agent 另写的抽象摘要"，其用词**不落在 full 里**（如 `摘要：…不回显表达式返回值`
+// / `正文：解决：js 内把结果写入 document.title…`）。若索引只取 full，这些**摘要独有词**
+// 会整体退出倒排 —— 实测 10 个 query 中有 3 个换块、其中 `不回显` **明显退化**
+// （0.667 命中正确条目 → 0.084 命中无关块）。这与"索引口径修正本该改善检索"的目的相反。
+//
+// 取并集而非替换，理由有三：
+//  ① 保住全部收益：`expression` / `keep-alive` 这类**只在长正文里**的词仍能被检索到
+//     （旧口径 0 命中）——这正是当初改口径的动机；
+//  ② 找回被丢掉的召回：摘要独有词重新可检索（`不回显` 恢复命中正确条目）；
+//  ③ 沿用本仓库既有先例：legacy 记忆检索 `kernel/graph.mjs:36` 的索引文本就是
+//     `` `${theme} ${tagText} ${summary} ${full}` ``（摘要与全文**都在**）。
+// 摘要已被 full 包含时不重复拼接（memory.mjs 那类"摘要=正文前 60 字"的条目即如此），
+// 避免给倒排灌入重复 gram、也让 df 统计不被自己抬高。
+export function retrievalText(block) {
+  const b = block || {}
+  const content = relationContent(b)
+  const summary = stripTypePrefix(b.text || '')
+  if (!summary || content.includes(summary)) return content
+  return `${summary} ${content}`
+}
+
 // 内容指纹：sha1 前 12 位（spec §6.2）。读时校验靠它判断"边两端的内容还是不是物化时那份"，
 // 内容被改 → 该边剔除（保守：宁可少连也不错连）。48 bit 在单库规模下碰撞可忽略。
 export function blockContentSig(block) {

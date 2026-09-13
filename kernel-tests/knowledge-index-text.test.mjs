@@ -60,19 +60,26 @@ test('索引文本取 relationContent：正文（full）深部词可召回，sni
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('已知代价（钉住行为）：只出现在摘要、正文与标签都没有的词不再可检索', async () => {
+test('口径 = 摘要 ∪ 去前缀 full：摘要独有词**可**检索（原「已知代价」用例的反转）', async () => {
   const { dir } = makeFixture()
   try {
     const store = createKnowledgeStore({ configDir: dir })
     await store.load({ force: true })
-    // 为什么钉住"查不到"：这是 S5 §8 口径变更的**真实代价**（真实库实测 59/76 条目的
-    // 摘要与正文无重叠），不是缺陷、也不是漏改。写成用例是为了：若将来把口径改成
-    // "relationContent ∪ 摘要"（Task 2 报告里的建议项），这条会立刻红，提醒改口径的人
-    // 一并更新文档与前后对比，而不是悄悄漂移。
+    // 本用例原为「已知代价：只出现在摘要、正文与标签都没有的词**不再**可检索」，
+    // 是 Task 2 故意留的**金丝雀**：一旦口径改成"relationContent ∪ 摘要"就变红，提醒改口径者
+    // 一并更新文档与前后对比，而不是悄悄漂移。S5 终验收触发了它 —— 现按新口径反转。
+    //
+    // 触发依据（真实库 10 query 前后对比，见 s5-task-2-report §3）：真实库 76 条中 **59 条（78%）**
+    // 的摘要是"另写的抽象摘要"、用词不在 full 里。只索引 full 会让摘要独有词整体退出倒排，
+    // `不回显` 由 0.667（正确条目）掉到 0.084（无关块）。故改为**并集**：
+    // 保住新增收益（只在长正文里的词由 0 命中变可检索），同时找回摘要词召回。
+    // 与 legacy 记忆检索 `kernel/graph.mjs:36`（`${theme} ${tagText} ${summary} ${full}`）同口径。
     const bare = store.search({ query: 'zqsummary', topK: 5 })
-    assert.equal(bare.count, 0, '摘要独有词不进索引（两条路径口径一致，都不能召回）')
+    assert.ok(bare.count > 0, '摘要独有词应能召回（并集口径）')
+    assert.ok(bare.items[0].text.includes('zqsummary'), '命中的是含该摘要词的那条条目（ENTRY_B）')
+    assert.ok(!bare.items[0].text.includes('正文'), 'item.text 仍是摘要（snippet 口径未变）')
     const kw = store.search({ query: 'zqsummary', keywords: ['zqsummary'], topK: 5 })
-    assert.equal(kw.count, 0, '关键词路同口径，也不能召回')
+    assert.ok(kw.count > 0, '关键词路同口径，同样能召回')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

@@ -10,7 +10,7 @@ import { join, relative, sep, basename } from 'node:path'
 import {
   INDEX_VERSION, builtinSpaceSpecs, parseFrontmatter, splitBlocks, extractLinks,
   toDocId, hashLine,
-  countGrams, buildIdf, vectorizeText, blockIndexText, blockTagBoost, relationContent,
+  countGrams, buildIdf, vectorizeText, blockIndexText, blockTagBoost, relationContent, retrievalText,
   serializeIndex, parseJsonl, resolveLinkTarget,
   cosine, keywordScore, structBoostOf, fuseScore, makeSnippet, toBlockId,
   // S5 关联锚点（Task 1 的纯函数层）：物化 + 读时校验只用这几个，判定逻辑一律留在 shared
@@ -144,16 +144,22 @@ const SEARCH_SAMPLES = 100
 const SEARCH_RELATED_TOPN = 3
 
 /**
- * 索引文本的**唯一口径**（S5 Task 2 / spec §8）：内容部分取 `relationContent(b)`
- * （= `stripTypePrefix(full || text)`），不再取 `b.text`。
+ * **检索**索引文本的口径（S5 Task 2 / spec §8）：内容部分取 `retrievalText(b)`
+ * （= 摘要与去前缀 full 的**并集**），不再只取 `b.text`。
  *
  * **why**：`b.text` 是 `kernel/memory.mjs:186` 生成的 `类型前缀 + t.slice(0,60)` 截断摘要，
- * 实测同一条目 text=45 字 vs full=471 字（10 倍信息差）。而检索的向量/gram 路与关联物化
- * （`shared/knowledge-core.mjs` 的 `relatedCandidates`，同样按 relationContent 算 cos）
- * **共用同一份索引语料**——两边口径不一致时，同一对块在"检索排序"与"关联分数"里会给出
- * 互相矛盾的相关度，用户看到的 `score` 与 `related[].why.score` 对不上。
- * 统一到"去前缀 full"还顺带修掉截断摘要丢失语义细节的问题：落在 60 字之后的内容
- * 以前**根本进不了索引**（查不到），现在能查到。
+ * 实测同一条目 text=45 字 vs full=471 字（10 倍信息差）——落在 60 字之后的内容以前
+ * **根本进不了索引**（查不到），这是当初改口径的动机。
+ *
+ * ⚠️ **但只取 full 会引入新的召回退化**（S5 终验收实测）：真实库 76 条中 **59 条（78%）**
+ * 的摘要是"另写的抽象摘要"，用词**不在 full 里**。只索引 full 会让这些摘要独有词整体退出倒排：
+ * 10 个 query 里 3 个换块，`不回显` 从 0.667（正确条目）掉到 0.084（无关块）。
+ * 故取**并集**——保住新增收益（`expression`/`keep-alive` 这类只在正文里的词由 0 命中变可检索），
+ * 同时找回被丢掉的摘要词召回。详见 `shared/knowledge-core.mjs` 的 `retrievalText` 注释。
+ *
+ * 注意与**关联层**的区别：关联层（`buildRelIdf` / `relatedCandidates`）仍按
+ * `relationContent`（只 full）算相似度——阈值 0.15 是按那个口径校准的，改成并集会让校准失效。
+ * 两者共用同一次索引遍历，但**文本口径故意不同**，别合并。
  *
  * 类型标签前缀与 tagBoost 仍走 `blockIndexText`/`blockTagBoost`（entry 块 tag 加 3 倍权）：
  * 那是 S1 的 tag 命中语义，S5 不动。
@@ -161,7 +167,7 @@ const SEARCH_RELATED_TOPN = 3
  * 反过来说，**不要**在这里改回 `b.text`：改了就会退回"两条路径信息量不一致"的老问题。
  */
 function indexTextOf(b) {
-  return blockIndexText({ kind: b.kind, text: relationContent(b), entryTag: b.tag })
+  return blockIndexText({ kind: b.kind, text: retrievalText(b), entryTag: b.tag })
 }
 
 /**
@@ -447,10 +453,12 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     const cos = degraded ? 0 : cosine(
       vectorizeText(indexTextOf(b), { tagBoost: blockTagBoost(b), idf }), qvec,
     )
-    // 关键词路的 summary 与向量路**同一口径**（S5 §8：relationContent）——两条路径喂给融合
-    // 评分的必须同源，否则"向量说近、关键词说远"会在同一查询内互相抵消。
+    // 关键词路的 summary 与向量路**同一口径**（S5 §8：retrievalText = 摘要 ∪ 去前缀 full）——
+    // 两条路径喂给融合评分的必须同源，否则"向量说近、关键词说远"会在同一查询内互相抵消。
+    // 取并集而非只取 full：关键词路恰恰最擅长精确词命中，把摘要独有词从倒排里去掉，
+    // 等于把 `不回显` 这类用户真会敲的词判为不相关（实测退化 0.667→0.084，见 indexTextOf 注释）。
     // `full: b.full` 保持原样：它是 `mode='full'` 的正文来源，也是"内容落在摘要截断之外"的兜底信号。
-    const kw = keywordScore({ tag: b.tag || '', summary: relationContent(b), full: b.full || '', theme: doc.title }, kws)
+    const kw = keywordScore({ tag: b.tag || '', summary: retrievalText(b), full: b.full || '', theme: doc.title }, kws)
     const struct = structBoostOf({ block: { kind: b.kind }, doc, query: qtext, keywords: kws })
     return { cos, kw, struct }
   }
