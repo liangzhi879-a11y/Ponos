@@ -83,11 +83,12 @@ test('checkSpecQuality：action 命名非法 / 没有 read 命令 → 硬错误'
   assert.ok(q2.errors.some((e) => e.includes('read 命令')), q2.errors.join('｜'))
 })
 
-test('checkSpecQuality：命令数偏少 / 缺 returns / 都在同一页面 → 只提示不拦（避免永远交不出东西）', () => {
+test('checkSpecQuality：★ 不再有写死的命令条数阈值（用户明确反对）——缺 returns / 同页面仍只提示不拦', () => {
   const spec = { commands: [{ action: 'listAll', title: '查询全部', kind: 'read', params: [], steps: [{ act: 'goto', url: '/list' }] }] }
   const q = checkSpecQuality(spec, { hasMaterial: true })
   assert.equal(q.ok, true, '这些属偏好，不该阻塞交付')
-  assert.ok(q.warnings.some((w) => w.includes('命令数偏少')), q.warnings.join('｜'))
+  assert.ok(!q.warnings.some((w) => /命令数偏少|至少 ?\d+ ?条|条数/.test(w)),
+    `不得再出现任何固定条数阈值/文案：${q.warnings.join('｜')}`)
   assert.ok(q.warnings.some((w) => w.includes('returns')), q.warnings.join('｜'))
 })
 

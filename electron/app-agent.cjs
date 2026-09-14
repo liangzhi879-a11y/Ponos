@@ -386,8 +386,13 @@ function parseTurn(text) {
  *
  * 硬错误只留"会让产物直接不可用"的问题：title 空/占位、params 没有说明、read 没有返回说明、
  * action 命名非法。这些将来会直接体现在模型看到的工具描述里，写砸了工具就是废的。
- * 「命令数偏少 / 覆盖度不够」属**偏好**，记 warning 并在界面提示用户核对——若把它设成硬拦，
- * 模型一旦凑不出足够数量就会永远交不出东西（比少几条命令更糟）。
+ *
+ * ★ 为什么**没有**对命令条数的任何阈值（含 warning）：用户明确反对写死条数——
+ * "条数尽可能多，不要硬性要求；质量是根据实际应用/网站决定的"。
+ * 命令该有几条，取决于用户的覆盖度需求与目标实际暴露的入口数，写死任何 N 都会逼模型凑数
+ * （凑出来的命令会在真实试跑里失败）或让本来就小的应用永远"不达标"。
+ * 覆盖度由 **M4 的 LLM 评审轮**对着"用户需求 + 已探明能力清单 + 交付的 Spec"评判，
+ * 结论落进 spec.review，而不是靠一个与真实质量无关的计数。
  * @returns {{ok:boolean, errors:string[], warnings:string[]}}
  */
 function checkSpecQuality(spec, { driver = 'browser', hasMaterial = true } = {}) {
@@ -395,10 +400,6 @@ function checkSpecQuality(spec, { driver = 'browser', hasMaterial = true } = {})
   const warnings = []
   const cmds = Array.isArray(spec?.commands) ? spec.commands : []
   const d = normalizeDriver(driver)
-  const minCommands = hasMaterial ? 3 : 1
-  if (cmds.length < minCommands) {
-    warnings.push(`命令数偏少：${cmds.length} 条${hasMaterial ? `（有素材时建议至少 ${minCommands} 条）` : ''}——建议覆盖更多功能入口，而不是只写一个页面能做的事`)
-  }
   const paths = new Set()
   for (const [i, c] of cmds.entries()) {
     const at = `commands[${i}]`
