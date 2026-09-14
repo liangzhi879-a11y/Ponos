@@ -19,6 +19,7 @@ const appAgent = require('./app-agent.cjs')
 const { callLlmStream } = require('./app-llm.cjs')
 const appValidator = require('./app-validator.cjs')
 const httpProbe = require('./app-http-probe.cjs')
+const appWebsearch = require('./app-websearch.cjs')
 const { normalizeUrl, snapshotToText } = require('./app-util.cjs')
 // 分区键唯一出处（web 按站点 app-site-<host>、desktop 按 app-<appId>）——绝不在此手写 persist:automation-*
 const { appSessionKey } = require('./app-session-key.cjs')
@@ -537,6 +538,21 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
         if (!visited.size) return { ok: true, summary: '还没有抓过任何页面（可能是桌面应用）。可以直接 submit_spec。' }
         return { ok: true, summary: [...visited.values()].map((p) => `${p.url}｜${p.title || '(无标题)'}｜${p.interactives ?? '?'} 个可交互线索｜表单 ${p.forms} 个`).join('\n') }
       }
+      if (tool === 'web_search') {
+        // ★ 用户明确要求：原生应用常有官方/开源 CLI，"本机探不到" ≠ "没有"。
+        //   下"无法接入"结论前先联网确认一次（探测不到很可能是用户填错了路径）。
+        //   检索失败 **不抛**：如实回"没查到"，让模型换关键词或改用其它通道，绝不打断整次生成。
+        const query = String(args?.query || '').trim()
+        if (!query) return { ok: false, summary: 'web_search 缺少 query；请填要检索的问题（例：<应用名> CLI command line | headless | API）' }
+        emitProgress(appId, { phase: 'explore', detail: `联网检索：${query.slice(0, 80)}…` })
+        const r = await appWebsearch.searchWeb({ query, maxResults: args?.maxResults, provider: appWebsearch.loadSearchProvider() })
+        if (!r.ok) return { ok: false, error: r.error, summary: `联网检索没查到（${r.error}）。可以换关键词再试，或改用其它通道；但**不要**仅凭"本机探不到"就断言该应用没有 CLI。` }
+        const srcLines = (r.sources || []).slice(0, 8).map((s) => `- ${s.title}｜${s.url}`).join('\n')
+        return {
+          ok: true, text: r.text, sources: r.sources,
+          summary: `${r.text || '(检索无正文)'}${srcLines ? `\n来源：\n${srcLines}` : ''}`,
+        }
+      }
       if (tool === 'fetch_page') {
         const url = normalizeUrl(args?.url)
         if (!url) return { ok: false, summary: `网址不合法：${String(args?.url)}（要写完整地址，如 https://example.com/foo）` }
@@ -656,7 +672,7 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
           summary: `用户已完成登录，登录态已生效（后续 browse / 试跑 / AI 调用都会复用）。登录后重新抓取的首页素材：\n${materialLine}`,
         }
       }
-      return { ok: false, summary: `未知工具「${tool}」。可用工具：fetch_page / list_pages / browse / click / back / request_login / run_command / submit_spec。` }
+      return { ok: false, summary: `未知工具「${tool}」。可用工具：web_search / fetch_page / list_pages / browse / click / back / request_login / run_command / submit_spec。` }
     }
 
     const agent = await appAgent.runAgentLoop({

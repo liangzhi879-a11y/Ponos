@@ -76,6 +76,10 @@ function agentToolDocs(driver = 'browser') {
     )
   }
   lines.push(
+    '· **联网检索**：确认某个应用是否存在官方/开源 CLI 或 API（探测不到本机 CLI 时先查这里）。',
+    '  ★ **本机探不到不等于没有**：很多应用自带 CLI/headless 模式，只是用户填错了路径或没装到 PATH。',
+    '  下"无法接入"结论前**先联网确认一次**，确认确实没有再把结论写成"无法接入"：',
+    '  {"thought":"…","tool":"web_search","args":{"query":"<应用名> CLI command line | headless | API"}}',
     '· 试跑你草稿里的某条命令，看真实结果或真实报错（**只允许 read 命令**；write 会被拒绝，因为那会真的改动用户的数据）：',
     '  {"thought":"…","tool":"run_command","args":{"action":"命令名","args":{}}}',
     '· 提交一版 Spec（系统会做结构校验 + 封装质量校验 + **真实试跑**，不通过就把具体问题回给你继续改）：',
