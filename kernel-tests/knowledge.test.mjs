@@ -81,7 +81,10 @@ test('parseDocFile 抽取链接边（from=docId）', () => {
   try {
     const space = discoverSpaces({ configDir: dir }).find((s) => s.id === 'my-notes')
     const { links } = parseDocFile({ absPath: join(notes, 'a.md'), space, relPath: 'a.md' })
-    assert.deepEqual(links, [{ from: 'my-notes/a.md', to: 'b' }])
+    // S5.1 追加 `anchor` / `line` / `block`：`line`+`block` 用于把链接**定位到所属条目**，
+    // 是条目级 ref 关联的源（本 fixture 的链接在 frontmatter 之后、无 entry 块 → block 为 null，
+    // 退化为文档级，属预期）。见 spec s51 §4.1。
+    assert.deepEqual(links, [{ from: 'my-notes/a.md', to: 'b', anchor: '', line: 3, block: null }])
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

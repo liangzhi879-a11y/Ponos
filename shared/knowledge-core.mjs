@@ -393,24 +393,41 @@ export function isBlockId(value) {
 // 外链（含协议）与纯锚点不算边——它们连不到本文档集内的任何文档，进图只会是噪声。
 // 去重按 `to`（同一目标多次出现只留首次，anchor 取首次出现的别名）：
 // links.jsonl 与图扩展都按目标聚合，重复边只会放大同一文档的权重。
+//
+// 返回项带 `index`（匹配在原文中的字符下标）：调用方据此把链接**定位到所属块**
+// （S5.1：条目级 ref 关联要知道"是哪条经验引用了这篇文档"）。
 export function extractLinks(text) {
   const wikiRe = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g
   const mdRe = /\[([^\]]*)\]\(([^)\s]+)\)/g
   const out = []
   const seen = new Set()
-  const push = (to, anchor) => {
-    const t = String(to ?? '').trim()
-    if (!t || seen.has(t)) return
-    seen.add(t)
-    out.push({ to: t, anchor: anchor || '' })
-  }
   const src = String(text ?? '')
+
+  // 防护①：排除**代码跨度**内的匹配。统计匹配位置之前的反引号数量，奇数 = 位于行内代码内。
+  // 依据（真实库实测）：workflow.md 讲 JS 写法时写了 `` `anyOf:[['a','b']]` ``，
+  // wiki 正则 /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/ 会把 JS 嵌套数组当成 [[wiki 引用]]，
+  // 于是 links.jsonl 多出一行垃圾 `{"to":"'a','b'"}`（全库 7 个文档就这 1 条链接，还是假的）。
+  // 这是**通用**防护：文档里"教人怎么写 wiki 链接"的示例段落同样会被挡住。
+  const inCode = (idx) => ((src.slice(0, idx).match(/`/g) || []).length % 2) === 1
+
+  // 防护②：**目标形状校验**——路径字符集之外的字符一律拒绝。
+  // `'a','b'` 含引号与逗号 → 被拦；这挡住的是"代码/JSON/伪代码片段被当成路径"这类误判，
+  // 补足防护①（若片段在代码块 ``` 内而反引号计数为偶数时，仅靠①会漏）。
+  const badShape = (t) => /[\s'"(){}\[\]<>,;|]/.test(t)
+
+  const push = (to, anchor, index) => {
+    const t = String(to ?? '').trim()
+    if (!t || seen.has(t) || badShape(t)) return
+    if (inCode(index)) return
+    seen.add(t)
+    out.push({ to: t, anchor: anchor || '', index })
+  }
   let m
-  while ((m = wikiRe.exec(src))) push(m[1], m[2] || '')
+  while ((m = wikiRe.exec(src))) push(m[1], m[2] || '', m.index)
   while ((m = mdRe.exec(src))) {
     const href = String(m[2] || '')
     if (/^[a-z]+:\/\//i.test(href) || href.startsWith('#')) continue
-    push(href)
+    push(href, '', m.index)
   }
   return out
 }
@@ -560,6 +577,14 @@ export const MAX_RELATED = 8
 export const MAX_TAG_RELATED = 5
 export const MAX_CONTENT_RELATED = 5
 
+// ref 层（S5.1）：一条**手写引用**最多连到被引文档的几条条目。
+// 为什么必须设上限：真实库 `workflow.md` 有 57 条条目，若"引用整篇文档"就全连，
+// 一次引用会产出 57 条边（物化膨胀 + 挤占锚点预算）。按**内容相似度**取前 3，
+// 即"引用一篇文档时，最值得接着读的 3 条经验"。取 3 而非 5：ref 是
+// 结构性信号（层级/主题归属）的补充，不是替代，且用户手写引用通常指向"那篇文档"
+// 而非"其中某几条"，给太多会把自动派生层（content）挤没。
+export const MAX_REF_RELATED = 3
+
 // 覆盖层的 tagBoost **必须为 1**（校准结论，不是随手选；spec §5.3）：
 //  ① `vectorizeText` 的 boost 在**归一化之后**乘（`shared/knowledge-core.mjs:257-259`），
 //     即返回值 = 归一化向量 × boost ⇒ `cosine` 不是真余弦（两侧各乘一次 boost → 分数被放大
@@ -570,14 +595,28 @@ export const MAX_CONTENT_RELATED = 5
 //     淹没；tag 关系本就由**骨架层**负责，覆盖层只按内容算。
 export const RELATION_TAG_BOOST = 1
 
-// 剥掉"类型前缀"：开头至首个中文冒号（含）。
+// 剥掉"类型前缀"——但**只认已知的类型标签**，不按"首个冒号"一刀切。
+//
 // 前缀由 kernel/memory.mjs:183-187 生成（`流程要点：` / `用户偏好（x）：` / `业务要点（x）：` /
-// `用户纠正（x）：`），它只标条目类型、**同类型条目共有**，属纯噪声：实测不去前缀时，
-// 高分对的 `shared` 全是"流程/程要/要点"这类前缀自身的字（spec §13.1 轮②）。
+// `用户纠正（x）：`），它只标条目类型、**同类型条目共有**，属纯噪声：
+// 实测不去前缀时，高分对的 `shared` 全是"流程/程要/要点"这类前缀自身的字（spec §13.1 轮②）。
+//
+// ⚠️ **为什么不能用 `indexOf('：')` 一刀切**（S5.1 实测修正，原实现即如此）：
+// memory 条目的正文常含**中文冒号**，一刀切会把正文前段当"前缀"一起剥掉。
+// 真实库 78 条 entry 实测：**70 条（90%）被剥**，其中 **20 条剥掉 >12 字**（误剥正文），
+// **1 条被剥到 < MIN_LEN(20) 而彻底排除在关联之外**。例：
+//   "在开发/调试企业微信相关自动化（发消息、通知、机器人）时，用户明确要求：测试目标只能…"
+//   一刀切后只剩"测试目标只能…"——**前半段语义全丢**（content 相似度就建在残段上）。
+// 故收窄为白名单：**零误伤**，代价是将来 memory.mjs 若新增类型需在此登记（宁可漏剥，
+// 不可错剥——漏剥只是多点噪声，错剥是丢掉真实语义）。
+const TYPE_PREFIX_RE = new RegExp(
+  '^(?:流程要点|用户偏好|业务要点|用户纠正|用户画像|会话主题)'
+  + '(?:[（(][^：\\n，。、；！？]{0,12}[）)])?：',
+)
+
 export function stripTypePrefix(s) {
   const t = String(s ?? '')
-  const i = t.indexOf('：')
-  return i < 0 ? t : t.slice(i + 1)
+  return t.replace(TYPE_PREFIX_RE, '')
 }
 
 // 关联/索引的统一正文口径：`stripTypePrefix(full || text)`。
@@ -782,6 +821,13 @@ export function validateRelation(edge, lookup) {
   if (kind === 'content' || kind === 'duplicate') {
     // ③ 两端内容指纹仍等于物化时那份（内容被改 → 剔除；保守：宁可少连也不错连）
     return blockContentSig(a) === edge.sigFrom && blockContentSig(b) === edge.sigTo
+  }
+  if (kind === 'ref') {
+    // ref（S5.1）：**只要求两端存在**（① 已在上面校验），**不比对内容指纹**。
+    // 理由：引用是**用户手写的意图**——"这条经验引用了那篇文档"不因文档内容被编辑而失效。
+    // 若按指纹校验，改一个字就会让引用锚点凭空消失，与用户预期相反
+    // （手写引用的语义是"我指向那篇文档"，与目标内容无关）。
+    return true
   }
   return false // 未知 kind 一律不认（保守）
 }

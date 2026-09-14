@@ -15,6 +15,8 @@ import {
   cosine, keywordScore, structBoostOf, fuseScore, makeSnippet, toBlockId,
   // S5 关联锚点（Task 1 的纯函数层）：物化 + 读时校验只用这几个，判定逻辑一律留在 shared
   relatedCandidates, blockContentSig, validateRelation, MIN_LEN, SIM_THRESHOLD, MAX_RELATED,
+  // S5.1：ref 层（手写引用 → 条目级关联）需要自己的目标数上限与真余弦口径的 boost
+  MAX_REF_RELATED, RELATION_TAG_BOOST,
 } from '../shared/knowledge-core.mjs'
 
 /** 空间根：<configDir>/knowledge（configDir 由调用方给，本模块不自解析 home） */
@@ -124,7 +126,28 @@ export function parseDocFile({ absPath, space, relPath }) {
       tag: b.entryTag || null, full: b.entryFull || null,
     })),
   }
-  const links = extractLinks(raw).map((l) => ({ from: docId, to: l.to }))
+  // 链接定位（S5.1）：extractLinks 给的字符下标 → 行号 → 所属块。
+  // 有了块号才能建**条目级 ref 关联**（"是哪条经验引用了这篇文档"），否则只能退化成文档级。
+  // 块区间取 [b.line, 下一块.line)：splitBlocks 的 line 已按 bodyStartLine 偏移，与 raw 行号同基准。
+  // 定位不到块（链接在 frontmatter 后、首个块之前等）→ block 置 null，不丢链接、只是退化为文档级。
+  const lineOfIndex = (idx) => raw.slice(0, Math.max(0, idx || 0)).split('\n').length
+  const blockAtLine = (line) => {
+    for (let i = 0; i < doc.blocks.length; i++) {
+      const b = doc.blocks[i]
+      const next = doc.blocks[i + 1]
+      if (line >= b.line && (!next || line < next.line)) return b
+    }
+    return null
+  }
+  const links = extractLinks(raw).map((l) => {
+    const line = lineOfIndex(l.index)
+    const b = blockAtLine(line)
+    return {
+      from: docId, to: l.to, anchor: l.anchor || '', line,
+      // 只有 entry 块才能当 ref 边的源：段落/标题不是"经验条目"，挂上去会造出不存在的锚点源。
+      block: b && b.kind === 'entry' ? b.n : null,
+    }
+  })
   return { doc, links }
 }
 
@@ -288,10 +311,14 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       const target = owner
         ? resolveLinkTarget({ fromRel: owner.rel, to: l.to, spaceId: owner.spaceId, docIds: ids })
         : null
-      nextLinks.push({ from: l.from, to: l.to, target })
+      // `anchor`/`line`/`block` 一并保留（S5.1）：`block` 是链接所在**条目**的块号，
+      // 是条目级 ref 关联的源；`line` 供 GUI 跳转定位；`anchor` 是被引块的别名/锚点。
+      nextLinks.push({
+        from: l.from, to: l.to, anchor: l.anchor || '', line: l.line, block: l.block ?? null, target,
+      })
       const arr = out.get(l.from)
-      if (arr) arr.push({ to: l.to, target })
-      else out.set(l.from, [{ to: l.to, target }])
+      if (arr) arr.push({ to: l.to, target, block: l.block ?? null, line: l.line })
+      else out.set(l.from, [{ to: l.to, target, block: l.block ?? null, line: l.line }])
     }
 
     docs = nextDocs
@@ -401,9 +428,13 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     const linkRows = parseJsonl(raw('links.jsonl'))
     linkOut = new Map()
     for (const l of linkRows) {
+      // `block`/`line` 必须一并读回（S5.1）：ref 边以"链接所在的**条目**"为源，
+      // 只回填 to/target 会让**重载索引后 ref 边整体消失**（物化文件里有、内存里没有），
+      // 表现为"重启一次引用关联就没了"。
+      const row = { to: l.to, target: l.target, block: l.block ?? null, line: l.line ?? null }
       const arr = linkOut.get(l.from)
-      if (arr) arr.push({ to: l.to, target: l.target })
-      else linkOut.set(l.from, [{ to: l.to, target: l.target }])
+      if (arr) arr.push(row)
+      else linkOut.set(l.from, [row])
     }
     const gramDocs = []
     for (const d of docs) {
@@ -741,6 +772,51 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
         idf: relIdf, topN: 5, minScore: SIM_THRESHOLD, dropped: relDropped,
       })) add(b.blockId, c.to, c.why)
     }
+    // ref 边（S5.1 spec §4.2）：把**手写引用**变成条目级关联。
+    //
+    // 源 = 链接所在的**条目**（`link.block`，由 parseDocFile 按行号定位）；定位不到块时
+    // 退化为"该文档的全部条目"（宁可全连也不丢这条引用，但仍受 MAX_REF_RELATED 约束）。
+    // 目标 = 被引文档的条目，按 `cos(源, 目标)` 降序取前 MAX_REF_RELATED。
+    // **断链（target 为 null）不产生任何边** —— 这同时是伪链接的**兜底**：
+    // 即便 `extractLinks` 的形状校验漏了某种伪链接，它也 resolve 不到真实文档 → 无边。
+    // 放在镜像轮**之前**：ref 边也获得反向行，条目级也能回答"谁引用了我"。
+    {
+      const byDoc = new Map()
+      for (const b of pool) {
+        const a = byDoc.get(b.docId)
+        if (a) a.push(b)
+        else byDoc.set(b.docId, [b])
+      }
+      const byId = new Map(pool.map((b) => [b.blockId, b]))
+      const vcache = new Map()
+      const vecOf = (b) => {
+        let v = vcache.get(b.blockId)
+        if (!v) {
+          v = vectorizeText(relationContent(b), { tagBoost: RELATION_TAG_BOOST, idf: relIdf })
+          vcache.set(b.blockId, v)
+        }
+        return v
+      }
+      for (const [fromDoc, links] of linkOut) {
+        for (const l of links) {
+          if (!l.target) continue
+          const targets = byDoc.get(l.target)
+          if (!targets || !targets.length) continue
+          const one = l.block != null ? byId.get(`${fromDoc}#${l.block}`) : null
+          const sources = one ? [one] : (byDoc.get(fromDoc) || [])
+          for (const s of sources) {
+            const picked = targets
+              .map((t) => ({ t, cos: cosine(vecOf(s), vecOf(t)) }))
+              .sort((a, b) => b.cos - a.cos || (a.t.blockId < b.t.blockId ? -1 : 1))
+              .slice(0, MAX_REF_RELATED)
+            for (const { t, cos } of picked) {
+              add(s.blockId, t.blockId, { kind: 'ref', to: l.target, score: Number(cos.toFixed(4)) })
+            }
+          }
+        }
+      }
+    }
+
     // 镜像轮：`from→to` 与 `to→from` 各一行（why 对称：tag/content/duplicate 三类都只用
     // 两端共有的信息，故原样复制；sig 互换方向）
     for (const r of rows.slice()) {
@@ -871,10 +947,15 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     return readViewCache
   }
 
-  // 排序键：骨架层（tag，必然非空零噪声）→ 覆盖层（content，分数降序）→ 重复（最后）。
-  // 与 `relatedCandidates` 的层序一致；同层内保持物化顺序（sort 稳定 + 物化可复现），
+  // 排序键：tag（骨架层，必然非空零噪声）→ **ref（用户手写的引用意图）** → content（自动派生）
+  // → 其他（duplicate，最后）。同层内按 score 降序、再保持物化顺序（sort 稳定 + 物化可复现），
   // 不另造一套排序口径（两套排序必然漂移）。
-  const relRank = (r) => (r?.why?.kind === 'tag' ? 0 : r?.why?.kind === 'content' ? 1 : 2)
+  // ref 排在 content 之前（S5.1 spec §4.3）：手写引用是**人的明确意图**，
+  // 比机器算出的相似度更该占据有限的呈现预算（`limit` 截断时先保 ref）。
+  const relRank = (r) => {
+    const k = r?.why?.kind
+    return k === 'tag' ? 0 : k === 'ref' ? 1 : k === 'content' ? 2 : 3
+  }
   const relScore = (r) => (typeof r?.why?.score === 'number' ? r.why.score : 0)
 
   /** `why` 深一层拷贝：返回值可能被 GUI/agent 改写，不能让它穿到 `relEdges` 内部。 */
@@ -1122,7 +1203,50 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
    * 为什么默认不带：spec §7.5 —— 实测真实库当前只有 1 条显式链接，若默认把关联层也返回并画上，
    * 图谱会从 1 条边骤增到几百条，第一印象被噪声淹没；图层要用户主动开。
    */
-  function getGraph({ space = null, limit = 200, related = false } = {}) {
+  /**
+   * 条目级图谱（S5.1 spec §5.1）：节点 = 条目，边 = 三大关联（tag / content / ref）。
+   *
+   * 这是用户实测反馈的正解：真实库 **74/76 条条目挤在同一个文件里**，
+   * 文档级图把这些条目间的 **290 条关联全部塌成自环**并过滤掉 ⇒
+   * `graph --related` 只剩 1 条跨文档边，"看起来像没做图谱"。条目级才有信息量。
+   *
+   * - 节点带 `line`：GUI 点条目节点要能定位到该块（复用 S2 的块定位）。
+   * - **不画文档级 `links`（显式链接）边**：它是**文档间**关系、不隶属某一条条目，
+   *   硬映射到条目就是造假。条目级的"引用"由 `ref` 边表达（源=链接所在的条目），语义更准。
+   * - **不画 `duplicate`**：重复是**去重提示**、不是阅读路径（S5 §5.5），进图只制造噪声。
+   * - `related` 开关在条目级被忽略（恒返回关联边）：条目级图除关联外没有别的边，
+   *   再让它受开关约束就只剩一堆孤立点，等于没图。
+   */
+  function getEntryGraph({ space = null, limit = 400 } = {}) {
+    const pool = relatablePool().filter((b) => !space || b.spaceId === space)
+    const chosen = pool.slice(0, limit) // 顺序即文档序+块序，稳定可复现
+    const inGraph = new Set(chosen.map((b) => b.blockId))
+    // `line` 不在 pool 元素上（relatablePool 只带关联必需字段），从 docs 取一次映射
+    const lineOf = new Map()
+    for (const d of docs) for (const b of d.blocks || []) lineOf.set(`${d.id}#${b.n}`, b.line ?? null)
+    const nodes = chosen.map((b) => ({
+      id: b.blockId, kind: 'entry', docId: b.docId, tag: b.tag ?? null,
+      line: lineOf.get(b.blockId) ?? null,
+      // label 用**去类型前缀**的内容前 40 字：类型前缀只标类型，占 label 纯属浪费
+      label: relationContent(b).slice(0, 40),
+    }))
+    const seen = new Set()
+    const edges = []
+    for (const r of relEdges) {
+      const k = r?.why?.kind
+      if (k !== 'tag' && k !== 'content' && k !== 'ref') continue
+      if (!inGraph.has(r.from) || !inGraph.has(r.to)) continue
+      const key = `${r.from}\u0000${r.to}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      edges.push({ from: r.from, to: r.to, kind: k, score: r.why.score ?? null })
+    }
+    return { nodes, edges, level: 'entry', truncated: pool.length > chosen.length }
+  }
+
+  function getGraph({ space = null, limit = 200, related = false, level = 'doc' } = {}) {
+    // S5.1：层级开关。`entry` 走条目级图；`doc`（缺省）行为与 S2/S5 完全一致。
+    if (level === 'entry') return getEntryGraph({ space, limit })
     const pool = space ? docs.filter((d) => d.spaceId === space) : docs
     const ids = new Set(pool.map((d) => d.id))
     const nodes = pool.slice(0, limit).map((d) => ({ id: d.id, label: d.title, spaceId: d.spaceId, kind: 'doc' }))
@@ -1177,12 +1301,13 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       // （shared 为空 / 端点消失 / 超上限截断）。
       // **不含读时校验剔除数**：读侧 validate 返回的是"视图"、属只读行为，计入会让同一库的
       // stats 随查询历史漂移（不可复现 ⇒ 指标失效）。这条是 spec 定死的，别"顺手补全"。
-      const rc = { edges: 0, tagEdges: 0, contentEdges: 0, dupEdges: 0 }
+      const rc = { edges: 0, tagEdges: 0, contentEdges: 0, refEdges: 0, dupEdges: 0 }
       for (const r of relEdges) {
         rc.edges += 1
         const k = r?.why?.kind
         if (k === 'tag') rc.tagEdges += 1
         else if (k === 'content') rc.contentEdges += 1
+        else if (k === 'ref') rc.refEdges += 1
         else if (k === 'duplicate') rc.dupEdges += 1
       }
       return {

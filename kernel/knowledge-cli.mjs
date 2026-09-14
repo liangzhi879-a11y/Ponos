@@ -158,6 +158,9 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '' } = {}
             // S5 Task 9：`--related` 才附隐式关联层（显式 `=== true`；缺省/字符串一律不带，
             // 宁可少带也不因参数解析意外把 258 条隐式边灌进图谱）
             related: args.related === true,
+            // S5.1：`--level entry` 切到条目级图。白名单式解析（只认 'entry'，其余落回 'doc'）：
+            // 层级是枚举而不是自由值，非法值静默落回缺省比报错更合用（GUI 传参不该打断浏览）。
+            level: args.level === 'entry' ? 'entry' : 'doc',
           }),
           code: 0,
         }

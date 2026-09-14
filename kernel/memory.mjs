@@ -206,10 +206,21 @@ export function captureMemoryCandidates({ userText = '', tag = null, markers = n
 // 较长样本的噪声由关联侧 MIN_LEN 负责过滤（spec §9.1「修源头 + 关联侧防御」两步都要）。
 function isEmptyTemplateContent(content, marker) {
   const c = String(content ?? '').trim()
+  // 去标点/空白后的实义字符（判据②③共用；`\p{P}` 覆盖中英文标点，含全角冒号）
+  const bare = c.replace(/[\s\p{P}\p{S}]/gu, '')
   if (!c) return true // ① 去类型前缀后为空（实测形态：`流程要点：用户回答：`）
-  if (!c.replace(/[\s\p{P}\p{S}]/gu, '')) return true // ② 只剩空白/标点，无实义字符
+  if (!bare) return true // ② 只剩空白/标点，无实义字符
+  // ④ 整段就是"短标签 + 结尾冒号"（实测形态：`流程是：`、`用户回答：`）。
+  // 之前这条是靠 `stripTypePrefix` **剥到首个冒号**的副作用顺带拦住的（剥完变空 → 判据①）；
+  // S5.1 把 stripTypePrefix 收窄成白名单前缀后，这个副作用消失，必须显式判。
+  // 阈值 8：正常的"标签式残段"都很短；真实但简短的偏好（`记住：导出目录必须用绝对路径`）
+  // 远长于此，不受影响（判据 1-3 也拦不住它，那正是设计意图——源头不丢数据）。
+  if (bare.length <= 8 && /[：:]$/.test(c)) return true
   const m = String(marker ?? '').trim()
-  return !!m && c === m // ③ 内容恰是触发词本身（实测形态：`业务要点（请注意）：`）
+  // ③ 内容恰是触发词本身，允许带标点/空白差异（实测形态：`业务要点（请注意）：`）。
+  // 用"去标点后相等"而不是字面相等：`流程是：` vs 触发词 `流程是` 只差一个冒号，
+  // 字面比较会漏判（这正是上面 ④ 要补的洞的另一种形态）。
+  return !!m && bare === m.replace(/[\s\p{P}\p{S}]/gu, '')
 }
 
 // 从任务标签/文本推断主题：申报/政策/财务关键词 → 业务主题；否则 workflow

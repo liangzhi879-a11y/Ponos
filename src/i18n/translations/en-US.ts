@@ -927,5 +927,17 @@ export const enUS: TranslationKeys = {
     graphLayerRelatedHint: 'Only explicit links are drawn by default; implicit relations (from tags/content) must be turned on',
     graphRelatedCount: '{n} related',
     graphRelatedLoading: 'Loading relations…',
+    // —— S5.1: graph level (doc / entry) ——
+    graphLevel: 'Level',
+    graphLevelDoc: 'Docs',
+    graphLevelEntry: 'Entries',
+    graphLevelEntryHint: 'By entry: nodes are individual experiences, edges are tag/content/reference relations — entries in the same file can connect too',
+    graphEntryCount: '{n} entries',
+    graphEntryTruncated: '(truncated, showing first {n} entries)',
+    graphEntryEmpty: 'No relatable entries in this scope',
+    graphEntryHint: 'Entry-level graph: tag (same topic), content similarity, and reference edges; doc-to-doc explicit links are not shown at this level',
+    graphEdgeRef: 'Ref',
+    graphEdgeTag: 'Topic',
+    graphEdgeContent: 'Similar',
   },
 }

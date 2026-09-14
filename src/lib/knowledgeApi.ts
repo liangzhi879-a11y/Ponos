@@ -156,9 +156,25 @@ export interface KnowledgeGraphRelatedEdge {
   count: number
 }
 
-export interface KnowledgeGraphNode { id: string; label: string; spaceId: string; kind: string }
-export interface KnowledgeGraphEdge { from: string; to: string; target: string }
-export interface KnowledgeGraph { nodes: KnowledgeGraphNode[]; edges: KnowledgeGraphEdge[] }
+export interface KnowledgeGraphNode {
+  id: string; label: string; spaceId: string; kind: string
+  // S5.1：条目级图谱的节点字段（文档级节点不带）。`docId`+`line` 用于**点节点后定位到块**——
+  // 没有 line 就只能在文档里从头找，条目级图的可导航性就废了一半。
+  docId?: string; line?: number | null; tag?: string | null
+}
+export interface KnowledgeGraphEdge {
+  from: string; to: string; target: string
+  /** S5.1：条目级边的类型（tag / content / ref）。文档级的显式链接边没有 kind。 */
+  kind?: 'tag' | 'content' | 'ref'
+  score?: number | null
+}
+export interface KnowledgeGraph {
+  nodes: KnowledgeGraphNode[]; edges: KnowledgeGraphEdge[]
+  /** S5.1：'doc'（缺省）| 'entry'。内核据此返回不同形状的图。 */
+  level?: 'doc' | 'entry'
+  /** 条目级图被 `limit` 截断时为 true（提示用户"还有更多条目未画出"） */
+  truncated?: boolean
+}
 
 export interface KnowledgeStats {
   version: number
@@ -385,6 +401,19 @@ export function getGraphRelated(space?: string, limit?: number, opts?: Knowledge
 export function getGraph(space?: string, limit?: number, opts?: KnowledgeCallOpts): Promise<ApiResult<KnowledgeGraph>> {
   const query = qs({ space, limit })
   return dedupe(`graph:${query}`, () => call<KnowledgeGraph>(`/knowledge/graph${query}`, { opts }))
+}
+
+/**
+ * 条目级图谱（S5.1）：`?level=entry`。**单独一个函数**，理由同 `getGraphRelated`——
+ * 形状根本不同（节点是**条目**而非文档、边是 tag/content/ref 三类关联而非文档间链接），
+ * 共用一个签名会让调用方把条目级数据按文档级解读（节点 id 是 `docId#n` 不是 `docId`）。
+ *
+ * 为什么需要它：真实库 **74/76 条条目挤在同一文件内**，文档级图把这些条目间的关联
+ * 全部塌成自环并过滤 ⇒ 文档级只有 1 条跨文档边，用户看到的等于是"没有图谱"。
+ */
+export function getEntryGraph(space?: string, limit?: number, opts?: KnowledgeCallOpts): Promise<ApiResult<KnowledgeGraph>> {
+  const query = qs({ space, limit, level: 'entry' })
+  return dedupe(`graphEntry:${query}`, () => call<KnowledgeGraph>(`/knowledge/graph${query}`, { opts }))
 }
 
 export function getStats(opts?: KnowledgeCallOpts): Promise<ApiResult<KnowledgeStats>> {

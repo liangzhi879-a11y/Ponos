@@ -339,7 +339,9 @@ test('extractLinks 取 wiki 链接与相对 md 链接，忽略外链与纯锚点
 
 test('extractLinks 无别名的 wiki 链接 anchor 为空串（不是 undefined，落盘要能 JSON 化）', () => {
   const links = extractLinks('[[code-style]]')
-  assert.deepEqual(links, [{ to: 'code-style', anchor: '' }])
+  // `index` 是 S5.1 为"把链接定位到所属块"而追加的字段（由此才能建条目级 ref 关联），
+  // 其余字段与落盘 JSON 形态不变。
+  assert.deepEqual(links, [{ to: 'code-style', anchor: '', index: 0 }])
   assert.equal(typeof links[0].anchor, 'string')
 })
 
@@ -349,7 +351,7 @@ test('extractLinks 去重（同一目标只出现一次）', () => {
 })
 
 test('extractLinks 去重按 to：同一目标的不同别名只留首次出现的 anchor', () => {
-  assert.deepEqual(extractLinks('[[a|甲]] 与 [[a|乙]]'), [{ to: 'a', anchor: '甲' }])
+  assert.deepEqual(extractLinks('[[a|甲]] 与 [[a|乙]]'), [{ to: 'a', anchor: '甲', index: 0 }])
 })
 
 test('extractLinks 对空/无链接文本返回空数组', () => {
@@ -521,17 +523,28 @@ test('S5 Task1：常量与 spec §7.1 一致（阈值改动必须重跑校准）
   assert.equal(RELATION_TAG_BOOST, 1) // 覆盖层必须 tagBoost=1（见常量注释）
 })
 
-test('S5 Task1：stripTypePrefix 剥掉开头到首个中文冒号的类型前缀', () => {
+test('S5 Task1 / S5.1：stripTypePrefix 只剥**已知类型标签**，不按首个冒号一刀切', () => {
   assert.equal(stripTypePrefix('流程要点：先备份再改'), '先备份再改')
   assert.equal(stripTypePrefix('用户偏好（以后都）：用 pnpm 装依赖'), '用 pnpm 装依赖')
   assert.equal(stripTypePrefix('业务要点（请注意）：导出要写绝对路径'), '导出要写绝对路径')
   assert.equal(stripTypePrefix('用户纠正（不要再）：以后不要用 npm'), '以后不要用 npm')
   assert.equal(stripTypePrefix('没有前缀的正文'), '没有前缀的正文') // 无中文冒号 → 原样
-  assert.equal(stripTypePrefix('结论：A：B'), 'A：B') // 只认**首个**中文冒号，余下的真实内容保留
   assert.equal(stripTypePrefix(''), '')
   assert.equal(stripTypePrefix(null), '')
   assert.equal(stripTypePrefix(undefined), '')
   assert.equal(stripTypePrefix(42), '42') // 非字符串字段不得抛（块字段可能为 null/数字）
+
+  // —— S5.1 修正：原来的"首个冒号一刀切"会**误剥正文**。真实库实测：78 条 entry 里
+  // 70 条（90%）被剥，其中 20 条剥掉 >12 字、1 条被剥到 < MIN_LEN 而彻底掉出关联。
+  // 下面四条就是那些被误剥的真实形态（正文里带中文冒号）——正文必须完整保留。
+  const keep = '在开发/调试企业微信相关自动化（发消息、通知、机器人）时，用户明确要求：测试目标只能是测试群'
+  assert.equal(stripTypePrefix(keep), keep, '正文含中文冒号 → 不得剥（这是语义，不是类型标签）')
+  assert.equal(stripTypePrefix('结论先说：这次分析的核心在于…'), '结论先说：这次分析的核心在于…',
+    '正文引导句不是类型标签 → 保留')
+  assert.equal(stripTypePrefix('乙0讲数据库迁移的第一种情形：表结构变更与回滚'),
+    '乙0讲数据库迁移的第一种情形：表结构变更与回滚', '普通陈述句 → 保留')
+  // 但已知类型标签必须照剥（别为了防误剥把能力做没了）
+  assert.equal(stripTypePrefix('会话主题（企微）：外部群配置'), '外部群配置')
 })
 
 test('S5 Task1：relationContent 优先 full（实测 text 45 字 vs full 471 字）并去前缀', () => {
