@@ -16,7 +16,7 @@
     "typecheck": "tsc --noEmit",
     "build:electron": "npm run build && electron-builder",
     "build:electron:dir": "npm run build && electron-builder --dir",
-    "test": "node --test \"shared/**/*.test.mjs\" \"server/*.test.mjs\" \"electron/*.test.mjs\" \"kernel-tests/*.test.mjs\" \"src/**/*.test.ts\""
+    "test": "node --test --test-timeout=300000 \"shared/**/*.test.mjs\" \"server/*.test.mjs\" \"electron/*.test.mjs\" \"kernel-tests/*.test.mjs\" \"src/**/*.test.ts\""
   },
   "dependencies": {
     "@assistant-ui/react": "^0.15.18",
