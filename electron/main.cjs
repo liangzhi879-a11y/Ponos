@@ -184,11 +184,15 @@ let bridgeRestartTimer = null        // bridge 意外退出的重启防抖定时
 let bridgeRestartAttempts = 0        // 连续重启计数（指数退避，防崩溃循环）
 const BRIDGE_RESTART_BASE_MS = 2000
 const BRIDGE_RESTART_MAX_MS = 10000
+// 退出兜底期限：before-quit 之后超过这个时间仍未退出，即认定退出被窗口否决（见 armQuitWatchdog）。
+const QUIT_WATCHDOG_MS = 2500
 const BRIDGE_HEALTH_INTERVAL_MS = 5000  // 接管的外部 bridge 健康探活间隔
 const BRIDGE_HEALTH_MAX_FAILS = 3       // 连续失败 N 次（约 15s）判定接管 bridge 死亡
 let tray = null
 let trayEnabled = true
 let isQuitting = false
+// 退出兜底计时器（armQuitWatchdog）：app.quit() 被窗口否决而中止时兜底硬退出。
+let quitWatchdog = null
 let browserExecutor = null        // 内置浏览器自动化执行器（connectBrowserExecutor 创建，IPC 共用）
 let petProcess = null
 let gpuCrashCount = 0            // 诊断：GPU 进程崩溃累计（child-process-gone 处 ++）
@@ -331,6 +335,29 @@ function scheduleBridgeRestart() {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 退出兜底（2026-09-14 实况：半死实例）
+// app.quit() 只要被任一窗口的 close 处理器 preventDefault 否决，就会被**中止**：
+// keepAlive 登录窗（browser-executor 的「点 X 只隐藏」）正是这种窗口。中止之后
+// isQuitting 已在 before-quit 置真、且全仓没有复位点；桥已被 killBridge 杀掉，
+// 自愈又被 scheduleBridgeRestart 的 `|| isQuitting` 挡死；will-quit 的清理需要
+// 窗口先关完，而中止的退出永远等不到它 ⇒ 进程活着、窗口在、却永远连不上桥
+// （渲染层无限 1006 重连）。半死比直接退出更糟——用户看到窗口以为能用。
+// 故给退出一个硬期限：到点补做 will-quit 的收尾（它不会触发）再硬退出。
+function armQuitWatchdog() {
+  if (quitWatchdog) return
+  quitWatchdog = setTimeout(() => {
+    console.warn('[main] 退出被窗口否决 —— 兜底强制退出')
+    try { writeBootSummary() } catch { /* 静默：退出路径不因日志设施失败而改变 */ }
+    try { renderConsoleSink.flush() } catch {}
+    try { killBridge() } catch {}
+    try { killPet() } catch {}
+    if (browserExecutor) { try { browserExecutor.destroyAllWindows?.() } catch {} }
+    app.exit(0)
+  }, QUIT_WATCHDOG_MS)
+  if (quitWatchdog.unref) quitWatchdog.unref()
+}
+
 // Adopted-bridge supervision
 // 缺陷背景：应用启动时若发现端口上已有 bridge（上个实例遗留的孤儿），
 // 之前只是打日志"reusing"，不接管所有权、不挂任何监听——旧 bridge 死后
@@ -714,7 +741,24 @@ function createTray() {
   tray.on('double-click', showMainWindow)
 }
 
+/**
+ * 撤销「已中止的退出」（半死实例的另一半保险）。
+ * before-quit 置 isQuitting=true 后若 app.quit() 被窗口否决中止，该闩永不复位 ⇒
+ * 进程活着但桥起不来。用户再次索要窗口（点桌面图标 → second-instance、托盘
+ * 「打开主窗口」、activate）就是「还要用」的明确信号：复位闩并把桥拉回来。
+ * 同时取消退出兜底——用户刚表达了还要用，不能让兜底把应用杀掉。
+ */
+function reviveIfQuitAborted() {
+  if (!isQuitting) return
+  isQuitting = false
+  bridgeRestartAttempts = 0        // 复位退避：复活要立刻，不能等指数退避到 10s
+  if (quitWatchdog) { clearTimeout(quitWatchdog); quitWatchdog = null }
+  console.warn('[main] 退出曾被中止 —— 复位 isQuitting 并重拉桥')
+  scheduleBridgeRestart()
+}
+
 function showMainWindow() {
+  reviveIfQuitAborted()
   if (mainWindow && !mainWindow.isDestroyed()) {
     // 最小化时先还原：show() 对已最小化的窗口不会取消最小化状态。
     // （托盘菜单与 second-instance 共用此函数，两条路径都需要这步。）
@@ -1580,6 +1624,13 @@ app.on('before-quit', () => {
   isQuitting = true
   killBridge()
   killPet()
+  // 退出前先销毁浏览器执行器的全部窗口（含**挂起保活**的登录窗）：
+  // keepAlive 登录窗的 close 处理器会 preventDefault「点 X 只隐藏」，而 app.quit()
+  // 只要有一个窗口否决就被**中止**，应用随即停在半死态（见 armQuitWatchdog）。
+  // 本行是 will-quit 里那句 destroyAllWindows 的前移：will-quit 需要窗口先关完
+  // 才触发，而被否决的退出永远等不到它。
+  if (browserExecutor) { try { browserExecutor.destroyAllWindows?.() } catch {} }
+  armQuitWatchdog()
 })
 
 app.on('will-quit', () => {
