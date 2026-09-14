@@ -456,6 +456,105 @@ function checkSpecQuality(spec, { driver = 'browser', hasMaterial = true } = {})
   return { ok: errors.length === 0, errors, warnings }
 }
 
+// ---------------------------------------------------------------------------
+// 交付前评审（M4）：质量控制改由 LLM 评估（用户明确反对写死条数）
+// ---------------------------------------------------------------------------
+//
+// ★ 为什么是"同会话追加一次调用"（用户拍板）：评审要看的上下文与生成完全一致
+//   （同一份 system + 同一份 seed + 同一份工具回喂日志），重新开一段对话就得把上下文再喂一遍
+//   ——既贵又容易漏。这里的实现就是把**同一份上下文**原样重发，尾部追加评审指令，
+//   因此 callLlm 仍然是无状态的（不需要服务端会话支持）。
+//
+// ★ 为什么"必须能降级"：评审只是质量辅助，它失败不该毁掉一份已经试跑通过的产物。
+//   解析失败 / 调用失败一律降级为"不补全 + 如实记录"，绝不抛异常、也绝不靠猜触发补全。
+
+/** 评审 + 补全各占 1 个真实轮次：剩余轮次不足就整段跳过（宁可少一次评审，也不透支预算） */
+const REVIEW_RESERVE_TURNS = 2
+/** 评审 + 补全至少需要的时间余量（低于它直接跳过，避免"评审跑到一半预算耗尽"） */
+const REVIEW_MIN_REMAINING_MS = 60000
+
+/**
+ * 评审指令（尾部追加）。要求三件事：
+ *   ① 对着**用户需求**逐条核对覆盖度（无需求时对着目标自身核对主要入口）；
+ *   ② gaps 必须是**具体**缺口（哪项能力/哪条需求没被命令覆盖），不写"可以更完善"这类空话；
+ *   ③ 只输出一个 JSON 对象（结构化，便于机器读取；解析失败有降级路径）。
+ */
+function reviewInstruction(requirement) {
+  const req = normalizeRequirement(requirement)
+  return [
+    '【现在做一次交付前评审（不要输出工具调用、不要重写 Spec、不要输出解释文字）】',
+    req.length
+      ? `对着【用户需求】逐条核对：需求里每一项能力，是否都有命令覆盖？\n${req.map((t, i) => `  ${i + 1}. ${t}`).join('\n')}`
+      : '这次没有用户需求：请对着**目标本身**核对——已探明/已试跑通过的能力里，哪些主要功能入口还没被任何命令覆盖。',
+    '只输出一个 JSON 对象，形如：',
+    '{"verdict":"ok|thin","gaps":[{"what":"缺的能力或未被覆盖的需求点","why":"为什么算缺口","hint":"建议怎么补（加什么 act / 调哪个接口 / 读哪个文件）"}],"notes":"一句话说明"}',
+    '规矩：',
+    '· gaps 每条都必须是**具体**缺口，并指明它属于哪条需求或哪个主要入口；不要写"可以更完善""建议多测"这类空话。',
+    '· 覆盖到位就写 verdict:"ok" 且 gaps 为空数组——**不要为了凑数编缺口**（命令条数不是质量指标）。',
+  ].join('\n')
+}
+
+/** 评审输出 → 结构化结论。★ 任何解析失败都降级为 ok+gaps[]（见上文"为什么必须能降级"） */
+function parseReview(text) {
+  const raw = String(text || '')
+  const j = extractSpec(raw)          // 复用既有的稳健抽取（代码块 / 整段 / 首个 { 到末个 }）
+  if (!j) {
+    return { ok: false, verdict: 'ok', gaps: [], notes: `评审输出无法解析（已跳过补全）：${raw.slice(0, 200)}`, parseFailed: true }
+  }
+  const list = Array.isArray(j.gaps) ? j.gaps : []
+  const gaps = []
+  for (const g of list) {
+    if (g == null) continue
+    if (typeof g === 'string') {
+      const what = g.trim()
+      if (what) gaps.push({ what, why: '', hint: '' })
+    } else if (typeof g === 'object') {
+      const what = String(g.what ?? g.gap ?? g.desc ?? g.title ?? '').trim()
+      if (!what) continue
+      gaps.push({ what, why: String(g.why ?? g.reason ?? '').slice(0, 300), hint: String(g.hint ?? g.suggestion ?? '').slice(0, 300) })
+    }
+    if (gaps.length >= 8) break             // 至多 8 条：再多也补不动，还会把提示词撑爆
+  }
+  const verdict = j.verdict === 'thin' || j.verdict === 'ok'
+    ? j.verdict
+    : (gaps.length ? 'thin' : 'ok')         // 模型没写/写错 verdict 时按 gaps 推断（保守但不误伤）
+  return { ok: true, verdict, gaps, notes: String(j.notes || '').slice(0, 500), parseFailed: false }
+}
+
+/** gaps → 回喂给模型的补齐要求（一次补全轮的全部输入） */
+function reviewFeedbackLines(review) {
+  const gaps = Array.isArray(review?.gaps) ? review.gaps : []
+  const lines = ['【交付前评审：发现覆盖缺口，请补齐后重新 submit_spec】']
+  for (const [i, g] of gaps.entries()) {
+    lines.push(`${i + 1}. 缺：${g.what}`)
+    if (g.why) lines.push(`   为什么算缺口：${g.why}`)
+    if (g.hint) lines.push(`   建议：${g.hint}`)
+  }
+  lines.push('要求：只补这些缺口（新增命令、或扩充已有命令的步骤）；**不要推翻**刚试跑通过的部分；')
+  lines.push('确实补不了（缺权限/缺登录态/接口不存在）就写进 spec.notes 说明原因，不要硬凑命令行。')
+  return lines.join('\n')
+}
+
+/**
+ * 同会话追加一次评审调用。
+ * @param {{system:string, userPrefix:string, requirement:any, callLlm:Function, maxTokens?:number}} p
+ *   userPrefix = 本轮生成实际用过的上下文前缀（seedUser + renderLog(log)），原样重发。
+ * @returns {Promise<{ok:boolean, verdict:'ok'|'thin', gaps:Array, notes:string, parseFailed?:boolean, callFailed?:boolean, raw?:string}>}
+ */
+async function reviewSpec({ system, userPrefix, requirement, callLlm, maxTokens } = {}) {
+  const user = [userPrefix, reviewInstruction(requirement)].filter(Boolean).join('\n\n')
+  let r
+  try {
+    r = await callLlm({ system, user, maxTokens })
+  } catch (e) {
+    return { ok: false, verdict: 'ok', gaps: [], notes: `评审调用异常（已跳过补全）：${String(e?.message || e)}`, callFailed: true }
+  }
+  if (!r?.ok) {
+    return { ok: false, verdict: 'ok', gaps: [], notes: `评审调用失败（已跳过补全）：${r?.error || '未知错误'}`, callFailed: true }
+  }
+  return { ...parseReview(r.text), raw: String(r.text || '') }
+}
+
 /** 单次工具结果的进历史文本（截断，但要保留报错原文——那是模型调试的唯一依据） */
 function toolResultText(tool, out, cap = DEFAULT_BUDGET.perToolChars) {
   const head = out?.ok === false ? `【${tool} 失败】` : `【${tool} 结果】`
@@ -696,4 +795,6 @@ module.exports = {
   resolveClickTarget, isDestructiveLabel, DESTRUCTIVE_LABEL,
   DEFAULT_BUDGET, PLACEHOLDER, isPlaceholder,
   normalizeRequirement, requirementLines,
+  parseReview, reviewInstruction, reviewFeedbackLines, reviewSpec,   // ← M4 新增
+  REVIEW_RESERVE_TURNS, REVIEW_MIN_REMAINING_MS,                     // ← M4 新增
 }
