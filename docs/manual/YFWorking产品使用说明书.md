@@ -247,7 +247,12 @@ YFWorking 基于 Electron 构建，采用本地桥接服务连接模型 API，�
 | `/clear` | 清空当前对话 |
 | `/compact` | 压缩对话上下文 |
 | `/cost` | 查看使用费用 |
-| `/loop` | 创建循环任务（间隔 + 任务，如 `/loop 10m 检查磁盘`） |
+| `/loop` | 循环任务。语法：`/loop [次数] [--every <间隔>] [--until <目标>] [--done <命令>] [--goal <目标>] [--max-cost <USD>] [--max-steps <N>] [--fresh] <任务>`，如 `/loop 10m 检查磁盘`（间隔巡检）、`/loop 3 --until 测试通过 修复 bug`（判词达成即停）、`/loop --done "pytest" --done "ruff check ." 修登录 bug`（命令式验真） |
+| `/loop status` | 查看 loop 状态（目标 / 轮次 / 步数 / 成本 / 无进展 / 最近验证结果） |
+| `/loop pause`·`resume`·`stop` | 暂停（当前轮跑完生效）/ 恢复 / 立即停止 |
+| `/loop budget --max-cost 2 --max-steps 30` | 查询或设置 loop 预算（成本 / 步数 / 墙钟硬顶，超限即停） |
+| `/loop approve`·`inject <补充信息>` | 批准挂起项（无进展预警 / 回滚）/ 向下一轮注入人工补充信息 |
+| `/loop replay`·`memory`·`rollback` | 回放轮次时间线 / 查看 loop 记忆与失败经验 / 回滚到 loop 检查点（需确认）|
 | `/技能名` | 技能命令（菜单中带 ⚡ 图标），如 `/gxtz-rd-report`，发送时自动转换为技能启动指令 |
 
 > 说明：`/help`、`/doctor`、`/model`、`/theme` 等其他命令在 GUI 会话中**不生效**（桌面会话仅放行上述白名单命令），对应功能请使用命令面板（`Ctrl+K`）、顶栏按钮或「设置」完成。
@@ -473,7 +478,10 @@ YFWorking 基于 Electron 构建，采用本地桥接服务连接模型 API，�
 ### 5.16 循环与定时任务
 
 - 输入框左侧点击**循环图标**打开引导面板，可选择：
-  - **循环任务**：`/loop <间隔> <任务>`，按固定间隔重复执行（预设 5 分钟 / 10 分钟 / 30 分钟 / 1 小时 / 2 小时 / 1 天，或自定义间隔），用于周期性巡检、持续监听等场景。
+  - **循环任务**：`/loop <间隔> <任务>`（等价 `/loop --every <间隔> <任务>`），按固定间隔重复执行（预设 5 分钟 / 10 分钟 / 30 分钟 / 1 小时 / 2 小时 / 1 天，或自定义间隔），用于周期性巡检、持续监听等场景。间隔式默认持续运行，需用界面面板或 `/loop stop` 结束，也可配预算（`--max-cost` / `--max-steps` / `--max-wall`）自动收尾。
+  - **有界循环**：`/loop <次数> <任务>`（如 `/loop 3 优化这个函数`）执行固定轮数；加 `--until <目标>` 由判词判定达成即提前停止。
+  - **可验证循环**：`/loop --done "<命令>" ... <任务>`，每轮结束自动执行验真命令（退出码 0 才算通过，可多个 = 全部通过），比"模型自认完成"更可信。
+  - **循环状态面板**：运行中在对话区显示目标 / 轮次 / 步数 / 成本 / 无进展计数 / 验真结果，并提供暂停、恢复、批准、停止按钮；预算超限或无进展（连续多轮无实质变更、重复相同错误）会自动收尾或请求人工介入，不会静默烧钱。
   - **一次性定时**：自然语言指定触发时间（如「10 分钟后」「明天 9:00」），到点自动执行一次，用于提醒与定时处理。
 - 任务在应用空闲时按计划触发，无需人工干预。
 
@@ -806,7 +814,7 @@ YFWorking 基于 Electron 构建，采用本地桥接服务连接模型 API，�
 | `requesting-code-review` / `receiving-code-review` / `code-review-and-quality` | 发起代码审查 / 处理审查反馈 / 多轴代码质量审查 |
 | `using-git-worktrees` / `finishing-a-development-branch` | Git 工作树开发、分支收尾集成 |
 | `context7` | 开源软件库文档检索 |
-| `loop` | 循环执行提示词或命令（如 `/loop 5m /foo`） |
+| `loop` | 循环执行任务：`/loop [次数] [--every <间隔>] [--until <目标>] [--done <命令>] [--fresh] <任务>`；另有指令族 `status`/`pause`/`resume`/`stop`/`budget`/`approve`/`inject`/`rollback`/`replay`/`memory` |
 | `update-config` | 配置 YFW 自动化行为（hooks） |
 | `simplify` | 审查已改代码并修复可复用性与质量问题 |
 | `example-skill` | 标准技能包格式示例 |

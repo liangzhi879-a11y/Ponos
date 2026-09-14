@@ -355,3 +355,51 @@ GUI `LoopStatusBar` 的 `REASON_KEY`（`LoopStatusBar.tsx:12-15`）需补新值�
 - 差距审计：`docs/superpowers/audits/2026-09-08-agentloop-guide-gap.md`
 - agentloop 升级 spec/plan：`docs/superpowers/specs|plans/2026-09-08-agentloop-prod-upgrade*`
 - 桥接契约：`docs/bridge-contract.md`（本轮需补 `loop_command` 与 loop 帧扩展）
+
+---
+
+## 附录 C：实施结论（2026-09-14）
+
+**状态：已实施并通过验收。** 提交：设计 `8cb0cde` → 计划 `e518e5a` → Task1+2 `b145d01` → Task3 `ca1af52` → Task4+5+6 `d9ecab1` → 本文档更新。
+
+### C.1 交付与验证
+
+| 层 | 产物 | 验证 |
+|---|---|---|
+| 解析 | `kernel/loop-commands.mjs` | 7 测试（含零回归锁①） |
+| 验证器 | `kernel/loop-verify.mjs` | 9 测试（命令经 Bash 门 / 短路 / fail-closed） |
+| 控制器 | `kernel/loop.mjs` | 12 测试（状态机 / 预算硬停 / 无进展 / 持久化 round-trip） |
+| 接线 | `kernel/cli.mjs`、`kernel/engine.mjs`（`runTurn` 补 `toolDigest`） | 6 e2e 测试 |
+| 打通 | `server/loop-translate.mjs`、`server/bridge.mjs` | 5 测试 + **真实 bridge 端到端 8/8 PASS** |
+| GUI | `LoopPanel.tsx`、`LoopStatusBar.tsx`、`useYFWCLI.ts`、`types/index.ts`、i18n | `tsc --noEmit` 通过 |
+
+**核心验收证据**（真实 bridge + WS 客户端 + `PONOS_MOCK_API=1` 净室）：GUI 纯文本
+`/loop --every 3s 巡检` → 内核帧序列 `loop/start(everyMs=3000) → loop/iter`；`/loop status`
+文本 → `system/loop_result` 可读回执；`/loop stop` → `end(cancelled)`；停止后越过两个间隔
+窗口仅 1 次 iter、start 帧数恒为 1（无重启）；随后普通消息正常（未污染会话）。
+
+### C.2 实施期发现并修复的缺陷
+
+1. **停止后 loop 自启（严重，已修 + 反证）**：`--every` 的延迟投递定时器不可取消。用户在间隔
+   期间 `stop`/`cancel` 后，定时器到点仍投递下一轮载荷 → `handleUser` 见 `!loop.isActive()`
+   把已终结的 loop **重新 start**。实测：`stop` 后 loop 自行重启并续跑 8 轮。
+   修法：新增 `clearLoopNextTimer()`（在 `stop`/`pause`/`resume`/`approve`/cancel 五处调用）
+   + 到点复核 `status === 'running'`（覆盖"stop 早于定时器注册"的竞态）。
+   已用反证确认回归测试有牙齿（临时移除守卫 → 测试失败并复现 8 轮）。
+2. **`resume` 双投递**：`resume` 需补投递下一轮（控制器只在轮末被调用，否则恢复后静默停住），
+   若残留定时器未清会连跑两轮 → 由同一 `clearLoopNextTimer()` 消除。
+3. **`engine.runTurn` 不返回 `toolDigest`**：无进展指纹与 `filesChanged` 恒为空 → 检测形同
+   虚设。已补返回字段（只增不改）。
+
+### C.3 遗留 / 后续
+
+- `rollback` 仅登记 `pendingApproval` 并记录 git HEAD 快照引用，**未实现实际 `git reset` 执行**
+  （防误伤取向）；`PONOS_LOOP_ON_STALL=stop` 分支无自动化测试（端到端手测项）。
+- 命令式验真仅支持 `expect === 0`：Bash 工具以 `isError` 表达退出码、不暴露原始码，显式非 0
+  期望 → fail-closed 并在 `reason` 说明。
+- 无进展指纹以 `<工具名>:<路径>` / `<工具名>:<错误前缀>` 构成：同路径内容变更可能被判为
+  "无进展"（保守取向，宁可提前问人也不静默烧钱），可用 `PONOS_LOOP_NOPROGRESS_N` 放宽。
+- GUI 组件无自动化测试基建，本轮以真实 bridge 端到端 + `tsc` 交付；`LoopPanel` 按钮的
+  浏览器层交互建议后续纳入 Electron 冒烟。
+- 本次提交 `d9ecab1` 因 `kernel/cli.mjs`、`server/bridge.mjs` 上并存其他在途任务（知识库回收站）
+  的未提交改动，整文件提交一并定型（已在该 commit message 中注明）。

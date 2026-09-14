@@ -101,6 +101,8 @@
 | type | 载荷 | 语义 |
 |---|---|---|
 | `user` | `{ message:{role:'user',content}, priority?, uuid? }` | 投递一轮用户消息（队列化；`uuid` 用于生命周期追踪） |
+| `user` | 同上 + `loop:{ count, until, everyMs, fresh, goal, doneWhen[], maxCostUsd, maxSteps, maxWallMs }` | **loop 启动**（2026-09-14）：带 `loop` 字段的消息进入时内核登记 loop 运行时并开始推进（`start → iter… → end`）。`count:null` = 持续运行（需 stop/until/预算终止）。bridge 侧由 `translateLoopSend` 从 GUI 文本 `/loop …` 转译（§6.1） |
+| `loop_command` | `{ op, args:string[], requestId? }` | **loop 指令族**（2026-09-14）：`op` ∈ `start/status/pause/resume/stop/budget/approve/inject/rollback/replay/memory`。内核同步执行并回 `system/loop_result`（§4）。**不产生轮次**：bridge 不得因此置 `_turnActive`、不得武装首字节等待条（否则 UI 悬挂/看门狗误触发） |
 | `control_request` | `{ request_id, request:{subtype} }` | 中断/取消。`subtype:'cancel'`（bridge 的优雅停止）、`'interrupt'`（abort 主查询）等 |
 | `control_request` | `{ request_id, request:{ subtype:'reasoning_effort', payload:{value} } }` | 思考深度热切换（Task 12） |
 | `control_request` | `{ request_id, request:{ subtype:'approval_mode', payload:{value} } }` | 审批档位热切换（2026-09-12）。`value` ∈ `manual/auto/loose/bypass`；非法值**不报错不崩**，回落默认档并回 `system/approval_mode_rejected`（§4）。生效后内核侧记 `appendMeta('approval_mode')` 审计 |
@@ -115,7 +117,7 @@
 
 | type | 关键字段 | 语义 / bridge 处理 |
 |---|---|---|
-| `system` | `subtype`（init/status/session_state_changed/task_notification/task_started/task_progress/post_turn_summary/rate_limit/approval_mode_updated/approval_mode_rejected…） | 生命周期与系统事件；`task_progress` 视为低优先级可丢弃。`init` 携带 `approval_mode`（内核此刻**实际生效**档位，供 bridge 做旧内核检测）；`approval_mode_updated` 带 `{value}`，`approval_mode_rejected` 带 `{reason, value}` |
+| `system` | `subtype`（init/status/session_state_changed/task_notification/task_started/task_progress/post_turn_summary/rate_limit/approval_mode_updated/approval_mode_rejected…） | 生命周期与系统事件；`task_progress` 视为低优先级可丢弃。`init` 携带 `approval_mode`（内核此刻**实际生效**档位，供 bridge 做旧内核检测）；`approval_mode_updated` 带 `{value}`，`approval_mode_rejected` 带 `{reason, value}`。**`loop_result`（2026-09-14）** 为 loop 指令族回执：`{ requestId, op, ok, text }`——`text` 为人类可读回执（`status`/`replay`/`memory` 的正文），GUI 应作为可见消息呈现 |
 | `assistant` | `message.content[]`（text/thinking/tool_use 块）、`uuid` | 模型回复。bridge 从中**提取并剥离**里程碑标记与 `<!--ASK_USER-->` 卡片 |
 | `result` | `usage{input_tokens,output_tokens}` | 一轮结束；cancel 生效确认点；`_turnActive` 复位 |
 | `control_request` | `request{ subtype:'can_use_tool', request_id, tool_use_id, tool_name, input, decision_reason, hard?, mode? }` | 权限审批弹窗触发源（bridge 转发为 `approval`，GUI 批准后回 `control_response`）。`hard:true` = 命中灾难级硬黑名单（§2.1，四档都问、不计入降级连击）；`mode` = 发起询问时生效的档位。二者缺省省略（旧载荷逐字节不变） |
@@ -124,6 +126,18 @@
 | `error` | `{message}` | 错误 |
 | `ponos_health` | `score/tier/compactCount/remainingPct/remainingTurns/suggestNewSession/reason/…` + `distortion?{}` | 上下文健康事件（档位变化才发；初始即绿不发）。**bridge 无需改动**：整包经 `event` 原样透传 GUI，`distortion` 为纯增量可选字段（缺省即 green）。字段语义见 §4.1 |
 | `ponos_summary` | `{summary, compactCount}` | 压缩摘要落地事件（`yfw_summary` 同义转发），血条压缩脉冲与建议卡摘要来源 |
+| `loop` | `state` ∈ `start/iter/end/status` + 见下 | **loop 运行时事件**（2026-09-14）。bridge 无需改动：整包经 `event` 原样透传 GUI。既有字段（`index/total/until/fresh/judged/reason/error`）**只增不改** |
+
+### 4.0.1 `loop` 事件字段（2026-09-14，只增不改）
+
+| state | 字段 | 语义 |
+|---|---|---|
+| `start` | `index, total, until, fresh, goal, everyMs, budget, doneWhen[], resumed?` | loop 登记。`total:null` = 持续运行；`resumed:true` = 由 `--resume` 从落盘状态恢复 |
+| `iter` | `index, total, steps, costUsd, filesChanged, noProgressStreak, verify?, judged?, reason?, error?` | 每轮结束。`verify:{passed, results:[{run,type,ok}]}` 为命令式验真摘要（已裁掉 spec 细节） |
+| `end` | `reason, index, total, goal, costUsd` | 收尾。`reason` ∈ `completed`（次数耗尽）/`until_hit`（`--until` 判词达成）/`verify_hit`（`done_when` 通过）/`budget_exceeded`/`no_progress`/`cancelled`/`judge_error`/`failed` |
+| `status` | 全量状态快照（含 `status/goal/index/count/steps/costUsd/budget/noProgress/pendingApproval/doneWhen`） | `/loop status` 回执同步广播 |
+
+**契约要点**：loop 运行时状态机、预算硬停、无进展升级、持久化均在 `kernel/loop.mjs`（LoopController）。短路序为 `pausing → 预算 → 无进展 → 验证 → 次数`——预算与无进展**先于**验证判定，防止"验证反复失败 → 无限重试烧钱"。
 
 ### 4.1 上下文健康：两个独立被测量（2026-09-12）
 
@@ -178,7 +192,8 @@ env 调参：`PONOS_FIDELITY`（`0` 总开关关）、`_WINDOW`（默认 12 轮�
 | type | 载荷 | 语义 |
 |---|---|---|
 | `send` | `{ sessionId, cwd, resumeId, systemPrompt, model, compactCount, prompt, requestId, priority, uuid }` | 发消息；无会话则 spawn（`resumeId` 有 → `--resume` 恢复，无 → 新会话注入 systemPrompt） |
-| `cancel` | `{ sessionId }` | 优雅停止（`control_request(cancel)` + 6s 超时后 taskkill 兜底） |
+| `loop-command` | `{ sessionId, op, args[], requestId? }` | **loop 指令族**（2026-09-14）：GUI 面板按钮 / `/loop status` 等 → bridge 转写内核 stdin `loop_command`（`op` ∈ `start/status/pause/resume/stop/budget/approve/inject/rollback/replay/memory`）。回执经 `system/loop_result` 广播；会话不存在时静默忽略（GUI 应自行禁用） |
+| `cancel` | `{ sessionId }` | 优雅停止（`control_request(cancel)` + 6s 超时后 taskkill 兜底）。**同时终止 loop**：内核 cancel 路径会取消 `--every` 挂起的延迟投递（否则停止后定时器到点会把 loop 重新启动） |
 | `answer` | `{ sessionId, data:{ answers[], notes }, cwd?, resumeId?, mode?, systemPrompt?, model?, compactCount? }` | 卡片回答 → 拼装成用户消息注入内核 stdin，广播 `question-resolved`。尾部的 spawn 字段集与 `send` 同源（2026-09-14）：提问卡片挂久了内核会先离场（等待超时收尾→空闲回收／等待豁免超上限），此时**凭 `resumeId` 以 `--resume` 重启内核再注入回答**——否则回答会被静默丢弃、GUI 永远停在"执行中"；连 `resumeId` 都没有（老前端）则回 `error` 让前端解锁，绝不静默丢弃 |
 | `question-dismiss` | `{ sessionId }` | 跳过卡片（CLI 保持等待，广播 `question-resolved`） |
 | `approval-response` | `{ sessionId, toolUseId, approved }` | 审批结果 → `control_response` 注入内核 |
@@ -189,7 +204,33 @@ env 调参：`PONOS_FIDELITY`（`0` 总开关关）、`_WINDOW`（默认 12 轮�
 | `browser:event` | `{ sessionId, event }` | 执行器事件 → 广播 GUI |
 | `pet:show-main` / `pet:quit-app` | `{}` | 宠物请求显示主窗口 / 退出应用（广播） |
 
-安全：WS 服务只接受本机可信来源——无 Origin、`file:`、`localhost/127.0.0.1/::1`；外部 Origin 一律 403。
+### 6.1 GUI 文本 `/loop` 转译（2026-09-14 打通点）
+
+GUI 的 `send` 是**纯文本**通道，用户在输入框或排程卡里写 `/loop …` 时，bridge 在写内核前经
+`server/loop-translate.mjs` 的 `translateLoopSend(text)` 判定：
+
+```
+/loop …  → { type:'user', message, loop:{…} }   // start 形式：驱动内核 loop 状态机
+/loop op → { type:'loop_command', op, args }    // 指令族
+其他文本 → null                                 // 原路径直通（不吞用户输入）
+```
+
+统一语法（cli / TUI / bridge / GUI 四端一致）：
+
+```
+/loop [次数] [--until <目标>] [--every <间隔>] [--fresh]
+      [--done <命令>]... [--goal <目标>]
+      [--max-cost <USD>] [--max-steps <N>] [--max-wall <时长>] [prompt...]
+```
+
+首个 token 为时长（`10m`/`30s`/`2h`/`1d`）时按 **`--every` 间隔**解析（`count:null` 持续运行），
+为整数时按**次数**解析。`--done` 可重复（多个 = AND，全部退出码 0 才通过），构成
+`done_when` **命令式验真**——它经 `engine.tools.run({name:'Bash'})` 执行（同受审批门、黑名单与
+审计约束），失败即短路（不再跑后续命令、不调判词模型），弥补"只靠模型自认完成"的风险。
+
+**历史缺陷（本契约补充的动因）**：此前 GUI 发的 `/loop 10m <任务>` 走纯文本直通，被当普通
+prompt 交给模型 → loop 状态机永不启动；且 `10m` 经 `Number()` 变 `NaN` 静默回落为 3 轮。
+
 
 ## 7. HTTP REST API（同端口 51517）
 
