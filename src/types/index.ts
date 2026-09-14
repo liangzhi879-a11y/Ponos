@@ -9,6 +9,9 @@ import type { LogPolicy } from '@/lib/logUi'
 // 同理：KnowledgeImportPolicy 在 src/lib/knowledgeImportUi.ts（零依赖纯模块），
 // 类型只从那里引一次，避免 types 与 lib 各写一份必然漂移。
 import type { KnowledgeImportPolicy } from '@/lib/knowledgeImportUi'
+// 能力清单的类型定义在 src/lib/appSurface.ts（归一化 + 三分文案的可测唯一出处）：
+// 这里只 import 一次给 AppProbeResult 用，末尾再原样再导出，避免与组件各写一份结构定义。
+import type { AppSurface } from '@/lib/appSurface'
 
 export type { ApprovalMode, LogPolicy, KnowledgeImportPolicy }
 
@@ -563,6 +566,8 @@ export interface AppProbeResult {
   reachable: boolean
   title?: string | null
   snapshot?: { url?: string | null; title?: string | null; text?: string; interactiveCount?: number } | null
+  /** 能力清单（三态通道 + 证据 + 下一步）：老版本主进程不返回该字段，故可选；失败路径为 null */
+  surface?: AppSurface | null
   error?: string
 }
 
@@ -885,3 +890,9 @@ export interface BrowserEvent {
   /** download 事件的落盘绝对路径 */
   path?: string
 }
+
+/**
+ * 能力清单的类型**定义在 src/lib/appSurface.ts**（那里有归一化与三分文案，是可测的唯一出处），
+ * 这里只做再导出，供组件与 IPC 契约共用同一份类型。
+ */
+export type { AppSurface, SurfaceCapability, SurfaceVerdict, CapabilityConfidence } from '@/lib/appSurface'

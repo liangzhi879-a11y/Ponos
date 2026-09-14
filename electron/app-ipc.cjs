@@ -212,27 +212,33 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     // 否则用户刚登录过、探测却看不到（渲染层仍会传 chat sessionId，这里一律忽略）
     const key = keyFor(appId, target)
     let detected
+    // ★ 用 probe 回调把 probeDesktop 的完整返回接住：能力清单（capabilities/surface）在它里面，
+    //   而 detectDriver 只回 level/evidence（老契约，不为此改它）。与 app:generate 同款做法。
+    let probedDesktop = null
     try {
       detected = await profiler.detectDriver({
         target,
-        probe: (p) => profiler.probeDesktop({ exePath: p?.exePath }),
+        probe: async (p) => { probedDesktop = await profiler.probeDesktop({ exePath: p?.exePath }); return probedDesktop },
       })
     } catch (e) {
-      return { ok: false, driver: null, evidence: null, reachable: false, error: String(e?.message || e) }
+      return { ok: false, driver: null, evidence: null, reachable: false, surface: null, error: String(e?.message || e) }
     }
     if (detected.driver === 'browser') {
       const executor = getExecutor()
-      if (!executor) return { ok: true, ...detected, reachable: false, error: '浏览器执行器未就绪' }
+      if (!executor) return { ok: true, ...detected, reachable: false, surface: null, error: '浏览器执行器未就绪' }
       // 用户点「探测」时填的网址 = 显式授权（原先这里会直接报"目标域名不在白名单"，真实反馈即出于此）
       authorizeAppTarget(target)
+      // ★ surface 原样交给渲染层（面板按三态分组展示；没有素材时它只有 web-ui 通道，如实展示即可，
+      //   不允许前端"补"任何未探测到的通道）。probeWeb 内部自己抓一次快照，不额外多开浏览器。
+      let probed = null
       try {
-        const probed = await profiler.probeWeb({ url: target?.url, executor, sessionId: key })
-        return { ok: true, ...detected, reachable: true, title: probed.title, snapshot: profiledSnapshot(probed.snapshot) }
+        probed = await profiler.probeWeb({ url: target?.url, executor, sessionId: key })
+        return { ok: true, ...detected, reachable: true, title: probed.title, snapshot: profiledSnapshot(probed.snapshot), surface: probed.surface || null }
       } catch (e) {
-        return { ok: true, ...detected, reachable: false, error: String(e?.message || e) }
+        return { ok: true, ...detected, reachable: false, surface: probed?.surface || null, error: String(e?.message || e) }
       }
     }
-    return { ok: true, ...detected, reachable: detected.driver !== 'uia' }
+    return { ok: true, ...detected, reachable: detected.driver !== 'uia', surface: detected.surface || probedDesktop?.surface || null }
   })
 
   // ---- 自检（Task 2.3 占位语义 → 真实"本地可判定"检查；结构校验仍归内核 validateSpec） ----
