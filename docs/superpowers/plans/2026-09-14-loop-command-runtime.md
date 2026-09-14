@@ -111,7 +111,7 @@ test('指令族：11 个 op 全部可解析', () => {
   assert.deepEqual(LOOP_OPS, ['start', 'status', 'pause', 'resume', 'stop', 'budget', 'approve', 'inject', 'rollback', 'replay', 'memory'])
   assert.deepEqual(parseLoopDirective('/loop status'), { kind: 'op', op: 'status', args: [] })
   assert.deepEqual(parseLoopDirective('/loop pause'), { kind: 'op', op: 'pause', args: [] })
-  assert.deepEqual(parseLoopDirective('/loop stop 预算不够'), { kind: 'op', op: 'stop', args: ['预算', '不够'] })
+  assert.deepEqual(parseLoopDirective('/loop stop 预算 不够'), { kind: 'op', op: 'stop', args: ['预算', '不够'] })
   assert.deepEqual(parseLoopDirective('/loop replay --last 5'), { kind: 'op', op: 'replay', args: ['--last', '5'] })
   assert.equal(parseLoopDirective('/loop inject 改用 v2 接口').op, 'inject')
   assert.equal(parseLoopDirective('/loop budget --max-cost 1.5').op, 'budget')
@@ -304,6 +304,8 @@ git commit -m "feat/loop-runtime: Task1 /loop 指令解析纯函数（次数/--u
 **Interfaces:**
 - Consumes: `tools`（`engine.tools`，`run({name,input}, ctx) → {content, isError}`）、`engine.judgeUntil({target,maxTokens}) → {done, reason, error}`。
 - Produces: `verifyDoneWhen(doneWhen, { tools, judge, signal, timeoutMs }) → { passed:boolean|null, results:[{spec,type,ok,run?,reason?,ms}], reason:string }`
+
+> **退出码契约（实现期已核实并修正）**：Bash 工具的 `finish(content, isError)` 只表达「退出码是否为 0」，**不返回原始退出码**（`kernel/tools.mjs:107-111`）。故 `spec.expect` 仅支持 `0`（缺省）；显式要求非 0 退出码无法判定 → fail-closed 并在 `reason` 中说明「不支持自定义退出码」。计划初稿的 `spec.expect === undefined ? r?.isError !== true : false` 会让显式 expect 恒判失败，已按此订正为显式分支。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -1394,7 +1396,7 @@ test('完整参数 → loop 载荷字段齐备', () => {
 
 test('指令族 → loop_command', () => {
   assert.deepEqual(translateLoopSend('/loop status'), { type: 'loop_command', op: 'status', args: [] })
-  assert.deepEqual(translateLoopSend('/loop stop 预算不够'), { type: 'loop_command', op: 'stop', args: ['预算', '不够'] })
+  assert.deepEqual(translateLoopSend('/loop stop 预算 不够'), { type: 'loop_command', op: 'stop', args: ['预算', '不够'] })
 })
 
 test('零回归锁②：普通文本 → null（原样直通，不吞输入）', () => {
