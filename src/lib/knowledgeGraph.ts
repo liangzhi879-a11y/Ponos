@@ -22,9 +22,19 @@ export interface GraphEdgeLike {
 
 /** 网格单元尺寸：节点卡片最大 188px 宽 / 两行文字 ≈ 46px 高，留出连线走线的余量 */
 const COL_W = 216
-const ROW_H = 92
+export const ROW_H = 92
 /** 列数上限：超宽屏下 12 列会让"邻接关系"横向拉得太散，眼睛来回扫很累 */
 const MAX_COLS = 6
+/**
+ * 孤立区与关联区之间留的空行数（S5.1）。靠这条**空白带**把两区在视觉上分开——
+ * 没有它，"未关联"就只是网格尾部几行，读起来像"没连线的残渣"而不是一个类别。
+ */
+const ISOLATED_GAP_ROWS = 1
+
+/** 列数 ≈ sqrt(n)（正方形网格）、下限 1、上限 MAX_COLS */
+function colsOf(n: number): number {
+  return Math.min(Math.max(Math.ceil(Math.sqrt(n)), 1), MAX_COLS)
+}
 
 export interface NodePosition { id: string; x: number; y: number }
 
@@ -36,21 +46,62 @@ export function nodeDegrees(edges: readonly GraphEdgeLike[]): Map<string, number
   return deg
 }
 
+export interface GraphSectionLayout {
+  positions: NodePosition[]
+  /** 孤立区（度=0）首行的 y 坐标；无孤立节点时 null。视图据此在画布上画分区标签 */
+  isolatedTopY: number | null
+  /** 孤立节点数（度=0） */
+  isolatedCount: number
+  /** 关联节点数（度>0） */
+  connectedCount: number
+}
+
+/**
+ * 图谱**分区**布局（S5.1）：在 `layoutGraph` 的基础上额外回报"孤立区从哪开始"。
+ *
+ * 为什么单独导出而不是改 `layoutGraph` 的返回类型：`layoutGraph` 的数组签名被既有单测
+ * 与"只要坐标"的调用点依赖，改签名会连带改一批无关心的地方；
+ * 而"孤立区起点"只有画布需要（画分区标签）。分成两个函数，各自职责单一。
+ */
+export function layoutSections(nodes: readonly GraphNodeLike[], edges: readonly GraphEdgeLike[]): GraphSectionLayout {
+  const list = nodes.filter(n => n && n.id)
+  if (!list.length) return { positions: [], isolatedTopY: null, isolatedCount: 0, connectedCount: 0 }
+  const deg = nodeDegrees(edges)
+  // 度数降序；同度按 id 升序兜底（否则结果由 sort 实现决定，不稳定）
+  const bySort = (a: { id: string }, b: { id: string }) => {
+    const d = (deg.get(b.id) ?? 0) - (deg.get(a.id) ?? 0)
+    return d !== 0 ? d : a.id.localeCompare(b.id)
+  }
+  // **分两区排布**（S5.1 用户实测反馈："只有上部的条目连接了，下边的全都没有连"）。
+  // 原来按度数降序**混排**成一个网格 ⇒ 全部零度节点必然连续沉到最底部若干行：
+  // 真实库 72 节点 / 15 个孤立时，视觉上就是"上半有连线、下半全断线"，看着像图谱坏了。
+  // 现在把零度节点提出来，单独排成一个**整齐的区块**（中间留空行 + 画布分区标签），
+  // 让"未关联"被读成一个明确的类别，而不是网格尾部的残渣。
+  //
+  // 零度节点**不删不隐藏**："这条经验暂时没有关联"本身有信息量
+  // （真实库那 8 条多是主题唯一的真经验，如"编辑工具陷阱"），隐藏反而像数据丢失。
+  const connected = list.filter(n => (deg.get(n.id) ?? 0) > 0).sort(bySort)
+  const isolated = list.filter(n => (deg.get(n.id) ?? 0) === 0).sort(bySort)
+  const grid = (arr: GraphNodeLike[], y0: number) => {
+    const cols = colsOf(arr.length)
+    return arr.map((n, i) => ({ id: n.id, x: (i % cols) * COL_W, y: y0 + Math.floor(i / cols) * ROW_H }))
+  }
+  const positions = grid(connected, 0)
+  let isolatedTopY: number | null = null
+  if (isolated.length) {
+    const rowsUsed = connected.length ? Math.ceil(connected.length / colsOf(connected.length)) : 0
+    isolatedTopY = rowsUsed * ROW_H + ISOLATED_GAP_ROWS * ROW_H
+    positions.push(...grid(isolated, isolatedTopY))
+  }
+  return { positions, isolatedTopY, isolatedCount: isolated.length, connectedCount: connected.length }
+}
+
 /**
  * 节点 → 坐标。入参顺序**不影响**结果（内部先排序），视图侧可以放心直接用后端给的顺序。
  * 空入参 → []（调用方据 nodes.length 走空态，不会走到这里）。
  */
 export function layoutGraph(nodes: readonly GraphNodeLike[], edges: readonly GraphEdgeLike[]): NodePosition[] {
-  const list = nodes.filter(n => n && n.id)
-  if (!list.length) return []
-  const deg = nodeDegrees(edges)
-  const ordered = [...list].sort((a, b) => {
-    const d = (deg.get(b.id) ?? 0) - (deg.get(a.id) ?? 0)
-    return d !== 0 ? d : a.id.localeCompare(b.id)
-  })
-  // 列数 ≈ sqrt(n)（正方形网格）、下限 1、上限 MAX_COLS
-  const cols = Math.min(Math.max(Math.ceil(Math.sqrt(ordered.length)), 1), MAX_COLS)
-  return ordered.map((n, i) => ({ id: n.id, x: (i % cols) * COL_W, y: Math.floor(i / cols) * ROW_H }))
+  return layoutSections(nodes, edges).positions
 }
 
 /**

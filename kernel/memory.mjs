@@ -163,8 +163,32 @@ const DEFAULT_MARKERS = {
   correction: ['以后不要', '不要再', '以后别', '别用', '记住不要'],
   preference: ['我喜欢', '我希望', '我习惯', '以后都', '记得以后'],
   fact: ['记住', '请注意', '特别注意', '关键点是', '必须用', '必须走', '只能用', '统一用'],
-  workflow: ['流程是', '步骤是', '先', '再', '最后', '标准做法', '推荐做法'],
+  // workflow 原为 ['流程是','步骤是','**先**','**再**','**最后**','标准做法','推荐做法']。
+  // S5.1 **删掉三个单字弱信号**（先/再/最后）：它们是全库最高频汉字，配合下方的
+  // "长度 > 30" 门槛（几乎任何用户消息都满足）⇒ **任何较长消息都被当成"流程经验"入库**。
+  //
+  // 真实库实测（`.superpowers/.../calib-capture-precision.mjs`，81 条条目）：
+  //   · capture 自动产出 18 条，其中 **17 条是垃圾**（16 条「流程要点」+ 1 条「业务要点」）
+  //   · 16 条「流程要点」里**含强信号词的 = 0 条** —— 全是弱信号误触发的对话原文
+  //     （"不太符合我的要求，我想的是扁平科技风…"）、协议块（"执行技能 using-superpowers…"）、
+  //     空模板（"用户回答："）
+  //   · 而 agent **主动沉淀**的 63 条全部有 tag、零协议文本 ⇒ 弱信号分支净贡献为零、纯噪声
+  // 故只保留**明确声明式**的强信号词：用户写明"流程是…/步骤是…"才算流程经验。
+  // 需要放开时仍可在配置 `memory.markers.workflow` 里自定义（本表只是默认值）。
+  workflow: ['流程是', '步骤是', '标准做法', '推荐做法'],
 }
+
+// 协议／系统文本：harness 注入的块与模板框架，**不是用户表达的经验**。
+// 实测形态（真实库）：`【上下文锚定 · 权威事实】`、`【用户插话——补充信息/调整要求】`、
+// `执行技能 using-superpowers。首选使用 Read 工具读取 "…"`、`用户回答：`。
+// 这类内容入库后必然是**无关联的孤立噪声**（真实库 21% 孤立条目里的主要来源），
+// 且对检索毫无价值（谁也不会去回忆"上下文锚定"这几个字）。
+//
+// 判据是**起始匹配**（不是"包含即拦"），这是个**故意的取舍**：
+// 真实库垃圾的 full 都以协议标记**开头**（如 `【用户插话——…】` 本身），起始判据已足够拦住它们；
+// 而"含【就拦"会**错杀真经验**（用户完全可能说"先在报告里用【】标出待确认项"）。
+// 漏拦一条 → 只是少拦一点噪声；错杀一条 → 用户真经验永久丢失。按不可逆性取小（同 S5 读时校验原则）。
+const PROTOCOL_TEXT_RE = /^(?:【|执行技能\s|用户回答：|用户插话)/
 
 // 确定性捕获（启发式）：轮末对 user 文本做模式匹配，产出结构化记忆候选。
 // 分级：correction/preference → 高价值（theme 固定 workflow/communication）；
@@ -174,9 +198,12 @@ export function captureMemoryCandidates({ userText = '', tag = null, markers = n
   const t = String(userText || '')
   const m = { ...DEFAULT_MARKERS, ...(markers || {}) }
   const out = []
-  // 统一出口：所有候选都过"空模板"闸（S5 Task 3）。模板化的条目对检索与关联都无价值，
-  // 入库只会变成噪声，故**不再产生新的**（存量靠关联侧 MIN_LEN 过滤，读取兼容性不动）。
+  // 统一出口：所有候选都过两道闸（S5 Task 3 空模板闸 + S5.1 协议文本闸）。
   const push = (theme, summary, full, marker) => {
+    // ① 协议／系统文本一律不捕获（harness 注入块、技能调用提示、模板框架）。
+    //    查 full（正文）为主；summary 带 `流程要点：` 这类前缀，故只对无前缀的正文判起始。
+    if (PROTOCOL_TEXT_RE.test(String(full ?? '').trim())) return
+    // ② 空模板（S5 Task 3）：模板化条目对检索与关联都无价值，入库只会变成噪声。
     if (isEmptyTemplateContent(relationContent({ full, text: summary }), marker)) return
     out.push({ theme, tag, summary, full })
   }
@@ -186,11 +213,10 @@ export function captureMemoryCandidates({ userText = '', tag = null, markers = n
   if (preference) push('communication', `用户偏好（${preference}）：${t.slice(0, 60)}`, t.slice(0, 500), preference)
   const fact = (m.fact || []).find((x) => t.includes(x))
   if (fact) push(inferTheme(tag, t), `业务要点（${fact}）：${t.slice(0, 60)}`, t.slice(0, 500), fact)
-  // 流程要点：强信号词（流程是/标准做法/推荐做法）直接捕获；弱信号词（先/再/最后）
-  // 要求文本足够长（≥30 字符）才捕获，防泛化词误伤。
+  // 流程要点：只认**明确声明式**的强信号词（默认表已删掉单字 `先/再/最后`，见 DEFAULT_MARKERS）。
+  // 原来还有一条"弱信号词 + 长度 > 30"的宽口径，真实库实测其产出 16/16 全是垃圾，已移除。
   const workflow = (m.workflow || []).find((x) => t.includes(x))
-  const strongFlow = /流程是|标准做法|推荐做法|步骤是/.test(t)
-  if (workflow && !fact && (strongFlow || t.length > 30)) {
+  if (workflow && !fact) {
     push('workflow', `流程要点：${t.slice(0, 60)}`, t.slice(0, 500), workflow)
   }
   return out
