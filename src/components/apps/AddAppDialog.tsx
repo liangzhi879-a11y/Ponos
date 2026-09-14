@@ -24,7 +24,7 @@ import type { AppGenerateProgress, AppGenerateResult, AppProbeResult, AppSpec, A
 
 const ID_RE = /^[a-zA-Z0-9_-]+$/
 /** 阶段顺序（用于把"已到达"的阶段点亮；只是展示顺序，不代表会全部发生） */
-const PHASE_ORDER: AppGenerateProgress['phase'][] = ['fetch', 'probe', 'round', 'explore', 'stream', 'parse', 'invalid', 'quality', 'parsed', 'verify', 'done']
+const PHASE_ORDER: AppGenerateProgress['phase'][] = ['fetch', 'login', 'probe', 'round', 'explore', 'stream', 'parse', 'invalid', 'quality', 'parsed', 'verify', 'done']
 
 /**
  * 网址归一：用户从地址栏复制的常常不带协议头（`kimi.com`），而取素材与域名授权都要能解析它——
@@ -80,6 +80,8 @@ export function AddAppDialog({ onClose, onDone, sessionId }: { onClose: () => vo
   const [jsonDraft, setJsonDraft] = useState('')
   const [showJson, setShowJson] = useState(false)
   const [verify, setVerify] = useState<AppVerifyResult | null>(null)
+  /** 正在等待登录时的分区键（来自进度事件）：「我已完成登录」「取消等待」用它回传主进程 */
+  const [loginKey, setLoginKey] = useState<string | null>(null)
   /** 用户显式选择"未验证也保存"——默认关闭，避免糊里糊涂存下不可用命令 */
   const [forceSave, setForceSave] = useState(false)
   const startedAt = useRef<number | null>(null)
@@ -111,6 +113,8 @@ export function AddAppDialog({ onClose, onDone, sessionId }: { onClose: () => vo
       setProg(p)
       setSeen((prev) => (prev.includes(p.phase) ? prev : [...prev, p.phase]))
       if (typeof p.chars === 'number') setChars(p.chars)
+      // 等待登录：记下分区键，供「我已完成登录」「取消等待」回传给主进程
+      if (p.phase === 'login') setLoginKey(p.waiting ? (p.key ?? null) : null)
       // 真实流式内容追加（主进程做了节流，见 app-generate.cjs 的 150ms/200字符）
       if (p.delta) {
         streamBuf.current = (streamBuf.current + p.delta).slice(-4000)
@@ -295,6 +299,38 @@ export function AddAppDialog({ onClose, onDone, sessionId }: { onClose: () => vo
                 )}
 
                 {prog?.detail && <div className="text-[10px] text-secondary">{prog.detail}</div>}
+
+                {/* 等待登录：主进程检测到登录墙并自动打开了可见窗口时出现。
+                    自动检测到登录成功就会继续（不需要点任何按钮）；这两个按钮是给用户
+                    "我登录完了，别等了"和"这次先不登录"用的。 */}
+                {prog?.phase === 'login' && prog.waiting && (
+                  <div className="flex flex-col gap-2 rounded-lg border border-input bg-surface-2 p-2">
+                    <div className="text-[10px] text-secondary">{t('apps.loginNeeded')}</div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        onClick={() => { void api?.appLoginDone?.({ key: loginKey || '' }) }}
+                        disabled={!api?.appLoginDone}
+                      >{t('apps.loginDone')}</Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => { void api?.appLoginCancel?.({ key: loginKey || '' }) }}
+                        disabled={!api?.appLoginCancel}
+                      >{t('apps.loginCancel')}</Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* 登录结果如实展示：没登录成功就说"未在登录态下验证"，别让人以为一切正常 */}
+                {gen?.login && !gen.login.ok && (
+                  <div className="text-[10px] text-warning">
+                    · {gen.login.reason === 'timeout' ? t('apps.loginTimeout')
+                      : gen.login.reason === 'cancelled' ? t('apps.loginCancelled')
+                      : gen.login.reason === 'no-executor' ? t('apps.loginNotReady')
+                      : (gen.login.detail || t('apps.loginNotVerified'))}
+                  </div>
+                )}
                 {!!prog?.issues?.length && (
                   <ul className="flex flex-col gap-0.5">
                     {prog.issues.map((s, i) => <li key={i} className="text-[10px] text-warning">· {s}</li>)}

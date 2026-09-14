@@ -526,6 +526,11 @@ export interface AppSpec {
   driver?: AppDriver
   target: AppTarget
   expose?: { mode: 'private' | 'console' | 'public' }
+  /**
+   * 该应用需要登录（生成期检测到登录墙时写入；老 Spec 没有这个字段，照常工作）。
+   * needsLogin 为真但当前分区没有 Cookie 时，app:check 会如实提示"AI 调用会被登录墙挡住"。
+   */
+  auth?: { needsLogin?: boolean; loginUrl?: string }
   commands: AppSpecCommand[]
 }
 
@@ -588,13 +593,18 @@ export interface AppGenerateProgress {
   /**
    * fetch：后台抓取页面素材（无需浏览器）；probe：浏览器探测（仅白名单站点增强用）；
    * explore：模型自主探索（抓页面/试跑命令）——如实展示"模型正在做什么"，不做假进度；
+   * login：需要人工登录（waiting=true 时界面要给"我已完成登录/取消等待"按钮）；
    * quality：封装质量校验未达标被打回；error：失败（必须带原因）
    */
-  phase: 'fetch' | 'probe' | 'round' | 'explore' | 'stream' | 'parse' | 'invalid' | 'quality' | 'parsed' | 'verify' | 'done' | 'error'
+  phase: 'fetch' | 'probe' | 'round' | 'explore' | 'stream' | 'parse' | 'invalid' | 'quality' | 'parsed' | 'verify' | 'login' | 'done' | 'error'
   round?: number
   maxRounds?: number
   /** 当前是第几次工具调用（explore 阶段） */
   toolCalls?: number
+  /** 是否正在等待用户登录（仅 phase='login'）：true=等待中，false=已结束（detail 说明结果） */
+  waiting?: boolean
+  /** 站点/应用级分区键（phase='login' 时给"我已完成登录/取消等待"按钮回传用） */
+  key?: string
   chars?: number
   /** 真实流式增量文本（已节流，用于界面展示实时输出） */
   delta?: string
@@ -636,6 +646,12 @@ export interface AppGenerateResult {
   verify?: AppVerifyResult
   /** 自主探索概况：模型自己调了哪些工具、几轮收敛（用于让用户看懂"生成过程做了什么"） */
   agent?: { turns: number; toolCalls: number; verified: boolean; stoppedBy?: string; trace?: unknown[] }
+  /**
+   * 登录情况（生成期检测到登录墙才有）：
+   * attempted=false 且 reason='no-executor' = 需要登录但执行器不可用（本次未在登录态下验证）；
+   * ok=false 但 spec 照常产出 = 未登录成功下生成，界面必须如实标注"未在登录态下验证"。
+   */
+  login?: { attempted: boolean; ok: boolean; reason: string; detail: string } | null
   error?: string
   elapsedMs?: number
 }
@@ -702,7 +718,14 @@ export interface YFWAPI {
    * 打开**可见**的登录窗口（与应用命令、模型探索共用同一浏览器会话）。
    * 登录一次后命令执行与模型探索都会带上该登录态（这是"带登录态探索"的入口）。
    */
-  appLogin: (payload: { url: string; sessionId?: string }) => Promise<{ ok: boolean; sessionId?: string; url?: string; error?: string }>
+  appLogin: (payload: { url: string; sessionId?: string }) => Promise<{ ok: boolean; key?: string; sessionId?: string; url?: string; error?: string }>
+  /**
+   * 告知主进程"我已经登录完成了"——正在等登录的生成会立刻继续（不必等 Cookie 轮询）。
+   * 返回 ok=false 表示"当前没有等待中的登录"（例如重复点击），**不是错误**，不要弹报错。
+   */
+  appLoginDone: (payload: { key: string }) => Promise<{ ok: boolean }>
+  /** 取消等待登录：生成继续，但本次如实标注"未在登录态下验证" */
+  appLoginCancel: (payload: { key: string }) => Promise<{ ok: boolean }>
   /**
    * 生成 App Spec（探测 → LLM → 结构校验 → read 试跑）。**不落盘**：
    * 必须由用户确认后另行调用 appWriteSpec 保存。
