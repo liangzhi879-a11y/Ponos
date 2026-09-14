@@ -14,6 +14,8 @@ const appRegistry = require('./app-registry.cjs')
 const appBindings = require('./app-bindings.cjs')
 const profiler = require('./app-profiler.cjs')
 const { runCommand, appendHistory, desktopRunner } = require('./app-runner.cjs')
+// 非浏览器驱动的**唯一分发点**（process/script/uia → desktopRunner；http → httpRunner；file → fileRunner）
+const { runNonBrowser } = require('./app-runner-route.cjs')
 const { generateSpec, verifySpec, snapshotForPrompt, validateSpecBasic, driverOf } = require('./app-generate.cjs')
 const appAgent = require('./app-agent.cjs')
 const { callLlmStream } = require('./app-llm.cjs')
@@ -90,6 +92,24 @@ function inferDriver(spec) {
 function pickBlockerReasons(agent) {
   const list = agent?.blockers?.length ? agent.blockers : (agent?.issues || []).slice(-3)
   return list.slice(0, 3)
+}
+
+/**
+ * 本次生成该用哪个驱动当"尺子"。**唯一真源**（校验 / 试跑 / 交付三处必须同口径）。
+ *
+ * ★ 为什么需要（M3 的真实障碍）：探测出的 driver 是**目标级**的（web → browser；desktop → process/script/uia），
+ *   而 `http` / `file` 是模型在 Spec 里**为这份封装选的执行后端**。若一律用探测结果覆盖草稿的 driver，
+ *   模型照能力清单写出的 `request` / `read` 步骤会被判成"driver=uia 只允许 focus/type/key/wait"——
+ *   清单承诺的能力永远交不出来。
+ * ★ 边界：只放行 `http` / `file` 这两个"模型可选的后端"，其余值仍以探测结果为准
+ *   （driver 是目标的属性，不能让模型随手改掉 browser/process）。
+ * @param {object} spec 草稿或已交付的 Spec
+ * @param {string} probedDriver 本次探测出的驱动（目标级）
+ * @returns {string} 生效驱动
+ */
+function draftDriverOf(spec, probedDriver) {
+  const raw = typeof spec?.driver === 'string' ? spec.driver.trim() : ''
+  return raw === 'http' || raw === 'file' ? raw : probedDriver
 }
 
 /**
@@ -529,15 +549,19 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     //   原流程按写死的规则抓 6 页 → 一次成型 → 只回喂两次修正；站点结构一变（多级入口、
     //   要先搜索才能到详情页…）就抓不到关键页面，模型只能凭猜 → 命令又少又漏。
     //   现在：模型自己决定抓哪些页面、抓几次、先写什么、怎么调试，我们只提供工具与真实反馈。
-    const runForVerify = (spec) => ({ action, args, sessionId: sid }) => (
-      driver === 'browser'
-        ? runCommand({ roots: roots(), appId, action, args, executor: getExecutor(), sessionId: sid, spec, persist: false })
-        // ★ desktop 必须把 driver 注入 spec：草稿里的 driver 由模型写、常常没有，
-        //   而 desktopRunner 第一件事就是校验 driver（回 "不支持的 driver：undefined"）。
-        //   执行路径早就这么做了（见 runAppCommand 的 desktopRunner 调用），试跑路径漏了 —— 真实故障：
-        //   试跑恒失败 → 模型被反复回喂 → 用户最终看到的是最早几轮的陈旧错误。
-        : desktopRunner({ appId, action, args, spec: { ...spec, driver } })
-    )
+    /** 生成期试跑：按草稿的**有效驱动**分发（browser 走执行器；process/script/uia/http/file 走统一分发） */
+    const runForVerify = (spec) => ({ action, args, sessionId: sid }) => {
+      const d = draftDriverOf(spec, driver)
+      // ★ 必须把 driver 注入 spec：草稿里的 driver 由模型写、常常没有，
+      //   而 desktopRunner 第一件事就是校验 driver（回 "不支持的 driver：undefined"）。
+      //   执行路径早就这么做了（见 runAppCommand），试跑路径曾漏掉 —— 真实故障：
+      //   试跑恒失败 → 模型被反复回喂 → 用户最终看到的是最早几轮的陈旧错误。
+      //   `draftDriverOf` 让草稿自声明的 http/file 生效，其余仍以探测结果为准（唯一口径）。
+      const specWithDriver = { ...spec, driver: d }
+      return d === 'browser'
+        ? runCommand({ roots: roots(), appId, action, args, executor: getExecutor(), sessionId: sid, spec: specWithDriver, persist: false })
+        : runNonBrowser({ appId, action, args, spec: specWithDriver, roots: roots(), exploreRoots: () => exploreRoots(target), deps, persist: false })
+    }
     // 试跑一律用站点/应用级键（登录态就存在这个分区里；chat sessionId 与它无关）
     const verifyOnce = (spec) => verifySpec({
       spec, sessionId: key,
@@ -748,9 +772,13 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
       //   driver 是"目标"的属性（探测决定，交付时也是 `{ ...agent.spec, driver }` 覆盖），模型写的只是参考。
       //   唯一例外：草稿自己声明了**另一种 target.type**（模型连目标都写错了），此时按草稿自己的 target
       //   推定驱动，免得"目标写错"被报成"act 不合法"而互相掩盖。
+      //   ★ M3 补充：`draftDriverOf` 再放行模型自声明的 http/file（那是**为这份封装选的执行后端**，
+      //   不是目标的属性）——否则模型按能力清单写出的 request / read 步骤会被判成 uia 的 act，全数打回。
       validate: (s) => {
         const draftType = s?.target?.type
-        return draftType && draftType !== target.type ? validateSpecBasic(s) : validateSpecBasic({ ...s, driver })
+        // 目标写错时仍按草稿自己的 target 推定（免得"目标写错"被报成"act 不合法"而互相掩盖）
+        if (draftType && draftType !== target.type) return validateSpecBasic(s)
+        return validateSpecBasic({ ...s, driver: draftDriverOf(s, driver) })
       },
       verify: verifyOnce,
       onProgress: (p) => emitProgress(appId, p),
@@ -769,7 +797,11 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
       return done({ ok: false, error: whyWithSurface, issues: agent.issues, blockers: agent.blockers, rounds: agent.turns, turns: agent.turns, toolCalls: agent.toolCalls, driver, stoppedBy: agent.stoppedBy })
     }
 
-    let specWithDriver = { ...agent.spec, driver, target: { ...(agent.spec.target || {}), ...target } }
+    // ★ M3：交付的驱动 = `draftDriverOf`（草稿自声明的 http/file 优先，其余以探测结果为准）——
+    //   与校验、试跑同口径；否则"校验/试跑都按 http 跑通了，交付时却被改回 process"，
+    //   用户拿到手的 Spec 立刻变成跑不通的一份（三处口径必须完全一致）。
+    const finalDriver = draftDriverOf(agent.spec, driver)
+    let specWithDriver = { ...agent.spec, driver: finalDriver, target: { ...(agent.spec.target || {}), ...target } }
     // 登录墙结论落进 Spec 的可选字段 auth（仅 needed 时写）：界面据此提示"AI 调用前需先登录"，
     // 而 app:check 的运行时登录结论也只看它。validateSpec 不校验未知字段 → 向后兼容。
     if (loginWall?.needed) {
@@ -803,7 +835,7 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
   //   ② 内核桥（Task 4.x「应用即工具」）：内核 bridge_request(route=app) →
   //      bridge 转 executor/主进程 → 本文件同一函数 → app:exec:response 回写内核。
   // 抽成模块级函数的唯一目的是让两侧执行语义/留痕**逐字节一致**（两套实现必漂移）。
-  ipcMain.handle('app:run', (_e, payload) => runAppCommand({ ...(payload || {}), roots: roots(), getExecutor }))
+  ipcMain.handle('app:run', (_e, payload) => runAppCommand({ ...(payload || {}), roots: roots(), getExecutor, deps }))
 
   // 打开**可见**登录窗口：这是"带登录态探索/执行"的入口。
   //
@@ -902,11 +934,11 @@ function exploreRoots(target) {
  * 任何执行含失败都写 history）。
  * @returns {Promise<{ok:boolean, data:any, error:string|null, kind:string, durationMs:number}>}
  */
-async function runAppCommand({ appId, action, args = {}, sessionId, getExecutor, roots = appRoots() } = {}) {
+async function runAppCommand({ appId, action, args = {}, sessionId, getExecutor, roots = appRoots(), deps = {} } = {}) {
   const spec = appRegistry.readSpec({ roots, appId })
   if (!spec) return { ok: false, data: null, error: `应用 Spec 不存在：${appId}`, kind: 'unknown', durationMs: 0 }
 
-  const driver = inferDriver(spec)
+  const driver = inferDriver(spec)          // 唯一真源：现在会如实返回 http / file
   if (driver === 'browser') {
     const executor = typeof getExecutor === 'function' ? getExecutor() : null
     if (!executor) return { ok: false, data: null, error: '浏览器执行器未就绪', kind: 'unknown', durationMs: 0 }
@@ -919,10 +951,16 @@ async function runAppCommand({ appId, action, args = {}, sessionId, getExecutor,
     return runCommand({ roots, appId, action, args, executor, sessionId: key })
   }
 
-  // desktop：与 browser 路径同口径留痕（runCommand 内部负责 browser 的留痕）
-  const res = await desktopRunner({ appId, action, args, spec: { ...spec, driver } })
-  appendHistory({ roots, appId, entry: { appId, action, args, kind: res.kind, at: new Date().toISOString(), ok: res.ok, error: res.error, durationMs: res.durationMs } })
-  return res
+  // desktop（process/script/uia）与 M3 新增的 http / file 共用同一份分发与留痕
+  // （留痕在 runNonBrowser 内，口径与改动前逐字一致：任何执行含失败都写一行）
+  return runNonBrowser({
+    appId, action, args,
+    spec: { ...spec, driver },
+    roots,
+    exploreRoots: () => exploreRoots(spec.target),
+    deps,
+    persist: true,
+  })
 }
 
 /** 同一站点的常见两种写法：apex 与 www（网站几乎都会在两者间跳转） */
@@ -982,4 +1020,4 @@ function profiledSnapshot(snap) {
   }
 }
 
-module.exports = { registerAppHandlers, runAppCommand, handleAppExecMessage, inferDriver, appRoots, exploreRoots, profiledSnapshot, authorizeAppTarget, hostVariants, pickBlockerReasons }
+module.exports = { registerAppHandlers, runAppCommand, handleAppExecMessage, inferDriver, appRoots, exploreRoots, profiledSnapshot, authorizeAppTarget, hostVariants, pickBlockerReasons, draftDriverOf }

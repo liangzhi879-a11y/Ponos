@@ -43,6 +43,35 @@ const isPlaceholder = (s) => PLACEHOLDER.test(String(s || '').trim())
 const cjkLen = (s) => String(s || '').trim().length
 
 /**
+ * M3「可选执行后端」教义：告诉模型**这两条路存在、怎么写、边界在哪**。
+ *
+ * ★ 为什么必须写进提示词（而不是只放进契约表）：契约表管的是"写了能不能过校验"，
+ *   提示词管的是"模型知不知道能这么写"。只改契约不改提示词，模型会继续写 browser + js
+ *   （那是 M1/M2 阶段的唯一选择），能力清单里列出的 http/file 通道等于白列——
+ *   这正是本任务"模型可见性"要解决的问题。
+ * ★ ① 需要登录态的接口**不要走 http**（http 后端刻意不带 Cookie，写了也调不通）——
+ *   这条对所有驱动都要说；但"改用什么"必须按驱动说：浏览器目标才提 `driver:"browser"` + js 步骤，
+ *   **桌面目标绝不提**——runTool 对桌面驱动明确拒绝浏览器工具（"这是桌面应用，没有浏览器页面可浏览"），
+ *   在桌面提示词里写浏览器方案只会让模型去调一个注定失败的东西
+ *   （既有测试锁定：桌面提示词的 `agentToolDocs` 不含 browse/fetch 这套引导）。
+ *   ② file 只读（系统不给模型任何写文件的口子，别去试）。
+ * @param {boolean} isWeb 驱动是否为 browser
+ */
+const optionalDriverRules = (isWeb) => [
+  '【可选执行后端（M3）：封装"接口级 / 数据级"能力时，把整份 Spec 的 driver 换成下面之一】',
+  '· driver:"http" —— 主进程直调 HTTP 接口（steps.act 只能写 "request"，必填 "url"）。',
+  '  **只能访问 target 同源的地址**；要调其它公开接口，必须在 Spec 里写 http.allowHosts:["api.example.com"]。',
+  '  本机/内网地址会被拒绝，响应体有大小上限，**不会带 Cookie**。',
+  ...(isWeb
+    ? ['  ⇒ **需要登录态的接口不要用 http**：那种接口请用 driver:"browser" + {"act":"js"}（自带登录会话）。']
+    : ['  ⇒ **需要登录态的接口不要用 http**：它拿不到浏览器的会话，请改用 CLI / 本地数据文件这条路。']),
+  '· driver:"file" —— 主进程读本地文件（steps.act 只能写 "read" / "query"，必填 "path"）。',
+  '  **只读**（没有任何写文件的 act）；路径必须在目标程序目录或其用户数据目录内，越界会被拒绝。',
+  '  query 步骤用极简选择器只取需要的字段：{"act":"query","path":"…/project.json","select":"$.frames[*].name","save":"names"}。',
+  '· 用不到这两条路就**不要**写（默认沿用探测出的 driver，例如 process 的 cli）。',
+].join('\n')
+
+/**
  * 模型每轮可用的工具说明（渲染进 system，字段名必须与 parseTurn/主进程 runTool 一致）。
  * 先归一化驱动再分支：生产 driver 值是 browser/process/script/uia，旧代码判 `driver === 'desktop'`
  * 在生产里永不成立（桌面应用拿到的会是浏览器那套工具说明）。
@@ -210,6 +239,8 @@ function buildAgentSystem({ target, driver = 'browser', requirement, surfaceLine
     '',
     ...(req ? [req, ''] : []),
     ...(surface ? [surface, ''] : []),     // ← 清单紧随需求：模型据此"从最有把握的通道开始试"
+    optionalDriverRules(isWeb),            // ← 清单告诉它"有哪些路"，这段告诉它"路怎么写"
+    '',
     agentToolDocs(d),
     '',
     '【工作方式（强烈建议遵循）】',
