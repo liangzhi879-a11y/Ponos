@@ -16,12 +16,14 @@
 'use strict'
 // LOGIN_PATH_RE / loginSucceeded 的唯一出处是 app-login-page.cjs（零 Electron 依赖的纯函数），
 // 这里只做编排与 re-export（测试从 app-login.cjs 导入 loginSucceeded，避免接口漂移）。
-const { loginSucceeded, LOGIN_PATH_RE } = require('./app-login-page.cjs')
+const { loginSucceeded, snapshotHasPassword, LOGIN_PATH_RE } = require('./app-login-page.cjs')
 
 const DEFAULT_WAIT_MS = 5 * 60 * 1000
 const POLL_MS = 1500
+/** 超时文案的"秒/分钟"分界：短于 1 分钟仍按分钟取整会得到误导性的"0 分钟" */
+const MINUTE_MS = 60 * 1000
 
-/** 等待注册表：key → { resolve }；供 app:login-done / app:login-cancel 通道命中 */
+/** 等待注册表：key → { resolve, waiters }；供 app:login-done / app:login-cancel 通道命中 */
 const pending = new Map()
 
 function resolveLoginWait(key) {
@@ -36,7 +38,31 @@ function cancelLoginWait(key) {
   p.resolve('cancelled')
   return true
 }
+/** 登记条数（按 key 计；同一 key 的多个等待者共享同一条登记，见 acquireWait） */
 function pendingCount() { return pending.size }
+
+/**
+ * 取（或复用）等待登记。
+ * ★ 同 key 重复进入必须**复用**同一登记，不能覆盖：直接 `set` 会让先进入者的 resolve 被顶掉
+ *   （用户明明点了完成，先进入者照样干等到超时），并且先退出者的清理会一并删掉后进入者的登记。
+ *   这里用等待者计数：登记的生命周期 = 最后一个使用者退出。
+ */
+function acquireWait(key) {
+  let reg = pending.get(key)
+  if (!reg) {
+    reg = { waiters: 0, resolve: () => {} }
+    reg.external = new Promise((res) => { reg.resolve = res })
+    pending.set(key, reg)
+  }
+  reg.waiters += 1
+  return reg
+}
+/** 释放登记；计数归零才删除（"先退出的等待者"不得掐断仍在等待的登记） */
+function releaseWait(key, reg) {
+  if (pending.get(key) !== reg) return
+  reg.waiters -= 1
+  if (reg.waiters <= 0) pending.delete(key)
+}
 
 function done(ok, reason, t0, now, extra = {}) {
   return { ok, reason, elapsedMs: Math.max(0, now() - t0), ...extra }
@@ -47,14 +73,46 @@ function isLoginUrl(url) {
   try { return LOGIN_PATH_RE.test(new URL(String(url || '')).pathname) } catch { return false }
 }
 
+/** 快照自身给的 page.url 是否已"离开登录路径"；地址不可解析时不算证据（保守 false，与 loginSucceeded 同一原则） */
+function leftLoginPath(url) {
+  try { return !LOGIN_PATH_RE.test(new URL(String(url || '')).pathname) } catch { return false }
+}
+
+/** 超时文案：不到 1 分钟用"秒"，避免 `Math.round(waitMs/60000)` 输出误导性的"0 分钟" */
+function timeoutError(waitMs) {
+  const unit = waitMs < MINUTE_MS
+    ? `${Math.max(1, Math.ceil(waitMs / 1000))} 秒`
+    : `${Math.round(waitMs / MINUTE_MS)} 分钟`
+  return `等待登录超时（${unit}）：本次未在登录态下验证`
+}
+
+/**
+ * 开窗前的"已登录"预判（brief 自带测试 1 与测试 3 的唯一差异就在传进来的 url）。
+ *   · url **不是**登录页：整段预判都可用（含 `logged_in === true` 这条强信号）——
+ *     用户本来就在站点里操作，快照说已登录就无需打扰；
+ *   · url **是**登录页：只否决 `logged_in === true` 这条捷径（不少站点在登录页也照样输出该字段，
+ *     采信它会导致"明明要登录却直接跳过登录"），但**不跳过整段预判**：
+ *     仍认"快照自身这一路证据"——page.url 已离开登录路径 且 页面上没有密码框。
+ *   ★ 为什么必须留这条：Task 6 主路径传 `wall.loginUrl || webUrl`，只要 loginUrl 非空就永远是登录页 url，
+ *     若整段跳过预判，真已登录的用户也会被无谓开窗；对这种"不输出 logged_in 且 cookie 不轮换"的站点，
+ *     会白等 5 分钟并给出"未在登录态下验证"的假超时。
+ */
+function preLoginShortcut(snapshot, url) {
+  const page = snapshot?.page
+  if (!page) return false
+  if (!isLoginUrl(url)) return loginSucceeded(snapshot, url)
+  if (page.logged_in === true) return false
+  if (snapshotHasPassword(page)) return false
+  return leftLoginPath(page.url)
+}
+
 /**
  * 打开可见窗口等用户登录（同一分区 = 与命令执行/模型探索共用登录态）。
  *
  * ★ "先探一次快照"的边界（brief 自带测试 1 与测试 3 的唯一差异就在传进来的 url）：
- *   仅当**传入 url 不是登录页**时才采信"快照已登录 → already-logged-in"。
- *   理由：url 是登录页时上游（登录墙流程）已经判定需要登录，此刻快照上的 logged_in 标记
- *   在登录页上并不可信（不少站点在登录页也照样输出该字段），采信它会导致"明明要登录却直接跳过登录"。
- *   这条路径不会漏判：进了等待流程后第一轮快照判定立刻就会给出 logged_in=true → 返回 logged-in。
+ *   预判逻辑集中在 preLoginShortcut（Fix round 1 / F4 之后：url 是登录页时**只**否决
+ *   `logged_in === true` 这条捷径，不再整段跳过预判）。这条路径不会漏判：即使预判为假，
+ *   进了等待流程后第一轮快照判定立刻就会给出 logged_in=true → logged-in。
  */
 async function ensureLoggedIn({ key, url, executor, deps = {}, emit, waitMs = DEFAULT_WAIT_MS, pollMs = POLL_MS } = {}) {
   const now = deps.now || (() => Date.now())
@@ -72,30 +130,41 @@ async function ensureLoggedIn({ key, url, executor, deps = {}, emit, waitMs = DE
 
   if (!executor) return finish(false, 'no-executor', { error: '浏览器执行器未就绪' })
 
-  // 先看一眼是不是本来就登录着（已登录就别弹窗打扰）
+  // 先看一眼是不是本来就登录着（已登录就别弹窗打扰）；取舍见 preLoginShortcut 注释
   const snapOnce = async () => {
     try { const r = await executor.exec(key, 'snapshot', {}); return r?.snapshot || null } catch { return null }
   }
-  if (!isLoginUrl(url)) {
-    const first = await snapOnce()
-    if (loginSucceeded(first, url)) return finish(true, 'already-logged-in')
-  }
+  if (preLoginShortcut(await snapOnce(), url)) return finish(true, 'already-logged-in')
 
-  try { await executor.openWindow(key) } catch (e) {
-    return finish(false, 'open-failed', { error: `打开登录窗口失败：${String(e?.message || e)}` })
-  }
-  const nav = await executor.exec(key, 'goto', { url })
-  if (!nav?.ok) return finish(false, 'nav-failed', { error: `打开页面失败：${nav?.error || '未知错误'}` })
-
-  emitLogin({ phase: 'login', waiting: true, key, url, detail: '需要登录：已在可见窗口中打开该站点，请在其中完成登录（检测到登录成功后会自动继续）…' })
-  announced = true
-
-  // 外部信号（用户在界面上点「我已完成登录」/「取消等待」）
-  let resolveExternal = () => {}
-  const external = new Promise((res) => { resolveExternal = res })
-  pending.set(String(key), { resolve: resolveExternal })
-  const baseline = await readFingerprint(deps, executor, key, url)
+  // ★ F1：登记必须早于 openWindow。上游（Task 6/7）在调用本函数**之前**就会 emit waiting:true，
+  //   渲染层此时已显示「我已完成登录」；而开窗 + goto 要花几百毫秒~数秒（goto 上限 30s）。
+  //   若等到导航完成才登记，用户在开窗期间点击会拿不到登记（resolveLoginWait 返 false），
+  //   信号被永久丢弃 → 用户视角是"点了没反应，干等 5 分钟"。
+  //   副作用（已知并接受）：开窗前就点击 → 以 user-confirmed 提前返回（语义合理：用户说他已完成登录）。
+  // ★ F2：同 key 并发进入复用同一登记（见 acquireWait），先退出者不得删掉后进入者的登记。
+  const waitKey = String(key)
+  const reg = acquireWait(waitKey)
+  const external = reg.external
   try {
+    let opened
+    try { opened = await executor.openWindow(key) } catch (e) {
+      return finish(false, 'open-failed', { error: `打开登录窗口失败：${String(e?.message || e)}` })
+    }
+    // F5：执行器用 {ok:false} 报错（没抛异常）时同样算开窗失败，不能当成成功继续往下走
+    if (opened?.ok === false) return finish(false, 'open-failed', { error: `打开登录窗口失败：${opened?.error || '未知错误'}` })
+
+    // F3：goto 抛错必须归一为 {ok:false, reason:'nav-failed'}。否则 Promise 直接 reject，
+    //     而契约要求所有出口都是 {ok,reason}（9 个 reason 是唯一取值域），调用方按返回值分支会拿到未捕获 rejection。
+    let nav
+    try { nav = await executor.exec(key, 'goto', { url }) } catch (e) {
+      return finish(false, 'nav-failed', { error: `打开页面失败：${String(e?.message || e)}` })
+    }
+    if (!nav?.ok) return finish(false, 'nav-failed', { error: `打开页面失败：${nav?.error || '未知错误'}` })
+
+    emitLogin({ phase: 'login', waiting: true, key, url, detail: '需要登录：已在可见窗口中打开该站点，请在其中完成登录（检测到登录成功后会自动继续）…' })
+    announced = true
+
+    const baseline = await readFingerprint(deps, executor, key, url)
     const deadline = t0 + waitMs
     while (now() < deadline) {
       // 先看 cookie（登录必然写 cookie），再看快照；两者都无变化才继续等
@@ -112,9 +181,10 @@ async function ensureLoggedIn({ key, url, executor, deps = {}, emit, waitMs = DE
       if (raced?.how === 'cancelled') return finish(false, 'cancelled', { error: '用户取消等待登录' })
       if (raced?.how === 'user-confirmed') return finish(true, 'user-confirmed')
     }
-    return finish(false, 'timeout', { error: `等待登录超时（${Math.round(waitMs / 60000)} 分钟）：本次未在登录态下验证` })
+    return finish(false, 'timeout', { error: timeoutError(waitMs) })
   } finally {
-    pending.delete(String(key))
+    // 覆盖"登记之后的整段流程"（含 open-failed / nav-failed 早退）：登记绝不泄漏
+    releaseWait(waitKey, reg)
   }
 }
 
