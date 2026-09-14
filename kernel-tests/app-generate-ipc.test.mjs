@@ -2,7 +2,7 @@
 process.env.PONOS_MOCK_API = '1'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -500,7 +500,9 @@ test('桌面应用不该出现浏览器探索（如实拒绝，而不是静默�
     executor: exploreExecutor(calls),
     llm: async (p) => { seenUsers.push(p?.user || ''); const text = script[Math.min(i, script.length - 1)]; i += 1; return { ok: true, text, error: null, chars: text.length } },
   })
-  await t.invoke('app:generate', { target: { type: 'desktop', exePath: 'C:/x.exe' }, appId: 'x', sessionId: 's1' })
+  // exePath 必须是**真能探测出驱动的**可执行文件：uia 目标在生成阶段就早退（见文末 Task 5 用例），
+  // 用不存在的 'C:/x.exe' 会退化成 uia 而根本走不到"模型想用浏览器"这一步。
+  await t.invoke('app:generate', { target: { type: 'desktop', exePath: process.execPath }, appId: 'x', sessionId: 's1' })
   assert.equal(calls.length, 0, '桌面应用不该去动浏览器执行器')
   assert.ok(seenUsers.some((u) => u.includes('桌面应用')), '要如实告诉模型这条路走不通')
 })
@@ -773,7 +775,8 @@ test('模型请求登录：桌面应用明确拒绝（没有浏览器登录概�
   const t = setup({
     llm: async () => { const text = script[Math.min(i, script.length - 1)]; i += 1; return { ok: true, text, error: null, chars: text.length } },
   })
-  const r = await t.invoke('app:generate', { target: { type: 'desktop', exePath: 'C:/x.exe' }, appId: 'desk', sessionId: 's1' })
+  // 同上：用真实可执行文件（→ process 驱动），否则 uia 早退会让"生成照常继续"无从验证
+  const r = await t.invoke('app:generate', { target: { type: 'desktop', exePath: process.execPath }, appId: 'desk', sessionId: 's1' })
 
   assert.equal(r.ok, true, '拒绝该工具不应中断生成')
   const turn = r.agent.trace.find((x) => x.kind === 'tool' && x.tool === 'request_login')
@@ -810,4 +813,27 @@ test('app:generate（desktop/process）：生成 → 试跑全链路通过（试
   assert.equal(r.verify.ok, true, `试跑应通过（failures：${JSON.stringify(r.verify?.failures || [])}）`)
   assert.deepEqual(r.verify.tried.slice().sort(), ['listModules', 'version'], '只试跑无需参数的 read')
   assert.equal(r.verify.notRun.length, 0, '三条都是 read')
+})
+
+// ---------- Task 5：uia 目标在生成阶段早退（明确拒绝，而不是产出注定跑不通的应用） ----------
+//
+// 真实故障：桌面目标探测不到 CLI/脚本接口时会降级为 uia 驱动，而 UI 自动化后端**尚未接入**
+// （app-runner-desktop.cjs 的 runUia 恒返回"未接入"）→ 此路径下生成的任何命令都注定跑不通。
+// 原行为却照常烧十几轮模型预算，最后可能"生成成功"交给用户一个永远失败的应用。
+test('app:generate（desktop/uia）：后端未接入 → 早退拒绝，不烧模型轮次、不产出注定跑不通的应用', async () => {
+  let llmCalled = 0
+  const stubDir = mkdtempSync(join(tmpdir(), 'uia-stub-'))
+  const stub = join(stubDir, 'nope.exe')          // 空文件 + .exe：process/script 探测都失败 → uia
+  writeFileSync(stub, '', 'utf-8')
+  const t = setup({ llm: async () => { llmCalled++; return { ok: true, text: '{}', error: null, chars: 2 } } })
+  try {
+    const r = await t.invoke('app:generate', { target: { type: 'desktop', exePath: stub }, appId: 'd2', sessionId: 's1' })
+    assert.equal(r.ok, false)
+    assert.equal(r.driver, 'uia')
+    assert.equal(r.stoppedBy, 'uia-unsupported')
+    assert.ok(r.error.includes('UI 自动化后端尚未接入'), `要说清为什么不能生成：${r.error}`)
+    assert.ok(r.error.includes('命令行') || r.error.includes('CLI'), '要给出可行的替代路径')
+    assert.equal(llmCalled, 0, '注定跑不通就别去烧模型轮次')
+    assert.ok(t.phases().includes('error'), '进度要以 error 收尾（界面才不会停在"生成中"）')
+  } finally { rmSync(stubDir, { recursive: true, force: true }) }
 })

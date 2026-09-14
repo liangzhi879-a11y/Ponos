@@ -403,6 +403,15 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
       const detected = await profiler.detectDriver({ target, probe: (p) => profiler.probeDesktop({ exePath: p?.exePath }) })
       driver = detected.driver
       key = keyFor(appId, target)   // desktop：键只影响下载目录与事件标签（无 cookie 语义）
+      // ★ uia 后端尚未接入：app-runner-desktop.runUia 恒返回"未接入"，此时生成的**任何**命令
+      //   都注定跑不通。与其给用户一个永远失败的应用（还烧掉十几轮模型预算），不如立即如实拒绝并给出出路。
+      //   手工写入的 uia Spec 不受影响（校验层不拦，控制台里跑起来仍是如实的"未接入"报错）。
+      if (driver === 'uia') {
+        const why = '该目标未发现 CLI / 脚本接口，只能走 UI 自动化；而 UI 自动化后端尚未接入，无法生成可用命令。'
+          + '请改用带命令行的可执行文件（例如在命令行执行「<程序>.exe --help」有输出），或把这个应用作为 web 站点接入。'
+        emitProgress(appId, { phase: 'error', done: true, detail: why })
+        return done({ ok: false, error: why, driver, stoppedBy: 'uia-unsupported', issues: [why], turns: 0, toolCalls: 0 })
+      }
       probeMode = 'browser'   // desktop 侧的"素材"是探测证据，口径沿用既有 browser 分支
       probeMaterial = { target, driver, evidence: detected.evidence }
       emitProgress(appId, { phase: 'probe', detail: `探测完成：驱动 ${driver}`, done: true })
