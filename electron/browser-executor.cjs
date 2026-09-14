@@ -22,6 +22,7 @@ const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const { buildSnapshot, computeFingerprint, pickSelector, isWhitelisted } = require('./browser-common.cjs')
+const { partitionFor } = require('./app-session-key.cjs')
 
 // 需要先刷新 ref 缓存的动作（动作脚本按 ref 解析元素）
 const REF_ACTIONS = new Set(['click', 'type', 'select', 'scroll', 'hover', 'wait'])
@@ -550,6 +551,45 @@ class BrowserExecutor {
     }
   }
 
+  // ---------- Cookie 只读能力（登录态编排/带 Cookie 抓取用） ----------
+  //
+  // 为什么放在执行器里而不是各调用点自己 require('electron')：
+  //   执行器的职责边界就是"唯一持有 Electron 浏览器对象"，且测试通过覆写本方法即可用假
+  //   session 回归（见 kernel-tests/browser-executor-cookies.test.mjs）。
+  //   cookie 不依赖窗口存活（分区是 session 级），所以窗口重建/关闭后登录态照样读得到。
+
+  cookieSession(sessionId) {
+    const { session } = require('electron')
+    return session.fromPartition(partitionFor(sessionId))
+  }
+
+  /** 该分区、该 URL 可见的 cookie（读失败返回空数组——绝不抛，读不到 ≠ 未登录） */
+  async getCookies(sessionId, url) {
+    try {
+      const s = this.cookieSession(sessionId)
+      const list = await s.cookies.get(url ? { url } : {})
+      return Array.isArray(list) ? list : []
+    } catch (err) {
+      console.warn('[browser-executor] getCookies failed:', err && err.message || err)
+      return []
+    }
+  }
+
+  /** Cookie 请求头；无 cookie → null（调用方据此决定"不带 Cookie"） */
+  async getCookieHeader(sessionId, url) {
+    const list = await this.getCookies(sessionId, url)
+    if (list.length === 0) return null
+    return list.map((c) => `${c.name}=${c.value}`).join('; ')
+  }
+
+  /** 登录态指纹：只对"值"敏感、与顺序无关；无 cookie → 'empty' */
+  async getCookieFingerprint(sessionId, url) {
+    const list = await this.getCookies(sessionId, url)
+    if (list.length === 0) return 'empty'
+    const raw = list.map((c) => `${c.name}=${c.value}`).sort().join('|')
+    return `n${list.length}:${require('node:crypto').createHash('sha1').update(raw).digest('hex').slice(0, 12)}`
+  }
+
   async openWindow(sessionId) {
     const win = await this.ensureWindow(sessionId)
     if (win && !win.isDestroyed()) {
@@ -585,7 +625,8 @@ class BrowserExecutor {
     this.sessionId = sessionId
     this.lastSnapshot = null
     this.refSelectors = {}
-    const partition = 'persist:automation-' + sessionId
+    // 分区字符串的唯一出处是 app-session-key.cjs（键语义见该文件头注释）
+    const partition = partitionFor(sessionId)
     const win = new BrowserWindow({
       width: 1100,
       height: 780,
