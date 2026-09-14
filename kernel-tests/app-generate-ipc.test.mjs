@@ -2,7 +2,7 @@
 process.env.PONOS_MOCK_API = '1'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -834,9 +834,49 @@ test('app:generate（desktop/uia）：后端未接入 → 早退拒绝，不烧�
     assert.equal(r.stoppedBy, 'uia-unsupported')
     assert.ok(r.error.includes('UI 自动化后端尚未接入'), `要说清为什么不能生成：${r.error}`)
     assert.ok(r.error.includes('命令行') || r.error.includes('CLI'), '要给出可行的替代路径')
+    // ★ 拒绝文案必须带上**真实探测原因**，不能只给一句笼统结论。
+    //   真机（2026-09-14 Aseprite）：用户看到的只有"未发现 CLI / 脚本接口"，无法分辨是
+    //   路径写错、目录没解析、还是包装器跑不起来 —— 于是合理怀疑"系统的获取配置功能坏了"。
+    assert.ok(r.error.includes('探测详情'), `要把每层的真实原因带出来：${r.error}`)
+    assert.ok(/CLI：|脚本接口：/.test(r.error), `详情要标明是哪一层失败的：${r.error}`)
     assert.equal(llmCalled, 0, '注定跑不通就别去烧模型轮次')
     assert.ok(t.phases().includes('error'), '进度要以 error 收尾（界面才不会停在"生成中"）')
   } finally { rmSync(stubDir, { recursive: true, force: true }) }
+})
+
+// ---------- 桌面探测：安装目录 / .bat 包装器（真机 2026-09-14 反馈） ----------
+//
+// 现象：用户对 `D:\Program Files (x86)\Aseprite` 发起封装 → 界面报"该目标未发现 CLI / 脚本接口"。
+// 真实情况：① 用户填的是**安装目录**；② 该目录下 `aseprite.exe --help` 有 5.8KB 完整帮助（自带 CLI）；
+//          ③ 用户手上还有个 `ase-cli.bat` 包装器，但批处理**不能被 execFile 直接拉起**（需 shell），
+//             于是"明明有可用 CLI"被一律判成"没有 CLI"。
+test('app:generate（desktop）：填安装目录 → 自动解析出主程序并采用，不再误判"未发现 CLI"', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ase-root-'))
+  const dir = join(root, 'Aseprite')          // 目录名与主程序同名：Aseprite/aseprite.exe（真实安装形态）
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'aseprite.exe'), '', 'utf-8')       // 主程序（空文件，跑不起来）
+  writeFileSync(join(dir, 'gen.exe'), '', 'utf-8')            // 辅助程序：不该被选中
+  writeFileSync(join(dir, 'notes.txt'), '', 'utf-8')
+  const exe = join(dir, 'aseprite.exe')
+  const t = setup()
+  try {
+    const r = await t.invoke('app:generate', { target: { type: 'desktop', exePath: dir }, appId: 'd3', sessionId: 's1' })
+    assert.equal(r.ok, false)                                  // 空 exe 跑不出帮助 → 仍降级 uia（不会瞎生成）
+    assert.ok(!r.error.includes('是目录'), `目录不该被当成"错误输入"直接拒绝：${r.error}`)
+    assert.ok(r.error.includes(exe), `要把解析出的真实程序路径写进详情，便于用户核对：${r.error}`)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('app：目录里有多个 .exe 且无同名主程序 → 如实说明"无法确定用哪个"，不瞎猜', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'multi-exe-'))
+  writeFileSync(join(dir, 'alpha.exe'), '', 'utf-8')
+  writeFileSync(join(dir, 'beta.exe'), '', 'utf-8')
+  const t = setup()
+  try {
+    const r = await t.invoke('app:generate', { target: { type: 'desktop', exePath: dir }, appId: 'd4', sessionId: 's1' })
+    assert.equal(r.ok, false)
+    assert.ok(r.error.includes('没有可确定的主程序'), `多候选时要如实说明：${r.error}`)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 // ---------- M3：失败原因取自"最新"，不是 round-1 的旧错 ----------

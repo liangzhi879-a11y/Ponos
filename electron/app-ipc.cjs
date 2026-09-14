@@ -25,6 +25,9 @@ const { appSessionKey } = require('./app-session-key.cjs')
 // 登录墙分级（只有 high 才自动弹窗）与登录编排（开窗等待 → 三路成功信号 → 超时如实降级）
 const { detectLoginWall, HIGH_ONLY } = require('./app-login-wall.cjs')
 const appLogin = require('./app-login.cjs')
+// 登录态指纹判据（cookie + localStorage/sessionStorage）：自检里的"有没有登录态"只走这里，
+// 勿在 IPC 层自行截串判断（真机故障 2026-09-14：SPA 站点 token 只在 sessionStorage → 只看 cookie 必误报未登录）
+const { loginEvidence } = require('./app-login-state.cjs')
 // 浏览器自动化白名单（*.gov.cn / localhost / 127.0.0.1 + {YFW_HOME}/browser-whitelist.json）。
 // 只用来决定"要不要用浏览器增强探测"；生成命令本身**不依赖**它（见 app-http-probe.cjs 头部说明）。
 const { isWhitelisted } = require('./browser-common.cjs')
@@ -233,17 +236,23 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     const spec = appRegistry.readSpec({ roots: roots(), appId })
     const res = await profiler.checkApp({ spec })
     // ★ 登录态结论**只在 IPC 层叠加**（app-profiler 保持纯 node：它不该 require Electron/执行器）。
-    //   "生成时检测到过登录墙"（spec.auth.needsLogin）+ 当前分区读不到 Cookie = 现在多半没登录态，
+    //   "生成时检测到过登录墙"（spec.auth.needsLogin）+ 当前分区读不到登录态 = 现在多半没登录态，
     //   如实报 drifted 并给出下一步（而不是让用户进控制台后才在 AI 调用上撞登录墙）。
+    //   ★ 判据是**登录态指纹**（cookie + localStorage/sessionStorage），不是只看 cookie：
+    //     真实故障 2026-09-14——站点 www.yfljsj.com 是 Vue SPA，登录 token 只写 sessionStorage，
+    //     该分区一行 cookie 都没有 → 旧的"只看 cookie"版本在用户明明已登录时也报"未检测到登录态"。
     if (spec?.target?.type === 'web' && spec?.auth?.needsLogin) {
       const executor = getExecutor()
       const key = keyFor(appId, spec.target)
-      let fp = 'empty'
+      let fp = null
       try {
-        // getCookieFingerprint 读不到时返回 'empty'；异常（执行器未就绪/electron 不可用）同样按 'empty' 处理
-        fp = (await executor?.getCookieFingerprint?.(key, spec.target?.url)) || 'empty'
-      } catch { fp = 'empty' }
-      if (fp === 'empty') {
+        // 优先读合成指纹；执行器未实现时回退 getCookieFingerprint（旧契约，仍在既有测试里被 mock）
+        const read = executor?.getLoginFingerprint || executor?.getCookieFingerprint
+        const v = read ? await read.call(executor, key, spec.target?.url) : null
+        fp = typeof v === 'string' && v !== '' ? v : null
+      } catch { fp = null }
+      // 只有"确实看到登录痕迹"才不提醒；读不到（fp=null）按既有语义提醒，但**不谎报成 'empty'**
+      if (loginEvidence(fp) !== true) {
         res.issues = [...(res.issues || []), '该应用需要登录，当前未检测到登录态（AI 调用会被登录墙挡住）；可点「登录此应用」']
         if (res.status === 'healthy') res.status = 'drifted'
       }
@@ -431,10 +440,28 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
       //   都注定跑不通。与其给用户一个永远失败的应用（还烧掉十几轮模型预算），不如立即如实拒绝并给出出路。
       //   手工写入的 uia Spec 不受影响（校验层不拦，控制台里跑起来仍是如实的"未接入"报错）。
       if (driver === 'uia') {
+        // ★ 必须**如实带上探测细节**（`evidence.attempts` 里每层的真实 reason + 各开关的输出/报错）。
+        //   真机反馈（2026-09-14）：用户对 Aseprite 发起封装时，界面只回一句"未发现 CLI / 脚本接口"，
+        //   而真实情况是——① 用户填的是**安装目录**（旧实现连目录都没解析）；② 该目录下
+        //   `aseprite.exe --help` 其实有 5.8KB 完整帮助（Aseprite 自带 CLI）。
+        //   一句笼统结论把"路径写错/包装器没跑起来"误导成"这程序没有命令行"，用户只能怀疑系统坏了。
+        const attempts = Array.isArray(detected.evidence?.attempts) ? detected.evidence.attempts : []
+        const detail = attempts
+          .map((a) => `${a.level === 'process' ? 'CLI' : '脚本接口'}：${a.reason}`)
+          .join('；')
         const why = '该目标未发现 CLI / 脚本接口，只能走 UI 自动化；而 UI 自动化后端尚未接入，无法生成可用命令。'
+          + (detail ? `（探测详情：${detail}）` : '')
           + '请改用带命令行的可执行文件（例如在命令行执行「<程序>.exe --help」有输出），或把这个应用作为 web 站点接入。'
+          + '提示：填**安装目录**也可以（会自动识别其中的主程序）；若填的是 .bat/.cmd 包装器，请确认它能独立运行。'
         emitProgress(appId, { phase: 'error', done: true, detail: why })
         return done({ ok: false, error: why, driver, stoppedBy: 'uia-unsupported', issues: [why], turns: 0, toolCalls: 0 })
+      }
+      // ★ 目录输入已被探测层解析出真实主程序 → 把 spec 的 exePath 修正过来，否则后续每次
+      //   运行都要重走一遍"目录 → 找主程序"，且 spec 里存的路径对不上真正执行的程序。
+      const resolvedExe = detected.evidence?.exePath
+      if (resolvedExe && detected.evidence?.resolvedFrom && resolvedExe !== target.exePath) {
+        target = { ...target, exePath: resolvedExe }
+        emitProgress(appId, { phase: 'probe', detail: `已从目录解析主程序：${resolvedExe}`, done: true })
       }
       probeMode = 'browser'   // desktop 侧的"素材"是探测证据，口径沿用既有 browser 分支
       probeMaterial = { target, driver, evidence: detected.evidence }
@@ -711,7 +738,10 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     // 显式授权该域名（与取素材/探索同源），否则导航会被白名单拦下
     authorizeAppTarget({ type: 'web', url })
     try {
-      await executor.openWindow(key)          // 用户主动要登录 → 这里显式显示窗口（内部 show+focus）
+      // 用户主动要登录 → 显式显示窗口（内部 show+focus），并置 keepAlive：
+      // 之后点 X 只隐藏不销毁，否则站点把登录态存 sessionStorage 时（yfljsj.com 这类 SPA）
+      // 关窗即丢登录态 —— 用户视角就是"手动登录了却读取不到登录状态"。
+      await executor.openWindow(key, { keepAlive: true })
       const r = await executor.exec(key, 'goto', { url })
       if (!r?.ok) return { ok: false, error: r?.error || '打开登录页面失败', key, sessionId: key }
       return { ok: true, key, sessionId: key, url: r?.snapshot?.page?.url || url }

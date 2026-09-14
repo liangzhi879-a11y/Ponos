@@ -94,3 +94,77 @@ test('defaultScriptProbe：真实目录（node 自身所在目录无脚本目录
   const r = await defaultScriptProbe({ exePath: process.execPath })
   assert.equal(typeof r.ok, 'boolean')
 })
+
+// ---- 安装目录 / .bat 包装器（真机 2026-09-14 Aseprite 反馈） ----
+//
+// 用户对 `D:\Program Files (x86)\Aseprite` 发起封装 → 界面只说"该目标未发现 CLI / 脚本接口"。
+// 真实情况：① 填的是**安装目录**（旧实现见 isFile()=false 就直接判死）；② 该目录下
+// `aseprite.exe --help` 有 5.8KB 完整帮助（Aseprite 自带 CLI）；③ 用户手上的 `ase-cli.bat`
+// 包装器则因"批处理不能被 execFile 直接拉起"而恒失败。三者叠加成一句误导性结论。
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+test('defaultProcessProbe：填安装目录 → 解析出同名主程序（辅助 .exe 不抢主位）', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'prof-dir-'))
+  const dir = join(root, 'Aseprite')
+  mkdirSync(dir, { recursive: true })
+  // 空文件跑不出帮助，但**解析**这一步必须成功：失败原因里应出现主程序路径，而不是"是目录"
+  writeFileSync(join(dir, 'aseprite.exe'), '', 'utf-8')
+  writeFileSync(join(dir, 'gen.exe'), '', 'utf-8')
+  try {
+    const r = await defaultProcessProbe({ exePath: dir })
+    assert.equal(r.ok, false, '空 exe 没有输出，仍应判失败')
+    assert.ok(!r.reason.includes('是目录'), `目录应被解析而不是拒绝：${r.reason}`)
+    assert.ok(r.reason.includes(join(dir, 'aseprite.exe')), `要报出解析到的主程序：${r.reason}`)
+    assert.equal(r.exePath, join(dir, 'aseprite.exe'))
+    assert.equal(r.tried.length, 4, '--help/-h/--version//? 四个开关都要试过并留证')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('defaultProcessProbe：目录里有多个 .exe 且无同名 → 如实要求指定具体程序（不瞎猜）', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'prof-multi-'))
+  const dir = join(root, 'tools')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'alpha.exe'), '', 'utf-8')
+  writeFileSync(join(dir, 'beta.exe'), '', 'utf-8')
+  try {
+    const r = await defaultProcessProbe({ exePath: dir })
+    assert.equal(r.ok, false)
+    assert.ok(r.reason.includes('没有可确定的主程序'), `多候选必须要求用户指定：${r.reason}`)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('defaultProcessProbe：Windows 批处理包装器能跑起来（CRLF，走 shell）', { skip: process.platform !== 'win32' }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'prof-bat-'))
+  const bat = join(dir, 'my-cli.bat')
+  // ★ 必须 CRLF：cmd.exe 解析 LF 行尾的批处理会错乱（真机里用户的 ase-cli.bat 正是 LF，
+  //   于是 cmd 报"'…cmd' 不是内部或外部命令"，被误读成"这程序没有 CLI"）
+  writeFileSync(bat, '@echo off\r\necho MY-CLI-USAGE-LINE\r\n', 'utf-8')
+  try {
+    const r = await defaultProcessProbe({ exePath: bat })
+    assert.equal(r.ok, true, `批处理包装器应当被视为可用 CLI：${JSON.stringify(r.tried || r.reason)}`)
+    assert.ok(r.help.includes('MY-CLI-USAGE-LINE'), `要拿到批处理的帮助输出：${r.help}`)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('probeDesktop：失败时把每层真实原因带回（供界面如实展示）', async () => {
+  const r = await probeDesktop({ exePath: 'C:/definitely/not/here/nope.exe' })
+  assert.equal(r.level, 'uia')
+  assert.equal(r.evidence.level, 'uia')
+  assert.ok(Array.isArray(r.evidence.attempts), 'attempts 必须存在')
+  const cli = r.evidence.attempts.find((a) => a.level === 'process')
+  const script = r.evidence.attempts.find((a) => a.level === 'script')
+  assert.ok(cli.reason.includes('不存在'), `CLI 层原因要具体：${cli.reason}`)
+  assert.ok(script?.reason, '脚本层原因也要给')
+})
+
+test('probeDesktop：探测抛错 → 原因里带上异常信息（不再只有一句笼统结论）', async () => {
+  const r = await probeDesktop({ exePath: 'a.exe', deps: {
+    processProbe: async () => { throw new Error('EPERM') },
+    scriptProbe: async () => { throw new Error('ENOENT') },
+  } })
+  assert.equal(r.level, 'uia')
+  assert.ok(r.evidence.attempts[0].reason.includes('EPERM'))
+  assert.ok(r.evidence.attempts[1].reason.includes('ENOENT'))
+})

@@ -23,6 +23,8 @@ const fs = require('fs')
 const os = require('os')
 const { buildSnapshot, computeFingerprint, pickSelector, isWhitelisted } = require('./browser-common.cjs')
 const { partitionFor } = require('./app-session-key.cjs')
+// 登录态指纹（cookie + localStorage/sessionStorage 的唯一真源）；探测脚本也从这里取，勿另写一份
+const { buildStorageProbeScript, buildLoginFingerprint, isSameSite } = require('./app-login-state.cjs')
 
 // 需要先刷新 ref 缓存的动作（动作脚本按 ref 解析元素）
 const REF_ACTIONS = new Set(['click', 'type', 'select', 'scroll', 'hover', 'wait'])
@@ -512,6 +514,9 @@ class BrowserExecutor {
     this.onEvent = typeof onEvent === 'function' ? onEvent : () => {}
     this.win = null              // 当前自动化窗口（v1 单窗口）
     this.sessionId = null        // 窗口绑定的会话（partition 后缀）
+    // 挂起保活的窗口（键 → 窗口）：用户主动登录过的窗口不能因为"别的键要用窗口"被销毁，
+    // 否则站点把登录态存在 sessionStorage 时（不落盘、随渲染进程消失）登录态立刻丢失。
+    this.parked = new Map()
     this.humanMode = false       // 人工接管中
     this.mode = 'normal'         // normal | imitation（拟真行为 Task 7 细化）
     this.lastSnapshot = null     // 上一版快照（diff 基线）
@@ -582,7 +587,7 @@ class BrowserExecutor {
     return list.map((c) => `${c.name}=${c.value}`).join('; ')
   }
 
-  /** 登录态指纹：只对"值"敏感、与顺序无关；无 cookie → 'empty' */
+  /** 登录态指纹（cookie 侧）：只对"值"敏感、与顺序无关；无 cookie → 'empty' */
   async getCookieFingerprint(sessionId, url) {
     const list = await this.getCookies(sessionId, url)
     if (list.length === 0) return 'empty'
@@ -590,9 +595,65 @@ class BrowserExecutor {
     return `n${list.length}:${require('node:crypto').createHash('sha1').update(raw).digest('hex').slice(0, 12)}`
   }
 
-  async openWindow(sessionId) {
+  /** 该 sessionId 的活窗口：当前窗口或已挂起保活的窗口（都没有 → null） */
+  windowFor(sessionId) {
+    const k = String(sessionId == null ? '' : sessionId)
+    const cur = this.win
+    if (cur && !cur.isDestroyed() && String(this.sessionId) === k) return cur
+    const parkedWin = this.parked.get(k)
+    if (parkedWin && !parkedWin.isDestroyed()) return parkedWin
+    return null
+  }
+
+  /**
+   * 站点**会话存储**指纹（localStorage + sessionStorage 里的会话痕迹键；判据与脚本见 app-login-state.cjs）。
+   * 返回裸值：`'?'` 读不到 | `'none'` 可读但无痕迹 | `'yes:<hash>'` 有痕迹（hash 对内容敏感）。
+   *
+   * ★ 为什么必须有这一路（真实故障 2026-09-14）：Vue/SPA 站点常把登录 token 只写 sessionStorage
+   *   （yfljsj.com 就是：`vea:auth:access_token`），既无 cookie 也不落盘 → 只读 cookie 永远得到
+   *   'empty' → 已登录被当成未登录。
+   * ★ 读不到（无窗口 / 窗口不在同站点 / 执行异常）一律返回 '?'，**绝不返回 'none'**：
+   *   "读不到"与"确实没有"语义完全不同，混同会让上层误报"未登录"（这正是本次故障的另一半）。
+   * ★ executeJavaScript 在页面导航中可能永不 settle（Electron 已知行为，见 exec 内注释），
+   *   这里也加 8s 兜底，避免一次读存储把调用方挂死。
+   */
+  async getStorageFingerprint(sessionId, url) {
+    const win = this.windowFor(sessionId)
+    if (!win) return '?'
+    let current = ''
+    try { current = win.webContents.getURL() || '' } catch { return '?' }
+    // storage 按 origin 隔离：窗口必须正停在同一站点上，读出来的才是该站点的登录痕迹
+    if (!isSameSite(current, url)) return '?'
+    try {
+      const res = await this.withTimeout('storage', () => win.webContents.executeJavaScript(buildStorageProbeScript()), 8000)
+      if (!res || res.ok !== true) return '?'
+      return Number(res.keys) > 0 ? `yes:${res.hash}` : 'none'
+    } catch { return '?' }
+  }
+
+  /**
+   * **登录态指纹**（"是否已登录"判定与登录编排三路信号的唯一读数口）：
+   * cookie 侧（分区级、落盘、不依赖窗口）+ storage 侧（origin 级、需窗口、不落盘）。
+   * 形状固定为 `c:…|s:…`（见 app-login-state.cjs），解析一律走 parseLoginFingerprint / loginEvidence，
+   * 勿在调用点自行截串判断。
+   */
+  async getLoginFingerprint(sessionId, url) {
+    const cookieFp = await this.getCookieFingerprint(sessionId, url)
+    const storageFp = await this.getStorageFingerprint(sessionId, url)
+    return buildLoginFingerprint(cookieFp, storageFp)
+  }
+
+  /**
+   * 打开（并显示）窗口。
+   * @param {string} sessionId
+   * @param {{keepAlive?:boolean}} [opts] keepAlive=true = "用户主动打开的登录窗口"：
+   *   之后点右上角 X 只会隐藏而**不销毁**（见 ensureWindow 的 close 拦截）。理由：站点把登录态
+   *   存在 sessionStorage 时，销毁渲染进程等于把刚登录的会话一起丢掉——用户视角就是"登录了还是没登录"。
+   */
+  async openWindow(sessionId, opts = {}) {
     const win = await this.ensureWindow(sessionId)
     if (win && !win.isDestroyed()) {
+      if (opts && opts.keepAlive) win.__yfwKeepAlive = true
       win.show()
       win.focus()
       this.onEvent(this.sessionId, { type: 'status', text: '浏览器窗口已打开' })
@@ -616,17 +677,50 @@ class BrowserExecutor {
 
   async ensureWindow(sessionId, retry = 0) {
     const { BrowserWindow } = require('electron')
-    if (this.win && !this.win.isDestroyed()) {
-      if (this.sessionId === sessionId) return this.win
-      // v1 单窗口：会话切换时销毁旧窗口换新分区重建（spec §9 不做多窗口并行自动化）
-      console.log('[browser-executor] switching session window →', sessionId)
-      this.destroyWindow()
+    const key = String(sessionId == null ? '' : sessionId)
+    // 该键已有活窗口（当前窗口或挂起保活的窗口）→ 直接复用。
+    // ★ "挂起保活"是本次修复的核心：v1 是单窗口，原来键一变就 destroy 旧窗口，
+    //   而站点把登录态存在 sessionStorage 时，销毁渲染进程 = 丢掉刚登录的会话
+    //   （真机：用户在登录窗口登录成功，随后探测/生成切键 → 登录态立刻消失 → "登录没保存"）。
+    const existing = this.windowFor(key)
+    if (existing) {
+      if (this.win !== existing) {
+        console.log('[browser-executor] resume parked window →', key)
+        // 从挂起表摘除（它现在是"当前窗口"）：留着会让下一次 park 走到 else 分支被销毁，
+        // 登录态又随渲染进程丢掉（保活就白做了）。
+        this.parked.delete(key)
+        this.win = existing
+        this.sessionId = key
+        this.lastSnapshot = null
+        this.refSelectors = {}
+      }
+      return existing
     }
-    this.sessionId = sessionId
+    if (this.win && !this.win.isDestroyed()) {
+      // v1 单窗口：换键时把旧窗口**挂起**而不是销毁（保登录态与页面）；
+      // 仅当它是 keepAlive（用户主动登录过）才保活，其余照旧销毁以免窗口堆积。
+      if (this.win.__yfwKeepAlive === true && this.sessionId && !this.parked.has(this.sessionId)) {
+        console.log('[browser-executor] parking session window →', this.sessionId)
+        const old = this.win
+        old.hide()
+        this.parked.set(String(this.sessionId), old)
+        this.win = null
+        this.sessionId = null
+        // 挂起窗口不再"当前"：停掉人工接管轮询（它盯的是 this.win）并复位接管态，
+        // 否则别的键进来会因为 humanMode=true 被"人工接管中"挡住（第 877 行的守卫）。
+        this.stopFingerprintPoll()
+        this.humanMode = false
+        this.fpBase = null
+      } else {
+        console.log('[browser-executor] switching session window →', sessionId)
+        this.destroyWindow()
+      }
+    }
+    this.sessionId = key
     this.lastSnapshot = null
     this.refSelectors = {}
     // 分区字符串的唯一出处是 app-session-key.cjs（键语义见该文件头注释）
-    const partition = partitionFor(sessionId)
+    const partition = partitionFor(key)
     const win = new BrowserWindow({
       width: 1100,
       height: 780,
@@ -644,13 +738,27 @@ class BrowserExecutor {
       },
     })
     this.win = win
+    // 挂起保活的窗口也要能被清理：窗口被外部销毁（用户强杀/系统回收）时把挂起表里的残留摘掉，
+    // 否则 windowFor() 会拿到已销毁的窗口，getStorageFingerprint 一路返回 '?'（登录态又读不到）。
     win.on('closed', () => {
+      for (const [k, v] of this.parked) if (v === win) this.parked.delete(k)
       if (this.win === win) {
         this.win = null
         this.sessionId = null
         this.humanMode = false
         this.stopFingerprintPoll()
       }
+    })
+    // ★ 用户主动打开的登录窗口（keepAlive）点 X 只隐藏、不销毁。
+    //   理由：登录态可能存在 sessionStorage（yfljsj.com 这类 SPA），销毁渲染进程 = 丢掉刚登录的会话，
+    //   用户视角就是"手动登录了但读取不到登录状态"。要真正清掉请用「清空会话」（closeSession）。
+    //   非 keepAlive 窗口（AI 后台自动化建的隐藏窗口）行为不变：照常可被关闭/销毁。
+    win.on('close', (e) => {
+      if (win.__yfwKeepAlive !== true || win.isDestroyed()) return
+      if (win.__yfwForceClose === true) return
+      e.preventDefault()
+      win.hide()
+      this.onEvent(this.sessionId, { type: 'status', text: '登录窗口已隐藏（登录态保留；要清除请点「清空会话」）' })
     })
     // 下载落盘：{userData}/browser-downloads/{sessionId}/ + 路径回传（v1 通道）。
     // 同一 persist: 分区只挂一次监听（DOWNLOAD_LISTENER_PARTITIONS 去重），
@@ -713,25 +821,55 @@ class BrowserExecutor {
     this.win = null
     this.sessionId = null
     if (win && !win.isDestroyed()) {
+      // keepAlive 窗口的 close 拦截要放行：销毁是"程序化清理"，不是用户点 X
+      win.__yfwForceClose = true
       try { win.destroy() } catch (err) { console.warn('[browser-executor] window destroy failed:', err.message) }
     }
   }
 
+  /** 销毁某个键**挂起保活**的窗口（清空会话/退出清理用）；返回是否确有销毁 */
+  destroyParked(key) {
+    const k = String(key == null ? '' : key)
+    const win = this.parked.get(k)
+    this.parked.delete(k)
+    if (!win || win.isDestroyed()) return false
+    win.__yfwForceClose = true
+    try { win.destroy() } catch (err) { console.warn('[browser-executor] parked window destroy failed:', err.message) }
+    return true
+  }
+
+  /** 销毁全部窗口（含挂起保活的）——仅供进程退出等整体清理使用 */
+  destroyAllWindows() {
+    for (const k of [...this.parked.keys()]) this.destroyParked(k)
+    this.destroyWindow()
+  }
+
+  /**
+   * 清空某会话的存储并关闭其窗口（界面上的「清空会话」，也是登录态的唯一清除入口）。
+   * ★ 必须同时覆盖**挂起保活**的窗口：用户主动登录过的窗口被 park 起来了，
+   *   旧实现只看 this.win，会"报成功但其实什么都没清"——用户以为登出/清干净了，登录态还在。
+   */
   async closeSession(sessionId) {
+    const key = sessionId == null ? null : String(sessionId)
+    const parkedWin = key ? this.parked.get(key) : null
     const win = this.win
-    if (win && !win.isDestroyed()) {
-      if (sessionId && this.sessionId !== sessionId) return { ok: true }
+    const targets = []
+    if (win && !win.isDestroyed() && (!key || this.sessionId === key)) targets.push(win)
+    if (parkedWin && !parkedWin.isDestroyed() && parkedWin !== win) targets.push(parkedWin)
+    for (const t of targets) {
       try {
-        await win.webContents.session.clearStorageData()
+        await t.webContents.session.clearStorageData()
         console.log('[browser-executor] session storage cleared:', sessionId)
       } catch (err) {
         console.warn('[browser-executor] clearStorageData failed:', err.message)
       }
-      this.downloads.clear()
-      this.expiredNotified = false
-      this.onEvent(sessionId, { type: 'closed' })
-      this.destroyWindow()
     }
+    if (!targets.length) return { ok: true }
+    this.downloads.clear()
+    this.expiredNotified = false
+    this.onEvent(sessionId, { type: 'closed' })
+    if (parkedWin && targets.includes(parkedWin)) this.destroyParked(key)
+    if (targets.includes(win)) this.destroyWindow()
     return { ok: true }
   }
 

@@ -12,14 +12,27 @@
 //   exePath 是否支持 CLI / 脚本接口取决于**用户机器上的实际安装**，同一 Spec 换台机器
 //   可能就该降级。故判定放运行时，Spec 只记录目标是什么。
 'use strict'
-const { existsSync, statSync } = require('node:fs')
-const { dirname, isAbsolute, join, parse } = require('node:path')
+const { existsSync, statSync, readdirSync } = require('node:fs')
+const { dirname, isAbsolute, join, basename } = require('node:path')
 
 /** 稳定性优先的降级链：越靠前越稳定（CLI 有结构化输出 > 脚本接口 > UI 自动化） */
 const SURFACE_ORDER = ['process', 'script', 'uia']
 
 const CLI_PROBE_TIMEOUT_MS = 5000
 const CLI_OUTPUT_CAP = 4000
+
+/**
+ * CLI 探测的候选参数（**依次尝试、命中即停**）。
+ * ★ 为什么不止 `--help`：不同程序把帮助/版本打到不同开关上，尤其 Windows GUI 程序。
+ *   真机（2026-09-14，Aseprite）：只试 `--help` 时，用户填入**安装目录**或指向 `.bat` 包装器
+ *   都会失败，而界面只回一句"未发现 CLI/脚本接口"，把"路径写错/包装器没跑起来"误导成
+ *   "这程序没有命令行" —— 用户据此以为系统的"获取配置"是坏的（实际 Aseprite 自带完整 CLI）。
+ *   多试几个开关 + 如实上报每个开关的输出，才能让用户自我纠正。
+ */
+const HELP_ARGS_LIST = [['--help'], ['-h'], ['--version'], ['/?']]
+
+/** Windows 批处理：execFile 拉不起来（需 shell），单独走一条路径 */
+const isBatchFile = (p) => /\.(bat|cmd)$/i.test(String(p || ''))
 
 /**
  * 判定 driver。
@@ -53,25 +66,33 @@ async function probeWeb({ url, executor, sessionId }) {
 
 /**
  * desktop 三级探测：命中即停；探测抛错只降级、不冒泡（探测失败不该阻断进入控制台）。
+ *
+ * ★ **每层的真实失败原因必须带回去**（evidence.attempts）：过去只返回一句
+ *   "未发现 CLI/脚本接口"，上层据此写出的用户提示把"路径不是文件""批处理没跑起来"
+ *   统统说成"该程序没有命令行"，用户无法自我纠正（真机 2026-09-14 Aseprite 反馈）。
  * @returns {Promise<{level:'process'|'script'|'uia', evidence:object}>}
  */
 async function probeDesktop({ exePath, deps = {} } = {}) {
   const processProbe = deps.processProbe || defaultProcessProbe
   const scriptProbe = deps.scriptProbe || defaultScriptProbe
-  if (!exePath) return { level: 'uia', evidence: { note: '缺少 exePath' } }
+  if (!exePath) return { level: 'uia', evidence: { level: 'uia', note: '缺少 exePath' } }
+  const attempts = []
   try {
     const p = await processProbe({ exePath })
     if (p?.ok) return { level: 'process', evidence: p }      // ★ 命中即停
+    attempts.push({ level: 'process', reason: p?.reason || '未发现 CLI 接口' })
   } catch (e) {
     // 降级：CLI 探测失败（无 CLI / 超时 / 拒绝访问）不是错误，是"该层不可用"
+    attempts.push({ level: 'process', reason: `探测异常：${String(e?.message || e)}` })
   }
   try {
     const s = await scriptProbe({ exePath })
     if (s?.ok) return { level: 'script', evidence: s }       // ★ 命中即停
+    attempts.push({ level: 'script', reason: s?.reason || '未发现脚本/扩展目录' })
   } catch (e) {
-    // 同上，继续降级
+    attempts.push({ level: 'script', reason: `探测异常：${String(e?.message || e)}` })
   }
-  return { level: 'uia', evidence: { level: 'uia', note: '未发现 CLI/脚本接口，降级到 UI 自动化' } }
+  return { level: 'uia', evidence: { level: 'uia', note: '未发现 CLI / 脚本接口，降级到 UI 自动化', attempts } }
 }
 
 /** 系统目录黑名单：探测绝不执行这些目录下的可执行文件（探测会真的跑进程，必须挡在最前） */
@@ -84,41 +105,93 @@ function isSystemPath(p) {
 }
 
 /**
+ * 用户在界面里填了**安装目录**而不是具体程序时，替他在目录里找出主程序。
+ * ★ 真机（2026-09-14）：用户对 `D:\Program Files (x86)\Aseprite` 整个目录发起封装 → 旧实现
+ *   `statSync().isFile()` 为假 → 直接判"未发现 CLI"，而该目录下的 `aseprite.exe --help`
+ *   **有 5.8KB 完整帮助输出**（CLI 明明可用）。填目录是很自然的操作，探测层应当容错而不是误导。
+ * 选法：① 与目录同名的 exe（Aseprite/aseprite.exe）；② 目录里唯一的 exe。
+ * 多候选且无同名 → 返回 null（宁可不猜，也不拿 gen.exe 这种辅助程序去当主程序）。
+ */
+function findMainExeInDir(dir) {
+  let names = []
+  try { names = readdirSync(dir).filter((n) => /\.exe$/i.test(n)) } catch { return null }
+  const cand = names.filter((n) => !/^(unins|setup|install|vc_?redist|dxsetup|update)/i.test(n))
+  const base = String(basename(dir)).toLowerCase()
+  const same = cand.find((n) => n.toLowerCase().replace(/\.exe$/, '') === base)
+  if (same) return join(dir, same)
+  return cand.length === 1 ? join(dir, cand[0]) : null
+}
+
+/**
  * CLI 探测真实实现（带安全守卫）。
- * 守卫顺序：绝对路径 → 存在且是文件 → 非系统目录 → 才执行 `--help`。
- * 注意 `--help` 常以非零码退出（usage 打到 stderr/stdout），故**不把退出码当失败**，
- * 判定标准是"有非空输出"。
+ * 守卫顺序：绝对路径 → 存在 → 是**文件**（是目录则先解析主程序）→ 非系统目录 → 才执行探测。
+ * 注意探测命令常以非零码退出（usage 打到 stderr/stdout），故**不把退出码当失败**，
+ * 判定标准是"有非空输出"；`--help/-h/--version//?` 依次尝试，命中即停。
+ *
+ * @returns {Promise<object>} 失败时必带 `reason`（供上层如实展示）与 `tried`（各开关的输出情况）
  */
 async function defaultProcessProbe({ exePath }) {
   if (!exePath || typeof exePath !== 'string') return { ok: false, reason: '缺少 exePath' }
   if (!isAbsolute(exePath)) return { ok: false, reason: 'exePath 必须是绝对路径' }
   if (!existsSync(exePath)) return { ok: false, reason: '可执行文件不存在' }
-  try { if (!statSync(exePath).isFile()) return { ok: false, reason: 'exePath 不是文件' } } catch { return { ok: false, reason: '无法读取文件信息' } }
-  if (isSystemPath(exePath)) return { ok: false, reason: '拒绝探测系统目录下的可执行文件' }
-  if (!/\.(exe|cmd|bat|com)$/i.test(exePath) && process.platform === 'win32') {
+  let resolved = exePath
+  try {
+    if (statSync(exePath).isDirectory()) {
+      const found = findMainExeInDir(exePath)
+      if (!found) return { ok: false, reason: `${exePath} 是目录，且其中没有可确定的主程序（含多个 .exe），请直接指向具体程序文件` }
+      resolved = found
+    } else if (!statSync(exePath).isFile()) {
+      return { ok: false, reason: 'exePath 不是文件' }
+    }
+  } catch { return { ok: false, reason: '无法读取文件信息' } }
+  if (isSystemPath(resolved)) return { ok: false, reason: '拒绝探测系统目录下的可执行文件' }
+  if (!/\.(exe|cmd|bat|com)$/i.test(resolved) && process.platform === 'win32') {
     return { ok: false, reason: '非可执行后缀' }
   }
-  const out = await runHelp(exePath)
-  const text = String(out.stdout || '').trim()
-  return text.length > 0
-    ? { ok: true, help: text.slice(0, CLI_OUTPUT_CAP), args: ['--help'] }
-    : { ok: false, reason: '--help 无输出（视为无 CLI 接口）', exitCode: out.exitCode }
+  const tried = []
+  for (const args of HELP_ARGS_LIST) {
+    const out = await runHelp(resolved, args)
+    const text = String(out.stdout || '').trim()
+    tried.push({ args: args.join(' '), exitCode: out.exitCode, outLen: text.length, err: text ? '' : String(out.stderr || '').trim().slice(0, 160) })
+    if (text) {
+      return {
+        ok: true,
+        help: text.slice(0, CLI_OUTPUT_CAP),
+        args,
+        exePath: resolved,
+        // 目录输入被解析出真实程序时要回传，调用方据此把 spec 的 exePath 修正掉
+        ...(resolved === exePath ? {} : { resolvedFrom: exePath }),
+        tried,
+      }
+    }
+  }
+  return {
+    ok: false,
+    // 把"实际跑的是哪个程序"写进原因：用户填目录时，这条是他核对路径的唯一线索
+    reason: `${resolved === exePath ? '' : `已在目录中识别主程序 ${resolved}；`}试过 --help / -h / --version / /? 都没有输出（视为无 CLI 接口）`,
+    tried,
+    exePath: resolved,
+  }
 }
 
-/** 跑一次 `--help`：任何失败都转成结构化结果，不抛（探测层不该把 EPERM 变成崩溃） */
-function runHelp(exePath) {
+/**
+ * 跑一次探测命令：任何失败都转成结构化结果，不抛（探测层不该把 EPERM 变成崩溃）。
+ * ★ Windows 的 `.bat/.cmd` **不能**被 execFile 直接拉起（Node 对批处理要求 shell：
+ *   否则 EINVAL/ENOENT）——真机反例：用户已有的 `C:\Users\T203-15\ase-cli\ase-cli.bat`
+ *   包装器明明能打印帮助（内部调 bash），却因这条恒失败被判成"该程序没有 CLI"。
+ *   故批处理走 shell，并把路径加引号（安装路径常含空格）。
+ */
+function runHelp(exePath, args = ['--help']) {
   return new Promise((resolve) => {
     let settled = false
     const done = (v) => { if (!settled) { settled = true; resolve(v) } }
     try {
-      const { execFile } = require('node:child_process')
-      const child = execFile(exePath, ['--help'], {
-        timeout: CLI_PROBE_TIMEOUT_MS,
-        windowsHide: true,
-        maxBuffer: 1024 * 1024,
-      }, (err, stdout, stderr) => {
-        done({ exitCode: err?.code ?? 0, stdout, stderr })
-      })
+      const { execFile, exec } = require('node:child_process')
+      const opts = { timeout: CLI_PROBE_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024 }
+      const cb = (err, stdout, stderr) => done({ exitCode: err?.code ?? 0, stdout, stderr })
+      const child = isBatchFile(exePath)
+        ? exec(`"${exePath}" ${args.join(' ')}`, opts, cb)
+        : execFile(exePath, args, opts, cb)
       child.on?.('error', (e) => done({ exitCode: -1, stdout: '', stderr: String(e?.message || e) }))
     } catch (e) {
       done({ exitCode: -1, stdout: '', stderr: String(e?.message || e) })

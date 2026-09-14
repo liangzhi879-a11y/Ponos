@@ -75,7 +75,7 @@ logTee.onCrash(() => {
   try { killPet() } catch {}
   if (browserExecutor) {
     try { browserExecutor.stopFingerprintPoll?.() } catch {}
-    try { browserExecutor.destroyWindow?.() } catch {}
+    try { browserExecutor.destroyAllWindows?.() } catch {}
   }
 })
 
@@ -1118,7 +1118,10 @@ async function registerIpc() {
   // ---------------------------------------------------------------------------
   ipcMain.handle('browser:open', async (_e, sessionId) => {
     if (!browserExecutor) return { ok: false, error: 'executor 未初始化' }
-    return browserExecutor.openWindow(sessionId)
+    // keepAlive：用户主动打开/登录过的窗口点 X 只隐藏不销毁。
+    // 站点把登录态存 sessionStorage 时（yfljsj.com 这类 SPA），销毁渲染进程 = 丢掉刚登录的会话，
+    // 用户重开同一站点又回到登录页（＝"登录状态没有保存"）。要真正清除请用「清空会话」。
+    return browserExecutor.openWindow(sessionId, { keepAlive: true })
   })
   ipcMain.handle('browser:clear-session', async (_e, sessionId) => {
     if (!browserExecutor) return { ok: false, error: 'executor 未初始化' }
@@ -1590,7 +1593,9 @@ app.on('will-quit', () => {
   try { killPet() } catch {}
   if (browserExecutor) {
     try { browserExecutor.stopFingerprintPoll?.() } catch {}
-    try { browserExecutor.destroyWindow?.() } catch {}
+    // destroyAllWindows：连**挂起保活**的登录窗口一起清（keepAlive 窗口不受 X 关闭影响，
+    // 退出时必须显式销毁，否则分区/渲染进程残留到进程结束）
+    try { browserExecutor.destroyAllWindows?.() } catch {}
   }
 })
 

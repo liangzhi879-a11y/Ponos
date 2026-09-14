@@ -6,7 +6,9 @@
 //   · 只有高置信度登录墙才自动弹窗（判定在 app-login-wall.cjs）。
 //
 // ★ 三路成功信号（任一成立即算成功，理由：不同站点的登录写法差别很大）：
-//   a) cookie 指纹变化   —— 登录必然写 cookie，是最通用的信号；
+//   a) 登录态指纹出现新证据 —— cookie 变化（登录必然写 cookie 的最通用信号），
+//      或 **localStorage/sessionStorage 里会话痕迹从无到有**（SPA 站点把 token 只写 storage 的兜底，
+//      真实故障 2026-09-14：yfljsj.com 的 token 只在 sessionStorage，只读 cookie 永远等不到成功）；
 //   b) 快照已登录        —— logged_in=true，或已离开登录页且密码框消失；
 //   c) 用户点「我已完成登录」—— 给"只写 localStorage、cookie 不变"的站点兜底。
 //
@@ -17,6 +19,8 @@
 // LOGIN_PATH_RE / loginSucceeded 的唯一出处是 app-login-page.cjs（零 Electron 依赖的纯函数），
 // 这里只做编排与 re-export（测试从 app-login.cjs 导入 loginSucceeded，避免接口漂移）。
 const { loginSucceeded, snapshotHasPassword, LOGIN_PATH_RE } = require('./app-login-page.cjs')
+// 登录态指纹的唯一真源（cookie + localStorage/sessionStorage）：登录成功信号与"已登录"预判都读它
+const { loginStateChangeKind, hasStrongLoginEvidence } = require('./app-login-state.cjs')
 
 const DEFAULT_WAIT_MS = 5 * 60 * 1000
 const POLL_MS = 1500
@@ -163,10 +167,28 @@ async function ensureLoggedIn({ key, url, executor, deps = {}, emit, waitMs = DE
   const reg = acquireWait(waitKey)
   const external = reg.external
   try {
+    // ★ 开窗前的预判多看一路硬证据：storage 里已有会话痕迹（token/auth/session 类键）就说明
+    //   本来就在登录态——SPA 站点常不输出 logged_in，只靠快照会把真已登录的用户反复开窗并假超时。
+    //   ### 只在执行器提供**合成指纹**（getLoginFingerprint = cookie+storage）时才读 ###：
+    //   裸 cookie 指纹判不了 storage，而且这一读会多消耗一次指纹调用，破坏既有假执行器
+    //   "按调用次序给指纹"的契约（kernel-tests/app-login.test.mjs）。
+    const fpReader = deps.getLoginFingerprint || executor.getLoginFingerprint
+    if (typeof fpReader === 'function') {
+      let fpBefore = null
+      try {
+        const v = await fpReader.call(executor, key, url)
+        fpBefore = typeof v === 'string' ? v : null
+      } catch { fpBefore = null }
+      if (hasStrongLoginEvidence(fpBefore)) return finish(true, 'already-logged-in')
+    }
     if (preLoginShortcut(await snapOnce(), url)) return finish(true, 'already-logged-in')
 
     let opened
-    try { opened = await executor.openWindow(key) } catch (e) {
+    try {
+      // keepAlive：用户要在这个窗口里手动登录 → 点 X 只隐藏不销毁。
+      // 站点把登录态存 sessionStorage 时，销毁渲染进程等于丢掉刚登录的会话（本次故障的成因之一）。
+      opened = await executor.openWindow(key, { keepAlive: true })
+    } catch (e) {
       return finish(false, 'open-failed', { error: `打开登录窗口失败：${String(e?.message || e)}` })
     }
     // F5：执行器用 {ok:false} 报错（没抛异常）时同样算开窗失败，不能当成成功继续往下走
@@ -186,9 +208,12 @@ async function ensureLoggedIn({ key, url, executor, deps = {}, emit, waitMs = DE
     const baseline = await readFingerprint(deps, executor, key, url)
     const deadline = t0 + waitMs
     while (now() < deadline) {
-      // 先看 cookie（登录必然写 cookie），再看快照；两者都无变化才继续等
+      // 先看登录态指纹（cookie 或 storage 里出现新的会话证据），再看快照；两者都无变化才继续等
       const fp = await readFingerprint(deps, executor, key, url)
-      if (fp && fp !== 'empty' && fp !== baseline) return finish(true, 'cookie-changed')
+      const kind = loginStateChangeKind(baseline, fp)
+      if (kind === 'cookie') return finish(true, 'cookie-changed')
+      // storage 路单独给 reason：文案/日志里"cookie 变了"与"storage 出现了 token"是两件事，别混称
+      if (kind === 'storage') return finish(true, 'storage-changed')
       const snap = await snapOnce()
       if (loginSucceeded(snap, url)) return finish(true, 'logged-in')
 
@@ -207,10 +232,14 @@ async function ensureLoggedIn({ key, url, executor, deps = {}, emit, waitMs = DE
   }
 }
 
-/** 读指纹；任何异常都返回 null（读不到 cookie 绝不等于未登录） */
+/**
+ * 读指纹；任何异常都返回 null（读不到 cookie 绝不等于未登录）。
+ * ★ 优先用 getLoginFingerprint（cookie + storage 的合成指纹）；执行器没实现时回退 getCookieFingerprint
+ *   ——后者是旧契约（既有假执行器/单测传的就是裸 cookie 指纹），必须继续被兼容。
+ */
 async function readFingerprint(deps, executor, key, url) {
   try {
-    const f = deps.getCookieFingerprint || executor.getCookieFingerprint
+    const f = deps.getCookieFingerprint || executor.getLoginFingerprint || executor.getCookieFingerprint
     if (typeof f !== 'function') return null
     const v = await f.call(executor, key, url)
     return typeof v === 'string' ? v : null
@@ -221,6 +250,7 @@ async function readFingerprint(deps, executor, key, url) {
 function loginResultDetail(res) {
   if (res.ok) {
     if (res.reason === 'user-confirmed') return '已收到「我已完成登录」，正在带登录态重新获取页面…'
+    // cookie 路与 storage 路（SPA 只写 localStorage/sessionStorage token）都是"已检测到登录成功"
     return '已检测到登录成功，正在带登录态重新获取页面…'
   }
   return res.reason === 'timeout'
