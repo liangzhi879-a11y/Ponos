@@ -20,6 +20,7 @@ const { callLlmStream } = require('./app-llm.cjs')
 const appValidator = require('./app-validator.cjs')
 const httpProbe = require('./app-http-probe.cjs')
 const appWebsearch = require('./app-websearch.cjs')
+const appExplore = require('./app-explore.cjs')
 const { normalizeUrl, snapshotToText } = require('./app-util.cjs')
 // 分区键唯一出处（web 按站点 app-site-<host>、desktop 按 app-<appId>）——绝不在此手写 persist:automation-*
 const { appSessionKey } = require('./app-session-key.cjs')
@@ -603,6 +604,14 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
         emitProgress(appId, { phase: 'explore', detail: '返回上一页…' })
         return exploreBrowse('back', {})
       }
+      if (tool === 'list_dir' || tool === 'read_file') {
+        // 只读探索工具：让模型能"看"（列目录/读文本），而不是只能凭记忆猜。
+        // roots 由目标推导：程序所在目录 + 该应用的用户数据目录（后者尽力而为，取不到不报错）。
+        const roots = exploreRoots(target)
+        return tool === 'list_dir'
+          ? appExplore.listDir({ path: args?.path, limit: args?.limit }, { roots })
+          : appExplore.readTextFile({ path: args?.path, maxBytes: args?.maxBytes }, { roots })
+      }
       if (tool === 'run_command') {
         const action = String(args?.action || '')
         const cmd = (draft?.commands || []).find((c) => c.action === action)
@@ -799,6 +808,22 @@ function handleAppExecMessage(msg, { getExecutor, send }) {
 
 /** 应用数据根唯一真源（与内核侧 cli.mjs 的 <configDir>/apps 同源） */
 function appRoots() { return [join(resolveYfwHome(), 'apps')] }
+
+/**
+ * 探索工具（list_dir / read_file）的允许根目录：程序所在目录 + 该应用的用户数据目录。
+ * 用户数据目录取不到（没有 APPDATA/LOCALAPPDATA）就算了——不阻断探索，只是范围小一点。
+ */
+function exploreRoots(target) {
+  const { dirname, join: joinPath, basename } = require('node:path')
+  const roots = []
+  if (target?.exePath) roots.push(dirname(target.exePath))
+  const name = target?.name || (target?.exePath ? basename(target.exePath, '.exe') : '')
+  if (name) {
+    const appData = process.env.APPDATA || process.env.LOCALAPPDATA
+    if (appData) roots.push(joinPath(appData, name))
+  }
+  return roots
+}
 
 /**
  * 执行一条应用命令（唯一实现：渲染层 IPC 与内核桥共用）。
