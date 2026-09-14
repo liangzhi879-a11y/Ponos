@@ -629,7 +629,15 @@ function createWindow() {
     }
   })
 
-  mainWindow.on('closed', () => { mainWindow = null })
+  mainWindow.on('closed', () => {
+    mainWindow = null
+    // 托盘行为关闭时，主窗口消失即退出应用。不能指望 window-all-closed 兜底：
+    // 浏览器执行器的自动化窗口也是顶层窗口，它开着时 window-all-closed 永不触发
+    // （2026-09-14 实况：主窗口渲染进程已退出、自动化窗口仍存活，实例长期占着
+    // 单实例锁且没有主窗口，用户再点图标毫无反应）。
+    // before-quit 会补 killBridge/killPet，此处不必重复。
+    if (!trayEnabled && !isQuitting) app.quit()
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -685,6 +693,9 @@ function createTray() {
 
 function showMainWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) {
+    // 最小化时先还原：show() 对已最小化的窗口不会取消最小化状态。
+    // （托盘菜单与 second-instance 共用此函数，两条路径都需要这步。）
+    if (mainWindow.isMinimized()) mainWindow.restore()
     mainWindow.show()
     mainWindow.focus()
   } else if (authGranted) {
@@ -1396,11 +1407,11 @@ if (!gotTheLock) {
   app.quit()
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.show()
-      mainWindow.focus()
-    }
+    // 复用 showMainWindow()（与托盘「打开主窗口」同源）。此前内联的 `if (mainWindow)`
+    // 在主窗口已被销毁时静默无操作 —— 而该实例仍占着单实例锁，用户再点图标完全
+    // 没有反馈（2026-09-14 实况：主窗口渲染进程已退出、mainWindow=null）。
+    // showMainWindow() 在认证已放行时会重建主窗口，未放行时聚焦/重建认证小窗。
+    showMainWindow()
   })
 
   // ---------------------------------------------------------------------------
