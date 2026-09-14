@@ -8,10 +8,12 @@
 // ★ 为什么写操作要二次确认：控制台是人工点按的路径，没有内核侧审批链兜底
 //   （内核侧审批只覆盖 AI 调用）。漏了这一步，用户点一下就可能真的提交/删除数据。
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, LogIn, Play, Settings2, ShieldCheck, Wrench } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, LogIn, Play, Radio, Settings2, ShieldCheck, Wrench } from 'lucide-react'
 import { Button, Input } from '@/components/ui'
 import { useTranslation } from '@/i18n/useTranslation'
+import { VERDICT_COPY, groupCapabilities, normalizeSurface, reviewSummary, summarizeSpec } from '@/lib/appSurface'
 import { SpecEditor } from './SpecEditor'
+import type { AppSurface } from '@/lib/appSurface'
 import type { AppCheckResult, AppItem, AppRepairResult, AppRunResult, AppSpec, AppSpecCommand } from '@/types'
 
 export function AppConsole({ app, sessionId, onBack }: {
@@ -23,6 +25,11 @@ export function AppConsole({ app, sessionId, onBack }: {
   const api = window.yfworkingAPI
   const [spec, setSpec] = useState<AppSpec | null>(null)
   const [check, setCheck] = useState<AppCheckResult | null>(null)
+  // 能力清单（M5）：按需探测，不在进入控制台时自动跑——web 探测要开一次隐藏浏览器，
+  // desktop 探测会真的执行 --help（最长 5s/层），"只是看一眼命令"不该付这个成本。
+  const [surface, setSurface] = useState<AppSurface | null>(null)
+  const [probing, setProbing] = useState(false)
+  const [probeMsg, setProbeMsg] = useState<string | null>(null)
   const [checking, setChecking] = useState(true)
   const [argValues, setArgValues] = useState<Record<string, Record<string, string>>>({})
   const [pending, setPending] = useState<AppSpecCommand | null>(null)
@@ -66,6 +73,28 @@ export function AppConsole({ app, sessionId, onBack }: {
   useEffect(() => { void runCheck() }, [runCheck])
 
   /**
+   * 探测接入路径：复用既有 app:probe（返回值在 M5 起带上 surface）。
+   * 无论成功失败都给出反馈——清单是"为什么这么接"的唯一解释，静默失败等于让用户猜。
+   */
+  const onProbeSurface = useCallback(async () => {
+    if (!spec?.target) { setProbeMsg('尚未读取到 Spec，无法探测'); return }
+    setProbing(true)
+    setProbeMsg(null)
+    try {
+      const r = await api?.appProbe?.({ target: spec.target })
+      const s = normalizeSurface(r?.surface)
+      setSurface(s)
+      if (!r?.ok) setProbeMsg(r?.error || '探测失败')
+      else if (!s) setProbeMsg(r?.error || '本次未取得能力清单（可能缺少程序路径或浏览器执行器未就绪）')
+      else setProbeMsg(null)
+    } catch (e) {
+      setProbeMsg(String((e as Error)?.message || e))
+    } finally {
+      setProbing(false)
+    }
+  }, [api, spec])
+
+  /**
    * 打开登录窗口（用户主动触发，与应用命令/模型探索共用同一浏览器会话）。
    * 自动化窗口平时是隐藏的，没有这个入口用户就无处登录，登录态探索也就无从谈起。
    * 无论成功失败都给出反馈——不得静默。
@@ -105,6 +134,13 @@ export function AppConsole({ app, sessionId, onBack }: {
   }, [api, app.id, runCheck])
 
   const commands = useMemo(() => spec?.commands ?? [], [spec])
+
+  /**
+   * 评审结论（M4 的 spec.review，质量结论要看得见）。
+   * ★ 这里用局部收窄而不是给 AppSpec 加字段：本任务只改本文件；spec.json 的额外字段读取本就宽松，
+   *   将来 review 正式进 AppSpec 类型后，这一处可直接换成 spec?.review。
+   */
+  const reviewText = reviewSummary((spec as { review?: unknown } | null)?.review)
 
   function setArg(action: string, name: string, value: string) {
     setArgValues((prev) => ({ ...prev, [action]: { ...(prev[action] || {}), [name]: value } }))
@@ -186,6 +222,64 @@ export function AppConsole({ app, sessionId, onBack }: {
           </ul>
         )}
 
+        {/* 接入路径（能力清单，M5）：三段与后端 renderSurfaceReport 一一对应——
+            已实测 / 待确认 / 已排除。三分措辞由 VERDICT_COPY 统一供给，
+            weak（证据不足）不得被降级说成不可接入——该措辞协议由 src/lib/appSurface.test.ts 钉住。 */}
+        <div className="rounded-lg border border-subtle bg-elevated p-3 flex flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-semibold text-tertiary uppercase tracking-wider">接入路径（能力清单）</span>
+            {surface && (
+              <span className={
+                surface.verdict === 'connectable' ? 'text-[9px] px-1 py-0.5 rounded bg-success/20 text-success'
+                  : surface.verdict === 'weak' ? 'text-[9px] px-1 py-0.5 rounded bg-warning/20 text-warning'
+                    : 'text-[9px] px-1 py-0.5 rounded bg-error/20 text-error'
+              }>{VERDICT_COPY[surface.verdict].label}</span>
+            )}
+            <div className="flex-1" />
+            <Button size="sm" variant="ghost" disabled={probing} onClick={() => void onProbeSurface()}>
+              {probing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Radio className="w-3 h-3" />}
+              探测接入路径
+            </Button>
+          </div>
+          <div className="text-[10px] text-secondary">{summarizeSpec(spec)}</div>
+          {surface && <p className="text-[10px] text-secondary">{VERDICT_COPY[surface.verdict].detail}</p>}
+          {probeMsg && <div className="text-[10px] text-warning">{probeMsg}</div>}
+          {!surface && !probeMsg && (
+            <p className="text-[10px] text-tertiary">点「探测接入路径」查看该应用有哪些可控通道、各自的证据与下一步（探测会真实访问目标，可能需要几秒）。</p>
+          )}
+          {surface && (() => {
+            const g = groupCapabilities(surface)
+            const Section = ({ title, items, tone }: { title: string; items: typeof g.verified; tone: string }) => (
+              items.length === 0 ? null : (
+                <div className="flex flex-col gap-0.5">
+                  <div className={`text-[10px] ${tone}`}>{title}</div>
+                  {items.map((c) => (
+                    <div key={c.channel} className="text-[10px] text-secondary">
+                      <span className="font-mono">{c.channel}</span>
+                      {c.driver ? <span className="text-tertiary">{` → ${c.driver}`}</span> : null}
+                      {'：'}{c.label}
+                      {c.evidence ? <span className="text-tertiary">{'（'}{c.evidence}{'）'}</span> : null}
+                      {c.next ? <div className="text-tertiary pl-3">下一步：{c.next}</div> : null}
+                    </div>
+                  ))}
+                </div>
+              )
+            )
+            return (
+              <>
+                <Section title="已实测可用" items={g.verified} tone="text-success" />
+                <Section title="待进一步确认（证据不足，尚不能断言可行）" items={g.probable} tone="text-warning" />
+                <Section title="已排查且不成立" items={g.dead} tone="text-tertiary" />
+              </>
+            )
+          })()}
+        </div>
+
+        {/* 评审结论（M4 写入 spec.review）：质量结论在面板上要看得见，而不是只留在生成过程里 */}
+        {reviewText && (
+          <div className="px-3 py-2 rounded bg-input text-[10px] text-secondary">{reviewText}</div>
+        )}
+
         {/* 登录反馈：无论成功失败都要说清（登录态探索依赖它） */}
         {loginMsg && (
           <div className="px-3 py-2 rounded bg-info/10 text-[10px] text-secondary">{loginMsg}</div>
@@ -236,6 +330,9 @@ export function AppConsole({ app, sessionId, onBack }: {
                   <span className="text-[9px] px-1 py-0.5 rounded bg-input text-tertiary font-mono">{cmd.action}</span>
                   <span className={cmd.kind === 'write' ? 'text-[9px] px-1 py-0.5 rounded bg-warning/20 text-warning' : 'text-[9px] px-1 py-0.5 rounded bg-input text-tertiary'}>
                     {cmd.kind}
+                  </span>
+                  <span className="text-[9px] px-1 py-0.5 rounded bg-input text-tertiary font-mono" title="这条命令的执行后端">
+                    {spec?.driver || '—'}
                   </span>
                   <div className="flex-1" />
                   <Button size="sm" variant={cmd.kind === 'write' ? 'secondary' : 'primary'}
