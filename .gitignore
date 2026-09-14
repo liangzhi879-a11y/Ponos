@@ -45,3 +45,12 @@ runtime/
 nul
 out
 err
+
+# 运行时数据与工作流状态（本机产物，禁入 git；2026-09-14）
+# /knowledge/ 为知识库索引与回收站运行时数据（.index/ .trash/ 等）——**必须根锚定**：
+# 源码目录 src/components/knowledge 已跟踪，若写成 knowledge/ 会连源码一起忽略。
+/knowledge/
+# /.yfw-spec/ 为 spec-dev 工作流状态（与已忽略的 .superpowers 同类）
+/.yfw-spec/
+# 根级临时调试脚本（根目录仅 version.mjs 为正式脚本）
+/tmp-*.mjs
