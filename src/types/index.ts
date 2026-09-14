@@ -536,6 +536,20 @@ export interface AppSpecCommand {
 
 /** 应用规格（$YFW_HOME/apps/<appId>/spec.json） */
 /**
+ * 评审指出的一处缺口。
+ * ★ 用对象而不是字符串：让"缺什么 / 为什么算缺 / 建议怎么补"分开可读，
+ *   回喂给模型做补全时也能给出可执行的指引（这是 gaps 能真正驱动补全的前提）。
+ */
+export interface AppReviewGap {
+  /** 缺口是什么（缺哪项能力、或哪条需求没被覆盖） */
+  what: string
+  /** 为什么算缺口（可空） */
+  why?: string
+  /** 建议怎么补（可空） */
+  hint?: string
+}
+
+/**
  * 交付前评审结论（M4：生成结束后**同会话追加一次**评审调用产出）。
  * ★ 为什么要有它：用户明确反对"写死命令条数"，质量结论改由 LLM 给出具体 gaps，
  *   界面据此如实展示"到位 / 有几处缺口 / 是否已补全一轮 / 是否因预算跳过"。
@@ -543,17 +557,17 @@ export interface AppSpecCommand {
 export interface AppReview {
   /** 评审结论（ok=到位；其余为模型给出的判定） */
   verdict: string
-  /** 具体缺口（每条应是"缺什么能力/哪条需求没被覆盖"） */
-  gaps: string[]
+  /** 具体缺口（每条是"缺什么能力/哪条需求没被覆盖"） */
+  gaps: AppReviewGap[]
   /** 评审说明（可为空串） */
   notes?: string
   /** 是否已把 gaps 回喂触发过一次补全轮 */
-  applied: boolean
+  applied?: boolean
   /**
    * 结局：no-gaps 无缺口 / refined 已补全 / refine-failed 补全后试跑未过（交付的是上一版通过的）
    * / skipped-budget 预算不足跳过 / review-failed 评审调用或解析失败（已降级，不影响交付）
    */
-  outcome: 'no-gaps' | 'refined' | 'refine-failed' | 'skipped-budget' | 'review-failed'
+  outcome?: 'no-gaps' | 'refined' | 'refine-failed' | 'skipped-budget' | 'review-failed'
   at?: string
 }
 
