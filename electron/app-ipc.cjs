@@ -354,7 +354,17 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
           harvested = await harvest(cookieProvider)
           authorizeLanding(harvested)
           reportHarvest(harvested)
+          // 登录成功但重抓失败（典型：登录后跳到未授权域名，抓取层"跨站即整体失败"）：
+          // 如实告知"已登录但没取到登录后素材"，别让用户以为本次生成用的是登录后的内容。
+          if (!harvested.ok) {
+            emitProgress(appId, { phase: 'login', waiting: false, key, detail: `已登录，但未取得登录后的页面素材（${harvested.error || '抓取失败'}）：本次生成未使用站点素材` })
+          }
         }
+      } else if (wall.confidence === 'high' && !executor) {
+        // 高置信度登录墙但没有执行器 = 一条信号都发不出去（用户与界面完全不知情）。
+        // 如实提示一声，并告知"登录此应用"入口暂不可用。
+        loginInfo = { attempted: false, ok: false, reason: 'no-executor', detail: '检测到该站点需要登录，但浏览器执行器未就绪：本次未在登录态下验证' }
+        emitProgress(appId, { phase: 'login', waiting: false, key, detail: loginInfo.detail })
       }
 
       const fetched = harvested.ok

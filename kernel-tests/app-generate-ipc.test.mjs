@@ -680,6 +680,26 @@ test('带 Cookie 重抓：Cookie 只发给授权 host（跨站跳转直接停跟
   assert.equal(calls.filter((c) => c.url.includes('tracker.example')).length, 0, '未授权域名一个请求都不该收到')
   const withCookie = calls.filter((c) => c.cookie)
   assert.ok(withCookie.every((c) => new URL(c.url).hostname === 'x.com'), `Cookie 只能发给授权 host：${JSON.stringify(withCookie)}`)
+  // 登录成功了、但重抓拿不到素材（跨站即整体失败）：必须如实说"没取到登录后素材"，
+  // 否则用户会以为本次生成用的是登录后的内容。
+  const last = loginEvents(t.events).pop()
+  assert.equal(last.waiting, false)
+  assert.ok(last.detail.includes('未取得登录后的页面素材'), last.detail)
+})
+
+test('高置信度登录墙但没有执行器：不静默——如实提示"未在登录态下验证"', async () => {
+  const t = setup({ executor: null, fetch: async (u) => htmlResp(PAGE_WITH_PASSWORD, { url: u }) })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://x.com/login' }, appId: 'x', sessionId: 's1' })
+
+  assert.equal(r.ok, true, '执行器缺失也不能中断生成')
+  assert.equal(r.login.attempted, false)
+  assert.equal(r.login.ok, false)
+  assert.equal(r.login.reason, 'no-executor')
+  const ev = loginEvents(t.events)
+  assert.equal(ev.length, 1, '至少要看得到一条登录相关提示，不能一条都不发')
+  assert.equal(ev[0].waiting, false)
+  assert.ok(ev[0].detail.includes('未就绪'), ev[0].detail)
+  assert.ok(ev[0].detail.includes('未在登录态下验证'), ev[0].detail)
 })
 
 test('模型探索 fetch_page：Cookie 只发给本次流程授权的 host（登录态绝不外发）', async () => {

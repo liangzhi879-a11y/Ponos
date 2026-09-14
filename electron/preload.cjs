@@ -49,10 +49,12 @@ const yfworkingAPI = {
   /**
    * 登录信号（生成期登录墙等窗口用）：用户点「我已完成登录」/取消等待。
    * 返回 {ok:boolean}——ok:false 只表示"当前没有等待中的登录"（不是错误，别渲染成"请重试"）。
-   * key = 站点/应用级分区键（app:login 与 app:generate 的进度事件都会给出）。
+   * payload = { key }，key 为站点/应用级分区键（app:login 与 app:generate 的进度事件都会给出）。
+   * 载荷**原样透传**（不在 preload 里改形状）：渲染层传什么、主进程就收到什么，
+   * 否则 {key} 会被包成 {key:{key}} → 主进程查不到等待登记 → 按钮静默无效。
    */
-  appLoginDone: (key) => ipcRenderer.invoke('app:login-done', { key }),
-  appLoginCancel: (key) => ipcRenderer.invoke('app:login-cancel', { key }),
+  appLoginDone: (payload) => ipcRenderer.invoke('app:login-done', payload),
+  appLoginCancel: (payload) => ipcRenderer.invoke('app:login-cancel', payload),
   /**
    * 生成 App Spec（探测 → LLM → 校验 → read 试跑）。**不落盘**，需用户确认后另行保存。
    */

@@ -116,6 +116,20 @@ test('preload 真加载：调用方法确实发出对应渠道（名对名）', 
   }
 })
 
+// 载荷形状契约：渲染层传 { key }，主进程就应收到 { key }。
+// 若 preload 擅自把载荷改形（例如 (key) => invoke(ch, { key })），
+// 主进程 payload.key 会拿到对象 → 查不到等待登记 → 「我已完成登录」按钮静默无效，且两侧都不报错。
+test('preload 真加载：登录信号载荷原样透传（形状不得被 preload 改写）', async () => {
+  const { exposed, calls } = loadExposed()
+  const api = exposed.yfworkingAPI
+  for (const method of ['appLoginDone', 'appLoginCancel']) {
+    calls.length = 0
+    await api[method]({ key: 'app-site-example.com' })
+    assert.equal(calls.length, 1, `${method} 未发出调用`)
+    assert.deepEqual(calls[0].a, [{ key: 'app-site-example.com' }], `${method} 改写了载荷形状：${JSON.stringify(calls[0].a)}`)
+  }
+})
+
 test('主进程侧：清单里的渠道全部注册（文本层面）', () => {
   const main = readMainSide()
   for (const ch of Object.keys(CHANNELS)) {
