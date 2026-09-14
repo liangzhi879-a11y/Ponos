@@ -338,6 +338,9 @@ export async function handleKnowledgeRoute({
       // "第一印象不被噪声淹没"）。**逐字判 '1'**：`related=0`/`related=false` 一律视为不带，
       // 免得"关着的图层"因参数写法不同而打开。
       if (q('related') === '1') args.push('--related')
+      // S5.1：`?level=entry` 切条目级图。**逐字判 'entry'**（与 `related` 同一纪律：
+      // 层级是枚举，非法值落回文档级由内核兜底，路由不做自由透传以免把任意字符串喂进内核）。
+      if (q('level') === 'entry') args.push('--level', 'entry')
       return ok((await callJson(callKernel, args)).value)
     }
     if (!isPost && p === '/knowledge/stats') return ok((await callJson(callKernel, ['--knowledge', 'stats'])).value)

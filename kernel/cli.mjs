@@ -170,6 +170,11 @@ export function parseArgs(argv) {
       // 混用会让"给了 docId 却按 blockId 查"变成静默空数组（最贵的假阴性）。
       case '--doc': out.doc = next() ?? null; break
       case '--related': out.related = true; break
+      // S5.1：`graph --level entry`（图谱层级：文档/条目）。同上，未知 `--` 参数静默忽略，
+      // 漏登记就会让"层级切换点了没反应"看起来像前端问题。
+      // 值与 `--doc` 一样需要吃下一个 token：写成 `out.level = true` 会把 'entry' 丢给
+      // positional 参数（进而被当成路径），是本 CLI 最容易写错的一处。
+      case '--level': out.level = next() ?? null; break
       case '--mode': out.mode = next() ?? null; break
       // 显式强制重建索引（reindex 本身恒 force；本 flag 供其它 op 复用同一语义）
       case '--force': out.force = true; break
@@ -256,7 +261,7 @@ export async function main(argv) {
         // 后者被静默忽略（图层开着却没有边，看起来像数据问题而不是参数问题）。
         // 单测覆盖不到这里：它们直接调 runKnowledgeCommand，绕过了本层管道；
         // 回归由 kernel-tests/knowledge-cli-flags.test.mjs 以**真进程**钉住。
-        doc: args.doc, related: args.related,
+        doc: args.doc, related: args.related, level: args.level,
       },
     })
     console.log(JSON.stringify(output))

@@ -940,6 +940,20 @@ export const zhCN = {
     graphLayerRelatedHint: '默认只画文档之间的显式链接；隐式关联（标签/内容算出来的）需要手动打开',
     graphRelatedCount: '{n} 条关联',
     graphRelatedLoading: '关联加载中…',
+    // —— S5.1：图谱层级（文档 / 条目）——
+    // 为什么要有层级：真实库 74/76 条经验挤在同一个文件里，文档级图把条目间的关联
+    // 全塌成自环过滤掉 ⇒ 文档级几乎无边，"看着像没有图谱"；条目级才有信息量。
+    graphLevel: '层级',
+    graphLevelDoc: '文档',
+    graphLevelEntry: '条目',
+    graphLevelEntryHint: '按条目看：节点是每条经验，边是标签/内容/引用关系——同一个文件内的条目也能互相连起来',
+    graphEntryCount: '{n} 个条目',
+    graphEntryTruncated: '（已截断，仅显示前 {n} 个条目）',
+    graphEntryEmpty: '这个范围内还没有可关联的条目',
+    graphEntryHint: '条目级图谱：标签（同主题）、内容相似、引用三类边；文档之间的显式链接不在此层显示',
+    graphEdgeRef: '引用',
+    graphEdgeTag: '同主题',
+    graphEdgeContent: '相似',
   },
 }
 

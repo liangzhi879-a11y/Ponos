@@ -206,8 +206,9 @@ test('search() 附锚点：只给摘要（字段集合）+ topN 条数上限，�
     assert.ok(r2.items.length >= 1)
     for (const it of r2.items) assert.ok(!('related' in it), 'off 模式不得出现 related 字段（等价 S4）')
     assert.deepEqual(off.getRelated(`${DOC2}#0`), [], 'off 模式没有关联概念 → []')
+    // `refEdges` 为 S5.1 追加（手写引用 → 条目级关联的边数，spec s51 §4.2）
     assert.deepEqual(off.stats().related,
-      { edges: 0, tagEdges: 0, contentEdges: 0, dupEdges: 0, dropped: 0 })
+      { edges: 0, tagEdges: 0, contentEdges: 0, refEdges: 0, dupEdges: 0, dropped: 0 })
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

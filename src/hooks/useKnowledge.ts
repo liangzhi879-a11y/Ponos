@@ -13,7 +13,7 @@
 // 后端保存即增量索引，不失效就会出现"刚保存却搜不到"（S2 验收第 6 项）。
 import { useCallback, useEffect, useReducer, useRef } from 'react'
 import {
-  getDoc, getGraph, getGraphRelated, getLinks, getRelatedDoc, getStats, listEntries, listSpaces, listTree,
+  getDoc, getEntryGraph, getGraph, getGraphRelated, getLinks, getRelatedDoc, getStats, listEntries, listSpaces, listTree,
   search, writeDoc,
   type ApiResult, type KnowledgeCallOpts, type KnowledgeDoc, type KnowledgeEntry,
   type KnowledgeGraph, type KnowledgeGraphRelatedEdge, type KnowledgeLinks,
@@ -32,6 +32,8 @@ export const knowledgeKeys = {
   entries: (id: string) => `entries:${id}`,
   search: (p: KnowledgeSearchParams) => `search:${[p.q, csv(p.keywords), p.topK ?? '', p.mode ?? '', csv(p.spaces)].join('|')}`,
   graph: (space: string | null, limit?: number) => `graph:${space ?? '*'}|${limit ?? ''}`,
+  /** 条目级图谱（S5.1 层级开关）。键前缀独立，否则与文档级图互相串缓存 */
+  graphEntry: (space: string | null, limit?: number) => `graphEntry:${space ?? '*'}|${limit ?? ''}`,
   /** 出边 + 反链（右栏 Inspector，Task 9）；键按文档 id，故前缀失效用 `links:` */
   links: (id: string) => `links:${id}`,
   /** 整篇文档的关联锚点（S5 Task 9：条目卡片关联行 / Inspector 关联段） */
@@ -174,6 +176,17 @@ export function useSearch(params: KnowledgeSearchParams): KnowledgeResource<Know
 export function useGraph(space: string | null = null, limit?: number): KnowledgeResource<KnowledgeGraph> {
   const key = knowledgeKeys.graph(space, limit)
   return useResource<KnowledgeGraph>(key, () => getGraph(space ?? undefined, limit))
+}
+
+/**
+ * 条目级图谱（S5.1 层级开关）：`enabled=false` → 键为 null → **不发请求**。
+ * 照 `useGraphRelated` 的范式：层级是二选一的，两个层级的图同时拉等于白花一半流量。
+ */
+export function useEntryGraph(
+  space: string | null = null, limit?: number, enabled = true,
+): KnowledgeResource<KnowledgeGraph> {
+  const key = enabled ? knowledgeKeys.graphEntry(space, limit) : null
+  return useResource<KnowledgeGraph>(key, () => getEntryGraph(space ?? undefined, limit))
 }
 
 /** 出边 + 反链（右栏 Inspector 用 `in`：谁引用了我）；未选中文档时不发请求 */
