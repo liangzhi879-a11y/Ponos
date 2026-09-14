@@ -9,6 +9,9 @@ const {
   MAX_ROUNDS, VERIFY_MAX_READS, ACT_CONTRACT, actContractLines, WEB_ACTS, DESKTOP_ACTS, SYSTEM_RULES,
   driverOf, actsFor, tableFor, driverRulesLine, SPEC_SHAPE_LINE, WEB_CONTRACT, DESKTOP_CONTRACT,
 } = require('../electron/app-generate.cjs')
+// 跨模块一致性护栏（Task 8）：提示词侧（app-agent 的 buildAgentSystem）与校验侧（app-generate 的
+// actsFor/validateSpecBasic）必须共用同一份驱动口径 —— 两处逐字节绑死，任何一边单边改动就红。
+const { buildAgentSystem } = require('../electron/app-agent.cjs')
 
 const GOOD_SPEC = {
   specVersion: 1, appId: 'demo', name: '示例站',
@@ -405,4 +408,40 @@ test('actContractLines：只渲染传入驱动的 act，每个 act 都带字段�
   assert.ok(/"file" 或 "code"/.test(actContractLines('script')), 'script 应渲染为 file 或 code')
   assert.ok(SYSTEM_RULES.includes('expression'), 'SYSTEM_RULES 要包含契约说明')
   assert.ok(SYSTEM_RULES.includes('不是 CSS 选择器'), 'SYSTEM_RULES 要明确 ref ≠ 选择器')
+})
+
+// ---------- 跨模块一致性护栏（Task 8） ----------
+//
+// 背景：同一份 driver 契约曾有两个判定口径 —— 提示词侧判 `driver === 'desktop'`（生产 driver 只有
+// browser/process/script/uia，该条件永不成立），校验侧判 `target.type === 'desktop'`
+// → 给模型下发的 act 清单与校验允许的 act 清单长期不一致，本地应用封装必然失败。
+// 之所以长期没被发现，是因为测试里用的是生产不存在的 driver:'desktop'。
+// 下面两条把两侧清单逐字节绑死，任何一边单边改动就会红。
+
+test('一致性护栏：提示词下发的 act 清单与校验允许的 act 清单逐字节一致（四种驱动）', () => {
+  const cases = [
+    ['browser', { type: 'web', url: 'https://x/' }],
+    ['process', { type: 'desktop', exePath: 'C:/x/y.exe' }],
+    ['script', { type: 'desktop', exePath: 'C:/x/y.exe' }],
+    ['uia', { type: 'desktop', exePath: 'C:/x/y.exe' }],
+  ]
+  for (const [driver, target] of cases) {
+    const sys = buildAgentSystem({ target, driver })
+    const line = sys.match(/steps\.act 只能取：([^\n]+)/)
+    assert.ok(line, `${driver} 的提示词里没有 act 清单行`)
+    const fromPrompt = line[1].replace(/[。.]\s*$/, '').split(/[、,，]\s*/).map((s) => s.trim()).filter(Boolean)
+    assert.deepEqual(fromPrompt, actsFor(driver), `${driver}：提示词与校验的 act 清单必须一致`)
+  }
+})
+
+test('一致性护栏：提示词说能写的 act，校验必须真的放行（逐驱动抽样）', () => {
+  const sample = { browser: { act: 'snapshot' }, process: { act: 'cli', argv: ['--version'] }, script: { act: 'script', lang: 'js', code: '1' }, uia: { act: 'key', value: 'Enter' } }
+  for (const [driver, step] of Object.entries(sample)) {
+    const spec = { specVersion: 1, appId: 'a', name: '甲', driver, expose: { mode: 'console' },
+                   target: driver === 'browser' ? { type: 'web', url: 'https://x/' } : { type: 'desktop', exePath: 'C:/x/y.exe' },
+                   commands: [{ action: 'doIt', title: '执行一步', kind: 'read', params: [], steps: [step] }] }
+    const sys = buildAgentSystem({ target: spec.target, driver })
+    assert.ok(sys.includes(step.act), `${driver} 的提示词应包含 ${step.act}`)
+    assert.equal(validateSpecBasic(spec).ok, true, `${driver}：提示词说能写却校验不过 —— ${JSON.stringify(validateSpecBasic(spec).errors)}`)
+  }
 })
