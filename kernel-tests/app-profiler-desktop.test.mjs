@@ -209,5 +209,9 @@ test('probeDesktop：只有 probable 线索时结论为证据不足（不得说�
     const file = r.capabilities.find((c) => c.channel === 'file')
     assert.equal(file.confidence, 'probable')
     assert.equal(file.driver, 'file')
+    // ★ `file` 执行后端 M3 才有（act 契约现只有 browser/process/script/uia）：next 不说明的话，
+    //   模型会照清单写出注定被校验拒掉的 act，白烧轮次。
+    assert.ok(file.next.includes('该执行后端由 M3 提供'), `next 要提示后端还没到：${file.next}`)
+    assert.ok(file.next.includes('read_file'), '要给出当前可用的替代写法')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

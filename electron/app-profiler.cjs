@@ -72,7 +72,8 @@ function buildWebCapabilities({ url, material } = {}) {
     caps.push(capability('http', {
       confidence: 'probable',
       evidence: `发现 ${apiHints.length} 个接口线索：${apiHints.slice(0, 5).join('、')}`,
-      next: '公开接口可用 http 直调；**需要登录态的接口优先用 browser+js 调用**（自带会话）',
+      next: '公开接口可用 http 直调；**需要登录态的接口优先用 browser+js 调用**（自带会话）'
+        + '（该执行后端由 M3 提供，当前请先用 browser+js / 现有 act 验证）',
     }))
   }
   if (material?.scripts?.length) {
@@ -185,7 +186,10 @@ async function probeDesktop({ exePath, deps = {} } = {}) {
       caps.push(capability('file', {
         confidence: 'probable',
         evidence: `发现数据/配置文件线索：${(f.hits || []).join('、')}`,
-        next: '用 read_file 抽样看格式后，封装 file 驱动的 read/query 步骤',
+        next: '用 read_file 抽样看格式后，封装 file 驱动的 read/query 步骤'
+          // ★ 同 http 通道：`file` 执行后端 M3 才有（act 契约现只有 browser/process/script/uia），
+          //   不说明的话模型会照清单写出注定被校验拒掉的 act —— 白烧轮次。
+          + '（该执行后端由 M3 提供，当前请先用 read_file + 现有 act 验证）',
       }))
     } else {
       attempts.push({ level: 'file', reason: f?.reason || '未发现数据/配置文件' })

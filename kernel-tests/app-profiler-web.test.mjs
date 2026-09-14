@@ -30,6 +30,10 @@ test('★ 发现接口线索 → http 为 probable，且证据里带具体路径
   assert.equal(http.confidence, 'probable', '线索未实测，不许标 verified')
   assert.equal(http.driver, 'http')
   assert.ok(http.evidence.includes('/api/order/list'), `证据要含具体路径：${http.evidence}`)
+  // ★ `http` 执行后端 M3 才有（act 契约现只有 browser/process/script/uia）：
+  //   清单的 next 不说明的话，模型会照它写出注定被校验拒掉的 act，白烧轮次。
+  assert.ok(http.next.includes('该执行后端由 M3 提供'), `next 要提示后端还没到：${http.next}`)
+  assert.ok(http.next.includes('browser+js'), '要给出当前可用的替代写法')
 })
 
 test('★ 发现脚本 → chunk 通道用 browser 执行（自带登录态，SPA 的真实能力面在这里）', () => {

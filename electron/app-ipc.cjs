@@ -753,8 +753,14 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     if (!agent.ok || !agent.spec) {
       const why = pickBlockerReasons(agent).join('；') || '模型未产出通过校验的 Spec'
       const whyWithStop = agent.stoppedBy && agent.stoppedBy !== 'budget' ? `${why}（已停止：${agent.stoppedBy}）` : why
-      emitProgress(appId, { phase: 'error', detail: whyWithStop })
-      return done({ ok: false, error: whyWithStop, issues: agent.issues, blockers: agent.blockers, rounds: agent.turns, turns: agent.turns, toolCalls: agent.toolCalls, driver, stoppedBy: agent.stoppedBy })
+      // ★ 三分协议里 weak（证据不足）的文案落点：生成确实失败了，但**失败原因不是"此路不通"**，
+      //   而是"只有待确认线索 + 这次没试出来"。把探测报告一并交出去，用户才知道该补什么证据
+      //   （程序路径/官方文档），而不是误以为该应用被系统判死。
+      //   措辞由 renderSurfaceReport 保证仍是"证据不足/待进一步确认"，**绝不出现"无法接入"**。
+      const weakReport = surface?.verdict === 'weak' ? renderSurfaceReport(surface) : ''
+      const whyWithSurface = weakReport ? `${whyWithStop}\n${weakReport}` : whyWithStop
+      emitProgress(appId, { phase: 'error', detail: whyWithSurface })
+      return done({ ok: false, error: whyWithSurface, issues: agent.issues, blockers: agent.blockers, rounds: agent.turns, turns: agent.turns, toolCalls: agent.toolCalls, driver, stoppedBy: agent.stoppedBy })
     }
 
     let specWithDriver = { ...agent.spec, driver, target: { ...(agent.spec.target || {}), ...target } }
@@ -860,12 +866,26 @@ function appRoots() { return [join(resolveYfwHome(), 'apps')] }
  */
 function exploreRoots(target) {
   const { dirname, join: joinPath, basename } = require('node:path')
+  const { readdirSync } = require('node:fs')
   const roots = []
   if (target?.exePath) roots.push(dirname(target.exePath))
-  const name = target?.name || (target?.exePath ? basename(target.exePath, '.exe') : '')
-  if (name) {
-    const appData = process.env.APPDATA || process.env.LOCALAPPDATA
-    if (appData) roots.push(joinPath(appData, name))
+  // 派生名：`target.name` 只是**可选**字段（AppTarget 的界面契约里没有它，见 src/types/index.ts，
+  // 因此实际上永远走 basename 兜底；这里保留是为了"有人真传了就用真名"）。
+  const derived = target?.name || (target?.exePath ? basename(target.exePath, '.exe') : '')
+  if (derived) {
+    // ★ 大小写不能照抄派生名：Windows 上 `%APPDATA%` 里是 `Aseprite`，而派生名是小写 `aseprite`
+    //   （basename 保留原样，主程序常写成 aseprite.exe）→ 路径守卫拒掉 → 设计文档 §4.3 承诺的
+    //   "该应用用户数据目录"在真实机器上基本读不到，而配置/工程数据恰好都在那里。
+    //   故列出实际子目录做**大小写不敏感**匹配；匹配不到就退回原派生名（尽力而为，不阻断探索）。
+    for (const appData of [process.env.APPDATA, process.env.LOCALAPPDATA]) {
+      if (!appData) continue
+      let hit = null
+      try {
+        hit = readdirSync(appData).find((n) => n.toLowerCase() === derived.toLowerCase()) || null
+      } catch { /* 目录不存在/无权限：按"取不到"处理 */ }
+      const p = joinPath(appData, hit || derived)
+      if (!roots.includes(p)) roots.push(p)
+    }
   }
   return roots
 }
@@ -956,4 +976,4 @@ function profiledSnapshot(snap) {
   }
 }
 
-module.exports = { registerAppHandlers, runAppCommand, handleAppExecMessage, inferDriver, appRoots, profiledSnapshot, authorizeAppTarget, hostVariants, pickBlockerReasons }
+module.exports = { registerAppHandlers, runAppCommand, handleAppExecMessage, inferDriver, appRoots, exploreRoots, profiledSnapshot, authorizeAppTarget, hostVariants, pickBlockerReasons }

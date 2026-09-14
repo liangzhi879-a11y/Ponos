@@ -12,7 +12,7 @@ const home = mkdtempSync(join(tmpdir(), 'appgen-'))
 process.env.YFWORKING_HOME = home
 delete process.env.CLAUDE_CONFIG_DIR
 
-const { registerAppHandlers, pickBlockerReasons, inferDriver } = require('../electron/app-ipc.cjs')
+const { registerAppHandlers, pickBlockerReasons, inferDriver, exploreRoots } = require('../electron/app-ipc.cjs')
 const { DRIVERS } = require('../electron/app-generate.cjs')
 
 const SPEC_TEXT = JSON.stringify({
@@ -1026,6 +1026,13 @@ test('★ app:generate（desktop）：只有 probable 线索（weak）→ 不硬
     assert.ok(!sys.includes('无法接入该应用'), `weak 场景不得下"无法接入"的结论：${sys.slice(0, 200)}`)
     assert.ok(!sys.includes('结论：**无法接入**'), 'weak 场景不得出现"无法接入"的结论行')
     assert.ok(t.details().some((d) => String(d).includes('继续尝试封装')), '进度要如实说"只有待确认线索，继续尝试封装"')
+    // ★ weak 也要有**文案落点**：生成确实失败了，但失败原因是"证据不足 + 这次没试出来"，
+    //   不是"此路不通"。报告必须并进最终 error（此前 renderSurfaceReport 的 weak 分支无任何调用点）。
+    assert.equal(r.ok, false, '本轮假模型没产出 Spec → 走最终失败路径')
+    assert.ok(/证据不足|待进一步确认/.test(r.error), `最终 error 要带上"证据不足"报告：${r.error}`)
+    assert.ok(r.error.includes('本地数据/配置文件'), `报告要含清单里的真实线索：${r.error}`)
+    assert.ok(!r.error.includes('无法接入'), `weak 绝不许说成"无法接入"：${r.error}`)
+    assert.ok(t.details().some((d) => /证据不足|待进一步确认/.test(String(d))), '进度事件里也要能看到该报告')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -1077,4 +1084,73 @@ test('surfaceLines 缺省/为空串时提示词逐字不变（老应用重生成
   const seedBase = { target: base.target, driver: 'browser', probeMode: 'none' }
   assert.equal(buildAgentSeed({ ...seedBase, surfaceLines: '' }), buildAgentSeed(seedBase))
   assert.equal(buildAgentSeed({ ...seedBase, surfaceLines: S }).replace(S + '\n\n', ''), buildAgentSeed(seedBase))
+})
+
+// ---------- ★ M2 实质失效修复：探索工具的结果必须真的到模型手上 ----------
+//
+// 原实现（形式具备、实质失效）：`list_dir` / `read_file` 只返回结构化字段（entries / text），
+// 而 app-agent 的 toolResultText **只读 `summary`** → 模型收到的恒是"（无摘要）"：
+// 目录内容与文件正文全丢，越界时连"超出允许范围"都读不到（与教义里"照错误改正即可"直接矛盾）。
+// 单测原来只看工具的原始返回体 → 漏检。本用例断言**模型实际收到的文本**（callLlm 的 user），
+// 这才是"某个改动是否让 M2 真的生效"的唯一判据。
+test('★ M2：list_dir / read_file 的结果必须真的到达模型（回喂文本含真实文件名、正文与越界错误）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gen-tools-'))
+  writeFileSync(join(dir, 'settings.json'), '{"theme":"dark","lang":"zh"}', 'utf-8')
+  writeFileSync(join(dir, 'nope.exe'), '', 'utf-8')   // 空文件：CLI 探测失败，但 settings.json 给出一条 probable 线索 → weak，照常生成
+  const exe = join(dir, 'nope.exe')
+  const seenUsers = []
+  const script = [
+    exploreTurn('list_dir', { path: dir }),                              // 真正该看到的目录
+    exploreTurn('read_file', { path: join(dir, 'settings.json') }),      // 真正该看到的正文
+    exploreTurn('list_dir', { path: 'C:/Windows/System32' }),            // 越界：模型必须读到为什么被拒
+    '{}',                                                                // 收尾：连读不懂 → bad-output 早停（不烧满轮次）
+  ]
+  let i = 0
+  const t = setup({ llm: async (p) => {
+    seenUsers.push(String(p?.user || ''))
+    const text = script[Math.min(i, script.length - 1)]
+    i += 1
+    return { ok: true, text, error: null, chars: text.length }
+  } })
+  try {
+    const r = await t.invoke('app:generate', { target: { type: 'desktop', exePath: exe }, appId: 'tools1', sessionId: 's1' })
+    assert.equal(r.stoppedBy, 'bad-output', `用例以"模型连读不懂"收尾即可（实际 ${r.stoppedBy}）：重点是下面三段回喂文本`)
+    assert.ok(seenUsers.length >= 4, `工具结果各占一轮上下文（实际 ${seenUsers.length} 轮）`)
+    // ★ 断言的是"模型下一轮实际收到的那段文本"，不是工具的原始返回体
+    const afterList = seenUsers[1] || ''
+    assert.ok(afterList.includes('settings.json'), `list_dir 的目录内容必须回喂给模型：${afterList.slice(-400)}`)
+    assert.ok(afterList.includes('nope.exe'), `目录里的其它文件也要给：${afterList.slice(-400)}`)
+    assert.ok(!afterList.includes('(无摘要)'), '不许再出现"（无摘要）"（M2 空转的根因）')
+    const afterRead = seenUsers[2] || ''
+    assert.ok(afterRead.includes('"theme":"dark"'), `read_file 的正文必须回喂给模型：${afterRead.slice(-400)}`)
+    const afterDenied = seenUsers[3] || ''
+    assert.ok(afterDenied.includes('超出允许范围'), `越界原因必须回喂给模型（否则它无从改正）：${afterDenied.slice(-400)}`)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ---------- ★ 修复：exploreRoots 的应用名大小写 ----------
+//
+// 真实现象（Windows + Aseprite）：`exploreRoots` 用 `basename(exePath,'.exe')` 派生小写名 `aseprite`，
+// 而真实用户数据目录是 `%APPDATA%\Aseprite` → 路径守卫拒掉 → 设计文档 §4.3 承诺的
+// "该应用用户数据目录"在真实机器上基本读不到，而配置/工程数据恰好都在那里。
+test('★ exploreRoots：%APPDATA% 里真实目录名大小写不同也要命中（aseprite → Aseprite）', () => {
+  assert.equal(exploreRoots({ type: 'desktop', exePath: 'C:/Apps/aseprite/aseprite.exe' }).some((p) => /aseprite$/i.test(p)), true,
+    '派生名取不到时仍尽力而为（退回派生名）')
+  const appData = mkdtempSync(join(tmpdir(), 'appdata-'))
+  mkdirSync(join(appData, 'Aseprite'))
+  const oldAppData = process.env.APPDATA
+  const oldLocal = process.env.LOCALAPPDATA
+  process.env.APPDATA = appData
+  delete process.env.LOCALAPPDATA
+  try {
+    const roots = exploreRoots({ type: 'desktop', exePath: 'C:/Apps/aseprite/aseprite.exe' })
+    assert.ok(roots.some((p) => p.endsWith('Aseprite')), `必须命中真实大小写的目录：${roots.join('｜')}`)
+    // 命中还不够——该目录必须**真的能通过路径守卫**（这才是"用户数据目录可读"）
+    const { resolveExplorePath } = require('../electron/app-explore.cjs')
+    assert.ok(resolveExplorePath(roots, join(appData, 'ASEPRITE', 'config.ini')).toLowerCase().endsWith('config.ini'))
+  } finally {
+    if (oldAppData === undefined) delete process.env.APPDATA; else process.env.APPDATA = oldAppData
+    if (oldLocal === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = oldLocal
+    rmSync(appData, { recursive: true, force: true })
+  }
 })
