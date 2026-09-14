@@ -250,11 +250,18 @@ function isEmptyTemplateContent(content, marker) {
 }
 
 // 从任务标签/文本推断主题：申报/政策/财务关键词 → 业务主题；否则 workflow
+//
+// ⚠️ 判据必须是**词**而不是单字。原写法含裸 `账`，实测把一条讲"数据根合并前必须做去重勘察…
+// 合并后要对账"的经验判成了 finance（`对账` 含 `账`）—— 误判率不高的词反而更糟：
+// 它悄悄把条目塞进一个语义无关的主题文件，事后只能靠人翻。故 finance 只认
+// `财务/报销/发票/税务/财税/成本/会计/记账/账单`，不再收单字。
+// 另：`台账` 在多处属申报语境（研发辅助账/辅助账台账），而 project-application 的判断在最前，
+// 故含"研发/申报"的台账会先被正确归到 project-application，这里无需再处理。
 function inferTheme(tag, text) {
   const s = `${tag || ''} ${text}`.toLowerCase()
   if (/申报|认定|材料|知识产权|研发|高企|专精特新|小巨人|资质/.test(s)) return 'project-application'
   if (/政策|通知|公告|公示|补贴|资金/.test(s)) return 'policy'
-  if (/财务|报销|发票|账|税务|成本/.test(s)) return 'finance'
+  if (/财务|报销|发票|税务|财税|成本|会计|记账|账单/.test(s)) return 'finance'
   return 'workflow'
 }
 
