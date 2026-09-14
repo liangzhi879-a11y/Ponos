@@ -137,10 +137,10 @@ export function AppConsole({ app, sessionId, onBack }: {
 
   /**
    * 评审结论（M4 的 spec.review，质量结论要看得见）。
-   * ★ 这里用局部收窄而不是给 AppSpec 加字段：本任务只改本文件；spec.json 的额外字段读取本就宽松，
-   *   将来 review 正式进 AppSpec 类型后，这一处可直接换成 spec?.review。
+   * ★ review 已正式进 AppSpec 类型，这里直接用 spec?.review；老 spec.json 没这个字段时为 undefined，
+   *   reviewSummary 内部按"无评审记录"处理（不编内容）。
    */
-  const reviewText = reviewSummary((spec as { review?: unknown } | null)?.review)
+  const reviewText = reviewSummary(spec?.review)
 
   function setArg(action: string, name: string, value: string) {
     setArgValues((prev) => ({ ...prev, [action]: { ...(prev[action] || {}), [name]: value } }))

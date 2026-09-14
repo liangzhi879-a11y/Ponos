@@ -535,6 +535,28 @@ export interface AppSpecCommand {
 }
 
 /** 应用规格（$YFW_HOME/apps/<appId>/spec.json） */
+/**
+ * 交付前评审结论（M4：生成结束后**同会话追加一次**评审调用产出）。
+ * ★ 为什么要有它：用户明确反对"写死命令条数"，质量结论改由 LLM 给出具体 gaps，
+ *   界面据此如实展示"到位 / 有几处缺口 / 是否已补全一轮 / 是否因预算跳过"。
+ */
+export interface AppReview {
+  /** 评审结论（ok=到位；其余为模型给出的判定） */
+  verdict: string
+  /** 具体缺口（每条应是"缺什么能力/哪条需求没被覆盖"） */
+  gaps: string[]
+  /** 评审说明（可为空串） */
+  notes?: string
+  /** 是否已把 gaps 回喂触发过一次补全轮 */
+  applied: boolean
+  /**
+   * 结局：no-gaps 无缺口 / refined 已补全 / refine-failed 补全后试跑未过（交付的是上一版通过的）
+   * / skipped-budget 预算不足跳过 / review-failed 评审调用或解析失败（已降级，不影响交付）
+   */
+  outcome: 'no-gaps' | 'refined' | 'refine-failed' | 'skipped-budget' | 'review-failed'
+  at?: string
+}
+
 export interface AppSpec {
   specVersion: number
   appId: string
@@ -550,6 +572,8 @@ export interface AppSpec {
    */
   auth?: { needsLogin?: boolean; loginUrl?: string }
   commands: AppSpecCommand[]
+  /** 交付前评审结论（M4 产出；老 Spec 读回时为 undefined，界面需容错） */
+  review?: AppReview | null
 }
 
 /** 进入控制台前的自检结果 */
@@ -664,6 +688,8 @@ export interface AppGenerateResult {
   /** 封装质量提示（不拦交付，但要在界面上让用户看到"哪里还不够"） */
   warnings?: string[]
   verify?: AppVerifyResult
+  /** 交付前评审结论（与 spec.review 同源，便于调用方直接读生成结果） */
+  review?: AppReview | null
   /** 自主探索概况：模型自己调了哪些工具、几轮收敛（用于让用户看懂"生成过程做了什么"） */
   agent?: { turns: number; toolCalls: number; verified: boolean; stoppedBy?: string; trace?: unknown[] }
   /**
