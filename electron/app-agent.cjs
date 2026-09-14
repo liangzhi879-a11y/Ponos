@@ -363,7 +363,7 @@ function describeToolCall(tool, args) {
  * @param {Function} [p.verify]  真实试跑：spec => {ok, tried, failures}
  * @param {Function} [p.onProgress]
  * @returns {Promise<{ok:boolean, spec:object|null, verified:boolean, turns:number, toolCalls:number,
- *   trace:Array, issues:string[], warnings:string[], verify:object|null, elapsedMs:number, stoppedBy:string}>}
+ *   trace:Array, issues:string[], blockers:string[], warnings:string[], verify:object|null, elapsedMs:number, stoppedBy:string}>}
  */
 async function runAgentLoop({
   target, driver = 'browser', probeMode, probeMaterial, seedSummary,
@@ -376,6 +376,14 @@ async function runAgentLoop({
   const log = []
   const trace = []
   const issues = []
+  /**
+   * 最新一轮的阻塞原因（面向用户的"当前卡在哪"）。
+   * 为什么单列：issues 只增不减，早期轮次的错误会一直排在最前 —— 界面取前 3 条时，用户看到的
+   * 是 round-1 的陈旧错误（真实现象："specVersion 必须为 1；缺少 name；…snapshot 不合法"，
+   * 而这些其实早就改好了），反而看不到当前真正的卡点。
+   */
+  let blockers = []
+  const setBlockers = (list) => { blockers = (list || []).slice(0, 8) }
   const warnings = []
   let spec = null        // **通过结构+质量校验**的 Spec（只有它才可能被交付）
   let draft = null       // 最近一次提交的草稿（哪怕没通过校验，也留给 run_command 调试用）
@@ -435,6 +443,8 @@ async function runAgentLoop({
     if (!r?.ok) {
       const why = `模型调用失败：${r?.error || '未知错误'}`
       issues.push(why); stoppedBy = 'llm-error'
+      // 也要落成 blocker：否则界面会拿上一轮的旧结构错误当"当前卡点"，而真正挂掉的是模型接口
+      setBlockers([why])
       onProgress?.({ phase: 'error', detail: why })
       break
     }
@@ -488,6 +498,7 @@ async function runAgentLoop({
     const v = check(normalized)
     if (!v.ok) {
       issues.push(...v.errors)
+      setBlockers(v.errors)
       log.push({ role: '系统', text: `结构校验未通过：\n${v.errors.slice(0, 8).map((e, i) => `${i + 1}. ${e}`).join('\n')}\n请修正后重新 submit_spec。` })
       onProgress?.({ phase: 'invalid', turn: turns, detail: `草稿结构校验未通过：${v.errors.slice(0, 3).join('；')}` })
       if (stallCheck(v.errors)) { stoppedBy = 'no-progress'; issues.push(`模型连续提交同一批结构问题，已早停（避免空耗预算）：${v.errors.slice(0, 2).join('；')}`); break }
@@ -499,6 +510,7 @@ async function runAgentLoop({
     warnings.push(...q.warnings)
     if (!q.ok) {
       issues.push(...q.errors)
+      setBlockers(q.errors)
       log.push({ role: '系统', text: `封装质量校验未通过（命令将来要变成给模型调用的工具，这几项不达标用户就用不了）：\n${q.errors.slice(0, 8).map((e, i) => `${i + 1}. ${e}`).join('\n')}\n请修正后重新 submit_spec。` })
       onProgress?.({ phase: 'quality', turn: turns, detail: `草稿质量未达标：${q.errors.slice(0, 3).join('；')}` })
       if (stallCheck(q.errors)) { stoppedBy = 'no-progress'; issues.push(`模型连续提交同一批质量问题，已早停（避免空耗预算）：${q.errors.slice(0, 2).join('；')}`); break }
@@ -516,6 +528,7 @@ async function runAgentLoop({
     }
     const fails = (verifyResult.failures || []).map((f) => `${f.action}：${f.error}`)
     issues.push(...fails)
+    setBlockers(fails)
     log.push({
       role: '系统',
       text: `你提交的这版**真实试跑未通过**（草稿已保留，你可以用 run_command 逐条调试后再 submit_spec）：\n${fails.slice(0, 8).map((e, i) => `${i + 1}. ${e}`).join('\n')}${(verifyResult.skipped || []).length ? `\n（未试跑：${verifyResult.skipped.join('、')}——可试跑的命令都需要参数）` : ''}`,
@@ -535,7 +548,7 @@ async function runAgentLoop({
         : `探索结束（${stoppedBy}）：${spec.commands.length} 条命令，试跑**未全部通过**，已在界面给出原因`)
       : `探索结束（${stoppedBy}）：未产出通过校验的 Spec`,
   })
-  return { ok, spec, verified, turns: Math.min(turns, b.maxTurns), toolCalls, trace, issues, warnings, verify: verifyResult, elapsedMs, stoppedBy }
+  return { ok, spec, verified, turns: Math.min(turns, b.maxTurns), toolCalls, trace, issues, blockers, warnings, verify: verifyResult, elapsedMs, stoppedBy }
 }
 
 module.exports = {

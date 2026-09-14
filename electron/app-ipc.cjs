@@ -625,9 +625,14 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
       budget: AGENT_BUDGET,
     })
     if (!agent.ok || !agent.spec) {
-      const why = (agent.issues || []).slice(0, 3).join('；') || '模型未产出通过校验的 Spec'
-      emitProgress(appId, { phase: 'error', detail: why })
-      return done({ ok: false, error: why, issues: agent.issues, rounds: agent.turns, turns: agent.turns, toolCalls: agent.toolCalls, driver, stoppedBy: agent.stoppedBy })
+      // 优先用**最新一轮**的阻塞原因（blockers）：issues 是历史累积，直接取前 3 条会把早已改好的
+      // 旧错误当成本次失败原因展示给用户（真实现象：用户看到"specVersion 必须为 1；缺少 name；…"，
+      // 而当前真正卡住的是最后一轮的试跑失败）。blockers 空时再退回 issues（如纯 LLM 报错早退）。
+      const pick = (agent.blockers?.length ? agent.blockers : agent.issues || [])
+      const why = pick.slice(0, 3).join('；') || '模型未产出通过校验的 Spec'
+      const whyWithStop = agent.stoppedBy && agent.stoppedBy !== 'budget' ? `${why}（已停止：${agent.stoppedBy}）` : why
+      emitProgress(appId, { phase: 'error', detail: whyWithStop })
+      return done({ ok: false, error: whyWithStop, issues: agent.issues, blockers: agent.blockers, rounds: agent.turns, turns: agent.turns, toolCalls: agent.toolCalls, driver, stoppedBy: agent.stoppedBy })
     }
 
     let specWithDriver = { ...agent.spec, driver, target: { ...(agent.spec.target || {}), ...target } }

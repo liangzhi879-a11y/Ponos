@@ -448,3 +448,21 @@ test('buildAgentSystem：桌面驱动不出现网页相关引导（js/fetch/goto
   for (const k of ['fetch', 'snapshot', 'browse', '"tool":"click"']) assert.ok(!sys.includes(k), `桌面提示词不该出现 ${k}`)
   assert.ok(sys.includes('cli') && sys.includes('argv'), '要讲清 cli 步骤与 argv')
 })
+
+test('runAgentLoop：blockers 只保留最新一轮的阻塞原因，issues 仍保留全量（界面据此显示当前真实卡点）', async () => {
+  // 第 1 轮：缺 name（结构校验）；第 2 轮：补了 name 但没有 read 命令（质量校验）
+  const mk = (n) => (n === 1
+    ? { specVersion: 1, appId: 'a', target: { type: 'web', url: 'https://x/' }, commands: [] }
+    : { specVersion: 1, appId: 'a', name: '甲', target: { type: 'web', url: 'https://x/' },
+        commands: [{ action: 'doWrite', title: '写入一条记录', kind: 'write', params: [], steps: [{ act: 'goto', url: '/' }] }] })
+  let n = 0
+  const callLlm = async () => { n++; return { ok: true, text: JSON.stringify({ thought: 't', tool: 'submit_spec', spec: mk(n) }), error: null } }
+  const r = await runAgentLoop({
+    target: { type: 'web', url: 'https://x/' }, driver: 'browser',
+    callLlm, runTool: async () => ({ ok: true, summary: 'x' }), budget: { maxTurns: 4 },
+  })
+  assert.ok(r.blockers.length > 0, '要有最新阻塞原因')
+  assert.ok(r.blockers.some((b) => b.includes('read')), `最新卡点应是"至少要有 1 条 read 命令"，实际：${r.blockers.join('；')}`)
+  assert.ok(r.issues.length > r.blockers.length, `issues 是全量累积（${r.issues.length}），blockers 只留最新（${r.blockers.length}）`)
+  assert.ok(r.issues.some((i) => i.includes('name')), '旧轮次的错误仍要留在 issues 里供排障')
+})
