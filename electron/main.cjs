@@ -464,6 +464,29 @@ function waitForBridge(maxRetries = 30, interval = 500) {
   })
 }
 
+// 启动失败兜底对话框（附日志路径：打开/复制）。
+// 必须声明在**顶层**：调用方 startBridgeAndWait() 是顶层函数。
+// 曾把它放在 `} else {`（单实例锁）块内 —— Annex B 的块级函数提升**只覆盖
+// FunctionDeclaration，不覆盖 AsyncFunctionDeclaration**，于是 493 行调用抛
+// ReferenceError，紧随其后的 app.quit() 永不执行：启动失败后进程不退、桥也没起
+// 来，正是「实例还活着但什么都不能做」的形态（2026-09-14 实测）。
+// 依赖均为顶层：logTee(66)、dialog/shell/clipboard(10)。
+async function showBootFailureDialog() {
+  try {
+    const logPath = logTee.getLogPath()
+    const { response } = await dialog.showMessageBox({
+      type: 'error',
+      title: 'YFWorking 启动异常',
+      message: '应用界面启动失败。完整错误日志已保存到：',
+      detail: logPath,
+      buttons: ['打开日志目录', '复制路径', '确定'],
+      defaultId: 0, cancelId: 2,
+    })
+    if (response === 0) shell.openPath(path.dirname(logPath))
+    if (response === 1) clipboard.writeText(logPath)
+  } catch (_) {}
+}
+
 /**
  * 启动 bridge 并等待就绪；失败时弹错误框并退出（启动阶段唯一退出点，
  * 供判据统一后的接管/空闲两条路径复用，避免错误处理逻辑重复）。
@@ -1435,21 +1458,7 @@ if (!gotTheLock) {
       fs.writeFileSync(p, JSON.stringify({ ok: !bootPhaseFailed, nodes: bootNodes, failedAt: bootPhaseFailed ? new Date().toISOString() : null }, null, 2), 'utf-8')
     } catch (_) {}
   }
-  async function showBootFailureDialog() {
-    try {
-      const logPath = logTee.getLogPath()
-      const { response } = await dialog.showMessageBox({
-        type: 'error',
-        title: 'YFWorking 启动异常',
-        message: '应用界面启动失败。完整错误日志已保存到：',
-        detail: logPath,
-        buttons: ['打开日志目录', '复制路径', '确定'],
-        defaultId: 0, cancelId: 2,
-      })
-      if (response === 0) shell.openPath(path.dirname(logPath))
-      if (response === 1) clipboard.writeText(logPath)
-    } catch (_) {}
-  }
+  // showBootFailureDialog 已上移到顶层（见 startBridgeAndWait 上方注释）。
   function registerRendererErrorCapture(win) {
     if (!win || !win.webContents) return
     // did-fail-load：单行摘要入盘（崩溃跨多行由 tee 处理，此处仅 console.error 摘要）。
