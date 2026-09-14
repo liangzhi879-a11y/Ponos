@@ -7,12 +7,19 @@ interface Props {
   conversationId: string
 }
 
-/** loop 终止原因 → i18n 键（loop end 帧 reason 值域，语义对照 pd ②-05 reason 文案 map） */
-const REASON_KEY: Record<LoopEndReason, string> = {
+/** loop 终止原因 → i18n 键（loop end 帧 reason 值域 8 值，语义对照 kernel/loop.mjs
+ *  END_REASONS；2026-09-14 loop 运行时补 verify_hit/budget_exceeded/no_progress/failed）。
+ *  导出供 LoopPanel 复用（同一个 reason 在状态条是胶囊、在面板是右上角文案——两份
+ *  映射必然漂移，只留这一份）。 */
+export const REASON_KEY: Record<LoopEndReason, string> = {
   completed: 'loopStatus.reasonCompleted',
   until_hit: 'loopStatus.reasonUntilHit',
   cancelled: 'loopStatus.reasonCancelled',
   judge_error: 'loopStatus.reasonJudgeError',
+  verify_hit: 'loopStatus.reasonVerifyHit',
+  budget_exceeded: 'loopStatus.reasonBudget',
+  no_progress: 'loopStatus.reasonNoProgress',
+  failed: 'loopStatus.reasonFailed',
 }
 
 /**
@@ -63,6 +70,21 @@ export function LoopStatusBar({ conversationId }: Props) {
         ) : (
           <span className="text-[11px] font-medium text-secondary tabular-nums whitespace-nowrap">
             {t('loopStatus.progress', { current, total })}
+          </span>
+        )}
+
+        {/* loop 目标（start/end 帧 goal；无目标循环缺省） */}
+        {loop.goal && (
+          <span className="text-[10px] text-tertiary whitespace-nowrap max-w-[240px] truncate">
+            {t('loopStatus.goal', { goal: loop.goal })}
+          </span>
+        )}
+
+        {/* 累计成本（iter/end 帧 costUsd；仅 > 0 显示——0 成本既可能是未计量也可能是
+            免费模型，显示 $0.0000 只会让人误读为"本轮没花钱"） */}
+        {(loop.costUsd ?? 0) > 0 && (
+          <span className="text-[10px] text-tertiary tabular-nums whitespace-nowrap">
+            {t('loopStatus.cost', { usd: (loop.costUsd ?? 0).toFixed(4) })}
           </span>
         )}
 

@@ -60,8 +60,11 @@ export interface ConversationProgress {
   inProgress?: number
 }
 
-/** 多轮 loop 终止原因（内核 loop end 帧 reason 字段值域） */
+/** 多轮 loop 终止原因（内核 loop end 帧 reason 字段值域；2026-09-14 loop 运行时扩为
+ *  8 值，对齐 kernel/loop.mjs END_REASONS：次数耗尽/达成目标/取消/判定失败/
+ *  验证命中/预算超限/无进展/失败） */
 export type LoopEndReason = 'completed' | 'until_hit' | 'cancelled' | 'judge_error'
+  | 'verify_hit' | 'budget_exceeded' | 'no_progress' | 'failed'
 
 /** 多轮 loop 进度（运行时瞬态，不持久化；由内核 loop 帧 state start/iter/end 驱动，
  *  语义对照 kernel/cli.mjs wire.loop 发射点与 S5 ②-05 pd 参照 LoopState 形状） */
@@ -80,6 +83,25 @@ export interface LoopState {
   reason?: LoopEndReason
   /** 最近一次 until 模型判定文本（judged iter 帧的 reason 字段，LoopStatusBar 判定文案） */
   judgeReason?: string
+  // ---- 2026-09-14 loop 运行时扩展（内核 loop start/iter/end/status 帧新字段） ----
+  /** loop 目标（start/end 帧 goal；LoopPanel 面板首行展示） */
+  goal?: string
+  /** 控制器状态机当前状态（status 帧 status；值域 = kernel/loop.mjs state.status，
+   *  'idle' 为控制器未起跑时的初值）。注意 pause() 先置 'pausing'、轮末才转 'paused' */
+  status?: 'idle' | 'running' | 'pausing' | 'paused' | 'awaiting_approval' | 'verifying'
+    | 'done' | 'budget_exceeded' | 'cancelled'
+  /** 累计成本（美元；iter/end 帧 costUsd，展示型字段，成本 > 0 才显示） */
+  costUsd?: number
+  /** 累计工具步数（iter 帧 steps） */
+  steps?: number
+  /** 循环间隔毫秒（start 帧 everyMs；0 = 未设间隔） */
+  everyMs?: number
+  /** 连续无进展轮次（iter 帧 noProgressStreak；达阈值触发预警/挂起） */
+  noProgressStreak?: number
+  /** 最近一次 doneWhen 验证结果（iter 帧 verify；run/type 为验证条目标识） */
+  verify?: { passed: boolean; results: Array<{ run?: string; type: string; ok: boolean }> }
+  /** 待用户批准的挂起项（status 帧 pendingApproval：rollback / no_progress 等） */
+  pendingApproval?: { kind: string; detail?: string }
 }
 
 /** 子 agent 任务（运行时瞬态，不持久化；由内核 system/task_* SDK 事件驱动） */

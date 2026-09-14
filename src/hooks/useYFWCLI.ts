@@ -309,6 +309,21 @@ export function sendApprovalMode(conversationId: string | undefined, mode: Appro
 }
 
 /**
+ * loop 指令族（2026-09-14，Task6）：状态面板按钮 / `/loop status|replay|pause|…` 归一到
+ * 一条 ws 入站帧 `{type:'loop-command', sessionId, op, args}`，bridge 直写内核 stdin 的
+ * `loop_command`，内核 handleLoopOp 回一条 `system/loop_result` 帧（见上方 system 分支
+ * 的可见回执）。会话不存在 / WS 未连接时桥与内核两端都幂等忽略（不排队、不建连）——
+ * 兜底与 sendEffort/sendApprovalMode/stop 同款：conversationId → lastSessionId → 'default'。
+ * args 为指令参数数组（如 budget 的 ['--max-cost','0.5']、replay 的 ['--last','20']）。
+ */
+export function sendLoopCommand(conversationId: string | undefined, op: string, args: string[] = []) {
+  const target = conversationId || lastSessionId || 'default'
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'loop-command', sessionId: target, op, args }))
+  }
+}
+
+/**
  * 会话的 spawn/resume 字段集——bridge 侧 getOrCreateSession 的原样入参。
  * buildSendPayload 与 sendAnswer **同源**（2026-09-14）：回答路径也需要它——提问卡片
  * 放很久后内核已被空闲回收，回答要靠这些字段才能触发"以 --resume 重启内核"，
@@ -834,6 +849,26 @@ function sweepStaleCompaction() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// loop 运行时帧归约的值域常量（2026-09-14，与 kernel/loop.mjs 状态机同源）
+// ---------------------------------------------------------------------------
+// active 判定对应内核 isActive()：暂停请求已登记(pausing)/挂起待批(awaiting_approval)/
+// 验证中(verifying) 都仍属"在跑"，只有 done/cancelled/budget_exceeded/idle/paused 不是。
+const LOOP_ACTIVE_STATUSES: readonly string[] = ['running', 'pausing', 'awaiting_approval', 'verifying']
+// end 帧 reason 值域 = kernel/loop.mjs END_REASONS（8 值）；未列出的脏 reason 一律丢弃
+const LOOP_END_REASONS: readonly string[] = [
+  'completed', 'until_hit', 'cancelled', 'judge_error',
+  'verify_hit', 'budget_exceeded', 'no_progress', 'failed',
+]
+
+// 总轮数归约：内核 count=null（间隔式 `--every` / 无次数上限的持续循环）时 start/iter
+// 帧的 total 就是 null → 归约为 0，语义 = "无上限"（面板显示 ∞）。旧写法
+// `Number(d.total) || 1` 把持续循环谎报成 1 轮，与"间隔被吞掉后 count 默认 3"叠加成
+// "0/3 轮 / 0/1 轮"的错误观感（2026-09-14 修复点）。
+function loopTotalOf(v: unknown): number {
+  return typeof v === 'number' && v > 0 ? Number(v) : 0
+}
+
 function handleMessage(msg: Record<string, unknown>) {
   const store = useChatStore.getState()
   const sid = (msg.sessionId as string) || 'default'
@@ -1043,13 +1078,35 @@ function handleMessage(msg: Record<string, unknown>) {
         useChatStore.getState().pushLaneNote(sid, makeLaneNote(String(n.taskId ?? ''), String(n.text ?? ''), Number(n.compactCount) || 0))
         return
       }
+      if (subtype === 'loop_result') {
+        // loop 指令族回执（2026-09-14）：内核 handleLoopOp 统一回 { requestId, op, ok, text }。
+        // 指令族**没有轮次产出**（内核回执后直接结束，不发 assistant/result）⇒ 不落一条
+        // 可见消息的话 `/loop status`、`/loop replay`、`/loop memory` 在界面上毫无反馈
+        //（与 bridge "loop_command 无轮次产出" 的约定配套）。
+        // 文本是内核 formatStatus/formatLoopReplay 的多行纯文本 → 用 system 角色消息承载
+        //（灰底 "System" 气泡，不冒充模型回复、不参与 assistant 块的流式复用）。
+        const r = event as { op?: unknown; ok?: unknown; text?: unknown }
+        const text = String(r.text ?? '').trim()
+        if (text) {
+          useChatStore.getState()._addMessage(sid, {
+            id: generateId(),
+            role: 'system',
+            content: [{ id: generateId(), type: 'text', content: text }],
+            timestamp: Date.now(),
+          })
+        }
+        return
+      }
     }
 
     if (type === 'loop') {
-      // S5 ②-05 守卫接线：多轮 loop 进度归约。净室内核 loop 帧（kernel/cli.mjs wire.loop）：
-      //   start { index:0, total, until, fresh } /
-      //   iter { index, total, judged?, reason?, error? }（until 判定的 iter 才带 reason）/
-      //   end { reason:'completed'|'until_hit'|'cancelled'|'judge_error', index, total }
+      // S5 ②-05 守卫接线：多轮 loop 进度归约。净室内核 loop 帧（kernel/loop.mjs emit，
+      // 2026-09-14 loop 运行时扩字段）：
+      //   start { index:0, total, until, fresh, goal, everyMs, budget, doneWhen, resumed? } /
+      //   iter { index, total, steps, costUsd, filesChanged, noProgressStreak, verify?, judged?, reason?, error? } /
+      //   end { reason, index, total, goal, costUsd }（reason 值域 8 个，见 LoopEndReason）/
+      //   status { 状态字段 }（pause/resume/setBudget/rollback 只发**部分**字段；
+      //     `/loop status` 指令走全量快照 { ...state }）
       // 帧负载经 bridge 原样透传（{type:'event',data:帧}），归约只映射展示字段。
       const d = event as Record<string, unknown>
       const loopState = String(d.state || '')
@@ -1058,29 +1115,79 @@ function handleMessage(msg: Record<string, unknown>) {
         chat.setLoopState(sid, {
           active: true,
           index: 0,
-          total: Number(d.total) || 1,
+          total: loopTotalOf(d.total),
           until: typeof d.until === 'string' && d.until ? d.until : undefined,
           fresh: d.fresh === true,
-          // 新 loop 起跑：清掉上一 loop 残留的终结/判定文案，避免跨轮串扰
+          // 新 loop 起跑：清掉上一 loop 残留的终结/判定/计量文案，避免跨 loop 串扰
           reason: undefined,
           judgeReason: undefined,
+          goal: typeof d.goal === 'string' && d.goal ? d.goal : undefined,
+          everyMs: typeof d.everyMs === 'number' ? d.everyMs : undefined,
+          status: 'running',
+          costUsd: 0,
+          steps: 0,
+          noProgressStreak: 0,
+          verify: undefined,
+          pendingApproval: undefined,
         })
       } else if (loopState === 'iter') {
         chat.setLoopState(sid, {
           index: Number(d.index) || 0,
-          total: Number(d.total) || 1,
+          total: loopTotalOf(d.total),
           // until 判定的 iter 帧带模型判定文本（reason）；纯次数 iter 帧无该字段 → 清空
           judgeReason: typeof d.reason === 'string' && d.reason ? d.reason : undefined,
+          steps: typeof d.steps === 'number' ? d.steps : undefined,
+          costUsd: typeof d.costUsd === 'number' ? d.costUsd : undefined,
+          noProgressStreak: typeof d.noProgressStreak === 'number' ? d.noProgressStreak : undefined,
+          // verify 只在 doneWhen 验证轮次的 iter 帧出现；缺失时保留上一次验证结果
+          //（面板展示"最近一次验证"，连续未验证轮次不该把结论抹成空白）
+          ...(d.verify ? { verify: d.verify as LoopState['verify'] } : {}),
+          // 挂起项随 iter 帧出现的场景（无进展预警）：有则写、无则不动（缺失即清会
+          // 抹掉 rollback 挂起——rollback 只发 status 帧）
+          ...(d.pendingApproval ? { pendingApproval: d.pendingApproval as LoopState['pendingApproval'] } : {}),
         })
+      } else if (loopState === 'status') {
+        // status 帧语义分层：指令 status = 全量快照，pause/resume/setBudget/rollback 只带
+        // 部分字段 ⇒ **只写帧里真实存在的键**（"缺失即 undefined"会把 goal/costUsd/steps
+        // 抹成空——已有值被无关帧清掉）。
+        const patch: Partial<LoopState> = {}
+        if (typeof d.status === 'string' && d.status) patch.status = d.status as LoopState['status']
+        if (typeof d.goal === 'string' && d.goal) patch.goal = d.goal
+        if (typeof d.costUsd === 'number') patch.costUsd = d.costUsd
+        if (typeof d.steps === 'number') patch.steps = d.steps
+        if (typeof d.everyMs === 'number') patch.everyMs = d.everyMs
+        if (typeof d.index === 'number') patch.index = Number(d.index) || 0
+        // 全量快照（`/loop status`）里字段名是 state.count（可能为 null = 无上限），
+        // 部分帧（pause/resume/budget）没有它 → 存在才写，缺失不动
+        if ('count' in d) patch.total = loopTotalOf(d.count)
+        else if ('total' in d) patch.total = loopTotalOf(d.total)
+        const np = d.noProgress as { streak?: unknown } | undefined
+        if (np && typeof np.streak === 'number') patch.noProgressStreak = np.streak
+        // pendingApproval 用 key 存在性判定：全量快照里 pendingApproval:null 是"已清空"
+        // 的权威信号（resume 已置 null），不能靠取值真伪区分"没有该键"
+        if ('pendingApproval' in d) {
+          patch.pendingApproval = d.pendingApproval
+            ? d.pendingApproval as LoopState['pendingApproval']
+            : undefined
+        }
+        // active 归约与内核 isActive() 同源（running/pausing/awaiting_approval/verifying）
+        if (typeof d.status === 'string') {
+          patch.active = LOOP_ACTIVE_STATUSES.includes(d.status)
+        }
+        if (Object.keys(patch).length) chat.setLoopState(sid, patch)
       } else if (loopState === 'end') {
         const rawReason = String(d.reason || '')
-        const validEnd = rawReason === 'completed' || rawReason === 'until_hit'
-          || rawReason === 'cancelled' || rawReason === 'judge_error'
+        const validEnd = (LOOP_END_REASONS as readonly string[]).includes(rawReason)
         chat.setLoopState(sid, {
           active: false,
           index: Number(d.index) || 0,
-          total: Number(d.total) || 1,
+          total: loopTotalOf(d.total),
           reason: validEnd ? rawReason as LoopState['reason'] : undefined,
+          // end 帧带终值 goal/costUsd（内核 stop/收尾统一补发）；status 置 undefined：
+          // 内核收尾不补 status 帧，留着旧的 'running' 会让面板显示"运行中 + 已结束"
+          status: undefined,
+          ...(typeof d.goal === 'string' && d.goal ? { goal: d.goal } : {}),
+          ...(typeof d.costUsd === 'number' ? { costUsd: d.costUsd } : {}),
         })
       }
       return

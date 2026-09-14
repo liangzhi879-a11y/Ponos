@@ -6,6 +6,7 @@ import { ThreadPrimitive, type MessageState } from '@assistant-ui/react'
 import { HealthGlow } from './HealthGlow'
 import { SessionModeBar } from './SessionModeBar'
 import { LoopStatusBar } from './LoopStatusBar'
+import { LoopPanel } from './LoopPanel'
 import { WaitStatusBar } from './WaitStatusBar'
 import { ChatRuntimeProvider } from '@/lib/chatRuntime'
 import { ChatContext } from './MarkdownText'
@@ -307,6 +308,11 @@ export function ChatWindow({ conversationId }: Props) {
           {/* 多轮 loop 轮次状态条（消息流/输入上方；非 active 不占位）。
               子 Agent 悬浮条/压缩指示族已移入右侧折叠状态栏（2026-09-10） */}
           <LoopStatusBar conversationId={conversationId} />
+
+          {/* loop 状态面板（Task6，2026-09-14）：目标/轮次/步数/成本/无进展/验证 + 暂停·
+              恢复·批准·停止·刷新（经 sendLoopCommand → bridge loop-command → 内核路由）。
+              面板自带空态（无记录或已收尾返回 null），故无需额外条件包裹。 */}
+          <LoopPanel conversationId={conversationId} />
 
           {/* 任务目录选择器（欢迎页入口；会话内入口 = 右侧状态栏固定目录卡片） */}
           {showDirPicker && (

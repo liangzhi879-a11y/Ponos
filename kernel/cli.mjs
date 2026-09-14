@@ -28,6 +28,10 @@ import { makeWire, wireLastWriteAt, setTurnActive, isTurnActive, isAwaitingUser,
 import { createSessionStore, newSessionId } from './session.mjs'
 import { createHealth } from './health.mjs'
 import { createCompactor, extractKeyInfo, buildSessionMemoryText } from './compact.mjs'
+// loop 运行时（2026-09-14 Task 4 接线）：状态机/预算/无进展/持久化/指令族在 loop.mjs，
+// 指令文本解析在 loop-commands.mjs（纯函数，零 IO）
+import { createLoopController } from './loop.mjs'
+import { parseLoopDirective } from './loop-commands.mjs'
 import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } from './context.mjs'
 import { resolveCompactSettings } from './compact.mjs'
 import { extractConstraints } from './fidelity.mjs'
@@ -100,6 +104,8 @@ export function parseArgs(argv) {
     // args.knowledge 有值时被读取，对既有主链路零影响（这些 flag 名与既有 --model/
     // --scope/--to 等无冲突）。knowledge=null ⇒ 不作任何知识库 IO。
     knowledge: null,
+    // 知识内核子命令的空间白名单（复数，数组形态；见 parseArgs 里 `--spaces` 的 why）
+    spaces: null,
     space: null,
     path: null,
     id: null,
@@ -111,6 +117,10 @@ export function parseArgs(argv) {
     limit: null,
     mode: null,
     force: false,
+    // 知识库删除管理（回收站）：见 parseArgs 里对应 case 的 why（漏登记即静默失效）
+    trashId: null,
+    confirm: null,
+    all: false,
   }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -153,6 +163,11 @@ export function parseArgs(argv) {
       // kernel/knowledge-cli.mjs（此处不做校验——未知 op 由那边返回 code=1）。
       case '--knowledge': out.knowledge = next() ?? null; break
       case '--space': out.space = next() ?? null; break
+      // 2026-09-14：`--spaces a,b`（复数形式，标签枚举/检索的空间白名单）。
+      // **必须显式登记**：本 CLI 对未知 `--` 参数静默忽略，漏了它 `--spaces a,b` 会被无声吞掉，
+      // 表现为"过滤没生效"（全库结果）——与漏登记 `--confirm` 同一类病灶。
+      // 解析成**数组**（与 `--keywords` 同款），让消费侧拿到的形态唯一，不必再猜"逗号串还是数组"。
+      case '--spaces': out.spaces = String(next() ?? '').split(',').map((s) => s.trim()).filter(Boolean); break
       case '--path': out.path = next() ?? null; break
       case '--id': out.id = next() ?? null; break
       case '--query': out.query = next() ?? null; break
@@ -211,6 +226,16 @@ export function parseArgs(argv) {
       case '--max-vision-pages': out.maxVisionPages = next() ?? null; break
       // 显式强制重建索引（reindex 本身恒 force；本 flag 供其它 op 复用同一语义）
       case '--force': out.force = true; break
+      // ── 知识库删除管理（回收站，2026-09-14）─────────────────────────────────
+      // 同一条纪律：本 CLI 对未知 `--` 参数**静默忽略**，故这三个必须显式登记。
+      // 漏登记的具体后果：`--confirm 研发资料` 被吞 → delete-space 恒报 confirm-mismatch
+      // （看起来像"确认逻辑坏了"，实为参数没进内核）；`--all` 被吞 → purge 静默只删不净。
+      // `--trash-id` 而非 `--id`：`--id` 已被 docId/blockId 占用，混用会让
+      // "给了 trashId 却按 docId 查"变成静默空结果。
+      case '--trash-id': out.trashId = next() ?? null; break
+      case '--confirm': out.confirm = next() ?? null; break
+      // 清空回收站（布尔，无值）：purge --all
+      case '--all': out.all = true; break
       case '--help': case '-h': usage(); process.exit(0); break
       default:
         if (a && !a.startsWith('--')) out.positional = a
@@ -325,6 +350,10 @@ export async function main(argv) {
       src: args.src, name: args.name, dryRun: args.dryRun,
       maxOcrPages: args.maxOcrPages, visionTables: args.visionTables, maxVisionPages: args.maxVisionPages,
       maxFiles: args.maxFiles, maxTotalMb: args.maxTotalMb,
+      // 知识库删除管理（回收站，2026-09-14）：同上——漏一个键该 flag 就"从未生效"。
+      // `confirm` 尤其危险：被吞掉后 `delete-space --confirm X` 恒被拒，
+      // 表面是"确认逻辑有问题"，实为转发层没接线。
+      trashId: args.trashId, confirm: args.confirm, all: args.all,
     }
     // S6：`--text -` = 从 stdin 读取正文。
     // 为什么需要：经验正文常含多行、引号、`|`、反引号——写在命令行里要么被 shell 改写，
@@ -844,8 +873,24 @@ export async function main(argv) {
   }
 
   const state = { turnActive: false, queue: [], cancelling: false }
-  // loop 迭代状态（顶层 msg.loop 字段驱动；cancel / until 命中 / 次数耗尽结束）
-  const loopState = { active: false, total: 0, until: '', content: '', index: 0, fresh: false }
+  // loop 运行时（2026-09-14 抽模块）：状态机/预算/无进展/验证/持久化/指令族集中在
+  // kernel/loop.mjs（Task 3），cli 只负责：登记 start、轮末驱动 onTurnEnd、投递下一轮
+  // 载荷、--until 判定（judgeUntil 调用点在 cli，控制器不持有 until 目标）。
+  const loop = createLoopController({
+    wire, engine, store, configDir, sessionId, cwd: args.addDirs[0] || '', env: process.env,
+  })
+  // --until 目标由 cli 持有（judgeUntil 调用点在 cli）；控制器只管轮次/预算/验证
+  let loopUntil = ''
+  const loopStateUntil = () => loopUntil
+  // everyMs 间隔的延迟投递定时器句柄。必须可取消：否则 --every 期间用户 stop/pause
+  // 后，定时器到点仍投递下一轮载荷 → handleUser 见 !loop.isActive() 会**重启 loop**
+  // （"停止后又跑一轮"）；resume 补投递与残留定时器并存还会双投递连跑两轮。
+  let loopNextTimer = null
+  const clearLoopNextTimer = () => { if (loopNextTimer) { clearTimeout(loopNextTimer); loopNextTimer = null } }
+  // --resume：恢复未终结 loop（崩溃/中断断点续跑）；无文件/已终结/损坏 → 静默按新会话
+  if (args.resume) {
+    try { loop.load() } catch { /* 加载失败按新会话处理 */ }
+  }
 
   // workflow 自动触发：普通用户消息命中 auto_trigger 工作流的触发词 →
   // 后台 run（wfBusy 防 EOF 提前退出），完成后结果经 engine.queueNext 注入
@@ -870,21 +915,84 @@ export async function main(argv) {
     })
   }
 
+  // loop 指令族执行（stdin 的 loop_command 与 TUI 斜杠文本共用同一路由）。
+  // 任何异常都折叠为 { ok:false, text } 回执——指令失败绝不中断主 loop（health 风格）。
+  function handleLoopOp(op, opArgs = []) {
+    try {
+      switch (op) {
+        case 'status': {
+          const st = loop.status()
+          try { wire.loop('status', { ...st }) } catch { /* 事件失败不阻断回执 */ }
+          return { ok: true, text: loop.formatStatus() }
+        }
+        case 'pause': clearLoopNextTimer(); loop.pause(); return { ok: true, text: '已请求暂停（当前轮跑完生效）' }
+        case 'resume': case 'approve': {
+          const wasActive = loop.isActive()
+          clearLoopNextTimer() // 先取消残留的延迟投递，避免与下面的补投递双投递连跑两轮
+          loop.resume()
+          // 恢复后需重新投递下一轮：暂停/挂起都发生在"轮已结束"的边界，控制器不会自行
+          // 推进（其 onTurnEnd 只在轮末被调用），故此处补投递，否则恢复后静默停住。
+          if (wasActive) {
+            const p = loop.nextPayload(loopUntil)
+            state.queue.unshift({ message: p.message, loop: p.loop, skipMemoryCapture: true })
+            if (!state.turnActive) { const n = state.queue.shift(); if (n) void handleUser(n) }
+          }
+          return { ok: true, text: '已恢复' }
+        }
+        case 'stop': clearLoopNextTimer(); loop.stop('cancelled'); return { ok: true, text: '已停止 loop' }
+        case 'budget': {
+          const patch = {}
+          for (let i = 0; i < opArgs.length; i++) {
+            const a = opArgs[i]
+            if (a === '--max-cost') patch.maxCostUsd = Number(opArgs[++i]) || 0
+            else if (a === '--max-steps') patch.maxSteps = Number(opArgs[++i]) || 0
+            else if (a === '--max-wall') patch.maxWallMs = Number(opArgs[++i]) || 0
+          }
+          if (Object.keys(patch).length) loop.setBudget(patch)
+          const b = loop.status().budget
+          return { ok: true, text: `预算：成本上限 ${b.maxCostUsd || '不限'} USD，步数上限 ${b.maxSteps || '不限'}，墙钟上限 ${b.maxWallMs ? Math.round(b.maxWallMs / 1000) + 's' : '不限'}` }
+        }
+        case 'inject': loop.inject(opArgs.join(' ')); return { ok: true, text: '已注入补充信息' }
+        case 'rollback': {
+          const r = loop.rollback()
+          return { ok: r.ok !== false, text: r.ok ? '已登记回滚点（需 /loop approve 确认执行）' : String(r.error) }
+        }
+        case 'replay': return { ok: true, text: loop.replay(Number(opArgs[opArgs.indexOf('--last') + 1]) || 10) }
+        case 'memory': return { ok: true, text: loop.memory() }
+        default: return { ok: false, text: `未知 loop 指令：${op}` }
+      }
+    } catch (e) { return { ok: false, text: `指令执行失败：${e?.message || String(e)}` } }
+  }
+
   async function handleUser(msg) {
-    setTurnActive(true) // 硬看门狗武装（result 事件经 writeLine 自动解除）
     const content = extractContent(msg)
+    // 进程内斜杠文本（TUI 直发）：/loop 指令族经同一路由（GUI 路径由 bridge 转译为
+    // loop_command）。放在 setTurnActive 之前——指令回执即刻完成，不武装硬看门狗。
+    // 零回归锁②：非 /loop 文本 parseLoopDirective 返回 null → 直通原路径逐字不变。
+    const directive = parseLoopDirective(content)
+    if (directive && directive.kind === 'op') {
+      wire.system('loop_result', { op: directive.op, ...handleLoopOp(directive.op, directive.args) })
+      return
+    }
+    setTurnActive(true) // 硬看门狗武装（result 事件经 writeLine 自动解除）
     const priority = msg?.priority
     const uuid = msg?.uuid
-    // loop 初始化：首个带 loop 字段的消息进入时登记（内部推进消息 loopState 已 active，跳过）
-    const loop = msg?.loop
-    if (loop && !loopState.active) {
-      loopState.active = true
-      loopState.total = Math.max(1, Number(loop.count) || 1)
-      loopState.until = String(loop.until || '')
-      loopState.content = content
-      loopState.index = 0
-      loopState.fresh = !!loop.fresh
-      wire.loop('start', { index: 0, total: loopState.total, until: loopState.until, fresh: loopState.fresh })
+    // loop 初始化：首个带 loop 字段的消息进入时登记（内部推进消息 loop 已 active，跳过）
+    const loopMsg = msg?.loop
+    if (loopMsg && !loop.isActive()) {
+      loopUntil = String(loopMsg.until || '')
+      loop.start({
+        count: loopMsg.count ?? null,
+        until: loopUntil,
+        everyMs: Number(loopMsg.everyMs) || 0,
+        fresh: loopMsg.fresh === true,
+        goal: String(loopMsg.goal || ''),
+        doneWhen: Array.isArray(loopMsg.doneWhen) ? loopMsg.doneWhen : [],
+        maxCostUsd: Number(loopMsg.maxCostUsd) || 0,
+        maxSteps: Number(loopMsg.maxSteps) || 0,
+        maxWallMs: Number(loopMsg.maxWallMs) || 0,
+        prompt: content,
+      })
     }
     // P8 排队插话（priority:'next'）：当前轮活跃时吸收进 engine 待注入队列，
     // 工具边界注入当前轮（模型尽快看到补充信息）；立即回发 command_lifecycle
@@ -913,6 +1021,10 @@ export async function main(argv) {
     state.turnActive = true
     // workflow 自动触发（普通新消息；插话/loop 消息不触发，避免批处理重复执行）
     try { maybeAutoTriggerWorkflow(content) } catch { /* 触发失败不影响主流程 */ }
+    // 本轮 outcome（engine.runTurn 返回值）：loop 轮末决策的数据来源——无进展指纹
+    // 靠 outcome.toolDigest、成本/步数靠 outcome.usage/toolDigest。取消/异常轮保持 null
+    // （控制器对 null outcome 静默降级：不累计、不误记无进展）。
+    let turnOutcome = null
     // 早退路径（hook 拦截 / 竞态取消）统一落在外层 try 内，确保 finally 复位
     // turnActive——否则后续消息会永远排队不处理。
     try {
@@ -936,8 +1048,9 @@ export async function main(argv) {
         return
       }
       // engine 全权负责本轮：user 入 session、中间/最终 assistant 落盘、
-      // result 事件（含 duration_ms）——cli 不再重复 emit/append
-      await engine.runTurn({ content, msg })
+      // result 事件（含 duration_ms）——cli 不再重复 emit/append。
+      // 返回值（usage/model/text/durationMs/toolDigest）供 loop 轮末决策使用。
+      turnOutcome = await engine.runTurn({ content, msg })
     } catch (err) {
       if (err?.name === 'AbortError' || state.cancelling) {
         log.info('turn cancelled')
@@ -981,34 +1094,49 @@ export async function main(argv) {
       } catch { /* 工作记忆写失败不影响主流程 */ }
       state.turnActive = false
       state.cancelling = false
-      // loop 推进（轮次已完成）：until 模型判定 / 次数检查 → 下一轮 unshift 入队
-      // （插话消息排在 loop 之后公平执行；cancel 已清 loopState.active 自然停止）
-      if (loopState.active) {
-        const nextIndex = loopState.index + 1
-        const endLoop = (reason) => {
-          wire.loop('end', { reason, index: nextIndex, total: loopState.total })
-          loopState.active = false
+      // loop 推进（轮次已完成）：控制器统一决策（暂停/预算/无进展/验证/次数）→
+      // next 时把下一轮载荷 unshift 入队（插话消息排在 loop 之后公平执行；cancel /
+      // 预算 / 验证达成 / 次数耗尽由控制器自行收尾并发 end 帧，此处不再判次数）。
+      // 决策异常不阻断：按"不推进"处理（loop 停摆优于主轮次崩溃）。
+      if (loop.isActive()) {
+        let decision = { action: 'wait', delayMs: 0, rationale: '' }
+        try {
+          decision = await loop.onTurnEnd({ outcome: turnOutcome })
+        } catch (e) {
+          log.error('loop onTurnEnd failed', e)
         }
-        if (loopState.until) {
+        // 既有 --until 判定行为保留（语义不变，判定在 cli 侧）：仅在实际要继续下一轮时
+        // 判定，命中 → until_hit 收尾；判定异常 → judge_error 收尾（不无限重试烧钱）。
+        // judged/reason/error 三个既有 iter 字段照旧发出（零回归锁③）。
+        if (decision.action === 'next' && loopUntil) {
           let j = null
-          try { j = await engine.judgeUntil({ target: loopState.until }) } catch { j = { done: false, error: true } }
-          wire.loop('iter', { index: nextIndex, total: loopState.total, judged: j?.done === true, reason: j?.reason || '', error: !!j?.error })
-          if (j?.done) endLoop('until_hit')
-          else if (j?.error || nextIndex >= loopState.total) endLoop(j?.error ? 'judge_error' : 'completed')
-          else {
-            // fresh：第 1 轮完成后设窗口起点，第 2 轮请求面只含本轮之后内容
-            if (loopState.fresh && nextIndex === 1) engine.setFreshWindow()
-            loopState.index = nextIndex
-            state.queue.unshift({ message: { role: 'user', content: loopState.content }, loop: { count: loopState.total, until: loopState.until, index: nextIndex }, skipMemoryCapture: true })
-          }
-        } else if (nextIndex >= loopState.total) {
-          endLoop('completed')
-        } else {
+          try { j = await engine.judgeUntil({ target: loopUntil }) } catch { j = { done: false, error: true } }
+          wire.loop('iter', { index: loop.status().index, total: loop.status().count, judged: j?.done === true, reason: j?.reason || '', error: !!j?.error })
+          if (j?.done) { loop.stop('until_hit'); decision = { action: 'stop', delayMs: 0, rationale: 'until_hit' } }
+          else if (j?.error) { loop.stop('judge_error'); decision = { action: 'stop', delayMs: 0, rationale: 'judge_error' } }
+        }
+        if (decision.action === 'next') {
           // fresh：第 1 轮完成后设窗口起点，第 2 轮请求面只含本轮之后内容
-          if (loopState.fresh && nextIndex === 1) engine.setFreshWindow()
-          loopState.index = nextIndex
-          wire.loop('iter', { index: nextIndex, total: loopState.total })
-          state.queue.unshift({ message: { role: 'user', content: loopState.content }, loop: { count: loopState.total, index: nextIndex }, skipMemoryCapture: true })
+          const deliver = () => {
+            if (loop.status().fresh && loop.status().index === 1) engine.setFreshWindow()
+            const p = loop.nextPayload(loopStateUntil())
+            state.queue.unshift({ message: p.message, loop: p.loop, skipMemoryCapture: true })
+          }
+          if (decision.delayMs > 0) {
+            // everyMs 间隔：延迟投递且此时本函数已返回（finally 收尾完毕），
+            // 故延迟分支需自行启动下一轮（未在跑轮时）。
+            // 到点必须复核 loop 仍处于 running：期间可能已 stop（cancelled）/暂停
+            // （paused）/预算超限/验证达成/无进展挂起 —— 直接投递会经 handleUser 的
+            // !isActive() 分支把已终结的 loop 重新 start（停止后又跑一轮）。
+            loopNextTimer = setTimeout(() => {
+              loopNextTimer = null
+              if (loop.status().status !== 'running') return
+              deliver()
+              if (!state.turnActive) { const n = state.queue.shift(); if (n) void handleUser(n) }
+            }, decision.delayMs)
+          } else {
+            deliver() // 立即投递：由本 finally 尾部的队列消费启动下一轮
+          }
         }
       }
       // 插话残余兜底：next 消息在纯文本阶段未被工具边界吸收 → 作为新轮处理。
@@ -1136,9 +1264,9 @@ export async function main(argv) {
     if (subtype === 'cancel') {
       state.cancelling = true
       // loop 立即终止：清 active（后续轮次不再推进），结束事件发出
-      if (loopState.active) {
-        loopState.active = false
-        wire.loop('end', { reason: 'cancelled', index: loopState.index + 1, total: loopState.total })
+      clearLoopNextTimer() // 同 /loop stop：取消挂起的延迟投递，防停止后再跑一轮
+      if (loop.isActive()) {
+        loop.stop('cancelled') // 控制器发 end(reason:'cancelled') 并清零 active
       }
       // 停止按钮全杀语义（engine.hardStop）：kill 工具子进程（Bash/OCR）+ 中止
       // 全部后台子 agent + 中断当前 API 流。与打断插入（now，engine.abort()，
@@ -1232,6 +1360,14 @@ export async function main(argv) {
     if (!t) return
     let parsed = null
     try { parsed = JSON.parse(t) } catch { return }
+    if (parsed.type === 'loop_command') {
+      // loop 指令族（bridge 按 /loop 文本转译 / 宿主按钮直发）：status/pause/resume/
+      // stop/budget/approve/inject/rollback/replay/memory。逐条即时回执（含 requestId），
+      // 与 /wf 的 workflow_result 同构；异常一律折叠成 ok:false 文本，不阻断主 loop。
+      const { op, args: opArgs = [], requestId } = parsed
+      wire.system('loop_result', { requestId, op, ...handleLoopOp(op, Array.isArray(opArgs) ? opArgs : []) })
+      return
+    }
     if (parsed.type === 'user') {
       // P8 插话消息（priority:'next'/'now'）在轮次活跃时必须进 handleUser——其
       // priority 分支负责 queueNext 吸收（工具边界注入当前轮）或 now 打断；普通
@@ -1276,9 +1412,9 @@ export async function main(argv) {
   rl.on('close', () => {
     // stdin EOF：若仍有活跃轮次 / 排队消息 / 进行中 loop / workflow 命令，延迟到完成后退出
     // （管道测试与 bridge 优雅退出两全；30s 兜底防挂起）
-    if (state.turnActive || state.queue.length || loopState.active || wfBusy > 0) {
+    if (state.turnActive || state.queue.length || loop.isActive() || wfBusy > 0) {
       const timer = setInterval(() => {
-        if (!state.turnActive && !state.queue.length && !loopState.active && wfBusy <= 0) {
+        if (!state.turnActive && !state.queue.length && !loop.isActive() && wfBusy <= 0) {
           clearInterval(timer)
           shutdown(0)
         }

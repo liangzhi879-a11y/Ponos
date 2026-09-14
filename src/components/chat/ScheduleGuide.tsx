@@ -42,8 +42,10 @@ export function ScheduleGuide({ conversationId, mode, onClose }: Props) {
     if (isLoop) {
       const iv = customIntervalActive ? customInterval.trim() : interval
       if (!iv) return
-      // /loop 语法：/loop <间隔> <任务>（间隔 Ns/Nm/Nh/Nd，默认 10m）
-      send(conversationId, `/loop ${iv} ${t}`)
+      // 结构化 loop 语法（2026-09-14）：间隔走 `--every`。旧写法 `/loop ${iv} ${t}` 里的
+      // `10m` 会被位置解析吞掉（既有解析器按数字取 count，`Number('10m')` = NaN → 静默
+      // 丢间隔），归一为 `--every <间隔>` 后内核 parseLoopDirective 才认（bridge 转译同源）。
+      send(conversationId, `/loop --every ${iv} ${t}`)
     } else {
       const w = customWhenActive ? customWhen.trim() : when
       if (!w) return
@@ -211,7 +213,7 @@ export function ScheduleGuide({ conversationId, mode, onClose }: Props) {
             <div className="text-[9px] text-tertiary mb-0.5">即将发送</div>
             <div className="text-[11px] text-secondary font-mono leading-snug break-all">
               {isLoop
-                ? `/loop ${customIntervalActive && customInterval.trim() ? customInterval.trim() : interval} ${task.trim() || '…'}`
+                ? `/loop --every ${customIntervalActive && customInterval.trim() ? customInterval.trim() : interval} ${task.trim() || '…'}`
                 : `在 ${customWhenActive && customWhen.trim() ? customWhen.trim() : when} 执行：${task.trim() || '…'}`}
             </div>
           </div>

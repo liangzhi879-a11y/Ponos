@@ -10,6 +10,9 @@ import { join, sep, dirname, resolve, basename } from 'path'
 import { tmpdir } from 'os'
 import { randomBytes } from 'node:crypto'
 import { extractMilestoneMarks, extractProseStages } from './milestones.mjs'
+// GUI → 内核 /loop 指令转译（纯函数模块，零进程依赖）：GUI 发的是纯文本 `/loop …`，
+// 内核无斜杠解析 → 必须在此转译为内核原生 loop 载荷/loop_command（spec 5.5 打通点）
+import { translateLoopSend } from './loop-translate.mjs'
 import { matchesHighRisk } from './highrisk.mjs'
 import { approvalSpawnArgs, DEFAULT_APPROVAL_MODE, isValidApprovalMode, normalizeApprovalMode, resolveEffectiveApprovalMode } from './approval-mode.mjs'
 import { parseAskUserPayload, extractAskUserBlocks } from './askuser.mjs'
@@ -1058,7 +1061,7 @@ function knowledgePackConfig() {
 // S3 D2：KnowledgeSearch 出表（chat 放行只读知识检索）——理由与语义变更说明见内核
 // kernel/tools.mjs 同名表的头注；**改这一份时那一份必须同步改**（逐项比对会变红）。
 // 2026-09-14：KnowledgeImport 入表（写盘类，chat 禁用）——同上，两份同时改。
-export const CHAT_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch', 'KnowledgeImport']
+export const CHAT_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch', 'KnowledgeImport', 'KnowledgeDelete']
 
 // 浏览器白名单写入（2026-09-10）：内核 Browser 工具白名单审批通过后，把域名
 // 追加进 {YFW_HOME}/browser-whitelist.json 的 allow 数组。执行器（browser-common.cjs
@@ -2972,16 +2975,40 @@ wss.on('connection', (ws, req) => {
         const mode = msg.mode === 'chat' ? 'chat' : 'task'
         const session = getOrCreateSession(sid, msg.cwd, msg.resumeId, msg.systemPrompt, msg.model, msg.compactCount, mode)
         if (!session) return // spawn failed — error already sent via WebSocket
-        session.proc.stdin.write(JSON.stringify({
-          type: 'user',
-          message: { role: 'user', content: msg.prompt },
-          ...(msg.priority ? { priority: msg.priority } : {}),
-          ...(msg.uuid ? { uuid: msg.uuid } : {}),
-        }) + '\n')
-        session._turnActive = true
+        // /loop 指令转译（打通点）：GUI 发纯文本 `/loop …` → 内核原生 loop 载荷/指令。
+        // 非指令文本 translateLoopSend 返回 null → 原路径逐字直通（零回归锁②）。
+        const loopMsg = translateLoopSend(msg.prompt)
+        session.proc.stdin.write(JSON.stringify(
+          loopMsg || {
+            type: 'user',
+            message: { role: 'user', content: msg.prompt },
+            ...(msg.priority ? { priority: msg.priority } : {}),
+            ...(msg.uuid ? { uuid: msg.uuid } : {}),
+          },
+        ) + '\n')
+        // loop_command 无轮次产出（内核只回一条 loop_result system 帧、不发 assistant/
+        // result）⇒ 不得置轮次活跃态，否则 UI 悬挂（发送按钮长转）、且回收器/失速看门狗
+        // 的活跃豁免与首字节等待条都会误武装。start 形式仍有完整轮次，照旧置位。
+        const isLoopCmd = loopMsg?.type === 'loop_command'
+        if (!isLoopCmd) session._turnActive = true
         session._askBuf = '' // 新用户消息：上一条消息残留的标记残片不得与本次文本拼接
-        armFirstBytePending(session, sid)
+        if (!isLoopCmd) armFirstBytePending(session, sid) // 指令族无轮次：不武装首字节等待条
         send({ type: 'ack', data: { requestId: msg.requestId, sessionId: sid } })
+      } else if (msg.type === 'loop-command') {
+        // loop 指令族入站通道（GUI 状态面板按钮：暂停/恢复/停止/预算/回放…）：
+        // 直写内核 stdin 的 loop_command，内核回 loop_result system 帧。
+        // 与 send 分支的文本转译同源；无轮次产出 ⇒ **不置 _turnActive、不武装
+        // 首字节等待条**（否则 UI 悬挂：发送按钮长转）。会话不存在/进程已死 → 幂等忽略。
+        const sid = msg.sessionId || 'default'
+        const s = sessions.get(sid)
+        if (s?.proc?.stdin) {
+          s.proc.stdin.write(JSON.stringify({
+            type: 'loop_command',
+            op: String(msg.op || ''),
+            args: Array.isArray(msg.args) ? msg.args : [],
+            requestId: msg.requestId,
+          }) + '\n')
+        }
       } else if (msg.type === 'cancel') {
         const sid = msg.sessionId || 'default'
         const s = sessions.get(sid)

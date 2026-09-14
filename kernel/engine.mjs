@@ -2873,7 +2873,13 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       } catch { /* judge 异常静默：不影响本轮 result */ }
       // result 事件由 engine 发出（含 duration_ms；cli 不再重复 emit）
       wire.result(outcome.usage, { duration_ms: durationMs })
-      return { usage: outcome.usage, model: outcome.model, text: outcome.text, durationMs }
+      // toolDigest（2026-09-14 loop 运行时接线，只增字段）：loop 控制器的轮次无进展
+      // 指纹与 filesChanged/步数累计依赖本轮的"工具结果指纹"（outcome 内部已有）。
+      // 非工具轮/内部错误轮可能没有该字段 → 统一归一为空数组，消费方无需再判类型。
+      return {
+        usage: outcome.usage, model: outcome.model, text: outcome.text, durationMs,
+        toolDigest: Array.isArray(outcome.toolDigest) ? outcome.toolDigest : [],
+      }
     },
   }
 }
