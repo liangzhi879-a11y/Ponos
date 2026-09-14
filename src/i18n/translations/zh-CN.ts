@@ -398,6 +398,16 @@ export const zhCN = {
     skillsTabDesc: '管理技能包安装和自动经验捕获',
     permissionsTab: '权限',
     logsTab: '日志',
+    // 知识库导入上限（2026-09-14）。必须说清"整批拒绝"这个后果 ——
+    // 用户无法从"上限"二字推断出"超一个就一个都不导"，不说就会误以为"会导前 N 个"。
+    importTab: '知识库导入',
+    importLimitNote: '单次导入的上限。注意：超限是整批拒绝（一个文件都不会导入），不是只导前 N 个。资料很多时，要么调大上限一次导完，要么保持默认分几次导。',
+    importMaxFiles: '单次最大文件数',
+    importMaxTotalMb: '单次最大总大小（MB）',
+    importRangeHint: '可填 {min} – {max}',
+    importRestoreDefault: '恢复默认',
+    importCurrentDefault: '默认：{files} 个文件 / {mb} MB',
+    importClampNote: '超出范围的值会被自动收敛到边界（保存时与服务端同一口径钳制）。',
     providerConfig: '供应商配置',
     advanced: '高级设置',
     installedSkills: '已安装技能',
@@ -845,6 +855,51 @@ export const zhCN = {
     // —— S4 Task 6：知识包市场 ——
     viewMarket: '市场',
     marketDiscover: '发现知识包',
+    // 文件知识库导入（2026-09-14）
+    importTitle: '导入资料',
+    importHint: '支持 PDF、Word、Excel、PPT、图片（扫描件自动 OCR）、文本 / Markdown / CSV。导入后会自动转成可检索的 Markdown，保留原目录结构。',
+    importPickFiles: '选择文件…',
+    importPickFolder: '选择文件夹…',
+    importNoDesktop: '当前环境不支持选择本地文件（需在桌面端使用）',
+    importSources: '已选来源',
+    importSpaceNew: '新建空间',
+    importSpaceExisting: '导入到已有空间',
+    importSpaceNamePlaceholder: '空间名（如：申报资料）',
+    importPreview: '预览',
+    importRun: '开始导入',
+    importRunning: '导入中…',
+    importSlow: '大文件（尤其扫描件 PDF 走 OCR）需要一些时间，请勿关闭窗口',
+    importDone: '导入完成',
+    importPreviewDone: '预览结果（未写盘）',
+    importOk: '成功',
+    importSkipped: '跳过',
+    importFailedShort: '失败',
+    importConverted: '已转换',
+    importWillConvert: '将转换',
+    importSkippedList: '跳过（内容未变，已入库过）',
+    importFailedList: '失败',
+    importWarnings: '提示',
+    importFailed: '导入失败',
+    importNeedSource: '请先选择文件或文件夹',
+    importNeedSpace: '请填写空间名或选择目标空间',
+    importIndexPending: '索引未同步，下次检索会自动重建',
+    // 视觉模型的**事前**提示（两态各说清后果，而不是只报状态）
+    importVisionOn: '已配置视觉模型（{model}）：扫描件/图片中的表格会自动提取（默认最多 20 页，超长文档按页截断）。',
+    importVisionOff: '未配置视觉模型：扫描件/图片中的表格不会被提取（正文仍会导入；文本层 PDF 的表格不受影响，会自动识别）。需要表格请在 设置 → 模型服务 里配置视觉模型后重新导入。',
+    // **事后**口径：读了要说清是哪来的；没读出来要给出可执行的下一步
+    importVisionExtracted: '已用视觉模型从图片/扫描件中提取 {tables} 个表格（{pages} 页）。',
+    importVisionSkipped: '本次含扫描件/图片，但未配置视觉模型 —— 正文已导入，其中的表格没有提取。配置视觉模型后重新导入即可补上。',
+    // 批量导入的进度文案（2026-09-14）。两段式：先"统计文件数"（分母未知），
+    // 再"处理 n/total"（分母已知）。分开成两句是因为前者必须显示不确定态，
+    // 否则用户会以为卡死在 0%。
+    importProgressCounting: '正在统计文件数…',
+    importProgressProcessing: '正在处理 {n}/{total}：{current}',
+    importProgressProcessingNoName: '正在处理 {n}/{total}',
+    importProgressDone: '已完成 {total} 个文件',
+    // 列表溢出计数（一次导入几百个文件时明细只列前 20 条）
+    importMoreRows: '…另有 {n} 条',
+    // 403：目标空间只读（pack-* 知识包空间）。原始错误码之外补一句"怎么解决"
+    importReadonlyHint: '目标空间是只读的知识包空间，请改选一个可写空间，或用「新建空间」导入。',
     marketTitle: '知识包市场',
     marketSourceLocal: '本地清单（未联网）',
     marketSourceRemote: '在线清单',

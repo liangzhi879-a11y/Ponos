@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Settings, Monitor, Cpu, Info, Check, Sparkles, Globe, Save, Database, FolderOpen, Brain, ChevronDown, Plus, X, Trash2, Puzzle, ChevronRight, HardDrive, RefreshCw, Wifi, Zap, ShieldCheck, FileText } from 'lucide-react'
+import { Settings, Monitor, Cpu, Info, Check, Sparkles, Globe, Save, Database, FolderOpen, Brain, ChevronDown, Plus, X, Trash2, Puzzle, ChevronRight, HardDrive, RefreshCw, Wifi, Zap, ShieldCheck, FileText, Upload } from 'lucide-react'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
   Button, ScrollArea, Switch,
@@ -14,13 +14,17 @@ import { fetchBridgeConfig, saveBridgeConfig, addProvider, deleteProvider, testP
 import { EFFORT_OPTIONS, normalizeEffortUi } from '@/lib/effortUi'
 import { normalizeApprovalMode } from '@/lib/approvalModeUi'
 import { normalizeLogPolicyUi } from '@/lib/logUi'
+import { normalizeKnowledgeImportPolicyUi } from '@/lib/knowledgeImportUi'
+// 视觉能力/来源判定：唯一实现在 lib（知识库导入提示与本页共用，避免两处口径分叉）
+import { resolveVisionProvider } from '@/lib/visionUi'
 import { ExperiencePanel } from '@/components/settings/ExperiencePanel'
 import { PermissionsPanel } from '@/components/settings/PermissionsPanel'
 import { LogsPanel } from '@/components/settings/LogsPanel'
+import { KnowledgeImportPanel } from '@/components/settings/KnowledgeImportPanel'
 import type { AppSettings, ModelProvider, YFWorkingConfigV2 } from '@/types'
 import { THEMES, type ThemeMode, type ThemeMeta, type Language } from '@/types'
 
-type Section = 'general' | 'model' | 'permissions' | 'logs' | 'skills' | 'pet' | 'experience' | 'about'
+type Section = 'general' | 'model' | 'permissions' | 'logs' | 'knowledgeImport' | 'skills' | 'pet' | 'experience' | 'about'
 
 export function SettingsView() {
   const { settings, updateSettings } = useSettingsStore()
@@ -49,6 +53,8 @@ export function SettingsView() {
               // 权限档位 / 日志策略（2026-09-12）：两个新分区的全局设置入口
               { id: 'permissions' as Section, label: t('settings.permissionsTab'), icon: ShieldCheck },
               { id: 'logs' as Section, label: t('settings.logsTab'), icon: FileText },
+              // 知识库导入上限（2026-09-14）：批量导入的护栏可配入口
+              { id: 'knowledgeImport' as Section, label: t('settings.importTab'), icon: Upload },
               { id: 'skills' as Section, label: t('settings.skillsTab'), icon: Puzzle },
               { id: 'pet' as Section, label: t('settings.petTab'), icon: Sparkles },
               { id: 'experience' as Section, label: t('settings.experienceTab'), icon: Brain },
@@ -268,6 +274,7 @@ export function SettingsView() {
               {section === 'permissions' && <PermissionsPanel />}
 
               {section === 'logs' && <LogsPanel />}
+              {section === 'knowledgeImport' && <KnowledgeImportPanel />}
 
               {section === 'skills' && (
                 <SkillsPanel t={t} settings={settings} updateSettings={updateSettings} />
@@ -410,6 +417,8 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
           approvalMode: normalizeApprovalMode(cfg.approvalMode),
           // 日志策略：同样以磁盘为准（写入端读的就是它）
           logPolicy: normalizeLogPolicyUi(cfg.logPolicy),
+          // 知识库导入上限（2026-09-14）：同上，以磁盘为准（桥与主进程读的就是它）
+          knowledgeImport: normalizeKnowledgeImportPolicyUi(cfg.knowledgeImport),
         })
       })
       .catch(() => {})
@@ -417,8 +426,9 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
 
   const activeProv = (settings.providers || []).find(p => p.id === settings.activeProvider)
   const isBuiltin = (id: string) => id === 'deepseek' || id === 'minimax'
-  /** 视觉模型来源 provider：显式指定 visionProviderId 则用该 provider，否则跟随 activeProvider */
-  const visionProv = (settings.providers || []).find(p => p.id === settings.visionProviderId) || activeProv
+  /** 视觉模型来源 provider：判定收在 src/lib/visionUi.ts（与知识库导入提示同一份口径）。
+   *  此前这里内联写过一遍同样的 find 逻辑 —— 两份判定迟早会分叉，故改为只消费。 */
+  const visionProv = resolveVisionProvider(settings)
 
   const handleSwitchProvider = (providerId: string) => {
     updateSettings({ activeProvider: providerId })
@@ -544,6 +554,8 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
         approvalMode: normalizeApprovalMode(settings.approvalMode),
         // 日志策略：桥/主进程的写入端按 TTL(5s) 重读 config.json，无需重启即生效
         logPolicy: normalizeLogPolicyUi(settings.logPolicy),
+        // 导入上限：桥按 TTL 重读，保存后下一次导入即生效（无需重启）
+        knowledgeImport: normalizeKnowledgeImportPolicyUi(settings.knowledgeImport),
         providers: settings.providers,
       }
       const saved = await saveBridgeConfig(cfg)

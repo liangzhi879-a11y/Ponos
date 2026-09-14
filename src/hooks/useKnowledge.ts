@@ -15,8 +15,8 @@
 // 不失效 tree 就是"导进去了但树里看不见"，用户会以为失败再导一遍。
 import { useCallback, useEffect, useReducer, useRef } from 'react'
 import {
-  getDoc, getEntryGraph, getGraph, getGraphRelated, getLinks, getRelatedDoc, getStats, importKnowledge,
-  listEntries, listSpaces, listTree, search, writeDoc,
+  getDoc, getEntryGraph, getGraph, getGraphRelated, getImportJob, getLinks, getRelatedDoc, getStats, importKnowledge,
+  listEntries, listSpaces, listTree, search, startImportJob, writeDoc,
   type ApiResult, type KnowledgeCallOpts, type KnowledgeDoc, type KnowledgeEntry,
   type KnowledgeGraph, type KnowledgeGraphRelatedEdge, type KnowledgeImportPayload,
   type KnowledgeImportReport, type KnowledgeLinks,
@@ -283,11 +283,17 @@ export async function importDocuments(
 ): Promise<ApiResult<KnowledgeImportReport>> {
   const r = await importKnowledge(payload, opts)
   if (!r.ok) return r
+  invalidateAfterImport(r.data)
+  return r
+}
+
+/** 导入落定后的缓存失效（同步与异步两条路径共用，避免各写一份必然漂移） */
+function invalidateAfterImport(data: KnowledgeImportReport): void {
   // 全跳过（内容未变）+ 空间非新建 = 库内什么都没变，不必惊动缓存
-  const changed = r.data.spaceCreated || r.data.counts.converted > 0
-  if (r.data.dryRun || !changed) return r
+  const changed = data.spaceCreated || data.counts.converted > 0
+  if (data.dryRun || !changed) return
   // 目标空间 id **取后端回执**而不是入参：新建空间时前端只知道 `name`，最终 id 是内核定的
-  const space = r.data.spaceId
+  const space = data.spaceId
   invalidateKnowledge(knowledgeKeys.spaces)   // 新空间 / docCount 变了
   invalidateKnowledge(`tree:${space}|`)       // 新增的一批 .md 必须立刻出现在树里
   invalidateKnowledge('search:')              // 否则"刚导入就搜不到"
@@ -295,5 +301,99 @@ export async function importDocuments(
   invalidateKnowledge('graphEntry:')
   invalidateKnowledge('graphRelated:')
   invalidateKnowledge(knowledgeKeys.stats)
-  return r
+}
+
+/** 轮询间隔（毫秒）。500ms 对"几千文件跑几分钟"的任务足够跟手，又不至于把桥刷爆。 */
+const IMPORT_POLL_MS = 500
+/** 轮询连续失败多少次后放弃（每次失败会先重试，见下）。约 5s 的容错窗口。 */
+const IMPORT_POLL_MAX_ERRORS = 10
+
+export interface ImportTrackedOpts extends KnowledgeCallOpts {
+  /** 每次轮询拿到新状态时回调（用于驱动进度条）。首个回调通常是 total=0 的统计态。 */
+  onProgress?: (job: KnowledgeImportJobSnapshot) => void
+  /** 取消信号：组件卸载/关闭对话框时置 aborted，轮询立即停止（**不**中止服务端任务） */
+  signal?: { aborted: boolean }
+}
+
+/** 进度快照：只暴露 UI 需要的部分，避免组件依赖整份 job（含 report）反复重建 */
+export interface KnowledgeImportJobSnapshot {
+  status: 'running' | 'done' | 'error'
+  done: number
+  total: number
+  percent: number
+  current?: string
+}
+
+/**
+ * 批量导入（异步 + 进度）—— 2026-09-14。需求："支持大批量文件压力、上传时显示进度条
+ * （先查文件数，然后根据实时处理的文件数量算进度）"。
+ *
+ * 与 `importDocuments` 的分工：那个是"提交并等结果"的同步语义，适合小批量/预览；
+ * 这个是"提交 → 轮询 → 收结果"。**两条路径的返回类型完全相同**，缓存失效也共用
+ * `invalidateAfterImport`，所以调用方切换过去不改变任何下游行为。
+ *
+ * 三个刻意的设计：
+ * 1. `onProgress` 在**统计阶段**（total=0）也会被调一次 —— 组件据此知道"已经提交、正在统计"，
+ *    可以显示不确定态而不是假装 0%。这是需求里"先查文件数"的前半句。
+ * 2. 轮询失败**不立即放弃**：网络抖动/桥重启都可能在几分钟的导入里出现；容忍
+ *    `IMPORT_POLL_MAX_ERRORS` 次连续失败，期间继续按上一次状态显示（不倒退、不清零）。
+ *    超过才报错 —— 绝不让进度条无声地卡在某个百分比上（那是最难排查的形态）。
+ * 3. `signal.aborted` 只停**轮询**，不取消服务端任务：导入已经落盘了一部分，
+ *    强行中止会留下半批结果且用户无从知晓。组件卸载 ≠ 用户想放弃导入。
+ */
+export async function importDocumentsTracked(
+  payload: KnowledgeImportPayload,
+  opts: ImportTrackedOpts = {},
+): Promise<ApiResult<KnowledgeImportReport>> {
+  const { onProgress, signal, ...callOpts } = opts
+  const started = await startImportJob(payload, callOpts)
+  if (!started.ok) return started
+  const jobId = started.data?.jobId
+  if (!jobId) {
+    // 服务端契约保证 202 必带 jobId；缺失说明桥版本不匹配（比"静默当成功"好得多）
+    return { ok: false, error: 'import: 服务端未返回 jobId（异步导入需要新版本桥）' }
+  }
+  // 立即上报一次"统计中"，让组件在首个响应回来前就进入进度态
+  onProgress?.({ status: 'running', done: 0, total: 0, percent: 0 })
+
+  let errors = 0
+  for (;;) {
+    if (signal?.aborted) {
+      // 调用方不再关心结果；**任务仍在服务端继续**（见设计取舍 3）。
+      // 用专门的消息让调用方区分"我不看了"与"失败了"。
+      return { ok: false, error: 'import: 已停止跟踪（导入仍在后台继续）' }
+    }
+    const r = await getImportJob(jobId, callOpts)
+    if (!r.ok) {
+      errors += 1
+      if (errors >= IMPORT_POLL_MAX_ERRORS) {
+        return { ok: false, error: `import: 进度查询连续失败 ${errors} 次（最后一次：${r.error}）` }
+      }
+      await sleep(IMPORT_POLL_MS)
+      continue
+    }
+    errors = 0
+    const job = r.data
+    onProgress?.({
+      status: job.status,
+      done: job.done ?? 0,
+      total: job.total ?? 0,
+      percent: job.percent ?? 0,
+      ...(job.current ? { current: job.current } : {}),
+    })
+    if (job.status === 'error') {
+      return { ok: false, error: job.error || 'import: 后台任务失败' }
+    }
+    if (job.status === 'done') {
+      const report = job.report
+      if (!report) return { ok: false, error: 'import: 任务完成但未返回报告' }
+      invalidateAfterImport(report)
+      return { ok: true, data: report }
+    }
+    await sleep(IMPORT_POLL_MS)
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((res) => setTimeout(res, ms))
 }

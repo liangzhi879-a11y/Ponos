@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware'
 import type { AppSettings, YFWorkingConfig, ModelProvider, YFWorkingConfigV2 } from '@/types'
 import { DEFAULT_APPROVAL_MODE, normalizeApprovalMode } from '@/lib/approvalModeUi'
 import { DEFAULT_LOG_POLICY, normalizeLogPolicyUi } from '@/lib/logUi'
+import { DEFAULT_KNOWLEDGE_IMPORT_POLICY, normalizeKnowledgeImportPolicyUi } from '@/lib/knowledgeImportUi'
 import { useChatStore } from './chatStore'
 import { verifyActiveProvider, type ProviderVerifyResult } from '@/lib/config'
 import { migrateThemeId } from '@/lib/themeMap'
@@ -128,6 +129,11 @@ const defaultSettings: AppSettings = {
   // （parity 测试钉住）；写入端读桥 config.json，这里是 GUI 的显示与编辑副本。
   logPolicy: DEFAULT_LOG_POLICY,
 
+  // 知识库文件导入上限（全局，2026-09-14）：与 server/knowledge-import-policy.cjs 的默认值
+  // 同源（parity 测试钉住）。默认 500 文件 / 300MB —— 保守，因为超限是**整批拒绝**
+  // （一个都不导），宁可让用户显式放宽，也不要默默吃掉服务器内存。
+  knowledgeImport: DEFAULT_KNOWLEDGE_IMPORT_POLICY,
+
   minimizeToTray: true,
   notifyMode: 'background' as const,
   petEnabled: false,
@@ -135,8 +141,7 @@ const defaultSettings: AppSettings = {
   petRandomChat: true,
 }
 
-interface SettingsState {
-  settings: AppSettings
+interface SettingsState {  settings: AppSettings
   updateSettings: (updates: Partial<AppSettings>) => void
   updateYFWorkingConfig: (updates: Partial<YFWorkingConfig>) => void
   setYFWorkingConfig: (cfg: YFWorkingConfigV2) => void
@@ -256,6 +261,9 @@ export const useSettingsStore = create<SettingsState>()(
           // 旧版本残留）不能带着越界数字进轮转器，否则轮转器按坏参数运行。
           state.settings.approvalMode = normalizeApprovalMode(state.settings.approvalMode)
           state.settings.logPolicy = normalizeLogPolicyUi(state.settings.logPolicy)
+          // 导入上限同理：越界值（手改 localStorage / 旧版本残留）绝不能进导入路径，
+          // 否则会拿一个 0 或天文数字去请求内核（0 会被判非法、天文数字会撑爆内存）。
+          state.settings.knowledgeImport = normalizeKnowledgeImportPolicyUi(state.settings.knowledgeImport)
         }
       },
     }

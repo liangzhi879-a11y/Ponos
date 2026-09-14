@@ -7,6 +7,7 @@
 // 只提示不解释会让用户以为面板坏了；后端 403 是最后一道兜底（spec §8 双保险）。
 import { useMemo } from 'react'
 import { ChevronDown, Library, PackageSearch } from 'lucide-react'
+import { KnowledgeImportDialog } from './KnowledgeImportDialog'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
 } from '@/components/ui'
@@ -22,9 +23,11 @@ export interface KnowledgeSidebarProps {
   /** 空间列表（宿主用 useSpaces 拉到后下发；不在这里再拉一次，避免重复请求） */
   spaces: KnowledgeSpace[] | undefined
   spacesLoading: boolean
+  /** 文件知识库导入成功后通知宿主刷新（空间列表/统计要跟着变） */
+  onImported?: (spaceId: string) => void
 }
 
-export function KnowledgeSidebar({ spaces, spacesLoading }: KnowledgeSidebarProps) {
+export function KnowledgeSidebar({ spaces, spacesLoading, onImported }: KnowledgeSidebarProps) {
   const { t } = useTranslation()
   const spaceId = useKnowledgeStore(s => s.spaceId)
   const setSpace = useKnowledgeStore(s => s.setSpace)
@@ -77,7 +80,11 @@ export function KnowledgeSidebar({ spaces, spacesLoading }: KnowledgeSidebarProp
 
       {/* 市场入口放在**固定底栏**（原型 §1 的"空间列表底部"）：它不属于任何空间，
           更不能只在"选中了空间"时才出现——没空间的人最需要装一个知识包。 */}
-      <div className="shrink-0 px-2 py-1 border-t border-default">
+      <div className="shrink-0 px-2 py-1 border-t border-default space-y-0.5">
+        {/* 文件知识库导入（2026-09-14）：与市场入口同级（都是"往知识库放东西"的全局操作）。
+            刻意**不**依赖"已选中空间"：没空间的人也能用（导入时会新建），
+            而这正是用户第一次用这个功能时的状态。 */}
+        <KnowledgeImportDialog spaces={spaces} onImported={onImported} />
         <button
           type="button"
           onClick={() => setView('market')}

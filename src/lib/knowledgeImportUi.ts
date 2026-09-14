@@ -105,3 +105,33 @@ export function reduceProgressEvent(evt: unknown): ImportProgress | null {
     ...(typeof e.current === 'string' && e.current ? { current: e.current } : {}),
   }
 }
+
+/**
+ * 把 HTTP 异步任务的 job 快照映射成 ImportProgress（GUI 走这条；CLI 走上面那条）。
+ *
+ * 为什么 phase 判定要**同时**看 status 与 total：`status:'running'` 且有值 total 才是真在处理；
+ * `running` + `total === 0` 说明内核还没枚举完文件（=`plan` 阶段）—— 此时必须显示不确定态，
+ * 否则要么显示 0%（用户以为卡住）、要么按未知分母算出一个假百分比。这正是需求里
+ * "先查文件数，再按已处理数算进度"的分界点。
+ */
+export function progressFromJob(job: unknown): ImportProgress | null {
+  if (!job || typeof job !== 'object') return null
+  const j = job as Record<string, unknown>
+  const st = j.status
+  if (st !== 'running' && st !== 'done' && st !== 'error') return null
+  const num = (v: unknown) => (Number.isFinite(Number(v)) ? Math.max(0, Math.floor(Number(v))) : 0)
+  const total = num(j.total)
+  const done = num(j.done)
+  const phase: ImportProgress['phase'] = st === 'error'
+    ? 'error'
+    : st === 'done'
+      ? 'done'
+      : (total > 0 ? 'process' : 'plan')
+  return {
+    phase,
+    done,
+    total,
+    ...(typeof j.current === 'string' && j.current ? { current: j.current } : {}),
+    ...(st === 'error' && typeof j.error === 'string' && j.error ? { error: j.error } : {}),
+  }
+}

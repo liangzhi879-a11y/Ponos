@@ -78,7 +78,7 @@ export function KnowledgePanel() {
 
       {/* 三栏：左 236px（空间+树）/ 中 flex-1（四视图）/ 右 212px（大纲·反链·元信息） */}
       <div className="flex-1 flex min-h-0 min-w-0">
-        <KnowledgeSidebar spaces={spaces} spacesLoading={spacesLoading} />
+        <KnowledgeSidebar spaces={spaces} spacesLoading={spacesLoading} onImported={refreshAll} />
 
         <div className="flex-1 min-w-0 flex flex-col">
           {spacesError ? (

@@ -6,8 +6,11 @@ import type { EffortLevel } from '@/lib/effortUi'
 // 同上：ApprovalMode 在 src/lib/approvalModeUi.ts，LogPolicy/LogLevel 在 src/lib/logUi.ts（均零依赖）。
 import type { ApprovalMode } from '@/lib/approvalModeUi'
 import type { LogPolicy } from '@/lib/logUi'
+// 同理：KnowledgeImportPolicy 在 src/lib/knowledgeImportUi.ts（零依赖纯模块），
+// 类型只从那里引一次，避免 types 与 lib 各写一份必然漂移。
+import type { KnowledgeImportPolicy } from '@/lib/knowledgeImportUi'
 
-export type { ApprovalMode, LogPolicy }
+export type { ApprovalMode, LogPolicy, KnowledgeImportPolicy }
 
 // ============================================================
 // Core TypeScript types for YFWorking GUI
@@ -277,6 +280,10 @@ export interface AppSettings {
   /** 运行日志本地持久化策略（2026-09-12）：写入端读桥 config.json，
    *  设置页写这里 + saveBridgeConfig 落盘；旧快照缺失时 normalizeLogPolicyUi 兜底。 */
   logPolicy: LogPolicy
+  /** 知识库文件导入上限（2026-09-14）：单次导入的文件数/总字节。服务端读桥 config.json
+   *  并在保存时钳制（server/knowledge-import-policy.cjs），设置页写这里；
+   *  两端口径由 server/knowledge-import-policy-parity.test.mjs 钉住。 */
+  knowledgeImport: KnowledgeImportPolicy
 
   // YFWorking multi-provider config
   activeProvider: string
@@ -370,6 +377,8 @@ export interface YFWorkingConfigV2 {
   approvalMode?: string
   /** 运行日志持久化策略（2026-09-12）：bridge 钳制后落盘，写入端（桥/主进程）读同一份。 */
   logPolicy?: LogPolicy
+  /** 知识库文件导入上限（2026-09-14）：bridge 钳制后落盘。 */
+  knowledgeImport?: KnowledgeImportPolicy
 }
 
 // --- File System Types ---
@@ -748,6 +757,13 @@ export interface YFWFileAPI {
   openSkillPackage: () => Promise<string | null>
   /** S4：知识包市场"从本地文件安装"（只收 .zip）。可选——浏览器 dev 下该 API 不存在 */
   openKnowledgePack?: () => Promise<string | null>
+  /**
+   * 文件知识库导入（2026-09-14）：选文件（可多选）/ 选文件夹，只返回路径。
+   * 可选——浏览器 dev 下不存在（调用方按"桌面端可用性"降级处理）。
+   * 取消时 pickKnowledgeFiles 返回**空数组**（不是 null），调用方不必再判空。
+   */
+  pickKnowledgeFiles?: () => Promise<string[]>
+  pickKnowledgeFolder?: () => Promise<string | null>
 }
 
 export interface YFWorkingWindowControls {

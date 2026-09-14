@@ -8,9 +8,19 @@
 // 契约与 server/logs-routes.mjs 一致：命中返回 { status, body }，未命中返回 null。
 // `callKernel` 可注入（默认 server/kernel-readonly.mjs 的 kernelReadonly）——测试用假实现，
 // 绝不起 bridge、不起真实内核子进程。
+//
+// 2026-09-14 起 `/knowledge/import` 多两条路：`async:true` → 202 + jobId（后台任务，
+// 经 `GET /knowledge/import/jobs/:id` 查进度/结果），以及可选的批量上限覆盖。
+// **不传 async 时同步路径（含 argv）逐字节不变** —— 既有消费者把它当契约。
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
 import { kernelReadonly } from './kernel-readonly.mjs'
+// 2026-09-14：异步导入任务。`spawnKernelStreaming` 只作为**默认实现**注入（测试注入假实现，
+// 绝不在路由里直接 spawn —— 本仓库有"测试起进程/起桥误杀运行中应用"的前车之鉴）。
+import { spawnKernelStreaming } from './kernel-stream.mjs'
+import { startImportJob, getImportJob } from './import-jobs.mjs'
+// 导入上限策略（config.json 的 `knowledgeImport`）：只读**带 TTL 的缓存**，让设置改动免重启生效
+import { readImportPolicyCached, IMPORT_POLICY_LIMITS } from './knowledge-import-policy.cjs'
 import { resolveYfwHome } from './yfw-home.cjs'
 import { PACK_ID_RE, compareSemver } from '../shared/knowledge-pack.mjs'
 // `isBlockId` 走 shared 中性层：形状判定内核 CLI 用的是同一个函数（server ⊥ kernel
@@ -347,7 +357,90 @@ function parseDryRun(v) {
   return { ok: false }
 }
 
-async function handleImport({ readJsonBody, callKernel }) {
+/**
+ * 内核失败文本 → HTTP 响应（`{status, body}`）。
+ * **同步路径与异步任务共用这一份**：同一个错误，看它从哪条路来就得到两种状态码/两种措辞，
+ * 是这类"两条车道"最典型的漂移，而漂移是静默的（码只是数字）。异步任务那边只取
+ * `error`/`code` 两个字段（见下方 `importJobFailure`）。
+ */
+function importFailureResponse(msg) {
+  // 与 /knowledge/append 同一约定：内核以**非零退出 + stderr `[knowledge]` 前缀**
+  // （kernel/cli.mjs:319）表达"这次请求被拒"，而 kernelReadonly/kernelStreaming 非零退出即
+  // reject 并**丢弃 stdout** —— 这条前缀是路由区分"输入不合规"与"内核崩了"的唯一线索。
+  // 不认它，bad-space-id 这类 400 级错误会被报成 500，用户完全无从下手。
+  // 取**以 `[knowledge] ` 开头的那一行**（kernel/cli.mjs 的失败行），而不是"含该前缀的整段
+  // stderr"：kernelReadonly 把 stderr 前 8KB 原样塞进 `e.message`（server/kernel-readonly.mjs:97
+  // `new Error(err.trim() || …)`），只要内核在这行前后再写任何一行（第三方库的告警、Node 崩溃
+  // 时的 code frame、将来在 `--knowledge` 分支前加的日志），`replace(/^\[knowledge\]/)` 就会把
+  // 那些残留原样透给客户端 —— 那正是"把 stderr/traceback 当响应体"。逐行挑 = 只透内核**明确
+  // 想给调用方**的那一句（它的 message 由内核自己构造，标题就是"为什么被拒"）。
+  const gateLine = String(msg).split('\n').map((l) => l.trim()).find((l) => l.startsWith('[knowledge] '))
+  if (gateLine) {
+    const text = gateLine.slice('[knowledge] '.length).trim()
+    // 一律按**码**定状态码，而不是把这条路上的所有错误压成 400：内核把码原样写在
+    // 冒号前面（`readonly-space: …`），丢弃它就会让 403/404/413 三条语义全塌成 400，
+    // 与上面的映射表自相矛盾（表里写着 413、实际回 400 —— 调用方按"分批重试"还是
+    // "改参数"处置，就取决于这个码）。码信息同时以 `code` 字段回传（GUI 想按码给
+    // 针对性提示时不必去解析中文消息）。
+    const code = (/^([a-z0-9-]+)\s*:/.exec(text) || [])[1] || ''
+    return { status: statusOfKnowledgeError(text), body: { error: text, ...(code ? { code } : {}) } }
+  }
+  // 非闸门类失败（内核崩溃 / 超时 / stdout 超限）：**不把 stderr 原文透给客户端**。
+  // 内核崩溃时 stderr 是 Node 的 code frame + 绝对路径栈（`D:\...\kernel\cli.mjs:123` / `at …`），
+  // 那是服务端的实现细节与目录结构：调用方拿它做不了任何处置（它连"该改参数还是该重试"都读不出来），
+  // 却把内部路径摊开了。**只有我们自己产生的、形状固定的 harness 消息**是安全且有用的
+  // （server/kernel-readonly.mjs 与 server/kernel-stream.mjs 的 timeout/超限/exit 三种，
+  // 文本里不含任何路径），逐字放行 —— 两个模块的前缀都登记，否则异步任务的超时会退化成
+  // 一句"内核异常退出"，用户分不清"跑太久"与"崩了"。
+  const harness = /^\[kernel-(?:readonly|stream)\] (?:timeout \d+ms|stdout 超过上限 \d+B|exit -?\d+)$/.exec(String(msg).trim())
+  if (harness) return { status: 500, body: { error: `导入失败：${harness[0]}`, code: 'kernel-failed' } }
+  // 其余一律给可读的定式消息；原文只落服务端控制台（排障用），不入响应体。
+  console.warn('[knowledge-import] 内核失败（原文只落服务端日志，不返给客户端）:', String(msg).slice(0, 800))
+  return { status: 500, body: { error: '导入失败：内核异常退出（详见服务端日志）', code: 'kernel-failed' } }
+}
+
+/**
+ * 异步任务用：同一张映射表，只取契约 §1 的 `error` / `code` 两字段。
+ * （任务查询恒回 200 —— 任务失败是**任务的状态**，不是这次 HTTP 请求的失败。）
+ */
+export function importJobFailure(msg) {
+  const r = importFailureResponse(msg)
+  return { error: r.body.error, ...(r.body.code ? { code: r.body.code } : {}) }
+}
+
+/**
+ * 批量上限覆盖值的解析（`maxFiles` / `maxTotalMb`）——**非法即 400，绝不静默回落**。
+ * 为什么不能像 `maxOcrPages` 那样"非法值交内核归一为缺省"：那是**上限**，
+ * 静默回落意味着"用户以为放宽到 5000、实际仍按 500 整批拒绝"，而超限报错只说
+ * "文件数 1200 超出单批上限 500"——用户会去数文件、怀疑是不是路径写错，永远想不到是
+ * 自己的参数被丢了。这与 `dryRun` 那条"宁可拒也不能猜"是同一条纪律。
+ * 区间用 `IMPORT_POLICY_LIMITS`（与设置项、GUI 同一组数字，parity 测试钉住）。
+ */
+function parseImportLimits(body) {
+  const out = { maxFiles: null, maxTotalMb: null }
+  const raw = (v) => v !== undefined && v !== null && String(v).trim() !== ''
+  if (raw(body.maxFiles)) {
+    const n = Number(body.maxFiles)
+    const { minFiles, maxFiles } = IMPORT_POLICY_LIMITS
+    if (!Number.isInteger(n) || n < minFiles || n > maxFiles) {
+      return { ok: false, error: `maxFiles 必须是 ${minFiles}–${maxFiles} 的整数（收到 ${JSON.stringify(body.maxFiles)}）` }
+    }
+    out.maxFiles = n
+  }
+  if (raw(body.maxTotalMb)) {
+    const MB = 1024 * 1024
+    const n = Number(body.maxTotalMb)
+    const min = IMPORT_POLICY_LIMITS.minTotalBytes / MB
+    const max = IMPORT_POLICY_LIMITS.maxTotalBytes / MB
+    if (!Number.isFinite(n) || n < min || n > max) {
+      return { ok: false, error: `maxTotalMb 必须是 ${min}–${max} 的数值（单位 MB，收到 ${JSON.stringify(body.maxTotalMb)}）` }
+    }
+    out.maxTotalMb = n
+  }
+  return { ok: true, ...out }
+}
+
+async function handleImport({ readJsonBody, callKernel, spawnStream, home }) {
   const body = (await readJsonBody()) || {}
   // from 可以是字符串，也可以是数组（GUI 多选文件 = 一条请求带多个源）。
   // 全部归一在路由层做完：内核只认"一个 `--src` 一个源"的扁平 argv，别让它去解析 JSON 形状。
@@ -392,42 +485,42 @@ async function handleImport({ readJsonBody, callKernel }) {
     if (Number.isFinite(maxVision) && maxVision >= 0) args.push('--max-vision-pages', String(Math.floor(maxVision)))
   }
 
+  // ── 批量上限与异步任务（2026-09-14）─────────────────────────────────────────
+  // 异步判定用**严格 `=== true`**（契约 §1）：`async: "true"` 之类的模糊值不发车，
+  // 否则调用方以为拿到了 jobId 去轮询，实际却收到一份同步报告（字段全 undefined）。
+  const asyncMode = body.async === true
+
+  const lim = parseImportLimits(body)
+  if (!lim.ok) return { status: 400, body: { error: lim.error } }
+  // 上限来源：请求显式覆盖 > config.json 的 `knowledgeImport`（带 TTL 缓存，改设置免重启）。
+  // **同步路径一条都不追加**（`asyncMode` 为假时下面两个分支都不进）：既有调用方（curl/agent/
+  // 老 GUI）的 argv 是契约的一部分，`knowledge-import-routes.test.mjs` 用逐字段精确断言钉着它；
+  // 而内核默认（500 文件/300MB）与策略默认**同值**（parity 测试钉住），故同步路径"不读策略"
+  // 不改变任何既有行为，没有兼容性缺口。设置项面向的是新 GUI 的批量异步导入这条路。
+  const effMaxFiles = lim.maxFiles ?? (asyncMode ? readImportPolicyCached({ home }).maxFiles : null)
+  const effMaxTotalMb = lim.maxTotalMb ?? (asyncMode
+    ? Math.floor(readImportPolicyCached({ home }).maxTotalBytes / (1024 * 1024))
+    : null)
+  if (effMaxFiles !== null) args.push('--max-files', String(effMaxFiles))
+  if (effMaxTotalMb !== null) args.push('--max-total-mb', String(effMaxTotalMb))
+
+  if (asyncMode) {
+    // 立即 202 + jobId：导入在后台跑，进度经 `GET /knowledge/import/jobs/:id` 查。
+    // `--progress` 由 startImportJob 追加（那是异步任务的实现细节，不是路由的 flag 映射）。
+    // 超时/缓冲沿用同步路径的两个常数：同一批文件不该"同步能导完、异步却超时"。
+    // 32MB stdout 上限对 NDJSON 也够：进度行约 100B/文件，20000 文件 ≈ 2MB。
+    const { jobId } = startImportJob({
+      args, spawnStream, mapError: importJobFailure,
+      timeoutMs: IMPORT_TIMEOUT_MS, maxBuffer: IMPORT_MAX_BUFFER,
+    })
+    return { status: 202, body: { jobId } }
+  }
+
   let raw
   try {
     raw = await callKernel(args, { timeoutMs: IMPORT_TIMEOUT_MS, maxBuffer: IMPORT_MAX_BUFFER })
   } catch (e) {
-    const msg = String(e?.message || e)
-    // 与 /knowledge/append 同一约定：内核以**非零退出 + stderr `[knowledge]` 前缀**
-    // （kernel/cli.mjs:319）表达"这次请求被拒"，而 kernelReadonly 非零退出即 reject
-    // 并**丢弃 stdout** —— 这条前缀是路由区分"输入不合规"与"内核崩了"的唯一线索。
-    // 不认它，bad-space-id 这类 400 级错误会被报成 500，用户完全无从下手。
-    // 取**以 `[knowledge] ` 开头的那一行**（kernel/cli.mjs 的失败行），而不是"含该前缀的整段
-    // stderr"：kernelReadonly 把 stderr 前 8KB 原样塞进 `e.message`（server/kernel-readonly.mjs:97
-    // `new Error(err.trim() || …)`），只要内核在这行前后再写任何一行（第三方库的告警、Node 崩溃
-    // 时的 code frame、将来在 `--knowledge` 分支前加的日志），`replace(/^\[knowledge\]/)` 就会把
-    // 那些残留原样透给客户端 —— 那正是"把 stderr/traceback 当响应体"。逐行挑 = 只透内核**明确
-    // 想给调用方**的那一句（它的 message 由内核自己构造，标题就是"为什么被拒"）。
-    const gateLine = String(msg).split('\n').map((l) => l.trim()).find((l) => l.startsWith('[knowledge] '))
-    if (gateLine) {
-      const text = gateLine.slice('[knowledge] '.length).trim()
-      // 一律按**码**定状态码，而不是把这条路上的所有错误压成 400：内核把码原样写在
-      // 冒号前面（`readonly-space: …`），丢弃它就会让 403/404/413 三条语义全塌成 400，
-      // 与上面的映射表自相矛盾（表里写着 413、实际回 400 —— 调用方按"分批重试"还是
-      // "改参数"处置，就取决于这个码）。码信息同时以 `code` 字段回传（GUI 想按码给
-      // 针对性提示时不必去解析中文消息）。
-      const code = (/^([a-z0-9-]+)\s*:/.exec(text) || [])[1] || ''
-      return { status: statusOfKnowledgeError(text), body: { error: text, ...(code ? { code } : {}) } }
-    }
-    // 非闸门类失败（内核崩溃 / 超时 / stdout 超限）：**不把 stderr 原文透给客户端**。
-    // 内核崩溃时 stderr 是 Node 的 code frame + 绝对路径栈（`D:\...\kernel\cli.mjs:123` / `at …`），
-    // 那是服务端的实现细节与目录结构：调用方拿它做不了任何处置（它连"该改参数还是该重试"都读不出来），
-    // 却把内部路径摊开了。**只有我们自己产生的、形状固定的 harness 消息**是安全且有用的
-    // （`server/kernel-readonly.mjs` 的 timeout/超限/exit 三种，文本里不含任何路径），逐字放行。
-    const harness = /^\[kernel-readonly\] (?:timeout \d+ms|stdout 超过上限 \d+B|exit -?\d+)$/.exec(String(msg).trim())
-    if (harness) return { status: 500, body: { error: `导入失败：${harness[0]}`, code: 'kernel-failed' } }
-    // 其余一律给可读的定式消息；原文只落服务端控制台（排障用），不入响应体。
-    console.warn('[knowledge-import] 内核失败（原文只落服务端日志，不返给客户端）:', String(msg).slice(0, 800))
-    return { status: 500, body: { error: '导入失败：内核异常退出（详见服务端日志）', code: 'kernel-failed' } }
+    return importFailureResponse(String(e?.message || e))
   }
   let v
   try {
@@ -470,11 +563,16 @@ async function packsExport({ home, readJsonBody, callKernel }) {
  *                   不在高频读路由上白白多一次文件 IO）。
  *   · `appVersion` —— 当前应用版本（版本兼容判定用；缺省走 `defaultAppVersion()`，
  *                   且**懒求值**，不在高频读路由上多一次文件 IO）。
+ *   · `spawnStream`（2026-09-14）—— 流式 spawn 实现（缺省 `spawnKernelStreaming`）。
+ *                   **只被 `/knowledge/import` 的 `async:true` 消费**，注入点而非在路由里
+ *                   直接 spawn：测试注入假实现即可覆盖"进度归约/TTL/淘汰/错误映射"，
+ *                   不必真起内核进程（与 callKernel/fetcher 同一纪律）。
  */
 export async function handleKnowledgeRoute({
   method = 'GET', pathname = '', searchParams = new URLSearchParams(),
   readJsonBody = async () => ({}), callKernel = kernelReadonly,
   home = resolveYfwHome(), fetcher = globalThis.fetch, config = {}, appVersion = null,
+  spawnStream = spawnKernelStreaming,
 } = {}) {
   if (!pathname.startsWith('/knowledge')) return null
   const p = pathname.replace(/\/+$/, '') || '/knowledge'
@@ -571,8 +669,29 @@ export async function handleKnowledgeRoute({
     //   visionTables（布尔|串）  → `--vision-tables on|off|<原样>`（布尔 true/false 翻成 on/off；
     //                             串原样透传，取值合法性由**内核**判，路由不写第二套校验）
     //   maxVisionPages（数字）  → `--max-vision-pages <n>`（0 合法 = 不交给视觉模型）
+    //   async（布尔）           → 不发 argv：立即 202 `{jobId}`，导入转后台任务（见下）
+    //   maxFiles（int）/ maxTotalMb（number） → `--max-files` / `--max-total-mb`
+    //                             （**仅异步任务**会用策略缺省补齐；非法值 400，不静默回落）
     // 超时/缓冲由 handleImport 内的 IMPORT_TIMEOUT_MS / IMPORT_MAX_BUFFER 决定（见那里的理由）。
-    if (isPost && p === '/knowledge/import') return await handleImport({ readJsonBody, callKernel })
+    if (isPost && p === '/knowledge/import') {
+      return await handleImport({ readJsonBody, callKernel, spawnStream, home })
+    }
+    // 异步导入任务的进度/结果查询（2026-09-14）：`GET /knowledge/import/jobs/:id`。
+    // 未命中 → 404：任务记录**过期被回收**（保留 10 分钟）与应用重启是调用方仅靠响应
+    // 无法区分的两种情形，但它们与"任务还在跑、只是还没枚举完文件"必须能分开 ——
+    // 后者回 `running` + total 0（GUI 据此显示"正在统计文件数…"），把过期也回成 200 空壳
+    // 只会让进度条永远不动。故这里宁可 404 也不给假进度。
+    if (!isPost && (p === '/knowledge/import/jobs' || p.startsWith('/knowledge/import/jobs/'))) {
+      let id = p.slice('/knowledge/import/jobs'.length).replace(/^\/+/, '')
+      // 非法百分号编码（`%E4%`）会让 decodeURIComponent 抛错 —— 那是"id 不认识"，
+      // 该回 404 而不是让外层折成 500（500 会让调用方去重试/报障，而它改个路径就行了）。
+      try { id = decodeURIComponent(id) } catch { /* 原样当作未知 id */ }
+      const job = getImportJob(id)
+      if (!job) {
+        return { status: 404, body: { error: `未知的导入任务：${id || '(空)'}（可能已完成并超过保留期，或服务已重启）` } }
+      }
+      return ok(job)
+    }
     // S6：append-only 写入通道（`{tag?, text, theme?}`）。与 `/knowledge/doc` 的关键差别：
     // 那条是**整体覆盖**（GUI 编辑器语义，需四道路径防护）；这条**只追加一条经验**，
     // 结构上没有覆盖/删除路径 —— 故不需要 `space.writable` 与路径校验那一套（没有"路径"参数，

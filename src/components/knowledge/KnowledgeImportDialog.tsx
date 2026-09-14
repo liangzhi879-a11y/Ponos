@@ -11,7 +11,7 @@
 //   会以为失败又导一遍（幂等会跳过，但他已经困惑了）。
 // - 数据路径：组件只调 `useKnowledge.importDocuments`，**不直接碰 `knowledgeApi`** ——
 //   导入后的缓存失效（spaces/tree/search/graph/stats）收在 hook 一处，组件各记各的必漂移。
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Upload, FolderOpen, Loader2, FilePlus2, Table2, AlertTriangle } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { useTranslation } from '@/i18n/useTranslation'
@@ -25,9 +25,14 @@ import {
   type KnowledgeImportReport,
   type KnowledgeSpace,
 } from '@/lib/knowledgeApi'
+// 进度归约/百分比/文案都来自纯函数模块（可单测），组件只负责渲染与生命周期。
+import {
+  IDLE_IMPORT_PROGRESS, importPercent, normalizeKnowledgeImportPolicyUi,
+  progressFromJob, type ImportProgress,
+} from '@/lib/knowledgeImportUi'
 // 写入必须走 hook 的 importDocuments（不是直接调 api）：它负责导入后的缓存失效
 // （tree/search/graph/stats）—— 少了这一步，P1-1 的"导入后立刻能读到、搜到"不成立。
-import { importDocuments } from '@/hooks/useKnowledge'
+import { importDocuments, importDocumentsTracked } from '@/hooks/useKnowledge'
 
 export interface KnowledgeImportDialogProps {
   spaces: KnowledgeSpace[] | undefined
@@ -75,6 +80,30 @@ function EntryList({ title, items, tone, render }: {
   )
 }
 
+/**
+ * 进度文案（走 i18n，不直接用 `importProgressText` 的中文字面量）：
+ * 那个纯函数是给非 React 场景（CLI/测试）的降级文案，组件里必须走 t() 才能在英文界面下正确显示。
+ * 两段式对应需求："先查文件数"（分母未知 → 不定态）→"按已处理数算进度"（分母已知）。
+ */
+function progressLabel(
+  t: (k: string) => string,
+  p: ImportProgress,
+): string {
+  if (p.phase === 'plan') return t('knowledge.importProgressCounting')
+  if (p.phase === 'done') return t('knowledge.importProgressDone').replace('{total}', String(p.total))
+  if (p.phase === 'process') {
+    // n 用 done+1（"正在处理第几个"，而非"已完成几个"），并钳到 total：
+    // 最后一个文件时 done+1 恰好等于 total，不会显示成 "11/10"。
+    const n = Math.min(p.done + 1, p.total)
+    const key = p.current ? 'knowledge.importProgressProcessing' : 'knowledge.importProgressProcessingNoName'
+    return t(key)
+      .replace('{n}', String(n))
+      .replace('{total}', String(p.total))
+      .replace('{current}', p.current ?? '')
+  }
+  return t('knowledge.importProgressCounting')
+}
+
 export function KnowledgeImportDialog({ spaces, onImported }: KnowledgeImportDialogProps) {
   const { t } = useTranslation()
   const setSpace = useKnowledgeStore(s => s.setSpace)
@@ -88,6 +117,18 @@ export function KnowledgeImportDialog({ spaces, onImported }: KnowledgeImportDia
   const [error, setError] = useState<string | null>(null)
   /** 403 = 目标空间只读（pack-*）。单独留个标记，好在原始错误之外补一句"怎么解决" */
   const [readonlyError, setReadonlyError] = useState(false)
+  /**
+   * 导入进度（2026-09-14 批量场景）。`phase: 'plan'`（total 未知）= 内核还在枚举文件，
+   * 此时渲染不确定态进度条 —— 需求原话"先查文件数，然后根据实时处理的文件数量算进度"，
+   * 这一态正是前半句的可见形态。
+   */
+  const [progress, setProgress] = useState<ImportProgress>(IDLE_IMPORT_PROGRESS)
+  /**
+   * 轮询取消信号。只在**关闭对话框**时置位，语义是"我不看进度了、导入继续在后台跑"，
+   * 不是取消任务（强行中止会留下半批结果，且用户无从知晓）。用 ref 而非 state：
+   * 它不需要触发重渲染，且必须在 cleanup 时读到最新值。
+   */
+  const pollCtl = useRef<{ aborted: boolean } | null>(null)
 
   const writableSpaces = useMemo(() => (spaces ?? []).filter(s => s.writable !== false), [spaces])
   // 视觉模型是否可用：扫描件/图片里的表格**只能**靠它读出来（OCR 不保留列坐标）。
@@ -96,6 +137,11 @@ export function KnowledgeImportDialog({ spaces, onImported }: KnowledgeImportDia
   const visionSettings = useSettingsStore(s => s.settings)
   const visionOk = isVisionConfigured(visionSettings)
   const visionModelName = resolveVisionProvider(visionSettings)?.visionModel?.trim() || ''
+  // 导入上限（设置项）。经归一化再读：手改 config.json 写坏的值不该让组件算出 NaN 上限。
+  const importPolicy = useMemo(
+    () => normalizeKnowledgeImportPolicyUi(visionSettings.knowledgeImport),
+    [visionSettings.knowledgeImport],
+  )
   // `window.yfworkingFile` 的类型在 src/types/index.ts 全局声明（preload 的 exposeInMainWorld
   // 名字），这里**不做 as 断言**：断言会把"窗口名/方法名写错 → 静默 undefined"这类坑
   // 从类型检查里藏起来（本项目高发）。浏览器 dev 下该 API 不存在，故仍按可选处理。
@@ -124,13 +170,38 @@ export function KnowledgeImportDialog({ spaces, onImported }: KnowledgeImportDia
     setBusy(dryRun ? 'dry' : 'run')
     setError(null)
     setReadonlyError(false)
+    setProgress(IDLE_IMPORT_PROGRESS)
     // from 单源传字符串（报告里是路径），多源传数组（内核按源加前缀，避免同名互撞）
     // 走 hook 的 importDocuments（不是 api.importKnowledge）：成功后由它失效 tree/search 等缓存
-    const res = await importDocuments({
+    const payload = {
       from: sources.length === 1 ? sources[0] : sources,
       ...(mode === 'existing' ? { spaceId: target } : { name: target }),
+      // 上限跟随设置项（服务端还会按同一份常量钳制；两端口径由 parity 测试钉住）。
+      // 取整到 MB：内核的 `--max-total-mb` 是数值 MB，传字节会被当成天文数字的 MB。
+      // `Math.max(1, …)` 兜住 0：上限 0 会被内核判非法（bad-max-total-mb），
+      // 而钳制区间的最小值本就是 1MB，所以这里不可能凭空造出非法值。
+      maxFiles: importPolicy.maxFiles,
+      maxTotalMb: Math.max(1, Math.round(importPolicy.maxTotalBytes / (1024 * 1024))),
       dryRun,
-    })
+    }
+    let res
+    if (dryRun) {
+      // 预览走**同步**路径：它不落盘、通常秒回，异步化只会白加一轮轮询，
+      // 还会让"预览"这个高频动作在 UI 上先闪一下不确定态进度条。
+      res = await importDocuments(payload)
+    } else {
+      // 正式导入走异步 + 轮询：这是"大批量 + 进度条"的正路。
+      const ctl = { aborted: false }
+      pollCtl.current = ctl
+      res = await importDocumentsTracked(payload, {
+        signal: ctl,
+        onProgress: (j) => {
+          const p = progressFromJob(j)
+          if (p) setProgress(p)   // 形状不认识就保持上一态，不把进度条打回 0
+        },
+      })
+      pollCtl.current = null
+    }
     setBusy(null)
     if (!res.ok) {
       setReport(null)
@@ -149,7 +220,14 @@ export function KnowledgeImportDialog({ spaces, onImported }: KnowledgeImportDia
   }
 
   return (
-    <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) setError(null) }}>
+    <Dialog open={open} onOpenChange={(v) => {
+      setOpen(v)
+      if (!v) {
+        setError(null)
+        // 关对话框 = 不再跟进度（**不**取消服务端任务，见 pollCtl 注释）
+        if (pollCtl.current) pollCtl.current.aborted = true
+      }
+    }}>
       <DialogTrigger asChild>
         <button
           type="button"
@@ -283,6 +361,39 @@ export function KnowledgeImportDialog({ spaces, onImported }: KnowledgeImportDia
           </button>
           {busy && <span className="text-[10px] text-tertiary">{t('knowledge.importSlow')}</span>}
         </div>
+
+        {/* 进度条（2026-09-14 批量场景）：只在正式导入时出现。
+            两态刻意分开渲染：
+            · `plan`（total 未知）= **不确定态**（脉冲滑块 + "正在统计文件数…"）。
+              此时若画 0% 会让用户以为卡死；若直接画满则是假进度。
+            · `process`/`done`（total 已知）= 确定态，按 `done/total` 算百分比。
+            这就是需求"先查文件数，然后根据实时处理的文件数量算进度"的两段式。 */}
+        {busy === 'run' && (
+          <div className="mt-2" data-testid="import-progress">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] text-secondary truncate" title={progress.current}>
+                {progressLabel(t, progress)}
+              </span>
+              {progress.total > 0 && (
+                <span className="shrink-0 text-[10px] text-tertiary tabular-nums">{importPercent(progress)}%</span>
+              )}
+            </div>
+            <div className="mt-1 h-1 w-full overflow-hidden rounded bg-hover">
+              {progress.total > 0
+                ? (
+                  <div
+                    className="h-full bg-primary transition-[width] duration-200"
+                    style={{ width: `${importPercent(progress)}%` }}
+                  />
+                )
+                : (
+                  // 不确定态：脉冲滑块表达"在动但不知多久"（不用旋转图标，免得和按钮上的
+                  // Loader2 抢注意力，也不占额外高度）
+                  <div className="h-full w-1/3 animate-pulse rounded bg-primary/60" />
+                )}
+            </div>
+          </div>
+        )}
 
         {/* 错误**必须显式渲染**（P3-1：不得静默失败）。原始 message 原样带上——它是内核/
             路由给的英文错误码短语（如 `readonly-space: space 不得以 "pack-" 开头…`），

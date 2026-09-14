@@ -547,6 +547,37 @@ export interface KnowledgeImportPayload {
   visionTables?: boolean | 'auto'
   /** 交给视觉模型的页数上限（缺省 20；0 = 一页都不给，即"只要正文不要表格"）。视觉调用按页慢且可能计费 */
   maxVisionPages?: number
+  /**
+   * 异步导入（2026-09-14，批量场景）：`true` 时服务端**立即**回 `202 {jobId}`，
+   * 导入在后台跑，进度经 `getImportJob` 轮询。缺省（或不传）走原来的同步一次性返回
+   * —— 那条路径的行为逐字节不变，小批量/既有调用方不受影响。
+   */
+  async?: boolean
+  /** 单次导入的文件数上限覆盖（缺省用服务端配置档；非法值服务端回 400 而非静默回落） */
+  maxFiles?: number
+  /** 单次导入的总 MB 上限覆盖（缺省用服务端配置档） */
+  maxTotalMb?: number
+}
+
+/** 异步导入任务的状态（与服务端 `GET /knowledge/import/jobs/:id` 一一对应） */
+export interface KnowledgeImportJob {
+  status: 'running' | 'done' | 'error'
+  /** 已完成数（`running` 时 = 内核上报的循环下标） */
+  done: number
+  /** 计划文件数；`plan` 事件到达前**为 0**（= 还在统计，调用方应显示不确定态） */
+  total: number
+  /** 0-100 整数（服务端与前端同一口径：total=0 时 0，上限 100） */
+  percent: number
+  /** 当前处理的相对路径（仅 running 且已进入处理阶段时有） */
+  current?: string
+  startedAt?: number
+  endedAt?: number
+  /** 仅 `done`：与同步路径**完全相同**的报告形状 */
+  report?: KnowledgeImportReport
+  /** 仅 `error`：错误消息（闸门错误形如 `too-many-files: …`） */
+  error?: string
+  /** 仅 `error`：机器可读错误码（有则便于前端按码给建议） */
+  code?: string
 }
 
 /**
@@ -566,5 +597,42 @@ export function importKnowledge(
     method: 'POST',
     body: payload,
     opts: { timeoutMs: IMPORT_TIMEOUT_MS, ...(opts || {}) },
+  })
+}
+
+/**
+ * 提交**异步**导入（2026-09-14，批量场景）：服务端立即回 `202 {jobId}`，随后用
+ * `getImportJob` 轮询进度与结果。
+ *
+ * 为什么批量必须异步：同步路径要等整批转完才回一个响应，几千个文件时前端只有转圈
+ * （既不知道总数、也不知道到哪了），而且一旦超过 `IMPORT_TIMEOUT_MS` 就整体失败——
+ * 前面已经转换完的文件白等。异步化让"先查文件数、再按已处理数算进度"成为可能。
+ *
+ * 超时用短超时（不是 IMPORT_TIMEOUT_MS）：这个请求**只做提交**，服务端立刻返回；
+ * 若它自己挂住，说明桥/内核启动有问题，不该让用户干等 16 分钟。
+ */
+export function startImportJob(
+  payload: KnowledgeImportPayload,
+  opts?: KnowledgeCallOpts,
+): Promise<ApiResult<{ jobId: string }>> {
+  return call<{ jobId: string }>('/knowledge/import', {
+    method: 'POST',
+    body: { ...payload, async: true },
+    opts: { timeoutMs: 30 * 1000, ...(opts || {}) },
+  })
+}
+
+/**
+ * 查异步导入任务的状态（轮询用）。
+ *
+ * 为什么用短超时：轮询是高频动作（~500ms 一次），单次请求挂住时应该**尽快失败并重试**，
+ * 而不是把轮询循环卡在一次请求上——那会让进度条看起来"停止更新"而实际任务仍在跑。
+ */
+export function getImportJob(
+  jobId: string,
+  opts?: KnowledgeCallOpts,
+): Promise<ApiResult<KnowledgeImportJob>> {
+  return call<KnowledgeImportJob>(`/knowledge/import/jobs/${encodeURIComponent(jobId)}`, {
+    opts: { timeoutMs: 10 * 1000, ...(opts || {}) },
   })
 }
