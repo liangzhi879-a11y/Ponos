@@ -54,8 +54,45 @@ async function detectDriver({ target, probe } = {}) {
   throw new Error(`不支持的 target.type: ${String(type)}`)
 }
 
-/** web 探测：打开页面并取快照（步骤复用浏览器执行器，不另造导航逻辑） */
-async function probeWeb({ url, executor, sessionId }) {
+/**
+ * web 侧能力清单（**纯函数**：只依赖素材，不需要浏览器）。
+ * ★ 与 desktop 侧同一个设计：产出"若干可控路径 + 三态结论"，而不是"一个级别判定"。
+ * ★ 为什么 web-ui 恒为 verified：页面能抓下来就说明"能通过界面操作"这条兜底路径始终成立。
+ * ★ 为什么 http/chunk 只标 probable：素材里的接口/脚本路径只是**线索**（未实测调用），
+ *   宁缺勿假——把线索标成"已实测"会让封装在真正请求失败时无从解释。
+ */
+function buildWebCapabilities({ url, material } = {}) {
+  const caps = [capability('web-ui', {
+    confidence: 'verified',
+    evidence: `页面可访问，标题「${material?.title || '（无）'}」，可交互元素 ${material?.interactives ?? 0} 个`,
+    next: '用 browse/click/type 走一遍主要流程，边点边记网络请求（列表/详情/提交）',
+  })]
+  const apiHints = material?.apiHints || (material?.forms || []).map((f) => f.action).filter(Boolean)
+  if (apiHints?.length) {
+    caps.push(capability('http', {
+      confidence: 'probable',
+      evidence: `发现 ${apiHints.length} 个接口线索：${apiHints.slice(0, 5).join('、')}`,
+      next: '公开接口可用 http 直调；**需要登录态的接口优先用 browser+js 调用**（自带会话）',
+    }))
+  }
+  if (material?.scripts?.length) {
+    caps.push(capability('chunk', {
+      confidence: 'probable',
+      evidence: `发现 ${material.scripts.length} 个脚本，如 ${material.scripts[0]}`,
+      next: '用 fetch_page 拉取 chunk 反解其中的接口路径与参数定义——SPA 的能力面在 chunk 里，'
+        + '不要只照 HTML 里的几个入口封装',
+    }))
+  }
+  return { capabilities: caps, surface: buildCapabilitySurface({ target: { type: 'web', url }, capabilities: caps }) }
+}
+
+/**
+ * web 探测：打开页面并取快照（步骤复用浏览器执行器，不另造导航逻辑）。
+ * ★ material 可传入（调用方 harvestSite 已抓过时直接复用，避免重复抓取）；
+ *   清单由素材决定，故拆成纯函数 buildWebCapabilities，可在无浏览器时直测。
+ * @returns {Promise<{url:string, snapshot:object|null, title:string|null, capabilities:object[], surface:object}>}
+ */
+async function probeWeb({ url, executor, sessionId, material } = {}) {
   if (!executor) throw new Error('缺少 browserExecutor')
   const nav = await executor.exec(sessionId, 'goto', { url })
   if (!nav?.ok) throw new Error(`导航失败：${nav?.error || '未知'}`)
@@ -63,7 +100,8 @@ async function probeWeb({ url, executor, sessionId }) {
   const snapshot = snap?.snapshot ?? null
   // 真实快照把页级字段放在 page 下（browser-common.cjs 的 buildSnapshot）；
   // 早期写成 snapshot.title 会恒为 null（真机验收发现探测结果标题为空）。
-  return { url, snapshot, title: snapshot?.page?.title ?? snapshot?.title ?? null }
+  const { capabilities, surface } = buildWebCapabilities({ url, material })
+  return { url, snapshot, title: snapshot?.page?.title ?? snapshot?.title ?? null, capabilities, surface }
 }
 
 /**
@@ -355,7 +393,7 @@ async function checkApp({ spec } = {}) {
 }
 
 module.exports = {
-  detectDriver, probeWeb, probeDesktop, checkApp,
+  detectDriver, probeWeb, probeDesktop, checkApp, buildWebCapabilities,
   defaultProcessProbe, defaultScriptProbe, defaultFileProbe, isSystemPath,
   SURFACE_ORDER, CLI_PROBE_TIMEOUT_MS, CLI_OUTPUT_CAP,
 }

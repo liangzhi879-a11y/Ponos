@@ -66,7 +66,7 @@ const textOf = (tag) => stripTags(String(tag).replace(/^<[^>]*>/, '')).slice(0, 
 
 /**
  * 从 HTML 里抽出"写命令要用到"的素材（纯函数）。
- * @returns {{title:string, description:string, headings:string[], forms:Array, buttons:string[], links:Array, text:string, interactives:number, hasPassword:boolean}}
+ * @returns {{title:string, description:string, headings:string[], forms:Array, buttons:string[], links:Array, text:string, interactives:number, hasPassword:boolean, scripts:string[], apiHints:string[]}}
  */
 function extractPageMaterial(html, url) {
   const src = String(html || '')
@@ -103,7 +103,25 @@ function extractPageMaterial(html, url) {
   // 登录墙硬信号：密码框（可能在 <form> 外，form 解析覆盖不到，故直接扫原文）
   // 严格正则：`data-type="password"` / `type="passwordx"` 都不算（见 PASSWORD_INPUT_RE 注释）
   const hasPassword = PASSWORD_INPUT_RE.test(src)
-  return { url: url || '', title, description, headings, forms, buttons, links, text, interactives, hasPassword }
+
+  // ★ 前端 chunk：SPA 的真实能力面不在 HTML 里，而在打包产物里（接口路径、参数定义都在那）。
+  //   001（yfljsj.com）就是典型：首页只暴露几个入口，能力全在 /js/index.*.js。
+  //   这里只**收集路径**（去重、限量、协议相对地址补全为 https），不解析 chunk 内容——
+  //   反解 chunk 交给模型用 fetch_page 做（主进程不该替模型做这一步）。
+  const scripts = [...src.matchAll(/<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi)]
+    .map((m) => m[1])
+    .filter((s) => !/^javascript:/i.test(s))
+    .map((s) => (s.startsWith('//') ? `https:${s}` : s))
+    .filter((s, i, arr) => arr.indexOf(s) === i)
+    .slice(0, 40)
+
+  // 接口线索：内联脚本里的 fetch/axios 路径 + 表单 action
+  const apiHints = [
+    ...[...src.matchAll(/["'`](\/(?:api|prod-api|dev-api|v\d|rest|graphql)\/[A-Za-z0-9/_\-.{}$]*)/g)].map((m) => m[1]),
+    ...forms.map((f) => f.action).filter((a) => a && /^\//.test(a)),
+  ].filter((p, i, arr) => p && arr.indexOf(p) === i).slice(0, 60)
+
+  return { url: url || '', title, description, headings, forms, buttons, links, text, interactives, hasPassword, scripts, apiHints }
 }
 
 /** 素材是否"够 rich"（不够就得靠知识兜底 + 提示用户核对） */
