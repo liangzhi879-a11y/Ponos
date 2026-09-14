@@ -147,8 +147,6 @@ test('⑥未注入 runner → 明确报错（绝不静默成功）', async () =>
 test('⑦超 MAX_COMMANDS_PER_APP / publicLimit 被截断（按注册顺序）', () => {
   const perApp = tmpRoot()
   const spec = makeApp({ root: perApp, commands: mkCmds(MAX_COMMANDS_PER_APP + 3), bindSession: 's1' })
-  // 必须显式给 publicLimit：不给时用的是 dyntools 的 LIMIT_DEFAULT（全局工具池 20），
-  // 它会比单应用上限先截断，于是这条用例测的就不是"单应用上限"了（MAX 提到 40 后就暴露了）。
   const names = Object.keys(buildAppTools({ roots: [perApp], sessionId: 's1', publicLimit: MAX_COMMANDS_PER_APP + 10 }))
   assert.equal(names.length, MAX_COMMANDS_PER_APP, `单应用上限 ${MAX_COMMANDS_PER_APP}`)
   assert.equal(names[0], appToolName(spec, 'act1'))
@@ -157,9 +155,27 @@ test('⑦超 MAX_COMMANDS_PER_APP / publicLimit 被截断（按注册顺序）',
   const limit = tmpRoot()
   makeApp({ root: limit, mode: 'public', commands: mkCmds(5) })
   assert.equal(Object.keys(buildAppTools({ roots: [limit], sessionId: 's1', publicLimit: 2 })).length, 2)
-  // 非整数 publicLimit → dyntools 的 LIMIT_DEFAULT（20），此例 5 条全在
+  // 非整数 publicLimit → 回退到缺省上限；此例 5 条全在（缺省 ≥ 5）
   assert.equal(Object.keys(buildAppTools({ roots: [limit], sessionId: 's1', publicLimit: 'x' })).length, 5)
   assert.equal(Object.keys(buildAppTools({ roots: [limit], sessionId: 's1', publicLimit: 2.5 })).length, 5)
+})
+
+// ---------- 装配级护栏：缺省上限必须容得下"应用允许的命令数" ----------
+//
+// 真实故障（M2）：kernel/cli.mjs 的装配调用 `buildAppTools({ roots, agentId, sessionId, runner })`
+// **不传 publicLimit**，而此处缺省曾是 dyntools 的 LIMIT_DEFAULT(20)；同时 kernel/app-spec.mjs 的
+// 单应用上限已提到 40、校验也只比 40 —— 于是用户能存下 40 条命令的 Spec，工具池里只出现前 20 条，
+// 后 20 条被 slice 静默丢弃（模型只会说"没有这个工具"，界面上看不出少了什么）。
+// 上面 ⑦ 之所以没抓到，是因为它**显式传了** publicLimit，绕开了缺省路径。
+// 这条用例刻意**不传 publicLimit**，走的就是生产装配的那条分支。
+test('⑦b 不传 publicLimit（生产装配路径）：40 条命令全部进工具池，第 41 条才被截断', () => {
+  const root = tmpRoot()
+  const spec = makeApp({ root, commands: mkCmds(MAX_COMMANDS_PER_APP + 1), bindSession: 's1' })
+  const names = Object.keys(buildAppTools({ roots: [root], sessionId: 's1' }))
+  assert.equal(names.length, MAX_COMMANDS_PER_APP,
+    `缺省上限必须容得下单应用上限 ${MAX_COMMANDS_PER_APP} 条（实际 ${names.length} → 有命令被静默丢弃）`)
+  assert.equal(names.at(-1), appToolName(spec, `act${MAX_COMMANDS_PER_APP}`), '截断点应在第 41 条（注册顺序稳定）')
+  assert.ok(!names.includes(appToolName(spec, `act${MAX_COMMANDS_PER_APP + 1}`)), '超出单应用上限的第 41 条不应注册')
 })
 
 test('⑧重名 action：加哈希后缀保两条可用，冲突记入非枚举属性 nameConflicts', () => {

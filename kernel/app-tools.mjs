@@ -11,7 +11,7 @@
 //      两种 driver）。故执行能力经 `runner` 注入（kernel/cli.mjs 注入 app 桥路由 →
 //      bridge → 主进程执行器 → stdin app_response）。未注入 runner → **明确报错**，
 //      绝不静默成功（静默成功会让模型以为命令跑了，而实际什么也没发生）。
-import { deriveInputSchema, shortHash, LIMIT_DEFAULT } from './dyntools.mjs'
+import { deriveInputSchema, shortHash } from './dyntools.mjs'
 import { appToolName } from './app-naming.mjs'
 import { listApps, loadSpec, isAppVisible, getBoundApp, MAX_COMMANDS_PER_APP } from './app-spec.mjs'
 
@@ -37,7 +37,7 @@ function renderData(data) {
  * @param {string|null} p.agentId  预留：当前可见性只按会话绑定判定（与 app-spec 同口径）
  * @param {string|null} p.sessionId 当前会话 id（读 binding.json 用）
  * @param {Function} p.runner      执行能力：({appId, action, args, sessionId}) → {ok, data, error, kind, durationMs}
- * @param {number}   p.publicLimit 工具总数上限（非整数 → dyntools 的 LIMIT_DEFAULT）
+ * @param {number}   p.publicLimit 工具总数上限（缺省 → MAX_COMMANDS_PER_APP，与单应用命令上限对齐）
  * @returns {Object} 工具表（非枚举属性 nameConflicts 记录重名冲突明细）
  */
 export function buildAppTools({ roots = [], agentId = null, sessionId = null, runner, publicLimit } = {}) {
@@ -93,8 +93,13 @@ export function buildAppTools({ roots = [], agentId = null, sessionId = null, ru
     }
   }
 
-  // 工具总数上限（按注册顺序稳定截断）：publicLimit 非整数 → dyntools 的 LIMIT_DEFAULT 口径
-  const limit = Number.isInteger(publicLimit) && publicLimit >= 0 ? publicLimit : LIMIT_DEFAULT
+  // 工具总数上限（按注册顺序稳定截断）。
+  // 缺省取 MAX_COMMANDS_PER_APP 而**不是** dyntools 的 LIMIT_DEFAULT(20)：生产装配点
+  // kernel/cli.mjs 调用本函数时并不传 publicLimit，回退到 20 就会让 app-spec 允许的 40 条里
+  // 有 20 条被这里的 slice 静默丢弃——用户存得下一份 40 条命令的 Spec，工具池里只出现前 20 条，
+  // 界面上看不出来少了什么（只能靠"模型说没有这个工具"反推）。
+  // 显式传入的 publicLimit 优先级不变（仍受全局工具池上限约束）。
+  const limit = Number.isInteger(publicLimit) && publicLimit >= 0 ? publicLimit : MAX_COMMANDS_PER_APP
   const out = {}
   for (const n of Object.keys(tools).slice(0, limit)) out[n] = tools[n]
   // 冲突明细挂非枚举属性（与 dyntools 同款）：不进工具表视图（Object.keys/展开不可见），

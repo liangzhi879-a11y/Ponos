@@ -437,7 +437,15 @@ async function runAgentLoop({
   let pendingDelta = ''
 
   for (turns = 1; turns <= b.maxTurns; turns++) {
-    if (Date.now() - t0 - pausedMs > b.timeBudgetMs) { stoppedBy = 'time'; issues.push(`已达时间预算（${Math.round(b.timeBudgetMs / 1000)}s，不含等待登录的人工时间），停止探索`); break }
+    if (Date.now() - t0 - pausedMs > b.timeBudgetMs) {
+      stoppedBy = 'time'
+      const why = `已达时间预算（${Math.round(b.timeBudgetMs / 1000)}s，不含等待登录的人工时间），停止探索`
+      issues.push(why)
+      // 必须同时落成 blocker：本路径**没有任何一轮校验错误**，blockers 若为空，界面取到的就是
+      // issues 里最早那几条（round-1 的旧结构错误）——用户看到的"失败原因"与真实原因（时间到）无关。
+      setBlockers([why])
+      break
+    }
     const user = [seedUser, renderLog(log, b.historyChars), '请输出你的下一步（一个 JSON 对象）。'].filter(Boolean).join('\n\n')
     onProgress?.({ phase: 'round', turn: turns, maxTurns: b.maxTurns, detail: `第 ${turns}/${b.maxTurns} 轮：${log.length ? '把探索/试跑结果交给模型' : '请求模型开始探索'}…` })
     lastEmitAt = 0; pendingDelta = ''
@@ -473,7 +481,11 @@ async function runAgentLoop({
       // 连续读不懂就没必要耗满轮次（模型可能不支持这种协议/输出被截断），早停并如实报告
       if (badStreak >= 3) {
         stoppedBy = 'bad-output'
-        issues.push(`模型连续 ${badStreak} 轮输出无法解析为 JSON（最后一段：${String(turn.raw || '').slice(0, 120)}）`)
+        const why = `模型连续 ${badStreak} 轮输出无法解析为 JSON（最后一段：${String(turn.raw || '').slice(0, 120)}）`
+        issues.push(why)
+        // 同样要落 blocker：这条路径的真实原因就在 issues **尾部**，不设 blockers 时界面只会展示
+        // 最早几轮的旧错误（如"specVersion 必须为 1"），而用户真正需要知道的是"模型读不懂协议"。
+        setBlockers([why])
         break
       }
       continue
@@ -550,7 +562,12 @@ async function runAgentLoop({
     onProgress?.({ phase: 'verify', turn: turns, detail: `试跑未通过 ${fails.length} 条：${fails.slice(0, 2).join('；')}` })
   }
 
-  if (turns > b.maxTurns) stoppedBy = 'max-turns'
+  if (turns > b.maxTurns) {
+    stoppedBy = 'max-turns'
+    // 轮次耗尽也是"没有新一轮校验结果"的路径：不设 blockers 时界面只能拿最旧的错误当原因，
+    // 而真实原因是"探索轮次用尽、模型没交出合格 Spec"。
+    setBlockers([`探索轮次用尽（${b.maxTurns} 轮）仍未产出通过校验的 Spec，停止探索`])
+  }
   const elapsedMs = Date.now() - t0
   // 交付判定：只有**结构+质量都过**的草稿才值得给出；试跑未通过时如实标注 verified=false
   const ok = !!spec

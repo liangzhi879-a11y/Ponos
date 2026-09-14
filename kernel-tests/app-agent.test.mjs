@@ -498,3 +498,53 @@ test('runAgentLoop：blockers 只保留最新一轮的阻塞原因，issues 仍�
   assert.ok(r.issues.length > r.blockers.length, `issues 是全量累积（${r.issues.length}），blockers 只留最新（${r.blockers.length}）`)
   assert.ok(r.issues.some((i) => i.includes('name')), '旧轮次的错误仍要留在 issues 里供排障')
 })
+
+test('runAgentLoop：bad-output 早退也要设 blockers（真实原因在 issues 尾部，不能被 round-1 旧错顶替）', async () => {
+  // 复现真实故障：第 1 轮提交了一版结构错误（进 issues 头部），随后模型连续 3 轮输出读不懂 →
+  // bad-output 早停。早停路径此前不设 blockers，界面回退取 issues 前 3 条 = round-1 的旧错误，
+  // 而真实原因（"模型连续 3 轮输出无法解析"）永远显示不出来 —— 用户按提示去改 specVersion，
+  // 改多少轮都没用。
+  let n = 0
+  const callLlm = async () => {
+    n++
+    if (n === 1) {
+      // 结构非法（缺 name/commands），制造 round-1 的旧错误
+      return { ok: true, text: JSON.stringify({ thought: 't', tool: 'submit_spec', spec: { specVersion: 1, appId: 'a', target: { type: 'web', url: 'https://x/' }, commands: [] } }), error: null }
+    }
+    return { ok: true, text: '这一段完全不是 JSON', error: null }
+  }
+  const r = await runAgentLoop({
+    target: { type: 'web', url: 'https://x/' }, driver: 'browser', probeMode: 'http',
+    callLlm, runTool: async () => ({ ok: true, summary: 'x' }), budget: { maxTurns: 8 },
+  })
+  assert.equal(r.stoppedBy, 'bad-output')
+  assert.ok(r.blockers.length > 0, '早退路径必须自己设 blockers，否则界面只能展示最旧的错误')
+  assert.ok(r.blockers.some((b) => b.includes('输出无法解析')), `blockers 应是本路径的真实原因，实际：${r.blockers.join('；')}`)
+  assert.ok(!r.blockers.some((b) => b.includes('specVersion') || b.includes('name')),
+    `blockers 不得是 round-1 的旧结构错误，实际：${r.blockers.join('；')}`)
+  assert.ok(r.issues.some((i) => i.includes('name')), 'issues 仍要保留全量历史（供排障）')
+  assert.ok(r.issues.at(-1).includes('输出无法解析'), '真实原因在 issues 尾部——界面回退取尾部才拿得到')
+})
+
+test('runAgentLoop：时间预算早退 / 轮次耗尽也都要设 blockers（真实原因，不是旧错）', async () => {
+  // 时间预算：第 1 轮留下旧错后立刻超时（工具里把预算耗掉）
+  const timeOut = await runAgentLoop({
+    target: { type: 'web', url: 'https://x/' }, driver: 'browser', probeMode: 'http',
+    callLlm: async () => ({ ok: true, text: JSON.stringify({ thought: 't', tool: 'fetch_page', args: {} }), error: null }),
+    runTool: async () => { await new Promise((r) => setTimeout(r, 20)); return { ok: true, summary: 'x' } },
+    budget: { maxTurns: 5, timeBudgetMs: 10 },
+  })
+  assert.equal(timeOut.stoppedBy, 'time')
+  assert.ok(timeOut.blockers.some((b) => b.includes('时间预算')), `时间早退要给真实原因，实际：${timeOut.blockers.join('；')}`)
+
+  // 轮次耗尽：模型一直调用工具（不提交 Spec），预算轮次用尽后收工
+  let n = 0
+  const maxTurns = await runAgentLoop({
+    target: { type: 'web', url: 'https://x/' }, driver: 'browser', probeMode: 'http',
+    callLlm: async () => ({ ok: true, text: JSON.stringify({ thought: 't', tool: 'fetch_page', args: { i: ++n } }), error: null }),
+    runTool: async () => ({ ok: true, summary: 'x' }),
+    budget: { maxTurns: 2 },
+  })
+  assert.equal(maxTurns.stoppedBy, 'max-turns')
+  assert.ok(maxTurns.blockers.some((b) => b.includes('轮次用尽')), `轮次耗尽要给真实原因，实际：${maxTurns.blockers.join('；')}`)
+})

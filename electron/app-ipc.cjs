@@ -14,7 +14,7 @@ const appRegistry = require('./app-registry.cjs')
 const appBindings = require('./app-bindings.cjs')
 const profiler = require('./app-profiler.cjs')
 const { runCommand, appendHistory, desktopRunner } = require('./app-runner.cjs')
-const { generateSpec, verifySpec, snapshotForPrompt, validateSpecBasic } = require('./app-generate.cjs')
+const { generateSpec, verifySpec, snapshotForPrompt, validateSpecBasic, driverOf } = require('./app-generate.cjs')
 const appAgent = require('./app-agent.cjs')
 const { callLlmStream } = require('./app-llm.cjs')
 const appValidator = require('./app-validator.cjs')
@@ -55,10 +55,34 @@ const AGENT_BUDGET = { maxTurns: 24, maxToolCalls: 20, timeBudgetMs: 10 * 60 * 1
 /** 单次 fetch_page 回给模型的素材字符上限（它自己读 JSON，给小了看不到表单字段） */
 const AGENT_TOOL_MATERIAL_CAP = 6000
 
-/** Spec 里没写 driver 时的推定：web → browser，desktop → uia（最保守的兜底） */
+/**
+ * Spec → 驱动（执行前的最后一道推定）。
+ *
+ * ★ 为什么不再自己判（真实故障 D8）：这里曾是**第二份**驱动推定（`spec.driver` 原样返回，
+ *   既不归一化也不校验），与 app-generate 的 driverOf 平行。两份口径立刻分歧：
+ *   spec={driver:'web'} 能过 validateSpecBasic（'web' 被当作合法别名归一为 browser），
+ *   但执行侧把 'web' 原样交给 desktopRunner → 回 "不支持的 driver：web" ——
+ *   即"校验放过的值，执行跑不了"。改用唯一真源后，两侧对同一个值必然给出同一个驱动。
+ * @param {object} spec
+ */
 function inferDriver(spec) {
-  if (spec?.driver) return spec.driver
-  return spec?.target?.type === 'web' ? 'browser' : 'uia'
+  return driverOf(spec)
+}
+
+/**
+ * 失败原因选取（唯一定义，抽出来是为了可单测——它决定用户看到的"为什么失败"）。
+ *
+ * 为什么优先 blockers：issues 只增不减，早期轮次的错误永远排在最前。直接取前 3 条时用户看到的是
+ * round-1 的旧错误（真实现象："specVersion 必须为 1；缺少 name；…"——这些早就改好了），反而看不到
+ * 当前真正的卡点；而真实原因（如"模型连续 3 轮输出无法解析…"）是最后 push 进去的。
+ * 故：① 优先 blockers（app-agent 每条早退路径都会设）；② 回退时取 issues **尾部最新** 3 条而不是
+ * 头部 —— 万一将来某条路径忘了设 blockers，展示的也仍是最新原因，而不是最陈旧的那批。
+ * @param {{blockers?:string[], issues?:string[]}} agent
+ * @returns {string[]} 至多 3 条，供界面/错误文案使用
+ */
+function pickBlockerReasons(agent) {
+  const list = agent?.blockers?.length ? agent.blockers : (agent?.issues || []).slice(-3)
+  return list.slice(0, 3)
 }
 
 /**
@@ -625,11 +649,7 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
       budget: AGENT_BUDGET,
     })
     if (!agent.ok || !agent.spec) {
-      // 优先用**最新一轮**的阻塞原因（blockers）：issues 是历史累积，直接取前 3 条会把早已改好的
-      // 旧错误当成本次失败原因展示给用户（真实现象：用户看到"specVersion 必须为 1；缺少 name；…"，
-      // 而当前真正卡住的是最后一轮的试跑失败）。blockers 空时再退回 issues（如纯 LLM 报错早退）。
-      const pick = (agent.blockers?.length ? agent.blockers : agent.issues || [])
-      const why = pick.slice(0, 3).join('；') || '模型未产出通过校验的 Spec'
+      const why = pickBlockerReasons(agent).join('；') || '模型未产出通过校验的 Spec'
       const whyWithStop = agent.stoppedBy && agent.stoppedBy !== 'budget' ? `${why}（已停止：${agent.stoppedBy}）` : why
       emitProgress(appId, { phase: 'error', detail: whyWithStop })
       return done({ ok: false, error: whyWithStop, issues: agent.issues, blockers: agent.blockers, rounds: agent.turns, turns: agent.turns, toolCalls: agent.toolCalls, driver, stoppedBy: agent.stoppedBy })
@@ -815,4 +835,4 @@ function profiledSnapshot(snap) {
   }
 }
 
-module.exports = { registerAppHandlers, runAppCommand, handleAppExecMessage, inferDriver, appRoots, profiledSnapshot, authorizeAppTarget, hostVariants }
+module.exports = { registerAppHandlers, runAppCommand, handleAppExecMessage, inferDriver, appRoots, profiledSnapshot, authorizeAppTarget, hostVariants, pickBlockerReasons }

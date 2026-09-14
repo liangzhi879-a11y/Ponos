@@ -12,7 +12,8 @@ const home = mkdtempSync(join(tmpdir(), 'appgen-'))
 process.env.YFWORKING_HOME = home
 delete process.env.CLAUDE_CONFIG_DIR
 
-const { registerAppHandlers } = require('../electron/app-ipc.cjs')
+const { registerAppHandlers, pickBlockerReasons, inferDriver } = require('../electron/app-ipc.cjs')
+const { DRIVERS } = require('../electron/app-generate.cjs')
 
 const SPEC_TEXT = JSON.stringify({
   specVersion: 1, appId: 'x', name: '示例站',
@@ -836,4 +837,46 @@ test('app:generate（desktop/uia）：后端未接入 → 早退拒绝，不烧�
     assert.equal(llmCalled, 0, '注定跑不通就别去烧模型轮次')
     assert.ok(t.phases().includes('error'), '进度要以 error 收尾（界面才不会停在"生成中"）')
   } finally { rmSync(stubDir, { recursive: true, force: true }) }
+})
+
+// ---------- M3：失败原因取自"最新"，不是 round-1 的旧错 ----------
+//
+// 真实故障：早期轮次的错误永远排在 issues 头部，界面取前 3 条 → 用户看到的"失败原因"是早就改好的
+// 旧错（"specVersion 必须为 1；缺少 name；…"），真正卡住的原因（在 issues 尾部）永远显不出来。
+test('app:generate：失败原因必须是最新阻塞原因，不得把 round-1 的旧错当原因', async () => {
+  // 第 1 轮：结构非法（制造 round-1 旧错）；之后模型连续 3 轮输出读不懂 → bad-output 早停
+  let n = 0
+  const BAD_SPEC = JSON.stringify({ thought: 't', tool: 'submit_spec', spec: { specVersion: 1, appId: 'x', target: { type: 'web', url: 'https://example.com/' }, commands: [] } })
+  const t = setup({ llm: async () => { n++; return { ok: true, text: n === 1 ? BAD_SPEC : '我不太会写 JSON，这里是说明文字', error: null } } })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com' }, appId: 'x', sessionId: 's1' })
+  assert.equal(r.ok, false)
+  assert.equal(r.stoppedBy, 'bad-output')
+  assert.ok(r.error.includes('输出无法解析'), `原因应是本路径的真实原因，实际：${r.error}`)
+  assert.ok(!r.error.includes('specVersion'), `不得把 round-1 旧错当原因，实际：${r.error}`)
+  assert.ok(r.issues.some((i) => i.includes('name')), 'issues 仍需保留全量历史供排障')
+  assert.ok(t.details().some((d) => String(d).includes('输出无法解析')), '进度事件也要给出真实原因')
+})
+
+test('pickBlockerReasons：优先 blockers；回退取 issues 尾部（最新）而不是头部（最旧）', () => {
+  // ① 有 blockers：只信 blockers（app-agent 每条早退路径都会设）
+  assert.deepEqual(pickBlockerReasons({ blockers: ['当前卡点'], issues: ['round-1 旧错', 'round-2 旧错'] }), ['当前卡点'])
+  // ② 没有 blockers：回退取**尾部**最新 3 条（取头部等于把最陈旧的错误当原因，与目的正好相反）
+  assert.deepEqual(pickBlockerReasons({ blockers: [], issues: ['最旧1', '最旧2', '较新1', '较新2', '最新'] }), ['较新1', '较新2', '最新'])
+  // ③ 都没有：返回空数组（调用方给兜底文案）
+  assert.deepEqual(pickBlockerReasons({}), [])
+  // ④ 至多 3 条：界面文案不因历史上百条错误而失控
+  assert.equal(pickBlockerReasons({ blockers: ['1', '2', '3', '4'] }).length, 3)
+})
+
+// ---------- m1：驱动推定只有一份实现（校验放过的值 = 执行能跑的值） ----------
+test('inferDriver 复用 driverOf：校验放行的 driver（含历史别名 web）执行侧必然认识', () => {
+  // 'web' 是历史别名：validateSpecBasic 放行它，执行侧就必须归一为 browser ——
+  // 旧实现原样返回 'web' → desktopRunner 回"不支持的 driver：web"（校验放过、执行必炸）。
+  assert.equal(inferDriver({ driver: 'web', target: { type: 'web', url: 'https://a.com/' } }), 'browser')
+  assert.equal(inferDriver({ driver: 'desktop', target: { type: 'desktop', exePath: 'C:/x.exe' } }), 'uia', '历史值按 target.type 推定')
+  assert.equal(inferDriver({ driver: 'process', target: { type: 'desktop', exePath: 'C:/x.exe' } }), 'process')
+  assert.equal(inferDriver({ target: { type: 'web', url: 'https://a.com/' } }), 'browser', '缺 driver → 按 target.type')
+  assert.equal(inferDriver({ target: { type: 'desktop', exePath: 'C:/x.exe' } }), 'uia', '其余一律最保守的 uia')
+  // 非法值不得原样漏给执行器（必须归一到执行器认识的驱动）
+  assert.ok(DRIVERS.includes(inferDriver({ driver: 'launchMissiles', target: { type: 'web' } })))
 })

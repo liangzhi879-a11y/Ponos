@@ -19,7 +19,7 @@ const { readdirSync, readFileSync } = require('node:fs')
 const { join } = require('node:path')
 const registry = require('./app-registry.cjs')
 const profiler = require('./app-profiler.cjs')
-const { validateSpecBasic, extractSpec, SYSTEM_RULES, driverOf, driverRulesLine } = require('./app-generate.cjs')
+const { validateSpecBasic, extractSpec, systemRulesFor, driverOf } = require('./app-generate.cjs')
 
 const MAX_REPAIR = 5
 const HISTORY_DAYS = 14
@@ -81,13 +81,17 @@ function summarize(cmd) {
  * ★ 为什么必须按驱动（真实缺陷 D7）：系统规则是**通用**规则，桌面应用照它写会写出 goto/snapshot；
  *   修完的命令连结构校验都过不了 —— 等于把"能跑的旧命令"换成"跑不了的新命令"。
  *   驱动取自 Spec 自身（spec.driver 优先，否则按 target.type 推定），与执行/校验同一真源。
+ *
+ * ★ 为什么**复用 systemRulesFor** 而不是在这里自己拼 SYSTEM_RULES + driverRulesLine：
+ *   拼接提示词就是在造第二个门控点。M1 修复前 SYSTEM_RULES 里仍留着 browser 专属示例
+ *   （ref/snapshot/goto），谁在这里重拼一次，web act 就会重新漏进桌面应用的修复提示词（D7 复发）；
+ *   而且 spec.driver 与 target.type 若各推一次会推出两个值，提示词会自相矛盾。
+ *   故显式把已推定的 driver 传给 systemRulesFor，保证"驱动行 + 字段契约 + 专属示例"三处口径一致。
  */
 function buildCommandPrompt({ spec, command, error }) {
   const driver = driverOf(spec)
   const system = [
-    SYSTEM_RULES,
-    // ★ 按驱动渲染的契约行（act 清单 + 每个 act 的字段要求）与执行/校验同一真源
-    driverRulesLine(driver),
+    systemRulesFor(spec?.target, { driver }),
     '补充：这次只修**一条**命令。只输出这一个命令对象的 JSON（不要数组、不要外层 spec、不要解释文字）。',
     `修正后的命令必须仍属于 ${driver} 驱动，steps.act 只能取上面列出的 act。`,
   ].join('\n\n')

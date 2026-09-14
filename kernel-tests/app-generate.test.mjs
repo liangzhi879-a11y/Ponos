@@ -6,8 +6,8 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 const {
   buildPrompt, extractSpec, generateSpec, verifySpec, validateSpecBasic, snapshotForPrompt,
-  MAX_ROUNDS, VERIFY_MAX_READS, ACT_CONTRACT, actContractLines, WEB_ACTS, DESKTOP_ACTS, SYSTEM_RULES,
-  driverOf, actsFor, tableFor, driverRulesLine, SPEC_SHAPE_LINE, WEB_CONTRACT, DESKTOP_CONTRACT,
+  MAX_ROUNDS, VERIFY_MAX_READS, ACT_CONTRACT, actContractLines, WEB_ACTS, DESKTOP_ACTS, SYSTEM_RULES, WEB_ONLY_RULES,
+  driverOf, actsFor, tableFor, driverRulesLine, SPEC_SHAPE_LINE, WEB_CONTRACT, DESKTOP_CONTRACT, systemRulesFor,
 } = require('../electron/app-generate.cjs')
 // 跨模块一致性护栏（Task 8）：提示词侧（app-agent 的 buildAgentSystem）与校验侧（app-generate 的
 // actsFor/validateSpecBasic）必须共用同一份驱动口径 —— 两处逐字节绑死，任何一边单边改动就红。
@@ -60,7 +60,9 @@ test('buildPrompt：必须含 params、数组要求、read/write 规则与 URL',
 })
 
 test('buildPrompt：禁止 public、含 act 白名单、禁止敏感信息', () => {
-  const { system } = buildPrompt({ target: {}, probeMaterial: {} })
+  // target 必须写清类型：act 清单与 browser 专属示例按驱动下发，`target:{}` 会推成最保守的
+  // desktop(uia)，"含 web act" 这类断言就失去意义了（这正是被驱动的真实口径）。
+  const { system } = buildPrompt({ target: { type: 'web', url: 'https://a.com' }, probeMaterial: {} })
   assert.ok(system.includes('public'))
   assert.ok(system.includes('goto'))
   assert.ok(system.includes('cli'))
@@ -338,6 +340,11 @@ test('validateSpecBasic：driver=uia 只接受 focus/type/key/wait；driver 值�
   assert.equal(badValue.ok, false)
   assert.ok(badValue.errors.some((e) => e.includes('driver') && e.includes('android')), `driver 非法要点名：${badValue.errors.join('；')}`)
   assert.ok(!badValue.errors.some((e) => e.includes('steps[')), `driver 非法时不再叠加步骤契约噪音（实际：${badValue.errors.join('；')}）`)
+  // m2：文案必须与实现一致 —— 'web' 被当合法别名放行，报错文案就不能只说"只允许 browser/process/script/uia"
+  // （否则用户会去改一个本来能跑的值；历史 Spec 里真的存在 'web'，改写它纯属无谓的兼容性风险）
+  assert.equal(validateSpecBasic({ ...GOOD_SPEC, driver: 'web' }).ok, true,
+    "'web' 是合法历史别名（归一为 browser）")
+  assert.ok(badValue.errors.some((e) => e.includes('"web"')), `报错文案要说明 web 别名，实际：${badValue.errors.join('；')}`)
 })
 
 test('ACT_CONTRACT 覆盖全部允许的 act（新增 act 忘了写契约会被这条挡住）', () => {
@@ -406,8 +413,29 @@ test('actContractLines：只渲染传入驱动的 act，每个 act 都带字段�
   assert.ok(!desk.includes('snapshot'), 'process 契约绝不能提 snapshot')
   // 二选一的字段要渲染成"或"，不能写成"且"（曾因此把 script 的 file|code 写成两者都要）
   assert.ok(/"file" 或 "code"/.test(actContractLines('script')), 'script 应渲染为 file 或 code')
-  assert.ok(SYSTEM_RULES.includes('expression'), 'SYSTEM_RULES 要包含契约说明')
-  assert.ok(SYSTEM_RULES.includes('不是 CSS 选择器'), 'SYSTEM_RULES 要明确 ref ≠ 选择器')
+  // browser 专属示例必须还在（只是被门控到 browser）：删掉它们等于把 web 生成能力弄坏
+  assert.ok(WEB_ONLY_RULES.includes('expression'), 'WEB_ONLY_RULES 要包含 js 契约说明')
+  assert.ok(WEB_ONLY_RULES.includes('不是 CSS 选择器'), 'WEB_ONLY_RULES 要明确 ref ≠ 选择器')
+  // 通用规则里不得再夹带 browser 专属示例（否则桌面应用会照抄，写出校验必拒的步骤）
+  assert.ok(!SYSTEM_RULES.includes('snapshot') && !SYSTEM_RULES.includes('goto'),
+    'SYSTEM_RULES 是"所有驱动通用"，不得含 browser 专属示例：这些必须由 WEB_ONLY_RULES 承接')
+})
+
+test('systemRulesFor：browser 专属 act 示例只发给 browser，桌面驱动全文不得出现 snapshot/goto', () => {
+  const deskTarget = { type: 'desktop', exePath: 'C:/x/y.exe' }
+  for (const [driver, target] of [['uia', deskTarget], ['process', deskTarget], ['script', deskTarget]]) {
+    // 不传 driver（按 target.type 推定）与显式传 driver 两条路都要门住
+    for (const sys of [systemRulesFor(target), systemRulesFor(target, { driver })]) {
+      assert.ok(!sys.includes('snapshot'), `${driver}：桌面提示词不得出现 snapshot`)
+      assert.ok(!sys.includes('goto'), `${driver}：桌面提示词不得出现 goto`)
+    }
+  }
+  const proc = systemRulesFor(deskTarget, { driver: 'process' })
+  assert.ok(proc.includes('cli') && proc.includes('argv'), '分驱动不等于不分契约：process 仍要有 cli/argv 契约')
+  const web = systemRulesFor({ type: 'web', url: 'https://a.com/' })
+  assert.ok(web.includes('snapshot') && web.includes('goto'), 'browser 仍要拿到这些示例（门控不是把功能删了）')
+  // 历史别名 'web' 归一为 browser：门控按**归一后**的驱动判定，否则别名用户会被降级成桌面提示词
+  assert.ok(systemRulesFor(deskTarget, { driver: 'web' }).includes('snapshot'), "'web' 别名要按 browser 门控")
 })
 
 // ---------- 跨模块一致性护栏（Task 8） ----------

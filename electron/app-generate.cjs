@@ -168,8 +168,9 @@ function driverRulesLine(driver) {
   return lines.join('\n')
 }
 
-// 注意：这里**不含 act 清单与字段契约** —— 那些必须按驱动渲染（systemRulesFor），
-// 早期把两套 act 并列写在通用规则里，正是桌面应用被喂下 web act 的根源（D7）。
+// 注意：这里**不含 act 清单、字段契约与任何 browser 专属示例** —— 那些必须按驱动渲染
+// （systemRulesFor / WEB_ONLY_RULES），早期把两套 act 并列写在通用规则里，正是桌面应用被喂下
+// web act 的根源（D7）；只删 act 清单、留着 snapshot/goto 的例子，症状会以同样方式复发。
 const SYSTEM_RULES = [
   '你是「应用即工具」的规格撰写器。用户会给你一个目标（网站或桌面应用）以及真实探测素材，你要产出**一个 JSON 对象**作为 App Spec。',
   '只输出 JSON 本体，不要解释、不要 Markdown 说明文字。',
@@ -180,10 +181,6 @@ const SYSTEM_RULES = [
   'commands 每项：{"action":"英文驼峰且唯一","title":"中文短标题","kind":"read|write","params":[{"name":"...","type":"string","required":true,"desc":"..."}],"steps":[...],"returns":{"type":"text|json","from":"保存键名"}}。',
   'params **必须是数组**（没有参数就写 []）；每个参数都要说明用途，方便用户填写。',
   'kind 判定：只读/查询/导出/查看 → "read"；提交/保存/修改/删除/发送/下发 → "write"。拿不准一律按 "write"（更保守）。',
-  '**元素引用规则（最容易写错，务必遵守）**：click/type/select/hover 要的是 ref（元素编号），**不是 CSS 选择器**；ref 只能由**同一条命令内前一步的 snapshot** 产生（快照按顺序从 1 编号，每次快照都会变），所以：',
-  '· 命令内若要用 ref，steps 必须先有一步 {"act":"snapshot"}，再用该次快照里的 ref；',
-  '· 拿不准 ref 时，**优先改用 js 表达式**直接操作最稳（例：{"act":"js","expression":"document.querySelector(\'#submit\').click()"}）；',
-  '· 纯读取类命令首选 {"act":"goto"} + {"act":"snapshot","save":"r"}，或 {"act":"js","expression":"document.body.innerText"} —— 两者都不依赖 ref。',
   '命令参数在步骤里的写法固定为 ${参数名}（例：url:"/orders?id=${orderId}"、text:"${keyword}"），不要用 {{参数名}} 或其它写法。',
   '给出 3 到 8 条最有价值的命令，**尽量覆盖素材里出现的主要功能入口**（不同页面/不同表单都算）；',
   '其中至少 2 条 read 命令，且至少 1 条 read 命令**不需要参数**（便于系统自动试跑验证）。',
@@ -191,14 +188,37 @@ const SYSTEM_RULES = [
 ].join('\n')
 
 /**
+ * **浏览器专属** act 的示例与指引 —— 只由 systemRulesFor 在 driver === 'browser' 时下发。
+ *
+ * 为什么必须从 SYSTEM_RULES 里拆出来（真实故障 D7 的残留）：这四条讲的全是 browser 的 act
+ * （ref / snapshot / goto / js）。它们此前跟着"通用规则"下发给**所有**驱动，于是本地应用
+ * （process/script/uia）的提示词里同时出现「驱动：process（act 只能取 cli）」和
+ * 「纯读取类命令首选 goto+snapshot」——模型照 web 例子写 → 结构校验按 process 判非法 →
+ * 漂移修复链路走到"宁可不修，不可改坏"整体放弃（repaired: []），
+ * 用户看到的现象是"桌面应用的命令改了版就再也修不好"，而报错里根本不提这个矛盾。
+ */
+const WEB_ONLY_RULES = [
+  '**元素引用规则（最容易写错，务必遵守）**：click/type/select/hover 要的是 ref（元素编号），**不是 CSS 选择器**；ref 只能由**同一条命令内前一步的 snapshot** 产生（快照按顺序从 1 编号，每次快照都会变），所以：',
+  '· 命令内若要用 ref，steps 必须先有一步 {"act":"snapshot"}，再用该次快照里的 ref；',
+  '· 拿不准 ref 时，**优先改用 js 表达式**直接操作最稳（例：{"act":"js","expression":"document.querySelector(\'#submit\').click()"}）；',
+  '· 纯读取类命令首选 {"act":"goto"} + {"act":"snapshot","save":"r"}，或 {"act":"js","expression":"document.body.innerText"} —— 两者都不依赖 ref。',
+].join('\n')
+
+/**
  * 系统规则 + 该目标**真实驱动**的 act 契约（act 清单只由唯一真源按驱动渲染）。
  * 为什么必须按驱动：SYSTEM_RULES 里曾同时枚举两套 act（"web 的 steps.act 只能取：…snapshot…；
  * desktop 的 …"），紧随其后又是硬编码 browser 的字段契约 —— 一份提示词里并列两套口径，
  * 桌面应用（尤其是对它做漂移修复时）极易照抄到另一套 act，写出连结构校验都过不了的命令。
+ * 同样地，**浏览器专属的示例（WEB_ONLY_RULES）只在 browser 下发**：桌面应用看到
+ * "首选 goto+snapshot" 就会写出 process 驱动下根本不合法的步骤（D7 的同类故障）。
+ * @param {object} target
+ * @param {{driver?:string}} [opts] driver 可由调用方显式给出（漂移修复用的是 Spec 自身的 driver）：
+ *   两处各推一次就可能推出两个值，提示词里会出现「驱动：uia」+「browser 字段契约」这种自相矛盾的组合。
  */
-function systemRulesFor(target) {
-  const d = driverOf({ target })
-  return [SYSTEM_RULES, `steps.act 只能取：${actsFor(d).join(', ')}。`, actContractLines(d)].join('\n')
+function systemRulesFor(target, { driver } = {}) {
+  const d = driver ? driverOf({ driver }, { targetType: target?.type }) : driverOf({ target })
+  const base = normalizeDriver(d) === 'browser' ? `${SYSTEM_RULES}\n${WEB_ONLY_RULES}` : SYSTEM_RULES
+  return [base, `steps.act 只能取：${actsFor(d).join(', ')}。`, actContractLines(d)].join('\n')
 }
 
 /** 没有探测素材时追加的补充规则：明确告诉模型"你在靠公开知识推断"，并要求保守 */
@@ -374,7 +394,10 @@ function validateSpecBasic(spec, { allowPublic = false } = {}) {
     const driverInvalid = !!rawDriver && !DRIVERS.includes(rawDriver) && rawDriver !== 'web'
     const driver = driverInvalid ? driverFromTarget(t?.type ?? spec?.target?.type) : driverOf(spec)
     if (driverInvalid) {
-      errors.push(`driver 不合法：${rawDriver}（只允许 ${DRIVERS.join(' / ')}；桌面应用请按探测结果写 process / script / uia，历史值 "desktop" 请改为具体驱动）`)
+      // 文案必须与实现一致：'web' 是**合法历史别名**（下面 driverInvalid 特意放行），
+      // 旧文案只说"只允许 browser/process/script/uia"，用户/模型被这么告知后会把能跑的 'web'
+      // 也当成非法值去改——而跨版本的历史 Spec 里真的存在 'web'（改写它属于无谓的兼容性风险）。
+      errors.push(`driver 不合法：${rawDriver}（只允许 ${DRIVERS.join(' / ')}；历史别名 "web" 等同 browser；桌面应用请按探测结果写 process / script / uia，历史值 "desktop" 请改为具体驱动）`)
     }
     const seen = new Set()
     for (const [i, c] of spec.commands.entries()) {
@@ -506,7 +529,7 @@ async function verifySpec({ spec, runCommand, sessionId, maxReads = VERIFY_MAX_R
 
 module.exports = {
   buildPrompt, extractSpec, generateSpec, verifySpec, validateSpecBasic, validateStepFields, snapshotForPrompt,
-  MAX_ROUNDS, VERIFY_MAX_READS, SNAPSHOT_CHAR_CAP, SYSTEM_RULES, systemRulesFor, NO_PROBE_RULES, WEB_ACTS, DESKTOP_ACTS,
+  MAX_ROUNDS, VERIFY_MAX_READS, SNAPSHOT_CHAR_CAP, SYSTEM_RULES, WEB_ONLY_RULES, systemRulesFor, NO_PROBE_RULES, WEB_ACTS, DESKTOP_ACTS,
   ACT_CONTRACT, WEB_CONTRACT, DESKTOP_CONTRACT, contractFor, actContractLines,
   DRIVERS, ACTS_BY_DRIVER, LEGACY_DRIVER_VALUES, normalizeDriver, driverFromTarget, driverOf, actsFor, tableFor,
   driverRulesLine, SPEC_SHAPE_LINE,
