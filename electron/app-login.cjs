@@ -23,21 +23,29 @@ const POLL_MS = 1500
 /** 超时文案的"秒/分钟"分界：短于 1 分钟仍按分钟取整会得到误导性的"0 分钟" */
 const MINUTE_MS = 60 * 1000
 
-/** 等待注册表：key → { resolve, waiters }；供 app:login-done / app:login-cancel 通道命中 */
+/** 等待注册表：key → { resolve, external, waiters, settled }；供 app:login-done / app:login-cancel 通道命中 */
 const pending = new Map()
 
-function resolveLoginWait(key) {
-  const p = pending.get(String(key))
-  if (!p) return false
-  p.resolve('user-confirmed')
+/**
+ * 结算一条登记：唤醒等待者，并**立即把该 key 的登记从表里摘除**。
+ * ★ F8：摘除是必需的。已 resolve 的登记若留在表里，后启动的调用者会"复用"同一 promise，
+ *   于是**没有任何用户操作**就拿到 `user-confirmed` / `cancelled`（用户视角是"我没点，它却说我登录好了"，
+ *   或"我没取消，它却说取消了"）——两者都违反本功能的"如实"原则。
+ *   摘除后新调用自然新建登记、走正常等待/超时路径；而**已在等待的旧等待者**已持有 external 引用，
+ *   照样收到 `user-confirmed`/`cancelled` —— F2 的"一次点击唤醒所有同 key 等待者"语义不受影响。
+ * @returns {boolean} false = 没有可结算的登记（含"已经结算过"），调用方据此提示用户重试
+ */
+function settleWait(key, how) {
+  const k = String(key)
+  const reg = pending.get(k)
+  if (!reg || reg.settled) return false
+  reg.settled = true
+  pending.delete(k)
+  reg.resolve(how)
   return true
 }
-function cancelLoginWait(key) {
-  const p = pending.get(String(key))
-  if (!p) return false
-  p.resolve('cancelled')
-  return true
-}
+function resolveLoginWait(key) { return settleWait(key, 'user-confirmed') }
+function cancelLoginWait(key) { return settleWait(key, 'cancelled') }
 /** 登记条数（按 key 计；同一 key 的多个等待者共享同一条登记，见 acquireWait） */
 function pendingCount() { return pending.size }
 
@@ -46,18 +54,21 @@ function pendingCount() { return pending.size }
  * ★ 同 key 重复进入必须**复用**同一登记，不能覆盖：直接 `set` 会让先进入者的 resolve 被顶掉
  *   （用户明明点了完成，先进入者照样干等到超时），并且先退出者的清理会一并删掉后进入者的登记。
  *   这里用等待者计数：登记的生命周期 = 最后一个使用者退出。
+ * ★ F8：**已结算（settled）的登记绝不复用**。正常路径下 settleWait 已把登记摘除，这里再判一次
+ *   `settled` 只是兜底（不复用已 resolve 的 promise 是硬约束，不能只依赖调用顺序）。
+ *   新调用必须**另起一条新 promise**，否则"无用户操作却报成功/取消"。
  */
 function acquireWait(key) {
   let reg = pending.get(key)
-  if (!reg) {
-    reg = { waiters: 0, resolve: () => {} }
+  if (!reg || reg.settled) {
+    reg = { waiters: 0, settled: false, resolve: () => {} }
     reg.external = new Promise((res) => { reg.resolve = res })
     pending.set(key, reg)
   }
   reg.waiters += 1
   return reg
 }
-/** 释放登记；计数归零才删除（"先退出的等待者"不得掐断仍在等待的登记） */
+/** 释放登记；计数归零才删除（"先退出的等待者"不得掐断仍在等待的登记；已被结算摘除的登记为 no-op） */
 function releaseWait(key, reg) {
   if (pending.get(key) !== reg) return
   reg.waiters -= 1
@@ -113,6 +124,8 @@ function preLoginShortcut(snapshot, url) {
  *   预判逻辑集中在 preLoginShortcut（Fix round 1 / F4 之后：url 是登录页时**只**否决
  *   `logged_in === true` 这条捷径，不再整段跳过预判）。这条路径不会漏判：即使预判为假，
  *   进了等待流程后第一轮快照判定立刻就会给出 logged_in=true → logged-in。
+ * ★ 登记的**时机**（Fix round 2 / F9 之后）：等待登记早于"预判快照"（不只是早于开窗）——
+ *   预判是一次真实往返，用户在往返期间点击同样不能丢信号；见下方注释与 try/finally。
  */
 async function ensureLoggedIn({ key, url, executor, deps = {}, emit, waitMs = DEFAULT_WAIT_MS, pollMs = POLL_MS } = {}) {
   const now = deps.now || (() => Date.now())
@@ -134,18 +147,24 @@ async function ensureLoggedIn({ key, url, executor, deps = {}, emit, waitMs = DE
   const snapOnce = async () => {
     try { const r = await executor.exec(key, 'snapshot', {}); return r?.snapshot || null } catch { return null }
   }
-  if (preLoginShortcut(await snapOnce(), url)) return finish(true, 'already-logged-in')
 
   // ★ F1：登记必须早于 openWindow。上游（Task 6/7）在调用本函数**之前**就会 emit waiting:true，
   //   渲染层此时已显示「我已完成登录」；而开窗 + goto 要花几百毫秒~数秒（goto 上限 30s）。
   //   若等到导航完成才登记，用户在开窗期间点击会拿不到登记（resolveLoginWait 返 false），
   //   信号被永久丢弃 → 用户视角是"点了没反应，干等 5 分钟"。
   //   副作用（已知并接受）：开窗前就点击 → 以 user-confirmed 提前返回（语义合理：用户说他已完成登录）。
+  // ★ F9：登记还要早于**预判那次 snapshot**。预判本身是一次真实往返（百毫秒级），用户在往返期间点击
+  //   同样会丢信号 → 最终假超时。所以登记点提到 `if (!executor)` 早退之后的第一件事，
+  //   并让 try/finally 从那里起覆盖整段流程（预判 + 开窗 + goto + 等待循环，含 already-logged-in /
+  //   open-failed / nav-failed 三条早退——早退也必须释放，登记绝不泄漏）。
   // ★ F2：同 key 并发进入复用同一登记（见 acquireWait），先退出者不得删掉后进入者的登记。
+  // ★ F8：已结算的登记会被 settleWait 摘除，后来者不受"已 resolve 的 promise"影响（见 settleWait）。
   const waitKey = String(key)
   const reg = acquireWait(waitKey)
   const external = reg.external
   try {
+    if (preLoginShortcut(await snapOnce(), url)) return finish(true, 'already-logged-in')
+
     let opened
     try { opened = await executor.openWindow(key) } catch (e) {
       return finish(false, 'open-failed', { error: `打开登录窗口失败：${String(e?.message || e)}` })
@@ -183,7 +202,7 @@ async function ensureLoggedIn({ key, url, executor, deps = {}, emit, waitMs = DE
     }
     return finish(false, 'timeout', { error: timeoutError(waitMs) })
   } finally {
-    // 覆盖"登记之后的整段流程"（含 open-failed / nav-failed 早退）：登记绝不泄漏
+    // 覆盖"登记之后的整段流程"（含 already-logged-in / open-failed / nav-failed 早退）：登记绝不泄漏
     releaseWait(waitKey, reg)
   }
 }

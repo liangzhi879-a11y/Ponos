@@ -35,11 +35,15 @@ const realDeps = () => ({ sleep: (ms) => new Promise((r) => setTimeout(r, ms)), 
 /** 假时钟但每步跳 step ms —— 用于"大步长快速跑完长等待"（文案单位用例） */
 const stepDeps = (step) => ({ sleep: async () => {}, now: (() => { let t = 0; return () => (t += step) })() })
 
+/** 真实小值等待（毫秒级）——时序用例里等事件发生用（注意：与 ensureLoggedIn 的 waitMs 选项无关） */
+const tick = (ms) => new Promise((r) => setTimeout(r, ms))
+
 /**
  * 时序可控的执行器（fix round 1 用）：开窗可延迟、goto 可抛错、openWindow 可返回 {ok:false}。
  * 与上方的 fakeExecutor 分开，保持 brief Step 1 的假执行器逐字不动。
+ * fix round 2 增 `snapDelayMs`：让 snapshot 往返变慢，用于复现"预判快照期间点击"（F9）。
  */
-function timingExecutor({ openDelayMs = 0, gotoThrows = false, openRes = null, snapshot = { page: { logged_in: null } } } = {}) {
+function timingExecutor({ openDelayMs = 0, gotoThrows = false, openRes = null, snapshot = { page: { logged_in: null } }, snapDelayMs = 0 } = {}) {
   const calls = []
   return {
     calls,
@@ -54,6 +58,7 @@ function timingExecutor({ openDelayMs = 0, gotoThrows = false, openRes = null, s
         if (gotoThrows) throw new Error('goto boom')
         return { ok: true }
       }
+      if (action === 'snapshot' && snapDelayMs) await new Promise((r) => setTimeout(r, snapDelayMs))
       return { ok: true, snapshot }
     },
     getCookieFingerprint: async () => 'empty',
@@ -293,4 +298,66 @@ test('F6: 超时文案按量级选单位（<60s 用秒，绝不出现"0 分钟"�
   const minutes = await ensureLoggedIn({ key: 'f6m', url: 'https://x.com/login', executor: timingExecutor(), deps: stepDeps(5000), waitMs: DEFAULT_WAIT_MS, pollMs: 20 })
   assert.equal(minutes.reason, 'timeout')
   assert.match(minutes.error, /5 分钟/)
+})
+
+// —— fix round 2（审查 F8–F9）：已结算登记不得被复用 / 登记早于预判快照 ——
+
+test('F8①: 结算（点击完成）后新发起的同 key 调用不得复用已 resolve 的登记', async () => {
+  const before = pendingCount()
+  // 旧调用：开窗延迟期间用户点了「我已完成登录」→ 登记被结算，但旧等待者此刻还没返回
+  const a = ensureLoggedIn({ key: 'f8c', url: 'https://x.com/login', executor: timingExecutor({ openDelayMs: 120 }), deps: realDeps(), waitMs: 1500, pollMs: 20 })
+  await tick(20)
+  assert.equal(resolveLoginWait('f8c'), true)
+  assert.equal(pendingCount(), before, '结算即摘除登记：不得把已 resolve 的登记留在表里给后来者复用')
+  // 新调用：同 key，且全程无任何用户操作
+  const b = ensureLoggedIn({ key: 'f8c', url: 'https://x.com/login', executor: timingExecutor(), deps: realDeps(), waitMs: 300, pollMs: 20 })
+  const [ra, rb] = await Promise.all([a, b])
+  assert.equal(ra.reason, 'user-confirmed', 'F2 语义保住：已持有 promise 的旧等待者照常收到信号')
+  assert.equal(rb.ok, false, '没有任何用户操作，绝不能报成功')
+  assert.equal(rb.reason, 'timeout', '结算后的新调用必须走正常超时路径（不得凭空 user-confirmed）')
+  assert.equal(pendingCount(), before, '两路都收尾后登记表回到进入前水平')
+})
+
+test('F8②: 结算（取消）后新发起的同 key 调用不得继承 cancelled（用户并未取消这一次）', async () => {
+  const before = pendingCount()
+  const a = ensureLoggedIn({ key: 'f8x', url: 'https://x.com/login', executor: timingExecutor({ openDelayMs: 120 }), deps: realDeps(), waitMs: 1500, pollMs: 20 })
+  await tick(20)
+  assert.equal(cancelLoginWait('f8x'), true)
+  assert.equal(pendingCount(), before, '取消结算同样立即摘除登记')
+  const b = ensureLoggedIn({ key: 'f8x', url: 'https://x.com/login', executor: timingExecutor(), deps: realDeps(), waitMs: 300, pollMs: 20 })
+  const [ra, rb] = await Promise.all([a, b])
+  assert.equal(ra.ok, false)
+  assert.equal(ra.reason, 'cancelled', '旧等待者照常收到 cancelled')
+  assert.equal(rb.ok, false)
+  assert.equal(rb.reason, 'timeout', '未取消这一次的新调用不得凭空 cancelled')
+  assert.equal(pendingCount(), before)
+})
+
+test('F9: 预判快照期间（登记之前）的点击也必须生效——登记要早于预判那次 snapshot', async () => {
+  const before = pendingCount()
+  const ex = timingExecutor({ snapDelayMs: 80 }) // 预判快照往返 ~80ms
+  const p = ensureLoggedIn({ key: 'f9', url: 'https://x.com/login', executor: ex, deps: realDeps(), waitMs: 1200, pollMs: 20 })
+  await tick(20) // 预判快照尚未返回，用户此时点「我已完成登录」
+  const clicked = resolveLoginWait('f9')
+  const r = await p
+  assert.equal(clicked, true, '预判期间点击必须命中登记（命中不了 = 信号被永久丢弃 → 假超时）')
+  assert.notEqual(r.reason, 'timeout')
+  assert.equal(r.ok, true)
+  assert.equal(r.reason, 'user-confirmed')
+  assert.equal(pendingCount(), before, '提前登记之后整段流程都必须释放干净')
+})
+
+test('F9 守卫: 三条早退路径（already-logged-in / open-failed / nav-failed）都必须释放登记（不泄漏）', async () => {
+  const before = pendingCount()
+  const cases = [
+    { key: 'f9a', url: 'https://x.com/a', executor: fakeExecutor({ snapshots: [{ page: { logged_in: true } }] }), reason: 'already-logged-in' },
+    { key: 'f9o', url: 'https://x.com/login', executor: timingExecutor({ openRes: { ok: false, error: '窗口打不开' } }), reason: 'open-failed' },
+    { key: 'f9n', url: 'https://x.com/login', executor: timingExecutor({ gotoThrows: true }), reason: 'nav-failed' },
+  ]
+  for (const c of cases) {
+    const r = await ensureLoggedIn({ key: c.key, url: c.url, executor: c.executor, deps: realDeps(), waitMs: 300, pollMs: 20 })
+    assert.equal(r.reason, c.reason)
+    assert.equal(pendingCount(), before, `${c.reason} 早退后登记表必须回到调用前水平（登记提前到预判之前后仍不得泄漏）`)
+    assert.equal(resolveLoginWait(c.key), false, `${c.reason} 早退后同 key 不得残留可命中的登记`)
+  }
 })
