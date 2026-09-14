@@ -936,8 +936,12 @@ export function createLoopController({ wire, engine, store = null, configDir = '
     const filesChanged = digest.filter((t) => !t.isError && t.path).length
 
     // 2. 无进展指纹（轮次维度，补既有时间维度 LOOP_STALL_MS 的空档）
+    // 语义：连续相同指纹轮数。首次记录即算第 1 轮（第 1 轮不可能"与前一轮相同"），
+    // 后续每轮指纹不变则 +1；达到阈值（默认 3，env PONOS_LOOP_NOPROGRESS_N）即升级。
+    // 指纹为空（本轮无工具调用）→ 不计无进展（纯文本轮无法判定是否实质推进，保守不误停）。
     const fp = fingerprintOf(outcome)
     if (fp && fp === state.noProgress.lastFingerprint) state.noProgress.streak += 1
+    else if (fp) state.noProgress.streak = 1
     else state.noProgress.streak = 0
     state.noProgress.lastFingerprint = fp
 
@@ -1031,6 +1035,7 @@ export function createLoopController({ wire, engine, store = null, configDir = '
   return {
     start, onTurnEnd, status, formatStatus, pause, resume, stop, setBudget, approve, inject,
     snapshot, rollback, replay, memory, load, persist, isActive, nextPayload,
+    engine, // 暴露注入的 engine（cli 与测试共用同一实例；测试改其 queueNext 可断言注入）
     // 测试注入点（生产代码不调用）
     __setVerifyForTest(fn) { verifyImpl = fn },
   }
@@ -1236,7 +1241,7 @@ import { parseLoopDirective } from './loop-commands.mjs'
       if (loop.isActive()) {
         let decision = { action: 'wait', delayMs: 0, rationale: '' }
         try {
-          decision = await loop.onTurnEnd({ outcome: engine.lastOutcome?.() ?? null })
+          decision = await loop.onTurnEnd({ outcome: turnOutcome })
         } catch (e) {
           log.error('loop onTurnEnd failed', e) // 决策异常不阻断：按不推进处理
         }
@@ -1280,6 +1285,21 @@ import { parseLoopDirective } from './loop-commands.mjs'
 
 3e. cancel 路径（`kernel/cli.mjs:1156-1160`）替换为 `loop.stop('cancelled')`。
 
+3e-2. **轮次 outcome 采集**（无进展指纹与成本累计的数据来源）：
+当前 `kernel/cli.mjs:958` 为 `await engine.runTurn({ content, msg })` 且**忽略返回值**；而
+`engine.runTurn` 现返回 `{ usage, model, text, durationMs }`，**不含 `toolDigest`**
+（`kernel/engine.mjs:2876`，内部 `outcome` 有该字段）。故需：
+
+① `kernel/engine.mjs:2876` 的 return 补 `toolDigest`（只增字段，向后兼容）：
+```js
+      return { usage: outcome.usage, model: outcome.model, text: outcome.text, durationMs, toolDigest: outcome.toolDigest }
+```
+② cli 在 `handleUser` 的 try 之前声明 `let turnOutcome = null`，把 `:958` 改为：
+```js
+      turnOutcome = await engine.runTurn({ content, msg })
+```
+③ 轮末推进（3d）使用 `turnOutcome`（已按此订正）。
+
 3f. stdin 路由（`kernel/cli.mjs:1247` 的 `if (parsed.type === 'user')` 分支**之前**）加 `loop_command` 分支——抽为 `handleLoopOp(op, args, requestId)` 复用：
 
 ```js
@@ -1299,7 +1319,18 @@ import { parseLoopDirective } from './loop-commands.mjs'
       switch (op) {
         case 'status': { const st = loop.status(); try { wire.loop('status', { ...st }) } catch { /* 静默 */ } return { ok: true, text: loop.formatStatus() } }
         case 'pause': loop.pause(); return { ok: true, text: '已请求暂停（当前轮跑完生效）' }
-        case 'resume': case 'approve': loop.resume(); return { ok: true, text: '已恢复' }
+        case 'resume': case 'approve': {
+          const wasActive = loop.isActive()
+          loop.resume()
+          // 恢复后需重新投递下一轮：暂停/挂起都发生在"轮已结束"的边界，控制器不会自行
+          // 推进（其 onTurnEnd 只在轮末被调用），故此处补投递，否则恢复后静默停住。
+          if (wasActive) {
+            const p = loop.nextPayload(loopUntil)
+            state.queue.unshift({ message: p.message, loop: p.loop, skipMemoryCapture: true })
+            if (!state.turnActive) { const n = state.queue.shift(); if (n) void handleUser(n) }
+          }
+          return { ok: true, text: '已恢复' }
+        }
         case 'stop': loop.stop('cancelled'); return { ok: true, text: '已停止 loop' }
         case 'budget': {
           const patch = {}
