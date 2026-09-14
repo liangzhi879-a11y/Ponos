@@ -63,18 +63,44 @@ function passwordReason(ev) {
     : '页面上有密码输入框（登录墙强信号）'
 }
 
-/** loginUrl：优先同源的表单 action，其次（本页就是登录页时）本页地址；跨站 action 一律忽略（返回 null） */
+/** 表单 action 解析：必须是同源的 http(s) 地址，否则返回 null（跨站 action 绝不给登录窗口导航） */
+function sameOriginAction(f, pageUrl, base) {
+  if (!f || !f.action) return null
+  try {
+    const u = new URL(String(f.action), pageUrl)
+    if (!base || u.origin !== base.origin) return null
+    if (!/^https?:$/.test(u.protocol)) return null
+    return u
+  } catch { return null }
+}
+
+/**
+ * 挑一个"最像登录页"的地址给登录窗口导航。
+ * ★ 为什么不能"取第一个带 action 的同源表单"：真实站点首页常把**搜索框排在登录入口之前**
+ *   （甚至就在同一个登录页上），取第一个会把登录窗口导航到搜索结果页——用户在那儿根本找不到
+ *   登录框，只会以为功能坏了；同时 spec.auth.loginUrl 也会记下一个假登录地址。
+ *   所以按证据强弱打分，只取分最高者：
+ *     3 = 表单里有密码字段（几乎确定是登录表单）
+ *     2 = 表单 action 路径本身像登录页（/login、/signin、/sso…）
+ *     1 = 本页就是登录页（此时同源 action 视为登录提交地址）
+ *     0 = 与登录无关（搜索/筛选/订阅表单）→ 跳过；一个都不够分就退回本页地址或 null。
+ */
 function pickLoginUrl(material, pageUrl) {
   const base = parse(pageUrl)
   const forms = Array.isArray(material?.forms) ? material.forms : []
+  const pageIsLogin = !!(base && LOGIN_PATH_RE.test(base.pathname))
+  let best = null
+  let bestScore = 0
   for (const f of forms) {
-    if (!f || !f.action) continue
-    try {
-      const u = new URL(String(f.action), pageUrl)
-      if (base && u.origin === base.origin && /^https?:$/.test(u.protocol)) return u.toString()
-    } catch { /* 非法 action 忽略 */ }
+    const action = sameOriginAction(f, pageUrl, base)
+    if (!action) continue
+    const fields = Array.isArray(f?.fields) ? f.fields : []
+    const hasPw = fields.some((x) => String(x?.type || '').toLowerCase() === 'password')
+    const score = hasPw ? 3 : (LOGIN_PATH_RE.test(action.pathname) ? 2 : (pageIsLogin ? 1 : 0))
+    if (score > bestScore) { bestScore = score; best = action.toString() }
   }
-  if (base && LOGIN_PATH_RE.test(base.pathname)) return base.toString()
+  if (best) return best
+  if (base && pageIsLogin) return base.toString()
   return null
 }
 

@@ -243,3 +243,38 @@ test('loginSucceeded：偏保守——三类成立条件 + 拿不准一律 false
   assert.equal(loginPage.loginSucceeded(null, 'https://x.com/login'), false)
   assert.equal(loginPage.loginSucceeded(undefined, undefined), false)
 })
+
+// ─────────── 修补：loginUrl 必须认准"登录表单"，别把搜索框当登录页 ───────────
+// 真实站点首页常把搜索框排在登录入口之前。原实现"取第一个同源带 action 的表单"，
+// 会把登录窗口导航到搜索结果页（用户找不到登录框），spec.auth.loginUrl 也记下假地址。
+
+test('loginUrl：搜索框排在登录表单之前时，取登录表单（不得被第一个同源表单劫持）', () => {
+  const material = {
+    hasPassword: true,
+    forms: [
+      { action: '/orders', fields: [{ tag: 'input', type: 'text', name: 'kw' }, { tag: 'button' }] },
+      { action: '/login', fields: [{ tag: 'input', type: 'text', name: 'user' }, { tag: 'input', type: 'password', name: 'pw' }] },
+    ],
+  }
+  assert.equal(detectLoginWall({ material, url: 'https://x.com/orders' }).loginUrl, 'https://x.com/login')
+})
+
+test('loginUrl：本页是登录页时，仍优先取带密码字段的那个表单（不是第一个表单）', () => {
+  const material = {
+    hasPassword: true,
+    forms: [{ action: '/search' }, { action: '/session/new', fields: [{ tag: 'input', type: 'password' }] }],
+  }
+  assert.equal(detectLoginWall({ material, url: 'https://x.com/login' }).loginUrl, 'https://x.com/session/new')
+})
+
+test('loginUrl：只有搜索/筛选表单（与登录无关）时给 null，让调用方退回目标网址', () => {
+  const material = { forms: [{ action: '/search', fields: [{ tag: 'input', type: 'text', name: 'q' }] }] }
+  assert.equal(detectLoginWall({ material, url: 'https://x.com/' }).loginUrl, null)
+  // 路径本身像登录页的 action 仍算登录证据（/sso、/signin）
+  assert.equal(detectLoginWall({ material: { forms: [{ action: '/sso/start' }] }, url: 'https://x.com/' }).loginUrl, 'https://x.com/sso/start')
+})
+
+test('loginUrl：action 路径像登录页时优先于"本页是登录页"的兜底（分档生效）', () => {
+  const material = { forms: [{ action: '/account/login' }, { action: '/help' }] }
+  assert.equal(detectLoginWall({ material, url: 'https://x.com/login' }).loginUrl, 'https://x.com/account/login')
+})

@@ -19,6 +19,19 @@ function snapshotHasPassword(page) {
 }
 
 /**
+ * 取 URL 的 pathname；**只认绝对的 http(s) 地址**，其余（相对路径、javascript:、畸形串）返回 null。
+ * 为什么要求绝对 http(s)：登录成功判定是拿"当前路径"去比"登录路径"，一旦拿的不是真实网页地址
+ * （`about:blank`、`javascript:void(0)`、相对路径…），比较结果毫无意义——返回 null 让调用方保守处理。
+ */
+function pathOf(u) {
+  try {
+    const p = new URL(String(u || ''))
+    if (!/^https?:$/.test(p.protocol)) return null
+    return p.pathname
+  } catch { return null }
+}
+
+/**
  * 判断快照是否表明"已登录"（登录编排的三路成功信号之一，另一路是"cookie 指纹变化"）。
  *   a) `page.logged_in === true` —— 引擎给的强信号，直接为真（哪怕是"修改密码"页也认，因为它确实是登录态）；
  *   b) 页面上**还有密码框** —— 认为仍停在登录页，为假；
@@ -27,6 +40,8 @@ function snapshotHasPassword(page) {
  * ★ 刻意偏保守：拿不准一律返回 false。理由：在登录页上误判"成功"会让调用方带着未登录态继续抓页面，
  *   最终给用户一条残缺的命令，比多等一会儿糟得多；而"起始页不是登录页"时，
  *   "当前页没有密码框"根本不构成成功证据（页面可能还没渲染完）。
+ * ★ 所以 c) 的两个地址都必须**能解析**才敢比较：`page.url` 解析不了（相对路径/畸形 URL）时
+ *   一律返回 false，绝不能因为"解析失败"就当成"已经离开登录页"——那样恰好会误判成功。
  *
  * @param {object|null} snapshot 浏览器快照（取其 page 字段）
  * @param {string} url 本次操作的起始地址（用于判断"原本是不是在登录页"）
@@ -39,12 +54,12 @@ function loginSucceeded(snapshot, url) {
   if (snapshotHasPassword(page)) return false
   const current = String(page.url || '')
   if (!current) return false
-  let onLoginPage = false
-  try { onLoginPage = LOGIN_PATH_RE.test(new URL(current).pathname) } catch { onLoginPage = false }
-  if (onLoginPage) return false
-  let startWasLoginPage = false
-  try { startWasLoginPage = LOGIN_PATH_RE.test(new URL(String(url || '')).pathname) } catch { startWasLoginPage = false }
-  return startWasLoginPage
+  const currentPath = pathOf(current)
+  if (currentPath === null) return false
+  if (LOGIN_PATH_RE.test(currentPath)) return false
+  const startPath = pathOf(url)
+  if (startPath === null) return false
+  return LOGIN_PATH_RE.test(startPath)
 }
 
 module.exports = { LOGIN_PATH_RE, snapshotHasPassword, loginSucceeded }

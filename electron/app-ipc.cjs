@@ -29,8 +29,6 @@ const appLogin = require('./app-login.cjs')
 // 只用来决定"要不要用浏览器增强探测"；生成命令本身**不依赖**它（见 app-http-probe.cjs 头部说明）。
 const { isWhitelisted } = require('./browser-common.cjs')
 
-/** 探测专用浏览器会话：与用户会话隔开，避免探测把用户正在看的页面导航走（= appSessionKey 的兜底键） */
-const PROBE_SESSION = 'app-probe'
 /**
  * 生成时最多抓取多少页面。用户明确表示可以慢，但要求"尽可能充分获取所有能控制的接口信息"，
  * 所以宁可多抓几页（含列表/搜索/设置等）给模型，也不要只凭一个首页就写命令。
@@ -789,4 +787,4 @@ function profiledSnapshot(snap) {
   }
 }
 
-module.exports = { registerAppHandlers, runAppCommand, handleAppExecMessage, inferDriver, appRoots, PROBE_SESSION, profiledSnapshot, authorizeAppTarget, hostVariants }
+module.exports = { registerAppHandlers, runAppCommand, handleAppExecMessage, inferDriver, appRoots, profiledSnapshot, authorizeAppTarget, hostVariants }

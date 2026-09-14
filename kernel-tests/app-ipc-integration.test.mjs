@@ -365,3 +365,14 @@ test('app:login-done / app:login-cancel：给等待中的登录发信号（false
   assert.equal(res2.ok, false)
   assert.equal(res2.reason, 'cancelled')
 })
+
+// ─────────── 修补：会话键统一后，旧的固定探测会话常量已成死代码 ───────────
+// 键必须由 appSessionKey() 产出（web 按站点、desktop 按 appId、兜底 app-probe）。
+// 留一个"固定 app-probe"的导出极易被后来者当成可用常量去拼键 → 静默落到兜底分区 → Cookie 读空。
+test('app-ipc 不再导出固定的探测会话常量（键一律由 appSessionKey 产出）', () => {
+  const mod = require('../electron/app-ipc.cjs')
+  assert.ok(!('PROBE_SESSION' in mod), 'PROBE_SESSION 已废弃，不得继续导出（会被误用于拼键）')
+  const { appSessionKey } = require('../electron/app-session-key.cjs')
+  assert.equal(typeof appSessionKey, 'function')
+  assert.equal(appSessionKey({ appId: 'x', target: { type: 'web', url: 'https://www.x.com/a' } }), 'app-site-x.com')
+})

@@ -361,3 +361,26 @@ test('F9 守卫: 三条早退路径（already-logged-in / open-failed / nav-fail
     assert.equal(resolveLoginWait(c.key), false, `${c.reason} 早退后同 key 不得残留可命中的登记`)
   }
 })
+
+// ─────────── 修补：地址解析不了时 loginSucceeded 必须保守返回 false ───────────
+// 原实现把"当前地址解析失败"当成"已经离开登录页"（catch 里 onLoginPage=false），
+// 于是在登录页上等登录时，一个畸形/相对 URL 的快照就能骗到"登录成功" —— 与它自己的注释
+// "拿不准一律返回 false"直接矛盾，后果是带着未登录态继续抓页面、产出残缺命令。
+
+test('loginSucceeded：page.url 解析不了时一律 false（不得因解析失败被判"已离开登录页"）', () => {
+  const noPw = { interactives: [{ tag: 'link', label: '订单' }] }
+  for (const bad of ['/orders', 'not a url', 'javascript:void(0)', 'http://']) {
+    assert.equal(loginSucceeded({ page: { url: bad, ...noPw } }, 'https://x.com/login'), false, `畸形地址被误判成功：${bad}`)
+  }
+})
+
+test('loginSucceeded：起始地址解析不了时也 false（拿不准不冒充成功）', () => {
+  assert.equal(loginSucceeded({ page: { url: 'https://x.com/orders', interactives: [] } }, '/login'), false)
+  assert.equal(loginSucceeded({ page: { url: 'https://x.com/orders', interactives: [] } }, ''), false)
+})
+
+test('loginSucceeded：正常绝对地址照旧判定（logged_in=true 仍是最强信号，不受本次收紧影响）', () => {
+  assert.equal(loginSucceeded({ page: { logged_in: true, url: 'not a url' } }, 'https://x.com/login'), true)
+  assert.equal(loginSucceeded({ page: { url: 'https://x.com/orders', interactives: [] } }, 'https://x.com/login'), true)
+  assert.equal(loginSucceeded({ page: { url: 'https://x.com/login', interactives: [] } }, 'https://x.com/login'), false)
+})
