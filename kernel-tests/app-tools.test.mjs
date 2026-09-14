@@ -147,7 +147,9 @@ test('⑥未注入 runner → 明确报错（绝不静默成功）', async () =>
 test('⑦超 MAX_COMMANDS_PER_APP / publicLimit 被截断（按注册顺序）', () => {
   const perApp = tmpRoot()
   const spec = makeApp({ root: perApp, commands: mkCmds(MAX_COMMANDS_PER_APP + 3), bindSession: 's1' })
-  const names = Object.keys(buildAppTools({ roots: [perApp], sessionId: 's1' }))
+  // 必须显式给 publicLimit：不给时用的是 dyntools 的 LIMIT_DEFAULT（全局工具池 20），
+  // 它会比单应用上限先截断，于是这条用例测的就不是"单应用上限"了（MAX 提到 40 后就暴露了）。
+  const names = Object.keys(buildAppTools({ roots: [perApp], sessionId: 's1', publicLimit: MAX_COMMANDS_PER_APP + 10 }))
   assert.equal(names.length, MAX_COMMANDS_PER_APP, `单应用上限 ${MAX_COMMANDS_PER_APP}`)
   assert.equal(names[0], appToolName(spec, 'act1'))
   assert.equal(names.at(-1), appToolName(spec, `act${MAX_COMMANDS_PER_APP}`))

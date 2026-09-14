@@ -52,9 +52,9 @@ const withTwo = (fn) => {
   }
 }
 
-test('常量：expose 三态与命令上限', () => {
+test('常量：expose 三态与命令上限（上限是"防撑爆"的安全值，不是目标条数）', () => {
   assert.deepEqual(EXPOSE_MODES, ['private', 'console', 'public'])
-  assert.equal(MAX_COMMANDS_PER_APP, 20)
+  assert.equal(MAX_COMMANDS_PER_APP, 40)
 })
 
 test('listApps 读 registry.json 的 apps 数组', () => {

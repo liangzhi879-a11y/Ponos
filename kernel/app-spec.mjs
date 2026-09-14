@@ -11,8 +11,12 @@ import { join } from 'node:path'
 /** expose 三态：private 永不接给 agent / console 仅进入控制台的会话可见 / public 全局 */
 export const EXPOSE_MODES = ['private', 'console', 'public']
 
-/** 单应用命令数上限（防止工具池被单个应用撑爆，与 dyntools 的 LIMIT_DEFAULT 同思路） */
-export const MAX_COMMANDS_PER_APP = 20
+/**
+ * 单应用命令数上限（防止工具池被单个应用撑爆，与 dyntools 的 LIMIT_DEFAULT 同思路）。
+ * 注意：这是**安全上限**，不是"应该写多少条"的目标；命令质量由 app-agent.checkSpecQuality 把关。
+ * 20 → 40：接口级封装（js+fetch）落地后，一个站点可暴露的有效命令明显变多，20 会成为硬顶。
+ */
+export const MAX_COMMANDS_PER_APP = 40
 
 /** 缺省可见性：console（不进公共注册表，进入卡片才绑定） */
 const DEFAULT_EXPOSE_MODE = 'console'
