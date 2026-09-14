@@ -420,7 +420,14 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
         const why = fetched.ok ? '静态素材偏少，改用浏览器取真实 DOM' : fetched.error
         emitProgress(appId, { phase: 'probe', detail: `${why}；该域名在白名单内，改用浏览器取真实页面…` })
         try {
-          const probed = await profiler.probeWeb({ url: target.url, executor, sessionId: key })
+          // material 传进去：静态抓到的素材里已经有 scripts/apiHints（SPA 的能力面在 chunk 里，
+          // 不在浏览器快照的可见元素上），清单据此才能给出 http/chunk 通道。
+          const probed = await profiler.probeWeb({
+            url: target.url, executor, sessionId: key,
+            material: fetched.ok ? fetched.material : undefined,
+          })
+          // ★ 能力清单：探测已经算好了，直接接住（Task 10 遗留补齐，见下方 web 侧清单说明）
+          surface = probed.surface || surface
           probeMode = 'browser'
           probeMaterial = { url: target.url, title: probed.title, snapshot: snapshotForPrompt(probed.snapshot) }
           probeTitle = probed.title
@@ -440,6 +447,18 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
         probeMode = 'none'
         probeNote = fetched.error || '未取得页面素材'
         emitProgress(appId, { phase: 'fetch', done: true, detail: `${probeNote}；将基于模型对该站点的公开了解生成，命令需人工核对` })
+      }
+
+      // ★ web 侧能力清单（补齐 Task 7 的遗留）：清单只是"多给模型一份情报"——web 侧**不做**三分拦截
+      //   （web-ui 恒 verified：页面能访问就有可控路径，不存在需要拒绝的情形），也**不开浏览器**。
+      //   已调过 probeWeb 的分支在上面直接接住了它的 surface；其余分支（后台取素材就够了）用纯函数
+      //   `buildWebCapabilities` 从**已有素材**算——它被拆成纯函数的全部理由就是"不需要浏览器"。
+      //   001（Vue SPA）正靠这条：真实能力面在 chunk 的接口路径里，不在首页 HTML 上。
+      //   素材缺失/异常一律让 surface 保持 null → 提示词与改动前逐字一致（不报错、不阻塞生成）。
+      if (!surface && harvested.ok && harvested.material) {
+        try {
+          surface = profiler.buildWebCapabilities({ url: target.url, material: harvested.material })?.surface || null
+        } catch { surface = null }
       }
     } else {
       // ★ 能力清单要从探测结果原样带出来：`detectDriver` 只回 `level`/`evidence`（老契约，本任务不改它），

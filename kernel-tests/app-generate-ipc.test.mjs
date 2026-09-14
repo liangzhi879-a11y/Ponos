@@ -508,6 +508,48 @@ test('桌面应用不该出现浏览器探索（如实拒绝，而不是静默�
   assert.ok(seenUsers.some((u) => u.includes('桌面应用')), '要如实告诉模型这条路走不通')
 })
 
+// ---------- Task 10 补丁：web 侧清单也要进提示词（Task 7 的遗留） ----------
+//
+// 001（yfljsj.com，Vue SPA）的真实能力面在 chunk 里的接口路径，**不在首页 HTML 上**；
+// 清单只走 desktop 分支的话，"两侧同时给情报"就只剩一侧。这里守两条：
+//   · web 路径下清单确实进到 system（模型据此从最有把握的通道开始封装）；
+//   · 清单是**纯函数从已有素材算的**——不为它多开一次浏览器（用户无感优先）。
+const SPA_HTML = `<!doctype html><html><head><title>订单系统</title>
+<script src="/js/index.9f2c.js"></script></head><body>
+<form id="q" action="/api/orders"><input name="kw" placeholder="订单号"><input name="from" placeholder="起始日期">
+<input name="page" placeholder="页码"><button type="submit">查询</button></form>
+<a href="/orders">订单</a><a href="/export">导出</a>
+<script>fetch('/api/orders/list')</script></body></html>`
+
+test('app:generate（web）：能力清单用已有素材算出并进 system，且不额外开浏览器', async () => {
+  const seenSystems = []
+  const t = setup({
+    fetch: async () => ({ ok: true, status: 200, url: 'https://spa.example/', headers: { get: () => 'text/html' }, text: async () => SPA_HTML }),
+    llm: async (p) => { seenSystems.push(p?.system || ''); return { ok: true, text: SPEC_TEXT, error: null, chars: SPEC_TEXT.length } },
+  })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://spa.example/' }, appId: 'x', sessionId: 's1' })
+  assert.equal(r.ok, true)
+  // 首轮就该看见（清单是探索起点，不是事后报告）
+  const sys = seenSystems[0] || ''
+  assert.ok(sys.includes('已探明可控路径'), `web 侧清单必须进 system：${sys.slice(0, 300)}`)
+  assert.ok(sys.includes('channel=http'), `表单 action / 内联 fetch 应产出 http 通道：${sys.slice(0, 600)}`)
+  assert.ok(sys.includes('channel=chunk') && sys.includes('/js/index.9f2c.js'), `SPA 的 chunk 线索必须给出：${sys.slice(0, 600)}`)
+  assert.equal(r.probe.mode, 'http', '清单由已有素材纯函数算出，不得为此再开浏览器')
+})
+
+test('app:generate（web）：拿不到素材时清单缺席，但生成照常（回退既有行为）', async () => {
+  const seenSystems = []
+  // 注意：域名必须是本文件里**没被授权过**的新 host —— `authorizeAppTarget` 会真的放宽进程级白名单，
+  // 用过的 host 在后续用例里会变成"白名单站点"而多走一次浏览器探测（测试间串味的既存现象）。
+  const t = setup({
+    fetch: failFetch('取页面失败：连接被拒绝'),
+    llm: async (p) => { seenSystems.push(p?.system || ''); return { ok: true, text: SPEC_TEXT, error: null, chars: SPEC_TEXT.length } },
+  })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://no-material.example' }, appId: 'x', sessionId: 's1' })
+  assert.equal(r.ok, true, '素材拿不到不能阻塞生成')
+  assert.ok(!(seenSystems[0] || '').includes('已探明可控路径'), '没有素材就没有清单，绝不编造')
+})
+
 // ---------- Task 6：生成期登录闭环（检测登录墙 → 自动开窗 → 带 Cookie 重抓 → 继续生成） ----------
 //
 // 用户诉求（原话）："很多应用或网站需要登录才能暴露所有端口……要确保用户手动登陆后，
