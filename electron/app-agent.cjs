@@ -84,6 +84,50 @@ function agentToolDocs(driver = 'browser') {
   return lines.join('\n')
 }
 
+// ---------------------------------------------------------------------------
+// 用户需求（M1）
+// ---------------------------------------------------------------------------
+//
+// ★ 为什么需要：001 只生成 4 条、用户"不满足要求"的根因之一，是需求**从未进入生成链路**——
+//   提示词里只有 `目标：{"type":"web","url":…}`，模型不知道用户想要什么覆盖度，
+//   只能按站点表层结构给几条。需求段以"覆盖度硬约束"的口吻给出，并允许模型如实说明做不到。
+
+const REQUIREMENT_MAX_CHARS = 2000
+const REQUIREMENT_MAX_ITEMS = 40
+
+/**
+ * 归一化需求：字符串/数组都接受，去空、去重、截断。
+ * @param {string|string[]|null|undefined} requirement
+ * @returns {string[]}
+ */
+function normalizeRequirement(requirement) {
+  const raw = Array.isArray(requirement) ? requirement : [requirement]
+  const out = []
+  for (const item of raw) {
+    if (item == null) continue
+    const text = String(item).trim().slice(0, REQUIREMENT_MAX_CHARS)
+    if (!text || out.includes(text)) continue
+    out.push(text)
+    if (out.length >= REQUIREMENT_MAX_ITEMS) break
+  }
+  return out
+}
+
+/**
+ * 需求段。★ 无需求时返回空串：保证"没填需求"的既有调用方拿到的提示词与改动前**逐字一致**，
+ * 不因为这次改动改变老应用的重生成行为。
+ * @returns {string}
+ */
+function requirementLines(requirement) {
+  const list = normalizeRequirement(requirement)
+  if (!list.length) return ''
+  return [
+    '【用户需求】（作为**覆盖度硬约束**：需求里点到的每一项能力都必须有对应命令；',
+    '确实做不到的写进 spec.notes 说明原因，不要装作支持）',
+    ...list.map((t, i) => `  ${i + 1}. ${t}`),
+  ].join('\n')
+}
+
 /**
  * 明显是破坏性动作的按钮文字。**为什么必须有这道闸**：用户允许了"自动点击/翻页探索"，
  * 但"探索"不等于"可以替用户删数据/下单"。模型看到一个写着「删除」的按钮时不该去点。
@@ -135,12 +179,14 @@ function resolveClickTarget(interactives, { ref, text } = {}) {
  * `cmd.params[].desc` 生成）。所以 title 与 params[].desc 写得潦草，这个工具就等于废掉：
  * 模型不知道它干什么、也不知道参数该填什么。
  */
-function buildAgentSystem({ target, driver = 'browser' } = {}) {
+function buildAgentSystem({ target, driver = 'browser', requirement } = {}) {
   // 驱动必须走唯一真源推定：生产值是 browser/process/script/uia，旧代码判 `driver === 'desktop'`
   // 在生产里永不成立 → 给桌面应用下发 web act 清单 → 模型写出的 Spec 被校验全拒（D2 真实故障）。
   const d = driverOf({ driver, target }, { targetType: target?.type })
   const acts = actsFor(d)
   const isWeb = d === 'browser'
+  // 需求段：无需求时是空串，展开后不产生任何元素 → 提示词与改动前逐字一致
+  const req = requirementLines(requirement)
   return [
     '你是「应用即工具」的规格工程师。你的任务**不是**一次成型地写出一份 Spec，而是像一个真正的',
     '工程师那样工作：**先自主探索目标，再写草稿，再真实试跑，根据真实报错反复调试，直到全部通过**。',
@@ -148,6 +194,7 @@ function buildAgentSystem({ target, driver = 'browser' } = {}) {
     `目标：${JSON.stringify(target || {})}`,
     `驱动：${d}（${isWeb ? '网站：命令走浏览器自动化' : '桌面应用：命令走本机 CLI / 脚本接口'}）`,
     '',
+    ...(req ? [req, ''] : []),
     agentToolDocs(d),
     '',
     '【工作方式（强烈建议遵循）】',
@@ -215,10 +262,12 @@ function buildAgentSystem({ target, driver = 'browser' } = {}) {
 }
 
 /** 首轮 user：把"已经拿到的种子素材 + 预算 + 现状"交代清楚，让模型从探索开始 */
-function buildAgentSeed({ target, driver, probeMode, probeMaterial, seedSummary, budget } = {}) {
+function buildAgentSeed({ target, driver, probeMode, probeMaterial, seedSummary, budget, requirement } = {}) {
   const parts = []
   parts.push(`目标：${JSON.stringify(target || {})}`)
   parts.push(`驱动：${driver}`)
+  const req = requirementLines(requirement)
+  if (req) parts.push(req)          // ★ 首轮就要看见需求：否则模型第一轮抓的页面全凭猜测
   const parts2 = []
   if (seedSummary) parts2.push(`【系统预取的初始素材】\n${seedSummary}`)
   if (probeMaterial && probeMode && probeMode !== 'none') {
@@ -380,13 +429,13 @@ function describeToolCall(tool, args) {
  *   trace:Array, issues:string[], blockers:string[], warnings:string[], verify:object|null, elapsedMs:number, stoppedBy:string}>}
  */
 async function runAgentLoop({
-  target, driver = 'browser', probeMode, probeMaterial, seedSummary,
+  target, driver = 'browser', probeMode, probeMaterial, seedSummary, requirement,
   callLlm, runTool, validate, verify, onProgress, budget, maxTokens,
 } = {}) {
   const b = { ...DEFAULT_BUDGET, ...(budget || {}) }
   const t0 = Date.now()
-  const system = buildAgentSystem({ target, driver })
-  const seedUser = buildAgentSeed({ target, driver, probeMode, probeMaterial, seedSummary, budget: b })
+  const system = buildAgentSystem({ target, driver, requirement })
+  const seedUser = buildAgentSeed({ target, driver, probeMode, probeMaterial, seedSummary, budget: b, requirement })
   const log = []
   const trace = []
   const issues = []
@@ -587,4 +636,5 @@ module.exports = {
   renderLog, toolResultText, describeToolCall, agentToolDocs,
   resolveClickTarget, isDestructiveLabel, DESTRUCTIVE_LABEL,
   DEFAULT_BUDGET, PLACEHOLDER, isPlaceholder,
+  normalizeRequirement, requirementLines,
 }
