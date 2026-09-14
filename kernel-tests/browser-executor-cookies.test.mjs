@@ -34,3 +34,18 @@ test('cookie 读取异常一律**不抛**（返回空/empty）——读不到 co
   assert.deepEqual(await ex.getCookies('k', 'https://x.com/'), [])
   assert.equal(await ex.getCookieFingerprint('k', 'https://x.com/'), 'empty')
 })
+
+// ★ Task 6 补的覆盖：上面对假 session 忽略了 `cookies.get` 的**入参**，
+//   于是"按 URL 过滤"这条分支零覆盖。真机上它是安全边界：不带 url 取的是**整个分区**的 cookie，
+//   会被拼进请求头发给别的站点（跨站外发登录态）。故断言 options 必须带 url。
+test('cookies.get 必须按 URL 取（按 url 过滤分支；无 url 才退回整个分区）', async () => {
+  const seen = []
+  const ex = new BrowserExecutor()
+  ex.cookieSession = () => ({ cookies: { get: async (opts) => { seen.push(opts); return [{ name: 'sid', value: '1' }] } } })
+  assert.equal(await ex.getCookieHeader('app-site-x.com', 'https://x.com/orders'), 'sid=1')
+  assert.deepEqual(seen, [{ url: 'https://x.com/orders' }], '取 Cookie 必须带上 URL')
+  assert.deepEqual(await ex.getCookies('app-site-x.com', 'https://x.com/'), [{ name: 'sid', value: '1' }])
+  assert.deepEqual(seen[1], { url: 'https://x.com/' })
+  await ex.getCookies('app-site-x.com')
+  assert.deepEqual(seen[2], {}, '没给 URL 时退回"取整个分区"（既有行为，调用点显式传 URL 才走过滤分支）')
+})

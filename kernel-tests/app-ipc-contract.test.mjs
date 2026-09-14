@@ -38,6 +38,9 @@ const CHANNELS = {
   'app:repair': 'appRepair',
   // 打开可见登录窗口（用户主动触发）——自动化窗口平时隐藏，这是"带登录态探索"的唯一入口
   'app:login': 'appLogin',
+  // 登录成功/取消信号（渲染层「我已完成登录」按钮）——false 只表示"当前没有等待中的登录"
+  'app:login-done': 'appLoginDone',
+  'app:login-cancel': 'appLoginCancel',
 }
 
 // 主进程侧 handler 落在独立模块（app-ipc.cjs），main.cjs 只调用其注册函数——

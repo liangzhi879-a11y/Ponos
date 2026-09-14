@@ -20,17 +20,35 @@ const { callLlmStream } = require('./app-llm.cjs')
 const appValidator = require('./app-validator.cjs')
 const httpProbe = require('./app-http-probe.cjs')
 const { normalizeUrl, snapshotToText } = require('./app-util.cjs')
+// 分区键唯一出处（web 按站点 app-site-<host>、desktop 按 app-<appId>）——绝不在此手写 persist:automation-*
+const { appSessionKey } = require('./app-session-key.cjs')
+// 登录墙分级（只有 high 才自动弹窗）与登录编排（开窗等待 → 三路成功信号 → 超时如实降级）
+const { detectLoginWall, HIGH_ONLY } = require('./app-login-wall.cjs')
+const appLogin = require('./app-login.cjs')
 // 浏览器自动化白名单（*.gov.cn / localhost / 127.0.0.1 + {YFW_HOME}/browser-whitelist.json）。
 // 只用来决定"要不要用浏览器增强探测"；生成命令本身**不依赖**它（见 app-http-probe.cjs 头部说明）。
 const { isWhitelisted } = require('./browser-common.cjs')
 
-/** 探测专用浏览器会话：与用户会话隔开，避免探测把用户正在看的页面导航走 */
+/** 探测专用浏览器会话：与用户会话隔开，避免探测把用户正在看的页面导航走（= appSessionKey 的兜底键） */
 const PROBE_SESSION = 'app-probe'
 /**
  * 生成时最多抓取多少页面。用户明确表示可以慢，但要求"尽可能充分获取所有能控制的接口信息"，
  * 所以宁可多抓几页（含列表/搜索/设置等）给模型，也不要只凭一个首页就写命令。
  */
 const MAX_HARVEST_PAGES = 6
+/**
+ * 等待用户登录的上限（5 分钟，与 app-login.cjs 的 DEFAULT_WAIT_MS 同源）。
+ * 超时**不中断生成**：照常产出 Spec，但如实标注"未在登录态下验证"（用户的明确取舍）。
+ * 单测可用 deps.loginWaitMs / deps.loginPollMs 把它压到毫秒级。
+ */
+const LOGIN_WAIT_MS = 5 * 60 * 1000
+/**
+ * ensureLoggedIn 的"早退"原因集合：这些路径下它**没有**向界面宣布过等待，因此不会发收尾事件
+ * （open-failed / nav-failed / no-executor 会直接返回；already-logged-in 是对端预判，也没开过等待）。
+ * Task 6 在这些路径上要自己补一条 waiting:false，否则界面会停在"等待登录中"；其余路径由它自己发，
+ * Task 6 **不得**重复发（同一事件发两遍会让收尾/日志重复计数）。
+ */
+const LOGIN_EARLY_REASONS = Object.freeze(['no-executor', 'already-logged-in', 'open-failed', 'nav-failed'])
 /**
  * 自主探索预算。用户明确"不要期望 llm 分析生成很快完成"，所以给得宽松，但**必须有界**
  * （无上限会烧钱、界面看起来像卡死）。
@@ -71,6 +89,37 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
       // 窗口已关闭/未就绪：进度只用于展示，绝不能因此中断生成
     }
   }
+
+  /**
+   * 本次生成/执行的**分区键**（web 按站点、desktop 按 appId）——唯一出处 app-session-key.cjs。
+   * ★ 绝不手写 `persist:automation-*` 或拼 `app-` 字样：partitionFor 不清洗键，写错会**静默**落到
+   *   另一个分区 → Cookie 读空 → 上层把"已登录"误判成"未登录"（用户视角是"我明明登录了还要我登录"）。
+   */
+  const keyFor = (appId, target) => appSessionKey({ appId, target })
+
+  /** 主机名（小写）；非法输入返回 null（调用点常在错误路径上，绝不抛） */
+  const hostOfUrl = (u) => { try { return new URL(String(u)).hostname.toLowerCase() } catch { return null } }
+
+  /**
+   * Cookie 注入器：**只给本次流程已授权的站点**（authorizeAppTarget 授权过的 host）。
+   * ★ 它是登录态外发的**唯一闸门**：抓取层（app-http-probe.cjs）只在**重定向**时校验 isAllowedHost，
+   *   首跳 URL 不校验——所以"该不该给这个 URL 带 Cookie"必须由这里按 host 自己判定，
+   *   未授权 host 一律返回 null（跨站跳转因此既不带 Cookie 也不会被继续跟随）。
+   * ★ 读 Cookie 失败（分区不存在/electron 不可用/执行器未就绪）一律返回 null：读不到 ≠ 未登录。
+   */
+  const cookieProviderFor = (executor, key, authorizedHosts) => async (u) => {
+    const host = hostOfUrl(u)
+    if (!host || !authorizedHosts.has(host)) return null
+    if (typeof executor?.getCookieHeader !== 'function') return null
+    try {
+      // 必须按 URL 取：分区里的 Cookie 可能属于多个域名，按 URL 过滤才不会把别站 Cookie 拼进请求头
+      return await executor.getCookieHeader(key, u)
+    } catch { return null }
+  }
+
+  // 登录等待上限/轮询间隔：默认取 app-login.cjs 的默认值；deps 注入点供单测把超时压到毫秒级
+  const loginWaitMs = Number.isFinite(deps.loginWaitMs) ? deps.loginWaitMs : LOGIN_WAIT_MS
+  const loginPollMs = Number.isFinite(deps.loginPollMs) ? deps.loginPollMs : appLogin.POLL_MS
 
   // ---- 注册表 CRUD ----
   ipcMain.handle('app:list', () => appRegistry.listApps({ roots: roots() }))
@@ -129,7 +178,10 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
 
   // ---- 探测（Task 1.7/1.8）：判定 driver + 真实可达性 ----
   ipcMain.handle('app:probe', async (_e, payload) => {
-    const { target, sessionId } = payload || {}
+    const { target, appId } = payload || {}
+    // 会话 = 站点级键（唯一出处 app-session-key.cjs）：探测/生成/登录/执行必须落**同一分区**，
+    // 否则用户刚登录过、探测却看不到（渲染层仍会传 chat sessionId，这里一律忽略）
+    const key = keyFor(appId, target)
     let detected
     try {
       detected = await profiler.detectDriver({
@@ -145,7 +197,7 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
       // 用户点「探测」时填的网址 = 显式授权（原先这里会直接报"目标域名不在白名单"，真实反馈即出于此）
       authorizeAppTarget(target)
       try {
-        const probed = await profiler.probeWeb({ url: target?.url, executor, sessionId: sessionId || PROBE_SESSION })
+        const probed = await profiler.probeWeb({ url: target?.url, executor, sessionId: key })
         return { ok: true, ...detected, reachable: true, title: probed.title, snapshot: profiledSnapshot(probed.snapshot) }
       } catch (e) {
         return { ok: true, ...detected, reachable: false, error: String(e?.message || e) }
@@ -157,7 +209,24 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
   // ---- 自检（Task 2.3 占位语义 → 真实"本地可判定"检查；结构校验仍归内核 validateSpec） ----
   ipcMain.handle('app:check', async (_e, appId) => {
     const spec = appRegistry.readSpec({ roots: roots(), appId })
-    return profiler.checkApp({ spec })
+    const res = await profiler.checkApp({ spec })
+    // ★ 登录态结论**只在 IPC 层叠加**（app-profiler 保持纯 node：它不该 require Electron/执行器）。
+    //   "生成时检测到过登录墙"（spec.auth.needsLogin）+ 当前分区读不到 Cookie = 现在多半没登录态，
+    //   如实报 drifted 并给出下一步（而不是让用户进控制台后才在 AI 调用上撞登录墙）。
+    if (spec?.target?.type === 'web' && spec?.auth?.needsLogin) {
+      const executor = getExecutor()
+      const key = keyFor(appId, spec.target)
+      let fp = 'empty'
+      try {
+        // getCookieFingerprint 读不到时返回 'empty'；异常（执行器未就绪/electron 不可用）同样按 'empty' 处理
+        fp = (await executor?.getCookieFingerprint?.(key, spec.target?.url)) || 'empty'
+      } catch { fp = 'empty' }
+      if (fp === 'empty') {
+        res.issues = [...(res.issues || []), '该应用需要登录，当前未检测到登录态（AI 调用会被登录墙挡住）；可点「登录此应用」']
+        if (res.status === 'healthy') res.status = 'drifted'
+      }
+    }
+    return res
   })
 
   // ---- 生成（Task 3.1/3.2）：取素材 → LLM 生成 → 结构校验 → read 试跑 ----
@@ -165,12 +234,22 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
   ipcMain.handle('app:generate', async (_e, payload = {}) => {
     // target 用 let：web 目标会先做网址归一（kimi.com → https://kimi.com/）再往下走
     let { target } = payload
-    const { appId, sessionId, maxRounds } = payload
+    // sessionId（chat 会话）**刻意不解构**：登录态按站点/应用复用，跨会话共享（见 app-session-key.cjs）
+    const { appId, maxRounds } = payload
     const t0 = Date.now()
     const done = (extra) => ({ elapsedMs: Date.now() - t0, ...extra })
     if (!target || (target.type !== 'web' && target.type !== 'desktop')) {
       return done({ ok: false, error: `目标不合法：${JSON.stringify(target)}` })
     }
+    // 登录墙结论（web 分支填；仅 needed 时写进 Spec 的可选字段 auth）与登录编排结果（如实回传渲染层）
+    let loginWall = null
+    let loginInfo = null
+    // 本次流程的分区键（唯一出处 app-session-key.cjs）：生成、探索、试跑、执行、登录必须**同一个键**，
+    // 否则用户登录过也拿不到登录态（键写错会静默落到别的分区）。web 目标须在**网址归一之后**算键。
+    let key = null
+    // 登录态外发的授权集合（web 分支填）：Cookie 只发给这些 host；模型探索时也不会扩大它
+    let authorizedHosts = new Set()
+    let cookieProvider = null
 
     // ① 取素材（**用户无感优先**）：后台 HTTP 抓取，不开窗口、不受浏览器白名单约束。
     //    真实反馈驱动的改动：原先必须先探测成功才生成，而探测走 BrowserExecutor 受自动化白名单
@@ -195,32 +274,92 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
       // 顺序要紧：**先**判定"是不是白名单站点"（决定要不要浏览器增强），**再**做显式授权。
       // 反过来的话 authorize 会让 isWhitelisted 恒真 → 每个站点都去开浏览器，违背"用户无感"。
       const whitelisted = isWhitelisted(webUrl)
-      // 用户在界面上填的网址 = 显式授权（供后续试跑/执行通过；agent 自主浏览仍受原白名单约束）
-      authorizeAppTarget(target)
+      // 本次流程的分区键（唯一出处 app-session-key.cjs）：生成、探索、试跑、执行、登录必须**同一个键**，
+      // 否则用户登录过却拿不到登录态（键写错会静默落到别的分区）。
+      key = keyFor(appId, target)
+      // 用户在界面上填的网址 = 显式授权（供后续试跑/执行通过；agent 自主浏览仍受原白名单约束）。
+      // 返回值即本次流程的授权 host 集合：它同时用于"Cookie 只发给授权站点"与"跨站跳转是否跟随"。
+      authorizedHosts = new Set(authorizeAppTarget(target, { extraUrls: [webUrl] }))
+      const executor = getExecutor()
+      cookieProvider = cookieProviderFor(executor, key, authorizedHosts)
+      // ★ 抓取层对**跨 host 跳转一律失败**（含 apex→www、http→https 的同站跳转），所以每个调用点都必须
+      //   显式给出本次流程的授权集合，否则真实站点的常规跳转会让素材抓取整体失败（比不带 Cookie 更糟）。
+      const isAllowedHost = (u) => authorizedHosts.has(hostOfUrl(u))
+      const harvest = (provider) => httpProbe.harvestSite({
+        url: webUrl, fetchImpl, maxPages: MAX_HARVEST_PAGES,
+        cookieProvider: provider,
+        isAllowedHost,
+      })
       emitProgress(appId, { phase: 'fetch', detail: '正在后台获取页面内容（无需浏览器）…' })
       // **尽可能摸全**：首页 + 若干同源主要页面（列表/搜索/设置/详情…），让模型看到站点
       // 真正可控的入口，而不是只凭一个首页瞎猜（用户要求：宁可慢，也要把接口信息取充分）
-      const harvested = await httpProbe.harvestSite({ url: webUrl, fetchImpl, maxPages: MAX_HARVEST_PAGES })
+      let harvested = await harvest(cookieProvider)
+      // 跳转落点也要授权：网站常在 apex↔www 之间跳转（kimi.com → www.kimi.com），
+      // 而白名单是精确主机名匹配——不追加授权的话，模型照素材里跳转后的真实地址写出的命令
+      // 会在试跑阶段被拦（真机第二轮就是这个现象）。授权集合同步扩大（供后续抓取判定）。
+      const authorizeLanding = (h) => {
+        if (!h?.finalUrl) return
+        for (const host of authorizeAppTarget(target, { extraUrls: [h.finalUrl] })) authorizedHosts.add(host)
+        if (h.finalUrl !== webUrl) {
+          emitProgress(appId, { phase: 'fetch', detail: `页面跳转到 ${h.finalUrl}，已一并授权其域名` })
+        }
+      }
+      const reportHarvest = (h) => {
+        if (!h.ok) return
+        const sit = h.material?.site || {}
+        emitProgress(appId, {
+          phase: 'fetch',
+          detail: `已取得 ${sit.pagesFetched || 1} 个页面素材（共 ${sit.interactiveTotal || 0} 个可交互线索${h.failed?.length ? `，${h.failed.length} 个页面抓取失败` : ''}）`,
+        })
+      }
+      authorizeLanding(harvested)
+      reportHarvest(harvested)
+
+      // ★ 登录墙（用户诉求"允许在获取的过程中提示用户登录"）：
+      //   检测 → **只有 high 才自动开窗**（中/弱信号只提示，用户要求"能不弹就不弹"）→
+      //   登录成功 → **带 Cookie 重抓素材**（换掉登录前的空壳页）→ 继续生成。
+      //   `material` 里要带上 `spa`：harvestSite 把 spa 放在返回体顶层、不在 material 内，
+      //   不带的话 low 档判据（疑似前端空壳且线索极少）在生产路径几乎不可达。
+      const wall = detectLoginWall({
+        material: harvested.ok ? { ...harvested.material, spa: harvested.spa === true } : null,
+        page: null,
+        url: webUrl,
+      })
+      loginWall = wall
+      if (wall.needed && !HIGH_ONLY.includes(wall.confidence)) {
+        emitProgress(appId, { phase: 'login', waiting: false, key, detail: `${wall.reasons[0] || '该站点可能需要登录'}（未自动打开登录窗口，如需登录请点「登录此应用」）` })
+      }
+      if (wall.confidence === 'high' && executor) {
+        // 开窗 + 导航要几秒（goto 上限 30s）：先把"正在等待登录"告诉界面，用户才知道该去哪儿操作
+        emitProgress(appId, { phase: 'login', waiting: true, key, detail: `检测到登录墙：${wall.reasons[0] || ''}，已打开登录窗口，请在其中完成登录…` })
+        const res = await appLogin.ensureLoggedIn({
+          key,
+          // 优先用登录墙给出的登录地址（表单 action / 当前登录页）；若编排预判"本来就登录着"则不会开窗
+          url: wall.loginUrl || webUrl,
+          executor,
+          waitMs: loginWaitMs,
+          pollMs: loginPollMs,
+          // 编排自己的进度事件原样透传（含 waiting:true/false 与收尾文案），键统一由本层补
+          emit: (p) => emitProgress(appId, { ...p, key }),
+        })
+        loginInfo = { attempted: true, ok: res.ok, reason: res.reason, detail: appLogin.loginResultDetail(res) }
+        // 早退路径（没打扰过用户 ⇒ 编排自己不会发收尾事件）由本层补一条，否则界面停在"等待登录中"；
+        // 正常路径由编排发出同一文案的收尾事件，这里**不得**再发一遍（重复事件）。
+        if (LOGIN_EARLY_REASONS.includes(res.reason)) {
+          emitProgress(appId, { phase: 'login', waiting: false, key, detail: loginInfo.detail })
+        }
+        if (res.ok) {
+          // 带 Cookie 重抓：**替换**素材（登录前的空壳页绝不能当有效线索喂给模型）。
+          // 已抓页面种子（visited）在本轮之后才依据新素材构建，故天然不含登录前的页面。
+          harvested = await harvest(cookieProvider)
+          authorizeLanding(harvested)
+          reportHarvest(harvested)
+        }
+      }
+
       const fetched = harvested.ok
         ? { ok: true, material: harvested.material, finalUrl: harvested.finalUrl, spa: harvested.spa, bytes: harvested.bytes }
         : { ok: false, error: harvested.error, status: harvested.status }
-      if (harvested.ok) {
-        const sit = harvested.material?.site || {}
-        emitProgress(appId, {
-          phase: 'fetch',
-          detail: `已取得 ${sit.pagesFetched || 1} 个页面素材（共 ${sit.interactiveTotal || 0} 个可交互线索${harvested.failed?.length ? `，${harvested.failed.length} 个页面抓取失败` : ''}）`,
-        })
-      }
-      // 跳转落点也要授权：网站常在 apex↔www 之间跳转（kimi.com → www.kimi.com），
-      // 而白名单是精确主机名匹配——不追加授权的话，模型照素材里跳转后的真实地址写出的命令
-      // 会在试跑阶段被拦（真机第二轮就是这个现象）。
-      if (fetched.finalUrl) {
-        const extraHosts = authorizeAppTarget(target, { extraUrls: [fetched.finalUrl] })
-        if (fetched.finalUrl !== webUrl) {
-          emitProgress(appId, { phase: 'fetch', detail: `页面跳转到 ${fetched.finalUrl}，已一并授权其域名` })
-        }
-        void extraHosts
-      }
       if (fetched.ok && httpProbe.isMaterialRich(fetched.material)) {
         probeMode = 'http'
         probeMaterial = fetched.material
@@ -231,7 +370,7 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
         const why = fetched.ok ? '静态素材偏少，改用浏览器取真实 DOM' : fetched.error
         emitProgress(appId, { phase: 'probe', detail: `${why}；该域名在白名单内，改用浏览器取真实页面…` })
         try {
-          const probed = await profiler.probeWeb({ url: target.url, executor: getExecutor(), sessionId: sessionId || PROBE_SESSION })
+          const probed = await profiler.probeWeb({ url: target.url, executor, sessionId: key })
           probeMode = 'browser'
           probeMaterial = { url: target.url, title: probed.title, snapshot: snapshotForPrompt(probed.snapshot) }
           probeTitle = probed.title
@@ -255,6 +394,7 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     } else {
       const detected = await profiler.detectDriver({ target, probe: (p) => profiler.probeDesktop({ exePath: p?.exePath }) })
       driver = detected.driver
+      key = keyFor(appId, target)   // desktop：键只影响下载目录与事件标签（无 cookie 语义）
       probeMode = 'browser'   // desktop 侧的"素材"是探测证据，口径沿用既有 browser 分支
       probeMaterial = { target, driver, evidence: detected.evidence }
       emitProgress(appId, { phase: 'probe', detail: `探测完成：驱动 ${driver}`, done: true })
@@ -273,8 +413,9 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
         ? runCommand({ roots: roots(), appId, action, args, executor: getExecutor(), sessionId: sid, spec, persist: false })
         : desktopRunner({ appId, action, args, spec })
     )
+    // 试跑一律用站点/应用级键（登录态就存在这个分区里；chat sessionId 与它无关）
     const verifyOnce = (spec) => verifySpec({
-      spec, sessionId,
+      spec, sessionId: key,
       runCommand: runForVerify(spec),
       onProgress: (p) => emitProgress(appId, p),
     })
@@ -298,7 +439,8 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
      * 浏览器探索（用户允许"自动点击/翻页探索"与"带登录态探索"）：
      * 用**真实浏览器执行器 + 应用自己的会话**打开页面，因此
      *   ① 能看到 JS 渲染出来的内容（HTTP 抓取看不到）；
-     *   ② **带上该应用已有的登录态**（分区 persist:automation-<sessionId>，cookie 落盘持久化）；
+     *   ② **带上该应用已有的登录态**（分区键见 app-session-key.cjs：web 按站点、desktop 按 appId，
+     *      cookie 落盘持久化；键与命令执行/登录窗口共用，登录一次即全链路复用）；
      *   ③ 能点击展开菜单/翻页/进详情，看到 HTTP 永远看不到的页面。
      * 窗口仍是隐藏的（show:false），不会弹出来打扰用户。
      */
@@ -307,8 +449,7 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
       if (driver !== 'browser') return { ok: false, summary: '这是桌面应用，没有浏览器页面可浏览；请直接用 run_command 试跑或 submit_spec。' }
       const executor = getExecutor()
       if (!executor) return { ok: false, summary: '浏览器执行器未就绪（应用可能尚未完成初始化）' }
-      const sid = sessionId || PROBE_SESSION
-      const r = await executor.exec(sid, act, params)
+      const r = await executor.exec(key, act, params)
       if (!r?.ok) return { ok: false, summary: `${act} 失败：${r?.error || '未知错误'}` }
       const snap = r.snapshot || {}
       lastInteractives = Array.isArray(snap.interactives) ? snap.interactives : []
@@ -325,15 +466,24 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
       if (tool === 'fetch_page') {
         const url = normalizeUrl(args?.url)
         if (!url) return { ok: false, summary: `网址不合法：${String(args?.url)}（要写完整地址，如 https://example.com/foo）` }
-        // 顺手授权该域名（模型探索到的同站/子域页面，后续试跑才不会因白名单被拦）
-        authorizeAppTarget({ type: 'web', url }, { extraUrls: [url] })
+        // 顺手授权该域名（模型探索到的同站/子域页面，后续试跑才不会因白名单被拦）。
+        // ★ 注意它**不进** cookieProvider 的授权集合：模型自己挑的第三方页面绝不能收到本站登录态
+        //   （授权集合仍是"用户在界面上填的那个站点 + 它的跳转落点"）。
+        const exploreHosts = new Set(authorizeAppTarget({ type: 'web', url }, { extraUrls: [url] }))
         emitProgress(appId, { phase: 'explore', detail: `后台抓取 ${url}（不弹窗口）…` })
-        const r = await httpProbe.fetchPageMaterial({ url, fetchImpl })
+        const r = await httpProbe.fetchPageMaterial({
+          url, fetchImpl,
+          // 带登录态抓取：同站点页面能看到登录后的内容（Cookie 闸门仍是 cookieProvider）
+          cookieProvider,
+          // 跨 host 跳转的授权集合 = 用户授权站点 ∪ 模型这一次显式给的地址（含 apex/www 变体）
+          isAllowedHost: (u) => { const h = hostOfUrl(u); return !!h && (authorizedHosts.has(h) || exploreHosts.has(h)) },
+        })
         if (!r.ok) return { ok: false, summary: `${url} 抓取失败：${r.error}` }
         const m = r.material
         if (r.finalUrl) authorizeAppTarget({ type: 'web', url }, { extraUrls: [r.finalUrl] })
-        const key = r.finalUrl || url
-        visited.set(key, { url: key, title: m.title, interactives: m.interactives, forms: m.forms?.length || 0 })
+        // 注意别与上面的分区键 key 重名：这里只是"已抓页面的表键"
+        const pageKey = r.finalUrl || url
+        visited.set(pageKey, { url: pageKey, title: m.title, interactives: m.interactives, forms: m.forms?.length || 0 })
         return {
           ok: true,
           // 素材原样给模型（JSON 截断），它自己读得懂；摘要用于进度与 list_pages
@@ -373,7 +523,7 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
         if ((cmd.params || []).some((p) => p?.required) && !(args?.args && Object.keys(args.args).length)) {
           return { ok: false, summary: `命令「${action}」有必填参数，请在 args 里给出参数值再试跑（例：{"tool":"run_command","args":{"action":"${action}","args":{"id":"SO20250101-001"}}}` }
         }
-        const r = await runForVerify(draft)({ action, args: args?.args || {}, sessionId: sessionId || PROBE_SESSION })
+        const r = await runForVerify(draft)({ action, args: args?.args || {}, sessionId: key })
         return r?.ok
           ? { ok: true, summary: `试跑成功（${r.durationMs || 0}ms）：${String(typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? '')).slice(0, 1200) || '(无输出)'}` }
           : { ok: false, summary: `试跑失败：${String(r?.error || '未知错误')}` }
@@ -396,6 +546,11 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     }
 
     let specWithDriver = { ...agent.spec, driver, target: { ...(agent.spec.target || {}), ...target } }
+    // 登录墙结论落进 Spec 的可选字段 auth（仅 needed 时写）：界面据此提示"AI 调用前需先登录"，
+    // 而 app:check 的运行时登录结论也只看它。validateSpec 不校验未知字段 → 向后兼容。
+    if (loginWall?.needed) {
+      specWithDriver = { ...specWithDriver, auth: { needsLogin: true, loginUrl: loginWall.loginUrl || undefined } }
+    }
     const verify = agent.verify || { ok: false, tried: [], failures: [], notRun: [], skipped: [] }
     const genRounds = agent.turns
 
@@ -411,6 +566,9 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     return done({
       ok: true, spec: specWithDriver, driver, probe: probeInfo, rounds: genRounds,
       issues: agent.issues, warnings: agent.warnings, verify,
+      // 登录编排结果如实回传（没走登录编排就是 null，不假装登录过）：
+      // {attempted, ok, reason, detail}——界面据此决定"要不要提示未在登录态下验证"
+      login: loginInfo,
       agent: { turns: agent.turns, toolCalls: agent.toolCalls, verified: agent.verified, stoppedBy: agent.stoppedBy, trace: agent.trace },
     })
   })
@@ -425,29 +583,38 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
 
   // 打开**可见**登录窗口：这是"带登录态探索/执行"的入口。
   //
-  // 为什么需要它：浏览器自动化用的是分区 `persist:automation-<sessionId>`，cookie 落盘、可持久复用；
+  // 为什么需要它：浏览器自动化用的是**站点/应用级分区键**（见 app-session-key.cjs 的 partitionFor：
+  // web 按站点 `app-site-<host>`、desktop 按 `app-<appId>`），cookie 落盘、可持久复用；
   // 但自动化窗口本身是隐藏的（用户要求"能不弹就不弹"），所以用户没有任何地方可以登录。
-  // 这里提供一个**用户主动触发**的可见窗口（与命令/探索共用同一个会话），登录一次之后：
+  // 这里提供一个**用户主动触发**的可见窗口（与命令/探索/生成共用同一个键），登录一次之后：
   //   · 命令执行（app:run / 内核调用）直接复用该登录态；
-  //   · 模型探索时 browse/click 看到的也是登录后的页面。
+  //   · 模型探索时 browse/click 与生成期的带 Cookie 重抓看到的也是登录后的页面。
   // 注意：这不是"弹窗打扰"——它是用户点击后才打开的工具窗口。
   ipcMain.handle('app:login', async (_e, payload = {}) => {
     const url = normalizeUrl(payload.url)
     if (!url) return { ok: false, error: `网址不合法：${String(payload.url)}` }
     const executor = getExecutor()
     if (!executor) return { ok: false, error: '浏览器执行器未就绪' }
-    const sid = payload.sessionId || PROBE_SESSION
+    // 键 = 站点级分区键（唯一出处 app-session-key.cjs），**与生成/探索/执行同一个键**：
+    // 否则登录了也对命令没用（cookie 是按分区存的）。渲染层仍会用返回的 sessionId 字段，故两个字段都给。
+    const key = keyFor(payload.appId, { type: 'web', url })
     // 显式授权该域名（与取素材/探索同源），否则导航会被白名单拦下
     authorizeAppTarget({ type: 'web', url })
     try {
-      await executor.openWindow(sid)          // 用户主动要登录 → 这里显式显示窗口（内部 show+focus）
-      const r = await executor.exec(sid, 'goto', { url })
-      if (!r?.ok) return { ok: false, error: r?.error || '打开登录页面失败', sessionId: sid }
-      return { ok: true, sessionId: sid, url: r?.snapshot?.page?.url || url }
+      await executor.openWindow(key)          // 用户主动要登录 → 这里显式显示窗口（内部 show+focus）
+      const r = await executor.exec(key, 'goto', { url })
+      if (!r?.ok) return { ok: false, error: r?.error || '打开登录页面失败', key, sessionId: key }
+      return { ok: true, key, sessionId: key, url: r?.snapshot?.page?.url || url }
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
     }
   })
+
+  // ---- 登录信号（Task 6）：用户点「我已完成登录」/取消等待 ----
+  // 只回传 {ok:boolean}：false = **当前没有等待中的登录**（含"已经结算过"——结算即摘除登记），
+  // 不是错误，渲染层不该渲染成"出错/请重试"。
+  ipcMain.handle('app:login-done', (_e, payload) => ({ ok: appLogin.resolveLoginWait(payload?.key) }))
+  ipcMain.handle('app:login-cancel', (_e, payload) => ({ ok: appLogin.cancelLoginWait(payload?.key) }))
 }
 
 /**
@@ -486,9 +653,13 @@ async function runAppCommand({ appId, action, args = {}, sessionId, getExecutor,
   if (driver === 'browser') {
     const executor = typeof getExecutor === 'function' ? getExecutor() : null
     if (!executor) return { ok: false, data: null, error: '浏览器执行器未就绪', kind: 'unknown', durationMs: 0 }
+    // 会话 = 站点/应用级分区键（唯一出处 app-session-key.cjs）。
+    // ★ 传入的 chat sessionId **刻意忽略**：登录态属于应用而不是某次聊天会话，
+    //   否则换个会话就要重新登录，且用户刚登录过又"未登录"（本功能的核心诉求）。
+    const key = appSessionKey({ appId, target: spec.target })
     // 用户保存过的应用目标 = 显式授权（否则非白名单站点的命令执行/AI 调用会被直接拦下）
     authorizeAppTarget(spec.target)
-    return runCommand({ roots, appId, action, args, executor, sessionId })
+    return runCommand({ roots, appId, action, args, executor, sessionId: key })
   }
 
   // desktop：与 browser 路径同口径留痕（runCommand 内部负责 browser 的留痕）

@@ -32,15 +32,20 @@ function fakeIpcMain() {
   }
 }
 
-const fakeExecutor = (calls) => ({
-  openedWindows: [],
-  async openWindow(sessionId) { this.openedWindows.push(sessionId); return { ok: true } },
-  exec: async (_s, act, params) => {
-    calls.push([act, params])
-    if (act === 'goto' && String(params.url).includes('bad.example')) return { ok: false, error: '页面打不开' }
-    return { ok: true, snapshot: { title: '示例站', url: params?.url, text: 'body', page: { url: params?.url, title: '示例站' } } }
-  },
-})
+const fakeExecutor = (calls) => {
+  const sessions = []   // 每次 exec 收到的会话/分区键（断言"键由 appSessionKey 产出"用）
+  return {
+    openedWindows: [],
+    sessions,
+    async openWindow(sessionId) { this.openedWindows.push(sessionId); return { ok: true } },
+    exec: async (_s, act, params) => {
+      calls.push([act, params])
+      sessions.push(_s)
+      if (act === 'goto' && String(params.url).includes('bad.example')) return { ok: false, error: '页面打不开' }
+      return { ok: true, snapshot: { title: '示例站', url: params?.url, text: 'body', page: { url: params?.url, title: '示例站' } } }
+    },
+  }
+}
 
 const SPEC = {
   specVersion: 1, appId: 'demo', name: '演示站',
@@ -54,10 +59,10 @@ const SPEC = {
   ],
 }
 
-test('app:* 17 条通道全部注册（新增 app:login 打开登录窗口）', () => {
+test('app:* 19 条通道全部注册（新增 app:login-done / app:login-cancel 登录信号）', () => {
   const ipc = fakeIpcMain()
   registerAppHandlers({ ipcMain: ipc, getExecutor: () => fakeExecutor([]) })
-  assert.equal(ipc.channels().length, 17)
+  assert.equal(ipc.channels().length, 19)
 })
 
 test('CRUD → Spec → 自检 全链路（数据落在 YFWORKING_HOME/apps）', async () => {
@@ -237,15 +242,19 @@ test.after(() => { rmSync(home, { recursive: true, force: true }) })
 // app:login 提供一个**用户主动触发**的可见窗口，并且必须与应用命令/模型探索共用同一个会话
 //   —— 否则登录了也对命令没用（cookie 是按 persist:automation-<sessionId> 分区存的）。
 
-test('app:login：用应用自己的会话打开可见窗口并导航到目标网址', async () => {
+test('app:login：用**站点级分区键**打开可见窗口并导航到目标网址（chat sessionId 不再决定分区）', async () => {
   const calls = []
   const exec = fakeExecutor(calls)
   const ipc = fakeIpcMain()
   registerAppHandlers({ ipcMain: ipc, getExecutor: () => exec })
+  // 渲染层仍在传 chat sessionId；契约：分区键一律由 appSessionKey 产出（web 按站点），
+  // 否则换个聊天会话就要重新登录，且与生成/执行的登录态互相看不见。
   const r = await ipc.invoke('app:login', { url: 'kimi.com', sessionId: 'sess-42' })
   assert.equal(r.ok, true)
-  assert.equal(r.sessionId, 'sess-42', '必须复用应用会话，否则登录态对命令无效')
-  assert.deepEqual(exec.openedWindows, ['sess-42'], '要显式打开（显示）窗口——这是用户主动要的')
+  assert.equal(r.key, 'app-site-kimi.com', '键的唯一出处是 appSessionKey')
+  assert.equal(r.sessionId, r.key, 'sessionId 字段保留（= 键）以兼容渲染层旧代码')
+  assert.deepEqual(exec.openedWindows, ['app-site-kimi.com'], '要显式打开（显示）窗口——这是用户主动要的')
+  assert.deepEqual(exec.sessions, ['app-site-kimi.com'], '导航也必须用同一个键（登录态就存在这个分区里）')
   assert.deepEqual(calls[0], ['goto', { url: 'https://kimi.com/' }], '不带协议头的网址要被归一')
 })
 
@@ -270,4 +279,89 @@ test('app:login：导航被拒时如实返回失败原因', async () => {
   const r = await ipc.invoke('app:login', { url: 'https://bad.example/' })
   assert.equal(r.ok, false)
   assert.ok(String(r.error).includes('打不开'), r.error)
+})
+
+// ---------- Task 6：登录态支持（键统一 + 两条登录信号通道 + 自检叠加登录结论） ----------
+
+test('会话键统一：app:probe / app:run 一律用站点级键（chat sessionId 不再决定分区）', async () => {
+  const probeCalls = []
+  const probeExec = fakeExecutor(probeCalls)
+  const ipc1 = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc1, getExecutor: () => probeExec })
+  await ipc1.invoke('app:probe', { target: { type: 'web', url: 'https://example.com' }, appId: 'demo', sessionId: 'chat-s1' })
+  assert.ok(probeExec.sessions.length >= 1)
+  assert.ok(probeExec.sessions.every((s) => s === 'app-site-example.com'), `探测必须用站点级键：${JSON.stringify(probeExec.sessions)}`)
+
+  const runCalls = []
+  const runExec = fakeExecutor(runCalls)
+  const ipc2 = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc2, getExecutor: () => runExec })
+  await ipc2.invoke('app:write-spec', { appId: 'demo', spec: SPEC })
+  const r = await ipc2.invoke('app:run', { appId: 'demo', action: 'query', args: { orderId: 'A1' }, sessionId: 'chat-s1' })
+  assert.equal(r.ok, true)
+  assert.ok(runExec.sessions.every((s) => s === 'app-site-example.com'), `执行必须用站点级键（登录态跨会话复用）：${JSON.stringify(runExec.sessions)}`)
+})
+
+test('app:check 叠加运行时登录结论：需要登录 + 分区无 Cookie → drifted + 中文提示（app-profiler 保持纯 node）', async () => {
+  const spec = { ...SPEC, auth: { needsLogin: true, loginUrl: 'https://example.com/login' } }
+  const withExec = (fingerprint) => {
+    const exec = fakeExecutor([])
+    exec.getCookieFingerprint = async (key, url) => { exec.fpArgs = [key, url]; return fingerprint }
+    return exec
+  }
+  // ① 分区里没有 cookie（getCookieFingerprint 返回 'empty'）→ 如实报"未检测到登录态"
+  const exec = withExec('empty')
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => exec })
+  await ipc.invoke('app:write-spec', { appId: 'demo', spec })
+  const drifted = await ipc.invoke('app:check', 'demo')
+  assert.equal(drifted.status, 'drifted', `需要登录却无登录态 → 不能报 healthy：${JSON.stringify(drifted)}`)
+  assert.ok(drifted.issues.some((i) => i.includes('需要登录') && i.includes('未检测到登录态')), drifted.issues.join('｜'))
+  assert.ok(drifted.issues.some((i) => i.includes('登录此应用')), '要告诉用户下一步怎么办')
+  assert.deepEqual(exec.fpArgs, ['app-site-example.com', 'https://example.com'], '自检必须按站点级键 + 目标 URL 读该分区的登录态')
+
+  // ② 有 cookie → 保持原来的结论（不虚报问题）
+  const ipc2 = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc2, getExecutor: () => withExec('n1:abc') })
+  await ipc2.invoke('app:write-spec', { appId: 'demo', spec })
+  assert.equal((await ipc2.invoke('app:check', 'demo')).status, 'healthy')
+
+  // ③ 读 cookie 抛异常（执行器未就绪/electron 不可用）→ 按 'empty' 处理，绝不冒泡
+  const bad = fakeExecutor([])
+  bad.getCookieFingerprint = async () => { throw new Error('no electron') }
+  const ipc3 = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc3, getExecutor: () => bad })
+  await ipc3.invoke('app:write-spec', { appId: 'demo', spec })
+  const r3 = await ipc3.invoke('app:check', 'demo')
+  assert.equal(r3.status, 'drifted')
+})
+
+test('app:login-done / app:login-cancel：给等待中的登录发信号（false = 当前没有等待中的登录，不是错误）', async () => {
+  const appLogin = require('../electron/app-login.cjs')
+  const ipc = fakeIpcMain()
+  registerAppHandlers({ ipcMain: ipc, getExecutor: () => fakeExecutor([]) })
+  // 没有等待中的登录 → {ok:false}（只回传布尔值，渲染层不该当成"出错/请重试"）
+  assert.deepEqual(await ipc.invoke('app:login-done', { key: 'nobody' }), { ok: false })
+  assert.deepEqual(await ipc.invoke('app:login-cancel', { key: 'nobody' }), { ok: false })
+
+  // 真实的登录编排等在那里（键与 app:generate/app:login 是同一个），用户点「我已完成登录」
+  const key = 'app-site-x.com'
+  const waiting = appLogin.ensureLoggedIn({
+    key, url: 'https://x.com/login', executor: fakeExecutor([]), waitMs: 500, pollMs: 5,
+  })
+  assert.equal(appLogin.pendingCount(), 1, '前置：编排已在等待')
+  assert.deepEqual(await ipc.invoke('app:login-done', { key }), { ok: true })
+  const res = await waiting
+  assert.equal(res.ok, true)
+  assert.equal(res.reason, 'user-confirmed')
+  // 结算即摘除登记：第二次发同一个键返回 false（这是必然结果，不是异常）
+  assert.deepEqual(await ipc.invoke('app:login-done', { key }), { ok: false })
+  assert.equal(appLogin.pendingCount(), 0)
+
+  // 取消同理
+  const waiting2 = appLogin.ensureLoggedIn({ key, url: 'https://x.com/login', executor: fakeExecutor([]), waitMs: 500, pollMs: 5 })
+  assert.deepEqual(await ipc.invoke('app:login-cancel', { key }), { ok: true })
+  const res2 = await waiting2
+  assert.equal(res2.ok, false)
+  assert.equal(res2.reason, 'cancelled')
 })

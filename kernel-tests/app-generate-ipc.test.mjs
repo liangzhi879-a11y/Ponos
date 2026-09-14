@@ -32,7 +32,7 @@ const RICH_HTML = `<!doctype html><html><head><title>示例站</title></head><bo
 /** 只含一个标题的薄页面（细到不足以写命令） */
 const THIN_HTML = '<!doctype html><html><head><title>空壳</title></head><body><div id="root"></div></body></html>'
 
-function setup({ llm, exec, fetch: fetchImpl, executor } = {}) {
+function setup({ llm, exec, fetch: fetchImpl, executor, deps } = {}) {
   const handlers = new Map()
   const events = []
   const ipcMain = { handle: (c, f) => handlers.set(c, f) }
@@ -46,6 +46,8 @@ function setup({ llm, exec, fetch: fetchImpl, executor } = {}) {
     deps: {
       callLlm: llm || (async () => ({ ok: true, text: SPEC_TEXT, error: null, chars: SPEC_TEXT.length })),
       fetchImpl: fetchStub,
+      // 额外注入点（如登录等待上限/轮询间隔 loginWaitMs/loginPollMs，见 Task 6 用例）
+      ...(deps || {}),
     },
   })
   return {
@@ -414,7 +416,8 @@ test('browse：用浏览器打开（带登录态），快照与 ref 编号回喂
   const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com/' }, appId: 'x', sessionId: 's1' })
   assert.equal(r.ok, true)
   assert.equal(calls[0].act, 'goto')
-  assert.equal(calls[0].sessionId, 's1', '探索必须用应用自己的会话（登录态就存在这个分区里）')
+  // Task 6 契约变更：探索不再用 chat sessionId，而是站点级分区键（登录态就存在这个分区里）
+  assert.equal(calls[0].sessionId, 'app-site-example.com', '探索必须用应用自己的分区键（登录态就存在这个分区里）')
   const ctx = seenUsers[1] || ''
   assert.ok(ctx.includes('订单列表'), `快照要回喂给模型：${ctx.slice(-400)}`)
   assert.ok(ctx.includes('下一步') || ctx.includes('1'), '要带上 ref 编号供模型点击')
@@ -500,4 +503,204 @@ test('桌面应用不该出现浏览器探索（如实拒绝，而不是静默�
   await t.invoke('app:generate', { target: { type: 'desktop', exePath: 'C:/x.exe' }, appId: 'x', sessionId: 's1' })
   assert.equal(calls.length, 0, '桌面应用不该去动浏览器执行器')
   assert.ok(seenUsers.some((u) => u.includes('桌面应用')), '要如实告诉模型这条路走不通')
+})
+
+// ---------- Task 6：生成期登录闭环（检测登录墙 → 自动开窗 → 带 Cookie 重抓 → 继续生成） ----------
+//
+// 用户诉求（原话）："很多应用或网站需要登录才能暴露所有端口……要确保用户手动登陆后，
+// LLM 可以获取到登录状态。" 下面这几条守的就是这句话在**真实生成流程**里落地：
+//   · high 置信度登录墙 → 自动开窗 → 登录成功 → **换掉**素材重抓（模型必须看到登录后的内容）；
+//   · 非 high 一律不弹窗（用户要求"能不弹就不弹"）；超时仍产出 Spec 但如实警示"未在登录态下验证"；
+//   · Cookie 只发给本次授权 host（登录态绝不外发）。
+
+/** 登录页：有密码框（登录墙 high 的硬信号），没有订单内容 */
+const PAGE_WITH_PASSWORD = `<!doctype html><html><head><title>请登录 - 示例站</title></head><body>
+<form id="login" action="/login"><input name="user" placeholder="账号"><input type="password" name="pw" placeholder="密码"><button type="submit">登录</button></form></body></html>`
+/** 登录后才看得到的页面：模型必须看到 ORDERS 才算真的带上了登录态 */
+const PAGE_WITH_ORDERS = `<!doctype html><html><head><title>订单中心</title></head><body><h1>ORDERS</h1>
+<form id="q" action="/orders"><input name="kw" placeholder="订单号"><input name="from" placeholder="起始日期"><button>查询</button></form>
+<a href="/orders/export">导出订单</a></body></html>`
+
+/** 假 HTTP 响应（形状与真实 fetch 一致：headers.get 能取 content-type/location） */
+const htmlResp = (html, { url, status = 200, location = null } = {}) => ({
+  ok: status >= 200 && status < 300,
+  status,
+  url,
+  headers: {
+    get: (name) => {
+      const n = String(name).toLowerCase()
+      if (n === 'content-type') return 'text/html; charset=utf-8'
+      if (n === 'location') return location
+      return null
+    },
+  },
+  text: async () => html,
+})
+
+/**
+ * 假执行器：模拟"检测到登录墙 → 开窗 → 用户在窗口里完成登录（cookie 变化）"。
+ * 记录三件事供断言：开过的窗口、每次 exec 收到的键、每次取 Cookie 时的入参（键 + URL）。
+ * 登录成功的确定性触发点 = **开窗导航完成后的第 2 次轮询快照**（第一次仍如实显示"还停在登录页"）：
+ * 真实站点登录必然写 cookie，故状态一变就以 cookie-changed 收尾，不必依赖真实计时/网络。
+ * @param {{site?:string, cookie?:string, neverLogin?:boolean}} opts
+ */
+function loginExecutor({ site = 'https://x.com/login', cookie = null, neverLogin = false } = {}) {
+  const opened = []
+  const calls = []        // 每次 exec：{ key, act, url }
+  const cookieCalls = []  // 每次取 Cookie：{ key, url }（契约：必须按 URL 取，见 Task 2 的 url 过滤分支）
+  const state = { fp: cookie ? 'n1:abc' : 'empty', snapAfterOpen: 0 }
+  let openedDone = false
+  return {
+    opened, calls, cookieCalls, state,
+    openWindow: async (key) => { opened.push(key); return { ok: true } },
+    exec: async (key, act, params) => {
+      calls.push({ key, act, url: params?.url || null })
+      if (act === 'goto') { openedDone = true; return { ok: true, snapshot: { page: { url: params?.url, title: '请登录' } } } }
+      if (openedDone && !neverLogin) {
+        state.snapAfterOpen += 1
+        if (state.snapAfterOpen >= 2) state.fp = 'n1:abc'   // 用户完成了登录（写入了 cookie）
+      }
+      // 快照如实保持"仍停在登录页"：本次成功的唯一信号就是 cookie 变化（走 cookie-changed 分支）
+      return { ok: true, snapshot: { page: { url: site, logged_in: false, interactives: [{ ref: 1, tag: 'textbox', label: '密码' }] } } }
+    },
+    getCookieFingerprint: async (key, url) => { cookieCalls.push({ key, url }); return state.fp },
+    getCookieHeader: async (key, url) => { cookieCalls.push({ key, url }); return state.fp === 'empty' ? null : 'sid=1' },
+  }
+}
+
+/** 从进度事件里挑出登录阶段的事件（Task 6 新增 phase:'login'） */
+const loginEvents = (events) => events
+  .filter(([ch, p]) => ch === 'app:generate-progress' && p.phase === 'login')
+  .map(([, p]) => p)
+
+test('登录墙（high）→ 自动开窗等待 → cookie 变化 → 带 Cookie 重抓素材进 agent seed', async () => {
+  const exec = loginExecutor()
+  const fetchCalls = []
+  const fetched = async (u, opt) => {
+    const cookie = opt?.headers?.cookie || null
+    fetchCalls.push({ url: u, cookie })
+    return htmlResp(cookie ? PAGE_WITH_ORDERS : PAGE_WITH_PASSWORD, { url: u })
+  }
+  const seenUsers = []
+  const t = setup({
+    executor: exec,
+    fetch: fetched,
+    deps: { loginWaitMs: 500, loginPollMs: 5 },
+    llm: async (p) => { seenUsers.push(p?.user || ''); return { ok: true, text: SPEC_TEXT, error: null, chars: SPEC_TEXT.length } },
+  })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://x.com/login' }, appId: 'x', sessionId: 'chat-s1' })
+
+  assert.equal(r.ok, true)
+  // ① 检测到登录墙 → 自动打开登录窗口；键来自 appSessionKey（**不是** chat sessionId）
+  assert.deepEqual(exec.opened, ['app-site-x.com'], '必须自动打开登录窗口，且用站点级分区键')
+  assert.ok(exec.calls.every((c) => c.key === 'app-site-x.com'), `所有执行器调用都必须用站点级键：${JSON.stringify(exec.calls)}`)
+  assert.equal(r.login.attempted, true)
+  assert.equal(r.login.ok, true)
+  assert.equal(r.login.reason, 'cookie-changed', 'cookie 指纹变化即视为登录成功')
+  // ② 登录成功后带 Cookie 重抓：模型看到的必须是登录后的内容（替换而非追加）
+  assert.ok(fetchCalls.some((c) => c.cookie), '登录成功后必须带 Cookie 重抓')
+  assert.ok(seenUsers[0].includes('ORDERS'), `模型看到的素材必须是登录后的内容：${seenUsers[0].slice(0, 400)}`)
+  assert.ok(!seenUsers[0].includes('密码'), '不得把登录前的空壳页当有效线索喂给模型')
+  // ③ Cookie 必须**按 URL** 取（Task 2 的假 session 漏了 {url} 入参 → 这条分支此前零覆盖）
+  assert.ok(exec.cookieCalls.length > 0, '必须真的读过该分区的 Cookie')
+  assert.ok(exec.cookieCalls.every((c) => c.key === 'app-site-x.com'), JSON.stringify(exec.cookieCalls))
+  assert.ok(exec.cookieCalls.every((c) => typeof c.url === 'string' && c.url.startsWith('https://x.com')), `取 Cookie 必须带上 URL（按 URL 过滤）：${JSON.stringify(exec.cookieCalls)}`)
+  // ④ 进度：waiting true → false（收尾只有一条）；Spec 记录登录墙结论（可选字段）
+  const ev = loginEvents(t.events)
+  assert.equal(ev[0].waiting, true, '开窗前就要告诉界面"正在等待登录"')
+  assert.equal(ev[0].key, 'app-site-x.com')
+  assert.equal(ev.filter((p) => p.waiting === false).length, 1, '收尾事件只能一条（ensureLoggedIn 已发，Task 6 不得重复发）')
+  assert.ok(ev[ev.length - 1].detail.includes('带登录态重新获取页面'), ev[ev.length - 1].detail)
+  assert.equal(r.spec.auth?.needsLogin, true, '登录墙结论写进 Spec（可选字段，向后兼容）')
+  assert.equal(r.spec.auth?.loginUrl, 'https://x.com/login')
+})
+
+test('无需登录的页面：不开登录窗口（high 以外一律不打扰）', async () => {
+  const exec = loginExecutor()
+  const t = setup({ executor: exec })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com' }, appId: 'x', sessionId: 's1' })
+  assert.equal(r.ok, true)
+  assert.deepEqual(exec.opened, [], '没有登录墙就绝不弹窗')
+  assert.equal(r.login, null, '没走登录编排就该如实为 null（不假装登录过）')
+  assert.equal(loginEvents(t.events).length, 0, '没有登录墙就不该有 login 阶段事件')
+  assert.equal(r.spec.auth, undefined, '无需登录就不写 auth 字段')
+})
+
+test('登录词提示（medium）：只在进度里提示，不弹窗', async () => {
+  const loginWordHtml = `<!doctype html><html><head><title>请先登录</title></head><body><h1>请先登录后查看订单</h1>
+<form id="q" action="/orders"><input name="kw" placeholder="订单号"><input name="from" placeholder="起始日期"><button>查询</button></form>
+<a href="/orders/export">导出订单</a></body></html>`
+  const exec = loginExecutor()
+  const t = setup({ executor: exec, fetch: async () => htmlResp(loginWordHtml, { url: 'https://x.com/' }) })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://x.com/' }, appId: 'x', sessionId: 's1' })
+  assert.equal(r.ok, true)
+  assert.deepEqual(exec.opened, [], '中/弱信号一律不自动弹窗')
+  assert.equal(r.login, null)
+  const ev = loginEvents(t.events)
+  assert.equal(ev.length, 1, `只提示一次：${JSON.stringify(ev)}`)
+  assert.equal(ev[0].waiting, false)
+  assert.ok(ev[0].detail.includes('未自动打开登录窗口') && ev[0].detail.includes('登录此应用'), ev[0].detail)
+  assert.equal(r.spec.auth?.needsLogin, true, '中/弱信号同样记录"需要登录"（供自检提醒）')
+})
+
+test('登录超时：仍产出 spec，但 login.ok=false 且文案含"未在登录态下验证"', async () => {
+  const exec = loginExecutor({ neverLogin: true })   // 指纹与快照始终不变 = 用户没登录
+  const fetched = async (u, opt) => htmlResp(opt?.headers?.cookie ? PAGE_WITH_ORDERS : PAGE_WITH_PASSWORD, { url: u })
+  const t = setup({ executor: exec, fetch: fetched, deps: { loginWaitMs: 40, loginPollMs: 5 } })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://x.com/login' }, appId: 'x', sessionId: 's1' })
+
+  assert.equal(r.ok, true, '登录没完成也不能中断生成（用户明确取舍：超时仍继续）')
+  assert.ok(r.spec.commands.length > 0, '仍要产出 Spec')
+  assert.equal(r.login.attempted, true)
+  assert.equal(r.login.ok, false)
+  assert.equal(r.login.reason, 'timeout')
+  assert.ok(r.login.detail.includes('未在登录态下验证'), r.login.detail)
+  const ev = loginEvents(t.events)
+  assert.equal(ev[ev.length - 1].waiting, false, '超时也必须收尾，界面不能停在"等待登录中"')
+  assert.ok(ev[ev.length - 1].detail.includes('未在登录态下验证'), ev[ev.length - 1].detail)
+})
+
+test('带 Cookie 重抓：Cookie 只发给授权 host（跨站跳转直接停跟，一个请求都不发）', async () => {
+  const exec = loginExecutor()
+  const calls = []
+  const fetched = async (u, opt) => {
+    const cookie = opt?.headers?.cookie || null
+    calls.push({ url: u, cookie })
+    if (cookie) {
+      // 登录后站点把请求跳去第三方域名：登录态绝不能跟着走
+      return htmlResp('', { url: u, status: 302, location: 'https://tracker.example/steal' })
+    }
+    return htmlResp(PAGE_WITH_PASSWORD, { url: u })
+  }
+  const t = setup({ executor: exec, fetch: fetched, deps: { loginWaitMs: 500, loginPollMs: 5 } })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://x.com/login' }, appId: 'x', sessionId: 's1' })
+
+  assert.equal(r.ok, true)
+  assert.ok(calls.some((c) => c.cookie), '重抓必须带上 Cookie（否则拿不到登录后的内容）')
+  assert.equal(calls.filter((c) => c.url.includes('tracker.example')).length, 0, '未授权域名一个请求都不该收到')
+  const withCookie = calls.filter((c) => c.cookie)
+  assert.ok(withCookie.every((c) => new URL(c.url).hostname === 'x.com'), `Cookie 只能发给授权 host：${JSON.stringify(withCookie)}`)
+})
+
+test('模型探索 fetch_page：Cookie 只发给本次流程授权的 host（登录态绝不外发）', async () => {
+  const exec = loginExecutor({ cookie: 'sid=1' })   // 该站点已有登录态
+  const calls = []
+  const fetched = async (u, opt) => {
+    calls.push({ url: u, cookie: opt?.headers?.cookie || null })
+    return htmlResp(RICH_HTML, { url: u })
+  }
+  const script = [fetchTurn('https://other.example/data'), fetchTurn('https://x.com/recent'), submitTurn(JSON.parse(SPEC_TEXT))]
+  let i = 0
+  const t = setup({
+    executor: exec,
+    fetch: fetched,
+    llm: async () => { const text = script[Math.min(i, script.length - 1)]; i += 1; return { ok: true, text, error: null, chars: text.length } },
+  })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://x.com/' }, appId: 'x', sessionId: 's1' })
+
+  assert.equal(r.ok, true)
+  const other = calls.find((c) => c.url.includes('other.example'))
+  assert.ok(other, `模型主动抓的页面要真的去抓（否则探索就是假的）：${JSON.stringify(calls)}`)
+  assert.equal(other.cookie, null, '未授权 host 绝不带 Cookie')
+  assert.ok(calls.some((c) => c.url.startsWith('https://x.com/') && c.cookie), '本站点必须带 Cookie（否则探索看不到登录后内容）')
 })

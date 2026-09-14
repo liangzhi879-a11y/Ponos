@@ -47,6 +47,13 @@ const yfworkingAPI = {
    */
   appLogin: (payload) => ipcRenderer.invoke('app:login', payload),
   /**
+   * 登录信号（生成期登录墙等窗口用）：用户点「我已完成登录」/取消等待。
+   * 返回 {ok:boolean}——ok:false 只表示"当前没有等待中的登录"（不是错误，别渲染成"请重试"）。
+   * key = 站点/应用级分区键（app:login 与 app:generate 的进度事件都会给出）。
+   */
+  appLoginDone: (key) => ipcRenderer.invoke('app:login-done', { key }),
+  appLoginCancel: (key) => ipcRenderer.invoke('app:login-cancel', { key }),
+  /**
    * 生成 App Spec（探测 → LLM → 校验 → read 试跑）。**不落盘**，需用户确认后另行保存。
    */
   appGenerate: (payload) => ipcRenderer.invoke('app:generate', payload),
