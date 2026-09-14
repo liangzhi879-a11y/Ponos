@@ -22,8 +22,12 @@ const goodSpec = (n = 3) => ({
     title: `查询条目清单${i}`,
     kind: 'read',
     params: [],
-    steps: [{ act: 'goto', url: `/list/${i}` }, { act: 'snapshot', save: 'result' }],
-    returns: { type: 'text', from: 'result' },
+    // 第 0 条刻意走接口级（js + fetch）：合格产物 = 能取到结构化数据，而不是只能"打开页面看文本"。
+    // 否则质量检查会如实提示「所有查询命令都是打开页面 + 取快照」，「零提示」的断言就没意义了。
+    steps: i === 0
+      ? [{ act: 'js', expression: `await fetch('/api/items/${i}').then(r => r.json())`, save: 'result' }]
+      : [{ act: 'goto', url: `/list/${i}` }, { act: 'snapshot', save: 'result' }],
+    returns: { type: i === 0 ? 'json' : 'text', from: 'result' },
   })),
 })
 const submit = (spec) => JSON.stringify({ thought: '写完了', tool: 'submit_spec', spec })
@@ -91,6 +95,34 @@ test('checkSpecQuality：合格产物零错误零提示', () => {
   const q = checkSpecQuality(goodSpec(3), { hasMaterial: true })
   assert.equal(q.ok, true)
   assert.deepEqual(q.warnings, [], q.warnings.join('｜'))
+})
+
+test('checkSpecQuality：全部是「打开页面看文本」→ 提示未做接口级封装（只提示不硬拦）', () => {
+  const cmds = [1, 2, 3].map((i) => ({
+    action: `listPage${i}`, title: `查看第${i}个列表页`, kind: 'read', params: [],
+    returns: { type: 'text', from: 'r' },
+    steps: [{ act: 'goto', url: `/p${i}` }, { act: 'wait', ms: 800 }, { act: 'snapshot', save: 'r' }],
+  }))
+  const spec = { specVersion: 1, appId: 'a', name: '某站', target: { type: 'web', url: 'https://x/' }, commands: cmds }
+  const q = checkSpecQuality(spec, { driver: 'browser', hasMaterial: true })
+  assert.equal(q.ok, true, '只提示不硬拦：凑不出接口也必须能交付')
+  assert.ok(q.warnings.some((w) => w.includes('接口级')), `应提示走接口级封装：${q.warnings.join('；')}`)
+})
+
+test('checkSpecQuality：有接口级命令（js + fetch）→ 不再提示', () => {
+  const page = { action: 'listHome', title: '查看首页信息', kind: 'read', params: [], returns: { type: 'text', from: 'r' }, steps: [{ act: 'goto', url: '/' }, { act: 'snapshot', save: 'r' }] }
+  const api = { action: 'listOrders', title: '查询订单列表', kind: 'read', params: [], returns: { type: 'json', from: 'r' }, steps: [{ act: 'js', expression: "await fetch('/api/orders').then(r=>r.json())", save: 'r' }] }
+  const fills = { action: 'getUser', title: '查询当前用户信息', kind: 'read', params: [], returns: { type: 'json', from: 'r' }, steps: [{ act: 'js', expression: 'JSON.stringify(document.cookie ? 1 : 0)', save: 'r' }] }
+  const spec = { specVersion: 1, appId: 'a', name: '某站', target: { type: 'web', url: 'https://x/' }, commands: [page, api, fills] }
+  const q = checkSpecQuality(spec, { driver: 'browser', hasMaterial: true })
+  assert.ok(!q.warnings.some((w) => w.includes('接口级')), `有接口级命令就不该再提示：${q.warnings.join('；')}`)
+})
+
+test('checkSpecQuality：桌面驱动不做「看页面」判定（那是网页概念）', () => {
+  const cmds = [1, 2, 3].map((i) => ({ action: `step${i}`, title: `执行第${i}步`, kind: 'read', params: [], returns: { type: 'text', from: 'o' }, steps: [{ act: 'cli', argv: ['--version'], save: 'o' }] }))
+  const spec = { specVersion: 1, appId: 'd', name: '本地', driver: 'process', target: { type: 'desktop', exePath: 'C:/x/y.exe' }, commands: cmds }
+  const q = checkSpecQuality(spec, { driver: 'process', hasMaterial: true })
+  assert.ok(!q.warnings.some((w) => w.includes('接口级')), '桌面应用不该被提示"看页面"')
 })
 
 // ---------- 编排 ----------

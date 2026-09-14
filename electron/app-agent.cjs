@@ -287,6 +287,7 @@ function checkSpecQuality(spec, { driver = 'browser', hasMaterial = true } = {})
   const errors = []
   const warnings = []
   const cmds = Array.isArray(spec?.commands) ? spec.commands : []
+  const d = normalizeDriver(driver)
   const minCommands = hasMaterial ? 3 : 1
   if (cmds.length < minCommands) {
     warnings.push(`命令数偏少：${cmds.length} 条${hasMaterial ? `（有素材时建议至少 ${minCommands} 条）` : ''}——建议覆盖更多功能入口，而不是只写一个页面能做的事`)
@@ -326,11 +327,24 @@ function checkSpecQuality(spec, { driver = 'browser', hasMaterial = true } = {})
     warnings.push('所有命令都落在同一个页面上，建议覆盖更多功能入口（不同页面/表单/查询）')
   }
   const reads = cmds.filter((c) => c?.kind === 'read')
+  /**
+   * 「接口级 vs 看页面」偏好（**只提示、不硬拦**）。
+   * 依据：只读页面文本的命令，调用方拿到的是一坨文字——取不了数、存不了库，实际价值很低；
+   * 而 js 步骤支持 async（electron/browser-executor.cjs 的 executeJavaScript(..., true)），
+   * 完全可以直接调站点自己的 JSON 接口（自带登录态），像 CLI 那样给出结构化数据。
+   * 设成 warning 而不是 error：模型若一时找不到接口，也必须能交付一版可用产物。
+   */
+  const pageOnly = (c) => Array.isArray(c?.steps) && c.steps.length > 0
+    && c.steps.every((s) => ['goto', 'wait', 'snapshot'].includes(s?.act))
+  if (d === 'browser' && hasMaterial && reads.length >= 2 && reads.every(pageOnly)) {
+    warnings.push('所有查询命令都是「打开页面 + 取快照」形态，只能拿到页面文本；建议至少加一条**接口级**命令'
+      + '（例：{"act":"js","expression":"await fetch(\'/api/xxx\').then(r=>r.json())","save":"r"}），'
+      + '直接读写站点的数据接口，返回结构化数据且自带登录态')
+  }
   if (reads.length === 0) errors.push('至少要有 1 条 read 命令（否则系统无法自动验证，用户也无从查询该应用的状态）')
   if (reads.length >= 2 && !reads.some((c) => !(c.params || []).some((p) => p?.required))) {
     warnings.push('没有「无需参数」的 read 命令，系统难以自动验证；建议提供一条（例：列出全部）')
   }
-  void driver
   return { ok: errors.length === 0, errors, warnings }
 }
 
