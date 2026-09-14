@@ -79,7 +79,7 @@ function relatedParams(args) {
   return { ok: true, id, limit: lim.value }
 }
 
-export async function runKnowledgeCommand({ op, args = {}, configDir = '' } = {}) {
+export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEvent = null } = {}) {
   const name = String(op || '').trim()
   if (!OPS.has(name)) {
     return { output: { error: `unknown knowledge op: ${name}` }, code: 1 }
@@ -330,6 +330,43 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '' } = {}
           }
           maxVisionLimit = Math.floor(n)
         }
+        // 批量上限（2026-09-14，需求"支持大批量文件压力"+ 上限改为可配置）：
+        // `--max-files` / `--max-total-mb` 覆盖内核默认（500 文件 / 300MB）。
+        // 为什么必须可配：500 是**整批拒绝**式护栏（超一个就全不导），对企业知识库动辄上千文件
+        // 的场景直接不可用；但也不能简单删——它是内存与超时的唯一保护。
+        // 故做成"默认保守、可显式放宽"，把放宽的责任明确交给调用方（设置项）。
+        // 非法值报错而非静默回落（理由同 --max-ocr-pages：静默把 2000 读成 500，
+        // 用户看到的是"莫名只导进去一部分"，而不是"我的参数没生效"）。
+        const numOrNull = (raw, { min, errCode, hint }) => {
+          if (raw === undefined || raw === null || String(raw) === '') return { ok: true, value: null }
+          const n = Number(raw)
+          if (!Number.isFinite(n) || n < min) {
+            return { ok: false, resp: { output: { error: errCode, message: `import: ${hint}（收到 ${JSON.stringify(raw)}）` }, code: 1 } }
+          }
+          return { ok: true, value: Math.floor(n) }
+        }
+        const mf = numOrNull(args.maxFiles, {
+          min: 1, errCode: 'bad-max-files',
+          hint: '--max-files 必须是 ≥1 的整数；不传则用配置上限（默认 500）',
+        })
+        if (!mf.ok) return mf.resp
+        const mt = numOrNull(args.maxTotalMb, {
+          min: 1, errCode: 'bad-max-total-mb',
+          hint: '--max-total-mb 必须是 ≥1 的数值（单位 MB）；不传则用配置上限（默认 300）',
+        })
+        if (!mt.ok) return mt.resp
+        const MB = 1024 * 1024
+        // ⚠️ 键名必须用**内核 IMPORT_LIMITS 的键**（maxBatchFiles / maxBatchBytes），
+        // 不是 importFiles 的友好参数名（maxFiles / maxTotalBytes）。
+        // 本 op 直调 importDocuments，它的 limits 是 `{...IMPORT_LIMITS, ...override}` 的
+        // **浅合并**——写错键名不会报错，只会静默多出一个无人读取的字段，
+        // 于是"我把上限调到 5000"实际仍是 500。这正是本文件反复踩的"漏登记即静默失效"同类坑。
+        const limitPairs = {
+          ...(maxOcrLimit === null ? {} : { maxOcrPages: maxOcrLimit }),
+          ...(maxVisionLimit === null ? {} : { maxVisionPages: maxVisionLimit }),
+          ...(mf.value === null ? {} : { maxBatchFiles: mf.value }),
+          ...(mt.value === null ? {} : { maxBatchBytes: mt.value * MB }),
+        }
         const report = await importDocuments({
           configDir, from,
           space: args.space ?? null, name: args.name ?? null,
@@ -339,11 +376,12 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '' } = {}
           // dry-run 传 null：该分支在模块内部提前 return，从不碰索引；传了反而要冒"为预览
           // 付一次 store.load"的风险（那正是上面 skipLoad 要避免的落盘副作用）。
           knowledgeIndex: args.dryRun === true ? null : store,
-          limits: (maxOcrLimit === null && maxVisionLimit === null) ? null : {
-            ...(maxOcrLimit === null ? {} : { maxOcrPages: maxOcrLimit }),
-            ...(maxVisionLimit === null ? {} : { maxVisionPages: maxVisionLimit }),
-          },
+          limits: Object.keys(limitPairs).length ? limitPairs : null,
           visionTables,
+          // 进度旁路（2026-09-14）：由 cli.mjs 注入的 `onEvent` 决定是否落到 stdout。
+          // 不在此判断 `--progress`：本 op 不该知道传输格式（NDJSON / 回调 / 静默），那是调用层的事。
+          // 函数缺失即静默 ⇒ 单次调用语义与之前完全一致（既有消费者不受影响）。
+          onProgress: typeof onEvent === 'function' ? (evt) => onEvent({ type: 'progress', ...evt }) : null,
         })
         if (!report.ok) return { output: { error: report.error, message: report.message }, code: 1 }
         // 三档计数一并回显：调用方（GUI/agent）要能一眼看出"成功了几篇、跳过了几篇、失败几篇及原因"，

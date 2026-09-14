@@ -17,6 +17,7 @@ import { buildAnchorApplied } from './health-anchor.mjs'
 import { resolveKernelPaths } from '../electron/kernel-paths.cjs'
 import { resolveYfwHome } from './yfw-home.cjs'
 import { writeLogLine, readLogPolicyCached, enforceLogPolicy, normalizeLogPolicy, DEFAULT_LOG_POLICY } from './log-policy.cjs'
+import { DEFAULT_IMPORT_POLICY, normalizeImportPolicy } from './knowledge-import-policy.cjs'
 import { handleLogsRoute } from './logs-routes.mjs'
 import { handleKnowledgeRoute } from './knowledge-routes.mjs'
 import { installBuiltinWorkflows } from './workflow-install.mjs'
@@ -250,6 +251,11 @@ const DEFAULT_CONFIG = {
   // 缺此键 → loadConfig 合并默认档；写入一律经 sanitizeConfigPatch 钳制（手改 config.json
   // 填 {maxFileBytes:-1} 会拿回 5MB，而不是得到一个坏掉的轮转器）。
   logPolicy: { ...DEFAULT_LOG_POLICY },
+  // 知识库文件导入上限（2026-09-14）：maxFiles / maxTotalBytes。
+  // 缺此键 → 合并默认档（500 文件 / 300MB，与内核 IMPORT_LIMITS 同值）；
+  // 写入一律经 sanitizeConfigPatch 钳制 —— 手改 config.json 填 {maxFiles:0}
+  // 会拿回 1（最小值），而不是得到一个"什么都导不进去"的配置。
+  knowledgeImport: { ...DEFAULT_IMPORT_POLICY },
   providers: DEFAULT_PROVIDERS,
 }
 
@@ -463,6 +469,16 @@ function sanitizeConfigPatch(patch) {
     out.logPolicy = normalizeLogPolicy(merged)
     if (JSON.stringify(raw) !== JSON.stringify(out.logPolicy)) {
       console.warn(`[bridge] logPolicy 已钳制：${JSON.stringify(raw)} → ${JSON.stringify(out.logPolicy)}`)
+    }
+  }
+  if ('knowledgeImport' in out) {
+    const raw = out.knowledgeImport
+    // 局部补丁语义（同 logPolicy）：只发 { maxFiles: 2000 } 时 maxTotalBytes 应保持现值，
+    // 而不是被默认档重置 —— 否则用户调一个上限会把另一个悄悄打回默认。
+    const merged = { ...(loadConfig().knowledgeImport || DEFAULT_IMPORT_POLICY), ...(raw && typeof raw === 'object' ? raw : {}) }
+    out.knowledgeImport = normalizeImportPolicy(merged)
+    if (JSON.stringify(raw) !== JSON.stringify(out.knowledgeImport)) {
+      console.warn(`[bridge] knowledgeImport 已钳制：${JSON.stringify(raw)} → ${JSON.stringify(out.knowledgeImport)}`)
     }
   }
   return out
@@ -1041,7 +1057,8 @@ function knowledgePackConfig() {
 // 的兼容兜底；两份一致性由 kernel-tests/chat-mode.test.mjs 的源码比对守住。
 // S3 D2：KnowledgeSearch 出表（chat 放行只读知识检索）——理由与语义变更说明见内核
 // kernel/tools.mjs 同名表的头注；**改这一份时那一份必须同步改**（逐项比对会变红）。
-export const CHAT_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch']
+// 2026-09-14：KnowledgeImport 入表（写盘类，chat 禁用）——同上，两份同时改。
+export const CHAT_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch', 'KnowledgeImport']
 
 // 浏览器白名单写入（2026-09-10）：内核 Browser 工具白名单审批通过后，把域名
 // 追加进 {YFW_HOME}/browser-whitelist.json 的 allow 数组。执行器（browser-common.cjs

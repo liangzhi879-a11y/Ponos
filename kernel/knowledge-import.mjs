@@ -848,6 +848,15 @@ function atomicWrite(abs, content) {
  * @param pythonPath 注入的 python 解释器路径（透传给 defaultConverter；缺省见 resolvePython）
  * @param knowledgeIndex 内核 KnowledgeStore（可选；传了就在导入后同步索引）
  * @param limits    覆盖 IMPORT_LIMITS
+ * @param onProgress 进度回调（可选）：批量导入的可观测性。两次调用形状不同——
+ *                   `{phase:'plan', done:0, total:N, totalBytes}` 在**枚举完文件后立即**触发
+ *                   （"先查文件数"，GUI 据此算出总步数）；
+ *                   `{phase:'process', done:i, total:N, current:相对路径}` 在**每个文件开始处理时**触发
+ *                   （done = 已完成数，即循环下标；`total` 恒为计划文件数）。
+ *                   ⚠️ 进度按**循环下标**推进，而不是按"成功数"：一个文件可能走
+ *                   已导入/跳过/被拒/失败四条路（含多条 `continue`），若按成功数计，
+ *                   被跳过的文件会让进度条**永远差一截**（分母对不上的经典 bug）。
+ *                   按下标计则恒定收敛到 total。回调抛错不影响导入（见 emitProgress）。
  * @returns 结构化报告（见下方 return 形状）
  *
  * ⚠️ 另有一层**对外主入口** `importFiles(opts)`（本文件末尾）：同一条管线，参数/报告口径按
@@ -857,8 +866,15 @@ export async function importDocuments({
   configDir, from, space = null, name = null, dryRun = false,
   converter = null, knowledgeIndex = null, limits: limitOverride = null, pythonPath = null,
   visionTables = 'auto', visionCall = null, visionAvailable: visionOverride = null,
+  onProgress = null,
 } = {}) {
   const limits = { ...IMPORT_LIMITS, ...(limitOverride || {}) }
+  // 进度回调的**安全包装**：导入流程不该因为"上报进度时出错"而失败
+  //（GUI 关了、消费者崩了都不应影响落盘）。故吞掉异常，只在确实抛错时降级为静默。
+  const emitProgress = (evt) => {
+    if (typeof onProgress !== 'function') return
+    try { onProgress(evt) } catch { /* 进度是旁路，不能反向影响主流程 */ }
+  }
   if (!configDir) return { ok: false, error: 'bad-config', message: '缺少 configDir（无法定位知识根）' }
   const wantId = String(space || name || '').trim()
   const idCheck = validateSpaceId(wantId)
@@ -895,6 +911,10 @@ export async function importDocuments({
       message: `整批 ${fmtBytes(totalBytes)} 超出上限 ${fmtBytes(limits.maxBatchBytes)}（请分批导入）`,
     }
   }
+
+  // ① 计划阶段：文件数在此确定 —— 立即上报，让 GUI 不必等第一个文件处理完就能算出总步数。
+  // （需求原话："先查文件数，然后根据实时处理的文件数量算进度"。）
+  emitProgress({ phase: 'plan', done: 0, total: files.length, totalBytes, rejected: rejected.length })
 
   const spacesRoot = join(configDir, 'knowledge', 'spaces')
   const spaceRoot = join(spacesRoot, spaceId)
@@ -1003,7 +1023,11 @@ export async function importDocuments({
 
   const usedOut = new Set(Object.values(ledger.files).map((r) => r.out).filter(Boolean))
   let ledgerTouched = false      // 旧键迁移也会动台账（见下），不能只看 converted
-  for (const f of files) {
+  // ② 逐文件进度：按下标上报（见函数头注释——按"成功数"计会让进度条永远差一截）。
+  // 用下标循环而非 `for…of`，就是为了在不侵入四条 `continue` 分支的前提下拿到进度。
+  for (let fi = 0; fi < files.length; fi++) {
+    const f = files[fi]
+    emitProgress({ phase: 'process', done: fi, total: files.length, current: f.rel })
     let hash = null
     try { hash = sha256File(f.abs) } catch (e) {
       report.failed.push({ source: f.rel, error: 'unreadable', message: `读取失败：${e?.message || e}`, phase: 'collect' })
@@ -1241,6 +1265,9 @@ export async function importDocuments({
       report.indexSyncDetail = { updated, reloaded }
     }
   }
+  // ③ 终态：`done === total`。消费者据此把进度条收到 100%。
+  // 即便中途有文件走 skipped/failed 分支，这里也必定等于计划文件数（分母一致性）。
+  emitProgress({ phase: 'done', done: files.length, total: files.length })
   return report
 }
 
@@ -1362,6 +1389,7 @@ export async function importFiles({
   maxFileBytes = null, maxTotalBytes = null, maxFiles = null, maxMdBytes = null,
   knowledgeIndex = null, timeoutMs = null,
   visionTables = 'auto', maxVisionPages = null, visionCall = null, visionAvailable: visionOverride = null,
+  onProgress = null,
 } = {}) {
   const sources = (Array.isArray(from) ? from : [from])
     .map((s) => String(s ?? '').trim()).filter(Boolean)
@@ -1405,6 +1433,7 @@ export async function importFiles({
     space, name, dryRun, converter, knowledgeIndex,
     limits: Object.keys(limits).length ? limits : null,
     visionTables, visionCall, visionAvailable: visionOverride,
+    onProgress,
   })
   if (!report.ok) {
     return {

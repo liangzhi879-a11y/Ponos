@@ -199,6 +199,13 @@ export function parseArgs(argv) {
       // 只预览"将处理/将跳过/将被拒"的清单，不落盘（布尔，无值）
       case '--dry-run': out.dryRun = true; break
       case '--max-ocr-pages': out.maxOcrPages = next() ?? null; break
+      case '--max-files': out.maxFiles = next() ?? null; break
+      case '--max-total-mb': out.maxTotalMb = next() ?? null; break
+      // 流式进度（布尔）：把每个文件的处理进度以 NDJSON 逐行写到 stdout。
+      // 为什么必须 opt-in：既有契约是"stdout 恰好一行 JSON"（路由侧 callJson 整段解析），
+      // 无条件加行会破坏所有既有调用方。故只在显式要求时输出，
+      // 此时 stdout = 若干 `{"type":"progress",…}` 行 + 末行结果（消费者按行解析）。
+      case '--progress': out.progress = true; break
       // 三态：缺省 auto（配了视觉模型就用）；显式 `off` 关闭（省时间/费用）
       case '--vision-tables': out.visionTables = next() ?? null; break
       case '--max-vision-pages': out.maxVisionPages = next() ?? null; break
@@ -317,6 +324,7 @@ export async function main(argv) {
       // 静默变成真写入）。故 `knowledge-cli-import.test.mjs` 用真进程逐项钉住。
       src: args.src, name: args.name, dryRun: args.dryRun,
       maxOcrPages: args.maxOcrPages, visionTables: args.visionTables, maxVisionPages: args.maxVisionPages,
+      maxFiles: args.maxFiles, maxTotalMb: args.maxTotalMb,
     }
     // S6：`--text -` = 从 stdin 读取正文。
     // 为什么需要：经验正文常含多行、引号、`|`、反引号——写在命令行里要么被 shell 改写，
@@ -324,8 +332,15 @@ export async function main(argv) {
     // 只在 append 这一条写路径上读：其余 op 保持"纯参数、无隐式阻塞读"语义，
     // 否则任何一次忘记重定向的调用都会挂住直至超时。
     const stdinText = args.knowledge === 'append' && args.text === '-' ? await readStdin() : null
+    // 流式进度（`--progress`）：把 onEvent 接到 stdout 的 NDJSON。
+    // 用 `process.stdout.write` 而非 console.log —— 前者不做额外格式化，
+    // 保证每行都是**可直接 JSON.parse 的紧凑对象**（消费方是逐行解析的）。
+    // 只在 import 分支接线：其它 op 无进度语义，接了也没人调。
+    const onEvent = args.knowledge === 'import' && args.progress === true
+      ? (evt) => { try { process.stdout.write(JSON.stringify(evt) + '\n') } catch { /* EPIPE：消费者提前退出不该影响导入 */ } }
+      : null
     const { output, code } = await runKnowledgeCommand({
-      op: args.knowledge, configDir,
+      op: args.knowledge, configDir, onEvent,
       args: stdinText === null ? knowledgeArgs : { ...knowledgeArgs, text: stdinText },
     })
     console.log(JSON.stringify(output))
