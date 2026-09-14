@@ -61,6 +61,10 @@ function agentToolDocs(driver = 'browser') {
       '  返回新页面的快照。**删除/支付/提交订单/退出登录这类破坏性按钮会被拒绝**，别试。',
       '· 返回上一页（配合 click 连续探索）：',
       '  {"thought":"…","tool":"back","args":{}}',
+      '· **请求用户登录**：当你判断"要看的内容在登录之后"时用它——例如抓到的是登录页（有密码框）、',
+      '  或页面内容明显缺少主要功能入口（只有空壳/提示登录）。系统会打开一个可见窗口请用户手动登录，',
+      '  检测到登录成功后把**登录后的页面内容**回给你，你再继续探索：',
+      '  {"thought":"…","tool":"request_login","args":{"reason":"为什么判断需要登录"}}',
     )
   }
   lines.push(
@@ -144,6 +148,9 @@ function buildAgentSystem({ target, driver = 'browser' } = {}) {
       '   （折叠菜单、列表翻页、"下一页"、进入详情），就用 click 点进去再看快照。',
       '   探索完一个分支可以用 back 退回来继续看别的入口。用户允许你做这类探索性点击，',
       '   但**不要点删除/支付/提交订单/退出登录这类破坏性按钮**（会被系统拒绝）。',
+      '2.5) **抓到登录页不要硬猜、也不要反复抓同一个页面**：说明该站点需要登录 → 调 request_login',
+      '     请用户登录，用户登录后系统会把登录后的内容回给你（HTTP 抓取永远看不到登录后的内容，',
+      '     必要时改用 browse 看登录后的真实页面）。',
       '3) 再写草稿：用 submit_spec 提交。第一版不要求完美——它会被真实试跑，报错会原样回给你。',
       '4) 然后调试：根据回给你的**真实报错**修改。你可以用 run_command 单独试跑某条命令快速验证，',
       '   也可以用 fetch_page / browse 再看一眼页面结构（比如确认某个按钮的位置、表单字段名）。',
@@ -315,6 +322,7 @@ function describeToolCall(tool, args) {
   if (tool === 'browse') return `用浏览器打开（带登录态）${args?.url || ''}`
   if (tool === 'click') return `点击页面元素 ${args?.text ? `「${args.text}」` : `ref=${args?.ref ?? ''}`}`
   if (tool === 'back') return '返回上一页'
+  if (tool === 'request_login') return '请求用户登录（等待人工完成）'
   if (tool === 'run_command') return `试跑命令 ${args?.action || ''}`
   return `${tool}`
 }
@@ -354,6 +362,13 @@ async function runAgentLoop({
   let stalls = 0
   /** 连续"输出无法解析"的次数——模型读不懂协议时早点收工 */
   let badStreak = 0
+  /**
+   * 等待人工（登录）累计时长——**不计入**探索时间预算。
+   * 为什么必须扣掉：登录可能要等用户输入账号/短信验证码好几分钟，若算进 10 分钟探索预算，
+   * 就会出现"用户刚登录完，探索预算已经被等待吃光"的荒诞结果。
+   * 约定：工具结果里的 `pauseMs` 表示"本次调用里有多少毫秒是在等人工"，由 runTool 如实上报。
+   */
+  let pausedMs = 0
   const hasMaterial = !!probeMaterial && probeMode !== 'none'
   const check = validate || validateSpecBasic
   /**
@@ -373,7 +388,7 @@ async function runAgentLoop({
   let pendingDelta = ''
 
   for (turns = 1; turns <= b.maxTurns; turns++) {
-    if (Date.now() - t0 > b.timeBudgetMs) { stoppedBy = 'time'; issues.push(`已达时间预算（${Math.round(b.timeBudgetMs / 1000)}s），停止探索`); break }
+    if (Date.now() - t0 - pausedMs > b.timeBudgetMs) { stoppedBy = 'time'; issues.push(`已达时间预算（${Math.round(b.timeBudgetMs / 1000)}s，不含等待登录的人工时间），停止探索`); break }
     const user = [seedUser, renderLog(log, b.historyChars), '请输出你的下一步（一个 JSON 对象）。'].filter(Boolean).join('\n\n')
     onProgress?.({ phase: 'round', turn: turns, maxTurns: b.maxTurns, detail: `第 ${turns}/${b.maxTurns} 轮：${log.length ? '把探索/试跑结果交给模型' : '请求模型开始探索'}…` })
     lastEmitAt = 0; pendingDelta = ''
@@ -429,6 +444,8 @@ async function runAgentLoop({
         out = { ok: false, summary: `工具执行异常：${String(e?.message || e)}` }
       }
       if (!out || typeof out !== 'object') out = { ok: false, summary: '工具没有返回结果' }
+      // 等人工（登录）的时间从时间预算里剔除——只有工具如实上报 pauseMs 才扣
+      if (typeof out.pauseMs === 'number' && out.pauseMs > 0) pausedMs += out.pauseMs
       trace.push({ turn: turns, kind: 'tool', tool: turn.tool, args: turn.args, ok: out.ok !== false, summary: String(out.summary || '').slice(0, 400) })
       log.push({ role: '工具', text: toolResultText(turn.tool, out, b.perToolChars) })
       onProgress?.({ phase: 'explore', turn: turns, toolCalls, done: true, detail: `${label} → ${out.ok === false ? `失败：${String(out.summary || '').slice(0, 160)}` : `成功：${String(out.summary || '').slice(0, 160)}`}` })

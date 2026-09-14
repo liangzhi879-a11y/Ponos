@@ -538,7 +538,61 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
           ? { ok: true, summary: `试跑成功（${r.durationMs || 0}ms）：${String(typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? '')).slice(0, 1200) || '(无输出)'}` }
           : { ok: false, summary: `试跑失败：${String(r?.error || '未知错误')}` }
       }
-      return { ok: false, summary: `未知工具「${tool}」。可用工具：fetch_page / list_pages / browse / click / back / run_command / submit_spec。` }
+      if (tool === 'request_login') {
+        // 模型自己判断"要看的内容在登录之后"时用它——把"要不要打扰用户"的判断权交给它，
+        // 但真正的开窗等待仍然是同一套 ensureLoggedIn（与取素材阶段的自动检测复用同一条链路）。
+        if (driver !== 'browser') {
+          return { ok: false, summary: '这是桌面应用，没有浏览器登录概念；请直接用 run_command 试跑或 submit_spec。' }
+        }
+        const reason = String(args?.reason || '').slice(0, 120) || '该站点需要登录'
+        // 每次现取执行器（执行器可能被重建）：取不到就如实说"开不了登录窗口"，别假装等过用户
+        const loginExecutor = getExecutor()
+        if (!loginExecutor) return { ok: false, summary: '浏览器执行器未就绪，无法打开登录窗口' }
+        emitProgress(appId, { phase: 'login', waiting: true, key, detail: `模型请求登录：${reason}（已在可见窗口中打开该站点，请在其中完成登录）…` })
+        const t0Login = Date.now()
+        const res = await appLogin.ensureLoggedIn({
+          key, url: target.url, executor: loginExecutor, waitMs: loginWaitMs, pollMs: loginPollMs,
+          emit: (p) => emitProgress(appId, { ...p, key }),
+        })
+        if (LOGIN_EARLY_REASONS.includes(res.reason)) {
+          emitProgress(appId, { phase: 'login', waiting: false, key, detail: appLogin.loginResultDetail(res) })
+        }
+        // 等人工的时长如实上报：runAgentLoop 会把它从探索时间预算里剔除
+        const pauseMs = Date.now() - t0Login
+        if (!res.ok) {
+          return {
+            ok: false, pauseMs,
+            summary: `${appLogin.loginResultDetail(res)}（原因：${res.reason}）。你可以继续用现有能力探索，或用 browse 看登录后的页面，或直接 submit_spec 并在预览里让用户核对。`,
+          }
+        }
+        // 登录成功：把**登录后重抓到的首页素材**回喂，模型下一轮就看得到登录后的内容。
+        // 这里自带一套抓取参数（不依赖上面 web 分支块内的闭包变量）：授权集合按本次目标重新生成，
+        // Cookie 仍经同一个闸门（未授权 host 一律 null），因此不会因为"重抓"把登录态发给第三方。
+        let materialLine = '（登录后重抓失败，请用 browse 看登录后的真实页面）'
+        try {
+          const hosts = new Set(authorizeAppTarget(target, { extraUrls: [target.url] }))
+          const provider = cookieProviderFor(loginExecutor, key, hosts)
+          const re = await httpProbe.harvestSite({
+            url: target.url, fetchImpl, maxPages: 2,
+            cookieProvider: provider,
+            isAllowedHost: (u) => hosts.has(hostOfUrl(u)),
+          })
+          if (re.ok && re.material) {
+            const mk = re.finalUrl || target.url
+            visited.set(mk, { url: mk, title: re.material.title, interactives: re.material.interactives, forms: re.material.forms?.length || 0 })
+            materialLine = JSON.stringify(re.material).slice(0, AGENT_TOOL_MATERIAL_CAP)
+          } else {
+            materialLine = `登录后重抓失败：${re.error || '未知错误'}`
+          }
+        } catch (e) {
+          materialLine = `登录后重抓异常：${String(e?.message || e)}`
+        }
+        return {
+          ok: true, pauseMs,
+          summary: `用户已完成登录，登录态已生效（后续 browse / 试跑 / AI 调用都会复用）。登录后重新抓取的首页素材：\n${materialLine}`,
+        }
+      }
+      return { ok: false, summary: `未知工具「${tool}」。可用工具：fetch_page / list_pages / browse / click / back / request_login / run_command / submit_spec。` }
     }
 
     const agent = await appAgent.runAgentLoop({

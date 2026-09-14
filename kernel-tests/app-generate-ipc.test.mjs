@@ -516,6 +516,8 @@ test('桌面应用不该出现浏览器探索（如实拒绝，而不是静默�
 /** 登录页：有密码框（登录墙 high 的硬信号），没有订单内容 */
 const PAGE_WITH_PASSWORD = `<!doctype html><html><head><title>请登录 - 示例站</title></head><body>
 <form id="login" action="/login"><input name="user" placeholder="账号"><input type="password" name="pw" placeholder="密码"><button type="submit">登录</button></form></body></html>`
+/** 普通页面：既没有密码框、也没有订单内容（登录墙 none —— 不该触发任何自动开窗） */
+const PAGE_PLAIN = `<!doctype html><html><head><title>示例站首页</title></head><body><h1>示例站</h1><a href="/about">关于</a></body></html>`
 /** 登录后才看得到的页面：模型必须看到 ORDERS 才算真的带上了登录态 */
 const PAGE_WITH_ORDERS = `<!doctype html><html><head><title>订单中心</title></head><body><h1>ORDERS</h1>
 <form id="q" action="/orders"><input name="kw" placeholder="订单号"><input name="from" placeholder="起始日期"><button>查询</button></form>
@@ -723,4 +725,59 @@ test('模型探索 fetch_page：Cookie 只发给本次流程授权的 host（登
   assert.ok(other, `模型主动抓的页面要真的去抓（否则探索就是假的）：${JSON.stringify(calls)}`)
   assert.equal(other.cookie, null, '未授权 host 绝不带 Cookie')
   assert.ok(calls.some((c) => c.url.startsWith('https://x.com/') && c.cookie), '本站点必须带 Cookie（否则探索看不到登录后内容）')
+})
+
+test('模型主动请求登录：开窗等待成功 → 带 Cookie 重抓 → 把登录后内容回喂给模型继续探索', async () => {
+  // 本用例自带一个"打开窗口即视为登录成功"的假执行器：
+  // 不依赖按快照次数翻转指纹的启发式（那会让结果受调用次序影响）。
+  const state = { loggedIn: false, opened: [] }
+  const exec = {
+    async openWindow(key) { state.opened.push(key); state.loggedIn = true; return { ok: true } },
+    async exec(key, act) {
+      return { ok: true, snapshot: { page: { url: 'https://example.com/', logged_in: state.loggedIn, interactives: [] } } }
+      },
+    async getCookieFingerprint() { return state.loggedIn ? 'n1:abc' : 'empty' },
+    async getCookieHeader() { return state.loggedIn ? 'sid=1' : null },
+  }
+  const seenUsers = []
+  const fetched = async (u, opt) => htmlResp(opt?.headers?.cookie ? PAGE_WITH_ORDERS : PAGE_PLAIN, { url: u })
+  const script = [
+    JSON.stringify({ thought: '这页看不到功能入口', tool: 'request_login', args: { reason: '首页只有登录入口' } }),
+    submitTurn(JSON.parse(SPEC_TEXT)),
+  ]
+  let i = 0
+  const t = setup({
+    executor: exec,
+    fetch: fetched,
+    deps: { loginWaitMs: 500, loginPollMs: 5 },
+    llm: async (p) => { seenUsers.push(p?.user || ''); const text = script[Math.min(i, script.length - 1)]; i += 1; return { ok: true, text, error: null, chars: text.length } },
+  })
+  const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com/' }, appId: 'x', sessionId: 's1' })
+
+  assert.equal(r.ok, true, (r.issues || []).join('｜'))
+  assert.ok(state.opened.length >= 1, '必须真的打开了可见登录窗口')
+  const turn = r.agent.trace.find((x) => x.kind === 'tool' && x.tool === 'request_login')
+  assert.ok(turn, '模型主动请求登录要出现在轨迹里')
+  assert.equal(turn.ok, true, turn.summary)
+  assert.ok(turn.summary.includes('ORDERS'), `回喂的必须是**登录后**重抓到的素材：${turn.summary.slice(0, 300)}`)
+  assert.ok(seenUsers.some((u) => u.includes('ORDERS')), '下一轮模型也要看得到登录后的内容')
+  assert.ok(seenUsers.some((u) => u.includes('用户已完成登录')), '要如实告诉模型登录已完成')
+})
+
+test('模型请求登录：桌面应用明确拒绝（没有浏览器登录概念），生成照常继续', async () => {
+  const script = [
+    JSON.stringify({ thought: '想登录', tool: 'request_login', args: {} }),
+    submitTurn(JSON.parse(SPEC_TEXT)),
+  ]
+  let i = 0
+  const t = setup({
+    llm: async () => { const text = script[Math.min(i, script.length - 1)]; i += 1; return { ok: true, text, error: null, chars: text.length } },
+  })
+  const r = await t.invoke('app:generate', { target: { type: 'desktop', exePath: 'C:/x.exe' }, appId: 'desk', sessionId: 's1' })
+
+  assert.equal(r.ok, true, '拒绝该工具不应中断生成')
+  const turn = r.agent.trace.find((x) => x.kind === 'tool' && x.tool === 'request_login')
+  assert.ok(turn, '工具调用要出现在轨迹里')
+  assert.equal(turn.ok, false)
+  assert.ok(turn.summary.includes('桌面'), turn.summary)
 })

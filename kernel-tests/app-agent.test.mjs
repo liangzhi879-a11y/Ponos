@@ -12,7 +12,7 @@ const require = createRequire(import.meta.url)
 const {
   runAgentLoop, parseTurn, checkSpecQuality, renderLog, buildAgentSystem, buildAgentSeed,
   resolveClickTarget, isDestructiveLabel,
-  toolResultText, describeToolCall, DEFAULT_BUDGET,
+  toolResultText, describeToolCall, DEFAULT_BUDGET, agentToolDocs,
 } = require('../electron/app-agent.cjs')
 
 const goodSpec = (n = 3) => ({
@@ -347,10 +347,67 @@ test('agentToolDocs：浏览器驱动才有 browse/click/back，桌面驱动不�
   assert.ok(desk.includes('submit_spec'), '桌面驱动仍要有基本工具')
 })
 
+test('agentToolDocs：request_login 只给浏览器驱动，并说明"登录后会看到登录后的内容"', () => {
+  assert.ok(agentToolDocs('browser').includes('request_login'), '浏览器驱动必须能请求用户登录')
+  assert.ok(agentToolDocs('browser').includes('登录后'), '要让模型知道登录后会拿到登录后的内容')
+  const web = buildAgentSystem({ target: { type: 'web', url: 'https://x/' }, driver: 'browser' })
+  assert.ok(web.includes('request_login'), '系统提示里要有 request_login')
+  assert.ok(web.includes('2.5'), '探索策略里要写明"抓到登录页不要硬猜/反复抓"')
+  assert.ok(!agentToolDocs('desktop').includes('request_login'), '桌面应用没有浏览器登录概念，不给该工具')
+})
+
+test('runAgentLoop：等人工（登录）的时间不计入探索时间预算', async () => {
+  const realNow = Date.now
+  let clock = 0
+  // 每次取时间前进 1 分钟：若等待登录的 5 分钟被算进预算，5 分钟的预算必然提前耗尽
+  Date.now = () => (clock += 60_000)
+  try {
+    const llm = scripted([
+      say({ tool: 'request_login', args: { reason: '需要登录' } }),
+      say({ tool: 'list_pages', args: {} }),
+      submit(goodSpec(1)),
+    ])
+    const r = await runAgentLoop({
+      target: { type: 'web', url: 'https://example.com/' }, probeMode: 'http', probeMaterial: { title: 'T' },
+      driver: 'browser',
+      budget: { timeBudgetMs: 5 * 60 * 1000 },
+      callLlm: llm,
+      runTool: async ({ tool }) => (tool === 'request_login'
+        ? { ok: true, summary: '用户已完成登录', pauseMs: 5 * 60 * 1000 }
+        : { ok: true, summary: 'ok' }),
+      verify: async () => ({ ok: true, tried: ['listOrders'], failures: [], notRun: [], skipped: [] }),
+    })
+    assert.equal(r.ok, true, r.issues.join('｜'))
+    assert.notEqual(r.stoppedBy, 'time', '等待人工的时间不该吃掉探索预算')
+    assert.equal(llm.calls.length, 3, '登录后应能继续探索并最终提交')
+  } finally {
+    Date.now = realNow
+  }
+})
+
+test('runAgentLoop：没有 pauseMs 时照旧计时（不能因为"扣等待"把预算变成无限）', async () => {
+  const realNow = Date.now
+  let clock = 0
+  Date.now = () => (clock += 60_000 * 10)   // 每次前进 10 分钟
+  try {
+    const r = await runAgentLoop({
+      target: { type: 'web', url: 'https://example.com/' }, probeMode: 'http', probeMaterial: { title: 'T' },
+      budget: { timeBudgetMs: 60_000 },
+      callLlm: async () => { throw new Error('不该被调用') },
+      runTool: async () => ({ ok: true, summary: 'ok' }),
+      verify: async () => ({ ok: true, tried: [], failures: [] }),
+    })
+    assert.equal(r.stoppedBy, 'time')
+  } finally {
+    Date.now = realNow
+  }
+})
+
 test('describeToolCall：探索类工具要说人话（界面据此展示模型在做什么）', () => {
   assert.ok(describeToolCall('browse', { url: 'https://a/b' }).includes('https://a/b'))
   assert.ok(describeToolCall('browse', { url: 'https://a/b' }).includes('登录态'))
   assert.ok(describeToolCall('click', { text: '下一页' }).includes('下一页'))
   assert.ok(describeToolCall('click', { ref: 3 }).includes('3'))
   assert.ok(describeToolCall('back', {}).includes('返回'))
+  assert.ok(describeToolCall('request_login', { reason: '需要登录' }).includes('登录'))
 })
