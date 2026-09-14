@@ -22,6 +22,8 @@ const { normalizeUrl } = require('./app-util.cjs')
 
 const DEFAULT_TIMEOUT_MS = 15000
 const MAX_HTML_BYTES = 1_500_000
+/** 手动跟随重定向的最大跳数：登录态不能跟着跳转无限跑，更不能跑到第三方域名 */
+const MAX_REDIRECTS = 5
 const MAX_TEXT_CHARS = 3000
 const MAX_LINKS = 40
 const MAX_FORMS = 8
@@ -56,7 +58,7 @@ const textOf = (tag) => stripTags(String(tag).replace(/^<[^>]*>/, '')).slice(0, 
 
 /**
  * 从 HTML 里抽出"写命令要用到"的素材（纯函数）。
- * @returns {{title:string, description:string, headings:string[], forms:Array, buttons:string[], links:Array, text:string, interactives:number}}
+ * @returns {{title:string, description:string, headings:string[], forms:Array, buttons:string[], links:Array, text:string, interactives:number, hasPassword:boolean}}
  */
 function extractPageMaterial(html, url) {
   const src = String(html || '')
@@ -90,7 +92,9 @@ function extractPageMaterial(html, url) {
 
   const text = stripTags(src).slice(0, MAX_TEXT_CHARS)
   const interactives = forms.reduce((n, f) => n + f.fields.length + f.buttons.length, 0) + buttons.length + links.length
-  return { url: url || '', title, description, headings, forms, buttons, links, text, interactives }
+  // 登录墙硬信号：密码框（可能在 <form> 外，form 解析覆盖不到，故直接扫原文）
+  const hasPassword = /<input[^>]+type\s*=\s*["']?password/i.test(src)
+  return { url: url || '', title, description, headings, forms, buttons, links, text, interactives, hasPassword }
 }
 
 /** 素材是否"够 rich"（不够就得靠知识兜底 + 提示用户核对） */
@@ -107,11 +111,36 @@ function looksLikeSpaShell(html) {
   return /<div[^>]+id\s*=\s*["'](root|app)["']/i.test(s) || /__NEXT_DATA__|window\.__NUXT__|data-reactroot/i.test(s)
 }
 
+/** 单跳请求：按 url 重新索取 Cookie（**跨站绝不带**） */
+async function fetchOneHop(f, url, { headers, cookieProvider, timeoutMs, ac }) {
+  const h = { 'user-agent': UA, accept: 'text/html,application/xhtml+xml', 'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8', ...(headers || {}) }
+  if (typeof cookieProvider === 'function') {
+    // 每跳都重新问一次：登录态可能在流程中变化（用户刚扫码/刚过期）
+    const cookie = await cookieProvider(url)
+    if (cookie) h.cookie = cookie
+  }
+  return f(url, { redirect: 'manual', headers: h, signal: ac.signal })
+}
+
+/** 缺省授权判定：仅初始 host（显式传 isAllowedHost 时以调用方为准） */
+function defaultAllowedHost(initialUrl) {
+  const host = (() => { try { return new URL(initialUrl).hostname.toLowerCase() } catch { return null } })()
+  return (u) => { try { return new URL(u).hostname.toLowerCase() === host } catch { return false } }
+}
+
 /**
  * 后台取页面素材（主进程普通 HTTP，无窗口、无白名单，用户无感）。
+ *
+ * 登录态：可传 cookieProvider(url) 注入用户自己的 Cookie（登录后的页面才看得到真实控件）。
+ * 因为带 Cookie 的请求相当于"以用户身份访问"，**重定向必须逐跳判断**：重定向出去的目标
+ * 一旦不在授权 host 内，立即停止跟随且不向该域名发请求——绝不把登录态漏给第三方域名。
+ *
+ * @param {{url:string, fetchImpl?:Function, timeoutMs?:number, headers?:object,
+ *          cookieProvider?:(url:string)=>(string|null|Promise<string|null>),
+ *          isAllowedHost?:(url:string)=>boolean}} opts
  * @returns {Promise<{ok:boolean, status?:number, finalUrl?:string, material?:object, spa?:boolean, bytes?:number, error?:string}>}
  */
-async function fetchPageMaterial({ url, fetchImpl, timeoutMs = DEFAULT_TIMEOUT_MS, headers } = {}) {
+async function fetchPageMaterial({ url, fetchImpl, timeoutMs = DEFAULT_TIMEOUT_MS, headers, cookieProvider, isAllowedHost } = {}) {
   // 归一网址：用户常填不带协议头的写法（kimi.com）——直接 new URL() 会抛错，
   // 结果素材为空、生成只能靠猜（真实故障见 app-util.normalizeUrl 注释）
   const normalized = normalizeUrl(url)
@@ -126,22 +155,41 @@ async function fetchPageMaterial({ url, fetchImpl, timeoutMs = DEFAULT_TIMEOUT_M
   const ac = new AbortController()
   const timer = setTimeout(() => ac.abort(), timeoutMs)
   try {
-    const resp = await f(u.toString(), {
-      redirect: 'follow',
-      headers: { 'user-agent': UA, accept: 'text/html,application/xhtml+xml', 'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8', ...(headers || {}) },
-      signal: ac.signal,
-    })
+    const allowed = typeof isAllowedHost === 'function' ? isAllowedHost : defaultAllowedHost(u.toString())
+    let current = u.toString()
+    let resp = null
+    let hops = 0
+    while (true) {
+      resp = await fetchOneHop(f, current, { headers, cookieProvider, timeoutMs, ac })
+      const status = resp.status
+      const location = resp.headers?.get?.('location')
+      if (status >= 300 && status < 400 && location) {
+        if (hops >= MAX_REDIRECTS) return { ok: false, status, finalUrl: current, error: `重定向次数超过上限（${MAX_REDIRECTS} 跳）` }
+        let next
+        try { next = new URL(location, current).toString() } catch { return { ok: false, status, finalUrl: current, error: `重定向目标不合法：${location}` } }
+        if (!/^https?:/i.test(next)) return { ok: false, status, finalUrl: current, error: `重定向到不支持的协议：${next}` }
+        if (!allowed(next)) {
+          // 跨站跳转：把登录态发给第三方是绝不允许的，直接停止并不返回内容
+          const host = (() => { try { return new URL(next).hostname } catch { return next } })()
+          return { ok: false, status, finalUrl: current, error: `页面跨站跳转到未授权域名（${host}），已停止跟随且未携带 Cookie` }
+        }
+        current = next
+        hops++
+        continue
+      }
+      break
+    }
     const ctype = String(resp.headers?.get?.('content-type') || '')
     const raw = await resp.text()
     const html = raw.length > MAX_HTML_BYTES ? raw.slice(0, MAX_HTML_BYTES) : raw
     if (!resp.ok) {
-      return { ok: false, status: resp.status, finalUrl: resp.url || u.toString(), error: `页面返回 ${resp.status}（${ctype || '未知类型'}）` }
+      return { ok: false, status: resp.status, finalUrl: resp.url || current, error: `页面返回 ${resp.status}（${ctype || '未知类型'}）` }
     }
     if (ctype && !/text\/html|application\/xhtml|text\/plain/i.test(ctype)) {
-      return { ok: false, status: resp.status, finalUrl: resp.url || u.toString(), error: `返回的不是网页（${ctype}）` }
+      return { ok: false, status: resp.status, finalUrl: resp.url || current, error: `返回的不是网页（${ctype}）` }
     }
-    const material = extractPageMaterial(html, resp.url || u.toString())
-    return { ok: true, status: resp.status, finalUrl: resp.url || u.toString(), material, spa: looksLikeSpaShell(html), bytes: raw.length }
+    const material = extractPageMaterial(html, resp.url || current)
+    return { ok: true, status: resp.status, finalUrl: resp.url || current, material, spa: looksLikeSpaShell(html), bytes: raw.length }
   } catch (e) {
     const msg = e?.name === 'AbortError' ? `取页面超时（${Math.round(timeoutMs / 1000)}s）` : String(e?.message || e)
     return { ok: false, error: `取页面失败：${msg}` }
@@ -183,17 +231,18 @@ function pickFollowLinks(material, baseUrl, max) {
  * 把整个站点的可控入口摸出来，写出的命令更完整、更有用。用户明确表示可以慢，但要求摸全。
  *
  * 安全：只跟**同源**链接；跳过 logout/delete 等破坏性路径；页数有上限；任何一页失败都不影响整体。
+ * 登录态：cookieProvider / isAllowedHost 原样透传（后续各页同样带 Cookie、同样逐跳判授权）。
  * @returns {Promise<{ok:boolean, material?:object, pages?:Array, pagesFetched?:number, failed?:Array, error?:string}>}
  */
-async function harvestSite({ url, fetchImpl, maxPages = 5, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
-  const first = await fetchPageMaterial({ url, fetchImpl, timeoutMs })
+async function harvestSite({ url, fetchImpl, maxPages = 5, timeoutMs = DEFAULT_TIMEOUT_MS, cookieProvider, isAllowedHost } = {}) {
+  const first = await fetchPageMaterial({ url, fetchImpl, timeoutMs, cookieProvider, isAllowedHost })
   if (!first.ok) return { ok: false, error: first.error, status: first.status }
   const main = first.material
   const follow = pickFollowLinks(main, first.finalUrl, Math.max(0, maxPages - 1))
   const pages = []
   const failed = []
   // 并发抓取（同源、页数小，压力可控）
-  const results = await Promise.all(follow.map(async (u) => ({ u, r: await fetchPageMaterial({ url: u, fetchImpl, timeoutMs }) })))
+  const results = await Promise.all(follow.map(async (u) => ({ u, r: await fetchPageMaterial({ url: u, fetchImpl, timeoutMs, cookieProvider, isAllowedHost }) })))
   for (const { u, r } of results) {
     if (r.ok) pages.push(r.material)
     else failed.push({ url: u, error: r.error })
@@ -214,5 +263,5 @@ async function harvestSite({ url, fetchImpl, maxPages = 5, timeoutMs = DEFAULT_T
 
 module.exports = {
   fetchPageMaterial, harvestSite, extractPageMaterial, isMaterialRich, looksLikeSpaShell, stripTags, pickFollowLinks,
-  DEFAULT_TIMEOUT_MS, MAX_HTML_BYTES, RICH_MIN_INTERACTIVES,
+  DEFAULT_TIMEOUT_MS, MAX_HTML_BYTES, MAX_REDIRECTS, RICH_MIN_INTERACTIVES,
 }

@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
-const { extractPageMaterial, isMaterialRich, looksLikeSpaShell, fetchPageMaterial, harvestSite, pickFollowLinks, MAX_HTML_BYTES } = require('../electron/app-http-probe.cjs')
+const { extractPageMaterial, isMaterialRich, looksLikeSpaShell, fetchPageMaterial, harvestSite, pickFollowLinks, MAX_HTML_BYTES, MAX_REDIRECTS } = require('../electron/app-http-probe.cjs')
 const { normalizeUrl } = require('../electron/app-util.cjs')
 
 const PAGE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
@@ -245,4 +245,91 @@ test('BrowserExecutor：自动化窗口默认隐藏（用户主动打开才显�
   assert.doesNotMatch(createWin, /show:\s*true/, '不得改回 show:true')
   // 用户主动打开浏览器面板时必须仍能看到窗口：openWindow 要显式 show
   assert.match(src, /openWindow[\s\S]{0,400}?\.show\(\)/, 'openWindow 必须显式 show()，保证用户点开浏览器仍可见')
+})
+
+// ---------- 登录态：Cookie 注入 + 跨站隔离（应用智控·登录态支持） ----------
+//
+// 为什么：命令生成只能看到"未登录"的页面时，模型据以写出的选择器全是登录墙上的东西，
+// 用户拿到的命令必然失败。所以抓取要能带用户自己的登录态。
+// 但**带 Cookie 的请求等于以用户身份访问**——绝不允许跟着重定向把登录态漏给第三方域名，
+// 因此重定向改为逐跳判断：授权内照常跟随、跨站立即停止且不带 Cookie。安全核心就在下面第 2 条。
+
+test('fetchPageMaterial：注入 cookieProvider → 请求带 Cookie 头', async () => {
+  const seen = []
+  const r = await fetchPageMaterial({
+    url: 'https://x.com/a',
+    cookieProvider: (u) => (u.startsWith('https://x.com/') ? 'sid=1' : null),
+    fetchImpl: async (u, opt) => { seen.push({ u, cookie: opt.headers.cookie }); return htmlResp(PAGE, { url: u }) },
+  })
+  assert.equal(r.ok, true)
+  assert.equal(seen[0].cookie, 'sid=1')
+})
+
+test('fetchPageMaterial：授权外 host **绝不**带 Cookie（跨站隔离）', async () => {
+  const seen = []
+  const r = await fetchPageMaterial({
+    url: 'https://x.com/a',
+    cookieProvider: (u) => (u.startsWith('https://x.com/') ? 'sid=1' : null),
+    fetchImpl: async (u, opt) => {
+      seen.push({ u, cookie: opt.headers.cookie })
+      if (u === 'https://x.com/a') return { ok: true, status: 302, url: u, headers: new Headers({ location: 'https://evil.com/b' }), text: async () => '' }
+      return htmlResp(PAGE, { url: u })
+    },
+  })
+  assert.equal(r.ok, false)                     // 跨站跳转：停止跟随，如实报错
+  assert.equal(seen.length, 1)                  // 没有向 evil.com 发第二次请求
+  assert.ok(r.error.includes('跨站'))
+})
+
+test('fetchPageMaterial：同站点内重定向照常跟随，且每跳重新取 Cookie', async () => {
+  const seen = []
+  const r = await fetchPageMaterial({
+    url: 'https://x.com/a',
+    cookieProvider: (u) => (u.includes('/b') ? 'sid=after' : 'sid=before'),
+    fetchImpl: async (u, opt) => {
+      seen.push({ u, cookie: opt.headers.cookie })
+      if (u === 'https://x.com/a') return { ok: true, status: 302, url: u, headers: new Headers({ location: '/b' }), text: async () => '' }
+      return htmlResp(PAGE, { url: u })
+    },
+  })
+  assert.equal(r.ok, true)
+  assert.equal(seen.length, 2)
+  assert.equal(seen[1].cookie, 'sid=after')
+})
+
+test('fetchPageMaterial：重定向上限（防环）', async () => {
+  let n = 0
+  const r = await fetchPageMaterial({
+    url: 'https://x.com/a',
+    fetchImpl: async (u) => { n++; return { ok: true, status: 302, url: u, headers: new Headers({ location: `/r${n}` }), text: async () => '' } },
+  })
+  assert.equal(r.ok, false)
+  assert.equal(n, MAX_REDIRECTS + 1)
+  assert.ok(r.error.includes('重定向'))
+})
+
+test('extractPageMaterial：检出密码框（登录墙硬信号）', () => {
+  const m = extractPageMaterial('<html><body><input type="password" name="pw"></body></html>', 'https://x.com/login')
+  assert.equal(m.hasPassword, true)
+  assert.equal(extractPageMaterial('<html><body><input type="text"></body></html>', 'https://x.com/').hasPassword, false)
+})
+
+// 显式传 isAllowedHost 时以调用方为准（Task 6 会传站点授权集合）：允许的跨站可以跟，
+// 但 Cookie 仍由 cookieProvider 按 URL 自己把关——不授权就不带（两件事各管一摊）。
+test('fetchPageMaterial：显式 isAllowedHost 可放行跨站跳转，但 Cookie 仍按 url 把关', async () => {
+  const seen = []
+  const r = await fetchPageMaterial({
+    url: 'https://x.com/a',
+    isAllowedHost: (u) => /(^|\.)x\.com$|(^|\.)cdn\.x\.com$/.test(new URL(u).hostname),
+    cookieProvider: (u) => (new URL(u).hostname === 'x.com' ? 'sid=1' : null),
+    fetchImpl: async (u, opt) => {
+      seen.push({ u, cookie: opt.headers.cookie })
+      if (u === 'https://x.com/a') return { ok: true, status: 302, url: u, headers: new Headers({ location: 'https://cdn.x.com/b' }), text: async () => '' }
+      return htmlResp(PAGE, { url: u })
+    },
+  })
+  assert.equal(r.ok, true)
+  assert.equal(seen.length, 2)
+  assert.equal(seen[0].cookie, 'sid=1')
+  assert.equal(seen[1].cookie, undefined, '未授权 host 不得带 Cookie')
 })
