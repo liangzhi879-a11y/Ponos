@@ -7,6 +7,7 @@ const require = createRequire(import.meta.url)
 const {
   buildPrompt, extractSpec, generateSpec, verifySpec, validateSpecBasic, snapshotForPrompt,
   MAX_ROUNDS, VERIFY_MAX_READS, ACT_CONTRACT, actContractLines, WEB_ACTS, DESKTOP_ACTS, SYSTEM_RULES,
+  driverOf, actsFor, tableFor, driverRulesLine, SPEC_SHAPE_LINE, WEB_CONTRACT, DESKTOP_CONTRACT,
 } = require('../electron/app-generate.cjs')
 
 const GOOD_SPEC = {
@@ -322,6 +323,51 @@ test('ACT_CONTRACT 覆盖全部允许的 act（新增 act 忘了写契约会被�
   // type/wait 两侧语义不同，必须各有一份（web 用 ref+text，desktop 用 value）
   assert.ok(ACT_CONTRACT.web.type.required.includes('text'))
   assert.ok(ACT_CONTRACT.desktop.type.required.includes('value'))
+})
+
+// ---------- 驱动词汇表（唯一真源） ----------
+//
+// 背景（真实故障）：本地应用(desktop)封装必然失败 —— 提示词侧判 `driver === 'desktop'`，而生产
+// driver 只有 browser/process/script/uia，该条件永不成立 → 给模型下发 web act 清单（goto/snapshot）；
+// 同一条链路的校验又按 `target.type === 'desktop'` 收窄到 cli/script/focus/type/key/wait
+// → 同一份 Spec 一边被要求写、一边被判非法。下面这组用例把驱动词汇表钉成单一真源。
+
+test('driverOf：生产驱动值（process/script/uia）不再被当成 web；缺 driver 与 app-ipc.inferDriver 同口径', () => {
+  assert.equal(driverOf({ driver: 'process', target: { type: 'desktop' } }), 'process')
+  assert.equal(driverOf({ driver: 'script', target: { type: 'desktop' } }), 'script')
+  assert.equal(driverOf({ driver: 'uia', target: { type: 'desktop' } }), 'uia')
+  assert.equal(driverOf({ driver: 'browser', target: { type: 'web' } }), 'browser')
+  // 没写 driver → web 推 browser、其余推 uia（最保守的兜底，与 electron/app-ipc.cjs 的 inferDriver 一致）
+  assert.equal(driverOf({ target: { type: 'web' } }), 'browser')
+  assert.equal(driverOf({ target: { type: 'desktop' } }), 'uia')
+  // 历史别名：'desktop' 曾是 driver 值（真实故障源头），一律按 target.type 推定
+  assert.equal(driverOf({ driver: 'desktop', target: { type: 'desktop' } }), 'uia')
+  // targetType 显式给出时优先用它（提示词侧只拿得到 driver 字符串 + target）
+  assert.equal(driverOf({ driver: 'desktop' }, { targetType: 'web' }), 'browser')
+})
+
+test('actsFor：每个驱动只给自己能执行的 act（多一个都会在运行期炸）', () => {
+  assert.deepEqual(actsFor('process'), ['cli'], 'process 驱动只认 cli 步骤')
+  assert.deepEqual(actsFor('script'), ['script'], 'script 驱动只认 script 步骤')
+  assert.deepEqual(actsFor('uia'), ['focus', 'type', 'key', 'wait'])
+  assert.ok(actsFor('browser').includes('snapshot'))
+  assert.deepEqual(actsFor('desktop'), actsFor('uia'), "旧值兼容：'desktop' 不指明接口面 → 按最保守的 uia 算")
+  assert.deepEqual(actsFor('web'), actsFor('browser'), 'web 是 browser 的历史别名')
+  assert.deepEqual(actsFor('launchMissiles'), [], '未知驱动不返回任何 act（由校验层另行点名）')
+})
+
+test('tableFor：web 与桌面各自用自己那份字段契约（type/wait 两侧语义不同）', () => {
+  assert.equal(tableFor('browser'), WEB_CONTRACT)
+  assert.equal(tableFor('process'), DESKTOP_CONTRACT)
+  assert.equal(tableFor('uia'), DESKTOP_CONTRACT)
+})
+
+test('SPEC_SHAPE_LINE / driverRulesLine：顶层结构与驱动约束各只有一份真源', () => {
+  for (const k of ['specVersion', 'appId', 'name', 'target', 'commands']) assert.ok(SPEC_SHAPE_LINE.includes(k), `结构契约缺 ${k}`)
+  const line = driverRulesLine('process')
+  assert.ok(line.includes('process') && line.includes('cli'), `驱动行缺驱动/act：${line}`)
+  assert.ok(!/snapshot/.test(line.split('\n')[0]), 'process 的允许 act 里不得出现 snapshot')
+  assert.ok(line.includes('argv'), '要带字段契约（cli 必须 argv）')
 })
 
 test('actContractLines：每个 act 都带字段要求，js 明写 expression（提示词与校验同源）', () => {

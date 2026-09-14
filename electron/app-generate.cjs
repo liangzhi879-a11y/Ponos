@@ -18,9 +18,74 @@ const MAX_ROUNDS = 3
 const SNAPSHOT_CHAR_CAP = 20000
 const VERIFY_MAX_READS = 3
 
-/** Spec 里允许的步骤动作（写进提示词，避免模型编造 act） */
-const WEB_ACTS = ['goto', 'click', 'type', 'select', 'scroll', 'hover', 'js', 'wait', 'snapshot']
-const DESKTOP_ACTS = ['cli', 'script', 'focus', 'type', 'key', 'wait']
+/**
+ * 驱动词汇表 —— **唯一真源**。
+ *
+ * 为什么必须有它（真实故障）：生产链路的 driver 取值是 browser / process / script / uia
+ * （web → browser；desktop 由 app-profiler.detectDriver 探测出 process/script/uia）。
+ * 但提示词侧早期用 `driver === 'desktop'` 判断"是不是桌面应用" —— 生产里**永远不成立**，
+ * 于是给模型下发了网页用的 act 清单（goto/snapshot），而校验侧按 target.type==='desktop' 收窄到
+ * cli/script/... → 同一份 Spec 一边被要求写 goto/snapshot、一边被判非法，本地应用**从设计上就生成不出来**。
+ * 现在提示词、校验、试跑派发、漂移修复一律调用本表的函数，禁止各自判定。
+ */
+const DRIVERS = ['browser', 'process', 'script', 'uia']
+
+/**
+ * 每个驱动允许的 steps.act —— 与**执行器真实能力**一一对应（多一个都会在运行期炸）：
+ *   browser → electron/browser-executor.cjs 的 runAction 分支
+ *   process → electron/app-runner-desktop.cjs 的 `step.act === 'cli'` 分支
+ *   script  → 同上的 `step.act === 'script'` 分支
+ *   uia     → 同上的 runUia 分支（当前后端未接入，仅为契约占位）
+ */
+const ACTS_BY_DRIVER = {
+  browser: ['goto', 'click', 'type', 'select', 'scroll', 'hover', 'js', 'wait', 'snapshot'],
+  process: ['cli'],
+  script: ['script'],
+  uia: ['focus', 'type', 'key', 'wait'],
+}
+
+/** 历史别名：'web' 曾用来指浏览器；'desktop' 曾被当成 driver 值（本次矛盾的元凶） */
+function normalizeDriver(driver) {
+  const d = typeof driver === 'string' ? driver.trim() : ''
+  if (DRIVERS.includes(d)) return d
+  if (d === 'web') return 'browser'
+  if (d === 'desktop') return 'uia'   // 没写具体接口面 → 按最保守的 uia 算
+  return d
+}
+
+/** 按 target.type 推定驱动：web → browser，其余 → uia（与 electron/app-ipc.cjs 的 inferDriver 同口径） */
+const driverFromTarget = (type) => (type === 'web' ? 'browser' : 'uia')
+
+/**
+ * 历史 driver 值：它们**没有指明具体接口面**，因此不能直接当驱动用，必须按 target.type 推定。
+ * 'desktop' 只说明"这是个桌面应用"，而桌面应用有三种接口面（process/script/uia）——
+ * 旧代码把它当具体驱动，正是 D2 的根因。
+ */
+const LEGACY_DRIVER_VALUES = ['desktop']
+
+/** 驱动推定（**唯一**实现） */
+function driverOf(spec, { targetType } = {}) {
+  const raw = typeof spec?.driver === 'string' ? spec.driver.trim() : ''
+  const t = targetType || spec?.target?.type
+  if (!raw || LEGACY_DRIVER_VALUES.includes(raw)) return driverFromTarget(t)
+  const d = normalizeDriver(raw)
+  return DRIVERS.includes(d) ? d : driverFromTarget(t)
+}
+
+/** 该驱动允许的 act；未知驱动返回 []（由校验层另行点名"driver 不合法"） */
+function actsFor(driver) {
+  return ACTS_BY_DRIVER[normalizeDriver(driver)] || []
+}
+
+/** 字段契约表：浏览器一份、桌面一份（type/wait 两侧语义不同，不能混） */
+const tableFor = (driver) => (normalizeDriver(driver) === 'browser' ? WEB_CONTRACT : DESKTOP_CONTRACT)
+
+/** 顶层结构契约（提示词与修复提示词共用的唯一一句话） */
+const SPEC_SHAPE_LINE = '结构要求：{"specVersion":1,"appId":"...","name":"...","desc":"...","target":{...},"expose":{"mode":"console"},"commands":[...]}。specVersion、appId、name、target、commands 五项缺一不可。'
+
+/** Spec 里允许的步骤动作（派生量，写进提示词，避免模型编造 act） */
+const WEB_ACTS = ACTS_BY_DRIVER.browser
+const DESKTOP_ACTS = [...ACTS_BY_DRIVER.process, ...ACTS_BY_DRIVER.script, ...ACTS_BY_DRIVER.uia]
 
 /**
  * 各 act 的**字段契约 —— 唯一事实来源**，同时驱动「提示词」与「结构校验」。
@@ -62,11 +127,14 @@ const DESKTOP_CONTRACT = {
 }
 
 const ACT_CONTRACT = { web: WEB_CONTRACT, desktop: DESKTOP_CONTRACT }
-const contractFor = (act, driver) => (driver === 'desktop' ? DESKTOP_CONTRACT : WEB_CONTRACT)[act]
+const contractFor = (act, driver) => tableFor(driver)[act]
 
-/** 把契约渲染成提示词条目（模型照着写，就不会再缺字段） */
-function actContractLines() {
-  const render = (act, table) => {
+/** 把契约渲染成提示词条目（**只渲染该驱动允许的 act**——全下发是生成-校验矛盾的直接来源） */
+function actContractLines(driver = 'browser') {
+  const d = normalizeDriver(driver)
+  const acts = actsFor(d)
+  const table = tableFor(d)
+  const render = (act) => {
     const c = table[act]
     if (!c) return `· ${act}`
     const parts = []
@@ -75,12 +143,29 @@ function actContractLines() {
     for (const g of c.anyOf || []) parts.push(g.map((f) => `"${f}"`).join(' 或 '))
     return `· ${act}：必填 ${parts.join('，并且 ') || '（无）'}${c.optional?.length ? `（可选 ${c.optional.map((f) => `"${f}"`).join('/')}）` : ''}${c.note ? ` —— ${c.note}` : ''}`
   }
-  return [
-    'web 步骤字段契约（**严格照这个写，字段名不能自创**）：',
-    ...WEB_ACTS.map((a) => render(a, WEB_CONTRACT)),
-    'desktop 步骤字段契约：',
-    ...DESKTOP_ACTS.map((a) => render(a, DESKTOP_CONTRACT)),
-  ].join('\n')
+  return [`${d} 步骤字段契约（**严格照这个写，字段名不能自创**）：`, ...acts.map(render)].join('\n')
+}
+
+/**
+ * 驱动约束三行 —— 提示词与**漂移修复**提示词共用，避免"修复时又写出 web act"（真实缺陷 D7）。
+ * @returns {string} 形如：
+ *   驱动：process（该驱动下 steps.act 只能取：cli）
+ *   · cli：必填 "argv" —— argv 为字符串数组，如 ["--version"]
+ */
+function driverRulesLine(driver) {
+  const d = normalizeDriver(driver)
+  const acts = actsFor(d)
+  const lines = [`驱动：${d}（该驱动下 steps.act 只能取：${acts.join(', ')}）`]
+  for (const act of acts) {
+    const c = tableFor(d)[act]
+    if (!c) { lines.push(`· ${act}`); continue }
+    const parts = []
+    const req = (c.required || []).map((f) => `"${f}"`).join(' + ')
+    if (req) parts.push(req)
+    for (const g of c.anyOf || []) parts.push(g.map((f) => `"${f}"`).join(' 或 '))
+    lines.push(`· ${act}：必填 ${parts.join('，并且 ') || '（无）'}${c.optional?.length ? `（可选 ${c.optional.map((f) => `"${f}"`).join('/')}）` : ''}${c.note ? ` —— ${c.note}` : ''}`)
+  }
+  return lines.join('\n')
 }
 
 const SYSTEM_RULES = [
@@ -400,4 +485,6 @@ module.exports = {
   buildPrompt, extractSpec, generateSpec, verifySpec, validateSpecBasic, validateStepFields, snapshotForPrompt,
   MAX_ROUNDS, VERIFY_MAX_READS, SNAPSHOT_CHAR_CAP, SYSTEM_RULES, NO_PROBE_RULES, WEB_ACTS, DESKTOP_ACTS,
   ACT_CONTRACT, WEB_CONTRACT, DESKTOP_CONTRACT, contractFor, actContractLines,
+  DRIVERS, ACTS_BY_DRIVER, LEGACY_DRIVER_VALUES, normalizeDriver, driverFromTarget, driverOf, actsFor, tableFor,
+  driverRulesLine, SPEC_SHAPE_LINE,
 }
