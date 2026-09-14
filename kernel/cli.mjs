@@ -182,6 +182,26 @@ export function parseArgs(argv) {
       case '--text': out.text = next() ?? null; break
       case '--theme': out.theme = next() ?? null; break
       case '--mode': out.mode = next() ?? null; break
+      // ── 知识库文件导入（`--knowledge import`）的参数 ──────────────────────────
+      // `--src` 是**可重复**的（多源：文件与目录可混给）—— 与其它 flag 的
+      // "后值覆盖前值"语义不同，故单独做累加：首次存入，再次转为数组，之后追加。
+      // 多源必须走这条可重复形式；单个来源可用 `--from`（见下方回退）。
+      case '--src': {
+        const v = next()
+        if (v) {
+          out.src = out.src === undefined || out.src === null
+            ? v
+            : Array.isArray(out.src) ? [...out.src, v] : [out.src, v]
+        }
+        break
+      }
+      case '--name': out.name = next() ?? null; break
+      // 只预览"将处理/将跳过/将被拒"的清单，不落盘（布尔，无值）
+      case '--dry-run': out.dryRun = true; break
+      case '--max-ocr-pages': out.maxOcrPages = next() ?? null; break
+      // 三态：缺省 auto（配了视觉模型就用）；显式 `off` 关闭（省时间/费用）
+      case '--vision-tables': out.visionTables = next() ?? null; break
+      case '--max-vision-pages': out.maxVisionPages = next() ?? null; break
       // 显式强制重建索引（reindex 本身恒 force；本 flag 供其它 op 复用同一语义）
       case '--force': out.force = true; break
       case '--help': case '-h': usage(); process.exit(0); break
@@ -190,6 +210,10 @@ export function parseArgs(argv) {
         // 未知 -- 参数：静默忽略（向后兼容）
     }
   }
+  // 导入的单个来源可写作 `--from`（既有 flag，语义同为"从哪来"）。
+  // 只在 import 且未给 --src 时回退 —— 不去改动 `--from` 自身的行为，
+  // 避免影响其它 op 对 `--from` 的使用。
+  if (out.knowledge === 'import' && !out.src) out.src = out.from || undefined
   return out
 }
 
@@ -285,6 +309,14 @@ export async function main(argv) {
       // S6（同一条纪律）：append 的三个入参漏登记 → `--tag 应用智控` 被静默丢弃 →
       // 经验进了库却没有标签 → 永远无关联边。故 tag/text 的转发必须有真进程回归钉住。
       tag: args.tag, text: args.text, theme: args.theme,
+      // 知识库文件导入（`--knowledge import`）。
+      // 这里的键名必须与 `knowledge-cli.mjs` 的 import 分支读取的键**逐字一致**
+      //（它读 `args.src` / `args.maxOcrPages` / `args.visionTables` / `args.maxVisionPages`
+      // / `args.name` / `args.dryRun`）—— 同一类"漏登记即静默失效"的坑：
+      // 转发块少一个键，CLI 表面照常工作，只是该参数**从未生效**（如 `--dry-run`
+      // 静默变成真写入）。故 `knowledge-cli-import.test.mjs` 用真进程逐项钉住。
+      src: args.src, name: args.name, dryRun: args.dryRun,
+      maxOcrPages: args.maxOcrPages, visionTables: args.visionTables, maxVisionPages: args.maxVisionPages,
     }
     // S6：`--text -` = 从 stdin 读取正文。
     // 为什么需要：经验正文常含多行、引号、`|`、反引号——写在命令行里要么被 shell 改写，

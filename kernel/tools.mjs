@@ -17,7 +17,7 @@ import { discoverSkillsAll, loadSkillContent } from './skills.mjs'
 import { searchSkills } from './skill-search.mjs'
 import { searchLocalMemory } from './memory-search.mjs'
 import { searchKnowledge, searchKnowledgeItems, expandRelated, RELATED_EXPAND_LIMIT } from './knowledge-search.mjs'
-import { getProvider } from './provider.mjs'
+import { getProvider, visionEnv } from './provider.mjs'
 import { perfTime } from './perf.mjs'
 
 // R2-1 活跃子进程登记：Bash/OCR spawn 的子进程统一登记，内核退出（SIGINT/TERM）
@@ -789,7 +789,7 @@ async function webSearch(query) {
 // ---------------------------------------------------------------------------
 const OCR_TIMEOUT_MS = 300_000
 
-function findOcrEngine() {
+export function findOcrEngine() {
   if (process.env.PONOS_OCR_ENGINE && existsSync(process.env.PONOS_OCR_ENGINE)) return process.env.PONOS_OCR_ENGINE
   const home = process.env.USERPROFILE || process.env.HOME || ''
   // 多路径探测（修复"新设备报 OCR 不可用"）：
@@ -966,7 +966,7 @@ function visionMock(filePath, instruction) {
   return { content: `【Vision · mock】${filePath}\n描述：${instruction}`, isError: false }
 }
 
-async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
+export async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
   try {
     if (!filePath) return { content: 'file_path 缺失', isError: true }
     if (!skipBoundary && !withinBoundary(filePath, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${filePath}）`, isError: true }
@@ -983,9 +983,13 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
       return { content: `图片过大（${(bytes.length / 1024 / 1024).toFixed(1)}MB > 20MB），请先压缩或用 OCR 提取文字`, isError: true }
     }
     if (process.env.PONOS_MOCK_API === '1') return visionMock(filePath, instruction)
-    const base = (process.env.PONOS_VISION_BASE_URL || '').replace(/\/+$/, '')
-    const model = process.env.PONOS_VISION_MODEL || ''
-    const token = process.env.PONOS_VISION_AUTH_TOKEN || ''
+    // env 走 provider.visionEnv（**同时认 PONOS_VISION_* 与 YFW_VISION_***）：
+    // 原先只读 PONOS_*，而 bridge 注入的是 YFW_* —— 实测后果是"用户配好了视觉模型，
+    // 工具却一直提示未配置"。兼容先例见 kernel/health.mjs:79 的同类记录。
+    const v = visionEnv() || {}
+    const base = String(v.baseUrl || '').replace(/\/+$/, '')
+    const model = v.model || ''
+    const token = v.token || ''
     if (!base || !model || !token) {
       // 未配置视觉模型时：PONOS_AUTO_IMAGE_BRIDGE=1（bridge 注入）→ 自动降级走
       // 增强 OCR 本地证据（dsh-pseudo-vision 同思路：text-only 模型用 OCR 文字
@@ -1065,7 +1069,10 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
 // 而"知识库里以前记过什么"是纯聊场景的自然追问（问完仍需 Read 才能看全文，那条路仍禁）。
 // MemorySearch **不随之放行**：它每次都全量读文件 + 现算向量（O(N)），chat 场景无收益，
 // 放行只会让"同一能力两个入口、一个快一个慢"的口径更乱（S3 只对 D2 这一项做决策）。
-export const CHAT_MODE_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch']
+// 2026-09-14：KnowledgeImport 入表（chat 禁用）。它是**写盘**能力（往知识空间落文件），
+// 与 Read/Write/Skill 同类；chat 的语义是"纯聊/联网问答，不做本地执行与写盘"，导入显然不属于它。
+// 纯聊会话里想用知识库，用只读的 KnowledgeSearch 即可（S3 D2 已放行）。
+export const CHAT_MODE_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch', 'KnowledgeImport']
 
 export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null, readAllowFiles = [], dynamicTools = null, flatSkillRoots = null }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
@@ -1479,6 +1486,90 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
           topK: Math.min(Number(input?.topK) || 5, 10),
           mode: input?.mode === 'full' ? 'full' : 'snippet',
         })
+      },
+    },
+    // 文件知识库导入（2026-09-14）：把一批文件（PDF/Word/Excel/PPT/图片/文本）转成
+    // Markdown 落进一个知识空间，之后 KnowledgeSearch 就能检索到。
+    //
+    // **为什么是独立工具而不是让模型用 Bash 拼 python**：解析器定位（多候选探测）、
+    // OCR 引擎探测、扩展名白名单、体积护栏、路径防护、幂等台账、索引同步——全在
+    // kernel/knowledge-import.mjs 一份实现里。让模型自己拼命令行，等于把这条链路
+    // 重新"手工实现"一遍，且必然漏掉幂等（重复导入）与护栏（黑名单扩展名）。
+    KnowledgeImport: {
+      description: '把一个文件或整个目录（递归）导入知识空间 —— **写盘操作**（本地处理、无网络）：解析成 Markdown 写入 knowledge/spaces/<space>/，之后用 KnowledgeSearch 即可检索。支持 PDF（含扫描件，走 OCR）、Word(docx)、Excel(xlsx/xls)、PPT(pptx)、图片、文本/markdown/CSV；可执行/脚本类文件与不支持的扩展名会被拒并给出原因。护栏：单文件 ≤50MB、整批 ≤500 个文件且 ≤300MB。返回结构化报告（JSON）：summary 是全量计数（imported/skipped/rejected/failed），results 逐条给状态与原因——rejected = 这条**本来就不该**进库（格式/体积/符号链接），failed = 该进库但**没成功**（加密/解析崩溃/写盘失败），两者的下一步动作不同。dryRun=true 只预览"将处理/将跳过/将被拒"的清单，不写任何文件。目标空间不存在会自动新建（只读知识包空间不可作目标）。results 超过 50 条时省略（summary 仍为全量计数），需要逐条明细请分批导入。注意扫描件 PDF 与大文件耗时较长（OCR 可能数分钟），一次批量导入请留足时间。**表格**：文本层 PDF（Word/Excel 导出）的表格由本地解析自动识别；扫描件/图片里的表格 OCR 读不出列结构，只有配置了视觉模型才会自动调它按页识别（慢且可能计费，默认最多 20 页）——未配置时正文照常导入，报告的 vision 字段会说明表格未提取，此时若要表格需先配置视觉模型再重新导入。',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          from: { type: 'string', description: '要导入的绝对路径（文件或目录；目录递归处理）' },
+          space: { type: 'string', description: '目标空间 id（不存在则新建）。不得与内置空间（experience / session-memory / skill-experience）重名、不得以 pack- 开头、不得含 \\ / : * ? " < > | 或控制字符' },
+          name: { type: 'string', description: '可选：空间显示名（缺省与 space 相同）' },
+          dryRun: { type: 'boolean', description: '可选：true = 只预览"将处理 / 将跳过 / 将被拒"的清单，不落盘' },
+          maxOcrPages: { type: 'number', description: '可选：扫描件 PDF 的 OCR 页数上限（默认 200；超出按页截断并在报告里说明）' },
+          visionTables: { type: 'boolean', description: '可选：是否用视觉模型识别**扫描件/图片**里的表格（默认"配了视觉模型就用"）。关掉可省时间与调用费用；纯文本类文件与文本层 PDF 不受影响（后者自动识别表格）。未配置视觉模型时该项无效，报告里会给出提示' },
+          maxVisionPages: { type: 'number', description: '可选：交视觉模型识别表格的页数上限（默认 20；视觉调用按页慢且可能计费，超出按页截断并出声）' },        },
+        required: ['from', 'space'],
+      },
+      run: async (input, ctx) => {
+        const from = String(input?.from ?? '').trim()
+        const space = String(input?.space ?? '').trim()
+        if (!from) return { content: 'from 参数缺失：请给出要导入的文件或目录的绝对路径', isError: true }
+        if (!space) return { content: 'space 参数缺失：请给出目标空间 id（不存在会自动新建）', isError: true }
+        // 与 KnowledgeSearch 同一套根推导（memoryRoot = <configDir>/memory/personal，上溯两级）。
+        // 缺失时**不猜路径**：相对路径探知识根会在 cwd 下现种一棵 knowledge/.index（脏且难发现）。
+        if (!memoryRoot) {
+          return { content: '知识导入不可用（未配置知识根 memoryRoot）', isError: true }
+        }
+        const configDir = resolve(memoryRoot, '..', '..')
+        // 动态 import：本模块与 knowledge-import.mjs 互相引用（后者要用 findOcrEngine /
+        // childEnv / registerChild），顶层静态 import 会构成 ESM 循环依赖；放到调用点加载，
+        // 依赖方向保持单向（tools → knowledge-import 只在运行时发生）。
+        //
+        // 调的是**对外主入口 `importFiles`**（T5 契约名，勿改）：它与 CLI/GUI 走的
+        // `importDocuments` 是**同一条管线**（白名单/体积/符号链接/路径防护/台账/落盘/
+        // 索引同步全在那份实现里），只是报告口径按任务契约翻成 `results[].status` 四态 +
+        // `summary`。故本工具内**只有参数归一 + 一次调用**，没有第二份解析/渲染/落盘逻辑。
+        const { importFiles } = await import('./knowledge-import.mjs')
+        const maxOcr = Number(input?.maxOcrPages)
+        let report
+        try {
+          report = await importFiles({
+            configDir, from, space,
+            name: String(input?.name ?? '').trim() || null,
+            dryRun: input?.dryRun === true,
+            maxOcrPages: Number.isFinite(maxOcr) && maxOcr > 0 ? Math.floor(maxOcr) : null,
+            // 视觉表格提取：三态透传（undefined = auto，由 importFiles 按"是否配了视觉模型"决定）
+            visionTables: input?.visionTables === false ? false : (input?.visionTables === true ? true : 'auto'),
+            maxVisionPages: Number.isFinite(Number(input?.maxVisionPages)) && Number(input?.maxVisionPages) >= 0
+              ? Math.floor(Number(input.maxVisionPages)) : null,
+            // §6 注入点：python 调用点必须可注入假实现（工具级用例因此完全不加载 OCR 模型、
+            // 不起 bridge）。生产链路上 ctx 里没有这个键 → null → importFiles 走
+            // defaultConverter（真 python）。与 `ctx.browserDriver` 同一套依赖注入手法。
+            runDocToMd: typeof ctx?.runDocToMd === 'function' ? ctx.runDocToMd : null,
+          })
+        } catch (e) {
+          return { content: `导入失败：${e?.message || e}`, isError: true }
+        }
+        if (!report.ok) {
+          // 错误码**原样透出**（invalid-space-id / readonly-space / not-found / empty-batch /
+          // batch-too-large …）：只有码值能让模型自己决定"是改 id、换路径，还是分批"——
+          // 吞成一句"导入失败"等于让它盲目重试同一批（spec P3-1 的 400/403 语义）。
+          return { content: `导入未执行（${report.error}）：${report.message}`, isError: true }
+        }
+        // 逐文件失败**不**把工具标成 error：报告本身就是结果，标 error 会让模型丢掉
+        // "哪些成功了"的信息（它只会看到一句失败，然后重复整批导入）。
+        //
+        // 体量护栏：整批上限 500 个文件，逐条明细全量回灌会吃掉上万 token（白烧上下文）。
+        // 只截 `results`，`summary` 保持**全量计数**（模型仍准确知道多少成功/多少失败/多少
+        // 被拒），省略条数显式写在报告里（`resultsOmitted`）——不静默丢信息。
+        const MAX_ROWS = 50
+        const results = report.results.slice(0, MAX_ROWS)
+        const content = JSON.stringify({
+          ...report,
+          results,
+          ...(report.results.length > MAX_ROWS ? { resultsOmitted: report.results.length - MAX_ROWS } : {}),
+        }, null, 2)
+        return { content, isError: false }
       },
     },
     // 联网技能搜索：检索 Claude Code marketplace 生态（Anthropic 官方 + 社区市场），

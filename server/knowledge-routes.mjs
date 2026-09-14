@@ -249,6 +249,201 @@ async function packsUninstall({ home, readJsonBody }) {
   return ok({ ok: true, ...r })
 }
 
+/**
+ * 文件知识库导入（2026-09-14）：解析 + 落盘全在内核一份实现
+ * （kernel/knowledge-import.mjs），这里仍是**薄转发** —— server 不复制白名单/体积/
+ * 路径防护/落盘口径，只做"必填字段 + 状态码映射"，与 `/knowledge/append` 同一纪律。
+ *
+ * 与其它路由的**唯一**实质差别是超时窗口：解析要过 python，PDF 走 OCR 时按分钟计，
+ * 60s 默认值在扫描件上必然超时 —— 而超时等于内核子进程被 kill，调用方拿到一个无信息量的
+ * 502，却看不到"已经写进去几篇"（部分落盘 + 无解释是最难收拾的状态）。
+ * 故给 15 分钟窗口与 32MB stdout 上限；kernelReadonly 的单飞锁让"同一批的并发请求"
+ * 复用同一次导入（不会两个进程同时往一个空间写）。
+ *
+ * 注意：**逐文件失败不是 op 失败**（内核 exit 0 并交出报告），故那条路径返回 200 +
+ * `counts/failed[]` 明细；只有整批级错误（空间名非法 / 源不存在 / 超批量上限）才映射 4xx/5xx。
+ */
+const IMPORT_TIMEOUT_MS = 15 * 60 * 1000
+const IMPORT_MAX_BUFFER = 32 * 1024 * 1024
+/**
+ * 整批级错误码 → HTTP 状态码。**唯一映射表**：stdout 错误体（`{ok:false,error}`）与
+ * stderr 前缀（`[knowledge] <code>: <message>`）两条路都查它 —— 分两份写必然漂移，
+ * 而这里的漂移是静默的（错误码只是数字，没人会去比对）。
+ *
+ * 码值取自 `kernel/knowledge-import.mjs` 的 `bad()` 调用点（CLI 走 `importDocuments`，
+ * **不**经 `importFiles` 的对外别名层，故线上真实出现的是内部码；别名（`invalid-space-id`/
+ * `empty-batch`）也一并认，防将来 CLI 改走别名层时这里静默退化成"未知码 → 400"）。
+ * 语义对齐 spec P3-1（非法 id = 400、只读空间 = 403、源不存在 = 404、空批次 = 400）：
+ *   · `readonly-space` 必须 403 而非 400：它表示"这个空间只读"（用户改**选择**即可解决），
+ *     与 400 的"参数写错了"（改输入才能解决）不是同一件事，调用方要能分开提示。
+ *   · `too-many-files`/`batch-too-large` 是 413：处置是"分批重试"，不是"修参数"。
+ *   · `target-escape` 是 403：这是**写边界拒绝**（空间目录经 realpath 落在 `knowledge/spaces/`
+ *     之外，多半是有人把 `spaces/<id>` 换成了 junction），语义与 P3-1 同族 —— "拒绝写，且一个
+ *     字节都没写别处"。它与 `space-create-failed`（=500，mkdir 失败，服务端环境坏了）刻意分开：
+ *     前者的处置是"别用这个空间/清掉那个链接"，后者是"去看服务端环境"，合并会让用户白跑一趟。
+ *   · `bad-config`/`space-create-failed` 是 500：服务端环境问题（如缺 configDir），
+ *     不是调用方的错，标 400 会把用户引向无意义的"改参数"。
+ * ⚠️ 实测（2026-09-14，真实内核 argv 同形调用）：
+ *   `pack-x` → `[knowledge] readonly-space: space 不得以 "pack-" 开头…`
+ *   `a/b`    → `[knowledge] bad-space-id: space 含非法字符…`
+ *   501 文件 → `[knowledge] too-many-files: 文件数 501 超出单批上限 500（请分批导入）`
+ *   不存在的源 → `[knowledge] not-found: 导入源不存在：…`
+ *   四条全部是"exit 1 + stdout 被 kernelReadonly 丢弃"，即**只能**走下面 stderr 那条路。
+ *
+ * 📋 码覆盖清点（2026-09-14，逐 `bad(`/`return { ok:false }` 调用点核对；本案要求的
+ * "不许全落 400 兜底"就是指这一幕）。**只有整批级**的码进本表 —— 它们是"这一批没开始/整批
+ * 被拒"，HTTP 状态码是调用方唯一的处置依据：
+ *   · `kernel/knowledge-import.mjs`：`bad-config`、`bad-space-id`（`validateSpaceId` 唯一
+ *     权威判定，含空/超长/内置重名/非法字符/首尾点/保留设备名）、`readonly-space`、
+ *     `not-found`（源不存在）、`bad-source`（非文件非目录/源是符号链接）、`empty-source`、
+ *     `too-many-files`、`batch-too-large`；别名层 `importFiles` 另出 `invalid-space-id`、
+ *     `empty-batch`（`IMPORT_ERROR_ALIASES`）—— CLI 走的是 `importDocuments`，故线上真实
+ *     出现的是前一组，两组都登记是防"将来 CLI 改走别名层"时这里静默退化成兜底 400。
+ *   · `kernel/knowledge-cli.mjs`（op=import 的参数归一）：`missing-from`、`bad-max-ocr-pages`。
+ *   逐文件码（`unsupported`/`blocked-ext`/`too-large`/`empty`/`unreadable`/`symlink`/
+ *   `not-file`/`convert-failed`/`convert-timeout`/`parser-missing`/`render-failed`/
+ *   `bad-target`/`write-failed`/逐文件形态的 `target-escape`）**刻意不进本表**：它们随
+ *   200 + 报告的 `failed[]/rejected[]` 明细回（内核 exit 0，逐条给 source+原因），本就不经过
+ *   这里的状态码映射；把它们塞进表只会让"整批级"与"逐文件级"两档在此处糊成一片。
+ */
+const IMPORT_ERROR_STATUS = {
+  'bad-space-id': 400, 'invalid-space-id': 400, 'bad-source': 400, 'missing-from': 400,
+  'bad-max-ocr-pages': 400,
+  // 视觉表格提取的两个参数码（2026-09-14）：同为"参数不合规" → 400。
+  // 必须显式登记而不是靠兜底 400：兜底会让"内核新增了码、路由没跟上"这件事**看不出来**，
+  // 而这里登记后，routes 测试的"码覆盖清点"用例会强制它与内核的校验点同步。
+  'bad-vision-tables': 400, 'bad-max-vision-pages': 400,
+  'empty-source': 400, 'empty-batch': 400,
+  'readonly-space': 403, 'target-escape': 403,
+  'not-found': 404,
+  'too-many-files': 413, 'batch-too-large': 413,
+  'bad-config': 500, 'space-create-failed': 500,
+}
+
+/**
+ * 从内核错误文本里取错误码（形如 `[knowledge] readonly-space: …` 或 `readonly-space: …`）。
+ * 取不到码就退 400 —— `[knowledge]` 前缀的含义就是"这次请求被内核闸门拒了"，
+ * 底裤是 400 而**不是** 500（500 会让调用方以为服务崩了，转而去重试/报障）。
+ */
+function statusOfKnowledgeError(text) {
+  const m = /^([a-z0-9-]+)\s*:/.exec(String(text || '').trim())
+  return (m && IMPORT_ERROR_STATUS[m[1]]) || 400
+}
+
+/**
+ * `dryRun` 的宽松解析。严格 `=== true` 的代价**不对称**：GUI 传布尔没问题，但
+ * agent/curl 写 `"true"` 时预览会**静默变成真写盘**（用户以为在看报告，文件其实已经进空间）
+ * —— 这正是内核点名的最坏一类静默降级（kernel/cli.mjs `--dry-run` 同款警告）。
+ * 故：明确的"真"值 = 预览；明确的"假"值/缺失 = 真导入；**其余（含拼错的串、对象、数组）
+ * 一律 400 而不是当假值**——拼错 `dryRun` 的直接后果是不可逆的写盘，宁可拒也不能猜。
+ */
+function parseDryRun(v) {
+  if (v === undefined || v === null) return { ok: true, value: false }
+  if (v === true || v === false) return { ok: true, value: v }
+  const s = typeof v === 'string' ? v.trim().toLowerCase() : (typeof v === 'number' ? String(v) : null)
+  if (s === null) return { ok: false }
+  if (['true', '1', 'yes', 'on'].includes(s)) return { ok: true, value: true }
+  if (['false', '0', 'no', 'off', ''].includes(s)) return { ok: true, value: false }
+  return { ok: false }
+}
+
+async function handleImport({ readJsonBody, callKernel }) {
+  const body = (await readJsonBody()) || {}
+  // from 可以是字符串，也可以是数组（GUI 多选文件 = 一条请求带多个源）。
+  // 全部归一在路由层做完：内核只认"一个 `--src` 一个源"的扁平 argv，别让它去解析 JSON 形状。
+  // （内核 flag 叫 `--src` 而不是 `--from`：后者已被内核 CLI 的范围语义占用。）
+  const rawFrom = body.from ?? body.path ?? body.sources
+  const fromList = (Array.isArray(rawFrom) ? rawFrom : [rawFrom])
+    .map((s) => String(s ?? '').trim()).filter(Boolean)
+  if (!fromList.length) return { status: 400, body: { error: 'from 必填（要导入的文件或目录路径，可为数组）' } }
+  // 字段名兼容与 handleWriteDoc 同理：GET 系列用 `?space=`，POST 体若只认 `spaceId`
+  // 就会让前端按 GET 习惯发的 `{space}` 撞 400 且难定位。两者都收。
+  const space = String(body.spaceId ?? body.space ?? '').trim()
+  const name = String(body.name ?? '').trim()
+  if (!space && !name) {
+    return { status: 400, body: { error: 'spaceId/space 或 name 必填（目标空间）' } }
+  }
+  const args = ['--knowledge', 'import']
+  for (const f of fromList) args.push('--src', f)
+  if (space) args.push('--space', space)
+  if (name) args.push('--name', name)
+  const dry = parseDryRun(body.dryRun)
+  if (!dry.ok) {
+    return { status: 400, body: { error: `dryRun 只接受布尔值（收到 ${JSON.stringify(body.dryRun)}）——预览/真写盘不能靠猜` } }
+  }
+  if (dry.value) args.push('--dry-run')
+  const maxOcr = Number(body.maxOcrPages)
+  if (Number.isFinite(maxOcr) && maxOcr > 0) args.push('--max-ocr-pages', String(Math.floor(maxOcr)))
+  // 视觉表格提取（2026-09-14）：薄转发 —— 取值校验留给内核（唯一权威），
+  // 这里只做"字段存在就带上"的搬运；非法值由内核以 bad-vision-tables 回 400。
+  // `visionTables` 支持布尔（true/false）与 'auto' 两种形状：前端复选框给布尔、
+  // 想表达"跟着配置走"时给 auto。
+  const vt = body.visionTables
+  if (vt === false || vt === true) args.push('--vision-tables', vt ? 'on' : 'off')
+  else if (typeof vt === 'string' && vt.trim()) args.push('--vision-tables', vt.trim())
+  // ⚠️ 先显式排除 null/undefined/空串，再 Number()：`Number(null) === 0` 且有限，
+  // 而 0 对 `--max-vision-pages` 是**合法值**（= 一页都不交给视觉模型）⇒ 不排除的话
+  // "没给这个字段"会被转成 `--max-vision-pages 0`，把用户的默认行为静默改成"关闭视觉"。
+  // 这正是 kernel/knowledge-import.mjs 的 `num()` 头注点名的坑（"缺省值被当成合法 0"），
+  // 在同一类护栏上第二次踩到 —— 所以判断写在这里而不是省成一行。
+  const rawMaxVision = body.maxVisionPages
+  if (rawMaxVision !== undefined && rawMaxVision !== null && String(rawMaxVision).trim() !== '') {
+    const maxVision = Number(rawMaxVision)
+    if (Number.isFinite(maxVision) && maxVision >= 0) args.push('--max-vision-pages', String(Math.floor(maxVision)))
+  }
+
+  let raw
+  try {
+    raw = await callKernel(args, { timeoutMs: IMPORT_TIMEOUT_MS, maxBuffer: IMPORT_MAX_BUFFER })
+  } catch (e) {
+    const msg = String(e?.message || e)
+    // 与 /knowledge/append 同一约定：内核以**非零退出 + stderr `[knowledge]` 前缀**
+    // （kernel/cli.mjs:319）表达"这次请求被拒"，而 kernelReadonly 非零退出即 reject
+    // 并**丢弃 stdout** —— 这条前缀是路由区分"输入不合规"与"内核崩了"的唯一线索。
+    // 不认它，bad-space-id 这类 400 级错误会被报成 500，用户完全无从下手。
+    // 取**以 `[knowledge] ` 开头的那一行**（kernel/cli.mjs 的失败行），而不是"含该前缀的整段
+    // stderr"：kernelReadonly 把 stderr 前 8KB 原样塞进 `e.message`（server/kernel-readonly.mjs:97
+    // `new Error(err.trim() || …)`），只要内核在这行前后再写任何一行（第三方库的告警、Node 崩溃
+    // 时的 code frame、将来在 `--knowledge` 分支前加的日志），`replace(/^\[knowledge\]/)` 就会把
+    // 那些残留原样透给客户端 —— 那正是"把 stderr/traceback 当响应体"。逐行挑 = 只透内核**明确
+    // 想给调用方**的那一句（它的 message 由内核自己构造，标题就是"为什么被拒"）。
+    const gateLine = String(msg).split('\n').map((l) => l.trim()).find((l) => l.startsWith('[knowledge] '))
+    if (gateLine) {
+      const text = gateLine.slice('[knowledge] '.length).trim()
+      // 一律按**码**定状态码，而不是把这条路上的所有错误压成 400：内核把码原样写在
+      // 冒号前面（`readonly-space: …`），丢弃它就会让 403/404/413 三条语义全塌成 400，
+      // 与上面的映射表自相矛盾（表里写着 413、实际回 400 —— 调用方按"分批重试"还是
+      // "改参数"处置，就取决于这个码）。码信息同时以 `code` 字段回传（GUI 想按码给
+      // 针对性提示时不必去解析中文消息）。
+      const code = (/^([a-z0-9-]+)\s*:/.exec(text) || [])[1] || ''
+      return { status: statusOfKnowledgeError(text), body: { error: text, ...(code ? { code } : {}) } }
+    }
+    // 非闸门类失败（内核崩溃 / 超时 / stdout 超限）：**不把 stderr 原文透给客户端**。
+    // 内核崩溃时 stderr 是 Node 的 code frame + 绝对路径栈（`D:\...\kernel\cli.mjs:123` / `at …`），
+    // 那是服务端的实现细节与目录结构：调用方拿它做不了任何处置（它连"该改参数还是该重试"都读不出来），
+    // 却把内部路径摊开了。**只有我们自己产生的、形状固定的 harness 消息**是安全且有用的
+    // （`server/kernel-readonly.mjs` 的 timeout/超限/exit 三种，文本里不含任何路径），逐字放行。
+    const harness = /^\[kernel-readonly\] (?:timeout \d+ms|stdout 超过上限 \d+B|exit -?\d+)$/.exec(String(msg).trim())
+    if (harness) return { status: 500, body: { error: `导入失败：${harness[0]}`, code: 'kernel-failed' } }
+    // 其余一律给可读的定式消息；原文只落服务端控制台（排障用），不入响应体。
+    console.warn('[knowledge-import] 内核失败（原文只落服务端日志，不返给客户端）:', String(msg).slice(0, 800))
+    return { status: 500, body: { error: '导入失败：内核异常退出（详见服务端日志）', code: 'kernel-failed' } }
+  }
+  let v
+  try {
+    v = JSON.parse(raw)
+  } catch {
+    return { status: 502, body: { error: '内核返回非 JSON' } }
+  }
+  // 第二条车道：内核若将来改成"exit 0 + 错误体"（或某个 op 走这条路），用**同一张表**查码
+  // —— 两条车道同口径，才不会出现"同一个错误，看它从哪条路来就有两种状态码"。
+  if (v && (v.ok === false || v.error)) {
+    const code = IMPORT_ERROR_STATUS[v.error] ?? 400
+    return { status: code, body: { error: v.error, message: v.message, code: v.error } }
+  }
+  return ok(v)
+}
+
 /** 导出：**只允许可写空间**（只读的包空间导出无意义：它本身就是别人的包，再导一次只会混淆来源） */
 async function packsExport({ home, readJsonBody, callKernel }) {
   const body = (await readJsonBody()) || {}
@@ -363,6 +558,21 @@ export async function handleKnowledgeRoute({
     }
     if (isPost && p === '/knowledge/reindex') return ok((await callJson(callKernel, ['--knowledge', 'reindex', '--force'])).value)
     if (isPost && p === '/knowledge/doc') return await handleWriteDoc({ readJsonBody, callKernel })
+    // 文件知识库导入（2026-09-14）：`{from, spaceId|space|name, dryRun?, maxOcrPages?}` → 导入报告。
+    // 与 /knowledge/doc 的关键差别：内容**不经 HTTP body**，只传源路径，解析与落盘都在内核侧，
+    // 所以这一层没有四道路径防护要做（没有"目标路径"参数可被穿越）—— 防护在内核一份。
+    // 字段 → argv 的**全量**映射（漏一个就是静默降级，改这里必须同步 server/knowledge-import-routes.test.mjs
+    // 的逐字段精确断言）：
+    //   from（串|数组）        → `--src <路径>`（每源一次；内核 flag 是 `--src` 不是 `--from`）
+    //   spaceId / space        → `--space <id>`
+    //   name（空间名）          → `--name <名>`
+    //   dryRun（布尔）          → `--dry-run`
+    //   maxOcrPages（数字）     → `--max-ocr-pages <n>`
+    //   visionTables（布尔|串）  → `--vision-tables on|off|<原样>`（布尔 true/false 翻成 on/off；
+    //                             串原样透传，取值合法性由**内核**判，路由不写第二套校验）
+    //   maxVisionPages（数字）  → `--max-vision-pages <n>`（0 合法 = 不交给视觉模型）
+    // 超时/缓冲由 handleImport 内的 IMPORT_TIMEOUT_MS / IMPORT_MAX_BUFFER 决定（见那里的理由）。
+    if (isPost && p === '/knowledge/import') return await handleImport({ readJsonBody, callKernel })
     // S6：append-only 写入通道（`{tag?, text, theme?}`）。与 `/knowledge/doc` 的关键差别：
     // 那条是**整体覆盖**（GUI 编辑器语义，需四道路径防护）；这条**只追加一条经验**，
     // 结构上没有覆盖/删除路径 —— 故不需要 `space.writable` 与路径校验那一套（没有"路径"参数，

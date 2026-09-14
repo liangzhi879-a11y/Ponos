@@ -1,0 +1,350 @@
+// src/components/knowledge/KnowledgeImportDialog.tsx —— 文件知识库导入（2026-09-14）
+//
+// 交互取舍：
+// - 源**只传路径**（用系统对话框取），不上传字节：与 /read-docx、/convert-office 同一条数据通道。
+//   渲染进程把 File 对象搬进内存再落临时文件，白白多一次拷贝，而且拿不到"选整个文件夹"——
+//   而"把一个资料文件夹整批入库"恰恰是这里最有用的形态。
+// - "新建空间"是**默认项**：导一批新资料通常配一个新空间；已有可写空间作为备选。
+// - 预览（dryRun）与导入**共用一份结果视图**：三档（成功/跳过/失败）分列。
+//   只报"5/6 成功"等于让用户自己去文件树里对账，所以失败项必须带文件名与原因。
+// - 导入成功后**切到目标空间**：否则树还停在上一个空间，用户看不到刚导进去的东西，
+//   会以为失败又导一遍（幂等会跳过，但他已经困惑了）。
+// - 数据路径：组件只调 `useKnowledge.importDocuments`，**不直接碰 `knowledgeApi`** ——
+//   导入后的缓存失效（spaces/tree/search/graph/stats）收在 hook 一处，组件各记各的必漂移。
+import { useMemo, useState } from 'react'
+import { Upload, FolderOpen, Loader2, FilePlus2, Table2, AlertTriangle } from 'lucide-react'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { useTranslation } from '@/i18n/useTranslation'
+import { useKnowledgeStore } from '@/stores/knowledgeStore'
+// 视觉能力判定只消费**唯一一份**实现（src/lib/visionUi.ts）：导入提示与设置页必须同口径，
+// 否则会出现"设置页显示配好了、这里却提示未配置"这种用户无法自行判断的矛盾。
+import { useSettingsStore } from '@/stores/settingsStore'
+import { isVisionConfigured, resolveVisionProvider } from '@/lib/visionUi'
+import {
+  type KnowledgeImportEntry,
+  type KnowledgeImportReport,
+  type KnowledgeSpace,
+} from '@/lib/knowledgeApi'
+// 写入必须走 hook 的 importDocuments（不是直接调 api）：它负责导入后的缓存失效
+// （tree/search/graph/stats）—— 少了这一步，P1-1 的"导入后立刻能读到、搜到"不成立。
+import { importDocuments } from '@/hooks/useKnowledge'
+
+export interface KnowledgeImportDialogProps {
+  spaces: KnowledgeSpace[] | undefined
+  /** 导入成功后通知宿主刷新（空间列表/统计）；切空间已由本组件负责 */
+  onImported?: (spaceId: string) => void
+}
+
+const MAX_ROWS = 20
+
+/**
+ * 这份结果是不是"扫描件/图片"（= 若配了视觉模型才有机会拿到表格的那类）。
+ *
+ * 为什么按 converter 判而不是按扩展名：`.pdf` 既有文本层也有扫描件 —— 文本层 PDF 的表格
+ * 由本地 PyMuPDF 直接读（不受视觉模型影响），只有 `pdf-ocr`/`ocr` 这两种才依赖视觉模型。
+ * 按扩展名判会对着已经读出表格的文本层 PDF 说"表格没被提取"，是**假告警**。
+ */
+function isScannedResult(e: KnowledgeImportEntry): boolean {
+  const c = e.converter || ''
+  return c === 'pdf-ocr' || c === 'ocr'
+}
+
+/** 三档明细的统一渲染：只展示前 MAX_ROWS 条 + 溢出计数，避免一次导入几百文件把对话框撑爆 */
+function EntryList({ title, items, tone, render }: {
+  title: string
+  items: KnowledgeImportEntry[]
+  tone: string
+  render: (e: KnowledgeImportEntry) => string
+}) {
+  const { t } = useTranslation()
+  if (!items.length) return null
+  return (
+    <div>
+      <p className={`text-[10px] ${tone}`}>{title}（{items.length}）</p>
+      <ul className="mt-0.5 space-y-0.5">
+        {items.slice(0, MAX_ROWS).map((e, i) => (
+          <li key={`${e.source}#${i}`} className="text-[10px] text-tertiary truncate" title={render(e)}>
+            {render(e)}
+          </li>
+        ))}
+        {items.length > MAX_ROWS && (
+          <li className="text-[10px] text-tertiary">{t('knowledge.importMoreRows', { n: items.length - MAX_ROWS })}</li>
+        )}
+      </ul>
+    </div>
+  )
+}
+
+export function KnowledgeImportDialog({ spaces, onImported }: KnowledgeImportDialogProps) {
+  const { t } = useTranslation()
+  const setSpace = useKnowledgeStore(s => s.setSpace)
+  const [open, setOpen] = useState(false)
+  const [sources, setSources] = useState<string[]>([])
+  const [mode, setMode] = useState<'new' | 'existing'>('new')
+  const [newName, setNewName] = useState('')
+  const [spaceId, setSpaceId] = useState('')
+  const [busy, setBusy] = useState<'dry' | 'run' | null>(null)
+  const [report, setReport] = useState<KnowledgeImportReport | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  /** 403 = 目标空间只读（pack-*）。单独留个标记，好在原始错误之外补一句"怎么解决" */
+  const [readonlyError, setReadonlyError] = useState(false)
+
+  const writableSpaces = useMemo(() => (spaces ?? []).filter(s => s.writable !== false), [spaces])
+  // 视觉模型是否可用：扫描件/图片里的表格**只能**靠它读出来（OCR 不保留列坐标）。
+  // 为什么在**导入前**就提示：视觉调用按页慢且可能计费，用户有权在等待前知道"会不会走视觉"、
+  // 以及"没配的话表格会丢"——等导完才说，用户已经白等了几分钟、还得重导一遍。
+  const visionSettings = useSettingsStore(s => s.settings)
+  const visionOk = isVisionConfigured(visionSettings)
+  const visionModelName = resolveVisionProvider(visionSettings)?.visionModel?.trim() || ''
+  // `window.yfworkingFile` 的类型在 src/types/index.ts 全局声明（preload 的 exposeInMainWorld
+  // 名字），这里**不做 as 断言**：断言会把"窗口名/方法名写错 → 静默 undefined"这类坑
+  // 从类型检查里藏起来（本项目高发）。浏览器 dev 下该 API 不存在，故仍按可选处理。
+  const picker = window.yfworkingFile
+  const desktop = !!(picker?.pickKnowledgeFiles || picker?.pickKnowledgeFolder)
+  const target = mode === 'new' ? newName.trim() : (spaceId || writableSpaces[0]?.id || '')
+  const canRun = sources.length > 0 && !!target && !busy
+
+  async function addFiles() {
+    if (!picker?.pickKnowledgeFiles) { setError(t('knowledge.importNoDesktop')); return }
+    const picked = await picker.pickKnowledgeFiles()
+    if (picked?.length) {
+      // 去重：同一个文件被选两次会让内核把它当两个源（多源时各自加前缀 → 产出两份）
+      setSources(prev => Array.from(new Set([...prev, ...picked])))
+    }
+  }
+  async function addFolder() {
+    if (!picker?.pickKnowledgeFolder) { setError(t('knowledge.importNoDesktop')); return }
+    const dir = await picker.pickKnowledgeFolder()
+    if (dir) setSources(prev => (prev.includes(dir) ? prev : [...prev, dir]))
+  }
+
+  async function run(dryRun: boolean) {
+    if (!sources.length) { setError(t('knowledge.importNeedSource')); return }
+    if (!target) { setError(t('knowledge.importNeedSpace')); return }
+    setBusy(dryRun ? 'dry' : 'run')
+    setError(null)
+    setReadonlyError(false)
+    // from 单源传字符串（报告里是路径），多源传数组（内核按源加前缀，避免同名互撞）
+    // 走 hook 的 importDocuments（不是 api.importKnowledge）：成功后由它失效 tree/search 等缓存
+    const res = await importDocuments({
+      from: sources.length === 1 ? sources[0] : sources,
+      ...(mode === 'existing' ? { spaceId: target } : { name: target }),
+      dryRun,
+    })
+    setBusy(null)
+    if (!res.ok) {
+      setReport(null)
+      // 原始 message 一律展示（含内核错误码，便于报障）；403 额外补一句可执行的处置建议
+      setError(res.error || t('knowledge.importFailed'))
+      setReadonlyError(res.status === 403)
+      return
+    }
+    setReport(res.data)
+    if (!dryRun && res.data.counts.converted > 0) {
+      // 切到目标空间：否则树还停在上一个空间，用户看不到刚导进去的东西，
+      // 会以为失败又导一遍（幂等会跳过，但他已经困惑了）。缓存失效已在 importDocuments 内做完。
+      setSpace(res.data.spaceId)
+      onImported?.(res.data.spaceId)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) setError(null) }}>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          className="w-full flex items-center gap-1.5 py-0.5 text-[11px] text-tertiary hover:text-primary transition-colors"
+        >
+          <Upload className="w-3 h-3 shrink-0" />
+          <span className="truncate">{t('knowledge.importTitle')}</span>
+        </button>
+      </DialogTrigger>
+      <DialogContent className="max-w-[560px]">
+        <DialogHeader>
+          <DialogTitle>{t('knowledge.importTitle')}</DialogTitle>
+        </DialogHeader>
+
+        <p className="text-[11px] text-tertiary">{t('knowledge.importHint')}</p>
+
+        {/* 视觉模型的**事前**提示（2026-09-14）：两态各说清后果，而不是只报一个状态。
+            未配置：讲明"扫描件/图片的表格不会被提取"，并给出可执行路径（去设置里配 + 重新导入）；
+            已配置：讲明会走视觉、以及有页数上限（用户据此预估耗时，也知道超长扫描件的边界）。 */}
+        <div className="mt-1.5 flex items-start gap-1.5">
+          {visionOk
+            ? <Table2 className="mt-[1px] w-3 h-3 shrink-0 text-tertiary" />
+            : <AlertTriangle className="mt-[1px] w-3 h-3 shrink-0 text-warn" />}
+          <p className="text-[10px] text-tertiary leading-relaxed">
+            {visionOk
+              ? t('knowledge.importVisionOn', { model: visionModelName || 'vision' })
+              : t('knowledge.importVisionOff')}
+          </p>
+        </div>
+
+        <div className="mt-2 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={addFiles}
+            disabled={!desktop || !!busy}
+            className="flex items-center gap-1 px-2 py-1 text-[11px] border border-default rounded hover:bg-hover disabled:opacity-50"
+          >
+            <FilePlus2 className="w-3 h-3" />
+            {t('knowledge.importPickFiles')}
+          </button>
+          <button
+            type="button"
+            onClick={addFolder}
+            disabled={!desktop || !!busy}
+            className="flex items-center gap-1 px-2 py-1 text-[11px] border border-default rounded hover:bg-hover disabled:opacity-50"
+          >
+            <FolderOpen className="w-3 h-3" />
+            {t('knowledge.importPickFolder')}
+          </button>
+          {!desktop && <span className="text-[10px] text-tertiary">{t('knowledge.importNoDesktop')}</span>}
+        </div>
+
+        {sources.length > 0 && (
+          <div className="mt-2">
+            <p className="text-[10px] text-secondary">
+              {t('knowledge.importSources')}（{sources.length}）
+            </p>
+            <ul className="mt-0.5 max-h-[96px] overflow-auto space-y-0.5">
+              {sources.slice(0, MAX_ROWS).map(p => (
+                <li key={p} className="flex items-center gap-1 text-[10px] text-tertiary">
+                  <span className="flex-1 min-w-0 truncate" title={p}>{p}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSources(prev => prev.filter(s => s !== p))}
+                    className="shrink-0 hover:text-primary"
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+              {sources.length > MAX_ROWS && (
+                <li className="text-[10px] text-tertiary">{t('knowledge.importMoreRows', { n: sources.length - MAX_ROWS })}</li>
+              )}
+            </ul>
+          </div>
+        )}
+
+        <div className="mt-3 flex items-center gap-3">
+          <label className="flex items-center gap-1 text-[11px] text-secondary">
+            <input type="radio" checked={mode === 'new'} onChange={() => setMode('new')} />
+            {t('knowledge.importSpaceNew')}
+          </label>
+          <label className="flex items-center gap-1 text-[11px] text-secondary">
+            <input
+              type="radio"
+              checked={mode === 'existing'}
+              onChange={() => setMode('existing')}
+              disabled={!writableSpaces.length}
+            />
+            {t('knowledge.importSpaceExisting')}
+          </label>
+        </div>
+
+        {mode === 'new'
+          ? (
+            <input
+              value={newName}
+              onChange={e => setNewName(e.target.value)}
+              placeholder={t('knowledge.importSpaceNamePlaceholder')}
+              className="mt-1 w-full px-2 py-1 text-[11px] border border-default rounded bg-transparent"
+            />
+          )
+          : (
+            <select
+              value={target}
+              onChange={e => setSpaceId(e.target.value)}
+              className="mt-1 w-full px-2 py-1 text-[11px] border border-default rounded bg-transparent"
+            >
+              {writableSpaces.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          )}
+
+        <div className="mt-3 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => run(true)}
+            disabled={!canRun}
+            className="flex items-center gap-1 px-2 py-1 text-[11px] border border-default rounded hover:bg-hover disabled:opacity-50"
+          >
+            {busy === 'dry' && <Loader2 className="w-3 h-3 animate-spin" />}
+            {t('knowledge.importPreview')}
+          </button>
+          <button
+            type="button"
+            onClick={() => run(false)}
+            disabled={!canRun}
+            className="flex items-center gap-1 px-2 py-1 text-[11px] border border-default rounded hover:bg-hover disabled:opacity-50"
+          >
+            {busy === 'run' && <Loader2 className="w-3 h-3 animate-spin" />}
+            {busy === 'run' ? t('knowledge.importRunning') : t('knowledge.importRun')}
+          </button>
+          {busy && <span className="text-[10px] text-tertiary">{t('knowledge.importSlow')}</span>}
+        </div>
+
+        {/* 错误**必须显式渲染**（P3-1：不得静默失败）。原始 message 原样带上——它是内核/
+            路由给的英文错误码短语（如 `readonly-space: space 不得以 "pack-" 开头…`），
+            比前端猜一个通用文案更有诊断价值；403 再补一句"怎么解决"。 */}
+        {error && (
+          <div className="mt-2">
+            <p className="text-[11px] text-danger">{t('knowledge.importFailed')}：{error}</p>
+            {readonlyError && <p className="mt-0.5 text-[10px] text-tertiary">{t('knowledge.importReadonlyHint')}</p>}
+          </div>
+        )}
+
+        {report && (
+          <div className="mt-3 border-t border-default pt-2 space-y-2">
+            <p className="text-[11px] text-secondary">
+              {report.dryRun ? t('knowledge.importPreviewDone') : t('knowledge.importDone')}
+              {' · '}
+              {`${report.spaceName} · ${t('knowledge.importOk')} ${report.counts.converted} / ${t('knowledge.importSkipped')} ${report.counts.skipped} / ${t('knowledge.importFailedShort')} ${report.counts.failed}`}
+            </p>
+            {/* 索引未同步时必须说一声：否则用户会以为"导入失败"（明明文件已经在树里） */}
+            {!report.dryRun && report.counts.converted > 0 && report.indexSync !== 'reloaded' && (
+              <p className="text-[10px] text-tertiary">{t('knowledge.importIndexPending')}</p>
+            )}
+            {/* 视觉表格提取的**事后**口径：读了表格要说清是哪来的（用词可追溯，避免用户以为
+                "扫描件里本来没表格"）；没读出来且确实有扫描件/图片时，给出"怎么才能读到"
+                —— 这两句正是用户判断"要不要去配/重导"的唯一依据，缺失就等于让用户自己猜。 */}
+            {(report.vision?.tables ?? 0) > 0 && (
+              <p className="text-[10px] text-secondary">
+                {t('knowledge.importVisionExtracted', { tables: report.vision!.tables, pages: report.vision!.pages })}
+              </p>
+            )}
+            {report.vision?.skipped === 'not-configured' && report.converted.some(isScannedResult) && (
+              <p className="text-[10px] text-warn">{t('knowledge.importVisionSkipped')}</p>
+            )}
+            <EntryList
+              title={report.dryRun ? t('knowledge.importWillConvert') : t('knowledge.importConverted')}
+              items={report.converted}
+              tone="text-secondary"
+              render={e => `${e.source} → ${e.out ?? ''}${e.converter ? `（${e.converter}）` : ''}`}
+            />
+            <EntryList
+              title={t('knowledge.importSkippedList')}
+              items={report.skipped}
+              tone="text-secondary"
+              render={e => `${e.source} → ${e.out ?? ''}`}
+            />
+            <EntryList
+              title={t('knowledge.importFailedList')}
+              items={report.failed}
+              tone="text-danger"
+              render={e => `${e.source}：${e.message ?? e.error ?? ''}`}
+            />
+            {report.warnings?.length > 0 && (
+              <EntryList
+                title={t('knowledge.importWarnings')}
+                items={report.warnings.map(w => ({ source: w }))}
+                tone="text-secondary"
+                render={e => e.source}
+              />
+            )}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}

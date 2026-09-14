@@ -11,12 +11,15 @@
 //
 // 写路径：`saveDoc()` 成功**必须**失效 doc / tree / 全部 search ——
 // 后端保存即增量索引，不失效就会出现"刚保存却搜不到"（S2 验收第 6 项）。
+// 文件导入（T6，`importDocuments()`）同理且**更严重**：它一次往目标空间里新增几十篇文档，
+// 不失效 tree 就是"导进去了但树里看不见"，用户会以为失败再导一遍。
 import { useCallback, useEffect, useReducer, useRef } from 'react'
 import {
-  getDoc, getEntryGraph, getGraph, getGraphRelated, getLinks, getRelatedDoc, getStats, listEntries, listSpaces, listTree,
-  search, writeDoc,
+  getDoc, getEntryGraph, getGraph, getGraphRelated, getLinks, getRelatedDoc, getStats, importKnowledge,
+  listEntries, listSpaces, listTree, search, writeDoc,
   type ApiResult, type KnowledgeCallOpts, type KnowledgeDoc, type KnowledgeEntry,
-  type KnowledgeGraph, type KnowledgeGraphRelatedEdge, type KnowledgeLinks,
+  type KnowledgeGraph, type KnowledgeGraphRelatedEdge, type KnowledgeImportPayload,
+  type KnowledgeImportReport, type KnowledgeLinks,
   type KnowledgeRelatedBlock, type KnowledgeSearchParams, type KnowledgeSearchResult,
   type KnowledgeSpace, type KnowledgeStats, type KnowledgeTreeEntry, type KnowledgeWriteInput,
 } from '@/lib/knowledgeApi'
@@ -249,6 +252,47 @@ export async function saveDoc(
   invalidateKnowledge('search:')
   invalidateKnowledge('links:')
   invalidateKnowledge('relatedDoc:')
+  invalidateKnowledge('graphRelated:')
+  invalidateKnowledge(knowledgeKeys.stats)
+  return r
+}
+
+// —— 文件导入（T6，2026-09-14）——
+
+/**
+ * 把一批文件/目录导入知识空间（PDF/Word/Excel/PPT/图片 → 可检索 Markdown）。
+ *
+ * **为什么收在这一层**：导入是写路径，"后端已落盘 + 前端必须失效缓存"的纪律与 `saveDoc()`
+ * 完全一致，而且后果更外显 —— 导入一次新增几十篇文档，不失效 `tree:<目标空间>|` 就是
+ * "明明导入成功，树里却看不到"（用户会以为失败，再导一遍）；不失效 `search:` 就是
+ * "刚导入就搜不到"（命中结果的缓存里当然没有新文档）。P1-1 的"立刻能读到、搜到"
+ * 靠的不是调用方自觉，而是这里一次写清。组件各记各的失效 = 两处调用必漂移一处。
+ *
+ * **为什么不在 API 层 dedupe**：导入耗时可到分钟级，且有副作用（写盘）；同 key 合并会掩盖
+ * "用户换了目标空间后重试"这类真实意图变化（详见 knowledgeApi.importKnowledge 的 why）。
+ *
+ * 返回**原样透出** `ApiResult`（含 `status`）：UI 要按 403（只读空间）/ 413（超批上限）
+ * 给不同提示 —— 这两类都是"改一下选择就能解决"，压成一个通用错误对用户没有帮助。
+ *
+ * 预览（dryRun）**不失效任何缓存**：它一个字节都没写，失效只会让预览这个高频动作
+ * 白白触发一轮 tree/search 重取。
+ */
+export async function importDocuments(
+  payload: KnowledgeImportPayload,
+  opts?: KnowledgeCallOpts,
+): Promise<ApiResult<KnowledgeImportReport>> {
+  const r = await importKnowledge(payload, opts)
+  if (!r.ok) return r
+  // 全跳过（内容未变）+ 空间非新建 = 库内什么都没变，不必惊动缓存
+  const changed = r.data.spaceCreated || r.data.counts.converted > 0
+  if (r.data.dryRun || !changed) return r
+  // 目标空间 id **取后端回执**而不是入参：新建空间时前端只知道 `name`，最终 id 是内核定的
+  const space = r.data.spaceId
+  invalidateKnowledge(knowledgeKeys.spaces)   // 新空间 / docCount 变了
+  invalidateKnowledge(`tree:${space}|`)       // 新增的一批 .md 必须立刻出现在树里
+  invalidateKnowledge('search:')              // 否则"刚导入就搜不到"
+  invalidateKnowledge('graph:')               // 图谱多了一批节点
+  invalidateKnowledge('graphEntry:')
   invalidateKnowledge('graphRelated:')
   invalidateKnowledge(knowledgeKeys.stats)
   return r

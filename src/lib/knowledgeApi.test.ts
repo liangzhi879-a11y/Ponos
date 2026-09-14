@@ -8,7 +8,7 @@ import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   listSpaces, listTree, getDoc, listEntries, search, getLinks, getGraph, getStats, reindex, writeDoc,
-  getRelated, getRelatedDoc, getGraphRelated, clearKnowledgeInflight,
+  getRelated, getRelatedDoc, getGraphRelated, clearKnowledgeInflight, importKnowledge,
 } from './knowledgeApi.ts'
 
 const BASE = 'http://localhost:51517'
@@ -243,6 +243,77 @@ test('超时：AbortController 到点中止 → {ok:false, error: 请求超时}'
   const r = await listSpaces({ baseUrl: BASE, timeoutMs: 10 })
   assert.equal(r.ok, false)
   assert.match(r.ok === false ? r.error : '', /超时/)
+})
+
+test('importKnowledge：POST /knowledge/import，单源 from 是字符串、多源是数组；spaceId/name 二选一', async () => {
+  const report = {
+    ok: true, spaceId: 'declare', spaceName: '申报资料', spaceCreated: true, dryRun: false,
+    source: 'D:/申报', counts: { total: 6, converted: 6, skipped: 0, failed: 0 },
+    converted: [], skipped: [], failed: [], indexSync: 'reloaded', warnings: [],
+  }
+  mockFetch(() => json(report))
+  const r = await importKnowledge({ from: 'D:/申报', name: '申报资料' }, { baseUrl: BASE })
+  assert.equal(calls[0].init?.method, 'POST', '导入是写操作，必须 POST')
+  assert.equal(url().pathname, '/knowledge/import')
+  // 字段名与 server/knowledge-routes.mjs 的 handleImport **逐字对齐**：写错不会报错，
+  // 只会变成"路由 400 from 必填"，或更糟——落在默认空间上。
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), { from: 'D:/申报', name: '申报资料' })
+  assert.deepEqual(r, { ok: true, data: report })
+
+  // 多选文件 = 一条请求带多个源（路由把数组摊平成多个 `--src`）；已有空间用 spaceId
+  mockFetch(() => json({ ...report, spaceCreated: false }))
+  await importKnowledge({ from: ['a.pdf', 'b.docx'], spaceId: 'declare', dryRun: true }, { baseUrl: BASE })
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), { from: ['a.pdf', 'b.docx'], spaceId: 'declare', dryRun: true })
+  assert.equal(JSON.parse(String(calls[0].init?.body)).name, undefined, '给已有空间时不得同时带 name（会变成改名/新建的歧义）')
+})
+
+test('importKnowledge：逐文件失败是 200 + 三档明细（不是 error）；dryRun 报告原样透出', async () => {
+  const report = {
+    ok: true, spaceId: 'declare', spaceName: '申报资料', spaceCreated: false, dryRun: false,
+    source: 'D:/申报',
+    counts: { total: 3, converted: 1, skipped: 1, failed: 1 },
+    converted: [{ source: 'D:/申报/a.pdf', out: 'a.md', converter: 'pdf' }],
+    skipped: [{ source: 'D:/申报/b.docx', out: 'b.md', reason: 'unchanged' }],
+    failed: [{ source: 'D:/申报/setup.exe', error: 'unsupported-type', message: '不支持的扩展名：.exe' }],
+    indexSync: 'reloaded', warnings: [],
+  }
+  mockFetch(() => json(report))
+  const r = await importKnowledge({ from: 'D:/申报', spaceId: 'declare' }, { baseUrl: BASE })
+  assert.equal(r.ok, true, '部分失败是 200：整批不因一个 .exe 变红（P1-3）')
+  assert.deepEqual(r.ok && r.data.counts, { total: 3, converted: 1, skipped: 1, failed: 1 })
+  assert.equal(r.ok && r.data.failed[0].message, '不支持的扩展名：.exe', '失败项必须带文件名+原因（GUI 明细直接用）')
+  assert.equal(r.ok && r.data.skipped[0].reason, 'unchanged', '跳过是独立一档（P1-2：GUI 要能显示"跳过"）')
+})
+
+test('importKnowledge：整批级错误保留 status 与内核错误码（403 只读空间 / 413 超批）', async () => {
+  mockFetch(() => json({ error: 'readonly-space: space 不得以 "pack-" 开头（知识包空间只读）', code: 'readonly-space' }, 403))
+  const ro = await importKnowledge({ from: 'D:/x', spaceId: 'pack-demo' }, { baseUrl: BASE })
+  assert.deepEqual(ro, {
+    ok: false, status: 403,
+    error: 'readonly-space: space 不得以 "pack-" 开头（知识包空间只读）',
+  })
+
+  mockFetch(() => json({ error: 'too-many-files: 文件数 501 超出单批上限 500（请分批导入）' }, 413))
+  const many = await importKnowledge({ from: 'D:/big', spaceId: 'declare' }, { baseUrl: BASE })
+  assert.equal(many.ok === false && many.status, 413, '413 与 400 的处置不同（分批重试 vs 改参数），不能被压成同一个码')
+  assert.match(many.ok === false ? many.error : '', /too-many-files/)
+})
+
+test('importKnowledge：不过 dedupe —— 并发同参调用是两个请求（写路径不合并意图）', async () => {
+  let n = 0
+  mockFetch(() => {
+    n++
+    return new Promise<Response>((resolve) => setTimeout(() => resolve(json({
+      ok: true, spaceId: 'declare', spaceName: 'D', spaceCreated: false, dryRun: false, source: 'D:/x',
+      counts: { total: 0, converted: 0, skipped: 0, failed: 0 }, converted: [], skipped: [], failed: [],
+      indexSync: 'none', warnings: [],
+    })), 5))
+  })
+  await Promise.all([
+    importKnowledge({ from: 'D:/x', spaceId: 'declare' }, { baseUrl: BASE }),
+    importKnowledge({ from: 'D:/x', spaceId: 'declare' }, { baseUrl: BASE }),
+  ])
+  assert.equal(n, 2, '导入有副作用且耗时分钟级：被 dedupe 合并会掩盖"用户改了目标空间后重试"')
 })
 
 test('同 key 并发去重：复用同一 promise，只发一次 fetch', async () => {

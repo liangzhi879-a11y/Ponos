@@ -14,6 +14,8 @@ import { createKnowledgeStore, knowledgeRoot } from './knowledge.mjs'
 // 引的是 `validateAppendEntry` + `appendMemoryEntry`，后者已内含幂等去重（hashLine）
 // 与增量索引同步（syncKnowledgeIndex），故写完立刻可被检索、关联也随之更新。
 import { appendMemoryEntry, listMemoryTags, validateAppendEntry, memoryRoot } from './memory.mjs'
+// 文件知识库导入（2026-09-14）：实现全在 knowledge-import.mjs，本文件只做 op 分发。
+import { importDocuments } from './knowledge-import.mjs'
 // MAX_RELATED 从 shared 中性层取（不另写一个字面量 8）：CLI 的缺省必须与内核缺省同源，
 // 抄一份数字的话，将来调阈值时 CLI 会静默停在旧值（`--limit` 缺失路径）——那是查不出来的漂移。
 // `isBlockId` 同理由 shared 提供：路由侧（server）也要判同一件事，各写一份必然漂移。
@@ -38,6 +40,11 @@ const OPS = new Set([
   // `append` 是**唯一写 op**（append-only：结构上没有覆盖路径，故比放开 Write 白名单更安全）；
   // `tags` 供写前"优先复用已有标签"（否则单例标签越积越多 → 孤立条目，S5.1 实测主源）。
   'append', 'tags',
+  // 文件知识库（2026-09-14）：把一批文件转成 Markdown 落进一个空间。
+  // 它是第二个写 op，但写入面比 append 更窄：只能写 `knowledge/spaces/<id>/`，
+  // 目标空间 id 必须过 validateSpaceId（拒内置空间/pack- 前缀/非法字符），
+  // 且扩展名走白名单（脚本类一律拒）—— 见 kernel/knowledge-import.mjs 的分层说明。
+  'import',
 ])
 
 /**
@@ -89,7 +96,9 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '' } = {}
   // 唯一危险的是**写** —— `appendMemoryEntry` 内部会 `mkdirSync(recursive)`，
   // 拼错一个字符就能种出一棵新树。真实的 configDir 一定存在（内含 config.json/auth.json），
   // 故这条不会误伤正常安装。
-  if (name === 'append' && !rootExistedBefore) {
+  // 文件导入（import）同属**写** op 且更危险：它连 `knowledge/spaces/<id>/` 一起建，
+  // 拼错的 `PONOS_HOME` 会长出一整棵没人找得到的资料树，故共用同一道短路。
+  if ((name === 'append' || name === 'import') && !rootExistedBefore) {
     return {
       output: { error: 'bad-root', message: `配置根不存在: ${configDir}（PONOS_HOME/CLAUDE_CONFIG_DIR 指向了错误的路径？）` },
       code: 1,
@@ -100,7 +109,15 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '' } = {}
     // reindex 必须 force（用户显式要求重建）；其余 op 走"按需加载"（索引缺失/过期时
     // 内部自动全量重建），但 `--force` 可把任一 op 提到强制重建。load 是同步函数
     // （Task 6 的契约）——此处不写 await。
-    store.load({ force: name === 'reindex' || args.force === true })
+    //
+    // ⚠️ `import --dry-run` **必须跳过**这次 load：`load()` 会按需建
+    // `<configDir>/knowledge/.index/` 并把索引写盘，于是"预览"也在硬盘上留下痕迹
+    // （实测：dry-run 后出现 `.index/{manifest,docs,inverted,links,related}` 与空 jsonl）。
+    // spec P2-2 的措辞是"不写任何文件"，预览就该**零落盘副作用**（连索引脚手架都不该有）。
+    // 该分支另有 guard：dry-run 下传 `knowledgeIndex: null`（模块内部也提前 return，从不读它），
+    // 故不 load 不会让任何消费方拿到"半初始化的 store"。
+    const skipLoad = name === 'import' && args.dryRun === true
+    if (!skipLoad) store.load({ force: name === 'reindex' || args.force === true })
 
     switch (name) {
       case 'spaces':
@@ -241,6 +258,102 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '' } = {}
         // `deduped` 必须回显：调用方要能区分"写进去了"与"早就有了"——
         // 否则重复调用看起来都成功，实际文件没长，会被误判成写入失效。
         return { output: { ok: true, theme: v.theme, tag: v.tag, deduped: !!r?.deduped, ...r }, code: 0 }
+      }
+      case 'import': {
+        // 文件知识库导入（2026-09-14）：唯一入口，白名单/体积/路径防护/台账/索引同步
+        // 全部在 kernel/knowledge-import.mjs 里（本 op 只做参数归一与错误→退出码映射）。
+        //
+        // `--src` 必填且**不做默认值猜测**：缺省猜 cwd 会让"忘了给参数"变成
+        // "把整个工作目录导进知识库"——一次误操作几万文件，且不可逆（有台账也没人会去删）。
+        // 可重复给出（多选文件/多目录），归一成 string | string[]。
+        // （flag 叫 `--src` 而非 `--from`：后者已被 CLI 的范围语义占用，见 kernel/cli.mjs。）
+        const fromList = (Array.isArray(args.src) ? args.src : [args.src])
+          .map((s) => String(s ?? '').trim()).filter(Boolean)
+        if (!fromList.length) {
+          return { output: { error: 'missing-from', message: 'import 需要 --src <文件或目录路径>（可重复给出多个；等价写法 --from，但多源必须用可重复的 --src）' }, code: 1 }
+        }
+        const from = fromList.length === 1 ? fromList[0] : fromList
+        // `--max-ocr-pages` 的取值校验：**非法值必须报错，不得静默回落默认 200**。
+        // 为什么（与 `related` 的 parseLimit 同一条纪律）：OCR 是分钟级操作 —— `--max-ocr-pages 5`
+        // 若被静默当 200，用户会以为"已经限流"，实际跑了 40 倍工作量；`--max-ocr-pages abc`
+        // 静默成功更糟（参数错误被读成"数据本来就是这么处理的"）。
+        // 缺省（未给 / 空串）= 内核默认 200，是**唯一**允许的缺省路径。
+        // 非整数给 floor（`5.5 → 5`，与 server/tool 两层的 Math.floor 同口径，不算参数错误）。
+        let maxOcrLimit = null
+        const rawMaxOcr = args.maxOcrPages
+        if (rawMaxOcr !== undefined && rawMaxOcr !== null && String(rawMaxOcr) !== '') {
+          const n = Number(rawMaxOcr)
+          if (!Number.isFinite(n) || n < 1) {
+            return {
+              output: {
+                error: 'bad-max-ocr-pages',
+                message: `import: --max-ocr-pages 必须是 ≥1 的数值（收到 ${JSON.stringify(rawMaxOcr)}；不传则用内核默认 200）`,
+              },
+              code: 1,
+            }
+          }
+          maxOcrLimit = Math.floor(n)
+        }
+        // 视觉表格提取（2026-09-14）：`--vision-tables off` 显式关闭。
+        // 默认 `auto` = 配了视觉模型就用、没配就静默跳过（并让报告带上 not-configured 供 GUI 提示）。
+        // 为什么不默认关：用户配视觉模型就是为了让它干活；默认关会让"扫描件表格读不出来"
+        // 变成一个需要读文档才知道要打开的隐藏开关。
+        // 页数上限同样**非法值报错**（理由同 --max-ocr-pages：视觉按页计费，静默回落 = 账单失真）。
+        const rawVision = args.visionTables
+        let visionTables = 'auto'
+        if (rawVision !== undefined && rawVision !== null && String(rawVision) !== '') {
+          const v = String(rawVision).toLowerCase()
+          if (v === 'off' || v === 'false' || v === '0' || v === 'no') visionTables = false
+          else if (v === 'on' || v === 'true' || v === '1' || v === 'yes' || v === 'auto') visionTables = v === 'auto' ? 'auto' : true
+          else {
+            return {
+              output: {
+                error: 'bad-vision-tables',
+                message: `import: --vision-tables 只接受 auto|on|off（收到 ${JSON.stringify(rawVision)}；不传则 auto）`,
+              },
+              code: 1,
+            }
+          }
+        }
+        let maxVisionLimit = null
+        const rawMaxVision = args.maxVisionPages
+        if (rawMaxVision !== undefined && rawMaxVision !== null && String(rawMaxVision) !== '') {
+          const n = Number(rawMaxVision)
+          if (!Number.isFinite(n) || n < 0) {
+            return {
+              output: {
+                error: 'bad-max-vision-pages',
+                message: `import: --max-vision-pages 必须是 ≥0 的数值（收到 ${JSON.stringify(rawMaxVision)}；不传则用内核默认 20）`,
+              },
+              code: 1,
+            }
+          }
+          maxVisionLimit = Math.floor(n)
+        }
+        const report = await importDocuments({
+          configDir, from,
+          space: args.space ?? null, name: args.name ?? null,
+          dryRun: args.dryRun === true,
+          // 复用本进程已 load 的 store：导入后由它 load({}) 一次，让新空间/新文件立刻可检索。
+          // 不传的话"导入完搜不到"要等下次会话 —— 那是用户一眼能看见的毛病。
+          // dry-run 传 null：该分支在模块内部提前 return，从不碰索引；传了反而要冒"为预览
+          // 付一次 store.load"的风险（那正是上面 skipLoad 要避免的落盘副作用）。
+          knowledgeIndex: args.dryRun === true ? null : store,
+          limits: (maxOcrLimit === null && maxVisionLimit === null) ? null : {
+            ...(maxOcrLimit === null ? {} : { maxOcrPages: maxOcrLimit }),
+            ...(maxVisionLimit === null ? {} : { maxVisionPages: maxVisionLimit }),
+          },
+          visionTables,
+        })
+        if (!report.ok) return { output: { error: report.error, message: report.message }, code: 1 }
+        // 三档计数一并回显：调用方（GUI/agent）要能一眼看出"成功了几篇、跳过了几篇、失败几篇及原因"，
+        // 只回 ok 等于让用户去猜到底导进去了什么。
+        // ⚠️ 逐文件失败**不算** op 失败（exit 0）：op 已正常完成并交出报告，失败明细在
+        // `counts.failed` / `failed[]` 里。若这里 exit 1，HTTP 侧 kernelReadonly 会
+        // **reject 并丢弃 stdout**（见 server/kernel-readonly.mjs runOnce）→ 用户只拿到
+        // 一个无信息量的 500，而我们明明有逐条原因。整批级错误（bad-space-id / not-found /
+        // too-many-files）才 code 1 —— 那种情况下 message 就是全部信息。
+        return { output: report, code: 0 }
       }
       default:
         return { output: { error: `unknown knowledge op: ${name}` }, code: 1 }

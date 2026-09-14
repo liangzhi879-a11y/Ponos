@@ -27,6 +27,12 @@ import { getBridgeUrl } from './config.ts'
 const TIMEOUT_MS = 15_000
 /** 写文档：落盘 + 内核增量更新，冷启动首帧可能拉起子进程，给更宽的窗口 */
 const WRITE_TIMEOUT_MS = 30_000
+/**
+ * 文件知识库导入（2026-09-14）：解析 + 落盘全在内核，扫描件 PDF 走 OCR 按分钟计。
+ * 刻意比服务端的 15 分钟窗口**再宽一点**：这样超时一定由服务端先给出（带"内核超时"这类
+ * 有意义的 message），而不是前端先 abort（用户只看到一句"请求超时"，无从判断卡在哪一步）。
+ */
+const IMPORT_TIMEOUT_MS = 16 * 60 * 1000
 
 export type ApiResult<T> =
   | { ok: true; data: T }
@@ -463,5 +469,102 @@ export function readRawDoc(root: string, rel: string, opts?: KnowledgeCallOpts):
     return typeof r.data?.content === 'string'
       ? { ok: true as const, data: r.data.content }
       : { ok: false as const, error: 'read-file: 响应缺少 content' }
+  })
+}
+
+/** 导入报告里的一条结果（三档共用的形状；`error`/`reason` 至少有一个） */
+export interface KnowledgeImportEntry {
+  source: string
+  out?: string | null
+  /**
+   * 转换器：`pdf-text`(文本层 PDF，表格由本地 PyMuPDF 读) / `pdf-ocr`(扫描件，表格只能靠视觉模型) /
+   * `ocr`(图片) / `docx` / `xlsx` / `pptx` / `text` / `csv` …
+   * 前端据此判断"这份文件依赖视觉模型吗"（见 KnowledgeImportDialog 的 isScannedResult）。
+   */
+  converter?: string
+  /** 该文件的视觉表格提取结果（仅扫描件/图片且走了视觉时才有） */
+  vision?: { attempted: number; pages: number; tables: number; truncated?: boolean }
+  bytes?: number
+  truncated?: boolean
+  warnings?: string[]
+  /** dryRun 预览时出现：`convert` 表示此次会转换 */
+  action?: string
+  /** 跳过原因（`unchanged`）——目前只有"内容未变"一种，保留字段以便未来扩展 */
+  reason?: string
+  /** 失败时的机器可读码 */
+  error?: string
+  message?: string
+}
+
+export interface KnowledgeImportReport {
+  ok: boolean
+  spaceId: string
+  spaceName: string
+  spaceCreated: boolean
+  dryRun: boolean
+  spaceRoot?: string
+  /** 单源是字符串，多源是数组（GUI 多选文件 = 多源） */
+  source: string | string[]
+  sources?: string[]
+  counts: { total: number; converted: number; skipped: number; failed: number }
+  converted: KnowledgeImportEntry[]
+  skipped: KnowledgeImportEntry[]
+  failed: KnowledgeImportEntry[]
+  /** `reloaded` = 已同步索引（导入完立刻可搜）；`none`/`failed` 时提示会自动重建 */
+  indexSync: string
+  warnings: string[]
+  /**
+   * 视觉表格提取的整批口径（2026-09-14）：扫描件/图片里的表格**只能**靠视觉模型读出来
+   * （OCR 不保留列坐标，实测引擎的文本启发式表格数恒为 0）。
+   * `configured=false` + `skipped='not-configured'` 时前端要明确提示用户去配置 ——
+   * 否则用户只看到"扫描件里没有表格"，会误以为文档本身没表格。
+   */
+  vision?: {
+    /** 是否配置了视觉模型（内核与 Vision 工具同一份判定，兼容 PONOS_VISION_x 与 YFW_VISION_x 两种前缀） */
+    configured: boolean
+    /** `not-configured` | `disabled` | `no-page-images` | null（null = 本轮用上了视觉） */
+    skipped: string | null
+    used: boolean
+    pages: number
+    tables: number
+  }
+}
+
+export interface KnowledgeImportPayload {
+  /** 文件或目录的绝对路径；数组 = 一次导入多个源 */
+  from: string | string[]
+  /** 目标空间 id（不存在则新建）。与 `name` 至少给一个 */
+  spaceId?: string
+  /** 空间显示名（新建时写入 .space.json） */
+  name?: string
+  /** 只预览不落盘 */
+  dryRun?: boolean
+  maxOcrPages?: number
+  /**
+   * 扫描件/图片的表格识别（2026-09-14）：`true`/`false` 显式开关，`'auto'`（缺省）= 配了视觉模型就用。
+   * 关掉可省时间与调用费用；**文本层 PDF 的表格不受影响**（那是本地 PyMuPDF 直接读的）。
+   */
+  visionTables?: boolean | 'auto'
+  /** 交给视觉模型的页数上限（缺省 20；0 = 一页都不给，即"只要正文不要表格"）。视觉调用按页慢且可能计费 */
+  maxVisionPages?: number
+}
+
+/**
+ * 文件知识库导入（2026-09-14）：把一批文件（PDF/Word/Excel/PPT/图片/文本）转成 Markdown
+ * 落进一个知识空间，随后检索即可命中。
+ *
+ * 为什么**不**走 dedupe：导入本身是幂等操作（内核按 sourceHash 跳过未变文件），但它是有副作用的
+ * 写操作，被 dedupe 合并会掩盖"用户改了目标空间后重试"这类真实意图变化；而且它的耗时可到分钟级，
+ * 被并发去重表长期占位没有收益。同 writeDoc 的取舍。
+ * `dryRun` 也一样不过 dedupe（它便宜、且必须反映当下文件状态）。
+ */
+export function importKnowledge(
+  payload: KnowledgeImportPayload,
+  opts?: KnowledgeCallOpts,
+): Promise<ApiResult<KnowledgeImportReport>> {
+  return call<KnowledgeImportReport>('/knowledge/import', {
+    method: 'POST',
+    body: payload,
+    opts: { timeoutMs: IMPORT_TIMEOUT_MS, ...(opts || {}) },
   })
 }
