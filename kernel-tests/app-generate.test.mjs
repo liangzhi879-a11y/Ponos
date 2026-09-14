@@ -307,14 +307,34 @@ test('validateSpecBasic：goto 缺 url、wait 既无 ms 也无 ref、未知 act 
   assert.ok(unknown.errors.some((e) => e.includes('不合法') && e.includes('launchMissiles')), `实际：${unknown.errors}`)
 })
 
-test('validateSpecBasic：desktop 步骤按 desktop 契约校验（script 需 lang + file|code）', () => {
-  const d = (steps) => ({ ...GOOD_SPEC, target: { type: 'desktop', exePath: 'C:/x.exe' }, driver: 'desktop', commands: [{ action: 'x', title: 'x', kind: 'read', params: [], steps }] })
-  assert.equal(validateSpecBasic(d([{ act: 'cli', argv: ['--version'] }])).ok, true)
-  assert.equal(validateSpecBasic(d([{ act: 'script', lang: 'js', code: 'console.log(1)' }])).ok, true)
-  assert.ok(validateSpecBasic(d([{ act: 'script', code: 'x' }])).errors.some((e) => e.includes('lang')), 'script 缺 lang 应被拦')
-  assert.ok(validateSpecBasic(d([{ act: 'cli' }])).errors.some((e) => e.includes('argv')), 'cli 缺 argv 应被拦')
-  // web 的 act 不许混进 desktop
-  assert.ok(validateSpecBasic(d([{ act: 'goto', url: '/' }])).errors.some((e) => e.includes('goto')))
+// 生产里 desktop 目标的 driver 只可能是 process / script / uia（app-profiler.SURFACE_ORDER）。
+// 旧的这条用例传 driver:'desktop' —— 生产不存在的值，正是它让"提示词说 web、校验说 desktop"
+// 的矛盾长期没被发现（本地应用封装必失败的真实故障）。
+const deskSpec = (driver, steps) => ({
+  ...GOOD_SPEC, name: '本地应用', target: { type: 'desktop', exePath: 'C:/x.exe' }, driver,
+  commands: [{ action: 'doIt', title: '执行', kind: 'read', params: [], steps }],
+})
+
+test('validateSpecBasic：driver=process 只接受 cli 步骤', () => {
+  assert.equal(validateSpecBasic(deskSpec('process', [{ act: 'cli', argv: ['--version'] }])).ok, true)
+  const web = validateSpecBasic(deskSpec('process', [{ act: 'goto', url: '/' }, { act: 'snapshot', save: 'r' }]))
+  assert.equal(web.ok, false)
+  assert.ok(web.errors.some((e) => e.includes('process') && e.includes('cli')), `要按真实驱动点名允许的 act：${web.errors.join('；')}`)
+  assert.ok(validateSpecBasic(deskSpec('process', [{ act: 'cli' }])).errors.some((e) => e.includes('argv')), 'cli 缺 argv 应被拦')
+})
+
+test('validateSpecBasic：driver=script 只接受 script 步骤，且需要 lang + file|code', () => {
+  assert.equal(validateSpecBasic(deskSpec('script', [{ act: 'script', lang: 'js', code: 'console.log(1)' }])).ok, true)
+  assert.ok(validateSpecBasic(deskSpec('script', [{ act: 'script', code: 'x' }])).errors.some((e) => e.includes('lang')), 'script 缺 lang 应被拦')
+  assert.ok(validateSpecBasic(deskSpec('script', [{ act: 'cli', argv: ['--version'] }])).errors.some((e) => e.includes('script')), 'script 驱动不得写 cli 步骤')
+})
+
+test('validateSpecBasic：driver=uia 只接受 focus/type/key/wait；driver 值非法则单独点名（不叠加噪音）', () => {
+  assert.equal(validateSpecBasic(deskSpec('uia', [{ act: 'type', value: 'hello' }, { act: 'key', value: 'Enter' }])).ok, true)
+  const badValue = validateSpecBasic(deskSpec('android', [{ act: 'goto', url: '/' }]))
+  assert.equal(badValue.ok, false)
+  assert.ok(badValue.errors.some((e) => e.includes('driver') && e.includes('android')), `driver 非法要点名：${badValue.errors.join('；')}`)
+  assert.ok(!badValue.errors.some((e) => e.includes('steps[')), `driver 非法时不再叠加步骤契约噪音（实际：${badValue.errors.join('；')}）`)
 })
 
 test('ACT_CONTRACT 覆盖全部允许的 act（新增 act 忘了写契约会被这条挡住）', () => {

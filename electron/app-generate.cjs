@@ -289,8 +289,6 @@ function extractSpec(llmText) {
  *   另外打包产物不含 kernel/ 源码（electron-builder 的 files 白名单），主进程也 require 不到它。
  * @returns {{ok:boolean, errors:string[]}}
  */
-const actSetFor = (driver) => (driver === 'desktop' ? DESKTOP_ACTS : WEB_ACTS)
-
 /** 字段"有值"的判定：字符串非空、数组非空、其它非 null/undefined */
 const hasField = (v) => (Array.isArray(v) ? v.length > 0 : typeof v === 'string' ? v.trim() !== '' : v != null)
 
@@ -303,12 +301,14 @@ function validateStepFields(step, at, driver, errors) {
   if (!step || typeof step !== 'object') { errors.push(`${at} 不是对象`); return }
   const act = step.act
   if (!act || typeof act !== 'string') { errors.push(`${at} 缺少 act`); return }
-  const acts = actSetFor(driver)
+  const d = normalizeDriver(driver)
+  const acts = actsFor(d)
   if (!acts.includes(act)) {
-    errors.push(`${at}.act 不合法：${act}（${driver === 'desktop' ? 'desktop' : 'web'} 只允许 ${acts.join(' / ')}）`)
+    // 报错要说清"这个驱动允许什么"，模型与用户才能一次改对（旧文案只列 desktop 的并集，误事）
+    errors.push(`${at}.act 不合法：${act}（driver=${d} 只允许 ${acts.join(' / ')}）`)
     return
   }
-  const c = contractFor(act, driver) || {}
+  const c = tableFor(d)[act] || {}
   for (const f of c.required || []) {
     if (hasField(step[f])) continue
     // js 专治：模型常把表达式塞进 code/script/value —— 点名告诉它改哪个字段名
@@ -351,8 +351,17 @@ function validateSpecBasic(spec, { allowPublic = false } = {}) {
   if (!Array.isArray(spec.commands)) errors.push('commands 必须是数组')
   else if (spec.commands.length === 0) errors.push('commands 不能为空（至少 1 条命令）')
   else {
-    // driver 决定可用 act 集合：spec.driver 优先（已生成过的 spec 可能带），否则按 target.type
-    const driver = spec.driver === 'desktop' || t?.type === 'desktop' ? 'desktop' : 'web'
+    // driver 是**校验收窄的依据**，必须用唯一真源推定（旧实现写 `spec.driver === 'desktop' || t.type === 'desktop'`，
+    // 于是把 process/script/uia 全当成"desktop 并集"，而同一份 Spec 的提示词侧又说它该写 web act —— D2 的根因）。
+    //
+    // 注意用**原值**判定合法性（不能先归一化）：'desktop' 归一化后会变成 'uia'，那样就漏报了
+    // —— 而 'desktop' 恰恰是最需要点名纠正的历史值（它不指明接口面，执行期 desktopRunner 会直接拒绝）。
+    const rawDriver = typeof spec?.driver === 'string' ? spec.driver.trim() : ''
+    const driverInvalid = !!rawDriver && !DRIVERS.includes(rawDriver) && rawDriver !== 'web'
+    const driver = driverInvalid ? driverFromTarget(t?.type ?? spec?.target?.type) : driverOf(spec)
+    if (driverInvalid) {
+      errors.push(`driver 不合法：${rawDriver}（只允许 ${DRIVERS.join(' / ')}；桌面应用请按探测结果写 process / script / uia，历史值 "desktop" 请改为具体驱动）`)
+    }
     const seen = new Set()
     for (const [i, c] of spec.commands.entries()) {
       const at = `commands[${i}]`
@@ -362,7 +371,7 @@ function validateSpecBasic(spec, { allowPublic = false } = {}) {
       if (c?.kind !== 'read' && c?.kind !== 'write') errors.push(`${at} kind 必须是 read 或 write`)
       if (c?.params !== undefined && !Array.isArray(c.params)) errors.push(`${at} params 必须是数组`)
       if (!Array.isArray(c?.steps) || c.steps.length === 0) errors.push(`${at} steps 不能为空`)
-      else c.steps.forEach((s, j) => validateStepFields(s, `${at}.steps[${j}]`, driver, errors))
+      else if (!driverInvalid) c.steps.forEach((s, j) => validateStepFields(s, `${at}.steps[${j}]`, driver, errors))
     }
   }
   return { ok: errors.length === 0, errors }
