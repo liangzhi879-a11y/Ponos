@@ -180,7 +180,13 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '' } = {}
         return {
           output: store.getGraph({
             space: args.space ? String(args.space) : null,
-            limit: Number(args.limit) || 200,
+            // ⚠️ 这里**不设数字缺省**：缺省交由 store 按**层级**决定
+            //（条目级 1000 / 文档级 200）。原先写 `Number(args.limit) || 200`，
+            // 等于把 200 当成"显式值"传给条目级图 ⇒ 层级缺省永远被覆盖、条目图恒截到 200 节点，
+            // 且 `slice(0, 200)` 是从头截 —— 恰好砍掉排在文档尾部的段（S6 实测：合并进来的
+            // 那批经验压根不在图里）。非法/非正数一律归为 null（交由层级缺省），
+            // 避免 `Number('abc')=NaN` 让 slice(0, NaN) 变成空图。
+            limit: (() => { const n = Number(args.limit); return Number.isFinite(n) && n > 0 ? n : null })(),
             // S5 Task 9：`--related` 才附隐式关联层（显式 `=== true`；缺省/字符串一律不带，
             // 宁可少带也不因参数解析意外把 258 条隐式边灌进图谱）
             related: args.related === true,
