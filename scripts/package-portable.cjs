@@ -166,6 +166,42 @@ if (fs.existsSync(kernelSrc)) {
   console.warn('  WARNING: kernel-dist/cli.mjs not found — run `node scripts/build-kernel.mjs` first')
 }
 
+// ── server 侧引用的 kernel 源文件（bundle 不含，必须一并落位）──────────────
+// 2026-09-14 实况：server/loop-translate.mjs 静态 import '../kernel/loop-commands.mjs'
+// （GUI 侧 `/loop ...` 转译要与内核用同一套解析逻辑 ⇒ 共享源码），而便携版 kernel/
+// 此前只有 bundle 单文件 cli.mjs ⇒ 打包产物启动即
+//   ERR_MODULE_NOT_FOUND: kernel/loop-commands.mjs imported from server/loop-translate.mjs
+// → bridge 端口从未打开，**整个应用不可用**（不止 loop 功能）。
+// 这里自动收集 server/*.mjs 对 kernel/ 的相对引用（含级联 ./ 依赖），避免再靠人记清单。
+{
+  const serverDir = path.join(ROOT, 'server')
+  const queue = []
+  if (fs.existsSync(serverDir)) {
+    for (const f of fs.readdirSync(serverDir)) {
+      if (!f.endsWith('.mjs') || f.endsWith('.test.mjs')) continue
+      const code = fs.readFileSync(path.join(serverDir, f), 'utf-8')
+      for (const m of code.matchAll(/from\s+['"]\.\.\/kernel\/([\w.-]+\.mjs)['"]/g)) queue.push(m[1])
+    }
+  }
+  const seen = new Set()
+  let copied = 0
+  while (queue.length) {
+    const name = queue.shift()
+    if (seen.has(name)) continue
+    seen.add(name)
+    const src = path.join(ROOT, 'kernel', name)
+    if (!fs.existsSync(src)) {
+      console.warn('  WARNING: server imports kernel/' + name + ' but it does not exist — package will crash on boot')
+      continue
+    }
+    fs.copyFileSync(src, path.join(kernelDst, name))
+    copied++
+    // 级联：被引用的 kernel 源文件自身的同级相对依赖也要落位
+    for (const m of fs.readFileSync(src, 'utf-8').matchAll(/from\s+['"]\.\/([\w.-]+\.mjs)['"]/g)) queue.push(m[1])
+  }
+  if (copied) console.log('  kernel/ source deps copied for bridge (' + copied + ' file' + (copied > 1 ? 's' : '') + ': ' + [...seen].join(', ') + ')')
+}
+
 // ── Copy production node_modules ────────────────────────────────────────
 console.log('[3/5] Copying production dependencies...')
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'))
