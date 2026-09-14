@@ -14,6 +14,8 @@
 'use strict'
 const { existsSync, statSync, readdirSync } = require('node:fs')
 const { dirname, isAbsolute, join, basename } = require('node:path')
+// ★ 探测产出从"一个级别"升级为"若干可控路径 + 三态结论"（Discovery 的输出契约）
+const { capability, buildCapabilitySurface } = require('./app-capability.cjs')
 
 /** 稳定性优先的降级链：越靠前越稳定（CLI 有结构化输出 > 脚本接口 > UI 自动化） */
 const SURFACE_ORDER = ['process', 'script', 'uia']
@@ -65,34 +67,111 @@ async function probeWeb({ url, executor, sessionId }) {
 }
 
 /**
- * desktop 三级探测：命中即停；探测抛错只降级、不冒泡（探测失败不该阻断进入控制台）。
+ * desktop 三级探测：process / script **命中即停**（保持既有"级别"语义），
+ * file 通道与它们**并列**探测（不参与命中即停）；探测抛错只降级、不冒泡。
  *
  * ★ **每层的真实失败原因必须带回去**（evidence.attempts）：过去只返回一句
  *   "未发现 CLI/脚本接口"，上层据此写出的用户提示把"路径不是文件""批处理没跑起来"
  *   统统说成"该程序没有命令行"，用户无法自我纠正（真机 2026-09-14 Aseprite 反馈）。
- * @returns {Promise<{level:'process'|'script'|'uia', evidence:object}>}
+ *
+ * ★ 同时产出**能力清单**（capabilities / surface）：level 只回答"用哪个后端兜底"，
+ *   清单才回答"有哪些可控路径、每条有何证据、下一步怎么试"。上层决策应以 surface.verdict 为准；
+ *   level/evidence 保留原样只为兼容老调用方。
+ * @returns {Promise<{level:'process'|'script'|'uia', evidence:object, capabilities:object[], surface:object, attempts:object[]}>}
  */
 async function probeDesktop({ exePath, deps = {} } = {}) {
   const processProbe = deps.processProbe || defaultProcessProbe
   const scriptProbe = deps.scriptProbe || defaultScriptProbe
-  if (!exePath) return { level: 'uia', evidence: { level: 'uia', note: '缺少 exePath' } }
+  const fileProbe = deps.fileProbe || defaultFileProbe
+  if (!exePath) {
+    const dead = capability('unusable', { confidence: 'unusable', evidence: '缺少程序路径' })
+    return {
+      level: 'uia',
+      evidence: { level: 'uia', note: '缺少 exePath' },
+      capabilities: [dead],
+      surface: buildCapabilitySurface({ target: { type: 'desktop' }, capabilities: [dead] }),
+      attempts: [],
+    }
+  }
   const attempts = []
+  const caps = []
+  let level = 'uia'
+  let evidence = null
+
   try {
     const p = await processProbe({ exePath })
-    if (p?.ok) return { level: 'process', evidence: p }      // ★ 命中即停
-    attempts.push({ level: 'process', reason: p?.reason || '未发现 CLI 接口' })
+    if (p?.ok) {                                              // ★ 命中即停（保留既有语义）
+      level = 'process'
+      evidence = p
+      caps.push(capability('cli', {
+        confidence: 'verified',
+        // ★ evidence 要带**帮助原文的片段**：模型据此直接知道有哪些开关可封装，
+        //   只写"输出 N 字节"等于让它再跑一次命令去读（浪费轮次）。
+        evidence: `${p.exePath || exePath} ${(p.args || ['--help']).join(' ')} → ${(p.help || '').length} 字节，`
+          + `片段：${String(p.help || '').replace(/\s+/g, ' ').slice(0, 160)}`,
+        next: '按帮助里的开关直接封装 CLI 命令（最稳的一条路）',
+      }))
+    } else {
+      attempts.push({ level: 'process', reason: p?.reason || '未发现 CLI 接口' })
+    }
   } catch (e) {
     // 降级：CLI 探测失败（无 CLI / 超时 / 拒绝访问）不是错误，是"该层不可用"
     attempts.push({ level: 'process', reason: `探测异常：${String(e?.message || e)}` })
   }
-  try {
-    const s = await scriptProbe({ exePath })
-    if (s?.ok) return { level: 'script', evidence: s }       // ★ 命中即停
-    attempts.push({ level: 'script', reason: s?.reason || '未发现脚本/扩展目录' })
-  } catch (e) {
-    attempts.push({ level: 'script', reason: `探测异常：${String(e?.message || e)}` })
+
+  // ★ process 命中即停：不再探 script（与既有语义一致，也避免对同一目录重复做无谓 IO）
+  if (level !== 'process') {
+    try {
+      const s = await scriptProbe({ exePath })
+      if (s?.ok) {
+        level = 'script'
+        evidence = s
+        caps.push(capability('script', {
+          confidence: 'verified',
+          evidence: `发现脚本/扩展目录：${(s.dirs || s.scriptDirs || []).join('、') || '（同级目录）'}`,
+          next: '读该目录下的脚本示例，再封装 script 步骤',
+        }))
+      } else {
+        attempts.push({ level: 'script', reason: s?.reason || '未发现脚本/扩展目录' })
+      }
+    } catch (e) {
+      attempts.push({ level: 'script', reason: `探测异常：${String(e?.message || e)}` })
+    }
   }
-  return { level: 'uia', evidence: { level: 'uia', note: '未发现 CLI / 脚本接口，降级到 UI 自动化', attempts } }
+
+  // ★ 文件通道与上面两层**并列**探测（不参与"命中即停"）：能读写工程文件的应用，
+  //   往往比 UI 自动化稳得多，值得作为独立路径交给模型。
+  try {
+    const f = await fileProbe({ exePath })
+    if (f?.ok) {
+      caps.push(capability('file', {
+        confidence: 'probable',
+        evidence: `发现数据/配置文件线索：${(f.hits || []).join('、')}`,
+        next: '用 read_file 抽样看格式后，封装 file 驱动的 read/query 步骤',
+      }))
+    } else {
+      attempts.push({ level: 'file', reason: f?.reason || '未发现数据/配置文件' })
+    }
+  } catch (e) {
+    attempts.push({ level: 'file', reason: `探测异常：${String(e?.message || e)}` })
+  }
+
+  // 一条可用通道都没有 → 一条 unusable，证据=各层真实原因（供上层如实告知，便于用户自我纠正）
+  if (!caps.length) {
+    caps.push(capability('unusable', {
+      confidence: 'unusable',
+      evidence: attempts.map((a) => `${a.level}：${a.reason}`).join('；'),
+    }))
+  }
+
+  const surface = buildCapabilitySurface({ target: { type: 'desktop', exePath }, capabilities: caps })
+  return {
+    level,                                                    // 保持既有"级别"语义，兼容老调用方
+    evidence: evidence ? { ...evidence, attempts } : { level, note: '未发现 CLI / 脚本接口', attempts },
+    capabilities: caps,
+    surface,                                                  // ★ 上层决策应以 surface.verdict 为准
+    attempts,
+  }
 }
 
 /** 系统目录黑名单：探测绝不执行这些目录下的可执行文件（探测会真的跑进程，必须挡在最前） */
@@ -212,6 +291,38 @@ async function defaultScriptProbe({ exePath }) {
 }
 
 /**
+ * 数据/配置文件线索：命中即算 probable（能读写工程文件的应用，往往比 UI 自动化更稳）。
+ * ★ 为什么只到 probable：有配置文件只说明"数据在本地"，不说明格式可解析、更不说明有写入口，
+ *   断言 verified 会把"猜测"说成"已实测"，与 M2 的三态结论纪律冲突。
+ */
+const FILE_HINT_RE = /\.(json|ini|xml|csv|yaml|yml|toml|sqlite|db)$/i
+const FILE_HINT_DIRS = ['config', 'settings', 'data', 'projects', 'saves', 'assets', 'templates']
+
+/**
+ * 文件通道线索探测：只列目录名/文件名，**不读内容**（内容读取交给 LLM 用 read_file 按需做）。
+ * 用户填安装目录时以该目录为扫描基准，填文件时扫其同级目录。
+ * @returns {{ok:boolean, hits:string[], reason?:string}}
+ */
+function defaultFileProbe({ exePath }) {
+  if (!exePath || typeof exePath !== 'string') return { ok: false, reason: '缺少 exePath' }
+  let base = dirname(exePath)
+  try {
+    if (existsSync(exePath) && statSync(exePath).isDirectory()) base = exePath
+  } catch { /* 读不到就当文件处理，下面的 readdirSync 会给出结构化原因 */ }
+  const hits = []
+  try {
+    const entries = readdirSync(base, { withFileTypes: true })
+    for (const e of entries) {
+      if (e.isFile() && FILE_HINT_RE.test(e.name)) hits.push(e.name)
+      if (e.isDirectory() && FILE_HINT_DIRS.includes(e.name.toLowerCase())) hits.push(e.name + '/')
+    }
+  } catch (e) {
+    return { ok: false, reason: `无法列出目录 ${base}：${String(e?.message || e)}` }
+  }
+  return hits.length ? { ok: true, hits: hits.slice(0, 20) } : { ok: false, reason: '未发现数据/配置文件或配置目录' }
+}
+
+/**
  * 进入控制台前的自检（只做"本地可判定"的事实检查，不重复 Spec 结构校验）。
  * @returns {Promise<{status:'healthy'|'drifted'|'broken', issues:string[]}>}
  */
@@ -245,6 +356,6 @@ async function checkApp({ spec } = {}) {
 
 module.exports = {
   detectDriver, probeWeb, probeDesktop, checkApp,
-  defaultProcessProbe, defaultScriptProbe, isSystemPath,
+  defaultProcessProbe, defaultScriptProbe, defaultFileProbe, isSystemPath,
   SURFACE_ORDER, CLI_PROBE_TIMEOUT_MS, CLI_OUTPUT_CAP,
 }

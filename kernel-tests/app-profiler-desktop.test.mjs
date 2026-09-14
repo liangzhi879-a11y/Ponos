@@ -168,3 +168,46 @@ test('probeDesktop：探测抛错 → 原因里带上异常信息（不再只有
   assert.ok(r.evidence.attempts[0].reason.includes('EPERM'))
   assert.ok(r.evidence.attempts[1].reason.includes('ENOENT'))
 })
+
+// ---------- M2：探测产出能力清单（不只是"一个级别"） ----------
+import { capability as _cap } from '../electron/app-capability.cjs'
+
+test('★ probeDesktop：命中 CLI 时清单里有 verified 的 cli 通道与证据', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'prof-cap-'))
+  const bat = join(dir, 'a.bat')
+  writeFileSync(bat, '@echo off\r\necho USAGE\r\n', 'utf-8')
+  try {
+    const r = await probeDesktop({ exePath: bat })
+    assert.equal(r.level, 'process')
+    assert.ok(Array.isArray(r.capabilities) && r.capabilities.length > 0, '必须产出清单')
+    const cli = r.capabilities.find((c) => c.channel === 'cli')
+    assert.equal(cli.confidence, 'verified')
+    assert.equal(cli.driver, 'process')
+    assert.ok(cli.evidence.includes('USAGE'), `证据要含实际输出：${cli.evidence}`)
+    assert.equal(r.surface.verdict, 'connectable')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('probeDesktop：全不中时清单含 unusable 且结论为无法接入（并保留每层真实原因）', async () => {
+  const r = await probeDesktop({ exePath: 'C:/definitely/not/here/nope.exe' })
+  assert.equal(r.level, 'uia')
+  assert.equal(r.surface.verdict, 'unusable')
+  const dead = r.capabilities.find((c) => c.channel === 'unusable')
+  assert.ok(dead.evidence.includes('不存在'), `证据要能自我纠正：${dead.evidence}`)
+})
+
+test('probeDesktop：只有 probable 线索时结论为证据不足（不得说成无法接入）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'prof-weak-'))
+  writeFileSync(join(dir, 'config.json'), '{}', 'utf-8')   // 数据/配置文件线索
+  try {
+    // 让前两层都明确失败，只剩文件线索
+    const r = await probeDesktop({ exePath: join(dir, 'config.json'), deps: {
+      processProbe: async () => ({ ok: false, reason: '无输出' }),
+      scriptProbe: async () => ({ ok: false, reason: '无脚本目录' }),
+    } })
+    assert.equal(r.surface.verdict, 'weak', JSON.stringify(r.capabilities))
+    const file = r.capabilities.find((c) => c.channel === 'file')
+    assert.equal(file.confidence, 'probable')
+    assert.equal(file.driver, 'file')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
