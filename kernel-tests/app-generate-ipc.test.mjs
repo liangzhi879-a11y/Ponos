@@ -781,3 +781,33 @@ test('模型请求登录：桌面应用明确拒绝（没有浏览器登录概�
   assert.equal(turn.ok, false)
   assert.ok(turn.summary.includes('桌面'), turn.summary)
 })
+
+// ---------- Task 4：desktop 试跑必须注入 driver ----------
+//
+// 真实故障：desktop 的试跑分支只把草稿 spec 交给 desktopRunner，而草稿里的 driver 由模型写、
+// 常常没有 → desktopRunner 直接回 "不支持的 driver：undefined" → 试跑恒失败 → 模型被反复回喂
+// → 用户最终看到的是最早几轮的陈旧错误（"specVersion 必须为 1；缺少 name；…"）。
+test('app:generate（desktop/process）：生成 → 试跑全链路通过（试跑必须注入 driver）', async () => {
+  const DESK_SPEC = JSON.stringify({
+    specVersion: 1, appId: 'd1', name: '本地 CLI',
+    target: { type: 'desktop', exePath: process.execPath },
+    expose: { mode: 'console' },
+    commands: [
+      { action: 'version', title: '查看版本号', kind: 'read', params: [], returns: { type: 'text', from: 'out' },
+        steps: [{ act: 'cli', argv: ['--version'], save: 'out' }] },
+      { action: 'listModules', title: '列出内置模块', kind: 'read', params: [], returns: { type: 'text', from: 'out' },
+        steps: [{ act: 'cli', argv: ['-e', 'console.log(Object.keys(process.versions).join(","))'], save: 'out' }] },
+      { action: 'getVersionOf', title: '查询指定组件的版本号', kind: 'read',
+        params: [{ name: 'name', type: 'string', required: true, desc: '组件名，如 node / v8 / openssl' }],
+        returns: { type: 'text', from: 'out' },
+        steps: [{ act: 'cli', argv: ['-e', 'console.log(process.versions["${name}"] || "unknown")'], save: 'out' }] },
+    ],
+  })
+  const t = setup({ llm: async () => ({ ok: true, text: DESK_SPEC, error: null, chars: DESK_SPEC.length }) })
+  const r = await t.invoke('app:generate', { target: { type: 'desktop', exePath: process.execPath }, appId: 'd1', sessionId: 's1' })
+  assert.equal(r.driver, 'process')
+  assert.equal(r.ok, true, `生成应成功（issues：${JSON.stringify(r.issues || [])}）`)
+  assert.equal(r.verify.ok, true, `试跑应通过（failures：${JSON.stringify(r.verify?.failures || [])}）`)
+  assert.deepEqual(r.verify.tried.slice().sort(), ['listModules', 'version'], '只试跑无需参数的 read')
+  assert.equal(r.verify.notRun.length, 0, '三条都是 read')
+})

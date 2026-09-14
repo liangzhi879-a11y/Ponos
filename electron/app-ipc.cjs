@@ -419,7 +419,11 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     const runForVerify = (spec) => ({ action, args, sessionId: sid }) => (
       driver === 'browser'
         ? runCommand({ roots: roots(), appId, action, args, executor: getExecutor(), sessionId: sid, spec, persist: false })
-        : desktopRunner({ appId, action, args, spec })
+        // ★ desktop 必须把 driver 注入 spec：草稿里的 driver 由模型写、常常没有，
+        //   而 desktopRunner 第一件事就是校验 driver（回 "不支持的 driver：undefined"）。
+        //   执行路径早就这么做了（见 runAppCommand 的 desktopRunner 调用），试跑路径漏了 —— 真实故障：
+        //   试跑恒失败 → 模型被反复回喂 → 用户最终看到的是最早几轮的陈旧错误。
+        : desktopRunner({ appId, action, args, spec: { ...spec, driver } })
     )
     // 试跑一律用站点/应用级键（登录态就存在这个分区里；chat sessionId 与它无关）
     const verifyOnce = (spec) => verifySpec({
@@ -596,7 +600,17 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     const agent = await appAgent.runAgentLoop({
       target, driver, probeMode, probeMaterial, seedSummary,
       callLlm, runTool,
-      validate: (s) => validateSpecBasic(s),
+      // ★ 草稿校验要用**本次探测出来的 driver**当尺子，不能交给 validateSpecBasic 只凭 target.type 去猜：
+      //   target.type='desktop' 猜出来的是 uia（最保守兜底），于是 process 应用写出的 cli 步骤被判
+      //   "driver=uia 只允许 focus / type / key / wait" —— 真实故障：模型拿着这条**方向反了**的报错
+      //   反复重交（叠加试跑恒失败），用户最终只看得到最早几轮的陈旧错误。
+      //   driver 是"目标"的属性（探测决定，交付时也是 `{ ...agent.spec, driver }` 覆盖），模型写的只是参考。
+      //   唯一例外：草稿自己声明了**另一种 target.type**（模型连目标都写错了），此时按草稿自己的 target
+      //   推定驱动，免得"目标写错"被报成"act 不合法"而互相掩盖。
+      validate: (s) => {
+        const draftType = s?.target?.type
+        return draftType && draftType !== target.type ? validateSpecBasic(s) : validateSpecBasic({ ...s, driver })
+      },
       verify: verifyOnce,
       onProgress: (p) => emitProgress(appId, p),
       budget: AGENT_BUDGET,
