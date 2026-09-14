@@ -476,6 +476,12 @@ export interface AppItem {
   logo?: string
   targetType: AppTargetType
   enabled?: boolean
+  /**
+   * 用户需求（M1）：用户在「新增应用」里填的"这个应用要能做什么"，多行原文（一行一条）。
+   * ★ 老条目没有这个字段 ⇒ undefined ⇒ 语义等同"未填需求"（不迁移、不补默认值）。
+   * 主进程落盘时按 2000 字符截断（electron/app-registry.cjs 与 app-agent.cjs 同口径）。
+   */
+  requirement?: string
 }
 
 export interface AppTarget {
@@ -738,8 +744,10 @@ export interface YFWAPI {
   /**
    * 生成 App Spec（探测 → LLM → 结构校验 → read 试跑）。**不落盘**：
    * 必须由用户确认后另行调用 appWriteSpec 保存。
+   * `requirement`（M1）是用户需求**原文**（多行，一行一条）——主进程 app-agent 负责归一化
+   * 并作为覆盖度硬约束写进提示词；不传 ⇒ 提示词与改动前逐字一致。
    */
-  appGenerate: (payload: { target: AppTarget; appId?: string; sessionId?: string; maxRounds?: number }) => Promise<AppGenerateResult>
+  appGenerate: (payload: { target: AppTarget; appId?: string; sessionId?: string; maxRounds?: number; requirement?: string }) => Promise<AppGenerateResult>
   /** 订阅生成进度（如实阶段事件）；返回取消订阅函数（组件卸载必须调用） */
   onAppGenerateProgress: (callback: (p: AppGenerateProgress) => void) => () => void
   /** Spec 备份列表（新→旧） */

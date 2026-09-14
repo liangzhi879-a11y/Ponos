@@ -20,6 +20,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertCircle, ArrowRight, CheckCircle2, FileJson, Loader2, LogIn, RefreshCw, Sparkles } from 'lucide-react'
 import { Button, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle, Input, Textarea } from '@/components/ui'
 import { useTranslation } from '@/i18n/useTranslation'
+import { normalizeRequirement } from '@/lib/appRequirement'
 import type { AppGenerateProgress, AppGenerateResult, AppProbeResult, AppSpec, AppTargetType, AppVerifyResult } from '@/types'
 
 const ID_RE = /^[a-zA-Z0-9_-]+$/
@@ -62,6 +63,8 @@ export function AddAppDialog({ onClose, onDone, sessionId }: { onClose: () => vo
   const [loginMsg, setLoginMsg] = useState<string | null>(null)
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
+  /** 用户需求（M1）：一行一条。原文整段交给主进程（由 app-agent 归一化），这里只用来提示条数 */
+  const [requirement, setRequirement] = useState('')
   const [type, setType] = useState<AppTargetType>('web')
   const [url, setUrl] = useState('')
   const [exePath, setExePath] = useState('')
@@ -90,6 +93,8 @@ export function AddAppDialog({ onClose, onDone, sessionId }: { onClose: () => vo
   const api = window.yfworkingAPI
   const target = type === 'web' ? { type, url: normalizeWebUrl(url) } : { type, exePath: exePath.trim() }
   const targetReady = type === 'web' ? !!normalizeWebUrl(url) : !!exePath.trim()
+  /** 需求条目（按行拆、去空、去重）——只用于界面如实提示"几行需求会作为硬约束"，不改变提交内容 */
+  const requirementItems = normalizeRequirement(requirement)
 
   /**
    * 先登录（可选）：该站点若需要登录才看得到功能，先在这里登录再生成——登录态与命令执行、
@@ -151,7 +156,9 @@ export function AddAppDialog({ onClose, onDone, sessionId }: { onClose: () => vo
       if (normalized && normalized !== url) setUrl(normalized)
     }
     try {
-      const r = await api?.appGenerate?.({ target, appId: id || undefined })
+      // 需求按**原文**传（不传界面拆好的数组）：主进程 app-agent 是归一化的权威口径（去空/去重/截断 2000）。
+      // 界面自己拆行只用于"如实提示条数"，不改变提交内容——避免出现"界面说 3 项、模型只收到 1 项"的错位。
+      const r = await api?.appGenerate?.({ target, appId: id || undefined, requirement })
       if (!r) { setError(t('apps.genFailed')); return }
       setGen(r)
       setVerify(r.verify ?? null)
@@ -180,7 +187,8 @@ export function AddAppDialog({ onClose, onDone, sessionId }: { onClose: () => vo
     spec = { ...spec, appId: id, name: spec.name || name.trim() }
     setSaving(true)
     try {
-      await api?.appUpsert?.({ id, name: name.trim(), desc: desc.trim(), targetType: type, enabled: true })
+      // 需求一并落注册表：重新生成/换会话接入时不用再让用户重填（主进程按同口径截断到 2000）
+      await api?.appUpsert?.({ id, name: name.trim(), desc: desc.trim(), targetType: type, enabled: true, requirement })
       await api?.appWriteSpec?.({ appId: id, spec })
       onDone()
     } catch (e) {
@@ -227,6 +235,25 @@ export function AddAppDialog({ onClose, onDone, sessionId }: { onClose: () => vo
                 <Input value={exePath} onChange={(e) => setExePath(e.target.value)} placeholder="C:\..." className="h-7 text-xs flex-1" />
               </Field>
             )}
+
+            {/* 用户需求（M1）：模型据此判断**覆盖度**——不填时提示词与改动前逐字一致（老行为不变）。
+                多行：一行一条，避免用户写成一大段散文被当成一条需求。 */}
+            <div className="flex items-start gap-2">
+              <span className="text-[11px] text-secondary w-20 shrink-0 pt-1.5">需求</span>
+              <div className="flex-1 flex flex-col gap-1">
+                <Textarea
+                  value={requirement}
+                  onChange={(e) => setRequirement(e.target.value)}
+                  placeholder="例如：导出全部订单并按日期筛选（一行一条）"
+                  className="min-h-[58px] text-xs px-2 py-1.5"
+                />
+                {requirementItems.length > 0 && (
+                  <span className="text-[10px] text-tertiary">
+                    {requirementItems.length} 行需求，将作为生成覆盖度的硬约束；模型做不到的会让它写明原因
+                  </span>
+                )}
+              </div>
+            </div>
 
             {/* 需要登录才能看到内容的站点：先登录，再让模型探索（登录态与命令/探索共用同一会话） */}
             {type === 'web' && (

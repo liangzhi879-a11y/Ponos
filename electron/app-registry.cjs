@@ -16,6 +16,36 @@ const readJson = (p) => { try { return JSON.parse(readFileSync(p, 'utf-8')) } ca
 const rootOf = (roots) => (Array.isArray(roots) ? roots[0] : roots)
 const registryPath = (roots) => join(rootOf(roots), 'registry.json')
 
+/**
+ * 用户需求（M1）在注册表里的上限。
+ * ★ 必须与 electron/app-agent.cjs 的 REQUIREMENT_MAX_CHARS **同口径**（那里是提示词的权威截断点）；
+ *   这里再截一次只是防止超长文本原样落盘。改一处要改两处。
+ */
+const REQUIREMENT_MAX_CHARS = 2000
+
+/**
+ * 需求字段归一化：只接受字符串；空白 → 空串（表示"没填"，用户清空后要能真的清掉）；
+ * 非字符串（数字/对象/数组）→ 空串（宁可当没填，也不要把 `[object Object]` 存进注册表）。
+ * 超长**截断而非报错**：一个字段超限不该让整次保存失败。
+ * ★ 老条目没有这个字段，读出来就是 undefined，语义等同"无需求"，不需要迁移。
+ */
+function normalizeRequirementField(value) {
+  if (value == null) return ''
+  if (typeof value !== 'string') return ''
+  return value.trim().slice(0, REQUIREMENT_MAX_CHARS)
+}
+
+/**
+ * 落盘前归一化条目：只为 `requirement` 收口，其余字段原样透传。
+ * ★ 为什么不加严格字段白名单：app:upsert 的调用方可能带别的字段（历史遗留/后续扩展），
+ *   白名单会**静默丢字段**——宁可多留一个键，也不要让调用方以为存上了却没存。
+ */
+function sanitizeApp(app) {
+  const next = { ...app }
+  if ('requirement' in next) next.requirement = normalizeRequirementField(next.requirement)
+  return next
+}
+
 /** 读应用清单；文件缺失/损坏返回空数组（不抛） */
 function listApps({ roots }) {
   const reg = readJson(registryPath(roots))
@@ -27,16 +57,17 @@ function writeRegistry({ roots, apps }) {
   writeFileSync(registryPath(roots), JSON.stringify({ version: 1, apps }, null, 2), 'utf-8')
 }
 
-/** 新增或更新（同 id 为更新，不追加重复项） */
+/** 新增或更新（同 id 为更新，不追加重复项）；写入前归一化 requirement */
 function upsertApp({ roots, app }) {
   if (!app?.id) throw new Error('upsertApp 需要 app.id')
+  const entry = sanitizeApp(app)
   const apps = listApps({ roots })
-  const i = apps.findIndex((a) => a.id === app.id)
-  if (i >= 0) apps[i] = { ...apps[i], ...app }
-  else apps.push(app)
+  const i = apps.findIndex((a) => a.id === entry.id)
+  if (i >= 0) apps[i] = { ...apps[i], ...entry }
+  else apps.push(entry)
   writeRegistry({ roots, apps })
-  mkdirSync(join(rootOf(roots), app.id), { recursive: true })
-  return app
+  mkdirSync(join(rootOf(roots), entry.id), { recursive: true })
+  return entry
 }
 
 function removeApp({ roots, appId }) {
@@ -117,4 +148,4 @@ function restoreSpec({ roots, appId, backupName }) {
   return spec
 }
 
-module.exports = { listApps, upsertApp, removeApp, readSpec, writeSpec, setAppEnabled, listBackups, restoreSpec, BACKUP_RE }
+module.exports = { listApps, upsertApp, removeApp, readSpec, writeSpec, setAppEnabled, listBackups, restoreSpec, BACKUP_RE, REQUIREMENT_MAX_CHARS }
