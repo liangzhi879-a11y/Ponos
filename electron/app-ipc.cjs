@@ -266,7 +266,9 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     // target 用 let：web 目标会先做网址归一（kimi.com → https://kimi.com/）再往下走
     let { target } = payload
     // sessionId（chat 会话）**刻意不解构**：登录态按站点/应用复用，跨会话共享（见 app-session-key.cjs）
-    const { appId, maxRounds } = payload
+    // 用户需求（M1）：界面里填的「这个应用要能做什么」，作为**覆盖度硬约束**交给模型。
+    // 只透传、不解释——是不是有效需求由 app-agent 归一化（无需求时提示词与改动前逐字一致）。
+    const { appId, maxRounds, requirement } = payload
     const t0 = Date.now()
     const done = (extra) => ({ elapsedMs: Date.now() - t0, ...extra })
     if (!target || (target.type !== 'web' && target.type !== 'desktop')) {
@@ -659,6 +661,9 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
 
     const agent = await appAgent.runAgentLoop({
       target, driver, probeMode, probeMaterial, seedSummary,
+      // ★ 需求必须从这里往上跳（M1）：漏传 = 用户写的「要能导出全部订单」根本到不了模型手里，
+      //   生成出来的命令只能靠模型对着素材猜覆盖度。
+      requirement,
       callLlm, runTool,
       // ★ 草稿校验要用**本次探测出来的 driver**当尺子，不能交给 validateSpecBasic 只凭 target.type 去猜：
       //   target.type='desktop' 猜出来的是 uia（最保守兜底），于是 process 应用写出的 cli 步骤被判

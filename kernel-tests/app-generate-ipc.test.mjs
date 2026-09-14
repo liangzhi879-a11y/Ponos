@@ -920,3 +920,34 @@ test('inferDriver 复用 driverOf：校验放行的 driver（含历史别名 web
   // 非法值不得原样漏给执行器（必须归一到执行器认识的驱动）
   assert.ok(DRIVERS.includes(inferDriver({ driver: 'launchMissiles', target: { type: 'web' } })))
 })
+
+// ---------- M1：需求透传到提示词 ----------
+// 真实故障背景：001 只生成 4 条命令的根因之一是——应用名称/描述/用户需求一条都没进生成链路
+// （提示词里只有 `目标：{"type":"web","url":"…"}`）。Task 1 让需求进了 app-agent 的提示词，
+// 本组用例守住**上游这一跳**：IPC 入口收到的 requirement 必须原样交给 runAgentLoop，不许被丢掉。
+test('app:generate：requirement 透传到模型 system prompt', async () => {
+  let seen = null
+  // 夹具的既有注入方式：setup({ llm }) → deps.callLlm（见文件开头的 setup）
+  const t = setup({ llm: async (args) => { seen = args; return { ok: true, text: SPEC_TEXT, error: null, chars: SPEC_TEXT.length } } })
+  const r = await t.invoke('app:generate', {
+    target: { type: 'web', url: 'https://www.yfljsj.com/' },
+    appId: 'r1', sessionId: 's1',
+    requirement: '导出全部订单，并支持按日期筛选',
+  })
+  assert.ok(seen, '模型必须被调用')
+  assert.ok(String(seen.system).includes('导出全部订单'), `需求要进 system：${seen.system?.slice(0, 200)}`)
+  assert.ok(String(seen.system).includes('覆盖度硬约束'), `需求须声明为覆盖度硬约束：${seen.system?.slice(0, 200)}`)
+  assert.ok(r.ok, `生成应成功，实际：${r.error || ''}`)
+})
+
+test('app:generate：不传 requirement 时模型看到的 system 与传空数组一致（无回归）', async () => {
+  let a = null
+  const t1 = setup({ llm: async (args) => { a = args; return { ok: true, text: SPEC_TEXT, error: null, chars: SPEC_TEXT.length } } })
+  await t1.invoke('app:generate', { target: { type: 'web', url: 'https://e.com/' }, appId: 'r2', sessionId: 's1' })
+  let b = null
+  const t2 = setup({ llm: async (args) => { b = args; return { ok: true, text: SPEC_TEXT, error: null, chars: SPEC_TEXT.length } } })
+  await t2.invoke('app:generate', { target: { type: 'web', url: 'https://e.com/' }, appId: 'r3', sessionId: 's1', requirement: [] })
+  assert.ok(a && b, '两次都要真的调用模型')
+  assert.equal(a.system, b.system)
+  assert.ok(!String(a.system).includes('用户需求'), '没需求时不得出现需求段（老应用重生成行为逐字不变）')
+})
