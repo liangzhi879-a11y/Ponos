@@ -95,6 +95,9 @@ export function createLoopController({ wire, engine, store = null, configDir = '
     emit('start', {
       index: 0, total: state.count, until: String(opts.until || ''), fresh: state.fresh,
       goal: state.goal, everyMs: state.everyMs, budget: state.budget,
+      // prompt 必须回传：GUI 排程卡发的是 `/loop --every 5m <任务>`（无 --goal），
+      // 若只回传 goal，前端面板/胶囊的"目标"行会空白（看起来像没生效）。
+      prompt: state.prompt,
       doneWhen: state.doneWhen.map((d) => d.run || d.text),
     })
     return state
@@ -313,7 +316,7 @@ export function createLoopController({ wire, engine, store = null, configDir = '
       if (Number(parsed?.version) !== SCHEMA_VERSION) return false
       if (TERMINAL.has(String(parsed?.status))) return false // 已终结不重启
       state = { ...freshState(), ...parsed, budget: { ...freshState().budget, ...(parsed.budget || {}) }, noProgress: { ...freshState().noProgress, ...(parsed.noProgress || {}) } }
-      emit('start', { index: state.index, total: state.count, until: '', fresh: state.fresh, goal: state.goal, everyMs: state.everyMs, budget: state.budget, resumed: true })
+      emit('start', { index: state.index, total: state.count, until: state.until || '', fresh: state.fresh, goal: state.goal, everyMs: state.everyMs, budget: state.budget, prompt: state.prompt, resumed: true })
       return true
     } catch { return false }
   }

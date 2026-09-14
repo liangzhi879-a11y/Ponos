@@ -45,6 +45,20 @@ test('start → running + 持久化 + wire start 帧', async () => {
   } finally { env.cleanup() }
 })
 
+// GUI 排程卡走 `/loop --every 5m <任务>`（无 --goal）→ 面板"目标"行需回落显示任务文本，
+// 否则 start 帧只带 goal、前端看不到任何目标，表现为"UI 没变化/面板没内容"。
+test('start 帧回传 prompt（间隔式无 --goal 时前端仍能显示目标）', async () => {
+  const env = makeEnv()
+  try {
+    env.controller.start({ count: null, everyMs: 300_000, prompt: '检查磁盘' })
+    const start = env.events.find((e) => e.state === 'start')
+    assert.ok(start, '应发 start 帧')
+    assert.equal(start.prompt, '检查磁盘')
+    assert.equal(start.goal, '', '未给 --goal 时 goal 为空，依赖 prompt 回落')
+    assert.equal(start.everyMs, 300_000)
+  } finally { env.cleanup() }
+})
+
 test('次数耗尽 → completed 且 stop', async () => {
   const env = makeEnv()
   try {

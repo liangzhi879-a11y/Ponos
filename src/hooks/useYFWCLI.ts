@@ -5,6 +5,14 @@
  */
 
 import { useState, useCallback, useEffect } from 'react'
+
+/**
+ * 最近一次的"知识空间已改动"版本号（2026-09-14 批次 4）。
+ * 单调递增，用于丢弃乱序到达的旧批次 —— WebSocket 不保证顺序，抖动下后发先至是可能的，
+ * 而"退回到旧批次"对失效语义无害（都只是清缓存），但会让 revision 比较逻辑失效
+ * （旧批次反而更新 lastKnowledgeRevision，之后真的新批次被当成旧的丢掉）。
+ */
+let lastKnowledgeRevision = 0
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -17,6 +25,8 @@ import { useAgentStore } from '@/stores/agentStore'
 import { useHealthStore, type HealthInfo } from '@/stores/healthStore'
 import { useWarningStore } from '@/stores/warningStore'
 import { normalizeWarning } from '@/lib/warningUi'
+// 知识空间外部改动 → 失效知识库缓存（2026-09-14 批次 4，见 knowledge_changed 处注释）
+import { invalidateKnowledge } from '@/hooks/useKnowledge'
 import { makeLaneNote } from '@/lib/laneUi'
 import { staleCompactionSids, COMPACT_INDICATOR_MAX_MS } from '@/lib/compactIndicator'
 import { createHeavyModeGate, nextFlushDelay } from '@/lib/streamPressure'
@@ -1121,7 +1131,7 @@ function handleMessage(msg: Record<string, unknown>) {
           // 新 loop 起跑：清掉上一 loop 残留的终结/判定/计量文案，避免跨 loop 串扰
           reason: undefined,
           judgeReason: undefined,
-          goal: typeof d.goal === 'string' && d.goal ? d.goal : undefined,
+          goal: (typeof d.goal === 'string' && d.goal ? d.goal : typeof d.prompt === 'string' ? d.prompt : '') || undefined, // 间隔式无 --goal → 回落任务文本
           everyMs: typeof d.everyMs === 'number' ? d.everyMs : undefined,
           status: 'running',
           costUsd: 0,
@@ -1422,6 +1432,28 @@ function handleMessage(msg: Record<string, unknown>) {
       })
       .catch(() => { /* 拉取失败静默：下次打开设置页仍会全量刷新 */ })
     void d
+    return
+  }
+
+  if (msg.type === 'knowledge_changed') {
+    // 知识空间被外部改动（2026-09-14 批次 4）：bridge 用 fs.watch 盯着 `spaces/`，
+    // 用户在 Obsidian / VSCode / 记事本里改了 md（甚至只是新建了一个文件）都会到这里。
+    // 处理就是**全量失效知识库缓存**：下次读取自然重取 —— 因为没有监听时，用户在外面改完
+    // 回到窗口看到的仍是旧内容、旧目录树、旧反链，且没有任何提示说"你看到的是过期的"，
+    // 他会以为修改没保存、或以为应用把它覆盖了，两种判断都会让人不敢再用。
+    //
+    // 失效是**幂等且廉价**的（只清缓存键，不立刻发请求）；真正的取数由仍挂载的视图触发，
+    // 没打开的视图自然不取 —— 这也是这里敢无脑全量失效的原因。
+    const d = msg.data as { revision?: number; paths?: string[] } | undefined
+    // 批次内的 revision 单调递增：乱序到达时丢弃旧批次（网络抖动下后发先至是可能的）
+    if (typeof d?.revision === 'number') {
+      if (d.revision <= lastKnowledgeRevision) return
+      lastKnowledgeRevision = d.revision
+    }
+    // ⚠️ 必须显式传**空串**前缀：`invalidateKnowledge` 的签名是 `prefix: string`，实现是
+    // `key.startsWith(prefix)` —— 漏传参数会变成 `startsWith(undefined)`，**一条键都不匹配**，
+    // 整个监听功能就成了"看起来很努力但什么都没做"（而且不报错）。
+    invalidateKnowledge('')
     return
   }
 
