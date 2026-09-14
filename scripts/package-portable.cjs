@@ -100,6 +100,11 @@ cpDir(path.join(ROOT, 'dist'), path.join(RELEASE, 'dist'))
 cpDir(path.join(ROOT, 'electron'), path.join(RELEASE, 'electron'))
 cpDir(path.join(ROOT, 'server'), path.join(RELEASE, 'server'))
 cpDir(path.join(ROOT, 'public'), path.join(RELEASE, 'public'))
+// shared/：内核与桥共用的模块（knowledge-pack/knowledge-core/pack-zip）。
+// 2026-09-14 实况：这份复制清单漏了它，而 server/knowledge-routes.mjs 静态 import
+// '../shared/knowledge-pack.mjs' ⇒ 打包产物里 bridge 在模块求值阶段就 ERR_MODULE_NOT_FOUND，
+// 端口从未打开，应用只报「桥接服务器无法在端口 51517 上启动」（把根因指向 WinNAT，误导）。
+cpDir(path.join(ROOT, 'shared'), path.join(RELEASE, 'shared'))
 
 // ── Copy built-in agent/memory/tools templates ──────────────────────────
 // 对齐 electron-builder extraResources `to: runtime/agents|memory|tools`

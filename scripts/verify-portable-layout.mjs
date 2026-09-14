@@ -5,9 +5,11 @@ import { join } from 'node:path'
 const ROOT = process.cwd()
 const R = join(ROOT, 'release', 'YFWorking')
 
+// shared/ 必列：桥在模块求值期静态 import ../shared/*.mjs，缺了它是启动即失败
+// 而非运行期降级（2026-09-14 便携包漏拷 shared/ ⇒ bridge ERR_MODULE_NOT_FOUND）。
 const requiredDir = ['dist', 'electron', 'server', 'public', 'pet', 'pet/assets',
   'runtime/python', 'runtime/skills', 'runtime/agents', 'runtime/memory', 'runtime/tools',
-  'kernel', 'node_modules/electron']
+  'kernel', 'shared', 'node_modules/electron']
 const requiredFile = ['node.exe', 'YFWorking.vbs', 'YFWorking-debug.bat',
   'electron/electron.exe', 'electron/main.cjs', 'kernel/cli.mjs',
   'runtime/python/python.exe', 'public/icon.ico', 'public/icon.png', 'public/logo.png']
