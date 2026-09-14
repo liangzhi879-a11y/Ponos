@@ -27,8 +27,13 @@ const VERIFY_MAX_READS = 3
  * 于是给模型下发了网页用的 act 清单（goto/snapshot），而校验侧按 target.type==='desktop' 收窄到
  * cli/script/... → 同一份 Spec 一边被要求写 goto/snapshot、一边被判非法，本地应用**从设计上就生成不出来**。
  * 现在提示词、校验、试跑派发、漂移修复一律调用本表的函数，禁止各自判定。
+ *
+ * M3 新增 http / file 两个**执行后端**（语义仍是"谁来执行"）：
+ *   http → 主进程直调接口（electron/app-runner-http.cjs）
+ *   file → 主进程只读本地文件（electron/app-runner-file.cjs）
+ * 通道（channel）是发现阶段的归类，与 driver 多对一（见 app-capability.cjs 的 CHANNELS）。
  */
-const DRIVERS = ['browser', 'process', 'script', 'uia']
+const DRIVERS = ['browser', 'process', 'script', 'uia', 'http', 'file']
 
 /**
  * 每个驱动允许的 steps.act —— 与**执行器真实能力**一一对应（多一个都会在运行期炸）：
@@ -42,6 +47,10 @@ const ACTS_BY_DRIVER = {
   process: ['cli'],
   script: ['script'],
   uia: ['focus', 'type', 'key', 'wait'],
+  // M3：接口直调。字段面见 HTTP_CONTRACT；**不发 Cookie**——需要登录态的接口用 browser + js。
+  http: ['request'],
+  // M3：本地文件。**只读**（read / query），不提供 write（用户拍板：file 只读）。
+  file: ['read', 'query'],
 }
 
 /** 历史别名：'web' 曾用来指浏览器；'desktop' 曾被当成 driver 值（本次矛盾的元凶） */
@@ -77,8 +86,18 @@ function actsFor(driver) {
   return ACTS_BY_DRIVER[normalizeDriver(driver)] || []
 }
 
-/** 字段契约表：浏览器一份、桌面一份（type/wait 两侧语义不同，不能混） */
-const tableFor = (driver) => (normalizeDriver(driver) === 'browser' ? WEB_CONTRACT : DESKTOP_CONTRACT)
+/**
+ * 契约表分发：浏览器一份、桌面一份、http 一份、file 一份。
+ *
+ * ★ 为什么 http/file 不能并进 DESKTOP_CONTRACT：字段面完全不同（request 要 method/url/query/body，
+ *   cli 要 argv），并表会让 required/anyOf 互相污染；而这两张老表已被大量既有 Spec 与测试锁定，
+ *   并表等于改既有语义。契约表同时驱动「提示词」与「校验」，同表才能保证两处逐字一致。
+ * ★ 为什么仍然保留"未知驱动 → DESKTOP_CONTRACT"的回退：老调用方/老 Spec 的容错行为不变，
+ *   驱动合法性由 validateSpecBasic 单独点名（那里才是该报错的地方）。
+ * ★ CONTRACT_BY_DRIVER 的声明必须放在 WEB_CONTRACT / DESKTOP_CONTRACT **之后**（对象字面量在模块加载期就取值，
+ *   提前声明会撞 const 的 TDZ）；本函数是调用期取数，所以函数体可以放在前面。
+ */
+const tableFor = (driver) => CONTRACT_BY_DRIVER[normalizeDriver(driver)] || DESKTOP_CONTRACT
 
 /** 顶层结构契约（提示词与修复提示词共用的唯一一句话） */
 const SPEC_SHAPE_LINE = '结构要求：{"specVersion":1,"appId":"...","name":"...","desc":"...","target":{...},"expose":{"mode":"console"},"commands":[...]}。specVersion、appId、name、target、commands 五项缺一不可。'
@@ -124,6 +143,53 @@ const DESKTOP_CONTRACT = {
   type: { required: ['value'], note: '向当前焦点窗口输入文本' },
   key: { required: ['value'], note: '如 "^s"、"Enter"' },
   wait: { anyOf: [['ms', 'ref']] },
+}
+
+/**
+ * M3：http 驱动（接口直调）的字段契约。
+ * 字段语义（与 electron/app-runner-http.cjs 一一对应）：
+ *   url（必填，http/https）· method（默认 GET）· headers（自定义头；cookie/authorization 会被丢弃）
+ *   query（查询参数对象，值支持 ${参数名} 插值）· body（JSON 对象，仅非 GET 时发送）
+ *   save（保存键名）· timeout（毫秒，默认 20000）
+ * ★ 为什么不给"带登录态"的能力：http 脱离浏览器就拿到不 cookie；需要登录态的接口必须用
+ *   browser + js（自带会话）。这条取舍写进提示词，避免模型写出注定 401 的命令。
+ */
+const HTTP_CONTRACT = {
+  request: {
+    required: ['url'],
+    optional: ['method', 'headers', 'query', 'body', 'save', 'timeout'],
+    note: 'url 必须是 http/https，且主机在允许范围内（target 同源，或在 spec.http.allowHosts 里显式加白）；'
+      + 'method 默认 GET；query 为查询参数对象；body 为 JSON 对象（method 非 GET 时才发送）；'
+      + '**禁止写 Cookie / Authorization 头**（会被丢弃）；需要登录态的接口请改用 browser + js',
+  },
+}
+
+/**
+ * M3：file 驱动（本地文件）的字段契约。**只读**——不提供 write。
+ * 字段语义（与 electron/app-runner-file.cjs 一一对应）：
+ *   path（必填，必须在"目标程序目录或其用户数据目录"之内）· format（json|text|csv|ini，默认 text）
+ *   select（query 步骤的极简选择器：点分路径 + [*] 数组展开，如 $.frames[*].name）· save（保存键名）
+ */
+const FILE_CONTRACT = {
+  read: {
+    required: ['path'],
+    optional: ['format', 'save'],
+    note: '只读：path 必须在目标程序目录或其用户数据目录之内（越界会被守卫拒绝）；format 默认 text；json 会自动解析',
+  },
+  query: {
+    required: ['path', 'select'],
+    optional: ['format', 'save'],
+    note: '只读：select 用极简选择器（点分路径 + [*] 数组展开，如 $.frames[*].name），适合只取需要的字段',
+  },
+}
+
+const CONTRACT_BY_DRIVER = {
+  browser: WEB_CONTRACT,
+  process: DESKTOP_CONTRACT,
+  script: DESKTOP_CONTRACT,
+  uia: DESKTOP_CONTRACT,
+  http: HTTP_CONTRACT,
+  file: FILE_CONTRACT,
 }
 
 const ACT_CONTRACT = { web: WEB_CONTRACT, desktop: DESKTOP_CONTRACT }
@@ -530,7 +596,7 @@ async function verifySpec({ spec, runCommand, sessionId, maxReads = VERIFY_MAX_R
 module.exports = {
   buildPrompt, extractSpec, generateSpec, verifySpec, validateSpecBasic, validateStepFields, snapshotForPrompt,
   MAX_ROUNDS, VERIFY_MAX_READS, SNAPSHOT_CHAR_CAP, SYSTEM_RULES, WEB_ONLY_RULES, systemRulesFor, NO_PROBE_RULES, WEB_ACTS, DESKTOP_ACTS,
-  ACT_CONTRACT, WEB_CONTRACT, DESKTOP_CONTRACT, contractFor, actContractLines,
+  ACT_CONTRACT, WEB_CONTRACT, DESKTOP_CONTRACT, HTTP_CONTRACT, FILE_CONTRACT, CONTRACT_BY_DRIVER, contractFor, actContractLines,
   DRIVERS, ACTS_BY_DRIVER, LEGACY_DRIVER_VALUES, normalizeDriver, driverFromTarget, driverOf, actsFor, tableFor,
   driverRulesLine, SPEC_SHAPE_LINE,
 }
