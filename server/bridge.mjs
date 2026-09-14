@@ -858,6 +858,20 @@ function buildChildEnv() {
     ...process.env,
     CLAUDE_CONFIG_DIR: YFW_HOME,
     YFWORKING_HOME: YFW_HOME,
+    // S6：**同一根的第二把钥匙**，专供 agent 的 Bash 子进程。
+    //
+    // 背景：内核 CLI（`resolveConfigDir`）的解析顺序是
+    // `CLAUDE_CONFIG_DIR > PONOS_HOME > ~/.ponos` —— **不认 `YFWORKING_HOME`**。
+    // 而 Bash 工具的 `childEnv()` 有安全白名单（S2-2，防子进程窃取宿主密钥），
+    // 只透传 PATH/HOME 等系统变量，**`CLAUDE_CONFIG_DIR` 被刻意剥离**，
+    // 于是 agent 在 Bash 里跑 `--knowledge append` 会退到 `~/.ponos`（**另一个根**）——
+    // 写进去的经验 GUI 完全看不见，从"路径受阻"变成"写进黑洞"。
+    //
+    // 解法不是把 `CLAUDE_CONFIG_DIR` 加进白名单（那是密钥目录名，放开等于削弱原防护），
+    // 而是额外注入语义中性的 `PONOS_HOME`：内核 CLI 认可它，但它的名字不指向密钥，
+    // 白名单放行它的代价仅是"暴露一个目录路径"，而 HOME 本就在白名单里、`.yfw` 也可猜。
+    // 这样两条路都能解析到同一个根：内核子进程走 CLAUDE_CONFIG_DIR，Bash 子进程走 PONOS_HOME。
+    PONOS_HOME: YFW_HOME,
   }
   // 内核 OCR/Vision 工具经 YFWORKING_PYTHON 使用 bundled python：
   // 安装器只把 skills/agents/memory/tools 同步到用户目录，python（数百 MB）

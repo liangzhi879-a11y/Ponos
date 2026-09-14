@@ -344,6 +344,10 @@ export async function handleKnowledgeRoute({
       return ok((await callJson(callKernel, args)).value)
     }
     if (!isPost && p === '/knowledge/stats') return ok((await callJson(callKernel, ['--knowledge', 'stats'])).value)
+    // S6：标签枚举（`{tags:[{tag,count,single,theme}],total,singleCount}`）。
+    // 用途是**写前先查**——优先复用已有标签，避免每次造新单例标签（孤立条目的主源）。
+    // 与其它 GET 一样是薄转发：枚举口径只在内核写一份，server 不自己扫盘。
+    if (!isPost && p === '/knowledge/tags') return ok((await callJson(callKernel, ['--knowledge', 'tags'])).value)
     // 检索：URL 用 `?q=`（避免与内核 flag `--query` 混淆），转发时映射为 `--query`；
     // `spaces` 只取首个（内核 `--space` 是单数，多空间过滤留给 S2 前端逐次请求）。
     if (!isPost && p === '/knowledge/search') {
@@ -359,6 +363,37 @@ export async function handleKnowledgeRoute({
     }
     if (isPost && p === '/knowledge/reindex') return ok((await callJson(callKernel, ['--knowledge', 'reindex', '--force'])).value)
     if (isPost && p === '/knowledge/doc') return await handleWriteDoc({ readJsonBody, callKernel })
+    // S6：append-only 写入通道（`{tag?, text, theme?}`）。与 `/knowledge/doc` 的关键差别：
+    // 那条是**整体覆盖**（GUI 编辑器语义，需四道路径防护）；这条**只追加一条经验**，
+    // 结构上没有覆盖/删除路径 —— 故不需要 `space.writable` 与路径校验那一套（没有"路径"参数，
+    // theme 是枚举名、由内核映射文件名），这也正是它比放开 Write 工具更安全的原因。
+    // 校验（协议文本/空模板/过短/标签与主题合法性/幂等去重）**全在内核一份**，
+    // 这里只做"必填字段"与状态码映射，不复制判据（两套口径必然漂移）。
+    if (isPost && p === '/knowledge/append') {
+      const body = (await readJsonBody()) || {}
+      const text = String(body.text ?? '')
+      if (!text.trim()) return { status: 400, body: { error: 'text 必填（经验正文）' } }
+      const args = ['--knowledge', 'append', '--text', text]
+      if (body.tag != null && String(body.tag)) args.push('--tag', String(body.tag))
+      if (body.theme != null && String(body.theme)) args.push('--theme', String(body.theme))
+      let r
+      try {
+        r = await callJson(callKernel, args)
+      } catch (e) {
+        // 内核以**退出码 1 + stderr `[knowledge] <code>: <message>`** 表达"闸门拒绝"
+        //（见 kernel/cli.mjs 的 --knowledge 分支）。kernelReadonly 遇非零退出即 reject 并
+        // **丢弃 stdout**，故这里从 stderr 前缀识别，映射成 400（客户端内容不合规），
+        // 而不是让它冒泡成 500 —— 调用方必须能区分"我的内容被拒了"与"内核崩了"。
+        // 非该前缀的失败（超时/崩溃/非 JSON）原样抛出 → 外层 500/502，不误标为 400。
+        const msg = String(e?.message || '')
+        if (!msg.startsWith('[knowledge] ')) throw e
+        return { status: 400, body: { error: msg.slice('[knowledge] '.length) } }
+      }
+      // 双保险：若内核将来改为"exit 0 + 错误体"，这里同样映射 400（message 原样带上）。
+      if (r.error) return { status: 400, body: { error: r.error } }
+      if (r.value && r.value.error) return { status: 400, body: r.value }
+      return ok(r.value)
+    }
 
     // ── 知识包生态（S4）：市场列表 / 详情 / 安装 / 卸载 / 导出 ──────────────
     // 纯新增路径，且**只有**这里消费 home/fetcher/config/appVersion 四个新注入点，

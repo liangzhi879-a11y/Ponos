@@ -152,8 +152,18 @@ export function parseDocFile({ absPath, space, relPath }) {
 }
 
 // ── 索引（Task 6）─────────────────────────────────────────────────────────
-/** 单文档最多索引的块数（护栏：防单文件把索引撑爆） */
-const MAX_BLOCKS_PER_DOC = 200
+/**
+ * 单文档最多索引的块数（护栏：防单文件把索引撑爆）。
+ *
+ * ⚠️ 数值来自真实库实测，不是随手取的。S6 合并历史经验库后 `experience/workflow.md`
+ * 有 **239** 条条目，而原值 200 让 `slice(0, 200)` 把**尾部 ~48 条静默丢掉** ——
+ * 那些条目仍在文件里（Read 看得见），却不在索引中：检索不到、没有关联边、图谱里不存在。
+ * 这是最难排查的一类分裂（"文件有、知识库没有"）。实测：文件 302 条 / 索引 254 条。
+ *
+ * 故提到 2000（对当前单文件最大 239 留 ~8× 余量），并且**截断必须出声**（见 `capBlocks`）——
+ * 护栏可以存在，但静默丢数据不行。
+ */
+const MAX_BLOCKS_PER_DOC = 2000
 const PRUNE_MIN_DOCS = 50      // 少于 50 篇不做高频剪枝（小库剪枝会误伤）
 const PRUNE_DF_RATIO = 0.5     // 出现在超半数文档里的 gram 近似停用词
 /** 检索耗时采样窗口（环形缓冲上限）：100 次足够看 P95，也不会无界增长 */
@@ -241,6 +251,21 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
   // （buildRelations / relateIncremental）里被重置并累加 —— 读时校验剔除**绝不**计入，
   // 否则同一库的 stats 会随查询历史漂移（spec §7.2，不可复现 = 指标失效）。
   let relDropped = { noShared: 0, missingEnd: 0, capped: 0 }
+  // 块上限截断计数（S6）：护栏触发的**可观测**留痕。原先 `slice(0, MAX_BLOCKS_PER_DOC)`
+  // 静默丢尾部 ⇒ "文件里有、知识库没有"无迹可循（实测：合并后文件 302 条 / 索引 254 条）。
+  // 只统计**本次建/更新索引**期间的截断，随 scanAll / updateDoc 重置，语义同 relDropped。
+  let blockCaps = { docs: 0, droppedBlocks: 0, docIds: [] }
+  // 截断块并**出声**：护栏可以存在，静默丢数据不行。
+  const capBlocks = (doc) => {
+    if (!doc || !Array.isArray(doc.blocks) || doc.blocks.length <= MAX_BLOCKS_PER_DOC) return doc
+    const dropped = doc.blocks.length - MAX_BLOCKS_PER_DOC
+    blockCaps.docs += 1
+    blockCaps.droppedBlocks += dropped
+    blockCaps.docIds.push(doc.id)
+    console.warn(`[knowledge] ${doc.id}: 块数 ${doc.blocks.length} 超上限 ${MAX_BLOCKS_PER_DOC}，尾部 ${dropped} 块**未索引**（文件里仍在，但检索/关联/图谱都看不到）`)
+    doc.blocks = doc.blocks.slice(0, MAX_BLOCKS_PER_DOC)
+    return doc
+  }
   // docs 的"代数"：docs 被整体替换（buildIndex / loadIndexFromDisk）或**原地改写**
   // （updateDoc 的 `docs[i] = 新doc`）时自增。读路径的缓存（块表 / 标题表）以此作键 ——
   // 不能用 `docs` 数组引用：updateDoc 原地改，引用不变，按引用缓存会取到已被替换的旧块，
@@ -252,14 +277,13 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
   const file = (name) => join(idxDir, name)
 
   function scanAll() {
+    blockCaps = { docs: 0, droppedBlocks: 0, docIds: [] }
     const acc = { docs: [], links: [] }
     for (const space of spaces) {
       for (const { absPath, relPath } of walkMd(space.root)) {
         try {
           const parsed = parseDocFile({ absPath, space, relPath })
-          if (parsed.doc.blocks.length > MAX_BLOCKS_PER_DOC) {
-            parsed.doc.blocks = parsed.doc.blocks.slice(0, MAX_BLOCKS_PER_DOC)
-          }
+          capBlocks(parsed.doc)
           acc.docs.push(parsed.doc)
           acc.links.push(...parsed.links)
         } catch { /* 单文档解析失败：跳过，不拖垮整库 */ }
@@ -1103,9 +1127,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     const space = spaces.find((s) => s.id === doc.spaceId)
     let parsed
     try { parsed = parseDocFile({ absPath: abs, space, relPath: doc.rel }) } catch { return { updated: false, reason: 'parse-error' } }
-    if (parsed.doc.blocks.length > MAX_BLOCKS_PER_DOC) {
-      parsed.doc.blocks = parsed.doc.blocks.slice(0, MAX_BLOCKS_PER_DOC)
-    }
+    capBlocks(parsed.doc)
     docs[i] = parsed.doc
     docsGen += 1 // 原地替换也算新代数（见 docsGen 声明处的 why）
 
@@ -1244,10 +1266,17 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     return { nodes, edges, level: 'entry', truncated: pool.length > chosen.length }
   }
 
-  function getGraph({ space = null, limit = 200, related = false, level = 'doc' } = {}) {
+  function getGraph({ space = null, limit = null, related = false, level = 'doc' } = {}) {
     // S5.1：层级开关。`entry` 走条目级图；`doc`（缺省）行为与 S2/S5 完全一致。
-    if (level === 'entry') return getEntryGraph({ space, limit })
+    //
+    // ⚠️ 两个层级要**各自**的缺省上限（S6 修）：
+    // 原先签名是 `limit = 200`，条目级也吃到这个 200 —— 而条目池随经验库增长（S6 合并后 254 条），
+    // 于是条目图被截到 200 节点，且 `chosen = pool.slice(0, limit)` 是**从头截**，
+    // 恰好吃掉排在后段的文档尾部（= 刚合并进来的那批经验）⇒ "合并了却看不见"。
+    // 文档级上限 200 依然合适（spaces 只有几十篇文档），故只在条目级放宽到 1000。
+    if (level === 'entry') return getEntryGraph({ space, limit: limit ?? 1000 })
     const pool = space ? docs.filter((d) => d.spaceId === space) : docs
+    limit = limit ?? 200
     const ids = new Set(pool.map((d) => d.id))
     const nodes = pool.slice(0, limit).map((d) => ({ id: d.id, label: d.title, spaceId: d.spaceId, kind: 'doc' }))
     const edges = []
@@ -1320,6 +1349,9 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
         search: { count: sorted.length, elapsedP50: pct(sorted, 0.5), elapsedP95: pct(sorted, 0.95) },
         // off 模式恒为全 0（relEdges 为空）：字段形状保持稳定，消费方不必分支
         related: { ...rc, dropped: relDropped.noShared + relDropped.missingEnd + relDropped.capped },
+        // S6：块上限护栏的留痕。`docs > 0` 表示**有文档的尾部块没进索引**（文件里仍在，
+        // 但检索/关联/图谱都看不到）—— 这是必须被看见的信号，不是内部细节。
+        blocksTruncated: { docs: blockCaps.docs, droppedBlocks: blockCaps.droppedBlocks, docIds: [...blockCaps.docIds] },
       }
     },
   }
