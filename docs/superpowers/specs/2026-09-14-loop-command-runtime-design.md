@@ -403,3 +403,21 @@ GUI `LoopStatusBar` 的 `REASON_KEY`（`LoopStatusBar.tsx:12-15`）需补新值�
   浏览器层交互建议后续纳入 Electron 冒烟。
 - 本次提交 `d9ecab1` 因 `kernel/cli.mjs`、`server/bridge.mjs` 上并存其他在途任务（知识库回收站）
   的未提交改动，整文件提交一并定型（已在该 commit message 中注明）。
+
+### C.4 二次审查补充修复（--resume 断点续跑，2026-09-14）
+
+**缺陷**：cli 启动时 `if (args.resume) { loop.load() }` —— `load()` 仅还原控制面状态
+（`status='running'`、`index=N`）而**不投递下一轮**。而控制器的 `onTurnEnd` 只在轮末被调用，
+故恢复后 loop 静默停住：用户看到"已恢复"却再无任何轮次推进，⑤「状态持久化 + 断点续跑」
+实际形同虚设。
+
+**修复**：
+1. `kernel/cli.mjs`：`load()` 成功后，若 `status === 'running'` 则补投递下一轮载荷
+   （`setImmediate` 推迟到 signal/rl 接线完成之后，规避启动期竞态与 TDZ）；
+   仅 `running` 自动续跑，`paused`/`awaiting_approval` 仍等用户 `resume`/`approve`。
+2. `kernel/loop.mjs`：`until` 纳入 `freshState()`/`start()` → 参与落盘，否则 `--resume` 后
+   `--until` 停止条件丢失（退化为按次数/预算收尾）。
+
+**反证**（确认回归测试有牙齿）：临时回退为原始 `loop.load()`，事件序列变为
+`system:crash_recovered → system:init → loop:start`（有 start、**无任何 iter**），
+断言 `恢复后应续跑下一轮` 如期失败；恢复修复后 7/7 通过。

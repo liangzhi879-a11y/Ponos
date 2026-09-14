@@ -26,9 +26,11 @@ const FMT = ['--print', '--output-format', 'stream-json', '--input-format', 'str
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-function makeKernel(extraEnv = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'ponos-loope2e-'))
-  const home = join(dir, 'home')
+function makeKernel(extraEnv = {}, opts = {}) {
+  // opts.dir/home 供 --resume 用例复用同一 home（两次 spawn 读同一份落盘 loop 状态）；
+  // 共享时 keepDir 跳过 rmSync，由调用方统一清理。
+  const dir = opts.dir || mkdtempSync(join(tmpdir(), 'ponos-loope2e-'))
+  const home = opts.home || join(dir, 'home')
   const env = {
     ...process.env,
     PONOS_MOCK_API: '1',
@@ -40,7 +42,7 @@ function makeKernel(extraEnv = {}) {
     PONOS_MOCK_WRITE_DIR: dir,
     ...extraEnv,
   }
-  const proc = spawn(process.execPath, [KERNEL_CLI, ...FMT, '--dangerously-skip-permissions', '--add-dir', dir], {
+  const proc = spawn(process.execPath, [KERNEL_CLI, ...FMT, '--dangerously-skip-permissions', '--add-dir', dir, ...(opts.extraArgs || [])], {
     env, stdio: ['pipe', 'pipe', 'pipe'],
   })
   const events = []
@@ -70,11 +72,14 @@ function makeKernel(extraEnv = {}) {
   return {
     proc, events, send, waitFor, dir,
     diag: () => `events=${JSON.stringify(events.map((e) => `${e.type}${e.state ? ':' + e.state : ''}${e.subtype ? ':' + e.subtype : ''}`))}\nstderr=${stderr.join('').slice(-1500)}`,
+    // 模拟崩溃：直接 kill，不等优雅退出（resume 用例需保留未终结的落盘状态）
+    crash: () => { try { proc.kill('SIGKILL') } catch { /* 已退出 */ } },
     cleanup: async () => {
       try { proc.stdin.end() } catch { /* 已关闭 */ }
       await Promise.race([once(proc, 'close'), sleep(2000)])
       try { proc.kill() } catch { /* 已退出 */ }
       await sleep(50)
+      if (opts.keepDir) return
       try { rmSync(dir, { recursive: true, force: true }) } catch { /* Windows 句柄释放竞态：目录残留不影响断言 */ }
     },
   }
@@ -189,4 +194,39 @@ test('--every 间隔期间 stop → 不得再投递下一轮（停止后不再�
     const iters = k.events.filter((e) => e.type === 'loop' && e.state === 'iter')
     assert.equal(iters.length, 1, `停止后不得推进轮次，实际 iter=${iters.length}；${k.diag()}`)
   } finally { await k.cleanup() }
+})
+
+// 回归：--resume 断点续跑。
+// 修复前：cli 只在启动时调 loop.load()（还原 status='running'、index=1）而**不投递**
+// 下一轮 —— onTurnEnd 仅在轮末被调用，故恢复后静默停住，"断点续跑"形同虚设。
+test('--resume 恢复未终结 loop 并继续推进（断点续跑）', async () => {
+  const shared = mkdtempSync(join(tmpdir(), 'ponos-loopresume-'))
+  const k1 = makeKernel({}, { dir: shared, home: join(shared, 'home'), keepDir: true })
+  try {
+    const init = await k1.waitFor((e) => e.type === 'system' && e.subtype === 'init')
+    assert.ok(init, `轮 1 应发 init；${k1.diag()}`)
+    const sid = init.session_id
+    assert.ok(sid, 'init 应带 session_id（--resume 需复用它）')
+
+    // everyMs 取大值：第 1 轮后进入长等待窗口，便于在"未终结"状态下杀掉进程
+    k1.send({ type: 'user', message: { role: 'user', content: '巡检' }, loop: { count: 3, everyMs: 60000 } })
+    const it1 = await k1.waitFor((e) => e.type === 'loop' && e.state === 'iter', 30_000)
+    assert.ok(it1, `轮 1 应完成 iter；${k1.diag()}`)
+    assert.equal(it1.index, 1)
+    k1.crash() // 模拟崩溃：此时 index=1 / status=running 已落盘
+    await k1.cleanup()
+
+    const k2 = makeKernel({}, { dir: shared, home: join(shared, 'home'), keepDir: true, extraArgs: ['--resume', sid] })
+    try {
+      const resumed = await k2.waitFor((e) => e.type === 'loop' && e.state === 'start', 30_000)
+      assert.ok(resumed, `--resume 应发 loop start（resumed）；${k2.diag()}`)
+      assert.equal(resumed.resumed, true, 'start 帧应标记 resumed:true')
+      // 关键：不得静默停住 —— 恢复后应续跑下一轮（且无需再等 60s 间隔）
+      const it2 = await k2.waitFor((e) => e.type === 'loop' && e.state === 'iter', 25_000)
+      assert.ok(it2, `恢复后应续跑下一轮（不得静默停住）；${k2.diag()}`)
+      assert.equal(it2.index, 2, '轮次应接着 1 往后走')
+    } finally { await k2.cleanup() }
+  } finally {
+    try { rmSync(shared, { recursive: true, force: true }) } catch { /* 句柄竞态 */ }
+  }
 })

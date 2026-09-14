@@ -889,7 +889,25 @@ export async function main(argv) {
   const clearLoopNextTimer = () => { if (loopNextTimer) { clearTimeout(loopNextTimer); loopNextTimer = null } }
   // --resume：恢复未终结 loop（崩溃/中断断点续跑）；无文件/已终结/损坏 → 静默按新会话
   if (args.resume) {
-    try { loop.load() } catch { /* 加载失败按新会话处理 */ }
+    try {
+      // load() 只还原控制面状态，**不会自行推进**（onTurnEnd 仅在轮末被调用）——必须补投递
+      // 下一轮，否则恢复成 running 却静默停住，"断点续跑"形同虚设。
+      // 仅 running 自动续跑；paused / awaiting_approval 需用户 /loop resume|approve。
+      if (loop.load()) {
+        loopUntil = String(loop.status().until || '') // --until 停止条件随落盘状态恢复
+        if (loop.status().status === 'running') {
+          // 推迟到本轮同步初始化（signal/rl 接线）完成之后再启动引擎轮，避免启动期竞态
+          setImmediate(() => {
+            try {
+              if (loop.status().status !== 'running') return
+              const p = loop.nextPayload(loopStateUntil())
+              state.queue.unshift({ message: p.message, loop: p.loop, skipMemoryCapture: true })
+              if (!state.turnActive) { const n = state.queue.shift(); if (n) void handleUser(n) }
+            } catch (e) { log.error('loop resume deliver failed', e) }
+          })
+        }
+      }
+    } catch { /* 加载失败按新会话处理 */ }
   }
 
   // workflow 自动触发：普通用户消息命中 auto_trigger 工作流的触发词 →

@@ -32,6 +32,9 @@ export function createLoopController({ wire, engine, store = null, configDir = '
   function freshState() {
     return {
       version: SCHEMA_VERSION, status: 'idle', goal: '', doneWhen: [], prompt: '',
+      // until 参与持久化：--until 的判词达成即停由 cli 侧 judgeUntil 执行，但目标必须
+      // 落盘，否则 --resume 恢复后停止条件丢失（会退化为按次数/预算收尾）。
+      until: '',
       index: 0, count: null, everyMs: 0, fresh: false,
       budget: { maxCostUsd: 0, maxSteps: 0, maxWallMs: 0 },
       usageAcc: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
@@ -76,6 +79,7 @@ export function createLoopController({ wire, engine, store = null, configDir = '
     state = freshState()
     state.status = 'running'
     state.goal = String(opts.goal || '')
+    state.until = String(opts.until || '')
     state.doneWhen = Array.isArray(opts.doneWhen) ? opts.doneWhen : []
     state.prompt = String(opts.prompt || opts.goal || '')
     state.count = opts.count === null || opts.count === undefined ? null : Math.max(1, Number(opts.count) || 1)
