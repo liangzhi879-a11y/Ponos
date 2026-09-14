@@ -8,6 +8,18 @@
 
 **Tech Stack:** Node ESM（`node:test`，仓库既有 kernel 栈）；React + zustand（GUI）；NDJSON wire 协议（`kernel/protocol.mjs`）。
 
+## 执行状态（2026-09-14 已完成）
+
+Task 1–7 已全部落地并通过验收。**实施期偏离与本计划缺陷**（实施记录以设计文档附录 C 为准，勿仅依赖本行号）：
+- `snapshot()` 的 `require` → 顶层 `import`（ESM）；`cli.mjs:958` 需 `engine.runTurn` 返回 `toolDigest`（未在初稿中列出）；`LoopState` 实际定义在 `src/types/index.ts` 而非计划所写位置。
+- Bash 工具仅以 `isError` 表达退出码、不暴露原始码 → 命令式验真只支持 `expect === 0`，显式非 0 期望 fail-closed。
+- 无进展指纹语义明确为"首次记录即第 1 轮"。
+- 计划第 114/1397 行的 `/loop stop 预算不够` 期望 `['预算','不够']` 属笔误（tokenizer 按空白切分），已统一为 `预算 不够`。
+- **实施期额外修复的 3 个真实缺陷**（计划未预见）：① `--every` 延迟投递不可取消 → 停止后 loop 自启续跑 8 轮；② `--resume` 不投递下一轮 → 断点续跑静默停住；③ `doneWhen` 分支跳过次数上限 → 验真永不通过的 loop 无限跑。均已补回归测试并反证。
+- Task 7 Step 5「移除 `PONOS_LOOP_LEGACY` 逃生开关」**免做**（该开关未实现，内联路径已整体替换）。
+
+---
+
 ## Global Constraints
 
 - 测试命令：`node --test kernel-tests/*.test.mjs`（内核测试不在 `npm test` 内）；`npm test` 覆盖 server/electron。
