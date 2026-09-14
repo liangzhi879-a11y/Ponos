@@ -46,11 +46,18 @@ export function killActiveChildren() {
 
 // S2-2 子进程 env 白名单：仅透传系统路径/编码/代理变量，剥离一切密钥与
 // ANTHROPIC_*/CLAUDE_CODE_* 配置（防 Bash/OCR 子进程窃取宿主密钥）。
+// S6 增补 `PONOS_HOME`：内核 CLI 解析配置根时会认它（`CLAUDE_CONFIG_DIR > PONOS_HOME > ~/.ponos`），
+// 而 `CLAUDE_CONFIG_DIR` 被上面这条安全策略刻意剥离 → 不补这一项，agent 在 Bash 里跑的
+// `--knowledge append` 会落到 `~/.ponos`（**与应用侧 `.yfw` 不同的根**，写进去 GUI 看不见）。
+// 选语义中性的 `PONOS_HOME` 而非放开 `CLAUDE_CONFIG_DIR`：前者只是一个目录路径，
+// 后者是密钥目录名；放行前者的代价最小（HOME 本就在白名单，目录名也可猜），
+// 却能保证"内核子进程 / Bash 子进程"两条路解析到同一个根。
 const ENV_WHITELIST = [
   'PATH', 'Path', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TMP', 'TEMP', 'TMPDIR',
   'SystemRoot', 'WINDIR', 'ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA', 'APPDATA',
   'LANG', 'LC_ALL', 'LANGUAGE', 'TERM', 'SHELL', 'COMSPEC', 'PATHEXT', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE',
   'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
+  'PONOS_HOME',
 ]
 export function childEnv() {
   const out = {}

@@ -7,9 +7,13 @@
 // 失败策略（本模块的硬契约）：**永不把异常抛给调用方**——未知 op 与内部异常一律
 // 折成 `{ output: { error }, code: 1 }`。CLI 子命令是旁路能力，它的故障不得打断
 // 调用方（server/bridge 后续经 kernel-readonly 薄转发，见 Task 11）。
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createKnowledgeStore, knowledgeRoot } from './knowledge.mjs'
+// S6：`append` op 复用记忆层的**同一套校验闸门与落盘函数**（不另造一份）——
+// 引的是 `validateAppendEntry` + `appendMemoryEntry`，后者已内含幂等去重（hashLine）
+// 与增量索引同步（syncKnowledgeIndex），故写完立刻可被检索、关联也随之更新。
+import { appendMemoryEntry, listMemoryTags, validateAppendEntry, memoryRoot } from './memory.mjs'
 // MAX_RELATED 从 shared 中性层取（不另写一个字面量 8）：CLI 的缺省必须与内核缺省同源，
 // 抄一份数字的话，将来调阈值时 CLI 会静默停在旧值（`--limit` 缺失路径）——那是查不出来的漂移。
 // `isBlockId` 同理由 shared 提供：路由侧（server）也要判同一件事，各写一份必然漂移。
@@ -30,6 +34,10 @@ function readMetrics(configDir) {
 
 const OPS = new Set([
   'spaces', 'tree', 'doc', 'entries', 'search', 'links', 'related', 'graph', 'stats', 'reindex', 'update-doc',
+  // S6：写入通道与标签枚举。
+  // `append` 是**唯一写 op**（append-only：结构上没有覆盖路径，故比放开 Write 白名单更安全）；
+  // `tags` 供写前"优先复用已有标签"（否则单例标签越积越多 → 孤立条目，S5.1 实测主源）。
+  'append', 'tags',
 ])
 
 /**
@@ -68,6 +76,24 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '' } = {}
   const name = String(op || '').trim()
   if (!OPS.has(name)) {
     return { output: { error: `unknown knowledge op: ${name}` }, code: 1 }
+  }
+  // S6：**在 load 之前**采样并短路"配置根是否已存在"。
+  // 为什么必须抢在 load 前：`store.load()` 会按需重建索引目录（mkdir -p），
+  // 于是 load 之后任何"根是否存在"的检查都会恒为真 —— 拼错的 `PONOS_HOME` 照样通过，
+  // 写操作会静默长出一棵没人找得到的树（实测踩过：条目落到 `~/.ponos/workflow.md`，
+  // 真正的 memory 目录一个字节没变，返回还是 `ok:true`）。
+  // 且必须**在 createKnowledgeStore/load 之前**返回：否则即便拒了写入，索引目录仍被建出来
+  // ——"拒绝"就带了副作用（且在硬盘上留下一个半成品的根，更让人困惑）。
+  const rootExistedBefore = !!configDir && existsSync(configDir)
+  // 为什么只对 append 生效：读类 op 在根不存在时返回空集是合理语义（首次安装、空库），
+  // 唯一危险的是**写** —— `appendMemoryEntry` 内部会 `mkdirSync(recursive)`，
+  // 拼错一个字符就能种出一棵新树。真实的 configDir 一定存在（内含 config.json/auth.json），
+  // 故这条不会误伤正常安装。
+  if (name === 'append' && !rootExistedBefore) {
+    return {
+      output: { error: 'bad-root', message: `配置根不存在: ${configDir}（PONOS_HOME/CLAUDE_CONFIG_DIR 指向了错误的路径？）` },
+      code: 1,
+    }
   }
   const store = createKnowledgeStore({ configDir })
   try {
@@ -172,6 +198,44 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '' } = {}
       case 'update-doc':
         // updateDoc 是同步函数（同 load）：增量更新后立即落盘，故此处也不写 await。
         return { output: store.updateDoc(String(args.id || '')), code: 0 }
+      case 'tags':
+        // S6：标签枚举（读侧"写前先查"的依据）。纯读、无副作用。
+        return { output: listMemoryTags(configDir), code: 0 }
+      case 'append': {
+        // S6：**唯一的写 op**（append-only）。
+        //
+        // 为什么不做成"放开 Write 白名单"：Write 是整体覆盖语义（工具说明原文：
+        // "必须携带完整新内容，遗漏会导致文件被清空"），一次失误能清空整个 theme 文件；
+        // append 在**结构上**没有覆盖路径 —— 它反而**强化**了 2026-09-10 那条
+        // "不允许任意覆盖记忆"的原始防护意图，同时把 agent 从 Bash `>>`（绕过全部检查）
+        // 拉回到有校验的正道。
+        //
+        // 四道闸门（校验失败**一个字节都不落盘**）：
+        //   协议文本 / 空模板 / 正文过短(<MIN_LEN，入库即成孤立条目) / tag 与 theme 字符合法性
+        const text = String(args.text ?? '')
+        const v = validateAppendEntry({ text, tag: args.tag ?? null, theme: args.theme ?? null })
+        if (!v.ok) return { output: { error: v.error, message: v.message }, code: 1 }
+        // ⚠️ `root` 是 **`memoryRoot(configDir)`**（= `<configDir>/memory/personal`），
+        // 不是 `configDir` 本身 —— `appendMemoryEntry` 内部直接 `themePath(root, theme)`
+        // 且会 `mkdirSync(root, {recursive:true})`，传错一层**不会报错**，只会静默新建
+        // 一个 `<configDir>/workflow.md`（实测踩过：测试条目落到了 `~/.ponos/workflow.md`，
+        // 真正的 memory 目录一个字节没变，而返回值还是 `ok:true`）。
+        const root = memoryRoot(configDir)
+        // 第二道防呆已在入口短路（见上，`name === 'append' && !rootExistedBefore`）——
+        // 这里不再重复判断，避免两处口径漂移。
+        const r = appendMemoryEntry({
+          root,
+          theme: v.theme,
+          tag: v.tag,
+          // summary 取正文首行截断（列表页展示用）；full 存全文（S5 起 full 才是关联与检索的主口径）
+          summary: text.trim().split('\n')[0].slice(0, 60),
+          full: text.trim(),
+          knowledgeIndex: store,
+        })
+        // `deduped` 必须回显：调用方要能区分"写进去了"与"早就有了"——
+        // 否则重复调用看起来都成功，实际文件没长，会被误判成写入失效。
+        return { output: { ok: true, theme: v.theme, tag: v.tag, deduped: !!r?.deduped, ...r }, code: 0 }
+      }
       default:
         return { output: { error: `unknown knowledge op: ${name}` }, code: 1 }
     }

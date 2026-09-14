@@ -175,6 +175,12 @@ export function parseArgs(argv) {
       // 值与 `--doc` 一样需要吃下一个 token：写成 `out.level = true` 会把 'entry' 丢给
       // positional 参数（进而被当成路径），是本 CLI 最容易写错的一处。
       case '--level': out.level = next() ?? null; break
+      // S6：`append` 写通道的三个参数。与上文同一条纪律——**必须显式登记**，
+      // 漏登记则 `--tag 应用智控` 会被静默丢弃（经验进了库却没有标签 → 永远成孤岛）。
+      // `--text -` 表示从 stdin 读取（长文本/多行经验的常规用法，避免命令行长度与转义问题）。
+      case '--tag': out.tag = next() ?? null; break
+      case '--text': out.text = next() ?? null; break
+      case '--theme': out.theme = next() ?? null; break
       case '--mode': out.mode = next() ?? null; break
       // 显式强制重建索引（reindex 本身恒 force；本 flag 供其它 op 复用同一语义）
       case '--force': out.force = true; break
@@ -190,6 +196,22 @@ export function parseArgs(argv) {
 function readPromptFile(path) {
   if (!path || !existsSync(path)) return ''
   try { return readFileSync(path, 'utf-8') } catch { return '' }
+}
+
+// S6：读尽 stdin（`--text -` 用）。TTY 下**不阻塞**——交互式终端里误写 `--text -`
+// 会看起来像挂死（用户不知道在等 Ctrl-D），故检测到 TTY 立即返回空串，
+// 由 append 的"空正文"闸门给出明确报错，而不是静默等到 120s 超时。
+// 编码按 utf8 解码（Node 的 setEncoding 处理跨 chunk 的多字节字符边界，
+// 避免 Buffer.toString 在分块处把中文切成乱码）。
+function readStdin() {
+  if (process.stdin.isTTY) return Promise.resolve('')
+  return new Promise((resolve) => {
+    let buf = ''
+    process.stdin.setEncoding('utf8')
+    process.stdin.on('data', (c) => { buf += c })
+    process.stdin.on('end', () => resolve(buf))
+    process.stdin.on('error', () => resolve(buf))
+  })
 }
 
 // P10-A：技能/工作流发现根解析——前端（bridge）负责下载/转化/安装/注册到技能根
@@ -248,23 +270,42 @@ export async function main(argv) {
     // `--knowledge` 路径上加载，普通会话启动不为它付模块解析成本（既有 --usage/
     // --audit 走静态导入，是因为那个模块更轻且启动即用）。
     const { runKnowledgeCommand } = await import('./knowledge-cli.mjs')
+    const knowledgeArgs = {
+      space: args.space, path: args.path, id: args.id, query: args.query,
+      keywords: args.keywords, topK: args.topK, limit: args.limit, mode: args.mode,
+      force: args.force, noValidate: args.noValidate,
+      // ⚠️ `doc` / `related` 必须在此显式登记——parseArgs 解析出的字段**不会自动**流到
+      // 知识内核，漏一个就等于该 flag 从未存在（**静默失效**，最贵的一类假阴性）。
+      // 实测踩过：`related --doc <docId>`（GUI 文档内条目批量口）与 `graph --related`
+      // （图谱关联图层）都因漏转发而拿不到值 —— 前者退化成 "missing --id" 报错，
+      // 后者被静默忽略（图层开着却没有边，看起来像数据问题而不是参数问题）。
+      // 单测覆盖不到这里：它们直接调 runKnowledgeCommand，绕过了本层管道；
+      // 回归由 kernel-tests/knowledge-cli-flags.test.mjs 以**真进程**钉住。
+      doc: args.doc, related: args.related, level: args.level,
+      // S6（同一条纪律）：append 的三个入参漏登记 → `--tag 应用智控` 被静默丢弃 →
+      // 经验进了库却没有标签 → 永远无关联边。故 tag/text 的转发必须有真进程回归钉住。
+      tag: args.tag, text: args.text, theme: args.theme,
+    }
+    // S6：`--text -` = 从 stdin 读取正文。
+    // 为什么需要：经验正文常含多行、引号、`|`、反引号——写在命令行里要么被 shell 改写，
+    // 要么受参数长度限制；stdin 是唯一能**逐字节**送达的通道（管道 / heredoc）。
+    // 只在 append 这一条写路径上读：其余 op 保持"纯参数、无隐式阻塞读"语义，
+    // 否则任何一次忘记重定向的调用都会挂住直至超时。
+    const stdinText = args.knowledge === 'append' && args.text === '-' ? await readStdin() : null
     const { output, code } = await runKnowledgeCommand({
       op: args.knowledge, configDir,
-      args: {
-        space: args.space, path: args.path, id: args.id, query: args.query,
-        keywords: args.keywords, topK: args.topK, limit: args.limit, mode: args.mode,
-        force: args.force, noValidate: args.noValidate,
-        // ⚠️ `doc` / `related` 必须在此显式登记——parseArgs 解析出的字段**不会自动**流到
-        // 知识内核，漏一个就等于该 flag 从未存在（**静默失效**，最贵的一类假阴性）。
-        // 实测踩过：`related --doc <docId>`（GUI 文档内条目批量口）与 `graph --related`
-        // （图谱关联图层）都因漏转发而拿不到值 —— 前者退化成 "missing --id" 报错，
-        // 后者被静默忽略（图层开着却没有边，看起来像数据问题而不是参数问题）。
-        // 单测覆盖不到这里：它们直接调 runKnowledgeCommand，绕过了本层管道；
-        // 回归由 kernel-tests/knowledge-cli-flags.test.mjs 以**真进程**钉住。
-        doc: args.doc, related: args.related, level: args.level,
-      },
+      args: stdinText === null ? knowledgeArgs : { ...knowledgeArgs, text: stdinText },
     })
     console.log(JSON.stringify(output))
+    // S6：失败时**同时**写一行 stderr。为什么需要（不是画蛇添足）：
+    // HTTP 侧经 `kernelReadonly` 调 CLI，而它在**非零退出时 reject 并丢弃 stdout**
+    //（`server/kernel-readonly.mjs` runOnce：`if (code === 0) resolve(out)` 否则
+    // `reject(new Error(err.trim() || 'exit N'))`）。于是 append 的校验理由只留在被丢弃的
+    // stdout 里，路由只能回一个无信息量的 500 —— 调用方看不到"为什么被拒"。
+    // stdout 的 JSON 契约保持不动（Bash/agent 侧仍读它 + 退出码）；stderr 只作补充通道。
+    if (code !== 0 && output && typeof output === 'object' && output.error) {
+      console.error(`[knowledge] ${output.error}${output.message ? ': ' + output.message : ''}`)
+    }
     return code
   }
 
