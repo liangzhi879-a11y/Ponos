@@ -60,6 +60,43 @@ test('块内声明的 async 函数不得被其他顶层构造引用（Annex B �
 // 反向锁：兜底对话框必须保持顶层可调用，且启动失败路径确实调用了它。
 // 少了这个调用，启动失败就没有「打开日志目录 / 复制路径」的出口；
 // 该调用一旦抛 ReferenceError，紧随其后的 app.quit() 便不执行 ⇒ 进程不退（当日实况）。
+// 2026-09-14 实况（半死实例）：app.quit() 被 keepAlive 登录窗的 close→preventDefault
+// 否决而**中止**，但 isQuitting 已置真且全仓没有复位点 ⇒ 桥被 killBridge 杀掉、自愈被
+// scheduleBridgeRestart 的 `|| isQuitting` 挡死、will-quit 的清理又要等窗口关完才触发：
+// 进程活着、窗口在、桥永远起不来（渲染层无限 1006 重连）。下面把两条防线各锁一次。
+test('退出路径：窗口否决不了退出，且退出闩可复位（防半死实例）', () => {
+  const block = (start, n) => lines.slice(start, start + n).join('\n')
+
+  // ① before-quit 必须解除窗口否决（destroyAllWindows 前移）+ 武装兜底
+  const bq = lines.findIndex((l) => /^app\.on\('before-quit'/.test(l))
+  assert.ok(bq > 0, 'before-quit 处理器应存在')
+  const bqBody = block(bq, 14)
+  assert.match(bqBody, /browserExecutor\.destroyAllWindows/,
+    'before-quit 必须销毁执行器窗口：keepAlive 登录窗 preventDefault 会让 app.quit() 被中止')
+  assert.match(bqBody, /armQuitWatchdog\(\)/, 'before-quit 必须武装退出兜底')
+
+  // ② 兜底：到点必须补做 will-quit 的收尾（被中止的退出等不到它）再硬退出
+  const wd = lines.findIndex((l) => /^function armQuitWatchdog\(\)/.test(l))
+  assert.ok(wd > 0, 'armQuitWatchdog 应存在')
+  const wdBody = block(wd, 16)
+  assert.match(wdBody, /writeBootSummary\(\)/, '兜底退出前要落 boot 汇总（will-quit 不会触发）')
+  assert.match(wdBody, /app\.exit\(0\)/, '兜底必须硬退出，不能停在半死态')
+
+  // ③ 复位路径：showMainWindow（second-instance / 托盘「打开主窗口」/ activate 共用）
+  //    必须先撤销「已中止的退出」，否则用户再点图标只会得到窗口 + 永远起不来的桥
+  const sm = lines.findIndex((l) => /^function showMainWindow\(\)/.test(l))
+  assert.ok(sm > 0, 'showMainWindow 应存在')
+  assert.match(block(sm, 4), /reviveIfQuitAborted\(\)/, 'showMainWindow 必须复位「已中止的退出」')
+
+  // ④ 复位体必须清闩、清退避、重拉桥，并取消兜底（否则用户"又要窗口"后仍被兜底杀掉）
+  const rv = lines.findIndex((l) => /^function reviveIfQuitAborted\(\)/.test(l))
+  assert.ok(rv > 0, 'reviveIfQuitAborted 应存在')
+  const rvBody = block(rv, 12)
+  assert.match(rvBody, /isQuitting = false/, '复位必须清掉退出闩')
+  assert.match(rvBody, /scheduleBridgeRestart\(\)/, '复位后必须重拉桥')
+  assert.match(rvBody, /clearTimeout\(quitWatchdog\)/, '复位必须取消兜底计时器（复活与兜底会打架）')
+})
+
 test('showBootFailureDialog 位于顶层且被启动失败路径调用', () => {
   assert.match(src, /^async function showBootFailureDialog\s*\(/m)
   const callIdx = lines.findIndex((l) => /await showBootFailureDialog\(\)/.test(l))
