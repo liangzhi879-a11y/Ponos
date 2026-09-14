@@ -411,3 +411,40 @@ test('describeToolCall：探索类工具要说人话（界面据此展示模型�
   assert.ok(describeToolCall('back', {}).includes('返回'))
   assert.ok(describeToolCall('request_login', { reason: '需要登录' }).includes('登录'))
 })
+
+// ---------- 提示词与校验同源（按驱动下发 act 与结构契约） ----------
+//
+// 背景（真实故障 D2）：本地应用(desktop)封装必然失败 —— 提示词侧判 `driver === 'desktop'`，
+// 而生产 driver 只有 browser/process/script/uia，该条件永不成立 → 给桌面应用下发 web act 清单
+// （goto/snapshot），模型照着写出来的 Spec 又被按真实驱动收窄的校验全判非法。
+// 下面把"提示词下发的 act 必须等于该驱动能执行的 act"钉死。
+
+test('buildAgentSystem：桌面驱动下发 desktop act 清单（真实生产 driver 值），绝不下发 snapshot', () => {
+  for (const [driver, must] of [['process', 'cli'], ['script', 'script'], ['uia', 'focus']]) {
+    const sys = buildAgentSystem({ target: { type: 'desktop', exePath: 'C:/x/y.exe' }, driver })
+    const acts = sys.match(/steps\.act 只能取：([^\n]+)/)[1]
+    assert.ok(acts.includes(must), `${driver} 应下发 ${must}（实际：${acts}）`)
+    // 老病根：这里曾因 driver==='desktop' 不成立而下发 web 清单，模型写 snapshot → 校验全拒
+    assert.ok(!acts.includes('snapshot'), `${driver} 绝不能下发 snapshot（实际：${acts}）`)
+    assert.ok(!acts.includes('goto'), `${driver} 绝不能下发 goto（实际：${acts}）`)
+  }
+})
+
+test('buildAgentSystem：顶层结构契约（specVersion/appId/name）必须写进提示词', () => {
+  const sys = buildAgentSystem({ target: { type: 'web', url: 'https://x/' }, driver: 'browser' })
+  for (const k of ['specVersion', 'appId', '"name"']) assert.ok(sys.includes(k), `提示词缺少 ${k}（模型漏写会被校验判"缺少 name"）`)
+  assert.ok(sys.includes('commands'), '要说明 commands 是数组且至少 1 条')
+})
+
+test('buildAgentSystem（web）：明确引导「接口级封装」（js + fetch），而不是只让模型看页面', () => {
+  const sys = buildAgentSystem({ target: { type: 'web', url: 'https://x/' }, driver: 'browser' })
+  assert.ok(sys.includes('fetch'), '要引导直接用 js 步骤调站点接口')
+  assert.ok(sys.includes('接口级'), '要写明"接口级"优于"看页面"')
+  assert.ok(sys.includes('json'), '要说明返回结构化数据')
+})
+
+test('buildAgentSystem：桌面驱动不出现网页相关引导（js/fetch/goto/browse）', () => {
+  const sys = buildAgentSystem({ target: { type: 'desktop', exePath: 'C:/x/y.exe' }, driver: 'process' })
+  for (const k of ['fetch', 'snapshot', 'browse', '"tool":"click"']) assert.ok(!sys.includes(k), `桌面提示词不该出现 ${k}`)
+  assert.ok(sys.includes('cli') && sys.includes('argv'), '要讲清 cli 步骤与 argv')
+})

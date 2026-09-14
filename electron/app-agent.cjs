@@ -23,7 +23,7 @@
 //   可注入，于是用假模型就能回归全部编排逻辑（不需要真网络、真模型）。
 'use strict'
 
-const { extractSpec, validateSpecBasic, actContractLines, WEB_ACTS, DESKTOP_ACTS } = require('./app-generate.cjs')
+const { extractSpec, validateSpecBasic, actContractLines, driverOf, normalizeDriver, actsFor, SPEC_SHAPE_LINE } = require('./app-generate.cjs')
 
 /**
  * 预算。用户明确"不要期望 llm 分析生成很快完成"，所以给得宽松——但要**有界**：
@@ -42,17 +42,25 @@ const PLACEHOLDER = /(^|\s)(todo|fixme|tbd|待补充|待完善|待定|占位|示
 const isPlaceholder = (s) => PLACEHOLDER.test(String(s || '').trim())
 const cjkLen = (s) => String(s || '').trim().length
 
-/** 模型每轮可用的工具说明（渲染进 system，字段名必须与 parseTurn/主进程 runTool 一致） */
+/**
+ * 模型每轮可用的工具说明（渲染进 system，字段名必须与 parseTurn/主进程 runTool 一致）。
+ * 先归一化驱动再分支：生产 driver 值是 browser/process/script/uia，旧代码判 `driver === 'desktop'`
+ * 在生产里永不成立（桌面应用拿到的会是浏览器那套工具说明）。
+ * 抓页面/浏览/点击这一组只对 browser 有意义——主进程 runTool 对桌面驱动本来就明确拒绝它们
+ * （"这是桌面应用，没有浏览器页面可浏览；请直接用 run_command 试跑或 submit_spec"），
+ * 写进提示词只会误导模型去调一个注定失败的工具。
+ */
 function agentToolDocs(driver = 'browser') {
+  const d = normalizeDriver(driver)
   const lines = [
     '【你可以调用的工具】每轮**只输出一个 JSON 对象**，不要输出解释性文字、不要输出多个对象：',
-    '· 抓取任意页面看结构（后台 HTTP 抓取，不会弹出窗口）。适合无需登录、静态渲染的页面：',
-    '  {"thought":"为什么要抓它","tool":"fetch_page","args":{"url":"https://…"}}',
-    '· 看你已经抓过哪些页面、有哪些线索（避免重复抓）：',
-    '  {"thought":"…","tool":"list_pages","args":{}}',
   ]
-  if (driver === 'browser') {
+  if (d === 'browser') {
     lines.push(
+      '· 抓取任意页面看结构（后台 HTTP 抓取，不会弹出窗口）。适合无需登录、静态渲染的页面：',
+      '  {"thought":"为什么要抓它","tool":"fetch_page","args":{"url":"https://…"}}',
+      '· 看你已经抓过哪些页面、有哪些线索（避免重复抓）：',
+      '  {"thought":"…","tool":"list_pages","args":{}}',
       '· 用**真实浏览器**打开页面（不弹窗，但**会带上登录态**、能执行 JS）。当 HTTP 抓取只能看到登录页、',
       '  空壳页、或内容明显不全时，改用这个（返回快照，含每个可交互元素的 ref 编号）：',
       '  {"thought":"…","tool":"browse","args":{"url":"https://…"}}',
@@ -128,26 +136,36 @@ function resolveClickTarget(interactives, { ref, text } = {}) {
  * 模型不知道它干什么、也不知道参数该填什么。
  */
 function buildAgentSystem({ target, driver = 'browser' } = {}) {
-  const acts = driver === 'desktop' ? DESKTOP_ACTS : WEB_ACTS
+  // 驱动必须走唯一真源推定：生产值是 browser/process/script/uia，旧代码判 `driver === 'desktop'`
+  // 在生产里永不成立 → 给桌面应用下发 web act 清单 → 模型写出的 Spec 被校验全拒（D2 真实故障）。
+  const d = driverOf({ driver, target }, { targetType: target?.type })
+  const acts = actsFor(d)
+  const isWeb = d === 'browser'
   return [
     '你是「应用即工具」的规格工程师。你的任务**不是**一次成型地写出一份 Spec，而是像一个真正的',
     '工程师那样工作：**先自主探索目标，再写草稿，再真实试跑，根据真实报错反复调试，直到全部通过**。',
     '',
     `目标：${JSON.stringify(target || {})}`,
-    `驱动：${driver}（${driver === 'desktop' ? '桌面应用：命令走本机脚本/CLI' : '网站：命令走浏览器自动化'}）`,
+    `驱动：${d}（${isWeb ? '网站：命令走浏览器自动化' : '桌面应用：命令走本机 CLI / 脚本接口'}）`,
     '',
-    agentToolDocs(driver),
+    agentToolDocs(d),
     '',
     '【工作方式（强烈建议遵循）】',
-    '1) 先探索：至少用 fetch_page 看清楚主要功能入口（导航、列表页、表单、详情页）。',
-    '   抓哪些页面**由你自己判断**——不要只抓首页。多级入口、需要先搜索/筛选才能到达的页面，',
-    '   都值得抓一次；必要时反复抓、抓更多。list_pages 可以帮你避免重复。',
-    ...(driver === 'browser' ? [
+    ...(isWeb ? [
+      '1) 先探索：至少用 fetch_page 看清楚主要功能入口（导航、列表页、表单、详情页）。',
+      '   抓哪些页面**由你自己判断**——不要只抓首页。多级入口、需要先搜索/筛选才能到达的页面，',
+      '   都值得抓一次；必要时反复抓、抓更多。list_pages 可以帮你避免重复。',
       '2) **页面抓不到内容时不要放弃**：HTTP 抓取看不到 JS 渲染的内容，也看不到登录后的页面。',
       '   这时候改用 browse（真实浏览器 + 登录态）打开它；如果页面里的入口**需要点击**才能展开',
       '   （折叠菜单、列表翻页、"下一页"、进入详情），就用 click 点进去再看快照。',
       '   探索完一个分支可以用 back 退回来继续看别的入口。用户允许你做这类探索性点击，',
       '   但**不要点删除/支付/提交订单/退出登录这类破坏性按钮**（会被系统拒绝）。',
+      '2.2) **优先做「接口级」封装**：只读页面文本是下策——调用方拿到的是一坨文字，取不了数也存不了库。',
+      '      多数站点的数据来自它自己的 JSON 接口：用 {"act":"js","expression":"await fetch(\'/x/list?page=1\').then(r=>r.json())"}',
+      '      这类步骤直接取数/提交（js 支持 async，可以 await），返回的就是结构化数据，而且**自带登录态**。',
+      '      接口线索就在你手里的素材里（表单的 action、页面脚本里的接口路径、按钮的 data-* 属性）；',
+      '      必要时用 browse 打开页面点一次功能，再看素材里的真实路径。',
+      '      只有「确实没有可用接口」或「必须渲染后内容」时才用 goto+snapshot 这种页面形态。',
       '2.5) **抓到登录页不要硬猜、也不要反复抓同一个页面**：说明该站点需要登录 → 调 request_login',
       '     请用户登录，用户登录后系统会把登录后的内容回给你（HTTP 抓取永远看不到登录后的内容，',
       '     必要时改用 browse 看登录后的真实页面）。',
@@ -156,8 +174,8 @@ function buildAgentSystem({ target, driver = 'browser' } = {}) {
       '   也可以用 fetch_page / browse 再看一眼页面结构（比如确认某个按钮的位置、表单字段名）。',
       '5) 反复做到：试跑全部通过、且命令覆盖了目标的主要功能入口。',
     ] : [
-      '2) 再写草稿：用 submit_spec 提交。第一版不要求完美——它会被真实试跑，报错会原样回给你。',
-      '3) 然后调试：根据回给你的**真实报错**修改，直到试跑全部通过、且命令覆盖主要功能入口。',
+      '1) 再写草稿：用 submit_spec 提交。第一版不要求完美——它会被真实试跑，报错会原样回给你。',
+      '2) 然后调试：根据回给你的**真实报错**修改，直到试跑全部通过、且命令覆盖主要功能入口。',
     ]),
     '',
     '【封装质量要求（不达标会被打回，请一次就写好）】',
@@ -167,21 +185,30 @@ function buildAgentSystem({ target, driver = 'browser' } = {}) {
     '  禁止「命令1」「示例」「TODO」「待补充」这类占位语——那等于没写。',
     '· params[].desc：说清「填什么、什么格式」（例「订单号，形如 SO20250101-001」），≥6 字，',
     '  同样禁止占位语；required 必须明确写 true/false；没有参数就写 params:[]。',
-    '· returns：read 命令必须说明返回什么，形如 {"type":"text|json","from":"保存键名"}，',
-    '  且 steps 里确实有对应输出（web：snapshot 步骤的 save 键名，或 js 表达式的返回值）。',
+    `· returns：read 命令必须说明返回什么，形如 {"type":"text|json","from":"保存键名"}，且 steps 里确实有对应输出${isWeb ? '（web：snapshot 步骤的 save 键名，或 js 表达式的返回值）' : '（桌面：cli / script 步骤用 save:"键名" 保存的输出）'}。`,
+    '· 查询命令的 returns：优先 {"type":"json","from":"<save 键名>"}（接口级返回结构化数据）；',
+    '  只有页面形态的命令才用 "text"。',
     '· 覆盖度：命令要覆盖你探索到的主要功能入口（不同页面/不同表单/不同查询都算），',
     '  不要只写首页能做的事。查询类命令（kind:"read"）至少 2 条，其中至少 1 条**不需要参数**。',
     '· kind：只读/查询/导出/查看 → "read"；提交/保存/修改/删除/发送 → "write"；拿不准按 "write"。',
     '',
     '【硬约束】',
     `· steps.act 只能取：${acts.join(', ')}。`,
-    actContractLines(),
-    '· click/type/select/hover 要的是 **ref（快照里的元素编号）**，不是 CSS 选择器；',
-    '  ref 必须由**同一条命令内前一步的 snapshot** 产生（编号每次快照都会变）。拿不准就改用 js 表达式。',
+    actContractLines(d),
+    // ref/选择器这套只对浏览器执行器成立：桌面驱动的 act（cli/script/focus/type/key/wait）没有元素编号概念
+    ...(isWeb ? [
+      '· click/type/select/hover 要的是 **ref（快照里的元素编号）**，不是 CSS 选择器；',
+      '  ref 必须由**同一条命令内前一步的 snapshot** 产生（编号每次快照都会变）。拿不准就改用 js 表达式。',
+    ] : []),
     '· 命令参数插值固定写 ${参数名}。',
     '· expose.mode 固定写 "console"（禁止 "public"）。',
     '· 绝不写入口令、令牌、密钥、身份证号等敏感信息。',
     '· 绝不设计"删除/清空/批量修改"这类破坏性命令，除非用户目标明确要求（那种情况 kind 必须是 write）。',
+    '',
+    '【输出格式（缺一不可，漏写会被结构校验直接打回）】',
+    SPEC_SHAPE_LINE,
+    `其中 target 用 ${isWeb ? '{"type":"web","url":"..."}' : '{"type":"desktop","exePath":"..."}'}，expose.mode 固定 "console"。`,
+    'commands 是数组、至少 1 条；每条必须有 action（英文小驼峰、唯一）、title、kind、params（数组）、steps。',
     '',
     '只输出 JSON 本体。现在开始按上面的方式工作。',
   ].join('\n')

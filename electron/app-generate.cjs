@@ -171,7 +171,8 @@ function driverRulesLine(driver) {
 const SYSTEM_RULES = [
   '你是「应用即工具」的规格撰写器。用户会给你一个目标（网站或桌面应用）以及真实探测素材，你要产出**一个 JSON 对象**作为 App Spec。',
   '只输出 JSON 本体，不要解释、不要 Markdown 说明文字。',
-  '结构要求：{"specVersion":1,"appId":"...","name":"...","desc":"...","target":{...},"expose":{"mode":"console"},"commands":[...]}。',
+  // 顶层结构契约只有一份真源（SPEC_SHAPE_LINE）：提示词与修复提示词共用，避免两处写法漂移
+  SPEC_SHAPE_LINE,
   'target：web 用 {"type":"web","url":"..."}；desktop 用 {"type":"desktop","exePath":"..."}。',
   'expose.mode 固定写 "console"（仅进入控制台的会话可见）；**禁止**写 "public"。',
   'commands 每项：{"action":"英文驼峰且唯一","title":"中文短标题","kind":"read|write","params":[{"name":"...","type":"string","required":true,"desc":"..."}],"steps":[...],"returns":{"type":"text|json","from":"保存键名"}}。',

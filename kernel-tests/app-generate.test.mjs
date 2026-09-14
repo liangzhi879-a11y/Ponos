@@ -390,14 +390,19 @@ test('SPEC_SHAPE_LINE / driverRulesLine：顶层结构与驱动约束各只有�
   assert.ok(line.includes('argv'), '要带字段契约（cli 必须 argv）')
 })
 
-test('actContractLines：每个 act 都带字段要求，js 明写 expression（提示词与校验同源）', () => {
-  const lines = actContractLines()
-  for (const act of [...WEB_ACTS, ...DESKTOP_ACTS]) assert.ok(lines.includes(act), `提示词缺 ${act}`)
-  assert.ok(/js：必填 "expression"/.test(lines), `js 的字段要求要写清：${lines.split('\n').find((l) => l.includes('js：'))}`)
-  assert.ok(lines.includes('"ref"'), 'ref 要求要写进提示词')
+test('actContractLines：只渲染传入驱动的 act，每个 act 都带字段要求（提示词与校验同源）', () => {
+  const web = actContractLines('browser')
+  for (const act of actsFor('browser')) assert.ok(web.includes(act), `浏览器契约缺 ${act}`)
+  // 只匹配"契约条目"形态的 · cli：，而不是裸子串 —— 'click' 里就含 'cli'，
+  // 裸 includes('cli') 与上面的"必须包含 click"直接矛盾（计划书里的这行断言写错了）
+  assert.ok(!/· cli：/.test(web), '浏览器契约不该出现桌面 act')
+  assert.ok(/js：必填 "expression"/.test(web), 'js 的字段要求要写清')
+  assert.ok(web.includes('"ref"'), 'ref 要求要写进提示词')
+  const desk = actContractLines('process')
+  assert.ok(desk.includes('cli') && desk.includes('"argv"'), 'process 契约要有 cli/argv')
+  assert.ok(!desk.includes('snapshot'), 'process 契约绝不能提 snapshot')
   // 二选一的字段要渲染成"或"，不能写成"且"（曾因此把 script 的 file|code 写成两者都要）
-  assert.ok(/"file" 或 "code"/.test(lines), `script 应渲染为 file 或 code：${lines.split('\n').find((l) => l.includes('· script'))}`)
-  assert.ok(/"ms" 或 "ref"/.test(lines), 'wait 应渲染为 ms 或 ref')
+  assert.ok(/"file" 或 "code"/.test(actContractLines('script')), 'script 应渲染为 file 或 code')
   assert.ok(SYSTEM_RULES.includes('expression'), 'SYSTEM_RULES 要包含契约说明')
   assert.ok(SYSTEM_RULES.includes('不是 CSS 选择器'), 'SYSTEM_RULES 要明确 ref ≠ 选择器')
 })
