@@ -191,7 +191,7 @@ function resolveClickTarget(interactives, { ref, text } = {}) {
  * `cmd.params[].desc` 生成）。所以 title 与 params[].desc 写得潦草，这个工具就等于废掉：
  * 模型不知道它干什么、也不知道参数该填什么。
  */
-function buildAgentSystem({ target, driver = 'browser', requirement } = {}) {
+function buildAgentSystem({ target, driver = 'browser', requirement, surfaceLines } = {}) {
   // 驱动必须走唯一真源推定：生产值是 browser/process/script/uia，旧代码判 `driver === 'desktop'`
   // 在生产里永不成立 → 给桌面应用下发 web act 清单 → 模型写出的 Spec 被校验全拒（D2 真实故障）。
   const d = driverOf({ driver, target }, { targetType: target?.type })
@@ -199,6 +199,8 @@ function buildAgentSystem({ target, driver = 'browser', requirement } = {}) {
   const isWeb = d === 'browser'
   // 需求段：无需求时是空串，展开后不产生任何元素 → 提示词与改动前逐字一致
   const req = requirementLines(requirement)
+  // 能力清单（探测产出）：模型据此"从最有把握的通道开始封装"。空串同样不产生任何元素。
+  const surface = surfaceLines ? String(surfaceLines) : ''
   return [
     '你是「应用即工具」的规格工程师。你的任务**不是**一次成型地写出一份 Spec，而是像一个真正的',
     '工程师那样工作：**先自主探索目标，再写草稿，再真实试跑，根据真实报错反复调试，直到全部通过**。',
@@ -207,6 +209,7 @@ function buildAgentSystem({ target, driver = 'browser', requirement } = {}) {
     `驱动：${d}（${isWeb ? '网站：命令走浏览器自动化' : '桌面应用：命令走本机 CLI / 脚本接口'}）`,
     '',
     ...(req ? [req, ''] : []),
+    ...(surface ? [surface, ''] : []),     // ← 清单紧随需求：模型据此"从最有把握的通道开始试"
     agentToolDocs(d),
     '',
     '【工作方式（强烈建议遵循）】',
@@ -274,12 +277,14 @@ function buildAgentSystem({ target, driver = 'browser', requirement } = {}) {
 }
 
 /** 首轮 user：把"已经拿到的种子素材 + 预算 + 现状"交代清楚，让模型从探索开始 */
-function buildAgentSeed({ target, driver, probeMode, probeMaterial, seedSummary, budget, requirement } = {}) {
+function buildAgentSeed({ target, driver, probeMode, probeMaterial, seedSummary, budget, requirement, surfaceLines } = {}) {
   const parts = []
   parts.push(`目标：${JSON.stringify(target || {})}`)
   parts.push(`驱动：${driver}`)
   const req = requirementLines(requirement)
   if (req) parts.push(req)          // ★ 首轮就要看见需求：否则模型第一轮抓的页面全凭猜测
+  const surface = surfaceLines ? String(surfaceLines) : ''
+  if (surface) parts.push(surface)  // ★ 探索起点也要在第一轮就到位（空串时不新增元素 → 逐字不变）
   const parts2 = []
   if (seedSummary) parts2.push(`【系统预取的初始素材】\n${seedSummary}`)
   if (probeMaterial && probeMode && probeMode !== 'none') {
@@ -441,13 +446,13 @@ function describeToolCall(tool, args) {
  *   trace:Array, issues:string[], blockers:string[], warnings:string[], verify:object|null, elapsedMs:number, stoppedBy:string}>}
  */
 async function runAgentLoop({
-  target, driver = 'browser', probeMode, probeMaterial, seedSummary, requirement,
+  target, driver = 'browser', probeMode, probeMaterial, seedSummary, requirement, surfaceLines,
   callLlm, runTool, validate, verify, onProgress, budget, maxTokens,
 } = {}) {
   const b = { ...DEFAULT_BUDGET, ...(budget || {}) }
   const t0 = Date.now()
-  const system = buildAgentSystem({ target, driver, requirement })
-  const seedUser = buildAgentSeed({ target, driver, probeMode, probeMaterial, seedSummary, budget: b, requirement })
+  const system = buildAgentSystem({ target, driver, requirement, surfaceLines })
+  const seedUser = buildAgentSeed({ target, driver, probeMode, probeMaterial, seedSummary, budget: b, requirement, surfaceLines })
   const log = []
   const trace = []
   const issues = []

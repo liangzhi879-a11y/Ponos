@@ -816,29 +816,34 @@ test('app:generate（desktop/process）：生成 → 试跑全链路通过（试
   assert.equal(r.verify.notRun.length, 0, '三条都是 read')
 })
 
-// ---------- Task 5：uia 目标在生成阶段早退（明确拒绝，而不是产出注定跑不通的应用） ----------
+// ---------- Task 5 → Task 7：探测结论为 unusable 时早退（明确"无法接入"，并如实列出证据） ----------
 //
-// 真实故障：桌面目标探测不到 CLI/脚本接口时会降级为 uia 驱动，而 UI 自动化后端**尚未接入**
-// （app-runner-desktop.cjs 的 runUia 恒返回"未接入"）→ 此路径下生成的任何命令都注定跑不通。
-// 原行为却照常烧十几轮模型预算，最后可能"生成成功"交给用户一个永远失败的应用。
-test('app:generate（desktop/uia）：后端未接入 → 早退拒绝，不烧模型轮次、不产出注定跑不通的应用', async () => {
+// 背景：桌面目标一条可控路径都没有 → driver 降级为 uia，而 UI 自动化后端**尚未接入**
+// （app-runner-desktop.cjs 的 runUia 恒返回"未接入"）→ 此路径下生成的任何命令都注定跑不通，
+// 故仍要早退（不烧十几轮模型预算、不交给用户一个永远失败的应用）。
+//
+// ★ Task 7 把措辞从"uia 后端没接"改成**三分协议里的 unusable 结论**：
+//   `stoppedBy` 由 'uia-unsupported' 改为 'no-capability'（值变了=语义变了：拒的理由不再是
+//   "后端缺失"，而是"这个应用没有任何可控路径"），文案也改为"无法接入 + 已排查通道与证据 + 下一步建议"。
+test('app:generate（desktop）：一条可控路径都没有 → 早退并明确"无法接入"（不烧轮次、不产出注定跑不通的应用）', async () => {
   let llmCalled = 0
   const stubDir = mkdtempSync(join(tmpdir(), 'uia-stub-'))
-  const stub = join(stubDir, 'nope.exe')          // 空文件 + .exe：process/script 探测都失败 → uia
+  const stub = join(stubDir, 'nope.exe')          // 空文件 + .exe：process/script/file 探测都失败 → unusable
   writeFileSync(stub, '', 'utf-8')
   const t = setup({ llm: async () => { llmCalled++; return { ok: true, text: '{}', error: null, chars: 2 } } })
   try {
     const r = await t.invoke('app:generate', { target: { type: 'desktop', exePath: stub }, appId: 'd2', sessionId: 's1' })
     assert.equal(r.ok, false)
     assert.equal(r.driver, 'uia')
-    assert.equal(r.stoppedBy, 'uia-unsupported')
-    assert.ok(r.error.includes('UI 自动化后端尚未接入'), `要说清为什么不能生成：${r.error}`)
-    assert.ok(r.error.includes('命令行') || r.error.includes('CLI'), '要给出可行的替代路径')
+    assert.equal(r.stoppedBy, 'no-capability')
+    assert.ok(r.error.includes('无法接入'), `要明确说清结论：${r.error}`)
+    assert.ok(r.error.includes('CLI'), '要给出可行的替代路径')
     // ★ 拒绝文案必须带上**真实探测原因**，不能只给一句笼统结论。
     //   真机（2026-09-14 Aseprite）：用户看到的只有"未发现 CLI / 脚本接口"，无法分辨是
     //   路径写错、目录没解析、还是包装器跑不起来 —— 于是合理怀疑"系统的获取配置功能坏了"。
-    assert.ok(r.error.includes('探测详情'), `要把每层的真实原因带出来：${r.error}`)
-    assert.ok(/CLI：|脚本接口：/.test(r.error), `详情要标明是哪一层失败的：${r.error}`)
+    assert.ok(r.error.includes('已排查'), `要列出已排查的通道：${r.error}`)
+    assert.ok(/process：|CLI：/.test(r.error), `详情要标明是哪一层失败的：${r.error}`)
+    assert.ok(r.error.includes('官方') && r.error.includes('web'), '要给出下一步建议（官方 CLI / 改按 web 接入）')
     assert.equal(llmCalled, 0, '注定跑不通就别去烧模型轮次')
     assert.ok(t.phases().includes('error'), '进度要以 error 收尾（界面才不会停在"生成中"）')
   } finally { rmSync(stubDir, { recursive: true, force: true }) }
@@ -950,4 +955,84 @@ test('app:generate：不传 requirement 时模型看到的 system 与传空数�
   assert.ok(a && b, '两次都要真的调用模型')
   assert.equal(a.system, b.system)
   assert.ok(!String(a.system).includes('用户需求'), '没需求时不得出现需求段（老应用重生成行为逐字不变）')
+})
+
+// ---------- Task 7：三分结论协议（可接入 / 证据不足 / 无法接入） ----------
+//
+// 原行为：probeDesktop 三层全不中 → driver=uia → **硬拒生成**（stoppedBy 'uia-unsupported'）。
+// 问题：**探测不到 ≠ 接不进来**。"没找到"只是"还没找到"，把它说成"此路不通"就把用户判死了
+// （而模型完全可以靠 browse / 试跑自己摸出路径）。
+// 新协议（措辞不得混用）：
+//   connectable（有 verified 通道）→ 正常生成，清单进提示词；
+//   weak（只有 probable 线索）→ **照常生成**，如实告知"证据不足"（可能要靠在真实环境里"试"而不是"读"）；
+//   unusable（一条可用通道都没有）→ 明确"无法接入" + 列出已排查的通道与证据 + 下一步建议。
+test('★ app:generate（desktop）：只有 probable 线索（weak）→ 不硬拒，照常进生成链路并带上清单', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gen-weak-'))
+  writeFileSync(join(dir, 'settings.json'), '{}', 'utf-8')   // 唯一线索：一个数据文件（只到 probable）
+  const exe = join(dir, 'nope.exe')                          // 不存在 → CLI / 脚本两条路都不成立
+  let seen = null
+  const t = setup({ llm: async (args) => { seen = args; return { ok: true, text: '{}', error: null, chars: 2 } } })
+  try {
+    const r = await t.invoke('app:generate', { target: { type: 'desktop', exePath: exe }, appId: 'w1', sessionId: 's1' })
+    assert.notEqual(r.stoppedBy, 'no-capability', `weak 结论不该被硬拒（实际 stoppedBy=${r.stoppedBy}）`)
+    assert.ok(seen, 'weak 结论不该阻断生成：模型必须被调用')
+    const sys = String(seen.system)
+    assert.ok(sys.includes('已探明可控路径'), `清单要进提示词：${sys.slice(0, 200)}`)
+    assert.ok(sys.includes('待验证'), '线索要标明"待验证"，不许说成已实测')
+    // 措辞不得混用：清单里**只有 probable 线索**时绝不能下"无法接入"的结论
+    // （教义里有"下无法接入结论前先联网确认"这句是**方法论**，不是结论，故这里查结论句式）
+    assert.ok(!sys.includes('无法接入该应用'), `weak 场景不得下"无法接入"的结论：${sys.slice(0, 200)}`)
+    assert.ok(!sys.includes('结论：**无法接入**'), 'weak 场景不得出现"无法接入"的结论行')
+    assert.ok(t.details().some((d) => String(d).includes('继续尝试封装')), '进度要如实说"只有待确认线索，继续尝试封装"')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('★ app:generate：完全无可控路径（unusable）→ 明确"无法接入"并列出已排查通道与证据', async () => {
+  let llmCalled = 0
+  const t = setup({ llm: async () => { llmCalled++; return { ok: true, text: '{}', error: null, chars: 2 } } })
+  const r = await t.invoke('app:generate', {
+    target: { type: 'desktop', exePath: 'C:/definitely/not/here/nope.exe' }, appId: 'w2', sessionId: 's1',
+  })
+  assert.equal(r.ok, false)
+  assert.equal(r.stoppedBy, 'no-capability')
+  assert.ok(r.error.includes('无法接入'), `要明确说无法接入：${r.error}`)
+  assert.ok(r.error.includes('已排查'), `要列出已排查的通道：${r.error}`)
+  assert.ok(r.error.includes('不存在') || /process：|CLI：/.test(r.error), `要带上真实证据（分层原因）：${r.error}`)
+  assert.ok(r.error.includes('官方') || r.error.includes('web'), `要给出下一步建议：${r.error}`)
+  assert.equal(llmCalled, 0, '注定跑不通就别去烧模型轮次')
+  assert.ok(t.phases().includes('error'), '进度要以 error 收尾（界面才不会停在"生成中"）')
+})
+
+test('★ app:generate：清单进提示词（有 verified 通道时 → connectable，正常生成）', async () => {
+  const DESK_SPEC = JSON.stringify({
+    specVersion: 1, appId: 'w3', name: '本地 CLI',
+    target: { type: 'desktop', exePath: process.execPath },
+    expose: { mode: 'console' },
+    commands: [
+      { action: 'version', title: '查看版本号', kind: 'read', params: [], returns: { type: 'text', from: 'out' },
+        steps: [{ act: 'cli', argv: ['--version'], save: 'out' }] },
+    ],
+  })
+  let seen = null
+  const t = setup({ llm: async (args) => { seen = args; return { ok: true, text: DESK_SPEC, error: null, chars: DESK_SPEC.length } } })
+  const r = await t.invoke('app:generate', { target: { type: 'desktop', exePath: process.execPath }, appId: 'w3', sessionId: 's1' })
+  assert.equal(r.ok, true, `生成应成功（issues：${JSON.stringify(r.issues || [])}）`)
+  const sys = String(seen?.system)
+  assert.ok(sys.includes('已探明可控路径'), '已验证通道要进提示词')
+  assert.ok(sys.includes('已实测'), 'verified 通道要标"已实测"')
+  assert.ok(!sys.includes('无法接入该应用'), '可接入的应用不得出现"无法接入"的结论')
+})
+
+test('surfaceLines 缺省/为空串时提示词逐字不变（老应用重生成无回归）', () => {
+  const { buildAgentSystem, buildAgentSeed } = require('../electron/app-agent.cjs')
+  const S = '【已探明可控路径】\n· [已实测] 命令行接口（channel=cli → driver=process）'
+  const base = { target: { type: 'web', url: 'https://e.com/' }, driver: 'browser' }
+  const bare = buildAgentSystem(base)
+  assert.equal(buildAgentSystem({ ...base, surfaceLines: '' }), bare, '空串不得多出空行')
+  const withSurface = buildAgentSystem({ ...base, surfaceLines: S })
+  assert.ok(withSurface.includes(S + '\n\n'), '清单要自成一段（后接空行）')
+  assert.equal(withSurface.replace(S + '\n\n', ''), bare, '去掉清单后提示词逐字回到原样')
+  const seedBase = { target: base.target, driver: 'browser', probeMode: 'none' }
+  assert.equal(buildAgentSeed({ ...seedBase, surfaceLines: '' }), buildAgentSeed(seedBase))
+  assert.equal(buildAgentSeed({ ...seedBase, surfaceLines: S }).replace(S + '\n\n', ''), buildAgentSeed(seedBase))
 })

@@ -22,6 +22,8 @@ const httpProbe = require('./app-http-probe.cjs')
 const appWebsearch = require('./app-websearch.cjs')
 const appExplore = require('./app-explore.cjs')
 const { normalizeUrl, snapshotToText } = require('./app-util.cjs')
+// 能力清单的渲染（纯函数）：探测结论 → 模型可用的"探索起点"/给用户看的"排查报告"
+const { renderSurfaceForPrompt, renderSurfaceReport } = require('./app-capability.cjs')
 // 分区键唯一出处（web 按站点 app-site-<host>、desktop 按 app-<appId>）——绝不在此手写 persist:automation-*
 const { appSessionKey } = require('./app-session-key.cjs')
 // 登录墙分级（只有 high 才自动弹窗）与登录编排（开窗等待 → 三路成功信号 → 超时如实降级）
@@ -296,6 +298,9 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     let probeMode = 'none'
     let probeNote = ''
     let probeTitle = null
+    // 探测产出的**能力清单**（Task 4/5/6）：决定三分结论，也决定要不要把清单喂给模型。
+    // 拿不到（老探测实现/某些分支）时为 null —— 上层必须容错，不得因此崩或改变老行为。
+    let surface = null
     if (target.type === 'web') {
       driver = 'browser'
       // ①′ 网址归一：用户常填不带协议头的写法（kimi.com）。不补全的话，取素材与授权都会
@@ -437,28 +442,42 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
         emitProgress(appId, { phase: 'fetch', done: true, detail: `${probeNote}；将基于模型对该站点的公开了解生成，命令需人工核对` })
       }
     } else {
-      const detected = await profiler.detectDriver({ target, probe: (p) => profiler.probeDesktop({ exePath: p?.exePath }) })
+      // ★ 能力清单要从探测结果原样带出来：`detectDriver` 只回 `level`/`evidence`（老契约，本任务不改它），
+      //   故用 probe 回调把 `probeDesktop` 的完整返回（含 surface.capabilities）接住。
+      let probedDesktop = null
+      const detected = await profiler.detectDriver({ target, probe: async (p) => {
+        probedDesktop = await profiler.probeDesktop({ exePath: p?.exePath })
+        return probedDesktop
+      } })
       driver = detected.driver
+      surface = detected.surface || probedDesktop?.surface || null
       key = keyFor(appId, target)   // desktop：键只影响下载目录与事件标签（无 cookie 语义）
-      // ★ uia 后端尚未接入：app-runner-desktop.runUia 恒返回"未接入"，此时生成的**任何**命令
-      //   都注定跑不通。与其给用户一个永远失败的应用（还烧掉十几轮模型预算），不如立即如实拒绝并给出出路。
-      //   手工写入的 uia Spec 不受影响（校验层不拦，控制台里跑起来仍是如实的"未接入"报错）。
-      if (driver === 'uia') {
-        // ★ 必须**如实带上探测细节**（`evidence.attempts` 里每层的真实 reason + 各开关的输出/报错）。
-        //   真机反馈（2026-09-14）：用户对 Aseprite 发起封装时，界面只回一句"未发现 CLI / 脚本接口"，
-        //   而真实情况是——① 用户填的是**安装目录**（旧实现连目录都没解析）；② 该目录下
-        //   `aseprite.exe --help` 其实有 5.8KB 完整帮助（Aseprite 自带 CLI）。
-        //   一句笼统结论把"路径写错/包装器没跑起来"误导成"这程序没有命令行"，用户只能怀疑系统坏了。
+      // ★ 三分结论协议（取代原来的"uia 一律硬拒"）：
+      //   · connectable（有已验证通道）→ 正常生成，清单进提示词；
+      //   · weak（只有待确认线索）→ **照常生成**，只如实告知"证据不足"——探测不到 ≠ 接不进来，
+      //     模型完全可以靠 browse / 试跑在真实环境里把路摸出来（把它判死等于替用户放弃）；
+      //   · unusable（一条可用通道都没有）→ 明确"无法接入"，列出**已排查的通道与证据**再给下一步建议。
+      //   ⚠️ 措辞不得混用：weak 场景**绝不能**出现"无法接入"（那会把"线索不足"谎报成"此路不通"）。
+      if (driver === 'uia' && (!surface || surface.verdict === 'unusable')) {
+        // 兜底：surface 缺失时（老探测实现）也走这条，不能退回"生成一个注定跑不通的应用"
+        // （uia 后端尚未接入，app-runner-desktop.runUia 恒返回"未接入"）。
         const attempts = Array.isArray(detected.evidence?.attempts) ? detected.evidence.attempts : []
-        const detail = attempts
-          .map((a) => `${a.level === 'process' ? 'CLI' : '脚本接口'}：${a.reason}`)
-          .join('；')
-        const why = '该目标未发现 CLI / 脚本接口，只能走 UI 自动化；而 UI 自动化后端尚未接入，无法生成可用命令。'
-          + (detail ? `（探测详情：${detail}）` : '')
-          + '请改用带命令行的可执行文件（例如在命令行执行「<程序>.exe --help」有输出），或把这个应用作为 web 站点接入。'
-          + '提示：填**安装目录**也可以（会自动识别其中的主程序）；若填的是 .bat/.cmd 包装器，请确认它能独立运行。'
+        // 证据两种来源：清单报告（有 surface）优先；没有 surface 时退回逐层真实原因。
+        const report = surface
+          ? renderSurfaceReport(surface)
+          : (attempts.length
+            ? `已排查且不成立的通道：\n${attempts.map((a) => `· ${a.level === 'process' ? 'CLI' : a.level === 'script' ? '脚本接口' : a.level}：${a.reason}`).join('\n')}`
+            : '')
+        const why = '无法接入该应用：未发现任何可控路径（CLI / 脚本接口 / 数据文件 / 接口均不成立）。'
+          + (report ? `\n${report}` : '')
+          + '\n建议：① 查该应用是否有**官方或开源 CLI**（可提供下载方式后重试）；② 若它有 HTTP 接口或网页版，改按 web 站点接入；'
+          + '③ 暂无自动化路径的应用只能人工操作。'
         emitProgress(appId, { phase: 'error', done: true, detail: why })
-        return done({ ok: false, error: why, driver, stoppedBy: 'uia-unsupported', issues: [why], turns: 0, toolCalls: 0 })
+        return done({ ok: false, error: why, driver, stoppedBy: 'no-capability', issues: [why], turns: 0, toolCalls: 0 })
+      }
+      if (driver === 'uia' && surface?.verdict === 'weak') {
+        // 只有 probable 线索：**继续生成**，但把"证据不足"如实说清，让模型知道这次可能得靠"试"而不是"读"。
+        emitProgress(appId, { phase: 'probe', detail: '未发现已验证的通道，只有待确认线索，继续尝试封装（可能要靠在真实环境里试跑，而不是只读素材）', done: true })
       }
       // ★ 目录输入已被探测层解析出真实主程序 → 把 spec 的 exePath 修正过来，否则后续每次
       //   运行都要重走一遍"目录 → 找主程序"，且 spec 里存的路径对不上真正执行的程序。
@@ -471,6 +490,11 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
       probeMaterial = { target, driver, evidence: detected.evidence }
       emitProgress(appId, { phase: 'probe', detail: `探测完成：驱动 ${driver}`, done: true })
     }
+
+    // ★ 清单进提示词（M2）：模型据此"从最有把握的通道开始封装"，而不是对着素材猜。
+    //   `renderSurfaceForPrompt(null)` 返回空串 → `app-agent` 的展开不会多出任何元素 →
+    //   提示词与改动前**逐字一致**（老应用重生成行为不受影响）。
+    const surfaceLines = renderSurfaceForPrompt(surface)
 
     // ② 生成 = **自主探索式**（app-agent.cjs）：把控制权交给模型
     //
@@ -689,6 +713,8 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
       // ★ 需求必须从这里往上跳（M1）：漏传 = 用户写的「要能导出全部订单」根本到不了模型手里，
       //   生成出来的命令只能靠模型对着素材猜覆盖度。
       requirement,
+      // ★ 能力清单（Task 7）：探测产出 → 模型可用的探索起点。空串时提示词逐字不变（无回归）。
+      surfaceLines,
       callLlm, runTool,
       // ★ 草稿校验要用**本次探测出来的 driver**当尺子，不能交给 validateSpecBasic 只凭 target.type 去猜：
       //   target.type='desktop' 猜出来的是 uia（最保守兜底），于是 process 应用写出的 cli 步骤被判
