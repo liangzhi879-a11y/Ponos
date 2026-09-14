@@ -192,6 +192,19 @@ S2-2 的原始防护；`PONOS_HOME` 只是一个目录路径，而 `HOME` 本就
 | 10 | 合并可回滚（双侧备份存在且校验） | 命令 |
 | 11 | 全量测试 0 新增 fail | 命令 |
 
+## 10. 实施结果（2026-09-14，已交付）
+
+- 提交：`2f2e19e`（写入通道 + 枚举 + 落根）、`e2a77f3`（两处静默截断修正）
+- 全量测试：**1893 / 1892 pass / 0 fail / 1 skip**（基线 1863）
+- 合并：三根 → `.yfw`，新增 **236 条**（跨源去重跳过 104 条），`64 → 302`
+- 备份：`~/.yfw/backups/memory-merge-20260914015914/`
+- **实施中新发现并修掉两条静默截断**（详见 `s6-report.md` §3）：
+  - `MAX_BLOCKS_PER_DOC` 200 → **2000**（合并后单文件 239 条，原上限静默丢尾部 ~48 条 ⇒ 文件 302 / 索引 254）
+  - 条目级图缺省 limit → **1000**（原沿用文档级 200 且从头截，恰好吃掉刚合并的尾部经验）
+  - 截断改为**出声 + 可观测**（`capBlocks` 收敛 + `console.warn` + `stats.blocksTruncated`）
+- 修后实测：**文件 302 = 索引 302**；条目图 302 节点 / 766 边 / `truncated=false`；孤立 94（31%）
+- **未处理（超范围，另议）**：`skill_experiences` 有两个归属 —— 技能读 `~/.trae-cn/memory/skill_experiences`（另一应用 home，18 个 JSON），而知识库 space 根是 `<home>/memory/skill_experiences`，且 `walkMd` 只索引 `.md` ⇒ 技能经验不参与知识库检索（该 space `docCount=1`，仅 README）。未擅自改动 `.trae-cn`
+
 ## 9. 非目标（YAGNI）
 
 - ❌ 不解锁 Write/Edit 白名单（保留"不允许整体覆盖经验库"的原防护意图）
