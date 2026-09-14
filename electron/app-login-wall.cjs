@@ -7,21 +7,19 @@
 //     medium = 标题或正文提到登录（只看正文前 1500 字符）        → 只在面板提示
 //     low    = 疑似前端空壳且交互线索极少                       → 只在面板提示
 //   只有 high 才自动弹窗，其余一律交给用户判断（HIGH_ONLY）。
+// ★ 密码框信号的可信度由**抽取层**决定：app-http-probe.cjs 的 attr()（属性名带左边界）与
+//   hasPassword（严格正则）已在源头挡住 `data-type="password"`、`type="passwordx"` 之类误报；
+//   本模块不再自己复核原文（生产者从不返回 rawHtml/html/raw，那条路径生产不可达）。
 'use strict'
 
 // LOGIN_PATH_RE 的**唯一出处**是 app-login-page.cjs（登录编排的成功判定也用它）——此处只复用，不复制。
 const { LOGIN_PATH_RE, snapshotHasPassword } = require('./app-login-page.cjs')
 
-/** 允许自动弹窗的置信度集合（唯一定义处，勿在别处再写一遍字符串判断） */
-const HIGH_ONLY = ['high']
+/** 允许自动弹窗的置信度集合（唯一定义处，勿在别处再写一遍字符串判断）。
+ *  ★ 冻结：它是"只有 high 才自动弹窗"的唯一开关，绝不能被外部 push 污染（HIGH_ONLY.includes 用法不受影响）。 */
+const HIGH_ONLY = Object.freeze(['high'])
 
 const LOGIN_TEXT_RE = /(请登录|立即登录|去登录|账号登录|密码登录|登录已过期|未登录|重新登录|请先登录|sign\s?in|log\s?in|please log in|session expired)/i
-
-// ★ 严格密码框正则：要求 `type` 前是空白（挡住 `<input data-type="password">` 这类自定义属性，
-//   HTML 属性名不允许内嵌连字符后又被当成独立属性），且值必须是完整的 password
-//  （挡住 `<input type="passwordx">`）。
-//   app-http-probe.cjs 里的宽松版 `/<input[^>]+type\s*=\s*["']?password/i` 这两类都会误判。
-const STRICT_PASSWORD_INPUT_RE = /<input\b[^>]*\stype\s*=\s*["']?password["'\s/>]/i
 
 function urlOf(...cands) {
   for (const c of cands) if (typeof c === 'string' && c) return c
@@ -32,18 +30,8 @@ function parse(u) {
   try { return new URL(u) } catch { return null }
 }
 
-/** 素材里可用的原始 HTML（目前 extractPageMaterial 不返回，属**防御性**分支：将来补上即自动启用严格复核） */
-function rawHtmlOf(material) {
-  if (!material || typeof material !== 'object') return ''
-  for (const k of ['rawHtml', 'html', 'raw']) {
-    if (typeof material[k] === 'string' && material[k]) return material[k]
-  }
-  return ''
-}
-
-/** 表单字段里的密码框 —— 抽取层把 type 归一化到字段上，且只扫 <form> 内，通常比全局宽松 hasPassword 可靠。
- *  ★ 残留风险：attr() 的正则没有词边界，`<input data-type="password">` 会被读成 type=password，
- *    故**原文可用时以严格正则为准**（见 passwordEvidence 的优先级）。 */
+/** 表单字段里的密码框 —— 抽取层（app-http-probe.cjs）把 type 归一化到字段上，只扫 <form> 内。
+ *  ★ 可信前提：抽取层的 attr() 已带左边界，`data-type="password"` 不会再被读成 type=password（见那边的注释）。 */
 function hasPasswordField(material) {
   const forms = Array.isArray(material?.forms) ? material.forms : []
   return forms.some((f) => {
@@ -54,34 +42,25 @@ function hasPasswordField(material) {
 }
 
 /**
- * 密码框证据（登录墙最强的硬信号），带**误报加固**。
- * 复核优先级（越靠前越可信）：原始 HTML 的严格正则 > 表单字段 > 宽松 hasPassword：
- *   1) 素材带原始 HTML（rawHtml/html/raw）→ 以严格正则为准（原文可复核时它就是权威），
- *      能挡住 data-type="password"、type="passwordx"，也能挡住下面第 2 项的"字段被污染"问题；
- *   2) 无原文但有表单字段 → forms[].fields[] 里有 tag=input && type=password；
- *   3) 都拿不到 → **保留** hasPassword 为强信号，但标注"未复核"。
- *      ★ 取舍：漏判真实登录墙的代价（用户拿不到素材、功能不可用）远大于多弹一次窗口的代价；
- *        而严格复核所需的原文当前抽取层不返回，故此处不做"无据降级"，只如实标注。
- * @returns {{hit:boolean, strict:boolean, source:'none'|'raw-html'|'raw-html-rejected'|'field'|'hasPassword'}}
+ * 密码框证据（登录墙最强的硬信号）。两个来源都建立在**源头已收紧的严格判定**上：
+ *   1) forms[].fields[] 里有 tag=input && type=password（抽取层按属性边界取 type）；
+ *   2) material.hasPassword（抽取层用严格正则扫原文，能挡住 data-type="password" 与 type="passwordx"）。
+ * ★ 这里**不再**有"素材带原文则重新复核"的分支：真实生产者（fetchPageMaterial / harvestSite）
+ *   从不返回 rawHtml/html/raw，那条分支生产不可达（死代码）；而且它的"原文没命中即否决"会短路
+ *   上面两个真实信号，把真登录墙判成 none（潜伏漏报）。判定只认源头修好的信号。
+ * @returns {{hit:boolean, source:'none'|'field'|'hasPassword'}}
  */
 function passwordEvidence(material) {
-  if (!material || typeof material !== 'object') return { hit: false, strict: true, source: 'none' }
-  const raw = rawHtmlOf(material)
-  if (raw) {
-    return STRICT_PASSWORD_INPUT_RE.test(raw)
-      ? { hit: true, strict: true, source: 'raw-html' }
-      : { hit: false, strict: true, source: 'raw-html-rejected' }
-  }
-  if (hasPasswordField(material)) return { hit: true, strict: true, source: 'field' }
-  if (material.hasPassword !== true) return { hit: false, strict: true, source: 'none' }
-  return { hit: true, strict: false, source: 'hasPassword' }
+  if (!material || typeof material !== 'object') return { hit: false, source: 'none' }
+  if (hasPasswordField(material)) return { hit: true, source: 'field' }
+  if (material.hasPassword === true) return { hit: true, source: 'hasPassword' }
+  return { hit: false, source: 'none' }
 }
 
 function passwordReason(ev) {
-  if (ev.source === 'field') return '表单里有密码字段（登录墙强信号）'
-  if (ev.strict) return '页面上有密码输入框（登录墙强信号）'
-  // 宽松判定且无原文可复核：如实标注，便于面板/报告提示"建议人工确认"
-  return '页面上疑似有密码输入框（登录墙强信号；hasPassword 为宽松判定、未复核，可能是 data-type/type=passwordx 之类误报）'
+  return ev.source === 'field'
+    ? '表单里有密码字段（登录墙强信号）'
+    : '页面上有密码输入框（登录墙强信号）'
 }
 
 /** loginUrl：优先同源的表单 action，其次（本页就是登录页时）本页地址；跨站 action 一律忽略（返回 null） */
@@ -105,7 +84,9 @@ function pickLoginUrl(material, pageUrl) {
  *   material 来自 app-http-probe（静态 HTML 解析），page 来自浏览器快照的 page 字段
  * @returns {{needed:boolean, confidence:'high'|'medium'|'low'|'none', reasons:string[], loginUrl:string|null}}
  */
-function detectLoginWall({ material, page, url } = {}) {
+function detectLoginWall(p) {
+  // ★ 不能写 `= {}` 默认值：那对 undefined 生效、对 null 仍会 TypeError，而本模块自述"任何异常输入都不抛"。
+  const { material, page, url } = p || {}
   const pageUrl = urlOf(url, material?.url, page?.url)
   const reasons = []
   let confidence = 'none'
@@ -145,4 +126,4 @@ function detectLoginWall({ material, page, url } = {}) {
   return { needed: confidence !== 'none', confidence, reasons, loginUrl: pickLoginUrl(material, pageUrl) }
 }
 
-module.exports = { detectLoginWall, HIGH_ONLY, LOGIN_PATH_RE, LOGIN_TEXT_RE, STRICT_PASSWORD_INPUT_RE }
+module.exports = { detectLoginWall, HIGH_ONLY, LOGIN_PATH_RE, LOGIN_TEXT_RE }

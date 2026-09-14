@@ -50,10 +50,18 @@ function stripTags(html) {
     .trim()
 }
 
+// ★ 属性名必须带**左边界** `(?<![-\w])`：否则 `attr('<input data-type="password">', 'type')` 会命中
+//   `data-type=` 里的 `type`，把自定义属性当成真属性（真实故障：登录墙检测据此误判"有密码框" →
+//   自动弹出登录窗口，而用户明确要求"能不弹就不弹"）。同类污染还有 data-id/data-name/data-placeholder/data-value。
 const attr = (tag, name) => {
-  const m = String(tag).match(new RegExp(`${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i'))
+  const m = String(tag).match(new RegExp(`(?<![-\\w])${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i'))
   return m ? (m[2] ?? m[3] ?? m[4] ?? '').trim() : ''
 }
+
+// ★ 密码框判定必须**严格**：`type` 前要求空白（排除 `data-type=` 这类属性名后缀相同的情况），
+//   值后要求边界（排除 `type="passwordx"`）。宽松写法 `/<input[^>]+type\s*=\s*["']?password/i`
+//   这两类都会误判成密码框 → 登录墙误报为 high → 自动弹登录窗口。
+const PASSWORD_INPUT_RE = /<input\b[^>]*\stype\s*=\s*["']?password(?=["'\s/>])/i
 const textOf = (tag) => stripTags(String(tag).replace(/^<[^>]*>/, '')).slice(0, 60)
 
 /**
@@ -93,7 +101,8 @@ function extractPageMaterial(html, url) {
   const text = stripTags(src).slice(0, MAX_TEXT_CHARS)
   const interactives = forms.reduce((n, f) => n + f.fields.length + f.buttons.length, 0) + buttons.length + links.length
   // 登录墙硬信号：密码框（可能在 <form> 外，form 解析覆盖不到，故直接扫原文）
-  const hasPassword = /<input[^>]+type\s*=\s*["']?password/i.test(src)
+  // 严格正则：`data-type="password"` / `type="passwordx"` 都不算（见 PASSWORD_INPUT_RE 注释）
+  const hasPassword = PASSWORD_INPUT_RE.test(src)
   return { url: url || '', title, description, headings, forms, buttons, links, text, interactives, hasPassword }
 }
 

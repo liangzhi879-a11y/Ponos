@@ -69,65 +69,75 @@ test('LOGIN_PATH_RE 语义：命中各类登录路径，不误伤普通路径', 
   }
 })
 
-test('误报加固①：material 带原始 HTML 时用严格正则复核，data-type="password" 不算密码框', () => {
-  const r = detectLoginWall({
-    material: { hasPassword: true, html: '<form><input data-type="password" name="q"></form>', interactives: 30, forms: [{ action: '', fields: [{ tag: 'input', type: 'text', name: 'q' }] }], text: '订单列表' },
-    url: 'https://x.com/orders',
-  })
+// ───────────────── 误报加固：判定必须落在**真实生产路径**上（fix round 1，F1） ─────────────────
+//
+// 旧实现的加固分支是"素材带 rawHtml/html/raw 时用严格正则复核"，而真实生产者
+//（fetchPageMaterial / harvestSite）**从不返回这些字段** → 加固形同虚设：
+// `data-type="password"` 依然判 high → 自动弹出登录窗口（用户明确要求"能不弹就不弹"）。
+// 现在收紧到源头（app-http-probe.cjs 的 attr 加左边界 + hasPassword 改严格正则），
+// 所以断言必须用 **extractPageMaterial 的真实产物**喂 detectLoginWall——这正是 Task 6 的调用形状：
+//   detectLoginWall({ material: harvested.material, page: null, url })
+const { extractPageMaterial } = require('../electron/app-http-probe.cjs')
+
+const wallOf = (html, url = 'https://x.com/search') =>
+  detectLoginWall({ material: extractPageMaterial(html, url), page: null, url })
+
+test('F1 端到端：data-type="password" 的真实素材 → none / 不弹窗（自动开窗的回归防线）', () => {
+  const r = wallOf('<html><body><form action="/s"><input data-type="password" name="q"><button>查询</button></form></body></html>')
   assert.equal(r.confidence, 'none')
+  assert.equal(r.needed, false)
   assert.deepEqual(r.reasons, [])
 })
 
-test('误报加固②：material 带原始 HTML 时，type="passwordx" 不算密码框', () => {
-  const r = detectLoginWall({
-    material: { hasPassword: true, rawHtml: '<form><input type="passwordx" name="q"></form>', interactives: 30, forms: [], text: '订单列表' },
-    url: 'https://x.com/orders',
-  })
+test('F1 端到端：type="passwordx" 的真实素材 → none（值必须以边界收尾）', () => {
+  const r = wallOf('<html><body><form action="/s"><input type="passwordx" name="q"><button>查询</button></form></body></html>')
   assert.equal(r.confidence, 'none')
+  assert.equal(r.needed, false)
 })
 
-test('误报加固③：真实的密码框（严格正则复核通过）仍是 high', () => {
-  const r = detectLoginWall({
-    material: { hasPassword: true, rawHtml: '<form><input type="password" name="pwd"></form>' },
-    url: 'https://x.com/orders',
-  })
+test('F1 端到端：真密码框的真实素材仍是 high（收紧不得连真信号一起挡掉）', () => {
+  const r = wallOf('<html><body><form action="/s"><input type="password" name="pwd"><button>登录</button></form></body></html>')
   assert.equal(r.confidence, 'high')
+  assert.equal(r.needed, true)
   assert.ok(r.reasons.join().includes('密码'))
 })
 
-test('已知误报（记录行为）：无原始 HTML 可复核时，宽松 hasPassword 仍保留为 high，但 reasons 标明未复核', () => {
+test('源①「表单字段命中」：forms[].fields[] 里有 tag=input && type=password → high', () => {
+  // attr 修好后字段里的 type 已是可信信号，措辞直接说"表单里有密码字段"，不再自称"严格复核"
   const r = detectLoginWall({
-    material: { hasPassword: true, interactives: 30, forms: [{ action: '', fields: [{ tag: 'input', type: 'text', name: 'q' }] }], text: '订单列表' },
-    url: 'https://x.com/orders',
-  })
-  assert.equal(r.confidence, 'high')
-  assert.ok(r.reasons.join().includes('未复核'), '应明示该 high 未经严格复核')
-})
-
-test('已知误报（字段被污染）：抽取层 attr 无词边界，data-type="password" 会被读成字段 type=password；有原文时严格复核仍能挡住', () => {
-  // 抽取层 attr('type') 会命中 `data-type=` 里的 type → 字段被判成 password（这条由 app-http-probe.cjs 决定，本任务不改）
-  const pollutedFields = [{ tag: 'input', type: 'password', name: 'q' }]
-  // a) 原文可用 → 严格正则为准 → 不误报
-  assert.equal(detectLoginWall({
-    material: { hasPassword: true, html: '<form><input data-type="password" name="q"></form>', interactives: 30, forms: [{ action: '', fields: pollutedFields }], text: '订单列表' },
-    url: 'https://x.com/orders',
-  }).confidence, 'none')
-  // b) 原文拿不到 → 只能沿用字段/宽松信号 → 仍 high（**已知残留误报**，如实记录；宁可多提示也不错判"无需登录"）
-  assert.equal(detectLoginWall({
-    material: { hasPassword: true, interactives: 30, forms: [{ action: '', fields: pollutedFields }], text: '订单列表' },
-    url: 'https://x.com/orders',
-  }).confidence, 'high')
-})
-
-test('可靠信号优先：表单字段里的 password 判为严格命中', () => {
-  const r = detectLoginWall({
-    material: { interactives: 30, forms: [{ action: '/session', fields: [{ tag: 'input', type: 'password', name: 'pwd' }] }], text: '登录' },
+    material: { interactives: 30, forms: [{ action: '/session', fields: [{ tag: 'input', type: 'password', name: 'pwd' }] }], text: '订单列表' },
     url: 'https://x.com/a',
   })
   assert.equal(r.confidence, 'high')
-  assert.ok(r.reasons.join().includes('密码'))
-  // 表单字段判定为严格命中 → 不该再带"未复核"的措辞
+  assert.ok(r.reasons.some((s) => s.includes('表单里有密码字段')), `实际：${r.reasons}`)
+  assert.equal(r.reasons.join().includes('未复核'), false, '源头已收紧，不该再出现"未复核"措辞')
+  // 非 input（如 select/textarea）或非 password 的 type 不算
+  assert.equal(wallOf('<html><body><form action="/s"><select name="x" type="password"></select></form></body></html>').confidence, 'none')
+  assert.equal(wallOf('<html><body><form action="/s"><input type="text" name="q"><button>查询</button></form></body></html>').confidence, 'none')
+})
+
+test('源②「素材 hasPassword」：抽取层严格正则命中 → high，措辞如实说"页面上有密码输入框"', () => {
+  const r = detectLoginWall({ material: { hasPassword: true, interactives: 30, text: '订单列表' }, url: 'https://x.com/orders' })
+  assert.equal(r.confidence, 'high')
+  assert.ok(r.reasons.some((s) => s.includes('页面上有密码输入框')), `实际：${r.reasons}`)
   assert.equal(r.reasons.join().includes('未复核'), false)
+})
+
+test('rawHtml/html/raw 分支已删除：这些字段不再参与判定（生产从不返回，属死代码）', () => {
+  const base = { hasPassword: false, interactives: 30, text: '订单列表' }
+  for (const k of ['html', 'rawHtml', 'raw']) {
+    const r = detectLoginWall({ material: { ...base, [k]: '<form><input type="password" name="pwd"></form>' }, url: 'https://x.com/orders' })
+    assert.equal(r.confidence, 'none', `material.${k} 不该影响判定`)
+  }
+})
+
+test('F3：素材带无关 html 字段时，其它 high 信号不得被"复核拒否"短路（真实登录墙不许漏报）', () => {
+  const r = detectLoginWall({
+    material: { html: '<div>loading…</div>', forms: [{ fields: [{ tag: 'input', type: 'password' }] }], hasPassword: true },
+    url: 'https://x.com/a',
+  })
+  assert.equal(r.confidence, 'high')
+  assert.equal(r.needed, true)
 })
 
 test('误报加固不吞掉其他 high 信号：logged_in=false 时即使密码框被复核为误报，仍 high', () => {
@@ -184,13 +194,29 @@ test('loginUrl 兜底：非法 action 字符串被忽略且不抛错', () => {
 })
 
 test('健壮性：无参数 / null / 字段类型异常都不抛错，返回 none', () => {
-  for (const arg of [undefined, {}, { material: null, page: null, url: null }, { material: 'x', page: 42 }]) {
+  for (const arg of [undefined, null, {}, { material: null, page: null, url: null }, { material: 'x', page: 42 }]) {
     const r = detectLoginWall(arg)
     assert.equal(r.needed, false)
     assert.equal(r.confidence, 'none')
     assert.deepEqual(r.reasons, [])
     assert.equal(r.loginUrl, null)
   }
+})
+
+test('F4：裸 null 不抛错（`= {}` 默认值只对 undefined 生效，曾直接 TypeError）', () => {
+  assert.doesNotThrow(() => detectLoginWall(null))
+  const r = detectLoginWall(null)
+  assert.equal(r.needed, false)
+  assert.equal(r.confidence, 'none')
+  assert.deepEqual(r.reasons, [])
+  assert.equal(r.loginUrl, null)
+})
+
+test('F5：HIGH_ONLY 冻结——外部 push 不得改变"只有 high 能自动弹窗"', () => {
+  assert.ok(Object.isFrozen(HIGH_ONLY))
+  assert.throws(() => HIGH_ONLY.push('none'), '冻结数组被 push 应抛错（ESM 严格模式）')
+  assert.deepEqual(HIGH_ONLY, ['high'])
+  assert.equal(HIGH_ONLY.includes('high'), true)
 })
 
 // ── app-login-page.cjs 的纯函数（Task 5 会直接复用，这里先锁定行为，防后续被改坏） ──

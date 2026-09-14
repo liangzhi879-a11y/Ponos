@@ -314,6 +314,50 @@ test('extractPageMaterial：检出密码框（登录墙硬信号）', () => {
   assert.equal(extractPageMaterial('<html><body><input type="text"></body></html>', 'https://x.com/').hasPassword, false)
 })
 
+// ---------- 密码框误报加固：必须在**源头**（应用智控·登录态 Task 4 fix round 1） ----------
+//
+// 真实故障（Task 3 审查发现、Task 6 的调用路径会踩到）：旧 hasPassword 用
+//   /<input[^>]+type\s*=\s*["']?password/i
+// 会把 `data-type="password"`、`type="passwordx"` 判成密码框；attr() 的正则 `${name}\s*=` 又没有
+// 左边界，`attr('<input data-type="password">', 'type')` 同样会抽到 "password"，
+// 于是 forms[].fields[].type 也被污染 → detectLoginWall 判 high → **自动弹出登录窗口**
+//（用户明确要求"能不弹就不弹"）。调用侧 detectLoginWall 曾用"素材带原文则严格复核"兜底，
+// 但真实生产者（fetchPageMaterial / harvestSite）从不返回 rawHtml/html/raw → 加固形同虚设。
+// 因此判定必须在源头收紧；下面两条守住源头正则，app-login-wall.test.mjs 守住端到端调用路径。
+
+test('extractPageMaterial：hasPassword 只认真正的 password 输入框（data-type / passwordx 都不算）', () => {
+  const pw = (html) => extractPageMaterial(html, 'https://x.com/a').hasPassword
+  // 真密码框：引号/大小写/无引号/自闭合/属性换行分隔 各种合法写法都要认
+  for (const html of [
+    '<input type="password">', "<input type='password'>", '<input type=password>', '<input type="PASSWORD">',
+    '<input name="pw" type="password" />', '<input\n  class="x"\n  type = "password"\n>',
+    '<form action="/s"><input type="password" name="pw"></form>',
+  ]) assert.equal(pw(html), true, `应判为密码框：${html}`)
+  // 误报：属性名只是后缀相同（data-type / x-type）、或值只是以 password 开头
+  for (const html of [
+    '<input data-type="password">', '<input data-type="password" name="q">', '<input x-type=password>',
+    '<input type="passwordx">', '<input type="passwordx" name="q">', '<input type="text" data-type="password">',
+    '<input type="text">', '<input name="password">',
+  ]) assert.equal(pw(html), false, `不该判为密码框：${html}`)
+})
+
+test('extractPageMaterial：attr 带左边界——data-* 属性不再冒充同名属性（type/id/name/placeholder/value）', () => {
+  const m = extractPageMaterial('<html><body><form action="/s"><input data-type="password" name="q"></form></body></html>', 'https://x.com/a')
+  assert.equal(m.forms[0].fields[0].type, 'text', 'data-type 不是 type，字段应保留 input 默认 text')
+  const m2 = extractPageMaterial('<html><body><form action="/s"><input data-id="xid" data-name="xname" data-placeholder="xph" data-value="xv"></form></body></html>', 'https://x.com/a')
+  const f = m2.forms[0].fields[0]
+  assert.deepEqual({ id: f.id, name: f.name, placeholder: f.placeholder, value: f.value }, { id: '', name: '', placeholder: '', value: '' })
+  // 无回归：真实属性（含 form/button/a/meta）仍要照常抽到
+  const m3 = extractPageMaterial('<html><head><meta name="description" content="说明"></head><body><form action="/s" method="post" id="F" name="fm"><input type="password" id="pwd" name="pw" placeholder="密码" value="v"><button id="B" type="submit">提交</button></form><a href="/x" id="L">链接</a></body></html>', 'https://x.com/a')
+  const g = m3.forms[0]
+  assert.equal(m3.description, '说明')
+  assert.deepEqual([g.action, g.method, g.id, g.name], ['/s', 'post', 'F', 'fm'])
+  assert.deepEqual([g.fields[0].type, g.fields[0].id, g.fields[0].name, g.fields[0].placeholder, g.fields[0].value], ['password', 'pwd', 'pw', '密码', 'v'])
+  assert.deepEqual([g.buttons[0].text, g.buttons[0].id, g.buttons[0].type], ['提交', 'B', 'submit'])
+  assert.deepEqual([m3.links[0].href, m3.links[0].id], ['/x', 'L'])
+  assert.deepEqual([m3.buttons[0].selector, m3.buttons[0].type], ['#B', 'submit'])
+})
+
 // 显式传 isAllowedHost 时以调用方为准（Task 6 会传站点授权集合）：允许的跨站可以跟，
 // 但 Cookie 仍由 cookieProvider 按 URL 自己把关——不授权就不带（两件事各管一摊）。
 test('fetchPageMaterial：显式 isAllowedHost 可放行跨站跳转，但 Cookie 仍按 url 把关', async () => {
