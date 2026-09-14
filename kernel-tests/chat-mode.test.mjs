@@ -18,7 +18,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, rmSy
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CHAT_MODE_DISALLOWED } from '../kernel/tools.mjs'
+import { CHAT_MODE_DISALLOWED, createToolRegistry } from '../kernel/tools.mjs'
 
 const KERNEL_CLI = fileURLToPath(new URL('../kernel/cli.mjs', import.meta.url))
 const BRIDGE_SRC = fileURLToPath(new URL('../server/bridge.mjs', import.meta.url))
@@ -143,10 +143,47 @@ test('chat 模式工具表：本地工具与工作流工具全部不可调用（
   assert.ok(taskTools.some((t) => String(t) === 'run_spec_dev'), `task 应暴露工作流工具 run_spec_dev（实际 ${taskTools.join(', ')}）`)
 })
 
+// 专测一条（T5）：KnowledgeImport 是**写盘类**能力（往知识空间落文件）——chat 必须禁。
+// 单独成例而不是只靠上面的逐项比对：deepEqual 红在"两张表不一致"上，而"只在一边 = 漏挡"
+// 这种故障（另一条路径照样能写盘）需要点名到具体工具才看得懂。
+test('KnowledgeImport（写盘类）必须同时存在于内核权威表与 bridge 拷贝表', () => {
+  const src = readFileSync(BRIDGE_SRC, 'utf-8')
+  const m = src.match(/export const CHAT_DISALLOWED = \[([^\]]*)\]/)
+  assert.ok(m, 'bridge 的 CHAT_DISALLOWED 必须仍存在')
+  // 解析数组字面量而不是原串 includes：注释里提到工具名不算"在表里"
+  const bridgeIds = m[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean)
+  assert.ok(CHAT_MODE_DISALLOWED.includes('KnowledgeImport'), '内核权威表必须含 KnowledgeImport')
+  assert.ok(bridgeIds.includes('KnowledgeImport'), 'bridge 拷贝表必须含 KnowledgeImport（只在一边 = 漏挡）')
+})
+
 test('禁工具表双份同源：bridge 拷贝（旧缓存内核兜底）与内核权威表逐项一致', () => {
   const src = readFileSync(BRIDGE_SRC, 'utf-8')
   const m = src.match(/export const CHAT_DISALLOWED = \[([^\]]*)\]/)
   assert.ok(m, 'bridge 的 CHAT_DISALLOWED 必须仍存在（不认 --session-mode 的旧缓存内核的兼容兜底）')
   const ids = m[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean)
   assert.deepEqual(ids, CHAT_MODE_DISALLOWED, '内核为权威源、bridge 为拷贝，两者必须逐项一致')
+  // 双向差集（deepEqual 的补充，不是重复）：deepEqual 红在"数组不同"上，读不出**往哪边漏**，
+  // 而两类漂移的后果完全不同 —— 只在 bridge 里 = 权威表漏挡（chat 走内核这条路照样能写盘）；
+  // 只在权威表里 = 拷贝漏挡（跑旧缓存内核的用户那条兜底路径放行）。故补双向差集并点名到项。
+  const onlyKernel = CHAT_MODE_DISALLOWED.filter((n) => !ids.includes(n))
+  const onlyBridge = ids.filter((n) => !CHAT_MODE_DISALLOWED.includes(n))
+  assert.deepEqual(onlyKernel, [], `只在权威表里（bridge 拷贝漏了）：${onlyKernel.join(', ')}`)
+  assert.deepEqual(onlyBridge, [], `只在 bridge 拷贝里（权威表漏了）：${onlyBridge.join(', ')}`)
+  // 手写拷贝最易出的另一类漂移：重复项。行为上无差别，但证明"逐项拷贝"已不再逐项——
+  // 下一次改动必然还会错，故当错误暴露而不是放过。
+  assert.equal(new Set(CHAT_MODE_DISALLOWED).size, CHAT_MODE_DISALLOWED.length, '权威表不得有重复项')
+  assert.equal(new Set(ids).size, ids.length, 'bridge 拷贝表不得有重复项')
+})
+
+// 两表"逐项一致"只证明它们**互相**没漂：两边同时把 'KnowledgeImport' 写成 'KnowledgImport'
+// （或表里留着一个已改名的工具）时全都绿，而实际效果是**静默漏挡**——chat 里那个工具照样
+// 能被调用（禁用的是个不存在的名字）。故再钉一层：每项都必须是注册表里真实存在的工具名。
+test('禁工具表不得有死名字：每一项都必须是注册表里真实的工具（拼错 = 静默漏挡）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chat-mode-names-'))
+  try {
+    const names = new Set(createToolRegistry({ cwd: dir, addDirs: [] }).toolNames)
+    assert.ok(names.has('KnowledgeImport'), `前置：注册表应含 KnowledgeImport（实际 ${[...names].join(', ')}）`)
+    const dead = CHAT_MODE_DISALLOWED.filter((n) => !names.has(n))
+    assert.deepEqual(dead, [], `权威表里的这些名字在注册表中不存在（拼错/已改名的条目等于没禁）：${dead.join(', ')}`)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })

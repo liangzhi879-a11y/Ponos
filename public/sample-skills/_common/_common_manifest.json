@@ -97,7 +97,47 @@
         }
       ],
       "current_version": "1.0.0"
+    },
+    "doc_to_md.py": {
+      "versions": [
+        {
+          "version": "1.0.0",
+          "date": "2026-09-14",
+          "summary": "文件知识库导入的文档解析器（唯一权威）：PDF(文本层/扫描件OCR)/Word/Excel/PPT/图片/文本/CSV → 单行 JSON sections；PPT 自研 OOXML 解析（无 python-pptx）；扫描件走 ocr_engine CLI，缺 PyMuPDF 时回退 pypdfium2 渲染+ocr_image；stdout 强制 UTF-8（Windows cp936 会让中文变乱码）"
+        },
+        {
+          "version": "1.1.0",
+          "date": "2026-09-14",
+          "summary": "文本层 PDF 增补真表格提取（PyMuPDF find_tables，新增 _pdf_tables_via_pymupdf）：此前 Excel/Word 导出的 PDF 表格被压成文本行、列关系丢失；仅文本层走此路（扫描件无坐标仍走 OCR），页数上限 200，异常降级为无表格不失败整篇。配套：bundled python 补装 PyMuPDF 1.28.2，修复 ocr_engine 处理 PDF 时 KeyError: total_pages"
+        },
+        {
+          "version": "1.2.0",
+          "date": "2026-09-14",
+          "summary": "新增页面图片渲染（--emit-page-images / --max-vision-pages + render_pdf_pages）：供上层视觉模型识别扫描件/图片里的表格（OCR 不保留列坐标，引擎文本启发式表格数恒为 0）。仅在调用方指定目录时渲染（默认零额外磁盘/耗时）；渲染失败降级为无表格并出声；图片输入直接复用原文件不再编码"
+        }
+      ],
+      "history": [
+        {
+          "from": "new",
+          "to": "1.0.0",
+          "date": "2026-09-14",
+          "summary": "文件知识库导入的文档解析器（唯一权威）：PDF(文本层/扫描件OCR)/Word/Excel/PPT/图片/文本/CSV → 单行 JSON sections；PPT 自研 OOXML 解析（无 python-pptx）；扫描件走 ocr_engine CLI，缺 PyMuPDF 时回退 pypdfium2 渲染+ocr_image；stdout 强制 UTF-8（Windows cp936 会让中文变乱码）"
+        },
+        {
+          "from": "1.0.0",
+          "to": "1.1.0",
+          "date": "2026-09-14",
+          "summary": "文本层 PDF 增补真表格提取（PyMuPDF find_tables，新增 _pdf_tables_via_pymupdf）：此前 Excel/Word 导出的 PDF 表格被压成文本行、列关系丢失；仅文本层走此路（扫描件无坐标仍走 OCR），页数上限 200，异常降级为无表格不失败整篇。配套：bundled python 补装 PyMuPDF 1.28.2，修复 ocr_engine 处理 PDF 时 KeyError: total_pages（引擎 ocr/ocr-table 此前对 PDF 必然崩）"
+        },
+        {
+          "from": "1.1.0",
+          "to": "1.2.0",
+          "date": "2026-09-14",
+          "summary": "新增页面图片渲染（--emit-page-images / --max-vision-pages + render_pdf_pages）：供上层（内核）调视觉模型识别扫描件/图片里的表格。仅在调用方给出目录时渲染（默认零额外磁盘与耗时）；渲染失败只降级为「无表格+warning」，不让整篇解析失败；图片输入直接复用原文件（不复制、不重编码）"
+        }
+      ],
+      "current_version": "1.2.0"
     }
   },
-  "updated_at": "2026-07-30T11:00:00"
+  "updated_at": "2026-09-14T00:00:00"
 }

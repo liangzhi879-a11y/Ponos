@@ -28,7 +28,13 @@ import { createHash } from 'node:crypto' // 仅内容指纹（sha1），无 IO
 // 1 → 2（S5）：索引文本口径由 `b.text`（60 字截断摘要，实测 45 字 vs full 471 字）
 // 改为 `relationContent(b)`（full 去类型前缀，spec §8）。口径变了，**旧索引必须整体重建**
 // ——kernel/knowledge.mjs 靠版本号不等触发重建（不得报错或返回空集，S5 全局约束 5）。
-export const INDEX_VERSION = 2
+//
+// v3（2026-09-14 对标 Obsidian 批次 1）：标签来源变了 —— ① frontmatter 支持 YAML 子集
+// （block 列表 / flow 数组 / 引号 / 行尾注释 / 多行折叠，见 parseYamlSubset）；② 正文内联
+// `#tag` 进索引（见 extractInlineTags）。**必须 bump**：这两项都改变 doc.tags，而被改的
+// .md 文件可能 size/mtime 未变（用户在别处敲了个内联标签就另存），indexStale() 的逐文件
+// 指纹发现不了 → 不 bump 就会拿着旧标签集一直跑（"文件里有、知识库没有"这类最难查的分裂）。
+export const INDEX_VERSION = 3
 
 // ── 基础：行指纹 ──────────────────────────────────────────────────────────
 // 与 kernel/memory.mjs:13 / server/experience.mjs:24 现行算法逐字相同。
@@ -61,18 +67,180 @@ export function parseEntryLine(line) {
 // ── 基础：frontmatter ─────────────────────────────────────────────────────
 // 极简实现（与 kernel/memory.mjs:17 同款语义），但额外给出 body 起始行号——
 // 块切分要把 "行号" 回溯到**原始文件**（含 frontmatter），否则跳转会错位。
+//
+// 2026-09-14（对标 Obsidian 批次 1）：原实现只认单行 `key: 值`，而 Obsidian Properties
+// 的**标准写法**恰恰是 YAML block 列表：
+//     tags:
+//       - 财务
+//       - 税务
+// 旧实现把 `tags:` 记成空串、`- 财务` 这行直接丢弃（不匹配 `^([\w-]+):`）→ **标签全丢**；
+// 另一种常见写法 `tags: [a, b]` 会得到字面量 `'[a, b]'`，下游按 `/[,\s]+/` 拆出
+// `['[a','b]']` 这种带方括号的脏 tag（检索、关联网全被污染）。
+// 现改为走 parseYamlSubset 的**标量/列表子集**（不做嵌套 map、不做锚点别名——批次 1 范围）。
 export function parseFrontmatter(raw) {
   // 去 BOM：Windows 记事本等保存的 md 可能以 \uFEFF 开头，否则 frontmatter 匹配失败、
   // title/tags 全丢（整段被当正文）。注意只作用于解析，hashLine 的指纹仍基于原始字符串。
   const text = String(raw ?? '').replace(/^\uFEFF/, '')
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text)
   if (!m) return { front: {}, body: text, bodyStartLine: 1 }
-  const front = {}
-  for (const line of m[1].split(/\r?\n/)) {
-    const kv = /^([\w-]+):\s*(.*)$/.exec(line)
-    if (kv) front[kv[1]] = kv[2]
-  }
+  const front = parseYamlSubset(m[1])
   return { front, body: text.slice(m[0].length), bodyStartLine: m[0].split(/\r?\n/).length }
+}
+
+/**
+ * YAML **子集**解析（frontmatter 专用，不是通用 YAML 实现）。支持：
+ *   `k: v`            → `'v'`（**含 `v` 里的逗号也不拆**——保持旧行为，下游 collectTags 自己拆）
+ *   `k: a, b`         → `'a, b'`（同上：旧行为是字符串，不因"看起来像列表"而改变类型）
+ *   `k: [a, b]`       → `['a', 'b']`（flow 数组，尊重引号内的逗号）
+ *   `k:` + 缩进 `- x` → `['x', ...]`（block 列表，Obsidian Properties 的标准写法）
+ *   `k: "x"` / `'x'`  → `'x'`（去引号；引号内 `#` 不当注释）
+ *   `k: v # 注释`      → `'v'`（行尾注释剔除；`#` 仅在**前面是空白或行首**时才算注释）
+ *   `k: >` / `k: |`   → 后续缩进行折叠成一行（`>` 用空格连、`|` 用 \n 连）
+ * 不支持（刻意，批次 1 范围外）：嵌套 map（缩进子键 **丢弃**，与旧行为一致）、
+ * 锚点/别名 `&a`/`*a`、时间戳类型化（一律字符串）、多文档 `---` 分隔。
+ */
+export function parseYamlSubset(text) {
+  const out = {}
+  const lines = String(text ?? '').split(/\r?\n/)
+
+  /** 剔除行尾注释：只在引号外、且 `#` 前是行首/空白时才截断（URL 里的 `#` 与 `"a#b"` 要留住） */
+  const stripComment = (s) => {
+    let quote = null
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i]
+      if (quote) { if (c === quote) quote = null; continue }
+      if (c === '"' || c === "'") { quote = c; continue }
+      if (c === '#' && (i === 0 || /\s/.test(s[i - 1]))) return s.slice(0, i)
+    }
+    return s
+  }
+  /** 去引号（只去**成对**的首尾引号，`'don't'` 这种保留内部撇号） */
+  const unquote = (s) => {
+    const t = s.trim()
+    if (t.length >= 2 && ((t[0] === '"' && t.endsWith('"')) || (t[0] === "'" && t.endsWith("'")))) {
+      return t.slice(1, -1)
+    }
+    return t
+  }
+  /** flow 数组的逗号拆分：`[a, 'b, c']` 的第二个元素不能被中间的逗号切开 */
+  const splitFlow = (body) => {
+    const parts = []
+    let buf = ''
+    let quote = null
+    for (const c of body) {
+      if (quote) { buf += c; if (c === quote) quote = null; continue }
+      if (c === '"' || c === "'") { quote = c; buf += c; continue }
+      if (c === ',') { parts.push(buf); buf = ''; continue }
+      buf += c
+    }
+    parts.push(buf)
+    return parts.map(unquote).filter((x) => x !== '')
+  }
+  const indentOf = (l) => l.length - l.trimStart().length
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line.trim() || /^\s*#/.test(line)) continue
+    // 顶层键必须**不缩进**：缩进行是上一键的子内容（block 列表 / 多行文本），在上面各自的分支里消费
+    if (indentOf(line) > 0) continue
+    const kv = /^([\w-]+):\s*(.*)$/.exec(line)
+    if (!kv) continue
+    const key = kv[1]
+    const rest = stripComment(kv[2]).trim()
+
+    if (rest === '' ) {
+      // 空值：看后续**缩进更深**的行决定是 block 列表还是多行标量；都没有 → `''`（旧行为）
+      const items = []
+      const buf = []
+      let mode = null                                  // 'list' | 'text' | null
+      let base = null
+      let j = i + 1
+      for (; j < lines.length; j++) {
+        const l = lines[j]
+        if (!l.trim()) { if (mode === 'text') buf.push(''); continue }
+        const ind = indentOf(l)
+        if (ind === 0) break                           // 回到顶层 → 本键结束
+        if (base === null) base = ind
+        if (ind < base) break
+        const item = /^\s*-\s*(.*)$/.exec(l)
+        if (item && mode !== 'text') { mode = 'list'; items.push(unquote(stripComment(item[1]))); continue }
+        if (mode === 'list') break                     // 列表里冒出非 `-` 行 → 收工（不做混合结构）
+        // 缩进行的形状是 `子键: 值` → 这是**嵌套 map**（frontmatter 里常见于自定义属性）。
+        // 批次 1 不解析嵌套（与旧行为一致：旧实现丢弃全部缩进行）——保留键、值置空串，
+        // 绝不能把 `b: 1` 当成上一键的多行文本拼进去（那会把结构数据变成一串假正文）。
+        if (/^[\w-]+\s*:/.test(l.trim())) { mode = 'map'; break }
+        mode = mode || 'text'
+        buf.push(l.trim())
+      }
+      i = j - 1
+      out[key] = mode === 'list' ? items.filter((x) => x !== '') : (buf.length ? buf.join(' ') : '')
+      continue
+    }
+
+    if (rest === '>' || rest === '|') {
+      const buf = []
+      let j = i + 1
+      for (; j < lines.length; j++) {
+        const l = lines[j]
+        if (!l.trim()) { buf.push(''); continue }
+        if (indentOf(l) === 0) break
+        buf.push(l.trim())
+      }
+      i = j - 1
+      out[key] = buf.join(rest === '|' ? '\n' : ' ').trim()
+      continue
+    }
+
+    if (rest.startsWith('[') && rest.endsWith(']')) {
+      out[key] = splitFlow(rest.slice(1, -1))
+      continue
+    }
+
+    out[key] = unquote(rest)
+  }
+  return out
+}
+
+/**
+ * 正文内联 `#tag` 提取（Obsidian 口径，2026-09-14 批次 1 新增）。
+ *
+ * 为什么必须有：Obsidian 用户敲标签的主力形态是**正文里的 `#标签`**，而不是 frontmatter。
+ * 旧实现只从三个来源收标签（frontmatter.tags / 文件名 / entry 行的 `|tag`），正文内联标签
+ * **完全不进索引** → 导入 Obsidian vault 后"标签体系凭空消失"，而标签正是 related.jsonl
+ * 骨架层（why.kind='tag'）与注入检索的主力信号。
+ *
+ * 规则（对齐 Obsidian）：
+ *   · `#` 前必须是**行首或空白**（`a#b` 不是标签，`[x](#anchor)` 的锚点不是标签）；
+ *   · tag 体 `[\p{L}\p{N}_][\p{L}\p{N}_/-]*`，允许中文与层级 `#a/b`；
+ *   · **至少一个非数字字符**（`#123` 是纯数字 → 不是标签；`#2024财务` 是）；
+ *   · 行内代码 `` `#x` `` 与 markdown 链接目标 `[x](#anchor)` 内不提取
+ *     （原地**等长**清空成空格后再匹配：长度不变所以不影响任何下标，下游若要用位置也不会错位）；
+ *   · 去重且**保持原样大小写**（Obsidian 标签大小写不敏感，但展示用原文）
+ */
+export function extractInlineTags(text) {
+  const src = String(text ?? '')
+  // 屏蔽两步（顺序无关，都是等长替换）：
+  //  ① 行内代码：`#x` 里的 `#x` 是**示例代码**，不是标签（否则"怎么用标签"的说明文档
+  //     会凭空长出一堆假标签）；
+  //  ② markdown 链接目标：`[文字](#锚点)` / `[文字](note.md#片段)` 的 `#` 是锚点，
+  //     不是标签。只屏蔽 `](...)` 这一段（保留 `[文字]`），免得把正文里
+  //     `（#财务）` 这种中文全角括号包住的真标签也误伤。
+  const masked = src
+    .replace(/`[^`\n]*`/g, (s) => ' '.repeat(s.length))
+    .replace(/\]\([^)\n]*\)/g, (s) => ' '.repeat(s.length))
+  const out = []
+  const seen = new Set()
+  // 边界用**非捕获组**（只卡位），故 tag 就是 `m[1]`；`m` 标志让 `^` 命中每一行行首
+  const re = /(?:^|[\s(（【\[])#([\p{L}\p{N}_][\p{L}\p{N}_/-]*)/gmu
+  for (const m of masked.matchAll(re)) {
+    const tag = m[1].replace(/[/-]+$/, '')             // `#a/b/` 收尾斜杠不是标签的一部分
+    if (!tag) continue
+    if (!/[\p{L}_]/u.test(tag)) continue              // 纯数字（含 #123/#12-34）不是标签
+    if (seen.has(tag)) continue
+    seen.add(tag)
+    out.push(tag)
+  }
+  return out
 }
 
 // ── 块切分 ────────────────────────────────────────────────────────────────

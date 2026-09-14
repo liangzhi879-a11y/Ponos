@@ -383,6 +383,15 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
         prev.evidence = issue.evidence
         prev.detail = issue.detail
       }
+      // 点数单调升级：同一 id 的中证据可能因新事实而"更值钱"（如同一 key 的矛盾由 1 对
+      // 增至 2 对，spec §3.2 由 1 点升为 2 点）。若不升级，去重会让它永远停在 1 点 →
+      // 该信号独自永远到不了 amber。
+      if (issue.strength !== 'strong' && prev.strength !== 'strong'
+        && Number.isFinite(issue.points) && issue.points > (Number.isFinite(prev.points) ? prev.points : 1)) {
+        prev.points = issue.points
+        prev.evidence = issue.evidence
+        prev.detail = issue.detail || prev.detail
+      }
       if (prev.resolved) {           // 复发：复活 + 打标记（前端据此升级动作为"新建会话"）
         prev.resolved = false
         prev.recurred = true
@@ -481,10 +490,16 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
       const facts = extractFacts(user + '\n' + assistant)
       factsByTurn.push(facts)
       if (factsByTurn.length > cfg.windowTurns * 2) factsByTurn.shift()
-      for (const c of detectContradictions(factsByTurn.slice(-cfg.windowTurns)).slice(0, 3)) {
+      // spec §3.2：「同一 key 在不同轮次对 ≥2 对 → 2 点」。id 按 key 去重（同一项只报一条），
+      // 故点数必须由"该 key 的对数"决定，否则去重会让它永远停在 1 点、独自到不了 amber。
+      const contras = detectContradictions(factsByTurn.slice(-cfg.windowTurns))
+      const pairsByKey = new Map()
+      for (const c of contras) pairsByKey.set(c.key, (pairsByKey.get(c.key) || 0) + 1)
+      for (const c of contras.slice(0, 3)) {
         produced.push(push(mkIssue({
           id: `c:contradiction:${normalizeEntity(c.key)}`, axis: 'coherence', kind: 'contradiction',
           strength: 'medium', turn,
+          points: (pairsByKey.get(c.key) || 1) >= 2 ? 2 : 1,
           evidence: `同一项「${c.key}」出现两种取值：${c.a} 与 ${c.b}`,
           detail: { key: c.key, a: c.a, b: c.b, turnA: c.turnA, turnB: c.turnB },
         })))
@@ -529,7 +544,7 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
     rw.slice(0, 2).forEach((r) => {
       out.push(push(mkIssue({
         id: `m:rewritten:${normalizeEntity(r)}`, axis: 'memory', kind: 'summary-rewritten',
-        strength: 'medium', turn: turn,
+        strength: 'medium', turn: turn, points: 2, // spec §4.1-B：rewritten 命中 = 中证据 2 点
         evidence: `摘要疑似改写事实：${r}`,
         detail: { rewritten: rw.slice(0, 5) },
       })))
@@ -583,7 +598,7 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
           reported.push(m)
           out.push(push(mkIssue({
             id: `m:summary:${normalizeEntity(m)}`, axis: 'memory', kind: 'summary-missing-entity',
-            strength: 'medium', turn,
+            strength: 'medium', turn, points: 2, // spec §3.2：缺失率 0.2–0.4 = 2 点
             evidence: `压缩摘要可能遗漏 ${m}（关键实体缺失率 ${Math.round(ratio * 100)}%）`,
             detail: { entity: m, ratio, total: entities.length },
           })))
@@ -635,9 +650,10 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
       for (const it of issues.values()) {
         if (it.resolved) continue
         if (it.turn <= floor) continue // 窗口外：半衰期到期，退出计分
-        const w = it.strength === 'strong'
-          ? STRONG_WEIGHT
-          : MEDIUM_WEIGHT * (Number.isFinite(it.points) ? it.points : 1) // 中证据按点数加权
+        // 权重按 plan：strong=1 / medium=0.6（平铺，点数不折进分数）。
+        // 点数只用于档位触发（amber 的「≥2 点」条件），以保持 score 语义稳定
+        // ——score 反映证据加权质量，点数反映"几条独立信号"，两者不混。
+        const w = it.strength === 'strong' ? STRONG_WEIGHT : MEDIUM_WEIGHT
         axes[it.axis] = (axes[it.axis] || 0) + w * Math.pow(cfg.decay, Math.max(0, turn - it.turn))
         if (it.strength === 'strong') hasStrongByAxis[it.axis] = true
         active.push(it)

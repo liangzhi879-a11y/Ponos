@@ -33,6 +33,9 @@ import {
 // 写入必须走 hook 的 importDocuments（不是直接调 api）：它负责导入后的缓存失效
 // （tree/search/graph/stats）—— 少了这一步，P1-1 的"导入后立刻能读到、搜到"不成立。
 import { importDocuments, importDocumentsTracked } from '@/hooks/useKnowledge'
+// 组件与 knowledgeApi 的**类型**同名（都叫 KnowledgeImportReport），故给组件起个别名 ——
+// 否则 TS 报 Duplicate identifier，而"改类型名"会波及 useKnowledge/其它调用点。
+import { KnowledgeImportReport as ImportReportView, MAX_ROWS } from './KnowledgeImportReport'
 
 export interface KnowledgeImportDialogProps {
   spaces: KnowledgeSpace[] | undefined
@@ -40,45 +43,14 @@ export interface KnowledgeImportDialogProps {
   onImported?: (spaceId: string) => void
 }
 
-const MAX_ROWS = 20
 
 /**
- * 这份结果是不是"扫描件/图片"（= 若配了视觉模型才有机会拿到表格的那类）。
- *
- * 为什么按 converter 判而不是按扩展名：`.pdf` 既有文本层也有扫描件 —— 文本层 PDF 的表格
- * 由本地 PyMuPDF 直接读（不受视觉模型影响），只有 `pdf-ocr`/`ocr` 这两种才依赖视觉模型。
- * 按扩展名判会对着已经读出表格的文本层 PDF 说"表格没被提取"，是**假告警**。
+ * 导入结果报告与明细清单已抽到 `KnowledgeImportReport.tsx`（2026-09-14）——
+ * 本文件因此保持在 400 行上限内（`scripts/verify-knowledge-gui.mjs` 会检查）。
+ * 那时一并修掉了报告里的 `text-warn` / `text-danger`：主题定义的是 `warning` / `error`，
+ * 未定义的类名不报错、只是不生效，表现为"告警不醒目"。
+ * `MAX_ROWS` 也从那里 import —— 文件列表与结果清单必须同一档上限。
  */
-function isScannedResult(e: KnowledgeImportEntry): boolean {
-  const c = e.converter || ''
-  return c === 'pdf-ocr' || c === 'ocr'
-}
-
-/** 三档明细的统一渲染：只展示前 MAX_ROWS 条 + 溢出计数，避免一次导入几百文件把对话框撑爆 */
-function EntryList({ title, items, tone, render }: {
-  title: string
-  items: KnowledgeImportEntry[]
-  tone: string
-  render: (e: KnowledgeImportEntry) => string
-}) {
-  const { t } = useTranslation()
-  if (!items.length) return null
-  return (
-    <div>
-      <p className={`text-[10px] ${tone}`}>{title}（{items.length}）</p>
-      <ul className="mt-0.5 space-y-0.5">
-        {items.slice(0, MAX_ROWS).map((e, i) => (
-          <li key={`${e.source}#${i}`} className="text-[10px] text-tertiary truncate" title={render(e)}>
-            {render(e)}
-          </li>
-        ))}
-        {items.length > MAX_ROWS && (
-          <li className="text-[10px] text-tertiary">{t('knowledge.importMoreRows', { n: items.length - MAX_ROWS })}</li>
-        )}
-      </ul>
-    </div>
-  )
-}
 
 /**
  * 进度文案（走 i18n，不直接用 `importProgressText` 的中文字面量）：
@@ -405,56 +377,7 @@ export function KnowledgeImportDialog({ spaces, onImported }: KnowledgeImportDia
           </div>
         )}
 
-        {report && (
-          <div className="mt-3 border-t border-default pt-2 space-y-2">
-            <p className="text-[11px] text-secondary">
-              {report.dryRun ? t('knowledge.importPreviewDone') : t('knowledge.importDone')}
-              {' · '}
-              {`${report.spaceName} · ${t('knowledge.importOk')} ${report.counts.converted} / ${t('knowledge.importSkipped')} ${report.counts.skipped} / ${t('knowledge.importFailedShort')} ${report.counts.failed}`}
-            </p>
-            {/* 索引未同步时必须说一声：否则用户会以为"导入失败"（明明文件已经在树里） */}
-            {!report.dryRun && report.counts.converted > 0 && report.indexSync !== 'reloaded' && (
-              <p className="text-[10px] text-tertiary">{t('knowledge.importIndexPending')}</p>
-            )}
-            {/* 视觉表格提取的**事后**口径：读了表格要说清是哪来的（用词可追溯，避免用户以为
-                "扫描件里本来没表格"）；没读出来且确实有扫描件/图片时，给出"怎么才能读到"
-                —— 这两句正是用户判断"要不要去配/重导"的唯一依据，缺失就等于让用户自己猜。 */}
-            {(report.vision?.tables ?? 0) > 0 && (
-              <p className="text-[10px] text-secondary">
-                {t('knowledge.importVisionExtracted', { tables: report.vision!.tables, pages: report.vision!.pages })}
-              </p>
-            )}
-            {report.vision?.skipped === 'not-configured' && report.converted.some(isScannedResult) && (
-              <p className="text-[10px] text-warn">{t('knowledge.importVisionSkipped')}</p>
-            )}
-            <EntryList
-              title={report.dryRun ? t('knowledge.importWillConvert') : t('knowledge.importConverted')}
-              items={report.converted}
-              tone="text-secondary"
-              render={e => `${e.source} → ${e.out ?? ''}${e.converter ? `（${e.converter}）` : ''}`}
-            />
-            <EntryList
-              title={t('knowledge.importSkippedList')}
-              items={report.skipped}
-              tone="text-secondary"
-              render={e => `${e.source} → ${e.out ?? ''}`}
-            />
-            <EntryList
-              title={t('knowledge.importFailedList')}
-              items={report.failed}
-              tone="text-danger"
-              render={e => `${e.source}：${e.message ?? e.error ?? ''}`}
-            />
-            {report.warnings?.length > 0 && (
-              <EntryList
-                title={t('knowledge.importWarnings')}
-                items={report.warnings.map(w => ({ source: w }))}
-                tone="text-secondary"
-                render={e => e.source}
-              />
-            )}
-          </div>
-        )}
+        {report && <ImportReportView report={report} />}
       </DialogContent>
     </Dialog>
   )

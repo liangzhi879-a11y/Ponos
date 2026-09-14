@@ -989,6 +989,34 @@ async function registerIpc() {
     return result.canceled ? null : result.filePaths[0]
   })
 
+  // 文件知识库导入（2026-09-14）：两个取源入口。
+  // 为什么用系统对话框而不是渲染进程的 <input type="file">：本项目的数据通道是
+  // "渲染进程只传**路径**、解析与落盘全在主进程/内核侧"（/read-docx、/convert-office 同理）。
+  // File 对象走 HTTP body 会把几十 MB 二进制搬进内存再落临时文件，白白多一次拷贝，
+  // 而且拿不到"选整个文件夹"这种最有用的形态。
+  ipcMain.handle('dialog:pick-knowledge-files', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile', 'multiSelections'],
+      filters: [{
+        name: 'Documents',
+        extensions: ['pdf', 'docx', 'xlsx', 'xls', 'pptx', 'doc', 'ppt',
+          'md', 'markdown', 'txt', 'csv', 'json', 'yaml', 'yml', 'html',
+          'png', 'jpg', 'jpeg', 'bmp', 'tif', 'tiff', 'webp'],
+      }, { name: 'All Files', extensions: ['*'] }],
+      title: 'Select files to import into the knowledge base',
+    })
+    // 取消返回**空数组**而不是 null：调用方统一按数组处理，少一个 null 分支就少一处漏判
+    return result.canceled ? [] : result.filePaths
+  })
+
+  ipcMain.handle('dialog:pick-knowledge-folder', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory'],
+      title: 'Select a folder to import into the knowledge base',
+    })
+    return result.canceled ? null : result.filePaths[0]
+  })
+
   ipcMain.handle('dialog:open-skill-package', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory'],

@@ -255,7 +255,8 @@ test('目标漂移：连续离题到阈值后，目标轴独自即达 amber（sp
   for (let i = 0; i < 7; i++) f.recordTurn({ user: '今天天气不错，聊点别的', assistant: '好，随便聊聊', toolDigest: [] })
   const s = f.snapshot()
   assert.ok(s.issues.some((i) => i.kind === 'goal-drift'), '应产生目标漂移证据')
-  assert.ok(s.axes.goal >= 40, `目标轴分数须达 amber 阈值（实得 ${s.axes.goal}）`)
+  // 档位由「点数通道」触发（plan：score ≥ amber 或 **有 ≥2 点中证据** → amber）；
+  // 点数不折进 score（score 只按 strong 1 / medium 0.6 平铺加权），故此处断言档位而非分数。
   assert.equal(s.tier, 'amber', '目标漂移独自 → amber（只点亮角标）')
   assert.equal(s.trigger, null, 'amber 不弹窗')
   assert.ok(!s.issues.some((i) => i.strength === 'strong'), '目标漂移属中证据，不得升为强证据（否则会直通红档）')
@@ -307,6 +308,56 @@ test('压缩审计去重：确定性分支已上报的条目，LLM 再报同一�
   const ids = out.map((i) => i.id)
   assert.ok(ids.some((id) => id.startsWith('m:summary:')), '确定性分支应上报 src/c.ts')
   assert.ok(!ids.some((id) => id.startsWith('m:llm-missing:')), 'LLM 重复报告同一项不得二次入账')
+})
+
+test('中证据计点表：spec §3.2 每个 2 点信号都必须能独自达到 amber', () => {
+  // 逐个信号对账（此前只修了目标漂移那一处，其余同类残留会静默不可见）。
+  // 判据：spec 说 2 点的信号，单条出现（无其它证据）→ 必须 amber。
+  const cases = [
+    ['摘要实体缺失率 0.2–0.4', (f) => {
+      f.recordTurn({ user: 'u', assistant: 'a', toolDigest: [] })
+      f.recordCompactionAudit({ entities: ['src/a.ts', 'src/b.ts', 'src/c.ts'], missing: ['src/c.ts'], ratio: 0.33 })
+    }],
+    ['LLM 审计 rewritten 命中', (f) => {
+      f.recordTurn({ user: 'u', assistant: 'a', toolDigest: [] })
+      f.recordCompactionAudit({ entities: [], missing: [], ratio: 0, llm: { ok: true, missing: [], rewritten: ['80→90'] } })
+    }],
+    ['同一 key 的矛盾 ≥2 对', (f) => {
+      f.recordTurn({ user: '端口用 8080', assistant: '好', toolDigest: [] })
+      f.recordTurn({ user: '端口改用 9090', assistant: '好', toolDigest: [] })
+      f.recordTurn({ user: '端口是 7070', assistant: '好', toolDigest: [] })
+      f.recordTurn({ user: '端口是 6060', assistant: '好', toolDigest: [] })
+    }],
+  ]
+  for (const [name, seed] of cases) {
+    const f = mkFid()
+    seed(f)
+    const s = f.snapshot()
+    assert.equal(s.tier, 'amber', `「${name}」独自应达 amber（实得 ${s.tier}，最高轴分 ${Math.max(...Object.values(s.axes))}）`)
+    assert.ok(!s.issues.some((i) => i.strength === 'strong'), `「${name}」不应产生强证据`)
+  }
+})
+
+test('中证据计点表：1 点信号（陈旧引用首见/单对矛盾）独自仍不打扰', () => {
+  // 反向保证：不能为了"让信号可见"而把所有中证据都抬成 2 点（那就是把 amber 变成噪声）。
+  const f = mkFid()
+  f.recordTurn({ user: '引用 src/x.ts', assistant: '读 src/x.ts', toolDigest: [{ name: 'Read', path: 'src/x.ts', isError: true, errorText: 'ENOENT' }] })
+  assert.equal(f.snapshot().tier, 'green', '单条陈旧引用（1 点）独自保持 green')
+
+  const g = mkFid()
+  g.recordTurn({ user: '端口用 8080', assistant: '好', toolDigest: [] })
+  g.recordTurn({ user: '端口是 9090', assistant: '好', toolDigest: [] })
+  assert.equal(g.snapshot().tier, 'green', '单对矛盾（1 点）独自保持 green')
+})
+
+test('中证据计点：同 key 矛盾由 1 对增至 2 对时点数升级（不因去重而停在 1 点）', () => {
+  const f = mkFid()
+  f.recordTurn({ user: '端口用 8080', assistant: '好', toolDigest: [] })
+  f.recordTurn({ user: '端口是 9090', assistant: '好', toolDigest: [] })
+  assert.equal(f.snapshot().tier, 'green', '1 对时 1 点（green）')
+  f.recordTurn({ user: '端口是 7070', assistant: '好', toolDigest: [] })
+  const s = f.snapshot()
+  assert.equal(s.tier, 'amber', '第 2 对出现 → 2 点 → amber（同一 id 也要能升级点数）')
 })
 
 test('假红回归：压缩刚落地（159×场景）不得弹失真红档', () => {

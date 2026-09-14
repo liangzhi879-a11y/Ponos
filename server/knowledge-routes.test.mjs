@@ -423,3 +423,29 @@ test('POST /knowledge/packs/export：只允许可写空间（只读包空间 403
     rmSync(spaceRoot, { recursive: true, force: true })
   }
 })
+
+// ── 2026-09-14 对标 Obsidian 批次 1：GET /knowledge/index-tags ──────────────
+// 与 /knowledge/tags（S6 经验库条目级）是两条路由、两种数据源，不能合。
+
+test('GET /knowledge/index-tags 不带 spaces → 原样转发 index-tags', async () => {
+  const callKernel = fakeKernel({ 'index-tags': { tags: [{ tag: '财务', count: 2, single: false }], total: 1, singleCount: 0, spaces: null } })
+  const r = await handleKnowledgeRoute(ctx({ url: '/knowledge/index-tags', callKernel }))
+  assert.equal(r.status, 200)
+  assert.equal(r.body.tags[0].tag, '财务')
+  assert.deepEqual(callKernel.calls[0], ['--knowledge', 'index-tags'])
+})
+
+test('GET /knowledge/index-tags?spaces=a,b → 拆成 --spaces 并保留逗号串（由内核 parseSpacesArg 归一）', async () => {
+  const callKernel = fakeKernel({ 'index-tags': { tags: [], total: 0, singleCount: 0, spaces: ['experience', 'my-notes'] } })
+  const r = await handleKnowledgeRoute(ctx({ url: '/knowledge/index-tags?spaces=experience,my-notes', callKernel }))
+  assert.equal(r.status, 200)
+  assert.deepEqual(callKernel.calls[0], ['--knowledge', 'index-tags', '--spaces', 'experience,my-notes'])
+})
+
+test('GET /knowledge/tags 与 /knowledge/index-tags 是两条不同路由（口径不同）', async () => {
+  const callKernel = fakeKernel({ tags: { tags: [], total: 0 }, 'index-tags': { tags: [], total: 0 } })
+  await handleKnowledgeRoute(ctx({ url: '/knowledge/tags', callKernel }))
+  await handleKnowledgeRoute(ctx({ url: '/knowledge/index-tags', callKernel }))
+  assert.deepEqual(callKernel.calls[0], ['--knowledge', 'tags'], '经验库条目标签走原路由')
+  assert.deepEqual(callKernel.calls[1], ['--knowledge', 'index-tags'], '全库文档标签走新路由')
+})

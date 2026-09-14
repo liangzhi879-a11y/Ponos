@@ -20,26 +20,28 @@
 // 卡片自己拉会变成"每张卡一次内核进程"，见内核 getRelatedForDoc 的 why。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
+import { Trash2 } from 'lucide-react'
 import type { KnowledgeDoc } from '@/lib/knowledgeApi'
+import { useTranslation } from '@/i18n/useTranslation'
 import { MD_COMPONENTS, MD_PLUGINS } from '@/components/chat/MarkdownText'
-import { normalizeTags, pickTargetIndex, pickTargetIndexByBlock, planBlockRender } from '@/lib/knowledgeBlocks'
+import { normalizeTags, pickTargetIndex, pickTargetIndexByBlock, planBlockRender, wikiTargetCandidates } from '@/lib/knowledgeBlocks'
 import { indexByBlock } from '@/lib/knowledgeRelations'
 import type { KnowledgeRelatedAnchor } from '@/lib/knowledgeApi'
-import { useRelatedDoc } from '@/hooks/useKnowledge'
+import { useLinks, useRelatedDoc } from '@/hooks/useKnowledge'
 import { useKnowledgeStore } from '@/stores/knowledgeStore'
 import { cn } from '@/lib/utils'
-import { useTranslation } from '@/i18n/useTranslation'
 import { KnowledgeEntryCard } from './KnowledgeEntryCard'
 import { KnowledgeEmpty } from './KnowledgeEmpty'
+import { WikiA, WikiLi, WikiLinkProvider, WikiP } from './KnowledgeWikiText'
 
 /** 高亮持续时间；spec §6 定 1.5s（够看清落点又不会一直亮着干扰阅读） */
 const HIGHLIGHT_MS = 1500
 
-/** 段落：MD_COMPONENTS 无 p 规则，补一条紧凑版（模块级定义 = 稳定引用，见文件头） */
-function MdP({ children }: { children?: React.ReactNode }) {
-  return <p className="my-1.5 leading-relaxed break-words [overflow-wrap:anywhere]">{children}</p>
-}
-const KB_COMPONENTS: Components = { ...MD_COMPONENTS, p: MdP }
+/**
+ * 阅读视图的 markdown 组件表（**模块级稳定引用**，见文件头）。
+ * p / li 补内链与紧凑样式（MD_COMPONENTS 原本没有这两条规则）；a 做站内/站外分流。
+ */
+const KB_COMPONENTS: Components = { ...MD_COMPONENTS, p: WikiP, li: WikiLi, a: WikiA }
 
 /** 标题级别 → 视觉规格（h1-h3 与 MD_COMPONENTS 的 h1-h3 对齐；h4+ 降为小节样式） */
 const HEADING_CLASS: Record<number, string> = {
@@ -54,9 +56,15 @@ export interface KnowledgeDocViewProps {
   targetLine?: number | null
   /** 目标块 id（knowledgeStore.targetBlockId，关联锚点跳转）；给了就优先按块定位 */
   targetBlockId?: string | null
+  /**
+   * 删除此文档（2026-09-14）。**为 null 时不画删除按钮** —— 权限判定（知识包只读）
+   * 由宿主按空间 `source` 决定并决定给不给这个回调。本视图刻意**不碰**权限逻辑：
+   * 它拿不到空间对象，为了画个按钮去拉一次空间列表等于凭空多一个内核进程。
+   */
+  onDelete?: (() => void) | null
 }
 
-export function KnowledgeDocView({ doc, targetLine = null, targetBlockId = null }: KnowledgeDocViewProps) {
+export function KnowledgeDocView({ doc, targetLine = null, targetBlockId = null, onDelete = null }: KnowledgeDocViewProps) {
   const { t } = useTranslation()
   // docId 下传是为了让条目渲染项带上 blockId（锚点定位的键）；不给 docId 时渲染计划与 S2 逐字相同
   const renders = useMemo(() => planBlockRender(doc.blocks, doc.id), [doc.blocks, doc.id])
@@ -93,15 +101,82 @@ export function KnowledgeDocView({ doc, targetLine = null, targetBlockId = null 
   // 本视图**不开第二条跳转通道**：偏移/高亮逻辑只有上面那一个 effect。
   const openAnchor = (a: KnowledgeRelatedAnchor) => useKnowledgeStore.getState().openAtBlock(a.docId, a.blockId)
 
+  // 内链（`[[x]]` / 相对 .md）的解析（2026-09-14 批次 1）：
+  // 数据源是**本已存在**的 `/knowledge/links`（阅读视图为了画反链本来就要拉它，见 useLinks），
+  // 所以这里加内链**不额外产生任何内核进程**——这一点决定了它能不能做：若为跳转再拉一次
+  // 全库链接表，就是每开一篇文档多一个 50–70MB 的子进程。
+  // 出边里 `to` 是**原文目标**、`target` 才是解析后的 docId（断链为 null），故用候选比对
+  // （候选顺序与内核 resolveLinkTarget 一致，见 lib/knowledgeBlocks.wikiTargetCandidates）。
+  const { data: links } = useLinks(doc.id)
+  const wikiResolver = useMemo(() => {
+    const byTo = new Map<string, string>()
+    for (const e of links?.out ?? []) {
+      if (e.target) byTo.set(e.to, e.target)
+    }
+    return {
+      resolve: (target: string): string | null => {
+        for (const cand of wikiTargetCandidates(target, doc.id)) {
+          const hit = byTo.get(cand)
+          if (hit) return hit
+        }
+        // 兜底：目标恰好就是本空间里的 docId（`[[a.md]]` 这种与 docId 同形的写法）
+        // 也允许跳转。只在候选全落空时试，避免把"同名的另一篇"错认成目标。
+        const direct = wikiTargetCandidates(target, doc.id).find((c) => c === target)
+        return direct ? (byTo.get(direct) ?? null) : null
+      },
+      open: (docId: string) => {
+        // 内链跳转 = 换文档 + 清定位 + 回阅读视图。**按 store 的既有语义分两步**（openAtBlock
+        // 是给"带块定位"的跳转用的，内链没有块信息，不该复用）：
+        // setDocId 内部已清 targetLine/targetBlockId（见 store 注释：换文档必须清定位，否则
+        // 上一篇的行号会错误地高亮新文档的同一行）。
+        const s = useKnowledgeStore.getState()
+        s.setTargetLine(null)
+        s.setDocId(docId)
+        s.setView('read')
+      },
+    }
+  }, [links, doc.id])
+
   return (
+    <WikiLinkProvider resolver={wikiResolver}>
     <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto px-4 py-3">
       <header>
-        <h2 className="text-sm font-semibold text-primary truncate">{doc.title}</h2>
-        <p className="mt-0.5 text-[10px] text-tertiary truncate">{doc.rel}</p>
+        {/* 标题行右侧挂「删除此文档」：放在文档头部是因为用户要点删除时总是**正读着**这篇
+            （从检索结果或树里进来），在头部比埋在别处少一次定位。onDelete 为 null
+            （= 宿主判定不可删，如只读知识包）时整块不渲染 —— 不做"置灰的按钮"，
+            置灰会让人以为要点什么才能解锁。 */}
+        <div className="flex items-start gap-2">
+          <div className="flex-1 min-w-0">
+            <h2 className="text-sm font-semibold text-primary truncate">{doc.title}</h2>
+            <p className="mt-0.5 text-[10px] text-tertiary truncate">{doc.rel}</p>
+          </div>
+          {onDelete && (
+            <button
+              type="button"
+              onClick={onDelete}
+              title={t('knowledge.deleteBtn')}
+              className="shrink-0 flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-tertiary hover:text-error transition-colors"
+            >
+              <Trash2 className="w-3 h-3" />
+              {t('knowledge.deleteBtn')}
+            </button>
+          )}
+        </div>
         {tags.length > 0 && (
           <div className="mt-1.5 flex flex-wrap gap-1">
+            {/* 标签可点（2026-09-14 批次 1）：点了按这个标签去检索——原来只是静态 chip，
+                用户在文档里看到标签却"无处可去"（要手抄到搜索框）。与标签视图走同一个入口
+                （store.openSearchWithKeywords），保证两条路径的范围/口径一致。 */}
             {tags.map(tag => (
-              <span key={tag} className="clip-sm bg-elevated px-1.5 py-0.5 text-[10px] text-secondary">{tag}</span>
+              <button
+                key={tag}
+                type="button"
+                onClick={() => useKnowledgeStore.getState().openSearchWithKeywords([tag.replace(/^#/, '')])}
+                title={t('knowledge.tagsHint')}
+                className="clip-sm bg-elevated px-1.5 py-0.5 text-[10px] text-secondary hover:text-primary hover:bg-hover transition-colors"
+              >
+                {tag}
+              </button>
             ))}
           </div>
         )}
@@ -141,6 +216,7 @@ export function KnowledgeDocView({ doc, targetLine = null, targetBlockId = null 
         ))}
       </div>
     </div>
+    </WikiLinkProvider>
   )
 }
 

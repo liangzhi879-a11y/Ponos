@@ -23,10 +23,10 @@ import type { KnowledgeTreeEntry } from '@/lib/knowledgeApi'
  * （离线安装 / 在线清单都不需要先选空间），故它在 KnowledgePanel 里排在 `!space` 空态之前短路。
  * 它同样可持久化——用户上次停在市场，重启后应回到市场，而不是被踢回阅读视图。
  */
-export type KnowledgeView = 'read' | 'edit' | 'graph' | 'search' | 'market'
-export const KNOWLEDGE_VIEWS: readonly KnowledgeView[] = ['read', 'edit', 'graph', 'search', 'market']
+export type KnowledgeView = 'read' | 'edit' | 'graph' | 'search' | 'market' | 'tags'
+export const KNOWLEDGE_VIEWS: readonly KnowledgeView[] = ['read', 'edit', 'graph', 'search', 'tags', 'market']
 
-/** 落盘 view 清洗：5 合法值透传，非法/缺省 → 'read'（最安全的只读入口） */
+/** 落盘 view 清洗：合法值透传，非法/缺省 → 'read'（最安全的只读入口） */
 export function sanitizeView(view: unknown): KnowledgeView {
   return KNOWLEDGE_VIEWS.includes(view as KnowledgeView) ? (view as KnowledgeView) : 'read'
 }
@@ -39,6 +39,19 @@ export function sanitizeSpaceId(spaceId: unknown): string | null {
 /** 落盘 docId 清洗：与 spaceId 同规则（非空字符串，其余 → null）；单列一个函数让调用点自解释 */
 export function sanitizeDocId(docId: unknown): string | null {
   return sanitizeSpaceId(docId)
+}
+
+/**
+ * 检索关键词意图清洗：非空字符串数组 → 去空/去重后的数组；其余（null/非数组/空数组/全空白）→ null。
+ *
+ * 为什么要单列：标签视图点的是"标签"，检索视图吃的是"关键词"，中间必然有一次形态转换。
+ * 把「空数组」也归一成 null 是关键——空数组会让检索视图发一次 `q=` 的空查询（白跑一次内核
+ * 进程，约 50-70MB RSS），而 null 表示"没有意图"，检索视图保持自己上一条查询不动。
+ */
+export function sanitizeKeywords(raw: unknown): string[] | null {
+  if (!Array.isArray(raw)) return null
+  const out = [...new Set(raw.filter((x): x is string => typeof x === 'string').map((x) => x.trim()).filter(Boolean))]
+  return out.length ? out : null
 }
 
 export interface KnowledgeTreeState {
@@ -117,6 +130,15 @@ export interface KnowledgeState {
    * **不落盘**（同 targetLine：一次性跳转意图）。
    */
   targetBlockId: string | null
+  /**
+   * 检索视图的**一次性关键词意图**（2026-09-14 批次 1：标签视图点击标签 → 跳到检索并塞入 `#tag`）。
+   *
+   * 为什么不能直接写进检索视图自己的 state：写入方（标签视图 / 元信息面板）与消费方（检索视图）
+   * 是**兄弟子树**，视图又是条件渲染（切换时旧视图整棵卸载），props 传不进去、state 也活不过切换。
+   * **不落盘**（同 targetLine / targetBlockId）：一次性跳转意图，重启后自动发起一次用户没要求的
+   * 检索只会让人困惑。
+   */
+  searchKeywords: string[] | null
   view: KnowledgeView
   /** 扁平 map：路径 → { entries, loaded, expanded } */
   tree: KnowledgeTreeMap
@@ -124,6 +146,10 @@ export interface KnowledgeState {
   setDocId: (docId: string | null) => void
   setTargetLine: (line: number | null) => void
   setTargetBlockId: (blockId: string | null) => void
+  /** 标签点击的唯一入口：切检索视图 + 塞关键词（一次写完，避免"切了视图还没关键词"的空跑一帧） */
+  openSearchWithKeywords: (keywords: string[]) => void
+  /** 检索视图消费完一次性意图后必须清空，否则返回检索视图会再次被顶入同一关键词 */
+  clearSearchKeywords: () => void
   /** 关联锚点跳转的唯一入口：打开文档 + 切阅读视图 + 置块级定位（一次写完，无中间态） */
   openAtBlock: (docId: string, blockId: string) => void
   setView: (view: KnowledgeView) => void
@@ -137,6 +163,7 @@ export const useKnowledgeStore = create<KnowledgeState>()(
     docId: null,
     targetLine: null,
     targetBlockId: null,
+    searchKeywords: null,
     view: 'read',
     tree: {},
 
@@ -188,6 +215,20 @@ export const useKnowledgeStore = create<KnowledgeState>()(
       const next = sanitizeView(view)
       if (next === get().view) return
       set({ view: next })
+    },
+
+    // 标签 → 检索的唯一入口。一次 set 写完 view 与关键词：分两次写会让检索视图先挂载一次
+    // （空关键词 → 拉一次空结果），用户看到一下闪动。
+    // 关键词清洗交给 sanitizeKeywords（空数组 → null = "无意图"，而不是"搜空串"）。
+    openSearchWithKeywords: (keywords) => {
+      const next = sanitizeKeywords(keywords)
+      if (!next) return
+      set({ view: 'search', searchKeywords: next })
+    },
+
+    clearSearchKeywords: () => {
+      if (get().searchKeywords === null) return
+      set({ searchKeywords: null })
     },
 
     // 对不存在的路径**创建**节点（expanded: true）：冷启动时 merge 恢复的展开态正是

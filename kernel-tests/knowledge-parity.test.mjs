@@ -175,3 +175,45 @@ test('索引可弃：删除 .index 后自动重建，结果与删除前完全一
     assert.deepEqual(cliIds, first)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 2026-09-14 对标 Obsidian 批次 1：`--spaces` 的**转发链路**（真进程）
+//
+// 为什么必须用真进程钉住：`--spaces` 要穿过三层才生效 ——
+//   cli.mjs parseArgs（登记旗标）→ cli.mjs 的 knowledgeArgs **显式白名单**（转发）
+//   → knowledge-cli.mjs 的 parseSpacesArg（数组/单值/逗号串三态归一）。
+// 三层任一漏掉都是**静默失效**（不报错、参数被吞、返回全库结果），单元测试各测一层都发现不了。
+// 本次实测真切踩过：parseArgs 与 knowledge-cli 都改好了，却漏了中间那层白名单，
+// `--spaces nope` 依然返回全部标签 —— 只有真进程能暴露。
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('批次1：index-tags 的 --spaces 必须真的生效（转发链路三层齐备）', () => {
+  const dir = fixture()
+  try {
+    // fixture 里只有内置空间（experience/session-memory 等），故"限定到不存在的空间"应为空集
+    const all = runCli(dir, ['index-tags'])
+    assert.ok(Array.isArray(all.tags), 'index-tags 返回 tags 数组')
+    assert.equal(all.spaces, null, '不带 --spaces → 不过滤')
+
+    const scoped = runCli(dir, ['index-tags', '--spaces', 'experience'])
+    assert.deepEqual(scoped.spaces, ['experience'], '--spaces 必须被转发到内核（漏转发会被静默吞掉）')
+    assert.ok(scoped.tags.length > 0, '经验库里有文件名派生的标签')
+
+    const none = runCli(dir, ['index-tags', '--spaces', 'no-such-space'])
+    assert.deepEqual(none.spaces, ['no-such-space'])
+    assert.equal(none.tags.length, 0, '限定到不存在的空间 → 空集（证明过滤生效，而非"未过滤"）')
+
+    // 逗号串（HTTP `?spaces=a,b` 的形状）也要被归一成数组
+    const multi = runCli(dir, ['index-tags', '--spaces', 'experience,session-memory'])
+    assert.deepEqual(multi.spaces, ['experience', 'session-memory'], '逗号串逐字拆成数组')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('批次1：search 的 total 与 tagHit 经 CLI 往返后不丢', () => {
+  const dir = fixture()
+  try {
+    const r = runCli(dir, ['search', '--query', '申报材料', '--topK', '2'])
+    assert.ok(r.total >= r.count, 'total 是截断前的命中总数，count 是本页条数')
+    assert.ok(Number.isFinite(r.total), 'CLI 往返后 total 必须是数字（不是 undefined）')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

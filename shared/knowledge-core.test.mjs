@@ -4,6 +4,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   hashLine, parseFrontmatter, parseEntryLine, splitBlocks, ENTRY_LINE_RE,
+  // 2026-09-14（对标 Obsidian 批次 1）：YAML 子集解析 + 正文内联标签
+  parseYamlSubset, extractInlineTags,
   // S5 Task 1 追加：关联锚点纯函数层
   INDEX_VERSION, SIM_THRESHOLD, DUP_COS, MIN_LEN, MAX_RELATED, MAX_TAG_RELATED,
   MAX_CONTENT_RELATED, RELATION_TAG_BOOST, stripTypePrefix, relationContent, blockContentSig,
@@ -510,7 +512,11 @@ test('builtinSpaceSpecs 每项字段齐备（GUI 与 collectTags 依赖），且
 // ═══════════════════════════════════════════════════════════════════════════
 
 test('S5 Task1：常量与 spec §7.1 一致（阈值改动必须重跑校准）', () => {
-  assert.equal(INDEX_VERSION, 2) // 1→2：索引文本口径 b.text → relationContent(b)
+  assert.equal(INDEX_VERSION, 3) // 1→2：索引文本口径 b.text → relationContent(b)
+  // 2→3（2026-09-14，对标 Obsidian 批次 1）：标签来源变了 —— frontmatter 支持 YAML 子集
+  // （block 列表 / flow 数组不再丢或脏）+ 正文内联 `#tag` 进索引。**必须 bump**：这两项改变
+  // doc.tags，而被改的 .md 可能 size/mtime 未变（另存即改标签），indexStale() 的逐文件指纹
+  // 发现不了 → 不 bump 会拿着旧标签集一直跑（"文件里有、知识库没有"的分裂）。
   // 二次校准（spec §13.5）：首轮 0.32 的 idf 口径与线上不同源（blockIndexText vs relationContent），
   // 且线上按块统计 → 0.32 在两种口径下都命中 0 对（覆盖层空转）。修正为按文档 idf 后实测
   // 跨 tag 对最高 0.312，0.15 命中 16 对（18/69 条获得锚点，含无 tag 的 5/9）。改前请重跑校准。
@@ -724,4 +730,78 @@ test('S5 Task1：validateRelation 三条检查（端点存在 / tag 相等 / 内
   assert.equal(validateRelation(tagEdge, byObj), true)
   assert.equal(validateRelation(tagEdge, (id) => byObj[id] || null), true)
   assert.equal(validateRelation({ ...tagEdge, why: { kind: 'unknown' } }, byObj), false) // 未知 kind 保守判否
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 2026-09-14 对标 Obsidian 批次 1：frontmatter YAML 子集 + 正文内联 #tag
+//
+// 这两组用例钉住的是**导入 Obsidian 兼容性**：Obsidian Properties 的标准写法是 YAML
+// block 列表（`tags:` 后每行一个 `- x`），而旧实现把它解析成空串（标签全丢）、把
+// `tags: [a, b]` 解析成字面量 `'[a, b]'`（下游拆出带方括号的脏 tag）。
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('parseYamlSubset：block 列表 / flow 数组 / 逗号串三态（Obsidian tags 的三种写法）', () => {
+  // ① Obsidian Properties 的标准写法：`tags:` + 缩进 `- x`
+  assert.deepEqual(parseYamlSubset('tags:\n  - 财务\n  - 税务'), { tags: ['财务', '税务'] })
+  // ② flow 数组
+  assert.deepEqual(parseYamlSubset('tags: [a, b]'), { tags: ['a', 'b'] })
+  // ③ 逗号串：**保持字符串**（旧行为不变，拆分由 kernel collectTags 负责——两处都拆会让
+  //    `tags: a, b` 与 `tags: [a, b]` 的差异消失，但那是行为变更，不在批次 1 范围）
+  assert.deepEqual(parseYamlSubset('tags: a, b'), { tags: 'a, b' })
+  // ④ flow 数组里的引号：元素内的逗号不能被切开
+  assert.deepEqual(parseYamlSubset("tags: ['a, b', c]"), { tags: ['a, b', 'c'] })
+})
+
+test('parseYamlSubset：引号 / 行尾注释 / 多行折叠 / 空值 / 嵌套 map', () => {
+  assert.deepEqual(parseYamlSubset('title: "含,逗号"'), { title: '含,逗号' })
+  assert.deepEqual(parseYamlSubset("title: '单引号'"), { title: '单引号' })
+  // 行尾注释：`#` 前必须是空白或行首才当注释（URL / 引号内的 `#` 必须留住）
+  assert.deepEqual(parseYamlSubset('tags: a, b # 备注'), { tags: 'a, b' })
+  assert.deepEqual(parseYamlSubset('url: https://x.test/a#frag'), { url: 'https://x.test/a#frag' })
+  assert.deepEqual(parseYamlSubset('# 整行注释\nk: v'), { k: 'v' })
+  // 多行折叠：`>` 用空格连、`|` 用换行连
+  assert.deepEqual(parseYamlSubset('desc: >\n  第一行\n  第二行'), { desc: '第一行 第二行' })
+  assert.deepEqual(parseYamlSubset('desc: |\n  行一\n  行二'), { desc: '行一\n行二' })
+  // 空值：`k:` 后面什么都没有 → `''`（与旧行为一致）
+  assert.deepEqual(parseYamlSubset('tags:'), { tags: '' })
+  // 嵌套 map：批次 1 不解析，**值置空串而不是把 `b: 1` 当多行文本拼进去**
+  assert.deepEqual(parseYamlSubset('a:\n  b: 1\ntags: x'), { a: '', tags: 'x' })
+  // 多行块结束后必须回到顶层继续解析（不能把后面的键吞掉）
+  assert.deepEqual(parseYamlSubset('desc: |\n  行一\ntags: t'), { desc: '行一', tags: 't' })
+})
+
+test('parseFrontmatter：Obsidian 标准 frontmatter 端到端（body 起始行号不受影响）', () => {
+  const raw = '---\ntags:\n  - 财务\n  - 税务\naliases:\n  - 账务\ntitle: 示例\n---\n# 标题\n正文'
+  const r = parseFrontmatter(raw)
+  assert.deepEqual(r.front.tags, ['财务', '税务'])
+  assert.deepEqual(r.front.aliases, ['账务'])
+  assert.equal(r.front.title, '示例')
+  assert.equal(r.body, '# 标题\n正文')
+  // bodyStartLine 决定块行号能否回溯到**原始文件**：frontmatter 含分隔符共 8 行，
+  // 故正文从第 9 行开始
+  assert.equal(r.bodyStartLine, 9)
+})
+
+test('extractInlineTags：Obsidian 口径（边界 / 层级 / 纯数字 / 行内代码 / 链接目标）', () => {
+  assert.deepEqual(extractInlineTags('正文 #财务 结尾'), ['财务'])
+  assert.deepEqual(extractInlineTags('#行首标签'), ['行首标签'])
+  assert.deepEqual(extractInlineTags('换行\n#第二行标签'), ['第二行标签'])
+  assert.deepEqual(extractInlineTags('层级 #a/b 保留层级'), ['a/b'])
+  assert.deepEqual(extractInlineTags('（#全角括号）也算'), ['全角括号'])
+  // 纯数字不是标签（Obsidian：#123 不是 tag）；带非数字字符的年份前缀是
+  assert.deepEqual(extractInlineTags('#123 与 #12-34 不是'), [])
+  assert.deepEqual(extractInlineTags('#2024财务 是'), ['2024财务'])
+  // 边界纪律：`a#b`（无空白）不是标签；markdown 链接目标的 `#锚点` 不是标签
+  assert.deepEqual(extractInlineTags('a#b 不是标签'), [])
+  assert.deepEqual(extractInlineTags('[文字](#锚点) 不是标签'), [])
+  assert.deepEqual(extractInlineTags('[文字](note.md#frag) 也不是'), [])
+  // 行内代码里的 `#x` 是示例代码，不是标签
+  assert.deepEqual(extractInlineTags('用 `#标签` 表示标签'), [])
+  // 去重、保持原样大小写
+  assert.deepEqual(extractInlineTags('#财务 与 #财务 再来一次'), ['财务'])
+  assert.deepEqual(extractInlineTags('#Work 与 #work 是不同写法'), ['Work', 'work'])
+  // 收尾斜杠与连续字符清理
+  assert.deepEqual(extractInlineTags('#a/b/ 收尾'), ['a/b'])
+  assert.deepEqual(extractInlineTags('没有标签的正文'), [])
+  assert.deepEqual(extractInlineTags(''), [])
 })

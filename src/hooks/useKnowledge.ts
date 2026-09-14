@@ -17,9 +17,19 @@ import { useCallback, useEffect, useReducer, useRef } from 'react'
 import {
   getDoc, getEntryGraph, getGraph, getGraphRelated, getImportJob, getLinks, getRelatedDoc, getStats, importKnowledge,
   listEntries, listSpaces, listTree, search, startImportJob, writeDoc,
-  type ApiResult, type KnowledgeCallOpts, type KnowledgeDoc, type KnowledgeEntry,
+  // 索引标签枚举（2026-09-14 批次 1）：标签视图的数据源。注意它与下面的 `/knowledge/tags`
+  // （S6 经验库条目级，本模块未包装）不是一回事。
+  listIndexTags,
+  // 删除管理（2026-09-14）：API 层函数一律 `api*` 前缀 —— 本模块导出的 `deleteDoc` /
+  // `deleteSpace` / `restoreTrash` / `purgeTrash` 是**带缓存失效的包装**，两者同名会
+  // 静默地让某一处调用打到"无失效"的裸 API（表现 = 删了但界面还在）。
+  listTrash,
+  deleteDoc as apiDeleteDoc, deleteSpace as apiDeleteSpace,
+  restoreTrash as apiRestoreTrash, purgeTrash as apiPurgeTrash,
+  type ApiResult, type KnowledgeCallOpts, type KnowledgeDeleteResult, type KnowledgeDoc, type KnowledgeEntry,
   type KnowledgeGraph, type KnowledgeGraphRelatedEdge, type KnowledgeImportPayload,
-  type KnowledgeImportReport, type KnowledgeLinks,
+  type KnowledgeImportReport, type KnowledgeLinks, type KnowledgeTrashList,
+  type KnowledgeIndexTags,
   type KnowledgeRelatedBlock, type KnowledgeSearchParams, type KnowledgeSearchResult,
   type KnowledgeSpace, type KnowledgeStats, type KnowledgeTreeEntry, type KnowledgeWriteInput,
 } from '@/lib/knowledgeApi'
@@ -44,6 +54,12 @@ export const knowledgeKeys = {
   /** 图谱的隐式关联层（S5 Task 9：图层开关打开时才请求）；分隔符 `|` 同 graph 键 */
   graphRelated: (space: string | null, limit?: number) => `graphRelated:${space ?? '*'}|${limit ?? ''}`,
   stats: 'stats',
+  /**
+   * 索引标签枚举（2026-09-14 批次 1）。键里编码空间白名单：`*` = 全部空间。
+   * 为什么编码而不是"只用一个 key 再前端过滤"：标签计数**必须**由内核按空间算
+   * （前端只有当前空间的数据，跨空间同名标签的计数它算不出来），所以不同白名单是不同查询。
+   */
+  indexTags: (spaces?: string[]) => `indexTags:${csv(spaces) || '*'}`,
 }
 
 interface Resource { data?: unknown; loading: boolean; error?: string }
@@ -228,6 +244,19 @@ export function useStats(): KnowledgeResource<KnowledgeStats> {
   return useResource<KnowledgeStats>(key, () => getStats())
 }
 
+/**
+ * 标签视图数据源（2026-09-14 批次 1）。`spaces` 省略 = 全库（含只读知识包）。
+ *
+ * 为什么不用 `useResource` 的 null-key 短路（像 useTree 那样"没选空间就不请求"）：
+ * 标签视图的价值恰在**跨空间**的全局标签视角（Obsidian 的 Tag view 也是全 vault），
+ * 只统计当前空间会把"这个标签在别的空间里被用了 20 次"藏起来，用户就误判标签是孤立的。
+ * 收窄是**可选**能力（传 spaces），不是默认行为。
+ */
+export function useIndexTags(spaces?: string[]): KnowledgeResource<KnowledgeIndexTags> {
+  const list = spaces && spaces.length ? spaces : undefined
+  return useResource<KnowledgeIndexTags>(knowledgeKeys.indexTags(list), () => listIndexTags(list))
+}
+
 // —— 写端点 ——
 
 /**
@@ -254,6 +283,10 @@ export async function saveDoc(
   invalidateKnowledge('relatedDoc:')
   invalidateKnowledge('graphRelated:')
   invalidateKnowledge(knowledgeKeys.stats)
+  // 文档内容变了 → 它带的标签可能增删（正文内联 `#tag` 也算，2026-09-14 批次 1），
+  // 标签视图的计数必须跟着变。前缀失效（`indexTags:`）是必要的：标签视图可能同时挂着
+  // 「全库」与「当前空间」两个白名单的缓存，只失效其中一个会让两个视图的计数对不上。
+  invalidateKnowledge('indexTags:')
   return r
 }
 
@@ -301,6 +334,8 @@ function invalidateAfterImport(data: KnowledgeImportReport): void {
   invalidateKnowledge('graphEntry:')
   invalidateKnowledge('graphRelated:')
   invalidateKnowledge(knowledgeKeys.stats)
+  // 导入会一次带进大量标签（尤其从 Obsidian vault 导入，2026-09-14 批次 1）→ 标签视图重取
+  invalidateKnowledge('indexTags:')
 }
 
 /** 轮询间隔（毫秒）。500ms 对"几千文件跑几分钟"的任务足够跟手，又不至于把桥刷爆。 */
@@ -396,4 +431,102 @@ export async function importDocumentsTracked(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms))
+}
+
+// —— 删除管理 / 回收站（2026-09-14）——
+
+/** 回收站清单（「最近删除」对话框用）。key 固定 —— 全库只有一个回收站。 */
+export const TRASH_KEY = 'trash'
+
+export function useTrash(enabled = true): KnowledgeResource<KnowledgeTrashList> {
+  // `enabled=false` → key 为 null → **一个请求都不发**：对话框没打开时不该有内核进程开销
+  // （每次 HTTP 调用在 bridge 侧 = 一次新内核进程）。照 useGraphRelated 的既有范式。
+  return useResource<KnowledgeTrashList>(enabled ? TRASH_KEY : null, () => listTrash())
+}
+
+/**
+ * 删/还原之后的**统一缓存失效**。为什么必须收在一处：这四种操作都会改变
+ * 「空间集合 × 文档树 × 检索结果 × 图谱」四类视图中的至少三类，各调用点自己记
+ * 必然漂移一处 —— 而漂移的表现是"删了但树里还在"（用户会以为删除失败再删一次）。
+ *
+ * 失效范围与 `invalidateAfterImport` 同口径，外加 `doc:`：被删文档的正文缓存若不失效，
+ * 用户从检索结果点进去仍能读到"已删掉的内容"（那是缓存，不是文件还在）。
+ * 回收站自身的键也在内 —— 删完要能立刻在「最近删除」里看到。
+ */
+function invalidateAfterDelete(space?: string | null, docId?: string | null): void {
+  invalidateKnowledge(knowledgeKeys.spaces)   // docCount / 空间集合变了
+  if (space) invalidateKnowledge(`tree:${space}|`)
+  if (docId) invalidateKnowledge(knowledgeKeys.doc(docId))
+  invalidateKnowledge('search:')              // 删掉的文档不该再出现在命中里
+  invalidateKnowledge('links:')               // 别的文档引用它 → 出边/反链两边都变
+  invalidateKnowledge('relatedDoc:')
+  invalidateKnowledge('graph:')
+  invalidateKnowledge('graphEntry:')
+  invalidateKnowledge('graphRelated:')
+  invalidateKnowledge(knowledgeKeys.stats)
+  invalidateKnowledge(TRASH_KEY)
+  // 删除会减少标签计数（甚至让某标签消失）→ 标签视图必须重取（2026-09-14 批次 1）
+  invalidateKnowledge('indexTags:')
+}
+
+/**
+ * 软删除一篇文档（管理员操作，需已确认）。`space` 与 `path` 都传是为了精准失效
+ * （`tree:<space>|` 只重取受影响的空间，不必把每个空间的树都刷一遍）。
+ */
+export async function deleteDoc(
+  input: { space: string; path: string; docId?: string },
+  opts?: KnowledgeCallOpts,
+): Promise<ApiResult<KnowledgeDeleteResult>> {
+  const r = await apiDeleteDoc(input.space, input.path, opts)
+  if (!r.ok) return r
+  invalidateAfterDelete(input.space, input.docId ?? `${input.space}/${input.path}`)
+  return r
+}
+
+/**
+ * 软删除整个知识库。**不改 `useKnowledgeStore.spaceId`**：调用方（页面）应当刷新后
+ * 让 `KnowledgePanel` 的空间归一化 effect 自己落到剩余空间 —— 在这里直接写 store 会让
+ * "删了但还没刷新"的窗口期指向一个不存在的空间。
+ */
+export async function deleteSpace(
+  input: { spaceId: string; confirm: string },
+  opts?: KnowledgeCallOpts,
+): Promise<ApiResult<KnowledgeDeleteResult>> {
+  const r = await apiDeleteSpace(input.spaceId, input.confirm, opts)
+  if (!r.ok) return r
+  // 整库被删：其下所有 docs 的正文缓存都要清（前缀失效覆盖不到 `doc:<id>` 这种键，
+  // 故这里只能全量清 `doc:` —— 空间级的 doc 前缀映射前端并不持有）
+  invalidateAfterDelete(input.spaceId, null)
+  invalidateKnowledge('doc:')
+  return r
+}
+
+/** 从回收站还原（条目回原空间原路径 / 整库回 spaces/；同名由内核改名让位） */
+export async function restoreTrash(
+  trashId: string,
+  opts?: KnowledgeCallOpts,
+): Promise<ApiResult<KnowledgeDeleteResult>> {
+  const r = await apiRestoreTrash(trashId, opts)
+  if (!r.ok) return r
+  // 还原改的是"哪个空间/哪篇文档"都可能：spaceId 要等响应才知道，故这里按最宽范围失效。
+  // 宁可多重取一轮树，也不能出现"还原了却看不到"（那会让用户重复点、重复还原出副本）。
+  invalidateAfterDelete(null, null)
+  invalidateKnowledge('tree:')
+  invalidateKnowledge('doc:')
+  return r
+}
+
+/**
+ * 彻底删除（不可恢复）。**缓存失效范围最窄**：回收站本来就不在索引里，
+ * 只有回收站清单与 stats（磁盘占用）会变 —— 把 search/tree 也失效是白花一轮请求。
+ */
+export async function purgeTrash(
+  arg: { trashId: string } | { all: true },
+  opts?: KnowledgeCallOpts,
+): Promise<ApiResult<KnowledgeDeleteResult>> {
+  const r = await apiPurgeTrash(arg, opts)
+  if (!r.ok) return r
+  invalidateKnowledge(TRASH_KEY)
+  invalidateKnowledge(knowledgeKeys.stats)
+  return r
 }

@@ -23,7 +23,8 @@ import { Input } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import type { KnowledgeSearchItem, KnowledgeSearchParams } from '@/lib/knowledgeApi'
 import {
-  KB_FOCUS_SEARCH_EVENT, maxScore, parseKeywords, searchTerms, splitHighlight, strengthLevel,
+  KB_FOCUS_SEARCH_EVENT, maxScore, parseKeywords, searchTerms, sortHits, splitHighlight, strengthLevel,
+  type SearchSort,
 } from '@/lib/knowledgeSearch'
 import { KnowledgeEmpty } from './KnowledgeEmpty'
 import { KnowledgeSkeleton } from './KnowledgeSkeleton'
@@ -43,7 +44,34 @@ export function KnowledgeSearchView() {
   /** 已 debounce 的草稿（发请求只看它） */
   const [settled, setSettled] = useState({ q: '', kw: '' })
   const [allSpaces, setAllSpaces] = useState(true)
+  // 排序模式（2026-09-14 批次 1）：内核只有 score 降序，这里只重排**本次返回的**那批
+  // （排序语义的边界见 lib/knowledgeSearch.ts 的 sortHits 注释）。默认相关度 = 内核顺序。
+  const [sort, setSort] = useState<SearchSort>('relevance')
+  // 全文模式：命中项返回整段内容而不是 snippet。默认**关**——整段进上下文很贵
+  // （内核 maxBytes 预算的由来），这里做成用户显式要求才付这个代价。
+  const [fullText, setFullText] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  // 标签视图 / 元信息面板的"以标签去检索"意图（store 的一次性字段）：
+  // 查询串与关键词都填标签名——两者缺一都会让点击标签的结果不完整：
+  //   · `q` 为空时内核直接返回空集（searchInner 的 qtext 短路）；
+  //   · 关键词为空时，frontmatter 里的标签**不参与**匹配（它不在块文本里，只通过
+  //     structBoost/keywordScore 的 tags 匹配加权），于是"只在 frontmatter 标了标签、
+  //     正文没提过这个词"的文档会整批漏掉。
+  // 消费后立即清空：否则从阅读视图切回检索视图会被这条陈旧意图再顶一次。
+  const pendingKeywords = useKnowledgeStore(s => s.searchKeywords)
+  useEffect(() => {
+    if (!pendingKeywords || !pendingKeywords.length) return
+    // 第一个词当**查询串**，整串当关键词：父标签点击会带上一串后代标签（`a`, `a/b`, `a/c`），
+    // 把这一串原样塞进查询串只会变成"整串的 gram 匹配"（几乎必然 0 命中），
+    // 所以查询串只取主标签，其余交给关键词路做加权。
+    const primary = pendingKeywords[0]
+    const kwText = pendingKeywords.join(', ')
+    setQ(primary)
+    setKw(kwText)
+    setSettled({ q: primary, kw: kwText })   // 跳过 debounce：这是明确意图，不该等 200ms
+    useKnowledgeStore.getState().clearSearchKeywords()
+  }, [pendingKeywords])
 
   useEffect(() => {
     const timer = setTimeout(() => setSettled({ q, kw }), DEBOUNCE_MS)
@@ -70,13 +98,18 @@ export function KnowledgeSearchView() {
     topK: TOP_K,
     // 「全部空间」= 不发 spaces 参数（空数组的正确表达是"不发"，见 knowledgeApi 的 csv 注释）
     spaces: allSpaces || !spaceId ? undefined : [spaceId],
-  }), [settled.q, keywords, allSpaces, spaceId])
+    // 全文模式（批次 1）：只有用户显式打开才要整段；缺省走 snippet（预算友好）
+    mode: fullText ? 'full' : undefined,
+  }), [settled.q, keywords, allSpaces, spaceId, fullText])
 
   const { data, loading, error } = useSearch(params)
 
-  const items = data?.items ?? []
+  const items = useMemo(() => sortHits(data?.items ?? [], sort), [data, sort])
   const terms = useMemo(() => searchTerms(settled.q, keywords), [settled.q, keywords])
   const top = useMemo(() => maxScore(items), [items])
+  // 命中总数 vs 返回条数（批次 1）：老内核不返回 total → 降级成 count（不显示"命中 undefined"）
+  const totalHits = data?.total ?? data?.count ?? 0
+  const shown = data?.count ?? items.length
 
   const openHit = (it: KnowledgeSearchItem) => {
     const st = useKnowledgeStore.getState()
@@ -111,13 +144,41 @@ export function KnowledgeSearchView() {
         />
         <div className="flex items-center gap-1.5">
           <KnowledgeScopeToggle all={allSpaces} onChange={setAllSpaces} />
+          {/* 排序（批次 1）：单键循环而不是下拉——236px 的中栏里塞三选项下拉会把范围开关挤没。
+              键面显示**当前**模式（不是"排序"二字），一眼可知当前按什么排。 */}
+          <button
+            type="button"
+            onClick={() => setSort(prev => (prev === 'relevance' ? 'title' : prev === 'title' ? 'line' : 'relevance'))}
+            title={t('knowledge.searchSortTooltip', { n: shown })}
+            className="shrink-0 text-[10px] px-1.5 h-5 clip-sm bg-elevated text-secondary hover:text-primary transition-colors"
+          >
+            {t(sort === 'relevance' ? 'knowledge.searchSortRelevance' : sort === 'title' ? 'knowledge.searchSortTitle' : 'knowledge.searchSortLine')}
+          </button>
+          {/* 全文开关（批次 1）：默认关，开了才让内核回整段（`mode=full`） */}
+          <button
+            type="button"
+            onClick={() => setFullText(v => !v)}
+            aria-pressed={fullText}
+            title={t('knowledge.searchFullTooltip')}
+            className={cn(
+              'shrink-0 text-[10px] px-1.5 h-5 clip-sm transition-colors',
+              fullText ? 'bg-brand-500 text-inverse' : 'bg-elevated text-secondary hover:text-primary',
+            )}
+          >
+            {t('knowledge.searchFull')}
+          </button>
           <span className="flex-1 min-w-0" />
           {/* 降级微标：向量路被跳过（查询 gram 全落空），结果只来自关键词路 */}
           {data?.degraded === true && (
             <span className="micro shrink-0" title={t('knowledge.degradedHint')}>{t('knowledge.indexDegraded')}</span>
           )}
           {searching && !loading && data && (
-            <span className="micro shrink-0">{t('knowledge.searchCount', { n: data.count })}</span>
+            <span className="micro shrink-0" title={t('knowledge.searchTotalHint')}>
+              {/* total > count 时才提"显示 N 条"：两者相等时说两遍同一个数字只是噪音 */}
+              {totalHits > shown
+                ? t('knowledge.searchTotal', { total: totalHits, n: shown })
+                : t('knowledge.searchCount', { n: shown })}
+            </span>
           )}
         </div>
       </div>
@@ -162,6 +223,14 @@ function HitRow({ item, terms, max, onOpen }: {
         <FileText className="w-3 h-3 shrink-0 text-tertiary" />
         <span className="text-[11px] text-primary truncate">{title}</span>
         {item.heading && <span className="text-[10px] text-tertiary truncate shrink-0 max-w-[40%]">{item.heading}</span>}
+        {/* 标签命中（2026-09-14 批次 1）：这条结果的证据是"文档带了这个标签"，不是正文里
+            出现过这个词（`tagHit` 由内核给出）。必须显式标出来——否则用户看到一段与查询词
+            无关的 snippet（标签命中的锚点块往往是标题），会以为检索坏了。 */}
+        {item.tagHit && (
+          <span className="clip-sm bg-elevated px-1 text-[9px] text-tertiary shrink-0" title={t('knowledge.tagHitTooltip')}>
+            #{item.tagHit}
+          </span>
+        )}
         <span className="flex-1 min-w-0" />
         {/* 强弱：三格色条。列名用 aria-label 说明，色条本身 aria-hidden（装饰性） */}
         <span className="flex items-center gap-[2px] shrink-0" title={t('knowledge.relevance')} aria-label={t('knowledge.relevance')}>

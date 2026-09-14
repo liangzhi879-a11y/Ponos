@@ -341,6 +341,12 @@ export async function main(argv) {
       // S6（同一条纪律）：append 的三个入参漏登记 → `--tag 应用智控` 被静默丢弃 →
       // 经验进了库却没有标签 → 永远无关联边。故 tag/text 的转发必须有真进程回归钉住。
       tag: args.tag, text: args.text, theme: args.theme,
+      // 2026-09-14（对标 Obsidian 批次 1）：`index-tags` 的空间白名单。
+      // ⚠️ 又一次踩到同一个坑（真进程实测才发现）：parseArgs 里登记了 `--spaces`、knowledge-cli
+      // 里也读了 `args.spaces`，但**本转发层漏了这一个键** → `--spaces a,b` 被静默吞掉，
+      // 表现为"过滤没生效"（返回全库标签），而不是报错。同 doc/related/tag/trashId 的教训，
+      // 回归由 kernel-tests/knowledge-cli-flags.test.mjs 以真进程钉住。
+      spaces: args.spaces,
       // 知识库文件导入（`--knowledge import`）。
       // 这里的键名必须与 `knowledge-cli.mjs` 的 import 分支读取的键**逐字一致**
       //（它读 `args.src` / `args.maxOcrPages` / `args.visionTables` / `args.maxVisionPages`

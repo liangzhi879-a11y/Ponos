@@ -12,7 +12,7 @@
 // 三栏写法照 WorkflowCanvas.tsx:347-516 的 flex 三件套：左右**定宽 shrink-0**、
 // 中栏 `flex-1 min-w-0`。`min-w-0` 是关键——没有它，中栏里的长表格/长代码行会把
 // flex 项撑到内容宽度，窄窗口下整块面板横向溢出（rail 之外的内容被裁掉且无法滚动）。
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from '@/i18n/useTranslation'
 import { useKnowledgeStore } from '@/stores/knowledgeStore'
 import { useDoc, useSpaces, useStats } from '@/hooks/useKnowledge'
@@ -27,6 +27,10 @@ import { KnowledgeSearchView } from './KnowledgeSearchView'
 import { KnowledgeGraphView } from './KnowledgeGraphView'
 import { KnowledgeInspector } from './KnowledgeInspector'
 import { KnowledgeMarketView } from './KnowledgeMarketView'
+import { KnowledgeTagsView } from './KnowledgeTagsView'
+// 删除管理（2026-09-14）：确认框受控挂在宿主；权限预判用纯函数（与内核 deleteGate 同源）
+import { DeleteDocDialog } from './KnowledgeDeleteDialogs'
+import { canDeleteDoc } from '@/lib/knowledgeDeleteUi'
 
 export function KnowledgePanel() {
   const { t } = useTranslation()
@@ -39,6 +43,9 @@ export function KnowledgePanel() {
   const view = useKnowledgeStore(s => s.view)
   const setSpace = useKnowledgeStore(s => s.setSpace)
   const setView = useKnowledgeStore(s => s.setView)
+  // 删除管理（2026-09-14）：删完必须清掉选中文档（见下方 DeleteDocDialog 的 onDeleted）
+  const setDocId = useKnowledgeStore(s => s.setDocId)
+  const [delDocOpen, setDelDocOpen] = useState(false)
 
   const { data: spaces, loading: spacesLoading, error: spacesError, refresh: refreshSpaces } = useSpaces()
   const { data: stats, loading: statsLoading, refresh: refreshStats } = useStats()
@@ -78,7 +85,14 @@ export function KnowledgePanel() {
 
       {/* 三栏：左 236px（空间+树）/ 中 flex-1（四视图）/ 右 212px（大纲·反链·元信息） */}
       <div className="flex-1 flex min-h-0 min-w-0">
-        <KnowledgeSidebar spaces={spaces} spacesLoading={spacesLoading} onImported={refreshAll} />
+        <KnowledgeSidebar
+          spaces={spaces}
+          spacesLoading={spacesLoading}
+          onImported={refreshAll}
+          // 删库/还原/清空之后：空间集合与统计都变了。`refreshAll` 含 spaces+stats+tree，
+          // 足够覆盖三种操作的并集（回收站的键由 useKnowledge 的包装层自己失效）。
+          onDeleted={refreshAll}
+        />
 
         <div className="flex-1 min-w-0 flex flex-col">
           {spacesError ? (
@@ -88,6 +102,11 @@ export function KnowledgePanel() {
             // 故必须排在 `!space` 空态之前——否则"一个空间都没有"的用户永远进不去市场，
             // 而"没有空间"恰恰是装第一个知识包的最常见时机。
             <KnowledgeMarketView />
+          ) : view === 'tags' ? (
+            // 标签视图（2026-09-14 批次 1）：与市场同理，**不依赖当前空间**（范围由视图内的
+            // 开关决定：全部空间 / 本空间），故必须排在 `!space` 空态之前——否则"一个空间都
+            // 没有"时点标签页只会看到"请先选空间"，而标签视图恰恰是用来盘点"我有什么"的。
+            <KnowledgeTagsView />
           ) : !space ? (
             // !space 覆盖两类：空间列表尚未到位（骨架屏），或列表为空（真空态）
             spacesLoading || !spaces
@@ -95,7 +114,16 @@ export function KnowledgePanel() {
               : <KnowledgeEmpty title={t('knowledge.spaceEmpty')} className="m-auto" />
           ) : view === 'read' ? (
             docLoading ? <KnowledgeSkeleton lines={10} />
-              : doc ? <KnowledgeDocView doc={doc} targetLine={targetLine} targetBlockId={targetBlockId} />
+              : doc ? (
+                <KnowledgeDocView
+                  doc={doc}
+                  targetLine={targetLine}
+                  targetBlockId={targetBlockId}
+                  // 权限预判（知识包只读）由宿主做：本视图拿不到空间对象，见其 props 注释。
+                  // 不可删 → 传 null → 视图**不渲染**删除按钮（而非置灰）。
+                  onDelete={canDeleteDoc(space) ? () => setDelDocOpen(true) : null}
+                />
+              )
                 : <KnowledgeEmpty title={t('knowledge.emptyNoDoc')} className="m-auto" />
           ) : view === 'edit' ? (
             // 只读空间不渲染编辑视图（spec §11.3：CodeEditor 无 readOnly，编辑器内容非受控）
@@ -116,6 +144,25 @@ export function KnowledgePanel() {
             宿主只管"放在三栏的最右"，这样 Task 9 只需替换一个组件（见文件头拆分原则） */}
         <KnowledgeInspector doc={doc} />
       </div>
+
+      {/* 删除文档确认框（受控）：**只挂一次**，触发器在文档视图头部 —— 受控的理由见
+          KnowledgeDeleteDialogs 文件头（同一份确认框被两个宿主共用时不能自带触发器）。 */}
+      {space && doc && (
+        <DeleteDocDialog
+          spaceId={space.id}
+          spaceName={space.name}
+          path={doc.rel}
+          open={delDocOpen}
+          onOpenChange={setDelDocOpen}
+          onDeleted={() => {
+            // 删掉的正是当前打开的这篇 → 必须清掉选中。留着会让右栏 Inspector 与检索高亮
+            // 继续引用一个已不在磁盘的 docId（表现为点开报"文档不存在"，像是删除没生效）。
+            setDelDocOpen(false)
+            setDocId(null)
+            refreshAll()
+          }}
+        />
+      )}
     </div>
   )
 }

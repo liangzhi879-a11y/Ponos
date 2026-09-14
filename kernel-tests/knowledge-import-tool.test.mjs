@@ -230,9 +230,15 @@ test('源码守卫：KnowledgeImport 工具体 = 参数归一 + 调用权威主�
   const start = src.indexOf('KnowledgeImport: {')
   assert.ok(start > 0, 'tools.mjs 必须仍注册 KnowledgeImport')
   const rest = src.slice(start)
-  // 切到**下一个静态工具键**（4 空格缩进 + `名字: {`），不写死名字（重命名/换序不会误伤）
-  const end = rest.search(/\n {4}[A-Za-z][A-Za-z0-9]*: \{\n/)
+  // 切到**下一个静态工具键**（4 空格缩进 + `名字: {`），不写死名字（重命名/换序不会误伤）。
+  // ⚠️ 必须写 `\r?\n`：tools.mjs 是 **CRLF**，原先的 `\n {4}` 在本文件里**从不匹配**
+  // （`{` 后面跟的是 `\r` 不是 `\n`）→ `end` 恒为 -1 → `block` 退化成"从 KnowledgeImport
+  // 到文件尾"，守卫实际一直在**全文扫描**。它此前"通过"只是因为 KnowledgeImport 之后没有
+  // 哪个工具用到那些禁词；加入 KnowledgeDelete（自身需要 createKnowledgeStore）后立刻显形。
+  // 修成 CRLF 无关后，切分范围才真的等于"这一个工具的体"。
+  const end = rest.search(/\r?\n {4}[A-Za-z][A-Za-z0-9]*: \{\r?\n/)
   const block = end > 0 ? rest.slice(0, end) : rest
+  assert.ok(block.length < rest.length, '守卫必须能切出 KnowledgeImport 这个工具的体（否则退化成全文扫描）')
   // 注释行先剥掉再查禁词：注释里**提到**权威函数名（说明同源关系）是文档，不是实现
   const code = block.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
   assert.match(code, /const \{ importFiles \} = await import\('\.\/knowledge-import\.mjs'\)/,

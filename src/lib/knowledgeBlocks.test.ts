@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 
 import {
   clampLevel, isEntryCard, normalizeTags, pickTargetIndex, pickTargetIndexByBlock, planBlockRender,
+  splitWikiLinks, wikiTargetCandidates,
   type BlockLike,
 } from './knowledgeBlocks.ts'
 
@@ -153,4 +154,45 @@ test('pickTargetIndexByBlock：命中块 id → 下标；未给/不在本篇 →
   assert.equal(pickTargetIndexByBlock(plan, 'notes/b.md#1'), null, '别的文档的块 id 不属于本篇')
   assert.equal(pickTargetIndexByBlock(plan, null), null)
   assert.equal(pickTargetIndexByBlock([], 'notes/a.md#1'), null)
+})
+
+// ── 2026-09-14 对标 Obsidian 批次 1：`[[wiki 链接]]` 切分与目标候选 ──────────
+
+test('splitWikiLinks：普通文本 / 单独链接 / 别名 / 混排顺序', () => {
+  assert.deepEqual(splitWikiLinks('没有链接'), [{ type: 'text', text: '没有链接' }])
+  const one = splitWikiLinks('看 [[目标]] 这里')
+  assert.deepEqual(one.map(c => c.type), ['text', 'wiki', 'text'])
+  assert.equal(one[1].target, '目标')
+  assert.equal(one[1].label, '目标')
+  assert.equal(one[0].text, '看 ')
+  assert.equal(one[2].text, ' 这里')
+
+  const alias = splitWikiLinks('[[目标|显示名]]')
+  assert.equal(alias.length, 1)
+  assert.equal(alias[0].target, '目标', '别名只影响显示，不影响解析目标')
+  assert.equal(alias[0].label, '显示名')
+})
+
+test('splitWikiLinks：行内代码 / 空目标 / 多链接边界', () => {
+  // 行内代码里的 `[[x]]` 是在讲语法，不是链接
+  assert.deepEqual(splitWikiLinks('用 `[[目标]]` 表示链接'), [{ type: 'text', text: '用 `[[目标]]` 表示链接' }])
+  // 空目标不是链接（渲染出来会点了没反应）
+  assert.deepEqual(splitWikiLinks('[[]]'), [{ type: 'text', text: '[[]]' }])
+  assert.deepEqual(splitWikiLinks('[[ ]]').map(c => c.type), ['text'])
+  // 同一段里多个链接：顺序与下标不能错位
+  const two = splitWikiLinks('[[a]] 与 [[b|别名]]')
+  assert.deepEqual(two.filter(c => c.type === 'wiki').map(c => c.target), ['a', 'b'])
+  assert.equal(two.filter(c => c.type === 'wiki')[1].label, '别名')
+  // 未闭合的 `[[` 保持原文
+  assert.deepEqual(splitWikiLinks('[[未闭合').map(c => c.type), ['text'])
+})
+
+test('wikiTargetCandidates：与内核 resolveLinkTarget 同序的候选表', () => {
+  // 同目录文档：原样 → 加 .md
+  assert.deepEqual(wikiTargetCandidates('笔记', 'a/b.md'), ['笔记', '笔记.md', 'a/笔记', 'a/笔记.md'])
+  // 已是 .md 不重复加后缀
+  assert.deepEqual(wikiTargetCandidates('笔记.md', 'a/b.md'), ['笔记.md', 'a/笔记.md'])
+  // `./` 前缀剔除；根级文档没有目录前缀
+  assert.deepEqual(wikiTargetCandidates('./笔记', 'top.md'), ['笔记', '笔记.md'])
+  assert.deepEqual(wikiTargetCandidates('', 'a.md'), [])
 })

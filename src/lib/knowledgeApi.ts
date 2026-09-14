@@ -8,6 +8,7 @@
 //   GET  /knowledge/entries?id=                  条目级清单（经验文件；非经验文档 → []）
 //   GET  /knowledge/search?q=&keywords=&topK=&mode=&spaces=
 //   GET  /knowledge/links?id=                    出边 + 反链
+//   GET  /knowledge/index-tags?spaces=           全库文档标签枚举（2026-09-14 批次 1）
 //   GET  /knowledge/related?id=&doc=&limit=      关联锚点（块级 / 整篇；S5）
 //   GET  /knowledge/graph?space=&limit=          文档级图谱
 //   GET  /knowledge/stats                        索引统计
@@ -36,9 +37,16 @@ const IMPORT_TIMEOUT_MS = 16 * 60 * 1000
 
 export type ApiResult<T> =
   | { ok: true; data: T }
-  /** status 保留 HTTP 状态码：UI 要区分 403（空间只读）与 413（文档超限）——两者文案都是后端英文短语，
+  /* status 保留 HTTP 状态码：UI 要区分 403（空间只读）与 413（文档超限）——两者文案都是后端英文短语，
    *  只靠字符串匹配太脆。 */
-  | { ok: false; error: string; status?: number }
+  /* `message` 可选：后端给的人类可读解释（删除管理用）。为什么单列而不是塞进 `error`：
+   * `error` 是**机器可判的码**（`confirm-mismatch` / `protected-space`），UI 要用它选文案；
+   * `message` 是码之外的具体说明（"需要 --confirm 且须精确等于「研发资料」"）。
+   * 拼进 error 会让码不可判，丢掉则用户只看到 `confirm-mismatch` 这种没法照做的提示。
+   * 声明为**同一个成员上的可选字段**（不是第二个联合成员）—— 拆成两个成员会让
+   * "老端点不返回 message"这件事从"字段缺省"升级成"类型分支"，调用方每次读
+   * `r.message` 都得先窄化类型，把可选字段的成本转嫁给所有调用点。 */
+  | { ok: false; error: string; message?: string; status?: number }
 
 export interface KnowledgeCallOpts {
   /** 测试注入用；缺省 getBridgeUrl() */
@@ -108,11 +116,24 @@ export interface KnowledgeSearchItem {
   kind: string
   /** 内核 toItem()（kernel/knowledge.mjs:360-368）**当前不含** tag；保留为可选，UI 勿依赖 */
   tag?: string | null
+  /**
+   * 标签直连命中（2026-09-14 批次 1）：本条结果的证据是"文档带了这个标签"（值 = 命中的标签名），
+   * 而不是"正文里出现过查询词"。缺省 undefined = 正文命中。
+   * **可选**：老内核不返回它，UI 必须能按正文命中降级渲染（不显示标签标记）。
+   */
+  tagHit?: string
 }
 
 export interface KnowledgeSearchResult {
   items: KnowledgeSearchItem[]
+  /** **实际返回**条数（受 topK/maxBytes 截断），不等于命中总数 */
   count: number
+  /**
+   * **截断前**的命中总数（2026-09-14 批次 1 新增）。
+   * 可选：老服务端不返回它，UI 必须能降级（`total ?? count`）——否则连不上新版内核时
+   * 整个检索视图会因 undefined 渲染出"命中 undefined 条"。
+   */
+  total?: number
   /** 索引构建时间距现在多久（null = 无 builtAt） */
   indexAge: number | null
   /** true = 查询 gram 全部落空，向量路被跳过（只剩关键词路） */
@@ -121,6 +142,26 @@ export interface KnowledgeSearchResult {
 
 export interface KnowledgeLinkOut { to: string; target?: string | null }
 export interface KnowledgeLinks { out: KnowledgeLinkOut[]; in: Array<{ from: string }> }
+
+// —— 索引标签枚举（2026-09-14 对标 Obsidian 批次 1）——
+
+/** 单个标签的统计。`single` = 只被一篇文档用到（标签体系腐烂的第一信号，内核显式标记） */
+export interface KnowledgeIndexTag {
+  tag: string
+  /** 引用该标签的**文档数**（不是块数——同一文档内出现多次只算一次） */
+  count: number
+  /** 所属空间；跨空间同名标签 → null（表示"不止一个空间在用"） */
+  spaceId?: string | null
+  single: boolean
+}
+
+export interface KnowledgeIndexTags {
+  tags: KnowledgeIndexTag[]
+  total: number
+  singleCount: number
+  /** 生效的空间白名单；null = 全部空间。用于把"该空间确实没有标签"与"空间名拼错"区分开 */
+  spaces: string[] | null
+}
 
 // —— 关联锚点（S5 §7.4）——
 
@@ -242,7 +283,17 @@ async function call<T>(path: string, { method = 'GET', body, opts = {} }: CallAr
     const data: unknown = await res.json().catch(() => null)
     if (!res.ok) {
       const raw = (data && typeof data === 'object' && 'error' in data) ? (data as { error: unknown }).error : ''
-      return { ok: false, error: raw ? String(raw) : `HTTP ${res.status}`, status: res.status }
+      const detail = (data && typeof data === 'object' && 'message' in data)
+        ? String((data as { message: unknown }).message ?? '')
+        : ''
+      // 只在后端真的给了 message 时才带上该键：老端点（如 write/import）不返回它，
+      // 恒塞一个 `message: ''` 会让既有调用方的 deepEqual 断言全部失配。
+      return {
+        ok: false,
+        error: raw ? String(raw) : `HTTP ${res.status}`,
+        ...(detail ? { message: detail } : {}),
+        status: res.status,
+      }
     }
     return { ok: true, data: (data ?? null) as T }
   } catch (e: unknown) {
@@ -344,6 +395,27 @@ export function listEntries(id: string, opts?: KnowledgeCallOpts): Promise<ApiRe
   return dedupe(`entries:${query}`, async () => {
     const r = await call<unknown>(`/knowledge/entries${query}`, { opts })
     return r.ok ? { ok: true as const, data: unwrapList<KnowledgeEntry>(r.data, 'entries') } : r
+  })
+}
+
+/**
+ * 索引标签枚举（2026-09-14 批次 1）：**全库文档标签**（含用户空间与只读 packs），
+ * 与 `listMemoryTags`（S6 的 `/knowledge/tags`，只认经验库、条目级）不是一回事——两者都留着，
+ * 因为消费方不同（标签视图要全库；写前查重只关心经验库）。
+ * `spaces` 传空数组与不传等价（都不过滤），口径由内核的 parseSpacesArg 统一。
+ */
+export function listIndexTags(spaces?: string[], opts?: KnowledgeCallOpts): Promise<ApiResult<KnowledgeIndexTags>> {
+  const query = qs({ spaces: spaces && spaces.length ? spaces.join(',') : undefined })
+  return dedupe(`index-tags:${query}`, async () => {
+    const r = await call<unknown>(`/knowledge/index-tags${query}`, { opts })
+    if (!r.ok) return r
+    // 内核一定返回对象；但"返回了非对象"（代理改包/路由串）时要归一成 error 而不是让
+    // UI 拿到 undefined 去 .tags.length（白屏）。这是本模块既有的 unwrap 纪律。
+    const v = r.data as KnowledgeIndexTags | null
+    if (!v || typeof v !== 'object' || !Array.isArray(v.tags)) {
+      return { ok: false as const, error: 'bad-index-tags-payload' }
+    }
+    return { ok: true as const, data: v }
   })
 }
 
@@ -634,5 +706,115 @@ export function getImportJob(
 ): Promise<ApiResult<KnowledgeImportJob>> {
   return call<KnowledgeImportJob>(`/knowledge/import/jobs/${encodeURIComponent(jobId)}`, {
     opts: { timeoutMs: 10 * 1000, ...(opts || {}) },
+  })
+}
+
+// —— 删除管理 / 回收站（2026-09-14）——
+// 设计见 .yfw-spec/knowledge-trash/spec.md。删除一律是**软删除**（移到回收站），
+// 只有 purge 是真删；权限判定（内置空间不许删整库、知识包只读）**全在内核**，
+// 前端只做"要不要显示按钮"的预判，绝不复刻判据（复刻必漂移，而漂移意味着绕过权限）。
+
+/** 回收站里的一项（内核 `listTrash` 的条目形状，字段名照抄） */
+export interface KnowledgeTrashItem {
+  trashId: string
+  kind: 'doc' | 'space'
+  spaceId: string | null
+  spaceName: string | null
+  /** 仅 kind='doc'：原空间内的相对路径（还原就放回这里） */
+  relPath: string | null
+  name: string | null
+  deletedAt: string | null
+  bytes: number
+  fileCount: number
+  /** 内容是否还在磁盘上：false 时只能「彻底删除」记录，不能还原（内核会报 payload-missing） */
+  available: boolean
+}
+
+export interface KnowledgeTrashList {
+  dir: string
+  count: number
+  bytes: number
+  /** 无台账的散落目录数（内核只报数不列出：列出来也删不掉，比不列更糟） */
+  stray: number
+  items: KnowledgeTrashItem[]
+}
+
+/** 删除/还原/清空的结果（内核各 op 的公共字段） */
+export interface KnowledgeDeleteResult {
+  ok: true
+  trashId?: string
+  kind?: 'doc' | 'space'
+  spaceId?: string
+  path?: string
+  /** 还原时：原名被占用而改名让位（`a.md` → `a-2.md`）时为 true */
+  renamed?: boolean
+  bytes?: number
+  files?: number
+  purged?: number
+  indexSync?: 'reloaded' | 'unchanged'
+}
+
+/** 回收站清单（纯读，可缓存） */
+export function listTrash(opts?: KnowledgeCallOpts): Promise<ApiResult<KnowledgeTrashList>> {
+  return call<KnowledgeTrashList>('/knowledge/trash', { opts: { timeoutMs: 15 * 1000, ...(opts || {}) } })
+}
+
+/**
+ * 软删除单篇文档。**不走 dedupe**：删除有副作用且用户会重复点（第一次删完再删一次
+ * 应当得到"文件不存在"，而不是复用上一次的成功响应）。
+ */
+export function deleteDoc(
+  spaceId: string,
+  path: string,
+  opts?: KnowledgeCallOpts,
+): Promise<ApiResult<KnowledgeDeleteResult>> {
+  return call<KnowledgeDeleteResult>('/knowledge/delete', {
+    method: 'DELETE',
+    body: { spaceId, path },
+    opts: { timeoutMs: 15 * 1000, ...(opts || {}) },
+  })
+}
+
+/**
+ * 软删除整个知识库。`confirm` 必须**精确等于空间 id**（内核校验，防手滑删库）——
+ * 这里不做前端预校验：只在 UI 上把确认框做对，判据留内核一份。
+ */
+export function deleteSpace(
+  spaceId: string,
+  confirm: string,
+  opts?: KnowledgeCallOpts,
+): Promise<ApiResult<KnowledgeDeleteResult>> {
+  return call<KnowledgeDeleteResult>('/knowledge/delete-space', {
+    method: 'DELETE',
+    body: { spaceId, confirm },
+    opts: { timeoutMs: 30 * 1000, ...(opts || {}) },
+  })
+}
+
+/** 从回收站还原（遇同名由内核改名让位，绝不覆盖） */
+export function restoreTrash(
+  trashId: string,
+  opts?: KnowledgeCallOpts,
+): Promise<ApiResult<KnowledgeDeleteResult>> {
+  return call<KnowledgeDeleteResult>('/knowledge/restore', {
+    method: 'DELETE',
+    body: { trashId },
+    opts: { timeoutMs: 30 * 1000, ...(opts || {}) },
+  })
+}
+
+/**
+ * 彻底删除（**真正销毁、不可恢复**）：给 `trashId` 删一项，或 `all=true` 清空回收站。
+ * `all` 只认**严格 true**（服务端也只认 `=== true`）——"清空"必须是一次显式意图，
+ * 不能因为传了 `"false"` 这种字符串就把整个回收站清掉。
+ */
+export function purgeTrash(
+  arg: { trashId: string } | { all: true },
+  opts?: KnowledgeCallOpts,
+): Promise<ApiResult<KnowledgeDeleteResult>> {
+  return call<KnowledgeDeleteResult>('/knowledge/purge', {
+    method: 'DELETE',
+    body: arg,
+    opts: { timeoutMs: 60 * 1000, ...(opts || {}) },
   })
 }

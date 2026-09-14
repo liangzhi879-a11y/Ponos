@@ -40,12 +40,32 @@ const OPS = new Set([
   // `append` 是**唯一写 op**（append-only：结构上没有覆盖路径，故比放开 Write 白名单更安全）；
   // `tags` 供写前"优先复用已有标签"（否则单例标签越积越多 → 孤立条目，S5.1 实测主源）。
   'append', 'tags',
+  // 索引标签枚举（2026-09-14 对标 Obsidian 批次 1）：**全库文档标签**（含用户空间与只读
+  // packs），与上面 `tags`（S6，只认经验库、条目级）不是一回事 —— 故新开一个读 op 而不改
+  // 旧 op 的输出形状（旧 op 的消费方是"写前查已有标签"，改它会静默破坏 S6）。
+  // 读 op，不进 WRITE_OPS：根不存在时返回空标签集是合理语义。
+  'index-tags',
   // 文件知识库（2026-09-14）：把一批文件转成 Markdown 落进一个空间。
   // 它是第二个写 op，但写入面比 append 更窄：只能写 `knowledge/spaces/<id>/`，
   // 目标空间 id 必须过 validateSpaceId（拒内置空间/pack- 前缀/非法字符），
   // 且扩展名走白名单（脚本类一律拒）—— 见 kernel/knowledge-import.mjs 的分层说明。
   'import',
+  // 知识库删除管理（2026-09-14）：软删除 + 回收站。见 .yfw-spec/knowledge-trash/spec.md。
+  // 为什么条目与整库**分成两个 op**：`delete-space` 是不可逆量级更大的操作，
+  // 不该能因"漏给 --path"而落到删库分支（`delete-doc` 缺 --path 直接报 bad-path，
+  // 两条路径各自的失败模式都是明确的）。
+  'trash-list', 'delete-doc', 'delete-space', 'restore', 'purge',
 ])
+
+/**
+ * **写** op 白名单（2026-09-14 抽出常量，原先写死成 `name === 'append' || name === 'import'`）。
+ *
+ * 抽出来的理由：加入删除管理后，"哪些 op 是写"从 2 个变成 6 个，继续写成并列的 `||`
+ * 表达式迟早会漏 —— 而漏掉一个写 op 的代价是**配置根短路失效**（见下方 rootExistedBefore
+ * 处的长注释）：拼错的 `PONOS_HOME` 会让写操作静默长出一棵没人找得到的树。
+ * `trash-list` 是**读**（列回收站），不在本表 —— 根不存在时返回空清单是合理语义。
+ */
+const WRITE_OPS = new Set(['append', 'import', 'delete-doc', 'delete-space', 'restore', 'purge'])
 
 /**
  * `--limit` 解析（S5 §7.3）：非负整数照收（0 合法——只想要 duplicate 标记时用得上）；
@@ -79,6 +99,29 @@ function relatedParams(args) {
   return { ok: true, id, limit: lim.value }
 }
 
+/**
+ * `--space` / `--spaces` 参数归一（原先是 search 分支里的内联 IIFE，2026-09-14 批次 1 抽出）。
+ *
+ * 三种入参都必须支持，缺一即**静默失效**（返回未过滤或全空）：
+ *   · `args.spaces` 数组（`--spaces a,b` 经 parseArgs / 本模块直接调用）
+ *   · `args.space` 单值（parseArgs 收的单数形式）
+ *   · `args.space` 逗号串（HTTP `?spaces=a,b` 经路由转发的形式）
+ * 抽出来的理由：`search` 与 `index-tags` 两处都必须遵守**逐字同一口径**，各写一遍必然漂移
+ * ——"标签过滤生效、检索过滤不生效"这类假阴性最难排查（看代码两处都"有"过滤）。
+ * @returns {string[] | null} null = 不过滤（全部空间）
+ */
+function parseSpacesArg(args = {}) {
+  const list = args.spaces
+  if (Array.isArray(list) && list.length) {
+    const arr = list.map((s) => String(s).trim()).filter(Boolean)
+    return arr.length ? arr : null
+  }
+  const raw = String(list || args.space || '').trim()
+  if (!raw) return null
+  const parts = raw.split(',').map((s) => s.trim()).filter(Boolean)
+  return parts.length ? parts : null
+}
+
 export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEvent = null } = {}) {
   const name = String(op || '').trim()
   if (!OPS.has(name)) {
@@ -98,7 +141,7 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
   // 故这条不会误伤正常安装。
   // 文件导入（import）同属**写** op 且更危险：它连 `knowledge/spaces/<id>/` 一起建，
   // 拼错的 `PONOS_HOME` 会长出一整棵没人找得到的资料树，故共用同一道短路。
-  if ((name === 'append' || name === 'import') && !rootExistedBefore) {
+  if (WRITE_OPS.has(name) && !rootExistedBefore) {
     return {
       output: { error: 'bad-root', message: `配置根不存在: ${configDir}（PONOS_HOME/CLAUDE_CONFIG_DIR 指向了错误的路径？）` },
       code: 1,
@@ -136,19 +179,8 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
           output: store.search({
             query: String(args.query || ''),
             keywords: Array.isArray(args.keywords) ? args.keywords : [],
-            // 空间过滤。三种入参都要支持，缺一即静默失效（返回未过滤或全空）：
-            //   - `args.spaces` 数组（本模块直接调用）
-            //   - `args.space` 单值（parseArgs 收的单数形式）
-            //   - `args.space` 逗号串（HTTP `?spaces=a,b` 经路由转发的形式）
-            // 逗号分隔与 `--keywords` 的既有约定一致。原实现只把 `--space` 当**单个**
-            // id，于是 `--space a,b` 匹配不到任何空间 → 过滤掉全部结果、静默 0 命中。
-            spaces: (() => {
-              if (Array.isArray(args.spaces) && args.spaces.length) return args.spaces
-              const raw = String(args.space || '').trim()
-              if (!raw) return null
-              const parts = raw.split(',').map((s) => s.trim()).filter(Boolean)
-              return parts.length ? parts : null
-            })(),
+            // 空间过滤：口径见 parseSpacesArg（数组 / 单值 / 逗号串三态，缺一即静默失效）。
+            spaces: parseSpacesArg(args),
             topK: Number(args.topK) || 5,
             maxBytes: Number(args.maxBytes) || 2048,
             mode: args.mode === 'full' ? 'full' : 'snippet',
@@ -224,6 +256,12 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
       case 'tags':
         // S6：标签枚举（读侧"写前先查"的依据）。纯读、无副作用。
         return { output: listMemoryTags(configDir), code: 0 }
+      case 'index-tags': {
+        // 2026-09-14（批次 1）：全库文档标签枚举。`--spaces a,b` 限定空间，
+        // 缺省 = 全部空间。参数解析口径与 search 逐字一致（见 parseSpacesArg）。
+        const only = parseSpacesArg(args)
+        return { output: store.listIndexTags({ spaces: only }), code: 0 }
+      }
       case 'append': {
         // S6：**唯一的写 op**（append-only）。
         //
@@ -392,6 +430,35 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
         // 一个无信息量的 500，而我们明明有逐条原因。整批级错误（bad-space-id / not-found /
         // too-many-files）才 code 1 —— 那种情况下 message 就是全部信息。
         return { output: report, code: 0 }
+      }
+      case 'trash-list':
+        // 回收站清单（GUI「最近删除」）。纯读、无副作用（根不存在时返回空清单）。
+        return { output: store.listTrash(), code: 0 }
+      case 'delete-doc': {
+        // 软删除单个条目。空间/路径的合法性一律由内核 `deleteGate` + `normalizeMdRel` 判，
+        // 本层只做"参数是否给全"的粗筛（未给就明确报错，不通融成空 path）。
+        const r = store.deleteDoc({ space: args.space ?? null, path: args.path ?? null })
+        if (!r.ok) return { output: { error: r.error, message: r.message }, code: 1 }
+        return { output: r, code: 0 }
+      }
+      case 'delete-space': {
+        // 软删除整个**用户自建**空间。内置经验库/会话记忆库不可删整库（内核 protected-space），
+        // 知识包只读（readonly-space）；`--confirm` 必须精确等于空间 id（防手滑删库）。
+        const r = store.deleteSpace({ space: args.space ?? null, confirm: args.confirm ?? null })
+        if (!r.ok) return { output: { error: r.error, message: r.message }, code: 1 }
+        return { output: r, code: 0 }
+      }
+      case 'restore': {
+        const r = store.restore({ trashId: args.trashId ?? null })
+        if (!r.ok) return { output: { error: r.error, message: r.message }, code: 1 }
+        return { output: r, code: 0 }
+      }
+      case 'purge': {
+        // `--all` 与 `--trash-id` 的区别要**如实传下去**：`all` 只认 `=== true`
+        //（字符串 'false' / undefined 都按"单条删除"走，宁可少删不可多删）。
+        const r = store.purge({ trashId: args.trashId ?? null, all: args.all === true })
+        if (!r.ok) return { output: { error: r.error, message: r.message }, code: 1 }
+        return { output: r, code: 0 }
       }
       default:
         return { output: { error: `unknown knowledge op: ${name}` }, code: 1 }

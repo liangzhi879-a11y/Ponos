@@ -79,10 +79,38 @@ export function seedFromFile(filePath, { env = process.env } = {}) {
   return true
 }
 
+/**
+ * 视觉模型 env 解析（**唯一权威**：provider 上报与 Vision 工具/知识库导入都经它）。
+ *
+ * 为什么同时认 `PONOS_VISION_*` 与 `YFW_VISION_*`（实测缺陷，2026-09-14）：
+ * bridge 的 `buildChildEnv` 写进 settings.json 的是 **YFW_VISION_***（server/bridge.mjs:548），
+ * 而内核原先只读 `PONOS_VISION_*` ⇒ 用户在设置里明明填了视觉模型（实测 `~/.yfw/settings.json`
+ * 里 YFW_VISION_MODEL 已配好），内核却判定"未配置"，Vision 工具只能降级到本地 OCR 并提示用户去配置
+ * —— 用户对着已经填好的设置页反复确认。这正是 kernel/health.mjs:79 记录过的同一类坑
+ * （bridge 注入 `YFW_HEALTH_COMPACT_COUNT` 与内核读取名不一致），当时的处置也是**内核兼容 YFW_ 前缀**，
+ * 这里沿用同一先例：以 PONOS_ 为主（内核原生名）、YFW_ 为兼容回退。
+ *
+ * 返回 null 表示"未配置"（缺 baseUrl 或 model）；`configured` 另看 token（有些本地网关不需要 token）。
+ */
+export function visionEnv(env = process.env) {
+  const pick = (name) => (env[`PONOS_${name}`] || env[`YFW_${name}`] || '')
+  const baseUrl = pick('VISION_BASE_URL')
+  const model = pick('VISION_MODEL')
+  if (!baseUrl || !model) return null
+  const token = pick('VISION_AUTH_TOKEN')
+  // `configured` 沿用原先语义（**有 token** 才算"配置好"），不改动 GUI 的既有判定；
+  // 而"能不能调用"看的是 baseUrl+model（见 visionAvailable）—— 本地网关常无 token。
+  return { baseUrl, model, token, configured: !!token }
+}
+
 // 视觉模型透传：独立 provider（PONOS_VISION_*，bridge buildChildEnv 已注入）→ 上报用对象。
 export function visionFromEnv(env = process.env) {
-  const baseUrl = env.PONOS_VISION_BASE_URL || ''
-  const model = env.PONOS_VISION_MODEL || ''
-  if (!baseUrl || !model) return null
-  return { baseUrl, model, configured: !!env.PONOS_VISION_AUTH_TOKEN }
+  const v = visionEnv(env)
+  if (!v) return null
+  return { baseUrl: v.baseUrl, model: v.model, configured: v.configured }
+}
+
+/** 视觉是否可用（粗判：baseUrl + model 齐备）。调用方据此决定"要不要走视觉"，避免无谓开销。 */
+export function visionAvailable(env = process.env) {
+  return !!visionEnv(env)
 }

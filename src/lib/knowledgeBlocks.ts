@@ -135,3 +135,69 @@ export function pickTargetIndex(renders: readonly BlockRender[], targetLine?: nu
   }
   return found ?? 0
 }
+
+// ── `[[wiki 链接]]` 切分（2026-09-14 对标 Obsidian 批次 1）─────────────────
+
+export interface WikiLinkChunk {
+  /** 'text' = 普通文本（原样渲染）；'wiki' = `[[目标|别名]]`（渲染成可点/不可点的内链） */
+  type: 'text' | 'wiki'
+  /** 原文片段（text 类型是原文本；wiki 类型是**完整原文** `[[a|b]]`，便于调试与回退展示） */
+  text: string
+  /** wiki 专用：链接目标（`[[目标|别名]]` 取 `目标`，已 trim） */
+  target?: string
+  /** wiki 专用：显示名（有别名用别名，否则用目标） */
+  label?: string
+}
+
+/**
+ * 把一段文本按 `[[wiki]]` 切成片段序列（调用方 map 成链接/文本节点）。
+ *
+ * 与内核 `shared/knowledge-core.mjs` 的 `extractLinks` 同口径（**差异必须记在这里**，否则
+ * 两侧行为一旦漂移，UI 上会出现"画成链接但内核说不存在"的诡异组合）：
+ *   · 支持 `[[目标]]` 与 `[[目标|别名]]`（别名只影响显示，不影响解析目标）；
+ *   · **跳过行内代码**：`` `[[x]]` `` 是在讲语法，不是链接（原地等长遮蔽，不改长度）；
+ *   · 不做别名解析、不处理 `#标题`/`^块id` 锚点（内核也不做，属批次 2）；
+ *   · 空目标（`[[]]`、`[[ ]]`）→ 不当链接，原样留作文本（避免渲染出一个点了没反应的链接）。
+ *
+ * 为什么不用正则一次 split 完事：需要保留"未匹配部分"的原文顺序，且 `[[a]]` 与 `[[a|b]]`
+ * 在同一段里混排时下标容易算错。显式扫描（exec + lastIndex）虽然长，但下标可控、可断言。
+ */
+export function splitWikiLinks(text: string): WikiLinkChunk[] {
+  const src = String(text ?? '')
+  if (!src) return []
+  // 行内代码遮蔽：与内核 extractInlineTags 同一手法（等长替换，不影响任何下标）
+  const masked = src.replace(/`[^`\n]*`/g, (s) => ' '.repeat(s.length))
+  const re = /\[\[([^\]\n]+?)\]\]/g
+  const out: WikiLinkChunk[] = []
+  let last = 0
+  for (let m = re.exec(masked); m; m = re.exec(masked)) {
+    const inner = m[1]
+    const bar = inner.indexOf('|')
+    const target = (bar >= 0 ? inner.slice(0, bar) : inner).trim()
+    const alias = bar >= 0 ? inner.slice(bar + 1).trim() : ''
+    if (!target) continue                       // `[[|x]]` / `[[ ]]`：不是链接
+    if (m.index > last) out.push({ type: 'text', text: src.slice(last, m.index) })
+    out.push({ type: 'wiki', text: src.slice(m.index, m.index + m[0].length), target, label: alias || target })
+    last = m.index + m[0].length
+  }
+  if (last < src.length) out.push({ type: 'text', text: src.slice(last) })
+  return out.filter((c) => c.text !== '')
+}
+
+/**
+ * wiki 链接目标 → 所在文档目录下的相对 md 路径候选（**与内核 resolveLinkTarget 同序**）。
+ *
+ * 内核按「原样 → 加 `.md` → 相对当前文档目录 → 相对目录加 `.md`」逐个试；这里同样要试多个
+ * 候选，因为 UI 只有"出边解析结果"（`{to, target}`，target=null 表示断链），而 `to` 是**原文**，
+ * 未必等于最终 docId。调用方拿候选列表去比对出边里的 `to`，命中即为可跳转目标。
+ */
+export function wikiTargetCandidates(target: string, docId: string): string[] {
+  const t = String(target ?? '').trim().replace(/^\.\//, '')
+  if (!t) return []
+  const dir = String(docId ?? '').includes('/') ? String(docId).slice(0, String(docId).lastIndexOf('/')) : ''
+  const withMd = (p: string) => (/\.md$/i.test(p) ? p : `${p}.md`)
+  const cands = [t, withMd(t)]
+  if (dir) cands.push(`${dir}/${t}`, withMd(`${dir}/${t}`))
+  // 去重但保序（顺序即内核的解析优先级）
+  return [...new Set(cands)]
+}

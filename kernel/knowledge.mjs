@@ -5,11 +5,15 @@
 // 纯函数在 shared/knowledge-core.mjs（repo 根 shared/ 经一级 ../ 逃逸共享）。
 import {
   existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync, statSync,
+  rmSync, cpSync, realpathSync,
 } from 'node:fs'
-import { join, relative, sep, basename } from 'node:path'
+import { join, relative, sep, basename, dirname, extname } from 'node:path'
 import {
   INDEX_VERSION, builtinSpaceSpecs, parseFrontmatter, splitBlocks, extractLinks,
   toDocId, hashLine,
+  // 2026-09-14（对标 Obsidian 批次 1）：正文内联 `#tag` 进索引（Obsidian 标签的主力形态，
+  // 旧实现只认 frontmatter / 文件名 / entry 的 `|tag`，导入 Obsidian vault 会"标签凭空消失"）
+  extractInlineTags,
   countGrams, buildIdf, vectorizeText, blockIndexText, blockTagBoost, relationContent, retrievalText,
   serializeIndex, parseJsonl, resolveLinkTarget,
   cosine, keywordScore, structBoostOf, fuseScore, makeSnippet, toBlockId,
@@ -51,6 +55,153 @@ export function walkMd(root, { maxFiles = 5000 } = {}) {
 
 function readJsonFile(fp) {
   try { return JSON.parse(readFileSync(fp, 'utf-8')) } catch { return {} }
+}
+
+// ── 回收站（软删除，2026-09-14）──────────────────────────────────────────────
+// 设计见 .yfw-spec/knowledge-trash/spec.md。三条不变量，改本段前先读它们：
+//   ① 除 purge 外**不做任何物理删除**（`movePath` 的跨盘兜底 rm 只删"已经复制成功"的源）；
+//   ② 回收站放 `<knowledge>/.trash`（不在各空间内）：`walkMd` 跳过 `.` 开头的目录 ⇒
+//      回收站天然不进索引（索引层零改动）；且删整库时不会把回收站一起搬走；
+//   ③ 删除权限判定**独立于 `writable`**：内置经验空间的 `writable === true`（记忆需要能写），
+//      照它放行会直接删掉用户的 `~/.yfw/memory/personal`。
+const TRASH_DIR_NAME = '.trash'
+/** `YYYYMMDD-HHmm-<4位小写字母数字>`。purge 是唯一物理删除路径，形状校验是它的第一道闸。 */
+const TRASH_ID_RE = /^[0-9]{8}-[0-9]{4}-[0-9a-z]{4}$/
+
+/** 回收站根：`<configDir>/knowledge/.trash`。 */
+export function trashRoot(configDir) {
+  return join(knowledgeRoot(configDir), TRASH_DIR_NAME)
+}
+
+/** trashId 形状校验。`../`、绝对路径、盘符一律不匹配 ⇒ purge 拿不到回收站外的路径。 */
+export function isTrashId(v) {
+  return TRASH_ID_RE.test(String(v ?? '').trim())
+}
+
+/** 生成 trashId（时间可读 + 防同秒冲突）。`taken` 由调用方给（查台账 + 查目录）。 */
+export function newTrashId(taken = () => false) {
+  const d = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`
+  for (let i = 0; i < 200; i++) {
+    const rand = Math.random().toString(36).slice(2).padEnd(4, '0').slice(0, 4)
+    const id = `${stamp}-${rand}`
+    if (isTrashId(id) && !taken(id)) return id
+  }
+  // 不返回时间戳外的兜底值：宁可报错，也不覆盖已有回收站条目（那才是真的丢数据）
+  throw new Error('trash: 无法生成唯一 trashId（同分钟内 200 次随机全部撞车）')
+}
+
+/** 目标路径是否真的落在 root 内（软链接解析后判定）。`..` 已在路径规范化阶段拒掉，这是第二道。 */
+function realpathInside(root, abs) {
+  let rootReal
+  let absReal
+  try { rootReal = realpathSync(root) } catch { return false }
+  try { absReal = realpathSync(abs) } catch { return false }
+  return absReal === rootReal || absReal.startsWith(rootReal.endsWith(sep) ? rootReal : rootReal + sep)
+}
+
+/**
+ * 相对 .md 路径规范化（删除/还原专用，与 `listTree` 的读侧防护同口径）：
+ * 拒绝对路径/盘符/`..`/空段，且必须以 `.md` 结尾 —— 允许删非 md 文件等于把这里变成通用删文件口。
+ */
+function normalizeMdRel(rel) {
+  const s = String(rel ?? '').replace(/\\/g, '/').trim()
+  if (!s) return null
+  if (s.startsWith('/') || /^[a-zA-Z]:/.test(s)) return null
+  const parts = s.split('/').filter((p) => p && p !== '.')
+  if (!parts.length || parts.some((p) => p === '..')) return null
+  if (!/\.md$/i.test(parts[parts.length - 1])) return null
+  return parts.join('/')
+}
+
+/** 路径占用统计（删前算，删后就没有了）。文件返回自身大小；目录递归求和。 */
+function pathBytes(abs) {
+  let st
+  try { st = statSync(abs) } catch { return 0 }
+  if (st.isFile()) return st.size
+  let bytes = 0
+  const stack = [abs]
+  while (stack.length) {
+    const dir = stack.pop()
+    let entries = []
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { continue }
+    for (const e of entries) {
+      if (e.isSymbolicLink()) continue
+      const p = join(dir, e.name)
+      if (e.isDirectory()) { stack.push(p); continue }
+      if (!e.isFile()) continue
+      try { bytes += statSync(p).size } catch { /* 统计失败不影响删除，只是数字略小 */ }
+    }
+  }
+  return bytes
+}
+
+/** 目录下的文件相对路径清单（只用于报告"搬走了什么"，不参与删除决策）。 */
+function listRelFiles(abs) {
+  const out = []
+  let st
+  try { st = statSync(abs) } catch { return out }
+  if (st.isFile()) return [basename(abs)]
+  const stack = [abs]
+  while (stack.length) {
+    const dir = stack.pop()
+    let entries = []
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { continue }
+    for (const e of entries) {
+      if (e.isSymbolicLink()) continue
+      const p = join(dir, e.name)
+      if (e.isDirectory()) { stack.push(p); continue }
+      if (e.isFile()) out.push(relative(abs, p).split(sep).join('/'))
+    }
+  }
+  return out
+}
+
+/** 先试 rename（同盘原子、最快），EXDEV（跨盘）才退化成"复制成功后再删源"。 */
+function movePath(from, to) {
+  mkdirSync(dirname(to), { recursive: true })
+  try {
+    renameSync(from, to)
+    return 'rename'
+  } catch (e) {
+    if (e?.code !== 'EXDEV') throw e
+  }
+  cpSync(from, to, { recursive: true })
+  rmSync(from, { recursive: true, force: true }) // 源已完整复制，这里删的是副本的源
+  return 'copy'
+}
+
+/** 台账读写（原子替换：写 .tmp → rename，避免半截 JSON 让整个回收站不可读）。 */
+function readTrashIndex(trashDir) {
+  const raw = readJsonFile(join(trashDir, 'index.json'))
+  return { version: 1, items: Array.isArray(raw?.items) ? raw.items : [] }
+}
+
+function writeTrashIndex(trashDir, index) {
+  mkdirSync(trashDir, { recursive: true })
+  const fp = join(trashDir, 'index.json')
+  const tmp = `${fp}.tmp`
+  writeFileSync(tmp, JSON.stringify(index, null, 2), 'utf-8')
+  renameSync(tmp, fp)
+}
+
+/** 还原时的"同名让位"（与导入侧 `outRelFor` 同一约定：`a.md` → `a-2.md`）。 */
+function freeRel(root, rel) {
+  const parts = rel.split('/')
+  const file = parts.pop()
+  const dir = parts.join('/')
+  const ext = extname(file)
+  const stem = basename(file, ext)
+  // 让位名必须把**目录前缀带回去**（`sub/b.md` → `sub/b-2.md`）。只返回 `b-2.md` 会把文件
+  // 还原到空间根 —— 看起来"还原成功"，实际位置错了，且原目录下仍然缺这个文件。
+  const at = (name) => join(root, ...(dir ? `${dir}/${name}` : name).split('/'))
+  if (!existsSync(at(file))) return rel
+  for (let i = 2; i < 1000; i++) {
+    const cand = `${stem}-${i}${ext}`
+    if (!existsSync(at(cand))) return dir ? `${dir}/${cand}` : cand
+  }
+  return null
 }
 
 /**
@@ -96,12 +247,25 @@ export function discoverSpaces({ configDir, root = null } = {}) {
 
 function collectTags(front, space, relPath, blocks) {
   const tags = []
-  if (front.tags) tags.push(...String(front.tags).split(/[,\s]+/).filter(Boolean))
+  // frontmatter：**数组与字符串两态都吃**（2026-09-14 批次 1）。
+  // parseYamlSubset 起，`tags:` + 缩进 `- x`（Obsidian 标准写法）与 `tags: [a, b]` 都解析成数组；
+  // `tags: a, b` 仍是字符串（旧行为不变，靠这里的 split 兜住）。
+  if (Array.isArray(front.tags)) tags.push(...front.tags.map((t) => String(t)))
+  else if (front.tags) tags.push(...String(front.tags).split(/[,\s]+/))
+  // 正文内联 `#tag`（2026-09-14 批次 1）：Obsidian 用户敲标签的主力形态。
+  // code 块跳过（代码里的 `#xxx` 是注释/颜色值，不是标签）；entry 块取**全文**——
+  // 条目的摘要常被截断，"标签落在被截掉的后半段"是常态。
+  for (const b of blocks) {
+    if (b.kind === 'code') continue
+    tags.push(...extractInlineTags(b.kind === 'entry' ? (b.entryFull || b.text) : b.text))
+  }
   if (space.source === 'experience' || space.source === 'memory') {
     tags.push(basename(relPath).replace(/\.md$/i, ''))
   }
   for (const b of blocks) if (b.kind === 'entry' && b.entryTag) tags.push(b.entryTag)
-  return [...new Set(tags)]
+  // 清洗统一放在最后：strip 前导 `#`（`tags: "#财务"` 这种手写习惯，Obsidian 里属性值不带 #）、
+  // trim、去空、去重。放在出口处做的理由——上面四路来源的形态各不相同，逐路清洗必然漏一路。
+  return [...new Set(tags.map((t) => String(t).trim().replace(/^#+/, '')).filter(Boolean))]
 }
 
 /** 解析单个 md → { doc, links }。抛错由调用方兜住（单文档故障不影响整库）。 */
@@ -114,7 +278,10 @@ export function parseDocFile({ absPath, space, relPath }) {
   // 标题优先级：frontmatter.title → frontmatter.name → 首个 heading → 文件名。
   // name 必须排在 heading 之前：经验主题文件（如 workflow.md）带 `name: workflow`，
   // 若让首个 `## 小节` 抢先，主题名会被错认成小节名，检索排序与展示都会跟着错。
-  const title = front.title || front.name || (heading && heading.text) || basename(relPath).replace(/\.md$/i, '')
+  // 标量归一（2026-09-14 批次 1）：parseYamlSubset 之后 title/name 可能是**数组**
+  // （`title:` + 缩进 `- x`，或 `title: [a, b]`）——直接进模板会渲染成 "a,b" 这种脏标题。
+  const scalar = (v) => (Array.isArray(v) ? String(v[0] ?? '') : String(v ?? '')).trim()
+  const title = scalar(front.title) || scalar(front.name) || (heading && heading.text) || basename(relPath).replace(/\.md$/i, '')
   const st = statSync(absPath)
   const doc = {
     id: docId, spaceId: space.id, rel: relPath, title,
@@ -168,6 +335,24 @@ const PRUNE_MIN_DOCS = 50      // 少于 50 篇不做高频剪枝（小库剪枝
 const PRUNE_DF_RATIO = 0.5     // 出现在超半数文档里的 gram 近似停用词
 /** 检索耗时采样窗口（环形缓冲上限）：100 次足够看 P95，也不会无界增长 */
 const SEARCH_SAMPLES = 100
+
+/**
+ * 标签直连命中的**兜底底价**（2026-09-14 批次 1，见 searchInner 的 3.5 步）。
+ *
+ * 标签命中**不臆造分数**：它走既有的 struct 通道由公式算出 ——
+ * `fuseScore({cos:0, kw:0, struct: structBoostOf({block, doc, keywords:[标签]})})`
+ * ，其中 structBoostOf 的"标签命中"权重已定为 0.67（见 shared/knowledge-core.mjs:501），
+ * 于是 score ≈ 0.15 × 0.67 ≈ **0.10**。这个数是**推出来的**，不是拍的，而且天生低于任何
+ * 有正文证据的命中（那些还会再加 0.60×cos + 0.25×kw）——这正是我们要的顺序：
+ * 正文命中在前、标签命中在后，两者都能出现在结果里。
+ *
+ * （最初的实现给的是定值 0.30，被实测打回：本系统里**真实**的正文命中在短文档上只有
+ * 0.22–0.27（即便一个词在正文里出现 8 次），0.30 会把正文命中整体压到标签命中之后。）
+ *
+ * 这个常量只兜一种极端情形：单字符标签（`#a`）——structBoostOf 的 keywords 过滤掉长度 <2 的词，
+ * 于是 struct 可能为 0、score 为 0。给个极小正数保证它仍在结果里（0 分会被视作"没有证据"）。
+ */
+const TAG_HIT_FLOOR = 0.05
 /**
  * 检索结果每条附带的锚点上限（S5 Task 6）。取 3 而不是 MAX_RELATED(8) 的理由是**体积**：
  * 检索项本身已是 topK（缺省 5）条，每项 8 条锚点 ⇒ 最多 40 条摘要，而摘要里的 `why.shared`
@@ -550,7 +735,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     const kws = (keywords || []).map((k) => String(k).trim()).filter(Boolean)
     const qtext = q || kws.join(' ')
     const age = builtAt ? Date.now() - Date.parse(builtAt) : null
-    if (!qtext) return { items: [], count: 0, indexAge: age, degraded: false }
+    if (!qtext) return { items: [], count: 0, total: 0, indexAge: age, degraded: false }
     const allow = Array.isArray(only) && only.length ? new Set(only) : null
     const qvec = vectorizeText(qtext, { idf })
 
@@ -615,7 +800,55 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       }
     }
 
+    // 3.5) 标签直连（2026-09-14 对标 Obsidian 批次 1）：
+    //      查询串 / 关键词与某个标签**完全相同**（大小写不敏感、容忍前导 `#`）时，把带该标签的
+    //      文档直接作为候选并入结果。
+    //
+    //      为什么**必须**有这一路（真进程实测出来的洞）：标签写在 frontmatter 里，**不在任何块
+    //      的文本中**，而倒排与关键词路都只索引块文本 → `财务` 这种"只当标签用、正文从不提"的
+    //      词，全文检索恒为 0 命中。于是"标签视图点一下去看同标签文档"会得到一片空白
+    //      （实测：`index-tags` 里有 `财务`，`search --query 财务` 返回空 items）。
+    //      Obsidian 用 `tag:` 算子解决同一问题；我们没有算子（属批次 3），但**拿标签名当查询词**
+    //      是用户最自然的动作，必须能命中。同时这也让 agent 侧的 KnowledgeSearch 能按标签找料。
+    const tagTerms = new Set(
+      [q, ...kws].map((x) => String(x).trim().replace(/^#+/, '').toLowerCase()).filter(Boolean),
+    )
+    if (tagTerms.size) {
+      const haveDocs = new Set(items.map((x) => x.docId))
+      for (let i = 0; i < docs.length; i++) {
+        const doc = docs[i]
+        if (allow && !allow.has(doc.spaceId)) continue
+        if (haveDocs.has(doc.id)) continue          // 正文已命中 → 不重复给一条更弱的标签命中
+        if (!doc.tags || !doc.tags.length) continue
+        const hitTag = doc.tags.find((tg) => tagTerms.has(String(tg).toLowerCase()))
+        if (!hitTag) continue
+        // 锚点块：标题 > 条目 > 首块。标签命中的文档最该露出来的就是它的"领头内容"。
+        const anchor = doc.blocks.find((b) => b.kind === 'heading')
+          || doc.blocks.find((b) => b.kind === 'entry')
+          || doc.blocks[0]
+        if (!anchor) continue
+        const bid = toBlockId(doc.id, anchor.n)
+        if (seen.has(bid)) continue
+        seen.add(bid)
+        haveDocs.add(doc.id)
+        // 打分：**走既有 struct 通道由公式算**（不臆造分数）——标签命中没有正文证据，
+        // 于是 cos / kw 项给 0，只让 structBoostOf 的"标签命中"权重（0.67）参与，
+        // 结果 ≈ 0.15×0.67 ≈ 0.10，天生低于任何带正文证据的命中。口径与数值推导见 TAG_HIT_FLOOR。
+        const struct = structBoostOf({ block: anchor, doc, query: q, keywords: [String(hitTag)] })
+        const it = toItem(doc, anchor, { cos: 0, kw: 0, struct }, mode, false)
+        if (!(it.score > 0)) it.score = TAG_HIT_FLOOR
+        it.tagHit = String(hitTag)                  // 消费方可据此区分"命中正文"与"命中标签"
+        items.push(it)
+      }
+    }
+
     items.sort((a, b) => b.score - a.score)
+    // 命中总数（2026-09-14 批次 1）：**截断前**的候选条数。
+    // 为什么不能拿 `count` 充数：`count` 是"实际返回条数"（受 topK / maxBytes 双重截断），
+    // 用户看到的"命中 5 条"其实可能是"命中 300 条里给了 5 条"——这两件事在 UI 上是
+    // 完全不同的信息（要不要再加关键词 / 要不要放宽 topK）。`count` 语义保持不变（既有消费方
+    // 如注入预算按它算），只**新增** `total`。
+    const total = items.length
     // 4) 双层截断：topK 控条数，maxBytes 控上下文预算。
     //    第一条无条件放入——否则预算极小时前端永远空白，用户看到"搜不到"。
     const out = []
@@ -640,7 +873,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
         it.related = relatedOf(it.blockId, { validate: true, limit: SEARCH_RELATED_TOPN, lookup: table })
       }
     }
-    return { items: out, count: out.length, indexAge: age, degraded }
+    return { items: out, count: out.length, total, indexAge: age, degraded }
   }
 
   /**
@@ -1294,6 +1527,266 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     return { ...base, related: relatedDocEdges({ space }).filter((e) => present.has(e.from) && present.has(e.to)) }
   }
 
+  // ── 删除管理（回收站，2026-09-14）─────────────────────────────────────────
+  const trashDir = join(kroot, TRASH_DIR_NAME)
+
+  /**
+   * 删/还原之后的索引刷新。语义等价于 `load({ force: true })`，但 `load` 是**返回对象的
+   * 方法**、不在本闭包作用域内，故这里复刻它的两步行径。
+   * 必须**重新发现空间**：删整库/还原整库会改变 `spaces` 集合本身（不是只有文档变了）。
+   */
+  function refreshAfterMutation() {
+    spaces = discoverSpaces({ configDir, root: kroot })
+    buildIndex()
+  }
+
+  /**
+   * 删除权限判定。**刻意不看 `writable`**（见文件顶部不变量 ③），只认 `source`：
+   *   user                          → 条目可删、整库可删
+   *   experience / memory / skill_exp → 条目可删、**整库不可删**（用户明确要求：内置经验库、
+   *                                    会话记录等系统库只允许删条目）
+   *   pack                          → 条目与整库都不可删（只读来源）
+   * 错误码与导入侧 `validateSpaceId` 对齐（`readonly-space` 是权限语义、不是"名字打错"）。
+   */
+  function deleteGate(spaceId, { whole = false } = {}) {
+    const id = String(spaceId ?? '').trim()
+    if (!id) return { ok: false, error: 'missing-space', message: 'delete: 需要 --space <空间id>' }
+    const sp = spaces.find((s) => s.id === id)
+    if (!sp) return { ok: false, error: 'unknown-space', message: `delete: 空间不存在：${id}` }
+    if (sp.source === 'pack') {
+      return {
+        ok: false, error: 'readonly-space',
+        message: `delete: ${id} 是只读知识包（来源不可修改），条目与空间都不允许删除`,
+      }
+    }
+    if (whole && sp.source !== 'user') {
+      return {
+        ok: false, error: 'protected-space',
+        message: `delete-space: ${id} 是内置空间「${sp.name}」，只允许删除其中条目、不允许删除整个空间`,
+      }
+    }
+    return { ok: true, space: sp }
+  }
+
+  /** 把 payload 搬进回收站并登记台账。返回 { trashId, bytes, files }。 */
+  function stash({ kind, spaceId, spaceName, relPath, absPath, name }) {
+    mkdirSync(trashDir, { recursive: true })
+    const index = readTrashIndex(trashDir)
+    const trashId = newTrashId((id) => index.items.some((it) => it.trashId === id) || existsSync(join(trashDir, id)))
+    // doc 保留相对结构（`payload/a/b.md`）——还原时原样放回，不必再记"它原来在哪"；
+    // space 则是整棵目录树进 `payload/`。
+    const payload = kind === 'doc'
+      ? join(trashDir, trashId, 'payload', ...relPath.split('/'))
+      : join(trashDir, trashId, 'payload')
+    const bytes = pathBytes(absPath)
+    const files = listRelFiles(absPath)
+    // ⚠️ 顺序要紧：**先搬再写台账**。反过来的话，写台账成功而搬失败会留下一条
+    // 指向不存在内容的记录（GUI 里看得见、还原时才发现是空的）。
+    const via = movePath(absPath, payload)
+    const item = {
+      trashId, kind, spaceId, spaceName: spaceName || spaceId,
+      relPath: kind === 'doc' ? relPath : null,
+      name: name || basename(absPath),
+      deletedAt: new Date().toISOString(),
+      bytes, files: files.slice(0, 200), fileCount: files.length, via,
+    }
+    // 每条另存一份 meta.json：index.json 若被手工改坏，仍能从条目目录恢复出元数据。
+    writeFileSync(join(trashDir, trashId, 'meta.json'), JSON.stringify(item, null, 2), 'utf-8')
+    index.items.unshift(item)
+    writeTrashIndex(trashDir, index)
+    // 索引同步：搬走文件后 `indexStale()` 已能因"磁盘已删"判过期；此处主动 force 重建，
+    // 让"删完立刻搜不到"在本进程内即成立（删除是低频的用户显式操作，重建成本可接受）。
+    refreshAfterMutation()
+    return { trashId, bytes, files: files.length }
+  }
+
+  /** 软删除单个条目。 */
+  function deleteDoc({ space, path }) {
+    const gate = deleteGate(space)
+    if (!gate.ok) return gate
+    const sp = gate.space
+    const rel = normalizeMdRel(path)
+    if (!rel) {
+      return {
+        ok: false, error: 'bad-path',
+        message: `delete-doc: --path 必须是空间内的相对 .md 路径（收到 ${JSON.stringify(path)}）`,
+      }
+    }
+    const abs = join(sp.root, ...rel.split('/'))
+    // ⚠️ 顺序：**先判存在、再判越界**。反过来的话，不存在的文件会让 `realpathSync` 抛错、
+    // 被判成 `bad-path`（"路径非法"）—— 而 `zz.md` 明明是合法路径、只是没这个文件。
+    // 把"文件不存在"报成"路径非法"，调用方会去查路径写法，方向完全错了。
+    if (!existsSync(abs)) {
+      return { ok: false, error: 'not-found', message: `delete-doc: 文件不存在：${sp.id}/${rel}` }
+    }
+    if (!realpathInside(sp.root, abs)) {
+      return { ok: false, error: 'bad-path', message: `delete-doc: 路径越出空间根：${rel}` }
+    }
+    const r = stash({ kind: 'doc', spaceId: sp.id, spaceName: sp.name, relPath: rel, absPath: abs, name: basename(rel) })
+    return { ok: true, kind: 'doc', spaceId: sp.id, path: rel, ...r, indexSync: 'reloaded' }
+  }
+
+  /** 软删除整个用户自建空间（需 `confirm` 精确等于空间 id）。 */
+  function deleteSpace({ space, confirm }) {
+    const gate = deleteGate(space, { whole: true })
+    if (!gate.ok) return gate
+    const sp = gate.space
+    const want = String(confirm ?? '').trim()
+    if (want !== sp.id) {
+      return {
+        ok: false, error: 'confirm-mismatch',
+        message: `delete-space: 需要 --confirm <空间id>（须精确等于「${sp.id}」）；收到 ${JSON.stringify(confirm ?? '')}`,
+      }
+    }
+    const spacesDir = join(kroot, 'spaces')
+    if (!realpathInside(spacesDir, sp.root)) {
+      // 自建空间的 root 由 discoverSpaces 定为 `<kroot>/spaces/<id>`；不在此内的（如知识包
+      // 包装到本地、或手工改过配置的）一律拒删 —— 只删自己造的那棵目录。
+      return { ok: false, error: 'protected-space', message: `delete-space: ${sp.id} 的目录不在 knowledge/spaces/ 下，拒绝删除` }
+    }
+    const r = stash({ kind: 'space', spaceId: sp.id, spaceName: sp.name, relPath: null, absPath: sp.root, name: sp.name })
+    return { ok: true, kind: 'space', spaceId: sp.id, name: sp.name, ...r, indexSync: 'reloaded' }
+  }
+
+  /** 回收站清单（GUI「最近删除」用）。 */
+  function listTrash() {
+    const index = readTrashIndex(trashDir)
+    const items = index.items
+      .filter((it) => isTrashId(it.trashId))
+      .map((it) => ({
+        trashId: it.trashId,
+        kind: it.kind === 'space' ? 'space' : 'doc',
+        spaceId: it.spaceId ?? null,
+        spaceName: it.spaceName || it.spaceId || null,
+        relPath: it.relPath ?? null,
+        name: it.name || null,
+        deletedAt: it.deletedAt ?? null,
+        bytes: Number(it.bytes) || 0,
+        fileCount: Number(it.fileCount) || (Array.isArray(it.files) ? it.files.length : 0),
+        // 内容是否还在（用户可能手工清过磁盘）→ GUI 据此把"还原"置灰、只留"彻底删除"
+        available: existsSync(join(trashDir, it.trashId, 'payload')),
+      }))
+    // 无台账的散落子目录只报数、不列出：列出来却删不掉（形状未过白名单）比不列更糟。
+    let stray = 0
+    try {
+      const known = new Set(items.map((it) => it.trashId))
+      for (const name of readdirSync(trashDir)) {
+        if (name === 'index.json' || name.endsWith('.tmp') || known.has(name)) continue
+        try { if (statSync(join(trashDir, name)).isDirectory()) stray += 1 } catch { /* ignore */ }
+      }
+    } catch { /* 回收站不存在 = 空 */ }
+    return {
+      dir: trashDir,
+      count: items.length,
+      bytes: items.reduce((s, it) => s + it.bytes, 0),
+      stray,
+      items,
+    }
+  }
+
+  /** 还原（条目回原空间原路径；整库回 `spaces/<id>`）。遇同名**一律让位、绝不覆盖**。 */
+  function restore({ trashId }) {
+    const id = String(trashId ?? '').trim()
+    if (!isTrashId(id)) {
+      return { ok: false, error: 'bad-trash-id', message: `restore: 非法 trashId（收到 ${JSON.stringify(trashId)}）` }
+    }
+    const index = readTrashIndex(trashDir)
+    const item = index.items.find((it) => it.trashId === id)
+    if (!item) return { ok: false, error: 'unknown-trash-id', message: `restore: 回收站里没有 ${id}` }
+    const payload = join(trashDir, id, 'payload')
+    if (!existsSync(payload)) {
+      return { ok: false, error: 'payload-missing', message: `restore: ${id} 的内容已不在磁盘上（只能彻底删除该记录）` }
+    }
+    const dropEntry = () => {
+      index.items = index.items.filter((it) => it.trashId !== id)
+      writeTrashIndex(trashDir, index)
+      // 条目目录随台账一起清掉（注意：这里删的是**回收站内已被搬空**的壳目录）
+      purgeTrashEntryDir(id)
+    }
+    if (item.kind === 'space') {
+      const wanted = String(item.spaceId ?? '').trim()
+      if (!wanted) return { ok: false, error: 'bad-record', message: `restore: ${id} 台账缺少 spaceId` }
+      let target = join(kroot, 'spaces', wanted)
+      let spaceId = wanted
+      if (existsSync(target)) {
+        // 同名库已存在 → 改名让位（`x` → `x-2`），不覆盖用户的现库。
+        let found = null
+        for (let i = 2; i < 1000; i++) {
+          const cand = `${wanted}-${i}`
+          if (!existsSync(join(kroot, 'spaces', cand))) { found = cand; break }
+        }
+        if (!found) return { ok: false, error: 'name-exhausted', message: `restore: ${wanted} 同名空间过多，无法让位命名` }
+        spaceId = found
+        target = join(kroot, 'spaces', spaceId)
+      }
+      movePath(payload, target)
+      dropEntry()
+      refreshAfterMutation()
+      return { ok: true, kind: 'space', spaceId, renamed: spaceId !== wanted, indexSync: 'reloaded' }
+    }
+    // 条目：回原空间原路径。空间可能已被删/改名 → 明确拒绝而不是往幽灵目录里还原。
+    const rel = normalizeMdRel(item.relPath)
+    if (!rel) return { ok: false, error: 'bad-record', message: `restore: ${id} 台账的 relPath 非法` }
+    const sp = spaces.find((s) => s.id === item.spaceId)
+    if (!sp) {
+      return {
+        ok: false, error: 'unknown-space',
+        message: `restore: 原空间 ${item.spaceId} 已不存在，无法还原（可先新建同名空间，或从回收站目录手工取回）`,
+      }
+    }
+    const src = join(payload, ...rel.split('/'))
+    if (!existsSync(src)) {
+      return { ok: false, error: 'payload-missing', message: `restore: ${id} 内找不到 ${rel}` }
+    }
+    const free = freeRel(sp.root, rel)
+    if (!free) return { ok: false, error: 'name-exhausted', message: `restore: ${rel} 同名文件过多，无法让位命名` }
+    movePath(src, join(sp.root, ...free.split('/')))
+    dropEntry()
+    refreshAfterMutation()
+    return { ok: true, kind: 'doc', spaceId: sp.id, path: free, renamed: free !== rel, indexSync: 'reloaded' }
+  }
+
+  /**
+   * 彻底删除（**本模块唯一的物理删除路径**）。只认回收站内的合规 trashId 目录，
+   * 台账里的 trashId 先用白名单正则筛一遍 —— 即使 `index.json` 被手工塞进 `../xxx`，
+   * 也到不了回收站之外的路径。
+   */
+  function purgeTrashEntryDir(trashId) {
+    if (!isTrashId(trashId)) return false
+    const abs = join(trashDir, trashId)
+    const trashReal = (() => { try { return realpathSync(trashDir) } catch { return trashDir } })()
+    const absReal = (() => { try { return realpathSync(abs) } catch { return abs } })()
+    if (!(absReal === trashReal || absReal.startsWith(trashReal.endsWith(sep) ? trashReal : trashReal + sep))) return false
+    try { rmSync(abs, { recursive: true, force: true }); return true } catch { return false }
+  }
+
+  function purge({ trashId = null, all = false } = {}) {
+    const index = readTrashIndex(trashDir)
+    if (all === true) {
+      const items = index.items.filter((it) => isTrashId(it.trashId))
+      const bytes = items.reduce((s, it) => s + (Number(it.bytes) || 0), 0)
+      let purged = 0
+      for (const it of items) if (purgeTrashEntryDir(it.trashId)) purged += 1
+      writeTrashIndex(trashDir, { version: 1, items: [] })
+      // 清的是回收站，索引视图不受影响（回收站本就不在索引里）⇒ 不重建。
+      return { ok: true, purged, bytes, indexSync: 'unchanged' }
+    }
+    const id = String(trashId ?? '').trim()
+    if (!isTrashId(id)) {
+      return { ok: false, error: 'bad-trash-id', message: `purge: 非法 trashId（收到 ${JSON.stringify(trashId)}）；清空全部请用 --all` }
+    }
+    const item = index.items.find((it) => it.trashId === id)
+    // `rm` 以台账记录为准；内容缺失（用户手工清过）也允许抹掉记录，否则会留下永远删不掉的死行。
+    if (!item && !existsSync(join(trashDir, id))) {
+      return { ok: false, error: 'unknown-trash-id', message: `purge: 回收站里没有 ${id}` }
+    }
+    const bytes = Number(item?.bytes) || 0
+    const removed = purgeTrashEntryDir(id)
+    index.items = index.items.filter((it) => it.trashId !== id)
+    writeTrashIndex(trashDir, index)
+    return { ok: true, purged: removed ? 1 : 0, bytes, indexSync: 'unchanged' }
+  }
+
   return {
     /**
      * 加载或构建索引。**非 async**：内部全同步（无任何 await），因为 KnowledgeSearch
@@ -1317,7 +1810,52 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     /** 一篇文档内所有条目块的锚点（S5 Task 9 GUI 专用批量口；见 getRelatedForDoc 的 why） */
     getRelatedForDoc,
     updateDoc, getDoc, listEntries, listTree, getLinks, getGraph,
+    // 删除管理（回收站，2026-09-14）：CLI/路由/agent 工具的**唯一**入口面。
+    // 四个写方法都只做"搬文件 + 记台账"，物理删除仅存在于 purge 一支。
+    deleteDoc, deleteSpace, listTrash, restore, purge,
+    /** 删除权限查询（GUI 用它决定要不要画删除按钮，避免"点了才报错"）。 */
+    canDelete({ space, whole = false } = {}) {
+      const g = deleteGate(space, { whole })
+      return g.ok ? { ok: true } : { ok: false, error: g.error, message: g.message }
+    },
     getDocs() { return docs },
+    /**
+     * 索引标签枚举（2026-09-14 对标 Obsidian 批次 1）。纯读、无副作用。
+     *
+     * 为什么不复用 `listMemoryTags`（S6 的 tags op）：那个只认**经验库**（memory/personal），
+     * 且条目级；本口要的是**全库文档标签**（含用户空间与只读 packs），是标签视图的数据源。
+     *
+     * 为什么不读索引里的 `tags.json`：`loadIndexFromDisk` 不回填该文件（只有 buildIndex 路径
+     * 会写它），读它会让"冷启动（load）"与"刚建完索引"两条路径给出不同结果——同一库同一问
+     * 两个答案是最难查的一类 bug。直接遍历 `docs[i].tags`（内存里恒为当前视图）。
+     *
+     * 返回形状与 listMemoryTags 保持一致（tags/total/singleCount），GUI 与 agent 侧可用同一套
+     * 渲染与判断；`single` 标记"只被一篇文档用到的标签"——它是标签体系腐烂的第一信号
+     * （S5.1 实测：单例标签越积越多 → 条目孤立），所以显式给出，别让调用方自己数。
+     */
+    listIndexTags({ spaces: only = null } = {}) {
+      const allow = Array.isArray(only) && only.length ? new Set(only) : null
+      const byTag = new Map()
+      for (const d of docs) {
+        if (allow && !allow.has(d.spaceId)) continue
+        for (const t of d.tags || []) {
+          const cur = byTag.get(t)
+          if (cur) { cur.count += 1; if (cur.spaceId !== d.spaceId) cur.spaceId = null }
+          else byTag.set(t, { tag: t, count: 1, spaceId: d.spaceId })
+        }
+      }
+      const tags = [...byTag.values()]
+        .map((x) => ({ ...x, single: x.count === 1 }))
+        .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
+      return {
+        tags,
+        total: tags.length,
+        singleCount: tags.filter((x) => x.single).length,
+        // 生效的空间白名单（null = 全部空间）。回给调用方是为了让"过滤后为空"能被区分成
+        // "该空间确实没有标签"而不是"空间名拼错了"——后者需要在 UI 上明说。
+        spaces: allow ? [...allow] : null,
+      }
+    },
     getIdf() { return idf },
     getInverted() { return inverted },
     getLinkOut() { return linkOut },

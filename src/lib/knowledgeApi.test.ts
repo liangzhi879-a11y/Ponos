@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import {
   listSpaces, listTree, getDoc, listEntries, search, getLinks, getGraph, getStats, reindex, writeDoc,
   getRelated, getRelatedDoc, getGraphRelated, clearKnowledgeInflight, importKnowledge,
+  listTrash, deleteDoc, deleteSpace, restoreTrash, purgeTrash,
 } from './knowledgeApi.ts'
 
 const BASE = 'http://localhost:51517'
@@ -330,4 +331,96 @@ test('同 key 并发去重：复用同一 promise，只发一次 fetch', async (
   // 落定后从在途表摘除：下一次调用是新请求（缓存由 useKnowledge 负责，不在 http 层）
   await listSpaces({ baseUrl: BASE })
   assert.equal(n, 2)
+})
+
+// —— 删除管理 / 回收站（2026-09-14）——
+// 这组用例的重点不是"能不能删"，而是**方法/参数名/严格布尔**三件事：
+// 参数名写错不会报错（后端只当没收到 → 内核按"缺参"拒或按默认值走），
+// 而 `all` 的严格性直接关系到"会不会一次清空整个回收站"。
+
+test('listTrash：GET /knowledge/trash，无查询串', async () => {
+  const payload = { dir: 'C:/k/.trash', count: 1, bytes: 9, stray: 0, items: [{ trashId: '20260914-1630-ab12' }] }
+  mockFetch(() => json(payload))
+  const r = await listTrash({ baseUrl: BASE })
+  assert.equal(calls[0].init?.method, 'GET')
+  assert.equal(url().pathname, '/knowledge/trash')
+  assert.equal(url().search, '')
+  assert.deepEqual(r, { ok: true, data: payload })
+})
+
+test('deleteDoc：DELETE /knowledge/delete，body 用 spaceId（不是 space）', async () => {
+  mockFetch(() => json({ ok: true, kind: 'doc', spaceId: '研发资料', path: 'a.md', trashId: '20260914-1630-ab12' }))
+  const r = await deleteDoc('研发资料', 'sub/b.md', { baseUrl: BASE })
+  assert.equal(calls[0].init?.method, 'DELETE')
+  assert.equal(url().pathname, '/knowledge/delete')
+  // 后端同时接受 spaceId/space，但**前端只该发一个**：两个都发会让"哪个生效"变得不可判
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), { spaceId: '研发资料', path: 'sub/b.md' })
+  assert.equal(r.ok, true)
+})
+
+test('deleteSpace：DELETE /knowledge/delete-space，必须带上 confirm（手打库名）', async () => {
+  mockFetch(() => json({ ok: true, kind: 'space', spaceId: '研发资料', trashId: '20260914-1630-ab12' }))
+  await deleteSpace('研发资料', '研发资料', { baseUrl: BASE })
+  assert.equal(calls[0].init?.method, 'DELETE')
+  assert.equal(url().pathname, '/knowledge/delete-space')
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), { spaceId: '研发资料', confirm: '研发资料' })
+})
+
+test('restoreTrash / purgeTrash：DELETE，且 purge 的 all 严格 true', async () => {
+  mockFetch(() => json({ ok: true, purged: 1 }))
+  await restoreTrash('20260914-1630-ab12', { baseUrl: BASE })
+  assert.equal(url(0).pathname, '/knowledge/restore')
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), { trashId: '20260914-1630-ab12' })
+
+  mockFetch(() => json({ ok: true }))
+  await purgeTrash({ all: true }, { baseUrl: BASE })
+  assert.equal(url(0).pathname, '/knowledge/purge')
+  // 必须是**布尔 true**：服务端只认 `=== true`，发 `"true"` 会被当成"单条删除"
+  // （跑完才发现没清空，或更糟——以为清了其实没清）
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), { all: true })
+
+  mockFetch(() => json({ ok: true }))
+  await purgeTrash({ trashId: '20260914-1630-ab12' }, { baseUrl: BASE })
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), { trashId: '20260914-1630-ab12' })
+})
+
+test('删除类端点：错误响应里的 message 必须透出（否则用户只看到 confirm-mismatch）', async () => {
+  mockFetch(() => json({ error: 'confirm-mismatch', message: 'delete-space: 需要 --confirm <空间id>' }, 400))
+  const r = await deleteSpace('研发资料', '错的', { baseUrl: BASE })
+  assert.equal(r.ok, false)
+  if (r.ok) return
+  assert.equal(r.error, 'confirm-mismatch')   // 机器可判的码（UI 用它选文案）
+  assert.equal(r.message, 'delete-space: 需要 --confirm <空间id>')  // 人类可读的补充说明
+  assert.equal(r.status, 400)
+
+  // 后端没给 message 时**不得凭空造一个空字段**：老端点的调用方按 shape 断言会被全量失配
+  mockFetch(() => json({ error: 'not-found' }, 404))
+  const r2 = await deleteDoc('研发资料', 'x.md', { baseUrl: BASE })
+  assert.equal(r2.ok, false)
+  if (r2.ok) return
+  assert.equal(r2.error, 'not-found')
+  assert.equal('message' in r2, false)
+})
+
+test('删除类端点：403/410/409 的状态码要原样透出（GUI 据此区分提示）', async () => {
+  for (const [code, status] of [['protected-space', 403], ['payload-missing', 410], ['space-exists', 409]] as const) {
+    mockFetch(() => json({ error: code }, status))
+    const r = await deleteSpace('experience', 'experience', { baseUrl: BASE })
+    assert.equal(r.ok, false)
+    if (r.ok) continue
+    assert.equal(r.status, status, code)
+  }
+})
+
+test('删除类端点：不做 inflight 去重（删除有副作用，重复点必须各发一次）', async () => {
+  let n = 0
+  mockFetch(() => { n += 1; return json({ ok: true, trashId: `t${n}` }) })
+  // 两次并发调用同一篇文档：若被去重合并成一个请求，第二次点击的"文件已不存在"
+  // 反馈就永远拿不到（而用户是看着第一次的结果以为没生效才点第二次的）
+  const [a, b] = await Promise.all([
+    deleteDoc('研发资料', 'a.md', { baseUrl: BASE }),
+    deleteDoc('研发资料', 'a.md', { baseUrl: BASE }),
+  ])
+  assert.equal(calls.length, 2, '删除请求不得被去重')
+  assert.equal(a.ok && b.ok, true)
 })

@@ -97,3 +97,35 @@ export function maxScore(items: readonly KnowledgeSearchItem[]): number {
   for (const it of items) if (Number.isFinite(it?.score) && it.score > max) max = it.score
   return max
 }
+
+// ── 排序（2026-09-14 对标 Obsidian 批次 1）─────────────────────────────────
+//
+// Obsidian 的搜索能按 文件名 / 修改时间 / 创建时间 × 升降 排序；我们的内核**只有** score 降序
+// （kernel/knowledge.mjs 的 `items.sort((a,b)=>b.score-a.score)`，无排序参数）。批次 1 的取舍是
+// **不改内核**：在已返回的这批命中里做客户端重排。
+//
+// 为什么可以接受"只排已返回的"：TOP_K=20 与内核 topK 都是按 score 取的，所以"按标题/行号重排"
+// 在语义上是"把这 20 条按标题排"，不是"全库按标题排"。这在 UI 上必须说清楚（排序只是改变
+// 呈现顺序，不改变命中集合），否则用户会以为"按文件名排"能找到别处的文档——那是批次 3
+// （搜索语法 + 内核排序参数）的事。
+export type SearchSort = 'relevance' | 'title' | 'line'
+
+/** 稳定重排：同键保持内核给的相关度顺序（score 降序），避免"看起来随机"的抖动 */
+export function sortHits<T extends KnowledgeSearchItem>(items: readonly T[], sort: SearchSort): T[] {
+  const arr = [...items]
+  if (sort === 'relevance') return arr
+  if (sort === 'title') {
+    return arr.sort((a, b) => {
+      const ta = String(a.title || a.docId || '')
+      const tb = String(b.title || b.docId || '')
+      // localeCompare 而非 `<`：中文标题按拼音/笔画比较才符合直觉（默认字典序会按码位排）
+      return ta.localeCompare(tb, 'zh-Hans-CN') || b.score - a.score
+    })
+  }
+  return arr.sort((a, b) => {
+    const da = String(a.docId || '')
+    const db = String(b.docId || '')
+    // 先按文档聚合（同一篇的命中挨在一起），再按行号升序——这正是"按文件浏览命中"的读法
+    return da.localeCompare(db) || (a.line ?? 0) - (b.line ?? 0)
+  })
+}

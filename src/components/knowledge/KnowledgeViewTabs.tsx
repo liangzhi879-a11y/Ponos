@@ -7,18 +7,22 @@
 //
 // 为什么受控（props 进、onChange 出）而不是直接读写 store：这是个纯展示组件，
 // 单测/复用不受全局状态牵连；持久化由宿主 KnowledgePanel 调知识 store 的 setView 完成。
-import { Waypoints, PenLine, ScrollText, Search, Package } from 'lucide-react'
+import { Waypoints, PenLine, ScrollText, Search, Package, Tags } from 'lucide-react'
 import { Tabs, TabsList, TabsTrigger, Tooltip } from '@/components/ui'
 import type { KnowledgeView } from '@/stores/knowledgeStore'
 import { KNOWLEDGE_VIEWS } from '@/stores/knowledgeStore'
 import { useTranslation } from '@/i18n/useTranslation'
 
 /** 视图 → 图标 + i18n 键（顺序即展示顺序，与 KNOWLEDGE_VIEWS 一致） */
-const VIEW_META: Record<KnowledgeView, { icon: typeof ScrollText; labelKey: 'knowledge.viewRead' | 'knowledge.viewEdit' | 'knowledge.viewGraph' | 'knowledge.viewSearch' | 'knowledge.viewMarket' }> = {
+const VIEW_META: Record<KnowledgeView, { icon: typeof ScrollText; labelKey: 'knowledge.viewRead' | 'knowledge.viewEdit' | 'knowledge.viewGraph' | 'knowledge.viewSearch' | 'knowledge.viewTags' | 'knowledge.viewMarket' }> = {
   read: { icon: ScrollText, labelKey: 'knowledge.viewRead' },
   edit: { icon: PenLine, labelKey: 'knowledge.viewEdit' },
   graph: { icon: Waypoints, labelKey: 'knowledge.viewGraph' },
   search: { icon: Search, labelKey: 'knowledge.viewSearch' },
+  // 标签视图（2026-09-14 批次 1）：与空间无关的**全局视角**（可用空间下拉收窄），
+  // 故与市场一样不依赖 docId；它排在搜索之后——"找东西"的动线是 搜索 → 标签，
+  // 标签是搜索没结果时换的一个入口，不该插在阅读与搜索之间。
+  tags: { icon: Tags, labelKey: 'knowledge.viewTags' },
   // 市场视图（S4）：与当前空间无关，故在这个 tab 里也不依赖 space 是否选中
   market: { icon: Package, labelKey: 'knowledge.viewMarket' },
 }

@@ -101,7 +101,7 @@ test('load(force) 全量构建索引：三份 JSONL + manifest 落盘，字段�
     assert.ok(existsSync(join(idx, 'tags.json')), 'tags 落盘')
 
     const manifest = JSON.parse(readFileSync(join(idx, 'manifest.json'), 'utf-8'))
-    assert.equal(manifest.version, 2) // S5：INDEX_VERSION 1→2（索引文本口径改 relationContent，spec §8）
+    assert.equal(manifest.version, 3) // 2→3：标签来源变更（YAML 子集 + 正文内联 #tag，2026-09-14）
     // experience(workflow.md) + my-notes(a,b) + pack(p.md) = 4 篇
     assert.equal(manifest.docs, 4)
     assert.ok(manifest.blocks >= 6)
@@ -152,7 +152,7 @@ test('索引版本不符时自动重建（防旧格式误用）', async () => {
     writeFileSync(mf, JSON.stringify(m), 'utf-8')
     const s2 = createKnowledgeStore({ configDir: dir })
     await s2.load()
-    assert.equal(s2.stats().version ?? 1, 2, '重建回当前版本（S5 起为 2）')
+    assert.equal(s2.stats().version ?? 1, 3, '重建回当前版本（2026-09-14 起为 3）')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -606,5 +606,169 @@ test('S3：stats().search 记录检索耗时 P50/P95（进程内）', () => {
     assert.equal(s.count, 5)
     assert.ok(typeof s.elapsedP50 === 'number' && s.elapsedP50 >= 0)
     assert.ok(typeof s.elapsedP95 === 'number' && s.elapsedP95 >= s.elapsedP50, 'P95 不得小于 P50')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 2026-09-14 对标 Obsidian 批次 1：标签来源（YAML 子集 + 正文内联 #tag）
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('collectTags（经 parseDocFile）：Obsidian 标准 frontmatter + 正文内联标签都进 doc.tags', () => {
+  const { dir, notes } = makeFixture()
+  try {
+    // Obsidian 写法集合：block 列表 tags / flow 数组 aliases / 正文内联 #标签 / 行内代码干扰项
+    writeFileSync(join(notes, 'obsidian-style.md'), [
+      '---',
+      'title: 兼容性样本',
+      'tags:',
+      '  - 财务',
+      '  - 税务/增值税',
+      'aliases:',
+      '  - 账务',
+      '---',
+      '# 兼容性样本',
+      '',
+      '正文提到 #内联标签 与（#全角括号标签）以及 `#不是标签`。',
+      '[链接文字](#锚点) 的锚点不算标签。',
+    ].join('\n') + '\n', 'utf-8')
+
+    const space = { id: 'my-notes', source: 'user' }
+    const { doc } = parseDocFile({ absPath: join(notes, 'obsidian-style.md'), relPath: 'obsidian-style.md', space })
+    for (const t of ['财务', '税务/增值税', '内联标签', '全角括号标签']) {
+      assert.ok(doc.tags.includes(t), `doc.tags 应含 ${t}，实际 ${JSON.stringify(doc.tags)}`)
+    }
+    assert.ok(!doc.tags.includes('不是标签'), '行内代码里的 #不是标签 不得进索引')
+    assert.ok(!doc.tags.includes('锚点'), 'markdown 链接目标里的 #锚点 不得进索引')
+    assert.equal(doc.title, '兼容性样本')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('collectTags：title/tags 为数组时不产生脏标题（标量归一）', () => {
+  const { dir, notes } = makeFixture()
+  try {
+    writeFileSync(join(notes, 'arr.md'), '---\ntitle:\n  - 数组标题\ntags: [甲, 乙]\n---\n正文\n', 'utf-8')
+    const { doc } = parseDocFile({ absPath: join(notes, 'arr.md'), relPath: 'arr.md', space: { id: 'my-notes', source: 'user' } })
+    assert.equal(doc.title, '数组标题', '数组 title 取首元素，不能渲染成 "数组标题" 拼接串')
+    assert.deepEqual(doc.tags.sort(), ['乙', '甲'].sort())
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('search 返回 total（截断前的命中总数）且不改变 count 语义', () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    store.load({})
+    const all = store.search({ query: '正文', topK: 50 })
+    assert.ok(all.total >= all.count, 'total 是全量命中，count 是返回条数，恒有 total >= count')
+    const one = store.search({ query: '正文', topK: 1 })
+    assert.equal(one.count, 1, 'topK 截断 count')
+    assert.equal(one.total, all.total, 'total 不受 topK 影响（这正是它与 count 的区别）')
+    const empty = store.search({ query: '' })
+    assert.equal(empty.total, 0)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('listIndexTags：全库文档标签 + 空间过滤 + single 标记', () => {
+  const { dir, notes } = makeFixture()
+  try {
+    writeFileSync(join(notes, 't1.md'), '---\ntags:\n  - 共享\n  - 独占甲\n---\n正文甲\n', 'utf-8')
+    writeFileSync(join(notes, 't2.md'), '---\ntags:\n  - 共享\n---\n正文乙\n', 'utf-8')
+    const store = createKnowledgeStore({ configDir: dir })
+    store.load({})
+
+    const all = store.listIndexTags()
+    const byTag = Object.fromEntries(all.tags.map((t) => [t.tag, t]))
+    assert.equal(byTag['共享'].count, 2, '同名标签跨文档累计')
+    assert.equal(byTag['共享'].single, false)
+    assert.equal(byTag['独占甲'].count, 1)
+    assert.equal(byTag['独占甲'].single, true, '单例标签是标签体系腐烂的第一信号，须显式标记')
+    assert.equal(all.spaces, null, '缺省不过滤')
+    assert.equal(all.singleCount, all.tags.filter((t) => t.single).length)
+
+    // 排序：count 降序（共享在独占甲之前）
+    const idxShared = all.tags.findIndex((t) => t.tag === '共享')
+    const idxOnly = all.tags.findIndex((t) => t.tag === '独占甲')
+    assert.ok(idxShared < idxOnly, 'count 降序排列')
+
+    const scoped = store.listIndexTags({ spaces: ['my-notes'] })
+    assert.deepEqual(scoped.spaces, ['my-notes'])
+    assert.ok(scoped.tags.some((t) => t.tag === '共享'), '限定空间后仍能看到该空间标签')
+    const other = store.listIndexTags({ spaces: ['pack-demo-pack'] })
+    assert.equal(other.tags.length, 0, '只读包内无 frontmatter 标签 → 空集（而不是报错）')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('listIndexTags 经 CLI 的 --spaces 生效（漏登记 --spaces 会被静默吞掉）', async () => {
+  const { dir } = makeFixture()
+  try {
+    writeFileSync(join(dir, 'knowledge', 'spaces', 'my-notes', 'x.md'), '---\ntags: [clitag]\n---\n正文\n', 'utf-8')
+    const { runKnowledgeCommand } = await import('../kernel/knowledge-cli.mjs')
+    const hit = await runKnowledgeCommand({ op: 'index-tags', args: { spaces: ['my-notes'] }, configDir: dir })
+    assert.equal(hit.code, 0)
+    assert.ok(hit.output.tags.some((t) => t.tag === 'clitag'), `应命中 clitag，实际 ${JSON.stringify(hit.output.tags)}`)
+    const miss = await runKnowledgeCommand({ op: 'index-tags', args: { spaces: ['pack-demo-pack'] }, configDir: dir })
+    assert.equal(miss.code, 0)
+    assert.equal(miss.output.tags.length, 0, '过滤到无标签空间 → 空集（证明过滤真的生效，而不是参数被吞）')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 2026-09-14 批次 1：标签直连检索（标签名当查询词必须能命中）
+//
+// 这一路的存在理由是一条实测出来的洞：标签写在 frontmatter 里，**不在任何块文本中**，
+// 而倒排/关键词路只索引块文本 → `财务` 这种"只当标签、正文从不提"的词全文检索恒为 0 命中，
+// 于是"标签视图点标签去看同标签文档"会得到空白。
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('search：查询词命中标签 → 直连该标签的文档（tagHit 标记 + 定值分）', () => {
+  const { dir, notes } = makeFixture()
+  try {
+    // a：只在 frontmatter 打了标签，正文完全不提"财务"
+    writeFileSync(join(notes, 'a.md'), '---\ntags:\n  - 财务\n---\n# 甲\n正文只有别的内容。\n', 'utf-8')
+    // b：正文里明写"财务"（应作为正文命中，且不得被标签路重复计一条）
+    writeFileSync(join(notes, 'b.md'), '---\ntags:\n  - 财务\n---\n# 乙\n财务制度说明。\n', 'utf-8')
+    // c：**强**正文命中（词反复出现）——用于断言排序口径（见下面 idxC < idxA）
+    writeFileSync(join(notes, 'c.md'), '---\n---\n# 丙\n财务 财务 财务：财务制度、财务流程、财务核算都要走财务口径。\n财务预算与财务决算。\n', 'utf-8')
+    const store = createKnowledgeStore({ configDir: dir })
+    store.load({})
+
+    const r = store.search({ query: '财务', topK: 10 })
+    const docsHit = r.items.map((x) => x.docId)
+    assert.ok(docsHit.includes('my-notes/a.md'), '仅打标签、正文不提的文档也必须被命中（标签直连）')
+    assert.ok(docsHit.includes('my-notes/b.md'), '正文命中的文档照常命中')
+    assert.equal(docsHit.filter((d) => d === 'my-notes/b.md').length, 1, '同一文档不得出现两条（正文已命中则不再给标签命中）')
+
+    const a = r.items.find((x) => x.docId === 'my-notes/a.md')
+    assert.equal(a.tagHit, '财务', '标签命中必须带 tagHit 标记，供消费方区分证据类型')
+    assert.ok(a.score > 0 && a.score < 0.2,
+      `标签命中分走 struct 通道算出（≈0.10），不得高于正文命中，实际 ${a.score}`)
+    const b = r.items.find((x) => x.docId === 'my-notes/b.md')
+    assert.equal(b.tagHit, undefined, '正文命中不带 tagHit')
+
+    // 正文命中与标签命中的**排序口径**：标签命中只带 struct 证据（≈0.10），正文命中另外
+    // 带 cos/kw 项，故正文命中恒在标签命中之前。这里用 c.md（正文里反复出现）钉住这一顺序。
+    const r2 = store.search({ query: '财务', topK: 10 })
+    const idxC = r2.items.findIndex((x) => x.docId === 'my-notes/c.md')
+    const idxA = r2.items.findIndex((x) => x.docId === 'my-notes/a.md')
+    assert.ok(idxC >= 0 && idxA >= 0, '强正文命中与标签命中都要在结果里')
+    assert.ok(idxC < idxA, `正文命中排在标签命中之前（c=${r2.items[idxC]?.score} a=${r2.items[idxA]?.score}）`)
+
+    // 前导 `#` 与大小写：容忍（用户从正文里抄标签会带 #）
+    assert.ok(store.search({ query: '#财务', topK: 10 }).items.length >= 2, '查询串带前导 # 也要能命中标签')
+    // 不相关的词不该把标签文档带出来
+    assert.equal(store.search({ query: '完全不存在的词', topK: 10 }).items.length, 0, '无关查询不产生标签命中')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('search：标签直连遵守 spaces 白名单', () => {
+  const { dir, notes } = makeFixture()
+  try {
+    writeFileSync(join(notes, 'a.md'), '---\ntags:\n  - 财务\n---\n# 甲\n正文。\n', 'utf-8')
+    const store = createKnowledgeStore({ configDir: dir })
+    store.load({})
+    const hit = store.search({ query: '财务', spaces: ['my-notes'], topK: 10 })
+    assert.equal(hit.items.length, 1)
+    const miss = store.search({ query: '财务', spaces: ['pack-demo-pack'], topK: 10 })
+    assert.equal(miss.items.length, 0, '换到别的空间 → 标签命中也要一起被过滤掉（不能绕过白名单）')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

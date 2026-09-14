@@ -1072,7 +1072,9 @@ export async function visionDescribe(filePath, allowDirs, input = {}, skipBounda
 // 2026-09-14：KnowledgeImport 入表（chat 禁用）。它是**写盘**能力（往知识空间落文件），
 // 与 Read/Write/Skill 同类；chat 的语义是"纯聊/联网问答，不做本地执行与写盘"，导入显然不属于它。
 // 纯聊会话里想用知识库，用只读的 KnowledgeSearch 即可（S3 D2 已放行）。
-export const CHAT_MODE_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch', 'KnowledgeImport']
+// 2026-09-14：KnowledgeDelete 入表（chat 禁用）——**同族的理由更强**：它是写盘且带破坏性
+// （移动/销毁用户知识库文件）。放行它等于让"纯聊"会话具备删库能力，与 chat 的隔离承诺直接冲突。
+export const CHAT_MODE_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch', 'KnowledgeImport', 'KnowledgeDelete']
 
 export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null, readAllowFiles = [], dynamicTools = null, flatSkillRoots = null }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
@@ -1570,6 +1572,77 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
           ...(report.results.length > MAX_ROWS ? { resultsOmitted: report.results.length - MAX_ROWS } : {}),
         }, null, 2)
         return { content, isError: false }
+      },
+    },
+    // 知识库删除管理（回收站，2026-09-14）。设计见 .yfw-spec/knowledge-trash/spec.md。
+    // 与 KnowledgeImport 对称：**三入口里唯一的 agent 面**，落盘/权限/路径防护全在
+    // kernel/knowledge.mjs 一份实现，本工具内只有参数归一 + 一次调用。
+    //
+    // 为什么入 chat 禁用表：它是**写盘**能力（移动/删除用户的知识库文件），
+    // 与 KnowledgeImport/Write 同类；chat 的语义是"纯聊/联网问答，不做本地执行与写盘"。
+    KnowledgeDelete: {
+      description: '管理知识库的删除（**软删除到回收站**，本地、无网络）：列出回收站、删条目、删整个知识库、还原、彻底删除。删除都是"移到回收站"而非销毁 —— 还原会把内容放回原位（遇同名自动改名让位，绝不覆盖）。\n\naction：\n· list —— 列出回收站（名称/原空间/删除时间/大小/内容是否还在）。**建议先 list 再决定还原还是彻底删**。\n· doc —— 删一个条目，需 space + path（path 是空间内相对 .md 路径，如 "研发/立项报告.md"）。\n· space —— 删**整个知识库**，需 space + confirm 且 confirm 必须精确等于 space。只允许删用户自建的库；内置空间（experience / session-memory / skill-experience）只能删其中条目、不能删库；知识包（pack-*）完全只读。\n· restore —— 还原，需 trashId（从 list 取）。\n· purge —— 彻底删除（**真正销毁、不可恢复**），需 trashId；或 action=purge 且 all=true 清空整个回收站。\n\n注意：删整库是不可逆量级更大的操作，先与用户确认再执行；不确定时用 list 看现状。',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          action: { type: 'string', enum: ['list', 'doc', 'space', 'restore', 'purge'], description: '要执行的操作' },
+          space: { type: 'string', description: 'action=doc|space 时必填：空间 id（内置空间只允许删条目）' },
+          path: { type: 'string', description: 'action=doc 时必填：空间内的相对 .md 路径' },
+          confirm: { type: 'string', description: 'action=space 时必填：必须精确等于 space（防误删整库）' },
+          trashId: { type: 'string', description: 'action=restore|purge 时必填：回收站条目 id（从 action=list 取）' },
+          all: { type: 'boolean', description: 'action=purge 时可选：true = 清空整个回收站（与 trashId 二选一）' },
+        },
+        required: ['action'],
+      },
+      run: async (input, ctx) => {
+        const action = String(input?.action ?? '').trim()
+        if (!action) return { content: 'action 参数缺失：可选 list / doc / space / restore / purge', isError: true }
+        if (!memoryRoot) {
+          return { content: '知识库删除不可用（未配置知识根 memoryRoot）', isError: true }
+        }
+        const configDir = resolve(memoryRoot, '..', '..')
+        // 注入点（与 `ctx.runDocToMd` 同一套依赖注入手法）：工具级用例可直接给假 store，
+        // 完全不起真进程、不碰真实磁盘。生产链路上 ctx 无此键 → 走真 store。
+        let store = ctx?.knowledgeStore || null
+        if (!store) {
+          // 动态 import 的理由同 KnowledgeImport：本模块与知识生态互相引用，
+          // 顶层静态 import 会构成 ESM 循环依赖；调用点加载保持依赖单向。
+          const { createKnowledgeStore } = await import('./knowledge.mjs')
+          store = createKnowledgeStore({ configDir })
+          store.load()
+        }
+        try {
+          if (action === 'list') {
+            const t = store.listTrash()
+            return { content: JSON.stringify(t, null, 2), isError: false }
+          }
+          if (action === 'doc') {
+            const r = store.deleteDoc({ space: input?.space ?? null, path: input?.path ?? null })
+            if (!r.ok) return { content: `删除未执行（${r.error}）：${r.message}`, isError: true }
+            return { content: JSON.stringify(r, null, 2), isError: false }
+          }
+          if (action === 'space') {
+            const r = store.deleteSpace({ space: input?.space ?? null, confirm: input?.confirm ?? null })
+            if (!r.ok) return { content: `删除未执行（${r.error}）：${r.message}`, isError: true }
+            return { content: JSON.stringify(r, null, 2), isError: false }
+          }
+          if (action === 'restore') {
+            const r = store.restore({ trashId: input?.trashId ?? null })
+            if (!r.ok) return { content: `还原未执行（${r.error}）：${r.message}`, isError: true }
+            return { content: JSON.stringify(r, null, 2), isError: false }
+          }
+          if (action === 'purge') {
+            // `all` 只认**严格 true**（同 server 路由）：`"false"`/0 这类写法按单条删除走，
+            // 宁可少删也不能因参数写法把整个回收站清了。
+            const r = store.purge({ trashId: input?.trashId ?? null, all: input?.all === true })
+            if (!r.ok) return { content: `彻底删除未执行（${r.error}）：${r.message}`, isError: true }
+            return { content: JSON.stringify(r, null, 2), isError: false }
+          }
+          return { content: `未知 action：${action}（可选 list / doc / space / restore / purge）`, isError: true }
+        } catch (e) {
+          return { content: `知识库删除失败：${e?.message || e}`, isError: true }
+        }
       },
     },
     // 联网技能搜索：检索 Claude Code marketplace 生态（Anthropic 官方 + 社区市场），

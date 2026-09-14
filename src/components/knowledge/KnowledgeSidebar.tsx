@@ -5,8 +5,8 @@
 //
 // 只读空间（`writable === false`）：新建钮禁用（由 KnowledgeNewMenu 内部判定）+ 一行显式说明。
 // 只提示不解释会让用户以为面板坏了；后端 403 是最后一道兜底（spec §8 双保险）。
-import { useMemo } from 'react'
-import { ChevronDown, Library, PackageSearch } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { ChevronDown, Library, PackageSearch, Trash2 } from 'lucide-react'
 import { KnowledgeImportDialog } from './KnowledgeImportDialog'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
@@ -18,6 +18,11 @@ import { KnowledgeTree } from './KnowledgeTree'
 import { KnowledgeNewMenu } from './KnowledgeNewMenu'
 import { KnowledgeEmpty } from './KnowledgeEmpty'
 import { KnowledgeSkeleton } from './KnowledgeSkeleton'
+// 删除管理（2026-09-14）：整库删除的入口在**空间信息栏**（作用域明确 = 当前空间），
+// 与回收站入口（全局，在底栏）分开。判据镜像在内核，这里只决定"画不画按钮"。
+import { DeleteSpaceDialog } from './KnowledgeDeleteDialogs'
+import { KnowledgeTrashDialog } from './KnowledgeTrashDialog'
+import { canDeleteSpace } from '@/lib/knowledgeDeleteUi'
 
 export interface KnowledgeSidebarProps {
   /** 空间列表（宿主用 useSpaces 拉到后下发；不在这里再拉一次，避免重复请求） */
@@ -25,13 +30,18 @@ export interface KnowledgeSidebarProps {
   spacesLoading: boolean
   /** 文件知识库导入成功后通知宿主刷新（空间列表/统计要跟着变） */
   onImported?: (spaceId: string) => void
+  /** 删除/还原/清空之后通知宿主刷新（空间列表/树/统计都要跟着变） */
+  onDeleted?: () => void
 }
 
-export function KnowledgeSidebar({ spaces, spacesLoading, onImported }: KnowledgeSidebarProps) {
+export function KnowledgeSidebar({ spaces, spacesLoading, onImported, onDeleted }: KnowledgeSidebarProps) {
   const { t } = useTranslation()
   const spaceId = useKnowledgeStore(s => s.spaceId)
   const setSpace = useKnowledgeStore(s => s.setSpace)
   const setView = useKnowledgeStore(s => s.setView)
+  // 整库删除的确认框（受控）：触发器在下方空间信息栏，确认框在这里挂一次 —— 避免
+  // "每个可能删库的地方各带一份确认框"（那会让两处的文案与校验逻辑迟早分叉）。
+  const [delSpaceOpen, setDelSpaceOpen] = useState(false)
 
   const space = useMemo(() => spaces?.find(s => s.id === spaceId) ?? null, [spaces, spaceId])
   const readonly = space?.writable === false
@@ -93,16 +103,48 @@ export function KnowledgeSidebar({ spaces, spacesLoading, onImported }: Knowledg
           <PackageSearch className="w-3 h-3 shrink-0" />
           <span className="truncate">{t('knowledge.marketDiscover')}</span>
         </button>
+        {/* 回收站：与上面两项同级（都是全局入口 —— 回收站不属于任何空间，
+            删掉的库也在里面）。刻意**不**依赖"已选中空间"，与导入同一条理由。 */}
+        <KnowledgeTrashDialog onChanged={onDeleted} />
       </div>
 
       {space && (
-        <div className="shrink-0 px-2 py-1 border-t border-default">
+        <div className="shrink-0 px-2 py-1 border-t border-default space-y-0.5">
           {/* 空间根路径：只读展示，方便用户拿它去资源管理器里对照（长路径 truncate + title 兜住） */}
           <p className="text-[10px] text-tertiary truncate" title={space.root}>
             {space.source} · {space.root} · {space.docCount} {t('knowledge.statDocs')}
           </p>
+          {/* 删整库入口：仅用户自建库显示（canDeleteSpace 只认 source==='user'，与内核
+              deleteGate 同源）。内置经验库/会话记忆**不显示**而非"显示但点不动"——
+              后者会让用户反复点击并以为界面坏了。知识包同理（连条目都不能删）。 */}
+          {canDeleteSpace(space) && (
+            <button
+              type="button"
+              onClick={() => setDelSpaceOpen(true)}
+              className="w-full flex items-center gap-1.5 py-0.5 text-[11px] text-tertiary hover:text-error transition-colors"
+            >
+              <Trash2 className="w-3 h-3 shrink-0" />
+              <span className="truncate">{t('knowledge.deleteSpaceBtn')}</span>
+            </button>
+          )}
+          {/* 内置库给出**解释性提示**：入口不显示时必须说明为什么（否则用户会去找、
+              或者以为只有自己的库才配删）。只读知识包不提示 —— 它已有 readonly 标记。 */}
+          {space.source !== 'user' && space.source !== 'pack' && (
+            <p className="text-[10px] text-tertiary">{t('knowledge.deleteSpaceProtected')}</p>
+          )}
         </div>
       )}
+
+      {/* 确认框挂载点。删成功时 `onDeleted` 会先关再刷新：顺序很重要 —— 反过来的话
+          刷新先把 `space` 清成 null（该库已不在列表里），确认框会在**还开着**的状态下
+          变成"空库名确认"（user 看到输入框里的库名被抹掉，像是操作失败）。
+          先关后刷，渲染时 open 已是 false，对话框内容不再取值。 */}
+      <DeleteSpaceDialog
+        space={space}
+        open={delSpaceOpen}
+        onOpenChange={setDelSpaceOpen}
+        onDeleted={() => { setDelSpaceOpen(false); onDeleted?.() }}
+      />
     </div>
   )
 }

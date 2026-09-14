@@ -126,6 +126,10 @@ contextBridge.exposeInMainWorld('yfworkingFile', {
   openSkillPackage: () => ipcRenderer.invoke('dialog:open-skill-package'),
   // S4：知识包市场"从本地文件安装"（.zip）。缺 IPC 时前端给"仅桌面版"提示并禁用按钮
   openKnowledgePack: () => ipcRenderer.invoke('dialog:open-knowledge-pack'),
+  // 文件知识库导入（2026-09-14）：文件（可多选）与文件夹两种取源；
+  // 只回路径，解析与落盘在主进程/内核侧（见 main.cjs 同名 handler 的头注）。
+  pickKnowledgeFiles: () => ipcRenderer.invoke('dialog:pick-knowledge-files'),
+  pickKnowledgeFolder: () => ipcRenderer.invoke('dialog:pick-knowledge-folder'),
 })
 
 // 启动预热进度（2026-09-11：main 轮询 bridge /boot-status 后转发真实模块就绪事件）

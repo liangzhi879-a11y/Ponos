@@ -66,6 +66,67 @@ async function callJson(callKernel, argsList) {
   }
 }
 
+/**
+ * 删除类 op 的**错误码 → HTTP 状态码**唯一映射（2026-09-14）。
+ * 与 `IMPORT_ERROR_STATUS` 同一纪律：内核 stdout 错误体与 stderr 前缀两条路共用一张表，
+ * 分两份写必然漂移，而这里的漂移是静默的（错误码只是数字，没人会去比对）。
+ * 码值取自 `kernel/knowledge.mjs` 的各 error 返回点。
+ */
+const TRASH_ERROR_STATUS = {
+  // 403：权限拒绝 —— 用户改「选择」即可解决（换个空间），与"参数写错"不是一回事
+  'readonly-space': 403,   // 知识包只读：条目与空间都不可删
+  'protected-space': 403,  // 内置空间（经验库/会话记忆）不许删整库
+  // 400：调用方参数问题
+  'bad-path': 400, 'bad-space': 400, 'missing-space': 400,
+  'bad-trash-id': 400, 'bad-record': 400, 'confirm-mismatch': 400,
+  // 404：目标不存在
+  'unknown-space': 404, 'not-found': 404, 'unknown-trash-id': 404,
+  // 410：记录还在、内容已不在磁盘（用户手工清过）。与 404 刻意分开 ——
+  // GUI 据此把「还原」置灰、只留「彻底删除」，合成 404 会让界面给出做不到的建议。
+  'payload-missing': 410,
+  // 409：冲突，需用户先做别的事（改名/清理同名）
+  'space-exists': 409, 'name-exhausted': 409,
+  // 500：服务端环境问题（配置根不存在）
+  'bad-root': 500,
+}
+
+/**
+ * 删除/还原/清空/列回收站的共用调用体。
+ *
+ * 为什么值得抽出来：这 5 个 op 的差别**只在 argv 与字段映射**，错误处理完全同构 ——
+ * 复制 5 遍的后果是"某条路由漏映射 403"，表现为"删内置库返回 400 而 GUI 提示成参数错误"，
+ * 排查时得逐个路由比对。抽一处后，新增 op 只接一个 args 数组。
+ */
+async function callTrashOp({ callKernel, args }) {
+  try {
+    const r = await callJson(callKernel, args)
+    // 内核失败有两条路：exit≠0（kernelReadonly reject → 下面的 catch）与 stdout 里的
+    // `{error,message}`（`callJson` 只在 error 是**唯一键**时折成 `{error}`，带 message 的
+    // 落进 value）。两条都必须映射，漏一条就会变成"200 + 空壳响应"。
+    if (r.error) {
+      const code = String(r.error)
+      return { status: TRASH_ERROR_STATUS[code] ?? 400, body: { error: code } }
+    }
+    const v = r.value
+    if (v && typeof v === 'object' && v.error) {
+      const code = String(v.error)
+      return { status: TRASH_ERROR_STATUS[code] ?? 400, body: { error: code, message: v.message || undefined } }
+    }
+    return ok(v)
+  } catch (e) {
+    const msg = String(e?.message || '')
+    // kernelReadonly 把内核 stderr 原样带出（`[knowledge] <code>: <message>`）。
+    // 只认这个前缀：其余错误（超时、内核崩了、非 JSON）语义上都是 5xx，交回上层。
+    if (!msg.startsWith('[knowledge] ')) throw e
+    const payload = msg.slice('[knowledge] '.length).trim()
+    const code = payload.split(':')[0].trim()
+    // 消息里**去掉重复的码前缀**：stderr 形态是 `<code>: <message>`，`body` 已单独给了
+    // `error: code`，再原样带一遍会让前端拼出「protected-space: protected-space: …」。
+    const rest = payload.slice(code.length).replace(/^:\s*/, '').trim()
+    return { status: TRASH_ERROR_STATUS[code] ?? 400, body: { error: code, message: rest || undefined } }
+  }
+}
+
 // 写文档：四重防护 + 落盘 + 触发增量索引。**不复制任何检索/切块逻辑**。
 async function handleWriteDoc({ readJsonBody, callKernel }) {
   const body = (await readJsonBody()) || {}
@@ -641,6 +702,15 @@ export async function handleKnowledgeRoute({
     // 用途是**写前先查**——优先复用已有标签，避免每次造新单例标签（孤立条目的主源）。
     // 与其它 GET 一样是薄转发：枚举口径只在内核写一份，server 不自己扫盘。
     if (!isPost && p === '/knowledge/tags') return ok((await callJson(callKernel, ['--knowledge', 'tags'])).value)
+    // 2026-09-14（对标 Obsidian 批次 1）：**全库文档**标签枚举。与上面 `/knowledge/tags`
+    // （S6 的经验库条目标签）是两件事，故另开一条路由而不是给它加参数——两个口径的数据源
+    // 完全不同（memory/personal 的条目 vs 全部空间的文档），合成一条必然产生"同一接口两种
+    // 语义"的混淆。`?spaces=a,b` 沿用 search 的逗号串约定（同一套 parseSpacesArg 口径）。
+    if (!isPost && p === '/knowledge/index-tags') {
+      const args = ['--knowledge', 'index-tags']
+      if (q('spaces')) args.push('--spaces', q('spaces'))
+      return ok((await callJson(callKernel, args)).value)
+    }
     // 检索：URL 用 `?q=`（避免与内核 flag `--query` 混淆），转发时映射为 `--query`；
     // `spaces` 只取首个（内核 `--space` 是单数，多空间过滤留给 S2 前端逐次请求）。
     if (!isPost && p === '/knowledge/search') {
@@ -722,6 +792,55 @@ export async function handleKnowledgeRoute({
       if (r.error) return { status: 400, body: { error: r.error } }
       if (r.value && r.value.error) return { status: 400, body: r.value }
       return ok(r.value)
+    }
+
+    // ── 知识库删除管理（回收站，2026-09-14）─────────────────────────────────
+    // 设计见 .yfw-spec/knowledge-trash/spec.md。本层仍是**薄转发**：
+    // 权限判定（内置空间不许删整库 / 知识包只读）、路径穿越防护、软删除与还原策略、
+    // `--confirm` 校验**全在内核一份**（kernel/knowledge.mjs 的 deleteGate/normalizeMdRel），
+    // server 不复制任何判据 —— 两套口径必然漂移，而这里的漂移意味着"绕过权限删库"。
+    // 字段 → argv 的**全量**映射（漏一个就是静默降级）：
+    //   DELETE /knowledge/delete       {spaceId|space, path}      → `delete-doc --space --path`
+    //   DELETE /knowledge/delete-space {spaceId|space, confirm}   → `delete-space --space --confirm`
+    //   DELETE /knowledge/restore      {trashId|id}               → `restore --trash-id`
+    //   DELETE /knowledge/purge        {trashId|id} | {all:true}  → `purge --trash-id` | `--all`
+    //   GET    /knowledge/trash                                   → `trash-list`
+    // 用 `DELETE` 动词承载"回收站三件套"（delete/restore/purge 都是对垃圾桶的操作）。
+    // 为什么**不新造** `POST`：这个路由文件既有写路由全是 POST，但语义上"删"用 DELETE
+    // 更直白，而 GUI 侧由 knowledgeApi 统一封装，动词选择不影响调用方。
+    if (!isPost && p === '/knowledge/trash') {
+      return await callTrashOp({ callKernel, args: ['--knowledge', 'trash-list'] })
+    }
+    if (method.toUpperCase() === 'DELETE' && p === '/knowledge/delete') {
+      const body = (await readJsonBody()) || {}
+      // 字段名兼容 `spaceId`/`space`：与 handleWriteDoc 同一条理由（GET 系列一律用 `space=`，
+      // 只认一种名字会让另一侧的调用方拿到"空间不存在"这种误导性报错）。
+      const args = ['--knowledge', 'delete-doc', '--space', String(body.spaceId ?? body.space ?? '')]
+      if (body.path != null) args.push('--path', String(body.path))
+      return await callTrashOp({ callKernel, args })
+    }
+    if (method.toUpperCase() === 'DELETE' && p === '/knowledge/delete-space') {
+      const body = (await readJsonBody()) || {}
+      const args = ['--knowledge', 'delete-space', '--space', String(body.spaceId ?? body.space ?? '')]
+      // `confirm` 只在**给了**的时候透传：不给时由内核按 confirm-mismatch 拒（那是明确的
+      // "你还得确认一次"），而在这里塞个空串会让错误信息丢掉"你应该输入什么"的上下文。
+      if (body.confirm != null && String(body.confirm)) args.push('--confirm', String(body.confirm))
+      return await callTrashOp({ callKernel, args })
+    }
+    if (method.toUpperCase() === 'DELETE' && p === '/knowledge/restore') {
+      const body = (await readJsonBody()) || {}
+      const id = String(body.trashId ?? body.id ?? '')
+      return await callTrashOp({ callKernel, args: ['--knowledge', 'restore', '--trash-id', id] })
+    }
+    if (method.toUpperCase() === 'DELETE' && p === '/knowledge/purge') {
+      const body = (await readJsonBody()) || {}
+      // `all` 只认**严格 true**：`all:"false"` / `all:0` 这类写法一律按"单条删除"走 ——
+      // 宁可少删（用户再点一次）也不能因参数写法把整个回收站清了。
+      if (body.all === true) {
+        return await callTrashOp({ callKernel, args: ['--knowledge', 'purge', '--all'] })
+      }
+      const id = String(body.trashId ?? body.id ?? '')
+      return await callTrashOp({ callKernel, args: ['--knowledge', 'purge', '--trash-id', id] })
     }
 
     // ── 知识包生态（S4）：市场列表 / 详情 / 安装 / 卸载 / 导出 ──────────────
