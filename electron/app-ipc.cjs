@@ -822,6 +822,8 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     return done({
       ok: true, spec: specWithDriver, driver, probe: probeInfo, rounds: genRounds,
       issues: agent.issues, warnings: agent.warnings, verify,
+      // ★ M4：评审结论如实回传（未评审/被跳过时为带 outcome 的对象，不是 null——界面据此说明"这次没评审"）
+      review: agent.review,
       // 登录编排结果如实回传（没走登录编排就是 null，不假装登录过）：
       // {attempted, ok, reason, detail}——界面据此决定"要不要提示未在登录态下验证"
       login: loginInfo,

@@ -609,6 +609,12 @@ async function runAgentLoop({
   let spec = null        // **通过结构+质量校验**的 Spec（只有它才可能被交付）
   let draft = null       // 最近一次提交的草稿（哪怕没通过校验，也留给 run_command 调试用）
   let verified = false
+  let verifiedSpec = null  // M4：最后一次**试跑全通过**的 Spec（补全轮翻车时用它兜底交付）
+  let review = null        // M4：评审结论（结构化）
+  let reviewDone = false    // 评审只做一次（因此补全轮也只有一次）
+  let refineGranted = false // 是否给了补全轮
+  let refineVerified = false// 补全轮是否也试跑通过
+  let chargedTurns = 0      // M4：循环体之外的模型调用（评审）也要记账，避免预算外烧钱
   let verifyResult = null
   let turns = 0
   let toolCalls = 0
@@ -643,7 +649,7 @@ async function runAgentLoop({
   let lastEmitAt = 0
   let pendingDelta = ''
 
-  for (turns = 1; turns <= b.maxTurns; turns++) {
+  for (turns = 1; turns <= b.maxTurns - chargedTurns; turns++) {
     if (Date.now() - t0 - pausedMs > b.timeBudgetMs) {
       stoppedBy = 'time'
       const why = `已达时间预算（${Math.round(b.timeBudgetMs / 1000)}s，不含等待登录的人工时间），停止探索`
@@ -755,6 +761,40 @@ async function runAgentLoop({
     verifyResult = verify ? await verify(normalized) : { ok: true, tried: [], failures: [], notRun: [], skipped: [] }
     if (verifyResult.ok) {
       verified = true
+      verifiedSpec = normalized
+      if (refineGranted) refineVerified = true
+      const remainingTurns = b.maxTurns - chargedTurns - turns
+      const remainingMs = b.timeBudgetMs - (Date.now() - t0 - pausedMs)
+      /**
+       * ★ M4 评审门的取值依据（明确写死，便于验收）：
+       *   · 剩余轮次 ≥ REVIEW_RESERVE_TURNS(2)：评审 1 轮 + 补全 1 轮；不够就**整段跳过**；
+       *   · 剩余时间 ≥ REVIEW_MIN_REMAINING_MS(60s)：避免"评审跑到一半预算耗尽"；
+       *   · 只评审一次（reviewDone）⇒ 补全轮不会再次评审，不会形成"评审→补全→再评审"的循环。
+       */
+      if (!reviewDone && remainingTurns >= REVIEW_RESERVE_TURNS && remainingMs >= REVIEW_MIN_REMAINING_MS) {
+        reviewDone = true
+        chargedTurns += 1                                   // 评审本身占 1 轮
+        onProgress?.({ phase: 'round', turn: turns, maxTurns: b.maxTurns, detail: `第 ${turns}/${b.maxTurns} 轮：试跑通过，追加一次交付前评审（覆盖度）…` })
+        review = await reviewSpec({
+          system,
+          userPrefix: [seedUser, renderLog(log, b.historyChars)].filter(Boolean).join('\n\n'),
+          requirement,
+          callLlm,
+          maxTokens,
+        })
+        if (review.parseFailed || review.callFailed) warnings.push(review.notes)
+        if (review.gaps.length) {
+          refineGranted = true
+          log.push({ role: '系统', text: reviewFeedbackLines(review) })
+          onProgress?.({ phase: 'round', turn: turns, maxTurns: b.maxTurns, detail: `第 ${turns}/${b.maxTurns} 轮：评审发现 ${review.gaps.length} 处覆盖缺口，追加一轮补全…` })
+          continue                                          // 进入补全轮（轮次由循环上界记账）
+        }
+        onProgress?.({ phase: 'round', turn: turns, maxTurns: b.maxTurns, done: true, detail: '评审：覆盖度到位（未发现需补的缺口）' })
+      } else if (!reviewDone) {
+        review = { ok: false, verdict: 'ok', gaps: [], notes: `预算不足（剩余 ${remainingTurns} 轮 / ${Math.round(remainingMs / 1000)}s），已跳过交付前评审`, skipped: true }
+        warnings.push('已跳过交付前评审（预算不足）：本次交付未经过覆盖度评审')
+        onProgress?.({ phase: 'round', turn: turns, maxTurns: b.maxTurns, detail: '预算不足，已跳过交付前评审' })
+      }
       stoppedBy = 'verified'
       onProgress?.({ phase: 'verify', turn: turns, done: true, detail: `试跑通过：${(verifyResult.tried || []).join('、') || '（无可试跑命令）'}` })
       break
@@ -769,24 +809,44 @@ async function runAgentLoop({
     onProgress?.({ phase: 'verify', turn: turns, detail: `试跑未通过 ${fails.length} 条：${fails.slice(0, 2).join('；')}` })
   }
 
-  if (turns > b.maxTurns) {
+  if (turns > b.maxTurns - chargedTurns) {
     stoppedBy = 'max-turns'
     // 轮次耗尽也是"没有新一轮校验结果"的路径：不设 blockers 时界面只能拿最旧的错误当原因，
     // 而真实原因是"探索轮次用尽、模型没交出合格 Spec"。
     setBlockers([`探索轮次用尽（${b.maxTurns} 轮）仍未产出通过校验的 Spec，停止探索`])
   }
   const elapsedMs = Date.now() - t0
+  /**
+   * ★ M4：交付物选取——补全轮若没通过试跑，**交付上一版通过试跑的产物**而不是更差的新草稿。
+   *   （补全是为了更好；"越补越差"时交付旧版才是对用户更诚实的取舍。）
+   */
+  const delivered = verifiedSpec || spec
+  const reviewOutcome = !review ? null
+    : review.skipped ? 'skipped-budget'
+      : (review.ok === false ? 'review-failed'
+        : (!review.gaps.length ? 'no-gaps' : (refineGranted ? (refineVerified ? 'refined' : 'refine-failed') : 'no-gaps')))
+  if (review && reviewOutcome === 'refine-failed') {
+    warnings.push('补全轮未通过试跑：已交付上一版通过试跑的 Spec（评审指出的缺口见 spec.review.gaps）')
+  }
+  const reviewOut = review
+    ? { verdict: review.verdict, gaps: review.gaps, notes: review.notes, applied: refineGranted, outcome: reviewOutcome, at: new Date().toISOString() }
+    : null
+  const specOut = delivered ? (reviewOut ? { ...delivered, review: reviewOut } : delivered) : null
   // 交付判定：只有**结构+质量都过**的草稿才值得给出；试跑未通过时如实标注 verified=false
-  const ok = !!spec
+  const ok = !!specOut
   onProgress?.({
     phase: 'done', done: true,
     detail: ok
       ? (verified
-        ? `探索完成：${spec.commands.length} 条命令，试跑全部通过（${turns} 轮交互 / ${toolCalls} 次工具调用）`
-        : `探索结束（${stoppedBy}）：${spec.commands.length} 条命令，试跑**未全部通过**，已在界面给出原因`)
+        ? `探索完成：${specOut.commands.length} 条命令，试跑全部通过（${turns + chargedTurns} 轮模型调用${reviewOut ? `，评审：${reviewOut.outcome}` : ''}）`
+        : `探索结束（${stoppedBy}）：${specOut.commands.length} 条命令，试跑**未全部通过**，已在界面给出原因`)
       : `探索结束（${stoppedBy}）：未产出通过校验的 Spec`,
   })
-  return { ok, spec, verified, turns: Math.min(turns, b.maxTurns), toolCalls, trace, issues, blockers, warnings, verify: verifyResult, elapsedMs, stoppedBy }
+  return {
+    ok, spec: specOut, verified, review: reviewOut,
+    turns: Math.min(turns, b.maxTurns - chargedTurns) + chargedTurns, toolCalls, trace, issues, blockers, warnings,
+    verify: verifyResult, elapsedMs, stoppedBy,
+  }
 }
 
 module.exports = {

@@ -366,7 +366,9 @@ test('app:generate：js 缺 expression 的坏 Spec 会在校验轮被拦下并�
   })
   const r = await t.invoke('app:generate', { target: { type: 'web', url: 'https://example.com' }, appId: 'x', sessionId: 's1' })
   assert.equal(r.ok, true)
-  assert.equal(llmCalls, 2, '第一轮的坏 Spec 应被校验拦下 → 回喂 → 第二轮修好')
+  // ★ M4：第 3 次是"交付前评审"这一次同会话追加调用（试跑通过后必评审一次，设计内新增）。
+  //   本用例只关心"第一轮的坏 Spec 被拦下并回喂"，评审轮由 app-agent-review-loop.test.mjs 钉死。
+  assert.equal(llmCalls, 3, '第一轮的坏 Spec 应被校验拦下 → 回喂 → 第二轮修好（+1 为交付前评审）')
   assert.ok(seen[1].includes('"code"') && seen[1].includes('expression'), `回喂内容要点名 code→expression：${seen[1].slice(-400)}`)
   assert.equal(r.spec.commands[0].steps[1].expression, 'document.body.innerText')
 })

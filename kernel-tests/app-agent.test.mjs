@@ -412,7 +412,8 @@ test('runAgentLoop：等人工（登录）的时间不计入探索时间预算',
     })
     assert.equal(r.ok, true, r.issues.join('｜'))
     assert.notEqual(r.stoppedBy, 'time', '等待人工的时间不该吃掉探索预算')
-    assert.equal(llm.calls.length, 3, '登录后应能继续探索并最终提交')
+    // ★ M4：+1 为"交付前评审"这一次同会话追加调用（设计内新增，不是漂移）
+    assert.equal(llm.calls.length, 4, '登录后应能继续探索并最终提交（+1 为交付前评审）')
   } finally {
     Date.now = realNow
   }
