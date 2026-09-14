@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 const registry = require('../electron/app-registry.cjs')
-const { repairApp, findFailingCommands, readHistory, extractCommand, defaultRegenerateCommand } = require('../electron/app-validator.cjs')
+const { repairApp, findFailingCommands, readHistory, extractCommand, defaultRegenerateCommand, buildCommandPrompt } = require('../electron/app-validator.cjs')
 
 const mk = () => {
   const root = mkdtempSync(join(tmpdir(), 'apprep-'))
@@ -249,6 +249,18 @@ test('readHistory 只读最近 N 天的 YYYY-MM-DD.jsonl', () => {
   const h = readHistory({ roots, appId: 'demo' })
   assert.ok(h.some((e) => e.action === 'x'))
   assert.ok(!h.some((e) => e.action === 'old'), '超出窗口的旧记录不算（太久以前的失败不具参考性）')
+})
+
+// ---------- buildCommandPrompt：修复提示词必须按驱动（D7） ----------
+
+test('buildCommandPrompt：带上驱动与允许的 act（桌面应用的修复不得写出 web act）', () => {
+  const spec = { specVersion: 1, appId: 'd', name: '本地', driver: 'process',
+                 target: { type: 'desktop', exePath: 'C:/x/y.exe' }, commands: [] }
+  const { system } = buildCommandPrompt({ spec, command: { action: 'ver', kind: 'read', steps: [{ act: 'cli', argv: ['--version'] }] }, error: '退出码 1：参数不识别' })
+  assert.ok(system.includes('process'), '要告知驱动')
+  assert.ok(system.includes('cli'), '要告知该驱动允许的 act')
+  assert.ok(!/steps\.act 只能取：[^\n]*snapshot/.test(system), `process 不得被告知可写 snapshot：${system.match(/steps\.act 只能取：[^\n]*/)}`)
+  assert.ok(system.includes('argv'), '要带字段契约（cli 必须 argv）')
 })
 
 test.after(() => { /* 保留临时目录便于失败排查 */ })

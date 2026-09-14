@@ -168,6 +168,8 @@ function driverRulesLine(driver) {
   return lines.join('\n')
 }
 
+// 注意：这里**不含 act 清单与字段契约** —— 那些必须按驱动渲染（systemRulesFor），
+// 早期把两套 act 并列写在通用规则里，正是桌面应用被喂下 web act 的根源（D7）。
 const SYSTEM_RULES = [
   '你是「应用即工具」的规格撰写器。用户会给你一个目标（网站或桌面应用）以及真实探测素材，你要产出**一个 JSON 对象**作为 App Spec。',
   '只输出 JSON 本体，不要解释、不要 Markdown 说明文字。',
@@ -178,8 +180,6 @@ const SYSTEM_RULES = [
   'commands 每项：{"action":"英文驼峰且唯一","title":"中文短标题","kind":"read|write","params":[{"name":"...","type":"string","required":true,"desc":"..."}],"steps":[...],"returns":{"type":"text|json","from":"保存键名"}}。',
   'params **必须是数组**（没有参数就写 []）；每个参数都要说明用途，方便用户填写。',
   'kind 判定：只读/查询/导出/查看 → "read"；提交/保存/修改/删除/发送/下发 → "write"。拿不准一律按 "write"（更保守）。',
-  `web 的 steps.act 只能取：${WEB_ACTS.join(', ')}；desktop 的 steps.act 只能取：${DESKTOP_ACTS.join(', ')}。`,
-  actContractLines(),
   '**元素引用规则（最容易写错，务必遵守）**：click/type/select/hover 要的是 ref（元素编号），**不是 CSS 选择器**；ref 只能由**同一条命令内前一步的 snapshot** 产生（快照按顺序从 1 编号，每次快照都会变），所以：',
   '· 命令内若要用 ref，steps 必须先有一步 {"act":"snapshot"}，再用该次快照里的 ref；',
   '· 拿不准 ref 时，**优先改用 js 表达式**直接操作最稳（例：{"act":"js","expression":"document.querySelector(\'#submit\').click()"}）；',
@@ -189,6 +189,17 @@ const SYSTEM_RULES = [
   '其中至少 2 条 read 命令，且至少 1 条 read 命令**不需要参数**（便于系统自动试跑验证）。',
   '绝对不要写入口令、令牌、密钥、身份证号等敏感信息。',
 ].join('\n')
+
+/**
+ * 系统规则 + 该目标**真实驱动**的 act 契约（act 清单只由唯一真源按驱动渲染）。
+ * 为什么必须按驱动：SYSTEM_RULES 里曾同时枚举两套 act（"web 的 steps.act 只能取：…snapshot…；
+ * desktop 的 …"），紧随其后又是硬编码 browser 的字段契约 —— 一份提示词里并列两套口径，
+ * 桌面应用（尤其是对它做漂移修复时）极易照抄到另一套 act，写出连结构校验都过不了的命令。
+ */
+function systemRulesFor(target) {
+  const d = driverOf({ target })
+  return [SYSTEM_RULES, `steps.act 只能取：${actsFor(d).join(', ')}。`, actContractLines(d)].join('\n')
+}
 
 /** 没有探测素材时追加的补充规则：明确告诉模型"你在靠公开知识推断"，并要求保守 */
 const NO_PROBE_RULES = [
@@ -247,7 +258,9 @@ function buildPrompt({ target, probeMaterial, previousErrors, probeMode } = {}) 
     parts.push(`上一轮结果有问题（结构校验或试跑失败），错误如下：\n${previousErrors.map((e, i) => `${i + 1}. ${e}`).join('\n')}\n请针对这些错误修正后，仅输出修正完的完整 JSON。`)
   }
   parts.push('请产出完整 App Spec JSON。')
-  const system = mode === 'none' || mode === 'http-thin' ? `${SYSTEM_RULES}\n${NO_PROBE_RULES}` : SYSTEM_RULES
+  // 契约按**真实驱动**渲染（旧写法用 SYSTEM_RULES 自带的"两套 act 并列"行 → 桌面应用会照抄到 web act）
+  const base = systemRulesFor(target)
+  const system = mode === 'none' || mode === 'http-thin' ? `${base}\n${NO_PROBE_RULES}` : base
   return { system, user: parts.join('\n\n') }
 }
 
@@ -493,7 +506,7 @@ async function verifySpec({ spec, runCommand, sessionId, maxReads = VERIFY_MAX_R
 
 module.exports = {
   buildPrompt, extractSpec, generateSpec, verifySpec, validateSpecBasic, validateStepFields, snapshotForPrompt,
-  MAX_ROUNDS, VERIFY_MAX_READS, SNAPSHOT_CHAR_CAP, SYSTEM_RULES, NO_PROBE_RULES, WEB_ACTS, DESKTOP_ACTS,
+  MAX_ROUNDS, VERIFY_MAX_READS, SNAPSHOT_CHAR_CAP, SYSTEM_RULES, systemRulesFor, NO_PROBE_RULES, WEB_ACTS, DESKTOP_ACTS,
   ACT_CONTRACT, WEB_CONTRACT, DESKTOP_CONTRACT, contractFor, actContractLines,
   DRIVERS, ACTS_BY_DRIVER, LEGACY_DRIVER_VALUES, normalizeDriver, driverFromTarget, driverOf, actsFor, tableFor,
   driverRulesLine, SPEC_SHAPE_LINE,

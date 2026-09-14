@@ -19,7 +19,7 @@ const { readdirSync, readFileSync } = require('node:fs')
 const { join } = require('node:path')
 const registry = require('./app-registry.cjs')
 const profiler = require('./app-profiler.cjs')
-const { validateSpecBasic, extractSpec, SYSTEM_RULES } = require('./app-generate.cjs')
+const { validateSpecBasic, extractSpec, SYSTEM_RULES, driverOf, driverRulesLine } = require('./app-generate.cjs')
 
 const MAX_REPAIR = 5
 const HISTORY_DAYS = 14
@@ -75,11 +75,24 @@ function summarize(cmd) {
   }
 }
 
-/** 单条命令的修复提示词（在生成规则上追加"只输出这一条命令"的约束） */
+/**
+ * 单条命令的修复提示词（在生成规则上追加"只修这一条"的约束 + 该应用**真实驱动**的契约）。
+ *
+ * ★ 为什么必须按驱动（真实缺陷 D7）：系统规则是**通用**规则，桌面应用照它写会写出 goto/snapshot；
+ *   修完的命令连结构校验都过不了 —— 等于把"能跑的旧命令"换成"跑不了的新命令"。
+ *   驱动取自 Spec 自身（spec.driver 优先，否则按 target.type 推定），与执行/校验同一真源。
+ */
 function buildCommandPrompt({ spec, command, error }) {
-  const system = `${SYSTEM_RULES}\n\n补充：这次只修**一条**命令。只输出这一个命令对象的 JSON（不要数组、不要外层 spec、不要解释文字）。`
+  const driver = driverOf(spec)
+  const system = [
+    SYSTEM_RULES,
+    // ★ 按驱动渲染的契约行（act 清单 + 每个 act 的字段要求）与执行/校验同一真源
+    driverRulesLine(driver),
+    '补充：这次只修**一条**命令。只输出这一个命令对象的 JSON（不要数组、不要外层 spec、不要解释文字）。',
+    `修正后的命令必须仍属于 ${driver} 驱动，steps.act 只能取上面列出的 act。`,
+  ].join('\n\n')
   const user = [
-    `应用：${spec?.name || spec?.appId}（target=${JSON.stringify(spec?.target || {})}）`,
+    `应用：${spec?.name || spec?.appId}（target=${JSON.stringify(spec?.target || {})}，driver=${driver}）`,
     `原命令（执行失败）：${JSON.stringify(command)}`,
     `失败原因（来自真实执行报错）：${error}`,
     '请输出修正后的这一条命令 JSON（action 必须与原命令完全相同）。',
