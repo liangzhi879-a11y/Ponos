@@ -421,3 +421,23 @@ GUI `LoopStatusBar` 的 `REASON_KEY`（`LoopStatusBar.tsx:12-15`）需补新值�
 **反证**（确认回归测试有牙齿）：临时回退为原始 `loop.load()`，事件序列变为
 `system:crash_recovered → system:init → loop:start`（有 start、**无任何 iter**），
 断言 `恢复后应续跑下一轮` 如期失败；恢复修复后 7/7 通过。
+
+### C.5 二次审查补充修复（doneWhen 无视次数上限 → 无限跑，2026-09-14）
+
+**缺陷**：`loop.mjs` 的 `onTurnEnd` 在 `doneWhen` 分支中，验真失败时直接
+`return { action:'next' }`，**完全跳过次数上限判定** → 配了 `--done` 而验真永不通过的 loop
+会**无限跑**（只剩预算/无进展/人工三条兜底），正是"烧钱死循环"的典型形态。
+
+**为何既有测试漏掉**：Task 4 的 e2e 用例当时**用 `maxWallMs: 1500` 绕过**（注释自陈"控制器在
+doneWhen 分支不检查 count 上限"），并把断言放宽为 `completed|budget_exceeded` —— 测试通过
+但缺陷仍在。是**独立端到端验证**（真实 bridge + 极小预算 + 验真失败）暴露出"30s 内无 end 帧"。
+
+**修复**：`doneWhen` 分支验真失败后补次数判定 —— `count` 有限且 `index >= count` →
+`end('failed')`（语义：轮数用尽而目标未达成是失败；`completed` 保留给无 `done_when` 的"跑满 N 轮"）。
+`failed` 为既有枚举值与既有 i18n 键，无回归。
+
+**测试**：该 e2e 用例去掉 `maxWallMs` 绕过、断言收紧为
+`reason === 'failed' && iters.length === 2`（count=2 恰好 2 轮后收尾），得确定性用例。
+
+**验收**：真实 bridge 端到端 7/7 PASS（`--done` 失败命令 → 各轮 `verify.passed=false` →
+`end(failed, index=2)`；`/loop budget --max-cost 0.000001` → `end(budget_exceeded, costUsd=150)`）。

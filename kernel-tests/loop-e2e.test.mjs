@@ -147,28 +147,28 @@ test('零回归锁②：普通消息（无 loop 字段）不触发 loop 帧', as
   } finally { await k.cleanup() }
 })
 
-test('doneWhen 命令式验真失败 → 继续下一轮且 iter 带 verify 摘要；上限耗尽收尾', async () => {
-  // 收尾原因放宽为「completed | budget_exceeded」：控制器在 doneWhen 分支**不检查
-  // count 上限**（kernel/loop.mjs onTurnEnd 第 4 步直接 return 'next'），此时次数
-  // 耗尽不会发生。故本用例同时给 maxWallMs 作确定性硬停护栏——次数上限语义若在
-  // 后续任务补齐，本用例依然成立（两处收尾都算"上限耗尽"）。
-  // [mock:write] 意图（本轮 Task 4 关键点）：让每轮都产生工具调用 → iter 帧的
-  // steps 必须 > 0。若 cli 没把 engine.runTurn 的返回值（toolDigest）喂给
-  // loop.onTurnEnd，steps 恒为 0 —— 该断言就是"轮次 outcome 采集"的检测口。
-  // PONOS_LOOP_NOPROGRESS_N=99：本用例每轮指纹必然相同（同工具同路径），默认阈值 3
-  // 会在第 3 轮触发"无进展升级"（awaiting_approval，不发 end 帧）→ 收尾原因与轮数
-  // 变成时序依赖。关掉该升级后只剩预算硬停一条收尾路径 → 确定性。
+test('doneWhen 命令式验真失败 → 继续下一轮且 iter 带 verify 摘要；次数耗尽以 failed 收尾', async () => {
+  // 本用例曾**绕过**一个真实缺陷：控制器 doneWhen 分支不检查 count 上限 → `--done` 永不通过的
+  // loop 无视次数上限无限跑，测试当时靠 maxWallMs 兜底并放宽断言为 completed|budget_exceeded。
+  // 缺陷已在 kernel/loop.mjs 修复（轮数用尽 + 验真未过 → end('failed')），故此处改为严格断言：
+  // 不给任何预算护栏，仅靠次数上限收尾，且收尾原因必须是 failed。
+  // [mock:write] 意图：让每轮都产生工具调用 → iter 帧的 steps 必须 > 0。若 cli 没把
+  // engine.runTurn 的返回值（toolDigest）喂给 loop.onTurnEnd，steps 恒为 0 —— 该断言就是
+  // "轮次 outcome 采集"的检测口。
+  // PONOS_LOOP_NOPROGRESS_N=99：本用例每轮指纹必然相同（同工具同路径），默认阈值 3 会在
+  // 第 3 轮触发"无进展升级"抢占收尾；关掉后只剩"次数耗尽"一条收尾路径 → 确定性。
   const k = makeKernel({ PONOS_LOOP_NOPROGRESS_N: '99' })
   try {
     assert.ok(await k.waitFor((e) => e.type === 'system' && e.subtype === 'init'), '应发 init')
     k.send({
       type: 'user', message: { role: 'user', content: '[mock:write] 修 bug' },
-      loop: { count: 2, maxWallMs: 1500, doneWhen: [{ type: 'cmd', run: 'node -e "process.exit(1)"' }] },
+      loop: { count: 2, doneWhen: [{ type: 'cmd', run: 'node -e "process.exit(1)"' }] },
     })
     const end = await k.waitFor((e) => e.type === 'loop' && e.state === 'end', 25_000)
-    assert.ok(end, `验证始终失败 → 应由上限收尾；${k.diag()}`)
-    assert.ok(['completed', 'budget_exceeded'].includes(end.reason), `收尾原因：${end.reason}`)
+    assert.ok(end, `验证始终失败 → 应由次数上限收尾（不得无限跑）；${k.diag()}`)
+    assert.equal(end.reason, 'failed', `轮数用尽而目标未达成应为 failed；实际 ${end.reason}`)
     const iters = k.events.filter((e) => e.type === 'loop' && e.state === 'iter')
+    assert.equal(iters.length, 2, `count=2 应恰好跑 2 轮后收尾；${k.diag()}`)
     assert.ok(iters.some((e) => e.verify && e.verify.passed === false), `iter 帧应带 verify 摘要；${k.diag()}`)
     assert.ok(iters.some((e) => e.steps > 0), `iter 帧 steps 应 >0（toolDigest 采集生效）；${k.diag()}`)
   } finally { await k.cleanup() }

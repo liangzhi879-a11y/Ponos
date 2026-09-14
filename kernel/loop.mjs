@@ -281,6 +281,16 @@ export function createLoopController({ wire, engine, store = null, configDir = '
       }
       persist()
       emit('iter', { index: state.index, total: state.count, steps: state.steps, costUsd: Number(state.costUsd.toFixed(4)), filesChanged, noProgressStreak: state.noProgress.streak, verify: historyEntry.verify })
+      // 次数耗尽 + done_when 未达成 → 失败收尾。
+      // 修复前此处直接 return 'next'（不检查 count）→ `--done` 永不通过的 loop 无视次数上限
+      // **无限跑**（只能靠预算/无进展/人工停），属"烧钱死循环"。语义上轮数用尽而目标未达成
+      // 是失败而非完成，故用 'failed'（'completed' 保留给无 done_when 的"跑满 N 轮"）。
+      if (state.count !== null && state.index >= state.count) {
+        state.status = 'done'; state.endReason = 'failed'; state.endedAt = new Date().toISOString()
+        persist()
+        emit('end', { reason: 'failed', index: state.index, total: state.count, goal: state.goal, costUsd: Number(state.costUsd.toFixed(4)), verify: historyEntry.verify })
+        return { action: 'stop', delayMs: 0, rationale: 'failed' }
+      }
       return { action: 'next', delayMs: state.everyMs, rationale: `verify_failed: ${v?.reason || ''}` }
     }
 
