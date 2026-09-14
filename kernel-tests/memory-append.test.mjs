@@ -93,6 +93,17 @@ test('validateAppendEntry：四个闸门各自拦得住', () => {
   assert.equal(validateAppendEntry({ text: '申报材料里的研发费用必须与专审报告口径一致，否则会被核减', tag: 'x' }).theme, 'project-application')
 })
 
+test('inferTheme 只认词不认单字（裸"账"曾把"对账"判成 finance）', () => {
+  // 实测踩过：一条讲"数据根合并…合并后要对账"的经验被塞进了 finance.md，
+  // 只因 `对账` 含 `账`。误判主题是**静默**的（条目消失在一个语义无关的文件里），
+  // 故这里把正反两侧都钉住。
+  assert.equal(validateAppendEntry({ text: '数据根合并后必须对账：文件层条目数要与索引层一致才算迁完', tag: 'x' }).theme, 'workflow')
+  assert.equal(validateAppendEntry({ text: '研发辅助账台账要与专审报告口径一致，否则被核减掉', tag: 'x' }).theme, 'project-application')
+  // 真正的财务词仍要认（别把判据收得太狠）
+  assert.equal(validateAppendEntry({ text: '报销发票抬头开错了要走红冲流程，税务口径按当期处理', tag: 'x' }).theme, 'finance')
+  assert.equal(validateAppendEntry({ text: '记账凭证附件要留存，会计凭证号连续不能断号', tag: 'x' }).theme, 'finance')
+})
+
 test('闸门拒绝时真进程退出码 1、stdout 有 error、stderr 有可读理由', () => {
   const dir = fixture()
   const r = runCli(dir, ['--knowledge', 'append', '--text', '太短了'])
