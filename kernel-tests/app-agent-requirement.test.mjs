@@ -37,6 +37,26 @@ test('buildAgentSystem：无需求不加需求段（保持既有提示词稳定�
     '空需求与未传需求必须完全一致')
 })
 
+test('★ 桌面侧探索教义：先读帮助 → 列目录 → 联网确认 → 探不到如实收手', () => {
+  const sys = buildAgentSystem({ target: { type: 'desktop', exePath: 'C:/a/a.exe' }, driver: 'process' })
+  assert.ok(sys.includes('--help'), '要教它先读帮助')
+  assert.ok(sys.includes('list_dir'), '要教它列目录找脚本/数据')
+  assert.ok(sys.includes('web_search'), '要教它联网确认开源 CLI')
+  assert.ok(/如实|不要硬凑/.test(sys), '探不到要如实收手，不许硬凑命令')
+})
+
+test('surfaceLines：清单进提示词；不传时提示词不变（无回归）', () => {
+  const withOut = buildAgentSystem({ target: { type: 'web', url: 'https://e.com/' }, driver: 'browser' })
+  const withIn = buildAgentSystem({ target: { type: 'web', url: 'https://e.com/' }, driver: 'browser', surfaceLines: '【已探明可控路径】\n· [已实测] 命令行接口' })
+  assert.ok(withIn.includes('已探明可控路径'))
+  assert.ok(!withOut.includes('已探明可控路径'))
+  assert.equal(
+    buildAgentSystem({ target: TARGET, driver: 'browser', surfaceLines: '' }),
+    buildAgentSystem({ target: TARGET, driver: 'browser' }),
+    '空串必须与不传完全一致'
+  )
+})
+
 test('buildAgentSeed：需求随种子一起给出（首轮就要看见）', () => {
   // 注：素材段走既有形参 seedSummary（buildAgentSeed 的签名是 probeMaterial/seedSummary，没有 material）
   const seed = buildAgentSeed({ target: TARGET, driver: 'browser', seedSummary: '素材：首页 3 个入口', requirement: '导出 PSD' })
