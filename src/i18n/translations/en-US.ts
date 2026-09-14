@@ -939,5 +939,8 @@ export const enUS: TranslationKeys = {
     graphEdgeRef: 'Ref',
     graphEdgeTag: 'Topic',
     graphEdgeContent: 'Similar',
+    graphIsolatedSection: '{n} unlinked · unique topic or standalone content',
+    graphIsolated: '{n} unlinked',
+    graphIsolatedHint: 'These entries have a topic (tag) that appears only once in the whole library and no sufficiently similar content, so they currently have no relations. They are placed in a separate block below the graph — this is normal, not missing data.',
   },
 }

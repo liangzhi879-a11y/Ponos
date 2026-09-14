@@ -30,7 +30,7 @@ import { Layers } from 'lucide-react'
 import { useEntryGraph, useGraph, useGraphRelated } from '@/hooks/useKnowledge'
 import { useKnowledgeStore } from '@/stores/knowledgeStore'
 import { useTranslation } from '@/i18n/useTranslation'
-import { layoutGraph, nodeDegrees, resolvedEdges, shortRef } from '@/lib/knowledgeGraph'
+import { layoutGraph, layoutSections, nodeDegrees, ROW_H, resolvedEdges, shortRef } from '@/lib/knowledgeGraph'
 import { mergeGraphEdges } from '@/lib/knowledgeRelations'
 import { cn } from '@/lib/utils'
 import type { KnowledgeGraphNode } from '@/lib/knowledgeApi'
@@ -38,10 +38,11 @@ import { KnowledgeEmpty } from './KnowledgeEmpty'
 import { KnowledgeSkeleton } from './KnowledgeSkeleton'
 import { KnowledgeScopeToggle } from './KnowledgeScopeToggle'
 import { KnowledgeNode, type KnowledgeNodeData } from './graph/KnowledgeNode'
+import { SectionLabel } from './graph/SectionLabel'
 import { KnowledgeEdge, type KnowledgeEdgeData } from './graph/KnowledgeEdge'
 
 /** 稳定引用（见文件头 ②） */
-const nodeTypes = { kb: KnowledgeNode }
+const nodeTypes = { kb: KnowledgeNode, kbSection: SectionLabel }
 const edgeTypes = { kb: KnowledgeEdge }
 
 export function KnowledgeGraphView() {
@@ -77,9 +78,12 @@ export function KnowledgeGraphView() {
   const graphError = isEntry ? entryError : error
 
   const { flowNodes, flowEdges, edgeCounts } = useMemo<{
-    flowNodes: Node<KnowledgeNodeData>[]
+    // `Node[]` 而非 `Node<KnowledgeNodeData>[]`：条目级会混入**分区标签节点**
+    // （type='kbSection'），它不是数据节点、没有 spaceId/degree。ReactFlow 的 nodes
+    // 本就接受混合类型，收紧泛型只会逼出无意义的假字段。
+    flowNodes: Node[]
     flowEdges: Edge[]
-    edgeCounts: { link: number; related: number; tag: number; content: number; ref: number }
+    edgeCounts: { link: number; related: number; tag: number; content: number; ref: number; isolated: number }
   }>(() => {
     // —— 条目级（S5.1）——
     // 内核已给出**条目级、双向、去重**的三类关联边（tag/content/ref），所以本层：
@@ -88,7 +92,8 @@ export function KnowledgeGraphView() {
     //   · 不画 duplicate（去重提示不是阅读路径，S5 §5.5）
     if (isEntry) {
       const ec = edges.filter(e => e && e.from && e.to)
-      const epos = new Map(layoutGraph(nodes, ec).map(p => [p.id, p]))
+      const sections = layoutSections(nodes, ec)
+      const epos = new Map(sections.positions.map(p => [p.id, p]))
       const edeg = nodeDegrees(ec)
       const counts = { link: 0, related: 0, tag: 0, content: 0, ref: 0 }
       const efs: Edge[] = ec.map(e => {
@@ -109,18 +114,40 @@ export function KnowledgeGraphView() {
               : { stroke: 'var(--border-strong)', strokeWidth: 1, strokeDasharray: '4 3' },
         }
       })
+      // 分区标签节点：孤立区（度=0）上方插一句说明 + 虚线。
+      // 只有空行是不够的——用户看到的仍是"下面一堆没连线的方块"，这正是原始反馈。
+      // 它不是数据节点：selectable/connectable/draggable 全 false（视图侧也不给它 onNodeClick 分支）。
+      const sepNodes: Node[] = []
+      if (sections.isolatedTopY != null && sections.isolatedCount > 0) {
+        sepNodes.push({
+          id: '__section_isolated__',
+          type: 'kbSection',
+          // 上移 ROW_H 的 0.62 倍：落在孤立区首行**上方**的空隙里，不与首行节点重叠
+          position: { x: 0, y: sections.isolatedTopY - Math.round(ROW_H * 0.62) },
+          data: { label: t('knowledge.graphIsolatedSection', { n: sections.isolatedCount }) },
+          draggable: false, selectable: false, connectable: false,
+        })
+      }
       return {
         // label 直接用内核给的摘要（已是"去类型前缀 + 前 40 字"）；spaceId 位放 docId，
         // 供节点组件在需要时显示来源文档——条目 id 是 `docId#n`，label 里不带文档名会认不出归属
-        flowNodes: nodes.map<Node<KnowledgeNodeData>>(n => ({
-          id: n.id,
-          type: 'kb',
-          position: epos.get(n.id) ?? { x: 0, y: 0 },
-          data: { label: labelOf(n), spaceId: n.docId ?? n.spaceId, degree: edeg.get(n.id) ?? 0 },
-          draggable: false,
-        })),
+        flowNodes: [
+          ...nodes.map<Node<KnowledgeNodeData>>(n => ({
+            id: n.id,
+            type: 'kb',
+            position: epos.get(n.id) ?? { x: 0, y: 0 },
+            data: { label: labelOf(n), spaceId: n.docId ?? n.spaceId, degree: edeg.get(n.id) ?? 0 },
+            draggable: false,
+          })),
+          ...sepNodes,
+        ],
         flowEdges: efs,
-        edgeCounts: counts,
+        // `isolated` = 度数为 0 的条目数（布局已把它们排到下方独立区块，见 layoutGraph）：
+        // 顶部图例必须显示它，否则"下面那一块为什么没连线"仍然只能靠猜（用户实测反馈的原问题）。
+        edgeCounts: {
+          link: counts.link, related: counts.related, tag: 0, content: 0, ref: 0,
+          isolated: [...edeg.values()].filter(d => d === 0).length,
+        },
       }
     }
 
@@ -148,12 +175,15 @@ export function KnowledgeGraphView() {
         draggable: false,
       })),
       flowEdges: fs,
-      // 文档级没有这三类**条目级**边（tag/content/ref 都是条目间关系）→ 恒 0。
-      // 不为"省三个字段"而省略：两个分支的 `edgeCounts` 必须同形，
-      // 否则 TS 会把联合类型按第一个分支收窄（这里曾报 `Property 'tag' does not exist`）。
-      edgeCounts: { link: counts.link, related: counts.related, tag: 0, content: 0, ref: 0 },
+      // 文档级同样标注孤岛数（同一套"不连通的东西要点出来"的原则）；
+      // tag/content/ref 是**条目级**关系，文档级恒 0 —— 两分支的 edgeCounts 必须同形，
+      // 否则 TS 会按第一个分支收窄联合类型（这里曾报 `Property 'tag' does not exist`）。
+      edgeCounts: {
+        link: counts.link, related: counts.related, tag: 0, content: 0, ref: 0,
+        isolated: [...deg.values()].filter(d => d === 0).length,
+      },
     }
-  }, [nodes, edges, relatedEdges, showRelated, isEntry])
+  }, [nodes, edges, relatedEdges, showRelated, isEntry, t])
 
   const openDoc = (docId: string, line?: number | null) => {
     const st = useKnowledgeStore.getState()
@@ -207,11 +237,23 @@ export function KnowledgeGraphView() {
             {entryData?.truncated && (
               <span className="micro shrink-0">{t('knowledge.graphEntryTruncated', { n: nodes.length })}</span>
             )}
+            {/* 未关联条目的**图例**（S5.1）：布局已把它们排到下方独立区块，这里必须同步说明——
+                否则"下面那一块为什么没连线"还是只能靠猜（用户实测反馈的原问题）。 */}
+            {edgeCounts.isolated > 0 && (
+              <span className="micro shrink-0" title={t('knowledge.graphIsolatedHint')}>
+                {t('knowledge.graphIsolated', { n: edgeCounts.isolated })}
+              </span>
+            )}
           </>
         ) : (
           <>
             <span className="micro shrink-0">{t('knowledge.graphDocCount', { n: nodes.length })}</span>
             <span className="micro shrink-0">{t('knowledge.graphLinkCount', { n: edgeCounts.link })}</span>
+            {edgeCounts.isolated > 0 && (
+              <span className="micro shrink-0" title={t('knowledge.graphIsolatedHint')}>
+                {t('knowledge.graphIsolated', { n: edgeCounts.isolated })}
+              </span>
+            )}
             {/* 图层开着时显示隐式边数：加载中显示"…"而不是 0 —— 0 会被读成"没有关联"，与"还没加载"混淆 */}
             {showRelated && (
               <span className="micro shrink-0">

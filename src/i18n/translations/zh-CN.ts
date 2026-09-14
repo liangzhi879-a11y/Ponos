@@ -954,6 +954,10 @@ export const zhCN = {
     graphEdgeRef: '引用',
     graphEdgeTag: '同主题',
     graphEdgeContent: '相似',
+    // —— S5.1：未关联条目（布局把它们排到下方独立区块，这里同步标注）——
+    graphIsolatedSection: '未关联 {n} · 主题唯一或内容独特',
+    graphIsolated: '未关联 {n}',
+    graphIsolatedHint: '这些条目的主题（标签）在全库只出现一次，也没有足够相似的内容，因此暂时没有关联。图下方单独一块就是它们——属于正常情况，不是数据缺失。',
   },
 }
 
