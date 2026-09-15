@@ -1,0 +1,10 @@
+{
+  "name": "ponos",
+  "private": true,
+  "description": "Ponos 内核：零运行时依赖的 Agent 内核（CLI / TUI / bridge / GUI 四端统一）",
+  "license": "MIT",
+  "scripts": {
+    "test": "node scripts/test-kernel.mjs",
+    "smoke": "node kernel/cli.mjs --help"
+  }
+}
