@@ -1,0 +1,145 @@
+# spec-dev —— spec 驱动开发工作流（2026-09-11 系统化升级；参考 github/spec-kit +
+# superpowers subagent-driven-development 内核化）
+# 流程：specify → plan → tasks → implement/reviewer 逐任务派发（loop 上限 3 轮收敛）
+#   → converge（三方一致性检查；输出以「已收敛」/「未收敛」开头）→ 未收敛回 implement
+# 状态文件：<cwd>/.yfw-spec/<slug>/{spec,plan,tasks}.md（document 节点可读，agent 节点读写）
+# DSL v2（Task 8 重写）：执行顺序由 **edges** 决定（nodes 数组顺序无语义）；节点专属配置
+#   收进 node.config（画布友好，加载期摊平）；触发/并发等运行参数在 trigger_config/settings。
+name: spec-dev
+description: spec 驱动开发：把模糊需求经 规格(spec)→计划(plan)→任务(tasks)→实现(逐任务派实现者子Agent+审查者子Agent)→收敛(converge) 的状态文件驱动流程执行，适合中大型功能/重构任务
+version: 2.0.0
+# 可见性（spec §4 三态）：public → 进入工具池（具名工具 run_spec_dev）与提示词【可用工作流】
+# 清单；缺 expose 缺省 private（模型侧完全不可见，只能 /wf run）。
+expose: { mode: public, tool_name: run_spec_dev }
+triggers: spec 开发, spec-dev, 按 spec 开发, 规格驱动开发, 规格化开发
+inputs:
+  - {name: requirement, type: string, required: true}
+  - {name: slug, type: string, required: true}
+settings:
+  max_parallel: 4
+trigger_config:
+  manual: true
+  auto_trigger: false
+nodes:
+  - id: start
+    type: start
+    label: 开始
+    position: {x: 40, y: 240}
+
+  - id: specify
+    type: agent
+    label: 写规格(spec)
+    position: {x: 200, y: 240}
+    config:
+      prompt: |
+        你是 spec 起草者。需求：
+        {{inputs.requirement}}
+
+        在 <cwd>/.yfw-spec/{{inputs.slug}}/spec.md 写规格文档（用 Write 工具，目录不存在先 mkdir -p）：
+        - P1/P2/P3 优先级用户故事，每个故事独立可测并含 Given/When/Then 验收场景
+        - 明确非目标（不在本次范围内的内容）
+        写完后用 Read 复读一遍确认落盘，然后输出「spec 完成：<绝对路径>」。
+      system: 你是 Ponos 的 spec 起草者。用简体中文，只写文件与汇报，不做其他操作。
+      max_iters: 10
+      timeout_ms: 300000
+
+  - id: plan
+    type: agent
+    label: 写计划(plan)
+    position: {x: 400, y: 240}
+    config:
+      prompt: |
+        读 <cwd>/.yfw-spec/{{inputs.slug}}/spec.md，在 <cwd>/.yfw-spec/{{inputs.slug}}/plan.md 写实现计划：
+        - bite-sized 步骤清单（每步：做什么 + 涉及文件 + 验证方式）
+        - 标注步骤间依赖与可并行项
+        - 每步与 spec 用户故事的映射（哪步实现哪个 P1/P2/P3）
+        写完后 Read 复读确认，输出「plan 完成：<绝对路径>」。
+      system: 你是 Ponos 的规划者。用简体中文，只写文件与汇报。
+      max_iters: 10
+      timeout_ms: 300000
+
+  - id: tasks
+    type: agent
+    label: 拆任务(tasks)
+    position: {x: 600, y: 240}
+    config:
+      prompt: |
+        读 <cwd>/.yfw-spec/{{inputs.slug}}/spec.md 与 plan.md，在 <cwd>/.yfw-spec/{{inputs.slug}}/tasks.md 写任务清单（checklist 格式）：
+        - 每个任务 = 「- [ ] 任务说明（含验收方式与 spec 映射）」
+        - 任务粒度 = 一个 implementer 子 Agent 一轮可完成；标注可并行项
+        写完后用 TodoWrite 建立同步清单，输出「tasks 完成：<绝对路径>」。
+      system: 你是 Ponos 的任务拆解者。用简体中文，只写文件与汇报。
+      max_iters: 10
+      timeout_ms: 300000
+
+  # 收敛循环：最多 3 轮；每轮 implement → converge（body 子图），
+  # converge 输出含「已收敛」即提前终止（break_conditions）。
+  - id: impl_loop
+    type: loop
+    label: 实现/收敛循环(≤3轮)
+    position: {x: 800, y: 240}
+    config:
+      count: 3
+      continue_on_error: false
+      body: [implement, converge]
+      break_conditions:
+        - var: converge.text
+          op: contains
+          value: 已收敛
+
+  - id: implement
+    type: agent
+    label: 逐任务实现
+    position: {x: 800, y: 420}
+    config:
+      prompt: |
+        读 <cwd>/.yfw-spec/{{inputs.slug}}/tasks.md 中所有未完成（- [ ]）的任务，逐一执行：
+        1. 对每个任务：用 Agent 工具派发 implementer 子 Agent（subagent_type: implementer，
+           prompt = 任务原文 + spec 摘录 + 涉及文件路径，context: summary）
+        2. 每个任务完成后：派发 reviewer 子 Agent（subagent_type: reviewer，
+           prompt = 任务原文 + 该任务改动文件清单 + spec 验收场景）审查
+        3. 审查判定「需返工」：把返工项追加给同一任务的 implementer 续跑（resume_task_id）
+        4. 全部任务完成：更新 tasks.md 勾选完成项
+        连续执行，不要中途向用户确认。输出「implement 完成：完成 N 个任务，返工 M 次」。
+      system: 你是 Ponos 的实现协调者（subagent-driven-development）。用简体中文，只协调与汇报，具体实现交给 implementer 子 Agent。
+      max_iters: 20
+      timeout_ms: 1800000
+
+  - id: converge
+    type: agent
+    label: 收敛检查
+    position: {x: 1000, y: 420}
+    config:
+      prompt: |
+        对 <cwd>/.yfw-spec/{{inputs.slug}}/ 下 spec.md / plan.md / tasks.md 做三方一致性检查：
+        - spec 的每个验收场景是否都有任务覆盖且已完成勾选
+        - plan 步骤与 tasks 是否一致
+        - 代码实际状态与 spec 是否相符（抽查关键文件）
+        收敛则输出以「已收敛」开头；未收敛则输出以「未收敛」开头 + 差异清单（供下一轮 implement 修复）。
+      system: 你是 Ponos 的收敛检查者。用简体中文，输出必须以「已收敛」或「未收敛」开头。
+      max_iters: 10
+      timeout_ms: 300000
+
+  - id: end
+    type: end
+    label: 结束
+    position: {x: 1200, y: 240}
+    # 终审修复（P0-2）：end 缺 outputs ⇒ finalOutput 恒为 {}，工作流跑完交不出任何结果。
+    # 聚合三段状态文本 + 收敛轮数/结论，调用方（模型）无需再读盘即可判断结果。
+    config:
+      outputs:
+        - { name: spec, selector: "{{specify.text}}" }
+        - { name: plan, selector: "{{plan.text}}" }
+        - { name: tasks, selector: "{{tasks.text}}" }
+        - { name: iterations, selector: "{{impl_loop.iterations}}" }
+        - { name: converged, selector: "{{impl_loop.broken}}" }
+
+# 执行顺序唯一真相（nodes 数组顺序无语义）：主图 5 条 + impl_loop 子图内 1 条。
+# 子图边（e6）不得跨 body 边界（validateWorkflow 的 BODY_ESCAPE 会拦）。
+edges:
+  - { id: e1, source: start, target: specify }
+  - { id: e2, source: specify, target: plan }
+  - { id: e3, source: plan, target: tasks }
+  - { id: e4, source: tasks, target: impl_loop }
+  - { id: e5, source: impl_loop, target: end }
+  - { id: e6, source: implement, target: converge }
