@@ -76,9 +76,18 @@ export const SETTINGS_DEFAULTS = {
   model: '',
   maxOutputTokens: 64000,
   autoApproveHighRisk: false,
+  // 审批档位（2026-09-12 四档化）：'' = 未设置 → 由 --approval-mode / 旧 flag 派生。
+  // 刻意不动 SCHEMA_VERSION、不加迁移：缺键本就是"走派生"，迁移会无谓改写所有用户的
+  // settings.json（且这类写盘会触发 .bak 轮转）。
+  approvalMode: '',
   disallowedTools: [],
   env: {},
   compact: { thresholdTokens: 0, reserveTokens: 0, maxToolResults: 0 },
+  // memory 的两个 S3 灰度位（injectMode / injectMaxBytes）**不在这里声明默认值**：
+  // SETTINGS_DEFAULTS 的消费方 diffFromDefault 是"整键 JSON 相等"比较，多两个键会让
+  // "只设了 memory.inject" 的用户被误报为配置漂移；且默认值放两处就必然漂移。
+  // 它们的单一权威在 kernel/knowledge-inject.mjs 的 resolveInjectMode / resolveInjectBudget
+  // （缺省 legacy / 4096 = 既有行为），settings.json 里可缺、可写（validateSettings 不校验子键）。
   memory: { inject: true, capture: true },
   hooks: [],
 }

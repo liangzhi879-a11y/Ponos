@@ -7,8 +7,61 @@
 // 事件 type 名与关键字段是跨层契约（§3-§6），必须保留；内部实现原创。
 
 export function writeLine(stream, obj) {
-  try { stream.write(JSON.stringify(obj) + '\n') } catch { /* stdout 已关闭 */ }
+  // result = 一轮收尾 → 轮次结束，硬看门狗解武装（轮间空闲不误杀）
+  if (obj && obj.type === 'result') turnActive = false
+  try {
+    stream.write(JSON.stringify(obj) + '\n')
+    // 只有**写成功**才推进"最近 wire 输出时刻"（2026-09-12 异步链失活事故）：旧写法
+    // 在 write 之前推进，写到已关闭/已销毁的 stdout 上一样算数——看门狗被一个"实际
+    // 已经说不出话"的内核骗过去。自愈帧（guard_heal）尤其危险：每次愈合都写一帧，
+    // 于是"续命本身"不断重置看门狗，2006s/2911s 的纯静默窗口就是这么被延续的。
+    lastWireWriteAt = Date.now()
+  } catch (e) {
+    wireWriteFailures++
+    lastWireWriteError = e?.message || String(e)
+  }
 }
+
+export function wireLastWriteAt() {
+  return lastWireWriteAt
+}
+
+// 写失败计数（硬看门狗现场指纹用）：连续失败 = stdout 实际已断，静默时长不再可信
+export function wireWriteStats() {
+  return { failures: wireWriteFailures, lastError: lastWireWriteError }
+}
+
+export function setTurnActive(v) {
+  turnActive = v === true
+}
+
+export function isTurnActive() {
+  return turnActive
+}
+
+// 等待用户（审批）标记：内核发 can_use_tool control_request 前 begin，收到回执/超时/拒绝
+// 全部等待者后 end。用计数而非布尔：同一批并行工具调用可能同时挂起多个审批，任何一个
+// 解除都不该把"还在等"的状态抹掉。硬看门狗据此**展期**而不是暂停判定：等的是人不该被
+// 内核自己的看门狗杀掉（2026-09-12：用户思考超过 600s 就被 exit(7) 杀掉、且自杀前不写
+// result/error 帧，桥只见 close、作答落空），但"GUI 永不回执"必须有界——只加一个
+// "审批上限"宽限窗口，超了照杀。
+export function beginAwaitingUser() {
+  awaitingUserCount++
+}
+
+export function endAwaitingUser() {
+  if (awaitingUserCount > 0) awaitingUserCount--
+}
+
+export function isAwaitingUser() {
+  return awaitingUserCount > 0
+}
+
+let lastWireWriteAt = Date.now()
+let turnActive = false
+let awaitingUserCount = 0
+let wireWriteFailures = 0
+let lastWireWriteError = ''
 
 // 取消中断信号：cancel 触发后置位 aborted，运行中的循环在检查点抛 AbortError
 export function abortError() {
@@ -32,7 +85,7 @@ export function makeWire(stream = process.stdout) {
     result(usage = { input_tokens: 0, output_tokens: 0 }, extra = {}) {
       writeLine(stream, { type: 'result', subtype: 'success', usage, ...extra })
     },
-    controlRequest({ requestId, toolName, toolUseId, input, reason }) {
+    controlRequest({ requestId, toolName, toolUseId, input, reason, hard, mode }) {
       writeLine(stream, {
         type: 'control_request',
         request_id: requestId,
@@ -42,6 +95,11 @@ export function makeWire(stream = process.stdout) {
           tool_name: toolName,
           input,
           decision_reason: reason,
+          // hard：命中灾难级硬黑名单（四档都要问、且不参与拒绝降级计数）；
+          // mode：发起本次询问时生效的审批档位。弹窗据此显示"为什么问、是不是硬黑名单"。
+          // 二者缺省省略，保持旧载荷逐字节不变（旧桥/GUI 解析不受影响）。
+          ...(hard ? { hard: true } : {}),
+          ...(mode ? { mode } : {}),
         },
       })
     },
@@ -62,6 +120,17 @@ export function makeWire(stream = process.stdout) {
     },
     summary(text, compactCount) {
       writeLine(stream, { type: 'ponos_summary', text: String(text ?? ''), compactCount })
+    },
+    // 工具结果 live 回传（2026-09-09 会话 UI 标准化）：此前 wire 只发
+    // tool_use、结果仅落盘 transcript（GUI 历史回放才可见）——内联工具卡片的
+    // "执行中/完成/失败"状态机依赖本事件。bridge 转发、GUI 回填对应 part。
+    toolResult({ toolUseId, content, isError = false }) {
+      writeLine(stream, {
+        type: 'tool_result',
+        tool_use_id: toolUseId,
+        content: String(content ?? ''),
+        is_error: isError === true,
+      })
     },
     // —— subagent 生命周期事件（shape 对齐 release 内核，GUI usePonosCLI task_* 分支消费）——
     // S1 血缘：task_started 携带 parent_task_id/depth（主 agent 派发为 null/0，

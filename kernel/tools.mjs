@@ -15,7 +15,10 @@ import { get as httpGet, request as httpRequest } from 'node:http'
 import { matchesHighRisk } from './highrisk.mjs'
 import { discoverSkillsAll, loadSkillContent } from './skills.mjs'
 import { searchSkills } from './skill-search.mjs'
-import { getProvider } from './provider.mjs'
+import { searchLocalMemory } from './memory-search.mjs'
+import { searchKnowledge, searchKnowledgeItems, expandRelated, RELATED_EXPAND_LIMIT } from './knowledge-search.mjs'
+import { getProvider, visionEnv } from './provider.mjs'
+import { perfTime } from './perf.mjs'
 
 // R2-1 活跃子进程登记：Bash/OCR spawn 的子进程统一登记，内核退出（SIGINT/TERM）
 // 时 killActiveChildren 兜底清理，防孤儿进程。child 'close' 后自动移除。
@@ -43,11 +46,18 @@ export function killActiveChildren() {
 
 // S2-2 子进程 env 白名单：仅透传系统路径/编码/代理变量，剥离一切密钥与
 // ANTHROPIC_*/CLAUDE_CODE_* 配置（防 Bash/OCR 子进程窃取宿主密钥）。
+// S6 增补 `PONOS_HOME`：内核 CLI 解析配置根时会认它（`CLAUDE_CONFIG_DIR > PONOS_HOME > ~/.ponos`），
+// 而 `CLAUDE_CONFIG_DIR` 被上面这条安全策略刻意剥离 → 不补这一项，agent 在 Bash 里跑的
+// `--knowledge append` 会落到 `~/.ponos`（**与应用侧 `.yfw` 不同的根**，写进去 GUI 看不见）。
+// 选语义中性的 `PONOS_HOME` 而非放开 `CLAUDE_CONFIG_DIR`：前者只是一个目录路径，
+// 后者是密钥目录名；放行前者的代价最小（HOME 本就在白名单，目录名也可猜），
+// 却能保证"内核子进程 / Bash 子进程"两条路解析到同一个根。
 const ENV_WHITELIST = [
   'PATH', 'Path', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TMP', 'TEMP', 'TMPDIR',
   'SystemRoot', 'WINDIR', 'ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA', 'APPDATA',
   'LANG', 'LC_ALL', 'LANGUAGE', 'TERM', 'SHELL', 'COMSPEC', 'PATHEXT', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE',
   'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
+  'PONOS_HOME',
 ]
 export function childEnv() {
   const out = {}
@@ -178,11 +188,12 @@ function resolvePath(p, cwd) {
 // 的往返与 token（T003 上轮 Read 6 次中部分为重复读）。
 const READ_STUB_PREFIX = '文件自上次读取后未变化'
 
-function readFile(filePath, allowDirs, input = {}, cwd, readCache, skipBoundary) {
+function readFile(filePath, allowDirs, input = {}, cwd, readCache, skipBoundary, allowFiles) {
   try {
     if (!filePath) return { content: 'file_path 缺失', isError: true }
     const resolved = resolvePath(filePath, cwd)
-    if (!skipBoundary && !withinBoundary(resolved, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${resolved}）`, isError: true }
+    const fileAllowed = allowFiles && allowFiles.has(resolved.toLowerCase())
+    if (!skipBoundary && !withinBoundary(resolved, allowDirs) && !fileAllowed) return { content: `拒绝访问：路径超出会话目录边界（${resolved}）`, isError: true }
     if (!existsSync(resolved)) return { content: `文件不存在：${resolved}（当前工作目录：${cwd || process.cwd()}；可用 Glob 定位候选文件或用绝对路径）`, isError: true }
     const st = statSync(resolved)
     if (st.isDirectory()) return { content: `是目录：${resolved}`, isError: true }
@@ -190,6 +201,36 @@ function readFile(filePath, allowDirs, input = {}, cwd, readCache, skipBoundary)
     // （对照 claude 的 maxSizeInstruction：让模型知道用什么参数继续，而非猜）
     if (st.size > READ_MAX_BYTES) {
       return { content: `文件过大（${st.size} 字节），超出 ${READ_MAX_BYTES} 字节读取上限；请用 offset/limit 参数定向读取（offset 起始行号，limit 行数）`, isError: true }
+    }
+    // 二进制文件引导：先探测魔数，图片/PDF 等直接引导走 OCR/专用工具，
+    // 避免把二进制当文本读出乱码（对照 claude 的 isBinary 检测）。
+    const BINARY_MAGIC = [
+      ['PNG', [0x89, 0x50, 0x4e, 0x47]],
+      ['JPEG', [0xff, 0xd8, 0xff]],
+      ['GIF', [0x47, 0x49, 0x46, 0x38]],
+      ['BMP', [0x42, 0x4d]],
+      ['WebP', [0x52, 0x49, 0x46, 0x46]],
+      ['PDF', [0x25, 0x50, 0x44, 0x46]],
+      ['ZIP', [0x50, 0x4b, 0x03, 0x04]],
+      ['DOCX/XLSX/PPTX', [0x50, 0x4b, 0x03, 0x04]],
+    ]
+    const probeHead = readFileSync(resolved, 'latin1').slice(0, 8)
+    const headBytes = [...probeHead].map((c) => c.charCodeAt(0))
+    const isImage = /\.(png|jpe?g|gif|bmp|tiff?|webp)$/i.test(resolved)
+    const isPdf = /\.pdf$/i.test(resolved)
+    let binaryHint = ''
+    if (isImage) binaryHint = `这是图片文件（${extname(resolved)}）——提取图中文字用 OCR 工具，理解版面/语义用 Vision 工具`
+    else if (isPdf) binaryHint = `这是 PDF 文件——含文本层可用 Bash python doc_toolkit 提取，扫描件用 OCR 工具`
+    else {
+      for (const [name, magic] of BINARY_MAGIC) {
+        if (magic.every((b, i) => headBytes[i] === b)) {
+          binaryHint = `这是二进制文件（${name}）——文本内容请用 OCR 或对应文档工具提取`
+          break
+        }
+      }
+    }
+    if (binaryHint) {
+      return { content: `Read 仅支持文本文件：${resolved}\n${binaryHint}`, isError: true }
     }
     const full = readFileSync(resolved, 'utf-8')
     // offset/limit：按行范围读取（offset 从 1 开始，limit=行数，均可选）
@@ -305,36 +346,145 @@ function shouldSkipDir(dirname, explicit) {
   return IGNORE_DIR_NAMES.has(dirname) && !explicit.has(dirname)
 }
 
+// ---------------------------------------------------------------------------
+// 搜索扫描：预算 + 协作式让出（2026-09-11 全树挂起事故修复）
+// 旧实现用同步 readdir/readFile 递归遍历 allowDirs 全集。--add-dir 一旦指向大目录
+// （实测用户主目录 83 万文件），单次 Grep 独占事件循环数十分钟：stdin 的 cancel
+// 读不到（GUI Stop 键完全失效）、engine 的 withToolDeadline 永不触发（它只包住
+// 返回值，同步执行早已跑完）、bridge 失速看门狗只能告警不能救。遍历改为每
+// SCAN_YIELD_EVERY 个条目 setImmediate 让出一次（取消/超时得以插入事件循环），
+// 并施加时间/条目双预算——超预算返回已得结果 + 收窄提示，而非空手失败。
+// ---------------------------------------------------------------------------
+const SCAN_YIELD_EVERY = 128
+function scanBudgetMs() {
+  const v = Number(process.env.YFW_TOOL_SCAN_BUDGET_MS)
+  return Number.isFinite(v) && v > 0 ? v : 10_000
+}
+function scanBudgetEntries() {
+  const v = Number(process.env.YFW_TOOL_SCAN_BUDGET_ENTRIES)
+  return Number.isFinite(v) && v > 0 ? v : 300_000
+}
+
+// 路径收窄（Grep/Glob 的 path 参数）：把遍历根从"全部 allowDirs"收窄到指定的一处。
+// 越界/不存在一律拒绝并给出可行动提示——静默忽略正是旧实现把"只搜这一个文件"
+// 变成"全树扫描"的根因；拒绝也比静默降级为全树扫描安全。
+function resolveScanScope(scopePath, allowDirs, { cwd, skipBoundary } = {}) {
+  const raw = scopePath == null ? '' : String(scopePath).trim()
+  if (!raw) return { roots: allowDirs }
+  const resolved = resolvePath(raw, cwd)
+  let st
+  try { st = statSync(resolved) } catch {
+    return { error: `路径不存在：${resolved}（path 需为已存在的文件或目录；省略 path 则遍历全部会话目录）` }
+  }
+  if (!st.isFile() && !st.isDirectory()) return { error: `path 既不是文件也不是目录：${resolved}` }
+  if (!skipBoundary && !withinBoundary(resolved, allowDirs)) {
+    return { error: `拒绝访问：路径超出会话目录边界（${resolved}）。可用根目录：${allowDirs.join('、')}` }
+  }
+  return { roots: [resolved] }
+}
+
+// 共享异步遍历：roots 内每个条目交 onFile 判定；onFile 返回 false 表示"已够，停"。
+// 目录判定走 Dirent（不额外 stat），仅根节点按 stat 区分文件/目录——与旧实现的
+// 系统调用量级一致。回报截断原因供上层做渐进式披露。
+async function walkForSearch(roots, { explicit, signal, onFile }) {
+  const startedAt = Date.now()
+  const maxMs = scanBudgetMs()
+  const maxEntries = scanBudgetEntries()
+  let entries = 0
+  let sinceYield = 0
+  let truncation = null
+
+  const hit = () => {
+    if (signal?.aborted) return 'aborted'
+    if (entries > maxEntries) return 'budget-entries'
+    if (Date.now() - startedAt > maxMs) return 'budget-time'
+    return null
+  }
+  const step = async () => {
+    entries++
+    const reason = hit()
+    if (reason) { truncation ||= reason; return false }
+    if (++sinceYield >= SCAN_YIELD_EVERY) {
+      sinceYield = 0
+      // 宏任务让出：微任务（await 链）不足以让 stdin/timer 插队，必须走 setImmediate
+      await new Promise((r) => setImmediate(r))
+      const late = hit()
+      if (late) { truncation ||= late; return false }
+    }
+    return true
+  }
+
+  const walkDir = async (dir) => {
+    let list
+    try { list = readdirSync(dir, { withFileTypes: true }) } catch { return true }
+    for (const ent of list) {
+      if (!(await step())) return false
+      if (ent.name.startsWith('.') && ent.name !== '.' && ent.name !== '..') continue
+      const full = join(dir, ent.name)
+      if (ent.isDirectory()) {
+        if (shouldSkipDir(ent.name, explicit)) continue
+        if (!(await walkDir(full))) return false
+      } else if (!(await onFile(full))) return false
+    }
+    return true
+  }
+
+  for (const root of roots) {
+    let st
+    try { st = statSync(root) } catch { continue }
+    const ok = st.isDirectory() ? await walkDir(root) : st.isFile() ? await onFile(root) : true
+    if (!ok) break
+  }
+  return { truncation, entries, elapsedMs: Date.now() - startedAt }
+}
+
+const SCAN_TRUNCATION_TEXT = {
+  'budget-time': '扫描超出时间预算，已中止',
+  'budget-entries': '扫描超出条目预算，已中止',
+  aborted: '扫描被取消，已中止',
+}
+
+// 渐进式披露兜底：截断时不吞掉已得结果，而是附上"为何停 + 下一步怎么收窄"。
+// 无 path 时首要建议是加 path（这正是本次事故的触发面），已有 path 则建议缩小
+// 该 path 或收紧 pattern/glob。
+function scanNotice(stats, { hasPath }) {
+  if (!stats.truncation) return ''
+  const why = SCAN_TRUNCATION_TEXT[stats.truncation] || '扫描被中断'
+  const head = `\n\n⚠ ${why}——结果可能不完整（已扫 ${stats.entries} 个条目 / ${stats.elapsedMs}ms）。`
+  if (stats.truncation === 'aborted') return head
+  return head + (hasPath
+    ? '该 path 范围仍然过大，请进一步收窄 path，或用更精确的 pattern/glob 缩小搜索面。'
+    : '请用 path 参数限定到具体目录或文件（如 path: "kernel"），或用 glob 过滤（如 **/*.mjs）——在全量会话目录上大范围搜索代价极高。')
+}
+
 // Glob：在会话目录边界内递归匹配文件名/路径（pattern 支持 * ? 和 **）。
 // 匹配前把路径归一化为正斜杠，Windows 反斜杠路径与 pattern 里的 / 均能命中。
-function globSearch(pattern, allowDirs, { maxResults = 200 } = {}) {
+async function globSearch(pattern, allowDirs, { maxResults = 200, path: scopePath, cwd, signal, skipBoundary } = {}) {
   try {
     if (!pattern) return { content: 'pattern 缺失', isError: true }
     const re = globToRegExp(String(pattern).replace(/\\/g, '/'))
     const explicit = explicitIgnoreDirs(pattern)
+    const scope = resolveScanScope(scopePath, allowDirs, { cwd, skipBoundary })
+    if (scope.error) return { content: scope.error, isError: true }
     const results = []
     const seen = new Set()
-    const walk = (dir) => {
-      if (results.length >= maxResults) return
-      let entries
-      try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
-      for (const ent of entries) {
-        if (results.length >= maxResults) break
-        if (ent.name.startsWith('.') && ent.name !== '.' && ent.name !== '..') continue // 跳过隐藏项
-        const full = join(dir, ent.name)
-        if (ent.isDirectory()) {
-          if (shouldSkipDir(ent.name, explicit)) continue // 剪枝依赖/构建目录
-          walk(full)
-        } else {
-          const normalized = full.replace(/\\/g, '/')
-          if (re.test(normalized) && !seen.has(full)) { seen.add(full); results.push(full) }
-        }
-      }
+    const stats = await walkForSearch(scope.roots, {
+      explicit,
+      signal,
+      onFile: async (full) => {
+        const normalized = full.replace(/\\/g, '/')
+        if (re.test(normalized) && !seen.has(full)) { seen.add(full); results.push(full) }
+        return results.length < maxResults
+      },
+    })
+    const notice = scanNotice(stats, { hasPath: !!String(scopePath ?? '').trim() })
+    if (results.length === 0) {
+      // 截断导致的"零结果"不等于"不存在"——不得回"无匹配"误导模型收手
+      if (stats.truncation) return { content: `未扫到匹配文件，但扫描已提前中止，不能据此判定不存在。${notice}`, isError: true }
+      return { content: `无匹配文件（pattern: ${pattern}）。依赖/构建目录（node_modules 等）默认剪枝——若目标在其中，请用含目录段的 pattern（如 **/node_modules/**）；否则用更精确的 pattern，勿反复全树试探` }
     }
-    for (const base of allowDirs) walk(base)
-    if (results.length === 0) return { content: `无匹配文件（pattern: ${pattern}）。依赖/构建目录（node_modules 等）默认剪枝——若目标在其中，请用含目录段的 pattern（如 **/node_modules/**）；否则用更精确的 pattern，勿反复全树试探` }
     const truncated = results.length >= maxResults ? `\n（已达 ${maxResults} 条上限，结果截断）` : ''
-    return { content: results.join('\n') + truncated }
+    return { content: results.join('\n') + truncated + notice }
   } catch (e) {
     return { content: `搜索失败：${e.message}`, isError: true }
   }
@@ -396,7 +546,7 @@ function globToRegExp(pattern) {
 }
 
 // Grep：在边界内按正则搜索文件内容，返回 file:line 匹配行（含上下文）
-function grepSearch(pattern, allowDirs, { glob, context = 0, maxResults = 200 } = {}) {
+async function grepSearch(pattern, allowDirs, { glob, context = 0, maxResults = 200, path: scopePath, cwd, signal, skipBoundary } = {}) {
   try {
     if (!pattern) return { content: 'pattern 缺失', isError: true }
     let re
@@ -405,46 +555,45 @@ function grepSearch(pattern, allowDirs, { glob, context = 0, maxResults = 200 } 
     const globRe = glob ? globToRegExp(String(glob).replace(/\\/g, '/')) : null
     // 显式引用忽略目录（glob 或 pattern 含 node_modules 等）→ 该目录不剪枝
     const explicit = new Set([...explicitIgnoreDirs(glob), ...explicitIgnoreDirs(pattern)])
+    const scope = resolveScanScope(scopePath, allowDirs, { cwd, skipBoundary })
+    if (scope.error) return { content: scope.error, isError: true }
     const results = []
     const MAX_BYTES = 2 * 1024 * 1024
-    const walk = (dir) => {
-      if (results.length >= maxResults) return
-      let entries
-      try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
-      for (const ent of entries) {
-        if (results.length >= maxResults) break
-        if (ent.name.startsWith('.')) continue
-        const full = join(dir, ent.name)
-        if (ent.isDirectory()) {
-          if (shouldSkipDir(ent.name, explicit)) continue // 剪枝依赖/构建目录
-          walk(full)
-        } else if (!globRe || globRe.test(full.replace(/\\/g, '/'))) {
-          let st
-          try { st = statSync(full) } catch { continue }
-          if (!st.isFile() || st.size > MAX_BYTES) continue
-          // 单文件读取失败（权限/占用/编码）跳过，不中断整个搜索；
-          // 含 NUL 字节视为二进制跳过（避免乱码误匹配）
-          let content
-          try { content = readFileSync(full, 'utf-8') } catch { continue }
-          if (content.includes('\0')) continue
-          const lines = content.split('\n')
-          for (let i = 0; i < lines.length; i++) {
-            if (re.test(lines[i])) {
-              const from = Math.max(0, i - ctx)
-              const to = Math.min(lines.length, i + ctx + 1)
-              const block = []
-              for (let j = from; j < to; j++) block.push(`${j + 1}:${lines[j]}`)
-              results.push(`—— ${full}（行 ${i + 1}）\n${block.join('\n')}`)
-              if (results.length >= maxResults) break
-            }
+    const stats = await walkForSearch(scope.roots, {
+      explicit,
+      signal,
+      onFile: async (full) => {
+        if (globRe && !globRe.test(full.replace(/\\/g, '/'))) return true
+        let st
+        try { st = statSync(full) } catch { return true }
+        if (!st.isFile() || st.size > MAX_BYTES) return true
+        // 单文件读取失败（权限/占用/编码）跳过，不中断整个搜索；
+        // 含 NUL 字节视为二进制跳过（避免乱码误匹配）
+        let content
+        try { content = readFileSync(full, 'utf-8') } catch { return true }
+        if (content.includes('\0')) return true
+        const lines = content.split('\n')
+        for (let i = 0; i < lines.length; i++) {
+          if (re.test(lines[i])) {
+            const from = Math.max(0, i - ctx)
+            const to = Math.min(lines.length, i + ctx + 1)
+            const block = []
+            for (let j = from; j < to; j++) block.push(`${j + 1}:${lines[j]}`)
+            results.push(`—— ${full}（行 ${i + 1}）\n${block.join('\n')}`)
+            if (results.length >= maxResults) return false
           }
         }
-      }
+        return true
+      },
+    })
+    const notice = scanNotice(stats, { hasPath: !!String(scopePath ?? '').trim() })
+    if (results.length === 0) {
+      // 截断导致的"零结果"不等于"不存在"——不得回"无匹配"误导模型收手
+      if (stats.truncation) return { content: `未搜到匹配行，但扫描已提前中止，不能据此判定不存在。${notice}`, isError: true }
+      return { content: `无匹配行（pattern: ${pattern}${glob ? `, glob: ${glob}` : ''}）。依赖/构建目录默认剪枝——若目标在其中，glob 需含目录段（如 **/node_modules/**）显式放行；否则核对正则，勿反复试探` }
     }
-    for (const base of allowDirs) walk(base)
-    if (results.length === 0) return { content: `无匹配行（pattern: ${pattern}${glob ? `, glob: ${glob}` : ''}）。依赖/构建目录默认剪枝——若目标在其中，glob 需含目录段（如 **/node_modules/**）显式放行；否则核对正则，勿反复试探` }
     const truncated = results.length >= maxResults ? `\n（已达 ${maxResults} 条上限，结果截断）` : ''
-    return { content: results.join('\n\n') + truncated }
+    return { content: results.join('\n\n') + truncated + notice }
   } catch (e) {
     return { content: `搜索失败：${e.message}`, isError: true }
   }
@@ -601,7 +750,9 @@ async function webSearch(query) {
       headers: {
         'content-type': 'application/json',
         'x-api-key': token,
-        'authorization': `Bearer ${token}`,
+        // 同时发两种鉴权头（超集兼容）：x-api-key-only 端点读 x-api-key，Bearer-only
+        // 端点读 authorization。token 已带 "Bearer " 前缀时不重复。
+        'authorization': /^Bearer\s/i.test(token) ? token : `Bearer ${token}`,
         'anthropic-version': '2023-06-01',
         'accept': 'application/json',
         'user-agent': 'Ponos-turbo/0.1',
@@ -638,13 +789,27 @@ async function webSearch(query) {
 // ---------------------------------------------------------------------------
 const OCR_TIMEOUT_MS = 300_000
 
-function findOcrEngine() {
+export function findOcrEngine() {
   if (process.env.PONOS_OCR_ENGINE && existsSync(process.env.PONOS_OCR_ENGINE)) return process.env.PONOS_OCR_ENGINE
   const home = process.env.USERPROFILE || process.env.HOME || ''
-  const candidates = [
-    join(home, '.claude', 'skills', '_common', 'ocr_engine.py'),
-    join(home, '.ponos', 'skills', '_common', 'ocr_engine.py'),
-  ]
+  // 多路径探测（修复"新设备报 OCR 不可用"）：
+  //   1. PONOS_SKILLS_DIR（bridge 注入的技能根，PONOS_HOME 机制权威来源）
+  //   2. PONOS_HOME/skills（skillRoot 兜底）
+  //   3. 打包资源 runtime/skills（electron-builder extraResources → <app>/resources/runtime/skills）
+  //   4. 传统路径 ~/.ponos/skills、~/.ponos-dev/skills、~/.claude/skills
+  // 全部命中失败时再尝试从 python 同目录找（嵌入式 runtime 的 skills 并排部署）。
+  const candidates = []
+  const push = (p) => { if (p) candidates.push(p) }
+  const skillsDir = process.env.PONOS_SKILLS_DIR || ''
+  const ponosHome = process.env.PONOS_HOME || ''
+  push(join(skillsDir, '_common', 'ocr_engine.py'))
+  push(join(ponosHome, 'skills', '_common', 'ocr_engine.py'))
+  // 打包资源：dev 便携版 runtime 在仓库根；安装版在 resources/runtime（__dirname 相对 kernel/）
+  push(join(dirname(dirname(process.cwd())), 'runtime', 'skills', '_common', 'ocr_engine.py'))
+  push(join(dirname(dirname(process.cwd())), 'resources', 'runtime', 'skills', '_common', 'ocr_engine.py'))
+  push(join(home, '.ponos', 'skills', '_common', 'ocr_engine.py'))
+  push(join(home, '.ponos-dev', 'skills', '_common', 'ocr_engine.py'))
+  push(join(home, '.claude', 'skills', '_common', 'ocr_engine.py'))
   return candidates.find((p) => existsSync(p)) || null
 }
 
@@ -707,25 +872,33 @@ async function ocrFile(filePath, allowDirs, input = {}, skipBoundary) {
     if (statSync(filePath).isDirectory()) return { content: `是目录：${filePath}`, isError: true }
     const mode = input?.mode === 'table' ? 'table' : 'text'
     const project = String(input?.project || 'default')
+    // 增强管线开关：auto=图片默认增强（深色反色/对比度/低置信度重试/数字复核/超长分块），
+    // off=基础 OCR（兼容旧行为，用于图片预处理导致误伤时回退）。PDF 走 CLI 不受影响。
+    const enhance = input?.enhance === 'off' ? false : true
     const engine = findOcrEngine()
     if (!engine) {
       const home = process.env.USERPROFILE || process.env.HOME || ''
       const checked = [
-        join(home, '.claude', 'skills', '_common'),
+        process.env.PONOS_SKILLS_DIR && join(process.env.PONOS_SKILLS_DIR, '_common'),
+        process.env.PONOS_HOME && join(process.env.PONOS_HOME, 'skills', '_common'),
+        join(dirname(dirname(process.cwd())), 'runtime', 'skills', '_common'),
         join(home, '.ponos', 'skills', '_common'),
-      ].join('、')
-      return { content: `OCR 引擎不可用：未找到 ocr_engine.py（已检查 ${checked}；可设置 PONOS_OCR_ENGINE 指向引擎路径）`, isError: true }
+        join(home, '.ponos-dev', 'skills', '_common'),
+        join(home, '.claude', 'skills', '_common'),
+      ].filter(Boolean).join('、')
+      return { content: `OCR 引擎不可用：未找到 ocr_engine.py（已检查 ${checked}；可设置 PONOS_OCR_ENGINE 指向引擎路径，或确认应用已安装技能库）`, isError: true }
     }
     const isImage = IMAGE_EXTS.includes(extname(filePath).toLowerCase())
     let data = null
     if (isImage) {
-      // 图片：内联 import ocr_engine.ocr_image（table 模式对图片无意义，一律全文）
+      // 图片：内联 import ocr_engine.ocr_image（table 模式对图片无意义，一律全文；
+      // enhance 透传：auto 走增强管线，off 走基础 OCR）
       const engineDir = dirname(engine)
       const script = [
         'import sys, json',
         `sys.path.insert(0, ${JSON.stringify(engineDir)})`,
         'from ocr_engine import ocr_image',
-        `r = ocr_image(${JSON.stringify(filePath)}, ${JSON.stringify(project)})`,
+        `r = ocr_image(${JSON.stringify(filePath)}, ${JSON.stringify(project)}, enhance=${enhance ? 'True' : 'False'})`,
         'print(json.dumps(r, ensure_ascii=False))',
       ].join('; ')
       const r = await runPythonCapture(['-c', script], { cwd: dirname(filePath) })
@@ -793,7 +966,7 @@ function visionMock(filePath, instruction) {
   return { content: `【Vision · mock】${filePath}\n描述：${instruction}`, isError: false }
 }
 
-async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
+export async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
   try {
     if (!filePath) return { content: 'file_path 缺失', isError: true }
     if (!skipBoundary && !withinBoundary(filePath, allowDirs)) return { content: `拒绝访问：路径超出会话目录边界（${filePath}）`, isError: true }
@@ -810,10 +983,25 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
       return { content: `图片过大（${(bytes.length / 1024 / 1024).toFixed(1)}MB > 20MB），请先压缩或用 OCR 提取文字`, isError: true }
     }
     if (process.env.PONOS_MOCK_API === '1') return visionMock(filePath, instruction)
-    const base = (process.env.PONOS_VISION_BASE_URL || '').replace(/\/+$/, '')
-    const model = process.env.PONOS_VISION_MODEL || ''
-    const token = process.env.PONOS_VISION_AUTH_TOKEN || ''
+    // env 走 provider.visionEnv（**同时认 PONOS_VISION_* 与 YFW_VISION_***）：
+    // 原先只读 PONOS_*，而 bridge 注入的是 YFW_* —— 实测后果是"用户配好了视觉模型，
+    // 工具却一直提示未配置"。兼容先例见 kernel/health.mjs:79 的同类记录。
+    const v = visionEnv() || {}
+    const base = String(v.baseUrl || '').replace(/\/+$/, '')
+    const model = v.model || ''
+    const token = v.token || ''
     if (!base || !model || !token) {
+      // 未配置视觉模型时：PONOS_AUTO_IMAGE_BRIDGE=1（bridge 注入）→ 自动降级走
+      // 增强 OCR 本地证据（dsh-pseudo-vision 同思路：text-only 模型用 OCR 文字
+      // "看"图），而非直接报错。OCR 失败也带降级说明（明确告知尝试了本地 OCR
+      // 但失败原因），不会让模型误判"视觉功能本身缺失"。
+      if (process.env.PONOS_AUTO_IMAGE_BRIDGE === '1' && process.env.PONOS_AUTO_IMAGE_BRIDGE !== '0') {
+        const ocrR = await ocrFile(filePath, allowDirs, { project: 'vision-bridge' }, skipBoundary)
+        return {
+          content: `【Vision 未配置 · 已自动降级为本地 OCR 证据】\n${ocrR.isError ? `（本地 OCR 失败：${ocrR.content}）` : ocrR.content}\n\n（视觉模型未启用：PONOS_VISION_* 未配置。以上为本地增强 OCR 提取的文字；如需版面/物体/图表语义理解，请在应用设置中启用视觉模型）`,
+          isError: false,
+        }
+      }
       return { content: 'Vision 未配置：需设置 PONOS_VISION_BASE_URL / PONOS_VISION_MODEL / PONOS_VISION_AUTH_TOKEN（GUI 设置中选中视觉模型后由 bridge 注入）。需要提取图中文字时可先用 OCR', isError: true }
     }
     let res
@@ -823,7 +1011,8 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
         headers: {
           'content-type': 'application/json',
           'x-api-key': token,
-          'authorization': `Bearer ${token}`,
+          // 与 webSearch 同策略：两种鉴权头超集同发，Bearer 前缀容忍（见上）
+          'authorization': /^Bearer\s/i.test(token) ? token : `Bearer ${token}`,
           'anthropic-version': '2023-06-01',
           'accept': 'application/json',
           'user-agent': 'Ponos-turbo/0.1',
@@ -866,12 +1055,45 @@ async function visionDescribe(filePath, allowDirs, input = {}, skipBoundary) {
   }
 }
 
-export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null }) {
+// chat 模式禁用工具表（2026-09-12 会话模式隔离）：chat 是纯联网会话，只留
+// WebFetch/WebSearch 等联网只读工具——禁一切本地执行/读写/搜索/子 Agent/技能/
+// 工作流/浏览器/记忆检索。此表是**唯一权威源**：内核按 --session-mode chat
+// 自行套用（不依赖宿主传参，宿主漏传也不会把本地能力泄进 chat）；bridge 的
+// CHAT_DISALLOWED 是逐项拷贝，仅为"跑的是旧缓存内核（不认 --session-mode）"的
+// 兼容兜底——两者一致性由 kernel-tests/chat-mode.test.mjs 的源码比对守住。
+//
+// S3 D2（2026-09-13，**有意的语义变更**）：KnowledgeSearch 出表 = chat 放行它。
+// S1 时它与 MemorySearch 同列，语义是"chat 禁一切本地能力"；D2 把该语义**收窄**为
+// "chat 禁本地执行/写盘/出网执行类能力"。理由：KnowledgeSearch 是只读检索——不写盘、
+// 不执行命令、不出网，隔离要防的风险（本地执行与文件改写的泄漏）它一项都不构成；
+// 而"知识库里以前记过什么"是纯聊场景的自然追问（问完仍需 Read 才能看全文，那条路仍禁）。
+// MemorySearch **不随之放行**：它每次都全量读文件 + 现算向量（O(N)），chat 场景无收益，
+// 放行只会让"同一能力两个入口、一个快一个慢"的口径更乱（S3 只对 D2 这一项做决策）。
+// 2026-09-14：KnowledgeImport 入表（chat 禁用）。它是**写盘**能力（往知识空间落文件），
+// 与 Read/Write/Skill 同类；chat 的语义是"纯聊/联网问答，不做本地执行与写盘"，导入显然不属于它。
+// 纯聊会话里想用知识库，用只读的 KnowledgeSearch 即可（S3 D2 已放行）。
+// 2026-09-14：KnowledgeDelete 入表（chat 禁用）——**同族的理由更强**：它是写盘且带破坏性
+// （移动/销毁用户知识库文件）。放行它等于让"纯聊"会话具备删库能力，与 chat 的隔离承诺直接冲突。
+export const CHAT_MODE_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch', 'KnowledgeImport', 'KnowledgeDelete']
+
+export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null, readAllowFiles = [], dynamicTools = null, flatSkillRoots = null }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
+  // 记忆只读边界扩展（2026-09-10）：Read 追加个人/项目记忆根——记忆文件是内核
+  // 自己维护的知识库（与 MemorySearch 同源），会话目录边界把它们排除在外会让
+  // 模型"引用记忆原文"被拒（用户实证：memory/personal/workflow.md 无法 Read）。
+  // 只扩只读工具：Write/Edit 仍锁会话目录（记忆写入走 memory.mjs 工具链与
+  // 会话工作记忆维护，不允许任意覆盖）。
+  const readAllowDirs = [...allowDirs, memoryRoot, projectMemoryRoot].filter(Boolean)
+  // 只读文件白名单（2026-09-11 渐进式披露）：会话 transcript 文件放行 Read——
+  // 硬适配索引化后模型按行号展开历史细节；仅精确文件匹配，不放宽任何目录。
+  const readAllowFilesSet = new Set((readAllowFiles || []).map((f) => resolve(String(f)).toLowerCase()))
   // P10-A：技能加载根 = 显式 skillsDirs（发现根，含默认 <configDir>/skills）优先，
   // 缺省回退 allowDirs——Skill 工具与提示词【可用技能】块同一数据源（cli 发现用同 roots）。
   // 注意：skillsDirs 不并入 allowDirs，避免扩大 Bash/Read 等工具的文件边界。
   const skillLoadRoots = (skillsDirs?.length ? skillsDirs : allowDirs).filter(Boolean)
+  // 平铺 <id>.md 的根白名单（2026-09-12 P2-1）：与 cli 提示词发现同口径——项目根里的
+  // BUILD.md 之类不再能被 Skill 工具当技能加载，也不出现在"可用技能"回执里。
+  const flatSkillRootsArg = Array.isArray(flatSkillRoots) ? flatSkillRoots : undefined
   // 会话目录边界开关：--allow-outside-dirs / PONOS_ALLOW_OUTSIDE_DIRS=1 解锁文件工具
   // （Read/Write/Edit/OCR）的目录限制；Glob/Grep 仍限定会话目录内（避免全盘扫描）。
   const skipBoundary = !!allowOutsideDirs || process.env.PONOS_ALLOW_OUTSIDE_DIRS === '1'
@@ -895,7 +1117,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
       isHighRisk: (input) => matchesHighRisk(String(input?.command ?? '')),
     },
     Read: {
-      description: `读取文本文件内容。一次读全文（上限 ${READ_MAX_LINES} 行 / ${READ_MAX_BYTES / 1024 / 1024}MB），默认应读全文而非分段取样；超大文件用 offset/limit 定向读取，结果会提示续读位置。重复读取未变化的文件会返回"文件自上次读取后未变化"提示——直接引用此前结果即可，勿重复发起。优先用本工具而非 Bash cat/sed 读文件；路径用绝对路径，或相对当前工作目录的相对路径。边界限制：仅可读取当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标文件位于会话目录内，否则改用 Bash 或让用户放入会话目录。`,
+      description: `读取文本文件内容。一次读全文（上限 ${READ_MAX_LINES} 行 / ${READ_MAX_BYTES / 1024 / 1024}MB），默认应读全文而非分段取样；超大文件用 offset/limit 定向读取，结果会提示续读位置。重复读取未变化的文件会返回"文件自上次读取后未变化"提示——直接引用此前结果即可，勿重复发起。优先用本工具而非 Bash cat/sed 读文件；路径用绝对路径，或相对当前工作目录的相对路径。边界限制：仅可读取当前会话目录及其挂载目录（--add-dir）内的文件，以及个人记忆/项目记忆目录（memory/personal）中的记忆文件；其余会话外路径会被拒绝——调用前先确认目标文件位于会话目录或记忆目录内，否则改用 Bash 或让用户放入会话目录。`,
       // concurrencySafe：只读工具可并发执行（P0-4 只读批并行）
       concurrencySafe: true,
       input_schema: {
@@ -908,7 +1130,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
         },
         required: ['file_path'],
       },
-      run: (input) => readFile(String(input?.file_path ?? ''), allowDirs, input, cwd, readCache, skipBoundary),
+      run: (input) => readFile(String(input?.file_path ?? ''), readAllowDirs, input, cwd, readCache, skipBoundary, readAllowFilesSet),
     },
     Write: {
       description: '写入文本文件（覆盖整个文件）。注意是整体覆盖语义——必须携带完整新内容，遗漏会导致文件被清空或内容丢失；改动范围超过半个文件时优先考虑本工具而非多次 Edit。边界限制：仅可写入当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标路径位于会话目录内。',
@@ -939,51 +1161,60 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
       run: (input) => editFile(String(input?.file_path ?? ''), String(input?.old_string ?? ''), String(input?.new_string ?? ''), input?.replace_all === true, allowDirs, cwd, readCache, skipBoundary),
     },
     Glob: {
-      description: '在会话目录内递归搜索文件路径（pattern 支持 * ? 和 ** 通配）。先 Glob 定位候选文件再 Read，避免无目标 ls。依赖/构建产物目录（node_modules/dist/build/release/vendors/workspace 等）默认剪枝不搜索——若目标在其中，pattern 需显式含目录名（如 **/node_modules/**）；无匹配时按返回提示换更精确的 pattern，勿反复全树试探（代价高）。',
+      description: '在会话目录内递归搜索文件路径（pattern 支持 * ? 和 ** 通配）。先 Glob 定位候选文件再 Read，避免无目标 ls。已知大致位置时务必传 path 收窄范围——省略 path 会遍历全部会话目录，代价极高。依赖/构建产物目录（node_modules/dist/build/release/vendors/workspace 等）默认剪枝不搜索——若目标在其中，pattern 需显式含目录名（如 **/node_modules/**）；无匹配时按返回提示换更精确的 pattern，勿反复全树试探。',
       concurrencySafe: true,
       input_schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
           pattern: { type: 'string', description: '文件路径通配模式，如 **/*.mjs' },
+          path: { type: 'string', description: '可选：限定搜索的目录或文件（绝对路径，或相对会话目录）。强烈建议传——省略则遍历全部会话目录' },
           maxResults: { type: 'number', description: '可选：最大结果数（默认 200）' },
         },
         required: ['pattern'],
       },
-      run: (input) => globSearch(String(input?.pattern ?? ''), allowDirs, { maxResults: Number(input?.maxResults) || 200 }),
+      run: (input, ctx) => globSearch(String(input?.pattern ?? ''), allowDirs, {
+        maxResults: Number(input?.maxResults) || 200,
+        path: input?.path ? String(input.path) : undefined,
+        cwd, signal: ctx?.signal, skipBoundary,
+      }),
     },
     Grep: {
-      description: '在会话目录内按正则搜索文件内容，返回 file:line 匹配行。带精确 pattern 与 glob 过滤；需要上下文时用 context 参数；结果最多 200 条（超出截断并标注）。依赖/构建产物目录默认剪枝（同 Glob，显式引用可放行）。无匹配时按返回提示调整，避免试探性重复搜索。',
+      description: '在会话目录内按正则搜索文件内容，返回 file:line 匹配行。带精确 pattern 与 glob 过滤；需要上下文时用 context 参数；结果最多 200 条（超出截断并标注）。已知大致位置时务必传 path 收窄范围——省略 path 会遍历全部会话目录，代价极高。依赖/构建产物目录默认剪枝（同 Glob，显式引用可放行）。无匹配时按返回提示调整，避免试探性重复搜索。',
       concurrencySafe: true,
       input_schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
           pattern: { type: 'string', description: '正则表达式' },
+          path: { type: 'string', description: '可选：限定搜索的目录或文件（绝对路径，或相对会话目录）。强烈建议传——省略则遍历全部会话目录' },
           glob: { type: 'string', description: '可选：文件路径通配过滤，如 **/*.mjs' },
           context: { type: 'number', description: '可选：匹配行上下文件数（0-10，默认 0）' },
           maxResults: { type: 'number', description: '可选：最大结果数（默认 200）' },
         },
         required: ['pattern'],
       },
-      run: (input) => grepSearch(String(input?.pattern ?? ''), allowDirs, {
+      run: (input, ctx) => grepSearch(String(input?.pattern ?? ''), allowDirs, {
         glob: input?.glob ? String(input.glob) : undefined,
         context: Number(input?.context) || 0,
         maxResults: Number(input?.maxResults) || 200,
+        path: input?.path ? String(input.path) : undefined,
+        cwd, signal: ctx?.signal, skipBoundary,
       }),
     },
     // 子代理分发：执行体在 engine（ctx.spawnSubAgent）。子 lane 内禁止嵌套。
     Agent: {
-      description: '将子任务委派给子 Agent 执行（按优势场景选择 subagent_type）；前台同步回填结果，或 run_in_background 后台异步执行；可基于既有后台任务会话续跑（resume_task_id）',
+      description: '将子任务委派给子 Agent 执行（按优势场景选择 subagent_type）；前台同步回填结果，或 run_in_background 后台异步执行；可基于既有后台任务会话续跑（resume_task_id）；context 控制主会话上下文继承（none 不继承/summary 继承摘要+最近轮次/full 继承全量历史——长会话推荐 summary 档）',
       input_schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          subagent_type: { type: 'string', description: '子 Agent 类型（general-purpose / researcher 或用户注册的 agent id）' },
+          subagent_type: { type: 'string', description: '子 Agent 类型（general-purpose / researcher / implementer / reviewer / explorer / planner 或用户注册的 agent id）' },
           prompt: { type: 'string', description: '委派给子 Agent 的完整任务说明；resume 模式下为续跑指令' },
-          run_in_background: { type: 'boolean', description: '可选：true 时后台异步执行，立即返回 task_id（Task 工具查询/中止/续跑）' },
+          run_in_background: { type: 'boolean', description: '可选：true 时后台异步执行，立即返回 task_id（Task 工具查询/中止/续跑/投递消息）' },
           description: { type: 'string', description: '可选：任务描述（展示用）' },
           resume_task_id: { type: 'string', description: '可选：基于既有后台子任务会话继续执行（复用其 lane 会话，prompt 作为续跑指令追加；任务须已结束且进程存活）' },
+          context: { type: 'string', description: '可选：主会话上下文继承档 none（默认）| summary（主会话压缩摘要+最近 20 轮文本）| full（最近 200 条全量文本，可能撑爆子任务上下文，谨慎使用）' },
         },
         required: ['subagent_type', 'prompt'],
       },
@@ -995,14 +1226,15 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
     },
     // 后台子 Agent 任务管理（查询/中止/续跑）
     Task: {
-      description: '管理后台子 Agent 任务：list 列出全部（层级缩进）、status/output 查询单个、stop 中止、resume 续跑（基于既有会话继续）',
+      description: '管理后台子 Agent 任务：list 列出全部（层级缩进）、status/output 查询单个、stop 中止、resume 续跑（基于既有会话继续）、send_message 向运行中任务投递消息（其当前工具轮结束后接收）、followup 投递消息（对已结束任务自动续跑）',
       input_schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          command: { type: 'string', description: 'list | status | output | stop | resume' },
-          task_id: { type: 'string', description: '可选：status/output/stop/resume 时的任务 id' },
-          prompt: { type: 'string', description: '可选：resume 时的续跑指令（追加到既有会话；缺省「（任务继续）」）' },
+          command: { type: 'string', description: 'list | status | output | stop | resume | send_message | followup' },
+          task_id: { type: 'string', description: '可选：status/output/stop/resume/send_message/followup 时的任务 id' },
+          prompt: { type: 'string', description: '可选：resume/followup 时的续跑指令（追加到既有会话；缺省「（任务继续）」）' },
+          message: { type: 'string', description: '可选：send_message/followup 时投递的消息内容' },
         },
         required: ['command'],
       },
@@ -1016,7 +1248,9 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
         if (cmd === 'output') return sys.output(id)
         if (cmd === 'stop') return sys.stop(id)
         if (cmd === 'resume') return sys.resume(id, input?.prompt)
-        return { content: `未知 command：${cmd}（支持 list/status/output/stop/resume）`, isError: true }
+        if (cmd === 'send_message') return sys.sendMessage(id, input?.message)
+        if (cmd === 'followup') return sys.followup(id, input?.message || input?.prompt)
+        return { content: `未知 command：${cmd}（支持 list/status/output/stop/resume/send_message/followup）`, isError: true }
       },
     },
     // 任务规划清单（覆盖式更新，返回当前清单）
@@ -1087,7 +1321,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
     },
     // 扫描件 OCR（spawn python 调 ocr_engine.py；PDF/图片均可；结果按 project 缓存）
     OCR: {
-      description: '对扫描件 PDF 或图片执行 OCR 文字识别（mode=text 提取全文；mode=table 额外识别表格，仅 PDF 有效；结果按 project 缓存，重复识别秒回）。首次调用需加载识别模型，可能耗时数十秒——属正常初始化，勿误判卡死或重复调用。边界限制：仅可识别当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标文件位于会话目录内（若在会话外，先请用户将文件放入会话目录或经 --add-dir 挂载，不要盲目重试）。',
+      description: '对扫描件 PDF 或图片执行 OCR 文字识别（mode=text 提取全文；mode=table 额外识别表格，仅 PDF 有效；结果按 project 缓存，重复识别秒回）。图片默认走增强管线（enhance=auto：深色模式反色/对比度/低置信度重试/数字复核/超长截图分块，识别质量显著高于基础 OCR；enhance=off 可回退基础 OCR）。首次调用需加载识别模型，可能耗时数十秒——属正常初始化，勿误判卡死或重复调用。边界限制：仅可识别当前会话目录及其挂载目录（--add-dir）内的文件，会话外路径会被拒绝——调用前先确认目标文件位于会话目录内（若在会话外，先请用户将文件放入会话目录或经 --add-dir 挂载，不要盲目重试）。',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -1095,6 +1329,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
           file_path: { type: 'string', description: '要识别的 PDF/图片绝对路径' },
           mode: { type: 'string', description: '可选：text（默认，全文识别）| table（含表格识别）' },
           project: { type: 'string', description: '可选：项目名（缓存隔离，默认 default）' },
+          enhance: { type: 'string', description: '可选：auto（默认，图片走增强管线）| off（基础 OCR）' },
         },
         required: ['file_path'],
       },
@@ -1130,12 +1365,284 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
       run: (input) => {
         const id = String(input?.skill ?? '').trim()
         if (!id) return { content: 'skill 参数缺失：请传入技能名（提示词【可用技能】清单中的 id）', isError: true }
-        const content = loadSkillContent({ roots: skillLoadRoots, id })
+        const content = loadSkillContent({ roots: skillLoadRoots, id, flatRoots: flatSkillRootsArg })
         if (content == null) {
-          const ids = discoverSkillsAll({ roots: skillLoadRoots }).map((s) => s.id)
+          const ids = discoverSkillsAll({ roots: skillLoadRoots, flatRoots: flatSkillRootsArg }).map((s) => s.id)
           return { content: `技能不存在：${id}。可用技能：${ids.join(', ') || '（当前无可用技能）'}`, isError: true }
         }
         return { content: `技能「${id}」已加载，严格按以下指引执行：\n\n${content}`, isError: false }
+      },
+    },
+    // MS1 个人/项目经验检索。S3 §4.2：**签名不变、内部转发**到知识库块级检索（老提示词/
+    // 老会话零改动即获块级能力），索引不可用时回落 legacy 直检。输出条目含文件绝对路径供
+    // Read 追全文。无命中返回明确提示（勿盲目换词重试——可先确认经验库是否有沉淀）。
+    // 保留本工具而非直接改名：老提示词/老技能仍在引用它（契约纯增量，见 spec §2.6）。
+    MemorySearch: {
+      description: '检索个人/项目经验库（本地检索，无网络）：按 query 找过往沉淀的经验条目与知识块。命中返回条目清单（含主题/标签/摘要/全文/所在文件，score 排序），需全文用 Read 读给出的文件路径。适合"以前处理过类似问题吗"类查询。scope：personal=个人经验；project=项目经验（需项目库存在）；all=全部（默认）。**新会话推荐改用 KnowledgeSearch**（支持限定空间、块级粒度与可选全文，速度更快）。',
+      concurrencySafe: true,
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          query: { type: 'string', description: '检索关键词（一句话描述想找的经验主题）' },
+          topK: { type: 'number', description: '可选：返回条数上限（1-10，默认 5）' },
+          scope: { type: 'string', description: "可选：'personal' | 'project' | 'all'（默认 all）" },
+        },
+        required: ['query'],
+      },
+      run: (input) => {
+        const q = String(input?.query ?? '').trim()
+        if (!q) return { content: 'query 参数缺失：请描述想检索的经验主题', isError: true }
+        const scope = String(input?.scope || 'all')
+        const topK = Math.min(Math.max(1, Number(input?.topK) || 5), 10)
+        // S3 §4.2：**签名不变，内部转发**到知识库块级检索（老提示词/老会话零改动即获块级能力）。
+        // scope 映射：personal → ['experience']；project → ['project-*']（知识库里没有该空间，
+        // 恒 0 命中 —— 与现状"cli 不传 projectMemoryRoot"等价，见 S3 spec §11.3 N2）；
+        // all → null（全部可读空间）。configDir 推导同 KnowledgeSearch（memoryRoot 上溯两级）。
+        if (memoryRoot) {
+          const r = searchKnowledgeItems({
+            configDir: resolve(memoryRoot, '..', '..'),
+            query: q,
+            topK,
+            spaces: scope === 'personal' ? ['experience'] : scope === 'project' ? ['project-*'] : null,
+          })
+          if (r.ok) {
+            if (!r.items.length) {
+              return { content: `经验库无「${q}」相关命中。可换关键词，或确认该主题尚未沉淀过经验。`, isError: false }
+            }
+            const lines = [`【经验库命中 ${r.items.length} 条，取前 ${r.items.length}】`]
+            for (const it of r.items) {
+              // 来源给**绝对路径**（而不是 docId）：Read 的白名单只含 memoryRoot 等目录，
+              // 喂相对 docId 会让模型 Read 失败（legacy 实现本来就给绝对路径）。
+              const rel = it.docId.slice(it.spaceId.length + 1)
+              const sp = r.spaces.find((s) => s.id === it.spaceId)
+              const file = sp ? join(sp.root, ...rel.split('/')) : it.docId
+              const theme = rel.replace(/\.md$/i, '')
+              lines.push(`- [${theme}${it.tag ? '|' + it.tag : ''}] ${it.text} -- ${it.full || it.text}（score ${it.score} · ${file}）`)
+            }
+            return { content: lines.join('\n'), isError: false }
+          }
+          // r.ok === false（索引不可用）：回落下面的 legacy 直检——工具能力不得因索引故障缩水。
+        }
+        const { items, count } = searchLocalMemory({
+          personalRoot: memoryRoot,
+          projectRoot: projectMemoryRoot,
+          query: q,
+          topK,
+          scope,
+        })
+        if (!items.length) {
+          const why = count > 0 ? '（均未达相似度阈值）' : ''
+          return { content: `经验库无「${q}」相关命中${why}。可换关键词，或确认该主题尚未沉淀过经验。`, isError: false }
+        }
+        const lines = [`【经验库命中 ${count} 条，取前 ${items.length}】`]
+        for (const it of items) {
+          lines.push(`- [${it.theme}${it.tag ? '|' + it.tag : ''}] ${it.summary} -- ${it.full}（score ${it.score} · ${it.file}）`)
+        }
+        return { content: lines.join('\n'), isError: false }
+      },
+    },
+    // S1 知识检索：走已建索引的块级检索（比 MemorySearch 的 O(N) 全量扫描快得多），
+    // 支持按空间过滤与 snippet/full 两档。S1 阶段与 MemorySearch 并存，S3 收敛。
+    KnowledgeSearch: {
+      description: '在知识库中做块级检索（本地索引，无网络）：可跨"个人经验/会话记忆/我的笔记/知识包"等空间，按语义+关键词命中到**单个知识块**（一条经验、一个标题段、一段正文）。返回命中清单（空间/文件/标题/行号/分数/摘要），需全文用 Read 读对应文件行。适合"知识库里有没有关于 X 的内容"类查询。spaces 可选限定空间；mode=full 返回整块原文。命中行括号内是 blockId；给 related=该 blockId 可展开这条的**一跳**关联锚点（只回 blockId/标题/理由，不做多跳扩散）。',
+      concurrencySafe: true,
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          query: { type: 'string', description: '检索意图（自然语言，走向量匹配）' },
+          keywords: { type: 'array', items: { type: 'string' }, description: '可选：精确关键词（走关键词路，适合专有名词/表名）' },
+          spaces: { type: 'array', items: { type: 'string' }, description: '可选：限定空间 id 列表（见 /knowledge/spaces）' },
+          topK: { type: 'number', description: '可选：返回条数上限（1-10，默认 5）' },
+          mode: { type: 'string', description: "可选：'snippet'（默认，省上下文）| 'full'（整块原文）" },
+          related: { type: 'string', description: '可选：给一个命中行的 blockId（形如 experience/workflow.md#2），返回该条目的**一跳**关联锚点（最多 5 条，只给 blockId/标题/理由；需正文用 Read）。与 query 二选一或并用。' },
+        },
+        // S5 Task 10：`required` 由 ['query'] 放宽为二者皆可（至少给一个，由 run() 判）。
+        // **why 必须放宽**：API 层会校验 required，若仍强制 query，"只想展开一跳"的调用会被
+        // 直接 400 掉 —— 新参数就成了摆设。既有调用方一律带 query，行为不受影响。
+        required: [],
+      },
+      run: (input) => {
+        const relId = String(input?.related ?? '').trim()
+        const q = String(input?.query ?? '').trim()
+        if (!q && !relId) {
+          return { content: 'query 参数缺失：请描述想检索的知识主题（或给 related 指定 blockId 展开一跳关联）', isError: true }
+        }
+        // configDir 推导：createToolRegistry 收到的 memoryRoot = <configDir>/memory/personal
+        // （kernel/cli.mjs 的 memoryRoot(configDir)），故 <configDir> = memoryRoot 上溯两级。
+        // memoryRoot 缺失（部分测试/嵌入场景不传）时**不猜路径**——用相对路径探知识根会
+        // 在 cwd 下建 knowledge/.index，故直接降级为明确提示。
+        if (!memoryRoot) {
+          return { content: '知识库检索不可用（未配置知识根 memoryRoot）。可直接用 Read 打开记忆文件。', isError: false }
+        }
+        const configDir = resolve(memoryRoot, '..', '..')
+        // related 分支优先：给了 blockId 就是"展开这条往哪读"，与 query 检索互不干扰
+        // （同一工具的两个查询维度；两条路都只读、都不含正文）。
+        if (relId) return expandRelated({ configDir, blockId: relId, limit: RELATED_EXPAND_LIMIT })
+        return searchKnowledge({
+          configDir,
+          query: q,
+          keywords: Array.isArray(input?.keywords) ? input.keywords : [],
+          spaces: Array.isArray(input?.spaces) && input.spaces.length ? input.spaces : null,
+          topK: Math.min(Number(input?.topK) || 5, 10),
+          mode: input?.mode === 'full' ? 'full' : 'snippet',
+        })
+      },
+    },
+    // 文件知识库导入（2026-09-14）：把一批文件（PDF/Word/Excel/PPT/图片/文本）转成
+    // Markdown 落进一个知识空间，之后 KnowledgeSearch 就能检索到。
+    //
+    // **为什么是独立工具而不是让模型用 Bash 拼 python**：解析器定位（多候选探测）、
+    // OCR 引擎探测、扩展名白名单、体积护栏、路径防护、幂等台账、索引同步——全在
+    // kernel/knowledge-import.mjs 一份实现里。让模型自己拼命令行，等于把这条链路
+    // 重新"手工实现"一遍，且必然漏掉幂等（重复导入）与护栏（黑名单扩展名）。
+    KnowledgeImport: {
+      description: '把一个文件或整个目录（递归）导入知识空间 —— **写盘操作**（本地处理、无网络）：解析成 Markdown 写入 knowledge/spaces/<space>/，之后用 KnowledgeSearch 即可检索。支持 PDF（含扫描件，走 OCR）、Word(docx)、Excel(xlsx/xls)、PPT(pptx)、图片、文本/markdown/CSV；可执行/脚本类文件与不支持的扩展名会被拒并给出原因。护栏：单文件 ≤50MB、整批 ≤500 个文件且 ≤300MB。返回结构化报告（JSON）：summary 是全量计数（imported/skipped/rejected/failed），results 逐条给状态与原因——rejected = 这条**本来就不该**进库（格式/体积/符号链接），failed = 该进库但**没成功**（加密/解析崩溃/写盘失败），两者的下一步动作不同。dryRun=true 只预览"将处理/将跳过/将被拒"的清单，不写任何文件。目标空间不存在会自动新建（只读知识包空间不可作目标）。results 超过 50 条时省略（summary 仍为全量计数），需要逐条明细请分批导入。注意扫描件 PDF 与大文件耗时较长（OCR 可能数分钟），一次批量导入请留足时间。**表格**：文本层 PDF（Word/Excel 导出）的表格由本地解析自动识别；扫描件/图片里的表格 OCR 读不出列结构，只有配置了视觉模型才会自动调它按页识别（慢且可能计费，默认最多 20 页）——未配置时正文照常导入，报告的 vision 字段会说明表格未提取，此时若要表格需先配置视觉模型再重新导入。',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          from: { type: 'string', description: '要导入的绝对路径（文件或目录；目录递归处理）' },
+          space: { type: 'string', description: '目标空间 id（不存在则新建）。不得与内置空间（experience / session-memory / skill-experience）重名、不得以 pack- 开头、不得含 \\ / : * ? " < > | 或控制字符' },
+          name: { type: 'string', description: '可选：空间显示名（缺省与 space 相同）' },
+          dryRun: { type: 'boolean', description: '可选：true = 只预览"将处理 / 将跳过 / 将被拒"的清单，不落盘' },
+          maxOcrPages: { type: 'number', description: '可选：扫描件 PDF 的 OCR 页数上限（默认 200；超出按页截断并在报告里说明）' },
+          visionTables: { type: 'boolean', description: '可选：是否用视觉模型识别**扫描件/图片**里的表格（默认"配了视觉模型就用"）。关掉可省时间与调用费用；纯文本类文件与文本层 PDF 不受影响（后者自动识别表格）。未配置视觉模型时该项无效，报告里会给出提示' },
+          maxVisionPages: { type: 'number', description: '可选：交视觉模型识别表格的页数上限（默认 20；视觉调用按页慢且可能计费，超出按页截断并出声）' },        },
+        required: ['from', 'space'],
+      },
+      run: async (input, ctx) => {
+        const from = String(input?.from ?? '').trim()
+        const space = String(input?.space ?? '').trim()
+        if (!from) return { content: 'from 参数缺失：请给出要导入的文件或目录的绝对路径', isError: true }
+        if (!space) return { content: 'space 参数缺失：请给出目标空间 id（不存在会自动新建）', isError: true }
+        // 与 KnowledgeSearch 同一套根推导（memoryRoot = <configDir>/memory/personal，上溯两级）。
+        // 缺失时**不猜路径**：相对路径探知识根会在 cwd 下现种一棵 knowledge/.index（脏且难发现）。
+        if (!memoryRoot) {
+          return { content: '知识导入不可用（未配置知识根 memoryRoot）', isError: true }
+        }
+        const configDir = resolve(memoryRoot, '..', '..')
+        // 动态 import：本模块与 knowledge-import.mjs 互相引用（后者要用 findOcrEngine /
+        // childEnv / registerChild），顶层静态 import 会构成 ESM 循环依赖；放到调用点加载，
+        // 依赖方向保持单向（tools → knowledge-import 只在运行时发生）。
+        //
+        // 调的是**对外主入口 `importFiles`**（T5 契约名，勿改）：它与 CLI/GUI 走的
+        // `importDocuments` 是**同一条管线**（白名单/体积/符号链接/路径防护/台账/落盘/
+        // 索引同步全在那份实现里），只是报告口径按任务契约翻成 `results[].status` 四态 +
+        // `summary`。故本工具内**只有参数归一 + 一次调用**，没有第二份解析/渲染/落盘逻辑。
+        const { importFiles } = await import('./knowledge-import.mjs')
+        const maxOcr = Number(input?.maxOcrPages)
+        let report
+        try {
+          report = await importFiles({
+            configDir, from, space,
+            name: String(input?.name ?? '').trim() || null,
+            dryRun: input?.dryRun === true,
+            maxOcrPages: Number.isFinite(maxOcr) && maxOcr > 0 ? Math.floor(maxOcr) : null,
+            // 视觉表格提取：三态透传（undefined = auto，由 importFiles 按"是否配了视觉模型"决定）
+            visionTables: input?.visionTables === false ? false : (input?.visionTables === true ? true : 'auto'),
+            maxVisionPages: Number.isFinite(Number(input?.maxVisionPages)) && Number(input?.maxVisionPages) >= 0
+              ? Math.floor(Number(input.maxVisionPages)) : null,
+            // §6 注入点：python 调用点必须可注入假实现（工具级用例因此完全不加载 OCR 模型、
+            // 不起 bridge）。生产链路上 ctx 里没有这个键 → null → importFiles 走
+            // defaultConverter（真 python）。与 `ctx.browserDriver` 同一套依赖注入手法。
+            runDocToMd: typeof ctx?.runDocToMd === 'function' ? ctx.runDocToMd : null,
+          })
+        } catch (e) {
+          return { content: `导入失败：${e?.message || e}`, isError: true }
+        }
+        if (!report.ok) {
+          // 错误码**原样透出**（invalid-space-id / readonly-space / not-found / empty-batch /
+          // batch-too-large …）：只有码值能让模型自己决定"是改 id、换路径，还是分批"——
+          // 吞成一句"导入失败"等于让它盲目重试同一批（spec P3-1 的 400/403 语义）。
+          return { content: `导入未执行（${report.error}）：${report.message}`, isError: true }
+        }
+        // 逐文件失败**不**把工具标成 error：报告本身就是结果，标 error 会让模型丢掉
+        // "哪些成功了"的信息（它只会看到一句失败，然后重复整批导入）。
+        //
+        // 体量护栏：整批上限 500 个文件，逐条明细全量回灌会吃掉上万 token（白烧上下文）。
+        // 只截 `results`，`summary` 保持**全量计数**（模型仍准确知道多少成功/多少失败/多少
+        // 被拒），省略条数显式写在报告里（`resultsOmitted`）——不静默丢信息。
+        const MAX_ROWS = 50
+        const results = report.results.slice(0, MAX_ROWS)
+        const content = JSON.stringify({
+          ...report,
+          results,
+          ...(report.results.length > MAX_ROWS ? { resultsOmitted: report.results.length - MAX_ROWS } : {}),
+        }, null, 2)
+        return { content, isError: false }
+      },
+    },
+    // 知识库删除管理（回收站，2026-09-14）。设计见 .yfw-spec/knowledge-trash/spec.md。
+    // 与 KnowledgeImport 对称：**三入口里唯一的 agent 面**，落盘/权限/路径防护全在
+    // kernel/knowledge.mjs 一份实现，本工具内只有参数归一 + 一次调用。
+    //
+    // 为什么入 chat 禁用表：它是**写盘**能力（移动/删除用户的知识库文件），
+    // 与 KnowledgeImport/Write 同类；chat 的语义是"纯聊/联网问答，不做本地执行与写盘"。
+    KnowledgeDelete: {
+      description: '管理知识库的删除（**软删除到回收站**，本地、无网络）：列出回收站、删条目、删整个知识库、还原、彻底删除。删除都是"移到回收站"而非销毁 —— 还原会把内容放回原位（遇同名自动改名让位，绝不覆盖）。\n\naction：\n· list —— 列出回收站（名称/原空间/删除时间/大小/内容是否还在）。**建议先 list 再决定还原还是彻底删**。\n· doc —— 删一个条目，需 space + path（path 是空间内相对 .md 路径，如 "研发/立项报告.md"）。\n· space —— 删**整个知识库**，需 space + confirm 且 confirm 必须精确等于 space。只允许删用户自建的库；内置空间（experience / session-memory / skill-experience）只能删其中条目、不能删库；知识包（pack-*）完全只读。\n· restore —— 还原，需 trashId（从 list 取）。\n· purge —— 彻底删除（**真正销毁、不可恢复**），需 trashId；或 action=purge 且 all=true 清空整个回收站。\n\n注意：删整库是不可逆量级更大的操作，先与用户确认再执行；不确定时用 list 看现状。',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          action: { type: 'string', enum: ['list', 'doc', 'space', 'restore', 'purge'], description: '要执行的操作' },
+          space: { type: 'string', description: 'action=doc|space 时必填：空间 id（内置空间只允许删条目）' },
+          path: { type: 'string', description: 'action=doc 时必填：空间内的相对 .md 路径' },
+          confirm: { type: 'string', description: 'action=space 时必填：必须精确等于 space（防误删整库）' },
+          trashId: { type: 'string', description: 'action=restore|purge 时必填：回收站条目 id（从 action=list 取）' },
+          all: { type: 'boolean', description: 'action=purge 时可选：true = 清空整个回收站（与 trashId 二选一）' },
+        },
+        required: ['action'],
+      },
+      run: async (input, ctx) => {
+        const action = String(input?.action ?? '').trim()
+        if (!action) return { content: 'action 参数缺失：可选 list / doc / space / restore / purge', isError: true }
+        if (!memoryRoot) {
+          return { content: '知识库删除不可用（未配置知识根 memoryRoot）', isError: true }
+        }
+        const configDir = resolve(memoryRoot, '..', '..')
+        // 注入点（与 `ctx.runDocToMd` 同一套依赖注入手法）：工具级用例可直接给假 store，
+        // 完全不起真进程、不碰真实磁盘。生产链路上 ctx 无此键 → 走真 store。
+        let store = ctx?.knowledgeStore || null
+        if (!store) {
+          // 动态 import 的理由同 KnowledgeImport：本模块与知识生态互相引用，
+          // 顶层静态 import 会构成 ESM 循环依赖；调用点加载保持依赖单向。
+          const { createKnowledgeStore } = await import('./knowledge.mjs')
+          store = createKnowledgeStore({ configDir })
+          store.load()
+        }
+        try {
+          if (action === 'list') {
+            const t = store.listTrash()
+            return { content: JSON.stringify(t, null, 2), isError: false }
+          }
+          if (action === 'doc') {
+            const r = store.deleteDoc({ space: input?.space ?? null, path: input?.path ?? null })
+            if (!r.ok) return { content: `删除未执行（${r.error}）：${r.message}`, isError: true }
+            return { content: JSON.stringify(r, null, 2), isError: false }
+          }
+          if (action === 'space') {
+            const r = store.deleteSpace({ space: input?.space ?? null, confirm: input?.confirm ?? null })
+            if (!r.ok) return { content: `删除未执行（${r.error}）：${r.message}`, isError: true }
+            return { content: JSON.stringify(r, null, 2), isError: false }
+          }
+          if (action === 'restore') {
+            const r = store.restore({ trashId: input?.trashId ?? null })
+            if (!r.ok) return { content: `还原未执行（${r.error}）：${r.message}`, isError: true }
+            return { content: JSON.stringify(r, null, 2), isError: false }
+          }
+          if (action === 'purge') {
+            // `all` 只认**严格 true**（同 server 路由）：`"false"`/0 这类写法按单条删除走，
+            // 宁可少删也不能因参数写法把整个回收站清了。
+            const r = store.purge({ trashId: input?.trashId ?? null, all: input?.all === true })
+            if (!r.ok) return { content: `彻底删除未执行（${r.error}）：${r.message}`, isError: true }
+            return { content: JSON.stringify(r, null, 2), isError: false }
+          }
+          return { content: `未知 action：${action}（可选 list / doc / space / restore / purge）`, isError: true }
+        } catch (e) {
+          return { content: `知识库删除失败：${e?.message || e}`, isError: true }
+        }
       },
     },
     // 联网技能搜索：检索 Claude Code marketplace 生态（Anthropic 官方 + 社区市场），
@@ -1200,6 +1707,14 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
         const id = String(input?.workflow ?? '').trim()
         if (!id) return { content: 'workflow 参数缺失：请传入工作流 id（提示词【可用工作流】清单）', isError: true }
         if (!workflow) return { content: '工作流引擎未初始化', isError: true }
+        // M3 可见性闸门：本通用工具不得成为私密/未绑定/旧格式工作流的后门——隐藏一个具名
+        // 工具（private 不入 dyntools 工具池）却能靠 id 直接执行，等于绕过工具列表。
+        // 判定口径与工具池同源（engine.canRun → dyntools.visibilityOf + legacy 拒绝），
+        // 不可见即拒绝执行、不落审计。canRun 缺失（测试替身/旧引擎）时跳过闸门。
+        if (typeof workflow.canRun === 'function') {
+          const gate = workflow.canRun(id)
+          if (!gate.ok) return { content: `工作流「${id}」不可执行：${gate.reason}`, isError: true }
+        }
         const mode = input?.mode === 'background' ? 'background' : 'sync'
         const r = await workflow.run({ id, inputs: input?.inputs || {}, mode })
         if (!r.ok) return { content: `工作流「${id}」执行失败: ${r.error}${r.node ? `（节点 ${r.node}）` : ''}`, isError: true }
@@ -1213,7 +1728,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
     // （docs/bridge-contract.md §4 bridge_request；bridge 的 browserRouter 已接线）。
     // 执行体在 engine（ctx.browserDriver 挂起等 bridge 回写 browser_response 解除）。
     Browser: {
-      description: '驱动内置浏览器执行页面操作（快照驱动：先 snapshot 查看页面结构与可交互元素 ref，再按 ref 操作）。支持动作：goto 导航 / back 后退 / forward 前进 / refresh 刷新 / snapshot 页面快照 / click 点击 / type 输入 / select 选择 / scroll 滚动 / hover 悬停 / wait 等待 / js 页面内执行 JS。元素 ref 随页面变化失效——操作失败时重新 snapshot 获取最新 ref，勿沿用旧 ref 重试。',
+      description: '驱动内置浏览器执行页面操作（快照驱动：先 snapshot 查看页面结构与可交互元素 ref，再按 ref 操作）。支持动作：goto 导航 / back 后退 / forward 前进 / refresh 刷新 / snapshot 页面快照 / click 点击 / type 输入 / select 选择 / scroll 滚动 / hover 悬停 / wait 等待 / js 页面内执行 JS。元素 ref 随页面变化失效——操作失败时重新 snapshot 获取最新 ref，勿沿用旧 ref 重试。域名白名单限制：goto 访问非白名单域名会被拦截（默认放行政务 *.gov.cn / 搜索 / 企业查询 / 邮箱等站点）。被拦截时系统会向用户请求批准——若用户批准，该域名即自动写入白名单并即时生效，你直接重试同一操作即可；若用户拒绝，改用 WebFetch/WebSearch 等其他途径，勿反复重试。',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -1233,29 +1748,59 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
       },
     },
   }
+  // 动态工具（工作流即工具）：视图函数每次求值，磁盘上增删工作流即时生效。
+  // 可传函数（每次求值）或对象（静态快照）；取值/求值异常一律视为空池，不阻断 turn。
+  let dynamicToolsRef = dynamicTools
+  // K0 观测：`tools=` = 视图求值次数/毫秒。静态名单 getter（toolNames 等）实际被
+  // engine 每迭代 + 每次工具调用各读一次，是 K1.2 工具表缓存的核心指标。
+  const dynamicView = () => perfTime('tools', () => {
+    try { return (typeof dynamicToolsRef === 'function' ? dynamicToolsRef() : dynamicToolsRef) || {} } catch { return {} }
+  })
   return {
     registry,
-    toolNames: Object.keys(registry).filter((n) => !blocked.has(n)),
+    // getter（非快照）：动态工具（工作流即工具）随磁盘增删即时进出名单，故每次读取求值
+    get toolNames() {
+      return [...Object.keys(registry).filter((n) => !blocked.has(n)), ...Object.keys(dynamicView()).filter((n) => !blocked.has(n) && !(n in registry))]
+    },
     // P0-4：只读工具并发安全标记（Bash/Write/Edit/Agent/Task/OCR 等写/执行类串行）
     isConcurrencySafe(name) {
-      return registry[name]?.concurrencySafe === true
+      return registry[name]?.concurrencySafe === true || dynamicView()[name]?.concurrencySafe === true
     },
     // 中立工具 schema 列表（Anthropic/OpenAI 协议字段映射在 api.mjs 完成）
     toolSchemas() {
-      return Object.entries(registry).filter(([name]) => !blocked.has(name)).map(([name, tool]) => ({
+      const statics = Object.entries(registry).filter(([name]) => !blocked.has(name)).map(([name, tool]) => ({
         name,
         description: tool.description,
         input_schema: tool.input_schema,
       }))
+      const dyn = Object.entries(dynamicView()).filter(([name]) => !blocked.has(name) && !(name in registry)).map(([name, tool]) => ({
+        name,
+        description: tool.description,
+        input_schema: tool.input_schema,
+      }))
+      return [...statics, ...dyn]
     },
+    // 动态工具源热替换（engine.mjs 不转发 dynamicTools —— 其调用点不在本任务改动范围，
+    // cli 拿到 engine.tools 后经此注入；与 dynamicTools 构造参数等价，后设覆盖先设）
+    setDynamicTools(fn) { dynamicToolsRef = fn || null },
     // 执行入口：返回归一化 { content, isError }（成功路径可能缺省 isError）；
-    // approval 决策由调用方（engine）先行
+    // approval 决策由调用方（engine）先行。兜底铁律：任何工具实现抛异常
+    // （含审批/hook 内部错误）都不得向上中断 turn——归一化为错误结果返回，
+    // 调用方（runToolBatch）看到 isError 后模型可自愈重试，会话不断。
     async run(toolUse, ctx) {
       const name = toolUse?.name
       if (blocked.has(name)) return { content: `工具已被禁用：${name}`, isError: true }
-      const tool = registry[name]
+      // 动态工具（工作流即工具）：与静态同名冲突时静态优先（动态名单已排除同名项）；
+      // 被禁/未命中的动态调用同样在此拒绝——防模型绕过工具列表。
+      const dynTool = !(name in registry) ? dynamicView()[name] : null
+      const tool = registry[name] || dynTool
       if (!tool) return { content: `未知工具：${name}`, isError: true }
-      const r = await tool.run(toolUse.input || {}, ctx)
+      let r
+      try {
+        r = await tool.run(toolUse.input || {}, ctx)
+      } catch (e) {
+        return { content: `工具执行异常：${e?.message || String(e)}`, isError: true }
+      }
       if (r && typeof r === 'object') {
         return { content: r.content ?? '', isError: r.isError === true, ...(r.meta ? { meta: r.meta } : {}) }
       }

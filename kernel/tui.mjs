@@ -33,6 +33,11 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { KERNEL_VERSION } from '../version.mjs'
 import { resolveConfigDir } from './config.mjs'
+// /loop 语法解析与内核共用同一份纯函数（loop-commands.mjs 零依赖零 IO）：
+// 契约要求 `cli / TUI / bridge / GUI 四端一致`（docs/bridge-contract.md §6.1），
+// TUI 曾经自带一套只认「次数/--until/--fresh」的旧解析 —— 于是 `/loop status`
+// 被当成 prompt 真起了 3 轮 loop（语法互吞）。此后再无第二份解析。
+import { parseLoopDirective } from './loop-commands.mjs'
 import { sanitizeSegment } from './session.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
@@ -467,10 +472,14 @@ function main() {
   /effort 思考深度档位         /version dev 版本号
   /loop   连续迭代             /model <序号|id|模型名> 切换模型
   /wf     工作流（严格流程）    /quit 退出
-  /loop 用法: /loop [次数] [--until 目标] [--fresh] [prompt...]（无 prompt 重放上一条）
+  /loop 用法: /loop [次数|间隔] [--until 目标] [--every 5m] [--fresh] [--done <命令>]... [--goal 目标]
+                   [--max-cost USD] [--max-steps N] [--max-wall 30m] [prompt...]（无 prompt 重放上一条）
             例: /loop 3 优化这个函数            — 连续 3 轮迭代
                 /loop 5 --until 测试全部通过    — 直到模型判定达成（最多 5 轮）
-                /loop 3 --fresh 重新实现        — 每轮清上下文（独立轮次）
+                /loop 10m 巡检                  — 每 10 分钟一轮（持续，直到 /loop stop）
+                /loop 3 --done "pytest -q" 修 bug — 每轮末跑验真命令，通过即提前结束
+  /loop 指令族: status | pause | resume | approve | stop | budget [--max-cost/--max-steps/--max-wall]
+                | inject <补充信息> | rollback | replay [--last N] | memory
   /wf 用法: /wf list | /wf run <id> [--input k=v ...] | /wf verify <审计文件路径>
             例: /wf run 政策拆解 --input file=policy.pdf — 执行工作流（确定性 DAG + 审计）
 历史: 启动时检测到历史会话自动弹出选择器（↑↓ 选择 Enter 确认 Esc 新建）；/sessions 随时重开
@@ -516,6 +525,9 @@ function main() {
   let effort = process.env.CLAUDE_CODE_EFFORT_LEVEL || process.env.PONOS_REASONING_EFFORT || 'auto'
   let toolExpanded = new Set()
   let toolSeqMap = new Map()
+  // tool_use_id → 卡片序号：内核的 tool_result 帧（protocol.mjs wire.toolResult）
+  // 只带 tool_use_id，没有这张表就只能把结果丢掉（旧行为：卡片 result 恒为空串）。
+  let toolIdSeq = new Map()
   let messages = []
   let thinkingBuf = ''
   let thinkingHinted = false
@@ -768,7 +780,29 @@ function main() {
   }
   function logPlain(ev) {
     switch (ev.type) {
-      case 'system': if (ev.subtype === 'init') console.log(`[init] model=${ev.model} session=${ev.session_id}`); break
+      // 非 TTY（管道）主要用于日志取证：把此前只在 TTY 分支处理的帧也直出，
+      // 否则这些事件在管道里是**完全不可见**的（静默丢弃比渲染粗糙更难排查）。
+      case 'system': {
+        if (ev.subtype === 'init') { console.log(`[init] model=${ev.model} session=${ev.session_id}`); break }
+        const t = typeof ev.text === 'string' ? ' ' + ev.text.replace(/\s+/g, ' ').slice(0, 200) : ''
+        console.log(`[${ev.subtype || 'system'}]${t}`)
+        break
+      }
+      case 'loop': {
+        const s = ev.state
+        const total = ev.total === null || ev.total === undefined ? '∞' : ev.total
+        const tail = s === 'start' ? ` ${total} 轮${ev.until ? `，直到「${ev.until}」` : ''}${ev.fresh ? '，fresh' : ''}`
+          : s === 'iter' ? ` #${ev.index}/${total}${ev.judged === true ? ' ✓' : ''}`
+            : s === 'status' ? ` ${ev.status}${ev.pendingApproval ? `（${ev.pendingApproval.kind}:${ev.pendingApproval.detail || ''}）` : ''}`
+              : ` ${ev.reason ?? ''}`
+        console.log(`[loop:${s}]${tail}`)
+        break
+      }
+      case 'tool_result': {
+        const one = String(ev.content ?? '').replace(/\s+/g, ' ').trim()
+        console.log(`[工具结果]${ev.is_error ? '（错误）' : ''} ${one.slice(0, 200)}`)
+        break
+      }
       case 'assistant': {
         for (const b of ev.message?.content ?? ev.blocks ?? []) {
           if (b?.type === 'text') process.stdout.write(b.text)
@@ -792,16 +826,35 @@ function main() {
     if (!isTui) { logPlain(ev); return }
     switch (ev.type) {
       case 'loop': {
-        // loop 迭代状态：start/iter/end（渲染轮次徽标，不打断当前流）
+        // loop 迭代状态：start/iter/end/status（渲染轮次徽标，不打断当前流）
+        // total 为 null = 间隔式/持续运行（count 无上限），显示 ∞ 而不是 "null 轮"。
         const s = ev.state
+        const total = ev.total === null || ev.total === undefined ? '∞' : ev.total
         if (s === 'start') {
-          pushMessage({ kind: 'system', text: `[loop] 开始 ${ev.total} 轮${ev.until ? `，直到达成「${ev.until}」` : ''}${ev.fresh ? '，fresh 清上下文' : ''}` })
+          pushMessage({ kind: 'system', text: `[loop] 开始 ${total} 轮${ev.until ? `，直到达成「${ev.until}」` : ''}${ev.fresh ? '，fresh 清上下文' : ''}` })
         } else if (s === 'iter') {
           const judged = ev.judged === true ? ' ✓达成' : (ev.judged === false ? ' ✗未达成' : '')
-          pushMessage({ kind: 'system', text: `[loop] 第 ${ev.index}/${ev.total} 轮完成${judged}${ev.reason ? ' — ' + ev.reason : ''}` })
+          const v = ev.verify ? `（验真 ${ev.verify.passed ? '通过' : '未通过'}${ev.verify.results?.length ? ` ${ev.verify.results.filter((r) => r.ok).length}/${ev.verify.results.length}` : ''}）` : ''
+          pushMessage({ kind: 'system', text: `[loop] 第 ${ev.index}/${total} 轮完成${judged}${v}${ev.reason ? ' — ' + ev.reason : ''}` })
+        } else if (s === 'status') {
+          // 内核在 pause/resume/停滞升级/回滚登记/预算变更时都会发 status 帧；
+          // 旧 TUI 不认识这个状态 → **静默丢弃**，于是"等人工确认"时用户看不到任何提示
+          // （也无从知道要用 /loop approve）。
+          const statusMap = {
+            running: '运行中', pausing: '本轮结束后暂停', paused: '已暂停（/loop resume 继续）',
+            verifying: '验真中', awaiting_approval: '等待人工确认', done: '已结束', cancelled: '已取消',
+          }
+          const hint = ev.status === 'awaiting_approval'
+            ? `（${ev.pendingApproval?.detail || ev.pendingApproval?.kind || '需人工介入'} → /loop approve 继续、/loop inject <补充> 、/loop stop 停止）`
+            : ev.status === 'paused' ? '（/loop resume 继续）' : ''
+          pushMessage({ kind: 'system', text: `[loop] 状态：${statusMap[ev.status] || ev.status}${hint}` })
         } else if (s === 'end') {
-          const reasonMap = { until_hit: '达成目标，提前结束', completed: '次数耗尽', cancelled: '已取消', judge_error: '判定失败，已停止' }
-          pushMessage({ kind: 'system', text: `[loop] 结束（${reasonMap[ev.reason] || ev.reason}）· 共 ${ev.index}/${ev.total} 轮` })
+          const reasonMap = {
+            until_hit: '达成目标，提前结束', completed: '次数耗尽', cancelled: '已取消', judge_error: '判定失败，已停止',
+            verify_hit: '验真通过', failed: '轮数用尽但目标未达成', budget_exceeded: '超出预算',
+            no_progress: '无进展已停止', stalled: '停滞待人工确认',
+          }
+          pushMessage({ kind: 'system', text: `[loop] 结束（${reasonMap[ev.reason] || ev.reason}）· 共 ${ev.index}/${total} 轮` })
         }
         render()
         break
@@ -854,12 +907,61 @@ function main() {
             pushMessage({ kind: 'system', text: `[工作流] 人工审批请求：${ev.message}${inputs ? '\n' + inputs : ''}\n    → /wf approve [意见] 或 /wf reject [意见]` })
             render()
           } else if (ev.type === 'node') {
-            pushMessage({ kind: 'system', text: `[工作流] 节点 ${ev.node}（${ev.node_type || ev.type}${ev.in_body ? '·子图' : ''}）${ev.status === 'done' ? '完成' : '失败'}` + (ev.dur_ms ? ` ${ev.dur_ms}ms` : '') })
+            // 三态渲染：done=完成 / skipped=跳过（跳过不是失败，审查 I-1）/ 其余=failed
+            const st = ev.status === 'done' ? '完成' : ev.status === 'skipped' ? '跳过' : '失败'
+            pushMessage({ kind: 'system', text: `[工作流] 节点 ${ev.node}（${ev.node_type || ev.type}${ev.in_body ? '·子图' : ''}）${st}` + (ev.dur_ms ? ` ${ev.dur_ms}ms` : '') })
           } else if (ev.type === 'start') {
             pushMessage({ kind: 'system', text: `[工作流] 开始：${ev.workflow}（${ev.nodes} 节点，runId ${ev.runId}）` })
           } else if (ev.type === 'end') {
             pushMessage({ kind: 'system', text: `[工作流] 结束：${ev.status}（${ev.steps} 步）` })
           }
+          render()
+        } else if (ev.subtype === 'loop_result') {
+          // /loop 指令族回执（cli 的 handleLoopOp → wire.system('loop_result')）。
+          // 旧 TUI 的 system 分支**没有 else**，这一整类帧被静默丢弃 → 用户发
+          // /loop pause|budget|... 后"什么也没发生"。
+          pushMessage({ kind: ev.ok === false ? 'error' : 'result', text: ev.text || `[loop] ${ev.op}` })
+          render()
+        } else if (ev.subtype === 'provider_switched') {
+          initInfo.model = ev.model || initInfo.model
+          pushMessage({ kind: 'result', text: `模型已切换：${ev.model}` })
+          render()
+        } else if (ev.subtype === 'provider_switch_rejected') {
+          pushMessage({ kind: 'error', text: `模型切换被拒：${ev.reason || '未知原因'}` })
+          render()
+        } else if (ev.subtype === 'context_window_retargeted') {
+          // 小窗口模型切换提示（2026-09-10）：后续每轮按新窗口规划压缩/预算
+          pushMessage({ kind: 'system', text: `上下文窗口重定向：${ev.model || ''} → ${Math.round((Number(ev.window) || 0) / 1000)}K（压缩阈值与输出预算按新窗口生效）` })
+          render()
+        } else if (ev.subtype === 'approval_mode_updated') {
+          pushMessage({ kind: 'result', text: `审批档位已更新：${ev.mode ?? ''}` })
+          render()
+        } else if (ev.subtype === 'approval_mode_rejected') {
+          pushMessage({ kind: 'error', text: `审批档位设置被拒：${ev.reason ?? '未知原因'}` })
+          render()
+        } else if (ev.subtype === 'crash_recovered') {
+          pushMessage({ kind: 'system', text: `[恢复] 检测到上次异常退出并已恢复：${ev.detail || ev.session_id || ''}` })
+          render()
+        } else if (ev.subtype === 'task_started') {
+          // 子 agent 生命周期（protocol.mjs task_* 三件套）：旧 TUI 全丢，
+          // 派发子任务后只有主 agent 的工具卡片，看不到子任务在干什么。
+          pushMessage({ kind: 'system', text: `[子任务] 启动 ${ev.task_id}${ev.depth ? `（深度 ${ev.depth}）` : ''}：${String(ev.prompt || '').slice(0, 80)}` })
+          render()
+        } else if (ev.subtype === 'task_resumed') {
+          pushMessage({ kind: 'system', text: `[子任务] 续跑 ${ev.task_id}：${String(ev.prompt || '').slice(0, 80)}` })
+          render()
+        } else if (ev.subtype === 'task_progress') {
+          pushMessage({ kind: 'system', text: `[子任务] ${ev.task_id} · ${ev.last_tool_name || ''} ${String(ev.description || '').slice(0, 80)}（工具 ${ev.usage?.tool_uses ?? 0} 次 / ${ev.usage?.total_tokens ?? 0} tokens）` })
+          render()
+        } else if (ev.subtype === 'task_notification') {
+          const st = ev.status === 'completed' ? '完成' : ev.status === 'stopped' ? '已停止' : String(ev.status || '')
+          const outs = (ev.outputs || []).length ? `\n产物：\n- ${(ev.outputs || []).join('\n- ')}` : ''
+          pushMessage({ kind: 'result', text: `[子任务] ${ev.task_id} ${st}：${String(ev.summary || '').slice(0, 200)}${outs}` })
+          render()
+        } else {
+          // 兜底：内核新增 system 子类型时不再静默丢弃（宁可显示成一行原始帧）
+          const t = typeof ev.text === 'string' ? ev.text.slice(0, 200) : JSON.stringify(ev).slice(0, 200)
+          pushMessage({ kind: 'system', text: `[${ev.subtype}] ${t}` })
           render()
         }
         break
@@ -875,6 +977,7 @@ function main() {
             const toolMsg = { kind: 'tool', seq: toolSeq, name: b.name, input: b.input, result: '' }
             pushMessage(toolMsg)
             toolSeqMap.set(toolSeq, toolMsg)
+            if (b.id) toolIdSeq.set(String(b.id), toolSeq)
             render()
           } else {
             pushMessage({ kind: 'system', text: `[assistant] ${JSON.stringify(b).slice(0, 200)}` })
@@ -904,13 +1007,20 @@ function main() {
         render()
         break
       }
-      case 'provider_switched':
-        initInfo.model = ev.model || initInfo.model
-        pushMessage({ kind: 'result', text: `模型已切换：${ev.model}` })
-        render(); break
-      case 'provider_switch_rejected':
-        pushMessage({ kind: 'error', text: `模型切换被拒：${ev.reason || '未知原因'}` })
-        render(); break
+      // 注：provider_switched / context_window_retargeted / provider_switch_rejected
+      // 都是**内核 system 帧的子类型**（cli 走 wire.system），不是顶层 type —— 这三个
+      // 曾长期挂在这里当顶层 case，永远不会触发（已移入上面的 system 分支）。
+      case 'tool_result': {
+        // 工具结果帧（protocol.mjs wire.toolResult {tool_use_id, content, is_error}）：
+        // 旧版无人处理 ⇒ 工具卡片详情恒为空、且落到 default 打印原始 JSON。
+        const seq = toolIdSeq.get(String(ev.tool_use_id ?? ''))
+        const tm = seq === undefined ? null : toolSeqMap.get(seq)
+        if (!tm) break
+        tm.result = String(ev.content ?? '')
+        tm.isError = ev.is_error === true
+        render()
+        break
+      }
       case 'ponos_health':
         pushMessage({ kind: 'result', text: `健康 score=${ev.score ?? '?'} tier=${ev.tier ?? '?'}` })
         render(); break
@@ -983,31 +1093,35 @@ function main() {
       }
       case '/banner': showBanner(); break
       case '/loop': {
-        // /loop [次数] [--until 目标] [--fresh] [prompt...]（无 prompt 重放上一条）
-        // 例：/loop 3 优化这个函数
-        //     /loop 5 --until 测试全部通过 修复 bug
-        //     /loop 3 --fresh 重新实现
-        const lastUser = [...messages].reverse().find((m) => m.kind === 'user' || (m.role === 'user' && m.kind !== 'system'))
-        const restArgs = rest.slice()
-        let count = 3
-        if (restArgs.length && /^\d+$/.test(restArgs[0])) count = parseInt(restArgs[0], 10)
-        const flagStart = /^\d+$/.test(restArgs[0] || '') ? 1 : 0
-        let until = ''
-        let fresh = false
-        const clean = []
-        let inUntil = false
-        for (const a of restArgs.slice(flagStart)) {
-          if (a === '--fresh') { fresh = true; continue }
-          if (a === '--until') { inUntil = true; continue }
-          if (a.startsWith('--until=')) { until = a.slice(8); continue }
-          if (inUntil) { until = a; inUntil = false; continue }
-          clean.push(a)
+        // 语法与内核共用 loop-commands.mjs::parseLoopDirective（契约 docs/bridge-contract.md
+        // §6.1 要求 cli/TUI/bridge/GUI 四端一致）。旧版 TUI 自带一套只认「次数/--until/--fresh」
+        // 的解析，两份语法互相吞：`/loop status` 的 status 掉进 prompt 分支 ⇒ 静默真起 3 轮
+        // loop；`/loop 10m x` 也不认间隔。自带解析已整体删除。
+        const d = parseLoopDirective(cmdText)
+        if (!d) { pushMessage({ kind: 'error', text: '用法见 /help 的 /loop 段（次数|间隔 + --until/--every/--done/--goal/--fresh/预算旗标 + prompt）' }); render(); break }
+        if (d.kind === 'op') {
+          // 指令族走 loop_command 帧（与 bridge/GUI 同构，含 requestId 通道），
+          // 回执由 system.loop_result 帧返回（见 handleEvent 的 loop_result 分支）。
+          child.stdin.write(JSON.stringify({ type: 'loop_command', op: d.op, args: d.args }) + '\n')
+          pushMessage({ kind: 'system', text: `[loop] ${d.op} …` })
+          render(); break
         }
-        const promptText = clean.join(' ')
-        const content = promptText || (lastUser ? (lastUser.text || lastUser.content || '') : '')
-        if (!content) { pushMessage({ kind: 'error', text: '没有可重放的上一条消息。/loop [次数] [--until 目标] [--fresh] 消息内容' }); render(); break }
-        child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content }, loop: { count, until, fresh } }) + '\n')
-        pushMessage({ kind: 'system', text: `[loop] 提交：${count} 轮${until ? `，直到达成「${until}」` : ''}${fresh ? '，fresh 清上下文' : ''}` })
+        const lastUser = [...messages].reverse().find((m) => m.kind === 'user' || (m.role === 'user' && m.kind !== 'system'))
+        const o = d.opts
+        const content = String(o.prompt || '').trim() || (lastUser ? (lastUser.text || lastUser.content || '') : '')
+        if (!content) { pushMessage({ kind: 'error', text: '没有可重放的上一条消息（/loop 后请带 prompt 或先发一条消息）' }); render(); break }
+        const loop = { count: o.count, until: o.until, everyMs: o.everyMs, fresh: o.fresh, goal: o.goal, doneWhen: o.doneWhen, maxCostUsd: o.maxCostUsd, maxSteps: o.maxSteps, maxWallMs: o.maxWallMs }
+        child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content }, loop }) + '\n')
+        const parts = [o.count === null ? '持续（直到停止/预算）' : `${o.count} 轮`]
+        if (o.everyMs) parts.push(`间隔 ${Math.round(o.everyMs / 1000)}s`)
+        if (o.until) parts.push(`直到达成「${o.until}」`)
+        if (o.doneWhen.length) parts.push(`验真 ${o.doneWhen.length} 条命令`)
+        if (o.goal) parts.push(`目标「${o.goal}」`)
+        if (o.fresh) parts.push('fresh 清上下文')
+        if (o.maxCostUsd) parts.push(`成本上限 ${o.maxCostUsd}`)
+        if (o.maxSteps) parts.push(`步数上限 ${o.maxSteps}`)
+        if (o.maxWallMs) parts.push(`墙钟上限 ${Math.round(o.maxWallMs / 1000)}s`)
+        pushMessage({ kind: 'system', text: `[loop] 提交：${parts.join('，')}` })
         render()
         break
       }
@@ -1134,6 +1248,7 @@ function main() {
           authToken: p.authToken,
           model: modelName || p.primaryModel || (p.models && p.models[0]) || '',
           contextWindow: p.contextWindow || 0,
+          authScheme: p.authScheme || 'x-api-key',
         },
       },
     }) + '\n')

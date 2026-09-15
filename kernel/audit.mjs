@@ -20,13 +20,13 @@ export function buildAuditReport(entries, { from = '', to = '', sessionId = '' }
     if (m.role === 'assistant' && Array.isArray(m.content)) {
       for (const b of m.content) {
         if (b?.type === 'tool_use') {
-          rows.push({ ts, seq: e.seq, session: sessionId || '', type: 'tool_use', tool: b.name, params: summarize(b.input) })
+          rows.push({ ts, seq: e.seq, session: e.sessionId || sessionId || '', type: 'tool_use', tool: b.name, params: summarize(b.input) })
         }
       }
     } else if (m.role === 'user' && Array.isArray(m.content)) {
       for (const b of m.content) {
         if (b?.type === 'tool_result') {
-          rows.push({ ts, seq: e.seq, session: sessionId || '', type: 'tool_result', toolUseId: b.tool_use_id, summary: String(b.content || '').slice(0, 200) })
+          rows.push({ ts, seq: e.seq, session: e.sessionId || sessionId || '', type: 'tool_result', toolUseId: b.tool_use_id, summary: String(b.content || '').slice(0, 200) })
         }
       }
     }

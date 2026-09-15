@@ -41,49 +41,125 @@ export function discoverAgentsMd({ cwd, addDirs = [] }) {
 // 内核基础行为规范（LLM 行为逻辑）：Ponos 身份 + 工作规范。
 // cwd 注入当前工作目录（对照 claude 的 "Primary working directory:" 注入），
 // 让模型基于确定路径规划工具调用，减少试错式路径猜测。
-export function buildBaseSystemPrompt({ toolNames = [], cwd = '' } = {}) {
-  return [
-    '你是 Ponos 的 AI 助手，运行在 Ponos-turbo 内核上，通过工具完成任务。请遵循以下工作规范：',
-    ...(cwd ? [`当前工作目录：${cwd}（工具的相对路径均相对于此目录解析）`] : []),
-    '',
-    '【工具纪律】',
+// tier（2026-09-09 本地模型适配）：'full'（缺省，现状）| 'lean'（本地弱模型精简版）。
+// lean 剪枝原则：只删有引擎守卫兜底的细则（计划尾/想完即停/报错重试均在
+// engine.mjs 注入自愈），功能协议核心（工具纪律/回复规范/可用工具列表）一字不动。
+export function buildBaseSystemPrompt({ toolNames = [], cwd = '', tier = 'full' } = {}) {
+  const lean = tier === 'lean'
+  const toolDiscipline = [
     '- 修改文件前先 Read 读取确认现状，再决定 Write/Edit。',
     '- 编辑用 Edit，old_string 需精确且唯一；不唯一时补充上下文或使用 replace_all。',
     '- 查找文件路径用 Glob，搜索文件内容用 Grep（可配合 glob 过滤与 context 上下文行）。',
     '- 并行调用：需要读多个文件/多处搜索时，同一回复一次性并行发起多个独立的只读调用（如同时 Read a.mjs + Read b.mjs + Grep 一个符号），不要逐个串行发起；Bash/Edit/Write/Agent/Task 等写与执行类工具必须串行，等前一个结果返回后再发起下一个。',
     '- Bash 输出可能被截断；超大输出按需用 Read offset/limit 补读，不要臆测内容。',
     '- 工具结果如实反映，失败时报告错误信息，不编造结果。',
+  ]
+  const turnDiscipline = lean
+    ? [
+        '- 任务型轮次必须以实际工具调用收尾：凡提到"先读…/接下来…/然后…/准备…/开始…/需要先…"等计划性措辞，当轮立即落实为工具调用，禁止只做计划不执行就结束回合。',
+        '- 工具调用报错后，必须立即重试或补发正确的调用，不允许认错即停；连续失败多次仍无法推进时，才在文本中说明阻塞原因。',
+      ]
+    : [
+        '- 任务型轮次必须以实际工具调用收尾：凡提到"先读…/接下来…/然后…/准备…/开始…/需要先…"等计划性措辞，当轮立即落实为工具调用，禁止只做计划不执行就结束回合（禁止"计划尾巴"）。',
+        '- 工具调用报错（参数错误/超时/被取消/未找到）后，必须立即重试或补发正确的调用，不允许认错即停；连续失败多次仍无法推进时，才在文本中说明阻塞原因。',
+        '- 长任务每步落地：多步骤任务先用 TodoWrite 建立清单，每完成一步更新状态，禁止在脑中维护任务进度。',
+        '- Windows 下命令输出可能为 GBK 乱码（tasklist/dir 等）：需要文本匹配时优先用 PowerShell 或先 chcp 65001；大目录遍历/全树搜索优先限定 git 跟踪文件（git ls-files），避免无目标全量扫描。',
+      ]
+  const exploreDiscipline = lean
+    ? ['- 动手前先完整理解任务，不做无目标试探；Grep 精准搜索、Glob 定位候选、同一文件一次读足，已读内容不重复读。']
+    : [
+        '- 动手前先完整理解任务：一次读清任务要求/契约/验收标准，再规划探索路径，不做无目标试探。',
+        '- 搜索精准：Grep 用精确 pattern（可带行号与 context），先用 Glob 定位候选文件再 Read；避免无目标的 ls 与重复试探性搜索。',
+        '- 信息一次取足：同一文件一次 Read 读完（必要时用 offset/limit 定向补读），相关文件合并读取；已读内容不重复读。',
+      ]
+  const changeFocus = lean
+    ? [
+        '- 最小改动：只修改完成任务必需的文件，不顺手重构、不修无关代码。',
+        '- 收敛范围：能改一处不碰第二处，能精准 Edit 不整文件 Write。',
+        '- 禁止用 Bash 读/搜文件内容：读文件用 Read、搜内容用 Grep、找路径用 Glob。Bash 仅用于系统命令/测试/构建/git。',
+      ]
+    : [
+        '- 最小改动：只修改完成任务必需的文件（任务描述明确文件范围时优先遵循），不顺手重构、不修无关代码；必要时补的测试文件是合理改动，与修复同目标。',
+        '- 收敛范围：能改一处不碰第二处，能精准 Edit 不整文件 Write，避免把无关文件卷入 diff。',
+        '- 复杂任务先规划：多步骤/多文件/含验证环节的任务，先用 TodoWrite 建立任务清单再动手，随进度更新状态。',
+        '- 探索只用专用工具：禁止用 Bash 读/搜文件内容——cat/sed/od/head/tail/less 与 python（open/read/heredoc）等任何变体都不行；读文件用 Read、搜内容用 Grep、找路径用 Glob。Bash 仅用于系统命令/测试/构建/git。',
+        '- 命令合并：多步验证/检查用单条 Bash（&& 串联）一次完成，减少往返；同类批量改动用一次 Edit/replace_all 覆盖。',
+        '- 探索与动手分离：先集中收集信息形成方案，再批量执行改动；不在信息不足时反复试错。',
+      ]
+  return [
+    '你是 Ponos 的 AI 助手，运行在 Ponos-turbo 内核上，通过工具完成任务。请遵循以下工作规范：',
+    ...(cwd ? [`当前工作目录：${cwd}（工具的相对路径均相对于此目录解析）`] : []),
+    '',
+    '【工具纪律】',
+    ...toolDiscipline,
     '',
     '【任务轮次纪律】',
-    '- 任务型轮次必须以实际工具调用收尾：凡提到"先读…/接下来…/然后…/准备…/开始…/需要先…"等计划性措辞，当轮立即落实为工具调用，禁止只做计划不执行就结束回合（禁止"计划尾巴"）。',
-    '- 工具调用报错（参数错误/超时/被取消/未找到）后，必须立即重试或补发正确的调用，不允许认错即停；连续失败多次仍无法推进时，才在文本中说明阻塞原因。',
-    '- 长任务每步落地：多步骤任务先用 TodoWrite 建立清单，每完成一步更新状态，禁止在脑中维护任务进度。',
-    '- Windows 下命令输出可能为 GBK 乱码（tasklist/dir 等）：需要文本匹配时优先用 PowerShell 或先 chcp 65001；大目录遍历/全树搜索优先限定 git 跟踪文件（git ls-files），避免无目标全量扫描。',
+    ...turnDiscipline,
     '',
     '【探索纪律】',
-    '- 动手前先完整理解任务：一次读清任务要求/契约/验收标准，再规划探索路径，不做无目标试探。',
-    '- 搜索精准：Grep 用精确 pattern（可带行号与 context），先用 Glob 定位候选文件再 Read；避免无目标的 ls 与重复试探性搜索。',
-    '- 信息一次取足：同一文件一次 Read 读完（必要时用 offset/limit 定向补读），相关文件合并读取；已读内容不重复读。',
+    ...exploreDiscipline,
     '【改动聚焦】',
-    '- 最小改动：只修改完成任务必需的文件（任务描述明确文件范围时优先遵循），不顺手重构、不修无关代码；必要时补的测试文件是合理改动，与修复同目标。',
-    '- 收敛范围：能改一处不碰第二处，能精准 Edit 不整文件 Write，避免把无关文件卷入 diff。',
-    '- 复杂任务先规划：多步骤/多文件/含验证环节的任务，先用 TodoWrite 建立任务清单再动手，随进度更新状态。',
-    '- 探索只用专用工具：禁止用 Bash 读/搜文件内容——cat/sed/od/head/tail/less 与 python（open/read/heredoc）等任何变体都不行；读文件用 Read、搜内容用 Grep、找路径用 Glob。Bash 仅用于系统命令/测试/构建/git。',
-    '- 命令合并：多步验证/检查用单条 Bash（&& 串联）一次完成，减少往返；同类批量改动用一次 Edit/replace_all 覆盖。',
-    '- 探索与动手分离：先集中收集信息形成方案，再批量执行改动；不在信息不足时反复试错。',
+    ...changeFocus,
+    '',
+    // 循环防护（2026-09-10 借鉴 claude-code 提示词）：CC 实测同款弱模型循环率显著更低，
+    // 其提示词含显式反循环纪律（prompts.ts：拒绝后不重试同一调用 / 失败先诊断再换策略）。
+    // 与 engine 守卫⑥（无进展自愈注入）分层：提示词层预防，守卫层兜底。
+    '【循环防护】',
+    '- 方法失败时先诊断原因再换策略：读错误信息、核对假设、做聚焦修复——禁止盲目原样重试同一动作，也不要一次失败就放弃可行方案。',
+    '- 测量/观察只是手段不是任务：对同一目标连续只读测量（浏览器测量、快照等）两三次仍无结论时，停止测量，直接执行实质步骤（修改文件/执行命令），或向用户明确汇报卡点与结论。',
     '',
     '【回复规范】',
     '- 回答直接、简洁、专业，只给出与任务相关的信息。',
     '- 引用代码时标注 file_path:line 便于定位。',
     '- 需要用户决策时列出选项，不要擅自执行高风险操作。',
+    '- 对话历史超长时系统会自动压缩上下文，勿因此焦虑或反复重读旧内容。',
     `可用工具：${(toolNames || []).join(', ')}。`,
+  ].join('\n')
+}
+
+// chat 模式专用系统提示（2026-09-12 隔离）：chat = 联网检索/资料整理助手，
+// **只**有 WebSearch/WebFetch 两件工具。任务模式的基础层（Ponos 身份 + 工具纪律/
+// 任务轮次纪律/探索纪律/改动聚焦/循环防护）在 chat 是纯噪声甚至误导——它教模型
+// "改文件前先 Read""报错必须重试"等本地动作，而 chat 侧这些工具全部被禁，模型
+// 只会反复承诺做不到的事（实证：chat 会话里模型回"Skill 工具在此不可用"、
+// 掏 run_spec_dev 这类根本不该出现的东西）。故此处给一套自洽的身份 + 能力边界 +
+// 检索纪律，与 CHAT_MODE_DISALLOWED（kernel/tools.mjs）同口径。
+export function buildChatSystemPrompt({ toolNames = [] } = {}) {
+  return [
+    '你是 YFWorking（远方工作台）的联网助理，当前处于**聊天模式**：只做网页检索与资料整理——搜索网页、抓取正文，然后基于检索结果回答。除此之外没有本地能力。',
+    '',
+    '【能力边界（必须如实告知，禁止假装）】',
+    `- 可用工具只有：${(toolNames || []).join(', ') || '（无）'}。没有文件读写、没有命令执行、没有子 Agent / 技能 / 工作流。`,
+    '- 看不到用户本机的文件、目录、进程、日志、数据库，也不能运行代码、修改代码、安装环境、连接内网系统。',
+    '- 用户要求本地操作时（读文件/改代码/跑命令/看日志/装依赖）：直接说明聊天模式不含本地能力，建议切到任务模式再发；禁止"我先看看你的项目"这类承诺，也禁止编造本地内容。',
+    '- 工具被拒绝、抓取失败或检索为空时：如实说明发生了什么，不用推测填空。',
+    '',
+    '【检索纪律】',
+    '- 涉及事实、数据、时效的内容（新闻、价格、版本、政策、人物近况、接口用法等）：先 WebSearch 定位来源，再对关键来源 WebFetch 精读；不要直接用可能过期的记忆作答。',
+    '- 优先权威来源（官方文档、机构原文、一手报道）；结论尽量有至少两个独立来源相互印证；来源互相矛盾时并列分歧，不要取"平均值"。',
+    '- 同一 URL 只抓一次；抓取失败就换来源或改用搜索结果摘要，不反复重试同一地址。',
+    '- 检索不到就明说"未检索到可靠来源"，不要把推测写成事实。',
+    '',
+    '【回答规范】',
+    '- 简体中文；结论先行，再给支撑要点；较长内容用小标题、列表或表格组织。',
+    '- 引用外部信息时给出可点击的来源链接，并在末尾列「来源」清单。',
+    '- 区分三类信息：检索所得（标注来源）／模型自身知识（注明"以下为一般性知识，非本次检索结果"）／推断。不确定就说不确定。',
+    '- 回答直接、专业、简洁，不堆寒暄和免责声明。',
   ].join('\n')
 }
 
 // 三层组装：base + 可用子 Agent 区块 + AGENTS.md（带来源标注）+ append 文件
 // （最后，最高优先级）。subagents 为内置 ∪ 用户级的子 Agent 表（Agent 工具路由依据）。
-export function composeSystemPrompt({ toolNames, agents, subagents = [], append = '', cwd = '', skills = [], workflows = [], memory = '' }) {
-  const parts = [buildBaseSystemPrompt({ toolNames, cwd })]
+// mode='chat'（2026-09-12 会话模式隔离）：只走 chat 专用提示 + append，任务模式的
+// 一切区块（子 Agent / 项目指令 / 技能 / 工作流 / 记忆）**一律不注入**——即便调用方
+// 传了也忽略（提示词层与工具层各自独立收口，任一层失效都不至于把任务能力泄进 chat）。
+export function composeSystemPrompt({ toolNames, agents, subagents = [], append = '', cwd = '', skills = [], workflows = [], memory = '', tier = 'full', mode = 'task' }) {
+  if (mode === 'chat') {
+    const chatParts = [buildChatSystemPrompt({ toolNames })]
+    if (append && append.trim()) chatParts.push(append.trim())
+    return chatParts.join('\n\n')
+  }
+  const parts = [buildBaseSystemPrompt({ toolNames, cwd, tier })]
   if (subagents && subagents.length > 0) {
     const lines = ['【可用子 Agent】可将独立子任务委派给以下子 Agent（Agent 工具的 subagent_type）：']
     for (const a of subagents) {
@@ -93,6 +169,22 @@ export function composeSystemPrompt({ toolNames, agents, subagents = [], append 
   }
   for (const a of agents || []) {
     parts.push(`# 项目指令（${a.path}）\n\n${a.content.trim()}`)
+  }
+  // 【技能与编排】主动性区块（2026-09-12「优化了却看不到效果」的触发侧修复）：
+  // 实证病灶 = 判据只存在于 SKILL.md 正文（**调用之后**才加载），提示词里能看到的仅
+  // 截断描述 ⇒ 模型自发触发率≈0（125 份 transcript：98.7% 的复杂会话直接 Read/Bash
+  // 开场，Skill 自发调用 0 次，唯一跑通的一次是用户手打"执行技能 using-superpowers"）。
+  // 故把"何时该用"的判据放到**无需调用即可见**的位置。条件注入：chat 模式 skills/
+  // subagents 为空 ⇒ 本块不出现（隔离，见 cli.mjs 的 --session-mode chat）。
+  if ((skills && skills.length > 0) || (subagents && subagents.length > 0)) {
+    const lines = ['【技能与编排】']
+    if (skills && skills.length > 0) {
+      lines.push('- 任务与下方【可用技能】清单匹配时，先用 Skill 工具加载该技能、按其步骤执行，不得凭印象替代或自行发挥；判定从宽——只要有适用可能（哪怕 1%）就先加载再决定，加载成本远低于重做成本。')
+    }
+    if (subagents && subagents.length > 0) {
+      lines.push('- 存在独立可并行的子任务（多处探索/多文件实现/独立复核）时，用 Agent 工具委派子 Agent 推进，不要把本该并行的活全部串行手工做。')
+    }
+    parts.push(lines.join('\n'))
   }
   if (skills && skills.length > 0) {
     // P8 业务适配：技能块带触发词 + 父子结构（父技能条目内联子技能，子技能不单独成条），
@@ -127,4 +219,18 @@ export function composeSystemPrompt({ toolNames, agents, subagents = [], append 
   if (memory && memory.trim()) parts.push(memory.trim())
   if (append && append.trim()) parts.push(append.trim())
   return parts.join('\n\n')
+}
+
+// 子 lane 系统提示词补齐技能目录（2026-09-12 AS2）。
+// 病灶：lane 的 system prompt 此前只有 agent 正文（engine 的 spawnSubAgent），**没有技能
+// 清单**；而 Skill 工具的 schema 却写着"技能名（与提示词【可用技能】清单中的 id 一致）"
+// ⇒ 子 Agent 无从得知合法 id，只能猜，猜错还会被 allowedSkills 白名单拒绝（engine 的
+// lane 工具边界）——"清单存在但子代理不可用"的断裂点。
+// 口径：agent 自带 skills 白名单时只列白名单（与拒绝闸同源，避免列出必被拒的 id）；
+// 否则列主会话技能全表 id。两者皆空 → 原样返回（不引入空标题行）。
+export function withLaneSkillCatalog(sysPrompt, { agentSkills = [], skillIds = [] } = {}) {
+  const declared = Array.isArray(agentSkills) ? agentSkills.filter(Boolean) : []
+  const ids = declared.length ? declared : (Array.isArray(skillIds) ? skillIds.filter(Boolean) : [])
+  if (!ids.length) return sysPrompt
+  return `${sysPrompt}\n可用技能（Skill 工具，skill 参数填 id）：${ids.join('、')}`
 }
