@@ -1,6 +1,6 @@
 {
   "name": "ponos-kernel",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Ponos-turbo 内核独立部署包（零 npm 依赖，无 GUI）",
   "type": "module",
   "bin": { "ponos-kernel": "cli.mjs" },
@@ -10,5 +10,5 @@
     "smoke": "node cli.mjs --help"
   },
   "engines": { "node": ">=18" },
-  "license": "UNLICENSED"
+  "license": "MIT"
 }

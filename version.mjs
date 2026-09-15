@@ -9,7 +9,7 @@
 export const APP_VERSION = 'dev 3.0.0'
 
 // Ponos-Turbo 内核版本线（与 kernel/package.json 的 semver 同步，映射规则见 bump 脚本）
-export const KERNEL_VERSION = 'dev 0.1'
+export const KERNEL_VERSION = 'dev 0.2'
 
 // settings 文件 schema 版本（D2-1）：无 schemaVersion 的旧文件视为 v0，读取时沿迁移链升级。
 export const SCHEMA_VERSION = 1
