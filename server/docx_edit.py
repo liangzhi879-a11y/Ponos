@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # 归一化与版本口径取自共享件（与 sheet_edit.py **同一套规则**）：
 # 两边各写一份会漂移，而"两边判等口径不一致"在协同里直接表现为合并结果悄悄不对。
-from office_common import content_id, file_sha256, norm_text
+from office_common import assign_ids, content_id, digest12, file_sha256, norm_text
 
 # 可识别的块标签（body 的子元素里，只有这两种是"块"；其余如 w:sectPr 是节属性，跳过）
 _BLOCK_TAGS = (qn("w:p"), qn("w:tbl"))
@@ -75,6 +75,230 @@ def _rows_payload(rows):
     return json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
 
 
+# ---------------------------------------------------------------------------
+# C4 格式指纹：把"格式"变成块模型里**可见**的东西（B4）
+# ---------------------------------------------------------------------------
+# B4 的现象：只读 `p.text` ⇒ "仅把某段改成粗体"会被判定为**块序列完全一致**，
+# 格式修改在协同里彻底不可见（验收标准 §10-S1-5 要求"不再被判定为无变化"）。
+#
+# —— 为什么不把格式并进 blockId（对 D-2 的实测修正）——
+# spec 明写 blockId 的稳定性"因基于 p.text"，且 C4 引入格式指纹后须**重验 T2**。
+# 实测（tools/docx_format_probe.py diff base.docx word_resaved.docx）发现一处真实噪声：
+#   python-docx 写 `w:pStyle w:val="Heading1"`（**样式名**），
+#   Word 重存后变成 `w:pStyle w:val="3"`（**styleId**）—— 同一段落、同一外观。
+# 若格式并进 id，这类噪声会让"用户在 Word 里打开又保存"把标题块的 id 全部换掉，
+# 三路合并随即把整篇判成"删旧增新"。而把格式作为**独立字段**还能带来一个关键好处：
+# "甲改格式 + 乙改文字"落在同一个 blockId 上 ⇒ 可合并；并进 id 则退化成删除+新增 ⇒ 必然互斥。
+
+# 修订噪声：Word 每次重存/编辑轨迹都可能改这些，且它们**不是外观**
+_NOISE_TAGS = {
+    "proofErr",          # 拼写/语法标记
+    "ins", "del",        # 修订插入/删除
+    "moveFrom", "moveTo",
+    "rPrChange", "pPrChange", "tblPrChange", "trPrChange", "tcPrChange", "sectPrChange",
+    "bookmarkStart", "bookmarkEnd",  # 书签位置随编辑漂移
+    "lastRenderedPageBreak",
+}
+
+# Word 保存时会把"表样式里继承来的外观"**物化**成直接格式（实测：补写下列元素，取值等于
+# 样式自身定义，外观未变）。它们不参与表格格式指纹，否则 T2 必然失败 —— 详见 `_table_format`。
+_TABLE_MATERIALIZED = {
+    "tblBorders", "tblCellMar", "tblInd", "tblLayout", "tblLook",
+    "top", "left", "bottom", "right", "insideH", "insideV", "start", "end",
+}
+
+
+def _canon_attrs(node):
+    """规范化属性：丢掉 `rsid*` 类噪声（`w:rsidR`/`w:rsidRPr`…每次保存都可能变）。"""
+    out = {}
+    for k, v in node.attrib.items():
+        name = k.split("}")[-1]
+        if name.startswith("rsid"):
+            continue
+        out[name] = v
+    return out
+
+
+def _fmt_items(el, style_name=None, style_tags=("pStyle", "rStyle"), skip_tags=()):
+    """把 `pPr`/`rPr`/`tblPr` 元素摊平成 (标签, 规范化属性) 列表。
+
+    **先摊平再排序**是有意为之：只比较"格式项的集合"，不比较 XML 书写顺序与命名空间声明
+    —— 实测那两项都会因序列化工具不同而产生**假差异**（首版探针就踩过：run 级报 1 处差异，
+    剥掉命名空间声明后差异为 0）。
+    `pStyle`/`rStyle`/`tblStyle` 的 `val` 换成**样式名**：实测这是重存噪声的修法 ——
+    python-docx 写 `w:pStyle w:val="Heading1"`（样式名）而 Word 重存写 `w:val="3"`（styleId）；
+    表同理（`TableGrid` → `33`）。
+    """
+    if el is None:
+        return []
+    items = []
+    for node in el.iter():
+        if node is el:
+            continue
+        tag = node.tag.split("}")[-1]
+        if tag in _NOISE_TAGS or tag in skip_tags:
+            continue
+        attrs = _canon_attrs(node)
+        if tag in style_tags and style_name:
+            attrs["val"] = style_name
+        items.append((tag, tuple(sorted(attrs.items()))))
+    return items
+
+
+def _digest_of(items):
+    """格式项集合 → 12 位摘要（同一外观即同一摘要）。"""
+    payload = json.dumps(sorted(items), ensure_ascii=False, separators=(",", ":"))
+    return digest12("format", payload)
+
+
+def _style_name_of(style):
+    try:
+        return style.name if style else None
+    except Exception:
+        return None
+
+
+def _doc_defaults_items(part, which):
+    """文档默认值（`docDefaults`）里的格式项 —— 继承链的最顶端。"""
+    try:
+        styles_el = part.styles_element
+    except Exception:
+        return set()
+    node = styles_el.find(qn("w:docDefaults"))
+    if node is None:
+        return set()
+    holder = node.find(qn("w:rPrDefault")) if which == "rPr" else node.find(qn("w:pPrDefault"))
+    if holder is None:
+        return set()
+    return {_item_key(it) for it in _fmt_items(holder.find(qn("w:" + which)))}
+
+
+def _inherited_items(style, part, which):
+    """汇总"从样式继承而来的格式项"（样式链 + 文档默认值）。
+
+    用途：**剔除 Word 物化出的冗余直配**。实测（base.docx vs word_resaved.docx）Word 保存时
+    会把"从样式继承来的外观"写成**直接格式**：单元格段落被补上
+    `w:spacing(after=0,line=240,lineRule=auto)`，而该值正是单元格样式本身的定义，外观一字未变。
+    若不做这个剔除，T2 必红（每次"在 Word 里打开又保存"都被读成"格式被改"）。
+
+    这个口径同时**提高判别力**：指纹反映的是**有效外观**而非 XML 书写方式 ——
+    "把段落间距设成与样式相同的值"本就不改变外观，不该算格式变更。
+    """
+    out = _doc_defaults_items(part, which)
+    seen = 0
+    while style is not None and seen < 10:
+        el = getattr(style, "element", None)
+        if el is not None:
+            node = el.find(qn("w:" + which))
+            for it in _fmt_items(node):
+                out.add(_item_key(it))
+        style = getattr(style, "base_style", None)
+        seen += 1
+    return out
+
+
+def _item_key(item):
+    return (item[0], tuple(sorted(item[1])))
+
+
+def _direct_items(el, style_name, inherited, style_tags=("pStyle", "rStyle"), skip_tags=()):
+    """取"直接格式项"，剔除与继承值相同的冗余项（见 `_inherited_items`）。"""
+    items = _fmt_items(el, style_name, style_tags=style_tags, skip_tags=skip_tags)
+    # 样式引用（pStyle/rStyle）本身就是"继承"的意思，必须保留（换标题层级是真变更）
+    keep = []
+    for it in items:
+        if it[0] in ("pStyle", "rStyle", "tblStyle"):
+            keep.append(it)
+        elif _item_key(it) not in inherited:
+            keep.append(it)
+    return keep
+
+
+def _para_format(p):
+    """段落的格式指纹：段级 `pPr` + run 级 `rPr`（相邻同格式的 run 折叠；继承冗余项剔除）。
+
+    为什么折叠相邻同格式 run：`<w:r>ab</w:r>` 与 `<w:r>a</w:r><w:r>b</w:r>`（格式相同）
+    是**同一外观的两种表示**，Word 重存就可能这么改。不折叠的话"重存"会被读成格式变更。
+    折叠只去掉"表示差异"：格式**真正交替**（粗体→正常→粗体）时序列原样保留。
+    """
+    part = p.part
+    p_pr = p._p.find(qn("w:pPr"))
+    style_name = _style_name_of(p.style)
+    para_items = _direct_items(p_pr, style_name, _inherited_items(p.style, part, "pPr"))
+
+    para_rpr_inherited = _inherited_items(p.style, part, "rPr")
+    run_digests = []
+    for r in p.runs:
+        inherited = set(para_rpr_inherited) | _inherited_items(getattr(r, "style", None), part, "rPr")
+        d = _digest_of(_direct_items(r._r.find(qn("w:rPr")), _style_name_of(getattr(r, "style", None)), inherited))
+        if not run_digests or run_digests[-1] != d:
+            run_digests.append(d)
+    return {
+        "digest": _digest_of(para_items + [("__runs__", tuple(run_digests))]),
+        "style": style_name,
+        "runFormats": len(run_digests),
+    }
+
+
+def _table_format(table):
+    """表格的格式指纹：`tblPr` 摘要（剔除"可被物化"的属性组）+ 表样式名。
+
+    实测依据（tools/docx_format_probe.py 对比 base.docx 与 word_resaved.docx）：
+    Word 保存时会把**表样式里继承来的外观物化成直接格式** —— 实测补写了
+    `tblBorders`/`tblCellMar`/`tblInd`/`tblLayout`/`tblLook`，取值等于样式自身的定义，
+    **外观一字未变**。若不剔除，那么"用户在 Word 里打开又保存"会被读成"整表格式被改"，
+    T2（spec 明列的不变量）必然失败。
+
+    代价（如实记账，登记终验）：**用直接格式改表格边框/边距/缩进/布局**这类改动在本指纹里
+    **不可见**；表格的**结构**变更（增删行列、单元格文本）以及表样式切换仍完全可见。
+    选它是因为 T2 是硬不变量，而"改边框"属低频且不影响内容正确性的改动。
+    """
+    return {
+        "digest": _digest_of(_fmt_items(
+            table._tbl.find(qn("w:tblPr")),
+            _style_name_of(table.style),
+            style_tags=("tblStyle",),
+            skip_tags=_TABLE_MATERIALIZED,
+        )),
+        "style": _style_name_of(table.style),
+    }
+
+
+def _texts_payload(texts):
+    """一行/一列的指纹载荷（单元格文本归一化后拼接；`\\x1f` 不会出现在正常文本里）。"""
+    return "\x1f".join(norm_text(t) for t in texts)
+
+
+def _table_cells_view(rows):
+    """C3 细粒度视图：把整表降维成"行 id + 列 id"的单元格网格。
+
+    spec §6.1-C3 要的是"合并粒度下沉到单元格"（B2：甲改 (1,1)、乙改 (1,2) 应能自动合成，
+    而整表原子性让它们被误判为 1 冲突）。这里给出对齐所需的坐标框架：
+      * `rowIds` 按**行内容指纹**算 ⇒ 在某处插入一行不会让其他行的身份漂移（B6 的表格版）；
+      * `colIds` 同理按列内容指纹算；
+      * 单元格身份 = `rowId + '#' + colId`（组合规则公开，调用方无需再学一套 id 生成）；
+      * `values` 与 `rowIds`/`colIds` **同序同长**（错位一格就会把改动写到别的格上）。
+
+    —— 为什么不给每格加"格式指纹"（实测取舍，登记终验）——
+    曾实现 `cellFormats`（每格格式摘要），**T2 立即失败**：Word 保存时把**单元格样式**的属性
+    物化成单元格段落的直配 —— 实测 base 的单元格段落无 `w:spacing`，重存后被补上
+    `(after=0, line=240, lineRule=auto)`，而该值属于**表/单元格样式链**（同一段落的段落样式
+    Normal 在重存件里是 `(after=200, line=276)`，两者不同），故"剔除继承冗余项"这条通用修法
+    在此够不着（S1 不解析表样式链）。另一可选方案是"运行级白名单"，但它依赖
+    "Word 不会物化运行级属性"这一**未经证实的假设**，一旦不成立就以 T2 全线失守为代价。
+    取舍：**放弃单元格级格式指纹，保住 T2（spec 明列的硬不变量）**。单元格的**文本**改动与
+    表格**结构**改动仍完全可见；段落级格式指纹（含 run 级）与表格级指纹照常提供。
+
+    **保留粗粒度 `rows` 是有意的（D-3 双视图）**：spec §6.1 非目标明写"不改编辑器 UI"，
+    而 `DocxEditor` 现按 `rows` 渲染 ⇒ 若只留细粒度，就必须改 UI（与自身非目标冲突）。
+    """
+    ncols = max((len(r) for r in rows), default=0)
+    padded = [list(r) + [""] * (ncols - len(r)) for r in rows]
+    row_ids = assign_ids("trow", [_texts_payload(r) for r in padded])
+    col_ids = assign_ids("tcol", [_texts_payload([r[c] if c < len(r) else "" for r in padded]) for c in range(ncols)])
+    return {"rowIds": row_ids, "colIds": col_ids, "values": padded}
+
+
 def _enumerate_blocks(doc):
     """按 **body 子元素真序** 产出块（表格穿插在正确位置），并附元素引用供写入使用。
 
@@ -99,6 +323,8 @@ def _enumerate_blocks(doc):
                 "blockId": content_id(kind, payload, occurrence[key]),
                 "kind": kind,
                 "text": para.text,
+                # C4：格式进入块模型（不入 id —— 理由见 `_NOISE_TAGS` 上方说明）
+                "format": _para_format(para),
                 "obj": para,
                 "element": child,
             })
@@ -111,6 +337,9 @@ def _enumerate_blocks(doc):
                 "blockId": content_id("table", key[1], occurrence[key]),
                 "kind": "table",
                 "rows": rows,
+                # C3：细粒度单元格视图（与粗粒度 rows 并存，双视图）
+                "tableCells": _table_cells_view(rows),
+                "format": _table_format(table),
                 "obj": table,
                 "element": child,
             })
@@ -122,9 +351,14 @@ def _public_blocks(blocks):
     out = []
     for b in blocks:
         if b["kind"] == "table":
-            out.append({"blockId": b["blockId"], "kind": "table", "rows": b["rows"]})
+            out.append({
+                "blockId": b["blockId"], "kind": "table", "rows": b["rows"],
+                "tableCells": b["tableCells"], "format": b["format"],
+            })
         else:
-            out.append({"blockId": b["blockId"], "kind": b["kind"], "text": b["text"]})
+            out.append({
+                "blockId": b["blockId"], "kind": b["kind"], "text": b["text"], "format": b["format"],
+            })
     return out
 
 

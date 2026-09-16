@@ -154,11 +154,13 @@ test('read 字段契约（C2 后）：每块有唯一 blockId、顶层有 baseVe
     ids.add(b.blockId)
     if (b.kind === 'table') {
       tableCount += 1
-      assert.deepEqual(Object.keys(b).sort(), ['blockId', 'kind', 'rows'])
+      // 步骤 5（C3/C4）扩展了线格式：表格块增 `tableCells`（细粒度视图）与 `format`（格式指纹）。
+      // 这正是本用例该管的事 —— 字段增减必须是有意为之，不能悄悄漂。
+      assert.deepEqual(Object.keys(b).sort(), ['blockId', 'format', 'kind', 'rows', 'tableCells'])
       assert.ok(Array.isArray(b.rows) && b.rows.every((r) => Array.isArray(r)))
     } else {
       paraCount += 1
-      assert.deepEqual(Object.keys(b).sort(), ['blockId', 'kind', 'text'])
+      assert.deepEqual(Object.keys(b).sort(), ['blockId', 'format', 'kind', 'text'])
       assert.equal(typeof b.text, 'string')
     }
   }
