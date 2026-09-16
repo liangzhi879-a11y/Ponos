@@ -178,11 +178,19 @@ export function McpPanel() {
     setError('')
     setTests({})
     autoRan.current = false       // 「重新读取」后应重新实测
-    const r = await getMcpConfig()
-    setRows(toRows(r.servers))
-    setConfigPath(r.configPath || '')
-    if (!r.ok) setError(r.error || t('settings.mcpLoadFailed'))
-    setLoading(false)
+    try {
+      const r = await getMcpConfig()
+      setRows(toRows(r.servers))
+      setConfigPath(r.configPath || '')
+      if (!r.ok) setError(r.error || t('settings.mcpLoadFailed'))
+    } catch (e) {
+      // getMcpConfig 本身不抛（内部已兜底），但 toRows 遇到意外形状会抛。
+      // 若不兜住，异常会越过下面的 setLoading(false)，界面就永远停在「读取中」——
+      // 这正是刚修的无限循环的表现（同一个死角，必须一并堵上）。
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)   // 无条件复位：loading 卡住会让整个面板不可用
+    }
   }, [lang])   // 循环根源：原先依赖 t ⇒ load 每帧新 ⇒ 下面的 effect 每帧重跑
 
   useEffect(() => { void load() }, [load])
