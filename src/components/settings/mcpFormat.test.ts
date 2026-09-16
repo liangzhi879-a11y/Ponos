@@ -12,7 +12,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  badgeOf, toolsOf, errorOf, summarize, summaryText,
+  badgeOf, toolsOf, errorOf, summarize, summaryText, transportOf,
   type McpTestState,
 } from './mcpFormat.ts'
 
@@ -80,4 +80,16 @@ test('summaryText：全通时不列 0 项（避免「2 通 · 0 失败 · 0 未�
   assert.equal(summaryText(summarize(['a', 'b'], { a: OK, b: OK }), L), '2 通')
   assert.equal(summaryText(summarize(['a', 'b', 'c'], { a: OK, b: OK, c: BAD }), L), '2 通 · 1 失败')
   assert.equal(summaryText(summarize([], {}), L), '', '无服务器时无文案')
+})
+
+// 【HTTP 传输，2026-09-16】传输类型判定必须是纯函数：
+// 面板要用它决定渲染哪一组字段，且「切换传输时清另一侧字段」也读它。
+// 判定口径与内核 normalizeMcpServers 一致（按 url 是否存在），
+// 但**不做**校验（command+url 并存仍报 'http'，交给内核 400 兜底）——
+// 前端重复实现校验规则只会造出第二份会漂移的真源。
+test('transportOf：按 url 判定传输类型（有 url 即 HTTP，否则 stdio）', () => {
+  assert.equal(transportOf({ command: 'npx', args: [] }), 'stdio')
+  assert.equal(transportOf({ url: 'https://e.com/mcp' }), 'http')
+  assert.equal(transportOf({ url: 'http://127.0.0.1:8080/mcp', headers: { A: 'B' }, timeoutMs: 5000 }), 'http')
+  assert.equal(transportOf({ command: 'node', args: [], env: {}, cwd: '/tmp', timeoutMs: 1000 }), 'stdio')
 })

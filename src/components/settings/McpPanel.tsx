@@ -6,7 +6,11 @@
 //   ② **不静默失败**：读/写/测试的任何错误都就地显示（含后端原文），
 //      否则用户会误以为"保存成功了"或"配置丢了"。
 //   ③ **连接测试是可选步骤**：测试失败不阻止保存——用户可能先存好再装依赖。
-//   ④ 校验只拦"必然无效"的输入（名称空/重复、命令空），其余交给内核侧归一化（单一真源）。
+//   ④ 校验只拦"必然无效"的输入（名称空/重复，以及本地命令 / HTTP URL 为空），
+//      其余交给内核侧归一化（单一真源）：URL 是否可达、`${ENV_VAR}` 是否已定义都是运行期事实。
+//   ⑦ **两种传输**（2026-09-16 扩展）：每卡片可选「本地命令」(stdio) / 「远程 HTTP」，
+//      切换时**清掉另一侧专属字段**（否则写出 command+url 并存，后端一律 400 拒绝），
+//      但保留两传输共用的 `timeoutMs`。认证头只存 `${ENV_VAR}` 占位符 ⇒ 密钥不落盘。
 //   ⑤ **状态与工具清单**（2026-09-16 增强）：每张卡片显示"已连接·N 个工具"徽章并列出工具名，
 //      打开面板与保存后自动逐台实测，顶部给汇总（如"2 通 · 1 失败"）与「全部测试」。
 //      ——数据来源是 /mcp/test 的真实握手，而非猜测；这正是"哪台连不上、各有什么工具"的答案。
@@ -23,8 +27,8 @@ import {
   type McpServerConfig,
 } from '@/lib/mcpApi'
 import {
-  badgeOf, toolsOf, errorOf, summarize, summaryText,
-  type McpTestState,
+  badgeOf, toolsOf, errorOf, summarize, summaryText, transportOf,
+  type McpTestState, type McpTransport,
 } from '@/components/settings/mcpFormat'
 
 type Row = {
@@ -37,35 +41,94 @@ type Row = {
 let seq = 0
 const nextKey = () => `row-${++seq}`
 
-const emptyConfig = (): McpServerConfig => ({ command: '', args: [], env: {}, timeoutMs: 30000 })
+/** 新建行默认「本地命令」：既有用户几乎都是 stdio，默认值保持原样（零行为变化） */
+const emptyConfig = (kind: McpTransport = 'stdio'): McpServerConfig =>
+  kind === 'http'
+    ? { url: '', headers: {}, timeoutMs: 30000 }
+    : { command: '', args: [], env: {}, timeoutMs: 30000 }
 
-/** 配置对象 → 行模型（args 一行一个，env 一行一个 KEY=VALUE，便于编辑） */
+/**
+ * 切换传输时**重造配置对象**，也就是清掉另一侧的全部传输专属字段。
+ *
+ * 为什么必须清（而不是把另一侧字段留在对象里、只是不渲染）：后端把
+ * 「command 与 url 并存」「args/env/cwd 配 url」「headers 配 command」一律判为非法并返回 400。
+ * 字段若只是被 UI 藏起来，保存就会被拒，而界面上找不到任何可疑输入 —— 属于极难自诊的失败。
+ * `timeoutMs` 两种传输共用，必须显式保留：否则用户设过的超时会因切一次传输而莫名回到默认。
+ * 代价是切走再切回会丢掉另一侧已填内容，属刻意取舍（重填成本低，而 400 无法自诊）。
+ */
+const configForTransport = (config: McpServerConfig, kind: McpTransport): McpServerConfig =>
+  kind === 'http'
+    ? { url: '', headers: {}, timeoutMs: config.timeoutMs }
+    : { command: '', args: [], env: {}, timeoutMs: config.timeoutMs }
+
+/** 该传输形态的必填字段是否已填：本地 = 命令，HTTP = URL */
+function requiredFilled(row: Row): boolean {
+  return transportOf(row.config) === 'http'
+    ? Boolean(String(row.config.url ?? '').trim())
+    : Boolean(String(row.config.command ?? '').trim())
+}
+
+/** 探测载荷：只带该传输的字段（HTTP 上多发 args/env 会被后端 400 拒掉） */
+function probePayload(row: Row): McpServerConfig {
+  const timeoutMs = row.config.timeoutMs
+  if (transportOf(row.config) === 'http') {
+    return {
+      url: String(row.config.url ?? '').trim(),
+      headers: row.config.headers ?? {},
+      timeoutMs,
+    }
+  }
+  const payload: McpServerConfig = {
+    command: String(row.config.command ?? '').trim(),
+    args: row.config.args ?? [],
+    env: row.config.env ?? {},
+    timeoutMs,
+  }
+  const cwd = String(row.config.cwd ?? '').trim()
+  if (cwd) payload.cwd = cwd
+  return payload
+}
+
+/** 配置对象 → 行模型（args 一行一个，env/headers 一行一个 KEY=VALUE，便于编辑） */
 function toRows(servers: Record<string, McpServerConfig>): Row[] {
   return Object.entries(servers).map(([name, cfg]) => ({
     key: nextKey(),
     name,
-    config: {
-      command: cfg.command ?? '',
-      args: Array.isArray(cfg.args) ? cfg.args : [],
-      env: cfg.env && typeof cfg.env === 'object' ? cfg.env : {},
-      cwd: cfg.cwd ?? undefined,
-      timeoutMs: cfg.timeoutMs,
-    },
+    // 只保留该传输形态的字段：带过去另一侧的键会在保存时被后端判为非法组合
+    config: transportOf(cfg) === 'http'
+      ? {
+          url: cfg.url ?? '',
+          headers: cfg.headers && typeof cfg.headers === 'object' ? cfg.headers : {},
+          timeoutMs: cfg.timeoutMs,
+        }
+      : {
+          command: cfg.command ?? '',
+          args: Array.isArray(cfg.args) ? cfg.args : [],
+          env: cfg.env && typeof cfg.env === 'object' ? cfg.env : {},
+          cwd: cfg.cwd ?? undefined,
+          timeoutMs: cfg.timeoutMs,
+        },
   }))
 }
 
-/** 行模型 → 配置对象（空 cwd 不下发，避免写入无意义键） */
+/** 行模型 → 配置对象（HTTP 行不写 command/args/env；空 cwd 不下发，避免写入无意义键） */
 function toServers(rows: Row[]): Record<string, McpServerConfig> {
   const out: Record<string, McpServerConfig> = {}
   for (const r of rows) {
     const name = r.name.trim()
     if (!name) continue
-    const cfg: McpServerConfig = {
-      command: r.config.command.trim(),
-      args: r.config.args,
-      env: r.config.env,
+    let cfg: McpServerConfig
+    if (transportOf(r.config) === 'http') {
+      cfg = { url: String(r.config.url ?? '').trim(), headers: r.config.headers ?? {} }
+    } else {
+      cfg = {
+        command: String(r.config.command ?? '').trim(),
+        args: r.config.args ?? [],
+        env: r.config.env ?? {},
+      }
+      const cwd = String(r.config.cwd ?? '').trim()
+      if (cwd) cfg.cwd = cwd
     }
-    if (r.config.cwd && r.config.cwd.trim()) cfg.cwd = r.config.cwd.trim()
     if (r.config.timeoutMs && r.config.timeoutMs > 0) cfg.timeoutMs = r.config.timeoutMs
     out[name] = cfg
   }
@@ -88,7 +151,7 @@ export function McpPanel() {
   /** 测一台（结果结构化存 tools/error，供徽章与工具清单渲染） */
   const doTest = useCallback(async (row: Row): Promise<void> => {
     setTests(prev => ({ ...prev, [row.key]: { running: true } }))
-    const r = await testMcpServer({ ...row.config, command: row.config.command.trim() })
+    const r = await testMcpServer(probePayload(row))
     setTests(prev => ({
       ...prev,
       [row.key]: r.ok
@@ -99,7 +162,7 @@ export function McpPanel() {
 
   /** 测全部：并发（内核侧也是并发启动），单台失败不影响其它台 */
   const testAll = useCallback(async (list: Row[]): Promise<void> => {
-    const valid = list.filter(r => r.name.trim() && r.config.command.trim())
+    const valid = list.filter(r => r.name.trim() && requiredFilled(r))
     await Promise.all(valid.map(r => doTest(r)))
   }, [doTest])
 
@@ -134,15 +197,33 @@ export function McpPanel() {
 
   const removeRow = (key: string) => setRows(prev => prev.filter(r => r.key !== key))
 
-  // 校验：只拦必然无效的（名称空/重复、命令空）
+  /**
+   * 切换传输类型：重造配置（清另一侧字段）+ **作废该台的测试结论**。
+   * 结论必须作废：换了传输就是换了连接方式，上一次的「✓ 3 个工具」再显示出来就是误导。
+   */
+  const setTransport = (row: Row, kind: McpTransport) => {
+    if (transportOf(row.config) === kind) return
+    patch(row.key, r => ({ ...r, config: configForTransport(r.config, kind) }))
+    setTests(prev => {
+      const next = { ...prev }
+      delete next[row.key]
+      return next
+    })
+    setNotice('')
+  }
+
+  // 校验：只拦必然无效的（名称空/重复，以及该传输形态的必填字段为空：本地=命令，HTTP=URL）。
+  // URL 是否可达、`${ENV_VAR}` 变量是否已定义属运行期事实，交给「连接测试」定论。
   const names = rows.map(r => r.name.trim()).filter(Boolean)
   const dupName = names.find((n, i) => names.indexOf(n) !== i)
-  const invalidRow = rows.find(r => !r.name.trim() || !r.config.command.trim())
+  const invalidRow = rows.find(r => !r.name.trim() || !requiredFilled(r))
   const validateMsg = dupName
     ? t('settings.mcpErrDupName', { name: dupName })
-    : invalidRow
-      ? t('settings.mcpErrRequired')
-      : ''
+    : !invalidRow
+      ? ''
+      : transportOf(invalidRow.config) === 'http' && !requiredFilled(invalidRow)
+        ? t('settings.mcpErrUrlRequired')
+        : t('settings.mcpErrRequired')
   const canSave = rows.length === 0 || !validateMsg
 
   const onSave = async () => {
@@ -241,8 +322,28 @@ export function McpPanel() {
               const badge = badgeOf(test)
               const tools = toolsOf(test)
               const err = errorOf(test)
+              const kind = transportOf(row.config)
               return (
                 <div key={row.key} className="space-y-3 rounded-xl border p-4">
+                  {/* 传输类型放在卡片最上方：它是"这台服务器怎么连"的第一决策，决定下面渲染哪组字段 */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-secondary">{t('settings.mcpTransport')}</span>
+                    <Button
+                      variant={kind === 'stdio' ? 'primary' : 'outline'}
+                      size="xs"
+                      onClick={() => setTransport(row, 'stdio')}
+                    >
+                      {t('settings.mcpTransportStdio')}
+                    </Button>
+                    <Button
+                      variant={kind === 'http' ? 'primary' : 'outline'}
+                      size="xs"
+                      onClick={() => setTransport(row, 'http')}
+                    >
+                      {t('settings.mcpTransportHttp')}
+                    </Button>
+                  </div>
+
                   <div className="flex items-center gap-2">
                     <Input
                       value={row.name}
@@ -269,7 +370,7 @@ export function McpPanel() {
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={!row.config.command.trim() || test?.running}
+                      disabled={!requiredFilled(row) || test?.running}
                       onClick={() => void doTest(row)}
                     >
                       <Plug className="w-4 h-4" />
@@ -280,73 +381,107 @@ export function McpPanel() {
                     </Button>
                   </div>
 
-                  <label className="block space-y-1">
-                    <span className="text-xs text-secondary">{t('settings.mcpCommand')}</span>
-                    <Input
-                      value={row.config.command}
-                      placeholder="npx"
-                      className="font-mono text-xs"
-                      onChange={e => patch(row.key, r => ({ ...r, config: { ...r.config, command: e.target.value } }))}
-                    />
-                  </label>
-
-                  <label className="block space-y-1">
-                    <span className="text-xs text-secondary">{t('settings.mcpArgs')}</span>
-                    <textarea
-                      value={row.config.args.join('\n')}
-                      placeholder={'-y\n@modelcontextprotocol/server-filesystem\n/home/me'}
-                      rows={3}
-                      className="w-full resize-y rounded-lg border bg-transparent px-3 py-2 font-mono text-xs outline-none focus:border-brand-500"
-                      onChange={e =>
-                        patch(row.key, r => ({
-                          ...r,
-                          config: { ...r.config, args: e.target.value.split('\n').map(s => s.trim()).filter(Boolean) },
-                        }))
-                      }
-                    />
-                  </label>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <label className="block space-y-1">
-                      <span className="text-xs text-secondary">{t('settings.mcpEnv')}</span>
-                      <textarea
-                        value={Object.entries(row.config.env).map(([k, v]) => `${k}=${v}`).join('\n')}
-                        placeholder="API_KEY=xxx"
-                        rows={2}
-                        className="w-full resize-y rounded-lg border bg-transparent px-3 py-2 font-mono text-xs outline-none focus:border-brand-500"
-                        onChange={e => {
-                          const env: Record<string, string> = {}
-                          for (const line of e.target.value.split('\n')) {
-                            const i = line.indexOf('=')
-                            if (i > 0) env[line.slice(0, i).trim()] = line.slice(i + 1)
-                          }
-                          patch(row.key, r => ({ ...r, config: { ...r.config, env } }))
-                        }}
-                      />
-                    </label>
-                    <div className="space-y-3">
+                  {kind === 'http' ? (
+                    <>
                       <label className="block space-y-1">
-                        <span className="text-xs text-secondary">{t('settings.mcpCwd')}</span>
+                        <span className="text-xs text-secondary">{t('settings.mcpUrl')}</span>
                         <Input
-                          value={row.config.cwd ?? ''}
-                          placeholder="/path/to/workdir"
+                          value={row.config.url ?? ''}
+                          placeholder="https://example.com/mcp"
                           className="font-mono text-xs"
-                          onChange={e => patch(row.key, r => ({ ...r, config: { ...r.config, cwd: e.target.value } }))}
+                          onChange={e => patch(row.key, r => ({ ...r, config: { ...r.config, url: e.target.value } }))}
                         />
                       </label>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <label className="block space-y-1">
+                          <span className="text-xs text-secondary">{t('settings.mcpHeaders')}</span>
+                          <KeyValueArea
+                            value={row.config.headers ?? {}}
+                            rows={2}
+                            placeholder={'Authorization=Bearer ${MY_TOKEN}'}
+                            onChange={headers =>
+                              patch(row.key, r => ({ ...r, config: { ...r.config, headers } }))}
+                          />
+                          {/* 让人看见"为什么不填明文"：写进文件的只是占位符，真值运行时才取 */}
+                          <span className="block text-[10px] text-tertiary">{t('settings.mcpHeadersHint')}</span>
+                        </label>
+                        <label className="block space-y-1">
+                          <span className="text-xs text-secondary">{t('settings.mcpTimeout')}</span>
+                          <Input
+                            type="number"
+                            value={String(row.config.timeoutMs ?? 30000)}
+                            className="font-mono text-xs"
+                            onChange={e =>
+                              patch(row.key, r => ({ ...r, config: { ...r.config, timeoutMs: Number(e.target.value) || 0 } }))
+                            }
+                          />
+                        </label>
+                      </div>
+                    </>
+                  ) : (
+                    <>
                       <label className="block space-y-1">
-                        <span className="text-xs text-secondary">{t('settings.mcpTimeout')}</span>
+                        <span className="text-xs text-secondary">{t('settings.mcpCommand')}</span>
                         <Input
-                          type="number"
-                          value={String(row.config.timeoutMs ?? 30000)}
+                          value={row.config.command ?? ''}
+                          placeholder="npx"
                           className="font-mono text-xs"
+                          onChange={e => patch(row.key, r => ({ ...r, config: { ...r.config, command: e.target.value } }))}
+                        />
+                      </label>
+
+                      <label className="block space-y-1">
+                        <span className="text-xs text-secondary">{t('settings.mcpArgs')}</span>
+                        <textarea
+                          value={(row.config.args ?? []).join('\n')}
+                          placeholder={'-y\n@modelcontextprotocol/server-filesystem\n/home/me'}
+                          rows={3}
+                          className="w-full resize-y rounded-lg border bg-transparent px-3 py-2 font-mono text-xs outline-none focus:border-brand-500"
                           onChange={e =>
-                            patch(row.key, r => ({ ...r, config: { ...r.config, timeoutMs: Number(e.target.value) || 0 } }))
+                            patch(row.key, r => ({
+                              ...r,
+                              config: { ...r.config, args: e.target.value.split('\n').map(s => s.trim()).filter(Boolean) },
+                            }))
                           }
                         />
                       </label>
-                    </div>
-                  </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <label className="block space-y-1">
+                          <span className="text-xs text-secondary">{t('settings.mcpEnv')}</span>
+                          <KeyValueArea
+                            value={row.config.env ?? {}}
+                            rows={2}
+                            placeholder="API_KEY=xxx"
+                            onChange={env => patch(row.key, r => ({ ...r, config: { ...r.config, env } }))}
+                          />
+                        </label>
+                        <div className="space-y-3">
+                          <label className="block space-y-1">
+                            <span className="text-xs text-secondary">{t('settings.mcpCwd')}</span>
+                            <Input
+                              value={row.config.cwd ?? ''}
+                              placeholder="/path/to/workdir"
+                              className="font-mono text-xs"
+                              onChange={e => patch(row.key, r => ({ ...r, config: { ...r.config, cwd: e.target.value } }))}
+                            />
+                          </label>
+                          <label className="block space-y-1">
+                            <span className="text-xs text-secondary">{t('settings.mcpTimeout')}</span>
+                            <Input
+                              type="number"
+                              value={String(row.config.timeoutMs ?? 30000)}
+                              className="font-mono text-xs"
+                              onChange={e =>
+                                patch(row.key, r => ({ ...r, config: { ...r.config, timeoutMs: Number(e.target.value) || 0 } }))
+                              }
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    </>
+                  )}
 
                   {/* 工具清单：证明"连上了且能干这些事"；名字带 mcp__<server>__<tool> 前缀可直接核对 */}
                   {tools.length > 0 && (
@@ -393,4 +528,34 @@ export function McpPanel() {
 /** 刷新按钮的旋转态（避免额外依赖） */
 function cnSpin(spinning: boolean): string {
   return spinning ? 'w-4 h-4 animate-spin' : 'w-4 h-4'
+}
+
+/**
+ * `KEY=VALUE` 行编辑器（环境变量与认证头共用同款交互）。
+ *
+ * 抽成一处是为了让两侧解析规则**必然一致**：值里可能出现 `=`（如 base64 的 `==`），
+ * 故只按**第一个** `=` 切分；键为空的行忽略（半输入状态不该写进配置）。
+ */
+function KeyValueArea({ value, rows, placeholder, onChange }: {
+  value: Record<string, string>
+  rows: number
+  placeholder?: string
+  onChange: (v: Record<string, string>) => void
+}) {
+  return (
+    <textarea
+      value={Object.entries(value).map(([k, v]) => `${k}=${v}`).join('\n')}
+      placeholder={placeholder}
+      rows={rows}
+      className="w-full resize-y rounded-lg border bg-transparent px-3 py-2 font-mono text-xs outline-none focus:border-brand-500"
+      onChange={e => {
+        const out: Record<string, string> = {}
+        for (const line of e.target.value.split('\n')) {
+          const i = line.indexOf('=')
+          if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1)
+        }
+        onChange(out)
+      }}
+    />
+  )
 }

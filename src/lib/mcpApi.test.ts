@@ -121,6 +121,49 @@ test('testMcpServer：网络异常同样不抛', async () => {
   } finally { s.restore() }
 })
 
+// 【HTTP 传输，2026-09-16】下面两个用例钉住「透传」这条契约。
+// 为什么必须测：接口层若把 body 按白名单挑字段（这类写法很常见），
+// `url`/`headers` 会被静默丢弃 —— 界面显示"已保存"，磁盘上却没有这两个键，
+// 重开面板配置就"消失"了，而单测全绿也发现不了。
+test('saveMcpConfig：保存时透传 url 与 headers（不得被字段白名单丢掉）', async () => {
+  const s = stubFetch(() => ({ body: { ok: true, servers: {} } }))
+  try {
+    await saveMcpConfig({
+      remote: {
+        url: 'https://example.com/mcp',
+        headers: { Authorization: 'Bearer ${TOKEN}', 'X-Trace': 't-1' },
+        timeoutMs: 20000,
+      },
+    }, 'http://127.0.0.1:1')
+    const body = JSON.parse(String(s.calls[0].init?.body))
+    assert.equal(body.servers.remote.url, 'https://example.com/mcp')
+    assert.equal(
+      body.servers.remote.headers.Authorization,
+      'Bearer ${TOKEN}',
+      '占位符必须原样落盘（写盘时求值 = 密钥进配置文件，本批安全前提即失效）',
+    )
+    assert.equal(body.servers.remote.headers['X-Trace'], 't-1')
+    assert.equal(body.servers.remote.timeoutMs, 20000, 'timeoutMs 两种传输共用，不得丢')
+  } finally { s.restore() }
+})
+
+test('testMcpServer：url/headers 原样送到 /mcp/test（返回形状与 stdio 一致）', async () => {
+  const s = stubFetch(() => ({ body: { ok: true, tools: [{ name: 'echo', description: '回显' }], serverInfo: { name: 'http-stub' } } }))
+  try {
+    const server: McpServerConfig = {
+      url: 'https://example.com/mcp',
+      headers: { Authorization: 'Bearer ${TOKEN}' },
+      timeoutMs: 5000,
+    }
+    const r = await testMcpServer(server, 'http://127.0.0.1:1')
+    assert.equal(r.ok, true)
+    assert.deepEqual(r.tools?.map((t) => t.name), ['echo'], 'HTTP 与 stdio 的返回形状必须一致，前端无需分支')
+    const sent = JSON.parse(String(s.calls[0].init?.body)).server
+    assert.equal(sent.url, 'https://example.com/mcp')
+    assert.equal(sent.headers.Authorization, 'Bearer ${TOKEN}')
+  } finally { s.restore() }
+})
+
 test('非 JSON 响应（桥返回空体）也要被兜住', async () => {
   const original = globalThis.fetch
   globalThis.fetch = (async () => ({

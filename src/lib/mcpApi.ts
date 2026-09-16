@@ -14,11 +14,24 @@ import { resolveBridgeBase, BRIDGE_BASE_FALLBACK } from './bridgeBase.ts'
 /** 兜底基地址：与桥默认端口一致。仅在 getBridgeUrl() 取不到时使用（如 node --test 无 vite define） */
 export const MCP_BASE = BRIDGE_BASE_FALLBACK
 
+/**
+ * 单台服务器配置。**两种形态互斥**（`command` 本地 stdio / `url` 远程 HTTP），
+ * 后端 `normalizeMcpServers` 会拒掉"两者并存"与"两者都缺"，故此处把字段全部标为可选：
+ * 类型上不强制 `command`，是为了让 HTTP 行能只写 `{url, headers, timeoutMs}` ——
+ * 若强行补一个 `command: ''`，实际落在文件里的键就多了一个无用字段。
+ */
 export type McpServerConfig = {
-  command: string
-  args: string[]
-  env: Record<string, string>
+  // ---- stdio 传输 ----
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
   cwd?: string | null
+  // ---- HTTP 传输（Streamable HTTP）----
+  /** 必须是 http/https 绝对地址；值内可写 `${ENV_VAR}` 占位符 */
+  url?: string
+  /** 认证头。占位符**只在运行时**求值 ⇒ 密钥不落盘（mcp.json 会被备份/截图/同步） */
+  headers?: Record<string, string>
+  /** 两种传输共用 */
   timeoutMs?: number
 }
 
@@ -86,7 +99,14 @@ export async function getMcpConfig(baseUrl?: string): Promise<McpConfigResult> {
   }
 }
 
-/** 保存全部 MCP 服务器配置（后端为整体替换语义，故此处直接送全量） */
+/**
+ * 保存全部 MCP 服务器配置（后端为整体替换语义，故此处直接送全量）
+ *
+ * 【不挑字段，原样透传 url/headers】这里是本批（HTTP 传输）最容易埋雷的一处：
+ * 若在此按"已知字段"重建对象（白名单式组装），`url`/`headers` 会被**静默丢弃** ——
+ * 界面照样显示"已保存"，磁盘上却没有这两个键，用户重开面板发现配置"消失"，
+ * 且单测若只断言 stdio 字段仍会全绿。故只做 JSON 序列化，不做字段筛选。
+ */
 export async function saveMcpConfig(
   servers: Record<string, McpServerConfig>,
   baseUrl?: string,
@@ -100,7 +120,13 @@ export async function saveMcpConfig(
   }
 }
 
-/** 连接测试：临时拉起服务器并列出工具。连不上属正常业务结果（ok:false + error 文案）。 */
+/**
+ * 连接测试：临时拉起服务器并列出工具。连不上属正常业务结果（ok:false + error 文案）。
+ *
+ * 同样**整对象透传**：后端按 `server.url` 是否存在分派到 HTTP 客户端，
+ * 且两种传输的返回形状一致（成功 `{ok,tools,serverInfo}` / 连不上 `{ok:false,error}`）
+ * ⇒ 调用方无需分支。挑字段会让 HTTP 探测退化成"缺少 url"的 400。
+ */
 export async function testMcpServer(
   server: McpServerConfig,
   baseUrl?: string,

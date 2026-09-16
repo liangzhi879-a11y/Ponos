@@ -570,6 +570,16 @@ export const enUS: TranslationKeys = {
     mcpTestBad: 'Test failed',
     mcpErrRequired: 'Name and command are required',
     mcpErrDupName: 'Duplicate server name: {name}',
+    // Transport type (2026-09-16: remote Streamable HTTP). HTTP entries require a URL instead
+    // of a command, so this needs its own message — "command is required" would be unfixable
+    // from the UI, since the command field is not rendered for HTTP entries.
+    mcpTransport: 'Transport',
+    mcpTransportStdio: 'Local command',
+    mcpTransportHttp: 'Remote HTTP',
+    mcpUrl: 'Server URL',
+    mcpHeaders: 'Auth headers (KEY=VALUE per line)',
+    mcpHeadersHint: 'Supports ${ENV_VAR}; secrets are never written to the config file',
+    mcpErrUrlRequired: 'URL is required',
     mcpRestartHint: 'Takes effect on a new turn after saving',
     // Status & tool list (2026-09-16): answers come from a real /mcp/test handshake
     mcpStatusUntested: 'Not tested',

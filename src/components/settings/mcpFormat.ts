@@ -9,6 +9,38 @@
 
 export type McpToolInfo = { name: string; description?: string }
 
+/** 传输类型：`stdio` = 本地子进程，`http` = 远程 Streamable HTTP */
+export type McpTransport = 'stdio' | 'http'
+
+/**
+ * 面板用到的配置形状（与 `mcpApi.ts` 的 `McpServerConfig` 结构一致，但**不 import**——
+ * 本模块零依赖：node --test 走 Node 原生 TS，不认 `@/` alias）。
+ * 列全字段（而非只写 `url`）是刻意的：否则传字面量时 TS 会以"存在多余属性"报错，
+ * 而调用点（测试、面板）本来就会连着 `command`/`args` 一起写。
+ */
+export type McpConfigLike = {
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  cwd?: string | null
+  url?: string
+  headers?: Record<string, string>
+  timeoutMs?: number
+}
+
+/**
+ * 判定配置走哪种传输（面板据此决定渲染哪一组字段、"测试"按钮何时可用、
+ * 以及切传输时清哪一侧的字段）。
+ *
+ * 口径只有一条：**有 `url` 就是 HTTP**。与内核 `classifyMcpEntry` 同源，
+ * 但此处**不做校验**（`command` 与 `url` 并存时仍返回 `'http'`）——
+ * 前端再实现一遍校验规则就会长出第二份会漂移的真源；
+ * 非法组合由后端 `normalizeMcpServers` 返回 400 兜底，界面如实显示其原文即可。
+ */
+export function transportOf(config?: McpConfigLike | null): McpTransport {
+  return String(config?.url ?? '').trim() ? 'http' : 'stdio'
+}
+
 /** 单台服务器最近一次连接测试的结果（未测试 = undefined） */
 export type McpTestState = {
   running?: boolean

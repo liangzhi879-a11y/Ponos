@@ -576,6 +576,15 @@ export const zhCN = {
     mcpTestBad: '测试未通过',
     mcpErrRequired: '名称与命令均为必填',
     mcpErrDupName: '服务器名称重复：{name}',
+    // 传输类型（2026-09-16 扩展：远程 Streamable HTTP）。HTTP 形态的必填字段是 URL 而非命令，
+    // 故单列一条文案——否则用户会看到"命令必填"却找不到命令输入框（HTTP 形态下它不渲染）。
+    mcpTransport: '传输方式',
+    mcpTransportStdio: '本地命令',
+    mcpTransportHttp: '远程 HTTP',
+    mcpUrl: '服务器 URL',
+    mcpHeaders: '认证头（每行 KEY=VALUE）',
+    mcpHeadersHint: '支持 ${ENV_VAR}，密钥不写入配置文件',
+    mcpErrUrlRequired: 'URL 必填',
     mcpRestartHint: '保存后需新开一轮对话生效',
     // 状态与工具清单（2026-09-16 增强）：答案来自 /mcp/test 的真实握手
     mcpStatusUntested: '未测试',
