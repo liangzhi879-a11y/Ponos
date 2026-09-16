@@ -138,6 +138,99 @@ export function contentToText(result) {
 }
 
 /**
+ * JSON-RPC 会话核心（P1-5 扩展：stdio 与 HTTP **共用**）。
+ *
+ * 抽出来的理由不是"少写代码"，而是**语义只能有一份**：本模块最需要杜绝的是三类悬挂
+ * （① 请求超时 ② 传输断开 ③ 调用方 abort），每种都必须把 pending 清空并 reject。
+ * 若 stdio 与 HTTP 各写一套，超时不回收定时器、close 后不 reject 这类 bug 会在两处
+ * 各自出现、各自逃过测试 —— 这是这类传输扩展最典型的事故形态。
+ *
+ * 传输侧只需提供 `send(msg)`，并把入站消息交给 `handleMessage(msg)`。
+ * @param {{name:string, timeoutMs?:number, send:(msg:object)=>any, onLog?:Function}} opts
+ */
+export function createJsonRpcSession({ name, timeoutMs = DEFAULT_MCP_TIMEOUT_MS, send, onLog = null } = {}) {
+  const log = (level, msg) => { try { onLog?.(level, msg) } catch { /* 日志失败不影响协议 */ } }
+  let closed = false
+  let nextId = 0
+  let errors = 0
+  const pending = new Map()     // id → { resolve, reject }
+
+  const rejectAll = (err) => {
+    for (const [, p] of pending) { try { p.reject(err) } catch { /* 已 settle */ } }
+    pending.clear()
+  }
+
+  const closeWith = (err, why) => {
+    if (closed) return
+    closed = true
+    log('warn', `MCP 服务器 ${name} 已关闭（${why}）`)
+    rejectAll(err || new Error(`MCP 服务器 ${name} 已关闭`))
+  }
+
+  function request(method, params, { signal, timeoutMs: tmo } = {}) {
+    return new Promise((resolve, reject) => {
+      if (closed) return reject(new Error(`MCP 服务器 ${name} 已关闭`))
+      if (signal?.aborted) return reject(new Error('已取消'))
+      const ms = tmo || timeoutMs
+      const id = ++nextId
+      // 单点收尾：无论如何结束都必须清定时器与 abort 监听，否则每个请求都会泄漏一个定时器
+      const finish = (fn, arg) => {
+        if (!pending.has(id)) return
+        pending.delete(id)
+        clearTimeout(timer)
+        signal?.removeEventListener('abort', onAbort)
+        fn(arg)
+      }
+      const timer = setTimeout(() => {
+        errors++
+        finish(reject, new Error(`MCP ${name} ${method} 超时（${ms}ms）`))
+      }, ms)
+      timer.unref?.()
+      const onAbort = () => finish(reject, new Error('已取消'))
+      if (signal) signal.addEventListener('abort', onAbort, { once: true })
+      pending.set(id, { resolve: (v) => finish(resolve, v), reject: (e) => finish(reject, e) })
+      const msg = { jsonrpc: '2.0', id, method }
+      if (params !== undefined) msg.params = params
+      try {
+        // send 可同步失败（stdio 写失败 / HTTP 头插值失败）：必须让该请求被 reject，
+        // 否则 promise 永久悬挂。传输侧若已自行 rejectAll，这里的 finish 是空操作。
+        if (send(msg) === false) finish(reject, new Error(`MCP 服务器 ${name} 发送失败`))
+      } catch (e) { finish(reject, e) }
+    })
+  }
+
+  /**
+   * 处理入站消息。命中本会话的请求 id 才结算，返回是否已处理
+   * （无 id 的通知不参与请求应答，由调用方决定如何对待）。
+   */
+  function handleMessage(msg) {
+    if (!msg || msg.id === undefined || msg.id === null) return false
+    const p = pending.get(msg.id)
+    if (!p) return false
+    if (msg.error) {
+      errors++
+      const e = new Error(`MCP ${name} 返回错误: ${msg.error.message || JSON.stringify(msg.error)}`)
+      e.mcpError = msg.error
+      p.reject(e)
+    } else p.resolve(msg.result)
+    return true
+  }
+
+  return {
+    request,
+    handleMessage,
+    notify: (method, params) => {
+      const msg = { jsonrpc: '2.0', method }
+      if (params !== undefined) msg.params = params
+      return send(msg)
+    },
+    closeWith,
+    close: (err) => closeWith(err, 'close'),
+    stats: () => ({ pending: pending.size, closed, errors }),
+  }
+}
+
+/**
  * 启动一个 MCP 服务器并完成握手。
  * 返回 { name, tools(), call(), close(), stats() }；失败时 reject（由调用方决定降级）。
  */
@@ -158,27 +251,26 @@ export async function startMcpClient({ name, command, args = [], env = {}, cwd =
     ? spawn([command, ...args].map(quote).join(' '), spawnOpts)
     : spawn(command, args, spawnOpts)
 
-  let closed = false
-  let closerTimer                 // 关闭时清理（声明在前，避免 closeWith 的 TDZ）
-  let nextId = 0
-  const pending = new Map()     // id → { resolve, reject }
   const stderrLines = []
   let calls = 0
-  let errors = 0
   let toolsCache = null
 
-  const rejectAll = (err) => {
-    for (const [, p] of pending) { try { p.reject(err) } catch { /* 已 settle */ } }
-    pending.clear()
-  }
-
-  const closeWith = (err, why) => {
-    if (closed) return
-    closed = true
-    if (closerTimer) { clearTimeout(closerTimer); closerTimer = undefined }
-    log('warn', `MCP 服务器 ${name} 已关闭（${why}）`)
-    rejectAll(err || new Error(`MCP 服务器 ${name} 已关闭`))
-  }
+  // —— 传输侧只提供 send；pending/超时/abort/收尾语义全部交给会话核心 ——
+  const session = createJsonRpcSession({
+    name,
+    timeoutMs,
+    onLog,
+    send: (obj) => {
+      try {
+        child.stdin.write(JSON.stringify(obj) + '\n')
+        return true
+      } catch (e) {
+        // 写失败即"传输已断"：closeWith 会 reject 全部 pending（含本次请求）
+        session.closeWith(new Error(`MCP 服务器 ${name} 写入失败: ${e.message}`), 'write')
+        return false
+      }
+    },
+  })
 
   // —— stdout：逐行 JSON（协议流）——
   let buf = ''
@@ -192,17 +284,8 @@ export async function startMcpClient({ name, command, args = [], env = {}, cwd =
       if (!line) continue
       let msg
       try { msg = JSON.parse(line) } catch { log('warn', `MCP ${name} 收到非法 JSON 行（已忽略）`); continue }
-      if (msg && msg.id !== undefined && pending.has(msg.id)) {
-        const p = pending.get(msg.id)
-        pending.delete(msg.id)
-        if (msg.error) {
-          errors++
-          const e = new Error(`MCP ${name} 返回错误: ${msg.error.message || JSON.stringify(msg.error)}`)
-          e.mcpError = msg.error
-          p.reject(e)
-        } else p.resolve(msg.result)
-      }
-      // 无 id 的通知（如 notifications/message）不参与请求应答，忽略
+      // 无 id 的通知（如 notifications/message）不参与请求应答，handleMessage 返回 false
+      session.handleMessage(msg)
     }
   })
 
@@ -223,53 +306,12 @@ export async function startMcpClient({ name, command, args = [], env = {}, cwd =
   })
 
   // —— 进程退出 / 断流：必须 reject 全部 pending（否则引擎轮次永久卡住）——
-  child.on('error', (e) => closeWith(new Error(`MCP 服务器 ${name} 启动/运行失败: ${e.message}`), 'error'))
-  child.on('exit', (code, sig) => closeWith(new Error(`MCP 服务器 ${name} 已退出（code=${code}${sig ? `, signal=${sig}` : ''}）`), 'exit'))
-  child.stdin.on('error', () => closeWith(new Error(`MCP 服务器 ${name} stdin 断流`), 'stdin'))
+  child.on('error', (e) => session.closeWith(new Error(`MCP 服务器 ${name} 启动/运行失败: ${e.message}`), 'error'))
+  child.on('exit', (code, sig) => session.closeWith(new Error(`MCP 服务器 ${name} 已退出（code=${code}${sig ? `, signal=${sig}` : ''}）`), 'exit'))
+  child.stdin.on('error', () => session.closeWith(new Error(`MCP 服务器 ${name} stdin 断流`), 'stdin'))
 
-  const writeMsg = (obj) => {
-    try {
-      child.stdin.write(JSON.stringify(obj) + '\n')
-      return true
-    } catch (e) {
-      closeWith(new Error(`MCP 服务器 ${name} 写入失败: ${e.message}`), 'write')
-      return false
-    }
-  }
-
-  function request(method, params, { signal, timeoutMs: tmo } = {}) {
-    return new Promise((resolve, reject) => {
-      if (closed) return reject(new Error(`MCP 服务器 ${name} 已关闭`))
-      if (signal?.aborted) return reject(new Error('已取消'))
-      const ms = tmo || timeoutMs
-      const id = ++nextId
-      const timer = setTimeout(() => {
-        pending.delete(id)
-        errors++
-        reject(new Error(`MCP ${name} ${method} 超时（${ms}ms）`))
-      }, ms)
-      timer.unref?.()
-      const onAbort = () => {
-        pending.delete(id)
-        clearTimeout(timer)
-        reject(new Error('已取消'))
-      }
-      if (signal) signal.addEventListener('abort', onAbort, { once: true })
-      pending.set(id, {
-        resolve: (v) => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); resolve(v) },
-        reject: (e) => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); reject(e) },
-      })
-      const msg = { jsonrpc: '2.0', id, method }
-      if (params !== undefined) msg.params = params
-      if (!writeMsg(msg)) { pending.delete(id); clearTimeout(timer); /* closeWith 已 rejectAll */ }
-    })
-  }
-
-  const notify = (method, params) => {
-    const msg = { jsonrpc: '2.0', method }
-    if (params !== undefined) msg.params = params
-    writeMsg(msg)
-  }
+  const request = session.request
+  const notify = session.notify
 
   // —— 握手：initialize → notifications/initialized ——
   const init = await request('initialize', {
@@ -303,10 +345,11 @@ export async function startMcpClient({ name, command, args = [], env = {}, cwd =
     close() {
       try { child.stdin.end() } catch { /* 已关闭 */ }
       try { child.kill() } catch { /* 已退出 */ }
-      closeWith(new Error(`MCP 服务器 ${name} 已关闭`), 'close')
+      session.closeWith(new Error(`MCP 服务器 ${name} 已关闭`), 'close')
     },
     stats() {
-      return { pending: pending.size, closed, calls, errors, lastStderr: stderrLines.slice(-5) }
+      const s = session.stats()
+      return { pending: s.pending, closed: s.closed, calls, errors: s.errors, lastStderr: stderrLines.slice(-5) }
     },
   }
 }
