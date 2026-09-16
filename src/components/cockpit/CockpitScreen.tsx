@@ -1,11 +1,15 @@
 // src/components/cockpit/CockpitScreen.tsx —— 驾驶舱 iframe 容器（Task 8）
 // 载荷：Task 7 资产 public/cockpit/index.html（自绘驾驶舱 UI），经 postMessage 双向通信。
 // 消息契约（与资产注释逐条对齐，2026-09-10 设计语言统一后升级为全量主题 ID）：
-//   父 → iframe：{type:'yfw:theme', theme:'dark'|'light'|'dark-glass'|'light-glass',
+//   父 → iframe：{type:'yfw:theme', theme:'dark'|'light'|'dark-glass',
 //                  speedMode:boolean, glassOpacity:number}
 //               {type:'yfw:overview', data: overview|null}
 //   iframe → 父：{type:'yfw:ready'}（加载完成，listener 已就绪）
 //               {type:'yfw:hub-click'}（hub 点击且无面板打开；面板开着点击只收起不上报）
+//               {type:'yfw:nav', target}（功能入口：把用户真正带进对应功能，
+//                 target 形状与解析规则见 cockpitNav.ts；本组件只做 source 校验，
+//                 语义校验全在 resolveCockpitNav（由 ViewRouter 调用）——
+//                 这里若再判一次，同一份白名单就有了第二个真相源）
 // 时序铁律：iframe 在 listener 注册前会丢弃父消息——theme/overview 一律等收到 yfw:ready
 // 才下发；active 重新置真时（保活切回）重推一份最新值，未重载的 iframe 重复收也无害。
 // 保活：本组件由 ViewRouter 常驻渲染，active=false 时根容器 display:none 隐藏但不卸载，
@@ -27,9 +31,14 @@ export interface CockpitScreenProps {
   preload?: boolean
   /** hub 点击（且无面板开启）→ 通知 ViewRouter 播放 LogoMorph 并进入工作屏 */
   onEnterWork: () => void
+  /**
+   * 驾驶舱功能入口（2026-09-15）：iframe 点模块 → 上抛原始载荷，由宿主解析并导航。
+   * 传**原始载荷**而非解析结果：校验规则（白名单/不变量）只保留在宿主一处。
+   */
+  onNavigate?: (raw: unknown) => void
 }
 
-export function CockpitScreen({ active, preload = false, onEnterWork }: CockpitScreenProps) {
+export function CockpitScreen({ active, preload = false, onEnterWork, onNavigate }: CockpitScreenProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
   // src 仅挂载时定型：首帧主题经 query 直给全量主题 ID（资产 head 即解析，避免就绪前底色错）
@@ -50,6 +59,8 @@ export function CockpitScreen({ active, preload = false, onEnterWork }: CockpitS
   activeRef.current = active
   const onEnterWorkRef = useRef(onEnterWork)
   onEnterWorkRef.current = onEnterWork
+  const onNavigateRef = useRef(onNavigate)
+  onNavigateRef.current = onNavigate
 
   // 主题/极速/玻璃透光度：ready 即推（保活隐藏期间也保持最新，回切驾驶舱不闪主题色）
   useEffect(() => {
@@ -81,6 +92,11 @@ export function CockpitScreen({ active, preload = false, onEnterWork }: CockpitS
       }
       if (type === 'yfw:hub-click' && activeRef.current) {
         onEnterWorkRef.current()
+        return
+      }
+      // 功能入口：仅 active 期受理（预热/保活隐藏期的消息不该改变用户所在视图）
+      if (type === 'yfw:nav' && activeRef.current) {
+        onNavigateRef.current?.(raw)
       }
     }
     window.addEventListener('message', onMessage)
