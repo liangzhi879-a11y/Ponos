@@ -32,6 +32,13 @@ function startStub(mode) {
 
 const urlOf = (s) => `http://127.0.0.1:${s.port}/mcp`
 
+/**
+ * 收尾必须容错：若客户端在**构造阶段**就失败（如握手超时），`c` 仍是 undefined，
+ * 直接 `await c.close()` 会在 finally 里二次抛错 ⇒ 夹具进程不被杀、事件循环不退出，
+ * 整个测试套件表现为**挂死而不是报红**（失败被伪装成卡住，最难排查）。
+ */
+const safeClose = (c) => { try { c?.close() } catch { /* 已关闭 */ } }
+
 test('HTTP 客户端：JSON 响应路径 —— 握手 / 列工具 / 调工具 / 零悬挂', async () => {
   const s = await startStub('json')
   const logs = []
@@ -47,7 +54,7 @@ test('HTTP 客户端：JSON 响应路径 —— 握手 / 列工具 / 调工具 /
     assert.equal(r.text, 'echo:你好')
     assert.equal(r.isError, false)
     assert.equal(c.stats().pending, 0, '请求结束后不得有悬挂 pending')
-  } finally { await c.close(); s.kill() }
+  } finally { safeClose(c); s.kill() }
 })
 
 test('HTTP 客户端：SSE 响应路径同样走通（响应基于 SSE 流时不能认不出）', async () => {
@@ -59,7 +66,7 @@ test('HTTP 客户端：SSE 响应路径同样走通（响应基于 SSE 流时不
     const r = await c.call('echo', { text: 'x' })
     assert.equal(r.text, 'echo:x')
     assert.equal(c.stats().pending, 0)
-  } finally { await c.close(); s.kill() }
+  } finally { safeClose(c); s.kill() }
 })
 
 test('HTTP 客户端：会话 id 被记住并回传（否则第二跳即 404）', async () => {
@@ -69,7 +76,7 @@ test('HTTP 客户端：会话 id 被记住并回传（否则第二跳即 404）'
     // 夹具对"不带对的 session id"的请求一律回 404 ⇒ 列工具能成功即证明回传生效
     const tools = await c.tools()
     assert.equal(tools.length, 2)
-  } finally { await c.close(); s.kill() }
+  } finally { safeClose(c); s.kill() }
 })
 
 test('HTTP 客户端：${ENV_VAR} 插值生效 —— 由服务器回显请求头证明', async () => {
@@ -84,7 +91,7 @@ test('HTTP 客户端：${ENV_VAR} 插值生效 —— 由服务器回显请求�
     const r = await c.call('whoami', {})
     assert.match(r.text, /Bearer secret-abc/,
       '服务器必须收到解析后的头——这才能证明插值真的发生在发送前')
-  } finally { await c.close(); s.kill() }
+  } finally { safeClose(c); s.kill() }
 })
 
 test('HTTP 客户端：未定义变量**启动即报错并点名**（不静默换空串、不发请求）', async () => {
@@ -138,7 +145,7 @@ test('HTTP 客户端：已建会话后请求超时 → reject(含"超时")、pen
     assert.equal(c.stats().pending, 0, '超时必须清 pending，否则会持续泄漏')
     // 超时后连接必须被中断：再发一次仍应正常超时（说明会话没有卡在"半死"状态）
     await assert.rejects(() => c.tools(), /超时/)
-  } finally { await c.close(); s.kill() }
+  } finally { safeClose(c); s.kill() }
 })
 
 test('HTTP 客户端：握手阶段就超时 → 启动即失败（不留半个客户端）', async () => {
@@ -158,20 +165,22 @@ test('HTTP 客户端：会话过期(404) 与"地址写错"给出可区分文案'
   try {
     await assert.rejects(() => c.tools(), (e) => /会话已过期|404/.test(e.message),
       '404 在 Streamable HTTP 里特指会话不存在，用户需据此决定"重新连接"还是"改地址"')
-  } finally { await c.close(); s.kill() }
+  } finally { safeClose(c); s.kill() }
 })
 
 test('HTTP 客户端：close() 后发起调用立即失败（不悬挂）', async () => {
   const s = await startStub('json')
-  const c = await startMcpHttpClient({ name: 'closing', url: urlOf(s), timeoutMs: 5000 })
-  await c.tools()
-  await c.close()
-  assert.equal(c.stats().closed, true)
-  // 用 call 而非 tools 验证：tools 命中缓存会直接返回（stdio 亦如此，属既有语义），
-  // 真正危险的是"关闭后仍去向服务器发请求"——那才会悬挂。
-  await assert.rejects(() => c.call('echo', { text: 'x' }), /已关闭/)
-  assert.equal(c.stats().pending, 0)
-  s.kill()
+  let c = null
+  try {
+    c = await startMcpHttpClient({ name: 'closing', url: urlOf(s), timeoutMs: 5000 })
+    await c.tools()
+    c.close()
+    assert.equal(c.stats().closed, true)
+    // 用 call 而非 tools 验证：tools 命中缓存会直接返回（stdio 亦如此，属既有语义），
+    // 真正危险的是"关闭后仍去向服务器发请求"——那才会悬挂。
+    await assert.rejects(() => c.call('echo', { text: 'x' }), /已关闭/)
+    assert.equal(c.stats().pending, 0)
+  } finally { safeClose(c); s.kill() }
 })
 
 test('HTTP 客户端：非 http(s) 地址 / 缺 url 直接拒绝（不进入网络层）', async () => {
