@@ -255,7 +255,7 @@ prompt 交给模型 → loop 状态机永不启动；且 `10m` 经 `Number()` �
 | 端点 | 用途 |
 |---|---|
 | `/drives`、`/list-dir`、`/read-file`、`/raw-file`、`/write-file` | 文件系统访问（带 Origin 白名单保护） |
-| `/convert-office`、`/read-sheet`、`/write-sheet`、`/read-docx`、`/write-docx` | Office 读写（调 python 脚本 `convert_docx.py`/`convert_xls.py`/`docx_edit.py`/`sheet_edit.py`） |
+| `/convert-office`、`/read-sheet`、`/write-sheet`、`/read-docx`、`/write-docx` | Office 读写（调 python 脚本 `convert_docx.py`/`convert_xls.py`/`docx_edit.py`/`sheet_edit.py`）。**契约见 §7.3（2026-09-16 改为 ops-only + baseVersion，旧的 `blocks`/`updates` 写法已被显式拒绝）** |
 | `/transcript/list`、`/transcript/load`、`/transcript/search` | 会话转录（内核 transcript 为权威源，GUI 只读索引） |
 | `/health`、`/diag/info` | 健康/诊断 |
 | `/session/anchor-applied`（POST） | 上下文失真「重新锚定」上报（2026-09-12）：body `{sessionId, issueIds[]}` → 校验后向该会话内核 stdin 写 `anchor_applied`（§3）。`sessionId` 缺失/空白 → **400** `{ok:false,error:'sessionId required'}`（不允许无主消息落进某个会话）；`issueIds` 非数组/含脏值 → 清洗（去重、剔非字符串、单条限长 120、封顶 50）后照常 **200** `{ok:true}`。路由只做校验+转发，**判定永远在内核** |
@@ -347,6 +347,46 @@ prompt 交给模型 → loop 状态机永不启动；且 `10m` 经 `Number()` �
 `persist:false` = 只停止写入：**绝不删除已有日志**，`/logs/tail` 与 `/logs/prune` 照常可用。
 `[立即清理]`（prune）只删轮转份（`.1`、`.2`…）并把当前主文件轮转成 `.1`——主文件从不被直接 `unlink`（`kernel-stderr.log` 的崩溃原文可能正被诊断读取）；不受 `persist` 开关影响（用户主动点清理即明确意图）。
 **明确不在日志策略管辖内**：`projects/**/*.jsonl`（内核 transcript = 权威对话档案）、`sessions/**`、`chats/**`、`runs/*.running|.err`、`config.json(.bak*)`、`memory/ skills/ workflows/ browser-whitelist.json auth.json`。
+
+### 7.3 Office 读写契约（2026-09-16，S1：**改为 ops-only + `baseVersion`**）
+
+**这是破坏性变更**：旧的"全量 `blocks`"（docx）与"`updates:[{row,col,value}]`"（xlsx）写法**已被显式拒绝**，不再静默降级。
+
+| 端点 | 请求 | 成功响应 |
+|---|---|---|
+| `GET /read-docx?path=` | — | `{ ok:true, baseVersion, blocks:[{blockId,kind,text\|rows,tableCells?,format}] }` |
+| `POST /write-docx` | `{ path, baseVersion, ops:[…] }` | `{ ok:true, baseVersion }`（写后的新版本号，供前端续接） |
+| `GET /read-sheet?path=` | — | `{ ok:true, baseVersion, sheetNames, sheets:[{name,rows,formulas,rowIds,colIds}] }` |
+| `POST /write-sheet` | `{ path, baseVersion, sheet?, ops:[…] }` | `{ ok:true, baseVersion }` |
+
+**ops 形态**（一律以**磁盘上当前内容**的 id 寻址；序号寻址已废弃）：
+
+```
+docx: {op:'update', blockId, text} | {op:'update', blockId, rows}      // 表用 rows
+      {op:'insert', after: blockId|null, block:{kind,text|rows}}        // after:null = 插到最前
+      {op:'delete', blockId} | {op:'move', blockId, after: blockId|null}
+xlsx: {op:'updateCell', rowId, colId, value}
+      {op:'insertRow', after: rowId|null, values} | {op:'deleteRow', rowId}
+      {op:'insertCol', after: colId|null, values} | {op:'deleteCol', colId}
+```
+
+**`baseVersion` 必需**（缺即拒）—— 它是防丢失更新的唯一依据：整文件 sha256，不匹配说明读到之后有人改过。
+
+**错误码 → HTTP**（409 与 400 分开是有意的：用户动作不同 —— 重载 vs 改请求）：
+
+| 码 | HTTP | 含义 |
+|---|---|---|
+| `base-version-mismatch` | 409 | 文件被他人/外部程序改过，**重新载入**后再编辑 |
+| `base-version-required` / `ops-required` / `path-required` | 400 | 请求缺字段 |
+| `legacy-blocks-not-supported` / `legacy-updates-not-supported` | 400 | 用了废弃写法（消息里给出新写法） |
+| `block-not-found` / `block-deleted` / `bad-move` / `unknown-op` / `bad-op` | 400 | ops 引用或形态非法 |
+| `row-not-found` / `col-not-found` / `row-deleted` / `col-deleted` / `value-required` / `sheet-not-found` | 400 | xlsx ops 非法 |
+| `formula-cell-readonly` | 400 | 写公式格（含具体坐标）；整个请求不落盘 |
+| `xls-write-unsupported` | 400 | `.xls` 结构写不支持（格式限制，另存为 `.xlsx`） |
+| `file-missing` | 404 | 文件不存在 |
+| `file-locked` | 423 | 文件被占用（Word/Excel/网盘同步） |
+
+**失败一律不落盘**（拒绝要彻底：不做部分写入）。
 
 ## 8. 会话生命周期
 

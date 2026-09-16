@@ -10,6 +10,9 @@
   docx_mutate_probe.py table-jc <path> <tableIdx>          # 表加 w:jc=center（表级格式，**不在**物化组内）
   docx_mutate_probe.py dup-row    <path> <tableIdx> <rowIdx>        # 复制该行并插到其后（模拟"原样复制一行"）
   docx_mutate_probe.py insert-row <path> <tableIdx> <afterIdx> <txt>  # 在 afterIdx 后插入一行**全新内容**
+  docx_mutate_probe.py set-text   <path> <paraIdx> <text>          # 改写某段文字（模拟外部编辑）
+  docx_mutate_probe.py insert-para <path> <afterIdx> <text>        # 在某段之后插入新段（T6 用）
+  docx_mutate_probe.py table-set-cell <path> <tIdx> <r> <c> <txt>  # 改表格某格（B2 用）
 """
 import copy
 import json
@@ -76,6 +79,36 @@ def insert_row(path, t_idx, after_idx, text):
     return _save(d, path, f"table[{t_idx}]: inserted new row after row[{after_idx}]")
 
 
+def set_text(path, idx, text):
+    """改写某正文段的文字（模拟"外部在 Word 里改了一段"）。"""
+    d = Document(path)
+    d.paragraphs[int(idx)].text = text
+    return _save(d, path, f"paragraph[{idx}].text = {text!r}")
+
+
+def insert_para(path, after_idx, text):
+    """在某正文段之后插入一个新段（模拟"外部插了一段"；三路合并 T6 用）。
+
+    做法是**复制原段的 XML 再改文字**，而不是 `doc.add_paragraph`（后者只能加到文档末尾）——
+    T6 要的是"在中间插入"，插到末尾测不出"内容对齐能否吸收插入"。
+    """
+    from docx.text.paragraph import Paragraph
+
+    d = Document(path)
+    src = d.paragraphs[int(after_idx)]._p
+    new_el = copy.deepcopy(src)
+    src.addnext(new_el)
+    Paragraph(new_el, d.paragraphs[int(after_idx)]._parent).text = text
+    return _save(d, path, f"inserted paragraph after [{after_idx}]: {text!r}")
+
+
+def table_set_cell(path, t_idx, r, c, text):
+    """改写表格某格的文字（模拟"外部改了表格里的一个格"；B2 用）。"""
+    d = Document(path)
+    d.tables[int(t_idx)].cell(int(r), int(c)).text = text
+    return _save(d, path, f"table[{t_idx}].cell({r},{c}).text = {text!r}")
+
+
 def main():
     if len(sys.argv) < 4:
         print(json.dumps({"ok": False, "error": "参数不足"}))
@@ -90,6 +123,12 @@ def main():
             return dup_row(sys.argv[2], sys.argv[3], sys.argv[4])
         if mode == "insert-row":
             return insert_row(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
+        if mode == "set-text":
+            return set_text(sys.argv[2], sys.argv[3], sys.argv[4])
+        if mode == "insert-para":
+            return insert_para(sys.argv[2], sys.argv[3], sys.argv[4])
+        if mode == "table-set-cell":
+            return table_set_cell(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6])
     except Exception as e:  # noqa: BLE001 - 探针把失败如实回报给测试
         print(json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}))
         return 1
