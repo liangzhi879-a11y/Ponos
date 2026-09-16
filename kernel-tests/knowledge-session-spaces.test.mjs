@@ -9,7 +9,7 @@
 // 为什么注入层必须 spawn 真进程：范围是在 kernel/cli.mjs 启动段解析并消费的，engine 级单测
 // 绕不过去——而"关联了却没生效"正是本任务要防的头号故障（4 跳透传，任一跳漏登记即静默失效）。
 //
-// 隔离纪律：CLAUDE_CONFIG_DIR/YFW_HOME 与所有夹具都在 mkdtempSync 临时目录内，绝不碰真实 home。
+// 隔离纪律：PONOS_CONFIG_DIR/YFW_HOME 与所有夹具都在 mkdtempSync 临时目录内，绝不碰真实 home。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -166,7 +166,7 @@ async function runTurn({ args = [], env = {}, userText = '储备库专属条目�
     env: {
       ...process.env, PONOS_MOCK_API: '1', PONOS_MOCK_SYS_PROBE: NEEDLES.join('|'),
       PONOS_KNOWLEDGE_INJECT_MODE: 'unified', PONOS_MEMORY_KEYWORDS: PHRASE,
-      CLAUDE_CONFIG_DIR: dir, YFW_HOME: dir,
+      PONOS_CONFIG_DIR: dir, YFW_HOME: dir,
       ...env,
     },
     stdio: ['pipe', 'pipe', 'pipe'],

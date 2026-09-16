@@ -11,9 +11,9 @@ import { contextWindowFor, clampOutputBudgetForWindow, LOCAL_DEFAULT_WINDOW, DEF
 test('contextWindowFor：内置模型表优先于注入（表=事实窗口，防 provider 手配虚高）', () => {
   // 2026-09-11：deepseek provider 手配 1M 在 flash（真实 200K）上虚高的根因修复——
   // 已知模型以表为准，未知模型才尊重注入值
-  assert.equal(contextWindowFor('deepseek-v4-flash', { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' }), 200_000, 'flash 表 200K 压过注入 1M')
-  assert.equal(contextWindowFor('unknown-model', { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '131072', PONOS_PROVIDER_PROFILE: 'local' }), 131072, '未知模型注入优先')
-  assert.equal(contextWindowFor('MiniMax-M3[1m]', { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' }), 1_000_000, '带后缀不命中表 → 注入生效')
+  assert.equal(contextWindowFor('deepseek-v4-flash', { PONOS_AUTO_COMPACT_WINDOW: '1000000' }), 200_000, 'flash 表 200K 压过注入 1M')
+  assert.equal(contextWindowFor('unknown-model', { PONOS_AUTO_COMPACT_WINDOW: '131072', PONOS_PROVIDER_PROFILE: 'local' }), 131072, '未知模型注入优先')
+  assert.equal(contextWindowFor('MiniMax-M3[1m]', { PONOS_AUTO_COMPACT_WINDOW: '1000000' }), 1_000_000, '带后缀不命中表 → 注入生效')
 })
 
 test('contextWindowFor：内置模型表精确命中', () => {
@@ -32,9 +32,9 @@ test('contextWindowFor：cloud/未知画像未命中表 → 200K 默认（既有
 })
 
 test('contextWindowFor：注入 0/NaN/非法值视为未注入（回落表/画像默认）', () => {
-  assert.equal(contextWindowFor('m', { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '0', PONOS_PROVIDER_PROFILE: 'cloud' }), DEFAULT_WINDOW)
-  assert.equal(contextWindowFor('m', { CLAUDE_CODE_AUTO_COMPACT_WINDOW: 'abc', PONOS_PROVIDER_PROFILE: 'cloud' }), DEFAULT_WINDOW)
-  assert.equal(contextWindowFor('deepseek-v4-flash', { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '0' }), 200_000, '注入 0 时表仍生效')
+  assert.equal(contextWindowFor('m', { PONOS_AUTO_COMPACT_WINDOW: '0', PONOS_PROVIDER_PROFILE: 'cloud' }), DEFAULT_WINDOW)
+  assert.equal(contextWindowFor('m', { PONOS_AUTO_COMPACT_WINDOW: 'abc', PONOS_PROVIDER_PROFILE: 'cloud' }), DEFAULT_WINDOW)
+  assert.equal(contextWindowFor('deepseek-v4-flash', { PONOS_AUTO_COMPACT_WINDOW: '0' }), 200_000, '注入 0 时表仍生效')
 })
 
 test('clampOutputBudgetForWindow：预算装得下不动', () => {

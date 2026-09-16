@@ -165,7 +165,7 @@ node kernel/cli.mjs --knowledge search --text "关键词"
 | WS 心跳 | `YFW_WS_HEARTBEAT_MS`(30000)、`YFW_WS_PONG_GRACE_MS`(3×心跳)、`YFW_WS_PONG_HARD_MS`(300000) | `server/bridge.mjs:2841-2846` |
 | 内核回收 | `YFW_KERNEL_IDLE_MS`(10min)、`_TURN_REAP_MS`(20min)、`_WAIT_EXEMPT_MS`(30min) | `server/bridge.mjs:2885,2891,2895` |
 | 内核守卫 | `PONOS_LOOP_GUARD`、`PONOS_LOOP_MAX_ITERATIONS`、`PONOS_STREAM_IDLE_MS`、`PONOS_OVERFLOW_MAX_RETRIES`、`PONOS_LANE_MAX_CONCURRENT` | `kernel/engine-config.mjs:34-203` |
-| 输出预算 | `CLAUDE_CODE_MAX_OUTPUT_TOKENS`(64000) | `kernel/engine.mjs:63` |
+| 输出预算 | `PONOS_MAX_OUTPUT_TOKENS`(64000) | `kernel/engine.mjs:63` |
 | 计费 | `PONOS_PRICE_PER_M_INPUT/OUTPUT`、`PONOS_CACHE_READ_RATIO`、`PONOS_BUDGET_USD` | `kernel/engine.mjs:155-162` |
 | Mock/测试 | `PONOS_MOCK_*`（22 个）、`PONOS_TEST_HOME` | `kernel/api.mjs:265+` |
 
@@ -258,7 +258,7 @@ node kernel/cli.mjs --print --output-format stream-json --input-format stream-js
 | `UPSTREAM_DEAD_HEAL_MAX` / `_BACKOFF_MS` | 2 / 30_000 | 上游假死自愈与退避 | `:188-189` |
 | `IDLE_DEAD_RETRY_MAX` / `_BACKOFF_MS` | 3 / 3000 | 零数据挂起重试 | `:125-126` |
 | `FID_ANCHOR_MAX_CONSEC` / `_REINJECT_EVERY` | 2 / 8 | 失真锚点注入节奏 | `:120-121` |
-- 预算与安全阀：输出 token 上限 `CLAUDE_CODE_MAX_OUTPUT_TOKENS`（默认 64000，`engine.mjs:63`）；会话美元预算 `PONOS_BUDGET_USD`（`:162,2266-2271`）；单条工具结果字节预算默认 **20000 B**（`:1109`），批量预算默认 **100000 B**（下限 20000，`:998`）；审批拒绝连击 `DENIAL_STREAK_LIMIT=3` / `DENIAL_TOTAL_LIMIT=20`（`:1175-1176`）。
+- 预算与安全阀：输出 token 上限 `PONOS_MAX_OUTPUT_TOKENS`（默认 64000，`engine.mjs:63`）；会话美元预算 `PONOS_BUDGET_USD`（`:162,2266-2271`）；单条工具结果字节预算默认 **20000 B**（`:1109`），批量预算默认 **100000 B**（下限 20000，`:998`）；审批拒绝连击 `DENIAL_STREAK_LIMIT=3` / `DENIAL_TOTAL_LIMIT=20`（`:1175-1176`）。
 
 **工具与能力**（`kernel/tools.mjs` 等）：工具注册与执行在 `tools.mjs`（Bash/Read/Grep/Glob/Write/Edit/WebFetch/WebSearch/Task/TodoWrite/OCR/Vision 等，含 `kernel/dyntools.mjs` 动态工具与 `kernel/app-tools.mjs` 应用工具）；实测限制：
 
@@ -272,7 +272,7 @@ node kernel/cli.mjs --print --output-format stream-json --input-format stream-js
 | Vision 超时 / tokens / 图片上限 | 60s / 2048 / 20 MiB | `tools.mjs:960-962` |
 
 **上下文与压缩**（`kernel/context.mjs`、`kernel/compact.mjs`）：
-- 窗口来源优先级：内置模型表 `MODEL_CONTEXT_WINDOWS` → `CLAUDE_CODE_AUTO_COMPACT_WINDOW` → 默认 `DEFAULT_WINDOW = 200_000`（本地模型 `LOCAL_DEFAULT_WINDOW = 65_536`）（`context.mjs:8,14,17,31-34`）。
+- 窗口来源优先级：内置模型表 `MODEL_CONTEXT_WINDOWS` → `PONOS_AUTO_COMPACT_WINDOW` → 默认 `DEFAULT_WINDOW = 200_000`（本地模型 `LOCAL_DEFAULT_WINDOW = 65_536`）（`context.mjs:8,14,17,31-34`）。
 - token 估算带 **WeakMap 记忆化**（`BLK_CACHE`/`MSG_CACHE`，`:151-152`）+ 内容纪元 `bumpContentEpoch()`（`:146`）做失效；`predictTurns()` 以 `thresholdRatio=0.8` 预测剩余轮数（`:321-334`）。
 - 压缩产物用统一占位符 `[旧工具结果已清除——需要时重新调用工具读取]`（`compact.mjs:25`），且只有**可重放工具**才允许清除：`Read/Bash/Grep/Glob/WebFetch/OCR`（`compact.mjs:26`）；压缩后做保真度门禁：缺失点 `>= FIDELITY_GATE_MIN_MISSING(3)` 且比例 `>= FIDELITY_GATE_RATIO(0.5)` 才判失真（`:381-382`）。
 

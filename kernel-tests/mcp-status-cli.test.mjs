@@ -23,7 +23,7 @@ const STUB_TOOLS = 5   // 桩服务器暴露 echo / boom / hang / die / plain
 function spawnKernel(home) {
   const proc = spawn(process.execPath, [KERNEL_CLI, '--print', '--output-format', 'stream-json',
     '--input-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', '--add-dir', home], {
-    env: { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: home, YFW_HOME: home },
+    env: { ...process.env, PONOS_MOCK_API: '1', PONOS_CONFIG_DIR: home, YFW_HOME: home },
     cwd: home, stdio: ['pipe', 'pipe', 'pipe'],
   })
   const events = []

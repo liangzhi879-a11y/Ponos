@@ -9,7 +9,7 @@
 //   ⑤ 真进程链路：`--knowledge` 在**格式校验之后**，故必须带
 //      `--output-format stream-json --input-format stream-json`（S1 踩过的坑，用例锁死）。
 //
-// 隔离纪律：mkdtempSync 临时目录；真进程用例走 PONOS_HOME（并清掉 CLAUDE_CONFIG_DIR，
+// 隔离纪律：mkdtempSync 临时目录；真进程用例走 PONOS_HOME（并清掉 PONOS_CONFIG_DIR，
 // 防宿主环境把它指到真实库），**不起 bridge、不联网**。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -148,7 +148,7 @@ test('真进程链路：带 I/O 格式旗标可用；不带则被格式校验拦
   try {
     const id = await firstBlockId(dir)
     const env = { ...process.env, PONOS_HOME: dir }
-    delete env.CLAUDE_CONFIG_DIR // 防宿主环境把 configDir 指到真实库
+    delete env.PONOS_CONFIG_DIR // 防宿主环境把 configDir 指到真实库
     const fmt = ['--output-format', 'stream-json', '--input-format', 'stream-json']
     const args = ['--knowledge', 'related', '--id', id]
 
@@ -228,7 +228,7 @@ test('真进程链路：--doc 与 graph --related 必须真的穿过 CLI 管道�
   try {
     await runKnowledgeCommand({ op: 'reindex', configDir: dir })
     const env = { ...process.env, PONOS_HOME: dir }
-    delete env.CLAUDE_CONFIG_DIR
+    delete env.PONOS_CONFIG_DIR
     const fmt = ['--output-format', 'stream-json', '--input-format', 'stream-json']
 
     // ① related --doc：GUI「进入文档」后的批量锚点口

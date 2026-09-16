@@ -158,7 +158,7 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
   // 拼错的 `PONOS_HOME` 会长出一整棵没人找得到的资料树，故共用同一道短路。
   if (WRITE_OPS.has(name) && !rootExistedBefore) {
     return {
-      output: { error: 'bad-root', message: `配置根不存在: ${configDir}（PONOS_HOME/CLAUDE_CONFIG_DIR 指向了错误的路径？）` },
+      output: { error: 'bad-root', message: `配置根不存在: ${configDir}（PONOS_HOME/PONOS_CONFIG_DIR 指向了错误的路径？）` },
       code: 1,
     }
   }

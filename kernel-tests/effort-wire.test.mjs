@@ -69,7 +69,7 @@ const NONE = { thinking: undefined, reasoning_effort: undefined }
 // 矩阵：每行 = 一个 (env, 档位) 组合 → 期望真正发出去的两个旋钮
 // env 值 null 表示「显式删掉该变量」。①/②/③ 是 effortParam 的优先级编号（见 api.mjs）。
 const CASES = [
-  { n: '①默认：无档位、无 thinking env → 两个旋钮都不发', env: { CLAUDE_CODE_THINKING_ENABLED: null }, opts: {}, want: NONE },
+  { n: '①默认：无档位、无 thinking env → 两个旋钮都不发', env: { PONOS_THINKING_ENABLED: null }, opts: {}, want: NONE },
   { n: '①档位 auto → 不发（模型原生自适应）', env: {}, opts: { reasoningEffort: 'auto' }, want: NONE },
   { n: '①未知档位 medium → 不发（api 层不认识；engine 的 normalizeEffort 已把 medium→high）', env: {}, opts: { reasoningEffort: 'medium' }, want: NONE },
   { n: '③档位 low → reasoning_effort', env: {}, opts: { reasoningEffort: 'low' }, want: { thinking: undefined, reasoning_effort: 'low' } },
@@ -77,12 +77,12 @@ const CASES = [
   { n: '①档位 off → thinking:disabled', env: {}, opts: { reasoningEffort: 'off' }, want: OFF },
   { n: '①thinkingMode=off → thinking:disabled（策略层新入口）', env: {}, opts: { thinkingMode: 'off' }, want: OFF },
   { n: '①thinkingMode=off 压过档位 low（优先级 ① > ③）', env: {}, opts: { thinkingMode: 'off', reasoningEffort: 'low' }, want: OFF },
-  { n: '②thinking env → enabled+budget 4096（默认）', env: { CLAUDE_CODE_THINKING_ENABLED: '1' }, opts: {}, want: enabled(4096) },
-  { n: '②budget 随 provider 配置下发', env: { CLAUDE_CODE_THINKING_ENABLED: '1', CLAUDE_CODE_THINKING_BUDGET: '2048' }, opts: {}, want: enabled(2048) },
-  { n: '②budget 非法值 → 回落 4096（不得发出 NaN）', env: { CLAUDE_CODE_THINKING_ENABLED: '1', CLAUDE_CODE_THINKING_BUDGET: 'abc' }, opts: {}, want: enabled(4096) },
-  { n: '②thinking env 下档位 max 仍走 thinking 分支（旧实现静默吃掉，现为显式契约）', env: { CLAUDE_CODE_THINKING_ENABLED: '1' }, opts: { reasoningEffort: 'max' }, want: enabled(4096) },
-  { n: '①thinkingMode=off 压过 thinking env（本任务要的降思考杠杆）', env: { CLAUDE_CODE_THINKING_ENABLED: '1' }, opts: { thinkingMode: 'off' }, want: OFF },
-  { n: '①thinkingMode=off 同时压过 thinking env 与用户档位', env: { CLAUDE_CODE_THINKING_ENABLED: '1' }, opts: { thinkingMode: 'off', reasoningEffort: 'max' }, want: OFF },
+  { n: '②thinking env → enabled+budget 4096（默认）', env: { PONOS_THINKING_ENABLED: '1' }, opts: {}, want: enabled(4096) },
+  { n: '②budget 随 provider 配置下发', env: { PONOS_THINKING_ENABLED: '1', PONOS_THINKING_BUDGET: '2048' }, opts: {}, want: enabled(2048) },
+  { n: '②budget 非法值 → 回落 4096（不得发出 NaN）', env: { PONOS_THINKING_ENABLED: '1', PONOS_THINKING_BUDGET: 'abc' }, opts: {}, want: enabled(4096) },
+  { n: '②thinking env 下档位 max 仍走 thinking 分支（旧实现静默吃掉，现为显式契约）', env: { PONOS_THINKING_ENABLED: '1' }, opts: { reasoningEffort: 'max' }, want: enabled(4096) },
+  { n: '①thinkingMode=off 压过 thinking env（本任务要的降思考杠杆）', env: { PONOS_THINKING_ENABLED: '1' }, opts: { thinkingMode: 'off' }, want: OFF },
+  { n: '①thinkingMode=off 同时压过 thinking env 与用户档位', env: { PONOS_THINKING_ENABLED: '1' }, opts: { thinkingMode: 'off', reasoningEffort: 'max' }, want: OFF },
 ]
 
 test('诊断每进程只落一行，且只对「显式档位被吃掉」说话', () => {
@@ -92,8 +92,8 @@ test('诊断每进程只落一行，且只对「显式档位被吃掉」说话',
   console.error = (...a) => { lines.push(a.join(' ')) }
   const dropped = () => lines.filter((l) => l.includes('未随请求发出')).length
   try {
-    process.env.CLAUDE_CODE_THINKING_ENABLED = '1'
-    process.env.CLAUDE_CODE_THINKING_BUDGET = '2048'
+    process.env.PONOS_THINKING_ENABLED = '1'
+    process.env.PONOS_THINKING_BUDGET = '2048'
     effortParam(null)            // auto：本就不注入，不算「被吃掉」→ 不提示
     effortParam('auto')
     assert.equal(dropped(), 0, 'auto 档位不应产生提示（否则是误报）')
@@ -105,8 +105,8 @@ test('诊断每进程只落一行，且只对「显式档位被吃掉」说话',
     assert.equal(dropped(), 1, '每进程只提示一次，避免逐步刷屏')
   } finally {
     console.error = real
-    delete process.env.CLAUDE_CODE_THINKING_ENABLED
-    delete process.env.CLAUDE_CODE_THINKING_BUDGET
+    delete process.env.PONOS_THINKING_ENABLED
+    delete process.env.PONOS_THINKING_BUDGET
   }
 })
 
@@ -150,8 +150,8 @@ test('不变量：两个旋钮绝不同时出现在同一请求里（同步发�
 
 test('旋钮之外请求体不变：不同档位只改这两个字段（缓存前缀不被搅动）', async () => {
   const strip = (b) => { const { thinking, reasoning_effort, ...rest } = b; return rest }
-  delete process.env.CLAUDE_CODE_THINKING_ENABLED
-  delete process.env.CLAUDE_CODE_THINKING_BUDGET
+  delete process.env.PONOS_THINKING_ENABLED
+  delete process.env.PONOS_THINKING_BUDGET
   const a = await withServer(() => ask({}))
   const b = await withServer(() => ask({ reasoningEffort: 'max' }))
   const c = await withServer(() => ask({ reasoningEffort: 'off' }))
@@ -207,8 +207,8 @@ async function runCompaction({ expectBodies = () => 2, ...envOpts } = {}) {
 
 test('端到端：策略生效 → 摘要步真的不带思考（provider 开着 thinking 也一样）', async () => {
   delete process.env.PONOS_EFFORT_POLICY // 默认 graded
-  process.env.CLAUDE_CODE_THINKING_ENABLED = '1'
-  process.env.CLAUDE_CODE_THINKING_BUDGET = '4096'
+  process.env.PONOS_THINKING_ENABLED = '1'
+  process.env.PONOS_THINKING_BUDGET = '4096'
   try {
     const bodies = (await runCompaction()).bodies
     assert.ok(bodies.length >= 1, '摘要请求必须真的发出去')
@@ -217,22 +217,22 @@ test('端到端：策略生效 → 摘要步真的不带思考（provider 开着
       reasoning_effort: undefined,
     }, '摘要/压缩步应显式 thinking:disabled（K3.1 唯一启用点）')
   } finally {
-    delete process.env.CLAUDE_CODE_THINKING_ENABLED
-    delete process.env.CLAUDE_CODE_THINKING_BUDGET
+    delete process.env.PONOS_THINKING_ENABLED
+    delete process.env.PONOS_THINKING_BUDGET
   }
 })
 
 test('端到端：回退开关 PONOS_EFFORT_POLICY=off → 摘要步回到现状（enabled+budget）', async () => {
   process.env.PONOS_EFFORT_POLICY = 'off'
-  process.env.CLAUDE_CODE_THINKING_ENABLED = '1'
-  process.env.CLAUDE_CODE_THINKING_BUDGET = '4096'
+  process.env.PONOS_THINKING_ENABLED = '1'
+  process.env.PONOS_THINKING_BUDGET = '4096'
   try {
     const bodies = (await runCompaction()).bodies
     assert.deepEqual(knobs(bodies[0]), enabled(4096), '一键回退：策略不干预，走 provider 思考开关')
   } finally {
     delete process.env.PONOS_EFFORT_POLICY
-    delete process.env.CLAUDE_CODE_THINKING_ENABLED
-    delete process.env.CLAUDE_CODE_THINKING_BUDGET
+    delete process.env.PONOS_THINKING_ENABLED
+    delete process.env.PONOS_THINKING_BUDGET
   }
 })
 
@@ -241,8 +241,8 @@ test('端到端：分块摘要（map-reduce）的每一块也都降思考', asyn
   // 这条单列，是因为决策漏在分块分支上时**只有这类会话**（小窗口模型 / 大 covered）会继续
   // 思考——单发路径的用例抓不到它（首版就是这么漏的，变异 M2 存活才发现）。
   delete process.env.PONOS_EFFORT_POLICY
-  process.env.CLAUDE_CODE_THINKING_ENABLED = '1'
-  process.env.CLAUDE_CODE_THINKING_BUDGET = '4096'
+  process.env.PONOS_THINKING_ENABLED = '1'
+  process.env.PONOS_THINKING_BUDGET = '4096'
   try {
     const { bodies, result } = await runCompaction({
       limit: 32768, turns: 35,
@@ -256,22 +256,22 @@ test('端到端：分块摘要（map-reduce）的每一块也都降思考', asyn
       assert.deepEqual(knobs(b), want, `第 ${i} 次请求（共 ${bodies.length}）旋钮不符`)
     }
   } finally {
-    delete process.env.CLAUDE_CODE_THINKING_ENABLED
-    delete process.env.CLAUDE_CODE_THINKING_BUDGET
+    delete process.env.PONOS_THINKING_ENABLED
+    delete process.env.PONOS_THINKING_BUDGET
   }
 })
 
 test('端到端：保真审计步不受策略影响（抓坏摘要的安全网不得被悄悄削弱）', async () => {
   delete process.env.PONOS_EFFORT_POLICY // graded：摘要步已降
-  process.env.CLAUDE_CODE_THINKING_ENABLED = '1'
-  process.env.CLAUDE_CODE_THINKING_BUDGET = '4096'
+  process.env.PONOS_THINKING_ENABLED = '1'
+  process.env.PONOS_THINKING_BUDGET = '4096'
   try {
     const bodies = (await runCompaction()).bodies
     assert.ok(bodies.length >= 2, `应有摘要 + 审计两次请求（实际 ${bodies.length}）`)
     assert.deepEqual(knobs(bodies[0]), { thinking: { type: 'disabled' }, reasoning_effort: undefined })
     assert.deepEqual(knobs(bodies[1]), enabled(4096), '审计步是判断步：必须保留思考')
   } finally {
-    delete process.env.CLAUDE_CODE_THINKING_ENABLED
-    delete process.env.CLAUDE_CODE_THINKING_BUDGET
+    delete process.env.PONOS_THINKING_ENABLED
+    delete process.env.PONOS_THINKING_BUDGET
   }
 })

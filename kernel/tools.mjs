@@ -46,12 +46,12 @@ export function killActiveChildren() {
 }
 
 // S2-2 子进程 env 白名单：仅透传系统路径/编码/代理变量，剥离一切密钥与
-// ANTHROPIC_*/CLAUDE_CODE_* 配置（防 Bash/OCR 子进程窃取宿主密钥）。
-// S6 增补 `PONOS_HOME`：内核 CLI 解析配置根时会认它（`CLAUDE_CONFIG_DIR > PONOS_HOME > ~/.ponos`），
-// 而 `CLAUDE_CONFIG_DIR` 被上面这条安全策略刻意剥离 → 不补这一项，agent 在 Bash 里跑的
+// ANTHROPIC_* / PONOS_* 配置类变量（防 Bash/OCR 子进程窃取宿主密钥）。
+// S6 增补 `PONOS_HOME`：内核 CLI 解析配置根时会认它（`PONOS_CONFIG_DIR > PONOS_HOME > ~/.ponos`），
+// 而 `PONOS_CONFIG_DIR` 被上面这条安全策略刻意剥离 → 不补这一项，agent 在 Bash 里跑的
 // `--knowledge append` 会落到 `~/.ponos`（**与应用侧 `.yfw` 不同的根**，写进去 GUI 看不见）。
-// 选语义中性的 `PONOS_HOME` 而非放开 `CLAUDE_CONFIG_DIR`：前者只是一个目录路径，
-// 后者是密钥目录名；放行前者的代价最小（HOME 本就在白名单，目录名也可猜），
+// 选语义中性的 `PONOS_HOME` 而非放开 `PONOS_CONFIG_DIR`：前者只是一个目录路径，
+// 后者是配置/会话根目录名；放行前者的代价最小（HOME 本就在白名单，目录名也可猜），
 // 却能保证"内核子进程 / Bash 子进程"两条路解析到同一个根。
 const ENV_WHITELIST = [
   'PATH', 'Path', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TMP', 'TEMP', 'TMPDIR',
@@ -784,7 +784,7 @@ async function webSearch(query) {
 
 // ---------------------------------------------------------------------------
 // OCR：扫描件识别。内核保持零 npm 依赖——OCR 能力来自外部 python 引擎
-// （RapidOCR/PP-OCRv4，见 ~/.claude/skills/_common/ocr_engine.py），工具仅负责
+// （RapidOCR/PP-OCRv4，见 skills/_common/ocr_engine.py），工具仅负责
 // 定位引擎、传参、解析输出。引擎探测：PONOS_OCR_ENGINE env 覆盖 → 常见技能路径。
 // 输出用 --output 写临时 JSON 全量结果（stdout 仅 500 字符预览），解析后删除。
 // ---------------------------------------------------------------------------
@@ -797,7 +797,7 @@ export function findOcrEngine() {
   //   1. PONOS_SKILLS_DIR（bridge 注入的技能根，PONOS_HOME 机制权威来源）
   //   2. PONOS_HOME/skills（skillRoot 兜底）
   //   3. 打包资源 runtime/skills（electron-builder extraResources → <app>/resources/runtime/skills）
-  //   4. 传统路径 ~/.ponos/skills、~/.ponos-dev/skills、~/.claude/skills
+  //   4. 传统路径 ~/.ponos/skills、~/.ponos-dev/skills
   // 全部命中失败时再尝试从 python 同目录找（嵌入式 runtime 的 skills 并排部署）。
   const candidates = []
   const push = (p) => { if (p) candidates.push(p) }
@@ -810,7 +810,6 @@ export function findOcrEngine() {
   push(join(dirname(dirname(process.cwd())), 'resources', 'runtime', 'skills', '_common', 'ocr_engine.py'))
   push(join(home, '.ponos', 'skills', '_common', 'ocr_engine.py'))
   push(join(home, '.ponos-dev', 'skills', '_common', 'ocr_engine.py'))
-  push(join(home, '.claude', 'skills', '_common', 'ocr_engine.py'))
   return candidates.find((p) => existsSync(p)) || null
 }
 

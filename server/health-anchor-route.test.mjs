@@ -42,7 +42,7 @@ function freePort() {
 }
 
 function spawnBridge(home, port) {
-  const env = { ...process.env, PONOS_MOCK_API: '1', YFW_BRIDGE_PORT: String(port), CLAUDE_CONFIG_DIR: home, YFWORKING_HOME: home }
+  const env = { ...process.env, PONOS_MOCK_API: '1', YFW_BRIDGE_PORT: String(port), PONOS_CONFIG_DIR: home, YFWORKING_HOME: home }
   delete env.PONOS_HOME
   const proc = spawn(process.execPath, [BRIDGE_ENTRY], { cwd: REPO_ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] })
   const out = []

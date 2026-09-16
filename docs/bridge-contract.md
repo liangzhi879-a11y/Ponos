@@ -82,16 +82,15 @@
 `--dangerously-skip-permissions` 仍在而停在 `loose`；bridge 经 §4 的 `init.approval_mode`
 回显比对发现不一致时报 `approval-mode-degraded`（§5）。打包前须跑 `node scripts/build-kernel.mjs`。
 
-环境变量（`buildChildEnv()`，解析序统一 `YFWORKING_HOME || CLAUDE_CONFIG_DIR || ~/.yfworking`，见 server/yfw-home.cjs）：
+环境变量（`buildChildEnv()`，解析序统一 `YFWORKING_HOME || PONOS_CONFIG_DIR || ~/.yfworking`，见 server/yfw-home.cjs）：
 | 变量 | 值 | 作用 |
 |---|---|---|
-| `CLAUDE_CONFIG_DIR` | `<home>` | 内核独立配置/会话目录 |
+| `PONOS_CONFIG_DIR` | `<home>` | 内核独立配置/会话目录 |
 | `YFWORKING_HOME` | `<home>` | 数据根（隔离双版时指向专用目录） |
-| `CLAUDE_CODE_AGENT_TRIGGERS` | `true` | 启用内核原生定时任务（CronCreate/…） |
 | `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` | 用户配置的第三方 provider | 内核实际调用的 API |
 | `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_SONNET/OPUS/HAIKU_MODEL` | provider 主/子模型 | 模型路由 |
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | contextWindow | 自动压缩窗口 |
-| `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | 64000（可覆盖） | 输出 token 上限 |
+| `PONOS_AUTO_COMPACT_WINDOW` | contextWindow | 自动压缩窗口 |
+| `PONOS_MAX_OUTPUT_TOKENS` | 64000（可覆盖） | 输出 token 上限 |
 | `YFW_HEALTH_COMPACT_COUNT` | 历史压缩次数（有值才注入） | 健康血条恢复。**内核读双名**（`PONOS_HEALTH_COMPACT_COUNT` / `YFW_HEALTH_COMPACT_COUNT`）并取两者较大值，非法值回落 0——此前只读 `PONOS_` 前缀导致该 seed 从未生效（2026-09-12 修） |
 
 系统提示词注入：**不通过命令行传长文本**（cmd.exe 8191 字符限制），而是写入 `%TEMP%/yfw-prompt-<sid>.txt`（新会话）或 `.resume.txt`（resume），经 `--append-system-prompt-file` 传入；会话进程退出时删除。内容 = 身份提示词（或自定义 agent systemPrompt）+ 互动问答格式（ASK_USER 卡片规范）+ 里程碑协议 + 技能清单（resume 用精简版）+ 经验注入（沉积引导+摘要索引，可配置）。
@@ -383,7 +382,7 @@ S4 把 bridge 内核解析/构建/bootstrap 全指向本库内核，并落地在
 | 内核运行时 | bun 布局（legacy） | **node**（D1：bridge = `process.execPath`；Electron main = bundled node.exe 或 PATH `node`） | 由调用方定位 |
 | bridge HTTP+WS 端口 | 51309 | **51517** | `YFW_BRIDGE_PORT` |
 | vite dev / preview 端口 | 5173 / 4173 | **5197 / 4197** | `YFW_VITE_PORT` / `YFW_VITE_PREVIEW_PORT` |
-| 数据根 home | `~/.yfworking`（在售） | 默认 `~/.yfw`（净室专属根，2026-09-09 串配置事故修复：各启动入口兜底注入 `YFWORKING_HOME=~/.yfw`——electron/main.cjs 模块头、dev start.bat、bin/yfworking.cmd；显式设 `YFWORKING_HOME=~/.yfworking` 可临时切回读旧会话） | 解析序 `YFWORKING_HOME \|\| CLAUDE_CONFIG_DIR \|\| ~/.yfworking`（server/yfw-home.cjs，模块默认不变，仅入口接线兜底） |
+| 数据根 home | `~/.yfworking`（在售） | 默认 `~/.yfw`（净室专属根，2026-09-09 串配置事故修复：各启动入口兜底注入 `YFWORKING_HOME=~/.yfw`——electron/main.cjs 模块头、dev start.bat、bin/yfworking.cmd；显式设 `YFWORKING_HOME=~/.yfworking` 可临时切回读旧会话） | 解析序 `YFWORKING_HOME \|\| PONOS_CONFIG_DIR \|\| ~/.yfworking`（server/yfw-home.cjs，模块默认不变，仅入口接线兜底） |
 | provider 行为画像 | 无 | config.json provider 可选字段 `profile`（'auto'\|'cloud'\|'local'，auto 启发式：私有网段→local、云域名→cloud、http 公网 IP→local）+ 显式覆盖 `temperature`/`maxOutputTokens`/`firstByteMs`/`idleMs`。本地默认：温度 0.6、提示词 lean 精简纪律段（`PONOS_PROMPT_TIER`）、输出预算 16384；云端零注入（=现状）。唯一决策点 `server/provider-profile.mjs`，经 buildChildEnv/syncKernelSettings 注入 env；syncKernelSettings 先剔除受管键再并入（防切回云端残留） | 2026-09-09 本地模型系统性适配；身份提示词同批动态化（`buildIdentityPrompt(model)`，不再硬编码 deepseek-v4-flash） |
 | 内核缓存落地目录 | `~/.yfworking/runtime/kernel`（cli.mjs + vendor/ripgrep，在售使用中，**绝不可覆写**） | `<home>/runtime/ponos-kernel`（多文件源码整目录镜像，专用目录名不互覆，D3） | 2026-09-08 覆写事故固化为专用目录 |
 | 内核来源 | yfw-kernel 分支（legacy） | 本库 `kernel/`（源，node 直跑）→ `kernel-dist/cli.mjs`（bundle，D7 产物） | `YFWORKING_KERNEL` 唯一逃生口（D8，值无效即抛错，不静默回退） |

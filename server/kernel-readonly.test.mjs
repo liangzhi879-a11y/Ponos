@@ -70,7 +70,7 @@ test('resolveKernelCli：YFWORKING_KERNEL 逃生口仍最高优先（与 findYFW
 test('kernelReadonlySync：--agents / --usage 真实 spawn 返回 JSON', () => {
   const home = mkdtempSync(join(tmpdir(), 'yfw-kr-home-'))
   try {
-    const env = { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: home, YFWORKING_HOME: home }
+    const env = { ...process.env, PONOS_MOCK_API: '1', PONOS_CONFIG_DIR: home, YFWORKING_HOME: home }
     delete env.PONOS_HOME // 防宿主演进内核解析链（kernel-bridge.test.mjs 同款隔离）
     const agents = JSON.parse(kernelReadonlySync(['--agents'], { env, cwd: process.cwd() }))
     assert.ok(Array.isArray(agents) && agents.length >= 2)

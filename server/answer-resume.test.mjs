@@ -53,7 +53,7 @@ function spawnBridge(home, port, extraEnv = {}) {
     ...process.env,
     PONOS_MOCK_API: '1',
     YFW_BRIDGE_PORT: String(port),
-    CLAUDE_CONFIG_DIR: home,
+    PONOS_CONFIG_DIR: home,
     YFWORKING_HOME: home,
     YFW_KERNEL_STALL_MS: '0', // 失速告警与回收无关，关掉以免噪声
     ...extraEnv,

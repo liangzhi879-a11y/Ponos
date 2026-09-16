@@ -5,7 +5,7 @@
 // （transcript 只有 user/assistant），故沿用 kernel-tests/chat-mode.test.mjs 的
 // PONOS_MOCK_SYS_PROBE 多针探针口子（'|' 分隔，回 SYS_PROBE:<bits>，位序 = NEEDLES 顺序）。
 //
-// 隔离纪律：CLAUDE_CONFIG_DIR/YFW_HOME 都指向 mkdtempSync 出来的临时目录，绝不碰真实 home。
+// 隔离纪律：PONOS_CONFIG_DIR/YFW_HOME 都指向 mkdtempSync 出来的临时目录，绝不碰真实 home。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -48,7 +48,7 @@ async function runTurn({ env = {}, userText = '你好，四表联动的口径是
   ], {
     env: {
       ...process.env, PONOS_MOCK_API: '1', PONOS_MOCK_SYS_PROBE: NEEDLES.join('|'),
-      CLAUDE_CONFIG_DIR: dir, YFW_HOME: dir,
+      PONOS_CONFIG_DIR: dir, YFW_HOME: dir,
       // 关键词注入：graph.search 与块级抽调都靠它拿到 query（与真实会话同一条来源链）
       PONOS_MEMORY_KEYWORDS: '四表联动',
       ...env,

@@ -92,7 +92,7 @@ function spawnKernel(dir, port, { answerApp }) {
       ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
       ANTHROPIC_AUTH_TOKEN: 'test-token',
       ANTHROPIC_MODEL: 'test-model',
-      CLAUDE_CONFIG_DIR: dir,
+      PONOS_CONFIG_DIR: dir,
       YFW_HOME: dir,
     },
     stdio: ['pipe', 'pipe', 'pipe'],

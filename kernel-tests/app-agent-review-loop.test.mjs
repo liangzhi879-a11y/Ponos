@@ -170,7 +170,7 @@ test('★ 没通过试跑的路径不评审（评审的前提是"有可交付的
 test('★ IPC：app:generate 的返回值带上 review（界面/后续可见）', async () => {
   const home = mkdtempSync(join(tmpdir(), 'appreview-ipc-'))
   process.env.YFWORKING_HOME = home
-  delete process.env.CLAUDE_CONFIG_DIR
+  delete process.env.PONOS_CONFIG_DIR
   const require2 = require
   const handlers = new Map()
   let calls = 0

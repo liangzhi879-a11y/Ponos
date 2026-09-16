@@ -60,7 +60,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // P4-5：model 每轮从 provider 注册表刷新（CLI --model 显式指定优先于 registry）；
   // 未激活时 getProvider 现读 env.ANTHROPIC_MODEL，与既有行为一致
   let model = opts.model || getProvider().model || ''
-  const maxTokens = Math.max(1, Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || 64000))
+  const maxTokens = Math.max(1, Number(process.env.PONOS_MAX_OUTPUT_TOKENS || 64000))
   // P0-3 大结果落盘目录并入文件边界：persistToolResult 把 >20K 工具结果存到
   // <会话目录>/tool-results/ 并只回模型 stub（提示"可用 Read 读取"）。但会话目录
   // = configDir/projects/<cwd>，位于 GUI 挂载的 --add-dir（项目目录）之外——若不入
@@ -173,8 +173,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // 提示词（基础行为规范 + AGENTS.md + append），直连测试可经 opts.systemPrompt 预置
   let systemPrompt = opts.systemPrompt || ''
   // 思考深度档位：null = auto（不注入，模型原生自适应）；off/low/high/max = 显式。
-  // 初始来源：CLAUDE_CODE_EFFORT_LEVEL（Claude Code 命名，DeepSeek 官方推荐）> PONOS_REASONING_EFFORT > auto
-  let reasoningEffort = normalizeEffort(process.env.CLAUDE_CODE_EFFORT_LEVEL || process.env.PONOS_REASONING_EFFORT || 'auto')
+  // 初始来源：PONOS_REASONING_EFFORT（本内核自有命名）> auto
+  let reasoningEffort = normalizeEffort(process.env.PONOS_REASONING_EFFORT || 'auto')
   function resolveEffort() { return reasoningEffort }
   function applyReasoningEffort(value) {
     const v = String(value ?? 'auto').trim().toLowerCase()
@@ -995,7 +995,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // 67 次 → 请求面 317KB、292 条消息——长会话 DS 流反复中断的温床）。同一 user
       // 消息内 tool_result 合计超预算时，把最大的几条落盘替换为 preview+path
       // （Read 例外同 P0-3：模型显式索要的文件内容不 stub），直到合计低于预算。
-      const aggBudget = Math.max(20_000, Number(process.env.CLAUDE_CODE_TOOL_RESULT_BATCH_BUDGET || 100_000))
+      const aggBudget = Math.max(20_000, Number(process.env.PONOS_TOOL_RESULT_BATCH_BUDGET || 100_000))
       const aggResults = applyAggregateResultBudget(toolResults, blocks.map((b) => b.name), {
         budgetChars: aggBudget,
         persist: (content, idx) => persistToolResult(store || session, blocks[idx]?.id, content, 5000),
@@ -1106,7 +1106,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // 预览 + 路径（可 Read 补读，无损恢复；参考 claude toolResultStorage）
   function persistToolResult(target, toolUseId, content, limitOverride) {
     if (!target || typeof content !== 'string') return content
-    const limit = Number(limitOverride ?? process.env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES ?? 20000)
+    const limit = Number(limitOverride ?? process.env.PONOS_TOOL_RESULT_BUDGET_BYTES ?? 20000)
     if (content.length <= limit) return content
     try {
       const dir = join(dirname(target.file), 'tool-results')
@@ -1294,7 +1294,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     // Task 4.x），子 agent 循环注入 lane:true（禁嵌套分发）
     const { store, ...toolCtx } = ctx
     // P1-9：统一执行 deadline（兜"永不返回"的工具；各工具自身超时负责 kill）
-    const toolDeadlineMs = Number(process.env.CLAUDE_CODE_TOOL_TIMEOUT_MS || 300_000)
+    const toolDeadlineMs = Number(process.env.PONOS_TOOL_TIMEOUT_MS || 300_000)
     const r = await withToolDeadline(tools.run(toolUse, { ...toolCtx, toolUseId: toolUse.id, browserDriver: runBrowser, appRunner: runApp }), toolDeadlineMs)
     // P0-3：大结果落盘到目标会话目录（子 lane 独立 store）。Read 例外：Read 返回的
     // 就是模型显式索要的文件内容（≤2000 行/2MB，超界文件已由 Read 自身引导 offset/

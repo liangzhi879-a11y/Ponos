@@ -23,12 +23,12 @@ test('bridge 引入并调用 disabled 路由 handler', () => {
     '必须在请求分发处调用，且把 method/pathname 原样传入')
 })
 
-test('configDir 必须是 YFW_HOME（内核子进程的 CLAUDE_CONFIG_DIR 同处）', () => {
-  // 这是本设计的**关键不变量**：桥写 <YFW_HOME>/disabled.json，内核读 <CLAUDE_CONFIG_DIR>/disabled.json，
-  // 而 CLAUDE_CONFIG_DIR 就取自 YFW_HOME（见 buildChildEnv）。若这里写成别的目录，
+test('configDir 必须是 YFW_HOME（内核子进程的 PONOS_CONFIG_DIR 同处）', () => {
+  // 这是本设计的**关键不变量**：桥写 <YFW_HOME>/disabled.json，内核读 <PONOS_CONFIG_DIR>/disabled.json，
+  // 而 PONOS_CONFIG_DIR 就取自 YFW_HOME（见 buildChildEnv）。若这里写成别的目录，
   // 开关会"写进一个没人读的文件"——功能整体失效且无任何错误。
   assert.match(src, /configDir: YFW_HOME \}\)/, 'configDir 必须传 YFW_HOME')
-  assert.match(src, /CLAUDE_CONFIG_DIR: YFW_HOME/, '不变量前提：内核的 CLAUDE_CONFIG_DIR 必须仍等于 YFW_HOME')
+  assert.match(src, /PONOS_CONFIG_DIR: YFW_HOME/, '不变量前提：内核的 PONOS_CONFIG_DIR 必须仍等于 YFW_HOME')
 })
 
 test('路由在 /sample-skills 之前（分发顺序不得把它挤到 unreachable 分支）', () => {

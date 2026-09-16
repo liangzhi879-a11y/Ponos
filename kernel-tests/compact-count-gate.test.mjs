@@ -21,11 +21,11 @@ test('resolveCompactSettings：maxMessages 默认 120，settings/env 可覆盖�
   assert.equal(resolveCompactSettings({ window: 200_000, settings: { compact: { maxMessages: 50 } }, env: {} }).maxMessages, 50)
   assert.equal(resolveCompactSettings({ window: 200_000, settings: { compact: { maxMessages: 0 } }, env: {} }).maxMessages, 0)
   assert.equal(
-    resolveCompactSettings({ window: 200_000, settings: {}, env: { CLAUDE_CODE_COMPACT_MAX_MESSAGES: '7' } }).maxMessages,
+    resolveCompactSettings({ window: 200_000, settings: {}, env: { PONOS_COMPACT_MAX_MESSAGES: '7' } }).maxMessages,
     7,
   )
   assert.equal(
-    resolveCompactSettings({ window: 200_000, settings: { compact: { maxMessages: 50 } }, env: { CLAUDE_CODE_COMPACT_MAX_MESSAGES: '7' } }).maxMessages,
+    resolveCompactSettings({ window: 200_000, settings: { compact: { maxMessages: 50 } }, env: { PONOS_COMPACT_MAX_MESSAGES: '7' } }).maxMessages,
     50,
     'settings 显式配置时压过 env',
   )

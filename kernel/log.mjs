@@ -1,6 +1,6 @@
 // kernel/log.mjs —— 内核结构化日志（docs/production/reliability.md R5-1）
 // 输出 stderr（stdout 是 NDJSON 契约通道，日志不得污染）。级别过滤经
-// CLAUDE_CODE_LOG_LEVEL（fatal/error/warn/info/debug），默认 info。
+// PONOS_LOG_LEVEL（fatal/error/warn/info/debug），默认 info。
 // S2-1：error/fatal/warn 的 err 消息落日志前脱敏（日志不泄密钥）。
 import { redactText } from './redact.mjs'
 const LEVELS = { fatal: 0, error: 1, warn: 2, info: 3, debug: 4 }

@@ -313,7 +313,7 @@ export interface AppSettings {
   autoImageBridge: boolean
   /** 视觉模型来源 provider id（空=跟随 activeProvider）；视觉模型取自该 provider 的 visionModel 字段 */
   visionProviderId: string
-  /** 思考深度（全局，Task 12）：新会话 spawn 经 CLAUDE_CODE_EFFORT_LEVEL env 注入，
+  /** 思考深度（全局，Task 12）：新会话 spawn 经 PONOS_REASONING_EFFORT env 注入，
    *  运行中会话经 WS reasoning_effort 热切换；'auto' = 内核默认（不注入）。
    *  必填——defaultSettings 恒提供；旧 persist 快照可能缺失，消费点一律 normalizeEffortUi。 */
   effortLevel: EffortLevel
@@ -359,7 +359,7 @@ export interface ModelProvider {
   /** 单次输出预算（tokens）；未设=本地 16384 / 云端 16384（2026-09-12 起，见 provider-profile） */
   maxOutputTokens?: number
   /** 单条工具结果字节上限（2026-09-12 四家方案对标：CC 50K 聚合 / pi 50KB / Codex 10K tok）；
-   *  未设=内核默认 20000 字符（落盘+预览替换）。值注入 CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES */
+   *  未设=内核默认 20000 字符（落盘+预览替换）。值注入 PONOS_TOOL_RESULT_BUDGET_BYTES */
   toolResultBudgetBytes?: number
   /** 首个内容块前的空闲宽限（ms）；未设=内核默认 300000 */
   firstByteMs?: number

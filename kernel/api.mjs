@@ -1156,7 +1156,7 @@ export async function* protocolStream({ url, body, headers, signal }) {
   // 制造更多孤儿，形成"越重试越挂"的死亡螺旋（实测 8 分钟 19 次重试全灭）。
   // 真正的挂起守卫是 engine 的首字节看门狗（447/480s，abort 信号传导到 fetch）；
   // TCP 连接失败（拒绝/RST）由系统栈秒级报错，不需要 30s 兜底。
-  const connectTimeoutMs = Math.max(0, Number(process.env.CLAUDE_CODE_CONNECT_TIMEOUT_MS || 600_000))
+  const connectTimeoutMs = Math.max(0, Number(process.env.PONOS_CONNECT_TIMEOUT_MS || 600_000))
   const extSignal = toAbortSignal(signal)
   // connection: close（2026-09-09 挂起事故修复）：远程网关对半开/复用连接有隐性
   // 限流——kernel 连接堆积（ESTABLISHED+CLOSE_WAIT）后新请求被静默丢弃（实测：
@@ -1193,9 +1193,9 @@ export async function* protocolStream({ url, body, headers, signal }) {
   // "每 300s 重发同一请求"的失速循环（2026-09-10 实测 881s 静默告警根因：
   // engine 首字节看门狗 447/600s 还没到，流读先被 300s 掐死 → zeroEvents
   // 无限重试）。大请求（>200K 字符，engine adaptiveFirstByteMs 同门槛）放宽
-  // 到 600s 封顶。显式 CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS 仍权威（测试/用户覆盖）。
+  // 到 600s 封顶。显式 PONOS_STREAM_IDLE_TIMEOUT_MS 仍权威（测试/用户覆盖）。
   const idleTimeoutMs = (() => {
-    const explicit = Number(process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS)
+    const explicit = Number(process.env.PONOS_STREAM_IDLE_TIMEOUT_MS)
     if (Number.isFinite(explicit) && explicit > 0) return explicit
     const fb = Number(process.env.PONOS_STREAM_FIRST_BYTE_MS)
     // 大请求：对齐 engine adaptiveFirstByteMs（>200K 字符 → 600s 上限）
@@ -1345,7 +1345,7 @@ function isCacheRejection(err) {
 // **优先级是显式的，且经实测确定（Task 11 探针，2026-09-13，n=8/臂/题）**：
 //   ① 策略关思考（thinkingMode==='off'）或用户 off 档 → thinking:{type:'disabled'}
 //      —— 唯一被实测证明能压掉思考量的手段：中位墙钟 3.1× / 1.5×，且 16/16 全对
-//   ② provider 开了思考模式（CLAUDE_CODE_THINKING_ENABLED=1）→ thinking:{enabled,budget}
+//   ② provider 开了思考模式（PONOS_THINKING_ENABLED=1）→ thinking:{enabled,budget}
 //      —— 唯一真正控制思考量的旋钮（MiniMax 等不显式开启则思考完全不可见）
 //   ③ 其余档位 → reasoning_effort
 // 关键实测（决定了②必须排在③之前，而不是"两害相权"）：在本端点 `reasoning_effort`
@@ -1372,8 +1372,8 @@ export function effortParam(effort, thinkingMode = null) {
   // provider 思考模式（2026-09-10）：MiniMax 等不认 reasoning_effort 的云端，
   // 显式 thinking:enabled+budget 后流内才有 thinking_delta（实测无参数时思考
   // 完全不可见——思考混进 text_delta 或整段隐藏）。auto 档位走本分支。
-  if (process.env.CLAUDE_CODE_THINKING_ENABLED === '1') {
-    const budget = Number(process.env.CLAUDE_CODE_THINKING_BUDGET || 4096)
+  if (process.env.PONOS_THINKING_ENABLED === '1') {
+    const budget = Number(process.env.PONOS_THINKING_BUDGET || 4096)
     const n = Number.isFinite(budget) && budget > 0 ? Math.floor(budget) : 4096
     // 诊断不降级：旧实现对此**完全静默**——用户在设置面板把档位从 low 拉到 max，
     // 线上请求一字未变却无从察觉。落一行（每进程一次）到内核 stderr，可经
@@ -1430,7 +1430,7 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
       ? { tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema })) }
       : {}),
   }
-  const maxReconnect = Math.max(0, Number(process.env.CLAUDE_CODE_STREAM_RECONNECTS ?? 3))
+  const maxReconnect = Math.max(0, Number(process.env.PONOS_STREAM_RECONNECTS ?? 3))
   // 已知取舍（审计 #9，2026-09-07 复核维持现状）：断流重连时若上一段文本已部分输出，
   // 重试可能重复半截文本。审计与产品取舍均判定"接受"——重试正确性优先于输出去重；
   // 若要改进（engine 层半截文本去重）需先做真实断流复现与评估，勿无评估直接改此处。

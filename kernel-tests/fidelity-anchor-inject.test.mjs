@@ -118,7 +118,7 @@ async function runAnchorScenario(extraEnv) {
   const k = spawnKernel({
     PONOS_MOCK_API: '1',
     PONOS_FIDELITY: '1',
-    CLAUDE_CONFIG_DIR: dir,
+    PONOS_CONFIG_DIR: dir,
     YFW_HOME: dir,
     ...extraEnv,
   }, dir)
@@ -197,7 +197,7 @@ async function runThrottleScenario(extraEnv, turns) {
     PONOS_MOCK_API: '1',
     PONOS_FIDELITY: '1',
     PONOS_MOCK_ANCHOR_PROBE: ANCHOR_MARK,
-    CLAUDE_CONFIG_DIR: dir,
+    PONOS_CONFIG_DIR: dir,
     YFW_HOME: dir,
     ...extraEnv,
   }, dir)

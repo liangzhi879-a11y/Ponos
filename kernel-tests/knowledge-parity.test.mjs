@@ -6,7 +6,7 @@
 // 往返钉死；算法内部漂移由 shared/ 与 kernel-tests/knowledge-*.test.mjs 覆盖。
 //
 // 隔离：子进程经 PONOS_HOME 指向 mkdtempSync 临时目录（resolveConfigDir 优先级：
-// CLAUDE_CONFIG_DIR → PONOS_HOME → ~/.ponos）；CLAUDE_CONFIG_DIR 显式置空以免外部干扰。
+// PONOS_CONFIG_DIR → PONOS_HOME → ~/.ponos）；PONOS_CONFIG_DIR 显式置空以免外部干扰。
 // 绝不触碰真实 ~/.yfworking / ~/.yfw；不起 bridge。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -44,7 +44,7 @@ function runCli(dir, argsList) {
   const out = execFileSync(process.execPath, [
     CLI, '--output-format', 'stream-json', '--input-format', 'stream-json', '--knowledge', ...argsList,
   ], {
-    env: { ...process.env, PONOS_HOME: dir, CLAUDE_CONFIG_DIR: '' },
+    env: { ...process.env, PONOS_HOME: dir, PONOS_CONFIG_DIR: '' },
     encoding: 'utf-8',
     timeout: 60000,
   })
@@ -56,7 +56,7 @@ function runCliRaw(dir, argsList) {
   return execFileSync(process.execPath, [
     CLI, '--output-format', 'stream-json', '--input-format', 'stream-json', '--knowledge', ...argsList,
   ], {
-    env: { ...process.env, PONOS_HOME: dir, CLAUDE_CONFIG_DIR: '' },
+    env: { ...process.env, PONOS_HOME: dir, PONOS_CONFIG_DIR: '' },
     encoding: 'utf-8',
     timeout: 60000,
   })

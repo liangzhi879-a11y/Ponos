@@ -19,7 +19,7 @@
 //      从未存在（S5 的 `--doc`/`--related` 就是这么静默失效的），而单测直调
 //      `runKnowledgeCommand` 会绕过这一层管道，完全抓不到。
 //
-// 隔离：mkdtempSync + PONOS_HOME，并清 CLAUDE_CONFIG_DIR（宿主若设了它，真进程会读真实库）。
+// 隔离：mkdtempSync + PONOS_HOME，并清 PONOS_CONFIG_DIR（宿主若设了它，真进程会读真实库）。
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -47,7 +47,7 @@ after(() => { for (const d of tmpDirs) { try { rmSync(d, { recursive: true, forc
 /** 真进程跑 `--knowledge <args>`；返回 `{code, stdout, stderr, env}` */
 function runCli(dir, args) {
   const env = { ...process.env, PONOS_HOME: dir }
-  delete env.CLAUDE_CONFIG_DIR
+  delete env.PONOS_CONFIG_DIR
   const r = spawnSync(process.execPath, [CLI, '--output-format', 'stream-json', '--input-format', 'stream-json', ...args], {
     env, encoding: 'utf8', timeout: 60_000,
   })
@@ -178,7 +178,7 @@ test('`--text -` 从 stdin 逐字读入（多行含 | 与反引号不被 shell �
   const dir = fixture()
   const text = '多行经验：第一行说明背景\n第二行含 | 竖线与 `code` 反引号，经 stdin 应逐字保留'
   const env = { ...process.env, PONOS_HOME: dir }
-  delete env.CLAUDE_CONFIG_DIR
+  delete env.PONOS_CONFIG_DIR
   const r = spawnSync(process.execPath, [CLI, '--output-format', 'stream-json', '--input-format', 'stream-json',
     '--knowledge', 'append', '--tag', 'stdin通道', '--text', '-'], {
     env, encoding: 'utf8', timeout: 60_000, input: text,

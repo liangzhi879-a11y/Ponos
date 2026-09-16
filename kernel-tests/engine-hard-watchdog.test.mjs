@@ -41,7 +41,7 @@ test('硬看门狗：异步链失活 → 超时硬退出（exit 7 + marker.err �
   const { proc, out, err } = spawnKernel({
     PONOS_MOCK_API: '1',
     PONOS_KERNEL_HARD_TIMEOUT_MS: '4000',
-    CLAUDE_CONFIG_DIR: dir,
+    PONOS_CONFIG_DIR: dir,
     YFW_HOME: dir,
   }, dir)
   try {
@@ -67,7 +67,7 @@ test('硬看门狗不误杀：正常轮次结束后（result 解除武装）进�
   const { proc, events } = spawnKernel({
     PONOS_MOCK_API: '1',
     PONOS_KERNEL_HARD_TIMEOUT_MS: '3000',
-    CLAUDE_CONFIG_DIR: dir,
+    PONOS_CONFIG_DIR: dir,
     YFW_HOME: dir,
   }, dir)
   try {
@@ -99,7 +99,7 @@ test('审批等待期按上限展期：等待超过 hardTimeoutMs 不被误杀�
     PONOS_MOCK_API: '1',
     PONOS_KERNEL_HARD_TIMEOUT_MS: '3000',
     PONOS_APPROVAL_TIMEOUT_MS: '30000', // 展期窗口 >> 基础阈值，才测得出"展期"
-    CLAUDE_CONFIG_DIR: dir,
+    PONOS_CONFIG_DIR: dir,
     YFW_HOME: dir,
   }, dir)
   try {
@@ -144,7 +144,7 @@ test('无人回执的审批等待有界：不残留纯静默（必见 result 或
     PONOS_MOCK_API: '1',
     PONOS_KERNEL_HARD_TIMEOUT_MS: '2000',
     PONOS_APPROVAL_TIMEOUT_MS: '4000',
-    CLAUDE_CONFIG_DIR: dir,
+    PONOS_CONFIG_DIR: dir,
     YFW_HOME: dir,
   }, dir)
   try {

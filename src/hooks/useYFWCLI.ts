@@ -297,7 +297,7 @@ export function sendPermissionResponse(sessionId: string, toolUseId: string, app
  * 思考深度热切换（Task 12）：GUI 设置页选定 effort 后上送 bridge，bridge 对运行中
  * 内核会话注入 reasoning_effort control_request。conversationId 为空时回退到
  * 模块级 lastSessionId（最近发送过消息的会话），再无则 'default'——与 stop() 同款
- * 兜底。无活动会话 / WS 未连接时幂等忽略（新会话由 spawn env CLAUDE_CODE_EFFORT_LEVEL
+ * 兜底。无活动会话 / WS 未连接时幂等忽略（新会话由 spawn env PONOS_REASONING_EFFORT
  * 注入兜底）。ws-null-guard 与 stop() 一致：仅当已连接才 send，不排队不建连。
  */
 export function sendEffort(conversationId: string | undefined, level: string) {

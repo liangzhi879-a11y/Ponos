@@ -430,7 +430,7 @@ export async function main(argv) {
   // 会话身份：--resume 恢复既有会话，否则新建（session_id 供 GUI 从 init 事件
   // 记录 conversation.sessionId，transcript 文件名 = 该 id，契约 §7/§8）
   const sessionId = args.resume || newSessionId()
-  // S5-1 配置目录解析纯函数（CLAUDE_CONFIG_DIR > PONOS_HOME > ~/.ponos）
+  // S5-1 配置目录解析纯函数（PONOS_CONFIG_DIR > PONOS_HOME > ~/.ponos）
   const configDir = resolveConfigDir(process.env, homedir)
   // P10-A：技能/工作流发现根——前端（bridge）负责安装注册到技能根，内核只发现使用。
   // 显式 --skills-dir 优先；否则 addDirs（含 bridge 注入技能根）叠加默认根 <configDir>/skills，
@@ -455,8 +455,8 @@ export async function main(argv) {
   for (const [k, v] of Object.entries(settings.merged.env || {})) {
     if (v !== undefined && process.env[k] === undefined) process.env[k] = String(v)
   }
-  // 内核结构化日志（R5-1）：stderr JSON 行，级别过滤经 CLAUDE_CODE_LOG_LEVEL
-  const log = createLogger({ level: process.env.CLAUDE_CODE_LOG_LEVEL || 'info', sid: sessionId })
+  // 内核结构化日志（R5-1）：stderr JSON 行，级别过滤经 PONOS_LOG_LEVEL
+  const log = createLogger({ level: process.env.PONOS_LOG_LEVEL || 'info', sid: sessionId })
 
   // 会话知识范围（2026-09-15，P1「会话模式关联经验库之外的知识库」，spec §3.2）。
   //
@@ -590,14 +590,14 @@ export async function main(argv) {
   // P4-5：model 热切换后可变（init/回执用最新值；未激活时 getProvider 现读 env）
   // P4-3：settings.merged.model 三级兜底（args > env > settings）
   let model = args.model || getProvider().model || settings.merged.model || ''
-  const maxTokens = Math.max(1, Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || settings.merged.maxOutputTokens || 64000))
+  const maxTokens = Math.max(1, Number(process.env.PONOS_MAX_OUTPUT_TOKENS || settings.merged.maxOutputTokens || 64000))
   const contextWindow = contextWindowFor(model)
   // L2-1：settings.compact 预算配置化——threshold/reserve ratio + 工具结果预算。
   // 仅当 settings 显式配置 maxToolResults 且 env 未设置时才兜底填 env（不覆盖 spawn env）。
   const compactCfg = resolveCompactSettings({ window: contextWindow, settings: settings.merged, env: process.env })
   const maxToolResults = Number(settings.merged.compact?.maxToolResults)
-  if (Number.isFinite(maxToolResults) && maxToolResults > 0 && !process.env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES) {
-    process.env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES = String(maxToolResults)
+  if (Number.isFinite(maxToolResults) && maxToolResults > 0 && !process.env.PONOS_TOOL_RESULT_BUDGET_BYTES) {
+    process.env.PONOS_TOOL_RESULT_BUDGET_BYTES = String(maxToolResults)
   }
   const context = {
     window: contextWindow,
@@ -797,7 +797,7 @@ export async function main(argv) {
   }
   // J1：health Judge 注入位——包装 engine.judgeUntil 作健康判定（目标 = 当前会话
   // 健康状态判定：是否建议重置/继续/压缩后继续）。默认关（PONOS_LLM_JUDGE /
-  // CLAUDE_CODE_LLM_JUDGE），开时仅红档 + 冷却 300s 触发；异常由 health 侧静默。
+  // PONOS_LLM_JUDGE），开时仅红档 + 冷却 300s 触发；异常由 health 侧静默。
   try {
     health.runJudge = async () => {
       const j = await engine.judgeUntil({

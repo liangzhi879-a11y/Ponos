@@ -10,7 +10,7 @@
 //      于是 flag 被静默吞掉（`graph --related` 图层开了却没有边），单测直调
 //      `runKnowledgeCommand` 完全没抓到。这次一开始就用真进程锁住。
 //
-// 隔离纪律：mkdtempSync 临时目录；真进程走 PONOS_HOME 并清 CLAUDE_CONFIG_DIR
+// 隔离纪律：mkdtempSync 临时目录；真进程走 PONOS_HOME 并清 PONOS_CONFIG_DIR
 // （防宿主环境把它指到真实库），不起 bridge、不联网。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -49,7 +49,7 @@ function runCli(dir, extra = []) {
     '--knowledge', 'graph', ...extra,
   ], {
     encoding: 'utf-8',
-    env: { ...process.env, PONOS_HOME: dir, CLAUDE_CONFIG_DIR: '' },
+    env: { ...process.env, PONOS_HOME: dir, PONOS_CONFIG_DIR: '' },
     cwd: ROOT,
   })
   assert.equal(r.status, 0, `真进程退出码应为 0，stderr=${r.stderr}`)

@@ -50,8 +50,8 @@ async function waitFor(fn, ms) {
 
 test('连接超时（响应头未到）→ 底层 fetch 被真正 abort，服务端观测到断开', async () => {
   let serverSawClose = false
-  process.env.CLAUDE_CODE_CONNECT_TIMEOUT_MS = '600'
-  process.env.CLAUDE_CODE_STREAM_RECONNECTS = '0'
+  process.env.PONOS_CONNECT_TIMEOUT_MS = '600'
+  process.env.PONOS_STREAM_RECONNECTS = '0'
   try {
     // 服务端收到请求后**永不响应**（排队/静默丢弃形态）
     await withServer((req) => {
@@ -62,15 +62,15 @@ test('连接超时（响应头未到）→ 底层 fetch 被真正 abort，服务
         '连接超时后必须 abort 底层 fetch——旧实现只 reject，请求留在连接池/服务端继续跑（孤儿占位，重试叠加成越重试越挂）')
     })
   } finally {
-    delete process.env.CLAUDE_CODE_CONNECT_TIMEOUT_MS
-    delete process.env.CLAUDE_CODE_STREAM_RECONNECTS
+    delete process.env.PONOS_CONNECT_TIMEOUT_MS
+    delete process.env.PONOS_STREAM_RECONNECTS
   }
 })
 
 test('流读空闲超时 → 底层 reader 被 cancel，服务端观测到断开', async () => {
   let serverSawClose = false
-  process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS = '700'
-  process.env.CLAUDE_CODE_STREAM_RECONNECTS = '0'
+  process.env.PONOS_STREAM_IDLE_TIMEOUT_MS = '700'
+  process.env.PONOS_STREAM_RECONNECTS = '0'
   try {
     // 已送出 HTTP 200 + 一个事件（不算空流），随后永久静默：正是"上游还在思考"的形态
     await withServer((req, res) => {
@@ -83,7 +83,7 @@ test('流读空闲超时 → 底层 reader 被 cancel，服务端观测到断开
         '空闲超时后必须 reader.cancel()——旧实现只 releaseLock()，挂起的 read() 与响应体一起泄漏，服务端连接永不收口')
     })
   } finally {
-    delete process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS
-    delete process.env.CLAUDE_CODE_STREAM_RECONNECTS
+    delete process.env.PONOS_STREAM_IDLE_TIMEOUT_MS
+    delete process.env.PONOS_STREAM_RECONNECTS
   }
 })

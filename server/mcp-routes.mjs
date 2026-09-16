@@ -5,7 +5,7 @@
 // 测试**不得起 bridge、不得起内核子进程**——bridge 在 import 期就会扫真实 home。
 //
 // 落点 = `<configDir>/mcp.json`，与内核读的**同一个文件**（内核 `configDir` = 桥的 `YFW_HOME`，
-// 而 `YFW_HOME` 就是内核子进程的 `CLAUDE_CONFIG_DIR`，bridge.mjs 的 disabled 分支已写明）。
+// 而 `YFW_HOME` 就是内核子进程的 `PONOS_CONFIG_DIR`，bridge.mjs 的 disabled 分支已写明）。
 // 故这里是"写"、内核是"读"，中间没有 spawn 透传参数——这也是不用命令行参数做 MCP 配置的理由：
 // 少一条会静默失效的链路（本仓库已有 `--spaces`/`--confirm` 两次"漏登记被静默忽略"的前车之鉴）。
 //

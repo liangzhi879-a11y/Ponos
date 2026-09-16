@@ -61,7 +61,7 @@ function spawnKernel(home, port, agentId) {
       ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
       ANTHROPIC_AUTH_TOKEN: 'test-token',
       ANTHROPIC_MODEL: 'test-model',
-      CLAUDE_CONFIG_DIR: home,
+      PONOS_CONFIG_DIR: home,
       YFW_HOME: home,
     },
     stdio: ['pipe', 'pipe', 'pipe'],

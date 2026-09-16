@@ -584,7 +584,6 @@ export function parserCandidates() {
   push(join(cwdUp2, 'resources', 'runtime', 'skills', '_common', 'doc_to_md.py'))
   push(join(home, '.yfw', 'skills', '_common', 'doc_to_md.py'))
   push(join(home, '.ponos', 'skills', '_common', 'doc_to_md.py'))
-  push(join(home, '.claude', 'skills', '_common', 'doc_to_md.py'))
   return out.filter(Boolean)
 }
 

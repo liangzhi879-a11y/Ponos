@@ -59,7 +59,7 @@ test('OPTIONS 预检回显 origin + 允许 methods/headers（renderer POST/PUT/D
     YFW_BRIDGE_PORT: String(port),
     YFW_AUTH_FILE: authFile,
     YFWORKING_HOME: home,
-    CLAUDE_CONFIG_DIR: home,
+    PONOS_CONFIG_DIR: home,
   }
   delete env.PONOS_HOME // 防止宿主演进到解析链
   const proc = spawn(process.execPath, [BRIDGE_ENTRY], { cwd: REPO_ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] })

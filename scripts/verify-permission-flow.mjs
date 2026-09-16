@@ -60,7 +60,7 @@ const posixFile = testFile.replace(/\\/g, '/')
 
 const env = {
   ...process.env,
-  CLAUDE_CONFIG_DIR: YFW_HOME,
+  PONOS_CONFIG_DIR: YFW_HOME,
   ANTHROPIC_BASE_URL: provider.apiBaseUrl,
   ANTHROPIC_AUTH_TOKEN: provider.authToken,
   ANTHROPIC_MODEL: model,

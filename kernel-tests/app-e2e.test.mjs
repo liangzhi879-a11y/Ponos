@@ -17,7 +17,7 @@ const require = createRequire(import.meta.url)
 
 const home = mkdtempSync(join(tmpdir(), 'appe2e-'))
 process.env.YFWORKING_HOME = home
-delete process.env.CLAUDE_CONFIG_DIR
+delete process.env.PONOS_CONFIG_DIR
 
 const ROOT = join(home, 'apps')
 const roots = [ROOT]

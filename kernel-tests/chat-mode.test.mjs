@@ -79,7 +79,7 @@ async function runTurn({ chat }) {
   const h = spawnKernel({
     PONOS_MOCK_API: '1',
     PONOS_MOCK_SYS_PROBE: NEEDLES.join('|'),
-    CLAUDE_CONFIG_DIR: dir,
+    PONOS_CONFIG_DIR: dir,
     YFW_HOME: dir,
   }, dir, chat ? ['--session-mode', 'chat'] : [])
   try {

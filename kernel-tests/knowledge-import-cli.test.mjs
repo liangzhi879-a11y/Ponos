@@ -11,7 +11,7 @@
 // python 脚本），故用例不依赖真实 pd 解析库、不加载 OCR 模型。没有可用 python 解释器的
 // 环境里，只有"需要落盘产物"的用例 skip（flag 校验/护栏/零落盘那批不依赖 python）。
 //
-// 隔离：mkdtemp + PONOS_HOME（并清掉 CLAUDE_CONFIG_DIR，防宿主把 configDir 指到真实库）；
+// 隔离：mkdtemp + PONOS_HOME（并清掉 PONOS_CONFIG_DIR，防宿主把 configDir 指到真实库）；
 // 不起 bridge、不联网。真实 `knowledge/` 一律不碰。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -73,7 +73,7 @@ function pyOk() {
 
 function envFor(home, extra = {}) {
   const env = { ...process.env, PONOS_HOME: home, ...extra }
-  delete env.CLAUDE_CONFIG_DIR   // 否则优先级高于 PONOS_HOME，用例会写进真实 configDir
+  delete env.PONOS_CONFIG_DIR   // 否则优先级高于 PONOS_HOME，用例会写进真实 configDir
   return env
 }
 /** 真进程跑 `--knowledge <args…>`（格式旗标必须带：`--knowledge` 短路在格式校验之后） */

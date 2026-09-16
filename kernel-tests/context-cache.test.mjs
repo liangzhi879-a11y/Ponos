@@ -65,7 +65,7 @@ test('反例①：老化清除（compact.mjs:59）后估值必须下降——不
 test('反例②：结构裁剪（compact.mjs:199）后估值必须下降', () => {
   const msgs = [assistantTool('t1', 'Bash'), toolResultMsg('t1', 'z'.repeat(8000))]
   const before = estimateHistory(msgs)
-  const r = freeShrink(msgs, { window: 200_000, env: { CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES: '200' }, age: false })
+  const r = freeShrink(msgs, { window: 200_000, env: { PONOS_TOOL_RESULT_BUDGET_BYTES: '200' }, age: false })
   assert.equal(r.prunedAny, true, '超预算结果应被裁剪')
   const after = estimateHistory(msgs)
   assert.ok(after < before, `裁剪后估值必须下降（${before} → ${after}）；相等=缓存陈旧`)
@@ -84,13 +84,13 @@ test('反例③：bumpContentEpoch 后（非 compact 路径的外部改写）同
 test('密度 env 进键：改系数必须重算，恢复后回到原值', () => {
   const msgs = bigHistory({ messages: 60 })
   const a = estimateRequest({ system: '', messages: msgs }).total
-  process.env.CLAUDE_CODE_TOKEN_DENSITY_TEXT = '2' // 系数是「每 token 几个字符」→ 变小 = 估值变大
+  process.env.PONOS_TOKEN_DENSITY_TEXT = '2' // 系数是「每 token 几个字符」→ 变小 = 估值变大
   try {
     const b = estimateRequest({ system: '', messages: msgs }).total
     assert.notEqual(b, a, '密度系数变了必须重算（缓存键缺 dk 就会串味 → 这里会静默返回旧值）')
     assert.ok(b > a, `密度 4→2 应使估值上升（${a} → ${b}）`)
   } finally {
-    delete process.env.CLAUDE_CODE_TOKEN_DENSITY_TEXT
+    delete process.env.PONOS_TOKEN_DENSITY_TEXT
   }
   assert.equal(estimateRequest({ system: '', messages: msgs }).total, a, '恢复后应回到原值')
 })

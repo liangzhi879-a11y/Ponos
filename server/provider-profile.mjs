@@ -18,7 +18,7 @@ export const MANAGED_KEYS = [
   'PONOS_TEMPERATURE',
   'PONOS_PROMPT_TIER',
   'PONOS_PROMPT_CACHE',
-  'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
+  'PONOS_MAX_OUTPUT_TOKENS',
   'PONOS_STREAM_FIRST_BYTE_MS',
   'PONOS_STREAM_IDLE_MS',
   // 画像标记（2026-09-10）：内核 contextWindowFor 按 local/cloud 选保守默认窗口
@@ -27,24 +27,24 @@ export const MANAGED_KEYS = [
 ]
 
 // 本地画像默认值（云端画像不产出任何键 = 现状）。
-// 2026-09-10 循环治理对标 claude-code：温度 1.0（CC 默认，思考模式强制 1）——
+// 2026-09-10 循环治理标定：温度 1.0（业界默认，思考模式强制 1）——
 // 低确定性降低"失败后原样重复"的循环倾向（旧 0.6 为防贪婪早停标定，与循环倾向
 // 冲突，实测对比后弃用）；输出预算 8K（CC 默认档，截断才升级）——短单轮产出
 // 让弱模型主线清晰，减少长生成漂移打转。两项均为实测测试值，验证后定标。
 const LOCAL_DEFAULTS = {
-  PONOS_TEMPERATURE: '1.0',       // CC 默认温度（云端维持 0）
+  PONOS_TEMPERATURE: '1.0',       // 业界默认温度（云端维持 0）
   PONOS_PROMPT_TIER: 'lean',      // 内核精简纪律段（功能协议全保留）
   // PONOS_PROMPT_CACHE 不设：vLLM 前缀缓存是服务端自动行为，客户端 cache_control 标记无意义
-  CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8192', // 单轮 8K（CC 默认档）；缓解 vLLM KV 调度压力
+  PONOS_MAX_OUTPUT_TOKENS: '8192', // 单轮 8K（业界默认档）；缓解 vLLM KV 调度压力
   // 看门狗窗口不设：内核默认 300s/120s 已按本地 27B prefill 实测标定（engine.mjs）
 }
 
-// 云端画像默认值（2026-09-12 四家方案对标：CC 默认 8K+升档重试 / pi 默认 16K /
+// 云端画像默认值（2026-09-12 四家方案对标：业界默认 8K+升档重试 / pi 默认 16K /
 // deepseek-harness 官方警告"大输出预算按预分配占用上下文、拖慢 TTFT"）。
 // 旧行为：云端不产出任何键 → 内核默认 64000。实测 p99 单轮输出远小于 64K，
 // 64K 预留在 DeepSeek 端点上是纯拖累；截断后用户可发「继续」接续，无损。
 const CLOUD_DEFAULTS = {
-  CLAUDE_CODE_MAX_OUTPUT_TOKENS: '16384', // 单轮 16K（pi 默认档）；显式 maxOutputTokens 优先
+  PONOS_MAX_OUTPUT_TOKENS: '16384', // 单轮 16K（pi 默认档）；显式 maxOutputTokens 优先
 }
 
 const PRIVATE_NET_RE = /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|localhost$|\[?::1\]?$)/i
@@ -109,13 +109,13 @@ export function providerProfileEnv(provider = {}, { env = {} } = {}) {
   if (m !== undefined && m !== null && m !== '') {
     const n = numOrNull(m, { min: 1 })
     if (n === null) console.warn('[provider-profile] invalid maxOutputTokens, skipped:', m)
-    else if (env.CLAUDE_CODE_MAX_OUTPUT_TOKENS === undefined) out.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(Math.floor(n))
+    else if (env.PONOS_MAX_OUTPUT_TOKENS === undefined) out.PONOS_MAX_OUTPUT_TOKENS = String(Math.floor(n))
   }
   const tb = provider.toolResultBudgetBytes
   if (tb !== undefined && tb !== null && tb !== '') {
     const n = numOrNull(tb, { min: 1000 })
     if (n === null) console.warn('[provider-profile] invalid toolResultBudgetBytes, skipped:', tb)
-    else if (env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES === undefined) out.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES = String(Math.floor(n))
+    else if (env.PONOS_TOOL_RESULT_BUDGET_BYTES === undefined) out.PONOS_TOOL_RESULT_BUDGET_BYTES = String(Math.floor(n))
   }
   const f = provider.firstByteMs
   if (f !== undefined && f !== null && f !== '') {

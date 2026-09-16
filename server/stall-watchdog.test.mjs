@@ -55,7 +55,7 @@ function spawnBridge(home, port, extraEnv = {}) {
     ...process.env,
     PONOS_MOCK_API: '1',
     YFW_BRIDGE_PORT: String(port),
-    CLAUDE_CONFIG_DIR: home,
+    PONOS_CONFIG_DIR: home,
     YFWORKING_HOME: home,
     // 回收器与本测试无关（默认 10min/20min/30min 都远大于用例时长），给足上限避免干扰
     YFW_KERNEL_IDLE_MS: '600000',
@@ -142,7 +142,7 @@ async function waitSpawned(home, timeoutMs = 10000) {
   return false
 }
 
-// 内核日志尾巴（桥把 CLAUDE_CONFIG_DIR/YFWORKING_HOME 都指向临时 home，故内核日志在此）
+// 内核日志尾巴（桥把 PONOS_CONFIG_DIR/YFWORKING_HOME 都指向临时 home，故内核日志在此）
 function kernelLogTail(home, max = 2000) {
   try {
     const dir = join(home, 'logs')

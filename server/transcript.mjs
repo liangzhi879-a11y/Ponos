@@ -1,7 +1,7 @@
 // transcript.mjs — GUI 从内核 transcript 按需读取（+ 删除）会话消息的 handler（供 bridge.mjs 路由接入）。
 //
 // 内核（本库 kernel/ 源码或 kernel-dist bundle——ponos，node 直跑）每次会话都在磁盘写 append-only JSONL
-// transcript：<CLAUDE_CONFIG_DIR ?? ~/.yfworking>/projects/<sanitize(cwd)>/<sessionId>.jsonl，
+// transcript：<PONOS_CONFIG_DIR ?? ~/.yfworking>/projects/<sanitize(cwd)>/<sessionId>.jsonl，
 // 每行一个原始 entry（type: user/assistant/system/attachment/queue-operation…）。
 //
 // 读路径只负责读文件 + 原样返回 entry，不做任何转换（parentUuid 链重建在 renderer/chatStore 侧）。
@@ -53,8 +53,8 @@ export function isUuidFile(name) {
 
 /** 返回 transcript 项目根目录（projects 目录本身，不含项目子目录）。 */
 export function transcriptBaseDir() {
-  // 数据根经共享模块解析（YFWORKING_HOME || CLAUDE_CONFIG_DIR || ~/.yfworking）：
-  // 与 bridge spawn 内核时注入的 CLAUDE_CONFIG_DIR 指向同一 home，隔离模式下
+  // 数据根经共享模块解析（YFWORKING_HOME || PONOS_CONFIG_DIR || ~/.yfworking）：
+  // 与 bridge spawn 内核时注入的 PONOS_CONFIG_DIR 指向同一 home，隔离模式下
   // 转录读写一致落在隔离根目录。
   return join(resolveYfwHome(), 'projects')
 }

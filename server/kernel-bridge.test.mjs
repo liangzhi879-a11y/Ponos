@@ -7,7 +7,7 @@
 //     经 stdin/stdout NDJSON 走完整会话协议（docs/bridge-contract.md §3/§4/§5）。
 //   - spawn 参数与 server/bridge.mjs getOrCreateSession（F8）一致（最小必要集，
 //     无 --resume/--append-system-prompt-file 时按会话契约注入 home/projects 转录）。
-//   - 环境隔离：CLAUDE_CONFIG_DIR（内核 resolveConfigDir 读取，config.mjs）与
+//   - 环境隔离：PONOS_CONFIG_DIR（内核 resolveConfigDir 读取，config.mjs）与
 //     YFWORKING_HOME 均指向测试临时目录，PONOS_MOCK_API=1 免网络——不触碰真实
 //     ~/.yfworking / ~/.ponos。
 //   - 本文件被 npm test 的 `server/*.test.mjs` glob 收录，必须在无真实 config、
@@ -62,7 +62,7 @@ function spawnKernel({ home, workDir, resume, approvalMode }) {
   const env = {
     ...process.env,
     PONOS_MOCK_API: '1',                 // mock：免网络免真实 config
-    CLAUDE_CONFIG_DIR: home,             // 内核数据根（config.mjs resolveConfigDir）
+    PONOS_CONFIG_DIR: home,             // 内核数据根（config.mjs resolveConfigDir）
     YFWORKING_HOME: home,                // 净室 home 语义一致性（内核不读，产品层用）
   }
   delete env.PONOS_HOME                  // 防止宿主演进到内核解析链

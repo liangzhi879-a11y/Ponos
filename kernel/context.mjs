@@ -20,7 +20,7 @@ export const MODEL_CONTEXT_WINDOWS = {
   'MiniMax-M3': 262_144,
 }
 
-// contextWindow 来源优先级：内置模型表 → CLAUDE_CODE_AUTO_COMPACT_WINDOW（bridge
+// contextWindow 来源优先级：内置模型表 → PONOS_AUTO_COMPACT_WINDOW（bridge
 // 注入 provider 手配值）→ 画像默认（PONOS_PROVIDER_PROFILE=local → 64K 保守，
 // cloud/未知 → 200K）。
 // 2026-09-11 表优先于注入：表是模型的"事实窗口"，注入值是 provider 级声明——对
@@ -31,7 +31,7 @@ export const MODEL_CONTEXT_WINDOWS = {
 export function contextWindowFor(model, env = process.env) {
   const byModel = MODEL_CONTEXT_WINDOWS[String(model || '')]
   if (byModel) return byModel
-  const injected = Number(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW)
+  const injected = Number(env.PONOS_AUTO_COMPACT_WINDOW)
   if (Number.isFinite(injected) && injected > 0) return injected
   return env.PONOS_PROVIDER_PROFILE === 'local' ? LOCAL_DEFAULT_WINDOW : DEFAULT_WINDOW
 }
@@ -56,9 +56,9 @@ export function clampOutputBudgetForWindow({ window, inputEst, budget, reserve =
 // 400 溢出兜底，表现为每 1-2 轮被迫压缩一次（见 zz-smoke/diag-context.mjs 复盘）。
 function densityOf(env = process.env) {
   const d = { code: 3, text: 4, cjk: 1 }
-  const code = Number(env.CLAUDE_CODE_TOKEN_DENSITY_CODE)
-  const text = Number(env.CLAUDE_CODE_TOKEN_DENSITY_TEXT)
-  const cjk = Number(env.CLAUDE_CODE_TOKEN_DENSITY_CJK)
+  const code = Number(env.PONOS_TOKEN_DENSITY_CODE)
+  const text = Number(env.PONOS_TOKEN_DENSITY_TEXT)
+  const cjk = Number(env.PONOS_TOKEN_DENSITY_CJK)
   if (Number.isFinite(code) && code > 0) d.code = code
   if (Number.isFinite(text) && text > 0) d.text = text
   if (Number.isFinite(cjk) && cjk > 0) d.cjk = cjk
@@ -136,7 +136,7 @@ function payloadText(block) {
 // 3) **唯一的原地改写是 compact.mjs 的两处 `b.content = …`**（`ageOutToolResults:59` /
 //    `freeShrink:199`；全仓 grep 仅此两命中，`Object.assign`/`delete` 无命中）。两处都
 //    **紧邻**调用 `bumpContentEpoch()` ⇒ 一次改写即让进程内全部估算记忆失效，可证无遗漏。
-// 另：密度系数（CLAUDE_CODE_TOKEN_DENSITY_*）进键——env 变化必须重算。
+// 另：密度系数（PONOS_TOKEN_DENSITY_*）进键——env 变化必须重算。
 //
 // 容量：WeakMap 键是「活着的历史对象」，条目数被历史体量天然限制且随对象回收，
 // 故不需要 LRU 上限（参考实现里涨到 300MB 的是**字符串键的会话级 Map**，形状不同）。

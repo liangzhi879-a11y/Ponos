@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, statSync, existsSync, rmSync } from 'node:fs'
 import { resolveYfwHome } from './yfw-home.cjs'
 
-// 数据根经共享模块解析（YFWORKING_HOME || CLAUDE_CONFIG_DIR || ~/.yfworking）；
+// 数据根经共享模块解析（YFWORKING_HOME || PONOS_CONFIG_DIR || ~/.yfworking）；
 // 测试设 YFWORKING_HOME 指向临时目录即隔离，不碰真实 ~/.yfworking。
 export const PERSONAL_DIR = join(resolveYfwHome(), 'memory', 'personal')
 export const INDEX_FILE = join(PERSONAL_DIR, '_index.json')

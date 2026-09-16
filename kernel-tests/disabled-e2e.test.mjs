@@ -52,7 +52,7 @@ async function runTurn({ dir, userText = '你好', needles = NEEDLES } = {}) {
   ], {
     env: {
       ...process.env, PONOS_MOCK_API: '1', PONOS_MOCK_SYS_PROBE: needles.join('|'),
-      CLAUDE_CONFIG_DIR: dir, YFW_HOME: dir,
+      PONOS_CONFIG_DIR: dir, YFW_HOME: dir,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   })

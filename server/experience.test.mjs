@@ -5,7 +5,7 @@ import path from 'node:path'
 import fs from 'node:fs'
 
 // 通过注入数据根重定向 personal 目录：模块 PERSONAL_DIR 经共享模块
-// yfw-home.cjs 解析（YFWORKING_HOME || CLAUDE_CONFIG_DIR || ~/.yfworking）
+// yfw-home.cjs 解析（YFWORKING_HOME || PONOS_CONFIG_DIR || ~/.yfworking）
 const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-exp-home-'))
 const prevYfwHome = process.env.YFWORKING_HOME
 process.env.YFWORKING_HOME = path.join(testHome, '.yfworking')

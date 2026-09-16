@@ -4,7 +4,7 @@
 // 目标分发逻辑；集中在一处才能一眼看全"渲染层能做什么"。main.cjs 只留一行调用。
 //
 // ★ 数据根唯一真源：server/yfw-home.cjs 的 resolveYfwHome()。它与内核侧
-//   kernel/cli.mjs 的 resolveConfigDir 同源（YFWORKING_HOME → CLAUDE_CONFIG_DIR →
+//   kernel/cli.mjs 的 resolveConfigDir 同源（YFWORKING_HOME → PONOS_CONFIG_DIR →
 //   ~/.yfworking），故 UI 写的 Spec/绑定与内核读到的是**同一份文件**。
 //   绝不在此另写一套 home 解析（本项目已有"两套逻辑漂移"的事故教训）。
 'use strict'

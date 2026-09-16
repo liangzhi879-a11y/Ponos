@@ -14,7 +14,7 @@ const require = createRequire(import.meta.url)
 
 const home = mkdtempSync(join(tmpdir(), 'appipc-'))
 process.env.YFWORKING_HOME = home
-delete process.env.CLAUDE_CONFIG_DIR
+delete process.env.PONOS_CONFIG_DIR
 
 const { registerAppHandlers } = require('../electron/app-ipc.cjs')
 

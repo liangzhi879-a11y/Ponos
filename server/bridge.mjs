@@ -152,7 +152,7 @@ const YFW_MILESTONE_PROTOCOL = `【任务里程碑进度协议】
 // YFWorking home directory — STRICTLY ISOLATED from Claude.
 // All YFWorking state (skills, config, providers, sessions) lives here.
 // We never read from ~/.claude/ even if it exists on the machine.
-// 数据根经共享模块 yfw-home.cjs 解析：YFWORKING_HOME || CLAUDE_CONFIG_DIR ||
+// 数据根经共享模块 yfw-home.cjs 解析：YFWORKING_HOME || PONOS_CONFIG_DIR ||
 // ~/.yfworking（双版并行隔离开关；模块加载期解析，spawn 子进程经
 // buildChildEnv 注入解析后的 home）。
 // ---------------------------------------------------------------------------
@@ -277,7 +277,7 @@ const DEFAULT_CONFIG = {
   autoImageBridge: true,
   visionProviderId: '',
   // 思考深度（Task 12）：'auto' = 内核默认（不注入 env）；非 auto 值经 buildChildEnv
-  // 注入 CLAUDE_CODE_EFFORT_LEVEL。旧 config.json 缺此键 → loadConfig merge 默认 auto。
+  // 注入 PONOS_REASONING_EFFORT。旧 config.json 缺此键 → loadConfig merge 默认 auto。
   effortLevel: 'auto',
   // 审批档位（2026-09-12 四档化）：全局持久化档位，manual|auto|loose|bypass 逐级放宽。
   // **新装默认 = auto**（P0-4，2026-09-16）：新装/首次生成 config.json 写入 auto —— 只读与
@@ -623,7 +623,7 @@ function syncKernelSettings() {
       // contextWindow=0/未设（2026-09-10：GUI 新建 provider 默认 0 = 自动探测）时
       // 不注入任何值——内核回落 内置模型表 → 画像默认（local 64K / cloud 200K），
       // 探测回填后下一 spawn 生效真实窗口。
-      CLAUDE_CODE_AUTO_COMPACT_WINDOW: resolveProviderProfile(provider) === 'local' && Number(provider.contextWindow) > 500_000
+      PONOS_AUTO_COMPACT_WINDOW: resolveProviderProfile(provider) === 'local' && Number(provider.contextWindow) > 500_000
         ? ''
         : (Number(provider.contextWindow) > 0 ? String(provider.contextWindow) : ''),
       YFW_VISION_BASE_URL: visionProvider.apiBaseUrl || '',
@@ -955,7 +955,7 @@ const appRouter = makeAppRouter({ writeKernel: writeControlRequest })
 const q = (s) => '"' + String(s).replace(/"/g, '') + '"'
 
 // Build the isolated environment for spawned CLI processes.
-// CLAUDE_CONFIG_DIR redirects Claude Code's config dir to ~/.yfworking so
+// PONOS_CONFIG_DIR redirects Claude Code's config dir to ~/.yfworking so
 // the agent's sessions, memory, and skills never collide with ~/.claude.
 // 内核 provider 环境签名（2026-09-10 模型热切换修复）：spawn 时冻结内核收到的
 // provider 环境（baseUrl/model/auth），后续 send 携带的新配置与冻结签名不一致 →
@@ -998,21 +998,21 @@ function buildChildEnv() {
   const provider = (cfg.providers || []).find(p => p.id === cfg.activeProvider) || cfg.providers?.[0]
   const env = {
     ...process.env,
-    CLAUDE_CONFIG_DIR: YFW_HOME,
+    PONOS_CONFIG_DIR: YFW_HOME,
     YFWORKING_HOME: YFW_HOME,
     // S6：**同一根的第二把钥匙**，专供 agent 的 Bash 子进程。
     //
     // 背景：内核 CLI（`resolveConfigDir`）的解析顺序是
-    // `CLAUDE_CONFIG_DIR > PONOS_HOME > ~/.ponos` —— **不认 `YFWORKING_HOME`**。
+    // `PONOS_CONFIG_DIR > PONOS_HOME > ~/.ponos` —— **不认 `YFWORKING_HOME`**。
     // 而 Bash 工具的 `childEnv()` 有安全白名单（S2-2，防子进程窃取宿主密钥），
-    // 只透传 PATH/HOME 等系统变量，**`CLAUDE_CONFIG_DIR` 被刻意剥离**，
+    // 只透传 PATH/HOME 等系统变量，**`PONOS_CONFIG_DIR` 被刻意剥离**，
     // 于是 agent 在 Bash 里跑 `--knowledge append` 会退到 `~/.ponos`（**另一个根**）——
     // 写进去的经验 GUI 完全看不见，从"路径受阻"变成"写进黑洞"。
     //
-    // 解法不是把 `CLAUDE_CONFIG_DIR` 加进白名单（那是密钥目录名，放开等于削弱原防护），
+    // 解法不是把 `PONOS_CONFIG_DIR` 加进白名单（那是配置/会话目录名，放开等于削弱原防护），
     // 而是额外注入语义中性的 `PONOS_HOME`：内核 CLI 认可它，但它的名字不指向密钥，
     // 白名单放行它的代价仅是"暴露一个目录路径"，而 HOME 本就在白名单里、`.yfw` 也可猜。
-    // 这样两条路都能解析到同一个根：内核子进程走 CLAUDE_CONFIG_DIR，Bash 子进程走 PONOS_HOME。
+    // 这样两条路都能解析到同一个根：内核子进程走 PONOS_CONFIG_DIR，Bash 子进程走 PONOS_HOME。
     PONOS_HOME: YFW_HOME,
   }
   // 内核 OCR/Vision 工具经 YFWORKING_PYTHON 使用 bundled python：
@@ -1021,22 +1021,17 @@ function buildChildEnv() {
   // 显式注入绝对路径后，缓存/安装两种内核布局下 OCR/Vision 均可用。
   const pythonExe = findPythonExe()
   if (pythonExe !== 'python') env.YFWORKING_PYTHON = pythonExe
-  // 开启内核原生定时任务（Kairos Cron：CronCreate/CronDelete/CronList 工具）
-  // 与 /loop 循环执行 skill。release 内核 bundle 已编译全部代码，仅需此开关。
-  // 用户环境变量可显式覆盖（如设为 false 关闭）。
-  env.CLAUDE_CODE_AGENT_TRIGGERS =
-    process.env.CLAUDE_CODE_AGENT_TRIGGERS === 'false' ? 'false' : 'true'
   // 思考深度（Task 12）：新会话 spawn 兜底 env 注入。'auto'（默认）不注入——
   // 内核自身默认即 auto，语义等价且干净；运行中会话的即时切换走 WS reasoning_effort
   //（本文件 effort case），这里只负责每个新 spawn 的初始档位。
   const effort = cfg.effortLevel || 'auto'
-  if (effort !== 'auto') env.CLAUDE_CODE_EFFORT_LEVEL = effort
-  // 内核日志等级（2026-09-12 日志策略）：仅在非 info 时注入 CLAUDE_CODE_LOG_LEVEL
+  if (effort !== 'auto') env.PONOS_REASONING_EFFORT = effort
+  // 内核日志等级（2026-09-12 日志策略）：仅在非 info 时注入 PONOS_LOG_LEVEL
   //（info = 内核默认，语义等价且干净）。刻意**不**进入 providerEnvSig：改等级只影响
   // 新 spawn 的日志啰嗦度，不该像换模型那样触发收割重建内核。debug 会把内核 stderr
   // 逐行推给 GUI（很吵），设置页文案已提醒。
   const logLevel = normalizeLogPolicy(cfg.logPolicy).level
-  if (logLevel !== 'info') env.CLAUDE_CODE_LOG_LEVEL = logLevel
+  if (logLevel !== 'info') env.PONOS_LOG_LEVEL = logLevel
   // Inject the active provider's API config as ANTHROPIC_* env vars so the
   // Claude Code kernel actually calls the user-configured endpoint/model
   // with the user's token. Without these the CLI falls back to its built-in
@@ -1068,8 +1063,8 @@ function buildChildEnv() {
     // thinking:enabled+budget（MiniMax 等不认 reasoning_effort 的云端经此才有
     // thinking_delta 流，否则思考在流内完全不可见）
     if (provider.thinkingEnabled) {
-      env.CLAUDE_CODE_THINKING_ENABLED = '1'
-      env.CLAUDE_CODE_THINKING_BUDGET = String(provider.thinkingBudget || 4096)
+      env.PONOS_THINKING_ENABLED = '1'
+      env.PONOS_THINKING_BUDGET = String(provider.thinkingBudget || 4096)
     }
     if (provider.contextWindow) {
       // 本地画像上下文窗口钳制（2026-09-09 容器适配）：GUI 添加 provider 的默认
@@ -1081,7 +1076,7 @@ function buildChildEnv() {
       if (isLocal && Number(provider.contextWindow) > 500_000) {
         console.warn(`[bridge] provider ${provider.id} contextWindow ${provider.contextWindow} looks inflated for a local model — not injecting (kernel falls back to model table default)`)
       } else {
-        env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(provider.contextWindow)
+        env.PONOS_AUTO_COMPACT_WINDOW = String(provider.contextWindow)
       }
     }
     // provider 画像 env（2026-09-09 本地模型适配）：温度/提示词分级/输出预算等按
@@ -1094,13 +1089,10 @@ function buildChildEnv() {
   } else if (provider) {
     console.warn('[bridge] provider', provider.id, 'missing apiBaseUrl or authToken — using CLI defaults')
   }
-  // 内核 Grep/Glob 为原生 node 递归实现（本库 ponos 内核，kernel/tools.mjs），
-  // 无 ripgrep/vendor 依赖（F3）→ CLAUDE_CODE_USE_NATIVE_FILE_SEARCH 注入不再
-  // 必要（旧 claude-code 内核 vendor rg 语义不适用；内核忽略未知 env）。
-  // 工具结果字节预算（2026-09-12 起改由 provider.toolResultBudgetBytes 经
-  // providerProfileEnv 注入 CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES；旧布尔开关
-  // CLAUDE_CODE_TOOL_RESULT_BUDGET=true 对内核是 no-op——compact.mjs 将布尔形态
-  // 视为未显式（Number('true')=NaN），已移除，勿回退）。
+  // 内核 Grep/Glob 为原生 node 递归实现（kernel/tools.mjs），无 ripgrep/vendor 依赖。
+  // 工具结果字节预算（2026-09-12 起）由 provider.toolResultBudgetBytes 经
+  // providerProfileEnv 注入 PONOS_TOOL_RESULT_BUDGET_BYTES；非数值形态（Number=NaN）
+  // 被 compact.mjs 视为未显式，落入窗口缩放（安全侧），勿回退为布尔开关。
   return env
 }
 
@@ -2191,7 +2183,7 @@ const httpServer = createServer(async (req, res) => {
       // 变成"偶尔才扫"的一处。三种非失败态：fresh（命中且新）/ stale（命中但旧：立即回旧值，
       // 后台刷新）/ computing（冷启动未就绪：立刻 503，刷新留后台跑完 ⇒ 下次轮询即有值）。
       // 键 = 子命令 + 全部影响结果的 flags。env 不必入键：buildChildEnv() 每次重读 config，
-      // 但其中**唯一影响聚合结果**的是 CLAUDE_CONFIG_DIR ← YFW_HOME，而它是模块级常量
+      // 但其中**唯一影响聚合结果**的是 PONOS_CONFIG_DIR ← YFW_HOME，而它是模块级常量
       // （:120 resolveYfwHome()），进程内恒定；其余注入项（provider / effort / 日志等级）
       // 只作用于会话运行，不改历史记录。将来若 YFW_HOME 变成可热改，这里必须一并入键。
       const t0 = Date.now()
@@ -2581,14 +2573,14 @@ const httpServer = createServer(async (req, res) => {
       }
     }
     // ── Agent 目录（2026-09-15，批次二 H）：内核权威列表（含"只在内核里存在"的 5 个内置 agent）──
-    // 与 disabled 路由同款：纯 handler + YFW_HOME 作 configDir（= 内核的 CLAUDE_CONFIG_DIR）。
+    // 与 disabled 路由同款：纯 handler + YFW_HOME 作 configDir（= 内核的 PONOS_CONFIG_DIR）。
     {
       const r = await handleAgentsRoute({ method: req.method, pathname: url.pathname, configDir: YFW_HOME })
       if (r) return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.body))
     }
     // ── Agent / Skill 全局停用注册表（2026-09-15，P1「agent和skill页面及功能需要大改」D 条款）──
     // 逻辑在 server/disabled-routes.mjs（纯 handler，可直调测试——本仓库纪律：测试不起 bridge）。
-    // `YFW_HOME` 就是内核子进程的 `CLAUDE_CONFIG_DIR`，故写在这里 = 内核读得到，无需 spawn 透传。
+    // `YFW_HOME` 就是内核子进程的 `PONOS_CONFIG_DIR`，故写在这里 = 内核读得到，无需 spawn 透传。
     {
       const r = await handleDisabledRoute({ method: req.method, pathname: url.pathname, readJsonBody: () => readJsonBody(req), configDir: YFW_HOME })
       if (r) return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.body))
@@ -3287,7 +3279,7 @@ wss.on('connection', (ws, req) => {
       } else if (msg.type === 'effort') {
         // 思考深度热切换（Task 12）：GUI 改 effort → 对运行中内核会话注入
         // reasoning_effort control_request。会话不存在/进程已死/level 为空 → 幂等忽略
-        //（新会话由 buildChildEnv 的 CLAUDE_CODE_EFFORT_LEVEL env 注入兜底）。
+        //（新会话由 buildChildEnv 的 PONOS_REASONING_EFFORT env 注入兜底）。
         // 注意：bridge 无 lastSessionId——目标会话由前端解析（conversationId || 前端
         // lastSessionId || 'default'）后随消息带给本 case，这里只信任 msg.sessionId。
         const sid = msg.sessionId || 'default'

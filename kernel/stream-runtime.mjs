@@ -40,10 +40,10 @@ export function sleepAbortable(ms, signal) {
   })
 }
 
-// 思考深度档位规范化（导出供测试）：对齐 Claude Code /effort 档位体系。
+// 思考深度档位规范化（导出供测试）：自有统一档位体系（off/low/high/max/auto）。
 // off/low/high/max 原样；medium → high（DeepSeek 旧映射，规避端点不识 medium）；
 // auto / 空 / 未知 → null（不注入任何字段，交给模型原生自适应——DeepSeek 默认
-// high、agent 场景自动 max，官方推荐 Claude Code 场景设 CLAUDE_CODE_EFFORT_LEVEL=max）
+// high、agent 场景自动 max；需要钉死档位时显式设 PONOS_REASONING_EFFORT=max）
 export function normalizeEffort(value) {
   const v = String(value ?? 'auto').trim().toLowerCase()
   if (v === 'off' || v === 'low' || v === 'high' || v === 'max') return v
@@ -64,7 +64,7 @@ export async function* retryStream({ model, messages, maxTokens, signal, tools, 
   const configured = process.env.PONOS_MOCK_API_RETRIES
   const maxRetries = configured !== undefined
     ? Number(configured)
-    : (isMock ? 0 : Number(process.env.CLAUDE_CODE_API_RETRIES || 5))
+    : (isMock ? 0 : Number(process.env.PONOS_API_RETRIES || 5))
   let attempt = 0
   let zeroStreak = 0 // P1-11 连续"0 事件"失败计数（含 transient 形态：连接被对端销毁等）
   while (true) {

@@ -1,5 +1,5 @@
 // U1/AS1 cli 只读子命令冒烟：spawn `node kernel/cli.mjs --usage/--audit/--agents`
-// （CLAUDE_CONFIG_DIR 指向 fixture 临时目录，PONOS_MOCK_API=1 免网络）→ stdout JSON。
+// （PONOS_CONFIG_DIR 指向 fixture 临时目录，PONOS_MOCK_API=1 免网络）→ stdout JSON。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -33,7 +33,7 @@ test('cli --usage / --audit / --agents：stdout JSON 输出 schema（fixture tra
     mkdirSync(projDir, { recursive: true })
     writeFileSync(join(projDir, 's1.jsonl'),
       JSON.stringify({ type: 'assistant', seq: 1, timestamp: '2026-09-08T00:00:00.000Z', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't', name: 'Bash', input: { command: 'ls' } }], usage: { input_tokens: 100, output_tokens: 50 }, model: 'm' } }) + '\n')
-    const env = { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: join(dir, 'home'), YFWORKING_HOME: join(dir, 'home') }
+    const env = { ...process.env, PONOS_MOCK_API: '1', PONOS_CONFIG_DIR: join(dir, 'home'), YFWORKING_HOME: join(dir, 'home') }
     delete env.PONOS_HOME // 防宿主演进内核解析链（kernel-bridge.test.mjs 同款隔离）
     const usage = await runCli(['--usage'], env)
     assert.equal(usage.code, 0, usage.err)

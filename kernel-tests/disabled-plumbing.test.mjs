@@ -84,12 +84,12 @@ test('⑥ GUI：disabledStore 失败必须回滚（否则界面与内核不一�
   assert.match(store, /const next = toggleDisabledId\(prev, id, disabled\)/, '复用纯函数（与单测同口径）')
 })
 
-test('⑦ 关键不变量：桥写的目录 = 内核读的目录（YFW_HOME ≡ CLAUDE_CONFIG_DIR）', () => {
+test('⑦ 关键不变量：桥写的目录 = 内核读的目录（YFW_HOME ≡ PONOS_CONFIG_DIR）', () => {
   const bridge = read('../server/bridge.mjs')
   assert.match(bridge, /configDir: YFW_HOME \}\)/, '桥必须写到 YFW_HOME 根')
-  assert.match(bridge, /CLAUDE_CONFIG_DIR: YFW_HOME/, '不变量前提：内核子进程的 CLAUDE_CONFIG_DIR 必须等于 YFW_HOME')
-  // 内核侧 configDir 解析优先级（CLAUDE_CONFIG_DIR > PONOS_HOME > ~/.ponos）
-  assert.match(cli, /CLAUDE_CONFIG_DIR/, '内核必须仍以 CLAUDE_CONFIG_DIR 为首选')
+  assert.match(bridge, /PONOS_CONFIG_DIR: YFW_HOME/, '不变量前提：内核子进程的 PONOS_CONFIG_DIR 必须等于 YFW_HOME')
+  // 内核侧 configDir 解析优先级（PONOS_CONFIG_DIR > PONOS_HOME > ~/.ponos）
+  assert.match(cli, /PONOS_CONFIG_DIR/, '内核必须仍以 PONOS_CONFIG_DIR 为首选')
 })
 
 // ── H 条款（批次二）：内核独有 agent 的入口 + 跨区域停用不被覆盖 ────────────────

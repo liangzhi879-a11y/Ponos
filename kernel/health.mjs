@@ -94,7 +94,7 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
   let lastJudgeAt = 0
   const recent = [] // 近 10 轮 turnStats
   const failures = { count: 0 }
-  const judgeEnabled = env.PONOS_LLM_JUDGE === '1' || env.CLAUDE_CODE_LLM_JUDGE === '1'
+  const judgeEnabled = env.PONOS_LLM_JUDGE === '1'
   // J1：Judge 结论暂存——仅随 force 发（recordJudge → emitIfChanged(true)）的
   // ponos_health 一次性带出（judge 字段；发完即清，不残留到后续事件）
   let pendingJudge = null

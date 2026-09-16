@@ -90,7 +90,7 @@ test('条目级图缺省覆盖全池（不再被 200 截断）；文档级缺省
 test('真进程：显式 --limit 生效；非法 --limit 退化为层级缺省而非空图', () => {
   const dir = fixture(60)
   const env = { ...process.env, PONOS_HOME: dir }
-  delete env.CLAUDE_CONFIG_DIR
+  delete env.PONOS_CONFIG_DIR
   const run = (args) => JSON.parse(spawnSync(process.execPath, [CLI, '--output-format', 'stream-json', '--input-format', 'stream-json', ...args], { env, encoding: 'utf8', timeout: 60_000 }).stdout)
 
   assert.equal(run(['--knowledge', 'graph', '--level', 'entry', '--limit', '50']).nodes.length, 50)

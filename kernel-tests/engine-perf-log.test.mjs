@@ -45,7 +45,7 @@ function spawnKernel(env, dir) {
     KERNEL_CLI, '--print', '--output-format', 'stream-json', '--input-format', 'stream-json',
     '--verbose', '--dangerously-skip-permissions', '--add-dir', dir,
   ], {
-    env: { ...base, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: dir, YFW_HOME: dir, ...env },
+    env: { ...base, PONOS_MOCK_API: '1', PONOS_CONFIG_DIR: dir, YFW_HOME: dir, ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   let out = ''

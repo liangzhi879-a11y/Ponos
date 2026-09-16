@@ -48,7 +48,7 @@ function runCommands(root, commands) {
   return new Promise((resolve, reject) => {
     const home = join(root, 'home')
     mkdirSync(home, { recursive: true })
-    const env = { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: home, YFWORKING_HOME: home }
+    const env = { ...process.env, PONOS_MOCK_API: '1', PONOS_CONFIG_DIR: home, YFWORKING_HOME: home }
     delete env.PONOS_HOME // 防宿主演进内核解析链（cli-subcommands.test.mjs 同款隔离）
     // --skills-dir=工作流根：发现/加载走真实 resolveSkillRoots + loadWorkflow 路径
     const proc = spawn(process.execPath, [KERNEL_CLI, ...FMT, '--no-default-skills', '--skills-dir', join(root, 'wf')], { env })

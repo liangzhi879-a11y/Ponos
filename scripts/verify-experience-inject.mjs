@@ -3,7 +3,7 @@
 import { join } from 'node:path'
 import os from 'node:os'
 
-// 沙盒验证：数据根经共享模块 yfw-home.cjs 解析（YFWORKING_HOME || CLAUDE_CONFIG_DIR ||
+// 沙盒验证：数据根经共享模块 yfw-home.cjs 解析（YFWORKING_HOME || PONOS_CONFIG_DIR ||
 // ~/.yfworking）。旧 YFW_TEST_HOME 已废弃无人消费——此处总是把 home 指向临时目录，
 // 绝不落真实数据根；确需自定义临时目录时用 YFW_VERIFY_HOME 覆盖。
 process.env.YFWORKING_HOME = process.env.YFW_VERIFY_HOME || join(os.tmpdir(), 'yfw-verify-inject-home')

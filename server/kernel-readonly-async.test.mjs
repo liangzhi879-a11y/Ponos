@@ -33,7 +33,7 @@ async function rmDir(dir) {
 
 /** 真内核的 hermetic 环境（与 kernel-readonly.test.mjs 同款隔离） */
 function realEnv(home) {
-  const env = { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: home, YFWORKING_HOME: home }
+  const env = { ...process.env, PONOS_MOCK_API: '1', PONOS_CONFIG_DIR: home, YFWORKING_HOME: home }
   delete env.PONOS_HOME // 防宿主演进内核解析链
   delete env.YFWORKING_KERNEL // 必须走真内核（不是 mock）
   return env

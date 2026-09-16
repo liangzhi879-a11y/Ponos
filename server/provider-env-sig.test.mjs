@@ -23,7 +23,7 @@ test('providerEnvSig：baseUrl/model/auth 任一变化 → 签名不同', () => 
 
 test('providerEnvSig：无关环境变量不影响签名', () => {
   const a = { ANTHROPIC_BASE_URL: 'u', ANTHROPIC_MODEL: 'm', ANTHROPIC_AUTH_TOKEN: 't' }
-  assert.equal(providerEnvSig(a), providerEnvSig({ ...a, CLAUDE_CODE_EFFORT_LEVEL: 'max', PATH: 'x' }))
+  assert.equal(providerEnvSig(a), providerEnvSig({ ...a, PONOS_REASONING_EFFORT: 'max', PATH: 'x' }))
 })
 
 test('providerEnvSig：缺失字段按空串归一（不产生 undefined/null 漂移）', () => {

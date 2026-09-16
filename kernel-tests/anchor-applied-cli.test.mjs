@@ -55,7 +55,7 @@ async function waitForEvent(k, pred, timeoutMs = 15_000, from = 0) {
 
 test('锚定生效链路：失真红档 → stdin anchor_applied → 回绿（真内核）', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'anchor-e2e-'))
-  const k = spawnKernel({ PONOS_MOCK_API: '1', PONOS_FIDELITY: '1', CLAUDE_CONFIG_DIR: dir, YFW_HOME: dir }, dir)
+  const k = spawnKernel({ PONOS_MOCK_API: '1', PONOS_FIDELITY: '1', PONOS_CONFIG_DIR: dir, YFW_HOME: dir }, dir)
   try {
     const init = await waitForEvent(k, (e) => e.type === 'system' && e.subtype === 'init', 20_000)
     assert.ok(init, `内核未就绪\nstdout=${k.out.slice(-500)}\nstderr=${k.err.slice(-500)}`)

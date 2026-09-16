@@ -47,7 +47,7 @@ function spawnBridge(home, port) {
     ...process.env,
     PONOS_MOCK_API: '1',
     YFW_BRIDGE_PORT: String(port),
-    CLAUDE_CONFIG_DIR: home,
+    PONOS_CONFIG_DIR: home,
     YFWORKING_HOME: home,
   }
   delete env.PONOS_HOME
@@ -109,9 +109,9 @@ test('尸体内核 + 停止 → 6s 未确认即强杀 + 广播 closed（人工�
     assert.ok(hello, '应收到 bridge_hello')
     // 发消息拉起内核：[mock:hang-forever] 永久挂起且无视 abort = 真尸体。
     // cwd 用仓库根而非临时 home：内核 CWD 不锁临时目录（Windows 句柄延迟），
-    // 会话数据仍经 CLAUDE_CONFIG_DIR=home 落进临时目录。
+    // 会话数据仍经 PONOS_CONFIG_DIR=home 落进临时目录。
     ws.send(JSON.stringify({ type: 'send', sessionId: 'corpse-sess', prompt: '[mock:hang-forever] 挂住我', cwd: REPO_ROOT }))
-    // 等内核 spawn + 挂起：轮询运行 marker（CLAUDE_CONFIG_DIR=home → home/runs/*.running；
+    // 等内核 spawn + 挂起：轮询运行 marker（PONOS_CONFIG_DIR=home → home/runs/*.running；
     // 内核启动时写入 {pid,ts}）。结构化日志走 log-tee 不进桥 stdout，故不查 stdout。
     const { existsSync, readdirSync } = await import('node:fs')
     const markerDeadline = Date.now() + 10000

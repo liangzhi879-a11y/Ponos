@@ -51,7 +51,7 @@ function spawnBridge(home, port) {
     ...process.env,
     PONOS_MOCK_API: '1',
     YFW_BRIDGE_PORT: String(port),
-    CLAUDE_CONFIG_DIR: home,
+    PONOS_CONFIG_DIR: home,
     YFWORKING_HOME: home,
   }
   delete env.PONOS_HOME // 防止宿主演进到解析链

@@ -497,7 +497,7 @@ function main() {
   mkdirSync(args.dir, { recursive: true })
   const DIR = args.dir
   const MODEL = defaultModel()
-  const CONTEXT_WINDOW = Number(process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || 1_000_000) || 1_000_000
+  const CONTEXT_WINDOW = Number(process.env.PONOS_AUTO_COMPACT_WINDOW || 1_000_000) || 1_000_000
   const isTui = !!(process.stdin.isTTY && process.stdout.isTTY)
 
   // ---------- 状态 ----------
@@ -521,8 +521,8 @@ function main() {
   let historyIdx = -1
   let historyTemp = ''
   let scrollOffset = 0 // 0 = 跟随底部
-  // 思考深度档位（对齐 Claude Code /effort）：auto 默认 = 模型原生自适应
-  let effort = process.env.CLAUDE_CODE_EFFORT_LEVEL || process.env.PONOS_REASONING_EFFORT || 'auto'
+  // 思考深度档位（自有统一档位）：auto 默认 = 模型原生自适应
+  let effort = process.env.PONOS_REASONING_EFFORT || 'auto'
   let toolExpanded = new Set()
   let toolSeqMap = new Map()
   // tool_use_id → 卡片序号：内核的 tool_result 帧（protocol.mjs wire.toolResult）

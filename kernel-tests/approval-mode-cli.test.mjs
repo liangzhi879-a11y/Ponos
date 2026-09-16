@@ -39,7 +39,7 @@ test('派生护栏：旧 flag 组合的档位（默认档 = loose = 今天的真
 
 // —— 进程级：init 回显 + 优先级 + 热切换 ——
 function spawnCli({ home, workDir, args = [] }) {
-  const env = { ...process.env, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: home, YFWORKING_HOME: home }
+  const env = { ...process.env, PONOS_MOCK_API: '1', PONOS_CONFIG_DIR: home, YFWORKING_HOME: home }
   delete env.PONOS_HOME
   const proc = spawn(process.execPath, [
     KERNEL_CLI, '--print', '--output-format', 'stream-json', '--input-format', 'stream-json',

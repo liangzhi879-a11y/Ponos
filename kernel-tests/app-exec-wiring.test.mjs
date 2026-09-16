@@ -20,7 +20,7 @@ import { makeAppRouter } from '../server/app-routing.mjs'
 const require = createRequire(import.meta.url)
 const home = mkdtempSync(join(tmpdir(), 'appexec-'))
 process.env.YFWORKING_HOME = home
-delete process.env.CLAUDE_CONFIG_DIR
+delete process.env.PONOS_CONFIG_DIR
 
 const { runAppCommand, handleAppExecMessage } = require('../electron/app-ipc.cjs')
 const appRegistry = require('../electron/app-registry.cjs')

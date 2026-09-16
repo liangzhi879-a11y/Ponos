@@ -554,7 +554,7 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
         autoImageBridge: settings.autoImageBridge,
         visionProviderId: settings.visionProviderId || '',
         // 全局思考深度并入 cfg（Task 12）：bridge saveConfig 整包透传写 config.json，
-        // 新会话 spawn 时 buildChildEnv 读它注入 CLAUDE_CODE_EFFORT_LEVEL
+        // 新会话 spawn 时 buildChildEnv 读它注入 PONOS_REASONING_EFFORT
         effortLevel: normalizeEffortUi(settings.effortLevel),
         // 全局审批档位（2026-09-12）：bridge 侧 sanitizeConfigPatch 再钳一次后落盘，
         // 并对无覆盖的活会话热切（否则"设置页点了没反应"）。落盘后新会话 spawn 用

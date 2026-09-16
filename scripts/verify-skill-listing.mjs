@@ -3,7 +3,7 @@
 // 背景：bridge 宿主 appendSkillList 注入已停用，技能清单唯一来源 = 内核
 // composeSystemPrompt【可用技能】块（技能根经 --add-dir 发现，见 server/bridge.mjs
 // getOrCreateSession）。本脚本不再 import bridge（避免模块加载副作用），改为：
-//   1) 自包含枚举真实技能库（YFWORKING_HOME/CLAUDE_CONFIG_DIR/~/.yfworking 解析，
+//   1) 自包含枚举真实技能库（YFWORKING_HOME/PONOS_CONFIG_DIR/~/.yfworking 解析，
 //      与 yfw-home.cjs 一致；技能 id = 目录/文件名，同内核发现语义）；
 //   2) 数据完整性校验：子技能 parent 声明必须存在且本身无 parent（无孤儿）；
 //   3) 内核技能块格式校验：枚举结果喂给 kernel/prompt.mjs composeSystemPrompt，
@@ -15,7 +15,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { composeSystemPrompt } from '../kernel/prompt.mjs'
 
-const HOME = process.env.YFWORKING_HOME || process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.yfworking')
+const HOME = process.env.YFWORKING_HOME || process.env.PONOS_CONFIG_DIR || join(homedir(), '.yfworking')
 const SKILLS_DIR = join(HOME, 'skills')
 
 // 枚举已安装技能（镜像原 bridge listInstalledSkills 的目录/扁平 .md 双格式扫描，

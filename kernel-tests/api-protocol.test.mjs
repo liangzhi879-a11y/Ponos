@@ -83,8 +83,8 @@ test('protocolStream（P1-6）：单次流读空闲看门狗——body 永不产
     ok: true,
     body: new ReadableStream({ start(c) { /* 永不 enqueue/close */ } }),
   })
-  const oldTimeout = process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS
-  process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS = '50'
+  const oldTimeout = process.env.PONOS_STREAM_IDLE_TIMEOUT_MS
+  process.env.PONOS_STREAM_IDLE_TIMEOUT_MS = '50'
   try {
     await assert.rejects(
       (async () => {
@@ -94,8 +94,8 @@ test('protocolStream（P1-6）：单次流读空闲看门狗——body 永不产
     )
   } finally {
     global.fetch = prev
-    if (oldTimeout === undefined) delete process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS
-    else process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS = oldTimeout
+    if (oldTimeout === undefined) delete process.env.PONOS_STREAM_IDLE_TIMEOUT_MS
+    else process.env.PONOS_STREAM_IDLE_TIMEOUT_MS = oldTimeout
   }
 })
 
@@ -118,8 +118,8 @@ test('protocolStream（C1）：慢 chunk 流不被空闲看门狗误杀——脉
       },
     }),
   })
-  const old = process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS
-  process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS = '80'
+  const old = process.env.PONOS_STREAM_IDLE_TIMEOUT_MS
+  process.env.PONOS_STREAM_IDLE_TIMEOUT_MS = '80'
   try {
     const texts = []
     for await (const c of protocolStream({ url: 'http://t/v1/messages', body: {}, headers: {} })) {
@@ -128,8 +128,8 @@ test('protocolStream（C1）：慢 chunk 流不被空闲看门狗误杀——脉
     assert.equal(texts.join(''), 'abcd', '慢 chunk 流应完整读完（单次 read 在阈值内，看门狗不触发）')
   } finally {
     global.fetch = prev
-    if (old === undefined) delete process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS
-    else process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS = old
+    if (old === undefined) delete process.env.PONOS_STREAM_IDLE_TIMEOUT_MS
+    else process.env.PONOS_STREAM_IDLE_TIMEOUT_MS = old
   }
 })
 
@@ -506,8 +506,8 @@ test('R1-2 fetch 连接超时：首次 fetch 抛 TimeoutError → 经重发链�
     ANTHROPIC_BASE_URL: 'http://t',
     ANTHROPIC_AUTH_TOKEN: 'k',
     PONOS_MOCK_API: '',
-    CLAUDE_CODE_CONNECT_TIMEOUT_MS: '150',   // 测试缩短
-    CLAUDE_CODE_STREAM_RECONNECTS: '2',
+    PONOS_CONNECT_TIMEOUT_MS: '150',   // 测试缩短
+    PONOS_STREAM_RECONNECTS: '2',
   })
   try {
     const chunks = []
@@ -546,8 +546,8 @@ test('R1-2 连接超时只作用于首字节：fetch 快速 resolve 后长流不
     ANTHROPIC_BASE_URL: 'http://t',
     ANTHROPIC_AUTH_TOKEN: 'k',
     PONOS_MOCK_API: '',
-    CLAUDE_CODE_CONNECT_TIMEOUT_MS: '100',  // 100ms 连接超时，远小于流总时长 200ms
-    CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS: '5000',
+    PONOS_CONNECT_TIMEOUT_MS: '100',  // 100ms 连接超时，远小于流总时长 200ms
+    PONOS_STREAM_IDLE_TIMEOUT_MS: '5000',
   })
   try {
     const texts = []
@@ -584,7 +584,7 @@ test('P4-5 setProvider 激活后 streamMessages 请求走新 baseUrl（mock fetc
     process.env.ANTHROPIC_BASE_URL = 'http://orig'
     process.env.ANTHROPIC_AUTH_TOKEN = 'k'
     process.env.PONOS_MOCK_API = ''
-    process.env.CLAUDE_CODE_CONNECT_TIMEOUT_MS = '150'
+    process.env.PONOS_CONNECT_TIMEOUT_MS = '150'
     const { setProvider } = await import('../kernel/provider.mjs')
     setProvider({ baseUrl: 'http://hot-switched', authToken: 'k2', model: 'm2' })
     for await (const c of streamMessages({ model: 'm2', messages: [{ role: 'user', content: 'hi' }], maxTokens: 100 })) {}

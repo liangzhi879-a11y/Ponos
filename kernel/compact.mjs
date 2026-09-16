@@ -174,10 +174,10 @@ export function pruneToolResult(content, { budget = 20000 } = {}) {
 
 // 工具结果裁剪预算解析（2026-09-10 窗口感知）：env 显式值优先（含 resolveCompactSettings
 // 写入的 BYTES）；未显式时按窗口缩放——小窗口本地模型（32K → 4K 字符/条）单条工具结果
-// 不再吃掉半个窗口，大窗口（1M）封顶 24K 防过度裁剪。`CLAUDE_CODE_TOOL_RESULT_BUDGET=true`
-// 布尔形态（bridge 旧注入）Number 为 NaN → 视为未显式，落入窗口缩放（安全侧）。
+// 不再吃掉半个窗口，大窗口（1M）封顶 24K 防过度裁剪。仅显式数值生效；非数值
+// 形态（Number 为 NaN）视为未显式，落入窗口缩放（安全侧）。
 export function resolveToolResultBudget(env = process.env, window = 200_000) {
-  const explicit = Number(env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES || env.CLAUDE_CODE_TOOL_RESULT_BUDGET)
+  const explicit = Number(env.PONOS_TOOL_RESULT_BUDGET_BYTES)
   if (Number.isFinite(explicit) && explicit > 0) return explicit
   const w = Number.isFinite(window) && window > 0 ? window : 200_000
   return Math.max(4000, Math.min(24000, Math.floor(w / 8)))
@@ -189,7 +189,7 @@ export function resolveToolResultBudget(env = process.env, window = 200_000) {
 // 不清除（maybeCompact 老化需 est ≥ clearRatio 门控，见调用方）。
 export function freeShrink(messages, { window = 200_000, env = process.env, age = true } = {}) {
   let cleared = 0
-  if (age) cleared = ageOutToolResults(messages, { keepRecent: Number(env.CLAUDE_CODE_TOOL_RESULT_KEEP_RECENT || 2) })
+  if (age) cleared = ageOutToolResults(messages, { keepRecent: Number(env.PONOS_TOOL_RESULT_KEEP_RECENT || 2) })
   const budget = resolveToolResultBudget(env, window)
   let prunedAny = false
   for (const m of messages) {
@@ -534,7 +534,7 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
     const ratioThreshold = Math.floor(window * (context.thresholdRatio ?? 0.8))
     const budget = Number.isFinite(outputBudget) && outputBudget > 0 ? outputBudget : 0
     if (budget <= 0) return ratioThreshold
-    const reserve = Number(env.CLAUDE_CODE_COMPACT_RESERVE || 4096)
+    const reserve = Number(env.PONOS_COMPACT_RESERVE || 4096)
     const budgeted = window - budget - reserve
     return budgeted < Math.floor(window * 0.05) ? ratioThreshold : Math.min(ratioThreshold, budgeted)
   }
@@ -780,7 +780,7 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
       }
       wire?.system?.('compaction', { state: 'start', covered: cut.covered.length, coveredTokens })
       compactEmitted = true
-      const retries = Number(env.CLAUDE_CODE_COMPACTION_RETRIES || 3)
+      const retries = Number(env.PONOS_COMPACTION_RETRIES || 3)
       let summary = null
       let converged = false
       // P0-2（2026-09-16）：门禁开关与计数。gateFailures = 因保真门禁不通过而**放弃当前
@@ -895,7 +895,7 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
       // 即进入压缩链路，但**只做零模型成本的免费收缩**：摘要是一次 480–600s 级完整
       // 请求，绝不为"条数多"付费（收口见下方 count-only 早退）。0 = 关闭。
       const msgs = Array.isArray(messages) ? messages.length : 0
-      const maxMessages = Number(context.maxMessages ?? env.CLAUDE_CODE_COMPACT_MAX_MESSAGES ?? 120)
+      const maxMessages = Number(context.maxMessages ?? env.PONOS_COMPACT_MAX_MESSAGES ?? 120)
       const overTokens = est.total >= threshold
       const overCount = Number.isFinite(maxMessages) && maxMessages > 0 && msgs > maxMessages
       if (!overTokens && !overCount) return { action: 'none', reason: 'below-threshold', msgs, est: est.total }
@@ -903,7 +903,7 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
       // 老化清除（P9-1）——上下文超过 clearRatio 时清可重放旧工具结果；清除后回落
       // 到 threshold 之下则本轮免摘要（压缩次数↓）。裁剪预算随窗口缩放（32K 窗口 →
       // 4K 字符/条），小窗口本地模型单条大文件读取不再吃掉半个窗口。
-      const clearRatio = Number(env.CLAUDE_CODE_TOOL_RESULT_CLEAR_RATIO || 0.5)
+      const clearRatio = Number(env.PONOS_TOOL_RESULT_CLEAR_RATIO || 0.5)
       const shrink = freeShrink(messages, { window, env, age: est.total >= Math.floor(window * clearRatio) })
       if (shrink.cleared > 0) {
         const est1 = context.estimate({ system, messages })
@@ -963,12 +963,12 @@ export function resolveCompactSettings({ window = 200_000, settings = {}, env = 
     : 0.16
   const toolResultBudget = Number.isFinite(maxToolResults) && maxToolResults > 0
     ? maxToolResults
-    : Number(env.CLAUDE_CODE_TOOL_RESULT_BUDGET_BYTES || 20000)
+    : Number(env.PONOS_TOOL_RESULT_BUDGET_BYTES || 20000)
   // T1 条数触发口：settings.compact.maxMessages 显式给值优先（含 0=关闭），其次 env，
   // 最后默认 120（口径 = 派生消息条数，与"实测 767 条从未触发"同一把尺）。
   const maxMessagesCfg = Number.isFinite(maxMessages) && maxMessages >= 0
     ? maxMessages
-    : Number(env.CLAUDE_CODE_COMPACT_MAX_MESSAGES)
+    : Number(env.PONOS_COMPACT_MAX_MESSAGES)
   const maxMessagesOut = Number.isFinite(maxMessagesCfg) && maxMessagesCfg >= 0 ? maxMessagesCfg : 120
   return { thresholdRatio, retainRatio, toolResultBudget, maxMessages: maxMessagesOut }
 }
