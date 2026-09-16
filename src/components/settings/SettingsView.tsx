@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Settings, Monitor, Cpu, Info, Check, Sparkles, Globe, Save, Database, FolderOpen, Brain, ChevronDown, Plus, X, Trash2, Puzzle, ChevronRight, HardDrive, RefreshCw, Wifi, Zap, ShieldCheck, FileText, Upload, Plug } from 'lucide-react'
+import { Settings, Monitor, Cpu, Info, Check, Sparkles, Globe, Save, Database, FolderOpen, Brain, ChevronDown, Plus, X, Trash2, Puzzle, ChevronRight, HardDrive, RefreshCw, Wifi, Zap, ShieldCheck, FileText, Upload } from 'lucide-react'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
   Button, ScrollArea, Switch,
@@ -22,11 +22,14 @@ import { PermissionsPanel } from '@/components/settings/PermissionsPanel'
 import { LogsPanel } from '@/components/settings/LogsPanel'
 import { KnowledgeImportPanel } from '@/components/settings/KnowledgeImportPanel'
 // MCP 服务器配置（P1-5 扩展）：可视化编辑 <configDir>/mcp.json
-import { McpPanel } from '@/components/settings/McpPanel'
+// 2026-09-16：入口已迁出设置窗 —— MCP 提升为与会话/任务同级的顶层标签（第八 rail），
+// 配置 + 授权 + 内核真实接入状态都在 `src/components/mcp/McpView.tsx`（含 McpConfigEditor）。
+// 这里刻意**不留**旧 section：两处入口会让"改了这边、那边没变"变成常态
+//（本组件与 rail 面板各自持有 rows 状态，同时打开时两边会互相覆盖）。
 import type { AppSettings, ModelProvider, YFWorkingConfigV2 } from '@/types'
 import { THEMES, type ThemeMode, type ThemeMeta, type Language } from '@/types'
 
-type Section = 'general' | 'model' | 'permissions' | 'logs' | 'knowledgeImport' | 'skills' | 'pet' | 'mcp' | 'experience' | 'about'
+type Section = 'general' | 'model' | 'permissions' | 'logs' | 'knowledgeImport' | 'skills' | 'pet' | 'experience' | 'about'
 
 export function SettingsView() {
   const { settings, updateSettings } = useSettingsStore()
@@ -60,8 +63,6 @@ export function SettingsView() {
               { id: 'skills' as Section, label: t('settings.skillsTab'), icon: Puzzle },
               { id: 'pet' as Section, label: t('settings.petTab'), icon: Sparkles },
               { id: 'experience' as Section, label: t('settings.experienceTab'), icon: Brain },
-              // MCP 服务器（P1-5 扩展）：可视化编辑 mcp.json
-              { id: 'mcp' as Section, label: t('settings.mcpTab'), icon: Plug },
               { id: 'about' as Section, label: t('settings.about'), icon: Info },
             ].map(item => {
               const Icon = item.icon
@@ -349,8 +350,6 @@ export function SettingsView() {
               )}
 
               {section === 'experience' && <ExperiencePanel />}
-
-              {section === 'mcp' && <McpPanel />}
 
               {section === 'about' && (
                 <div className="space-y-4 text-sm text-secondary">

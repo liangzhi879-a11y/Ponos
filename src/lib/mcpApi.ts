@@ -33,6 +33,18 @@ export type McpServerConfig = {
   headers?: Record<string, string>
   /** 两种传输共用 */
   timeoutMs?: number
+  /**
+   * 授权模式（2026-09-16 新增，camelCase 与内核契约一致）。
+   * `private` = 连上但不给任何 AI（仅测试）/ `public` = 所有 agent / `bound` = 仅 `bindAgents` 列出的 agent。
+   * **缺省 = public**（存量配置没有该字段，若缺省 private 则升级后工具全部消失）。
+   */
+  expose?: { mode?: 'private' | 'public' | 'bound'; bindAgents?: string[] }
+  /**
+   * 是否启用。**只有显式 `false` 才是关闭**（内核 `normalizeEnabled` 同规则）：
+   * 缺省、`'false'` 字符串、0 一律视为开启——解析歧义不该悄悄停用用户的服务器。
+   * 关闭 = 内核根本不启动连接（不 spawn 子进程、不发 HTTP 请求）。
+   */
+  enabled?: boolean
 }
 
 export type McpConfigResult = {
@@ -47,6 +59,65 @@ export type McpTestResult = {
   tools?: { name: string; description: string }[]
   serverInfo?: { name?: string; version?: string } | null
   error?: string
+}
+
+/**
+ * 内核真实接入状态的一台服务器（`GET /mcp/status` 的 kernel.servers 条目）。
+ * `tools` 是该服务器**实际发现的全部工具全名**（`mcp__<server>__<tool>`），
+ * 与可见性无关——可见性由 `expose`（授权意图）表达，是另一维信息。
+ */
+export type McpKernelServerStatus = { tools: string[]; expose: string }
+
+/** 内核上报的快照（`mcpRegistry.snapshot()` 的线上形状） */
+export type McpKernelSnapshotPayload = {
+  servers: Record<string, McpKernelServerStatus>
+  failed: Record<string, string>
+  disabled: string[]
+  configSig: string
+}
+
+/**
+ * `GET /mcp/status` 的结果。
+ * `kernel === null` 表示**内核本次运行还没上报过**（面板必须显示"内核尚未启动"，
+ * 而不是"已接入 0 个工具"）；`stale` 表示磁盘配置比内核用的那份新（下一条消息生效）。
+ */
+export type McpStatusResult = {
+  ok: boolean
+  error?: string
+  config: { path: string; sig: string | null }
+  kernel: McpKernelSnapshotPayload | null
+  stale: boolean
+}
+
+/**
+ * 读取**内核真实接入状态**（面板顶部的"全局真值"）。
+ *
+ * 与 `testMcpServer` 的区别是本次改动的核心：那个是**面板自己发起的探测**，
+ * 只证明"这台服务器此刻连得上"；只有这里返回的 `kernel` 才证明"内核已经把它
+ * 接进了 AI 的工具表"。此前只有一个，用户因此认为"添加成功却用不上"。
+ *
+ * 同样**永不抛**：桥返回 ok:false（配置文件损坏）时降级为 `kernel:null` + error 文案，
+ * 让界面既能把原因画出来、又能据此禁用保存。
+ */
+export async function getMcpStatus(baseUrl?: string): Promise<McpStatusResult> {
+  const r = await requestJson('/mcp/status', { method: 'GET' }, baseUrl)
+  const data = r.data
+  const cfg = (data?.config ?? {}) as { path?: unknown; sig?: unknown }
+  const empty: McpStatusResult = {
+    ok: false,
+    error: r.error || '无法读取 MCP 状态',
+    config: { path: typeof cfg.path === 'string' ? cfg.path : '', sig: typeof cfg.sig === 'string' ? cfg.sig : null },
+    kernel: null,
+    stale: false,
+  }
+  if (r.error || !data) return empty
+  return {
+    ok: data.ok === true,
+    ...(typeof data.error === 'string' ? { error: data.error } : {}),
+    config: { path: typeof cfg.path === 'string' ? cfg.path : '', sig: typeof cfg.sig === 'string' ? cfg.sig : null },
+    kernel: (data.kernel as McpKernelSnapshotPayload | null) ?? null,
+    stale: data.stale === true,
+  }
 }
 
 /** 统一的请求封装：把一切异常收敛成可展示文案，永不抛出 */

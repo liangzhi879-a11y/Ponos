@@ -59,6 +59,8 @@ export const enUS: TranslationKeys = {
     // S2 Task 1: 7th rail. A missing key does NOT throw — t() falls back to the key literal,
     // so the rail would literally render "rail.knowledge".
     knowledge: 'Knowledge',
+    // 2026-09-16: 8th rail. A missing key does NOT throw — t() falls back to the key literal.
+    mcp: 'MCP Servers',
     chatNew: 'New Chat',
     chatEmpty: 'No chats yet — start one below',
     chatEmptyAction: 'Start a Chat',
@@ -544,8 +546,8 @@ export const enUS: TranslationKeys = {
     petTab: 'Pet',
     // S2 Task 10: the page is now a knowledge-settings subpage; entry browsing moved to the Knowledge panel
     experienceTab: 'Experience & Knowledge',
-    // --- MCP servers (P1-5 extension: GUI config) ---
-    mcpTab: 'MCP Servers',
+    // --- MCP servers (P1-5 extension: GUI config; 2026-09-16 the entry moved to the 8th rail) ---
+    // Note: the settings-window key `mcpTab` was removed with that section (it was its only user).
     mcpTitle: 'MCP Servers',
     mcpDesc: 'Connect external tools over the Model Context Protocol. Takes effect after saving and starting a new turn.',
     mcpReload: 'Reload',
@@ -595,6 +597,30 @@ export const enUS: TranslationKeys = {
     mcpSummaryFailed: 'failed',
     mcpSummaryTesting: 'testing',
     mcpSummaryUntested: 'untested',
+    // Authorization model (2026-09-16): four levels = off / test only / public / selected agents.
+    // "Test only" needs the hint: on its own it reads as "test calls only", while the real
+    // meaning is "connected but registered to no AI" (the panel can still probe it manually).
+    mcpAuth: 'Access',
+    mcpAuth_off: 'Off',
+    mcpAuth_test: 'Test only',
+    mcpAuth_public: 'Public',
+    mcpAuth_bound: 'Selected agents',
+    mcpAuthHint: 'Public = every AI; Test only = connected but exposed to no AI; Off = the kernel never connects',
+    mcpAuthNoAgents: 'Agent list unavailable (only Public or Test only for now)',
+    mcpAuthAgentDisabled: '(disabled)',
+    mcpAuthBoundHint: 'Only the checked agents can use it; the main session cannot; saving is blocked with none checked',
+    mcpErrBoundNoAgent: 'Server "{name}" is limited to selected agents, but none is checked',
+    // Kernel-reported status (2026-09-16): must stay separate from the card's "Test connection" —
+    // that one is a panel-side probe ("reachable right now"), this one is "the kernel really
+    // registered it into the tool set". Conflating them is what made users think a saved server
+    // was working while the AI could not call it.
+    mcpKernelNever: 'Kernel not started yet (takes effect after you send a message)',
+    mcpKernelOk: '{servers} servers · {tools} tools connected',
+    mcpStaleHint: 'Config updated — it will take effect automatically on your next message',
+    mcpFailedOne: '{name} failed to start: {reason}',
+    mcpDisabledOne: 'Off: {names}',
+    mcpToolsList: 'Tools loaded by the kernel',
+    mcpRefresh: 'Refresh',
     minimizeToTray: 'Minimize to tray on close',
     minimizeToTrayDesc: 'Hide to system tray on close and keep running tasks in background',
     notifyMode: 'Task notification timing',

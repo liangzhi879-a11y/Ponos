@@ -1,4 +1,10 @@
-// src/components/settings/McpPanel.tsx —— 设置 → MCP 服务器（P1-5 扩展：GUI 配置界面）
+// src/components/mcp/McpConfigEditor.tsx —— MCP 服务器**配置编辑器**（由设置窗的 McpPanel 拆分而来）
+//
+// 2026-09-16（MCP 顶层面板）：MCP 从设置窗提升为顶层 rail。原 665 行的 McpPanel 职责已偏多
+// （配置 IO + 校验 + 表单 + 状态），故拆成两件：
+//   · 本文件 = **配置编辑器**（表单 + 增删 + 连接测试 + 保存 + 每卡的授权控件）
+//   · `McpView.tsx` = **视图层**（内核真实接入状态条 + 工具清单），提供外壳与滚动容器
+// 拆分以"搬家 + 加授权控件"为限，既有交互逻辑不动（既有 15 条 mcpFormat 测试是这次拆分的回归网）。
 //
 // 设计要点（为什么这么做）：
 //   ① **文件是唯一真源**：本页面只通过桥的 /mcp 路由读写 <configDir>/mcp.json，
@@ -6,16 +12,23 @@
 //   ② **不静默失败**：读/写/测试的任何错误都就地显示（含后端原文），
 //      否则用户会误以为"保存成功了"或"配置丢了"。
 //   ③ **连接测试是可选步骤**：测试失败不阻止保存——用户可能先存好再装依赖。
-//   ④ 校验只拦"必然无效"的输入（名称空/重复，以及本地命令 / HTTP URL 为空），
+//      但必须与"内核已接入"区分：测试只证明"这台此刻连得上"（面板自己发的探测），
+//      内核是否真把它接进工具表由 McpView 顶部状态条回答（内核上报的真值）。
+//   ④ 校验只拦"必然无效"的输入（名称空/重复、传输必填字段、bound 未选 agent），
 //      其余交给内核侧归一化（单一真源）：URL 是否可达、`${ENV_VAR}` 是否已定义都是运行期事实。
 //   ⑦ **两种传输**（2026-09-16 扩展）：每卡片可选「本地命令」(stdio) / 「远程 HTTP」，
 //      切换时**清掉另一侧专属字段**（否则写出 command+url 并存，后端一律 400 拒绝），
-//      但保留两传输共用的 `timeoutMs`。认证头只存 `${ENV_VAR}` 占位符 ⇒ 密钥不落盘。
+//      但保留两传输共用的 `timeoutMs` **与授权字段**——授权与传输无关，
+//      切一次传输就把"指定 agent"重置回"公开"属静默的权限扩大。
 //   ⑤ **状态与工具清单**（2026-09-16 增强）：每张卡片显示"已连接·N 个工具"徽章并列出工具名，
 //      打开面板与保存后自动逐台实测，顶部给汇总（如"2 通 · 1 失败"）与「全部测试」。
-//      ——数据来源是 /mcp/test 的真实握手，而非猜测；这正是"哪台连不上、各有什么工具"的答案。
+//      ——数据来源是 /mcp/test 的真实握手，而非猜测。
 //   ⑥ **多服务器**：并发测试（内核侧同样是 Promise.allSettled 并发启动），
 //      一台失败不影响其它台——汇总如实呈现"2 通 1 失败"，不整体判死。
+//   ⑧ **授权四档**（2026-09-16）：关闭 / 仅测试 / 公开 / 指定 agent。档位 ↔ 配置的互转
+//      与校验规则都在 `mcpFormat.ts`（纯函数，可回归）；本文件只负责画控件与调用。
+//      `bound` 但未选 agent ⇒ 校验报错、禁用保存（fail-closed 的界面侧对应：内核读侧
+//      遇到空列表会让该服务器对**所有人**不可见，绝不退化成 public）。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Plug, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Button, Input } from '@/components/ui'
@@ -26,11 +39,16 @@ import {
   testMcpServer,
   type McpServerConfig,
 } from '@/lib/mcpApi'
+// 授权多选的 agent 来源：与 agent 管理页**同源**（`GET /agents` 返回完整目录 + disabled 标记）。
+// 若面板自己另立一份列表，用户就会在两边看到不同的可选集合，甚至"选了一个不存在的 agent"
+// （而那个工具将无人可用）。
+import { fetchKernelAgents } from '@/lib/agentsApi'
 import {
   badgeOf, toolsOf, errorOf, summarize, summaryText, transportOf, configForTransport, canSaveConfig,
   parseArgLines, formatArgLines, parseKeyValueLines, formatKeyValueLines, nextDraft,
+  authLevelOf, applyAuthLevel, authFieldsOf, requiredFilledOf, validateRowIssues,
   type McpTestState, type McpTransport,
-} from '@/components/settings/mcpFormat'
+} from '@/components/mcp/mcpFormat'
 
 type Row = {
   /** 稳定 key：重命名时不能丢焦点 */
@@ -56,22 +74,14 @@ const nextKey = () => `row-${++seq}`
 /** 新建行默认「本地命令」：既有用户几乎都是 stdio，默认值保持原样（零行为变化） */
 const emptyConfig = (kind: McpTransport = 'stdio'): McpServerConfig =>
   kind === 'http'
-    ? { url: '', headers: {}, timeoutMs: 30000 }
-    : { command: '', args: [], env: {}, timeoutMs: 30000 }
+    ? { url: '', headers: {}, timeoutMs: 30000, enabled: true, expose: { mode: 'public', bindAgents: [] } }
+    : { command: '', args: [], env: {}, timeoutMs: 30000, enabled: true, expose: { mode: 'public', bindAgents: [] } }
 
 /**
- * 切换传输时重造配置对象（清另一侧字段、保留 timeoutMs）。
+ * 切换传输时重造配置对象（清另一侧字段、保留 timeoutMs 与授权字段）。
  * 实现已下沉到 `mcpFormat.ts` —— 它是纯逻辑，放在组件里无法被单测覆盖，
  * 而正是这段逻辑"归还空 url"的特性踩了"反推传输类型"的坑（详见该函数注释）。
  */
-
-/** 该传输形态的必填字段是否已填：本地 = 命令，HTTP = URL */
-function requiredFilled(row: Row): boolean {
-  // 一律读 row.transport（真源），不从 config 反推 —— 反推会把"已选 HTTP 但 url 尚空"判成 stdio
-  return row.transport === 'http'
-    ? Boolean(String(row.config.url ?? '').trim())
-    : Boolean(String(row.config.command ?? '').trim())
-}
 
 /** 探测载荷：只带该传输的字段（HTTP 上多发 args/env 会被后端 400 拒掉） */
 function probePayload(row: Row): McpServerConfig {
@@ -113,12 +123,15 @@ function toRows(servers: Record<string, McpServerConfig>): Row[] {
       key: nextKey(),
       name,
       transport,
-      // 只保留该传输形态的字段：带过去另一侧的键会在保存时被后端判为非法组合
+      // 只保留该传输形态的字段：带过去另一侧的键会在保存时被后端判为非法组合；
+      // 授权字段（enabled/expose）与传输无关，必须一并保留（否则"指定 agent"会在读一次后丢档）。
       config: transport === 'http'
         ? {
             url: cfg.url ?? '',
             headers: cfg.headers && typeof cfg.headers === 'object' ? cfg.headers : {},
             timeoutMs: cfg.timeoutMs,
+            enabled: cfg.enabled !== false,
+            expose: { mode: cfg.expose?.mode || 'public', bindAgents: [...(cfg.expose?.bindAgents || [])] },
           }
         : {
             command: cfg.command ?? '',
@@ -126,6 +139,8 @@ function toRows(servers: Record<string, McpServerConfig>): Row[] {
             env: cfg.env && typeof cfg.env === 'object' ? cfg.env : {},
             cwd: cfg.cwd ?? undefined,
             timeoutMs: cfg.timeoutMs,
+            enabled: cfg.enabled !== false,
+            expose: { mode: cfg.expose?.mode || 'public', bindAgents: [...(cfg.expose?.bindAgents || [])] },
           },
     }
   })
@@ -150,12 +165,16 @@ function toServers(rows: Row[]): Record<string, McpServerConfig> {
       if (cwd) cfg.cwd = cwd
     }
     if (r.config.timeoutMs && r.config.timeoutMs > 0) cfg.timeoutMs = r.config.timeoutMs
+    // 授权字段必须显式落盘：漏掉它们时内核会用缺省（开启 + public），
+    // 用户设的"关闭/仅测试/指定 agent"会静默失效——而界面显示的仍是用户设的档位。
+    // `authFieldsOf` 只搬运**存在**的键（读旧配置时也能原样往返）。
+    Object.assign(cfg, authFieldsOf(r.config))
     out[name] = cfg
   }
   return out
 }
 
-export function McpPanel() {
+export function McpConfigEditor() {
   // lang 必须一并取出：`t` 是**每次渲染新建**的函数（useTranslation 未做 memo），
   // 把它放进依赖数组会让 useCallback 每帧重建 ⇒ 依赖它的 useEffect 每帧重跑。
   // 本面板的 load() 首行就是 setLoading(true)、末尾 setLoading(false)，
@@ -180,6 +199,17 @@ export function McpPanel() {
   // 供异步的 doTest 在拿到结果时回看"这份配置还是不是当初那份"（见 doTest 内的过期判定）
   const rowsRef = useRef<Row[]>([])
   rowsRef.current = rows
+  // 授权多选的 agent 目录（与 agent 管理页同源）。取不到就只显示档位，不阻塞配置编辑：
+  // 拉列表失败不该让用户连"改 URL"都做不到。
+  const [agents, setAgents] = useState<Array<{ id: string; name?: string; disabled?: boolean }>>([])
+  useEffect(() => {
+    void (async () => {
+      try {
+        const list = await fetchKernelAgents()
+        setAgents(list.map(a => ({ id: a.id, name: a.name, disabled: a.disabled })))
+      } catch { /* 取不到就只显示档位（见上） */ }
+    })()
+  }, [])
 
   /** 测一台（结果结构化存 tools/error，供徽章与工具清单渲染） */
   const doTest = useCallback(async (row: Row): Promise<void> => {
@@ -203,7 +233,7 @@ export function McpPanel() {
 
   /** 测全部：并发（内核侧也是并发启动），单台失败不影响其它台 */
   const testAll = useCallback(async (list: Row[]): Promise<void> => {
-    const valid = list.filter(r => r.name.trim() && requiredFilled(r))
+    const valid = list.filter(r => r.name.trim() && requiredFilledOf(r.config, r.transport))
     await Promise.all(valid.map(r => doTest(r)))
   }, [doTest])
 
@@ -285,18 +315,20 @@ export function McpPanel() {
     setNotice('')
   }
 
-  // 校验：只拦必然无效的（名称空/重复，以及该传输形态的必填字段为空：本地=命令，HTTP=URL）。
-  // URL 是否可达、`${ENV_VAR}` 变量是否已定义属运行期事实，交给「连接测试」定论。
-  const names = rows.map(r => r.name.trim()).filter(Boolean)
-  const dupName = names.find((n, i) => names.indexOf(n) !== i)
-  const invalidRow = rows.find(r => !r.name.trim() || !requiredFilled(r))
-  const validateMsg = dupName
-    ? t('settings.mcpErrDupName', { name: dupName })
-    : !invalidRow
-      ? ''
-      : invalidRow.transport === 'http' && !requiredFilled(invalidRow)
-        ? t('settings.mcpErrUrlRequired')
-        : t('settings.mcpErrRequired')
+  // 校验：规则全在 `mcpFormat.validateRowIssues`（纯函数，可回归）。
+  // 这里只负责把 issue 映射成本地化文案——规则与文案分开，是为了让同一份规则既能在
+  // 中文界面下报错、又能被单测直接断言（无需 DOM / i18n）。
+  // 规则：名称必填、名称不重复、该传输的必填字段已填（**关闭的跳过**）、bound 必须选 agent。
+  const issue = validateRowIssues(rows)
+  const validateMsg = issue === null
+    ? ''
+    : issue.kind === 'dupName'
+      ? t('settings.mcpErrDupName', { name: issue.name })
+      : issue.kind === 'boundNoAgent'
+        ? t('settings.mcpErrBoundNoAgent', { name: issue.name })
+        : issue.transport === 'http'
+          ? t('settings.mcpErrUrlRequired')
+          : t('settings.mcpErrRequired')
   // 读取失败时优先说明"为什么不能保存"，否则用户只会盯着一个灰掉的保存按钮发愣
   const blockedMsg = loadFailed ? t('settings.mcpSaveBlocked') : ''
   const canSave = canSaveConfig({ rowCount: rows.length, validateMsg, loadFailed })
@@ -326,14 +358,16 @@ export function McpPanel() {
   })
 
   return (
-    <div className="max-w-3xl space-y-5 text-sm">
+    <div className="space-y-5 p-4 text-sm">
+      {/* 页面级标题/说明已上移到 McpView（那是"面板"的标题）：这里只留**配置维度的工具条**——
+          配置文件路径 + 重新读取 + 新增。"重新读取"必须留在本组件内：它同时重置 rows/测试结论
+          并且是保存被禁用时的自救入口（见 mcpSaveBlocked 文案），搬走反而会两处状态不同步。 */}
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <h2 className="flex items-center gap-2 text-base font-semibold text-primary">
+        <div className="min-w-0">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-primary">
             <Plug className="w-[18px] h-[18px] text-brand-500" />
             {t('settings.mcpTitle')}
-          </h2>
-          <p className="mt-1 text-xs text-tertiary">{t('settings.mcpDesc')}</p>
+          </h3>
           {configPath && (
             <p className="mt-1 font-mono text-[10px] text-tertiary break-all">{configPath}</p>
           )}
@@ -419,6 +453,60 @@ export function McpPanel() {
                     </Button>
                   </div>
 
+                  {/* 授权档位：关闭 / 仅测试 / 公开 / 指定 agent（2026-09-16）。
+                      档位只改本地 state，**保存后才落盘**（与既有表单一致）——半途点错档不会
+                      立刻改变 AI 的可用工具；而对"带凭证的远程服务器"来说，粒度粗一档就是
+                      "对所有子 agent 开放"，改错代价高，故宁多一步显式保存。
+                      档位 ↔ 配置的互转在 `mcpFormat.applyAuthLevel`（保留 bindAgents 列表）。 */}
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-secondary">{t('settings.mcpAuth')}</span>
+                    <div className="flex gap-1">
+                      {(['off', 'test', 'public', 'bound'] as const).map(lv => (
+                        <Button
+                          key={lv}
+                          size="xs"
+                          variant={authLevelOf(row.config) === lv ? 'primary' : 'outline'}
+                          onClick={() => patchConfig(row.key, r => ({ ...r, config: applyAuthLevel(r.config, lv) }))}
+                        >
+                          {t(`settings.mcpAuth_${lv}`)}
+                        </Button>
+                      ))}
+                    </div>
+                    {/* 档位语义就地说明：光看按钮文字（"仅测试"）不足以让人知道它=连上但不给 AI */}
+                    <span className="text-[10px] text-tertiary">{t('settings.mcpAuthHint')}</span>
+                  </div>
+                  {authLevelOf(row.config) === 'bound' && (
+                    <div className="mt-2 space-y-1">
+                      <div className="flex flex-wrap gap-x-3 gap-y-1">
+                        {agents.length === 0 && (
+                          <span className="text-[10px] text-tertiary">{t('settings.mcpAuthNoAgents')}</span>
+                        )}
+                        {agents.map(a => {
+                          const on = (row.config.expose?.bindAgents || []).includes(a.id)
+                          return (
+                            <label key={a.id} className="flex items-center gap-1 text-xs text-secondary">
+                              <input
+                                type="checkbox"
+                                checked={on}
+                                onChange={() => patchConfig(row.key, r => {
+                                  const cur = r.config.expose?.bindAgents || []
+                                  const next = on ? cur.filter(x => x !== a.id) : [...cur, a.id]
+                                  return { ...r, config: { ...r.config, expose: { mode: 'bound' as const, bindAgents: next } } }
+                                })}
+                              />
+                              {a.name || a.id}
+                              {/* 已停用的 agent 照列不滤：按设计（§4.5）要"展示全部并标出状态"，
+                                  否则用户会以为"面板里选不到的 agent"不存在。绑定已停用 agent ⇒
+                                  该工具无人可用（fail-closed），故状态必须显示出来。 */}
+                              {a.disabled ? <span className="text-tertiary">{t('settings.mcpAuthAgentDisabled')}</span> : null}
+                            </label>
+                          )
+                        })}
+                      </div>
+                      <span className="block text-[10px] text-tertiary">{t('settings.mcpAuthBoundHint')}</span>
+                    </div>
+                  )}
+
                   <div className="flex items-center gap-2">
                     <Input
                       value={row.name}
@@ -445,7 +533,7 @@ export function McpPanel() {
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={!requiredFilled(row) || test?.running}
+                      disabled={!requiredFilledOf(row.config, row.transport) || test?.running}
                       onClick={() => void doTest(row)}
                     >
                       <Plug className="w-4 h-4" />

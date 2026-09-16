@@ -58,6 +58,8 @@ export const zhCN = {
     apps: '应用智控',
     // S2 Task 1：第七 rail。漏加此键**不报错**——t() 对缺键回退为 key 字面，界面会直接显示 "rail.knowledge"
     knowledge: '知识',
+    // 2026-09-16：第八 rail。漏加此键**不报错**——t() 对缺键回退为 key 字面，界面会显示 "rail.mcp"
+    mcp: 'MCP 服务',
     chatNew: '新建对话',
     chatEmpty: '暂无对话，先聊点什么吧',
     chatEmptyAction: '开始对话',
@@ -550,8 +552,8 @@ export const zhCN = {
     petTab: '桌面宠物',
     // S2 Task 10：本页简化为「知识库设置子页」（注入/索引/激活/导入导出），条目浏览改由知识面板承接
     experienceTab: '经验与知识库',
-    // --- MCP 服务器（P1-5 扩展：GUI 配置界面）---
-    mcpTab: 'MCP 服务器',
+    // --- MCP 服务器（P1-5 扩展：GUI 配置界面；2026-09-16 入口迁到第八 rail「MCP 服务」）---
+    // 注：原设置窗入口键 `mcpTab` 已随该 section 删除（只被它使用）；面板自身的键保留。
     mcpTitle: 'MCP 服务器',
     mcpDesc: '通过 Model Context Protocol 接入外部工具。保存后新开一轮对话即生效。',
     mcpReload: '重新读取',
@@ -600,6 +602,29 @@ export const zhCN = {
     mcpSummaryFailed: '失败',
     mcpSummaryTesting: '测试中',
     mcpSummaryUntested: '未测',
+    // 授权模型（2026-09-16）：四档 = 关闭 / 仅测试 / 公开 / 指定 agent。
+    // "仅测试"这个词必须配提示：光看按钮文字，用户会以为它是"只允许测试调用"，
+    // 而实际语义是「连上但**不注册给任何 AI**」——面板仍可手动点连接测试。
+    mcpAuth: '授权',
+    mcpAuth_off: '关闭',
+    mcpAuth_test: '仅测试',
+    mcpAuth_public: '公开',
+    mcpAuth_bound: '指定 agent',
+    mcpAuthHint: '公开=所有 AI 可用；仅测试=连上但不给任何 AI；关闭=内核不连接',
+    mcpAuthNoAgents: '未取得 agent 列表（暂时只能选公开或仅测试）',
+    mcpAuthAgentDisabled: '（已停用）',
+    mcpAuthBoundHint: '仅勾选的 agent 可用，主会话不可用；一个都没勾则无法保存',
+    mcpErrBoundNoAgent: '服务器 "{name}" 指定了「仅特定 agent」，但一个 agent 都没选',
+    // 内核真实接入状态（2026-09-16）：与卡片上的「连接测试」**必须分开写**——
+    // 后者只是面板自己发起的探测（证明"这台此刻连得上"），前者才证明"内核已把它接进工具表"。
+    // 混在一起正是用户"添加成功却找不到调用入口"的来源。
+    mcpKernelNever: '内核尚未启动（发送一条消息后生效）',
+    mcpKernelOk: '{servers} 个服务器 · {tools} 个工具已接入',
+    mcpStaleHint: '配置已更新，将在你发送下一条消息时自动生效',
+    mcpFailedOne: '{name} 启动失败：{reason}',
+    mcpDisabledOne: '已关闭：{names}',
+    mcpToolsList: '内核已加载的工具',
+    mcpRefresh: '刷新',
     minimizeToTray: '关闭时最小化到托盘',
     minimizeToTrayDesc: '启用后点击关闭将隐藏到系统托盘，应用在后台继续运行任务',
     notifyMode: '任务完成通知时机',

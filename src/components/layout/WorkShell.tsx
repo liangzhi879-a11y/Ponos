@@ -18,6 +18,8 @@ import { SkillsPanel } from '@/components/skills/SkillsPanel'
 import { WorkflowsPanel } from '@/components/workflows/WorkflowsPanel'
 import { AppsPanel } from '@/components/apps/AppsPanel'
 import { KnowledgePanel } from '@/components/knowledge/KnowledgePanel'
+// 第八 rail（2026-09-16）：MCP 服务面板。设置窗内的 MCP 入口已删除，这里是唯一入口
+import { McpView } from '@/components/mcp/McpView'
 import { StatusBar } from './StatusBar'
 import { ChatWindow } from '@/components/chat/ChatWindow'
 import { ChatInput } from '@/components/chat/ChatInput'
@@ -214,6 +216,10 @@ export function WorkShell({ onGoCockpit }: WorkShellProps) {
         ) : rail === 'knowledge' ? (
           // 第七 rail：知识库（S2 Task 1 接入 rail；三栏工作台从 Task 3 起逐任务填充）
           <KnowledgePanel />
+        ) : rail === 'mcp' ? (
+          // 第八 rail：MCP 服务（2026-09-16）——配置 + 授权 + 内核真实接入状态。
+          // 必须排在默认分支（chat/task 双栏）之前，否则会掉进聊天列里。
+          <McpView />
         ) : (
           <>
         <SecondPanel />

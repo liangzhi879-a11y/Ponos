@@ -1,5 +1,5 @@
-// src/components/settings/mcpFormat.test.ts
-// MCP 面板状态归并的测试。
+// src/components/mcp/mcpFormat.test.ts（2026-09-16 由 src/components/settings/ 迁入；既有断言原样保留）
+// MCP 面板状态归并 + 授权档位/校验的测试。
 //
 // 测什么（挑真实风险，不凑覆盖率）：
 //   ① **running 必须压过旧结论**：点「测试」时若仍显示上一次的「✓ 5 个工具」，
@@ -14,6 +14,7 @@ import assert from 'node:assert/strict'
 import {
   badgeOf, toolsOf, errorOf, summarize, summaryText, transportOf, configForTransport, canSaveConfig,
   parseKeyValueLines, formatKeyValueLines, parseArgLines, formatArgLines, nextDraft,
+  authLevelOf, applyAuthLevel, validateRowsMsg,
   type McpTestState,
 } from './mcpFormat.ts'
 
@@ -222,4 +223,46 @@ test('陷阱回归：**不得从 config 反推编辑态的传输类型**（否�
 
   // 而"读取已保存的合法配置"仍可用它判定：后端只存合法数据，HTTP 条目必有非空 url
   assert.equal(transportOf({ url: 'https://e.com/mcp' }), 'http')
+})
+
+// 【MCP 顶层面板与授权模型，2026-09-16】授权档位（四档）与配置的互转。
+//
+// 为什么把"档位 ↔ 配置"做成纯函数：档位是界面概念（关闭 / 仅测试 / 公开 / 指定 agent），
+// 配置是磁盘契约（enabled + expose.mode + expose.bindAgents）。两者互转若散在 JSX 里，
+// 最容易出的错就是**静默的权限扩大**——比如把"仅测试"当成"公开"写进文件，
+// 用户以为只是测试，AI 却已经能用；或切档时把 bindAgents 清空导致"指定 agent"变成无人可用。
+test('授权档位 ↔ 配置互转：四档语义清晰且往返稳定', () => {
+  // off：不连接（内核连进程都不起）
+  assert.equal(authLevelOf({ command: 'x', enabled: false, expose: { mode: 'public', bindAgents: [] } }), 'off')
+  // test：连上但不给任何 AI（面板仍可测试）
+  assert.equal(authLevelOf({ command: 'x', enabled: true, expose: { mode: 'private', bindAgents: [] } }), 'test')
+  assert.equal(authLevelOf({ command: 'x', enabled: true, expose: { mode: 'public', bindAgents: [] } }), 'public')
+  assert.equal(authLevelOf({ command: 'x', enabled: true, expose: { mode: 'bound', bindAgents: ['a'] } }), 'bound')
+  // 存量配置（无新字段）= 开启 + 公开
+  assert.equal(authLevelOf({ command: 'x' }), 'public')
+
+  const base = { command: 'x' }
+  assert.equal(authLevelOf(applyAuthLevel(base, 'off')), 'off')
+  assert.equal(authLevelOf(applyAuthLevel(base, 'test')), 'test')
+  assert.equal(authLevelOf(applyAuthLevel(base, 'public')), 'public')
+  // 切到 bound 但还没选 agent：仍是 bound 档（空列表情形由校验拦保存）
+  assert.equal(authLevelOf(applyAuthLevel(base, 'bound')), 'bound')
+  // 从 bound 切走再切回：agent 列表要保留（否则用户要重选）
+  const withAgents = applyAuthLevel(applyAuthLevel(base, 'bound'), 'bound')
+  const bound = { ...withAgents, expose: { mode: 'bound' as const, bindAgents: ['r'] } }
+  assert.equal(authLevelOf(bound), 'bound')
+  assert.deepEqual(applyAuthLevel(bound, 'public').expose, { mode: 'public', bindAgents: ['r'] },
+    '切档时保留列表：切回来不用重选（列表在非 bound 档不生效，留在配置里也无害）')
+})
+
+test('bound 无 agent ⇒ 校验必须报错（fail-closed 的界面侧对应）', () => {
+  const rows = [{ key: '1', name: 'jira', transport: 'http' as const,
+    config: { url: 'https://e.com/mcp', enabled: true, expose: { mode: 'bound' as const, bindAgents: [] } } }]
+  assert.ok(validateRowsMsg(rows), 'bound 而无人可用 ⇒ 保存按钮必须被禁用，并在保存时报错')
+})
+
+test('关闭的服务器不因缺 URL/命令而报错（它本来就不连接）', () => {
+  const rows = [{ key: '1', name: 'x', transport: 'stdio' as const,
+    config: { command: '', enabled: false, expose: { mode: 'public' as const, bindAgents: [] } } }]
+  assert.equal(validateRowsMsg(rows), '', '关闭的服务器没有必填项 —— 校验它会让用户无法保存')
 })

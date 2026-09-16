@@ -24,6 +24,9 @@ import { getAgentById } from '@/lib/agents'
 import { useAgentStore } from '@/stores/agentStore'
 import { useHealthStore, type HealthInfo } from '@/stores/healthStore'
 import { useWarningStore } from '@/stores/warningStore'
+// MCP 真实接入状态（2026-09-16）：内核就绪后发 system/mcp_status → 存 mcpStore → MCP 面板读。
+// 与 health/warning 同一条套路（事件推送，不轮询），故也用同款的"按会话/全局最近一份"归约。
+import { useMcpStore, type McpKernelSnapshot } from '@/stores/mcpStore'
 import { normalizeWarning } from '@/lib/warningUi'
 // 知识空间外部改动 → 失效知识库缓存（2026-09-14 批次 4，见 knowledge_changed 处注释）
 import { invalidateKnowledge } from '@/hooks/useKnowledge'
@@ -1091,6 +1094,23 @@ function handleMessage(msg: Record<string, unknown>) {
         // 帧 { taskId, text, compactCount }；同 taskId 覆盖（pushLaneNote cap 3）。
         const n = event as { taskId?: unknown; text?: unknown; compactCount?: unknown }
         useChatStore.getState().pushLaneNote(sid, makeLaneNote(String(n.taskId ?? ''), String(n.text ?? ''), Number(n.compactCount) || 0))
+        return
+      }
+      if (subtype === 'mcp_status') {
+        // 内核就绪后上报的**真实接入状态**（MCP 面板顶部的"全局真值"）。
+        // 与卡片上的「连接测试」不是一回事：那个是**面板自己发起的探测**，只证明"这台此刻
+        // 连得上"；只有这个事件才证明"内核已经把它接进 AI 的工具表"。两者混为一谈正是
+        // 用户"添加成功却找不到调用入口"的来源。
+        //
+        // 载荷即 registry.snapshot()，逐字段兜底：缺字段/畸形帧退化成空表而不是 undefined
+        // （面板要遍历 servers/failed，塞进 undefined 会在渲染期抛）。
+        const s = event as Record<string, unknown>
+        useMcpStore.getState().setKernelStatus({
+          servers: (s.servers && typeof s.servers === 'object' ? s.servers : {}) as McpKernelSnapshot['servers'],
+          failed: (s.failed && typeof s.failed === 'object' ? s.failed : {}) as Record<string, string>,
+          disabled: Array.isArray(s.disabled) ? s.disabled.map(String) : [],
+          configSig: String(s.configSig ?? ''),
+        })
         return
       }
       if (subtype === 'loop_result') {

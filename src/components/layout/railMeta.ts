@@ -18,7 +18,10 @@
 //    **不用 BookOpen**：它已被 SkillsPanel 占用两处（SkillsPanel.tsx:382,412，语义=读文档），
 //    复用会违反图标唯一性审计（docs/superpowers/audits/2026-09-08-gui-icon-uniqueness.md）。
 //    Library 全库零占用；备选 NotebookPen。
-import { MessageSquare, SquareKanban, Bot, Puzzle, Workflow, LayoutGrid, Library, type LucideIcon } from 'lucide-react'
+//  - mcp=Plug（2026-09-16 第八 rail「MCP 服务」）：Plug 原先只被设置窗的 MCP section 占用，
+//    该 section 已删除（入口迁到本 rail）⇒ 属**同一实体的位置迁移**，不新增图标占用；
+//    McpConfigEditor 卡片上的 Plug 与 rail 同域同义（MCP 连接），符合本表"域内同实体复用"约定。
+import { MessageSquare, SquareKanban, Bot, Puzzle, Workflow, LayoutGrid, Library, Plug, type LucideIcon } from 'lucide-react'
 import type { RailId } from '@/stores/viewStore'
 
 export interface RailMeta {
@@ -35,6 +38,9 @@ export const RAIL: readonly RailMeta[] = [
   { id: 'workflows', icon: Workflow, labelKey: 'rail.workflows' },
   { id: 'apps', icon: LayoutGrid, labelKey: 'rail.apps' },
   { id: 'knowledge', icon: Library, labelKey: 'rail.knowledge' },
+  // 第八 rail：MCP 服务（配置 + 授权 + 内核真实接入状态）。设置窗内的 MCP 入口已移除，
+  // 故 i18n 键 `rail.mcp` 是**必须**的：漏加不报错，但 RailNav 会直接渲染出 "rail.mcp" 字面。
+  { id: 'mcp', icon: Plug, labelKey: 'rail.mcp' },
 ]
 
 /** 非法/未知 rail id 兜底 → 'task'（与 viewStore.sanitizeRail 同策略，供宿主路由防护） */
