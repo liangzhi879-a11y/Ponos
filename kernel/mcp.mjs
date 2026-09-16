@@ -10,6 +10,7 @@
 import { spawn } from 'node:child_process'
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { createHash } from 'node:crypto'
 
 export const DEFAULT_MCP_TIMEOUT_MS = 20000
 const STDERR_KEEP = 20
@@ -114,11 +115,18 @@ export function loadMcpServers(configPath) {
   for (const [name, cfg] of Object.entries(servers)) {
     const kind = classifyMcpEntry(cfg)
     if (kind.kind === 'invalid') continue // 与 normalizeMcpServers 同判定 ⇒ 不会出现"存得进、读不出"
+    // 授权与开关必须在这里也读出来：注册表就是靠 loadMcpServers 的结果决定
+    // "连不连"与"给谁看"。若只有写侧 normalize 认识这两个字段、读侧不认识，
+    // 表现就是"界面上关了，内核照旧连接并暴露"——最糟的一类静默失效。
+    const ex = normalizeExpose(cfg.expose)
+    if (!ex.ok) continue   // 读侧放弃畸形条目，与上面 invalid 同一处理（写侧已挡住）
+    const policy = { enabled: normalizeEnabled(cfg.enabled), expose: ex.expose }
     if (kind.kind === 'http') {
       out[name] = {
         url: kind.url,
         headers: normalizeHeaders(cfg.headers),
         timeoutMs: normalizeTimeout(cfg.timeoutMs),
+        ...policy,
       }
       continue
     }
@@ -128,6 +136,7 @@ export function loadMcpServers(configPath) {
       env: cfg.env && typeof cfg.env === 'object' ? cfg.env : {},
       cwd: cfg.cwd ? String(cfg.cwd) : null,
       timeoutMs: normalizeTimeout(cfg.timeoutMs),
+      ...policy,
     }
   }
   return out
@@ -396,6 +405,100 @@ export async function startMcpClient({ name, command, args = [], env = {}, cwd =
 // ---------------------------------------------------------------------------
 
 /**
+ * 授权模式。
+ * - `private` 连上但不给任何 AI 用（面板仍可测试连通性）
+ * - `public`  所有 agent 可用
+ * - `bound`   仅 `bindAgents` 列出的 agent 可用（主会话不可用）
+ */
+export const EXPOSE_MODES = ['private', 'public', 'bound']
+
+/**
+ * 归一化 `expose`。
+ *
+ * 缺省 `{mode:'public'}` —— 这是**刻意与工作流不同**的一处：`kernel/dyntools.mjs` 的可见性
+ * 缺省是 private，而存量 `mcp.json` 里根本没有 `expose` 字段；若这里缺省 private，
+ * 升级后所有 MCP 工具会突然消失，用户会认为功能坏了。向后兼容优先：
+ * 没有该字段 = 沿用现在的行为 = 所有 agent 可用。
+ *
+ * @returns {{ok:true, expose:{mode:string, bindAgents:string[]}} | {ok:false, error:string}}
+ */
+export function normalizeExpose(raw) {
+  if (raw === undefined || raw === null) return { ok: true, expose: { mode: 'public', bindAgents: [] } }
+  if (typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'expose 必须是对象' }
+  const mode = raw.mode === undefined || raw.mode === null ? 'public' : String(raw.mode)
+  if (!EXPOSE_MODES.includes(mode)) {
+    return { ok: false, error: `expose.mode 只能是 ${EXPOSE_MODES.join(' / ')}（收到 "${mode}"）` }
+  }
+  const bindAgents = []
+  if (raw.bindAgents !== undefined && raw.bindAgents !== null) {
+    if (!Array.isArray(raw.bindAgents)) return { ok: false, error: 'expose.bindAgents 必须是数组' }
+    for (const a of raw.bindAgents) {
+      const s = String(a ?? '').trim()
+      // 空项几乎总是漏填或模板残留，是"该填没填"的信号，别默默忽略
+      if (!s) return { ok: false, error: 'expose.bindAgents 里不能有空项' }
+      if (!bindAgents.includes(s)) bindAgents.push(s)   // 去重保序：重复项会让界面显示重复标签
+    }
+  }
+  // fail-closed 的**写侧**对应：bound 却没列出任何人 ⇒ 该服务器无人可用，
+  // 几乎总是漏填而非本意。保存时就报错，好过保存后发现"授权了却没生效"。
+  if (mode === 'bound' && !bindAgents.length) {
+    return { ok: false, error: 'expose.mode 为 bound 时须至少指定一个 agent（否则没有任何 AI 能用）' }
+  }
+  return { ok: true, expose: { mode, bindAgents } }
+}
+
+/**
+ * `enabled` 只认显式 `false`。
+ * 解析歧义（`'false'` 字符串、`0`、`null`）一律视为**开启**：
+ * 宁可多连一次，也不要因为一个格式问题静默停用用户的服务器。
+ */
+export function normalizeEnabled(raw) {
+  return raw === false ? false : true
+}
+
+/**
+ * 某条目对指定 agent 的可见性。`agentId` 为空 = 主会话。
+ *
+ * 与 `kernel/dyntools.mjs` 的 `visibilityOf` **同名同义**（bound 对主会话不可见），
+ * 用户不必学第二套规则。任何未知/畸形输入一律返回 `null` ——
+ * 权限判定必须向"更严"一侧失败：判错成 public 是权限事故，判错成不可见只是少个工具。
+ *
+ * @returns {'public'|'bound'|null} null = 不可见
+ */
+export function mcpVisibilityOf(entry, agentId) {
+  if (!entry || entry.enabled === false) return null
+  const mode = entry.expose?.mode || 'public'
+  if (mode === 'private') return null
+  if (mode === 'public') return 'public'
+  if (mode === 'bound') {
+    if (!agentId) return null
+    const list = Array.isArray(entry.expose?.bindAgents) ? entry.expose.bindAgents : []
+    return list.includes(String(agentId)) ? 'bound' : null
+  }
+  return null
+}
+
+/** 稳定序列化：键排序。签名必须与键序无关，否则"重存一次配置"就白重启一次内核 */
+function stableStringify(v) {
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`
+  if (v && typeof v === 'object') {
+    return `{${Object.keys(v).sort().map(k => `${JSON.stringify(k)}:${stableStringify(v[k])}`).join(',')}}`
+  }
+  return JSON.stringify(v === undefined ? null : v)
+}
+
+/**
+ * 配置内容签名（16 位十六进制）。桥用它判断"磁盘配置是否比运行中的内核新"：
+ * 不一致 ⇒ 重放内核（`--resume`，上下文不丢）。
+ *
+ * **必须包含 `enabled`/`expose`** —— 授权变更同样需要重载，
+ * 否则用户改了授权却看不到任何效果，还以为功能坏了。
+ */
+export function mcpConfigSig(servers) {
+  return createHash('sha256').update(stableStringify(servers || {})).digest('hex').slice(0, 16)
+}
+
+/**
  * 归一化 `{ servers: { <name>: {command,args,env,cwd,timeoutMs} 或 {url,headers,timeoutMs} } }`
  * （**纯函数、无 IO**）。
  * 校验严格是因为它挡在磁盘前面：任何"能通过校验但内核读不懂"的条目都是静默失效。
@@ -417,6 +520,10 @@ export function normalizeMcpServers(raw) {
     // 逐条目报姓名是 GUI 能定位问题的前提（哪台服务器填错了）
     const kind = classifyMcpEntry(cfg)
     if (kind.kind === 'invalid') return { ok: false, error: `服务器 "${name}" ${kind.reason}` }
+    // 授权与开关：两种传输都要带（HTTP 分支与 stdio 分支共用）
+    const ex = normalizeExpose(cfg.expose)
+    if (!ex.ok) return { ok: false, error: `服务器 "${name}" ${ex.error}` }
+    const policy = { enabled: normalizeEnabled(cfg.enabled), expose: ex.expose }
     if (kind.kind === 'http') {
       // 只存 ${ENV_VAR} 字面量，**运行时**才取环境变量 ⇒ 密钥不进入 mcp.json
       // （该文件会被备份、截图、同步到网盘）。此处不校验变量是否存在：
@@ -425,6 +532,7 @@ export function normalizeMcpServers(raw) {
         url: kind.url,
         headers: normalizeHeaders(cfg.headers),
         timeoutMs: normalizeTimeout(cfg.timeoutMs),
+        ...policy,
       }
       continue
     }
@@ -443,7 +551,7 @@ export function normalizeMcpServers(raw) {
     const cwd = cfg.cwd === undefined || cfg.cwd === null ? '' : String(cfg.cwd).trim()
     if (cwd) entry.cwd = cwd
     entry.timeoutMs = normalizeTimeout(cfg.timeoutMs)
-    out[name] = entry
+    out[name] = { ...entry, ...policy }
   }
   return { ok: true, servers: out }
 }

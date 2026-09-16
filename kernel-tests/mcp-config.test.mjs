@@ -13,12 +13,22 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   DEFAULT_MCP_TIMEOUT_MS, normalizeMcpServers, writeMcpServers, readMcpServers, loadMcpServers,
+  EXPOSE_MODES, normalizeExpose, normalizeEnabled, mcpVisibilityOf, mcpConfigSig,
 } from '../kernel/mcp.mjs'
 
 const mkTmp = () => mkdtempSync(join(tmpdir(), 'yfw-mcp-config-'))
-/** 归一到 loadMcpServers 的形状：空 cwd 时它给 null，而 normalize 是"不设该键"——同一件事。 */
+/**
+ * 归一到 loadMcpServers 的形状：空 cwd 时它给 null，而 normalize 是"不设该键"——同一件事。
+ * `enabled`/`expose` 是 2026-09-16 新增的字段：**存量配置没有它们，归一化后必然出现**，
+ * 故比较前在这里补齐缺省值。不补的话，"往返一致"会被误判成回归，其实只是契约扩展。
+ */
 const canon = (servers) => Object.fromEntries(
-  Object.entries(servers).map(([k, v]) => [k, { ...v, cwd: v.cwd ?? null }]),
+  Object.entries(servers).map(([k, v]) => [k, {
+    ...v,
+    cwd: v.cwd ?? null,
+    enabled: v.enabled === false ? false : true,
+    expose: v.expose ?? { mode: 'public', bindAgents: [] },
+  }]),
 )
 
 // ---------------------------------------------------------------------------
@@ -203,5 +213,123 @@ test('writeMcpServers：路径缺失时报错而不是抛（调用方是 HTTP ha
     writeFileSync(blocked, 'x', 'utf-8')
     const w2 = writeMcpServers(join(blocked, 'mcp.json'), { s: { command: 'node' } })
     assert.equal(w2.ok, false, 'IO 失败必须是 {ok:false}，由 handler 转成 500')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ---------------------------------------------------------------------------
+// 授权模型（2026-09-16 P1-6「MCP 顶层面板」）：`enabled` + 三档 `expose`。
+//
+// 为什么这一层要测：判定错一格，后果是**权限事故**而非界面小瑕疵 ——
+// 把"仅特定 agent"判成"公开"，等于把带凭证的服务器给了所有 agent；
+// 把"关闭"判成"开启"，等于用户以为停用了却仍在连接。故这里必须把三档 × agentId 全部钉住。
+
+test('expose 归一化：缺省 = public（存量配置行为不变，升级后工具不消失）', () => {
+  const n = normalizeMcpServers({ servers: { a: { command: 'npx' } } })
+  assert.equal(n.ok, true)
+  assert.deepEqual(n.servers.a.expose, { mode: 'public', bindAgents: [] })
+  assert.equal(n.servers.a.enabled, true, 'enabled 缺省必须是 true，否则升级后所有工具突然消失')
+  assert.deepEqual(EXPOSE_MODES, ['private', 'public', 'bound'])
+})
+
+test('enabled 只认显式 false —— 解析歧义不该悄悄关掉用户的服务器', () => {
+  const mk = (v) => normalizeMcpServers({ servers: { a: { command: 'npx', enabled: v } } }).servers.a.enabled
+  assert.equal(mk(false), false)
+  assert.equal(mk(true), true)
+  assert.equal(mk(undefined), true)
+  assert.equal(mk('false'), true, '字符串 "false" 视为开启：宁可多连一次，也不要静默停用')
+  assert.equal(mk(0), true)
+  assert.equal(mk(null), true)
+  assert.equal(normalizeEnabled(false), false)
+  assert.equal(normalizeEnabled('false'), true)
+})
+
+test('expose.mode 非法值 → 整份配置判失败，并点名服务器与合法取值', () => {
+  const n = normalizeMcpServers({ servers: { jira: { url: 'https://e.com/mcp', expose: { mode: 'nope' } } } })
+  assert.equal(n.ok, false)
+  assert.match(n.error, /jira/)
+  assert.match(n.error, /private|public|bound/)
+  // 非对象 / 数组同样拒绝（放行等于把畸形值当缺省 public，那是权限放大）
+  assert.equal(normalizeExpose([]).ok, false)
+  assert.equal(normalizeExpose('public').ok, false)
+  assert.equal(normalizeExpose(null).ok, true, 'null = 未设置 = 缺省，不算错')
+})
+
+test('bound 必须至少指定一个 agent（fail-closed 的写侧对应）', () => {
+  const n = normalizeMcpServers({ servers: { j: { command: 'x', expose: { mode: 'bound', bindAgents: [] } } } })
+  assert.equal(n.ok, false, 'bound 而无人可用几乎总是漏填 ⇒ 保存时就该报错，而不是保存后发现"授权了却没生效"')
+  assert.match(n.error, /agent/)
+  assert.equal(normalizeExpose({ mode: 'bound', bindAgents: ['a'] }).ok, true)
+})
+
+test('bound 归一化：去空项、去重、保序；空项判非法', () => {
+  const ok = normalizeExpose({ mode: 'bound', bindAgents: ['a', ' a ', 'b', 'a'] })
+  assert.equal(ok.ok, true)
+  assert.deepEqual(ok.expose.bindAgents, ['a', 'b'], '去重保序：重复项会让界面显示重复标签')
+  assert.equal(normalizeExpose({ mode: 'bound', bindAgents: ['a', ''] }).ok, false, '空项是漏填的信号')
+  assert.equal(normalizeExpose({ mode: 'bound', bindAgents: 'a' }).ok, false, '必须是数组')
+})
+
+test('可见性：三档 × agentId（bound 对主会话不可见，与 dyntools 同义）', () => {
+  const pub = { enabled: true, expose: { mode: 'public', bindAgents: [] } }
+  const priv = { enabled: true, expose: { mode: 'private', bindAgents: [] } }
+  const bound = { enabled: true, expose: { mode: 'bound', bindAgents: ['researcher'] } }
+  const off = { enabled: false, expose: { mode: 'public', bindAgents: [] } }
+
+  assert.equal(mcpVisibilityOf(pub, null), 'public')
+  assert.equal(mcpVisibilityOf(pub, 'researcher'), 'public')
+  assert.equal(mcpVisibilityOf(priv, null), null, '仅测试：谁都不能用（面板仍可探测）')
+  assert.equal(mcpVisibilityOf(priv, 'researcher'), null)
+  assert.equal(mcpVisibilityOf(bound, 'researcher'), 'bound')
+  assert.equal(mcpVisibilityOf(bound, 'other'), null)
+  assert.equal(mcpVisibilityOf(bound, null), null, 'bound 对主会话不可见（与 dyntools.visibilityOf 同义）')
+  assert.equal(mcpVisibilityOf(off, null), null, '关闭的服务器对谁都不可见')
+  assert.equal(mcpVisibilityOf(off, 'researcher'), null)
+})
+
+test('fail-closed：任何畸形输入一律不可见，绝不退化成 public', () => {
+  // 归一化拦住了这些配置，但读侧可能遇到手写文件/旧版本产物 ⇒ 判定必须向"更严"一侧失败
+  assert.equal(mcpVisibilityOf({ enabled: true, expose: { mode: 'bound', bindAgents: [] } }, 'x'), null)
+  assert.equal(mcpVisibilityOf({ enabled: true, expose: { mode: 'bound' } }, 'x'), null)
+  assert.equal(mcpVisibilityOf({ enabled: true, expose: { mode: '怪值' } }, 'x'), null, '未知 mode 一律不可见')
+  assert.equal(mcpVisibilityOf(null, 'x'), null)
+  assert.equal(mcpVisibilityOf(undefined, 'x'), null)
+  assert.equal(mcpVisibilityOf({ enabled: true }, 'x'), 'public', '无 expose 字段 = 存量配置 = public')
+})
+
+test('配置签名：键序无关；enabled/expose/args 变化则变化', () => {
+  assert.equal(
+    mcpConfigSig({ s: { command: 'npx', args: ['-y', 'x'] } }),
+    mcpConfigSig({ s: { args: ['-y', 'x'], command: 'npx' } }),
+    '键序不该影响签名，否则重存一次配置就白重启一次内核',
+  )
+
+  const base = { s: { command: 'npx', args: [], enabled: true, expose: { mode: 'public', bindAgents: [] } } }
+  const sig = mcpConfigSig(base)
+  assert.match(sig, /^[0-9a-f]{16}$/)
+  assert.notEqual(mcpConfigSig({ s: { ...base.s, enabled: false } }), sig, '开关变更必须触发重载')
+  assert.notEqual(mcpConfigSig({ s: { ...base.s, expose: { mode: 'private', bindAgents: [] } } }), sig,
+    '授权变更同样必须触发重载，否则用户改了授权看不到效果')
+  assert.notEqual(mcpConfigSig({ s: { ...base.s, expose: { mode: 'bound', bindAgents: ['r'] } } }), sig)
+  assert.notEqual(mcpConfigSig({ s: { ...base.s, args: ['z'] } }), sig)
+  assert.equal(mcpConfigSig({}), mcpConfigSig({}))
+  assert.equal(mcpConfigSig(null), mcpConfigSig({}), '空与未配置等价，避免一次空读就触发重载')
+})
+
+test('loadMcpServers 也带 enabled/expose（内核启动路径据此过滤，缺了就是"配置读到了但没生效"）', () => {
+  const dir = mkTmp()
+  try {
+    const f = join(dir, 'mcp.json')
+    writeFileSync(f, JSON.stringify({
+      servers: {
+        a: { command: 'node', expose: { mode: 'private' } },
+        b: { command: 'node', enabled: false },
+        c: { command: 'node', expose: { mode: 'bound', bindAgents: ['r'] } },
+      },
+    }), 'utf-8')
+    const cfg = loadMcpServers(f)
+    assert.equal(cfg.a.enabled, true, '未写 enabled = 开启')
+    assert.deepEqual(cfg.a.expose, { mode: 'private', bindAgents: [] })
+    assert.equal(cfg.b.enabled, false, '内核读取必须保留关闭状态，否则"关闭"只在 GUI 里生效')
+    assert.deepEqual(cfg.c.expose, { mode: 'bound', bindAgents: ['r'] })
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
