@@ -14,6 +14,26 @@ import { handleDisabledRoute } from './disabled-routes.mjs'
 import { handleAgentsRoute } from './agents-routes.mjs'
 import { handleSkillDetailRoute } from './skill-detail-routes.mjs'
 import { handleMcpRoute } from './mcp-routes.mjs'
+import { readMcpServers, mcpConfigSig } from '../kernel/mcp.mjs'
+
+/**
+ * MCP 内核上报的**最近一份**接入状态快照（`GET /mcp/status` 用）。
+ *
+ * 为什么"全局最近一份"就够：内核是每会话一进程，而 MCP 面板是全局的。
+ * 快照里的 `servers[name].tools` 是该服务器实际发现的**全部**工具（发现阶段不做可见性过滤），
+ * 而所有内核都读同一个 mcp.json、连同一批服务器 ⇒ 各会话的发现结果必然相同。
+ * 随 agent 变化的只是"谁看得见"，那是配置维度的信息（面板按 expose 展示），
+ * 不是需要实时查询的运行时状态。故无须按会话聚合。
+ */
+let lastMcpStatus = null
+
+/** 当前磁盘上 MCP 配置的内容签名（失败/坏了返回 'invalid'，与任何真实签名都不相等 ⇒ 触发重放） */
+function currentMcpSig() {
+  try {
+    const cur = readMcpServers(join(YFW_HOME, 'mcp.json'))
+    return cur.ok ? mcpConfigSig(cur.servers) : 'invalid'
+  } catch { return 'invalid' }
+}
 // GUI → 内核 /loop 指令转译（纯函数模块，零进程依赖）：GUI 发的是纯文本 `/loop …`，
 // 内核无斜杠解析 → 必须在此转译为内核原生 loop 载荷/loop_command（spec 5.5 打通点）
 import { translateLoopSend } from './loop-translate.mjs'
@@ -1204,8 +1224,17 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
       // 生效时机因此是"改关联后的下一句话"，与"--resume 不丢上下文"配合即可用。
       const sigChanged = s._spawnEnvSig && s._spawnEnvSig !== providerEnvSig(buildChildEnv())
       const ksChanged = s._spawnKnowledgeSig !== knowledgeSpacesSig(knowledgeSpaces)
-      if (sigChanged || ksChanged) {
-        console.log(`[bridge] ${ksChanged ? 'knowledge spaces' : 'provider/model'} changed — reaping kernel sid ${sid.slice(0, 8)} to respawn`)
+      // MCP 配置变更（2026-09-16，P1-6「MCP 顶层面板」）：与 provider/model、知识范围
+      // **完全同一条路径**。磁盘上的 mcp.json 变了（含 enabled/expose 这类**授权**变更）
+      // ⇒ 收割旧内核、以 --resume 重 spawn（上下文不丢）。
+      // 为什么不做热加载：注册表在启动段构建一次、工具表还被视图缓存，运行中注入新工具
+      // 要同时动缓存与视图两层；而 respawn 这条路已被两条既有特性验证过，用现成的更可靠。
+      // 生效时机因此是"保存配置后的下一句话"，与"改关联后下一句生效"一致，也不打断正在跑的轮次。
+      // 故意不加 `!== undefined` 护栏：万一冻结处漏了，这里会重放一次、随后冻结补齐即自愈；
+      // 而"漏冻结 ⇒ 每轮都重放"的灾难由 Step 4 的静态核对（3 处出现）兜住。
+      const mcpChanged = s._spawnMcpSig !== currentMcpSig()
+      if (sigChanged || ksChanged || mcpChanged) {
+        console.log(`[bridge] ${ksChanged ? 'knowledge spaces' : mcpChanged ? 'mcp config' : 'provider/model'} changed — reaping kernel sid ${sid.slice(0, 8)} to respawn`)
         if (resumeId) { try { rmSync(join(YFW_HOME, 'runs', resumeId + '.running'), { force: true }) } catch {} }
         s._reaped = true
         try { execSync(`taskkill -F -T -PID ${s.proc.pid}`, { timeout: 5000, stdio: 'ignore' }) } catch { try { s.proc.kill() } catch {} }
@@ -1650,6 +1679,9 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
         console.log(`[bridge] compaction frame state=${parsed.state} sid=${sid} ok=${parsed.ok ?? '-'} covered=${parsed.covered ?? '-'} coveredTokens=${parsed.coveredTokens ?? '-'} clients=${wsClients.size}`)
       }
       send({ type: 'event', data: parsed, sessionId: sid })
+      // MCP 接入状态缓存（2026-09-16，P1-6）：内核就绪后上报一次，面板经 GET /mcp/status 取。
+      // 只缓存不解包转发 —— 事件本身照旧透传给前端（前端 mcpStore 也会消费它），两条路互不冲突。
+      if (parsed?.type === 'system' && parsed?.subtype === 'mcp_status') lastMcpStatus = parsed
     } else {
       send({ type: 'raw', data: t, sessionId: sid })
     }
@@ -1697,7 +1729,7 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
   })
   // _awaitingSince = 首次登记"有未决等待（提问/审批）"的时刻（0 = 当前无等待）。回收器
   // 据此给等待豁免设时限：豁免无条件 ⇒ 内核挂死或 GUI 永不回执时永远收不掉（T9）。
-  const session = { proc, cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()), mode, _pendingQuestions: null, _proseProgress: { total: 0, lastIndex: 0, structuredUsed: false }, _pendingApprovals: new Map(), firstTokenAt: null, _lastOutAt: 0, _turnActive: false, _stallWarnedAt: 0, _reaped: false, _cancelPending: false, _cancelAt: 0, _cancelTimer: null, _turnStartAt: 0, _fbpTimer: null, _fbpFirstTimer: null, _awaitingSince: 0, _lastCompactFrameAt: 0, _askBuf: '', _spawnEnvSig: providerEnvSig(buildChildEnv()), _spawnKnowledgeSig: knowledgeSpacesSig(knowledgeSpaces) }
+  const session = { proc, cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()), mode, _pendingQuestions: null, _proseProgress: { total: 0, lastIndex: 0, structuredUsed: false }, _pendingApprovals: new Map(), firstTokenAt: null, _lastOutAt: 0, _turnActive: false, _stallWarnedAt: 0, _reaped: false, _cancelPending: false, _cancelAt: 0, _cancelTimer: null, _turnStartAt: 0, _fbpTimer: null, _fbpFirstTimer: null, _awaitingSince: 0, _lastCompactFrameAt: 0, _askBuf: '', _spawnEnvSig: providerEnvSig(buildChildEnv()), _spawnKnowledgeSig: knowledgeSpacesSig(knowledgeSpaces), _spawnMcpSig: currentMcpSig() }
   sessions.set(sid, session)
   return session
 }
@@ -2562,8 +2594,13 @@ const httpServer = createServer(async (req, res) => {
       if (r) return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.body))
     }
     // ── MCP 配置（2026-09-15，P1-6「MCP 配置界面」）：与上面同款纯 handler，落点 <YFW_HOME>/mcp.json ──
-    if (url.pathname === '/mcp' || url.pathname === '/mcp/test') {
-      const r = await handleMcpRoute({ method: req.method, pathname: url.pathname, readJsonBody: () => readJsonBody(req), configDir: YFW_HOME })
+    // /mcp/status（2026-09-16）额外回传内核真实接入状态：getMcpStatus 注入**最近一次上报**的快照。
+    if (url.pathname === '/mcp' || url.pathname === '/mcp/test' || url.pathname === '/mcp/status') {
+      const r = await handleMcpRoute({
+        method: req.method, pathname: url.pathname,
+        readJsonBody: () => readJsonBody(req), configDir: YFW_HOME,
+        getMcpStatus: () => lastMcpStatus,
+      })
       if (r) return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.body))
     }
     if (url.pathname === '/sample-skills') {
