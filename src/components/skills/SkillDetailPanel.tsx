@@ -31,7 +31,9 @@ type Props = {
 }
 
 export function SkillDetailPanel({ skillId, disabled, folder }: Props) {
-  const { t } = useTranslation()
+  // lang 一并取出：`t` 每次渲染新建，放进依赖数组会让下方 effect 每帧重跑；
+  // lang 稳定且 t 的行为只由 lang 决定 ⇒ 语义不变、引用稳定。
+  const { t, lang } = useTranslation()
   const [detail, setDetail] = useState<SkillDetail | null>(null)
   const [error, setError] = useState<string>('')
   const [loading, setLoading] = useState(true)
@@ -47,7 +49,7 @@ export function SkillDetailPanel({ skillId, disabled, folder }: Props) {
       setLoading(false)
     })
     return () => { alive = false }
-  }, [skillId, t])
+  }, [skillId, lang])   // 原为 t：不稳定引用会让此 effect 每帧重跑
 
   // "管理"的实际动作 = 系统打开文件（只读；失败出声，别让用户以为点了没反应是正常的）
   const fail = (msg: string) => alert(msg)

@@ -21,7 +21,10 @@ export function AppConsole({ app, sessionId, onBack }: {
   sessionId: string | null
   onBack: () => void
 }) {
-  const { t } = useTranslation()
+  // lang 一并取出：`t` 每次渲染都是新函数（useTranslation 未 memo），
+  // 放进依赖数组会让下方 useCallback/useEffect 每帧重建（本文件曾因此类隐患抖动）。
+  // lang 是稳定字符串，且 t 的行为只由 lang 决定 ⇒ 语义不变、引用稳定。
+  const { t, lang } = useTranslation()
   const api = window.yfworkingAPI
   const [spec, setSpec] = useState<AppSpec | null>(null)
   const [check, setCheck] = useState<AppCheckResult | null>(null)
@@ -112,7 +115,7 @@ export function AppConsole({ app, sessionId, onBack }: {
     } finally {
       setLoggingIn(false)
     }
-  }, [api, spec, sessionId, t])
+  }, [api, spec, sessionId, lang])   // 原为 t：不稳定引用会让此 effect 每帧重跑
 
   /**
    * 漂移修复：只修"最近一次执行失败"的命令（后端按 history 判定），

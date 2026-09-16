@@ -46,7 +46,9 @@ const nodeTypes = { kb: KnowledgeNode, kbSection: SectionLabel }
 const edgeTypes = { kb: KnowledgeEdge }
 
 export function KnowledgeGraphView() {
-  const { t } = useTranslation()
+  // lang 一并取出：`t` 每次渲染新建，放进依赖数组会让下方 effect 每帧重跑；
+  // lang 稳定且 t 的行为只由 lang 决定 ⇒ 语义不变、引用稳定。
+  const { t, lang } = useTranslation()
   const spaceId = useKnowledgeStore(s => s.spaceId)
   const [allSpaces, setAllSpaces] = useState(true)
   // 图层开关的**默认 false 是 spec 的明确要求**（见文件头），不是随手选的初值
@@ -194,7 +196,7 @@ export function KnowledgeGraphView() {
         isolated: [...deg.values()].filter(d => d === 0).length,
       },
     }
-  }, [nodes, edges, relatedEdges, showRelated, isEntry, t])
+  }, [nodes, edges, relatedEdges, showRelated, isEntry, lang])   // 原为 t：不稳定引用会让此 effect 每帧重跑
 
   const openDoc = (docId: string, line?: number | null) => {
     const st = useKnowledgeStore.getState()

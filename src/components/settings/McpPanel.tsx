@@ -136,7 +136,14 @@ function toServers(rows: Row[]): Record<string, McpServerConfig> {
 }
 
 export function McpPanel() {
-  const { t } = useTranslation()
+  // lang 必须一并取出：`t` 是**每次渲染新建**的函数（useTranslation 未做 memo），
+  // 把它放进依赖数组会让 useCallback 每帧重建 ⇒ 依赖它的 useEffect 每帧重跑。
+  // 本面板的 load() 首行就是 setLoading(true)、末尾 setLoading(false)，
+  // 于是"重跑 ⇒ 置真 ⇒ 异步置假 ⇒ 重渲染 ⇒ 再重跑"形成无限循环：
+  // 界面永远停在"读取中"、新增的卡片也因走 loading 分支而看不见。
+  // lang 是字符串、引用稳定，用它当依赖既断开循环，又保住"切换语言时刷新文案"的语义
+  //（重建时捕获的 t 恰好对应新语言）。
+  const { t, lang } = useTranslation()
   const [rows, setRows] = useState<Row[]>([])
   const [configPath, setConfigPath] = useState<string>('')
   const [loading, setLoading] = useState(true)
@@ -158,7 +165,7 @@ export function McpPanel() {
         ? { ok: true, tools: r.tools || [] }
         : { ok: false, error: r.error || t('settings.mcpTestFailed') },
     }))
-  }, [t])
+  }, [lang])   // 不能用 t（每次渲染新建）；lang 稳定且足以覆盖"语言变了要换文案"
 
   /** 测全部：并发（内核侧也是并发启动），单台失败不影响其它台 */
   const testAll = useCallback(async (list: Row[]): Promise<void> => {
@@ -176,7 +183,7 @@ export function McpPanel() {
     setConfigPath(r.configPath || '')
     if (!r.ok) setError(r.error || t('settings.mcpLoadFailed'))
     setLoading(false)
-  }, [t])
+  }, [lang])   // 循环根源：原先依赖 t ⇒ load 每帧新 ⇒ 下面的 effect 每帧重跑
 
   useEffect(() => { void load() }, [load])
 
