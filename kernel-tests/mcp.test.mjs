@@ -15,7 +15,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   loadMcpServers, startMcpClient, mcpToolName, sanitizeMcpName, contentToText, mcpChildEnv,
-  normalizeMcpServers, writeMcpServers,
+  normalizeMcpServers, writeMcpServers, interpolateEnv,
 } from '../kernel/mcp.mjs'
 import { createMcpRegistry, mcpConfigPath } from '../kernel/mcp-tools.mjs'
 
@@ -325,4 +325,27 @@ test('读校验同口径：loadMcpServers 跳过的条目，normalizeMcpServers 
       assert.equal(r.ok, false, `${name} 应被校验侧拒绝（两处口径必须一致）`)
     }
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ---------------------------------------------------------------------------
+// P1-5 扩展：${ENV_VAR} 插值（密钥不落盘的执行侧）
+test('interpolateEnv：替换已定义变量；无占位符原样返回；多个占位符都替换', () => {
+  assert.equal(interpolateEnv('Bearer ${TOKEN}', { TOKEN: 'abc' }), 'Bearer abc')
+  assert.equal(interpolateEnv('plain', {}), 'plain')
+  assert.equal(interpolateEnv('${A}-${B}', { A: '1', B: '2' }), '1-2')
+})
+
+test('interpolateEnv：未定义变量**报错并点名**（绝不静默换空串）', () => {
+  // 静默换空串会得到 "Bearer " 这种语法正确但语义空洞的头，
+  // 服务器回一个含义不明的 401，排查成本远高于直接报错。
+  assert.throws(
+    () => interpolateEnv('Bearer ${MISSING}', {}, 'headers.Authorization'),
+    (e) => /MISSING/.test(e.message) && /headers\.Authorization/.test(e.message),
+    '错误必须点名变量与所在配置项',
+  )
+  assert.throws(() => interpolateEnv('${EMPTY}', { EMPTY: '' }), /EMPTY/,
+    '已定义但为空串同样视为不可用（换成空串等于没配）')
+  // 非法变量名（如 ${1BAD}）不匹配占位符语法 ⇒ 原样保留。它进不了 header 值的关键位，
+  // 且服务器会直接拒绝；此处不该抛错，否则用户写文档示例都会被误伤。
+  assert.equal(interpolateEnv('${1BAD}', {}), '${1BAD}', '非法变量名应原样保留而非误替换')
 })

@@ -31,6 +31,28 @@ export function mcpChildEnv(extra = {}) {
 }
 
 /**
+ * 解析 `${ENV_VAR}` 占位符（P1-5 扩展：远程 MCP 的认证头）。
+ *
+ * 两条不可动摇的规则：
+ *  ① **只在运行时求值**，写盘时保留字面量 —— mcp.json 会被备份、截图、同步到网盘，
+ *     明文 token 一旦落盘就永久留在那些副本里。
+ *  ② **未定义变量抛错并点名**，绝不静默替换为空串 —— 静默会得到 `Bearer ` 这种
+ *     语法正确但语义空洞的头，服务器回一个含义不明的 401，排查成本远高于直接报错。
+ *
+ * 只把变量是否存在交给运行环境判断：写配置的环境未必是运行环境
+ * （GUI 在桌面，变量可能来自启动脚本），因此校验侧只查语法、不查变量。
+ */
+export function interpolateEnv(value, env = process.env, where = '') {
+  return String(value).replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name) => {
+    const v = env?.[name]
+    if (v === undefined || v === '') {
+      throw new Error(`环境变量 ${name} 未定义${where ? `（配置项 ${where}）` : ''}`)
+    }
+    return String(v)
+  })
+}
+
+/**
  * 判定一个配置条目走哪种传输（P1-5 扩展：stdio 或 Streamable HTTP）。
  * **读侧与校验侧共用同一份判定**——本文件顶部已声明强约束「写出的必须能被读回等价」，
  * 若两处各写一套规则，用户会看到"保存成功但服务器消失"这类静默失效。
