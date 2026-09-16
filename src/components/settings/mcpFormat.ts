@@ -63,6 +63,65 @@ export function configForTransport(config: McpConfigLike, kind: McpTransport): M
     : { command: '', args: [], env: {}, timeoutMs: config?.timeoutMs }
 }
 
+/**
+ * 多行 `KEY=VALUE` 编辑器的**解析**（认证头与环境变量共用同一份规则）。
+ *
+ * 规则三条：① 只按**第一个** `=` 切分（值里可能有 `=`，如 base64 的 `==`）；
+ * ② 键为空的行忽略；③ 还没敲到 `=` 的行忽略（半输入状态不该写进配置）。
+ *
+ * ⚠️ 第 ③ 条意味着**解析是有损的**：`parse('A')` 得到 `{}`。
+ * 所以调用方**绝不能**把 `format(parse(text))` 直接当作 textarea 的受控值 ——
+ * 用户每敲一个字符都会被抹掉，表现为"这个框一个字都打不进去，只能把整段粘进去"。
+ * 正确接法是让编辑器自己留草稿，只在外部值真变了时才回灌（见 `nextDraft`）。
+ */
+export function parseKeyValueLines(text: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const line of text.split('\n')) {
+    const i = line.indexOf('=')
+    if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1)
+  }
+  return out
+}
+
+/** 反向：把 `KEY=VALUE` 对象写成多行文本（供编辑器回显） */
+export function formatKeyValueLines(value: Record<string, string>): string {
+  return Object.entries(value).map(([k, v]) => `${k}=${v}`).join('\n')
+}
+
+/**
+ * 参数列表的多行编辑规则：一行一个参数，行首尾空白与空行忽略。
+ * 同样**有损**：`parseArgLines('a\n')` 得到 `['a']` —— 尾随空行被吃掉，
+ * 于是"把 `join('\n')` 当受控值"会让回车换行看起来毫无反应（同 `nextDraft` 的坑）。
+ */
+export function parseArgLines(text: string): string[] {
+  return text.split('\n').map(s => s.trim()).filter(Boolean)
+}
+
+/** 反向：参数数组写成多行文本 */
+export function formatArgLines(args: string[]): string {
+  return args.join('\n')
+}
+
+/**
+ * 多行编辑器的草稿同步决策：**只在外部文本真的变了时才回灌草稿**。
+ *
+ * 为什么需要它：这类编辑器的"值"是解析结果（对象/数组），而 `format(parse(text))` 有损
+ * （见上面几个函数）。若把 `format(value)` 当受控值，用户敲下的半成品会被立刻抹掉：
+ *   · env / headers：敲 "A"（还没到 `=`）→ 解析为空 → 受控值回到空串 → **一个字都打不进去**；
+ *   · args：敲回车 → 尾随空行被过滤 → 受控值回退 → **回车"没反应"**，只能粘贴多行。
+ * 所以草稿留在编辑器本地：`external === lastExternal` 说明这次变化是自己输入引起的回声，
+ * 保留草稿；不等则说明是"重新读取 / 切换传输清空"这类真外部变化，才接受它。
+ *
+ * 做成纯函数是为了能直接断言"连敲一串字符草稿不丢"这条性质
+ * （组件没有 DOM 测试环境，而这条性质恰恰是最容易写错、坏了却只表现为"输入框怪怪的"）。
+ */
+export function nextDraft(
+  draft: string, external: string, lastExternal: string,
+): { draft: string; lastExternal: string } {
+  if (external === lastExternal) return { draft, lastExternal }
+  return { draft: external, lastExternal: external }
+}
+
 /** 单台服务器最近一次连接测试的结果（未测试 = undefined） */
 export type McpTestState = {
   running?: boolean

@@ -28,6 +28,7 @@ import {
 } from '@/lib/mcpApi'
 import {
   badgeOf, toolsOf, errorOf, summarize, summaryText, transportOf, configForTransport,
+  parseArgLines, formatArgLines, parseKeyValueLines, formatKeyValueLines, nextDraft,
   type McpTestState, type McpTransport,
 } from '@/components/settings/mcpFormat'
 
@@ -91,6 +92,15 @@ function probePayload(row: Row): McpServerConfig {
   const cwd = String(row.config.cwd ?? '').trim()
   if (cwd) payload.cwd = cwd
   return payload
+}
+
+/**
+ * 两次探测的载荷是否一致 —— 用来判断"测试发起之后，这份配置有没有被改"。
+ * 比较探测载荷（命令/参数/环境/工作目录/URL/认证头/超时），也就是**决定能否连通的全部字段**：
+ * 改了任何一项，先前那次结论就不再代表现在这份配置。
+ */
+function sameProbe(a: Row, b: Row): boolean {
+  return JSON.stringify(probePayload(a)) === JSON.stringify(probePayload(b))
 }
 
 /** 配置对象 → 行模型（args 一行一个，env/headers 一行一个 KEY=VALUE，便于编辑） */
@@ -164,11 +174,22 @@ export function McpPanel() {
   const [tests, setTests] = useState<Record<string, McpTestState>>({})
   // 自动实测只跑一次（用户编辑表单会频繁改 rows，不能每次重测）
   const autoRan = useRef(false)
+  // 供异步的 doTest 在拿到结果时回看"这份配置还是不是当初那份"（见 doTest 内的过期判定）
+  const rowsRef = useRef<Row[]>([])
+  rowsRef.current = rows
 
   /** 测一台（结果结构化存 tools/error，供徽章与工具清单渲染） */
   const doTest = useCallback(async (row: Row): Promise<void> => {
     setTests(prev => ({ ...prev, [row.key]: { running: true } }))
     const r = await testMcpServer(probePayload(row))
+    // 拿到结果先回看这份配置还在不在、还是不是当初那份：
+    // 测试期间用户可能改了 URL/命令，或干脆删了这一行。若照写不误，界面上就会出现
+    // "新配置 + 旧结论"（绿勾或红叉都可能），是实打实的误导 —— 结论只对被测的那份配置成立。
+    const cur = rowsRef.current.find(x => x.key === row.key)
+    if (!cur || !sameProbe(cur, row)) {
+      setTests(prev => { const n = { ...prev }; delete n[row.key]; return n })
+      return
+    }
     setTests(prev => ({
       ...prev,
       [row.key]: r.ok
@@ -214,6 +235,23 @@ export function McpPanel() {
 
   const patch = (key: string, fn: (r: Row) => Row) =>
     setRows(prev => prev.map(r => (r.key === key ? fn(r) : r)))
+
+  /**
+   * 改"连接相关"字段（命令/参数/环境/工作目录/URL/认证头/超时）时，顺手丢掉该行的测试结论。
+   *
+   * 结论只对**被测的那份配置**成立，配置一改就不再可信；留着那个绿勾，用户会以为
+   * 刚填的 URL/命令已经验证过（与 setTransport 作废结论同一个道理）。
+   * 名称只影响标识、不影响连接，故仍走 patch —— 改个名字不该把已验证的结果清掉。
+   */
+  const patchConfig = (key: string, fn: (r: Row) => Row) => {
+    patch(key, fn)
+    setTests(prev => {
+      if (!(key in prev)) return prev     // 本来就没结论：原样返回，避免无谓重渲染
+      const next = { ...prev }
+      delete next[key]
+      return next
+    })
+  }
 
   const addRow = () => {
     // 新卡片默认本地命令（最常用），transport 显式写入，不从 config 反推
@@ -419,7 +457,7 @@ export function McpPanel() {
                           value={row.config.url ?? ''}
                           placeholder="https://example.com/mcp"
                           className="font-mono text-xs"
-                          onChange={e => patch(row.key, r => ({ ...r, config: { ...r.config, url: e.target.value } }))}
+                          onChange={e => patchConfig(row.key, r => ({ ...r, config: { ...r.config, url: e.target.value } }))}
                         />
                       </label>
 
@@ -431,7 +469,7 @@ export function McpPanel() {
                             rows={2}
                             placeholder={'Authorization=Bearer ${MY_TOKEN}'}
                             onChange={headers =>
-                              patch(row.key, r => ({ ...r, config: { ...r.config, headers } }))}
+                              patchConfig(row.key, r => ({ ...r, config: { ...r.config, headers } }))}
                           />
                           {/* 让人看见"为什么不填明文"：写进文件的只是占位符，真值运行时才取 */}
                           <span className="block text-[10px] text-tertiary">{t('settings.mcpHeadersHint')}</span>
@@ -440,10 +478,10 @@ export function McpPanel() {
                           <span className="text-xs text-secondary">{t('settings.mcpTimeout')}</span>
                           <Input
                             type="number"
-                            value={String(row.config.timeoutMs ?? 30000)}
+                            value={row.config.timeoutMs ? String(row.config.timeoutMs) : ''} placeholder="30000"
                             className="font-mono text-xs"
                             onChange={e =>
-                              patch(row.key, r => ({ ...r, config: { ...r.config, timeoutMs: Number(e.target.value) || 0 } }))
+                              patchConfig(row.key, r => ({ ...r, config: { ...r.config, timeoutMs: Number(e.target.value) || 0 } }))
                             }
                           />
                         </label>
@@ -457,23 +495,18 @@ export function McpPanel() {
                           value={row.config.command ?? ''}
                           placeholder="npx"
                           className="font-mono text-xs"
-                          onChange={e => patch(row.key, r => ({ ...r, config: { ...r.config, command: e.target.value } }))}
+                          onChange={e => patchConfig(row.key, r => ({ ...r, config: { ...r.config, command: e.target.value } }))}
                         />
                       </label>
 
                       <label className="block space-y-1">
                         <span className="text-xs text-secondary">{t('settings.mcpArgs')}</span>
-                        <textarea
-                          value={(row.config.args ?? []).join('\n')}
+                        <MultilineArea
+                          text={formatArgLines(row.config.args ?? [])}
                           placeholder={'-y\n@modelcontextprotocol/server-filesystem\n/home/me'}
                           rows={3}
-                          className="w-full resize-y rounded-lg border bg-transparent px-3 py-2 font-mono text-xs outline-none focus:border-brand-500"
-                          onChange={e =>
-                            patch(row.key, r => ({
-                              ...r,
-                              config: { ...r.config, args: e.target.value.split('\n').map(s => s.trim()).filter(Boolean) },
-                            }))
-                          }
+                          onText={text =>
+                            patchConfig(row.key, r => ({ ...r, config: { ...r.config, args: parseArgLines(text) } }))}
                         />
                       </label>
 
@@ -484,7 +517,7 @@ export function McpPanel() {
                             value={row.config.env ?? {}}
                             rows={2}
                             placeholder="API_KEY=xxx"
-                            onChange={env => patch(row.key, r => ({ ...r, config: { ...r.config, env } }))}
+                            onChange={env => patchConfig(row.key, r => ({ ...r, config: { ...r.config, env } }))}
                           />
                         </label>
                         <div className="space-y-3">
@@ -494,17 +527,17 @@ export function McpPanel() {
                               value={row.config.cwd ?? ''}
                               placeholder="/path/to/workdir"
                               className="font-mono text-xs"
-                              onChange={e => patch(row.key, r => ({ ...r, config: { ...r.config, cwd: e.target.value } }))}
+                              onChange={e => patchConfig(row.key, r => ({ ...r, config: { ...r.config, cwd: e.target.value } }))}
                             />
                           </label>
                           <label className="block space-y-1">
                             <span className="text-xs text-secondary">{t('settings.mcpTimeout')}</span>
                             <Input
                               type="number"
-                              value={String(row.config.timeoutMs ?? 30000)}
+                              value={row.config.timeoutMs ? String(row.config.timeoutMs) : ''} placeholder="30000"
                               className="font-mono text-xs"
                               onChange={e =>
-                                patch(row.key, r => ({ ...r, config: { ...r.config, timeoutMs: Number(e.target.value) || 0 } }))
+                                patchConfig(row.key, r => ({ ...r, config: { ...r.config, timeoutMs: Number(e.target.value) || 0 } }))
                               }
                             />
                           </label>
@@ -563,8 +596,8 @@ function cnSpin(spinning: boolean): string {
 /**
  * `KEY=VALUE` 行编辑器（环境变量与认证头共用同款交互）。
  *
- * 抽成一处是为了让两侧解析规则**必然一致**：值里可能出现 `=`（如 base64 的 `==`），
- * 故只按**第一个** `=` 切分；键为空的行忽略（半输入状态不该写进配置）。
+ * 抽成一处是为了让两侧解析规则**必然一致**（规则在 `parseKeyValueLines`）：
+ * 值里可能出现 `=`（如 base64 的 `==`），故只按**第一个** `=` 切分；键为空的行忽略。
  */
 function KeyValueArea({ value, rows, placeholder, onChange }: {
   value: Record<string, string>
@@ -573,19 +606,51 @@ function KeyValueArea({ value, rows, placeholder, onChange }: {
   onChange: (v: Record<string, string>) => void
 }) {
   return (
+    <MultilineArea
+      text={formatKeyValueLines(value)}
+      placeholder={placeholder}
+      rows={rows}
+      onText={text => onChange(parseKeyValueLines(text))}
+    />
+  )
+}
+
+/**
+ * 多行草稿输入框：**显示用户敲的原文**，对外只推解析结果。
+ *
+ * 为什么必须留草稿（本次交互自查发现的两个真实故障，同一根因）：
+ *   · env / headers 原本直接受控于 `Object.entries(value).map(...).join('\n')`：
+ *     用户敲下 "A"（还没到 `=`）会被 `parseKeyValueLines` 当"半输入行"丢弃 ⇒
+ *     受控值回到空串 ⇒ **一个字都打不进去，只能把 `KEY=VALUE` 整段粘进来**；
+ *   · args 原本直接受控于 `args.join('\n')`：敲回车产生的尾随空行被 `filter(Boolean)` 吃掉
+ *     ⇒ 受控值回退 ⇒ **回车"没反应"，无法一行一个参数地输入**。
+ * 根因是同一个：`format(parse(text))` 有损，拿它当受控值就会不停抹掉半成品输入。
+ * 解法：草稿留在本组件，仅当**外部文本真的变了**（重新读取、切换传输清空）才回灌；
+ * 判定逻辑提为纯函数 `nextDraft`，已有回归测试钉住这几个性质。
+ *
+ * ⚠️ 不要"简化"回 `value={format(parse(text))}`：那样看起来更贴近单一真源，
+ * 却会让上面两个故障原样复活，而且不报错、typecheck 与单测都拦不住。
+ */
+function MultilineArea({ text, onText, rows, placeholder }: {
+  text: string
+  onText: (t: string) => void
+  rows: number
+  placeholder?: string
+}) {
+  const [draft, setDraft] = useState(text)
+  const lastExternal = useRef(text)
+  useEffect(() => {
+    const next = nextDraft(draft, text, lastExternal.current)
+    if (next.lastExternal !== lastExternal.current) lastExternal.current = next.lastExternal
+    if (next.draft !== draft) setDraft(next.draft)
+  }, [text, draft])
+  return (
     <textarea
-      value={Object.entries(value).map(([k, v]) => `${k}=${v}`).join('\n')}
+      value={draft}
       placeholder={placeholder}
       rows={rows}
       className="w-full resize-y rounded-lg border bg-transparent px-3 py-2 font-mono text-xs outline-none focus:border-brand-500"
-      onChange={e => {
-        const out: Record<string, string> = {}
-        for (const line of e.target.value.split('\n')) {
-          const i = line.indexOf('=')
-          if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1)
-        }
-        onChange(out)
-      }}
+      onChange={e => { setDraft(e.target.value); onText(e.target.value) }}
     />
   )
 }

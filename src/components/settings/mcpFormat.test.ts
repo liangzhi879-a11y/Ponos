@@ -13,6 +13,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   badgeOf, toolsOf, errorOf, summarize, summaryText, transportOf, configForTransport,
+  parseKeyValueLines, formatKeyValueLines, parseArgLines, formatArgLines, nextDraft,
   type McpTestState,
 } from './mcpFormat.ts'
 
@@ -115,6 +116,76 @@ test('configForTransport：清掉另一侧字段，且保留两传输共用的 t
   assert.equal(fromHttp.command, '')
   assert.equal(fromHttp.args?.length, 0)
   assert.equal(fromHttp.timeoutMs, 999)
+})
+
+// 【交互自查，2026-09-16】多行编辑器的"半成品输入不被抹掉"。
+//
+// 背景：面板里 args / env / headers 三个多行框的"值"都是解析结果，
+// 而 `format(parse(text))` 是**有损**的。若拿它当受控值，用户每敲一个字符就被抹一次：
+//   · env/headers：敲 "A"（还没到 `=`）→ 解析为空 → 受控值回空串 ⇒ 一个字都打不进去；
+//   · args：敲回车 → 尾随空行被过滤 → 受控值回退 ⇒ 回车"没反应"，无法一行一个参数。
+// 这类 bug 不报错、typecheck 与既有单测都拦不住，只表现为"输入框怪怪的"，故在此钉住。
+test('parse/format：KEY=VALUE 只按第一个 = 切分，且半输入行会被忽略（有损是刻意的）', () => {
+  assert.deepEqual(parseKeyValueLines('Authorization=Bearer ${TOKEN}'), { Authorization: 'Bearer ${TOKEN}' })
+  assert.deepEqual(parseKeyValueLines('TOKEN=abc=='), { TOKEN: 'abc==' }, '值里的 = 不能被当分隔符')
+  assert.deepEqual(parseKeyValueLines('A=1\n\nB=2'), { A: '1', B: '2' }, '空行忽略')
+  assert.deepEqual(parseKeyValueLines('=x'), {}, '键为空的行忽略')
+  assert.deepEqual(parseKeyValueLines('A'), {}, '还没敲到 = ⇒ 解析为空（这正是"直接受控"会吞字的根因）')
+  assert.equal(formatKeyValueLines({ A: '1', B: '2' }), 'A=1\nB=2')
+})
+
+test('回归：env/headers 连敲一串字符，草稿不被"回声"抹掉', () => {
+  // 模拟一次真实按键序列：组件草稿 + 父组件「解析→序列化」回声，逐字符走一遍。
+  let draft = ''
+  let lastExternal = ''
+  const type = (ch: string) => {
+    draft += ch
+    const external = formatKeyValueLines(parseKeyValueLines(draft))  // 父组件回灌的受控值
+    const next = nextDraft(draft, external, lastExternal)
+    draft = next.draft
+    lastExternal = next.lastExternal
+  }
+  for (const ch of 'A=1\nB=2') type(ch)
+  assert.equal(draft, 'A=1\nB=2', '草稿应完整保留用户敲的原文')
+  assert.deepEqual(parseKeyValueLines(draft), { A: '1', B: '2' })
+
+  // 对照：若无草稿（直接受控于 format(parse())），第一个字符就被解析丢弃 ⇒ 输入框永远空
+  assert.deepEqual(parseKeyValueLines('A'), {})
+  assert.equal(formatKeyValueLines(parseKeyValueLines('A')), '', '受控值回到空串 —— 字被打进去又被抹掉')
+})
+
+test('回归：args 连敲 a⏎b，回车不被吃掉', () => {
+  let draft = ''
+  let lastExternal = ''
+  const type = (ch: string) => {
+    draft += ch
+    const external = formatArgLines(parseArgLines(draft))
+    const next = nextDraft(draft, external, lastExternal)
+    draft = next.draft
+    lastExternal = next.lastExternal
+  }
+  for (const ch of 'a\nb') type(ch)
+  assert.equal(draft, 'a\nb')
+  assert.deepEqual(parseArgLines(draft), ['a', 'b'])
+
+  // 对照：直接受控时尾随换行被 filter(Boolean) 抹掉 ⇒ 回车"没反应"
+  assert.deepEqual(parseArgLines('a\n'), ['a'])
+  assert.equal(formatArgLines(parseArgLines('a\n')), 'a', '受控值回退成一行 —— 换行按了等于没按')
+})
+
+test('nextDraft：仅"外部真变了"才回灌（重新读取 / 切换传输清空要能生效）', () => {
+  assert.deepEqual(
+    nextDraft('A=1\nB', 'A=1', 'A=1'), { draft: 'A=1\nB', lastExternal: 'A=1' },
+    '外部值没变（是自己输入的回声）⇒ 保留草稿，否则半成品会被抹掉',
+  )
+  assert.deepEqual(
+    nextDraft('A=1', '', 'A=1'), { draft: '', lastExternal: '' },
+    '外部清空（切换传输把认证头清空）⇒ 必须接受，否则残留旧内容会让人以为还在生效',
+  )
+  assert.deepEqual(
+    nextDraft('old', 'new-from-reload', 'old'), { draft: 'new-from-reload', lastExternal: 'new-from-reload' },
+    '重新读取后配置变了 ⇒ 覆盖草稿',
+  )
 })
 
 test('陷阱回归：**不得从 config 反推编辑态的传输类型**（否则"远程 HTTP"会选不中）', () => {
