@@ -10,22 +10,22 @@ const { providerEnvSig } = await import('./bridge.mjs')
 
 test('providerEnvSig：baseUrl/model/auth 任一变化 → 签名不同', () => {
   const base = {
-    ANTHROPIC_BASE_URL: 'http://a:8900',
-    ANTHROPIC_MODEL: 'Qwen3.8-27B',
-    ANTHROPIC_AUTH_TOKEN: 'tok-1',
+    PONOS_BASE_URL: 'http://a:8900',
+    PONOS_MODEL: 'Qwen3.8-27B',
+    PONOS_AUTH_TOKEN: 'tok-1',
   }
   const sig0 = providerEnvSig(base)
   assert.equal(sig0, providerEnvSig(base), '同配置签名稳定')
-  assert.notEqual(sig0, providerEnvSig({ ...base, ANTHROPIC_MODEL: 'deepseek-v4-flash' }), '换模型')
-  assert.notEqual(sig0, providerEnvSig({ ...base, ANTHROPIC_BASE_URL: 'http://b:9000' }), '换端点')
-  assert.notEqual(sig0, providerEnvSig({ ...base, ANTHROPIC_AUTH_TOKEN: 'tok-2' }), '换凭证')
+  assert.notEqual(sig0, providerEnvSig({ ...base, PONOS_MODEL: 'deepseek-v4-flash' }), '换模型')
+  assert.notEqual(sig0, providerEnvSig({ ...base, PONOS_BASE_URL: 'http://b:9000' }), '换端点')
+  assert.notEqual(sig0, providerEnvSig({ ...base, PONOS_AUTH_TOKEN: 'tok-2' }), '换凭证')
 })
 
 test('providerEnvSig：无关环境变量不影响签名', () => {
-  const a = { ANTHROPIC_BASE_URL: 'u', ANTHROPIC_MODEL: 'm', ANTHROPIC_AUTH_TOKEN: 't' }
+  const a = { PONOS_BASE_URL: 'u', PONOS_MODEL: 'm', PONOS_AUTH_TOKEN: 't' }
   assert.equal(providerEnvSig(a), providerEnvSig({ ...a, PONOS_REASONING_EFFORT: 'max', PATH: 'x' }))
 })
 
 test('providerEnvSig：缺失字段按空串归一（不产生 undefined/null 漂移）', () => {
-  assert.equal(providerEnvSig({}), providerEnvSig({ ANTHROPIC_BASE_URL: '', ANTHROPIC_MODEL: '', ANTHROPIC_AUTH_TOKEN: '' }))
+  assert.equal(providerEnvSig({}), providerEnvSig({ PONOS_BASE_URL: '', PONOS_MODEL: '', PONOS_AUTH_TOKEN: '' }))
 })

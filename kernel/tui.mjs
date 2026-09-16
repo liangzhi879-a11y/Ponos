@@ -59,9 +59,9 @@ export function loadProviders(env = process.env) {
     return null
   }
 }
-// 启动默认模型：env ANTHROPIC_MODEL 优先，其次 providers.json 当前激活 provider，最后内置兜底
+// 启动默认模型：env PONOS_MODEL 优先，其次 providers.json 当前激活 provider，最后内置兜底
 export function defaultModel(env = process.env) {
-  if (env.ANTHROPIC_MODEL) return env.ANTHROPIC_MODEL
+  if (env.PONOS_MODEL) return env.PONOS_MODEL
   const cfg = loadProviders(env)
   if (cfg) {
     const active = cfg.providers.find((p) => p.id === cfg.activeId) || cfg.providers[0]
@@ -491,7 +491,7 @@ function main() {
   if (args.mock) process.env.PONOS_MOCK_COMPACT_RESPONSE = '1'
   if (!args.mock) {
     if (process.env.PONOS_MOCK_API === '1') { console.error('错误: PONOS_MOCK_API=1 会走 mock，请清除或加 --mock'); process.exit(2) }
-    if (!process.env.ANTHROPIC_BASE_URL) { console.error('错误: 需要 ANTHROPIC_BASE_URL env（或加 --mock）'); process.exit(2) }
+    if (!process.env.PONOS_BASE_URL) { console.error('错误: 需要 PONOS_BASE_URL env（或加 --mock）'); process.exit(2) }
   }
   if (args.theme === 'light') { themeName = 'light'; theme = THEMES.light }
   mkdirSync(args.dir, { recursive: true })
@@ -1186,7 +1186,7 @@ function main() {
     const lines = [`当前模型：${current}`]
     const cfg = loadProviders()
     if (!cfg) {
-      lines.push('未找到 providers.json（' + join(resolveConfigDir(process.env), 'providers.json') + '），仅支持 env ANTHROPIC_MODEL 指定模型')
+      lines.push('未找到 providers.json（' + join(resolveConfigDir(process.env), 'providers.json') + '），仅支持 env PONOS_MODEL 指定模型')
       pushMessage({ kind: 'result', text: lines.join('\n') })
       render()
       return

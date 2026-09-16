@@ -58,7 +58,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     get rawSignal() { return abortController.signal },
   }
   // P4-5：model 每轮从 provider 注册表刷新（CLI --model 显式指定优先于 registry）；
-  // 未激活时 getProvider 现读 env.ANTHROPIC_MODEL，与既有行为一致
+  // 未激活时 getProvider 现读 env.PONOS_MODEL，与既有行为一致
   let model = opts.model || getProvider().model || ''
   const maxTokens = Math.max(1, Number(process.env.PONOS_MAX_OUTPUT_TOKENS || 64000))
   // P0-3 大结果落盘目录并入文件边界：persistToolResult 把 >20K 工具结果存到
@@ -366,7 +366,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           wire.warning?.({ level: 'context', tokens: estIn, budget, message: '上下文接近压缩阈值，长会话即将触发自动压缩' })
         }
       }
-      // —— 调用时输出预算钳制（2026-09-10 小窗口本地模型适配；pi clampMaxTokensToContext 语义）——
+      // —— 调用时输出预算钳制（2026-09-10 小窗口本地模型适配）——
       // 窗口在每次模型调用时生效：est(input) + max_tokens 超窗即收窄，保证请求恒可
       // 装下——本地小窗口模型（32K-64K）配大默认预算（64K/16K）不再必然撞 400。
       // resolveThreshold 对"预算近乎占满窗口"的异常配置退化回纯比例，本钳制补上
@@ -864,7 +864,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       }
       if (loopStop) break // 生成重复/挂起已优雅收尾 → 本轮结束（说明文本见轮末 finalize）
       // P0-2：输出被 max_tokens 截断且已产出工具调用 → 不执行残缺参数，注入
-      // 错误 tool_result 提示模型补全重发（pi 机制，消灭"执行参数残缺的调用"）
+      // 错误 tool_result 提示模型补全重发（消灭"执行参数残缺的调用"）
       // 【2026-09-11 适配】Anthropic/DeepSeek 官方语义用 'max_tokens'，旧判据只认
       // 'length'（mock 用法）→ 真端点截断时守卫不触发、残缺工具被当正常调用执行。
       if (blocks.length > 0 && (stopReason === 'length' || stopReason === 'max_tokens')) {
@@ -990,8 +990,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         }
         if (turnToolDigest.length > 40) turnToolDigest.splice(0, turnToolDigest.length - 40)
       } catch { /* 观测数据采集失败不影响工具主流程 */ }
-      // P0-3b 单消息聚合预算（2026-09-12 四家对标：CC 单消息 200K token 聚合 /
-      // pi 双上限）：单条 20K 落盘挡不住"一轮几十次工具调用"的聚合膨胀（实测一轮
+      // P0-3b 单消息聚合预算（2026-09-12 对标：单消息 200K token 聚合 /
+      // 双上限）：单条 20K 落盘挡不住"一轮几十次工具调用"的聚合膨胀（实测一轮
       // 67 次 → 请求面 317KB、292 条消息——长会话 DS 流反复中断的温床）。同一 user
       // 消息内 tool_result 合计超预算时，把最大的几条落盘替换为 preview+path
       // （Read 例外同 P0-3：模型显式索要的文件内容不 stub），直到合计低于预算。
@@ -1033,7 +1033,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // P1-6：判据来自 guards.mjs（与子 lane 共用，防两侧漂移）
       const madeProgress = isRealProgress(blocks, toolResults)
       if (madeProgress) { lastProgressAt = Date.now(); stallHeals = 0 }
-      // 守卫⑤：连续同工具提醒（dsh repeat-tool-reminder 语义：仅提醒不否决，硬性
+      // 守卫⑤：连续同工具提醒（仅提醒不否决，硬性
       // 由迭代上限兜底）。以每轮首个 tool_use 的规范键（name+参数深排序）为基准；
       // 键变化视为换了方向，链复位。到阈值把提示并入下一条 user 消息——顺序为
       // assistant(tool_use) → user(tool_result) → user(提醒)，与 R3-2 注入先例
@@ -1729,7 +1729,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // P1-6：判据来自 guards.mjs（与主循环**同一实现**，防两侧口径漂移）
       const laneProgress = isRealProgress(blocks, toolResults)
       if (laneProgress) { subLastProgressAt = Date.now(); subStallHeals = 0 }
-      // 审计 #10 守卫⑤（子 lane 镜像）：连续同工具提醒（dsh repeat-tool-reminder 语义：
+      // 审计 #10 守卫⑤（子 lane 镜像）：连续同工具提醒（
       // 仅提醒不 veto，硬性由迭代上限兜底）。以每轮首个 tool_use 的规范键（name+参数深排序）
       // 为基准；键变化视为换了方向，链复位。位置在工具结果落 store 后、守卫④熔断判定前，
       // 镜像主循环 836-851 的提醒块。注入经 store.appendUser，与③/③b 不重叠（③③b 检生成
@@ -1882,7 +1882,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     if (!prompt) return { content: 'prompt 缺失：请说明要委派给子 Agent 的任务', isError: true }
     // AS1：agent spec 字段接线（P2-1① 签名扩展的消费方）。tools/skills 引用未知项 →
     // wire.warning（level:'agent_spec'）提示不拦截；空/未定义 = 全量（零回归锁①）。
-    // 2026-09-11：disallowedTools/effort 入 laneOptions（对齐 CC agent frontmatter）。
+    // 2026-09-11：disallowedTools/effort 入 laneOptions（沿用 agent frontmatter）。
     const laneOptions = {
       model: agent.model || '',
       // 工具范围由纯函数算出（2026-09-15，A 条款；原逻辑内联在此，无法单测）：
@@ -1909,7 +1909,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       laneOptions.allowedTools = (laneOptions.allowedTools || tools.toolNames).filter((t) => !disSet.has(t))
     }
     warnUnknownAgentRefs(agent)
-    // agent 定义 background:true 恒后台（对齐 CC frontmatter background 字段）
+    // agent 定义 background:true 恒后台（frontmatter background 字段）
     const runInBackground = input?.run_in_background === true || agent.background === true
     const taskId = newSessionId()
     // S1 血缘：主 agent 派发 depth 0 / parent null；子 lane 派发（S4 预留）经 ctx.lane 透传
@@ -2252,7 +2252,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         const errText = `【系统】本轮执行出现内部错误：${errMsg}（会话已保留，可继续对话或重试）`
         pushMemory({ role: 'assistant', content: `【系统】本轮执行出现内部错误：${errMsg}` })
         try { wire.assistant([{ type: 'text', text: errText }]) } catch { /* 事件流异常不再掩盖原错误 */ }
-        outcome = { usage: null, model: opts.model || process.env.ANTHROPIC_MODEL || '', text: errText }
+        outcome = { usage: null, model: opts.model || process.env.PONOS_MODEL || '', text: errText }
       }
       const durationMs = Date.now() - t0
       // turnStats 每轮尾部产出（health/result/stats 共用）。lastUsage = 本轮最后一次

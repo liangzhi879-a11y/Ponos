@@ -36,7 +36,7 @@ export function contextWindowFor(model, env = process.env) {
   return env.PONOS_PROVIDER_PROFILE === 'local' ? LOCAL_DEFAULT_WINDOW : DEFAULT_WINDOW
 }
 
-// 调用时输出预算钳制（pi clampMaxTokensToContext 语义；2026-09-10 小窗口本地模型适配）：
+// 调用时输出预算钳制（2026-09-10 小窗口本地模型适配）：
 // 每次模型调用前按 window − 输入估算 − 余量 收窄 max_tokens，保证 input+max_tokens
 // 恒 ≤ 窗口——本地小窗口模型（32K-64K）配大默认预算（64K/16K）不再必然撞 400。
 // cap 低于 floor 时返回 floor（宁可小预算尝试，也不放大请求；仍装不下由 400 自愈路径

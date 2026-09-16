@@ -1,3 +1,6 @@
+// 兼容垫片引导：必须是本文件**首个** import——旧名 → PONOS_* 主名的映射须在本进程
+// 任何模块顶层读取 env 之前完成（shared/legacy-env.mjs 是唯一映射实现）。
+import '../kernel/legacy-env-boot.mjs'
 import { spawn, execSync } from 'child_process'
 import { createInterface } from 'readline'
 import { WebSocketServer } from 'ws'
@@ -613,12 +616,12 @@ function syncKernelSettings() {
     }
     existing.env = {
       ...(existing.env || {}),
-      ANTHROPIC_BASE_URL: provider.apiBaseUrl || '',
-      ANTHROPIC_AUTH_TOKEN: provider.authToken || '',
-      ANTHROPIC_MODEL: model,
-      ANTHROPIC_DEFAULT_SONNET_MODEL: model,
-      ANTHROPIC_DEFAULT_OPUS_MODEL: model,
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: sub,
+      PONOS_BASE_URL: provider.apiBaseUrl || '',
+      PONOS_AUTH_TOKEN: provider.authToken || '',
+      PONOS_MODEL: model,
+      PONOS_DEFAULT_SONNET_MODEL: model,
+      PONOS_DEFAULT_OPUS_MODEL: model,
+      PONOS_DEFAULT_HAIKU_MODEL: sub,
       // 本地画像上下文窗口钳制（同 buildChildEnv 规则，2026-09-09 容器适配）。
       // contextWindow=0/未设（2026-09-10：GUI 新建 provider 默认 0 = 自动探测）时
       // 不注入任何值——内核回落 内置模型表 → 画像默认（local 64K / cloud 200K），
@@ -964,9 +967,9 @@ const q = (s) => '"' + String(s).replace(/"/g, '') + '"'
 // model 字段永远到不了内核——切换模型必须换对话才生效的根因。
 export function providerEnvSig(env = process.env) {
   return JSON.stringify({
-    baseUrl: env.ANTHROPIC_BASE_URL || '',
-    model: env.ANTHROPIC_MODEL || '',
-    auth: env.ANTHROPIC_AUTH_TOKEN || '',
+    baseUrl: env.PONOS_BASE_URL || '',
+    model: env.PONOS_MODEL || '',
+    auth: env.PONOS_AUTH_TOKEN || '',
   })
 }
 
@@ -1037,8 +1040,8 @@ function buildChildEnv() {
   // token. Without these the CLI falls back to its built-in protocol defaults
   // and the saved config is ignored at runtime.
   if (provider && provider.apiBaseUrl && provider.authToken) {
-    env.ANTHROPIC_BASE_URL = provider.apiBaseUrl
-    env.ANTHROPIC_AUTH_TOKEN = provider.authToken
+    env.PONOS_BASE_URL = provider.apiBaseUrl
+    env.PONOS_AUTH_TOKEN = provider.authToken
     // 模型改名适配（2026-09-11）：spawn 时对配置模型名做清单校验——提供方升级
     // 改名后（如 deepseek-chat → deepseek-v4-flash），已配置的旧模型名不在探测
     // 清单内 → 自动落到当前服务端首项，会话不再因旧名 404。清单来自探测回填的
@@ -1054,10 +1057,10 @@ function buildChildEnv() {
       sub = servedModels[0]
     }
     if (model) {
-      env.ANTHROPIC_MODEL = model
-      env.ANTHROPIC_DEFAULT_SONNET_MODEL = model
-      env.ANTHROPIC_DEFAULT_OPUS_MODEL = model
-      env.ANTHROPIC_DEFAULT_HAIKU_MODEL = sub || model
+      env.PONOS_MODEL = model
+      env.PONOS_DEFAULT_SONNET_MODEL = model
+      env.PONOS_DEFAULT_OPUS_MODEL = model
+      env.PONOS_DEFAULT_HAIKU_MODEL = sub || model
     }
     // provider 思考模式（2026-09-10）：thinkingEnabled → 内核请求注入
     // thinking:enabled+budget（MiniMax 等不认 reasoning_effort 的云端经此才有
@@ -2409,7 +2412,7 @@ const httpServer = createServer(async (req, res) => {
             const ev = JSON.parse(t)
             // system/init event proves the CLI loaded the new model + auth
             if (ev.type === 'system' && ev.subtype === 'init') {
-              return finish({ ok: true, model: ev.model || env.ANTHROPIC_MODEL || '', tools: ev.tools || [] })
+              return finish({ ok: true, model: ev.model || env.PONOS_MODEL || '', tools: ev.tools || [] })
             }
             // API errors arrive as assistant errors or result is_error=true
             if (ev.type === 'result' && ev.is_error) {

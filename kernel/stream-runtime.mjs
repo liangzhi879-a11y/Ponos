@@ -51,7 +51,7 @@ export function normalizeEffort(value) {
   return null
 }
 
-// P0-1 重试退避：指数 + 25% jitter（参考 pi provider-retry：抖动避免同步风暴）
+// P0-1 重试退避：指数 + 25% jitter（抖动避免同步风暴）
 export function retryDelayMs(attempt) {
   return 500 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 250)
 }
@@ -116,7 +116,7 @@ export function withToolDeadline(promise, ms) {
   })
 }
 
-// P0-3b 单消息聚合预算（2026-09-12 四家对标：CC 单消息 200K token 聚合 / pi 双上限
+// P0-3b 单消息聚合预算（2026-09-12 对标：单消息 200K token 聚合 / 双上限
 // 50KB+2000 行）。纯函数：不改入参；持久化动作由调用方注入（persist(content, idx)
 // 返回替换 stub）。按大小降序替换，直到合计 ≤ budget；Read（toolNames[i]==='Read'）
 // 豁免（模型显式索要的文件内容不 stub，同 P0-3 语义）。

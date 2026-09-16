@@ -4,7 +4,7 @@
 
 ## 一步启动
 
-1. 复制 `.env.example` 为 `.env` 并填入 `ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_MODEL`
+1. 复制 `.env.example` 为 `.env` 并填入 `PONOS_BASE_URL / PONOS_AUTH_TOKEN / PONOS_MODEL`
 2. 加载环境变量后运行：
 
    node cli.mjs

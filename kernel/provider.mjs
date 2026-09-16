@@ -26,10 +26,10 @@ export function authHeaders(provider = {}) {
 
 function envProvider(env = process.env) {
   return {
-    baseUrl: (env.ANTHROPIC_BASE_URL || '').replace(/\/+$/, ''),
-    authToken: env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY || '',
-    model: env.ANTHROPIC_MODEL || '',
-    authScheme: env.ANTHROPIC_AUTH_SCHEME === 'bearer' ? 'bearer' : 'x-api-key',
+    baseUrl: (env.PONOS_BASE_URL || '').replace(/\/+$/, ''),
+    authToken: env.PONOS_AUTH_TOKEN || env.PONOS_API_KEY || '',
+    model: env.PONOS_MODEL || '',
+    authScheme: env.PONOS_AUTH_SCHEME === 'bearer' ? 'bearer' : 'x-api-key',
   }
 }
 

@@ -148,7 +148,7 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
   // 且 bridge 会报 skipped），而是**下一次 append 会与残行黏连**：`writeEntry` 用
   // `appendFileSync(line+'\n')`，若文件末尾是崩溃留下的半行（**没有换行**），新条目会被拼在
   // 同一行上 ⇒ 整行 JSON.parse 失败 ⇒ **新条目静默丢失**（连 skipped 计数都只是"一行坏"）。
-  // 这正是 append-only 日志最典型的故障形态，范式 pi-main `session/jsonl/storage.ts:38-41,89-105`。
+  // 这正是 append-only 日志最典型的故障形态。
   // 修法：加载时若末尾不是换行 ⇒ 补齐或丢弃那半行，让文件重新以 '\n' 结尾。
   // 只在**有残行**时才付出整读代价（健康文件零成本，见 endsWithNewline）。
   /** 末尾是否为换行（1 字节探针，不整读大文件）。读不到一律当"正常"——绝不因此动用户文件 */

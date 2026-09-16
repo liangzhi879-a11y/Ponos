@@ -45,8 +45,9 @@ export function killActiveChildren() {
   ACTIVE_CHILDREN.clear()
 }
 
-// S2-2 子进程 env 白名单：仅透传系统路径/编码/代理变量，剥离一切密钥与
-// ANTHROPIC_* / PONOS_* 配置类变量（防 Bash/OCR 子进程窃取宿主密钥）。
+// S2-2 子进程 env 白名单：仅透传系统路径/编码/代理变量，其余一律剥离——包含全部
+// 凭据类与 PONOS_* 配置类变量，以及那些经兼容垫片映射为 PONOS_* 的历史旧名
+// （防 Bash/OCR 子进程窃取宿主密钥）。
 // S6 增补 `PONOS_HOME`：内核 CLI 解析配置根时会认它（`PONOS_CONFIG_DIR > PONOS_HOME > ~/.ponos`），
 // 而 `PONOS_CONFIG_DIR` 被上面这条安全策略刻意剥离 → 不补这一项，agent 在 Bash 里跑的
 // `--knowledge append` 会落到 `~/.ponos`（**与应用侧 `.yfw` 不同的根**，写进去 GUI 看不见）。
@@ -69,7 +70,7 @@ export function childEnv() {
 }
 
 const BASH_TIMEOUT_MS = 120_000
-// Read 一次读取的容量上限（对照 deepseek 的 2000 行、pi 的截断提示）：
+// Read 一次读取的容量上限（含截断提示，让模型知道如何继续）：
 // 模型看到声明后放心一次读全文，不再用 sed/python 碎片化取样。
 const READ_MAX_LINES = 2000
 const READ_MAX_BYTES = 2 * 1024 * 1024
@@ -177,14 +178,14 @@ function withinBoundary(filePath, allowDirs) {
 }
 
 // 相对路径解析到 cwd（消除"试 4 种路径格式"的浪费）：绝对路径原样，~ 展开，
-// 其余 resolve(cwd, p)。参考 pi 的 resolveToCwd 机制。
+// 其余 resolve(cwd, p)。
 function resolvePath(p, cwd) {
   if (!p) return p
   if (p.startsWith('~') || p.startsWith('~/')) return join(process.env.HOME || process.env.USERPROFILE || '', p.slice(p[1] === '/' ? 2 : 1))
   return resolve(cwd || process.cwd(), p)
 }
 
-// Read 去重 stub（FILE_UNCHANGED_STUB 语义）：全量读过的文件在 mtime/size
+// Read 去重 stub：全量读过的文件在 mtime/size
 // 未变时再次读取返回 stub，提示直接引用此前结果——省去模型重复读同一文件
 // 的往返与 token（T003 上轮 Read 6 次中部分为重复读）。
 const READ_STUB_PREFIX = '文件自上次读取后未变化'
@@ -199,7 +200,7 @@ function readFile(filePath, allowDirs, input = {}, cwd, readCache, skipBoundary,
     const st = statSync(resolved)
     if (st.isDirectory()) return { content: `是目录：${resolved}`, isError: true }
     // 超大文件不直接读全文（读一半即 2MB 内存），改为报错 + 定向读取建议
-    // （对照 maxSizeInstruction：让模型知道用什么参数继续，而非猜）
+    // （让模型知道用什么参数继续，而非猜）
     if (st.size > READ_MAX_BYTES) {
       return { content: `文件过大（${st.size} 字节），超出 ${READ_MAX_BYTES} 字节读取上限；请用 offset/limit 参数定向读取（offset 起始行号，limit 行数）`, isError: true }
     }
@@ -244,7 +245,7 @@ function readFile(filePath, allowDirs, input = {}, cwd, readCache, skipBoundary,
       const slice = all.slice(from0, to1)
       return { content: slice.join('\n') + (slice.length ? '\n' : ''), slice }
     }
-    // 部分读取时追加进度指引（对照 pi 的 "[Showing X-Y of N. Use offset=Z to continue]"）：
+    // 部分读取时追加进度指引（"[Showing X-Y of N. Use offset=Z to continue]"）：
     // 模型无需猜测文件大小与剩余内容，直接按指引续读，杜绝碎片化试错
     const progressHint = (start, end) => {
       const last = Math.min(end, totalLines)
@@ -264,7 +265,7 @@ function readFile(filePath, allowDirs, input = {}, cwd, readCache, skipBoundary,
       return { content: content + progressHint(1, last), isError: false, meta: { range: [1, last], totalLines } }
     }
     // 全量读：先查去重缓存（mtime/size 未变且此前全量读完 → stub，省重复读往返；
-    // FILE_UNCHANGED_STUB 同款语义）。部分读取（offset/limit）不参与去重——定向
+    // 同款语义）。部分读取（offset/limit）不参与去重——定向
     // 读是有意取特定范围，且不视为"已有全部内容"。
     const cached = readCache?.get(resolved)
     if (cached?.fullRead && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
@@ -680,8 +681,8 @@ function htmlToText(html) {
 
 // ---------------------------------------------------------------------------
 // WebSearch：经 Anthropic 兼容端点的原生 web_search server tool 执行搜索。
-// 零新依赖——复用 provider（ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL），参考
-// deepseek-harness web-search-deepseek provider 的 wire 契约：POST /v1/messages，
+// 零新依赖——复用 provider（PONOS_BASE_URL/AUTH_TOKEN/MODEL），参考
+// 联网搜索所调 provider 的 wire 契约：POST /v1/messages，
 // body 带 tools:[{type:'web_search_20250305', name:'web_search', max_uses}]，
 // 解析 web_search_tool_result 块（url/title/page_age）+ text 块 citations
 // （cited_text 作 snippet，url 首见优先）。
@@ -704,7 +705,7 @@ function webSearchMock(query) {
   }
 }
 
-// Anthropic Messages 响应 → 来源列表（与 deepseek-harness mapAnthropicResponse 同构）
+// Anthropic Messages 响应 → 来源列表
 function formatWebSearchResult(payload, query) {
   const blocks = payload?.content || []
   const resultBlocks = blocks.filter((b) => b.type === 'web_search_tool_result')
@@ -741,8 +742,8 @@ async function webSearch(query) {
   const p = getProvider()
   const base = p.baseUrl
   const token = p.authToken
-  const model = p.model || process.env.ANTHROPIC_MODEL || ''
-  if (!base || !token) return { content: 'WebSearch 需要配置 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN（与主对话同一 provider 端点）', isError: true }
+  const model = p.model || process.env.PONOS_MODEL || ''
+  if (!base || !token) return { content: 'WebSearch 需要配置 PONOS_BASE_URL / PONOS_AUTH_TOKEN（与主对话同一 provider 端点）', isError: true }
   const url = base.replace(/\/+$/, '') + '/v1/messages'
   let res
   try {
@@ -991,7 +992,7 @@ export async function visionDescribe(filePath, allowDirs, input = {}, skipBounda
     const token = v.token || ''
     if (!base || !model || !token) {
       // 未配置视觉模型时：PONOS_AUTO_IMAGE_BRIDGE=1（bridge 注入）→ 自动降级走
-      // 增强 OCR 本地证据（dsh-pseudo-vision 同思路：text-only 模型用 OCR 文字
+      // 增强 OCR 本地证据（text-only 模型用 OCR 文字
       // "看"图），而非直接报错。OCR 失败也带降级说明（明确告知尝试了本地 OCR
       // 但失败原因），不会让模型误判"视觉功能本身缺失"。
       if (process.env.PONOS_AUTO_IMAGE_BRIDGE === '1' && process.env.PONOS_AUTO_IMAGE_BRIDGE !== '0') {

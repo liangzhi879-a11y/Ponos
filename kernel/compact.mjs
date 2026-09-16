@@ -15,7 +15,7 @@ import { countCjk, bumpContentEpoch } from './context.mjs'
 import { extractEntities, missingEntities } from './fidelity.mjs'
 import { patchOrphanToolUses } from './engine.mjs'
 
-// P9-1：工具结果老化清除（microcompact 语义）
+// P9-1：工具结果老化清除
 // ---------------------------------------------------------------------------
 // 零模型成本：上下文超过"老化清除阈值"时，把保留窗口之外的可重放工具
 // （Read/Bash/Grep/Glob/WebFetch/OCR——结果可按需重新调用工具读取）结果整条
@@ -36,7 +36,7 @@ export function ageOutToolResults(messages, { keepRecent = 2 } = {}) {
     }
   }
   // 按出现顺序记录所有 tool_result 及其是否可重放（保留窗口按"全部工具结果"计，
-  // microcompact 语义：最近 N 条结果不论类型一律保留，只清窗口外
+  // 老化语义：最近 N 条结果不论类型一律保留，只清窗口外
   // 的可重放结果——否则 Edit/Write 的紧凑结果会挤占窗口导致可清条目永远不足）
   const results = [] // { i, j, replayable }
   for (let i = 0; i < messages.length; i++) {

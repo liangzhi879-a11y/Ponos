@@ -48,7 +48,7 @@ test('resolveProviderProfile：空/非法 baseUrl → cloud（安全默认）', 
 
 // —— env 映射 ——
 
-test('providerProfileEnv：local 默认表（2026-09-10 CC 对标：温度 1.0 / 输出 8K）', () => {
+test('providerProfileEnv：local 默认表（2026-09-10 对标：温度 1.0 / 输出 8K）', () => {
   const env = providerProfileEnv({ profile: 'local', apiBaseUrl: 'http://218.17.137.219:8900' })
   assert.equal(env.PONOS_TEMPERATURE, '1.0')
   assert.equal(env.PONOS_PROMPT_TIER, 'lean')
@@ -58,7 +58,7 @@ test('providerProfileEnv：local 默认表（2026-09-10 CC 对标：温度 1.0 /
   assert.equal(env.PONOS_STREAM_IDLE_MS, undefined)
 })
 
-test('providerProfileEnv：cloud → 画像标记 + 输出预算 16K（2026-09-12 四家对标：CC 8K/pi 16K/DS-harness 预分配警告；旧行为仅画像标记）', () => {
+test('providerProfileEnv：cloud → 画像标记 + 输出预算 16K（2026-09-12 对标：8K 升档 / 16K 备选 / 预分配警告；旧行为仅画像标记）', () => {
   assert.deepEqual(providerProfileEnv({ profile: 'cloud', apiBaseUrl: 'https://api.deepseek.com/anthropic' }), { PONOS_PROVIDER_PROFILE: 'cloud', PONOS_MAX_OUTPUT_TOKENS: '16384' })
   assert.deepEqual(providerProfileEnv({ apiBaseUrl: 'https://api.minimaxi.com/anthropic' }), { PONOS_PROVIDER_PROFILE: 'cloud', PONOS_MAX_OUTPUT_TOKENS: '16384' })
 })
@@ -75,8 +75,8 @@ test('providerProfileEnv：显式字段覆盖任何画像', () => {
 
 test('providerProfileEnv：非法数值跳过（宁缺勿崩）', () => {
   const env = providerProfileEnv({ profile: 'local', temperature: 3, maxOutputTokens: -5, firstByteMs: 'abc', idleMs: 0 })
-  assert.equal(env.PONOS_TEMPERATURE, '1.0', '非法显式温度回退 local 默认（2026-09-10 CC 对标 1.0）')
-  assert.equal(env.PONOS_MAX_OUTPUT_TOKENS, '8192', '非法预算回退默认（2026-09-10 CC 对标 8K）')
+  assert.equal(env.PONOS_TEMPERATURE, '1.0', '非法显式温度回退 local 默认（2026-09-10 对标 1.0）')
+  assert.equal(env.PONOS_MAX_OUTPUT_TOKENS, '8192', '非法预算回退默认（2026-09-10 对标 8K）')
   assert.equal(env.PONOS_STREAM_FIRST_BYTE_MS, undefined)
   assert.equal(env.PONOS_STREAM_IDLE_MS, undefined)
 })

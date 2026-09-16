@@ -135,7 +135,7 @@ export function createWorkflowEngine({ configDir = '', registry, onEvent, getMod
   let _configDir = configDir
   let _registry = registry
   let _onEvent = onEvent || (() => {})
-  let _getModel = getModel || (() => process.env.ANTHROPIC_MODEL || '')
+  let _getModel = getModel || (() => process.env.PONOS_MODEL || '')
   let _signal = signal || { aborted: false }
   let _memoryRoot = memoryRoot
   // 当前会话 agent id（M3）：bound 可见性判定用；与 dyntools 工具池的 agentId 同源

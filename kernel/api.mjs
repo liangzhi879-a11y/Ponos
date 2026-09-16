@@ -1,7 +1,7 @@
 // Ponos-turbo LLM API 客户端（docs/bridge-contract.md §2 buildChildEnv 注入的 provider env）
 // ---------------------------------------------------------------------------
-// 以 Anthropic Messages API 兼容协议调上游（ANTHROPIC_BASE_URL +
-// ANTHROPIC_AUTH_TOKEN + ANTHROPIC_MODEL）。OpenAI 兼容端点已删除（2026-08-20 实测
+// 以 Anthropic Messages API 兼容协议调上游（PONOS_BASE_URL +
+// PONOS_AUTH_TOKEN + PONOS_MODEL）。OpenAI 兼容端点已删除（2026-08-20 实测
 // deepseek OpenAI 端点带 tools 时高概率 thinking-only 空回复，见 zz-smoke 冒烟记录），
 // SSE 流式解析后产出结构化 chunk：
 //   { type: 'text',     text }      已累积的文本段（按段落/阈值切分）
@@ -110,7 +110,7 @@ function* segmentText(buffer, kind = 'text') {
 // 纯 env 契约（api-protocol.test.mjs 以自定义 env 对象调用，不得读 registry/process）。
 // P4-5 registry 生效点只在 anthropicStream 内部（getProvider 未激活时现读 env，等效）。
 export function detectProtocol(env = process.env) {
-  return env.ANTHROPIC_BASE_URL ? 'anthropic' : null
+  return env.PONOS_BASE_URL ? 'anthropic' : null
 }
 
 // usage 归一化：扩展 cache_read/cache_creation（deepseek 系）
@@ -1405,7 +1405,7 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
   const p = getProvider()
   const base = p.baseUrl
   const token = p.authToken
-  if (!base || !token) throw new Error('内核：ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 未配置')
+  if (!base || !token) throw new Error('内核：PONOS_BASE_URL / PONOS_AUTH_TOKEN 未配置')
   const useCache = process.env.PONOS_PROMPT_CACHE === '1' && !!system
   // 鉴权头按 provider.authScheme 选择：默认 x-api-key（anthropic/deepseek/minimax）；
   // vLLM 等本地 Bearer-only 端点配置 authScheme=bearer 后改发 Authorization。
@@ -1524,7 +1524,7 @@ export function classifyApiError(err) {
 }
 
 // 单次读操作空闲看门狗（P1-6）：reader.read() 长时间无数据判超时。
-// 参考 deepseek-harness 的流式空闲看门狗（300s），防 fetch 永不 settle。
+// 流式空闲看门狗（300s），防 fetch 永不 settle。
 function withIdleTimeout(promise, ms) {
   if (!ms || ms <= 0) return promise
   return new Promise((resolve, reject) => {
@@ -1547,6 +1547,6 @@ export async function* streamMessages({ model, messages, maxTokens, signal, tool
     yield* mockStream({ messages, signal })
     return
   }
-  if (!detectProtocol()) throw new Error('内核：未检测到可用协议（需 ANTHROPIC_BASE_URL）')
+  if (!detectProtocol()) throw new Error('内核：未检测到可用协议（需 PONOS_BASE_URL）')
   yield* anthropicStream({ model, messages: rest, system, tools, maxTokens, signal, reasoningEffort, thinkingMode })
 }

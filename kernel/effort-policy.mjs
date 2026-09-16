@@ -5,8 +5,8 @@
 //   在本 provider（deepseek-v4-flash）上 `budget_tokens` 与 `reasoning_effort` **都不控
 //   思考量**——1024 vs 4096 区间重叠、轮 1 甚至反超；`reasoning_effort` 两轮方向相反；
 //   `adaptive` 被端点接受但无优势。唯一有量级效应的旋钮是 **thinking 的开与关**
-//   （关掉后中位墙钟 3.1× / 1.5×，16/16 全对）。多套参考实现（codex /
-//   deepseek-harness / pi）也全部是「配置维度 + 阶段边界」，**零运行时启发式**——同设置内
+//   （关掉后中位墙钟 3.1× / 1.5×，16/16 全对）。多套参考实现（
+//   同类实现）也全部是「配置维度 + 阶段边界」，**零运行时启发式**——同设置内
 //   跑次间方差 10.7×，任何逐步微调都会被噪声吞掉。
 //
 // 启用范围（用户 2026-09-13 决策）：**只对摘要/压缩步** off，常规步一律不干预。
@@ -23,7 +23,7 @@ export const EFFORT_POLICIES = ['graded', 'off']
 export const DEFAULT_EFFORT_POLICY = 'graded'
 
 // 解析层放**一处**：合法值、别名、未知值降级全写死在这里，调用点不做 if。
-// 范式：三层链（档位映射）+ codex `reasoning_effort.rs` 的
+// 范式：三层链（档位映射）+ 参考实现的
 // 「别名 → 线协议值」降级表。
 export function resolveEffortPolicy(raw) {
   const v = String(raw ?? '').trim().toLowerCase()

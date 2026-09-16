@@ -233,7 +233,7 @@ export function parseAgentMarkdown(text) {
       description,
       tools: spec.tools,
       allTools: spec.allTools,
-      // 2026-09-11：disallowedTools/effort/background frontmatter（对齐 CC agent 定义）
+      // 2026-09-11：disallowedTools/effort/background frontmatter（agent 定义字段）
       disallowedTools: [...new Set([...spec.disallowed, ...explicitDisallowed])],
       model: fields.model || '',
       // skills 同理（`All skills` 是自然语言写法，不能当技能名）

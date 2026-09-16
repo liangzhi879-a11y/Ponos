@@ -5,8 +5,8 @@ import { nrNorm } from './gen-guards.mjs'
 
 
 // —— agent loop 兜底（本地模型死循环防护）——
-// 参考 pi/dsh 等实现：主循环均默认无全局硬上限（靠 Esc 中断/可选 maxTurns/上下文
-// 自愈）；dsh 独有 repeat-tool-reminder（连续同工具调用达阈值注入提醒）。本地模型（vLLM
+// 参考同类实现：主循环均默认无全局硬上限（靠 Esc 中断/可选 maxTurns/上下文
+// 自愈）；另有「连续同工具调用达阈值注入提醒」的做法。本地模型（vLLM
 // Qwen 等）死循环两大形态：① 工具调用不断但无进展（反复同工具/全失败重试/无限续轮，
 // 含"测量打转"——只读测量参数微变、守卫③b/⑤抓不到，由守卫⑥无进展停滞兜底）；
 // ② 生成环节打转（thinking/文本重复打转、流式无数据挂起、单轮拖超时）。本引擎按本地
@@ -139,7 +139,7 @@ export function adaptiveFirstByteMs(messagesProvider, baseMs) {
 }
 // 连续工具失败熔断：一轮内连续全部失败的迭代达上限即收尾（成功一次即复位）
 export const MAX_ERROR_ITERATIONS = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_LOOP_MAX_ERROR_ITERATIONS', 6)
-// 同工具重复提醒注入阈值（dsh repeat-tool-reminder 语义；仅提醒不 veto，硬性由
+// 同工具重复提醒注入阈值（仅提醒不 veto，硬性由
 // 迭代上限兜底）。PONOS_LOOP_REPEAT_REMIND 逗号分隔，如 "3,5"；空串/0 → 关闭。
 export function envRemindList(name) {
   const raw = process.env[name]
@@ -173,7 +173,7 @@ export const NEAR_REPEAT_CODE_SKIP = LOOP_GUARD_OFF ? false : process.env.PONOS_
 // 愈合后出现一轮"无命中的干净迭代"即清零；真循环每轮必命中、预算不耗尽，安全网 =
 // 守卫⑥（纯文本循环无工具进展，10 分钟无进展停滞接管收尾）。设 >0 恢复有限预算语义。
 export const REPEAT_HEAL_MAX = LOOP_GUARD_OFF ? 0 : envHealMax('PONOS_REPEAT_HEAL_MAX', -1)
-// 输出截断自愈（2026-09-12 四家对标：CC 8K 撞顶升档 64K 重试 / pi 可恢复截断重试）：
+// 输出截断自愈（2026-09-12 对标：8K 撞顶升档 64K 重试 / 可恢复截断重试）：
 // 文本收尾被 max_tokens 截断 → 不再让用户发「继续」，内部按档位升输出预算续写、
 // 拼进同一回复（8K/16K/32K/64K，最多升 2 档）；64K 再截断才按普通收尾处理
 // （用户可发「继续」）。=0 关闭（旧行为：截断即收尾）。
@@ -197,7 +197,7 @@ export const UPSTREAM_DEAD_HEAL_BACKOFF_MS = LOOP_GUARD_OFF ? 0 : envNonNeg('PON
 // 即清零愈合计数；耗尽 STALL_HEAL_MAX 仍无进展才落可见收尾（硬停是最后防线，非默认路径）。
 export const LOOP_STALL_MS = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_LOOP_STALL_MS', 600_000)
 export const STALL_HEAL_MAX = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_STALL_HEAL_MAX', 2)
-// B3 子 agent 后台并发槽（2026-09-11）：同时运行的后台 lane 上限（默认 4，对齐
-// Codex multi_agent_v2 max_concurrent_threads_per_session）；超限派发排队（FIFO），
+// B3 子 agent 后台并发槽（2026-09-11）：同时运行的后台 lane 上限（默认 4，
+// 对齐同类产品的"每会话并发线程数"上限）；超限派发排队（FIFO），
 // 槽位释放自动启动。0 = 不限（既有行为）。
 export const LANE_MAX_CONCURRENT = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_LANE_MAX_CONCURRENT', 4)

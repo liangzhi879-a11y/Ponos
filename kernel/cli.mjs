@@ -15,6 +15,10 @@
 //   - 轮次队列：turnActive 时后续 user 排队，result 后处理
 //   - stdin 关闭 → exit 0（bridge 侧 kill 或 EOF 均优雅退出）
 
+// 兼容垫片引导：必须是本文件**首个** import——旧名 → PONOS_* 主名的映射须在任何模块
+// 顶层读取 env 之前完成（shared/legacy-env.mjs 是唯一映射实现）。
+import './legacy-env-boot.mjs'
+import { applyLegacyEnvAliases } from '../shared/legacy-env.mjs'
 import { createInterface } from 'node:readline'
 import { readFileSync, existsSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
@@ -455,6 +459,9 @@ export async function main(argv) {
   for (const [k, v] of Object.entries(settings.merged.env || {})) {
     if (v !== undefined && process.env[k] === undefined) process.env[k] = String(v)
   }
+  // 兼容垫片：settings.json 里可能仍是历史版本的旧名（Anthropic 兼容协议时代沿用），
+  // 在此统一映射到 PONOS_* 主名，保证配置来源与进程 env 两条路径口径一致。
+  applyLegacyEnvAliases()
   // 内核结构化日志（R5-1）：stderr JSON 行，级别过滤经 PONOS_LOG_LEVEL
   const log = createLogger({ level: process.env.PONOS_LOG_LEVEL || 'info', sid: sessionId })
 
@@ -813,7 +820,7 @@ export async function main(argv) {
     configDir,
     registry: engine.tools,
     onEvent: (ev) => { try { wire.system('workflow', ev) } catch { /* 事件失败不阻断 */ } },
-    getModel: () => getProvider().model || model || process.env.ANTHROPIC_MODEL || '',
+    getModel: () => getProvider().model || model || process.env.PONOS_MODEL || '',
     memoryRoot: memoryRoot(configDir),
     // M3：bound 可见性判定用（与 dyntools 工具池同源，同为 --agent）
     agentId: args.agent || null,
