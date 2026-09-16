@@ -24,6 +24,7 @@ import { createEngine } from './engine.mjs'
 import { resolveConfigDir, sharedDirFor } from './config.mjs'
 import { killActiveChildren, CHAT_MODE_DISALLOWED } from './tools.mjs'
 import { createLogger } from './log.mjs'
+import { createMcpRegistry, hookMcpExitCleanup } from './mcp-tools.mjs'
 import { makeWire, wireLastWriteAt, setTurnActive, isTurnActive, isAwaitingUser, wireWriteStats } from './protocol.mjs'
 import { createSessionStore, newSessionId } from './session.mjs'
 import { createHealth } from './health.mjs'
@@ -723,6 +724,21 @@ export async function main(argv) {
     //     发生在所有 ESM 模块求值之后，写成模块级常量必然读不到。
     const viewCache = createToolsViewCache({ max: 8 })   // 容量上限 + LRU（见 dyntools 头注）
     let viewSources = []                 // 上一轮发现实际读过的文件（签名的文件级输入）
+    // P1-5 MCP 客户端：外部工具接入。**必须放在签名缓存之外合并**——MCP 服务器的就绪
+    // 状态变化不改变盘面签名，若把它的工具混进缓存值，首次"尚未就绪返回空"会被缓存住、
+    // 之后永久看不到 MCP 工具。故缓存只存「本进程工具」（工作流/应用智控），MCP 每次实时合并。
+    // 未配置 ~/.yfworking/mcp.json 时 view() 恒返回 {} ⇒ 既有行为逐字不变。
+    const mcpRegistry = createMcpRegistry({
+      log: (level, msg) => { try { if (level === 'warn' || level === 'error') log.warn(msg); else log.info?.(msg) } catch { /* 日志失败不影响工具 */ } },
+    })
+    hookMcpExitCleanup(mcpRegistry)      // 内核退出时回收 MCP 子进程，避免孤儿
+    // MCP 工具合并器：命名带 `mcp__` 前缀，不会与内置/工作流/应用工具重名；
+    // 万一重名以本进程工具为准（不劫持既有工具），故 MCP 置于右侧作补充。
+    // 就绪前 view() 返回 {} ⇒ 返回原对象引用（不产生多余对象，签名缓存语义不受影响）。
+    const withMcp = (v) => {
+      const mcp = mcpRegistry.view()
+      return Object.keys(mcp).length ? { ...v, ...mcp } : v
+    }
     engine.tools.setDynamicTools(() => {
       // 应用智控：按「当前会话绑定的应用」注入 read/write 权限规则（安全双保险的主机制）。
       // 与工具注入同处一个视图函数（每次求值），故「进入控制台 → 绑定 → 规则生效」
@@ -744,7 +760,7 @@ export async function main(argv) {
       const hit = viewCache.get(sig)     // sig=null（关缓存/不可判定）时恒 null
       if (hit) {
         perfCount('dynHit')
-        return hit
+        return withMcp(hit)              // P1-5：缓存只存本进程工具，MCP 每次实时合并
       }
       const wfTools = buildWorkflowTools({ roots: workflowRoots, engine: wfEngine, agentId: args.agent || null, publicLimit: wfPublicLimit })
       viewSources = wfTools.sourcePaths || []   // 展开前取（非枚举属性不进 `{...}`）
@@ -765,8 +781,8 @@ export async function main(argv) {
           runner: (p) => engine.runApp(p),
         }),
       }
-      viewCache.set(sig, view)           // 超上限由容器按 LRU 自行淘汰
-      return view
+      viewCache.set(sig, view)           // 超上限由容器按 LRU 自行淘汰（只存本进程工具）
+      return withMcp(view)               // P1-5：MCP 工具实时合并，不进缓存
     })
   }
   // J1：health Judge 注入位——包装 engine.judgeUntil 作健康判定（目标 = 当前会话
