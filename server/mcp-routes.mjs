@@ -13,7 +13,7 @@
 // **500 = 磁盘 IO 失败**（数据合规但没写下去），**200 + ok:false = 正常业务结果**
 // （如"测试连接失败"——服务器连不上是家常便饭，不该以 5xx 让 GUI 走进错误分支）。
 import { join } from 'node:path'
-import { startMcpClient, normalizeMcpServers, readMcpServers, writeMcpServers } from '../kernel/mcp.mjs'
+import { startMcpClient, normalizeMcpServers, readMcpServers, writeMcpServers, mcpConfigSig } from '../kernel/mcp.mjs'
 import { startMcpHttpClient } from '../kernel/mcp-http.mjs'
 
 // /mcp/test 的超时：探测是**用户在前面等**的交互动作，不能沿用内核默认 20s；
@@ -26,18 +26,21 @@ const errText = (e) => e?.message || String(e)
 const json = (status, body) => ({ status, body })
 
 /**
- * 处理 `/mcp` 与 `/mcp/test`。
- * @param {{method:string, pathname:string, readJsonBody:() => Promise<any>, configDir:string}} ctx
+ * 处理 `/mcp`、`/mcp/test` 与 `/mcp/status`。
+ * @param {{method:string, pathname:string, readJsonBody:() => Promise<any>, configDir:string,
+ *          getMcpStatus?:() => object|null}} ctx
+ *   `getMcpStatus` 由 bridge 注入，返回**最近一次内核上报**的接入状态快照（可为 null）。
  * @returns {Promise<{status:number, body:object} | null>} 未匹配返回 `null`（交给后续路由）
  */
 export async function handleMcpRoute(ctx) {
-  const { method, pathname, readJsonBody, configDir } = ctx || {}
+  const { method, pathname, readJsonBody, configDir, getMcpStatus } = ctx || {}
   // 先判"方法+路径"再判方法内部逻辑：不支持的方法（如 DELETE /mcp）必须返回 null 交给后续路由，
   // 否则一个 500 会把本该走别的路由的请求吞掉。
   const wantGet = pathname === '/mcp' && method === 'GET'
   const wantPut = pathname === '/mcp' && method === 'PUT'
   const wantTest = pathname === '/mcp/test' && method === 'POST'
-  if (!wantGet && !wantPut && !wantTest) return null
+  const wantStatus = pathname === '/mcp/status' && method === 'GET'
+  if (!wantGet && !wantPut && !wantTest && !wantStatus) return null
   if (!configDir) return json(500, { ok: false, error: '路由未配置 configDir（无法定位 mcp.json）' })
   const configPath = join(configDir, 'mcp.json')
 
@@ -48,6 +51,30 @@ export async function handleMcpRoute(ctx) {
     // 而不是撞上 5xx 后只显示一句"加载失败"，让用户完全无法自救。
     if (!cur.ok) return json(200, { ok: false, error: cur.error, configPath, servers: {} })
     return json(200, { ok: true, configPath, servers: cur.servers })
+  }
+
+  // ---- GET /mcp/status：内核**真实接入状态**（面板顶部的"全局真值"）----
+  // 面板里的连接测试（/mcp/test）只能说明"这台此刻连得上"，本端点回答的是
+  // "内核已经把它接进 AI 的工具表了吗"——两者混为一谈就会出现"添加成功却找不到调用入口"。
+  if (wantStatus) {
+    const cur = readMcpServers(configPath)
+    const sig = cur.ok ? mcpConfigSig(cur.servers) : null
+    // 内核是**每会话一进程**，而面板是全局的 ⇒ 返回"最近一次上报"即可：
+    // snapshot().servers[].tools 是该服务器实际发现的**全部**工具（发现阶段不做可见性过滤），
+    // 而所有内核都读同一个 mcp.json、连同一批服务器 ⇒ 各会话的发现结果必然相同。
+    // 随 agent 变化的只是"谁看得见"，那是**配置维度**的信息（面板按 expose 展示），
+    // 不是需要实时查询的运行时状态。故无须按会话聚合、也不必让用户先选会话。
+    let kernel = null
+    try { kernel = typeof getMcpStatus === 'function' ? (getMcpStatus() || null) : null }
+    catch { kernel = null }   // 诊断接口自身出错不该让面板拿不到配置信息
+    const stale = !!(kernel && kernel.configSig && sig && kernel.configSig !== sig)
+    return json(200, {
+      ok: cur.ok === true,
+      ...(cur.ok ? {} : { error: cur.error }),
+      config: { path: configPath, sig },
+      kernel,
+      stale,
+    })
   }
 
   // ---- PUT /mcp：整表替换 servers ----

@@ -263,3 +263,80 @@ test('PUT /mcp：url 服务器可保存并原样读回占位符（HTTP 配置走
     assert.equal(back.body.servers.remote.url, 'https://example.com/mcp')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+// ---------------------------------------------------------------------------
+// GET /mcp/status（2026-09-16，P1-6「MCP 顶层面板」）：内核**真实接入状态**。
+//
+// 为什么单独一个端点：面板里的"连接测试"只说明"这台此刻连得上"，而用户真正要问的是
+// "内核已经把它接进 AI 的工具表了吗"——两者是不同的事实，混为一谈就会出现
+// "添加成功却找不到调用入口"。这个端点回答后者，并给出"配置比内核新"的判定依据。
+const statusCall = (dir, extra = {}) => handleMcpRoute({
+  method: 'GET', pathname: '/mcp/status',
+  readJsonBody: async () => ({}), configDir: dir, ...extra,
+})
+
+test('GET /mcp/status：内核从未上报 ⇒ kernel:null（不谎称"已接入 0 个"）', async () => {
+  const dir = tmp()
+  try {
+    writeFileSync(join(dir, 'mcp.json'), JSON.stringify({ servers: { a: { command: 'npx' } } }), 'utf-8')
+    const r = await statusCall(dir)
+    assert.equal(r.status, 200)
+    assert.equal(r.body.ok, true)
+    assert.equal(r.body.kernel, null, '没有内核上报时必须是 null —— 界面据此显示"内核尚未启动"')
+    assert.equal(r.body.stale, false, '没有内核可比 ⇒ 不该显示"待生效"')
+    assert.match(r.body.config.sig, /^[0-9a-f]{16}$/)
+    assert.equal(r.body.config.path, join(dir, 'mcp.json'))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('GET /mcp/status：内核签名落后于磁盘 ⇒ stale:true（"发下一条消息即生效"的依据）', async () => {
+  const dir = tmp()
+  try {
+    writeFileSync(join(dir, 'mcp.json'), JSON.stringify({ servers: { a: { command: 'npx' } } }), 'utf-8')
+
+    const stale = await statusCall(dir, {
+      getMcpStatus: () => ({ servers: {}, failed: {}, disabled: [], configSig: 'deadbeefdeadbeef' }),
+    })
+    assert.equal(stale.body.stale, true, '内核用的是别的配置 ⇒ 界面要提示"下一条消息生效"')
+
+    const cur = await statusCall(dir, {
+      getMcpStatus: () => ({ servers: {}, failed: {}, disabled: [], configSig: stale.body.config.sig }),
+    })
+    assert.equal(cur.body.stale, false, '签名一致 ⇒ 已生效，提示消失')
+
+    // 内核没带 configSig（畸形/旧版本）时不得误报为"已生效"
+    const noSig = await statusCall(dir, { getMcpStatus: () => ({ servers: {}, failed: {}, disabled: [] }) })
+    assert.equal(noSig.body.stale, false, '缺签名不误报：没有证据说"落后"就不提示，避免噪音')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('GET /mcp/status：配置文件坏掉 ⇒ ok:false 且不抛（界面显示原因并禁用保存）', async () => {
+  const dir = tmp()
+  try {
+    writeFileSync(join(dir, 'mcp.json'), '{ 这不是 JSON', 'utf-8')
+    const r = await statusCall(dir)
+    assert.equal(r.status, 200, '读失败也要 200：这是"读不出来"的报告，不是请求错误')
+    assert.equal(r.body.ok, false)
+    assert.ok(String(r.body.error || '').length > 0)
+    assert.equal(r.body.config.sig, null, '读不出配置 ⇒ 无签名')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('GET /mcp/status：getMcpStatus 抛异常也不得 500（面板不能因诊断接口而崩）', async () => {
+  const dir = tmp()
+  try {
+    writeFileSync(join(dir, 'mcp.json'), JSON.stringify({ servers: {} }), 'utf-8')
+    const r = await statusCall(dir, { getMcpStatus: () => { throw new Error('boom') } })
+    assert.equal(r.status, 200)
+    assert.equal(r.body.kernel, null, '诊断失败就当作"没有上报"，不影响读取配置本身')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('未匹配路径仍返回 null（不吞别的路由），且 status 只接受 GET', async () => {
+  assert.equal(await handleMcpRoute({
+    method: 'GET', pathname: '/mcp/whatever', readJsonBody: async () => ({}), configDir: '/tmp',
+  }), null)
+  assert.equal(await handleMcpRoute({
+    method: 'POST', pathname: '/mcp/status', readJsonBody: async () => ({}), configDir: '/tmp',
+  }), null, 'status 只接受 GET（POST 落到后续路由，不是"不支持的方法"）')
+})
