@@ -84,6 +84,23 @@ export function classifyMcpEntry(cfg) {
   return { kind: 'http', url: urlRaw }
 }
 
+/**
+ * 「关闭的占位条目」：用户把还没填完的服务器标成关闭后保存。
+ *
+ * 为什么必须容忍它：关闭的服务器**根本不连接**，所以"要存下『关闭』这个状态"不该以
+ * "先填出一个合法定义"为前提。界面侧已按此放行必填校验（计划 Task 8），内核若仍判非法，
+ * 同一动作就会被两侧给出相反答案 —— 用户点保存只得到 400，卡死在"存不下也改不掉"。
+ *
+ * 判据刻意**严到只认"除开关/授权/超时外什么都没有"**：放宽成"没 command、没 url 就行"，
+ * 会让 `{enabled:false, headers:{…}}` 这类**真错配置**被悄悄存下（headers 被丢弃），
+ * 等用户重新开启时才发现刚填的东西没了 —— 那是比报错更糟的静默丢失。
+ */
+export function isDisabledPlaceholder(cfg) {
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return false
+  if (String(cfg.command ?? '').trim() || String(cfg.url ?? '').trim()) return false
+  return !['headers', 'args', 'env', 'cwd'].some((k) => cfg[k] !== undefined && cfg[k] !== null)
+}
+
 /** 归一化 HTTP 头：只收原始类型（对象/数组作头值无意义，写进文件只会让人以为内核不认） */
 function normalizeHeaders(raw) {
   const out = {}
@@ -113,14 +130,25 @@ export function loadMcpServers(configPath) {
   if (!servers || typeof servers !== 'object') return {}
   const out = {}
   for (const [name, cfg] of Object.entries(servers)) {
-    const kind = classifyMcpEntry(cfg)
-    if (kind.kind === 'invalid') continue // 与 normalizeMcpServers 同判定 ⇒ 不会出现"存得进、读不出"
     // 授权与开关必须在这里也读出来：注册表就是靠 loadMcpServers 的结果决定
     // "连不连"与"给谁看"。若只有写侧 normalize 认识这两个字段、读侧不认识，
     // 表现就是"界面上关了，内核照旧连接并暴露"——最糟的一类静默失效。
-    const ex = normalizeExpose(cfg.expose)
-    if (!ex.ok) continue   // 读侧放弃畸形条目，与上面 invalid 同一处理（写侧已挡住）
-    const policy = { enabled: normalizeEnabled(cfg.enabled), expose: ex.expose }
+    // 同样要早于传输判定：否则"关闭的占位条目"会被丢掉，面板的"已关闭"清单里看不到它，
+    // 用户会以为保存没生效。
+    // `cfg?.` 是必要的：走到这里 cfg 可能是 null/字符串/数组，而"非对象条目"的守卫原先
+    // 由 classifyMcpEntry 兼任 —— 把授权与开关提到它之前，就得自己扛住这层。
+    // 漏了它 = 内核启动时 loadMcpServers 抛异常 = 整个 MCP 配置读不出来。
+    const ex = normalizeExpose(cfg?.expose)
+    if (!ex.ok) continue   // 读侧放弃畸形条目，与下面 invalid 同一处理（写侧已挡住）
+    const enabled = normalizeEnabled(cfg?.enabled)
+    const kind = classifyMcpEntry(cfg)
+    if (kind.kind === 'invalid') {
+      if (enabled === false && isDisabledPlaceholder(cfg)) {
+        out[name] = { timeoutMs: normalizeTimeout(cfg?.timeoutMs), enabled: false, expose: ex.expose }
+      }
+      continue // 与 normalizeMcpServers 同判定 ⇒ 不会出现"存得进、读不出"
+    }
+    const policy = { enabled, expose: ex.expose }
     if (kind.kind === 'http') {
       out[name] = {
         url: kind.url,
@@ -518,12 +546,25 @@ export function normalizeMcpServers(raw) {
     const name = String(rawName || '').trim()
     if (!name) return { ok: false, error: '服务器名称不能为空' }
     // 逐条目报姓名是 GUI 能定位问题的前提（哪台服务器填错了）
-    const kind = classifyMcpEntry(cfg)
-    if (kind.kind === 'invalid') return { ok: false, error: `服务器 "${name}" ${kind.reason}` }
-    // 授权与开关：两种传输都要带（HTTP 分支与 stdio 分支共用）
-    const ex = normalizeExpose(cfg.expose)
+    // 授权与开关先算（两种传输共用），**且必须早于传输判定** —— 见下面的占位条目说明。
+    // 顺序不是风格问题：放在 classify 之后，就无法识别"关闭 + 未填完"这个合法组合。
+    // `cfg?.` 是必要的：走到这里 cfg 可能是 null/字符串/数组，而"非对象条目"的守卫原先
+    // 由 classifyMcpEntry 兼任 —— 把授权与开关提到它之前，就得自己扛住这层。
+    const ex = normalizeExpose(cfg?.expose)
     if (!ex.ok) return { ok: false, error: `服务器 "${name}" ${ex.error}` }
-    const policy = { enabled: normalizeEnabled(cfg.enabled), expose: ex.expose }
+    const enabled = normalizeEnabled(cfg?.enabled)
+    const kind = classifyMcpEntry(cfg)
+    if (kind.kind === 'invalid') {
+      // 关闭的服务器允许"还没填完就保存"的占位形态（界面已放行必填校验，两侧必须给同一答案）。
+      // 只放宽"什么都没填"这一种：command 与 url 同时给出、或 url 非法这类**真错误**仍报错，
+      // 否则等于让一份错配置静静躺在文件里，等用户重新开启时才炸。
+      if (enabled === false && isDisabledPlaceholder(cfg)) {
+        out[name] = { timeoutMs: normalizeTimeout(cfg?.timeoutMs), enabled: false, expose: ex.expose }
+        continue
+      }
+      return { ok: false, error: `服务器 "${name}" ${kind.reason}` }
+    }
+    const policy = { enabled, expose: ex.expose }
     if (kind.kind === 'http') {
       // 只存 ${ENV_VAR} 字面量，**运行时**才取环境变量 ⇒ 密钥不进入 mcp.json
       // （该文件会被备份、截图、同步到网盘）。此处不校验变量是否存在：

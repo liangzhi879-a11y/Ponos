@@ -333,3 +333,55 @@ test('loadMcpServers 也带 enabled/expose（内核启动路径据此过滤，�
     assert.deepEqual(cfg.c.expose, { mode: 'bound', bindAgents: ['r'] })
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+// ---------------------------------------------------------------------------
+// 关闭的"占位"条目（2026-09-16，跨层不一致修复）：界面按设计放行"关闭跳过必填校验"，
+// 而内核原先在 enabled 判定**之前**跑传输校验 ⇒ 同一动作被两侧给出相反答案，
+// 用户新建卡片设为「关闭」后点保存只得到 400，卡在"存不下也改不掉"。
+// 关闭的服务器根本不连接，故"存下『关闭』这个状态"不该以"先填出合法定义"为前提。
+
+test('关闭 + 什么都没填 ⇒ 可保存（两侧必须给同一答案）', () => {
+  const n = normalizeMcpServers({ servers: { draft: { enabled: false, expose: { mode: 'private' } } } })
+  assert.equal(n.ok, true, '这是合法的"占位"：关闭的服务器不连接，不需要填出定义')
+  assert.deepEqual(n.servers.draft.expose, { mode: 'private', bindAgents: [] })
+  assert.equal(n.servers.draft.enabled, false)
+  assert.equal(n.servers.draft.command, undefined, '占位条目不该被塞入假 command')
+})
+
+test('关闭的占位条目能被读回，且保留在 out 里（否则面板"已关闭"清单看不到它）', () => {
+  const dir = mkTmp()
+  try {
+    const f = join(dir, 'mcp.json')
+    writeFileSync(f, JSON.stringify({ servers: { draft: { enabled: false } } }), 'utf-8')
+    const cfg = loadMcpServers(f)
+    assert.ok(cfg.draft, '读侧丢掉它 ⇒ 注册表拿不到它 ⇒ snapshot().disabled 里没有它 ⇒ 面板显示成"不存在"')
+    assert.equal(cfg.draft.enabled, false)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('放宽只限"什么都没填"：真错配置（含真二义）仍报错，绝不静默丢弃字段', () => {
+  const mk = (v) => normalizeMcpServers({ servers: { x: v } })
+  // headers 却无 url：这是填到一半的真错，若放行会把 headers 悄悄丢掉
+  assert.equal(mk({ enabled: false, headers: { Authorization: 'Bearer x' } }).ok, false)
+  assert.match(mk({ enabled: false, headers: { A: 'b' } }).error, /缺少 command 或 url/)
+  // command 与 url 同时给出 = 真二义，与开关状态无关
+  assert.equal(mk({ enabled: false, command: 'npx', url: 'https://e.com/mcp' }).ok, false)
+  // env/args/cwd 同理（放行等于静默丢字段）
+  assert.equal(mk({ enabled: false, env: { A: '1' } }).ok, false)
+  assert.equal(mk({ enabled: false, args: ['-y'] }).ok, false)
+  // url 非法仍是错（有值 ⇒ 不是占位）
+  assert.equal(mk({ enabled: false, url: 'ftp://e.com' }).ok, false)
+})
+
+test('放宽只限"关闭"：启用态的空条目照旧报错（别把哑条目变成可运行服务器）', () => {
+  const n = normalizeMcpServers({ servers: { x: { enabled: true } } })
+  assert.equal(n.ok, false)
+  assert.match(n.error, /缺少 command 或 url/)
+  assert.equal(normalizeMcpServers({ servers: { x: {} } }).ok, false, '缺省开启 ⇒ 同样报错')
+})
+
+test('占位条目保留 timeoutMs（用户填过的值不该在保存时蒸发）', () => {
+  const n = normalizeMcpServers({ servers: { d: { enabled: false, timeoutMs: 12345 } } })
+  assert.equal(n.ok, true)
+  assert.equal(n.servers.d.timeoutMs, 12345)
+})
