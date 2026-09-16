@@ -8,7 +8,7 @@
 //   ③ **body 形状**：PUT 必须发 `{servers}` 整体替换语义，发错形状后端一律 400
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { getMcpConfig, saveMcpConfig, testMcpServer, type McpServerConfig } from './mcpApi.ts'
+import { getMcpConfig, saveMcpConfig, testMcpServer, MCP_BASE, type McpServerConfig } from './mcpApi.ts'
 
 /** 用可编排 stub 替换全局 fetch（照 agentsApi.test.ts 范式） */
 function stubFetch(handler: (url: string, init?: RequestInit) => { status?: number; body?: unknown; throwErr?: boolean }) {
@@ -132,4 +132,25 @@ test('非 JSON 响应（桥返回空体）也要被兜住', async () => {
     assert.equal(r.ok, true, '响应体不可解析时按空配置处理，但不应崩')
     assert.deepEqual(r.servers, {})
   } finally { globalThis.fetch = original }
+})
+
+// 【守门用例，2026-09-16】桥真实监听 `YFW_BRIDGE_PORT || 51517`
+// （server/bridge.mjs:59 / electron/main.cjs:206 / vite.config.ts:11 三处一致）。
+// 而 disabledApi.ts:19、agentsApi.ts:23 硬编码了历史端口 127.0.0.1:3939 —— 若照抄，
+// 本页在生产必然「无法连接本地服务」，且单测全绿也发现不了（测试都注入 baseUrl）。
+// 这条用例把端口钉死，防回归。
+test('兜底基地址必须是桥默认端口 51517，不得回退到历史端口 3939', () => {
+  assert.match(MCP_BASE, /:51517$/, 'MCP_BASE 应指向桥默认端口 51517')
+  assert.doesNotMatch(MCP_BASE, /3939/, '不得使用历史坏端口 3939（见 disabledApi.ts 的坑）')
+})
+
+test('未注入 baseUrl 时走默认解析（不显式传参也不得抛，生产路径）', async () => {
+  const s = stubFetch(() => ({ body: { ok: true, servers: {} } }))
+  try {
+    // 不传 baseUrl ⇒ 走 resolveBaseUrl → getBridgeUrl()（node 下会抛）→ 兜底 MCP_BASE。
+    // 关键断言：这条路径绝不抛异常（渲染层安全），且能拿到结构化结果。
+    const r = await getMcpConfig()
+    assert.equal(r.ok, true)
+    assert.equal(s.calls.length, 1, '应确实发出了请求')
+  } finally { s.restore() }
 })

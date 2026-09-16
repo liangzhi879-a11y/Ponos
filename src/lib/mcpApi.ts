@@ -5,7 +5,31 @@
 //   · **失败不静默**：网络异常/HTTP 非 2xx/后端 ok:false 一律转成可展示的中文 error，
 //     绝不把异常抛给渲染层（否则 React 渲染期直接白屏，用户看不到任何原因）
 //   · 读失败降级但不掩盖：返回空 servers + error，界面既能显示空态也能显示原因
-export const MCP_BASE = 'http://127.0.0.1:3939'
+//
+// 【端口坑，2026-09-16 实测】桥真实监听 `YFW_BRIDGE_PORT || 51517`
+// （server/bridge.mjs:59、electron/main.cjs:206、vite.config.ts:11 三处一致），
+// 主流程一律走 getBridgeUrl()。而 disabledApi.ts:19 / agentsApi.ts:23 硬编码了
+// 历史端口 127.0.0.1:3939 —— 那是坏代码，**不要照抄**，否则本页永远「无法连接本地服务」。
+import { getBridgeUrl } from './config.ts'
+
+/** 兜底基地址：与桥默认端口一致。仅在 getBridgeUrl() 取不到时使用（如 node --test 无 vite define） */
+export const MCP_BASE = 'http://127.0.0.1:51517'
+
+/**
+ * 解析基地址：注入值优先 → getBridgeUrl()（生产，跟随 YFW_BRIDGE_PORT/VITE_BRIDGE_URL）
+ * → MCP_BASE 兜底。getBridgeUrl 内部读 import.meta.env / __BRIDGE_PORT__，
+ * 在 node --test（无 vite define）下会抛，故必须包 try。
+ */
+function resolveBaseUrl(injected?: string): string {
+  if (injected) return injected
+  try {
+    const url = getBridgeUrl()
+    if (url) return url
+  } catch {
+    // node --test：无 import.meta.env / __BRIDGE_PORT__，退回兜底端口
+  }
+  return MCP_BASE
+}
 
 export type McpServerConfig = {
   command: string
@@ -33,10 +57,10 @@ export type McpTestResult = {
 async function requestJson(
   path: string,
   init: { method: string; body?: unknown },
-  baseUrl: string,
+  baseUrlInjected?: string,
 ): Promise<{ httpOk: boolean; status: number; data: Record<string, unknown> | null; error?: string }> {
   try {
-    const res = await fetch(`${baseUrl}${path}`, {
+    const res = await fetch(`${resolveBaseUrl(baseUrlInjected)}${path}`, {
       method: init.method,
       headers: init.body === undefined ? undefined : { 'Content-Type': 'application/json' },
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
@@ -60,7 +84,7 @@ async function requestJson(
 }
 
 /** 读取 MCP 服务器配置。文件损坏时后端返回 ok:false，此处同样降级为「空列表 + 错误原因」。 */
-export async function getMcpConfig(baseUrl: string = MCP_BASE): Promise<McpConfigResult> {
+export async function getMcpConfig(baseUrl?: string): Promise<McpConfigResult> {
   const r = await requestJson('/mcp', { method: 'GET' }, baseUrl)
   const servers = (r.data?.servers as Record<string, McpServerConfig>) || {}
   if (r.error) return { ok: false, servers: {}, error: r.error }
@@ -82,7 +106,7 @@ export async function getMcpConfig(baseUrl: string = MCP_BASE): Promise<McpConfi
 /** 保存全部 MCP 服务器配置（后端为整体替换语义，故此处直接送全量） */
 export async function saveMcpConfig(
   servers: Record<string, McpServerConfig>,
-  baseUrl: string = MCP_BASE,
+  baseUrl?: string,
 ): Promise<McpConfigResult> {
   const r = await requestJson('/mcp', { method: 'PUT', body: { servers } }, baseUrl)
   if (r.error) return { ok: false, servers, error: r.error }
@@ -96,7 +120,7 @@ export async function saveMcpConfig(
 /** 连接测试：临时拉起服务器并列出工具。连不上属正常业务结果（ok:false + error 文案）。 */
 export async function testMcpServer(
   server: McpServerConfig,
-  baseUrl: string = MCP_BASE,
+  baseUrl?: string,
 ): Promise<McpTestResult> {
   const r = await requestJson('/mcp/test', { method: 'POST', body: { server } }, baseUrl)
   if (r.error) return { ok: false, error: r.error }
