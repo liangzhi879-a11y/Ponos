@@ -3,7 +3,7 @@
 // 病根：`MarkdownTextPart` 每帧把**整段正文**交给 react-markdown 重解析（remark 解析
 // → mdast→hast → React 元素 → 协调）。正文越长越贵，而每帧真正新增的只有末尾那一小段。
 //
-// 解法（范式 `claude-code/src/components/Markdown.tsx` 的 StreamingMarkdown）：把正文切成
+// 解法（范式 StreamingMarkdown）：把正文切成
 // 「已冻结的稳定前缀」+「仍在增长的尾块」两块，前缀交给被 memo 的组件——**它只在前缀
 // 真的推进时重解析**，其余帧只解析尾块。
 //

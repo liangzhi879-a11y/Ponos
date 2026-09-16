@@ -15,7 +15,7 @@ import { countCjk, bumpContentEpoch } from './context.mjs'
 import { extractEntities, missingEntities } from './fidelity.mjs'
 import { patchOrphanToolUses } from './engine.mjs'
 
-// P9-1：工具结果老化清除（microcompact 语义，对照 claude-code microCompact.ts）
+// P9-1：工具结果老化清除（microcompact 语义）
 // ---------------------------------------------------------------------------
 // 零模型成本：上下文超过"老化清除阈值"时，把保留窗口之外的可重放工具
 // （Read/Bash/Grep/Glob/WebFetch/OCR——结果可按需重新调用工具读取）结果整条
@@ -36,7 +36,7 @@ export function ageOutToolResults(messages, { keepRecent = 2 } = {}) {
     }
   }
   // 按出现顺序记录所有 tool_result 及其是否可重放（保留窗口按"全部工具结果"计，
-  // 与 claude-code microCompact 一致：最近 N 条结果不论类型一律保留，只清窗口外
+  // microcompact 语义：最近 N 条结果不论类型一律保留，只清窗口外
   // 的可重放结果——否则 Edit/Write 的紧凑结果会挤占窗口导致可清条目永远不足）
   const results = [] // { i, j, replayable }
   for (let i = 0; i < messages.length; i++) {
@@ -424,7 +424,7 @@ export function parseFidelityAudit(text) {
   } catch { return empty }
 }
 
-// P9-3：会话工作记忆（session memory，对照 claude-code sessionMemoryCompact.ts）
+// P9-3：会话工作记忆（session memory）
 // ---------------------------------------------------------------------------
 // 轮末把关键状态（todo/文件变更/最近决策）增量写入独立文件；压缩时读文件作为
 // 摘要事实来源，注入摘要请求——摘要不再依赖"对话全文的一次性有损概括"，且
@@ -563,7 +563,7 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
 
   // thinking 由**策略层**给（'off' = 本步关思考；'on' = 不干预，照旧走用户档位与 provider
   // 开关）。摘要/压缩步传 'off'（该步产出是结构化摘要，不需要探索性推理，范式
-  // claude-code compact.ts:1305）；**保真审计步显式传 'on'**——审计的产出是"摘要漏了什么"
+  // 同类压缩实现）；**保真审计步显式传 'on'**——审计的产出是"摘要漏了什么"
   // 的判断本身，把它的思考关掉等于悄悄削弱"抓坏摘要"的安全网，而它是压缩质量的唯一自动
   // 兜底。见 kernel/effort-policy.mjs 顶部的范围说明。
   async function callSummaryBody({ body, maxOut, thinking = 'on' }) {

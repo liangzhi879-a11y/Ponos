@@ -93,7 +93,7 @@ const MIRROR_MAX_CHARS = 30 * 1024 * 1024
 // v2 架构：消息体归内核 transcript，localStorage 只存索引（2026-08-17 改造）
 // ---------------------------------------------------------------------------
 // 背景：v1 把全部会话消息（可达 41MB）塞进单一 localStorage 键，启动全量 parse、
-// 每次写入全量序列化（372ms+），是整机卡死根因。参考 claude-code / deepseek-harness
+// 每次写入全量序列化（372ms+），是整机卡死根因。参考 deepseek-harness
 // 的会话系统设计（磁盘 append-only JSONL + header 列表 + 摘要压缩），v2 改为：
 //   1. 消息全文权威源 = 内核 transcript（~/.yfworking/projects/<cwd>/<sessionId>.jsonl，
 //      内核已 append-only 写入），GUI 不再持久化消息体；

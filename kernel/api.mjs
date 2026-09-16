@@ -1338,7 +1338,7 @@ function isCacheRejection(err) {
   return status === 400 || status === 422 || /cache|unknown field|unsupported/i.test(msg)
 }
 
-// 思考深度 → 请求体字段（对齐 Claude Code 档位 + DeepSeek Anthropic 兼容端点：
+// 思考深度 → 请求体字段（对齐自有统一档位 + DeepSeek Anthropic 兼容端点：
 // 深度走 reasoning_effort（low/high/max），关闭走 thinking:disabled；两者不并发生
 // 发，避免 DeepSeek #1397 的 400）。auto/未知 → {}（模型原生自适应，不注入）。
 //

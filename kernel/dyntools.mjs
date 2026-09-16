@@ -108,7 +108,7 @@ const SIG_EQ = '\u0001'
 
 /**
  * 工具视图缓存容器：**容量上限 + LRU**。
- * 范式 claude-code `utils/memoize.ts:227-269`——无上限的会话级 Map 曾涨到 300MB+ 才被迫
+ * 范式：无上限的会话级 Map 曾涨到 300MB+ 才被迫
  * 换 LRU；本处键是签名串、值是工具表（含 description/schema），同理必须有界。命中即重插
  * 队尾 ⇒ 淘汰的总是最久未用者（Map 的插入序即 LRU 序）。
  * 键为 null（签名不可判定）时 get/set 均为 no-op ⇒ 调用方自然退化为"每次求值"。

@@ -4,7 +4,7 @@
 //   1. buildBaseSystemPrompt —— 内核基础行为规范（身份：Ponos + 工具纪律/
 //      回复规范）。身份内置于基础层，使 TUI/CLI 直跑时模型即自称 Ponos。
 //   2. discoverAgentsMd —— 项目指令 AGENTS.md（cwd 及祖先链至 git root，
-//      加 --add-dir 根目录），成熟方案（Claude Code 等）的标配。
+//      加 --add-dir 根目录），成熟方案的标配。
 //   3. append 文件（cli 注入的 GUI 提示词：身份/技能/格式规范）——最高优先级，
 //      GUI 层仍可覆盖/强化身份声明。
 import { existsSync, readFileSync } from 'node:fs'
@@ -39,7 +39,7 @@ export function discoverAgentsMd({ cwd, addDirs = [] }) {
 }
 
 // 内核基础行为规范（LLM 行为逻辑）：Ponos 身份 + 工作规范。
-// cwd 注入当前工作目录（对照 claude 的 "Primary working directory:" 注入），
+// cwd 注入当前工作目录（对照同类的 "Primary working directory:" 注入），
 // 让模型基于确定路径规划工具调用，减少试错式路径猜测。
 // tier（2026-09-09 本地模型适配）：'full'（缺省，现状）| 'lean'（本地弱模型精简版）。
 // lean 剪枝原则：只删有引擎守卫兜底的细则（计划尾/想完即停/报错重试均在
@@ -101,7 +101,7 @@ export function buildBaseSystemPrompt({ toolNames = [], cwd = '', tier = 'full' 
     '【改动聚焦】',
     ...changeFocus,
     '',
-    // 循环防护（2026-09-10 借鉴 claude-code 提示词）：CC 实测同款弱模型循环率显著更低，
+    // 循环防护（2026-09-10 借鉴业界提示词实践）：实测同款弱模型循环率显著更低，
     // 其提示词含显式反循环纪律（prompts.ts：拒绝后不重试同一调用 / 失败先诊断再换策略）。
     // 与 engine 守卫⑥（无进展自愈注入）分层：提示词层预防，守卫层兜底。
     '【循环防护】',

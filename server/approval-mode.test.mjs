@@ -28,7 +28,7 @@ test('normalize：非法/空/大小写/空白', () => {
   assert.equal(normalizeApprovalMode(''), DEFAULT_APPROVAL_MODE)
   assert.equal(normalizeApprovalMode(null), DEFAULT_APPROVAL_MODE)
   assert.equal(normalizeApprovalMode(undefined), DEFAULT_APPROVAL_MODE)
-  // 刻意不接受的近义词：Claude Code 的 permission-mode 语义与本档位不同名
+  // 刻意不接受的近义词：permission-mode 语义与本档位不同名
   for (const bad of ['plan', 'acceptEdits', 'bypassPermissions', 'default', 'yolo', 7, {}]) {
     assert.equal(normalizeApprovalMode(bad), DEFAULT_APPROVAL_MODE, `${JSON.stringify(bad)} 应回落默认档`)
     assert.equal(isValidApprovalMode(bad), false)

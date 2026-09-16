@@ -718,7 +718,7 @@ export async function main(argv) {
     // K1.2 工具视图缓存（签名语义/残留风险见 kernel/dyntools.mjs 的 toolSourceSignature 头注）：
     //   · 缓存**只包工具表构造**（132ms/步 → 命中 ~0.4ms/步）；
     //   · 键 = 盘面签名（各根名字列表 + 已知工作流文件 + 应用 registry/binding/spec）；
-    //   · 容量上限 ≤8 + LRU——教训见 claude-code utils/memoize.ts：无上限会话级 Map 曾涨到 300MB+；
+    //   · 容量上限 ≤8 + LRU——教训：无上限会话级 Map 曾涨到 300MB+；
     //   · 签名不可判定（stat 异常）或构造抛错 ⇒ 不缓存，退化为原「每次求值」行为；
     //   · `PONOS_DYNTOOLS_CACHE=0` 一键回退。**必须惰性读**：cli.mjs 的 settings.env 注入
     //     发生在所有 ESM 模块求值之后，写成模块级常量必然读不到。

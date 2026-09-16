@@ -259,7 +259,7 @@ function createLineGate({ patterns = RENDER_CHATTER_PATTERNS, windowMs = RENDER_
   }
 }
 
-// 缓冲写（形状照 claude-code utils/bufferedWriter.ts）：到点或到量才落盘，溢出走
+// 缓冲写（固定容量分片缓冲）：到点或到量才落盘，溢出走
 // setImmediate 解耦（不阻塞当前 tick）。**必须显式 flush**（退出/崩溃路径），否则最多
 // 丢一个窗口的行——诊断可接受，业务日志不走这条路。
 function createBufferedWriter({ write, flushIntervalMs = 1000, maxBufferSize = 100, setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout } = {}) {

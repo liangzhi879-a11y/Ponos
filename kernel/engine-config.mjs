@@ -5,7 +5,7 @@ import { nrNorm } from './gen-guards.mjs'
 
 
 // —— agent loop 兜底（本地模型死循环防护）——
-// 参考 claude-code/pi/dsh：三者主循环均默认无全局硬上限（靠 Esc 中断/可选 maxTurns/上下文
+// 参考 pi/dsh 等实现：主循环均默认无全局硬上限（靠 Esc 中断/可选 maxTurns/上下文
 // 自愈）；dsh 独有 repeat-tool-reminder（连续同工具调用达阈值注入提醒）。本地模型（vLLM
 // Qwen 等）死循环两大形态：① 工具调用不断但无进展（反复同工具/全失败重试/无限续轮，
 // 含"测量打转"——只读测量参数微变、守卫③b/⑤抓不到，由守卫⑥无进展停滞兜底）；

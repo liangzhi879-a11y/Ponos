@@ -102,7 +102,7 @@ test('assistant entry：tool_result 块（content 为数组时 join）', () => {
   assert.equal(tr.metadata?.isError, false)
 })
 
-// ── user content 数组（claude-code 把 tool_result 作为 user 消息块回传） ─────────
+// ── user content 数组（把 tool_result 作为 user 消息块回传） ─────────
 
 test('user entry：纯 tool_result 回显 → 跳过；结果挂到对应 assistant tool_use', () => {
   const echoEntry = userEntry({

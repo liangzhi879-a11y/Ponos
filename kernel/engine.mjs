@@ -1103,7 +1103,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
 
   // P0-3：大工具结果磁盘持久化 + 预览替换——超阈值全文落盘
   // <sessionDir>/tool-results/<toolUseId>.json，模型输入只留 <persisted-output>
-  // 预览 + 路径（可 Read 补读，无损恢复；参考 claude toolResultStorage）
+  // 预览 + 路径（可 Read 补读，无损恢复）
   function persistToolResult(target, toolUseId, content, limitOverride) {
     if (!target || typeof content !== 'string') return content
     const limit = Number(limitOverride ?? process.env.PONOS_TOOL_RESULT_BUDGET_BYTES ?? 20000)
@@ -1169,7 +1169,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   }
 
   // P1-7：权限 denial 计数降级——连续拒绝 3 次 / 累计 20 次后，高危命令自动 deny
-  // （不再打扰用户弹窗），tool_result 明示模型停止尝试（参考 claude denialTracking）
+  // （不再打扰用户弹窗），tool_result 明示模型停止尝试（同类拒绝追踪）
   let denialStreak = 0
   let denialTotal = 0
   const DENIAL_STREAK_LIMIT = 3

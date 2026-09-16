@@ -18,7 +18,7 @@
 // assistant content 块：{type:'text', text, citations?} | {type:'tool_use', id, name, input}
 //                     | {type:'tool_result', tool_use_id, content, is_error?} | {type:'thinking', thinking}
 // user content 数组：内核会把 tool_result 作为 user 消息的 content 块回传
-// （wire 契约沿 claude-code transcript 形态，实测出现）。
+// （wire 契约沿外部工具 transcript 形态，实测出现）。
 
 import { sanitizeText, generateId } from './utils.ts'
 import type { Message, ContentBlock } from '../types/index.ts'
@@ -192,7 +192,7 @@ export function transcriptEntryToMessage(entry: any): Message | null {
   // 两类"非用户发言"的 user 条目在此过滤：
   //   1. harness 注入的系统管道消息（<task-notification> 等 XML 信封）——string 形态；
   //   2. tool_result 回显块——内核把工具结果作为 user 消息的 content 块回传
-  //      （wire 契约沿 claude-code 形态，实测出现），属内核回显而非用户发言；结果由 entriesToMessages 预扫描后
+  //      （wire 契约沿外部工具形态，实测出现），属内核回显而非用户发言；结果由 entriesToMessages 预扫描后
   //      挂接到对应 assistant tool_use 块，这里不单独成"用户消息"。
   if (type === 'user') {
     const content = msg.content

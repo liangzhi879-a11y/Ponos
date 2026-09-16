@@ -781,8 +781,8 @@ function findYFWorking() {
   }
   // 3) 罕见兜底：安装/源码路径消失但 home 缓存仍在（升级/卸载残留）→ 直接用缓存
   if (rp.kernel) return `"${node}" "${rp.kernel}"`
-  // 4) Last resort（PATH 上的 claude 命令兜底）已删：全部落空 → 抛清晰错误，
-  //    严禁静默回退 claude
+  // 4) Last resort（PATH 上的其它同名 CLI 兜底）已删：全部落空 → 抛清晰错误，
+  //    严禁静默回退到其它同名 CLI
   throw new Error('[bridge] kernel not found — set YFWORKING_KERNEL, or ensure <repo>/kernel/cli.mjs or <repo>/kernel-dist/cli.mjs exists (node scripts/build-kernel.mjs)')
 }
 const YFWORKING = findYFWorking()

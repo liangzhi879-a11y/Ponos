@@ -69,7 +69,7 @@ export function childEnv() {
 }
 
 const BASH_TIMEOUT_MS = 120_000
-// Read 一次读取的容量上限（对照 claude/deepseek 的 2000 行、pi 的截断提示）：
+// Read 一次读取的容量上限（对照 deepseek 的 2000 行、pi 的截断提示）：
 // 模型看到声明后放心一次读全文，不再用 sed/python 碎片化取样。
 const READ_MAX_LINES = 2000
 const READ_MAX_BYTES = 2 * 1024 * 1024
@@ -177,14 +177,14 @@ function withinBoundary(filePath, allowDirs) {
 }
 
 // 相对路径解析到 cwd（消除"试 4 种路径格式"的浪费）：绝对路径原样，~ 展开，
-// 其余 resolve(cwd, p)。参考 claude/pi 的 resolveToCwd 机制。
+// 其余 resolve(cwd, p)。参考 pi 的 resolveToCwd 机制。
 function resolvePath(p, cwd) {
   if (!p) return p
   if (p.startsWith('~') || p.startsWith('~/')) return join(process.env.HOME || process.env.USERPROFILE || '', p.slice(p[1] === '/' ? 2 : 1))
   return resolve(cwd || process.cwd(), p)
 }
 
-// Read 去重 stub（对照 claude FILE_UNCHANGED_STUB）：全量读过的文件在 mtime/size
+// Read 去重 stub（FILE_UNCHANGED_STUB 语义）：全量读过的文件在 mtime/size
 // 未变时再次读取返回 stub，提示直接引用此前结果——省去模型重复读同一文件
 // 的往返与 token（T003 上轮 Read 6 次中部分为重复读）。
 const READ_STUB_PREFIX = '文件自上次读取后未变化'
@@ -199,12 +199,12 @@ function readFile(filePath, allowDirs, input = {}, cwd, readCache, skipBoundary,
     const st = statSync(resolved)
     if (st.isDirectory()) return { content: `是目录：${resolved}`, isError: true }
     // 超大文件不直接读全文（读一半即 2MB 内存），改为报错 + 定向读取建议
-    // （对照 claude 的 maxSizeInstruction：让模型知道用什么参数继续，而非猜）
+    // （对照 maxSizeInstruction：让模型知道用什么参数继续，而非猜）
     if (st.size > READ_MAX_BYTES) {
       return { content: `文件过大（${st.size} 字节），超出 ${READ_MAX_BYTES} 字节读取上限；请用 offset/limit 参数定向读取（offset 起始行号，limit 行数）`, isError: true }
     }
     // 二进制文件引导：先探测魔数，图片/PDF 等直接引导走 OCR/专用工具，
-    // 避免把二进制当文本读出乱码（对照 claude 的 isBinary 检测）。
+    // 避免把二进制当文本读出乱码（isBinary 检测）。
     const BINARY_MAGIC = [
       ['PNG', [0x89, 0x50, 0x4e, 0x47]],
       ['JPEG', [0xff, 0xd8, 0xff]],
@@ -264,7 +264,7 @@ function readFile(filePath, allowDirs, input = {}, cwd, readCache, skipBoundary,
       return { content: content + progressHint(1, last), isError: false, meta: { range: [1, last], totalLines } }
     }
     // 全量读：先查去重缓存（mtime/size 未变且此前全量读完 → stub，省重复读往返；
-    // 对照 claude FILE_UNCHANGED_STUB）。部分读取（offset/limit）不参与去重——定向
+    // FILE_UNCHANGED_STUB 同款语义）。部分读取（offset/limit）不参与去重——定向
     // 读是有意取特定范围，且不视为"已有全部内容"。
     const cached = readCache?.get(resolved)
     if (cached?.fullRead && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
@@ -300,7 +300,7 @@ function editFile(filePath, oldString, newString, replaceAll, allowDirs, cwd, re
     if (!existsSync(resolved)) return { content: `文件不存在：${resolved}（当前工作目录：${cwd || process.cwd()}；可用 Glob 定位候选文件或用绝对路径）`, isError: true }
     if (typeof oldString !== 'string' || !oldString) return { content: 'old_string 缺失或为空', isError: true }
     if (typeof newString !== 'string') return { content: 'new_string 必须为字符串', isError: true }
-    // CRLF 行尾归一化（对照 claude FileEditTool.ts:214 的 replaceAll('\r\n','\n')）：
+    // CRLF 行尾归一化（replaceAll('\r\n','\n')）：
     // Windows 仓库文件普遍 CRLF，模型（LF 习惯）写的 old_string 若严格字节匹配
     // 永不命中 → 连续失败重试 + 转 python repr 验证字节（T003 实测 34 次工具里
     // Edit 连环失败即此根因）。归一化后 LF old_string 必然命中；写回时按原文件
@@ -884,7 +884,6 @@ async function ocrFile(filePath, allowDirs, input = {}, skipBoundary) {
         join(dirname(dirname(process.cwd())), 'runtime', 'skills', '_common'),
         join(home, '.ponos', 'skills', '_common'),
         join(home, '.ponos-dev', 'skills', '_common'),
-        join(home, '.claude', 'skills', '_common'),
       ].filter(Boolean).join('、')
       return { content: `OCR 引擎不可用：未找到 ocr_engine.py（已检查 ${checked}；可设置 PONOS_OCR_ENGINE 指向引擎路径，或确认应用已安装技能库）`, isError: true }
     }

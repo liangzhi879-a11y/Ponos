@@ -93,7 +93,7 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
   }
 
   // 依序重建 seq + surface；孤儿 compaction/start 直接忽略（replace 从未落地）
-  // foreign：无 turbo transcript meta 标记的旧格式（claude-code 历史）transcript。
+  // foreign：无 turbo transcript meta 标记的旧格式（外部工具历史）transcript。
   // 其 tool_use/tool_result 链不满足 Anthropic API「tool_result 必须紧跟 tool_use」
   // 约束（跨层乱序 → 恢复时 API 400，2026-08-22 实测 1783 orphan tool_use）。
   // 恢复时剥离 tool 块、只保留文本历史（工具无法重放，文本才是可恢复的对话）。
@@ -201,7 +201,7 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
     }
     const entries = await readLines()
     // 旧格式（foreign）判定：turbo 会话首行必写 transcript meta；无则视为
-    // claude-code 历史会话，恢复时按旧格式语义投影（剥离工具链，见 rebuildSurface）
+    // 外部工具历史会话，恢复时按旧格式语义投影（剥离工具链，见 rebuildSurface）
     const foreign = !entries.some((e) => e?.type === 'meta' && e?.kind === 'transcript' && e?.schemaVersion != null)
     rebuildSurface(entries, { foreign })
     const metaEntry = entries.find((e) => e?.type === 'meta' && e?.kind === 'transcript' && e?.schemaVersion != null)
