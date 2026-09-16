@@ -48,7 +48,7 @@ MCP 配置界面已完成（能增删改服务器、能测试连通、HTTP 传�
       "url": "https://jira.example.com/mcp",
       "headers": { "Authorization": "Bearer ${JIRA_TOKEN}" },
       "enabled": true,
-      "expose": { "mode": "bound", "bind_agents": ["researcher", "general-purpose"] }
+      "expose": { "mode": "bound", "bindAgents": ["researcher", "general-purpose"] }
     },
     "scratch": {
       "command": "npx", "args": ["-y", "some-experimental-server"],
@@ -65,7 +65,7 @@ MCP 配置界面已完成（能增删改服务器、能测试连通、HTTP 传�
 |---|---|---|---|
 | `enabled` | `true` / `false` | `true` | `false` ⇒ **根本不启动连接**（不 spawn 子进程、不发 HTTP 请求），AI 看不到 |
 | `expose.mode` | `private` / `public` / `bound` | **`public`** | 见下 |
-| `expose.bind_agents` | `string[]` | `[]` | 仅 `bound` 时有意义 |
+| `expose.bindAgents` | `string[]` | `[]` | 仅 `bound` 时有意义 |
 
 **三档 = 关闭 / 仅测试 / 授权**，与用户确认一致：
 
@@ -74,14 +74,14 @@ MCP 配置界面已完成（能增删改服务器、能测试连通、HTTP 传�
 | 关闭 | `enabled:false` | 不连接 |
 | **仅测试** | `enabled:true` + `expose.mode='private'` | 连接（面板可测试），但**不注册给任何 AI** |
 | 授权 · 公开 | `enabled:true` + `expose.mode='public'` | 所有 agent 可用 |
-| 授权 · 指定 | `enabled:true` + `expose.mode='bound'` | **仅** `bind_agents` 列出的 agent 可用；**主会话不可用** |
+| 授权 · 指定 | `enabled:true` + `expose.mode='bound'` | **仅** `bindAgents` 列出的 agent 可用；**主会话不可用** |
 
 **两处刻意的语义选择（须写进注释与测试）**
 
 1. **缺省 `mode` 是 `public`，不是 `private`** —— 这与工作流的缺省（`dyntools.mjs` 的 `visibilityOf` 缺省 `private`）**不一致**，是有意为之：存量 `mcp.json` 里没有任何 `expose` 字段，若缺省 `private` 则升级后所有 MCP 工具**突然消失**，用户会认为功能坏了。向后兼容优先。（用户已确认"存量默认开启+公开"。）
 2. **`bound` 对主会话不可见** —— 与 `dyntools.visibilityOf` 现行语义一致（`!agentId` 时 `bound` 返回 `null`），不引入第二套规则。（用户已确认。）
 
-**fail-closed**：`mode='bound'` 但 `bind_agents` 为空或全部无效时，**视为 `private`（无人可见）**，绝不退化成 `public`。权限判定必须向"更严"一侧失败。写侧校验（GUI/`normalizeMcpServers`）直接把这种组合判为非法并 400，让用户在保存时就知道，而不是保存后困惑"为什么没生效"。
+**fail-closed**：`mode='bound'` 但 `bindAgents` 为空或全部无效时，**视为 `private`（无人可见）**，绝不退化成 `public`。权限判定必须向"更严"一侧失败。写侧校验（GUI/`normalizeMcpServers`）直接把这种组合判为非法并 400，让用户在保存时就知道，而不是保存后困惑"为什么没生效"。
 
 ## 4. 组件与职责
 
@@ -89,14 +89,14 @@ MCP 配置界面已完成（能增删改服务器、能测试连通、HTTP 传�
 
 - `loadMcpServers` / `normalizeMcpServers`：解析并归一化 `enabled` / `expose`
   - `enabled` 归一化：只有显式 `false` 才是关闭，其它（含缺省、`'false'` 字符串）**一律视为开启**——解析歧义不该悄悄关掉用户的服务器
-  - `expose` 归一化：`mode` 不在三值内 → 判非法（写侧 400、读侧跳过该条目）；`bind_agents` 只收非空字符串数组
+  - `expose` 归一化：`mode` 不在三值内 → 判非法（**整份配置读取失败** `ok:false`，界面显示原因并禁用保存——与既有 `command`/`url` 校验失败同一处理，不新立规则）；`bindAgents` 只收非空字符串数组、去重保序、含空项则判非法
   - 强约束（既有测试已断言）：`writeMcpServers` 写出的必须能被 `loadMcpServers` 读回等价 —— 新增字段同样纳入该等值断言
 - **新增 `mcpConfigSig(servers)`**：归一化后的**稳定序列化**（键排序）→ 短哈希。用途见 §5。**必须包含 `enabled`/`expose`**：授权变更同样需要触发内核重载。
 - **新增 `mcpVisibilityOf(entry, agentId)`**：返回 `'public'` / `'bound'` / `null`（不可见）
   - `enabled===false` → `null`
   - `mode==='private'` → `null`
   - `mode==='public'` → `'public'`
-  - `mode==='bound'` → `bind_agents.includes(agentId)` 时 `'bound'`，否则 `null`（`agentId` 为 null ⇒ `null`，即主会话不可见）
+  - `mode==='bound'` → `bindAgents.includes(agentId)` 时 `'bound'`，否则 `null`（`agentId` 为 null ⇒ `null`，即主会话不可见）
 
 ### 4.2 内核 `kernel/mcp-tools.mjs`（注册表）
 
@@ -132,7 +132,7 @@ MCP 配置界面已完成（能增删改服务器、能测试连通、HTTP 传�
   - 内核从未上报（本次运行还没发过消息）时 `kernel: null`，面板显示"内核尚未启动"
   - 读用 `readMcpServers`（绝不抛），与既有 `GET /mcp` 同纪律
   - **"报哪个会话的快照"这个歧义必须显式解决**：内核是**每会话一进程**，而面板是全局的。
-    结论：返回**最近一次上报的快照**（更新即覆盖），并在快照里带上 `sid` / `agent` 供界面标注来源。
+    结论：返回**最近一次上报的快照**（更新即覆盖）。
     **为什么一个全局快照就够**：`snapshot().servers[].tools` 是"该服务器实际发现的全部工具"
     （§4.2，发现阶段**不做可见性过滤**），而所有内核读同一个 `mcp.json`、连同一批服务器
     ⇒ 各会话的**发现结果必然相同**。随 agent 变化的只是"谁看得见"，那是**配置维度**的信息
@@ -214,7 +214,7 @@ bridge 缓存 snapshot → GET /mcp/status → 面板显示真实工具清单，
 ## 7. 测试策略
 
 **内核（纯函数优先，`kernel-tests/`）**
-- `mcpVisibilityOf`：三档 × agentId 组合（含 `agentId=null`、`bind_agents` 空、名字不匹配）——重点锁 **bound 对主会话不可见** 与 **fail-closed**
+- `mcpVisibilityOf`：三档 × agentId 组合（含 `agentId=null`、`bindAgents` 空、名字不匹配）——重点锁 **bound 对主会话不可见** 与 **fail-closed**
 - `loadMcpServers` / `normalizeMcpServers`：`enabled`/`expose` 往返等值（写→读回等价）；`enabled` 只认显式 `false`；`bound` 空列表判非法
 - `mcpConfigSig`：内容相同（键序不同）⇒ 同签名；改动 `enabled`/`expose`/`args` ⇒ 签名变化
 - `createMcpRegistry`：注入假配置路径
