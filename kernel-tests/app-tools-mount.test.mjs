@@ -4,7 +4,7 @@
 // 宿主 → 结果回填」这条链跨 cli.mjs（视图函数挂载）/ engine.mjs（桥挂起）/ bridge 路由
 // 三层，任何一层漏接都只有"在真进程里跑一次"才看得出来（源码字符串断言查不出来）。
 //
-// 手法：本机起一个假 Anthropic 端点（SSE），内核经 ANTHROPIC_BASE_URL 直连它——
+// 手法：本机起一个假 Anthropic 端点（SSE），内核经 PONOS_BASE_URL 直连它——
 //   ① 从内核 init 帧的 tools 与真实请求体的 tools 断言 app_* 工具**确实进了工具表**；
 //   ② 假端点回一个 app_* 的 tool_use，内核必然发出 bridge_request(route=app)
 //      （= bridge 侧要转给主进程执行器的那条消息），测试扮演 bridge 回写 app_response；
@@ -89,9 +89,9 @@ function spawnKernel(dir, port, { answerApp }) {
     env: {
       ...process.env,
       PONOS_MOCK_API: '', // 本测试走真实 HTTP 路径（假端点在本地）
-      ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
-      ANTHROPIC_AUTH_TOKEN: 'test-token',
-      ANTHROPIC_MODEL: 'test-model',
+      PONOS_BASE_URL: `http://127.0.0.1:${port}`,
+      PONOS_AUTH_TOKEN: 'test-token',
+      PONOS_MODEL: 'test-model',
       PONOS_CONFIG_DIR: dir,
       YFW_HOME: dir,
     },

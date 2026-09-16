@@ -26,14 +26,14 @@ async function withServer(handler, fn) {
   server.on('connection', (s) => { sockets.add(s); s.on('close', () => sockets.delete(s)) })
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   const port = server.address().port
-  const prev = { url: process.env.ANTHROPIC_BASE_URL, tok: process.env.ANTHROPIC_AUTH_TOKEN }
-  process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${port}`
-  process.env.ANTHROPIC_AUTH_TOKEN = 'test-token'
+  const prev = { url: process.env.PONOS_BASE_URL, tok: process.env.PONOS_AUTH_TOKEN }
+  process.env.PONOS_BASE_URL = `http://127.0.0.1:${port}`
+  process.env.PONOS_AUTH_TOKEN = 'test-token'
   try {
     await fn()
   } finally {
-    if (prev.url === undefined) delete process.env.ANTHROPIC_BASE_URL; else process.env.ANTHROPIC_BASE_URL = prev.url
-    if (prev.tok === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN; else process.env.ANTHROPIC_AUTH_TOKEN = prev.tok
+    if (prev.url === undefined) delete process.env.PONOS_BASE_URL; else process.env.PONOS_BASE_URL = prev.url
+    if (prev.tok === undefined) delete process.env.PONOS_AUTH_TOKEN; else process.env.PONOS_AUTH_TOKEN = prev.tok
     for (const s of sockets) { try { s.destroy() } catch {} }
     await new Promise((r) => server.close(r))
   }

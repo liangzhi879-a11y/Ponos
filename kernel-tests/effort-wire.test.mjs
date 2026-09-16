@@ -41,9 +41,9 @@ async function withServer(fn) {
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   const saved = { ...process.env }
   try {
-    process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${server.address().port}`
-    process.env.ANTHROPIC_AUTH_TOKEN = 'test-token'
-    process.env.ANTHROPIC_MODEL = 'test-model'
+    process.env.PONOS_BASE_URL = `http://127.0.0.1:${server.address().port}`
+    process.env.PONOS_AUTH_TOKEN = 'test-token'
+    process.env.PONOS_MODEL = 'test-model'
     return await fn()
   } finally {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]

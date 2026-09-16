@@ -644,10 +644,10 @@ let streamFlushScheduled = false
 // ReactMarkdown 会让渲染进程空转 → UI 冻结 → WS/管道反压整链卡死，故压力大时降到
 // 120ms 合帧。**旧判据（单帧处理耗时 >50ms）在真实负载下从未置位过**——那个计时只包住
 // store 循环、不含 React 提交；现改为测队列压力（深度 + 最老待处理项年龄）+ 不对称滞回，
-// 阈值与形状取自 codex `streaming/chunking.rs`。流结束（result/cancelled/closed）时复位。
+// 流结束（result/cancelled/closed）时复位。
 const heavyGate = createHeavyModeGate()
-// 上一次 flush 的开始时刻：满速期的调度补足到 16ms 目标帧间隔用（pi-main 的
-// `setTimeout(max(0, 16-elapsed))` 形状），替代原先的 rAF——后台/失焦窗口 rAF 会停摆。
+// 上一次 flush 的开始时刻：满速期的调度补足到 16ms 目标帧间隔用
+// （`setTimeout(max(0, 16-elapsed))` 形状），替代原先的 rAF——后台/失焦窗口 rAF 会停摆。
 let lastStreamFlushAt = 0
 
 // K0.3 渲染帧指标（2026-09-13「任务运行慢」系统性优化）：流式期渲染进程实测吃满
@@ -744,8 +744,8 @@ function scheduleStreamFlush() {
   if (streamFlushScheduled) return
   streamFlushScheduled = true
   // 一律走定时器，不再用 rAF：后台/失焦窗口 rAF 会**完全停摆**（不是变慢），流式内容
-  // 就只能等窗口重新可见才追上来（pi-main `tui/src/tui.ts:343,806-824` 用
-  // `setTimeout(max(0,16-elapsed))` 正是为规避此坑）。降频期延迟由 gate 给
+  // 就只能等窗口重新可见才追上来（`setTimeout(max(0,16-elapsed))`
+  // 正是为规避此坑）。降频期延迟由 gate 给
   // （120ms 合帧），满速期补足到 16ms。
   const elapsed = lastStreamFlushAt ? performance.now() - lastStreamFlushAt : 0
   setTimeout(flushStreamEvents, nextFlushDelay(heavyGate, elapsed))

@@ -87,11 +87,21 @@
 |---|---|---|
 | `PONOS_CONFIG_DIR` | `<home>` | 内核独立配置/会话目录 |
 | `YFWORKING_HOME` | `<home>` | 数据根（隔离双版时指向专用目录） |
-| `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` | 用户配置的第三方 provider | 内核实际调用的 API |
-| `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_SONNET/OPUS/HAIKU_MODEL` | provider 主/子模型 | 模型路由 |
+| `PONOS_BASE_URL` / `PONOS_AUTH_TOKEN` | 用户配置的第三方 provider | 内核实际调用的 API |
+| `PONOS_MODEL` / `PONOS_DEFAULT_SONNET/OPUS/HAIKU_MODEL` | provider 主/子模型 | 模型路由 |
 | `PONOS_AUTO_COMPACT_WINDOW` | contextWindow | 自动压缩窗口 |
 | `PONOS_MAX_OUTPUT_TOKENS` | 64000（可覆盖） | 输出 token 上限 |
 | `YFW_HEALTH_COMPACT_COUNT` | 历史压缩次数（有值才注入） | 健康血条恢复。**内核读双名**（`PONOS_HEALTH_COMPACT_COUNT` / `YFW_HEALTH_COMPACT_COUNT`）并取两者较大值，非法值回落 0——此前只读 `PONOS_` 前缀导致该 seed 从未生效（2026-09-12 修） |
+
+**环境变量命名与兼容垫片**：本项目自主实现的环境变量一律以 `PONOS_` 为主名
+（`PONOS_CONFIG_DIR` / `PONOS_BASE_URL` / `PONOS_AUTH_TOKEN` / `PONOS_MODEL` / 压缩与守卫类等）。
+历史版本沿用过的外部命名（Anthropic 兼容协议时代的 `ANTHROPIC_*`、早前内核的 `CLAUDE_CODE_*`）
+由 **唯一映射实现** `shared/legacy-env.mjs` 兜底：主名优先、旧名仅在主名未设时生效、旧名不删除。
+垫片在 env 进入进程的两个入口各调用一次——`kernel/legacy-env-boot.mjs`（内核 CLI 的首个
+import，早于任何模块顶层读 env）与 `loadSettings()` 合并 settings.json 的 env 之后；
+bridge 侧以 `import '../kernel/legacy-env-boot.mjs'` 同样置于首个 import。
+wire 层不受影响：HTTP 头 `anthropic-version`（值 `2023-06-01`）与请求体字段仍是
+Anthropic Messages API 兼容协议的事实标准，不参与改名。
 
 系统提示词注入：**不通过命令行传长文本**（cmd.exe 8191 字符限制），而是写入 `%TEMP%/yfw-prompt-<sid>.txt`（新会话）或 `.resume.txt`（resume），经 `--append-system-prompt-file` 传入；会话进程退出时删除。内容 = 身份提示词（或自定义 agent systemPrompt）+ 互动问答格式（ASK_USER 卡片规范）+ 里程碑协议 + 技能清单（resume 用精简版）+ 经验注入（沉积引导+摘要索引，可配置）。
 
@@ -386,7 +396,7 @@ S4 把 bridge 内核解析/构建/bootstrap 全指向本库内核，并落地在
 | provider 行为画像 | 无 | config.json provider 可选字段 `profile`（'auto'\|'cloud'\|'local'，auto 启发式：私有网段→local、云域名→cloud、http 公网 IP→local）+ 显式覆盖 `temperature`/`maxOutputTokens`/`firstByteMs`/`idleMs`。本地默认：温度 0.6、提示词 lean 精简纪律段（`PONOS_PROMPT_TIER`）、输出预算 16384；云端零注入（=现状）。唯一决策点 `server/provider-profile.mjs`，经 buildChildEnv/syncKernelSettings 注入 env；syncKernelSettings 先剔除受管键再并入（防切回云端残留） | 2026-09-09 本地模型系统性适配；身份提示词同批动态化（`buildIdentityPrompt(model)`，不再硬编码 deepseek-v4-flash） |
 | 内核缓存落地目录 | `~/.yfworking/runtime/kernel`（cli.mjs + vendor/ripgrep，在售使用中，**绝不可覆写**） | `<home>/runtime/ponos-kernel`（多文件源码整目录镜像，专用目录名不互覆，D3） | 2026-09-08 覆写事故固化为专用目录 |
 | 内核来源 | yfw-kernel 分支（legacy） | 本库 `kernel/`（源，node 直跑）→ `kernel-dist/cli.mjs`（bundle，D7 产物） | `YFWORKING_KERNEL` 唯一逃生口（D8，值无效即抛错，不静默回退） |
-| 内核 API | — | `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL`（第三方 provider） | 实测：云端 ds 与本地 Qwen 均通（2026-09-08） |
+| 内核 API | — | `PONOS_BASE_URL` / `PONOS_AUTH_TOKEN` / `PONOS_MODEL`（第三方 provider） | 实测：云端 ds 与本地 Qwen 均通（2026-09-08） |
 | 浏览器 CDP | — | 进程内 `webContents.debugger.attach('1.3')`，**无网络端口**（D5） | 隔离矩阵原 52319/9223 行修订为 N/A |
 | App 身份 / userData | 在售 appId/productName | S6 定案（正式替换身份）：与在售同 appId `com.yfworking.desktop` / productName `YFWorking`，版本 2.8.0；userData 恒重定向 `<数据根>/userData`（入口兜底注入 `YFWORKING_HOME` 后 D6 恒成立；2026-09-09 前两版曾共用 `%APPDATA%\Electron`——default_app.asar 无 app 名——theme.json 互串） | 安装形态走 `build/installer.nsh` 版本比较（2.8.0）覆盖升级保留数据；双版并存由便携/dev 目录隔离 + userData 重定向兜底，无需独立 appId |
 

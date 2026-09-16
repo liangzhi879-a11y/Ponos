@@ -46,7 +46,7 @@ flowchart TB
     end
 
     subgraph L5["⑤ 外部依赖与数据落点"]
-        PROV["LLM Provider<br/>ANTHROPIC_BASE_URL / AUTH_TOKEN / MODEL"]
+        PROV["LLM Provider<br/>PONOS_BASE_URL / AUTH_TOKEN / MODEL"]
         NODE["node 运行时（bundled node.exe）"]
         PYRT["内置 Python runtime/python"]
         HOME["数据根 YFWORKING_HOME<br/>默认 ~/.yfw（在售旧版 ~/.yfworking）"]

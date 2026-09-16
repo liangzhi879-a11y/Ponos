@@ -134,7 +134,7 @@ test('protocolStream（C1）：慢 chunk 流不被空闲看门狗误杀——脉
 })
 
 test('detectProtocol：Anthropic env 存在 → anthropic，否则 null', () => {
-  assert.equal(detectProtocol({ ANTHROPIC_BASE_URL: 'http://y' }), 'anthropic')
+  assert.equal(detectProtocol({ PONOS_BASE_URL: 'http://y' }), 'anthropic')
   assert.equal(detectProtocol({}), null)
   assert.equal(detectProtocol({ OPENAI_BASE_URL: 'http://x' }), null)
 })
@@ -312,7 +312,7 @@ test('tools 注入：Anthropic 请求 body 含 tools[]（字段名映射，mock 
     captured.push({ url: String(url), body: JSON.parse(String(init.body)) })
     return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"message_delta","usage":{"input_tokens":1,"output_tokens":1}}\n\ndata: [DONE]\n\n')); c.close() } }) }
   }
-  const env = { ANTHROPIC_BASE_URL: 'http://t', ANTHROPIC_AUTH_TOKEN: 'k', ANTHROPIC_MODEL: 'm' }
+  const env = { PONOS_BASE_URL: 'http://t', PONOS_AUTH_TOKEN: 'k', PONOS_MODEL: 'm' }
   const oldEnv = { ...process.env }
   Object.assign(process.env, env)
   try {
@@ -390,7 +390,7 @@ test('prompt cache：PONOS_PROMPT_CACHE=1 时 system 打 ephemeral 缓存标记�
     return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"message_delta","usage":{"input_tokens":1,"output_tokens":1}}\n\ndata: [DONE]\n\n')); c.close() } }) }
   }
   const oldEnv = { ...process.env }
-  Object.assign(process.env, { ANTHROPIC_BASE_URL: 'http://t', ANTHROPIC_AUTH_TOKEN: 'k', PONOS_PROMPT_CACHE: '1' })
+  Object.assign(process.env, { PONOS_BASE_URL: 'http://t', PONOS_AUTH_TOKEN: 'k', PONOS_PROMPT_CACHE: '1' })
   try {
     const chunks = []
     for await (const c of streamMessages({ model: 'm', messages: [{ role: 'system', content: 'SYS' }, { role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
@@ -421,7 +421,7 @@ test('prompt cache：端点拒绝缓存标记时自动去掉重发（兼容回�
     return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"message_delta","usage":{"input_tokens":1,"output_tokens":1}}\n\ndata: [DONE]\n\n')); c.close() } }) }
   }
   const oldEnv = { ...process.env }
-  Object.assign(process.env, { ANTHROPIC_BASE_URL: 'http://t', ANTHROPIC_AUTH_TOKEN: 'k', PONOS_PROMPT_CACHE: '1' })
+  Object.assign(process.env, { PONOS_BASE_URL: 'http://t', PONOS_AUTH_TOKEN: 'k', PONOS_PROMPT_CACHE: '1' })
   try {
     const chunks = []
     for await (const c of streamMessages({ model: 'm', messages: [{ role: 'system', content: 'SYS' }, { role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
@@ -460,7 +460,7 @@ test('R1-1 流中断：第一次流中途抛 transient → 自动重发成功（
     return new Response(new ReadableStream({ start(c) { c.enqueue(enc.encode(ok)); c.close() } }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
   }
   const oldEnv = { ...process.env }
-  Object.assign(process.env, { ANTHROPIC_BASE_URL: 'http://t', ANTHROPIC_AUTH_TOKEN: 'k', PONOS_MOCK_API: '' })
+  Object.assign(process.env, { PONOS_BASE_URL: 'http://t', PONOS_AUTH_TOKEN: 'k', PONOS_MOCK_API: '' })
   try {
     const chunks = []
     for await (const c of streamMessages({ model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
@@ -503,8 +503,8 @@ test('R1-2 fetch 连接超时：首次 fetch 抛 TimeoutError → 经重发链�
   }
   const oldEnv = { ...process.env }
   Object.assign(process.env, {
-    ANTHROPIC_BASE_URL: 'http://t',
-    ANTHROPIC_AUTH_TOKEN: 'k',
+    PONOS_BASE_URL: 'http://t',
+    PONOS_AUTH_TOKEN: 'k',
     PONOS_MOCK_API: '',
     PONOS_CONNECT_TIMEOUT_MS: '150',   // 测试缩短
     PONOS_STREAM_RECONNECTS: '2',
@@ -543,8 +543,8 @@ test('R1-2 连接超时只作用于首字节：fetch 快速 resolve 后长流不
   }
   const oldEnv = { ...process.env }
   Object.assign(process.env, {
-    ANTHROPIC_BASE_URL: 'http://t',
-    ANTHROPIC_AUTH_TOKEN: 'k',
+    PONOS_BASE_URL: 'http://t',
+    PONOS_AUTH_TOKEN: 'k',
     PONOS_MOCK_API: '',
     PONOS_CONNECT_TIMEOUT_MS: '100',  // 100ms 连接超时，远小于流总时长 200ms
     PONOS_STREAM_IDLE_TIMEOUT_MS: '5000',
@@ -581,8 +581,8 @@ test('P4-5 setProvider 激活后 streamMessages 请求走新 baseUrl（mock fetc
   }
   const oldEnv = { ...process.env }
   try {
-    process.env.ANTHROPIC_BASE_URL = 'http://orig'
-    process.env.ANTHROPIC_AUTH_TOKEN = 'k'
+    process.env.PONOS_BASE_URL = 'http://orig'
+    process.env.PONOS_AUTH_TOKEN = 'k'
     process.env.PONOS_MOCK_API = ''
     process.env.PONOS_CONNECT_TIMEOUT_MS = '150'
     const { setProvider } = await import('../kernel/provider.mjs')

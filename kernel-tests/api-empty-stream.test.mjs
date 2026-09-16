@@ -26,14 +26,14 @@ async function withServer(handler, fn) {
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   try {
     const port = server.address().port
-    process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${port}`
-    process.env.ANTHROPIC_AUTH_TOKEN = 'test-token'
-    process.env.ANTHROPIC_MODEL = 'test-model'
+    process.env.PONOS_BASE_URL = `http://127.0.0.1:${port}`
+    process.env.PONOS_AUTH_TOKEN = 'test-token'
+    process.env.PONOS_MODEL = 'test-model'
     await fn()
   } finally {
-    delete process.env.ANTHROPIC_BASE_URL
-    delete process.env.ANTHROPIC_AUTH_TOKEN
-    delete process.env.ANTHROPIC_MODEL
+    delete process.env.PONOS_BASE_URL
+    delete process.env.PONOS_AUTH_TOKEN
+    delete process.env.PONOS_MODEL
     await new Promise((r) => server.close(r))
   }
 }

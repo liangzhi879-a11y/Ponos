@@ -10,7 +10,7 @@
 //   · 唯一可信的证据是内核真正发给模型的那份 tools。
 //
 // 手法沿用仓库既有先例 app-tools-mount.test.mjs：本机起假 Anthropic 端点（SSE），
-// 内核经 ANTHROPIC_BASE_URL 直连；用 `system/mcp_status` 作为"MCP 已就绪"的信号，
+// 内核经 PONOS_BASE_URL 直连；用 `system/mcp_status` 作为"MCP 已就绪"的信号，
 // 之后再发消息，取请求体的 tools。全程无网络、无费用。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -58,9 +58,9 @@ function spawnKernel(home, port, agentId) {
     env: {
       ...process.env,
       PONOS_MOCK_API: '',                       // 走真实 HTTP 路径（假端点在本地）
-      ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
-      ANTHROPIC_AUTH_TOKEN: 'test-token',
-      ANTHROPIC_MODEL: 'test-model',
+      PONOS_BASE_URL: `http://127.0.0.1:${port}`,
+      PONOS_AUTH_TOKEN: 'test-token',
+      PONOS_MODEL: 'test-model',
       PONOS_CONFIG_DIR: home,
       YFW_HOME: home,
     },

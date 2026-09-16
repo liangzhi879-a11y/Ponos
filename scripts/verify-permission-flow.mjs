@@ -61,12 +61,12 @@ const posixFile = testFile.replace(/\\/g, '/')
 const env = {
   ...process.env,
   PONOS_CONFIG_DIR: YFW_HOME,
-  ANTHROPIC_BASE_URL: provider.apiBaseUrl,
-  ANTHROPIC_AUTH_TOKEN: provider.authToken,
-  ANTHROPIC_MODEL: model,
-  ANTHROPIC_DEFAULT_SONNET_MODEL: model,
-  ANTHROPIC_DEFAULT_OPUS_MODEL: model,
-  ANTHROPIC_DEFAULT_HAIKU_MODEL: provider.subagentModel || model,
+  PONOS_BASE_URL: provider.apiBaseUrl,
+  PONOS_AUTH_TOKEN: provider.authToken,
+  PONOS_MODEL: model,
+  PONOS_DEFAULT_SONNET_MODEL: model,
+  PONOS_DEFAULT_OPUS_MODEL: model,
+  PONOS_DEFAULT_HAIKU_MODEL: provider.subagentModel || model,
 }
 
 // --permission-prompt-tool stdio: 让内核的 ask 决策走 can_use_tool

@@ -169,6 +169,14 @@ node kernel/cli.mjs --knowledge search --text "关键词"
 | 计费 | `PONOS_PRICE_PER_M_INPUT/OUTPUT`、`PONOS_CACHE_READ_RATIO`、`PONOS_BUDGET_USD` | `kernel/engine.mjs:155-162` |
 | Mock/测试 | `PONOS_MOCK_*`（22 个）、`PONOS_TEST_HOME` | `kernel/api.mjs:265+` |
 
+**命名契约与兼容垫片**（2026-09-16 起）：自主实现的环境变量**一律以 `PONOS_` 为主名**，包括端点与模型契约（`PONOS_BASE_URL`／`PONOS_AUTH_TOKEN`／`PONOS_MODEL`／`PONOS_DEFAULT_{SONNET,OPUS,HAIKU}_MODEL`／`PONOS_AUTH_SCHEME`／`PONOS_API_KEY`）与配置根 `PONOS_CONFIG_DIR`。
+历史旧名（Anthropic 兼容协议时代的 `ANTHROPIC_*`、早前内核的 `CLAUDE_CODE_*`，共 35 个）由**唯一映射实现** `shared/legacy-env.mjs` 兜底，语义为**主名优先、旧名仅兜底、旧名不删除**：
+
+- 垫片必须早于任何模块顶层读 env，故以 `kernel/legacy-env-boot.mjs` 作为 `kernel/cli.mjs` 与 `server/bridge.mjs` 的**首个 import**（`engine-config.mjs` 在顶层读 env，晚于该模块即失效）；
+- settings.json 里的旧键在 `loadSettings()` 合并 env 之后由同一映射二次兜底；
+- wire 层不受影响：HTTP 头 `anthropic-version`（`2023-06-01`）与请求体字段仍是 Anthropic Messages API 兼容协议的事实标准，**不参与改名**；
+- 契约测试 `shared/legacy-env.test.mjs`（8 例）锁定以上语义，并显式断言 `ANTHROPIC_VERSION` 不在映射表内。
+
 ### 2.8 测试与校验命令
 
 ```bash
@@ -524,6 +532,7 @@ node scripts/pack-source-zip.mjs --suffix r2  # 出 -r2 包，不覆盖已发出
 14. `runtime/skills` 实测 180 MB（其中 `yfwweb-verify` 单库 154 MB），`electron-builder.yml:58-61` 全量 `**/*` 打入且 `compression: store`，未见任何体积上限断言。
 15. `.superpowers/`、`.trae/` 等目录被 `.gitignore` 忽略但实际存在于工作区，其内容不在受控面内，不可作为结论依据。
 16. 其他未确认项：`runtime/sample-skills` 是否在运行时被索引（体积是否被用户感知）、`@tanstack/react-virtual` 历史用法、i18n 缺失键是否有统计上报、`themes.css` 283 个变量未逐一核对。
+17. **兼容垫片的覆盖边界**（§2.7）：`kernel/engine-config.mjs` 在**模块顶层**读 env，因此只有"进程 env 已有旧名"的情形能被首个 import 的垫片覆盖；若旧名只存在于 `settings.json` 的 env 段，则该模块的顶层常量取不到映射值（`loadSettings()` 的二次兜底发生在模块求值之后）。其余在函数内惰性读 env 的模块（provider/api/compact 等）两条路径均覆盖。彻底消除需把 engine-config 的读取改为惰性，属可选的后续重构。
 
 ---
 

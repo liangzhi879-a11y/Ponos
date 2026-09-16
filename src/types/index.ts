@@ -358,7 +358,7 @@ export interface ModelProvider {
   temperature?: number
   /** 单次输出预算（tokens）；未设=本地 16384 / 云端 16384（2026-09-12 起，见 provider-profile） */
   maxOutputTokens?: number
-  /** 单条工具结果字节上限（2026-09-12 四家方案对标：CC 50K 聚合 / pi 50KB / Codex 10K tok）；
+  /** 单条工具结果字节上限（2026-09-12 对标：50K 聚合 / 50KB / 10K tok）；
    *  未设=内核默认 20000 字符（落盘+预览替换）。值注入 PONOS_TOOL_RESULT_BUDGET_BYTES */
   toolResultBudgetBytes?: number
   /** 首个内容块前的空闲宽限（ms）；未设=内核默认 300000 */
