@@ -31,9 +31,57 @@ export function mcpChildEnv(extra = {}) {
 }
 
 /**
- * 读 MCP 服务器配置：{ "servers": { "<name>": { command, args?, env?, cwd?, timeoutMs? } } }
+ * 判定一个配置条目走哪种传输（P1-5 扩展：stdio 或 Streamable HTTP）。
+ * **读侧与校验侧共用同一份判定**——本文件顶部已声明强约束「写出的必须能被读回等价」，
+ * 若两处各写一套规则，用户会看到"保存成功但服务器消失"这类静默失效。
+ *
+ * 规则：`command`（stdio）与 `url`（HTTP）**恰好其一**。
+ * 同时配置是错误而非"优先其一"：留一个二义会让运行期行为取决于实现顺序。
+ * @returns {{kind:'stdio'} | {kind:'http', url:string} | {kind:'invalid', reason:string}}
+ */
+export function classifyMcpEntry(cfg) {
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return { kind: 'invalid', reason: '条目必须是对象' }
+  const command = String(cfg.command ?? '').trim()
+  const urlRaw = String(cfg.url ?? '').trim()
+  if (command && urlRaw) return { kind: 'invalid', reason: '不能同时配置 command 与 url（二选一）' }
+  if (!command && !urlRaw) return { kind: 'invalid', reason: '缺少 command 或 url' }
+  if (!urlRaw) {
+    // stdio：远程专属字段出现在本地条目上，几乎总是用户改到一半的半成品，报错优于默默忽略
+    if (cfg.headers !== undefined) return { kind: 'invalid', reason: 'headers 仅适用于 url 传输' }
+    return { kind: 'stdio' }
+  }
+  let u = null
+  try { u = new URL(urlRaw) } catch { /* 落到下面的报错 */ }
+  if (!u || (u.protocol !== 'http:' && u.protocol !== 'https:')) {
+    return { kind: 'invalid', reason: 'url 必须是 http/https 绝对地址' }
+  }
+  if (cfg.args !== undefined || cfg.cwd !== undefined || cfg.env !== undefined) {
+    return { kind: 'invalid', reason: 'args/env/cwd 仅适用于 command 传输' }
+  }
+  return { kind: 'http', url: urlRaw }
+}
+
+/** 归一化 HTTP 头：只收原始类型（对象/数组作头值无意义，写进文件只会让人以为内核不认） */
+function normalizeHeaders(raw) {
+  const out = {}
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') out[String(k)] = String(v)
+    }
+  }
+  return out
+}
+
+/** timeoutMs 归一：非法/非正数 → 默认值（两套读写面共用，避免各判一次） */
+const normalizeTimeout = (v) => (Number.isFinite(v) && v > 0 ? v : DEFAULT_MCP_TIMEOUT_MS)
+
+/**
+ * 读 MCP 服务器配置。两种条目形态：
+ *   stdio：{ command, args?, env?, cwd?, timeoutMs? }
+ *   HTTP ：{ url, headers?, timeoutMs? }（P1-5 扩展）
  * - 文件不存在 → {}（**默认零行为变化**：没配置 MCP 的用户与从前完全一致）
  * - JSON 损坏 / 结构不对 → **抛出**（由注册表捕获并记日志，不让内核启动失败）
+ * - 单条目不合法 → 跳过（宁可少一个工具，不要半个坏服务器）
  */
 export function loadMcpServers(configPath) {
   if (!configPath || !existsSync(configPath)) return {}
@@ -42,15 +90,22 @@ export function loadMcpServers(configPath) {
   if (!servers || typeof servers !== 'object') return {}
   const out = {}
   for (const [name, cfg] of Object.entries(servers)) {
-    if (!cfg || typeof cfg !== 'object') continue
-    const command = String(cfg.command || '').trim()
-    if (!command) continue // 无命令的条目直接忽略（宁可少一个工具，不要半个坏服务器）
+    const kind = classifyMcpEntry(cfg)
+    if (kind.kind === 'invalid') continue // 与 normalizeMcpServers 同判定 ⇒ 不会出现"存得进、读不出"
+    if (kind.kind === 'http') {
+      out[name] = {
+        url: kind.url,
+        headers: normalizeHeaders(cfg.headers),
+        timeoutMs: normalizeTimeout(cfg.timeoutMs),
+      }
+      continue
+    }
     out[name] = {
-      command,
+      command: String(cfg.command).trim(),
       args: Array.isArray(cfg.args) ? cfg.args.map(String) : [],
       env: cfg.env && typeof cfg.env === 'object' ? cfg.env : {},
       cwd: cfg.cwd ? String(cfg.cwd) : null,
-      timeoutMs: Number.isFinite(cfg.timeoutMs) && cfg.timeoutMs > 0 ? cfg.timeoutMs : DEFAULT_MCP_TIMEOUT_MS,
+      timeoutMs: normalizeTimeout(cfg.timeoutMs),
     }
   }
   return out
@@ -268,7 +323,8 @@ export async function startMcpClient({ name, command, args = [], env = {}, cwd =
 // ---------------------------------------------------------------------------
 
 /**
- * 归一化 `{ servers: { <name>: {command,args,env,cwd,timeoutMs} } }`（**纯函数、无 IO**）。
+ * 归一化 `{ servers: { <name>: {command,args,env,cwd,timeoutMs} 或 {url,headers,timeoutMs} } }`
+ * （**纯函数、无 IO**）。
  * 校验严格是因为它挡在磁盘前面：任何"能通过校验但内核读不懂"的条目都是静默失效。
  * @returns {{ok:true, servers:object} | {ok:false, error:string}}
  */
@@ -285,10 +341,21 @@ export function normalizeMcpServers(raw) {
   for (const [rawName, cfg] of Object.entries(src)) {
     const name = String(rawName || '').trim()
     if (!name) return { ok: false, error: '服务器名称不能为空' }
-    // 非对象条目（null/字符串等）同样按"缺 command"报错：它确实没有可读的 command，
-    // 而"逐条目报姓名"是 GUI 能定位问题的前提。
-    const command = cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? String(cfg.command ?? '').trim() : ''
-    if (!command) return { ok: false, error: `服务器 "${name}" 缺少 command` }
+    // 逐条目报姓名是 GUI 能定位问题的前提（哪台服务器填错了）
+    const kind = classifyMcpEntry(cfg)
+    if (kind.kind === 'invalid') return { ok: false, error: `服务器 "${name}" ${kind.reason}` }
+    if (kind.kind === 'http') {
+      // 只存 ${ENV_VAR} 字面量，**运行时**才取环境变量 ⇒ 密钥不进入 mcp.json
+      // （该文件会被备份、截图、同步到网盘）。此处不校验变量是否存在：
+      // 写配置的环境未必是运行环境，由"连接测试"即时反馈更准确。
+      out[name] = {
+        url: kind.url,
+        headers: normalizeHeaders(cfg.headers),
+        timeoutMs: normalizeTimeout(cfg.timeoutMs),
+      }
+      continue
+    }
+    const command = String(cfg.command).trim()
     const args = Array.isArray(cfg.args) ? cfg.args.map(String) : []
     const env = {}
     if (cfg.env && typeof cfg.env === 'object' && !Array.isArray(cfg.env)) {
@@ -302,7 +369,7 @@ export function normalizeMcpServers(raw) {
     // 而"缺键"在 `loadMcpServers` 侧本来就是 null（= 沿用当前工作目录）。
     const cwd = cfg.cwd === undefined || cfg.cwd === null ? '' : String(cfg.cwd).trim()
     if (cwd) entry.cwd = cwd
-    entry.timeoutMs = Number.isFinite(cfg.timeoutMs) && cfg.timeoutMs > 0 ? cfg.timeoutMs : DEFAULT_MCP_TIMEOUT_MS
+    entry.timeoutMs = normalizeTimeout(cfg.timeoutMs)
     out[name] = entry
   }
   return { ok: true, servers: out }

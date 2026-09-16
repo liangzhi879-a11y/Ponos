@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   loadMcpServers, startMcpClient, mcpToolName, sanitizeMcpName, contentToText, mcpChildEnv,
+  normalizeMcpServers, writeMcpServers,
 } from '../kernel/mcp.mjs'
 import { createMcpRegistry, mcpConfigPath } from '../kernel/mcp-tools.mjs'
 
@@ -234,4 +235,94 @@ test('closeAll：回收后视图为空（防止孤儿进程与"幽灵工具"）'
 test('mcpConfigPath：位于配置目录下（PONOS_HOME 可覆盖）', () => {
   const p = mcpConfigPath({ PONOS_HOME: 'C:/tmp/ponos-home' })
   assert.match(p.replace(/\\/g, '/'), /tmp\/ponos-home\/mcp\.json$/)
+})
+
+// ---------------------------------------------------------------------------
+// P1-5 扩展：HTTP 传输的配置面（url / headers）
+test('normalizeMcpServers：接受纯 url 服务器，占位符原样存盘（不落盘解析）', () => {
+  const n = normalizeMcpServers({
+    servers: { remote: { url: 'https://example.com/mcp', headers: { Authorization: 'Bearer ${TOKEN}' } } },
+  })
+  assert.equal(n.ok, true, `纯 url 配置应合法：${n.ok ? '' : n.error}`)
+  assert.equal(n.servers.remote.url, 'https://example.com/mcp')
+  assert.equal(n.servers.remote.headers.Authorization, 'Bearer ${TOKEN}',
+    '必须原样保存占位符——密钥只能运行时求值，否则会明文落盘')
+  assert.equal(n.servers.remote.timeoutMs, 20000, '未给 timeoutMs 应回落默认值')
+})
+
+test('normalizeMcpServers：command 与 url 恰好其一（同时给或都不给都报错）', () => {
+  const both = normalizeMcpServers({ servers: { x: { command: 'npx', url: 'https://e.com/mcp' } } })
+  assert.equal(both.ok, false, '同给应报错（消歧，避免运行期行为取决于实现顺序）')
+  assert.match(both.error, /同时/)
+
+  const neither = normalizeMcpServers({ servers: { y: { args: ['-y'] } } })
+  assert.equal(neither.ok, false, '两者都缺应报错')
+  assert.match(neither.error, /缺少/)
+})
+
+test('normalizeMcpServers：字段与传输类型必须匹配', () => {
+  const a = normalizeMcpServers({ servers: { x: { url: 'https://e.com/mcp', args: ['--x'] } } })
+  assert.equal(a.ok, false, 'url 配 args 应报错（args 仅 stdio）')
+  assert.match(a.error, /args/)
+
+  const b = normalizeMcpServers({ servers: { x: { command: 'npx', headers: { A: '1' } } } })
+  assert.equal(b.ok, false, 'command 配 headers 应报错（headers 仅 HTTP）')
+  assert.match(b.error, /headers/)
+})
+
+test('normalizeMcpServers：url 必须是 http(s) 绝对地址', () => {
+  for (const bad of ['ftp://e.com/mcp', '/relative/path', 'not a url', '']) {
+    const r = normalizeMcpServers({ servers: { x: { url: bad } } })
+    assert.equal(r.ok, false, `非法 url 应报错: ${JSON.stringify(bad)}`)
+  }
+  assert.equal(normalizeMcpServers({ servers: { x: { url: 'http://127.0.0.1:8080/mcp' } } }).ok, true)
+})
+
+test('loadMcpServers：不再丢弃纯 url 条目（**读侧修复**）', () => {
+  const dir = mkTmp()
+  try {
+    const p = join(dir, 'mcp.json')
+    writeFileSync(p, JSON.stringify({ servers: { remote: { url: 'https://example.com/mcp', headers: { A: 'B' } } } }))
+    const cfg = loadMcpServers(p)
+    assert.ok(cfg.remote, '纯 url 服务器必须被加载（修复前会被静默丢弃 ⇒ HTTP 功能整体失效）')
+    assert.equal(cfg.remote.url, 'https://example.com/mcp')
+    assert.deepEqual(cfg.remote.headers, { A: 'B' })
+    assert.equal(cfg.remote.command, undefined, 'HTTP 条目不应带 command 键')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('往返：writeMcpServers 写出的 url 服务器能被读回等价（防两套规则漂移）', () => {
+  const dir = mkTmp()
+  try {
+    const p = join(dir, 'mcp.json')
+    const n = normalizeMcpServers({
+      servers: { remote: { url: 'https://e.com/mcp', headers: { Authorization: 'Bearer ${T}' }, timeoutMs: 5000 } },
+    })
+    assert.equal(n.ok, true)
+    const w = writeMcpServers(p, n.servers)
+    assert.equal(w.ok, true, `写入应成功：${w.ok ? '' : w.error}`)
+    const back = loadMcpServers(p)
+    assert.equal(back.remote.url, 'https://e.com/mcp')
+    assert.deepEqual(back.remote.headers, { Authorization: 'Bearer ${T}' },
+      '占位符往返必须不变形（否则"存得进读不出"）')
+    assert.equal(back.remote.timeoutMs, 5000)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('读校验同口径：loadMcpServers 跳过的条目，normalizeMcpServers 也必须拒绝', () => {
+  const dir = mkTmp()
+  try {
+    const p = join(dir, 'mcp.json')
+    const bad = {
+      both: { command: 'npx', url: 'https://e.com/mcp' },
+      badUrl: { url: 'ftp://e.com/mcp' },
+      headersOnStdio: { command: 'npx', headers: { A: '1' } },
+    }
+    writeFileSync(p, JSON.stringify({ servers: bad }))
+    assert.deepEqual(loadMcpServers(p), {}, '三条都应被读侧跳过')
+    for (const [name, cfg] of Object.entries(bad)) {
+      const r = normalizeMcpServers({ servers: { [name]: cfg } })
+      assert.equal(r.ok, false, `${name} 应被校验侧拒绝（两处口径必须一致）`)
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
