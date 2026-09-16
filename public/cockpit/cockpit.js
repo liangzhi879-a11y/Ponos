@@ -21,7 +21,7 @@
  *     轮廓随之缩放 → 洞始终贴合 logo。
  *
  *   消息桥（iframe ⇄ 父窗口，与 CockpitScreen.tsx 契约逐条对齐，2026-09-10 设计语言统一后）：
- *     父 → 本页：{ type:'yfw:theme', theme:'dark'|'light'|'dark-glass'|'light-glass',
+ *     父 → 本页：{ type:'yfw:theme', theme:'dark'|'light'|'dark-glass',
  *                  speedMode:boolean, glassOpacity:number }
  *                { type:'yfw:overview', data: overview|null }
  *     本页 → 父：{ type:'yfw:ready' }
@@ -78,14 +78,20 @@ let LOGO_CENTER = { x: 0, y: 0 };
  * 6 个按钮模块（4 个小三角 → 1 个 2L 大三角按钮）
  *   图标：Lucide（messages-square / list-checks / bot / library /
  *   bar-chart-3 / settings）；模块与驾驶舱六功能一一对应
+ *
+ *   route = 该模块的**真入口**（2026-09-15）：点击详情面板里的主按钮后，
+ *   经 yfw:nav 上抛给主程序，由 ViewRouter 解析并导航到真实功能
+ *   （rail / rail+次级浮层 / 独立工具窗）。route 的合法值由主程序侧白名单判定，
+ *   本页只负责"按已声明的意图上报"，不做合法性假设。
+ *   cta = 入口按钮文案（各模块不同，避免"进入 →"这种无信息量的统一文案）。
  * ================================================================ */
 const BUTTON_MODULES = [
-  { id: 'sessions', name: '会话',       en: 'Sessions',    icon: 'messages-square', sub: '与工作流对话、并行多会话协作，A/B 上下文不串扰。' },
-  { id: 'tasks',    name: '任务',       en: 'Tasks',       icon: 'list-checks',     sub: '任务编排、自动执行与进度追踪，可并行的子任务矩阵。' },
-  { id: 'agents',   name: '智能体矩阵', en: 'Agent',       icon: 'bot',             sub: '多智能体协同工作，各司其职，通过矩阵调度统一编排。' },
-  { id: 'kb',       name: '知识库',     en: 'Knowledge',   icon: 'library',         sub: '沉淀项目事实、检索增强与跨会话的工作记忆。' },
-  { id: 'usage',    name: '用量统计',   en: 'Usage',       icon: 'bar-chart-3',     sub: 'Token 消耗、请求规模与成本估算的实时视图。' },
-  { id: 'settings', name: '设置',       en: 'Settings',    icon: 'settings',        sub: '偏好、模型、输出与安全选项的集中控制台。' },
+  { id: 'sessions', name: '会话',       en: 'Sessions',    icon: 'messages-square', cta: '进入会话',   route: { rail: 'chat' },                  sub: '与工作流对话、并行多会话协作，A/B 上下文不串扰。' },
+  { id: 'tasks',    name: '任务',       en: 'Tasks',       icon: 'list-checks',     cta: '进入任务',   route: { rail: 'task' },                  sub: '任务编排、自动执行与进度追踪，可并行的子任务矩阵。' },
+  { id: 'agents',   name: '智能体矩阵', en: 'Agent',       icon: 'bot',             cta: '进入智能体', route: { rail: 'agents' },                sub: '多智能体协同工作，各司其职，通过矩阵调度统一编排。' },
+  { id: 'kb',       name: '知识库',     en: 'Knowledge',   icon: 'library',         cta: '进入知识库', route: { rail: 'knowledge' },             sub: '沉淀项目事实、检索增强与跨会话的工作记忆。' },
+  { id: 'usage',    name: '用量统计',   en: 'Usage',       icon: 'bar-chart-3',     cta: '用量明细',   route: { rail: 'task', secondTab: 'usage' }, sub: 'Token 消耗、请求规模与成本估算的实时视图。' },
+  { id: 'settings', name: '设置',       en: 'Settings',    icon: 'settings',        cta: '打开设置',   route: { utility: 'settings' },           sub: '偏好、模型、输出与安全选项的集中控制台。' },
 ];
 const BTN_TARGET_ANGLES = [-90, -30, 30, 90, 150, 210];  // 度，屏幕 y 向下
 
@@ -446,6 +452,9 @@ function renderTriCanvas() {
   /* 统一极简渲染：淡细线框背景 + 按钮填色（无密度场） */
   renderDensity(svg);
 
+  /* 邻接表随 tris 定型（裁剪后）重建：hover 光晕的邻居查询必须与当前索引一致 */
+  buildNeighbors();
+
   // 按钮图标（Lucide）压在按钮三角之上
   renderButtonIcons(svg);
 
@@ -458,7 +467,9 @@ function triPath(t) {
 
 /* 极简渲染：背景三角统一淡细线框（无密度场），仅按钮填色 */
 function isLightTheme() {
-  return /theme-(light|light-glass)/.test(document.documentElement.className || '');
+  // 只认 .theme-light 本身：className 里还有 cockpit-speed 等类，
+  // 用词边界而非 ^$ 锚定（旧的双浅色正则已随浅色玻璃主题删除收敛为单值）
+  return /(^|\s)theme-light(\s|$)/.test(document.documentElement.className || '');
 }
 function renderDensity(svg) {
   const isLight = isLightTheme();
@@ -509,8 +520,47 @@ function renderButtonIcons(svg) {
 }
 
 /* ================================================================
- * 交互
+ * 邻接表（2026-09-15 hover 光晕）
+ *   共顶点的三角互为邻居：hover 时邻居做柔和衰减，形成"该三角放大、
+ *   周围平缓过渡"的聚焦感。
+ *   在 layout 期一次性建表（顶点键 → 三角索引）——若改成 hover 时
+ *   遍历全部三角求邻居，4K 窗口下每次 mouseenter 都是 O(n²)，会明显卡顿。
  * ================================================================ */
+const NEIGHBORS = [];   // 索引 → 邻居索引数组
+function buildNeighbors() {
+  NEIGHBORS.length = 0;
+  const byVertex = new Map();
+  STATE.tris.forEach((t, i) => {
+    NEIGHBORS[i] = [];
+    // 顶点键不带索引号：同一顶点在不同三角里必须折叠为同一个键
+    [t.p1, t.p2, t.p3].forEach(p => {
+      const k = Math.round(p.x * 1000) + ',' + Math.round(p.y * 1000);
+      let arr = byVertex.get(k);
+      if (!arr) { arr = []; byVertex.set(k, arr); }
+      arr.push(i);
+    });
+  });
+  byVertex.forEach(arr => {
+    for (let a = 0; a < arr.length; a++) {
+      for (let b = a + 1; b < arr.length; b++) {
+        NEIGHBORS[arr[a]].push(arr[b]);
+        NEIGHBORS[arr[b]].push(arr[a]);
+      }
+    }
+  });
+}
+
+/* 清除某索引的 hover 视觉（自身 tri-hover + 邻居 tri-near） */
+function clearHoverVisual(idx) {
+  if (idx < 0) return;
+  const self = document.querySelector(`#triCanvas path[data-idx="${idx}"]`);
+  if (self) self.classList.remove('tri-hover');
+  (NEIGHBORS[idx] || []).forEach(n => {
+    const el = document.querySelector(`#triCanvas path[data-idx="${n}"]`);
+    if (el) el.classList.remove('tri-near');
+  });
+}
+
 function bindTriInteractions(svg) {
   const paths = svg.querySelectorAll('path.tri');
   paths.forEach(p => {
@@ -522,13 +572,22 @@ function bindTriInteractions(svg) {
   });
 }
 function onHover(idx, e) {
-  if (STATE.hoverIdx >= 0 && STATE.hoverIdx !== idx) {
-    const prev = document.querySelector(`#triCanvas path[data-idx="${STATE.hoverIdx}"]`);
-    if (prev) prev.classList.remove('tri-hover');
-  }
+  if (STATE.hoverIdx >= 0 && STATE.hoverIdx !== idx) clearHoverVisual(STATE.hoverIdx);
   STATE.hoverIdx = idx;
   const p = document.querySelector(`#triCanvas path[data-idx="${idx}"]`);
-  if (p) p.classList.add('tri-hover');
+  if (p) {
+    p.classList.add('tri-hover');
+    /* 放大 1.22 后需压住邻居（否则放大的一角会被邻三角描边切断）：
+       插到首个按钮图标 <g> 之前——既在全部 path 之上，又不遮按钮图标。 */
+    const svg = document.getElementById('triCanvas');
+    const anchor = svg.querySelector('g[data-btn-icon]');
+    if (anchor) svg.insertBefore(p, anchor); else svg.appendChild(p);
+  }
+  /* 邻居柔和衰减（.tri-near 带 CSS transition ⇒ 进出都是缓动，无跳变） */
+  (NEIGHBORS[idx] || []).forEach(n => {
+    const el = document.querySelector(`#triCanvas path[data-idx="${n}"]`);
+    if (el) el.classList.add('tri-near');
+  });
   const t = STATE.tris[idx];
   if (!t) return;
 
@@ -538,7 +597,7 @@ function onHover(idx, e) {
     if (bm) { showHoverPanel(bm); document.getElementById('triTip').classList.remove('show'); return; }
   }
 
-  /* 普通三角：仅点亮（tri-hover 高亮描边） */
+  /* 普通三角：仅点亮（tri-hover 高亮 + 放大） */
   hideHoverPanel();
 }
 function moveTip(e) {
@@ -548,8 +607,7 @@ function moveTip(e) {
 }
 function onLeave(idx) {
   STATE.hoverIdx = -1;
-  const p = document.querySelector(`#triCanvas path[data-idx="${idx}"]`);
-  if (p) p.classList.remove('tri-hover');
+  clearHoverVisual(idx);
   document.getElementById('triTip').classList.remove('show');
   hideHoverPanel();
 }
@@ -598,7 +656,7 @@ const WAIT_HINT = '<div class="hint">等待主程序注入数据…</div>';
 function hoverBrief(m) {
   const d = cockpitData;
   if (!d) return WAIT_HINT;
-  const hint = '<div class="hint">点击展开详情 →</div>';
+  const hint = '<div class="hint">点击展开详情 · 面板内可进入功能 →</div>';
   switch (m.id) {
     case 'sessions': {
       const t = Array.isArray(d.runningTasks) ? d.runningTasks : null;
@@ -663,14 +721,40 @@ function showHoverPanel(bm) {
   document.getElementById('hpBody').innerHTML   = hoverBrief(bm);
 
   const panelW = 278, panelH = 150;
-  // 面板朝按钮外侧偏移，避免遮挡按钮
+  /* 贴着按钮外侧展开（2026-09-15）：以按钮**外缘**为锚，留 HOVER_GAP 间隙，
+     垂直于展开方向居中于按钮；主方向取 |dx| 与 |dy| 中较大者。
+     旧实现按 (dx/len)*130 相对 logo 中心偏移，窗口一大就飘离按钮，读起来与按钮脱钩。 */
   const dx = bm.center.x - LOGO_CENTER.x;
   const dy = bm.center.y - LOGO_CENTER.y;
-  const len = Math.hypot(dx, dy) || 1;
-  let x = bm.center.x + (dx / len) * 130 - panelW / 2;
-  let y = bm.center.y + (dy / len) * 105 - panelH / 2;
+  const half = (bm.size || 100) * 0.42;   // 按钮外接半径近似（大三角边长 2L）
+  const HOVER_GAP = 10;
+  const horiz = Math.abs(dx) >= Math.abs(dy);
+  const side = horiz
+    ? (dx >= 0 ? 'right' : 'left')
+    : (dy >= 0 ? 'bottom' : 'top');
+  let x, y;
+  if (horiz) {
+    x = dx >= 0 ? bm.center.x + half + HOVER_GAP
+                : bm.center.x - half - HOVER_GAP - panelW;
+    y = bm.center.y - panelH / 2;
+  } else {
+    x = bm.center.x - panelW / 2;
+    y = dy >= 0 ? bm.center.y + half + HOVER_GAP
+                : bm.center.y - half - HOVER_GAP - panelH;
+  }
+  // 视口收敛：夹紧到窗口内（贴边时可能与按钮重叠，但绝不越界不可见）
   x = Math.max(12, Math.min(window.innerWidth  - panelW - 12, x));
   y = Math.max(12, Math.min(window.innerHeight - panelH - 12, y));
+  /* 入场方向按**夹紧后**的相对位置重判：夹紧可能把面板挪到按钮另一侧，
+     若仍用夹紧前的方向，滑入动画会从错误的一侧进来（视觉上"跳"一下） */
+  let effSide;
+  if (x + panelW <= bm.center.x - half + 1) effSide = 'left';
+  else if (x >= bm.center.x + half - 1)     effSide = 'right';
+  else if (y + panelH <= bm.center.y - half + 1) effSide = 'top';
+  else if (y >= bm.center.y + half - 1)     effSide = 'bottom';
+  else effSide = side;                            // 重叠（贴边）时保留主方向
+  el.classList.remove('side-left', 'side-right', 'side-top', 'side-bottom');
+  el.classList.add('side-' + effSide);
   el.style.left = x + 'px';
   el.style.top  = y + 'px';
   el.classList.add('show');
@@ -829,10 +913,22 @@ function openDetailPanel(moduleId) {
   document.getElementById('dpName').textContent = bm.name;
   document.getElementById('dpEn').textContent   = bm.en;
   document.getElementById('dpSub').textContent  = bm.sub;
+  /* 功能入口按钮：文案随模块变，route 决定去哪儿（点击 → yfw:nav） */
+  const cta = document.getElementById('dpCta');
+  cta.textContent = bm.cta || '进入';
+  cta.dataset.module = moduleId;
   renderDetailPanel(moduleId);
   document.getElementById('detailPanel').classList.add('open');
   document.getElementById('dpVeil').classList.add('on');
   hideHoverPanel();
+}
+/* 功能入口：把用户真正带进功能（不是停在只读面板）。
+   上报的是模块**声明的** route，合法性与导航动作全在主程序侧；
+   本页不做合法性假设，也不改自身状态——导航失败时用户仍停在面板上，可重试。 */
+function navTo(moduleId) {
+  const bm = BUTTON_MODULES.find(b => b.id === moduleId);
+  if (!bm || !bm.route) return;
+  notifyHost('yfw:nav', { target: bm.route });
 }
 function closeDetailPanel() {
   document.getElementById('detailPanel').classList.remove('open');
@@ -872,7 +968,9 @@ function setSpeed(on) {
   cockpitSpeed = on;
   document.documentElement.classList.toggle('cockpit-speed', on);
 }
-function notifyHost(type) { try { host.postMessage({ type }, '*') } catch (e) {} }
+function notifyHost(type, extra) {
+  try { host.postMessage(Object.assign({ type: type }, extra || {}), '*') } catch (e) {}
+}
 function signalReady() {
   if (document.readyState === 'complete') { setTimeout(() => notifyHost('yfw:ready'), 0); }
   else { window.addEventListener('load', () => setTimeout(() => notifyHost('yfw:ready'), 0)); }
@@ -887,7 +985,10 @@ function layout() {
   STATE.CX = STATE.W / 2;
   STATE.CY = STATE.H * 0.46;
 
-  const lw = Math.min(Math.min(STATE.W, STATE.H) * 0.42, 346);
+  /* 中央 logo 显示尺寸（2026-09-15 降低）：0.42/346 → 0.30/248。
+     按钮布局的距离约束按 scale = logoS/REF_S 联动，logo 变小则按钮整体收近，
+     中央留白随之收敛，视觉重心更低。 */
+  const lw = Math.min(Math.min(STATE.W, STATE.H) * 0.30, 248);
   const lh = lw * (378 / 544);
   STATE.logoLW = lw; STATE.logoLH = lh;
   STATE.logoS = lw / BOOST_VIEW_W;
@@ -936,12 +1037,12 @@ function clearSelection() {
   STATE.selectedIdx = -1;
 }
 /* 主题完全由主程序驱动（?theme= 首帧 + yfw:theme 热切）：本页无独立主题开关，
-   只切换 .theme-{dark|light|dark-glass|light-glass} 并重渲染画布；不回写存储、不上报变更。
+   只切换 .theme-{dark|light|dark-glass} 并重渲染画布；不回写存储、不上报变更。
    classList 增删（不清空 className，保留 cockpit-speed） */
 function applyTheme(id) {
   id = id || 'dark';
   const root = document.documentElement;
-  ['dark', 'light', 'dark-glass', 'light-glass'].forEach(function (n) {
+  ['dark', 'light', 'dark-glass'].forEach(function (n) {
     root.classList.remove('theme-' + n);
   });
   root.classList.add('theme-' + id);
@@ -956,6 +1057,11 @@ document.getElementById('footR').textContent = '会话 / 任务 / 智能体矩�
 /* 详细面板关闭 */
 document.getElementById('dpClose').addEventListener('click', closeDetailPanel);
 document.getElementById('dpVeil').addEventListener('click', closeDetailPanel);
+/* 功能入口主按钮：当前面板对应模块的 route（moduleId 由 openDetailPanel 写在 dataset） */
+document.getElementById('dpCta').addEventListener('click', e => {
+  e.stopPropagation();
+  navTo(e.currentTarget.dataset.module || '');
+});
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') { closeDetailPanel(); clearSelection(); }
 });
@@ -968,11 +1074,11 @@ document.getElementById('logoSvg').addEventListener('click', () => {
 
 /* 应用主题：首帧前 head 脚本已按主程序 ?theme= 加 class，这里同步画布；
    本页无独立主题开关，运行期变化由 yfw:theme 消息驱动（消息桥上方已接）。
-   四值：dark / light / dark-glass / light-glass（非法值回落 dark） */
+   三值：dark / light / dark-glass（非法值回落 dark） */
 let initTheme = 'dark';
 try {
   const _q = new URLSearchParams(location.search).get('theme');
-  if (['dark', 'light', 'dark-glass', 'light-glass'].includes(_q)) initTheme = _q;
+  if (['dark', 'light', 'dark-glass'].includes(_q)) initTheme = _q;
 } catch (e) {}
 applyTheme(initTheme);
 setSpeed(false);   /* speedMode 初值：默认动效开启，主程序经 yfw:theme 下发 */
