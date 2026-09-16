@@ -12,12 +12,29 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawn } from 'node:child_process'
 import { handleMcpRoute } from './mcp-routes.mjs'
 import { loadMcpServers } from '../kernel/mcp.mjs'
 
 // 复用内核测试的同款 stub（支持 tools: echo/boom/hang/die/plain），不另造一个
 const STUB = fileURLToPath(new URL('../kernel-tests/fixtures/mcp-stub-server.mjs', import.meta.url))
+const HTTP_STUB = fileURLToPath(new URL('../kernel-tests/fixtures/mcp-http-stub-server.mjs', import.meta.url))
 const NODE = process.execPath
+
+/** 起一个 Streamable HTTP 夹具（P1-5：url 服务器的试连用例），等它打印 PORT=<n> */
+function startHttpStub(mode = 'json') {
+  return new Promise((resolve, reject) => {
+    const child = spawn(NODE, [HTTP_STUB, mode], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let buf = ''
+    const timer = setTimeout(() => { child.kill(); reject(new Error('HTTP 夹具启动超时')) }, 10000)
+    child.stdout.on('data', (c) => {
+      buf += c
+      const m = buf.match(/PORT=(\d+)/)
+      if (m) { clearTimeout(timer); resolve({ port: Number(m[1]), kill: () => child.kill() }) }
+    })
+    child.on('error', (e) => { clearTimeout(timer); reject(e) })
+  })
+}
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'ponos-mcp-routes-'))
 /** 造一次请求：body 为对象则序列化；`raw` 直接给字符串（测坏负载，与 bridge 的 readJsonBody 一样会抛）。 */
@@ -170,10 +187,79 @@ test('POST /mcp/test：缺 command / body 非对象 → 400（不白起子进程
   try {
     const a = await call(dir, { method: 'POST', pathname: '/mcp/test', body: { server: { args: ['x'] } } })
     assert.equal(a.status, 400)
-    assert.match(String(a.body.error), /command/)
+    assert.match(String(a.body.error), /command|url/, '报错应点明缺少 command 或 url')
     const b = await call(dir, { method: 'POST', pathname: '/mcp/test', raw: '[1]' })
     assert.equal(b.status, 400)
     const c = await call(dir, { method: 'POST', pathname: '/mcp/test', body: {} })
     assert.equal(c.status, 400)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ---------------------------------------------------------------------------
+// P1-5 扩展：POST /mcp/test 支持远程 HTTP 服务器
+test('POST /mcp/test：url 服务器 → 200 且列出工具（HTTP 分派真的接通了）', async () => {
+  const dir = tmp()
+  const s = await startHttpStub('json')
+  try {
+    const r = await call(dir, {
+      method: 'POST', pathname: '/mcp/test',
+      body: { server: { url: `http://127.0.0.1:${s.port}/mcp`, timeoutMs: 5000 } },
+    })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.equal(r.body.ok, true, r.body.error)
+    assert.deepEqual(r.body.tools.map((t) => t.name), ['echo', 'whoami'])
+    assert.equal(r.body.serverInfo?.name, 'http-stub')
+    assert.equal(existsSync(join(dir, 'mcp.json')), false, '试连不得写配置文件')
+  } finally { s.kill(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('POST /mcp/test：url 不可达 → 200 + ok:false（连不上是业务结果，不是 500）', async () => {
+  const dir = tmp()
+  try {
+    const r = await call(dir, {
+      method: 'POST', pathname: '/mcp/test',
+      body: { server: { url: 'http://127.0.0.1:1/mcp', timeoutMs: 1000 } },
+    })
+    assert.equal(r.status, 200, '不可达不该让界面走进 5xx 错误分支')
+    assert.equal(r.body.ok, false)
+    assert.ok(String(r.body.error || '').length > 0)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('POST /mcp/test：认证头里未定义的变量 → 200 + ok:false 且点名变量（不失真成 400/500）', async () => {
+  const dir = tmp()
+  const s = await startHttpStub('json')
+  try {
+    // 变量名为故意不存在的：用户点了"测试"应看到"哪个变量没定义"，
+    // 而不是一句笼统的失败——这才是这个按钮存在的意义。
+    const r = await call(dir, {
+      method: 'POST', pathname: '/mcp/test',
+      body: {
+        server: {
+          url: `http://127.0.0.1:${s.port}/mcp`, timeoutMs: 5000,
+          headers: { Authorization: 'Bearer ${YFW_TEST_TOKEN_SURELY_UNDEFINED}' },
+        },
+      },
+    })
+    assert.equal(r.status, 200)
+    assert.equal(r.body.ok, false)
+    assert.match(String(r.body.error), /YFW_TEST_TOKEN_SURELY_UNDEFINED/, '错误必须点名未定义的变量')
+  } finally { s.kill(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('PUT /mcp：url 服务器可保存并原样读回占位符（HTTP 配置走完整链路）', async () => {
+  const dir = tmp()
+  try {
+    const servers = {
+      remote: { url: 'https://example.com/mcp', headers: { Authorization: 'Bearer ${MY_TOKEN}' }, timeoutMs: 5000 },
+    }
+    const r = await call(dir, { method: 'PUT', pathname: '/mcp', body: { servers } })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.equal(r.body.ok, true)
+    // 落盘内容必须仍是占位符：明文 token 一旦写进 mcp.json 就随备份/截图一起流出去
+    const onDisk = JSON.parse(readFileSync(join(dir, 'mcp.json'), 'utf-8'))
+    assert.equal(onDisk.servers.remote.headers.Authorization, 'Bearer ${MY_TOKEN}')
+    const back = await call(dir, { method: 'GET', pathname: '/mcp' })
+    assert.equal(back.body.servers.remote.url, 'https://example.com/mcp')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

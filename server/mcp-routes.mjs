@@ -14,6 +14,7 @@
 // （如"测试连接失败"——服务器连不上是家常便饭，不该以 5xx 让 GUI 走进错误分支）。
 import { join } from 'node:path'
 import { startMcpClient, normalizeMcpServers, readMcpServers, writeMcpServers } from '../kernel/mcp.mjs'
+import { startMcpHttpClient } from '../kernel/mcp-http.mjs'
 
 // /mcp/test 的超时：探测是**用户在前面等**的交互动作，不能沿用内核默认 20s；
 // 上限 15000ms 是防呆——用户填 300000 会让请求挂死、GUI 转圈到用户以为界面卡了。
@@ -90,7 +91,11 @@ export async function handleMcpRoute(ctx) {
     let client = null
     try {
       // 名字固定为 probe：它只出现在日志/错误文案里，不参与工具命名（这个连接用完即弃）
-      client = await startMcpClient({ name: 'probe', ...cfg, timeoutMs })
+      // 按 cfg.url 分派：远程 HTTP 走 Streamable HTTP 客户端，本地走 stdio 子进程。
+      // 两种客户端都在 start 内完成握手且失败即 reject ⇒ 下面的 catch/finally 无需分支。
+      client = cfg.url
+        ? await startMcpHttpClient({ name: 'probe', url: cfg.url, headers: cfg.headers, timeoutMs })
+        : await startMcpClient({ name: 'probe', ...cfg, timeoutMs })
       const tools = await client.tools()
       return json(200, {
         ok: true,
@@ -98,11 +103,12 @@ export async function handleMcpRoute(ctx) {
         serverInfo: client.serverInfo,
       })
     } catch (e) {
-      // 连不上（命令不存在、握手失败、超时）是**正常业务结果**：200 + ok:false，界面照原样展示原因
+      // 连不上（命令不存在、URL 不可达、握手失败、超时、环境变量未定义）是**正常业务结果**：
+      // 200 + ok:false，界面照原样展示原因。探测失败不该让 GUI 走进 5xx 的错误分支。
       return json(200, { ok: false, error: errText(e) })
     } finally {
-      // 无论成败都必须回收：探测失败的服务器常留下**半启动的子进程**，
-      // 不 close 就会在用户反复点"测试"时堆出一批孤儿进程（本仓库有过孤儿进程的前车之鉴）。
+      // 无论成败都必须回收：探测失败的服务器常留下**半启动的子进程**（stdio）
+      // 或**未关闭的会话**（HTTP），不 close 就会在用户反复点"测试"时累积泄漏。
       try { client?.close() } catch { /* 已退出 */ }
     }
   }
