@@ -77,6 +77,7 @@ import { kernelReadonly } from './kernel-readonly.mjs'
 import { createReadonlyCache } from './readonly-cache.mjs'
 import { getAuthStatus, setupPassword, checkPassword, changePassword } from './auth.mjs'
 import { resolveBridgeToken, authorizeBridgeRequest } from './bridge-token.mjs'
+import { listEgressPolicy, EGRESS_MODE } from './egress-policy.mjs'
 import { MANAGED_KEYS, providerProfileEnv, buildIdentityPrompt, activeProviderModel, resolveProviderProfile } from './provider-profile.mjs'
 import { probeProviderCapabilities, applyProbeResults, resolveWindowFromProbe, maybeAdoptWindowFromEvent } from './provider-probe.mjs'
 
@@ -1918,6 +1919,16 @@ const httpServer = createServer(async (req, res) => {
   }
   const url = new URL(req.url, 'http://localhost:' + PORT)
   try {
+    // 【S2-D3 数据出网闸】唯一判定面（spec §6.2 D3「落在 bridge 请求入口——所有读写的唯一仲裁点」）。
+    // 位置：D2 闸门之后 ⇒ **自动受 token 保护**（D2 的豁免面只有 /health 与 /api/auth/*），无需改动
+    // 豁免清单、不削弱 D2。
+    // 只读：返回各数据实体当前 syncPolicy 与"能否过团队源"的结论。单机版为 local-only 档，
+    // `allowedEntities` 必为空——即 §10 S2-3「默认配置下 transcript/config 等无任何出网路径」。
+    // 为什么要有这个面：判定内核若不可观测，就无法在验收时证明"无路径"，S3 接线也缺既定入口。
+    if (url.pathname === '/egress/policy' && req.method === 'GET') {
+      reply(200, { 'Content-Type': 'application/json' }, JSON.stringify(listEgressPolicy({ mode: EGRESS_MODE.LOCAL_ONLY })))
+      return
+    }
     // 工作流路由链最前：仅 /workflows* 前缀进入（无关请求不必构造宿主单例/读配置），
     // 命中即 return；路由函数未匹配返回 false → 继续走下方既有路由（不吞其他端点）。
     // 置于既有 try 内：宿主构造（loadConfig）等意外抛错走统一 400 回执，不打穿 handler。
