@@ -266,10 +266,12 @@ function freeRel(root, rel) {
  * 空间发现。顺序 = 内置（目录存在才挂）→ 用户空间 → 知识包（只读）。
  * 目录缺失一律静默跳过——"没有"不是错误。
  */
-export function discoverSpaces({ configDir, root = null } = {}) {
+export function discoverSpaces({ configDir, root = null, extraSpaceSpecs = [] } = {}) {
   const kroot = root || knowledgeRoot(configDir)
   const out = []
-  for (const s of builtinSpaceSpecs(configDir)) {
+  // S3：`extraSpaceSpecs` 让调用方把**团队空间**（`team-<teamId>`，指向团队源目录）挂进来。
+  // 缺省空数组 ⇒ 与改造前逐字一致（零回归）；团队空间同样"目录存在才挂"。
+  for (const s of builtinSpaceSpecs(configDir, { extra: extraSpaceSpecs })) {
     if (existsSync(s.root)) out.push(s)
   }
 
@@ -358,8 +360,8 @@ const ASSOCIABLE_SCOPE_SOURCES = new Set(['user', 'pack'])
  *   `unassociated` = 存在但**未**关联、**且可关联**（source ∈ {user,pack}，与 GUI 开关同判据）
  *   的空间 id（提示词据此告诉模型"还有什么库可以请用户关联"——只列指得到门的，避免指路无门）。
  */
-export function resolveSessionKnowledgeScope({ configDir, requested = null } = {}) {
-  const all = discoverSpaces({ configDir })
+export function resolveSessionKnowledgeScope({ configDir, requested = null, extraSpaceSpecs = [] } = {}) {
+  const all = discoverSpaces({ configDir, extraSpaceSpecs })
   const builtin = all.filter((s) => BUILTIN_SCOPE_SOURCES.has(s.source)).map((s) => s.id)
   const byId = new Map(all.map((s) => [s.id, s]))
   // 归一：非数组/含空串一律当"没关联"（GUI 传来的可能是 undefined、旧会话可能是 null）。
@@ -586,7 +588,7 @@ function resolveRelateMode(configDir, explicit = null) {
   return 'on'
 }
 
-export function createKnowledgeStore({ configDir, root = null, relateMode = null } = {}) {
+export function createKnowledgeStore({ configDir, root = null, relateMode = null, extraSpaceSpecs = [] } = {}) {
   const kroot = root || knowledgeRoot(configDir)
   const idxDir = join(kroot, '.index')
   let spaces = []
@@ -2087,7 +2089,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
    * 必须**重新发现空间**：删整库/还原整库会改变 `spaces` 集合本身（不是只有文档变了）。
    */
   function refreshAfterMutation() {
-    spaces = discoverSpaces({ configDir, root: kroot })
+    spaces = discoverSpaces({ configDir, root: kroot, extraSpaceSpecs })
     buildIndex()
   }
 
@@ -2396,7 +2398,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
      * 故调用方可自由书写（Task 7-9 的测试即如此）。
      */
     load({ force = false, spaces: injected = null } = {}) {
-      spaces = injected || discoverSpaces({ configDir, root: kroot })
+      spaces = injected || discoverSpaces({ configDir, root: kroot, extraSpaceSpecs })
       if (force) { buildIndex(); return }
       const ok = loadIndexFromDisk()
       if (!ok || indexStale()) buildIndex()

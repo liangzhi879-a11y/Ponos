@@ -24,7 +24,13 @@ test('第 1 跳：内核 CLI 登记 --knowledge-spaces（漏登记 = 被静默�
   assert.match(src, /case '--knowledge-spaces'/, '必须显式登记 case：本 CLI 对未知 `--` 参数静默忽略')
   assert.match(src, /knowledgeSpaces: null/, '初值要登记（否则 case 写出来的值不在 out 里）')
   // 解析 → 消费四处：范围解析、注入层、工具层、超限丢弃的上报
-  assert.match(src, /resolveSessionKnowledgeScope\(\{ configDir, requested: args\.knowledgeSpaces \}\)/)
+  // 注：本行改成"前缀匹配"是**有意的契约变更**——S3 起该调用追加了 `extraSpaceSpecs`
+  // （把团队知识空间纳入会话范围，§5.9：检索范围默认跨全部空间、不受模式影响）。
+  // 原断言是逐字全文匹配，加参数即红；但它的**意图**是"`--knowledge-spaces` 的值必须真的传进去"，
+  // 因此保留前缀匹配，并把新增项单独钉一行（见下一条）——只放宽格式、不放宽要求。
+  assert.match(src, /resolveSessionKnowledgeScope\(\{ configDir, requested: args\.knowledgeSpaces\b/)
+  // S3 追加项也必须登记：漏掉它，团队知识空间永远进不了会话范围（同类"漏登记即静默失效"）
+  assert.match(src, /extraSpaceSpecs: safeTeamSpaceSpecs\(configDir\)/, '团队空间 spec 必须真的接到范围解析')
   assert.match(src, /spaces: knowledgeScope\.spaces,/, '注入层必须传范围（否则 unified 仍按全空间打分）')
   assert.match(src, /knowledgeSpaces: knowledgeScope\.spaces,/, '工具层必须传范围（双层同源）')
   assert.match(src, /knowledge_spaces: knowledgeScope\.spaces,/, 'init 帧回显：让"传到没有"可判定')

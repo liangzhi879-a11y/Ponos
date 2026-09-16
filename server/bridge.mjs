@@ -81,6 +81,9 @@ import { listEgressPolicy, EGRESS_MODE } from './egress-policy.mjs'
 // 【S2-D6 标签实体化】注册表的可观测面与「自动合并 / 可撤销」入口。规则实现在 shared/tag-registry.mjs，
 // 落盘在 kernel/tag-store.mjs（bridge 已有多处 import kernel/* 的先例，如 kernel/mcp.mjs）。
 import { tagRegistrySnapshot, mergeTagsInStore, undoMergeInStore } from '../kernel/tag-store.mjs'
+// 【S3 团队源】团队路由（创建/邀请/加入/撤销/状态）落在这里，紧邻 D6 的 `/tags*` 之后 ⇒
+// 同样位于 **D2 令牌闸门之后**，自动受保护（新增路由必须放在闸门后面，这是 D2/D3/D6 的一贯做法）。
+import { teamStatus, createTeam, joinTeam, exportInvite, revokeMember, setSearchRoot } from '../kernel/team-store.mjs'
 import { DEFAULT_TAG_SCOPE } from '../shared/tag-registry.mjs'
 import { MANAGED_KEYS, providerProfileEnv, buildIdentityPrompt, activeProviderModel, resolveProviderProfile } from './provider-profile.mjs'
 import { probeProviderCapabilities, applyProbeResults, resolveWindowFromProbe, maybeAdoptWindowFromEvent } from './provider-probe.mjs'
@@ -1969,6 +1972,95 @@ const httpServer = createServer(async (req, res) => {
         r = undoMergeInStore(YFW_HOME, body && body.mergeId)
       } catch (e) {
         r = { ok: false, reason: 'registry-unreadable', message: String((e && e.message) || e) }
+      }
+      reply(r.ok ? 200 : 400, { 'Content-Type': 'application/json' }, JSON.stringify(r))
+      return
+    }
+    // ---------------------------------------------------------------------
+    // 【S3 团队源与内容协同】路由。位置紧邻 D6 的 `/tags*` 之后 ⇒ **位于 D2 令牌闸门之后**，
+    // 自动受保护（新增路由必须落在闸门后面，这是 D2/D3/D6 一贯做法；放闸门之前 = 未鉴权暴露）。
+    // 每个 handler 都**不允许异常逃逸**：团队是可选能力，它出问题不该让桥 500 或崩掉；
+    // 统一捕获并如实回报 reason，供前端给出可操作提示（而不是笼统"未知错误"）。
+    // ---------------------------------------------------------------------
+    if (url.pathname === '/team/status' && req.method === 'GET') {
+      try {
+        const r = teamStatus({ configDir: YFW_HOME, teamId: url.searchParams.get('teamId') || null })
+        reply(200, { 'Content-Type': 'application/json' }, JSON.stringify(r))
+      } catch (e) {
+        reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, reason: 'status-failed', message: String((e && e.message) || e) }))
+      }
+      return
+    }
+    if (url.pathname === '/team/create' && req.method === 'POST') {
+      let body = null
+      try { body = await readJsonBody(req) } catch { body = null }
+      let r
+      try {
+        r = createTeam({
+          configDir: YFW_HOME,
+          name: body && body.name,
+          dir: body && body.dir,
+          identCode: body && body.identCode ? String(body.identCode) : null,
+        })
+      } catch (e) {
+        r = { ok: false, reason: 'create-failed', message: String((e && e.message) || e) }
+      }
+      reply(r.ok ? 200 : 400, { 'Content-Type': 'application/json' }, JSON.stringify(r))
+      return
+    }
+    if (url.pathname === '/team/invite' && req.method === 'POST') {
+      let body = null
+      try { body = await readJsonBody(req) } catch { body = null }
+      let r
+      try {
+        r = exportInvite({
+          configDir: YFW_HOME,
+          teamId: body && body.teamId,
+          ttlMs: body && body.ttlMs ? Number(body.ttlMs) : undefined,
+        })
+      } catch (e) {
+        r = { ok: false, reason: 'invite-failed', message: String((e && e.message) || e) }
+      }
+      reply(r.ok ? 200 : 400, { 'Content-Type': 'application/json' }, JSON.stringify(r))
+      return
+    }
+    if (url.pathname === '/team/join' && req.method === 'POST') {
+      let body = null
+      try { body = await readJsonBody(req) } catch { body = null }
+      let r
+      try {
+        r = joinTeam({
+          configDir: YFW_HOME,
+          identCode: body && body.identCode,
+          code: body && body.code,
+          searchRoot: body && body.searchRoot ? String(body.searchRoot) : null,
+        })
+      } catch (e) {
+        r = { ok: false, reason: 'join-failed', message: String((e && e.message) || e) }
+      }
+      reply(r.ok ? 200 : 400, { 'Content-Type': 'application/json' }, JSON.stringify(r))
+      return
+    }
+    if (url.pathname === '/team/revoke' && req.method === 'POST') {
+      let body = null
+      try { body = await readJsonBody(req) } catch { body = null }
+      let r
+      try {
+        r = revokeMember({ configDir: YFW_HOME, teamId: body && body.teamId, memberId: body && body.memberId })
+      } catch (e) {
+        r = { ok: false, reason: 'revoke-failed', message: String((e && e.message) || e) }
+      }
+      reply(r.ok ? 200 : 400, { 'Content-Type': 'application/json' }, JSON.stringify(r))
+      return
+    }
+    if (url.pathname === '/team/search-root' && req.method === 'POST') {
+      let body = null
+      try { body = await readJsonBody(req) } catch { body = null }
+      let r
+      try {
+        r = setSearchRoot(YFW_HOME, body && body.searchRoot)
+      } catch (e) {
+        r = { ok: false, reason: 'set-search-root-failed', message: String((e && e.message) || e) }
       }
       reply(r.ok ? 200 : 400, { 'Content-Type': 'application/json' }, JSON.stringify(r))
       return

@@ -782,9 +782,14 @@ export function parseJsonl(text) {
 // source 取值被下游依赖：Task 5 的 collectTags 用 source==='experience'/'memory' 决定
 // 文件名是否进 tags，路由把整个 spec 透出给 GUI 区分空间来源，**改动会静默改变检索结果**。
 // 迁移（spec §12）是独立后续任务，届时只改这里三行 root。
-export function builtinSpaceSpecs(configDir) {
+//
+// 【S3-D6/团队源：opt-in 的 `extra`】团队知识空间（`team-<teamId>`，spec §7.1 要求"插在
+// builtinSpaceSpecs"）由调用方经 `extra` 传入 —— 本函数**不自己读团队配置**：一旦在这里加 IO，
+// 它就从"按目录算出清单"变成"要读磁盘状态"，会让所有既有调用点（含无 IO 的纯逻辑单测）行为漂移。
+// 不传 `extra` 时返回值与改造前**逐字一致**（零回归）。
+export function builtinSpaceSpecs(configDir, { extra = [] } = {}) {
   const base = String(configDir ?? '')
-  return [
+  const specs = [
     {
       id: 'experience', name: '个人经验',
       description: '跨会话沉淀的个人经验条目',
@@ -801,6 +806,11 @@ export function builtinSpaceSpecs(configDir) {
       root: join(base, 'memory', 'skill_experiences'), writable: true, source: 'skill_exp',
     },
   ]
+  // 追加顺序：内置在前、团队在后（团队空间由 `discoverSpaces` 按"目录存在才挂"决定是否出现）
+  for (const s of Array.isArray(extra) ? extra : []) {
+    if (s && s.id && s.root) specs.push(s)
+  }
+  return specs
 }
 
 // ── 关联锚点（S5 Task 1，spec §5/§7.1）─────────────────────────────────────

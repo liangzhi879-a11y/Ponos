@@ -64,6 +64,9 @@ import { loadSpec, resolveScopedApp } from './app-spec.mjs'
 // K0 观测 + K1.2 缓存命中计数（默认关：关闭时只付一次布尔判断，见 kernel/perf.mjs）
 import { perfCount } from './perf.mjs'
 import { syncAppPermissionRules } from './app-permissions.mjs'
+// 【S3 内容协同】会话知识范围纳入**团队知识空间**（§5.9：检索范围默认跨全部空间、**不受模式影响**）。
+// `safeTeamSpaceSpecs` 异常时返回 `[]`、未加入团队时也返回 `[]` ⇒ 与改造前逐字一致（零回归）。
+import { safeTeamSpaceSpecs } from './team-sync.mjs'
 // 应用智控：应用即工具（绑定到本会话的应用命令 → app_* 具名工具，Task 4.x）
 import { buildAppTools } from './app-tools.mjs'
 
@@ -484,7 +487,7 @@ export async function main(argv) {
   // 看到"注入里没有这条、检索却说自己没权限"的自相矛盾，比单纯少个能力更难排查。
   //
   // 放在 log 之后 / createEngine 之前：工具层白名单在引擎构造时就要值。纯目录发现、无 IO 写盘。
-  const knowledgeScope = resolveSessionKnowledgeScope({ configDir, requested: args.knowledgeSpaces })
+  const knowledgeScope = resolveSessionKnowledgeScope({ configDir, requested: args.knowledgeSpaces, extraSpaceSpecs: safeTeamSpaceSpecs(configDir) })
   if (knowledgeScope.missing.length) log.warn('knowledge scope: 关联的库不存在（已忽略）', { missing: knowledgeScope.missing })
   if (knowledgeScope.truncated) log.warn('knowledge scope: 关联数量超上限（已截断）', { max: MAX_ASSOC_SPACES, dropped: knowledgeScope.dropped })
 

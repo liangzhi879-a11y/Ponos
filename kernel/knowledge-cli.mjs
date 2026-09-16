@@ -19,6 +19,9 @@ import { appendMemoryEntry, listMemoryTags, validateAppendEntry, memoryRoot } fr
 // 有"漏登记一个键即**静默失效**"的反复踩坑史（`--spaces`/`--tag`/`doc`/`related` 均栽过），
 // 新增 flag 就要同时改 parseArgs + 转发层 + 真进程回归；本能力挂在既有 op 上，少一个高危面。
 import { makeTagResolver } from './tag-store.mjs'
+// 【S3 内容协同】把**团队知识空间**（`team-<teamId>`，指向团队源目录）挂进 store。
+// `safeTeamSpaceSpecs` 在"未加入任何团队/配置损坏"时返回 `[]` ⇒ 与改造前逐字一致（零回归）。
+import { safeTeamSpaceSpecs } from './team-sync.mjs'
 // 文件知识库导入（2026-09-14）：实现全在 knowledge-import.mjs，本文件只做 op 分发。
 import { importDocuments } from './knowledge-import.mjs'
 // MAX_RELATED 从 shared 中性层取（不另写一个字面量 8）：CLI 的缺省必须与内核缺省同源，
@@ -167,7 +170,7 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
       code: 1,
     }
   }
-  const store = createKnowledgeStore({ configDir })
+  const store = createKnowledgeStore({ configDir, extraSpaceSpecs: safeTeamSpaceSpecs(configDir) })
   try {
     // reindex 必须 force（用户显式要求重建）；其余 op 走"按需加载"（索引缺失/过期时
     // 内部自动全量重建），但 `--force` 可把任一 op 提到强制重建。load 是同步函数
