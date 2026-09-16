@@ -13,6 +13,7 @@ import { extractMilestoneMarks, extractProseStages } from './milestones.mjs'
 import { handleDisabledRoute } from './disabled-routes.mjs'
 import { handleAgentsRoute } from './agents-routes.mjs'
 import { handleSkillDetailRoute } from './skill-detail-routes.mjs'
+import { handleMcpRoute } from './mcp-routes.mjs'
 // GUI → 内核 /loop 指令转译（纯函数模块，零进程依赖）：GUI 发的是纯文本 `/loop …`，
 // 内核无斜杠解析 → 必须在此转译为内核原生 loop 载荷/loop_command（spec 5.5 打通点）
 import { translateLoopSend } from './loop-translate.mjs'
@@ -2558,6 +2559,11 @@ const httpServer = createServer(async (req, res) => {
     // `YFW_HOME` 就是内核子进程的 `CLAUDE_CONFIG_DIR`，故写在这里 = 内核读得到，无需 spawn 透传。
     {
       const r = await handleDisabledRoute({ method: req.method, pathname: url.pathname, readJsonBody: () => readJsonBody(req), configDir: YFW_HOME })
+      if (r) return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.body))
+    }
+    // ── MCP 配置（2026-09-15，P1-6「MCP 配置界面」）：与上面同款纯 handler，落点 <YFW_HOME>/mcp.json ──
+    if (url.pathname === '/mcp' || url.pathname === '/mcp/test') {
+      const r = await handleMcpRoute({ method: req.method, pathname: url.pathname, readJsonBody: () => readJsonBody(req), configDir: YFW_HOME })
       if (r) return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.body))
     }
     if (url.pathname === '/sample-skills') {

@@ -1,0 +1,207 @@
+// kernel-tests/mcp-config.test.mjs —— MCP 配置的读写面（`normalizeMcpServers` / `writeMcpServers` /
+// `readMcpServers`，2026-09-15 P1-6「MCP 配置界面」的服务端）。
+//
+// 为什么这一层要独立成测（而不是只测 HTTP handler）：这些函数是**磁盘前的最后一道闸**。
+//   · 校验漏一条 → GUI 显示"保存成功"，内核 `loadMcpServers` 却读不出这个服务器（静默失效）
+//   · 非原子写    → 内核恰好在写的中途重读，读到半截 JSON → 整个 MCP 配置被当成"损坏"跳过
+//   · 读时抛异常  → GUI 直接白屏，用户连"哪个文件坏了"都看不到
+// 全部用 mkdtempSync 隔离，不碰真实 ~/.yfworking。
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  DEFAULT_MCP_TIMEOUT_MS, normalizeMcpServers, writeMcpServers, readMcpServers, loadMcpServers,
+} from '../kernel/mcp.mjs'
+
+const mkTmp = () => mkdtempSync(join(tmpdir(), 'yfw-mcp-config-'))
+/** 归一到 loadMcpServers 的形状：空 cwd 时它给 null，而 normalize 是"不设该键"——同一件事。 */
+const canon = (servers) => Object.fromEntries(
+  Object.entries(servers).map(([k, v]) => [k, { ...v, cwd: v.cwd ?? null }]),
+)
+
+// ---------------------------------------------------------------------------
+test('normalizeMcpServers：顶层必须是对象；servers 缺省视为 {}；servers 非对象报错', () => {
+  for (const bad of [null, undefined, 42, 'x', [], true]) {
+    const r = normalizeMcpServers(bad)
+    assert.equal(r.ok, false, `${JSON.stringify(bad)} 应被拒（数组尤其危险：放行等于"用 [] 清空配置"）`)
+    assert.ok(r.error, '必须给出可展示的 error')
+  }
+  assert.deepEqual(normalizeMcpServers({}), { ok: true, servers: {} }, 'servers 缺省 = 空配置')
+  assert.deepEqual(normalizeMcpServers({ servers: {} }), { ok: true, servers: {} })
+  for (const badServers of ['oops', 42, [], null]) {
+    assert.equal(normalizeMcpServers({ servers: badServers }).ok, false, `servers=${JSON.stringify(badServers)} 应报错`)
+  }
+})
+
+test('normalizeMcpServers：条目必须带非空 command（含空名），错误文案点名到具体服务器', () => {
+  const r = normalizeMcpServers({ servers: { bad: { args: ['a'] } } })
+  assert.equal(r.ok, false)
+  assert.match(r.error, /缺少 command/)
+  assert.match(r.error, /bad/, '错误要点名哪个服务器，否则多服务器配置里用户无从定位')
+
+  assert.equal(normalizeMcpServers({ servers: { x: { command: '   ' } } }).ok, false, '空白 command 不算数')
+  assert.equal(normalizeMcpServers({ servers: { x: null } }).ok, false, 'null 条目同样读不出 command')
+  assert.equal(normalizeMcpServers({ servers: { '  ': { command: 'node' } } }).ok, false, '空名必须报错（工具前缀会变成 mcp____x）')
+  assert.equal(normalizeMcpServers({ servers: { ' ok ': { command: 'node' } } }).servers.ok.command, 'node', '名字应去空白')
+})
+
+test('normalizeMcpServers：args/env/cwd/timeoutMs 归一规则（与 loadMcpServers 对齐）', () => {
+  const r = normalizeMcpServers({
+    servers: {
+      s: {
+        command: '  node  ',
+        args: ['a.mjs', 1, true],                  // 非字符串元素 → 字符串化
+        env: { A: 'x', N: 2, B: false, O: { k: 1 }, L: [1] }, // 只有原始类型值保留
+        cwd: '  /tmp/work  ',
+        timeoutMs: 500,
+      },
+      d: { command: 'node', args: 'not-array', env: [], cwd: '   ', timeoutMs: -5 },
+    },
+  })
+  assert.equal(r.ok, true, r.error)
+  assert.equal(r.servers.s.command, 'node', 'command 去空白')
+  assert.deepEqual(r.servers.s.args, ['a.mjs', '1', 'true'])
+  assert.deepEqual(r.servers.s.env, { A: 'x', N: '2', B: 'false' }, '对象/数组值丢弃（写进文件只会让人以为内核不认）')
+  assert.equal(r.servers.s.cwd, '/tmp/work')
+  assert.equal(r.servers.s.timeoutMs, 500)
+
+  assert.deepEqual(r.servers.d.args, [], 'args 非数组 → []')
+  assert.deepEqual(r.servers.d.env, {}, 'env 非对象 → {}')
+  assert.equal('cwd' in r.servers.d, false, 'cwd 为空必须**不设键**（留空串会让 spawn 以空 cwd 报错）')
+  assert.equal(r.servers.d.timeoutMs, DEFAULT_MCP_TIMEOUT_MS, '非正 timeoutMs 回落默认值')
+  assert.ok('cwd' in r.servers.s, 'cwd 非空时必须写入')
+})
+
+test('normalizeMcpServers 是纯函数：不改动入参（GUI 拿到原对象后还要继续用）', () => {
+  const input = { servers: { s: { command: 'node', args: ['a'], env: { K: 1 } } } }
+  const snapshot = JSON.stringify(input)
+  normalizeMcpServers(input)
+  assert.equal(JSON.stringify(input), snapshot, '归一化不得就地修改调用方对象')
+})
+
+test('writeMcpServers：校验不通过 → 直接返回且**绝不触碰磁盘**', () => {
+  const dir = mkTmp()
+  try {
+    const file = join(dir, 'mcp.json')
+    const known = JSON.stringify({ servers: { keep: { command: 'node' } } }, null, 2) + '\n'
+    writeFileSync(file, known, 'utf-8')
+    const before = readFileSync(file)
+
+    for (const badServers of [{ x: { args: [] } }, { x: { command: '' } }, 'oops', []]) {
+      const w = writeMcpServers(file, badServers)
+      assert.equal(w.ok, false, `${JSON.stringify(badServers)} 应被拒`)
+      assert.ok(w.error, '必须给出 error')
+      assert.equal(readFileSync(file).equals(before), true, '被拒的写入不得改动既有文件（逐字节比较）')
+    }
+    assert.equal(existsSync(`${file}.tmp`), false, '被拒的写入不得留下 .tmp 残渣')
+
+    // 目标文件不存在时，校验失败也不得"顺手创建"
+    const fresh = join(dir, 'sub', 'mcp.json')
+    assert.equal(writeMcpServers(fresh, { x: {} }).ok, false)
+    assert.equal(existsSync(fresh), false)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('writeMcpServers：原子写（无 .tmp 残留）+ 目录自动创建 + 内核读回等价内容（往返一致）', () => {
+  const dir = mkTmp()
+  try {
+    // 深一层目录：GUI 的 YFW_HOME 可能还不存在，写不进去会表现为"保存无效"
+    const file = join(dir, 'nested', 'deep', 'mcp.json')
+    const servers = {
+      alpha: { command: 'node', args: ['a.mjs'], env: { K: 'v' }, cwd: dir, timeoutMs: 777 },
+      beta: { command: 'npx', args: [], env: {}, timeoutMs: DEFAULT_MCP_TIMEOUT_MS },
+    }
+    const w = writeMcpServers(file, servers)
+    assert.equal(w.ok, true, w.error)
+    assert.deepEqual(w, { ok: true }, '成功返回值就是 {ok:true}（不多塞字段，调用方按契约判断）')
+    assert.equal(existsSync(`${file}.tmp`), false, 'rename 之后不得留下 .tmp（残留会被用户当成垃圾文件）')
+    assert.equal(JSON.parse(readFileSync(file, 'utf-8')).servers !== undefined, true)
+
+    // **强约束**：写出的文件必须能被 loadMcpServers 读回等价内容
+    const back = loadMcpServers(file)
+    assert.deepEqual(canon(back), canon(servers), '往返必须一致，否则用户会看到"保存成功但服务器消失"')
+    assert.deepEqual(Object.keys(back).sort(), ['alpha', 'beta'])
+    assert.equal(back.alpha.timeoutMs, 777)
+    assert.equal(back.alpha.cwd, dir)
+    // 再写一次（覆盖）也要一致：覆盖路径不得累积脏数据
+    assert.equal(writeMcpServers(file, { alpha: { command: 'node' } }).ok, true)
+    assert.deepEqual(Object.keys(loadMcpServers(file)), ['alpha'])
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('writeMcpServers：保留现有文件里的未知顶层键（只覆盖 servers）', () => {
+  const dir = mkTmp()
+  try {
+    const file = join(dir, 'mcp.json')
+    writeFileSync(file, JSON.stringify({ foo: 1, nested: { a: [1, 2] }, servers: { old: { command: 'node' } } }), 'utf-8')
+    assert.equal(writeMcpServers(file, { fresh: { command: 'node' } }).ok, true)
+    const onDisk = JSON.parse(readFileSync(file, 'utf-8'))
+    assert.equal(onDisk.foo, 1)
+    assert.deepEqual(onDisk.nested, { a: [1, 2] })
+    assert.deepEqual(Object.keys(onDisk.servers), ['fresh'])
+
+    // 现有文件损坏时：无法保留未知键，但必须仍能把**合规的新配置**写下去（否则用户永久卡死）
+    writeFileSync(file, '{ 坏的', 'utf-8')
+    assert.equal(writeMcpServers(file, { fresh: { command: 'node' } }).ok, true)
+    assert.deepEqual(Object.keys(loadMcpServers(file)), ['fresh'])
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('readMcpServers：缺文件 → 空配置；坏 JSON / 结构不对 → ok:false 且**绝不抛出**', () => {
+  const dir = mkTmp()
+  try {
+    assert.deepEqual(readMcpServers(join(dir, 'none.json')), { ok: true, servers: {} })
+    assert.deepEqual(readMcpServers(), { ok: true, servers: {} }, '无路径也不得抛')
+
+    const bad = join(dir, 'bad.json')
+    writeFileSync(bad, '{ 这不是 JSON', 'utf-8')
+    const r1 = readMcpServers(bad)          // 关键：这一行不能抛（GUI 要显示错误而不是白屏）
+    assert.equal(r1.ok, false)
+    assert.ok(String(r1.error || '').length > 0)
+
+    const partial = join(dir, 'partial.json')
+    writeFileSync(partial, JSON.stringify({ servers: { good: { command: 'node' }, bad: {} } }), 'utf-8')
+    const r2 = readMcpServers(partial)
+    assert.equal(r2.ok, false, '有条目不合法就整体报错，让用户去修，而不是静默少一个服务器')
+    assert.match(String(r2.error), /bad/)
+
+    const okFile = join(dir, 'ok.json')
+    writeFileSync(okFile, JSON.stringify({ servers: { s: { command: 'node', args: ['a.mjs'] } } }), 'utf-8')
+    const r3 = readMcpServers(okFile)
+    assert.equal(r3.ok, true, r3.error)
+    assert.deepEqual(Object.keys(r3.servers), ['s'])
+    assert.deepEqual(canon(r3.servers), canon(loadMcpServers(okFile)), 'read 与内核 load 必须给出等价结果')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('loadMcpServers 既有语义未被本次追加改动（缺文件 {} / 坏 JSON 抛出 / 无 command 忽略）', () => {
+  const dir = mkTmp()
+  try {
+    assert.deepEqual(loadMcpServers(join(dir, 'none.json')), {})
+    const bad = join(dir, 'bad.json')
+    writeFileSync(bad, '{坏')
+    assert.throws(() => loadMcpServers(bad), '内核侧仍必须抛出（由注册表捕获记日志），不得被改成静默返回')
+    const f = join(dir, 'ok.json')
+    writeFileSync(f, JSON.stringify({ servers: { n: { args: ['x'] }, y: { command: 'node', timeoutMs: -1 } } }), 'utf-8')
+    const cfg = loadMcpServers(f)
+    assert.deepEqual(Object.keys(cfg), ['y'], '无 command 的条目仍然被忽略')
+    assert.equal(cfg.y.timeoutMs, DEFAULT_MCP_TIMEOUT_MS)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('writeMcpServers：路径缺失时报错而不是抛（调用方是 HTTP handler，抛出去就是 500 白屏）', () => {
+  const dir = mkTmp()
+  try {
+    const w = writeMcpServers('', { s: { command: 'node' } })
+    assert.equal(w.ok, false)
+    assert.ok(w.error)
+    // 目录被占位成文件（模拟 IO 失败）→ 返回 ok:false，不抛
+    const blocked = join(dir, 'blocked.json')
+    mkdirSync(join(dir, 'dir'))
+    writeFileSync(blocked, 'x', 'utf-8')
+    const w2 = writeMcpServers(join(blocked, 'mcp.json'), { s: { command: 'node' } })
+    assert.equal(w2.ok, false, 'IO 失败必须是 {ok:false}，由 handler 转成 500')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

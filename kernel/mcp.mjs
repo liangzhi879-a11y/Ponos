@@ -8,7 +8,8 @@
 //     三种情况都必须把 pending 里的 promise 全部 reject 并清空，绝不留下永不 resolve 的项
 //   · stderr 单独按行留存（最近 N 行）作诊断，**不混入 stdout**（那是协议流）
 import { spawn } from 'node:child_process'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 export const DEFAULT_MCP_TIMEOUT_MS = 20000
 const STDERR_KEEP = 20
@@ -252,5 +253,101 @@ export async function startMcpClient({ name, command, args = [], env = {}, cwd =
     stats() {
       return { pending: pending.size, closed, calls, errors, lastStderr: stderrLines.slice(-5) }
     },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 配置文件的**读写面**（P1-6，供 GUI 的 MCP 配置界面使用）——与上面的客户端逻辑分开：
+//   · `loadMcpServers` 是内核启动路径，纪律是"坏配置不许拖垮内核"（解析失败就抛出、由调用方跳过）
+//   · 这一组是**GUI 路径**，纪律是"坏数据不许落盘、坏文件不许抛崩界面"（全部返回 {ok:false}）
+// 两套纪律不能混用：内核可以"跳过坏配置继续跑"，但 GUI 必须把错误**回报给用户**，
+// 否则用户点"保存"后界面显示成功、内核其实读不懂 —— 这是本仓库最痛的一类静默失效。
+//
+// 强约束（有测试断言）：`writeMcpServers` 写出的文件必须能被 `loadMcpServers` 读回等价内容。
+// 若两边归一化规则漂移（例如这里过滤了 args、那边没过滤），用户会看到"保存成功但服务器消失"。
+// ---------------------------------------------------------------------------
+
+/**
+ * 归一化 `{ servers: { <name>: {command,args,env,cwd,timeoutMs} } }`（**纯函数、无 IO**）。
+ * 校验严格是因为它挡在磁盘前面：任何"能通过校验但内核读不懂"的条目都是静默失效。
+ * @returns {{ok:true, servers:object} | {ok:false, error:string}}
+ */
+export function normalizeMcpServers(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    // 数组也是 typeof 'object'，但它不可能是合法配置；放行会变成"用 [] 把用户配置清空"
+    return { ok: false, error: 'MCP 配置必须是 JSON 对象' }
+  }
+  const src = raw.servers === undefined ? {} : raw.servers
+  if (!src || typeof src !== 'object' || Array.isArray(src)) {
+    return { ok: false, error: 'servers 必须是对象（{ "<名称>": { command, ... } }）' }
+  }
+  const out = {}
+  for (const [rawName, cfg] of Object.entries(src)) {
+    const name = String(rawName || '').trim()
+    if (!name) return { ok: false, error: '服务器名称不能为空' }
+    // 非对象条目（null/字符串等）同样按"缺 command"报错：它确实没有可读的 command，
+    // 而"逐条目报姓名"是 GUI 能定位问题的前提。
+    const command = cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? String(cfg.command ?? '').trim() : ''
+    if (!command) return { ok: false, error: `服务器 "${name}" 缺少 command` }
+    const args = Array.isArray(cfg.args) ? cfg.args.map(String) : []
+    const env = {}
+    if (cfg.env && typeof cfg.env === 'object' && !Array.isArray(cfg.env)) {
+      for (const [k, v] of Object.entries(cfg.env)) {
+        // 只收原始类型：对象/数组当环境变量值毫无意义，写进文件只会让用户以为是内核不认
+        if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') env[k] = String(v)
+      }
+    }
+    const entry = { command, args, env }
+    // cwd 为空则**不设该键**：留空字符串会让 spawn 以空 cwd 启动而报错，
+    // 而"缺键"在 `loadMcpServers` 侧本来就是 null（= 沿用当前工作目录）。
+    const cwd = cfg.cwd === undefined || cfg.cwd === null ? '' : String(cfg.cwd).trim()
+    if (cwd) entry.cwd = cwd
+    entry.timeoutMs = Number.isFinite(cfg.timeoutMs) && cfg.timeoutMs > 0 ? cfg.timeoutMs : DEFAULT_MCP_TIMEOUT_MS
+    out[name] = entry
+  }
+  return { ok: true, servers: out }
+}
+
+/**
+ * 读配置供 GUI 展示。**绝不抛出**（GUI 要能显示"文件坏了"而不是白屏）。
+ * @returns {{ok:true, servers:object} | {ok:false, error:string}} 缺文件视为空配置
+ */
+export function readMcpServers(configPath) {
+  try {
+    if (!configPath || !existsSync(configPath)) return { ok: true, servers: {} }
+    const n = normalizeMcpServers(JSON.parse(readFileSync(configPath, 'utf-8')))
+    return n.ok ? n : { ok: false, error: n.error }
+  } catch (e) {
+    return { ok: false, error: `MCP 配置读取失败：${e?.message || String(e)}` }
+  }
+}
+
+/**
+ * 写配置（`servers` 是**服务器映射**，即 `{servers:{...}}` 里的那层）。
+ * - 校验不通过 → **直接返回且不触碰磁盘**（半校验就落盘会把用户既有配置写坏）
+ * - 校验通过 → mkdir → 写 `<configPath>.tmp` → rename 原子替换（避免半截文件被内核读到）
+ * - **保留现有文件里的未知顶层键**：将来配置里加别的字段（或用户手写注释性字段）不因保存而丢
+ * @returns {{ok:true} | {ok:false, error:string}}
+ */
+export function writeMcpServers(configPath, servers) {
+  if (!configPath) return { ok: false, error: '缺少配置文件路径' }
+  const n = normalizeMcpServers({ servers })
+  if (!n.ok) return n
+  let base = {}
+  if (existsSync(configPath)) {
+    try {
+      const cur = JSON.parse(readFileSync(configPath, 'utf-8'))
+      if (cur && typeof cur === 'object' && !Array.isArray(cur)) base = cur
+      // 现有文件坏了：无法保留未知键，只能整体覆盖（GUI 的 GET 已把错误告诉用户）
+    } catch { /* 同上 */ }
+  }
+  try {
+    mkdirSync(dirname(configPath), { recursive: true })
+    const tmp = `${configPath}.tmp`
+    writeFileSync(tmp, JSON.stringify({ ...base, servers: n.servers }, null, 2) + '\n', 'utf-8')
+    renameSync(tmp, configPath) // 原子替换：内核随时可能重读此文件，绝不能看到半截 JSON
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: `MCP 配置写入失败：${e?.message || String(e)}` }
   }
 }
