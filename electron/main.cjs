@@ -7,7 +7,7 @@
  * Electron auto-starts the bridge, then loads the frontend.
  * CommonJS so Electron runs it directly without transpilation.
  */
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell, Tray, Notification, nativeImage, screen, clipboard } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, Tray, Notification, nativeImage, screen, clipboard, safeStorage } = require('electron')
 const { spawn } = require('child_process')
 const path = require('path')
 const fs = require('fs')
@@ -50,6 +50,7 @@ const { BrowserExecutor } = require('./browser-executor.cjs')
 // 应用智控（第六 rail「应用智控」）：app:* IPC 通道集中注册在 app-ipc.cjs，
 // 本文件只留这一行接线（12 条通道 + 目标分发逻辑集中一处才好审计）。
 const { registerAppHandlers, handleAppExecMessage } = require('./app-ipc.cjs')
+const { registerVaultHandlers } = require('./vault-ipc.cjs')
 
 // ---------------------------------------------------------------------------
 // 应用内诊断（Task 2）：日志 tee 最早期接入——启动序列第一行日志即入盘。
@@ -554,6 +555,9 @@ async function startBridgeAndWait() {
 // 但透明窗口让每个 CSS 动画都走每帧全窗合成路径（旧 GPU 上 ~13% GPU + 放大
 // 渲染进程动画成本）——非 glass 主题改为不透明窗口是纯性能优化、零视觉回归。
 const THEME_FILE = () => path.join(app.getPath('userData'), 'theme.json')
+// 2026-09-15：'light-glass' 主题已删除；此处保留它仍是无害的历史兼容
+// （老用户磁盘上可能仍是 light-glass，按 glass 处理只是多一次透明窗口，
+// 渲染层迁移会把主题改成 'light'，下次启动即不再命中）。
 const GLASS_THEMES = ['dark-glass', 'light-glass']
 function readPersistedTheme() {
   try {
@@ -1223,6 +1227,18 @@ async function registerIpc() {
     ipcMain,
     getExecutor: () => browserExecutor,
     getWebContents: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null),
+  })
+
+  // ---------------------------------------------------------------------------
+  // 密码库（vault）：safeStorage 加密落盘 <YFW_HOME>/vault.enc（实现见 electron/vault-ipc.cjs）。
+  // 加密器传 Electron 的 safeStorage（OS 能力：DPAPI/Keychain/libsecret），不在此自研密码学；
+  // 不可用时由 vault 内部 fail-closed 拒绝读写（绝不回退明文）。
+  // ---------------------------------------------------------------------------
+  registerVaultHandlers({
+    ipcMain,
+    home: ensureYfwHome(),
+    crypto: safeStorage,
+    clipboard,
   })
 
   // 编辑器窗口内关闭按钮 / 标签全关闭后的自动收起

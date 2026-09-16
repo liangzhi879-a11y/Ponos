@@ -122,14 +122,34 @@ contextBridge.exposeInMainWorld('yfworkingWindow', {
 })
 
 // File dialogs (skill install / knowledge pack install)
-contextBridge.exposeInMainWorld('yfworkingFile', {
-  openSkillPackage: () => ipcRenderer.invoke('dialog:open-skill-package'),
+contextBridge.exposeInMainWorld('yfworkingFile', {  openSkillPackage: () => ipcRenderer.invoke('dialog:open-skill-package'),
   // S4：知识包市场"从本地文件安装"（.zip）。缺 IPC 时前端给"仅桌面版"提示并禁用按钮
   openKnowledgePack: () => ipcRenderer.invoke('dialog:open-knowledge-pack'),
   // 文件知识库导入（2026-09-14）：文件（可多选）与文件夹两种取源；
   // 只回路径，解析与落盘在主进程/内核侧（见 main.cjs 同名 handler 的头注）。
   pickKnowledgeFiles: () => ipcRenderer.invoke('dialog:pick-knowledge-files'),
   pickKnowledgeFolder: () => ipcRenderer.invoke('dialog:pick-knowledge-folder'),
+})
+
+// 密码库（2026-09-15）：明文只在主进程解密（D3）。
+//   · list 回收据式条目（**不含 password**）——默认最小暴露；
+//   · 显示明文走 reveal（单条按需）；
+//   · 复制走 copy，收的是**条目 id**而非文本，明文不回渲染层。
+// 返回 { ok:false, error } 时必须按 error 分类：'unavailable'（系统安全存储不可用）
+// 与 'corrupt'（文件读不出来）是两种不同故障，**都不能当成"库是空的"**。
+contextBridge.exposeInMainWorld('yfworkingVault', {
+  status: () => ipcRenderer.invoke('vault:status'),
+  list: () => ipcRenderer.invoke('vault:list'),
+  upsert: (payload) => ipcRenderer.invoke('vault:upsert', payload),
+  remove: (id) => ipcRenderer.invoke('vault:remove', id),
+  reveal: (id) => ipcRenderer.invoke('vault:reveal', id),
+  copy: (id) => ipcRenderer.invoke('vault:copy', id),
+  // 应用密钥（模型 authToken 等）：不再明文落 localStorage / 配置文件。
+  // secretKeys 只回键名（"配没配"），secretGetAll 供启动注水，secretSet 空值即删除。
+  secretKeys: () => ipcRenderer.invoke('vault:secret-keys'),
+  secretGetAll: () => ipcRenderer.invoke('vault:secret-get-all'),
+  secretSet: (key, value) => ipcRenderer.invoke('vault:secret-set', key, value),
+  secretDelete: (key) => ipcRenderer.invoke('vault:secret-delete', key),
 })
 
 // 启动预热进度（2026-09-11：main 轮询 bridge /boot-status 后转发真实模块就绪事件）
