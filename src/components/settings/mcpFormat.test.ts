@@ -12,7 +12,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  badgeOf, toolsOf, errorOf, summarize, summaryText, transportOf, configForTransport,
+  badgeOf, toolsOf, errorOf, summarize, summaryText, transportOf, configForTransport, canSaveConfig,
   parseKeyValueLines, formatKeyValueLines, parseArgLines, formatArgLines, nextDraft,
   type McpTestState,
 } from './mcpFormat.ts'
@@ -186,6 +186,27 @@ test('nextDraft：仅"外部真变了"才回灌（重新读取 / 切换传输清
     nextDraft('old', 'new-from-reload', 'old'), { draft: 'new-from-reload', lastExternal: 'new-from-reload' },
     '重新读取后配置变了 ⇒ 覆盖草稿',
   )
+})
+
+// 【交互自查，2026-09-16】保存按钮的可用性 —— 含一条真实的数据丢失路径。
+test('canSaveConfig：读取失败时必须禁用保存（否则空列表会覆盖磁盘上那份配置）', () => {
+  // 配置文件损坏时 GET /mcp 返回 ok:false + servers:{}（后端刻意用 200 好让界面显示原因），
+  // 界面拿到 rows=[]。若此时仍允许保存，一次点击就把空配置 PUT 回磁盘，
+  // 覆盖掉那份也许只是少了个括号、还能手工救回来的文件。
+  assert.equal(
+    canSaveConfig({ rowCount: 0, validateMsg: '', loadFailed: true }), false,
+    '读不出当前状态 ⇒ 不许写：空列表是"读失败"的假象，不是"用户清空了配置"',
+  )
+  assert.equal(canSaveConfig({ rowCount: 2, validateMsg: '', loadFailed: true }), false,
+    '读取失败时即便界面上还留着行，也不该允许保存（状态本身不可信）')
+
+  // 正常路径不受影响
+  assert.equal(canSaveConfig({ rowCount: 0, validateMsg: '', loadFailed: false }), true,
+    '文件不存在时内核返回 ok:true + 空配置 ⇒ 首次使用必须能保存')
+  assert.equal(canSaveConfig({ rowCount: 1, validateMsg: '', loadFailed: false }), true)
+  assert.equal(canSaveConfig({ rowCount: 1, validateMsg: '名称与命令均为必填', loadFailed: false }), false,
+    '有校验错误时不许保存')
+  assert.equal(canSaveConfig({ rowCount: 3, validateMsg: 'URL 必填', loadFailed: false }), false)
 })
 
 test('陷阱回归：**不得从 config 反推编辑态的传输类型**（否则"远程 HTTP"会选不中）', () => {

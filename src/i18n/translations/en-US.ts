@@ -557,6 +557,9 @@ export const enUS: TranslationKeys = {
     mcpSaved: 'Saved',
     mcpLoadFailed: 'Failed to load config',
     mcpSaveFailed: 'Failed to save',
+    // Save is disabled when the config could not be read: the empty list on screen is not the truth,
+    // and saving would overwrite a file that may still be repairable by hand.
+    mcpSaveBlocked: 'Config could not be read, so saving is disabled to avoid overwriting it (fix the file, then Reload)',
     mcpNamePlaceholder: 'Server name (unique)',
     mcpCommand: 'Command',
     mcpArgs: 'Arguments (one per line)',

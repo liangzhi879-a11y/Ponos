@@ -27,7 +27,7 @@ import {
   type McpServerConfig,
 } from '@/lib/mcpApi'
 import {
-  badgeOf, toolsOf, errorOf, summarize, summaryText, transportOf, configForTransport,
+  badgeOf, toolsOf, errorOf, summarize, summaryText, transportOf, configForTransport, canSaveConfig,
   parseArgLines, formatArgLines, parseKeyValueLines, formatKeyValueLines, nextDraft,
   type McpTestState, type McpTransport,
 } from '@/components/settings/mcpFormat'
@@ -169,6 +169,9 @@ export function McpPanel() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string>('')
+  // 上一次「读取配置」是否失败：读不出当前状态时必须禁用保存，
+  // 否则空列表会被当成"用户清空了配置"写回磁盘，覆盖那份可能还能救的文件（见 canSaveConfig）
+  const [loadFailed, setLoadFailed] = useState(false)
   const [notice, setNotice] = useState<string>('')
   // 每台服务器的最近一次连接测试结果（按行 key 存）
   const [tests, setTests] = useState<Record<string, McpTestState>>({})
@@ -213,11 +216,13 @@ export function McpPanel() {
       const r = await getMcpConfig()
       setRows(toRows(r.servers))
       setConfigPath(r.configPath || '')
+      setLoadFailed(!r.ok)        // 读不出来 ⇒ 不许保存（空列表会覆盖掉磁盘上那份配置）
       if (!r.ok) setError(r.error || t('settings.mcpLoadFailed'))
     } catch (e) {
       // getMcpConfig 本身不抛（内部已兜底），但 toRows 遇到意外形状会抛。
       // 若不兜住，异常会越过下面的 setLoading(false)，界面就永远停在「读取中」——
       // 这正是刚修的无限循环的表现（同一个死角，必须一并堵上）。
+      setLoadFailed(true)         // 没读到可信状态，同样不许保存
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)   // 无条件复位：loading 卡住会让整个面板不可用
@@ -292,7 +297,9 @@ export function McpPanel() {
       : invalidRow.transport === 'http' && !requiredFilled(invalidRow)
         ? t('settings.mcpErrUrlRequired')
         : t('settings.mcpErrRequired')
-  const canSave = rows.length === 0 || !validateMsg
+  // 读取失败时优先说明"为什么不能保存"，否则用户只会盯着一个灰掉的保存按钮发愣
+  const blockedMsg = loadFailed ? t('settings.mcpSaveBlocked') : ''
+  const canSave = canSaveConfig({ rowCount: rows.length, validateMsg, loadFailed })
 
   const onSave = async () => {
     setSaving(true)
@@ -580,7 +587,9 @@ export function McpPanel() {
         <Button onClick={() => void onSave()} disabled={!canSave || saving || loading}>
           {saving ? t('settings.mcpSaving') : t('settings.mcpSave')}
         </Button>
-        {validateMsg && <span className="text-xs text-amber-400">{validateMsg}</span>}
+        {(blockedMsg || validateMsg) && (
+          <span className="text-xs text-amber-400">{blockedMsg || validateMsg}</span>
+        )}
         <div className="flex-1" />
         <span className="text-[10px] text-tertiary">{t('settings.mcpRestartHint')}</span>
       </div>

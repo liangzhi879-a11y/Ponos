@@ -122,6 +122,29 @@ export function nextDraft(
   return { draft: external, lastExternal: external }
 }
 
+/**
+ * 保存按钮是否可用。
+ *
+ * `loadFailed` 时必须禁用 —— 这是一条真实的数据丢失路径：
+ * 配置文件损坏时 `GET /mcp` 会返回 `ok:false` + `servers:{}`（后端**刻意用 200**，
+ * 好让界面能把"这个文件读不出来 + 原因"画出来），界面于是拿到 rows = []；
+ * 若此时仍允许保存，一次点击就会把空配置 PUT 回磁盘，**覆盖掉那份也许只是少了个括号、
+ * 还能手工救回来的文件**。读不出当前状态就不允许写。
+ *
+ * 与后端"PUT 必须显式带 servers 字段，否则 400"是同一个考虑：
+ * 别让"一次误发"把用户的全部服务器删掉。
+ * 注意「文件不存在」不算失败（内核 `readMcpServers` 返回 `ok:true, servers:{}`），
+ * 否则首次使用的人会被挡在保存之外。
+ */
+export function canSaveConfig(args: {
+  rowCount: number
+  validateMsg: string
+  loadFailed: boolean
+}): boolean {
+  if (args.loadFailed) return false
+  return args.rowCount === 0 || !args.validateMsg
+}
+
 /** 单台服务器最近一次连接测试的结果（未测试 = undefined） */
 export type McpTestState = {
   running?: boolean

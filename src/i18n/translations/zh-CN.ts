@@ -563,6 +563,9 @@ export const zhCN = {
     mcpSaved: '已保存',
     mcpLoadFailed: '读取配置失败',
     mcpSaveFailed: '保存失败',
+    // 读取失败时禁用保存：读不出当前配置 ⇒ 界面上的空列表是假象，一旦保存就会覆盖磁盘上那份
+    // （也许只是少个括号、还能手工救回来的）文件。文案要给出自救路径，否则用户只会对着灰按钮发愣。
+    mcpSaveBlocked: '配置读取失败，已停用保存以免覆盖原文件（请修复后点「重新读取」）',
     mcpNamePlaceholder: '服务器名称（唯一）',
     mcpCommand: '命令',
     mcpArgs: '参数（每行一个）',
