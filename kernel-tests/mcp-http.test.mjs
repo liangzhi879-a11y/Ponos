@@ -10,6 +10,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import net from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { startMcpHttpClient } from '../kernel/mcp-http.mjs'
 
@@ -31,6 +32,18 @@ function startStub(mode) {
 }
 
 const urlOf = (s) => `http://127.0.0.1:${s.port}/mcp`
+
+/** 取一个"确定没人在听"的端口：先绑 0 拿到系统分配的空闲端口，再关掉它 */
+function freeClosedPort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer()
+    srv.on('error', reject)
+    srv.listen(0, '127.0.0.1', () => {
+      const p = srv.address().port
+      srv.close(() => resolve(p))
+    })
+  })
+}
 
 /**
  * 收尾必须容错：若客户端在**构造阶段**就失败（如握手超时），`c` 仍是 undefined，
@@ -157,6 +170,33 @@ test('HTTP 客户端：握手阶段就超时 → 启动即失败（不留半个�
       '握手失败必须让 start 直接 reject，由注册表记入失败服务器',
     )
   } finally { s.kill() }
+})
+
+test('HTTP 客户端：不可达的错误必须可诊断（不能只说 "fetch failed"）', async () => {
+  // 这条文案就是 GUI 上"测试"按钮的产出。若只显示 "fetch failed"，
+  // 用户无法区分"地址写错/服务没起/域名解析不了"——等于没有诊断价值。
+  // 用"先占用再释放"的端口拿确定的空闲端口，避免写死某个端口后因环境不同而假通过。
+  const port = await freeClosedPort()
+  await assert.rejects(
+    () => startMcpHttpClient({ name: 'unreachable', url: `http://127.0.0.1:${port}/mcp`, timeoutMs: 2000 }),
+    (e) => {
+      assert.doesNotMatch(e.message, /^fetch failed$/i, '不得把 Node 原始错误直接暴露给用户')
+      assert.match(e.message, /连接被拒绝|ECONNREFUSED/, `应给出可行动的原因，实际：${e.message}`)
+      return true
+    },
+  )
+})
+
+test('HTTP 客户端：保留端口(:1) 这类"有 cause 无 code"的错误也要翻译（别丢 cause）', async () => {
+  // fetch 规范禁止的端口抛的是 TypeError: fetch failed + cause.message='bad port'，且**没有 code**。
+  // 若翻译器只认 code，就会把 cause 一起丢掉、退回成无信息的 "fetch failed"。
+  await assert.rejects(
+    () => startMcpHttpClient({ name: 'badport', url: 'http://127.0.0.1:1/mcp', timeoutMs: 2000 }),
+    (e) => {
+      assert.match(e.message, /bad port/i, `应保留 cause 的信息，实际：${e.message}`)
+      return true
+    },
+  )
 })
 
 test('HTTP 客户端：会话过期(404) 与"地址写错"给出可区分文案', async () => {

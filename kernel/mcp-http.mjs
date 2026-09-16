@@ -21,6 +21,35 @@ import {
 export const MCP_HTTP_PROTOCOL_VERSION = '2025-03-26'
 const CLIENT_INFO = { name: 'yfworking', version: '1.0.0' }
 
+/**
+ * 把 Node fetch 的原始错误翻译成用户能据此行动的话。
+ * 起因：不可达时 fetch 只抛 `TypeError: fetch failed`，真正的原因（ECONNREFUSED 等）
+ * 藏在 `cause` 里。GUI 上"测试"按钮的产出就是这个字符串——若只显示 "fetch failed"，
+ * 用户无法区分"地址写错/服务没起/域名解析不了/被防火墙拦"，等于没有诊断价值。
+ */
+function describeNetworkError(e) {
+  if (!e) return '未知错误'
+  const cause = e.cause
+  const code = cause?.code || e.code
+  switch (code) {
+    case 'ECONNREFUSED': return '连接被拒绝（目标端口没有服务在监听）'
+    case 'ENOTFOUND':
+    case 'EAI_AGAIN': return '域名无法解析（检查地址拼写与本机 DNS）'
+    case 'ETIMEDOUT':
+    case 'UND_ERR_CONNECT_TIMEOUT': return '连接超时（检查网络、代理或防火墙）'
+    case 'ECONNRESET': return '连接被重置（对端中断了连接）'
+    case 'CERT_HAS_EXPIRED': return 'TLS 证书已过期'
+    case 'DEPTH_ZERO_SELF_SIGNED_CERT':
+    case 'SELF_SIGNED_CERT_IN_CHAIN': return 'TLS 证书是自签名的，Node 默认不信任'
+    default: break
+  }
+  if (code) return `${code}${cause?.message ? `：${cause.message}` : ''}`
+  // 有 cause 却无 code 的情况真实存在：例如 fetch 规范禁止的保留端口（如 :1）
+  // 抛的就是 cause.message='bad port'。这类信息比笼统的 "fetch failed" 有用得多，不能丢。
+  if (cause?.message) return `网络错误：${cause.message}`
+  return e.message || String(e)
+}
+
 /** 兜底短文案：错误里带上响应片段便于诊断，但**截断**（避免把整页 HTML 灌进日志/聊天） */
 async function readSnippet(res, max = 200) {
   try {
@@ -123,8 +152,11 @@ export async function startMcpHttpClient({
         session.handleMessage(data)
       }
     } catch (e) {
-      // 传输层错误统一脱敏后再上抛：这条消息可能进入工具结果并显示在对话里
-      throw new Error(redact(e?.message || String(e)))
+      // 两层处理：① 把 fetch 的原始错误翻译成有诊断价值的话（"fetch failed" 等于没说），
+      // ② 统一脱敏后上抛——这条消息会进入工具结果并显示在对话里。
+      // 注意：本模块自己抛的错误（HTTP 500 / 会话过期等）无 cause 也无 code，
+      // describeNetworkError 会原样返回其 message，不会被改写。
+      throw new Error(redact(describeNetworkError(e)))
     } finally {
       clearTimeout(killer)
       inflight.delete(ctrl)
