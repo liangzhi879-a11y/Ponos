@@ -136,9 +136,10 @@ test('非 JSON 响应（桥返回空体）也要被兜住', async () => {
 
 // 【守门用例，2026-09-16】桥真实监听 `YFW_BRIDGE_PORT || 51517`
 // （server/bridge.mjs:59 / electron/main.cjs:206 / vite.config.ts:11 三处一致）。
-// 而 disabledApi.ts:19、agentsApi.ts:23 硬编码了历史端口 127.0.0.1:3939 —— 若照抄，
-// 本页在生产必然「无法连接本地服务」，且单测全绿也发现不了（测试都注入 baseUrl）。
-// 这条用例把端口钉死，防回归。
+// 历史上 disabledApi.ts / agentsApi.ts / skillDetail.ts 与本模块都硬编码过
+// `127.0.0.1:3939`（坏端口，默认配置下必然「无法连接本地服务」），且单测全绿也
+// 发现不了——因为测试都注入 baseUrl。那三处已改走 bridgeBase.ts；
+// 本用例继续把本模块的端口钉死，防回归。更全面的守卫见 bridgeBase.test.ts。
 test('兜底基地址必须是桥默认端口 51517，不得回退到历史端口 3939', () => {
   assert.match(MCP_BASE, /:51517$/, 'MCP_BASE 应指向桥默认端口 51517')
   assert.doesNotMatch(MCP_BASE, /3939/, '不得使用历史坏端口 3939（见 disabledApi.ts 的坑）')
