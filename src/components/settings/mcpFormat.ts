@@ -41,6 +41,28 @@ export function transportOf(config?: McpConfigLike | null): McpTransport {
   return String(config?.url ?? '').trim() ? 'http' : 'stdio'
 }
 
+/**
+ * 切换传输类型时**重造配置对象** —— 即清掉另一侧的全部传输专属字段。
+ *
+ * 为什么必须清（而不是把另一侧字段留在对象里、只是不渲染）：后端把
+ * 「command 与 url 并存」「args/env/cwd 配 url」「headers 配 command」一律判为非法并返回 400。
+ * 字段若只是被 UI 藏起来，保存就会被拒，而界面上找不到任何可疑输入 —— 极难自诊。
+ * `timeoutMs` 是两种传输共用的，必须显式保留：否则用户设过的超时会因切一次传输而莫名回到默认。
+ * 代价：切走再切回会丢掉另一侧已填内容，属刻意取舍（重填成本低，而 400 无法自诊）。
+ *
+ * ⚠️ 返回的 HTTP 配置里 `url` 是**空串**，所以 `transportOf(结果)` 会得到 `'stdio'`。
+ * 这正是「点『远程 HTTP』选不中」那个真实故障的来源：面板当时用 `transportOf(row.config)`
+ * 反推当前传输类型，于是刚切到 HTTP 就被判回 stdio —— 判定"没变化"直接 return、
+ * 高亮弹回、HTTP 表单也不渲染，用户看到的就是"点了没反应"。
+ * 结论：**编辑态的传输类型必须另存**（`Row.transport`），不能从数据反推 ——
+ * 空值状态表达不了"已选 HTTP 但还没填 URL"。
+ */
+export function configForTransport(config: McpConfigLike, kind: McpTransport): McpConfigLike {
+  return kind === 'http'
+    ? { url: '', headers: {}, timeoutMs: config?.timeoutMs }
+    : { command: '', args: [], env: {}, timeoutMs: config?.timeoutMs }
+}
+
 /** 单台服务器最近一次连接测试的结果（未测试 = undefined） */
 export type McpTestState = {
   running?: boolean

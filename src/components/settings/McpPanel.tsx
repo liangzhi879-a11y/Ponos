@@ -27,7 +27,7 @@ import {
   type McpServerConfig,
 } from '@/lib/mcpApi'
 import {
-  badgeOf, toolsOf, errorOf, summarize, summaryText, transportOf,
+  badgeOf, toolsOf, errorOf, summarize, summaryText, transportOf, configForTransport,
   type McpTestState, type McpTransport,
 } from '@/components/settings/mcpFormat'
 
@@ -35,6 +35,17 @@ type Row = {
   /** 稳定 key：重命名时不能丢焦点 */
   key: string
   name: string
+  /**
+   * **传输类型的唯一真源**，不从 config 反推。
+   *
+   * 起因（真实 bug）：HTTP 形态刚切过去时 `url` 还是空串，而"从 url 是否非空反推"会把
+   * 空串判成 stdio ⇒ 点「远程 HTTP」按钮高亮立刻弹回「本地命令」、HTTP 表单也不渲染，
+   * 用户看到的就是"点了没反应、选不中"。
+   * 本质问题：**空值状态无法表达"已选 HTTP 但还没填 URL"** —— 意图必须自己存一份，
+   * 不能靠数据倒推。读已有配置时（toRows）才可以从 config 判定，因为后端只存合法数据
+   * （HTTP 条目必有非空 url）。
+   */
+  transport: McpTransport
   config: McpServerConfig
 }
 
@@ -48,22 +59,15 @@ const emptyConfig = (kind: McpTransport = 'stdio'): McpServerConfig =>
     : { command: '', args: [], env: {}, timeoutMs: 30000 }
 
 /**
- * 切换传输时**重造配置对象**，也就是清掉另一侧的全部传输专属字段。
- *
- * 为什么必须清（而不是把另一侧字段留在对象里、只是不渲染）：后端把
- * 「command 与 url 并存」「args/env/cwd 配 url」「headers 配 command」一律判为非法并返回 400。
- * 字段若只是被 UI 藏起来，保存就会被拒，而界面上找不到任何可疑输入 —— 属于极难自诊的失败。
- * `timeoutMs` 两种传输共用，必须显式保留：否则用户设过的超时会因切一次传输而莫名回到默认。
- * 代价是切走再切回会丢掉另一侧已填内容，属刻意取舍（重填成本低，而 400 无法自诊）。
+ * 切换传输时重造配置对象（清另一侧字段、保留 timeoutMs）。
+ * 实现已下沉到 `mcpFormat.ts` —— 它是纯逻辑，放在组件里无法被单测覆盖，
+ * 而正是这段逻辑"归还空 url"的特性踩了"反推传输类型"的坑（详见该函数注释）。
  */
-const configForTransport = (config: McpServerConfig, kind: McpTransport): McpServerConfig =>
-  kind === 'http'
-    ? { url: '', headers: {}, timeoutMs: config.timeoutMs }
-    : { command: '', args: [], env: {}, timeoutMs: config.timeoutMs }
 
 /** 该传输形态的必填字段是否已填：本地 = 命令，HTTP = URL */
 function requiredFilled(row: Row): boolean {
-  return transportOf(row.config) === 'http'
+  // 一律读 row.transport（真源），不从 config 反推 —— 反推会把"已选 HTTP 但 url 尚空"判成 stdio
+  return row.transport === 'http'
     ? Boolean(String(row.config.url ?? '').trim())
     : Boolean(String(row.config.command ?? '').trim())
 }
@@ -71,7 +75,7 @@ function requiredFilled(row: Row): boolean {
 /** 探测载荷：只带该传输的字段（HTTP 上多发 args/env 会被后端 400 拒掉） */
 function probePayload(row: Row): McpServerConfig {
   const timeoutMs = row.config.timeoutMs
-  if (transportOf(row.config) === 'http') {
+  if (row.transport === 'http') {
     return {
       url: String(row.config.url ?? '').trim(),
       headers: row.config.headers ?? {},
@@ -91,24 +95,30 @@ function probePayload(row: Row): McpServerConfig {
 
 /** 配置对象 → 行模型（args 一行一个，env/headers 一行一个 KEY=VALUE，便于编辑） */
 function toRows(servers: Record<string, McpServerConfig>): Row[] {
-  return Object.entries(servers).map(([name, cfg]) => ({
-    key: nextKey(),
-    name,
-    // 只保留该传输形态的字段：带过去另一侧的键会在保存时被后端判为非法组合
-    config: transportOf(cfg) === 'http'
-      ? {
-          url: cfg.url ?? '',
-          headers: cfg.headers && typeof cfg.headers === 'object' ? cfg.headers : {},
-          timeoutMs: cfg.timeoutMs,
-        }
-      : {
-          command: cfg.command ?? '',
-          args: Array.isArray(cfg.args) ? cfg.args : [],
-          env: cfg.env && typeof cfg.env === 'object' ? cfg.env : {},
-          cwd: cfg.cwd ?? undefined,
-          timeoutMs: cfg.timeoutMs,
-        },
-  }))
+  return Object.entries(servers).map(([name, cfg]) => {
+    // 读已有配置时**可以**从数据判定：后端只存合法数据，HTTP 条目必有非空 url。
+    // 编辑态则不行（url 可能还是空串），所以 Row 上另存 transport 作真源。
+    const transport = transportOf(cfg)
+    return {
+      key: nextKey(),
+      name,
+      transport,
+      // 只保留该传输形态的字段：带过去另一侧的键会在保存时被后端判为非法组合
+      config: transport === 'http'
+        ? {
+            url: cfg.url ?? '',
+            headers: cfg.headers && typeof cfg.headers === 'object' ? cfg.headers : {},
+            timeoutMs: cfg.timeoutMs,
+          }
+        : {
+            command: cfg.command ?? '',
+            args: Array.isArray(cfg.args) ? cfg.args : [],
+            env: cfg.env && typeof cfg.env === 'object' ? cfg.env : {},
+            cwd: cfg.cwd ?? undefined,
+            timeoutMs: cfg.timeoutMs,
+          },
+    }
+  })
 }
 
 /** 行模型 → 配置对象（HTTP 行不写 command/args/env；空 cwd 不下发，避免写入无意义键） */
@@ -118,7 +128,7 @@ function toServers(rows: Row[]): Record<string, McpServerConfig> {
     const name = r.name.trim()
     if (!name) continue
     let cfg: McpServerConfig
-    if (transportOf(r.config) === 'http') {
+    if (r.transport === 'http') {
       cfg = { url: String(r.config.url ?? '').trim(), headers: r.config.headers ?? {} }
     } else {
       cfg = {
@@ -206,7 +216,8 @@ export function McpPanel() {
     setRows(prev => prev.map(r => (r.key === key ? fn(r) : r)))
 
   const addRow = () => {
-    setRows(prev => [...prev, { key: nextKey(), name: '', config: emptyConfig() }])
+    // 新卡片默认本地命令（最常用），transport 显式写入，不从 config 反推
+    setRows(prev => [...prev, { key: nextKey(), name: '', transport: 'stdio' as McpTransport, config: emptyConfig() }])
     setNotice('')
   }
 
@@ -215,10 +226,14 @@ export function McpPanel() {
   /**
    * 切换传输类型：重造配置（清另一侧字段）+ **作废该台的测试结论**。
    * 结论必须作废：换了传输就是换了连接方式，上一次的「✓ 3 个工具」再显示出来就是误导。
+   *
+   * 判定必须读 `row.transport` 而不是 `transportOf(row.config)`：后者在"刚切到 HTTP、
+   * url 还是空串"时会判回 stdio，于是这次切换被当成"没变化"直接 return，而 config
+   * 已经变成 HTTP 形态 —— 表现为按钮点了没反应、选中态弹回。
    */
   const setTransport = (row: Row, kind: McpTransport) => {
-    if (transportOf(row.config) === kind) return
-    patch(row.key, r => ({ ...r, config: configForTransport(r.config, kind) }))
+    if (row.transport === kind) return
+    patch(row.key, r => ({ ...r, transport: kind, config: configForTransport(r.config, kind) }))
     setTests(prev => {
       const next = { ...prev }
       delete next[row.key]
@@ -236,7 +251,7 @@ export function McpPanel() {
     ? t('settings.mcpErrDupName', { name: dupName })
     : !invalidRow
       ? ''
-      : transportOf(invalidRow.config) === 'http' && !requiredFilled(invalidRow)
+      : invalidRow.transport === 'http' && !requiredFilled(invalidRow)
         ? t('settings.mcpErrUrlRequired')
         : t('settings.mcpErrRequired')
   const canSave = rows.length === 0 || !validateMsg
@@ -337,7 +352,7 @@ export function McpPanel() {
               const badge = badgeOf(test)
               const tools = toolsOf(test)
               const err = errorOf(test)
-              const kind = transportOf(row.config)
+              const kind = row.transport   // 真源：不从 config 反推（刚切到 HTTP 时 url 还是空的）
               return (
                 <div key={row.key} className="space-y-3 rounded-xl border p-4">
                   {/* 传输类型放在卡片最上方：它是"这台服务器怎么连"的第一决策，决定下面渲染哪组字段 */}

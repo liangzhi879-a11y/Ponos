@@ -12,7 +12,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  badgeOf, toolsOf, errorOf, summarize, summaryText, transportOf,
+  badgeOf, toolsOf, errorOf, summarize, summaryText, transportOf, configForTransport,
   type McpTestState,
 } from './mcpFormat.ts'
 
@@ -92,4 +92,42 @@ test('transportOf：按 url 判定传输类型（有 url 即 HTTP，否则 stdio
   assert.equal(transportOf({ url: 'https://e.com/mcp' }), 'http')
   assert.equal(transportOf({ url: 'http://127.0.0.1:8080/mcp', headers: { A: 'B' }, timeoutMs: 5000 }), 'http')
   assert.equal(transportOf({ command: 'node', args: [], env: {}, cwd: '/tmp', timeoutMs: 1000 }), 'stdio')
+})
+
+// 【HTTP 传输，2026-09-16】切换传输的实现 + 一个必须钉住的陷阱。
+test('configForTransport：清掉另一侧字段，且保留两传输共用的 timeoutMs', () => {
+  // 清另一侧不是洁癖：内核把「command 与 url 并存」「args/env/cwd 配 url」
+  // 「headers 配 command」一律判 400。字段若只是被 UI 藏起来，保存就会被拒，
+  // 而界面上找不到任何可疑输入 —— 属于极难自诊的失败。
+  const fromStdio = configForTransport(
+    { command: 'npx', args: ['-y'], env: { A: '1' }, cwd: '/x', timeoutMs: 12345 }, 'http',
+  )
+  assert.equal(fromStdio.url, '')
+  assert.equal(fromStdio.command, undefined, 'HTTP 形态不得残留 command（与 url 并存会被 400）')
+  assert.equal(fromStdio.args, undefined, 'HTTP 形态不得残留 args')
+  assert.equal(fromStdio.env, undefined, 'HTTP 形态不得残留 env')
+  assert.equal(fromStdio.cwd, undefined, 'HTTP 形态不得残留 cwd')
+  assert.equal(fromStdio.timeoutMs, 12345, 'timeoutMs 两传输共用，切一次就丢会让用户白设')
+
+  const fromHttp = configForTransport({ url: 'https://e.com/mcp', headers: { A: 'B' }, timeoutMs: 999 }, 'stdio')
+  assert.equal(fromHttp.url, undefined, 'stdio 形态不得残留 url')
+  assert.equal(fromHttp.headers, undefined, 'stdio 形态不得残留 headers')
+  assert.equal(fromHttp.command, '')
+  assert.equal(fromHttp.args?.length, 0)
+  assert.equal(fromHttp.timeoutMs, 999)
+})
+
+test('陷阱回归：**不得从 config 反推编辑态的传输类型**（否则"远程 HTTP"会选不中）', () => {
+  // 真实故障：面板曾用 transportOf(row.config) 反推当前传输类型来决定按钮高亮与渲染哪组字段。
+  // 而刚切到 HTTP 时 url 还是空串（用户还没填），transportOf 便判回 'stdio' ⇒
+  // setTransport 认为"没变化"直接 return、高亮弹回「本地命令」、HTTP 表单不渲染，
+  // 用户看到的就是"点『远程 HTTP』选不中"。
+  // 根因是**空值状态表达不了"已选 HTTP 但还没填 URL"**：意图必须另存（Row.transport），
+  // 不能靠数据倒推。下面这条断言把这个事实固定下来，防止有人改回反推写法。
+  const justSwitched = configForTransport({ command: 'npx' }, 'http')
+  assert.equal(transportOf(justSwitched), 'stdio',
+    '空 url 被判成 stdio —— 这正是不该用 transportOf 反推编辑态的原因')
+
+  // 而"读取已保存的合法配置"仍可用它判定：后端只存合法数据，HTTP 条目必有非空 url
+  assert.equal(transportOf({ url: 'https://e.com/mcp' }), 'http')
 })
