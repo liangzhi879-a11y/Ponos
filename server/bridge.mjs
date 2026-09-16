@@ -80,6 +80,16 @@ import { MANAGED_KEYS, providerProfileEnv, buildIdentityPrompt, activeProviderMo
 import { probeProviderCapabilities, applyProbeResults, resolveWindowFromProbe, maybeAdoptWindowFromEvent } from './provider-probe.mjs'
 
 const PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51517', 10)
+// 【S2-D1（2026-09-16）】桥只绑回环地址。原先 `httpServer.listen(PORT)` 未指定 host ⇒ 同时对
+// 局域网开放（实测 `0.0.0.0:51517 LISTENING`，任何同网段设备都能直调全部端点），而 origin
+// 校验对"不带 Origin 头的非浏览器客户端"一律放行（`isAllowedOrigin` 首行 `if (!origin) return
+// true`）⇒ 局域网内可直接读/写任意文件、读 `/config`（含明文 provider token）。鉴权（D2）尚未
+// 落地，故先把可达性收窄到本机。
+// 为什么不是"回环双栈"（127.0.0.1 + ::1 两个 server）：客户端已统一改写成显式 127.0.0.1
+// （`src/lib/config.ts` / `electron/main.cjs` / `pet/jiajia-pet.py`），不再依赖 `localhost` 的
+// IPv4/IPv6 解析顺序；单栈让 netstat 验收结论干净（仅 127.0.0.1）。若要恢复 IPv6 回环客户端，
+// 需同时补 `::1` 监听并抽 HTTP/WS handler——那是本决策的反向操作，勿只改一半。
+const LOOPBACK_HOST = '127.0.0.1'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 /** 读取并 JSON.parse 请求体（各 POST 路由共用）。 */
@@ -3114,8 +3124,12 @@ if (!process.env.YFW_BRIDGE_NO_LISTEN) {
       reclaimAttempts++
       setTimeout(listenWithReclaim, 800)
     })
-    httpServer.listen(PORT, () => {
+    httpServer.listen(PORT, LOOPBACK_HOST, () => {
+      // 首行日志文案保持 `http+ws://localhost:<port>`：12 个 server/*.test.mjs 以本行作**就绪
+      // 判据**（改文案＝无谓扩大 diff）。紧随其后补一行精确地址，消除"日志说 localhost、
+      // 实际只绑 127.0.0.1"的歧义（S2-D1 后这两者不再等价）。
       console.log('[bridge] http+ws://localhost:' + PORT)
+      console.log(`[bridge] listening ${LOOPBACK_HOST}:${PORT} (loopback only)`)
       autoInstallSamples()
       bootState.samplesInstalled = true // 预热就绪信号（同步函数，返回即完成/尽力）
       autoInstallBuiltinWorkflows()

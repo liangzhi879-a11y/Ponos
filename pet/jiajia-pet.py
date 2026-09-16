@@ -59,7 +59,10 @@ LOG_PATH = YFW_HOME / 'pet.log'
 ASSET_DIR = Path(__file__).resolve().parent / 'assets'
 
 BRIDGE_PORT = os.environ.get('YFW_BRIDGE_PORT', '51517')
-BRIDGE_URL = f'ws://localhost:{BRIDGE_PORT}'
+# 【S2-D1 配套（2026-09-16）】桥只绑 127.0.0.1（IPv4 回环）。此处不能写 `localhost`：
+# socket.create_connection 按 getaddrinfo 顺序尝试，Windows 上常先给 ::1 —— 桥已不监听
+# IPv6 回环，桌宠会连不上（表现为宠物不动/无气泡，且不报错给用户）。
+BRIDGE_URL = f'ws://127.0.0.1:{BRIDGE_PORT}'
 
 FRAME_W, FRAME_H = 408, 512
 CELLS = 8

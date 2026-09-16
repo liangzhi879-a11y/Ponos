@@ -204,7 +204,7 @@ let petIntentKill = null     // 主动 kill 的宠物进程（区分“用户右
 let petRestartTimer = null   // 宠物配置变更重启的防抖定时器
 const ICON_PATH = path.join(__dirname, '..', 'public', 'icon.png')
 const BRIDGE_PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51517', 10)
-const BRIDGE_READY_URL = `http://localhost:${BRIDGE_PORT}/health`
+const BRIDGE_READY_URL = `http://127.0.0.1:${BRIDGE_PORT}/health`
 
 // ---------------------------------------------------------------------------
 // Bridge lifecycle
@@ -791,7 +791,10 @@ function showMainWindow() {
 // ---------------------------------------------------------------------------
 function connectBridgeClient(onMessage, { tag = 'bridge', onOpen, onClose } = {}) {
   try {
-    const ws = new WebSocket('ws://localhost:' + BRIDGE_PORT)
+    // 【S2-D1 配套（2026-09-16）】显式 127.0.0.1：桥只绑 IPv4 回环，用 `localhost` 会先解析
+    // ::1（Windows 默认序）而连不上——主进程这条 WS 是"桥事件 → 窗口"的通道，静默失联的
+    // 表现是托盘/宠物/小窗不收事件，很难归因。
+    const ws = new WebSocket('ws://127.0.0.1:' + BRIDGE_PORT)
     ws.on('open', () => {
       console.log('[main] ' + tag + ' bridge client connected')
       if (typeof onOpen === 'function') { try { onOpen(ws) } catch (e) { console.error('[main] ' + tag + ' onOpen error:', e.message) } }

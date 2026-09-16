@@ -12,7 +12,11 @@ import type { ModelProvider, YFWorkingConfigV2 } from '@/types'
 // ---------------------------------------------------------------------------
 
 export function getBridgeUrl(): string {
-  return import.meta.env.VITE_BRIDGE_URL || `http://localhost:${__BRIDGE_PORT__}`
+  // 【S2-D1 配套（2026-09-16）】host 显式写 127.0.0.1，不用 `localhost`：桥已收窄为只绑
+  // 127.0.0.1（`server/bridge.mjs` 的 LOOPBACK_HOST），而 `localhost` 在 Windows 上会解析到
+  // ::1 优先——实测桌宠/主进程此前正是经 `[::1]` 连的。写死 IPv4 回环后，"谁连桥、连到哪个
+  // 地址"成为可 grep 的静态事实，不再取决于 DNS 解析顺序（否则表现为"偶发连不上"）。
+  return import.meta.env.VITE_BRIDGE_URL || `http://127.0.0.1:${__BRIDGE_PORT__}`
 }
 
 export function getWsUrl(): string {
