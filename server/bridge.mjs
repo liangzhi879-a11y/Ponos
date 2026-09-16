@@ -585,9 +585,9 @@ function loadConfig() {
   }
 }
 
-// Bypass the kernel's interactive login (claude login / OAuth) by writing
-// the active provider's credentials into ~/.yfworking/settings.json. The
-// Claude Code kernel reads env vars from settings.json at startup, so the
+// Bypass the kernel's interactive login (OAuth) by writing the active
+// provider's credentials into ~/.yfworking/settings.json. The kernel reads
+// env vars from settings.json at startup, so the
 // app works with plain API keys — no browser-based authentication needed.
 const YFW_SETTINGS_PATH = join(YFW_HOME, 'settings.json')
 
@@ -755,7 +755,7 @@ function bootstrapKernelToUserDir(kernel) {
 function findYFWorking() {
   // NOTE: 必须 spawn 本库 ponos 内核（kernel/ 源码或 kernel-dist bundle，node
   // 直跑）——NOT npm-global yfworking.cmd（那是 GUI launcher：会起 bridge+vite+
-  // browser、杀掉内核会话），也 NOT PATH 上的 stock Claude Code（会绕过一切 YFW
+  // browser、杀掉内核会话），也 NOT PATH 上其它同名 CLI（会绕过一切 YFW
   // 隔离修复）。运行时 = node（D1）：`"<node>" "<kernel>"`（spawn shell:true，
   // 命令 + args 直接拼接）。node 定位 = process.execPath——bridge 恒由 node 拉起
   //（dev：node server/bridge.mjs；packaged：main.cjs startBridge resolveNode()）。
@@ -955,8 +955,8 @@ const appRouter = makeAppRouter({ writeKernel: writeControlRequest })
 const q = (s) => '"' + String(s).replace(/"/g, '') + '"'
 
 // Build the isolated environment for spawned CLI processes.
-// PONOS_CONFIG_DIR redirects Claude Code's config dir to ~/.yfworking so
-// the agent's sessions, memory, and skills never collide with ~/.claude.
+// PONOS_CONFIG_DIR points the kernel's config dir at ~/.yfworking so the
+// agent's sessions, memory, and skills never collide with other tools' dirs.
 // 内核 provider 环境签名（2026-09-10 模型热切换修复）：spawn 时冻结内核收到的
 // provider 环境（baseUrl/model/auth），后续 send 携带的新配置与冻结签名不一致 →
 // 收割旧内核、以 --resume + 新配置重启（同一聊天内切换模型真正生效，历史经
@@ -1033,9 +1033,9 @@ function buildChildEnv() {
   const logLevel = normalizeLogPolicy(cfg.logPolicy).level
   if (logLevel !== 'info') env.PONOS_LOG_LEVEL = logLevel
   // Inject the active provider's API config as ANTHROPIC_* env vars so the
-  // Claude Code kernel actually calls the user-configured endpoint/model
-  // with the user's token. Without these the CLI falls back to its built-in
-  // anthropic.com defaults and the saved config is ignored at runtime.
+  // kernel actually calls the user-configured endpoint/model with the user's
+  // token. Without these the CLI falls back to its built-in protocol defaults
+  // and the saved config is ignored at runtime.
   if (provider && provider.apiBaseUrl && provider.authToken) {
     env.ANTHROPIC_BASE_URL = provider.apiBaseUrl
     env.ANTHROPIC_AUTH_TOKEN = provider.authToken
