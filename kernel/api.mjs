@@ -709,6 +709,19 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // 子 lane 计划尾守卫测试（2026-09-16 两侧对齐）：触发 Agent tool_use，子任务 prompt
+  // 内嵌 [mock:lane-plan-tail]——lane 侧首轮只产"承诺后续动作"文本（无工具调用），
+  // engine 注入计划尾续跑指令后由下方 R3-2 恢复分支（历史含计划尾注入串）产成功 Bash。
+  // marker 与既有互不子串劫持：'agent-lane-plan-tail' 中 'lane' 前有 'agent-'，
+  // 不匹配 lane 侧要求紧邻 'mock:' 的 [mock:lane-plan-tail]。
+  if (lastText.includes('[mock:agent-lane-plan-tail]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_mock_agent_lane_plan_tail', name: 'Agent',
+      input: { subagent_type: 'general-purpose', prompt: '子任务：请针对 [mock:lane-plan-tail] 输出确认并执行' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // 子 lane R3-2 失败自愈测试（审计 #10）：触发 Agent tool_use，子任务 prompt 内嵌
   // [mock:lane-heal]——lane 侧首轮产失败 Bash，engine 注入"请立即重试"续跑后由 R3-2
   // 恢复分支（历史含守卫注入串）产成功 Bash（见下方 lane-heal 模拟分支）
@@ -820,6 +833,20 @@ async function* mockStream({ messages, signal }) {
     if (signal?.aborted) throw abortError()
     await sleep(MOCK_SLEEP_MS)
     yield { type: 'tool_use', id: `tool_use_lane_healcap_${n}_${Math.floor(Math.random() * 1e9)}`, name: 'Bash', input: { command: `exit ${n}` } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // 子 lane 计划尾模拟（2026-09-16 两侧对齐 [mock:lane-plan-tail]）：lane 任务 prompt 仍为
+  // 末条 user 文本（lastText 含标记 → 尚未经历注入轮）⇒ 只产**文本**、不产工具调用，且
+  // 文本尾部是"承诺后续动作"（命中 gen-guards 的 PLAN_TAIL_RE）——模拟子任务"只说不做"。
+  // engine 在"无工具轮 break"前应注入计划尾续跑指令（而不直接收尾），随后 R3-2 恢复分支
+  // （历史含【系统】你在上一轮承诺了后续动作串）产成功 Bash，lane 得以继续执行。
+  // 用 lastText 门控（非历史门控）：注入轮之后 lastText 已是注入文案、不再含标记，
+  // 否则会每轮重复产计划尾文本直到 guardInjections 上限，测不出"注入 → 恢复"路径。
+  if (lastText.includes('[mock:lane-plan-tail]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'text', text: '我先看一下这个子任务的输入。接下来我要读取核心表格并核对数据。' }
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }

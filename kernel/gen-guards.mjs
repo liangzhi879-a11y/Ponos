@@ -7,7 +7,19 @@ import { NEAR_REPEAT_CODE_SKIP } from './engine-config.mjs'
 // R3-2 计划尾检测：模型以"计划/承诺"措辞收尾但未执行工具调用（计划尾巴）。
 // 匹配文本尾部 120 字符内的计划词；完成语（完成/结束/以上就是/无需…）优先否决，
 // 避免误伤正常收尾。中英双语覆盖。
-export const PLAN_TAIL_RE = /(先(读|看|查|确认|检查|验证|尝试|搜索|获取|执行|开始)|(接下来|然后|接着|下一步)(读|看|查|检查|验证|处理|执行|写|改|搜索|获取|开始|做|需要|要)|开始(实施|执行|动手|做|写|改|处理)|准备(好|一下)?|需要先|我先|让我(先|开始|试)|稍等|待会|再(继续|检查|验证|读|看)|立即(开始|动手|执行)|稍后|计划|first,?\s+let|next,?\s+(i|let|we)|let me (start|begin|first)|i will (first|start|begin|now)|i'?m going to (first|start|begin|now)|to do this,?\s+(i|we)|i need to (first|start|begin))/i
+//
+// 2026-09-16 口径收紧（活跃度巡检）：删掉 6 个**无动作指向或对用户说话**的裸词分支——
+// `准备(好|一下)?`（"材料已准备就绪"→ 误判）、`稍等`/`待会`/`稍后`（多为对用户说的
+// 客套话，如"生成需要稍等片刻"）、`再(继续|检查|验证|读|看)`（"再验证一下"也可以是
+// 结论性说明）、`计划`（"这是本次申报的整理计划"→ 误判：这是**交付物名称**而非承诺）。
+// 保留的分支都要求「后续动作动词」或「第一人称承诺主语」（先读/接下来…/开始实施/
+// 需要先/我先/让我先/立即执行）。
+//
+// 权衡（判错两个方向的代价不对称，故意如此）：漏检 = 少注入一次推进指令，用户可发
+// 「继续」接续，代价可控；误判 = 注入"你承诺了后续动作"**并清空 textBuf**（见
+// engine.mjs 计划尾分支）——已流式展示的那段内容不落 transcript、被重新生成，且把
+// 正常收尾强行拉回工具轮。故取"宁漏勿滥"。若要恢复某项，须同时补该形态的误伤对照。
+export const PLAN_TAIL_RE = /(先(读|看|查|确认|检查|验证|尝试|搜索|获取|执行|开始)|(接下来|然后|接着|下一步)[^，。；：！？\n]{0,6}(读|看|查|检查|验证|处理|执行|写|改|搜索|获取|开始|做|要|实现|修复|运行|测试|生成)|开始(实施|执行|动手|做|写|改|处理)|需要先|我先|让我(先|开始|试)|立即(开始|动手|执行)|first,?\s+let|next,?\s+(i|let|we)|let me (start|begin|first)|i will (first|start|begin|now)|i'?m going to (first|start|begin|now)|to do this,?\s+(i|we)|i need to (first|start|begin))/i
 export const PLAN_TAIL_DONE_RE = /(已完成|完成|搞定|结束|成功|以上就是|以上就是全部|已处理|没有更多|无需|不需要|不需要了|bye|done|complete|finished|that'?s all|no more)/i
 export function isPlanTail(text) {
   const tail = String(text ?? '').slice(-120)

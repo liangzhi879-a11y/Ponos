@@ -177,3 +177,82 @@ test('e2e: 对照组 PONOS_FIDELITY_ANCHOR=0 时锚点不注入（排除假阳�
   assert.ok(probes.length >= 3, `探针应至少记录 3 轮请求，实际 ${probes.length} 轮\nstderr=${k.err.slice(-800)}`)
   assert.ok(!probes.includes('1'), `关闭注入后任何一轮请求都不应含锚点，实际探针序列=[${probes.join(',')}]\nstderr=${k.err.slice(-800)}`)
 })
+
+// ── 端到端：锚点注入节流（2026-09-16 活跃度巡检）────────────────────────────
+//
+// 背景：red 期间旧实现**每个 API 请求步都注入**（注入缓存键含 face 身份，而 face 每步
+// 必变）——真实运行实测 876 次注入 / 单会话 388 次 = 52% 的请求带锚点，且锚点尾句固定
+// 要求"先复述关键事实确认，再继续任务" ⇒ 模型被反复要求复述，是"内核频繁提醒模型继续"
+// 体感的最大来源。
+//
+// 观测口子：注入计数用内核自己的 stderr 行 `[fidelity] anchor injected`（只在**确实注入**
+// 时输出）；请求总数用 ANCHOR_PROBE 行数（每请求一行）。A/B 两个字跑同一脚本序列，唯一
+// 差异是 PONOS_FIDELITY_ANCHOR_MAX_CONSEC（0 = 关闭节流 = 旧行为）。
+// 判定：关闭节流时注入数 == red 期请求数（逐请求），开启后必须**显著少于**它且不为零
+// （仍周期性在场，不是彻底静默）。
+/** 跑「2 轮推 red + N 轮持续引用同一缺失路径」的脚本，返回注入数与请求数。 */
+async function runThrottleScenario(extraEnv, turns) {
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-anchor-thr-'))
+  const k = spawnKernel({
+    PONOS_MOCK_API: '1',
+    PONOS_FIDELITY: '1',
+    PONOS_MOCK_ANCHOR_PROBE: ANCHOR_MARK,
+    CLAUDE_CONFIG_DIR: dir,
+    YFW_HOME: dir,
+    ...extraEnv,
+  }, dir)
+  try {
+    const init = await waitForEvent(k, (e) => e.type === 'system' && e.subtype === 'init', 20_000)
+    if (!init) return { k, dir, ready: false }
+    let from = 0
+    for (let i = 0; i < turns; i++) {
+      k.proc.stdin.write(JSON.stringify({
+        type: 'user',
+        session_id: 'anchor-throttle-e2e',
+        message: { role: 'user', content: `[mock:fidelity-read-fail] 核对 ${MISSING} 的配置（第 ${i + 1} 次）` },
+      }) + '\n')
+      const done = await waitForEvent(k, (e) => e.type === 'result', 30_000, from)
+      if (!done) break
+      from = done.idx + 1
+    }
+    return {
+      k,
+      dir,
+      ready: true,
+      requests: [...k.err.matchAll(/ANCHOR_PROBE:/g)].length,
+      probes: [...k.err.matchAll(/ANCHOR_PROBE:(\d+)/g)].map((m) => m[1]),
+      injected: [...k.err.matchAll(/\[fidelity\] anchor injected:/g)].length,
+    }
+  } finally {
+    try { k.proc.kill() } catch { /* 已退出 */ }
+    await new Promise((r) => setTimeout(r, 400))
+  }
+}
+
+test('e2e: 节流生效——red 期注入数显著少于请求数（对照关闭节流）', { timeout: 180_000 }, async (t) => {
+  const TURNS = 7
+  const on = await runThrottleScenario({}, TURNS)
+  const off = await runThrottleScenario({ PONOS_FIDELITY_ANCHOR_MAX_CONSEC: '0' }, TURNS)
+  t.after(() => {
+    for (const d of [on.dir, off.dir]) { try { rmSync(d, { recursive: true, force: true }) } catch { /* 句柄未释放，忽略 */ } }
+  })
+  const msg = (r) => `requests=${r.requests} injected=${r.injected} probes=[${r.probes.join(',')}]\nstderr=${r.k.err.slice(-800)}`
+  assert.ok(on.ready && off.ready, `内核未就绪\n${msg(on)}\n---\n${msg(off)}`)
+  // 前提：两跑必须真在 red 期发够请求——否则节流无从体现（先排除场景没建起来）
+  assert.ok(off.requests >= 6, `对照组应发足够请求以观察逐请求注入\n${msg(off)}`)
+  // ① 关闭节流 = 旧行为基线：一旦进入 red，**之后每个请求都带锚点**（逐请求注入）
+  const offFirst = off.probes.indexOf('1')
+  assert.ok(offFirst >= 0, `对照组应出现注入\n${msg(off)}`)
+  assert.ok(off.probes.slice(offFirst).every((p) => p === '1'),
+    `关闭节流时 red 之后不得有任何请求缺锚点（旧行为基线）\n${msg(off)}`)
+  // ② 开启节流：注入数必须显著下降（至少省掉一半请求的注入）
+  assert.ok(on.injected < off.injected, `开启节流后注入数应少于关闭时\nON ${msg(on)}\nOFF ${msg(off)}`)
+  assert.ok(on.injected * 2 <= off.injected, `节流应至少把注入数减半\nON ${msg(on)}\nOFF ${msg(off)}`)
+  // ③ 但不是彻底静默：仍周期性在场（锚点需长期可见，否则长任务会再次跑偏）
+  assert.ok(on.injected >= 2, `节流不应退化为完全静默\n${msg(on)}`)
+  // ④ red 起始后的前两次请求必带锚点（新指纹立即送达 + 连击上限 2），第三次起才可能跳过
+  const onFirst = on.probes.indexOf('1')
+  assert.ok(on.probes.slice(onFirst, onFirst + 2).every((p) => p === '1'),
+    `red 起始后的前两次请求都应带锚点\n${msg(on)}`)
+})
+

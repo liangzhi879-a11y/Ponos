@@ -102,6 +102,23 @@ export function withAnchorTail(face, text) {
   arr.push({ role: 'user', content: body })
   return arr
 }
+// 锚点注入节流（2026-09-16 活跃度巡检）：失真 red 期间**每个 API 请求步都重建注入**——
+// 注入缓存键是「锚点指纹 + face 身份」，而 face 每步必变 ⇒ 每步都注入一次，没有任何
+// 冷却。真实运行实测（kernel-stderr.log，38 小时窗口）：876 次注入，单会话最高
+// 388 次 / 748 次 API 请求 = **52% 的请求带锚点**；而锚点尾句固定要求"请先复述关键
+// 事实确认，再继续任务"（fidelity.mjs 的 ANCHOR_TAIL）——模型因此被反复要求复述，
+// 是"内核频繁提醒模型继续"体感的最大来源（量级高于全部循环守卫注入之和）。
+//
+// 节流语义（同指纹连续期内两级）：
+//   · 同一锚点指纹（issue ids 集合）连续注入至多 FID_ANCHOR_MAX_CONSEC 次（默认 2）；
+//   · 之后每跳过 FID_ANCHOR_REINJECT_EVERY 步（默认 8）**补注一次**——不彻底静默：
+//     长任务里锚点仍需在场（模型长程跑偏、早期注入被挤出注意力），只是不再每步重复。
+// 不受节流约束（立即注入）的两种情形：
+//   · 指纹变化——失真证据集合变了＝新信息，必须送达（锚点内容也随之变化）；
+//   · 上下文收缩——本次 face 消息数少于上次注入时＝压缩/裁剪发生，旧锚点已被遮蔽。
+// 0 = 关闭节流（恢复"每步都注入"旧行为）。失真轴与压力轴独立，故不受 LOOP_GUARD 影响。
+export const FID_ANCHOR_MAX_CONSEC = envNonNeg('PONOS_FIDELITY_ANCHOR_MAX_CONSEC', 2)
+export const FID_ANCHOR_REINJECT_EVERY = envNonNeg('PONOS_FIDELITY_ANCHOR_EVERY', 8)
 // 上游零数据挂起（prefill 超首内容宽限）的自动重试上限：真死服务重试无益，但
 // 排队/瞬态负载场景一次重试常能恢复。0 = 关闭（直接按挂起收尾）。
 // 2026-09-10 无感愈合原则：预算 2 → 3（多一轮静默重试才落可见收尾）。

@@ -14,7 +14,9 @@ import { fileURLToPath } from 'node:url'
 import {
   isRealProgress, allToolResultsFailed, nextHadToolError,
   shouldRemindRepeat, repeatRemindText, errorMeltdownText, hasMeltdownBudget,
+  batchToolKey, isClosedOut, planTailText,
 } from '../kernel/guards.mjs'
+import { canonicalToolCallKey, isPlanTail } from '../kernel/gen-guards.mjs'
 
 const ENGINE = fileURLToPath(new URL('../kernel/engine.mjs', import.meta.url))
 const engineSrc = readFileSync(ENGINE, 'utf-8')
@@ -159,4 +161,111 @@ test('防再重复（双向）：guards.mjs 不得反向依赖 engine.mjs（防�
   )
   assert.deepEqual(requires, [], `guards.mjs 不得 require，实得：${JSON.stringify(requires)}`)
   assert.deepEqual(dynImports, [], `guards.mjs 不得动态 import，实得：${JSON.stringify(dynImports)}`)
+})
+
+// ---------------------------------------------------------------------------
+// 守卫⑤ 链键口径（2026-09-16 收紧）：整批工具调用 vs 每轮首个
+// ---------------------------------------------------------------------------
+test('batchToolKey：整批键——"开头相同 + 后续不同"不得判为同一次', () => {
+  const k = (name, input) => `${name}\u0000${JSON.stringify(input)}`
+  // 同一批（键序无关）→ 同键
+  const a = [{ name: 'Read' }, { name: 'Grep' }]
+  const b = [{ name: 'Grep' }, { name: 'Read' }]
+  assert.equal(batchToolKey(a, (x) => x.name), batchToolKey(b, (x) => x.name), '整批键与调用顺序无关')
+  // 开头相同、后续不同 → **不同键**（旧口径只取 blocks[0] 会把这两批判成同一次而误报）
+  const first = [{ name: 'Bash' }, { name: 'Edit' }]
+  const second = [{ name: 'Bash' }, { name: 'Grep' }]
+  assert.notEqual(batchToolKey(first, (x) => x.name), batchToolKey(second, (x) => x.name))
+  // 单调用与批量也不会撞键（分隔符保证前缀不互相包含）
+  assert.notEqual(batchToolKey([{ name: 'Bash' }], (x) => x.name), batchToolKey(first, (x) => x.name))
+  // 真死循环（整批一模一样）仍判同一次
+  assert.equal(batchToolKey(first, (x) => x.name), batchToolKey([...first], (x) => x.name))
+  // 边界：空批 / 无 keyOf → 空串（调用方按"键空则不推进链"处理）
+  assert.equal(batchToolKey([], (x) => x.name), '')
+  assert.equal(batchToolKey(first, null), '')
+  assert.equal(batchToolKey(null, (x) => x.name), '')
+  // 与真实 canonicalToolCallKey 组合（engine 的实际用法）
+  assert.equal(
+    batchToolKey([tool('Bash', { command: 'ls' })], canonicalToolCallKey),
+    canonicalToolCallKey(tool('Bash', { command: 'ls' })),
+    '单块时整批键应退化为该块的规范键',
+  )
+})
+
+// ---------------------------------------------------------------------------
+// R3-2 失败自愈出口（2026-09-16）：文本已明确收尾则不再注入
+// ---------------------------------------------------------------------------
+test('isClosedOut：认"完成声明/交付结果/请示用户"，不认"认错即停"', () => {
+  const closed = (t) => isClosedOut(t, isPlanTail)
+  // ① 完成声明与交付结果 → 已收尾（守卫必须让位，否则"提示→照做→再提示"循环）
+  assert.equal(closed('本次检查已完成，未发现内核守卫异常。'), true)
+  assert.equal(closed('报告已生成，保存在 docs/ 目录下。'), true)
+  assert.equal(closed('以下是整理结果：\n- 守卫 A\n- 守卫 B'), true, '交付清单：收尾语在首行，清单不是承诺')
+  assert.equal(closed('汇总如下：共 9 项'), true)
+  assert.equal(closed('以上是全部证据。'), true)
+  // ② 请示用户（把决定权交回用户也是合法收尾）
+  assert.equal(closed('需要你确认是否按方案 A 执行。'), true)
+  assert.equal(closed('请你确认后我再继续。'), true)
+  // ③ ★ 刻意不收"卡住/无法继续"类措辞——那正是 R3-2 要抓的"认错即停"
+  assert.equal(closed('抱歉，我无法继续。'), false, '"无法继续"是认错即停，必须仍被拉回重试')
+  assert.equal(closed('工具报错了，我先停一下等你说。'), false)
+  assert.equal(closed('这里卡住了。'), false)
+  // ④ 计划尾巴不在收尾语里（与计划尾守卫职责分离）
+  assert.equal(closed('我先看一下结构，接下来开始处理。'), false)
+  // ⑤ 收尾语之后**又出现计划尾巴** → 不算收尾（判据不是"尾巴里有没有收尾语"）
+  assert.equal(closed('前一步已完成。接下来我准备继续读下一个文件并验证。'), false)
+  // ⑥ 关掉计划判据注入时退化为"只认收尾语"（文档化该退化，防有人误以为恒定）
+  assert.equal(isClosedOut('前一步已完成。接下来我准备继续读下一个文件并验证。'), true)
+  assert.equal(isClosedOut(''), false)
+  assert.equal(isClosedOut(null), false)
+})
+
+test('反挂账：engine.mjs 两侧 R3-2 必须都经 isClosedOut 门控（防只改主循环）', () => {
+  const hits = [...engineSrc.matchAll(/isClosedOut\(/g)].length
+  assert.ok(hits >= 2, `主循环与子 lane 都应经 isClosedOut 门控，实测 ${hits} 处`)
+  assert.match(engineSrc, /from '\.\/guards\.mjs'/)
+})
+
+test('反挂账：engine.mjs 不得回退到"每轮首个工具调用"作守卫⑤链键', () => {
+  assert.ok(
+    !/canonicalToolCallKey\(blocks\[0\]\)/.test(engineSrc),
+    '守卫⑤ 链键应走 batchToolKey(blocks, canonicalToolCallKey)，不得回退到 blocks[0]',
+  )
+  const uses = [...engineSrc.matchAll(/batchToolKey\(blocks, canonicalToolCallKey\)/g)].length
+  assert.ok(uses >= 2, `主循环与子 lane 都应改用 batchToolKey，实测 ${uses} 处`)
+})
+
+test('反挂账：子 lane 的重复自愈须与主循环同为 "-1 = 不限次" 语义', () => {
+  // 旧缺陷：子 lane 写 `REPEAT_HEAL_MAX > 0`，默认值 -1 时该 lane 完全没有自愈
+  assert.ok(
+    !/REPEAT_HEAL_MAX > 0 && subHeals < REPEAT_HEAL_MAX/.test(engineSrc),
+    '子 lane 不得用 REPEAT_HEAL_MAX > 0（-1=不限次语义会失效）',
+  )
+  assert.match(engineSrc, /REPEAT_HEAL_MAX !== 0 && \(REPEAT_HEAL_MAX < 0 \|\| subHeals < REPEAT_HEAL_MAX\)/)
+})
+
+test('反挂账：计划尾守卫两侧对称（主循环 + 子 lane），且文案单一来源', () => {
+  // ① 两侧都要有 isPlanTail 门控（修复前子 lane 无此分支：子任务以"接下来我要…"收尾
+  //    会被当作完成结果回传主线程）
+  const gates = [...engineSrc.matchAll(/isPlanTail\(textBuf\)/g)].length
+  assert.ok(gates >= 2, `计划尾门控应覆盖主循环与子 lane，实测 ${gates} 处`)
+  // ② 注入文案不得内联回 engine.mjs（否则两侧各一份文案，改一处即分叉）
+  assert.ok(
+    !/const inject = '【系统】你在上一轮承诺了后续动作/.test(engineSrc),
+    '计划尾文案应走 guards.planTailText()（单一来源），不得内联',
+  )
+  const uses = [...engineSrc.matchAll(/planTailText\(\)/g)].length
+  assert.ok(uses >= 2, `两侧都应调用 planTailText()，实测 ${uses} 处`)
+})
+
+test('防再重复（跨文件契约）：planTailText 首句必须与 api.mjs mock 恢复锚点一致', () => {
+  // api.mjs 的 R3-2 恢复分支按【系统】你在上一轮承诺了后续动作 匹配历史——改文案不改
+  // mock 会让所有计划尾 e2e 退化为"注入后无恢复"（测试仍绿但已失去意义），故在此钉死。
+  const anchor = '【系统】你在上一轮承诺了后续动作'
+  assert.ok(planTailText().startsWith(anchor), `planTailText 首句须为 mock 锚点，实际：${planTailText().slice(0, 60)}`)
+  const apiSrc = readFileSync(fileURLToPath(new URL('../kernel/api.mjs', import.meta.url)), 'utf-8')
+  assert.ok(apiSrc.includes(anchor), 'api.mjs 恢复分支应含同一锚点串')
+  // 端到端测试也依赖该锚点在人读断言里可见（防有人把它改成变量后断言空转）
+  const e2e = readFileSync(fileURLToPath(new URL('./plan-tail-e2e.test.mjs', import.meta.url)), 'utf-8')
+  assert.ok(e2e.includes('你在上一轮承诺了后续动作'), 'plan-tail-e2e 应含同一锚点串')
 })

@@ -24,6 +24,7 @@ import { catastrophicFamily } from './blacklist.mjs'
 import {
   isRealProgress, allToolResultsFailed, nextHadToolError,
   shouldRemindRepeat, repeatRemindText, errorMeltdownText, hasMeltdownBudget,
+  batchToolKey, isClosedOut, planTailText,
 } from './guards.mjs'
 import { normalizeApprovalMode, deriveApprovalMode } from './approval-mode.mjs'
 import { withLaneSkillCatalog } from './prompt.mjs'
@@ -36,7 +37,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { createCompactor } from './compact.mjs'
 import { perfTime, perfTimeAsync, perfMark, perfSpan, perfStep, perfBegin, perfCount } from './perf.mjs'
-import { CONTINUE_HEAL_MAX, IDLE_DEAD_RETRY_BACKOFF_MS, IDLE_DEAD_RETRY_MAX, IDLE_HEAL_MAX, LANE_MAX_CONCURRENT, LOOP_STALL_MS, MAX_ERROR_ITERATIONS, MAX_OVERFLOW_RETRIES, MAX_TOOL_ITERATIONS, MELTDOWN_HEAL_MAX, NEAR_REPEAT_AVG, NEAR_REPEAT_BACK, NEAR_REPEAT_CODE_SKIP, NEAR_REPEAT_RECENT, NEAR_REPEAT_SIM, OUTPUT_TIERS, REPEAT_HEAL_MAX, REPEAT_REMIND_AT, STALL_HEAL_MAX, STREAM_FIRST_BYTE_MS, STREAM_IDLE_MS, TURN_TIMEOUT_MS, UPSTREAM_DEAD_HEAL_BACKOFF_MS, UPSTREAM_DEAD_HEAL_MAX, adaptiveFirstByteMs, isFidAnchorOn, withAnchorTail } from './engine-config.mjs'
+import { CONTINUE_HEAL_MAX, FID_ANCHOR_MAX_CONSEC, FID_ANCHOR_REINJECT_EVERY, IDLE_DEAD_RETRY_BACKOFF_MS, IDLE_DEAD_RETRY_MAX, IDLE_HEAL_MAX, LANE_MAX_CONCURRENT, LOOP_STALL_MS, MAX_ERROR_ITERATIONS, MAX_OVERFLOW_RETRIES, MAX_TOOL_ITERATIONS, MELTDOWN_HEAL_MAX, NEAR_REPEAT_AVG, NEAR_REPEAT_BACK, NEAR_REPEAT_CODE_SKIP, NEAR_REPEAT_RECENT, NEAR_REPEAT_SIM, OUTPUT_TIERS, REPEAT_HEAL_MAX, REPEAT_REMIND_AT, STALL_HEAL_MAX, STREAM_FIRST_BYTE_MS, STREAM_IDLE_MS, TURN_TIMEOUT_MS, UPSTREAM_DEAD_HEAL_BACKOFF_MS, UPSTREAM_DEAD_HEAL_MAX, adaptiveFirstByteMs, isFidAnchorOn, withAnchorTail } from './engine-config.mjs'
 import { addUsage, applyAggregateResultBudget, hasUsage, makeIdleWatchdog, normalizeEffort, rawAbortSignal, retryStream, sleep, withToolDeadline } from './stream-runtime.mjs'
 import { createRequestFace, fitRequestToWindow, messageTextOf, patchOrphanToolUses, trimOversizedRequestCopy } from './request-face.mjs'
 import { canonicalToolCallKey, createNearRepeatDetector, detectGenerationRepeat, isPlanTail, isThinkOnly } from './gen-guards.mjs'
@@ -279,17 +280,43 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     let anchorKey = null
     let anchorBase = null
     let anchorFace = null
+    // 注入节流状态（2026-09-16 活跃度巡检，语义见 engine-config 的 FID_ANCHOR_* 注释）：
+    // 注入缓存的键是「锚点指纹 + face 对象身份」，而 face 每步必变 ⇒ 旧实现等价于
+    // "red 期间每个请求步都注入一次"（实测单会话 388 次 / 748 请求 = 52%）。
+    let anchorInjectStreak = 0 // 同一指纹连续注入次数
+    let anchorSkipFace = null  // 已判定"本次跳过"的 face——同一 face 会被估算/看门狗/实际
+                               // 请求多次求值，不记身份就会把一次跳过重复计数成多次
+    let anchorSkipStreak = 0   // 同一指纹连续跳过次数（达 REINJECT_EVERY 即补注一次）
     const requestFaceWithAnchor = () => {
       const face = requestFace()
-      if (!isFidAnchorOn()) { anchorKey = null; anchorBase = null; anchorFace = null; return face }
+      const resetAnchor = () => {
+        anchorKey = null; anchorBase = null; anchorFace = null
+        anchorSkipFace = null; anchorInjectStreak = 0; anchorSkipStreak = 0
+      }
+      if (!isFidAnchorOn()) { resetAnchor(); return face }
       let a = null
       try { a = health && typeof health.fidelityAnchor === 'function' ? health.fidelityAnchor() : null } catch { a = null }
-      if (!a || !a.text) { anchorKey = null; anchorBase = null; anchorFace = null; return face }
+      if (!a || !a.text) { resetAnchor(); return face }
       const key = a.ids && a.ids.length ? a.ids.slice().sort().join(',') : 'no-id'
-      if (key === anchorKey && anchorBase === face && anchorFace) return anchorFace
+      const sameKey = key === anchorKey
+      // 上下文收缩（压缩/裁剪发生）＝旧锚点已被遮蔽 → 不受节流约束，立即重注
+      const shrunk = Array.isArray(anchorBase) && face.length < anchorBase.length
+      if (sameKey && anchorBase === face && anchorFace) return anchorFace
+      if (sameKey && anchorSkipFace === face) return face
+      if (FID_ANCHOR_MAX_CONSEC > 0 && FID_ANCHOR_REINJECT_EVERY > 0
+        && sameKey && !shrunk
+        && anchorInjectStreak >= FID_ANCHOR_MAX_CONSEC
+        && anchorSkipStreak < FID_ANCHOR_REINJECT_EVERY) {
+        anchorSkipFace = face
+        anchorSkipStreak++
+        return face
+      }
       anchorKey = key
       anchorBase = face
       anchorFace = withAnchorTail(face, a.text)
+      anchorSkipFace = null
+      if (sameKey && !shrunk) { anchorInjectStreak++; anchorSkipStreak = 0 }
+      else { anchorInjectStreak = 1; anchorSkipStreak = 0 }
       try { console.error(`[fidelity] anchor injected: ${(a.ids && a.ids.length) || 0} issue(s)`) } catch { /* 日志失败不阻断请求 */ }
       return anchorFace
     }
@@ -874,7 +901,13 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
             continue
           }
         }
-        if (hadToolError && guardInjections < maxGuardInjections) {
+        // R3-2 失败自愈（2026-09-16 口径修复）：注入文案自己就承诺了"或明确说明任务已完成
+        // 并给出结果摘要"这条出路，判据也必须认这个出路——否则模型**照做**（给出结论/请示
+        // 用户）仍被判"停留在文本说明"，形成"提示 → 照做 → 再提示"的循环（真实会话实测
+        // 同一轮内 16 次注入）。误判面被 tools.mjs 放大：Bash 非零退出码一律记 is_error，
+        // 日常 `grep -c` 无匹配返回 1 ⇒「工具报错 → 模型给结论收尾」本就是常态形态。
+        // 文本已明确收尾时让位给正常收尾路径（判据见 guards.mjs isClosedOut）。
+        if (hadToolError && guardInjections < maxGuardInjections && !isClosedOut(textBuf, isPlanTail)) {
           guardInjections++
           const inject = '【系统】检测到上一轮存在失败/被取消的工具调用，任务尚未完成。请立即重试或补发正确的工具调用，不要停留在文本说明。'
           pushMemory({ role: 'user', content: inject })
@@ -884,7 +917,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         }
         if (textBuf.trim() && guardInjections < maxGuardInjections && isPlanTail(textBuf)) {
           guardInjections++
-          const inject = '【系统】你在上一轮承诺了后续动作（先…/接下来…/开始…）但未执行工具调用就结束了回合。任务型轮次必须以实际工具调用收尾——请立即落实你提到的计划，或明确说明任务已完成并给出结果摘要。'
+          const inject = planTailText()
           pushMemory({ role: 'user', content: inject })
           if (session) session.appendUser(inject)
           textBuf = ''
@@ -1001,7 +1034,10 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // assistant(tool_use) → user(tool_result) → user(提醒)，与 R3-2 注入先例
       // 一致（连续 user 消息 API 接受）。
       if (!loopStop && REPEAT_REMIND_AT.length && blocks.length) {
-        const key = canonicalToolCallKey(blocks[0])
+        // 2026-09-16 口径收紧：链键取**整批**工具调用（原来只取 blocks[0]）——模型每轮以
+        // 同一调用开头、后续调用完全不同时不再误判为"连续同工具"（实测该提示是最高频的
+        // 循环守卫注入）。判据见 guards.mjs batchToolKey。
+        const key = batchToolKey(blocks, canonicalToolCallKey)
         if (key && key === lastToolKey) {
           repeatStreak++
         } else {
@@ -1605,8 +1641,11 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       }
       watchdog.stop()
       // P1 ③/③b 内部自愈（同主 loop）：丢弃退化流 → 注入推进指令续跑；耗尽上限才收尾
+      // 2026-09-16 与主循环对齐 `-1 = 不限次`：原判据 `REPEAT_HEAL_MAX > 0` 使默认值 -1
+      // （持久无限自愈）在子 lane 变成"完全没有自愈"——两侧语义漂移正是 guards.mjs 头注
+      // 要消除的形态（主循环等价判据见 `REPEAT_HEAL_MAX !== 0 && (<0 || < max)`）。
       if (subStop) {
-        if (REPEAT_HEAL_MAX > 0 && subHeals < REPEAT_HEAL_MAX) {
+        if (REPEAT_HEAL_MAX !== 0 && (REPEAT_HEAL_MAX < 0 || subHeals < REPEAT_HEAL_MAX)) {
           subHeals++
           textBuf = ''
           const inject = '【系统】检测到你刚才的回复在反复复述近似内容（疑似陷入生成循环），该部分已被丢弃。请立即停止复述，直接推进当前任务——执行下一步具体行动或直接给出最终结论。'
@@ -1636,9 +1675,25 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         // 注入用 store.appendUser——lane 无 pushMemory/session 概念，同 subStop 自愈先例）。
         // 与守卫④熔断互补：R3-2 在失败轮后先给"重试机会"，熔断兜"重试救不回来"的底。
         // guardInjections 额度上限防模型拒不配合时无限注入续跑。
-        if (hadToolError && guardInjections < maxGuardInjections) {
+        // 2026-09-16 与主循环同款口径修复：文本已明确收尾（完成声明/交付结果/输出阻塞
+        // 说明）时不再注入——注入文案要求"不要停留在文本说明"，但子任务给出最终结论
+        // 就是合法收尾，反复拉回工具轮属于同一类"提示→照做→再提示"循环。
+        if (hadToolError && guardInjections < maxGuardInjections && !isClosedOut(textBuf, isPlanTail)) {
           guardInjections++
           const inject = '【系统】检测到上一轮存在失败/被取消的工具调用，任务尚未完成。请立即重试或补发正确的工具调用，不要停留在文本说明。'
+          store.appendUser(inject)
+          textBuf = ''
+          continue
+        }
+        // 计划尾守卫（2026-09-16 与主循环对齐）：子任务同样可能出现"只承诺后续动作、
+        // 未执行工具调用就收尾"（子 lane 此前**无此守卫**——主循环有而子 lane 没有，
+        // 与刚修的 REPEAT_HEAL_MAX `-1` 语义漂移同属"两侧不对称"）。不注入的话子任务
+        // 会以一句"接下来我要…"直接收尾，被当作完成结果回传主线程。
+        // 守卫顺序与主循环一致：R3-2（有工具错误）→ 计划尾 → 收尾 break；同受
+        // guardInjections 上限约束。注入用 store.appendUser（lane 无 pushMemory/session）。
+        if (textBuf.trim() && guardInjections < maxGuardInjections && isPlanTail(textBuf)) {
+          guardInjections++
+          const inject = planTailText()
           store.appendUser(inject)
           textBuf = ''
           continue
@@ -1675,7 +1730,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // 镜像主循环 836-851 的提醒块。注入经 store.appendUser，与③/③b 不重叠（③③b 检生成
       // 文本重复、⑤ 检重复同工具调用，信号与阶段皆异）。
       if (REPEAT_REMIND_AT.length && blocks.length) {
-        const key = canonicalToolCallKey(blocks[0])
+        // 2026-09-16 口径收紧：与主循环同步取整批键（见 guards.mjs batchToolKey）
+        const key = batchToolKey(blocks, canonicalToolCallKey)
         if (key && key === lastSubToolKey) {
           subRepeatStreak++
         } else {
