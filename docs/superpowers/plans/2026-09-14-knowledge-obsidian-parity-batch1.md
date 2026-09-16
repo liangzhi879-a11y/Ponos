@@ -101,3 +101,82 @@
 - 代码改动：`shared/knowledge-core.mjs`、`kernel/knowledge.mjs`、`kernel/knowledge-cli.mjs`、`server/knowledge-routes.mjs`、`src/lib/{knowledgeApi,knowledgeBlocks}.ts`、`src/hooks/useKnowledge.ts`、`src/stores/knowledgeStore.ts`、`src/components/knowledge/{KnowledgeTagsView(新),KnowledgeViewTabs,KnowledgePanel,KnowledgeDocView,KnowledgeSearchView,KnowledgeInspector}.tsx`、i18n；
 - 测试：`shared/knowledge-core.test.mjs` + `kernel-tests/` 对应用例；
 - 本文件作为实施留痕。
+
+---
+
+# 实施记录（2026-09-14 完成）
+
+## 与原计划的差异（实施中发现的真实问题，均已修正）
+
+1. **索引版本 bump 2 → 3**：计划已列，实施确认必要——标签来源变化不会改文件 size/mtime，
+   `indexStale()` 的逐文件指纹发现不了，只能靠版本号。实测：把 manifest 改回 2 → 下次 `load()`
+   静默全量重建、版本回写 3、标签不丢。
+2. **`--spaces` 三层转发链路（发现并修掉一个真 bug）**：`parseArgs`（登记）→
+   `cli.mjs` 的 `knowledgeArgs` **显式白名单**（转发）→ `parseSpacesArg`（归一）三处缺一即
+   **静默失效**。实施时前两层都改了、漏了中间白名单，真进程实测 `--spaces nope` 仍返回全库
+   标签才暴露。已补 `kernel-tests/knowledge-parity.test.mjs` 两个真进程用例钉住。
+3. **检索新增「标签直连」路（计划外，必须加）**：实测发现标签写在 frontmatter 里、
+   **不在任何块文本中**，倒排/关键词路只索引块文本 → `财务` 这类"只当标签、正文从不提"的词
+   **全文检索恒为 0 命中**，于是"标签视图点标签去看同标签文档"会得到一片空白。
+   → 在 `searchInner` 加 3.5 步：查询串/关键词与某标签**完全相同**（大小写不敏感、
+   容忍前导 `#`）时，把该文档的锚点块（标题 > 条目 > 首块）作为候选并入，带 `tagHit` 标记。
+   分值**不臆造**：走既有 struct 通道（标签命中权重 0.67）由 `fuseScore` 算出 ≈0.10，
+   天生低于任何带正文证据的命中。最初给的定值 0.30 被实测打回（本系统真实正文命中在短文档上
+   只有 0.22–0.27）。
+4. **父标签点击带后代**：Obsidian 的 `tag:#税务` 也命中 `#税务/增值税`，故标签树父节点点击时
+   把 `[父, ...后代]`（上限 8）一并作为关键词；检索视图用**第一个词当查询串**、
+   整串当关键词（否则查询串变成一串标签的 gram，几乎必然 0 命中）。
+5. **内链用 Context 而非 props**：`MarkdownText.tsx` 文件头记着"components 表每渲染新建对象会
+   整棵重挂载"的事故，故表格保持模块级稳定、数据走 `WikiLinkProvider`。
+
+## 交付物
+
+**内核 / 共享层**
+- `shared/knowledge-core.mjs`：`parseYamlSubset`（YAML 子集：block 列表 / flow 数组 / 引号 /
+  行尾注释 / 多行折叠 / 空值 / 嵌套 map 丢弃）、`extractInlineTags`（Obsidian 标签口径：
+  边界、层级、纯数字排除、行内代码与 md 链接目标遮蔽）、`INDEX_VERSION = 3`
+- `kernel/knowledge.mjs`：`collectTags` 吃数组两态 + 正文内联标签；`title/name` 标量归一；
+  `search` 返回 `total`；标签直连路 + `TAG_HIT_FLOOR`；`listIndexTags({spaces})`
+- `kernel/knowledge-cli.mjs`：`index-tags` op + `parseSpacesArg`（三态归一，search 同步复用）
+- `kernel/cli.mjs`：登记 `--spaces` 并**加入转发白名单**
+- `server/knowledge-routes.mjs`：`GET /knowledge/index-tags?spaces=`
+
+**前端**
+- 新增：`src/lib/knowledgeTags.ts`（标签树纯逻辑）、`KnowledgeTagsView.tsx`（层级标签视图）、
+  `KnowledgeWikiText.tsx`（内链 Context + Provider + WikiP/WikiLi/WikiA）
+- 改动：`knowledgeStore`（`'tags'` 视图 + 一次性 `searchKeywords` 意图 + `sanitizeKeywords`）、
+  `knowledgeApi`（`listIndexTags` + `total`/`tagHit` 字段）、`useKnowledge`（`useIndexTags` +
+  四处失效补 `indexTags:`）、`knowledgeBlocks`（`splitWikiLinks`/`wikiTargetCandidates`）、
+  `knowledgeSearch`（`sortHits`）、`KnowledgeViewTabs`/`KnowledgePanel`/`KnowledgeDocView`/
+  `KnowledgeSearchView`、i18n 双语 16 键
+
+**测试**（全部通过）
+- `shared/knowledge-core.test.mjs`：YAML 子集 3 组 + 内联标签 1 组（含行内代码 / 链接目标 /
+  纯数字 / 全角括号 / 收尾斜杠）
+- `kernel-tests/knowledge.test.mjs`：标签来源端到端、数组标题、`total` 语义、`listIndexTags`
+  （计数 / single / 排序 / 空间过滤）、CLI `--spaces`、标签直连检索（含排序口径与白名单）
+- `kernel-tests/knowledge-parity.test.mjs`：`--spaces` 转发链路真进程、`total`/`tagHit` 往返
+- `server/knowledge-routes.test.mjs`：新路由转发 + 与旧 `/knowledge/tags` 的路由隔离
+- `src/lib/knowledgeTags.test.ts` / `knowledgeBlocks.test.ts` / `knowledgeStore.test.ts`：
+  标签树、wiki 切分与候选、六视图集合
+
+## 验证方式与结果
+
+| 验证 | 方式 | 结果 |
+|---|---|---|
+| 存量不回归 | `npm test` 全量 | 2454 pass / 0 fail（另有 2 个计时类用例在并行跑时偶发，单独跑均通过，与本次改动无关） |
+| 类型 | `npx tsc --noEmit` | 通过 |
+| 前端可构建 | `npx vite build` | 通过（exit 0） |
+| frontmatter 三态 | 真进程 `--knowledge doc` | block 列表 / flow 数组 / 内联标签全部进 `doc.tags`；`\`#不是标签\`` 不进 |
+| 标签枚举与过滤 | 真进程 `--knowledge index-tags [--spaces x]` | 计数正确；`--spaces no-such` → 空集（证明确实过滤） |
+| 索引重建 | manifest 改回 version=2 → `stats` | 静默重建、版本回写 3、标签不丢 |
+| 标签直连检索 | 真进程 `search --query 财务` | 打标签的文档命中（`tagHit` + 0.1005），正文命中 0.247/0.222 排在前 |
+| 父标签点击流 | `search --query 税务 --keywords 税务,税务/增值税` | 命中带子标签的文档（模拟标签视图父节点点击） |
+
+## 已知边界（未做，属批次 2/3）
+
+- `![[嵌入]]` 语义、`^块ID`、`#标题` 锚点导航、别名解析、未链接提及（Unlinked mentions）
+- 搜索语法层（`file:/path:/tag:/line:/block:/section:/task:`、布尔/括号/短语/正则/属性查询）、
+  分页、内核级排序（当前排序是客户端重排已返回集合，UI 已注明）
+- 数据写入原子化（`POST /knowledge/doc` 仍是裸 `writeFileSync`）、fs watcher、覆盖前备份
+- 标签重命名（Obsidian 的全库重命名）、标签拖拽、Bases/Canvas 类视图
