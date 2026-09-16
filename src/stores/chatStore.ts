@@ -380,6 +380,15 @@ interface ChatState {
   setSessionApprovalMode: (id: string, report: SessionApprovalMode | null) => void
   // mode 缺省 'task'（全工具现状）；'chat' = 纯聊受限会话（禁本地工具，不绑业务 cwd）
   createConversation: (cwd?: string, agentId?: string, mode?: 'chat' | 'task') => string
+  /**
+   * 取（或建）某个应用的**常驻 agent 会话**（Task 4「生成后自动质检」）。
+   * 幂等：已存在 appId 匹配的会话就直接返回它的 id——一个应用一个会话，不每次新建
+   * （否则质检跑几轮就在任务列表里堆出一串"应用·xxx"，用户根本分不清哪个是哪个）。
+   * 新建时恒为 **task 模式**（chat 模式 appRoots=[]，应用工具根本不存在，质检无从开跑）、
+   * `titleAuto: false`（否则首条质检提示词会被自动标题改写成用户看不懂的一串）、
+   * 并带上 appPageId（= appId）把工具池收窄到该应用。
+   */
+  getOrCreateAppConversation: (appId: string, appName: string) => string
   deleteConversation: (id: string) => void
   setActiveConversation: (id: string) => void
   /** 按需加载会话消息体（内核 transcript + ext 兜底），加载完成注入 messages */
@@ -527,6 +536,29 @@ export const useChatStore = create<ChatState>()(
         set(state => ({
           conversations: [conversation, ...state.conversations],
           activeConversationId: id,
+        }))
+        return id
+      },
+
+      /**
+       * 取（或建）某应用的常驻 agent 会话。幂等键 = `appId`（与 appPageId 同值）。
+       * 复用 createConversation 落 mode/cwd/titleAuto 等既有口径，只补三件事：
+       *   appId（幂等键）/ appPageId（内核侧工具池作用域）/ title（应用名）+ titleAuto:false。
+       */
+      getOrCreateAppConversation: (appId, appName) => {
+        const key = (appId || '').trim()
+        const existing = get().conversations.find(c => c.appId === key)
+        if (existing) return existing.id
+        // ★ task 而非 chat：chat 模式下 bridge spawn 不带应用根（appRoots=[]），
+        //   应用的控制工具根本不在工具池里，质检会以"没有工具可用"告终。
+        const id = get().createConversation(undefined, undefined, 'task')
+        const name = ((appName || '').trim()) || key
+        set(state => ({
+          conversations: state.conversations.map(c => c.id === id
+            // appId 为空串时不写该键（空串在 sanitizeConversations 里会被归一成 undefined，
+            // 留着只会让"有 appId"与"无 appId"多出第二种形状）
+            ? { ...c, title: `应用·${name}`, titleAuto: false, ...(key ? { appId: key, appPageId: key } : {}) }
+            : c),
         }))
         return id
       },
@@ -1514,6 +1546,11 @@ export const useChatStore = create<ChatState>()(
           // 会话知识范围必须进白名单：partialize 是**显式取字段**（非全量展开），漏掉它 =
           // 关联关系永远不落盘，重启应用后静默丢失（表现为"关联过一次，下次打开又没了"）。
           knowledgeSpaces: c.knowledgeSpaces,
+          // 应用会话的两个键必须进白名单（2026-09-16，Task 4）：partialize 是**显式取字段**，
+          // 漏掉 appId = 重启后"一个应用一个会话"的幂等键消失 → 每次打开应用页都新建一个
+          // "应用·xxx"；漏掉 appPageId = 重启后工具池不再收窄（应用工具全没了）。
+          appId: c.appId,
+          appPageId: c.appPageId,
           sessionIds: c.sessionIds,
           messageCount: c.messageCount ?? ((c.messages?.length ?? 0) > 0 ? c.messages.length : undefined),
           tokensTotal: c.tokensTotal,

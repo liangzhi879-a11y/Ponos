@@ -1,6 +1,6 @@
 // 应用智控 IPC 注册（Task 1.5 / 1.7 / 2.1 / 2.3）
 //
-// 为什么单独成文件而不写进 main.cjs：main.cjs 已 1500+ 行，本模块有 16 条通道与
+// 为什么单独成文件而不写进 main.cjs：main.cjs 已 1500+ 行，本模块有 20 条通道与
 // 目标分发逻辑；集中在一处才能一眼看全"渲染层能做什么"。main.cjs 只留一行调用。
 //
 // ★ 数据根唯一真源：server/yfw-home.cjs 的 resolveYfwHome()。它与内核侧
@@ -183,6 +183,13 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     const path = appRegistry.writeSpec({ roots: roots(), appId, spec })
     return { ok: true, path }
   })
+  /**
+   * 应用序号（工具识别号）自动分配：界面不再让用户手填 id，打开对话框时来取一个。
+   * 纯读（扫注册表 + 目录名）→ 不需审批；返回 { id }，id 形如 `app-001`。
+   * ★ 它是"建议值"而非预留凭证：真正的落盘仍走 app:upsert / app:write-spec，
+   *   两条通道收到的 appId 字段名与格式与改动前**逐字一致**（下游链路不受影响）。
+   */
+  ipcMain.handle('app:next-id', () => ({ id: appRegistry.nextAppId({ roots: roots() }) }))
 
   // ---- Spec 备份与回滚（Task 3.3） ----
   ipcMain.handle('app:list-backups', (_e, appId) => appRegistry.listBackups({ roots: roots(), appId }))
@@ -212,6 +219,57 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
   ipcMain.handle('app:repair', async (_e, payload) => {
     const { appId, maxRepair } = payload || {}
     return appValidator.repairApp({ roots: roots(), appId, maxRepair, deps: { callLlm } })
+  })
+
+  // ---- 质检（Task 4）：应用生成后"自动跑一轮整体质量检验"的后端能力 ----
+  /**
+   * 确定性试跑：复用**生成期同一套** verifySpec（只跑无需必填参数的 read 命令；write 绝不试跑）。
+   * ★ 试跑不是"用户执行"：runCommand / runNonBrowser 一律固定 `persist: false` ——
+   *   不写 history（否则质检的每一轮都会把用户真实执行记录淹没）、也不产生任何备份。
+   * ★ verifySpec 的签名里**没有** persist 参数（见 electron/app-generate.cjs），所以 persist
+   *   由这里传入的 runCommand 闭包固定，而**不是**去改 verifySpec 的签名（那会波及生成期老路径）。
+   * ★ 会话键与执行/登录同源（唯一出处 app-session-key.cjs）：质检用的就是那份登录态。
+   */
+  ipcMain.handle('app:verify', async (_e, appId) => {
+    const empty = { tried: [], failures: [], notRun: [], skipped: [] }
+    const spec = appRegistry.readSpec({ roots: roots(), appId })
+    if (!spec) return { ok: false, error: '应用 Spec 不存在', ...empty }
+    const driver = inferDriver(spec)
+    const key = keyFor(appId, spec.target)
+    if (driver === 'browser' && !getExecutor()) {
+      // 执行器未就绪时**如实报错**（而不是把每条命令都记成"失败"）：否则用户看到一片红，
+      // 却分不清是应用坏了还是浏览器还没起来。
+      return { ok: false, error: '浏览器执行器未就绪', ...empty }
+    }
+    const runForVerify = ({ action, args }) => {
+      if (driver === 'browser') {
+        // 用户保存过的应用目标 = 显式授权（否则试跑会被白名单拦下，报"域名不在白名单"）
+        authorizeAppTarget(spec.target)
+        return runCommand({ roots: roots(), appId, action, args, executor: getExecutor(), sessionId: key, persist: false })
+      }
+      return runNonBrowser({
+        appId, action, args,
+        spec: { ...spec, driver },
+        roots: roots(),
+        exploreRoots: () => exploreRoots(spec.target),
+        deps,
+        persist: false,
+      })
+    }
+    return verifySpec({ spec, sessionId: key, runCommand: runForVerify })
+  })
+
+  /**
+   * 落盘质检标记。
+   * ★ 必须放**注册表**（upsertApp 的合并语义 ⇒ 其余字段不丢），**不走 writeSpec**：
+   *   writeSpec 每次写盘前都先备份（spec.bak.<ts>.json），质检标记这种高频小写入会把备份列表淹没。
+   */
+  ipcMain.handle('app:mark-quality', (_e, payload) => {
+    const { appId, quality } = payload || {}
+    const exists = appRegistry.listApps({ roots: roots() }).some((a) => a?.id === appId)
+    if (!exists) return { ok: false, error: `应用不存在：${appId}` }
+    appRegistry.upsertApp({ roots: roots(), app: { id: appId, quality: quality ?? null } })
+    return { ok: true }
   })
 
   // ---- 控制台绑定（严格单开） ----

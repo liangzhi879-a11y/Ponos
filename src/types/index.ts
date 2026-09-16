@@ -12,8 +12,10 @@ import type { KnowledgeImportPolicy } from '@/lib/knowledgeImportUi'
 // 能力清单的类型定义在 src/lib/appSurface.ts（归一化 + 三分文案的可测唯一出处）：
 // 这里只 import 一次给 AppProbeResult 用，末尾再原样再导出，避免与组件各写一份结构定义。
 import type { AppSurface } from '@/lib/appSurface'
+// 质检标记（指纹/时间/结论/问题数）定义在 src/lib/appQuality.ts（零依赖纯模块，不 import 本文件 ⇒ 无循环）。
+import type { AppQualityMark } from '@/lib/appQuality'
 
-export type { ApprovalMode, LogPolicy, KnowledgeImportPolicy }
+export type { ApprovalMode, LogPolicy, KnowledgeImportPolicy, AppQualityMark }
 
 // ============================================================
 // Core TypeScript types for YFWorking GUI
@@ -152,6 +154,21 @@ export interface Conversation {
    *  桥检测到签名变化会以 --resume 重启内核（上下文不丢）。
    *  上限 8 个（kernel/knowledge.mjs MAX_ASSOC_SPACES），超出的部分被内核忽略。 */
   knowledgeSpaces?: string[]
+  /** 应用页作用域（2026-09-16，P2「应用页会话」）：设置后本会话的工具池**除默认工具外只含
+   *  这个应用的控制工具**（public 应用也不旁路），便于在一个应用内专注干活。
+   *  与 appId 的关系：作用域优先于 binding.json 的绑定（内核 app-spec.isAppVisible）。
+   *  undefined = 现有行为（不为本会话收窄，走 binding/console 判定）。
+   *  变更在**下一次发消息**时生效——作用域在内核启动段冻结，桥检测到签名变化会以
+   *  --resume 重启内核（上下文不丢）。 */
+  appPageId?: string
+  /**
+   * 该会话是某个应用的**专属 agent 会话**（2026-09-16，Task 4「应用生成后自动质检」）。
+   * 与 appPageId 的分工：appPageId 是"工具池收窄到该应用"（内核读的冻结作用域），
+   * appId 是"这个会话属于哪个应用"（渲染层用来做一个应用一个常驻会话的幂等查找）。
+   * 二者在应用会话上**同时**被设置，且值相同。
+   * undefined = 普通任务/对话会话（现有行为）。
+   */
+  appId?: string
   setId?: string
   /** 该会话经历过的全部内核 transcript sessionId（按需加载消息体用，持久化索引字段） */
   sessionIds?: string[]
@@ -501,6 +518,15 @@ export interface AppItem {
    * 主进程落盘时按 2000 字符截断（electron/app-registry.cjs 与 app-agent.cjs 同口径）。
    */
   requirement?: string
+  /**
+   * 最后一次质检标记（Task 4「生成后自动跑一轮整体质量检验」）。
+   * ★ 落 **registry.json**（electron/app-registry.cjs 的 upsertApp），**不落 spec.json**——
+   *   writeSpec 每次写盘前都先备份，质检标记会把备份列表淹没。
+   * ★ 指纹与 `specFingerprint(spec)` 同源：相等即"这一版已查过"（不重跑），
+   *   不等（AI 修复/用户手改 spec 后）才自动再跑一轮。
+   * 老条目没有这个字段 ⇒ undefined ⇒ 语义等同"从未质检"。
+   */
+  quality?: AppQualityMark | null
 }
 
 export interface AppTarget {
@@ -690,6 +716,9 @@ export interface AppGenerateProgress {
 /** 试跑验证结果（只跑 read；write 绝不试跑） */
 export interface AppVerifyResult {
   ok: boolean
+  /** 环境级失败原因（执行器未就绪 / Spec 不存在）：此时 tried/failures 均为空，
+   *  界面要如实说"是环境问题"而不是"应用有 N 条命令坏了"（Task 4 质检第 1 步） */
+  error?: string
   tried: string[]
   failures: { action: string; error: string }[]
   /** 未试跑的 write 命令 */
@@ -778,6 +807,11 @@ export interface YFWAPI {
   appReadSpec: (appId: string) => Promise<AppSpec | null>
   /** 写入 App Spec（写前自动备份旧版到 versions/） */
   appWriteSpec: (payload: { appId: string; spec: AppSpec }) => Promise<{ ok: boolean; path?: string }>
+  /**
+   * 自动分配下一个应用序号（工具识别号，形如 `app-001`）：新增对话框只读展示，用户不再手填。
+   * 只在保存/生成时把拿到的 id 当作 appId 传下去（字段名与格式与手填时完全一致）。
+   */
+  appNextId: () => Promise<{ id: string }>
   /** 进入应用控制台：把该应用绑定到当前内核会话（严格单开） */
   appEnterConsole: (payload: { sessionId: string; appId: string }) => Promise<{ ok: boolean }>
   /** 离开应用控制台：仅当当前绑定正是该 appId 时才解绑（防迟到事件误清） */
@@ -819,6 +853,13 @@ export interface YFWAPI {
   appCheckSpec: (payload: { spec: AppSpec; allowPublic?: boolean }) => Promise<{ ok: boolean; errors: string[] }>
   /** 漂移修复：只修执行失败的命令，写盘前自动备份，返回 repaired 明细 */
   appRepair: (payload: { appId: string; maxRepair?: number }) => Promise<AppRepairResult>
+  /**
+   * 确定性试跑（质检用，Task 4）：只跑无需必填参数的 read 命令；**不写 history**（试跑不是用户执行）。
+   * failures 里每条都带真实 action + error（界面据此展示"哪里坏了、为什么"）。
+   */
+  appVerify: (appId: string) => Promise<{ ok: boolean; error?: string; tried: string[]; failures: { action: string; error: string }[]; notRun: string[]; skipped: string[] }>
+  /** 写入质检标记（落 registry.json，不碰 spec.json）；quality 传 null 表示清掉旧标记 */
+  appMarkQuality: (payload: { appId: string; quality: AppQualityMark | null }) => Promise<{ ok: boolean; error?: string }>
 }
 
 /** File dialogs (skill install / knowledge pack install) — exposed by preload as `yfworkingFile` */

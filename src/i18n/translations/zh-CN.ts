@@ -869,7 +869,11 @@ export const zhCN = {
     noDesc: '（无描述）',
     targetWeb: '网站',
     targetDesktop: '桌面应用',
-    idLabel: '应用 ID',
+    idLabel: '应用序号',
+    /** 应用序号由系统分配（扫已有应用取下一个），用户不再手填 */
+    idAuto: '自动分配',
+    idAllocating: '分配中…',
+    idAllocFailed: '应用序号分配失败，请重试',
     name: '名称',
     desc: '描述',
     targetType: '目标类型',
@@ -880,7 +884,6 @@ export const zhCN = {
     cancel: '取消',
     remove: '删除应用',
     removeConfirm: '确定删除「{name}」？其 Spec 与执行历史将一并删除，且不可恢复。',
-    invalidId: '应用 ID 只能包含字母、数字、短横线、下划线',
     needName: '请填写应用名称',
     needTarget: '请填写目标（网址或可执行文件路径）',
     specInvalid: 'Spec JSON 解析失败：{msg}',
@@ -994,6 +997,30 @@ export const zhCN = {
     repairDetail: '改动明细',
     repairNotRun: '未改动 Spec（原文件保持不变）',
     noSpecYet: '这个应用还没有 Spec（回到卡片点「生成命令」或手工写入）',
+
+    // --- 应用页三标签（Task 4 后段）：默认落在 agent——生成完应用后用户要看的是
+    //     "AI 正在质检 + 能直接下指令"，命令清单与自检细节是第二步的事 ---
+    tabAgent: 'AI 助手',
+    tabDiagnose: '自检与诊断',
+    tabCommands: '命令与 Spec',
+    tabAgentHint: '在这里直接给这个应用下指令：回复留在本应用专属会话里（AI 只在这个会话能调用它的控制工具）',
+    tabDiagnoseHint: '自检结论、接入路径（能力清单）、评审结论、登录与修复结果',
+    tabCommandsHint: '手工执行命令、查看执行结果、编辑 Spec',
+    agentPreparing: '正在准备该应用的 AI 会话…',
+
+    // --- 自动质检（生成后进入应用页自动跑一轮；每条状态都必须可见，不得静默）---
+    qualityVerify: '质检第 1 步：正在真实试跑该应用的查询命令…',
+    qualityRunning: '质检进行中：AI 正在复跑失败命令并给出结论（结论会出现在下面这个会话里）',
+    qualityPassed: '质检通过：这一版未发现问题',
+    qualityFound: '质检发现 {n} 个问题（明细见下方会话）',
+    qualityAlready: '这一版已质检过（Spec 未变化），不重复跑',
+    qualityBusy: '应用会话正在输出，本次不并发跑质检（等它结束后重新进入本页可再触发）',
+    qualityNoSpec: '这个应用还没有 Spec，无从质检',
+    qualityVerifyFail: '确定性试跑未通过：{n} 条命令报错（已连同报错交给 AI 定位）',
+    qualityVerifyError: '确定性试跑失败：{msg}',
+    qualityCantRun: '质检未能发起：{msg}',
+    qualityMarkFailed: '质检结论未能写入注册表（不影响使用）：{msg}',
+    qualityNoConclusion: '本轮未收到结构化结论，已按试跑结果记录',
   },
 
   // --- 知识库面板（S2；Task 3 起逐任务补齐内容） ---

@@ -41,7 +41,24 @@ export function AppsPanel() {
   const opened = openId ? apps.find((a) => a.id === openId) ?? null : null
 
   if (opened) {
-    return <AppConsole app={opened} sessionId={sessionId} onBack={() => setOpenId(null)} />
+    return (
+      <AppConsole
+        app={opened}
+        sessionId={sessionId}
+        /**
+         * 返回列表时刷新 store：质检标记是写进 registry 的，内存里的 apps 仍是旧值
+         * （quality 为 undefined）⇒ 不刷新会让"指纹一致就跳过"失效，返回再进又跑一轮。
+         */
+        onBack={() => { void load(); setOpenId(null) }}
+        /**
+         * 恒为 true：进入应用页即允许自动质检，**是否真跑由 Spec 指纹判定** ——
+         * 指纹与上次质检标记一致则自动跳过（提示"这一版已质检过"），
+         * 变了（刚生成 / 手工改过 spec / 修复过）才跑一轮。
+         * 因此"生成后自动质检"与"改完 spec 回来复验"是同一套机制，不需要额外开关。
+         */
+        autoQuality
+      />
+    )
   }
 
   return (
@@ -83,7 +100,20 @@ export function AppsPanel() {
         )}
       </div>
 
-      {adding && <AddAppDialog sessionId={sessionId} onClose={() => setAdding(false)} onDone={() => { setAdding(false); void load() }} />}
+      {adding && (
+        <AddAppDialog
+          sessionId={sessionId}
+          onClose={() => setAdding(false)}
+          onDone={async (newId) => {
+            setAdding(false)
+            // ★ 必须先 await load()：opened 是 `apps.find(a => a.id === openId)` 算出来的，
+            //   store 里还是旧列表时把 openId 设成新 id 会 **找不到该应用** ⇒ 直接弹回列表，
+            //   表现就是"生成完没进应用页"（真实踩过：列表刷新与新 id 的竞态）。
+            await load()
+            if (newId) setOpenId(newId)
+          }}
+        />
+      )}
     </div>
   )
 }

@@ -12,6 +12,7 @@ import {
   isAppVisible,
   validateSpec,
   getBoundApp,
+  resolveScopedApp,
   EXPOSE_MODES,
   MAX_COMMANDS_PER_APP,
 } from '../kernel/app-spec.mjs'
@@ -158,6 +159,77 @@ test('可见性：未知 mode 一律不可见（fail-safe）', () => {
 test('可见性：spec 为空返回 false，不抛', () => {
   assert.equal(isAppVisible(null, { boundApp: 'x' }), false)
   assert.equal(isAppVisible(undefined, {}), false)
+})
+
+// —— 应用页作用域（--app-page，2026-09-16）—————————————————————————
+// 作用域是**过滤器**：本会话只接这一个应用。三件事必须钉死：
+//   ① console 态即便未绑定，作用域命中即可见（应用页的会话不依赖 binding.json）；
+//   ② public **不得旁路**（否则应用页里照样混着别的公共系统，"专注"是假的）；
+//   ③ private **不因作用域放宽**（作用域不是提权入口），未知 mode 同样恒不可见。
+test('作用域：命中本应用可见（console 未绑定也可见）', () => {
+  const spec = { appId: 'app-a', expose: { mode: 'console' }, commands: [] }
+  assert.equal(isAppVisible(spec, { scopeAppId: 'app-a', boundApp: null }), true, '作用域命中 ⇒ 可见（不必再绑定）')
+  assert.equal(isAppVisible(spec, { scopeAppId: 'app-b', boundApp: null }), false, '作用域是别的应用 ⇒ 本应用不可见')
+})
+
+test('★ 作用域：public 不得旁路（应用页里不得混进别的公共应用）', () => {
+  const pub = { appId: 'app-b', expose: { mode: 'public' }, commands: [] }
+  assert.equal(isAppVisible(pub, { scopeAppId: 'app-a' }), false, 'public 在作用域下也必须被过滤掉')
+  assert.equal(isAppVisible(pub, { scopeAppId: 'app-b' }), true, '作用域命中的 public 才可见')
+})
+
+test('★ 作用域：private 不因作用域放宽（判定在 mode 检查之后，fail-safe）', () => {
+  const priv = { appId: 'app-a', expose: { mode: 'private' }, commands: [] }
+  assert.equal(isAppVisible(priv, { scopeAppId: 'app-a' }), false, '作用域命中也不能把 private 捞出来')
+  const unknown = { appId: 'app-a', expose: { mode: 'wat' }, commands: [] }
+  assert.equal(isAppVisible(unknown, { scopeAppId: 'app-a' }), false, '未知 mode 同理（宁可少给，不可错给）')
+})
+
+test('作用域：优先于绑定（绑了别的应用，作用域仍说了算）', () => {
+  const spec = { appId: 'app-a', expose: { mode: 'console' }, commands: [] }
+  assert.equal(isAppVisible(spec, { scopeAppId: 'app-a', boundApp: 'app-b' }), true, '作用域命中 ⇒ 不受绑定影响')
+  assert.equal(isAppVisible(spec, { scopeAppId: 'app-b', boundApp: 'app-a' }), false, '作用域未命中 ⇒ 绑定本应用也不可见')
+})
+
+test('★ 作用域缺省（null/不传）⇒ 行为逐字不变（缺省零回归）', () => {
+  const console_ = { appId: 'app-a', expose: { mode: 'console' }, commands: [] }
+  const pub = { appId: 'app-a', expose: { mode: 'public' }, commands: [] }
+  const priv = { appId: 'app-a', expose: { mode: 'private' }, commands: [] }
+  for (const spec of [console_, pub, priv]) {
+    assert.equal(isAppVisible(spec, { boundApp: 'app-a' }),
+      isAppVisible(spec, { boundApp: 'app-a', scopeAppId: null }), '不传 vs scopeAppId:null 必须同结果')
+    assert.equal(isAppVisible(spec, { boundApp: null }),
+      isAppVisible(spec, { boundApp: null, scopeAppId: null }))
+  }
+  assert.equal(isAppVisible(console_, { boundApp: 'app-a', scopeAppId: null }), true)
+  assert.equal(isAppVisible(console_, { boundApp: null, scopeAppId: null }), false)
+  assert.equal(isAppVisible(pub, { boundApp: null, scopeAppId: null }), true)
+})
+
+test('resolveScopedApp：作用域优先于 binding.json（工具池与权限规则的同源口径）', () => {
+  withFixture((root) => {
+    writeFileSync(join(root, 'binding.json'), JSON.stringify({
+      s1: { appId: 'app-a', boundAt: '2026-09-13T00:00:00.000Z' },
+    }), 'utf-8')
+    // 无作用域 ⇒ 走绑定（现有行为）
+    const byBind = resolveScopedApp({ roots: [root], sessionId: 's1' })
+    assert.equal(byBind.appId, 'app-a')
+    assert.equal(byBind.spec?.appId, 'app-a')
+    // 有作用域 ⇒ 作用域说了算，且**不看** binding
+    const byScope = resolveScopedApp({ roots: [root], sessionId: 's1', scopeAppId: 'app-other' })
+    assert.equal(byScope.appId, 'app-other')
+    assert.equal(byScope.spec, null, '作用域指向不存在的应用 ⇒ spec 为 null（调用方据此 warn，而不是静默无工具）')
+  })
+})
+
+test('resolveScopedApp：无作用域且无绑定 → 双双 null（不抛）', () => {
+  withFixture((root) => {
+    assert.deepEqual(resolveScopedApp({ roots: [root], sessionId: 's1' }), { appId: null, spec: null })
+    assert.deepEqual(resolveScopedApp({ roots: [root], sessionId: null }), { appId: null, spec: null })
+    assert.deepEqual(resolveScopedApp({}), { appId: null, spec: null })
+    // 空串作用域等价"无作用域"（不把它当成一个真实 appId 去 loadSpec）
+    assert.deepEqual(resolveScopedApp({ roots: [root], sessionId: 's1', scopeAppId: '' }), { appId: null, spec: null })
+  })
 })
 
 test('validateSpec 捕获结构非法', () => {

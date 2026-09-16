@@ -42,3 +42,26 @@ test('partialize 白名单包含 knowledgeSpaces（漏了 = 重启后关联静�
   assert.match(src.slice(i, i + 1200), /knowledgeSpaces: c\.knowledgeSpaces/,
     'partialize 是显式取字段而非全量展开：漏字段不报错，只表现为"重启后关联没了"')
 })
+
+test('getOrCreateAppConversation：幂等（命中 appId 即返回）+ task 模式 + titleAuto:false + appPageId', () => {
+  const i = src.indexOf('getOrCreateAppConversation: (appId, appName)')
+  assert.ok(i > 0, '动作必须存在（应用页与自动质检依赖它）')
+  const body = src.slice(i, i + 1200)
+  assert.match(body, /\.find\(c => c\.appId === key\)/, '幂等键必须是 appId')
+  assert.match(body, /if \(existing\) return existing\.id/, '已存在必须直接复用，不得新建第二个')
+  assert.match(body, /createConversation\(undefined, undefined, 'task'\)/,
+    '必须 task 模式：chat 模式 appRoots=[]，应用工具根本不存在')
+  assert.match(body, /titleAuto: false/, '否则首条质检提示词会被自动标题改写（用户看不懂）')
+  assert.match(body, /appPageId: key/, '应用页作用域必须与 appId 同值（否则工具池不收窄到该应用）')
+  assert.match(body, /title: `应用·\$\{name\}`/, '标题要能一眼看出是哪个应用的会话')
+})
+
+test('partialize 白名单包含 appId/appPageId（漏了 = 重启后幂等失效 + 工具池失效）', () => {
+  const i = src.indexOf('partialize: (state) => ({')
+  assert.ok(i > 0)
+  const block = src.slice(i, i + 1600)
+  assert.match(block, /appId: c\.appId/,
+    '漏掉 appId：重启后"一个应用一个会话"的幂等键消失 → 每开一次应用页都新建一条"应用·xxx"')
+  assert.match(block, /appPageId: c\.appPageId/,
+    '漏掉 appPageId：重启后工具池不再收窄到该应用（应用工具全没了，且不报错）')
+})

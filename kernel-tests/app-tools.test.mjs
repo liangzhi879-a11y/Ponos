@@ -178,6 +178,70 @@ test('⑦b 不传 publicLimit（生产装配路径）：40 条命令全部进工
   assert.ok(!names.includes(appToolName(spec, `act${MAX_COMMANDS_PER_APP + 1}`)), '超出单应用上限的第 41 条不应注册')
 })
 
+// ---------- 应用页作用域（scopeAppId，2026-09-16）----------
+//
+// 场景刻意用**三种 expose 同场**（console + public + private），因为作用域的语义就是
+// "public 也不旁路"：只有把 public 应用放进同一个 fixture，"过滤掉了没有"才是可判定的
+// ——单独的 console 应用即使漏了作用域也不会露馅（未绑定本来就不可见）。
+const SCOPED_ACTIONS = { 'app-a': 'queryOrder', 'app-b': 'listItems', 'app-c': 'secretOp' }
+/** 三个应用的 spec 身份（命名真源是 app-naming.mjs，此处按 spec 的 appId/name 复算同名） */
+const SCOPED_SPECS = { 'app-a': { appId: 'app-a', name: '甲系统' }, 'app-b': { appId: 'app-b', name: '乙系统' }, 'app-c': { appId: 'app-c', name: '丙系统' } }
+
+/** console app-a + public app-b + private app-c 的数据根；binding 绑 app-a（作用域应覆盖它） */
+function makeScopedRoot() {
+  const root = tmpRoot()
+  makeApp({ root, appId: 'app-a', name: '甲系统', mode: 'console', commands: [{ ...READ_CMD, action: SCOPED_ACTIONS['app-a'] }], bindSession: 's1' })
+  for (const [appId, name, mode] of [['app-b', '乙系统', 'public'], ['app-c', '丙系统', 'private']]) {
+    mkdirSync(join(root, appId), { recursive: true })
+    writeFileSync(join(root, appId, 'spec.json'), JSON.stringify({
+      specVersion: 1, appId, name, target: { type: 'web', url: 'u' }, expose: { mode },
+      commands: [{ ...READ_CMD, action: SCOPED_ACTIONS[appId] }],
+    }), 'utf-8')
+  }
+  writeFileSync(join(root, 'registry.json'), JSON.stringify({
+    version: 1,
+    apps: [{ id: 'app-a', name: '甲系统', enabled: true }, { id: 'app-b', name: '乙系统', enabled: true }, { id: 'app-c', name: '丙系统', enabled: true }],
+  }), 'utf-8')
+  return root
+}
+
+const nameOf = (appId) => appToolName(SCOPED_SPECS[appId], SCOPED_ACTIONS[appId])
+
+test('⑩无作用域（对照）：绑定的 console + public 都进池，private 不进', () => {
+  const root = makeScopedRoot()
+  const names = Object.keys(buildAppTools({ roots: [root], sessionId: 's1' }))
+  assert.deepEqual(new Set(names), new Set([nameOf('app-a'), nameOf('app-b')]),
+    '对照面：默认行为 = console(已绑定) + public 都在（这才让下面的"只有一个"有意义）')
+})
+
+test('★ ⑪scopeAppId=app-a ⇒ 工具池里只有 app-a（public app-b 被过滤掉）', () => {
+  const root = makeScopedRoot()
+  const names = Object.keys(buildAppTools({ roots: [root], sessionId: 's1', scopeAppId: 'app-a' }))
+  assert.deepEqual(names, [nameOf('app-a')], `作用域下只应剩本应用（实际 ${JSON.stringify(names)}）`)
+  assert.ok(!names.includes(nameOf('app-b')), 'public 不得旁路（否则应用页里混着别的公共系统）')
+  assert.ok(!names.includes(nameOf('app-c')), 'private 恒不可见（作用域不放宽）')
+})
+
+test('⑫scopeAppId=app-b（public）⇒ 只有 app-b，即使绑定的不是它', () => {
+  const root = makeScopedRoot()
+  const names = Object.keys(buildAppTools({ roots: [root], sessionId: 's1', scopeAppId: 'app-b' }))
+  assert.deepEqual(names, [nameOf('app-b')], '作用域优先于 binding：作用域是 app-b 时就只给 app-b')
+})
+
+test('⑬scopeAppId 指向 private / 不存在的应用 ⇒ 0 工具（fail-closed）', () => {
+  const root = makeScopedRoot()
+  assert.deepEqual(Object.keys(buildAppTools({ roots: [root], sessionId: 's1', scopeAppId: 'app-c' })), [], 'private 不被作用域捞出来')
+  assert.deepEqual(Object.keys(buildAppTools({ roots: [root], sessionId: 's1', scopeAppId: 'app-nope' })), [], '不存在的应用 ⇒ 一个都不给（宁可少给）')
+})
+
+test('⑭scopeAppId=null ⇒ 与不传逐字同结果（缺省零回归）', () => {
+  const root = makeScopedRoot()
+  assert.deepEqual(
+    Object.keys(buildAppTools({ roots: [root], sessionId: 's1', scopeAppId: null })),
+    Object.keys(buildAppTools({ roots: [root], sessionId: 's1' })),
+  )
+})
+
 test('⑧重名 action：加哈希后缀保两条可用，冲突记入非枚举属性 nameConflicts', () => {
   const root = tmpRoot()
   // 两个 public 应用同名 'x' + 同 action → 工具名必撞（slug 相同）

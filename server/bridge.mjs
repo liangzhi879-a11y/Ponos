@@ -996,6 +996,27 @@ export function knowledgeSpacesSig(input) {
   return JSON.stringify(normalizeKnowledgeSpaces(input))
 }
 
+/**
+ * 归一应用页作用域（2026-09-16，P2「应用页会话」）。
+ *
+ * 与 normalizeKnowledgeSpaces 同一条纪律，但形态是**单值**：作用域语义上只有一个应用
+ * （内核的 `--app-page` 也只收一个 id），数组化会让"多写一个 id"变成静默截断。
+ * `''` / `undefined` / `null` / 非字符串 / 纯空白 一律等价 `null` = 无作用域（现有行为）。
+ *
+ * 为什么必须归一：spawn 冻结签名按值比对，`''` 与 `undefined` 若各留一个签名，
+ * 前端一次"清空作用域"的操作就会被判成"作用域变了" → 白重启一次内核（掉一次首字节，
+ * 用户看到卡顿）。同一状态只应有一个签名。
+ */
+export function normalizeAppPageId(input) {
+  const v = typeof input === 'string' ? input.trim() : ''
+  return v ? v : null
+}
+
+/** 应用页作用域的 spawn 冻结签名（'null' 唯一代表"无作用域"，见 normalizeAppPageId）。 */
+export function appPageSig(input) {
+  return JSON.stringify(normalizeAppPageId(input))
+}
+
 function buildChildEnv() {
   const cfg = loadConfig()
   const provider = (cfg.providers || []).find(p => p.id === cfg.activeProvider) || cfg.providers?.[0]
@@ -1204,7 +1225,10 @@ export function addBrowserWhitelist(host) {
   }
 }
 
-function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCount, mode = 'task', knowledgeSpaces = null) {
+function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCount, mode = 'task', knowledgeSpaces = null, appPageId = null) {
+  // 应用页作用域先归一（''/undefined/null 同签名）：签名判定的输入必须是**唯一形态**，
+  // 否则"清空作用域"会被判成一次变更、白重启内核（见 normalizeAppPageId）。
+  const pageId = normalizeAppPageId(appPageId)
   if (sessions.has(sid)) {
     const s = sessions.get(sid)
     if (s.proc && !s.proc.killed) {
@@ -1228,8 +1252,13 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
       // 故意不加 `!== undefined` 护栏：万一冻结处漏了，这里会重放一次、随后冻结补齐即自愈；
       // 而"漏冻结 ⇒ 每轮都重放"的灾难由 Step 4 的静态核对（3 处出现）兜住。
       const mcpChanged = s._spawnMcpSig !== currentMcpSig()
-      if (sigChanged || ksChanged || mcpChanged) {
-        console.log(`[bridge] ${ksChanged ? 'knowledge spaces' : mcpChanged ? 'mcp config' : 'provider/model'} changed — reaping kernel sid ${sid.slice(0, 8)} to respawn`)
+      // 应用页作用域变更（2026-09-16，P2「应用页会话」）：与上面三条**完全同一条路径**。
+      // 作用域在启动段固化（--app-page 进 argv、工具池与权限规则都按它收窄），运行中的内核
+      // 无法"改作用域"⇒ 只有重 spawn 才生效。用签名比对而不是每次 send 都重启：
+      // 签名一致时零动作（绝大多数轮次的路径不变），否则每次发消息都白掉一次首字节。
+      const appPageChanged = s._spawnAppPageSig !== appPageSig(pageId)
+      if (sigChanged || ksChanged || mcpChanged || appPageChanged) {
+        console.log(`[bridge] ${appPageChanged ? 'app page' : ksChanged ? 'knowledge spaces' : mcpChanged ? 'mcp config' : 'provider/model'} changed — reaping kernel sid ${sid.slice(0, 8)} to respawn`)
         if (resumeId) { try { rmSync(join(YFW_HOME, 'runs', resumeId + '.running'), { force: true }) } catch {} }
         s._reaped = true
         try { execSync(`taskkill -F -T -PID ${s.proc.pid}`, { timeout: 5000, stdio: 'ignore' }) } catch { try { s.proc.kill() } catch {} }
@@ -1345,6 +1374,13 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
   // 拼错一个字符就是"关联了没生效"且毫无报错（本仓库已有 --spaces/--confirm 两次前车）。
   const kSpaces = normalizeKnowledgeSpaces(knowledgeSpaces)
   if (kSpaces.length) args.push('--knowledge-spaces', q(kSpaces.join(',')))
+  // 应用页作用域（2026-09-16，P2）：非空 → `--app-page <id>`（内核据此把工具池收窄到该应用）。
+  // 无作用域时**不传参数**（同 --knowledge-spaces：缺省即语义，不传空串——空串在内核侧
+  // 等价 null，但会让"没传"与"传了个空的"成为两个不同的 argv 形态，徒增对不上的可能）。
+  // 参数名必须与 kernel/cli.mjs 的登记项逐字一致：那边对未知 `--` 参数**静默忽略**，
+  // 拼错一个字符就是"开了应用页却仍是全量工具池"且毫无报错（本仓库已有 --spaces/
+  // --confirm/--knowledge-spaces 三次前车）。
+  if (pageId) args.push('--app-page', q(pageId))
   const skillRoot = findSkillRoot()
   if (existsSync(skillRoot)) args.push('--add-dir', q(skillRoot))
   console.log('[bridge] skill root:', skillRoot)
@@ -1724,7 +1760,7 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
   })
   // _awaitingSince = 首次登记"有未决等待（提问/审批）"的时刻（0 = 当前无等待）。回收器
   // 据此给等待豁免设时限：豁免无条件 ⇒ 内核挂死或 GUI 永不回执时永远收不掉（T9）。
-  const session = { proc, cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()), mode, _pendingQuestions: null, _proseProgress: { total: 0, lastIndex: 0, structuredUsed: false }, _pendingApprovals: new Map(), firstTokenAt: null, _lastOutAt: 0, _turnActive: false, _stallWarnedAt: 0, _reaped: false, _cancelPending: false, _cancelAt: 0, _cancelTimer: null, _turnStartAt: 0, _fbpTimer: null, _fbpFirstTimer: null, _awaitingSince: 0, _lastCompactFrameAt: 0, _askBuf: '', _spawnEnvSig: providerEnvSig(buildChildEnv()), _spawnKnowledgeSig: knowledgeSpacesSig(knowledgeSpaces), _spawnMcpSig: currentMcpSig() }
+  const session = { proc, cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()), mode, _pendingQuestions: null, _proseProgress: { total: 0, lastIndex: 0, structuredUsed: false }, _pendingApprovals: new Map(), firstTokenAt: null, _lastOutAt: 0, _turnActive: false, _stallWarnedAt: 0, _reaped: false, _cancelPending: false, _cancelAt: 0, _cancelTimer: null, _turnStartAt: 0, _fbpTimer: null, _fbpFirstTimer: null, _awaitingSince: 0, _lastCompactFrameAt: 0, _askBuf: '', _spawnEnvSig: providerEnvSig(buildChildEnv()), _spawnKnowledgeSig: knowledgeSpacesSig(knowledgeSpaces), _spawnMcpSig: currentMcpSig(), _spawnAppPageSig: appPageSig(pageId) }
   sessions.set(sid, session)
   return session
 }
@@ -1886,8 +1922,10 @@ const httpServer = createServer(async (req, res) => {
           folders.push({ name: c.name, kind: c.kind, path: abs.split(sep).join('/') })
         } catch { /* 单项探测失败不影响其余项 */ }
       }
-      reply(200, { folders })
-      return
+      // reply 是 (code, headers, body) 三参签名：漏掉第三参会把 headers 当成
+      // body（200 + 空响应体），渲染层 res.json() 解析失败 ⇒ 目录选择器左栏
+      // 恒显"读取失败"。修复 2026-09-16。
+      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ folders }))
     }
     if (url.pathname === '/drives') {
       const drives = []
@@ -3193,7 +3231,7 @@ wss.on('connection', (ws, req) => {
         // Conversation.mode 收敛：'chat' 走受限 spawn（禁本地工具 + cwd=YFW_HOME），
         // 其余（task/undefined 旧会话）维持现状全工具
         const mode = msg.mode === 'chat' ? 'chat' : 'task'
-        const session = getOrCreateSession(sid, msg.cwd, msg.resumeId, msg.systemPrompt, msg.model, msg.compactCount, mode, msg.knowledgeSpaces)
+        const session = getOrCreateSession(sid, msg.cwd, msg.resumeId, msg.systemPrompt, msg.model, msg.compactCount, mode, msg.knowledgeSpaces, msg.appPageId)
         if (!session) return // spawn failed — error already sent via WebSocket
         // /loop 指令转译（打通点）：GUI 发纯文本 `/loop …` → 内核原生 loop 载荷/指令。
         // 非指令文本 translateLoopSend 返回 null → 原路径逐字直通（零回归锁②）。
@@ -3355,7 +3393,10 @@ wss.on('connection', (ws, req) => {
             console.log(`[bridge] answer on reaped session ${sid.slice(0, 8)} — respawning kernel (resume ${String(resumeId).slice(0, 8)})`)
             // cwd/mode/systemPrompt/model/compactCount 与 send 同源（前端 buildSendPayload
             // 的字段集）⇒ 重启出来的内核与"用户再发一条消息"完全等价，历史经 --resume 无缝续
-            session = getOrCreateSession(sid, msg.cwd, resumeId, msg.systemPrompt, msg.model, msg.compactCount, msg.mode === 'chat' ? 'chat' : 'task', msg.knowledgeSpaces)
+            // appPageId 必须与 send 路径**同一来源**（前端 buildSendPayload 的字段集）：
+            // 漏传一处就会出现"首条消息按作用域收窄、回答触发重 spawn 后又变回全量工具池"
+            // 的分裂——只在"卡在提问上的会话被回收后作答"时才暴露，极难复现。
+            session = getOrCreateSession(sid, msg.cwd, resumeId, msg.systemPrompt, msg.model, msg.compactCount, msg.mode === 'chat' ? 'chat' : 'task', msg.knowledgeSpaces, msg.appPageId)
             if (session) session._askBuf = ''
           } else {
             console.warn(`[bridge] answer undeliverable — session ${sid.slice(0, 8)} was reaped and payload carries no resumeId`)

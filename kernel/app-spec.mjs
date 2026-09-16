@@ -95,21 +95,53 @@ export function getBoundApp({ roots = [], sessionId = null } = {}) {
  *   public  → 始终可见（需用户显式开启；validateSpec 默认拒绝，见下）
  * 未知 mode 一律不可见（fail-safe：宁可少给，不可错给）。
  *
+ * **绑定/作用域优先于 public**：`scopeAppId`（应用页模式，--app-page）存在时，本会话的工具池
+ * 只含该应用——public 也不例外。否则"应用页"里会混进一堆与当前应用无关的公共工具，
+ * 模型照样能绕开这个页面去调别的系统（用户开应用页的意图就是"只看这一个"）。
+ * 判定顺序刻意是「private → scope → console/public」：
+ *   · private 放在 scope 之前 = **不因作用域放宽**（fail-safe：作用域不是提权入口）；
+ *   · scope 放在 console/public 之前 = 作用域是**过滤器**，不是"又一个绑定来源"。
+ * `scopeAppId == null` 时行为与引入本维度之前**逐字一致**（缺省零回归）。
+ *
  * 注意：`agentId` 为**预留参数**——当前版本可见性只按「会话绑定」判定，
  * agent 维度不参与（即 console 态下 = 该会话内所有 agent 均可调用）。
  * 若将来需要"同一会话内只给某 agent"，在此处收窄即可。
  *
  * @param {object} spec
- * @param {{agentId?:string|null, boundApp?:string|null}} ctx
+ * @param {{agentId?:string|null, boundApp?:string|null, scopeAppId?:string|null}} ctx
  * @returns {boolean}
  */
-export function isAppVisible(spec, { agentId = null, boundApp = null } = {}) {
+export function isAppVisible(spec, { agentId = null, boundApp = null, scopeAppId = null } = {}) {
   if (!spec) return false
   const mode = spec.expose?.mode || DEFAULT_EXPOSE_MODE
   if (!EXPOSE_MODES.includes(mode)) return false
   if (mode === 'private') return false
+  // 作用域优先于 console/public（含 public 不得旁路，见上）
+  if (scopeAppId != null) return spec.appId === scopeAppId
   if (mode === 'console') return !!boundApp && boundApp === spec.appId
   return true // public
+}
+
+/**
+ * 解析本会话"当前应该接哪个应用"——**作用域（应用页）优先于绑定（控制台）**。
+ *
+ * 存在的唯一理由：让「工具注入」（app-tools）与「权限规则注入」（app-permissions）共用
+ * 同一口径。若两处各写一遍 `scopeAppId ? … : getBoundApp(…)`，一旦口径分叉就会出现
+ * 「工具池给 A、规则按 B 注入」——症状是 read 被拒/ write 不弹窗，而两边代码各自看都对。
+ *
+ * 语义：
+ *   · scopeAppId 非空 → 该 id 即作用域，读它的 spec（**不看 binding.json**）；
+ *   · scopeAppId 为空/null → 现有行为：读 binding.json 的绑定（恒为 console 态的单开绑定）。
+ *   · spec 取不到（应用不存在/无 spec.json）→ 返回 `{ appId, spec: null }`：
+ *     调用方（cli.mjs）据此 warn，否则表现为"模型说没有这个工具"而毫无线索。
+ *
+ * @param {{roots?:string[], sessionId?:string|null, scopeAppId?:string|null}} p
+ * @returns {{appId:string|null, spec:object|null}}
+ */
+export function resolveScopedApp({ roots = [], sessionId = null, scopeAppId = null } = {}) {
+  const appId = scopeAppId != null && scopeAppId !== '' ? scopeAppId : getBoundApp({ roots, sessionId })
+  if (!appId) return { appId: null, spec: null }
+  return { appId, spec: loadSpec({ roots, appId }) }
 }
 
 /**

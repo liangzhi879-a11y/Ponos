@@ -2,7 +2,7 @@
 process.env.PONOS_MOCK_API = '1'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -131,5 +131,91 @@ test('★ 与内核侧 app-spec.mjs 的一致性契约：写出的 Spec 能被�
       assert.equal(spec.appId, 'app-a')
       resolve()
     } catch (e) { reject(e) } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+})
+
+// ---- 应用序号（工具识别号）自动分配 ----
+// 它是内核侧工具名 `app_<slug>_<action>` 的真源：撞车 = 两个应用共用一份 Spec（静默错配），
+// 所以"不冲突"是硬要求，且必须同时看**注册表记录**与**目录名**两处占用。
+
+test('nextAppId：无任何应用 → app-001（3 位补零）', () => {
+  withRoot((root) => {
+    assert.equal(registry.nextAppId({ roots: [root] }), 'app-001')
+  })
+})
+
+test('nextAppId：已有 app-003 → app-004', () => {
+  withRoot((root) => {
+    registry.upsertApp({ roots: [root], app: { id: 'app-003', name: '丙' } })
+    assert.equal(registry.nextAppId({ roots: [root] }), 'app-004')
+  })
+})
+
+test('nextAppId：只有目录、没进注册表的遗留应用也算占用', () => {
+  withRoot((root) => {
+    mkdirSync(join(root, 'app-005'))
+    assert.equal(registry.nextAppId({ roots: [root] }), 'app-006')
+  })
+})
+
+test('nextAppId：混合非规范 id（001 / 002 / my-app）不与新 id 冲突，且序号不被带偏', () => {
+  withRoot((root) => {
+    for (const id of ['001', '002', 'my-app']) {
+      registry.upsertApp({ roots: [root], app: { id, name: id } })
+    }
+    const next = registry.nextAppId({ roots: [root] })
+    assert.equal(next, 'app-001', '非规范 id 不参与序号推算，从 app-001 起')
+    for (const id of ['001', '002', 'my-app']) assert.notEqual(next, id)
+  })
+})
+
+test('nextAppId：非规范 id 占用了 app-001 时向后让位', () => {
+  withRoot((root) => {
+    mkdirSync(join(root, 'app-001'))   // 可以是历史遗留的规范 id 目录
+    registry.upsertApp({ roots: [root], app: { id: 'app-002', name: '乙' } })
+    assert.equal(registry.nextAppId({ roots: [root] }), 'app-003')
+  })
+})
+
+test('nextAppId：补零格式在进位处保持正确（app-009 → app-010，app-099 → app-100）', () => {
+  withRoot((root) => {
+    registry.upsertApp({ roots: [root], app: { id: 'app-009', name: '九' } })
+    assert.equal(registry.nextAppId({ roots: [root] }), 'app-010')
+  })
+  withRoot((root) => {
+    registry.upsertApp({ roots: [root], app: { id: 'app-099', name: '九十九' } })
+    assert.equal(registry.nextAppId({ roots: [root] }), 'app-100')
+  })
+})
+
+test('nextAppId：同进程内重复调用不会给出同一个 id（并发预留生效）', () => {
+  withRoot((root) => {
+    const a = registry.nextAppId({ roots: [root] })
+    const b = registry.nextAppId({ roots: [root] })
+    assert.equal(a, 'app-001')
+    assert.equal(b, 'app-002', '第二次调用必须跳过上一次已发放的 id')
+    assert.notEqual(a, b)
+  })
+})
+
+test('nextAppId：id 落盘后预留给出的下一个仍不冲突（未保存的预留也算占用）', () => {
+  withRoot((root) => {
+    const first = registry.nextAppId({ roots: [root] })
+    registry.upsertApp({ roots: [root], app: { id: first, name: '第一个' } })
+    const second = registry.nextAppId({ roots: [root] })
+    assert.equal(second, 'app-002')
+    const ids = registry.listApps({ roots: [root] }).map((a) => a.id)
+    assert.deepEqual(ids, [first], '注册表里只应有已保存的那个')
+    assert.ok(!ids.includes(second))
+  })
+})
+
+test('nextAppId：多个根目录（roots 数组）以第一个为准，不因第二个根而错乱', () => {
+  withRoot((root) => {
+    const other = mk()
+    try {
+      registry.upsertApp({ roots: [root], app: { id: 'app-007', name: '庚' } })
+      assert.equal(registry.nextAppId({ roots: [root, other] }), 'app-008')
+    } finally { rmSync(other, { recursive: true, force: true }) }
   })
 })

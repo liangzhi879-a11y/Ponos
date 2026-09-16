@@ -17,6 +17,62 @@ const rootOf = (roots) => (Array.isArray(roots) ? roots[0] : roots)
 const registryPath = (roots) => join(rootOf(roots), 'registry.json')
 
 /**
+ * 应用序号（自动分配的 id）形态：`app-` + 序号。
+ * ★ 只有这个前缀参与"最大序号"推算：`001` / `002` / `my-app` 这类非规范 id 只当**占用**，
+ *   不许它们把序号带偏（否则已有 `999` 目录就会让新应用从 app-1000 开始）。
+ */
+const APP_ID_SEQ_RE = /^app-(\d+)$/
+/**
+ * 根目录 → 已"发放但尚未落盘"的 id。**并发/重复调用的去重靠它**：
+ * 纯扫盘的话，同一进程内连续两次 nextAppId（两个对话框同时打开）会算出同一个 id；
+ * 这里把已发出的 id 先**预留**，直到 upsertApp 真的把它写进注册表（落盘后扫盘就能看到，预留即失效）。
+ * ★ 只保证**同一进程内**不重复。跨进程（多开 GUI）理论上仍可能撞车，
+ *   但 appId 是目录名，重复 id 会表现为"两个应用共用一份 Spec"，代价明确、且多开 GUI 并非正常用法；
+ *   为此加文件锁/原子占位属过度设计（真实写路径 upsertApp → mkdirSync(recursive) 也不会抛错兜底）。
+ */
+const reservations = new Map()
+
+/** 某根目录下**已被占用**的全部 id：注册表记录 ∪ 目录名（目录名才是 appId 的唯一真源，可能尚未登记） */
+function takenAppIds({ roots }) {
+  const ids = new Set()
+  for (const a of listApps({ roots })) if (a?.id != null && a.id !== '') ids.add(String(a.id))
+  try {
+    for (const name of readdirSync(rootOf(roots))) ids.add(name)
+  } catch { /* 目录还不存在 = 一个应用都没有，不是错误 */ }
+  return ids
+}
+
+/**
+ * 自动分配下一个应用序号（工具识别号）：`app-001`、`app-002`…
+ *
+ * 规则（用户侧的诉求：id 不再让人手填，但它是内核侧 `app_<slug>_<action>` 工具名的真源，必须稳定且不撞）：
+ *   · 扫**注册表记录 + 目录名**两处占用 —— 只扫一处必漏（真实环境里存在只有目录、没进注册表的遗留）；
+ *   · 取形如 `app-<数字>` 的最大序号 +1，3 位补零（序号 ≥1000 时自然变 4 位，仍是合法 id）；
+ *   · 候选若已被占用（含 `001` / `my-app` 这类非规范 id）就继续向后找，**绝不返回一个已存在的 id**；
+ *   · 无任何应用时从 `app-001` 开始；
+ *   · 同进程内重复调用不会给出同一个 id（靠上面的 reservations 预留）。
+ * @param {{roots: string|string[]}} args
+ * @returns {string}
+ */
+function nextAppId({ roots } = {}) {
+  const root = String(rootOf(roots))
+  const taken = takenAppIds({ roots })
+  let reserved = reservations.get(root)
+  if (!reserved) { reserved = new Set(); reservations.set(root, reserved) }
+  let max = 0
+  for (const id of taken) {
+    const m = APP_ID_SEQ_RE.exec(id)
+    if (m) max = Math.max(max, Number(m[1]))
+  }
+  for (let n = max + 1; ; n += 1) {
+    const candidate = `app-${String(n).padStart(3, '0')}`
+    if (taken.has(candidate) || reserved.has(candidate)) continue
+    reserved.add(candidate)
+    return candidate
+  }
+}
+
+/**
  * 用户需求（M1）在注册表里的上限。
  * ★ 必须与 electron/app-agent.cjs 的 REQUIREMENT_MAX_CHARS **同口径**（那里是提示词的权威截断点）；
  *   这里再截一次只是防止超长文本原样落盘。改一处要改两处。
@@ -67,6 +123,8 @@ function upsertApp({ roots, app }) {
   else apps.push(entry)
   writeRegistry({ roots, apps })
   mkdirSync(join(rootOf(roots), entry.id), { recursive: true })
+  // 该 id 已落盘（扫盘即可见），预留可以撤销——不撤也不会出错，但会让 Map 无界增长
+  reservations.get(String(rootOf(roots)))?.delete(String(entry.id))
   return entry
 }
 
@@ -148,4 +206,4 @@ function restoreSpec({ roots, appId, backupName }) {
   return spec
 }
 
-module.exports = { listApps, upsertApp, removeApp, readSpec, writeSpec, setAppEnabled, listBackups, restoreSpec, BACKUP_RE, REQUIREMENT_MAX_CHARS }
+module.exports = { listApps, upsertApp, removeApp, readSpec, writeSpec, setAppEnabled, listBackups, restoreSpec, nextAppId, BACKUP_RE, REQUIREMENT_MAX_CHARS }

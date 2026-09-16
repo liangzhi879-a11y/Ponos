@@ -858,7 +858,11 @@ export const enUS: TranslationKeys = {
     noDesc: '(no description)',
     targetWeb: 'Website',
     targetDesktop: 'Desktop app',
-    idLabel: 'App ID',
+    idLabel: 'App no.',
+    /** App no. is assigned by the system (scans existing apps for the next one); users no longer type it */
+    idAuto: 'auto-assigned',
+    idAllocating: 'Allocating…',
+    idAllocFailed: 'Failed to allocate an app number — please retry',
     name: 'Name',
     desc: 'Description',
     targetType: 'Target type',
@@ -869,7 +873,6 @@ export const enUS: TranslationKeys = {
     cancel: 'Cancel',
     remove: 'Delete app',
     removeConfirm: 'Delete "{name}"? Its spec and run history will be removed permanently.',
-    invalidId: 'App ID may only contain letters, digits, dash and underscore',
     needName: 'Please enter an app name',
     needTarget: 'Please enter a target (URL or executable path)',
     specInvalid: 'Failed to parse Spec JSON: {msg}',
@@ -983,6 +986,30 @@ export const enUS: TranslationKeys = {
     repairDetail: 'Changes',
     repairNotRun: 'Spec unchanged (file left as-is)',
     noSpecYet: 'No Spec yet for this app (go back and click Generate commands, or write one manually)',
+
+    // --- App page tabs (Task 4 follow-up): default lands on agent — right after generating
+    //     an app the user wants to see the quality check running and be able to instruct it ---
+    tabAgent: 'AI assistant',
+    tabDiagnose: 'Checks & diagnostics',
+    tabCommands: 'Commands & Spec',
+    tabAgentHint: 'Instruct this app directly here — replies stay in this app-only conversation (the AI can call its control tools only in this conversation)',
+    tabDiagnoseHint: 'Self-check result, integration paths (capability list), review verdict, login and repair results',
+    tabCommandsHint: 'Run commands by hand, inspect results, edit the Spec',
+    agentPreparing: 'Preparing this app\'s AI conversation…',
+
+    // --- Auto quality check (runs once when you land on the app page after generating) ---
+    qualityVerify: 'Quality check step 1: really re-running the app\'s read commands…',
+    qualityRunning: 'Quality check running: the AI is re-running failed commands and will report its verdict in the conversation below',
+    qualityPassed: 'Quality check passed: no issues found in this version',
+    qualityFound: 'Quality check found {n} issue(s) — details in the conversation below',
+    qualityAlready: 'This version was already checked (Spec unchanged) — not re-running',
+    qualityBusy: 'The app conversation is still streaming — not running the check concurrently (re-enter this page after it finishes to trigger it)',
+    qualityNoSpec: 'This app has no Spec yet — nothing to check',
+    qualityVerifyFail: 'Deterministic dry run failed: {n} command(s) errored (handed to the AI together with the errors)',
+    qualityVerifyError: 'Deterministic dry run failed: {msg}',
+    qualityCantRun: 'Quality check could not start: {msg}',
+    qualityMarkFailed: 'Quality verdict could not be written to the registry (usage unaffected): {msg}',
+    qualityNoConclusion: 'No structured verdict this round — recorded from the dry-run result',
   },
 
   // --- Knowledge panel (S2; filled in task by task from Task 3) ---

@@ -372,6 +372,11 @@ function conversationSpawnFields(conversationId: string): Record<string, unknown
     // 缺失时**不发该键**（bridge 缺省 = 内置经验类空间）：传空数组会让"没关联"与
     // "关联了空列表"两个状态在桥侧产生不同签名，从而多触发一次内核重启。
     ...(conversation.knowledgeSpaces?.length ? { knowledgeSpaces: conversation.knowledgeSpaces } : {}),
+    // 应用页作用域（2026-09-16，P2）：会话设了作用域 → bridge 转成 `--app-page` → 内核把
+    // 工具池收窄到该应用。**缺失时不发该键**（与上面 knowledgeSpaces 同款纪律）：bridge 侧
+    // `undefined` 与 `''` 虽已归一成同一签名，但少发一个键能少一层依赖，也不会让"没设作用域"
+    // 与"显式清空"在报文里成为两种形状。
+    ...(conversation.appPageId ? { appPageId: conversation.appPageId } : {}),
   }
 }
 

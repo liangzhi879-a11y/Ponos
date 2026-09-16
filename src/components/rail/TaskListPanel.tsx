@@ -2,7 +2,8 @@
 // 自旧 Sidebar.tsx chats 分支完整迁移：搜索、整理（Wand2 autoOrganize）、排序（DropdownMenu）、
 // 置顶/会话集/未分组、拖动排序与拖入会话集、行右键菜单（重命名/置顶/移动会话集/导出/删除）、
 // 会话集右键菜单（重命名/导出/删除）、流式会话进度条（conv-progress）、冷启动定位滚动。
-// 变更点：仅任务会话入列（isTaskLike；chat 会话归 ChatListPanel 且无会话集概念）；
+// 变更点：仅任务会话入列（isPlainTaskLike = isTaskLike 且非应用会话；chat 会话归 ChatListPanel
+//         且无会话集概念；应用会话见 Task 4）；
 //         exportChats 已迁至 @/lib/chatExport；硬编码中文全部改为 i18n 键。
 // 头部 = PanelToolbar（rail.task 标题 + 计数 + 新建任务 + 次级浮层图标行 files/history/usage/worktree）。
 import { useState, useEffect, useRef, useLayoutEffect, memo } from 'react'
@@ -22,7 +23,7 @@ import { useViewStore, type SecondTabId } from '@/stores/viewStore'
 import { useTranslation } from '@/i18n/useTranslation'
 import { exportChats } from '@/lib/chatExport'
 import { formatDate, cn } from '@/lib/utils'
-import { isTaskLike } from '@/lib/chatModeUi'
+import { isPlainTaskLike } from '@/lib/chatModeUi'
 import type { Conversation, ConversationProgress, ConversationSet } from '@/types'
 
 export function TaskListPanel() {
@@ -67,8 +68,10 @@ export function TaskListPanel() {
   const [distillId, setDistillId] = useState<string | null>(null)
   const distillConv = useChatStore(s => (distillId ? s.conversations.find(c => c.id === distillId) ?? null : null))
 
-  // 本面板只渲染任务会话（chat 会话与集合概念隔离，见 ChatListPanel）
-  const tasks = conversations.filter(isTaskLike)
+  // 本面板只渲染任务会话（chat 会话与集合概念隔离，见 ChatListPanel）；
+  // 应用专属会话（Conversation.appId，Task 4 质检用）也不入列——它是某个应用的常驻会话，
+  // 混进任务列表只会与"一个应用一个会话"的幂等语义打架（见 chatModeUi.isPlainTaskLike）。
+  const tasks = conversations.filter(isPlainTaskLike)
 
   // 次级浮层：点同 tab 再次点击关闭；其余切换内容
   const toggleSecondTab = (tab: SecondTabId) => {

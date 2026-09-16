@@ -59,10 +59,29 @@ const SPEC = {
   ],
 }
 
-test('app:* 19 条通道全部注册（新增 app:login-done / app:login-cancel 登录信号）', () => {
+test('app:* 22 条通道全部注册（新增 app:verify / app:mark-quality 质检通道）', () => {
   const ipc = fakeIpcMain()
   registerAppHandlers({ ipcMain: ipc, getExecutor: () => fakeExecutor([]) })
-  assert.equal(ipc.channels().length, 19)
+  assert.equal(ipc.channels().length, 22)
+})
+
+test('app:next-id 走真实注册层：空目录给 app-001，落盘后给下一个（不撞车）', async () => {
+  const home2 = mkdtempSync(join(tmpdir(), 'appipc-nextid-'))
+  const prev = process.env.YFWORKING_HOME
+  process.env.YFWORKING_HOME = home2
+  try {
+    const ipc = fakeIpcMain()
+    registerAppHandlers({ ipcMain: ipc, getExecutor: () => fakeExecutor([]) })
+    assert.deepEqual(await ipc.invoke('app:next-id'), { id: 'app-001' })
+    await ipc.invoke('app:upsert', { id: 'app-001', name: '第一个', targetType: 'web', enabled: true })
+    assert.deepEqual(await ipc.invoke('app:next-id'), { id: 'app-002' })
+    const ids = (await ipc.invoke('app:list')).map((a) => a.id)
+    assert.deepEqual(ids, ['app-001'])
+  } finally {
+    if (prev === undefined) delete process.env.YFWORKING_HOME
+    else process.env.YFWORKING_HOME = prev
+    rmSync(home2, { recursive: true, force: true })
+  }
 })
 
 test('CRUD → Spec → 自检 全链路（数据落在 YFWORKING_HOME/apps）', async () => {

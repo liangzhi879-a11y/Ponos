@@ -47,7 +47,9 @@ test('第 3 跳：bridge 把会话字段转成 --knowledge-spaces（参数名逐
   const src = read('server/bridge.mjs')
   assert.match(src, /args\.push\('--knowledge-spaces'/, '参数名必须与内核登记项逐字一致（拼错=静默失效）')
   assert.match(src, /normalizeKnowledgeSpaces\(knowledgeSpaces\)/, '先归一再加参（同一状态只应有一个签名）')
-  assert.match(src, /getOrCreateSession\(sid, cwd, resumeId, systemPrompt, model, compactCount, mode = 'task', knowledgeSpaces = null\)/,
+  // 参数表尾部用 `[,)]` 收口：appPageId（应用页作用域，2026-09-16）追加在 knowledgeSpaces 之后，
+  // 本断言只关心"这个字段被收下了"，不该因为后面多一个兄弟参数而红
+  assert.match(src, /getOrCreateSession\(sid, cwd, resumeId, systemPrompt, model, compactCount, mode = 'task', knowledgeSpaces = null[,)]/,
     'getOrCreateSession 必须收这个字段（否则前端传了也到不了 argv）')
   assert.match(src, /_spawnKnowledgeSig/, '范围签名：变更后要能触发 --resume 重启内核才生效')
 })

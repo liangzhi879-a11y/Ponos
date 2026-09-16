@@ -35,6 +35,11 @@ const yfworkingAPI = {
   appRemove: (appId) => ipcRenderer.invoke('app:remove', appId),
   appReadSpec: (appId) => ipcRenderer.invoke('app:read-spec', appId),
   appWriteSpec: (payload) => ipcRenderer.invoke('app:write-spec', payload),
+  /**
+   * 自动分配下一个应用序号（工具识别号，形如 app-001）：新增对话框只读展示，用户不再手填。
+   * 返回值是"建议值"，可能与另一个同时打开的对话框不同——两处都只在**保存时**用自己拿到的那个。
+   */
+  appNextId: () => ipcRenderer.invoke('app:next-id'),
   appEnterConsole: (payload) => ipcRenderer.invoke('app:console-enter', payload),
   appLeaveConsole: (payload) => ipcRenderer.invoke('app:console-leave', payload),
   appBound: (sessionId) => ipcRenderer.invoke('app:console-bound', sessionId),
@@ -67,6 +72,16 @@ const yfworkingAPI = {
   appCheckSpec: (payload) => ipcRenderer.invoke('app:check-spec', payload),
   /** 漂移修复：只修执行失败的命令，写盘前自动备份，返回 repaired 明细 */
   appRepair: (payload) => ipcRenderer.invoke('app:repair', payload),
+  /**
+   * 确定性试跑（质检用）：只跑无需必填参数的 read 命令，**不写 history**（试跑不是"用户执行"）。
+   * 入参 appId，返回 { ok, tried, failures:[{action,error}], notRun, skipped }。
+   */
+  appVerify: (appId) => ipcRenderer.invoke('app:verify', appId),
+  /**
+   * 写入质检标记 `{appId, quality}`（落注册表 registry.json，**不碰 spec.json**——
+   * 后者每次写盘都先备份，会把 spec.bak 列表淹没）。quality 传 null 表示清掉标记。
+   */
+  appMarkQuality: (payload) => ipcRenderer.invoke('app:mark-quality', payload),
   /**
    * 订阅生成进度（如实阶段事件）。返回取消订阅函数——
    * 组件卸载必须调用，否则渲染层会残留监听（与 onExperienceAlert 同款约定）。

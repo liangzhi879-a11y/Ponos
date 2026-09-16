@@ -6,7 +6,8 @@
 //      后者恒带 run_ 前缀、且把中文名清洗成空（回退 run_workflow_<hash>），会让
 //      app-permissions.mjs 注入的 `app_*:*` 规则永不命中——read 放不了行、write 挡不住。
 //   ② 可见性由 app-spec.mjs 的 isAppVisible 判定（console = 仅本会话绑定的那个应用 /
-//      public = 恒可见 / private = 永不可见），不在此另造一套可见性口径。
+//      public = 恒可见 / private = 永不可见；**应用页作用域 scopeAppId 优先，public 不旁路**），
+//      不在此另造一套可见性口径。
 //   ③ 执行不在本进程：内核是独立进程，应用命令必须回到 Electron 执行（browser/desktop
 //      两种 driver）。故执行能力经 `runner` 注入（kernel/cli.mjs 注入 app 桥路由 →
 //      bridge → 主进程执行器 → stdin app_response）。未注入 runner → **明确报错**，
@@ -36,21 +37,26 @@ function renderData(data) {
  * @param {string[]} p.roots       应用数据根（<configDir>/apps 等）
  * @param {string|null} p.agentId  预留：当前可见性只按会话绑定判定（与 app-spec 同口径）
  * @param {string|null} p.sessionId 当前会话 id（读 binding.json 用）
+ * @param {string|null} p.scopeAppId 应用页作用域（--app-page）：非空 ⇒ 只注册该应用的工具
+ *                 （public 也不旁路；语义见 app-spec.isAppVisible）。缺省 null = 现有行为。
  * @param {Function} p.runner      执行能力：({appId, action, args, sessionId}) → {ok, data, error, kind, durationMs}
  * @param {number}   p.publicLimit 工具总数上限（缺省 → MAX_COMMANDS_PER_APP，与单应用命令上限对齐）
  * @returns {Object} 工具表（非枚举属性 nameConflicts 记录重名冲突明细）
  */
-export function buildAppTools({ roots = [], agentId = null, sessionId = null, runner, publicLimit } = {}) {
+export function buildAppTools({ roots = [], agentId = null, sessionId = null, scopeAppId = null, runner, publicLimit } = {}) {
   const tools = {}
   const conflicts = []
   const run = typeof runner === 'function' ? runner : missingRunner
   // 当前会话绑定的应用（严格单开）。每次求值现读 binding.json —— 与权限规则注入同一时点。
+  // scopeAppId 非空时 isAppVisible 直接按作用域判定（binding 不参与），故这里照读即可：
+  // 多读一次 binding.json 不会改变结果（作用域优先），但保留了"无作用域"时的原路径。
   const boundApp = getBoundApp({ roots, sessionId })
 
   for (const app of listApps({ roots })) {
     if (app.enabled === false) continue
     const spec = loadSpec({ roots, appId: app.id })
-    if (!isAppVisible(spec, { agentId, boundApp })) continue // private 恒不可见 / console 需绑定
+    // private 恒不可见 / 作用域只留本应用 / console 需绑定（口径见 app-spec.isAppVisible）
+    if (!isAppVisible(spec, { agentId, boundApp, scopeAppId })) continue
     const appName = String(spec.name || app.name || app.id)
     const commands = (Array.isArray(spec.commands) ? spec.commands : [])
       .filter((c) => c && c.action)

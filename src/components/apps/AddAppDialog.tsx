@@ -56,8 +56,16 @@ function skeletonSpec({ id, name, type, url, exePath }: {
   }
 }
 
-export function AddAppDialog({ onClose, onDone, sessionId }: { onClose: () => void; onDone: () => void; sessionId?: string | null }) {
+// onDone 回传**刚落盘的 appId**（Task 4「生成后默认进入应用页」）：调用方要靠它把用户直接
+// 送进新应用的应用页并自动跑一轮质检；不传 id 时调用方只能退回列表（旧行为）。
+export function AddAppDialog({ onClose, onDone, sessionId }: { onClose: () => void; onDone: (appId?: string) => void; sessionId?: string | null }) {
   const { t } = useTranslation()
+  /**
+   * 应用序号（工具识别号）：**自动分配，用户不再手填**。
+   * 打开对话框时向主进程取一个（扫注册表 + 目录名，形如 app-001）；取不到时本地兜底一个不冲突的
+   * —— 宁可 id 难看一点，也不能因为一次 IPC 失败就让用户没法继续创建。
+   * 它仍是内核侧工具名 `app_<slug>_<action>` 的真源，故字段名/格式与手填时完全一致（下游链路不变）。
+   */
   const [id, setId] = useState('')
   const [loggingIn, setLoggingIn] = useState(false)
   const [loginMsg, setLoginMsg] = useState<string | null>(null)
@@ -95,6 +103,45 @@ export function AddAppDialog({ onClose, onDone, sessionId }: { onClose: () => vo
   const targetReady = type === 'web' ? !!normalizeWebUrl(url) : !!exePath.trim()
   /** 需求条目（按行拆、去空、去重）——只用于界面如实提示"几行需求会作为硬约束"，不改变提交内容 */
   const requirementItems = normalizeRequirement(requirement)
+
+  /**
+   * 本地兜底：按已有应用列表推一个不冲突的 `app-00N`；列表也取不到就用时间戳（仍是合法 id 形态）。
+   * 只在主进程 app:next-id 不可用/失败时才走这里。
+   */
+  const localNextId = useCallback(async () => {
+    const taken = new Set<string>()
+    try {
+      const list = await api?.appList?.()
+      for (const a of list || []) if (a?.id) taken.add(String(a.id))
+    } catch { /* 列表取不到：走时间戳兜底 */ }
+    for (let n = 1; n < 100000; n += 1) {
+      const candidate = `app-${String(n).padStart(3, '0')}`
+      if (!taken.has(candidate)) return candidate
+    }
+    return `app-${Date.now()}`
+  }, [api])
+
+  /** 取下一个应用序号：优先主进程（它是跳过"已占用 id"的唯一权威实现），失败则本地兜底 */
+  const allocateId = useCallback(async () => {
+    try {
+      const r = await api?.appNextId?.()
+      if (r?.id && ID_RE.test(r.id)) return r.id
+    } catch { /* 落到本地兜底 */ }
+    return localNextId()
+  }, [api, localNextId])
+
+  /** 打开对话框即取一个（只读展示）；已取到就不再改，避免用户看着 id 跳来跳去 */
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      const next = await allocateId()
+      if (alive) setId((prev) => prev || next)
+    })()
+    return () => { alive = false }
+  }, [allocateId])
+
+  /** 生成/保存前确保有 id：用户可能在分配返回之前就点了按钮 */
+  const ensureId = useCallback(async () => (ID_RE.test(id) ? id : allocateId()), [id, allocateId])
 
   /**
    * 先登录（可选）：该站点若需要登录才看得到功能，先在这里登录再生成——登录态与命令执行、
@@ -156,9 +203,10 @@ export function AddAppDialog({ onClose, onDone, sessionId }: { onClose: () => vo
       if (normalized && normalized !== url) setUrl(normalized)
     }
     try {
+      const appId = await ensureId()
       // 需求按**原文**传（不传界面拆好的数组）：主进程 app-agent 是归一化的权威口径（去空/去重/截断 2000）。
       // 界面自己拆行只用于"如实提示条数"，不改变提交内容——避免出现"界面说 3 项、模型只收到 1 项"的错位。
-      const r = await api?.appGenerate?.({ target, appId: id || undefined, requirement })
+      const r = await api?.appGenerate?.({ target, appId: appId || undefined, requirement })
       if (!r) { setError(t('apps.genFailed')); return }
       setGen(r)
       setVerify(r.verify ?? null)
@@ -173,7 +221,9 @@ export function AddAppDialog({ onClose, onDone, sessionId }: { onClose: () => vo
 
   async function onSave() {
     setError('')
-    if (!ID_RE.test(id)) return setError(t('apps.invalidId'))
+    // 应用序号由系统分配（用户不再手填）：保存前确保拿到，拿不到就明确报错，不静默用空 id 落盘
+    const appId = await ensureId()
+    if (!ID_RE.test(appId)) return setError(t('apps.idAllocFailed'))
     if (!name.trim()) return setError(t('apps.needName'))
     let spec: AppSpec
     if (showJson) {
@@ -181,16 +231,18 @@ export function AddAppDialog({ onClose, onDone, sessionId }: { onClose: () => vo
     } else if (gen?.spec) {
       spec = gen.spec
     } else {
-      spec = skeletonSpec({ id, name: name.trim(), type, url: normalizeWebUrl(url), exePath: exePath.trim() })
+      spec = skeletonSpec({ id: appId, name: name.trim(), type, url: normalizeWebUrl(url), exePath: exePath.trim() })
       if (probe?.driver) spec.driver = probe.driver as AppSpec['driver']
     }
-    spec = { ...spec, appId: id, name: spec.name || name.trim() }
+    spec = { ...spec, appId, name: spec.name || name.trim() }
     setSaving(true)
     try {
       // 需求一并落注册表：重新生成/换会话接入时不用再让用户重填（主进程按同口径截断到 2000）
-      await api?.appUpsert?.({ id, name: name.trim(), desc: desc.trim(), targetType: type, enabled: true, requirement })
-      await api?.appWriteSpec?.({ appId: id, spec })
-      onDone()
+      await api?.appUpsert?.({ id: appId, name: name.trim(), desc: desc.trim(), targetType: type, enabled: true, requirement })
+      await api?.appWriteSpec?.({ appId, spec })
+      // 顺序固定：先 upsert/写 spec，再回调——调用方要立刻按 id 打开应用页，
+      // 若提前回调会把用户带进一个磁盘上还不存在的应用（列表里找不到它）。
+      onDone(appId)
     } catch (e) {
       setError(String((e as Error)?.message || e))
     } finally { setSaving(false) }
@@ -210,8 +262,13 @@ export function AddAppDialog({ onClose, onDone, sessionId }: { onClose: () => vo
         <DialogBody>
           <div className="flex flex-col gap-2.5">
             <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+              {/* 应用序号：**自动分配、只读**（用户诉求：不再手填 id）。
+                  它决定内核侧工具名 app_<slug>_<action>，所以由系统统一分配、保证不与已有应用撞车。 */}
               <Field label={t('apps.idLabel')}>
-                <Input value={id} onChange={(e) => setId(e.target.value)} placeholder="my-app" className="h-7 text-xs flex-1" />
+                <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                  <Input readOnly tabIndex={-1} value={id || t('apps.idAllocating')} className="h-7 text-xs flex-1 text-tertiary" />
+                  <span className="text-[10px] text-tertiary shrink-0">{t('apps.idAuto')}</span>
+                </div>
               </Field>
               <Field label={t('apps.name')}>
                 <Input value={name} onChange={(e) => setName(e.target.value)} className="h-7 text-xs flex-1" />

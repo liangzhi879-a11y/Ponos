@@ -25,6 +25,8 @@ const CHANNELS = {
   'app:remove': 'appRemove',
   'app:read-spec': 'appReadSpec',
   'app:write-spec': 'appWriteSpec',
+  // 应用序号自动分配（新增对话框只读展示，用户不再手填 id）
+  'app:next-id': 'appNextId',
   'app:console-enter': 'appEnterConsole',
   'app:console-leave': 'appLeaveConsole',
   'app:console-bound': 'appBound',
@@ -36,6 +38,10 @@ const CHANNELS = {
   'app:restore-spec': 'appRestoreSpec',
   'app:check-spec': 'appCheckSpec',
   'app:repair': 'appRepair',
+  // 质检（Task 4）：确定性试跑（复用生成期同一套 verifySpec，persist:false）
+  'app:verify': 'appVerify',
+  // 质检标记落注册表（不走 writeSpec——后者每次备份会淹没备份列表）
+  'app:mark-quality': 'appMarkQuality',
   // 打开可见登录窗口（用户主动触发）——自动化窗口平时隐藏，这是"带登录态探索"的唯一入口
   'app:login': 'appLogin',
   // 登录成功/取消信号（渲染层「我已完成登录」按钮）——false 只表示"当前没有等待中的登录"

@@ -60,7 +60,7 @@ import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
 import { runReadonly } from './readonly.mjs'
 import { KERNEL_VERSION, SCHEMA_VERSION, buildId } from '../version.mjs'
 // 应用智控：内核侧 Spec 读取（纯函数）与权限规则注入
-import { getBoundApp, loadSpec } from './app-spec.mjs'
+import { loadSpec, resolveScopedApp } from './app-spec.mjs'
 // K0 观测 + K1.2 缓存命中计数（默认关：关闭时只付一次布尔判断，见 kernel/perf.mjs）
 import { perfCount } from './perf.mjs'
 import { syncAppPermissionRules } from './app-permissions.mjs'
@@ -120,6 +120,13 @@ export function parseArgs(argv) {
     // `--knowledge-spaces docs` 会被无声吞掉，表现为"关联了却没生效"（与 `--spaces`/`--confirm`
     // 同一病灶，本文件内已反复踩过）。
     knowledgeSpaces: null,
+    // 应用页模式（2026-09-16，P2「应用页会话」）：本会话的**应用作用域**——非空 ⇒ 工具池里
+    // 除默认工具外只含该应用的 app_* 工具（public 应用也不旁路），便于"在一个应用内专注干活"。
+    // 与 binding.json 的关系：作用域**优先于**绑定（见 app-spec.isAppVisible/resolveScopedApp）。
+    // **必须显式登记**：本 CLI 对未知 `--` 参数静默忽略，漏登记时 `--app-page app-a` 会被无声
+    // 吞掉，表现为"开了应用页却仍是全量工具池"——与前两处（--spaces/--confirm/--knowledge-spaces）
+    // 同一病灶，本文件已反复踩过。
+    appPage: null,
     // 知识图谱局部图（批次 2）：以某文档为心、N 跳双向邻域
     around: null,
     hops: null,
@@ -191,6 +198,9 @@ export function parseArgs(argv) {
       // "逗号串还是数组"）。空串/全空白 → `[]` = 没关联，交由 resolveSessionKnowledgeScope
       // 归一（那边把脏值一律当"未关联"，故这里不重复做校验分支）。
       case '--knowledge-spaces': out.knowledgeSpaces = String(next() ?? '').split(',').map((s) => s.trim()).filter(Boolean); break
+      // 应用页作用域（2026-09-16）：单值 id（**不是**逗号列表——作用域语义上只有一个应用，
+      // 数组化只会让"多写一个 id"变成静默截断）。缺省 null = 现有行为（按 binding.json 判定）。
+      case '--app-page': out.appPage = next() || null; break
       // 2026-09-14 批次 2（局部图）：`--around <docId>` 把图谱收敛到该文档的 N 跳邻域。
       // 与 `--space`/`--spaces` 同一纪律：**必须登记 + 必须转发**（转发见 knowledgeArgs），
       // 否则 `--around` 被静默吞掉、图谱照旧画全局图 —— 用户以为"局部图没生效"。
@@ -649,6 +659,16 @@ export async function main(argv) {
   // 应用智控数据根：<configDir>/apps（与 electron/app-registry.cjs 的 roots 对应）。
   // chat 模式与工作流同处理：根为空 ⇒ 不注入应用规则。
   const appRoots = chatMode ? [] : [join(configDir, 'apps')]
+  // 应用页作用域（2026-09-16）：本会话只接这一个应用的工具。两点刻意：
+  //   · 它是**过滤器**，不改 appRoots——数据根仍指 <configDir>/apps，作用域只在可见性判定
+  //     里收窄。若改根，binding.json/spec 的读取路径会一起变（权限规则注入与工具池会不同源）；
+  //   · chat 模式恒 null（与 appRoots=[] 同源）：chat 会话不接应用工具，作用域无从谈起。
+  const appPageId = chatMode ? null : (args.appPage || null)
+  // 作用域里应用不存在（被删/改名/spec 缺失）必须出声：此时 isAppVisible 恒 false ⇒ 工具池里
+  // 一个 app_* 都没有，用户侧只看到"模型说没有这个工具"，没有任何线索可查。
+  if (appPageId && !loadSpec({ roots: appRoots, appId: appPageId })) {
+    log.warn(`apps: --app-page ${appPageId} 未找到对应应用（spec 缺失或已删除）—— 本会话将没有任何应用工具`)
+  }
   // I-2：public 工作流入池上限——settings.workflow.publicLimit（设置项不存在/非法 → 缺省 20，
   // 与 dyntools 内 LIMIT_DEFAULT 一致；不为此扩设置系统）。
   const wfPublicLimitN = Number(settings.merged.workflow?.publicLimit)
@@ -765,9 +785,11 @@ export async function main(argv) {
       // **K1.2 硬约束：本段有副作用（改 rules.allow/ask），是"进/离控制台即生效"的主机制，
       // 故必须在缓存判定之前、每次求值都跑——绝不进缓存，也不受签名命中影响。**
       try {
-        const boundAppId = getBoundApp({ roots: appRoots, sessionId })
-        const boundSpec = boundAppId ? loadSpec({ roots: appRoots, appId: boundAppId }) : null
-        syncAppPermissionRules({ rules: permissionRules, spec: boundSpec })
+        // 口径与工具池**同源**（resolveScopedApp）：作用域（--app-page）优先于 binding.json。
+        // 两处若各写一份判定，就会出现「工具池给 A、规则按 B 注入」的分裂——症状是
+        // read 被拒 / write 不弹窗，而两边代码各自看都对（见 app-spec.resolveScopedApp）。
+        const { spec: scopedSpec } = resolveScopedApp({ roots: appRoots, sessionId, scopeAppId: appPageId })
+        syncAppPermissionRules({ rules: permissionRules, spec: scopedSpec })
       } catch (err) {
         log.warn('apps: 权限规则注入失败（本轮继续）', err)
       }
@@ -790,11 +812,15 @@ export async function main(argv) {
         //   · runner 走 engine.runApp：内核只发起 bridge_request(route=app)，
         //     真正的执行在 Electron 主进程（electron/app-ipc.cjs 的 app:run 逻辑），
         //     回执经 stdin app_response → engine.resolveApp；
-        //   · 未绑定/未注入 runner 时不会静默成功（app-tools 侧对缺 runner 明确报错）。
+        //   · 未绑定/未注入 runner 时不会静默成功（app-tools 侧对缺 runner 明确报错）；
+        //   · scopeAppId = --app-page（应用页模式）：非空 ⇒ 只注册该应用的工具（public 不旁路）。
+        //     **作用域是进程启动段冻结的**（bridge 侧变更即重 spawn，见 appPageChanged），
+        //     故它不进 toolSourceSignature —— 同一进程内它恒为同一个值，缓存不会串味。
         ...buildAppTools({
           roots: appRoots,
           agentId: args.agent || null,
           sessionId,
+          scopeAppId: appPageId,
           runner: (p) => engine.runApp(p),
         }),
       }
