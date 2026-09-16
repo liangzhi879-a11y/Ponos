@@ -26,13 +26,20 @@
   （`<12位hex>:<第几次出现>`）。代价：在别处插入同内容段会让后续同名块序号漂移 —— 这是已知限制，
   已在 plan 的 D-2 记录（将来若要根除，需把 id 物化进文档，属改用户文件本体，未做）。
 """
-import hashlib
 import json
 import os
-import re
 import sys
 
 from docx.oxml.ns import qn
+
+# 本仓库的 python 是**嵌入式发行版**（runtime/python 下有 `python312._pth`）：它按 `._pth`
+# 决定 sys.path，**不会**像常规解释器那样自动把"脚本所在目录"加进去。所以这里必须显式补一次，
+# 否则 `import office_common` 直接 ModuleNotFoundError（实测确实如此，不是理论风险）。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# 归一化与版本口径取自共享件（与 sheet_edit.py **同一套规则**）：
+# 两边各写一份会漂移，而"两边判等口径不一致"在协同里直接表现为合并结果悄悄不对。
+from office_common import content_id, file_sha256, norm_text
 
 # 可识别的块标签（body 的子元素里，只有这两种是"块"；其余如 w:sectPr 是节属性，跳过）
 _BLOCK_TAGS = (qn("w:p"), qn("w:tbl"))
@@ -47,34 +54,8 @@ _KIND_TO_STYLE = {"h1": "Heading 1", "h2": "Heading 2", "h3": "Heading 3"}
 # ---------------------------------------------------------------------------
 # 基础
 # ---------------------------------------------------------------------------
-
-def _file_sha256(path):
-    """整文件内容哈希（S1 阶段的 baseVersion 来源）。
-
-    为什么用整文件而不是"规范化内容哈希"：S1 无版本链，而这里要防的是**丢失更新** ——
-    任何人（外部 Word/网盘同步/另一个客户端）动过文件，就应该让本次提交失败并让用户重新载入。
-    整文件哈希对"文件被动过"最敏感，宁可多让用户重载一次，也不要用宽容的口径把别人的改动覆盖掉。
-    （S3/S4 阶段换来源为版本链 versionId，字段名与语义不变。）
-    """
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _norm_text(text):
-    """归一化文本用于 id 与比对：连续空白折成一个空格、去首尾。
-
-    不动的部分：大小写、标点、中文全/半角 —— 那些是**内容差异**，抹掉它们会把不同的段判成同一段。
-    """
-    return re.sub(r"\s+", " ", text or "").strip()
-
-
-def _block_id(kind, payload, occurrence):
-    """blockId = 内容指纹前 12 位 + 出现序号。内容相同 ⇒ id 相同（幂等/稳定），重复内容靠序号区分。"""
-    digest = hashlib.sha256(f"{kind}\x00{payload}".encode("utf-8")).hexdigest()[:12]
-    return f"{digest}:{occurrence}"
+# 归一化（norm_text）、内容指纹（content_id）与版本哈希（file_sha256）定义在 `office_common.py`，
+# 与 `sheet_edit.py` 共用同一份实现 —— 见该文件顶部说明。
 
 
 def _para_kind(p):
@@ -111,11 +92,11 @@ def _enumerate_blocks(doc):
         if child.tag == qn("w:p"):
             para = Paragraph(child, doc)
             kind = _para_kind(para)
-            payload = _norm_text(para.text)
+            payload = norm_text(para.text)
             key = (kind, payload)
             occurrence[key] = occurrence.get(key, 0) + 1
             out.append({
-                "blockId": _block_id(kind, payload, occurrence[key]),
+                "blockId": content_id(kind, payload, occurrence[key]),
                 "kind": kind,
                 "text": para.text,
                 "obj": para,
@@ -127,7 +108,7 @@ def _enumerate_blocks(doc):
             key = ("table", _rows_payload(rows))
             occurrence[key] = occurrence.get(key, 0) + 1
             out.append({
-                "blockId": _block_id("table", key[1], occurrence[key]),
+                "blockId": content_id("table", key[1], occurrence[key]),
                 "kind": "table",
                 "rows": rows,
                 "obj": table,
@@ -163,7 +144,7 @@ def read_docx(path):
         return _err("file-missing", f"文件不存在：{path}")
     doc = Document(path)
     blocks = _enumerate_blocks(doc)
-    return {"ok": True, "baseVersion": _file_sha256(path), "blocks": _public_blocks(blocks)}
+    return {"ok": True, "baseVersion": file_sha256(path), "blocks": _public_blocks(blocks)}
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +273,7 @@ def write_docx(body):
         return _err("base-version-required", "缺少 baseVersion：它是防止覆盖他人改动的依据，必需字段")
     if not os.path.exists(path):
         return _err("file-missing", f"文件不存在：{path}")
-    actual = _file_sha256(path)
+    actual = file_sha256(path)
     if actual != base_version:
         return _err(
             "base-version-mismatch",
@@ -381,7 +362,7 @@ def write_docx(body):
     except PermissionError as e:
         return _err("file-locked", f"文件被占用，无法写入（可能正被 Word/网盘同步进程锁定）：{e}")
 
-    return {"ok": True, "baseVersion": _file_sha256(path), "applied": applied}
+    return {"ok": True, "baseVersion": file_sha256(path), "applied": applied}
 
 
 # ---------------------------------------------------------------------------
@@ -396,7 +377,11 @@ def main():
         print(json.dumps(write_docx(body)))
 
 
-try:
-    main()
-except Exception as e:
-    print(json.dumps({"ok": False, "code": "exception", "error": f"{type(e).__name__}: {e}"}))
+# 必须用 `__main__` 守卫：本文件会被测试/探针 **import**（需要直接调用 read/write 函数做比对）。
+# 不守卫的话 import 时就会去读 `sys.argv[1]` 并抛 IndexError —— 实测踩到过：调用方的 stdout 里
+# 混进一条 `{"ok":false,…IndexError…}`，看起来像功能坏了，实际只是导入副作用。
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(json.dumps({"ok": False, "code": "exception", "error": f"{type(e).__name__}: {e}"}))

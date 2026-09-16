@@ -2208,30 +2208,61 @@ const httpServer = createServer(async (req, res) => {
       const st = statSync(fp)
       if (st.isDirectory() || st.size > 10485760) throw new Error('Invalid or too large')
     }
-    // Excel 结构读取（值 + 公式标记），供应用内网格编辑
+    // Excel 结构读取（值 + 公式标记 + 行/列内容指纹），供应用内网格编辑。
+    // 【S1-C5】额外透传 `baseVersion`（防丢失更新）与 `sheetNames`（多表工作簿"有哪些表"必须可见，
+    // 否则 ops 能写到 read 看不见的表上，形成信息不对称）；每个 sheet 带 `rowIds`/`colIds`，
+    // 它们是前端提交时的**寻址标识**（行/列身份按内容算，不按行号 —— 插删行列后行号会漂移）。
     if (url.pathname === '/read-sheet') {
       const fp = resolve((url.searchParams.get('path') || '').replace(/\//g, sep))
       validOfficeFile(fp)
       try {
         const result = await runOfficeScript('sheet_edit.py', ['read', fp])
         if (!result.ok) throw new Error(result.error || 'read failed')
-        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, sheets: result.sheets }))
+        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, baseVersion: result.baseVersion, sheetNames: result.sheetNames, sheets: result.sheets }))
       } catch (e) {
         return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ error: e.message || 'Read error' }))
       }
     }
-    // Excel 单元格写回：{ path, sheet, updates:[{row,col,value}] }（公式格跳过）
+    // Excel 写回：【S1-C6】只接受 `{ path, baseVersion, sheet?, ops[] }`（旧的 `updates:[{row,col,value}]`
+    // 会被 python 侧显式拒绝并转达 400）。状态码映射与 /write-docx 同一口径：
+    // 409=版本冲突（用户应重新载入）、400=请求不可用（含旧写法/公式格只读/引用不存在的行）、
+    // 423=文件被占用、404=文件不存在，其余 500。
     if (url.pathname === '/write-sheet' && req.method === 'POST') {
       const body = await readJsonBody(req)
       const fp = resolve((body.path || '').replace(/\//g, sep))
       if (!body.path) throw new Error('path required')
       validOfficeFile(fp)
       const tmp = join(tmpdir(), 'yfw-sheet-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.json')
-      writeFileSync(tmp, JSON.stringify(body))
+      writeFileSync(tmp, JSON.stringify({ ...body, path: fp }))
       try {
         const result = await runOfficeScript('sheet_edit.py', ['write', tmp])
-        if (!result.ok) throw new Error(result.error || 'write failed')
-        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true }))
+        if (!result.ok) {
+          const code = result.code || 'write-failed'
+          const status = ({
+            'base-version-mismatch': 409,
+            'file-locked': 423,
+            'file-missing': 404,
+            'xls-write-unsupported': 400,
+            'path-required': 400,
+            'ops-required': 400,
+            'base-version-required': 400,
+            'legacy-updates-not-supported': 400,
+            'sheet-not-found': 400,
+            'row-not-found': 400,
+            'col-not-found': 400,
+            'row-deleted': 400,
+            'col-deleted': 400,
+            'formula-cell-readonly': 400,
+            'value-required': 400,
+            'unknown-op': 400,
+            'bad-op': 400,
+            'bad-request': 400,
+          })[code] || 500
+          return reply(status, { 'Content-Type': 'application/json' }, JSON.stringify({
+            ok: false, code, error: result.error || 'write failed', expected: result.expected, actual: result.actual, cell: result.cell, sheetNames: result.sheetNames,
+          }))
+        }
+        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, baseVersion: result.baseVersion }))
       } catch (e) {
         return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ error: e.message || 'Write error' }))
       } finally {

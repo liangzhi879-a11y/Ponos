@@ -15,6 +15,10 @@ interface SheetData {
   name: string
   rows: (string | number | boolean | null)[][]
   formulas: boolean[][]
+  /** 行/列的内容指纹（服务端按内容算，插删行列后不漂移）。**提交时按它寻址，不用行号**：
+   *  行号在插入/删除后会整体错位（实测 1 处插入会被误报成 19 处修改）。 */
+  rowIds: string[]
+  colIds: string[]
 }
 
 /** 单元格写回值：空输入 → null；原为数字且输入可解析 → 数字；其余按文本 */
@@ -39,10 +43,17 @@ export const SheetEditor = forwardRef<SheetEditorHandle, { file: FileTab }>(func
   const [saveError, setSaveError] = useState('')
   const [editing, setEditing] = useState<{ r: number; c: number } | null>(null)
   const [editText, setEditText] = useState('')
+  // 提交时的基线版本（服务端据此判断"我读到之后有没有人改过"）
+  const [baseVersion, setBaseVersion] = useState('')
+  // 版本冲突与普通失败分开：冲突时用户该"重新载入"，重试保存必然再失败
+  const [conflict, setConflict] = useState(false)
+  // 状态驱动重载（不用 window.location.reload：那会连编辑器外壳一起重建，丢失当前上下文）
+  const [reloadTick, setReloadTick] = useState(0)
   const [, forceRender] = useState(0)
 
-  // 已编辑格（写回用）；key = "r,c"（0-based）
-  const dirtyRef = useRef<Map<string, { row: number; col: number; value: unknown }>>(new Map())
+  // 已编辑格（写回用）；key = "r,c"（0-based）。存的是**值**，
+  // 寻址标识（rowId/colId）在保存时从基线数组取 —— 保证地址永远是"我读到的那份"的地址。
+  const dirtyRef = useRef<Map<string, { value: unknown }>>(new Map())
   // 编辑态同步 ref，避免 input 卸载触发的 onBlur 读到陈旧闭包
   const editingRef = useRef(editing)
   const skipBlurRef = useRef(false)
@@ -58,13 +69,19 @@ export const SheetEditor = forwardRef<SheetEditorHandle, { file: FileTab }>(func
         if (cancelled) return
         if (d.error) throw new Error(d.error)
         setSheets(d.sheets || [])
+        setBaseVersion(d.baseVersion || '')
+        // 载入即清空待提交改动：服务端内容成为新基线，旧的寻址标识已无意义
+        dirtyRef.current.clear()
+        setConflict(false)
+        setSaveError('')
+        saveErrorRef.current = ''
         setLoading(false)
       })
       .catch((e: any) => {
         if (!cancelled) { setError(e?.message || t('common.loading')); setLoading(false) }
       })
     return () => { cancelled = true }
-  }, [file.path])
+  }, [file.path, reloadTick])
 
   const sheet = sheets?.[0]
 
@@ -87,7 +104,7 @@ export const SheetEditor = forwardRef<SheetEditorHandle, { file: FileTab }>(func
     if (unchanged) {
       dirtyRef.current.delete(key)
     } else {
-      dirtyRef.current.set(key, { row: r + 1, col: c + 1, value })
+      dirtyRef.current.set(key, { value })
       markFileModified(file.id)
     }
     forceRender(x => x + 1)
@@ -107,19 +124,36 @@ export const SheetEditor = forwardRef<SheetEditorHandle, { file: FileTab }>(func
   useImperativeHandle(ref, () => ({
     save: async () => {
       if (!sheet) return false
-      const updates = [...dirtyRef.current.values()]
-      if (updates.length === 0) return true
+      if (dirtyRef.current.size === 0) return true
+      // 把 UI 的 (r,c) 映射成**基线的内容指纹**：一旦有人插删行列，行号会漂移，
+      // 而 rowId/colId 不会 —— 这正是"改动写到别人那一行"这类静默错误的根治办法。
+      const ops = []
+      for (const [key, d] of dirtyRef.current) {
+        const [rs, cs] = key.split(',')
+        const r = Number(rs), c = Number(cs)
+        const rowId = sheet.rowIds?.[r]
+        const colId = sheet.colIds?.[c]
+        if (!rowId || !colId) continue // 越界（例如表格被外部改小）：跳过而不是猜一个地址
+        ops.push({ op: 'updateCell', rowId, colId, value: d.value })
+      }
+      if (ops.length === 0) return true
       try {
         const res = await fetch(getBridgeUrl() + '/write-sheet', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: file.path, sheet: sheet.name, updates }),
+          body: JSON.stringify({ path: file.path, sheet: sheet.name, baseVersion, ops }),
         })
         const data = await res.json()
-        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`)
+        if (!res.ok || !data.ok) {
+          // 409 = 版本冲突（我读到之后有人改了）：单独标记，引导用户重新载入
+          if (res.status === 409 || data.code === 'base-version-mismatch') setConflict(true)
+          throw new Error(data.error || `HTTP ${res.status}`)
+        }
+        if (data.baseVersion) setBaseVersion(data.baseVersion)
         dirtyRef.current.clear()
         saveErrorRef.current = ''
         setSaveError('')
+        setConflict(false)
         forceRender(x => x + 1)
         markFileSaved(file.id)
         return true
@@ -201,7 +235,18 @@ export const SheetEditor = forwardRef<SheetEditorHandle, { file: FileTab }>(func
       <div className="flex items-center gap-2 px-3 py-1 bg-modal text-xs text-tertiary border-b shrink-0">
         <span className="truncate">{sheet.name}</span>
         {dirtyRef.current.size > 0 && <span className="text-warning/80">• {dirtyRef.current.size} 处改动</span>}
-        {saveError && <span className="text-error truncate" title={saveError}>⚠ {saveError}</span>}
+        {conflict && (
+          <span className="text-error flex items-center gap-2">
+            ⚠ 文件已被其他程序或协作者修改，你的改动**未**保存（避免覆盖对方内容）
+            <button
+              onClick={() => setReloadTick(n => n + 1)}
+              className="px-2 py-0.5 rounded border border-error/50 hover:bg-error/10 text-[12px]"
+            >
+              重新载入
+            </button>
+          </span>
+        )}
+        {saveError && !conflict && <span className="text-error truncate" title={saveError}>⚠ {saveError}</span>}
       </div>
       <div className="flex-1 min-h-0 overflow-auto">
         <table className="border-collapse w-max min-w-full">
