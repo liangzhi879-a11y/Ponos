@@ -732,11 +732,21 @@ export async function main(argv) {
       log: (level, msg) => { try { if (level === 'warn' || level === 'error') log.warn(msg); else log.info?.(msg) } catch { /* 日志失败不影响工具 */ } },
     })
     hookMcpExitCleanup(mcpRegistry)      // 内核退出时回收 MCP 子进程，避免孤儿
+    // 就绪后把**真实接入状态**上报给桥，供 MCP 面板显示。
+    // 为什么需要它：面板上的"连接测试"是面板自己发起的探测，只能证明"这台此刻连得上"，
+    // 不能证明"内核已接入"——两者被混为一谈，用户就会觉得"添加成功了却找不到调用入口"。
+    // **绝不 await 在启动路径上**：MCP 服务器不可达时要等数秒，绝不能拖慢内核启动或 init。
+    mcpRegistry.ready()
+      .then(() => { try { wire.system('mcp_status', mcpRegistry.snapshot()) } catch { /* 上报失败不影响内核 */ } })
+      .catch(() => { /* 启动异常已在 registry 内部记日志 */ })
     // MCP 工具合并器：命名带 `mcp__` 前缀，不会与内置/工作流/应用工具重名；
     // 万一重名以本进程工具为准（不劫持既有工具），故 MCP 置于右侧作补充。
     // 就绪前 view() 返回 {} ⇒ 返回原对象引用（不产生多余对象，签名缓存语义不受影响）。
+    // **agentId 必须用 args.agent**（与下面 buildWorkflowTools 同一个来源）——
+    // 两处用不同来源就会出现"工作流按 agent 过滤、MCP 不按"的分裂，
+    // 而那种 bug 只在"某 agent 该看不到某工具却看到了"时才暴露，极难发现。
     const withMcp = (v) => {
-      const mcp = mcpRegistry.view()
+      const mcp = mcpRegistry.view({ agentId: args.agent || null })
       return Object.keys(mcp).length ? { ...v, ...mcp } : v
     }
     engine.tools.setDynamicTools(() => {
