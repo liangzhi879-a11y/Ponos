@@ -212,7 +212,9 @@ export async function startMcpHttpClient({
       const r = await session.request('tools/call', { name: tool, arguments: argsObj || {} }, opts)
       return { text: contentToText(r), isError: r?.isError === true, raw: r }
     },
-    async close() {
+    // 同步关闭：注册表的 closeAll() 是同步遍历（内核退出路径），异步 close 会留下
+    // 未处理的 rejection。这里的两步（中止在途请求、收尾会话）本身就无需等待。
+    close() {
       for (const c of inflight) { try { c.abort() } catch { /* 已断开 */ } }
       inflight.clear()
       session.closeWith(new Error(`MCP 服务器 ${name} 已关闭`), 'close')

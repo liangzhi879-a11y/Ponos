@@ -10,6 +10,7 @@
 import { join } from 'node:path'
 import { resolveConfigDir } from './config.mjs'
 import { loadMcpServers, startMcpClient, mcpToolName } from './mcp.mjs'
+import { startMcpHttpClient } from './mcp-http.mjs'
 
 /** MCP 配置文件位置：<configDir>/mcp.json（沿用内核既有配置目录约定） */
 export function mcpConfigPath(env = process.env) {
@@ -65,7 +66,12 @@ export function createMcpRegistry({ configPath, log = () => {} } = {}) {
     const entries = Object.entries(cfg)
     if (!entries.length) return // 未配置 ⇒ 视图保持空对象（既有行为零变化）
     const results = await Promise.allSettled(entries.map(async ([name, c]) => {
-      const client = await startMcpClient({ name, ...c, onLog: log })
+      // 按配置自动选传输：有 url 走 Streamable HTTP，否则走 stdio 子进程。
+      // 两种客户端返回形状一致（都已在该步内完成握手），故取值处无需再分支；
+      // 失败一律 reject ⇒ 由下面的 fulfilled 判定统一记入 failures（故障隔离语义不变）。
+      const client = c.url
+        ? await startMcpHttpClient({ name, url: c.url, headers: c.headers, timeoutMs: c.timeoutMs, onLog: log })
+        : await startMcpClient({ name, ...c, onLog: log })
       return { name, client }
     }))
     const built = {}

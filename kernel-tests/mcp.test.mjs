@@ -12,6 +12,7 @@ import assert from 'node:assert/strict'
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   loadMcpServers, startMcpClient, mcpToolName, sanitizeMcpName, contentToText, mcpChildEnv,
@@ -20,10 +21,26 @@ import {
 import { createMcpRegistry, mcpConfigPath } from '../kernel/mcp-tools.mjs'
 
 const STUB = fileURLToPath(new URL('./fixtures/mcp-stub-server.mjs', import.meta.url))
+const HTTP_STUB = fileURLToPath(new URL('./fixtures/mcp-http-stub-server.mjs', import.meta.url))
 const NODE = process.execPath
 
 const mkTmp = () => mkdtempSync(join(tmpdir(), 'yfw-mcp-'))
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/** 起一个 Streamable HTTP 夹具，等它打印 PORT=<n>（注册表分派用例用） */
+function startHttpStub(mode = 'json') {
+  return new Promise((resolve, reject) => {
+    const child = spawn(NODE, [HTTP_STUB, mode], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let buf = ''
+    const timer = setTimeout(() => { child.kill(); reject(new Error('HTTP 夹具启动超时')) }, 10000)
+    child.stdout.on('data', (c) => {
+      buf += c
+      const m = buf.match(/PORT=(\d+)/)
+      if (m) { clearTimeout(timer); resolve({ port: Number(m[1]), kill: () => child.kill() }) }
+    })
+    child.on('error', (e) => { clearTimeout(timer); reject(e) })
+  })
+}
 
 /** 起一个连到 stub 的客户端（跑完请 close） */
 const startStub = (timeoutMs = 4000) =>
@@ -348,4 +365,46 @@ test('interpolateEnv：未定义变量**报错并点名**（绝不静默换空�
   // 非法变量名（如 ${1BAD}）不匹配占位符语法 ⇒ 原样保留。它进不了 header 值的关键位，
   // 且服务器会直接拒绝；此处不该抛错，否则用户写文档示例都会被误伤。
   assert.equal(interpolateEnv('${1BAD}', {}), '${1BAD}', '非法变量名应原样保留而非误替换')
+})
+
+// ---------------------------------------------------------------------------
+// P1-5 扩展：注册表按配置自动分派 stdio / HTTP
+test('注册表：url 条目走 HTTP 传输并被收集（工具进视图、无失败）', async () => {
+  const s = await startHttpStub('json')
+  const dir = mkTmp()
+  try {
+    const p = join(dir, 'mcp.json')
+    writeFileSync(p, JSON.stringify({ servers: { remote: { url: `http://127.0.0.1:${s.port}/mcp`, timeoutMs: 5000 } } }))
+    const reg = createMcpRegistry({ configPath: p, log: () => {} })
+    await reg.ready()
+    const names = reg.toolNames().sort()
+    assert.deepEqual(names, ['mcp__remote__echo', 'mcp__remote__whoami'],
+      '远程服务器的工具必须进动态视图（分派错了会表现为视图恒空）')
+    assert.deepEqual(reg.failedServers(), {}, '不应有失败记录')
+    reg.closeAll()
+  } finally { s.kill(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('注册表：一台 HTTP 不可达不影响 stdio 与其它 HTTP（故障隔离）', async () => {
+  const s = await startHttpStub('json')
+  const dir = mkTmp()
+  try {
+    const p = join(dir, 'mcp.json')
+    writeFileSync(p, JSON.stringify({
+      servers: {
+        broken: { url: 'http://127.0.0.1:1/mcp', timeoutMs: 800 },   // 不可达端口
+        remote: { url: `http://127.0.0.1:${s.port}/mcp`, timeoutMs: 5000 },
+        local: { command: NODE, args: [STUB], timeoutMs: 5000 },     // stdio 与 HTTP 混布
+      },
+    }))
+    const reg = createMcpRegistry({ configPath: p, log: () => {} })
+    await reg.ready()
+    const names = reg.toolNames()
+    assert.ok(names.includes('mcp__remote__echo'), '可达的 HTTP 服务器仍应可用')
+    assert.ok(names.includes('mcp__stub__echo') || names.some((n) => n.startsWith('mcp__local__')),
+      'stdio 服务器仍应可用（两种传输可混布）')
+    assert.deepEqual(Object.keys(reg.failedServers()), ['broken'], '只应记录真正失败的那台')
+    reg.closeAll()
+    assert.deepEqual(reg.toolNames(), [], 'closeAll 后视图应为空（HTTP 客户端也必须被回收）')
+  } finally { s.kill(); rmSync(dir, { recursive: true, force: true }) }
 })
