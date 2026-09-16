@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
 import http from 'node:http'
 import { WebSocket } from 'ws'
+import { TEST_BRIDGE_TOKEN, authHeaders } from './test-bridge-auth.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = join(__dirname, '..')
@@ -92,15 +93,20 @@ async function httpProbeUntil(url, expectStatus, { budgetMs = 25000, perTryMs = 
   return last
 }
 
-/** WS 握手探测（模拟主进程 C3 / 桌宠 C4 的连接方式）；成功即手；失败给 errno 文案 */
-function wsProbe(url, timeoutMs = 3000) {
+/**
+ * WS 握手探测（模拟主进程 C3 / 桌宠 C4 的连接方式）。
+ * 【S2-D2】这两个客户端都不带 Origin，属"必须持 token"的一类，故调用方要传 headers；
+ * 另外桥对非法握手是"先 upgrade 再 1008 关闭"，所以 open 后要观察一小段才算接受成功。
+ */
+function wsProbe(url, { headers = {}, timeoutMs = 3000, settleMs = 600 } = {}) {
   return new Promise((resolve) => {
     let ws
     let done = false
     const finish = (v) => { if (!done) { done = true; try { ws && ws.close() } catch {} ; resolve(v) } }
-    try { ws = new WebSocket(url) } catch (e) { return resolve({ ok: false, error: String(e && e.message) }) }
+    try { ws = new WebSocket(url, { headers }) } catch (e) { return resolve({ ok: false, error: String(e && e.message) }) }
     const timer = setTimeout(() => finish({ ok: false, error: 'timeout' }), timeoutMs)
-    ws.on('open', () => { clearTimeout(timer); finish({ ok: true }) })
+    ws.on('open', () => setTimeout(() => { clearTimeout(timer); finish({ ok: true }) }, settleMs))
+    ws.on('close', (code) => { clearTimeout(timer); finish({ ok: false, error: 'closed ' + code }) })
     ws.on('error', (e) => { clearTimeout(timer); finish({ ok: false, error: e && e.message }) })
   })
 }
@@ -121,7 +127,8 @@ test('静态：listen 必须显式绑回环，四处客户端必须显式 127.0.
 
   const mainSrc = readFileSync(join(REPO_ROOT, 'electron', 'main.cjs'), 'utf8')
   assert.match(mainSrc, /http:\/\/127\.0\.0\.1:\$\{BRIDGE_PORT\}\/health/, '主进程健康轮询必须写 127.0.0.1')
-  assert.match(mainSrc, /new WebSocket\('ws:\/\/127\.0\.0\.1:' \+ BRIDGE_PORT\)/, '主进程 WS 必须写 127.0.0.1')
+  // 只锁"显式 127.0.0.1"这一点，不锁参数表——S2-D2 起该调用多了 `{ headers: ... }`（令牌）
+  assert.match(mainSrc, /new WebSocket\('ws:\/\/127\.0\.0\.1:' \+ BRIDGE_PORT/, '主进程 WS 必须写 127.0.0.1')
   assert.doesNotMatch(mainSrc, /ws:\/\/localhost:/, '主进程不得留 ws://localhost:（桥侧事件通道会静默失联）')
 
   const petSrc = readFileSync(join(REPO_ROOT, 'pet', 'jiajia-pet.py'), 'utf8')
@@ -142,6 +149,8 @@ test('真机：回环可达、局域网地址与 IPv6 回环均不可达、netst
     YFW_AUTH_FILE: join(home, 'auth.json'),
     YFWORKING_HOME: home,
     PONOS_CONFIG_DIR: home,
+    // 【S2-D2】本用例的 WS 客户端是"无 Origin 的本机客户端"，必须持令牌，否则握手被 1008 拒。
+    YFW_BRIDGE_TOKEN: TEST_BRIDGE_TOKEN,
   }
   delete env.PONOS_HOME // 防止宿主演进到解析链
   const proc = spawn(process.execPath, [BRIDGE_ENTRY], { cwd: REPO_ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -177,7 +186,7 @@ test('真机：回环可达、局域网地址与 IPv6 回环均不可达、netst
     let wsOk = null
     const wsDeadline = Date.now() + 20000
     while (Date.now() < wsDeadline) {
-      wsOk = await wsProbe(`ws://127.0.0.1:${port}`)
+      wsOk = await wsProbe(`ws://127.0.0.1:${port}`, { headers: authHeaders() })
       if (wsOk.ok) break
       await sleep(250)
     }

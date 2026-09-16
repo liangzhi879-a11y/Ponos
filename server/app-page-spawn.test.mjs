@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
+import { TEST_BRIDGE_TOKEN, withToken } from './test-bridge-auth.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = join(__dirname, '..')
@@ -78,6 +79,7 @@ function spawnBridge(home, port, extraEnv = {}) {
     YFW_KERNEL_TURN_REAP_MS: '600000', // 回收器阈值拉长：本用例只关心"作用域变更"这一条收割路径
     YFW_KERNEL_IDLE_MS: '600000',
     YFW_KERNEL_REAP_TICK_MS: '60000',
+    YFW_BRIDGE_TOKEN: TEST_BRIDGE_TOKEN,
     ...extraEnv,
   }
   delete env.PONOS_HOME
@@ -106,7 +108,7 @@ async function waitReady(b, port) {
 
 function connectWS(port) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}`)
+    const ws = new WebSocket(withToken(`ws://127.0.0.1:${port}`))
     const timer = setTimeout(() => { ws.close(); reject(new Error('ws open timeout')) }, READY_TIMEOUT_MS)
     ws.onopen = () => { clearTimeout(timer); resolve(ws) }
     ws.onerror = () => { clearTimeout(timer); reject(new Error('ws connection error')) }

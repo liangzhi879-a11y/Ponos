@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
+import { TEST_BRIDGE_TOKEN, withToken } from './test-bridge-auth.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = join(__dirname, '..')
@@ -51,6 +52,7 @@ function spawnBridge(home, port) {
     YFWORKING_HOME: home,
     YFW_KERNEL_STALL_MS: '0',
     YFW_KERNEL_IDLE_MS: '600000',
+    YFW_BRIDGE_TOKEN: TEST_BRIDGE_TOKEN,
   }
   delete env.PONOS_HOME
   const proc = spawn(process.execPath, [BRIDGE_ENTRY], { cwd: REPO_ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -78,7 +80,7 @@ async function waitReady(b, port) {
 
 function connectWS(port) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}`)
+    const ws = new WebSocket(withToken(`ws://127.0.0.1:${port}`))
     ws.frames = []
     ws.onmessage = (ev) => { try { ws.frames.push(JSON.parse(String(ev.data))) } catch {} }
     const timer = setTimeout(() => { ws.close(); reject(new Error('ws open timeout')) }, READY_TIMEOUT_MS)

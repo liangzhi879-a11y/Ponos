@@ -19,6 +19,7 @@ import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { TEST_BRIDGE_TOKEN, authHeaders } from './test-bridge-auth.mjs'
 
 const BRIDGE = fileURLToPath(new URL('./bridge.mjs', import.meta.url))
 const HOMES = []
@@ -39,7 +40,7 @@ function freshHome() {
 
 async function startBridge(home, port) {
   const proc = spawn(process.execPath, [BRIDGE], {
-    env: { ...process.env, YFW_BRIDGE_PORT: String(port), YFW_HOME: home, YFWORKING_HOME: home },
+    env: { ...process.env, YFW_BRIDGE_PORT: String(port), YFW_HOME: home, YFWORKING_HOME: home, YFW_BRIDGE_TOKEN: TEST_BRIDGE_TOKEN },
     stdio: 'ignore',
   })
   PROCS.push(proc)
@@ -56,9 +57,9 @@ async function waitFor(fn, { timeoutMs = 15000, stepMs = 250 } = {}) {
   return false
 }
 
-/** 桥的运行时上报值（GET /config 无鉴权，与 GUI 设置页取档同一通道） */
+/** 桥的运行时上报值（GET /config；【S2-D2】起 /config 属受保护面，无 Origin 的客户端必须带令牌） */
 async function fetchEffectiveMode(port) {
-  const res = await fetch(`http://127.0.0.1:${port}/config`, { signal: AbortSignal.timeout(3000) })
+  const res = await fetch(`http://127.0.0.1:${port}/config`, { headers: authHeaders(), signal: AbortSignal.timeout(3000) })
   assert.ok(res.ok, `GET /config 应 200，实得 ${res.status}`)
   return (await res.json()).approvalMode
 }

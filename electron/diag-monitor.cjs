@@ -65,9 +65,9 @@ function httpHealth(url, ms = 800) {
   })
 }
 
-function getJson(url, ms = 2000) {
+function getJson(url, ms = 2000, headers = null) {
   return new Promise((resolve) => {
-    const req = http.get(url, (res) => {
+    const req = http.get(url, headers ? { headers } : {}, (res) => {
       let buf = ''
       res.on('data', (d) => buf += d)
       res.on('end', () => { try { resolve(JSON.parse(buf)) } catch (_) { resolve(null) } })
@@ -116,13 +116,18 @@ function runProbe(cmdArgs, ms, tag = 'probe') {
 
 // 注意（协调者决议）：logTee 为可选依赖——Task 5 的 IPC diag:export 会传真身；
 // 缺省值时单测（不传 logTee）也能直接跑，exportReport 的日志尾默认空。
-function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort = process.env.YFW_BRIDGE_PORT || '51517' }) {
+function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort = process.env.YFW_BRIDGE_PORT || '51517', bridgeToken = process.env.YFW_BRIDGE_TOKEN || '' }) {
   let lastSnapshot = null
   let onChange = null
   let timer = null
   let kernelCheckInflight = false
 
-  const bridgeInfo = () => getJson(`http://127.0.0.1:${bridgePort}/diag/info`)
+  // 【S2-D2】桥对"无 Origin 且无 token"的请求回 401。诊断的 /diag/info、/transcript/list 属受保护
+  // 面（/health 免令牌），必须带令牌，否则诊断面板把"没带令牌"误报成 bridge error。
+  // 令牌由 main 注入（`bridgeToken`），也可从 env 兜底取（main 与桥共用同一解析规则）。
+  const bridgeHeaders = bridgeToken ? { 'x-yfw-bridge-token': bridgeToken } : null
+
+  const bridgeInfo = () => getJson(`http://127.0.0.1:${bridgePort}/diag/info`, 2000, bridgeHeaders)
 
   async function checkKernelFiles() {
     const { kernel, runtime } = ctx.appPaths
@@ -192,7 +197,7 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
   }
 
   async function checkTranscriptIndex() {
-    const r = await getJson(`http://127.0.0.1:${bridgePort}/transcript/list?cwd=${encodeURIComponent(process.cwd())}`)
+    const r = await getJson(`http://127.0.0.1:${bridgePort}/transcript/list?cwd=${encodeURIComponent(process.cwd())}`, 2000, bridgeHeaders)
     return { status: r && r.ok ? 'ok' : 'error', detail: r?.ok ? `${r.sessions?.length ?? 0} 会话索引` : 'transcript 端点异常' }
   }
 

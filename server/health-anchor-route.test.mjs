@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
+import { TEST_BRIDGE_TOKEN, authHeaders } from './test-bridge-auth.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = join(__dirname, '..')
@@ -42,7 +43,7 @@ function freePort() {
 }
 
 function spawnBridge(home, port) {
-  const env = { ...process.env, PONOS_MOCK_API: '1', YFW_BRIDGE_PORT: String(port), PONOS_CONFIG_DIR: home, YFWORKING_HOME: home }
+  const env = { ...process.env, PONOS_MOCK_API: '1', YFW_BRIDGE_PORT: String(port), PONOS_CONFIG_DIR: home, YFWORKING_HOME: home, YFW_BRIDGE_TOKEN: TEST_BRIDGE_TOKEN }
   delete env.PONOS_HOME
   const proc = spawn(process.execPath, [BRIDGE_ENTRY], { cwd: REPO_ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] })
   const out = []
@@ -76,7 +77,7 @@ test('锚定上报路由：缺 sessionId → 400；正常请求 → 200（真桥
     await waitReady(b, port)
     const post = async (body) => {
       const res = await fetch(`http://127.0.0.1:${port}${URL_PATH}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body),
       })
       return { status: res.status, json: await res.json().catch(() => null) }
     }

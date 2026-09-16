@@ -64,6 +64,25 @@ BRIDGE_PORT = os.environ.get('YFW_BRIDGE_PORT', '51517')
 # IPv6 回环，桌宠会连不上（表现为宠物不动/无气泡，且不报错给用户）。
 BRIDGE_URL = f'ws://127.0.0.1:{BRIDGE_PORT}'
 
+
+def _resolve_bridge_token():
+    """【S2-D2】桥对"无 Origin 且无 token"的 WS 握手直接 1008 拒绝（桌宠不带 Origin）。
+
+    令牌优先取 Electron main spawn 时注入的环境变量；取不到时回落到与桥/主进程**同一份**
+    落盘文件（`<home>/runtime/bridge-token`）——桌宠也可能被单独启动（不经 main），
+    那时只有文件通道可用。两者都没有则返回空串，连接会被桥拒绝并在桥侧日志留痕。
+    """
+    tok = (os.environ.get('YFW_BRIDGE_TOKEN') or '').strip()
+    if tok:
+        return tok
+    try:
+        return (YFW_HOME / 'runtime' / 'bridge-token').read_text(encoding='utf-8').strip()
+    except Exception:
+        return ''
+
+
+BRIDGE_TOKEN = _resolve_bridge_token()
+
 FRAME_W, FRAME_H = 408, 512
 CELLS = 8
 FRAME_MS_IDLE = 120
@@ -772,7 +791,9 @@ def ws_loop():
         ws = None
         try:
             import websocket as _ws
-            ws = _ws.create_connection(BRIDGE_URL, timeout=1)
+            # 【S2-D2】无令牌的握手会被桥 1008 拒绝；带上令牌即与桥同一条合法客户端路径。
+            extra = {'header': [f'x-yfw-bridge-token: {BRIDGE_TOKEN}']} if BRIDGE_TOKEN else {}
+            ws = _ws.create_connection(BRIDGE_URL, timeout=1, **extra)
             ws.settimeout(0.2)
             with ws_lock:
                 ws_conn[0] = ws

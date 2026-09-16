@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
+import { TEST_BRIDGE_TOKEN, withToken, authHeaders } from './test-bridge-auth.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = join(__dirname, '..')
@@ -45,7 +46,7 @@ function freePort() {
 }
 
 function spawnBridge(home, port) {
-  const env = { ...process.env, PONOS_MOCK_API: '1', PONOS_FIDELITY: '1', YFW_BRIDGE_PORT: String(port), PONOS_CONFIG_DIR: home, YFWORKING_HOME: home }
+  const env = { ...process.env, PONOS_MOCK_API: '1', PONOS_FIDELITY: '1', YFW_BRIDGE_PORT: String(port), PONOS_CONFIG_DIR: home, YFWORKING_HOME: home, YFW_BRIDGE_TOKEN: TEST_BRIDGE_TOKEN }
   delete env.PONOS_HOME
   const proc = spawn(process.execPath, [BRIDGE_ENTRY], { cwd: REPO_ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] })
   const out = []
@@ -89,7 +90,7 @@ async function waitStartupSettled(b, quietMs = 800, maxMs = 20_000) {
 
 function connectWS(port) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}`)
+    const ws = new WebSocket(withToken(`ws://127.0.0.1:${port}`))
     const timer = setTimeout(() => { ws.close(); reject(new Error('ws open timeout')) }, READY_TIMEOUT_MS)
     ws.onopen = () => { clearTimeout(timer); resolve(ws) }
     ws.onerror = () => { clearTimeout(timer); reject(new Error('ws connection error')) }
@@ -167,7 +168,7 @@ test('全链路：桥→内核→ponos_health(失真红) → 锚定上报 → �
     // 用户在卡片上点「重新锚定」→ 上报 → 内核 resolved → 回绿
     const res = await fetch(`http://127.0.0.1:${port}/session/anchor-applied`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ sessionId: SID, issueIds: d.issues.map((it) => it.id) }),
     })
     assert.equal(res.status, 200, `锚定上报应 200，实测 ${res.status}`)

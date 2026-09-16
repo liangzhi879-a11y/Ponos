@@ -14,7 +14,9 @@ const fs = require('fs')
 const os = require('os')
 const http = require('http')
 const WebSocket = require('ws')
+const crypto = require('crypto')
 const { resolveYfwHome } = require('../server/yfw-home.cjs')
+const { resolveBridgeToken, BRIDGE_TOKEN_HEADER, BRIDGE_TOKEN_ENV } = require('../server/bridge-token.cjs')
 
 // 入口兜底数据根隔离（2026-09-09 串配置事故修复）：桌面快捷方式直启 electron.exe /
 // YFWorking.vbs / debug bat 均不携带 env，此前双版全部回落 ~/.yfworking 与在售旧版
@@ -206,6 +208,20 @@ const ICON_PATH = path.join(__dirname, '..', 'public', 'icon.png')
 const BRIDGE_PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51517', 10)
 const BRIDGE_READY_URL = `http://127.0.0.1:${BRIDGE_PORT}/health`
 
+// 【S2-D2 bridge 鉴权】令牌由 **main 侧** 生成/复用并经 spawn env 注入桥（"token 由 Electron
+// main 侧注入"，spec §6.2 D2），主进程自身的本机客户端（/boot-status、WS 事件通道、诊断
+// /diag/info、桌宠）也用它。
+// 为什么解析走公共模块 `server/bridge-token.cjs` 而不是这里 `randomBytes` 一句：桥与 main 必须
+// 得到**同一个**令牌——main 会"接管"上一实例遗留或手工启动的桥（startHealthMonitor/bridgeAdopted），
+// 若两侧各生成一份，接管后每个调用都回 401，表现为启动卡死。公共模块还保证：已有落盘令牌时
+// **复用**（跨重启稳定），仅在确无令牌时才新生成 0600 落盘。
+const BRIDGE_TOKEN_INFO = resolveBridgeToken({ home: resolveYfwHome() })
+const BRIDGE_TOKEN = BRIDGE_TOKEN_INFO.token
+/** 本机客户端（非浏览器）调桥所需请求头；桥对"无 Origin 且无 token"的请求回 401。 */
+function bridgeAuthHeaders(extra = {}) {
+  return { ...extra, [BRIDGE_TOKEN_HEADER]: BRIDGE_TOKEN }
+}
+
 // ---------------------------------------------------------------------------
 // Bridge lifecycle
 // ---------------------------------------------------------------------------
@@ -261,7 +277,8 @@ function startBootProgressPoll() {
   if (bootProgressPollTimer) return
   bootProgressPollTimer = setInterval(async () => {
     try {
-      const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/boot-status`)
+      // 【S2-D2】/boot-status 需持令牌（仅 /health 与 /api/auth/* 免令牌）
+      const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/boot-status`, { headers: bridgeAuthHeaders() })
       if (!res.ok) return
       const st = await res.json()
       if (!bootProgressSent.bridge) { bootProgressSent.bridge = true; emitBootProgress({ step: 'bridge', done: true }) }
@@ -286,7 +303,13 @@ function startBridge() {
     // 父进程监控（2026-09-09 孤儿桥自愈）：electron 被强杀（taskkill/任务管理器，
     // 不触发 before-quit）时，桥靠本 PID 探活检测父进程消失 → 杀内核会话并退出，
     // 不再遗留孤儿占用 51517 导致"重启后无法唤醒"。
-    env: { ...process.env, YFW_BRIDGE_PARENT_PID: String(process.pid) },
+    env: {
+      ...process.env,
+      YFW_BRIDGE_PARENT_PID: String(process.pid),
+      // 【S2-D2】把 main 侧令牌注入桥（spec §6.2 D2「token 由 Electron main 侧注入」）。
+      // 桥对"无 Origin 且无 token"的请求回 401，故缺了这一项，主进程自身的所有调用都会 401。
+      YFW_BRIDGE_TOKEN: BRIDGE_TOKEN,
+    },
     windowsHide: true,   // no console window on Windows
   })
 
@@ -794,7 +817,7 @@ function connectBridgeClient(onMessage, { tag = 'bridge', onOpen, onClose } = {}
     // 【S2-D1 配套（2026-09-16）】显式 127.0.0.1：桥只绑 IPv4 回环，用 `localhost` 会先解析
     // ::1（Windows 默认序）而连不上——主进程这条 WS 是"桥事件 → 窗口"的通道，静默失联的
     // 表现是托盘/宠物/小窗不收事件，很难归因。
-    const ws = new WebSocket('ws://127.0.0.1:' + BRIDGE_PORT)
+    const ws = new WebSocket('ws://127.0.0.1:' + BRIDGE_PORT, { headers: bridgeAuthHeaders() })
     ws.on('open', () => {
       console.log('[main] ' + tag + ' bridge client connected')
       if (typeof onOpen === 'function') { try { onOpen(ws) } catch (e) { console.error('[main] ' + tag + ' onOpen error:', e.message) } }
@@ -965,6 +988,9 @@ async function registerIpc() {
       renderCrashCount: () => renderCrashCount,
       bridgeRestartCount: () => bridgeRestartAttempts,
     },
+    // 【S2-D2】诊断模块以"无 Origin 的本机客户端"身份调桥（/diag/info、/transcript/list），
+    // 必须持令牌，否则诊断面板恒显 bridge error（而 /health 免令牌，会掩盖这个差异）。
+    bridgeToken: BRIDGE_TOKEN,
   })
   monitor.setOnChange((snap) => {
     try { mainWindow?.webContents.send('diag:status-changed', snap) } catch (_) {}
@@ -1384,6 +1410,9 @@ function spawnPet() {
 
   const petPython = findPythonForPet()
   const env = { ...process.env }
+  // 【S2-D2】桌宠是"无 Origin 的本机客户端"，必须持令牌连桥（否则 WS 握手被 1008 拒绝，
+  // 表现为宠物不动/无气泡且不报错给用户）。桌宠读不到 env 时会回落到 <home>/runtime/bridge-token。
+  env[BRIDGE_TOKEN_ENV] = BRIDGE_TOKEN
   const pythonDir = path.dirname(petPython)
   const tclDir = path.join(pythonDir, 'tcl')
   if (fs.existsSync(tclDir)) {

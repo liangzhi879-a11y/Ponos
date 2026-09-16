@@ -1,6 +1,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { TEST_BRIDGE_TOKEN, withToken } from './test-bridge-auth.mjs'
 
 // 工作目录选择器（DirectoryPicker）依赖的三个 bridge 端点契约。
 //
@@ -14,7 +15,10 @@ import { readFileSync } from 'node:fs'
 // 因此这里的断言刻意落在**响应体可解析 + 字段类型**上，而不是只断言 status：
 // 三个端点共用同一个 reply()，谁漏了 body 都在这里现形。
 
+// YFW_BRIDGE_TOKEN 必须在 import bridge.mjs 之前设置（D2 起桥在模块求值时解析令牌：
+// 顺序错了桥会自生成令牌并落盘，本测试的无 Origin 请求就会 401）。
 process.env.YFW_BRIDGE_NO_LISTEN = '1'
+process.env.YFW_BRIDGE_TOKEN = TEST_BRIDGE_TOKEN
 const { httpServer } = await import('./bridge.mjs')
 
 let port = 0
@@ -36,7 +40,7 @@ after(() => {
 })
 
 const getJson = async (path) => {
-  const res = await fetch(`http://127.0.0.1:${port}${path}`)
+  const res = await fetch(withToken(`http://127.0.0.1:${port}${path}`))
   assert.equal(res.status, 200, `${path} 应回 200`)
   assert.match(
     res.headers.get('content-type') || '', /application\/json/,

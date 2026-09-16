@@ -1,10 +1,14 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { TEST_BRIDGE_TOKEN, withToken } from './test-bridge-auth.mjs'
 
 // YFW_BRIDGE_NO_LISTEN 必须在 import bridge.mjs 之前设置：模块求值（1983 行附近）
 // 会据此跳过顶层 listen，避免端口冲突。测试自行 listen(0) 起随机端口。
+// YFW_BRIDGE_TOKEN 同理必须在这之前设置（D2 起桥在模块求值时解析令牌，顺序错了
+// 桥会自生成令牌并落盘，本测试的无 Origin 请求就会 401）。
 process.env.YFW_BRIDGE_NO_LISTEN = '1'
+process.env.YFW_BRIDGE_TOKEN = TEST_BRIDGE_TOKEN
 const { httpServer } = await import('./bridge.mjs')
 
 let port = 0
@@ -28,7 +32,7 @@ after(() => {
 // 行为测试：真实 HTTP 请求 /diag/info，断言初始零值结构（埋点只在真实内核
 // 会话中触发，本测试环境无会话，故计数类为全零初值）。
 test('GET /diag/info 返回初始零值结构', async () => {
-  const res = await fetch(`http://127.0.0.1:${port}/diag/info`)
+  const res = await fetch(withToken(`http://127.0.0.1:${port}/diag/info`))
   assert.equal(res.status, 200)
   const body = await res.json()
   assert.equal(body.ok, true)

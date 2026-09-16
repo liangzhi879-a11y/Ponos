@@ -76,6 +76,7 @@ import { makeAppRouter } from './app-routing.mjs'
 import { kernelReadonly } from './kernel-readonly.mjs'
 import { createReadonlyCache } from './readonly-cache.mjs'
 import { getAuthStatus, setupPassword, checkPassword, changePassword } from './auth.mjs'
+import { resolveBridgeToken, authorizeBridgeRequest } from './bridge-token.mjs'
 import { MANAGED_KEYS, providerProfileEnv, buildIdentityPrompt, activeProviderModel, resolveProviderProfile } from './provider-profile.mjs'
 import { probeProviderCapabilities, applyProbeResults, resolveWindowFromProbe, maybeAdoptWindowFromEvent } from './provider-probe.mjs'
 
@@ -170,6 +171,11 @@ const YFW_MILESTONE_PROTOCOL = `【任务里程碑进度协议】
 // buildChildEnv 注入解析后的 home）。
 // ---------------------------------------------------------------------------
 const YFW_HOME = resolveYfwHome()
+// 【S2-D2 bridge 鉴权】令牌解析（策略与理由集中在 server/bridge-token.mjs）。
+// fail-closed：无论令牌来自 env（Electron main 注入）还是自生成落盘，下面的闸门**一律生效**；
+// 本文件里不存在"未配 token 即放行"的分支——那种写法会让 main 侧注入一旦失效就静默敞开。
+const BRIDGE_TOKEN_INFO = resolveBridgeToken({ home: YFW_HOME })
+const BRIDGE_TOKEN = BRIDGE_TOKEN_INFO.token
 // 用户档案文件（2026-09-10 个人信息窗）：昵称/头像/简介
 const PROFILE_PATH = join(YFW_HOME, 'userData', 'profile.json')
 const YFW_SKILLS_DIR = join(YFW_HOME, 'skills')
@@ -1901,6 +1907,15 @@ const httpServer = createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
     reply(204, {}); return
   }
+  // 【S2-D2】无 Origin 头的请求（curl / Node / python 等非浏览器客户端，以及浏览器
+  // `<img>`/`<script>`/表单 GET 这类**不发 Origin 的 CSRF 触发面**）必须持有效 token；
+  // 带 Origin 的请求继续由上面的 `isAllowedOrigin` 白名单负责（降级为"第二道"）。
+  // 位置：OPTIONS 之后（预检先放行）、任何读写路由之前（命中即 401，绝不落到业务逻辑）。
+  const authz = authorizeBridgeRequest(req, BRIDGE_TOKEN)
+  if (!authz.ok) {
+    reply(401, { 'Content-Type': 'application/json' }, JSON.stringify({ error: 'Unauthorized' }))
+    return
+  }
   const url = new URL(req.url, 'http://localhost:' + PORT)
   try {
     // 工作流路由链最前：仅 /workflows* 前缀进入（无关请求不必构造宿主单例/读配置），
@@ -3130,6 +3145,9 @@ if (!process.env.YFW_BRIDGE_NO_LISTEN) {
       // 实际只绑 127.0.0.1"的歧义（S2-D1 后这两者不再等价）。
       console.log('[bridge] http+ws://localhost:' + PORT)
       console.log(`[bridge] listening ${LOOPBACK_HOST}:${PORT} (loopback only)`)
+      // 【S2-D2】只打印令牌**来源/落盘路径**，永不打印令牌值本身（"不经局域网可读通道"：
+      // 日志会被复制/上报，令牌一旦进日志即等于泄露）。env 来源说明由启动方注入，无文件。
+      console.log(`[bridge] auth token: ${BRIDGE_TOKEN_INFO.source === 'env' ? 'injected via ' + 'YFW_BRIDGE_TOKEN (env)' : BRIDGE_TOKEN_INFO.path}`)
       autoInstallSamples()
       bootState.samplesInstalled = true // 预热就绪信号（同步函数，返回即完成/尽力）
       autoInstallBuiltinWorkflows()
@@ -3146,6 +3164,15 @@ wss.on('connection', (ws, req) => {
   if (wsOrigin && !isAllowedOrigin(wsOrigin)) {
     console.warn('[bridge] WS connection rejected, origin:', wsOrigin)
     try { ws.close(1008, 'Forbidden origin') } catch {}
+    return
+  }
+  // 【S2-D2】无 Origin 的 WS（主进程/桌宠/脚本等非浏览器客户端）必须持 token：令牌走
+  // `x-yfw-bridge-token` 头或 `?token=`（浏览器 WS 不能自定义 header）。浏览器发起的 WS
+  // 一律带 Origin，故渲染层零改动、行为与 D2 前完全一致。
+  const wsAuthz = authorizeBridgeRequest(req, BRIDGE_TOKEN)
+  if (!wsAuthz.ok) {
+    console.warn('[bridge] WS connection rejected: missing/invalid token')
+    try { ws.close(1008, 'Unauthorized') } catch {}
     return
   }
   wsClients.add(ws)
