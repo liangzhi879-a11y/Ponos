@@ -84,3 +84,55 @@ export function ageParts(ms: number | null | undefined): AgeParts | null {
   if (ms < 86_400_000) return { unit: 'hour', value: Math.floor(ms / 3_600_000) }
   return { unit: 'day', value: Math.floor(ms / 86_400_000) }
 }
+
+/**
+ * 反链分组（2026-09-14 批次 2）：把 `links.in` 按**来源文档**归组，组内保留每处引用。
+ *
+ * 为什么不是简单的去重列表：`dedupeSources` 只留"谁引用了我"，用户看到来源名却不知道
+ * 在哪一段、说了什么 —— 点过去还得从文档开头自己翻。Obsidian 的反链面板之所以有用，
+ * 正是它给出**上下文**。
+ *
+ * 为什么要分组（而不是平铺所有引用）：同一文档在长文里可能引用十几次，平铺会让侧栏
+ * 被同一篇文档的名字刷屏，反而看不到"一共有几篇文档在引用我"。
+ * 组内按行号升序 —— 与阅读顺序一致，用户顺着往下看就是文档的推进顺序。
+ *
+ * 老内核不返回 `line`/`snippet`/`anchorRef`（批次 2 之前的索引）时全部退化：
+ * 组仍在、refs 只剩 `line: null`，UI 显示 `L?`。不抛错、不丢条目。
+ */
+export interface BacklinkRef {
+  line?: number | null
+  snippet?: string
+  anchorRef?: string
+  anchorKind?: string
+  embed?: boolean
+}
+
+export interface BacklinkGroup {
+  from: string
+  refs: BacklinkRef[]
+}
+
+export function groupBacklinks(list: readonly (BacklinkRef & { from?: string })[] | undefined): BacklinkGroup[] {
+  const map = new Map<string, BacklinkRef[]>()
+  for (const it of list ?? []) {
+    const from = String(it?.from ?? '').trim()
+    if (!from) continue
+    const ref: BacklinkRef = {
+      line: it.line ?? null,
+      snippet: String(it.snippet ?? '').trim(),
+      anchorRef: String(it.anchorRef ?? '').trim(),
+      anchorKind: String(it.anchorKind ?? '').trim(),
+      embed: it.embed === true,
+    }
+    const arr = map.get(from)
+    if (arr) arr.push(ref)
+    else map.set(from, [ref])
+  }
+  const groups = [...map.entries()].map(([from, refs]) => ({
+    from,
+    refs: refs.sort((a, b) => (a.line ?? 0) - (b.line ?? 0)),
+  }))
+  // 组间按"引用处数"降序：被引最多的文档排最前（那通常也是最相关的上下文来源），
+  // 同数时按 docId 稳定排序 —— 否则每次重渲染顺序都可能不同，用户会觉得列表在"跳"。
+  return groups.sort((a, b) => b.refs.length - a.refs.length || a.from.localeCompare(b.from))
+}

@@ -46,7 +46,11 @@ export type ApiResult<T> =
    * 声明为**同一个成员上的可选字段**（不是第二个联合成员）—— 拆成两个成员会让
    * "老端点不返回 message"这件事从"字段缺省"升级成"类型分支"，调用方每次读
    * `r.message` 都得先窄化类型，把可选字段的成本转嫁给所有调用点。 */
-  | { ok: false; error: string; message?: string; status?: number }
+  /* `conflict` / `body`（2026-09-14 批次 4）。两者都是可选成员，理由同上：
+   *   · `conflict`：409 冲突时磁盘上的真实状态（mtime/size），只有 writeDoc 会填；
+   *   · `body`：**仅在调用方显式开启 `includeErrorBody` 时**才带（见 CallArgs），
+   *     用来透出错误响应体（409 的 mtime/size 就在里面）。 */
+  | { ok: false; error: string; message?: string; status?: number; conflict?: ConflictInfo; body?: unknown }
 
 export interface KnowledgeCallOpts {
   /** 测试注入用；缺省 getBridgeUrl() */
@@ -138,10 +142,110 @@ export interface KnowledgeSearchResult {
   indexAge: number | null
   /** true = 查询 gram 全部落空，向量路被跳过（只剩关键词路） */
   degraded: boolean
+  /**
+   * 查询解析失败原因（2026-09-14 批次 3）。**只有解析失败时才有值**（无效正则 / 查询串过长）。
+   *
+   * 为什么必须在 UI 显式呈现而不是当成"0 条结果"：用户写 `/[/` 时，静默当文本搜会给出
+   * "看起来能搜到、语义完全不同"的结果；而当成 0 条则会被理解成"库里没有"。
+   * 两种都会让用户对着错误的前提做判断。可选：老内核不返回它 → UI 视为无错。
+   */
+  queryError?: string | null
+  /**
+   * 已生效的算子信息（批次 3）。UI 据此回显"哪些算子真的起作用了" ——
+   * 否则用户看到结果变少却不知道是哪个算子造成的（尤其 `-tag:x` 这类否定，结果变少是唯一的信号）。
+   */
+  query?: {
+    /** 出现过的算子字段（规范化后的名字：tag/path/file/section/content/block，去重保序） */
+    fields?: string[]
+    filters?: Array<{ field: string; value: string; negate: boolean }>
+    terms?: string[]
+    phrases?: string[]
+    regexes?: Array<{ value: string; negate: boolean }>
+    /** 查询里含 `OR` 分组 */
+    or?: boolean
+    /** 用户显式写了布尔逻辑（OR 或否定）→ 结果严格满足布尔语义 */
+    strict?: boolean
+    /** 只有过滤条件、没有任何检索词（走枚举而非打分） */
+    filterOnly?: boolean
+  }
+  /** 仅过滤查询的排序依据（`'path'`）；打分查询不返回该字段 */
+  orderedBy?: string
 }
 
-export interface KnowledgeLinkOut { to: string; target?: string | null }
-export interface KnowledgeLinks { out: KnowledgeLinkOut[]; in: Array<{ from: string }> }
+/**
+ * 引用体系（2026-09-14 对标 Obsidian 批次 2）。
+ *
+ * `anchorRef`/`anchorKind`：`[[note#小节]]` 的锚点，`'heading' | 'block'`。
+ * 阅读视图据此把链接跳到**那一节**而不是文档开头（旧实现在解析时把 `#` 后整段剥掉，
+ * 锚点信息在落盘时就没了，只能到文档）。
+ * `embed`：`![[note]]` 是**嵌入**（把内容显示在这里），不是引用——两者在 Obsidian 里是
+ * 完全不同的阅读体验，数据层必须能区分。
+ * `self`：`[[#小节]]` 同文档锚点（目标 = 本文档自身）。旧实现因为 `to` 为空把这类引用
+ * **整条丢弃**，文档内部的目录式跳转因此全丢。
+ */
+export interface KnowledgeLinkOut {
+  to: string
+  target?: string | null
+  /** 链接在原始文件里的行号（跳转定位用） */
+  line?: number | null
+  /** 链接所在**条目块**的块号（只有 entry 块才非 null：条目级 ref 关联的源） */
+  block?: number | null
+  /** `[[目标|别名]]` 的别名（展示用，与锚点无关） */
+  anchor?: string
+  anchorRef?: string
+  anchorKind?: 'heading' | 'block' | ''
+  embed?: boolean
+  self?: boolean
+}
+
+/** 反链条目（2026-09-14 批次 2 增强）：除了"谁引用了"，还要给出"在哪、说了什么" */
+export interface KnowledgeLinkIn {
+  from: string
+  line?: number | null
+  block?: number | null
+  anchor?: string
+  anchorRef?: string
+  anchorKind?: 'heading' | 'block' | ''
+  embed?: boolean
+  self?: boolean
+  /** 引用位置所在块的短文本（反链面板的上下文预览；老内核不返回 → 空串） */
+  snippet?: string
+}
+
+export interface KnowledgeLinks { out: KnowledgeLinkOut[]; in: KnowledgeLinkIn[] }
+
+/**
+ * 未链接提及（Unlinked mentions，2026-09-14 批次 2）：全库里"提到这篇文档、但没打链接"的位置。
+ * Obsidian 的核心发现机制——"你在别处写过它，只是没连起来"。没有它，引用体系只能反映
+ * 已经建立的连接，提示不了本该建立的连接。
+ */
+export interface KnowledgeMention {
+  docId: string
+  spaceId?: string
+  title?: string
+  /** 该提及所在块的块 ID（`docId#n`），可直接用于按块跳转 */
+  blockId: string
+  block: number
+  line: number
+  kind?: string
+  /** 命中的关键词（标题或文件名 stem）——告诉用户"是哪个词命中的" */
+  matched: string
+  snippet: string
+}
+
+export interface KnowledgeMentions {
+  items: KnowledgeMention[]
+  count: number
+  /** 达到 limit 提前停止（库很大时"还有更多"要能提示出来，否则用户以为这就是全部） */
+  truncated?: boolean
+}
+
+/** 断链（2026-09-14 批次 2）：`target` 为 null 的引用，按**目标名**聚合（同一拼错常重复出现） */
+export interface KnowledgeBrokenLink {
+  to: string
+  count: number
+  refs: Array<{ from: string; line?: number | null; block?: number | null; anchorRef?: string }>
+}
 
 // —— 索引标签枚举（2026-09-14 对标 Obsidian 批次 1）——
 
@@ -232,6 +336,18 @@ export interface KnowledgeStats {
   builtAt: string | null
   indexAgeMs: number | null
   indexBytes: number
+  /**
+   * 文件数上限留痕（2026-09-14 批次 4）。`truncated: true` = 有文档**没进索引**：
+   * 该空间的文件数超过 `limit`（缺省 5000），被静默跳过的那些搜不到、图谱里没有、
+   * 统计数字也不含。旧内核不返回该字段 → UI 视为"未截断"（不误报）。
+   * `staleSweepSkipped`：截断导致"磁盘已删"清扫被跳过（见内核 indexStale 注释）。
+   */
+  filesTruncated?: {
+    truncated: boolean
+    limit: number
+    spaces: Array<{ spaceId: string; count: number; limit: number }>
+    staleSweepSkipped?: boolean
+  }
   /** S3：本进程内的检索耗时分布（CLI/HTTP 通道下恒为 0 样本——跨进程看下面的 metrics） */
   search?: { count: number; elapsedP50: number | null; elapsedP95: number | null }
   /** S3：上次会话注入落盘的指标 sidecar（.index/metrics.json）；无记录为 null。
@@ -263,13 +379,34 @@ export interface KnowledgeWriteInput {
   /** 空间根内相对 .md 路径（server 侧四重穿越防护：绝对路径/`..`/非 md 一律 400） */
   path: string
   content: string
+  /**
+   * 客户端**加载该文档时**看到的 mtime（2026-09-14 批次 4）。
+   *
+   * 为什么必须有：知识空间目录是共享的（Obsidian/VSCode 会直接改同一批 md）。带上它，
+   * 服务端就能发现"我加载之后这文件被别人改过"，从而**拒绝**这次覆盖（409）而不是
+   * 让外部那笔改动无声消失。不带（老调用方）→ 服务端跳过校验，行为与旧版一致。
+   */
+  mtime?: number
+  /** 冲突时是否强制覆盖（服务端会先把磁盘上那份备份进回收站）。只有用户在冲突提示里明确选择才传 */
+  force?: boolean
 }
 
 // —— 请求 ——
 
-interface CallArgs { method?: string; body?: unknown; opts?: KnowledgeCallOpts }
+interface CallArgs {
+  method?: string
+  body?: unknown
+  opts?: KnowledgeCallOpts
+  /**
+   * 失败时把响应体一并带出（2026-09-14 批次 4）。**必须显式开**：
+   * 既有失败分支刻意不带 `body`（理由见上方 `message` 处注释 —— 恒塞空值会让既有调用方的
+   * deepEqual 断言全部失配）。只有需要读错误细节的调用方（写文档的 409 冲突要拿磁盘
+   * mtime/size 给用户判断）才打开它，其它路径的返回形状逐字不变。
+   */
+  includeErrorBody?: boolean
+}
 
-async function call<T>(path: string, { method = 'GET', body, opts = {} }: CallArgs = {}): Promise<ApiResult<T>> {
+async function call<T>(path: string, { method = 'GET', body, opts = {}, includeErrorBody = false }: CallArgs = {}): Promise<ApiResult<T>> {
   const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -293,6 +430,9 @@ async function call<T>(path: string, { method = 'GET', body, opts = {} }: CallAr
         error: raw ? String(raw) : `HTTP ${res.status}`,
         ...(detail ? { message: detail } : {}),
         status: res.status,
+        // 只在调用方明确要求时带出响应体（批次 4：409 冲突要读磁盘 mtime/size），
+        // 其余路径的返回形状逐字不变（理由同上，见 includeErrorBody 的注释）
+        ...(includeErrorBody ? { body: data ?? null } : {}),
       }
     }
     return { ok: true, data: (data ?? null) as T }
@@ -436,6 +576,39 @@ export function getLinks(id: string, opts?: KnowledgeCallOpts): Promise<ApiResul
 }
 
 /**
+ * 未链接提及（2026-09-14 批次 2）。`id` 必填——服务端对缺失返回 400（不是"空集"）：
+ * 没有目标就无所谓"提及"，静默返回一批无关数据会被误读成"这篇被提及了很多次"。
+ */
+export function getMentions(id: string, limit?: number, opts?: KnowledgeCallOpts): Promise<ApiResult<KnowledgeMentions>> {
+  const query = qs({ id, limit })
+  return dedupe(`mentions:${query}`, async () => {
+    const r = await call<unknown>(`/knowledge/mentions${query}`, { opts })
+    if (!r.ok) return r
+    const v = r.data as KnowledgeMentions | null
+    // 与 listIndexTags 同样的拆包纪律：返回非对象时给明确错误，
+    // 否则 UI 会拿到 undefined 去 .items.map（白屏），而错误信息归零。
+    if (!v || typeof v !== 'object' || !Array.isArray(v.items)) {
+      return { ok: false as const, error: 'bad-mentions-payload' }
+    }
+    return { ok: true as const, data: { ...v, count: v.count ?? v.items.length } }
+  })
+}
+
+/** 断链清单（2026-09-14 批次 2）。`space` 缺省 = 全部空间 */
+export function getBrokenLinks(space?: string | null, limit?: number, opts?: KnowledgeCallOpts): Promise<ApiResult<{ items: KnowledgeBrokenLink[]; total: number; broken: number }>> {
+  const query = qs({ space: space || undefined, limit })
+  return dedupe(`broken-links:${query}`, async () => {
+    const r = await call<unknown>(`/knowledge/broken-links${query}`, { opts })
+    if (!r.ok) return r
+    const v = r.data as { items?: KnowledgeBrokenLink[] } | null
+    if (!v || typeof v !== 'object' || !Array.isArray(v.items)) {
+      return { ok: false as const, error: 'bad-broken-links-payload' }
+    }
+    return { ok: true as const, data: { items: v.items, total: v.items.length, broken: v.items.reduce((n, x) => n + (x.count || 0), 0) } }
+  })
+}
+
+/**
  * 单个块的关联锚点（spec §7.4）。响应体是 CLI 包装对象 `{blockId, validate, limit, count, related}`，
  * 故与 listTree/listEntries 一样**拆包**取 `related`（上游改成裸数组也兼容）。
  * 空数组是**常态**（多数条目没有锚点），不是错误——UI 不得把空集渲染成加载失败。
@@ -475,10 +648,14 @@ export function getGraphRelated(space?: string, limit?: number, opts?: Knowledge
   })
 }
 
-/** `limit` 省略 = 后端默认 200（kernel/knowledge.mjs:596），前端不要硬编码更小的值 */
-export function getGraph(space?: string, limit?: number, opts?: KnowledgeCallOpts): Promise<ApiResult<KnowledgeGraph>> {
-  const query = qs({ space, limit })
-  return dedupe(`graph:${query}`, () => call<KnowledgeGraph>(`/knowledge/graph${query}`, { opts }))
+/** `limit` 省略 = 后端默认 200（kernel/knowledge.mjs:596），前端不要硬编码更小的值。
+ *  `around` + `hops`（2026-09-14 批次 2）= **局部图**：只画以某文档为心的 N 跳双向邻域。
+ *  全局图在文档多起来后是毛线球（看不出结构），局部图才是能读的视图。
+ *  `hops` 只在 `around` 存在时有意义 —— 服务端也是这么处理的（单给 hops 什么都不做）。 */
+export function getGraph(space?: string, limit?: number, opts?: KnowledgeCallOpts & { around?: string; hops?: number }): Promise<ApiResult<KnowledgeGraph>> {
+  const { around, hops, ...rest } = opts ?? {}
+  const query = qs({ space, limit, around, hops: around ? hops : undefined })
+  return dedupe(`graph:${query}`, () => call<KnowledgeGraph>(`/knowledge/graph${query}`, { opts: rest }))
 }
 
 /**
@@ -507,16 +684,64 @@ export function reindex(opts?: KnowledgeCallOpts): Promise<ApiResult<KnowledgeSt
  * 写文档（新建与保存共用）。后端回执 = `{ ok, docId, updated }`——`ok` 由本层归一成
  * `ApiResult.ok`，data 只透出 `docId`/`updated`（两处同名字段会让调用方判错层）。
  * 后端已做落盘 + 增量索引，故调用方**仍需**失效 doc/tree/search 缓存（见 useKnowledge.saveDoc）。
- * 错误码：400（非法路径/非 md）/ 403（空间只读或越界）/ 404（空间不存在）/ 413（>2MB）。
+ * 错误码：400（非法路径/非 md）/ 403（空间只读或越界）/ 404（空间不存在）/ 413（>2MB）
+ *        / **409（冲突：文件已被外部修改，见下）**。
+ *
+ * 409 冲突（2026-09-14 批次 4）：带上 `mtime` 后，服务端会比对磁盘实际 mtime；不一致说明
+ * 用户加载之后有别的程序（Obsidian/VSCode）改过这个文件 → **拒绝写入**，不再让外部改动无声消失。
+ * 调用方拿到 409 要提示用户选择：重新载入外部版本，或以自己这份覆盖（覆盖前服务端自动备份）。
+ * `updated:false` + `unchanged:true` = 内容与磁盘一致，服务端短路了写入（不是失败）。
  */
-export async function writeDoc(input: KnowledgeWriteInput, opts?: KnowledgeCallOpts): Promise<ApiResult<{ docId: string; updated: boolean }>> {
-  const r = await call<{ docId?: unknown; updated?: unknown }>('/knowledge/doc', {
+export async function writeDoc(
+  input: KnowledgeWriteInput,
+  opts?: KnowledgeCallOpts,
+): Promise<ApiResult<{ docId: string; updated: boolean; unchanged?: boolean; mtime?: number | null; conflict?: ConflictInfo }>> {
+  const r = await call<{ docId?: unknown; updated?: unknown; unchanged?: unknown; mtime?: unknown }>('/knowledge/doc', {
     method: 'POST',
-    body: { space: input.space, path: input.path, content: input.content },
+    body: {
+      space: input.space, path: input.path, content: input.content,
+      // 只在有值时带上：老调用方（不带 mtime）会走"跳过校验"的旧路径，不去制造误报冲突
+      ...(Number.isFinite(input.mtime) ? { mtime: Number(input.mtime) } : {}),
+      ...(input.force === true ? { force: true } : {}),
+    },
     opts: { timeoutMs: WRITE_TIMEOUT_MS, ...opts },
+    // 409 冲突要看响应体里的 mtime/size（见 CallArgs.includeErrorBody：默认不带，避免影响
+    // 其它调用方的返回形状与既有断言）
+    includeErrorBody: true,
   })
-  if (!r.ok) return r
-  return { ok: true, data: { docId: String(r.data?.docId ?? ''), updated: r.data?.updated === true } }
+  if (!r.ok) {
+    // 409 不是"失败"，是"需要用户决策"：把磁盘真实状态一起带出去，UI 才能显示
+    // "外部版本多大/多新"让用户判断（只给一句"冲突了"等于把问题丢回给用户）
+    if (r.status === 409) {
+      const d = r.body as { mtime?: number; size?: number } | null
+      return { ok: false, error: r.error, status: 409, conflict: { mtime: d?.mtime ?? null, size: d?.size ?? null } }
+    }
+    // 非冲突错误（403/413/…）：把 `body` 摘掉再返回。`includeErrorBody` 只为 409 而开，
+    // 但它是**整次调用的开关** —— 不摘的话 403/413 的返回形状会多出一个 `body` 字段，
+    // 破坏"错误结果不含多余字段"这条被测试钉着的契约（本仓库有专门用例）。
+    const { body: _drop, ...plain } = r
+    return plain
+  }
+  return {
+    ok: true,
+    data: {
+      docId: String(r.data?.docId ?? ''),
+      updated: r.data?.updated === true,
+      // `unchanged`/`mtime` **只在有值时出现**（2026-09-14 批次 4）。与失败分支的 `message`/
+      // `body` 同一取舍：恒塞 `undefined`/`null` 会让既有调用方的 deepEqual 断言全部失配
+      // （本仓库有测试专门钉"请求/响应不含多余字段"）。老服务端不返回 mtime → 形状与旧版逐字一致。
+      ...(r.data?.unchanged === true ? { unchanged: true } : {}),
+      ...(typeof r.data?.mtime === 'number' ? { mtime: r.data.mtime } : {}),
+    },
+  }
+}
+
+/** 409 冲突时磁盘上的真实状态（供 UI 展示"外部版本"信息） */
+export interface ConflictInfo {
+  /** 磁盘上文件的 mtime（毫秒）；拿不到为 null */
+  mtime: number | null
+  /** 磁盘上文件的字节数；拿不到为 null */
+  size: number | null
 }
 
 /**

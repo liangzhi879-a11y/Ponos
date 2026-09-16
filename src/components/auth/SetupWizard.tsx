@@ -1,7 +1,7 @@
-// src/components/auth/SetupWizard.tsx —— 首设口令向导表单体
+// src/components/auth/SetupWizard.tsx —— 首设密码向导表单体
 // 由 AuthScreen 在 phase==='uninitialized' 时渲染（外层 AuthFrame 已给出
-// setupTitle/setupHint 与品牌 logo，本组件只负责两个口令输入框 + 提交）：
-//   · 客户端校验：长度 ≥4、两次一致（mismatch 挂确认框、tooShort 挂口令框）；
+// setupTitle/setupHint 与品牌 logo，本组件只负责两个密码输入框 + 提交）：
+//   · 客户端校验：长度 ≥4、两次一致（mismatch 挂确认框、tooShort 挂密码框）；
 //   · 通过后 authStore.setup(pw) → 成功即"设置即解锁"，发 IPC auth:granted
 //     （认证小窗语义，见 AuthScreen.tsx 头注释——主进程接管窗口切换，不再 setView）；
 //   · setup 失败：失败文案取 store.error（服务端兜底校验，正常流程不会走到），
@@ -24,7 +24,7 @@ export function SetupWizard() {
 
   const [pw, setPw] = useState('')
   const [confirm, setConfirm] = useState('')
-  /** 本地校验错：'tooShort'（挂口令框）/ 'mismatch'（挂确认框） */
+  /** 本地校验错：'tooShort'（挂密码框）/ 'mismatch'（挂确认框） */
   const [fieldErr, setFieldErr] = useState<'tooShort' | 'mismatch' | null>(null)
   /** 服务端 setup 失败原文（走失败分支才出现；正常路径不可达） */
   const [serverErr, setServerErr] = useState<string | null>(null)

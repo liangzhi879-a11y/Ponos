@@ -1,13 +1,21 @@
 import { useState, useEffect } from 'react'
-import { Zap, Search, ChevronRight, ArrowRight, Plus, Download, Trash2, FolderOpen, BookOpen, Star, FolderPlus, MoreHorizontal, Check, Folder, Edit3, X } from 'lucide-react'
+import { Zap, Search, ChevronRight, ArrowRight, Plus, Download, Trash2, FolderOpen, BookOpen, Star, FolderPlus, MoreHorizontal, Check, Folder, Edit3, X, Ban, Play } from 'lucide-react'
 import { ScrollArea, Badge, Button } from '@/components/ui'
 import { useUIStore } from '@/stores/uiStore'
+import { useDisabledStore } from '@/stores/disabledStore'
+import { PinnedSkillsRow } from './PinnedSkillsRow'
+import { SkillDetailPanel } from './SkillDetailPanel'
 import { useChatStore } from '@/stores/chatStore'
 import { useViewStore } from '@/stores/viewStore'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn } from '@/lib/utils'
 import { getBridgeUrl } from '@/lib/config'
 import { fetchSkills, buildSkillPrompt, type SkillEntry } from '@/lib/skills'
+// 父子归属与分类的纯逻辑（2026-09-15，批次二 C）：抽到 .ts 才能被 node --test 直测
+// （.tsx 无法 import，实测 ERR_UNKNOWN_FILE_EXTENSION）。同时统一了原先分散在三处的父级判据
+// —— 判据不一致会导致"只被 parent 反指的父级不带子项"与"孤儿技能在界面上彻底消失"，
+// 详见 skillTree.ts 头注。
+import { topLevelSkills, defaultFolderOf, resolveFolder, isParentSkill, childrenToShow } from '@/lib/skillTree'
 
 export function SkillsPanel() {
   const { t } = useTranslation()
@@ -21,6 +29,14 @@ export function SkillsPanel() {
   const [builtin, setBuiltin] = useState<SkillEntry[]>([])
   const { setPendingInput } = useUIStore()
   const { pinnedSkills, togglePinSkill, skillFolders, skillFolderMap, addSkillFolder, removeSkillFolder, renameSkillFolder, setSkillFolder } = useUIStore()
+  // 全局停用清单（2026-09-15，D 条款）：挂载时拉一次（不持久化到前端——真相在内核读的那个文件里）
+  const disabledSkills = useDisabledStore(s => s.skills)
+  const loadDisabled = useDisabledStore(s => s.load)
+  const setSkillDisabled = useDisabledStore(s => s.setSkillDisabled)
+  // 详情面板展开态（2026-09-15，批次二 C）：只存一个 id —— 同时只展开一个技能，
+  // 避免多个详情面板堆叠把列表撑得极长（这页的问题本来就是"不占版面"）。
+  const [detailId, setDetailId] = useState<string | null>(null)
+  useEffect(() => { void loadDisabled() }, [loadDisabled])
   const { conversations, activeConversationId } = useChatStore()
   const activeConv = conversations.find(c => c.id === activeConversationId)
   const projectRoot = activeConv?.cwd || '.'
@@ -56,16 +72,13 @@ export function SkillsPanel() {
   const [folderMenuId, setFolderMenuId] = useState<string | null>(null)
   const [folderPickerSkillId, setFolderPickerSkillId] = useState<string | null>(null)
 
-  // Default folder assignment heuristic: Working vs Coding
-  const getDefaultFolder = (skillId: string): string => {
-    if (/^(gxtz-|yfwdoc-|yfwweb-|yfwx-)/.test(skillId)) return 'Working'
-    return 'Coding'
-  }
+  // 分类口径（2026-09-15，批次二 C）：抽到 `@/lib/skillTree`（纯函数，可被 node --test 直测）
+  // ——「人工指派优先，其次前缀启发式」的规则只此一处（原先内联在此，且与顶层过滤/渲染处的
+  // 父级判据不一致，详见 skillTree.ts 头注）。
+  const getDefaultFolder = (skillId: string): string => defaultFolderOf(skillId)
 
   // Resolve a skill's folder (explicit assignment > default heuristic)
-  const getSkillFolder = (skillId: string): string => {
-    return skillFolderMap[skillId] || getDefaultFolder(skillId)
-  }
+  const getSkillFolder = (skillId: string): string => resolveFolder(skillId, skillFolderMap)
 
   const quickRun = (skillId: string) => {
     setPendingInput(buildSkillPrompt(skillsDir, skillId), true)
@@ -183,11 +196,10 @@ export function SkillsPanel() {
     s.description.toLowerCase().includes(filter.toLowerCase()) ||
     s.triggers.some(t => t.includes(filter))
 
-  // 顶层可见技能 = 无 parent 的父/独立技能；搜索时若某子技能命中，其父技能一并带出
-  const filtered = skills.filter(s => !s.parent && (matches(s) || (s.subskills || []).some(c => {
-    const child = skills.find(x => x.id === c)
-    return !!child && matches(child)
-  })))
+  // 顶层可见技能（2026-09-15，批次二 C）：口径抽到 `@/lib/skillTree` 的 `topLevelSkills`
+  // —— 原先内联在这里 + 另有两处各自判断，导致「父级判据不一致」与「孤儿技能消失」两个缺陷
+  // （详见 skillTree.ts 头注）。规则：无 parent → 顶层；**孤儿**（parent 指向不存在的技能）也留顶层。
+  const filtered = topLevelSkills(skills, matches)
 
   const selectedSkill = skills.find(s => s.id === selected)
 
@@ -210,8 +222,13 @@ export function SkillsPanel() {
   // Reusable skill list item — used by both the pinned (常用技能) and category sections.
   // Parent skills (subskills declared) show a fold arrow on the left; clicking toggles
   // expansion + selects. Child/standalone skills keep the existing Zap + right chevron.
-  const renderSkillItem = (skill: SkillEntry, isParent = false, isExpanded = false, onToggle?: () => void) => {
+  // childCount（2026-09-15，批次二 C）：统一父级判据后新增——原先只显示 `skill.subskills.length`，
+  // 于是"只被子技能用 parent 反指"的父级会显示为父级却没有计数（自相矛盾）。现在由调用方传入
+  // 合并双来源后的真实子项数。
+  const renderSkillItem = (skill: SkillEntry, isParent = false, isExpanded = false, onToggle?: () => void, childCount = 0) => {
     const isPinned = pinnedSkills.includes(skill.id)
+    // 停用态（2026-09-15，D 条款）：从全局注册表派生，故"文件被手改/换机器"后界面也会如实反映。
+    const skillDisabled = disabledSkills.includes(skill.id)
     return (
       <div
         key={skill.id}
@@ -248,11 +265,18 @@ export function SkillsPanel() {
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-medium text-primary">{skill.id}</span>
-              {isParent && skill.subskills && (
-                <span className="text-[9px] text-tertiary/80 font-mono">{skill.subskills.length} 子</span>
+              {isParent && childCount > 0 && (
+                <span className="text-[9px] text-tertiary/80 font-mono">{childCount} 子</span>
               )}
               <span className="text-[9px] text-tertiary font-mono">{skill.version}</span>
               {isPinned && <Star className="w-2.5 h-2.5 fill-warning text-warning shrink-0" />}
+              {/* 停用徽标常驻（不只在 hover 操作区）：停用状态必须在列表里一眼可见，
+                  否则用户会以为技能还能用（而它是被内核静默排除的）。 */}
+              {skillDisabled && (
+                <span className="text-[9px] px-1 py-0.5 rounded bg-warning/15 text-warning shrink-0">
+                  {t('skills.disabledBadge')}
+                </span>
+              )}
             </div>
             <p className="text-[10px] text-tertiary line-clamp-2 mt-0.5 leading-relaxed">
               {skill.description}
@@ -262,6 +286,17 @@ export function SkillsPanel() {
                 {skill.triggers.slice(0, 4).map(t => (
                   <span key={t} className="text-[9px] px-1 py-0.5 rounded bg-input text-tertiary">{t}</span>
                 ))}
+              </div>
+            )}
+            {/* 详情面板（2026-09-15，批次二 C）：只读展示触发规则 / 关联脚本 / 来源目录 + 系统打开。
+                放在内容列内（而不是卡片外）以保证与卡片左对齐、不破坏 flex 行布局。 */}
+            {detailId === skill.id && (
+              <div onClick={e => e.stopPropagation()}>
+                <SkillDetailPanel
+                  skillId={skill.id}
+                  disabled={skillDisabled}
+                  folder={getSkillFolder(skill.id)}
+                />
               </div>
             )}
           </div>
@@ -274,6 +309,40 @@ export function SkillsPanel() {
         </button>
         {/* Action buttons — visible on hover */}
         <div className="absolute right-6 top-1.5 hidden group-hover:flex items-center gap-1 animate-fade-in">
+          {/* 详情开关（2026-09-15，批次二 C）：展开显示只读的触发规则与关联脚本 */}
+          <button
+            onClick={e => { e.stopPropagation(); setDetailId(detailId === skill.id ? null : skill.id) }}
+            className={cn(
+              'px-1.5 py-1 rounded transition-colors text-[10px] font-medium',
+              detailId === skill.id
+                ? 'bg-brand-500/20 text-brand-400 ring-1 ring-brand-500/30'
+                : 'bg-input hover:bg-brand-500/10 text-secondary hover:text-brand-400'
+            )}
+            title={t('skills.detailToggle')}
+          >
+            <BookOpen className="w-3.5 h-3.5" />
+          </button>
+          {/* 全局启用/停用（2026-09-15，D 条款）：技能此前**完全没有**开关，
+              停用后内核不再把它列入提示词技能清单，也不能按名调用。 */}
+          <button
+            onClick={e => {
+              e.stopPropagation()
+              void (async () => {
+                const err = await setSkillDisabled(skill.id, !skillDisabled)
+                // 失败必须出声：静默失败会长期停留在"我明明停用了它"的错觉里。
+                if (err) alert(t('skills.toggleFailed', { error: err }))
+              })()
+            }}
+            className={cn(
+              'px-1.5 py-1 rounded transition-colors text-[10px] font-medium',
+              skillDisabled
+                ? 'bg-warning/20 text-warning ring-1 ring-warning/30'
+                : 'bg-input hover:bg-warning/10 text-secondary hover:text-warning/80'
+            )}
+            title={skillDisabled ? t('skills.enableHint') : t('skills.disableHint')}
+          >
+            {skillDisabled ? <Play className="w-3.5 h-3.5" /> : <Ban className="w-3.5 h-3.5" />}
+          </button>
           <button
             onClick={e => { e.stopPropagation(); togglePinSkill(skill.id) }}
             className={cn(
@@ -448,7 +517,25 @@ export function SkillsPanel() {
             <Star className="w-3 h-3 fill-warning text-warning" />
             {t('skills.pinnedSkillsTitle')}
           </div>
-          {pinnedList.map(s => renderSkillItem(s))}
+          {/* 紧凑卡片行（2026-09-15，批次二 B）：改前这里用与主体列表相同的整卡渲染，
+              收藏几个就把主体列表挤下去大半屏。现在只占一行小卡。 */}
+          <div className="col-span-full pb-1">
+            <PinnedSkillsRow
+              skills={pinnedList}
+              onOpen={(s) => {
+                // 收藏小卡点击 = "带我去看它"（紧凑区不该再承载编辑/安装等操作）。
+                // 若它是父级技能则先展开（折叠状态下来找会很困惑），再滚动定位到主体列表里那一项。
+                // 判据统一走 `isParentSkill`（2026-09-15，批次二 C）：此处原先是第三份内联副本，
+                // 与顶层过滤/渲染循环各自实现同一语义 —— 判据一分散就必然出现"某一处漏了新来源"的缺陷。
+                if (isParentSkill(s, skills)) setExpanded(e => ({ ...e, [s.id]: true }))
+                requestAnimationFrame(() => {
+                  document.getElementById(`skill-item-${s.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                })
+              }}
+              onUnpin={(id) => togglePinSkill(id)}
+              isDisabled={(id) => disabledSkills.includes(id)}
+            />
+          </div>
           <div
             className="col-span-full h-px my-1"
             style={{ background: 'linear-gradient(to right, transparent, var(--warning) 15%, var(--warning) 85%, transparent)' }}
@@ -543,26 +630,26 @@ export function SkillsPanel() {
                   )}
                 </div>
                 {items.map(s => {
-                  // 子技能折叠在父技能条目下，不在 folder 层平铺
-                  if (s.parent) return null
-                  const isParent = (s.subskills || []).length > 0
+                  // 父级判据统一走 isParentSkill（双来源合并）：**不能**只认 `subskills`，
+                  // 否则"只被子技能用 parent 反指"的父级会被当普通技能 ⇒ 子项不渲染。
+                  const isParent = isParentSkill(s, skills)
                   const parentMatched = matches(s)
-                  // 子技能匹配双来源：父技能的 subskills id 列表为主（大多数子技能不写 parent），
-                  // parent 反推为辅（如 yfwx-project-eval 声明了 parent: yfwx-suite）
-                  const childIds = s.subskills || []
-                  const children = isParent
-                    ? skills.filter(c => (childIds.includes(c.id) || c.parent === s.id) && (!filter || parentMatched || matches(c)))
-                    : []
+                  // 子技能双来源合并 + 去重 + 剔除不存在与自指（`childIdsOf`），并按搜索态过滤。
+                  const children = childrenToShow(s, skills, matches, !!filter)
                   // 手动展开优先；搜索时命中父或其任一子技能 → 自动展开
                   const isExpanded = expanded[s.id] || (filter ? parentMatched || children.length > 0 : false)
                   return (
-                    <div key={s.id}>
+                    <div key={s.id} id={`skill-item-${s.id}`}>
                       {renderSkillItem(
                         s, isParent, isExpanded,
-                        () => setExpanded(e => ({ ...e, [s.id]: !e[s.id] }))
+                        () => setExpanded(e => ({ ...e, [s.id]: !e[s.id] })),
+                        // 真实子项数（双来源合并后的 children），用于"n 子"计数
+                        children.length
                       )}
                       {isParent && isExpanded && children.length > 0 && (
                         <div className="pl-4">
+                          {/* 子项调用不传 childCount：本层不递归展开孙项，
+                              给了计数却不能展开反而是误导（默认 0 即不显示）。 */}
                           {children.map(c => renderSkillItem(c))}
                         </div>
                       )}

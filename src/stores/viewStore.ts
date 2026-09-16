@@ -37,7 +37,7 @@ interface ViewState {
   view: AppView
   workState: WorkState
   setView: (v: AppView) => void
-  enterWork: (rail?: RailId) => void
+  enterWork: (rail?: RailId, secondTab?: SecondTabId | null) => void
 }
 
 export const useViewStore = create<ViewState>()(
@@ -46,7 +46,19 @@ export const useViewStore = create<ViewState>()(
     workState: { rail: 'task', secondTab: null },
     setView: (view) => set({ view }),
     // enterWork 整建 workState：进工作屏总是从浮层关闭态起（secondTab 只在任务 rail 内可开）
-    enterWork: (rail) => set({ view: 'work', workState: { rail: rail ?? 'task', secondTab: null } }),
+    // 2026-09-15 驾驶舱功能入口：可选 secondTab 直接落定次级浮层（如用量统计 = task + usage）；
+    // 非 task rail 一律强制 null——SecondPanel 只在 rail==='task' 渲染浮层，
+    // 否则会写出"配置了却永远不显示"的死状态。
+    enterWork: (rail, secondTab) => {
+      const target = rail ?? 'task'
+      set({
+        view: 'work',
+        workState: {
+          rail: target,
+          secondTab: target === 'task' ? sanitizeSecondTab(secondTab ?? null) : null,
+        },
+      })
+    },
   }), {
     name: 'yfworking-view',
     partialize: (s) => {

@@ -7,6 +7,16 @@ import { DEFAULT_KNOWLEDGE_IMPORT_POLICY, normalizeKnowledgeImportPolicyUi } fro
 import { useChatStore } from './chatStore'
 import { verifyActiveProvider, type ProviderVerifyResult } from '@/lib/config'
 import { migrateThemeId } from '@/lib/themeMap'
+import { deleteSecret, describeVaultError, getVaultApi, loadAllSecrets, saveSecret } from '@/lib/vaultApi'
+import {
+  applySecretsToSettings,
+  collectSecrets,
+  createHydrationGate,
+  planHydration,
+  planSecretSync,
+  providerTokenKey,
+  stripSecretsFromPersisted,
+} from '@/lib/providerSecrets'
 
 /** Show a system notification through Electron's Notification API (cross-platform).
  *  Falls back silently in dev mode (no preload → no yfworkingAPI). */
@@ -246,6 +256,13 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: 'yfworking-settings',
+      /**
+       * 落盘（localStorage）**剥掉一切密钥**（2026-09-15）：
+       * providers[].authToken / apiKey 的真相源改为密码库（safeStorage 加密）。
+       * 只改"要落盘的那份"，内存状态不变——否则正在用的密钥会当场消失。
+       * ⚠️ 加字段时记得检查是否是秘密：新密钥字段必须同时进 stripSecretsFromPersisted。
+       */
+      partialize: (state) => ({ settings: stripSecretsFromPersisted(state.settings) }),
       // Migrate old persisted state to include new fields with defaults
       onRehydrateStorage: () => (state) => {
         if (state?.settings) {
@@ -277,4 +294,83 @@ if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
     if (e.key === 'yfworking-settings') useSettingsStore.persist.rehydrate()
   })
+}
+
+// ============================================================================
+// 密钥迁入密码库（2026-09-15）
+//
+// 背景：此前 providers[].authToken / apiKey 以**明文**存在 localStorage。
+// 现在库是唯一真相源，localStorage 只留非秘密配置（见上面 partialize）。
+//
+// 顺序很关键（错一步就会把用户 API Key 清掉）：
+//   1. 注水前：闸门关闭，任何写回都跳过（此刻内存里"没有密钥"不代表"密钥该没有"）；
+//   2. 读库 → 库里有值 ⇒ 注回内存；内存有值而库里没有 ⇒ 迁移写库（首次搬迁明文）；
+//   3. 注水完成后才打开闸门，之后按差量写回；
+//   4. 最后强制重写一次持久化，把 localStorage 里**残留的旧明文**擦掉
+//      （partialize 只影响"以后的写入"，历史快照得靠这一次覆盖）。
+// 全程 fire-and-forget：密钥同步失败不该阻塞 UI（失败时下次启动会重试迁移）。
+// ============================================================================
+const secretGate = createHydrationGate()
+/** 本轮已同步到库的快照，用于算差量（避免每次 set 都写盘） */
+let syncedSecrets: Record<string, string> = {}
+
+/** 读库→注水→迁移→擦除本地明文。可重复调用（幂等）。 */
+export async function hydrateSecretsFromVault(): Promise<{ ok: boolean; migrated: number; error?: string }> {
+  const api = getVaultApi()
+  if (!api) return { ok: false, migrated: 0, error: '当前环境不支持密码库（仅桌面端可用）' }
+  try {
+    // 闸门此刻必须是关闭的：下面要基于"库 + 内存"做一次性决策
+    const res = await loadAllSecrets()
+    if (!res.ok) {
+      // 读不出来（未启用/损坏）⇒ **保持闸门关闭**：宁可本次不写回，
+      // 也不能用一个空的库视图去覆盖用户真实存在的密钥
+      return { ok: false, migrated: 0, error: describeVaultError(res.error, res.message) }
+    }
+    const inMemory = collectSecrets(useSettingsStore.getState().settings)
+    const { toWrite, toApply } = planHydration(inMemory, res.secrets)
+
+    // 2a) 首次迁移：把既有明文搬进库
+    let migrated = 0
+    for (const [k, v] of Object.entries(toWrite)) {
+      const r = await saveSecret(k, v)
+      if (r.ok) migrated += 1
+    }
+    // 2b) 注入内存（库优先）
+    if (Object.keys(toApply).length > 0) {
+      useSettingsStore.setState(s => ({ settings: applySecretsToSettings(s.settings, toApply) }))
+    }
+    syncedSecrets = { ...res.secrets, ...toWrite }
+    secretGate.markHydrated()
+    // 4) 擦掉 localStorage 里的历史明文（此时才允许写入）
+    useSettingsStore.setState(s => ({ settings: { ...s.settings } }))
+    return { ok: true, migrated }
+  } catch (e) {
+    return { ok: false, migrated: 0, error: (e as Error)?.message }
+  }
+}
+
+/** 差量写回。注水前直接跳过（见闸门注释）。 */
+async function syncSecretsToVault(settings: AppSettings): Promise<void> {
+  if (!secretGate.canSync()) return
+  const inMemory = collectSecrets(settings)
+  const ops = planSecretSync(inMemory, syncedSecrets)
+  const keys = Object.keys(ops)
+  if (keys.length === 0) return
+  for (const k of keys) {
+    const r = await saveSecret(k, ops[k])   // 空串即删除（用户清空了 token 输入框）
+    if (r.ok) syncedSecrets[k] = ops[k]
+  }
+}
+
+if (typeof window !== 'undefined') {
+  // 订阅 store：一处覆盖全部改密钥的入口（updateProvider / addProvider /
+  // setYFWorkingConfig / resetSettings…），不必逐个 setter 记得写库
+  useSettingsStore.subscribe((state) => { void syncSecretsToVault(state.settings) })
+}
+
+/** 删除某供应商时显式清掉它的密钥（删除是破坏性动作，必须显式，不由差量推断） */
+export async function deleteProviderSecret(providerId: string): Promise<void> {
+  const key = providerTokenKey(providerId)
+  const r = await deleteSecret(key)
+  if (r.ok) delete syncedSecrets[key]
 }

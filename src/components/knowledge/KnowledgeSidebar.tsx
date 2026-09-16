@@ -23,6 +23,11 @@ import { KnowledgeSkeleton } from './KnowledgeSkeleton'
 import { DeleteSpaceDialog } from './KnowledgeDeleteDialogs'
 import { KnowledgeTrashDialog } from './KnowledgeTrashDialog'
 import { canDeleteSpace } from '@/lib/knowledgeDeleteUi'
+// 会话知识范围（2026-09-15，P1）：关联开关的**判据**在 lib 里（纯函数、可单测），
+// 本组件只负责把它画出来 + 写会话字段。内核仍是收口方（越界由内核拒绝）。
+import { isAssociableSpace, isLargeSpace, toggleKnowledgeSpace, MAX_ASSOC_SPACES } from '@/lib/knowledgeScopeUi'
+import { cn } from '@/lib/utils'
+import { useChatStore } from '@/stores/chatStore'
 
 export interface KnowledgeSidebarProps {
   /** 空间列表（宿主用 useSpaces 拉到后下发；不在这里再拉一次，避免重复请求） */
@@ -42,9 +47,21 @@ export function KnowledgeSidebar({ spaces, spacesLoading, onImported, onDeleted 
   // 整库删除的确认框（受控）：触发器在下方空间信息栏，确认框在这里挂一次 —— 避免
   // "每个可能删库的地方各带一份确认框"（那会让两处的文案与校验逻辑迟早分叉）。
   const [delSpaceOpen, setDelSpaceOpen] = useState(false)
+  // 关联超上限的即时提示（受控、不落库）：唯一需要"当场告知"的失败态——超限时点击无效果，
+  // 不出声用户只会反复点。其余失败态（库不存在等）由内核在会话里出声，界面不重复报。
+  const [assocLimitHit, setAssocLimitHit] = useState(false)
+
+  // 会话知识范围（2026-09-15，P1）：关联关系挂在**当前会话**上（不是全局设置）——
+  // 需求原文把它归为"会话模式"的能力，且不同会话用不同知识库才是常态
+  // （写材料的会话要运营库，写代码的会话不要）。
+  const activeConvId = useChatStore(s => s.activeConversationId)
+  const activeConv = useChatStore(s => s.conversations.find(c => c.id === s.activeConversationId))
+  const setConvKnowledgeSpaces = useChatStore(s => s.setConversationKnowledgeSpaces)
 
   const space = useMemo(() => spaces?.find(s => s.id === spaceId) ?? null, [spaces, spaceId])
   const readonly = space?.writable === false
+  const associable = isAssociableSpace(space)
+  const associated = !!(space && activeConv?.knowledgeSpaces?.includes(space.id))
 
   return (
     <div className="w-[236px] shrink-0 border-r border-default flex flex-col min-w-0">
@@ -114,6 +131,46 @@ export function KnowledgeSidebar({ spaces, spacesLoading, onImported, onDeleted 
           <p className="text-[10px] text-tertiary truncate" title={space.root}>
             {space.source} · {space.root} · {space.docCount} {t('knowledge.statDocs')}
           </p>
+          {/* 会话知识范围（2026-09-15，P1）「关联到当前会话」：把当前库纳入**本会话**的 agent
+              可用范围（注入层 + 检索工具层）。放在空间信息栏而不是下拉列表里：它的作用域是
+              "当前选中的库"，与"删整库"同级；丢进下拉则每次点选都会关掉菜单，无从确认状态。
+              三点刻意设计：
+                · 只对 user/pack 显示（内置经验库恒在范围内，画开关等于画一个点不动的按钮）；
+                · 无活动会话时给一行说明而不是隐藏（否则用户以为功能不存在）；
+                · 生效时机写清楚（内核在启动段冻结范围，改关联后**下一句话**生效，
+                  桥以 --resume 重启内核、上下文不丢）。 */}
+          {associable && (
+            activeConvId ? (
+              <button
+                type="button"
+                onClick={() => {
+                  const r = toggleKnowledgeSpace(activeConv?.knowledgeSpaces, space.id)
+                  if (r.rejected === 'limit') { setAssocLimitHit(true); return }
+                  setAssocLimitHit(false)
+                  setConvKnowledgeSpaces(activeConvId, r.spaces)
+                }}
+                aria-pressed={associated}
+                className={cn(
+                  'w-full flex items-center gap-1.5 py-0.5 text-[11px] transition-colors text-left',
+                  associated ? 'text-brand-500 hover:text-brand-600' : 'text-tertiary hover:text-primary',
+                )}
+              >
+                <span className="truncate">{t(associated ? 'knowledge.assocOn' : 'knowledge.assocOff')}</span>
+              </button>
+            ) : (
+              <p className="text-[10px] text-tertiary">{t('knowledge.assocNoConv')}</p>
+            )
+          )}
+          {associable && activeConvId && associated && (
+            <p className="text-[10px] text-tertiary">
+              {isLargeSpace(space.docCount)
+                ? t('knowledge.assocLarge', { count: space.docCount })
+                : t('knowledge.assocHint')}
+            </p>
+          )}
+          {assocLimitHit && (
+            <p className="text-[10px] text-error">{t('knowledge.assocLimit', { count: MAX_ASSOC_SPACES })}</p>
+          )}
           {/* 删整库入口：仅用户自建库显示（canDeleteSpace 只认 source==='user'，与内核
               deleteGate 同源）。内置经验库/会话记忆**不显示**而非"显示但点不动"——
               后者会让用户反复点击并以为界面坏了。知识包同理（连条目都不能删）。 */}

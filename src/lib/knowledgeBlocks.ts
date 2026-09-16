@@ -147,6 +147,18 @@ export interface WikiLinkChunk {
   target?: string
   /** wiki 专用：显示名（有别名用别名，否则用目标） */
   label?: string
+  /**
+   * wiki 专用：这是**嵌入** `![[x]]`（2026-09-14 批次 2）。
+   * 嵌入与引用是**两种阅读体验**：嵌入把内容显示在这里，引用只是一个可点入口。
+   * 旧实现两者不可区分（正则从 `[[` 起匹配，`!` 被无视），所以必须显式带出来。
+   */
+  embed?: boolean
+  /** wiki 专用：锚点（`[[a#小节]]` 的 `小节`；`^` 前缀已在解析时去掉） */
+  anchorRef?: string
+  /** wiki 专用：锚点类型（`heading` 标题 / `block` 块 ID） */
+  anchorKind?: 'heading' | 'block' | ''
+  /** wiki 专用：`[[#小节]]` 同文档锚点（目标是本文档自身） */
+  self?: boolean
 }
 
 /**
@@ -167,21 +179,104 @@ export function splitWikiLinks(text: string): WikiLinkChunk[] {
   if (!src) return []
   // 行内代码遮蔽：与内核 extractInlineTags 同一手法（等长替换，不影响任何下标）
   const masked = src.replace(/`[^`\n]*`/g, (s) => ' '.repeat(s.length))
-  const re = /\[\[([^\]\n]+?)\]\]/g
+  // 组 1 = `!`（嵌入标记，2026-09-14 批次 2），组 2 = 内层（可能含 `#锚点` 与 `|别名`）
+  const re = /(!?)\[\[([^\]\n]+?)\]\]/g
   const out: WikiLinkChunk[] = []
   let last = 0
   for (let m = re.exec(masked); m; m = re.exec(masked)) {
-    const inner = m[1]
-    const bar = inner.indexOf('|')
-    const target = (bar >= 0 ? inner.slice(0, bar) : inner).trim()
-    const alias = bar >= 0 ? inner.slice(bar + 1).trim() : ''
-    if (!target) continue                       // `[[|x]]` / `[[ ]]`：不是链接
+    const inner = m[2]
+    let raw = inner
+    // 锚点与别名的**拆分顺序很重要**：先按 `|` 分别名（别名里可以含 `#`，Obsidian 亦然），
+    // 再在目标段里拆 `#锚点`。反过来会把 `[[a#b|c]]` 的锚点吃到别名里去。
+    const bar = raw.indexOf('|')
+    const aliasPart = bar >= 0 ? raw.slice(bar + 1).trim() : ''
+    raw = bar >= 0 ? raw.slice(0, bar).trim() : raw.trim()
+    const hash = raw.lastIndexOf('#')
+    let target = raw
+    let anchorRef = ''
+    let anchorKind: 'heading' | 'block' | '' = ''
+    if (hash >= 0) {
+      const ref = raw.slice(hash + 1).trim()
+      target = raw.slice(0, hash).trim()
+      if (ref) {
+        if (ref.startsWith('^')) { anchorRef = ref.slice(1).trim(); anchorKind = anchorRef ? 'block' : '' }
+        else { anchorRef = ref; anchorKind = 'heading' }
+      }
+    }
+    const self = !target && !!anchorRef
+    // `[[ ]]` / `[[|x]]` 这类空目标既不是链接也不是嵌入：原样留作文本，避免渲染出点了没反应的控件。
+    // 但**同文档锚点** `[[#小节]]` 的 target 本来就是空串，它是合法的、必须保留。
+    if (!target && !self) continue
     if (m.index > last) out.push({ type: 'text', text: src.slice(last, m.index) })
-    out.push({ type: 'wiki', text: src.slice(m.index, m.index + m[0].length), target, label: alias || target })
+    out.push({
+      type: 'wiki',
+      text: src.slice(m.index, m.index + m[0].length),
+      target,
+      // 显示名优先级（Obsidian 口径）：别名 > 锚点文本 > 目标。
+      // `[[guide#安装步骤]]` 要显示"安装步骤"（用户关心的是哪一节），显示 `guide` 等于把
+      // 锚点信息白解析了。`[[#本地小节]]` 无别名无目标 → 只能显示锚点，正好也是用户想看的。
+      label: aliasPart || anchorRef || target,
+      embed: m[1] === '!',
+      anchorRef,
+      anchorKind,
+      ...(self ? { self: true } : {}),
+    })
     last = m.index + m[0].length
   }
   if (last < src.length) out.push({ type: 'text', text: src.slice(last) })
   return out.filter((c) => c.text !== '')
+}
+
+/**
+ * **标题锚点归一**（2026-09-14 批次 2）。Obsidian 的 `[[note#小节名]]` 匹配规则：
+ * 大小写不敏感、空格与 `-` 等价、忽略首尾 `#`（用户手写时常带上）。
+ *
+ * 为什么必须归一而不能直接字符串比较：用户在正文里写 `[[guide#安装 步骤]]`，
+ * 而目标标题是 `## 安装步骤`——字面比较会判成断链，用户看到"链接点不动"却查不出原因
+ * （两处都"看起来一样"）。归一化把这类差异抹平，才是"能用"的锚点。
+ */
+export function normalizeAnchorText(raw: unknown): string {
+  return String(raw ?? '')
+    .trim()
+    .replace(/^#+/, '')
+    // 去 `#` 之后**必须再 trim 一次**：`## 安装步骤` 去掉 `##` 会剩下前导空格，
+    // 于是它与 `安装步骤` 归一出不同结果 → 锚点匹配失败（用户看到"点不动"却查不出原因）。
+    .trim()
+    .replace(/\s+/g, ' ')          // 折叠连续空白
+    .replace(/\s*-\s*/g, '-')      // `安装 - 步骤` 与 `安装-步骤` 等价
+    .toLowerCase()
+}
+
+/**
+ * 把锚点解析成**目标文档内的块下标**（2026-09-14 批次 2）。返回 null = 解析不到
+ * （断链/锚点写错，调用方应如实表现为"找不到该锚点"，不要悄悄跳到文档开头——
+ * 那会让用户以为锚点生效了，其实每次都落在同一处）。
+ *
+ * heading：按归一化文本匹配 `kind === 'heading'` 的块；
+ * block：块文本末尾的 `^id`（Obsidian 的块 ID 语法）。这里**从块文本里现搜**而不是依赖
+ *   内核预建块 ID 表——因为块 ID 只在"被引用时"才有意义，全量建表是纯开销；
+ *   文档块数在千级以内，现搜足够（`MAX_BLOCKS_PER_DOC` 也是 2000）。
+ */
+export function resolveAnchorIndex(
+  blocks: readonly BlockLike[],
+  anchorRef: string,
+  anchorKind: 'heading' | 'block' | '' = 'heading',
+): number | null {
+  const ref = String(anchorRef ?? '').trim()
+  if (!ref) return null
+  if (anchorKind === 'block') {
+    // `^id` 必须在块文本里（Obsidian 规则），且右侧要有边界：`^abc` 不该匹配到 `^abcdef`。
+    // 先把 ref 收敛到块 ID 的合法字符集（字母/数字/下划线/连字符），再做正则匹配 ——
+    // 这比"手工转义正则元字符"更短也更安全（不存在漏转义某个元字符的可能）。
+    const id = ref.replace(/[^A-Za-z0-9_-]/g, '')
+    if (!id) return null
+    const re = new RegExp('\\^' + id + '(?![\\w-])', 'i')
+    const i = blocks.findIndex((b) => re.test(String(b.text ?? '')))
+    return i >= 0 ? i : null
+  }
+  const want = normalizeAnchorText(ref)
+  const i = blocks.findIndex((b) => b.kind === 'heading' && normalizeAnchorText(b.text) === want)
+  return i >= 0 ? i : null
 }
 
 /**

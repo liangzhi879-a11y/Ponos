@@ -9,8 +9,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  clampLevel, isEntryCard, normalizeTags, pickTargetIndex, pickTargetIndexByBlock, planBlockRender,
-  splitWikiLinks, wikiTargetCandidates,
+  clampLevel, isEntryCard, normalizeAnchorText, normalizeTags, pickTargetIndex, pickTargetIndexByBlock,
+  planBlockRender, resolveAnchorIndex, splitWikiLinks, wikiTargetCandidates,
   type BlockLike,
 } from './knowledgeBlocks.ts'
 
@@ -195,4 +195,79 @@ test('wikiTargetCandidates：与内核 resolveLinkTarget 同序的候选表', ()
   // `./` 前缀剔除；根级文档没有目录前缀
   assert.deepEqual(wikiTargetCandidates('./笔记', 'top.md'), ['笔记', '笔记.md'])
   assert.deepEqual(wikiTargetCandidates('', 'a.md'), [])
+})
+
+// ── 2026-09-14 批次 2：引用体系（锚点 / 嵌入 / 同文档锚点 / 锚点归一）──────────
+
+test('splitWikiLinks：`![[嵌入]]` 与 `[[引用]]` 必须可区分，且锚点/别名拆分顺序正确', () => {
+  const [embed] = splitWikiLinks('![[snippet]]')
+  assert.equal(embed.embed, true, '`![[x]]` 是嵌入')
+
+  const [quote] = splitWikiLinks('[[snippet]]')
+  assert.equal(quote.embed, false, '`[[x]]` 是引用')
+
+  const [anchored] = splitWikiLinks('[[guide#安装步骤]]')
+  assert.equal(anchored.target, 'guide')
+  assert.equal(anchored.anchorRef, '安装步骤')
+  assert.equal(anchored.anchorKind, 'heading')
+  assert.equal(anchored.label, '安装步骤', '无别名时显示锚点文本（Obsidian 口径）')
+
+  // 拆分顺序：先 `|` 分别名，再在目标段拆 `#锚点`。反过来会把锚点吃进别名。
+  const [both] = splitWikiLinks('[[guide#安装步骤|看这里]]')
+  assert.equal(both.target, 'guide')
+  assert.equal(both.anchorRef, '安装步骤')
+  assert.equal(both.label, '看这里')
+
+  // 块锚点：`^` 是语法标记，不属于 ID
+  const [blockRef] = splitWikiLinks('[[guide#^abc123]]')
+  assert.equal(blockRef.anchorRef, 'abc123')
+  assert.equal(blockRef.anchorKind, 'block')
+
+  // 同文档锚点：目标是空串，但**不能**按"空目标"丢弃（旧实现在这里把整条引用丢了）
+  const [selfRef] = splitWikiLinks('[[#本地小节]]')
+  assert.equal(selfRef.self, true)
+  assert.equal(selfRef.target, '')
+  assert.equal(selfRef.anchorRef, '本地小节')
+  assert.equal(selfRef.label, '本地小节')
+
+  // 嵌入 + 锚点 + 别名同时出现
+  const [full] = splitWikiLinks('![[guide#^b1|别名]]')
+  assert.equal(full.embed, true)
+  assert.equal(full.anchorKind, 'block')
+  assert.equal(full.label, '别名')
+})
+
+test('splitWikiLinks：空目标仍被拒绝（`[[ ]]` / `[[|x]]`），避免渲染不可点控件', () => {
+  assert.deepEqual(splitWikiLinks('[[]]').map(c => c.type), ['text'])
+  assert.deepEqual(splitWikiLinks('[[|只有别名]]').map(c => c.type), ['text'])
+  // `#` 后为空（`[[a#]]`）→ 合法引用，只是没有锚点
+  const [bare] = splitWikiLinks('[[a#]]')
+  assert.equal(bare.target, 'a')
+  assert.equal(bare.anchorRef, '')
+})
+
+test('normalizeAnchorText：大小写 / 空白 / `-` / 前导 `#` 等价（锚点匹配的前提）', () => {
+  assert.equal(normalizeAnchorText('安装步骤'), '安装步骤')
+  assert.equal(normalizeAnchorText('  安装 步骤 '), '安装 步骤')
+  assert.equal(normalizeAnchorText('安装 - 步骤'), '安装-步骤')
+  assert.equal(normalizeAnchorText('安装-步骤'), '安装-步骤')
+  assert.equal(normalizeAnchorText('## 安装步骤'), '安装步骤')
+  assert.equal(normalizeAnchorText('API Reference'), normalizeAnchorText('api reference'))
+})
+
+test('resolveAnchorIndex：标题锚点（含归一化匹配）/ 块 ID / 解析不到返回 null', () => {
+  const blocks = [
+    { kind: 'heading', level: 1, text: '指南', line: 1 },
+    { kind: 'para', text: '正文', line: 3 },
+    { kind: 'heading', level: 2, text: '安装步骤', line: 5 },
+    { kind: 'para', text: '第一步。', line: 7 },
+    { kind: 'para', text: '这段有块 ID ^abc123', line: 9 },
+  ] as BlockLike[]
+  assert.equal(resolveAnchorIndex(blocks, '安装步骤'), 2)
+  assert.equal(resolveAnchorIndex(blocks, '## 安装步骤'), 2, '前导 # 要容忍')
+  assert.equal(resolveAnchorIndex(blocks, '安装步骤'), 2)
+  assert.equal(resolveAnchorIndex(blocks, '不存在的节'), null, '解析不到必须返回 null（不要悄悄跳文档开头）')
+  assert.equal(resolveAnchorIndex(blocks, 'abc123', 'block'), 4)
+  assert.equal(resolveAnchorIndex(blocks, 'abc', 'block'), null, '块 ID 不匹配前缀（^abc ≠ ^abc123）')
+  assert.equal(resolveAnchorIndex(blocks, ''), null)
 })

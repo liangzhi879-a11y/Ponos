@@ -40,7 +40,21 @@ export function SessionModeBar({ conversationId }: Props) {
         {t(isChat ? 'sessionMode.chat' : 'sessionMode.task')}
       </span>
       {/* 右：思考深度热切选择器（Task 13；conversationId 兜底交给 sendEffort） */}
-      <EffortPicker conversationId={conversationId} />
+      <div className="flex items-center gap-2 min-w-0">
+        {/* 会话知识库徽标（2026-09-15，P1）：**仅在已关联时渲染**——未关联是绝大多数会话的
+            常态，常驻一个"知识库 0"只会白占版面（这一行还同时挤着模式徽标与 effort 选择器）。
+            title 里列出库名而非另开 popover：要回答的问题是"这个会话能用哪些库"（只读信息），
+            为此引入一个受控浮层不划算。库名清单来自会话字段，与传给内核的**同一份**数据。 */}
+        {(conversation.knowledgeSpaces?.length ?? 0) > 0 && (
+          <span
+            className="inline-flex items-center rounded-full px-2 h-[18px] text-[11px] leading-none border bg-elevated text-secondary border-subtle max-w-[200px] truncate"
+            title={`${t('knowledge.sessionChipTitle')}：${(conversation.knowledgeSpaces ?? []).join('、')}`}
+          >
+            {t('knowledge.sessionChip', { count: conversation.knowledgeSpaces!.length })}
+          </span>
+        )}
+        <EffortPicker conversationId={conversationId} />
+      </div>
     </div>
   )
 }

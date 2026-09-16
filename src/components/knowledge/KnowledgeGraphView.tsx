@@ -26,7 +26,7 @@
 import { useMemo, useState } from 'react'
 import { ReactFlow, Background, Controls, type Edge, type Node } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { Layers } from 'lucide-react'
+import { Focus, Layers } from 'lucide-react'
 import { useEntryGraph, useGraph, useGraphRelated } from '@/hooks/useKnowledge'
 import { useKnowledgeStore } from '@/stores/knowledgeStore'
 import { useTranslation } from '@/i18n/useTranslation'
@@ -58,9 +58,20 @@ export function KnowledgeGraphView() {
   const [level, setLevel] = useState<'doc' | 'entry'>('doc')
   const isEntry = level === 'entry'
 
+  // 局部图（Local graph，2026-09-14 批次 2）：只画**当前文档 N 跳内**的双向邻域。
+  // 为什么必须有：全局图在文档多起来之后是毛线球（几百个节点彼此连线，看不出结构），
+  // 只能当装饰看；局部图才是能读的结构视图（Obsidian 的核心图谱用法）。
+  // 缺省**关闭**：与旧行为逐字一致（不改变默认视野），用户主动开。
+  const docId = useKnowledgeStore(s => s.docId)
+  const [local, setLocal] = useState(false)
+  const [hops, setHops] = useState(1)
+  // 局部图必须要有中心文档：没打开文档时开关不可用（不做"点了没反应"的假按钮）
+  const localEnabled = local && !!docId && !isEntry
+
   // `limit` 不传 = 后端默认 200（kernel/knowledge.mjs:596）；前端**不许**再压小，
   // 压小会让"图谱缺了一大块"看起来像索引坏了。
-  const { data, loading, error } = useGraph(allSpaces ? null : spaceId)
+  const localParam = localEnabled ? { around: docId as string, hops } : null
+  const { data, loading, error } = useGraph(allSpaces ? null : spaceId, undefined, localParam)
   // 图层关着时 enabled=false → hook 的 key 为 null，一个请求都不发（默认路径与 S2 完全一致）
   const { data: relatedEdges, loading: relatedLoading } = useGraphRelated(
     allSpaces ? null : spaceId, undefined, showRelated,
@@ -263,6 +274,49 @@ export function KnowledgeGraphView() {
           </>
         )}
         <span className="flex-1 min-w-0" />
+        {/* 局部图开关 + 深度（2026-09-14 批次 2）。只在**文档级**出现（条目级没有"文档邻域"的概念）。
+            没有当前文档时置灰并说明原因 —— "点了没反应"比"不可点"更让人困惑。 */}
+        {!isEntry && (
+          <>
+            <button
+              type="button"
+              onClick={() => docId && setLocal(v => !v)}
+              aria-pressed={localEnabled}
+              disabled={!docId}
+              title={docId ? t('knowledge.graphLocalTooltip') : t('knowledge.graphLocalHint')}
+              className={cn(
+                'shrink-0 flex items-center gap-1 clip-sm border px-1.5 py-0.5 text-[10px] transition-colors',
+                !docId && 'opacity-50 cursor-not-allowed',
+                localEnabled
+                  ? 'border-strong bg-accent-subtle text-primary'
+                  : 'border-default text-secondary hover:text-primary',
+              )}
+            >
+              <Focus className="w-3 h-3" />
+              {t('knowledge.graphLocal')}
+            </button>
+            {/* 跳数选择只在局部图打开时出现：常态下它没有意义（全局图没有"几跳"） */}
+            {localEnabled && (
+              <div className="shrink-0 flex items-center clip-sm border border-default" role="group" aria-label={t('knowledge.graphLocal')}>
+                {([1, 2, 3] as const).map(h => (
+                  <button
+                    key={h}
+                    type="button"
+                    onClick={() => setHops(h)}
+                    aria-pressed={hops === h}
+                    title={t('knowledge.graphLocalHint')}
+                    className={cn(
+                      'px-1.5 py-0.5 text-[10px] transition-colors',
+                      hops === h ? 'bg-accent-subtle text-primary' : 'text-secondary hover:text-primary',
+                    )}
+                  >
+                    {t('knowledge.graphHops', { n: h })}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
         {/* 关联图层开关只在**文档级**有意义：条目级的边本身就是关联，没有"图层"可叠（spec s51 §5.1） */}
         {!isEntry && (
           <button

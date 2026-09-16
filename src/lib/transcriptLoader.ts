@@ -65,6 +65,45 @@ export async function fetchTranscript(
   }
 }
 
+/**
+ * 删除单个内核会话的磁盘转录（bridge /transcript/delete）。
+ *
+ * 仅供「用户删除会话」这一动作使用：sessionId 必须是**内核 sessionId**
+ * （conversation.sessionId），GUI 的 conversation.id 是另一套 id——传错只会 not-found，
+ * 所以调用方（chatStore.deleteConversation）必须先判空再调。
+ *
+ * 与 fetchTranscript 同款：不抛异常，失败以返回值上报（调用方 fire-and-forget，
+ * 删除失败绝不影响本地会话删除）。
+ */
+export interface DeleteTranscriptResult {
+  ok: boolean
+  /** 真正删掉了文件为 true；not-found（幂等）为 false */
+  deleted: boolean
+  error?: string
+}
+
+export async function deleteTranscriptRemote(
+  sessionId: string,
+  cwd: string,
+  opts: { baseUrl?: string } = {}
+): Promise<DeleteTranscriptResult> {
+  const base = opts.baseUrl || getBridgeUrl()
+  try {
+    const res = await fetch(`${base}/transcript/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, cwd }),
+    })
+    const data = await res.json().catch(() => null)
+    if (!res.ok) {
+      return { ok: false, deleted: false, error: data?.error || `HTTP ${res.status}` }
+    }
+    return { ok: true, deleted: data?.deleted === true }
+  } catch (e: any) {
+    return { ok: false, deleted: false, error: e?.message || 'fetch failed' }
+  }
+}
+
 /** loadConversationMessages 的参数（与 GUI Conversation 相关字段兼容，避免强依赖）。 */
 export interface LoadConversationInput {
   sessionIds?: string[]

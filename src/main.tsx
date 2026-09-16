@@ -6,6 +6,7 @@ import App from './App'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { THEME_CLASS_NAMES, type ThemeMode } from '@/types'
 import { migrateThemeId } from './lib/themeMap'
+import { hydrateSecretsFromVault } from '@/stores/settingsStore'
 
 /* ------------------------------------------------------------
    Pre-mount: migrate old localStorage keys, then read the
@@ -31,13 +32,11 @@ const THEME_BG: Record<ThemeMode, string> = {
   'dark':         '#0b0e14',
   'light':        '#fdf9f5',
   'dark-glass':   '#11161f',   // 玻璃主题取面板基色兜底（首帧由 class 接管）
-  'light-glass':  '#fffdfb',
 }
 const THEME_FG: Record<ThemeMode, string> = {
   'dark':         '#f0e6d8',
   'light':        '#24272c',
   'dark-glass':   '#f0e6d8',
-  'light-glass':  '#24272c',
 }
 
 try {
@@ -72,3 +71,12 @@ root.render(
     </ErrorBoundary>
   </React.StrictMode>
 )
+
+// 密钥注水（2026-09-15）：模型 authToken 已从 localStorage 移入密码库（safeStorage 加密），
+// 故每个渲染进程启动后都要把密钥从库注入设置状态——否则界面看到的是"没配密钥"。
+// 放在这里而不是各窗口组件内：main.tsx 是所有窗口（主窗/设置窗/个人信息窗…）的唯一入口，
+// 一处覆盖全部；且必须在首帧渲染之后（不阻塞启动，失败也只是本次显示为未配置，
+// 下一次启动会重试迁移）。失败仅记录，不弹窗打断用户。
+void hydrateSecretsFromVault().then(r => {
+  if (!r.ok) console.warn('[vault] 密钥注水未完成：', r.error)
+})

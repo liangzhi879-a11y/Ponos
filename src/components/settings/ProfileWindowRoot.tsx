@@ -3,15 +3,20 @@
 // 未初始化时直接设置）、认证状态展示。档案经 bridge /api/profile 落盘
 // <YFW_HOME>/userData/profile.json；密码经 /api/auth/change-password 改盐重哈希。
 import { useEffect, useRef, useState } from 'react'
-import { User, Lock, Camera, CheckCircle2, AlertTriangle, X } from 'lucide-react'
+import { User, Lock, Camera, CheckCircle2, AlertTriangle, X, KeyRound } from 'lucide-react'
 import { TooltipProvider, Button, Input, Textarea } from '@/components/ui'
 import { getBridgeUrl } from '@/lib/config'
 import { UtilityWindowShell } from './UtilityWindowShell'
+import { VaultPanel } from '@/components/vault/VaultPanel'
 
 interface ProfileData { nickname: string; avatar: string; bio: string }
 interface AuthStatusData { phase: 'uninitialized' | 'ok' | 'locked'; lockedForMs?: number }
 
 export function ProfileWindowRoot() {
+  // 顶层标签：个人信息（账号本身）/ 密码库（用户在各站点·应用的账号密码，2026-09-15 新增）
+  // 放在同一个窗口而不是另开一窗：两者都是"我的"数据，且密码库需要一个长列表的稳定容器，
+  // 复用已有工具窗的尺寸/主题/外壳，少一套窗口生命周期要维护。
+  const [tab, setTab] = useState<'profile' | 'vault'>('profile')
   const [profile, setProfile] = useState<ProfileData>({ nickname: '', avatar: '', bio: '' })
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState('')
@@ -76,6 +81,26 @@ export function ProfileWindowRoot() {
   return (
     <TooltipProvider>
       <UtilityWindowShell>
+        {/* 标签切换（密码库面板自带页头，故此处只在个人信息态显示页头） */}
+        <div className="px-6 pt-3 flex items-center gap-1 border-b shrink-0">
+          {([['profile', '个人信息', User], ['vault', '密码库', KeyRound]] as const).map(([id, label, Icon]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setTab(id)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 -mb-px text-sm rounded-t transition-colors border-b-2 ${
+                tab === id
+                  ? 'text-primary border-brand-500 font-medium'
+                  : 'text-tertiary border-transparent hover:text-secondary'
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              {label}
+            </button>
+          ))}
+        </div>
+        {tab === 'vault' && <VaultPanel />}
+        {tab === 'profile' && (
         <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
           {/* 页头 */}
           <div className="px-6 py-4 border-b flex items-center gap-2">
@@ -170,6 +195,7 @@ export function ProfileWindowRoot() {
             </div>
           </div>
         </div>
+        )}
       </UtilityWindowShell>
     </TooltipProvider>
   )

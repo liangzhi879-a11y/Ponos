@@ -35,7 +35,18 @@ export interface KnowledgeEditorViewProps {
   spaceRoot: string
 }
 
-type SaveState = { kind: 'idle' } | { kind: 'saving' } | { kind: 'saved' } | { kind: 'failed'; error: string }
+type SaveState =
+  | { kind: 'idle' }
+  | { kind: 'saving' }
+  | { kind: 'saved' }
+  | { kind: 'failed'; error: string }
+  /**
+   * 409 冲突（2026-09-14 批次 4）：磁盘上的文件在你加载它之后被外部程序改过。
+   * 这是**独立状态**而不是 failed —— 它不是错误，是"需要用户二选一"：
+   * 载入外部版本（丢弃本地编辑）或覆盖（服务端先备份外部版本）。
+   * 混进 failed 只会显示一行红字，用户根本不知道还有"覆盖"这个出口。
+   */
+  | { kind: 'conflict'; info: { mtime: number | null; size: number | null } | null }
 
 export function KnowledgeEditorView({ doc, spaceId, spaceRoot }: KnowledgeEditorViewProps) {
   const { t } = useTranslation()
@@ -72,17 +83,40 @@ export function KnowledgeEditorView({ doc, spaceId, spaceRoot }: KnowledgeEditor
     setSaveState(s => (s.kind === 'saved' ? { kind: 'idle' } : s))
   }, [])
 
-  const doSave = useCallback(() => {
+  const doSave = useCallback((force = false) => {
     if (loading || !dirty) return          // 无改动不发请求：POST 会触发落盘 + 增量索引，白白重建
     const seq = ++seqRef.current
     setSaveState({ kind: 'saving' })
     void (async () => {
-      const r = await saveDoc({ space: spaceId, path: doc.rel, content })
+      // `mtime: doc.mtime`（2026-09-14 批次 4）：带上传给服务端做**覆盖前置校验**。
+      // 知识空间目录是共享的 —— Obsidian/VSCode 会直接改同一批 md。带 mtime 后，服务端发现
+      // "加载之后这文件被外部改过"就拒绝写入（409），而不是让外部那笔改动无声消失。
+      // 只有用户明确选择"以我这份为准"（force=true）才允许覆盖，且服务端会先把外部版本备份进回收站。
+      const r = await saveDoc({ space: spaceId, path: doc.rel, content, mtime: doc.mtime, force })
       if (seq !== seqRef.current) return   // 已有更新的保存发起 → 本次结果作废
       if (r.ok) { setOriginal(content); setSaveState({ kind: 'saved' }) }
+      // 409 冲突不是"保存失败"，是"需要你决定"：单独一种状态，UI 给出两个出口
+      // （载入外部版本 / 覆盖并备份）。混在 failed 里只会显示一行红字，用户不知道还能怎么办。
+      else if (r.status === 409) setSaveState({ kind: 'conflict', info: r.conflict ?? null })
       else setSaveState({ kind: 'failed', error: r.error })
     })()
-  }, [loading, dirty, spaceId, doc.rel, content])
+  }, [loading, dirty, spaceId, doc.rel, doc.mtime, content])
+
+  /**
+   * 冲突时「载入外部版本」：重新读磁盘原文，**丢弃本地编辑**。
+   * 之所以要二次确认（由调用处的按钮文案承担：按钮就叫"载入外部版本"，不做静默替换）——
+   * 这一步会把用户刚写的内容丢掉，而用户可能只是想看看外部改了什么。
+   */
+  const reloadExternal = useCallback(() => {
+    setSaveState({ kind: 'idle' })
+    setLoading(true)
+    void (async () => {
+      const r = await readRawDoc(spaceRoot, doc.rel)
+      if (r.ok) { setContent(r.data); setOriginal(r.data); setLoadError(undefined) }
+      else setLoadError(r.error)
+      setLoading(false)
+    })()
+  }, [spaceRoot, doc.rel])
 
   // FileTab 是 CodeEditor 的入参形状（types/index.ts:373-381）；markdown 模式 = language: 'markdown'
   const file: FileTab = useMemo(() => ({
@@ -100,13 +134,31 @@ export function KnowledgeEditorView({ doc, spaceId, spaceRoot }: KnowledgeEditor
       <div className="h-8 shrink-0 flex items-center gap-2 px-3 border-b border-default">
         <span className="text-[11px] text-primary truncate">{file.name}</span>
         <span className="flex-1 min-w-0" />
+        {/* 冲突态（2026-09-14 批次 4）：给两个明确出口 + 磁盘版本的大小/时间。
+            只显示"冲突了"等于把问题丢回给用户 —— 他需要知道外部版本是什么、该选哪个。 */}
+        {saveState.kind === 'conflict' ? (
+          <>
+            <span className="text-[10px] text-warning truncate" title={t('knowledge.writeConflict')}>
+              {t('knowledge.writeConflict')}
+            </span>
+            {saveState.info?.size != null && (
+              <span className="micro shrink-0">{(saveState.info.size / 1024).toFixed(1)} KB</span>
+            )}
+            <Button variant="ghost" size="xs" onClick={reloadExternal} title={t('knowledge.writeConflictReload')}>
+              {t('knowledge.writeConflictReload')}
+            </Button>
+            <Button variant="primary" size="xs" onClick={() => doSave(true)} title={t('knowledge.writeConflictOverwrite')}>
+              {t('knowledge.writeConflictOverwrite')}
+            </Button>
+          </>
+        ) : null}
         {saveState.kind === 'failed' ? (
           <span className="text-[10px] text-error truncate max-w-[45%]" title={saveState.error}>
             {t('knowledge.saveFailed', { msg: saveState.error })}
           </span>
         ) : saveState.kind === 'saving' ? (
           <span className="micro shrink-0">{t('knowledge.saving')}</span>
-        ) : dirty ? (
+        ) : saveState.kind === 'conflict' ? null : dirty ? (
           <span className="micro shrink-0">{t('knowledge.unsaved')}</span>
         ) : saveState.kind === 'saved' ? (
           <span className="micro shrink-0">{t('knowledge.saved')}</span>
@@ -115,7 +167,10 @@ export function KnowledgeEditorView({ doc, spaceId, spaceRoot }: KnowledgeEditor
           variant="primary"
           size="xs"
           disabled={!dirty || saveState.kind === 'saving'}
-          onClick={doSave}
+          // 显式包一层：`onClick={doSave}` 会把 MouseEvent 当成 `force` 参数传进去
+          // （`force = event` → 真值 → **任何一次普通保存都变成强制覆盖**）。这个坑很隐蔽：
+          // 类型上 TS 会报错拦住，但如果哪天 doSave 的签名改成单参数就再也拦不住了。
+          onClick={() => doSave()}
           title={t('knowledge.saveHint')}
         >
           {t('knowledge.save')}

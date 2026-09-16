@@ -1,4 +1,4 @@
-// src/components/auth/PasswordField.tsx —— 登录/首设口令共用的受控口令输入框
+// src/components/auth/PasswordField.tsx —— 登录/首设密码共用的受控密码输入框
 // 设计语言（2026-09-10）：输入框 = .cut.focusable 切角细线框（聚焦热边）+ .ci 内层；
 // 错误态 = .cut.err 红线。不用共享 Input 组件（其自带 border/rounded 会与切角框双线重叠），
 // 直接渲染原生 input。可见性切换（Eye/EyeOff）+ 错误红框 + 抖动（animate-shake，0.3s）：

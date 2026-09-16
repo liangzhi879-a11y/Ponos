@@ -4,7 +4,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
   Button, ScrollArea, Switch,
 } from '@/components/ui'
-import { useSettingsStore } from '@/stores/settingsStore'
+import { deleteProviderSecret, useSettingsStore } from '@/stores/settingsStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useYFWCLI, sendEffort } from '@/hooks/useYFWCLI'
 import { useTranslation } from '@/i18n/useTranslation'
@@ -141,8 +141,8 @@ export function SettingsView() {
                         </select>
                       </SettingRow>
 
-                      {/* Glass 磨砂玻璃设置 —— 仅 dark-glass / light-glass 主题显示 */}
-                      {(settings.theme === 'dark-glass' || settings.theme === 'light-glass') && (
+                      {/* Glass 磨砂玻璃设置 —— 仅 dark-glass 主题显示 */}
+                      {settings.theme === 'dark-glass' && (
                         <>
                           <div>
                             <label className="flex items-center justify-between py-1">
@@ -474,6 +474,9 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
           ? (settings.providers.find(p => p.id !== providerId)?.id || 'deepseek')
           : settings.activeProvider,
       })
+      // 同时清掉该供应商存在密码库里的密钥（删除是破坏性动作，显式做；
+      // 否则库里会留下一条永远用不到的凭证）
+      await deleteProviderSecret(providerId)
     }
   }
 

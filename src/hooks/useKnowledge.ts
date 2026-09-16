@@ -15,7 +15,7 @@
 // 不失效 tree 就是"导进去了但树里看不见"，用户会以为失败再导一遍。
 import { useCallback, useEffect, useReducer, useRef } from 'react'
 import {
-  getDoc, getEntryGraph, getGraph, getGraphRelated, getImportJob, getLinks, getRelatedDoc, getStats, importKnowledge,
+  getBrokenLinks, getDoc, getEntryGraph, getGraph, getGraphRelated, getImportJob, getLinks, getMentions, getRelatedDoc, getStats, importKnowledge,
   listEntries, listSpaces, listTree, search, startImportJob, writeDoc,
   // 索引标签枚举（2026-09-14 批次 1）：标签视图的数据源。注意它与下面的 `/knowledge/tags`
   // （S6 经验库条目级，本模块未包装）不是一回事。
@@ -29,7 +29,7 @@ import {
   type ApiResult, type KnowledgeCallOpts, type KnowledgeDeleteResult, type KnowledgeDoc, type KnowledgeEntry,
   type KnowledgeGraph, type KnowledgeGraphRelatedEdge, type KnowledgeImportPayload,
   type KnowledgeImportReport, type KnowledgeLinks, type KnowledgeTrashList,
-  type KnowledgeIndexTags,
+  type KnowledgeIndexTags, type KnowledgeMentions, type KnowledgeBrokenLink,
   type KnowledgeRelatedBlock, type KnowledgeSearchParams, type KnowledgeSearchResult,
   type KnowledgeSpace, type KnowledgeStats, type KnowledgeTreeEntry, type KnowledgeWriteInput,
 } from '@/lib/knowledgeApi'
@@ -44,7 +44,13 @@ export const knowledgeKeys = {
   doc: (id: string) => `doc:${id}`,
   entries: (id: string) => `entries:${id}`,
   search: (p: KnowledgeSearchParams) => `search:${[p.q, csv(p.keywords), p.topK ?? '', p.mode ?? '', csv(p.spaces)].join('|')}`,
-  graph: (space: string | null, limit?: number) => `graph:${space ?? '*'}|${limit ?? ''}`,
+  /**
+   * 文档级图谱。`around`/`hops` 是**局部图**参数（批次 2）：只有它们也进键，
+   * "同一空间 + 不同中心/深度"才不会共用同一份缓存。
+   * 前缀 `graph:` 与 `graphEntry:` 严格分开（否则两个层级的图互相串缓存，见下一条）。
+   */
+  graph: (space: string | null, limit?: number, around?: string | null, hops?: number | null) =>
+    `graph:${space ?? '*'}|${limit ?? ''}|${around ?? ''}|${hops ?? ''}`,
   /** 条目级图谱（S5.1 层级开关）。键前缀独立，否则与文档级图互相串缓存 */
   graphEntry: (space: string | null, limit?: number) => `graphEntry:${space ?? '*'}|${limit ?? ''}`,
   /** 出边 + 反链（右栏 Inspector，Task 9）；键按文档 id，故前缀失效用 `links:` */
@@ -60,6 +66,10 @@ export const knowledgeKeys = {
    * （前端只有当前空间的数据，跨空间同名标签的计数它算不出来），所以不同白名单是不同查询。
    */
   indexTags: (spaces?: string[]) => `indexTags:${csv(spaces) || '*'}`,
+  /** 未链接提及（批次 2）：按文档 + limit（内核是"扫到就停"，limit 参与缓存键） */
+  mentions: (docId: string, limit: number) => `mentions:${docId}:${limit}`,
+  /** 断链清单（批次 2）：按空间（null = 全部空间） */
+  brokenLinks: (space: string | null, limit: number) => `brokenLinks:${space ?? '*'}:${limit}`,
 }
 
 interface Resource { data?: unknown; loading: boolean; error?: string }
@@ -192,9 +202,18 @@ export function useSearch(params: KnowledgeSearchParams): KnowledgeResource<Know
   return useResource<KnowledgeSearchResult>(key, () => search(params))
 }
 
-export function useGraph(space: string | null = null, limit?: number): KnowledgeResource<KnowledgeGraph> {
-  const key = knowledgeKeys.graph(space, limit)
-  return useResource<KnowledgeGraph>(key, () => getGraph(space ?? undefined, limit))
+export function useGraph(
+  space: string | null = null,
+  limit?: number,
+  local?: { around: string; hops: number } | null,
+): KnowledgeResource<KnowledgeGraph> {
+  // 局部图（2026-09-14 批次 2）：`around`/`hops` 进缓存键 —— 不同中心/深度是**不同查询**，
+  // 不区分会让"切了中心却看到上一个中心的图"（缓存命中返回旧数据，看起来像没生效）。
+  const key = knowledgeKeys.graph(space, limit, local?.around ?? null, local?.hops ?? null)
+  return useResource<KnowledgeGraph>(
+    key,
+    () => getGraph(space ?? undefined, limit, local ? { around: local.around, hops: local.hops } : undefined),
+  )
 }
 
 /**
@@ -237,6 +256,23 @@ export function useRelatedDoc(id: string | null): KnowledgeResource<KnowledgeRel
 export function useGraphRelated(space: string | null, limit?: number, enabled = false): KnowledgeResource<KnowledgeGraphRelatedEdge[]> {
   const key = enabled ? knowledgeKeys.graphRelated(space, limit) : null
   return useResource<KnowledgeGraphRelatedEdge[]>(key, () => getGraphRelated(space ?? undefined, limit))
+}
+
+/**
+ * 未链接提及（2026-09-14 批次 2）：全库里"提到这篇文档但没打链接"的位置。
+ * `limit` 进缓存键：内核是**扫到就停**的护栏（不是扫完再截断），故不同 limit 是不同查询。
+ */
+export function useMentions(docId: string | null, limit = 20): KnowledgeResource<KnowledgeMentions> {
+  const key = docId ? knowledgeKeys.mentions(docId, limit) : null
+  return useResource<KnowledgeMentions>(key, () => getMentions(docId as string, limit))
+}
+
+/**
+ * 断链清单（2026-09-14 批次 2）。**全局口**（`space` 为 null = 全部空间）：
+ * 断链是"待办"，用户关心的是"我的库里有多少坏链接"，而不是"当前空间里有多少"。
+ */
+export function useBrokenLinks(space?: string | null, limit = 200): KnowledgeResource<{ items: KnowledgeBrokenLink[]; total: number; broken: number }> {
+  return useResource(knowledgeKeys.brokenLinks(space ?? null, limit), () => getBrokenLinks(space ?? null, limit))
 }
 
 export function useStats(): KnowledgeResource<KnowledgeStats> {
@@ -287,6 +323,14 @@ export async function saveDoc(
   // 标签视图的计数必须跟着变。前缀失效（`indexTags:`）是必要的：标签视图可能同时挂着
   // 「全库」与「当前空间」两个白名单的缓存，只失效其中一个会让两个视图的计数对不上。
   invalidateKnowledge('indexTags:')
+  // 正文里的 `[[链接]]` 变了 → **引用派生视图**也必须失效（2026-09-14 批次 4 补）。
+  // 批次 2 新增了两个派生通道却没回头补失效清单：mentions（未链接提及）与 brokenLinks（断链）。
+  // 症状很隐蔽 —— 保存完切到右栏，看到的还是保存前那份"提到但没连"的清单，
+  // 用户会以为链接没生效（实际上索引已经更新，只是前端抱着旧缓存）。
+  // 教训：**凡是新增派生视图，就必须回头把写路径的失效清单补齐**；否则就是一个只在
+  // "新增视图 + 旧的写入口"交叉处才出现的静默不一致。
+  invalidateKnowledge('mentions:')
+  invalidateKnowledge('brokenLinks:')
   return r
 }
 
@@ -336,6 +380,10 @@ function invalidateAfterImport(data: KnowledgeImportReport): void {
   invalidateKnowledge(knowledgeKeys.stats)
   // 导入会一次带进大量标签（尤其从 Obsidian vault 导入，2026-09-14 批次 1）→ 标签视图重取
   invalidateKnowledge('indexTags:')
+  // 同理：导入带进的是**整批文档的引用关系**（批次 2 的未链接提及/断链、批次 4 补失效）。
+  // 从 vault 导入时这一点尤其明显：几百篇文档之间的链接一次性出现，"提到但没连"的清单会大改。
+  invalidateKnowledge('mentions:')
+  invalidateKnowledge('brokenLinks:')
 }
 
 /** 轮询间隔（毫秒）。500ms 对"几千文件跑几分钟"的任务足够跟手，又不至于把桥刷爆。 */

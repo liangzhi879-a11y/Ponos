@@ -21,7 +21,7 @@ import { useKnowledgeStore } from '@/stores/knowledgeStore'
 import { useTranslation } from '@/i18n/useTranslation'
 import { Input } from '@/components/ui'
 import { cn } from '@/lib/utils'
-import type { KnowledgeSearchItem, KnowledgeSearchParams } from '@/lib/knowledgeApi'
+import type { KnowledgeSearchItem, KnowledgeSearchParams, KnowledgeSearchResult } from '@/lib/knowledgeApi'
 import {
   KB_FOCUS_SEARCH_EVENT, maxScore, parseKeywords, searchTerms, sortHits, splitHighlight, strengthLevel,
   type SearchSort,
@@ -29,6 +29,66 @@ import {
 import { KnowledgeEmpty } from './KnowledgeEmpty'
 import { KnowledgeSkeleton } from './KnowledgeSkeleton'
 import { KnowledgeScopeToggle } from './KnowledgeScopeToggle'
+// 检索语法层的前端镜像（批次 3）：**只用于输入过程中的提示**；结果回显一律以内核回传为准
+import { describeQuery } from '@/lib/knowledgeQuery'
+
+/**
+ * 把内核回带的 `query` 元信息渲染成"已生效算子"标签（批次 3）。
+ *
+ * 只用**内核**回带的字段（不用本地 `describeQuery` 的结果）：显示"生效的算子"必须以实际
+ * 执行为准。两份实现一旦漂移，用户会看到"UI 说生效了、结果却没按它过滤"—— 那是最难排查的
+ * 一类不一致（既不报错，也不稳定复现）。本地解析留给"输入过程中的提示"。
+ *
+ * 渲染规则：过滤条件带值（`tag:财务`）；纯文本项只报数量（把每个词都列出来会挤满一行，
+ * 且用户刚打完那个词，不需要再被告知一遍）。否定项前置 `-`。
+ */
+function activeQueryChips(q: NonNullable<KnowledgeSearchResult['query']>): string[] {
+  const out: string[] = []
+  for (const f of q.filters ?? []) out.push(`${f.negate ? '-' : ''}${f.field}:${f.value}`)
+  for (const r of q.regexes ?? []) out.push(`${r.negate ? '-' : ''}/${r.value}/`)
+  const textCount = (q.terms?.length ?? 0) + (q.phrases?.length ?? 0)
+  if (textCount > 0) out.push('⌕×' + String(textCount))
+  if (q.or) out.push('OR')
+  return out
+}
+
+/**
+ * 输入过程中的算子提示行（批次 3）。
+ *
+ * 只在用户**已经用上算子**或查询串看起来"没有可搜索的文本"时显示 —— 空查询、或一句普通
+ * 关键词搜索时不出现（那两个状态下提示只是噪音，还会把结果区往下挤）。
+ *
+ * 特别处理 `noPositiveText`：只写 `tag:x` 或只写 `-foo` 时用户不知道会得到什么结果。
+ * 前者走"按标签枚举文档"，后者按语义**必然为空** —— 提前一句话说清，好过让他对着空列表猜。
+ */
+/** 算子字段 → i18n key。**显式映射**而不是动态拼 key：拼错了 tsc 抓不到，
+ *  运行时只会静默回退成把 key 本身显示给用户（ 这种字样出现在界面上）。 */
+const FIELD_DESC_KEY: Record<string, string> = {
+  tag: 'knowledge.qfTag',
+  path: 'knowledge.qfPath',
+  file: 'knowledge.qfFile',
+  section: 'knowledge.qfSection',
+  content: 'knowledge.qfContent',
+  block: 'knowledge.qfBlock',
+}
+
+function QueryHintRow({ raw }: { raw: string }) {
+  const { t } = useTranslation()
+  const d = describeQuery(raw)
+  if (d.fields.length === 0 && !d.hasOr && !d.noPositiveText) return null
+  return (
+    <div className="flex items-center gap-1 flex-wrap pt-1 text-[10px] text-tertiary">
+      {d.fields.map(f => (
+        <span key={f} className="px-1.5 h-4 inline-flex items-center clip-sm bg-elevated text-secondary">
+          {f}: {t(FIELD_DESC_KEY[f] ?? 'knowledge.qfTag')}
+        </span>
+      ))}
+      {d.hasOr && <span className="text-secondary">OR</span>}
+      {d.negated && <span>{t('knowledge.queryNegatedHint')}</span>}
+      {d.noPositiveText && <span>{t('knowledge.queryNoTextHint')}</span>}
+    </div>
+  )
+}
 
 /** 键入到发请求的静默期（Task 7 指定 200ms） */
 const DEBOUNCE_MS = 200
@@ -135,6 +195,11 @@ export function KnowledgeSearchView() {
           // 覆盖 ui/input 的 h-9 与 rounded-md：本面板一律紧凑 + 切角
           className="h-7 clip-sm rounded-none text-[11px] pl-8"
         />
+        {/* 输入过程中的算子提示（批次 3）：只在**查询里还没有可用的内核结果**（或结果出错）时显示。
+            为什么要有：`tag:` / `path:` / `-` / `OR` 这些算子没有自动补全，用户不知道它们存在
+            就等于没做；而打错一个字符（如写成 `tags:` 之外的自造字段）会静默回落成文本搜索。
+            结果回来之后一律以内核回带的 `query` 元信息为准（见 activeQueryChips 的注释）。 */}
+        {q.trim() !== '' && <QueryHintRow raw={q} />}
         <Input
           value={kw}
           onChange={e => setKw(e.target.value)}
@@ -168,6 +233,14 @@ export function KnowledgeSearchView() {
             {t('knowledge.searchFull')}
           </button>
           <span className="flex-1 min-w-0" />
+          {/* 解析失败（批次 3）：必须显眼且**不能**退化成"0 条结果"。
+              用户写 `/[/` 时，静默当文本搜会给出语义完全不同的结果，当成 0 条则会被读成
+              "库里没有"——两种都让用户对着错误前提做判断。这里直接说出失败原因。 */}
+          {data?.queryError && (
+            <span className="text-[10px] text-error shrink-0 max-w-[60%] truncate" title={data.queryError}>
+              {t('knowledge.queryError')}
+            </span>
+          )}
           {/* 降级微标：向量路被跳过（查询 gram 全落空），结果只来自关键词路 */}
           {data?.degraded === true && (
             <span className="micro shrink-0" title={t('knowledge.degradedHint')}>{t('knowledge.indexDegraded')}</span>
@@ -181,6 +254,25 @@ export function KnowledgeSearchView() {
             </span>
           )}
         </div>
+        {/* 已生效算子回显（批次 3）：用**内核回带的** `query` 元信息，不用本地解析结果 ——
+            本地那份只用于输入提示；显示"生效的算子"必须以实际执行为准，否则两份实现漂移时
+            用户会看到"UI 说生效了、结果却没按它过滤"（最难排查的一类不一致）。
+            否定/严格模式额外标出来：结果变少时，这是用户唯一能看到的解释。 */}
+        {searching && data?.query && (activeQueryChips(data.query).length > 0 || data.query.strict) && (
+          <div className="flex items-center gap-1 flex-wrap pt-0.5">
+            {activeQueryChips(data.query).map(c => (
+              <span key={c} className="text-[10px] px-1.5 h-4 inline-flex items-center clip-sm bg-elevated text-secondary">
+                {c}
+              </span>
+            ))}
+            {data.query.strict && (
+              <span className="text-[10px] px-1.5 h-4 inline-flex items-center clip-sm bg-elevated text-secondary"
+                title={t('knowledge.queryStrictHint')}>
+                {t('knowledge.queryStrict')}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex-1 min-h-0 overflow-auto">

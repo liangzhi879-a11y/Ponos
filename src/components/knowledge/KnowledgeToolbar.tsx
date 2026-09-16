@@ -18,11 +18,18 @@ export interface KnowledgeToolbarProps {
   readonly?: boolean
   /** 统计数据（来自 useStats；未加载完传 undefined，不显示占位数字避免跳动） */
   stats?: { docs: number; blocks: number }
+  /**
+   * 有文档因文件数上限**没进索引**时的提示文案（2026-09-14 批次 4）。
+   * null/undefined = 无截断（不显示）。为什么要显眼地放在工具条上：截断的用户可见症状是
+   * "搜索搜不到明明存在的那篇文档"，而这在用户看来就是"搜索坏了"——
+   * 不告诉他上限这件事，他会一直怀疑功能有问题。
+   */
+  filesTruncatedHint?: string | null
   loading?: boolean
   onRefresh: () => void
 }
 
-export function KnowledgeToolbar({ spaceName, readonly = false, stats, loading = false, onRefresh }: KnowledgeToolbarProps) {
+export function KnowledgeToolbar({ spaceName, readonly = false, stats, filesTruncatedHint = null, loading = false, onRefresh }: KnowledgeToolbarProps) {
   const { t } = useTranslation()
   return (
     <div className="flex items-center gap-1.5 px-2 h-9 border-b border-default shrink-0 bg-app">
@@ -33,6 +40,15 @@ export function KnowledgeToolbar({ spaceName, readonly = false, stats, loading =
         {spaceName ?? t('knowledge.spaceNone')}
       </span>
       {readonly && <span className="micro shrink-0">{t('knowledge.readonly')}</span>}
+      {/* 文件数上限提示（批次 4）：用 error 色而非 tertiary —— 它是"你的库不完整"这种
+          需要用户采取行动的状态（拆分空间 / 调高上限），不是无害的元信息。 */}
+      {filesTruncatedHint && (
+        <Tooltip content={filesTruncatedHint} side="bottom">
+          <span className="text-[10px] text-error shrink-0 cursor-default max-w-[260px] truncate">
+            ⚠ {filesTruncatedHint}
+          </span>
+        </Tooltip>
+      )}
       {stats && (
         <span className="text-[10px] text-tertiary tabular-nums shrink-0">
           {stats.docs} {t('knowledge.statDocs')} · {stats.blocks} {t('knowledge.statBlocks')}

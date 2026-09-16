@@ -188,7 +188,7 @@ textarea::placeholder {
    结构：.health-meter（外框+轨道） > .health-meter-fill（档位渐变填充） > .health-meter-text（压缩次数覆盖文字）。
    扁平基线（普通主题）：无边框、无外阴影，仅低对比度轨道底色，主题令牌 var(--health-tier-{color}) 决定填充色，
    文字色 var(--health-meter-text) 也按主题设定（浅主题更亮、深主题暖白）。换主题即时生效。
-   玻璃态增强（仅 .theme-dark-glass / .theme-light-glass）：在 .health-meter 上加 .health-meter-glass 类，
+   玻璃态增强（仅 .theme-dark-glass）：在 .health-meter 上加 .health-meter-glass 类，
    自动启用 1px 边框 + 霓虹辉光 + 顶部光泽高光——更通透游戏 HP 风格。
    注意：不用 html:not([class*="-glass"]) 否定选择器——cssnano 压缩会破坏该选择器
    （产物成 `theme-glass]) .xxx` 非法片段整条丢弃）。 */
@@ -260,7 +260,7 @@ textarea::placeholder {
   50%, 100% { opacity: 0; }
 }
 
-/* 密码错误抖动（AuthScreen/SetupWizard 口令框）：水平抖三下后归位，
+/* 密码错误抖动（AuthScreen/SetupWizard 密码框）：水平抖三下后归位，
    配合红边框提示错误；speed-mode 与系统"减少动画"下自动停用。 */
 @keyframes shake {
   0%, 100% { transform: translateX(0); }
@@ -362,14 +362,12 @@ kbd {
 
 .theme-dark .accent-glow,
 .theme-light .accent-glow,
-.theme-dark-glass .accent-glow,
-.theme-light-glass .accent-glow {
+.theme-dark-glass .accent-glow {
   position: relative;
 }
 .theme-dark .accent-glow::after,
 .theme-light .accent-glow::after,
-.theme-dark-glass .accent-glow::after,
-.theme-light-glass .accent-glow::after {
+.theme-dark-glass .accent-glow::after {
   content: '';
   position: absolute;
   inset: -1px;
@@ -381,10 +379,15 @@ kbd {
 }
 
 /* ===== 会话条目背景进度条（里程碑协议） ===== */
+/* 右侧内缩到 8px（2026-09-15 修「进度条超出切角边缘」）：行容器用 .cut-sm，右下角是
+   8px 斜切（clip-path polygon），而本元素是那个容器的**兄弟节点**——不受 clip 裁切，
+   只能靠 right 内缩避让。实测几何：进度条 bottom:2px + height:2px，即距底 2~4px，
+   而右下斜边在该高度区间距右边只有 6~4px；原来的 right:4px 在底端会伸出斜边约 2px。
+   取切角尺寸 8px 作内缩量，该区间内最紧处仍留 2px 余量。左侧对应的是直角边，保持 4px。 */
 .conv-progress {
   position: absolute;
   left: 4px;
-  right: 4px;
+  right: 8px;
   bottom: 2px;
   height: 2px;
   border-radius: 1px;
@@ -463,7 +466,7 @@ kbd {
      #root (z:1)             — 应用内容（根容器 bg-app 透明，露出光晕）
      玻璃面板 (.bg-surface…) — 半透明白底 + backdrop-filter 实时模糊
                                （滚动/漂移的内容穿过面板下方时被模糊）
-   主题类用 [class*="-glass"] 匹配 .theme-dark-glass 与 .theme-light-glass
+   主题类用 [class*="-glass"] 匹配 .theme-dark-glass
    ============================================================ */
 
 /* ---- 基础定位（两套光晕共享） ---- */
@@ -515,19 +518,6 @@ kbd {
   0%   { transform: translate3d(-1.2%, -0.8%, 0) scale(1.02); filter: hue-rotate(0deg); }
   50%  { transform: translate3d(0.8%, 1%, 0) scale(1.05);  filter: hue-rotate(6deg); }
   100% { transform: translate3d(1.5%, -0.6%, 0) scale(1.03); filter: hue-rotate(12deg); }
-}
-
-/* ---- 暖金微光 · light-glass（白磨砂，暖金主晕 + 淡青副晕，低饱和） ----
-   提亮层同样随 --glass-opacity 联动（默认 op=0.3 ≈ 顶部 0.16 / 基色 0.30）。 */
-.theme-light-glass body::before {
-  background:
-    linear-gradient(rgba(253, 249, 245, calc(var(--glass-opacity, 0.3) * 0.55)), rgba(253, 249, 245, calc(var(--glass-opacity, 0.3) * 0.55))),
-    radial-gradient(36% 44% at 20% 18%, rgba(255, 170, 90, 0.35) 0%, transparent 56%),
-    radial-gradient(30% 38% at 82% 16%, rgba(120, 170, 200, 0.25) 0%, transparent 58%),
-    radial-gradient(42% 50% at 76% 86%, rgba(255, 170, 90, 0.20) 0%, transparent 58%),
-    radial-gradient(28% 34% at 8% 82%, rgba(255, 200, 130, 0.24) 0%, transparent 55%),
-    radial-gradient(22% 28% at 52% 50%, rgba(255, 220, 170, 0.18) 0%, transparent 60%),
-    linear-gradient(160deg, rgba(253, 249, 245, calc(var(--glass-opacity, 0.3) * 1.0)) 0%, rgba(255, 253, 251, calc(var(--glass-opacity, 0.3) * 0.9)) 52%, rgba(253, 249, 245, calc(var(--glass-opacity, 0.3) * 1.0)) 100%);
 }
 
 /* ---- SVG 噪点颗粒层：模糊前后对比强烈，玻璃才有"磨"的质感 ---- */
@@ -780,8 +770,9 @@ html.speed-mode[class*="-glass"] body::before,
 html.speed-mode[class*="-glass"] body::after {
   display: none !important;
 }
-/* dark-glass（墨玻璃）实色兜底：取主题表面色系，扁平化后保持可读 */
-html.speed-mode[class*="-glass"]:not([class*="light-glass"]) {
+/* dark-glass（墨玻璃）实色兜底：取主题表面色系，扁平化后保持可读
+   （2026-09-15：浅色玻璃删除后无需再排除 light-glass，唯一 glass 主题即 dark-glass） */
+html.speed-mode[class*="-glass"] {
   --bg-app:      #0b0e14;
   --bg-surface:  #11161f;
   --bg-elevated: #161c28;
@@ -799,26 +790,6 @@ html.speed-mode[class*="-glass"]:not([class*="light-glass"]) {
   --tooltip-bg:  #11161f;
   --modal-bg:    #161c28;
 }
-/* light-glass（白磨砂）实色兜底 */
-html.speed-mode[class*="light-glass"] {
-  --bg-app:      #fdf9f5;
-  --bg-surface:  #fffdfb;
-  --bg-elevated: #ffffff;
-  --bg-hover:    #fff6ef;
-  --bg-active:   #ffeddd;
-  --bg-input:    #fffdfb;
-  --bg-toolbar:  #fffdfb;
-  --bg-modal:    #ffffff;
-  --bg-popover:  #ffffff;
-  --bg-tooltip:  #24272c;
-  --bg-code:     #24272c;
-  --bg-prose:    #fffdfb;
-  --bg-kbd:      #fff6ef;
-  --popover-bg:  #ffffff;
-  --tooltip-bg:  #24272c;
-  --modal-bg:    #ffffff;
-}
-
 /* ============ 设计语言（spec 2026-09-10）：单对角切角 / 细线 / 光效白名单 / 微标 ============
    切角 = 单对角（左上+右下）；1px 外层即细线（hairline）；内容放 >.ci 内层。
    不切角：tooltip / chip / 头像 / 开关 / 状态点 / 进度轨道 / 代码块。
@@ -859,7 +830,7 @@ html.speed-mode[class*="light-glass"] {
 .cut-pop>.ci{background:var(--popover-bg);}
 /* 输入框容器：聚焦时热边点亮 */
 .cut.focusable:focus-within{background:var(--line-hot);}
-/* 错误态：外层细线点亮为 error 色（口令框等） */
+/* 错误态：外层细线点亮为 error 色（密码框等） */
 .cut.err{background:color-mix(in srgb, var(--error) 60%, transparent);}
 .cut.err.focusable:focus-within{background:var(--error);}
 /* 语义色细边变体（警示卡/提示卡/成功卡）：保留语义色语义，边线随切角 */

@@ -131,6 +131,19 @@ export interface KnowledgeState {
    */
   targetBlockId: string | null
   /**
+   * 内链**锚点定位意图**（2026-09-14 批次 2）：`[[note#小节]]` 点了之后要落到"那一节"，
+   * 而不是文档开头。字段是锚点原文 + 类型（`heading` / `block`），由阅读视图用
+   * `resolveAnchorIndex` 换成渲染下标 —— 与 targetBlockId 同一思路（**零额外内核请求**：
+   * 阅读视图按块渲染，块文本里就有标题/块 ID，不需要查库）。
+   *
+   * 为什么不复用 targetBlockId：锚点原文要**先解析**才知道是哪一块（`## 安装步骤` 可能
+   * 存在也可能写错），而 targetBlockId 是已解析好的确定值。硬塞进去就需要在点击时先取一次
+   * 目标文档来解析 —— 那正是本字段要避免的一次内核进程。
+   *
+   * **不落盘**（同 targetLine/targetBlockId）：一次性跳转意图。
+   */
+  targetAnchor: { anchorRef: string; anchorKind: 'heading' | 'block' | '' } | null
+  /**
    * 检索视图的**一次性关键词意图**（2026-09-14 批次 1：标签视图点击标签 → 跳到检索并塞入 `#tag`）。
    *
    * 为什么不能直接写进检索视图自己的 state：写入方（标签视图 / 元信息面板）与消费方（检索视图）
@@ -146,12 +159,19 @@ export interface KnowledgeState {
   setDocId: (docId: string | null) => void
   setTargetLine: (line: number | null) => void
   setTargetBlockId: (blockId: string | null) => void
+  setTargetAnchor: (anchor: { anchorRef: string; anchorKind: 'heading' | 'block' | '' } | null) => void
   /** 标签点击的唯一入口：切检索视图 + 塞关键词（一次写完，避免"切了视图还没关键词"的空跑一帧） */
   openSearchWithKeywords: (keywords: string[]) => void
   /** 检索视图消费完一次性意图后必须清空，否则返回检索视图会再次被顶入同一关键词 */
   clearSearchKeywords: () => void
   /** 关联锚点跳转的唯一入口：打开文档 + 切阅读视图 + 置块级定位（一次写完，无中间态） */
   openAtBlock: (docId: string, blockId: string) => void
+  /**
+   * 内链锚点跳转的唯一入口（2026-09-14 批次 2）：打开目标文档 + 切阅读视图 + 置锚点定位。
+   * 与 openAtBlock 同样**一次 set 写完**：分次写会出现"已换文档、定位目标还是上一篇的"中间帧，
+   * 那一帧里阅读视图的 effect 会拿着旧锚点去匹配新文档。
+   */
+  openAtAnchor: (docId: string, anchorRef: string, anchorKind: 'heading' | 'block' | '') => void
   setView: (view: KnowledgeView) => void
   toggleExpanded: (path: string) => void
   setTreeEntries: (path: string, entries: KnowledgeTreeEntry[]) => void
@@ -163,6 +183,7 @@ export const useKnowledgeStore = create<KnowledgeState>()(
     docId: null,
     targetLine: null,
     targetBlockId: null,
+    targetAnchor: null,
     searchKeywords: null,
     view: 'read',
     tree: {},
@@ -174,7 +195,7 @@ export const useKnowledgeStore = create<KnowledgeState>()(
     setSpace: (spaceId) => {
       const next = sanitizeSpaceId(spaceId)
       if (next === get().spaceId) return
-      set({ spaceId: next, docId: null, targetLine: null, targetBlockId: null, tree: {} })
+      set({ spaceId: next, docId: null, targetLine: null, targetBlockId: null, targetAnchor: null, tree: {} })
     },
 
     // 换文档顺带清 targetLine：行号只在**同一篇文档**内有意义，留着它会让新文档里一行无关内容被点亮。
@@ -184,7 +205,7 @@ export const useKnowledgeStore = create<KnowledgeState>()(
       if (next === get().docId) return
       // 块级定位目标（targetBlockId）同理必须一起清：它的 `<docId>#<n>` 里编码了**上一篇**文档，
       // 留着它会让新文档的渲染层去匹配一个不存在的块（最坏是没有任何高亮，看起来像点了没反应）。
-      set({ docId: next, targetLine: null, targetBlockId: null })
+      set({ docId: next, targetLine: null, targetBlockId: null, targetAnchor: null })
     },
 
     setTargetLine: (line) => {
@@ -199,6 +220,28 @@ export const useKnowledgeStore = create<KnowledgeState>()(
       set({ targetBlockId: next })
     },
 
+    // 锚点定位（2026-09-14 批次 2）。清洗口径：`anchorRef` 去空白后为空 → null（="无意图"，
+    // 而不是"定位到空标题"）；`anchorKind` 非 heading/block 一律回落 ''（由消费侧按 heading 处理）。
+    setTargetAnchor: (anchor) => {
+      const ref = String(anchor?.anchorRef ?? '').trim()
+      const next = ref
+        ? { anchorRef: ref, anchorKind: (anchor?.anchorKind === 'block' ? 'block' : anchor?.anchorKind === 'heading' ? 'heading' : '') as 'heading' | 'block' | '' }
+        : null
+      const cur = get().targetAnchor
+      if (cur === next || (cur && next && cur.anchorRef === next.anchorRef && cur.anchorKind === next.anchorKind)) return
+      set({ targetAnchor: next })
+    },
+
+    openAtAnchor: (docId, anchorRef, anchorKind) => {
+      const id = sanitizeDocId(docId)
+      const ref = String(anchorRef ?? '').trim()
+      if (!id || !ref) return
+      set({
+        docId: id, view: 'read', targetLine: null, targetBlockId: null,
+        targetAnchor: { anchorRef: ref, anchorKind: anchorKind === 'block' ? 'block' : anchorKind === 'heading' ? 'heading' : '' },
+      })
+    },
+
     // 关联锚点点击（条目卡片 / Inspector 关联段 / 图谱节点悬停）：
     // ① 必须切到 'read'——在 graph/search 视图下只换 docId，用户看到的还是原视图（"点了没反应"）；
     // ② 必须清 targetLine——上一次检索命中的行号与新锚点无关，留着会点亮无关行；
@@ -208,7 +251,7 @@ export const useKnowledgeStore = create<KnowledgeState>()(
       const id = sanitizeDocId(docId)
       const bid = sanitizeTargetBlockId(blockId)
       if (!id || !bid) return
-      set({ docId: id, view: 'read', targetLine: null, targetBlockId: bid })
+      set({ docId: id, view: 'read', targetLine: null, targetBlockId: bid, targetAnchor: null })
     },
 
     setView: (view) => {

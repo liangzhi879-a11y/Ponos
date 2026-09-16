@@ -30,7 +30,7 @@ export function Header({ onGoCockpit }: HeaderProps = {}) {
   }
 
   const activeTheme = THEMES.find(t => t.id === settings.theme) ?? THEMES[0]
-  const ThemeIcon = settings.theme === 'light' || settings.theme === 'light-glass' ? Sun : Moon
+  const ThemeIcon = settings.theme === 'light' ? Sun : Moon
 
   // Frameless window: track maximized state for the toggle icon
   const [isMax, setIsMax] = useState(false)
@@ -99,8 +99,12 @@ export function Header({ onGoCockpit }: HeaderProps = {}) {
       <div className="flex-1 min-w-0 flex items-baseline gap-2 ml-1 select-none">
         <span className="text-sm font-semibold text-primary truncate">YFWorking</span>
         <span className="text-[10px] font-mono text-tertiary shrink-0">v{typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''}</span>
-        {/* 固定英文微标（装饰，不进 i18n）——窄窗隐藏 */}
-        <span className="micro hidden min-[720px]:inline-block shrink-0">YFWORKING</span>
+        {/* 小字标注（2026-09-15）：原为重复的 "YFWORKING" 微标（装饰，不进 i18n，窄窗隐藏）
+            ——同一行左右各一个品牌名
+            是冗余，且与左侧主标识抢注意力。改为署名行 "powered by ponos"，既有信息量
+            又不重复。用 normal-case 覆盖 .micro 自带的 text-transform:uppercase，
+            否则会显示成全大写 "POWERED BY PONOS" 而不符要求。 */}
+        <span className="micro normal-case hidden min-[720px]:inline-block shrink-0">powered by ponos</span>
       </div>
 
       <div className="flex items-center gap-0.5 no-drag shrink-0">

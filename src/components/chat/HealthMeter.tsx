@@ -32,7 +32,7 @@ export function HealthMeter({ conversationId }: { conversationId: string }) {
   const health = useHealthStore(s => s.healthBySession[conversationId]) ?? null
   const summaryCompactCount = useHealthStore(s => s.summaryCompactCountBySession[conversationId]) ?? 0
   const theme = useSettingsStore(s => s.settings.theme)
-  const isGlass = theme === 'dark-glass' || theme === 'light-glass'
+  const isGlass = theme === 'dark-glass'
   const [flash, setFlash] = useState(false)
   const prevCount = useRef(summaryCompactCount)
 

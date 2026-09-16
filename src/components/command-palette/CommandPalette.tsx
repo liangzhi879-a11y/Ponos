@@ -47,7 +47,7 @@ export function CommandPalette() {
         case 'new-conv': createConversation(); break
         case 'open-settings': openSettings(); break
         case 'toggle-theme': {
-          const order = ['dark', 'light', 'dark-glass', 'light-glass'] as const
+          const order = ['dark', 'light', 'dark-glass'] as const
           const idx = order.indexOf(settings.theme)
           const next = order[(idx + 1) % order.length]
           updateSettings({ theme: next })

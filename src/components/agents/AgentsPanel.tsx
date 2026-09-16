@@ -13,6 +13,8 @@ import { useChatStore } from '@/stores/chatStore'
 import { useViewStore } from '@/stores/viewStore'
 import type { Agent } from '@/lib/agents'
 import { AgentAvatar } from './AgentAvatar'
+import { AgentToolsEditor } from './AgentToolsEditor'
+import { KernelAgentsSection } from './KernelAgentsSection'
 import { AvatarCropDialog } from './AvatarCropDialog'
 
 const TYPE_LABELS: Record<string, string> = {
@@ -36,6 +38,9 @@ export function AgentsPanel() {
   const deleteAgent = useAgentStore(s => s.deleteAgent)
   const resetAgent = useAgentStore(s => s.resetAgent)
   const resetAllAgents = useAgentStore(s => s.resetAllAgents)
+  // 工具范围编辑（2026-09-15，A 条款）：对**任何**类型 agent 都生效（专业 agent 的工具控制
+  // 原先完全不可改，只能整体重置）。
+  const setAgentTools = useAgentStore(s => s.setAgentTools)
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
@@ -170,6 +175,12 @@ export function AgentsPanel() {
           )} />
         </div>
       </div>
+      {/* 关联工具控制（2026-09-15，A 条款）：卡片内直接可视 + 可改。
+          放在卡片主体而非弹窗，是为了让"这个 agent 能用哪些工具"在浏览列表时即可读到——
+          原先该信息完全不可见（只有自由文本框，且专业 agent 连文本框都没有）。 */}
+      <div className="px-3 pb-2">
+        <AgentToolsEditor agent={agent} onSave={(tools) => setAgentTools(agent.id, tools)} />
+      </div>
       {deleteConfirm === agent.id && (
         <div className="px-3 py-2 bg-error/5 flex items-center gap-2">
           <span className="text-[10px] text-error flex-1">确认删除「{agent.name}」？此操作不可撤销。</span>
@@ -264,6 +275,9 @@ export function AgentsPanel() {
               </div>
             )
           })}
+          {/* 内核内置智能体（2026-09-15，批次二 H）：5 个只在核心里定义的 agent
+              （researcher/implementer/reviewer/explorer/planner），此前界面上看不到、也就停不掉。 */}
+          <KernelAgentsSection />
           {agents.length === 0 && (
             <div className="px-3 py-8 text-center text-xs text-tertiary">
               No agents found

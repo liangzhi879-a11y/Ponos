@@ -364,6 +364,11 @@ function conversationSpawnFields(conversationId: string): Record<string, unknown
     // 双数据源取 max：healthBySession 为最近健康事件快照，summaryCompactCountBySession
     // 为压缩事件计数（yfw_summary 可能先于 yfw_health 到达，二者都可能较新）。
     ...(compactCount > 0 ? { compactCount } : {}),
+    // 会话知识范围（2026-09-15，P1「会话模式关联经验库之外的知识库」）：本会话关联的
+    // 知识库 id 列表 → bridge 转成 `--knowledge-spaces` → 内核据此收窄注入层与检索工具。
+    // 缺失时**不发该键**（bridge 缺省 = 内置经验类空间）：传空数组会让"没关联"与
+    // "关联了空列表"两个状态在桥侧产生不同签名，从而多触发一次内核重启。
+    ...(conversation.knowledgeSpaces?.length ? { knowledgeSpaces: conversation.knowledgeSpaces } : {}),
   }
 }
 

@@ -9,10 +9,13 @@ import { useState, useEffect, useRef, useLayoutEffect, memo } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Search, Pin, Trash2, Edit3, Plus, SquareKanban, SquarePlus, Folder, FolderOpen,
-  FolderPlus, Share2, ArrowUpDown, Check, Wand2, ChevronRight, History, Gauge, GitFork,
+  FolderPlus, Share2, ArrowUpDown, Check, Wand2, ChevronRight, History, Gauge, GitFork, Library,
 } from 'lucide-react'
 import { Button, ScrollArea, Tooltip, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui'
 import { PanelToolbar, type RailToolbarIconAction } from './PanelToolbar'
+// 一键蒸馏到知识库（2026-09-15，清单 P1）：对话框只在**打开时**挂载（内部会拉空间清单 +
+// 目标目录列举，各是一次内核进程调用，不该在应用启动时就白跑）。
+import { SessionDistillDialog } from './SessionDistillDialog'
 import { useChatStore } from '@/stores/chatStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useViewStore, type SecondTabId } from '@/stores/viewStore'
@@ -60,6 +63,9 @@ export function TaskListPanel() {
   const [moveTarget, setMoveTarget] = useState<string | null>(null)
   const [dragSetId, setDragSetId] = useState<string | null>(null)
   const [dragSetOverId, setDragSetOverId] = useState<string | null>(null)
+  /** 待蒸馏的会话 id（null = 对话框关闭）。见 SessionDistillDialog 的挂载纪律 */
+  const [distillId, setDistillId] = useState<string | null>(null)
+  const distillConv = useChatStore(s => (distillId ? s.conversations.find(c => c.id === distillId) ?? null : null))
 
   // 本面板只渲染任务会话（chat 会话与集合概念隔离，见 ChatListPanel）
   const tasks = conversations.filter(isTaskLike)
@@ -238,6 +244,15 @@ export function TaskListPanel() {
     setSetMenuId(null)
   }
 
+  // 删除会话的二次确认：自 2026-09-16 起 deleteConversation 会**真的删掉磁盘转录**
+  // （<YFW_HOME>/projects/<sanitize(cwd)>/<sessionId>.jsonl，不可恢复），误点代价从
+  // "重进内核还能捞回"变成"数据永久消失"——所以这里必须有确认（先例：上面的会话集删除）。
+  const handleDeleteConversation = (id: string) => {
+    const conv = conversations.find(c => c.id === id)
+    if (!window.confirm(t('rail.deleteConvConfirm', { name: conv?.title || '' }))) return
+    deleteConversation(id)
+  }
+
   const handleMoveToSet = (conversationId: string, setId: string | null) => {
     setConversationSet(conversationId, setId)
     setMoveTarget(null)
@@ -273,7 +288,8 @@ export function TaskListPanel() {
       onRenameSubmit={() => handleRename(conv.id)}
       onRenameCancel={() => setRenamingId(null)}
       onPin={() => pinConversation(conv.id)}
-      onDelete={() => deleteConversation(conv.id)}
+      onDelete={() => handleDeleteConversation(conv.id)}
+      onDistill={() => { setContextMenu(null); setDistillId(conv.id) }}
       onContextToggle={() => { setMoveTarget(null); setContextMenu(contextMenu === conv.id ? null : conv.id) }}
       onMoveTargetChange={setMoveTarget}
       onMoveToSet={handleMoveToSet}
@@ -421,6 +437,10 @@ export function TaskListPanel() {
         </ScrollArea>
       )}
 
+      {/* 一键蒸馏到知识库对话框：**只在打开时挂载**（内部要拉空间清单 + 目标目录列举，
+          每次都是一次内核进程调用；常驻挂载会让应用启动时白跑两枪）。 */}
+      {distillConv && <SessionDistillDialog conversation={distillConv} onClose={() => setDistillId(null)} />}
+
       {/* 会话集右键菜单 — portal 到 body，viewport 定位防滚动区裁剪 */}
       {setMenuId && setMenuPos && (() => {
         const s = conversationSets.find(x => x.id === setMenuId)
@@ -469,6 +489,8 @@ interface ConvItemProps {
   onRenameCancel: () => void
   onPin: () => void
   onDelete: () => void
+  /** 一键蒸馏到知识库（2026-09-15，P1） */
+  onDistill: () => void
   onContextToggle: () => void
   moveTarget: string | null
   conversationSets: ConversationSet[]
@@ -485,7 +507,7 @@ interface ConvItemProps {
 const ConversationItem = memo(function ConversationItem({
   conv, active, isStreaming, isAwaiting, progress, renaming, renameValue,
   contextOpen, dragOver, isDragging, onSelect, onRenameStart, onRenameChange,
-  onRenameSubmit, onRenameCancel, onPin, onDelete,
+  onRenameSubmit, onRenameCancel, onPin, onDelete, onDistill,
   onContextToggle, moveTarget, conversationSets,
   onMoveTargetChange, onMoveToSet, onNewSetAndMove,
   onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd,
@@ -509,7 +531,7 @@ const ConversationItem = memo(function ConversationItem({
     if (!el) return
     const rect = el.getBoundingClientRect()
     const MENU_W = 144  // w-36
-    const MENU_H = 220  // estimated: 6 rows + separator + padding
+    const MENU_H = 260  // estimated: 6 rows + separator + padding（2026-09-15 加「蒸馏到知识库」一行）
     const GAP = 6
     const left = Math.max(8, Math.min(rect.right - MENU_W, window.innerWidth - MENU_W - 8))
     const flip = window.innerHeight - rect.bottom < MENU_H + GAP
@@ -610,6 +632,8 @@ const ConversationItem = memo(function ConversationItem({
             <button onClick={onRenameStart} aria-label={t('sidebar.rename')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><Edit3 className="w-3 h-3" /> {t('sidebar.rename')}</button>
             <button onClick={onPin} aria-label={conv.pinned ? t('sidebar.unpin') : t('sidebar.pin')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><Pin className="w-3 h-3" /> {conv.pinned ? t('sidebar.unpin') : t('sidebar.pin')}</button>
             <button onClick={() => onMoveTargetChange(conv.id)} aria-label={t('sidebar.moveToSet')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><FolderPlus className="w-3 h-3" /> {t('sidebar.moveToSet')}</button>
+            {/* 一键蒸馏到知识库：与"导出分享"同组（都是把会话**带出去**），位置在导出之前 */}
+            <button onClick={onDistill} aria-label={t('distill.action')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><Library className="w-3 h-3" /> {t('distill.action')}</button>
             <button onClick={() => onExportConversation(conv.id)} aria-label={t('sidebar.exportShare')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-hover"><Share2 className="w-3 h-3" /> {t('sidebar.exportShare')}</button>
             <div className="border-t my-1" />
             <button onClick={onDelete} aria-label={t('sidebar.delete')} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-error hover:bg-error/10"><Trash2 className="w-3 h-3" /> {t('sidebar.delete')}</button>

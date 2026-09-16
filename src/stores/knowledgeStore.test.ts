@@ -231,3 +231,52 @@ test('sanitizeTargetBlockId: 只认 <docId>#<n> 形状, 其余落 null(不抛)',
   assert.equal(sanitizeTargetBlockId(null), null)
   assert.equal(sanitizeTargetBlockId(3 as unknown as string), null)
 })
+
+// ── 2026-09-14 批次 2：内链锚点跳转（`[[note#小节]]`）─────────────────────────
+
+test('openAtAnchor: 一次写完 docId/view/锚点定位, 并清掉行定位与块定位（三条通道互斥）', () => {
+  st().setDocId('notes/a.md')
+  st().setTargetLine(12)
+  st().setView('graph')
+  st().openAtAnchor('notes/b.md', '安装步骤', 'heading')
+  assert.equal(st().docId, 'notes/b.md')
+  assert.equal(st().view, 'read', '非阅读视图下必须先切回 read，否则点了锚点看不到目标小节')
+  assert.deepEqual(st().targetAnchor, { anchorRef: '安装步骤', anchorKind: 'heading' })
+  assert.equal(st().targetLine, null, '行定位与新锚点无关，必须清（否则点亮无关行）')
+  assert.equal(st().targetBlockId, null, '块定位同理：留着它会去匹配一个不存在的块')
+
+  // 同文档锚点（`[[#小节]]`）：docId 不变，但锚点要更新 → 阅读视图靠 targetAnchor 变化触发定位
+  st().openAtAnchor('notes/b.md', '另一节', 'heading')
+  assert.deepEqual(st().targetAnchor, { anchorRef: '另一节', anchorKind: 'heading' })
+
+  // 非法形状一律 no-op：空锚点 / 空 docId 都不该产生"要定位却定位不到"的状态
+  st().openAtAnchor('notes/c.md', '  ', 'heading')
+  assert.equal(st().docId, 'notes/b.md')
+  st().openAtAnchor('', '某节', 'heading')
+  assert.equal(st().docId, 'notes/b.md')
+  // 非法的 anchorKind 回落 ''（消费侧按 heading 处理），不整条丢弃 —— 锚点本身是有效的
+  st().openAtAnchor('notes/b.md', '第三节', 'nonsense' as never)
+  assert.deepEqual(st().targetAnchor, { anchorRef: '第三节', anchorKind: '' })
+
+  // 换文档 / 切空间 / 按块跳转都要清锚点（否则上一篇的锚点会去新文档里找同名标题）
+  st().setDocId('notes/d.md')
+  assert.equal(st().targetAnchor, null, '换文档必须清锚点')
+  st().openAtAnchor('notes/d.md', '某节', 'heading')
+  st().openAtBlock('notes/d.md', 'notes/d.md#2')
+  assert.equal(st().targetAnchor, null, '按块跳转也要清锚点（三条通道只允许一条生效）')
+  st().openAtAnchor('notes/d.md', '某节', 'heading')
+  st().setSpace('experience')
+  assert.equal(st().targetAnchor, null, '切空间必须清锚点')
+  st().setSpace(null)
+})
+
+test('setTargetAnchor: 空锚点 → null（"无意图"而不是"定位到空标题"）', () => {
+  st().setTargetAnchor({ anchorRef: '  ', anchorKind: 'heading' })
+  assert.equal(st().targetAnchor, null)
+  st().setTargetAnchor(null)
+  assert.equal(st().targetAnchor, null)
+  st().setTargetAnchor({ anchorRef: ' 安装 ', anchorKind: 'block' })
+  assert.deepEqual(st().targetAnchor, { anchorRef: '安装', anchorKind: 'block' }, '两端空白要剥掉（HTTP 参数常有）')
+  st().setTargetAnchor({ anchorRef: '', anchorKind: 'heading' })
+  assert.equal(st().targetAnchor, null)
+})

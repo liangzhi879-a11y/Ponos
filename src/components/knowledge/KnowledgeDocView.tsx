@@ -24,7 +24,10 @@ import { Trash2 } from 'lucide-react'
 import type { KnowledgeDoc } from '@/lib/knowledgeApi'
 import { useTranslation } from '@/i18n/useTranslation'
 import { MD_COMPONENTS, MD_PLUGINS } from '@/components/chat/MarkdownText'
-import { normalizeTags, pickTargetIndex, pickTargetIndexByBlock, planBlockRender, wikiTargetCandidates } from '@/lib/knowledgeBlocks'
+import {
+  normalizeTags, pickTargetIndex, pickTargetIndexByBlock, planBlockRender,
+  resolveAnchorIndex, wikiTargetCandidates, type BlockLike,
+} from '@/lib/knowledgeBlocks'
 import { indexByBlock } from '@/lib/knowledgeRelations'
 import type { KnowledgeRelatedAnchor } from '@/lib/knowledgeApi'
 import { useLinks, useRelatedDoc } from '@/hooks/useKnowledge'
@@ -57,6 +60,11 @@ export interface KnowledgeDocViewProps {
   /** 目标块 id（knowledgeStore.targetBlockId，关联锚点跳转）；给了就优先按块定位 */
   targetBlockId?: string | null
   /**
+   * 目标**锚点**（knowledgeStore.targetAnchor，2026-09-14 批次 2）：`[[note#小节]]` 点的跳转。
+   * 三级定位优先级：块 id（最确定）> 锚点 > 行号。三者互斥由 store 保证（每个写入路径都清另外两个）。
+   */
+  targetAnchor?: { anchorRef: string; anchorKind: 'heading' | 'block' | '' } | null
+  /**
    * 删除此文档（2026-09-14）。**为 null 时不画删除按钮** —— 权限判定（知识包只读）
    * 由宿主按空间 `source` 决定并决定给不给这个回调。本视图刻意**不碰**权限逻辑：
    * 它拿不到空间对象，为了画个按钮去拉一次空间列表等于凭空多一个内核进程。
@@ -64,7 +72,7 @@ export interface KnowledgeDocViewProps {
   onDelete?: (() => void) | null
 }
 
-export function KnowledgeDocView({ doc, targetLine = null, targetBlockId = null, onDelete = null }: KnowledgeDocViewProps) {
+export function KnowledgeDocView({ doc, targetLine = null, targetBlockId = null, targetAnchor = null, onDelete = null }: KnowledgeDocViewProps) {
   const { t } = useTranslation()
   // docId 下传是为了让条目渲染项带上 blockId（锚点定位的键）；不给 docId 时渲染计划与 S2 逐字相同
   const renders = useMemo(() => planBlockRender(doc.blocks, doc.id), [doc.blocks, doc.id])
@@ -97,6 +105,49 @@ export function KnowledgeDocView({ doc, targetLine = null, targetBlockId = null,
     return () => clearTimeout(timer)
   }, [targetIndex, renders])
 
+  /**
+   * 内链锚点定位（2026-09-14 批次 2）：`[[note#安装步骤]]` / `[[#小节]]` 点了之后落到"那一节"。
+   *
+   * 数据源是**本视图已有的** `doc.blocks`（标题文本、块 ID 都在里面），故这条路径**零额外请求**——
+   * 与 targetBlockId 的定位同一思路。锚点原文 → 块下标由 `resolveAnchorIndex` 完成（归一化匹配）。
+   *
+   * 解析不到时**如实提示**（顶部一行提示），不做"悄悄跳到文档开头"：那会让用户以为锚点生效了，
+   * 而每次点都落在同一处、还查不出原因（目标文档里那个标题可能已被改名）。
+   * 提示 4 秒后自动消失 —— 它是解释性信息，不需要用户手动关。
+   */
+  const anchorBlocks = useMemo<BlockLike[]>(
+    () => (doc.blocks ?? []).map((b) => ({ kind: b.kind, level: b.level, text: b.text, line: b.line })),
+    [doc.blocks],
+  )
+  const [anchorMiss, setAnchorMiss] = useState<string | null>(null)
+  const anchorIndex = useMemo(
+    () => (targetAnchor ? resolveAnchorIndex(anchorBlocks, targetAnchor.anchorRef, targetAnchor.anchorKind) : null),
+    [targetAnchor, anchorBlocks],
+  )
+
+  useEffect(() => {
+    if (!targetAnchor) { setAnchorMiss(null); return }
+    if (anchorIndex === null) {
+      // 写错了 / 标题被改名 / 块 ID 不存在 —— 都在这条分支上。提示是"解释"，不是"报错"。
+      setAnchorMiss(targetAnchor.anchorRef)
+      return
+    }
+    setAnchorMiss(null)
+    const el = itemRefs.current[anchorIndex]
+    if (!el) return
+    el.scrollIntoView({ block: 'start' })   // 锚点跳到"那一节"：靠顶（center 会把标题之外的内容也居中，读起来找不到节首）
+    setActiveLine(renders[anchorIndex]?.line ?? null)
+    const timer = setTimeout(() => setActiveLine(null), HIGHLIGHT_MS)
+    return () => clearTimeout(timer)
+  }, [targetAnchor, anchorIndex, renders])
+
+  // 锚点提示自动消失（4s）：它是解释性信息，不需要用户手动关。
+  useEffect(() => {
+    if (!anchorMiss) return
+    const timer = setTimeout(() => setAnchorMiss(null), 4000)
+    return () => clearTimeout(timer)
+  }, [anchorMiss])
+
   // 点锚点 = 打开目标文档 + 切阅读视图 + 按块定位，三件事一次写完（store.openAtBlock）。
   // 本视图**不开第二条跳转通道**：偏移/高亮逻辑只有上面那一个 effect。
   const openAnchor = (a: KnowledgeRelatedAnchor) => useKnowledgeStore.getState().openAtBlock(a.docId, a.blockId)
@@ -114,7 +165,10 @@ export function KnowledgeDocView({ doc, targetLine = null, targetBlockId = null,
       if (e.target) byTo.set(e.to, e.target)
     }
     return {
-      resolve: (target: string): string | null => {
+      // `opts.self` = 同文档锚点 `[[#小节]]`（批次 2）：目标就是本文档自身。
+      // 不处理它的话这类链接会被判成断链（它的 target 是空串），文档内部的目录式跳转就全灰了。
+      resolve: (target: string, opts?: { self?: boolean }): string | null => {
+        if (opts?.self) return doc.id
         for (const cand of wikiTargetCandidates(target, doc.id)) {
           const hit = byTo.get(cand)
           if (hit) return hit
@@ -124,12 +178,25 @@ export function KnowledgeDocView({ doc, targetLine = null, targetBlockId = null,
         const direct = wikiTargetCandidates(target, doc.id).find((c) => c === target)
         return direct ? (byTo.get(direct) ?? null) : null
       },
-      open: (docId: string) => {
+      /**
+       * 内链跳转（2026-09-14 批次 2 起带锚点）。
+       *
+       * 带锚点时走 `openAtAnchor`：打开目标文档 + 置锚点定位（由本视图的 effect 解析成块下标）。
+       * **同文档锚点也走它** —— store 的 setDocId 对同值是 no-op，但 targetAnchor 会变，
+       * 定位 effect 照常触发；且这样"文档内跳转"与"跨文档跳转"只有一条代码路径，
+       * 不会出现"跨文档能用、本文档内不能用"这类半通状态。
+       * 无锚点时保持旧行为（setTargetLine(null) + setDocId + 切 read）。
+       */
+      open: (docId: string, anchor?: { anchorRef: string; anchorKind: 'heading' | 'block' | '' }) => {
+        const s = useKnowledgeStore.getState()
+        if (anchor?.anchorRef) {
+          s.openAtAnchor(docId, anchor.anchorRef, anchor.anchorKind)
+          return
+        }
         // 内链跳转 = 换文档 + 清定位 + 回阅读视图。**按 store 的既有语义分两步**（openAtBlock
         // 是给"带块定位"的跳转用的，内链没有块信息，不该复用）：
-        // setDocId 内部已清 targetLine/targetBlockId（见 store 注释：换文档必须清定位，否则
-        // 上一篇的行号会错误地高亮新文档的同一行）。
-        const s = useKnowledgeStore.getState()
+        // setDocId 内部已清 targetLine/targetBlockId/targetAnchor（见 store 注释：换文档必须清定位，
+        // 否则上一篇的行号会错误地高亮新文档的同一行）。
         s.setTargetLine(null)
         s.setDocId(docId)
         s.setView('read')
@@ -181,6 +248,15 @@ export function KnowledgeDocView({ doc, targetLine = null, targetBlockId = null,
           </div>
         )}
       </header>
+
+      {/* 锚点未命中提示（2026-09-14 批次 2）：`[[note#某节]]` 点进来但标题不存在/已改名。
+          如实说明**比静默跳到文档开头更好** —— 后者会让人以为锚点生效了，而每次点都落在同一处、
+          还查不出原因。提示是解释性信息，4 秒后自动消失（见上面的 effect）。 */}
+      {anchorMiss && (
+        <div className="mt-2 clip-sm bg-elevated px-2 py-1 text-[10px] text-tertiary">
+          {t('knowledge.anchorMissing', { ref: anchorMiss })}
+        </div>
+      )}
 
       <div className="mt-3">
         {renders.length === 0 ? (

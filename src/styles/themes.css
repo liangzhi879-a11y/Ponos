@@ -1,6 +1,7 @@
 /* ============================================================
    YFWorking 主题变量（GUI 设计语言统一 · 2026-09-10 spec）
-   4 主题：dark / light / dark-glass / light-glass
+   3 主题：dark / light / dark-glass
+   （2026-09-15：light-glass 浅色玻璃主题已删除）
    —— Boost 橙品牌（#FF7429）全主题统一，实色取驾驶舱墨/暖白 token，
       玻璃 = 实色基色 + color-mix 透明度机制（--glass-opacity 联动）。
    组件只引用变量，不写具体色值。
@@ -378,127 +379,6 @@
 }
 
 /* ============================================================
-   light-glass —— 暖金微光 · 白磨砂（窗口透明，色板随 --glass-opacity 联动）
-   ============================================================ */
-.theme-light-glass {
-  /* ---- 暖白 · 10 级色阶（实色参考，玻璃面板走 color-mix）---- */
-  --s-50:   #fdf9f5;
-  --s-100:  #fffdfb;
-  --s-200:  #ffffff;
-  --s-300:  #fff6ef;
-  --s-400:  #ffeddd;
-  --s-500:  #f0ddd0;
-  --s-600:  #d9c6b8;
-  --s-700:  #b3a99e;
-  --s-800:  #8e8880;
-  --s-900:  #5e636c;
-  --s-950:  #24272c;
-
-  /* ---- Boost 橙品牌色阶 ---- */
-  --brand-50:  #fff3ea;
-  --brand-100: #ffe6d5;
-  --brand-200: #ffd1ae;
-  --brand-300: #ffb88a;
-  --brand-400: #ffa268;
-  --brand-500: #ff7429;
-  --brand-600:  #e8590c;
-  --brand-700:  #c2410c;
-  --brand-800:  #9a3412;
-  --brand-900:  #7c2d12;
-  --brand-950:  #431407;
-
-  /* ---- 语义色板（color-mix：基色 × 透光度 → 磨砂面板）---- */
-  --bg-app:      transparent;
-  --bg-surface:  color-mix(in srgb, #fffdfb calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-elevated: color-mix(in srgb, #ffffff calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-hover:    color-mix(in srgb, #fff6ef calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-active:   color-mix(in srgb, #ffeddd calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-input:    color-mix(in srgb, #fffdfb calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-toolbar:  color-mix(in srgb, #fffdfb calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-modal:    color-mix(in srgb, #ffffff calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-popover:  color-mix(in srgb, #fffdfb calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-tooltip:  color-mix(in srgb, #24272c calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-code:     color-mix(in srgb, #24272c calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --code-text:   #f0e6d8;
-  --bg-prose:    color-mix(in srgb, #fffdfb calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --bg-kbd:      color-mix(in srgb, #fff6ef calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --popover-bg:  color-mix(in srgb, #fffdfb calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --tooltip-bg:  color-mix(in srgb, #24272c calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --modal-bg:    color-mix(in srgb, #ffffff calc(var(--glass-opacity, 0.3) * 100%), transparent);
-  --popover-blur: 24px;
-
-  --text-primary:   #24272c;
-  --text-secondary: #5e636c;
-  --text-tertiary:  #9aa1ac;
-  --text-inverse:   #fffdfb;
-
-  --border-default: rgba(34, 38, 44, 0.14);
-  --border-subtle:  rgba(34, 38, 44, 0.08);
-  --border-strong:  rgba(34, 38, 44, 0.24);
-
-  --accent-default: #ff7429;
-  --accent-hover:   #ff9a55;
-  --accent-subtle:  rgba(255, 116, 41, 0.16);
-
-  --accent-red:        #ff2400;
-  --accent-red-hover:  #e31e00;
-  --accent-red-deep:   #b81700;
-  --accent-red-subtle: rgba(255, 36, 0, 0.10);
-  --accent-red-ring:   rgba(255, 36, 0, 0.18);
-  --accent-red-fg:     #ffffff;
-  --accent-red-glow:   rgba(255, 36, 0, 0.35);
-
-  /* ---- 状态语义色（chip 三态：run / wait / done）---- */
-  --success: #047857;
-  --success-rgb: 4 120 87;
-  --success-subtle: rgba(4, 120, 87, 0.10);
-  --warning: #b45309;
-  --warning-rgb: 180 83 9;
-  --warning-subtle: rgba(180, 83, 9, 0.10);
-  --error: #dc2626;
-  --error-rgb: 220 38 38;
-  --error-subtle: rgba(220, 38, 38, 0.10);
-  --info: #0369a1;
-  --info-rgb: 3 105 161;
-  --info-subtle: rgba(3, 105, 161, 0.10);
-
-  --scrollbar-thumb: rgba(34, 38, 44, 0.22);
-  --scrollbar-track: transparent;
-
-  /* ---- 阴影（暖棕低透明 + 1px 细线勾边，替代原靛蓝系）---- */
-  --shadow-sm: 0 1px 2px rgba(70, 50, 30, 0.10);
-  --shadow-md: 0 4px 16px rgba(70, 50, 30, 0.14), 0 0 0 1px var(--border-subtle);
-  --shadow-lg: 0 12px 36px rgba(70, 50, 30, 0.16), 0 0 0 1px var(--border-subtle);
-  --shadow-modal: 0 20px 50px -10px rgba(70, 50, 30, 0.22), 0 0 0 1px var(--border-default);
-  --shadow-popover: 0 8px 24px -6px rgba(70, 50, 30, 0.16), 0 0 0 1px var(--border-subtle);
-  --shadow-window: inset 0 0 0 1px var(--border-subtle), 0 0 0 transparent;
-
-  /* ---- 窗口健康度四档（tier-0..3）---- */
-  --health-tier-green: #22c55e;
-  --health-tier-amber: #ea580c;
-  --health-tier-red:   #dc2626;
-  --health-meter-text: #ffffff;
-
-  /* ---- 浮层遮罩（玻璃下更轻，保留磨砂感）---- */
-  --overlay-bg: rgba(11, 14, 20, 0.32);
-  --overlay-blur: 8px;
-
-  /* ---- 选区 / kbd 细线 / tooltip 前景 ---- */
-  --selection-bg:  rgba(255, 116, 41, 0.18);
-  --kbd-border:    rgba(34, 38, 44, 0.18);
-  --tooltip-fg:    #ffffff;
-
-  /* ---- 设计语言变量（同 light 实色）---- */
-  --grad-brand: linear-gradient(135deg, #ffa268, #ff4200);
-  --line-hot:   rgba(255, 116, 41, 0.55);
-  --glow-soft:  0 8px 24px rgba(180, 100, 40, 0.12);
-  --glow-hot:   0 6px 16px rgba(255, 116, 41, 0.22);
-  --halo:       rgba(255, 116, 41, 0.20);
-  --micro-track: 0.22em;
-  --modal-drop: 0 10px 24px rgba(70, 50, 30, 0.22);
-}
-
-/* ============================================================
    color-scheme：原生表单控件 / 滚动条 / 系统高亮跟随主题
    （仅按主模式两态；glass 主题按各自明暗归入 dark / light 侧）
    ============================================================ */
@@ -506,4 +386,3 @@
 :root.theme-dark            { color-scheme: dark; }
 :root.theme-light           { color-scheme: light; }
 :root.theme-dark-glass      { color-scheme: dark; }
-:root.theme-light-glass     { color-scheme: light; }

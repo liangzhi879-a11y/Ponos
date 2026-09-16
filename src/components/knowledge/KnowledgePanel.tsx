@@ -40,6 +40,8 @@ export function KnowledgePanel() {
   const targetLine = useKnowledgeStore(s => s.targetLine)
   // 关联锚点的块级定位目标（S5 Task 9）；与 targetLine 是同一件事的两条通道（见知识 store 注释）
   const targetBlockId = useKnowledgeStore(s => s.targetBlockId)
+  // 内链锚点定位（2026-09-14 批次 2）：`[[note#小节]]` 的跳转意图（见 store.targetAnchor）
+  const targetAnchor = useKnowledgeStore(s => s.targetAnchor)
   const view = useKnowledgeStore(s => s.view)
   const setSpace = useKnowledgeStore(s => s.setSpace)
   const setView = useKnowledgeStore(s => s.setView)
@@ -78,6 +80,17 @@ export function KnowledgePanel() {
         spaceName={space?.name ?? null}
         readonly={readonly}
         stats={stats ? { docs: stats.docs, blocks: stats.blocks } : undefined}
+        // 文件数上限提示（2026-09-14 批次 4）：截断是静默的数据缺失（搜不到、图谱没有、
+        // 统计也不含），用户可见症状就是"搜索坏了"。这里如实说清原因与上限。
+        // 老内核不返回该字段 → undefined → 不显示（不误报）。
+        filesTruncatedHint={
+          stats?.filesTruncated?.truncated
+            ? t('knowledge.filesTruncated', {
+                limit: stats.filesTruncated.limit,
+                spaces: stats.filesTruncated.spaces.map(x => x.spaceId).join('、'),
+              })
+            : null
+        }
         loading={loading}
         onRefresh={refreshAll}
       />
@@ -119,6 +132,7 @@ export function KnowledgePanel() {
                   doc={doc}
                   targetLine={targetLine}
                   targetBlockId={targetBlockId}
+                  targetAnchor={targetAnchor}
                   // 权限预判（知识包只读）由宿主做：本视图拿不到空间对象，见其 props 注释。
                   // 不可删 → 传 null → 视图**不渲染**删除按钮（而非置灰）。
                   onDelete={canDeleteDoc(space) ? () => setDelDocOpen(true) : null}

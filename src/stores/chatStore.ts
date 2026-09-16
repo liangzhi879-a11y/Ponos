@@ -3,10 +3,11 @@ import { persist, createJSONStorage, type PersistStorage, type StorageValue } fr
 import type { Conversation, Message, ContentBlock, PermissionRequest, BackgroundTask, QuestionPayload, ConversationProgress, SubAgentTask, ConversationSet, LoopState } from '@/types'
 import { generateId, sanitizeText, repairCorruptedJson, recoverCorruptedChatState } from '@/lib/utils'
 import { appendStreamingBlock } from '@/lib/chatParts'
+import { sanitizeConversations, sanitizeKnowledgeSpaces, migrateChatV3 } from '@/lib/chatScopeMigration'
 import { getDefaultHome } from '@/lib/config'
 import { useHealthStore } from '@/stores/healthStore'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { loadConversationMessages as loadTranscriptMessages } from '@/lib/transcriptLoader'
+import { loadConversationMessages as loadTranscriptMessages, deleteTranscriptRemote } from '@/lib/transcriptLoader'
 import { mergeResyncedMessages } from '@/lib/conversationResync'
 import { generateChatTitle, truncateTitle } from '@/lib/titleGen'
 import { pushLaneNote as pushLane, dismissLaneNote as dismissLane } from '@/lib/laneUi'
@@ -104,39 +105,11 @@ const EXT_KEY_PREFIX = 'yfworking-chat-ext-'
 // 内存最多驻留的已加载会话数（流式会话与激活会话豁免），超出卸载最旧
 const MAX_LOADED_CONVERSATIONS = 3
 
-/**
- * 会话消毒：保证每个 conversation.messages 是数组（undefined/null/非数组 → []），
- * 同时保证 conv 是非 null 对象。rehydrate/migrate 后统一调用，避免持久化数据
- * 缺字段（partialize 不存 messages）或损坏时下游 `c.messages.length`/`[...c.messages]` 崩。
- * 2026-08-18 修复：启动报 `Cannot read properties of undefined (reading 'length')`
- * 与 `r.messages is not iterable` 根因 = rehydrate 后 messages 字段缺失。
- * 2026-09-09（mode v3）：会话模式缺省归一——persist 版本 2→3 后旧行 mode 未定义，
- * 统一补 'task'，保证任何经过本消毒的会话（migrate v2 分支 / rehydrate / getItem 兜底）
- * 都不会复活 undefined-mode 会话；新建会话恒由 createConversation 显式落 mode。
- */
-function sanitizeConversations(convs: unknown): Conversation[] {
-  if (!Array.isArray(convs)) return []
-  const out: Conversation[] = []
-  let changed = false
-  for (const c of convs) {
-    if (!c || typeof c !== 'object') { changed = true; continue }
-    const obj = c as Record<string, unknown>
-    const needMessages = !Array.isArray(obj.messages)
-    const needMode = obj.mode === undefined
-    if (needMessages || needMode) {
-      changed = true
-      out.push({
-        ...obj,
-        messages: needMessages ? [] : obj.messages,
-        mode: needMode ? 'task' : obj.mode,
-      } as unknown as Conversation)
-    } else {
-      out.push(c as Conversation)
-    }
-  }
-  // 全部干净时返回原引用：调用方据此跳过无谓的 setState/写回
-  return changed ? out : convs as Conversation[]
-}
+// 会话消毒与 v3→v4 迁移抽到 `@/lib/chatScopeMigration`（2026-09-15）：那是**纯函数**，
+// 而本文件有 12 处运行期别名导入 ⇒ 留在 store 里的迁移逻辑永远进不了 `node --test`
+// （别名在 Node 原生测试下不可解析）。迁移恰好属于"写错了会静默损坏数据"的一类，
+// 必须可单测；本文件只负责调用，接线由 kernel-tests/knowledge-scope-plumbing 静态守卫钉住。
+// 历史沿革（消毒中心化的两条修复）记在 chatScopeMigration.ts 的注释里，避免两处各写一半。
 
 /** 消息数组防御访问：运行时会话可能缺 messages 字段（历史持久化/外部合并/竞态），统一兜底为 []。 */
 function asMessages(m: unknown): Message[] {
@@ -421,6 +394,9 @@ interface ChatState {
   renameConversation: (id: string, title: string) => void
   setConversationCwd: (id: string, cwd: string) => void
   setConversationAgent: (id: string, agentId: string | null) => void
+  /** 设置会话知识范围（2026-09-15，P1）：本会话关联的知识库 id 列表（undefined=未关联）。
+   *  只写本地状态——透传与"变更后重启内核"由 useYFWCLI 的 spawn 字段 + bridge 的签名比对负责。 */
+  setConversationKnowledgeSpaces: (id: string, spaces: string[] | undefined) => void
   // Invalidate the CLI session bound to a conversation so the next message
   // spawns a fresh CLI process (used when active provider/model changes — the
   // running CLI inherited env vars at spawn time and won't pick up new settings).
@@ -556,10 +532,20 @@ export const useChatStore = create<ChatState>()(
       },
 
       deleteConversation: (id) => {
-        // v2：删除该会话的 ext 兜底键（transcript 随内核保留，不在此清理）
+        // v2：删除该会话的 ext 兜底键
+        // 2026-09-16：**同时删除磁盘转录**（此前注释写着"transcript 随内核保留，不在此清理"
+        // → 用户删了会话，<YFW_HOME>/projects 下的 jsonl 永远留着，本机实测积到 2.3G）。
+        const target = get().conversations.find(c => c.id === id)
         try { window.localStorage.removeItem(EXT_KEY_PREFIX + id) } catch { /* ignore */ }
         // 同步清理该会话的健康快照（避免 localStorage 残留陈旧会话数据）
         useHealthStore.getState().reset(id)
+        // 磁盘转录文件名 = **内核 sessionId**（conversation.sessionId），不是 GUI 的 conversation.id
+        // （两套 id 不同，传 id 只会 not-found）。历史会话可能没有 sessionId → 直接跳过，绝不猜测路径。
+        // fire-and-forget：删失败（桥未启动 / 会话仍在运行被桥拒绝 409 / 文件本就不在）都不影响
+        // 本地删除，也不打扰用户——所以既不 await 也不上报。
+        if (target?.sessionId) {
+          void deleteTranscriptRemote(target.sessionId, target.cwd || '').catch(() => {})
+        }
         set(state => {
           const filtered = state.conversations.filter(c => c.id !== id)
           const nextActive = state.activeConversationId === id
@@ -697,6 +683,17 @@ export const useChatStore = create<ChatState>()(
         set(state => ({
           conversations: state.conversations.map(c =>
             c.id === id ? { ...c, agentId: agentId || undefined } : c
+          ),
+        }))
+      },
+
+      // 会话知识范围（2026-09-15，P1）：**只动 knowledgeSpaces**（不碰 updatedAt/title ——
+      // 关联一次知识库不该把会话顶到列表最前、也不该改标题，那是 cwd/agent 之类"切换语境"
+      // 的语义，而关联是"给当前会话加一副眼镜"）。空数组归一为 undefined（见 sanitizeKnowledgeSpaces）。
+      setConversationKnowledgeSpaces: (id, spaces) => {
+        set(state => ({
+          conversations: state.conversations.map(c =>
+            c.id === id ? { ...c, knowledgeSpaces: sanitizeKnowledgeSpaces(spaces) } : c
           ),
         }))
       },
@@ -1438,14 +1435,22 @@ export const useChatStore = create<ChatState>()(
     {
       name: 'yfworking-chat',
       storage: resilientChatStorage(),
-      version: 3,
+      version: 4,
       // v1 → v2 迁移（2026-08-17）：消息体剥离（权威源 = 内核 transcript），收集 sessionIds，
       // 旧 41MB 大键备份为 yfworking-chat-v1 供用户确认导出后清理，绝不静默删除。
       // v2 → v3（2026-09-09）：Conversation.mode 字段——旧行 mode undefined → 'task'。
       //   · version===2 分支走 sanitizeConversations（mode 归一在消毒中心化处理）；
       //   · version<2（v1/0/损坏恢复）分支在重建行内补 mode:'task'；
       //   · 已 v3 的行（未来部分回滚写入）经 rehydrate/getItem 消毒同样归一。
+      // v3 → v4（2026-09-15）：Conversation.knowledgeSpaces（会话知识范围）——由消毒中心化归一
+      //   （v3 分支同样只走 sanitizeConversations）。**刻意不复用下面的 <2 重建分支**：
+      //   那个分支按"已剥离的 messages"重算 messageCount/tokensTotal，而 v3 行里这两个值
+      //   恰恰是当初算好存下来的，跑一遍就把会话列表的统计清零（迁移只该补新字段，
+      //   不该顺手重建）。
       migrate: (persisted, version) => {
+        if (version === 3) {
+          return migrateChatV3(persisted)
+        }
         if (version === 2) {
           // v2 数据可能因 partialize 不存 messages 而缺字段（旧版写入/损坏），
           // 消毒保证 messages 是数组，避免下游访问崩；mode undefined → 'task'（v3）
@@ -1506,6 +1511,9 @@ export const useChatStore = create<ChatState>()(
           id: c.id, title: c.title, createdAt: c.createdAt, updatedAt: c.updatedAt,
           model: c.model, pinned: c.pinned, tags: c.tags, summary: c.summary,
           cwd: c.cwd, mode: c.mode, titleAuto: c.titleAuto, sessionId: c.sessionId, agentId: c.agentId, setId: c.setId,
+          // 会话知识范围必须进白名单：partialize 是**显式取字段**（非全量展开），漏掉它 =
+          // 关联关系永远不落盘，重启应用后静默丢失（表现为"关联过一次，下次打开又没了"）。
+          knowledgeSpaces: c.knowledgeSpaces,
           sessionIds: c.sessionIds,
           messageCount: c.messageCount ?? ((c.messages?.length ?? 0) > 0 ? c.messages.length : undefined),
           tokensTotal: c.tokensTotal,

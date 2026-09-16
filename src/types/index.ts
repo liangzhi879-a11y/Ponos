@@ -146,6 +146,12 @@ export interface Conversation {
   titleAuto?: boolean
   sessionId?: string   // CLI session id bound to this conversation (used for resume)
   agentId?: string   // Professional agent bound to this conversation (see src/lib/agents.ts)
+  /** 会话知识范围（2026-09-15，P1「会话模式关联经验库之外的知识库」）：本会话显式关联的
+   *  知识库（空间）id 列表。经验库（experience/session-memory）恒在范围内、不在此列。
+   *  undefined = 未关联（只用经验库）。变更在**下一次发消息**时生效——内核在启动段冻结范围，
+   *  桥检测到签名变化会以 --resume 重启内核（上下文不丢）。
+   *  上限 8 个（kernel/knowledge.mjs MAX_ASSOC_SPACES），超出的部分被内核忽略。 */
+  knowledgeSpaces?: string[]
   setId?: string
   /** 该会话经历过的全部内核 transcript sessionId（按需加载消息体用，持久化索引字段） */
   sessionIds?: string[]
@@ -164,7 +170,7 @@ export interface ConversationSet {
 
 // --- Settings Types ---
 
-export type ThemeMode = 'dark' | 'light' | 'dark-glass' | 'light-glass'
+export type ThemeMode = 'dark' | 'light' | 'dark-glass'
 export type Language = 'zh-CN' | 'en-US'
 
 /** Static metadata for each theme (used by the picker UI). */
@@ -188,7 +194,7 @@ export interface ThemeMeta {
   isDefault?: boolean
   /** Dark or light variant — used to group in the picker */
   mode: 'dark' | 'light'
-  /** 主题分组（2 实色 + 2 玻璃）—— ThemePicker 按此分组渲染 */
+  /** 主题分组（2 实色 + 1 玻璃）—— ThemePicker 按此分组渲染 */
   category: 'solid' | 'glass'
 }
 
@@ -230,18 +236,6 @@ export const THEMES: readonly ThemeMeta[] = [
     category: 'glass',
     mode: 'dark',
   },
-  {
-    id: 'light-glass',
-    name: '远方',
-    variant: '浅色玻璃',
-    tagline: '暖金微光 · 白磨砂',
-    glyph: '璃',
-    primary: '#ff7429',
-    deep: '#e8590c',
-    surface: '#fdf9f5',
-    category: 'glass',
-    mode: 'light',
-  },
 ] as const
 
 /** 主题对应的 html class 名（main.tsx 预挂载与 AppShell 运行时共用同一数据源） */
@@ -260,7 +254,7 @@ export interface AppSettings {
   showThinking: boolean
   autoScroll: boolean
 
-  // Glass 磨砂玻璃主题（仅 dark-glass / light-glass 生效）
+  // Glass 磨砂玻璃主题（仅 dark-glass 生效）
   /** 玻璃面板透光度 0.3~0.9（越低越透明、越透出背后光晕/桌面） */
   glassOpacity: number
   /** 光晕漂移动画开关 */
@@ -908,11 +902,55 @@ export interface DiagCheck {
 export interface DiagSnapshot { overall: DiagOverall; checks: DiagCheck[]; lastRunAt: number }
 export interface DiagBootSummary { ok: boolean; nodes: { name: string; at: string; ok: boolean; error?: string }[]; failedAt: string | null }
 
+// --- 密码库（Password Vault）Types ---
+// spec：docs/superpowers/specs/2026-09-15-password-vault-design.md
+/** 错误码：不可用（环境）与损坏（文件）必须可区分，且都不能当成"空库" */
+export type VaultErrorCode = 'unavailable' | 'corrupt' | 'not_found' | 'invalid' | 'io'
+/** 列表条目：**不含 password**（明文只在主进程，需显示时单条 reveal） */
+export interface VaultEntryMeta {
+  id: string
+  name: string
+  url: string
+  username: string
+  notes: string
+  tags: string[]
+  createdAt: string
+  updatedAt: string
+}
+export interface VaultFailure { ok: false; error: VaultErrorCode; message?: string }
+export interface VaultStatus { ok: boolean; available: boolean; count: number; error?: VaultErrorCode; message?: string }
+export interface VaultListResult { ok: boolean; entries: VaultEntryMeta[]; error?: VaultErrorCode; message?: string }
+export interface VaultUpsertInput {
+  id?: string
+  name: string
+  url?: string
+  username?: string
+  /** 缺省 = 更新时保持原密码；显式 '' = 清空；新增时必填 */
+  password?: string
+  notes?: string
+  tags?: string[]
+}
+export interface YFWVaultAPI {
+  status: () => Promise<VaultStatus>
+  list: () => Promise<VaultListResult>
+  upsert: (payload: VaultUpsertInput) => Promise<{ ok: true; entry: VaultEntryMeta } | VaultFailure>
+  remove: (id: string) => Promise<{ ok: true } | VaultFailure>
+  reveal: (id: string) => Promise<{ ok: true; password: string } | VaultFailure>
+  copy: (id: string) => Promise<{ ok: true; clearInMs: number } | VaultFailure>
+  // 应用密钥（模型 authToken 等）——与用户密码条目分区，不进密码列表 UI
+  secretKeys: () => Promise<{ ok: true; keys: string[] } | VaultFailure>
+  secretGetAll: () => Promise<{ ok: true; secrets: Record<string, string> } | VaultFailure>
+  secretSet: (key: string, value: string) => Promise<{ ok: true } | VaultFailure>
+  secretDelete: (key: string) => Promise<{ ok: true } | VaultFailure>
+}
+
 declare global {
   interface Window {
     yfworkingAPI?: YFWAPI
     yfworkingWindow?: YFWorkingWindowControls
     yfworkingFile?: YFWFileAPI
+    /** 密码库：桌面端才有；浏览器 dev 下不存在（调用方按可用性降级） */
+    yfworkingVault?: YFWVaultAPI
     /** 内置浏览器自动化（Task 3 preload IPC：打开窗口/暂停/继续/清空会话/状态） */
     browser?: {
       openWindow: (sessionId: string) => Promise<{ ok: boolean }>

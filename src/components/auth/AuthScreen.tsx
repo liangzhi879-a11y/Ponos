@@ -1,12 +1,12 @@
 // src/components/auth/AuthScreen.tsx —— 登录/锁定/向导路由宿主 + 主题相关登录视觉
 // 由 AuthWindowRoot（?auth=1 独立认证小窗，D11-D13/Task 6b）渲染——不再是主窗口视图：
 //   · mount 即 init() 拉一次 status（占位屏时代从不触发，phase 恒 unknown——Task 5 ledger 修复点）；
-//   · uninitialized → SetupWizard（首设口令向导）；locked → LockedView（lockedForMs 倒计时）；
+//   · uninitialized → SetupWizard（首设密码向导）；locked → LockedView（lockedForMs 倒计时）；
 //   · ok / setup-done → LoginView。login 成功 → IPC auth:granted（主进程关小窗、开主窗口），
 //     不再 setView——主窗口视图机由主进程放行后才创建并自 'boot' 开场（bridge token 每次
 //     启动失效，生产语义每次启动需登录，见 task-6-brief Interfaces）。
 // 背景决策（2026-09-10 GUI 统一）：整屏 bg-app 主题底 + 两枚品牌 orb 光晕；字标按主题明暗
-// 切换（dark/dark-glass → 白字标；light/light-glass → 深字标），不再强制深色底。
+// 切换（dark/dark-glass → 白字标；light → 深字标），不再强制深色底。
 // 卡 = cut hot topline（单对角切角 + 热边 + 签名顶线），磨砂/底色由 ci 的 --bg-elevated 接管
 // （玻璃主题自动半透明）。
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
@@ -68,7 +68,7 @@ function AuthFrame({
   )
 }
 
-/** 登录视图：单口令框 + 主按钮（pending 禁用转圈）+ Enter 提交；423 锁定 → LockedView */
+/** 登录视图：单密码框 + 主按钮（pending 禁用转圈）+ Enter 提交；423 锁定 → LockedView */
 function LoginView() {
   const { t } = useTranslation()
   const pending = useAuthStore(s => s.pending)
@@ -95,7 +95,7 @@ function LoginView() {
         useAuthStore.getState().setPhase('locked')
         return
       }
-      setPw('') // 口令错误清空重输
+      setPw('') // 密码错误清空重输
       return
     }
     grant() // 登录成功 → IPC auth:granted：主进程关认证小窗并创建主窗口（boot 开场）

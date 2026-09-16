@@ -21,14 +21,14 @@
 // 大纲点击复用 Task 5 的行定位能力：写 `targetLine` → 阅读视图的 effect 滚动并高亮 1.5s
 // （锚点就是块上的 `data-line`）。这里**不自己实现一套滚动**，否则高亮与滚动会各走各的。
 import { useMemo } from 'react'
-import { CornerDownRight, Tag } from 'lucide-react'
-import { useLinks, useRelatedDoc, useStats } from '@/hooks/useKnowledge'
+import { CornerDownRight, Search, Tag, Unlink } from 'lucide-react'
+import { useBrokenLinks, useLinks, useMentions, useRelatedDoc, useStats } from '@/hooks/useKnowledge'
 import { useKnowledgeStore } from '@/stores/knowledgeStore'
 import { useTranslation } from '@/i18n/useTranslation'
 import { normalizeTags } from '@/lib/knowledgeBlocks'
 import type { KnowledgeDoc } from '@/lib/knowledgeApi'
 import { shortRef } from '@/lib/knowledgeGraph'
-import { ageParts, buildOutline, dedupeSources, outlineIndent } from '@/lib/knowledgeInspector'
+import { ageParts, buildOutline, groupBacklinks, outlineIndent } from '@/lib/knowledgeInspector'
 import { collectAnchors, formatScore, trimShared } from '@/lib/knowledgeRelations'
 import type { KnowledgeRelatedAnchor } from '@/lib/knowledgeApi'
 import { cn } from '@/lib/utils'
@@ -48,8 +48,27 @@ export function KnowledgeInspector({ doc }: KnowledgeInspectorProps) {
 
   const outline = useMemo(() => buildOutline(doc?.blocks), [doc])
   const tags = useMemo(() => normalizeTags(doc?.tags), [doc])
-  // 去重：同一文档在一篇文里链接两次 → 后端 `in` 会给两条同 from 的记录（见 lib 注释）
-  const backlinks = useMemo(() => dedupeSources(links?.in), [links])
+  /**
+   * 反链（2026-09-14 批次 2 增强）：按**来源文档**分组，组内保留每处引用（行号 + 上下文片段 + 锚点）。
+   *
+   * 旧实现用 `dedupeSources` 只留"谁引用了我"，用户看到来源却**不知道在哪一段、说了什么**，
+   * 点过去只能从文档开头自己翻。Obsidian 的反链面板之所以有用，正是因为它给上下文。
+   * 这里仍然保留"同一来源只出一个文档头"的层级（列表才不至于变成一堆重复文件名），
+   * 但把该文档的每处提及列在下面 —— 层级不丢，信息补全。
+   */
+  const backlinkGroups = useMemo(() => groupBacklinks(links?.in), [links])
+  // 未链接提及（批次 2）：全库范围内"提到本文档却没打链接"的位置。发现机制 ——
+  // 有了它用户才知道"该连的还没连"，这是把孤立文档织成网的主要入口。
+  const { data: mentions } = useMentions(doc?.id ?? null, 20)
+  /**
+   * 断链清单（2026-09-14 批次 2）：`target` 为 null 的引用，按目标名聚合。
+   *
+   * 为什么是**全局**（跟当前空间走）而不是"本文档的断链"：断链是**待办**（补文档 / 改链接 /
+   * 删引用），用户关心的是"我的库里有多少坏链接"。只显示本文档的断链会让用户永远不知道
+   * 别处还有多少 —— 而那些正是需要他去修的。
+   */
+  const spaceId = useKnowledgeStore(s => s.spaceId)
+  const { data: broken } = useBrokenLinks(spaceId ?? null, 100)
   // 整篇锚点汇总：按目标块去重、剔除 duplicate（去重提示不是关联，spec §5.5）
   const relatedAnchors = useMemo(() => collectAnchors(relatedBlocks), [relatedBlocks])
 
@@ -67,6 +86,18 @@ export function KnowledgeInspector({ doc }: KnowledgeInspectorProps) {
     const st = useKnowledgeStore.getState()
     st.setDocId(docId)      // 换文档顺带清 targetLine（行号只对上一篇有意义）
     st.setView('read')
+  }
+
+  /**
+   * 反链/提及条目点击 = **打开来源文档并定位到那一行**。
+   * 用 `setDocId` + `setTargetLine` 两步（同 store 给"检索命中"的既有口径），
+   * 不复用 openAtBlock：那条路径要块 ID，而反链给的是行号（更精确且零额外请求）。
+   */
+  const openAtLine = (docId: string, line?: number | null) => {
+    const st = useKnowledgeStore.getState()
+    st.setDocId(docId)
+    st.setView('read')
+    if (typeof line === 'number' && Number.isFinite(line) && line > 0) st.setTargetLine(line)
   }
 
   // 关联锚点跳转：与条目卡片走**同一个** store 动作（打开文档 + 切阅读视图 + 按块定位）。
@@ -106,22 +137,69 @@ export function KnowledgeInspector({ doc }: KnowledgeInspectorProps) {
               )}
             </Section>
 
-            <Section title={t('knowledge.backlinks')} count={backlinks.length}>
-              {backlinks.length ? backlinks.map(from => (
-                <button
-                  key={from}
-                  type="button"
-                  onClick={() => openDoc(from)}
-                  title={from}
-                  className="w-full flex items-center gap-1.5 px-2 py-[3px] text-left text-[11px] text-secondary hover:bg-hover transition-colors"
-                >
-                  <CornerDownRight className="w-3 h-3 shrink-0 text-tertiary" />
-                  <span className="truncate">{shortRef(from)}</span>
-                </button>
+            <Section title={t('knowledge.backlinks')} count={backlinkGroups.reduce((n, g) => n + g.refs.length, 0)}>
+              {backlinkGroups.length ? backlinkGroups.map(g => (
+                <div key={g.from} className="mb-0.5">
+                  {/* 文档头一行：点它 = 打开来源文档（不定位）。组内每条提及再各自定位到行。 */}
+                  <button
+                    type="button"
+                    onClick={() => openDoc(g.from)}
+                    title={g.from}
+                    className="w-full flex items-center gap-1.5 px-2 py-[3px] text-left text-[11px] text-secondary hover:bg-hover transition-colors"
+                  >
+                    <CornerDownRight className="w-3 h-3 shrink-0 text-tertiary" />
+                    <span className="truncate">{shortRef(g.from)}</span>
+                    {g.refs.length > 1 && <span className="micro shrink-0">×{g.refs.length}</span>}
+                  </button>
+                  {/* 每处引用的上下文（批次 2 的核心）：没有它，用户只能从文档开头自己翻。
+                      嵌入（`![[x]]`）与带锚点的引用加显式标记 —— 它们与普通引用读法不同。 */}
+                  {g.refs.map((r, i) => (
+                    <button
+                      key={`${g.from}-${r.line ?? i}`}
+                      type="button"
+                      onClick={() => openAtLine(g.from, r.line)}
+                      title={r.anchorRef ? `锚点：${r.anchorRef}` : `L${r.line ?? '?'}`}
+                      className="w-full flex items-start gap-1 pl-5 pr-2 py-[2px] text-left hover:bg-hover transition-colors"
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[10px] text-tertiary/90">
+                          {r.embed && <span className="text-brand-500/90">嵌入 </span>}
+                          {r.anchorRef && <span className="text-brand-500/90">#{r.anchorRef} </span>}
+                          {r.snippet || `L${r.line ?? '?'}`}
+                        </span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
               )) : (
                 // 中性陈述：多数文档没有入链是常态，不是错误（见文件头）
                 <Hint>{t('knowledge.backlinksEmpty')}</Hint>
               )}
+            </Section>
+
+            {/* 未链接提及（2026-09-14 批次 2）：Obsidian 的"发现本该有的连接"。
+                与上面反链语义**不同**：反链是已经连上的，这里是"提到了但没连"（用户据此补链）。
+                上限 20 条由内核扫到即停保证，`truncated` 时如实提示 —— 用户以为看到全部
+                就不会去别处找了。 */}
+            <Section title={t('knowledge.mentions')} count={mentions?.items.length ?? 0}>
+              {mentions?.items.length ? mentions.items.map(m => (
+                <button
+                  key={`${m.docId}-${m.block}`}
+                  type="button"
+                  onClick={() => openAtLine(m.docId, m.line)}
+                  title={`${m.docId} · L${m.line}`}
+                  className="w-full flex items-start gap-1.5 px-2 py-[3px] text-left transition-colors hover:bg-hover"
+                >
+                  <Search className="w-3 h-3 shrink-0 mt-px text-tertiary" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[11px] text-secondary">{String(m.title ?? '').trim() || shortRef(m.docId)}</span>
+                    <span className="block truncate text-[10px] text-tertiary">{m.snippet}</span>
+                  </span>
+                </button>
+              )) : (
+                <Hint>{t('knowledge.mentionsEmpty')}</Hint>
+              )}
+              {mentions?.truncated && <Hint>{t('knowledge.mentionsTruncated')}</Hint>}
             </Section>
 
             <Section title={t('knowledge.related')} count={relatedAnchors.length}>
@@ -150,6 +228,42 @@ export function KnowledgeInspector({ doc }: KnowledgeInspectorProps) {
               {/* 语义提示：关联是**自动派生**的，与上面"反链"（别人手写的引用）不是一回事。
                   这行文字是 spec §7.5「两段语义不同」在界面上的落点（用户据此判断删文档时该不该管它） */}
               {relatedAnchors.length > 0 && <Hint>{t('knowledge.relatedHint')}</Hint>}
+            </Section>
+
+            <Section title={t('knowledge.brokenLinks')} count={broken?.broken ?? 0}>
+              {broken?.items.length ? (
+                <>
+                  <Hint>{t('knowledge.brokenLinksCount', { n: broken.broken })}</Hint>
+                  {broken.items.map(item => (
+                    <div key={item.to} className="mb-0.5">
+                      {/* 断链按**目标名**聚合（同一拼错常被写错好几次）：组头显示目标 + 次数，
+                          组内列出每处引用（点进去改）。按行平铺只会看到重复的同一件事。 */}
+                      <div className="flex items-center gap-1.5 px-2 py-[3px] text-[11px] text-secondary">
+                        <Unlink className="w-3 h-3 shrink-0 text-tertiary" />
+                        <span className="truncate" title={item.to}>{item.to}</span>
+                        <span className="micro shrink-0">×{item.count}</span>
+                      </div>
+                      {item.refs.map((r, i) => (
+                        <button
+                          key={`${item.to}-${r.from}-${r.line ?? i}`}
+                          type="button"
+                          onClick={() => openAtLine(r.from, r.line)}
+                          title={`${r.from} · L${r.line ?? '?'}`}
+                          className="w-full flex items-center gap-1 pl-5 pr-2 py-[2px] text-left text-[10px] text-tertiary hover:bg-hover transition-colors"
+                        >
+                          <span className="truncate">{shortRef(r.from)}{typeof r.line === 'number' ? `:${r.line}` : ''}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ))}
+                  {/* 解释性提示：断链的处理动作有三种（补文档 / 改链接 / 删引用），
+                      用户需要知道这不是"系统出错"，而是**待办**。 */}
+                  <Hint>{t('knowledge.brokenLinksHint')}</Hint>
+                </>
+              ) : (
+                // 无断链是好事：中性陈述（不是"加载失败"，也不是"恭喜"）
+                <Hint>{t('knowledge.brokenLinksEmpty')}</Hint>
+              )}
             </Section>
 
             <Section title={t('knowledge.meta')}>

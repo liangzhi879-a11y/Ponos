@@ -15,12 +15,13 @@
 // 驾驶舱层常驻保活、双视图切换本就无加载成本；morph overlay 反而制造延迟与闪烁）。
 // onGoCockpit 回调签名保留 rect 参数（Header 不再需要量 rect，兼容旧接线）。
 import { useEffect, useState } from 'react'
-import { useViewStore } from '@/stores/viewStore'
+import { useViewStore, sanitizeRail, sanitizeSecondTab } from '@/stores/viewStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { THEME_CLASS_NAMES, THEMES } from '@/types'
 import { BootScreen } from '@/components/boot/BootScreen'
 import { CockpitScreen } from '@/components/cockpit/CockpitScreen'
+import { resolveCockpitNav } from '@/components/cockpit/cockpitNav'
 import { WorkShell } from './WorkShell'
 
 export function ViewRouter() {
@@ -85,6 +86,29 @@ export function ViewRouter() {
     st.enterWork(st.workState.rail)
   }
 
+  /**
+   * 驾驶舱功能入口（2026-09-15）：iframe 点模块 → 真正进功能，而不是停在只读详情面板。
+   * 载荷先过 resolveCockpitNav 解析（形状/互斥/不变量），白名单用 viewStore 的
+   * sanitizeRail/sanitizeSecondTab 现场判定——合法值只有一处真相源，不在此抄名单。
+   * 非法载荷一律不动作（"点了没反应"优于"跳到错误页面"）。
+   */
+  const handleCockpitNavigate = (raw: unknown) => {
+    const spec = resolveCockpitNav(raw, {
+      isRail: v => typeof v === 'string' && sanitizeRail(v) === v,
+      isSecondTab: v => typeof v === 'string' && sanitizeSecondTab(v) === v,
+    })
+    if (!spec) return
+    if (spec.kind === 'utility') {
+      window.yfworkingWindow?.openUtility?.(spec.utility)
+      return
+    }
+    // 已通过白名单判定 → sanitize* 幂等还原为字面量联合类型（无需断言）
+    // secondTab 的 rail==='task' 不变量由 enterWork 再守一道
+    useViewStore
+      .getState()
+      .enterWork(sanitizeRail(spec.rail), spec.secondTab === null ? null : sanitizeSecondTab(spec.secondTab))
+  }
+
   /** work Header logo 点击 → 直切回驾驶舱（2026-09-10 morph 退役；rect 参数兼容旧接线） */
   const handleGoCockpit = () => {
     useViewStore.getState().setView('cockpit')
@@ -127,6 +151,7 @@ export function ViewRouter() {
         active={!inWork && !booting}
         preload={booting}
         onEnterWork={handleEnterWork}
+        onNavigate={handleCockpitNavigate}
       />
       {/* work 组件树：始终 absolute inset-0（两态同构，预热→激活零重排），
           仅切可见性——预热期 invisible + pointer-events-none：布局照常计算
