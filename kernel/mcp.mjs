@@ -214,9 +214,17 @@ export function createJsonRpcSession({ name, timeoutMs = DEFAULT_MCP_TIMEOUT_MS,
       const msg = { jsonrpc: '2.0', id, method }
       if (params !== undefined) msg.params = params
       try {
-        // send 可同步失败（stdio 写失败 / HTTP 头插值失败）：必须让该请求被 reject，
-        // 否则 promise 永久悬挂。传输侧若已自行 rejectAll，这里的 finish 是空操作。
-        if (send(msg) === false) finish(reject, new Error(`MCP 服务器 ${name} 发送失败`))
+        // send 可同步失败（stdio 写管道）也可异步失败（HTTP fetch）：两种情况都必须
+        // 落到本请求上，否则 promise 会一直挂到超时、错误还会变成 unhandled rejection。
+        // 传输侧若已自行 rejectAll，这里的 finish 是空操作。
+        const sent = send(msg)
+        if (sent === false) finish(reject, new Error(`MCP 服务器 ${name} 发送失败`))
+        else if (sent && typeof sent.then === 'function') {
+          sent.then(
+            (v) => { if (v === false) finish(reject, new Error(`MCP 服务器 ${name} 发送失败`)) },
+            (e) => finish(reject, e),
+          )
+        }
       } catch (e) { finish(reject, e) }
     })
   }

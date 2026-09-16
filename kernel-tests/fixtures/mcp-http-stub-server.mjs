@@ -8,7 +8,7 @@
 // mock fetch 只能验证"我调了什么"，验证不了"我处理得对不对"。
 //
 // 用法：node mcp-http-stub-server.mjs [mode]
-//   mode: json（默认）| sse | http500 | hang | no-session | echo-auth
+//   mode: json（默认）| sse | http500 | hang | hang-tools | no-session | echo-auth
 // 启动后向 stdout 打印一行 PORT=<n>，供测试读取后连接。
 import http from 'node:http'
 
@@ -41,6 +41,11 @@ const server = http.createServer((req, res) => {
     }
 
     const isInit = msg.method === 'initialize'
+
+    // hang-tools：握手正常返回，但**后续请求一律不响应**。
+    // 专门用来测"会话已建立后某次请求超时"——这是最贴近真实故障（服务器卡住）的形态，
+    // 也才能验证超时是否清了 pending 并中断了在途连接。hang 模式则连握手都不给。
+    if (mode === 'hang-tools' && !isInit) return
 
     // no-session：init 之外一律 404，模拟"会话已过期/服务器重启"
     if (mode === 'no-session' && !isInit) {
