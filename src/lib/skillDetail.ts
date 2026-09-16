@@ -17,6 +17,9 @@
 //
 // `404` = 技能在磁盘上已不存在（被删/被移）；网络异常 = 桥未就绪；HTTP 错误 = 服务端问题。
 // 若都笼统返回空对象，界面只能渲染一张空白面板 —— 用户会以为界面坏了，而不是"这个技能没了"。
+
+import { resolveBridgeBase } from './bridgeBase.ts'
+
 export type SkillDetail = {
   id: string
   dir: string
@@ -35,12 +38,11 @@ export type SkillDetail = {
 
 export type SkillDetailResult = SkillDetail | { error: string }
 
-const BASE = 'http://127.0.0.1:3939'
-
 /** 拉取技能详情；失败返回 `{ error }`（分类见文件头）。**不抛**给渲染层。 */
 export async function fetchSkillDetail(id: string): Promise<SkillDetailResult> {
   try {
-    const r = await fetch(`${BASE}/skill-detail?id=${encodeURIComponent(id)}`)
+    // 基地址见 bridgeBase.ts：此前硬编码 3939 与桥真实端口不符，默认配置下必然连不上
+    const r = await fetch(`${resolveBridgeBase()}/skill-detail?id=${encodeURIComponent(id)}`)
     if (r.status === 404) return { error: 'not-found' }
     if (!r.ok) return { error: `HTTP ${r.status}` }
     const j = await r.json() as { ok?: boolean; error?: string } & Partial<SkillDetail>

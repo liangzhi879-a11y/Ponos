@@ -9,14 +9,14 @@
 //   ③ **读失败降级为空清单但透出 readable**：注册表损坏时"界面显示全开"是对的（内核也按全开处理），
 //      但必须让界面能说明"读取失败"，否则用户会以为自己的停用配置丢了。
 
+import { resolveBridgeBase } from './bridgeBase.ts'
+
 export type DisabledState = {
   agents: string[]
   skills: string[]
   /** false = 注册表存在但读不出来；界面据此提示"配置读取失败，当前按全部启用处理" */
   readable: boolean
 }
-
-const BASE = 'http://127.0.0.1:3939'
 
 /** 归一：去空、去重、保序（与内核 normalizeDisabled 同口径）。 */
 export function normalizeIdList(v: unknown): string[] {
@@ -25,7 +25,8 @@ export function normalizeIdList(v: unknown): string[] {
 }
 
 async function req(path: string, init?: RequestInit): Promise<Response> {
-  return fetch(`${BASE}${path}`, init)
+  // 基地址见 bridgeBase.ts：此前硬编码 3939 与桥真实端口不符，默认配置下必然连不上
+  return fetch(`${resolveBridgeBase()}${path}`, init)
 }
 
 /** 读取停用注册表。网络异常时返回"全开 + unreadable"，绝不抛给渲染层。 */

@@ -7,29 +7,12 @@
 //   · 读失败降级但不掩盖：返回空 servers + error，界面既能显示空态也能显示原因
 //
 // 【端口坑，2026-09-16 实测】桥真实监听 `YFW_BRIDGE_PORT || 51517`
-// （server/bridge.mjs:59、electron/main.cjs:206、vite.config.ts:11 三处一致），
-// 主流程一律走 getBridgeUrl()。而 disabledApi.ts:19 / agentsApi.ts:23 硬编码了
-// 历史端口 127.0.0.1:3939 —— 那是坏代码，**不要照抄**，否则本页永远「无法连接本地服务」。
-import { getBridgeUrl } from './config.ts'
+// （server/bridge.mjs:59、electron/main.cjs:206、vite.config.ts:11 三处一致）。
+// 解析逻辑统一收敛在 bridgeBase.ts（单一真源），本模块只做 re-export 兼容既有调用方。
+import { resolveBridgeBase, BRIDGE_BASE_FALLBACK } from './bridgeBase.ts'
 
 /** 兜底基地址：与桥默认端口一致。仅在 getBridgeUrl() 取不到时使用（如 node --test 无 vite define） */
-export const MCP_BASE = 'http://127.0.0.1:51517'
-
-/**
- * 解析基地址：注入值优先 → getBridgeUrl()（生产，跟随 YFW_BRIDGE_PORT/VITE_BRIDGE_URL）
- * → MCP_BASE 兜底。getBridgeUrl 内部读 import.meta.env / __BRIDGE_PORT__，
- * 在 node --test（无 vite define）下会抛，故必须包 try。
- */
-function resolveBaseUrl(injected?: string): string {
-  if (injected) return injected
-  try {
-    const url = getBridgeUrl()
-    if (url) return url
-  } catch {
-    // node --test：无 import.meta.env / __BRIDGE_PORT__，退回兜底端口
-  }
-  return MCP_BASE
-}
+export const MCP_BASE = BRIDGE_BASE_FALLBACK
 
 export type McpServerConfig = {
   command: string
@@ -60,7 +43,7 @@ async function requestJson(
   baseUrlInjected?: string,
 ): Promise<{ httpOk: boolean; status: number; data: Record<string, unknown> | null; error?: string }> {
   try {
-    const res = await fetch(`${resolveBaseUrl(baseUrlInjected)}${path}`, {
+    const res = await fetch(`${resolveBridgeBase(baseUrlInjected)}${path}`, {
       method: init.method,
       headers: init.body === undefined ? undefined : { 'Content-Type': 'application/json' },
       body: init.body === undefined ? undefined : JSON.stringify(init.body),

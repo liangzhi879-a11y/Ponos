@@ -7,6 +7,8 @@
 // 口径：`GET /agents` 返回的是**完整目录 + `disabled` 标记**（不是"当前可用集合"）——
 // 这是刻意的，否则停用后该行消失，用户永远无法把它点回来（开关变单向）。
 
+import { resolveBridgeBase } from './bridgeBase.ts'
+
 export type KernelAgent = {
   id: string
   name: string
@@ -20,8 +22,6 @@ export type KernelAgent = {
   disabled: boolean
 }
 
-const BASE = 'http://127.0.0.1:3939'
-
 /**
  * 拉取内核 Agent 目录。
  * 网络异常/桥未就绪时返回 `[]`（面板降级为"不显示该分区"），绝不抛给渲染层——
@@ -29,7 +29,8 @@ const BASE = 'http://127.0.0.1:3939'
  */
 export async function fetchKernelAgents(): Promise<KernelAgent[]> {
   try {
-    const r = await fetch(`${BASE}/agents`)
+    // 基地址见 bridgeBase.ts：此前硬编码 3939 与桥真实端口不符，默认配置下必然连不上
+    const r = await fetch(`${resolveBridgeBase()}/agents`)
     if (!r.ok) return []
     const j = await r.json() as { agents?: unknown }
     if (!Array.isArray(j.agents)) return []
