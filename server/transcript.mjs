@@ -1,13 +1,18 @@
-// transcript.mjs — GUI 从内核 transcript 按需读取会话消息的三个 handler（供 bridge.mjs 路由接入）。
+// transcript.mjs — GUI 从内核 transcript 按需读取（+ 删除）会话消息的 handler（供 bridge.mjs 路由接入）。
 //
 // 内核（本库 kernel/ 源码或 kernel-dist bundle——ponos，node 直跑）每次会话都在磁盘写 append-only JSONL
 // transcript：<CLAUDE_CONFIG_DIR ?? ~/.yfworking>/projects/<sanitize(cwd)>/<sessionId>.jsonl，
 // 每行一个原始 entry（type: user/assistant/system/attachment/queue-operation…）。
 //
-// 本模块只负责读文件 + 原样返回 entry，不做任何转换（parentUuid 链重建在 renderer/chatStore 侧）。
+// 读路径只负责读文件 + 原样返回 entry，不做任何转换（parentUuid 链重建在 renderer/chatStore 侧）。
 // 目录下还有 <sessionId>/ 子目录（subagent 产物），一律忽略，只处理 *.jsonl 且 UUID 命名的文件。
-import { readdirSync, statSync, existsSync, readFileSync } from 'fs'
-import { join } from 'path'
+//
+// 删除路径（2026-09-16 新增，deleteTranscript）：GUI 删除会话时同步清掉该会话的磁盘转录。
+// 此前该模块只读、chatStore 的注释写着"transcript 随内核保留"——结果是用户删了会话，转录
+// 永远留在 <YFW_HOME>/projects 下（实测本机 2.3G / 72 个项目目录）。删除同样只认 *.jsonl 且
+// UUID 命名的文件，且必须由调用方（chatStore）用**内核 sessionId**（≠ GUI conversation.id）驱动。
+import { readdirSync, statSync, existsSync, readFileSync, unlinkSync, rmdirSync } from 'fs'
+import { join, resolve, relative, isAbsolute } from 'path'
 import { createHash } from 'crypto'
 import { resolveYfwHome } from './yfw-home.cjs'
 
@@ -230,8 +235,48 @@ export function searchTranscripts(projectsDir, query, { limit = 50 } = {}) {
 }
 
 /**
+ * 删除单个会话的磁盘转录（GUI 删会话 → bridge /transcript/delete → 这里）。
+ *
+ * 安全约束（逐条对应门禁测试）：
+ *   · sessionId 必须通过 isUuidFile 严格校验——非 UUID 一律不动任何文件（拦 `../x`、空串等）；
+ *   · 目标路径由 cwd 经 sanitizePathSegment 计算，且必须仍在 projectsDir 之内（resolve + relative
+ *     复核，防路径穿越；sanitize 已把分隔符换成 '-'，这里是第二道闸，将来 sanitize 行为变化也不会删到外面）；
+ *   · 只删 `<sessionId>.jsonl` 文件本身，不递归、不删子目录（<sessionId>/ 是 subagent 产物，不属于本次范围）；
+ *   · **任何情况都不抛异常**——调用方是 fire-and-forget 的 UI 动作，失败只作为返回值上报。
+ *
+ * @returns {{deleted: boolean, reason: 'deleted'|'invalid-id'|'outside-base'|'not-found'|'io-error'}}
+ */
+export function deleteTranscript(projectsDir, cwd, sessionId) {
+  if (!isUuidFile(`${sessionId}.jsonl`)) {
+    return { deleted: false, reason: 'invalid-id' }
+  }
+  const base = resolve(projectsDir)
+  const projectDir = join(base, sanitizePathSegment(cwd ?? ''))
+  const fp = join(projectDir, `${sessionId}.jsonl`)
+  const rel = relative(base, fp)
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+    return { deleted: false, reason: 'outside-base' }
+  }
+  try {
+    // 不存在（或同名的是目录）→ not-found：接口按幂等处理，不算失败
+    if (!existsSync(fp) || !statSync(fp).isFile()) {
+      return { deleted: false, reason: 'not-found' }
+    }
+    unlinkSync(fp)
+  } catch {
+    return { deleted: false, reason: 'io-error' } // 文件被占用/权限不足：如实上报，不抛
+  }
+  // 删完往往只剩空壳项目目录（实测 72 个项目目录里大量如此），空目录同样算垃圾 → 顺手收掉。
+  // 失败（非空 / 被占用 / 仍有 subagent 子目录）忽略；base 自身永不删。
+  try {
+    if (projectDir !== base && readdirSync(projectDir).length === 0) rmdirSync(projectDir)
+  } catch { /* 目录非空或被占用：保留，不影响删除结果 */ }
+  return { deleted: true, reason: 'deleted' }
+}
+
+/**
  * 工厂：绑定默认 projectsDir（可由调用方注入 base 以便测试）。
- * bridge.mjs 只 import 本工厂 + 三个顶层函数即可。
+ * bridge.mjs 只 import 本工厂 + 四个顶层函数即可。
  */
 export function createTranscriptHandlers(base) {
   const projectsDir = base || transcriptBaseDir()
@@ -239,5 +284,8 @@ export function createTranscriptHandlers(base) {
     listSessions: (cwd) => listSessions(projectsDir, cwd),
     loadTranscript: (cwd, sessionId, tailFirst) => loadTranscript(projectsDir, cwd, sessionId, tailFirst),
     searchTranscripts: (query, limit) => searchTranscripts(projectsDir, query, { limit }),
+    // 参数顺序与 loadTranscript 的 handler 保持一致（sessionId 在前，cwd 在后）：
+    // 两者都由 chatStore 以 conversation.sessionId 驱动。
+    deleteTranscript: (sessionId, cwd) => deleteTranscript(projectsDir, cwd, sessionId),
   }
 }

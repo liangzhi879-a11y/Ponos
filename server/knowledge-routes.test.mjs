@@ -2,7 +2,7 @@
 // 纪律：不起 bridge、不起内核子进程（本仓库有"测试起桥误杀运行中应用"的前车之鉴）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync, rmSync, statSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { handleKnowledgeRoute, safeRelPath } from './knowledge-routes.mjs'
@@ -448,4 +448,196 @@ test('GET /knowledge/tags 与 /knowledge/index-tags 是两条不同路由（口�
   await handleKnowledgeRoute(ctx({ url: '/knowledge/index-tags', callKernel }))
   assert.deepEqual(callKernel.calls[0], ['--knowledge', 'tags'], '经验库条目标签走原路由')
   assert.deepEqual(callKernel.calls[1], ['--knowledge', 'index-tags'], '全库文档标签走新路由')
+})
+
+// ── 2026-09-14 对标 Obsidian 批次 2：引用体系三条路由 + 局部图参数 ───────────────
+
+test('GET /knowledge/mentions 缺 id → 400（不是"空集"：没有目标就无所谓"提及"）', async () => {
+  const callKernel = fakeKernel({ mentions: { items: [] } })
+  const r = await handleKnowledgeRoute(ctx({ url: '/knowledge/mentions', callKernel }))
+  // 静默返回一批无关数据会被调用方误读成"这篇文档被提及了很多次"，所以这里必须显式失败
+  assert.equal(r.status, 400)
+  assert.equal(r.body.error, 'missing-id')
+  assert.equal(callKernel.calls.length, 0, '不该为一个非法请求起内核进程（那是真金白银的开销）')
+})
+
+test('GET /knowledge/mentions?id=&limit= → 转发 --id/--limit', async () => {
+  const callKernel = fakeKernel({ mentions: { items: [{ docId: 'a.md', blockId: 'a.md#1', block: 1, line: 3, matched: '标题', snippet: '上下文' }], count: 1 } })
+  const r = await handleKnowledgeRoute(ctx({ url: '/knowledge/mentions?id=my-notes%2Fa.md&limit=5', callKernel }))
+  assert.equal(r.status, 200)
+  assert.equal(r.body.items[0].snippet, '上下文')
+  assert.deepEqual(callKernel.calls[0], ['--knowledge', 'mentions', '--id', 'my-notes/a.md', '--limit', '5'])
+})
+
+test('GET /knowledge/broken-links → 转发 --space/--limit', async () => {
+  const callKernel = fakeKernel({ 'broken-links': { items: [{ to: '不存在', count: 2, refs: [] }], total: 1, broken: 2 } })
+  const r = await handleKnowledgeRoute(ctx({ url: '/knowledge/broken-links?space=my-notes&limit=50', callKernel }))
+  assert.equal(r.status, 200)
+  assert.equal(r.body.broken, 2)
+  assert.deepEqual(callKernel.calls[0], ['--knowledge', 'broken-links', '--space', 'my-notes', '--limit', '50'])
+})
+
+test('GET /knowledge/graph?around=…&hops=… → 局部图参数转发；单给 hops 不带 around 时**不转发**', async () => {
+  const callKernel = fakeKernel({ graph: { nodes: [], edges: [] } })
+  await handleKnowledgeRoute(ctx({ url: '/knowledge/graph?space=my-notes&around=my-notes%2Fa.md&hops=2', callKernel }))
+  assert.deepEqual(callKernel.calls[0],
+    ['--knowledge', 'graph', '--space', 'my-notes', '--around', 'my-notes/a.md', '--hops', '2'],
+    '局部图两个参数都要落到命令行（漏一个就静默退回全局图）')
+  // 只给 hops 没给 around = "想做局部图但没说以谁为心"：保持全局图比"猜一个中心"安全
+  await handleKnowledgeRoute(ctx({ url: '/knowledge/graph?hops=2', callKernel }))
+  assert.deepEqual(callKernel.calls[1], ['--knowledge', 'graph'])
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 2026-09-14 对标 Obsidian 批次 4：写路径加固（原子写 / 冲突前置 / 覆盖前备份 / 同内容短路）
+//
+// 这一组修的是**数据安全**：旧实现是裸 `writeFileSync`，四个风险一起存在
+//   ① 半截文件（进程被杀，笔记只剩前几百字节，且无任何报错留下）
+//   ② 覆盖外部改动不打招呼（知识空间目录本来就是与 Obsidian/VSCode 共享的）
+//   ③ 覆盖前不备份（冲突被强制覆盖时，磁盘那份永远消失）
+//   ④ 相同内容也重写（mtime 变化 → 索引失效重算）
+// ═══════════════════════════════════════════════════════════════════════════
+
+function writeCtx(spaceRoot, body, calls = []) {
+  const callKernel = fakeKernel({
+    spaces: { spaces: [{ id: 'notes', writable: true, root: spaceRoot }] },
+    'update-doc': { updated: true },
+    'stash-doc': { ok: true, trashId: 't1', reason: 'overwrite' },
+  }, calls)
+  return { method: 'POST', url: '/knowledge/doc', callKernel, body }
+}
+
+test('批次4：mtime 不一致 → 409 冲突且**不落盘**（外部改动不会被无声覆盖）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-kr-cf-'))
+  const spaceRoot = join(dir, 'spaces', 'notes')
+  mkdirSync(spaceRoot, { recursive: true })
+  const file = join(spaceRoot, 'a.md')
+  try {
+    writeFileSync(file, '# 外部版本\n', 'utf-8')
+    const diskMtime = statSync(file).mtimeMs
+    // 客户端手里是"更早"的 mtime（= 它加载之后文件被外部程序改过）
+    const r = await handleKnowledgeRoute(ctx(writeCtx(spaceRoot, {
+      spaceId: 'notes', path: 'a.md', content: '# 我的版本\n', mtime: Math.round(diskMtime) - 60_000,
+    })))
+    assert.equal(r.status, 409)
+    assert.equal(r.body.error, 'conflict')
+    // 回带磁盘真实状态：UI 要显示"外部版本多大/多新"让用户判断（只给一句"冲突了"等于把问题丢回去）
+    assert.equal(typeof r.body.mtime, 'number')
+    assert.equal(r.body.size, Buffer.byteLength('# 外部版本\n'))
+    // **外部内容一个字节都没动** —— 这是本用例的全部意义
+    assert.equal(readFileSync(file, 'utf-8'), '# 外部版本\n')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('批次4：mtime 一致（正常编辑）→ 直接原子写入，不产生冲突、不调备份', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-kr-ok-'))
+  const spaceRoot = join(dir, 'spaces', 'notes')
+  mkdirSync(spaceRoot, { recursive: true })
+  const file = join(spaceRoot, 'a.md')
+  const calls = []
+  try {
+    writeFileSync(file, '# 旧\n', 'utf-8')
+    const r = await handleKnowledgeRoute(ctx(writeCtx(spaceRoot, {
+      spaceId: 'notes', path: 'a.md', content: '# 新内容\n', mtime: Math.round(statSync(file).mtimeMs),
+    }, calls)))
+    assert.equal(r.status, 200)
+    assert.equal(readFileSync(file, 'utf-8'), '# 新内容\n')
+    assert.ok(!calls.some((a) => a[1] === 'stash-doc'), '非冲突的正常保存不该往回收站塞备份（否则每次保存都堆一条）')
+    // 返回新 mtime：客户端据此继续保存时不会拿旧 mtime 去撞冲突（否则第二次保存必然 409）
+    assert.equal(typeof r.body.mtime, 'number')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('批次4：force 覆盖冲突 → **先备份再写**（备份失败则放弃写入）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-kr-force-'))
+  const spaceRoot = join(dir, 'spaces', 'notes')
+  mkdirSync(spaceRoot, { recursive: true })
+  const file = join(spaceRoot, 'a.md')
+  try {
+    writeFileSync(file, '# 外部版本\n', 'utf-8')
+    const callKernel = fakeKernel({
+      spaces: { spaces: [{ id: 'notes', writable: true, root: spaceRoot }] },
+      'update-doc': { updated: true },
+      'stash-doc': { ok: true, trashId: 't1', reason: 'overwrite' },
+    })
+    const r = await handleKnowledgeRoute(ctx({
+      method: 'POST', url: '/knowledge/doc', callKernel,
+      body: { spaceId: 'notes', path: 'a.md', content: '# 覆盖后\n', mtime: 1, force: true },
+    }))
+    assert.equal(r.status, 200)
+    assert.equal(readFileSync(file, 'utf-8'), '# 覆盖后\n')
+    // fakeKernel 把调用记录挂在函数自身（`callKernel.calls`），不是第二个参数 —— 记录里
+    // 每一项是"内核进程收到的完整参数数组"，用于断言转发了哪些 flag（见批次 1 的三层链路教训）
+    const stashCall = callKernel.calls.find((a) => a.includes('stash-doc'))
+    assert.ok(stashCall, '强制覆盖**必须**先备份磁盘那份：那是它唯一的留存机会')
+    assert.ok(stashCall.includes('--reason') && stashCall.includes('overwrite'),
+      '备份原因要落到命令行：回收站得如实标明"这是自动备份"而不是"用户删除的"')
+    // 参数口径必须是 stash-doc 自己的 --space/--path（不是 update-doc 的 --id）：
+    // 抄错 op 的入参会让内核报 space-not-found → 每次强制覆盖都"备份失败" → 用户再也保存不了
+    assert.ok(stashCall.includes('--space') && stashCall.includes('--path'),
+      `stash-doc 要用 --space/--path，实际：${stashCall.join(' ')}`)
+
+    // 备份失败 → 放弃写入（宁可这次不保存，也不能把别人的改动销毁得无影无踪）
+    writeFileSync(file, '# 外部第二版\n', 'utf-8')
+    const failKernel = fakeKernel({
+      spaces: { spaces: [{ id: 'notes', writable: true, root: spaceRoot }] },
+      'stash-doc': { error: 'trash-full' },
+    })
+    const r2 = await handleKnowledgeRoute(ctx({
+      method: 'POST', url: '/knowledge/doc', callKernel: failKernel,
+      body: { spaceId: 'notes', path: 'a.md', content: '# 不该写进去\n', mtime: 1, force: true },
+    }))
+    assert.equal(r2.status, 500)
+    assert.equal(r2.body.error, 'backup-failed')
+    assert.equal(readFileSync(file, 'utf-8'), '# 外部第二版\n', '备份失败时目标文件必须原封不动')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('批次4：内容与磁盘完全一致 → 不重写文件（mtime 不变），但索引照常刷新', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-kr-same-'))
+  const spaceRoot = join(dir, 'spaces', 'notes')
+  mkdirSync(spaceRoot, { recursive: true })
+  const file = join(spaceRoot, 'a.md')
+  try {
+    writeFileSync(file, '# 一样的内容\n', 'utf-8')
+    const before = statSync(file).mtimeMs
+    const callKernel = fakeKernel({
+      spaces: { spaces: [{ id: 'notes', writable: true, root: spaceRoot }] },
+      'update-doc': { updated: true },
+    })
+    const r = await handleKnowledgeRoute(ctx({
+      method: 'POST', url: '/knowledge/doc', callKernel,
+      body: { spaceId: 'notes', path: 'a.md', content: '# 一样的内容\n', mtime: Math.round(before) },
+    }))
+    assert.equal(r.status, 200)
+    assert.equal(r.body.unchanged, true)
+    // **不重写**是这条捷径的全部价值：重写会刷新 mtime → 索引被判失效 → 白烧一次全量重算
+    assert.equal(statSync(file).mtimeMs, before, '相同内容不该重写文件')
+    // 但索引仍照常刷新：'每次被接受的写入都触发增量索引' 是既有契约（老测试钉着它），
+    // 而索引可能因别的原因变旧（手工动过索引、版本升级）—— 省一次内核进程不值得破契约
+    assert.ok(callKernel.calls.some((a) => a.includes('update-doc')), '索引照常刷新（既有契约）')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('批次4：写入过程不留临时文件（原子写的 tmp 必须被 rename 掉或清理）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ponos-kr-tmp-'))
+  const spaceRoot = join(dir, 'spaces', 'notes')
+  mkdirSync(spaceRoot, { recursive: true })
+  try {
+    const r = await handleKnowledgeRoute(ctx(writeCtx(spaceRoot, {
+      spaceId: 'notes', path: 'sub/deep.md', content: '# 深路径\n',
+    })))
+    assert.equal(r.status, 200)
+    assert.equal(readFileSync(join(spaceRoot, 'sub', 'deep.md'), 'utf-8'), '# 深路径\n')
+    // 残留的 tmp 文件会被 walkMd 当成 `.md` 收进索引（临时名结尾也是 .md）→ 库里多出一篇同名文档
+    const leftovers = []
+    const walk = (d) => {
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        if (e.isDirectory()) walk(join(d, e.name))
+        else if (e.name.startsWith('.yfw-tmp-')) leftovers.push(join(d, e.name))
+      }
+    }
+    walk(spaceRoot)
+    assert.deepEqual(leftovers, [], '写入完成后不得留下临时文件')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })

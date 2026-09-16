@@ -12,7 +12,7 @@
 // 2026-09-14 起 `/knowledge/import` 多两条路：`async:true` → 202 + jobId（后台任务，
 // 经 `GET /knowledge/import/jobs/:id` 查进度/结果），以及可选的批量上限覆盖。
 // **不传 async 时同步路径（含 argv）逐字节不变** —— 既有消费者把它当契约。
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
 import { kernelReadonly } from './kernel-readonly.mjs'
 // 2026-09-14：异步导入任务。`spawnKernelStreaming` 只作为**默认实现**注入（测试注入假实现，
@@ -26,6 +26,9 @@ import { PACK_ID_RE, compareSemver } from '../shared/knowledge-pack.mjs'
 // `isBlockId` 走 shared 中性层：形状判定内核 CLI 用的是同一个函数（server ⊥ kernel
 // 双向禁止 import，shared 是唯一不会漂移的落点）。
 import { isBlockId } from '../shared/knowledge-core.mjs'
+// 原子写入（2026-09-14 批次 4）：tmp + fsync + rename。旧实现是裸 writeFileSync——
+// 就地覆写时进程被杀/磁盘满会让用户的 md 停在半截，且**没有任何报错留下**（见该模块文件头）。
+import { writeFileAtomicSync } from '../shared/atomic-write.mjs'
 import {
   installPack, uninstallPack, listInstalledPacks, exportSpaceAsPack, readIndex, fetchPackDetail,
   fetchPackArchive, resolveRegistry, packsRoot,
@@ -33,6 +36,17 @@ import {
 
 // 单文档体积上限（2MB）：超过即拒，防一次 HTTP 写入把索引/内存打爆
 const MAX_DOC_BYTES = 2 * 1024 * 1024
+
+/**
+ * 覆盖冲突判定的 mtime 容差（毫秒，2026-09-14 批次 4）。
+ *
+ * 取 1ms 而不是 0：不同文件系统的 mtime 精度不同（FAT32 是 2 秒、部分网络盘更粗），
+ * 同一时刻的取值往返后可能差几毫秒。用 0 会把**正常保存**误判成冲突，用户被满屏
+ * "文件已被外部修改"挡住 —— 那比不做校验更糟（而且会让人学会无脑点"覆盖"，
+ * 冲突提示从此彻底失效）。1ms 足以滤掉精度噪声，又不会漏掉真实的外部改动
+ * （人工编辑与程序写入之间的间隔远大于 1ms）。
+ */
+const MTIME_TOLERANCE_MS = 1
 /** 离线 zip 上传上限：与包总解压上限同值（超过连读都别读，先拒） */
 const MAX_PACK_ZIP_BYTES = 50 * 1024 * 1024
 
@@ -164,10 +178,105 @@ async function handleWriteDoc({ readJsonBody, callKernel }) {
     }
   } catch { return { status: 500, body: { error: 'space root unreadable' } } }
 
-  writeFileSync(dest, content, 'utf-8')
+  // 四重防护全部通过 → 进入落盘（原子写 + 冲突校验 + 覆盖前备份 + 同内容短路，见 writeDocWithGuard）。
+  // `mtime`/`force` 是批次 4 新增的可选字段：老客户端不发 → `expectedMtime` 非有限数 →
+  // 跳过冲突检测，行为与旧版逐字一致（不误报冲突，不改变既有集成）。
   const docId = `${spaceId}/${rel}`
+  return writeDocWithGuard({
+    dest, docId, spaceId, rel, content,
+    expectedMtime: Number(body.mtime ?? body.expectedMtime),
+    force: body.force === true,
+    callKernel,
+  })
+}
+
+/**
+ * 写文档的**落盘阶段**（2026-09-14 批次 4 加固；四重防护在 handleWriteDoc 里，此处只管写）。
+ *
+ * 旧实现是一行 `writeFileSync(dest, content)`，四个问题一起存在：
+ *
+ * ① **半截文件**：就地覆写时进程被杀/磁盘满 → 用户的 md 停在一半，且无任何报错留下。
+ *    现在走 `writeFileAtomicSync`（tmp + fsync + rename，见 shared/atomic-write.mjs）。
+ * ② **覆盖别人的改动不打招呼**：客户端加载文档后，文件可能已被 Obsidian/VSCode 改过（同一目录
+ *    本来就是共享的）。旧实现直接覆盖 → 外部那笔改动**无声消失**。现在带 `mtime` 前置校验：
+ *    与磁盘上实际 mtime 不一致 → 409 冲突，除非客户端显式 `force`。
+ * ③ **覆盖前不备份**：冲突被 `force` 强行覆盖时（用户明确选择"以我这份为准"），
+ *    磁盘上那份必须先备份进回收站 —— 这是"永不静默销毁内容"的底线。
+ * ④ **相同内容也重写**：GUI 自动保存/重复 Ctrl+S 会用**完全相同**的内容重写文件，
+ *    白白改变 mtime → 索引失效重算 + 回收站堆满无意义备份。内容相同直接短路，连索引都不碰。
+ *
+ * mtime 允许 1ms 容差：不同文件系统（FAT/网络盘）的 mtime 精度差异会让"其实相等"判成冲突，
+ * 那会把正常保存变成满屏冲突弹窗 —— 比不校验更糟。
+ */
+async function writeDocWithGuard({ dest, docId, spaceId, rel, content, expectedMtime, force, callKernel }) {
+  const exists = existsSync(dest)
+  let prevBuf = null
+  let prevMtime = null
+  if (exists) {
+    try {
+      const st = statSync(dest)
+      prevMtime = st.mtimeMs
+      prevBuf = readFileSync(dest)
+    } catch (e) {
+      // 存在但读不到（权限/刚被删）：**不能当作"可以安全覆盖"** —— 读不到就无法备份。
+      return { status: 500, body: { error: 'target unreadable', message: String(e?.message ?? e) } }
+    }
+  }
+
+  // ② 冲突检测：只在客户端**明确给出期望 mtime** 时生效（老客户端不发 → 保持旧行为，不误报）
+  if (exists && Number.isFinite(expectedMtime) && prevMtime !== null
+      && Math.abs(prevMtime - Number(expectedMtime)) > MTIME_TOLERANCE_MS) {
+    if (force !== true) {
+      return {
+        status: 409,
+        body: {
+          error: 'conflict',
+          message: '文件已被外部修改（磁盘 mtime 与客户端加载时不一致）',
+          // 回带磁盘真实状态：客户端据此提示"外部版本 / 你的版本"，用户选完再 force 重发
+          mtime: Math.round(prevMtime),
+          size: prevBuf?.length ?? 0,
+        },
+      }
+    }
+    // ③ 用户选择"以我这份为准" → 先备份磁盘那份再覆盖（备份失败就**不写**：宁可不保存，
+    //    也不能把别人的改动销毁得无影无踪）
+    //    参数用 `--space`/`--path`（stash-doc 的入参口径），**不是** update-doc 的 `--id`：
+    //    两个 op 的入参不同形，照抄另一个 op 的参数会让内核报 space-not-found（静默退化成
+    //    "每次覆盖都备份失败" → 用户再也保存不了）。
+    const stash = await callJson(callKernel, [
+      '--knowledge', 'stash-doc', '--space', spaceId, '--path', rel, '--reason', 'overwrite',
+    ])
+    // 成功判定用 `error`/`value.ok`（callJson 的契约就是这个形状）——不是 `status`。
+    // 写错字段名的后果极隐蔽：它恒真（`undefined !== 0`），于是**每次强制覆盖都被判成备份失败**。
+    if (stash.error || stash.value?.ok !== true) {
+      return { status: 500, body: { error: 'backup-failed', message: '覆盖前备份失败，已放弃写入以保护现有内容' } }
+    }
+  }
+
+  // ④ 内容完全相同 → **不写盘**（不改变 mtime → 索引不会因此失效重算），但仍刷新一次索引：
+  //    "每次被接受的写入都触发增量索引"是既有契约（本仓库的测试也钉着它），而索引可能是
+  //    因别的原因变旧的（手工动过索引、版本升级）。省下一次真金白银的内核进程不值得为它
+  //    破掉一条已有契约 —— 这条捷径的收益在"不改 mtime"，不在"少跑一次内核"。
+  const nextBuf = Buffer.from(String(content ?? ''), 'utf-8')
+  if (exists && prevBuf && prevBuf.equals(nextBuf)) {
+    const upd0 = await callJson(callKernel, ['--knowledge', 'update-doc', '--id', docId])
+    return ok({
+      ok: true, docId, updated: upd0.value?.updated ?? false, unchanged: true,
+      mtime: prevMtime === null ? null : Math.round(prevMtime),
+    })
+  }
+
+  // ① 原子写
+  try {
+    writeFileAtomicSync(dest, nextBuf)
+  } catch (e) {
+    // 原子写失败时目标文件**一个字节都没动**（临时文件已清理），如实报错即可
+    return { status: 500, body: { error: 'write-failed', message: String(e?.message ?? e) } }
+  }
+  let mtime = null
+  try { mtime = Math.round(statSync(dest).mtimeMs) } catch { /* 写成功了但 stat 失败：不影响结果 */ }
   const upd = await callJson(callKernel, ['--knowledge', 'update-doc', '--id', docId])
-  return ok({ ok: true, docId, updated: upd.value?.updated ?? false })
+  return ok({ ok: true, docId, updated: upd.value?.updated ?? false, mtime })
 }
 
 // ── 知识包生态（S4 Task 4）───────────────────────────────────────────────────
@@ -695,6 +804,13 @@ export async function handleKnowledgeRoute({
       // S5.1：`?level=entry` 切条目级图。**逐字判 'entry'**（与 `related` 同一纪律：
       // 层级是枚举，非法值落回文档级由内核兜底，路由不做自由透传以免把任意字符串喂进内核）。
       if (q('level') === 'entry') args.push('--level', 'entry')
+      // 局部图（2026-09-14 批次 2）：`?around=<docId>&hops=2` 只画该文档的 N 跳双向邻域。
+      // `hops` 只在 `around` 存在时才有意义 —— 单给 hops 而没给 around 是"用户想说局部图但没说
+      // 以谁为心"，此时**什么都不做**（保持全局图）比"猜一个中心"更安全。
+      if (q('around')) {
+        args.push('--around', q('around'))
+        if (q('hops')) args.push('--hops', q('hops'))
+      }
       return ok((await callJson(callKernel, args)).value)
     }
     if (!isPost && p === '/knowledge/stats') return ok((await callJson(callKernel, ['--knowledge', 'stats'])).value)
@@ -709,6 +825,23 @@ export async function handleKnowledgeRoute({
     if (!isPost && p === '/knowledge/index-tags') {
       const args = ['--knowledge', 'index-tags']
       if (q('spaces')) args.push('--spaces', q('spaces'))
+      return ok((await callJson(callKernel, args)).value)
+    }
+    // 未链接提及（2026-09-14 批次 2）：`?id=<docId>&limit=` —— "全库里提到这篇文档但没打链接"。
+    // `id` 缺失时**明确报错**而不是返回全库的前 30 条：没有目标就无所谓"提及"，
+    // 静默返回一批无关数据会让调用方以为"这篇文档被提及了 30 次"。
+    if (!isPost && p === '/knowledge/mentions') {
+      const id = q('id')
+      if (!id) return { status: 400, body: { error: 'missing-id' } }
+      const args = ['--knowledge', 'mentions', '--id', id]
+      if (q('limit')) args.push('--limit', q('limit'))
+      return ok((await callJson(callKernel, args)).value)
+    }
+    // 断链清单（2026-09-14 批次 2）：`?space=&limit=` —— target 为 null 的引用，按目标名聚合。
+    if (!isPost && p === '/knowledge/broken-links') {
+      const args = ['--knowledge', 'broken-links']
+      if (q('space')) args.push('--space', q('space'))
+      if (q('limit')) args.push('--limit', q('limit'))
       return ok((await callJson(callKernel, args)).value)
     }
     // 检索：URL 用 `?q=`（避免与内核 flag `--query` 混淆），转发时映射为 `--query`；

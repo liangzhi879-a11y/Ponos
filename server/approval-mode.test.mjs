@@ -1,9 +1,14 @@
 // 桥侧审批档位：与内核枚举一致性 + spawn 参数 + 覆盖解析
 // 打包产物没有 kernel/ 目录 → 桥侧独立一份枚举，本测试负责把"两份必须逐字一致"钉死。
+//
+// P0-4（2026-09-16）："新装默认档"（NEW_INSTALL_APPROVAL_MODE = auto）与"兜底/回落值"
+// （DEFAULT_APPROVAL_MODE = loose）**刻意分离**。末尾两条用例钉住这个分离关系与它的
+// 两条机制保证——① 兜底值不变（旧 flag/裸内核路径不回归）；② 存量值原样保留（老用户零影响）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  APPROVAL_MODES, DEFAULT_APPROVAL_MODE, isValidApprovalMode, normalizeApprovalMode,
+  APPROVAL_MODES, DEFAULT_APPROVAL_MODE, NEW_INSTALL_APPROVAL_MODE,
+  isValidApprovalMode, normalizeApprovalMode,
   resolveEffectiveApprovalMode, approvalSpawnArgs, approvalModeSummary,
 } from './approval-mode.mjs'
 import {
@@ -62,4 +67,45 @@ test('approvalModeSummary：四档各有文案且不空', () => {
   }
   assert.match(approvalModeSummary('bypass'), /灾难/, 'bypass 摘要必须点明硬黑名单仍在拦截')
   assert.equal(approvalModeSummary('nonsense'), approvalModeSummary(DEFAULT_APPROVAL_MODE))
+})
+
+// ---------------------------------------------------------------------------
+// P0-4：新装默认档 = auto（与兜底值分离）
+// ---------------------------------------------------------------------------
+test('P0-4 新装默认档：= auto，且与兜底档 DEFAULT_APPROVAL_MODE 分离', () => {
+  assert.equal(
+    NEW_INSTALL_APPROVAL_MODE, 'auto',
+    '新装默认档应为 auto（只读+普通 Bash 自动；写文件/出网/派子agent/未识别工具需确认）',
+  )
+  assert.ok(isValidApprovalMode(NEW_INSTALL_APPROVAL_MODE), '新装默认档必须是合法档位')
+  // **分离**是本设计的要点：实现"提高新装默认"**不能**靠改 DEFAULT_APPROVAL_MODE ——
+  // 那个值被内核旧 flag 兼容推导（deriveApprovalMode）复用，改它会让写文件从 allow 变 ask
+  // = 行为回归（内核文件头明确禁止），且被本文件首个用例与内核值做一致性断言。
+  assert.equal(
+    DEFAULT_APPROVAL_MODE, 'loose',
+    '兜底/回落值必须保持 loose（兼容旧 flag 路径与裸内核行为）——提高新装默认请走 NEW_INSTALL_APPROVAL_MODE',
+  )
+  assert.equal(normalizeApprovalMode(undefined), DEFAULT_APPROVAL_MODE, '缺值仍回落兜底档（不变）')
+  assert.equal(normalizeApprovalMode(''), DEFAULT_APPROVAL_MODE, '空值仍回落兜底档（不变）')
+})
+
+test('P0-4 机制保证：存量档位原样保留；新装用户的内核按 auto 启动（不带 skip flag）', () => {
+  // ① 存量用户零影响：loadConfig 的 `{...DEFAULT_CONFIG, ...cfg}` 合并中 cfg 优先，
+  //    而 normalize 对合法值原样返回 ⇒ 盘上写了 loose 的老用户仍是 loose。
+  assert.equal(normalizeApprovalMode('loose'), 'loose', '存量 loose 必须原样保留（老用户零行为变化）')
+  assert.equal(normalizeApprovalMode('manual'), 'manual')
+  assert.equal(normalizeApprovalMode('bypass'), 'bypass')
+  assert.equal(resolveEffectiveApprovalMode({ configMode: 'loose' }), 'loose')
+
+  // ② 新装用户的内核启动参数必须体现新档：auto 只传显式档位，**不**带旧 skip flag
+  //    （带了就等于悄悄按 loose 起内核 = 新装默认形同虚设）。
+  const autoArgs = approvalSpawnArgs(NEW_INSTALL_APPROVAL_MODE)
+  assert.deepEqual(autoArgs, ['--approval-mode', 'auto'], '新装默认档应精确产生 auto 参数')
+  assert.ok(
+    !autoArgs.includes('--dangerously-skip-permissions'),
+    '新装默认档不得携带旧 skip flag（否则内核跑到 loose，新装默认形同虚设）',
+  )
+  // ③ 对照：存量兜底档仍带 skip flag（行为与改前完全一致）
+  const legacyArgs = approvalSpawnArgs(DEFAULT_APPROVAL_MODE)
+  assert.deepEqual(legacyArgs, ['--approval-mode', 'loose', '--dangerously-skip-permissions'])
 })

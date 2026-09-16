@@ -1,14 +1,16 @@
 import { test, describe, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, utimesSync } from 'fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, utimesSync, existsSync, readdirSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { fileURLToPath } from 'node:url'
 import {
   sanitizePathSegment,
   isUuidFile,
   listSessions,
   loadTranscript,
   searchTranscripts,
+  createTranscriptHandlers,
 } from './transcript.mjs'
 
 const UUID = '04ddb4e5-13dd-46fe-9cd0-d018e61f2030'
@@ -291,5 +293,139 @@ describe('searchTranscripts', () => {
     const res = searchTranscripts(root, 'hit')
     assert.equal(res.length, 1)
     assert.equal(res[0].sessionId, UUID)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 会话删除的磁盘清理（2026-09-16）：deleteTranscript / createTranscriptHandlers
+// ---------------------------------------------------------------------------
+// 背景：GUI 删会话此前只清 localStorage 兜底键，磁盘转录永远留着（本机实测 2.3G/72 项目目录）。
+// 删除是本模块首个**写**动作，所以下面重点覆盖"删不到 / 删多 / 删错"三类失败。
+describe('deleteTranscript（会话删除的磁盘清理）', () => {
+  const CWD = 'C:\\Users\\t\\demo-project'
+  const OTHER_ID = '99999999-9999-4999-8999-999999999999'
+
+  test('删已存在的转录：文件消失，空掉的项目目录也被移除', (t) => {
+    const { root, proj } = makeProjects(t)
+    mk(proj, `${UUID}.jsonl`, entry('user') + '\n')
+    assert.ok(existsSync(join(proj, `${UUID}.jsonl`)))
+
+    const r = createTranscriptHandlers(root).deleteTranscript(UUID, CWD)
+    assert.deepEqual(r, { deleted: true, reason: 'deleted' })
+    assert.ok(!existsSync(join(proj, `${UUID}.jsonl`)), '转录文件必须真的消失')
+    assert.ok(!existsSync(proj), '删空后的项目目录（空壳垃圾）也应被收掉')
+  })
+
+  test('删不存在的转录：not-found 且不抛异常', (t) => {
+    const { root } = makeProjects(t)
+    const api = createTranscriptHandlers(root)
+    let r
+    assert.doesNotThrow(() => { r = api.deleteTranscript(OTHER_ID, CWD) }, 'IO 失败路径不得抛异常')
+    assert.deepEqual(r, { deleted: false, reason: 'not-found' })
+    // 项目目录根本不存在时同样只是 not-found（不 mkdir、不抛）
+    assert.doesNotThrow(() => { r = api.deleteTranscript(OTHER_ID, 'C:\\nowhere\\gone') })
+    assert.deepEqual(r, { deleted: false, reason: 'not-found' })
+  })
+
+  test('非法 sessionId 一律拒绝，且同目录其它文件完好无损', (t) => {
+    const { root, proj } = makeProjects(t)
+    mk(proj, `${UUID}.jsonl`, entry('user') + '\n')
+    mk(proj, 'not-uuid.jsonl', entry('user') + '\n') // 非 UUID 命名的文件（不该被任何调用误删）
+    const api = createTranscriptHandlers(root)
+
+    for (const bad of ['../x', 'abc', '', '../../etc/passwd']) {
+      const r = api.deleteTranscript(bad, CWD)
+      assert.deepEqual(r, { deleted: false, reason: 'invalid-id' }, `sessionId=${JSON.stringify(bad)} 必须被拒绝`)
+      // 显式断言：目录内其它文件一个都不能少
+      assert.ok(existsSync(join(proj, `${UUID}.jsonl`)), `非法 id（${bad}）不得连带删除合法转录`)
+      assert.ok(existsSync(join(proj, 'not-uuid.jsonl')), `非法 id（${bad}）不得删除非 UUID 文件`)
+      assert.deepEqual(readdirSync(proj).sort(), [`${UUID}.jsonl`, 'not-uuid.jsonl'].sort())
+    }
+  })
+
+  test('恶意 cwd 无法越出 base：base 之外的文件一个都不动', (t) => {
+    const root = mkdtempSync(join(tmpdir(), 'transcript-test-'))
+    const base = join(root, 'projects')
+    const outside = join(root, 'outside')
+    mkdirSync(base, { recursive: true })
+    mkdirSync(outside, { recursive: true })
+    t.after(() => rmSync(root, { recursive: true, force: true }))
+    // base 之外放一个与 sessionId 同名的文件：删除路径一旦可穿越，被删的就是它
+    mk(outside, `${UUID}.jsonl`, entry('user') + '\n')
+
+    const api = createTranscriptHandlers(base)
+    for (const evilCwd of ['..', '../..', '../../outside', 'C:\\..\\..\\outside', outside, '..\\..\\outside']) {
+      const r = api.deleteTranscript(UUID, evilCwd)
+      assert.equal(r.deleted, false, `恶意 cwd=${evilCwd} 不得删掉任何文件`)
+      // sanitizePathSegment 把分隔符/点全部换成 '-'，穿越目标必然落在 base 内（故这里是 not-found）；
+      // deleteTranscript 内的 resolve+relative 出口校验是第二道闸（sanitize 行为变化时兜底），
+      // 其 'outside-base' 分支无法经公开 API 触达，此处以"base 之外零改动"为该闸的可观测保证。
+      assert.equal(r.reason, 'not-found')
+    }
+    assert.ok(existsSync(join(outside, `${UUID}.jsonl`)), 'base 之外的转录必须完好')
+    assert.deepEqual(readdirSync(outside), [`${UUID}.jsonl`], 'base 之外目录内容必须一字未变')
+    assert.deepEqual(readdirSync(base), [], 'base 内也没被误建/误删')
+  })
+
+  test('同目录两个转录只删其一：另一个必须还在（防"删多"）', (t) => {
+    const { root, proj } = makeProjects(t)
+    mk(proj, `${UUID}.jsonl`, entry('user') + '\n')
+    mk(proj, `${OTHER_ID}.jsonl`, entry('user') + '\n')
+
+    const r = createTranscriptHandlers(root).deleteTranscript(UUID, CWD)
+    assert.deepEqual(r, { deleted: true, reason: 'deleted' })
+    assert.ok(!existsSync(join(proj, `${UUID}.jsonl`)))
+    assert.ok(existsSync(join(proj, `${OTHER_ID}.jsonl`)), '同目录另一个会话不得被连带删除')
+    assert.ok(existsSync(proj), '目录非空 → 不得 rmdir')
+    // 删剩的那个仍可正常读取（删除没有破坏同目录其它会话）
+    assert.equal(loadTranscript(root, CWD, OTHER_ID).ok, true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 删除链路的源码守卫（防接线被改回"只删本地"或删错 id）
+// ---------------------------------------------------------------------------
+// 为什么静态断言：这条链跨 renderer(chatStore) → bridge → transcript.mjs 三段，中间两段
+// 需要起 bridge/浏览器才能真正跑；而失效形态是**静默**的（删不掉 / 删错文件），
+// 故按本仓库既有做法（kernel-tests/knowledge-scope-plumbing.test.mjs）用源码文本锁住接线。
+// 本仓库约定：源码级断言前必须先剥注释，否则注释里的示例文字会造成假红。
+const stripComments = (src) => src
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  // 行注释：前置字符不能是 ' / " / \（排除 https:// 与转义），保留前置字符本身
+  .replace(/(^|[^:'"\\])\/\/[^\n]*/g, '$1')
+
+const readSrc = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8')
+
+describe('删除链路源码守卫', () => {
+  test('chatStore.deleteConversation 用 conversation.sessionId（绝不用 GUI 的 conversation.id）', () => {
+    const raw = readSrc('../src/stores/chatStore.ts')
+    // 那句误导性注释必须已被改掉（它当初就是这个泄漏的书面理由）：assert 的是旧注释原文
+    // "ext 兜底键（transcript 随内核保留，不在此清理）"——新注释里对该结论的历史引用不受影响。
+    assert.ok(!raw.includes('ext 兜底键（transcript 随内核保留'), '旧的"不清理磁盘转录"注释必须已被更正')
+    const code = stripComments(raw)
+    assert.ok(
+      code.split('\n').some((l) => l.includes("from '@/lib/transcriptLoader'") && l.includes('deleteTranscriptRemote')),
+      '必须从 transcriptLoader 引入 deleteTranscriptRemote（既有请求桥写法，不新造 fetch）'
+    )
+    const start = code.indexOf('deleteConversation: (id) => {')
+    assert.ok(start >= 0, '找不到 deleteConversation 起点：若已重构，请同步更新本守卫')
+    const end = code.indexOf('setActiveConversation: (id) => {', start)
+    assert.ok(end > start, 'deleteConversation 块的结束锚点缺失')
+    const block = code.slice(start, end)
+    assert.match(block, /deleteTranscriptRemote\(\s*[^)]*sessionId/, '删磁盘必须用内核 sessionId')
+    assert.doesNotMatch(block, /deleteTranscriptRemote\(\s*[^)]*\bid\b/,
+      '不得把 GUI 的 conversation.id 当内核 sessionId 传给删除接口（两套 id，传错只会 not-found）')
+    assert.match(block, /if\s*\([^)]*\.sessionId\s*\)/, 'sessionId 缺失（历史会话）时必须跳过，不得猜测路径')
+    assert.match(block, /\.catch\(\(\) => \{\}\)/, 'fire-and-forget：删除失败不得冒泡成未处理拒绝')
+  })
+
+  test('bridge /transcript/delete 带"会话仍在运行"守卫（否则删了会被内核立刻重建）', () => {
+    const code = stripComments(readSrc('../server/bridge.mjs'))
+    assert.match(code, /url\.pathname === '\/transcript\/delete'/, '端点必须存在')
+    const at = code.indexOf("=== '/transcript/delete'")
+    const block = code.slice(at, at + 1500)
+    assert.match(block, /sessions\.has\(\s*sessionId\s*\)/, '运行中的会话（sessions.has）必须拒绝删除转录')
+    assert.match(block, /transcriptApi\.deleteTranscript\(/, '必须真的调用 deleteTranscript')
+    assert.match(block, /409/, '拒绝要用 409 表达"状态冲突"，让前端可区分"没找到/非法"')
   })
 })

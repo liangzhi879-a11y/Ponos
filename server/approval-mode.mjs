@@ -10,9 +10,26 @@
 //   普通 Bash 从 auto 起自动、写文件/出网/agent 从 loose 起自动、高危 Bash 仅 bypass 自动。
 //   灾难级硬黑名单（rm -rf / 等）四档都要问，不在本模块表达（内核 blacklist.mjs 负责）。
 export const APPROVAL_MODES = ['manual', 'auto', 'loose', 'bypass']
-// 默认档 = loose = 应用今天的真实行为（桥一直硬编码 --dangerously-skip-permissions）。
+// 兜底档 = loose = 应用今天的真实行为（桥一直硬编码 --dangerously-skip-permissions）。
 // 选它而非 manual：存量用户升级后零行为变化（写文件仍自动执行），徽标从此说真话。
+//
+// ⚠️ 本常量是**兜底/回落值**（"不知道时怎么兜"），**不是**新装默认档（"新装给什么"）——
+// 二者语义不同、刻意分离。想实现"提高新装默认档"（P0-4）请改 NEW_INSTALL_APPROVAL_MODE，
+// **不要**改本值，原因有二：
+//   ① 本值同时是内核旧 flag 兼容推导（kernel/approval-mode.mjs 的 deriveApprovalMode）的
+//      落点，改成 auto 会让裸内核/旧 flag 路径把写文件从 allow 变 ask = **行为回归**
+//      （内核文件头明确禁止"未跳权限映射成更严档"）；
+//   ② server/approval-mode.test.mjs 断言本值与内核 DEFAULT 逐字一致（打包产物无 kernel/，
+//      靠该测试把关一致性）。
 export const DEFAULT_APPROVAL_MODE = 'loose'
+
+// P0-4（2026-09-16）**新装默认档** = auto：仅供 bridge 首次生成 config.json 时写入
+// （见 bridge.mjs 的 DEFAULT_CONFIG.approvalMode）。auto 下只读与普通 Bash 仍自动，但
+// **写文件、出网/浏览器、派子 agent、未识别(MCP) 工具**需用户确认 —— 即"新用户一到手
+// 就带审阅闸"，而**存量用户完全不受影响**（config.json 已显式持久化其档位，loadConfig
+// 合并时被 cfg 覆盖）。
+// 刻意不复用 DEFAULT_APPROVAL_MODE：那是"兜底值"，复用它会把旧 flag 兼容路径一起改严。
+export const NEW_INSTALL_APPROVAL_MODE = 'auto'
 
 const RANK = { manual: 0, auto: 1, loose: 2, bypass: 3 }
 

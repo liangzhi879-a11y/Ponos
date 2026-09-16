@@ -7,22 +7,35 @@ import { fileURLToPath } from 'url'
 import { readdirSync, statSync, existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, copyFileSync, unlinkSync, appendFileSync } from 'fs'
 import { readdir, stat } from 'fs/promises'
 import { join, sep, dirname, resolve, basename } from 'path'
-import { tmpdir } from 'os'
+import { tmpdir, homedir } from 'os'
 import { randomBytes } from 'node:crypto'
 import { extractMilestoneMarks, extractProseStages } from './milestones.mjs'
+import { handleDisabledRoute } from './disabled-routes.mjs'
+import { handleAgentsRoute } from './agents-routes.mjs'
+import { handleSkillDetailRoute } from './skill-detail-routes.mjs'
 // GUI → 内核 /loop 指令转译（纯函数模块，零进程依赖）：GUI 发的是纯文本 `/loop …`，
 // 内核无斜杠解析 → 必须在此转译为内核原生 loop 载荷/loop_command（spec 5.5 打通点）
 import { translateLoopSend } from './loop-translate.mjs'
 import { matchesHighRisk } from './highrisk.mjs'
-import { approvalSpawnArgs, DEFAULT_APPROVAL_MODE, isValidApprovalMode, normalizeApprovalMode, resolveEffectiveApprovalMode } from './approval-mode.mjs'
+import { approvalSpawnArgs, DEFAULT_APPROVAL_MODE, NEW_INSTALL_APPROVAL_MODE, isValidApprovalMode, normalizeApprovalMode, resolveEffectiveApprovalMode } from './approval-mode.mjs'
 import { parseAskUserPayload, extractAskUserBlocks } from './askuser.mjs'
 import { buildAnchorApplied } from './health-anchor.mjs'
 import { resolveKernelPaths } from '../electron/kernel-paths.cjs'
 import { resolveYfwHome } from './yfw-home.cjs'
 import { writeLogLine, readLogPolicyCached, enforceLogPolicy, normalizeLogPolicy, DEFAULT_LOG_POLICY } from './log-policy.cjs'
 import { DEFAULT_IMPORT_POLICY, normalizeImportPolicy } from './knowledge-import-policy.cjs'
+// 戳记备份保留策略（纯函数，删文件判错=永久丢数据，故独立成模块并配单测）
+import { selectStaleBackups, hasBackupForDay } from './backup-retention.mjs'
+
+// 留存上限（2026-09-15 修「应用在用户系统内留垃圾」）：同日 1 份、总量 20 份、龄期沿用 7 天。
+// 之所以要"同日 1 份"而不是只靠总量：一天内写 800 次时，总量上限会把**更早几天的有效
+// 快照**挤掉，留下 20 份几乎相同的当日副本——既占地方又没有回滚价值。
+const BACKUP_KEEP_PER_DAY = 1
+const BACKUP_KEEP_TOTAL = 20
 import { handleLogsRoute } from './logs-routes.mjs'
 import { handleKnowledgeRoute } from './knowledge-routes.mjs'
+// 知识空间文件监听（批次 4）：外部编辑器改动 → 广播 GUI 失效缓存（用法处有完整 why）
+import { startKnowledgeWatch } from './knowledge-watch.mjs'
 import { installBuiltinWorkflows } from './workflow-install.mjs'
 // 技能安装/更新链（P2-2）：同为可测模块——bridge 顶层 listen，测试不能 import 本文件
 import { copyWithRewrite, readSkillIndex, writeSkillIndex, installBuiltinSkills } from './skill-install.mjs'
@@ -246,10 +259,14 @@ const DEFAULT_CONFIG = {
   // 注入 CLAUDE_CODE_EFFORT_LEVEL。旧 config.json 缺此键 → loadConfig merge 默认 auto。
   effortLevel: 'auto',
   // 审批档位（2026-09-12 四档化）：全局持久化档位，manual|auto|loose|bypass 逐级放宽。
-  // 默认 loose = 应用今天的真实行为（内核 spawn 一直硬编码 --dangerously-skip-permissions），
-  // 存量 config.json 缺此键 → loadConfig 合并默认 loose → 升级零行为变化。
+  // **新装默认 = auto**（P0-4，2026-09-16）：新装/首次生成 config.json 写入 auto —— 只读与
+  // 普通 Bash 仍自动，写文件/出网/派子 agent/未识别(MCP) 工具需用户确认。
+  // 存量用户不受影响：其 config.json 已显式持久化档位（实测多为 loose），loadConfig 的
+  // `{...DEFAULT_CONFIG, ...cfg}` 合并时被 cfg 覆盖 ⇒ 升级零行为变化。
+  // 注意与 DEFAULT_APPROVAL_MODE（= 'loose'，兜底/回落值）的区别：后者是"不知道时怎么兜"，
+  // 同时被内核旧 flag 兼容推导复用，改它会造成行为回归 —— 故两者刻意分离，见 approval-mode.mjs。
   // 会话级临时覆盖另存 sessionApprovalModes（仅内存），不写本文件。
-  approvalMode: DEFAULT_APPROVAL_MODE,
+  approvalMode: NEW_INSTALL_APPROVAL_MODE,
   // 本地日志持久化策略（2026-09-12）：persist / level / maxFileBytes / maxFiles / maxAgeDays。
   // 缺此键 → loadConfig 合并默认档；写入一律经 sanitizeConfigPatch 钳制（手改 config.json
   // 填 {maxFileBytes:-1} 会拿回 5MB，而不是得到一个坏掉的轮转器）。
@@ -318,10 +335,21 @@ function safeWriteJsonWithBak(targetPath, content) {
       copyFileSync(targetPath, targetPath + '.bak')
       // 2. Stamp a dated snapshot once per day so we keep a recent history
       //    (capped to last 7 days; older stamped backups auto-pruned).
-      const stamp = formatStamp(new Date())
+      const now = new Date()
+      const stamp = formatStamp(now)
       const stamped = `${targetPath}.bak.${stamp}`
       try {
-        copyFileSync(targetPath, stamped)
+        // **断源（2026-09-15）**：上面注释一直写 "once per day"，但原实现没有这个判断，
+        // 于是每次写入都新打一份戳记——这才是 1691 个 .bak 的真正来源。
+        // 光靠 pruneStampedBackups 裁剪只是治标：边删边生，目录仍会持续膨胀。
+        // 这里先看"当天是否已有戳记"，有就不再打（同日多份对用户没有额外价值：
+        // 一天内的中间态几乎不可能被用到；真要回滚也有滚动 .bak 兜底）。
+        const day = stamp.slice(0, 8)   // formatStamp → YYYYMMDD-HHMMSS
+        let names = []
+        try { names = readdirSync(dirname(targetPath)) } catch { /* 读不到就按"没有"处理，宁可多打一份也不漏快照 */ }
+        if (!hasBackupForDay(names, day, basename(targetPath))) {
+          copyFileSync(targetPath, stamped)
+        }
         pruneStampedBackups(targetPath, 7)
       } catch { /* stamping is best-effort */ }
     } catch (e) {
@@ -370,18 +398,31 @@ function tryReadJsonWithRecovery(filePath) {
   return null
 }
 
+// 戳记备份的裁剪（2026-09-15 修「应用在用户系统内留垃圾」）：原实现**只按龄期**删，
+// 没有任何条数上限，而 safeWriteJsonWithBak 又是**每次写入都打戳**（注释说 once per day，
+// 代码没做当日判断）——两者叠加导致同一天写 800 次就留 800 份。实测 ~/.yfworking/ 顶层
+// 1738 项里 1691 个是 .bak*（config 827 / settings 778 / providers 88），用户主目录被
+// 自己的备份淹掉，还拖慢 readdir（本函数与 tryReadJsonWithRecovery 都要遍历该目录）。
+// 现在改为：龄期 + **同日只留 1 份** + **总量上限 20**，判定逻辑抽到 backup-retention.mjs
+// 走单测（删文件判错就是永久丢数据，必须可测、可复核）。
 function pruneStampedBackups(targetPath, keepDays) {
   try {
     const dir = dirname(targetPath)
     const base = basename(targetPath)
     const stampPrefix = `${base}.bak.`
-    const cutoff = Date.now() - keepDays * 24 * 3600 * 1000
+    const items = []
     for (const name of readdirSync(dir)) {
       if (!name.startsWith(stampPrefix)) continue
-      const full = join(dir, name)
       try {
-        if (statSync(full).mtimeMs < cutoff) unlinkSync(full)
-      } catch { /* race with concurrent write — ignore */ }
+        items.push({ name, mtimeMs: statSync(join(dir, name)).mtimeMs })
+      } catch { /* 取不到 stat（并发删/无权限）⇒ 不纳入候选，保守不删 */ }
+    }
+    for (const name of selectStaleBackups(items, {
+      maxAgeDays: keepDays,
+      keepPerDay: BACKUP_KEEP_PER_DAY,
+      keepTotal: BACKUP_KEEP_TOTAL,
+    })) {
+      try { unlinkSync(join(dir, name)) } catch { /* race with concurrent write — ignore */ }
     }
   } catch { /* best-effort */ }
 }
@@ -740,6 +781,44 @@ function broadcastGui(msg) {
 }
 
 // ---------------------------------------------------------------------------
+// 知识空间文件监听（2026-09-14 对标 Obsidian 批次 4）。
+//
+// 为什么在服务端：内核是**短命子进程**（每次 CLI 调用起一个、干完就退），在那里挂 watcher
+// 等于挂在一个马上要死的进程上。服务端长驻、且已有 broadcastGui 通道，是唯一可行的位置。
+//
+// 为什么只盯 `spaces/`：`index/`（索引）与 `trash/`（回收站）是本应用自己的产物。
+// 重建索引会批量改写 index/ —— 若把它也盯上就会自激：改文件 → 通知 GUI → GUI 拉数据 →
+// 内核重建索引 → 又通知 GUI。只有 spaces/ 里的变化才是用户关心的"内容变了"。
+//
+// 失败不致命：监听是"更好用"的能力，挂了不该拖垮服务端（startKnowledgeWatch 永不抛错，
+// 失败只体现在返回句柄的 mode/error 上并打一行日志）。
+// ---------------------------------------------------------------------------
+const KNOWLEDGE_SPACES_ROOT = join(YFW_HOME, 'knowledge', 'spaces')
+const knowledgeWatch = startKnowledgeWatch({
+  root: KNOWLEDGE_SPACES_ROOT,
+  onChange: (batch) => {
+    // 广播给所有已连接 GUI：让它失效知识库缓存并重取。带上 revision（单调递增）——
+    // 客户端可据此丢弃乱序到达的旧批次（网络抖动下批次可能后发先至）。
+    broadcastGui({
+      type: 'knowledge_changed',
+      data: {
+        revision: batch.revision,
+        count: batch.count,
+        paths: batch.paths,
+        pathsTruncated: batch.pathsTruncated === true,
+      },
+    })
+  },
+  onError: (e) => console.warn('[bridge] knowledge watch callback failed:', e?.message ?? e),
+})
+if (!knowledgeWatch.ok) {
+  // 如实记录降级/失败：静默的监听失败会让"为什么有时不同步"变成无法排查的玄学问题
+  console.log('[bridge] knowledge watch:', knowledgeWatch.mode, knowledgeWatch.error ?? 'ok')
+} else {
+  console.log('[bridge] watching knowledge spaces:', KNOWLEDGE_SPACES_ROOT, `(${knowledgeWatch.mode})`)
+}
+
+// ---------------------------------------------------------------------------
 // 工作流模块（/workflows，UI Task 12）：宿主会话懒单例 + 存储根。
 // 宿主 = 普通内核会话（sid = _wfhost，mode=task），承载 load/save/validate/run/stop/confirm；
 // 内核回执按 requestId 配对（见 workflow-host.mjs），workflow 事件经 onEvent → GUI 广播。
@@ -868,6 +947,29 @@ export function providerEnvSig(env = process.env) {
     model: env.ANTHROPIC_MODEL || '',
     auth: env.ANTHROPIC_AUTH_TOKEN || '',
   })
+}
+
+/**
+ * 归一化会话知识范围（2026-09-15，待处理清单 P1）。三条纪律：
+ *   ① 只留非空字符串、去重、**保序**（顺序 = 提示词里的优先级，见 kernel/knowledge.mjs）；
+ *   ② 非法输入一律当"未关联"，绝不抛异常——它是用户点出来的 UI 值，不该让 spawn 失败；
+ *   ③ 归一化后再算签名：`['docs']` 与 `['docs ','docs']` 必须得到同一个签名，否则
+ *      "点到同一个状态"会触发一次多余的内核重启（掉一次首字节，用户看到卡顿）。
+ */
+export function normalizeKnowledgeSpaces(input) {
+  if (!Array.isArray(input)) return []
+  const list = [...new Set(input.map((s) => String(s ?? '').trim()).filter(Boolean))]
+  // 逗号是 `--knowledge-spaces a,b` 的分隔符（内核按 ',' split），含逗号的 id 永远无法
+  // 正确表达——**在这里丢弃并出声**，而不是让内核收到一个被切碎的 id 后静默关联到不存在的库。
+  // 空间 id 由 GUI/服务端生成（常规为字母数字与连字符），故这是纯边界防御，正常路径不触发。
+  const bad = list.filter((s) => s.includes(','))
+  if (bad.length) console.warn(`[bridge] 忽略含逗号的知识库 id（无法通过 --knowledge-spaces 表达）：${bad.join(' ')}`)
+  return list.filter((s) => !s.includes(','))
+}
+
+/** 会话知识范围的 spawn 冻结签名（与 providerEnvSig 同款：变了就重启内核，见 getOrCreateSession）。 */
+export function knowledgeSpacesSig(input) {
+  return JSON.stringify(normalizeKnowledgeSpaces(input))
 }
 
 function buildChildEnv() {
@@ -1086,7 +1188,7 @@ export function addBrowserWhitelist(host) {
   }
 }
 
-function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCount, mode = 'task') {
+function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCount, mode = 'task', knowledgeSpaces = null) {
   if (sessions.has(sid)) {
     const s = sessions.get(sid)
     if (s.proc && !s.proc.killed) {
@@ -1095,8 +1197,14 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
       // 消息即为"用新模型继续"的明确意图；旧内核在跑轮次也一并终止（transcript
       // 已落盘，--resume 无缝续）。先清运行 marker 防误报"previous run crashed"，
       // _reaped 抑制 closed 广播（前端状态无缝过渡）。
-      if (s._spawnEnvSig && s._spawnEnvSig !== providerEnvSig(buildChildEnv())) {
-        console.log(`[bridge] provider/model changed — reaping kernel sid ${sid.slice(0, 8)} to respawn with new env`)
+      // 会话知识范围变更（2026-09-15，P1）复用同一条路径：范围是在内核**启动段**解析并
+      // 冻结进提示词的（注入层一次性组装），运行中的内核无法"改范围"——只有重 spawn 才生效。
+      // 用签名比对而不是"每次 send 都重启"：签名一致时零动作（绝大多数轮次的路径不变）。
+      // 生效时机因此是"改关联后的下一句话"，与"--resume 不丢上下文"配合即可用。
+      const sigChanged = s._spawnEnvSig && s._spawnEnvSig !== providerEnvSig(buildChildEnv())
+      const ksChanged = s._spawnKnowledgeSig !== knowledgeSpacesSig(knowledgeSpaces)
+      if (sigChanged || ksChanged) {
+        console.log(`[bridge] ${ksChanged ? 'knowledge spaces' : 'provider/model'} changed — reaping kernel sid ${sid.slice(0, 8)} to respawn`)
         if (resumeId) { try { rmSync(join(YFW_HOME, 'runs', resumeId + '.running'), { force: true }) } catch {} }
         s._reaped = true
         try { execSync(`taskkill -F -T -PID ${s.proc.pid}`, { timeout: 5000, stdio: 'ignore' }) } catch { try { s.proc.kill() } catch {} }
@@ -1205,6 +1313,13 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
   if (model) args.push('--model', q(model))
   // chat 模式不把业务 cwd 注入内核（纯聊会话工作根 = YFW_HOME，见下方 spawn cwd）
   if (cwd && mode !== 'chat') args.push('--add-dir', q(cwd))
+  // 会话知识范围（2026-09-15，P1）：关联的库 id → `--knowledge-spaces`。
+  // 未关联时**不传参数**（而不是传空串）：内核缺省 = 内置经验类空间，空串会让"没关联"与
+  // "关联了空列表"在下游变成同一件事、却多走一遍解析——缺省即语义，不必显式表达。
+  // 参数名必须与 kernel/cli.mjs 的登记项逐字一致：那边对未知 `--` 参数**静默忽略**，
+  // 拼错一个字符就是"关联了没生效"且毫无报错（本仓库已有 --spaces/--confirm 两次前车）。
+  const kSpaces = normalizeKnowledgeSpaces(knowledgeSpaces)
+  if (kSpaces.length) args.push('--knowledge-spaces', q(kSpaces.join(',')))
   const skillRoot = findSkillRoot()
   if (existsSync(skillRoot)) args.push('--add-dir', q(skillRoot))
   console.log('[bridge] skill root:', skillRoot)
@@ -1581,7 +1696,7 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
   })
   // _awaitingSince = 首次登记"有未决等待（提问/审批）"的时刻（0 = 当前无等待）。回收器
   // 据此给等待豁免设时限：豁免无条件 ⇒ 内核挂死或 GUI 永不回执时永远收不掉（T9）。
-  const session = { proc, cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()), mode, _pendingQuestions: null, _proseProgress: { total: 0, lastIndex: 0, structuredUsed: false }, _pendingApprovals: new Map(), firstTokenAt: null, _lastOutAt: 0, _turnActive: false, _stallWarnedAt: 0, _reaped: false, _cancelPending: false, _cancelAt: 0, _cancelTimer: null, _turnStartAt: 0, _fbpTimer: null, _fbpFirstTimer: null, _awaitingSince: 0, _lastCompactFrameAt: 0, _askBuf: '', _spawnEnvSig: providerEnvSig(buildChildEnv()) }
+  const session = { proc, cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()), mode, _pendingQuestions: null, _proseProgress: { total: 0, lastIndex: 0, structuredUsed: false }, _pendingApprovals: new Map(), firstTokenAt: null, _lastOutAt: 0, _turnActive: false, _stallWarnedAt: 0, _reaped: false, _cancelPending: false, _cancelAt: 0, _cancelTimer: null, _turnStartAt: 0, _fbpTimer: null, _fbpFirstTimer: null, _awaitingSince: 0, _lastCompactFrameAt: 0, _askBuf: '', _spawnEnvSig: providerEnvSig(buildChildEnv()), _spawnKnowledgeSig: knowledgeSpacesSig(knowledgeSpaces) }
   sessions.set(sid, session)
   return session
 }
@@ -1719,6 +1834,32 @@ const httpServer = createServer(async (req, res) => {
     // 置于既有 try 内：宿主构造（loadConfig）等意外抛错走统一 400 回执，不打穿 handler。
     if (url.pathname === '/workflows' || url.pathname.startsWith('/workflows/')) {
       if (await handleWorkflowRoute({ url, req, reply, readJsonBody, host: workflowHost(), root: WF_ROOT, runsRoot: WF_RUNS })) return
+    }
+    // 已知文件夹（快捷入口，2026-09-15 工作目录选择器资源管理器化）：
+    // 由 bridge 而非渲染层枚举——只有这里知道真实用户目录（homedir + 平台差异）；
+    // 渲染层拼 "C:/Users/xxx/Desktop" 在非 C 盘系统 / 非英文用户名 / Mac / Linux 上必错。
+    // 只回**真实存在**的目录（服务器/精简系统常无音乐·视频）：列出来点了报错比不列更差。
+    if (url.pathname === '/known-folders') {
+      const home = homedir()
+      const candidates = [
+        { name: '主目录', kind: 'home', rel: '' },
+        { name: '桌面', kind: 'desktop', rel: 'Desktop' },
+        { name: '文档', kind: 'documents', rel: 'Documents' },
+        { name: '下载', kind: 'downloads', rel: 'Downloads' },
+        { name: '图片', kind: 'pictures', rel: 'Pictures' },
+        { name: '音乐', kind: 'music', rel: 'Music' },
+        { name: '视频', kind: 'videos', rel: 'Videos' },
+      ]
+      const folders = []
+      for (const c of candidates) {
+        const abs = c.rel ? join(home, c.rel) : home
+        try {
+          if (!existsSync(abs) || !statSync(abs).isDirectory()) continue
+          folders.push({ name: c.name, kind: c.kind, path: abs.split(sep).join('/') })
+        } catch { /* 单项探测失败不影响其余项 */ }
+      }
+      reply(200, { folders })
+      return
     }
     if (url.pathname === '/drives') {
       const drives = []
@@ -2082,6 +2223,25 @@ const httpServer = createServer(async (req, res) => {
       const limit = parseInt(url.searchParams.get('limit') || '50', 10) || 50
       return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, results: transcriptApi.searchTranscripts(query, limit) }))
     }
+    // 删除单个会话的磁盘转录（GUI 删会话时调用；实现与安全约束见 transcript.mjs deleteTranscript）。
+    // Body: { sessionId, cwd }——sessionId 必须是**内核 sessionId**（conversation.sessionId），
+    // GUI 的 conversation.id 是另一套 id，传错只会 not-found。
+    if (url.pathname === '/transcript/delete' && req.method === 'POST') {
+      const body = await readJsonBody(req)
+      const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
+      const cwd = typeof body?.cwd === 'string' ? body.cwd : ''
+      // 运行中的会话不得删除：内核进程仍在 append 写同一文件，删了会被立刻重建
+      // （且丢掉当前上下文），因此按契约直接拒绝，由 GUI 静默忽略。
+      if (sessions.has(sessionId)) {
+        return reply(409, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: '会话仍在运行，无法删除转录' }))
+      }
+      const r = transcriptApi.deleteTranscript(sessionId, cwd)
+      if (r.reason === 'invalid-id' || r.reason === 'outside-base') {
+        return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: r.reason === 'invalid-id' ? '非法 sessionId' : '路径越界，已拒绝' }))
+      }
+      // not-found 视为成功（幂等：文件早已不在，目标状态已达成）
+      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, deleted: r.deleted }))
+    }
 
     // Test provider connectivity before saving. Body: { apiBaseUrl, authToken, model? }
     // Probes the provider's /v1/messages endpoint with a minimal request and
@@ -2301,6 +2461,15 @@ const httpServer = createServer(async (req, res) => {
       }
     }
 
+    // ── 技能详情（只读）2026-09-15，批次二 C：展开卡片时按需取（触发规则 / 关联脚本 / 来源目录）──
+    // roots 用与 /skills 列表**同一个** findSkillRoot()：详情与列表必须来自同一处，
+    // 否则会出现"列表里有、详情说找不到"的矛盾。
+    {
+      const r = await handleSkillDetailRoute({
+        method: req.method, pathname: url.pathname, searchParams: url.searchParams, roots: [findSkillRoot()],
+      })
+      if (r) return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.body))
+    }
     if (url.pathname === '/skills') {
       // Always scan the live skill directory — never trust a stale _skill_index.json
       // (it used to report deleted skills after uninstall).
@@ -2377,6 +2546,19 @@ const httpServer = createServer(async (req, res) => {
       } catch (e) {
         return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: e.message }))
       }
+    }
+    // ── Agent 目录（2026-09-15，批次二 H）：内核权威列表（含"只在内核里存在"的 5 个内置 agent）──
+    // 与 disabled 路由同款：纯 handler + YFW_HOME 作 configDir（= 内核的 CLAUDE_CONFIG_DIR）。
+    {
+      const r = await handleAgentsRoute({ method: req.method, pathname: url.pathname, configDir: YFW_HOME })
+      if (r) return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.body))
+    }
+    // ── Agent / Skill 全局停用注册表（2026-09-15，P1「agent和skill页面及功能需要大改」D 条款）──
+    // 逻辑在 server/disabled-routes.mjs（纯 handler，可直调测试——本仓库纪律：测试不起 bridge）。
+    // `YFW_HOME` 就是内核子进程的 `CLAUDE_CONFIG_DIR`，故写在这里 = 内核读得到，无需 spawn 透传。
+    {
+      const r = await handleDisabledRoute({ method: req.method, pathname: url.pathname, readJsonBody: () => readJsonBody(req), configDir: YFW_HOME })
+      if (r) return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.body))
     }
     if (url.pathname === '/sample-skills') {
       const skillRoot = findSkillRoot()
@@ -2973,7 +3155,7 @@ wss.on('connection', (ws, req) => {
         // Conversation.mode 收敛：'chat' 走受限 spawn（禁本地工具 + cwd=YFW_HOME），
         // 其余（task/undefined 旧会话）维持现状全工具
         const mode = msg.mode === 'chat' ? 'chat' : 'task'
-        const session = getOrCreateSession(sid, msg.cwd, msg.resumeId, msg.systemPrompt, msg.model, msg.compactCount, mode)
+        const session = getOrCreateSession(sid, msg.cwd, msg.resumeId, msg.systemPrompt, msg.model, msg.compactCount, mode, msg.knowledgeSpaces)
         if (!session) return // spawn failed — error already sent via WebSocket
         // /loop 指令转译（打通点）：GUI 发纯文本 `/loop …` → 内核原生 loop 载荷/指令。
         // 非指令文本 translateLoopSend 返回 null → 原路径逐字直通（零回归锁②）。
@@ -3135,7 +3317,7 @@ wss.on('connection', (ws, req) => {
             console.log(`[bridge] answer on reaped session ${sid.slice(0, 8)} — respawning kernel (resume ${String(resumeId).slice(0, 8)})`)
             // cwd/mode/systemPrompt/model/compactCount 与 send 同源（前端 buildSendPayload
             // 的字段集）⇒ 重启出来的内核与"用户再发一条消息"完全等价，历史经 --resume 无缝续
-            session = getOrCreateSession(sid, msg.cwd, resumeId, msg.systemPrompt, msg.model, msg.compactCount, msg.mode === 'chat' ? 'chat' : 'task')
+            session = getOrCreateSession(sid, msg.cwd, resumeId, msg.systemPrompt, msg.model, msg.compactCount, msg.mode === 'chat' ? 'chat' : 'task', msg.knowledgeSpaces)
             if (session) session._askBuf = ''
           } else {
             console.warn(`[bridge] answer undeliverable — session ${sid.slice(0, 8)} was reaped and payload carries no resumeId`)
