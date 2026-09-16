@@ -11,6 +11,20 @@ import { handleWorkflowRoute } from './workflow-routes.mjs'
 import { createWorkflowHost, HOST_SID } from './workflow-host.mjs'
 import * as store from './workflow-store.mjs'
 
+/**
+ * 【S2-D4】工作流每次写入都会由 `writeWorkflowYml` 补写归属元数据 `authorId`/`workspaceId`
+ * （spec §6.2 D4：三处落盘点写入时必须带归属，避免事后"全量数据迁移"）。
+ * 因此"存盘内容"的比较要先剥离这两行**元数据**，断言仍然是内容级的（原意不变：
+ * 新建落盘该内容 / 回滚恢复快照内容）。归属本身是否落盘由
+ * `kernel-tests/attribution-d4d5.test.mjs` 专门覆盖。
+ */
+function contentOf(yml) {
+  return String(yml)
+    .split('\n')
+    .filter((l) => !/^authorId:\s/.test(l) && !/^workspaceId:\s/.test(l))
+    .join('\n')
+}
+
 function mkReply() {
   const out = {}
   return { out, reply: (code, headers, body) => { out.code = code; out.headers = headers; out.body = JSON.parse(body) } }
@@ -57,7 +71,7 @@ test('PUT /workflows/:id：存盘并回传内核校验错误', async () => {
     await handleWorkflowRoute({ url: new URL('http://x/workflows/demo'), req: reqOf('PUT', '/workflows/demo', { model: { name: 'demo' } }), reply, readJsonBody: async () => ({ model: { name: 'demo' } }), store, host, root, runsRoot })
     assert.equal(out.body.ok, true)
     assert.ok(existsSync(join(root, 'demo', 'workflow.yml')))
-    assert.equal(readFileSync(join(root, 'demo', 'workflow.yml'), 'utf-8'), 'name: demo\nnodes: []\nedges: []\n')
+    assert.equal(contentOf(readFileSync(join(root, 'demo', 'workflow.yml'), 'utf-8')), 'name: demo\nnodes: []\nedges: []\n')
 
     const bad = mkReply()
     await handleWorkflowRoute({
@@ -242,7 +256,7 @@ test('版本 / 回滚 / 导出 / 导入 / 复制 / 删除', async () => {
     const rb = mkReply()
     await handleWorkflowRoute({ url: new URL('http://x/workflows/demo/rollback'), req: reqOf('POST', '/workflows/demo/rollback', { ts: vers.out.body.versions[0].ts }), reply: rb.reply, readJsonBody: async () => ({ ts: vers.out.body.versions[0].ts }), store, host, root, runsRoot })
     assert.equal(rb.out.body.ok, true)
-    assert.equal(readFileSync(join(root, 'demo', 'workflow.yml'), 'utf-8'), YML, '回滚应恢复快照原文')
+    assert.equal(contentOf(readFileSync(join(root, 'demo', 'workflow.yml'), 'utf-8')), contentOf(YML), '回滚应恢复快照原文（剥离 D4 补写的归属元数据后比较：回滚的语义是恢复快照内容，归属由写入收口统一补齐）')
 
     // 穿越版本号 → 400（不得读出工作流目录之外的文件）
     const evil = mkReply()
@@ -353,7 +367,7 @@ test('真实宿主（假内核会话）接线：PUT 走 save-raw 配对 → 内�
     await handleWorkflowRoute({ url: new URL('http://x/workflows/zi'), req: reqOf('PUT', '/workflows/zi', { model: { name: 'zi' } }), reply: okr.reply, readJsonBody: async () => ({ model: { name: 'zi' } }), store, host, root, runsRoot })
     assert.equal(okr.out.body.ok, true)
     assert.equal(written[0].subtype, 'save-raw', '宿主 save 以 save-raw 载体发 model（内核两种载荷都认）')
-    assert.equal(readFileSync(join(root, 'zi', 'workflow.yml'), 'utf-8'), 'name: zi\nnodes: []\nedges: []\n')
+    assert.equal(contentOf(readFileSync(join(root, 'zi', 'workflow.yml'), 'utf-8')), 'name: zi\nnodes: []\nedges: []\n')
 
     const bad = mkReply()
     await handleWorkflowRoute({ url: new URL('http://x/workflows/zi'), req: reqOf('PUT', '/workflows/zi', { yaml: 'x: 1\n' }), reply: bad.reply, readJsonBody: async () => ({ yaml: 'x: 1\n' }), store, host, root, runsRoot })

@@ -378,7 +378,12 @@ export function normalizeWorkflow(wf) {
 
 // 节点顶层「非配置」键：保持顶层，其余（prompt/code/...）收拢回 node.config。
 const NODE_META_KEYS = new Set(['id', 'type', 'label', 'position', 'retry', 'on_error', 'body', 'note'])
-const TOP_KEYS = ['name', 'description', 'version', 'triggers', 'trigger_config', 'settings', 'inputs', 'nodes', 'edges', 'expose', 'permissions']
+// 【S2-D4 归属字段】`authorId`/`workspaceId` 必须进白名单，否则会被 toModel（下方投影）与
+// serializeWorkflow（只输出已知键）**静默丢弃** —— 那比不写更糟：GUI 编辑器一存就把归属抹掉，
+// 而 D4 的整个目的正是"数据落盘时带归属，避免事后全量迁移"（spec §6.2 D4）。
+// 放在元数据键里而非 `settings:` 内：归属是记录的元数据（与 name/version 同类），塞进 settings
+// 既语义不符，也会与用户自己的 settings 抢键。
+const TOP_KEYS = ['name', 'description', 'version', 'authorId', 'workspaceId', 'triggers', 'trigger_config', 'settings', 'inputs', 'nodes', 'edges', 'expose', 'permissions']
 
 // wf（摊平后）→ 画布模型：非元数据字段收拢回 node.config。
 // 幂等：若节点已是模型形态（已带 config），则把 config 展开后重新收拢，不会丢配置。
@@ -486,7 +491,7 @@ export function serializeWorkflow(input) {
   // 早期版本用启发式判断"是否已是模型"，会静默丢掉已有 config。
   const model = toModel(input || {})
   const out = []
-  for (const k of ['name', 'description', 'version']) if (model[k] !== undefined) out.push(`${k}: ${scalar(model[k])}`)
+  for (const k of ['name', 'description', 'version', 'authorId', 'workspaceId']) if (model[k] !== undefined) out.push(`${k}: ${scalar(model[k])}`)
   if (model.triggers) out.push(`triggers: [${model.triggers.map(scalar).join(', ')}]`)
   out.push('trigger_config: ' + inlineObj(model.trigger_config || { manual: true }))
   if (model.settings) out.push('settings: ' + inlineObj(model.settings))

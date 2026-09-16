@@ -19,6 +19,7 @@ import { createInterface } from 'node:readline'
 import { join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { redactEntry } from './redact.mjs'
+import { attributionOf } from '../shared/attribution.mjs'
 
 export const MAX_SANITIZED_LENGTH = 200
 
@@ -57,7 +58,21 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
   // D2-2：新会话落盘 meta 首行（版本标记；不占 seq、不投影）。旧文件/恢复会话不写。
   if (!existsSync(file)) {
     try {
-      appendFileSync(file, JSON.stringify({ type: 'meta', kind: 'transcript', schemaVersion: TRANSCRIPT_SCHEMA_VERSION, timestamp: new Date().toISOString() }) + '\n', 'utf-8')
+      // 【S2-D4 归属字段落盘】meta 首行是"会话级属性"的自然位置（归属属于整个会话，不属某条
+      // entry）。之所以必须在**新会话写入时**就落：spec §6.2 D4「L1 阶段作者恒为本人、工作区恒为
+      // `personal` 也要写——后补 = 全量数据迁移」——事后无法从 transcript 反推作者，只能迁移全量数据。
+      // 兼容性：`authorId`/`workspaceId` 是**可选新增字段**，与既有"在 { type, id, timestamp, message }
+      // 之上扩展可选字段、旧文件可加载"的约定一致，故**不动 TRANSCRIPT_SCHEMA_VERSION**（旧文件
+      // 仍视为 v1，读侧不得因缺这两个字段而拒绝加载）。
+      const attribution = attributionOf()
+      appendFileSync(file, JSON.stringify({
+        type: 'meta',
+        kind: 'transcript',
+        schemaVersion: TRANSCRIPT_SCHEMA_VERSION,
+        timestamp: new Date().toISOString(),
+        authorId: attribution.authorId,
+        workspaceId: attribution.workspaceId,
+      }) + '\n', 'utf-8')
     } catch { /* 磁盘不可写不致命 */ }
   }
   // 内存状态：entries（seq → entry）、surface（投影顺序）、derive 缓存、压缩计数

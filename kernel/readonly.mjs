@@ -76,15 +76,28 @@ export function collectTranscriptFiles({ configDir = '', sessionId = '', project
       }
       let text = ''
       try { text = readFileSync(abs, 'utf-8') } catch { continue }
+      // 【S2-D4 归属字段读取】meta 首行携带会话级 `authorId`/`workspaceId`（session.mjs 写入）。
+      // 逐 entry 注入而非逐条读取：归属是**会话级**属性，且 meta 是该文件首行 ⇒ 单次解析即可覆盖
+      // 整个文件，与既有 `sessionId`/`project` 的注入方式同层同模式，`aggregateUsage` 因此仍是纯函数。
+      // 旧文件（D4 之前）没有这两个字段 ⇒ **不伪造默认值**，宁可在 byAuthor 里落 `unknown` 桶：
+      // 伪造会让"从未记录过归属的历史数据"看起来像"已归属"，掩盖了需要迁移的那部分。
+      let fileAttribution = null
       for (const line of text.split('\n')) {
         const t = line.trim()
         if (!t) continue
         let e = null
         try { e = JSON.parse(t) } catch { continue }
+        // 会话级归属只认 meta 行；取到即固定，后续 entry 沿用（D4 之后每个文件首行都有）
+        if (!fileAttribution && e && e.type === 'meta') {
+          const a = {}
+          if (e.authorId) a.authorId = e.authorId
+          if (e.workspaceId) a.workspaceId = e.workspaceId
+          fileAttribution = a
+        }
         const ts = String(e.timestamp || '')
         if (from && ts.slice(0, 10) < from) continue
         if (to && ts.slice(0, 10) > to) continue
-        entries.push({ ...e, sessionId: sid, project: dirName })
+        entries.push({ ...e, sessionId: sid, project: dirName, ...(fileAttribution || {}) })
       }
     }
   }

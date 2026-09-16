@@ -6,6 +6,7 @@
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { hashLine, parseEntryLine, keywordScore, toDocId, relationContent, MIN_LEN } from '../shared/knowledge-core.mjs'
+import { withAttribution } from '../shared/attribution.mjs'
 
 export { hashLine, parseEntryLine, keywordScore }
 
@@ -73,9 +74,16 @@ export function appendMemoryEntry({ root = '', theme = '', tag = null, summary =
   const { front, entries } = readTheme(root, theme)
   const line = `- [会话${tag ? '|' + tag : ''}] ${summary} -- ${full}`
   if (entries.some((e) => e.hash === hashLine(line))) return { ok: true, deduped: true }
-  const head = Object.keys(front).length
-    ? Object.entries(front).map(([k, v]) => `${k}: ${v}`).join('\n')
-    : `name: ${theme}\ndescription: ${theme}\nactive: true`
+  // 【S2-D4 归属字段落盘】归属落在**文件 frontmatter**（本文件已用 frontmatter 承载
+  // name/description/active，`parseFrontmatter` 的键名正则天然容纳 camelCase，读取侧零改动）。
+  // 为什么不塞进条目行的 `[会话|标签]` 槽位（spec §6.2 D4 称该槽位为"作者位"）：那是模型可见/
+  // 人可见的格式，且既有哈希去重（hashLine 按行文本比较）与经验库文档都依赖它；混入机器字段会造成
+  // "旧条目旧格式、新条目新格式"的混合态，同一条内容换个写法即被视为两条，并污染注入模型的提示。
+  // L1 单作者下主题级与条目级归属等价。用 withAttribution 做**幂等**补充：已有值不被覆盖。
+  const baseFront = Object.keys(front).length
+    ? front
+    : { name: theme, description: theme, active: true }
+  const head = Object.entries(withAttribution(baseFront)).map(([k, v]) => `${k}: ${v}`).join('\n')
   const body = entries.map((e) => e.text).concat(line)
   writeFileSync(themePath(root, theme), `---\n${head}\n---\n` + body.join('\n') + '\n', 'utf-8')
   // 神经图谱：markdown 权威写入成功后同步派生索引（graphStore 内部去重）

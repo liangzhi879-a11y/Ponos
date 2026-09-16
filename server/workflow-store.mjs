@@ -3,6 +3,9 @@
 // 因此只做轻量正则元数据解析（列表展示用）；权威解析/校验/序列化一律经宿主会话。
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, copyFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+// 【S2-D4】归属解析取 `shared/`（本模块的约束只禁 import kernel/*；`shared/` 是既有跨层位置，
+// 生产包也随包分发）。沿用同一实现可保证三处落盘点的默认值/覆盖规则一致。
+import { attributionOf } from '../shared/attribution.mjs'
 
 export const SCHEMA_VERSION = 2
 export const BUNDLE_FORMAT = 'yfworking-workflow'
@@ -162,6 +165,11 @@ export function parseWorkflowMeta(yml) {
     name: grab(text, 'name'),
     description: grab(text, 'description'),
     version: grab(text, 'version'),
+    // 【S2-D4 归属字段】暴露落盘的 authorId/workspaceId（写入侧见 writeWorkflowYml 的收口注入）。
+    // 缺失时与其他元数据键同一约定返回**空串**（`grab` 的既有行为，name/description 亦然）——
+    // 不伪造默认值，读侧用 falsy 判断即可区分"从未记录"与"已归属"。
+    authorId: grab(text, 'authorId'),
+    workspaceId: grab(text, 'workspaceId'),
     triggers: inlineList('triggers').length ? inlineList('triggers') : (nlList('triggers').length ? nlList('triggers') : csvList('triggers')),
     expose: { mode: exposeMode || 'private', ...(toolName ? { tool_name: toolName.replace(/["',}]/g, '') } : {}) },
     nodeCount: sectionCount(text, 'nodes'),
@@ -208,6 +216,31 @@ export function readWorkflowYml({ root, id }) {
   return readFileSync(f, 'utf-8')
 }
 
+/**
+ * 【S2-D4 归属字段落盘】把 `authorId`/`workspaceId` 补进工作流 YAML 的元数据。
+ *
+ * 为什么放在**写入收口**：新建 / 保存 / 复制（还原版本）都经 `writeWorkflowYml` ⇒ 一处生效，
+ * 且工作流编辑器（渲染层）无需知道归属概念。
+ * 为什么是**文本级注入**而不是"用 DSL 解析后重新序列化"：重新序列化会丢掉用户 YAML 里的
+ * 注释与排版（属破坏性改写），而注入只加两行。
+ * 幂等：已有该键则不重复写（`grab` 命中即跳过）——还原旧版本、重复保存都不会累积字段。
+ *
+ * 注意：`kernel/workflow-dsl.mjs` 的 `TOP_KEYS` / `serializeWorkflow` 也已把这两个键纳入 ——
+ * 否则编辑器"加载→序列化"一往返就会把归属**静默丢掉**（那比不写更糟）。
+ */
+function ensureAttribution(yml) {
+  const { authorId, workspaceId } = attributionOf()
+  const out = String(yml)
+  const missing = []
+  if (!grab(out, 'authorId')) missing.push(`authorId: ${authorId}`)
+  if (!grab(out, 'workspaceId')) missing.push(`workspaceId: ${workspaceId}`)
+  if (!missing.length) return out
+  const block = missing.join('\n') + '\n'
+  // 插在 `name:` 行之后（serializeWorkflow 的规范输出以 name 开头；万一没有则前置）
+  const m = out.match(/^name:[^\n]*\n/m)
+  return m ? out.replace(m[0], m[0] + block) : block + out
+}
+
 export function writeWorkflowYml({ root, id, yml }) {
   assertSafeId(id)
   mkdirSync(wfDir(root, id), { recursive: true })
@@ -223,7 +256,7 @@ export function writeWorkflowYml({ root, id, yml }) {
       try { rmSync(join(versionsDir(root, id), old), { force: true }) } catch {}
     }
   }
-  writeFileSync(f, String(yml), 'utf-8')
+  writeFileSync(f, ensureAttribution(yml), 'utf-8')
   return { ok: true, id, backup }
 }
 
