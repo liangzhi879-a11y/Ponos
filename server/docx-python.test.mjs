@@ -112,46 +112,58 @@ before(() => {
 // 一、语料完整性（先钉住"尺子"本身，否则后面全是假绿）
 // ---------------------------------------------------------------------------
 
-test('语料完整性：入库 base.docx 与生成脚本产物的 read 输出逐字节相等', () => {
+test('语料完整性：入库 base.docx 与生成脚本产物的 **blocks 逐字节相等**', () => {
   // 为什么重要：本文件后续所有断言都以 `base.docx` 为基准。若入库字节被静默替换，或
   // gen_docx.py 漂移（比如有人改了标题层级），基准就变了而测试仍可能"看起来通过"。
   // 这条断言让"基准本身"也进入受控状态。变红意味着：要么换了语料，要么生成脚本改了结构。
+  //
+  // C2 起只比 `blocks`、**不比整个输出**：`baseVersion` 是"整文件 sha256"，两个内容相同
+  // 但 zip 时间戳不同的文件必然给出不同哈希 —— 那是版本字段的**应有**行为，不是语料漂移。
+  // 若这里改成比整份输出，会在 C2 落地后恒红（假红），把真正的语料漂移淹没掉。
   const gen = join(TMP, 'base_gen.docx')
   assert.ok(existsSync(gen), 'gen_docx.py 未产出文件')
-  assert.equal(readDocxRaw(gen), readDocxRaw(BASE))
+  assert.deepEqual(readDocx(gen).blocks, readDocx(BASE).blocks)
 })
 
 // ---------------------------------------------------------------------------
 // 二、read 的字段契约
 // ---------------------------------------------------------------------------
 
-test('read 字段集合：段落块只有 {kind,text}、表格块只有 {kind,rows}，且当前没有 id', () => {
-  // 为什么重要：这是 read→write 的**线格式**。S1 的 C1/C2 要往这里加 id、baseVersion、
-  // ops 等字段；在这之前先把"当前只有一个 kind/text（或 rows）"钉死，才能确信后续
-  // 新增字段是有意为之、而不是顺手多吐了一个字段把下游（AI 提示词/合并器）带歪。
+test('read 字段契约（C2 后）：每块有唯一 blockId、顶层有 baseVersion', () => {
+  // 为什么重要：这是 read→write 的**线格式**，也是 ops 寻址的全部依据。
+  // 原断言钉的是"C2 之前没有 id"；C2 落地后**反转为"必须有 id"**（不是删掉——删掉就再没人看着线格式了）。
+  // 变红意味着：要么 blockId 没了（ops 立刻无从寻址），要么 baseVersion 没了
+  // （防丢失更新失效，A 的改动会静默覆盖 B 的）。
   const j = readDocx(BASE)
   assert.equal(j.ok, true)
   assert.ok(Array.isArray(j.blocks))
   assert.equal(j.blocks.length, 17)
 
+  // 顶层版本字段：64 位 hex（整文件 sha256），供写入时做"基线比对"
+  assert.equal(typeof j.baseVersion, 'string')
+  assert.match(j.baseVersion, /^[0-9a-f]{64}$/)
+
+  const ids = new Set()
   let paraCount = 0
   let tableCount = 0
   for (const b of j.blocks) {
     assert.ok(PARA_KINDS.has(b.kind) || b.kind === 'table', `未知 kind：${b.kind}`)
-    // TODO-C2：稳定 blockId 落地后，这里的字段集合会多出 `id`——届时同步更新本断言
-    assert.ok(!('id' in b), `当前不应有 id（C2 之前）：${JSON.stringify(b).slice(0, 80)}`)
+    assert.equal(typeof b.blockId, 'string', '每块都必须有 blockId')
+    assert.ok(b.blockId.length > 0)
+    assert.equal(ids.has(b.blockId), false, `blockId 必须唯一，重复：${b.blockId}`)
+    ids.add(b.blockId)
     if (b.kind === 'table') {
       tableCount += 1
-      assert.deepEqual(Object.keys(b).sort(), ['kind', 'rows'])
+      assert.deepEqual(Object.keys(b).sort(), ['blockId', 'kind', 'rows'])
       assert.ok(Array.isArray(b.rows) && b.rows.every((r) => Array.isArray(r)))
     } else {
       paraCount += 1
-      assert.deepEqual(Object.keys(b).sort(), ['kind', 'text'])
+      assert.deepEqual(Object.keys(b).sort(), ['blockId', 'kind', 'text'])
       assert.equal(typeof b.text, 'string')
     }
   }
-  assert.equal(paraCount, 15)
-  assert.equal(tableCount, 2)
+  assert.equal(paraCount, 15, '段落块数不得改变（字段升级不应增删内容）')
+  assert.equal(tableCount, 2, '表格块数不得改变')
 })
 
 // ---------------------------------------------------------------------------
@@ -169,96 +181,114 @@ test('【不变量】T1 幂等：同一文件连续 read 3 次，输出逐字节
   assert.equal(b, c)
 })
 
-test('【不变量】T2 稳定：真 Word 重存后的 word_resaved.docx 与 base.docx 的 read 输出完全相同', () => {
+test('【不变量】T2 稳定：真 Word 重存后的 word_resaved.docx 与 base.docx 的 **blocks 完全相同**', () => {
   // 为什么重要：这条解除"两种编辑入口混用"的最大顾虑——用户在 Word 里打开又保存
   // （内容一字未改，但 Word 会重组 zip、重切 run），块级解析必须仍然认得出来。
   // 若变红：Word 的 run 重切已经影响到我们读到的块序列，块对齐会全线失准。
   // 注意这是"入库的真 Word 字节"，不是脚本生成的（见 office-fixtures/README.md）。
-  assert.equal(readDocxRaw(RESAVED), readDocxRaw(BASE))
+  //
+  // C2 起只比 `blocks` 而**不比整个输出**：`baseVersion` 是整文件 sha256，
+  // base.docx 与 word_resaved.docx 是**两个不同的文件**（本就不同字节），哈希必然不同。
+  // 那是版本字段的应有语义；若把整份输出拿来比，这条会在 C2 后恒红（假红），
+  // 从而掩盖真正的信号——"blockId 是否扛住了 Word 重存"。
+  assert.deepEqual(readDocx(RESAVED).blocks, readDocx(BASE).blocks)
+  // 顺带把"两个文件确实不同字节"钉住，避免有人误以为 baseVersion 也该相同
+  assert.notEqual(readDocx(RESAVED).baseVersion, readDocx(BASE).baseVersion)
 })
 
 // ---------------------------------------------------------------------------
-// 四、【锁现状 + TODO】B3 块序 ≠ 文档真序
+// 四、【C2 新契约】块序 = 文档真序
 // ---------------------------------------------------------------------------
 
-test('TODO-C2: B3 现状——read 先遍历段落再遍历表格，两个表格全被堆到末尾（≠ 文档真序）', () => {
-  // 为什么锁它：`read_docx` 是「先 doc.paragraphs 再 doc.tables」，两个独立序列拼起来，
-  // **交错关系彻底丢失**。后果不是"显示难看"，而是：块序错位 ⇒ 任何按序对齐的合并
-  // （LCS/按位）都会把"表格前的那段"和"表格后的那段"判成同一位置。
-  //
-  // C2 之后此断言必须**反转为"表格穿插的真序"**：期望块序里 table 出现在它原本的位置。
-  // 反转做法：把下面的 kinds 断言换成真序（trueBodyOrder 已经是真序，可直接比对）。
+test('C2：read 按文档**真序**取块（原 B3 缺陷已根除）——表格穿插在它原本的位置', () => {
+  // 这条原是"锁现状"（先段落后表格，T 全在末尾）。C2 落地后**反转为真序断言**。
+  // 为什么从"锁现状"改成"验正确"而不是删掉：块序是合并对齐的坐标基准，必须有断言看着。
+  // 独立性说明：期望值不是硬编码，而是由 python-docx 直接遍历 `doc.element.body` 算出
+  // （`trueBodyOrder`），与 `docx_edit.py` 的实现**不是同一段代码** —— 不是自证。
   const j = readDocx(BASE)
-  const kinds = j.blocks.map((b) => (b.kind === 'table' ? 'T' : b.kind)).join('')
-  assert.equal(kinds, 'h1ppph2pph3ppph2pppTT', '当前现状：1ppp2pp3ppp2pppTT（T 全在末尾）')
+  // 两侧字母表不同，必须先归一：read 给的是**标题层级**（h1/h2/h3/p），
+  // 而 `trueBodyOrder` 给的是**标签名**（p/tbl）。直接比 'h1ppph2…' 与 'pppp…' 是假红
+  // （首版就是这么红的）。归一为"表/非表结构"后，比对的是**交错次序**，正是 B3 的失败点。
+  const structOfRead = j.blocks.map((b) => (b.kind === 'table' ? 'T' : 'P')).join('')
 
-  // 现状的两个侧面，写清楚免得被"看起来对"糊弄：
-  assert.ok(j.blocks.slice(15).every((b) => b.kind === 'table'), '末尾 2 块都是表格')
-  assert.ok(j.blocks.slice(0, 15).every((b) => b.kind !== 'table'), '前 15 块都是段落')
-
-  // 而文档真序里，**表格出现在最后一段之前** ⇒ 这正是不等于真序的证据
   const order = trueBodyOrder(BASE)
+  const expectStruct = order.map((v) => (v === 'tbl' ? 'T' : 'P')).join('')
+  assert.equal(structOfRead, expectStruct, '块序必须与 body 子元素真序一致（独立实现：直接遍历 python-docx 的 body）')
+  assert.equal(j.blocks.length, order.length, '块数 = body 中 p/tbl 子元素数（sectPr 等非块元素必须被跳过）')
+
+  // 真序的关键特征（也是旧实现的失败点）：表格**出现在末尾段落之前**，末块是段落
   assert.ok(order.includes('tbl'))
   assert.ok(order.indexOf('tbl') < order.lastIndexOf('p'), '真序中表格应先于末尾段落出现')
+  assert.equal(j.blocks[j.blocks.length - 1].kind !== 'table', true, '末块应为段落（旧实现里末两块都是表格）')
 })
 
 // ---------------------------------------------------------------------------
-// 五、【锁现状 + TODO】B1 按位 zip：静默截断 / 静默丢弃
+// 五、【C1 新契约】B1 已根除：旧全量 blocks 写法**显式拒绝**，zip 按位覆盖不复存在
 // ---------------------------------------------------------------------------
 
-test('TODO-C1: B1 现状——写入的段落块多于文档实际时，多出的块被静默丢弃且返回 ok:true', () => {
-  // 为什么锁它：这是 FINDINGS.md 判为「🔴 阻断」的那条。`zip(paras, doc.paragraphs)`
-  // 短序列结束即停，**多出来的合并结果直接消失，却谎报 `{"ok":true}`**。
-  // 协同场景里这等于"用户的改动被无声吞掉"，比报错危害大得多。
+test('C1：旧全量 blocks 写法被**显式拒绝**（原 B1"静默丢弃/静默截断"已根除）', () => {
+  // 这两条原是"锁现状"（多一个块被静默丢弃、少一个块被静默保留，且都返回 ok:true）。
+  // C1 落地后**反转为"必须显式拒绝"**。
   //
-  // C1 之后此断言必须**反转**：应改为「块数与文档不符 ⇒ 显式报错（不得静默）」。
-  const p = freshCopy('b1-more')
+  // 为什么不能只是"删掉旧用例"：B1 是 FINDINGS.md 判为 🔴 阻断的那条 —— 它的危害不是"写错"，
+  // 而是**静默**（协同场景里等于"用户的改动被无声吞掉"）。反转成"必须报错"后，
+  // 一旦有人为了兼容又把旧路径放回来，这条会立刻变红。
+  const p = freshCopy('c1-legacy-more')
   const j0 = readDocx(BASE)
   const ghost = '【幽灵段】不应出现在文档中'
-  const res = writeDocx({ path: p, blocks: [...j0.blocks, { kind: 'p', text: ghost }] })
-  assert.equal(res.ok, true, '现状：静默接受并谎报成功')
 
-  const j1 = readDocx(p)
-  assert.equal(j1.blocks.length, 17, '现状：文档段落数未变（第 16 段从未被写入）')
-  assert.ok(!j1.blocks.some((b) => (b.text || '').includes('幽灵段')), '现状：多出的块被丢弃')
-})
+  // ① 多一个块
+  let res = writeDocx({ path: p, blocks: [...j0.blocks, { kind: 'p', text: ghost }] })
+  assert.equal(res.ok, false, '旧写法必须被拒绝，不得静默接受')
+  assert.equal(res.code, 'legacy-blocks-not-supported')
+  assert.equal(readDocx(p).blocks.length, 17, '被拒绝的写入不得改动文件')
+  assert.ok(!readDocx(p).blocks.some((b) => (b.text || '').includes('幽灵段')))
 
-test('TODO-C1: B1 现状——写入的段落块少于文档实际时，其余段落被静默保留（不报错）', () => {
-  // 为什么锁它：zip 的另一面。传 3 个段落块进去，只有前 3 段被覆盖，**第 4 段及以后
-  // 原样留下**，同样返回 ok:true。调用方无法从返回值分辨"写全了"还是"只写了前 3 段"。
-  // C1 之后此断言必须**反转**为「显式报错」（或由 ops 语义显式表达"只改这三段"）。
-  const p = freshCopy('b1-fewer')
-  const j0 = readDocx(BASE)
+  // ② 少几个块
+  const p2 = freshCopy('c1-legacy-fewer')
   const paras = j0.blocks.filter((b) => b.kind !== 'table')
   const tables = j0.blocks.filter((b) => b.kind === 'table')
-  const short = [{ kind: 'p', text: '改写第0段' }, paras[1], paras[2], ...tables]
+  res = writeDocx({ path: p2, blocks: [{ kind: 'p', text: '改写第0段' }, paras[1], paras[2], ...tables] })
+  assert.equal(res.ok, false, '旧写法必须被拒绝（即便只传了部分块）')
+  assert.equal(res.code, 'legacy-blocks-not-supported')
+  assert.deepEqual(readDocx(p2).blocks, j0.blocks, '被拒绝的写入不得留下半截改动')
 
-  const res = writeDocx({ path: p, blocks: short })
-  assert.equal(res.ok, true, '现状：静默接受')
+  // ③ 既不传 ops 也不传 blocks ⇒ 明确报"缺 ops"
+  const p3 = freshCopy('c1-no-ops')
+  res = writeDocx({ path: p3 })
+  assert.equal(res.ok, false)
+  assert.equal(res.code, 'ops-required')
 
-  const j1 = readDocx(p)
-  assert.equal(j1.blocks.length, 17, '段落数不变——未传入的段落原样保留')
-  assert.equal(j1.blocks[0].text, '改写第0段', '传入的前 3 段被覆盖（第 0 段）')
-  assert.equal(j1.blocks[5].text, j0.blocks[5].text, '第 5 段未传入 ⇒ 原文照旧')
+  // ④ 旧写法带不带 baseVersion 都必须被拒（不能因为"顺手带了 baseVersion"就放行旧路径）
+  const p4 = freshCopy('c1-legacy-with-version')
+  res = writeDocx({ path: p4, baseVersion: j0.baseVersion, blocks: j0.blocks })
+  assert.equal(res.ok, false)
+  assert.equal(res.code, 'legacy-blocks-not-supported')
 })
 
 // ---------------------------------------------------------------------------
 // 六、【不变量】写回文本确实生效
 // ---------------------------------------------------------------------------
 
-test('【不变量】写回生效：改一段文字后重新 read 能看到新文字', () => {
-  // 为什么重要：上面几条锁的都是"缺陷"，如果只有它们，那么一个「什么都不写」的实现
-  // 也能全绿。本条是最基本的正向保证：write 确实改了文档，且 read 能读回来。
+test('【不变量】写回生效：改一段文字后重新 read 能看到新文字（改用 ops）', () => {
+  // 为什么重要：上面几条锁的都是"拒绝路径"，如果只有它们，那么一个「什么都不写」的实现
+  // 也能全绿。本条是最基本的正向保证：ops 确实改了文档，且 read 能读回来。
+  // C1 起写入换成 ops（blockId 寻址 + baseVersion），因此这里也换成 ops —— 若仍用旧 blocks，
+  // 它会因为"被正确拒绝"而变红，那是**假红**（拒绝是对的），会掩盖真正的写入失效。
   const p = freshCopy('write-ok')
-  const j0 = readDocx(BASE)
+  const j0 = readDocx(p)
   const NEW = '【校验】本期目标为打通采集、校验、汇总三个环节。'
-  const blocks = j0.blocks.map((b, i) => (i === 5 ? { kind: b.kind, text: NEW } : b))
 
-  const res = writeDocx({ path: p, blocks })
-  assert.equal(res.ok, true)
+  const res = writeDocx({
+    path: p,
+    baseVersion: j0.baseVersion,
+    ops: [{ op: 'update', blockId: j0.blocks[5].blockId, text: NEW }],
+  })
+  assert.equal(res.ok, true, JSON.stringify(res))
   assert.equal(readDocx(p).blocks[5].text, NEW)
   // 顺带钉住"只改了一段"：邻居段未被波及
   assert.equal(readDocx(p).blocks[6].text, j0.blocks[6].text)
+  assert.equal(readDocx(p).blocks.length, j0.blocks.length, '块数不变')
 })
 
 // ---------------------------------------------------------------------------
@@ -281,9 +311,13 @@ test('【锁现状】set_para_text 抹平 run 分段：写入后可见文本只�
   assert.ok(b4.runs.some((r) => r.bold === true), 'base 第 3 段含粗体 run')
   assert.ok(b4.runs.some((r) => r.italic === true), 'base 第 3 段含斜体 run')
 
-  const j0 = readDocx(BASE)
-  const blocks = j0.blocks.map((b, i) => (i === 3 ? { kind: b.kind, text: NEW } : b))
-  assert.equal(writeDocx({ path: p, blocks }).ok, true)
+  const j0 = readDocx(p)
+  const w = writeDocx({
+    path: p,
+    baseVersion: j0.baseVersion,
+    ops: [{ op: 'update', blockId: j0.blocks[3].blockId, text: NEW }],
+  })
+  assert.equal(w.ok, true, JSON.stringify(w))
 
   assert.equal(readDocx(p).blocks[3].text, NEW, 'read 层看起来"写对了"')
 

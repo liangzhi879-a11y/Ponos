@@ -7,6 +7,8 @@ import type { FileTab } from '@/types'
 
 export interface SheetEditorHandle {
   save: () => Promise<boolean>
+  /** 最近一次保存失败的原因（供上层 `FileEditor` 转述）。用方法而非属性：属性会被闭包定格。 */
+  lastError: () => string
 }
 
 interface SheetData {
@@ -44,6 +46,8 @@ export const SheetEditor = forwardRef<SheetEditorHandle, { file: FileTab }>(func
   // 编辑态同步 ref，避免 input 卸载触发的 onBlur 读到陈旧闭包
   const editingRef = useRef(editing)
   const skipBlurRef = useRef(false)
+  // 与 `saveError` 同值的 ref：句柄方法会被闭包定格，读 state 会拿到旧值；失败原因必须最新
+  const saveErrorRef = useRef('')
   useEffect(() => { editingRef.current = editing }, [editing])
 
   useEffect(() => {
@@ -114,15 +118,19 @@ export const SheetEditor = forwardRef<SheetEditorHandle, { file: FileTab }>(func
         const data = await res.json()
         if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`)
         dirtyRef.current.clear()
+        saveErrorRef.current = ''
         setSaveError('')
         forceRender(x => x + 1)
         markFileSaved(file.id)
         return true
       } catch (e: any) {
-        setSaveError(e?.message || '保存失败')
+        const msg = e?.message || '保存失败'
+        saveErrorRef.current = msg
+        setSaveError(msg)
         return false
       }
     },
+    lastError: () => saveErrorRef.current,
   }))
 
   if (loading) {

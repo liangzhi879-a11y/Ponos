@@ -34,11 +34,18 @@ export function FileEditor() {
     setSaveError(null)
     try {
       if (/\.(xlsx|xls)$/i.test(file.name)) {
-        await sheetRef.current?.save()
+        // ⚠️ 必须检查返回值：子编辑器用 `false` 表示"写入被拒绝"（版本冲突/文件被占用等）。
+        // 早期版本直接 `return`，于是"保存失败"在 UI 上**完全无声** —— 用户以为存好了，
+        // 直到重开文件才发现改动没了。这类"静默失败"比报错危险得多（协同场景尤其致命）。
+        const ok = await sheetRef.current?.save()
+        if (ok === false) throw new Error(sheetRef.current?.lastError?.() || '保存被拒绝')
+        markFileSaved(file.id)
         return
       }
       if (/\.docx$/i.test(file.name)) {
-        await docxRef.current?.save()
+        const ok = await docxRef.current?.save()
+        if (ok === false) throw new Error(docxRef.current?.lastError?.() || '保存被拒绝')
+        markFileSaved(file.id)
         return
       }
       const res = await fetch(`${getBridgeUrl()}/write-file`, {

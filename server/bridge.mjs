@@ -2238,30 +2238,60 @@ const httpServer = createServer(async (req, res) => {
         try { unlinkSync(tmp) } catch { /* ignore */ }
       }
     }
-    // Word 块结构读取（标题/段落/表格），供应用内文档编辑
+    // Word 块结构读取（标题/段落/表格），供应用内文档编辑。
+    // 【S1-C2】额外透传 `baseVersion`（整文件 sha256）：写回时必须带回它，否则拒绝 —— 这是
+    // "防丢失更新"的唯一依据（A 读到 B 改之前的内容时，A 的提交必须失败而不是覆盖 B）。
     if (url.pathname === '/read-docx') {
       const fp = resolve((url.searchParams.get('path') || '').replace(/\//g, sep))
       validOfficeFile(fp)
       try {
         const result = await runOfficeScript('docx_edit.py', ['read', fp])
         if (!result.ok) throw new Error(result.error || 'read failed')
-        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, blocks: result.blocks }))
+        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, baseVersion: result.baseVersion, blocks: result.blocks }))
       } catch (e) {
         return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ error: e.message || 'Read error' }))
       }
     }
-    // Word 块结构写回：{ path, blocks }
+    // Word 写回：【S1-C1】只接受 `{ path, baseVersion, ops[] }`（旧的 `{ path, blocks }` 会被
+    // python 侧**显式拒绝**，这里如实转达）。错误码 → HTTP 状态映射见下：
+    //   400 = 请求本身不可用（含"旧写法"、"缺 ops/baseVersion"、"引用了不存在的块"）
+    //   409 = 冲突（baseVersion 不匹配）—— 前端应**重新载入**而不是重试
+    //   404 = 文件不存在；423 = 文件被占用；其余 500
+    // 把 409 与 400 分开是有意的：两者的用户动作完全不同（重载 vs 改请求）。
     if (url.pathname === '/write-docx' && req.method === 'POST') {
       const body = await readJsonBody(req)
       const fp = resolve((body.path || '').replace(/\//g, sep))
       if (!body.path) throw new Error('path required')
       validOfficeFile(fp)
       const tmp = join(tmpdir(), 'yfw-docx-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.json')
-      writeFileSync(tmp, JSON.stringify(body))
+      writeFileSync(tmp, JSON.stringify({ ...body, path: fp }))
       try {
         const result = await runOfficeScript('docx_edit.py', ['write', tmp])
-        if (!result.ok) throw new Error(result.error || 'write failed')
-        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true }))
+        if (!result.ok) {
+          const code = result.code || 'write-failed'
+          const status = ({
+            'base-version-mismatch': 409,
+            'file-locked': 423,
+            'file-missing': 404,
+            'path-required': 400,
+            'ops-required': 400,
+            'base-version-required': 400,
+            'legacy-blocks-not-supported': 400,
+            'block-not-found': 400,
+            'block-deleted': 400,
+            'bad-move': 400,
+            'unknown-op': 400,
+            'bad-op': 400,
+            'text-required': 400,
+            'rows-required': 400,
+            'bad-request': 400,
+          })[code] || 500
+          return reply(status, { 'Content-Type': 'application/json' }, JSON.stringify({
+            ok: false, code, error: result.error || 'write failed', expected: result.expected, actual: result.actual,
+          }))
+        }
+        // 返回新的 baseVersion：前端可据此继续编辑（不必立刻重读整篇）
+        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, baseVersion: result.baseVersion }))
       } catch (e) {
         return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ error: e.message || 'Write error' }))
       } finally {
