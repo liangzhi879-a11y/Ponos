@@ -341,9 +341,12 @@ test('extractLinks 取 wiki 链接与相对 md 链接，忽略外链与纯锚点
 
 test('extractLinks 无别名的 wiki 链接 anchor 为空串（不是 undefined，落盘要能 JSON 化）', () => {
   const links = extractLinks('[[code-style]]')
-  // `index` 是 S5.1 为"把链接定位到所属块"而追加的字段（由此才能建条目级 ref 关联），
-  // 其余字段与落盘 JSON 形态不变。
-  assert.deepEqual(links, [{ to: 'code-style', anchor: '', index: 0 }])
+  // `index` 是 S5.1 为"把链接定位到所属块"而追加的字段（由此才能建条目级 ref 关联）。
+  // 批次 2（2026-09-14）再追加引用体系四字段：`anchorRef`/`anchorKind`（`#锚点`）、
+  // `embed`（`![[x]]` 嵌入）、`self`（`[[#x]]` 同文档锚点，仅在成立时出现）。
+  assert.deepEqual(links, [{
+    to: 'code-style', anchor: '', anchorRef: '', anchorKind: '', embed: false, index: 0,
+  }])
   assert.equal(typeof links[0].anchor, 'string')
 })
 
@@ -353,7 +356,12 @@ test('extractLinks 去重（同一目标只出现一次）', () => {
 })
 
 test('extractLinks 去重按 to：同一目标的不同别名只留首次出现的 anchor', () => {
-  assert.deepEqual(extractLinks('[[a|甲]] 与 [[a|乙]]'), [{ to: 'a', anchor: '甲', index: 0 }])
+  // 批次 2 起去重键是 `to` + `anchorRef`：别名不进键（不同别名仍去重、留首次），
+  // 但 `[[a#第一章]]` 与 `[[a#第二章]]` 是**两个引用位置**，必须各自成条（反链要分别显示）。
+  assert.deepEqual(extractLinks('[[a|甲]] 与 [[a|乙]]'), [{
+    to: 'a', anchor: '甲', anchorRef: '', anchorKind: '', embed: false, index: 0,
+  }])
+  assert.equal(extractLinks('[[a#第一章]] 与 [[a#第二章]]').length, 2, '同一目标的不同锚点不去重')
 })
 
 test('extractLinks 对空/无链接文本返回空数组', () => {
@@ -512,7 +520,7 @@ test('builtinSpaceSpecs 每项字段齐备（GUI 与 collectTags 依赖），且
 // ═══════════════════════════════════════════════════════════════════════════
 
 test('S5 Task1：常量与 spec §7.1 一致（阈值改动必须重跑校准）', () => {
-  assert.equal(INDEX_VERSION, 3) // 1→2：索引文本口径 b.text → relationContent(b)
+  assert.equal(INDEX_VERSION, 4) // 1→2：索引文本口径；2→3：标签来源；3→4：引用体系（to 语义变 + 锚点/嵌入/同文档锚点）
   // 2→3（2026-09-14，对标 Obsidian 批次 1）：标签来源变了 —— frontmatter 支持 YAML 子集
   // （block 列表 / flow 数组不再丢或脏）+ 正文内联 `#tag` 进索引。**必须 bump**：这两项改变
   // doc.tags，而被改的 .md 可能 size/mtime 未变（另存即改标签），indexStale() 的逐文件指纹

@@ -34,7 +34,14 @@ import { createHash } from 'node:crypto' // 仅内容指纹（sha1），无 IO
 // `#tag` 进索引（见 extractInlineTags）。**必须 bump**：这两项都改变 doc.tags，而被改的
 // .md 文件可能 size/mtime 未变（用户在别处敲了个内联标签就另存），indexStale() 的逐文件
 // 指纹发现不了 → 不 bump 就会拿着旧标签集一直跑（"文件里有、知识库没有"这类最难查的分裂）。
-export const INDEX_VERSION = 3
+// v4（2026-09-14 对标 Obsidian 批次 2）：**引用体系**。links 的 `to` 语义变了 ——
+// `[[a#x]]` 的 `to` 从 `'a#x'` 改为剥离锚点的 `'a'`，锚点移入新字段 `anchorRef`/`anchorKind`；
+// 同时新增 `embed`（`![[x]]`）与 `self`（`[[#x]]` 同文档锚点，旧实现在 to 为空时直接丢弃）。
+// **必须 bump**：① `to` 的取值变了（反链比对、图边、前端解析全依赖它）；② 老索引里同文档锚点
+// **整条缺失**（不是"字段缺失"而是"数据从来没落盘"），只追加字段无法恢复 —— 只能重建。
+// 另：`relinkDoc`（增量路径）曾只写 `{from,to,target}` 丢字段，已改为与全量共用 linkRowsOf；
+// 那个 bug 造成的既存数据（被编辑过的文档缺 line/block/锚点）也只有重建才会修复。
+export const INDEX_VERSION = 4
 
 // ── 基础：行指纹 ──────────────────────────────────────────────────────────
 // 与 kernel/memory.mjs:13 / server/experience.mjs:24 现行算法逐字相同。
@@ -556,16 +563,36 @@ export function isBlockId(value) {
   return /^\d+$/.test(s.slice(i + 1))
 }
 
-// ── 链接（Task 3）────────────────────────────────────────────────────────
-// 只认两类站内引用：[[wiki]]（含 `[[目标|别名]]`，别名作 anchor）与相对路径 md 链接。
-// 外链（含协议）与纯锚点不算边——它们连不到本文档集内的任何文档，进图只会是噪声。
-// 去重按 `to`（同一目标多次出现只留首次，anchor 取首次出现的别名）：
-// links.jsonl 与图扩展都按目标聚合，重复边只会放大同一文档的权重。
+// ── 链接（Task 3；2026-09-14 批次 2 扩展为"引用体系"）──────────────────────
+// 认两类站内引用：`[[wiki]]`（含 `[[目标|别名]]`、`[[目标#锚点]]`、`![[嵌入]]`）与
+// 相对路径 md 链接。外链（含协议）与纯锚点 md 链接不算边——它们连不到本文档集内的文档。
+//
+// 2026-09-14（对标 Obsidian 批次 2）新增四件事，**每一项都是实测出来的缺口**：
+//   ① `![[x]]` 嵌入：旧实现把它当**普通链接**（正则从 `[[` 起匹配），于是"嵌入"与"引用"
+//      在数据层不可区分 —— 阅读视图没法把它渲染成内联内容，图谱也把嵌入当普通边。
+//   ② `[[note#heading]]` 标题锚点：旧实现把 `#heading` 当成**目标的一部分**（`to='note#heading'`），
+//      只在 resolveLinkTarget 里剥掉，于是锚点在落盘时丢了 → 点链接只能到文档、到不了那一节。
+//   ③ `[[note#^blockId]]` 块锚点：同上，且 `^` 前缀没有任何语义（块根本没有 ID）。
+//   ④ `[[#heading]]` **同文档锚点**：旧实现因 `to` 为空被直接丢弃（`!t` 短路）→
+//      文档内部的目录/跳转链接整批消失。
+//
+// 字段契约（**to 的语义变了**，故 INDEX_VERSION 3→4）：
+//   · `to`       目标原文，**锚点已剥离**（`[[a#x]]` → `'a'`）；同文档锚点为 `''`
+//   · `self`     同文档锚点（`[[#x]]`）——调用方据此用"来源文档自身"作目标
+//   · `anchorRef` 锚点原文（`#` 之后；block 锚点已去掉 `^`）
+//   · `anchorKind` `'heading' | 'block' | ''`
+//   · `anchor`   `|别名`（**保持原语义**：展示用别名，与锚点无关）
+//   · `embed`    `![[...]]` 为 true
+//   · `index`    匹配在原文中的字符下标（调用方据此定位所属块）
+//
+// 去重键 = `to` + `anchorRef`（不是只按 `to`）：`[[a#第一章]]` 与 `[[a#第二章]]` 是两个
+// 不同的引用位置，反链要能分别显示；只按 `to` 去重会把第二个锚点吞掉。
 //
 // 返回项带 `index`（匹配在原文中的字符下标）：调用方据此把链接**定位到所属块**
 // （S5.1：条目级 ref 关联要知道"是哪条经验引用了这篇文档"）。
 export function extractLinks(text) {
-  const wikiRe = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g
+  // 组：1=`!`（嵌入标记）2=目标（含可能的 `#锚点`）3=别名
+  const wikiRe = /(!?)\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g
   const mdRe = /\[([^\]]*)\]\(([^)\s]+)\)/g
   const out = []
   const seen = new Set()
@@ -583,22 +610,80 @@ export function extractLinks(text) {
   // 补足防护①（若片段在代码块 ``` 内而反引号计数为偶数时，仅靠①会漏）。
   const badShape = (t) => /[\s'"(){}\[\]<>,;|]/.test(t)
 
-  const push = (to, anchor, index) => {
+  const push = (to, alias, index, opt = {}) => {
     const t = String(to ?? '').trim()
-    if (!t || seen.has(t) || badShape(t)) return
+    const anchorRef = String(opt.anchorRef ?? '').trim()
+    const self = opt.self === true
+    // 同文档锚点 `[[#x]]` 的 to 是空串：**不能按"空目标"丢弃**（那是它合法且常见的形态）。
+    if (!t && !self) return
+    if (t && badShape(t)) return
     if (inCode(index)) return
-    seen.add(t)
-    out.push({ to: t, anchor: anchor || '', index })
+    const key = `${t}\u0000${anchorRef}`
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push({
+      to: t,
+      anchor: alias || '',
+      anchorRef,
+      anchorKind: anchorRef ? (opt.anchorKind || '') : '',
+      embed: opt.embed === true,
+      ...(self ? { self: true } : {}),
+      index,
+    })
   }
   let m
-  while ((m = wikiRe.exec(src))) push(m[1], m[2] || '', m.index)
+  while ((m = wikiRe.exec(src))) {
+    const parsed = splitWikiAnchor(m[2])
+    push(parsed.target, m[3] || '', m.index, {
+      anchorRef: parsed.anchorRef,
+      anchorKind: parsed.anchorKind,
+      self: parsed.self,
+      embed: m[1] === '!',
+    })
+  }
   while ((m = mdRe.exec(src))) {
     const href = String(m[2] || '')
-    if (/^[a-z]+:\/\//i.test(href) || href.startsWith('#')) continue
-    push(href, '', m.index)
+    if (/^[a-z]+:\/\//i.test(href)) continue
+    // 纯锚点 md 链接 `[x](#y)`：Obsidian 里是页内跳转。我们**不做**页内滚动到任意标题
+    // （阅读视图的锚点跳转只服务 wiki 语法，见 lib/knowledgeBlocks），故继续跳过——
+    // 否则会凭空多出一批 `to=''` 的边，把反链列表塞满无意义条目。
+    if (href.startsWith('#')) continue
+    const parsed = splitWikiAnchor(href)
+    push(parsed.target, '', m.index, {
+      anchorRef: parsed.anchorRef,
+      anchorKind: parsed.anchorKind,
+      self: false,
+      embed: false,
+    })
   }
   return out
 }
+
+/**
+ * 拆分引用的锚点部分（2026-09-14 批次 2）。Obsidian 的锚点语法：
+ *   `目标#标题`     → heading 锚点（标题文本，大小写不敏感、空格/`-` 等价）
+ *   `目标#^块ID`    → block 锚点（`^` 后是块 ID；`^` 本身是语法标记，不属于 ID）
+ *   `#标题` / `#^块ID` → **同文档**锚点（目标为空，`self: true`）
+ *   `目标`          → 无锚点
+ *
+ * 为什么用 `lastIndexOf('#')` 而不是第一个：文件名里含 `#` 虽罕见但合法
+ * （`issue#42.md`）。取最后一个 `#` 的代价是"锚点里含 `#`"会拆错——而 Obsidian 的标题里
+ * 出现 `#` 同样会歧义（官方也按最后一段解释），两边一致即可，不为特例改规则。
+ */
+export function splitWikiAnchor(raw) {
+  const s = String(raw ?? '').trim()
+  const hash = s.lastIndexOf('#')
+  if (hash < 0) return { target: s, anchorRef: '', anchorKind: '', self: false }
+  const target = s.slice(0, hash).trim()
+  const ref = s.slice(hash + 1).trim()
+  if (!ref) return { target, anchorRef: '', anchorKind: '', self: !target }
+  if (ref.startsWith('^')) {
+    const id = ref.slice(1).trim()
+    return { target, anchorRef: id, anchorKind: id ? 'block' : '', self: !target }
+  }
+  return { target, anchorRef: ref, anchorKind: 'heading', self: !target }
+}
+
 
 // 相对路径段归一：`.` 跳过、`..` 回退一级；**越出根部的 `..` 原样保留**——它必然匹配
 // 不到 docIds（docId 只由空间内真实 relPath 构成），于是顺带成了链接层的穿越防护
@@ -631,9 +716,17 @@ function normalizeRelPath(p) {
 // 图扩展少掉真实邻居。
 // 注意 `to` 本身存原文（links.jsonl 落原文，`--knowledge links` 展示不丢信息）；
 // 纯锚点（`#sec`）依旧一律 null——它连不到本文档集内的任何文档。
-export function resolveLinkTarget({ fromRel = '', to = '', spaceId = '', docIds = null } = {}) {
+export function resolveLinkTarget({ fromRel = '', to = '', spaceId = '', docIds = null, self = false } = {}) {
+  // 同文档锚点（`[[#标题]]` / `[[#^块ID]]`，2026-09-14 批次 2）：目标是**来源文档自身**。
+  // 这类引用在旧实现里因为 `to === ''` 被直接丢弃，于是文档内部的目录式跳转整批消失。
+  // 仍需 docIds 校验：文件可能刚被删（索引还是旧的），此时"指向自己"也该算断链。
+  if (self === true) {
+    const own = toDocId(spaceId, normalizeRelPath(fromRel))
+    return !own ? null : ((!docIds || docIds.has(own)) ? own : null)
+  }
   const src = String(to ?? '').trim()
   if (!src || /^[a-z]+:\/\//i.test(src) || src.startsWith('#')) return null
+  // `to` 自批次 2 起已由 extractLinks 剥好锚点；这里的 replace 只作防御（老索引 / 手写调用）
   const raw = src.replace(/#.*$/, '').replace(/^\.\//, '')
   if (!raw) return null
   const dir = String(fromRel ?? '').split(/[\\/]+/).filter(Boolean).slice(0, -1).join('/')
@@ -999,3 +1092,4 @@ export function validateRelation(edge, lookup) {
   }
   return false // 未知 kind 一律不认（保守）
 }
+
