@@ -314,6 +314,11 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       anchorKey = key
       anchorBase = face
       anchorFace = withAnchorTail(face, a.text)
+      // D 断反馈环（2026-09-16）：把"本轮确实注入了锚点"回报 fidelity——该轮里复述锚点
+      // 权威值的事实不再计入矛盾对（否则锚点要求的复述会被判成模型自相矛盾 → 失真分被
+      // 自己抬高、窗口延长 → 更多锚定）。只在**确实注入**的分支回报：被节流跳过的那步
+      // 模型根本没看到锚点，此时它复述旧记忆不算"权威更新"，不该豁免。
+      try { if (health && typeof health.markFidelityAnchorInjected === 'function') health.markFidelityAnchorInjected(a.text) } catch { /* 标记失败不阻断请求 */ }
       anchorSkipFace = null
       if (sameKey && !shrunk) { anchorInjectStreak++; anchorSkipStreak = 0 }
       else { anchorInjectStreak = 1; anchorSkipStreak = 0 }

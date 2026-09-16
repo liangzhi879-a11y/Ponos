@@ -258,6 +258,17 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
       } catch { return null }
     },
     fidelityEnabled() { return fidEnabled },
+    // 锚点**确实注入到请求面**时由 engine 回调（2026-09-16 断反馈环）：把锚点原文交给
+    // fidelity，使"注入锚点的那一轮中复述锚点权威值"的事实不计入矛盾对——否则锚点自己
+    // 要求的复述会被判成模型自相矛盾，抬高失真分、延长窗口、招致更多锚定（自维持反馈环）。
+    // 与 fidelityAnchor 的分工：那个是"读锚点"，这个是"报告已注入"（只写一个受值约束的
+    // 标记，**不改变任何证据的 resolved 状态**，人工确认路径仍只走 markFidelityResolved）。
+    markFidelityAnchorInjected(text) {
+      try {
+        if (!fidEnabled) return 0
+        return fid.markAnchorInjected(text)
+      } catch { return 0 }
+    },
     // H3：真实窗口同步（compactor.adoptWindow 采纳端点 max_model_len 后调用，只下调
     // 场景）。同步后水位/预测立即按真实窗口重估。
     setWindow(w) {

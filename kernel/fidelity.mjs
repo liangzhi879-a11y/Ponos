@@ -108,6 +108,35 @@ export function normalizeEntity(s) {
   return t.toLowerCase()
 }
 
+/**
+ * A 客观回绿判据（2026-09-16 锚定闭环修复）：某实体是否已由**工具记录**证实"重回上下文"。
+ *
+ * 为什么必须是工具记录、不能是模型文本：锚点文案自带缺失实体清单（`■ 此前摘要遗漏、
+ * 现已补回的关键事实 - src/x.ts`），模型被要求"先复述关键事实确认"——只要拿复述当依据，
+ * 必然假绿，正好绕过铁律②"模型自评最高只到 medium、不信任自述"。工具成功读取则是
+ * 真值优先级②的确定性事实：与模型怎么说无关。
+ *
+ * 只认 `isError !== true`（成功）：读**失败**恰恰说明实体仍不可达，不能算恢复。
+ * 路径匹配双向兼容相对/绝对写法，但要求落在**路径分隔符边界**上——防"同名不同目录"
+ * 被误判为恢复（`src/other/mcpApi.ts` ≠ `src/lib/mcpApi.ts`）。
+ */
+export function entityRegained(entity, digest) {
+  try {
+    const e = normalizeEntity(entity)
+    if (!e) return false
+    const list = Array.isArray(digest) ? digest : []
+    for (const d of list) {
+      if (!d || d.isError) continue
+      const p = normalizeEntity(d.path)
+      if (!p) continue
+      if (p === e) return true
+      if (p.includes('/' + e)) return true
+      if (e.includes('/' + p)) return true
+    }
+    return false
+  } catch { return false }
+}
+
 function uniqRaw(list, max) {
   const seen = new Set()
   const out = []
@@ -246,20 +275,37 @@ export function detectContradictions(factsByTurn) {
   try {
     const turns = Array.isArray(factsByTurn) ? factsByTurn : []
     const byKey = new Map()
+    // 每个 key 的"权威取值集合"（由锚点注入轮的复述确立）。豁免须**沿 key 传递**：
+    // 实测发现只豁免注入轮那一条是不够的——锚点让模型在后续多轮里持续保持正确取值，
+    // 第 2 轮起再复述同一权威值时会与压缩前的旧自述重新配对并报矛盾（假失真照旧出现，
+    // 只是延后了 1 轮）。故只要"较晚侧取值 = 该 key 的权威取值"即视为复述，不计矛盾。
+    const authValues = new Map()
     turns.forEach((facts, i) => {
       for (const f of Array.isArray(facts) ? facts : []) {
         if (!f || !f.key || !f.value) continue
         if (EVOLVE_MARKERS.test(String(f.sentence || ''))) continue
         if (!byKey.has(f.key)) byKey.set(f.key, [])
-        byKey.get(f.key).push({ value: f.value, turn: i })
+        byKey.get(f.key).push({ value: f.value, turn: i, authoritative: !!f.authoritative })
+        if (f.authoritative) {
+          if (!authValues.has(f.key)) authValues.set(f.key, new Set())
+          authValues.get(f.key).add(f.value)
+        }
       }
     })
     const out = []
     for (const [key, list] of byKey) {
+      const av = authValues.get(key)
       for (let i = 0; i < list.length; i++) {
         for (let j = i + 1; j < list.length; j++) {
           if (list[i].value === list[j].value) continue
           if (list[i].turn === list[j].turn) continue // 同轮内不同表述不算（多为列举/否定）
+          // 锚点权威轮（2026-09-16 断反馈环）：较晚侧取值是**复述锚点里的权威事实**（勘误），
+          // 不是模型自相矛盾——旧行为会让"锚点要求复述 → 复述被当成新说法 → 与压缩前的
+          // 旧自述冲突 → 判失真 → 分数抬高、窗口延长 → 更多锚定"形成自维持反馈环。
+          // 只豁免"取值出现在锚点文本中"的那部分（按值判定，且沿 key 传递），故同轮中与
+          // 锚点无关的其他 key 矛盾照抓；模型改口成**非权威**取值也照抓（见 D3/D6/D4）。
+          if (list[j].authoritative) continue
+          if (av && av.has(list[j].value)) continue
           out.push({ key, a: list[i].value, b: list[j].value, turnA: list[i].turn, turnB: list[j].turn })
         }
       }
@@ -366,6 +412,11 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
   let observeUntilTurn = null
   let goalMissStreak = 0
   const toolErrorTurns = new Map() // 归一化路径 → 出现报错的轮次集合（陈旧引用的真值）
+  // 锚点权威标记（2026-09-16 断反馈环）：engine 在**确实注入锚点**时调用
+  // markAnchorInjected(anchorText)，记下锚点原文的归一化文本；本轮 recordTurn 提取出的
+  // 事实中"取值出现在锚点文本里"的那些标记为 authoritative（= 复述锚点权威值），矛盾检测
+  // 不计它们与历史的冲突。一次性消费；未注入则恒为 null，默认行为完全不变。
+  let anchorHay = null
 
   const enabled = () => cfg.enabled !== false
 
@@ -395,6 +446,7 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
       if (prev.resolved) {           // 复发：复活 + 打标记（前端据此升级动作为"新建会话"）
         prev.resolved = false
         prev.recurred = true
+        prev.autoResolved = false    // 客观回绿后又复发 ⇒ 不再是"已修复"，标记须撤（否则证据日志误报）
         // 复发次数：前端抑制键含次数（<id>#recurred<n>），否则第一次复发登记后，
         // 第二次及以后的复发会撞同一个键而被静默（用户以为已解决）。
         prev.recurredCount = (prev.recurredCount || 0) + 1
@@ -488,6 +540,15 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
 
       // 内部矛盾（同 key 互斥取值，排除显式演进）
       const facts = extractFacts(user + '\n' + assistant)
+      // D 断反馈环：锚点注入轮里"复述锚点权威值"的事实标记为 authoritative。按**值**判定
+      // （值须出现在锚点文本中），而非整轮放行——同轮中与锚点无关的取值照常参与检测。
+      // 标记一次性消费：下一轮（未注入）的矛盾照常报（见 fidelity-anchor-loop 的 D4）。
+      if (anchorHay) {
+        for (const f of facts) {
+          if (f && f.value && anchorHay.includes(f.value)) f.authoritative = true
+        }
+        anchorHay = null
+      }
       factsByTurn.push(facts)
       if (factsByTurn.length > cfg.windowTurns * 2) factsByTurn.shift()
       // spec §3.2：「同一 key 在不同轮次对 ≥2 对 → 2 点」。id 按 key 去重（同一项只报一条），
@@ -531,8 +592,45 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
       if (llm && typeof llm === 'object') {
         produced.push(...applyLlmAudit(llm))
       }
+
+      // A 客观回绿：模型侧是否已恢复，由**工具记录**判定（不采信任何自述）
+      autoResolveRegained(digest)
       return produced
     } catch { return [] }
+  }
+
+  // A 客观回绿（2026-09-16 锚定闭环修复）：压缩丢失的实体被工具**成功读取** ⇒ 该证据
+  // 描述的问题（摘要漏了它）已被确定性修复 ⇒ 自动消解。这补上了"锚点已在模型侧生效"
+  // 回流健康度的唯一客观通道——旧实现里这条通道根本不存在（消解只走 GUI 人工回传），
+  // 于是 red 窗口 12 轮内锚定按证据轮龄无差别重注，模型第 1 轮就恢复也照注满 11 轮。
+  // 判据是工具记录而非模型自述（守铁律②）；逐实体核实、不做整档清空；打 autoResolved
+  // 标记以便审计区分"客观已修复"与"用户点了重新锚定"，人工路径不受影响。
+  function autoResolveRegained(digest) {
+    try {
+      let n = 0
+      for (const it of issues.values()) {
+        if (it.resolved || it.axis !== 'memory') continue
+        const entity = it.detail && it.detail.entity
+        if (!entity) continue
+        if (!entityRegained(entity, digest)) continue
+        it.resolved = true
+        it.autoResolved = true
+        it.resolvedAt = clock().toISOString()
+        n += 1
+      }
+      if (n > 0) observeUntilTurn = turn + cfg.observeTurns
+      return n
+    } catch { return 0 }
+  }
+
+  // engine 在**确实注入锚点**时调用。空文本不设标记（否则等于把该轮整轮放行，
+  // 会让 D 变成矛盾检测的漏洞）。
+  function markAnchorInjected(anchorText) {
+    try {
+      const hay = normalizeEntity(anchorText)
+      anchorHay = hay || null
+      return hay ? 1 : 0
+    } catch { anchorHay = null; return 0 }
   }
 
   function applyLlmAudit(llm) {
@@ -637,6 +735,7 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
       id: it.id, axis: it.axis, kind: it.kind, strength: it.strength, turn: it.turn,
       evidence: it.evidence, detail: it.detail, at: it.at,
       ...(it.recurred ? { recurred: true, recurredCount: it.recurredCount || 1 } : {}),
+      ...(it.autoResolved && it.resolved ? { autoResolved: true } : {}),
     }
   }
 
@@ -729,9 +828,10 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
     observeUntilTurn = null
     goalMissStreak = 0
     toolErrorTurns.clear()
+    anchorHay = null
   }
 
-  return { recordTurn, recordCompactionAudit, markResolved, snapshot, evidenceLog, reset, getTurn: () => turn }
+  return { recordTurn, recordCompactionAudit, markResolved, markAnchorInjected, snapshot, evidenceLog, reset, getTurn: () => turn }
 }
 
 // 正则转义：刻意不用含反斜杠字面量的实现——编辑工具对替换文本做 sed 式展开
