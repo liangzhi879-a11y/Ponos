@@ -91,7 +91,7 @@ interface UIState {
   pendingAutoSend: boolean
   setPendingInput: (text: string, autoSend?: boolean) => void
 
-  // 定时任务引导：新建"定时任务"会话后，目标会话的 ChatInput 自动弹出引导面板
+  // 循环任务引导：新建"循环任务"会话后，目标会话的 ChatInput 自动弹出引导面板
   scheduleGuideFor: string | null
   setScheduleGuideFor: (id: string | null) => void
 

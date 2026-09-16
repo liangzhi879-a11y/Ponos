@@ -89,7 +89,7 @@ export function ChatInput({ conversationId }: Props) {
   const projectRoot = useChatStore(s => s.conversations.find(c => c.id === s.activeConversationId)?.cwd || getDefaultHome())
   const streamingConversations = useChatStore(s => s.streamingConversations)
   const isStreaming = !!streamingConversations[conversationId]
-  // 2026-09-10 主标签化：chat 会话为纯聊受限形态——技能选择/定时任务等
+  // 2026-09-10 主标签化：chat 会话为纯聊受限形态——技能选择/循环任务等
   // 任务型输入功能随之隐藏（同步欢迎页移除目录选择的收敛语义）
   const isChatMode = useChatStore(s => s.conversations.find(c => c.id === conversationId)?.mode === 'chat')
   const settings = useSettingsStore(s => s.settings)
@@ -132,7 +132,7 @@ export function ChatInput({ conversationId }: Props) {
     }
   }, [pendingAttachments])
 
-  // 新建"定时任务"会话：目标会话自动弹出引导面板（一次性触发，随后清除标记）
+  // 新建"循环任务"会话：目标会话自动弹出引导面板（一次性触发，随后清除标记）
   useEffect(() => {
     if (scheduleGuideFor === conversationId) {
       setShowScheduleGuide(true)
@@ -645,15 +645,15 @@ export function ChatInput({ conversationId }: Props) {
             </>
           )}
 
-          {/* 循环 / 定时任务（chat 纯聊形态隐藏：定时任务=任务型功能，2026-09-10） */}
+          {/* 循环任务（chat 纯聊形态隐藏：循环=任务型功能，2026-09-10） */}
           {!isChatMode && (
-            <Tooltip content="循环任务 / 定时任务">
+            <Tooltip content="循环任务">
               <Button
                 variant="ghost"
                 size="xs"
                 className={cn('text-tertiary hover:text-secondary', showScheduleGuide && 'text-brand-500')}
                 onClick={() => setShowScheduleGuide(v => !v)}
-                aria-label="循环任务 / 定时任务"
+                aria-label="循环任务"
               >
                 <Repeat className="w-3.5 h-3.5" />
               </Button>
@@ -774,11 +774,10 @@ export function ChatInput({ conversationId }: Props) {
         </div>
       </div>
 
-      {/* 循环/定时任务引导面板 */}
+      {/* 循环任务引导面板 */}
       {showScheduleGuide && (
         <ScheduleGuide
           conversationId={conversationId}
-          mode="loop"
           onClose={() => setShowScheduleGuide(false)}
         />
       )}
