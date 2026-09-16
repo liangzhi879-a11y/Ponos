@@ -84,7 +84,13 @@ test('parseDocFile 抽取链接边（from=docId）', () => {
     // S5.1 追加 `anchor` / `line` / `block`：`line`+`block` 用于把链接**定位到所属条目**，
     // 是条目级 ref 关联的源（本 fixture 的链接在 frontmatter 之后、无 entry 块 → block 为 null，
     // 退化为文档级，属预期）。见 spec s51 §4.1。
-    assert.deepEqual(links, [{ from: 'my-notes/a.md', to: 'b', anchor: '', line: 3, block: null }])
+    // 批次 2（2026-09-14）追加引用体系四字段：`anchorRef`/`anchorKind`（`#锚点`）、
+    // `embed`（`![[x]]`）、`self`（`[[#x]]` 同文档锚点）—— 阅读视图要靠它们跳到
+    // "那一节/那个块"、把嵌入渲染成内联内容。未用到时是空串/false。
+    assert.deepEqual(links, [{
+      from: 'my-notes/a.md', to: 'b', anchor: '', line: 3, block: null,
+      anchorRef: '', anchorKind: '', embed: false, self: false,
+    }])
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -101,7 +107,7 @@ test('load(force) 全量构建索引：三份 JSONL + manifest 落盘，字段�
     assert.ok(existsSync(join(idx, 'tags.json')), 'tags 落盘')
 
     const manifest = JSON.parse(readFileSync(join(idx, 'manifest.json'), 'utf-8'))
-    assert.equal(manifest.version, 3) // 2→3：标签来源变更（YAML 子集 + 正文内联 #tag，2026-09-14）
+    assert.equal(manifest.version, 4) // 3→4：引用体系（links 的 to 语义 + 锚点/嵌入/同文档锚点，2026-09-14 批次 2）
     // experience(workflow.md) + my-notes(a,b) + pack(p.md) = 4 篇
     assert.equal(manifest.docs, 4)
     assert.ok(manifest.blocks >= 6)
@@ -152,7 +158,7 @@ test('索引版本不符时自动重建（防旧格式误用）', async () => {
     writeFileSync(mf, JSON.stringify(m), 'utf-8')
     const s2 = createKnowledgeStore({ configDir: dir })
     await s2.load()
-    assert.equal(s2.stats().version ?? 1, 3, '重建回当前版本（2026-09-14 起为 3）')
+    assert.equal(s2.stats().version ?? 1, 4, '重建回当前版本（2026-09-14 批次 2 起为 4）')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -770,5 +776,166 @@ test('search：标签直连遵守 spaces 白名单', () => {
     assert.equal(hit.items.length, 1)
     const miss = store.search({ query: '财务', spaces: ['pack-demo-pack'], topK: 10 })
     assert.equal(miss.items.length, 0, '换到别的空间 → 标签命中也要一起被过滤掉（不能绕过白名单）')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 2026-09-14 对标 Obsidian 批次 2：引用体系（锚点 / 嵌入 / 同文档锚点 / 提及 / 断链 / 局部图）
+//
+// 这一批修的核心是"引用的**位置**信息" —— 旧实现只记"谁引用了谁"，不记"引用的是哪一节、
+// 在哪一行、是不是嵌入"，于是：点链接只能到文档开头、嵌入与引用不可区分、反链看不到上下文、
+// 文档内部的 `[[#小节]]` 整批丢失、被编辑过的文档连行号都会丢。
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('批次2：引用锚点/嵌入/同文档锚点都被解析并落盘（增量路径字段不丢）', () => {
+  const { dir, notes } = makeFixture()
+  try {
+    writeFileSync(join(notes, 'notes.md'), [
+      '# 笔记',
+      '',
+      '见 [[guide#安装步骤]] 与 [[guide|指南]]。',
+      '',
+      '![[snippet]]',
+      '',
+      '本文档内跳到 [[#本地小节]]。',
+      '',
+    ].join('\n'), 'utf-8')
+    writeFileSync(join(notes, 'guide.md'), '# 指南\n\n## 安装步骤\n\n第一步。\n', 'utf-8')
+    writeFileSync(join(notes, 'snippet.md'), '被嵌入的片段。\n', 'utf-8')
+
+    const store = createKnowledgeStore({ configDir: dir })
+    store.load({})
+    const out = store.getLinks('my-notes/notes.md').out
+    const anchor = out.find((l) => l.to === 'guide' && l.anchorRef === '安装步骤')
+    assert.ok(anchor, `锚点引用要有 anchorRef，实际 ${JSON.stringify(out)}`)
+    assert.equal(anchor.anchorKind, 'heading')
+    assert.equal(anchor.target, 'my-notes/guide.md', '锚点剥离后仍要解析到目标文档')
+    assert.ok(out.some((l) => l.to === 'guide' && l.anchor === '指南'), '别名引用照旧')
+    assert.ok(out.some((l) => l.to === 'snippet' && l.embed === true), '![[x]] 要标 embed')
+    const selfRef = out.find((l) => l.self === true)
+    assert.ok(selfRef, '`[[#本地小节]]` 同文档锚点必须保留（旧实现因 to 为空被整条丢弃）')
+    assert.equal(selfRef.target, 'my-notes/notes.md', '同文档锚点的目标就是本文档自身')
+    assert.equal(selfRef.anchorRef, '本地小节')
+
+    // a.md 在本套用例里不含任何链接，改它来触发**增量**路径（修 relinkDoc 丢字段的那个 bug）
+    writeFileSync(join(notes, 'a.md'), '# 笔记 A\n\n改一下，见 [[guide#使用]]。\n', 'utf-8')
+    store.updateDoc('my-notes/a.md')
+    const inc = store.getLinks('my-notes/a.md').out
+    assert.equal(inc.length, 1)
+    assert.equal(inc[0].anchorKind, 'heading', '增量路径也不能丢 anchorKind（旧实现只写 from/to/target）')
+    assert.equal(inc[0].anchorRef, '使用')
+    assert.ok(inc[0].line > 0, '增量路径必须带行号（旧实现丢 line → 跳转定位失效）')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('批次2：反链带上下文（line/block/snippet）且不丢锚点信息', () => {
+  const { dir, notes } = makeFixture()
+  try {
+    writeFileSync(join(notes, 'a.md'), '# 甲\n\n这里是正文，引用 [[b#某节]]。\n', 'utf-8')
+    writeFileSync(join(notes, 'b.md'), '# 乙\n\n## 某节\n\n内容。\n', 'utf-8')
+    const store = createKnowledgeStore({ configDir: dir })
+    store.load({})
+    const back = store.getLinks('my-notes/b.md').in
+    assert.equal(back.length, 1)
+    assert.equal(back[0].from, 'my-notes/a.md')
+    assert.equal(back[0].anchorRef, '某节', '反链要知道"引用的是哪一节"')
+    assert.ok(back[0].line > 0, '反链要有行号（可跳转）')
+    assert.ok(String(back[0].snippet).includes('引用'), '反链要有上下文片段（Obsidian 反链面板的核心）')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('批次2：未链接提及（标题/文件名匹配、排除已链接、排除自身、长度护栏）', () => {
+  const { dir, notes } = makeFixture()
+  try {
+    writeFileSync(join(notes, 'guide.md'), '# 指南手册\n\n本文档内容。\n', 'utf-8')
+    // ① 正文提到标题但没链接 → 应被列出
+    writeFileSync(join(notes, 'talk.md'), '# 闲聊\n\n正文写到 指南手册 四个字，但没有链接。\n', 'utf-8')
+    // ② 正文提到文件名 stem（guide）但没链接 → 也应被列出
+    writeFileSync(join(notes, 'other.md'), '# 其他\n\n提到了 guide 这个词。\n', 'utf-8')
+    // ③ 已经打了链接的文档 → 不算"未链接提及"（否则与反链面板显示同一件事）
+    writeFileSync(join(notes, 'linked.md'), '# 已链\n\n见 [[guide]]。\n', 'utf-8')
+    const store = createKnowledgeStore({ configDir: dir })
+    store.load({})
+    const r = store.listMentions('my-notes/guide.md')
+    const docsHit = r.items.map((x) => x.docId)
+    assert.ok(docsHit.includes('my-notes/talk.md'), '标题提及要命中')
+    assert.ok(docsHit.includes('my-notes/other.md'), '文件名 stem 提及要命中')
+    assert.ok(!docsHit.includes('my-notes/linked.md'), '已建立链接的不算"未链接提及"')
+    assert.ok(!docsHit.includes('my-notes/guide.md'), '自身不算提及')
+    const talk = r.items.find((x) => x.docId === 'my-notes/talk.md')
+    assert.equal(talk.matched, '指南手册')
+    assert.ok(talk.line > 0 && talk.blockId.includes('#'), '提及要有行号与块 ID 供跳转')
+    // 长度护栏：单字标题不参与匹配（否则会命中成百上千处噪声）
+    writeFileSync(join(notes, 'one.md'), '# 甲\n\n内容。\n', 'utf-8')
+    writeFileSync(join(notes, 'noise.md'), '# 噪声\n\n甲 甲 甲。\n', 'utf-8')
+    const store2 = createKnowledgeStore({ configDir: dir })
+    store2.load({})
+    assert.equal(store2.listMentions('my-notes/one.md').items.length, 0, '单字标题不参与提及匹配')
+    // limit 是**扫到就停**的硬护栏
+    assert.ok(store.listMentions('my-notes/guide.md', { limit: 1 }).items.length <= 1)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('批次2：断链按目标聚合 + 空间过滤', () => {
+  const { dir, notes } = makeFixture()
+  try {
+    writeFileSync(join(notes, 'x.md'), '# 坏链\n\n指向 [[不存在]] 与 [[缺目标#某节]]。\n', 'utf-8')
+    writeFileSync(join(notes, 'y.md'), '# 也坏\n\n又一次 [[不存在]]。\n', 'utf-8')
+    const store = createKnowledgeStore({ configDir: dir })
+    store.load({})
+    const r = store.listBrokenLinks()
+    const bad = r.items.find((x) => x.to === '不存在')
+    assert.ok(bad, `应有"不存在"这条断链，实际 ${JSON.stringify(r.items)}`)
+    assert.equal(bad.count, 2, '同一目标在多处写错要聚合计数')
+    assert.equal(bad.refs.length, 2, '要保留每处引用（用户要能逐个去改）')
+    assert.ok(r.items.some((x) => x.to === '缺目标' && x.refs[0].anchorRef === '某节'), '带锚点的断链也要列出')
+    assert.equal(r.broken, 3)
+    // 空间过滤：换到不存在的空间 → 空集（证明过滤生效）
+    assert.equal(store.listBrokenLinks({ space: 'no-such-space' }).broken, 0)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('批次2：图谱局部图（双向 N 跳邻域 + 去自环 + 端点必在节点集内）', () => {
+  const { dir, notes } = makeFixture()
+  try {
+    // 链：a → b → c → d，另有孤岛 e，以及 a 的自引用（同文档锚点）
+    writeFileSync(join(notes, 'a.md'), '# 甲\n\n[[b]] 与 [[#自己]]\n', 'utf-8')
+    writeFileSync(join(notes, 'b.md'), '# 乙\n\n[[c]]\n', 'utf-8')
+    writeFileSync(join(notes, 'c.md'), '# 丙\n\n[[d]]\n', 'utf-8')
+    writeFileSync(join(notes, 'd.md'), '# 丁\n\n没有出链。\n', 'utf-8')
+    writeFileSync(join(notes, 'e.md'), '# 孤岛\n\n无人理我。\n', 'utf-8')
+    const store = createKnowledgeStore({ configDir: dir })
+    store.load({})
+
+    // 全局图：含全部文档（fixture 自带若干 md，故只断言"包含我造的 5 篇"与"无自环"）
+    const all = store.getGraph({})
+    for (const id of ['a.md', 'b.md', 'c.md', 'd.md', 'e.md']) {
+      assert.ok(all.nodes.some((n) => n.id === `my-notes/${id}`), `全局图应含 ${id}`)
+    }
+    assert.ok(!all.edges.some((e) => e.from === e.to), '自环边不得进图（`[[#自己]]` 是自引用）')
+    assert.ok(all.edges.every((e) => all.nodes.some((n) => n.id === e.from) && all.nodes.some((n) => n.id === e.to)),
+      '边的端点必须在节点集内（旧实现在 limit 截断时会产生悬空边）')
+
+    // 1 跳（双向）：a 的出链邻居 b + 入链（无）→ {a, b}；隔离的 c/d/e 不在
+    const h1 = store.getGraph({ around: 'my-notes/a.md', hops: 1 })
+    assert.deepEqual(h1.nodes.map((n) => n.id).sort(), ['my-notes/a.md', 'my-notes/b.md'],
+      '1 跳只含自身与直接邻居')
+    // 2 跳：a → b → c（含双向）
+    const h2 = store.getGraph({ around: 'my-notes/a.md', hops: 2 })
+    assert.deepEqual(h2.nodes.map((n) => n.id).sort(),
+      ['my-notes/a.md', 'my-notes/b.md', 'my-notes/c.md'])
+    // 3 跳：到 d 为止，**仍然不含孤岛 e**（局部图的全部意义就是不把无关节点拉进来）
+    const h3 = store.getGraph({ around: 'my-notes/a.md', hops: 3 })
+    assert.deepEqual(h3.nodes.map((n) => n.id).sort(),
+      ['my-notes/a.md', 'my-notes/b.md', 'my-notes/c.md', 'my-notes/d.md'])
+    assert.ok(!h3.nodes.some((n) => n.id === 'my-notes/e.md'), '孤岛不得进局部图')
+    // 反向也要走：以 d 为心 1 跳 → {d, c}（入链方向）
+    const back = store.getGraph({ around: 'my-notes/d.md', hops: 1 })
+    assert.deepEqual(back.nodes.map((n) => n.id).sort(), ['my-notes/c.md', 'my-notes/d.md'],
+      '局部图必须双向遍历（只走出链会漏掉"谁引用了我"）')
+    // hops 超上限被 clamp 到 3；around 不存在 → 回落全局图（不报错）
+    assert.equal(store.getGraph({ around: 'my-notes/a.md', hops: 99 }).nodes.length, h3.nodes.length)
+    const fallback = store.getGraph({ around: 'my-notes/不存在.md', hops: 2 })
+    assert.ok(fallback.nodes.length > h3.nodes.length, 'around 不存在时回落全局图，而不是空图')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

@@ -17,6 +17,7 @@
 // 解析失败/字段缺失的文件静默跳过（容错，不影响启动）。
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { readDisabled, excludeDisabled } from './disabled.mjs'
 
 // 内置系统级 agent。业务专业 agent（material-writer/table-expert 等）由 GUI
 // 同步进 $PONOS_HOME/agents/，不在此重复定义。
@@ -114,6 +115,96 @@ function parseYamlValue(raw) {
 
 // 解析单个 agent .md（frontmatter + 正文）。返回 { id, name, description,
 // tools, model, skills, systemPrompt }；不合法返回 null（容错跳过）。
+/**
+ * 解析 agent 的 `tools` 声明（2026-09-15，P1「agent和skill页面及功能需要大改」A 条款）。
+ *
+ * ## 为什么需要这一步（修的是一个**静默且危险**的既存缺陷）
+ *
+ * `tools` 一直是**自然语言句式**（GUI `src/lib/agents.ts` 里写的是
+ * `'All tools except Agent, Edit, Write'`），而下游（`engine.mjs` 的 laneOptions）把它当
+ * **具体工具名数组**用。原先这里直接按逗号 split，于是那句声明被切成
+ * `['All tools except Agent', 'Edit', 'Write']`，再经过 engine 的"白名单里只要有一个认识的名字
+ * 就不重置"守卫（`Edit`/`Write` 恰是真实工具名 ⇒ 守卫不生效），该 agent 最终只剩
+ * **Edit + Write 两个工具**——一个"不会读文件、只会改文件"的 agent，且**没有任何报错**。
+ * 对只读型专业 agent 而言，这既是能力缺失也是安全性倒退。
+ *
+ * ## 语义
+ *
+ *   · `'All tools'` / 空 / 缺省     → 不限制（`{ tools: [], disallowed: [] }`，
+ *     与 engine "allowedTools 为空 = 全量放行"的既有约定一致）
+ *   · `'All tools except A, B'`      → 不限制白名单 + 禁用 A、B（大小写不敏感、忽略空白）
+ *   · `'Read, Glob, Grep'`           → 显式白名单
+ *
+ * 参数既接受字符串也接受**数组**（历史上有两种写法），数组会先拼回逗号串再解析，
+ * 保证 `['All tools except Agent, Edit, Write']` 与 `'All tools except Agent, Edit, Write'`
+ * 行为一致——GUI 侧两种都写过。
+ *
+ * 无法识别的自由文本**不静默丢弃**：作为白名单项返回，交由 engine 的 `knownToolNames` 守卫
+ * 与 `warnUnknownAgentRefs` 报出（保底行为与改动前一致，不会更坏）。
+ *
+ * @returns {{ tools: string[], disallowed: string[], allTools: boolean }}
+ */
+export function parseToolsSpec(raw) {
+  const text = (Array.isArray(raw) ? raw.map((x) => String(x ?? '')).join(', ') : String(raw ?? '')).trim()
+  if (!text) return { tools: [], disallowed: [], allTools: true }
+  // 逗号切分后再 trim 并丢空项：`'Read, , Glob'` 这类手写失误不该产生幽灵工具名。
+  const m = text.match(/^all\s+tools\b/i)
+  if (m) {
+    const rest = text.slice(m[0].length).trim()
+    const em = rest.match(/^except\b/i)
+    if (!em) return { tools: [], disallowed: [], allTools: true }
+    const except = rest.slice(em[0].length).split(',').map((s) => s.trim()).filter(Boolean)
+    return { tools: [], disallowed: except, allTools: true }
+  }
+  return { tools: text.split(',').map((s) => s.trim()).filter(Boolean), disallowed: [], allTools: false }
+}
+
+/**
+ * 解析 agent 的 `skills` 声明（与 tools 同款问题）：自然语言 `'All skills'` 与显式列表并存。
+ * 语义：`'All skills'`/空 → `[]`（不限制）；否则显式白名单。
+ */
+export function parseSkillsSpec(raw) {
+  const text = (Array.isArray(raw) ? raw.map((x) => String(x ?? '')).join(', ') : String(raw ?? '')).trim()
+  if (!text || /^all\s+skills\b/i.test(text)) return []
+  return text.split(',').map((s) => s.trim()).filter(Boolean)
+}
+
+/** 发现内置与用户 agent 之外的解析入口（导出供测试与 GUI 一致性守卫使用）。 */
+export function parseAgentTools(raw) {
+  return parseToolsSpec(raw)
+}
+
+/**
+ * 由 agent 的工具声明算出**子 Agent 车道**的工具范围（2026-09-15，A 条款）。
+ *
+ * 从 `engine.mjs` 的 Task 工具里抽出来，动机是**可测**：这段逻辑（"空白名单 = 全量"、
+ * "名字全不认识 = 退回全量"、"只禁不白 = 全量减禁用集"）原先内联在 2900 行的 engine 里，
+ * 只能靠"跑一个真子 Agent 看它能不能调 Read"来间接验证——而那正是本缺陷（agent 只剩
+ * Edit/Write）长期无人发现的原因。抽成纯函数后可直接断言每个分支。
+ *
+ * 三个分支与既有行为**逐条对齐**（零回归，engine 侧不再自行判断）：
+ *   ① 白名单一项都不认识 → `undefined`（= 不收窄）：防"名单写错导致 lane 无任何工具可用"；
+ *   ② 只给了禁用集     → 全量 − 禁用集（reviewer/planner 这类只读 agent 靠这条）；
+ *   ③ 都没给           → `undefined`（全量）。
+ *
+ * @param {{tools?: string[], disallowedTools?: string[], allToolNames: string[]}} p
+ * @returns {string[]|undefined} 收窄后的白名单；`undefined` = 不收窄
+ */
+export function resolveLaneTools({ tools, disallowedTools, allToolNames = [] } = {}) {
+  const known = new Set(allToolNames)
+  let allowed = Array.isArray(tools) && tools.length ? [...tools] : undefined
+  // ① 空 schema 守卫：名单无一命中已注册工具名时视为"未收窄"。空集（非 undefined）会让
+  //    lane 收到 tools:[]（子 Agent 无任何工具可用）——那是最难排查的一种"静默失效"。
+  if (allowed && !allowed.some((t) => known.has(t))) allowed = undefined
+  // ② 只禁不白：自动补齐白名单 = 全量 − 禁用集
+  const dis = Array.isArray(disallowedTools) ? disallowedTools.filter(Boolean) : []
+  if (dis.length) {
+    const disSet = new Set(dis)
+    allowed = (allowed || allToolNames).filter((t) => !disSet.has(t))
+  }
+  return allowed
+}
+
 export function parseAgentMarkdown(text) {
   try {
     const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(String(text ?? ''))
@@ -129,15 +220,24 @@ export function parseAgentMarkdown(text) {
     const id = fields.name || ''
     const description = fields.description || ''
     if (!id || !description) return null // 内核解析要求 name/description 非空
+    // tools / disallowedTools 走 `parseToolsSpec`（2026-09-15，A 条款）：
+    // 自然语言句式（`All tools except Agent, Edit, Write`）必须在这里就变成**可执行**的
+    // 白名单/禁名单，否则下游只会按逗号切出一堆伪工具名（详见 parseToolsSpec 的注释）。
+    // frontmatter 里若同时写了 `disallowedTools`，与 tools 句式里的 except 项**合并**
+    // （两者都是"禁用"意图，合并比"后者覆盖前者"更符合用户预期，且不会静默丢掉任一处声明）。
+    const spec = parseToolsSpec(fields.tools)
+    const explicitDisallowed = String(fields.disallowedTools || '').split(',').map((s) => s.trim()).filter(Boolean)
     return {
       id,
       name: id,
       description,
-      tools: String(fields.tools || '').split(',').map((s) => s.trim()).filter(Boolean),
+      tools: spec.tools,
+      allTools: spec.allTools,
       // 2026-09-11：disallowedTools/effort/background frontmatter（对齐 CC agent 定义）
-      disallowedTools: String(fields.disallowedTools || '').split(',').map((s) => s.trim()).filter(Boolean),
+      disallowedTools: [...new Set([...spec.disallowed, ...explicitDisallowed])],
       model: fields.model || '',
-      skills: String(fields.skills || '').split(',').map((s) => s.trim()).filter(Boolean),
+      // skills 同理（`All skills` 是自然语言写法，不能当技能名）
+      skills: parseSkillsSpec(fields.skills),
       // Task 7：workflows 绑定——逗号分隔的工作流 id 列表（空/缺失 → []）。该字段由
       // electron/main.cjs（agents:sync）写入 .md frontmatter；内核在给定 agentId 时
       // 按该 agent 过滤 expose.mode=bound 工作流的工具可见性（调用方以 agent.name 作
@@ -173,10 +273,20 @@ export function discoverUserAgents({ configDir, root } = {}) {
 }
 
 // 全量 agent 表：内置 ∪ 用户级（用户级同名覆盖内置，GUI 可定制）
-export function resolveAgents({ configDir } = {}) {
+export function resolveAgents({ configDir, disabled } = {}) {
+  const builtinIds = new Set(BUILTIN_AGENTS.map((a) => a.id))
   const byId = new Map(BUILTIN_AGENTS.map((a) => [a.id, a]))
   for (const a of discoverUserAgents({ configDir })) byId.set(a.id, a)
-  return [...byId.values()]
+  // 全局停用过滤（2026-09-15，D 条款）。**在这里读注册表而不是让调用方传**：
+  // resolveAgents 有多个调用点（engine 的 Task 工具、readonly 的只读面），若改成"调用方传
+  // disabled"，漏传的调用点会静默把停用 agent 放回来——而漏传不会报错。函数内自读只有一处
+  // 真相，任何调用点都不可能忘。显式传 `disabled`（数组）时以传入为准（供测试与未来复用）。
+  const off = disabled !== undefined ? disabled : readDisabled({ configDir }).agents
+  // `builtin` 标记（2026-09-15，批次二 H）：区分"内核硬编码内置 agent"与"用户/GUI 同步的 .md agent"。
+  // 界面需要它来把**只在核心里存在**的 agent（researcher/implementer/reviewer/explorer/planner）
+  // 单独列出——这 5 个不在 GUI 自己的 agent 列表里，若不列出，用户在界面上根本看不到、也就停不掉。
+  // 加字段是**纯增量**：既有消费者只读 id/tools/skills 等，多一个布尔字段不影响任何行为。
+  return excludeDisabled([...byId.values()], off).map((a) => ({ ...a, builtin: builtinIds.has(a.id) }))
 }
 
 export function resolveAgent(agents, type) {

@@ -19,7 +19,7 @@
 // 行为侧验证 `childEnv()` 实际透传结果（白名单改了但变量没注入，同样无效）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { childEnv } from '../kernel/tools.mjs'
@@ -51,8 +51,11 @@ test('内核解析顺序：CLAUDE_CONFIG_DIR > PONOS_HOME > ~/.ponos', () => {
   assert.match(resolveConfigDir({}, () => '/home/x'), /\.ponos$/)
 })
 
-test('bridge 的 buildChildEnv 同时注入三把钥匙（静态守卫，防回退）', () => {
-  const src = readFileSync(join(ROOT, 'server', 'bridge.mjs'), 'utf8')
+test('bridge 的 buildChildEnv 同时注入三把钥匙（静态守卫，防回退）', (t) => {
+  // 纯内核形态（本仓无 server/）：bridge 是 GUI 侧组件，没有可比对的源码 → 跳过。
+  const bridgePath = join(ROOT, 'server', 'bridge.mjs')
+  if (!existsSync(bridgePath)) { t.skip('本仓无 server/bridge.mjs（纯内核形态），跳过跨层静态守卫'); return }
+  const src = readFileSync(bridgePath, 'utf8')
   const block = src.slice(src.indexOf('function buildChildEnv()'), src.indexOf('function buildChildEnv()') + 2000)
   for (const key of ['CLAUDE_CONFIG_DIR', 'YFWORKING_HOME', 'PONOS_HOME']) {
     assert.match(block, new RegExp(`${key}: YFW_HOME`), `buildChildEnv 必须注入 ${key}`)

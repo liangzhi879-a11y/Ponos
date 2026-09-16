@@ -148,14 +148,43 @@ export function buildChatSystemPrompt({ toolNames = [] } = {}) {
   ].join('\n')
 }
 
+/**
+ * 【本会话知识库】区块（2026-09-15，P1 spec §3.5）。
+ *
+ * **why 要有这一段**：工具层的范围收窄（`kernel/tools.mjs` 的 knowledgeSpaces）是"防越界"，
+ * 但只做防守会让模型陷入猜谜——它不知道本会话能查哪些库、更不知道"查不到"是因为越界还是因为
+ * 真没有。把范围**写进提示词**，"可调用性"才从"配了就算"变成"模型知道自己有什么"。
+ *
+ * 两条边界纪律：
+ *   ① 只列**未关联库的名字**（不列 id、不列根路径）：模型要做的是"请用户去点关联"，
+ *      不是拼 id；把 id 摆出来反而诱导它硬写 spaces 参数去试探。
+ *   ② 未关联库最多列 12 个（`等 N 个` 收尾）：储备库可能有几十个，全列会把这个区块本身
+ *      变成上下文膨胀源——与它要解决的膨胀问题自相矛盾。
+ */
+export function renderKnowledgeScope(scope) {
+  const names = Array.isArray(scope?.names) ? scope.names.filter(Boolean) : []
+  if (!names.length) return ''
+  const lines = [`【本会话知识库】可检索：${names.join('、')}（KnowledgeSearch 的 spaces 只能取这里列出的库）。`]
+  const un = Array.isArray(scope?.unassociated) ? scope.unassociated.filter(Boolean) : []
+  if (un.length) {
+    lines.push(`未关联的库（${un.slice(0, 12).join('、')}${un.length > 12 ? ` 等共 ${un.length} 个` : ''}）不在本会话范围内：用户要用时请其先在知识面板把该库「关联到当前会话」，不要反复重试同一检索。`)
+  }
+  return lines.join('\n')
+}
+
 // 三层组装：base + 可用子 Agent 区块 + AGENTS.md（带来源标注）+ append 文件
 // （最后，最高优先级）。subagents 为内置 ∪ 用户级的子 Agent 表（Agent 工具路由依据）。
 // mode='chat'（2026-09-12 会话模式隔离）：只走 chat 专用提示 + append，任务模式的
 // 一切区块（子 Agent / 项目指令 / 技能 / 工作流 / 记忆）**一律不注入**——即便调用方
 // 传了也忽略（提示词层与工具层各自独立收口，任一层失效都不至于把任务能力泄进 chat）。
-export function composeSystemPrompt({ toolNames, agents, subagents = [], append = '', cwd = '', skills = [], workflows = [], memory = '', tier = 'full', mode = 'task' }) {
+export function composeSystemPrompt({ toolNames, agents, subagents = [], append = '', cwd = '', skills = [], workflows = [], memory = '', tier = 'full', mode = 'task', knowledgeScope = null }) {
   if (mode === 'chat') {
     const chatParts = [buildChatSystemPrompt({ toolNames })]
+    // 会话知识范围（2026-09-15，P1 spec §3.5）：chat 也渲染——chat 里 KnowledgeSearch 是放行的
+    // （S3 D2 的决定：只读检索不吃"纯聊不做本地执行"的隔离承诺），那么"能用哪些库"就必须同样
+    // 对模型可见，否则它只能靠猜（猜错 = 拒绝，用户看到的是"聊天不会用我的知识库"）。
+    const kb = renderKnowledgeScope(knowledgeScope)
+    if (kb) chatParts.push(kb)
     if (append && append.trim()) chatParts.push(append.trim())
     return chatParts.join('\n\n')
   }
@@ -216,6 +245,8 @@ export function composeSystemPrompt({ toolNames, agents, subagents = [], append 
     }
     parts.push(lines.join('\n'))
   }
+  const kbBlock = renderKnowledgeScope(knowledgeScope)
+  if (kbBlock) parts.push(kbBlock)
   if (memory && memory.trim()) parts.push(memory.trim())
   if (append && append.trim()) parts.push(append.trim())
   return parts.join('\n\n')

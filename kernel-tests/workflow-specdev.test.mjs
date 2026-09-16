@@ -13,12 +13,15 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, mkdirSync, copyFileSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { discoverWorkflows, loadWorkflow, createWorkflowEngine, verifyRun } from '../kernel/workflow.mjs'
 import { validateWorkflow } from '../kernel/workflow-dsl.mjs'
 import { createToolRegistry } from '../kernel/tools.mjs'
 import { buildWorkflowTools, listVisibleWorkflows } from '../kernel/dyntools.mjs'
 
-const SRC = join(process.cwd().replace(/\\/g, '/'), 'workflows', 'spec-dev', 'workflow.yml')
+// 仓库根相对定位（不依赖 cwd）：在 kernel/ 下跑 npm test 也能找到内置工作流
+const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
+const SRC = join(REPO_ROOT, 'workflows', 'spec-dev', 'workflow.yml')
 
 // spec-dev 结构的**DAG 等价冒烟件**：主链 start → lp → e（edges 显式），
 // body 内 b1 → b2（跨边界边由 BODY_ESCAPE 禁止）。

@@ -126,8 +126,12 @@ export function createLoopController({ wire, engine, store = null, configDir = '
 
   function resume() {
     if (TERMINAL.has(state.status)) return state
+    // 人工介入即开新的计数窗口：awaiting_approval 状态下 streak 已达阈值，若不清零，
+    // approve 后第一轮指纹照旧 → 立刻再次升级为 awaiting_approval（人工确认等于白点一次）。
+    const wasAwaiting = state.status === 'awaiting_approval'
     state.status = 'running'
     state.pendingApproval = null
+    if (wasAwaiting) { state.noProgress.streak = 0; state.noProgress.lastFingerprint = '' }
     persist()
     emit('status', { status: state.status, index: state.index, total: state.count })
     return state
@@ -214,6 +218,30 @@ export function createLoopController({ wire, engine, store = null, configDir = '
     state.steps += digest.length
     const filesChanged = digest.filter((t) => !t.isError && t.path).length
 
+    // 1.5 待人工审批（停滞升级 / 回滚登记）→ **不再自行推进，也不再重复注入**
+    // 缺陷背景（2026-09-15 实测复现）：停滞分支会注入一条反思消息并把 status 置为
+    // awaiting_approval，而 awaiting_approval 属于 isActive() ⇒ cli 在那条被注入消息的
+    // 轮末又进 onTurnEnd（cli.mjs 的 `if (loop.isActive())`），指纹不变 ⇒ streak 继续
+    // 增长 ⇒ 再注入一条反思 …… 形成"每轮一次 API 调用"的无限自续跑（管道 mock 下 60s
+    // 内跑到第 19 轮仍未停）。设计意图是"停下来要人介入"，不是继续跑。
+    // 只挡自动推进：人工确认（/loop approve → resume()）会把 status 拨回 running，
+    // 之后照常推进。此处**不推进 index、不更新指纹、不写 history**——等待轮不是一次迭代
+    //（否则轮次显示会从 3/3 一路涨到 13/3），停滞本身也已在升级那一刻记入 history。
+    if (state.status === 'awaiting_approval') {
+      persist()
+      return { action: 'wait', delayMs: 0, rationale: 'awaiting_approval' }
+    }
+
+    // 1.6 轮次条目（后续全部分支共用；index 已在此推进——本函数只在"轮末"被调用一次）
+    const historyEntry = {
+      index: state.index + 1, ts: new Date().toISOString(),
+      usage: outcome?.usage || null, costUsd: Number(state.costUsd.toFixed(4)),
+      steps: digest.length, toolCount: digest.length, filesChanged,
+      errors: digest.filter((t) => t.isError).length,
+      verify: null, judged: false, note: '',
+    }
+    state.index += 1
+
     // 2. 无进展指纹（轮次维度，补既有时间维度 LOOP_STALL_MS 的空档）
     // 语义：连续相同指纹轮数。首次记录即算第 1 轮（第 1 轮不可能"与前一轮相同"），
     // 后续每轮指纹不变则 +1；达到阈值（默认 3，env PONOS_LOOP_NOPROGRESS_N）即升级。
@@ -223,15 +251,6 @@ export function createLoopController({ wire, engine, store = null, configDir = '
     else if (fp) state.noProgress.streak = 1
     else state.noProgress.streak = 0
     state.noProgress.lastFingerprint = fp
-
-    const historyEntry = {
-      index: state.index + 1, ts: new Date().toISOString(),
-      usage: outcome?.usage || null, costUsd: Number(state.costUsd.toFixed(4)),
-      steps: digest.length, toolCount: digest.length, filesChanged,
-      errors: digest.filter((t) => t.isError).length,
-      verify: null, judged: false, note: '',
-    }
-    state.index += 1
 
     // 3. 短路序：pausing → 预算 → 无进展 → 验证 → 次数
     if (state.status === 'pausing') {

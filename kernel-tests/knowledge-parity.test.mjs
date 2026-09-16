@@ -209,6 +209,85 @@ test('批次1：index-tags 的 --spaces 必须真的生效（转发链路三层�
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 2026-09-14 对标 Obsidian 批次 2：引用体系的三条 CLI 通道（真进程）
+//
+// 为什么每条都要真进程钉：`--around`/`--hops` 与批次 1 的 `--spaces` 同一个坑 ——
+//   ① cli.mjs 的 parseArgs 不登记 → 静默忽略；② knowledgeArgs 白名单漏转发 → 静默吞掉。
+// 两层都"不报错、不抛异常"，单元测试各测一层也全绿，只有真进程能发现。
+// `mentions` / `broken-links` 是新 op，还要额外验证它们真的被 CLI 的 op 白名单接住
+// （不在白名单里会走"unknown op"分支）。
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('批次2：graph 的 --around/--hops 必须真的生效（登记 + 转发两层齐备）', () => {
+  const dir = fixture()
+  try {
+    // 造一个真有引用关系的文档集（fixture 的经验库文档之间没有链接，测不出邻域）：
+    //   a → b → c → d，另有孤岛 e
+    const sp = join(dir, 'knowledge', 'spaces', 'demo')
+    mkdirSync(sp, { recursive: true })
+    writeFileSync(join(sp, 'a.md'), '# 甲\n\n[[b]]\n', 'utf-8')
+    writeFileSync(join(sp, 'b.md'), '# 乙\n\n[[c]]\n', 'utf-8')
+    writeFileSync(join(sp, 'c.md'), '# 丙\n\n[[d]]\n', 'utf-8')
+    writeFileSync(join(sp, 'd.md'), '# 丁\n\n没有出链。\n', 'utf-8')
+    writeFileSync(join(sp, 'e.md'), '# 孤岛\n\n无人理我。\n', 'utf-8')
+
+    const all = runCli(dir, ['graph', '--space', 'demo'])
+    assert.deepEqual(all.nodes.map((n) => n.id).sort(), ['demo/a.md', 'demo/b.md', 'demo/c.md', 'demo/d.md', 'demo/e.md'])
+    assert.ok(all.edges.length >= 3, '全局图应有 a→b/b→c/c→d 的边（证明链接真的被解析成边）')
+
+    // 1 跳 = 自身 + 直接邻居；孤岛与更远的节点都不在
+    const one = runCli(dir, ['graph', '--space', 'demo', '--around', 'demo/a.md', '--hops', '1'])
+    assert.deepEqual(one.nodes.map((n) => n.id).sort(), ['demo/a.md', 'demo/b.md'],
+      '若 --around 被静默吞掉，这里会返回全局的 5 个节点')
+    // 2 跳到 c（走的是**出链**方向）
+    assert.deepEqual(runCli(dir, ['graph', '--space', 'demo', '--around', 'demo/a.md', '--hops', '2']).nodes.map((n) => n.id).sort(),
+      ['demo/a.md', 'demo/b.md', 'demo/c.md'])
+    // 3 跳到 d 为止，**孤岛 e 始终不进局部图**（局部图的意义就是不把无关节点拉进来）
+    const three = runCli(dir, ['graph', '--space', 'demo', '--around', 'demo/a.md', '--hops', '3'])
+    assert.deepEqual(three.nodes.map((n) => n.id).sort(), ['demo/a.md', 'demo/b.md', 'demo/c.md', 'demo/d.md'])
+    // 双向：以 d 为心 1 跳要能走到 c（只走出链会漏掉"谁引用了我"，那是反链方向）
+    assert.deepEqual(runCli(dir, ['graph', '--space', 'demo', '--around', 'demo/d.md', '--hops', '1']).nodes.map((n) => n.id).sort(),
+      ['demo/c.md', 'demo/d.md'], '--hops 生效且遍历是双向的')
+    // hops 越界收敛到 3（CLI 层 clamp）；不存在的中心 → 回落全局图（不是空图）
+    assert.deepEqual(runCli(dir, ['graph', '--space', 'demo', '--around', 'demo/a.md', '--hops', '99']).nodes.map((n) => n.id).sort(),
+      ['demo/a.md', 'demo/b.md', 'demo/c.md', 'demo/d.md'])
+    assert.equal(runCli(dir, ['graph', '--space', 'demo', '--around', 'demo/不存在.md', '--hops', '2']).nodes.length, 5)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('批次2：mentions / broken-links 两个新 op 能经 CLI 直通（含 limit 缺省回落）', () => {
+  const dir = fixture()
+  try {
+    // mentions：目标文档的标题是"workflow"（frontmatter name 派生），另一篇 policy.md 里没提到它 → 空集
+    const m = runCli(dir, ['mentions', '--id', 'experience/workflow.md'])
+    assert.ok(Array.isArray(m.items), 'mentions 返回 items 数组')
+    assert.equal(typeof m.count, 'number')
+    // 非法 limit（0 / abc）→ 回落缺省 30，而不是 0 条或 NaN
+    assert.ok(Array.isArray(runCli(dir, ['mentions', '--id', 'experience/workflow.md', '--limit', 'abc']).items))
+    // 不存在的文档 → 空集（不是报错：文档刚删是常态）
+    assert.deepEqual(runCli(dir, ['mentions', '--id', 'no-such.md']).items, [])
+
+    const b = runCli(dir, ['broken-links'])
+    assert.ok(Array.isArray(b.items))
+    assert.equal(typeof b.broken, 'number')
+    // 空间过滤生效（限定到不存在的空间 → 0；证明 --space 被转发了，不是"未过滤"）
+    assert.equal(runCli(dir, ['broken-links', '--space', 'no-such-space']).broken, 0)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('批次2：links 的锚点/嵌入字段经 CLI 往返后不丢（JSON 序列化不能吃掉 false/空串）', () => {
+  const dir = fixture()
+  try {
+    const r = runCli(dir, ['links', '--id', 'experience/workflow.md'])
+    assert.ok(Array.isArray(r.out) && Array.isArray(r.in))
+    // fixture 里没有 wiki 链接 → 两个数组都空；这条主要钉"op 直通 + 形状正确"，
+    // 字段级往返由 kernel-tests/knowledge.test.mjs 的批次 2 用例覆盖（那里能造出锚点数据）。
+    assert.equal(r.out.length, 0)
+    assert.equal(r.in.length, 0)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('批次1：search 的 total 与 tagHit 经 CLI 往返后不丢', () => {
   const dir = fixture()
   try {

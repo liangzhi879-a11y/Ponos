@@ -91,7 +91,7 @@ test('manifest.version 不符（旧索引）→ load() 自动全量重建，非�
     assert.equal(s1.stats().docs, 1)
     const manPath = join(idxDir(dir), 'manifest.json')
     const man = JSON.parse(readFileSync(manPath, 'utf-8'))
-    assert.equal(man.version, 3, 'INDEX_VERSION 已 bump 到 3（标签来源变更，见 shared 常量注释）')
+    assert.equal(man.version, 4, 'INDEX_VERSION 已 bump 到 4（引用体系：to 语义 + 锚点/嵌入/同文档锚点）')
     // 伪造"口径变更前的旧索引"：版本号改回 1，并**清空 docs.jsonl**。
     // 若上层把旧索引当可复用，docs 会是 0（静默空集，S1 最怕的故障模式）；
     // 正确行为是判定"过期派生物"→ 整库重建。
@@ -101,8 +101,8 @@ test('manifest.version 不符（旧索引）→ load() 自动全量重建，非�
     const s2 = createKnowledgeStore({ configDir: dir })
     await s2.load() // 不传 force：走 loadIndexFromDisk → 版本不符 → buildIndex
     assert.equal(s2.stats().docs, 1, '版本不符必须触发重建（而不是复用出空集）')
-    assert.equal(s2.stats().version, 3)
-    assert.equal(JSON.parse(readFileSync(manPath, 'utf-8')).version, 3, '重建后 manifest 版本回写为当前 INDEX_VERSION')
+    assert.equal(s2.stats().version, 4)
+    assert.equal(JSON.parse(readFileSync(manPath, 'utf-8')).version, 4, '重建后 manifest 版本回写为当前 INDEX_VERSION')
     assert.ok(s2.search({ query: DEEP, topK: 3 }).count > 0, '重建后立即可检索')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

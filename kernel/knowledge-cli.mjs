@@ -54,7 +54,22 @@ const OPS = new Set([
   // 为什么条目与整库**分成两个 op**：`delete-space` 是不可逆量级更大的操作，
   // 不该能因"漏给 --path"而落到删库分支（`delete-doc` 缺 --path 直接报 bad-path，
   // 两条路径各自的失败模式都是明确的）。
+  // 引用体系补全（2026-09-14 批次 2）：未链接提及 与 断链清单。
+  // 两个都是**读** op（不改盘），也都不进 WRITE_OPS —— 根不存在时返回空集是合理语义。
+  // 为什么分开成两个 op 而不是塞进 links/stats：消费场景与护栏完全不同 ——
+  // `mentions` 是"发现本该有的连接"（全库扫描、必须限流），`broken-links` 是"修坏掉的连接"
+  // （只扫 links 表、需按目标聚合）。合成一条会让 limit 语义含糊。
+  'mentions', 'broken-links',
+  // 回收站管理 + 覆盖前备份（2026-09-14 批次 4 加 `stash-doc`）。
+  // ⚠️ 这五个删除/还原 op 在批次 2 那次编辑里被误删过（新增 op 时把带 `])` 的整行替换掉了）——
+  // 症状是 `trash-list`/`delete-doc` 等全部变成 "unknown knowledge op"，而 WRITE_OPS 里还留着它们。
+  // 教训：往 Set 的字面量里加东西时，**不要拿结尾行当锚点**。
   'trash-list', 'delete-doc', 'delete-space', 'restore', 'purge',
+  // `stash-doc`（批次 4）：**复制**当前内容进回收站、原文件保留（覆盖前备份）。
+  // 与 delete-doc 是两件不同的事：那个是"删除"（文件消失），这个是"留档"（文件还在），
+  // 且**不重载索引**（内容与路径都没变）。合进 delete-doc 就得给它加个 mode 开关，
+  // 而"删除"是最不能出歧义的操作 —— 宁可多一个 op。
+  'stash-doc',
 ])
 
 /**
@@ -65,7 +80,7 @@ const OPS = new Set([
  * 处的长注释）：拼错的 `PONOS_HOME` 会让写操作静默长出一棵没人找得到的树。
  * `trash-list` 是**读**（列回收站），不在本表 —— 根不存在时返回空清单是合理语义。
  */
-const WRITE_OPS = new Set(['append', 'import', 'delete-doc', 'delete-space', 'restore', 'purge'])
+const WRITE_OPS = new Set(['append', 'import', 'delete-doc', 'delete-space', 'restore', 'purge', 'stash-doc'])
 
 /**
  * `--limit` 解析（S5 §7.3）：非负整数照收（0 合法——只想要 duplicate 标记时用得上）；
@@ -189,6 +204,25 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
         }
       case 'links':
         return { output: store.getLinks(String(args.id || '')), code: 0 }
+      case 'mentions':
+        // 未链接提及（2026-09-14 批次 2）：全库里"提到这篇文档但没打链接"的位置。
+        // `--id` 必填（没有目标就无所谓"提及"）；`--limit` 是**硬护栏**——这条路径全库扫描，
+        // 缺省 30 条即停（见内核 listMentions 的成本说明），非法值回落缺省而非 0/NaN。
+        return {
+          output: store.listMentions(String(args.id || ''), {
+            limit: (() => { const n = Number(args.limit); return Number.isFinite(n) && n > 0 ? n : 30 })(),
+          }),
+          code: 0,
+        }
+      case 'broken-links':
+        // 断链清单（2026-09-14 批次 2）：`target` 为 null 的引用，按目标名聚合。
+        return {
+          output: store.listBrokenLinks({
+            space: args.space ? String(args.space) : null,
+            limit: (() => { const n = Number(args.limit); return Number.isFinite(n) && n > 0 ? n : 200 })(),
+          }),
+          code: 0,
+        }
       case 'related': {
         // S5 Task 9：`related --doc <docId> [--limit N]` —— 一篇文档内**所有条目块**的锚点。
         // 为什么另开一支而不是让 GUI 逐块问：HTTP 路径每次调用都是一次新内核进程
@@ -242,6 +276,13 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
             // S5.1：`--level entry` 切到条目级图。白名单式解析（只认 'entry'，其余落回 'doc'）：
             // 层级是枚举而不是自由值，非法值静默落回缺省比报错更合用（GUI 传参不该打断浏览）。
             level: args.level === 'entry' ? 'entry' : 'doc',
+            // 局部图（2026-09-14 批次 2）：`--around <docId>` 只画该文档 N 跳双向邻域。
+            // 为什么需要：全局图在文档多起来后是"毛线球"，只能当装饰；局部图才是能读的结构视图。
+            // 缺省不设（null）→ 仍是全局图，行为与旧版一致（GUI 不传就什么都没变）。
+            around: args.around ? String(args.around) : null,
+            // `--hops` 是**范围参数**，故在这里收敛到 1..3：内核里也 clamp（防御直接调用者），
+            // 但 CLI 层先收敛能让"传了 99"这种明显笔误立刻表现为上限 3，而不是悄悄给出大半张图。
+            hops: (() => { const n = Number(args.hops); return Number.isFinite(n) && n > 0 ? Math.min(3, Math.floor(n)) : 1 })(),
           }),
           code: 0,
         }
@@ -434,6 +475,19 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
       case 'trash-list':
         // 回收站清单（GUI「最近删除」）。纯读、无副作用（根不存在时返回空清单）。
         return { output: store.listTrash(), code: 0 }
+      case 'stash-doc': {
+        // 覆盖前备份（2026-09-14 批次 4）：**复制**当前内容进回收站，原文件保留。
+        // 服务端在"用户强制覆盖一份已被外部改过的文件"时先调它；失败则放弃写入
+        // （宁可这次不保存，也不能把别人的改动销毁得无影无踪）。
+        // 属于写操作 → 必须进 WRITE_OPS（否则根目录不存在时会静默"成功"）。
+        const r = store.stashDoc({
+          space: args.space ?? null,
+          path: args.path ?? null,
+          reason: args.reason ?? null,
+        })
+        if (!r.ok) return { output: { error: r.error, message: r.message }, code: 1 }
+        return { output: r, code: 0 }
+      }
       case 'delete-doc': {
         // 软删除单个条目。空间/路径的合法性一律由内核 `deleteGate` + `normalizeMdRel` 判，
         // 本层只做"参数是否给全"的粗筛（未给就明确报错，不通融成空 path）。

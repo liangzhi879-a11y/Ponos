@@ -17,11 +17,19 @@ import { abortError, beginAwaitingUser, endAwaitingUser } from './protocol.mjs'
 import { countCjk, estimateRequest, estimateMessage, clampOutputBudgetForWindow, requestTokens, DEFAULT_WINDOW, contentEpoch } from './context.mjs'
 import { costOf } from './cost.mjs'
 import { decideToolPermission } from './permissions.mjs'
+// P0-3（2026-09-16）：同族重试硬拒需要族归因；族判定与"是否灾难"共用 blacklist 一份逻辑
+import { catastrophicFamily } from './blacklist.mjs'
+// P1-6（2026-09-16）：主循环与子 lane 的守卫判据/文案收敛到唯一实现——此前两侧各写一份
+// （内注释自认「子 lane 镜像主循环」），是"同一逻辑两处维护"，改一处忘另一处即造成两侧漂移。
+import {
+  isRealProgress, allToolResultsFailed, nextHadToolError,
+  shouldRemindRepeat, repeatRemindText, errorMeltdownText, hasMeltdownBudget,
+} from './guards.mjs'
 import { normalizeApprovalMode, deriveApprovalMode } from './approval-mode.mjs'
 import { withLaneSkillCatalog } from './prompt.mjs'
 import { createToolRegistry, killActiveChildren } from './tools.mjs'
 import { createSessionStore, newSessionId, sanitizeSegment } from './session.mjs'
-import { resolveAgent, resolveAgents } from './agents.mjs'
+import { resolveAgent, resolveAgents, resolveLaneTools } from './agents.mjs'
 import { getProvider } from './provider.mjs'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -103,6 +111,30 @@ const STREAM_FIRST_BYTE_MS = LOOP_GUARD_OFF ? 0 : Math.min(envNonNeg('PONOS_STRE
 // 所有 ESM 模块求值之后，写成模块级常量会永远读到 undefined（同 perf.mjs 头注 1）。
 let requestFaceCacheOn = null
 const isRequestFaceCacheOn = () => (requestFaceCacheOn === null ? (requestFaceCacheOn = process.env.PONOS_REQUEST_FACE_CACHE !== '0') : requestFaceCacheOn)
+
+// ── 失真红线锚点注入（2026-09-15 闭环）───────────────────────────────────────
+// 开关：默认开；PONOS_FIDELITY_ANCHOR=0 关闭。**惰性读**——cli.mjs 的 settings.env
+// 注入发生在所有 ESM 模块求值之后（与 perf.mjs 同一坑：顶层直读 process.env 会永远
+// 拿到注入前的值）。
+let fidAnchorCacheOn = null
+const isFidAnchorOn = () => (fidAnchorCacheOn === null ? (fidAnchorCacheOn = process.env.PONOS_FIDELITY_ANCHOR !== '0') : fidAnchorCacheOn)
+
+// 把锚点并入请求面**尾部**（而非 system）：前缀字节不变，prompt cache 命中不受影响。
+// 末条为 user 时并入其 content 而非新起一条——保证 user/assistant 交替合法（部分端点
+// 拒连续两条 user）。纯派生：不写日志、不发消息事件，GUI 看不到，transcript 权威性不变。
+export function withAnchorTail(face, text) {
+  const body = `【系统提醒 · 上下文失真告警】\n${text}\n（以上由内核自动检测：你已丢失这些信息，请据此修正——重新读取或复述相关事实，不要臆造假信息。）`
+  const arr = Array.isArray(face) ? face.slice() : []
+  const last = arr[arr.length - 1]
+  if (last && last.role === 'user') {
+    if (typeof last.content === 'string') arr[arr.length - 1] = { ...last, content: `${last.content}\n\n${body}` }
+    else if (Array.isArray(last.content)) arr[arr.length - 1] = { ...last, content: [...last.content, { type: 'text', text: body }] }
+    else arr[arr.length - 1] = { ...last, content: body }
+    return arr
+  }
+  arr.push({ role: 'user', content: body })
+  return arr
+}
 // 上游零数据挂起（prefill 超首内容宽限）的自动重试上限：真死服务重试无益，但
 // 排队/瞬态负载场景一次重试常能恢复。0 = 关闭（直接按挂起收尾）。
 // 2026-09-10 无感愈合原则：预算 2 → 3（多一轮静默重试才落可见收尾）。
@@ -758,7 +790,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     : (opts.configDir && opts.addDirs?.[0])
       ? join(opts.configDir, 'projects', sanitizeSegment(opts.addDirs[0]), 'tool-results')
       : null
-  const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: toolResultsDir ? [...(opts.addDirs || []), toolResultsDir] : opts.addDirs, skillsDirs: opts.skillsDirs, flatSkillRoots: opts.flatSkillRoots, skipPermissions: opts.skipPermissions, allowOutsideDirs: opts.allowOutsideDirs, disallowedTools: opts.disallowedTools, workflow: opts.workflow, memoryRoot: opts.memoryRoot || null, projectMemoryRoot: opts.projectMemoryRoot || null, readAllowFiles: session?.file ? [session.file] : [] })
+  const tools = createToolRegistry({ cwd: opts.addDirs?.[0], addDirs: toolResultsDir ? [...(opts.addDirs || []), toolResultsDir] : opts.addDirs, skillsDirs: opts.skillsDirs, flatSkillRoots: opts.flatSkillRoots, skipPermissions: opts.skipPermissions, allowOutsideDirs: opts.allowOutsideDirs, disallowedTools: opts.disallowedTools, workflow: opts.workflow, memoryRoot: opts.memoryRoot || null, projectMemoryRoot: opts.projectMemoryRoot || null, readAllowFiles: session?.file ? [session.file] : [], knowledgeSpaces: opts.knowledgeSpaces ?? null, disabledSkills: opts.disabledSkills ?? null })
   // 审批放行档位（2026-09-12 四档化）：闭包变量而非 opts 字段——运行中可经
   // setApprovalMode 热切换（cli control_request），下一轮工具调用即按新档判定。
   // 未传档位时按旧 flag 派生（= 今天的真实行为，见 approval-mode.mjs 文件头）。
@@ -886,6 +918,9 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   }
 
   async function runTurnInternal({ content }) {
+    // P0-3：轮起点清空"已拒灾难族"——语义严格对齐 spec 的「同一 turn 内」。
+    // 跨轮重提属新的用户意图，应当重新询问（一次拒绝不该永久封禁该族命令）。
+    deniedCatastrophicFamilies.clear()
     // P4-5：provider 热切换后每轮重解析模型（下一轮立即生效，无需重建 engine）
     model = opts.model || getProvider().model || ''
     let usage = {}
@@ -951,7 +986,34 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       getSkip: () => historySkip,
       getSystem: () => systemPrompt,
     })
-    const requestMessages = () => perfTime('req', requestFace)
+    // 失真红线锚点注入（2026-09-15 闭环）：此前 anchorText 只经 ponos_health 事件发
+    // GUI，等用户点"重新锚定"回传 anchor_applied 才置 resolved——**内核从不把锚点
+    // 注入模型上下文**，检测到失真等于只报警不处置。此处把它并入请求面尾部
+    // （withAnchorTail，纯派生，不改 requestFace 缓存对象）。
+    // 缓存双键 = 「失真指纹 + 基准 face 对象身份」：
+    //  · 必须缓存结果而不只是记指纹——估算(979/1140)、看门狗(1128) 会先于实际请求
+    //    (1146) 调用 requestMessages，只记指纹会让估算"吃掉"那次注入，实际请求反而
+    //    拿不到锚点（闭环静默失效）；缓存结果后它们看到同一份带锚点的消息。
+    //  · 必须绑 face 身份——只按指纹缓存会在历史更新后继续返回基于旧 face 的数组
+    //    （把过期内容发给模型）。face 内容变化时会重建对象，身份变化即自然失效。
+    let anchorKey = null
+    let anchorBase = null
+    let anchorFace = null
+    const requestFaceWithAnchor = () => {
+      const face = requestFace()
+      if (!isFidAnchorOn()) { anchorKey = null; anchorBase = null; anchorFace = null; return face }
+      let a = null
+      try { a = health && typeof health.fidelityAnchor === 'function' ? health.fidelityAnchor() : null } catch { a = null }
+      if (!a || !a.text) { anchorKey = null; anchorBase = null; anchorFace = null; return face }
+      const key = a.ids && a.ids.length ? a.ids.slice().sort().join(',') : 'no-id'
+      if (key === anchorKey && anchorBase === face && anchorFace) return anchorFace
+      anchorKey = key
+      anchorBase = face
+      anchorFace = withAnchorTail(face, a.text)
+      try { console.error(`[fidelity] anchor injected: ${(a.ids && a.ids.length) || 0} issue(s)`) } catch { /* 日志失败不阻断请求 */ }
+      return anchorFace
+    }
+    const requestMessages = () => perfTime('req', requestFaceWithAnchor)
     // pre-step 测压检查点：每轮请求前（工具结果/上轮产物已落日志之后）
     async function preStep() {
       if (!compactor || !session) return
@@ -1634,12 +1696,12 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       }
       // R3-2 失败自愈：记录本轮工具错误（模型下一轮若认错即停，守卫会强制重试）；
       // 工具成功执行后重置（错误已恢复，不再触发守卫）
-      if (toolResults.some((r) => r.is_error)) hadToolError = true
-      else if (toolResults.length) hadToolError = false
+      // P1-6：判据来自 guards.mjs（与子 lane 共用同一实现，防两侧漂移）
+      hadToolError = nextHadToolError(hadToolError, toolResults)
       // 守卫④：连续工具失败熔断——连续"全部失败"迭代达上限即收尾止损（任一成功
       // 即复位）。与 R3-2 自愈互补：自愈引导"失败后重试"，熔断负责"重试救不回来"
       // 时的兜底，二者同源但用途相反。
-      const allFailed = toolResults.length > 0 && toolResults.every((r) => r.is_error)
+      const allFailed = allToolResultsFailed(toolResults)
       if (allFailed) errorStreak++
       else if (toolResults.length) { errorStreak = 0; meltdownHeals = 0 } // 工具成功 → 熔断愈合计数清零
       if (toolResults.length) {
@@ -1650,12 +1712,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // Grep/Bash/goto 等）；Browser js/snapshot（只读测量）与失败结果不刷新——
       // "测量打转"循环因此被 LOOP_STALL_MS 停滞守卫拦下（见常量注释）。
       // 恢复进展即清零愈合计数：自愈成功的轮次重新获得完整愈合预算。
-      const madeProgress = blocks.some((b, i) => {
-        if (toolResults[i]?.is_error) return false
-        if (b.name !== 'Browser') return true
-        const a = String(b.input?.action || '')
-        return !(a === 'js' || a === 'snapshot')
-      })
+      // P1-6：判据来自 guards.mjs（与子 lane 共用，防两侧漂移）
+      const madeProgress = isRealProgress(blocks, toolResults)
       if (madeProgress) { lastProgressAt = Date.now(); stallHeals = 0 }
       // 守卫⑤：连续同工具提醒（dsh repeat-tool-reminder 语义：仅提醒不否决，硬性
       // 由迭代上限兜底）。以每轮首个 tool_use 的规范键（name+参数深排序）为基准；
@@ -1671,9 +1729,11 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           lastToolKey = key
           remindedAt = new Set()
         }
-        if (REPEAT_REMIND_AT.includes(repeatStreak) && !remindedAt.has(repeatStreak)) {
+        // P1-6：阈值命中判定与注入文案来自 guards.mjs（与子 lane 共用同一实现与同一文案，
+        // 防两侧漂移——此前两份模板串字面相同却是两处维护）
+        if (shouldRemindRepeat(repeatStreak, REPEAT_REMIND_AT, remindedAt)) {
           remindedAt.add(repeatStreak)
-          const inject = `【提示】你已连续 ${repeatStreak} 次调用同一工具（${blocks[0].name}）且未见方向变化。若前几次未取得实质进展，请换一种方法（其他工具、拆解子任务或直接向用户说明卡点），不要重复无进展的调用。`
+          const inject = repeatRemindText(repeatStreak, blocks[0].name)
           pushMemory({ role: 'user', content: inject })
           if (session) session.appendUser(inject)
         }
@@ -1681,10 +1741,10 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       if (MAX_ERROR_ITERATIONS > 0 && errorStreak >= MAX_ERROR_ITERATIONS) {
         // 无感愈合（2026-09-10）：连续全败达阈值先注入"排查失败原因"指令静默续跑
         // （重开失败预算）；耗尽 MELTDOWN_HEAL_MAX 才落可见收尾。
-        if (MELTDOWN_HEAL_MAX < 0 || meltdownHeals < MELTDOWN_HEAL_MAX) {
+        if (hasMeltdownBudget(meltdownHeals, MELTDOWN_HEAL_MAX)) {
           meltdownHeals++
           errorStreak = 0 // 重开失败预算（愈合窗口内再给一轮完整容错）
-          const inject = '【系统】检测到连续多轮工具调用全部失败。请停止原样重试：先读取最新失败的具体错误信息（Read 相关文件/日志，或查看上一轮 tool_result 的 stderr），分析失败原因（权限/环境/参数/路径），改用修正后的调用重试；仍无法推进时向用户说明阻塞原因。'
+          const inject = errorMeltdownText('main')
           pushMemory({ role: 'user', content: inject })
           if (session) session.appendUser(inject)
           try { wire?.system?.('guard_heal', { reason: 'error-meltdown', attempt: meltdownHeals, max: MELTDOWN_HEAL_MAX }) } catch { /* 事件失败不影响主流程 */ }
@@ -1794,6 +1854,13 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   const DENIAL_STREAK_LIMIT = 3
   const DENIAL_TOTAL_LIMIT = 20
 
+  // P0-3（2026-09-16）：灾难命令"同族重试硬拒"。用户在本轮明确拒绝某灾难族后，模型
+  // 再发**同族**命令（含改写/升权变体：rm -rf / → rm -rf /* / sudo rm -rf /）不再弹窗，
+  // 直接拒绝。理由：底线拦截若只作用于"判定"、不作用于"同一意图的重复尝试"，就会被
+  // "重试"绕过；反复弹窗还会训练用户在第三、四次点击「允许」（审批疲劳）。
+  // 族粒度是必要条件——字面比对挡不住改写。跨轮清空见 runTurnInternal 轮起点。
+  const deniedCatastrophicFamilies = new Set()
+
   // 工具权限门（P1-7 权限决策 + ask 审批挂起 + hooks.preToolUse 否决）。主 agent
   // 会话 executeToolUse 与工作流内嵌工具调用共用同一道门——工作流 tool/document/
   // agent 节点经 registry 直接执行工具时不得旁路主会话审批（高危 Bash/越权操作须
@@ -1812,6 +1879,17 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       return { allowed: false, message: '用户拒绝执行该操作' }
     }
     if (perm.decision === 'ask') {
+      // P0-3：本轮已被拒的灾难族 → 不弹窗、直接硬拒。放在降级检查之前是有意的：
+      // 两者是独立机制，若排在后面，连续拒绝 3 次后文案会退化成"连续拒绝 N 次"而
+      // 掩盖真实原因（用户拒的是这一族命令本身，不是"高危操作"）。不计 streak：
+      // 与硬黑名单首次拒绝同待遇——它不是"用户在拒绝高危操作"这一可学习信号。
+      const hardFamily = perm.hard ? catastrophicFamily(String(toolUse.input?.command ?? '')) : null
+      if (hardFamily && deniedCatastrophicFamilies.has(hardFamily)) {
+        return {
+          allowed: false,
+          message: `该命令属于「${hardFamily}」灾难族，用户已于本轮拒绝过同族命令（含改写/升权变体）。请立即停止对该族的任何尝试，改用安全替代方案；换写法重试同样会被拒绝。`,
+        }
+      }
       // 降级检查：拒绝过多 → 直接 deny（不挂起弹窗）。**硬黑名单豁免**：灾难命令
       // 必须每次都问，否则用户连拒 3 次后再发普通高危命令会被连带自动拒绝（文案
       // 还会谎称"用户已连续拒绝"）。硬黑名单的拒绝也不计入 streak（见下）。
@@ -1860,6 +1938,9 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           denialStreak++
           denialTotal++
         }
+        // P0-3：记住"用户明确拒绝了这一族"。超时**不记**——用户可能只是没看到弹窗，
+        // 记了会让他永久失去放行该命令的能力（一次错过 ≠ 拒绝）。
+        if (decision?.behavior !== 'timeout' && hardFamily) deniedCatastrophicFamilies.add(hardFamily)
         return { allowed: false, message: decision?.message || '用户拒绝执行该操作' }
       }
       denialStreak = 0
@@ -2293,23 +2374,20 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         content: executed[i]?.content ?? '',
         is_error: executed[i]?.isError === true,
       }))
-      // 审计 #10 R3-2（子 lane 镜像）：记录本轮工具错误（模型下一轮若纯文本收尾，守卫会
-      // 注入续跑）；工具成功执行后重置（错误已恢复，不再触发守卫）——镜像主循环 819-820。
-      if (toolResults.some((r) => r.is_error)) hadToolError = true
-      else if (toolResults.length) hadToolError = false
+      // 审计 #10 R3-2：记录本轮工具错误（模型下一轮若纯文本收尾，守卫会注入续跑）；
+      // 工具成功执行后重置（错误已恢复，不再触发守卫）。
+      // P1-6：判据改由 guards.mjs 提供（与主循环**同一实现**——此前两侧各写一份三态逻辑，
+      // 改一处忘另一处即造成子 lane 守卫落后于主循环）。
+      hadToolError = nextHadToolError(hadToolError, toolResults)
       for (let i = 0; i < blocks.length; i++) {
         toolUses++
         onTool?.(blocks[i], executed[i], toolUses)
       }
       store.appendToolResults(toolResults)
-      // 守卫⑥ 进展刷新（子 lane 镜像主循环）：成功且非只读测量的工具结果 = 实质进展；
-      // 恢复进展即清零愈合计数（自愈成功重新获得完整愈合预算）
-      const laneProgress = blocks.some((b, i) => {
-        if (toolResults[i]?.is_error) return false
-        if (b.name !== 'Browser') return true
-        const a = String(b.input?.action || '')
-        return !(a === 'js' || a === 'snapshot')
-      })
+      // 守卫⑥ 进展刷新：成功且非只读测量的工具结果 = 实质进展；
+      // 恢复进展即清零愈合计数（自愈成功重新获得完整愈合预算）。
+      // P1-6：判据来自 guards.mjs（与主循环**同一实现**，防两侧口径漂移）
+      const laneProgress = isRealProgress(blocks, toolResults)
       if (laneProgress) { subLastProgressAt = Date.now(); subStallHeals = 0 }
       // 审计 #10 守卫⑤（子 lane 镜像）：连续同工具提醒（dsh repeat-tool-reminder 语义：
       // 仅提醒不 veto，硬性由迭代上限兜底）。以每轮首个 tool_use 的规范键（name+参数深排序）
@@ -2325,26 +2403,27 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           lastSubToolKey = key
           subRemindedAt = new Set()
         }
-        if (REPEAT_REMIND_AT.includes(subRepeatStreak) && !subRemindedAt.has(subRepeatStreak)) {
+        // P1-6：阈值命中判定与注入文案由 guards.mjs 提供，与主循环**同一实现、同一文案**
+        // （此前两份模板串字面相同却是两处维护；副作用仍留各自分支：lane 只落 store）
+        if (shouldRemindRepeat(subRepeatStreak, REPEAT_REMIND_AT, subRemindedAt)) {
           subRemindedAt.add(subRepeatStreak)
-          const inject = `【提示】你已连续 ${subRepeatStreak} 次调用同一工具（${blocks[0].name}）且未见方向变化。若前几次未取得实质进展，请换一种方法（其他工具、拆解子任务或直接向用户说明卡点），不要重复无进展的调用。`
-          store.appendUser(inject)
+          store.appendUser(repeatRemindText(subRepeatStreak, blocks[0].name))
         }
       }
-      // P1-守卫④（子 lane 镜像，审计 #4）：连续"全部失败"迭代达上限即收尾止损（任一
-      // 成功即复位）——镜像主循环 engine.mjs:786-791 / 817-823，工具结果落 store 后
+      // 守卫④：连续"全部失败"迭代达上限即收尾止损（任一成功即复位），工具结果落 store 后
       // 判定，不改落 store 语义。与 R3-2 自愈互补：自愈引导失败后重试，熔断兜"重试救
       // 不回来"的底（审计 #4：子 lane 此前无此守卫，连续全败会一路空转到迭代上限）。
-      const allLaneFailed = toolResults.length > 0 && toolResults.every((r) => r.is_error)
+      // P1-6：判据与文案来自 guards.mjs（与主循环同一实现/同源文案，仅 variant 不同）
+      const allLaneFailed = allToolResultsFailed(toolResults)
       if (allLaneFailed) subErrorStreak++
       else if (toolResults.length) { subErrorStreak = 0; subMeltdownHeals = 0 }
       if (MAX_ERROR_ITERATIONS > 0 && subErrorStreak >= MAX_ERROR_ITERATIONS) {
-        // 无感愈合（子 lane 镜像主循环 2026-09-10）：先注入排查指令静默续跑，
-        // 耗尽 MELTDOWN_HEAL_MAX 才 guardStop（后台 lane 注入即唯一干预）
-        if (MELTDOWN_HEAL_MAX < 0 || subMeltdownHeals < MELTDOWN_HEAL_MAX) {
+        // 无感愈合（2026-09-10）：先注入排查指令静默续跑，耗尽 MELTDOWN_HEAL_MAX 才 guardStop
+        // （后台 lane 注入即唯一干预——无交互对象，故文案取 'lane' 变体）
+        if (hasMeltdownBudget(subMeltdownHeals, MELTDOWN_HEAL_MAX)) {
           subMeltdownHeals++
           subErrorStreak = 0
-          store.appendUser('【系统】检测到连续多轮工具调用全部失败。请停止原样重试：先读取最新失败的具体错误信息，分析失败原因（权限/环境/参数/路径），改用修正后的调用重试；仍无法推进时输出阻塞说明。')
+          store.appendUser(errorMeltdownText('lane'))
           continue
         }
         const meltdownNotice = stopNotice(
@@ -2465,7 +2544,11 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     // 2026-09-11：disallowedTools/effort 入 laneOptions（对齐 CC agent frontmatter）。
     const laneOptions = {
       model: agent.model || '',
-      allowedTools: Array.isArray(agent.tools) && agent.tools.length ? agent.tools : undefined,
+      // 工具范围由纯函数算出（2026-09-15，A 条款；原逻辑内联在此，无法单测）：
+      // 自然语言声明已被 parseToolsSpec 归一，这里只管"空白名单/全不认识/只禁不白"三个分支。
+      allowedTools: resolveLaneTools({
+        tools: agent.tools, disallowedTools: agent.disallowedTools, allToolNames: tools.toolNames,
+      }),
       allowedSkills: Array.isArray(agent.skills) && agent.skills.length ? agent.skills : undefined,
       disallowedTools: Array.isArray(agent.disallowedTools) && agent.disallowedTools.length ? agent.disallowedTools : undefined,
       effort: agent.effort || '',

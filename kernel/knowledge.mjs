@@ -8,6 +8,13 @@ import {
   rmSync, cpSync, realpathSync,
 } from 'node:fs'
 import { join, relative, sep, basename, dirname, extname } from 'node:path'
+// 原子写 / 临时文件判定（2026-09-14 批次 4）：`walkMd` 必须跳过 `.yfw-tmp-*.md`。
+// 临时文件的名字**以目标名结尾、同样是 .md**，不跳过就会被当成一篇新文档收进索引 ——
+// 于是"保存一次文档"在库里多出一篇同名文档，而它随时会被 rename 走或删除。
+import { isAtomicTmpName } from '../shared/atomic-write.mjs'
+// 检索语法层（2026-09-14 对标 Obsidian 批次 3）：解析 `tag:` / `path:` / `"短语"` / `A OR B` /
+// `-x` / `/正则/`，内核据此"先过滤、后打分"。纯函数无 IO，前端另有一份同口径手写实现。
+import { parseSearchQuery, matchDocQuery, matchBlockQuery, matchTextParts } from '../shared/knowledge-query.mjs'
 import {
   INDEX_VERSION, builtinSpaceSpecs, parseFrontmatter, splitBlocks, extractLinks,
   toDocId, hashLine,
@@ -30,11 +37,43 @@ export function knowledgeRoot(configDir) {
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.index', '.obsidian'])
 
-/** 递归收集 md。不跟符号链接（穿越防护第一道），跳过依赖/隐藏目录。 */
-export function walkMd(root, { maxFiles = 5000 } = {}) {
+/**
+ * 单个空间的**索引文件数上限**（2026-09-14 批次 4 提为常量）。
+ *
+ * 上限本身是必要的防护（一次误指向家目录就会试图索引上百万个文件），但**静默**截断不行：
+ * 用户看到"索引成功"，而超限的文档搜不到、图谱里没有、统计数字也不含 —— 没有任何迹象说明原因。
+ * 现在截断会被写进 manifest 并在 `stats()` 里报出来，GUI 据此提示（见 KnowledgePanel 的上限提示）。
+ */
+const FILE_LIMIT_PER_SPACE = 5000
+
+/**
+ * 递归收集 md。不跟符号链接（穿越防护第一道），跳过依赖/隐藏目录。
+ *
+ * `stats` 出参（2026-09-14 批次 4）：**截断必须出声**。旧实现在 `out.length >= maxFiles` 时
+ * 静默停手 —— 用户看着一个"索引成功"的界面，而第 5001 篇之后的文档**根本不存在**：
+ * 搜不到、图谱里没有、统计数字也不含。没有任何迹象说明原因，用户只会怀疑"搜索坏了"。
+ * 这里把 `truncated`/`limit`/`count` 写回调用方给的 `stats` 对象（不改返回值形状 —— 既有调用方
+ * 与测试都按数组用，改形状会把无关代码卷进 diff），再由调用方写进 manifest 与 stats 输出。
+ *
+ * **必须跳过原子写的临时文件**：`shared/atomic-write.mjs` 的临时名是
+ * `.yfw-tmp-<pid>-<rand>-<原名>.md` —— 结尾仍是 `.md`，会被这里的 `/\.md$/i` 收进索引，
+ * 于是"保存一次文档"就会在库里多出一篇同名文档（而它随时会被 rename 走或删掉）。
+ * 进程被强杀留下的残留也会因此长期污染索引。
+ */
+export function walkMd(root, { maxFiles = 5000, stats = null } = {}) {
   const out = []
   const stack = [root]
-  while (stack.length && out.length < maxFiles) {
+  /**
+   * 是否因为**撞上限而丢弃了本该收录的文件**（2026-09-14 批次 4）。
+   *
+   * 旧实现的循环条件 `out.length < maxFiles` 只在外层判断 —— 内层把一个目录里的条目
+   * **全部**收完才回到外层。于是单目录 2 万个文件时会全部收下：`maxFiles` 根本不是硬上限，
+   * 只是"最多跑这么多轮目录"。更糟的是它让"截断"无法判定（收完 6 个、上限 3 个，
+   * 栈也空了 → 看不出发生过截断）。现在把上限判定挪到**入数组那一刻**：
+   * 丢弃即置位，语义精确 = "有文件本可收录但没收"。
+   */
+  let dropped = false
+  scan: while (stack.length) {
     const dir = stack.pop()
     let entries = []
     try { entries = readdirSync(dir, { withFileTypes: true }) } catch { continue }
@@ -46,9 +85,17 @@ export function walkMd(root, { maxFiles = 5000 } = {}) {
         continue
       }
       if (!e.isFile() || !/\.md$/i.test(e.name)) continue
+      if (isAtomicTmpName(e.name)) continue      // 见上：临时文件结尾也是 .md
+      if (out.length >= maxFiles) { dropped = true; break scan }
       const abs = join(dir, e.name)
       out.push({ absPath: abs, relPath: relative(root, abs).split(sep).join('/') })
     }
+  }
+  if (stats && typeof stats === 'object') {
+    // `truncated` 的含义：**有文件因为上限被丢弃**（不是"栈里还有目录"——扫完了也不是截断）
+    stats.truncated = dropped
+    stats.limit = maxFiles
+    stats.count = out.length
   }
   return out
 }
@@ -172,6 +219,17 @@ function movePath(from, to) {
   return 'copy'
 }
 
+/**
+ * 复制路径（2026-09-14 批次 4）。与 `movePath` 唯一的区别是**源保留**。
+ * 搬走的场景要 30 秒内跨盘也能用（`cpSync` + `rmSync`），复制场景直接用 `cpSync` 即可 ——
+ * 但都要先 `mkdirSync` 父目录，否则 `cpSync` 在父目录不存在时抛 ENOENT。
+ */
+function copyPath(from, to) {
+  mkdirSync(dirname(to), { recursive: true })
+  cpSync(from, to, { recursive: true })
+  return 'copy'
+}
+
 /** 台账读写（原子替换：写 .tmp → rename，避免半截 JSON 让整个回收站不可读）。 */
 function readTrashIndex(trashDir) {
   const raw = readJsonFile(join(trashDir, 'index.json'))
@@ -245,6 +303,85 @@ export function discoverSpaces({ configDir, root = null } = {}) {
   return out
 }
 
+/**
+ * 会话可关联的知识库数量上限（2026-09-15，待处理清单 P1「会话模式关联经验库之外的知识库」）。
+ *
+ * **why 是 8**：范围会同时进入「注入白名单」与「提示词清单」——两者都是**每次请求都要付**的成本
+ * （提示词里每多一个库名，就多一分与任务无关的噪声）。8 个已远超"人工挑选"的实际粒度（用户
+ * 真正常用的储备库是 1–3 个），再多的部分不是"能力"而是"上下文税"。
+ * 超限**不报错**（用户操作不该抛异常），但必须进 `dropped` 被看见（见返回结构）。
+ */
+export const MAX_ASSOC_SPACES = 8
+
+/**
+ * GUI「大库提示」阈值（2026-09-15）：关联时若某库文档数超过它，界面提示"注入受预算限制"。
+ *
+ * **why 是 1000**：注入层的抽调预算是 4096 字节（`knowledge-inject.mjs` DEFAULT_TOTAL_BUDGET），
+ * 单条命中按摘要十来行算，实际能装下的条目是**个位数**。1000 篇规模意味着"随手一搜就有几百条
+ * 候选"，用户此时需要知道的是"该按关键词按需检索，而不是指望它整库进上下文"。
+ * 数值本身不参与检索决策（纯提示），故不需要像关联上限那样严格论证——但也不能不设：
+ * 没有阈值就没有提示的触发点。
+ */
+export const LARGE_SPACE_DOCS = 1000
+
+/** 内置经验类空间的 source 集合：它们是"给执行任务用的"基础设施，恒在会话范围内（spec D4）。 */
+const BUILTIN_SCOPE_SOURCES = new Set(['experience', 'memory'])
+/**
+ * **可被关联**的空间 source 集合（2026-09-15）：与 GUI 的 `isAssociableSpace` 同义。
+ *
+ * 为什么要在这里也判一次：`unassociated` 会被渲染进提示词，让模型**请用户去关联**。
+ * 若把 GUI 根本给不出开关的空间（如尚未启用的 `skill-experience`）列进去，模型就会指一条
+ * 走不通的路——用户按提示去找开关，找不到，只能怀疑功能坏了。清单只列"指得到门"的空间。
+ */
+const ASSOCIABLE_SCOPE_SOURCES = new Set(['user', 'pack'])
+
+/**
+ * 解析**会话知识范围**（2026-09-15，spec §3.2）：本会话的 agent 可注入/可检索的空间白名单。
+ *
+ * 组成 = 内置经验类空间 ∪ 用户显式关联的空间。三条语义要点：
+ *   1. **经验库不可被移除**（D4）：它是执行任务的基础设施，"关掉经验库"只会让 agent 变笨而
+ *      用户不知道为什么。故 `builtin` 一律前置，`requested` 只能**追加**。
+ *   2. **不存在/不可读的 id 进 `missing`，超上限的进 `dropped`**（不报错、不静默）：关联是用户
+ *      在界面上点的，操作本身不该抛异常；但"点了没生效"必须可解释——两处出声让 GUI/日志能做
+ *      到"忽略了这个库，因为……"。
+ *   3. **纯读、无副作用**：只调 `discoverSpaces`（目录发现），不建索引、不写盘；cli 在会话启动
+ *      段就能廉价调用，工具层与注入层拿到的是**同一个**对象（双层同源，spec §2.2）。
+ *
+ * 与 `discoverSpaces` 的差别：那个回答"库里有哪些空间"，本函数回答"**本次会话**能用哪些"。
+ * 前者是事实，后者是授权——不要互相替代（GUI 的空间下拉必须看到全部，agent 只能看到授权集）。
+ *
+ * @returns {{
+ *   spaces: string[], builtin: string[], associated: string[], missing: string[],
+ *   dropped: string[], truncated: boolean, labels: Record<string,string>, unassociated: string[],
+ * }}
+ *   `labels` = id→显示名（提示词与 GUI 共用一份，避免两处各取一次名字而名字口径漂移）；
+ *   `unassociated` = 存在但**未**关联、**且可关联**（source ∈ {user,pack}，与 GUI 开关同判据）
+ *   的空间 id（提示词据此告诉模型"还有什么库可以请用户关联"——只列指得到门的，避免指路无门）。
+ */
+export function resolveSessionKnowledgeScope({ configDir, requested = null } = {}) {
+  const all = discoverSpaces({ configDir })
+  const builtin = all.filter((s) => BUILTIN_SCOPE_SOURCES.has(s.source)).map((s) => s.id)
+  const byId = new Map(all.map((s) => [s.id, s]))
+  // 归一：非数组/含空串一律当"没关联"（GUI 传来的可能是 undefined、旧会话可能是 null）。
+  const asked = (Array.isArray(requested) ? requested : [])
+    .map((s) => String(s ?? '').trim()).filter(Boolean)
+  // 去重保持**用户给定顺序**（顺序即优先级的天然表达：先关联的排在提示词前面），
+  // 在去重之后再判 missing/dropped，避免"同一个 id 写两遍"把配额吃掉两份。
+  const uniq = [...new Set(asked)]
+  const missing = uniq.filter((id) => !byId.has(id))
+  // 内置空间即使被显式列出也不算"关联"，否则它会在配额里占位（用户并不需要为经验库买单）。
+  const known = uniq.filter((id) => byId.has(id) && !builtin.includes(id))
+  const associated = known.slice(0, MAX_ASSOC_SPACES)
+  const dropped = known.slice(MAX_ASSOC_SPACES)
+  const spaces = [...builtin, ...associated]
+  const scopeSet = new Set(spaces)
+  return {
+    spaces, builtin, associated, missing, dropped, truncated: dropped.length > 0,
+    labels: Object.fromEntries(all.map((s) => [s.id, s.name || s.id])),
+    unassociated: all.filter((s) => !scopeSet.has(s.id) && ASSOCIABLE_SCOPE_SOURCES.has(s.source)).map((s) => s.id),
+  }
+}
+
 function collectTags(front, space, relPath, blocks) {
   const tags = []
   // frontmatter：**数组与字符串两态都吃**（2026-09-14 批次 1）。
@@ -294,28 +431,50 @@ export function parseDocFile({ absPath, space, relPath }) {
     })),
   }
   // 链接定位（S5.1）：extractLinks 给的字符下标 → 行号 → 所属块。
-  // 有了块号才能建**条目级 ref 关联**（"是哪条经验引用了这篇文档"），否则只能退化成文档级。
-  // 块区间取 [b.line, 下一块.line)：splitBlocks 的 line 已按 bodyStartLine 偏移，与 raw 行号同基准。
-  // 定位不到块（链接在 frontmatter 后、首个块之前等）→ block 置 null，不丢链接、只是退化为文档级。
+  // 走到 linkRowsOf 里统一实现（**全量建索引与增量更新共用一份**，见该函数注释）。
+  const links = linkRowsOf(raw, docId, doc.blocks)
+  return { doc, links }
+}
+
+/**
+ * 文档原文 → links 行（2026-09-14 批次 2 抽出）——**全量建索引与增量 updateDoc 的唯一实现**。
+ *
+ * 为什么必须抽成一份：原实现有**两份** —— 这里产 `{from,to,anchor,line,block}`，
+ * 而增量路径的 `relinkDoc` 自己重写了一遍、只产 `{from,to,target}`。同一份数据的两个生产者
+ * 字段不一致，后果很隐蔽：**任何文件被编辑过之后，它的引用就丢掉行号与块归属**，
+ * 条目级 ref 关联（"是哪条经验引用了这篇文档"）随之消失或退化成"整篇条目全连"。
+ * 那种 bug 不报错、不抛异常，只是关联质量悄悄变差（实测确认：改过的文档 ref 边全丢）。
+ * 现在字段只有这一处定义，谁都改不动它的一致性。
+ *
+ * 返回行的字段见 shared/knowledge-core.extractLinks 的契约；这里补三样**位置**信息：
+ *   · `line`  链接在**原始文件**（含 frontmatter 偏移）里的行号
+ *   · `block` **entry 块**的块号（只有条目能当 ref 边的源：段落/标题不是"经验条目"，
+ *              挂上去会造出不存在的锚点源）；定位不到 → null（不丢链接，只退化为文档级）
+ *   · `target` 由调用方解析后补（全量在 build、增量在 relinkDoc）
+ */
+function linkRowsOf(raw, docId, blocks) {
   const lineOfIndex = (idx) => raw.slice(0, Math.max(0, idx || 0)).split('\n').length
   const blockAtLine = (line) => {
-    for (let i = 0; i < doc.blocks.length; i++) {
-      const b = doc.blocks[i]
-      const next = doc.blocks[i + 1]
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i]
+      const next = blocks[i + 1]
       if (line >= b.line && (!next || line < next.line)) return b
     }
     return null
   }
-  const links = extractLinks(raw).map((l) => {
+  return extractLinks(raw).map((l) => {
     const line = lineOfIndex(l.index)
     const b = blockAtLine(line)
     return {
       from: docId, to: l.to, anchor: l.anchor || '', line,
-      // 只有 entry 块才能当 ref 边的源：段落/标题不是"经验条目"，挂上去会造出不存在的锚点源。
+      // 批次 2：锚点 / 同文档锚点 / 嵌入 三类语义（读过 Obsidian 语法的 md 才能正确跳转）
+      anchorRef: l.anchorRef || '',
+      anchorKind: l.anchorKind || '',
+      embed: l.embed === true,
+      self: l.self === true,
       block: b && b.kind === 'entry' ? b.n : null,
     }
   })
-  return { doc, links }
 }
 
 // ── 索引（Task 6）─────────────────────────────────────────────────────────
@@ -353,6 +512,19 @@ const SEARCH_SAMPLES = 100
  * 于是 struct 可能为 0、score 为 0。给个极小正数保证它仍在结果里（0 分会被视作"没有证据"）。
  */
 const TAG_HIT_FLOOR = 0.05
+
+/**
+ * 未链接提及（Unlinked mentions）的**最短关键词长度**（2026-09-14 批次 2）。
+ *
+ * 取 2 的依据：中文里单字标题（"甲"、"税"）做包含匹配会命中成百上千个块——那些不是"提及"，
+ * 而是"这个字恰好出现过"。面板一旦被噪声填满，用户就不会再打开它（比没有这个功能更糟）。
+ * 英文单字母同理（"a"）。所以长度 < 2 的关键词**整条**跳过：宁可对短标题漏报，
+ * 也不要给出满屏假提及。
+ */
+const MIN_MENTION_LEN = 2
+
+/** 反链 / 提及面板的上下文片段长度（字符）。依据见 snippetAt 的注释 */
+const SNIPPET_LEN = 120
 /**
  * 检索结果每条附带的锚点上限（S5 Task 6）。取 3 而不是 MAX_RELATED(8) 的理由是**体积**：
  * 检索项本身已是 topK（缺省 5）条，每项 8 条锚点 ⇒ 最多 40 条摘要，而摘要里的 `why.shared`
@@ -427,6 +599,12 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
   // 索引指纹表（manifest.files）与 links.jsonl 的当前行集：staleness 精确判定与
   // 增量更新的共享状态。**唯一写入口是 persist()**（全量/增量共用），避免两套写盘逻辑漂移。
   let lastFiles = {}
+  /**
+   * 本轮索引的**截断留痕**（2026-09-14 批次 4）。`truncated: true` 表示"有文档没进索引"——
+   * 与 `blocksTruncated` 同一性质：必须被看见的信号，不是内部细节。
+   * `staleSweepSkipped` 表示"截断导致'磁盘已删'清扫被跳过"（见 indexStale 的注释）。
+   */
+  let lastTruncation = null
   let lastLinkRows = []
   // 关联物化行（S5 Task 4）：`related.jsonl` 的内存镜像。**唯一写入口仍是 persist()**
   // ——全量（buildIndex）与增量（updateDoc）共用同一份序列化/原子落盘逻辑，
@@ -464,8 +642,13 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
   function scanAll() {
     blockCaps = { docs: 0, droppedBlocks: 0, docIds: [] }
     const acc = { docs: [], links: [] }
+    // 截断统计（2026-09-14 批次 4）：按空间记录"撞到 maxFiles 上限、还有文档没进索引"。
+    // 旧实现静默停手 → 用户看到"索引成功"，而超出上限的文档搜不到、图谱里没有、
+    // 统计数字也不含，且没有任何迹象说明原因。
+    const trunc = { truncated: false, limit: FILE_LIMIT_PER_SPACE, spaces: [], count: 0 }
     for (const space of spaces) {
-      for (const { absPath, relPath } of walkMd(space.root)) {
+      const stats = {}
+      for (const { absPath, relPath } of walkMd(space.root, { maxFiles: FILE_LIMIT_PER_SPACE, stats })) {
         try {
           const parsed = parseDocFile({ absPath, space, relPath })
           capBlocks(parsed.doc)
@@ -473,7 +656,16 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
           acc.links.push(...parsed.links)
         } catch { /* 单文档解析失败：跳过，不拖垮整库 */ }
       }
+      if (stats.truncated) {
+        trunc.truncated = true
+        trunc.spaces.push({ spaceId: space.id, count: stats.count, limit: stats.limit })
+        trunc.count += stats.count
+      }
     }
+    // 留痕落在模块级变量上（persist 才是写盘处，但那里看不到 scanAll 的局部变量）：
+    // 由 persist 写进 manifest —— 只有写盘才跨进程可见，否则"库里少了 300 篇文档"
+    // 这件事在下次 CLI 调用时就无从得知。
+    lastTruncation = trunc
     return acc
   }
 
@@ -518,16 +710,29 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     for (const l of links) {
       const owner = nextDocs.find((d) => d.id === l.from)
       const target = owner
-        ? resolveLinkTarget({ fromRel: owner.rel, to: l.to, spaceId: owner.spaceId, docIds: ids })
+        ? resolveLinkTarget({
+          fromRel: owner.rel, to: l.to, spaceId: owner.spaceId, docIds: ids, self: l.self,
+        })
         : null
       // `anchor`/`line`/`block` 一并保留（S5.1）：`block` 是链接所在**条目**的块号，
       // 是条目级 ref 关联的源；`line` 供 GUI 跳转定位；`anchor` 是被引块的别名/锚点。
+      // 批次 2 再加三类语义：`anchorKind`（'heading'|'block'）+ `anchorRef`（锚点原文）让链接能
+      // 落到"那一节/那个块"，`embed` 区分 `![[x]]`（阅读视图要内联渲染），`self` 是 `[[#x]]`
+      // 同文档锚点（目标 = 来源文档自身）。落盘与内存（linkOut）必须**同一组字段**，
+      // 否则"重建索引后好、编辑一次后字段没了"这类不一致又会回来。
       nextLinks.push({
         from: l.from, to: l.to, anchor: l.anchor || '', line: l.line, block: l.block ?? null, target,
+        anchorRef: l.anchorRef || '', anchorKind: l.anchorKind || '',
+        embed: l.embed === true, self: l.self === true,
       })
+      const edge = {
+        to: l.to, target, block: l.block ?? null, line: l.line, anchor: l.anchor || '',
+        anchorRef: l.anchorRef || '', anchorKind: l.anchorKind || '',
+        embed: l.embed === true, self: l.self === true,
+      }
       const arr = out.get(l.from)
-      if (arr) arr.push({ to: l.to, target, block: l.block ?? null, line: l.line })
-      else out.set(l.from, [{ to: l.to, target, block: l.block ?? null, line: l.line }])
+      if (arr) arr.push(edge)
+      else out.set(l.from, [edge])
     }
 
     docs = nextDocs
@@ -566,6 +771,9 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       blocks: docs.reduce((s, d) => s + d.blocks.length, 0),
       spaces: Object.fromEntries(Object.entries(spaceCount).map(([k, v]) => [k, { docs: v }])),
       files,
+      // 文件数上限留痕（2026-09-14 批次 4）：只有 `truncated: true` 时才写键 ——
+      // 没截断的常态下不该在 manifest 里留痕（与 `relLines` 同一取舍：off/常态不留无用键）。
+      ...(lastTruncation?.truncated ? { filesTruncated: lastTruncation } : {}),
       // 完整性指纹：加载时用来识别「半写/截断」的索引。没有它，被截断的 inverted.jsonl
       // 会解析成「合法但更少」的 postings——不报错，却让检索静默返回空集（实测 count 0）。
       // 索引是派生物，宁可判定损坏后重建，也不要拿着残缺索引装正常。
@@ -640,7 +848,15 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       // `block`/`line` 必须一并读回（S5.1）：ref 边以"链接所在的**条目**"为源，
       // 只回填 to/target 会让**重载索引后 ref 边整体消失**（物化文件里有、内存里没有），
       // 表现为"重启一次引用关联就没了"。
-      const row = { to: l.to, target: l.target, block: l.block ?? null, line: l.line ?? null }
+      const row = {
+        to: l.to, target: l.target, block: l.block ?? null, line: l.line ?? null,
+        // `anchor`/锚点/`embed`/`self` 同样必须读回：阅读视图要靠 anchorKind+anchorRef 跳到
+        // "那一节/那个块"，靠 embed 把 `![[x]]` 渲染成内联内容，靠 self 处理 `[[#x]]`。
+        // 只回填 to/target 会让这些能力**在重载索引后整体消失**（磁盘上有、内存里没有），
+        // 表现为"重启一次，嵌入变回普通链接、锚点跳不动"——与当年 ref 边消失同一类 bug。
+        anchor: l.anchor || '', anchorRef: l.anchorRef || '', anchorKind: l.anchorKind || '',
+        embed: l.embed === true, self: l.self === true,
+      }
       const arr = linkOut.get(l.from)
       if (arr) arr.push(row)
       else linkOut.set(l.from, [row])
@@ -655,6 +871,12 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     builtAt = manifest.builtAt || null
     lastFiles = manifest.files || {}
     lastLinkRows = linkRows
+    // 读回截断留痕（2026-09-14 批次 4）：**必须从盘上恢复**，否则"库里少了 N 篇文档"
+    // 只在触发重建的那一次进程里可见，之后每次 CLI 调用都报"未截断" —— 一个只在重建瞬间
+    // 存在的警告等于没有警告（用户重启客户端就再也看不到）。
+    lastTruncation = manifest.filesTruncated
+      ? { ...manifest.filesTruncated, staleSweepSkipped: false }
+      : null
     indexBytes = ['docs.jsonl', 'inverted.jsonl', 'links.jsonl', 'tags.json']
       .reduce((s, n) => s + Buffer.byteLength(raw(n), 'utf-8'), 0)
       + (relateOn() ? Buffer.byteLength(raw('related.jsonl'), 'utf-8') : 0)
@@ -669,8 +891,10 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
    */
   function indexStale() {
     const seen = new Set()
+    let truncated = false
     for (const space of spaces) {
-      for (const { absPath, relPath } of walkMd(space.root)) {
+      const stats = {}
+      for (const { absPath, relPath } of walkMd(space.root, { maxFiles: FILE_LIMIT_PER_SPACE, stats })) {
         const id = toDocId(space.id, relPath)
         seen.add(id)
         const rec = lastFiles[id]
@@ -680,8 +904,18 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
           if (st.size !== rec.size || Math.abs(st.mtimeMs - rec.mtime) > 1) return true
         } catch { return true }                     // 读不到 → 保守重建
       }
+      if (stats.truncated) truncated = true
     }
-    for (const id of Object.keys(lastFiles)) if (!seen.has(id)) return true  // 磁盘已删
+    // "磁盘已删"的清扫**在截断时必须跳过**（2026-09-14 批次 4）：
+    // seen 里没有的文件可能只是排在 5001 名之后、这轮根本没走到 —— 据此判"已删"会让
+    // >5000 文件的库**每次 load 都全量重建**（而且重建写回的 lastFiles 依然缺那些文件，
+    // 于是下一轮又重建）：索引永远追不上，CPU 白烧，还会和写入互相抢盘。
+    // 代价是超限空间里真的删掉文件时这一轮发现不了 —— 诚实的不确定 > 假装知道。
+    if (!truncated) {
+      for (const id of Object.keys(lastFiles)) if (!seen.has(id)) return true  // 磁盘已删
+    } else {
+      lastTruncation = { ...(lastTruncation || {}), staleSweepSkipped: true }
+    }
     return false
   }
 
@@ -730,13 +964,106 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
    * 全程不原地排序 `docs` / `inverted` 内部数组：`getDocs()` 返回的是内部引用，
    * 一旦被 sort，`docs.jsonl` 行序（即 docIdx 定义）就被永久打乱，postings 下标全部失效。
    */
+  /**
+   * 把解析结果压成 **JSON 安全**的元信息回给调用方（批次 3）。
+   *
+   * 为什么单独抽一层而不直接返回 `parsed`：`parsed.regexes[].re` 是 RegExp 实例，
+   * 直接塞进 CLI 的 stream-json 输出会变成 `{}`（JSON 序列化丢字段）—— 调用方拿到一个空对象，
+   * 只能猜"正则到底生效没"。这里显式展开成字符串字段，让"生效的算子"可被机器消费。
+   */
+  function queryMeta(p) {
+    return {
+      filters: (p.filters || []).map((f) => ({ field: f.field, value: f.value, negate: !!f.negate })),
+      fields: [...(p.hint || [])],
+      terms: [...(p.terms || [])],
+      phrases: [...(p.phrases || [])],
+      regexes: (p.regexes || []).map((r) => ({ value: r.value, negate: !!r.negate })),
+      or: (p.orGroups || []).length > 0,
+      strict: p.strict === true,
+      filterOnly: p.filterOnly === true,
+      // 枚举路径开关（含只有正则的查询，见 knowledge-query.mjs 的 enumerate 说明）
+      enumerate: p.enumerate === true,
+    }
+  }
+
+  /**
+   * 枚举检索（批次 3）：查询里**没有可打分的正向文本**，只有过滤条件或正则
+   * （`tag:财务`、`path:reports/`、`/\d+%/`）。
+   *
+   * 为什么不能复用打分链：`scoreBlock` 的每一路都需要**文本证据**（向量余弦 / 关键词命中 /
+   * 结构近似），没有词时全为 0 → `isHit` 恒假 → 命中集恒空。用户写 `tag:财务` 会得到"没搜到"，
+   * 而库里明明有那个标签。这类查询的正确语义是**枚举**：把所有满足条件的块找出来。
+   *
+   * 返回形态与 `searchInner` 完全一致（`items`/`count`/`total`/`query`），调用方无需分支。
+   * 排序：按**文档路径**（可预测 —— 枚举结果之间没有相关度可言，给一个稳定顺序即可，
+   * 用 mtime 会让"同样的查询两次结果顺序不同"，看起来像 bug）。
+   */
+  function enumerateSearch(parsed, { allow, topK, maxBytes, mode, age, meta }) {
+    const out = []
+    const limit = Math.max(1, Number(topK) || 5)
+    const hits = []
+    for (const doc of docs) {
+      if (allow && !allow.has(doc.spaceId)) continue
+      if (!matchDocQuery(doc, parsed)) continue
+      // 每篇取"最合适的一个块"作为代表：第一个满足全部条件的块；都不满足则跳过整篇。
+      // 不给"所有匹配块"是因为调用方（GUI 列表 / agent）按块展示，一篇出十条会淹没结果。
+      let chosen = null
+      for (const b of doc.blocks) {
+        if (!matchBlockQuery(b, doc, parsed)) continue
+        // 文本项**无条件**判（不只在 strict 时）：枚举模式没有打分兜底，查询里的文本项
+        // （正则、否定词）就是谓词本身。漏掉这一条的话纯正则查询会把每篇的第一个块都算命中。
+        if (!matchTextParts(b.text, parsed)) continue
+        chosen = b
+        break
+      }
+      if (!chosen) continue
+      hits.push({ doc, block: chosen })
+    }
+    hits.sort((a, b) => (a.doc.rel < b.doc.rel ? -1 : a.doc.rel > b.doc.rel ? 1 : 0))
+    for (const { doc, block } of hits) {
+      if (out.length >= limit) break
+      // 用 `toItem` 走同一条产出路径（snippet 截断、块 id、标签、grep 字段都在里面），
+      // 保证"枚举结果"与"打分结果"在字段上完全同形 —— 否则前端要按来源写两套渲染。
+      out.push(toItem(doc, block, { cos: 0, kw: 0, struct: 0, raw: 0, contentHits: 0 }, mode, false))
+    }
+    return {
+      items: out, count: out.length, total: hits.length, indexAge: age, degraded: false, ...meta,
+      // 说明"为什么这些结果看起来没有相关度排序"：让调用方能如实告诉用户（而非自己猜）
+      orderedBy: 'path',
+    }
+  }
+
   function searchInner({ query = '', keywords = [], spaces: only = null, topK = 5, maxBytes = 2048, mode = 'snippet' } = {}) {
     const q = String(query || '').trim()
     const kws = (keywords || []).map((k) => String(k).trim()).filter(Boolean)
-    const qtext = q || kws.join(' ')
+    const rawText = q || kws.join(' ')
     const age = builtAt ? Date.now() - Date.parse(builtAt) : null
-    if (!qtext) return { items: [], count: 0, total: 0, indexAge: age, degraded: false }
+    if (!rawText) return { items: [], count: 0, total: 0, indexAge: age, degraded: false }
     const allow = Array.isArray(only) && only.length ? new Set(only) : null
+
+    // 检索语法层（批次 3）：解析成结构化查询，再"先过滤、后打分"。
+    // 过滤器放打分**之前**不只是省算力：语义上就是"在这些文档里搜"，而不是"搜完再扔掉一些"。
+    const parsed = parseSearchQuery(rawText)
+    const meta = { query: queryMeta(parsed) }
+    if (!parsed.ok) {
+      // 解析失败（无效正则 / 查询串过长）→ **明确报错**，不静默当成文本搜。
+      // 静默降级会给出"看起来能搜到、语义完全不同"的结果，比报错难排查得多。
+      return { items: [], count: 0, total: 0, indexAge: age, degraded: false, queryError: parsed.error, ...meta }
+    }
+    // 打分用的文本**必须剥掉算子**：把 `tag:财务` 原样喂给 vectorizeText 会把整串切 gram，
+    // 于是"搜 tag:财务"会命中一堆含 "tag" 的文档 —— 过滤器只该过滤，不该参与打分。
+    const qtext = parsed.enumerate ? '' : (parsed.textQuery || '')
+    if (parsed.enumerate) {
+      // 枚举路径（无正向检索文本）：`tag:财务`、`path:reports/`、纯正则 `/\d+%/`。
+      // 打分链需要文本证据（cos/kw/struct），没有词时全为 0 → 命中集恒空 →
+      // 用户看到"明明有那个标签却搜不出东西"。枚举 + 逐块核对才是这类查询的正确语义。
+      return enumerateSearch(parsed, { allow, topK, maxBytes, mode, age, meta })
+    }
+    if (!qtext) {
+      // 只有否定项（`-foo`）而没有任何正向文本：没有可打分的东西。
+      // 返回空 + 让 UI 说明原因，好过"随便给一堆结果"（用户会以为否定词失效了）。
+      return { items: [], count: 0, total: 0, indexAge: age, degraded: false, ...meta }
+    }
     const qvec = vectorizeText(qtext, { idf })
 
     // 1) 倒排候选：只遍历查询 gram 的 postings，成本 ∝ 命中量（不是全库 × 全 gram）
@@ -755,6 +1082,9 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     }
     cand = cand
       .filter((i) => docs[i] && (!allow || allow.has(docs[i].spaceId)))
+      // 文档级过滤（批次 3）：`tag:` / `path:` / `file:` 与否定项在这里一次判掉。
+      // 放在候选排序**之前**：先缩小候选集再排序，大库上是数量级差别（排序本身是 O(n log n)）。
+      .filter((i) => matchDocQuery(docs[i], parsed))
       .map((i) => ({ i, s: acc.get(i) || 0 }))
       .sort((a, b) => b.s - a.s)
       .slice(0, Math.max(topK * 4, 20))
@@ -772,6 +1102,13 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       let best = null
       let bestSc = null
       for (const b of doc.blocks) {
+        // 块级过滤（批次 3）：`section:` / `content:` / `block:` 与否定项。
+        // 过滤掉的块不参与 best 竞争 —— 若整篇的块都被过滤掉，这篇自然进不了结果（符合预期）。
+        if (!matchBlockQuery(b, doc, parsed)) continue
+        // 严格文本判定（批次 3）：**只在用户显式写了布尔逻辑时**启用（`OR` 或 `-x`）。
+        // 没写时保持既有"部分命中也能召回"的打分行为不变 —— 无条件改成 AND 语义会让
+        // 老查询的结果突然变少，那是行为回退而不是修 bug（见 knowledge-query.mjs 的 strict 注释）。
+        if (parsed.strict && !matchTextParts(b.text, parsed)) continue
         const sc = scoreBlock(doc, b, qvec, qtext, kws, degraded)
         const it = toItem(doc, b, sc, mode, false)
         if (!best || it.score > best.score) { best = it; bestSc = sc }
@@ -789,8 +1126,13 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
         if (ti === undefined) continue
         const tdoc = docs[ti]
         if (allow && !allow.has(tdoc.spaceId)) continue
+        // 图扩展也必须遵守过滤条件（批次 3）：否则 `tag:财务` 会把命中文档的**链接目标**
+        // 一并带出来 —— 那些文档没有该标签，用户看到的是"过滤没生效"（比漏结果更糟：
+        // 它让人不敢信任过滤）。外链是"相关"的弱证据，不该突破用户显式给的约束。
+        if (!matchDocQuery(tdoc, parsed)) continue
         for (const b of tdoc.blocks) {
           if (b.kind !== 'heading' && b.kind !== 'entry') continue
+          if (!matchBlockQuery(b, tdoc, parsed)) continue
           const bid = toBlockId(tdoc.id, b.n)
           if (seen.has(bid)) continue
           const sc2 = scoreBlock(tdoc, b, qvec, qtext, kws, degraded)
@@ -808,8 +1150,11 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     //      的文本中**，而倒排与关键词路都只索引块文本 → `财务` 这种"只当标签用、正文从不提"的
     //      词，全文检索恒为 0 命中。于是"标签视图点一下去看同标签文档"会得到一片空白
     //      （实测：`index-tags` 里有 `财务`，`search --query 财务` 返回空 items）。
-    //      Obsidian 用 `tag:` 算子解决同一问题；我们没有算子（属批次 3），但**拿标签名当查询词**
-    //      是用户最自然的动作，必须能命中。同时这也让 agent 侧的 KnowledgeSearch 能按标签找料。
+    //      Obsidian 用 `tag:` 算子解决同一问题；本仓库的 `tag:` 算子在批次 3 已实现（走
+    //      enumerateSearch 枚举路径），但**拿标签名当查询词**仍是用户最自然的动作，必须能命中。
+    //      同时这也让 agent 侧的 KnowledgeSearch 能按标签找料。
+    //      注意：`tag:财务` 在这里**不会**被当成标签名（带算子前缀时 tagTerms 里是 "tag:财务"，
+    //      匹配不上任何标签）—— 它交给上面的 filterOnly 路径，两条路不会重复出结果。
     const tagTerms = new Set(
       [q, ...kws].map((x) => String(x).trim().replace(/^#+/, '').toLowerCase()).filter(Boolean),
     )
@@ -818,6 +1163,9 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       for (let i = 0; i < docs.length; i++) {
         const doc = docs[i]
         if (allow && !allow.has(doc.spaceId)) continue
+        // 标签直连也要遵守过滤条件（批次 3）：`path:reports/ 财务` 里那个 `财务` 命中的标签
+        // 只应作用于 reports 内的文档；否则过滤条件被"另一条路径的兜底"绕过，用户看到越界结果。
+        if (!matchDocQuery(doc, parsed)) continue
         if (haveDocs.has(doc.id)) continue          // 正文已命中 → 不重复给一条更弱的标签命中
         if (!doc.tags || !doc.tags.length) continue
         const hitTag = doc.tags.find((tg) => tagTerms.has(String(tg).toLowerCase()))
@@ -873,7 +1221,9 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
         it.related = relatedOf(it.blockId, { validate: true, limit: SEARCH_RELATED_TOPN, lookup: table })
       }
     }
-    return { items: out, count: out.length, total, indexAge: age, degraded }
+    // `...meta`（批次 3）：回给调用方"哪些算子生效、是否仅过滤、是否严格布尔"，
+    // GUI 据此回显（否则用户看到结果变少却不知道是哪个算子起了作用）。
+    return { items: out, count: out.length, total, indexAge: age, degraded, ...meta }
   }
 
   /**
@@ -913,10 +1263,18 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     if (abs && existsSync(abs)) {
       let raw = ''
       try { raw = readFileSync(abs, 'utf-8') } catch { raw = '' }
-      for (const l of extractLinks(raw)) {
-        const target = resolveLinkTarget({ fromRel: doc.rel, to: l.to, spaceId: doc.spaceId, docIds: ids })
-        rows.push({ from: doc.id, to: l.to, target })
-        out.push({ to: l.to, target })
+      // 与全量建索引共用**同一份** linkRowsOf（2026-09-14 批次 2 修正）。
+      // 修的是什么：旧实现在这里自己重写了一遍链接抽取，只产 `{from,to,target}` —— 于是
+      // **任何一个被编辑过的文档，它的引用都会丢掉 line/block/anchor/锚点/嵌入**，
+      // 条目级 ref 关联（"哪条经验引用了这篇文档"）随之消失或退化成"整篇条目全连"。
+      // 这类 bug 不报错、不抛异常，只是关联质量悄悄变差，所以必须靠"单一定义"从根上堵住。
+      for (const l of linkRowsOf(raw, doc.id, doc.blocks)) {
+        const target = resolveLinkTarget({
+          fromRel: doc.rel, to: l.to, spaceId: doc.spaceId, docIds: ids, self: l.self,
+        })
+        rows.push({ ...l, target })
+        const { from: _ignored, ...rest } = l
+        out.push({ ...rest, target })
       }
     }
     linkOut.delete(doc.id)
@@ -1443,11 +1801,148 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
   }
 
   /** 出边 + 反向链接（GUI 面包屑与"谁引用了我"用）。 */
+  /** 某文档某行所属的块（行号在**原始文件**基准上，与 doc.blocks[].line 同基准） */
+  function blockAtLineOf(doc, line) {
+    if (!doc || typeof line !== 'number') return null
+    const bs = doc.blocks || []
+    for (let i = 0; i < bs.length; i++) {
+      const b = bs[i]
+      const next = bs[i + 1]
+      if (line >= b.line && (!next || line < next.line)) return b
+    }
+    return null
+  }
+
+  /**
+   * 某位置所在块的短文本（反链 / 提及面板的"上下文"）。
+   * 截断长度取 120 字：面板宽度约 260px，两行内能读完；再长就变成"把整段贴过来"，
+   * 反链列表会从"扫一眼"退化成"逐条读"。
+   */
+  function snippetAt(docId, line) {
+    const doc = docs.find((d) => d.id === docId)
+    const b = blockAtLineOf(doc, line)
+    if (!b) return ''
+    const text = String(retrievalText(b) || '').replace(/\s+/g, ' ').trim()
+    return text.length > SNIPPET_LEN ? `${text.slice(0, SNIPPET_LEN)}…` : text
+  }
+
+  /**
+   * 引用关系（2026-09-14 批次 2 增强为"引用体系"）。
+   *
+   * **out（出链）**：补 `line`/`block`/`anchor`/锚点三件套/`embed`/`self`。
+   *   阅读视图要靠它们做跳转（跳到哪一节）、嵌入渲染、以及"断链在第几行"的提示。
+   *
+   * **in（反链）**：旧实现只回 `{from}` —— 用户看到"某篇文档提到过这里"，却**不知道在哪一段、
+   *   说了什么**，点过去只能从文档开头自己找。批次 2 补 `line`/`block`/锚点/`embed`/`self`，
+   *   并附 `snippet`（所在块的短文本）。这是 Obsidian 反链面板的核心价值（上下文预览）。
+   *
+   * 实现仍是**全量扫 linkOut**（O(边数)）：真实库边数在几百量级，为它维护一份反向索引的收益
+   * 抵不上"多一份需要同步的派生数据"的风险（ref 边消失的教训还热着）。边数上千再谈。
+   */
   function getLinks(docId) {
-    const out = (linkOut.get(docId) || []).map((l) => ({ to: l.to, target: l.target }))
+    const out = (linkOut.get(docId) || []).map((l) => ({
+      to: l.to, target: l.target, line: l.line ?? null, block: l.block ?? null,
+      anchor: l.anchor || '', anchorRef: l.anchorRef || '', anchorKind: l.anchorKind || '',
+      embed: l.embed === true, self: l.self === true,
+    }))
     const inb = []
-    for (const [from, arr] of linkOut) for (const l of arr) if (l.target === docId) inb.push({ from })
+    for (const [from, arr] of linkOut) {
+      for (const l of arr) {
+        if (l.target !== docId) continue
+        inb.push({
+          from, line: l.line ?? null, block: l.block ?? null,
+          anchor: l.anchor || '', anchorRef: l.anchorRef || '', anchorKind: l.anchorKind || '',
+          embed: l.embed === true, self: l.self === true,
+          snippet: snippetAt(from, l.line),
+        })
+      }
+    }
+    // 反链按**来源文档**聚合排序：同文档的多处提及挨在一起，便于"这篇文档在几处提到我"一眼看完
+    inb.sort((a, b) => String(a.from).localeCompare(String(b.from)) || (a.line ?? 0) - (b.line ?? 0))
     return { out, in: inb }
+  }
+
+  /**
+   * 未链接提及（Unlinked mentions，2026-09-14 批次 2）——Obsidian 的核心发现机制之一：
+   * "你在别处写过它，只是没打链接"。用户据此补链，知识网络才从"孤立文档"变成连通图。
+   * 没有它，本系统的引用体系只能反映**已经**建立的连接，无法提示**本该建立**的连接。
+   *
+   * 匹配口径（刻意保守：宁可漏报，不要误报——误报会让面板变噪声，用户就不再看了）：
+   *   · 关键词 = 标题 + 文件名 stem（去 `.md`），长度 < `MIN_MENTION_LEN` 的一律不用
+   *     （单字标题"甲"会命中成百上千处，全是噪声）；
+   *   · 在**块文本**上做包含匹配（大小写不敏感）；
+   *   · 该块若已有指向本文档的**显式链接** → 不算"未链接"（那已经在引用体系里了，重复列出
+   *     会让"未链接提及"与"反链"两个面板显示同一件事）；
+   *   · 排除文档自身（自己提自己的标题不算）。
+   *
+   * 成本护栏：全库 O(块数 × 关键词数)。故 `limit` 生效方式是**扫到就停**（提前返回），
+   * 不是扫完再截断——大库上这条路径会扫几万个块，扫完再截是白烧 CPU。
+   */
+  function listMentions(docId, { limit = 30 } = {}) {
+    const target = docs.find((d) => d.id === docId)
+    if (!target) return { items: [], count: 0, truncated: false }
+    const keys = [...new Set([
+      String(target.title || '').trim(),
+      basename(target.rel || '').replace(/\.md$/i, '').trim(),
+    ].filter((k) => k.length >= MIN_MENTION_LEN))]
+    if (!keys.length) return { items: [], count: 0, truncated: false }
+    const lower = keys.map((k) => k.toLowerCase())
+    const cap = Math.max(1, Number(limit) || 30)
+    const items = []
+    let truncated = false
+    for (const doc of docs) {
+      if (doc.id === docId) continue
+      // 该文档已有指向本文档的链接所在块 → 这些块的提及不再算"未链接"
+      const linkedBlocks = new Set(
+        (linkOut.get(doc.id) || []).filter((l) => l.target === docId && l.block !== null).map((l) => l.block),
+      )
+      const linkedLines = new Set(
+        (linkOut.get(doc.id) || []).filter((l) => l.target === docId).map((l) => l.line),
+      )
+      for (const b of doc.blocks || []) {
+        if (linkedBlocks.has(b.n)) continue
+        const text = String(retrievalText(b) || '')
+        const hay = text.toLowerCase()
+        const hit = lower.find((k) => hay.includes(k))
+        if (!hit) continue
+        // 同一块里已经有指向本文档的链接（行号命中）→ 视为已链接
+        if (linkedLines.has(b.line)) continue
+        items.push({
+          docId: doc.id, spaceId: doc.spaceId, title: doc.title,
+          blockId: toBlockId(doc.id, b.n), block: b.n, line: b.line, kind: b.kind,
+          matched: keys[lower.indexOf(hit)],
+          snippet: text.replace(/\s+/g, ' ').trim().slice(0, SNIPPET_LEN),
+        })
+        if (items.length >= cap) { truncated = true; break }
+      }
+      if (truncated) break
+    }
+    return { items, count: items.length, truncated }
+  }
+
+  /**
+   * 断链清单（2026-09-14 批次 2）：`target === null` 的引用行（写的时候目标不存在），按目标聚合。
+   *
+   * 为什么单独成一个 op 而不是塞进 stats：断链是**需要处理**的待办（补文档 / 改链接 / 删引用），
+   * 不是统计数字。聚合到"目标名"这一层才有用——同一个拼错的目标名往往被写错好几次，
+   * 按行列出来只会看到重复的同一件事。返回 `from` 列表让用户能直接点进去改。
+   * `self=true` 的引用（`[[#x]]`）永远指向自身，不算断链（resolveLinkTarget 已保证）。
+   */
+  function listBrokenLinks({ space = null, limit = 200 } = {}) {
+    const inPool = (id) => (!space || (docs.find((d) => d.id === id) || {}).spaceId === space)
+    const byTo = new Map()
+    for (const row of lastLinkRows) {
+      if (row.target) continue
+      if (!inPool(row.from)) continue
+      const key = row.to || '(同文档锚点)'
+      const cur = byTo.get(key)
+      const ref = { from: row.from, line: row.line ?? null, block: row.block ?? null, anchorRef: row.anchorRef || '' }
+      if (cur) { cur.count += 1; if (cur.refs.length < 20) cur.refs.push(ref) }
+      else byTo.set(key, { to: key, count: 1, refs: [ref] })
+    }
+    const items = [...byTo.values()].sort((a, b) => b.count - a.count || a.to.localeCompare(b.to))
+    const cap = Math.max(1, Number(limit) || 200)
+    return { items: items.slice(0, cap), total: items.length, broken: items.reduce((n, x) => n + x.count, 0) }
   }
 
   /**
@@ -1499,7 +1994,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     return { nodes, edges, level: 'entry', truncated: pool.length > chosen.length }
   }
 
-  function getGraph({ space = null, limit = null, related = false, level = 'doc' } = {}) {
+  function getGraph({ space = null, limit = null, related = false, level = 'doc', around = null, hops = 1 } = {}) {
     // S5.1：层级开关。`entry` 走条目级图；`doc`（缺省）行为与 S2/S5 完全一致。
     //
     // ⚠️ 两个层级要**各自**的缺省上限（S6 修）：
@@ -1511,19 +2006,75 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     const pool = space ? docs.filter((d) => d.spaceId === space) : docs
     limit = limit ?? 200
     const ids = new Set(pool.map((d) => d.id))
-    const nodes = pool.slice(0, limit).map((d) => ({ id: d.id, label: d.title, spaceId: d.spaceId, kind: 'doc' }))
+
+    // 局部图（Neighborhood / "Local graph"，2026-09-14 批次 2）。
+    // 为什么必须有：全局图在文档多起来之后是**毛线球**（几百个节点彼此连线，用户看不出结构），
+    // 只能当装饰看。Obsidian 的局部图用"深度"把视野收敛到当前笔记的邻居，这才是能用的视图。
+    // 遍历方向 = **双向**（出链 + 入链）：只走出链会漏掉"谁引用了我"，而反链恰是最关心的一侧。
+    // 深度上限 3：4 跳后在典型库上已经回到"大半张图"，失去收敛意义。
+    let chosen = null
+    if (around && ids.has(around)) {
+      const depth = Math.max(1, Math.min(3, Number(hops) || 1))
+      const keep = new Set([around])
+      let frontier = [around]
+      // 反向邻接表**建一次**再逐跳用：否则每一跳都要 `for (const [from, arr] of linkOut)`
+      // 扫一遍全表的边（深度 3 × 边数 = 白烧），而且那份扫描对每一跳的结果完全相同。
+      const inbound = new Map()
+      for (const [from, arr] of linkOut) {
+        if (!ids.has(from)) continue
+        for (const l of arr) {
+          if (!l.target || !ids.has(l.target)) continue
+          const cur = inbound.get(l.target)
+          if (cur) cur.push(from)
+          else inbound.set(l.target, [from])
+        }
+      }
+      for (let h = 0; h < depth && frontier.length; h++) {
+        const next = []
+        for (const cur of frontier) {
+          for (const l of linkOut.get(cur) || []) {
+            if (l.target && ids.has(l.target) && !keep.has(l.target)) { keep.add(l.target); next.push(l.target) }
+          }
+          for (const from of inbound.get(cur) || []) {
+            if (!keep.has(from)) { keep.add(from); next.push(from) }
+          }
+        }
+        frontier = next
+      }
+      chosen = keep
+    }
+
+    const nodes = (chosen ? pool.filter((d) => chosen.has(d.id)) : pool.slice(0, limit))
+      .map((d) => ({ id: d.id, label: d.title, spaceId: d.spaceId, kind: 'doc' }))
+    // 边的两个端点都必须在 `nodes` 里：
+    //   · 旧实现按 `ids`（**截断前**的池）过滤，于是 limit 截断时会产生"边指向不存在节点"的悬空边，
+    //     前端渲染这种边要么报错、要么画到画布外（表现为"图上有几条莫名其妙的线"）；
+    //   · 局部图更要把邻居之外的边全部丢掉，否则一眼看去还是全局图。
+    // 另外按 `from→target` 去重：`[[a#第一章]]` 与 `[[a#第二章]]` 是两条引用记录（反链要分别显示）
+    // 但它们只该画**一条**边（重复边只会让布局算法把两个节点反复推挤，视觉上更乱）。
+    const present = new Set(nodes.map((n) => n.id))
     const edges = []
+    const seenEdge = new Set()
     for (const [from, arr] of linkOut) {
-      if (!ids.has(from)) continue
+      if (!present.has(from)) continue
       for (const l of arr) {
-        if (l.target && ids.has(l.target)) edges.push({ from, to: l.target, target: l.target })
+        if (!l.target || !present.has(l.target)) continue
+        // 丢掉**自环**：`[[#本地小节]]`（同文档锚点，批次 2 新增支持的语法）会产出 from===to 的边。
+        // 力导向布局里自环只会让节点自己抖、视觉上多出一根套在自己身上的线，表达不了任何关系。
+        // （注意：自环是**数据层**的真实引用，只在这里——图层——过滤；反链/提及面板照常显示它。）
+        if (l.target === from) continue
+        const key = `${from}\u0000${l.target}`
+        if (seenEdge.has(key)) continue
+        seenEdge.add(key)
+        edges.push({ from, to: l.target, target: l.target })
       }
     }
     const base = { nodes, edges }
     // 显式要求 `related` 时：节点被 `limit` 截断 ⇒ 关联边也必须按**实际在场的节点**过滤，
     // 否则会出现"边指向画布上不存在的节点"（xyflow 直接丢弃，图上看是缺边 = 像索引坏了）
     if (related !== true) return base
-    const present = new Set(nodes.map((n) => n.id))
+    // 复用上面的 `present`（该集合已经按"实际画出来的节点"算好）——
+    // 局部图与 limit 截断两条路径都能靠它挡住"边端点不在图上"的隐含边。
     return { ...base, related: relatedDocEdges({ space }).filter((e) => present.has(e.from) && present.has(e.to)) }
   }
 
@@ -1568,8 +2119,20 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     return { ok: true, space: sp }
   }
 
-  /** 把 payload 搬进回收站并登记台账。返回 { trashId, bytes, files }。 */
-  function stash({ kind, spaceId, spaceName, relPath, absPath, name }) {
+  /**
+   * 把 payload 搬进回收站并登记台账。返回 { trashId, bytes, files }。
+   *
+   * `keepSource`（2026-09-14 批次 4）：**复制**而不是搬走源文件。给"覆盖前自动备份"用 ——
+   * 那种场景下源文件必须留在原地（紧接着就要写入新内容）。其余（台账格式、trashId 规则、
+   * payload 相对结构、还原路径）与搬走完全一致，所以两处产出的条目在 GUI「最近删除」里
+   * 都能正常还原，不需要第二套还原逻辑。
+   *
+   * `reason`：`'delete'`（用户删除）| `'overwrite'`（覆盖前自动备份）。
+   * 必须落进条目里，否则 GUI 会把一条"自动备份"显示成"你删除了它"—— 用户看到自己没删过的东西
+   * 出现在回收站里，会怀疑系统乱删文件。备份条目在还原语义上也不同：还原备份**不改变**当前
+   * 文件（目标还在），所以 UI 该提示"另存为/比较"，而不是"还原覆盖"。
+   */
+  function stash({ kind, spaceId, spaceName, relPath, absPath, name, keepSource = false, reason = 'delete' }) {
     mkdirSync(trashDir, { recursive: true })
     const index = readTrashIndex(trashDir)
     const trashId = newTrashId((id) => index.items.some((it) => it.trashId === id) || existsSync(join(trashDir, id)))
@@ -1582,13 +2145,14 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     const files = listRelFiles(absPath)
     // ⚠️ 顺序要紧：**先搬再写台账**。反过来的话，写台账成功而搬失败会留下一条
     // 指向不存在内容的记录（GUI 里看得见、还原时才发现是空的）。
-    const via = movePath(absPath, payload)
+    // 同理 `keepSource` 的复制也必须在写台账之前完成（否则台账指向一个空 payload）。
+    const via = keepSource ? copyPath(absPath, payload) : movePath(absPath, payload)
     const item = {
       trashId, kind, spaceId, spaceName: spaceName || spaceId,
       relPath: kind === 'doc' ? relPath : null,
       name: name || basename(absPath),
       deletedAt: new Date().toISOString(),
-      bytes, files: files.slice(0, 200), fileCount: files.length, via,
+      bytes, files: files.slice(0, 200), fileCount: files.length, via, reason,
     }
     // 每条另存一份 meta.json：index.json 若被手工改坏，仍能从条目目录恢复出元数据。
     writeFileSync(join(trashDir, trashId, 'meta.json'), JSON.stringify(item, null, 2), 'utf-8')
@@ -1597,7 +2161,10 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     // 索引同步：搬走文件后 `indexStale()` 已能因"磁盘已删"判过期；此处主动 force 重建，
     // 让"删完立刻搜不到"在本进程内即成立（删除是低频的用户显式操作，重建成本可接受）。
     refreshAfterMutation()
-    return { trashId, bytes, files: files.length }
+    // `reason`/`via` 一并返回（2026-09-14 批次 4）：调用方（stashDoc → 服务端）需要
+    // 如实知道"这条是怎么进回收站的"，`reason` 尤其重要 —— 回收站条目要区分
+    // "用户删除"与"覆盖前自动备份"，否则用户会看到自己没删过的东西出现在回收站里。
+    return { trashId, bytes, files: files.length, via, reason }
   }
 
   /** 软删除单个条目。 */
@@ -1624,6 +2191,35 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     }
     const r = stash({ kind: 'doc', spaceId: sp.id, spaceName: sp.name, relPath: rel, absPath: abs, name: basename(rel) })
     return { ok: true, kind: 'doc', spaceId: sp.id, path: rel, ...r, indexSync: 'reloaded' }
+  }
+
+  /**
+   * 覆盖前备份（2026-09-14 批次 4）：把当前文件内容**复制**进回收站，原文件保留。
+   *
+   * 为什么不复用 `deleteDoc`：它是**删除**语义 —— 先把文件搬走（原文件消失），再重载索引。
+   * 这个场景要的恰好相反：文件必须留在原地（调用方紧接着要写入新内容），索引也不该重载
+   * （内容和路径都没变，重载只是白烧一次全量扫描）。
+   *
+   * 什么时候会被调用：客户端带着**过期的 mtime** 保存（文件已被 Obsidian/VSCode 改过），
+   * 用户明确选择"以我这份为准"。此时磁盘上那份马上要被覆盖掉，备份是它唯一的留存机会。
+   * 所以这个函数的失败必须让调用方**放弃写入**（服务端就是这么做的）——
+   * 备份失败还继续覆盖，等于"备份功能形同虚设"。
+   */
+  function stashDoc({ space, path, reason = 'overwrite' }) {
+    const sp = spaces.find((s) => s.id === String(space ?? '').trim())
+    if (!sp) return { ok: false, error: 'space-not-found', message: `stash-doc: 空间不存在：${space}` }
+    const rel = normalizeMdRel(path)
+    if (!rel) return { ok: false, error: 'bad-path', message: `stash-doc: --path 必须是空间内的相对 .md 路径（收到 ${JSON.stringify(path)}）` }
+    const abs = join(sp.root, ...rel.split('/'))
+    // 同 deleteDoc 的顺序纪律：先判存在再判越界（否则"不存在"会被报成"路径非法"，方向全错）
+    if (!existsSync(abs)) return { ok: false, error: 'not-found', message: `stash-doc: 文件不存在：${sp.id}/${rel}` }
+    if (!realpathInside(sp.root, abs)) return { ok: false, error: 'bad-path', message: `stash-doc: 路径越出空间根：${rel}` }
+    const r = stash({
+      kind: 'doc', spaceId: sp.id, spaceName: sp.name,
+      relPath: rel, absPath: abs, name: basename(rel),
+      keepSource: true, reason: reason === 'delete' ? 'delete' : 'overwrite',
+    })
+    return { ok: true, kind: 'doc', spaceId: sp.id, path: rel, reason: r.reason, ...r }
   }
 
   /** 软删除整个用户自建空间（需 `confirm` 精确等于空间 id）。 */
@@ -1665,6 +2261,12 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
         fileCount: Number(it.fileCount) || (Array.isArray(it.files) ? it.files.length : 0),
         // 内容是否还在（用户可能手工清过磁盘）→ GUI 据此把"还原"置灰、只留"彻底删除"
         available: existsSync(join(trashDir, it.trashId, 'payload')),
+        // 进回收站的**原因**（2026-09-14 批次 4）：`'delete'`（用户删除，含旧数据的不填）
+        // 与 `'overwrite'`（覆盖前自动备份）。必须透出去 —— 否则用户会看到自己没删过的东西
+        // 出现在回收站里，合理地怀疑"系统乱删我的文件"。
+        reason: it.reason === 'overwrite' ? 'overwrite' : 'delete',
+        // 搬运方式（rename / cp+rm / copy）：排查"备份是否真落盘"时的第一手信息
+        via: it.via ?? null,
       }))
     // 无台账的散落子目录只报数、不列出：列出来却删不掉（形状未过白名单）比不列更糟。
     let stray = 0
@@ -1812,7 +2414,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     updateDoc, getDoc, listEntries, listTree, getLinks, getGraph,
     // 删除管理（回收站，2026-09-14）：CLI/路由/agent 工具的**唯一**入口面。
     // 四个写方法都只做"搬文件 + 记台账"，物理删除仅存在于 purge 一支。
-    deleteDoc, deleteSpace, listTrash, restore, purge,
+    deleteDoc, deleteSpace, listTrash, restore, purge, stashDoc,
     /** 删除权限查询（GUI 用它决定要不要画删除按钮，避免"点了才报错"）。 */
     canDelete({ space, whole = false } = {}) {
       const g = deleteGate(space, { whole })
@@ -1856,6 +2458,12 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
         spaces: allow ? [...allow] : null,
       }
     },
+    // 引用体系（2026-09-14 批次 2）：未链接提及 与 断链清单。
+    // 两者实现是同作用域的普通函数声明（闭包内），这里显式挂到返回对象上才对外可见——
+    // 与 getLinks/getGraph 一致的口径。**挂漏了不会报错**，只会在 CLI/HTTP 调用时抛
+    // "store.listMentions is not a function"，所以新增能力时这一行不能忘。
+    listMentions,
+    listBrokenLinks,
     getIdf() { return idf },
     getInverted() { return inverted },
     getLinkOut() { return linkOut },
@@ -1890,6 +2498,16 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
         // S6：块上限护栏的留痕。`docs > 0` 表示**有文档的尾部块没进索引**（文件里仍在，
         // 但检索/关联/图谱都看不到）—— 这是必须被看见的信号，不是内部细节。
         blocksTruncated: { docs: blockCaps.docs, droppedBlocks: blockCaps.droppedBlocks, docIds: [...blockCaps.docIds] },
+        // 文件数上限留痕（批次 4）：`truncated: true` = 该空间还有文档**没进索引**
+        // （超过 FILE_LIMIT_PER_SPACE）。旧实现静默停手，用户只看到"索引成功"。
+        filesTruncated: lastTruncation
+          ? {
+            truncated: lastTruncation.truncated === true,
+            limit: lastTruncation.limit ?? FILE_LIMIT_PER_SPACE,
+            spaces: lastTruncation.spaces ?? [],
+            staleSweepSkipped: lastTruncation.staleSweepSkipped === true,
+          }
+          : { truncated: false, limit: FILE_LIMIT_PER_SPACE, spaces: [], staleSweepSkipped: false },
       }
     },
   }

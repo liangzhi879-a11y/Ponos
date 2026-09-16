@@ -369,6 +369,26 @@ export function auditSummaryFidelity({ covered, summary, minEntities = 3 } = {})
   } catch { return { entities: [], missing: [], total: 0, ratio: 0, skipped: true } }
 }
 
+// P0-2（2026-09-16）：保真门禁的判据。`auditSummaryFidelity` 只产出**审计**，
+// 本函数把审计变成**写入决策的输入**——换切点重压前必须先问它。
+//
+// 阈值刻意保守，因为两种判错方向的代价极不对称：
+//   · 该拦没拦（漏拦）→ 一份低保真摘要落地 = 与改前**相同**，不劣化现状；
+//   · 不该拦却拦（滥拦）→ 又要跑一次完整摘要调用（数百秒级 + token 成本），
+//     且这段延迟由用户等。
+// 故只在"证据确凿的大面积丢失"（≥3 个高信号实体 **且** 缺失率 ≥50%）才付重压代价。
+// 两个条件取**与**：单看比例，3 个实体丢 2 个就是 0.67，样本太小不足为凭。
+export const FIDELITY_GATE_MIN_MISSING = 3
+export const FIDELITY_GATE_RATIO = 0.5
+
+export function fidelityGate({ covered, summary } = {}) {
+  const audit = auditSummaryFidelity({ covered, summary })
+  const pass = audit.skipped
+    || audit.missing.length < FIDELITY_GATE_MIN_MISSING
+    || audit.ratio < FIDELITY_GATE_RATIO
+  return { pass, audit }
+}
+
 const FIDELITY_AUDIT_INSTRUCTION = [
   '你是事实保真审计器。对比下面的【原文摘录】与【摘要】，只报告"原文里有、摘要丢了或被改写"的关键事实。',
   '只输出 JSON，不要任何其他文字：',
@@ -633,7 +653,7 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
     // 单通道（FIX R1）：压缩成功后 ponos_summary 只发一次——装配 health 时由
     // health.recordCompaction 代发（并记录 lastSummary），未装配时保留 wire.summary 兜底。
     // 两路互斥，杜绝 ponos_summary 双发（spec §6：compact 成功后 health.recordCompaction 为权威调用点）。
-    function landSummary(summary, c, coveredTk) {
+    function landSummary(summary, c, coveredTk, gateAudit, gate) {
       const coveredSeqs = session.seqsForMessages(c.covered)
       if (!Array.isArray(coveredSeqs) || coveredSeqs.length === 0 || coveredSeqs.length !== c.covered.length) {
         throw new Error(
@@ -641,20 +661,32 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
           'covered 必须来自同一 surface 代的 deriveMessages() 结果'
         )
       }
+      // 保真审计（spec §4.1；**P0-2 2026-09-16 改为写入前置**）：确定性审计同步、零模型成本，
+      // 故从"落地后观测"提到**写盘之前**——审计结论必须是"是否用这份摘要落地"的输入，而非
+      // 事后通报。改前审计晚于落地：就算发现关键事实大面积丢失，那份低保真摘要**已经在会话
+      // 里了**（摘要读起来通顺但前提是错的，正是失真最难发现的形式），且没有任何机制能据此
+      // 重压。调用方（单发收敛路径）已按 `fidelityGate` 判据尝试过换切点重压，此处做最终
+      // 口径上报：上报的是**即将落地的这一份**摘要的审计结果。
+      const audit = gateAudit ?? auditSummaryFidelity({ covered: c.covered, summary })
+      try {
+        if (!audit.skipped) onCompactionAudit?.({ ...audit })
+      } catch { /* 审计上报失败不影响压缩落地 */ }
       session.appendCompactionStart(coveredSeqs)
       session.appendCompactionSummary({ summary, coveredSeqs })
       lastSummary = summary
       compactOk = true
       if (health) health.recordCompaction?.(summary, session.compactCount())
       else wire.summary?.(summary, session.compactCount())
-      // 保真审计（spec §4.1）：必须在压缩落地之后。确定性审计同步做（零模型成本），
-      // LLM 审计 fire-and-forget（不进 await 链，绝不拖慢压缩落地与轮次时延）。
-      try {
-        const audit = auditSummaryFidelity({ covered: c.covered, summary })
-        if (!audit.skipped) onCompactionAudit?.({ ...audit })
-      } catch { /* 审计失败不影响压缩落地 */ }
+      // LLM 审计（方法 B，能发现"被改写"而字面审计发现不了）保持 fire-and-forget：
+      // 不进 await 链，绝不拖慢压缩落地与轮次时延。
       void auditFidelityAsync(summary, c.covered)
-      return { action: 'summarized', summary, compactCount: session.compactCount(), usage, coveredTokens: coveredTk }
+      return {
+        action: 'summarized', summary, compactCount: session.compactCount(), usage, coveredTokens: coveredTk,
+        // P0-2：门禁可观测（仅在返回值上增字段，**不动 onCompactionAudit 载荷形状**，
+        // 消费方只读已知键 → 零风险）。gateFailures = 门禁触发的换切点重压次数。
+        gateFailures: gate?.failures ?? 0,
+        gateExhausted: gate?.exhausted ?? false,
+      }
     }
     try {
       const window = context.window ?? 200_000
@@ -751,6 +783,18 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
       const retries = Number(env.CLAUDE_CODE_COMPACTION_RETRIES || 3)
       let summary = null
       let converged = false
+      // P0-2（2026-09-16）：门禁开关与计数。gateFailures = 因保真门禁不通过而**放弃当前
+      // 切点、换更晚切点重压**的次数；gateExhausted = 重试预算耗尽后仍不达标、只能降级落地。
+      // 二者独立于 consecutiveFailures：后者是"落地失败"的熔断信号（返回 no-convergence 的
+      // 判据），门禁失败最终**仍会落地**，混入会污染熔断语义（那会让本该重试的压缩被熔断）。
+      let gateFailures = 0
+      let gateExhausted = false
+      let gateAudit = null
+      // 被门禁拒绝、但"无更晚切点可取"时仍需降级落地的那一份：连**切点与 token 量一起存**。
+      // 只存摘要文本是不够的——自愈循环会把 cut/coveredTokens 推进到更晚切点，若落地时用
+      // 更新后的 cut，就会出现"摘要描述的区间"与"被遮蔽区间"错配（摘要覆盖范围与遮蔽标记
+      // 不一致），虽不崩但会留下难以解释的状态。
+      let gateFallback = null
       for (let attempt = 0; attempt < retries; attempt++) {
         const { text, usage: callUsage } = await runSummarizer({ system, messages, cut, maxOut: summarizerMaxOut })
         usage = addUsage(usage, callUsage)
@@ -764,13 +808,38 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
         // 体量 → 巨大摘要被误判"已收敛"仍照单全收
         const cjkN = countCjk(s)
         const summaryTokens = cjkN + Math.ceil((s.length - cjkN) / 4)
-        if (summaryTokens < coveredTokens) { summary = s; converged = true; break }
-        consecutiveFailures++
+        // 本轮是否被门禁拦下（每次迭代重置）：决定 consecutiveFailures 是否累加
+        let gateBlocked = false
+        if (summaryTokens < coveredTokens) {
+          // P0-2：收敛**还不够**，必须同时过保真门禁。改前只看长度收敛：摘要短了就算成功，
+          // 哪怕它把关键技术前提（路径/端口/阈值）全丢了——"读起来通顺但前提是错的"正是
+          // 失真最难发现的形式。不通过则不 break，落入循环底部既有的自愈路径
+          // （retainTokens 扩大 → 取更晚切点 → 覆盖消息更少 → 摘要负担更轻），
+          // 并计数便于观测——**不允许静默重压**。
+          const verdict = fidelityGate({ covered: cut.covered, summary: s })
+          gateAudit = verdict.audit
+          if (verdict.pass) { summary = s; converged = true; break }
+          gateFailures++
+          gateFallback = { summary: s, cut, coveredTokens }
+          gateBlocked = true
+        }
+        // P0-2：门禁失败**不计** consecutiveFailures——该计数器是"落地失败"的熔断信号
+        // （返回 no-convergence 的判据）。门禁失败最终仍会落地，混入会让本该重试的压缩
+        // 被熔断成 no-convergence，直接破坏"压缩必须落地"（既有测试已抓到过这一缺陷）。
+        if (!gateBlocked) consecutiveFailures++
         // A2 收敛失败自愈：covered 减半重摘（保留预算翻倍）；末次仍不收敛时截断
         // 摘要按头 60% 落地——压缩必须落地（宁可有损，不无限重试烧时间）。
         if (attempt === retries - 1) {
-          const cap = Math.floor(s.length * 0.6)
-          summary = s.slice(0, cap) + '\n…（摘要过长，已截断落地）'
+          // P0-2：末次要区分两种情形。①"未收敛"（摘要比 covered 还长）→ 既有截断 60%
+          // 逻辑；②"已收敛但门禁不通过"（长度已达标、只是丢了实体）→ **原样落地**，
+          // 因为截断只会让保真度更差（截掉的是摘要尾部内容），且"必须落地"是不变量。
+          if (summaryTokens < coveredTokens) {
+            summary = s
+            gateExhausted = true
+          } else {
+            const cap = Math.floor(s.length * 0.6)
+            summary = s.slice(0, cap) + '\n…（摘要过长，已截断落地）'
+          }
           converged = true
           break
         }
@@ -783,13 +852,24 @@ export function createCompactor({ session, context, model, maxTokens, wire, heal
         cut = nextCut
         coveredTokens = context.estimateHistory ? context.estimateHistory(cut.covered) : cut.covered.length * 100
       }
+      // P0-2：门禁曾拒绝、但已无更晚切点可取（自愈走到头，`break` 出循环）→ **降级落地**
+      // 被拒的那一份。理由："压缩必须落地"是硬不变量——此处若返回 none，调用方按"未压缩"
+      // 处理 → 溢出路径再次触发 → 同一份摘要被反复重摘，比"落地一份低保真摘要"更糟
+      // （多烧 API、问题依旧）。gateExhausted 如实带出，不静默。
+      if ((!converged || !summary) && gateFallback) {
+        consecutiveFailures = 0
+        return landSummary(
+          gateFallback.summary, gateFallback.cut, gateFallback.coveredTokens, gateAudit,
+          { failures: gateFailures, exhausted: true },
+        )
+      }
       if (!converged || !summary) {
         consecutiveFailures++
         // 调用已发生（被计费）→ usage 一并返回，engine 侧并入本轮统计
-        return { action: 'none', reason: 'no-convergence', failures: consecutiveFailures, usage }
+        return { action: 'none', reason: 'no-convergence', failures: consecutiveFailures, usage, gateFailures }
       }
       consecutiveFailures = 0
-      return landSummary(summary, cut, coveredTokens)
+      return landSummary(summary, cut, coveredTokens, gateAudit, { failures: gateFailures, exhausted: gateExhausted })
     } catch (e) {
       // L0-c：摘要模型调用/落地异常 → 计为熔断失败并对称降级返回（不抛穿调用方）。
       // 抛穿后果：preStep 无 catch，异常会穿透成整轮"内部错误"；forceCompact 虽被

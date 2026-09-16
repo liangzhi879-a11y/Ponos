@@ -14,6 +14,7 @@ import { get as httpsGet, request as httpsRequest } from 'node:https'
 import { get as httpGet, request as httpRequest } from 'node:http'
 import { matchesHighRisk } from './highrisk.mjs'
 import { discoverSkillsAll, loadSkillContent } from './skills.mjs'
+import { isDisabled } from './disabled.mjs'
 import { searchSkills } from './skill-search.mjs'
 import { searchLocalMemory } from './memory-search.mjs'
 import { searchKnowledge, searchKnowledgeItems, expandRelated, RELATED_EXPAND_LIMIT } from './knowledge-search.mjs'
@@ -1076,7 +1077,7 @@ export async function visionDescribe(filePath, allowDirs, input = {}, skipBounda
 // （移动/销毁用户知识库文件）。放行它等于让"纯聊"会话具备删库能力，与 chat 的隔离承诺直接冲突。
 export const CHAT_MODE_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch', 'KnowledgeImport', 'KnowledgeDelete']
 
-export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null, readAllowFiles = [], dynamicTools = null, flatSkillRoots = null }) {
+export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null, readAllowFiles = [], dynamicTools = null, flatSkillRoots = null, knowledgeSpaces = null, disabledSkills = null }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
   // 记忆只读边界扩展（2026-09-10）：Read 追加个人/项目记忆根——记忆文件是内核
   // 自己维护的知识库（与 MemorySearch 同源），会话目录边界把它们排除在外会让
@@ -1094,6 +1095,15 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
   // 平铺 <id>.md 的根白名单（2026-09-12 P2-1）：与 cli 提示词发现同口径——项目根里的
   // BUILD.md 之类不再能被 Skill 工具当技能加载，也不出现在"可用技能"回执里。
   const flatSkillRootsArg = Array.isArray(flatSkillRoots) ? flatSkillRoots : undefined
+  // 全局停用技能清单（2026-09-15，D 条款）：归一为**数组或 null**。
+  // 传 null（缺省）表示"没有停用任何技能"——嵌入/测试场景的既有行为逐字节不变。
+  // 空数组与 null 在这里**等价**（都=没有停用项）：与 knowledgeSpaces 的三态语义不同，
+  // 因为"停用清单为空"本就等于"全开"，不存在"fail-closed"的第三态。
+  // 换名 `disabledSkillIds` 而不是复用入参名：同名 const 会在同一作用域触发 TDZ 报错
+  // （实测 `Identifier 'disabledSkills' has already been declared`），且读起来也更明确。
+  const disabledSkillIds = Array.isArray(disabledSkills)
+    ? [...new Set(disabledSkills.map((s) => String(s ?? '').trim()).filter(Boolean))]
+    : null
   // 会话目录边界开关：--allow-outside-dirs / PONOS_ALLOW_OUTSIDE_DIRS=1 解锁文件工具
   // （Read/Write/Edit/OCR）的目录限制；Glob/Grep 仍限定会话目录内（避免全盘扫描）。
   const skipBoundary = !!allowOutsideDirs || process.env.PONOS_ALLOW_OUTSIDE_DIRS === '1'
@@ -1102,6 +1112,54 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
   const blocked = new Set(disallowedTools || [])
   // Read 去重缓存（会话级）：resolved → { mtimeMs, size, fullRead }，Write/Edit 失效
   const readCache = new Map()
+  // ── 会话知识范围（2026-09-15，P1 spec §3.4）──────────────────────────────────
+  // `knowledgeSpaces` 三态语义（与 kernel/knowledge-inject.mjs 保持同一套口径）：
+  //   · null / 非数组 = **不限**（嵌入场景与单测没有"会话"概念，收窄会打断其既有行为——
+  //     createToolRegistry 是公开口，很多测试直接构造它验证检索能力）；
+  //   · 非空数组     = 白名单；
+  //   · 空数组       = **本会话没有可检索知识库** → 一切检索都被拒（fail-closed）。
+  // 空数组必须与"不限"区分开：早先写成 `Array.isArray(x) && x.length ? ... : null`，
+  // 于是"内置经验库也不存在"（memory/personal 被删 / 首启未经 ensurePersonalDir）时白名单
+  // 退化成不限，储备库被重新放进来——范围在最该收紧的场景里静默失效（评审抓出）。
+  const scopeSet = Array.isArray(knowledgeSpaces) ? new Set(knowledgeSpaces.map((s) => String(s))) : null
+  const scopeList = scopeSet ? [...scopeSet] : null
+  const scopeEmpty = scopeSet !== null && scopeSet.size === 0
+  /**
+   * 越界文案（**唯一处措辞**，两个工具共用）。三条硬要求：
+   *   ① 说清"哪个空间越界 + 当前范围是什么"——模型据此能自己换策略，不必问用户；
+   *   ② 明写**请勿重试同一调用**——否则弱模型会把"没权限"当瞬时故障反复重发（本仓库既有教训）；
+   *   ③ 给出**用户侧动作**（去知识面板关联）——这是唯一能让原请求变得合法的路径。
+   * 之所以要这么啰嗦：静默返回空命中时，模型无法与"该库确实没有这条知识"区分，会编造原因。
+   */
+  const outOfScopeMsg = (id) => `空间「${id}」不在本会话知识范围内（当前范围：${scopeList.join('、')}）。`
+    + '请勿重试同一调用：改用范围内的空间检索，或请用户在知识面板把该库「关联到当前会话」后再试。'
+  /** 空白名单专用文案：此时没有"范围里能改用的空间"，指引只能落在用户动作上。 */
+  const noSpaceMsg = '本会话没有任何可检索的知识库（经验库与已关联的库都不可用）。'
+    + '请勿重试同一调用：请用户确认个人经验库存在，或在知识面板把需要的库「关联到当前会话」后再试。'
+  /**
+   * 把工具请求的空间收窄到会话范围。
+   * @returns {{ spaces: string[]|null } | { deny: string }}
+   *
+   * **任一请求项越界即整体拒绝**（不做"悄悄丢掉越界项、只查剩下的"）：交集式放行会让模型以为
+   * 它查过了那个库、并据"查不到"下结论——那是最贵的假阴性。拒绝时文案点名越界项，
+   * 模型重发一次（只带范围内空间）即可完成原意图，代价小于一次错误结论。
+   */
+  const scopedSpaces = (requested) => {
+    const req = Array.isArray(requested) && requested.length ? requested.map((s) => String(s)) : null
+    if (!scopeSet) return { spaces: req }        // 不限：维持既有行为（零回归）
+    if (scopeEmpty) return { deny: noSpaceMsg }  // 空白名单：任何检索都无从谈起
+    if (!req) return { spaces: scopeList }       // 未指定 → 用范围全集（而不是"全部可读空间"）
+    const bad = req.find((id) => !scopeSet.has(id))
+    if (bad) return { deny: outOfScopeMsg(bad) }
+    return { spaces: req }
+  }
+  /** `related` 分支的越界判定：blockId 形状 `<spaceId>/<path>#<n>`，空间前缀一眼可判。 */
+  const blockIdOutOfScope = (blockId) => {
+    if (!scopeSet) return null
+    if (scopeEmpty) return noSpaceMsg
+    const sp = String(blockId || '').split('/')[0]
+    return scopeSet.has(sp) ? null : outOfScopeMsg(sp)
+  }
   // todo 清单（TodoWrite 覆盖式维护；同一进程共享）
   let todoItems = []
   const registry = {
@@ -1365,9 +1423,16 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
       run: (input) => {
         const id = String(input?.skill ?? '').trim()
         if (!id) return { content: 'skill 参数缺失：请传入技能名（提示词【可用技能】清单中的 id）', isError: true }
+        // 全局停用（2026-09-15，D 条款）：按名调用也要拦。
+        // 停用技能已从提示词与"可用清单"里消失，但模型可能**沿用历史对话/自身记忆**直接按名调用
+        // （尤其是长会话里刚被停用的技能）。只在发现处过滤、不在调用处拦截 = 留了一条"照旧能用"
+        // 的后门，用户看到的是"我明明停了它还在跑"。故这里独立判一次（防御深度，不是冗余）。
+        if (isDisabled(disabledSkillIds, id)) {
+          return { content: `技能「${id}」已被全局停用，当前不可调用。如需恢复，请在技能面板打开该技能的启用开关。`, isError: true }
+        }
         const content = loadSkillContent({ roots: skillLoadRoots, id, flatRoots: flatSkillRootsArg })
         if (content == null) {
-          const ids = discoverSkillsAll({ roots: skillLoadRoots, flatRoots: flatSkillRootsArg }).map((s) => s.id)
+          const ids = discoverSkillsAll({ roots: skillLoadRoots, flatRoots: flatSkillRootsArg, disabled: disabledSkillIds }).map((s) => s.id)
           return { content: `技能不存在：${id}。可用技能：${ids.join(', ') || '（当前无可用技能）'}`, isError: true }
         }
         return { content: `技能「${id}」已加载，严格按以下指引执行：\n\n${content}`, isError: false }
@@ -1378,7 +1443,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
     // Read 追全文。无命中返回明确提示（勿盲目换词重试——可先确认经验库是否有沉淀）。
     // 保留本工具而非直接改名：老提示词/老技能仍在引用它（契约纯增量，见 spec §2.6）。
     MemorySearch: {
-      description: '检索个人/项目经验库（本地检索，无网络）：按 query 找过往沉淀的经验条目与知识块。命中返回条目清单（含主题/标签/摘要/全文/所在文件，score 排序），需全文用 Read 读给出的文件路径。适合"以前处理过类似问题吗"类查询。scope：personal=个人经验；project=项目经验（需项目库存在）；all=全部（默认）。**新会话推荐改用 KnowledgeSearch**（支持限定空间、块级粒度与可选全文，速度更快）。',
+      description: '检索个人/项目经验库（本地检索，无网络）：按 query 找过往沉淀的经验条目与知识块。命中返回条目清单（含主题/标签/摘要/全文/所在文件，score 排序），需全文用 Read 读给出的文件路径。适合"以前处理过类似问题吗"类查询。scope：personal=个人经验；project=项目经验（需项目库存在）；all=本会话知识范围（默认）。**新会话推荐改用 KnowledgeSearch**（支持限定空间、块级粒度与可选全文，速度更快）。',
       concurrencySafe: true,
       input_schema: {
         type: 'object',
@@ -1400,11 +1465,20 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
         // 恒 0 命中 —— 与现状"cli 不传 projectMemoryRoot"等价，见 S3 spec §11.3 N2）；
         // all → null（全部可读空间）。configDir 推导同 KnowledgeSearch（memoryRoot 上溯两级）。
         if (memoryRoot) {
+          // 会话知识范围（2026-09-15，P1 spec §3.4）：`all` 从"全部可读空间"收敛为本会话范围。
+          // personal / project 两支**刻意不动**：personal 映射的 'experience' 恒在范围内（D4，
+          // 经验库不可被移除）；project 映射到知识库里并不存在的 'project-*'（恒 0 命中，
+          // 见 S3 §11.3 N2）——给一个不存在的空间套范围判定，只会把"本来就没数据"变成
+          // "看起来没权限"，把一个既有的空结果问题换成一个更难懂的新问题。
+          if (scope === 'all' && scopeEmpty) return { content: noSpaceMsg, isError: true }
+          const mapped = scope === 'personal' ? ['experience']
+            : scope === 'project' ? ['project-*']
+              : (scopeSet ? scopeList : null)
           const r = searchKnowledgeItems({
             configDir: resolve(memoryRoot, '..', '..'),
             query: q,
             topK,
-            spaces: scope === 'personal' ? ['experience'] : scope === 'project' ? ['project-*'] : null,
+            spaces: mapped,
           })
           if (r.ok) {
             if (!r.items.length) {
@@ -1453,7 +1527,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
         properties: {
           query: { type: 'string', description: '检索意图（自然语言，走向量匹配）' },
           keywords: { type: 'array', items: { type: 'string' }, description: '可选：精确关键词（走关键词路，适合专有名词/表名）' },
-          spaces: { type: 'array', items: { type: 'string' }, description: '可选：限定空间 id 列表（见 /knowledge/spaces）' },
+          spaces: { type: 'array', items: { type: 'string' }, description: '可选：限定空间 id 列表（**仅限本会话知识范围内的 id**，范围见提示词的【本会话知识库】段；越界会被拒绝）' },
           topK: { type: 'number', description: '可选：返回条数上限（1-10，默认 5）' },
           mode: { type: 'string', description: "可选：'snippet'（默认，省上下文）| 'full'（整块原文）" },
           related: { type: 'string', description: '可选：给一个命中行的 blockId（形如 experience/workflow.md#2），返回该条目的**一跳**关联锚点（最多 5 条，只给 blockId/标题/理由；需正文用 Read）。与 query 二选一或并用。' },
@@ -1469,6 +1543,12 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
         if (!q && !relId) {
           return { content: 'query 参数缺失：请描述想检索的知识主题（或给 related 指定 blockId 展开一跳关联）', isError: true }
         }
+        // 会话知识范围（2026-09-15，P1 spec §3.4）：越界一律**明确拒绝**，不返回空命中。
+        // 两道判定各管一路入参：related 按 blockId 的空间前缀、query 按 spaces 参数。
+        const scoped = scopedSpaces(input?.spaces)
+        if (scoped.deny) return { content: scoped.deny, isError: true }
+        const relDeny = relId ? blockIdOutOfScope(relId) : null
+        if (relDeny) return { content: relDeny, isError: true }
         // configDir 推导：createToolRegistry 收到的 memoryRoot = <configDir>/memory/personal
         // （kernel/cli.mjs 的 memoryRoot(configDir)），故 <configDir> = memoryRoot 上溯两级。
         // memoryRoot 缺失（部分测试/嵌入场景不传）时**不猜路径**——用相对路径探知识根会
@@ -1484,7 +1564,8 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
           configDir,
           query: q,
           keywords: Array.isArray(input?.keywords) ? input.keywords : [],
-          spaces: Array.isArray(input?.spaces) && input.spaces.length ? input.spaces : null,
+          // 收窄后的空间集（越界已在上面拦掉）：未指定 → 本会话范围全集；不限（嵌入/测试）→ null。
+          spaces: scoped.spaces,
           topK: Math.min(Number(input?.topK) || 5, 10),
           mode: input?.mode === 'full' ? 'full' : 'snippet',
         })

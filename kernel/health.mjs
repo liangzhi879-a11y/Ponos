@@ -243,6 +243,20 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
     fidelityEvidence() {
       try { return fid.evidenceLog() } catch { return { active: [], resolved: [] } }
     },
+    // 失真红线锚点（2026-09-15 闭环）：tier=red 时把"已丢失什么"的锚点文本与证据 id
+    // 交给 engine 注入请求面尾部——此前 anchorText 只进 ponos_health 事件发 GUI，等
+    // 用户点"重新锚定"回传 anchor_applied 才 markResolved，**内核从不注入模型上下文**，
+    // 检测等于只报警不处置。只读：不改变任何证据状态（置 resolved 仍只走
+    // markFidelityResolved，保持 GUI 回传为唯一人工确认路径）。
+    fidelityAnchor() {
+      try {
+        if (!fidEnabled) return null
+        const s = fid.snapshot()
+        if (!s || !s.anchorAvailable || !s.anchorText) return null
+        const ids = (Array.isArray(s.issues) ? s.issues : []).map((i) => i && i.id).filter(Boolean)
+        return { text: String(s.anchorText), ids }
+      } catch { return null }
+    },
     fidelityEnabled() { return fidEnabled },
     // H3：真实窗口同步（compactor.adoptWindow 采纳端点 max_model_len 后调用，只下调
     // 场景）。同步后水位/预测立即按真实窗口重估。

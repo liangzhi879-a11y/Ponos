@@ -37,7 +37,8 @@ import { resolveCompactSettings } from './compact.mjs'
 import { extractConstraints } from './fidelity.mjs'
 import { memoryRoot, captureMemoryCandidates, appendMemoryEntry, syncKnowledgeIndex } from './memory.mjs'
 import { buildKnowledgeInjection, resolveInjectMode, resolveInjectBudget } from './knowledge-inject.mjs'
-import { createKnowledgeStore } from './knowledge.mjs'
+import { readDisabled, excludeDisabled } from './disabled.mjs'
+import { createKnowledgeStore, resolveSessionKnowledgeScope, MAX_ASSOC_SPACES } from './knowledge.mjs'
 import { createGraphStore } from './graph.mjs'
 import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
 import { discoverSkills, verifySkillVersions } from './skills.mjs'
@@ -106,6 +107,17 @@ export function parseArgs(argv) {
     knowledge: null,
     // 知识内核子命令的空间白名单（复数，数组形态；见 parseArgs 里 `--spaces` 的 why）
     spaces: null,
+    // 会话知识范围（2026-09-15，待处理清单 P1「会话模式关联经验库之外的知识库」）：
+    // 本会话**显式关联**的知识库 id 列表。与 `spaces` 分开命名是刻意的——`--spaces` 是
+    // "知识子命令这一次检索的过滤条件"，本项是"这个会话的授权范围"（同时作用于注入层与
+    // 工具层）。复用同名会让两种语义互相污染：一次检索的过滤条件不该变成会话的长期边界。
+    // **必须显式登记**：本 CLI 对未知 `--` 参数静默忽略（见下方 default 分支），漏登记时
+    // `--knowledge-spaces docs` 会被无声吞掉，表现为"关联了却没生效"（与 `--spaces`/`--confirm`
+    // 同一病灶，本文件内已反复踩过）。
+    knowledgeSpaces: null,
+    // 知识图谱局部图（批次 2）：以某文档为心、N 跳双向邻域
+    around: null,
+    hops: null,
     space: null,
     path: null,
     id: null,
@@ -120,6 +132,8 @@ export function parseArgs(argv) {
     // 知识库删除管理（回收站）：见 parseArgs 里对应 case 的 why（漏登记即静默失效）
     trashId: null,
     confirm: null,
+    // 覆盖前备份的原因（2026-09-14 批次 4，stash-doc 用；见 parseArgs 里的 why）
+    reason: null,
     all: false,
   }
   for (let i = 0; i < argv.length; i++) {
@@ -168,6 +182,16 @@ export function parseArgs(argv) {
       // 表现为"过滤没生效"（全库结果）——与漏登记 `--confirm` 同一类病灶。
       // 解析成**数组**（与 `--keywords` 同款），让消费侧拿到的形态唯一，不必再猜"逗号串还是数组"。
       case '--spaces': out.spaces = String(next() ?? '').split(',').map((s) => s.trim()).filter(Boolean); break
+      // 会话知识范围（2026-09-15）：与 `--spaces` 同款数组化（形态唯一，消费侧不必猜
+      // "逗号串还是数组"）。空串/全空白 → `[]` = 没关联，交由 resolveSessionKnowledgeScope
+      // 归一（那边把脏值一律当"未关联"，故这里不重复做校验分支）。
+      case '--knowledge-spaces': out.knowledgeSpaces = String(next() ?? '').split(',').map((s) => s.trim()).filter(Boolean); break
+      // 2026-09-14 批次 2（局部图）：`--around <docId>` 把图谱收敛到该文档的 N 跳邻域。
+      // 与 `--space`/`--spaces` 同一纪律：**必须登记 + 必须转发**（转发见 knowledgeArgs），
+      // 否则 `--around` 被静默吞掉、图谱照旧画全局图 —— 用户以为"局部图没生效"。
+      case '--around': out.around = next() ?? null; break
+      // `--hops`（局部图深度）。收成数字，非数字/缺省 → null（由消费侧回落 1）
+      case '--hops': out.hops = (() => { const n = Number(next()); return Number.isFinite(n) ? n : null })(); break
       case '--path': out.path = next() ?? null; break
       case '--id': out.id = next() ?? null; break
       case '--query': out.query = next() ?? null; break
@@ -234,6 +258,10 @@ export function parseArgs(argv) {
       // "给了 trashId 却按 docId 查"变成静默空结果。
       case '--trash-id': out.trashId = next() ?? null; break
       case '--confirm': out.confirm = next() ?? null; break
+      // 覆盖前备份的原因（2026-09-14 批次 4：stash-doc）。缺省会回落 'overwrite'，
+      // 故漏登记的后果较轻（不报错、行为正确）—— 但仍然登记：它是"数据为何进回收站"的
+      // 唯一凭据，静默丢失会让回收站条目显示成用户自己删的。
+      case '--reason': out.reason = next() ?? null; break
       // 清空回收站（布尔，无值）：purge --all
       case '--all': out.all = true; break
       case '--help': case '-h': usage(); process.exit(0); break
@@ -347,6 +375,10 @@ export async function main(argv) {
       // 表现为"过滤没生效"（返回全库标签），而不是报错。同 doc/related/tag/trashId 的教训，
       // 回归由 kernel-tests/knowledge-cli-flags.test.mjs 以真进程钉住。
       spaces: args.spaces,
+      // 2026-09-14 批次 2：局部图的两个参数（登记见 parseArgs 的 `--around`/`--hops`）。
+      // 与 `spaces` 同属"漏一个就静默失效"的高危键，回归由 knowledge-parity.test.mjs 真进程钉住。
+      around: args.around,
+      hops: args.hops,
       // 知识库文件导入（`--knowledge import`）。
       // 这里的键名必须与 `knowledge-cli.mjs` 的 import 分支读取的键**逐字一致**
       //（它读 `args.src` / `args.maxOcrPages` / `args.visionTables` / `args.maxVisionPages`
@@ -356,6 +388,8 @@ export async function main(argv) {
       src: args.src, name: args.name, dryRun: args.dryRun,
       maxOcrPages: args.maxOcrPages, visionTables: args.visionTables, maxVisionPages: args.maxVisionPages,
       maxFiles: args.maxFiles, maxTotalMb: args.maxTotalMb,
+      // 覆盖前备份的原因（批次 4，stash-doc 用）
+      reason: args.reason,
       // 知识库删除管理（回收站，2026-09-14）：同上——漏一个键该 flag 就"从未生效"。
       // `confirm` 尤其危险：被吞掉后 `delete-space --confirm X` 恒被拒，
       // 表面是"确认逻辑有问题"，实为转发层没接线。
@@ -422,6 +456,27 @@ export async function main(argv) {
   }
   // 内核结构化日志（R5-1）：stderr JSON 行，级别过滤经 CLAUDE_CODE_LOG_LEVEL
   const log = createLogger({ level: process.env.CLAUDE_CODE_LOG_LEVEL || 'info', sid: sessionId })
+
+  // 会话知识范围（2026-09-15，P1「会话模式关联经验库之外的知识库」，spec §3.2）。
+  //
+  // 组成 = 内置经验类空间 ∪ `--knowledge-spaces` 显式关联。**一处解析、两处消费**：
+  //   ① 注入层（下方 buildKnowledgeInjection 的 spaces）；
+  //   ② 工具层（createEngine opts.knowledgeSpaces → createToolRegistry）。
+  // 双层同源是硬要求而非实现便利：注入（被动通道）与工具（主动通道）口径不一致时，模型会
+  // 看到"注入里没有这条、检索却说自己没权限"的自相矛盾，比单纯少个能力更难排查。
+  //
+  // 放在 log 之后 / createEngine 之前：工具层白名单在引擎构造时就要值。纯目录发现、无 IO 写盘。
+  const knowledgeScope = resolveSessionKnowledgeScope({ configDir, requested: args.knowledgeSpaces })
+  if (knowledgeScope.missing.length) log.warn('knowledge scope: 关联的库不存在（已忽略）', { missing: knowledgeScope.missing })
+  if (knowledgeScope.truncated) log.warn('knowledge scope: 关联数量超上限（已截断）', { max: MAX_ASSOC_SPACES, dropped: knowledgeScope.dropped })
+
+  // 全局停用注册表（2026-09-15，P1「agent和skill页面及功能需要大改」D 条款）：<configDir>/disabled.json。
+  // **一次读、多处用**（技能清单 + Skill 工具池）。读失败只 warn 不阻断：这个文件的作用是收窄
+  // 能力，"读失败就崩"会让内核根本起不来，代价远大于"停用没生效"（见 kernel/disabled.mjs 头注）。
+  // agent 侧的停用由 `resolveAgents` 内部自读（那边有多个调用点，靠传参迟早漏一个）。
+  const disabledReg = readDisabled({ configDir })
+  if (!disabledReg.ok) log.warn('disabled 注册表读取失败，本次按"未停用任何项"处理', { file: 'disabled.json' })
+  if (disabledReg.skills.length) log.info('已停用技能', { skills: disabledReg.skills })
 
   // R2-1/R3-1：运行 marker（<configDir>/runs/<sid>.running，{pid,ts} JSON）。
   // 启动时存在 → 上次非优雅退出（崩溃）→ 发 crash_recovered 事件提示恢复；
@@ -637,6 +692,13 @@ export async function main(argv) {
       // MS1：MemorySearch 个人经验根（<configDir>/memory/personal，memoryRoot(configDir)）。
       // projectMemoryRoot 当前无项目记忆写入方，cli 不传 —— tools 侧 null → project scope 0 命中。
       memoryRoot: memoryRoot(configDir),
+      // 会话知识范围（2026-09-15，P1）：工具层白名单（KnowledgeSearch / MemorySearch 据此收窄）。
+      // 传**数组**（恒非空：至少含内置经验类空间）= 收窄；`null` 只留给嵌入/测试场景
+      // （那类调用方没有"会话"概念，收窄会把它们的既有行为打断——见 createToolRegistry 的 why）。
+      knowledgeSpaces: knowledgeScope.spaces,
+      // 全局停用技能（2026-09-15，D 条款）：工具层按名调用时的拒绝判定 + "技能不存在"提示里
+      // 可用清单的口径。与上面提示词技能清单**同源**（都来自 disabledReg.skills）。
+      disabledSkills: disabledReg.skills,
       // P2-1③：主会话 context（estimate 闭包）透传——lane 压缩器阈值判定复用
       context,
     },
@@ -735,7 +797,10 @@ export async function main(argv) {
   // P10-A：roots = skillRoots（显式 --skills-dir > addDirs 叠加默认 <configDir>/skills）
   const seenSkillIds = new Set()
   for (const dir of skillRoots) {
-    for (const s of discoverSkills({ root: dir, allowFlat: flatSkillRoots.has(dir) })) {
+    // 全局停用过滤（2026-09-15，D 条款）：这一处同时决定**提示词技能清单**与 `skillIds`
+    // （工具池可见性口径），故过滤在这里一次到位——两处各自过滤必然漂移出
+    // "提示词里没了、工具还能按名调用"的半生效状态。
+    for (const s of excludeDisabled(discoverSkills({ root: dir, allowFlat: flatSkillRoots.has(dir) }), disabledReg.skills)) {
       if (!seenSkillIds.has(s.id)) { seenSkillIds.add(s.id); skills.push(s); skillIds.push(s.id) }
     }
   }
@@ -807,6 +872,15 @@ export async function main(argv) {
         query: kw.join(' '), keywords: kw,
         totalBudget: injectOpts.budget,
         mode: injectOpts.mode,
+        // 会话知识范围（2026-09-15，P1 spec §3.3）：**本轮的核心修复**——此前这里没传 spaces，
+        // 于是 unified 注入事实上对**全部空间**打分，用户的储备库（source=user/pack）会被无条件
+        // 带进每次请求的上下文。这既是上下文成本，也是"agent 越过会话意图去翻用户私人库"的越界。
+        // legacy 不受影响：那条路注入的是 buildMemoryIndex（个人经验目录行），与 spaces 无关，
+        // 输出逐字节不变 ⇒ 缺省模式下升级零突变。
+        spaces: knowledgeScope.spaces,
+        // 超上限被忽略的库随注入上报（G2 观测）：stats.spacesDropped 是"点了关联却没生效"的
+        // 唯一事后证据——只写 log.warn 的话，用户看不到、GUI 也无从显示。
+        spacesDropped: knowledgeScope.dropped,
         // unified 复用同一个 store 实例给后面的轮末沉淀（一次 load 两处用）；
         // legacy 传 null：不建索引（零回归 + 不为死路径付加载成本）。
         knowledgeIndex: injectOpts.mode === 'unified' ? ensureKnowledgeIndex() : null,
@@ -835,6 +909,13 @@ export async function main(argv) {
     skills,
     workflows: visibleWorkflows,
     memory: memoryBlock,
+    // 会话知识范围的人话清单（2026-09-15，P1 spec §3.5）：让模型**看得见**自己能检索什么、
+    // 还有什么库需要用户先关联。只给名字不给 id 清单的动机：模型要做的是"转告用户去点哪儿"，
+    // 不是拼 id；同时 id 进提示词会把内部命名暴露成模型的"可猜参数"，反而诱导它硬写 spaces。
+    knowledgeScope: {
+      names: knowledgeScope.spaces.map((id) => knowledgeScope.labels[id] || id),
+      unassociated: knowledgeScope.unassociated.map((id) => knowledgeScope.labels[id] || id),
+    },
     mode: chatMode ? 'chat' : 'task',
     // 本地弱模型精简纪律段（2026-09-09 适配）：桥按 provider 画像注入
     // PONOS_PROMPT_TIER=lean；未设=full（云端现状，零变化）。chat 用专用提示，与此无关。
@@ -854,6 +935,10 @@ export async function main(argv) {
   wire.system('init', {
     model, tools: engine.tools.toolNames, session_id: sessionId, name: 'Ponos', version: KERNEL_VERSION, capacity,
     schemaVersion: SCHEMA_VERSION,
+    // 会话知识范围回显（2026-09-15，P1）：关联关系从 GUI 到内核要跨 4 跳
+    // （会话字段 → WS payload → 桥 argv → 本 CLI 解析），任一跳漏登记都是**静默失效**。
+    // 让内核把它回显出来，"关联到底生效没有"就能在 init 帧上直接判定，而不是靠猜。
+    knowledge_spaces: knowledgeScope.spaces,
     buildId: buildId(),
     provider: prov ? { model: prov.model, version: providerVersion() } : null,
     vision: vision ? { model: vision.model } : null,

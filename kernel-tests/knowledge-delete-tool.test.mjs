@@ -8,7 +8,7 @@
 // 全部通过 `ctx.knowledgeStore` 注入假 store —— 工具级用例不落盘、不起进程。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { createToolRegistry, CHAT_MODE_DISALLOWED } from '../kernel/tools.mjs'
@@ -60,7 +60,7 @@ test('KnowledgeDelete: 契约 —— schema 的 action 枚举与 required', () =
   assert.match(def.description, /不可恢复/)
 })
 
-test('KnowledgeDelete: 入 chat 禁用表，且与 bridge 的表逐字一致', () => {
+test('KnowledgeDelete: 入 chat 禁用表，且与 bridge 的表逐字一致', (t) => {
   assert.ok(CHAT_MODE_DISALLOWED.includes('KnowledgeDelete'))
   // 它是**写盘**能力，必须与 KnowledgeImport 同类处置
   assert.ok(CHAT_MODE_DISALLOWED.includes('KnowledgeImport'))
@@ -69,7 +69,11 @@ test('KnowledgeDelete: 入 chat 禁用表，且与 bridge 的表逐字一致', (
   // import 它等于在测试里起服务器（实测报 EADDRINUSE + "测试结束后仍异步活动"）。
   // 手法与 chat-mode.test.mjs 一致 —— 两张表分处 kernel 与 server，漂移的后果是
   // "某个入口的纯聊会话多了一项写盘能力"，必须在测试里钉住。
-  const bridgeSrc = readFileSync(join(ROOT, 'server', 'bridge.mjs'), 'utf-8')
+  // 纯内核形态（本仓无 server/）没有可比对的另一张表：跨层比对无对象，跳过；
+  // 上面两条内核侧断言仍然生效（它们才是内核自己的契约）。
+  const bridgePath = join(ROOT, 'server', 'bridge.mjs')
+  if (!existsSync(bridgePath)) { t.skip('本仓无 server/bridge.mjs（纯内核形态），跳过跨层一致性比对'); return }
+  const bridgeSrc = readFileSync(bridgePath, 'utf-8')
   const m = bridgeSrc.match(/export const CHAT_DISALLOWED = \[([^\]]*)\]/)
   assert.ok(m, 'bridge 的 CHAT_DISALLOWED 必须存在')
   const bridgeList = m[1].split(',').map(x => x.trim().replace(/^'|'$/g, '')).filter(Boolean)

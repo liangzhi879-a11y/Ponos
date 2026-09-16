@@ -293,6 +293,24 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // 失真锚点注入探针（2026-09-15）：PONOS_MOCK_ANCHOR_PROBE=<needle> → 每轮把请求体内
+  // **任意非 system 条目**是否含该子串，写成 stderr 一行 `ANCHOR_PROBE:<bits>`（多针用
+  // `|` 分隔、回 bit 串）。**旁路观测，不改变响应**：早期版本命中即 return，会顶掉
+  // scripted 场景（[mock:fidelity-read-fail] 被截胡 → 失真场景根本建不起来）；而 mock
+  // 的场景状态是会话级持续的，仅"消息不含 [mock: 时才探测"也会漏掉后续轮次。
+  // 必要性：锚点是纯派生（不落盘、不发事件），只断言 ponos_health 带 anchorText 只能
+  // 证明"检测到了"，证明不了"锚点真进了发给模型的请求"——stderr 探针是唯一口子。
+  if (process.env.PONOS_MOCK_ANCHOR_PROBE) {
+    try {
+      const needles = String(process.env.PONOS_MOCK_ANCHOR_PROBE).split('|')
+      const bodyText = (messages || [])
+        .filter((m) => m?.role !== 'system')
+        .map((m) => (typeof m.content === 'string' ? m.content : (m.content || []).map((b) => b?.text || '').join('')))
+        .join('\n')
+      const bits = needles.map((n) => (bodyText.includes(n) ? '1' : '0')).join('')
+      process.stderr.write(`[mock-anchor-probe] ANCHOR_PROBE:${bits}\n`)
+    } catch { /* 观测失败不影响 mock 响应 */ }
+  }
   // 输出截断自愈模拟（2026-09-12 engine-continue-heal 测试）：PONOS_MOCK_TRUNCATE_CONT=1 →
   // 历史无续写指令时产出部分文本 + max_tokens 截断 stop_reason；续写指令出现后产出
   // 剩余文本 + 正常收尾。调用次数写 PONOS_MOCK_TRUNCATE_CONT_N 供断言有界。
@@ -487,6 +505,25 @@ async function* mockStream({ messages, signal }) {
   // 循环第二轮）。不得用"历史中任意 tool_result"判定——跨轮连续调用 [mock:tool]
   // 时，上一轮被拒绝的 tool_result 残留在历史里，会让 mock 误走结果回显分支而
   // 永远不再产出 tool_use（denial 降级测试复现，2026-08-21 修复）。
+  // 同族重试模拟（P0-3，2026-09-16）：验证"灾难命令被拒后，模型改写/升权再试"必须被
+  // **直接硬拒**而不是再次弹窗。**必须放在"工具结果回合"分支之前**——那个分支会在任何
+  // tool_result 之后立刻文本作答返回，永远走不到下面的标记分支，也就模拟不出同轮重试。
+  // 用法：一轮内第 1 次发 `rm -rf /`，第 2 次发**同族改写变体** `rm -rf /*`（刻意不字面
+  // 相同：字面比对挡不住的那种，正是族粒度拦截要证明的），第 3 次起落到下面的结果回显
+  // 分支让轮次正常结束。次数按 PONOS_MOCK_CATA_RETRY_N 计数（沿用本文件 overflow 计数
+  // 的既有惯例），测试在每轮开跑前清该变量即可复位。
+  if (lastText.includes('[mock:catastrophic-retry]') || JSON.stringify(messages || []).includes('[mock:catastrophic-retry]')) {
+    const nth = Number(process.env.PONOS_MOCK_CATA_RETRY_N || 0) + 1
+    process.env.PONOS_MOCK_CATA_RETRY_N = String(nth)
+    if (nth <= 2) {
+      if (signal?.aborted) throw abortError()
+      await sleep(MOCK_SLEEP_MS)
+      const command = nth === 1 ? 'rm -rf /' : 'rm -rf /*'
+      yield { type: 'tool_use', id: `tool_use_mock_cata_retry_${nth}`, name: 'Bash', input: { command } }
+      yield { type: 'usage', usage: MOCK_USAGE }
+      return
+    }
+  }
   const lastMessage = (messages || [])[messages.length - 1]
   const lastIsToolResult = lastMessage?.role === 'user' &&
     Array.isArray(lastMessage.content) && lastMessage.content.some((b) => b?.type === 'tool_result')
