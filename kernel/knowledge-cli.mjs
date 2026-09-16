@@ -14,6 +14,11 @@ import { createKnowledgeStore, knowledgeRoot } from './knowledge.mjs'
 // 引的是 `validateAppendEntry` + `appendMemoryEntry`，后者已内含幂等去重（hashLine）
 // 与增量索引同步（syncKnowledgeIndex），故写完立刻可被检索、关联也随之更新。
 import { appendMemoryEntry, listMemoryTags, validateAppendEntry, memoryRoot } from './memory.mjs'
+// 【S2-D6 标签实体化】生产接线：`tags` / `index-tags` 两个读 op 在这两行下方注入"标签解析器"，
+// 让被合并掉的写法（别名）折叠到规范实体上。**不新增 CLI flag** —— `kernel/cli.mjs` 的转发层
+// 有"漏登记一个键即**静默失效**"的反复踩坑史（`--spaces`/`--tag`/`doc`/`related` 均栽过），
+// 新增 flag 就要同时改 parseArgs + 转发层 + 真进程回归；本能力挂在既有 op 上，少一个高危面。
+import { makeTagResolver } from './tag-store.mjs'
 // 文件知识库导入（2026-09-14）：实现全在 knowledge-import.mjs，本文件只做 op 分发。
 import { importDocuments } from './knowledge-import.mjs'
 // MAX_RELATED 从 shared 中性层取（不另写一个字面量 8）：CLI 的缺省必须与内核缺省同源，
@@ -296,12 +301,15 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
         return { output: store.updateDoc(String(args.id || '')), code: 0 }
       case 'tags':
         // S6：标签枚举（读侧"写前先查"的依据）。纯读、无副作用。
-        return { output: listMemoryTags(configDir), code: 0 }
+        // 【S2-D6】按注册表解析规范名后再枚举 ⇒ 「合并后标签真的变少」体现出来。
+        // 解析只读注册表（不注册、不写盘），故仍是**纯读**：注册发生在合并时与 `reindex`（见下）。
+        return { output: listMemoryTags(configDir, { tagResolver: makeTagResolver({ configDir }) }), code: 0 }
       case 'index-tags': {
         // 2026-09-14（批次 1）：全库文档标签枚举。`--spaces a,b` 限定空间，
         // 缺省 = 全部空间。参数解析口径与 search 逐字一致（见 parseSpacesArg）。
         const only = parseSpacesArg(args)
-        return { output: store.listIndexTags({ spaces: only }), code: 0 }
+        // 【S2-D6】同上：聚合前把每个裸字符串解析成规范名，别名折叠到同一实体上计数。
+        return { output: store.listIndexTags({ spaces: only, tagResolver: makeTagResolver({ configDir }) }), code: 0 }
       }
       case 'append': {
         // S6：**唯一的写 op**（append-only）。

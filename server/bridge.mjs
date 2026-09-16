@@ -78,6 +78,10 @@ import { createReadonlyCache } from './readonly-cache.mjs'
 import { getAuthStatus, setupPassword, checkPassword, changePassword } from './auth.mjs'
 import { resolveBridgeToken, authorizeBridgeRequest } from './bridge-token.mjs'
 import { listEgressPolicy, EGRESS_MODE } from './egress-policy.mjs'
+// 【S2-D6 标签实体化】注册表的可观测面与「自动合并 / 可撤销」入口。规则实现在 shared/tag-registry.mjs，
+// 落盘在 kernel/tag-store.mjs（bridge 已有多处 import kernel/* 的先例，如 kernel/mcp.mjs）。
+import { tagRegistrySnapshot, mergeTagsInStore, undoMergeInStore } from '../kernel/tag-store.mjs'
+import { DEFAULT_TAG_SCOPE } from '../shared/tag-registry.mjs'
 import { MANAGED_KEYS, providerProfileEnv, buildIdentityPrompt, activeProviderModel, resolveProviderProfile } from './provider-profile.mjs'
 import { probeProviderCapabilities, applyProbeResults, resolveWindowFromProbe, maybeAdoptWindowFromEvent } from './provider-probe.mjs'
 
@@ -1927,6 +1931,46 @@ const httpServer = createServer(async (req, res) => {
     // 为什么要有这个面：判定内核若不可观测，就无法在验收时证明"无路径"，S3 接线也缺既定入口。
     if (url.pathname === '/egress/policy' && req.method === 'GET') {
       reply(200, { 'Content-Type': 'application/json' }, JSON.stringify(listEgressPolicy({ mode: EGRESS_MODE.LOCAL_ONLY })))
+      return
+    }
+    // 【S2-D6 标签实体化】标签注册表：可观测面 + 「自动合并 / 可撤销」入口
+    // （spec §6.2 D6、§10 S2-5；合并策略 = 用户裁定 📌#4「自动合并 + 可撤销」）。
+    // 位置同样在 D2 闸门之后 ⇒ **自动受 token 保护**，无需改豁免清单、不削弱 D2；且经 D1 仅回环可达。
+    // 为什么必须有这三个面：D6 的能力若只躺在库里等人 import，就无从验收、UI/agent 也无从调用；
+    // 与 D3 同款做法——判定内核配一个既定入口（D3 是 `/egress/policy`）。
+    // 注意：全部读写的是 `<YFW_HOME>/tags/registry.json`，**不触碰**用户的知识文件与经验文件。
+    if (url.pathname === '/tags' && req.method === 'GET') {
+      const scope = url.searchParams.get('scope') || DEFAULT_TAG_SCOPE
+      try {
+        reply(200, { 'Content-Type': 'application/json' }, JSON.stringify(tagRegistrySnapshot(YFW_HOME, { scope })))
+      } catch (e) {
+        reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, reason: 'invalid-scope', message: String((e && e.message) || e) }))
+      }
+      return
+    }
+    if (url.pathname === '/tags/merge' && req.method === 'POST') {
+      let body = null
+      try { body = await readJsonBody(req) } catch { body = null }
+      let r
+      try {
+        r = mergeTagsInStore(YFW_HOME, body && body.from, body && body.into, { scope: (body && body.scope) || DEFAULT_TAG_SCOPE })
+      } catch (e) {
+        // tag-store 写侧是**严格**模式：注册表损坏时拒绝写（不把损坏内容覆盖成空表），此处如实回报。
+        r = { ok: false, reason: 'registry-unreadable', message: String((e && e.message) || e) }
+      }
+      reply(r.ok ? 200 : 400, { 'Content-Type': 'application/json' }, JSON.stringify(r))
+      return
+    }
+    if (url.pathname === '/tags/undo' && req.method === 'POST') {
+      let body = null
+      try { body = await readJsonBody(req) } catch { body = null }
+      let r
+      try {
+        r = undoMergeInStore(YFW_HOME, body && body.mergeId)
+      } catch (e) {
+        r = { ok: false, reason: 'registry-unreadable', message: String((e && e.message) || e) }
+      }
+      reply(r.ok ? 200 : 400, { 'Content-Type': 'application/json' }, JSON.stringify(r))
       return
     }
     // 工作流路由链最前：仅 /workflows* 前缀进入（无关请求不必构造宿主单例/读配置），

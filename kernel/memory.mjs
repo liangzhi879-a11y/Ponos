@@ -352,15 +352,19 @@ export function validateAppendEntry({ text, tag = null, theme = null, markers = 
  * `single:true` 即"该标签全库只出现 1 次" —— agent 写前看到它，就该考虑换个标签
  * 或接受这条经验会成为孤岛。
  */
-export function listMemoryTags(configDir) {
+export function listMemoryTags(configDir, { tagResolver = null } = {}) {
   const byTag = new Map()
   const themes = listMemoryThemes(memoryRoot(configDir))
   for (const theme of themes) {
     for (const e of readTheme(memoryRoot(configDir), theme).entries || []) {
       if (!e.tag) continue
-      const cur = byTag.get(e.tag)
+      // 【S2-D6 标签实体化】同 `listIndexTags`：被合并掉的写法折叠到规范名后再计数，使"合并后
+      // 标签变少"真的体现出来。`tagResolver` 缺省 null ⇒ 与今日逐字一致（零回归）；
+      // 经验条目行本身（`- [主题|tag] …`）**一个字节都不动**（不改写用户数据）。
+      const tag = (tagResolver ? tagResolver(e.tag) : null) || e.tag
+      const cur = byTag.get(tag)
       if (cur) cur.count += 1
-      else byTag.set(e.tag, { tag: e.tag, count: 1, theme })
+      else byTag.set(tag, { tag, count: 1, theme })
     }
   }
   const tags = [...byTag.values()]

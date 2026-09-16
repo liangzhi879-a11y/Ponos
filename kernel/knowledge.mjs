@@ -2435,12 +2435,19 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
      * 渲染与判断；`single` 标记"只被一篇文档用到的标签"——它是标签体系腐烂的第一信号
      * （S5.1 实测：单例标签越积越多 → 条目孤立），所以显式给出，别让调用方自己数。
      */
-    listIndexTags({ spaces: only = null } = {}) {
+    listIndexTags({ spaces: only = null, tagResolver = null } = {}) {
       const allow = Array.isArray(only) && only.length ? new Set(only) : null
       const byTag = new Map()
       for (const d of docs) {
         if (allow && !allow.has(d.spaceId)) continue
-        for (const t of d.tags || []) {
+        for (const raw of d.tags || []) {
+          // 【S2-D6 标签实体化】先把裸字符串按"标签注册表"解析成规范名再计数：被合并掉的写法
+          // （别名）会折叠到同一实体上，于是"财务 / 财务部"合并后**只剩一行计数**，而不是看起来
+          // 仍有两个标签。`tagResolver` 缺省 null ⇒ 与今日行为**逐字一致**（零回归）；
+          // 未注册标签原样通过（§6.2 D6 明示不做强制受控词表）。
+          // 为什么在**读取聚合面**解析而不改写 `doc.tags`：改索引内容就必须 bump INDEX_VERSION
+          // ⇒ 强制全库重建 + 把用户文件里的标签悄悄改写（不可逆）。读取面解析零重建、零改写。
+          const t = (tagResolver ? tagResolver(raw) : null) || raw
           const cur = byTag.get(t)
           if (cur) { cur.count += 1; if (cur.spaceId !== d.spaceId) cur.spaceId = null }
           else byTag.set(t, { tag: t, count: 1, spaceId: d.spaceId })
