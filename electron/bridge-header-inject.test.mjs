@@ -2,6 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createBridgeHeaderInjector, installBridgeTokenHeaderInjector, isUntrustedBridgeSession } from './bridge-header-inject.cjs'
+// 分区名必须经 `partitionFor()` 生成——治理断言禁止在任何地方（含测试）手写分区前缀字面量：
+// 手写一旦与真实分区不符，会静默落到别的分区，症状是 Cookie 读空 → 误判"未登录"。
+import { partitionFor, SESSION_PARTITION_PREFIX } from './app-session-key.cjs'
 
 // 背景（2026-09-17 实测）：Electron 43.2.0 / Chromium 150 下，file:// 页面发往
 // http://127.0.0.1:<port> 的跨源 fetch **不带 Origin 头**，直接撞进 S2-D2 的
@@ -104,8 +107,8 @@ test('治理约束：桥的预检响应必须声明令牌头（否则自定义�
 // 而吃 403），必须堵住。
 
 test('isUntrustedBridgeSession：识别 automation 分区（含多实例），放行应用自身 session', () => {
-  assert.equal(isUntrustedBridgeSession({ partition: 'persist:automation-site-a1b2' }), true)
-  assert.equal(isUntrustedBridgeSession({ partition: 'persist:automation-session-42' }), true)
+  assert.equal(isUntrustedBridgeSession({ partition: partitionFor('site-a1b2') }), true)
+  assert.equal(isUntrustedBridgeSession({ partition: partitionFor('session-42') }), true)
   assert.equal(isUntrustedBridgeSession({ partition: '' }), false, 'defaultSession 的 partition 是空串')
   assert.equal(isUntrustedBridgeSession({}), false, '无 partition 字段按可信处理（应用自有 session）')
   assert.equal(isUntrustedBridgeSession(null), false)
@@ -115,7 +118,7 @@ test('isUntrustedBridgeSession：识别 automation 分区（含多实例），�
 test('installBridgeTokenHeaderInjector：不受信分区拒绝安装，且不占用 seen', () => {
   const handlers = []
   const automation = {
-    partition: 'persist:automation-site-x',
+    partition: partitionFor('site-x'),
     webRequest: { onBeforeSendHeaders(fn) { handlers.push(fn) } },
   }
   const seen = new WeakSet()
@@ -132,10 +135,12 @@ test('installBridgeTokenHeaderInjector：不受信分区拒绝安装，且不占
 
 test('治理约束：main.cjs 的 session-created 安装路径受不受信分区判定保护', () => {
   const src = readFileSync(new URL('./bridge-header-inject.cjs', import.meta.url), 'utf-8')
-  assert.match(src, /UNTRUSTED_SESSION_PARTITION_PREFIXES = \['persist:automation-'\]/)
+  // 前缀必须由**唯一出处**推导，不得手写——手写会被 kernel-tests/app-session-key.test.mjs 的
+  // 「分区字符串不得在别处手写」拦下（那正是本次修正的原因）。
+  assert.match(src, /UNTRUSTED_SESSION_PARTITION_PREFIXES = \[SESSION_PARTITION_PREFIX\]/)
   assert.match(src, /if \(isUntrustedBridgeSession\(targetSession\)\) return false/)
-  // 分区前缀必须与内置浏览器的实际分区来源一致，避免改名后静默失效
-  const sessionKeySrc = readFileSync(new URL('./app-session-key.cjs', import.meta.url), 'utf-8')
-  assert.match(sessionKeySrc, /persist:automation-/,
-    '分区前缀是两侧契约：app-session-key.cjs 改了前缀，这里的排除规则必须同步')
+  // 两侧契约：partitionFor 必须以 SESSION_PARTITION_PREFIX 起头（注入器的不受信前缀取自该常量）。
+  // 这里只断言**行为与来源**、不写字面量，前缀将来改名时本断言自动跟随。
+  assert.ok(SESSION_PARTITION_PREFIX.length > 0 && partitionFor('probe').startsWith(SESSION_PARTITION_PREFIX),
+    'partitionFor 必须由 SESSION_PARTITION_PREFIX 派生（注入器的不受信前缀取自该常量）')
 })

@@ -56,6 +56,11 @@ export const DEFAULT_FIDELITY_CONFIG = {
   amber: 40,
   summaryMissingStrong: 0.4,
   summaryMissingMedium: 0.2,
+  // 失真量下限（token）：缺失比例达标但**丢失量**不足此值时不判强证据。
+  // 校准依据（2026-09-17 实测真实会话 8 次压缩）：must-keep 基准下"好摘要"的丢失量落在
+  // 约 30–100 token 量级，故下限只用来挡"一两个短实体"级别的噪声（约 3 个路径/数字）。
+  // 注意别照旧口径（丢失 500–1600 token）定这个值——那是已废弃的饱和分母，用它会把真实信号一并挡掉。
+  summaryMissingMinTokens: 24,
   minEntities: 3,
   goalCoverageMin: 0.15,
   goalWindow: 6,
@@ -91,6 +96,7 @@ export function fidelityConfigFromEnv(env = process.env) {
   cfg.amber = num(e.PONOS_FIDELITY_AMBER, cfg.amber)
   cfg.summaryMissingStrong = num(e.PONOS_FIDELITY_SUMMARY_MISSING_STRONG, cfg.summaryMissingStrong)
   cfg.summaryMissingMedium = num(e.PONOS_FIDELITY_SUMMARY_MISSING_MEDIUM, cfg.summaryMissingMedium)
+  cfg.summaryMissingMinTokens = num(e.PONOS_FIDELITY_SUMMARY_MISSING_MIN_TOKENS, cfg.summaryMissingMinTokens)
   cfg.goalCoverageMin = num(e.PONOS_FIDELITY_GOAL_COVERAGE_MIN, cfg.goalCoverageMin)
   cfg.observeTurns = Math.max(0, Math.floor(num(e.PONOS_FIDELITY_OBSERVE_TURNS, cfg.observeTurns)))
   cfg.maxText = Math.max(1000, Math.floor(num(e.PONOS_FIDELITY_MAX_TEXT, cfg.maxText)))
@@ -397,6 +403,22 @@ function cutUtf8(s, maxBytes) {
 // 聚合器：证据 → 档位
 // ---------------------------------------------------------------------------
 
+/**
+ * 依据失真量给出**可执行**建议——这是"按失真量分级"的落点：不只报警，还告诉用户现在该做什么。
+ * 分级门槛与 cfg 同源（0.4/0.6），避免两处漂移。
+ */
+function summaryLossAdvice({ ratio = 0, lostTokens = null, sample = '' } = {}) {
+  const tok = lostTokens === null || lostTokens === undefined ? '' : `（约 ${lostTokens} token）`
+  const who = sample ? `，如 ${sample}` : ''
+  if (ratio >= 0.6) {
+    return `关键事实成片丢失${who}${tok}：建议立刻把丢失项补回摘要，或新建会话 / 缩小单次压缩覆盖范围——在当前上下文里继续长跑会持续丢事实。`
+  }
+  if (ratio >= 0.4) {
+    return `丢失了较多关键事实${who}${tok}：建议在下一轮摘要里显式保留这些条目，或把任务拆小以减少单次压缩量。`
+  }
+  return `有少量关键事实未保留${who}${tok}，属压缩的正常损耗；若后续仍要用到，可在摘要里补一句。`
+}
+
 export function createFidelity({ config, getAnchorSource, now } = {}) {
   const cfg = { ...DEFAULT_FIDELITY_CONFIG, ...(config || {}) }
   const clock = typeof now === 'function' ? now : () => new Date()
@@ -680,15 +702,23 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
       // 若拿入参 missing 去重，差集恒空 → LLM 的遗漏发现被静默丢弃、永远不成证据。
       const reported = []
       const enough = entities.length >= cfg.minEntities
-      if (enough && missing.length && ratio >= cfg.summaryMissingStrong) {
-        // S2 强证据：关键实体成片丢失
+      // 失真量下限（2026-09-17，对应用户反馈"部分失真应当是正常的"）：只有"缺失比例高"不足以
+      // 判强证据——丢失的绝对量太小（例如只漏了一两个数字）属压缩的正常损耗，应落在 amber 角标
+      // 而不是红。旧调用方若不提供 lostTokens（如直接喂 ratio 的单测），volumeOk 恒真、行为不变。
+      const lostTokens = Number.isFinite(Number(audit.lostTokens)) ? Number(audit.lostTokens) : null
+      const volumeOk = lostTokens === null || lostTokens >= cfg.summaryMissingMinTokens
+      const lossPct = Math.round(ratio * 100)
+      const lossTok = lostTokens === null ? '' : `，失真量约 ${lostTokens} token`
+      const advice = summaryLossAdvice({ ratio, lostTokens, sample: missing[0] })
+      if (enough && missing.length && ratio >= cfg.summaryMissingStrong && volumeOk) {
+        // S2 强证据：关键事实成片丢失
         for (const m of missing.slice(0, 3)) {
           reported.push(m)
           out.push(push(mkIssue({
             id: `m:summary:${normalizeEntity(m)}`, axis: 'memory', kind: 'summary-missing-entity',
             strength: 'strong', turn,
-            evidence: `压缩摘要丢失关键事实 ${m}（关键实体缺失率 ${Math.round(ratio * 100)}%）`,
-            detail: { entity: m, ratio, total: entities.length },
+            evidence: `压缩摘要丢失关键事实 ${m}（关键事实缺失率 ${lossPct}%${lossTok}）。${advice}`,
+            detail: { entity: m, ratio, total: entities.length, lostTokens },
           })))
         }
       } else if (enough && missing.length && ratio >= cfg.summaryMissingMedium) {
@@ -697,8 +727,8 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
           out.push(push(mkIssue({
             id: `m:summary:${normalizeEntity(m)}`, axis: 'memory', kind: 'summary-missing-entity',
             strength: 'medium', turn, points: 2, // spec §3.2：缺失率 0.2–0.4 = 2 点
-            evidence: `压缩摘要可能遗漏 ${m}（关键实体缺失率 ${Math.round(ratio * 100)}%）`,
-            detail: { entity: m, ratio, total: entities.length },
+            evidence: `压缩摘要可能遗漏 ${m}（关键事实缺失率 ${lossPct}%${lossTok}）。${advice}`,
+            detail: { entity: m, ratio, total: entities.length, lostTokens },
           })))
         }
       }

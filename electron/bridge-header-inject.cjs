@@ -25,6 +25,12 @@
 /** 与 `server/bridge-token.cjs` 的 BRIDGE_TOKEN_HEADER 保持一致（Node 侧 req.headers 已归一为小写）。 */
 const DEFAULT_BRIDGE_TOKEN_HEADER = 'x-yfw-bridge-token'
 
+// 分区字符串的唯一出处是 app-session-key.cjs（见该文件的治理注释与 kernel-tests 的
+// "分区字符串不得在别处手写" 断言：手写前缀一旦与真实分区不符，会静默落到别的分区、
+// 症状是 Cookie 读空 → 误判"未登录"）。这里**不写字面量**，从前缀常量派生。
+// 注意别用 `partitionFor('')`：那会带上默认键（`app-probe`），得到的不是前缀。
+const { SESSION_PARTITION_PREFIX } = require('./app-session-key.cjs')
+
 const BRIDGE_PROTOCOLS = ['http:', 'https:', 'ws:', 'wss:']
 
 /**
@@ -39,7 +45,7 @@ const BRIDGE_PROTOCOLS = ['http:', 'https:', 'ws:', 'wss:']
  *
  * 判据用前缀而非全等：分区键随站点变化（`persist:automation-<key>`），且将来可能有多实例。
  */
-const UNTRUSTED_SESSION_PARTITION_PREFIXES = ['persist:automation-']
+const UNTRUSTED_SESSION_PARTITION_PREFIXES = [SESSION_PARTITION_PREFIX]
 
 /** 该 session 是否属于"会加载外部站点"的不受信分区。 */
 function isUntrustedBridgeSession(session) {

@@ -41,8 +41,10 @@ function appSessionKey({ appId, target } = {}) {
 }
 
 /** 分区字符串唯一出处（browser-executor 与 app-login 都必须用它） */
+const SESSION_PARTITION_PREFIX = 'persist:automation-'
+
 function partitionFor(key) {
-  return 'persist:automation-' + String(key || 'app-probe')
+  return SESSION_PARTITION_PREFIX + String(key || 'app-probe')
 }
 
-module.exports = { appSessionKey, partitionFor, hostOf, sanitizeId }
+module.exports = { appSessionKey, partitionFor, hostOf, sanitizeId, SESSION_PARTITION_PREFIX }

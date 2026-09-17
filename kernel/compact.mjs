@@ -362,11 +362,49 @@ export function auditSummaryFidelity({ covered, summary, minEntities = 3 } = {})
     // 而缺失率是本信号的判定依据
     const entities = extractEntities(texts.join('\n'), { max: 120, kinds: 'key' })
     const miss = missingEntities(entities, summary)
-    if (miss.total < minEntities) {
-      return { entities, missing: [], total: miss.total, ratio: 0, skipped: true }
+    // 判定基准 = 摘要被**明确要求**保留的事实（`<key-info>` 契约：任务清单/文件变更/最近决策），
+    // 见 keyInfoBlock()——它随请求一起发给摘要器，原文是"摘要必须保留以下内容"。
+    //
+    // why 不拿"原文抽到的全部实体"当分母（2026-09-17 修复"压缩一次就报失真"）：
+    // 摘要是原文的**抽象**，长度只有其 1/30–1/140。要求它在逐字意义上包含原文的 120 个实体，
+    // 在物理上做不到——实测真实会话 8 次压缩，该口径的缺失率恒为 61–98%（均值 80%），
+    // 永远 ≥ 强证据阈值 0.4 ⇒ 每次压缩都判红（用户报告"压缩一次就失真"），门禁亦 8/8 拦下
+    // （每次压缩都白跑一次重压，是真实成本损耗）。换成"被要求保留的事实"基准后，同一批真实
+    // 压缩降到 12–32%（均值 21%）、0/8 判红，而"真把关键事实丢了"仍会被抓到（该口径对
+    // 人为丢弃 must-keep 的摘要给出 100%）。
+    // 旧口径保留在 raw 字段，供诊断与回归对比，不再参与判定。
+    const mustKeep = extractEntities(keyInfoBlock(extractKeyInfo(list)), { max: 60, kinds: 'key' })
+    const useMustKeep = mustKeep.length >= minEntities
+    const judged = useMustKeep ? missingEntities(mustKeep, summary) : miss
+    const raw = { entities, missing: miss.missing, total: miss.total, ratio: miss.ratio }
+    if (judged.total < minEntities) {
+      return { entities, missing: [], total: judged.total, ratio: 0, skipped: true, raw }
     }
-    return { entities, missing: miss.missing, total: miss.total, ratio: miss.ratio }
+    const mustMiss = useMustKeep ? judged : missingEntities(mustKeep, summary)
+    return {
+      entities: useMustKeep ? mustKeep : entities,
+      missing: judged.missing,
+      total: judged.total,
+      ratio: judged.ratio,
+      // 失真量（token 估算）：用户可读的"这次压缩丢了多少"，供健康度分级与建议使用
+      lostTokens: judged.missing.reduce((n, e) => n + approxTokens(e), 0),
+      mustKeep: mustKeep.length
+        ? { total: mustKeep.length, missing: mustMiss.missing.length, ratio: mustMiss.ratio }
+        : null,
+      raw,
+    }
   } catch { return { entities: [], missing: [], total: 0, ratio: 0, skipped: true } }
+}
+
+/**
+ * 近似 token 数：CJK 约 1 token/字，其余约 4 字符/token（与内核其它估算同量级）。
+ * 只用于"失真量"的可读量级（"丢了约 N token"），不参与任何精确预算。
+ */
+export function approxTokens(s) {
+  const t = String(s ?? '')
+  if (!t) return 0
+  const cjk = (t.match(/[\u3400-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]/g) || []).length
+  return Math.max(1, Math.round(cjk + (t.length - cjk) / 4))
 }
 
 // P0-2（2026-09-16）：保真门禁的判据。`auditSummaryFidelity` 只产出**审计**，
