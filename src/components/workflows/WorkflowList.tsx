@@ -11,6 +11,12 @@ import { cn } from '@/lib/utils'
 import { asTriggerList, checkWorkflowId } from '@/lib/workflowModel'
 import { runStatusOf, type WorkflowMeta } from '@/lib/workflowApi'
 import { WorkflowDeleteDialog } from './WorkflowDeleteDialog'
+// 【S3】侧边栏默认列表按模式筛选（spec §5.9「受模式影响」一栏：会话 / 工作流 / 知识的**筛选范围**）。
+// 与会话/任务面板同一条链路（`useModeFilter()` + `filterXxxByMode`）：没加入任何团队时 mode 恒为
+// 'personal'，且判据把"缺 workspaceId 的旧数据"也归个人 ⇒ 列表逐字不变（团队能力默认关闭）。
+import { filterWorkflowsByMode } from '@/lib/teamModeUi'
+import { useModeFilter } from '@/stores/teamStore'
+import { useTranslation } from '@/i18n/useTranslation'
 
 export interface WorkflowListProps {
   list: WorkflowMeta[]
@@ -38,6 +44,7 @@ const STATUS_TONE: Record<string, { cls: string; text: string }> = {
 
 export function WorkflowList(props: WorkflowListProps) {
   const { list, loading, error } = props
+  const { t } = useTranslation()
   const [q, setQ] = useState('')
   const [newId, setNewId] = useState('')
   const [creating, setCreating] = useState(false)
@@ -45,6 +52,14 @@ export function WorkflowList(props: WorkflowListProps) {
   const [importText, setImportText] = useState('')
   /** 待删除目标：非空即弹确认对话框（替代原先的 window.confirm，见 WorkflowDeleteDialog 的 why） */
   const [pendingDelete, setPendingDelete] = useState<WorkflowMeta | null>(null)
+
+  // 【S3】模式筛选（spec §5.9「受模式影响 = 侧边栏默认列表的筛选范围」），与会话/任务面板同一套语义。
+  //
+  // 命名纪律：本文件下方 `Row` 里的 `mode` 与卡片上的 `expose?.mode` 指的是**暴露态**
+  // （public/private），与这里的**工作区模式**（personal/team）是两件毫不相干的事。二者若同名，
+  // 读代码的人几乎必然误判（"团队模式的工作流"与"已公开的工作流"混为一谈），故此处显式命名 `wsMode`。
+  const { mode: wsMode, teamIds } = useModeFilter()
+  const byMode = filterWorkflowsByMode(list, wsMode, teamIds)
 
   const kw = q.trim().toLowerCase()
   /** 新建 id 的前端预校验（Task 12 审查 I-1）：非法即就地提示并禁用「创建」，不把错误推给后端 */
@@ -58,10 +73,14 @@ export function WorkflowList(props: WorkflowListProps) {
     setNewId('')
   }
   const filtered = kw
-    ? list.filter((m) => `${m.id} ${m.name || ''} ${asTriggerList(m.triggers).join(' ')}`.toLowerCase().includes(kw))
-    : list
+    ? byMode.filter((m) => `${m.id} ${m.name || ''} ${asTriggerList(m.triggers).join(' ')}`.toLowerCase().includes(kw))
+    : byMode
   const mine = filtered.filter((m) => m.expose?.mode !== 'public')
   const published = filtered.filter((m) => m.expose?.mode === 'public')
+  // 团队模式下个人工作流被筛空时**必须出声**：否则用户看到空网格会以为"工作流没了"，
+  // 而模式只是筛选范围、数据仍在本机（spec §5.9「模式 ≠ 隔离」）。
+  // 判据取 `byMode`（模式筛选后）而非 `list`（全部）：搜索词把列表查空是另一回事，不该报"被模式藏了"。
+  const hiddenByMode = byMode.length === 0 && list.length > 0 && wsMode === 'team'
 
   return (
     <div className="flex-1 flex flex-col min-h-0 min-w-0">
@@ -69,7 +88,10 @@ export function WorkflowList(props: WorkflowListProps) {
       <div className="px-4 py-3 border-b flex items-center gap-2">
         <GitBranch className="w-4 h-4 text-brand-500" />
         <span className="text-sm font-semibold text-primary">工作流</span>
-        <Badge variant="default">{list.length}</Badge>
+        {/* 计数必须与**可见卡片数**一致（同 ChatListPanel/TaskListPanel 的 `count={chats.length}`）：
+            团队模式下若仍显示全量，就会出现"标着 5 张却一张卡片都没有"的界面谎言。
+            仍刻意**不**跟随搜索词——搜索是临时查询、计数保持稳定，这是本组件既有行为。 */}
+        <Badge variant="default">{byMode.length}</Badge>
 
         <div className="flex-1" />
 
@@ -103,7 +125,13 @@ export function WorkflowList(props: WorkflowListProps) {
         <div className="p-4 flex flex-col gap-4">
           {mine.length === 0 && published.length === 0 && !loading && (
             <div className="text-[11px] text-tertiary px-1 py-6 text-center">
-              暂无工作流。点「新建」从 开始 → 结束 的最小骨架开始，或「导入」.yfwflow 分享包。
+              {hiddenByMode ? (
+                // 被模式筛空：此时说"暂无工作流"是假话（工作流就在本机），必须改说真实原因，
+                // 否则用户会去"新建"一个本已存在的工作流。文案复用会话/任务面板的同一键。
+                <span className="text-[10px] leading-relaxed">{t('team.listFilteredEmpty')}</span>
+              ) : (
+                <>暂无工作流。点「新建」从 开始 → 结束 的最小骨架开始，或「导入」.yfwflow 分享包。</>
+              )}
             </div>
           )}
           <Group title="我的工作流" items={mine} render={props} onRequestDelete={setPendingDelete} />

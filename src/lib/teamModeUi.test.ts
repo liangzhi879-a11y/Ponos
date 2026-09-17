@@ -157,3 +157,32 @@ test('反向断言①（源码级）：知识检索视图走 knowledgeSearchScop
     )
   }
 })
+
+test('接线守门（源码级）：工作流面板按模式筛选列表，且被筛空时出声', () => {
+  // spec §5.9「受模式影响」一栏把"会话 / 工作流 / 知识（列表）"三者并列，故工作流面板必须与
+  // ChatListPanel / TaskListPanel 走同一条链路（`useModeFilter()` + `filterXxxByMode`）——
+  // 此前它是该栏唯一的漏网项（S3 其余部分均已交付），这条断言就是钉住这个缺口。
+  const rel = 'src/components/workflows/WorkflowList.tsx'
+  assert.ok(existsSync(join(REPO, rel)), `找不到 ${rel}：工作流列表改名了就必须同步改这条断言，不能默默失效`)
+  const src = read(rel)
+
+  assert.match(src, /useModeFilter\(\)/, '模式必须取自 useModeFilter（与 header 开关同一收口），不得自己读 store 拼状态')
+  assert.match(src, /filterWorkflowsByMode\(list, wsMode, teamIds\)/, '工作流列表必须经 filterWorkflowsByMode 收口')
+  assert.match(
+    src,
+    /const filtered = kw\s*\?\s*byMode\.filter/,
+    '搜索必须建立在模式筛选结果之上：若先搜索后筛选模式，搜索结果会越过模式边界（个人工作流被搜出来）',
+  )
+  assert.match(src, /team\.listFilteredEmpty/, '团队模式把个人工作流筛空时必须出声（复用会话/任务面板同一文案键）')
+  assert.match(
+    src,
+    /<Badge variant="default">\{byMode\.length\}<\/Badge>/,
+    '计数徽标必须与可见卡片数一致，否则会出现"标着 5 张却一张卡片都没有"的界面谎言',
+  )
+  // 命名纪律：`expose.mode`（public/private 暴露态）与工作区模式（personal/team）同形不同义，
+  // 接线不得图省事复用变量名 `mode` —— 那是本文件里最容易被误读的一处。
+  assert.ok(
+    !/filterWorkflowsByMode\(list, mode[,)]/.test(src),
+    `${rel}: 工作区模式不得沿用变量名 mode（那是 expose.mode 的语义），请另起名字（本文件用 wsMode）`,
+  )
+})
