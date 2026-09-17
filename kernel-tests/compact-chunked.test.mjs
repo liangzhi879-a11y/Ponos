@@ -76,9 +76,11 @@ test('chunkMergeInstruction：含压缩指令关键字（mock 摘要检测依赖
 })
 
 // —— 端到端：covered ≫ 小窗口 → 分块滚动合并落地 ——
-// entityTurns > 0 时在前 N 个 turn 的 user 文本里注入**高信号实体**（路径/端口/阈值），
-// 供保真门禁（P0-2）用例复现"摘要丢了关键实体"；默认 0 → 纯 CJK 无实体，既有用例零影响
-// （无实体时 audit 走 skipped 分支，门禁必 pass）。
+// entityTurns > 0 时在前 N 个 turn 写入**真实形态的关键事实**（Write 工具调用 + TodoWrite +
+// 决策文本），供保真门禁（P0-2）用例复现"摘要丢了关键事实"；
+// 默认 0 → 纯 CJK 无关键事实，既有用例零影响（无基准时 audit 走 skipped，门禁必 pass）。
+// 2026-09-17 口径变更：判定基准已是 key-info 契约（任务清单/文件变更/最近决策），
+// **只把路径塞进 user 文本不再构成基准**（那正是"压缩一次就误报"的旧口径，已废弃）。
 function makeCompactorEnv({ turns = 35, limit = 32768, entityTurns = 0 } = {}) {
   const events = []
   const wire = {
@@ -92,9 +94,23 @@ function makeCompactorEnv({ turns = 35, limit = 32768, entityTurns = 0 } = {}) {
   const cjk = '这是一段用于撑满上下文的压缩测试文本内容，包含足够多的汉字来让估算器按中文字符密度计价。'
   const ENT = '请修改 C:/Users/T203-15/yfworking/kernel/compact.mjs 与 '
     + 'C:/Users/T203-15/yfworking/server/bridge.mjs，端口 ports=8080，超时 timeoutMs=45000。'
+  const ENT_FILES = [
+    'C:/Users/T203-15/yfworking/kernel/compact.mjs',
+    'C:/Users/T203-15/yfworking/server/bridge.mjs',
+  ]
   for (let i = 0; i < turns; i++) {
     store.appendUser(`第 ${i} 轮任务：${i < entityTurns ? ENT : ''}${cjk.repeat(10)}`)
-    store.appendAssistant([{ type: 'text', text: `第 ${i} 轮回答：${cjk.repeat(10)}` }])
+    const blocks = [{ type: 'text', text: `第 ${i} 轮回答：${cjk.repeat(10)}` }]
+    if (i < entityTurns) {
+      for (const p of ENT_FILES) {
+        blocks.push({ type: 'tool_use', id: `w:${i}:${p}`, name: 'Write', input: { file_path: p, content: 'x' } })
+      }
+      blocks.push({
+        type: 'tool_use', id: `todo:${i}`, name: 'TodoWrite',
+        input: { todos: [{ content: '修改 compact.mjs 与 bridge.mjs' }] },
+      })
+    }
+    store.appendAssistant(blocks)
   }
   const context = {
     window: limit,

@@ -106,8 +106,9 @@ test('假绿：连续 20 轮纯问答（无工具/无压缩/无纠错）恒 gree
 
 test('强证据直通：摘要实体缺失率 ≥ 0.4 → red + trigger + 下发锚点', () => {
   const f = mkFid({ getAnchorSource: () => ({ task: '实现删除交互', memoryText: '## 文件变更\n- src/a.ts' }) })
+  // 基准须 ≥ summaryMissingMinBasis（8 项）：小样本缺失率无统计意义（2026-09-17 起降级为 amber）
   const issues = f.recordCompactionAudit({
-    entities: ['src/a.ts', 'src/b.ts', 'src/c.ts', '阈值 120'],
+    entities: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts', 'src/f.ts', 'src/g.ts', 'src/h.ts'],
     missing: ['src/a.ts', 'src/b.ts'],
     ratio: 0.5,
   })

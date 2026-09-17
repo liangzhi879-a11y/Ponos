@@ -373,27 +373,93 @@ export function auditSummaryFidelity({ covered, summary, minEntities = 3 } = {})
     // 压缩降到 12–32%（均值 21%）、0/8 判红，而"真把关键事实丢了"仍会被抓到（该口径对
     // 人为丢弃 must-keep 的摘要给出 100%）。
     // 旧口径保留在 raw 字段，供诊断与回归对比，不再参与判定。
-    const mustKeep = extractEntities(keyInfoBlock(extractKeyInfo(list)), { max: 60, kinds: 'key' })
-    const useMustKeep = mustKeep.length >= minEntities
-    const judged = useMustKeep ? missingEntities(mustKeep, summary) : miss
-    const raw = { entities, missing: miss.missing, total: miss.total, ratio: miss.ratio }
-    if (judged.total < minEntities) {
-      return { entities, missing: [], total: judged.total, ratio: 0, skipped: true, raw }
+    //
+    // 第二轮回修（2026-09-17，同夜）：首版换成 must-keep 后仍有 33/154（21%）判红——
+    // 因为 must-keep 是从 `<key-info>` **整块文本**抽实体，把三类噪声也当成"必须保留"：
+    //   ① 包裹标签自身（`<key-info>` 抽出实体 "key-info"，每次必然缺 1 项）；
+    //   ② 一次性工作产物（scratch/ 探针、commit-msg.txt、verify 脚本、日志）——摘要本就不该复述；
+    //   ③ 非事实碎片（纯数字与比值 `1/4`、字母串 `M/L/H/…`、CSS 几何值 `26px 24px 14px`、`polygon(...)`）。
+    // 现改为 `mustKeepFacts()`：只取**实质事实**（文件路径/标识符），剔除上述噪声。
+    const mustKeep = mustKeepFacts(list)
+    // 基准不足（无法从 key-info 取到实质事实）时**不做判定**，而不是回落旧口径——
+    // 旧口径已知会饱和（分母与摘要容量无关），回落等于把已修的误报重新引入。
+    // 宁可不出声：无从判断时误报比漏报更有害（会让用户对整个健康度失去信任）。
+    if (mustKeep.length < minEntities) {
+      return {
+        entities: mustKeep, missing: [], total: mustKeep.length, ratio: 0, skipped: true,
+        raw: { entities, missing: miss.missing, total: miss.total, ratio: miss.ratio },
+        skipReason: mustKeep.length ? 'basis-too-small' : 'no-basis',
+      }
     }
-    const mustMiss = useMustKeep ? judged : missingEntities(mustKeep, summary)
+    const judged = missingEntities(mustKeep, summary)
+    const raw = { entities, missing: miss.missing, total: miss.total, ratio: miss.ratio }
+    const mustMiss = judged
     return {
-      entities: useMustKeep ? mustKeep : entities,
+      entities: mustKeep,
       missing: judged.missing,
       total: judged.total,
       ratio: judged.ratio,
+      skipped: false,
       // 失真量（token 估算）：用户可读的"这次压缩丢了多少"，供健康度分级与建议使用
       lostTokens: judged.missing.reduce((n, e) => n + approxTokens(e), 0),
-      mustKeep: mustKeep.length
-        ? { total: mustKeep.length, missing: mustMiss.missing.length, ratio: mustMiss.ratio }
-        : null,
+      // 基准的 token 总量：供健康度把"失真量下限"按基准规模缩放——
+      // 否则基准本身很小时（如 8 个短路径 ≈ 40 token），"关键事实全丢"也过不了绝对下限，
+      // 真信号会被下限挡掉（本文件回归用例 ④ 就是钉这个）。
+      basisTokens: mustKeep.reduce((n, e) => n + approxTokens(e), 0),
+      mustKeep: { total: mustKeep.length, missing: mustMiss.missing.length, ratio: mustMiss.ratio },
       raw,
     }
   } catch { return { entities: [], missing: [], total: 0, ratio: 0, skipped: true } }
+}
+
+/** 一次性工作产物：scratch/探针/提交信息/日志/构建脚本等——按定义可丢弃，不该要求摘要复述。 */
+export function isTransientArtifact(e) {
+  const s = String(e ?? '')
+  return /(^|[\\/])(scratch|tmp|temp|logs?|coverage|tool-results|verify-final|apps-staging)([\\/]|$)/i.test(s)
+    || /(^|[\\/])\.trae([\\/]|$)/i.test(s)                       // 一次性构建/导出脚本目录
+    || /(^|[\\/])tmp[-_][^\\/]*$/i.test(s)                       // tmp-xxx 临时文件
+    || /(^|[\\/])_[a-z]+_append\d*\./i.test(s)                   // 临时追加文件
+    || /(^|[\\/])(commit-msg|probe|diag|verify)[-_]?[^\\/]*$/i.test(s)
+    || /\.(log|tmp|bak)$/i.test(s)
+}
+
+/**
+ * 是否"实质事实"（值得要求摘要保留）：文件路径，或不含空白的、足够长的标识符。
+ * 剔除实测噪声：纯数字/比值/日期（`1/4`、`19/19`、`2026-09-17`）、字母串（`M/L/H/V`）、
+ * CSS 几何值（`26px 24px 14px`）与函数（`polygon(...)`）、过短词、以及 `<key-info>` 这类标记。
+ * 为什么必须筛：`kinds:'key'` 的口径会把数字与常量都当实体，粒度过细——把它们计入
+ * "必须保留"会让缺失率被噪声推高（实测残余误报里绝大多数是这类碎片）。
+ */
+export function isSubstantiveFact(e) {
+  const s = String(e ?? '')
+  if (!s || s.length < 6) return false
+  if (/\s/.test(s)) return false                                              // 含空格：非单一事实
+  if (/^\d+([/:.\-]\d+)*$/.test(s)) return false                              // 纯数字/比值/日期
+  if (/^[A-Z](\/[A-Z])+$/.test(s)) return false                               // 字母串 M/L/H/V
+  if (/^\d+(px|em|rem|%)(\s+\d+(px|em|rem|%)?){1,}$/.test(s)) return false    // CSS 尺寸组
+  if (/^(polygon|translate|rotate|scale|calc|min|max|matrix)\(/i.test(s)) return false
+  if (/^(key-info|session-memory|compacted-summary|summary|MILESTONE|MILESTONES|MILESTONE-OK)$/i.test(s)) return false
+  return true
+}
+
+/**
+ * 判定基准：摘要被**明确要求**保留的**实质事实**（`<key-info>` 契约的内容，剔除噪声）。
+ * 取结构化字段（任务清单/文件变更/最近决策）而非 keyInfoBlock 的整块文本——
+ * 后者含包裹标签，会稳定产出一个永远缺失的 "key-info" 噪声项。
+ */
+export function mustKeepFacts(covered) {
+  const key = extractKeyInfo(Array.isArray(covered) ? covered : [])
+  // 注意：`files` 是**字符串数组**（形如 "Write /a/b.mjs"），不是对象数组——
+  // 早期版本按 `f.action/f.path` 取，取到 undefined 导致基准塌陷、误回落旧口径。
+  const files = key.files.slice(-8)
+  const text = [
+    key.todos.length ? `任务清单：${key.todos.slice(-3).join('；')}` : '',
+    files.join('，'),
+    key.decisions.length ? `最近决策：${key.decisions.join(' | ').slice(0, 500)}` : '',
+  ].filter(Boolean).join('\n')
+  if (!text) return []
+  return extractEntities(text, { max: 60, kinds: 'key' })
+    .filter((e) => isSubstantiveFact(e) && !isTransientArtifact(e))
 }
 
 /**

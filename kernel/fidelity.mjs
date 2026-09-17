@@ -57,10 +57,17 @@ export const DEFAULT_FIDELITY_CONFIG = {
   summaryMissingStrong: 0.4,
   summaryMissingMedium: 0.2,
   // 失真量下限（token）：缺失比例达标但**丢失量**不足此值时不判强证据。
-  // 校准依据（2026-09-17 实测真实会话 8 次压缩）：must-keep 基准下"好摘要"的丢失量落在
-  // 约 30–100 token 量级，故下限只用来挡"一两个短实体"级别的噪声（约 3 个路径/数字）。
-  // 注意别照旧口径（丢失 500–1600 token）定这个值——那是已废弃的饱和分母，用它会把真实信号一并挡掉。
-  summaryMissingMinTokens: 24,
+  // 校准依据（2026-09-17，本机 **140 次真实压缩**的真实摘要上标定；基准=被要求保留的实质事实）：
+  //   下限 24 → 15.0% 判红；60 → 8.6%；100 → **5.0%**。取 100（≈ 4 个典型文件路径的量）：
+  //   红灯要"少而可信"——低于此值属压缩的正常损耗（走 amber 提示）。
+  //   反向核对：把关键事实一条不留（合成摘要）实测 ratio=1.00、失真 264 token ⇒ 仍必判红。
+  //   注意别照旧口径（分母饱和、丢失 500–1600 token）定这个值，那是已废弃的度量。
+  summaryMissingMinTokens: 100,
+  // 失真量下限的**相对档**：与"几乎全丢"路径（缺失率 ≥ summaryMissingNearTotal）配合使用——
+  // 此时只要丢失量达到基准的这一比例即判红，覆盖小基准下的"关键事实全丢"（绝对值不到 100 token）。
+  summaryMissingTokenShare: 0.6,
+  // "几乎全丢"的缺失率门槛：0.9 时才会走相对档（实测 0.8 会多出 3 例小基准轻微丢失，属噪声）
+  summaryMissingNearTotal: 0.9,
   minEntities: 3,
   goalCoverageMin: 0.15,
   goalWindow: 6,
@@ -97,6 +104,8 @@ export function fidelityConfigFromEnv(env = process.env) {
   cfg.summaryMissingStrong = num(e.PONOS_FIDELITY_SUMMARY_MISSING_STRONG, cfg.summaryMissingStrong)
   cfg.summaryMissingMedium = num(e.PONOS_FIDELITY_SUMMARY_MISSING_MEDIUM, cfg.summaryMissingMedium)
   cfg.summaryMissingMinTokens = num(e.PONOS_FIDELITY_SUMMARY_MISSING_MIN_TOKENS, cfg.summaryMissingMinTokens)
+  cfg.summaryMissingTokenShare = num(e.PONOS_FIDELITY_SUMMARY_MISSING_TOKEN_SHARE, cfg.summaryMissingTokenShare)
+  cfg.summaryMissingNearTotal = num(e.PONOS_FIDELITY_SUMMARY_MISSING_NEAR_TOTAL, cfg.summaryMissingNearTotal)
   cfg.goalCoverageMin = num(e.PONOS_FIDELITY_GOAL_COVERAGE_MIN, cfg.goalCoverageMin)
   cfg.observeTurns = Math.max(0, Math.floor(num(e.PONOS_FIDELITY_OBSERVE_TURNS, cfg.observeTurns)))
   cfg.maxText = Math.max(1000, Math.floor(num(e.PONOS_FIDELITY_MAX_TEXT, cfg.maxText)))
@@ -706,7 +715,19 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
       // 判强证据——丢失的绝对量太小（例如只漏了一两个数字）属压缩的正常损耗，应落在 amber 角标
       // 而不是红。旧调用方若不提供 lostTokens（如直接喂 ratio 的单测），volumeOk 恒真、行为不变。
       const lostTokens = Number.isFinite(Number(audit.lostTokens)) ? Number(audit.lostTokens) : null
-      const volumeOk = lostTokens === null || lostTokens >= cfg.summaryMissingMinTokens
+      const basisTokens = Number.isFinite(Number(audit.basisTokens)) ? Number(audit.basisTokens) : null
+      // 失真量门槛——**两条独立转红路径**（校准自本机 141 次真实压缩）：
+      //   · 成片丢失：丢失 ≥ 100 token（≈ 4 个典型文件路径的量）
+      //   · 几乎全丢：缺失率 ≥ 0.9 且丢失 ≥ 基准的 60%（覆盖小基准下的全丢，如 70→70 token）
+      // 刻意**不设**"基准规模门槛"：曾加过（基准 <8 项一律降 amber，理由是缺失率统计意义不足），
+      // 但基准净化后实测它只挡下 1/141 例、且那例本身是"关键事实全丢"的真信号 ⇒ 净收益为负，
+      // 徒增一条任意阈值。噪声已由"基准只取实质事实"+ 体积门槛挡住。
+      const nearTotal = lostTokens !== null && basisTokens !== null
+        && ratio >= cfg.summaryMissingNearTotal
+        && lostTokens >= Math.ceil(basisTokens * cfg.summaryMissingTokenShare)
+      const volumeOk = lostTokens === null
+        || lostTokens >= cfg.summaryMissingMinTokens
+        || nearTotal
       const lossPct = Math.round(ratio * 100)
       const lossTok = lostTokens === null ? '' : `，失真量约 ${lostTokens} token`
       const advice = summaryLossAdvice({ ratio, lostTokens, sample: missing[0] })

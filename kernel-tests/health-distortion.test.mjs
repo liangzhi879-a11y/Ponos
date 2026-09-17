@@ -41,8 +41,9 @@ test('失真档变化也发事件（压力档不变时），且 pressure tier �
   h.record({ usage: { input_tokens: 1000 }, lastUsage: { input_tokens: 1000 } })
   assert.equal(ev.length, 0)
   // S2 强证据：关键实体成片丢失 → 失真红，而压力仍绿
+  // 注：基准须 ≥ summaryMissingMinBasis（8 项）才判红（2026-09-17 起，小样本缺失率无统计意义）
   h.recordCompactionAudit({
-    entities: ['src/a.ts', 'src/b.ts', 'src/c.ts', '阈值 120'],
+    entities: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts', 'src/f.ts', 'src/g.ts', 'src/h.ts'],
     missing: ['src/a.ts', 'src/b.ts'],
     ratio: 0.5,
   })
@@ -78,7 +79,9 @@ test('markFidelityResolved 后回绿并发事件（失真档有回绿路径，�
   const h = createHealth({ wire, env: {} })
   h.record({ usage: { input_tokens: 1000 }, lastUsage: { input_tokens: 1000 } })
   h.recordCompactionAudit({
-    entities: ['a.md', 'b.md', 'c.md', 'd.md'], missing: ['a.md', 'b.md'], ratio: 0.5,
+    entities: ['a.md', 'b.md', 'c.md', 'd.md', 'e.md', 'f.md', 'g.md', 'h.md'],
+    missing: ['a.md', 'b.md'],
+    ratio: 0.5,
   })
   assert.equal(ev[ev.length - 1].distortion.tier, 'red')
   const ids = h.fidelityEvidence().active.map((i) => i.id)
@@ -105,7 +108,10 @@ test('静默降级：fidelity 抛异常不影响压力档与主流程', () => {
   const h = createHealth({ wire, env: {}, getAnchorSource: () => { throw new Error('boom') } })
   assert.doesNotThrow(() => {
     h.recordTurnContent({ user: 'u', assistant: 'a', toolDigest: null })
-    h.recordCompactionAudit({ entities: ['a.md', 'b.md', 'c.md', 'd.md'], missing: ['a.md', 'b.md'], ratio: 0.5 })
+    h.recordCompactionAudit({
+      entities: ['a.md', 'b.md', 'c.md', 'd.md', 'e.md', 'f.md', 'g.md', 'h.md'],
+      missing: ['a.md', 'b.md'], ratio: 0.5,
+    })
     h.record({ usage: { input_tokens: 1000 }, lastUsage: { input_tokens: 1000 } })
   })
   const last = ev[ev.length - 1]
