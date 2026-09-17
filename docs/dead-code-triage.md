@@ -1,6 +1,6 @@
 # 死代码三态判定（P2）
 
-结论先行：全仓 **10 个模块属"真死候选"**（9 个前端组件 + 1 个 e2e 脚本），另有 2 个"仅测试引用"应**保留**、23 个"动态/间接引用"**不得当死代码删除**。**本文只做判定，不执行删除**（理由见末节）。
+结论先行：全仓 **10 个模块属"真死候选"**（9 个前端组件 + 1 个 e2e 脚本），另有 2 个"仅测试引用"应**保留**、23 个"动态/间接引用"**不得当死代码删除**。**其中 5 个已确认删除**（见文末"清理结果"），其余保留待定。
 
 复现方式：判定器脚本在会话临时目录（非仓库内），核心逻辑见下方"方法"。
 
@@ -55,8 +55,31 @@
 
 ⚠️ 这一栏是**宽松启发式**（判据：其它文件中出现该模块的完整文件名）。它的价值是**拦住误删**，**不是**断言"该模块确实被字符串引用了"——其中有若干只是名字偶然出现在无关文本里（配置文件、说明文字）。因此本栏的正确用法是：**看到自己关心的模块出现在这里，就必须人工确认，而不能直接删**。
 
-## 决策：本次不执行删除
+## 决策：只判定、不批量删除（删除按风险分批）
 
 1. **判定 ≠ 删除。** P2 这一项要的是"哪些能删"的结论，删代码是独立的、可回滚性更低的一步，应由人点头。
 2. **风险不对称。** 删 9 个组件若其中有一个实际被用到，代价是运行时白屏；保留它们的代价只是几 KB 体积。在证据只覆盖静态图的情况下，不值得赌。
-3. **可安全执行的验证路径**（建议下一步按此走）：先删 ① 中**明确是遗留原件**的 5 个 `src/components/chat/*`，然后依次跑 `npm run typecheck`、`npm run build`、`npm run test:ci` —— 三步全绿即视为安全；`LogoMorph.tsx` 与 `dropdown-menu.tsx` 建议单独确认（前者是本轮 logo 相关改动的产物，后者可能被有意留作后续 UI 使用）。
+3. **可安全执行的验证路径**：删一批 → 跑 `npm run typecheck`、`npm run build`、`npm run test:ci`，三步全绿即视为安全；再继续下一批。
+
+## 清理结果
+
+### 已删除（第一批 5 个，2026-09-17）
+
+`src/components/chat/` 下 5 个组件，判定依据一致——**注释多处写着"自 X 迁入/从 X 抽出"，说明职责已并入其它组件**，且文件名在其它源码中出现的位置**全部是注释**（无 import、无动态路径、无测试引用）：
+
+- `src/components/chat/MessageBubble.tsx`
+- `src/components/chat/TaskCwdBar.tsx`
+- `src/components/chat/FirstBytePendingBar.tsx`（与后两者的名字互相出现在对方注释里，属同批遗留）
+- `src/components/chat/KernelStallBar.tsx`
+- `src/components/chat/SystemWarningStrip.tsx`
+
+**删除前复核**：`grep` 全仓确认非注释引用为 0。仅剩的命中位于 `.worktrees/*`（其它 git 工作树）与参考代码目录，均非本项目源码。
+
+**验证**：`typecheck` 0 错、`build` 通过、`unit` / `server` / `kernel` 三层全绿、文档口径门禁通过（并已把被删路径登记进白名单，理由：本文档的职责就是记录"哪些被判死代码、依据是什么"，必须能指名它们）。
+
+### 保留待定（4 个 + 1 个脚本）
+
+- `src/components/boot/LogoMorph.tsx`、`src/components/diagnostic/DiagnosticBanner.tsx`、`src/components/browser/BrowserStatusBar.tsx`、`src/components/ui/dropdown-menu.tsx`
+- `server/interject.e2e.mjs`（`.e2e.mjs` 属手工运行的端到端脚手架，可能是有意留在仓库、按需手跑的探针——是否删除应问维护者）
+
+理由：这 4 个组件的判定证据同样充分（仅注释提及），但 `LogoMorph` 与 logo 相关的近期改动有关、`dropdown-menu` 是基础件、可能被有意留作后续 UI 使用。**在没有明确用途确认前保持现状**——保留的代价只是几 KB 体积。

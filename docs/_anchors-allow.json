@@ -13,6 +13,26 @@
     {
       "path": "src/__nope__.ts",
       "reason": "验收清单里**刻意构造的负例**：用于验证闸门/守卫能正确拒绝「不存在的路径」。文件若存在则测试失去意义。"
+    },
+    {
+      "path": "src/components/chat/MessageBubble.tsx",
+      "reason": "**已删除**的遗留组件（2026-09-17 死代码清理）。docs/dead-code-triage.md 的职责就是记录「哪些被判定为死代码、依据是什么」，因此必须能指名这些文件；文件不存在即清理已执行。"
+    },
+    {
+      "path": "src/components/chat/TaskCwdBar.tsx",
+      "reason": "同上：死代码清理对象，docs/dead-code-triage.md 需保留其名字作为判定依据。"
+    },
+    {
+      "path": "src/components/chat/FirstBytePendingBar.tsx",
+      "reason": "同上：死代码清理对象，docs/dead-code-triage.md 需保留其名字作为判定依据。"
+    },
+    {
+      "path": "src/components/chat/KernelStallBar.tsx",
+      "reason": "同上：死代码清理对象，docs/dead-code-triage.md 需保留其名字作为判定依据。"
+    },
+    {
+      "path": "src/components/chat/SystemWarningStrip.tsx",
+      "reason": "同上：死代码清理对象，docs/dead-code-triage.md 需保留其名字作为判定依据。"
     }
   ]
 }
