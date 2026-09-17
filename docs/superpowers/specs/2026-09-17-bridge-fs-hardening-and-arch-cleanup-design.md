@@ -897,12 +897,43 @@ workspace-attribution-wiring、fidelity-chain、browser-whitelist-approval-e2e�
 | 子项 | 状态 |
 |---|---|
 | 测试基线 + CI | ✅ 完成（§13） |
-| 文档口径纳入 CI | ✅ 完成（§13.4） |
+| 文档口径纳入 CI | ✅ 完成（§13.4，本轮加固计数口径：只算 git 已跟踪文件，见下） |
 | 26 个孤立模块三态判定 | ✅ 判定完成 → `docs/dead-code-triage.md`（真死 10 / 仅测试 2 应保留 / 动态 23 不得删；**只判定不删除**，理由见该文末节） |
-| 5 个巨石拆分 | ⏳ 未开始（`server/bridge.mjs` 已由 4460 → 3847，另 4 个未动） |
+| 5 个巨石拆分 | 🚧 进行中：`server/bridge.mjs` 已迁出 11 组端点（§12 的 9 组 + 本轮的 `/health`、`/boot-status`）；另 4 个未动 |
 | 68 → ~50 域归并 | ⏳ 未开始（需先确定"域"的判定口径，否则是无法验收的目标） |
 
-P1 剩余部分的实施方案见 `docs/2026-09-17-P1剩余重构方案.md`。该方案中最有价值的一条是**已确证的阻塞 bug**：`/worktrees` 与 `/branches` 仍用 `execSync` 同步跑 git（各 10s 超时），桥是单事件循环，同步期间全部会话的 token 流与心跳停摆；同类问题在 `/api/usage` 已有实测 10.8–19.6s 的阻塞数字，且已改异步（`server/kernel-readonly.mjs`）——这两处是同一个 bug 的未修版本。
+### 14.1 本轮对 CI 口径的加固：计数只看 git 已跟踪文件
+
+分层清单与计数逻辑抽到 `scripts/test-tiers.mjs`（预检与门禁共用单一真源）。其中**测试文件数只统计 `git ls-files` 的已跟踪文件**，而"每条 glob 至少匹配一个文件"用工作树扫。
+
+原因：本仓库会同时跑多个任务，工作树里存在**别人尚未提交**的在途测试文件。把它们算进锚点，锚点就记录了"只存在于本机"的数量，**CI 在干净克隆上必然对不上而变红**。预检的比对语义因此是不对称的（工作树数少于锚点=疑似删除；已跟踪数少于锚点=提醒先 `git add`；本地比锚点多属正常）。
+
+### 14.2 顺带修掉的 CI 假失败
+
+`kernel-tests/app-tools-mount.test.mjs` 在 `--test-concurrency=4` 下会因 Windows 句柄未释放而在 `finally` 的 `rmSync` 抛 EPERM——**断言全过、只是清理报错**，于是表现为随机变红（单独跑 3/3 通过）。按仓库既有 `rmSyncRetry` 模式加兜底，之后连跑两次全绿。
+
+未做全仓批量修补：`rmSync` 出现在约 155 个测试文件里，但只有"被 kill 的子进程的 cwd 就是该目录"这一形态有风险（约 47 处）。无命中证据前不做无法审阅的大改动，命中时就地按同一模式修。
+
+---
+
+## 15. P1 批次 1 实施记录与一处**安全核查结论**（重要）
+
+批次 1 已实施并提交（`/worktrees`、`/branches` 去 execSync；`/health`、`/boot-status` 迁入 host-routes）。方案与实施细节见 `docs/2026-09-17-P1剩余重构方案.md`。
+
+**额外发现并修掉一个真实缺陷**：`/worktrees` 用 `l.slice(21)` 解析分支名，而 `branch refs/heads/` 只有 18 字符——每个分支名被**截掉前 3 个字符**（实测：`feature/app-universal-onboarding` → `ture/app-universal-onboarding`；`knowledge-s1` → `wledge-s1`）。工作树面板一直显示错误分支名。
+
+**迁移时踩到的坑（已加测试固化）**：`bootState` 是跨请求共享的**活对象**，必须按引用传入路由模块。传副本不报错、端到端也可能通过，只是启动进度永远停在初始态——这类静默失效已在 `server/host-routes.test.mjs` 用"事后改动必须被下一请求读到"的断言守住。
+
+### 15.1 令牌闸门：核查后确认**没有洞**（记录以免重复误判）
+
+核查 `/api/auth/*` 一带时，单看 `server/bridge-token.cjs` 的 `authorizeBridgeRequest()` 会得出"带非不透明 Origin 即免检 ⇒ 任何网站都能驱动本机桥"的结论——**这是误判**。读完整调用链后确认闸门由**两道**构成，且顺序是关键：
+
+1. **在前**：`server/bridge.mjs` 开头的 `isAllowedOrigin(origin)` 白名单，外部来源（如 `Origin: https://evil.com`）**一律 403**，早于任何分支处理；
+2. **在后**：`authorizeBridgeRequest()` 的令牌校验，其中"带非不透明 Origin 直接放行"这一条是 **spec §6.2 D2 的契约要求**（开发态 GUI 在普通浏览器里跑，拿不到注入令牌，渲染层有 58 处 fetch 分布在 27 个文件）。
+
+能走到第二道的 origin 已被第一道收窄到 `null`/`file:`/`localhost`：`null` 视为不透明、必须持令牌；`file:` 与 `localhost` 属可信本机来源。因此"任意 Origin 免检"实际不可达。
+
+**结论**：设计成立，无需改。**但这是一条"改动顺序就可能开出真洞"的脆弱契约**——批次 2 搬迁 auth 端点时必须确认委托点仍在两道闸门之后、且两道顺序不变。
 
 ---
 

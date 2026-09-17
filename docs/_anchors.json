@@ -14,10 +14,10 @@
   },
   "testFileCounts": {
     "shared/**/*.test.mjs": 11,
-    "server/*.test.mjs": 82,
+    "server/*.test.mjs": 83,
     "electron/*.test.mjs": 12,
     "kernel-tests/*.test.mjs": 198,
     "src/**/*.test.ts": 73
   },
-  "testTotal": 376
+  "testTotal": 377
 }
