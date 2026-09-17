@@ -34,6 +34,24 @@ const asJson = has('--json')
 const apply = has('--apply') && !has('--dry-run')
 const rollback = has('--rollback')
 
+/**
+ * 本机是否有正在运行的 YFWorking 应用进程。
+ *
+ * 为什么要检测：**旧版代码只认团队根下的 `team.json`**，迁移把清单挪进容器后，
+ * 仍在运行的旧进程会立刻读不到团队（表现为"团队名空、成员 0"，严重时像团队凭空消失）。
+ * 已在真实环境踩到：应用 14:12 启动、容器化代码 15:10 才进树 ⇒ 迁移后应用立刻看不到清单。
+ * 因此迁移完必须提示重启，并把这点说清楚，而不是等用户自己发现"团队没了"。
+ */
+function runningAppPids() {
+  try {
+    const { execFileSync } = require('node:child_process')
+    const ps = execFileSync('powershell', ['-NoProfile', '-Command',
+      "Get-CimInstance Win32_Process -Filter \"Name='node.exe' or Name='electron.exe'\" | Where-Object { $_.CommandLine -match 'bridge\\.mjs|YFWorking|cli\\.mjs' } | Select-Object -ExpandProperty ProcessId"],
+      { encoding: 'utf-8', windowsHide: true, timeout: 15000 })
+    return ps.split(/\r?\n/).map((s) => s.trim()).filter((s) => /^\d+$/.test(s))
+  } catch { return [] }   // 检测失败不阻断迁移（它只是提醒）
+}
+
 function targets() {
   if (arg('--dir')) return [arg('--dir')]
   const cfgPath = join(process.env.USERPROFILE || process.env.HOME, '.yfw', 'team', 'config.json')
@@ -108,6 +126,22 @@ function unmigrate(dir) {
   return { moved, errors, skipped: [] }
 }
 
+/**
+ * 生成"迁移后必须重启"的提示行（纯函数，便于测试）。
+ * `pids` 为空表示未检测到运行中的应用。
+ */
+function restartNoticeLines(pids = [], movedAnything = false) {
+  if (!movedAnything) return []
+  const head = '─'.repeat(64)
+  if (pids.length) {
+    return [head,
+      `⚠ 检测到 YFWorking 应用正在运行（PID ${pids.join(', ')}）。`,
+      '  **请立即重启应用**：布局已改变，运行中的旧进程仍会去团队根下找清单，',
+      '  在重启前会表现为"团队名缺失、成员显示为 0"。重启后即恢复正常。']
+  }
+  return [head, '✓ 未检测到运行中的应用；下次启动即按新布局读取。']
+}
+
 // ── CLI（仅直接执行时运行；被测试 require 时不得产生副作用）────────────────────
 function main() {
   const results = []
@@ -137,7 +171,15 @@ function main() {
   }
   if (asJson) console.log(JSON.stringify(results, null, 2))
   else if (!apply && !rollback) console.log('\n（预演结束；加 --apply 才会真正迁移）')
+
+  // 迁移/回滚**改变了清单所在位置**：仍在跑的旧版进程会立刻读不到团队。
+  // 这不是可选项，必须显式提示——否则用户看到的是"团队名空了/成员归零"，却不知道要重启。
+  const movedAnything = results.some((r) => r.result?.moved?.length)
+  if (apply || rollback) {
+    const lines = restartNoticeLines(movedAnything ? runningAppPids() : [], movedAnything)
+    if (lines.length) console.log('\n' + lines.join('\n'))
+  }
 }
 
-module.exports = { TEAM_ITEMS, inspect, migrate, unmigrate }
+module.exports = { TEAM_ITEMS, inspect, migrate, unmigrate, restartNoticeLines }
 if (require.main === module) main()

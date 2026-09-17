@@ -137,3 +137,22 @@ test('预演不落盘：inspect 只读，不建容器、不移文件', () => {
   assert.equal(existsSync(join(dir, TEAM_CONTAINER_DIR)), false, 'inspect 必须纯只读')
   assert.equal(existsSync(join(dir, 'team.json')), true)
 })
+
+test('迁移后必须提示重启（旧进程仍读团队根下的清单，会表现成"团队凭空消失"）', () => {
+  const { restartNoticeLines } = require(join(ROOT, 'scripts', 'migrate-team-container.cjs'))
+
+  // ① 检测到应用在运行 ⇒ 必须出现"重启"字样，并点明症状（否则用户不知为何团队变空）
+  const running = restartNoticeLines([1234, 5678], true).join('\n')
+  assert.match(running, /重启应用/, '必须明确要求重启')
+  assert.match(running, /1234, 5678/, '应列出 PID 便于用户确认')
+  assert.match(running, /成员显示为 0/, '应说明重启前的症状，否则用户会以为数据丢了')
+
+  // ② 没检测到运行中的进程 ⇒ 说明下次启动即生效（不要无端吓唬用户）
+  const idle = restartNoticeLines([], true).join('\n')
+  assert.match(idle, /未检测到运行中的应用/)
+  assert.doesNotMatch(idle, /请立即重启/)
+
+  // ③ 什么都没搬动（如"无需迁移"或全部跳过）⇒ 不输出任何提示（避免噪音）
+  assert.deepEqual(restartNoticeLines([1234], false), [])
+  assert.deepEqual(restartNoticeLines([], false), [])
+})
