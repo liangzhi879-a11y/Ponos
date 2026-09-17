@@ -16,6 +16,7 @@ const { existsSync, statSync, readdirSync } = require('node:fs')
 const { dirname, isAbsolute, join, basename } = require('node:path')
 // ★ 探测产出从"一个级别"升级为"若干可控路径 + 三态结论"（Discovery 的输出契约）
 const { capability, buildCapabilitySurface } = require('./app-capability.cjs')
+const { buildCommandLine } = require('./shell-args.cjs')
 
 /** 稳定性优先的降级链：越靠前越稳定（CLI 有结构化输出 > 脚本接口 > UI 自动化） */
 const SURFACE_ORDER = ['process', 'script', 'uia']
@@ -310,9 +311,14 @@ function runHelp(exePath, args = ['--help']) {
       const { execFile, exec } = require('node:child_process')
       const opts = { timeout: CLI_PROBE_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024 }
       const cb = (err, stdout, stderr) => done({ exitCode: err?.code ?? 0, stdout, stderr })
-      const child = isBatchFile(exePath)
-        ? exec(`"${exePath}" ${args.join(' ')}`, opts, cb)
-        : execFile(exePath, args, opts, cb)
+      // 加固（P1）：.bat/.cmd 必须经 shell，故命令行由 shell-args 助手统一校验+加引号。
+      // 原实现 `exec(`"${exePath}" ${args.join(' ')}`)` 在 exePath 含 `"` 时可被闭合引号注入。
+      let child
+      if (isBatchFile(exePath)) {
+        child = exec(buildCommandLine(exePath, args), opts, cb)
+      } else {
+        child = execFile(exePath, args, opts, cb)
+      }
       child.on?.('error', (e) => done({ exitCode: -1, stdout: '', stderr: String(e?.message || e) }))
     } catch (e) {
       done({ exitCode: -1, stdout: '', stderr: String(e?.message || e) })

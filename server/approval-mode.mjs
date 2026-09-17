@@ -64,6 +64,32 @@ export function approvalSpawnArgs(mode) {
   return args
 }
 
+// init 回显判定（2026-09-17）：内核起来后 system/init 回的 approval_mode 该跟谁比？
+// ---------------------------------------------------------------------------
+// **基准必须是 spawn 时真正传给内核的档位（spawnMode），不是此刻的实时档位。**
+// 为什么（2026-09-17 实证假告警）：resume 大 transcript 时 spawn→init 窗口可达数秒
+// （实测 7s，期间内核在读历史 + [compact] action=aged）。窗口内用户在状态栏切档，
+// bridge 会 push 热切并记下会话覆盖 ⇒ 实时档位与 spawn 档位分叉。若拿实时档位当基准，
+// 「内核明明认账了新 flag」会被误判成「跑的是旧缓存内核」：日志出现
+// `expected bypass, kernel reports loose`，GUI 同时弹 amber 假警报，且 init 回显被
+// 渲染层当"当前档位"写回 store ⇒ 徽标从用户刚选的 bypass 退回 loose（界面说反话）。
+// 回显检验的本意只有一个：**内核认不认 --approval-mode 这个 flag**（认 → 回显 = spawn 档）。
+// 返回四态（bridge 据此动作，本模块只判定、不做 IO，便于单测）：
+//   'degraded' 回显 ≠ spawn 档 → 旧内核（忽略未知 flag，靠旧 skip flag 停在 loose）⇒ 如实告警
+//   'realign'  回显 = spawn 档 ≠ 当前档 → 不是旧内核，只是窗口内切过档 ⇒ 补热切 + 补广播
+//   'ok'       三者一致 → 无事
+//   'unknown'  回显缺失（更老的内核无该字段）→ 无从判断，不动作（不告警）
+// spawnMode 缺失时回落兜底档（与 approvalSpawnArgs 缺省同款）——不会凭空放大权限。
+export function classifyApprovalEcho({ echoed, spawnMode, liveMode }) {
+  if (!echoed) return 'unknown'
+  const e = normalizeApprovalMode(echoed)
+  const spawn = normalizeApprovalMode(spawnMode)
+  const live = normalizeApprovalMode(liveMode)
+  if (e !== spawn) return 'degraded'
+  if (e !== live) return 'realign'
+  return 'ok'
+}
+
 // GUI 文案用的一行摘要（弹窗/状态栏 tooltip 复用，避免两处各写一套）
 export function approvalModeSummary(mode) {
   switch (normalizeApprovalMode(mode)) {

@@ -1,35 +1,12 @@
 // Ponos-turbo 高危命令匹配（Bash 权限审批触发判定）
 // ---------------------------------------------------------------------------
-// 破坏性/系统级/危险命令 → 触发 can_use_tool 审批。纯函数，供 permissions 与
-// 测试复用。注意：命令可能带引号/参数顺序变化，用宽松子串匹配 + 词边界。
+// **薄转发**（2026-09-17 · P1-2）：pattern 清单已收敛到 `shared/high-risk.mjs`（单一真源），
+// 此处只保留原公开 API `matchesHighRisk`，使既有调用点（kernel/permissions.mjs、
+// kernel/tools.mjs）与测试**零改动**。
+//
+// 语义：命中 ⇒ 触发 `can_use_tool` 审批（"要不要问用户"）。归一化只做 trim（**不剥引号**，
+// 与桥侧不同——该差异是刻意的，见 shared/high-risk.mjs 文件头与 shared/high-risk.test.mjs）。
+// 与 `kernel/blacklist.mjs` 的分工不变：highrisk 回答"要不要问"（档位可放宽），
+// blacklist 回答"要不要一票否决"（灾难级，档位不能放宽）。
 
-const HIGH_RISK_PATTERNS = [
-  // rm 递归强删：危险 flag 可在任意参数位置（rm -i -rf /、rm --recursive --force /、
-  // rm file -rf 均触发），不再要求紧跟 rm；r/f 任一出现即审批（宽松子串匹配语义）
-  /\brm\b\s+(?:.*\s)?(?:--recursive|--force|-[a-zA-Z]*[rf][a-zA-Z]*)/i,
-  /\brmdir\s+\/s/i,                                     // Windows rmdir /s
-  /\bdel\s+\/s/i,                                       // Windows del /s
-  /\bformat\s+\w:/i,                                    // 磁盘格式化
-  /\bdiskpart\b/i,                                      // 磁盘分区工具
-  /\bchkdsk\b/i,                                        // 磁盘检查（可能写盘）
-  /\bcleanmgr\b/i,                                      // 磁盘清理
-  /\bshutdown\b/i,                                      // 关机
-  /\breboot\b/i,
-  /\btaskkill\b/i,                                      // 杀进程
-  /\btskill\b/i,
-  /\bdrop\s+(table|database)\b/i,                       // SQL 删表
-  /\btruncate\s+table\b/i,
-  /\bgit\s+push\s+--force/i,                            // 强推（覆盖远端历史）
-  /\bgit\s+reset\s+--hard/i,                            // 硬重置（丢弃改动）
-  /\bgit\s+clean\s+-f/i,                                // 清理未跟踪文件
-  /\b(rm|del|erase)\s+-\w*\s+\/[a-zA-Z]:\\./i,          // 删除根路径文件（宽松）
-  /\bcurl\s+.*\|?\s*(sh|bash)\b/i,                      // 管道执行远程脚本
-  /\b(?:sudo|runas)\s+rm\b/i,
-]
-
-export function matchesHighRisk(command) {
-  if (!command || typeof command !== 'string') return false
-  const c = command.trim()
-  if (!c) return false
-  return HIGH_RISK_PATTERNS.some((re) => re.test(c))
-}
+export { matchesApprovalTrigger as matchesHighRisk } from '../shared/high-risk.mjs'

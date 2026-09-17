@@ -3,6 +3,7 @@ const { existsSync, readFileSync, accessSync, mkdirSync, writeFileSync, rmSync, 
 const { join } = require('path')
 const http = require('http')
 const { spawn, spawnSync } = require('child_process')
+const { buildCommandLine } = require('./shell-args.cjs')
 const { resolveKernelPaths } = require('./kernel-paths.cjs')
 const { resolveYfwHome } = require('../server/yfw-home.cjs')
 const { writeLogLine, readLogPolicyCached } = require('../server/log-policy.cjs')
@@ -84,15 +85,28 @@ function exeUsable(p) {
   return !!p && (existsSync(p) || !/[\\/]/.test(p))
 }
 
-function runProbe(cmdArgs, ms, tag = 'probe') {
+/**
+ * 运行一次探针。
+ * 加固（P1）：签名从 `runProbe(cmdArgs[], ...)` 改为 `runProbe(exePath, args[], ...)`，
+ * 令"拼 shell 命令行"只有**一处**，且由 `shared` 的 shell-args 助手统一校验+加引号。
+ * 原先调用点各自写 `"${path}"` 再 join —— 路径里若含 `"` 即可闭合引号并注入命令。
+ */
+function runProbe(exePath, args, ms, tag = 'probe') {
   return new Promise((resolve) => {
     const t0 = Date.now()
     let stdout = '', stderr = ''
     let done = false
     const finish = (ok, exitCode) => { if (!done) { done = true; resolve({ ok, stdout, stderr, exitCode, latencyMs: Date.now() - t0 }) } }
+    let cmd
+    try {
+      cmd = buildCommandLine(exePath, args)   // 校验失败（含引号/换行）会抛，按探测失败处理
+    } catch (e) {
+      appendKernelStderr(tag, `unsafe probe command rejected: ${e.message}`)
+      return finish(false, -3)
+    }
     let proc
     try {
-      proc = spawn(cmdArgs.join(' '), { shell: true, stdio: ['ignore', 'pipe', 'pipe'] })
+      proc = spawn(cmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'] })
     } catch (e) { return finish(false, -1) }
     const timer = setTimeout(() => {
       // Windows 专用：shell:true 下 proc 是 cmd shell，proc.kill() 只杀 shell 不杀孙进程；
@@ -148,7 +162,7 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
     const rp = resolveKernelPaths()
     const probeRuntime = ctx.appPaths?.runtime
     const probeKernel = rp.kernel || ctx.appPaths?.kernel
-    const r = await runProbe([`"${probeRuntime}"`, `"${probeKernel}"`, '--help'], 15000, 'probe:kernel-launch').catch(() => ({ ok: false, stderr: '' }))
+    const r = await runProbe(probeRuntime, [probeKernel, '--help'], 15000, 'probe:kernel-launch').catch(() => ({ ok: false, stderr: '' }))
     let detail = `stdout=${r.stdout?.trim() || ''} exit=${r.exitCode}`
     if (!r.ok && (r.stderr || '').trim()) {
       detail += ` | stderr: ${r.stderr.trim().slice(0, 200)}`
@@ -223,7 +237,7 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
 
   async function checkOfficeOcr() {
     if (!ctx.appPaths.python) return { status: 'unknown', detail: '无 python 运行时' }
-    const r = await timeout(runProbe([`"${ctx.appPaths.python}"`, '--version'], 5000).catch(() => ({ ok: false })), 6000, 'python')
+    const r = await timeout(runProbe(ctx.appPaths.python, ['--version'], 5000).catch(() => ({ ok: false })), 6000, 'python')
     return { status: r.ok ? 'ok' : 'error', detail: r.stdout?.trim() || `exit=${r.exitCode}` }
   }
 
@@ -403,7 +417,7 @@ function createDiagMonitor({ ctx, logTee = { getLogTail: () => [] }, bridgePort 
   async function runKernelCheck() {
     if (kernelCheckInflight) return { ok: false, stdout: '', stderr: 'in-flight', exitCode: -1, latencyMs: 0 }
     kernelCheckInflight = true
-    try { return await timeout(runProbe([`"${ctx.appPaths.runtime}"`, `"${ctx.appPaths.kernel}"`, '--help'], 15000), 16000, 'kernel-check') }
+    try { return await timeout(runProbe(ctx.appPaths.runtime, [ctx.appPaths.kernel, '--help'], 15000), 16000, 'kernel-check') }
     finally { kernelCheckInflight = false }
   }
 

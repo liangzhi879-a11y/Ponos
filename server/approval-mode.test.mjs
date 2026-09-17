@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import {
   APPROVAL_MODES, DEFAULT_APPROVAL_MODE, NEW_INSTALL_APPROVAL_MODE,
   isValidApprovalMode, normalizeApprovalMode,
-  resolveEffectiveApprovalMode, approvalSpawnArgs, approvalModeSummary,
+  resolveEffectiveApprovalMode, approvalSpawnArgs, approvalModeSummary, classifyApprovalEcho,
 } from './approval-mode.mjs'
 import {
   APPROVAL_MODES as KERNEL_MODES, DEFAULT_APPROVAL_MODE as KERNEL_DEFAULT,
@@ -59,6 +59,46 @@ test('approvalSpawnArgs：显式档位 + loose/bypass 保留旧 skip flag（旧�
     assert.equal(args[0], '--approval-mode')
     assert.ok(APPROVAL_MODES.includes(args[1]), `档位值必须合法，实际 ${args[1]}`)
   }
+})
+
+// init 回显判定（2026-09-17 假告警修复）：比对基准必须是 **spawn 时传下去的档位**，
+// 不是此刻的实时档位——否则"spawn→init 窗口内用户切档"会被误判成旧缓存内核。
+test('classifyApprovalEcho：基准 = spawn 档；窗口内切档 → realign 而非 degraded（假告警回归）', () => {
+  // 2026-09-17 实证场景：全局档 loose 起内核，窗口内（init 前 7s）用户切到 bypass。
+  // 内核认账了 --approval-mode loose ⇒ 回显 loose = spawn 档。若拿实时档 bypass 当基准，
+  // 就会广播"可能运行的是旧缓存内核"的假告警，并把徽标回写成 loose（界面说反话）。
+  assert.equal(classifyApprovalEcho({ echoed: 'loose', spawnMode: 'loose', liveMode: 'bypass' }), 'realign')
+  // 反向：按 bypass 起、窗口内降回 loose —— 同样只是时序，不是旧内核
+  assert.equal(classifyApprovalEcho({ echoed: 'bypass', spawnMode: 'bypass', liveMode: 'loose' }), 'realign')
+  assert.equal(classifyApprovalEcho({ echoed: 'auto', spawnMode: 'auto', liveMode: 'manual' }), 'realign')
+
+  // 三者一致 → 无事
+  assert.equal(classifyApprovalEcho({ echoed: 'manual', spawnMode: 'manual', liveMode: 'manual' }), 'ok')
+  assert.equal(classifyApprovalEcho({ echoed: 'bypass', spawnMode: 'bypass', liveMode: 'bypass' }), 'ok')
+  // 大小写/空白宽容（内核回显与 flag 同样过 normalize）
+  assert.equal(classifyApprovalEcho({ echoed: ' BYPASS ', spawnMode: 'bypass', liveMode: 'bypass' }), 'ok')
+
+  // 真·旧内核：忽略未知 flag，靠旧 skip flag 停在 loose ⇒ 回显 ≠ spawn 档 ⇒ 告警
+  assert.equal(classifyApprovalEcho({ echoed: 'loose', spawnMode: 'manual', liveMode: 'manual' }), 'degraded')
+  assert.equal(classifyApprovalEcho({ echoed: 'loose', spawnMode: 'auto', liveMode: 'auto' }), 'degraded')
+  assert.equal(classifyApprovalEcho({ echoed: 'loose', spawnMode: 'bypass', liveMode: 'bypass' }), 'degraded',
+    '窗口内切过档也不得掩盖旧内核：spawn 档有 skip flag 而回显停在 loose 时，仍是降级')
+  assert.equal(classifyApprovalEcho({ echoed: 'loose', spawnMode: 'manual', liveMode: 'bypass' }), 'degraded',
+    'degraded 优先于 realign：既没认账 flag、档位又变过 ⇒ 先如实告警')
+
+  // 回显缺失（更老的内核无该字段）→ unknown：不告警、也不纠正（无从判断）
+  assert.equal(classifyApprovalEcho({ echoed: null, spawnMode: 'bypass', liveMode: 'bypass' }), 'unknown')
+  assert.equal(classifyApprovalEcho({ echoed: undefined, spawnMode: 'bypass', liveMode: 'manual' }), 'unknown')
+  assert.equal(classifyApprovalEcho({}), 'unknown')
+
+  // spawn 档缺失（不该发生：spawn 必传 flag）按兜底档 loose 处理 —— 与 approvalSpawnArgs
+  // 缺省同款，不会凭空放大权限；回显 loose 即视为认账，需要时走 realign 对齐。
+  assert.equal(classifyApprovalEcho({ echoed: 'loose', liveMode: 'bypass' }), 'realign')
+  assert.equal(classifyApprovalEcho({ echoed: 'bypass', liveMode: 'bypass' }), 'degraded')
+
+  // 固有限制（如实记录，勿当回归）：spawn 档本身就是 loose 时，旧内核回显也是 loose，
+  // 无信息可区分"新内核按 loose 起"与"旧内核停在 loose" ⇒ 这一格永远只能判 ok。
+  assert.equal(classifyApprovalEcho({ echoed: 'loose', spawnMode: 'loose', liveMode: 'loose' }), 'ok')
 })
 
 test('approvalModeSummary：四档各有文案且不空', () => {

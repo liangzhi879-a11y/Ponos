@@ -365,6 +365,62 @@ test('档位端到端：硬黑名单（rm -rf /）在 bypass 档仍触发 can_us
   }
 })
 
+// 时序回归（2026-09-17 假告警修复的机制前提）：桥判定"内核认不认 --approval-mode"用的是
+// init 回显，而 init 回显反映的是 **spawn 参数**（不是后到的热切值）——否则桥在
+// "spawn→init 窗口内用户切档"（生产实测窗口 7s）时会拿实时档位当基准，把认账了新 flag 的
+// 内核误判成旧缓存内核，广播假降级告警并把徽标回写成 spawn 档（界面说反话）。
+// 本用例用真实内核把这条时序钉死：窗口内注入的热切不改 init 回显，但最终仍生效；
+// init 之后的补 push（桥的 realign 路径）同样是内核读到的最后一条 ⇒ 生效值 = 当前档。
+test('档位时序：init 前注入的热切不改 init 回显（回显 = spawn 档），init 后补 push 生效', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'yfw-kb-home-'))
+  const workDir = mkdtempSync(join(tmpdir(), 'yfw-kb-work-'))
+  let k
+  try {
+    const kk = spawnKernel({ home, workDir, approvalMode: 'loose' })
+    k = kk
+    // 模拟桥的状态栏热切：spawn 已发生、init 尚未到达（此后到 init 之间内核在读历史/压缩）
+    await k.send({ type: 'control_request', request_id: 'pre-init', request: { subtype: 'approval_mode', payload: { value: 'bypass' } } })
+
+    const init = await k.collect((m) => m.type === 'system' && m.subtype === 'init')
+    // ★ 修复所依赖的事实：回显 = spawn 档（loose），不是窗口内切到的 bypass。
+    //   桥若拿"此刻生效档位"当基准，即在此处误报旧缓存内核（假告警回归点）。
+    assert.equal(init.approval_mode, 'loose', 'init 回显必须是 spawn 档，窗口内热切不得改写它')
+
+    // 窗口内那次热切最终仍会被内核读到（stdin 管道保序）→ 生效档位切到 bypass
+    const upd = await k.collect((m) => m.type === 'system'
+      && (m.subtype === 'approval_mode_updated' || m.subtype === 'approval_mode_rejected'))
+    assert.equal(upd.subtype, 'approval_mode_updated', '合法档位应回 updated 而非 rejected')
+    assert.equal(upd.value, 'bypass')
+
+    // 桥的 realign 路径：init 之后补 push 当前档位 —— 管道保序 ⇒ 内核读到的最后一条即当前档
+    await k.send({ type: 'control_request', request_id: 'post-init', request: { subtype: 'approval_mode', payload: { value: 'manual' } } })
+    const upd2 = await k.collect((m) => m.type === 'system' && m.subtype === 'approval_mode_updated')
+    assert.equal(upd2.value, 'manual')
+
+    // 端到端确认"最后一条生效"：manual 档下普通 Bash 必发 can_use_tool 且载荷回带 manual
+    await k.send({ type: 'user', message: { role: 'user', content: '[mock:tool-safe] 看一眼' } })
+    const req = await k.collect((m) => m.type === 'control_request' && m.request?.subtype === 'can_use_tool')
+    assert.equal(req.request.mode, 'manual', 'init 后的补 push 必须真正生效（否则内核停在更宽的档）')
+    await k.send({
+      type: 'control_response',
+      response: {
+        request_id: req.request_id,
+        subtype: 'success',
+        response: { behavior: 'allow', updatedInput: {}, toolUseID: req.request.tool_use_id, decisionClassification: 'user_temporary' },
+      },
+    })
+    const { result } = await k.collectTurn()
+    assert.equal(result.subtype, 'success', '批准后本轮应正常收尾')
+    const info = await k.stop()
+    assert.ok(info)
+    assert.equal(info.code, 0)
+  } finally {
+    if (k) await k.stop()
+    rmSyncRetry(workDir)
+    rmSyncRetry(home)
+  }
+})
+
 test('cancel 闭环：control_request(cancel) → assistant(已取消。)+result → 会话保留可续聊', async () => {
   const home = mkdtempSync(join(tmpdir(), 'yfw-kb-home-'))
   const workDir = mkdtempSync(join(tmpdir(), 'yfw-kb-work-'))

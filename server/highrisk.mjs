@@ -1,39 +1,23 @@
-// 高风险命令匹配（与内核 destructiveCommandWarning.ts 同构，见 docs/superpowers/specs/2026-08-14-plan-execute-mode-design.md §2.5）
-// bridge 用：检测 BashTool tool_use 是否命中清单 → 前端审批弹窗
-export const HIGH_RISK_PATTERNS = [
-  // git 破坏性
-  /git\s+(?:reset|rebase|merge|push)\s+[^\n]*?(?:--hard|--force|-f\b)/i,
-  /git\s+clean\s+-[^ ]*f/i,
-  /git\s+checkout\s+(?:--|\.)/,
-  /git\s+restore\s+\./,
-  /git\s+stash\s+(?:drop|clear)/,
-  /git\s+branch\s+-D\b/,
-  /git\s+commit\s+[^\n]*--amend/,
-  /git\s+commit\s+[^\n]*--no-verify/,
-  // 文件/目录删除（Unix + Windows）
-  /\brm\b/i, // rm / rm -f / rm -rf（任何 rm 均为删除操作）
-  /\b(?:del|erase)\b/i,
-  /\brmdir\b/i,
-  /\brd\s+\/s/i,
-  /\bmove\b/i, // Windows move（文件移动）
-  /\bmv\b/i,
-  /\btakeown\s+\/f/i,
-  /\bformat\b/i,
-  /\bdiskpart\b/i,
-  /\breg\s+delete\b/i,
-  // 进程/服务终止
-  /\btaskkill\b/i,
-  /\bkill\b/i,
-  /\bStop-Process\b/i,
-  // 数据库/基础设施破坏性
-  /\b(?:DROP|TRUNCATE)\s+(?:TABLE|DATABASE|SCHEMA)\b/i,
-  /\bDELETE\s+FROM\b/i,
-  /\bkubectl\s+delete\b/i,
-  /\bterraform\s+destroy\b/i,
-]
+// 桥侧高危命令判定（审批弹窗的"高危"标识）
+// ---------------------------------------------------------------------------
+// **薄转发**（2026-09-17 · P1-2）：pattern 清单已收敛到 `shared/high-risk.mjs`（单一真源），
+// 此处只保留原公开 API，使 server/bridge.mjs 的调用点零改动。
+//
+// 语义更正（实测）：本判定**不影响是否执行/是否弹窗**，只决定弹窗里的风险等级文案
+// （渲染层 src/hooks/useYFWCLI.ts 的 `risk: 'high' | 'medium'`）。是否审批由内核档位与
+// kernel/blacklist.mjs 决定。⇒ 此前注释所称"与内核 destructiveCommandWarning.ts 同构"
+// 已失效（该文件不存在），且该判定与内核判定实测有 52.7% 分叉——现由
+// shared/high-risk.mjs 的规则标签 + shared/high-risk.test.mjs 的漂移锁统一管理。
+//
+// 归一化：trim + 剥掉首尾引号（与内核侧只 trim 不同，该差异刻意保留）。
 
-export function matchesHighRisk(command) {
-  if (typeof command !== 'string' || !command.trim()) return false
-  const c = command.trim().replace(/^["']|["']$/g, '') // 引号包裹容错
-  return HIGH_RISK_PATTERNS.some((re) => re.test(c))
-}
+import { matchesDangerSign, patternsFor } from '../shared/high-risk.mjs'
+
+/** @deprecated 请改用 shared/high-risk.mjs 的 HIGH_RISK_RULES（带 id/group/tags/note）。
+ *  此处仅为兼容既有导出形态而保留。 */
+export const HIGH_RISK_PATTERNS = patternsFor('sign')
+
+export { matchesDangerSign as matchesHighRisk } from '../shared/high-risk.mjs'
+
+/** 供诊断：命中的规则 id 列表（替代过去"读两份清单猜"） */
+export { matchedRuleIds } from '../shared/high-risk.mjs'
