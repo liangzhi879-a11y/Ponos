@@ -531,6 +531,11 @@ export const zhCN = {
     // Task 12：思考深度全局控制（自 provider 级旧 select 迁移；providerEffortLevel 键已于 T15 清理）
     effortLevel: '思考深度',
     effortLevelDesc: '影响新会话与当前会话（输入条可热切）',
+    // 第 10 项：子代理并发上限（新会话生效；同时约束同轮多子代理分派与后台任务）
+    maxSubAgents: '最大并发子代理数',
+    maxSubAgentsDesc: '同时运行的子代理上限（同轮并行分派与后台任务共用）。"自动"按本机 CPU 核数推导；改动对新建会话生效。',
+    subAgentsAuto: '自动（按系统配置）',
+    subAgentsUnlimited: '不限',
     addCustomProvider: '自定义供应商',
     addCustomProviderDesc: '手动添加其他 Anthropic 兼容 API 供应商',
     deleteProvider: '删除供应商',

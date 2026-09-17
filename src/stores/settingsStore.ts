@@ -129,6 +129,10 @@ const defaultSettings: AppSettings = {
   // 思考深度（全局，Task 12）：'auto' = 内核默认（不注入 env）；非 auto 新会话
   // spawn 注入 + 运行中会话 WS 热切换
   effortLevel: 'auto',
+  // 子代理并发上限（第 10 项，2026-09-17）：'auto' = 按系统配置推导（内核默认，
+  // 不注入 env）；'0' = 不限；数字串 = 显式上限。经 buildChildEnv 注入
+  // PONOS_LANE_MAX_CONCURRENT（只影响新 spawn 的内核进程）
+  maxSubAgents: 'auto',
 
   // 审批放行档位（全局，2026-09-12）：'loose' = 应用今天的真实行为（桥硬编码
   // --dangerously-skip-permissions）→ 存量用户零行为变化。设置页改这里（持久化 +

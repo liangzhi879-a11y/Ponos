@@ -526,6 +526,12 @@ export const enUS: TranslationKeys = {
     // providerEffortLevel key was removed in T15 cleanup)
     effortLevel: 'Thinking effort',
     effortLevelDesc: 'Affects new sessions and the current session (hot-switchable in the input bar)',
+    // Item 10: max concurrent sub-agents (applies to new sessions; bounds both same-turn
+    // parallel dispatch and background tasks)
+    maxSubAgents: 'Max concurrent sub-agents',
+    maxSubAgentsDesc: 'Upper bound on simultaneously running sub-agents (shared by same-turn parallel dispatch and background tasks). "Auto" is derived from this machine\'s CPU count; changes apply to new sessions.',
+    subAgentsAuto: 'Auto (by system)',
+    subAgentsUnlimited: 'Unlimited',
     addCustomProvider: '+ Custom Provider',
     addCustomProviderDesc: 'Manually add an Anthropic-compatible API provider',
     deleteProvider: 'Delete Provider',

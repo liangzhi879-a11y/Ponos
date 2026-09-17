@@ -345,6 +345,11 @@ export interface AppSettings {
    *  运行中会话经 WS reasoning_effort 热切换；'auto' = 内核默认（不注入）。
    *  必填——defaultSettings 恒提供；旧 persist 快照可能缺失，消费点一律 normalizeEffortUi。 */
   effortLevel: EffortLevel
+  /** 子代理并发上限（第 10 项，2026-09-17）：同时运行的子代理数上限（前台并发分派 + 后台
+   *  任务共用一份预算）。'auto' = 按系统配置推导（内核默认，不注入 env）；'0' = 不限；
+   *  数字串 = 显式上限。经 buildChildEnv 注入 PONOS_LANE_MAX_CONCURRENT，只影响新 spawn
+   *  的内核进程。旧 persist 快照可能缺失，消费点一律 normalizeMaxSubAgentsUi。 */
+  maxSubAgents: string
 
   // UI state
   sidebarOpen: boolean
@@ -411,6 +416,9 @@ export interface YFWorkingConfigV2 {
   visionProviderId?: string
   /** 思考深度（全局顶层，Task 12）：handleSave 恒带上；旧代码路径缺省不报错。 */
   effortLevel?: string
+  /** 子代理并发上限（第 10 项，2026-09-17）：bridge 归一后落盘并注入 env；null = 自动
+   *  （不注入，内核按系统配置推导）、0 = 不限、正整数 = 上限。 */
+  maxSubAgents?: number | null
   /** 新会话注入个人经验的开关（bridge read/save 按透传处理） */
   experienceInjectEnabled?: boolean
   /** 新会话注入个人经验的上限（字符数） */

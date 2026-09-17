@@ -14,6 +14,9 @@ import { tmpdir, homedir } from 'os'
 import { randomBytes } from 'node:crypto'
 import { extractMilestoneMarks, extractProseStages } from './milestones.mjs'
 import { handleDisabledRoute } from './disabled-routes.mjs'
+// 子代理并发上限的归一策略在 shared/（纯函数）：桥是入口模块，import 即起服务，纯策略
+// 放这里才可单测（否则测试一 import 就去 bind 端口）。
+import { normalizeMaxSubAgents } from '../shared/subagent-concurrency.mjs'
 import { handleAgentsRoute } from './agents-routes.mjs'
 import { handleSkillDetailRoute } from './skill-detail-routes.mjs'
 import { handleMcpRoute } from './mcp-routes.mjs'
@@ -316,6 +319,13 @@ const DEFAULT_CONFIG = {
   // 思考深度（Task 12）：'auto' = 内核默认（不注入 env）；非 auto 值经 buildChildEnv
   // 注入 PONOS_REASONING_EFFORT。旧 config.json 缺此键 → loadConfig merge 默认 auto。
   effortLevel: 'auto',
+  // 子代理并发上限（第 10 项，2026-09-17）：同时运行的子代理数上限（前台并发分派 + 后台
+  // 任务共用这一份预算）。null = **自动**（按系统配置推导，即内核默认行为，不注入 env）；
+  // 正整数 = 显式上限；0 = 不限（与内核 PONOS_LANE_MAX_CONCURRENT 的 0 语义一致，
+  // 故"自动"刻意不用 0 表示——否则 0 会被内核读成"不限"）。
+  // 经 buildChildEnv 注入 PONOS_LANE_MAX_CONCURRENT；写入经 sanitizeConfigPatch 钳制。
+  // 改它只影响**新 spawn** 的内核进程（运行中会话需重启内核生效，与其他 env 类设置一致）。
+  maxSubAgents: null,
   // 审批档位（2026-09-12 四档化）：全局持久化档位，manual|auto|loose|bypass 逐级放宽。
   // **新装默认 = auto**（P0-4，2026-09-16）：新装/首次生成 config.json 写入 auto —— 只读与
   // 普通 Bash 仍自动，写文件/出网/派子 agent/未识别(MCP) 工具需用户确认。
@@ -560,6 +570,13 @@ function applyGlobalApprovalMode(mode) {
 // ---------------------------------------------------------------------------
 function sanitizeConfigPatch(patch) {
   const out = { ...(patch || {}) }
+  if ('maxSubAgents' in out) {
+    const raw = out.maxSubAgents
+    out.maxSubAgents = normalizeMaxSubAgents(raw)
+    if (raw !== out.maxSubAgents) {
+      console.warn(`[bridge] maxSubAgents 已钳制：${JSON.stringify(raw)} → ${JSON.stringify(out.maxSubAgents)}`)
+    }
+  }
   if ('approvalMode' in out && !isValidApprovalMode(out.approvalMode)) {
     console.warn(`[bridge] approvalMode 非法值 ${JSON.stringify(out.approvalMode)} → 钳制为 ${DEFAULT_APPROVAL_MODE}`)
     out.approvalMode = DEFAULT_APPROVAL_MODE
@@ -1084,6 +1101,10 @@ function buildChildEnv() {
   //（本文件 effort case），这里只负责每个新 spawn 的初始档位。
   const effort = cfg.effortLevel || 'auto'
   if (effort !== 'auto') env.PONOS_REASONING_EFFORT = effort
+  // 子代理并发上限（第 10 项）：null = 自动（不注入 —— 内核按系统配置推导，语义等价且干净）；
+  // 0 = 不限；正整数 = 显式上限。只影响新 spawn 的内核进程。
+  const maxSubAgents = normalizeMaxSubAgents(cfg.maxSubAgents)
+  if (maxSubAgents !== null) env.PONOS_LANE_MAX_CONCURRENT = String(maxSubAgents)
   // 内核日志等级（2026-09-12 日志策略）：仅在非 info 时注入 PONOS_LOG_LEVEL
   //（info = 内核默认，语义等价且干净）。刻意**不**进入 providerEnvSig：改等级只影响
   // 新 spawn 的日志啰嗦度，不该像换模型那样触发收割重建内核。debug 会把内核 stderr

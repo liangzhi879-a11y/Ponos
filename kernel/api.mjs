@@ -924,6 +924,17 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // 同轮多子 Agent 派发：[mock:agent-pair] 在**一条 assistant 消息**里产出两个 Agent
+  // tool_use（测试前台批量并发用）。为什么必须同轮：runToolBatch 的并发判定按"同一批
+  // 内的工具"做，跨轮派发天然串行（第二轮要等第一轮结果回来），测不出并发能力。
+  if (lastText.includes('[mock:agent-pair]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_mock_agent_pair_1', name: 'Agent', input: { subagent_type: 'general-purpose', prompt: '同轮子任务 A：请输出一句确认' } }
+    yield { type: 'tool_use', id: 'tool_use_mock_agent_pair_2', name: 'Agent', input: { subagent_type: 'general-purpose', prompt: '同轮子任务 B：请输出一句确认' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // 后台子 Agent 分发冒烟：[mock:agent-bg] 触发 run_in_background Agent tool_use
   // （cancel 全杀 subagent 测试用：hardStop 后任务应被中止为 stopped）。子 prompt
   // 带 [mock:sleep] → 子 lane 进入长 Bash 执行（持续运行态，等待被 kill）。

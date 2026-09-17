@@ -129,8 +129,51 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   const pendingSubAgents = new Map()
   // B3 排队任务 FIFO（2026-09-11）：{ taskId, start }——槽位释放时按派发顺序启动
   const pendingQueuedLanes = []
+  // 前台子代理并发槽（第 10 项，2026-09-17）：与后台**共用** LANE_MAX_CONCURRENT 预算。
+  // 为什么共用而非各给一份：预算代表同一份资源（模型 API 并发 + 本地 CPU），各给一份会让
+  // 「最大并发子代理数」名不副实（实际可达 2N）。前台取不到槽时**等待**而不是被拒
+  // （等待可被取消信号打断），后台排队任务仍走 FIFO、只补空位。
+  let foregroundRunning = 0
+  let slotWaiters = []
+  function wakeSlotWaiters() {
+    const ws = slotWaiters
+    slotWaiters = []
+    for (const w of ws) w()
+  }
+  /**
+   * 前台子代理取槽：满则等待。返回释放函数（幂等；释放会唤醒等待者并补位后台队列）。
+   * LANE_MAX_CONCURRENT <= 0 视为不限（与后台语义一致）。
+   */
+  async function acquireForegroundSlot(signal) {
+    if (LANE_MAX_CONCURRENT <= 0) return () => {}
+    let warned = false
+    while (runningCount() >= LANE_MAX_CONCURRENT) {
+      if (signal?.aborted) throw abortError()
+      // 等待对用户是"主流程卡住"，必须可见（也让测试有确定性判据：上限 1 时必出现该告警）。
+      if (!warned) {
+        warned = true
+        try { wire.warning({ level: 'subagent_concurrency', message: `子代理并发已满（上限 ${LANE_MAX_CONCURRENT}），本子任务排队等待槽位` }) } catch { /* 事件失败不影响主流程 */ }
+      }
+      await new Promise((resolve, reject) => {
+        const onAbort = () => reject(abortError())
+        if (signal?.aborted) { reject(abortError()); return }
+        slotWaiters.push(() => { signal?.removeEventListener?.('abort', onAbort); resolve() })
+        signal?.addEventListener?.('abort', onAbort, { once: true })
+      })
+    }
+    foregroundRunning++
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      foregroundRunning--
+      wakeSlotWaiters()
+      drainQueuedLanes()
+    }
+  }
   function runningCount() {
-    let n = 0
+    // 前台在跑 + 后台在跑（queued 不计入，防自计数恒满——B3 的既有约定）
+    let n = foregroundRunning
     for (const [, t] of pendingSubAgents) if (t.status === 'running') n++
     return n
   }
@@ -1975,7 +2018,15 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       pendingQueuedLanes.push({ taskId, start: () => exec() })
       return { content: `子 Agent「${agent.id}」任务已排队（task_id: ${taskId}，当前后台并发已满 ${LANE_MAX_CONCURRENT}，槽位释放后自动启动）。可用 Task 工具查询/取消。`, isError: false }
     }
-    const r = await exec()
+    // 前台并发闸（第 10 项）：取槽后再跑；无论成功/失败/取消都必须释放，
+    // 否则槽位泄漏会让后续子代理永久排队（故用 try/finally）。
+    const releaseSlot = await acquireForegroundSlot(subController.signal)
+    let r
+    try {
+      r = await exec()
+    } finally {
+      releaseSlot()
+    }
     if (r.status === 'stopped') return { content: '子 Agent 任务已取消', isError: true }
     if (r.status === 'failed') return { content: r.text, isError: true }
     const totalTokens = (r.usage.input_tokens ?? 0) + (r.usage.output_tokens ?? 0)

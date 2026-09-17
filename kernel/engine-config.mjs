@@ -2,6 +2,8 @@
 // 性质：纯「配置」——与 createEngine 的闭包状态（signal/wire/session…）无关，故可独立成模块。
 // 注意：求值时机不变（模块顶层读 process.env）。engine.mjs 导入使用并 re-export 原导出面。
 import { nrNorm } from './gen-guards.mjs'
+import { availableParallelism, cpus } from 'node:os'
+import { defaultLaneConcurrency } from '../shared/subagent-concurrency.mjs'
 
 
 // —— agent loop 兜底（本地模型死循环防护）——
@@ -197,7 +199,14 @@ export const UPSTREAM_DEAD_HEAL_BACKOFF_MS = LOOP_GUARD_OFF ? 0 : envNonNeg('PON
 // 即清零愈合计数；耗尽 STALL_HEAL_MAX 仍无进展才落可见收尾（硬停是最后防线，非默认路径）。
 export const LOOP_STALL_MS = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_LOOP_STALL_MS', 600_000)
 export const STALL_HEAL_MAX = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_STALL_HEAL_MAX', 2)
-// B3 子 agent 后台并发槽（2026-09-11）：同时运行的后台 lane 上限（默认 4，
-// 对齐同类产品的"每会话并发线程数"上限）；超限派发排队（FIFO），
-// 槽位释放自动启动。0 = 不限（既有行为）。
-export const LANE_MAX_CONCURRENT = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_LANE_MAX_CONCURRENT', 4)
+// 第 10 项（2026-09-17）：默认值**按系统配置推导**（策略在 shared/，便于单测）。
+// 该值同时约束前台并发分派（同轮多个 Agent）与后台 lane——同一份预算，故
+// 「最大并发子代理数」名副其实。探测失败时回归旧的固定值 4。
+function probeCores() {
+  try {
+    return typeof availableParallelism === 'function' ? availableParallelism() : (cpus()?.length ?? 0)
+  } catch { return 0 }
+}
+// B3 子 agent 并发槽（2026-09-11）：同时运行的子代理上限（默认按系统配置推导，见上）；
+// 超限派发排队（FIFO），槽位释放自动启动。0 = 不限（既有行为）。
+export const LANE_MAX_CONCURRENT = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_LANE_MAX_CONCURRENT', defaultLaneConcurrency(probeCores()))

@@ -1280,6 +1280,15 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
         if (typeof ctx?.spawnSubAgent !== 'function') return { content: '子 Agent 执行器不可用', isError: true }
         return ctx.spawnSubAgent(input, ctx)
       },
+      // 第 10 项（2026-09-17）：同轮多个 Agent 调用**允许并发**。原 P0-4 把 Agent 归入
+      // "写/执行类必须串行"，实测代价是前台无法并行分派（同轮两个 Agent 的事件序恒为
+      // start→notify→start→notify，即第二个要等第一个跑完）。
+      // 并发安全依据（已逐项核查）：① 每个子 lane 独立 session store / AbortController /
+      // writePaths；② 子 lane 内禁止再派子 Agent（上面的 ctx.lane 守卫）⇒ 不会无限扇出；
+      // ③ 审批挂起用 Map 按 tool_use id 键（engine 的 approvalWaiters）+ 前端 pendingPermissions
+      // 是数组队列，多个并行审批请求不会互相覆盖；④ 扇出上限由 spawnSubAgent 的并发闸兜住
+      // （LANE_MAX_CONCURRENT，见 kernel/engine.mjs 的前台槽位）。
+      concurrencySafe: true,
     },
     // 后台子 Agent 任务管理（查询/中止/续跑）
     Task: {
@@ -1842,7 +1851,9 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
     get toolNames() {
       return [...Object.keys(registry).filter((n) => !blocked.has(n)), ...Object.keys(dynamicView()).filter((n) => !blocked.has(n) && !(n in registry))]
     },
-    // P0-4：只读工具并发安全标记（Bash/Write/Edit/Agent/Task/OCR 等写/执行类串行）
+    // P0-4：只读工具并发安全标记（Bash/Write/Edit/Task/OCR 等写/执行类串行）。
+    // Agent 自 2026-09-17（第 10 项）改为并发安全：同轮多子代理并行分派，扇出上限由
+    // engine 的前台并发槽兜住（见 tools.mjs 中 Agent 条目下的并发安全依据）。
     isConcurrencySafe(name) {
       return registry[name]?.concurrencySafe === true || dynamicView()[name]?.concurrencySafe === true
     },

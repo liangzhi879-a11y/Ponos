@@ -31,6 +31,9 @@ import { isTeamSectionRequest, SETTINGS_SECTION_STORAGE_KEY, SETTINGS_TEAM_SECTI
 //（本组件与 rail 面板各自持有 rows 状态，同时打开时两边会互相覆盖）。
 import type { AppSettings, ModelProvider, YFWorkingConfigV2 } from '@/types'
 import { THEMES, type ThemeMode, type ThemeMeta, type Language } from '@/types'
+import {
+  maxSubAgentsLabelKey, maxSubAgentsOptions, normalizeMaxSubAgentsUi, toConfigMaxSubAgents,
+} from '@/lib/subagentUi'
 
 type Section = 'general' | 'model' | 'permissions' | 'logs' | 'knowledgeImport' | 'skills' | 'pet' | 'experience' | 'team' | 'about'
 
@@ -436,6 +439,9 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
           visionProviderId: cfg.visionProviderId || '',
           // 顶层 effortLevel 从 bridge config 回读（旧 config 无此键 → normalize 兜底 'auto'）
           effortLevel: normalizeEffortUi(cfg.effortLevel),
+          // 子代理并发上限（第 10 项）：以磁盘 config.json 为准（旧 config 无此键 →
+          // normalize 兜底 'auto' = 内核按系统配置推导）
+          maxSubAgents: normalizeMaxSubAgentsUi(cfg.maxSubAgents),
           // 审批档位（2026-09-12）：磁盘 config.json 是全局档的唯一真源——桥侧 spawn
           // 与 WS 热切都读它，GUI 打开设置页时回读，避免"上次改完重启又变回来"。
           // 旧 config 无此键 → normalize 兜底 loose（= 等价旧行为）。
@@ -576,6 +582,10 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
         // 全局思考深度并入 cfg（Task 12）：bridge saveConfig 整包透传写 config.json，
         // 新会话 spawn 时 buildChildEnv 读它注入 PONOS_REASONING_EFFORT
         effortLevel: normalizeEffortUi(settings.effortLevel),
+        // 子代理并发上限（第 10 项）：bridge sanitizeConfigPatch 再钳一次后落盘，
+        // 新会话 spawn 时 buildChildEnv 注入 PONOS_LANE_MAX_CONCURRENT。
+        // null = 自动（不注入，内核按系统配置推导）；0 = 不限；正整数 = 上限。
+        maxSubAgents: toConfigMaxSubAgents(settings.maxSubAgents),
         // 全局审批档位（2026-09-12）：bridge 侧 sanitizeConfigPatch 再钳一次后落盘，
         // 并对无覆盖的活会话热切（否则"设置页点了没反应"）。落盘后新会话 spawn 用
         // approvalSpawnArgs(档位) 决定是否传 --dangerously-skip-permissions。
@@ -951,6 +961,25 @@ function YFWorkingModelPanel({ t, settings, updateSettings, showAddDialog, setSh
                     ))}
                   </select>
                   <p className="text-[10px] text-tertiary mt-1">{t('settings.effortLevelDesc')}</p>
+                </div>
+
+                {/* 子代理并发上限（第 10 项，2026-09-17）
+                    绑定 settings.maxSubAgents → handleSave 并入 cfg → bridge buildChildEnv 注入
+                    PONOS_LANE_MAX_CONCURRENT（内核侧同时约束前台同轮多 Agent 分派与后台 lane）。
+                    'auto' 刻意不注入 env：让内核按系统配置推导，避免把本机结论写死进配置。 */}
+                <div>
+                  <label className="text-xs font-medium text-secondary mb-1 block">{t('settings.maxSubAgents')}</label>
+                  <select
+                    value={normalizeMaxSubAgentsUi(settings.maxSubAgents)}
+                    onChange={e => updateSettings({ maxSubAgents: normalizeMaxSubAgentsUi(e.target.value) })}
+                    className="w-full h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent"
+                  >
+                    {maxSubAgentsOptions(settings.maxSubAgents).map(v => {
+                      const key = maxSubAgentsLabelKey(v)
+                      return <option key={v} value={v}>{key ? t(key) : v}</option>
+                    })}
+                  </select>
+                  <p className="text-[10px] text-tertiary mt-1">{t('settings.maxSubAgentsDesc')}</p>
                 </div>
 
                 {/* Context Window */}
