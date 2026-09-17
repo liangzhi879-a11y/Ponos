@@ -1,23 +1,23 @@
 {
-  "_note": "由 node scripts/check-doc-anchors.mjs --write 生成（**不要手改**）。info 段仅信息展示；testFileCounts 参与 CI 门禁。文档路径白名单是手写的 docs/_anchors-allow.json。",
+  "_note": "由 node scripts/check-doc-anchors.mjs --write 生成（**不要手改**）。info 段仅信息展示；testFileCounts 参与 CI 门禁（只计 git 已跟踪文件）。文档路径白名单是手写的 docs/_anchors-allow.json。",
   "_scope": "文档扫描范围：docs/*.md, docs/manual/**/*.md（已排除：/五引擎架构性能对比分析/）",
   "info": {
-    "sourceModules": 423,
-    "sourceLoc": 109045,
+    "sourceModules": 430,
+    "sourceLoc": 110366,
     "monoliths": {
       "kernel/knowledge.mjs": 2554,
       "kernel/engine.mjs": 2390,
       "kernel/tools.mjs": 1906,
       "electron/main.cjs": 1891,
-      "server/bridge.mjs": 3914
+      "server/bridge.mjs": 3905
     }
   },
   "testFileCounts": {
-    "shared/**/*.test.mjs": 12,
-    "server/*.test.mjs": 81,
+    "shared/**/*.test.mjs": 11,
+    "server/*.test.mjs": 82,
     "electron/*.test.mjs": 12,
-    "kernel-tests/*.test.mjs": 199,
-    "src/**/*.test.ts": 74
+    "kernel-tests/*.test.mjs": 198,
+    "src/**/*.test.ts": 73
   },
-  "testTotal": 378
+  "testTotal": 376
 }

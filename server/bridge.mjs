@@ -2249,7 +2249,7 @@ const httpServer = createServer(async (req, res) => {
         : null
       const r = await handleHostRoute({
         method: req.method, pathname: url.pathname, searchParams: url.searchParams,
-        body: hostBody, sep, diagInfo, sessions, createTranscriptHandlers,
+        body: hostBody, sep, diagInfo, sessions, bootState, createTranscriptHandlers,
       })
       if (r) return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.body))
     }
@@ -2301,9 +2301,6 @@ const httpServer = createServer(async (req, res) => {
     // 它们是前端提交时的**寻址标识**（行/列身份按内容算，不按行号 —— 插删行列后行号会漂移）。
     // （/read-sheet、/write-sheet 已迁至 server/office-routes.mjs）
 
-    if (url.pathname === '/health') {
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ status: 'ok', pid: process.pid }))
-    }
     // --- 运行日志（2026-09-12 本地持久化策略）：设置页的日志面板 ---
     // 逻辑抽在 server/logs-routes.mjs（可单测：不必起桥，避免测试误杀正在运行的应用）
     const logsRes = handleLogsRoute({
@@ -2345,11 +2342,8 @@ const httpServer = createServer(async (req, res) => {
         return reply(knowledgeRes.status, { 'Content-Type': 'application/json' }, JSON.stringify(knowledgeRes.body))
       }
     }
-    // 启动预热状态（2026-09-11 真实 boot 进度）：main 轮询本端点转发给 BootScreen——
-    // 各模块真实完成后置位，渲染层按真实步骤渲染、全部就绪才交棒
-    if (url.pathname === '/boot-status') {
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, ...bootState }))
-    }
+    // 启动预热状态（/boot-status）与存活探针（/health）已迁至 server/host-routes.mjs（P1 批次 1）
+    // —— 注意 bootState 是按**引用**传入该模块的，传副本会让启动进度永远停在初始态。
 
     // 登录屏口令端点（GUI 专用）：本地 scrypt 口令（server/auth.mjs），token 仅占位
     if (url.pathname === '/api/auth/status') {

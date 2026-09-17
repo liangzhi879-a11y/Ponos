@@ -3,16 +3,19 @@
 // 约定同 `server/logs-routes.mjs`：**纯算响应，不碰 res/socket**，
 // 返回 `{ status, body }` 表示已算出响应；返回 `null` 表示不是本模块负责的路径。
 //
-// 为什么这八组端点归一个模块：它们都是"读**宿主/内核本机**信息"的端点，共同特征是
+// 为什么这些端点归一个模块：它们都是"读**宿主/应用本机**信息"的端点，共同特征是
 // **不涉及会话状态与工具转发**（本桥最核心、最危险的部分），因此可以安全外移：
 //   · `/known-folders`、`/drives`  — 宿主文件系统结构（目录选择器左栏）
 //   · `/diag/info`、`/diag/render-frame` — 诊断指标（内存态，供 diag-monitor 读）
 //   · `/transcript/…`             — 内核落盘的会话转录（列表/载入/搜索/删除）
+//   · `/health`、`/boot-status`   — 应用自身的存活与启动进度（2026-09-17 批次 1 并入）
 //
 // **有状态依赖，必须由调用方按引用传入**（迁移时逐字保留语义）：
 //   · `diagInfo`  — 桥内存对象，`/diag/render-frame` 会**就地更新**它（diag-monitor 读同一对象）
 //   · `sessions` — 桥的会话 Map，`/transcript/delete` 用它判断"会话是否仍在运行"
-// 传引用（而非副本）是刻意的：这两个都是跨请求共享的活状态。
+//   · `bootState` — 桥启动进度对象，由 boot 流程逐步置位；`/boot-status` 只读它
+// 传引用（而非副本）是刻意的：这些都是跨请求共享的活状态。传副本会**静默失效**
+// （改动不再反射到另一端），且不会有任何报错——上一轮拆分时踩过这个坑。
 import { existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -20,6 +23,7 @@ import { join } from 'node:path'
 /** 本模块负责的路径（`/transcript/` 走前缀匹配，见 isHostPath） */
 const FIXED_PATHS = new Set([
   '/known-folders', '/drives', '/diag/info', '/diag/render-frame',
+  '/health', '/boot-status',
 ])
 
 export function isHostPath(pathname) {
@@ -38,11 +42,24 @@ const json = (status, body) => ({ status, body })
  * @param {string} p.sep                           平台路径分隔符
  * @param {object} p.diagInfo                      桥内存诊断对象（**按引用**，会被就地更新）
  * @param {Map} p.sessions                         桥会话 Map（**按引用**，用于判断会话是否在运行）
+ * @param {object} p.bootState                     桥启动进度对象（**按引用**，只读）
  * @param {Function} p.createTranscriptHandlers    来自 server/transcript.mjs
  * @returns {Promise<{status:number,body:any}|null>}
  */
-export async function handleHostRoute({ method, pathname, searchParams, body, sep, diagInfo, sessions, createTranscriptHandlers }) {
+export async function handleHostRoute({ method, pathname, searchParams, body, sep, diagInfo, sessions, bootState, createTranscriptHandlers }) {
   if (!isHostPath(pathname)) return null
+
+  // ── /health：存活探针（含 pid，便于运维确认"是哪个进程"）─────────────────
+  if (pathname === '/health') {
+    return json(200, { status: 'ok', pid: process.pid })
+  }
+
+  // ── /boot-status：启动预热状态（2026-09-11 真实 boot 进度）──────────────
+  // main 轮询本端点转发给 BootScreen——各模块真实完成后置位，渲染层按真实步骤渲染、
+  // 全部就绪才交棒。`...bootState` 必须读**活对象**（按引用传入），否则进度永远停在初始态。
+  if (pathname === '/boot-status') {
+    return json(200, { ok: true, ...bootState })
+  }
 
   // ── /known-folders：主目录下存在的常用文件夹（目录选择器左栏）──────────────
   if (pathname === '/known-folders') {

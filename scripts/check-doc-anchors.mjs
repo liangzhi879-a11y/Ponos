@@ -1,26 +1,26 @@
 #!/usr/bin/env node
 // 文档口径纳入 CI（P2 · 2026-09-17 新增）
 // ---------------------------------------------------------------------------
-// 解决什么问题：本仓库的文档（spec / 运维手册）大量引用**具体代码路径、行数、测试文件数**。
+// 解决什么问题：本仓库的文档（架构/契约/运维手册/spec）大量引用**具体代码路径、行数、测试文件数**。
 // 这些数字一旦与代码脱节，文档就从"可信依据"退化成"需要人工核对的猜测"——而读者通常
 // **不会**去核对，于是照着过期文档操作。把可客观校验的口径变成 CI 断言，是最省事的解法。
 //
 // 两类检查：
-//   A. **路径存在性**：扫描 docs/ 下所有 Markdown 里反引号包裹的仓库相对路径，
-//      断言文件真实存在（列出缺失清单）。文档提到"某文件某某行为"而文件已改名/删除时立即暴露。
-//      确属**有意**保留的历史引用（例如描述已删除文件、或计划新增尚未创建的文件），
-//      登记到 docs/_anchors.json 的 docPathAllowMissing 里即可放行。
-//   B. **计数口径**：源码模块数/总行数、各层测试文件数、五个巨石行数，与
-//      docs/_anchors.json 比对；不一致即失败并提示用 --write 更新声明。
+//   A. **路径存在性**：扫描本仓库文档里反引号包裹的仓库相对路径，断言文件真实存在。
+//      文档提到"某文件某某行为"而文件已改名/移动/删除时立即暴露。
+//      确属**有意**引用的不存在路径（构建产物名、刻意构造的负例、文档在说明"该引用已失效"），
+//      登记到 docs/_anchors-allow.json（**手写**，每条写理由）即可放行。
+//   B. **各层测试文件数**：与 docs/_anchors.json 比对，抓"整层测试静默消失 / glob 写错"。
 //
 // 用法：
 //   node scripts/check-doc-anchors.mjs           # 校验（CI 用）
 //   node scripts/check-doc-anchors.mjs --write   # 重新生成 docs/_anchors.json
-import { existsSync, readFileSync, writeFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { globSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { TEST_GLOBS, trackedTestCounts } from './test-tiers.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const ANCHORS = resolve(ROOT, 'docs/_anchors.json')
@@ -47,16 +47,13 @@ function readAllow() {
 /** 五个待拆巨石（P2 清单）——仅作**信息展示**，不参与门禁（见下方"门禁强度"说明） */
 const MONOLITHS = ['kernel/knowledge.mjs', 'kernel/engine.mjs', 'kernel/tools.mjs', 'electron/main.cjs', 'server/bridge.mjs']
 
-/** 与 scripts/ci-preflight.mjs 的 TEST_GLOBS 保持一致 */
-const TEST_GLOBS = ['shared/**/*.test.mjs', 'server/*.test.mjs', 'electron/*.test.mjs', 'kernel-tests/*.test.mjs', 'src/**/*.test.ts']
-
 /**
  * 扫描范围：只扫**描述本仓库现状**的文档。
  * 刻意排除三类（它们"路径不存在"是正常状态，纳入只会让白名单膨胀到上百条、门禁失效）：
  *   · `docs/superpowers/specs|plans|audits/**` — 设计/计划/审计**记录**，写的是"当时打算建什么"，
- *     且常含对外部参考实现的引用（如 `agent-loop/src/...`）；
- *   · `docs/2026-09-15-五引擎架构性能对比分析.md` — **对比他人引擎**的调研笔记；
- *   · 其余 `docs/*.md`（本仓库的架构/契约/运维手册）**在范围内**。
+ *     且常含对外部参考实现的引用；
+ *   · 五引擎架构对比笔记 — **对比他人引擎**的调研；
+ *   · 其余 `docs/*.md`（本仓库的架构/契约/运维手册）与 `docs/manual/**` **在范围内**。
  */
 const DOC_GLOBS = ['docs/*.md', 'docs/manual/**/*.md']
 const DOC_EXCLUDE = [/五引擎架构性能对比分析/]
@@ -76,8 +73,10 @@ function computeAnchors() {
     .filter((f) => !f.startsWith('scripts/') && !f.startsWith('public/') && !f.startsWith('kernel-dist/'))
   let loc = 0
   for (const f of src) { try { loc += readFileSync(resolve(ROOT, f), 'utf8').split('\n').length } catch { /* 读不到则不计 */ } }
-  const testFileCounts = {}
-  for (const g of TEST_GLOBS) testFileCounts[g] = globSync(g, { cwd: ROOT }).length
+  // 测试文件数只算 git 已跟踪的（口径与 ci-preflight 共用 scripts/test-tiers.mjs）：
+  // 工作树里可能有别人尚未提交的在途文件，算进来会让锚点记录"只存在于本机"的数量，
+  // CI 在干净克隆上必然对不上而变红。
+  const testFileCounts = trackedTestCounts(ROOT)
   const monoliths = {}
   for (const m of MONOLITHS) { try { monoliths[m] = readFileSync(resolve(ROOT, m), 'utf8').split('\n').length } catch { monoliths[m] = -1 } }
   return {
@@ -114,7 +113,7 @@ const anchors = computeAnchors()
 
 if (write) {
   const out = {
-    _note: '由 node scripts/check-doc-anchors.mjs --write 生成（**不要手改**）。info 段仅信息展示；testFileCounts 参与 CI 门禁。文档路径白名单是手写的 docs/_anchors-allow.json。',
+    _note: '由 node scripts/check-doc-anchors.mjs --write 生成（**不要手改**）。info 段仅信息展示；testFileCounts 参与 CI 门禁（只计 git 已跟踪文件）。文档路径白名单是手写的 docs/_anchors-allow.json。',
     _scope: `文档扫描范围：${DOC_GLOBS.join(', ')}（已排除：${DOC_EXCLUDE.map(String).join(', ')}）`,
     ...anchors,
   }
@@ -123,7 +122,7 @@ if (write) {
   const missing = []
   for (const [p] of extractDocPaths()) if (!existsSync(resolve(ROOT, p))) missing.push(p)
   const unresolved = missing.filter((p) => !allow.has(p))
-  console.log(`✅ 已写入 docs/_anchors.json（仅计数口径；白名单见 docs/_anchors-allow.json）`)
+  console.log('✅ 已写入 docs/_anchors.json（仅计数口径；白名单见 docs/_anchors-allow.json）')
   console.log(`   信息：源码模块 ${out.info.sourceModules} / 总行 ${out.info.sourceLoc} / 测试文件 ${out.testTotal}`)
   console.log(`   门禁：各层测试文件数 + 文档路径存在性（手写白名单 ${allow.size} 条）`)
   if (missing.length) {
@@ -132,9 +131,9 @@ if (write) {
   }
   if (unresolved.length) {
     console.error(`\n❌ 有 ${unresolved.length} 个缺失路径未处理。请：`)
-    console.error(`   · 文档腐烂（文件已改名/移动/删除）→ **修文档**，这是首选；`)
-    console.error(`   · 确属真·历史引用（构建产物名、刻意举例的负例路径、文档在说明"该引用已失效"等）`)
-    console.error(`     → 手写进 docs/_anchors-allow.json 并写明 reason。`)
+    console.error('   · 文档腐烂（文件已改名/移动/删除）→ **修文档**，这是首选；')
+    console.error('   · 确属真·历史引用（构建产物名、刻意举例的负例路径、文档在说明"该引用已失效"等）')
+    console.error('     → 手写进 docs/_anchors-allow.json 并写明 reason。')
     process.exit(1)
   }
   process.exit(0)
@@ -158,6 +157,14 @@ for (const [g, n] of Object.entries(anchors.testFileCounts)) {
     problems.push(`测试文件数[${g}] 与锚点不符：实际 ${n}，锚点 ${expect}（确认无误后跑 npm run anchors:write）`)
   }
 }
+// 门禁 A′：分层清单本身要与 package.json 的测试脚本一致（防"改了脚本忘了改口径"）
+try {
+  const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8'))
+  const scriptsText = JSON.stringify(pkg.scripts || {})
+  for (const g of TEST_GLOBS) {
+    if (!scriptsText.includes(g)) warnings.push(`分层清单里的 ${g} 未出现在 package.json 的测试脚本中（口径与脚本已漂移，请同步）`)
+  }
+} catch { warnings.push('无法读取 package.json 校验分层清单一致性') }
 
 // 门禁 B：文档路径存在性（未白名单的缺失 = 文档腐烂）
 for (const [p, refs] of extractDocPaths()) {

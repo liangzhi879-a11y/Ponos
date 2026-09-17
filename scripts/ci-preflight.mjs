@@ -21,19 +21,11 @@ import { existsSync, readFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { globSync } from 'node:fs'
+// 分层清单与计数口径来自单一真源（与 check-doc-anchors.mjs 共用），避免两处各写一份而漂移
+import { TEST_GLOBS, trackedTestCounts, worktreeTestCounts } from './test-tiers.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const allowRunningApp = process.argv.includes('--allow-running-app')
-
-/** 必须与 package.json 的 test 脚本保持同一组 glob（改一处必须改两处） */
-export const TEST_GLOBS = [
-  'shared/**/*.test.mjs',
-  'server/*.test.mjs',
-  'electron/*.test.mjs',
-  'kernel-tests/*.test.mjs',
-  'src/**/*.test.ts',
-]
 
 const problems = []
 const warnings = []
@@ -48,33 +40,37 @@ if (major < 22 || (major === 22 && minor < 6)) {
 }
 
 // ── 2. 每条 glob 必须匹配到文件；各层数量与声明锚点一致 ──────────────────
-const counts = {}
+// 用**工作树**计数做"至少有一个文件"的检查：某层文件全是新加的（还没 git add）时
+// 也要立刻发现 glob 失效，而不是等提交之后。
+const counts = worktreeTestCounts(ROOT)
 for (const g of TEST_GLOBS) {
-  let files = []
-  try { files = globSync(g, { cwd: ROOT }) } catch (e) { problems.push(`glob 解析失败: ${g} — ${e.message}`); continue }
-  counts[g] = files.length
-  if (files.length === 0) {
-    problems.push(`glob 匹配不到任何测试文件（会导致"零测试但绿灯"）：${g}`)
-  }
+  if (counts[g] < 0) { problems.push(`glob 解析失败: ${g}`); continue }
+  if (counts[g] === 0) problems.push(`glob 匹配不到任何测试文件（会导致"零测试但绿灯"）：${g}`)
 }
 const total = Object.values(counts).reduce((a, b) => a + b, 0)
 if (total === 0) problems.push('全部 glob 都匹配不到文件：测试脚本已失效')
 
 // 与文档锚点比对（锚点由 node scripts/check-doc-anchors.mjs --write 生成）
+// 注意口径差异是刻意的：锚点只算 **git 已跟踪** 文件（CI 上才是同一集合），
+// 而本地可能还有未提交的新测试文件，故这里只对"锚点数 > 工作树数"（文件疑似被删）报错。
 const anchorsPath = resolve(ROOT, 'docs/_anchors.json')
 if (existsSync(anchorsPath)) {
   try {
     const anchors = JSON.parse(readFileSync(anchorsPath, 'utf8'))
+    const tracked = trackedTestCounts(ROOT)
     for (const [g, n] of Object.entries(anchors.testFileCounts || {})) {
-      if (g in counts && counts[g] !== n) {
-        problems.push(`测试文件数与文档锚点不符：${g} 实际 ${counts[g]}，锚点 ${n}（若为有意新增/删除，请跑 node scripts/check-doc-anchors.mjs --write 更新声明）`)
+      if (!(g in counts)) continue
+      if (n > counts[g]) {
+        problems.push(`测试文件比锚点少：${g} 工作树 ${counts[g]} < 锚点 ${n} —— 疑似有测试文件被删除；若为有意删除请跑 npm run anchors:write 更新声明`)
+      } else if (tracked[g] < n) {
+        problems.push(`已跟踪的测试文件少于锚点：${g} 已跟踪 ${tracked[g]} < 锚点 ${n}（提交后 CI 会失败，请先 git add 新测试或更新锚点）`)
       }
     }
   } catch (e) {
     warnings.push(`无法读取 docs/_anchors.json：${e.message}`)
   }
 } else {
-  warnings.push('未找到 docs/_anchors.json（可跑 node scripts/check-doc-anchors.mjs --write 生成，以启用"文档口径纳入 CI"）')
+  warnings.push('未找到 docs/_anchors.json（可跑 npm run anchors:write 生成，以启用"文档口径纳入 CI"）')
 }
 
 // ── 3. 本机是否已有应用占用桥端口（本地跑测试的误杀风险）─────────────────
