@@ -24,6 +24,19 @@ const KERNEL_CLI = process.env.YFW_TEST_KERNEL_CLI || fileURLToPath(new URL('../
 const SESSION = 'app-mount-0000-0000-0000-000000000001'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+// Windows：刚 kill 的子进程仍持有 cwd/handle 时 rmSync 会 EPERM（内核工作根就在临时目录里）。
+// 并发跑（--test-concurrency=4）时子进程退出更慢，这个竞态会让用例在 finally 里**假失败**——
+// 实测在本仓库全量跑时命中过一次（断言全过、仅清理抛 EPERM）。重试兜底是本仓库既有做法
+// （见 kernel-tests/app-page-scope.test.mjs、server/answer-resume.test.mjs）。
+function rmSyncRetry(path, attempts = 40) {
+  for (let i = 0; i < attempts; i++) {
+    try { rmSync(path, { recursive: true, force: true }); return } catch (e) {
+      if (i === attempts - 1) throw e
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
+    }
+  }
+}
+
 const READ_CMD = { action: 'queryOrder', title: '查询订单', kind: 'read', params: [{ name: 'orderId', type: 'string', required: true }], steps: [{ act: 'goto', url: '/' }] }
 
 /** 临时 configDir：<dir>/apps 下放 registry/spec/binding（内核读的同一份数据根） */
@@ -178,7 +191,7 @@ test('绑定到本会话 → app_* 工具真的进了工具表（init + 请求�
   } finally {
     try { k.proc.kill() } catch { /* 已退出 */ }
     await api.close()
-    rmSync(dir, { recursive: true, force: true })
+    rmSyncRetry(dir)
   }
 })
 
@@ -201,6 +214,6 @@ test('未绑定本会话 → 工具表里没有任何 app_*，也不发 route=ap
   } finally {
     try { k.proc.kill() } catch { /* 已退出 */ }
     await api.close()
-    rmSync(dir, { recursive: true, force: true })
+    rmSyncRetry(dir)
   }
 })

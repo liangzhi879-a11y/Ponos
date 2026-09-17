@@ -26,6 +26,8 @@ import { resolveReadable, resolveWritable, guardErrorResponse, assertSizeOk, FSG
 import { handleFilesRoute } from './files-routes.mjs'
 import { handleOfficeRoute, OFFICE_ROUTE_PATHS } from './office-routes.mjs'
 import { handleCollabRoute, isCollabPath } from './collab-routes.mjs'
+// git 调用走异步（见模块头注释：桥是单事件循环，同步 git 会停摆全部会话的 token 流与心跳）
+import { gitOut, parseWorktrees, parseBranches } from './git-async.mjs'
 import { handleHostRoute, isHostPath } from './host-routes.mjs'
 import { handleAgentsRoute } from './agents-routes.mjs'
 import { handleSkillDetailRoute } from './skill-detail-routes.mjs'
@@ -2828,18 +2830,13 @@ const httpServer = createServer(async (req, res) => {
       return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ skills, dir: src ? src.replace(/\\/g, '/') : '' }))
     }
     if (url.pathname === '/worktrees') {
-      const out = execSync('git worktree list --porcelain', { cwd: url.searchParams.get('path') || '.', encoding: 'utf-8', timeout: 10000 })
-      const w = []; let c = null
-      for (const l of out.split('\n')) {
-        if (l.startsWith('worktree ')) { if (c) w.push(c); c = { path: l.slice(9).replace(/\\/g, '/'), branch: '(detached)' } }
-        else if (l.startsWith('branch ') && c) c.branch = l.slice(21)
-      }
-      if (c) w.push(c)
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ worktrees: w }))
+      // 异步：execSync 会把桥的事件循环堵到 timeout（10s），期间全部会话停摆
+      const out = await gitOut(['worktree', 'list', '--porcelain'], { cwd: url.searchParams.get('path') || '.' })
+      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ worktrees: parseWorktrees(out) }))
     }
     if (url.pathname === '/branches') {
-      const out = execSync('git branch -a --format="%(refname:short)"', { cwd: url.searchParams.get('path') || '.', encoding: 'utf-8', timeout: 10000 })
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ branches: out.trim().split('\n').filter(Boolean).map(b => b.trim()) }))
+      const out = await gitOut(['branch', '-a', '--format=%(refname:short)'], { cwd: url.searchParams.get('path') || '.' })
+      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ branches: parseBranches(out) }))
     }
     function detectSkillFormat(dir) {
       const skillMdPath = join(dir, 'SKILL.md')
