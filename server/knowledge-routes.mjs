@@ -38,6 +38,29 @@ import {
 const MAX_DOC_BYTES = 2 * 1024 * 1024
 
 /**
+ * 知识库侧内核子进程的环境变量（2026-09-17 修复）。
+ *
+ * **为什么必须有**：内核 CLI 的 `resolveConfigDir` 解析顺序是
+ * `PONOS_CONFIG_DIR > PONOS_HOME > ~/.ponos`，而它**不认 `YFWORKING_HOME`**
+ * （`kernel/config.mjs`）。本模块的两个默认实现原先是裸的 `kernelReadonly` /
+ * `spawnKernelStreaming`，它们的 `env` 缺省是 `process.env` —— 桥进程里**没有**
+ * `PONOS_CONFIG_DIR`（那是 spawn 内核时逐个子进程注入的），于是内核回落到 `~/.ponos`：
+ * 面板上读到的是另一个根里的旧数据，用户导入的新内容也写进那个根
+ * （`~/.yfw/knowledge/spaces` 反而空着）。会话侧没这个问题，因为
+ * `server/bridge.mjs` 的 `buildChildEnv()` 注入了同一个根。
+ *
+ * **为什么放在默认值里**：这个坑的成因是"调用方忘了传 env"（`bridge.mjs` 调本路由时
+ * 两处都没传）。修在默认实现上，后续任何新调用方忘了传也不会再错——只修调用点等于
+ * 把地雷留给下一个人。
+ *
+ * `PONOS_HOME` 是**同一根的第二把钥匙**（语义中性、专供 agent 的 Bash 子进程，见
+ * `buildChildEnv` 的详细注释），这里一并注入以保持两条路解析到同一个根。
+ */
+export function knowledgeKernelEnv(home = resolveYfwHome()) {
+  return { ...process.env, PONOS_CONFIG_DIR: home, PONOS_HOME: home }
+}
+
+/**
  * 覆盖冲突判定的 mtime 容差（毫秒，2026-09-14 批次 4）。
  *
  * 取 1ms 而不是 0：不同文件系统的 mtime 精度不同（FAT32 是 2 秒、部分网络盘更粗），
@@ -610,7 +633,7 @@ function parseImportLimits(body) {
   return { ok: true, ...out }
 }
 
-async function handleImport({ readJsonBody, callKernel, spawnStream, home }) {
+async function handleImport({ readJsonBody, callKernel, spawnStream, home, env = null }) {
   const body = (await readJsonBody()) || {}
   // from 可以是字符串，也可以是数组（GUI 多选文件 = 一条请求带多个源）。
   // 全部归一在路由层做完：内核只认"一个 `--src` 一个源"的扁平 argv，别让它去解析 JSON 形状。
@@ -680,7 +703,9 @@ async function handleImport({ readJsonBody, callKernel, spawnStream, home }) {
     // 超时/缓冲沿用同步路径的两个常数：同一批文件不该"同步能导完、异步却超时"。
     // 32MB stdout 上限对 NDJSON 也够：进度行约 100B/文件，20000 文件 ≈ 2MB。
     const { jobId } = startImportJob({
-      args, spawnStream, mapError: importJobFailure,
+      // `env: env || undefined`：显式传根（不依赖 spawnStream 的 wrapper 兜底），
+      // 但不能传 null —— spawn 的 `env = process.env` 默认值只在 undefined 时生效。
+      args, spawnStream, env: env || undefined, mapError: importJobFailure,
       timeoutMs: IMPORT_TIMEOUT_MS, maxBuffer: IMPORT_MAX_BUFFER,
     })
     return { status: 202, body: { jobId } }
@@ -722,8 +747,14 @@ async function packsExport({ home, readJsonBody, callKernel }) {
 }
 
 /**
- * 路由入口。`callKernel` 可注入（测试用假实现，避免起进程）。
+ * 路由入口。`callKernel` 可注入（测试用假实现，避免起进程；缺省实现见 `kernelEnv`）。
  * 返回 { status, body } 或 null（未命中，交后续路由）。
+ *
+ * 2026-09-17 新增 `kernelEnv` —— 缺省 `knowledgeKernelEnv(home)`，即"与 `home` 同一根"的
+ * 内核环境（`PONOS_CONFIG_DIR`/`PONOS_HOME`）。`callKernel`/`spawnStream` 的**默认实现**
+ * 会带上它；`bridge.mjs` 生产链路显式传 `buildChildEnv()`（含 provider 等完整注入），
+ * 两处一致指向 `YFW_HOME`。此前默认实现用 `process.env`，内核回落 `~/.ponos`——
+ * 知识库面板显示旧根数据、导入写进旧根。
  *
  * S4 Task 4 新增可选参（**只被 `/knowledge/packs*` 消费，既有路由行为逐字节不变**）：
  *   · `home`     —— 数据目录（缺省 `resolveYfwHome()`）。缺省值让生产链路零配置；
@@ -733,18 +764,25 @@ async function packsExport({ home, readJsonBody, callKernel }) {
  *                   不在高频读路由上白白多一次文件 IO）。
  *   · `appVersion` —— 当前应用版本（版本兼容判定用；缺省走 `defaultAppVersion()`，
  *                   且**懒求值**，不在高频读路由上多一次文件 IO）。
- *   · `spawnStream`（2026-09-14）—— 流式 spawn 实现（缺省 `spawnKernelStreaming`）。
- *                   **只被 `/knowledge/import` 的 `async:true` 消费**，注入点而非在路由里
- *                   直接 spawn：测试注入假实现即可覆盖"进度归约/TTL/淘汰/错误映射"，
+ *   · `spawnStream`（2026-09-14）—— 流式 spawn 实现（缺省 `spawnKernelStreaming`，
+ *                   带上 `kernelEnv`）。**只被 `/knowledge/import` 的 `async:true` 消费**，
+ *                   注入点而非在路由里直接 spawn：测试注入假实现即可覆盖"进度归约/TTL/淘汰/错误映射"，
  *                   不必真起内核进程（与 callKernel/fetcher 同一纪律）。
+ *   · `kernelEnv`（2026-09-17）—— 内核子进程环境变量（缺省 `knowledgeKernelEnv(home)`）。
  */
 export async function handleKnowledgeRoute({
   method = 'GET', pathname = '', searchParams = new URLSearchParams(),
-  readJsonBody = async () => ({}), callKernel = kernelReadonly,
+  readJsonBody = async () => ({}), callKernel = null,
   home = resolveYfwHome(), fetcher = globalThis.fetch, config = {}, appVersion = null,
-  spawnStream = spawnKernelStreaming,
+  spawnStream = null, kernelEnv = null,
 } = {}) {
   if (!pathname.startsWith('/knowledge')) return null
+  // 【2026-09-17】两个默认实现都**必须**绑定到与 `home` 同一根的内核环境，
+  // 否则内核回落 `~/.ponos`（成因与取值见 `knowledgeKernelEnv` 注释）。
+  // 显式注入（测试的假实现、bridge 传入 `buildChildEnv()`）优先，逐字节不变。
+  const env = kernelEnv || knowledgeKernelEnv(home)
+  callKernel = callKernel || ((args, opts = {}) => kernelReadonly(args, { ...opts, env: opts.env || env }))
+  spawnStream = spawnStream || ((argv, opts = {}) => spawnKernelStreaming(argv, { ...opts, env: opts.env || env }))
   const p = pathname.replace(/\/+$/, '') || '/knowledge'
   const q = (name) => String(searchParams.get(name) ?? '')
   const isPost = String(method).toUpperCase() === 'POST'
@@ -877,7 +915,7 @@ export async function handleKnowledgeRoute({
     //                             （**仅异步任务**会用策略缺省补齐；非法值 400，不静默回落）
     // 超时/缓冲由 handleImport 内的 IMPORT_TIMEOUT_MS / IMPORT_MAX_BUFFER 决定（见那里的理由）。
     if (isPost && p === '/knowledge/import') {
-      return await handleImport({ readJsonBody, callKernel, spawnStream, home })
+      return await handleImport({ readJsonBody, callKernel, spawnStream, home, env })
     }
     // 异步导入任务的进度/结果查询（2026-09-14）：`GET /knowledge/import/jobs/:id`。
     // 未命中 → 404：任务记录**过期被回收**（保留 10 分钟）与应用重启是调用方仅靠响应

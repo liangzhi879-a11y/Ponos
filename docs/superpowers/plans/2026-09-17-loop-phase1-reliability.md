@@ -416,15 +416,16 @@ import { resolveModelPrices } from './model-prices.mjs'
 ```js
   const loop = createLoopController({
     prices: resolveModelPrices(
-      // 模型名来源：cli 的 activeModel（与 engine 同源）；providerCfg 暂取 null（Phase 1 只落三级解析骨架，
-      // 设置页写入的 provider 价格字段在 Phase 1 后续版本接入；当前 provider 分支靠 env 显式覆盖生效）
-      (typeof activeModel === 'string' && activeModel) || '',
-      null,
+      // 模型名：用 cli 作用域内既有的本地变量 `model`（kernel/cli.mjs:612 已定义：
+      // `let model = args.model || getProvider().model || settings.merged.model || ''`）。
+      // 取不到时传空串 → source==='estimate'（= 改前行为，零回归）。
+      (typeof model === 'string' && model) || '',
+      null, // provider 价格表在 Task 13 接上（PONOS_MODEL_PRICES）
       env,
     ),
 ```
 
-> **实现注意**：`activeModel` 若在 cli 中不可直接取得，改用 `engine` 已暴露的当前模型名（如 `engine.model` 或等价取值）；**若两者都不可得，退化为传 `''`**（→ `source==='estimate'`，即改前行为）。**不要为此新增模型状态通道**——Phase 1 的目标是让价格可被真实注入，模型名接入属可选项，缺省必须保持零回归。
+> **已核实**：`kernel/cli.mjs:612` 有本地变量 `model`，`createLoopController`（`:1032`）在同一模块作用域内可直接引用它。**不要新增模型状态通道**。
 
 - [ ] **Step 7: 跑测试确认通过**
 
@@ -2330,19 +2331,33 @@ const loopSupervisor = createLoopSupervisor({
 })
 ```
 
-在 `reapIdleKernels` 的 tick 注册处（`server/bridge.mjs:3429` 的 `setInterval(reapIdleKernels, ...)`）之后加入：
+**先引入共享 tick 常量**（现状是内联三元表达式，`REAP_TICK_MS` 这个常量名**并不存在**）。把 `server/bridge.mjs:3431-3432` 的
 
 ```js
-// 主管与回收器同一个 60s tick（不新建定时器体系）。tick 内自吞所有异常，
-// 且 supervisor.tick 返回 Promise —— 这里 fire-and-forget，失败只记日志。
+const _reapTickEnv = Number(process.env.YFW_KERNEL_REAP_TICK_MS)
+if (KERNEL_IDLE_REAP_MS > 0) setInterval(reapIdleKernels, _reapTickEnv > 0 ? _reapTickEnv : 60000).unref?.()
+```
+
+改为
+
+```js
+const _reapTickEnv = Number(process.env.YFW_KERNEL_REAP_TICK_MS)
+// 回收器与循环主管共用同一扫描周期（用户决策：不新建定时器体系）。提为具名常量，
+// 供主管 tick 与"循环即将触发"的宽限窗口（Task 11 的 2×REAP_TICK）复用。
+const REAP_TICK = _reapTickEnv > 0 ? _reapTickEnv : 60000
+if (KERNEL_IDLE_REAP_MS > 0) setInterval(reapIdleKernels, REAP_TICK).unref?.()
 if (LOOP_SUPERVISOR_ON) {
-  setInterval(() => { void loopSupervisor.tick().catch(() => {}) }, REAP_TICK_MS).unref?.()
+  // loop 主管与回收器同一个 tick。supervisor.tick 返回 Promise —— 这里 fire-and-forget，
+  // 异常只记日志、绝不冒泡（主管故障不得拖垮 bridge）。
+  setInterval(() => { void loopSupervisor.tick().catch(() => {}) }, REAP_TICK).unref?.()
   // 启动后先跑一次：bridge 重启（应用重启）后立刻接管此前遗留的待触发循环
   setTimeout(() => { void loopSupervisor.tick().catch(() => {}) }, 5_000).unref?.()
 }
 ```
 
-> `REAP_TICK_MS` 是既有常量名；若实际为 `KERNEL_IDLE_REAP_MS` 或内联数值，按文件现状取用同名 tick 周期，**不要新造常量**。
+> **注意**：`REAP_TICK` 必须定义在 `loopSupervisor` 之前还是之后不影响（都在模块级且只在回调里用），但 `setInterval` 语句必须在 `REAP_TICK` 声明之后（`const` 有 TDZ）。
+
+> **测试用 env**：`YFW_KERNEL_REAP_TICK_MS` 已存在，把 tick 缩短即可让主管的巡检也随之加快（无需额外 env）。
 
 - [ ] **Step 6: 跑测试确认通过**
 
@@ -2528,7 +2543,9 @@ export function noteLoopFrame(sid, parsed, kernelSessionId = null) {
       // 循环宽限（P1-1 机制 A）：循环即将触发（nextRunAt 落在 2×tick 窗口内）→ 本轮不回收。
       // 否则内核恰在"刚要跑"时被杀，主管下次巡检才唤醒 = 一次无谓冷启动。
       // 长间隔循环不在窗口内，照常回收（这是不采用"无条件豁免"的原因：省内存）。
-      if (shouldGraceForLoop(sid, Date.now(), 2 * REAP_TICK_MS, {
+      // 放在全部回收分支之前：无论后续走"等待豁免超上限""轮次失活"还是"空闲回收"，
+      // 只要循环即将触发就不该杀。
+      if (shouldGraceForLoop(sid, Date.now(), 2 * REAP_TICK, {
         getLoopRecord,
         readState: (kernelSid) => readLoopState(YFW_HOME, kernelSid),
       })) continue
@@ -2540,7 +2557,7 @@ export function noteLoopFrame(sid, parsed, kernelSessionId = null) {
 import { readLoopMeta, upsertLoopMeta, removeLoopMeta, readLoopState } from './loop-paths.mjs'
 ```
 
-> `REAP_TICK_MS` 与 Step 5 的 tick 周期同源（按文件现状取同一常量名）。
+> `REAP_TICK` 由 Task 10 引入（`_reapTickEnv > 0 ? _reapTickEnv : 60000`），与本处同源。
 
 - [ ] **Step 6: 跑测试确认通过**
 
@@ -2570,49 +2587,65 @@ git commit -m "feat(bridge): 回收宽限，循环即将触发时不回收内核
 
 - [ ] **Step 1: 写失败测试**
 
-创建 `src/lib/loopNotice.test.ts`：
+创建 `src/lib/loopNotice.test.ts`（**用 `node:test` + `node:assert/strict`，import 本地模块带 `.ts` 后缀** —— 本仓库无 vitest，`npm test` 对 `src/**/*.test.ts` 也走 `node --test`；可参考 `src/lib/agentTools.test.ts` 的写法）：
 
 ```ts
-// 循环中断/恢复提示文案（P1-7）。纯函数，便于单测。
-import { describe, it, expect } from 'vitest'
-import { noticeFor } from './loopNotice'
+// src/lib/loopNotice.test.ts
+// 循环中断/恢复提示文案（P1-7）。跑在 node --test（本仓库无 vitest）。
+// 纯函数：把 bridge 广播的事件映射为 { level, message }。
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
 
-const t = (k: string) => k
-const tt = (k: string) => (k === 'warnings.loopInterrupted'
-  ? '循环已中断：{reason}'
-  : k === 'warnings.loopResumed' ? '循环已自动恢复（第 {n} 次）' : k)
+import { noticeFor } from './loopNotice.ts'
 
-describe('noticeFor', () => {
-  it('loop_resumed → loop_resumed level，含复活次数', () => {
-    const r = noticeFor('loop_resumed', { sessionId: 'k1', resumeCount: 3 }, tt)
-    expect(r?.level).toBe('loopResumed')
-    expect(r?.message).toContain('3')
-  })
+// 假 t：模仿项目真实 i18n 的签名 t(key, params) 与 '{n}' 占位符替换
+// （见 src/i18n/translations/zh-CN.ts 的 warnings.budget / warnings.skillVersion）
+const TEMPLATES: Record<string, string> = {
+  'warnings.loopResumed': '循环已自动恢复（第 {n} 次）',
+  'warnings.loopInterruptedLimit': '循环已中断：自动恢复次数已达上限，需人工处理',
+  'warnings.loopInterrupted': '循环已中断，需人工处理',
+}
+const tt = (k: string, p?: Record<string, string>) => {
+  const tpl = TEMPLATES[k] ?? k
+  return tpl.replace(/\{(\w+)\}/g, (_, name) => String(p?.[name] ?? `{${name}}`))
+}
 
-  it('loop_interrupted 达复活上限 → 提示含原因', () => {
-    const r = noticeFor('loop_interrupted', { sessionId: 'k1', reason: 'resume_limit' }, tt)
-    expect(r?.level).toBe('loopInterrupted')
-    expect(r?.message).not.toContain('{reason}')
-  })
+test('loop_resumed → loopResumed level，含复活次数', () => {
+  const r = noticeFor('loop_resumed', { sessionId: 'k1', resumeCount: 3 }, tt)
+  assert.equal(r?.level, 'loopResumed')
+  assert.ok(r?.message.includes('3'))
+  assert.ok(!r?.message.includes('{n}'), '占位符必须被替换')
+})
 
-  it('未知事件 → null（不动 warning 区）', () => {
-    expect(noticeFor('whatever', {}, t)).toBeNull()
-    expect(noticeFor('', {}, t)).toBeNull()
-  })
+test('loop_interrupted 达复活上限 → 专用文案', () => {
+  const r = noticeFor('loop_interrupted', { sessionId: 'k1', reason: 'resume_limit' }, tt)
+  assert.equal(r?.level, 'loopInterrupted')
+  assert.ok(r?.message.includes('上限'))
+})
 
-  it('缺失 resumeCount → 次数兜底为 0，不出现 NaN/undefined', () => {
-    const r = noticeFor('loop_resumed', {}, tt)
-    expect(r?.message).not.toContain('NaN')
-    expect(r?.message).not.toContain('undefined')
-    expect(r?.message).toContain('0')
-  })
+test('loop_interrupted 其他原因 → 通用文案', () => {
+  const r = noticeFor('loop_interrupted', { sessionId: 'k1', reason: 'other' }, tt)
+  assert.equal(r?.level, 'loopInterrupted')
+  assert.ok(!r?.message.includes('上限'))
+})
+
+test('未知/空事件 → null（不动 warning 区）', () => {
+  assert.equal(noticeFor('whatever', {}, tt), null)
+  assert.equal(noticeFor('', {}, tt), null)
+})
+
+test('缺失 resumeCount → 次数兜底为 0，不出现 NaN/undefined', () => {
+  const r = noticeFor('loop_resumed', {}, tt)
+  assert.ok(!r?.message.includes('NaN'))
+  assert.ok(!r?.message.includes('undefined'))
+  assert.ok(r?.message.includes('0'))
 })
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `npx vitest run src/lib/loopNotice.test.ts`
-Expected: FAIL —— `Failed to resolve import "./loopNotice"`
+Run: `node --test src/lib/loopNotice.test.ts`
+Expected: FAIL —— `Cannot find module .../loopNotice.ts`
 
 - [ ] **Step 3: 实现纯函数**
 
@@ -2624,22 +2657,25 @@ Expected: FAIL —— `Failed to resolve import "./loopNotice"`
 //
 // 纯函数：把 bridge 广播的事件映射为 { level, message }，便于单测；
 // 归约与展示分别由 useYFWCLI 与 SystemWarningStrip 负责。
+//
+// t 的签名与项目既有 i18n 一致：t(key, params)，文案用 '{n}' 占位符
+// （参见 src/i18n/translations/zh-CN.ts 的 warnings.budget / warnings.skillVersion）。
 export function noticeFor(
   evt: string,
   data: Record<string, unknown> = {},
-  t: (key: string) => string = (k) => k,
+  t: (key: string, params?: Record<string, string>) => string = (k) => k,
 ): { level: string, message: string } | null {
   const n = Number(data?.resumeCount)
   const count = Number.isFinite(n) ? n : 0
   if (evt === 'loop_resumed') {
     return {
       level: 'loopResumed',
-      message: t('warnings.loopResumed').replace('{n}', String(count)),
+      message: t('warnings.loopResumed', { n: String(count) }),
     }
   }
   if (evt === 'loop_interrupted') {
-    const reasonKey = data?.reason === 'resume_limit' ? 'warnings.loopInterruptedLimit' : 'warnings.loopInterrupted'
-    return { level: 'loopInterrupted', message: t(reasonKey) }
+    const key = data?.reason === 'resume_limit' ? 'warnings.loopInterruptedLimit' : 'warnings.loopInterrupted'
+    return { level: 'loopInterrupted', message: t(key) }
   }
   return null
 }
@@ -2667,52 +2703,44 @@ export function noticeFor(
 import { noticeFor } from '../lib/loopNotice'
 ```
 
-> `normalizeWarning` 与 `useWarningStore` 该文件已在用（既有 warning 分支同款），无需新增 import。`t` 取该组件作用域内既有的 i18n 函数。
+> `normalizeWarning` 与 `useWarningStore` 该文件已在用（既有 warning 分支同款），无需新增 import。`t` 取该组件作用域内既有的 i18n 函数（若该作用域内叫别的名字，按其现状取用）。import 路径不带扩展名（该文件既有 import 风格为不带后缀，以文件现状为准）。
 
-- [ ] **Step 5: 加 level 样式与标题**
+- [ ] **Step 5: 加 level 样式**
 
-在 `src/components/chat/SystemWarningStrip.tsx` 的 `LEVEL_STYLE` 中加入两个键（沿用既有 warning 色调，视觉上与现有级别一致）：
-
-```tsx
-  loopInterrupted: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30',
-  loopResumed: 'bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/30',
-```
-
-把该文件里既有 `t('warnings.approvalMode')` 一类的 title 映射（`w.level === 'xxx'` 分支链）改为追加两分支：
+在 `src/components/chat/SystemWarningStrip.tsx` 的 `LEVEL_STYLE` 中加入两个键（**该常量是 `{ text, border, icon }` 对象，不是类名字符串** —— 严格照该文件既有的形状写；icon 用该文件已引入的某个既有图标或复用同族图标）：
 
 ```tsx
-    w.level === 'loopInterrupted' ? t('warnings.loopInterruptedTitle')
-    : w.level === 'loopResumed' ? t('warnings.loopResumedTitle')
+  // 循环中断/恢复（P1-7）：两种状态视觉上必须可区分
+  loopInterrupted: { text: 'text-amber-500', border: 'border-amber-500/40', icon: <AlertTriangle size={13} /> },
+  loopResumed: { text: 'text-sky-500', border: 'border-sky-500/40', icon: <RefreshCw size={13} /> },
 ```
 
-（若该文件用的是 `LEVEL_TITLE` 之类的映射常量，则按同一结构补两个键；以文件现状为准，保持既有写法。）
+**标题无需新增 i18n 键**：该组件既有逻辑已有 `else if (warning.message)` 兜底分支（用 `warning.message` 直接渲染），而 `noticeFor` 产出的 `message` 已是本地化好的完整文案，故会走该分支正常显示。**不要**为此新增 `loopResumedTitle` / `loopInterruptedTitle` 之类的键（避免冗余与未被引用的翻译条目）。
+
+> **实现注意**：`AlertTriangle` / `RefreshCw` 只是示例名 —— 请用该文件**已 import** 的图标（若都没有，用既有最接近的图标，或从该文件已在用的图标库补 import）。`size` 与既有条目保持一致。
 
 - [ ] **Step 6: 加 i18n 文案**
 
-在 `src/i18n/translations/zh-CN.ts` 与 `en-US.ts` 的 `warnings` 段（与 `approvalMode` 同级处）追加：
+在 `src/i18n/translations/zh-CN.ts` 与 `en-US.ts` 的 `warnings` 段（与 `budget` / `skillVersion` 同级处）追加**三条**文案（占位符用该项目既有的 `{n}` 语法 —— 参见 `warnings.skillVersion`）：
 
 ```ts
     // zh-CN
     loopResumed: '循环已自动恢复（第 {n} 次）',
-    loopResumedTitle: '循环已恢复',
     loopInterrupted: '循环已中断，需人工处理',
     loopInterruptedLimit: '循环已中断：自动恢复次数已达上限，需人工处理',
-    loopInterruptedTitle: '循环已中断',
 ```
 
 ```ts
     // en-US
     loopResumed: 'Loop auto-resumed (attempt {n})',
-    loopResumedTitle: 'Loop resumed',
     loopInterrupted: 'Loop interrupted and needs attention',
     loopInterruptedLimit: 'Loop interrupted: auto-resume limit reached, needs attention',
-    loopInterruptedTitle: 'Loop interrupted',
 ```
 
 - [ ] **Step 7: 跑测试与类型检查**
 
-Run: `npx vitest run src/lib/loopNotice.test.ts && npm run typecheck`
-Expected: PASS（4 tests）+ 类型检查无错
+Run: `node --test src/lib/loopNotice.test.ts && npm run typecheck`
+Expected: PASS（5 tests）+ 类型检查无错
 
 - [ ] **Step 8: 提交**
 
@@ -2834,22 +2862,24 @@ import { resolveModelPrices, parseModelPricesEnv } from './model-prices.mjs'
 ```js
 // 读取激活 provider 的 modelPrices（形如 { "deepseek-chat": { input, output, cacheReadRatio } }）。
 // 读盘失败/未配置 → null（不注入该 env）。带短 TTL 缓存，避免每次 spawn 都读盘。
+// 设置来源用 bridge 既有的 loadConfig()（返回对象含 providers 数组与 activeProvider）。
 let _priceCache = { at: 0, val: null }
-function activeModelPrices() {
+function activeModelPrices({ env = process.env } = {}) {
   const now = Date.now()
   if (now - _priceCache.at < 30_000) return _priceCache.val
   let val = null
   try {
-    const cfg = readSettingsJsonSafe() // 复用 bridge 既有的设置读取函数（见文件现状）
+    const cfg = loadConfig()
     const prov = (cfg?.providers || []).find((p) => p.id === cfg?.activeProvider)
-    val = prov?.modelPrices && Object.keys(prov.modelPrices).length ? prov.modelPrices : null
+    const mp = prov?.modelPrices
+    val = mp && typeof mp === 'object' && Object.keys(mp).length ? mp : null
   } catch { val = null }
   _priceCache = { at: now, val }
   return val
 }
 ```
 
-> **实现注意**：`readSettingsJsonSafe()` 是占位名 —— 请用 bridge 中**既有的**设置读取函数（`grep -n "providers.json\|readSettings" server/bridge.mjs` 定位；`SettingsView.tsx:412` 显示设置以 `providers` / `activeProvider` 为键）。**不要新造读盘函数**；若 bridge 侧确无设置读取能力，则改为由 `send` 载荷里的 provider 字段透传，并在提交信息中说明。
+> **已核实**：bridge 中既有的设置读取函数就是 **`loadConfig()`**（`server/bridge.mjs:982` 定义，`buildChildEnv` 与 provider 档案等处已在用）；设置以 `providers`（数组）与 `activeProvider` 为键。**不要新造读盘函数**。
 
 - [ ] **Step 6: 在 `src/types/index.ts` 增字段**
 
@@ -2863,62 +2893,89 @@ function activeModelPrices() {
 
 - [ ] **Step 7: 设置页加价格编辑**
 
-在 `src/components/settings/SettingsView.tsx` 的 provider 配置表单中（`t('settings.providerApiBaseUrl')` / `t('settings.providerAuthToken')` 那一组字段之后），为**每个模型**加一行价格输入（input / output 两个数字框，可选 cacheReadRatio）：
+**（a）放宽既有更新助手的类型**：`src/components/settings/SettingsView.tsx:442` 的
 
 ```tsx
-                  <div className="mt-3">
-                    <label className="text-xs font-medium text-secondary mb-1 block">{t('settings.modelPrices')}</label>
-                    <p className="text-[11px] text-tertiary mb-2">{t('settings.modelPricesHint')}</p>
-                    {((settings.providers || []).find(p => p.id === settings.activeProvider)?.models || []).map(m => {
-                      const mp = ((settings.providers || []).find(p => p.id === settings.activeProvider)?.modelPrices || {})[m] || { input: 0, output: 0 }
+  const handleUpdateActiveProvider = (field: keyof ModelProvider, value: string | number | boolean | string[] | undefined) => {
+```
+
+改为（**只加 `| ModelProvider['modelPrices']`**，其余逐字不动）：
+
+```tsx
+  const handleUpdateActiveProvider = (field: keyof ModelProvider, value: string | number | boolean | string[] | ModelProvider['modelPrices'] | undefined) => {
+```
+
+**（b）插入价格编辑区块**：在 provider 表单中 **Max output tokens 区块之后、Tool result byte budget 区块之前**（约 `:750`，即 `{/* Tool result byte budget；空 = 内核默认 20000（落盘+预览替换） */}` 注释之前）插入：
+
+```tsx
+                {/* 模型单价（USD / 百万 token）：loop 成本显示与预算硬停的依据（P1-2）。
+                    留空 → 内核回落内置价表，仍无则标注「估算」。 */}
+                <div>
+                  <label className="text-xs font-medium text-secondary mb-1 block">{t('settings.providerModelPrices')}</label>
+                  <div className="space-y-1">
+                    {(activeProv.models || []).map(m => {
+                      const mp = (activeProv.modelPrices || {})[m] || { input: 0, output: 0 }
                       const setPrice = (patch: Partial<{ input: number, output: number }>) => {
-                        const updated = (settings.providers || []).map(p => p.id !== settings.activeProvider ? p : {
-                          ...p,
-                          modelPrices: { ...(p.modelPrices || {}), [m]: { ...mp, ...patch } },
+                        handleUpdateActiveProvider('modelPrices', {
+                          ...(activeProv.modelPrices || {}),
+                          [m]: { ...mp, ...patch },
                         })
-                        updateSettings({ providers: updated as ModelProvider[] })
                       }
                       return (
-                        <div key={m} className="flex items-center gap-2 mb-1">
-                          <span className="text-xs text-secondary w-40 truncate" title={m}>{m}</span>
-                          <input type="number" step="0.01" min="0" className="input-sm w-24"
-                            placeholder={t('settings.priceInput')} value={mp.input || ''}
-                            onChange={e => setPrice({ input: Number(e.target.value) || 0 })} />
-                          <input type="number" step="0.01" min="0" className="input-sm w-24"
-                            placeholder={t('settings.priceOutput')} value={mp.output || ''}
-                            onChange={e => setPrice({ output: Number(e.target.value) || 0 })} />
+                        <div key={m} className="flex items-center gap-2">
+                          <span className="text-xs text-secondary flex-1 truncate font-mono" title={m}>{m}</span>
+                          <input
+                            type="number" min={0} step={0.01}
+                            value={mp.input || ''}
+                            onChange={e => { const n = Number(e.target.value); setPrice({ input: Number.isFinite(n) && n >= 0 ? n : 0 }) }}
+                            placeholder={t('settings.providerPriceInput')}
+                            className="w-28 h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+                          />
+                          <input
+                            type="number" min={0} step={0.01}
+                            value={mp.output || ''}
+                            onChange={e => { const n = Number(e.target.value); setPrice({ output: Number.isFinite(n) && n >= 0 ? n : 0 }) }}
+                            placeholder={t('settings.providerPriceOutput')}
+                            className="w-28 h-8 rounded-md border border bg-surface px-3 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-accent font-mono"
+                          />
                         </div>
                       )
                     })}
                   </div>
+                  <p className="text-[10px] text-tertiary mt-1">{t('settings.providerModelPricesDesc')}</p>
+                </div>
+
 ```
 
-> 严格沿用该表单既有 input 的 `className` 与 `updateSettings` 写法（上表 Step 7 的 `input-sm` 仅为占位示例，按同文件既有输入框类名替换）。
+> 该区块的 `className` 已按同文件 `maxOutputTokens` 输入框逐字复制（`:749`），请**不要**改样式。`activeProv` 是该表单既有变量；`handleUpdateActiveProvider` 已支持 `undefined` 语义（本处不涉及清空整个表）。
+> 若 `activeProv.models` 为空数组，该区块只渲染标签与说明 —— 可接受（无模型即无价格可配）。
 
 - [ ] **Step 8: 加 i18n 文案**
 
-`warnings` 同级的新段落或既有 `settings` 段中追加（zh-CN / en-US 各一份）：
+在 `src/i18n/translations/zh-CN.ts` 与 `en-US.ts` 的 `settings` 段（与 `providerMaxOutputTokens` / `providerMaxOutputTokensDesc` 同级处）追加**四条**：
 
 ```ts
     // zh-CN
-    modelPrices: '模型单价（USD / 百万 token）',
-    modelPricesHint: '用于循环任务的成本显示与预算硬停；留空则使用内置估算价并标注「估算」。',
-    priceInput: '输入单价',
-    priceOutput: '输出单价',
+    providerModelPrices: '模型单价（USD / 百万 token）',
+    providerModelPricesDesc: '用于循环任务的成本显示与预算硬停；留空则使用内置估价并标注「估算」。',
+    providerPriceInput: '输入单价',
+    providerPriceOutput: '输出单价',
 ```
 
 ```ts
     // en-US
-    modelPrices: 'Model prices (USD / 1M tokens)',
-    modelPricesHint: 'Used for loop cost display and budget hard-stop. Leave blank to use built-in estimates (shown as estimated).',
-    priceInput: 'Input price',
-    priceOutput: 'Output price',
+    providerModelPrices: 'Model prices (USD / 1M tokens)',
+    providerModelPricesDesc: 'Used for loop cost display and budget hard-stop. Leave blank to use built-in estimates (marked as estimated).',
+    providerPriceInput: 'Input price',
+    providerPriceOutput: 'Output price',
 ```
 
 - [ ] **Step 9: 跑测试与类型检查**
 
 Run: `node --test kernel-tests/model-prices.test.mjs && npm run typecheck`
 Expected: PASS（10 tests）+ 类型检查无错
+
+> **顺带自检**：把 Task 12 的测试也跑一次（若 Task 12 已合入）：`node --test src/lib/loopNotice.test.ts`。
 
 - [ ] **Step 10: 提交**
 

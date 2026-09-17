@@ -1362,11 +1362,40 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
    * ——同一对若两个方向都算出来，保留先到的那行，结果与迭代顺序绑定但完全可复现
    * （物化要求：同一库两次重建产出同一份 related.jsonl）。
    */
+  /**
+   * 关联向量物化（2026-09-17 性能修复）。
+   *
+   * **为什么**：`buildRelations` / `relateIncremental` 对每个条目都要遍历整个空间池
+   * （N×M 次 `relatedCandidates`），而 `relatedCandidates` 内部对池里**每个**成员都调一次
+   * `vectorizeText`（切 gram + 归一化，O(文本长度)）和 `cosine`（内部 `new Map(b)`，
+   * O(向量维度)）。于是重建耗时随库体积**平方**增长：实测 experience 空间 436 条时，
+   * 全量 `reindex --force` 需 **104 秒**，远超 `kernelReadonly` 的 60s 超时——索引一过期，
+   * 面板每次请求都在重建中途被 kill，**永远建不完**（表现为知识库卡死/超时）。
+   * 而本模块的校准注释假设的库是"76 条 ≈ 5776 次"。
+   *
+   * **做法**：按**同一个 idf**给池里每个条目各向量化一次（N 次而非 N² 次），结果挂在池对象
+   * 的 `relVec`/`relVecMap` 上（`relatablePool()` 每次新建对象，不污染索引里的块）。
+   * `relatedCandidates` 见到这两个字段就直接用，没有的仍走老路现算——数学上完全等价
+   * （同一函数、同一入参），故重建产物应**逐字节一致**（有性能回归测试守着这一点）。
+   *
+   * 取值口径必须与 `relatedCandidates` 内一致：它用 `p.relContent || blockContentOf(p)`，
+   * 故只在 `relContent` 为真时物化，避免"少数缺关联文本的条目"算出不同向量。
+   */
+  function precomputeRelVecs(pool, idf) {
+    for (const p of pool) {
+      if (!p.relContent) continue
+      const v = vectorizeText(p.relContent, { tagBoost: RELATION_TAG_BOOST, idf })
+      p.relVec = v
+      p.relVecMap = new Map(v)
+    }
+  }
+
   function buildRelations() {
     if (!relateOn()) { relEdges = []; return }
     relDropped = { noShared: 0, missingEnd: 0, capped: 0 } // 本次物化的丢弃计数（见 relDropped 声明）
     const pool = relatablePool()
     const relIdf = buildRelIdf() // 关联层独立口径（按文档，见 buildRelIdf 的 why）
+    precomputeRelVecs(pool, relIdf) // 向量物化：把 N² 次切词降为 N 次（见该函数注释）
     const sig = new Map(pool.map((b) => [b.blockId, blockContentSig(b)]))
     // 关联只在**同空间**内建立（spec 非目标：不做跨空间隐式关联）
     const bySpace = new Map()
@@ -1472,6 +1501,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     // 与全量路径**同一份口径**（按文档 idf）：增量若用检索那份按块 idf，同一条目在
     // 改文件前后会算出不同分数，出现"改一个文档 → 锚点分数跳变"的诡异现象（spec §13.5）
     const relIdf = buildRelIdf()
+    precomputeRelVecs(pool, relIdf) // 向量物化：本文档条目 × 空间池也是 N×M 次调用
     const sig = new Map(pool.map((b) => [b.blockId, blockContentSig(b)]))
     const byTag = new Map() // tag -> block[]（本次增量共用的一份内存缓存）
     for (const b of pool) {

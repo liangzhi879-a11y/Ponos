@@ -882,7 +882,9 @@ export async function main(argv) {
   // I-3：提示词【可用工作流】清单改用与工具池同一可见性口径（private / bound 未命中 /
   // 超限 public / legacy 不注入名字与描述）。注意 workflows（未过滤）仍供 auto_trigger
   // 与 init 计数使用 —— 可见性与自动触发是两件事，本处只收窄注入面。
-  const visibleWorkflows = listVisibleWorkflows({ roots: workflowRoots, agentId: args.agent || null, publicLimit: wfPublicLimit })
+  // 抽成函数**不缓存**（2026-09-17）：清单须随盘面变化重算，见 refreshSystemPrompt 的 why。
+  const currentVisibleWorkflows = () =>
+    listVisibleWorkflows({ roots: workflowRoots, agentId: args.agent || null, publicLimit: wfPublicLimit })
   // L3-2：记忆注入（与 GUI 经验面板同一数据源；settings.memory.inject=false 逃生阀）。
   // S3 双策略（D1 灰度，缺省 legacy = 既有行为）：
   //   legacy  —— graph.search 按当前任务上下文关键词从神经图谱抽调经验全文 + buildMemoryIndex
@@ -960,7 +962,20 @@ export async function main(argv) {
   }
   // 提示词组装：内核基础行为规范 + 可用子 Agent 区块（内置 ∪ 用户级）+ AGENTS.md
   // 项目指令 + 技能区块 + 记忆索引 + GUI append 文件（最高优先级，后者覆盖前者）。cwd = addDirs[0]。
-  engine.setSystemPrompt(composeSystemPrompt({
+  //
+  // 抽成 refreshSystemPrompt() 并**每轮重算工作流清单**（2026-09-17 修复）：
+  //   此前这里只在会话启动时组装一次，且 engine 每次请求都读同一份快照
+  //   （engine.mjs: getSystem: () => systemPrompt），于是**会话活着期间删除的工作流，
+  //   提示词里的【可用工作流】清单纹丝不动**。后果不只是"显示旧数据"——agent 会照着
+  //   旧清单声称"我可以调用 run_xxx"，而 run_<slug> 工具**已经随盘面签名失效而从工具池
+  //   消失了**（kernel/dyntools.mjs 的盘面签名含工作流根条目名列表），真调必然失败。
+  //   用户侧看到的就是"工作流已删除，agent 仍能获取到（但一跑就无输出）"。
+  //   工具池与清单本应同一口径：工具池每次求值、删了立刻没；清单却冻在启动瞬间。
+  //   重算成本极低（一次 readdir + 读 yml 头部），且 setSystemPrompt 只换一个变量，
+  //   故每轮入口调用一次即可，无需失效广播（也就没有"漏广播"这类新失效面）。
+  //   注意 memory / knowledgeScope / skills 仍沿用启动时值：它们与"删除工作流"无关，
+  //   且 memoryBlock 一次图谱检索不便宜，不该每轮重算（保持零行为变化）。
+  const refreshSystemPrompt = () => engine.setSystemPrompt(composeSystemPrompt({
     toolNames: engine.tools.toolNames,
     // chat 隔离（2026-09-12）：子 Agent / 项目指令 / cwd 全部不进 chat 提示词
     // （composeSystemPrompt 的 mode='chat' 分支另有兜底，即便此处漏传也不会注入）。
@@ -969,7 +984,7 @@ export async function main(argv) {
     append: readPromptFile(args.appendSystemPromptFile),
     cwd: chatMode ? '' : (args.addDirs[0] || ''),
     skills,
-    workflows: visibleWorkflows,
+    workflows: chatMode ? [] : currentVisibleWorkflows(),
     memory: memoryBlock,
     // 会话知识范围的人话清单（2026-09-15，P1 spec §3.5）：让模型**看得见**自己能检索什么、
     // 还有什么库需要用户先关联。只给名字不给 id 清单的动机：模型要做的是"转告用户去点哪儿"，
@@ -983,6 +998,7 @@ export async function main(argv) {
     // PONOS_PROMPT_TIER=lean；未设=full（云端现状，零变化）。chat 用专用提示，与此无关。
     tier: process.env.PONOS_PROMPT_TIER === 'lean' ? 'lean' : 'full',
   }))
+  refreshSystemPrompt()
   // system(init)：spawn 即发。bridge /test-provider 判定 CLI 加载成功并读取
   // model/tools；GUI 从 session_id 绑定会话（usePonosCLI.ts handleMessage）。
   // name 字段标识 agent 身份（诊断用，GUI 不依赖）；version 为 ponos-turbo dev 版本线
@@ -1190,6 +1206,14 @@ export async function main(argv) {
       return
     }
     state.turnActive = true
+    // 每轮重算提示词（2026-09-17 修复）：工作流可在会话存活期间被删除/导入（面板或 API），
+    // 提示词里的【可用工作流】清单必须跟着工具池走 —— 否则 agent 会声称能调用已被删除的
+    // 工作流（工具已消失），真调即失败。**只在此处（普通用户轮入口）刷新**：循环轮/子 Agent
+    // 轮不刷，避免在自动重试等路径上引入额外盘面 IO 与行为变化。
+    // 失败不阻断本轮（提示词刷新是尽力而为，旧快照仍可用）。
+    if (!chatMode) {
+      try { refreshSystemPrompt() } catch { /* 刷新失败沿用旧提示词 */ }
+    }
     // workflow 自动触发（普通新消息；插话/loop 消息不触发，避免批处理重复执行）
     try { maybeAutoTriggerWorkflow(content) } catch { /* 触发失败不影响主流程 */ }
     // 本轮 outcome（engine.runTurn 返回值）：loop 轮末决策的数据来源——无进展指纹

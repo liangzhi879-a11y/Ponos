@@ -127,11 +127,15 @@ export function WorkflowsPanel() {
     await openWorkflow(id)
   }, [openWorkflow, refreshList])
 
-  const remove = useCallback(async (id: string) => {
+  /** 删除：确认对话框已先拦截（WorkflowDeleteDialog）。**必须把结果回传**——
+   *  失败时对话框要就地显示原因且不关闭；成功也出一声（原先静默，用户无从确认删掉了）。 */
+  const remove = useCallback(async (id: string): Promise<{ ok: boolean; error?: string }> => {
     const r = await deleteWorkflow(id)
-    if (!r.ok) { setNotice({ tone: 'error', text: r.error }); return }
+    if (!r.ok) { setNotice({ tone: 'error', text: r.error }); return { ok: false, error: r.error } }
     if (openId === id) { setOpenId(null); setModel(null) }
     await refreshList()
+    setNotice({ tone: 'ok', text: `已删除工作流 ${id}` })
+    return { ok: true }
   }, [openId, refreshList])
 
   const duplicate = useCallback(async (id: string) => {
@@ -392,7 +396,7 @@ export function WorkflowsPanel() {
           onRun={(id) => void openRunSetup(id)}
           onDuplicate={(id) => void duplicate(id)}
           onExport={(id) => void doExport(id)}
-          onDelete={(id) => void remove(id)}
+          onDelete={remove}
           onImport={(b) => void doImport(b)}
         />
         {authzDialog}

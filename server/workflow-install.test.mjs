@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { installBuiltinWorkflows } from './workflow-install.mjs'
+import { installBuiltinWorkflows, markBuiltinDeleted, readDeletedBuiltins, clearDeletedBuiltins } from './workflow-install.mjs'
 
 test('内置工作流安装：版本不同即覆盖（旧格式残留被升级）', () => {
   const src = mkdtempSync(join(tmpdir(), 'wf-src-'))
@@ -44,7 +44,7 @@ test('内置工作流安装：不存在即安装 / 版本相同即跳过', () =>
     assert.deepEqual(r.skipped, ['b'])
     assert.match(readFileSync(join(dst, 'a', 'workflow.yml'), 'utf-8'), /version: 1\.0\.0/)
     // 源目录缺失 → 空结果，不抛
-    assert.deepEqual(installBuiltinWorkflows({ srcRoot: join(src, 'nope'), dstRoot: dst }), { installed: [], updated: [], contentUpdated: [], skipped: [], legacyRemoved: [] })
+    assert.deepEqual(installBuiltinWorkflows({ srcRoot: join(src, 'nope'), dstRoot: dst }), { installed: [], updated: [], contentUpdated: [], skipped: [], skippedByUser: [], legacyRemoved: [] })
   } finally { rmSync(src, { recursive: true, force: true }); rmSync(dst, { recursive: true, force: true }) }
 })
 
@@ -96,6 +96,59 @@ test('内置工作流安装：版本相同但正文不同 → 内容指纹兜底
     assert.match(readFileSync(join(dst, 'demo', 'workflow.v1.0.0.bak.yml'), 'utf-8'), /next: null/)
     // 仅行尾空白差异（CRLF/尾随空格）不算内容不同 → 跳过
     writeFileSync(join(src, 'demo', 'workflow.yml'), 'name: demo\r\nversion: 1.0.0\r\nnodes: [{id: s, type: start}]  \r\nedges: []\r\n', 'utf-8')
-    assert.deepEqual(installBuiltinWorkflows({ srcRoot: src, dstRoot: dst }), { installed: [], updated: [], contentUpdated: [], skipped: ['demo'], legacyRemoved: [] })
+    assert.deepEqual(installBuiltinWorkflows({ srcRoot: src, dstRoot: dst }), { installed: [], updated: [], contentUpdated: [], skipped: ['demo'], skippedByUser: [], legacyRemoved: [] })
+  } finally { rmSync(src, { recursive: true, force: true }); rmSync(dst, { recursive: true, force: true }) }
+})
+
+// 用户删除记账（2026-09-17 修复）：删除内置工作流后重启不得复活。
+// 病灶：安装器语义为「目标不存在 → 安装」，删除动作不留痕迹 ⇒ 删了重启又装回来，
+//       用户侧表现为「删了还在、agent 照样能调用」。
+test('用户删除记账：删除内置工作流后安装器不再装回，清除记账后恢复', () => {
+  const src = mkdtempSync(join(tmpdir(), 'wf-src-'))
+  const dst = mkdtempSync(join(tmpdir(), 'wf-dst-'))
+  try {
+    mkdirSync(join(src, 'demo'), { recursive: true })
+    writeFileSync(join(src, 'demo', 'workflow.yml'), 'name: demo\nversion: 1.0.0\nnodes: [{id: s, type: start}]\nedges: []\n', 'utf-8')
+    // 首次安装：正常落地
+    assert.deepEqual(installBuiltinWorkflows({ srcRoot: src, dstRoot: dst }).installed, ['demo'])
+    // 用户删除（删本体 + 记账）——等价于 DELETE 路由 + markBuiltinDeleted 的组合
+    rmSync(join(dst, 'demo'), { recursive: true, force: true })
+    assert.equal(markBuiltinDeleted({ srcRoot: src, dstRoot: dst, id: 'demo' }), true, '内置 id 应写入记账')
+    assert.deepEqual(readDeletedBuiltins({ dstRoot: dst }), ['demo'])
+    // 重启（再跑安装）：不得复活
+    const r2 = installBuiltinWorkflows({ srcRoot: src, dstRoot: dst })
+    assert.deepEqual(r2.installed, [], '已删除的内置工作流不得被自动装回')
+    assert.deepEqual(r2.skippedByUser, ['demo'])
+    assert.equal(existsSync(join(dst, 'demo', 'workflow.yml')), false, '重启后本体不应存在')
+    // 记账文件不会被当成工作流：`.builtin-deleted.json` 是 `.` 前缀（列表/内核均跳过）
+    assert.equal(existsSync(join(dst, '.builtin-deleted.json')), true)
+    // 恢复路径：清除记账 → 下次安装重新落地
+    assert.equal(clearDeletedBuiltins({ dstRoot: dst }), true)
+    assert.deepEqual(readDeletedBuiltins({ dstRoot: dst }), [])
+    assert.deepEqual(installBuiltinWorkflows({ srcRoot: src, dstRoot: dst }).installed, ['demo'])
+  } finally { rmSync(src, { recursive: true, force: true }); rmSync(dst, { recursive: true, force: true }) }
+})
+
+test('用户删除记账：三条刻意约束（非内置不记账 / 用户自建同名不被接管 / 目标存在时记账不生效）', () => {
+  const src = mkdtempSync(join(tmpdir(), 'wf-src-'))
+  const dst = mkdtempSync(join(tmpdir(), 'wf-dst-'))
+  try {
+    mkdirSync(join(src, 'demo'), { recursive: true })
+    writeFileSync(join(src, 'demo', 'workflow.yml'), 'name: demo\nversion: 1.0.0\nnodes: [{id: s, type: start}]\nedges: []\n', 'utf-8')
+    // ① 非内置 id 不记账（防污染记账文件 / 误挡用户自建工作流的重建）
+    assert.equal(markBuiltinDeleted({ srcRoot: src, dstRoot: dst, id: 'user-own' }), false)
+    assert.deepEqual(readDeletedBuiltins({ dstRoot: dst }), [])
+    // ② 用户删掉后**自建同名**：目标存在 ⇒ 记账不得生效，安装器走正常版本比对
+    //    （否则一次重启就会把用户自己写的工作流静默换成内置版）
+    markBuiltinDeleted({ srcRoot: src, dstRoot: dst, id: 'demo' })
+    mkdirSync(join(dst, 'demo'), { recursive: true })
+    writeFileSync(join(dst, 'demo', 'workflow.yml'), 'name: demo\nversion: 9.9.9\nnodes: [{id: s, type: start}]\nedges: []\n', 'utf-8')
+    const r = installBuiltinWorkflows({ srcRoot: src, dstRoot: dst })
+    assert.deepEqual(r.skippedByUser, [], '目标存在时记账不得挡住安装器的正常比对')
+    assert.deepEqual(r.updated, ['demo'], '用户自建的同名工作流按版本比对被升级（既有语义，未变）')
+    assert.deepEqual(r.skipped, [])
+    // ③ 重复记账幂等
+    assert.equal(markBuiltinDeleted({ srcRoot: src, dstRoot: dst, id: 'demo' }), false, '同一 id 重复记账返回 false')
+    assert.deepEqual(readDeletedBuiltins({ dstRoot: dst }), ['demo'])
   } finally { rmSync(src, { recursive: true, force: true }); rmSync(dst, { recursive: true, force: true }) }
 })

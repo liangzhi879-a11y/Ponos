@@ -1922,7 +1922,11 @@ const httpServer = createServer(async (req, res) => {
     // fetch」与整片 fetch 报错。curl 与直调路由的单测都不发预检，故此前 52 项
     // 自动化全绿也照不出来；auth-preflight.test.mjs 已把该方法白名单锁成契约。
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    // 【2026-09-17】补 `x-yfw-bridge-token`：main 侧 webRequest 会给打包版渲染层的请求注入
+    // 令牌头（Electron 43/Chromium 150 下 file:// 页面的跨源 fetch 不再带 Origin，见
+    // `electron/main.cjs` 的 installBridgeTokenHeaderInjector）。自定义头一旦触发预检，
+    // 这里不声明就会让预检失败、真实请求根本不发（表现是 Failed to fetch 而非 401）。
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-yfw-bridge-token')
     reply(204, {}); return
   }
   // 【S2-D2】无 Origin 头的请求（curl / Node / python 等非浏览器客户端，以及浏览器
@@ -2276,7 +2280,7 @@ const httpServer = createServer(async (req, res) => {
     // 命中即 return；路由函数未匹配返回 false → 继续走下方既有路由（不吞其他端点）。
     // 置于既有 try 内：宿主构造（loadConfig）等意外抛错走统一 400 回执，不打穿 handler。
     if (url.pathname === '/workflows' || url.pathname.startsWith('/workflows/')) {
-      if (await handleWorkflowRoute({ url, req, reply, readJsonBody, host: workflowHost(), root: WF_ROOT, runsRoot: WF_RUNS })) return
+      if (await handleWorkflowRoute({ url, req, reply, readJsonBody, host: workflowHost(), root: WF_ROOT, runsRoot: WF_RUNS, builtinSrcRoot: join(__dirname, '..', 'workflows') })) return
     }
     // 已知文件夹（快捷入口，2026-09-15 工作目录选择器资源管理器化）：
     // 由 bridge 而非渲染层枚举——只有这里知道真实用户目录（homedir + 平台差异）；
@@ -2552,7 +2556,7 @@ const httpServer = createServer(async (req, res) => {
     // 读操作经 server/knowledge-routes.mjs **薄转发**给内核（kernel-readonly 单飞/超时/
     // 限流），server 不复制任何切块/检索逻辑；写文档由该模块落盘并立即触发增量索引。
     // 同样抽成独立模块——可单测，不必起桥（本仓库有"测试起桥误杀运行中应用"的前车之鉴）。
-    {
+    if (url.pathname.startsWith('/knowledge')) {
       const knowledgeRes = await handleKnowledgeRoute({
         method: req.method,
         pathname: url.pathname,
@@ -2565,6 +2569,16 @@ const httpServer = createServer(async (req, res) => {
         home: YFW_HOME,
         config: knowledgePackConfig,
         fetcher: globalThis.fetch,
+        // 【2026-09-17 修复】kernelEnv 必须显式传 buildChildEnv()，两条理由：
+        //  ① 根一致性：内核 CLI 只认 `PONOS_CONFIG_DIR > PONOS_HOME > ~/.ponos`（**不认
+        //     YFWORKING_HOME**）。此前这里没传，路由的默认实现用 process.env → 内核回落
+        //     `~/.ponos`（另一个根）：面板读到旧根数据，用户导入的新内容也写进旧根，
+        //     而 `~/.yfw/knowledge/spaces` 一直空着。
+        //  ② 导入扫描件要靠自带 python：`kernel/knowledge-import.mjs` 解析 python 时读
+        //     `PONOS_PYTHON`/`YFWORKING_PYTHON`，而后者由 buildChildEnv() 注入（bundled
+        //     python 留在安装目录，缺了会退回系统 `python`，扫描件 OCR 直接失败）。
+        // 惰性构造：loadConfig() 每次读盘，只在命中 /knowledge 时才付这份开销。
+        kernelEnv: buildChildEnv(),
       })
       if (knowledgeRes) {
         return reply(knowledgeRes.status, { 'Content-Type': 'application/json' }, JSON.stringify(knowledgeRes.body))
@@ -4043,8 +4057,17 @@ function autoInstallBuiltinWorkflows() {
       dstRoot: join(YFW_HOME, 'workflows'),
       legacyRoots: [findSkillRoot()], // 旧版安装器把内置工作流装进技能根 → 需清理
     })
-    if (r.installed.length || r.updated.length || r.contentUpdated.length || r.legacyRemoved.length) {
+    if (r.installed.length || r.updated.length || r.contentUpdated.length || r.legacyRemoved.length || r.skippedByUser.length) {
       console.log('[bridge] builtin workflows:', JSON.stringify(r))
+    }
+    // 用户主动删除过的内置工作流不再自动装回（2026-09-17 修复，见 workflow-install.mjs
+    // 「用户删除记账」）。此处出声说明"为什么不装"，并给出唯一恢复路径——否则用户只看到
+    // "内置工作流不见了"，无从知道是被自己的删除记账挡住了，还是真丢了。
+    if (r.skippedByUser.length) {
+      console.log(
+        `[bridge] 内置工作流已被用户删除，按记账跳过安装：${r.skippedByUser.join(', ')}`
+        + `（如需恢复，删除 ${join(YFW_HOME, 'workflows', '.builtin-deleted.json')} 中对应 id 后重启）`,
+      )
     }
   } catch (e) {
     console.warn('[bridge] autoInstallBuiltinWorkflows failed:', e?.message || e)

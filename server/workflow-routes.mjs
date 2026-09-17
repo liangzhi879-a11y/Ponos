@@ -10,6 +10,9 @@
 // 约束：本文件只 import `node:*` 与同目录 server 模块；**不得** import `kernel/*.mjs`
 // （生产包只带 kernel-dist/cli.mjs，dev 不显现、安装版才崩）。
 import * as wfStore from './workflow-store.mjs'
+// 内置工作流「用户已删除」记账（2026-09-17）：删除内置工作流后必须留下痕迹，
+// 否则下次启动 installBuiltinWorkflows 的「目标不存在 → 安装」会把它装回来。
+import { markBuiltinDeleted } from './workflow-install.mjs'
 import { resolve, relative, isAbsolute } from 'node:path'
 
 /** 目标路径是否位于 dir 之内（resolve 归一化后比较，防 `..` 穿越；dir 为空 → 不约束）。 */
@@ -23,7 +26,7 @@ function isInsideDir(target, dir) {
   } catch { return false }
 }
 
-export async function handleWorkflowRoute({ url, req, reply, readJsonBody, store = wfStore, host, runsRoot = '', root = '' }) {
+export async function handleWorkflowRoute({ url, req, reply, readJsonBody, store = wfStore, host, runsRoot = '', root = '', builtinSrcRoot = '' }) {
   const p = url.pathname
   if (p !== '/workflows' && !p.startsWith('/workflows/')) return false
   if (!host) return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: '工作流宿主未注入' })), true
@@ -133,7 +136,18 @@ export async function handleWorkflowRoute({ url, req, reply, readJsonBody, store
         if (!saved.ok) return json(400, saved), true
         return json(200, { ...store.writeWorkflowYml({ root, id, yml: saved.yml }), id, validation: saved.validation }), true
       }
-      if (sub === '' && req.method === 'DELETE') return json(200, store.deleteWorkflow({ root, id })), true
+      if (sub === '' && req.method === 'DELETE') {
+        const r = store.deleteWorkflow({ root, id })
+        // 内置工作流删除记账（2026-09-17 修复）：删除动作若不落痕迹，下次启动
+        // installBuiltinWorkflows 会按「目标不存在 → 安装」把内置工作流装回来 —— 用户侧
+        // 表现为「删了、重启还在、agent 照样能用」。markBuiltinDeleted 内部会校验该 id 是否
+        // 确为内置（<builtinSrcRoot>/<id>/workflow.yml 存在），非内置 id 不写记账文件。
+        // 记账失败不影响删除结果（本体已删是事实，记账只是安装器的备忘）。
+        if (r.ok) {
+          try { markBuiltinDeleted({ srcRoot: builtinSrcRoot, dstRoot: root, id }) } catch { /* 记账失败不阻断 */ }
+        }
+        return json(200, r), true
+      }
       if (sub === '/duplicate' && req.method === 'POST') {
         const body = await readJsonBody(req)
         return json(200, store.duplicateWorkflow({ root, fromId: id, toId: body.toId })), true

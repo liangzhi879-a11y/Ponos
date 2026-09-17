@@ -201,3 +201,72 @@ test('I4 assertSafeId：Windows 设备名/尾点/尾空格被拒，非设备名�
   const { root, cleanup } = mk()
   try { assert.throws(() => createWorkflow({ root, id: 'com1', yml: YML }), /非法工作流 id/) } finally { cleanup() }
 })
+
+// 删除语义（2026-09-17 修复）：本体两种形态都要删得掉 + 引用要跟着清。
+// 病灶 ①：内核 discoverWorkflows 认「平铺形态 <root>/<id>.yml(.yaml)」，而删除只删目录形态
+//        ⇒ 平铺工作流删不掉、返回「工作流不存在」、文件原地不动，agent 照旧能调用它
+//        （面板永不可见 → 用户既删不掉也看不见，只能手动去磁盘删）。
+// 病灶 ②：`_bindings.json` 的 trusted / agents 引用不清理 ⇒ 删掉后**重建同名**工作流会继承
+//        旧的信任凭据（信任是运行前授权凭据，属安全面，不该被继承）。
+test('删除：平铺形态 <id>.yml/.yaml 同样删得掉（内核认它，删除也必须认）', () => {
+  const { root, cleanup } = mk()
+  try {
+    writeWorkflowYml({ root, id: 'dir-one', yml: YML })
+    writeFileSync(join(root, 'flat-yml.yml'), YML, 'utf-8')
+    writeFileSync(join(root, 'flat-yaml.yaml'), YML, 'utf-8')
+    // 平铺形态不在列表里（listWorkflowMetas 只扫目录）——这正是它变"幽灵"的原因
+    assert.deepEqual(listWorkflowMetas({ root }).map((m) => m.id).sort(), ['dir-one'])
+    const r1 = deleteWorkflow({ root, id: 'flat-yml' })
+    assert.equal(r1.ok, true, '平铺 .yml 应删得掉（修复前返回「工作流不存在」）')
+    assert.equal(r1.kind, 'flat')
+    assert.equal(existsSync(join(root, 'flat-yml.yml')), false)
+    const r2 = deleteWorkflow({ root, id: 'flat-yaml' })
+    assert.equal(r2.ok, true, '平铺 .yaml 应删得掉（与内核扩展名判定同口径）')
+    assert.equal(r2.kind, 'flat')
+    assert.equal(existsSync(join(root, 'flat-yaml.yaml')), false)
+    // 目录形态仍走原路径，kind 明确回报
+    const r3 = deleteWorkflow({ root, id: 'dir-one' })
+    assert.equal(r3.kind, 'dir')
+    assert.equal(existsSync(join(root, 'dir-one')), false)
+    // 不存在 → 仍回失败（不误报成功）
+    assert.equal(deleteWorkflow({ root, id: 'nope' }).ok, false)
+  } finally { cleanup() }
+})
+
+test('删除：同步清理 _bindings.json 的 trusted 与 agent 绑定（重建同名不继承信任）', () => {
+  const { root, cleanup } = mk()
+  try {
+    writeWorkflowYml({ root, id: 'wf-a', yml: YML })
+    writeWorkflowYml({ root, id: 'wf-b', yml: YML })
+    writeBindings({ root, bindings: { agents: { 'table-expert': ['wf-a', 'wf-b'], 'x-agent': ['wf-a'] }, trusted: ['wf-a', 'wf-b'] } })
+    const r = deleteWorkflow({ root, id: 'wf-a' })
+    assert.equal(r.ok, true)
+    assert.equal(r.bindingsPruned, true, '有引用时应回报已清理')
+    const b = readBindings({ root })
+    assert.deepEqual(b.trusted, ['wf-b'], '信任清单里的 wf-a 必须摘掉')
+    assert.deepEqual(b.agents['table-expert'], ['wf-b'], 'agent 绑定的 wf-a 必须摘掉')
+    assert.deepEqual(b.agents['x-agent'], [], '绑定被清空后保留空数组（结构不变，UI 无需特判）')
+    // 无引用时不动盘（不新建/不改写 _bindings.json）
+    const r2 = deleteWorkflow({ root, id: 'wf-b' })
+    assert.equal(r2.bindingsPruned, true)
+    assert.deepEqual(readBindings({ root }).trusted, [])
+  } finally { cleanup() }
+})
+
+test('删除：无 _bindings.json 时不新建文件（不产生无谓副作用）', () => {
+  const { root, cleanup } = mk()
+  try {
+    writeWorkflowYml({ root, id: 'solo', yml: YML })
+    assert.equal(existsSync(join(root, '_bindings.json')), false)
+    const r = deleteWorkflow({ root, id: 'solo' })
+    assert.equal(r.ok, true)
+    assert.equal(r.bindingsPruned, false, '无引用 → 未改盘')
+    assert.equal(existsSync(join(root, '_bindings.json')), false, '不得凭空新建绑定文件')
+    // 损坏的 _bindings.json 不阻断本体删除（尽力而为）
+    writeWorkflowYml({ root, id: 'solo2', yml: YML })
+    writeFileSync(join(root, '_bindings.json'), '{ 这不是 JSON', 'utf-8')
+    const r2 = deleteWorkflow({ root, id: 'solo2' })
+    assert.equal(r2.ok, true, '绑定文件损坏也必须删掉本体')
+    assert.equal(existsSync(join(root, 'solo2')), false)
+  } finally { cleanup() }
+})

@@ -10,6 +10,7 @@ import { Badge, Button, Input, ScrollArea } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { asTriggerList, checkWorkflowId } from '@/lib/workflowModel'
 import { runStatusOf, type WorkflowMeta } from '@/lib/workflowApi'
+import { WorkflowDeleteDialog } from './WorkflowDeleteDialog'
 
 export interface WorkflowListProps {
   list: WorkflowMeta[]
@@ -20,7 +21,9 @@ export interface WorkflowListProps {
   onRun: (id: string) => void
   onDuplicate: (id: string) => void
   onExport: (id: string) => void
-  onDelete: (id: string) => void
+  /** 删除确认对话框已先行拦截（见 WorkflowDeleteDialog 的 why）；此回调只管执行删除，
+   *  返回 { ok:false } 时对话框会就地显示原因且不关闭。 */
+  onDelete: (id: string) => void | Promise<{ ok: boolean; error?: string } | void>
   onImport: (bundle: unknown) => void
   importing?: boolean
 }
@@ -40,6 +43,8 @@ export function WorkflowList(props: WorkflowListProps) {
   const [creating, setCreating] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [importText, setImportText] = useState('')
+  /** 待删除目标：非空即弹确认对话框（替代原先的 window.confirm，见 WorkflowDeleteDialog 的 why） */
+  const [pendingDelete, setPendingDelete] = useState<WorkflowMeta | null>(null)
 
   const kw = q.trim().toLowerCase()
   /** 新建 id 的前端预校验（Task 12 审查 I-1）：非法即就地提示并禁用「创建」，不把错误推给后端 */
@@ -101,10 +106,23 @@ export function WorkflowList(props: WorkflowListProps) {
               暂无工作流。点「新建」从 开始 → 结束 的最小骨架开始，或「导入」.yfwflow 分享包。
             </div>
           )}
-          <Group title="我的工作流" items={mine} render={props} />
-          <Group title="已公开（任意会话可调用）" items={published} render={props} />
+          <Group title="我的工作流" items={mine} render={props} onRequestDelete={setPendingDelete} />
+          <Group title="已公开（任意会话可调用）" items={published} render={props} onRequestDelete={setPendingDelete} />
         </div>
       </ScrollArea>
+
+      {pendingDelete && (
+        <WorkflowDeleteDialog
+          meta={pendingDelete}
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={async () => {
+            const r = await props.onDelete(pendingDelete.id)
+            // 成功 → 关掉对话框（列表由父组件 refreshList 刷新）
+            if (!r || r.ok) setPendingDelete(null)
+            return r
+          }}
+        />
+      )}
 
       {importOpen && (
         <div className="border-t p-3 flex flex-col gap-2">
@@ -132,19 +150,24 @@ export function WorkflowList(props: WorkflowListProps) {
   )
 }
 
-function Group({ title, items, render }: { title: string; items: WorkflowMeta[]; render: WorkflowListProps }) {
+function Group({ title, items, render, onRequestDelete }: {
+  title: string
+  items: WorkflowMeta[]
+  render: WorkflowListProps
+  onRequestDelete: (m: WorkflowMeta) => void
+}) {
   if (items.length === 0) return null
   return (
     <div>
       <div className="text-[11px] font-semibold text-tertiary uppercase tracking-wider mb-2">{title}</div>
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 content-start">
-        {items.map((m) => <Row key={m.id} meta={m} {...render} />)}
+        {items.map((m) => <Row key={m.id} meta={m} {...render} onRequestDelete={onRequestDelete} />)}
       </div>
     </div>
   )
 }
 
-function Row({ meta, onOpen, onRun, onDuplicate, onExport, onDelete }: { meta: WorkflowMeta } & WorkflowListProps) {
+function Row({ meta, onOpen, onRun, onDuplicate, onExport, onRequestDelete }: { meta: WorkflowMeta; onRequestDelete: (m: WorkflowMeta) => void } & WorkflowListProps) {
   const st = STATUS_TONE[runStatusOf(meta)] || STATUS_TONE.never
   const mode = meta.expose?.mode || 'private'
   return (
@@ -191,7 +214,7 @@ function Row({ meta, onOpen, onRun, onDuplicate, onExport, onDelete }: { meta: W
           <div className="flex-1" />
           <Button size="xs" variant="ghost" title="复制" onClick={() => onDuplicate(meta.id)}><Copy className="w-3 h-3" /></Button>
           <Button size="xs" variant="ghost" title="导出 .yfwflow" onClick={() => onExport(meta.id)}><Download className="w-3 h-3" /></Button>
-          <Button size="xs" variant="ghost" title="删除" className="text-error" onClick={() => { if (window.confirm(`删除工作流「${meta.name || meta.id}」？`)) onDelete(meta.id) }}><Trash2 className="w-3 h-3" /></Button>
+          <Button size="xs" variant="ghost" title="删除" className="text-error" onClick={() => onRequestDelete(meta)}><Trash2 className="w-3 h-3" /></Button>
         </div>
       </div>
     </div>

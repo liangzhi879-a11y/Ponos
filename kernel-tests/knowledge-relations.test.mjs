@@ -251,3 +251,61 @@ test('性能护栏：76 条规模的全量物化是毫秒~秒级（无 O(N³)/�
     console.log(`[perf] 76 条全量 reindex + 物化：${ms}ms，边 ${relLineCount(dir)} 行`)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+test('性能护栏：430 条大库的量级（防"单文件条目数增长 → 重建超时"回归）', async () => {
+  // 2026-09-17 实测背景：真实 experience 库长到 436 条时，全量 `reindex --force` 需
+  // **104 秒**，远超 `server/kernel-readonly.mjs` 的 60s 超时 —— 索引一过期，面板每次请求
+  // 都在重建中途被 kill，永远建不完（表现为知识库卡死）。根因是关联物化对 pool 里每个
+  // 成员各切一次 gram（N² 次 `vectorizeText` + `new Map(...)`）。
+  // 修复（池向量预计算 + cosine 直收 Map）后同一库降到 8s 量级（随文档数线性偏平方）。
+  // 本条护栏守的就是这份量级：若将来有人把预计算删掉/旁路，这里会直接红。
+  const { dir, personal } = makePersonal()
+  try {
+    const N = 430
+    const lines = ['---', 'name: perf-big', '---']
+    for (let i = 0; i < N; i++) {
+      const tag = i % 6 === 0 ? '性能标签' : `标签${i}`
+      lines.push(`- [会话|${tag}] 第${i}条经验 -- 第${i}条经验的正文内容，`
+        + `讨论主题编号${i}的排查步骤与结论，附带一些中文噪声词用于模拟真实条目的长度`)
+    }
+    writeFileSync(join(personal, 'big.md'), lines.join('\n') + '\n', 'utf-8')
+    const store = createKnowledgeStore({ configDir: dir })
+    const t0 = Date.now()
+    await store.load({ force: true })
+    const ms = Date.now() - t0
+    // 阈值取 30s：远严于修复前的 104s（同类库），又留足 CI/慢机余量
+    assert.ok(ms < 30000, `${N} 条大库全量物化耗时 ${ms}ms —— 关联物化疑似退化为逐对切词（修复前同规模约 104s）`)
+    assert.ok(relRows(dir).length > 0, '大库也必须真的物化出边')
+    console.log(`[perf] ${N} 条大库全量 reindex + 物化：${ms}ms，边 ${relLineCount(dir)} 行`)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('性能护栏：池向量预计算是纯等价变换（候选与分数逐条一致）', async () => {
+  // 等价性论证：`relatedCandidates` 用 `block.relVec`（调用方按同一 idf 预计算）替代内部的
+  // `vectorizeText(blockContentOf(block), …)`；池侧用 `p.relVecMap` 替代 `cosine(vec, 现算向量)`
+  // —— 都是同一函数、同一入参，数学上恒等。这里用**同一批块走两条路径**钉住它。
+  const { relatedCandidates, vectorizeText, RELATION_TAG_BOOST } = await import('../shared/knowledge-core.mjs')
+  const blocks = []
+  for (let i = 0; i < 60; i++) {
+    blocks.push({
+      blockId: `d#${i}`,
+      docId: 'd',
+      n: i,
+      relContent: `第${i}条经验 -- 讨论主题${i % 7}的排查步骤与结论，附带中文噪声词若干${i % 5}`,
+    })
+  }
+  const sig = (out) => out.map((r) => `${r.to}|${String(r.why?.kind)}|${r.score ?? r.why?.score}`)
+  // 路径 A：池里不带预计算字段（老路：每次现算向量 + cosine 内部 new Map）
+  const A = {}
+  for (const b of blocks) A[b.blockId] = sig(relatedCandidates(b, blocks, { topN: 5 }))
+  // 路径 B：按 kernel 的 precomputeRelVecs 同做法挂上 relVec / relVecMap
+  for (const b of blocks) {
+    const v = vectorizeText(b.relContent, { tagBoost: RELATION_TAG_BOOST, idf: null })
+    b.relVec = v
+    b.relVecMap = new Map(v)
+  }
+  const B = {}
+  for (const b of blocks) B[b.blockId] = sig(relatedCandidates(b, blocks, { topN: 5 }))
+  assert.deepEqual(B, A, '预计算路径与现算路径的候选/分数必须逐条一致')
+  assert.ok(A['d#0'].length > 0, '前置：这份语料必须真的产出候选（否则断言空转）')
+})

@@ -502,3 +502,39 @@ test('ok 契约守卫：所有 2xx 回执必须带 ok 字段（缺则 UI 判为�
     assert.deepEqual(offending, [], `以下 2xx 回执缺 ok 字段（UI 会当失败处理）：\n${offending.join('\n')}`)
   } finally { cleanup() }
 })
+
+// 删除内置工作流要落记账（2026-09-17 修复）：路由层 DELETE × markBuiltinDeleted 的接线。
+// 只测路由的**接线**（是否把 builtinSrcRoot 传给记账），记账逻辑本身由
+// workflow-install.test.mjs 覆盖。接线错 = 记账永不写入 = 重启复活（病灶原样保留），
+// 而单测 store 层是测不出来的。
+test('DELETE /workflows/:id：内置工作流被删时落删除记账（重启不复活）', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'wf-api-bdel-'))
+  const root = join(home, 'workflows')
+  const builtinSrcRoot = join(home, 'builtin')
+  mkdirSync(root, { recursive: true })
+  mkdirSync(join(builtinSrcRoot, 'spec-dev'), { recursive: true })
+  writeFileSync(join(builtinSrcRoot, 'spec-dev', 'workflow.yml'), 'name: spec-dev\nversion: 1.0.0\nnodes: []\nedges: []\n', 'utf-8')
+  const { host, cleanup } = setup()
+  try {
+    store.writeWorkflowYml({ root, id: 'spec-dev', yml: 'name: spec-dev\nnodes: []\nedges: []\n' })
+    const { out, reply } = mkReply()
+    await handleWorkflowRoute({ url: new URL('http://x/workflows/spec-dev'), req: reqOf('DELETE', '/workflows/spec-dev'), reply, readJsonBody: async () => ({}), store, host, root, runsRoot: '', builtinSrcRoot })
+    assert.equal(out.body.ok, true)
+    assert.equal(existsSync(join(root, 'spec-dev')), false)
+    // 记账文件必须已写入（缺这一环 → 重启后 installBuiltinWorkflows 会把它装回来）
+    const rec = JSON.parse(readFileSync(join(root, '.builtin-deleted.json'), 'utf-8'))
+    assert.deepEqual(rec, ['spec-dev'])
+    // 非内置 id 删除不记账（不污染记账文件 / 不挡用户自建的重建）
+    store.writeWorkflowYml({ root, id: 'my-own', yml: 'name: my-own\nnodes: []\nedges: []\n' })
+    const r2 = mkReply()
+    await handleWorkflowRoute({ url: new URL('http://x/workflows/my-own'), req: reqOf('DELETE', '/workflows/my-own'), reply: r2.reply, readJsonBody: async () => ({}), store, host, root, runsRoot: '', builtinSrcRoot })
+    assert.equal(r2.out.body.ok, true)
+    assert.deepEqual(JSON.parse(readFileSync(join(root, '.builtin-deleted.json'), 'utf-8')), ['spec-dev'], '非内置 id 不得进记账')
+    // 未注入 builtinSrcRoot（旧调用方）→ 不记账但删除照常成功（不因漏配而失败）
+    store.writeWorkflowYml({ root, id: 'spec-dev', yml: 'name: spec-dev\nnodes: []\nedges: []\n' })
+    const r3 = mkReply()
+    await handleWorkflowRoute({ url: new URL('http://x/workflows/spec-dev'), req: reqOf('DELETE', '/workflows/spec-dev'), reply: r3.reply, readJsonBody: async () => ({}), store, host, root, runsRoot: '' })
+    assert.equal(r3.out.body.ok, true)
+    assert.equal(existsSync(join(root, 'spec-dev')), false)
+  } finally { cleanup(); rmSync(home, { recursive: true, force: true }) }
+})

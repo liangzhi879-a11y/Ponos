@@ -16,6 +16,30 @@ export const runsRootOf = (home) => join(home, 'workflow-runs')
 const wfDir = (root, id) => join(root, id)
 const wfFile = (root, id) => join(wfDir(root, id), 'workflow.yml')
 const versionsDir = (root, id) => join(wfDir(root, id), 'versions')
+// 平铺形态：<root>/<id>.yml(.yaml)（内核 discoverWorkflows 同样认它，见
+// kernel/workflow-dsl.mjs「平铺形态：<root>/<id>.yml（仅独立工作流，不与 skill 配对）」，
+// 其扩展名判定为 /\.(yml|yaml)$/ —— 此处必须同口径，否则 .yaml 仍是删不掉的幽灵）。
+const flatFile = (root, id, ext) => join(root, `${id}.${ext}`)
+const FLAT_EXTS = ['yml', 'yaml']
+
+/**
+ * 本体定位：目录形态优先，回退平铺形态。
+ *
+ * 为什么必须收口成一处（2026-09-17 修复）：此前读取只认目录形态、删除也只删目录，
+ * 而内核两种都发现 —— 平铺工作流于是成了「面板看不见、删除删不掉、内核照旧可用」的幽灵
+ * （实测：deleteWorkflow 返回「工作流不存在」，文件原地不动，agent 仍能调用 run_<slug>）。
+ * 读/删/导出走同一判定，才不会有「读得到却删不掉」这类口径分裂。
+ * @returns {{kind:'dir'|'flat',dir:string,ymlPath:string}|null} 本体不存在时为 null
+ */
+function locateWorkflow(root, id) {
+  const f = wfFile(root, id)
+  if (existsSync(f)) return { kind: 'dir', dir: wfDir(root, id), ymlPath: f }
+  for (const ext of FLAT_EXTS) {
+    const p = flatFile(root, id, ext)
+    if (existsSync(p)) return { kind: 'flat', dir: '', ymlPath: p }
+  }
+  return null
+}
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const SAFE_TS = /^[0-9A-Za-z._-]{1,64}$/
@@ -211,9 +235,9 @@ function lastRunOf(runsRoot, name) {
 
 export function readWorkflowYml({ root, id }) {
   assertSafeId(id)
-  const f = wfFile(root, id)
-  if (!existsSync(f)) return null
-  return readFileSync(f, 'utf-8')
+  const loc = locateWorkflow(root, id)
+  if (!loc) return null
+  return readFileSync(loc.ymlPath, 'utf-8')
 }
 
 /**
@@ -266,12 +290,51 @@ export function createWorkflow({ root, id, yml }) {
   return writeWorkflowYml({ root, id, yml })
 }
 
+/**
+ * 删除工作流本体 + 清理对它的引用（2026-09-17 修复）。
+ *
+ * 修的是三处实测缺口：
+ *   ① 平铺形态 `<id>.yml(.yaml)` 不在删除范围内 → 返回「工作流不存在」而文件原地不动，
+ *      内核照旧发现并注册工具（面板永不可见、却对 agent 永久可用）；
+ *   ② `_bindings.json` 的 trusted / agents 绑定不清理 → 删掉后再建**同名**工作流，
+ *      旧的信任凭据与 agent 绑定会自动继承到新工作流上（信任是运行前授权凭据，不该被继承）；
+ *   ③ 未标明删的是哪种形态 —— 返回值带上 kind，便于诊断"到底删掉了什么"。
+ *
+ * 引用清理是**尽力而为**：读不到/解析失败/无引用都不阻断本体删除，也不新建
+ * `_bindings.json`（无绑定的工作流删除后不该凭空多出一个文件）。
+ */
 export function deleteWorkflow({ root, id }) {
   assertSafeId(id)
-  const dir = wfDir(root, id)
-  if (!existsSync(dir)) return { ok: false, error: `工作流不存在: ${id}` }
-  rmSync(dir, { recursive: true, force: true })
-  return { ok: true, id }
+  const loc = locateWorkflow(root, id)
+  if (!loc) return { ok: false, error: `工作流不存在: ${id}` }
+  if (loc.kind === 'dir') rmSync(loc.dir, { recursive: true, force: true })
+  else rmSync(loc.ymlPath, { force: true })
+  const bindingsPruned = pruneBindings({ root, id })
+  return { ok: true, id, kind: loc.kind, bindingsPruned }
+}
+
+/** 从 `_bindings.json` 摘除该 id 的引用（trusted + 各 agent 绑定）。返回是否真的改了盘。 */
+function pruneBindings({ root, id }) {
+  const f = bindingsFile(root)
+  if (!existsSync(f)) return false
+  let cur = null
+  try { cur = JSON.parse(readFileSync(f, 'utf-8')) } catch { return false }
+  if (!cur || typeof cur !== 'object') return false
+  const agents = cur.agents && typeof cur.agents === 'object' ? cur.agents : {}
+  let changed = false
+  for (const [name, list] of Object.entries(agents)) {
+    if (!Array.isArray(list)) continue
+    const next = list.filter((x) => x !== id)
+    if (next.length !== list.length) { agents[name] = next; changed = true }
+  }
+  const trusted = Array.isArray(cur.trusted) ? cur.trusted : []
+  const nextTrusted = trusted.filter((x) => x !== id)
+  if (nextTrusted.length !== trusted.length) changed = true
+  if (!changed) return false
+  try {
+    writeFileSync(f, JSON.stringify({ agents, trusted: nextTrusted }, null, 2), 'utf-8')
+    return true
+  } catch { return false }
 }
 
 export function duplicateWorkflow({ root, fromId, toId }) {

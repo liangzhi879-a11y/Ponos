@@ -7,7 +7,7 @@
  * Electron auto-starts the bridge, then loads the frontend.
  * CommonJS so Electron runs it directly without transpilation.
  */
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell, Tray, Notification, nativeImage, screen, clipboard, safeStorage } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, Tray, Notification, nativeImage, screen, clipboard, safeStorage, session } = require('electron')
 const { spawn } = require('child_process')
 const path = require('path')
 const fs = require('fs')
@@ -17,6 +17,7 @@ const WebSocket = require('ws')
 const crypto = require('crypto')
 const { resolveYfwHome } = require('../server/yfw-home.cjs')
 const { resolveBridgeToken, BRIDGE_TOKEN_HEADER, BRIDGE_TOKEN_ENV } = require('../server/bridge-token.cjs')
+const { installBridgeTokenHeaderInjector } = require('./bridge-header-inject.cjs')
 
 // 入口兜底数据根隔离（2026-09-09 串配置事故修复）：桌面快捷方式直启 electron.exe /
 // YFWorking.vbs / debug bat 均不携带 env，此前双版全部回落 ~/.yfworking 与在售旧版
@@ -221,6 +222,29 @@ const BRIDGE_TOKEN = BRIDGE_TOKEN_INFO.token
 function bridgeAuthHeaders(extra = {}) {
   return { ...extra, [BRIDGE_TOKEN_HEADER]: BRIDGE_TOKEN }
 }
+
+/** 已装注入器的 session 集合（同一 session 重复注册会覆盖上一次的处理器）。 */
+const bridgeHeaderSessions = new WeakSet()
+
+/**
+ * 【2026-09-17 兼容性修复】给渲染层发往本桥的请求注入令牌头。
+ * 实现与实测复现见 `electron/bridge-header-inject.cjs` 的模块头注释，此处只留结论：
+ * Electron 43 / Chromium 150 下 `file://` 页面的跨源 fetch **不再带 Origin**，于是撞进
+ * S2-D2 的"无 Origin 无令牌即 401"，打包版渲染层 HTTP 请求整体被拒（文件面板/知识库面板
+ * 直接回显 `Unauthorized`）。渲染层 58 处 fetch 逐处改不现实 ⇒ main 侧统一注入同一枚令牌；
+ * 只注入本桥 host，令牌不外泄，无 Origin 无令牌的 CSRF 面仍 401。
+ */
+function installBridgeHeaderInjector(s) {
+  return installBridgeTokenHeaderInjector(s, {
+    port: BRIDGE_PORT,
+    token: BRIDGE_TOKEN,
+    headerName: BRIDGE_TOKEN_HEADER,
+  }, bridgeHeaderSessions)
+}
+
+// 新 session（编辑器窗/设置窗/浏览器执行器等各有 partition）随创建即装；
+// defaultSession 早于本模块监听建立，另有 ready 内显式安装兜底。
+app.on('session-created', (s) => installBridgeHeaderInjector(s))
 
 // ---------------------------------------------------------------------------
 // Bridge lifecycle
@@ -1647,6 +1671,10 @@ if (!gotTheLock) {
     bootPhase('mainReady')
     bootStartAt = Date.now()   // 刷新启动基线（60s 兜底弹窗窗口）
     await registerIpc()
+
+    // 【2026-09-17】渲染层令牌注入须早于任何窗口创建（认证小窗/主窗/编辑器窗），
+    // 否则首批请求会以"无 Origin 无令牌"被桥回 401（详见该函数注释）。
+    installBridgeHeaderInjector(session.defaultSession)
 
     // First-run: make sure ~/.yfworking/ exists and has skills
     const yfwHome = ensureYfwHome()
