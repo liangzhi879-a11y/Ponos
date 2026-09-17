@@ -29,6 +29,10 @@ import { handleCollabRoute, isCollabPath } from './collab-routes.mjs'
 // git 调用走异步（见模块头注释：桥是单事件循环，同步 git 会停摆全部会话的 token 流与心跳）
 import { gitOut, parseWorktrees, parseBranches } from './git-async.mjs'
 import { handleHostRoute, isHostPath } from './host-routes.mjs'
+// 身份面（/api/auth/*、/api/profile）与只读聚合面（/api/usage、/api/audit）：P1 批次 2 迁出。
+// 两者的委托点都必须在**令牌闸门之后**——详见各自模块头注释与下方委托点的说明。
+import { handleAuthRoute } from './auth-routes.mjs'
+import { handleReadonlyRoute } from './readonly-routes.mjs'
 import { handleAgentsRoute } from './agents-routes.mjs'
 import { handleSkillDetailRoute } from './skill-detail-routes.mjs'
 import { handleMcpRoute } from './mcp-routes.mjs'
@@ -89,9 +93,8 @@ import { createTranscriptHandlers } from './transcript.mjs'
 import { makeBrowserRouter } from './browser-routing.mjs'
 // 应用即工具（Task 4.x）：内核 bridge_request(route=app) → 主进程执行器 → app_response
 import { makeAppRouter } from './app-routing.mjs'
-import { kernelReadonly } from './kernel-readonly.mjs'
-import { createReadonlyCache } from './readonly-cache.mjs'
-import { getAuthStatus, setupPassword, checkPassword, changePassword } from './auth.mjs'
+// kernelReadonly / createReadonlyCache 的 import 已随 /api/usage、/api/audit 迁走
+// —— 桥不再直接跑只读子命令，改由 server/readonly-routes.mjs 负责（见其模块头注释）。
 import { resolveBridgeToken, authorizeBridgeRequest } from './bridge-token.mjs'
 import { listEgressPolicy, EGRESS_MODE } from './egress-policy.mjs'
 // 【S3 团队源】团队路由（创建/邀请/加入/撤销/状态）落在这里，紧邻 D6 的 `/tags…` 之后 ⇒
@@ -1039,10 +1042,8 @@ const bootState = {
   probeDone: false,           // 活跃供应商实测探测完成（含欠费检测）
 }
 
-// 登录 token 占位表：token -> expiry（24h）。重启即清空 → 每次启动都要口令；
-// /api/auth/status 不做 token 免密判定，token 仅作为未来服务端会话换用的占位。
-const authTokens = new Map() // token -> expiry（重启清空）
-function issueToken() { const t = randomBytes(24).toString('hex'); authTokens.set(t, Date.now() + 86_400_000); return t }
+// 登录 token 占位表（token -> expiry）已随登录/登出端点迁至 server/auth-routes.mjs
+// —— 状态跟着它的唯一使用者走，比留在桥里再按引用注入更不易出错。
 
 // 桥进程实例 id（2026-09-12 桥树杀事故的无感愈合）：随进程启动生成、进程存续期
 // 恒定——GUI 用它区分"重连到同一桥"（瞬时闪断，无需动作）与"换了个新桥"
@@ -2138,24 +2139,8 @@ function isAllowedOrigin(origin) {
   } catch { return false }
 }
 
-// K2.2 只读聚合缓存（/api/usage、/api/audit）。**惰性建**：一是 TTL 允许用 env 覆盖
-// （PONOS_USAGE_CACHE_TTL_MS），而 env 有可能在模块求值之后才被上层补齐（内核侧 perf.mjs
-// 踩过同一个坑：cli.mjs 的 settings.env 注入晚于所有 ESM 求值）；二是本进程若只是被测试
-// import 而没起服务，也不该白建一份状态。
-let _readonlyCache = null
-function getReadonlyCache() {
-  if (_readonlyCache) return _readonlyCache
-  const ttlMs = Number(process.env.PONOS_USAGE_CACHE_TTL_MS) || undefined
-  _readonlyCache = createReadonlyCache({
-    ttlMs: ttlMs || 10_000,
-    // 后台刷新失败**只记日志**：绝不能外抛（未处理的 rejection 会掀掉整个桥），也绝不能
-    // 让本次请求失败——本次已回旧值，用户无感。
-    onWarn: (e) => {
-      try { console.error(`[bridge][readonly] 后台刷新失败: ${(e && e.message) || String(e)}`) } catch { /* 日志失败不影响服务 */ }
-    },
-  })
-  return _readonlyCache
-}
+// K2.2 只读聚合缓存单例已随 /api/usage、/api/audit 迁至 server/readonly-routes.mjs
+// （惰性建的理由与原注释一并搬走，见该模块 getReadonlyCache）。
 
 const httpServer = createServer(async (req, res) => {
   let sent = false
@@ -2345,60 +2330,15 @@ const httpServer = createServer(async (req, res) => {
     // 启动预热状态（/boot-status）与存活探针（/health）已迁至 server/host-routes.mjs（P1 批次 1）
     // —— 注意 bootState 是按**引用**传入该模块的，传副本会让启动进度永远停在初始态。
 
-    // 登录屏口令端点（GUI 专用）：本地 scrypt 口令（server/auth.mjs），token 仅占位
-    if (url.pathname === '/api/auth/status') {
-      const st = await getAuthStatus()
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify(st))
-    }
-    if (url.pathname === '/api/auth/setup' && req.method === 'POST') {
-      const { password } = await readJsonBody(req).catch(() => ({}))
-      try { await setupPassword(password); return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true })) }
-      catch (e) { return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: e?.message || String(e) })) }
-    }
-    if (url.pathname === '/api/auth/login' && req.method === 'POST') {
-      const { password } = await readJsonBody(req).catch(() => ({}))
-      try {
-        const r = await checkPassword(password)
-        if (r.ok) return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, token: issueToken() }))
-        const code = r.lockedForMs != null ? 423 : 401
-        return reply(code, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: r.reason, lockedForMs: r.lockedForMs ?? null }))
-      } catch (e) { return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: e?.message || String(e) })) }
-    }
-    if (url.pathname === '/api/auth/logout' && req.method === 'POST') {
-      const { token } = await readJsonBody(req).catch(() => ({}))
-      if (token) authTokens.delete(token)
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true }))
-    }
-    // 修改密码（2026-09-10 个人信息窗）：验证旧密 → 新盐新哈希；未初始化时直接设置。
-    if (url.pathname === '/api/auth/change-password' && req.method === 'POST') {
-      const { oldPassword, newPassword } = await readJsonBody(req).catch(() => ({}))
-      try {
-        const r = await changePassword(oldPassword, newPassword)
-        if (!r.ok) {
-          const code = r.lockedForMs != null ? 423 : 401
-          return reply(code, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: r.reason, lockedForMs: r.lockedForMs ?? null }))
-        }
-        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, wasUninitialized: r.wasUninitialized === true }))
-      } catch (e) { return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: e?.message || String(e) })) }
-    }
-    // 用户档案（2026-09-10 个人信息窗）：昵称/头像(dataURL)/简介，落盘
-    // <YFW_HOME>/userData/profile.json；头像上限 400KB 防单文件膨胀。
-    if (url.pathname === '/api/profile' && req.method === 'GET') {
-      try {
-        return reply(200, { 'Content-Type': 'application/json' }, readFileSync(PROFILE_PATH, 'utf-8'))
-      } catch { return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ nickname: '', avatar: '', bio: '' })) }
-    }
-    if (url.pathname === '/api/profile' && req.method === 'POST') {
-      const body = await readJsonBody(req).catch(() => ({}))
-      const nickname = String(body.nickname ?? '').slice(0, 64)
-      const bio = String(body.bio ?? '').slice(0, 500)
-      const avatar = String(body.avatar ?? '')
-      if (avatar.length > 400_000) return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: 'avatar too large' }))
-      try {
-        mkdirSync(dirname(PROFILE_PATH), { recursive: true })
-        writeFileSync(PROFILE_PATH, JSON.stringify({ nickname, avatar, bio }, null, 2), 'utf-8')
-        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true }))
-      } catch (e) { return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: String(e?.message || e) })) }
+    // 身份面（登录屏口令 /api/auth/* + 用户档案 /api/profile）已迁至 server/auth-routes.mjs（P1 批次 2）。
+    // ⚠️ 安全前提（勿在不理解前改动调用位置）：本委托点必须在令牌闸门 `authorizeBridgeRequest`
+    // **之后**——闸门内部按 pathname 判定豁免（含 /api/auth/*，因为登录发生在拿到令牌之前），
+    // 与"处理逻辑写在哪个文件"无关，故搬迁不改变鉴权行为；但**挪到闸门之前**就会开出未鉴权入口。
+    // 上方的 isAllowedOrigin 白名单（外部来源一律 403）是另一道，两者先后顺序同样是安全前提。
+    const authRes = await handleAuthRoute({ req, method: req.method, pathname: url.pathname, readJsonBody, profilePath: PROFILE_PATH })
+    if (authRes) {
+      const payload = authRes.raw === true ? authRes.body : JSON.stringify(authRes.body)
+      return reply(authRes.status, { 'Content-Type': 'application/json' }, payload)
     }
 
     // 上下文失真：用户「重新锚定」后上报（GUI → 内核 stdin control 消息）
@@ -2412,47 +2352,14 @@ const httpServer = createServer(async (req, res) => {
       return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true }))
     }
 
-    // U1 只读子命令薄转发：query → kernel 只读子命令 → 透传 stdout JSON（schema A.1/A.2）
-    if (url.pathname === '/api/usage' || url.pathname === '/api/audit') {
-      const sub = url.pathname === '/api/usage' ? '--usage' : '--audit'
-      const flags = []
-      for (const k of ['scope', 'sessionId', 'project', 'from', 'to']) {
-        const v = url.searchParams.get(k)
-        if (v) flags.push(`--${k}`, v)
-      }
-      // K2.1：改**异步** spawn（原为 execFileSync，见 server/kernel-readonly.mjs）。原实现
-      // 把桥的事件循环堵住数秒~数十秒（实测 10.8–19.6s；真机的乘数是 transcript **文件数**
-      // ——同 57MB：240 文件 731ms vs 4800 文件 3271ms），这期间所有 WS 帧、HTTP 响应、
-      // 控制请求一起停摆；GUI 侧超时 5s（src/lib/usageApi.ts）且驾驶舱每 5s 轮询一次
-      // （同值 ⇒ 必然重叠堆积）。`ms=` 是调用方等待；被连累的时长看 /diag/info 的
-      // loopDriftMaxMs（K0.2 探针）——异步化后它应显著回落。
-      // 异步化**创造了并发**（同步版反而天然串行），故同参请求由 kernelReadonly 内部单飞合并，
-      // 在飞的只读子进程数恒 ≤ 参数量级（见该模块 inFlight）。
-      // K2.2：桥侧 TTL + stale-while-revalidate（见 server/readonly-cache.mjs）。真机一次
-      // 全量聚合 10.8–19.6s，而缓存命中即**零扫描**——这是 K2 里唯一能把"每次轮询都全量扫"
-      // 变成"偶尔才扫"的一处。三种非失败态：fresh（命中且新）/ stale（命中但旧：立即回旧值，
-      // 后台刷新）/ computing（冷启动未就绪：立刻 503，刷新留后台跑完 ⇒ 下次轮询即有值）。
-      // 键 = 子命令 + 全部影响结果的 flags。env 不必入键：buildChildEnv() 每次重读 config，
-      // 但其中**唯一影响聚合结果**的是 PONOS_CONFIG_DIR ← YFW_HOME，而它是模块级常量
-      // （:120 resolveYfwHome()），进程内恒定；其余注入项（provider / effort / 日志等级）
-      // 只作用于会话运行，不改历史记录。将来若 YFW_HOME 变成可热改，这里必须一并入键。
-      const t0 = Date.now()
-      const key = `${sub}|${flags.join(' ')}`
-      const got = await getReadonlyCache().get(key, () => kernelReadonly([sub, ...flags], { env: buildChildEnv(), cwd: process.cwd() }))
-      const ms = Date.now() - t0
-      if (got.state === 'computing') {
-        try { console.error(`[bridge][readonly] ${sub} ms=${ms} COMPUTING(cold) args=${flags.join(' ') || '-'}`) } catch { /* 日志失败不影响响应 */ }
-        return reply(503, { 'Content-Type': 'application/json' }, JSON.stringify({ error: '用量聚合首次计算中，请稍后重试' }))
-      }
-      if (got.state === 'failed') {
-        const msg = got.error?.message || String(got.error)
-        try { console.error(`[bridge][readonly] ${sub} ms=${ms} FAILED args=${flags.join(' ') || '-'}: ${msg}`) } catch { /* 日志失败不影响响应 */ }
-        return reply(502, { 'Content-Type': 'application/json' }, JSON.stringify({ error: msg }))
-      }
-      try {
-        console.error(`[bridge][readonly] ${sub} ms=${ms} ${(got.payload || '').length}B state=${got.state} args=${flags.join(' ') || '-'}`)
-      } catch { /* 日志失败不影响响应 */ }
-      return reply(200, { 'Content-Type': 'application/json' }, got.payload)
+    // U1 只读聚合（/api/usage、/api/audit）已迁至 server/readonly-routes.mjs（P1 批次 2），
+    // 连同它的懒建只读缓存单例一并搬走。那里保留了异步 spawn（K2.1）、TTL + stale-while-revalidate
+    // （K2.2）、以及 503（computing）/502（failed）的区分理由——**那些注释是本实现的依据，勿当冗余删掉**。
+    // 注意 buildChildEnv 是**按引用**传入的：它每次调用都重读 config，传求值结果会让配置改动不再生效。
+    const roRes = await handleReadonlyRoute({ pathname: url.pathname, searchParams: url.searchParams, buildChildEnv })
+    if (roRes) {
+      const payload = roRes.raw === true ? roRes.body : JSON.stringify(roRes.body)
+      return reply(roRes.status, { 'Content-Type': 'application/json' }, payload)
     }
 
     // 诊断信息端点：diag-monitor 定期轮询（只读内存统计，见 diagInfo 定义）

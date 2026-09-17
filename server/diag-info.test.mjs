@@ -2,6 +2,7 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { TEST_BRIDGE_TOKEN, withToken } from './test-bridge-auth.mjs'
+import { allRouteSource } from './test-route-sources.mjs'
 
 // YFW_BRIDGE_NO_LISTEN 必须在 import bridge.mjs 之前设置：模块求值（1983 行附近）
 // 会据此跳过顶层 listen，避免端口冲突。测试自行 listen(0) 起随机端口。
@@ -54,14 +55,19 @@ test('GET /diag/info 返回初始零值结构', async () => {
 
 // 结构断言：diagInfo 各埋点触发点只在真实内核会话生命周期中出现（首 token /
 // usage result / 内核 close），无法在单测中触发，此处断言源码存在以保证埋点落地。
-const src = readFileSync(new URL('./bridge.mjs', import.meta.url), 'utf-8')
+//
+// 扫描范围是**全部路由模块**（bridge.mjs + server/*-routes.mjs），不是单读 bridge.mjs：
+// P1 的拆分正把端点陆续搬出 bridge（/diag/info 去了 host-routes、用量埋点去了 readonly-routes），
+// 而本断言的意图是"这段埋点存在"，与它落在哪个文件无关。扫全量后，后续继续搬家也不会误伤；
+// 反过来若某段埋点被**整个删掉**，拼起来的源码里同样找不到，断言照样失败。
+const src = allRouteSource()
 
-test('bridge.mjs 含 /diag/info 端点与崩溃埋点', () => {
+test('路由模块含 /diag/info 端点与崩溃埋点', () => {
   assert.match(src, /\/diag\/info/)
   assert.match(src, /diagInfo\.kernelCrashCount/)
 })
 
-test('bridge.mjs 含首 token 与 usage 埋点', () => {
+test('路由模块含首 token 与 usage 埋点', () => {
   assert.match(src, /diagInfo\.firstTokenTotal/)
   assert.match(src, /diagInfo\.firstTokenOk/)
   assert.match(src, /diagInfo\.lastApiSuccessAt/)
@@ -69,7 +75,7 @@ test('bridge.mjs 含首 token 与 usage 埋点', () => {
 
 // K0.2/K0.3 埋点落地（2026-09-13 系统性优化）：漂移探针与只读端点耗时日志都只在
 // 真实阻塞/真实轮询中出现，单测触发不到，故断言源码存在（与上面两条同策略）。
-test('bridge.mjs 含事件循环漂移探针与只读端点耗时日志', () => {
+test('路由模块含事件循环漂移探针与只读端点耗时日志', () => {
   assert.match(src, /diagInfo\.loopDriftMaxMs/)
   assert.match(src, /\[bridge\]\[readonly\]/)
 })

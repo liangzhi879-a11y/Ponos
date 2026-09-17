@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { kernelReadonly, kernelReadonlySync } from './kernel-readonly.mjs'
+import { allRouteSource } from './test-route-sources.mjs'
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url))
 
@@ -181,18 +182,18 @@ test('结构性守卫：/api/usage 路由必须走异步版（不启桥，故只
   // 没有可单测的接缝，而真起桥在测试里会误杀运行中的应用（见工作流计划的明确约束）。
   // 它的职责只有一个：防止有人把 await 改回 kernelReadonlySync 而无人察觉。
   // 真正的行为验证在 K2.1 的验收：改前用量面板 5s 超时失败 → 改后正常返回。
-  const src = readFileSync(join(SERVER_DIR, 'bridge.mjs'), 'utf8')
-  const at = src.indexOf("url.pathname === '/api/usage'")
-  assert.ok(at > 0, '必须仍存在 /api/usage 路由')
-  const block = src.slice(at, at + 3000)
-  // K2.2 起路由经 `getReadonlyCache().get(key, () => kernelReadonly(...))` 取数：异步调用被
-  // 挪进了取数回调，但**仍是 await 的**（且只有缓存未命中时才真的 spawn）。故断言改成
-  // 「await 的那条链上必须有 kernelReadonly」——保住本守卫的职责（不许退回同步），
-  // 同时不把结构钉死成 K2.1 当时的形状。
-  assert.match(block, /await getReadonlyCache\(\)\.get\(/, '/api/usage 必须 await 缓存取数（异步链）')
-  assert.match(block, /kernelReadonly\(\[sub, \.\.\.flags\]/, '缓存未命中时取数必须走 kernelReadonly')
-  assert.doesNotMatch(block, /kernelReadonlySync\(/, '/api/usage 不得再用同步版（会阻塞桥事件循环）')
-  assert.doesNotMatch(src, /import \{[^}]*kernelReadonlySync[^}]*\} from '\.\/kernel-readonly\.mjs'/, 'bridge 不应再导入同步版')
+  //
+  // 扫描范围是**全部路由模块**（bridge.mjs + server/*-routes.mjs）：P1 批次 2 已把
+  // /api/usage 的处理搬到 server/readonly-routes.mjs，本断言的意图是"这条链仍是异步的"，
+  // 与它落在哪个文件无关。扫全量后，后续继续搬家不会再误伤这条守卫。
+  const src = allRouteSource()
+  // K2.2 起路由经缓存取数：异步调用被挪进取数回调，但**仍是 await 的**（且只有缓存未命中时才真 spawn）。
+  // 故断言「await 的那条链上必须落到 kernelReadonly」——保住职责（不许退回同步），又不把结构钉死。
+  assert.match(src, /await \(cache \|\| getReadonlyCache\(\)\)\.get\(/, '/api/usage 必须 await 缓存取数（异步链）')
+  assert.match(src, /runner = kernelReadonly/, '取数默认必须走 kernelReadonly')
+  assert.match(src, /runner\(\[sub, \.\.\.flags\]/, '缓存未命中时取数必须走注入的 runner（默认异步版）')
+  assert.doesNotMatch(src, /kernelReadonlySync\(/, '/api/usage 不得再用同步版（会阻塞桥事件循环）')
+  assert.doesNotMatch(src, /import \{[^}]*kernelReadonlySync[^}]*\} from '\.\/kernel-readonly\.mjs'/, '路由层不应再导入同步版')
   // 同步版仍须存在（现有测试与离线脚本在用）
   assert.match(readFileSync(join(SERVER_DIR, 'kernel-readonly.mjs'), 'utf8'), /export function kernelReadonlySync/)
 })

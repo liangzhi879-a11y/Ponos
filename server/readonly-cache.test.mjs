@@ -22,6 +22,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createReadonlyCache, DEFAULT_FIRST_WAIT_MS } from './readonly-cache.mjs'
+import { allRouteSource, routeModuleFiles } from './test-route-sources.mjs'
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = join(SERVER_DIR, '..')
@@ -234,13 +235,19 @@ test('跨模块不变量：默认 firstWaitMs 必须 < GUI 的 5s 超时', () =>
 })
 
 test('结构护栏：/api/usage 路由必须走缓存（不得退回直调内核或同步 spawn）', () => {
-  const src = readFileSync(join(SERVER_DIR, 'bridge.mjs'), 'utf8')
-  const at = src.indexOf("url.pathname === '/api/usage'")
-  assert.ok(at > 0, 'bridge 里找不到 /api/usage 路由 —— 护栏失效，请同步更新本用例')
-  const block = src.slice(at, at + 3000)
-  assert.match(block, /getReadonlyCache\(\)\.get\(/, '路由必须经缓存取数')
-  assert.match(block, /'computing'/, '必须处理冷启动未就绪态')
-  assert.match(block, /'failed'/, '必须处理失败态（不得把它并进 computing）')
-  assert.doesNotMatch(block, /kernelReadonlySync\(/, 'HTTP 路径不得退回同步 spawn（会堵死桥事件循环）')
+  // 扫描**路由模块集合**而非单读 bridge.mjs：P1 批次 2 已把 /api/usage 连同它的缓存单例
+  // 一起搬到 server/readonly-routes.mjs。本护栏的意图是"这条链经缓存、且不退回同步"，
+  // 与文件归属无关；扫全量后，后续继续搬家不会再误伤它。
+  const files = routeModuleFiles()
+  const src = allRouteSource()
+  const owner = files.find((f) => readFileSync(join(SERVER_DIR, f), 'utf8').includes("'/api/usage'"))
+  assert.ok(owner, '路由模块里找不到 /api/usage 路由 —— 护栏失效，请同步更新本用例')
+  const ownerSrc = readFileSync(join(SERVER_DIR, owner), 'utf8')
+  // 取数形态带可注入的 cache（测试口子）：`(cache || getReadonlyCache()).get(...)`。
+  // 断言意图不变——**必须经过缓存这层**，只是允许注入口存在。
+  assert.match(ownerSrc, /getReadonlyCache\(\)\)\.get\(/, '路由必须经缓存取数')
+  assert.match(ownerSrc, /'computing'/, '必须处理冷启动未就绪态')
+  assert.match(ownerSrc, /'failed'/, '必须处理失败态（不得把它并进 computing）')
+  assert.doesNotMatch(ownerSrc, /kernelReadonlySync\(/, 'HTTP 路径不得退回同步 spawn（会堵死桥事件循环）')
   assert.match(src, /let _readonlyCache = null/, '缓存实例必须被真正创建（缺了它路由一跑就 ReferenceError）')
 })
