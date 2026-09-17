@@ -204,3 +204,43 @@ test('isWhitelisted: 配置文件 allow 动态生效（mtime 重读 + 子域匹�
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// ── file:// 放行（2026-09-17 用户明确裁定："允许，不限根目录"）──────────────────
+test('isWhitelisted: file:// 本地路径放行（hostname 恒为空串 ⇒ 域名白名单原理上无法表达）', () => {
+  // 回归真实事故：agent 想用浏览器预览自己生成的 HTML，`file:///C:/...` 被一律拦截；
+  // 内核把空 hostname 顶替成中文占位符「该域名」去弹审批，用户同意后写入端静默拒绝
+  // ⇒ "同意 → 重试 → 再弹审批"死循环（见 shared/browser-whitelist-host.cjs 头注）。
+  assert.equal(isWhitelisted('file:///C:/Users/x/scratch/mockup.html'), true)
+  assert.equal(isWhitelisted('file:///Z:/项目/资料/原型.html'), true, '中文路径同样放行')
+  assert.equal(isWhitelisted('file://server/share/a.html'), true, 'UNC 形式按"不限根目录"一并放行')
+})
+
+test('isWhitelisted: 放行不外溢到其它非 http 协议', () => {
+  assert.equal(isWhitelisted('data:text/html,<b>x</b>'), false)
+  assert.equal(isWhitelisted('about:blank'), false)
+  assert.equal(isWhitelisted('javascript:alert(1)'), false)
+  assert.equal(isWhitelisted('https://still-not-listed.example/'), false)
+})
+
+test('isWhitelisted: IPv6 回环放行（与 isAllowedOrigin 视 ::1 为可信来源的口径对齐）', () => {
+  assert.equal(isWhitelisted('http://[::1]:5173/'), true)
+})
+
+test('isWhitelisted: 配置文件里的脏值被归一滤除，合法项照常生效（与写入端共用口径）', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yfw-wl-dirty-'))
+  const cfgPath = path.join(dir, 'browser-whitelist.json')
+  const prev = process.env.YFWORKING_HOME
+  process.env.YFWORKING_HOME = dir
+  try {
+    // 手改配置文件塞进脏值（中文占位符、含空格、空串、点结构异常）——不得让它们成为可匹配项，也不得崩
+    fs.writeFileSync(cfgPath, JSON.stringify({ allow: ['good.test', '该域名', 'bad host!', '', 'a..b', '[::1]'] }))
+    assert.equal(isWhitelisted('https://good.test/'), true, '合法项照常生效')
+    assert.equal(isWhitelisted('https://sub.good.test/x'), true, '子域匹配照常')
+    assert.equal(isWhitelisted('https://bad.test/'), false, '脏值不会被当成域名放行')
+    assert.equal(isWhitelisted('http://[::1]:8080/'), true, '合法 IPv6 项生效')
+  } finally {
+    if (prev === undefined) delete process.env.YFWORKING_HOME
+    else process.env.YFWORKING_HOME = prev
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

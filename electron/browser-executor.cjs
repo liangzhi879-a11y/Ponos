@@ -925,7 +925,7 @@ class BrowserExecutor {
       // 白名单拦截结构化回传（2026-09-10）：内核按 code/data 走白名单审批流
       if (e && e.code === 'whitelist-blocked') {
         resp.code = 'whitelist-blocked'
-        resp.data = { domain: e.domain }
+        resp.data = { domain: e.domain, protocol: e.protocol, url: e.url }
       }
       return resp
     } finally {
@@ -1004,11 +1004,18 @@ class BrowserExecutor {
     if (!isWhitelisted(url)) {
       // 白名单拦截（2026-09-10）：结构化 code/data 回传——内核据此向用户请求
       // 批准写入白名单（批准后 mtime 热重载即时生效，模型重试同一操作即可）
-      let host = url
-      try { host = new URL(url).hostname } catch {}
+      // protocol/url 一并回传（2026-09-17）：本地 file:// 等**没有 hostname** 的地址，此前
+      // domain 为空串，内核只能把它顶替成中文占位符「该域名」去弹审批（用户看到的域名根本
+      // 不存在，且写入端必然拒绝 → "同意→重试→再弹"死循环）。带上协议与原始 URL 后，内核
+      // 才能分辨"能加白名单的域名"与"原理上无法加白名单的地址"，从而给出准确引导而非假审批。
+      let host = ''
+      let proto = ''
+      try { const u = new URL(url); host = u.hostname; proto = u.protocol } catch {}
       const err = new Error('目标域名不在白名单（默认 *.gov.cn/localhost），已拒绝导航: ' + url)
       err.code = 'whitelist-blocked'
       err.domain = host
+      err.protocol = proto
+      err.url = url
       throw err
     }
     try {

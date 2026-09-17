@@ -31,6 +31,7 @@ import { withLaneSkillCatalog } from './prompt.mjs'
 import { createToolRegistry, killActiveChildren } from './tools.mjs'
 import { createSessionStore, newSessionId, sanitizeSegment } from './session.mjs'
 import { resolveAgent, resolveAgents, resolveLaneTools } from './agents.mjs'
+import { normalizeWhitelistHost } from '../shared/browser-whitelist-host.cjs'
 import { getProvider } from './provider.mjs'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -1392,8 +1393,11 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       approvalWaiters.set(toolUseId, (d) => { clearTimeout(t); resolvePromise(d) })
     })
     endAwaitingUser()
+    // whitelistWritten（2026-09-17）：bridge 把**真实写盘结果**随回执带回（true/false）。
+    // 只在明确 false 时才改写文案——undefined 表示对端（旧 bridge）没带该字段，保持既有
+    // 乐观行为不变，避免新旧版本组合下误报"写入失败"。
     return decision?.behavior === 'allow'
-      ? { approved: true }
+      ? { approved: true, whitelistWritten: decision?.whitelistWritten }
       : { approved: false, reason: decision?.behavior ?? 'unknown' }
   }
 
@@ -1415,8 +1419,32 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     // 白名单拦截 → 用户批准流（2026-09-10）：批准即提示重试，未批准给替代途径
     if (!resp?.ok && resp?.code === 'whitelist-blocked') {
       const domain = String(resp?.data?.domain || '').trim()
-      const d = domain || '该域名'
+      const target = String(resp?.data?.url || '').trim()
+      // 无法加入白名单的地址**不弹审批**（2026-09-17 修复）：弹了也白弹——写入端只接受
+      // 合法主机名，用户点了"同意"写入必失败，而旧代码照样回模型"已批准，请重试"，于是
+      // agent 重试 → 仍被拦 → 再弹审批 → 用户再同意，形成死循环（真实事故：agent 想用浏览器
+      // 预览自己生成的 HTML，`file:///C:/...` 的 hostname 恒为空串，被顶替成中文占位符
+      // 「该域名」去弹审批，用户反复点是却永远打不开）。此处直接给出可执行的替代途径。
+      // 判据与写入端共用同一归一函数，两侧不会分叉。
+      if (!normalizeWhitelistHost(domain)) {
+        const what = target ? `“${target.length > 160 ? target.slice(0, 160) + '…' : target}”` : '该地址'
+        const why = domain
+          ? `主机名「${domain}」不是合法域名，无法写入白名单`
+          : '该地址没有主机名（如 file:// 本地路径、data:/about: 等），域名白名单机制对它不适用'
+        return {
+          content: `浏览器访问 ${what} 被域名白名单拦截，且该地址**无法通过"加入域名白名单"放行**：${why}。请改用其他途径（WebFetch / WebSearch 获取网页内容；本地文件用 Read 或应用内文件查看能力打开），不要重复重试同一地址。`,
+          isError: true,
+        }
+      }
+      const d = domain
       const appr = await requestWhitelistApproval(d)
+      // 批准但写入失败（2026-09-17）：如实告知，别让模型以为"重试就好"而空转
+      if (appr.approved && appr.whitelistWritten === false) {
+        return {
+          content: `浏览器访问 ${d} 被域名白名单拦截，用户已批准，但「${d}」**写入白名单失败**（未写入 browser-whitelist.json），重试同一操作仍会被拦截。请改用其他途径（WebFetch / WebSearch），或请用户手动把该域名加入白名单文件后重试。`,
+          isError: true,
+        }
+      }
       if (appr.approved) {
         return {
           content: `浏览器访问 ${d} 被域名白名单拦截，用户已批准将「${d}」加入白名单（即时生效）。请重试刚才的浏览器操作。`,

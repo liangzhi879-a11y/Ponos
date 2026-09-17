@@ -49,6 +49,7 @@ import { parseAskUserPayload, extractAskUserBlocks } from './askuser.mjs'
 import { buildAnchorApplied } from './health-anchor.mjs'
 import { resolveKernelPaths } from '../electron/kernel-paths.cjs'
 import { resolveYfwHome } from './yfw-home.cjs'
+import { normalizeWhitelistHost } from '../shared/browser-whitelist-host.cjs'
 import { writeLogLine, readLogPolicyCached, enforceLogPolicy, normalizeLogPolicy, DEFAULT_LOG_POLICY } from './log-policy.cjs'
 import { DEFAULT_IMPORT_POLICY, normalizeImportPolicy } from './knowledge-import-policy.cjs'
 // 戳记备份保留策略（纯函数，删文件判错=永久丢数据，故独立成模块并配单测）
@@ -1263,9 +1264,21 @@ export const CHAT_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep',
 // 浏览器白名单写入（2026-09-10）：内核 Browser 工具白名单审批通过后，把域名
 // 追加进 {YFW_HOME}/browser-whitelist.json 的 allow 数组。执行器（browser-common.cjs
 // whitelistConfigPath）按 mtime 热重载，写入即时生效无需重启。导出供测试。
+//
+// 2026-09-17 修复（静默失败 → 显式拒绝 + 日志）：
+// 旧实现自带 /^[a-z0-9.-]+$/ 校验，与读取端（browser-common.cjs）**各写一套**。内核把
+// file:// 的空 hostname 顶替成中文占位符「该域名」后传来，此处对中文不匹配便**静默
+// return false**：不写盘、不报错、不打日志；而内核只看审批结果就回模型"已批准，请重试"
+// ⇒ agent 重试 → 仍被拦 → 再弹审批 → 用户再同意 → 死循环。现在：
+//   ① 归一口径与读取端**共用** shared/browser-whitelist-host.cjs（消除分叉）；
+//   ② 失败**必留日志**（这是"用户以为加进去了、其实没有"的根源，不能无声）；
+//   ③ 返回布尔不变（既有调用方/测试依赖），调用方（审批分支）据此回传真实结果给内核。
 export function addBrowserWhitelist(host) {
-  const h = String(host || '').trim().toLowerCase()
-  if (!h || !/^[a-z0-9.-]+$/.test(h)) return false
+  const h = normalizeWhitelistHost(host)
+  if (!h) {
+    console.warn(`[bridge] browser whitelist rejected invalid host: ${JSON.stringify(String(host ?? ''))}`)
+    return false
+  }
   const p = join(YFW_HOME, 'browser-whitelist.json')
   let cfg = { allow: [] }
   try { cfg = JSON.parse(readFileSync(p, 'utf-8')) } catch { /* 文件不存在/损坏 → 重建 */ }
@@ -4004,8 +4017,16 @@ wss.on('connection', (ws, req) => {
             // toolUseId='whitelist:<domain>' 审批——批准即写入 browser-whitelist.json
             // 的 allow 数组（执行器 mtime 热重载，即时生效无需重启），内核随后提示
             // 模型重试同一操作。
+            // 修复（2026-09-17）：把**真实写盘结果**随回执回传（whitelistWritten），内核据此
+            // 决定说"已批准请重试"还是如实说"写入失败、重试也没用"。此前只看 approved 就回
+            // "已批准"，而写入端可能静默拒绝（非法值）⇒ 骗模型也骗用户，且造成重试死循环。
+            // 非白名单审批不写该字段，保持既有协议形状不变（旧内核读不到也不受影响）。
+            let whitelistWritten
             if (approved && String(toolUseId).startsWith('whitelist:')) {
-              addBrowserWhitelist(String(toolUseId).slice('whitelist:'.length))
+              whitelistWritten = addBrowserWhitelist(String(toolUseId).slice('whitelist:'.length))
+              if (!whitelistWritten) {
+                console.warn(`[bridge] whitelist approve 但写入失败 toolUseId=${toolUseId}（内核将收到 whitelistWritten=false，不再谎报"已批准"）`)
+              }
             }
             const response = {
               type: 'control_response',
@@ -4013,7 +4034,7 @@ wss.on('connection', (ws, req) => {
                 request_id: pending.requestId,
                 subtype: 'success',
                 response: approved
-                  ? { behavior: 'allow', updatedInput: {}, toolUseID: toolUseId, decisionClassification: 'user_temporary' }
+                  ? { behavior: 'allow', updatedInput: {}, toolUseID: toolUseId, decisionClassification: 'user_temporary', ...(whitelistWritten === undefined ? {} : { whitelistWritten }) }
                   : { behavior: 'deny', message: '用户拒绝了该高风险操作（User denied the high-risk operation）', toolUseID: toolUseId },
               },
             }

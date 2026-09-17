@@ -99,7 +99,7 @@ function computeFingerprint({ title, href, textLen, inputCount }) {
 // 另有运行时动态配置：{YFW_HOME}/browser-whitelist.json 的 allow 数组，
 // 免改代码免重启（mtime 变化自动重读），支持子域匹配。
 const DEFAULT_WHITELIST = [
-  /\.gov\.cn$/i, /^localhost$/i, /^127\.0\.0\.1$/,
+  /\.gov\.cn$/i, /^localhost$/i, /^127\.0\.0\.1$/, /^\[::1\]$/i,
   /(^|\.)bing\.com$/i, /(^|\.)baidu\.com$/i, /(^|\.)sogou\.com$/i, /(^|\.)google\.com$/i,
   /(^|\.)qcc\.com$/i, /(^|\.)tianyancha\.com$/i, /(^|\.)aiqicha\.com$/i, /(^|\.)shuidi\.cn$/i,
   /(^|\.)12333\.cn$/i,
@@ -109,6 +109,7 @@ const allowed = new Set()
 const fs = require('fs')
 const path = require('path')
 const { resolveYfwHome } = require('../server/yfw-home.cjs')
+const { normalizeWhitelistHost } = require('../shared/browser-whitelist-host.cjs')
 let cfgMtime = 0
 let cfgHosts = null
 function whitelistConfigPath() {
@@ -122,13 +123,28 @@ function refreshConfigHosts() {
   if (st.mtimeMs === cfgMtime) return
   try {
     const raw = JSON.parse(fs.readFileSync(whitelistConfigPath(), 'utf8'))
-    cfgHosts = Array.isArray(raw.allow) ? raw.allow.map(String).filter(Boolean) : []
+    // 归一口径与**写入端**（server/bridge.mjs 的 addBrowserWhitelist）共用同一函数：
+    // 两侧各写一套就会分叉，而分叉的后果是"用户批准了、读取端却认不出"的静默失效
+    //（真实事故见 shared/browser-whitelist-host.cjs 头注）。手改配置文件塞进脏值时也在此滤掉。
+    cfgHosts = Array.isArray(raw.allow) ? raw.allow.map(normalizeWhitelistHost).filter(Boolean) : []
     cfgMtime = st.mtimeMs
   } catch { cfgHosts = null }
 }
 function isWhitelisted(url) {
   try {
-    const host = new URL(url).hostname.toLowerCase()
+    const u = new URL(url)
+    // file:// 放行（2026-09-17 用户明确裁定："允许，不限根目录"）。
+    // 为什么必须在此特判：**本地路径在白名单范式下原理上无法表达** —— `file://` 没有 host
+    // 部分，`new URL('file:///C:/x.html').hostname` 恒为空串；空串既不在默认表里、也不可能是
+    // 合法白名单项（写入端正则不接受空值）⇒ 无论用户批不批准都必然被拦；更糟的是内核会把空
+    // hostname 顶替成中文占位符「该域名」去弹审批，用户同意后写入端又静默拒绝，于是
+    // "同意 → 重试 → 再弹审批"死循环（agent 无法用浏览器预览自己生成的 HTML）。
+    // 连带效果（属"不限根目录"的应有之义，非疏漏）：will-navigate/did-redirect-navigation
+    // 复检与 setWindowOpenHandler 也调用本函数，故**跳转/弹窗到 file:// 同样放行**。
+    // 安全面：执行器窗口 contextIsolation:true 且无 preload、无 nodeIntegration ⇒ 本地页面
+    // 拿不到 IPC/Node 能力；实际暴露限于"任意本地 HTML 会被加载渲染"（用户已裁定接受）。
+    if (u.protocol === 'file:') return true
+    const host = u.hostname.toLowerCase()
     refreshConfigHosts()
     if (allowed.has(host)) return true
     if (cfgHosts && (cfgHosts.includes(host) || cfgHosts.some(h => host.endsWith('.' + String(h).toLowerCase())))) return true
