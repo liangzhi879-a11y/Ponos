@@ -26,6 +26,12 @@ import { canDeleteSpace } from '@/lib/knowledgeDeleteUi'
 // 会话知识范围（2026-09-15，P1）：关联开关的**判据**在 lib 里（纯函数、可单测），
 // 本组件只负责把它画出来 + 写会话字段。内核仍是收口方（越界由内核拒绝）。
 import { isAssociableSpace, isLargeSpace, toggleKnowledgeSpace, MAX_ASSOC_SPACES } from '@/lib/knowledgeScopeUi'
+// 【S3】侧边栏默认列表（**知识空间清单**）按模式筛选（spec §5.9「受模式影响」一栏）。
+// 判据取**空间 id**（知识条目的归属在既有模型里已由 `spaceId` 承载）。
+// ⚠️ 只筛"列表显示"，**不**影响检索范围 —— 检索恒跨全部空间（见 teamModeUi.knowledgeSearchScopeFor
+// 与 KnowledgeSearchView 的接线，反向断言①在 teamModeUi.test.ts）。
+import { filterKnowledgeSpacesByMode } from '@/lib/teamModeUi'
+import { useModeFilter } from '@/stores/teamStore'
 import { cn } from '@/lib/utils'
 import { useChatStore } from '@/stores/chatStore'
 
@@ -59,6 +65,14 @@ export function KnowledgeSidebar({ spaces, spacesLoading, onImported, onDeleted 
   const setConvKnowledgeSpaces = useChatStore(s => s.setConversationKnowledgeSpaces)
 
   const space = useMemo(() => spaces?.find(s => s.id === spaceId) ?? null, [spaces, spaceId])
+  // 【S3】下拉里的**可选空间清单**按模式筛选。当前选中空间(`space`)刻意**不**筛：
+  // 若把它筛掉，用户从团队模式切回个人模式时会看到"当前空间为空但树还在"的错乱状态；
+  // 而列表只影响"还能选什么"，语义干净（§5.9 的筛选范围 = 默认列表）。
+  const modeFilter = useModeFilter()
+  const listedSpaces = useMemo(
+    () => filterKnowledgeSpacesByMode(spaces ?? [], modeFilter.mode, modeFilter.teamIds),
+    [spaces, modeFilter.mode, modeFilter.teamIds],
+  )
   const readonly = space?.writable === false
   const associable = isAssociableSpace(space)
   const associated = !!(space && activeConv?.knowledgeSpaces?.includes(space.id))
@@ -80,7 +94,14 @@ export function KnowledgeSidebar({ spaces, spacesLoading, onImported, onDeleted 
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-[212px]">
             <DropdownMenuLabel className="micro">{t('knowledge.spaceChoose')}</DropdownMenuLabel>
-            {(spaces ?? []).map(s => (
+            {/* 【S3】模式把本模式的库全筛掉时出声（否则下拉是空的，用户以为库没了；
+                模式只筛**列表**，检索仍跨全部空间 —— 见 teamModeUi.knowledgeSearchScopeFor） */}
+            {listedSpaces.length === 0 && (spaces?.length ?? 0) > 0 && (
+              <DropdownMenuItem disabled className="text-[10px] text-tertiary leading-snug">
+                {t('team.listFilteredEmpty')}
+              </DropdownMenuItem>
+            )}
+            {listedSpaces.map(s => (
               <DropdownMenuItem key={s.id} onSelect={() => setSpace(s.id)} className="text-[11px]">
                 <span className="flex-1 min-w-0 truncate">{s.name}</span>
                 {/* 只读标记必须在下拉里就能看见：否则用户会"选中 → 发现不能建 → 再换一个"来回试 */}

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Settings, Monitor, Cpu, Info, Check, Sparkles, Globe, Save, Database, FolderOpen, Brain, ChevronDown, Plus, X, Trash2, Puzzle, ChevronRight, HardDrive, RefreshCw, Wifi, Zap, ShieldCheck, FileText, Upload } from 'lucide-react'
+import { Settings, Monitor, Cpu, Info, Check, Sparkles, Globe, Save, Database, FolderOpen, Brain, ChevronDown, Plus, X, Trash2, Puzzle, ChevronRight, HardDrive, RefreshCw, Wifi, Zap, ShieldCheck, FileText, Upload, Users } from 'lucide-react'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
   Button, ScrollArea, Switch,
@@ -21,6 +21,9 @@ import { ExperiencePanel } from '@/components/settings/ExperiencePanel'
 import { PermissionsPanel } from '@/components/settings/PermissionsPanel'
 import { LogsPanel } from '@/components/settings/LogsPanel'
 import { KnowledgeImportPanel } from '@/components/settings/KnowledgeImportPanel'
+// 【S3 团队协同】设置窗的团队分区（开通/加入/成员管理/搜索根；强约束小字在 TeamPanel 内部）
+import { TeamPanel } from '@/components/team/TeamPanel'
+import { isTeamSectionRequest, SETTINGS_SECTION_STORAGE_KEY, SETTINGS_TEAM_SECTION } from '@/lib/teamModeUi'
 // MCP 服务器配置（P1-5 扩展）：可视化编辑 <configDir>/mcp.json
 // 2026-09-16：入口已迁出设置窗 —— MCP 提升为与会话/任务同级的顶层标签（第八 rail），
 // 配置 + 授权 + 内核真实接入状态都在 `src/components/mcp/McpView.tsx`（含 McpConfigEditor）。
@@ -29,14 +32,25 @@ import { KnowledgeImportPanel } from '@/components/settings/KnowledgeImportPanel
 import type { AppSettings, ModelProvider, YFWorkingConfigV2 } from '@/types'
 import { THEMES, type ThemeMode, type ThemeMeta, type Language } from '@/types'
 
-type Section = 'general' | 'model' | 'permissions' | 'logs' | 'knowledgeImport' | 'skills' | 'pet' | 'experience' | 'about'
+type Section = 'general' | 'model' | 'permissions' | 'logs' | 'knowledgeImport' | 'skills' | 'pet' | 'experience' | 'team' | 'about'
 
 export function SettingsView() {
   const { settings, updateSettings } = useSettingsStore()
   const { sessionModel } = useChatStore()
   const { connected } = useYFWCLI()
   const { t } = useTranslation()
-  const [section, setSection] = useState<Section>('general')
+  const [section, setSection] = useState<Section>(() => {
+    // 【S3 团队协同】header 的模式开关下拉会请求"团队"分区（跨窗口一次性意图，见 teamModeUi）。
+    // 初始化时读一次并**立即清除**：否则用户手动切到别的分区后，下次开窗又被弹回团队页。
+    try {
+      const raw = localStorage.getItem(SETTINGS_SECTION_STORAGE_KEY)
+      if (isTeamSectionRequest(raw)) {
+        localStorage.removeItem(SETTINGS_SECTION_STORAGE_KEY)
+        return SETTINGS_TEAM_SECTION as Section
+      }
+    } catch { /* 无 storage：落到默认分区 */ }
+    return 'general'
+  })
   // 添加供应商子对话框的打开标志（对话框内部自管 outside-click，无需外层守卫）
   const [showAddProviderDialog, setShowAddProviderDialog] = useState(false)
 
@@ -64,6 +78,9 @@ export function SettingsView() {
               { id: 'pet' as Section, label: t('settings.petTab'), icon: Sparkles },
               { id: 'experience' as Section, label: t('settings.experienceTab'), icon: Brain },
               { id: 'about' as Section, label: t('settings.about'), icon: Info },
+              // 【S3 团队协同】团队分区（2026-09-17）：开通/加入/成员管理 + 搜索根。
+              // 入口不只在这里：header 的模式开关下拉也会跳到这里（用 localStorage 传一次"请求的分区"）
+              { id: 'team' as Section, label: t('team.navLabel'), icon: Users },
             ].map(item => {
               const Icon = item.icon
               const active = section === item.id
@@ -350,6 +367,9 @@ export function SettingsView() {
               )}
 
               {section === 'experience' && <ExperiencePanel />}
+
+              {/* 【S3 团队协同】团队分区：识别码/验证码、成员表、同步盘警告与强制小字都在 TeamPanel 内 */}
+              {section === 'team' && <TeamPanel />}
 
               {section === 'about' && (
                 <div className="space-y-4 text-sm text-secondary">

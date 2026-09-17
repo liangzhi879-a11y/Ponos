@@ -29,6 +29,10 @@ import {
 import { KnowledgeEmpty } from './KnowledgeEmpty'
 import { KnowledgeSkeleton } from './KnowledgeSkeleton'
 import { KnowledgeScopeToggle } from './KnowledgeScopeToggle'
+// 【S3 团队协同】检索范围由 teamModeUi.knowledgeSearchScopeFor 收口（恒"全部空间"，
+// 见下方 params 注释与 teamModeUi.test.ts 的反向断言①）
+import { knowledgeSearchScopeFor } from '@/lib/teamModeUi'
+import { useTeamStore } from '@/stores/teamStore'
 // 检索语法层的前端镜像（批次 3）：**只用于输入过程中的提示**；结果回显一律以内核回传为准
 import { describeQuery } from '@/lib/knowledgeQuery'
 
@@ -98,6 +102,12 @@ const TOP_K = 20
 export function KnowledgeSearchView() {
   const { t } = useTranslation()
   const spaceId = useKnowledgeStore(s => s.spaceId)
+  // 【S3 团队协同·反向要求】知识检索范围**不受模式影响**（spec §5.9「不受模式影响」一栏）。
+  // 这里刻意读用户**选择**的模式并显式喂给 `knowledgeSearchScopeFor`（它恒返回"全部空间"）：
+  // 目的是让"检索范围"有唯一收口点 —— 谁想按模式收窄检索，就必须改那个函数（单测立刻变红），
+  // 而不是在本文件里顺手加一个 filter。`teamModeUi.test.ts` 的反向断言①做源码级守门。
+  const workspaceMode = useTeamStore(s => s.mode)
+  const modeScope = knowledgeSearchScopeFor(workspaceMode)
 
   const [q, setQ] = useState('')
   const [kw, setKw] = useState('')
@@ -157,10 +167,12 @@ export function KnowledgeSearchView() {
     keywords,
     topK: TOP_K,
     // 「全部空间」= 不发 spaces 参数（空数组的正确表达是"不发"，见 knowledgeApi 的 csv 注释）
-    spaces: allSpaces || !spaceId ? undefined : [spaceId],
+    // 【S3】默认分支取自 knowledgeSearchScopeFor（恒 undefined = 跨全部空间）：**模式不参与**。
+    // 用户手动把范围收窄到"当前空间"时仍然生效 —— 那是用户的显式选择，不是模式导致的。
+    spaces: allSpaces || !spaceId ? modeScope.spaceIds : [spaceId],
     // 全文模式（批次 1）：只有用户显式打开才要整段；缺省走 snippet（预算友好）
     mode: fullText ? 'full' : undefined,
-  }), [settled.q, keywords, allSpaces, spaceId, fullText])
+  }), [settled.q, keywords, allSpaces, spaceId, fullText, modeScope])
 
   const { data, loading, error } = useSearch(params)
 

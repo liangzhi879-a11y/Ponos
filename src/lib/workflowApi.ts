@@ -49,6 +49,16 @@ export interface WorkflowMeta {
   valid?: boolean
   updatedAt?: number
   lastRun?: { at: string; status: string; nodes: number } | null
+  /**
+   * 【S3 团队协同】归属工作区（内核 `server/workflow-store.mjs` 的 `listWorkflowMetas` 早已返回；
+   * 缺失时是**空串**——`grab()` 的既有约定，不伪造默认值）。
+   *
+   * 用途：侧边栏默认列表（工作流卡片网格）的**模式筛选**（spec §5.9「受模式影响」一栏），
+   * 判据用 `teamModeUi.filterWorkflowsByMode`（空串/缺字段按'personal'归类）。
+   * ⚠️ 当前**尚未接线**（接线点在 `WorkflowsPanel`/`WorkflowList`，那两份文件正被另一条
+   * 并行 lane 修改，本任务按约束未触碰）——字段先补齐，接线是"import + 过滤一行"。
+   */
+  workspaceId?: string
 }
 
 export interface RunRecord { file?: string; runId?: string; status?: string; steps?: number; at?: number; [k: string]: unknown }

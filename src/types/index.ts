@@ -170,6 +170,17 @@ export interface Conversation {
    */
   appId?: string
   setId?: string
+  /**
+   * 【S2-D4 / S3】归属工作区：会话属于哪个工作区。个人工作区用固定值 `personal`
+   * （与内核 `shared/attribution.mjs` 的 `DEFAULT_WORKSPACE_ID` 同源）；团队工作区形如
+   * `team-<teamId>`（与 `kernel/team-sync.mjs` 的知识空间 id 同一约定）。
+   *
+   * **可选**：D4 之前写入的旧会话没有这个字段 ⇒ 读侧一律按'personal'归类
+   * （`src/lib/teamModeUi.workspaceIdOfItem`），不伪造默认值、也不因此丢项。
+   * 渲染层只用它做**侧边栏默认列表的模式筛选**（spec §5.9「受模式影响」一栏）；
+   * 检索范围与数据可见性**不受**影响（同节的「不受模式影响」一栏）。
+   */
+  workspaceId?: string
   /** 该会话经历过的全部内核 transcript sessionId（按需加载消息体用，持久化索引字段） */
   sessionIds?: string[]
   /** 持久化索引：消息计数（messages 剥离/未加载时用于列表统计展示） */

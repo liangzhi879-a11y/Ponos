@@ -8,6 +8,7 @@ import { Button } from '@/components/ui'
 import { Tooltip } from '@/components/ui'
 import { useUIStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { TeamModeSwitch } from '@/components/team/TeamModeSwitch'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn } from '@/lib/utils'
 import { THEMES, type ThemeMode, type ThemeMeta } from '@/types'
@@ -108,6 +109,11 @@ export function Header({ onGoCockpit }: HeaderProps = {}) {
       </div>
 
       <div className="flex items-center gap-0.5 no-drag shrink-0">
+        {/* 【S3 团队协同】一级「个人 / 团队」模式开关（spec §5.9）。
+            放在搜索钮左侧、品牌名右侧：模式是"我正在做哪一类工作"的上下文，位置必须在一级工具条上。
+            未加入任何团队时它只是一个可展开的"个人"入口（团队能力默认关闭 ⇒ 不改动任何列表）。 */}
+        <TeamModeSwitch />
+
         {/* Search */}
         <Tooltip content={t('search.title') + ' (⌘⇧F)'}>
           <Button variant="ghost" size="xs" onClick={openSearch} aria-label={t('search.title')}>

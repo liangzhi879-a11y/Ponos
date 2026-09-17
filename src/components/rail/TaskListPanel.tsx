@@ -24,6 +24,9 @@ import { useTranslation } from '@/i18n/useTranslation'
 import { exportChats } from '@/lib/chatExport'
 import { formatDate, cn } from '@/lib/utils'
 import { isPlainTaskLike } from '@/lib/chatModeUi'
+// 【S3】侧边栏默认列表按模式筛选（spec §5.9）。未加入团队时 mode 恒 'personal' ⇒ 列表不变。
+import { filterConversationsByMode } from '@/lib/teamModeUi'
+import { useModeFilter } from '@/stores/teamStore'
 import type { Conversation, ConversationProgress, ConversationSet } from '@/types'
 
 export function TaskListPanel() {
@@ -71,7 +74,12 @@ export function TaskListPanel() {
   // 本面板只渲染任务会话（chat 会话与集合概念隔离，见 ChatListPanel）；
   // 应用专属会话（Conversation.appId，Task 4 质检用）也不入列——它是某个应用的常驻会话，
   // 混进任务列表只会与"一个应用一个会话"的幂等语义打架（见 chatModeUi.isPlainTaskLike）。
-  const tasks = conversations.filter(isPlainTaskLike)
+  // 【S3】再按模式筛一层（§5.9「受模式影响 = 侧边栏默认列表的筛选范围」）。
+  const modeFilter = useModeFilter()
+  const allTasks = conversations.filter(isPlainTaskLike)
+  const tasks = filterConversationsByMode(allTasks, modeFilter.mode, modeFilter.teamIds)
+  // 团队模式下个人会话被筛空时**必须出声**（否则用户以为数据丢了；模式只是筛选范围，见 §5.9）
+  const hiddenByMode = tasks.length === 0 && allTasks.length > 0 && modeFilter.mode === 'team'
 
   // 次级浮层：点同 tab 再次点击关闭；其余切换内容
   const toggleSecondTab = (tab: SecondTabId) => {
@@ -366,6 +374,7 @@ export function TaskListPanel() {
         <div className="flex-1 flex flex-col items-center justify-center gap-2.5 px-4 text-center min-h-0">
           <SquareKanban className="w-6 h-6 text-tertiary" />
           <span className="text-xs text-secondary leading-relaxed">{t('rail.taskEmpty')}</span>
+          {hiddenByMode && <span className="text-[10px] text-tertiary leading-relaxed">{t('team.listFilteredEmpty')}</span>}
           <Button variant="secondary" size="xs" onClick={() => createConversation()}>
             <SquarePlus className="w-3.5 h-3.5" />
             {t('rail.taskEmptyAction')}

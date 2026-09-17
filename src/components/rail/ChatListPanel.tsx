@@ -12,6 +12,11 @@ import { useChatStore } from '@/stores/chatStore'
 import { useTranslation } from '@/i18n/useTranslation'
 import { formatDate, cn } from '@/lib/utils'
 import { isChatLike } from '@/lib/chatModeUi'
+// 【S3】侧边栏默认列表按模式筛选（spec §5.9「受模式影响」一栏：会话/工作流/知识的**筛选范围**）。
+// 没加入任何团队时 `useModeFilter()` 的 mode 恒为 'personal' 且判据把"缺 workspaceId 的旧数据"
+// 也归个人 ⇒ 列表逐字不变（团队能力默认关闭）。
+import { filterConversationsByMode } from '@/lib/teamModeUi'
+import { useModeFilter } from '@/stores/teamStore'
 import type { Conversation } from '@/types'
 
 export function ChatListPanel() {
@@ -22,7 +27,12 @@ export function ChatListPanel() {
   const createConversation = useChatStore(s => s.createConversation)
   const setActiveConversation = useChatStore(s => s.setActiveConversation)
 
-  const chats = conversations.filter(isChatLike)
+  const { mode, teamIds } = useModeFilter()
+  const allChats = conversations.filter(isChatLike)
+  const chats = filterConversationsByMode(allChats, mode, teamIds)
+  // 团队模式下把个人内容全筛掉时**必须出声**：否则用户看到空列表会以为"数据没了"，
+  // 而模式只是筛选范围、数据仍在本机（spec §5.9「模式 ≠ 隔离」）。
+  const hiddenByMode = chats.length === 0 && allChats.length > 0 && mode === 'team'
   const startChat = () => createConversation(undefined, undefined, 'chat')
 
   return (
@@ -39,6 +49,7 @@ export function ChatListPanel() {
         <div className="flex-1 flex flex-col items-center justify-center gap-2.5 px-4 text-center min-h-0">
           <MessageSquare className="w-6 h-6 text-tertiary" />
           <span className="text-xs text-secondary leading-relaxed">{t('rail.chatEmpty')}</span>
+          {hiddenByMode && <span className="text-[10px] text-tertiary leading-relaxed">{t('team.listFilteredEmpty')}</span>}
           <Button variant="secondary" size="xs" onClick={startChat}>
             <MessageSquarePlus className="w-3.5 h-3.5" />
             {t('rail.chatEmptyAction')}
