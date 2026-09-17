@@ -1,0 +1,678 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YFWorking 全模块交互式架构图谱</title>
+<style>
+  :root{
+    --bg:#080b12; --panel:#0f1626; --panel2:#131c30; --line:#26324b; --line2:#1a2337;
+    --text:#e7edf9; --muted:#8d9dbb; --dim:#64748b;
+    --l-renderer:#38bdf8; --l-host:#a78bfa; --l-bridge:#4fd1c5; --l-kernel:#f472b6; --l-shared:#facc15; --l-tooling:#94a3b8;
+    --ok:#34d399; --warn:#fbbf24; --bad:#f87171;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--text); overflow:hidden;
+    font:13px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  }
+  /* 顶栏 */
+  header{
+    height:auto; padding:9px 16px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    background:linear-gradient(180deg,#101a2e,#0b1220); border-bottom:1px solid var(--line);
+  }
+  header h1{margin:0;font-size:15px;letter-spacing:.2px;white-space:nowrap}
+  header h1 b{color:var(--l-renderer)}
+  .meta{display:flex;gap:7px;flex-wrap:wrap}
+  .meta span{font-size:11px;color:var(--muted);background:#0e1526;border:1px solid var(--line);padding:2px 8px;border-radius:999px;white-space:nowrap}
+  .grow{flex:1}
+  a{color:var(--l-bridge);text-decoration:none}
+  a:hover{text-decoration:underline}
+  /* 工具条 */
+  .toolbar{
+    display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 16px;
+    background:#0c1523;border-bottom:1px solid var(--line);
+  }
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{background:transparent;border:0;color:var(--muted);padding:5px 12px;font-size:12px;cursor:pointer;font-family:inherit}
+  .seg button.on{background:#17324a;color:#bfe6ff}
+  .chip{
+    display:inline-flex;align-items:center;gap:6px;font-size:11.5px;padding:4px 9px;border-radius:999px;
+    border:1px solid var(--line);background:#0e1526;color:var(--muted);cursor:pointer;user-select:none;
+  }
+  .chip.on{color:#dceaff;border-color:#3a5578;background:#132340}
+  .chip i{width:8px;height:8px;border-radius:50%;display:inline-block}
+  input[type=search],select{
+    background:#0e1526;border:1px solid var(--line);color:var(--text);border-radius:8px;
+    padding:5px 9px;font-size:12px;font-family:inherit;outline:none;
+  }
+  input[type=search]{width:190px}
+  input[type=search]:focus{border-color:#3a5578}
+  .btn{background:#132340;border:1px solid #29405e;color:#cfe3ff;border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer;font-family:inherit}
+  .btn:hover{background:#17304f}
+  /* 主体三栏 */
+  main{display:flex;height:calc(100vh - 88px);min-height:420px}
+  #stage{position:relative;flex:1;min-width:0;background:
+      radial-gradient(900px 500px at 20% 0%, #101d33 0%, transparent 60%),
+      radial-gradient(700px 420px at 90% 100%, #161a33 0%, transparent 55%), var(--bg);}
+  canvas{display:block;width:100%;height:100%;cursor:grab}
+  canvas.dragging{cursor:grabbing}
+  .overlay{position:absolute;left:12px;bottom:12px;display:flex;gap:6px;flex-wrap:wrap;max-width:calc(100% - 24px)}
+  .legend{position:absolute;right:12px;bottom:12px;background:rgba(12,21,35,.86);border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:11.5px;backdrop-filter:blur(4px)}
+  .legend div{display:flex;align-items:center;gap:7px;margin:2px 0;color:var(--muted)}
+  .legend i{width:9px;height:9px;border-radius:50%}
+  .hint{position:absolute;left:12px;top:10px;font-size:11.5px;color:var(--dim);background:rgba(12,21,35,.7);padding:4px 9px;border-radius:8px;border:1px solid var(--line2)}
+  /* 详情栏 */
+  aside{
+    width:340px;flex:0 0 340px;border-left:1px solid var(--line);background:var(--panel);
+    overflow:auto;padding:12px 13px 22px;
+  }
+  aside h2{margin:0 0 4px;font-size:13px;color:#dbe6fb;word-break:break-all}
+  aside .kicker{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px;margin:14px 0 5px}
+  aside p{margin:0;font-size:12.3px;color:var(--muted)}
+  table.mini{width:100%;border-collapse:collapse;font-size:11.8px}
+  table.mini th,table.mini td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line2);vertical-align:top}
+  table.mini th{color:var(--dim);font-weight:600;background:#0d1524}
+  table.mini td.num{text-align:right;color:var(--muted)}
+  .link{color:var(--l-renderer);cursor:pointer;word-break:break-all}
+  .link:hover{text-decoration:underline}
+  .pill{display:inline-block;font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid var(--line);color:var(--muted);margin-right:5px}
+  code{background:#0d1626;border:1px solid #1e2b44;border-radius:5px;padding:1px 5px;font-size:11.5px;color:#a9d5ff;font-family:ui-monospace,Consolas,monospace}
+  /* 清单视图 */
+  #list{flex:1;overflow:auto;padding:14px 16px 40px;display:none;min-width:0}
+  #list table{width:100%;border-collapse:collapse;font-size:12.3px}
+  #list th{position:sticky;top:0;background:#0d1524;color:var(--muted);text-align:left;padding:8px 9px;border-bottom:1px solid var(--line);cursor:pointer;white-space:nowrap;z-index:2}
+  #list th:hover{color:#cfe3ff}
+  #list td{padding:7px 9px;border-bottom:1px solid var(--line2);vertical-align:top}
+  #list tr:hover td{background:#0d1729}
+  #list td.num{text-align:right;color:var(--muted)}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+  .bar{display:flex;gap:12px;flex-wrap:wrap;margin:0 0 12px}
+  .card{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:132px}
+  .card .n{font-size:20px;font-weight:600;color:#eaf2ff}
+  .card .t{font-size:11px;color:var(--dim)}
+  footer{position:fixed;right:12px;bottom:10px;font-size:11px;color:var(--dim);pointer-events:none}
+  @media (max-width:900px){ aside{display:none} .legend{display:none} }
+</style>
+</head>
+<body>
+<header>
+  <h1>YFWorking <b>全模块交互式架构图谱</b> <span style="font-size:11px;color:var(--dim)" id="hdrMode"></span></h1>
+  <div class="meta" id="hdrMeta"></div>
+  <div class="grow"></div>
+  <div class="meta">
+    <span>文本真源 <a href="./architecture.md">docs/architecture.md</a></span>
+    <span>分层图 <a href="./architecture.html">docs/architecture.html</a></span>
+  </div>
+</header>
+
+<div class="toolbar">
+  <div class="seg" id="viewSeg">
+    <button data-view="domain" class="on">功能域视图</button>
+    <button data-view="module">模块视图</button>
+  </div>
+  <input type="search" id="q" placeholder="搜索模块 / 功能域 / 路径…（/ 聚焦）">
+  <select id="sortSel">
+    <option value="deg">按连接数排序（枢纽优先）</option>
+    <option value="loc">按代码行数排序</option>
+    <option value="layer">按分层排序</option>
+    <option value="name">按名称排序</option>
+  </select>
+  <button class="btn" id="fitBtn">适配视图</button>
+  <button class="btn" id="resetBtn">重排布局</button>
+  <button class="btn" id="freezeBtn">暂停物理</button>
+  <div class="grow"></div>
+  <div class="meta" id="layerChips"></div>
+</div>
+
+<main>
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div class="hint" id="hint">拖拽节点/画布 · 滚轮缩放（模块视图放大后逐步显示标签）· 双击功能域下钻 · Esc 取消选中</div>
+    <div class="legend" id="legend"></div>
+    <div class="overlay"><span class="chip" id="statChip"></span></div>
+  </div>
+  <aside id="detail"><h2>未选中</h2><p>点击画布中的节点查看详情：职责、依赖、被依赖、所属分层与功能域。</p>
+    <div class="kicker">枢纽模块（按连接数）</div><div id="hubs"></div>
+    <div class="kicker">规模最大的功能域</div><div id="bigDoms"></div>
+    <div class="kicker">孤立模块</div><div id="orphans"></div>
+  </aside>
+  <div id="list"></div>
+</main>
+
+<script>
+const DATA = /*__ARCH_DATA__*/null;
+
+/* ───────────────────────── 状态 ───────────────────────── */
+const S = {
+  view: 'domain',
+  layerOn: new Set(DATA.layers.map(l => l.id)),
+  q: '',
+  sel: null,
+  hover: null,
+  drag: null,
+  pan: null,
+  scale: 1, tx: 0, ty: 0,
+  alpha: 1, frozen: false,
+  N: [], E: [], adj: new Map(),
+};
+
+const LAYER_COLOR = Object.fromEntries(DATA.layers.map(l => [l.id, l.color]));
+const LAYER_NAME = Object.fromEntries(DATA.layers.map(l => [l.id, l.name]));
+
+/* ───────────────────────── 建图 ───────────────────────── */
+function buildGraph () {
+  const isDom = S.view === 'domain';
+  const raw = isDom
+    ? DATA.domains.map(d => ({
+        id: d.id, label: d.name, layer: d.layer, purpose: d.desc,
+        loc: d.loc, count: d.count, files: d.files, isDomain: true,
+      }))
+    : DATA.nodes.map(n => ({
+        id: n.id, label: n.label, layer: n.layer, domain: n.domain, purpose: n.purpose,
+        loc: n.loc, deg: n.deg, dir: n.dir,
+      }));
+  const rawEdges = isDom ? DATA.domainEdges : DATA.edges;
+
+  const N = raw.map((r, i) => ({
+    ...r, idx: i,
+    x: Math.cos(i * 2.399) * (60 + 12 * Math.sqrt(i)),
+    y: Math.sin(i * 2.399) * (60 + 12 * Math.sqrt(i)),
+    vx: 0, vy: 0,
+    r: isDom ? Math.min(34, 7 + Math.sqrt(r.count) * 3.4) : Math.min(15, 2.6 + Math.sqrt(r.deg) * 1.7),
+    pinned: false,
+  }));
+  const idx = new Map(N.map(n => [n.id, n.idx]));
+  const E = [];
+  for (const e of rawEdges) {
+    const a = idx.get(e.from); const b = idx.get(e.to)
+    if (a === undefined || b === undefined) continue
+    E.push({ a, b, w: e.weight || 1, ref: e.ref || 0 })
+  }
+  S.N = N; S.E = E
+  S.adj = new Map(N.map((_, i) => [i, new Set()]))
+  for (const e of E) { S.adj.get(e.a).add(e.b); S.adj.get(e.b).add(e.a) }
+  S.alpha = 1
+  document.getElementById('hdrMode').textContent = isDom ? '功能域视图 · ' + N.length + ' 域' : '模块视图 · ' + N.length + ' 模块'
+  drawLegend(isDom)
+}
+
+function drawLegend (isDom) {
+  document.getElementById('legend').innerHTML =
+    DATA.layers.filter(l => layerVisible(l.id)).map(l => `<div><i style="background:${l.color}"></i>${l.name}</div>`).join('') +
+    (isDom
+      ? '<div style="color:#5c6b85;margin-top:4px">半径 = 模块数</div>'
+      : `<div style="color:#5c6b85;margin-top:4px">半径 = 连接数</div><div style="color:#5c6b85">实线 = import/require</div><div style="color:#a5893a">虚线 = 按路径引用（spawn）</div>`)
+}
+
+/* ───────────────────────── 过滤 ───────────────────────── */
+function layerVisible (id) { return S.layerOn.has(id) }
+function nodeVisible (n) {
+  if (!layerVisible(n.layer)) return false
+  return true
+}
+function matches (n) {
+  if (!S.q) return true
+  const q = S.q.toLowerCase()
+  return (n.id + ' ' + (n.label || '') + ' ' + (n.purpose || '') + ' ' + (n.domain || '') + ' ' + (DATA.domains.find(d => d.id === n.domain)?.name || '')).toLowerCase().includes(q)
+}
+
+/* ───────────────────────── 物理 ───────────────────────── */
+function tick () {
+  if (S.frozen) return
+  const N = S.N, E = S.E
+  const isDom = S.view === 'domain'
+  // 斥力按节点尺寸放大：大节点（功能域）天然需要更大间距
+  const REP = isDom ? 34000 : 6000
+  const SPRING = isDom ? 0.022 : 0.012
+  const GRAV = isDom ? 0.0011 : 0.0018
+  const DAMP = 0.84
+  const PAD = isDom ? 40 : 14
+  const CUT = isDom ? 900 : 420, CUT2 = CUT * CUT
+
+  for (let i = 0; i < N.length; i++) {
+    const a = N[i]
+    if (!nodeVisible(a)) continue
+    for (let j = i + 1; j < N.length; j++) {
+      const b = N[j]
+      if (!nodeVisible(b)) continue
+      let dx = b.x - a.x, dy = b.y - a.y
+      let d2 = dx * dx + dy * dy
+      if (d2 > CUT2) continue
+      if (d2 < 0.01) { dx = (Math.random() - .5) * .6; dy = (Math.random() - .5) * .6; d2 = dx * dx + dy * dy }
+      const d = Math.sqrt(d2)
+      const f = (REP * (a.r + b.r)) / 60 / d2        // 半径参与斥力，免得大节点被压在一起
+      const fx = (dx / d) * f, fy = (dy / d) * f
+      a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy
+    }
+  }
+  // 弹簧：静止长度随两端半径自适应
+  for (const e of E) {
+    const a = N[e.a], b = N[e.b]
+    if (!nodeVisible(a) || !nodeVisible(b)) continue
+    const dx = b.x - a.x, dy = b.y - a.y
+    const d = Math.max(0.01, Math.hypot(dx, dy))
+    const rest = a.r + b.r + (isDom ? 74 : 26)
+    const f = (d - rest) * SPRING
+    const fx = (dx / d) * f, fy = (dy / d) * f
+    a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy
+  }
+  // 向心 + 积分
+  for (const n of N) {
+    if (!nodeVisible(n)) continue
+    n.vx -= n.x * GRAV * 0.55; n.vy -= n.y * GRAV * 1.75  // 各向异性重力：让布局自然铺开成宽屏比例
+    if (n.pinned) { n.vx = 0; n.vy = 0; continue }
+    n.vx *= DAMP; n.vy *= DAMP
+    const sp = Math.hypot(n.vx, n.vy), MAX = 26
+    if (sp > MAX) { n.vx = n.vx / sp * MAX; n.vy = n.vy / sp * MAX }
+    n.x += n.vx; n.y += n.vy
+  }
+  // 碰撞分离：硬约束，保证节点（含标签空间）不重叠
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < N.length; i++) {
+      const a = N[i]
+      if (!nodeVisible(a)) continue
+      for (let j = i + 1; j < N.length; j++) {
+        const b = N[j]
+        if (!nodeVisible(b)) continue
+        const min = a.r + b.r + PAD
+        let dx = b.x - a.x, dy = b.y - a.y
+        let d = Math.hypot(dx, dy)
+        if (d >= min) continue
+        if (d < 0.01) { dx = (Math.random() - .5) * 2; dy = (Math.random() - .5) * 2; d = Math.hypot(dx, dy) }
+        const push = (min - d) / 2
+        const ux = dx / d, uy = dy / d
+        a.x -= ux * push; a.y -= uy * push
+        b.x += ux * push; b.y += uy * push
+      }
+    }
+  }
+  S.alpha *= 0.988
+  if (S.alpha < 0.012) { S.frozen = true; fit() }
+}
+
+/* ───────────────────────── 绘制 ───────────────────────── */
+const cv = document.getElementById('cv')
+const ctx = cv.getContext('2d')
+let W = 0, H = 0, DPR = 1
+function resize () {
+  DPR = Math.min(2, window.devicePixelRatio || 1)
+  const r = cv.parentElement.getBoundingClientRect()
+  W = r.width; H = r.height
+  cv.width = Math.floor(W * DPR); cv.height = Math.floor(H * DPR)
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0)
+}
+window.addEventListener('resize', () => { resize(); })
+
+function screenToWorld (sx, sy) { return { x: (sx - W / 2 - S.tx) / S.scale, y: (sy - H / 2 - S.ty) / S.scale } }
+
+function draw () {
+  ctx.clearRect(0, 0, W, H)
+  ctx.save()
+  ctx.translate(W / 2 + S.tx, H / 2 + S.ty)
+  ctx.scale(S.scale, S.scale)
+  const N = S.N, E = S.E
+  const sel = S.sel, hov = S.hover
+  const focus = sel !== null ? sel : hov
+  const nbr = focus !== null ? S.adj.get(focus) : null
+
+  // 边
+  for (const e of E) {
+    const a = N[e.a], b = N[e.b]
+    if (!nodeVisible(a) || !nodeVisible(b)) continue
+    const hot = focus !== null && (e.a === focus || e.b === focus)
+    if (focus !== null && !hot) continue
+    ctx.strokeStyle = hot ? 'rgba(125,211,252,.9)' : e.ref ? 'rgba(250,204,21,.28)' : 'rgba(120,150,190,.16)'
+    ctx.lineWidth = (hot ? 1.5 : 0.6) / S.scale
+    if (e.ref) ctx.setLineDash([4 / S.scale, 3 / S.scale])   // 虚线 = 按路径引用（spawn / 按路径加载）
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke()
+    if (e.ref) ctx.setLineDash([])
+  }
+  // 节点
+  const labelCand = []
+  for (const n of N) {
+    if (!nodeVisible(n)) continue
+    const dim = (S.q && !matches(n)) ? 0.18 : (focus !== null && n.idx !== focus && !(nbr && nbr.has(n.idx))) ? 0.24 : 1
+    const col = LAYER_COLOR[n.layer] || '#94a3b8'
+    ctx.globalAlpha = dim
+    ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, 6.2832)
+    ctx.fillStyle = col; ctx.fill()
+    if (n.idx === sel) { ctx.lineWidth = 2.4 / S.scale; ctx.strokeStyle = '#fff'; ctx.stroke() }
+    else if (n.idx === hov) { ctx.lineWidth = 1.8 / S.scale; ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.stroke() }
+    else if (!n.isDomain && n.deg === 0) { // 孤立模块：虚线环
+      ctx.save(); ctx.setLineDash([2.5 / S.scale, 2.5 / S.scale])
+      ctx.lineWidth = 1.4 / S.scale; ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.stroke(); ctx.restore()
+    }
+    ctx.globalAlpha = 1
+    const showLabel = S.view === 'domain' || n.idx === sel || n.idx === hov || n.deg >= 18 || (S.scale > 1.1 && n.deg >= 8) || S.scale > 1.8
+    if (showLabel) labelCand.push({ n, dim, pri: (n.idx === sel || n.idx === hov) ? 1e6 : n.deg * 1000 - n.r })
+  }
+  // 标签：按优先级摆放，逐个做矩形碰撞检测（同时避让其它标签与节点圆），重叠则尝试其它位置，全占则跳过
+  labelCand.sort((a, b) => b.pri - a.pri)
+  const placed = []
+  const nodeRects = N.filter(n => nodeVisible(n)).map(n => ({ x0: n.x - n.r, x1: n.x + n.r, y0: n.y - n.r, y1: n.y + n.r }))
+  const fs = Math.max(9.5, Math.min(15, (S.view === 'domain' ? 12 : 10.5) / Math.max(0.72, S.scale)))
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+  ctx.font = `${fs}px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif`
+  const hit = (box, arr) => arr.some(p => !(box.x1 < p.x0 || box.x0 > p.x1 || box.y1 < p.y0 || box.y0 > p.y1))
+  for (const { n, dim } of labelCand) {
+    const txt = n.label.length > 20 ? n.label.slice(0, 19) + '…' : n.label
+    const w = ctx.measureText(txt).width / S.scale
+    const h = (fs + 3) / S.scale
+    const gap = n.r + h / 2 + (S.view === 'domain' ? 9 : 4) / S.scale
+    const spots = [ // 依次尝试：下 / 上 / 右 / 左
+      { x: n.x, y: n.y + gap }, { x: n.x, y: n.y - gap },
+      { x: n.x + w / 2 + n.r + 6 / S.scale, y: n.y },
+      { x: n.x - w / 2 - n.r - 6 / S.scale, y: n.y },
+    ]
+    let chosen = null
+    for (const s of spots) {
+      const box = { x0: s.x - w / 2 - 1 / S.scale, x1: s.x + w / 2 + 1 / S.scale, y0: s.y - h / 2, y1: s.y + h / 2 }
+      if (hit(box, placed)) continue
+      if (hit(box, nodeRects) && n.idx !== sel) continue
+      chosen = { box, x: s.x, y: s.y }
+      break
+    }
+    if (!chosen) {
+      // 密集区无空位时：枢纽节点（连接数高）兜底放在节点下方，保证枢纽可辨认
+      if (S.view === 'module' && n.deg >= 18) {
+        chosen = { box: { x0: n.x - w / 2 - 1 / S.scale, x1: n.x + w / 2 + 1 / S.scale, y0: n.y + gap - h / 2, y1: n.y + gap + h / 2 }, x: n.x, y: n.y + gap }
+        if (hit(chosen.box, placed)) continue
+      } else continue
+    }
+    placed.push(chosen.box)
+    ctx.globalAlpha = dim
+    ctx.lineWidth = 3.4 / S.scale; ctx.strokeStyle = 'rgba(6,10,18,.9)'
+    ctx.strokeText(txt, chosen.x, chosen.y)
+    ctx.fillStyle = '#dbe6fb'
+    ctx.fillText(txt, chosen.x, chosen.y)
+    ctx.globalAlpha = 1
+  }
+  S.labelRects = placed; S.nodeRects = nodeRects   // 供自动化度量（标签互压/压节点计数）
+  ctx.restore()
+}
+
+/* ───────────────────────── 主循环 ───────────────────────── */
+function loop () {
+  if (!S.frozen) { const k = S.alpha > 0.45 ? 4 : S.alpha > 0.18 ? 2 : 1; for (let i = 0; i < k; i++) tick() }
+  draw()
+  requestAnimationFrame(loop)
+}
+
+/* ───────────────────────── 交互 ───────────────────────── */
+function pick (sx, sy, world = false) {
+  const p = world ? { x: sx, y: sy } : screenToWorld(sx, sy)
+  let best = null, bd = Infinity
+  for (const n of S.N) {
+    if (!nodeVisible(n)) continue
+    const d = Math.hypot(n.x - p.x, n.y - p.y)
+    if (d < n.r + 6 / S.scale && d < bd) { bd = d; best = n.idx }
+  }
+  return best
+}
+cv.addEventListener('mousedown', ev => {
+  const i = pick(ev.offsetX, ev.offsetY)
+  if (i !== null) {
+    S.drag = { i, wx: S.N[i].x, wy: S.N[i].y, sx: ev.offsetX, sy: ev.offsetY }
+    S.N[i].pinned = true; S.frozen = false; S.alpha = Math.max(S.alpha, .35)
+  } else {
+    S.pan = { x: ev.offsetX, y: ev.offsetY, tx: S.tx, ty: S.ty }
+    cv.classList.add('dragging')
+  }
+})
+window.addEventListener('mousemove', ev => {
+  if (S.drag) {
+    const n = S.N[S.drag.i]
+    const p = screenToWorld(ev.offsetX, ev.offsetY)
+    n.x = p.x; n.y = p.y; n.vx = n.vy = 0
+    return
+  }
+  if (S.pan) {
+    S.tx = S.pan.tx + (ev.offsetX - S.pan.x)
+    S.ty = S.pan.ty + (ev.offsetY - S.pan.y)
+    return
+  }
+  const r = cv.getBoundingClientRect()
+  const i = pick(ev.clientX - r.left, ev.clientY - r.top)
+  if (i !== S.hover) S.hover = i
+  cv.style.cursor = i !== null ? 'pointer' : 'grab'
+})
+window.addEventListener('mouseup', () => {
+  if (S.drag) { S.N[S.drag.i].pinned = false; S.drag = null }
+  if (S.pan) { S.pan = null; cv.classList.remove('dragging') }
+})
+cv.addEventListener('click', ev => {
+  const i = pick(ev.offsetX, ev.offsetY)
+  S.sel = i
+  renderDetail(i)
+})
+cv.addEventListener('dblclick', ev => {
+  const i = pick(ev.offsetX, ev.offsetY)
+  if (i === null) return
+  const n = S.N[i]
+  if (n.isDomain) { // 下钻：切模块视图并只保留该域
+    S.view = 'module'
+    document.querySelectorAll('#viewSeg button').forEach(b => b.classList.toggle('on', b.dataset.view === 'module'))
+    buildGraph()
+    S.q = ''
+    document.getElementById('q').value = ''
+    S.sel = S.N.findIndex(x => x.id === n.files[0]) ?? null
+    S.sel = null
+    focusDomain = n.id
+    renderDetail(S.N.find(x => x.id === n.files[0]) ? S.N.findIndex(x => x.id === n.files[0]) : null)
+    return
+  }
+  // 模块：切到该模块所属域
+  S.view = 'domain'
+  document.querySelectorAll('#viewSeg button').forEach(b => b.classList.toggle('on', b.dataset.view === 'domain'))
+  const dom = n.domain
+  buildGraph()
+  const k = S.N.findIndex(x => x.id === dom)
+  S.sel = k >= 0 ? k : null
+  if (k >= 0) { S.tx = -S.N[k].x * S.scale; S.ty = -S.N[k].y * S.scale }
+  renderDetail(S.sel)
+})
+let focusDomain = null
+cv.addEventListener('wheel', ev => {
+  ev.preventDefault()
+  const before = screenToWorld(ev.offsetX, ev.offsetY)
+  const k = Math.pow(1.0016, -ev.deltaY)
+  S.scale = Math.max(0.12, Math.min(6, S.scale * k))
+  const after = screenToWorld(ev.offsetX, ev.offsetY)
+  S.tx += (after.x - before.x) * S.scale
+  S.ty += (after.y - before.y) * S.scale
+}, { passive: false })
+
+window.addEventListener('keydown', ev => {
+  if (ev.key === '/' && document.activeElement !== document.getElementById('q')) { ev.preventDefault(); document.getElementById('q').focus(); return }
+  if (ev.key === 'Escape') { S.sel = null; renderDetail(null) }
+})
+
+/* ───────────────────────── 详情面板 ───────────────────────── */
+function esc (s) { return String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])) }
+function renderDetail (i) {
+  const el = document.getElementById('detail')
+  const N = S.N
+  if (i === null || i === undefined || !N[i]) {
+    el.innerHTML = `<h2>未选中</h2><p>点击画布中的节点查看详情：职责、依赖、被依赖、所属分层与功能域。</p>
+      <div class="kicker">枢纽模块（按连接数 Top 10）</div>
+      ${tableOf(DATA.nodes.slice().sort((a, b) => b.deg - a.deg).slice(0, 10).map(n => [n.label, n.deg, n.id]), ['模块', '连接', '路径'])}
+      <div class="kicker">规模最大的功能域</div>
+      ${tableOf(DATA.domains.slice(0, 10).map(d => [d.name, d.count, d.id]), ['功能域', '模块数', 'ID'])}
+      <div class="kicker">孤立模块（无任何依赖关系）</div>
+      ${(() => { const o = DATA.nodes.filter(n => n.deg === 0); return o.length ? tableOf(o.slice(0, 12).map(n => [n.label, 0, n.id]), ['模块', '', '路径']) : '<p>无 —— 全部模块都至少有一条依赖边。</p>' })()}`
+    return
+  }
+  const n = N[i]
+  const outs = [], ins = [], outsRef = [], insRef = []
+  for (const e of S.E) {
+    if (e.a === i) { (e.ref ? outsRef : outs).push({ other: N[e.b], w: e.w }) }
+    if (e.b === i) { (e.ref ? insRef : ins).push({ other: N[e.a], w: e.w }) }
+  }
+  const uniq = arr => { const m = new Map(); for (const x of arr) m.set(x.other.id, (m.get(x.other.id) || 0) + x.w); return [...m.entries()] }
+  const head = n.isDomain
+    ? `<h2>${esc(n.label)}</h2><p><span class="pill" style="color:${LAYER_COLOR[n.layer]}">${esc(LAYER_NAME[n.layer] || n.layer)}</span><span class="pill">${n.count} 个模块</span><span class="pill">${n.loc.toLocaleString()} 行</span></p>`
+    : `<h2>${esc(n.label)}</h2><p><code>${esc(n.id)}</code></p><p style="margin-top:6px"><span class="pill" style="color:${LAYER_COLOR[n.layer]}">${esc(LAYER_NAME[n.layer] || n.layer)}</span><span class="pill">${n.loc} 行</span><span class="pill">连接 ${n.deg}</span></p>`
+  const purpose = n.purpose ? `<div class="kicker">职责</div><p>${esc(n.purpose)}</p>` : ''
+  const domRow = n.isDomain ? '' : `<div class="kicker">所属功能域</div><p>${(() => { const d = DATA.domains.find(x => x.id === n.domain); return d ? `<span class="link" data-jump="dom:${esc(d.id)}">${esc(d.name)}</span> · ${d.count} 模块` : esc(n.domain || '—') })()}</p>`
+  const outsU = uniq(outs).sort((a, b) => b[1] - a[1])
+  const insU = uniq(ins).sort((a, b) => b[1] - a[1])
+  const outsRU = uniq(outsRef).sort((a, b) => b[1] - a[1])
+  const insRU = uniq(insRef).sort((a, b) => b[1] - a[1])
+  const listRows = (arr, mode) => arr.slice(0, 40).map(([id, w]) => {
+    const t = N.find(x => x.id === id)
+    if (!t) return ''
+    const nm = t.isDomain ? t.label : t.label
+    return `<tr><td><span class="dot" style="background:${LAYER_COLOR[t.layer]}"></span><span class="link" data-jump="${mode === 'mod' ? 'mod' : 'dom'}:${esc(t.id)}">${esc(nm)}</span></td><td class="num">${w}</td></tr>`
+  }).join('')
+  const filesTable = n.isDomain
+    ? `<div class="kicker">包含模块（${n.count}）</div>${tableOf(n.files.slice().sort().map(f => { const t = DATA.nodes.find(x => x.id === f); return [t.label, t.loc, f] }), ['模块', '行数', '路径'])}`
+    : ''
+
+  el.innerHTML = head + purpose + domRow +
+    `<div class="kicker">依赖（import/require，${outsU.length}）</div>${outsU.length ? `<table class="mini">${listRows(outsU, n.isDomain ? 'dom' : 'mod')}</table>` : '<p>无</p>'}` +
+    `<div class="kicker">被依赖（${insU.length}）</div>${insU.length ? `<table class="mini">${listRows(insU, n.isDomain ? 'dom' : 'mod')}</table>` : '<p>无</p>'}` +
+    (outsRU.length ? `<div class="kicker">按路径引用（spawn / 按路径加载，${outsRU.length}）</div><table class="mini">${listRows(outsRU, n.isDomain ? 'dom' : 'mod')}</table>` : '') +
+    (insRU.length ? `<div class="kicker">被按路径引用（${insRU.length}）</div><table class="mini">${listRows(insRU, n.isDomain ? 'dom' : 'mod')}</table>` : '') +
+    filesTable
+  el.querySelectorAll('[data-jump]').forEach(a => a.addEventListener('click', () => {
+    const [kind, id] = a.dataset.jump.split(/:(.+)/)
+    if (kind === 'dom') {
+      const k = N.findIndex(x => x.id === id)
+      if (S.view === 'domain' && k >= 0) { S.sel = k; renderDetail(k); S.tx = -N[k].x * S.scale; S.ty = -N[k].y * S.scale }
+      else { S.q = DATA.domains.find(d => d.id === id)?.name || id; document.getElementById('q').value = S.q }
+    } else {
+      const k = N.findIndex(x => x.id === id)
+      if (k >= 0) { S.sel = k; renderDetail(k); S.tx = -N[k].x * S.scale; S.ty = -N[k].y * S.scale }
+    }
+  }))
+}
+function tableOf (rows, headers) {
+  return `<table class="mini"><thead><tr>${headers.map((h, i) => `<th${i === 1 ? ' style="text-align:right"' : ''}>${esc(h)}</th>`).join('')}</tr></thead><tbody>` +
+    rows.map(r => `<tr><td>${esc(r[0])}</td><td class="num">${esc(r[1])}</td><td style="color:var(--dim);font-size:11px">${esc(r[2])}</td></tr>`).join('') + '</tbody></table>'
+}
+
+/* ───────────────────────── 清单视图 ───────────────────────── */
+let sortKey = 'deg', sortAsc = false
+function renderList () {
+  const q = S.q.toLowerCase()
+  let rows = DATA.nodes.slice()
+  if (q) rows = rows.filter(n => (n.id + n.purpose + n.label).toLowerCase().includes(q))
+  if (S.layerOn.size !== DATA.layers.length) rows = rows.filter(n => layerVisible(n))
+  const cmp = {
+    deg: (a, b) => b.deg - a.deg, loc: (a, b) => b.loc - a.loc,
+    layer: (a, b) => a.layer.localeCompare(b.layer) || b.deg - a.deg,
+    name: (a, b) => a.label.localeCompare(b.label),
+  }[sortKey]
+  rows.sort((a, b) => sortAsc ? -cmp(a, b) : cmp(a, b))
+  const domName = Object.fromEntries(DATA.domains.map(d => [d.id, d.name]))
+  document.getElementById('list').innerHTML = `
+    <div class="bar">
+      <div class="card"><div class="n">${DATA.stats.files}</div><div class="t">功能模块（源文件）</div></div>
+      <div class="card"><div class="n">${DATA.stats.edges}</div><div class="t">依赖边（含按路径引用 ${DATA.stats.refEdges}）</div></div>
+      <div class="card"><div class="n">${DATA.stats.domains}</div><div class="t">功能域</div></div>
+      <div class="card"><div class="n">${DATA.stats.loc.toLocaleString()}</div><div class="t">代码行数</div></div>
+      <div class="card"><div class="n">${DATA.stats.testsExcluded}</div><div class="t">测试文件（未计入）</div></div>
+      <div class="card"><div class="n">${DATA.stats.orphans}</div><div class="t">孤立模块</div></div>
+    </div>
+    <div class="bar">
+      <div class="card" style="flex:1;min-width:280px"><div class="t">逐目录覆盖核对（与 git ls-files 比对，确保「全模块覆盖」）</div>
+        <table class="mini" style="margin-top:6px"><thead><tr><th>目录</th><th style="text-align:right">git 跟踪</th><th style="text-align:right">已收录</th><th>结果</th></tr></thead><tbody>
+        ${DATA.coverage.map(c => `<tr><td><code>${esc(c.dir)}/</code></td><td class="num">${c.trackedGit}</td><td class="num">${c.collected}</td><td>${c.ok ? '<span style="color:#34d399">✅ 一致</span>' : '<span style="color:#fbbf24">⚠️ 不一致</span>'}</td></tr>`).join('')}
+        </tbody></table>
+        <div class="t" style="margin-top:6px">未归类模块 ${DATA.unmatched.length} · 未跟踪（本地新增）文件 ${DATA.stats.untracked}${DATA.untracked.length ? '：' + esc(DATA.untracked.join('、')) : ''}</div>
+      </div>
+    </div>
+    <p style="color:var(--dim);font-size:12px;margin:0 0 10px">共 ${rows.length} 行（受搜索与分层过滤影响）· 点击表头排序 · 点击「职责」列可查看完整说明。清单与图谱同源，均来自仓库真源扫描。</p>
+    <table><thead><tr>
+      <th data-k="name">模块</th><th data-k="layer">分层</th><th>功能域</th><th data-k="loc" style="text-align:right">行数</th>
+      <th data-k="deg" style="text-align:right">连接</th><th>职责（文件头注释摘录）</th><th>路径</th>
+    </tr></thead><tbody>${rows.map(n => `<tr>
+      <td><span class="dot" style="background:${LAYER_COLOR[n.layer]}"></span>${esc(n.label)}</td>
+      <td style="color:${LAYER_COLOR[n.layer]};font-size:11.5px">${esc((LAYER_NAME[n.layer] || n.layer).replace(/^[①-⑤] /, ''))}</td>
+      <td style="color:var(--muted);font-size:11.5px">${esc(domName[n.domain] || n.domain)}</td>
+      <td class="num">${n.loc}</td><td class="num">${n.deg}</td>
+      <td style="color:var(--muted);font-size:11.5px">${esc(n.purpose || '—')}</td>
+      <td style="color:var(--dim);font-size:11px">${esc(n.id)}</td></tr>`).join('')}</tbody></table>`
+  document.querySelectorAll('#list th[data-k]').forEach(th => th.addEventListener('click', () => {
+    const k = th.dataset.k
+    if (k === sortKey) sortAsc = !sortAsc; else { sortKey = k; sortAsc = false }
+    renderList()
+  }))
+}
+
+/* ───────────────────────── 顶栏 / 工具条 ───────────────────────── */
+function renderHeader () {
+  const b = DATA.baseline, s = DATA.stats
+  document.getElementById('hdrMeta').innerHTML =
+    `<span>生成 ${DATA.generatedAt}</span><span>基线 ${b.head}${b.dirty ? ` + ${b.dirty} 未提交` : ''}</span><span>v${b.version}</span>` +
+    `<span>模块 ${s.files}</span><span>依赖边 ${s.edges}</span><span>功能域 ${s.domains}</span>`
+  document.getElementById('layerChips').innerHTML = DATA.layers.map(l =>
+    `<span class="chip ${layerVisible(l.id) ? 'on' : ''}" data-layer="${l.id}"><i style="background:${l.color}"></i>${l.name} · ${l.count}</span>`).join('')
+  document.querySelectorAll('[data-layer]').forEach(c => c.addEventListener('click', () => {
+    const id = c.dataset.layer
+    if (S.layerOn.has(id)) { if (S.layerOn.size > 1) S.layerOn.delete(id) } else S.layerOn.add(id)
+    c.classList.toggle('on', S.layerOn.has(id))
+    drawLegend(S.view === 'domain')
+    S.frozen = false; S.alpha = Math.max(S.alpha, .3)
+    renderList()
+  }))
+  document.getElementById('statChip').textContent =
+    `${DATA.stats.files} 模块 · ${DATA.stats.edges} 条真实依赖 · ${DATA.stats.domains} 功能域 · ${DATA.stats.totLines ? '' : ''}共 ${DATA.stats.loc.toLocaleString()} 行`
+}
+
+document.querySelectorAll('#viewSeg button').forEach(b => b.addEventListener('click', () => {
+  if (S.view === b.dataset.view) return
+  S.view = b.dataset.view
+  document.querySelectorAll('#viewSeg button').forEach(x => x.classList.toggle('on', x === b))
+  buildGraph(); S.sel = null; renderDetail(null)
+}))
+document.getElementById('q').addEventListener('input', ev => { S.q = ev.target.value.trim(); renderList() })
+document.getElementById('sortSel').addEventListener('change', ev => { sortKey = ev.target.value; sortAsc = false; renderList() })
+document.getElementById('fitBtn').addEventListener('click', fit)
+document.getElementById('resetBtn').addEventListener('click', () => { buildGraph(); S.sel = null; renderDetail(null); setTimeout(fit, 900) })
+document.getElementById('freezeBtn').addEventListener('click', ev => { S.frozen = !S.frozen; ev.target.textContent = S.frozen ? '恢复物理' : '暂停物理' })
+function fit () {
+  // 分位数包围盒：避免个别外围节点（孤立脚本等）把视图撑大，导致主体缩小、偏移
+  const pts = S.N.filter(nodeVisible)
+  if (!pts.length) return
+  const xs = pts.map(n => n.x).sort((a, b) => a - b)
+  const ys = pts.map(n => n.y).sort((a, b) => a - b)
+  const q = (arr, p) => arr[Math.min(arr.length - 1, Math.max(0, Math.round((arr.length - 1) * p)))]
+  let minX = q(xs, 0.008), maxX = q(xs, 0.992)
+  let minY = q(ys, 0.008), maxY = q(ys, 0.992)
+  // 轻度的横纵归一：让布局比例贴近画布比例（画布偏宽时把布局铺开，避免大量留白）
+  const asp = W / Math.max(1, H)
+  const cur = (maxX - minX) / Math.max(1, maxY - minY)
+  const f = Math.max(0.8, Math.min(1.5, asp / Math.max(0.05, cur)))
+  if (Math.abs(f - 1) > 0.02) {
+    for (const n of pts) n.x *= f
+    const xs2 = pts.map(n => n.x).sort((a, b) => a - b)
+    minX = q(xs2, 0.008); maxX = q(xs2, 0.992)
+  }
+  const pad = 42
+  const sx = (W - pad * 2) / Math.max(1, maxX - minX), sy = (H - pad * 2) / Math.max(1, maxY - minY)
+  S.scale = Math.max(0.12, Math.min(2.6, Math.min(sx, sy)))
+  S.tx = -((minX + maxX) / 2) * S.scale
+  S.ty = -((minY + maxY) / 2) * S.scale
+}
+
+// 清单视图切换：用工具栏的视图按钮之外的入口 —— 双击标题切换
+document.querySelector('header h1').addEventListener('dblclick', () => {
+  const l = document.getElementById('list'), st = document.getElementById('stage'), as = document.getElementById('detail')
+  const on = l.style.display === 'block'
+  l.style.display = on ? 'none' : 'block'
+  st.style.display = on ? 'block' : 'none'
+  as.style.display = on ? 'block' : 'none'
+  if (!on) renderList()
+  else { resize(); drawLegend(S.view === 'domain') }
+})
+
+/* ───────────────────────── 启动 ───────────────────────── */
+renderHeader(); buildGraph(); resize(); renderDetail(null); loop()
+setTimeout(fit, 1200); setTimeout(fit, 3000)
+console.log('[arch-graph]', DATA.stats)
+</script>
+</body>
+</html>

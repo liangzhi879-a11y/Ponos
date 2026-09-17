@@ -1,8 +1,8 @@
 # YFWorking 应用架构图
 
 > 应用：YFWorking Desktop v2.8.0（`package.json`）
-> 架构真源：`electron/main.cjs`、`server/bridge.mjs`、`kernel/cli.mjs`、`docs/bridge-contract.md`；逐模块验证见 `docs/architecture-graph.html`（§12）
-> 更新日期：2026-09-17（基线 `978447c` + 工作树未提交改动）
+> 架构真源：`electron/main.cjs`、`server/bridge.mjs`、`kernel/cli.mjs`、`docs/bridge-contract.md`
+> 更新日期：2026-09-12
 
 ---
 
@@ -252,7 +252,7 @@ flowchart LR
 | 对话渲染 | `@assistant-ui/react` · react-markdown + remark-gfm · 自研 CodeBlock/BoxdrawTable |
 | 编辑器 | CodeMirror 6（多语言高亮） |
 | 图 | `@xyflow/react`（工作流 DAG 画布） |
-| 状态 | zustand（**15** 个 store：chat / view / auth / browser / diag / disabled / health / knowledge / mcp / settings / team / ui / warning / apps / agent） |
+| 状态 | zustand（11 个 store） |
 | 通信 | `ws` WebSocket + fetch REST（`src/lib/config.ts` 用编译期常量 `__BRIDGE_PORT__`） |
 
 ---
@@ -376,88 +376,4 @@ flowchart LR
 ## 11. 与可视化版的关系
 
 - 本文件为**文本真源**（可 diff、可评审，Mermaid 可被 GitHub/VSCode 直接渲染）。
-- 配套可视化版：`docs/architecture.html`（分层图版，自包含、离线可开，用于汇报/演示）。它有**自己的 12 章编排**，与本文件**不是逐节对应**：1 全景分层图 · 2 进程拓扑（运行态）· 3 两跳连接形态 · 4 一轮对话的端到端链路 · 5 应用智控链路 · 6 内核模块地图 · 7 审批与安全模型 · 8 数据落点 · 9 结构健康度 · 10 构建与发布链路 · 11 端口与版本隔离 · 12 已知风险与架构约束。差异：HTML 独有「端到端链路 / 应用智控链路 / 结构健康度」，本文件独有「三层协议契约 / 前端视图与状态」及 §11–§12；两者共享同一基线 `978447c`。
-  两者口径一致性维护口径：**本文件为文本真源**；HTML 中取自失败运行的数字（DevLens 摘要覆盖率、LLM 安全标记）已按 §9 的相同口径标注为「未生成 / 已作废」，不构成冲突。
-- 配套**交互式全模块图谱**：`docs/architecture-graph.html`（自包含、离线可开；覆盖全部 461 个源码模块，可点击 / 过滤 / 搜索，见 §12）。
-- 上一版快照：`docs/architecture-history/2026-09-12-architecture.md` + `.html`。
-
----
-
-## 12. 全模块索引（交互式图谱）
-
-§1–§10 讲**分层与链路**，本节补**逐模块的完整索引**：461 个源码模块一个不漏，且不是人工清单，而是脚本从仓库真源扫出来的。
-
-### 12.1 文件与再生成
-
-| 文件 | 作用 |
-|---|---|
-| `docs/architecture-graph.html` | 交互式图谱（自包含、离线可开，约 315KB）；功能域视图 68 域 / 模块视图 461 模块 / 清单视图 |
-| `scripts/build-arch-graph.mjs` | 生成器：扫描真源 → 抽取依赖边 → 注入模板 |
-| `scripts/arch-graph.template.html` | 页面模板（原生 Canvas 力导向，零外部依赖，保证离线可用） |
-| 重新生成 | `node scripts/build-arch-graph.mjs`（秒级；生成时自动做覆盖率自检） |
-
-### 12.2 口径（决定这张图能证明什么、不能证明什么）
-
-- **节点** = git 跟踪的源文件（`.ts/.tsx/.mjs/.cjs/.js/.py`）+ 根级模块（`version.mjs`、`vite.config.ts` 等）；排除 **366 个测试文件**与构建产物（`release/`、`dist/`、`kernel-dist/`）。
-- **边** = 两类真实依赖：① 静态 `import` / `require` / `export…from` / 动态 `import()`；② **按路径引用**（字符串字面量指向仓库内真实文件，覆盖 `spawn` 与按路径加载，图中以**虚线**区分）。
-- **抽取前先剔注释**——注释里提到的文件名不是依赖（未剔注释时会多出 143 条假边，典型是 11 条指向内核的「renderer→kernel」，实际全在注释里）。
-- **不解析**：变量拼接的动态导入、`require(变量)`、构建产物内部引用、不存在的别名。
-
-### 12.3 覆盖核对（脚本每次生成时自检，与 `git ls-files` 逐目录比对）
-
-| 目录 | 已收录 / git 跟踪 | 目录 | 已收录 / git 跟踪 |
-|---|---|---|---|
-| `src/` | 253 / 253 ✅ | `shared/` | 15 / 15 ✅ |
-| `electron/` | 34 / 34 ✅ | `bin/` | 1 / 1 ✅ |
-| `kernel/` | 68 / 68 ✅ | `scripts/` | 27 / 27 ✅ |
-| `server/` | 55 / 55 ✅ | `pet/` | 2 / 2 ✅ |
-
-**未归类模块 0**。另有 2 个本地未跟踪文件在图中有标记（`scripts/pack-source-zip.mjs`、`scripts/package-portable-zip.mjs`）。
-
-### 12.4 规模
-
-| 分层 | 模块数 |
-|---|---|
-| ① 表现层（`src/`） | **253**（其中 28 个组件域） |
-| ② 宿主层（`electron/`） | **34** |
-| ③ 桥接层（`server/`） | **55** |
-| ④ 内核层（`kernel/`） | **68** |
-| 共享层（`shared/`） | **15** |
-| 工具链 / 启动器（`bin/ scripts/ pet/` + 根级） | **36** |
-| **合计** | **461 模块 · 116,212 行 · 1,275 条依赖边**（其中 45 条按路径引用） |
-
-规模最大的功能域：`src/lib`（API 客户端与纯函数：72 模块 / 11,562 行）、`src/components/chat`（32）、`src/components/knowledge`（28）、应用智控宿主侧（23）。
-
-### 12.5 结构事实（由边计算得出，非人工描述）
-
-- **真正的公共面**（被依赖最多，改动波及最广）：`src/i18n/useTranslation.ts`（91）> `src/lib/utils.ts`（86）> `src/components/ui/index.ts`（72）> `src/types/index.ts`（45）> `src/stores/chatStore.ts`（42）> `src/lib/config.ts`（28）。
-- **自身依赖最多**（重构成本最高）：`server/bridge.mjs`（41）> `kernel/cli.mjs`（37）> `src/components/layout/WorkShell.tsx`（30）。
-- **跨层静态依赖**（含 45 条按路径引用）：`kernel→shared` 25 · `host→bridge` 15 · `bridge→kernel` 10 · `bridge→shared` 5 · `host→kernel` 4 · `bridge→host` 2 · `renderer→bridge` 1 · `host→shared` 1。另有 `tooling→renderer/host/bridge/kernel/shared` 共 33 条，全部来自 `scripts/verify-*-gui.mjs` 等**构建与验证脚本**（工具层引用运行层属正常，不计入架构纪律）。
-- **分层纪律在静态依赖上成立**：`renderer→kernel`、`renderer→shared`、`bridge→renderer` 三组**均为 0 条**（`renderer→bridge` 仅 1 条、`bridge→host` 仅 2 条，均为点状而非面状）。前端对 `shared/knowledge-core.mjs` 的引用全部出现在**注释**里（口径说明），`src/lib/knowledgeBlocks.ts` 是**同口径重复实现**而非 import——刻意的进程隔离，代价是双份维护。
-- **宿主层的例外确实存在**：`electron/app-llm.cjs:101-102` 用 `import('../kernel/api.mjs')`、`import('../kernel/provider.mjs')` **动态加载内核**（该文件头注释自称「不 require 内核」，指的是顶部静态依赖）。与「内核 ⊥ server 并非全局成立」同类——**不要把分层当作强制约束**。
-
-### 12.6 孤立模块（26 个，无任何依赖关系）
-
-构建 / 打包脚本、`server/office-fixtures/tools/*` 探针、根配置（`vite.config.ts`、`tailwind.config.ts`、`postcss.config.js`），以及下面这些**值得单独看一眼**的：
-
-| 模块 | 说明 |
-|---|---|
-| `src/components/boot/LogoMorph.tsx` | 全仓库无任何 `import`，仅被注释提及 ⇒ **未使用组件（死代码候选）** |
-| `src/components/settings/experienceFormat.ts` | 同上，无引用 |
-| `shared/office-merge.mjs`、`server/provider-profile.mjs`、`server/workflow-store.mjs` | 无 import，可能由动态路径加载或已废弃 |
-| `server/provider-probe.mjs`、`kernel/config-scan.mjs` | 疑为 CLI / 诊断入口，由命令行直接执行 |
-
-孤立 ≠ 错误：这是**死代码与动态加载候选清单**，供后续核查（图谱详情面板同样列出）。
-
-### 12.7 图谱怎么用
-
-- **功能域视图**（默认，68 域）：看清模块族群与跨域依赖；**双击某个域**下钻到该域的模块视图。
-- **模块视图**（461 模块）：看单文件级依赖；**放大后标签逐步出现**（总览只标枢纽，避免 461 个标签糊成一片）。
-- **点击节点** → 右侧详情：职责（文件头注释原样摘录）、依赖 / 被依赖（**列表项可点击跳转**）、按路径引用单独成组。
-- 工具栏：分层开关、搜索（模块 / 域 / 路径 / 职责）、排序、适配视图 / 重排布局 / 暂停物理。
-- **双击顶部标题**切换**清单视图**：461 行模块清单（按行数 / 连接数 / 分层 / 名称排序）+ §12.3 的覆盖核对表。
-- 键位：滚轮缩放、拖拽画布与节点、`/` 聚焦搜索、`Esc` 取消选中。
-
-### 12.8 布局质量（自动化实测，非目测）
-
-用 Electron 无头渲染加载该文件并度量：功能域视图 **0 对圆形重叠**（最小间隙 39px）、64 个标签 **0 互压**、视图填充率 **80%**；模块视图 0 重叠、填充率 72%。交互项（点击联动详情、视图切换、分层过滤、搜索、清单视图、详情内跳转）实测全部通过。
+- 配套可视化版：`docs/architecture.html`（自包含、离线可开，用于汇报/演示）。
