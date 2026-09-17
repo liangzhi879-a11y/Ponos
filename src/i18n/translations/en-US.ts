@@ -1392,10 +1392,11 @@ export const enUS: TranslationKeys = {
     modeTeam: 'Team',
     modeSwitchAria: 'Work mode (personal / team)',
     modeSwitchTitle: 'Switch between personal and team mode',
-    // ⚠️ State only what is implemented: the mode currently filters sidebar lists only. The former
-    //    "sets the default owner of new items" claim was false (no creation path writes team
-    //    attribution) and was removed; guarded by `teamModeIndicatorUi.test.ts`.
-    modeHint: 'Mode only filters the sidebar lists (sessions / tasks / workflows / knowledge spaces); it does not change data visibility.',
+    // 2026-09-17: attribution writing is now implemented (new sessions / tasks / workflows get
+    //    `team-<teamId>`), so the former claim is restored. Still do NOT phrase it as a "default"
+    //    owner/attribution: the value comes from the **current mode + current team**, not a static
+    //    default (reverse assertion in `teamModeIndicatorUi.test.ts`).
+    modeHint: 'Mode only filters the sidebar lists (sessions / tasks / workflows / knowledge spaces); it does not change data visibility. Sessions, tasks and workflows **created** while in team mode are attributed to that team.',
     modeNotIsolationNote: 'Mode only filters the sidebar lists. It is not data isolation: team content still lives on your local disk, and knowledge search always covers every space.',
     modeManage: 'Manage teams…',
     modeCurrentTeam: 'Current team',

@@ -14,6 +14,9 @@ import * as wfStore from './workflow-store.mjs'
 // 否则下次启动 installBuiltinWorkflows 的「目标不存在 → 安装」会把它装回来。
 import { markBuiltinDeleted } from './workflow-install.mjs'
 import { resolve, relative, isAbsolute } from 'node:path'
+// 【团队模式归属】与 `/workflows` 保存请求一起送来的 `workspaceId` 走**同一份**校验实现
+//（`shared/`，与内核/bridge 共用；本文件不得 import `kernel/*`，`shared/` 不受该约束）。
+import { sanitizeWorkspaceId } from '../shared/attribution.mjs'
 
 /** 目标路径是否位于 dir 之内（resolve 归一化后比较，防 `..` 穿越；dir 为空 → 不约束）。 */
 function isInsideDir(target, dir) {
@@ -26,11 +29,22 @@ function isInsideDir(target, dir) {
   } catch { return false }
 }
 
-export async function handleWorkflowRoute({ url, req, reply, readJsonBody, store = wfStore, host, runsRoot = '', root = '', builtinSrcRoot = '' }) {
+export async function handleWorkflowRoute({ url, req, reply, readJsonBody, store = wfStore, host, runsRoot = '', root = '', builtinSrcRoot = '', teamIds = [] }) {
   const p = url.pathname
   if (p !== '/workflows' && !p.startsWith('/workflows/')) return false
   if (!host) return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: '工作流宿主未注入' })), true
   const h = host
+  // 【团队模式归属】保存请求里的 `workspaceId`：先校验（`teamIds` = 本机已加入团队的白名单，
+  // 由 bridge 注入——本模块不读盘），合法才随写入落盘。
+  // 非法值 → **丢弃（按未传处理）并 warn 一行**，绝不因此拒绝保存：归属是元数据，
+  // 丢了最多让这条工作流被归到个人工作区，比"用户点保存失败"轻得多。
+  const workspaceIdOf = (body) => {
+    const id = sanitizeWorkspaceId(body && body.workspaceId, { teamIds })
+    if (id === null && body && body.workspaceId != null && String(body.workspaceId).trim() !== '') {
+      console.warn(`[workflows] workspaceId 被拒: ${JSON.stringify(body.workspaceId)} —— 只接受 'personal' 或已加入团队的 'team-<teamId>'，按未传处理`)
+    }
+    return id
+  }
   // 回执统一补 `ok`（2026-09-12 实测缺陷，影响面极大）：
   // 客户端 workflowApi.call() 的判定是「HTTP 非 2xx → 失败」+「body.ok === false → 失败」，
   // 而**成功回执没有 ok 字段**时消费方（AuthzDialog / WorkflowsPanel 等）会走 `if (!r.ok)`
@@ -56,7 +70,7 @@ export async function handleWorkflowRoute({ url, req, reply, readJsonBody, store
       if (!id) return json(400, { ok: false, error: 'id 必填' }), true
       const saved = await h.save({ id, model: body.model, yaml: body.yaml })
       if (!saved.ok) return json(400, saved), true
-      return json(200, { ...store.writeWorkflowYml({ root, id, yml: saved.yml }), id }), true
+      return json(200, { ...store.writeWorkflowYml({ root, id, yml: saved.yml, workspaceId: workspaceIdOf(body), teamIds }), id }), true
     }
     const m = p.match(/^\/workflows\/([^/]+)(\/.*)?$/)
     if (m) {
@@ -134,7 +148,7 @@ export async function handleWorkflowRoute({ url, req, reply, readJsonBody, store
         const body = await readJsonBody(req)
         const saved = await h.save({ id, model: body.model, yaml: body.yaml })
         if (!saved.ok) return json(400, saved), true
-        return json(200, { ...store.writeWorkflowYml({ root, id, yml: saved.yml }), id, validation: saved.validation }), true
+        return json(200, { ...store.writeWorkflowYml({ root, id, yml: saved.yml, workspaceId: workspaceIdOf(body), teamIds }), id, validation: saved.validation }), true
       }
       if (sub === '' && req.method === 'DELETE') {
         const r = store.deleteWorkflow({ root, id })

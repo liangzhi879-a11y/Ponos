@@ -13,6 +13,8 @@ import { generateChatTitle, truncateTitle } from '@/lib/titleGen'
 import { pushLaneNote as pushLane, dismissLaneNote as dismissLane } from '@/lib/laneUi'
 import type { LaneNote } from '@/lib/laneUi'
 import type { SessionApprovalMode } from '@/lib/approvalModeUi'
+import { workspaceIdForContent, PERSONAL_WORKSPACE_ID } from '@/lib/teamModeUi'
+import { useTeamStore } from '@/stores/teamStore'
 
 // ---------------------------------------------------------------------------
 // 防御性持久化（2026-08-13 事故修复）
@@ -518,6 +520,15 @@ export const useChatStore = create<ChatState>()(
         const title = isChat && !dir
           ? (useSettingsStore.getState().settings.language === 'zh-CN' ? '新对话' : 'New chat')
           : (dir.split('/').filter(Boolean).pop() || dir)
+        // 【S3 归属收口】新建会话写入**当前模式**的团队归属（2026-09-17）。
+        // 为什么在函数内读 store 而不是加参数：全部 9 处调用点（聊天列表 / 任务面板 / 应用面板 /
+        // 命令面板 / worktree / 视图路由…）都会自动获得归属，加参数就得逐处改，漏一处就是
+        // "某个入口建的会话在团队模式下看不见"（静默、难查）。
+        // **只在归属非 personal 时才落字段**：个人模式的持久化结果与今日逐字节相同
+        // （partialize 会丢弃 undefined 键），既有测试/快照零影响。
+        // 依赖方向：teamStore 不 import chatStore（只 import teamApi/teamModeUi），无循环依赖。
+        const team = useTeamStore.getState()
+        const workspaceId = workspaceIdForContent(team.mode, team.teams.map((x) => ({ id: x.teamId })), team.activeTeamId)
         const conversation: Conversation = {
           id,
           title,
@@ -532,6 +543,7 @@ export const useChatStore = create<ChatState>()(
           titleAuto: true,
           ...(dir ? { cwd: dir } : {}),
           agentId: agentId || undefined,
+          ...(workspaceId !== PERSONAL_WORKSPACE_ID ? { workspaceId } : {}),
         }
         set(state => ({
           conversations: [conversation, ...state.conversations],
@@ -1551,6 +1563,11 @@ export const useChatStore = create<ChatState>()(
           // "应用·xxx"；漏掉 appPageId = 重启后工具池不再收窄（应用工具全没了）。
           appId: c.appId,
           appPageId: c.appPageId,
+          // 归属工作区必须进白名单（2026-09-17，S3）：partialize 是**显式取字段**，漏掉它 =
+          // 团队模式下新建的会话重启后归属消失，表现成"我刚建的会话在团队模式里不见了"。
+          // 个人会话的 `workspaceId` 恒为 undefined ⇒ JSON.stringify 丢弃该键，
+          // 落盘字节与本次改动前**逐字相同**（零回归）。
+          workspaceId: c.workspaceId,
           sessionIds: c.sessionIds,
           messageCount: c.messageCount ?? ((c.messages?.length ?? 0) > 0 ? c.messages.length : undefined),
           tokensTotal: c.tokensTotal,

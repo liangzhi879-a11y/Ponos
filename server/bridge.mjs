@@ -86,7 +86,10 @@ import { listEgressPolicy, EGRESS_MODE } from './egress-policy.mjs'
 import { tagRegistrySnapshot, mergeTagsInStore, undoMergeInStore } from '../kernel/tag-store.mjs'
 // 【S3 团队源】团队路由（创建/邀请/加入/撤销/状态）落在这里，紧邻 D6 的 `/tags*` 之后 ⇒
 // 同样位于 **D2 令牌闸门之后**，自动受保护（新增路由必须放在闸门后面，这是 D2/D3/D6 的一贯做法）。
-import { teamStatus, createTeam, joinTeam, exportInvite, revokeMember, setSearchRoot } from '../kernel/team-store.mjs'
+import { teamStatus, createTeam, joinTeam, exportInvite, revokeMember, setSearchRoot, loadTeamConfig } from '../kernel/team-store.mjs'
+// 【团队模式归属】校验渲染层传来的 `workspaceId`（第 2 跳：bridge → spawn env `YFW_WORKSPACE_ID`
+// / 工作流落盘）。实现放 `shared/`：内核与桥两侧共用一份校验，且内核测试可直接覆盖。
+import { sanitizeWorkspaceId } from '../shared/attribution.mjs'
 // 【S4 文件协同】模态分层 / 版本链 / 软占用 / 检出检入 / 冲突处置。路由同样落在令牌闸门之后。
 import {
   ingestFile, versionsOf, claimsOf, claimFile, checkinFile, releaseClaim, heartbeatClaim,
@@ -1280,7 +1283,36 @@ export function addBrowserWhitelist(host) {
   }
 }
 
-function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCount, mode = 'task', knowledgeSpaces = null, appPageId = null) {
+/**
+ * 本机**已加入**团队的 id 列表 —— 归属校验（`sanitizeWorkspaceId`）的白名单来源。
+ *
+ * 为什么用 `loadTeamConfig` 而不用 `teamStatus`：`teamStatus` 会紧接着验签成员链、
+ * 扫描副本、测目录体积（`GET /team/status` 那种低频调用才付得起），而本函数在**每条发消息**上
+ * 都会被调到；白名单只需要"配置里有哪些 teamId"，一次小 JSON 读足够。
+ * 读失败（配置损坏/无权限）⇒ 空白名单：此时团队归属一律按"未传"处理（回落个人），
+ * **不影响对话**——归属是元数据，不该让主链路失败。
+ */
+function joinedTeamIds() {
+  try {
+    const cfg = loadTeamConfig(YFW_HOME)
+    return Object.keys((cfg && cfg.teams) || {})
+  } catch { return [] }
+}
+
+/**
+ * 校验来自渲染层的 `workspaceId`：合法 → 归一值；非法 → `null`（= 未传）并 warn 一行。
+ * **绝不抛错/拒绝请求**：归属是元数据，非法值最多让它落回个人工作区，不该阻断对话。
+ */
+function sanitizeClientWorkspaceId(raw, { label = 'send' } = {}) {
+  const id = sanitizeWorkspaceId(raw, { teamIds: joinedTeamIds() })
+  if (id === null && raw != null && String(raw).trim() !== '') {
+    // 含被拒原值：伪造/串味排查时，"到底是哪个值被丢了"是唯一线索。
+    console.warn(`[bridge] workspaceId 被拒（${label}）: ${JSON.stringify(raw)} —— 只接受 'personal' 或已加入团队的 'team-<teamId>'，按未传处理`)
+  }
+  return id
+}
+
+function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCount, mode = 'task', knowledgeSpaces = null, appPageId = null, workspaceId = null) {
   // 应用页作用域先归一（''/undefined/null 同签名）：签名判定的输入必须是**唯一形态**，
   // 否则"清空作用域"会被判成一次变更、白重启内核（见 normalizeAppPageId）。
   const pageId = normalizeAppPageId(appPageId)
@@ -1466,6 +1498,15 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
             ...(c.maxBytes !== 4096 ? { PONOS_KNOWLEDGE_INJECT_MAX_BYTES: String(c.maxBytes) } : {}),
           }
         })(),
+        // 【团队模式归属】本会话的工作区归属（团队模式 = 'team-<teamId>'，个人 = 'personal'）。
+        // 来源：渲染层随 send/answer 消息带来的 `workspaceId`，**已过 `sanitizeClientWorkspaceId`**
+        // （只接受 'personal' 或本机已加入团队的 id ⇒ 防伪造团队归属落盘）。
+        // 消费方：内核 `shared/attribution.mjs` 的 `attributionOf` 读 `YFW_WORKSPACE_ID`，
+        // 由此把 transcript meta / 记忆 / 经验写成该归属——这是"团队模式下列表为空"的根因所在
+        // （此前无任何地方设该 env ⇒ 归属恒为 personal）。
+        // 未传时**不设该 env**：内核走自己的默认值 'personal'，保持"未传 = 不改行为"。
+        // 只传值、判定在内核（与上方 YFW_HEALTH_COMPACT_COUNT / PONOS_KNOWLEDGE_INJECT_MODE 同款）。
+        ...(workspaceId ? { YFW_WORKSPACE_ID: workspaceId } : {}),
       },
       // chat 模式：内核工作根 = YFW_HOME（不落到业务目录，transcript 自成一格）
       cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()),
@@ -2308,7 +2349,7 @@ const httpServer = createServer(async (req, res) => {
     // 命中即 return；路由函数未匹配返回 false → 继续走下方既有路由（不吞其他端点）。
     // 置于既有 try 内：宿主构造（loadConfig）等意外抛错走统一 400 回执，不打穿 handler。
     if (url.pathname === '/workflows' || url.pathname.startsWith('/workflows/')) {
-      if (await handleWorkflowRoute({ url, req, reply, readJsonBody, host: workflowHost(), root: WF_ROOT, runsRoot: WF_RUNS, builtinSrcRoot: join(__dirname, '..', 'workflows') })) return
+      if (await handleWorkflowRoute({ url, req, reply, readJsonBody, host: workflowHost(), root: WF_ROOT, runsRoot: WF_RUNS, builtinSrcRoot: join(__dirname, '..', 'workflows'), teamIds: joinedTeamIds() })) return
     }
     // 已知文件夹（快捷入口，2026-09-15 工作目录选择器资源管理器化）：
     // 由 bridge 而非渲染层枚举——只有这里知道真实用户目录（homedir + 平台差异）；
@@ -3733,7 +3774,10 @@ wss.on('connection', (ws, req) => {
         // Conversation.mode 收敛：'chat' 走受限 spawn（禁本地工具 + cwd=YFW_HOME），
         // 其余（task/undefined 旧会话）维持现状全工具
         const mode = msg.mode === 'chat' ? 'chat' : 'task'
-        const session = getOrCreateSession(sid, msg.cwd, msg.resumeId, msg.systemPrompt, msg.model, msg.compactCount, mode, msg.knowledgeSpaces, msg.appPageId)
+        // 团队模式归属（第 2 跳）：渲染层带来的 workspaceId 先过校验（非法值丢弃 + warn，
+        // 绝不因此拒绝消息），合法值最终进 spawn env 的 YFW_WORKSPACE_ID。
+        const workspaceId = sanitizeClientWorkspaceId(msg.workspaceId, { label: 'send' })
+        const session = getOrCreateSession(sid, msg.cwd, msg.resumeId, msg.systemPrompt, msg.model, msg.compactCount, mode, msg.knowledgeSpaces, msg.appPageId, workspaceId)
         if (!session) return // spawn failed — error already sent via WebSocket
         // /loop 指令转译（打通点）：GUI 发纯文本 `/loop …` → 内核原生 loop 载荷/指令。
         // 非指令文本 translateLoopSend 返回 null → 原路径逐字直通（零回归锁②）。
@@ -3891,6 +3935,10 @@ wss.on('connection', (ws, req) => {
           sessions.delete(sid)
           session = null
           const resumeId = msg.resumeId
+          // workspaceId 与 send 路径**同一来源同一校验**：漏传一处就会出现"首条消息按团队
+          // 归属落盘、回答触发重 spawn 后又变回 personal"的分裂（只在"卡在提问上的会话被
+          // 回收后作答"时才暴露）——归属分裂比缺失更难排查（同一会话两个归属）。
+          const workspaceId = sanitizeClientWorkspaceId(msg.workspaceId, { label: 'answer' })
           if (resumeId) {
             console.log(`[bridge] answer on reaped session ${sid.slice(0, 8)} — respawning kernel (resume ${String(resumeId).slice(0, 8)})`)
             // cwd/mode/systemPrompt/model/compactCount 与 send 同源（前端 buildSendPayload
@@ -3898,7 +3946,7 @@ wss.on('connection', (ws, req) => {
             // appPageId 必须与 send 路径**同一来源**（前端 buildSendPayload 的字段集）：
             // 漏传一处就会出现"首条消息按作用域收窄、回答触发重 spawn 后又变回全量工具池"
             // 的分裂——只在"卡在提问上的会话被回收后作答"时才暴露，极难复现。
-            session = getOrCreateSession(sid, msg.cwd, resumeId, msg.systemPrompt, msg.model, msg.compactCount, msg.mode === 'chat' ? 'chat' : 'task', msg.knowledgeSpaces, msg.appPageId)
+            session = getOrCreateSession(sid, msg.cwd, resumeId, msg.systemPrompt, msg.model, msg.compactCount, msg.mode === 'chat' ? 'chat' : 'task', msg.knowledgeSpaces, msg.appPageId, workspaceId)
             if (session) session._askBuf = ''
           } else {
             console.warn(`[bridge] answer undeliverable — session ${sid.slice(0, 8)} was reaped and payload carries no resumeId`)

@@ -377,6 +377,13 @@ function conversationSpawnFields(conversationId: string): Record<string, unknown
     // `undefined` 与 `''` 虽已归一成同一签名，但少发一个键能少一层依赖，也不会让"没设作用域"
     // 与"显式清空"在报文里成为两种形状。
     ...(conversation.appPageId ? { appPageId: conversation.appPageId } : {}),
+    // 会话归属工作区（2026-09-17，S3）：bridge 把它作为 `YFW_WORKSPACE_ID` 传给内核，
+    // 内核据此在 transcript 头行写 `workspaceId`（`kernel/session.mjs`）⇒ 该会话的新消息
+    // 落到**它自己的**团队桶里。
+    // 🔴 取值只认**该会话自己的** `workspaceId`，绝不用当前模式兜底：对一条个人会话用
+    // "当前是团队模式"去兜底，会把个人会话的历史写进团队桶（数据串桶，且事后无法分辨）。
+    // 旧会话没有该字段 ⇒ **不发该键**（bridge 缺省 = 个人），与 knowledgeSpaces/appPageId 同款纪律。
+    ...(conversation.workspaceId ? { workspaceId: conversation.workspaceId } : {}),
   }
 }
 

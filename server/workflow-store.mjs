@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync
 import { join } from 'node:path'
 // 【S2-D4】归属解析取 `shared/`（本模块的约束只禁 import kernel/*；`shared/` 是既有跨层位置，
 // 生产包也随包分发）。沿用同一实现可保证三处落盘点的默认值/覆盖规则一致。
-import { attributionOf } from '../shared/attribution.mjs'
+import { attributionOf, sanitizeWorkspaceId } from '../shared/attribution.mjs'
 
 export const SCHEMA_VERSION = 2
 export const BUNDLE_FORMAT = 'yfworking-workflow'
@@ -251,13 +251,22 @@ export function readWorkflowYml({ root, id }) {
  *
  * 注意：`kernel/workflow-dsl.mjs` 的 `TOP_KEYS` / `serializeWorkflow` 也已把这两个键纳入 ——
  * 否则编辑器"加载→序列化"一往返就会把归属**静默丢掉**（那比不写更糟）。
+ *
+ * 【团队模式归属】`workspaceId` 支持由**请求携带**（`{ workspaceId, teamIds }`）。
+ * 为什么不能只靠 env：本模块运行在 bridge 里，而 bridge 是**长驻进程**、一个进程同时服务
+ * 个人与团队会话（`getOrCreateSession` 每会话一进程，bridge 不是）——进程级 env 会让
+ * 个人与团队两个请求的归属**串味**（谁先来谁定全局）。故归属必须随请求走：
+ * 传入值优先，并**再走一遍同一个 `sanitizeWorkspaceId`**（防其他调用方塞原值）；未传/非法
+ * 时才回落到既有的 `attributionOf()`（= 旧行为，保持"未传 = 不改行为"）。
  */
-function ensureAttribution(yml) {
-  const { authorId, workspaceId } = attributionOf()
+function ensureAttribution(yml, { workspaceId = null, teamIds = [] } = {}) {
+  const { authorId, workspaceId: envWorkspaceId } = attributionOf()
+  const requested = sanitizeWorkspaceId(workspaceId, { teamIds })
+  const workspace = requested || envWorkspaceId
   const out = String(yml)
   const missing = []
   if (!grab(out, 'authorId')) missing.push(`authorId: ${authorId}`)
-  if (!grab(out, 'workspaceId')) missing.push(`workspaceId: ${workspaceId}`)
+  if (!grab(out, 'workspaceId')) missing.push(`workspaceId: ${workspace}`)
   if (!missing.length) return out
   const block = missing.join('\n') + '\n'
   // 插在 `name:` 行之后（serializeWorkflow 的规范输出以 name 开头；万一没有则前置）
@@ -265,7 +274,7 @@ function ensureAttribution(yml) {
   return m ? out.replace(m[0], m[0] + block) : block + out
 }
 
-export function writeWorkflowYml({ root, id, yml }) {
+export function writeWorkflowYml({ root, id, yml, workspaceId = null, teamIds = [] }) {
   assertSafeId(id)
   mkdirSync(wfDir(root, id), { recursive: true })
   const f = wfFile(root, id)
@@ -280,7 +289,7 @@ export function writeWorkflowYml({ root, id, yml }) {
       try { rmSync(join(versionsDir(root, id), old), { force: true }) } catch {}
     }
   }
-  writeFileSync(f, ensureAttribution(yml), 'utf-8')
+  writeFileSync(f, ensureAttribution(yml, { workspaceId, teamIds }), 'utf-8')
   return { ok: true, id, backup }
 }
 

@@ -26,6 +26,8 @@
 import { getBridgeUrl } from '@/lib/config'
 import { getOrCreateWS } from '@/hooks/useYFWCLI'
 import type { WorkflowModel, LocalValidation } from '@/lib/workflowModel'
+import { workspaceIdForContent, PERSONAL_WORKSPACE_ID } from '@/lib/teamModeUi'
+import { useTeamStore } from '@/stores/teamStore'
 
 const TIMEOUT_MS = 20_000
 const SAVE_TIMEOUT_MS = 40_000   // 保存/校验走内核会话，冷启动首帧可能拉起子进程
@@ -99,6 +101,25 @@ async function call<T>(path: string, { method = 'GET', body, timeoutMs = TIMEOUT
 
 const enc = (id: string) => encodeURIComponent(id)
 
+/**
+ * 【S3 归属收口，2026-09-17】写路由要带的归属字段：**只有团队模式下才带**。
+ *
+ * 为什么在这里读 store（而不是给三个写函数加参数）：工作流的写路径有三条（新建 / 画布保存 /
+ * YAML 保存），调用点在 `WorkflowsPanel`。加参数就得三处逐处改，**漏一处 = 那个入口存下来的
+ * 工作流在团队模式里看不见**（静默、难查）——与 `chatStore.createConversation` 同一取舍。
+ *
+ * 个人模式**省略该键**：请求体与今日逐字节相同（零回归）；内核读取侧对"缺字段"的既有口径就是
+ * 'personal'（`server/workflow-store.mjs` 的 `grab()` 返回空串 ⇒ 列表按个人归类）。
+ * 归属取值一律经 `workspaceIdForContent`——绝不在前端拼 `team-` 前缀。
+ */
+function attributionBody(): { workspaceId?: string } {
+  const st = useTeamStore.getState()
+  // 纯逻辑只认 `{ id }`：团队缓存的字段名是 `teamId`（桥的口径），此处显式映射
+  // （同 `ModeFlipButton` 的做法），不让纯逻辑去猜 store 的形状。
+  const workspaceId = workspaceIdForContent(st.mode, st.teams.map((x) => ({ id: x.teamId })), st.activeTeamId)
+  return workspaceId === PERSONAL_WORKSPACE_ID ? {} : { workspaceId }
+}
+
 // —— 列表 / 读取 / 保存 / 删除 ——
 
 export function listWorkflows(): Promise<ApiResult<{ workflows: WorkflowMeta[]; root: string }>> {
@@ -112,17 +133,17 @@ export function loadWorkflow(id: string): Promise<ApiResult<{ id: string; model:
 
 /** 保存（画布 model → 内核序列化 → 存储层落盘 + 版本快照） */
 export function saveWorkflow(id: string, model: WorkflowModel): Promise<ApiResult<{ id: string; yml?: string; validation?: LocalValidation }>> {
-  return call(`/workflows/${enc(id)}`, { method: 'PUT', body: { model }, timeoutMs: SAVE_TIMEOUT_MS })
+  return call(`/workflows/${enc(id)}`, { method: 'PUT', body: { model, ...attributionBody() }, timeoutMs: SAVE_TIMEOUT_MS })
 }
 
 /** 新建：POST /workflows 需显式 id（路由 400 缺 id） */
 export function createWorkflow(id: string, model: WorkflowModel): Promise<ApiResult<{ id: string }>> {
-  return call('/workflows', { method: 'POST', body: { id, model }, timeoutMs: SAVE_TIMEOUT_MS })
+  return call('/workflows', { method: 'POST', body: { id, model, ...attributionBody() }, timeoutMs: SAVE_TIMEOUT_MS })
 }
 
 /** 以 YAML 原文保存（工具栏「YAML 切换」用；内核 save-raw 保留用户排版/注释） */
 export function saveWorkflowYaml(id: string, yaml: string): Promise<ApiResult<{ id: string; yml?: string; validation?: LocalValidation }>> {
-  return call(`/workflows/${enc(id)}`, { method: 'PUT', body: { yaml }, timeoutMs: SAVE_TIMEOUT_MS })
+  return call(`/workflows/${enc(id)}`, { method: 'PUT', body: { yaml, ...attributionBody() }, timeoutMs: SAVE_TIMEOUT_MS })
 }
 
 export function deleteWorkflow(id: string): Promise<ApiResult<Record<string, unknown>>> {

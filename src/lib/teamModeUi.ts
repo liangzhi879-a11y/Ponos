@@ -90,6 +90,40 @@ export function modeFlip(
   return teamId ? { mode: 'team', teamId } : null
 }
 
+/**
+ * 当前模式下**新建内容**（会话 / 任务 / 工作流）应归属的工作区 id。
+ *
+ * 为什么需要它：`workspaceId` 字段（`Conversation.workspaceId` / 工作流元数据）此前**没有任何
+ * 创建路径写入**，而列表筛选（`filterConversationsByMode` 等）早已按它判归属 ⇒ 团队模式下
+ * 列表**必然为空**。写入侧必须有**唯一收口**，否则五处创建路径会各自拼 `team-` 前缀（漏个 trim
+ * 就是一条永远筛不出来的脏数据）。
+ *
+ * 判定（与 `effectiveMode` / `modeFlip` 同一口径，刻意复用前者的"没团队即个人"语义）：
+ *   · `effectiveMode(mode, teams.length) !== 'team'` → `personal`（**没加入任何团队时强制回落**，
+ *     与既有语义一致：团队能力默认关闭 ⇒ 既有用户新建的内容与今日逐字相同）；
+ *   · 团队列表**没拿到**（null/空数组）→ `personal`：宁可这一次不写归属，也绝不把内容挂到
+ *     一个解析不出 id 的团队上（写入侧错一次就是"再也看不见"）；
+ *   · `activeTeamId` 非空且非纯空白 → 用它；否则取**第一个**团队（与 `teamStore.resolveActiveTeamId`
+ *     的回落方向一致，但这里不再检查 `ok`：列表项来自 store，已由它筛过）；
+ *   · 解析结果为空/纯空白 → `personal`。**绝不返回 `team-` 这种半截值**——它会被 `matchesMode`
+ *     判成团队、又在任何团队 id 列表里找不到，是"数据在但永远看不见"的最坏形状。
+ */
+export function workspaceIdForContent(
+  mode: WorkspaceMode,
+  teams: { id: string }[] | null,
+  activeTeamId: string | null,
+): string {
+  const list = Array.isArray(teams) ? teams : null
+  // 注意第二参是**团队数量**：null = "还没读到团队列表" ⇒ effectiveMode 保持原模式；
+  // 但归属计算不能停在"模式是 team"，故下面还有一道 list 判空（两道防线，语义不重叠）。
+  if (effectiveMode(mode, list ? list.length : null) !== 'team') return PERSONAL_WORKSPACE_ID
+  if (!list || list.length === 0) return PERSONAL_WORKSPACE_ID
+  const active = typeof activeTeamId === 'string' ? activeTeamId.trim() : ''
+  const first = String(list[0]?.id ?? '').trim()
+  const id = active || first
+  return id ? `${TEAM_WORKSPACE_PREFIX}${id}` : PERSONAL_WORKSPACE_ID
+}
+
 /** `team-<teamId>` → `<teamId>`；非团队工作区 → null（供展示"来自哪个团队"）。 */
 export function teamIdOfWorkspace(workspaceId: unknown): string | null {
   const id = String(workspaceId ?? '').trim()

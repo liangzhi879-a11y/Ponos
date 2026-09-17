@@ -68,13 +68,15 @@ test('第 3 跳：bridge 把会话字段转成 --app-page（参数名逐字一�
   const src = read('server/bridge.mjs')
   assert.match(src, /args\.push\('--app-page'/, '参数名必须与内核登记项逐字一致（拼错=静默失效）')
   assert.match(src, /normalizeAppPageId\(appPageId\)/, '先归一再加参（同一状态只应有一个签名）')
-  assert.match(src, /getOrCreateSession\(sid, cwd, resumeId, systemPrompt, model, compactCount, mode = 'task', knowledgeSpaces = null, appPageId = null\)/,
+  assert.match(src, /getOrCreateSession\(sid, cwd, resumeId, systemPrompt, model, compactCount, mode = 'task', knowledgeSpaces = null, appPageId = null, workspaceId = null\)/,
     'getOrCreateSession 必须收这个字段（否则前端传了也到不了 argv）')
   assert.match(src, /_spawnAppPageSig/, '作用域签名：变更后要能触发 --resume 重启内核才生效')
   assert.match(src, /appPageChanged/, '变更判定必须真的进 if（只冻签名不比对 = 改了不生效）')
   // send 与 answer 两条路径**都要传**：漏一处会出现"首条消息按作用域收窄、回答触发重 spawn
   // 后又变回全量工具池"的分裂（只在"卡在提问上的会话被回收后作答"时才暴露）。
-  const callSites = src.match(/msg\.knowledgeSpaces, msg\.appPageId\)/g) || []
+  // （断言随 getOrCreateSession 追加第 10 参 `workspaceId` 同步更新：仍是"两处调用点都传齐"，
+  //   且往后多传了一个字段，强度不降反升。）
+  const callSites = src.match(/msg\.knowledgeSpaces, msg\.appPageId, workspaceId\)/g) || []
   assert.equal(callSites.length, 2, `send 与 answer 两处调用点都必须传 appPageId（实际 ${callSites.length} 处）`)
 })
 
