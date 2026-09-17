@@ -101,6 +101,29 @@ function extractToken(req) {
 }
 
 /**
+ * 不透明来源判定（2026-09-17 安全修复）。
+ *
+ * `Origin: null` 是规范对**不透明来源（opaque origin）**的序列化：`<iframe sandbox>`（不含
+ * `allow-same-origin`）、`data:` / `blob:` 文档、跨源重定向后的来源都会得到它。它**不是可信
+ * 凭据**——任意网页都能自造一个，而且只要响应带上 `ACAO: null`，攻击者连响应都能读回。
+ *
+ * 实测（2026-09-17，重启后的真实实例；请求仅带 `Origin: null`、不带任何令牌）：
+ * `/config` → **200**（响应含 4 个 provider 的 `authToken` 明文，长度 35/125/43/35）、
+ * `/list-dir` → 200、`OPTIONS` 预检 → **204** 且回显 `ACAO: null` +
+ * `Allow-Methods: GET, POST, PUT, PATCH, DELETE` ⇒ 读写皆可。这正是"任意网页窃取 API 密钥"
+ * 的完整利用链，故本函数把不透明来源与"无 Origin"同等对待：**一律必须持令牌**。
+ *
+ * 另需澄清一个历史误解：D2 落地时把 `Origin: null` 当作"打包版渲染层的形态"而放行，实测证明
+ * **打包版渲染层从不发 `Origin: null`**——`file://` 页面的 `fetch` **不带 Origin**（这正是同日
+ * 401 故障的成因），其 `WebSocket` 握手带 `Origin: file://`；
+ * 而 `Origin: null` 恰恰是**攻击者**（沙箱 iframe）的形态。原断言见
+ * `server/bridge-auth-token.test.mjs`（已随之更正）。
+ */
+function isOpaqueOrigin(origin) {
+  return typeof origin === 'string' && origin.trim().toLowerCase() === 'null'
+}
+
+/**
  * D2 闸门（HTTP 与 WS 共用一条判定，避免两处语义漂移）。
  *
  * 语义严格照 spec §6.2 D2：**无 Origin 头 / 非浏览器客户端必须持 token**；带 Origin 的请求
@@ -111,12 +134,16 @@ function extractToken(req) {
  * 有 58 处 fetch 散在 27 个文件。若改成"带 Origin 也查 token"，就必须改渲染层全量 fetch 并让
  * dev 形态失去可用性——超出 D2 文档要求（残留风险见 docs/superpowers/plans/2026-09-16-s2-d2-bridge-token.md §6）。
  *
- * 注意 `origin` 为空串时按"无 Origin"处理：原始的 `Origin: ` 空值若不进 token 闸，就是一个
- * 可被构造的旁路（`isAllowedOrigin('')` 因 `!origin` 返回 true）。
+ * **该免检的前提是"来源本身不可伪造"**（浏览器只会填文档自己的来源）。不透明来源
+ * （`Origin: null`）天然不满足这个前提，故走下面的 token 闸——见 `isOpaqueOrigin`。
+ *
+ * 注意 `origin` 为空串时同样按"无 Origin"处理：原始的 `Origin: ` 空值若不进 token 闸，就是一
+ * 个可被构造的旁路（`isAllowedOrigin('')` 因 `!origin` 返回 true）。
  */
 function authorizeBridgeRequest(req, token) {
   const origin = req && req.headers ? req.headers.origin : undefined
-  if (origin) return { ok: true, via: 'origin' }
+  // 不可伪造的来源才免检；不透明来源（null）与缺头/空串一样，必须持令牌
+  if (origin && !isOpaqueOrigin(origin)) return { ok: true, via: 'origin' }
   let pathname = ''
   try { pathname = new URL((req && req.url) || '/', 'http://127.0.0.1').pathname } catch { pathname = '' }
   if (isTokenExemptPath(pathname)) return { ok: true, via: 'exempt' }
@@ -134,5 +161,6 @@ module.exports = {
   isTokenValid,
   isTokenExemptPath,
   extractToken,
+  isOpaqueOrigin,
   authorizeBridgeRequest,
 }

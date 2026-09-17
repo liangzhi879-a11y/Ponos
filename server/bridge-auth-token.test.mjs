@@ -26,7 +26,7 @@ import { createServer } from 'node:net'
 import http from 'node:http'
 import { WebSocket } from 'ws'
 import { TEST_BRIDGE_TOKEN, authHeaders, withToken } from './test-bridge-auth.mjs'
-import { bridgeTokenPath, isTokenExemptPath, authorizeBridgeRequest, isTokenValid } from './bridge-token.cjs'
+import { bridgeTokenPath, isTokenExemptPath, authorizeBridgeRequest, isTokenValid, isOpaqueOrigin } from './bridge-token.cjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = join(__dirname, '..')
@@ -168,9 +168,33 @@ test('纯函数：无 Origin 必须持 token；带 Origin 归 origin 闸；豁�
   assert.equal(authorizeBridgeRequest(req({}, '/config?token=' + TEST_BRIDGE_TOKEN), TEST_BRIDGE_TOKEN).ok, true, 'query token 必须放行')
   // 空 Origin 是可构造的旁路（isAllowedOrigin('') 因 !origin 返回 true），必须进 token 闸
   assert.equal(authorizeBridgeRequest(req({ origin: '' }), TEST_BRIDGE_TOKEN).ok, false, '空 Origin 必须按"无 Origin"处理')
-  // 带 Origin → 交给 origin 白名单（第二道），不查 token
-  assert.equal(authorizeBridgeRequest(req({ origin: 'null' }), TEST_BRIDGE_TOKEN).ok, true, '打包版渲染层形态（Origin: null）应放行')
+  // 带 Origin（来源不可伪造）→ 交给 origin 白名单（第二道），不查 token
   assert.equal(authorizeBridgeRequest(req({ origin: 'http://localhost:5197' }), TEST_BRIDGE_TOKEN).ok, true, 'dev 浏览器形态应放行')
+  assert.equal(authorizeBridgeRequest(req({ origin: 'file://' }), TEST_BRIDGE_TOKEN).ok, true, '打包版 WS 握手形态（Origin: file://）应放行')
+  // 【2026-09-17 安全修复】不透明来源（Origin: null）**不是可信来源**，必须持令牌。
+  //
+  // 此处原断言写的是"打包版渲染层形态（Origin: null）应放行"，那是**误判**：实测（真 Electron 43
+  // 渲染层）打包版从不发 Origin: null —— fetch 根本**不带** Origin、WebSocket 握手带 `Origin: file://`；
+  // 而 Origin: null 恰是 `<iframe sandbox>`（任意网页可自造）的形态。原断言等于把窃密通道写成了预期，
+  // 实测利用链见 server/bridge-token.cjs 的 isOpaqueOrigin 注释。
+  assert.equal(authorizeBridgeRequest(req({ origin: 'null' }), TEST_BRIDGE_TOKEN).ok, false,
+    '不透明来源（Origin: null）无令牌必须拒绝——这是任意网页可用沙箱 iframe 自造的来源')
+  assert.equal(authorizeBridgeRequest(req({ origin: 'null', 'x-yfw-bridge-token': TEST_BRIDGE_TOKEN }), TEST_BRIDGE_TOKEN).ok, true,
+    '不透明来源带正确令牌必须放行（应用自身的沙箱 iframe 靠 main 侧注入走这条路）')
+  assert.equal(authorizeBridgeRequest(req({ origin: 'null', 'x-yfw-bridge-token': 'wrong' }), TEST_BRIDGE_TOKEN).ok, false,
+    '不透明来源带错误令牌必须拒绝')
+  assert.equal(authorizeBridgeRequest(req({ origin: ' null ' }), TEST_BRIDGE_TOKEN).ok, false,
+    '不透明来源的空白变体也必须拒绝（不得靠加空格绕过）')
+  assert.equal(authorizeBridgeRequest(req({ origin: 'data:text/html,x' }), TEST_BRIDGE_TOKEN).ok, true,
+    'data:/blob: 文档在请求头里序列化为 null（已被上面拦住）；若真送来 data: 串则来源不可伪造，按 origin 处理')
+  // isOpaqueOrigin 本身
+  assert.equal(isOpaqueOrigin('null'), true)
+  assert.equal(isOpaqueOrigin('NULL'), true, '大小写不敏感（防绕过）')
+  assert.equal(isOpaqueOrigin(' null '), true, '首尾空白不敏感（防绕过）')
+  assert.equal(isOpaqueOrigin('file://'), false)
+  assert.equal(isOpaqueOrigin('http://localhost:5197'), false)
+  assert.equal(isOpaqueOrigin(''), false)
+  assert.equal(isOpaqueOrigin(undefined), false)
   // 豁免
   assert.equal(isTokenExemptPath('/health'), true)
   assert.equal(isTokenExemptPath('/api/auth/status'), true)
@@ -247,11 +271,27 @@ test('真机：无 Origin 无 token → 401；带 token → 200；带 Origin 的
     const wrong = await httpReqSettled(port, '/known-folders', { headers: { 'x-yfw-bridge-token': 'nope' } })
     assert.equal(wrong.status, 401, '错误 token 必须 401')
 
-    // (5) 既有带 Origin 客户端零改动仍通：打包版渲染层（Origin: null）与 dev 浏览器形态
-    const renderer = await httpReqSettled(port, '/known-folders', { headers: { origin: 'null' } })
-    assert.equal(renderer.status, 200, `打包版渲染层形态（Origin: null，无 token）必须仍通——D2 不得让既有客户端失联（实际 ${JSON.stringify(renderer)}）`)
+    // (5) 【2026-09-17 更正】不透明来源（Origin: null）**不得**再被放行：
+    //     它可由任意网页用 `<iframe sandbox>` 自造，且响应带 ACAO: null 时攻击者还能读回内容。
+    //     原断言把它当作"打包版渲染层形态"放行——那是误判：实测打包版 `fetch` **不带 Origin**
+    //     （走 (3) 的头部令牌路径）、`WebSocket` 握手带 `Origin: file://`（见 (6) 新增断言）。
+    const opaque = await httpReqSettled(port, '/known-folders', { headers: { origin: 'null' } })
+    assert.equal(opaque.status, 401, `不透明来源无令牌必须 401（实际 ${JSON.stringify(opaque)}）`)
+    const opaquePost = await httpReqSettled(port, '/write-file', { method: 'POST', headers: { origin: 'null' } })
+    assert.equal(opaquePost.status, 401, `不透明来源的写操作无令牌必须 401（实际 ${JSON.stringify(opaquePost)}）`)
+    // 但应用自身的沙箱 iframe（main 侧注入令牌后同 session 内）必须是通的
+    const opaqueWithToken = await httpReqSettled(port, '/known-folders', { headers: { origin: 'null', ...hdrs } })
+    assert.equal(opaqueWithToken.status, 200, `不透明来源带正确令牌必须 200（应用自身沙箱 iframe 走这条，实际 ${JSON.stringify(opaqueWithToken)}）`)
+
+    // (5b) 打包版渲染层的**真实** HTTP 形态：无 Origin + 令牌（2026-09-17 实测定论）
+    const packagedShape = await httpReqSettled(port, '/known-folders', { headers: hdrs })
+    assert.equal(packagedShape.status, 200, `打包版真实形态（无 Origin + 令牌）必须 200（实际 ${JSON.stringify(packagedShape)}）`)
+
+    // (5c) dev 浏览器形态与打包版 WS 握手形态仍零改动可用
     const devBrowser = await httpReqSettled(port, '/known-folders', { headers: { origin: 'http://localhost:5197' } })
     assert.equal(devBrowser.status, 200, `dev 浏览器形态（Origin: http://localhost:5197）必须仍通（实际 ${JSON.stringify(devBrowser)}）`)
+    const packagedWsShape = await httpReqSettled(port, '/known-folders', { headers: { origin: 'file://' } })
+    assert.equal(packagedWsShape.status, 200, `打包版 WS 握手形态（Origin: file://）必须仍通（实际 ${JSON.stringify(packagedWsShape)}）`)
 
     // (6) 外部网页 Origin 仍被 origin 闸拦下（第二道没有被 D2 削弱）
     const evil = await httpReqSettled(port, '/known-folders', { headers: { origin: 'https://evil.example' } })
@@ -323,9 +363,20 @@ test('真机：WS 无令牌被拒、带头部或 query 令牌通过、渲染层�
     const byQuery = await wsProbe(withToken(base))
     assert.equal(byQuery.accepted, true, `带 query 令牌的 WS 必须接受（实际 ${JSON.stringify(byQuery)}）`)
 
-    // 渲染层 WS（浏览器上下文必带 Origin）零改动仍通——这是"小窗/宠物全通"里最关键的一条
-    const rendererWs = await wsProbe(base, { headers: { origin: 'null' } })
-    assert.equal(rendererWs.accepted, true, `打包版渲染层 WS（Origin: null，无 token）必须仍通（实际 ${JSON.stringify(rendererWs)}）`)
+    // 【2026-09-17 更正】WS 侧的"既有客户端零改动"要按**实测形态**验收，而不是按臆测形态：
+    //   · 打包版渲染层的 WS 握手实际带 `Origin: file://`（真机探测所得，见
+    //     electron/bridge-header-inject.cjs 头注释与 docs/2026-09-17-打包版渲染层401修复.md），
+    //     file:// 不是可被远程内容伪造的来源 ⇒ 仍免令牌放行，零改动可用；
+    //   · 原断言用的 `Origin: null` 是**攻击者**形态（任意网页可用 `<iframe sandbox>` 自造），
+    //     若继续放行，恶意网页可直接开 WS 驱动桥（比 HTTP 更狠）⇒ 现在必须拒绝。
+    const rendererWs = await wsProbe(base, { headers: { origin: 'file://' } })
+    assert.equal(rendererWs.accepted, true, `打包版渲染层 WS 真实形态（Origin: file://）必须仍通（实际 ${JSON.stringify(rendererWs)}）`)
+
+    const opaqueWs = await wsProbe(base, { headers: { origin: 'null' } })
+    assert.equal(opaqueWs.accepted, false, `不透明来源（Origin: null）的 WS 无令牌必须拒绝（实际 ${JSON.stringify(opaqueWs)}）`)
+
+    const opaqueWsWithToken = await wsProbe(base, { headers: { origin: 'null', ...authHeaders() } })
+    assert.equal(opaqueWsWithToken.accepted, true, `不透明来源带正确令牌的 WS 必须接受（应用自身沙箱 iframe 走这条，实际 ${JSON.stringify(opaqueWsWithToken)}）`)
   } finally {
     await stopBridge(b)
     rmSyncRetry(home)

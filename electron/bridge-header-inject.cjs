@@ -27,6 +27,26 @@ const DEFAULT_BRIDGE_TOKEN_HEADER = 'x-yfw-bridge-token'
 
 const BRIDGE_PROTOCOLS = ['http:', 'https:', 'ws:', 'wss:']
 
+/**
+ * **不得注入令牌的 session 分区前缀**（2026-09-17 补）。
+ *
+ * 「应用智控」的内置浏览器用 `persist:automation-*` 分区（见 electron/app-session-key.cjs 与
+ * electron/browser-executor.cjs），它加载的是**任意外部网站**。若把桥令牌也注入这些 session，
+ * 那么用户在自动化浏览器里只要打开一个恶意页面，该页面请求 `http://127.0.0.1:<桥端口>/config`
+ * 就会被**自动附带令牌** ⇒ 直接读到 provider 的 `authToken` 明文。
+ * 这等于用"修 401"的方式新开一条窃密通道（外部站点原本因 `Origin: https://…` 不在白名单而
+ * 拿 403），故必须排除。
+ *
+ * 判据用前缀而非全等：分区键随站点变化（`persist:automation-<key>`），且将来可能有多实例。
+ */
+const UNTRUSTED_SESSION_PARTITION_PREFIXES = ['persist:automation-']
+
+/** 该 session 是否属于"会加载外部站点"的不受信分区。 */
+function isUntrustedBridgeSession(session) {
+  const partition = session && typeof session.partition === 'string' ? session.partition : ''
+  return UNTRUSTED_SESSION_PARTITION_PREFIXES.some((prefix) => partition.startsWith(prefix))
+}
+
 /** 缺省"已装"集合：同一 session 被重复装时静默跳过（Electron 会以后注册的处理器覆盖先注册的）。 */
 const defaultInstalledSessions = new WeakSet()
 
@@ -58,6 +78,10 @@ function createBridgeHeaderInjector(opts = {}) {
 /**
  * 给一个 Electron session 装上注入器；已装过的 session 不重复注册
  * （`onBeforeSendHeaders` 后注册会**覆盖**先注册的处理器，重复装等于白装前一次）。
+ *
+ * **不受信分区（加载外部站点的内置浏览器）一律拒绝安装**——理由见
+ * `UNTRUSTED_SESSION_PARTITION_PREFIXES`，那是"修 401"必须避开的新增窃密面。
+ *
  * @param {object} targetSession Electron Session（鸭子类型：需要 webRequest.onBeforeSendHeaders）
  * @param {{port: number|string, token: string, headerName?: string}} opts
  * @param {WeakSet<object>} [seen] 已装集合；缺省用模块级共享集合（调用方可自持一份以跨调用点共用）
@@ -66,6 +90,7 @@ function createBridgeHeaderInjector(opts = {}) {
 function installBridgeTokenHeaderInjector(targetSession, opts = {}, seen = defaultInstalledSessions) {
   if (!targetSession || !targetSession.webRequest) return false
   if (typeof targetSession.webRequest.onBeforeSendHeaders !== 'function') return false
+  if (isUntrustedBridgeSession(targetSession)) return false
   if (seen.has(targetSession)) return false
   seen.add(targetSession)
   const inject = createBridgeHeaderInjector(opts)
@@ -77,6 +102,8 @@ function installBridgeTokenHeaderInjector(targetSession, opts = {}, seen = defau
 
 module.exports = {
   DEFAULT_BRIDGE_TOKEN_HEADER,
+  UNTRUSTED_SESSION_PARTITION_PREFIXES,
+  isUntrustedBridgeSession,
   createBridgeHeaderInjector,
   installBridgeTokenHeaderInjector,
 }

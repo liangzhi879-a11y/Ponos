@@ -1867,10 +1867,17 @@ function logForwarded(kind, sid, extra = '') {
 
 // 本地桥接服务只应答本机可信来源：
 //  - 无 Origin（Electron 主进程 / Node 客户端）
-//  - file:// 页面（打包版生产加载方式，fetch 时 Origin 为 null）
+//  - file:// 页面（打包版生产加载方式；其 WebSocket 握手带 `Origin: file://`，
+//    而 fetch 不带 Origin —— 见 2026-09-17 的 401 修复记录）
 //  - localhost / 127.0.0.1 / ::1 任意端口（Vite dev server）
 // 恶意网页（https://evil.com 等）拿不到 CORS 响应头，无法读取 /raw-file
 // 等敏感端点，同时 GET 请求会直接被 403 拒绝。
+//
+// 【2026-09-17】`origin === 'null'`（不透明来源）**只是 CORS 形态上的放行，不等于信任**：
+// 本函数决定"是否回 ACAO"（应用自身的沙箱 iframe 需要它），而"是否放行"由
+// `authorizeBridgeRequest()` 的令牌闸决定 —— 该闸已把不透明来源视同"无 Origin"，
+// 必须持令牌（成因与实测利用链见 server/bridge-token.cjs 的 isOpaqueOrigin 注释）。
+// 若在此处直接拒绝 'null'，应用自身带令牌的沙箱 iframe 会被 403（ACAO 拿不到），故不放这里堵。
 function isAllowedOrigin(origin) {
   if (!origin) return true
   if (origin === 'null') return true

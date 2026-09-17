@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { createBridgeHeaderInjector, installBridgeTokenHeaderInjector } from './bridge-header-inject.cjs'
+import { createBridgeHeaderInjector, installBridgeTokenHeaderInjector, isUntrustedBridgeSession } from './bridge-header-inject.cjs'
 
 // 背景（2026-09-17 实测）：Electron 43.2.0 / Chromium 150 下，file:// 页面发往
 // http://127.0.0.1:<port> 的跨源 fetch **不带 Origin 头**，直接撞进 S2-D2 的
@@ -94,4 +94,48 @@ test('治理约束：main.cjs 确实装了注入器，且默认头名与桥侧�
 test('治理约束：桥的预检响应必须声明令牌头（否则自定义头会让预检失败、真实请求不发）', () => {
   const bridgeSrc = readFileSync(new URL('../server/bridge.mjs', import.meta.url), 'utf-8')
   assert.match(bridgeSrc, /Access-Control-Allow-Headers', 'Content-Type, x-yfw-bridge-token'/)
+})
+
+// ── 注入范围：绝不能装到"会加载外部站点"的内置浏览器分区（2026-09-17 补）─────────────────
+// 背景：`app.on('session-created')` 会给**所有**新 session 装注入器，而「应用智控」的内置浏览器
+// 用 `persist:automation-*` 分区加载**任意外部网站**。若不排除，用户在自动化浏览器里打开一个
+// 恶意页面，该页面请求 `http://127.0.0.1:<桥端口>/config` 就会被自动附带令牌 ⇒ 直接读到
+// provider 的 authToken 明文。这等于用"修 401"的方式新开一条窃密通道（原本因 Origin 不在白名单
+// 而吃 403），必须堵住。
+
+test('isUntrustedBridgeSession：识别 automation 分区（含多实例），放行应用自身 session', () => {
+  assert.equal(isUntrustedBridgeSession({ partition: 'persist:automation-site-a1b2' }), true)
+  assert.equal(isUntrustedBridgeSession({ partition: 'persist:automation-session-42' }), true)
+  assert.equal(isUntrustedBridgeSession({ partition: '' }), false, 'defaultSession 的 partition 是空串')
+  assert.equal(isUntrustedBridgeSession({}), false, '无 partition 字段按可信处理（应用自有 session）')
+  assert.equal(isUntrustedBridgeSession(null), false)
+  assert.equal(isUntrustedBridgeSession({ partition: 'persist:app-editor' }), false, '其它自有分区不误伤')
+})
+
+test('installBridgeTokenHeaderInjector：不受信分区拒绝安装，且不占用 seen', () => {
+  const handlers = []
+  const automation = {
+    partition: 'persist:automation-site-x',
+    webRequest: { onBeforeSendHeaders(fn) { handlers.push(fn) } },
+  }
+  const seen = new WeakSet()
+  assert.equal(installBridgeTokenHeaderInjector(automation, { port: 51517, token: 'T' }, seen), false,
+    '加载外部站点的分区绝不能拿到令牌注入器')
+  assert.equal(handlers.length, 0, '不得注册任何处理器')
+  assert.equal(seen.has(automation), false, '被拒的 session 不应写进 seen（便于诊断时看出未装）')
+
+  const appSession = { partition: '', webRequest: { onBeforeSendHeaders(fn) { handlers.push(fn) } } }
+  assert.equal(installBridgeTokenHeaderInjector(appSession, { port: 51517, token: 'T' }, seen), true,
+    '应用自身的 session 必须正常安装')
+  assert.equal(handlers.length, 1)
+})
+
+test('治理约束：main.cjs 的 session-created 安装路径受不受信分区判定保护', () => {
+  const src = readFileSync(new URL('./bridge-header-inject.cjs', import.meta.url), 'utf-8')
+  assert.match(src, /UNTRUSTED_SESSION_PARTITION_PREFIXES = \['persist:automation-'\]/)
+  assert.match(src, /if \(isUntrustedBridgeSession\(targetSession\)\) return false/)
+  // 分区前缀必须与内置浏览器的实际分区来源一致，避免改名后静默失效
+  const sessionKeySrc = readFileSync(new URL('./app-session-key.cjs', import.meta.url), 'utf-8')
+  assert.match(sessionKeySrc, /persist:automation-/,
+    '分区前缀是两侧契约：app-session-key.cjs 改了前缀，这里的排除规则必须同步')
 })
