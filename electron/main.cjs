@@ -17,7 +17,13 @@ const WebSocket = require('ws')
 const crypto = require('crypto')
 const { resolveYfwHome } = require('../server/yfw-home.cjs')
 const { resolveBridgeToken, BRIDGE_TOKEN_HEADER, BRIDGE_TOKEN_ENV } = require('../server/bridge-token.cjs')
-const { installBridgeTokenHeaderInjector } = require('./bridge-header-inject.cjs')
+const { installBridgeTokenHeaderInjector, isUntrustedBridgeSession, UNTRUSTED_SESSION_PARTITION_PREFIXES } = require('./bridge-header-inject.cjs')
+const { installShellCsp } = require('./csp-policy.cjs')
+// 网络代理（P1，2026-09-17）：参数计算的**唯一实现**在 shared/（与 server/bridge.mjs 共用一份）。
+// 本进程要两件事：① 把 Node 轨 env 注入**桥**（桥自己出网 + 它派生的内核/Bash/MCP 子进程）；
+// ② 给 Chromium 轨各 session 下发 `setProxy`（内置浏览器/自动化分区）。
+// 两轨实测互不影响（带 env 开关时主进程 fetch 走代理、但同一次请求不受 setProxy 影响）⇒ 必须分别下发。
+const { nodeProxyEnv, chromiumProxyOptions, redactProxyUrl } = require('../shared/proxy-config.cjs')
 
 // 入口兜底数据根隔离（2026-09-09 串配置事故修复）：桌面快捷方式直启 electron.exe /
 // YFWorking.vbs / debug bat 均不携带 env，此前双版全部回落 ~/.yfworking 与在售旧版
@@ -226,6 +232,48 @@ function bridgeAuthHeaders(extra = {}) {
 /** 已装注入器的 session 集合（同一 session 重复注册会覆盖上一次的处理器）。 */
 const bridgeHeaderSessions = new WeakSet()
 
+// ---------------------------------------------------------------------------
+// 网络代理（P1「应用内增加网络VPN代理配置功能」，2026-09-17）
+// ---------------------------------------------------------------------------
+/**
+ * 读磁盘上的代理配置（**同步**，模块加载期一次）。为什么同步且只读一次：代理必须在
+ * ① 桥进程 spawn 之前进 env、② 各 session 建立时就已 setProxy；两者都在启动路径上，
+ * 异步读取会让首帧请求漏出代理（Chromium 默认跟随系统 = 悄悄直连）。
+ * 改配置的生效时机因此是**重启应用**（设置页文案已如实说明，不假装即时）。
+ * 读失败/文件缺失/键缺失 → null（= off，不代理），绝不阻断启动。
+ */
+function readProxyConfig() {
+  try {
+    const cfgPath = path.join(resolveYfwHome(), 'config.json')
+    if (!fs.existsSync(cfgPath)) return null
+    const raw = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))
+    return raw && raw.network ? raw.network.proxy : null
+  } catch (e) {
+    console.warn('[main] 读取网络代理配置失败（按不代理处理）:', (e && e.message) || e)
+    return null
+  }
+}
+
+const PROXY_CONFIG = readProxyConfig()
+/** Node 轨补丁（off / system / 非法 ⇒ 空对象，一个变量都不注入）。 */
+const BRIDGE_PROXY_ENV = nodeProxyEnv(PROXY_CONFIG)
+/** Chromium 轨入参（off / 非法 ⇒ null = 刻意**不调用** setProxy，见 shared/proxy-config.cjs）。 */
+const CHROMIUM_PROXY = chromiumProxyOptions(PROXY_CONFIG)
+
+/** 给一个 Electron session 下发代理；off 时不动作（不干预 ≠ 强制直连）。 */
+function applyChromiumProxy(targetSession) {
+  if (!CHROMIUM_PROXY) return false
+  if (!targetSession || typeof targetSession.setProxy !== 'function') return false
+  try {
+    const p = targetSession.setProxy(CHROMIUM_PROXY)
+    if (p && typeof p.catch === 'function') p.catch((e) => console.warn('[main] setProxy 失败:', (e && e.message) || e))
+    return true
+  } catch (e) {
+    console.warn('[main] setProxy 抛错:', (e && e.message) || e)
+    return false
+  }
+}
+
 /**
  * 【2026-09-17 兼容性修复】给渲染层发往本桥的请求注入令牌头。
  * 实现与实测复现见 `electron/bridge-header-inject.cjs` 的模块头注释，此处只留结论：
@@ -234,17 +282,55 @@ const bridgeHeaderSessions = new WeakSet()
  * 直接回显 `Unauthorized`）。渲染层 58 处 fetch 逐处改不现实 ⇒ main 侧统一注入同一枚令牌；
  * 只注入本桥 host，令牌不外泄，无 Origin 无令牌的 CSRF 面仍 401。
  */
+/**
+ * D2-2（2026-09-17 FS 加固 · P0-3）：**只有可信发起帧才注入令牌**。
+ *
+ * 为什么需要：注入器原先"只看目标是桥 host"就注入，不看**谁**发起的。而
+ * `FileEditor` 的 HtmlPreview 把**用户任意 HTML** 经 `/raw-file` 以**桥源**载入，
+ * 其内联脚本发出的请求同样被注入令牌 ⇒ 配合文件端点即可任意读写本机文件。
+ * （仅去掉 iframe 的 `allow-same-origin` 不够：文档变 opaque 后仍需令牌，注入器照样补上，
+ *   且 `fetch({mode:'no-cors'})` 不读响应，CORS 拦不住副作用。）
+ *
+ * 判据用 `details.frame.origin`：**实测**（Electron 43 探针）`onBeforeSendHeaders`
+ * 的 details **没有 `initiator` 字段**（undefined），而 `frame.origin` 可稳定区分
+ * 「file:// 主窗口 = 'file://'」/「桥源文档 = 'http://127.0.0.1:<桥端口>'」/「沙箱 iframe = 'null'」。
+ * ⇒ 可信集合只含渲染层自身来源，**刻意不含桥 origin**。
+ */
+const TRUSTED_FRAME_ORIGINS = (() => {
+  const out = ['file://']
+  const push = (u) => { try { if (u) out.push(new URL(u).origin) } catch { /* 非法 URL 忽略 */ } }
+  push(process.env.VITE_DEV_SERVER_URL)
+  const devPort = process.env.YFW_VITE_PORT || '5197'
+  const previewPort = process.env.YFW_VITE_PREVIEW_PORT || '4197'
+  for (const p of [devPort, previewPort]) {
+    out.push(`http://localhost:${p}`, `http://127.0.0.1:${p}`)
+  }
+  return out
+})()
+
 function installBridgeHeaderInjector(s) {
+  // P0-4：在同一时机装配"应用外壳 CSP"（两者都按 session 生效、都依赖 webRequest；且
+  // onHeadersReceived 与 onBeforeSendHeaders 一样是"后注册覆盖先注册"，故集中在一处装）。
+  // 跳过不受信会话（自动化/浏览器分区）——那里加载的是任意网页，套外壳策略没有意义。
+  try {
+    if (!isUntrustedBridgeSession(s, UNTRUSTED_SESSION_PARTITION_PREFIXES)) installShellCsp(s)
+  } catch (e) {
+    console.warn('[csp] 安装外壳 CSP 失败（不影响启动）:', (e && e.message) || String(e))
+  }
   return installBridgeTokenHeaderInjector(s, {
     port: BRIDGE_PORT,
     token: BRIDGE_TOKEN,
     headerName: BRIDGE_TOKEN_HEADER,
+    trustedFrameOrigins: TRUSTED_FRAME_ORIGINS,
   }, bridgeHeaderSessions)
 }
 
 // 新 session（编辑器窗/设置窗/浏览器执行器等各有 partition）随创建即装；
 // defaultSession 早于本模块监听建立，另有 ready 内显式安装兜底。
-app.on('session-created', (s) => installBridgeHeaderInjector(s))
+// 【代理（P1）与令牌注入方向相反，勿"见一处改两处"】令牌注入**不得**进 automation 分区
+// （那里加载任意外部网站，注入令牌等于给恶意页面自动附带桥凭据）；代理**必须**进 automation 分区
+// （否则用户开了代理、内置浏览器仍直连）。
+app.on('session-created', (s) => { installBridgeHeaderInjector(s); applyChromiumProxy(s) })
 
 // ---------------------------------------------------------------------------
 // Bridge lifecycle
@@ -333,6 +419,14 @@ function startBridge() {
       // 【S2-D2】把 main 侧令牌注入桥（spec §6.2 D2「token 由 Electron main 侧注入」）。
       // 桥对"无 Origin 且无 token"的请求回 401，故缺了这一项，主进程自身的所有调用都会 401。
       YFW_BRIDGE_TOKEN: BRIDGE_TOKEN,
+      // 【代理 P1】Node 轨代理进桥进程 env：桥自身出网（provider 探测用 https.get，Node 24 的
+      // NODE_USE_ENV_PROXY 对 fetch 与 https.get **都**生效，实测）以及它派生的内核/Bash/MCP
+      // 子进程（`buildChildEnv()` 是 `...process.env` 展开 ⇒ 天然继承）。
+      // 合并顺序同桥侧：应用配置**覆盖**外部 env（用户启动脚本里的 HTTPS_PROXY 不该盖掉应用内的 off）。
+      // ⚠️ 生效时机：这里只在**桥启动时**注入一次，故改代理需重启应用（UI 已如实告知）。
+      // ⚠️ 回环（127.0.0.1/localhost/::1）由 shared/proxy-config.cjs **强制**并入 NO_PROXY，
+      //    否则桥会被自己的代理劫持（表现为"应用连不上后端"，报错指向代理端口、完全不提代理）。
+      ...BRIDGE_PROXY_ENV,
     },
     windowsHide: true,   // no console window on Windows
   })
@@ -1697,6 +1791,16 @@ if (!gotTheLock) {
     // 【2026-09-17】渲染层令牌注入须早于任何窗口创建（认证小窗/主窗/编辑器窗），
     // 否则首批请求会以"无 Origin 无令牌"被桥回 401（详见该函数注释）。
     installBridgeHeaderInjector(session.defaultSession)
+    // 【代理 P1】defaultSession 早于上面的 session-created 监听建立，必须显式补一次
+    // （与令牌注入同一处、同一理由）；此后新建的 session 由 session-created 钩子接管。
+    applyChromiumProxy(session.defaultSession)
+    // 代理开启时留一行可核对的日志（**脱敏**：URL 可能含 user:pass@）。
+    if (CHROMIUM_PROXY || Object.keys(BRIDGE_PROXY_ENV).length) {
+      console.log('[main] network proxy:', CHROMIUM_PROXY && CHROMIUM_PROXY.mode === 'system'
+        ? 'system（仅 Chromium 轨；Node 轨请用 manual）'
+        : redactProxyUrl(String((PROXY_CONFIG && PROXY_CONFIG.url) || '')),
+        '| bypass:', (BRIDGE_PROXY_ENV.NO_PROXY || ''))
+    }
 
     // First-run: make sure ~/.yfworking/ exists and has skills
     const yfwHome = ensureYfwHome()

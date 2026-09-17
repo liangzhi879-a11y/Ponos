@@ -1,14 +1,14 @@
 // 兼容垫片引导：必须是本文件**首个** import——旧名 → PONOS_* 主名的映射须在本进程
 // 任何模块顶层读取 env 之前完成（shared/legacy-env.mjs 是唯一映射实现）。
 import '../kernel/legacy-env-boot.mjs'
-import { spawn, execSync, spawnSync } from 'child_process'
+import { spawn, execSync } from 'child_process'
 import { createInterface } from 'readline'
 import { WebSocketServer } from 'ws'
 import http, { createServer } from 'http'
 import https from 'https'
 import { fileURLToPath } from 'url'
-import { readdirSync, statSync, existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, copyFileSync, unlinkSync, appendFileSync } from 'fs'
-import { readdir, stat } from 'fs/promises'
+import { readdirSync, statSync, existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, copyFileSync, unlinkSync, createReadStream } from 'fs'
+import { pipeline } from 'node:stream/promises'
 import { join, sep, dirname, resolve, basename } from 'path'
 import { tmpdir, homedir } from 'os'
 import { randomBytes } from 'node:crypto'
@@ -17,6 +17,16 @@ import { handleDisabledRoute } from './disabled-routes.mjs'
 // 子代理并发上限的归一策略在 shared/（纯函数）：桥是入口模块，import 即起服务，纯策略
 // 放这里才可单测（否则测试一 import 就去 bind 端口）。
 import { normalizeMaxSubAgents } from '../shared/subagent-concurrency.mjs'
+// 网络代理（P1，2026-09-17）：代理参数（Node 轨 env / Chromium 轨入参 / 回环白名单 / 凭据脱敏）
+// 的**唯一实现**在 shared/。桥是入口模块（import 即起服务），纯策略放那里才能单测；而且
+// `electron/main.cjs`（CJS，启动桥时注入 env）与桥（ESM）必须共用同一份判定 ——
+// 回环白名单漏一处就是"应用连不上自己的桥"（报错指向代理端口，完全不提代理）。
+import { mergeProxyPatch, nodeProxyEnv, normalizeProxyConfig, redactProxyConfig, redactProxyUrl } from '../shared/proxy-config.mjs'
+import { resolveReadable, resolveWritable, guardErrorResponse, assertSizeOk, FSGuardError } from '../shared/fs-guard.mjs'
+import { handleFilesRoute } from './files-routes.mjs'
+import { handleOfficeRoute, OFFICE_ROUTE_PATHS } from './office-routes.mjs'
+import { handleCollabRoute, isCollabPath } from './collab-routes.mjs'
+import { handleHostRoute, isHostPath } from './host-routes.mjs'
 import { handleAgentsRoute } from './agents-routes.mjs'
 import { handleSkillDetailRoute } from './skill-detail-routes.mjs'
 import { handleMcpRoute } from './mcp-routes.mjs'
@@ -44,7 +54,7 @@ function currentMcpSig() {
 // 内核无斜杠解析 → 必须在此转译为内核原生 loop 载荷/loop_command（spec 5.5 打通点）
 import { translateLoopSend } from './loop-translate.mjs'
 import { matchesHighRisk } from './highrisk.mjs'
-import { approvalSpawnArgs, DEFAULT_APPROVAL_MODE, NEW_INSTALL_APPROVAL_MODE, isValidApprovalMode, normalizeApprovalMode, resolveEffectiveApprovalMode } from './approval-mode.mjs'
+import { approvalSpawnArgs, DEFAULT_APPROVAL_MODE, NEW_INSTALL_APPROVAL_MODE, isValidApprovalMode, normalizeApprovalMode, resolveEffectiveApprovalMode, classifyApprovalEcho } from './approval-mode.mjs'
 import { parseAskUserPayload, extractAskUserBlocks } from './askuser.mjs'
 import { buildAnchorApplied } from './health-anchor.mjs'
 import { resolveKernelPaths } from '../electron/kernel-paths.cjs'
@@ -82,23 +92,12 @@ import { createReadonlyCache } from './readonly-cache.mjs'
 import { getAuthStatus, setupPassword, checkPassword, changePassword } from './auth.mjs'
 import { resolveBridgeToken, authorizeBridgeRequest } from './bridge-token.mjs'
 import { listEgressPolicy, EGRESS_MODE } from './egress-policy.mjs'
-// 【S2-D6 标签实体化】注册表的可观测面与「自动合并 / 可撤销」入口。规则实现在 shared/tag-registry.mjs，
-// 落盘在 kernel/tag-store.mjs（bridge 已有多处 import kernel/* 的先例，如 kernel/mcp.mjs）。
-import { tagRegistrySnapshot, mergeTagsInStore, undoMergeInStore } from '../kernel/tag-store.mjs'
-// 【S3 团队源】团队路由（创建/邀请/加入/撤销/状态）落在这里，紧邻 D6 的 `/tags*` 之后 ⇒
+// 【S3 团队源】团队路由（创建/邀请/加入/撤销/状态）落在这里，紧邻 D6 的 `/tags…` 之后 ⇒
 // 同样位于 **D2 令牌闸门之后**，自动受保护（新增路由必须放在闸门后面，这是 D2/D3/D6 的一贯做法）。
-import { teamStatus, createTeam, joinTeam, exportInvite, revokeMember, setSearchRoot, loadTeamConfig } from '../kernel/team-store.mjs'
+import { loadTeamConfig } from '../kernel/team-store.mjs'
 // 【团队模式归属】校验渲染层传来的 `workspaceId`（第 2 跳：bridge → spawn env `YFW_WORKSPACE_ID`
 // / 工作流落盘）。实现放 `shared/`：内核与桥两侧共用一份校验，且内核测试可直接覆盖。
 import { sanitizeWorkspaceId } from '../shared/attribution.mjs'
-// 【S4 文件协同】模态分层 / 版本链 / 软占用 / 检出检入 / 冲突处置。路由同样落在令牌闸门之后。
-import {
-  ingestFile, versionsOf, claimsOf, claimFile, checkinFile, releaseClaim, heartbeatClaim,
-  resolveFileId, writabilityOf, policyForPath, readPolicies, writePolicies, ensureCollabDirs,
-  prepareConflictResolution, currentPathOf,
-} from '../kernel/file-collab.mjs'
-import { planFallback } from '../shared/file-modal.mjs'
-import { DEFAULT_TAG_SCOPE } from '../shared/tag-registry.mjs'
 import { MANAGED_KEYS, providerProfileEnv, buildIdentityPrompt, activeProviderModel, resolveProviderProfile } from './provider-profile.mjs'
 import { probeProviderCapabilities, applyProbeResults, resolveWindowFromProbe, maybeAdoptWindowFromEvent } from './provider-probe.mjs'
 
@@ -193,9 +192,95 @@ const YFW_MILESTONE_PROTOCOL = `【任务里程碑进度协议】
 // buildChildEnv 注入解析后的 home）。
 // ---------------------------------------------------------------------------
 const YFW_HOME = resolveYfwHome()
-// 【S4】三层兜底的"能力探测"结果缓存（见 /file-collab/* 路由内的 s4Caps）：
-// 探测要起一次 python 进程，逐请求探查会明显拖慢协同操作，而结果在进程生命周期内恒定。
-let bridgeCapsCache = null
+
+// ── 文件端点路径闸门（P0-1）───────────────────────────────────────────────
+// 依据 docs/superpowers/specs/2026-09-17-bridge-fs-hardening-and-arch-cleanup-design.md §2 D1。
+// 原实现 `resolve(path)` 只做"相对转绝对"，没有任何"是否在允许根内"的判断 ⇒ 持令牌方可
+// 任意读写本机文件（写 = 持久化 RCE 入口）。闸门本体在 shared/fs-guard.mjs（单一真源）。
+//
+// 级别取自 S1 实测的调用面：
+//   · 读侧默认 warn —— /list-dir 的合法需求本就是"任意目录"（DirectoryPicker 起手为主目录），
+//     /read-file 还要读 ~/.yfworking 下的知识库文档（knowledgeApi.readRawDoc）；强拦会直接打坏功能。
+//   · 写侧默认 enforce —— /write-file 全仓仅 1 个调用点（FileEditor 保存），误伤面最小。
+//   · denyRoots（凭据/系统目录）在 warn 级别下**仍然拦**：S5 已证应用自身不经桥端点读写
+//     ~/.yfw，排除它零误伤，而它是"改写 settings.json 持久化"这条链的直接目标。
+const splitRootList = (v) =>
+  String(v || '').split(process.platform === 'win32' ? ';' : ':').map(s => s.trim()).filter(Boolean)
+const FS_READ_ROOTS = splitRootList(process.env.YFW_FS_ROOTS) // 空 = 该侧不做允许校验（默认，行为同现状）
+const FS_WRITE_ROOTS = splitRootList(process.env.YFW_FS_WRITE_ROOTS)
+const FS_WRITE_DENY_ROOTS = [
+  YFW_HOME, // 数据根：settings.json 的 provider 凭据、config.json
+  join(homedir(), '.yfw'),
+  join(homedir(), '.yfworking'),
+  ...splitRootList(process.env.YFW_FS_DENY_ROOTS),
+  // 凭据与"登录即执行"类目标：写进去就是持久化，且**不属于用户的文档工作区**
+  // （原实现在这些路径上完全无约束；此列表取"高价值 + 本应用绝不需要写"的交集，
+  //  误伤面刻意压到最小——更严的允许清单由 YFW_FS_WRITE_ROOTS 提供）
+  ...[
+    join(homedir(), '.ssh'),
+    join(homedir(), '.aws'),
+    join(homedir(), '.docker'),
+    join(homedir(), '.kube'),
+    join(homedir(), '.config'),      // Linux autostart / 各应用配置
+    join(homedir(), '.gitconfig'),
+    join(homedir(), '.npmrc'),
+    join(homedir(), '.bashrc'),
+    join(homedir(), '.bash_profile'),
+    join(homedir(), '.profile'),
+    join(homedir(), '.zshrc'),
+    join(homedir(), '.zprofile'),
+  ],
+  // 平台关键目录：系统目录 / 启动项 / 程序目录
+  ...(process.platform === 'win32'
+    ? [
+        process.env.SystemRoot,
+        process.env.ProgramFiles,
+        process.env['ProgramFiles(x86)'],
+        process.env.PROGRAMDATA,
+        process.env.APPDATA && join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu'),
+        process.env.APPDATA && join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup'),
+        process.env.APPDATA, // Roaming：登录时可能被加载的应用配置
+      ].filter(Boolean)
+    : ['/etc', '/bin', '/sbin', '/usr/bin', '/usr/sbin', '/boot', '/System', '/Library/LaunchDaemons', '/Library/LaunchAgents']),
+]
+
+/**
+ * 凭据文件：**读写都拒**（读=防外泄，写=防篡改）。
+ * 为什么读也要拒：读侧默认 warn（不拦越界），若这些文件可读，不受信预览一旦拿到令牌
+ * 即可读走 settings.json 里的 provider 明文令牌并外发——opaque 源仍能发出请求，
+ * CORS 只挡"读响应"，不挡"发送"。已在实现前核实渲染层不经文件端点读这些文件。
+ */
+const FS_CREDENTIAL_PATHS = [
+  join(YFW_HOME, 'settings.json'),
+  join(YFW_HOME, 'auth.json'),
+  join(homedir(), '.yfw', 'settings.json'),
+  join(homedir(), '.yfworking', 'settings.json'),
+  join(homedir(), '.yfw', 'auth.json'),
+  join(homedir(), '.yfworking', 'auth.json'),
+  ...splitRootList(process.env.YFW_FS_DENY_PATHS),
+]
+
+/** 抽出到 server/files-routes.mjs 的文件类端点（集中登记，便于一眼看清哪些已迁出） */
+const FILES_ROUTE_PATHS = new Set(['/list-dir', '/read-file', '/raw-file', '/write-file'])
+
+/** 传给 files-routes 的根目录集合（打包成一处，避免各端点各自拼装参数出错） */
+const FS_ROOTS = {
+  read: FS_READ_ROOTS,
+  write: FS_WRITE_ROOTS,
+  writeDeny: FS_WRITE_DENY_ROOTS,
+  credentials: FS_CREDENTIAL_PATHS,
+}
+
+/**
+ * 闸门错误 → HTTP 响应；非闸门错误返回 null（交调用方处理）。不回显解析后的路径。
+ * `reply` 是请求 handler 内的闭包（非模块级），故显式传入。
+ */
+export function replyGuardError(err, reply) {
+  const r = guardErrorResponse(err)
+  if (!r) return null
+  return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.body))
+}
+
 // 【S2-D2 bridge 鉴权】令牌解析（策略与理由集中在 server/bridge-token.mjs）。
 // fail-closed：无论令牌来自 env（Electron main 注入）还是自生成落盘，下面的闸门**一律生效**；
 // 本文件里不存在"未配 token 即放行"的分支——那种写法会让 main 侧注入一旦失效就静默敞开。
@@ -348,6 +433,14 @@ const DEFAULT_CONFIG = {
   // 写入一律经 sanitizeConfigPatch 钳制 —— 手改 config.json 填 {maxFiles:0}
   // 会拿回 1（最小值），而不是得到一个"什么都导不进去"的配置。
   knowledgeImport: { ...DEFAULT_IMPORT_POLICY },
+  // 网络代理（P1，2026-09-17）：{ mode: off|system|manual, url, bypass }。
+  // **默认 off = 与本方案落地前行为逐字节一致**（off 不注入任何代理变量、Chromium 轨也不调
+  // setProxy，故连"系统代理跟随"这种 Chromium 默认行为都不干预 —— off 是不干预，不是强制直连）。
+  // 缺此键 → loadConfig 合并默认档；写入经 sanitizeConfigPatch → mergeProxyPatch（局部补丁 +
+  // 打码密码回填），非法值**保存即失败**（见那处注释：静默保留现值会让用户以为配好了、实际直连）。
+  // 生效面：Node 轨（桥自身 + 内核/Bash/MCP 子进程）在**新 spawn** 时取当前值；桥进程自身的
+  // env 只在启动时注入一次 ⇒ 改配置对已在跑的桥需重启应用（UI 已如实告知，见设置页文案）。
+  network: { proxy: { mode: 'off', url: '', bypass: '' } },
   providers: DEFAULT_PROVIDERS,
 }
 
@@ -603,6 +696,22 @@ function sanitizeConfigPatch(patch) {
     if (JSON.stringify(raw) !== JSON.stringify(out.knowledgeImport)) {
       console.warn(`[bridge] knowledgeImport 已钳制：${JSON.stringify(raw)} → ${JSON.stringify(out.knowledgeImport)}`)
     }
+  }
+  if ('network' in out) {
+    const raw = out.network
+    const cur = loadConfig().network
+    // 局部补丁语义（同 logPolicy）：前端可能只发 { proxy: { bypass: '…' } }，其余键继承现值。
+    // 打码密码的回填也在 mergeProxyPatch 内（界面回显的是 user:***@host，用户只改端口再保存时，
+    // 若不回填就会把字面量 *** 当成真密码落盘 —— 代理鉴权失败，而用户认为自己什么都没改）。
+    const merged = mergeProxyPatch(raw && typeof raw === 'object' && !Array.isArray(raw) ? raw.proxy : undefined,
+      cur && typeof cur === 'object' ? cur.proxy : undefined)
+    if (!merged.ok) {
+      // **非法必须让保存失败**，不能"保留现值 + 仅打日志"：用户会以为配好了，而实际仍走直连
+      //（症状是模型调用超时/失败，与代理无关的报错，排障成本极高）。抛错由 POST /config 的
+      // 400 分支把原因原样带给界面（设置页另有即时校验，两层都拦）。
+      throw new Error(`网络代理配置非法：${merged.error}`)
+    }
+    out.network = { ...(cur && typeof cur === 'object' ? cur : {}), proxy: merged.value }
   }
   return out
 }
@@ -1072,6 +1181,22 @@ export function appPageSig(input) {
   return JSON.stringify(normalizeAppPageId(input))
 }
 
+// 代理配置归一**并出声**（P1，2026-09-17）。
+// 为什么要在这里再归一一次（保存路径已经拦过）：`config.json` 是用户可手改的文件，
+// 手改出的非法值（如 `mode: 'yolo'`、地址写成 `127.0.0.1:7890` 缺 scheme）会让
+// `nodeProxyEnv` 返回空补丁 ⇒ **静默走直连**。这与"没配代理"在日志上完全一样，
+// 是最难查的形态，所以必须让它在 stderr 上留痕。
+// 去重：`buildChildEnv()` 每次 send 都会调用（含 provider 签名比对），不去重会把日志刷爆。
+let lastProxyWarn = ''
+function proxyConfigOf(raw) {
+  const norm = normalizeProxyConfig(raw)
+  if (!norm.ok && norm.error !== lastProxyWarn) {
+    lastProxyWarn = norm.error
+    console.warn(`[bridge] 网络代理配置无效，本轮按**不代理**处理：${norm.error}`)
+  }
+  return raw
+}
+
 function buildChildEnv() {
   const cfg = loadConfig()
   const provider = (cfg.providers || []).find(p => p.id === cfg.activeProvider) || cfg.providers?.[0]
@@ -1094,6 +1219,21 @@ function buildChildEnv() {
     // 这样两条路都能解析到同一个根：内核子进程走 PONOS_CONFIG_DIR，Bash 子进程走 PONOS_HOME。
     PONOS_HOME: YFW_HOME,
   }
+  // 网络代理（P1，2026-09-17）：Node 轨 env 注入 —— 覆盖桥自身出网（provider 探测走 https.get）
+  // 与全部子进程（内核模型调用 fetch、内核派生的 Bash/MCP 等）。
+  // 合并顺序刻意是"**应用配置覆盖外部 env**"（对象构造里已有 `...process.env`，故这一句放最后）：
+  // 若用户启动脚本里带着 HTTPS_PROXY、而应用里选了 off，那结论必须是 off —— 否则
+  // "我明明关了代理却还在走"同样无法解释。off/system/非法一律返回空对象（一个变量都不注入）
+  // ⇒ **off 与本方案落地前逐字节一致**（验收基线）。
+  // `NODE_USE_ENV_PROXY=1` 是 Node 24 的开关，实测对 fetch 与 https.get **都生效**，
+  // 因此 provider 探测无需单独改代码（方案 §5 Step 2 的"降级方案"未被触发）。
+  Object.assign(env, nodeProxyEnv(proxyConfigOf(cfg.network && cfg.network.proxy)))
+  // 内核子进程**不需要**桥令牌（spec S4）。
+  // 桥以 `{ ...process.env }` 构造子进程 env，而 main 侧把 `YFW_BRIDGE_TOKEN` 注入桥进程
+  // （main.cjs:335），于是令牌被一并透传给内核。当前**不可利用**：内核对这些文件端点零引用，
+  // 且 Bash 工具的 childEnv() 有严格白名单（不含此变量）。但属无谓暴露——若将来新增
+  // "读 process.env 并出网"的工具，即成通路。故在此显式剔除。
+  delete env.YFW_BRIDGE_TOKEN
   // 内核 OCR/Vision 工具经 YFWORKING_PYTHON 使用 bundled python：
   // 安装器只把 skills/agents/memory/tools 同步到用户目录，python（数百 MB）
   // 留在安装目录；bootstrap 缓存内核相对路径向上找不到它（2026-08-22 修复）。
@@ -1379,7 +1519,12 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
   // flag，好让不认识新 flag 的旧缓存内核优雅停在 loose 而非掉进"ask 退化 deny"。
   // 注意：--permission-prompt-tool stdio 必须保留，否则非交互 print 模式下 ask 直接
   // 变 deny（弹窗根本没有机会出现）。
-  args.push(...approvalSpawnArgs(effectiveApprovalMode(sid)))
+  // 记住"这一进程实际按哪个档起来的"：init 回显的比对基准（见 rl.on('line') 的 init
+  // 处理）。不能用 effectiveApprovalMode(sid) 当基准——resume 大 transcript 时
+  // spawn→init 窗口可达数秒，期间用户切档会让实时档位与 spawn 档位分叉，拿实时档位
+  // 比对必然误报"旧缓存内核"（2026-09-17 实证，详见 classifyApprovalEcho 注释）。
+  const spawnApprovalMode = effectiveApprovalMode(sid)
+  args.push(...approvalSpawnArgs(spawnApprovalMode))
   // 权限审批走内核 can_use_tool control_request/control_response 协议：
   // 没有 --permission-prompt-tool stdio 时，非交互 print 模式下 ask 决策会直接
   // 退化为自动 deny（实证发现，spec §4.2），高风险命令将无法被用户批准。
@@ -1592,23 +1737,38 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     // 重新武装首字节等待提示，让等待条覆盖发消息后第一步之外的后续步骤；
     // result 收尾（_turnActive=false）不重武装（2026-09-09 反馈覆盖缺口修复）。
     if (session._turnActive) armFirstBytePending(session, sid)
-    // 内核启动回显比对（2026-09-12 档位化）：system/init 会带上真正生效的 approval_mode。
-    // 与桥期望的档位不一致 = 跑的是不认识 --approval-mode 的旧缓存内核（旧内核忽略未知
-    // flag，靠 --dangerously-skip-permissions 停在 loose）。此时如实广播降级告警，别让
-    // 用户以为自己选的 manual 生效了。回显缺失（更老的内核）不告警——无从判断。
+    // 内核启动回显比对（2026-09-12 档位化；2026-09-17 基准修正）：
+    // system/init 带的 approval_mode 是**这一进程按 spawn 参数起来时的档位**，它的用途只有
+    // 一个——判断内核认不认 --approval-mode 这个 flag（旧内核忽略未知 flag，靠
+    // --dangerously-skip-permissions 停在 loose）。故基准取 session._spawnApprovalMode
+    // （spawn 时真正传下去的值），**不是**此刻的实时档位：resume 大 transcript 时
+    // spawn→init 窗口可达数秒（2026-09-17 实测 7s，期间内核在读历史 + [compact] aged），
+    // 窗口内用户切档会让实时档位 ≠ spawn 档位，拿实时档位比对必然把"内核已认账"误判成
+    // "跑的是旧缓存内核"（当日实证假告警 + 徽标被 init 回显回写成 loose，界面说反话）。
+    // 三态判定收进纯函数 classifyApprovalEcho（server/approval-mode.mjs，单测覆盖）：
+    //   degraded → 旧内核，如实广播降级告警（别让用户以为选的档生效了）
+    //   realign  → 内核认账了 spawn 档，只是窗口内切过档 ⇒ 不告警，登记待补热切 + 补广播
+    //   unknown  → 回显缺失（更老的内核无该字段），无从判断，不动作
     if (parsed && parsed.type === 'system' && parsed.subtype === 'init') {
       const echoed = parsed.approval_mode
-      const expected = effectiveApprovalMode(sid)
-      if (echoed && normalizeApprovalMode(echoed) !== expected) {
-        console.warn(`[bridge] kernel approval_mode mismatch: expected ${expected}, kernel reports ${echoed} (old cached kernel? run scripts/build-kernel.mjs)`)
+      const spawnMode = session._spawnApprovalMode
+      const liveMode = effectiveApprovalMode(sid)
+      const verdict = classifyApprovalEcho({ echoed, spawnMode, liveMode })
+      if (verdict === 'degraded') {
+        console.warn(`[bridge] kernel approval_mode mismatch: expected ${spawnMode}, kernel reports ${echoed} (old cached kernel? run scripts/build-kernel.mjs)`)
         send({
           type: 'approval-mode-degraded', sessionId: sid,
           // message 是给用户看的**技术细节**（悬停展开），标题由 GUI 按 level 本地化
           data: {
-            expected, actual: normalizeApprovalMode(echoed),
-            message: `内核回显 approval_mode=${echoed}，期望 ${expected}。可能运行的是旧缓存内核（打包前请跑 scripts/build-kernel.mjs）。`,
+            expected: spawnMode, actual: normalizeApprovalMode(echoed),
+            message: `内核回显 approval_mode=${echoed}，期望 ${spawnMode}。可能运行的是旧缓存内核（打包前请跑 scripts/build-kernel.mjs）。`,
           },
         })
+      } else if (verdict === 'realign') {
+        // 只登记、不在此刻广播：init 帧本身稍后还要透传给 GUI（本 handler 末尾的
+        // send({type:'event'})），它会按回显把徽标写成 spawn 档；此刻先广播纠正值会被
+        // 随后的 init 帧回写覆盖 ⇒ 顺序必须是"先 init、后 changed"（见下方透传后的补广播）。
+        session._approvalRealign = liveMode
       }
     }
     // 内核 400 窗口学习回流（2026-09-09）：真实窗口 < 配置值 → 只下调持久回填
@@ -1819,6 +1979,19 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
         console.log(`[bridge] compaction frame state=${parsed.state} sid=${sid} ok=${parsed.ok ?? '-'} covered=${parsed.covered ?? '-'} coveredTokens=${parsed.coveredTokens ?? '-'} clients=${wsClients.size}`)
       }
       send({ type: 'event', data: parsed, sessionId: sid })
+      // spawn→init 窗口内档位被改过（classifyApprovalEcho → 'realign'）：init 帧刚透传
+      // （GUI 已按回显把徽标写成 spawn 档），**此刻才补**——顺序不可颠倒，否则补发的
+      // approval-mode-changed 会被随后的 init 帧回写覆盖（详见上方 init 分支注释）。
+      // 两件事：① 把内核真正切到当前档位——窗口内那次 push 早于内核绑定 stdin，
+      // 与这次同走管道缓冲，管道保序 ⇒ 这次是内核读到的最后一条档位指令，生效值即当前档；
+      // ② 广播让徽标与内核一致（scope 按是否存在会话覆盖给，供 GUI 显示「临时」标记）。
+      if (session._approvalRealign && parsed?.type === 'system' && parsed?.subtype === 'init') {
+        const target = session._approvalRealign
+        session._approvalRealign = null
+        console.log(`[bridge] approval_mode realign after init sid=${sid.slice(0, 8)} → ${target}`)
+        pushApprovalModeToKernel(sid, target)
+        broadcastApprovalMode(sid, sessionApprovalModes.has(sid) ? 'session' : 'global')
+      }
       // MCP 接入状态缓存（2026-09-16，P1-6）：内核就绪后上报一次，面板经 GET /mcp/status 取。
       // 只缓存不解包转发 —— 事件本身照旧透传给前端（前端 mcpStore 也会消费它），两条路互不冲突。
       if (parsed?.type === 'system' && parsed?.subtype === 'mcp_status') lastMcpStatus = parsed
@@ -1869,7 +2042,7 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
   })
   // _awaitingSince = 首次登记"有未决等待（提问/审批）"的时刻（0 = 当前无等待）。回收器
   // 据此给等待豁免设时限：豁免无条件 ⇒ 内核挂死或 GUI 永不回执时永远收不掉（T9）。
-  const session = { proc, cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()), mode, _pendingQuestions: null, _proseProgress: { total: 0, lastIndex: 0, structuredUsed: false }, _pendingApprovals: new Map(), firstTokenAt: null, _lastOutAt: 0, _turnActive: false, _stallWarnedAt: 0, _reaped: false, _cancelPending: false, _cancelAt: 0, _cancelTimer: null, _turnStartAt: 0, _fbpTimer: null, _fbpFirstTimer: null, _awaitingSince: 0, _lastCompactFrameAt: 0, _askBuf: '', _spawnEnvSig: providerEnvSig(buildChildEnv()), _spawnKnowledgeSig: knowledgeSpacesSig(knowledgeSpaces), _spawnMcpSig: currentMcpSig(), _spawnAppPageSig: appPageSig(pageId) }
+  const session = { proc, cwd: mode === 'chat' ? YFW_HOME : (cwd || process.cwd()), mode, _pendingQuestions: null, _proseProgress: { total: 0, lastIndex: 0, structuredUsed: false }, _pendingApprovals: new Map(), firstTokenAt: null, _lastOutAt: 0, _turnActive: false, _stallWarnedAt: 0, _reaped: false, _cancelPending: false, _cancelAt: 0, _cancelTimer: null, _turnStartAt: 0, _fbpTimer: null, _fbpFirstTimer: null, _awaitingSince: 0, _lastCompactFrameAt: 0, _askBuf: '', _spawnEnvSig: providerEnvSig(buildChildEnv()), _spawnKnowledgeSig: knowledgeSpacesSig(knowledgeSpaces), _spawnMcpSig: currentMcpSig(), _spawnAppPageSig: appPageSig(pageId), _spawnApprovalMode: spawnApprovalMode, _approvalRealign: null }
   sessions.set(sid, session)
   return session
 }
@@ -2038,326 +2211,22 @@ const httpServer = createServer(async (req, res) => {
     // 为什么必须有这三个面：D6 的能力若只躺在库里等人 import，就无从验收、UI/agent 也无从调用；
     // 与 D3 同款做法——判定内核配一个既定入口（D3 是 `/egress/policy`）。
     // 注意：全部读写的是 `<YFW_HOME>/tags/registry.json`，**不触碰**用户的知识文件与经验文件。
-    if (url.pathname === '/tags' && req.method === 'GET') {
-      const scope = url.searchParams.get('scope') || DEFAULT_TAG_SCOPE
-      try {
-        reply(200, { 'Content-Type': 'application/json' }, JSON.stringify(tagRegistrySnapshot(YFW_HOME, { scope })))
-      } catch (e) {
-        reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, reason: 'invalid-scope', message: String((e && e.message) || e) }))
-      }
-      return
-    }
-    if (url.pathname === '/tags/merge' && req.method === 'POST') {
-      let body = null
-      try { body = await readJsonBody(req) } catch { body = null }
-      let r
-      try {
-        r = mergeTagsInStore(YFW_HOME, body && body.from, body && body.into, { scope: (body && body.scope) || DEFAULT_TAG_SCOPE })
-      } catch (e) {
-        // tag-store 写侧是**严格**模式：注册表损坏时拒绝写（不把损坏内容覆盖成空表），此处如实回报。
-        r = { ok: false, reason: 'registry-unreadable', message: String((e && e.message) || e) }
-      }
-      reply(r.ok ? 200 : 400, { 'Content-Type': 'application/json' }, JSON.stringify(r))
-      return
-    }
-    if (url.pathname === '/tags/undo' && req.method === 'POST') {
-      let body = null
-      try { body = await readJsonBody(req) } catch { body = null }
-      let r
-      try {
-        r = undoMergeInStore(YFW_HOME, body && body.mergeId)
-      } catch (e) {
-        r = { ok: false, reason: 'registry-unreadable', message: String((e && e.message) || e) }
-      }
-      reply(r.ok ? 200 : 400, { 'Content-Type': 'application/json' }, JSON.stringify(r))
-      return
+    // ── 协作类端点（tags / team / file-collab）已抽出：server/collab-routes.mjs（P1 拆分）──
+    // 三者同属"协作"域，且都必须落在 D2 令牌闸门**之后**（放闸门之前 = 未鉴权暴露）。
+    // 由 server/tag-routes.test.mjs、server/team-routes.test.mjs 的端到端起桥测试守住
+    // （断言无 token 一律 401，且未授权 POST 不得产生写入）。
+    if (isCollabPath(url.pathname)) {
+      // body 解析**容错**：与原 /tags*、/team/* 一致（`try { … } catch { body = null }`），
+      // 解析失败不报错、由各端点按缺参处理。
+      let collabBody = null
+      if (req.method === 'POST') { try { collabBody = await readJsonBody(req) } catch { collabBody = null } }
+      const r = await handleCollabRoute({
+        method: req.method, pathname: url.pathname, searchParams: url.searchParams,
+        body: collabBody, sep, configDir: YFW_HOME, findPythonExe,
+      })
+      if (r) return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.body))
     }
     // ---------------------------------------------------------------------
-    // 【S3 团队源与内容协同】路由。位置紧邻 D6 的 `/tags*` 之后 ⇒ **位于 D2 令牌闸门之后**，
-    // 自动受保护（新增路由必须落在闸门后面，这是 D2/D3/D6 一贯做法；放闸门之前 = 未鉴权暴露）。
-    // 每个 handler 都**不允许异常逃逸**：团队是可选能力，它出问题不该让桥 500 或崩掉；
-    // 统一捕获并如实回报 reason，供前端给出可操作提示（而不是笼统"未知错误"）。
-    // ---------------------------------------------------------------------
-    if (url.pathname === '/team/status' && req.method === 'GET') {
-      try {
-        const r = teamStatus({ configDir: YFW_HOME, teamId: url.searchParams.get('teamId') || null })
-        reply(200, { 'Content-Type': 'application/json' }, JSON.stringify(r))
-      } catch (e) {
-        reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, reason: 'status-failed', message: String((e && e.message) || e) }))
-      }
-      return
-    }
-    if (url.pathname === '/team/create' && req.method === 'POST') {
-      let body = null
-      try { body = await readJsonBody(req) } catch { body = null }
-      let r
-      try {
-        r = createTeam({
-          configDir: YFW_HOME,
-          name: body && body.name,
-          dir: body && body.dir,
-          identCode: body && body.identCode ? String(body.identCode) : null,
-        })
-      } catch (e) {
-        r = { ok: false, reason: 'create-failed', message: String((e && e.message) || e) }
-      }
-      reply(r.ok ? 200 : 400, { 'Content-Type': 'application/json' }, JSON.stringify(r))
-      return
-    }
-    if (url.pathname === '/team/invite' && req.method === 'POST') {
-      let body = null
-      try { body = await readJsonBody(req) } catch { body = null }
-      let r
-      try {
-        r = exportInvite({
-          configDir: YFW_HOME,
-          teamId: body && body.teamId,
-          ttlMs: body && body.ttlMs ? Number(body.ttlMs) : undefined,
-        })
-      } catch (e) {
-        r = { ok: false, reason: 'invite-failed', message: String((e && e.message) || e) }
-      }
-      reply(r.ok ? 200 : 400, { 'Content-Type': 'application/json' }, JSON.stringify(r))
-      return
-    }
-    if (url.pathname === '/team/join' && req.method === 'POST') {
-      let body = null
-      try { body = await readJsonBody(req) } catch { body = null }
-      let r
-      try {
-        r = joinTeam({
-          configDir: YFW_HOME,
-          identCode: body && body.identCode,
-          code: body && body.code,
-          searchRoot: body && body.searchRoot ? String(body.searchRoot) : null,
-        })
-      } catch (e) {
-        r = { ok: false, reason: 'join-failed', message: String((e && e.message) || e) }
-      }
-      reply(r.ok ? 200 : 400, { 'Content-Type': 'application/json' }, JSON.stringify(r))
-      return
-    }
-    if (url.pathname === '/team/revoke' && req.method === 'POST') {
-      let body = null
-      try { body = await readJsonBody(req) } catch { body = null }
-      let r
-      try {
-        r = revokeMember({ configDir: YFW_HOME, teamId: body && body.teamId, memberId: body && body.memberId })
-      } catch (e) {
-        r = { ok: false, reason: 'revoke-failed', message: String((e && e.message) || e) }
-      }
-      reply(r.ok ? 200 : 400, { 'Content-Type': 'application/json' }, JSON.stringify(r))
-      return
-    }
-    if (url.pathname === '/team/search-root' && req.method === 'POST') {
-      let body = null
-      try { body = await readJsonBody(req) } catch { body = null }
-      let r
-      try {
-        r = setSearchRoot(YFW_HOME, body && body.searchRoot)
-      } catch (e) {
-        r = { ok: false, reason: 'set-search-root-failed', message: String((e && e.message) || e) }
-      }
-      reply(r.ok ? 200 : 400, { 'Content-Type': 'application/json' }, JSON.stringify(r))
-      return
-    }
-    // ---------------------------------------------------------------------
-    // 【S4 文件协同】路由
-    // ---------------------------------------------------------------------
-    // 与 /team/* 同构：落在同一令牌闸门之后、异常不外逃（统一 4xx/5xx 回执）。
-    //
-    // 能力探测（三层兜底的第一层）**惰性缓存**：探测要起一次 python 进程（约百毫秒），
-    // 每个请求都探会让协同操作明显变卡；但结果在进程生命周期内不会变，探一次即可。
-    // 探测失败（无 python / 无该模块）⇒ 对应能力为"不可用"，如实反映到分层结果（不假装能转）。
-    if (url.pathname.startsWith('/file-collab/')) {
-      const s4TeamRoot = (teamId) => {
-        const st = teamStatus({ configDir: YFW_HOME })
-        const teams = (st && st.teams) || []
-        const ok = teams.filter((t) => t && t.ok && t.dir)
-        if (ok.length === 0) return { ok: false, reason: 'no-team', teams: teams.map((t) => ({ teamId: t.teamId, ok: t.ok })) }
-        const hit = teamId ? ok.find((t) => t.teamId === teamId) : ok[0]
-        if (!hit) return { ok: false, reason: 'team-not-found', teamId, teams: ok.map((t) => t.teamId) }
-        return { ok: true, teamRoot: hit.dir, teamId: hit.teamId, deviceId: st.deviceId || null }
-      }
-      const s4Caps = () => {
-        if (bridgeCapsCache) return bridgeCapsCache
-        const py = findPythonExe()
-        const probe = 'import json,importlib\nout={}\nfor m in ("xlrd","openpyxl","win32com","PIL"):\n    try:\n        importlib.import_module(m); out[m]=True\n    except Exception:\n        out[m]=False\nprint(json.dumps(out))'
-        let mods = {}
-        try {
-          const r = spawnSync(py, ['-c', probe], { encoding: 'utf-8', timeout: 20000 })
-          mods = JSON.parse(String(r.stdout || '{}').trim() || '{}')
-        } catch { mods = {} }
-        // convert 能力逐格式报告：`.xls` 需 xlrd+openpyxl（可写出 .xlsx）；`.doc` 需 win32com（Word COM）
-        const convert = []
-        if (mods.xlrd && mods.openpyxl) convert.push('.xls')
-        if (mods.win32com) convert.push('.doc')
-        bridgeCapsCache = { convert, extract: true, modules: mods }
-        return bridgeCapsCache
-      }
-      const s4Reject = (r, okStatus = 200) => {
-        const status = r && r.ok ? okStatus : ({
-          'file-missing': 404,
-          'held-by-other': 409,
-          'not-checked-out': 409,
-          'blocked-by-other': 409,
-          'placeholder-file': 409,
-        }[(r && r.code) || ''] || 400)
-        reply(status, { 'Content-Type': 'application/json' }, JSON.stringify(r))
-      }
-
-      // 团队源概况（供 UI 判断"能否协同"）
-      if (url.pathname === '/file-collab/status' && req.method === 'GET') {
-        const st = s4TeamRoot(url.searchParams.get('teamId'))
-        if (!st.ok) return s4Reject(st)
-        const absPath = (url.searchParams.get('path') || '').replace(/\//g, sep)
-        const requesterId = url.searchParams.get('memberId') || null
-        if (!absPath || !existsSync(absPath)) return s4Reject({ ok: false, code: 'file-missing', error: `文件不存在：${absPath}` })
-        const resolved = resolveFileId(st.teamRoot, absPath)
-        const w = writabilityOf({ teamRoot: st.teamRoot, absPath, requesterId, caps: s4Caps() })
-        return s4Reject({
-          ok: true, teamId: st.teamId, deviceId: st.deviceId, path: absPath, fileId: resolved ? resolved.fileId : null,
-          ingested: !!resolved, modal: w.modal, readonly: w.readonly, reason: w.reason,
-          holder: w.holder || null, remainingMs: w.remainingMs ?? null,
-          policy: w.policy, caps: s4Caps(),
-        })
-      }
-
-      // 纳管（首次分配 fileId 并入 CAS；L-B/L-D 不产生原地写）
-      if (url.pathname === '/file-collab/ingest' && req.method === 'POST') {
-        let body = null
-        try { body = await readJsonBody(req) } catch { body = null }
-        const st = s4TeamRoot(body && body.teamId)
-        if (!st.ok) return s4Reject(st)
-        const absPath = String((body && body.path) || '').replace(/\//g, sep)
-        if (!absPath) return s4Reject({ ok: false, code: 'path-required', error: '缺少 path' })
-        ensureCollabDirs(st.teamRoot)
-        const r = ingestFile({ teamRoot: st.teamRoot, absPath, authorId: (body && body.memberId) || null, caps: s4Caps(), note: (body && body.note) || null })
-        return s4Reject({ ...r, teamId: st.teamId })
-      }
-
-      // 版本链
-      if (url.pathname === '/file-collab/versions' && req.method === 'GET') {
-        const st = s4TeamRoot(url.searchParams.get('teamId'))
-        if (!st.ok) return s4Reject(st)
-        const fileId = url.searchParams.get('fileId')
-        const absPath = (url.searchParams.get('path') || '').replace(/\//g, sep)
-        const resolved = fileId ? { fileId } : (absPath ? resolveFileId(st.teamRoot, absPath) : null)
-        if (!resolved) return s4Reject({ ok: false, code: 'file-not-ingested', error: '该文件尚未纳入团队源（无版本链）' })
-        const recs = versionsOf(st.teamRoot, resolved.fileId)
-        const cur = currentPathOf(st.teamRoot, resolved.fileId)
-        return s4Reject({
-          ok: true, teamId: st.teamId, fileId: resolved.fileId, currentPath: cur.path, logicalName: cur.logicalName,
-          versions: recs.filter((x) => x.type === 'version'),
-          history: recs,
-        })
-      }
-
-      // 占用/检出状态
-      if (url.pathname === '/file-collab/claims' && req.method === 'GET') {
-        const st = s4TeamRoot(url.searchParams.get('teamId'))
-        if (!st.ok) return s4Reject(st)
-        const fileId = url.searchParams.get('fileId')
-        if (!fileId) return s4Reject({ ok: false, code: 'fileId-required', error: '缺少 fileId' })
-        return s4Reject({ ok: true, teamId: st.teamId, fileId, records: claimsOf(st.teamRoot, fileId) })
-      }
-
-      // 检出 / 续租 / 释放 / 检入（#9 的显式动作）
-      if (url.pathname === '/file-collab/claim' && req.method === 'POST') {
-        let body = null
-        try { body = await readJsonBody(req) } catch { body = null }
-        const st = s4TeamRoot(body && body.teamId)
-        if (!st.ok) return s4Reject(st)
-        const absPath = String((body && body.path) || '').replace(/\//g, sep)
-        const holder = (body && body.memberId) || null
-        if (!absPath || !holder) return s4Reject({ ok: false, code: 'bad-request', error: '需要 path 与 memberId' })
-        if (!existsSync(absPath)) return s4Reject({ ok: false, code: 'file-missing', error: `文件不存在：${absPath}` })
-        const resolved = resolveFileId(st.teamRoot, absPath)
-        if (!resolved) return s4Reject({ ok: false, code: 'file-not-ingested', error: '请先纳管该文件（无版本链时无法建立占用）' })
-        const plan = planFallback(absPath, s4Caps())
-        const r = claimFile({
-          teamRoot: st.teamRoot, fileId: resolved.fileId, holder, deviceId: (body && body.deviceId) || null,
-          leaseMs: (body && body.leaseMs) || undefined, note: (body && body.note) || null,
-          modal: plan.modal, policy: policyForPath(st.teamRoot, absPath),
-        })
-        return s4Reject({ ...r, fileId: resolved.fileId, modal: plan.modal })
-      }
-      if (url.pathname === '/file-collab/heartbeat' && req.method === 'POST') {
-        let body = null
-        try { body = await readJsonBody(req) } catch { body = null }
-        const st = s4TeamRoot(body && body.teamId)
-        if (!st.ok) return s4Reject(st)
-        if (!body || !body.fileId || !body.memberId) return s4Reject({ ok: false, code: 'bad-request', error: '需要 fileId 与 memberId' })
-        return s4Reject(heartbeatClaim({ teamRoot: st.teamRoot, fileId: body.fileId, holder: body.memberId, leaseMs: body.leaseMs || undefined }))
-      }
-      if (url.pathname === '/file-collab/release' && req.method === 'POST') {
-        let body = null
-        try { body = await readJsonBody(req) } catch { body = null }
-        const st = s4TeamRoot(body && body.teamId)
-        if (!st.ok) return s4Reject(st)
-        if (!body || !body.fileId || !body.memberId) return s4Reject({ ok: false, code: 'bad-request', error: '需要 fileId 与 memberId' })
-        return s4Reject(releaseClaim({ teamRoot: st.teamRoot, fileId: body.fileId, holder: body.memberId }))
-      }
-      if (url.pathname === '/file-collab/checkin' && req.method === 'POST') {
-        let body = null
-        try { body = await readJsonBody(req) } catch { body = null }
-        const st = s4TeamRoot(body && body.teamId)
-        if (!st.ok) return s4Reject(st)
-        const absPath = String((body && body.path) || '').replace(/\//g, sep)
-        if (!body || !body.fileId || !body.memberId || !absPath) return s4Reject({ ok: false, code: 'bad-request', error: '需要 fileId、memberId 与 path' })
-        if (!existsSync(absPath)) return s4Reject({ ok: false, code: 'file-missing', error: `文件不存在：${absPath}` })
-        const r = checkinFile({
-          teamRoot: st.teamRoot, fileId: body.fileId, holder: body.memberId, absPath,
-          authorId: body.memberId, note: body.note || null, caps: s4Caps(),
-        })
-        return s4Reject(r)
-      }
-
-      // 冲突处置（四选一；save-copy 降级为草稿）
-      if (url.pathname === '/file-collab/conflict' && req.method === 'POST') {
-        let body = null
-        try { body = await readJsonBody(req) } catch { body = null }
-        const st = s4TeamRoot(body && body.teamId)
-        if (!st.ok) return s4Reject(st)
-        if (!body || !body.fileId || !body.choice) return s4Reject({ ok: false, code: 'bad-request', error: '需要 fileId 与 choice' })
-        const r = prepareConflictResolution({
-          teamRoot: st.teamRoot, fileId: body.fileId, logicalName: body.logicalName || null,
-          baseVersionId: body.baseVersionId || null, mineVersionId: body.mineVersionId || null,
-          theirsVersionId: body.theirsVersionId || null, choice: body.choice,
-        })
-        // Buffer 不进 JSON：只回报可序列化字段（内容落盘由调用方按 action 决定）
-        if (r && r.ok) {
-          const { content, ...rest } = r
-          return s4Reject({ ...rest, bytes: content ? content.length : 0 })
-        }
-        return s4Reject(r)
-      }
-
-      // 目录策略（批注 #3：全局默认关闭 + 按目录开启）
-      if (url.pathname === '/file-collab/policies' && req.method === 'GET') {
-        const st = s4TeamRoot(url.searchParams.get('teamId'))
-        if (!st.ok) return s4Reject(st)
-        const policies = readPolicies(st.teamRoot)
-        const relPath = url.searchParams.get('path')
-        return s4Reject({
-          ok: true, teamId: st.teamId, policies,
-          effective: relPath ? policyForPath(st.teamRoot, relPath.replace(/\//g, sep)) : null,
-        })
-      }
-      if (url.pathname === '/file-collab/policies' && req.method === 'POST') {
-        let body = null
-        try { body = await readJsonBody(req) } catch { body = null }
-        const st = s4TeamRoot(body && body.teamId)
-        if (!st.ok) return s4Reject(st)
-        const dirs = (body && body.dirs) || null
-        if (!dirs || typeof dirs !== 'object') return s4Reject({ ok: false, code: 'bad-request', error: '需要 dirs 对象（{ "<目录>": { softClaim, occupancy, maxFileBytes } }）' })
-        ensureCollabDirs(st.teamRoot)
-        writePolicies(st.teamRoot, { dirs })
-        return s4Reject({ ok: true, teamId: st.teamId, policies: readPolicies(st.teamRoot) })
-      }
-
-      return s4Reject({ ok: false, code: 'unknown-endpoint', error: `未知的 file-collab 端点：${url.pathname}` }, 404)
-    }
     // 工作流路由链最前：仅 /workflows* 前缀进入（无关请求不必构造宿主单例/读配置），
     // 命中即 return；路由函数未匹配返回 false → 继续走下方既有路由（不吞其他端点）。
     // 置于既有 try 内：宿主构造（loadConfig）等意外抛错走统一 400 回执，不打穿 handler。
@@ -2368,260 +2237,68 @@ const httpServer = createServer(async (req, res) => {
     // 由 bridge 而非渲染层枚举——只有这里知道真实用户目录（homedir + 平台差异）；
     // 渲染层拼 "C:/Users/xxx/Desktop" 在非 C 盘系统 / 非英文用户名 / Mac / Linux 上必错。
     // 只回**真实存在**的目录（服务器/精简系统常无音乐·视频）：列出来点了报错比不列更差。
-    if (url.pathname === '/known-folders') {
-      const home = homedir()
-      const candidates = [
-        { name: '主目录', kind: 'home', rel: '' },
-        { name: '桌面', kind: 'desktop', rel: 'Desktop' },
-        { name: '文档', kind: 'documents', rel: 'Documents' },
-        { name: '下载', kind: 'downloads', rel: 'Downloads' },
-        { name: '图片', kind: 'pictures', rel: 'Pictures' },
-        { name: '音乐', kind: 'music', rel: 'Music' },
-        { name: '视频', kind: 'videos', rel: 'Videos' },
-      ]
-      const folders = []
-      for (const c of candidates) {
-        const abs = c.rel ? join(home, c.rel) : home
-        try {
-          if (!existsSync(abs) || !statSync(abs).isDirectory()) continue
-          folders.push({ name: c.name, kind: c.kind, path: abs.split(sep).join('/') })
-        } catch { /* 单项探测失败不影响其余项 */ }
-      }
-      // reply 是 (code, headers, body) 三参签名：漏掉第三参会把 headers 当成
-      // body（200 + 空响应体），渲染层 res.json() 解析失败 ⇒ 目录选择器左栏
-      // 恒显"读取失败"。修复 2026-09-16。
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ folders }))
-    }
-    if (url.pathname === '/drives') {
-      const drives = []
-      for (let c = 65; c <= 90; c++) {
-        const dr = String.fromCharCode(c) + ':' + sep
-        if (existsSync(dr)) drives.push({ name: dr.replace(/\\/g, '/'), path: dr.replace(/\\/g, '/'), type: 'drive' })
-      }
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ drives }))
-    }
-    if (url.pathname === '/list-dir') {
-      const dir = resolve((url.searchParams.get('path') || '.').replace(/\//g, sep))
-      // 异步读取 + 条目上限：原实现 readdirSync + 逐文件 statSync 全同步跑在
-      // HTTP handler 里——大目录（尤其机械盘上的项目树）会阻塞整个 bridge
-      // 事件循环数秒到数十秒，期间所有会话转发与 WS 心跳停摆（整机卡死诱因之一）。
-      const MAX_LIST_ENTRIES = 2000
-      const items = await readdir(dir, { withFileTypes: true })
-      const dirNames = []
-      const fileNames = []
-      for (const x of items) {
-        if (x.isDirectory() && !x.name.startsWith('.') && !x.name.startsWith('$')) dirNames.push(x.name)
-        else if (x.isFile()) fileNames.push(x.name)
-      }
-      dirNames.sort((a, b) => a.localeCompare(b))
-      fileNames.sort((a, b) => a.localeCompare(b))
-      const dirs = dirNames.slice(0, MAX_LIST_ENTRIES).map(name => ({ name, path: join(dir, name).replace(/\\/g, '/'), type: 'directory' }))
-      const files = (await Promise.all(fileNames.slice(0, MAX_LIST_ENTRIES).map(async name => {
-        try { return { name, path: join(dir, name).replace(/\\/g, '/'), type: 'file', size: (await stat(join(dir, name))).size } }
-        catch { return null }
-      }))).filter(Boolean)
-      const entries = [...dirs, ...files]
-      const truncated = dirNames.length + fileNames.length > entries.length
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ path: dir.replace(/\\/g, '/'), parent: dirname(dir).replace(/\\/g, '/'), entries, truncated }))
-    }
-    if (url.pathname === '/read-file') {
-      const fp = resolve((url.searchParams.get('path') || '').replace(/\//g, sep))
-      const st = statSync(fp)
-      if (st.isDirectory() || st.size > 524288) throw new Error('Invalid or too large')
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ path: fp.replace(/\\/g, '/'), content: readFileSync(fp, 'utf-8'), size: st.size }))
-    }
-    if (url.pathname === '/raw-file') {
-      const fp = resolve((url.searchParams.get('path') || '').replace(/\//g, sep))
-      const st = statSync(fp)
-      const mimes = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml', webp: 'image/webp', pdf: 'application/pdf', html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8' }
-      return reply(200, { 'Content-Type': mimes[fp.split('.').pop()] || 'application/octet-stream', 'Content-Length': st.size }, readFileSync(fp))
-    }
-    if (url.pathname === '/write-file' && req.method === 'POST') {
-      const body = await readJsonBody(req)
-      const fp = resolve((body.path || '').replace(/\//g, sep))
-      if (!body.path) throw new Error('path required')
-      const content = String(body.content ?? '')
-      if (Buffer.byteLength(content, 'utf-8') > 2097152) throw new Error('Content too large')
-      writeFileSync(fp, content, 'utf-8')
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, path: fp.replace(/\\/g, '/') }))
-    }
-    if (url.pathname === '/convert-office') {
-      const fp = resolve((url.searchParams.get('path') || '').replace(/\//g, sep))
-      const st = statSync(fp)
-      if (st.isDirectory() || st.size > 10485760) {
-        return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ error: 'Invalid or too large' }))
-      }
-      const ext = fp.split('.').pop().toLowerCase()
-      const scriptMap = { docx: 'convert_docx.py', xlsx: 'convert_xls.py', xls: 'convert_xls.py' }
-      const scriptName = scriptMap[ext]
-      if (!scriptName) {
-        return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ error: 'Unsupported format' }))
-      }
-      const scriptPath = join(__dirname, scriptName)
-      try {
-        const { stdout } = await new Promise((resolve, reject) => {
-          const proc = spawn(findPythonExe(), [scriptPath, fp], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 15000 })
-          let out = ''
-          let err = ''
-          proc.stdout.on('data', d => { out += d })
-          proc.stderr.on('data', d => { err += d })
-          proc.on('close', code => {
-            if (code === 0) { resolve({ stdout: out }) } else { reject(new Error(err || 'exit ' + code)) }
-          })
-          proc.on('error', reject)
-        })
-        const result = JSON.parse(stdout.trim())
-        if (result.ok) {
-          return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ html: result.html }))
-        }
-        return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ error: result.error || 'Conversion failed' }))
-      } catch (e) {
-        return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ error: e.message || 'Conversion error' }))
-      }
-    }
-    // 运行 office 处理 python 脚本（转换/结构读取/写回共用）：stdout 必须是单行 JSON
-    const runOfficeScript = (scriptName, args) => new Promise((resolve, reject) => {
-      const scriptPath = join(__dirname, scriptName)
-      const proc = spawn(findPythonExe(), [scriptPath, ...args], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 15000 })
-      let out = ''
-      let err = ''
-      proc.stdout.on('data', d => { out += d })
-      proc.stderr.on('data', d => { err += d })
-      proc.on('close', code => {
-        if (code === 0) {
-          try { resolve(JSON.parse(out.trim())) } catch { reject(new Error('Invalid script output')) }
-        } else {
-          reject(new Error((err || '').trim() || 'exit ' + code))
-        }
+    // ── 宿主与诊断类端点已抽出：server/host-routes.mjs（P1 拆分）──────────────
+    // 覆盖 /known-folders、/drives、/diag/info、/diag/render-frame、/transcript/…；
+    // diagInfo 与 sessions 按**引用**传入（前者的 renderFrames 会被就地更新，
+    // 后者用于判断"会话是否仍在运行 ⇒ 不得删转录"）。
+    if (isHostPath(url.pathname)) {
+      const hostBody = req.method === 'POST'
+        ? await readJsonBody(req).catch(() => ({}))
+        : null
+      const r = await handleHostRoute({
+        method: req.method, pathname: url.pathname, searchParams: url.searchParams,
+        body: hostBody, sep, diagInfo, sessions, createTranscriptHandlers,
       })
-      proc.on('error', reject)
-    })
-    // 校验本地 office 文件：非目录、≤10MB（与 /convert-office 同款约束）
-    const validOfficeFile = (fp) => {
-      const st = statSync(fp)
-      if (st.isDirectory() || st.size > 10485760) throw new Error('Invalid or too large')
+      if (r) return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.body))
+    }
+    // ── 文件类端点已抽出：server/files-routes.mjs（P1 拆分）──────────────────
+    // 抽出后此处只做"解析入参 → 委托 → 回包"，端点实现与闸门用法集中在一个文件里。
+    if (FILES_ROUTE_PATHS.has(url.pathname)) {
+      const r = await handleFilesRoute({
+        method: req.method,
+        pathname: url.pathname,
+        searchParams: url.searchParams,
+        body: req.method === 'POST' ? await readJsonBody(req) : null,
+        sep,
+        roots: FS_ROOTS,
+        guard: { resolveReadable, resolveWritable, assertSizeOk },
+      })
+      if (r) {
+        if (r.stream) {
+          // /raw-file 专属：流式回包（避免把大文件读进内存、也不阻塞事件循环）
+          sent = true
+          res.writeHead(200, r.stream.headers)
+          try {
+            await pipeline(createReadStream(r.stream.filePath), res)
+          } catch (e) {
+            // 头已发出，只能中断连接（stat 与 open 之间的竞态：文件被删/被占用）
+            console.warn('[bridge] /raw-file stream failed:', (e && e.message) || String(e))
+            try { res.destroy() } catch { /* 连接可能已断 */ }
+          }
+          return
+        }
+        return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.body))
+      }
+    }
+    // ── Office 类端点已抽出：server/office-routes.mjs（P1 拆分 + 该路径同步 I/O 异步化）──
+    if (OFFICE_ROUTE_PATHS.has(url.pathname)) {
+      const r = await handleOfficeRoute({
+        method: req.method,
+        pathname: url.pathname,
+        searchParams: url.searchParams,
+        body: req.method === 'POST' ? await readJsonBody(req) : null,
+        sep,
+        roots: FS_ROOTS,
+        guard: { resolveReadable, resolveWritable, assertSizeOk, findPythonExe },
+      })
+      if (r) return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.body))
     }
     // Excel 结构读取（值 + 公式标记 + 行/列内容指纹），供应用内网格编辑。
     // 【S1-C5】额外透传 `baseVersion`（防丢失更新）与 `sheetNames`（多表工作簿"有哪些表"必须可见，
     // 否则 ops 能写到 read 看不见的表上，形成信息不对称）；每个 sheet 带 `rowIds`/`colIds`，
     // 它们是前端提交时的**寻址标识**（行/列身份按内容算，不按行号 —— 插删行列后行号会漂移）。
-    if (url.pathname === '/read-sheet') {
-      const fp = resolve((url.searchParams.get('path') || '').replace(/\//g, sep))
-      validOfficeFile(fp)
-      try {
-        const result = await runOfficeScript('sheet_edit.py', ['read', fp])
-        if (!result.ok) throw new Error(result.error || 'read failed')
-        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, baseVersion: result.baseVersion, sheetNames: result.sheetNames, sheets: result.sheets }))
-      } catch (e) {
-        return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ error: e.message || 'Read error' }))
-      }
-    }
-    // Excel 写回：【S1-C6】只接受 `{ path, baseVersion, sheet?, ops[] }`（旧的 `updates:[{row,col,value}]`
-    // 会被 python 侧显式拒绝并转达 400）。状态码映射与 /write-docx 同一口径：
-    // 409=版本冲突（用户应重新载入）、400=请求不可用（含旧写法/公式格只读/引用不存在的行）、
-    // 423=文件被占用、404=文件不存在，其余 500。
-    if (url.pathname === '/write-sheet' && req.method === 'POST') {
-      const body = await readJsonBody(req)
-      const fp = resolve((body.path || '').replace(/\//g, sep))
-      if (!body.path) throw new Error('path required')
-      validOfficeFile(fp)
-      const tmp = join(tmpdir(), 'yfw-sheet-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.json')
-      writeFileSync(tmp, JSON.stringify({ ...body, path: fp }))
-      try {
-        const result = await runOfficeScript('sheet_edit.py', ['write', tmp])
-        if (!result.ok) {
-          const code = result.code || 'write-failed'
-          const status = ({
-            'base-version-mismatch': 409,
-            'file-locked': 423,
-            'file-missing': 404,
-            'xls-write-unsupported': 400,
-            'path-required': 400,
-            'ops-required': 400,
-            'base-version-required': 400,
-            'legacy-updates-not-supported': 400,
-            'sheet-not-found': 400,
-            'row-not-found': 400,
-            'col-not-found': 400,
-            'row-deleted': 400,
-            'col-deleted': 400,
-            'formula-cell-readonly': 400,
-            'value-required': 400,
-            'unknown-op': 400,
-            'bad-op': 400,
-            'bad-request': 400,
-          })[code] || 500
-          return reply(status, { 'Content-Type': 'application/json' }, JSON.stringify({
-            ok: false, code, error: result.error || 'write failed', expected: result.expected, actual: result.actual, cell: result.cell, sheetNames: result.sheetNames,
-          }))
-        }
-        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, baseVersion: result.baseVersion }))
-      } catch (e) {
-        return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ error: e.message || 'Write error' }))
-      } finally {
-        try { unlinkSync(tmp) } catch { /* ignore */ }
-      }
-    }
-    // Word 块结构读取（标题/段落/表格），供应用内文档编辑。
-    // 【S1-C2】额外透传 `baseVersion`（整文件 sha256）：写回时必须带回它，否则拒绝 —— 这是
-    // "防丢失更新"的唯一依据（A 读到 B 改之前的内容时，A 的提交必须失败而不是覆盖 B）。
-    if (url.pathname === '/read-docx') {
-      const fp = resolve((url.searchParams.get('path') || '').replace(/\//g, sep))
-      validOfficeFile(fp)
-      try {
-        const result = await runOfficeScript('docx_edit.py', ['read', fp])
-        if (!result.ok) throw new Error(result.error || 'read failed')
-        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, baseVersion: result.baseVersion, blocks: result.blocks }))
-      } catch (e) {
-        return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ error: e.message || 'Read error' }))
-      }
-    }
-    // Word 写回：【S1-C1】只接受 `{ path, baseVersion, ops[] }`（旧的 `{ path, blocks }` 会被
-    // python 侧**显式拒绝**，这里如实转达）。错误码 → HTTP 状态映射见下：
-    //   400 = 请求本身不可用（含"旧写法"、"缺 ops/baseVersion"、"引用了不存在的块"）
-    //   409 = 冲突（baseVersion 不匹配）—— 前端应**重新载入**而不是重试
-    //   404 = 文件不存在；423 = 文件被占用；其余 500
-    // 把 409 与 400 分开是有意的：两者的用户动作完全不同（重载 vs 改请求）。
-    if (url.pathname === '/write-docx' && req.method === 'POST') {
-      const body = await readJsonBody(req)
-      const fp = resolve((body.path || '').replace(/\//g, sep))
-      if (!body.path) throw new Error('path required')
-      validOfficeFile(fp)
-      const tmp = join(tmpdir(), 'yfw-docx-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.json')
-      writeFileSync(tmp, JSON.stringify({ ...body, path: fp }))
-      try {
-        const result = await runOfficeScript('docx_edit.py', ['write', tmp])
-        if (!result.ok) {
-          const code = result.code || 'write-failed'
-          const status = ({
-            'base-version-mismatch': 409,
-            'file-locked': 423,
-            'file-missing': 404,
-            'path-required': 400,
-            'ops-required': 400,
-            'base-version-required': 400,
-            'legacy-blocks-not-supported': 400,
-            'block-not-found': 400,
-            'block-deleted': 400,
-            'bad-move': 400,
-            'unknown-op': 400,
-            'bad-op': 400,
-            'text-required': 400,
-            'rows-required': 400,
-            'bad-request': 400,
-          })[code] || 500
-          return reply(status, { 'Content-Type': 'application/json' }, JSON.stringify({
-            ok: false, code, error: result.error || 'write failed', expected: result.expected, actual: result.actual,
-          }))
-        }
-        // 返回新的 baseVersion：前端可据此继续编辑（不必立刻重读整篇）
-        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, baseVersion: result.baseVersion }))
-      } catch (e) {
-        return reply(500, { 'Content-Type': 'application/json' }, JSON.stringify({ error: e.message || 'Write error' }))
-      } finally {
-        try { unlinkSync(tmp) } catch { /* ignore */ }
-      }
-    }
+    // （/read-sheet、/write-sheet 已迁至 server/office-routes.mjs）
+
     if (url.pathname === '/health') {
       return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ status: 'ok', pid: process.pid }))
     }
@@ -2783,72 +2460,6 @@ const httpServer = createServer(async (req, res) => {
     }
 
     // 诊断信息端点：diag-monitor 定期轮询（只读内存统计，见 diagInfo 定义）
-    if (url.pathname === '/diag/info') {
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, data: diagInfo }))
-    }
-
-    // K0.3 渲染帧指标上报（2026-09-13「任务运行慢」系统性优化）：渲染进程每 5s 汇总
-    // 一次（帧数 / 单帧处理 ms p50,p95 / 真实帧间隔 p50,max）。只存内存、不落盘，
-    // 供 diag-monitor 的 render-health 读取。契约纯增量：老 GUI 不上报 → 字段缺失，
-    // 读取方按"无数据"降级。
-    if (url.pathname === '/diag/render-frame' && req.method === 'POST') {
-      const body = await readJsonBody(req).catch(() => ({}))
-      const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : 0)
-      diagInfo.renderFrames = {
-        frames: num(body?.frames), msP50: num(body?.msP50), msP95: num(body?.msP95),
-        gapP50: num(body?.gapP50), gapMax: num(body?.gapMax), heavy: body?.heavy === true,
-        // R5：降频成因（进/出次数 + 队列压力峰值 + 上一次触发的理由）。只报"当时是否
-        // 降频"回答不了"为什么降/为什么没降"，而后者才是排查 R 阶段问题时真正要看的。
-        heavyIn: num(body?.heavyIn), heavyOut: num(body?.heavyOut),
-        qMax: num(body?.qMax), qAgeMax: num(body?.qAgeMax),
-        reason: typeof body?.reason === 'string' ? body.reason.slice(0, 40) : '',
-        at: Date.now(),
-      }
-      return reply(200, { 'Content-Type': 'application/json' }, '{"ok":true}')
-    }
-
-    // 内核 transcript 读取端点（实现见 transcript.mjs；GUI 会话系统改造第一步）
-    const transcriptApi = createTranscriptHandlers()
-    if (url.pathname === '/transcript/list') {
-      const cwd = url.searchParams.get('cwd') || ''
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, sessions: transcriptApi.listSessions(cwd) }))
-    }
-    if (url.pathname === '/transcript/load') {
-      const cwd = url.searchParams.get('cwd') || ''
-      const sessionId = url.searchParams.get('sessionId') || ''
-      const tailFirst = url.searchParams.get('tailFirst') !== '0' // 默认 1
-      const r = transcriptApi.loadTranscript(cwd, sessionId, tailFirst)
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify(r))
-    }
-    if (url.pathname === '/transcript/search') {
-      const query = url.searchParams.get('query') || ''
-      const limit = parseInt(url.searchParams.get('limit') || '50', 10) || 50
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, results: transcriptApi.searchTranscripts(query, limit) }))
-    }
-    // 删除单个会话的磁盘转录（GUI 删会话时调用；实现与安全约束见 transcript.mjs deleteTranscript）。
-    // Body: { sessionId, cwd }——sessionId 必须是**内核 sessionId**（conversation.sessionId），
-    // GUI 的 conversation.id 是另一套 id，传错只会 not-found。
-    if (url.pathname === '/transcript/delete' && req.method === 'POST') {
-      const body = await readJsonBody(req)
-      const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
-      const cwd = typeof body?.cwd === 'string' ? body.cwd : ''
-      // 运行中的会话不得删除：内核进程仍在 append 写同一文件，删了会被立刻重建
-      // （且丢掉当前上下文），因此按契约直接拒绝，由 GUI 静默忽略。
-      if (sessions.has(sessionId)) {
-        return reply(409, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: '会话仍在运行，无法删除转录' }))
-      }
-      const r = transcriptApi.deleteTranscript(sessionId, cwd)
-      if (r.reason === 'invalid-id' || r.reason === 'outside-base') {
-        return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: r.reason === 'invalid-id' ? '非法 sessionId' : '路径越界，已拒绝' }))
-      }
-      // not-found 视为成功（幂等：文件早已不在，目标状态已达成）
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, deleted: r.deleted }))
-    }
-
-    // Test provider connectivity before saving. Body: { apiBaseUrl, authToken, model? }
-    // Probes the provider's /v1/messages endpoint with a minimal request and
-    // reports whether the API accepted the credentials. We do NOT save the
-    // config here — the caller only saves after a successful test.
     if (url.pathname === '/test-provider' && req.method === 'POST') {
       const body = await readJsonBody(req)
       const baseUrl = (body.apiBaseUrl || '').replace(/\/$/, '')
@@ -3010,11 +2621,24 @@ const httpServer = createServer(async (req, res) => {
     if (url.pathname === '/config') {
       if (req.method === 'POST') {
         const body = await readJsonBody(req)
-        const saved = saveConfig(body)
-        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, config: saved }))
+        let saved
+        try {
+          saved = saveConfig(body)
+        } catch (e) {
+          // 配置钳制拒绝（目前唯一来源是 network.proxy 非法）。**必须如实回 400 + 原因**：
+          // 若静默吞掉、回 200 {@code ok:true}，界面会显示"已保存"而磁盘值没变 ——
+          // 用户以为配好了代理、实际仍走直连（症状是与代理无关的模型调用失败）。
+          return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: e.message }))
+        }
+        // 回给界面的 config 也做代理地址打码（与 GET 同口径）：代理 URL 允许含密码，
+        // 而这份返回值会被渲染层直接放进 state 再回传保存 —— 打码后由 saveConfig 侧的
+        // `restoreRedactedProxyUrl` 回填真值，故**不会**把 `***` 落盘（有单测钉住）。
+        return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, config: redactProxyConfig(saved) }))
       }
       const cfg = loadConfig()
-      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify(cfg))
+      // 代理 URL 可能含 `user:pass@`：`/config` 是 GUI 全量读取的端点，明文密码会进入
+      // 界面状态/截图/日志。仅此一字段打码，其余键原样（见 shared/proxy-config.cjs）。
+      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify(redactProxyConfig(cfg)))
     }
     if (url.pathname === '/providers') {
       const cfg = loadConfig()
@@ -3285,7 +2909,12 @@ ${bodyContent}
     if (url.pathname === '/install-skill' && req.method === 'POST') {
       try {
         const body = await readJsonBody(req)
-        const sourcePath = resolve((body.path || '').replace(/\//g, sep))
+        // 读侧闸门（P0-1）。**刻意不加 denyRoots**：本端点会把源目录里的 SKILL.md 就地转换
+        // （convertToYFWorking），且产物安装到数据根的 skills/ —— 对数据根加写拒绝会破坏它。
+        // 这里的目的是"当运维把 YFW_FS_GUARD=enforce 且限定 roots 时，安装源也被约束"。
+        let sourcePath
+        try { sourcePath = await resolveReadable((body.path || '').replace(/\//g, sep), { roots: FS_READ_ROOTS, denyPaths: FS_CREDENTIAL_PATHS }) }
+        catch (e) { const r = replyGuardError(e, reply); if (r) return r; throw e }
         let actualPath = sourcePath
         if (body.isExample) {
           const exampleName = body.path.split('/').pop() || body.path

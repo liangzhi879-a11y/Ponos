@@ -142,7 +142,10 @@ export function FilePreview({ path, name, onClose }: Props) {
               <iframe
                 src={fileUrl}
                 className="w-full h-full border-0 bg-surface"
-                sandbox="allow-scripts allow-same-origin"
+                // 安全（2026-09-17 FS 加固 · P0-3/D2-1）：与 FileEditor 的 HtmlPreview 同理，
+                // **刻意不给 allow-same-origin**。此处内容是 docx/xlsx 转换出的 HTML（虽已转义，
+                // 但不能依赖单一防线），保留 same-origin 会让它获得桥源特权。
+                sandbox="allow-scripts"
                 title={name}
               />
             ) : (

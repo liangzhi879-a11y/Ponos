@@ -222,7 +222,13 @@ function HtmlPreview({ path }: { path: string }) {
     <iframe
       src={fileUrl}
       className="flex-1 min-h-0 w-full border-0 bg-surface"
-      sandbox="allow-scripts allow-same-origin"
+      // 安全（2026-09-17 FS 加固 · P0-3/D2-1）：**刻意不给 allow-same-origin**。
+      // 预览内容是用户任意 HTML，而 src 指向桥（/raw-file）⇒ 若保留 same-origin，该文档
+      // 的 origin 就是桥本身，其内联脚本可直接调桥的文件端点任意读写本机文件（连令牌都不用）。
+      // 去掉后文档变 opaque：拿不到同源特权，且配合注入器的"可信发起帧"白名单，连令牌也拿不到。
+      // 功能代价：预览内 localStorage/sessionStorage 会抛 SecurityError（各技能模板已 try/catch，
+      // 仅"主题偏好不持久化"，实测不影响展示）；allow-scripts 保留，互动展示照常。
+      sandbox="allow-scripts"
       title="html preview"
     />
   )

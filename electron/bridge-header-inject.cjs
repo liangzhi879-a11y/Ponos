@@ -57,15 +57,38 @@ function isUntrustedBridgeSession(session) {
 const defaultInstalledSessions = new WeakSet()
 
 /**
- * 生成"按请求头注入令牌"的纯函数。
- * @param {{port: number|string, token: string, headerName?: string}} opts
- * @returns {(details: {url?: string, requestHeaders?: Record<string,string>}) => Record<string,string>}
+ * **只对"可信发起帧"注入令牌**（2026-09-17 FS 加固 · D2-2）。
+ *
+ * 背景：本模块原先"只看目标 host 是桥，就注入令牌"——不看**谁**发起的请求。而
+ * `src/components/editor/FileEditor.tsx` 的 HtmlPreview 用
+ * `sandbox="allow-scripts allow-same-origin"` 从 `/raw-file` 载入**用户任意 HTML**，
+ * 该文档的 origin 就是桥本身 ⇒ 其中内联脚本发出的请求会被注入令牌，配合文件端点
+ * 即可任意读写本机文件。**去掉 `allow-same-origin` 不足以修复**：文档变 opaque（Origin: null）
+ * 后仍需令牌，而注入器照样补上；且 `fetch(..., { mode:'no-cors' })` 不读响应，CORS 拦不住副作用。
+ *
+ * 判据为何用 `details.frame.origin` 而非 `details.initiator`：**实测（Electron 43.2.0）**
+ * `onBeforeSendHeaders` 的 details **没有 `initiator` 字段**（值为 undefined），
+ * 而 `details.frame.origin` 可用且能干净区分三种情形（脚本见 scratch 的 S7 探针）：
+ *   · 打包态主窗口（`file://` 文档）      → `'file://'`      ← 可信
+ *   · 桥源文档自身（保留 same-origin 的预览）→ `'http://127.0.0.1:<桥端口>'` ← 不受信
+ *   · 去掉 same-origin 的沙箱 iframe        → `'null'`（opaque）        ← 不受信
+ *
+ * 兼容性：`trustedFrameOrigins` **未提供时不改变行为**（仍按 host 注入），保证现有调用点
+ * 与灰度可控；main 侧传入清单后才真正收紧。`frame` 缺失（非帧发起的请求）时按**可信**处理
+ * 并告警一次——宁可保留现状也不误伤主窗口（实测 XHR/fetch 均带 frame 信息）。
+ *
+ * @param {{port: number|string, token: string, headerName?: string, trustedFrameOrigins?: string[]}} opts
+ * @returns {(details: object) => Record<string,string>}
  *          返回**新的**头对象（绝不原地改传入对象），非桥请求原样返回副本。
  */
 function createBridgeHeaderInjector(opts = {}) {
   const { port, token } = opts
   const headerName = opts.headerName || DEFAULT_BRIDGE_TOKEN_HEADER
   const bridgeHost = `127.0.0.1:${port}`
+  const trusted = Array.isArray(opts.trustedFrameOrigins) && opts.trustedFrameOrigins.length
+    ? new Set(opts.trustedFrameOrigins.filter((o) => typeof o === 'string' && o !== '').map((o) => normalizeOrigin(o)))
+    : null
+  let warnedMissingFrame = false
   return function injectBridgeTokenHeader(details) {
     const headers = { ...((details && details.requestHeaders) || {}) }
     let hit = false
@@ -74,11 +97,57 @@ function createBridgeHeaderInjector(opts = {}) {
       hit = u.host === bridgeHost && BRIDGE_PROTOCOLS.includes(u.protocol)
     } catch { hit = false }
     if (!hit || !token) return headers
+
+    // D2-2：可信发起帧判定（仅在显式配置时生效）
+    if (trusted) {
+      const frameOrigin = details && details.frame ? details.frame.origin : undefined
+      if (frameOrigin === undefined) {
+        if (!warnedMissingFrame) {
+          warnedMissingFrame = true
+          console.warn('[bridge-inject] 请求缺少 frame 信息，按可信处理（保持既有行为）:', (details && details.url) || '')
+        }
+      } else if (!isTrustedFrameOrigin(frameOrigin, trusted)) {
+        // 不受信发起者（opaque 沙箱 / 桥源上的预览内容）：**不注入令牌** ⇒ 服务端 401
+        return headers
+      }
+    }
+
     // 调用方若已自带同名头（大小写不敏感），不覆盖
     const existing = Object.keys(headers).find((k) => k.toLowerCase() === headerName)
     if (!existing) headers[headerName] = token
     return headers
   }
+}
+
+/**
+ * origin 归一。
+ * ⚠️ 不能用"剥尾斜杠"实现：`file://` 的尾 `//` 是 scheme 的一部分，剥掉会变成 `file:`，
+ * 与 Electron 报出的 `file://` 不匹配 ⇒ **主窗口将拿不到令牌、全盘 401**（本函数曾被此坑咬过，
+ * 现由 electron/bridge-frame-trust.test.mjs 钉住）。
+ * 故优先走 URL 规范化：`file:` → 固定 `file://`；http(s) → `origin`（自带小写 + 去尾斜杠）。
+ * 非法输入（如 `null`）走 fallback 原样小写。
+ */
+function normalizeOrigin(o) {
+  const s = String(o == null ? '' : o).trim()
+  if (s === '') return ''
+  try {
+    const u = new URL(s)
+    if (u.protocol === 'file:') return 'file://'
+    return u.origin.toLowerCase()
+  } catch {
+    return s.replace(/\/+$/, '').toLowerCase()
+  }
+}
+
+/**
+ * 该发起帧 origin 是否可信。
+ * **`'null'`/空/opaque 一律不可信**——这是本函数的全部意义所在，故显式硬编码拒绝，
+ * 即使调用方误把它写进清单也不放行。
+ */
+function isTrustedFrameOrigin(frameOrigin, trustedSet) {
+  const o = normalizeOrigin(frameOrigin)
+  if (o === '' || o === 'null') return false
+  return trustedSet.has(o)
 }
 
 /**
@@ -110,6 +179,7 @@ module.exports = {
   DEFAULT_BRIDGE_TOKEN_HEADER,
   UNTRUSTED_SESSION_PARTITION_PREFIXES,
   isUntrustedBridgeSession,
+  isTrustedFrameOrigin,
   createBridgeHeaderInjector,
   installBridgeTokenHeaderInjector,
 }

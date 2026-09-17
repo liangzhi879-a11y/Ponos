@@ -419,13 +419,26 @@ describe('删除链路源码守卫', () => {
     assert.match(block, /\.catch\(\(\) => \{\}\)/, 'fire-and-forget：删除失败不得冒泡成未处理拒绝')
   })
 
-  test('bridge /transcript/delete 带"会话仍在运行"守卫（否则删了会被内核立刻重建）', () => {
-    const code = stripComments(readSrc('../server/bridge.mjs'))
-    assert.match(code, /url\.pathname === '\/transcript\/delete'/, '端点必须存在')
+  test('/transcript/delete 带"会话仍在运行"守卫（否则删了会被内核立刻重建）', () => {
+    // P1 拆分（2026-09-17）：端点实现已从 bridge.mjs 迁至 host-routes.mjs，
+    // 故语义断言改读新模块；同时**额外**断言桥仍委托到它，防止"只删线不搬实现"。
+    const code = stripComments(readSrc('../server/host-routes.mjs'))
+    assert.match(code, /pathname === '\/transcript\/delete'/, '端点必须存在')
     const at = code.indexOf("=== '/transcript/delete'")
+    assert.ok(at >= 0, '找不到 /transcript/delete 端点块：若已重构，请同步更新本守卫')
     const block = code.slice(at, at + 1500)
     assert.match(block, /sessions\.has\(\s*sessionId\s*\)/, '运行中的会话（sessions.has）必须拒绝删除转录')
     assert.match(block, /transcriptApi\.deleteTranscript\(/, '必须真的调用 deleteTranscript')
     assert.match(block, /409/, '拒绝要用 409 表达"状态冲突"，让前端可区分"没找到/非法"')
+    // 桥必须把 /transcript/* 交给该模块（否则端点整体失联）
+    // ⚠️ 这里断言**原始源码**而非剥注释后的文本：本文件顶部的 stripComments 是朴素实现
+    // （`/*`…`*/` 非贪婪配对、可跨行），而 bridge.mjs 的既有注释里存在 `/api/auth/*`、
+    // `/knowledge/*` 这类 `/*` 序列，会把相邻整段代码误吞——用它断言"存在某调用点"会因
+    // 文本位置不同而时灵时不灵。断言代码存在用原串更稳（仍要求真实调用点才匹配）。
+    const bridgeRaw = readSrc('../server/bridge.mjs')
+    assert.match(bridgeRaw, /isHostPath\(\s*url\.pathname\s*\)/, '桥必须委托 /transcript/* 到 host-routes')
+    assert.match(bridgeRaw, /handleHostRoute\(/, '桥必须调用 handleHostRoute')
+    // 顺带核对：桥传入的 sessions 是**同一个** Map（否则"运行中会话不得删"的守卫会失效）
+    assert.match(bridgeRaw, /handleHostRoute\(\{[\s\S]{0,400}?\bsessions\b/, '必须把 sessions 传给 host-routes')
   })
 })
