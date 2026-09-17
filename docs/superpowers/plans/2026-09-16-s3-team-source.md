@@ -107,3 +107,13 @@
 - **S3 的 UI 未做**：模式开关 / 三层新建向导 / 加入流程 / 邀请界面小字 / 侧边栏按模式筛选。本轮交付内核 + 桥面（6 个路由）；UI 属渲染层工作，**尚未开始**。
 - **文件（块模型/ops/三路合并）协同未做**：那是 S1 + S4 的范围；S3 只覆盖"团队源 + 成员 + 知识/经验协同"。
 
+### 更新（2026-09-17）：S3 的 UI 已补齐
+
+上文「S3 的 UI 未做…尚未开始」是**当日状态**，保留不改；实际已于 2026-09-17 完成，提交 **`8664f1e`**。
+
+- 五项落点：模式开关 `src/components/team/TeamModeSwitch.tsx` + `src/stores/teamStore.ts` + `src/lib/teamModeUi.ts` ｜ 三层新建向导 `CreateTeamWizard.tsx`（判据在 `teamOnboardingUi.ts`）｜ 加入流程 `JoinTeamPanel.tsx` ｜ 邀请小字 `InviteMemberPanel.tsx` ｜ 侧边栏按模式筛选 `rail/ChatListPanel.tsx`、`rail/TaskListPanel.tsx`、`knowledge/KnowledgeSidebar.tsx` ｜ 宿主 `TeamPanel.tsx`（设置窗「团队」分区）。
+- 验证：`npm run typecheck` ✓；`node --test "src/**/*.test.ts"` **680/680**（新增 32）；`node --test server/team-routes.test.mjs` **4/4**（未改 server，作 UI↔路由契约证据）。
+- **两条红线以源码级断言钉死**：① 模式筛选**不得**影响知识检索范围（检索恒为"全部空间"，且禁止检索视图引用筛选函数）；② 邀请文案**不得**出现"已加密/仅受邀可读"式承诺（应用层登记无强制力，权限由 OS ACL/网盘决定），同时正向要求必须能说清"验证码不是加密钥匙"。
+- **仍未接线（1 项）**：工作流侧边栏的模式筛选。谓词 `filterWorkflowsByMode` 与 `WorkflowMeta.workspaceId` 类型已就绪，但接线点 `WorkflowList.tsx`/`WorkflowsPanel.tsx` 当时正被另一条并行 lane 修改，按"不碰他人文件"未触碰；接线量约 2 行，待该 lane 收尾后补。
+- **未新增端点**：五项全部落在既有 6 路由；唯一非阻塞缺口是本机身份**指纹**在"尚未加入任何团队"时无读取途径（`/team/status` 只给 deviceId）⇒ 向导第①步先显示 deviceId，创建后经 status 展示 `me.fingerprint`。
+
