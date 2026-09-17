@@ -1,7 +1,7 @@
 // 兼容垫片引导：必须是本文件**首个** import——旧名 → PONOS_* 主名的映射须在本进程
 // 任何模块顶层读取 env 之前完成（shared/legacy-env.mjs 是唯一映射实现）。
 import '../kernel/legacy-env-boot.mjs'
-import { spawn, execSync } from 'child_process'
+import { spawn, execSync, spawnSync } from 'child_process'
 import { createInterface } from 'readline'
 import { WebSocketServer } from 'ws'
 import http, { createServer } from 'http'
@@ -84,6 +84,13 @@ import { tagRegistrySnapshot, mergeTagsInStore, undoMergeInStore } from '../kern
 // 【S3 团队源】团队路由（创建/邀请/加入/撤销/状态）落在这里，紧邻 D6 的 `/tags*` 之后 ⇒
 // 同样位于 **D2 令牌闸门之后**，自动受保护（新增路由必须放在闸门后面，这是 D2/D3/D6 的一贯做法）。
 import { teamStatus, createTeam, joinTeam, exportInvite, revokeMember, setSearchRoot } from '../kernel/team-store.mjs'
+// 【S4 文件协同】模态分层 / 版本链 / 软占用 / 检出检入 / 冲突处置。路由同样落在令牌闸门之后。
+import {
+  ingestFile, versionsOf, claimsOf, claimFile, checkinFile, releaseClaim, heartbeatClaim,
+  resolveFileId, writabilityOf, policyForPath, readPolicies, writePolicies, ensureCollabDirs,
+  prepareConflictResolution, currentPathOf,
+} from '../kernel/file-collab.mjs'
+import { planFallback } from '../shared/file-modal.mjs'
 import { DEFAULT_TAG_SCOPE } from '../shared/tag-registry.mjs'
 import { MANAGED_KEYS, providerProfileEnv, buildIdentityPrompt, activeProviderModel, resolveProviderProfile } from './provider-profile.mjs'
 import { probeProviderCapabilities, applyProbeResults, resolveWindowFromProbe, maybeAdoptWindowFromEvent } from './provider-probe.mjs'
@@ -179,6 +186,9 @@ const YFW_MILESTONE_PROTOCOL = `【任务里程碑进度协议】
 // buildChildEnv 注入解析后的 home）。
 // ---------------------------------------------------------------------------
 const YFW_HOME = resolveYfwHome()
+// 【S4】三层兜底的"能力探测"结果缓存（见 /file-collab/* 路由内的 s4Caps）：
+// 探测要起一次 python 进程，逐请求探查会明显拖慢协同操作，而结果在进程生命周期内恒定。
+let bridgeCapsCache = null
 // 【S2-D2 bridge 鉴权】令牌解析（策略与理由集中在 server/bridge-token.mjs）。
 // fail-closed：无论令牌来自 env（Electron main 注入）还是自生成落盘，下面的闸门**一律生效**；
 // 本文件里不存在"未配 token 即放行"的分支——那种写法会让 main 侧注入一旦失效就静默敞开。
@@ -2064,6 +2074,203 @@ const httpServer = createServer(async (req, res) => {
       }
       reply(r.ok ? 200 : 400, { 'Content-Type': 'application/json' }, JSON.stringify(r))
       return
+    }
+    // ---------------------------------------------------------------------
+    // 【S4 文件协同】路由
+    // ---------------------------------------------------------------------
+    // 与 /team/* 同构：落在同一令牌闸门之后、异常不外逃（统一 4xx/5xx 回执）。
+    //
+    // 能力探测（三层兜底的第一层）**惰性缓存**：探测要起一次 python 进程（约百毫秒），
+    // 每个请求都探会让协同操作明显变卡；但结果在进程生命周期内不会变，探一次即可。
+    // 探测失败（无 python / 无该模块）⇒ 对应能力为"不可用"，如实反映到分层结果（不假装能转）。
+    if (url.pathname.startsWith('/file-collab/')) {
+      const s4TeamRoot = (teamId) => {
+        const st = teamStatus({ configDir: YFW_HOME })
+        const teams = (st && st.teams) || []
+        const ok = teams.filter((t) => t && t.ok && t.dir)
+        if (ok.length === 0) return { ok: false, reason: 'no-team', teams: teams.map((t) => ({ teamId: t.teamId, ok: t.ok })) }
+        const hit = teamId ? ok.find((t) => t.teamId === teamId) : ok[0]
+        if (!hit) return { ok: false, reason: 'team-not-found', teamId, teams: ok.map((t) => t.teamId) }
+        return { ok: true, teamRoot: hit.dir, teamId: hit.teamId, deviceId: st.deviceId || null }
+      }
+      const s4Caps = () => {
+        if (bridgeCapsCache) return bridgeCapsCache
+        const py = findPythonExe()
+        const probe = 'import json,importlib\nout={}\nfor m in ("xlrd","openpyxl","win32com","PIL"):\n    try:\n        importlib.import_module(m); out[m]=True\n    except Exception:\n        out[m]=False\nprint(json.dumps(out))'
+        let mods = {}
+        try {
+          const r = spawnSync(py, ['-c', probe], { encoding: 'utf-8', timeout: 20000 })
+          mods = JSON.parse(String(r.stdout || '{}').trim() || '{}')
+        } catch { mods = {} }
+        // convert 能力逐格式报告：`.xls` 需 xlrd+openpyxl（可写出 .xlsx）；`.doc` 需 win32com（Word COM）
+        const convert = []
+        if (mods.xlrd && mods.openpyxl) convert.push('.xls')
+        if (mods.win32com) convert.push('.doc')
+        bridgeCapsCache = { convert, extract: true, modules: mods }
+        return bridgeCapsCache
+      }
+      const s4Reject = (r, okStatus = 200) => {
+        const status = r && r.ok ? okStatus : ({
+          'file-missing': 404,
+          'held-by-other': 409,
+          'not-checked-out': 409,
+          'blocked-by-other': 409,
+          'placeholder-file': 409,
+        }[(r && r.code) || ''] || 400)
+        reply(status, { 'Content-Type': 'application/json' }, JSON.stringify(r))
+      }
+
+      // 团队源概况（供 UI 判断"能否协同"）
+      if (url.pathname === '/file-collab/status' && req.method === 'GET') {
+        const st = s4TeamRoot(url.searchParams.get('teamId'))
+        if (!st.ok) return s4Reject(st)
+        const absPath = (url.searchParams.get('path') || '').replace(/\//g, sep)
+        const requesterId = url.searchParams.get('memberId') || null
+        if (!absPath || !existsSync(absPath)) return s4Reject({ ok: false, code: 'file-missing', error: `文件不存在：${absPath}` })
+        const resolved = resolveFileId(st.teamRoot, absPath)
+        const w = writabilityOf({ teamRoot: st.teamRoot, absPath, requesterId, caps: s4Caps() })
+        return s4Reject({
+          ok: true, teamId: st.teamId, deviceId: st.deviceId, path: absPath, fileId: resolved ? resolved.fileId : null,
+          ingested: !!resolved, modal: w.modal, readonly: w.readonly, reason: w.reason,
+          holder: w.holder || null, remainingMs: w.remainingMs ?? null,
+          policy: w.policy, caps: s4Caps(),
+        })
+      }
+
+      // 纳管（首次分配 fileId 并入 CAS；L-B/L-D 不产生原地写）
+      if (url.pathname === '/file-collab/ingest' && req.method === 'POST') {
+        let body = null
+        try { body = await readJsonBody(req) } catch { body = null }
+        const st = s4TeamRoot(body && body.teamId)
+        if (!st.ok) return s4Reject(st)
+        const absPath = String((body && body.path) || '').replace(/\//g, sep)
+        if (!absPath) return s4Reject({ ok: false, code: 'path-required', error: '缺少 path' })
+        ensureCollabDirs(st.teamRoot)
+        const r = ingestFile({ teamRoot: st.teamRoot, absPath, authorId: (body && body.memberId) || null, caps: s4Caps(), note: (body && body.note) || null })
+        return s4Reject({ ...r, teamId: st.teamId })
+      }
+
+      // 版本链
+      if (url.pathname === '/file-collab/versions' && req.method === 'GET') {
+        const st = s4TeamRoot(url.searchParams.get('teamId'))
+        if (!st.ok) return s4Reject(st)
+        const fileId = url.searchParams.get('fileId')
+        const absPath = (url.searchParams.get('path') || '').replace(/\//g, sep)
+        const resolved = fileId ? { fileId } : (absPath ? resolveFileId(st.teamRoot, absPath) : null)
+        if (!resolved) return s4Reject({ ok: false, code: 'file-not-ingested', error: '该文件尚未纳入团队源（无版本链）' })
+        const recs = versionsOf(st.teamRoot, resolved.fileId)
+        const cur = currentPathOf(st.teamRoot, resolved.fileId)
+        return s4Reject({
+          ok: true, teamId: st.teamId, fileId: resolved.fileId, currentPath: cur.path, logicalName: cur.logicalName,
+          versions: recs.filter((x) => x.type === 'version'),
+          history: recs,
+        })
+      }
+
+      // 占用/检出状态
+      if (url.pathname === '/file-collab/claims' && req.method === 'GET') {
+        const st = s4TeamRoot(url.searchParams.get('teamId'))
+        if (!st.ok) return s4Reject(st)
+        const fileId = url.searchParams.get('fileId')
+        if (!fileId) return s4Reject({ ok: false, code: 'fileId-required', error: '缺少 fileId' })
+        return s4Reject({ ok: true, teamId: st.teamId, fileId, records: claimsOf(st.teamRoot, fileId) })
+      }
+
+      // 检出 / 续租 / 释放 / 检入（#9 的显式动作）
+      if (url.pathname === '/file-collab/claim' && req.method === 'POST') {
+        let body = null
+        try { body = await readJsonBody(req) } catch { body = null }
+        const st = s4TeamRoot(body && body.teamId)
+        if (!st.ok) return s4Reject(st)
+        const absPath = String((body && body.path) || '').replace(/\//g, sep)
+        const holder = (body && body.memberId) || null
+        if (!absPath || !holder) return s4Reject({ ok: false, code: 'bad-request', error: '需要 path 与 memberId' })
+        if (!existsSync(absPath)) return s4Reject({ ok: false, code: 'file-missing', error: `文件不存在：${absPath}` })
+        const resolved = resolveFileId(st.teamRoot, absPath)
+        if (!resolved) return s4Reject({ ok: false, code: 'file-not-ingested', error: '请先纳管该文件（无版本链时无法建立占用）' })
+        const plan = planFallback(absPath, s4Caps())
+        const r = claimFile({
+          teamRoot: st.teamRoot, fileId: resolved.fileId, holder, deviceId: (body && body.deviceId) || null,
+          leaseMs: (body && body.leaseMs) || undefined, note: (body && body.note) || null,
+          modal: plan.modal, policy: policyForPath(st.teamRoot, absPath),
+        })
+        return s4Reject({ ...r, fileId: resolved.fileId, modal: plan.modal })
+      }
+      if (url.pathname === '/file-collab/heartbeat' && req.method === 'POST') {
+        let body = null
+        try { body = await readJsonBody(req) } catch { body = null }
+        const st = s4TeamRoot(body && body.teamId)
+        if (!st.ok) return s4Reject(st)
+        if (!body || !body.fileId || !body.memberId) return s4Reject({ ok: false, code: 'bad-request', error: '需要 fileId 与 memberId' })
+        return s4Reject(heartbeatClaim({ teamRoot: st.teamRoot, fileId: body.fileId, holder: body.memberId, leaseMs: body.leaseMs || undefined }))
+      }
+      if (url.pathname === '/file-collab/release' && req.method === 'POST') {
+        let body = null
+        try { body = await readJsonBody(req) } catch { body = null }
+        const st = s4TeamRoot(body && body.teamId)
+        if (!st.ok) return s4Reject(st)
+        if (!body || !body.fileId || !body.memberId) return s4Reject({ ok: false, code: 'bad-request', error: '需要 fileId 与 memberId' })
+        return s4Reject(releaseClaim({ teamRoot: st.teamRoot, fileId: body.fileId, holder: body.memberId }))
+      }
+      if (url.pathname === '/file-collab/checkin' && req.method === 'POST') {
+        let body = null
+        try { body = await readJsonBody(req) } catch { body = null }
+        const st = s4TeamRoot(body && body.teamId)
+        if (!st.ok) return s4Reject(st)
+        const absPath = String((body && body.path) || '').replace(/\//g, sep)
+        if (!body || !body.fileId || !body.memberId || !absPath) return s4Reject({ ok: false, code: 'bad-request', error: '需要 fileId、memberId 与 path' })
+        if (!existsSync(absPath)) return s4Reject({ ok: false, code: 'file-missing', error: `文件不存在：${absPath}` })
+        const r = checkinFile({
+          teamRoot: st.teamRoot, fileId: body.fileId, holder: body.memberId, absPath,
+          authorId: body.memberId, note: body.note || null, caps: s4Caps(),
+        })
+        return s4Reject(r)
+      }
+
+      // 冲突处置（四选一；save-copy 降级为草稿）
+      if (url.pathname === '/file-collab/conflict' && req.method === 'POST') {
+        let body = null
+        try { body = await readJsonBody(req) } catch { body = null }
+        const st = s4TeamRoot(body && body.teamId)
+        if (!st.ok) return s4Reject(st)
+        if (!body || !body.fileId || !body.choice) return s4Reject({ ok: false, code: 'bad-request', error: '需要 fileId 与 choice' })
+        const r = prepareConflictResolution({
+          teamRoot: st.teamRoot, fileId: body.fileId, logicalName: body.logicalName || null,
+          baseVersionId: body.baseVersionId || null, mineVersionId: body.mineVersionId || null,
+          theirsVersionId: body.theirsVersionId || null, choice: body.choice,
+        })
+        // Buffer 不进 JSON：只回报可序列化字段（内容落盘由调用方按 action 决定）
+        if (r && r.ok) {
+          const { content, ...rest } = r
+          return s4Reject({ ...rest, bytes: content ? content.length : 0 })
+        }
+        return s4Reject(r)
+      }
+
+      // 目录策略（批注 #3：全局默认关闭 + 按目录开启）
+      if (url.pathname === '/file-collab/policies' && req.method === 'GET') {
+        const st = s4TeamRoot(url.searchParams.get('teamId'))
+        if (!st.ok) return s4Reject(st)
+        const policies = readPolicies(st.teamRoot)
+        const relPath = url.searchParams.get('path')
+        return s4Reject({
+          ok: true, teamId: st.teamId, policies,
+          effective: relPath ? policyForPath(st.teamRoot, relPath.replace(/\//g, sep)) : null,
+        })
+      }
+      if (url.pathname === '/file-collab/policies' && req.method === 'POST') {
+        let body = null
+        try { body = await readJsonBody(req) } catch { body = null }
+        const st = s4TeamRoot(body && body.teamId)
+        if (!st.ok) return s4Reject(st)
+        const dirs = (body && body.dirs) || null
+        if (!dirs || typeof dirs !== 'object') return s4Reject({ ok: false, code: 'bad-request', error: '需要 dirs 对象（{ "<目录>": { softClaim, occupancy, maxFileBytes } }）' })
+        ensureCollabDirs(st.teamRoot)
+        writePolicies(st.teamRoot, { dirs })
+        return s4Reject({ ok: true, teamId: st.teamId, policies: readPolicies(st.teamRoot) })
+      }
+
+      return s4Reject({ ok: false, code: 'unknown-endpoint', error: `未知的 file-collab 端点：${url.pathname}` }, 404)
     }
     // 工作流路由链最前：仅 /workflows* 前缀进入（无关请求不必构造宿主单例/读配置），
     // 命中即 return；路由函数未匹配返回 false → 继续走下方既有路由（不吞其他端点）。

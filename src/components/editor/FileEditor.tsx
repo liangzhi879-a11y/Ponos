@@ -9,6 +9,7 @@ import type { FileTab } from '@/types'
 import { CodeEditor } from './CodeEditor'
 import { SheetEditor, type SheetEditorHandle } from './SheetEditor'
 import { DocxEditor, type DocxEditorHandle } from './DocxEditor'
+import { FileCollabBar, type FileCollabHandle } from './FileCollabBar'
 
 // 独立原生无边框窗口（BrowserWindow）内的文件编辑器：
 // - 窗口拖动由系统标题栏 -webkit-app-region: drag 承担（可超出主应用界面）
@@ -27,6 +28,8 @@ export function FileEditor() {
   // Excel/Word 编辑器的保存句柄（内部走 /write-sheet /write-docx 写回）
   const sheetRef = useRef<SheetEditorHandle>(null)
   const docxRef = useRef<DocxEditorHandle>(null)
+  // 【S4】协同状态条（顶栏状态条 + 显式检出/检入 + 冲突处置），批注 #9 的落点
+  const collabRef = useRef<FileCollabHandle>(null)
 
   // 通过本地 bridge 真实写入磁盘；成功后才标记为已保存。sheet/docx 由子编辑器写回
   const saveFile = async (file: FileTab) => {
@@ -58,6 +61,9 @@ export function FileEditor() {
       markFileSaved(file.id)
     } catch (e: any) {
       setSaveError(e?.message || '保存失败')
+      // 【S4】保存失败后刷新协同状态：窗口被他人检出时，条上要能立刻显示"谁在编辑、还剩多久"
+      // —— 否则用户只看到一句"保存被拒绝"，不知道该等谁。
+      collabRef.current?.refresh()
     } finally {
       setSaving(false)
     }
@@ -180,6 +186,9 @@ export function FileEditor() {
             </div>
             {saveError && <span className="text-error truncate max-w-[260px]" title={saveError}>⚠ {saveError}</span>}
           </div>
+
+          {/* 【S4】协同状态条：只读原因/持有者/剩余时间常驻可见；检出、检入是显式动作（批注 #9） */}
+          <FileCollabBar key={'collab-' + activeFile.id} ref={collabRef} path={activeFile.path} name={activeFile.name} />
 
           {/* Body：xlsx/docx → 应用内编辑器（写回原文件）；html 默认渲染预览（可切源码）；其他可编辑 → CodeMirror；其余 → 只读预览 */}
           {isSheet ? (
