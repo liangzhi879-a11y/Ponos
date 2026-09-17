@@ -620,6 +620,33 @@ export const enUS: TranslationKeys = {
     mcpFailedOne: '{name} failed to start: {reason}',
     mcpDisabledOne: 'Off: {names}',
     mcpToolsList: 'Tools loaded by the kernel',
+    // Prompt templates (2026-09-16, second batch: resources/prompts).
+    // These strings exist to make D-4 explicit: prompts are picked by the **user**; the AI never
+    // calls them on its own and the rendered text is never sent automatically. Seeing the word
+    // "template", users tend to assume the AI will use it behind their back — so the UI has to
+    // draw that line itself.
+    mcpPrompts: 'Prompt templates',
+    mcpPromptsHint: 'You pick a template and it is rendered to text; the AI never calls it and nothing is sent automatically',
+    mcpPromptsOpen: 'View templates',
+    mcpPromptsClose: 'Hide',
+    mcpPromptsUnsaved: 'This name is not in the saved config (save first — the bridge reads mcp.json on disk)',
+    mcpPromptsLoading: 'Loading…',
+    mcpPromptsEmpty: 'This server exposes no prompt templates',
+    mcpPromptsOff: 'Server is off and will not be connected (turn it on in Access first)',
+    mcpPromptPick: 'Pick a template',
+    mcpPromptArgs: 'Arguments',
+    mcpPromptRequired: 'required',
+    mcpPromptRender: 'Render',
+    mcpPromptRendering: 'Rendering…',
+    mcpPromptMissing: 'Fill in the required arguments first: {names}',
+    mcpPromptResult: 'Rendered text (hand it to the actions below — nothing is sent automatically)',
+    mcpPromptRenderFailed: 'Render failed',
+    mcpPromptEmptyText: 'The server returned empty text',
+    mcpPromptTruncated: 'Preview limited to the first {shown} of {total} characters; copy and insert use the full text',
+    mcpPromptCopy: 'Copy',
+    mcpPromptCopied: 'Copied',
+    mcpPromptInsert: 'Insert into input',
+    mcpPromptInserted: 'Inserted into the chat input (not sent)',
     mcpRefresh: 'Refresh',
     minimizeToTray: 'Minimize to tray on close',
     minimizeToTrayDesc: 'Hide to system tray on close and keep running tasks in background',

@@ -191,7 +191,7 @@ test('注册表：坏配置 → 不抛崩（只记警告并跳过）', async () 
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('注册表：接入 stub → 发现 5 个工具、命名带前缀、run 正常与错误路径', async () => {
+test('注册表：接入 stub → 发现全部工具（含固定的两个资源工具）、命名带前缀、run 正常与错误路径', async () => {
   const dir = mkTmp()
   try {
     const p = join(dir, 'mcp.json')
@@ -200,7 +200,13 @@ test('注册表：接入 stub → 发现 5 个工具、命名带前缀、run 正
     await reg.ready()
     const view = reg.view()
     const names = Object.keys(view).sort()
-    assert.deepEqual(names, ['mcp__stub__boom', 'mcp__stub__die', 'mcp__stub__echo', 'mcp__stub__hang', 'mcp__stub__plain'])
+    // 第二批（resources）给**每个启用的服务器**再加两个固定只读工具：
+    // list_resources / read_resource（spec D-2）。断言随之扩展——这不是"回归"，
+    // 而是本批刻意的行为变化，故在此显式列出（而非放宽成"包含即可"）。
+    assert.deepEqual(names, [
+      'mcp__stub__boom', 'mcp__stub__die', 'mcp__stub__echo', 'mcp__stub__hang',
+      'mcp__stub__list_resources', 'mcp__stub__plain', 'mcp__stub__read_resource',
+    ])
     assert.ok(view.mcp__stub__echo.description.startsWith('[MCP:stub]'), '描述须标注来源，便于用户与模型识别外部工具')
 
     const okRes = await view.mcp__stub__echo.run({ text: 'hi' }, {})
@@ -378,8 +384,11 @@ test('注册表：url 条目走 HTTP 传输并被收集（工具进视图、无�
     const reg = createMcpRegistry({ configPath: p, log: () => {} })
     await reg.ready()
     const names = reg.toolNames().sort()
-    assert.deepEqual(names, ['mcp__remote__echo', 'mcp__remote__whoami'],
-      '远程服务器的工具必须进动态视图（分派错了会表现为视图恒空）')
+    // 同理带上两个固定资源工具（该 HTTP 夹具只实现 tools ⇒ 这两个调用会走失败路径，
+    // 但"暴露"与"服务器支不支持"是两件事：契约是**每个启用服务器固定暴露**，spec D-2）
+    assert.deepEqual(names, [
+      'mcp__remote__echo', 'mcp__remote__list_resources', 'mcp__remote__read_resource', 'mcp__remote__whoami',
+    ], '远程服务器的工具必须进动态视图（分派错了会表现为视图恒空）')
     assert.deepEqual(reg.failedServers(), {}, '不应有失败记录')
     reg.closeAll()
   } finally { s.kill(); rmSync(dir, { recursive: true, force: true }) }

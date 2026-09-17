@@ -3068,7 +3068,11 @@ const httpServer = createServer(async (req, res) => {
     }
     // ── MCP 配置（2026-09-15，P1-6「MCP 配置界面」）：与上面同款纯 handler，落点 <YFW_HOME>/mcp.json ──
     // /mcp/status（2026-09-16）额外回传内核真实接入状态：getMcpStatus 注入**最近一次上报**的快照。
-    if (url.pathname === '/mcp' || url.pathname === '/mcp/test' || url.pathname === '/mcp/status') {
+    // /mcp/prompts 与 /mcp/prompts/get（2026-09-16，第二批）：prompt 模板清单与渲染。
+    // **必须登记在这个守卫里**：漏掉的话请求根本到不了 handler，表现为界面里那个入口一直转圈
+    // ——本仓库已有 `--spaces`/`--confirm` 两次"漏登记被静默忽略"的前车之鉴。
+    if (url.pathname === '/mcp' || url.pathname === '/mcp/test' || url.pathname === '/mcp/status'
+      || url.pathname === '/mcp/prompts' || url.pathname === '/mcp/prompts/get') {
       const r = await handleMcpRoute({
         method: req.method, pathname: url.pathname,
         readJsonBody: () => readJsonBody(req), configDir: YFW_HOME,

@@ -17,7 +17,10 @@ import { loadMcpServers, mcpConfigSig } from '../kernel/mcp.mjs'
 
 const KERNEL_CLI = fileURLToPath(new URL('../kernel/cli.mjs', import.meta.url))
 const STUB = fileURLToPath(new URL('./fixtures/mcp-stub-server.mjs', import.meta.url))
-const STUB_TOOLS = 5   // 桩服务器暴露 echo / boom / hang / die / plain
+const STUB_TOOLS = 7   // 桩服务器暴露 5 个工具（echo / boom / hang / die / plain）
+                       // + 第二批为**每个启用服务器固定追加**的 2 个资源工具（list_resources / read_resource）。
+                       // 这不是"回归"，而是 spec D-2 的刻意行为变化：资源以只读工具形式暴露，
+                       // 故面板/快照里的工具计数随之变化。
 
 /** 起内核（mock API，无网络无费用），返回事件收集器；事件按 NDJSON 逐行解析（一行可能被切两半） */
 function spawnKernel(home) {

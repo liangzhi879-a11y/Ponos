@@ -15,6 +15,8 @@ import {
   badgeOf, toolsOf, errorOf, summarize, summaryText, transportOf, configForTransport, canSaveConfig,
   parseKeyValueLines, formatKeyValueLines, parseArgLines, formatArgLines, nextDraft,
   authLevelOf, applyAuthLevel, validateRowsMsg,
+  promptListOf, promptsOfServer, promptArgsOf, renderPromptText, MCP_PROMPT_PREVIEW_CHARS,
+  requiredPromptArgsOf, missingPromptArgs,
   type McpTestState,
 } from './mcpFormat.ts'
 
@@ -265,4 +267,148 @@ test('关闭的服务器不因缺 URL/命令而报错（它本来就不连接）
   const rows = [{ key: '1', name: 'x', transport: 'stdio' as const,
     config: { command: '', enabled: false, expose: { mode: 'public' as const, bindAgents: [] } } }]
   assert.equal(validateRowsMsg(rows), '', '关闭的服务器没有必填项 —— 校验它会让用户无法保存')
+})
+
+// ---------------------------------------------------------------------------
+// prompt 模板（2026-09-16，第二批；D-4：prompts 是 user-controlled，绝不给模型自动调用）
+//
+// 测什么（都是"只表现为界面上的一行字"、坏了却很难查的性质）：
+//   ① 服务器返回的**不可信形状**不得让面板白屏（`arguments` 缺失/不是数组/required 是字符串）；
+//   ② 多服务器下**错误不得串台**（A 台连不上的原因画到 B 台卡片上，用户会去修一台没坏的）；
+//   ③ 必填参数的空串/纯空白必须算"没填"（否则渲染出的文本里那段变量是空的，用户不知道为什么）；
+//   ④ 超长文本只裁剪**预览**，且要如实报出原始长度（把预览当全文复制走是静默的数据丢失）。
+test('promptListOf：归一化服务器给的形状，坏数据一律安全缺省（绝不抛）', () => {
+  assert.deepEqual(promptListOf(undefined), [])
+  assert.deepEqual(promptListOf('oops'), [], '非数组不得让 .map 崩掉面板')
+  assert.deepEqual(promptListOf([null, 42, { noName: 1 }]), [], '没有名字的模板无法选中/取回，直接丢')
+
+  const got = promptListOf([
+    { name: ' summarize ', description: '总结', arguments: [{ name: 'text', description: '要总结的', required: true }] },
+    { name: 'greet' },                                   // 无 arguments 字段
+    { name: 'weird', arguments: 'not-an-array' },         // 形状不对
+    { name: 'str', arguments: [{ name: 'a', required: 'true' }, { name: '' }] },  // required 是字符串
+  ])
+  assert.deepEqual(got.map(p => p.name), ['summarize', 'greet', 'weird', 'str'])
+  assert.deepEqual(got[0].arguments, [{ name: 'text', description: '要总结的', required: true }])
+  assert.deepEqual(got[1].arguments, [], '缺 arguments ⇒ 空数组（界面据此渲染"无参数"而不是崩）')
+  assert.deepEqual(got[2].arguments, [], '非数组 ⇒ 空数组')
+  // required 只认显式 true：字符串 'true' 若被当真，界面上每个字段都会变成必填
+  assert.deepEqual(got[3].arguments, [{ name: 'a', description: '', required: false }], '无名参数要丢掉')
+})
+
+test('promptsOfServer：多服务器下错误不串台；缺条目 ⇒ 空清单 + 空错误（不谎报失败）', () => {
+  const res = {
+    servers: { alpha: { prompts: [{ name: 'p1' }] }, beta: {} },
+    errors: { beta: '连接失败：ECONNREFUSED' },
+    disabled: ['off'],
+  }
+  assert.deepEqual(promptsOfServer(res, 'alpha'),
+    { prompts: [{ name: 'p1', description: '', arguments: [] }], error: '', known: true })
+  assert.equal(promptsOfServer(res, 'beta').error, '连接失败：ECONNREFUSED')
+  assert.deepEqual(promptsOfServer(res, 'beta').prompts, [], '失败的那台不该显示上一次/别台的模板')
+  assert.equal(promptsOfServer(res, 'off').known, true, '已关闭的台也在配置里（桥只是没连它）')
+  // 名字不在桥看到的配置里（最常见：改了名还没保存）⇒ 必须能与"没提供模板"分开，
+  // 否则用户会去服务器那边查一个根本不存在的问题
+  assert.deepEqual(promptsOfServer(res, 'ghost'), { prompts: [], error: '', known: false })
+  assert.equal(promptsOfServer(res, '  alpha  ').known, true, '名字两侧空白不该影响命中')
+  assert.deepEqual(promptsOfServer(null, 'alpha'), { prompts: [], error: '', known: false })
+  assert.deepEqual(promptsOfServer({ servers: { a: {} }, errors: { a: 123 as unknown as string } }, 'a').error, '',
+    '非字符串错误值按"没有错误"处理，避免界面渲染出 [object Object]')
+})
+
+test('promptArgsOf：只认显式 required；空串/纯空白算没填；丢弃声明之外的键', () => {
+  const decl = [{ name: 'text', required: true }, { name: 'tone' }]
+  // 必填没填 ⇒ 按钮必须被拦下（这是"渲染"按钮唯一的禁用判据）
+  const missing = promptArgsOf(decl, { tone: '简洁' })
+  assert.equal(missing.ok, false)
+  assert.deepEqual(missing.missing, ['text'])
+  // 纯空白与"没填"对服务器是同一件事：判为已填会让用户拿到一段少了变量的文本
+  assert.equal(promptArgsOf(decl, { text: '   ' }).ok, false, '空格不算填了')
+  assert.deepEqual(promptArgsOf(decl, { text: '   ' }).payload, {}, '空白值不得发给服务器')
+
+  const ok = promptArgsOf(decl, { text: '正文', tone: '简洁' })
+  assert.equal(ok.ok, true)
+  assert.deepEqual(ok.payload, { text: '正文', tone: '简洁' })
+  // 可选参数没填不算错，也不进载荷（服务器收到空串可能判成"显式置空"）
+  assert.deepEqual(promptArgsOf(decl, { text: '正文' }), { ok: true, missing: [], payload: { text: '正文' } })
+  // 切换模板后残留的旧值不该被送出去
+  assert.deepEqual(promptArgsOf(decl, { text: 'x', stale: 'y' }).payload, { text: 'x' })
+  // 无参数模板（声明为空/缺失）：直接可渲染
+  assert.deepEqual(promptArgsOf([], undefined), { ok: true, missing: [], payload: {} })
+  assert.deepEqual(promptArgsOf(undefined, { a: '1' }), { ok: true, missing: [], payload: {} }, '没有声明就没有可发的参数')
+  // 多个必填缺失时按声明顺序报（提示文案要稳定，不能随对象键序抖动）
+  assert.deepEqual(promptArgsOf([{ name: 'b', required: true }, { name: 'a', required: true }], {}).missing, ['b', 'a'])
+})
+
+test('renderPromptText：空文本单列；超长只裁剪预览并如实报原始长度', () => {
+  const empty = renderPromptText('')
+  assert.deepEqual(empty, { text: '', truncated: false, originalChars: 0, empty: true })
+  assert.equal(renderPromptText('   \n ').empty, true, '纯空白也算空：界面要给一句解释，而不是一片空白')
+  assert.equal(renderPromptText(undefined).empty, true)
+  assert.equal(renderPromptText(null).empty, true)
+
+  const short = renderPromptText('短文本')
+  assert.deepEqual(short, { text: '短文本', truncated: false, originalChars: 3, empty: false })
+
+  // 两处"看起来对但错"的写法：① 等长也裁；② 裁了却不报原始长度（用户以为拿到全文）
+  const atLimit = renderPromptText('x'.repeat(MCP_PROMPT_PREVIEW_CHARS))
+  assert.equal(atLimit.truncated, false, '刚好等于上限不裁')
+  const long = renderPromptText('x'.repeat(MCP_PROMPT_PREVIEW_CHARS + 5))
+  assert.equal(long.truncated, true)
+  assert.equal(long.text.length, MCP_PROMPT_PREVIEW_CHARS)
+  assert.equal(long.originalChars, MCP_PROMPT_PREVIEW_CHARS + 5, '必须报**原始**长度：只给预览长度等于隐瞒截断')
+  // 上限可调（用例/将来改小都走同一条路径），非法上限回退默认
+  assert.equal(renderPromptText('abcdef', 3).text, 'abc')
+  assert.equal(renderPromptText('abcdef', 0).truncated, false, '0/负数 → 回退默认上限，不是"裁成空串"')
+  // 非字符串（服务器回了数字/对象）也要能显示，不得抛
+  assert.equal(renderPromptText(42).text, '42')
+  // 上限的两种写法等价（数字 / { max }）：两处调用各自写一种时不得出现不同结论
+  assert.deepEqual(renderPromptText('abcdef', { max: 3 }), renderPromptText('abcdef', 3))
+  assert.equal(renderPromptText('abcdef', { max: 0 }).truncated, false, '{ max } 的非法值同样回退默认')
+  assert.equal(renderPromptText('abcdef', {}).truncated, false, '缺 max ⇒ 默认上限')
+  assert.equal(renderPromptText('abcdef', 999).text.length, 6, '不超限不裁剪')
+})
+
+// 【提交前校验，第二批】必填清单与"缺哪几项"——它们是"渲染"按钮唯一的禁用判据。
+//
+// 为什么单独钉这两条：它们只影响界面上的一行提示，坏了不会报错，只会让用户
+// ① 点了才知道缺什么（提示不到点上），或 ② 被判为"缺参数"却怎么填都不通过。
+test('requiredPromptArgsOf：只认显式 required（缺省即选填），且坏声明一律安全缺省', () => {
+  assert.deepEqual(requiredPromptArgsOf(undefined), [])
+  assert.deepEqual(requiredPromptArgsOf({ arguments: 'not-an-array' }), [], '形状不对不得让面板崩')
+  assert.deepEqual(requiredPromptArgsOf({ arguments: [null, 7, { name: '' }] }), [], '无名/非对象声明丢弃')
+  assert.deepEqual(
+    requiredPromptArgsOf({ arguments: [{ name: 'text', required: true }, { name: 'tone' }, { name: 'x', required: 'true' }] })
+      .map(a => a.name),
+    ['text'],
+    '字符串 "true" 不算必填 —— 否则界面上每个字段都会被标成必填',
+  )
+  assert.deepEqual(
+    requiredPromptArgsOf({ arguments: [{ name: 'b', required: true }, { name: 'a', required: true }] }).map(a => a.name),
+    ['b', 'a'],
+    '顺序按声明（提示文案要稳定，不能随对象键序抖动）',
+  )
+})
+
+test('missingPromptArgs：必填缺失要点名 —— 空串与纯空白都算没填（反向断言：不放过）', () => {
+  const decl = { arguments: [{ name: 'text', required: true }, { name: 'tone' }] }
+  // 不放过空串 / 纯空白：判成"填了"会让用户拿到一段少了变量的文本，且不知道为什么
+  assert.deepEqual(missingPromptArgs(decl, {}), ['text'], '没填')
+  assert.deepEqual(missingPromptArgs(decl, { text: '' }), ['text'], '空串算没填')
+  assert.deepEqual(missingPromptArgs(decl, { text: '   ' }), ['text'], '纯空白算没填')
+  assert.deepEqual(missingPromptArgs(decl, { text: '\n\t ' }), ['text'], '换行/制表符同样算没填')
+  assert.deepEqual(missingPromptArgs(decl, { tone: '简洁' }), ['text'], '只填了选填项 ⇒ 仍缺 text')
+  // 反向：填了就**不得**再报缺失（否则按钮永远点不了）
+  assert.deepEqual(missingPromptArgs(decl, { text: '正文' }), [], '必填填了就通过，选填不填不算缺')
+  assert.deepEqual(missingPromptArgs(decl, { text: ' 正文 ' }), [], '前后空白不该把内容误判成缺失')
+  assert.deepEqual(missingPromptArgs(decl, { text: 'x', stale: 'y' }), [], '声明之外的键不影响判定')
+  // 无必填的模板：直接可渲染
+  assert.deepEqual(missingPromptArgs({ arguments: [] }, {}), [])
+  assert.deepEqual(missingPromptArgs(undefined, {}), [])
+  // 与 promptArgsOf 必须给出同一份结论（两条判据若有分歧，"按钮可点但提示说缺参数"就会同时出现）
+  const valueCases: Array<Record<string, string>> = [{}, { text: '' }, { text: '  ' }, { text: '正文' }, { tone: 'x' }]
+  for (const values of valueCases) {
+    assert.deepEqual(missingPromptArgs(decl, values), promptArgsOf(decl.arguments, values).missing,
+      `两种判据必须一致：${JSON.stringify(values)}`)
+  }
 })

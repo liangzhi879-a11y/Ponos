@@ -6,7 +6,7 @@
 //   响应可协商为 `application/json` 或 `text/event-stream`。后者天然覆盖了旧式的能力，
 //   因此本模块只实现单端点 POST —— 一个端点、一条代码路径，也更容易把错误语义做准。
 //
-// 与 stdio 客户端的关系：**共用 createJsonRpcSession**（pending/超时/abort/收尾语义只有一份）。
+// 与 stdio 客户端的关系：**共用 createJsonRpcSession（会话语义）+ createCapabilities（能力语义）**。
 // 本模块只负责"把一条 JSON-RPC 消息送到远端、把回来的消息交给会话核心"。
 //
 // 安全红线（每条都有对应测试）：
@@ -14,8 +14,9 @@
 //   · `redirect: 'error'` ⇒ 不跟随重定向（fetch 默认跟随会把 Authorization 带到另一主机）
 //   · 日志与错误串**绝不包含头值**（含"URL 里插值过"的情况，整条 URL 一并脱敏）
 import {
-  createJsonRpcSession, interpolateEnv, contentToText, DEFAULT_MCP_TIMEOUT_MS,
+  createJsonRpcSession, interpolateEnv, DEFAULT_MCP_TIMEOUT_MS,
 } from './mcp.mjs'
+import { createCapabilities } from './mcp-caps.mjs'
 
 /** 本客户端实现的 MCP 协议版本（Streamable HTTP 引入于该版本） */
 export const MCP_HTTP_PROTOCOL_VERSION = '2025-03-26'
@@ -92,7 +93,6 @@ export async function startMcpHttpClient({
   if (resolvedUrl !== rawUrl) secrets.push(resolvedUrl)
 
   let sessionId = null
-  let calls = 0
   const inflight = new Set()   // 在途 AbortController：close 时要能真正断开连接
 
   const session = createJsonRpcSession({ name, timeoutMs, onLog, send: (msg, opts) => send(msg, opts) })
@@ -221,29 +221,22 @@ export async function startMcpHttpClient({
     log('debug', `MCP ${name} initialized 通知发送失败（已忽略）：${redact(e?.message || String(e))}`)
   })
 
-  let toolsCache = null
+  // 能力层（tools / resources / prompts）与 stdio 传输**共用同一个工厂**：
+  // 本模块内不得再出现任何 `session.request('tools/…' | 'resources/…' | 'prompts/…')`
+  // （有源码级反向断言守着）。截断阈值、blob 省略、缓存语义因此只有一处实现。
+  const caps = createCapabilities(session, { name, onLog })
+
   return {
     name,
     url: resolvedUrl === rawUrl ? rawUrl : '[已隐藏]',
     protocolVersion: init?.protocolVersion || null,
     serverInfo: init?.serverInfo || null,
-    async tools() {
-      if (toolsCache) return toolsCache
-      const r = await session.request('tools/list', {})
-      toolsCache = Array.isArray(r?.tools)
-        ? r.tools.map((t) => ({
-          name: String(t.name),
-          description: String(t.description || ''),
-          input_schema: t.inputSchema && typeof t.inputSchema === 'object' ? t.inputSchema : { type: 'object', properties: {} },
-        }))
-        : []
-      return toolsCache
-    },
-    async call(tool, argsObj = {}, opts = {}) {
-      calls++
-      const r = await session.request('tools/call', { name: tool, arguments: argsObj || {} }, opts)
-      return { text: contentToText(r), isError: r?.isError === true, raw: r }
-    },
+    tools: (...a) => caps.tools(...a),
+    call: (...a) => caps.call(...a),
+    resources: (...a) => caps.resources(...a),
+    readResource: (...a) => caps.readResource(...a),
+    prompts: (...a) => caps.prompts(...a),
+    getPrompt: (...a) => caps.getPrompt(...a),
     // 同步关闭：注册表的 closeAll() 是同步遍历（内核退出路径），异步 close 会留下
     // 未处理的 rejection。这里的两步（中止在途请求、收尾会话）本身就无需等待。
     close() {
@@ -253,7 +246,7 @@ export async function startMcpHttpClient({
     },
     stats() {
       const s = session.stats()
-      return { pending: s.pending, closed: s.closed, calls, errors: s.errors, lastStderr: [] }
+      return { pending: s.pending, closed: s.closed, calls: caps.stats().calls, errors: s.errors, lastStderr: [] }
     },
   }
 }

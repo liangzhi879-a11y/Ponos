@@ -12,6 +12,18 @@
 // 三态区分（关键设计）：**400 = 用户给的数据不合规**（磁盘不动，GUI 应把 error 显示在输入框旁），
 // **500 = 磁盘 IO 失败**（数据合规但没写下去），**200 + ok:false = 正常业务结果**
 // （如"测试连接失败"——服务器连不上是家常便饭，不该以 5xx 让 GUI 走进错误分支）。
+//
+// 第二批（2026-09-16，resources/prompts）：新增 `GET /mcp/prompts`（列出各**启用中**服务器的
+// prompt 模板及参数声明）与 `POST /mcp/prompts/get`（渲染一个模板为文本）。
+// 为什么走**本模块自行连接**、而不是读内核的 `promptsSnapshot()`：
+//   ① 桥侧只有 `getMcpStatus`（内核 `snapshot()` 的线上形状），它**刻意不含 prompts**
+//      ——D-4 要求 prompts 与"工具/状态"这条通道分开，塞进去下一个人就会顺手渲染成工具；
+//   ② 该快照在内核未启动时为 null（面板会显示"内核尚未启动"），而"看 prompt 模板"这件事
+//      不该依赖"有没有一轮对话已经跑过"；
+//   ③ `GET /mcp`、`POST /mcp/test` 本来就是这个形状（纯 handler 自己读 mcp.json 再自行连接），
+//      沿用同一范式就不必为 prompts 单造一条会静默失效的链路（本仓库已两次踩过"漏登记被忽略"）。
+// 三条纪律与 /mcp/test 完全一致：`enabled:false` 的**绝不连接**、逐台 try/catch（一台失败不影响其它）、
+// 无论成败都在 finally 里 `close()` 回收（stdio 半启动会留子进程，HTTP 会留未关闭会话）。
 import { join } from 'node:path'
 import { startMcpClient, normalizeMcpServers, readMcpServers, writeMcpServers, mcpConfigSig } from '../kernel/mcp.mjs'
 import { startMcpHttpClient } from '../kernel/mcp-http.mjs'
@@ -24,6 +36,21 @@ const PROBE_MAX_TIMEOUT_MS = 15000
 const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
 const errText = (e) => e?.message || String(e)
 const json = (status, body) => ({ status, body })
+
+/**
+ * 按配置分派传输并完成握手（`/mcp/test`、`/mcp/prompts`、`/mcp/prompts/get` 三处共用一份）。
+ *
+ * 抽出来的理由：这三处若各写一遍"url ? HTTP : stdio + 超时归一"，就会出现**超时上限只改了一处**
+ * 这类偏差——而超时正是本文件最容易伤到用户的地方（面板是**用户在前面等**的交互动作）。
+ * `timeoutMs` 一律**夹在上限内**：用户填 300000 会让请求挂死、GUI 转圈到用户以为界面卡了。
+ */
+async function connectMcpServer(name, cfg) {
+  const asked = Number(cfg?.timeoutMs)
+  const timeoutMs = Number.isFinite(asked) && asked > 0 ? Math.min(PROBE_MAX_TIMEOUT_MS, asked) : PROBE_DEFAULT_TIMEOUT_MS
+  return cfg?.url
+    ? await startMcpHttpClient({ name, url: cfg.url, headers: cfg.headers, timeoutMs })
+    : await startMcpClient({ name, ...cfg, timeoutMs })
+}
 
 /**
  * 处理 `/mcp`、`/mcp/test` 与 `/mcp/status`。
@@ -40,7 +67,9 @@ export async function handleMcpRoute(ctx) {
   const wantPut = pathname === '/mcp' && method === 'PUT'
   const wantTest = pathname === '/mcp/test' && method === 'POST'
   const wantStatus = pathname === '/mcp/status' && method === 'GET'
-  if (!wantGet && !wantPut && !wantTest && !wantStatus) return null
+  const wantPrompts = pathname === '/mcp/prompts' && method === 'GET'
+  const wantPromptGet = pathname === '/mcp/prompts/get' && method === 'POST'
+  if (!wantGet && !wantPut && !wantTest && !wantStatus && !wantPrompts && !wantPromptGet) return null
   if (!configDir) return json(500, { ok: false, error: '路由未配置 configDir（无法定位 mcp.json）' })
   const configPath = join(configDir, 'mcp.json')
 
@@ -112,17 +141,14 @@ export async function handleMcpRoute(ctx) {
     const norm = normalizeMcpServers({ servers: { probe: body.server } })
     if (!norm.ok) return json(400, { ok: false, error: norm.error })
     const cfg = norm.servers.probe
-    const asked = Number(body.server.timeoutMs)
-    const timeoutMs = Number.isFinite(asked) && asked > 0 ? Math.min(PROBE_MAX_TIMEOUT_MS, asked) : PROBE_DEFAULT_TIMEOUT_MS
+    // 超时归一（含上限夹取）在 `connectMcpServer` 内，三处共用一份，不在此重复。
 
     let client = null
     try {
       // 名字固定为 probe：它只出现在日志/错误文案里，不参与工具命名（这个连接用完即弃）
       // 按 cfg.url 分派：远程 HTTP 走 Streamable HTTP 客户端，本地走 stdio 子进程。
       // 两种客户端都在 start 内完成握手且失败即 reject ⇒ 下面的 catch/finally 无需分支。
-      client = cfg.url
-        ? await startMcpHttpClient({ name: 'probe', url: cfg.url, headers: cfg.headers, timeoutMs })
-        : await startMcpClient({ name: 'probe', ...cfg, timeoutMs })
+      client = await connectMcpServer('probe', cfg)
       const tools = await client.tools()
       return json(200, {
         ok: true,
@@ -136,6 +162,95 @@ export async function handleMcpRoute(ctx) {
     } finally {
       // 无论成败都必须回收：探测失败的服务器常留下**半启动的子进程**（stdio）
       // 或**未关闭的会话**（HTTP），不 close 就会在用户反复点"测试"时累积泄漏。
+      try { client?.close() } catch { /* 已退出 */ }
+    }
+  }
+
+  // ---- GET /mcp/prompts：列出各**启用中**服务器的 prompt 模板（含参数声明）----
+  //
+  // 为什么不复用 /mcp/status 的内核快照：见文件头注（prompts 与"状态/工具"刻意分开，
+  // 且本端点不该依赖"内核已启动"）。返回形状与内核 `promptsSnapshot()` 对齐
+  // （`servers[name] = { prompts, expose }` + `errors`），使两处可互换。
+  if (wantPrompts) {
+    const cur = readMcpServers(configPath)
+    // 文件读不出来 ⇒ 200 + ok:false（与 GET /mcp 同一口径）：这是"读不出来"的**报告**，
+    // 不是请求错误；界面要能把原因画出来，而不是撞 5xx 后只剩一句"加载失败"。
+    if (!cur.ok) return json(200, { ok: false, error: cur.error, configPath, servers: {}, errors: {}, disabled: [] })
+    const entries = Object.entries(cur.servers)
+    // 关闭的服务器**绝不连接**（用户关掉它是为了"别再起进程/发请求"），但要在响应里列名，
+    // 否则界面上"这台为什么没有 prompts"会变成一个查不出来的谜。
+    const disabled = entries.filter(([, c]) => c.enabled === false).map(([n]) => n)
+    const enabled = entries.filter(([, c]) => c.enabled !== false)
+    const servers = {}
+    const errors = {}
+    // 并发（内核侧启动也是并发）：一台慢不会拖住另一台；单台失败只记进 errors，
+    // **不影响**其它台的清单，也不影响整体 ok —— "这台没提供 prompts"是常态，不是故障。
+    await Promise.all(enabled.map(async ([name, cfg]) => {
+      let client = null
+      try {
+        client = await connectMcpServer(name, cfg)
+        servers[name] = {
+          prompts: await client.prompts(),
+          // 与内核快照同字段：面板据此把"有 prompt"与"谁能用"分成两维展示
+          expose: cfg.expose?.mode || 'public',
+        }
+      } catch (e) {
+        errors[name] = errText(e)
+      } finally {
+        try { client?.close() } catch { /* 已退出 */ }
+      }
+    }))
+    return json(200, { ok: true, configPath, servers, errors, disabled })
+  }
+
+  // ---- POST /mcp/prompts/get：把选中模板渲染成文本，**交给用户**（D-4：不自动发送）----
+  //
+  // 400 的判据全部是**本地可判定**的（不碰服务器）：请求体形状、`server` 是否在配置里。
+  // 刻意**不**在这里校验"prompt 声明的必填参数是否齐"：那需要先向服务器取声明（多一次往返，
+  // 且服务器不实现 prompts/list 时会误判成"参数缺失"），而"缺参数"本就该由**服务器**判
+  //（它会回 -32602）—— 服务器报错属正常业务结果 ⇒ 200 + ok:false，与"连不上"同类。
+  // 界面侧另有 `promptArgsOf` 在点"渲染"之前就拦下缺失的必填项（那是 UX，不是契约）。
+  if (wantPromptGet) {
+    let body
+    try {
+      body = await readJsonBody()
+    } catch (e) {
+      return json(400, { ok: false, error: `请求体不是合法 JSON：${errText(e)}` })
+    }
+    if (!isPlainObject(body)) return json(400, { ok: false, error: '请求体必须是 JSON 对象' })
+    const serverName = typeof body.server === 'string' ? body.server.trim() : ''
+    if (!serverName) return json(400, { ok: false, error: '请求体需要 { server: "<服务器名>", name: "<prompt 名>", arguments: {...} }' })
+    const promptName = typeof body.name === 'string' ? body.name.trim() : ''
+    if (!promptName) return json(400, { ok: false, error: '请求体缺少 prompt 名称（name）' })
+    if (body.arguments !== undefined && body.arguments !== null && !isPlainObject(body.arguments)) {
+      return json(400, { ok: false, error: 'arguments 必须是 { "<参数名>": "<值>" } 对象' })
+    }
+    // 参数值统一成字符串（MCP 契约里就是字符串）：界面表单里数字/布尔都可能出现，
+    // 这里**不做**静默丢弃 —— 空串照发，由服务器决定它算不算"没填"（stub 就把 '' 当缺失）。
+    const args = {}
+    for (const [k, v] of Object.entries(body.arguments || {})) {
+      if (v === undefined || v === null) continue
+      args[k] = typeof v === 'string' ? v : String(v)
+    }
+
+    const cur = readMcpServers(configPath)
+    // 配置读不出来 ⇒ 500：与上面两条 400 的区别是"用户的请求没毛病，是磁盘读不了"，
+    // 混成同一个码，用户就不知道自己该改输入还是修文件。
+    if (!cur.ok) return json(500, { ok: false, error: cur.error })
+    const cfg = cur.servers[serverName]
+    if (!cfg) return json(400, { ok: false, error: `没有名为「${serverName}」的服务器（请先保存配置）` })
+    // 关闭的服务器不连接 ⇒ 这是**业务结果**（配置合法、用户自己的选择），不是数据不合规
+    if (cfg.enabled === false) return json(200, { ok: false, error: `服务器「${serverName}」已关闭，不会连接` })
+
+    let client = null
+    try {
+      client = await connectMcpServer(serverName, cfg)
+      const r = await client.getPrompt(promptName, args)
+      return json(200, { ok: true, text: r.text, description: r.description, messageCount: r.messageCount })
+    } catch (e) {
+      // 连不上 / prompt 不存在 / 服务器嫌参数不齐 —— 全是正常业务结果，界面照原样展示原因
+      return json(200, { ok: false, error: errText(e) })
+    } finally {
       try { client?.close() } catch { /* 已退出 */ }
     }
   }

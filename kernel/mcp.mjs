@@ -1,16 +1,23 @@
 // MCP 客户端（stdio 传输，P1-5）——零依赖、自包含的 JSON-RPC 2.0 客户端。
 // ---------------------------------------------------------------------------
 // 设计要点（与 spec docs/superpowers/specs/2026-09-16-mcp-client-design.md 对应）：
-//   · 只做 stdio（覆盖面最广、无额外依赖）；只做 tools（resources/prompts/sampling 不做）
-//   · **不 import 引擎内部模块**：本文件只依赖 node 内置 ⇒ 无循环依赖、可直接单测
+//   · 只做 stdio（覆盖面最广、无额外依赖）；能力覆盖 tools + resources + prompts（第二批补齐）
+//   · **只 import 纯逻辑同级模块**（`mcp-caps.mjs`：零依赖、无 IO）⇒ 无循环依赖、可直接单测
 //   · 三类"悬挂"必须杜绝（否则工具调用卡死整个引擎轮次）：
 //       ① 请求超时   ② 子进程退出/断流   ③ 调用方 abort
 //     三种情况都必须把 pending 里的 promise 全部 reject 并清空，绝不留下永不 resolve 的项
 //   · stderr 单独按行留存（最近 N 行）作诊断，**不混入 stdout**（那是协议流）
+//   · tools/resources/prompts 的**能力实现不在本文件**：统一走 `mcp-caps.mjs`，
+//     与 HTTP 传输共用同一份（否则每个 method 都要在两处各写一遍，改一处忘另一处）
 import { spawn } from 'node:child_process'
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
+import { createCapabilities, contentToText } from './mcp-caps.mjs'
+
+// `contentToText` 的实现已搬进 mcp-caps.mjs（resources/prompts 也要用它文本化），
+// 在此**重新导出**：既有调用方（`mcp-http.mjs`、测试）不必改，且"行为不变"有既有断言作证。
+export { contentToText }
 
 export const DEFAULT_MCP_TIMEOUT_MS = 20000
 const STDERR_KEEP = 20
@@ -180,21 +187,7 @@ export function mcpToolName(server, tool) {
   return `mcp__${sanitizeMcpName(server)}__${sanitizeMcpName(tool)}`
 }
 
-/** MCP tools/call 结果 → 纯文本（content 数组展平；非文本条目 JSON 化） */
-export function contentToText(result) {
-  if (result === null || result === undefined) return ''
-  const parts = Array.isArray(result.content) ? result.content : null
-  if (!parts) return typeof result === 'string' ? result : JSON.stringify(result, null, 2)
-  const out = []
-  for (const p of parts) {
-    if (!p || typeof p !== 'object') { out.push(String(p)); continue }
-    if (p.type === 'text' && typeof p.text === 'string') out.push(p.text)
-    else if (p.type === 'image') out.push(`[图片 ${p.mimeType || ''} 已省略]`)
-    else if (p.type === 'resource' && p.resource?.text) out.push(String(p.resource.text))
-    else out.push(JSON.stringify(p))
-  }
-  return out.join('\n')
-}
+// `contentToText` 已移至 `mcp-caps.mjs`（见本文件顶部的重新导出）。
 
 /**
  * JSON-RPC 会话核心（P1-5 扩展：stdio 与 HTTP **共用**）。
@@ -319,8 +312,6 @@ export async function startMcpClient({ name, command, args = [], env = {}, cwd =
     : spawn(command, args, spawnOpts)
 
   const stderrLines = []
-  let calls = 0
-  let toolsCache = null
 
   // —— 传输侧只提供 send；pending/超时/abort/收尾语义全部交给会话核心 ——
   const session = createJsonRpcSession({
@@ -379,6 +370,9 @@ export async function startMcpClient({ name, command, args = [], env = {}, cwd =
 
   const request = session.request
   const notify = session.notify
+  // 能力层（tools / resources / prompts）统一由共用工厂提供 —— 本文件不再自己实现任何
+  // `session.request('tools/…')`；HTTP 传输调用的是**同一个**实现。
+  const caps = createCapabilities(session, { name, onLog })
 
   // —— 握手：initialize → notifications/initialized ——
   const init = await request('initialize', {
@@ -392,23 +386,15 @@ export async function startMcpClient({ name, command, args = [], env = {}, cwd =
     name,
     protocolVersion: init?.protocolVersion || null,
     serverInfo: init?.serverInfo || null,
-    async tools() {
-      if (toolsCache) return toolsCache
-      const r = await request('tools/list', {})
-      toolsCache = Array.isArray(r?.tools)
-        ? r.tools.map((t) => ({
-          name: String(t.name),
-          description: String(t.description || ''),
-          input_schema: t.inputSchema && typeof t.inputSchema === 'object' ? t.inputSchema : { type: 'object', properties: {} },
-        }))
-        : []
-      return toolsCache
-    },
-    async call(tool, argsObj = {}, opts = {}) {
-      calls++
-      const r = await request('tools/call', { name: tool, arguments: argsObj || {} }, opts)
-      return { text: contentToText(r), isError: r?.isError === true, raw: r }
-    },
+    // —— 以下六项转发到共用能力工厂；本文件只负责"传输 + 回收"。——
+    // 用 `(...a) => caps.tools(...a)` 而非 `caps.tools`：保住方法调用时的 this 无依赖，
+    // 同时保持既有返回形状（同样的 promise / 同样的对象）。
+    tools: (...a) => caps.tools(...a),
+    call: (...a) => caps.call(...a),
+    resources: (...a) => caps.resources(...a),
+    readResource: (...a) => caps.readResource(...a),
+    prompts: (...a) => caps.prompts(...a),
+    getPrompt: (...a) => caps.getPrompt(...a),
     close() {
       try { child.stdin.end() } catch { /* 已关闭 */ }
       try { child.kill() } catch { /* 已退出 */ }
@@ -416,7 +402,7 @@ export async function startMcpClient({ name, command, args = [], env = {}, cwd =
     },
     stats() {
       const s = session.stats()
-      return { pending: s.pending, closed: s.closed, calls, errors: s.errors, lastStderr: stderrLines.slice(-5) }
+      return { pending: s.pending, closed: s.closed, calls: caps.stats().calls, errors: s.errors, lastStderr: stderrLines.slice(-5) }
     },
   }
 }

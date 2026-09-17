@@ -351,3 +351,159 @@ export function summaryText(
   if (s.untested) parts.push(`${s.untested} ${labels.untested}`)
   return parts.join(' · ')
 }
+
+// ---------------------------------------------------------------------------
+// prompt 模板（2026-09-16，第二批 resources/prompts；spec D-4）
+//
+// **prompts 是 user-controlled**：挑模板是**用户**的动作，不是模型该自主决定的事。
+// 所以这里的函数只服务"用户点开 → 填参数 → 拿到文本"这条通道，与工具（模型可调用）
+// 在代码里就不共用任何入口——共用了迟早有人顺手把模板渲染进工具视图。
+//
+// 服务器返回的形状是**不可信输入**（别人写的 MCP 服务器）：`arguments` 可能是 undefined、
+// `required` 可能是字符串、整个 prompts 可能不是数组。因此归一化放在本模块（纯函数、可回归），
+// 而不是散在 JSX 里"顺手 .map"——那正是 `arguments.map is not a function` 这类白屏的来源。
+// ---------------------------------------------------------------------------
+
+/** prompt 的参数声明（服务器给的形状，字段一律可选 → 归一化后再用） */
+export type McpPromptArg = { name: string; description?: string; required?: boolean }
+/** 一个 prompt 模板（含参数声明） */
+export type McpPromptInfo = { name: string; description?: string; arguments?: McpPromptArg[] }
+
+/** 预览裁剪上限（**仅显示用**：远端原文可能几十万字符，整段塞进 DOM 会让面板卡住） */
+export const MCP_PROMPT_PREVIEW_CHARS = 4000
+
+/** 未知形状 → prompt 模板数组（非数组/缺字段一律给安全缺省，绝不抛） */
+export function promptListOf(raw: unknown): McpPromptInfo[] {
+  if (!Array.isArray(raw)) return []
+  const out: McpPromptInfo[] = []
+  for (const it of raw) {
+    if (!it || typeof it !== 'object') continue
+    const p = it as Record<string, unknown>
+    const name = String(p.name ?? '').trim()
+    // 没有名字的模板无法被选中、也无法取回 → 直接丢，比渲染一行空白让人误点要好
+    if (!name) continue
+    const args = Array.isArray(p.arguments) ? p.arguments : []
+    out.push({
+      name,
+      description: String(p.description ?? ''),
+      arguments: args
+        .filter(a => a && typeof a === 'object')
+        .map(a => {
+          const x = a as Record<string, unknown>
+          return {
+            name: String(x.name ?? '').trim(),
+            description: String(x.description ?? ''),
+            // 只认显式 true（与内核 `prompts()` 同规则）：缺省即可选，否则界面上每个字段都成必填
+            required: x.required === true,
+          }
+        })
+        .filter(a => a.name !== ''),
+    })
+  }
+  return out
+}
+
+/**
+ * 从 `GET /mcp/prompts` 的结果里取出**某一台**服务器的模板与错误。
+ *
+ * 为什么值得一个纯函数：多服务器下最容易出的错是**错误串台**（把 A 台的原因画到 B 台卡片上），
+ * 以及"这台没返回清单"到底是哪种情况——这三种都只表现为界面上的一行字，没有断言就发现不了：
+ *   · `known:false` = 这个名字**不在桥看到的配置里**（最常见：改了名还没保存）。
+ *     此时若说成"没有提供模板"，用户会去服务器那边查一个根本不存在的问题；
+ *   · `error` 非空 = 桥连它时失败（原因照原样显示）；
+ *   · 两者都空且清单为空 = 它确实没提供模板（服务器的能力选项，不是故障）。
+ */
+export function promptsOfServer(
+  res: { servers?: Record<string, unknown>; errors?: Record<string, string>; disabled?: string[] } | null | undefined,
+  name: string,
+): { prompts: McpPromptInfo[]; error: string; known: boolean } {
+  const key = String(name ?? '').trim()
+  const err = res?.errors && typeof res.errors[key] === 'string' ? res.errors[key] : ''
+  const entry = res?.servers ? (res.servers[key] as { prompts?: unknown } | undefined) : undefined
+  const known = !!key && (
+    (res?.servers ? Object.prototype.hasOwnProperty.call(res.servers, key) : false)
+    || (res?.errors ? Object.prototype.hasOwnProperty.call(res.errors, key) : false)
+    || (Array.isArray(res?.disabled) ? res!.disabled!.includes(key) : false)
+  )
+  return { prompts: promptListOf(entry?.prompts), error: err, known }
+}
+
+/**
+ * 参数表单 → 提交载荷（**这是"渲染"按钮能不能点的唯一判据**）。
+ *
+ * 三条规则都来自真实误用：
+ *   ① **只认 required === true**：服务器没写 required 就是可选（与内核 `prompts()` 同口径）；
+ *   ② **空串/纯空白 = 没填**：界面上"填了个空格"和"没填"对服务器是同一件事，
+ *      若判为已填，用户会看到渲染结果里那段变量是空的却不知道为什么；
+ *   ③ **丢弃声明之外的键**：切换模板后残留的旧值不该被送出去（服务器可能对未知参数直接报错）。
+ * 与桥的关系：桥**不**用本规则拦请求（它没有声明，也不该为一次渲染多打一趟 prompts/list），
+ * 故本函数是 UI 侧的"提前拦"——用户不必等一次网络往返才知道漏填了。
+ */
+export function promptArgsOf(
+  declared: McpPromptArg[] | undefined,
+  values: Record<string, string> | undefined,
+): { ok: boolean; missing: string[]; payload: Record<string, string> } {
+  const vals = values || {}
+  const missing: string[] = []
+  const payload: Record<string, string> = {}
+  for (const a of (declared || [])) {
+    const key = String(a?.name ?? '')
+    if (!key) continue
+    const v = vals[key]
+    const text = v === undefined || v === null ? '' : String(v)
+    if (text.trim() !== '') payload[key] = text
+    else if (a?.required === true) missing.push(key)
+  }
+  return { ok: missing.length === 0, missing, payload }
+}
+
+/**
+ * 某模板的**必填参数清单**（表单据此打"必填"标记；也是 `missingPromptArgs` 的输入）。
+ *
+ * 归一化走 `promptListOf` 那一条规则（借一个占位名字复用），不在这里重写一遍——
+ * "哪些参数算数"若有两份实现，迟早会出现"表单显示 2 个必填、校验只认 1 个"这类偏差。
+ */
+export function requiredPromptArgsOf(
+  prompt: { arguments?: unknown } | null | undefined,
+): McpPromptArg[] {
+  const args = promptListOf([{ name: '__probe__', arguments: prompt?.arguments }])[0]?.arguments ?? []
+  return args.filter(a => a.required === true)
+}
+
+/**
+ * **缺失的必填参数名**（提交前校验；空数组 = 可以点"渲染"）。
+ *
+ * 与 `promptArgsOf` 是同一条规则的两面：那个回答"能不能提交、载荷是什么"，
+ * 这个回答"到底缺了哪几项"——提示里要点名（"请先填写必填参数：text"），
+ * 光有一个 `ok:false` 用户不知道该去填哪个框。
+ * 实现上**委托给 `promptArgsOf`**（只传必填声明）：空串/纯空白算没填那条规则只有一份。
+ */
+export function missingPromptArgs(
+  prompt: { arguments?: unknown } | null | undefined,
+  values: Record<string, string> | null | undefined,
+): string[] {
+  return promptArgsOf(requiredPromptArgsOf(prompt), values || undefined).missing
+}
+
+/**
+ * 渲染结果的**展示**裁剪（空/超长）。
+ *
+ * 只返回预览，**不返回"完整文本"**：调用方本来就有原文（它自己从接口拿的），
+ * 让本函数再带一份，就会出现"复制时到底该复制哪一份"这个迟早会搞错的问题。
+ * 纪律：**复制/插入一律用原文**（`full`），预览只是"看得见"的折中——
+ * 把预览复制走会让用户拿到一段**静默截断**的 prompt，还以为那就是全文。
+ * `empty` 单列出来（而不是让界面判 `text === ''`）：服务器返回空文本时要给一句解释，
+ * 否则用户看到一片空白会以为渲染失败。
+ * 上限的两种写法（`renderPromptText(t, 200)` 与 `renderPromptText(t, { max: 200 })`）语义完全相同——
+ * 都只是"归一化出一个上限"，非法值一律回退默认，绝不出现"裁成空串"这种静默失败。
+ */
+export function renderPromptText(
+  raw: unknown,
+  maxChars: number | { max?: number } = MCP_PROMPT_PREVIEW_CHARS,
+): { text: string; truncated: boolean; originalChars: number; empty: boolean } {
+  const full = raw === undefined || raw === null ? '' : typeof raw === 'string' ? raw : String(raw)
+  const asked = Number(typeof maxChars === 'number' ? maxChars : maxChars?.max)
+  const limit = Number.isFinite(asked) && asked > 0 ? Math.floor(asked) : MCP_PROMPT_PREVIEW_CHARS
+  const truncated = full.length > limit
+  return { text: truncated ? full.slice(0, limit) : full, truncated, originalChars: full.length, empty: full.trim() === '' }
+}

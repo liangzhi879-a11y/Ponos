@@ -22,8 +22,15 @@ function rpcError(id, message, code = -32000) {
   return JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } })
 }
 
-const server = http.createServer((req, res) => {
-  if (mode === 'http500') {
+// —— 第二批（resources + prompts）夹具：与 stdio 夹具**同形**，用于断言"两传输同一实现"。——
+// 只需最小集合：一条正常文本资源、一个 prompt。截断/blob 等边界由 stdio 夹具覆盖
+// （它们属能力层，共用工厂一份实现；HTTP 侧再测一遍同一份逻辑没有增量信息）。
+const HTTP_SMALL_TEXT = 'HTTP 资源正文 hello'
+const HTTP_PROMPTS = [
+  { name: 'summarize', description: '总结一段文本', arguments: [{ name: 'text', description: '要总结的文本', required: true }] },
+]
+
+const server = http.createServer((req, res) => {  if (mode === 'http500') {
     res.writeHead(500, { 'content-type': 'text/plain' })
     res.end('boom')
     return
@@ -89,6 +96,30 @@ const server = http.createServer((req, res) => {
         const text = msg.params?.arguments?.text ?? ''
         payload = rpc(msg.id, { content: [{ type: 'text', text: `echo:${text}` }] })
       }
+    } else if (msg.method === 'resources/list') {
+      payload = rpc(msg.id, {
+        resources: [{ uri: 'file:///http/readme.md', name: 'HTTP README', description: '小文本资源', mimeType: 'text/markdown' }],
+      })
+    } else if (msg.method === 'resources/templates/list') {
+      payload = rpc(msg.id, { resourceTemplates: [] })
+    } else if (msg.method === 'resources/read') {
+      if (msg.params?.uri === 'file:///http/readme.md') {
+        payload = rpc(msg.id, { contents: [{ uri: msg.params.uri, mimeType: 'text/markdown', text: HTTP_SMALL_TEXT }] })
+      } else {
+        payload = rpcError(msg.id, `资源不存在：${msg.params?.uri}`, -32002)
+      }
+    } else if (msg.method === 'prompts/list') {
+      payload = rpc(msg.id, { prompts: HTTP_PROMPTS })
+    } else if (msg.method === 'prompts/get') {
+      // 与 stdio 夹具**同形**（system + user 两条）：两传输渲染结果应逐字相同的断言才有意义
+      payload = msg.params?.arguments?.text
+        ? rpc(msg.id, {
+          messages: [
+            { role: 'system', content: { type: 'text', text: '你是摘要助手。' } },
+            { role: 'user', content: [{ type: 'text', text: `请总结：${msg.params.arguments.text}` }] },
+          ],
+        })
+        : rpcError(msg.id, '缺少必填参数 text', -32602)
     } else {
       payload = rpcError(msg.id, 'method not found', -32601)
     }

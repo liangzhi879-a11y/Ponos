@@ -8,7 +8,7 @@
 //   ③ **body 形状**：PUT 必须发 `{servers}` 整体替换语义，发错形状后端一律 400
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { getMcpConfig, saveMcpConfig, testMcpServer, MCP_BASE, type McpServerConfig } from './mcpApi.ts'
+import { getMcpConfig, saveMcpConfig, testMcpServer, listMcpPrompts, getMcpPrompt, MCP_BASE, type McpServerConfig } from './mcpApi.ts'
 
 /** 用可编排 stub 替换全局 fetch（照 agentsApi.test.ts 范式） */
 function stubFetch(handler: (url: string, init?: RequestInit) => { status?: number; body?: unknown; throwErr?: boolean }) {
@@ -196,5 +196,103 @@ test('未注入 baseUrl 时走默认解析（不显式传参也不得抛，生�
     const r = await getMcpConfig()
     assert.equal(r.ok, true)
     assert.equal(s.calls.length, 1, '应确实发出了请求')
+  } finally { s.restore() }
+})
+
+// ---------------------------------------------------------------------------
+// prompt 模板（2026-09-16，第二批 resources/prompts；spec D-4：**user-controlled**）
+//
+// 这一层要钉住的是"三态如何到达界面"：桥把 400（你填错了）、500（配置读不出来）、
+// 200+ok:false（服务器连不上）分开，API 层统一转成可展示的 error —— 若在这层把
+// 400 吞掉或抛出，界面就会退化成"点了没反应"或白屏，用户完全无从下手。
+test('listMcpPrompts：GET /mcp/prompts，透出各台清单、错误与已关闭名单', async () => {
+  const s = stubFetch(() => ({
+    body: {
+      ok: true,
+      configPath: '/home/u/.yfworking/mcp.json',
+      servers: { good: { prompts: [{ name: 'p1', arguments: [] }], expose: 'public' } },
+      errors: { bad: '连接失败：ECONNREFUSED' },
+      disabled: ['off'],
+    },
+  }))
+  try {
+    const r = await listMcpPrompts('http://127.0.0.1:1')
+    assert.equal(r.ok, true)
+    assert.equal(s.calls[0].init?.method, 'GET')
+    assert.match(String(s.calls[0].url), /\/mcp\/prompts$/, '不得打到 /mcp/prompts/get 上')
+    assert.deepEqual(Object.keys(r.servers), ['good'])
+    assert.equal(r.errors.bad, '连接失败：ECONNREFUSED', '一台连不上不能影响另一台，也不能丢掉原因')
+    assert.deepEqual(r.disabled, ['off'], '已关闭的台要能被界面单独说明')
+    assert.equal(r.configPath, '/home/u/.yfworking/mcp.json')
+  } finally { s.restore() }
+})
+
+test('listMcpPrompts：配置读不出来（ok:false）→ 降级但仍透出原因（不谎报成"没有模板"）', async () => {
+  const s = stubFetch(() => ({ body: { ok: false, error: 'mcp.json 解析失败', servers: {}, errors: {}, disabled: [] } }))
+  try {
+    const r = await listMcpPrompts('http://127.0.0.1:1')
+    assert.equal(r.ok, false)
+    assert.match(String(r.error), /解析失败/)
+    assert.deepEqual(r.servers, {})
+  } finally { s.restore() }
+})
+
+test('listMcpPrompts：网络异常不抛；errors 里的非字符串值被过滤（不给界面 [object Object]）', async () => {
+  const down = stubFetch(() => ({ throwErr: true }))
+  try {
+    const r = await listMcpPrompts('http://127.0.0.1:1')
+    assert.equal(r.ok, false)
+    assert.match(String(r.error), /无法连接本地服务/)
+    assert.deepEqual(r.servers, {})
+  } finally { down.restore() }
+
+  const weird = stubFetch(() => ({ body: { ok: true, servers: {}, errors: { a: 123, b: '真的错了' }, disabled: 'oops' } }))
+  try {
+    const r = await listMcpPrompts('http://127.0.0.1:1')
+    assert.deepEqual(r.errors, { b: '真的错了' })
+    assert.deepEqual(r.disabled, [], 'disabled 不是数组时给空数组，而不是把字符串摊成字符')
+  } finally { weird.restore() }
+})
+
+test('getMcpPrompt：POST 形状为 {server,name,arguments}；成功返回完整文本与描述', async () => {
+  const s = stubFetch(() => ({ body: { ok: true, text: '[user]\n请总结：x', description: '总结一段文本', messageCount: 1 } }))
+  try {
+    const r = await getMcpPrompt('demo', 'summarize', { text: 'x' }, 'http://127.0.0.1:1')
+    assert.equal(r.ok, true)
+    assert.equal(r.text, '[user]\n请总结：x')
+    assert.equal(r.description, '总结一段文本')
+    const call = s.calls[0]
+    assert.equal(call.init?.method, 'POST')
+    assert.match(String(call.url), /\/mcp\/prompts\/get$/)
+    assert.deepEqual(JSON.parse(String(call.init?.body)), { server: 'demo', name: 'summarize', arguments: { text: 'x' } })
+  } finally { s.restore() }
+})
+
+test('getMcpPrompt：桥返回 200+ok:false（连不上/prompt 不存在）→ ok:false 且**不抛**', async () => {
+  const s = stubFetch(() => ({ body: { ok: false, error: 'prompt 不存在：nope' } }))
+  try {
+    const r = await getMcpPrompt('demo', 'nope', {}, 'http://127.0.0.1:1')
+    assert.equal(r.ok, false)
+    assert.equal(r.text, '', '失败时不得留着上一次的文本（会被当成这次的渲染结果）')
+    assert.match(String(r.error), /prompt 不存在/)
+  } finally { s.restore() }
+})
+
+test('getMcpPrompt：400（服务器不存在/参数不合规）→ 原样透出桥的错误文案，不抛', async () => {
+  const s = stubFetch(() => ({ status: 400, body: { ok: false, error: '没有名为「ghost」的服务器（请先保存配置）' } }))
+  try {
+    const r = await getMcpPrompt('ghost', 'summarize', {}, 'http://127.0.0.1:1')
+    assert.equal(r.ok, false)
+    assert.match(String(r.error), /ghost/, '用户要看到自己填错的名字，而不是一句"请求失败"')
+  } finally { s.restore() }
+})
+
+test('getMcpPrompt：服务器返回 text 非字符串 → 空串（不得把 undefined 渲染进界面）', async () => {
+  const s = stubFetch(() => ({ body: { ok: true } }))
+  try {
+    const r = await getMcpPrompt('demo', 'greet', {}, 'http://127.0.0.1:1')
+    assert.equal(r.ok, true)
+    assert.equal(r.text, '')
+    assert.equal(r.description, '')
   } finally { s.restore() }
 })

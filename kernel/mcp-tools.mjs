@@ -33,12 +33,35 @@ export function createMcpRegistry({ configPath, log = () => {} } = {}) {
   const cfgByName = new Map()   // name → 归一化条目（可见性判定的依据）
   const toolKeysByServer = new Map()  // name → [工具全名]（该服务器**实际发现的全部**工具）
   const entriesByKey = new Map()      // 工具全名 → 视图条目
+  // 资源清单：**尽力而为**缓存（能力可选；"不支持"不是故障，故不进 failures）
+  const resourcesByServer = new Map() // name → { items, total, truncated, templatesFailed }
+  // prompt 清单：**绝不进 entriesByKey / view()**（spec D-4：user-controlled，不是模型可自选的能力）
+  const promptsByServer = new Map()   // name → 归一化 prompt 清单
+  const promptErrors = new Map()      // name → prompts/list 失败原因（含"该服务器不提供 prompts"）
   let configSig = ''            // 本次加载所用配置的内容签名（桥据此判断内核是否落后）
 
-  /** 发现单个客户端的工具并写入视图 */
-  async function collect(name, client) {
-    const list = await client.tools()
-    return list.map((t) => ({
+  /** 资源清单 → 文本（含**截断标注**：模型必须知道"这不是全部"，否则会基于残清单下结论） */
+  function renderResourceList(r) {
+    const lines = (r?.items || []).map((x) => {
+      const parts = [`- ${x.uri}`]
+      if (x.name) parts.push(`（${x.name}）`)
+      if (x.mimeType) parts.push(` [${x.mimeType}]`)
+      if (x.isTemplate) parts.push(' [模板]')
+      return parts.join('')
+    })
+    if (r?.truncated) {
+      lines.push(`[清单已截断：共 ${r.total} 条，此处仅列出前 ${r.items.length} 条，还有 ${r.total - r.items.length} 条未列出]`)
+    }
+    return lines.length ? lines.join('\n') : '（该服务器没有资源）'
+  }
+
+  /** 静态描述文案（写成常量便于测试与用户文档引用同一份，不散落） */
+  const LIST_RESOURCES_DESC = '列出该 MCP 服务器上的资源清单（只读；模板以 uriTemplate 形式列出）'
+  const READ_RESOURCE_DESC = '读取该 MCP 服务器上的一个资源（只读；二进制资源只返回元信息，超长内容会被截断）'
+
+  /** 把发现的工具（+ 固定的两个资源工具）转成视图条目 */
+  function toolEntries(name, client, list) {
+    const out = list.map((t) => ({
       key: mcpToolName(name, t.name),
       entry: {
         // 来源标注：让用户与模型都能看出这是外部工具（审批走 approval-mode 的 unknown 档）
@@ -57,6 +80,49 @@ export function createMcpRegistry({ configPath, log = () => {} } = {}) {
         },
       },
     }))
+    // —— 以下两个是**固定存在**的资源工具（spec D-2）——
+    // 为什么做成工具而不是"开会话就把资源塞进上下文"：MCP 规范把 resources 定为
+    // *application-driven*，由宿主决定何时读。本仓库没有长驻宿主 GUI 替模型决定，
+    // 内核就是 agent，工具视图是它唯一的出口 ⇒ 让模型**按需拉取**，避免必然爆上下文的做法。
+    // 副作用（也是刻意）：它们与其它 MCP 工具一样 `concurrencySafe:false`（未知风险档）——
+    // `read_resource` 能读到服务器端任意已暴露文件，比普通工具更需要把关。
+    out.push({
+      key: mcpToolName(name, 'list_resources'),
+      entry: {
+        description: `[MCP:${name}] ${LIST_RESOURCES_DESC}`,
+        input_schema: { type: 'object', properties: {} },
+        concurrencySafe: false,
+        run: async (input, ctx) => {
+          try {
+            const r = await client.resources({ signal: ctx?.signal })
+            return { content: renderResourceList(r), isError: false }
+          } catch (e) {
+            return { content: `MCP 工具错误（${name}/list_resources）：${e?.message || String(e)}`, isError: true }
+          }
+        },
+      },
+    })
+    out.push({
+      key: mcpToolName(name, 'read_resource'),
+      entry: {
+        description: `[MCP:${name}] ${READ_RESOURCE_DESC}`,
+        input_schema: {
+          type: 'object',
+          properties: { uri: { type: 'string', description: '资源 URI（来自 list_resources 的清单）' } },
+          required: ['uri'],
+        },
+        concurrencySafe: false,
+        run: async (input, ctx) => {
+          try {
+            const r = await client.readResource(input?.uri, { signal: ctx?.signal })
+            return { content: r.text, isError: r.isError === true }
+          } catch (e) {
+            return { content: `MCP 工具错误（${name}/read_resource）：${e?.message || String(e)}`, isError: true }
+          }
+        },
+      },
+    })
+    return out
   }
 
   /** 启动全部启用的服务器并发现工具；单个失败只记日志，不影响其它（也不影响内核） */
@@ -107,11 +173,29 @@ export function createMcpRegistry({ configPath, log = () => {} } = {}) {
       clients.push(r.value)
       try {
         // 注意：r.value 是 { name, client } 包装（closeAll 依赖此形状），
-        // 而 collect 需要**真客户端**——首版误传包装对象，导致 client.tools 不是函数、
+        // 而下面需要**真客户端**——首版误传包装对象，导致 client.tools 不是函数、
         // 异常被 catch 吞成"工具列表获取失败"，表现为视图恒空。
+        const client = r.value.client
+        // 三类能力**并行**取：JSON-RPC 按 id 多路复用，并行是安全的。
+        // 串行会让"某台服务器对未知 method 不回包"的坏情况把启动等待累加三倍
+        // （本仓库的 stub 就有 hang 形态，真实服务器也可能这样）。
+        const [toolsR, resR, promptsR] = await Promise.allSettled([
+          client.tools(), client.resources(), client.prompts(),
+        ])
+        // 工具列表失败仍按**故障**处理（保持既有语义：记 failures + 警告）
+        if (toolsR.status !== 'fulfilled') throw toolsR.reason
         const keys = []
-        for (const { key, entry } of await collect(name, r.value.client)) { entriesByKey.set(key, entry); keys.push(key) }
+        for (const { key, entry } of toolEntries(name, client, toolsR.value)) { entriesByKey.set(key, entry); keys.push(key) }
         toolKeysByServer.set(name, keys)
+        // resources / prompts 是**可选能力**：拿不到只记日志，不算故障
+        // （大多数只做 tools 的服务器都会对这两个 method 回 -32601，那不是错误）
+        if (resR.status === 'fulfilled') resourcesByServer.set(name, resR.value)
+        else try { log('info', `MCP 服务器 ${name} 无资源清单（${resR.reason?.message || String(resR.reason)}）`) } catch { /* noop */ }
+        if (promptsR.status === 'fulfilled') promptsByServer.set(name, promptsR.value)
+        else {
+          promptErrors.set(name, promptsR.reason?.message || String(promptsR.reason))
+          try { log('info', `MCP 服务器 ${name} 无 prompts（${promptErrors.get(name)}）`) } catch { /* noop */ }
+        }
       } catch (e) {
         failures.set(name, e?.message || String(e))
         warn(`MCP 服务器 ${name} 工具列表获取失败：${failures.get(name)}`)
@@ -165,7 +249,13 @@ export function createMcpRegistry({ configPath, log = () => {} } = {}) {
     snapshot() {
       const servers = {}
       for (const [name, keys] of toolKeysByServer) {
-        servers[name] = { tools: [...keys], expose: cfgByName.get(name)?.expose?.mode || 'public' }
+        servers[name] = {
+          tools: [...keys],
+          expose: cfgByName.get(name)?.expose?.mode || 'public',
+          // 资源条数（面板可显示"这台有多少资源"）；`null` = 该服务器不提供资源清单
+          // （能力可选，不区分"不支持"与"取失败"——两者对用户是同一件事：现在没有清单可看）
+          resources: resourcesByServer.get(name)?.total ?? null,
+        }
       }
       return {
         servers,
@@ -174,12 +264,41 @@ export function createMcpRegistry({ configPath, log = () => {} } = {}) {
         configSig,
       }
     },
+    /**
+     * 供桥/设置面板取用的 **prompt 清单**（**与工具视图完全分离**）。
+     *
+     * 为什么单独一个方法而不是塞进 `snapshot()`：prompts 是 *user-controlled* 的能力，
+     * 它既不能出现在 `view()` 里（模型不得自主调用），也不该被面板当成"工具"展示。
+     * 独立的取值口是让这条界线**在类型层面**也看得见——顺手塞进 snapshot 的 servers 里，
+     * 下一个人很容易就把它和 tools 一起渲染出去。
+     * `errors` 记录取不到清单的服务器（**多数是"该服务器不提供 prompts"**，属正常情况，
+     * 不是故障；故不进 `failed`）。
+     * @returns {{servers:Object<string,{prompts:Array, expose:string}>, errors:Object<string,string>}}
+     */
+    promptsSnapshot() {
+      const servers = {}
+      for (const [name, list] of promptsByServer) {
+        servers[name] = {
+          // 逐层拷一份：调用方（桥/GUI）不该能改到注册表内部缓存
+          prompts: list.map((p) => ({
+            name: p.name,
+            description: p.description,
+            arguments: p.arguments.map((a) => ({ name: a.name, description: a.description, required: a.required })),
+          })),
+          expose: cfgByName.get(name)?.expose?.mode || 'public',
+        }
+      }
+      return { servers, errors: Object.fromEntries(promptErrors) }
+    },
     /** 内核退出时回收所有 MCP 子进程（不回收会留下孤儿进程） */
     closeAll() {
       for (const { client } of clients) { try { client.close() } catch { /* 已退出 */ } }
       clients.length = 0
       toolKeysByServer.clear()
       entriesByKey.clear()
+      resourcesByServer.clear()
+      promptsByServer.clear()
+      promptErrors.clear()
     },
   }
 }

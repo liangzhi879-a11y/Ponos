@@ -213,3 +213,82 @@ export async function testMcpServer(
     serverInfo: (r.data?.serverInfo as McpTestResult['serverInfo']) || null,
   }
 }
+
+// ---------------------------------------------------------------------------
+// prompt 模板（2026-09-16，第二批 resources/prompts；spec D-4：**user-controlled**）
+//
+// 为什么走 bridge 的两个端点而不是让面板自己连 MCP：prompt 里的参数占位、渲染结果都来自
+// 别人的服务器，面板不该为此起子进程/持有会话（那会绕开内核的启动与回收）。桥侧是纯 handler，
+// 已在 kernel 侧有回归（server/mcp-prompts-routes.test.mjs）。
+//
+// 与既有函数同纪律：**永不抛**。三态语义（400 = 你填错了／500 = 配置文件读不出来／
+// 200+ok:false = 服务器连不上或嫌参数不齐）在这里统一收敛成"可展示的中文 error"。
+// 有意**不区分** 400 与 200+ok:false：面板两种都只是把原因显示在表单旁，
+// 而真正决定"能不能点渲染"的是界面侧 `promptArgsOf` 的本地校验。
+
+/**
+ * `GET /mcp/prompts` 的结果。
+ * `servers[name]` 的形状由**服务器**决定（可能是任意 JSON）⇒ 标成 `unknown` 是本条契约的一部分：
+ * 归一化在界面侧纯函数 `promptListOf` / `promptsOfServer` 里做（那里有用例钉住坏形状不崩），
+ * 若在此处断言成具体类型，只会把"未校验的数据"伪装成"已校验的数据"。
+ */
+export type McpPromptsResult = {
+  ok: boolean
+  error?: string
+  configPath?: string
+  servers: Record<string, unknown>
+  /** 取不到清单的服务器（**已关闭的不在其中**，它们只是没连，不算出错） */
+  errors: Record<string, string>
+  disabled: string[]
+}
+
+/** 读取各**启用中**服务器的 prompt 模板清单（含参数声明）。失败降级为「空清单 + 原因」。 */
+export async function listMcpPrompts(baseUrl?: string): Promise<McpPromptsResult> {
+  const r = await requestJson('/mcp/prompts', { method: 'GET' }, baseUrl)
+  if (r.error) return { ok: false, servers: {}, errors: {}, disabled: [], error: r.error }
+  const data = r.data ?? {}
+  const servers = (data.servers && typeof data.servers === 'object' ? data.servers : {}) as Record<string, unknown>
+  const errors: Record<string, string> = {}
+  if (data.errors && typeof data.errors === 'object') {
+    for (const [k, v] of Object.entries(data.errors as Record<string, unknown>)) {
+      if (typeof v === 'string') errors[k] = v
+    }
+  }
+  const disabled = Array.isArray(data.disabled) ? data.disabled.map(v => String(v)) : []
+  const configPath = typeof data.configPath === 'string' ? data.configPath : undefined
+  if (data.ok === false) {
+    return {
+      ok: false, servers, errors, disabled, configPath,
+      error: typeof data.error === 'string' ? data.error : 'prompt 清单读取失败',
+    }
+  }
+  return { ok: true, servers, errors, disabled, ...(configPath ? { configPath } : {}) }
+}
+
+/** `POST /mcp/prompts/get` 的结果（`text` 是**完整**渲染文本，画面裁不裁由界面决定） */
+export type McpPromptGetResult = { ok: boolean; text: string; description: string; error?: string }
+
+/**
+ * 渲染一个 prompt 模板。**这是"用户点一下"的动作**，绝不会被自动触发：
+ * prompts 属 user-controlled，模型不参与挑选，渲染结果也只是**交给用户**（复制/插入输入框）。
+ */
+export async function getMcpPrompt(
+  server: string,
+  name: string,
+  args: Record<string, string>,
+  baseUrl?: string,
+): Promise<McpPromptGetResult> {
+  const r = await requestJson('/mcp/prompts/get', {
+    method: 'POST',
+    body: { server, name, arguments: args },
+  }, baseUrl)
+  if (r.error) return { ok: false, text: '', description: '', error: r.error }
+  if (r.data?.ok === false) {
+    return { ok: false, text: '', description: '', error: typeof r.data.error === 'string' ? r.data.error : '渲染失败' }
+  }
+  return {
+    ok: true,
+    text: typeof r.data?.text === 'string' ? (r.data.text as string) : '',
+    description: typeof r.data?.description === 'string' ? (r.data.description as string) : '',
+  }
+}

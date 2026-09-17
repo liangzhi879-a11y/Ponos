@@ -15,7 +15,8 @@ import { createMcpRegistry } from '../kernel/mcp-tools.mjs'
 const STUB = fileURLToPath(new URL('./fixtures/mcp-stub-server.mjs', import.meta.url))
 const NODE = process.execPath
 /** 桩服务器暴露 5 个工具：echo / boom / hang / die / plain */
-const STUB_TOOLS = 5
+// 桩服务器工具数：5 个原生工具 + 第二批固定追加的 2 个资源工具（list_resources / read_resource）
+const STUB_TOOLS = 7
 
 function tmpCfg(servers) {
   const dir = mkdtempSync(join(tmpdir(), 'yfw-mcp-reg-'))

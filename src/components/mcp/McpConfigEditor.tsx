@@ -30,15 +30,22 @@
 //      `bound` 但未选 agent ⇒ 校验报错、禁用保存（fail-closed 的界面侧对应：内核读侧
 //      遇到空列表会让该服务器对**所有人**不可见，绝不退化成 public）。
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Plug, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Copy, FileText, Plug, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Button, Input } from '@/components/ui'
 import { useTranslation } from '@/i18n/useTranslation'
 import {
   getMcpConfig,
   saveMcpConfig,
   testMcpServer,
+  listMcpPrompts,
+  getMcpPrompt,
   type McpServerConfig,
+  type McpPromptsResult,
 } from '@/lib/mcpApi'
+// 渲染结果**交给用户**的落点：往对话输入框里塞草稿（`autoSend=false` ⇒ 绝不自动发送）。
+// 复用既有 `pendingInput` 通道而不是自己维护一份：ChatInput 已经在消费它（切 rail 后再回来也生效），
+// 另起一条链路就会出现"插进去但输入框看不见"这种只在某一侧复现的怪事。
+import { useUIStore } from '@/stores/uiStore'
 // 授权多选的 agent 来源：与 agent 管理页**同源**（`GET /agents` 返回完整目录 + disabled 标记）。
 // 若面板自己另立一份列表，用户就会在两边看到不同的可选集合，甚至"选了一个不存在的 agent"
 // （而那个工具将无人可用）。
@@ -47,7 +54,8 @@ import {
   badgeOf, toolsOf, errorOf, summarize, summaryText, transportOf, configForTransport, canSaveConfig,
   parseArgLines, formatArgLines, parseKeyValueLines, formatKeyValueLines, nextDraft,
   authLevelOf, applyAuthLevel, authFieldsOf, requiredFilledOf, validateRowIssues,
-  type McpTestState, type McpTransport,
+  promptArgsOf, promptsOfServer, renderPromptText, missingPromptArgs,
+  type McpTestState, type McpTransport, type McpPromptInfo,
 } from '@/components/mcp/mcpFormat'
 
 type Row = {
@@ -70,6 +78,36 @@ type Row = {
 
 let seq = 0
 const nextKey = () => `row-${++seq}`
+
+/**
+ * 一台服务器的 prompt 模板面板状态（2026-09-16，第二批；spec D-4）。
+ *
+ * 为什么每行各自存一份、而不是一个"当前展开的行"：多台服务器同时开着面板是常态
+ * （用户对照着看两台的模板），共用一个槽位会让"点第二台时第一台的内容跳到第二台上"。
+ *
+ * `res` 存的是**接口原始结果**（不预先归一化）：归一化（含"名字是否在配置里"的判定）
+ * 全部由渲染时的纯函数 `promptsOfServer` 做——它是被用例钉住的那一份，也只有在渲染时
+ * 才拿得到最新的行名（用户可能刚改过名字还没保存）。
+ * `text` 是服务器返回的**完整**渲染文本（`null` = 还没渲染过）：预览裁剪只在渲染时做，
+ * 复制/插入一律用这一份，避免把被裁剪的预览当成全文交出去。
+ */
+type PromptPanel = {
+  open: boolean
+  loading: boolean
+  res: McpPromptsResult | null
+  /** 选中的模板名（'' = 未选） */
+  picked: string
+  values: Record<string, string>
+  rendering: boolean
+  renderError: string
+  text: string | null
+  copied: boolean
+  inserted: boolean
+}
+const emptyPromptPanel = (): PromptPanel => ({
+  open: false, loading: false, res: null, picked: '', values: {},
+  rendering: false, renderError: '', text: null, copied: false, inserted: false,
+})
 
 /** 新建行默认「本地命令」：既有用户几乎都是 stdio，默认值保持原样（零行为变化） */
 const emptyConfig = (kind: McpTransport = 'stdio'): McpServerConfig =>
@@ -202,6 +240,8 @@ export function McpConfigEditor() {
   // 授权多选的 agent 目录（与 agent 管理页同源）。取不到就只显示档位，不阻塞配置编辑：
   // 拉列表失败不该让用户连"改 URL"都做不到。
   const [agents, setAgents] = useState<Array<{ id: string; name?: string; disabled?: boolean }>>([])
+  // 每台服务器的 prompt 模板面板状态（按行 key 存，见 PromptPanel 注释）
+  const [prompts, setPrompts] = useState<Record<string, PromptPanel>>({})
   useEffect(() => {
     void (async () => {
       try {
@@ -237,10 +277,81 @@ export function McpConfigEditor() {
     await Promise.all(valid.map(r => doTest(r)))
   }, [doTest])
 
+  // ---- prompt 模板（2026-09-16，第二批；spec D-4）----
+  // 这一组刻意**不用 useCallback**：它们只被 onClick 调用（不像 doTest/load 要进 effect 依赖），
+  // 而 useCallback 一旦漏写 `lang` 依赖，里面的 `t` 就会用旧语言缓存住文案
+  // （本文件已为同类问题付过代价，见 load 的循环注释）。
+  const panelOf = (key: string): PromptPanel => prompts[key] ?? emptyPromptPanel()
+  const patchPanel = (key: string, fn: (p: PromptPanel) => PromptPanel) =>
+    setPrompts(prev => ({ ...prev, [key]: fn(prev[key] ?? emptyPromptPanel()) }))
+
+  /**
+   * 展开/收起某台的模板面板。每次展开都**重新取**（不缓存）：
+   * 模板是服务器端可变的数据，缓存只会让用户看到过期事实（内核侧对 resources 同理不缓存）。
+   * 取的是**磁盘上的配置**（桥读 mcp.json）——名字改了还没保存时，由 known=false 的那条文案说明。
+   */
+  const togglePrompts = async (row: Row): Promise<void> => {
+    if (panelOf(row.key).open) { patchPanel(row.key, p => ({ ...p, open: false })); return }
+    patchPanel(row.key, () => ({ ...emptyPromptPanel(), open: true, loading: true }))
+    const res = await listMcpPrompts()
+    patchPanel(row.key, p => ({ ...p, loading: false, res }))
+  }
+
+  /** 选中一个模板：清掉参数与上一次的渲染结果（旧参数配新模板会渲染出莫名其妙的东西） */
+  const pickPrompt = (key: string, name: string) =>
+    patchPanel(key, p => ({
+      ...p, picked: name, values: {}, text: null, renderError: '',
+      rendering: false, copied: false, inserted: false,
+    }))
+
+  /** 改参数值 ⇒ 作废上一次渲染（那份结果只对改之前的那组参数成立） */
+  const setArg = (key: string, argName: string, value: string) =>
+    patchPanel(key, p => ({
+      ...p, values: { ...p.values, [argName]: value }, text: null, renderError: '', copied: false, inserted: false,
+    }))
+
+  /** 渲染：**用户点一下才发生**（prompts 属 user-controlled，模型不参与挑选） */
+  const doRender = async (row: Row): Promise<void> => {
+    const p = panelOf(row.key)
+    const serverName = row.name.trim()
+    const decl = promptsOfServer(p.res, serverName).prompts.find(x => x.name === p.picked)?.arguments
+    const check = promptArgsOf(decl, p.values)
+    // 兜底（按钮已按同一判据禁用）：用键盘/旧渲染帧仍可能触发到 —— 缺必填就别白跑一趟网络
+    if (!check.ok) {
+      patchPanel(row.key, s => ({ ...s, renderError: t('settings.mcpPromptMissing', { names: check.missing.join('、') }), text: null }))
+      return
+    }
+    const picked = p.picked
+    patchPanel(row.key, s => ({ ...s, rendering: true, renderError: '', text: null, copied: false, inserted: false }))
+    const r = await getMcpPrompt(serverName, picked, check.payload)
+    patchPanel(row.key, s => (s.picked !== picked
+      // 渲染期间用户换了模板：这份结果的归属已经变了，丢掉比贴到另一个模板上诚实
+      ? s
+      : {
+          ...s, rendering: false,
+          text: r.ok ? r.text : null,
+          renderError: r.ok ? '' : (r.error || t('settings.mcpPromptRenderFailed')),
+        }))
+  }
+
+  /** 复制**完整**渲染文本（不是被裁剪的预览）；剪贴板不可用时不谎称"已复制" */
+  const copyText = (key: string, text: string) => {
+    navigator.clipboard.writeText(text)
+      .then(() => patchPanel(key, s => ({ ...s, copied: true })))
+      .catch(() => { /* 无权限/非安全上下文 */ })
+  }
+
+  /** 插入对话输入框：**不自动发送**（`autoSend=false`）—— 发不发由用户按回车决定 */
+  const insertText = (key: string, text: string) => {
+    useUIStore.getState().setPendingInput(text, false)
+    patchPanel(key, s => ({ ...s, inserted: true }))
+  }
+
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
     setTests({})
+    setPrompts({})               // 配置重读 ⇒ 已展开的模板面板作废（行 key 也全换了）
     autoRan.current = false       // 「重新读取」后应重新实测
     try {
       const r = await getMcpConfig()
@@ -432,6 +543,14 @@ export function McpConfigEditor() {
               const tools = toolsOf(test)
               const err = errorOf(test)
               const kind = row.transport   // 真源：不从 config 反推（刚切到 HTTP 时 url 还是空的）
+              // prompt 模板面板（第二批）：归一化与"这名字在不在配置里"都在渲染时算——
+              // 用的是**当前行名**（用户可能刚改过还没保存），所以不能预先存进 state
+              const panel = panelOf(row.key)
+              const promptView = panel.open ? promptsOfServer(panel.res, row.name.trim()) : null
+              const promptPicked = promptView ? promptView.prompts.find(p => p.name === panel.picked) : undefined
+              const promptCheck = promptArgsOf(promptPicked?.arguments, panel.values)
+              // 只在真有渲染结果时才算预览（否则白切一次字符串）
+              const promptPreview = panel.text === null ? null : renderPromptText(panel.text)
               return (
                 <div key={row.key} className="space-y-3 rounded-xl border p-4">
                   {/* 传输类型放在卡片最上方：它是"这台服务器怎么连"的第一决策，决定下面渲染哪组字段 */}
@@ -538,6 +657,18 @@ export function McpConfigEditor() {
                     >
                       <Plug className="w-4 h-4" />
                       {test?.running ? t('settings.mcpTesting') : t('settings.mcpTest')}
+                    </Button>
+                    {/* prompt 模板入口（第二批）。关闭的服务器不给点：桥对已关闭的台是**不连接**的
+                        （与卡片上的"连接测试"不同——那个探的是表单里这份配置，与开关无关） */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={!row.name.trim() || authLevelOf(row.config) === 'off'}
+                      title={authLevelOf(row.config) === 'off' ? t('settings.mcpPromptsOff') : ''}
+                      onClick={() => void togglePrompts(row)}
+                    >
+                      <FileText className="w-4 h-4" />
+                      {panel.open ? t('settings.mcpPromptsClose') : t('settings.mcpPromptsOpen')}
                     </Button>
                     <Button variant="ghost" size="sm" onClick={() => removeRow(row.key)}>
                       <Trash2 className="w-4 h-4" />
@@ -658,6 +789,125 @@ export function McpConfigEditor() {
                           </span>
                         ))}
                       </div>
+                    </div>
+                  )}
+
+                  {/* ---- prompt 模板（第二批，spec D-4）----
+                      prompts 是 *user-controlled*：由**用户**挑模板 → 填参数 → 拿到文本。
+                      结果只**交给用户**（复制/插入输入框），绝不自动发送、也绝不注册成模型可调用的工具。 */}
+                  {panel.open && promptView && (
+                    <div className="space-y-2 rounded-lg border border-brand-500/20 bg-brand-500/5 px-3 py-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <FileText className="w-[14px] h-[14px] text-brand-500" />
+                        <span className="text-xs font-medium text-primary">{t('settings.mcpPrompts')}</span>
+                        <span className="text-[10px] text-tertiary">{t('settings.mcpPromptsHint')}</span>
+                      </div>
+
+                      {panel.loading && <p className="text-xs text-tertiary">{t('settings.mcpPromptsLoading')}</p>}
+
+                      {/* 三态各自说清：名字不在配置里（多半没保存）／桥连它失败／它确实没有模板。
+                          混为一谈的话，用户会对着一台没坏的服务器反复找问题。 */}
+                      {!panel.loading && !promptView.known && (
+                        <p className="text-xs text-amber-400">{t('settings.mcpPromptsUnsaved')}</p>
+                      )}
+                      {!panel.loading && promptView.known && promptView.error && (
+                        <p className="text-xs text-red-400">{t('settings.mcpTestBad')}: {promptView.error}</p>
+                      )}
+                      {!panel.loading && promptView.known && !promptView.error && promptView.prompts.length === 0 && (
+                        <p className="text-xs text-tertiary">{t('settings.mcpPromptsEmpty')}</p>
+                      )}
+
+                      {promptView.prompts.length > 0 && (
+                        <div className="space-y-1">
+                          <span className="text-[10px] uppercase tracking-wide text-tertiary">{t('settings.mcpPromptPick')}</span>
+                          <div className="flex flex-wrap gap-1">
+                            {promptView.prompts.map(pr => (
+                              <Button
+                                key={pr.name}
+                                size="xs"
+                                variant={panel.picked === pr.name ? 'primary' : 'outline'}
+                                title={pr.description || ''}
+                                onClick={() => pickPrompt(row.key, pr.name)}
+                              >
+                                {pr.name}
+                              </Button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {promptPicked && (
+                        <div className="space-y-1.5">
+                          {promptPicked.description && (
+                            <p className="text-[10px] text-tertiary">{promptPicked.description}</p>
+                          )}
+                          {/* 参数区标题：字段标签就是参数名本身，上面没有小标题时容易与描述混成一片 */}
+                          {!!(promptPicked.arguments || []).length && (
+                            <span className="text-[10px] uppercase tracking-wide text-tertiary">{t('settings.mcpPromptArgs')}</span>
+                          )}
+                          {(promptPicked.arguments || []).map(a => (
+                            <label key={a.name} className="block space-y-0.5">
+                              <span className="text-[10px] text-tertiary">
+                                {a.name}
+                                {a.required ? ` · ${t('settings.mcpPromptRequired')}` : ''}
+                                {a.description ? ` · ${a.description}` : ''}
+                              </span>
+                              {/* 多行：prompt 的参数常是一整段文本，单行框会让人以为只能填一行 */}
+                              <MultilineArea
+                                text={panel.values[a.name] ?? ''}
+                                rows={2}
+                                onText={v => setArg(row.key, a.name, v)}
+                              />
+                            </label>
+                          ))}
+                          <div className="flex flex-wrap items-center gap-2">
+                            {/* 必填未齐就禁用（判据 = 纯函数 promptArgsOf），并把缺哪个直接写出来 ——
+                                让用户点了才知道缺什么，是这一屏最容易惹人烦的地方。
+                                提示里的清单走 `missingPromptArgs`（同一个纯函数的另一面）：
+                                它点的名就是"缺的必填项"，而 `promptCheck` 只回答"能不能提交"。 */}
+                            <Button size="xs" variant="outline" disabled={panel.rendering || !promptCheck.ok} onClick={() => void doRender(row)}>
+                              {panel.rendering ? t('settings.mcpPromptRendering') : t('settings.mcpPromptRender')}
+                            </Button>
+                            {!promptCheck.ok && (
+                              <span className="text-[10px] text-amber-400">
+                                {t('settings.mcpPromptMissing', { names: missingPromptArgs(promptPicked, panel.values).join('、') })}
+                              </span>
+                            )}
+                            {panel.renderError && <span className="text-[10px] text-red-400">{panel.renderError}</span>}
+                          </div>
+                        </div>
+                      )}
+
+                      {promptPreview && (
+                        <div className="space-y-1">
+                          <span className="text-[10px] uppercase tracking-wide text-tertiary">{t('settings.mcpPromptResult')}</span>
+                          {promptPreview.empty ? (
+                            <p className="text-[10px] text-amber-400">{t('settings.mcpPromptEmptyText')}</p>
+                          ) : (
+                            <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-all rounded bg-black/20 px-2 py-1 font-mono text-[10px] text-secondary">
+                              {promptPreview.text}
+                            </pre>
+                          )}
+                          {/* 裁剪必须说明：否则用户会把预览当全文复制走，静默少一段 */}
+                          {promptPreview.truncated && (
+                            <p className="text-[10px] text-tertiary">
+                              {t('settings.mcpPromptTruncated', { shown: promptPreview.text.length, total: promptPreview.originalChars })}
+                            </p>
+                          )}
+                          <div className="flex flex-wrap items-center gap-2">
+                            {/* 两个动作都用**完整**原文（panel.text），不是上面那份预览 */}
+                            <Button size="xs" variant="outline" onClick={() => copyText(row.key, panel.text ?? '')}>
+                              <Copy className="w-3 h-3" />
+                              {t('settings.mcpPromptCopy')}
+                            </Button>
+                            <Button size="xs" variant="outline" onClick={() => insertText(row.key, panel.text ?? '')}>
+                              {t('settings.mcpPromptInsert')}
+                            </Button>
+                            {panel.copied && <span className="text-[10px] text-emerald-400">{t('settings.mcpPromptCopied')}</span>}
+                            {panel.inserted && <span className="text-[10px] text-emerald-400">{t('settings.mcpPromptInserted')}</span>}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 

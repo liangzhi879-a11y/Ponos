@@ -24,7 +24,10 @@ import { fileURLToPath } from 'node:url'
 const KERNEL_CLI = fileURLToPath(new URL('../kernel/cli.mjs', import.meta.url))
 const STUB = fileURLToPath(new URL('./fixtures/mcp-stub-server.mjs', import.meta.url))
 const SESSION = 'mcp-auth-0000-0000-0000-000000000001'
-const STUB_TOOLS = 5
+// 桩服务器的**工具数**：5 个原生工具（echo/boom/hang/die/plain）
+// + 第二批为每个启用服务器**固定追加**的 2 个资源工具（list_resources / read_resource）。
+// 资源工具同样受 expose 过滤（本文件正是验这条），故这里的基数须同步为 7。
+const STUB_TOOLS = 7
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** 假 Anthropic 端点：记录请求体（工具表断言只读它），回一个纯文本收尾 */
