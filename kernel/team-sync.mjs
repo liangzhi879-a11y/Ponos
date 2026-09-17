@@ -19,22 +19,47 @@ import { join } from 'node:path'
 import { hashLine } from '../shared/knowledge-core.mjs'
 import { writeFileAtomicSync } from '../shared/atomic-write.mjs'
 import { loadTeamConfig } from './team-store.mjs'
-import { writeVerifiedSync, openTeamSource, detectPlaceholderSync } from '../shared/team-source.mjs'
+import { writeVerifiedSync, openTeamSource, detectPlaceholderSync, teamPaths } from '../shared/team-source.mjs'
 
-/** 团队源里知识空间与经验的位置（§7.2 只规定同步基础设施；这两处是 S3 定义的内容约定）。 */
+/**
+ * 团队源里知识空间与经验的位置（§7.2 只规定同步基础设施；这两处是 S3 定义的内容约定）。
+ * 二者都放在 `teamPaths(teamDir)` 的**容器**里（`.yfworking/knowledge`、`.yfworking/experience`），
+ * 与用户的工作文件分开；旧布局（团队根下的同名目录）由 `*Dirs` 系列做只读回退。
+ */
 export const TEAM_CONTENT_SUBDIR = Object.freeze({ KNOWLEDGE: 'knowledge', EXPERIENCE: 'experience' })
 
 /** 团队知识空间 id（`team-<teamId>`，§7.1 指定）。 */
 export function teamSpaceId(teamId) { return `team-${String(teamId)}` }
 
-/** 团队知识空间根目录（在**共享目录**里，因此双方看到的是同一份）。 */
+/**
+ * 团队知识空间根目录（在**共享目录**里，因此双方看到的是同一份）。
+ * 写侧路径（容器内）；读侧请用 `teamKnowledgeRoots`。
+ */
 export function teamKnowledgeRoot(teamDir, teamId) {
-  return join(String(teamDir), TEAM_CONTENT_SUBDIR.KNOWLEDGE, 'spaces', teamSpaceId(teamId))
+  return join(teamPaths(teamDir).knowledgeDir, 'spaces', teamSpaceId(teamId))
 }
 
-/** 团队经验目录（共享）。 */
+/** 团队经验目录（共享）。写侧路径（容器内）；读侧请用 `teamExperienceDirs`。 */
 export function teamExperienceDir(teamDir) {
-  return join(String(teamDir), TEAM_CONTENT_SUBDIR.EXPERIENCE)
+  return join(teamPaths(teamDir).experienceDir)
+}
+
+/** 团队知识空间根的**双读**候选（容器优先，旧布局回退）。 */
+export function teamKnowledgeRoots(teamDir, teamId) {
+  const p = teamPaths(teamDir)
+  return [join(p.knowledgeDir, 'spaces', teamSpaceId(teamId)), join(p.legacy.knowledgeDir, 'spaces', teamSpaceId(teamId))]
+}
+
+/** 团队经验目录的**双读**候选（容器优先，旧布局回退）。 */
+export function teamExperienceDirs(teamDir) {
+  const p = teamPaths(teamDir)
+  return [p.experienceDir, p.legacy.experienceDir]
+}
+
+/** 双读第一个**存在**的目录；都不存在时返回写侧（容器内）路径。 */
+function firstExistingDir(dirs) {
+  for (const d of dirs) if (existsSync(d)) return d
+  return dirs[0]
 }
 
 /**
@@ -49,7 +74,10 @@ export function teamSpaceSpecs(configDir) {
   const out = []
   for (const [teamId, t] of Object.entries(cfg.teams || {})) {
     if (!t || !t.dir) continue
-    const root = teamKnowledgeRoot(t.dir, teamId)
+    // 双读：容器内的 knowledge/ 优先，旧布局（团队根下）回退。
+    // 注意这里**只挂一个根**（而非两个）：知识/经验是内容（不是可并集的日志记录），
+    // 挂两个根会让同一份内容分裂成两处、各自只见一半。
+    const root = firstExistingDir(teamKnowledgeRoots(t.dir, teamId))
     if (!existsSync(root)) continue
     out.push({
       id: teamSpaceId(teamId),
@@ -141,7 +169,8 @@ export function unionEntryLines(aLines, bLines) {
 
 /** 读团队某主题的经验条目（占位符/缺失 → 空，**不报错**）。 */
 export function readTeamExperience(teamDir, theme) {
-  const p = join(teamExperienceDir(teamDir), `${theme}.md`)
+  // 双读：容器内的 experience/ 优先，旧布局（团队根下）回退 —— 旧团队的经验条目仍读得到
+  const p = join(firstExistingDir(teamExperienceDirs(teamDir)), `${theme}.md`)
   if (!existsSync(p)) return { path: p, lines: [], exists: false }
   const ph = detectPlaceholderSync(p)
   if (ph.placeholder) return { path: p, lines: [], exists: true, placeholder: true, reason: ph.reason }
@@ -184,9 +213,14 @@ export function syncTeamExperience({ teamDir, theme, localLines, now = new Date(
 
 /** 列出团队源里已有的经验主题（供 UI/排障）。 */
 export function listTeamExperienceThemes(teamDir) {
-  let names = []
-  try { names = readdirSync(teamExperienceDir(teamDir)) } catch { return [] }
-  return names.filter((n) => n.endsWith('.md')).map((n) => n.replace(/\.md$/, '')).sort()
+  // 双读：新旧两个 experience 目录的并集（旧团队的主题不能被漏掉）
+  const set = new Set()
+  for (const d of teamExperienceDirs(teamDir)) {
+    let names = []
+    try { names = readdirSync(d) } catch { continue }
+    for (const n of names) if (n.endsWith('.md')) set.add(n.replace(/\.md$/, ''))
+  }
+  return Array.from(set).sort()
 }
 
 // ---------------------------------------------------------------------------
@@ -216,8 +250,8 @@ function builtinIds() { return ['experience', 'session-memory', 'skill-experienc
 export function checkTeamContentReady(teamDir, teamId) {
   const src = openTeamSource({ root: teamDir })
   const out = { ok: true, problems: [] }
-  if (!existsSync(src.paths.manifest)) { out.ok = false; out.problems.push('team-manifest-missing') }
-  const k = teamKnowledgeRoot(teamDir, teamId)
+  if (!existsSync(src.paths.read.manifestFile())) { out.ok = false; out.problems.push('team-manifest-missing') }
+  const k = firstExistingDir(teamKnowledgeRoots(teamDir, teamId))
   if (!existsSync(k)) out.problems.push('knowledge-dir-missing')
   const e = teamExperienceDir(teamDir)
   if (!existsSync(e)) out.problems.push('experience-dir-missing')

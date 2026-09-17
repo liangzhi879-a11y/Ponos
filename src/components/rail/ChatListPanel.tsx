@@ -17,6 +17,7 @@ import { isChatLike } from '@/lib/chatModeUi'
 // 也归个人 ⇒ 列表逐字不变（团队能力默认关闭）。
 import { filterConversationsByMode } from '@/lib/teamModeUi'
 import { useModeFilter } from '@/stores/teamStore'
+import { ModeFlipButton } from '@/components/team/ModeFlipButton'
 import type { Conversation } from '@/types'
 
 export function ChatListPanel() {
@@ -50,6 +51,8 @@ export function ChatListPanel() {
           <MessageSquare className="w-6 h-6 text-tertiary" />
           <span className="text-xs text-secondary leading-relaxed">{t('rail.chatEmpty')}</span>
           {hiddenByMode && <span className="text-[10px] text-tertiary leading-relaxed">{t('team.listFilteredEmpty')}</span>}
+          {/* 只说明不够：空态直接给出"切回个人模式"这个动作（无团队可进时该按钮自己不渲染） */}
+          {hiddenByMode && <ModeFlipButton className="mt-0.5" />}
           <Button variant="secondary" size="xs" onClick={startChat}>
             <MessageSquarePlus className="w-3.5 h-3.5" />
             {t('rail.chatEmptyAction')}

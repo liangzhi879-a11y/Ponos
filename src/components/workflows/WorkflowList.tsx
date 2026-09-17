@@ -16,6 +16,7 @@ import { WorkflowDeleteDialog } from './WorkflowDeleteDialog'
 // 'personal'，且判据把"缺 workspaceId 的旧数据"也归个人 ⇒ 列表逐字不变（团队能力默认关闭）。
 import { filterWorkflowsByMode } from '@/lib/teamModeUi'
 import { useModeFilter } from '@/stores/teamStore'
+import { ModeFlipButton } from '@/components/team/ModeFlipButton'
 import { useTranslation } from '@/i18n/useTranslation'
 
 export interface WorkflowListProps {
@@ -127,8 +128,12 @@ export function WorkflowList(props: WorkflowListProps) {
             <div className="text-[11px] text-tertiary px-1 py-6 text-center">
               {hiddenByMode ? (
                 // 被模式筛空：此时说"暂无工作流"是假话（工作流就在本机），必须改说真实原因，
-                // 否则用户会去"新建"一个本已存在的工作流。文案复用会话/任务面板的同一键。
-                <span className="text-[10px] leading-relaxed">{t('team.listFilteredEmpty')}</span>
+                // 否则用户会去"新建"一个本已存在的工作流。文案复用会话/任务面板的同一键，
+                // 并给出"切回个人模式"这个动作（只说明不给出路，用户还得自己找开关）。
+                <div className="flex flex-col items-center gap-1">
+                  <span className="text-[10px] leading-relaxed">{t('team.listFilteredEmpty')}</span>
+                  <ModeFlipButton />
+                </div>
               ) : (
                 <>暂无工作流。点「新建」从 开始 → 结束 的最小骨架开始，或「导入」.yfwflow 分享包。</>
               )}

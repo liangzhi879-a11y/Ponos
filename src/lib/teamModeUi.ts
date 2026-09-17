@@ -61,6 +61,35 @@ export function modeSwitchEnabled(teamCount: number | null | undefined): boolean
   return Number(teamCount ?? 0) > 0
 }
 
+/**
+ * 在两种模式之间**翻转**需要做什么（返回 `null` = 无法翻转，调用方**不应**渲染按钮）。
+ *
+ * 为什么单独抽成纯函数而不是在空态组件里 `mode === 'team' ? ... : ...`：
+ *   空态「一键翻转」有四处接线（会话 / 任务 / 工作流 / 知识空间），这类"判错了会出丑"的判据
+ *   若散在四处 JSX 里，改一处漏三处 —— 典型表现就是"点了按钮没反应"（界面谎言）。
+ *
+ * 三条规则：
+ *   · 当前是团队模式 → 回个人模式，**不动 `activeTeamId`**（下次再进团队模式仍回到同一个团队）；
+ *   · 当前是个人模式 + 有团队 → 进团队模式，沿用已选的 `activeTeamId`，没选过就用第一个团队
+ *     （与 `teamStore.setActiveTeam` 的语义一致：选了团队却停在个人模式，列表会立刻把它筛掉）；
+ *   · 当前是个人模式 + **没有可用团队** → `null`：没团队时"团队模式"无处可去，按钮该消失而不是
+ *     点了没反应（§10 S3-1 空态引导的既有纪律）。
+ * 团队 id 取空值（脏数据 / 列表项没有 id）时同样视为"不可用"，避免 `setActiveTeam('')` 这种
+ * 只把状态改一半的落点。
+ */
+export function modeFlip(
+  mode: WorkspaceMode,
+  teams: { id: string }[] | null,
+  activeTeamId: string | null,
+): { mode: WorkspaceMode; teamId: string | null } | null {
+  const m = sanitizeWorkspaceMode(mode)
+  if (m === 'team') return { mode: 'personal', teamId: activeTeamId }
+  const first = Array.isArray(teams) && teams.length ? String(teams[0]?.id ?? '').trim() : ''
+  const active = typeof activeTeamId === 'string' && activeTeamId.trim() ? activeTeamId : null
+  const teamId = active ?? (first || null)
+  return teamId ? { mode: 'team', teamId } : null
+}
+
 /** `team-<teamId>` → `<teamId>`；非团队工作区 → null（供展示"来自哪个团队"）。 */
 export function teamIdOfWorkspace(workspaceId: unknown): string | null {
   const id = String(workspaceId ?? '').trim()

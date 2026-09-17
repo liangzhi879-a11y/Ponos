@@ -16,13 +16,17 @@ import { createHash, randomBytes } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { TEAM_LAYOUT, detectPlaceholderSync, teamPaths, writeVerifiedSync } from '../shared/team-source.mjs'
+import { TEAM_LAYOUT, detectPlaceholderSync, teamPaths, writeVerifiedSync, hideContainerSync } from '../shared/team-source.mjs'
 import {
   MODAL, classifyModal, claimEnabled, foldClaims, measureSize, parseDirPolicy, planFallback, planConflict,
 } from '../shared/file-modal.mjs'
 
-/** 目录策略文件名（独立于 S3 的 `team.json`：**不去改 S3 的清单格式**，避免相互踩）。 */
-export const POLICY_FILE = 'policies.json'
+/**
+ * 目录策略文件名（独立于 S3 的 `team.json`：**不去改 S3 的清单格式**，避免相互踩）。
+ * 名字由 `TEAM_LAYOUT` 唯一定义；文件本身也在**容器**内（`<团队根>/.yfworking/policies.json`），
+ * 与用户的工作文件分开。
+ */
+export const POLICY_FILE = TEAM_LAYOUT.POLICY_FILE
 
 /** 内容哈希 = versionId（与 S1 的 `baseVersion` 同源：都是整文件 sha256）。 */
 export function sha256Of(buf) {
@@ -37,9 +41,11 @@ export function newFileId() {
 /** 确保团队源标准目录存在（幂等；用 S3 的布局常量，避免手拼路径写歪）。 */
 export function ensureCollabDirs(teamRoot) {
   const p = teamPaths(teamRoot)
-  for (const d of [p.root, p.casDir, p.versionsDir, p.claimsDir]) {
+  // `p.container` 必须在子目录之前建；建完设 Windows 隐藏属性（点开头在 Windows 上不隐藏）
+  for (const d of [p.root, p.container, p.casDir, p.versionsDir, p.claimsDir]) {
     mkdirSync(d, { recursive: true })
   }
+  hideContainerSync(p.container)
   return p
 }
 
@@ -49,7 +55,8 @@ export function ensureCollabDirs(teamRoot) {
 
 /** 读策略文件；缺失/损坏一律回落到"默认关闭"（不因脏配置改变行为）。 */
 export function readPolicies(teamRoot) {
-  const f = join(String(teamRoot), POLICY_FILE)
+  // 双读：容器内的 policies.json 优先，旧布局（团队根下）回退 —— 旧团队的目录策略仍然生效
+  const f = teamPaths(teamRoot).read.policyFile()
   if (!existsSync(f)) return { dirs: {} }
   try {
     const j = JSON.parse(readFileSync(f, 'utf-8'))
@@ -61,7 +68,7 @@ export function readPolicies(teamRoot) {
 
 /** 写策略文件（覆盖式是**可以**的：它是配置而非并发数据，且写入走校验写）。 */
 export function writePolicies(teamRoot, policies) {
-  const f = join(String(teamRoot), POLICY_FILE)
+  const f = teamPaths(teamRoot).policyFile
   writeVerifiedSync(f, JSON.stringify(policies, null, 2))
   return f
 }
@@ -128,12 +135,40 @@ function readJsonl(file) {
   return out
 }
 
+/**
+ * 双读一个 append-only 日志文件（容器内 / 旧布局）的**行并集**。
+ *
+ * 为什么日志不能用"容器优先、缺失回退"的 `read.*`：追加写只落在容器侧，而给旧团队追加**第一条**
+ * 记录时会在容器里**新建**该文件 ⇒ 一旦新建，`read.*` 就再也看不到旧侧那整段历史，
+ * 表现为"版本链突然只剩一条""占用记录凭空消失"。故日志必须取并集。
+ *
+ * 顺序：**先旧侧后容器侧** —— 追加写只写容器侧，旧侧文件因此是"冻结的历史"，
+ * 这个顺序天然等于时间序（版本链取"最后一条"，顺序错了结论就会错）。
+ * 对完全相同的行去重：防御性处理，万一两侧被同时写过也不会产生重复记录。
+ */
+function readJsonlDual(teamRoot, pick) {
+  const p = teamPaths(teamRoot)
+  const seen = new Set()
+  const out = []
+  for (const f of [pick(p.legacy), pick(p)]) {
+    if (!existsSync(f)) continue
+    for (const raw of readFileSync(f, 'utf-8').split('\n')) {
+      const s = raw.trim()
+      if (!s || seen.has(s)) continue
+      seen.add(s)
+      try { out.push(JSON.parse(s)) } catch { /* 跳过损坏行（同 readJsonl） */ }
+    }
+  }
+  return out
+}
+
 // ---------------------------------------------------------------------------
 // 版本链
 // ---------------------------------------------------------------------------
 
 export function versionsOf(teamRoot, fileId) {
-  return readJsonl(teamPaths(teamRoot).versionLog(fileId))
+  // 双读行并集（见 readJsonlDual 的说明：日志不能用"缺失回退"，否则新建即遮蔽历史）
+  return readJsonlDual(teamRoot, (q) => q.versionLog(fileId))
 }
 
 /** 该 fileId 的当前绑定路径（取最后一条 path/bind 行）。 */
@@ -153,10 +188,15 @@ export function currentPathOf(teamRoot, fileId) {
  */
 export function resolveFileId(teamRoot, absPath) {
   const p = teamPaths(teamRoot)
-  if (!existsSync(p.versionsDir)) return null
+  // 双读：新旧两个 versions 目录的并集（旧团队已纳管的文件不能被漏掉）
+  const names = new Set()
+  for (const d of [p.versionsDir, p.legacy.versionsDir]) {
+    let list = []
+    try { list = readdirSync(d) } catch { continue }
+    for (const f of list) if (f.endsWith('.jsonl')) names.add(f)
+  }
   const target = String(absPath)
-  for (const f of readdirSync(p.versionsDir)) {
-    if (!f.endsWith('.jsonl')) continue
+  for (const f of names) {
     const fileId = f.slice(0, -'.jsonl'.length)
     const { path } = currentPathOf(teamRoot, fileId)
     if (path && (path === target || path.replace(/\\/g, '/') === target.replace(/\\/g, '/'))) {
@@ -178,7 +218,8 @@ export function putBlob(teamRoot, buf) {
 }
 
 export function readBlob(teamRoot, versionId) {
-  const f = teamPaths(teamRoot).casBlob(versionId)
+  // 双读：旧团队的内容块在团队根下的 cas/，容器里没有 ⇒ 不回退就会读不到历史版本
+  const f = teamPaths(teamRoot).read.casBlob(versionId)
   if (!existsSync(f)) return null
   return readFileSync(f)
 }
@@ -244,7 +285,7 @@ export function headVersionOf(teamRoot, fileId) {
  * 检出/检入
  */
 export function claimsOf(teamRoot, fileId) {
-  return readJsonl(teamPaths(teamRoot).claimLog(fileId))
+  return readJsonlDual(teamRoot, (q) => q.claimLog(fileId))
 }
 
 /**

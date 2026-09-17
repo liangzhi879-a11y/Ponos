@@ -189,8 +189,19 @@ export function sourceUnavailableKey(kind: unknown): string | null {
 // 目录布局（§7.1 / §7.2 的交付契约）——向导第 ③ 步要"告诉用户团队源目录里会出现什么"
 // ---------------------------------------------------------------------------
 
+/**
+ * 团队留档的**容器目录名**：全部团队文件都收在团队根目录下的这一个点开头目录里。
+ *
+ * 为什么：团队根目录就是用户的**工作目录**（真实例子：`Z:\…\湖北美宝药业股份有限公司`），
+ * 早先把 `team.json` / `members/` / … 直接摊在工作文件旁，会和申报材料混在一起。
+ * 收进容器后工作目录只多出**一个**条目；Windows 上还会额外设隐藏属性（点开头在 Windows
+ * 上并不隐藏），故界面上不该宣称"看得到这六个目录"。
+ * 常量与内核同源：`shared/team-source.mjs` 的 `TEAM_LAYOUT.CONTAINER`。
+ */
+export const TEAM_CONTAINER_DIR = '.yfworking'
+
 export interface LayoutEntry {
-  /** 相对团队根的路径（§7.2 原文的布局） */
+  /** 相对**容器目录**的路径（容器内的布局；根就是 `.yfworking/`） */
   path: string
   /** 说明 i18n 键 */
   hintKey: string

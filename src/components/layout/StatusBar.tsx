@@ -7,6 +7,7 @@ import { useYFWCLI } from '@/hooks/useYFWCLI'
 import { useTranslation } from '@/i18n/useTranslation'
 import { Tooltip } from '@/components/ui'
 import { ApprovalModePicker } from '@/components/layout/ApprovalModePicker'
+import { TeamModeSwitch } from '../team/TeamModeSwitch'
 import { cn } from '@/lib/utils'
 
 interface StatusItemProps {
@@ -83,6 +84,10 @@ export function StatusBar() {
           value={modelLabel}
         />
         {/* 2026-09-10：原第三个图标（Extended Thinking 指示）删除——推理面板已有展示 */}
+        {/* 个人 / 团队模式常驻标识（S3 可辨识性）：此前模式只有 header 上 11px 的小按钮一处标识，
+            状态栏完全没有 —— 用户在"看列表为空"时无从判断是模式筛掉了还是真的没有。
+            与相邻微标同样式（9.5px / gap-1），点击打开同一个下拉菜单。 */}
+        <TeamModeSwitch variant="status" />
       </div>
 
       <div className="flex items-center gap-1">

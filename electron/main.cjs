@@ -1670,6 +1670,28 @@ if (!gotTheLock) {
   app.whenReady().then(async () => {
     bootPhase('mainReady')
     bootStartAt = Date.now()   // 刷新启动基线（60s 兜底弹窗窗口）
+
+    // 【2026-09-17】开发用：启动期把**源码同步进便携版树**（repo → appRoot）。
+    // 为什么需要：便携版树（release/YFWorking/）才是运行代码的真实来源——kernel-paths 优先
+    //   `<appRoot>/kernel/cli.mjs`，server/*.py 与 electron/*.cjs 也都从该树加载；而
+    //   `scripts/package-portable.cjs` 只在手工执行时才拷 repo ⇒ 平时改源码不进树，反复出现
+    //   「改了源码、应用仍跑旧代码」（已踩：kernel/cli.mjs 工作流修复没生效、electron preload
+    //   未暴露新 API 致功能静默失效、server/*.py 落后致 Word/Excel 编辑"假成功"）。
+    // 门控（详见模块头）：便携版根目录须带 `.yfw-dev-source.json` 且 autoSync 有效，
+    //   发布到别的机器上 sourceRoot 不存在 ⇒ 自动 no-op；YFW_NO_DEV_SYNC=1 可临时关闭。
+    // 位置：必须早于 registerIpc 与 bridge 启动，使**本次**启动即用上新代码（无需重启两次）。
+    // 失败绝不阻断启动（模块内部已兜底，此处再包一层以防 require 本身出错）。
+    try {
+      const { maybeAutoSync, describeReport } = require('./dev-source-sync.cjs')
+      const syncReport = maybeAutoSync({ appRoot: app.getAppPath() })
+      // 无关场景（无标记）不打日志，免污染正常用户的启动日志
+      if (syncReport.status !== 'skipped' || syncReport.reason !== 'no-marker') {
+        console.log('[main] ' + describeReport(syncReport))
+      }
+    } catch (e) {
+      console.warn('[main] dev-source-sync 不可用（忽略，不影响启动）:', e && e.message)
+    }
+
     await registerIpc()
 
     // 【2026-09-17】渲染层令牌注入须早于任何窗口创建（认证小窗/主窗/编辑器窗），

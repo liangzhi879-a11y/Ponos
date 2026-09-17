@@ -27,6 +27,7 @@ import { isPlainTaskLike } from '@/lib/chatModeUi'
 // 【S3】侧边栏默认列表按模式筛选（spec §5.9）。未加入团队时 mode 恒 'personal' ⇒ 列表不变。
 import { filterConversationsByMode } from '@/lib/teamModeUi'
 import { useModeFilter } from '@/stores/teamStore'
+import { ModeFlipButton } from '@/components/team/ModeFlipButton'
 import type { Conversation, ConversationProgress, ConversationSet } from '@/types'
 
 export function TaskListPanel() {
@@ -375,6 +376,8 @@ export function TaskListPanel() {
           <SquareKanban className="w-6 h-6 text-tertiary" />
           <span className="text-xs text-secondary leading-relaxed">{t('rail.taskEmpty')}</span>
           {hiddenByMode && <span className="text-[10px] text-tertiary leading-relaxed">{t('team.listFilteredEmpty')}</span>}
+          {/* 只说明不够：空态直接给出"切回个人模式"这个动作 */}
+          {hiddenByMode && <ModeFlipButton className="mt-0.5" />}
           <Button variant="secondary" size="xs" onClick={() => createConversation()}>
             <SquarePlus className="w-3.5 h-3.5" />
             {t('rail.taskEmptyAction')}

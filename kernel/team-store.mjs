@@ -168,7 +168,7 @@ export function exportInvite({ configDir, teamId, now = Date.now(), ttlMs = ENVE
   if (!local) return { ok: false, reason: 'not-a-member', message: '本机没有加入该团队，无法邀请' }
   if (!local.teamKey) return { ok: false, reason: 'no-team-key', message: '本机缺少团队密钥（可能只是加入了成员列表），无法邀请' }
   const src = openTeamSource({ root: local.dir })
-  if (!existsSync(src.paths.manifest)) return { ok: false, reason: 'team-dir-missing', message: `团队源目录不可用：${local.dir}` }
+  if (!existsSync(src.paths.read.manifestFile())) return { ok: false, reason: 'team-dir-missing', message: `团队源目录不可用：${local.dir}` }
 
   const newMemberId = memberId ? String(memberId) : generateMemberId()
   const code = generateVerifyCode()
@@ -257,16 +257,22 @@ export function joinTeam({ configDir, identCode, code, searchRoot = null, now = 
   const used = consumedInvites(records)
   const { members } = verifyTeamSource(src)
 
-  const keysDir = src.paths.keysDir
-  let envNames = []
-  try { envNames = readdirSync(keysDir).filter((n) => n.endsWith('.env')) } catch { envNames = [] }
-  if (!envNames.length) return { ok: false, reason: 'no-envelope', message: '团队源里没有可用的邀请信封（请让成员先生成邀请）' }
+  // 双读：邀请信封可能落在容器内 `keys/`（新布局）或团队根下的 `keys/`（旧布局）⇒ 两边都要找，
+  // 否则旧团队会表现为"团队源里没有可用的邀请信封"，而信封其实就在那儿。
+  const envFiles = []
+  for (const d of [src.paths.keysDir, src.paths.legacy.keysDir]) {
+    let names = []
+    try { names = readdirSync(d).filter((n) => n.endsWith('.env')) } catch { continue }
+    for (const n of names) envFiles.push({ name: n, path: join(d, n) })
+  }
+  if (!envFiles.length) return { ok: false, reason: 'no-envelope', message: '团队源里没有可用的邀请信封（请让成员先生成邀请）' }
+  // 名序稳定（跨目录也确定）：重放/试码顺序必须区域无关地可断言
+  envFiles.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
 
   let expiredSeen = false
-  for (const n of envNames.sort()) {
+  for (const { name: n, path } of envFiles) {
     const memberId = n.replace(/\.env$/, '')
     if (used.has(memberId)) continue // 已消费：跳过（但要与"验证码错"区分）
-    const path = join(keysDir, n)
     const ph = detectPlaceholderSync(path)
     if (ph.placeholder) continue
     let text = ''
@@ -300,7 +306,7 @@ export function joinTeam({ configDir, identCode, code, searchRoot = null, now = 
   }
   // 区分"码错"与"已用过/过期"：都归为 bad-code 会让用户反复重试一个永远不会成功的码
   if (expiredSeen) return { ok: false, reason: 'expired', message: '该验证码已过期，请让成员重新生成' }
-  if (used.size && used.size >= envNames.length) return { ok: false, reason: 'already-used', message: '团队源里的邀请都已使用过（验证码一次性），请让成员重新生成' }
+  if (used.size && used.size >= envFiles.length) return { ok: false, reason: 'already-used', message: '团队源里的邀请都已使用过（验证码一次性），请让成员重新生成' }
   return { ok: false, reason: 'bad-code', message: '验证码不正确' }
 }
 
@@ -334,7 +340,7 @@ export function teamStatus({ configDir, teamId = null, now = Date.now() } = {}) 
     const local = cfg.teams[id]
     if (!local) { out.push({ teamId: id, ok: false, reason: 'not-a-member' }); continue }
     const src = openTeamSource({ root: local.dir })
-    if (!existsSync(src.paths.manifest)) { out.push({ teamId: id, ok: false, reason: 'team-dir-missing', dir: local.dir }); continue }
+    if (!existsSync(src.paths.read.manifestFile())) { out.push({ teamId: id, ok: false, reason: 'team-dir-missing', dir: local.dir }); continue }
     const v = verifyTeamSource(src)
     out.push({
       teamId: id,

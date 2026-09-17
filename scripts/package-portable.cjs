@@ -331,6 +331,21 @@ execSync(`cscript //Nologo "${shortcutVbs}"`, { cwd: RELEASE, timeout: 10000 })
 fs.unlinkSync(shortcutVbs)
 console.log('  Shortcut → electron.exe directly')
 
+// ── Dev source marker ───────────────────────────────────────────────────
+// 记录「这棵便携版由哪个源码根打包而来」，并允许**开发期自动同步**：
+// electron/main.cjs 启动时会读它，把 kernel/shared/server/electron/dist 从源码根**增量**同步进来
+// （只覆盖/补齐、不删除），免得改完源码忘了重新打包而"改了没生效"——已踩过三次：
+//   kernel/cli.mjs 的工作流修复漏同步、electron/preload.cjs 未暴露新 API 致功能静默失效、
+//   server/*.py 落后致 Word/Excel 编辑返回 ok:true 却什么都没改。
+// 发布到别的机器：sourceRoot 不存在 ⇒ 启动时自动 no-op，无副作用；打包时加 `--no-dev-sync` 可关。
+try {
+  const { writeMarker } = require(path.join(ROOT, 'electron', 'dev-source-sync.cjs'))
+  const m = writeMarker(RELEASE, { sourceRoot: ROOT, autoSync: !process.argv.includes('--no-dev-sync') })
+  console.log(`[dev] source marker: autoSync=${m.autoSync} sourceRoot=${m.sourceRoot}`)
+} catch (e) {
+  console.warn('[dev] 未能写入 source marker（忽略）:', e && e.message)
+}
+
 // ── Done ────────────────────────────────────────────────────────────────
 console.log()
 console.log('========================================')

@@ -38,13 +38,13 @@ function setup(prefix) {
 test('§7.2 契约：team.json 是明文且**不含任何密钥**；识别码 9 位；团队密钥只在本机配置', () => {
   const env = setup('yfw-s3-join-')
   try {
-    const manifest = JSON.parse(readFileSync(join(env.dir, 'team.json'), 'utf-8'))
+    const manifest = JSON.parse(readFileSync(join(env.dir, '.yfworking', 'team.json'), 'utf-8'))
     assert.equal(manifest.identCode, '123456789')
     assert.equal(manifest.teamId.startsWith('t_'), true)
     assert.equal(typeof manifest.salt, 'string', '盐必须存在（解密方需要它，且盐不是秘密）')
     assert.equal(manifest.scrypt.N, 2 ** 15, '§5.9 指定 N=2^15')
     // 明文 manifest 里不能出现任何密钥材料
-    const raw = readFileSync(join(env.dir, 'team.json'), 'utf-8')
+    const raw = readFileSync(join(env.dir, '.yfworking', 'team.json'), 'utf-8')
     assert.equal(/teamKey|privateKey|"key"|secret/i.test(raw), false, 'team.json 绝不含密钥')
 
     // 团队密钥在本机配置里（0600）
@@ -66,7 +66,7 @@ test('加入成功：识别码匹配 + 正确验证码解出**同一个团队密
     assert.equal(invite.ok, true)
     assert.match(invite.code, /^\d{6}$/, '验证码 6 位数字')
     assert.ok(invite.copyText.includes('123456789') && invite.copyText.includes(invite.code), '转发文案含识别码与验证码')
-    assert.equal(existsSync(join(env.dir, 'keys', `${invite.memberId}.env`)), true, '信封必须落在 keys/<memberId>.env')
+    assert.equal(existsSync(join(env.dir, '.yfworking', 'keys', `${invite.memberId}.env`)), true, '信封必须落在 <团队根>/.yfworking/keys/<memberId>.env')
 
     // 另一台机器（独立 configDir = 独立设备 id 与身份密钥）
     const joinerCfg = join(env.workspace, 'joiner-appdata')
@@ -269,7 +269,7 @@ test('邀请信封的随机性：两次邀请的验证码与信封不同（同�
     const a = exportInvite({ configDir: env.ownerCfg, teamId: env.created.teamId })
     const b = exportInvite({ configDir: env.ownerCfg, teamId: env.created.teamId })
     assert.notEqual(a.memberId, b.memberId)
-    const keys = readdirSync(join(env.dir, 'keys')).sort()
+    const keys = readdirSync(join(env.dir, '.yfworking', 'keys')).sort()
     assert.equal(keys.length, 2, '两个信封各占一个成员槽')
     // 码空间 10^6，两次相同的概率极低；这里只断言"不是硬编码常量"
     assert.ok(a.code.length === 6 && b.code.length === 6)

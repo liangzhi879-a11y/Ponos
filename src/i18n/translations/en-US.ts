@@ -1392,10 +1392,14 @@ export const enUS: TranslationKeys = {
     modeTeam: 'Team',
     modeSwitchAria: 'Work mode (personal / team)',
     modeSwitchTitle: 'Switch between personal and team mode',
-    modeHint: 'Mode only filters the sidebar lists and sets the default owner of new items; it does not change data visibility.',
-    modeNotIsolationNote: 'Mode only filters the sidebar lists (sessions / workflows / libraries) and sets the default owner of new items. It is not data isolation: team content still lives on your local disk, and knowledge search always covers every space.',
+    // ⚠️ State only what is implemented: the mode currently filters sidebar lists only. The former
+    //    "sets the default owner of new items" claim was false (no creation path writes team
+    //    attribution) and was removed; guarded by `teamModeIndicatorUi.test.ts`.
+    modeHint: 'Mode only filters the sidebar lists (sessions / tasks / workflows / knowledge spaces); it does not change data visibility.',
+    modeNotIsolationNote: 'Mode only filters the sidebar lists. It is not data isolation: team content still lives on your local disk, and knowledge search always covers every space.',
     modeManage: 'Manage teams…',
     modeCurrentTeam: 'Current team',
+    modePickTeamHint: 'Selecting a team switches to team mode',
     modeTeamNone: 'No team joined',
     modeEmptyTitle: 'You have not joined any team yet',
     modeEmptyHint: 'The founder creates a team; members join with just two numbers (identification code + verification code) and never configure paths by hand.',
@@ -1415,6 +1419,8 @@ export const enUS: TranslationKeys = {
     listWarningsTitle: 'Team source warnings',
     listCopies: 'Absorbed {count} cloud-drive conflict copies',
     listFilteredEmpty: 'This list is empty in the current mode (mode only filters lists — it is not data isolation; the content is still on this machine, switch back to Personal to see it)',
+    modeFlipToPersonal: 'Switch to Personal',
+    modeFlipToTeam: 'View team content',
     roleOwner: 'Owner',
     roleAdmin: 'Admin',
     roleEditor: 'Editor',
@@ -1455,6 +1461,7 @@ export const enUS: TranslationKeys = {
     wizardBrowse: 'Browse…',
     wizardDirHint: 'Order matters (spec §5.9): the workspace entity comes first, the team source second; initialization writes the manifest, member logs and the folder layout.',
     wizardLayoutTitle: 'After initialization the team source contains',
+    wizardLayoutContainerNote: 'Everything above lives inside a single .yfworking/ folder under the team directory (marked hidden on Windows). Your working folder gains exactly one entry, so team records never mix with your work files.',
     wizardPrev: 'Back',
     wizardNext: 'Next',
     wizardCreate: 'Create team',

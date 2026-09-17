@@ -32,6 +32,7 @@ import { isAssociableSpace, isLargeSpace, toggleKnowledgeSpace, MAX_ASSOC_SPACES
 // 与 KnowledgeSearchView 的接线，反向断言①在 teamModeUi.test.ts）。
 import { filterKnowledgeSpacesByMode } from '@/lib/teamModeUi'
 import { useModeFilter } from '@/stores/teamStore'
+import { ModeFlipButton } from '@/components/team/ModeFlipButton'
 import { cn } from '@/lib/utils'
 import { useChatStore } from '@/stores/chatStore'
 
@@ -100,6 +101,13 @@ export function KnowledgeSidebar({ spaces, spacesLoading, onImported, onDeleted 
               <DropdownMenuItem disabled className="text-[10px] text-tertiary leading-snug">
                 {t('team.listFilteredEmpty')}
               </DropdownMenuItem>
+            )}
+            {/* 同一个"被模式筛空"分支里给出动作：一键切回个人模式（无团队可进时按钮自身不渲染）。
+                刻意放在 disabled 条目**外面** —— 塞进 disabled item 里的按钮点不动。 */}
+            {listedSpaces.length === 0 && (spaces?.length ?? 0) > 0 && (
+              <div className="px-2 pb-1.5">
+                <ModeFlipButton />
+              </div>
             )}
             {listedSpaces.map(s => (
               <DropdownMenuItem key={s.id} onSelect={() => setSpace(s.id)} className="text-[11px]">

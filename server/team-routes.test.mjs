@@ -131,10 +131,16 @@ test('真机：创建 → 邀请 → 加入 → 状态 → 撤销（全链路，
     assert.equal(c.ok, true)
     assert.match(c.teamId, /^t_/)
 
-    // 磁盘核实：manifest 明文且**不含密钥**
-    const manifestRaw = readFileSync(join(teamDir, 'team.json'), 'utf-8')
+    // 磁盘核实：manifest 明文且**不含密钥**（在 `.yfworking/` 容器内）
+    const CONTAINER = '.yfworking'
+    const manifestRaw = readFileSync(join(teamDir, CONTAINER, 'team.json'), 'utf-8')
     assert.equal(/teamKey|privateKey|secret/i.test(manifestRaw), false, 'team.json 绝不含密钥')
     assert.equal(JSON.parse(manifestRaw).identCode, '123456789')
+    // **本需求的核心保证**：团队留档全部收在容器里，团队根（= 用户工作目录）下不散落任何团队文件
+    for (const n of ['team.json', 'members', 'keys', 'cas', 'versions', 'claims']) {
+      assert.equal(existsSync(join(teamDir, n)), false, `团队文件不得散在工作目录根下: ${n}`)
+    }
+    assert.deepEqual(readdirSync(teamDir).sort(), [CONTAINER], '工作目录里只应多出容器这一个条目')
     // 本机配置含团队密钥（0600）
     const cfgPath = join(homeA, 'team', 'config.json')
     assert.equal(existsSync(cfgPath), true)
@@ -145,7 +151,7 @@ test('真机：创建 → 邀请 → 加入 → 状态 → 撤销（全链路，
     const inv = json(await b.post('/team/invite', { teamId: c.teamId }, authHeaders()))
     assert.equal(inv.ok, true, JSON.stringify(inv))
     assert.match(inv.code, /^\d{6}$/)
-    assert.equal(existsSync(join(teamDir, 'keys', `${inv.memberId}.env`)), true, '信封必须落盘')
+    assert.equal(existsSync(join(teamDir, CONTAINER, 'keys', `${inv.memberId}.env`)), true, '信封必须落盘（容器内 keys/）')
     assert.equal(/加密|安全|仅.*可见/i.test(inv.copyText), false, '§11 措辞约束：不得暗示"加密所以安全"')
 
     // ③ 加入（另一台机器 = 另一个隔离 home）

@@ -18,18 +18,40 @@
 
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync, lstatSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { dirname, join, relative, sep } from 'node:path'
 
-/** §7.2 目录布局（常量集中在此，避免各处手拼路径写歪）。 */
+/**
+ * **容器目录名**：团队的全部留档（清单、成员日志、密钥信封、CAS、版本链、内容区、策略）
+ * 都收在团队根目录下的这个点开头目录里。
+ *
+ * 为什么需要它：团队根目录是**用户的工作目录**（真实例子：`Z:\…\湖北美宝药业股份有限公司`），
+ * 旧布局把 `team.json` / `members/` / `keys/` / `cas/` / `versions/` / `claims/` 直接摊在工作文件
+ * 旁边 ⇒ 与申报材料、汇总表混在一起，同事既可能误删，也分不清哪个是资料、哪个是程序留档。
+ * 收进一个容器后，工作目录里只多出**一个**条目。
+ *
+ * 【Windows 注意】点开头在 Windows 上**不是**隐藏 —— 资源管理器照常显示（还排在前面）。
+ * 故 `ensureTeamDirs` 会额外 `attrib +h` 设隐藏属性（best-effort，失败不影响使用）。
+ */
+export const TEAM_CONTAINER_DIR = '.yfworking'
+
+/** §7.2 目录布局（常量集中在此，避免各处手拼路径写歪）。除 `CONTAINER` 外均为**容器内**的相对名。 */
 export const TEAM_LAYOUT = Object.freeze({
+  CONTAINER: TEAM_CONTAINER_DIR,
   MANIFEST: 'team.json',
   MEMBERS_DIR: 'members',
   KEYS_DIR: 'keys',
   CAS_DIR: 'cas',
   VERSIONS_DIR: 'versions',
   CLAIMS_DIR: 'claims',
+  KNOWLEDGE_DIR: 'knowledge',
+  EXPERIENCE_DIR: 'experience',
+  POLICY_FILE: 'policies.json',
   MANIFEST_VERSION: 1,
 })
+
+/** 布局版本：1 = 旧（元数据摊在团队根下）；2 = 新（元数据收进 `.yfworking/` 容器）。 */
+export const TEAM_LAYOUT_VERSION = 2
 
 /** 扫描默认深度（批注 #6「搜索根扫描深度」未定 ⇒ 做成显式参数，不把策略写死）。 */
 export const DEFAULT_SCAN_DEPTH = 4
@@ -44,32 +66,105 @@ export const TEAM_SOURCE_KINDS = Object.freeze({ L1_SHARED_DIR: 'l1-shared-dir',
 // 路径
 // ---------------------------------------------------------------------------
 
-/** 团队源内各标准路径（`root` = 团队目录本身）。 */
-export function teamPaths(root) {
-  const r = String(root)
+/** 某一层基目录下的标准路径（新旧布局共用同一套相对名，只是基目录不同）。 */
+function layoutAt(base) {
+  const b = String(base)
   return {
-    root: r,
-    manifest: join(r, TEAM_LAYOUT.MANIFEST),
-    membersDir: join(r, TEAM_LAYOUT.MEMBERS_DIR),
-    keysDir: join(r, TEAM_LAYOUT.KEYS_DIR),
-    casDir: join(r, TEAM_LAYOUT.CAS_DIR),
-    versionsDir: join(r, TEAM_LAYOUT.VERSIONS_DIR),
-    claimsDir: join(r, TEAM_LAYOUT.CLAIMS_DIR),
-    log: (deviceId) => join(r, TEAM_LAYOUT.MEMBERS_DIR, `log-${deviceId}.jsonl`),
-    keyEnvelope: (memberId) => join(r, TEAM_LAYOUT.KEYS_DIR, `${memberId}.env`),
-    // CAS 布局：cas/<hash[0:2]>/<hash>（§7.2；S4 文件协同用，本轮只给路径不实现读写）
-    casBlob: (hash) => join(r, TEAM_LAYOUT.CAS_DIR, String(hash).slice(0, 2), String(hash)),
-    versionLog: (fileId) => join(r, TEAM_LAYOUT.VERSIONS_DIR, `${fileId}.jsonl`),
-    claimLog: (fileId) => join(r, TEAM_LAYOUT.CLAIMS_DIR, `${fileId}.jsonl`),
+    base: b,
+    manifest: join(b, TEAM_LAYOUT.MANIFEST),
+    membersDir: join(b, TEAM_LAYOUT.MEMBERS_DIR),
+    keysDir: join(b, TEAM_LAYOUT.KEYS_DIR),
+    casDir: join(b, TEAM_LAYOUT.CAS_DIR),
+    versionsDir: join(b, TEAM_LAYOUT.VERSIONS_DIR),
+    claimsDir: join(b, TEAM_LAYOUT.CLAIMS_DIR),
+    knowledgeDir: join(b, TEAM_LAYOUT.KNOWLEDGE_DIR),
+    experienceDir: join(b, TEAM_LAYOUT.EXPERIENCE_DIR),
+    policyFile: join(b, TEAM_LAYOUT.POLICY_FILE),
+    log: (deviceId) => join(b, TEAM_LAYOUT.MEMBERS_DIR, `log-${deviceId}.jsonl`),
+    keyEnvelope: (memberId) => join(b, TEAM_LAYOUT.KEYS_DIR, `${memberId}.env`),
+    // CAS 布局：cas/<hash[0:2]>/<hash>（§7.2；S4 文件协同用）
+    casBlob: (hash) => join(b, TEAM_LAYOUT.CAS_DIR, String(hash).slice(0, 2), String(hash)),
+    versionLog: (fileId) => join(b, TEAM_LAYOUT.VERSIONS_DIR, `${fileId}.jsonl`),
+    claimLog: (fileId) => join(b, TEAM_LAYOUT.CLAIMS_DIR, `${fileId}.jsonl`),
   }
 }
 
-/** 建标准目录（幂等）。 */
+/** 双读回退：优先新布局，缺失时用旧布局；两边都没有则返回新路径（供"是否已存在"判断）。 */
+const pickExisting = (next, legacy) => (existsSync(next) ? next : (existsSync(legacy) ? legacy : next))
+
+/**
+ * 团队源内各标准路径（`root` = 团队目录本身，即用户的**工作目录**）。
+ *
+ * 【读写分离（双读兼容，不自动迁移）】
+ *   写：一律写容器内（`<root>/.yfworking/…`）—— 新内容只进新布局，避免越写越乱。
+ *   读：新布局优先、旧布局回退（`p.read.*`）—— 旧团队（元数据摊在 root 下）继续可读可用，
+ *       不需要任何迁移动作；用户也可以选择永远不迁移。
+ *   混合态：旧团队被新代码写过一次后，会出现"旧日志在 root、新日志在容器"的并存情况 ⇒
+ *       日志读取按**目录并集**处理（见 `openTeamSource.readLogCopies`），由
+ *       `mergeMemberLogCopies` 按 `(by, seq)` 去重，故并集不会产生重复成员记录。
+ */
+export function teamPaths(root) {
+  const r = String(root)
+  const container = join(r, TEAM_CONTAINER_DIR)
+  const next = layoutAt(container)   // 新布局（写侧唯一目标）
+  const legacy = layoutAt(r)         // 旧布局（只读回退）
+  return {
+    root: r,
+    container,
+    layoutVersion: TEAM_LAYOUT_VERSION,
+    ...next,
+    legacy,
+    /** 读侧：逐个给出"实际该读哪个文件/目录"。 */
+    read: {
+      exists: () => existsSync(next.manifest) || existsSync(legacy.manifest),
+      layout: () => (existsSync(next.manifest) ? 'container' : (existsSync(legacy.manifest) ? 'legacy' : 'none')),
+      manifestFile: () => pickExisting(next.manifest, legacy.manifest),
+      membersDir: () => pickExisting(next.membersDir, legacy.membersDir),
+      keysDir: () => pickExisting(next.keysDir, legacy.keysDir),
+      casDir: () => pickExisting(next.casDir, legacy.casDir),
+      versionsDir: () => pickExisting(next.versionsDir, legacy.versionsDir),
+      claimsDir: () => pickExisting(next.claimsDir, legacy.claimsDir),
+      knowledgeDir: () => pickExisting(next.knowledgeDir, legacy.knowledgeDir),
+      experienceDir: () => pickExisting(next.experienceDir, legacy.experienceDir),
+      policyFile: () => pickExisting(next.policyFile, legacy.policyFile),
+      log: (deviceId) => pickExisting(next.log(deviceId), legacy.log(deviceId)),
+      keyEnvelope: (memberId) => pickExisting(next.keyEnvelope(memberId), legacy.keyEnvelope(memberId)),
+      casBlob: (hash) => pickExisting(next.casBlob(hash), legacy.casBlob(hash)),
+      versionLog: (fileId) => pickExisting(next.versionLog(fileId), legacy.versionLog(fileId)),
+      claimLog: (fileId) => pickExisting(next.claimLog(fileId), legacy.claimLog(fileId)),
+    },
+  }
+}
+
+/**
+ * 给容器目录设 Windows 隐藏属性（best-effort，**失败不抛错**）。
+ *
+ * 为什么必须单独做：Windows 上「点开头」**不等于隐藏**，资源管理器默认照常显示。
+ * 不设的话，容器仍会出现在同事眼前（还可能因排序靠前而更显眼），与"与工作文件区分开"的
+ * 目的不符。POSIX 上点开头本身即隐藏，故直接跳过。
+ */
+export function hideContainerSync(dir, { platform = process.platform } = {}) {
+  const d = String(dir)
+  if (platform !== 'win32') return { ok: true, skipped: 'not-windows' }
+  try {
+    execFileSync('attrib', ['+h', d], { stdio: 'ignore', windowsHide: true })
+    return { ok: true, path: d }
+  } catch (e) {
+    return { ok: false, reason: (e && e.message) || String(e), path: d }
+  }
+}
+
+/**
+ * 建标准目录（幂等）：**创建容器 + 容器内各子目录**，并给容器设 Windows 隐藏属性。
+ * 返回 `teamPaths(root)`（含 `legacy` 与 `read.*`，调用方据此做双读）。
+ */
 export function ensureTeamDirs(root) {
   const p = teamPaths(root)
-  for (const d of [p.root, p.membersDir, p.keysDir, p.casDir, p.versionsDir, p.claimsDir]) {
+  // 容器必须先于子目录建：`attrib +h` 要在目录存在之后才有效
+  for (const d of [p.container, p.membersDir, p.keysDir, p.casDir, p.versionsDir, p.claimsDir]) {
     try { mkdirSync(d, { recursive: true }) } catch { /* 已存在/并发创建：忽略 */ }
   }
+  hideContainerSync(p.container)
   return p
 }
 
@@ -233,6 +328,42 @@ export function replayFileCopies(dir, logicalFileName, { parseLine } = {}) {
   return { records, skipped, copies: copies.map((c) => c.name) }
 }
 
+/**
+ * 跨目录重放同一逻辑文件的全部副本（**双读并集**）。
+ *
+ * 用途：双读兼容下会出现"旧日志在团队根、新日志在容器"的混合态。只读其中一边都会**丢成员记录**
+ * （少一边 = 少几条 add/revoke）。这里把两边并起来交给 `mergeMemberLogCopies` —— 它按
+ * `(by, seq)` 去重，故并集不会产生重复记录，只会补齐缺失的那些。
+ *
+ * `dirs` 顺序 = **重放顺序**，调用方按"旧侧在前"传（追加写只落新侧，旧侧是冻结的历史 ⇒
+ * 旧在前即时间序）。副本仍按 `listCopies` 的稳定排序；同一路径只取一次。
+ */
+export function replayFileCopiesFrom(dirs, logicalFileName, { parseLine } = {}) {
+  const copies = []
+  const seenPath = new Set()
+  for (const d of dirs) {
+    if (!d) continue
+    for (const c of listCopies(d, logicalFileName)) {
+      if (seenPath.has(c.path)) continue
+      seenPath.add(c.path)
+      copies.push(c)
+    }
+  }
+  const records = []
+  const skipped = []
+  for (const c of copies) {
+    const ph = detectPlaceholderSync(c.path)
+    if (ph.placeholder) { skipped.push({ name: c.name, reason: ph.reason }); continue }
+    let text = ''
+    try { text = readFileSync(c.path, 'utf-8') } catch (e) { skipped.push({ name: c.name, reason: `unreadable:${(e && e.code) || 'unknown'}` }); continue }
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim()) continue
+      records.push(parseLine ? parseLine(line, c) : line)
+    }
+  }
+  return { records, skipped, copies: copies.map((c) => c.name) }
+}
+
 // ---------------------------------------------------------------------------
 // 对策②：轮询扫描（无 fs.watch）
 // ---------------------------------------------------------------------------
@@ -285,17 +416,24 @@ export function scanTeamDirs({ root, maxDepth = DEFAULT_SCAN_DEPTH, maxEntries =
     for (const e of entries) {
       if (!e.isDirectory()) continue
       const full = join(dir, e.name)
+      // 容器目录（`.yfworking/`）**不是**团队根：它是某个团队根的留档区，由父目录那轮负责判定。
+      // 既不把它当候选（否则会把容器误报成一个团队），也不深入（里面不会再有团队）。
+      if (e.name === TEAM_CONTAINER_DIR) continue
       // 跳过明显的噪声目录（避免把整个工作区扫穿）：这些不是"策略裁剪"，而是纯收益
       if (e.name === '.git' || e.name === 'node_modules') continue
-      const manifest = join(full, TEAM_LAYOUT.MANIFEST)
-      if (existsSync(manifest)) {
+      // 新布局优先（容器内清单），旧布局回退（团队根下清单）：旧团队无需迁移仍能被发现。
+      for (const manifest of [join(full, TEAM_CONTAINER_DIR, TEAM_LAYOUT.MANIFEST), join(full, TEAM_LAYOUT.MANIFEST)]) {
+        if (!existsSync(manifest)) continue
         const ph = detectPlaceholderSync(manifest)
         if (ph.placeholder) { warnings.push({ kind: 'manifest-placeholder', path: manifest, reason: ph.reason }); continue }
         try {
           const m = JSON.parse(readFileSync(manifest, 'utf-8'))
           // #10：只认内容里的 teamId，目录名完全不参与判定 ⇒ 目录改名/复制都不影响发现
           if (m && typeof m === 'object' && m.teamId) {
+            // `dir` 报的是**团队根**（容器所在的那个目录），不是容器本身 —— 调用方拿它去
+            // `teamPaths(dir)` 就能同时得到新写法与旧读法。
             found.push({ dir: full, teamId: String(m.teamId), name: m.name ? String(m.name) : null, identCode: m.identCode ? String(m.identCode) : null, manifestPath: manifest })
+            break
           }
         } catch (err) {
           warnings.push({ kind: 'manifest-malformed', path: manifest, reason: (err && err.message) || String(err) })
@@ -358,10 +496,15 @@ export function openTeamSource({ kind = TEAM_SOURCE_KINDS.L1_SHARED_DIR, root } 
     kind,
     root: p.root,
     paths: p,
+    layoutVersion: TEAM_LAYOUT_VERSION,
+    /** 本团队当前实际读的是哪套布局（`container` / `legacy` / `none`）——排障与提示用。 */
+    layout: () => p.read.layout(),
     ensure: () => ensureTeamDirs(p.root),
     readManifest() {
-      if (!existsSync(p.manifest)) return null
-      return JSON.parse(readFileSync(p.manifest, 'utf-8'))
+      // 双读：容器内清单优先，旧布局（团队根下）回退
+      const f = p.read.manifestFile()
+      if (!existsSync(f)) return null
+      return JSON.parse(readFileSync(f, 'utf-8'))
     },
     writeManifest(obj) {
       return writeVerifiedSync(p.manifest, JSON.stringify(obj, null, 2) + '\n')
@@ -369,18 +512,25 @@ export function openTeamSource({ kind = TEAM_SOURCE_KINDS.L1_SHARED_DIR, root } 
     writeLog(deviceId, text) {
       return writeVerifiedSync(p.log(deviceId), text)
     },
-    /** 读某设备日志的**全部副本**（冲突副本吸收；返回 `{records,skipped,copies}`，records 为**行字符串**）。 */
+    /**
+     * 读某设备日志的**全部副本**（冲突副本吸收；返回 `{records,skipped,copies}`，records 为**行字符串**）。
+     * 双读：把旧布局 `members/` 与容器内 `members/` 的副本**并起来**重放，否则混合态会丢记录。
+     * 顺序为**旧侧在前**：追加写只落容器侧，故旧侧是冻结的历史，这个顺序即时间序
+     * （与 `kernel/file-collab.mjs` 的 `readJsonlDual` 同一约定）。
+     */
     readLogCopies(deviceId) {
-      return replayFileCopies(p.membersDir, `log-${deviceId}.jsonl`)
+      return replayFileCopiesFrom([p.legacy.membersDir, p.membersDir], `log-${deviceId}.jsonl`)
     },
-    /** 列出 members 目录里所有**逻辑日志名**（同一设备的多个副本归为一个逻辑名）。 */
+    /** 列出 members 目录里所有**逻辑日志名**（同一设备的多个副本归为一个逻辑名）。双读：两边并集。 */
     listLogNames() {
-      let names = []
-      try { names = readdirSync(p.membersDir) } catch { return [] }
       const set = new Set()
-      for (const n of names) {
-        const { logical } = logicalNameOf(n)
-        if (/^log-.*\.jsonl$/.test(logical)) set.add(logical)
+      for (const d of [p.membersDir, p.legacy.membersDir]) {
+        let names = []
+        try { names = readdirSync(d) } catch { continue }
+        for (const n of names) {
+          const { logical } = logicalNameOf(n)
+          if (/^log-.*\.jsonl$/.test(logical)) set.add(logical)
+        }
       }
       return Array.from(set).sort()
     },
@@ -388,7 +538,8 @@ export function openTeamSource({ kind = TEAM_SOURCE_KINDS.L1_SHARED_DIR, root } 
       return writeVerifiedSync(p.keyEnvelope(memberId), text)
     },
     readKeyEnvelope(memberId) {
-      const f = p.keyEnvelope(memberId)
+      // 双读：旧团队的邀请信封落在团队根下的 keys/，容器里没有 ⇒ 必须回退才收得到邀请
+      const f = p.read.keyEnvelope(memberId)
       if (!existsSync(f)) return null
       return readFileSync(f, 'utf-8')
     },

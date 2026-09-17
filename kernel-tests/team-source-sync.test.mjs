@@ -5,16 +5,17 @@
 // 与批注 #10（目录改名容错：只认 team.json 内容，不认目录名）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 
 import {
-  TEAM_LAYOUT, logicalNameOf, listCopies, replayFileCopies, writeVerifiedSync, detectPlaceholderSync,
+  TEAM_LAYOUT, TEAM_CONTAINER_DIR, logicalNameOf, listCopies, replayFileCopies, writeVerifiedSync, detectPlaceholderSync,
   detectGitAncestor, scanTeamDirs, clearScanCache, measureTeamSource, openTeamSource, ensureTeamDirs, teamPaths,
 } from '../shared/team-source.mjs'
+import { execFileSync } from 'node:child_process'
 import { mergeMemberLogCopies } from '../shared/team-members.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -233,7 +234,7 @@ test('安全/契约：本模块**不含 fs.watch 使用**（§7.1 明确禁用�
     const src = openTeamSource({ root })
     src.ensure()
     src.writeManifest({ teamId: 't_nokey', name: '无密钥团队', identCode: '123456789', scrypt: { N: 2 ** 15 } })
-    const manifest = readFileSync(join(root, TEAM_LAYOUT.MANIFEST), 'utf-8')
+    const manifest = readFileSync(join(root, TEAM_CONTAINER_DIR, TEAM_LAYOUT.MANIFEST), 'utf-8')
     assert.equal(/teamKey|privateKey|secretKey|"key"/i.test(manifest), false,
       '§7.2：team.json 是明文，**绝不含团队密钥**（团队密钥只在 keys/<memberId>.env 信封里）')
   } finally { cleanup(root) }
@@ -260,12 +261,146 @@ test('体积度量：只度量不阻断（批注 #8 未定）', () => {
   } finally { cleanup(root) }
 })
 
-test('teamPaths：§7.2 布局六项齐全（拼歪路径会静默写到别处，故逐项钉住）', () => {
+test('teamPaths：布局六项齐全且**全部落在 .yfworking/ 容器内**（拼歪路径会静默写到别处，故逐项钉住）', () => {
   const p = teamPaths('/tmp/teamroot')
-  assert.equal(p.manifest, join('/tmp/teamroot', 'team.json'))
-  assert.equal(p.log('d_1'), join('/tmp/teamroot', 'members', 'log-d_1.jsonl'))
-  assert.equal(p.keyEnvelope('u_1'), join('/tmp/teamroot', 'keys', 'u_1.env'))
-  assert.equal(p.casBlob('abcdef123456'), join('/tmp/teamroot', 'cas', 'ab', 'abcdef123456'), 'CAS = cas/<hash[0:2]>/<hash>')
-  assert.equal(p.versionLog('f_1'), join('/tmp/teamroot', 'versions', 'f_1.jsonl'))
-  assert.equal(p.claimLog('f_1'), join('/tmp/teamroot', 'claims', 'f_1.jsonl'))
+  // 写侧：一切团队留档都在容器内 ⇒ 用户的工作目录只多出 `.yfworking/` 一个条目
+  assert.equal(p.container, join('/tmp/teamroot', '.yfworking'), '容器目录 = <团队根>/.yfworking')
+  assert.equal(p.manifest, join('/tmp/teamroot', '.yfworking', 'team.json'))
+  assert.equal(p.log('d_1'), join('/tmp/teamroot', '.yfworking', 'members', 'log-d_1.jsonl'))
+  assert.equal(p.keyEnvelope('u_1'), join('/tmp/teamroot', '.yfworking', 'keys', 'u_1.env'))
+  assert.equal(p.casBlob('abcdef123456'), join('/tmp/teamroot', '.yfworking', 'cas', 'ab', 'abcdef123456'), 'CAS = cas/<hash[0:2]>/<hash>')
+  assert.equal(p.versionLog('f_1'), join('/tmp/teamroot', '.yfworking', 'versions', 'f_1.jsonl'))
+  assert.equal(p.claimLog('f_1'), join('/tmp/teamroot', '.yfworking', 'claims', 'f_1.jsonl'))
+  assert.equal(p.knowledgeDir, join('/tmp/teamroot', '.yfworking', 'knowledge'))
+  assert.equal(p.experienceDir, join('/tmp/teamroot', '.yfworking', 'experience'))
+  assert.equal(p.policyFile, join('/tmp/teamroot', '.yfworking', 'policies.json'))
+  // 反向断言：**不得**再把团队文件写在团队根下（否则又和用户的工作文件混在一起）
+  for (const [name, v] of [['manifest', p.manifest], ['members', p.membersDir], ['keys', p.keysDir], ['cas', p.casDir], ['versions', p.versionsDir], ['claims', p.claimsDir]]) {
+    assert.ok(v.startsWith(p.container + sep), `${name} 必须位于容器内，实得 ${v}`)
+  }
+  // 旧布局路径仍被完整保留（双读回退要用）
+  assert.equal(p.legacy.manifest, join('/tmp/teamroot', 'team.json'))
+  assert.equal(p.legacy.casBlob('abcdef123456'), join('/tmp/teamroot', 'cas', 'ab', 'abcdef123456'))
+})
+
+test('容器隔离（本需求的核心）：建团队后工作目录里**只多出容器**一个条目', () => {
+  const outer = tmp('yfw-s3-clean-')
+  try {
+    // workDir 就是用户的**工作目录**（真实场景里放的是申报材料）：团队根直接指向它
+    const workDir = join(outer, '湖北某公司申报材料')
+    mkdirSync(workDir, { recursive: true })
+    // 先放几个"工作文件"，确认同步/建团队不碰它们
+    writeFileSync(join(workDir, '知识产权汇总表.xlsx'), 'work-file')
+    writeFileSync(join(workDir, '立项报告.docx'), 'work-file')
+    const before = readdirSync(workDir).sort()
+
+    const src = openTeamSource({ root: workDir })
+    src.ensure()
+    src.writeManifest({ teamId: 't_clean', name: '整洁团队', identCode: '123456789' })
+    src.writeLog('d_1', '{"type":"add"}\n')
+    src.writeKeyEnvelope('u_1', 'env')
+
+    const after = readdirSync(workDir).sort()
+    const added = after.filter((n) => !before.includes(n))
+    assert.deepEqual(added, [TEAM_CONTAINER_DIR], `工作目录里只应新增容器一项，实得 ${JSON.stringify(added)}`)
+    // 工作文件原样未动
+    assert.equal(readFileSync(join(workDir, '知识产权汇总表.xlsx'), 'utf-8'), 'work-file')
+    // 团队文件确实在容器里，而不是散在根下
+    for (const rel of ['team.json', join('members', 'log-d_1.jsonl'), join('keys', 'u_1.env')]) {
+      assert.equal(existsSync(join(workDir, TEAM_CONTAINER_DIR, rel)), true, `应在容器内: ${rel}`)
+      assert.equal(existsSync(join(workDir, rel)), false, `不应散在团队根下: ${rel}`)
+    }
+  } finally { cleanup(outer) }
+})
+
+test('双读兼容：旧布局（团队根下）的团队仍能被发现、读到清单与内容', () => {
+  const outer = tmp('yfw-s3-dual-')
+  try {
+    const dir = join(outer, '旧团队工作目录')
+    mkdirSync(join(dir, 'members'), { recursive: true })
+    mkdirSync(join(dir, 'keys'), { recursive: true })
+    writeFileSync(join(dir, 'team.json'), JSON.stringify({ teamId: 't_old', name: '旧团队', identCode: '987654321' }))
+    writeFileSync(join(dir, 'members', 'log-d_old.jsonl'), '{"type":"add","by":"u_a","seq":1}\n')
+    writeFileSync(join(dir, 'keys', 'u_a.env'), 'legacy-env')
+
+    // ① 扫描能发现（resolveRoot 也要认）
+    clearScanCache()
+    const scan = scanTeamDirs({ root: outer, maxDepth: 3 })
+    assert.equal(scan.found.length, 1, '旧布局团队必须仍能被发现')
+    assert.equal(scan.found[0].teamId, 't_old')
+    assert.equal(scan.found[0].dir, dir, '报出的应是**团队根**（容器所在目录），不是容器本身')
+
+    // ② 读清单/日志/信封都走旧布局回退
+    const src = openTeamSource({ root: dir })
+    assert.equal(src.readManifest().teamId, 't_old')
+    assert.equal(src.layout(), 'legacy', '未迁移的旧团队应报告为 legacy 布局')
+    assert.deepEqual(src.listLogNames(), ['log-d_old.jsonl'], '旧布局 members/ 里的日志名必须读得到')
+    assert.equal(src.readLogCopies('d_old').records.length, 1)
+    assert.equal(src.readKeyEnvelope('u_a'), 'legacy-env', '旧布局 keys/ 里的信封必须读得到（否则收不到邀请）')
+    // CAS 读侧也要回退：在旧布局放一个内容块，读侧必须能取到它（否则历史版本读不出来）
+    mkdirSync(join(dir, 'cas', 'de'), { recursive: true })
+    writeFileSync(join(dir, 'cas', 'de', 'deadbeef'), 'legacy-blob')
+    assert.equal(src.paths.read.casBlob('deadbeef'), join(dir, 'cas', 'de', 'deadbeef'), 'CAS 读侧要回退到旧布局')
+    // 新布局里放同名块时以新布局为准
+    mkdirSync(join(dir, TEAM_CONTAINER_DIR, 'cas', 'de'), { recursive: true })
+    writeFileSync(join(dir, TEAM_CONTAINER_DIR, 'cas', 'de', 'deadbeef'), 'new-blob')
+    assert.equal(src.paths.read.casBlob('deadbeef'), join(dir, TEAM_CONTAINER_DIR, 'cas', 'de', 'deadbeef'), '两边都有时新布局优先')
+
+    // ③ 写侧仍进容器：新内容不再往工作目录根上摊
+    src.writeLog('d_old', '{"type":"add","by":"u_b","seq":2}\n')
+    assert.equal(existsSync(join(dir, TEAM_CONTAINER_DIR, 'members', 'log-d_old.jsonl')), true)
+    assert.equal(existsSync(join(dir, 'members', 'log-d_old.jsonl')), true, '旧侧文件保持原样（不迁移、不删除）')
+  } finally { cleanup(outer) }
+})
+
+test('双读并集：给旧团队追加记录后，**旧侧历史不丢**（日志不能"缺失回退"）', () => {
+  const outer = tmp('yfw-s3-union-')
+  try {
+    const dir = join(outer, '混合态团队')
+    mkdirSync(join(dir, 'members'), { recursive: true })
+    writeFileSync(join(dir, 'team.json'), JSON.stringify({ teamId: 't_mix', name: '混合态', identCode: '111222333' }))
+    // 旧侧有 2 条历史
+    writeFileSync(join(dir, 'members', 'log-d_1.jsonl'), '{"type":"add","by":"u_a","seq":1}\n{"type":"add","by":"u_a","seq":2}\n')
+
+    const src = openTeamSource({ root: dir })
+    // 新代码追加第 3 条 → 落在容器侧（该文件在容器里**新建**）
+    src.writeLog('d_1', '{"type":"add","by":"u_a","seq":3}\n')
+    const r = src.readLogCopies('d_1')
+    assert.equal(r.records.length, 3, '旧侧 2 条 + 容器侧 1 条都要在（只读一边就会丢历史）')
+    assert.deepEqual(r.records.map((s) => JSON.parse(s).seq), [1, 2, 3], '顺序应为 先旧侧 后容器侧 = 时间序')
+
+    // 重复记录（两侧出现同一条）不靠行级去重，而由 mergeMemberLogCopies 按 (by, seq) 折叠掉：
+    // 这里钉的是"折叠结果正确"，而不是"并集里不能出现重复行"（后者会误删真的同内容的独立记录）。
+    writeFileSync(join(dir, 'members', 'log-d_1.jsonl'), '{"type":"add","by":"u_a","seq":1,"ts":"2026-01-01T00:00:00.000Z"}\n{"type":"add","by":"u_a","seq":3,"ts":"2026-01-03T00:00:00.000Z"}\n')
+    writeFileSync(join(dir, TEAM_CONTAINER_DIR, 'members', 'log-d_1.jsonl'), '{"type":"add","by":"u_a","seq":3,"ts":"2026-01-03T00:00:00.000Z"}\n')
+    const rep = openTeamSource({ root: dir }).readLogCopies('d_1')
+    const merged = mergeMemberLogCopies([{ name: 'log-d_1.jsonl', records: rep.records.map((s) => JSON.parse(s)) }])
+    assert.deepEqual(merged.map((r) => r.seq), [1, 3], '折叠后不得出现重复的 (by,seq)')
+  } finally { cleanup(outer) }
+})
+
+test('隐藏属性：POSIX 上点开头即隐藏故跳过；win32 上要真的调用 attrib +h 且失败不抛错', async () => {
+  const { hideContainerSync } = await import('../shared/team-source.mjs')
+  // POSIX：无需额外处理
+  assert.equal(hideContainerSync('/tmp/x', { platform: 'linux' }).skipped, 'not-windows')
+  assert.equal(hideContainerSync('/tmp/x', { platform: 'darwin' }).skipped, 'not-windows')
+  // win32：本机真实执行一次（best-effort，失败也只返回 ok:false 不抛错）
+  const dir = tmp('yfw-s3-hidden-')
+  try {
+    const target = join(dir, TEAM_CONTAINER_DIR)
+    mkdirSync(target, { recursive: true })
+    const r = hideContainerSync(target, { platform: 'win32' })
+    assert.equal(r.ok, true, `attrib +h 应成功（reason: ${r.reason || ''}）`)
+    if (process.platform === 'win32') {
+      // 验证属性真的生效：`attrib` 输出里带 H
+      const out = execFileSync('attrib', [target], { encoding: 'utf-8' })
+      assert.match(out, /\bH\b/, `attrib 应显示隐藏位，实得: ${out.trim()}`)
+    }
+    // 目录不存在时：**不抛错**（best-effort 的契约）。注意 `attrib` 对不存在的路径返回码可能仍是 0，
+    // 故这里只钉"不抛 + 结构完整"，不钉 ok 的取值——否则就是在钉 attrib 的未文档化行为。
+    let bad = null
+    assert.doesNotThrow(() => { bad = hideContainerSync(join(dir, '不存在的目录'), { platform: 'win32' }) })
+    assert.equal(typeof bad.ok, 'boolean')
+    assert.equal(bad.path, join(dir, '不存在的目录'))
+  } finally { cleanup(dir) }
 })

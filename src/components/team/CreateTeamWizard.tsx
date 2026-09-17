@@ -19,7 +19,7 @@ import { createTeam } from '@/lib/teamApi'
 import { useTeamStore } from '@/stores/teamStore'
 import {
   canAdvance, formatCode, IDENT_CODE_LEN, nextStep, prevStep, sourceUnavailableKey,
-  TEAM_LAYOUT_ENTRIES, TEAM_SOURCE_OPTIONS, wizardBlockers, type TeamSourceKind, type WizardStep,
+  TEAM_CONTAINER_DIR, TEAM_LAYOUT_ENTRIES, TEAM_SOURCE_OPTIONS, wizardBlockers, type TeamSourceKind, type WizardStep,
 } from '@/lib/teamOnboardingUi'
 import { InviteMemberPanel } from './InviteMemberPanel'
 
@@ -166,19 +166,22 @@ export function CreateTeamWizard({ onCreated }: CreateTeamWizardProps) {
             <>
               <p className="text-[11px] text-secondary leading-relaxed">{t('team.wizardDirHint')}</p>
               {/* 目录布局契约（§7.2）：初始化**之前**就把"会出现什么"说清楚——
-                  否则用户第一次看到团队目录里的七个条目会以为是什么垃圾 */}
+                  否则用户第一次看到团队目录里的条目会以为是什么垃圾。
+                  收进容器后要显示**容器前缀**：只写 `team.json` 会让用户去团队根下找，
+                  而它其实在 `.yfworking/` 里；且工作目录只会多出这一个条目（本需求的核心）。 */}
               <div className="border rounded p-2 space-y-1">
                 <div className="text-[11px] text-primary font-medium">{t('team.wizardLayoutTitle')}</div>
                 <ScrollArea className="max-h-[168px]">
                   <ul className="space-y-1 pr-1">
                     {TEAM_LAYOUT_ENTRIES.map((e) => (
                       <li key={e.path} className="flex items-start gap-1.5">
-                        <code className="text-[10px] text-brand-500 shrink-0">{e.path}</code>
+                        <code className="text-[10px] text-brand-500 shrink-0">{TEAM_CONTAINER_DIR}/{e.path}</code>
                         <span className="text-[10px] text-tertiary leading-snug">{t(e.hintKey)}</span>
                       </li>
                     ))}
                   </ul>
                 </ScrollArea>
+                <p className="text-[10px] text-tertiary leading-snug">{t('team.wizardLayoutContainerNote')}</p>
                 <p className="text-[10px] text-tertiary flex items-start gap-1">
                   <KeyRound className="w-3 h-3 shrink-0 mt-px" />
                   {t('team.layoutKeysNote')}

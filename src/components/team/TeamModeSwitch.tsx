@@ -32,7 +32,7 @@ function openTeamSettings(intent: 'manage' | 'create' | 'join') {
   window.yfworkingWindow?.openUtility?.('settings')
 }
 
-export function TeamModeSwitch() {
+export function TeamModeSwitch({ variant = 'header' }: { variant?: 'header' | 'status' } = {}) {
   const { t } = useTranslation()
   const mode = useEffectiveMode()
   const teams = useTeamStore((s) => s.teams)
@@ -51,19 +51,37 @@ export function TeamModeSwitch() {
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label={t('team.modeSwitchAria')}
-          title={t('team.modeSwitchTitle')}
-          className={cn(
-            'flex items-center gap-1 h-6 px-2 text-[11px] clip-sm transition-colors',
-            mode === 'team' ? 'bg-brand-500/15 text-brand-500' : 'text-secondary hover:text-primary hover:bg-elevated',
-          )}
-        >
-          <Icon className="w-3.5 h-3.5" />
-          <span className="max-w-[110px] truncate">{label}</span>
-          <ChevronDown className="w-3 h-3 opacity-70" />
-        </button>
+        {variant === 'status' ? (
+          // 状态栏常驻标识（S3 可辨识性）：与 header 开关**同一份状态、同一个下拉**，只是形态更小、
+          // 更扁平（对齐状态栏微标的 9.5px 字号）。`title` 用 modeHint —— 状态栏位置窄，悬停时
+          // 说明"模式只筛列表、不是隔离"比只说"切换模式"更有信息量。
+          <button
+            type="button"
+            aria-label={t('team.modeSwitchAria')}
+            title={t('team.modeHint')}
+            className={cn(
+              'flex items-center gap-1 px-1.5 py-0.5 text-[9.5px] rounded transition-colors select-none',
+              mode === 'team' ? 'text-brand-500 hover:bg-elevated' : 'text-tertiary hover:text-secondary hover:bg-elevated',
+            )}
+          >
+            <Icon className="w-3 h-3" />
+            <span className="max-w-[90px] truncate">{label}</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            aria-label={t('team.modeSwitchAria')}
+            title={t('team.modeSwitchTitle')}
+            className={cn(
+              'flex items-center gap-1 h-6 px-2 text-[11px] clip-sm transition-colors',
+              mode === 'team' ? 'bg-brand-500/15 text-brand-500' : 'text-secondary hover:text-primary hover:bg-elevated',
+            )}
+          >
+            <Icon className="w-3.5 h-3.5" />
+            <span className="max-w-[110px] truncate">{label}</span>
+            <ChevronDown className="w-3 h-3 opacity-70" />
+          </button>
+        )}
       </DropdownMenuTrigger>
 
       <DropdownMenuContent align="end" className="w-[300px]">
@@ -108,6 +126,9 @@ export function TeamModeSwitch() {
 
             {/* 二级：当前团队（多团队切换）。选中即切到团队模式（否则列表立刻把它筛掉） */}
             <DropdownMenuLabel className="micro pt-1">{t('team.modeCurrentTeam')}</DropdownMenuLabel>
+            {/* 这行小字消解"下拉里团队已打勾、按钮却写个人"的困惑：**不改状态语义**，
+                只说明"选团队 = 进团队模式"这条既有规则（setActiveTeam 的注释同义）。 */}
+            <div className="px-2 pb-1 text-[10px] text-tertiary leading-snug">{t('team.modePickTeamHint')}</div>
             {teams.map((x) => (
               <DropdownMenuItem key={x.teamId} className="text-[11px]" onSelect={() => setActiveTeam(x.teamId)}>
                 <span className="flex-1 min-w-0 truncate">{x.name || x.teamId}</span>
