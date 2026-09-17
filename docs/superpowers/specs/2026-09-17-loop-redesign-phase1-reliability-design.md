@@ -119,7 +119,7 @@ A 保证"正要跑的别杀"，C 保证"已经死的能醒"。**长间隔循环�
                               ▼                        │
                    ┌─────────────── 内核（短命） ────────────────┐
                    │  LoopController                             │
-                   │   · 落盘新增 nextRunAt / aliveAt / resumeCount│
+                   │   · 落盘新增 nextRunAt / aliveAt（内核独占写）│
                    │   · 短间隔快路径仍用 setTimeout（零 spawn）   │
                    │   · --resume → load() 补投递（既有能力）      │
                    └─────────────────────────────────────────────┘
@@ -151,6 +151,8 @@ A 保证"正要跑的别杀"，C 保证"已经死的能醒"。**长间隔循环�
   "knowledgeSpaces": null,
   "appPageId": null,
   "compactCount": 0,
+  "resumeCount": 0,
+  "lastResumeAt": 0,
   "updatedAt": "2026-09-17T..."
 }
 ```
@@ -160,6 +162,8 @@ A 保证"正要跑的别杀"，C 保证"已经死的能醒"。**长间隔循环�
 - **原子写**：`tmp + rename`（与内核侧 loop 状态文件同款）。
 - **失败处理**：写失败 → 静默降级（主管无 meta 即不复活，退回旧行为），记 bridge 日志一行。
 
+> **`resumeCount` / `lastResumeAt` 归 meta 而非内核状态文件（设计修正）**：两者是**主管自有**的复活计数。若写入内核状态文件，会形成**同文件跨进程写冲突** —— 内核的 `persist()` 用其内存态整体覆写文件，而运行中的内核并不知道 bridge 写过这个字段，下一次 persist 就把 bridge 的写入抹掉（且 bridge 的写入时机与内核 persist 时机无同步）。故遵守**单写者原则**：内核状态文件只由内核写，meta 文件只由 bridge 写。
+
 ### 3.2 `<YFW_HOME>/loop/<sid>.json` — 内核写（既有文件，**只增字段**）
 
 新增字段：
@@ -168,7 +172,8 @@ A 保证"正要跑的别杀"，C 保证"已经死的能醒"。**长间隔循环�
 |---|---|---|
 | `nextRunAt` | 下次该跑的时刻（ms 时间戳） | `onTurnEnd` 返回 `next` 时：`delayMs > 0` → `now + delayMs`；`delayMs === 0` → `now`（表示"立即，内核自己会投递"） |
 | `aliveAt` | 内核最近一次心跳（ISO 时间） | 每轮轮末刷新（复用既有 `persist()`） |
-| `resumeCount` | 主管复活次数 | 主管复活成功后由 bridge 回写；内核 `start()`/`load()` 时保留不清零 |
+
+**单写者原则**：本文件**只由内核写**；bridge 只读。主管的复活计数（`resumeCount`/`lastResumeAt`）存 meta 文件（§3.1），避免同文件跨进程覆写。
 
 **兼容**：旧状态文件无这些字段 → 主管视为"无调度信息"，**不复活**（保守不误动，退回旧行为）。
 
@@ -191,7 +196,7 @@ function loopSupervisorTick(now):
     if !st.nextRunAt                           → skip      // 无调度信息（旧文件）→ 旧行为
     if st.nextRunAt > now                      → skip      // 未到点
     if sessionAlive(meta.sessionId)            → skip      // 内核活着，其 setTimeout 会处理
-    if resumeCount >= MAX_RESUME (5)           → warnOnce + skip   // 不再复活，交人处理
+    if meta.resumeCount >= MAX_RESUME (5)      → warnOnce + skip   // 不再复活，交人处理
     if resurrectInFlight.has(sid)              → skip      // 防重复 spawn
     if inBackoff(sid, now)                     → skip      // 指数退避未到
     → resurrect(meta)                                       // spawn --resume
@@ -208,7 +213,7 @@ resurrect(meta):
                   knowledgeSpaces: meta.knowledgeSpaces, appPageId: meta.appPageId })
     // 走既有 getOrCreateSession(sid, cwd, resumeId=sessionId, …) → args.push('--resume', sessionId)
     // 内核启动 → loop.load() 成功且 status==='running' → setImmediate 自动补投递下一轮
-    回写 meta.updatedAt ；st.resumeCount++ 落盘
+    回写 meta：{ resumeCount: meta.resumeCount + 1, lastResumeAt: now, updatedAt: now }
     清退避；emit('loop_resumed', { sessionId, resumeCount })
   catch e:
     记退避 = min(2^n × 60s, 15min)
@@ -225,7 +230,7 @@ resurrect(meta):
 | 同一 sid 复活在途 → 跳过 | 防重复 spawn 双跑两轮 |
 | 复活失败退避、不阻塞其他循环 | 单个循环故障不得拖垮 bridge |
 | 主管自身全套 `try/catch` 静默降级 | 主管故障绝不能拖垮 bridge |
-| `resumeCount` 达上限 → 告警 + 停止复活 | 防"复活 → 崩溃 → 复活"风暴；交人处理 |
+| `meta.resumeCount` 达上限 → 告警 + 停止复活 | 防"复活 → 崩溃 → 复活"风暴；交人处理 |
 | 每次 tick 复活数上限（`MAX_PER_TICK = 3`） | 防大量循环同时到点造成 spawn 风暴 |
 | `LOOP_SUPERVISOR=0` 逃生开关（默认开） | 出问题可一键退回旧行为 |
 
@@ -340,9 +345,9 @@ approve() 中的 rollback 分支（实际执行）:
 
 ### P1-6 bridge loop 帧可观测（`loopRegistry`）
 
-- bridge 在事件转发路径解析 `type === 'loop'` 帧，维护 `loopRegistry: Map<sid, {status, index, total, nextRunAt, endReason, costUsd, lastFrameAt}>`
-- **单一数据源**：机制 A 的宽限判定与主管的到点判定共用该视图（不再各读一次文件）
-- 供 Phase 4 全局列表直接消费
+- bridge 在事件转发路径解析 `type === 'loop'` 帧，维护 `loopRegistry: Map<sid, {status, index, total, endReason, costUsd, priceSource, lastFrameAt}>`
+- **用途**：循环运行视图（P1-6）→ Phase 4 全局列表的数据源；以及回收宽限的"是否有活跃循环"判定
+- **`nextRunAt` 不在帧内**（它是内核写进状态文件的调度语义，不随帧上报）。**单一数据源 = 内核写的状态文件**：机制 A（§4.4 回收宽限）与主管（§4.1）各自经 `server/loop-paths.mjs` 读同一份 `<YFW_HOME>/loop/<sid>.json`，不共享内存缓存（避免缓存陈旧导致误判）。宽限判定只在**已登记活跃循环**的会话上发生，读盘量为个位数级别，可忽略
 - 归约规则与 GUI 侧 `useYFWCLI` 同源（`LOOP_ACTIVE_STATUSES` / `LOOP_END_REASONS` 值域校验）
 
 ### P1-7 可见告警
@@ -365,7 +370,7 @@ approve() 中的 rollback 分支（实际执行）:
 
 | 文件 | 覆盖 |
 |---|---|
-| `kernel-tests/loop-supervisor.test.mjs`（新） | 到点复活 / 未到点不动 / 内核活着不重复 spawn / `paused` 不复活 / `awaiting_approval` 不复活 / 终态不复活 / 无 `nextRunAt` 旧文件不复活 / 复活失败退避 / `resumeCount` 上限告警停复活 / 损坏 meta 与损坏 state 静默跳过 / 每次 tick 上限 |
+| `server/loop-supervisor.test.mjs`（新） | 到点复活 / 未到点不动 / 内核活着不重复 spawn / `paused` 不复活 / `awaiting_approval` 不复活 / 终态不复活 / 无 `nextRunAt` 旧文件不复活 / 复活失败退避 / `meta.resumeCount` 上限告警停复活 / 损坏 meta 与损坏 state 静默跳过 / 每次 tick 上限 |
 | `kernel-tests/loop-controller.test.mjs`（扩） | `nextRunAt` 落盘 round-trip（`delayMs>0` / `=0` 两分支）/ `aliveAt` 刷新 / `--until` 移入后短路序（doneWhen 优先于 until、until 优先于次数）/ `judged/reason/error` 帧字段保留 / `sig` 指纹四种场景（内容变→有进展、内容同→无进展、重复读→无进展、重复错→无进展） |
 | `kernel-tests/loop-rollback.test.mjs`（新） | stash 保护后 reset 成功 / stash 失败则中止回滚（不 reset）/ 非 git 仓库降级报错 / 未经 `approve` 不执行 / 回滚记入 history |
 | `kernel-tests/model-prices.test.mjs`（新） | 三级解析优先级（provider > builtin > estimate）/ 未知模型落 estimate / 字段缺失即旧行为 |
@@ -388,7 +393,7 @@ approve() 中的 rollback 分支（实际执行）:
 
 | 风险 | 对冲 |
 |---|---|
-| 主管复活风暴（大量循环同时到点） | `resumeCount` 上限（5）+ 指数退避（60s→15min 封顶）+ 每次 tick 上限（3） |
+| 主管复活风暴（大量循环同时到点） | `meta.resumeCount` 上限（5）+ 指数退避（60s→15min 封顶）+ 每次 tick 上限（3） |
 | 主管自证循环（复活 → 崩溃 → 复活） | 达上限转告警并停止复活，交人处理（`loop_interrupted`） |
 | 复活用错 spawn 上下文 | meta 由 `send` 分支同一份字段写出（单一来源）；内核 `init` 帧回显 `session_id` 供校验 |
 | `--resume` 复活破坏在途工作 | 仅在"内核确认不在"时复活；复活前复核 `status === 'running'`；复活失败退避 |
@@ -424,7 +429,7 @@ approve() 中的 rollback 分支（实际执行）:
 
 1. `kernel/model-prices.mjs` + 测试（纯函数，无依赖，可先行）
 2. `engine.mjs` 的 `toolDigest.sig` + `loop.mjs` 的 `fingerprintOf` 校正 + 测试（P1-4）
-3. `loop.mjs` 落盘新增 `nextRunAt`/`aliveAt`/`resumeCount` + 测试（P1-1 前提）
+3. `loop.mjs` 落盘新增 `nextRunAt`/`aliveAt` + 测试（P1-1 前提）
 4. `loop.mjs` 的 `--until` 移入短路序 + cli 侧移除 + 帧字段保留断言（P1-5）
 5. `loop.mjs` 的 `rollback` 实际执行 + 测试（P1-3）
 6. `bridge.mjs` 的 `loopRegistry` 归约（P1-6，为 7/8 提供数据源）
