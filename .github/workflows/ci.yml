@@ -1,0 +1,90 @@
+name: CI
+
+# 为什么现在才有 CI：此前 367 个测试文件只靠"本地手跑"。缺少自动化门禁时，
+# 任何一次改动是否破坏既有行为，取决于人是否记得跑、跑得全不全。本次补齐。
+#
+# ── 两个刻意的环境决策 ──────────────────────────────────────────────────
+# 1) **runs-on: windows-latest**（而非 ubuntu-latest）
+#    本仓库是 Windows 桌面应用，测试里含平台特定断言：`C:\…` 字面路径、盘符枚举、
+#    `sep` 分支、`taskkill`/PowerShell 探测、p5.js 预览的 `file://` 帧语义等。
+#    跑 Linux 会产生一批**与被测行为无关**的失败（或更糟：静默跳过），门禁就失去意义。
+#    与开发环境保持一致，才能让"CI 绿"等价于"这台机器上绿"。
+# 2) **ELECTRON_SKIP_BINARY_DOWNLOAD=1**
+#    测试只 require/stub electron 模块（无一处 spawn 真二进制，已核查），
+#    不下载 ~100MB 二进制可显著缩短安装时间，且避免网络受限时的假失败。
+#
+# ── 测试怎么跑 ──────────────────────────────────────────────────────────
+# 用 `npm run test:ci`，它先过 `scripts/ci-preflight.mjs` 预检：
+#   · 每条测试 glob 必须匹配到 ≥1 个文件 —— 否则 `node --test` 会**零测试却 0 退出**，
+#     CI 显示绿灯而实际没有任何保护（测试基建最经典的静默失败）；
+#   · 各层文件数须与 `docs/_anchors.json` 一致 —— 抓出"glob 写错导致整层静默消失"；
+#   · 再跑 `scripts/check-doc-anchors.mjs` 校验文档口径（路径引用存在性 + 计数）。
+# 随后 `node --test --test-concurrency=4`：并发上限 4，兼顾速度与资源（测试自身用
+# `YFW_BRIDGE_PORT` 随机端口隔离，故并发安全；限流是防 CPU/内存打满导致计时类测试抖动）。
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的旧跑批自动取消：既省额度，也避免"旧提交绿灯"造成的误判
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+  # 让 ci-preflight 跳过"本机是否已有应用占用桥端口"的检查（CI 上必然为空闲）
+  CI: 'true'
+
+jobs:
+  test:
+    name: typecheck + tests (Windows / Node 24)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: 安装依赖（跳过 electron 二进制）
+        run: npm ci
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 预检 + 文档口径 + 全量测试
+        run: npm run test:ci
+
+      - name: 失败时输出文档锚点差异（便于直接定位口径漂移）
+        if: failure()
+        run: node scripts/check-doc-anchors.mjs
+        continue-on-error: true
+
+  build:
+    name: 构建产物可产出（渲染层 + 内核包）
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: 安装依赖（跳过 electron 二进制）
+        run: npm ci
+
+      # 产物可产出本身就是断言：类型/导入/打包配置坏了，测试可能全绿而用户拿到的是坏包
+      - name: 构建渲染层（tsc && vite build）
+        run: npm run build
+
+      - name: 构建内核包
+        run: node scripts/build-kernel.mjs

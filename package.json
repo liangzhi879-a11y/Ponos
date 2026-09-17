@@ -16,7 +16,14 @@
     "typecheck": "tsc --noEmit",
     "build:electron": "npm run build && electron-builder",
     "build:electron:dir": "npm run build && electron-builder --dir",
-    "test": "node --test --test-timeout=300000 \"shared/**/*.test.mjs\" \"server/*.test.mjs\" \"electron/*.test.mjs\" \"kernel-tests/*.test.mjs\" \"src/**/*.test.ts\""
+    "test": "node --test --test-timeout=300000 \"shared/**/*.test.mjs\" \"server/*.test.mjs\" \"electron/*.test.mjs\" \"kernel-tests/*.test.mjs\" \"src/**/*.test.ts\"",
+    "test:preflight": "node scripts/ci-preflight.mjs",
+    "test:unit": "node --test --test-timeout=120000 \"shared/**/*.test.mjs\" \"electron/*.test.mjs\" \"src/**/*.test.ts\"",
+    "test:server": "node --test --test-concurrency=4 --test-timeout=120000 \"server/*.test.mjs\"",
+    "test:kernel": "node --test --test-concurrency=4 --test-timeout=120000 \"kernel-tests/*.test.mjs\"",
+    "test:ci": "npm run test:preflight && node scripts/check-doc-anchors.mjs && npm run test:unit && npm run test:server && npm run test:kernel",
+    "anchors:write": "node scripts/check-doc-anchors.mjs --write",
+    "verify": "npm run typecheck && npm run test:ci"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.15.18",

@@ -7,7 +7,7 @@
 //   ③ **不自造端点**：路由表必须与 `server/bridge.mjs` 的既有 6 段一致（源码级断言）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import {
@@ -34,13 +34,19 @@ function stubFetch(handler: (url: string, init?: RequestInit) => { status?: numb
 
 const bodyOf = (c: { init?: RequestInit }) => JSON.parse(String(c.init?.body ?? '{}')) as Record<string, unknown>
 
-test('路由表：只有既有 6 个端点，且每个都真的存在于 server/bridge.mjs（不自造端点）', () => {
+test('路由表：只有既有 6 个端点，且每个都真的存在于服务端路由（不自造端点）', () => {
   assert.deepEqual(Object.keys(TEAM_ROUTES).sort(), ['create', 'invite', 'join', 'revoke', 'searchRoot', 'status'])
-  const bridge = readFileSync(join(REPO, 'server', 'bridge.mjs'), 'utf8')
+  // 断言目标从"只读 bridge.mjs"改为**服务端全部路由模块**（bridge.mjs + server/*-routes.mjs）：
+  // P1 拆分把 /team/* 从 bridge.mjs 迁到了 collab-routes.mjs，原先的单文件断言随之误报。
+  // 本测试的真实意图是"渲染层不得自造端点"，与端点写在哪个文件无关 —— 扫全部路由模块
+  // 既守住意图，也对后续继续拆分免疫。
+  const serverDir = join(REPO, 'server')
+  const routeFiles = ['bridge.mjs', ...readdirSync(serverDir).filter((f) => f.endsWith('-routes.mjs'))]
+  const serverSrc = routeFiles.map((f) => readFileSync(join(serverDir, f), 'utf8')).join('\n')
   for (const path of Object.values(TEAM_ROUTES)) {
     assert.ok(
-      bridge.includes(`'${path}'`),
-      `server/bridge.mjs 里没有 ${path}：渲染层不得自造端点（缺端点必须在报告里说明并只加最小端点）`,
+      serverSrc.includes(`'${path}'`),
+      `服务端路由（${routeFiles.join(', ')}）里都没有 ${path}：渲染层不得自造端点（缺端点必须在报告里说明并只加最小端点）`,
     )
   }
   assert.equal(TEAM_ROUTES.status, '/team/status')
