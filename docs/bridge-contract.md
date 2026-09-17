@@ -126,7 +126,7 @@ Anthropic Messages API 兼容协议的事实标准，不参与改名。
 
 | type | 关键字段 | 语义 / bridge 处理 |
 |---|---|---|
-| `system` | `subtype`（init/status/session_state_changed/task_notification/task_started/task_progress/post_turn_summary/rate_limit/approval_mode_updated/approval_mode_rejected…） | 生命周期与系统事件；`task_progress` 视为低优先级可丢弃。`init` 携带 `approval_mode`（内核此刻**实际生效**档位，供 bridge 做旧内核检测）；`approval_mode_updated` 带 `{value}`，`approval_mode_rejected` 带 `{reason, value}`。**`loop_result`（2026-09-14）** 为 loop 指令族回执：`{ requestId, op, ok, text }`——`text` 为人类可读回执（`status`/`replay`/`memory` 的正文），GUI 应作为可见消息呈现 |
+| `system` | `subtype`（init/status/session_state_changed/task_notification/task_started/task_progress/post_turn_summary/rate_limit/approval_mode_updated/approval_mode_rejected…） | 生命周期与系统事件；`task_progress` 视为低优先级可丢弃。`init` 携带 `approval_mode`（**spawn 时刻**生效档位 = 桥传下去的 `--approval-mode`；这是"内核认不认新 flag"的唯一检测点，故桥的比对基准必须是 **spawn 档**而非当前档——见 §8「档位回显比对」）；`approval_mode_updated` 带 `{value}`，`approval_mode_rejected` 带 `{reason, value}`。**`loop_result`（2026-09-14）** 为 loop 指令族回执：`{ requestId, op, ok, text }`——`text` 为人类可读回执（`status`/`replay`/`memory` 的正文），GUI 应作为可见消息呈现 |
 | `assistant` | `message.content[]`（text/thinking/tool_use 块）、`uuid` | 模型回复。bridge 从中**提取并剥离**里程碑标记与 `<!--ASK_USER-->` 卡片 |
 | `result` | `usage{input_tokens,output_tokens}` | 一轮结束；cancel 生效确认点；`_turnActive` 复位 |
 | `control_request` | `request{ subtype:'can_use_tool', request_id, tool_use_id, tool_name, input, decision_reason, hard?, mode? }` | 权限审批弹窗触发源（bridge 转发为 `approval`，GUI 批准后回 `control_response`）。`hard:true` = 命中灾难级硬黑名单（§2.1，四档都问、不计入降级连击）；`mode` = 发起询问时生效的档位。二者缺省省略（旧载荷逐字节不变） |
@@ -399,6 +399,18 @@ xlsx: {op:'updateCell', rowId, colId, value}
   进程 `close`/`error`（含 provider 切换重建进程、空闲回收）即清并广播 `approval-mode-changed{scope:'cleared'}`，
   徽标可见地弹回全局档。⇒ **进程重建后生效的必是全局档**（这也是 GUI 把 `init.approval_mode` 回显
   一律标 `override:false` 的依据）。
+- 档位回显比对（2026-09-17 修正）：`init.approval_mode` 反映的是 **spawn 参数**决定的档位，
+  故桥的比对基准取 spawn 时记下的档位（`session._spawnApprovalMode`），**不是**此刻生效档位 ——
+  resume 大 transcript 时 spawn→init 窗口可达数秒（实测 7s，期间内核在读历史 + 压缩），
+  窗口内用户切档会让两者分叉；拿当前档当基准会把"内核已认账新 flag"误判成旧缓存内核
+  （当日假告警实证：`expected bypass, kernel reports loose` + GUI amber 假警报 + 徽标被 init
+  回显回写成 spawn 档，界面说反话）。三态判定收在 `server/approval-mode.mjs` 的
+  `classifyApprovalEcho`，桥据此动作：
+  `degraded`（回显 ≠ spawn 档 = 真旧内核 → 广播 `approval-mode-degraded`）；
+  `realign`（回显 = spawn 档 ≠ 当前档 = 窗口内切过档 → **不告警**，init 帧透传后补一次热切
+  `approval-mode control_request` + `approval-mode-changed` 广播；顺序不可颠倒，否则补发的
+  广播会被随后的 init 帧回写覆盖）；`unknown`（无回显 = 更老的内核 → 不动作）。
+  固有限制：spawn 档本身就是 `loose` 时，旧内核回显也是 `loose`，无信息可区分 ⇒ 该格判 `ok`。
 
 ## 9. 净室重建的契约边界（替换内核时）
 
