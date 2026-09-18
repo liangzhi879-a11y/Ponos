@@ -1619,10 +1619,35 @@ function withIdleTimeout(promise, ms) {
   })
 }
 
+// 【2026-09-18 P1-9】请求面剔除本地记账字段 `usage` / `model`。
+// 为什么必须剔：
+//   ① 它们是**本地记账**字段（token 用量、模型名），对模型没有任何语义，却白付每轮
+//      重传的 prefill（长会话里几乎每条 assistant 都带，实测约 150–250B/条）；
+//   ② 更关键的是 engine 在**轮末给"已发出过"的 assistant 消息补 usage**
+//      （engine.mjs 的 `session.setEntryUsage(lastAssistantEntry, usage)`），使"上一轮请求"
+//      与"本轮请求"的公共前缀在**最末一条 assistant** 处断掉；剔除后公共前缀可一直延伸到
+//      该条消息本身，命中窗口更宽（前缀缓存逐字节匹配，任何一个字段变化都截断其后全部）。
+// 实现约束（**勿**改成在 `deriveMessages()` 里拷贝！）：`context.mjs` 的估算缓存以**消息对象
+//   身份**为 WeakMap 键，且 `session.deriveMessages()` 缓存的是 `entry.message` 本身、
+//   compact 的 covered→seq 反查也依赖同一 surface 代的对象身份。故此处**只对带这两键的消息**
+//   做浅拷贝，其余**原样返回同一引用**——与 streamMessages 里既有的 `filter` 新建数组、保留
+//   元素引用是同一身份契约，不会击穿任何缓存。
+// 存储侧**照旧保留** `usage` / `model`（`--usage` 只读聚合 `readonly.mjs` 直接自读 transcript
+//   文件、`context.predictTurns` 的旧数据回退路径都依赖它们），此处仅控制"不进模型输入"。
+export function stripAccountingFields(list) {
+  return list.map((m) => {
+    if (!m || (m.usage === undefined && m.model === undefined)) return m
+    const keep = { ...m }
+    delete keep.usage
+    delete keep.model
+    return keep
+  })
+}
+
 // 消息流入口：mock / 真实 Anthropic 协议分流。tools = 中立 [{name, description, input_schema}]
 export async function* streamMessages({ model, messages, maxTokens, signal, tools = [], reasoningEffort = null, thinkingMode = null }) {
   const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n')
-  const rest = messages.filter((m) => m.role !== 'system')
+  const rest = stripAccountingFields(messages.filter((m) => m.role !== 'system'))
   if (process.env.PONOS_MOCK_API === '1') {
     yield* mockStream({ messages, signal })
     return

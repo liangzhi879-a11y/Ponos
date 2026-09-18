@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { detectProtocol, createAnthropicParser, protocolStream, streamMessages, toAbortSignal, classifyApiError, cacheMarkerEnabled } from '../kernel/api.mjs'
+import { detectProtocol, createAnthropicParser, protocolStream, streamMessages, toAbortSignal, classifyApiError, cacheMarkerEnabled, stripAccountingFields } from '../kernel/api.mjs'
 import { createToolRegistry } from '../kernel/tools.mjs'
 
 test('classifyApiError（P0-1）：错误码结构化分类 + 可重试标记', () => {
@@ -130,6 +130,61 @@ test('protocolStream（C1）：慢 chunk 流不被空闲看门狗误杀——脉
     global.fetch = prev
     if (old === undefined) delete process.env.PONOS_STREAM_IDLE_TIMEOUT_MS
     else process.env.PONOS_STREAM_IDLE_TIMEOUT_MS = old
+  }
+})
+
+// 【2026-09-18 P1-9】请求面剔除本地记账字段（usage / model）。
+// 病灶：engine 轮末 `setEntryUsage` 会给**已发出过**的 assistant 消息补 usage，使上一轮与
+// 本轮请求的公共前缀在最末一条 assistant 处断掉；且这些字段对模型无语义、白付每轮重传。
+// ⚠ 关键约束：必须在**序列化层**剔除，不能改 deriveMessages —— context 的估算缓存以消息
+// **对象身份**为 WeakMap 键（context.mjs 注释里明确列为"可证不陈旧"依据之一），无差别拷贝
+// 会击穿估算缓存。本测试同时锁住"无这两键的对象必须原引用返回"。
+test('stripAccountingFields（P1-9）：剔除 usage/model，且不含者保持同一引用（身份契约）', () => {
+  const plain = { role: 'user', content: 'hi' }
+  const withUsage = { role: 'assistant', content: 'ok', usage: { input_tokens: 5, cache_read_input_tokens: 3 }, model: 'm-1' }
+  const out = stripAccountingFields([plain, withUsage])
+  // ① 剔除生效，且原有语义字段完整保留
+  assert.equal('usage' in out[1], false, 'usage 不得进模型输入')
+  assert.equal('model' in out[1], false, 'model 不得进模型输入')
+  assert.equal(out[1].role, 'assistant')
+  assert.equal(out[1].content, 'ok')
+  // ② 身份契约：不含记账字段者必须**原引用**（否则击穿 context 估算 WeakMap 缓存）
+  assert.equal(out[0], plain, '无记账字段的消息必须原样返回同一对象引用')
+  assert.notEqual(out[1], withUsage, '带记账字段者做浅拷贝')
+  // ③ 不得就地修改原对象（transcript/派生缓存仍持有它，且 readonly --usage 依赖其 usage）
+  assert.ok(withUsage.usage && withUsage.model, '原对象不得被就地改写（存储侧照旧保留）')
+})
+
+test('stripAccountingFields（P1-9）：请求体端到端不含 usage/model（含 system 抽离路径）', async () => {
+  const captured = []
+  const prev = global.fetch
+  global.fetch = async (url, init) => {
+    captured.push(JSON.parse(String(init.body)))
+    return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"message_delta","usage":{"input_tokens":1,"output_tokens":1}}\n\ndata: [DONE]\n\n')); c.close() } }) }
+  }
+  const oldEnv = { ...process.env }
+  Object.assign(process.env, { PONOS_BASE_URL: 'https://api.anthropic.com', PONOS_AUTH_TOKEN: 'k' })
+  try {
+    const messages = [
+      { role: 'system', content: 'SYS' },
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1', usage: { input_tokens: 9 }, model: 'm' },
+      { role: 'user', content: 'q2' },
+    ]
+    for await (const _ of streamMessages({ model: 'm', messages, maxTokens: 64 })) { /* drain */ }
+    assert.equal(captured.length, 1)
+    const sent = captured[0].messages
+    assert.equal(sent.length, 3, 'system 仍抽离为顶层参数')
+    for (const m of sent) {
+      assert.equal('usage' in m, false, `请求体不得含 usage：${JSON.stringify(m).slice(0, 80)}`)
+      assert.equal('model' in m, false, '请求体不得含 model')
+    }
+    // 原数组未被就地改写（transcript 侧数据保留）
+    assert.ok(messages[2].usage && messages[2].model)
+  } finally {
+    global.fetch = prev
+    for (const k of Object.keys(process.env)) if (!(k in oldEnv)) delete process.env[k]
+    Object.assign(process.env, oldEnv)
   }
 })
 

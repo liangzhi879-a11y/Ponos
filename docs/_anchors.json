@@ -3,11 +3,11 @@
   "_scope": "文档扫描范围：docs/*.md, docs/manual/**/*.md（已排除：/五引擎架构性能对比分析/）",
   "info": {
     "sourceModules": 435,
-    "sourceLoc": 111068,
+    "sourceLoc": 111664,
     "monoliths": {
-      "kernel/knowledge.mjs": 2554,
-      "kernel/engine.mjs": 2390,
-      "kernel/tools.mjs": 1550,
+      "kernel/knowledge.mjs": 2841,
+      "kernel/engine.mjs": 2393,
+      "kernel/tools.mjs": 1607,
       "electron/main.cjs": 1891,
       "server/bridge.mjs": 3820
     }
@@ -16,8 +16,8 @@
     "shared/**/*.test.mjs": 13,
     "server/*.test.mjs": 89,
     "electron/*.test.mjs": 12,
-    "kernel-tests/*.test.mjs": 205,
+    "kernel-tests/*.test.mjs": 209,
     "src/**/*.test.ts": 74
   },
-  "testTotal": 393
+  "testTotal": 397
 }
