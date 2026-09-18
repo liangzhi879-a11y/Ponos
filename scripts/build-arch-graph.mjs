@@ -14,7 +14,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..')
 const SRC_DIRS = ['src', 'electron', 'kernel', 'server', 'shared', 'bin', 'scripts', 'pet']
@@ -119,6 +119,48 @@ const SRC_VIEW_DOMAIN = {
   'src/components/command-palette': '命令面板',
   'src/components/layout': '布局骨架',
   'src/components/ui': '通用 UI 组件',
+}
+
+// ── 域归并表（P2-2：68+ → ~50，消除碎片化）
+// 背景：renderer 侧的域 id 是**按目录机械生成**的（见 domainOf：`src/components/<目录名>` 一目录一域），
+// 于是出现一批"只有 1–2 个模块"的细碎域（如 search、worktree、command-palette）——
+// 它们不是独立的功能域，只是目录结构的副产物，在架构图上表现为大量孤立小点，淹没真正的骨架。
+//
+// 判定标准（两类保留、其余并入邻近域）：
+//   · 保留：① 代表独立概念 且 ② 模块数 ≥3 的域（chat/knowledge/lib/stores/settings/ui/workflows/
+//     apps/team/agents/mcp/skills/i18n）；或虽小但属**跨域共享技术层**（lib/stores）。
+//   · 并入：只有 1–2 个模块、且语义上从属于某个更大功能面的目录（全部列于下表）。
+//   注：① 后端 kernel/bridge/host/tooling 的域**不在此表**——那些是 DOMAINS 里**手工策展**
+//   并带 name/desc 的语义域（如 b-mcp=MCP 配置面），合并它们等于销毁架构信息，不能为凑数而动。
+//   ② 阈值取"≥3"是为了让一个域在图上至少能形成可辨识的簇；纯计数驱动的硬凑会伤人可读性。
+//
+// 合并后的"域数"须与 docs/architecture.md 中的声明一致（由 scripts/check-doc-anchors.mjs 门禁守住）。
+const SRC_DOMAIN_MERGE = {
+  // 会话面：搜索与会话历史本就是会话侧栏的功能，独立成域是机械产物
+  'src/components/search': 'src/components/chat',
+  'src/components/history': 'src/components/chat',
+  // 设置与安全面（规格点名的"安全组"）：审批权限 / 密码库 / 快捷键 / 认证屏
+  'src/components/permissions': 'src/components/settings',
+  'src/components/vault': 'src/components/settings',
+  'src/components/shortcuts': 'src/components/settings',
+  'src/components/auth': 'src/components/settings',
+  // 外壳与骨架：导航栏 / 引导屏 / 命令面板 / 错误边界 / 应用根，都不是独立功能面
+  'src/components/rail': 'src/components/layout',
+  'src/components/boot': 'src/components/layout',
+  'src/components/command-palette': 'src/components/layout',
+  'src/components/ErrorBoundary.tsx': 'src/components/layout',
+  'src-root': 'src/components/layout',
+  // 文件与编辑面：工作树是文件侧的 git 视图，编辑器属文件编辑面
+  'src/components/worktree': 'src/components/files',
+  'src/components/editor': 'src/components/files',
+  // 观测面：用量是观测数据源，驾驶舱是观测仪表盘
+  'src/components/usage': 'src/components/diagnostic',
+  'src/components/cockpit': 'src/components/diagnostic',
+  // 应用/工具面：内置浏览器由应用与工具驱动
+  'src/components/browser': 'src/components/apps',
+  // 共用基础设施：hooks 与 types 都是跨域共享层，不必各占一域
+  'src/hooks': 'src/lib',
+  'src/types': 'src/lib',
 }
 
 // ── 收集文件
@@ -227,6 +269,13 @@ function resolveSpec (fromRel, spec, fileSet) {
 // ── 域归属
 const TABLE_OF_DIR = { src: 'renderer', electron: 'host', server: 'bridge', kernel: 'kernel', shared: 'shared', bin: 'tooling', scripts: 'tooling', pet: 'tooling' }
 function domainOf (rel) {
+  // renderer 侧的域是按目录机械生成的，故统一经 mergeSrcDomain 收敛细碎域（见 SRC_DOMAIN_MERGE）。
+  // 不在此处对后端 kernel/bridge/host/tooling 的域做任何合并——那些是手工策展的语义域。
+  const raw = domainOfRaw(rel)
+  return SRC_DOMAIN_MERGE[raw] || raw
+}
+
+function domainOfRaw (rel) {
   const seg = rel.split('/')
   const top = seg[0]
   const file = seg[seg.length - 1]
@@ -409,4 +458,9 @@ function main () {
   for (const c of coverage) console.log(`     ${c.ok ? '✅' : '❌'} ${c.dir.padEnd(9)} git ${String(c.trackedGit).padStart(4)} / 已收录 ${String(c.collected).padStart(4)}`)
 }
 
-main()
+// 仅在**直接执行**时跑主流程。被 import 时只暴露纯函数，供测试断言域的归并与分配规则
+// （否则 `import` 会立刻全仓扫描并覆写 docs/architecture-graph.html —— 测试无法接受）。
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) main()
+
+// 供 kernel-tests/arch-graph-domains.test.mjs 断言：域的分配与归并是纯函数，可直接单测。
+export { domainOf, SRC_DOMAIN_MERGE, SRC_VIEW_DOMAIN, DOMAINS }
