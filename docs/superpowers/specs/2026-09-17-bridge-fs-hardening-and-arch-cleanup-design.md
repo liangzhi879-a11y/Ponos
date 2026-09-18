@@ -373,10 +373,22 @@ if (url.pathname === '/read-file') {
 
 ## 5. P2 施工项（结构治理，可按周推进）
 
-### P2-1 · 巨石拆分（自上而下取前 5）
+### P2-1 · 巨石拆分（自上而下取前 5）🚧 首刀已完成
 
 `bridge.mjs`(4,318，P1-1 已拆) → `knowledge.mjs`(2,554) → `engine.mjs`(2,390) → `tools.mjs`(1,902) → `main.cjs`(1,787)。
 **约束**：纯搬移 + 显式导出，**零行为变更**；每拆一个跑该模块的既有测试（无测试的先用图谱登记"改前行为快照"）。
+
+**首刀实施结果（2026-09-17）：`kernel/tools.mjs` 的执行基座下沉 → `kernel/exec-base.mjs`**
+- `tools.mjs` **1,906 → 1,813 行**；新增 `exec-base.mjs`（178 行）。搬走的三类"多模块共用的管道"：① 活跃子进程登记（`ACTIVE_CHILDREN` / `registerChild` / `killActiveChildren`）② 子进程 env 白名单（`ENV_WHITELIST` / `childEnv`）③ 文件路径边界（`safeRealpath` / `realForComparison` / `withinBoundary` / `resolvePath`）。
+- **刻意留在 tools.mjs 的**：`runShell`（Bash 工具的 shell 语义与输出截断）、`BASH_TIMEOUT_MS`、`READ_MAX_LINES/BYTES` —— 只服务单个工具，留原地更内聚。本模块只收"多模块共用的管道"。
+
+**勘察结论的一处更正（重要）**：`docs/2026-09-17-P2-巨石接缝勘察.md` 称媒体簇（OCR+视觉，~285 行）"属单向依赖，无需反向注入"，**实测有误**——该簇需要 `registerChild` / `childEnv` / `withinBoundary`（tools.mjs 自身符号）。而图谱生成器**把动态 import 也计为边**，因此任何"媒体模块反向 import tools.mjs"的写法（无论静态还是动态）都会立刻构成 `tools ↔ media` **ESM 环**（文件级环数 5 → 6），与 P2 的整体目标相悖。**所以媒体簇不能作为首刀**，必须先下沉它依赖的基础设施——这正是本次做的 `exec-base`（且它使后续媒体簇拆分成为可能：媒体模块现在可以静态依赖 exec-base，而不必反向依赖 tools）。
+
+**依赖方向的验收**：拆后为单向 DAG（`exec-base ← tools ← knowledge-import`，`exec-base ← media-tools`（待拆））。`tools.mjs` 对 `registerChild`/`killActiveChildren`/`childEnv` 保持 **re-export**，故 `cli.mjs` / `engine.mjs` / `knowledge-import.mjs` 的 import 路径零改动。
+**行为不变的验证**：内核层 **1969 项（1 skip）/ 0 失败**、server 741、unit 1067、build 通过；两个受影响的白名单/根一致性测试同步了断言路径（`proxy-env-whitelist.test.mjs` 的源码提取目标由 `kernel/tools.mjs` 改为 `kernel/exec-base.mjs`，`knowledge-root-consistency.test.mjs` 仅注释更新——其行为断言经 re-export 仍从 tools.mjs 导入，顺带验证了 re-export 链）。
+**顺带修正的图谱缺口**：新增文件默认落到兜底域 `kernel-other`（又一个 1 模块碎域，与 P2-2 方向相悖）⇒ 已在 `DOMAINS.kernel` 的 `k-tools`（工具与权限）里显式登记 `exec-base.mjs`，域数保持 52。
+
+**下一刀（条件已具备）**：媒体簇（OCR + 视觉，现 `tools.mjs` 795–1080 段）拆为 `kernel/media-tools.mjs` —— 只静态依赖 `exec-base`，`tools.mjs` 反向引用它（单向，无环）。
 
 ### P2-2 · 功能域归并 ✅ 已完成
 
