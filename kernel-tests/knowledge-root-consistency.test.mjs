@@ -11,7 +11,9 @@
 //
 // 修法（两处必须同时到位，缺一无效）：
 //   ① `server/bridge.mjs` 的 `buildChildEnv()` 额外注入语义中性的 `PONOS_HOME`(= YFW_HOME)
-//   ② `kernel/tools.mjs` 的 `ENV_WHITELIST` 放行 `PONOS_HOME`
+//   ② `kernel/exec-base.mjs` 的 `ENV_WHITELIST` 放行 `PONOS_HOME`
+//      （P2-1 前该白名单在 `kernel/tools.mjs`，已下沉至 exec-base；`childEnv` 仍从
+//        `kernel/tools.mjs` re-export，故下面的行为断言导入路径不变）
 // 为什么不直接放行 `PONOS_CONFIG_DIR`：那是密钥目录名（内含 auth.json），
 // 放开等于削弱 S2-2 的原始防护；`PONOS_HOME` 只是一个路径，代价最小。
 //

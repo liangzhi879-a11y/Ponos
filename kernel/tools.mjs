@@ -6,10 +6,10 @@
 // WebFetch（URL 抓取，零依赖 Node https）、OCR（spawn python 调 ocr_engine.py
 // 识别扫描件，零 npm 依赖）。返回统一结果 { content, isError, meta? }，由
 // engine 以 tool_result 回填模型。
-import { spawn, execSync } from 'node:child_process'
-import { readFileSync, writeFileSync, statSync, existsSync, readdirSync, rmSync, realpathSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { readFileSync, writeFileSync, statSync, existsSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, resolve, sep, join, extname, basename } from 'node:path'
+import { dirname, resolve, join, extname } from 'node:path'
 import { get as httpsGet, request as httpsRequest } from 'node:https'
 import { get as httpGet, request as httpRequest } from 'node:http'
 import { matchesHighRisk } from './highrisk.mjs'
@@ -20,77 +20,24 @@ import { searchLocalMemory } from './memory-search.mjs'
 import { searchKnowledge, searchKnowledgeItems, expandRelated, RELATED_EXPAND_LIMIT } from './knowledge-search.mjs'
 import { getProvider, visionEnv } from './provider.mjs'
 import { perfTime } from './perf.mjs'
-
-// R2-1 活跃子进程登记：Bash/OCR spawn 的子进程统一登记，内核退出（SIGINT/TERM）
-// 时 killActiveChildren 兜底清理，防孤儿进程。child 'close' 后自动移除。
-const ACTIVE_CHILDREN = new Set()
-export function registerChild(child) {
-  ACTIVE_CHILDREN.add(child)
-  child.once('close', () => ACTIVE_CHILDREN.delete(child))
-  return child
-}
-export function killActiveChildren() {
-  for (const c of ACTIVE_CHILDREN) {
-    try {
-      // Windows 坑：git-bash（MSYS2）的 bash.exe 对 TerminateProcess 免疫，
-      // child.kill() 返回 true 但进程不死（实测）。taskkill /F /T 杀整个进程树
-      // （含 bash 派生的 sleep 等子进程），契约 §8"真杀 bash"同源。非 Windows
-      // 走常规 kill。已退出进程 taskkill 非 0 → execSync 抛 → catch 忽略。
-      if (process.platform === 'win32') {
-        try { execSync(`taskkill /F /T /PID ${c.pid}`, { stdio: 'ignore' }) } catch { /* 进程已退出 */ }
-      }
-      c.kill()
-    } catch {}
-  }
-  ACTIVE_CHILDREN.clear()
-}
-
-// S2-2 子进程 env 白名单：仅透传系统路径/编码/代理变量，其余一律剥离——包含全部
-// 凭据类与 PONOS_* 配置类变量，以及那些经兼容垫片映射为 PONOS_* 的历史旧名
-// （防 Bash/OCR 子进程窃取宿主密钥）。
-// S6 增补 `PONOS_HOME`：内核 CLI 解析配置根时会认它（`PONOS_CONFIG_DIR > PONOS_HOME > ~/.ponos`），
-// 而 `PONOS_CONFIG_DIR` 被上面这条安全策略刻意剥离 → 不补这一项，agent 在 Bash 里跑的
-// `--knowledge append` 会落到 `~/.ponos`（**与应用侧 `.yfw` 不同的根**，写进去 GUI 看不见）。
-// 选语义中性的 `PONOS_HOME` 而非放开 `PONOS_CONFIG_DIR`：前者只是一个目录路径，
-// 后者是配置/会话根目录名；放行前者的代价最小（HOME 本就在白名单，目录名也可猜），
-// 却能保证"内核子进程 / Bash 子进程"两条路解析到同一个根。
-const ENV_WHITELIST = [
-  'PATH', 'Path', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TMP', 'TEMP', 'TMPDIR',
-  'SystemRoot', 'WINDIR', 'ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA', 'APPDATA',
-  'LANG', 'LC_ALL', 'LANGUAGE', 'TERM', 'SHELL', 'COMSPEC', 'PATHEXT', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE',
-  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
-  // 代理 P1（2026-09-17）：Node 24 的开关，**必须**透传 —— 只给 HTTP_PROXY 而缺它，
-  // 子进程里跑的 node（Bash 里的脚本、Node 型 MCP 服务器）等于没配代理。
-  // 与 kernel/mcp.mjs 的 ENV_KEEP 代理段逐字对齐（有集合比对断言防漂移）。
-  'NODE_USE_ENV_PROXY',
-  'PONOS_HOME',
-]
-export function childEnv() {
-  const out = {}
-  for (const k of Object.keys(process.env)) {
-    if (ENV_WHITELIST.includes(k)) out[k] = process.env[k]
-  }
-  return out
-}
+// P2-1 巨石瘦身：子进程登记 / 子进程 env 白名单 / 文件路径边界已下沉到
+// `kernel/exec-base.mjs`（多模块共用的"管道"，自身只依赖 node 内置）。下沉后依赖方向
+// 是单向 DAG（exec-base ← tools ← knowledge-import），后续把 OCR/视觉簇拆成独立模块时，
+// 媒体模块可直接依赖 exec-base，**不必反向 import 本文件**（否则构成 ESM 环）。
+//
+// 这三项仍在**本文件 re-export**，是为了保持既有 import 路径不变：`cli.mjs`/`engine.mjs`
+// 取 `killActiveChildren`、`knowledge-import.mjs` 取 `registerChild`/`childEnv`，调用方零改动。
+import {
+  registerChild, killActiveChildren, childEnv, findGitBash,
+  safeRealpath, realForComparison, withinBoundary, resolvePath,
+} from './exec-base.mjs'
+export { registerChild, killActiveChildren, childEnv } from './exec-base.mjs'
 
 const BASH_TIMEOUT_MS = 120_000
 // Read 一次读取的容量上限（含截断提示，让模型知道如何继续）：
 // 模型看到声明后放心一次读全文，不再用 sed/python 碎片化取样。
 const READ_MAX_LINES = 2000
 const READ_MAX_BYTES = 2 * 1024 * 1024
-
-// Windows 探测 git-bash：Bash 工具语义须与系统提示一致（shell: bash）。
-// cmd.exe 的 /d /s /c 引号解析与 Node spawn 的参数包裹互相干扰（$HOME 不展开、
-// 引号错乱），且 PATH 混入 Git Unix 工具时行为不可预测；git-bash 与模型所见
-// 环境一致。找不到 git-bash 时回退 cmd.exe。
-function findGitBash() {
-  const candidates = [
-    process.env.ProgramFiles && join(process.env.ProgramFiles, 'Git', 'bin', 'bash.exe'),
-    process.env['ProgramFiles(x86)'] && join(process.env['ProgramFiles(x86)'], 'Git', 'bin', 'bash.exe'),
-    process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Programs', 'Git', 'bin', 'bash.exe'),
-  ].filter(Boolean)
-  return candidates.find((p) => existsSync(p)) || null
-}
 
 function runShell(command, cwd) {
   return new Promise((resolvePromise) => {
@@ -145,49 +92,9 @@ function runShell(command, cwd) {
   })
 }
 
-// 文件路径边界：仅允许读写 --add-dir 注入的目录（cwd / 技能根）内文件
-// S4-1 路径加固：realpath 解析真实路径（解符号链接），防链接逃逸出边界。
-// 文件不存在时对最近存在的父目录做 realpath，再拼回剩余段（写入新文件场景）。
-function safeRealpath(p) {
-  try { return realpathSync(p) } catch { return p }
-}
-function realForComparison(p) {
-  const r = resolve(p)
-  const real = safeRealpath(r)
-  if (real !== r) return real
-  // 路径不存在：逐级向上找最近存在的祖先做 realpath
-  let cur = r
-  const tail = []
-  for (let i = 0; i < 32; i++) {
-    try {
-      realpathSync(cur)
-      return join(realpathSync(cur), ...tail.reverse())
-    } catch {
-      const parent = dirname(cur)
-      if (parent === cur) return r
-      tail.push(basename(cur))
-      cur = parent
-    }
-  }
-  return r
-}
-
-function withinBoundary(filePath, allowDirs) {
-  const resolved = resolve(filePath)
-  const real = realForComparison(resolved).toLowerCase()
-  return allowDirs.some((dir) => {
-    const base = realForComparison(resolve(dir)).toLowerCase()
-    return real === base || real.startsWith(base + sep)
-  })
-}
-
-// 相对路径解析到 cwd（消除"试 4 种路径格式"的浪费）：绝对路径原样，~ 展开，
-// 其余 resolve(cwd, p)。
-function resolvePath(p, cwd) {
-  if (!p) return p
-  if (p.startsWith('~') || p.startsWith('~/')) return join(process.env.HOME || process.env.USERPROFILE || '', p.slice(p[1] === '/' ? 2 : 1))
-  return resolve(cwd || process.cwd(), p)
-}
+// 文件路径边界（safeRealpath / realForComparison / withinBoundary）与相对路径解析
+// （resolvePath）已下沉到 kernel/exec-base.mjs —— 它们是多模块共用的边界纪律，
+// 且媒体簇（OCR/视觉）也需要 withinBoundary，下沉后媒体模块可单向依赖 exec-base。
 
 // Read 去重 stub：全量读过的文件在 mtime/size
 // 未变时再次读取返回 stub，提示直接引用此前结果——省去模型重复读同一文件

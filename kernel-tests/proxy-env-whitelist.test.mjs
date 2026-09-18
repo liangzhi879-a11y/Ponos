@@ -1,7 +1,8 @@
 // 代理变量白名单的**跨模块一致性 + 行为**回归网（P1 网络代理，2026-09-17，方案 Step 4）。
 // ---------------------------------------------------------------------------
 // 本文件锁三件事：
-//   ① **两套白名单不漂移**：`kernel/tools.mjs` 的 ENV_WHITELIST（Bash/OCR 子进程）与
+//   ① **两套白名单不漂移**：`kernel/exec-base.mjs` 的 ENV_WHITELIST（Bash/OCR 子进程，
+//      P2-1 后从 `kernel/tools.mjs` 下沉至此）与
 //      `kernel/mcp.mjs` 的 ENV_KEEP（第三方 MCP 服务器）里的代理变量集合必须**相等**。
 //      漂移的症状是"MCP 能连、Bash 不能连"这类无头案 —— 两边各自看都"有代理支持"。
 //   ② **子进程真能拿到代理变量**（行为断言，非只看数组字面量）：
@@ -34,11 +35,11 @@ function proxyKeysIn(relPath) {
 }
 
 test('两套子进程白名单的代理变量集合必须相等（防只改一处）', () => {
-  const tools = proxyKeysIn('kernel/tools.mjs')
+  const tools = proxyKeysIn('kernel/exec-base.mjs')
   const mcp = proxyKeysIn('kernel/mcp.mjs')
   // 先把"存在性"钉住，避免两边同时漏掉某变量时"集合仍相等"的假绿
   for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'NODE_USE_ENV_PROXY']) {
-    assert.ok(tools.has(k), `kernel/tools.mjs 白名单缺 ${k}`)
+    assert.ok(tools.has(k), `kernel/exec-base.mjs 白名单缺 ${k}`)
     assert.ok(mcp.has(k), `kernel/mcp.mjs 白名单缺 ${k}`)
   }
   assert.deepEqual([...tools].sort(), [...mcp].sort(), '两处白名单的代理变量集合已漂移')
@@ -75,10 +76,10 @@ test('行为：宿主带代理 env 时，MCP 子进程 env 真能拿到（含 NO
 test('桥注入的代理键必须全部被两套白名单放行（缺 NO_PROXY 会代理掉回环）', () => {
   const injected = Object.keys(nodeProxyEnv({ mode: 'manual', url: 'http://127.0.0.1:7890', bypass: 'a.com' }))
   assert.ok(injected.length >= 6, `桥应注入代理变量，实际 ${JSON.stringify(injected)}`)
-  const tools = proxyKeysIn('kernel/tools.mjs')
+  const tools = proxyKeysIn('kernel/exec-base.mjs')
   const mcp = proxyKeysIn('kernel/mcp.mjs')
   for (const k of injected) {
-    assert.ok(tools.has(k), `桥注入了 ${k}，但 kernel/tools.mjs 白名单未放行 ⇒ Bash 子进程拿不到`)
+    assert.ok(tools.has(k), `桥注入了 ${k}，但 kernel/exec-base.mjs 白名单未放行 ⇒ Bash 子进程拿不到`)
     assert.ok(mcp.has(k), `桥注入了 ${k}，但 kernel/mcp.mjs 白名单未放行 ⇒ MCP 服务器拿不到`)
   }
   // off 时桥不注入任何代理变量 ⇒ 白名单放行与否都不改变行为（零回归的机制保证）
