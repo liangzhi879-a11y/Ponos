@@ -195,11 +195,48 @@ test('纯函数：无 Origin 必须持 token；带 Origin 归 origin 闸；豁�
   assert.equal(isOpaqueOrigin('http://localhost:5197'), false)
   assert.equal(isOpaqueOrigin(''), false)
   assert.equal(isOpaqueOrigin(undefined), false)
-  // 豁免
+  // 豁免（2026-09-18 加固：把"只有 /health 与 /api/auth/* 免令牌"这句**声明**变成断言）
+  // 闸门处（bridge.mjs）写着这句声明，但此前只有 2 条正向 + 5 条抽样反向断言——**声明本身没人守**。
+  // 下面补三层，任何一层失败都意味着安全边界被改动了。
   assert.equal(isTokenExemptPath('/health'), true)
+  assert.equal(isTokenExemptPath('/api/auth'), true)
   assert.equal(isTokenExemptPath('/api/auth/status'), true)
-  for (const p of ['/config', '/read-file', '/write-file', '/known-folders', '/diag/info']) {
+
+  // ① 反向：把**真实存在**的端点逐个钉住，重点覆盖"看起来该免令牌"的启动期端点。
+  //    /boot-status 尤其危险——它是启动早期端点，且 electron/main.cjs 专门为它带了令牌头，
+  //    很容易被误判成"启动期所以该豁免"。这些路径都取自源码（bridge.mjs 的内联路由 +
+  //    server/host-routes.mjs 的导出行），不是凭空列的清单。
+  const MUST_NOT_BE_EXEMPT = [
+    '/boot-status', // host-routes.mjs（P1 批次 1 从 bridge 迁出）
+    '/known-folders', '/drives', '/diag/info', '/diag/render-frame',
+    '/transcript/list', '/transcript/load',
+    '/config', '/read-file', '/write-file', '/spawn',
+  ]
+  for (const p of MUST_NOT_BE_EXEMPT) {
     assert.equal(isTokenExemptPath(p), false, `${p} 不得免令牌`)
+  }
+
+  // ② 边界：实现用的是"精确等于 + 前缀且带斜杠"，所以这些近似串必须**不放行**。
+  //    这层专门防"把 === 改成 startsWith"这类看似无害的放宽（会让 /healthz、/api/authx 一起敞开）。
+  for (const p of ['/healthz', '/health/x', '/api/authz', '/api/authx/y', '/api/auth-other', '/api/auth..']) {
+    assert.equal(isTokenExemptPath(p), false, `${p} 不得免令牌（前缀匹配必须带斜杠）`)
+  }
+  assert.equal(isTokenExemptPath(''), false)
+  assert.equal(isTokenExemptPath(undefined), false)
+
+  // ③ 声明式：豁免面是被写死在实现里的**安全边界**，新增一条就等于多开一扇门。
+  //    直接读实现源码、提取其中的路径字面量，断言"恰为这三处形态"——有人加路径时本断言失败，
+  //    逼他同时更新 bridge.mjs 闸门处的声明、在文档里说明理由，而不是让声明与实现悄悄不一致。
+  {
+    const selfDir = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(selfDir, 'bridge-token.cjs'), 'utf8')
+    const at = src.indexOf('function isTokenExemptPath')
+    assert.ok(at > 0, '找不到 isTokenExemptPath —— 若已改名/搬迁，请同步本断言')
+    const body = src.slice(at, src.indexOf('\n}', at))
+    const literals = [...new Set([...body.matchAll(/'([^']*)'/g)].map((m) => m[1]).filter((s) => s.startsWith('/')))].sort()
+    assert.deepEqual(literals, ['/api/auth', '/api/auth/', '/health'],
+      '豁免面的路径字面量变了 —— 豁免面是安全边界：新增路径必须同步 bridge.mjs 闸门处的声明、'
+      + '在 docs 里说明理由，并更新本断言（而不是让"声明"与"实现"悄悄不一致）')
   }
   // fail-closed：期望值为空一律失败
   assert.equal(isTokenValid('', ''), false, '期望值为空必须判失败（不存在"没配 token 即放行"）')

@@ -2185,6 +2185,11 @@ const httpServer = createServer(async (req, res) => {
     // 【S2-D3 数据出网闸】唯一判定面（spec §6.2 D3「落在 bridge 请求入口——所有读写的唯一仲裁点」）。
     // 位置：D2 闸门之后 ⇒ **自动受 token 保护**（D2 的豁免面只有 /health 与 /api/auth/*），无需改动
     // 豁免清单、不削弱 D2。
+    // ⚠️ 上面这句"豁免面只有…"是**安全边界声明**，已有断言守护（server/bridge-auth-token.test.mjs 的
+    // 豁免面用例）：① 反向钉住 /boot-status、/known-folders、/drives、/diag/*、/transcript/* 等
+    // **启动期端点不得免令牌**（它们最容易被误判成"启动期所以该豁免"）；② 钉住前缀匹配必须带斜杠
+    // （/healthz、/api/authx 不得放行）；③ 直接读 bridge-token.cjs 断言路径字面量恰为
+    // /health + /api/auth(/)。**改动豁免面会让该断言失败**，这是有意的。
     // 只读：返回各数据实体当前 syncPolicy 与"能否过团队源"的结论。单机版为 local-only 档，
     // `allowedEntities` 必为空——即 §10 S2-3「默认配置下 transcript/config 等无任何出网路径」。
     // 为什么要有这个面：判定内核若不可观测，就无法在验收时证明"无路径"，S3 接线也缺既定入口。
