@@ -59,6 +59,10 @@ const ENV_WHITELIST = [
   'SystemRoot', 'WINDIR', 'ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA', 'APPDATA',
   'LANG', 'LC_ALL', 'LANGUAGE', 'TERM', 'SHELL', 'COMSPEC', 'PATHEXT', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE',
   'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
+  // 代理 P1（2026-09-17）：Node 24 的开关，**必须**透传 —— 只给 HTTP_PROXY 而缺它，
+  // 子进程里跑的 node（Bash 里的脚本、Node 型 MCP 服务器）等于没配代理。
+  // 与 kernel/mcp.mjs 的 ENV_KEEP 代理段逐字对齐（有集合比对断言防漂移）。
+  'NODE_USE_ENV_PROXY',
   'PONOS_HOME',
 ]
 export function childEnv() {
@@ -1826,7 +1830,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
           params: {
             type: 'object',
             additionalProperties: true,
-            description: '动作参数：goto 需 url；click/type/select/hover 需 ref（快照中的元素引用）；type 另需 text；scroll 需 direction；wait 需 ms；js 需 expression。快照驱动，未知元素先 snapshot 获取 ref。',
+            description: '动作参数：goto 需 url；click/type/select/hover 需 ref（快照中的元素引用）；type 另需 text；scroll 需 delta（像素，正数向下）或 ref（滚到某元素）；wait 需 ms；js 需 expression。快照驱动，未知元素先 snapshot 获取 ref。',
           },
         },
         required: ['action'],

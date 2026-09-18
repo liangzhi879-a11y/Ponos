@@ -24,10 +24,17 @@ const STDERR_KEEP = 20
 
 // 子进程环境白名单：不把宿主全部环境（可能含密钥）透传给第三方 MCP 服务器。
 // 与 tools.mjs 的 childEnv() 同思路，但此处**内联**以保持本模块零依赖。
+// 【代理（P1，2026-09-17）】补代理变量：MCP 服务器是**第三方进程**，它自己出网。
+// 缺了这几项就是"配了代理但 MCP 单独直连"的半生效（用户最难查的组合）。
+// 与 kernel/tools.mjs 的 ENV_WHITELIST 代理段**逐字对齐**，并由
+// `kernel-tests/proxy-env-whitelist.test.mjs` 的集合比对断言锁住（防将来只改一处）。
+// `NODE_USE_ENV_PROXY` 也一并透传：Node 型 MCP 服务器（如 `npx` 起的那些）只有拿到该开关
+// 才会读 HTTP_PROXY（Node 24 起的行为），只给 HTTP_PROXY 对它们等于没配。
 const ENV_KEEP = [
   'PATH', 'Path', 'HOME', 'USERPROFILE', 'TEMP', 'TMP', 'SystemRoot', 'windir',
   'COMSPEC', 'PATHEXT', 'LANG', 'LC_ALL', 'APPDATA', 'LOCALAPPDATA', 'ProgramData',
   'ProgramFiles', 'ProgramFiles(x86)', 'NODE_PATH', 'SHELL', 'TERM',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'NODE_USE_ENV_PROXY',
 ]
 
 /** 构造受限环境；显式 env 覆盖白名单（用户配置的服务器变量优先） */

@@ -21,6 +21,7 @@ import { ExperiencePanel } from '@/components/settings/ExperiencePanel'
 import { PermissionsPanel } from '@/components/settings/PermissionsPanel'
 import { LogsPanel } from '@/components/settings/LogsPanel'
 import { KnowledgeImportPanel } from '@/components/settings/KnowledgeImportPanel'
+import { ProxySettings } from '@/components/settings/ProxySettings'
 // 【S3 团队协同】设置窗的团队分区（开通/加入/成员管理/搜索根；强约束小字在 TeamPanel 内部）
 import { TeamPanel } from '@/components/team/TeamPanel'
 import { isTeamSectionRequest, SETTINGS_SECTION_STORAGE_KEY, SETTINGS_TEAM_SECTION } from '@/lib/teamModeUi'
@@ -300,6 +301,15 @@ export function SettingsView() {
 
               {section === 'logs' && <LogsPanel />}
               {section === 'knowledgeImport' && <KnowledgeImportPanel />}
+
+              {/* 网络代理（P1，2026-09-17）：挂在"通用"下而不新增导航项 ——
+                  导航已有 10 项，而代理属"一次性配好"的设置，与语言/外观同属环境级配置。
+                  组件自带保存按钮（直连桥的 `/config` 局部补丁），不依赖模型页的"保存"。 */}
+              {section === 'general' && (
+                <div className="pt-2 border-t border">
+                  <ProxySettings />
+                </div>
+              )}
 
               {section === 'skills' && (
                 <SkillsPanel t={t} settings={settings} updateSettings={updateSettings} />

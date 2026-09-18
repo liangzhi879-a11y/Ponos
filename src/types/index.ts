@@ -9,6 +9,9 @@ import type { LogPolicy } from '@/lib/logUi'
 // 同理：KnowledgeImportPolicy 在 src/lib/knowledgeImportUi.ts（零依赖纯模块），
 // 类型只从那里引一次，避免 types 与 lib 各写一份必然漂移。
 import type { KnowledgeImportPolicy } from '@/lib/knowledgeImportUi'
+// 网络代理配置的形状定义在 src/lib/proxyUi.ts（零依赖纯模块，规则同 knowledgeImportUi）：
+// 类型只从这里引一次，界面归约与服务端 shared/proxy-config.cjs 的口径由测试做等价性断言。
+import type { ProxyUiConfig } from '@/lib/proxyUi'
 // 能力清单的类型定义在 src/lib/appSurface.ts（归一化 + 三分文案的可测唯一出处）：
 // 这里只 import 一次给 AppProbeResult 用，末尾再原样再导出，避免与组件各写一份结构定义。
 import type { AppSurface } from '@/lib/appSurface'
@@ -434,6 +437,10 @@ export interface YFWorkingConfigV2 {
   logPolicy?: LogPolicy
   /** 知识库文件导入上限（2026-09-14）：bridge 钳制后落盘。 */
   knowledgeImport?: KnowledgeImportPolicy
+  /** 网络代理（P1，2026-09-17）：`{ mode: 'off'|'system'|'manual', url, bypass }`。
+   *  结构定义在 src/lib/proxyUi.ts（零依赖纯模块），类型只从那里引一次，避免各写一份漂移；
+   *  服务端准入判定与钳制在 shared/proxy-config.cjs（唯一实现，桥与 Electron 主进程共用）。 */
+  network?: { proxy?: ProxyUiConfig }
 }
 
 // --- File System Types ---

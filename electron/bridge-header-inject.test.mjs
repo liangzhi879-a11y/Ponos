@@ -87,7 +87,13 @@ test('治理约束：main.cjs 确实装了注入器，且默认头名与桥侧�
   assert.match(mainSrc, /require\('\.\/bridge-header-inject\.cjs'\)/)
   assert.match(mainSrc, /installBridgeHeaderInjector\(session\.defaultSession\)/,
     'defaultSession 必须在 ready 内显式安装（它早于 session-created 监听建立）')
-  assert.match(mainSrc, /app\.on\('session-created', \(s\) => installBridgeHeaderInjector\(s\)\)/)
+  // 2026-09-17（P1 网络代理）：同一钩子现在还负责下发 Chromium 轨代理，故这里不再要求
+  // "箭头函数只有一句"，改为断言**两件事都在同一钩子里发生**。语义没放松：
+  //   ① 注入器必须装（本测试的主题）；
+  //   ② 代理也必须装 —— 令牌注入与代理**方向相反**：令牌**不得**进 automation 分区
+  //      （那里加载任意外部站点，注入令牌等于给恶意页自动附带桥凭据），
+  //      代理**必须**进 automation 分区（否则用户开了代理、内置浏览器仍直连）。
+  assert.match(mainSrc, /app\.on\('session-created', \(s\) => \{[^}]*installBridgeHeaderInjector\(s\)[^}]*applyChromiumProxy\(s\)[^}]*\}\)/)
   const tokenSrc = readFileSync(new URL('../server/bridge-token.cjs', import.meta.url), 'utf-8')
   assert.match(tokenSrc, /BRIDGE_TOKEN_HEADER = 'x-yfw-bridge-token'/,
     '头名是两侧契约：桥侧 extractToken 读的就是这个名字')
