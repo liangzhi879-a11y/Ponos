@@ -898,8 +898,8 @@ workspace-attribution-wiring、fidelity-chain、browser-whitelist-approval-e2e�
 |---|---|
 | 测试基线 + CI | ✅ 完成（§13） |
 | 文档口径纳入 CI | ✅ 完成（§13.4，本轮加固计数口径：只算 git 已跟踪文件，见下） |
-| 26 个孤立模块三态判定 | ✅ 判定完成 → `docs/dead-code-triage.md`（真死 10 / 仅测试 2 应保留 / 动态 23 不得删；**只判定不删除**，理由见该文末节） |
-| 5 个巨石拆分 | 🚧 进行中：`server/bridge.mjs` 已迁出 11 组端点（§12 的 9 组 + 本轮的 `/health`、`/boot-status`）；另 4 个未动 |
+| 26 个孤立模块三态判定 | ✅ 完成 → `docs/dead-code-triage.md`（真死 10 / 仅测试 2 应保留 / 动态 23 不得删）。**第一批已删除** 5 个明确遗留的 chat 组件（`MessageBubble`/`TaskCwdBar`/`FirstBytePendingBar`/`KernelStallBar`/`SystemWarningStrip`），删前 grep 确认非注释引用为 0、删后 typecheck+build+三层测试全绿；其余（4 个组件 + `interject.e2e.mjs`）保留待定，理由见该文"清理结果"节 |
+| 5 个巨石拆分 | 🚧 进行中：`server/bridge.mjs` 已迁出 15 组端点（§12 的 9 组 + 批次 1 的 `/health`、`/boot-status` + 批次 2 的 5 组身份面/只读面），3904 → 3812 行。另 4 个巨石的**接缝勘察已完成** → `docs/2026-09-17-P2-巨石接缝勘察.md`（含推荐执行顺序与状态耦合清单） |
 | 68 → ~50 域归并 | ⏳ 未开始（需先确定"域"的判定口径，否则是无法验收的目标） |
 
 ### 14.1 本轮对 CI 口径的加固：计数只看 git 已跟踪文件
