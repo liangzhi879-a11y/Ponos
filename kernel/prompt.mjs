@@ -43,7 +43,14 @@ export function discoverAgentsMd({ cwd, addDirs = [] }) {
 // 让模型基于确定路径规划工具调用，减少试错式路径猜测。
 // tier（2026-09-09 本地模型适配）：'full'（缺省，现状）| 'lean'（本地弱模型精简版）。
 // lean 剪枝原则：只删有引擎守卫兜底的细则（计划尾/想完即停/报错重试均在
-// engine.mjs 注入自愈），功能协议核心（工具纪律/回复规范/可用工具列表）一字不动。
+// engine.mjs 注入自愈），功能协议核心（工具纪律/回复规范）一字不动。
+//
+// 【2026-09-18 P0-3】原来末行还有 `可用工具：…`，现已**下沉**到 composeSystemPrompt 的
+// 最后一个 parts（见该函数末尾）。理由：这行内容随 toolNames 变化（MCP 晚到、应用绑定、
+// 工作流增删都会改它），原先位于 system 前 1/3，**一变就把 system 中后段（子 Agent / 项目
+// 指令 / 技能 / 工作流 / 知识库 / 记忆）全部打穿**——是所有失效源里最贵的一个。下沉到最末
+// 后，失效范围收缩到"这一行自身"，前面全部仍可复用（内容一字未删，提示强度不变；工具清单
+// 与 tools 数组本就重复冗余）。
 export function buildBaseSystemPrompt({ toolNames = [], cwd = '', tier = 'full' } = {}) {
   const lean = tier === 'lean'
   const toolDiscipline = [
@@ -113,7 +120,6 @@ export function buildBaseSystemPrompt({ toolNames = [], cwd = '', tier = 'full' 
     '- 引用代码时标注 file_path:line 便于定位。',
     '- 需要用户决策时列出选项，不要擅自执行高风险操作。',
     '- 对话历史超长时系统会自动压缩上下文，勿因此焦虑或反复重读旧内容。',
-    `可用工具：${(toolNames || []).join(', ')}。`,
   ].join('\n')
 }
 
@@ -161,10 +167,30 @@ export function buildChatSystemPrompt({ toolNames = [] } = {}) {
  *   ② 未关联库最多列 12 个（`等 N 个` 收尾）：储备库可能有几十个，全列会把这个区块本身
  *      变成上下文膨胀源——与它要解决的膨胀问题自相矛盾。
  */
-export function renderKnowledgeScope(scope) {
+/**
+ * 本次工具集里是否真的给了"按路径读文件"的能力（Read + Grep 缺一不可）。
+ *
+ * why 不看 mode：chat/task 只是**默认**工具集不同，真正决定"能不能 Read 知识库文件"
+ * 的是那份 toolNames（tier、子 agent、禁用工具都会改它）。提示词若与实际能力不一致，
+ * 比不提示更糟 —— 模型会照提示去 Grep 然后撞拒绝，白烧一轮并污染上下文。
+ */
+function canReadFiles(toolNames) {
+  const set = new Set(Array.isArray(toolNames) ? toolNames : [])
+  return set.has('Read') && set.has('Grep')
+}
+
+export function renderKnowledgeScope(scope, { readEnabled = false } = {}) {
   const names = Array.isArray(scope?.names) ? scope.names.filter(Boolean) : []
   if (!names.length) return ''
   const lines = [`【本会话知识库】可检索：${names.join('、')}（KnowledgeSearch 的 spaces 只能取这里列出的库）。`]
+  // 能力可见性（2026-09-18，P3）：已授权空间的文件**同时**进了只读白名单（Read/Grep 可用）。
+  // why 要写出来：工具层打通了边界、但模型不知道，等于白打通 —— 它会退回"一次次 KnowledgeSearch"
+  // 而不会去做"跨文档 grep 核验"（外部消融显示后者恰是收益最大的一环）。
+  // **必须由调用方按"本次真的给了 Read/Grep"来开关**：不一致的提示比不提示更糟
+  // （模型会照提示去 Grep，然后撞拒绝，白烧一轮）—— 只陈述能力，不列路径（路径在工具回执里给）。
+  if (readEnabled) {
+    lines.push('这些库的文件可直接用 Read/Grep 打开（只读）：已知编号/原文片段要跨文档比对时，直接 Grep 比反复检索更省事。')
+  }
   const un = Array.isArray(scope?.unassociated) ? scope.unassociated.filter(Boolean) : []
   if (un.length) {
     lines.push(`未关联的库（${un.slice(0, 12).join('、')}${un.length > 12 ? ` 等共 ${un.length} 个` : ''}）不在本会话范围内：用户要用时请其先在知识面板把该库「关联到当前会话」，不要反复重试同一检索。`)
@@ -183,7 +209,9 @@ export function composeSystemPrompt({ toolNames, agents, subagents = [], append 
     // 会话知识范围（2026-09-15，P1 spec §3.5）：chat 也渲染——chat 里 KnowledgeSearch 是放行的
     // （S3 D2 的决定：只读检索不吃"纯聊不做本地执行"的隔离承诺），那么"能用哪些库"就必须同样
     // 对模型可见，否则它只能靠猜（猜错 = 拒绝，用户看到的是"聊天不会用我的知识库"）。
-    const kb = renderKnowledgeScope(knowledgeScope)
+    // chat 下 Read/Grep 本来就不给（隔离承诺）→ readEnabled 由**实际工具集**判定，
+    // 不用 mode 猜：只有真给了 Read 与 Grep 才敢说"可直接打开"，否则模型会白撞一次拒绝。
+    const kb = renderKnowledgeScope(knowledgeScope, { readEnabled: canReadFiles(toolNames) })
     if (kb) chatParts.push(kb)
     if (append && append.trim()) chatParts.push(append.trim())
     return chatParts.join('\n\n')
@@ -245,10 +273,15 @@ export function composeSystemPrompt({ toolNames, agents, subagents = [], append 
     }
     parts.push(lines.join('\n'))
   }
-  const kbBlock = renderKnowledgeScope(knowledgeScope)
+  const kbBlock = renderKnowledgeScope(knowledgeScope, { readEnabled: canReadFiles(toolNames) })
   if (kbBlock) parts.push(kbBlock)
   if (memory && memory.trim()) parts.push(memory.trim())
   if (append && append.trim()) parts.push(append.trim())
+  // 【2026-09-18 P0-3】工具清单**必须放在 system 最末**：它是整个 system 里唯一随工具集变化的
+  // 内容（MCP 晚到 / 应用绑定 / 工作流增删即变）。放在前部会把其后所有段落一起打穿（前缀缓存
+  // 逐字节匹配，断裂点之后全部重算 + 重写）；放末尾则失效范围只剩这一行。原先它在
+  // buildBaseSystemPrompt 的末行（system 前 1/3 处），故下沉到此处——内容一字未删。
+  if (toolNames && toolNames.length) parts.push(`可用工具：${toolNames.join(', ')}。`)
   return parts.join('\n\n')
 }
 

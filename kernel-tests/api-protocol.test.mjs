@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { detectProtocol, createAnthropicParser, protocolStream, streamMessages, toAbortSignal, classifyApiError } from '../kernel/api.mjs'
+import { detectProtocol, createAnthropicParser, protocolStream, streamMessages, toAbortSignal, classifyApiError, cacheMarkerEnabled } from '../kernel/api.mjs'
 import { createToolRegistry } from '../kernel/tools.mjs'
 
 test('classifyApiError（P0-1）：错误码结构化分类 + 可重试标记', () => {
@@ -139,6 +139,70 @@ test('detectProtocol：Anthropic env 存在 → anthropic，否则 null', () => 
   assert.equal(detectProtocol({ OPENAI_BASE_URL: 'http://x' }), null)
 })
 
+// 【2026-09-18 P0-2】缓存标记按端点能力判定：Anthropic 官方不打标记 = 0 命中（必须自动开），
+// DeepSeek 忽略该字段（开了无用、还可能撞 400 触发去标记重发）。显式 env 必须仍能覆盖，
+// 否则既有手工契约与排障手段消失。
+test('cacheMarkerEnabled（P0-2）：显式 env 覆盖优先，未设时按端点能力判定', () => {
+  // ① 显式优先：无论端点是什么，env 说了算（保留既有契约）
+  assert.equal(cacheMarkerEnabled('https://api.deepseek.com', { PONOS_PROMPT_CACHE: '1' }), true)
+  assert.equal(cacheMarkerEnabled('https://api.anthropic.com', { PONOS_PROMPT_CACHE: '0' }), false)
+  // ② 未设：必须显式标记的端点自动开（否则缓存收益归零）
+  assert.equal(cacheMarkerEnabled('https://api.anthropic.com', {}), true)
+  assert.equal(cacheMarkerEnabled('https://bedrock-runtime.us-east-1.amazonaws.com', {}), true)
+  assert.equal(cacheMarkerEnabled('https://us-central1-aiplatform.googleapis.com', {}), true)
+  // ③ 未设：DeepSeek / 本地 / 未知网关保持关闭 = 原有默认行为不变（零回归）
+  assert.equal(cacheMarkerEnabled('https://api.deepseek.com', {}), false)
+  assert.equal(cacheMarkerEnabled('http://127.0.0.1:8000', {}), false)
+  assert.equal(cacheMarkerEnabled('https://gw.internal.example.com', {}), false)
+})
+
+// 端到端接线：纯函数判定必须真的作用到请求体，防止"判定写了但没接上"（本仓库
+// docs/2026-09-15-五引擎架构性能对比分析.md 记录过同类死逻辑 PROMPT_CACHE_BREAK_DETECTION）。
+test('cacheMarkerEnabled（P0-2）：Anthropic 端点未设 env 时请求体自动带 cache_control', async () => {
+  const captured = []
+  const prev = global.fetch
+  global.fetch = async (url, init) => {
+    captured.push({ body: JSON.parse(String(init.body)) })
+    return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"message_delta","usage":{"input_tokens":1,"output_tokens":1}}\n\ndata: [DONE]\n\n')); c.close() } }) }
+  }
+  const oldEnv = { ...process.env }
+  Object.assign(process.env, { PONOS_BASE_URL: 'https://api.anthropic.com', PONOS_AUTH_TOKEN: 'k' })
+  delete process.env.PONOS_PROMPT_CACHE
+  try {
+    const chunks = []
+    for await (const c of streamMessages({ model: 'm', messages: [{ role: 'system', content: 'SYS' }, { role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
+    assert.equal(captured.length, 1)
+    const sys = captured[0].body.system
+    assert.ok(Array.isArray(sys), 'Anthropic 端点应自动转数组形态并打标记')
+    assert.deepEqual(sys[0].cache_control, { type: 'ephemeral' })
+  } finally {
+    global.fetch = prev
+    for (const k of Object.keys(process.env)) if (!(k in oldEnv)) delete process.env[k]
+    Object.assign(process.env, oldEnv)
+  }
+})
+
+test('cacheMarkerEnabled（P0-2）：DeepSeek 端点未设 env 时不打标记（system 保持字符串）', async () => {
+  const captured = []
+  const prev = global.fetch
+  global.fetch = async (url, init) => {
+    captured.push({ body: JSON.parse(String(init.body)) })
+    return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"message_delta","usage":{"input_tokens":1,"output_tokens":1}}\n\ndata: [DONE]\n\n')); c.close() } }) }
+  }
+  const oldEnv = { ...process.env }
+  Object.assign(process.env, { PONOS_BASE_URL: 'https://api.deepseek.com', PONOS_AUTH_TOKEN: 'k' })
+  delete process.env.PONOS_PROMPT_CACHE
+  try {
+    const chunks = []
+    for await (const c of streamMessages({ model: 'm', messages: [{ role: 'system', content: 'SYS' }, { role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
+    assert.equal(captured[0].body.system, 'SYS', 'DeepSeek 忽略该字段，不发无谓标记（避免 400 重发）')
+  } finally {
+    global.fetch = prev
+    for (const k of Object.keys(process.env)) if (!(k in oldEnv)) delete process.env[k]
+    Object.assign(process.env, oldEnv)
+  }
+})
+
 test('Anthropic 解析器：text/tool_use/usage 归一化 chunk 形状', () => {
   const p = createAnthropicParser()
   const out = []
@@ -159,6 +223,58 @@ test('Anthropic 解析器：text/tool_use/usage 归一化 chunk 形状', () => {
   assert.equal(usage.output_tokens, 3)
   assert.equal(usage.cache_read_input_tokens, 2)
   assert.equal(usage.cache_creation_input_tokens, 1)
+})
+
+// 【2026-09-18 P0-1】缓存字段别名：端点回传 DeepSeek **原生**名字时也必须读到命中数。
+// 此前只认 Anthropic 形态，端点若回传原生名字 ⇒ 命中读成 0 且全程静默（观测/成本/预算
+// 同时失真）。两家口径不同：Anthropic 的 input 不含命中；DeepSeek 的 prompt_tokens 含命中
+// ——必须按来源归一，否则命中部分被按全价重复计一次。
+test('usage 归一化（P0-1）：DeepSeek 原生 prompt_cache_hit_tokens → cache_read，input 扣掉命中部分', () => {
+  const p = createAnthropicParser()
+  const out = p.feed({
+    type: 'message_delta',
+    usage: { prompt_tokens: 100, completion_tokens: 7, prompt_cache_hit_tokens: 80, prompt_cache_miss_tokens: 20 },
+  })
+  const u = out.find((c) => c.type === 'usage').usage
+  assert.equal(u.cache_read_input_tokens, 80, '命中数必须从原生字段读到')
+  assert.equal(u.input_tokens, 20, 'prompt_tokens 含命中部分，须扣减以免重叠计费')
+  assert.equal(u.output_tokens, 7, 'completion_tokens 别名')
+})
+
+test('usage 归一化（P0-1）：Anthropic 形态 input 不含命中 → 不扣减（回归保护）', () => {
+  const p = createAnthropicParser()
+  const out = p.feed({
+    type: 'message_delta',
+    usage: { input_tokens: 100, output_tokens: 7, cache_read_input_tokens: 80 },
+  })
+  const u = out.find((c) => c.type === 'usage').usage
+  assert.equal(u.input_tokens, 100, 'Anthropic 语义下 input 已不含命中，扣减会少算')
+  assert.equal(u.cache_read_input_tokens, 80)
+})
+
+test('usage 归一化（P0-1）：无缓存字段时两个口径都退化为原值', () => {
+  const p = createAnthropicParser()
+  const out = p.feed({ type: 'message_delta', usage: { prompt_tokens: 100, completion_tokens: 7 } })
+  const u = out.find((c) => c.type === 'usage').usage
+  assert.equal(u.input_tokens, 100)
+  assert.equal(u.cache_read_input_tokens, 0)
+})
+
+// OpenAI 形态：prompt_tokens + prompt_tokens_details.cached_tokens（Responses API 走
+// input_tokens_details.cached_tokens）。命中数同样是 prompt_tokens 的**子集**，须扣减。
+test('usage 归一化（P0-1）：OpenAI 形态 cached_tokens → cache_read，input 扣掉命中部分', () => {
+  const p = createAnthropicParser()
+  const out = p.feed({
+    type: 'message_delta',
+    usage: { prompt_tokens: 100_000, completion_tokens: 7, prompt_tokens_details: { cached_tokens: 90_000 } },
+  })
+  const u = out.find((c) => c.type === 'usage').usage
+  assert.equal(u.cache_read_input_tokens, 90_000, 'OpenAI 形态别名必须读到（否则观测层判"端点无缓存"而整体静默）')
+  assert.equal(u.input_tokens, 10_000, 'cached_tokens 是 prompt_tokens 的子集，须扣减')
+  const p2 = createAnthropicParser()
+  const out2 = p2.feed({ type: 'message_delta', usage: { prompt_tokens: 100, input_tokens_details: { cached_tokens: 80 } } })
+  const u2 = out2.find((c) => c.type === 'usage').usage
+  assert.equal(u2.cache_read_input_tokens, 80, 'Responses API 形态别名')
 })
 
 // 【2026-09-12 流式观感 + 丢字回归】原实现只在 "\n\n" 处产出文本 chunk（整段被扣到

@@ -43,7 +43,7 @@ import { extractConstraints } from './fidelity.mjs'
 import { memoryRoot, captureMemoryCandidates, appendMemoryEntry, syncKnowledgeIndex } from './memory.mjs'
 import { buildKnowledgeInjection, resolveInjectMode, resolveInjectBudget } from './knowledge-inject.mjs'
 import { readDisabled, excludeDisabled } from './disabled.mjs'
-import { createKnowledgeStore, resolveSessionKnowledgeScope, MAX_ASSOC_SPACES } from './knowledge.mjs'
+import { createKnowledgeStore, resolveSessionKnowledgeScope, discoverSpaces, MAX_ASSOC_SPACES } from './knowledge.mjs'
 import { createGraphStore } from './graph.mjs'
 import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
 import { discoverSkills, verifySkillVersions } from './skills.mjs'
@@ -491,6 +491,23 @@ export async function main(argv) {
   if (knowledgeScope.missing.length) log.warn('knowledge scope: 关联的库不存在（已忽略）', { missing: knowledgeScope.missing })
   if (knowledgeScope.truncated) log.warn('knowledge scope: 关联数量超上限（已截断）', { max: MAX_ASSOC_SPACES, dropped: knowledgeScope.dropped })
 
+  // 知识空间**只读**放行（P3，2026-09-20）：把范围内空间的实际根算好交给工具层。
+  //
+  // why 在 cli 算、而不是让 tools 自己读配置：`kernel/tools.mjs` 的纪律是"不知道配置根"
+  // （它连 configDir 都没有，只有派生出的 memoryRoot）——路径一律由上层解析，工具层只做边界判定。
+  //
+  // 为什么必须按**范围**过滤而不是把整棵知识根交出去（安全要点）：只读白名单一旦含
+  // `<配置根>/knowledge/spaces`，就等于**所有**空间的文件都可 Read（含本会话未关联的库），
+  // 而"关联到当前会话"正是用户表达授权的唯一动作——绕过它会让授权的语义在文件层失效。
+  // 故这里逐空间取 root（`{ id, root }`：id 供工具回执判断"这个空间能否 Read"）。
+  // 范围为空数组（本会话没有任何可检索库）时给空数组：工具层据此 fail-closed（一个都不放行）。
+  const knowledgeReadDirs = knowledgeScope.spaces.length
+    ? discoverSpaces({ configDir, extraSpaceSpecs: safeTeamSpaceSpecs(configDir) })
+        .filter((s) => s.root && knowledgeScope.spaces.includes(s.id))
+        .map((s) => ({ id: s.id, root: s.root }))
+    : []
+  log.info('knowledge read scope', { spaces: knowledgeReadDirs.map((s) => s.id) })
+
   // 全局停用注册表（2026-09-15，P1「agent和skill页面及功能需要大改」D 条款）：<configDir>/disabled.json。
   // **一次读、多处用**（技能清单 + Skill 工具池）。读失败只 warn 不阻断：这个文件的作用是收窄
   // 能力，"读失败就崩"会让内核根本起不来，代价远大于"停用没生效"（见 kernel/disabled.mjs 头注）。
@@ -738,6 +755,12 @@ export async function main(argv) {
     health,
     compactor,
   })
+  // 知识空间只读边界注入（P3）：与下面 setDynamicTools 同一处境——engine.mjs 的
+  // createToolRegistry 调用点逐项硬列参数、不转发本项，故在拿到 engine.tools 后注入
+  // （与构造参数 knowledgeReadDirs 等价，后设覆盖先设）。必须在第一轮工具调用之前完成，
+  // 而轮次只由 stdin 消息触发，故此处（createEngine 紧邻处）是安全的注入点。
+  // chat 模式照常注入：chat 的 Read 被 CHAT_DISALLOWED 禁掉，这条边界在那里不产生能力。
+  engine.tools.setKnowledgeReadDirs(knowledgeReadDirs)
   // Task 6：动态工具注入——工作流按 expose 三态成为具名工具（run_<slug>），随磁盘增删即时
   // 生效（视图函数每次求值）。engine.mjs 的 createToolRegistry 调用点不转发 dynamicTools，
   // 故此处经 registry 的 setDynamicTools 挂钩注入（与构造参数等价，后设覆盖先设）；agentId

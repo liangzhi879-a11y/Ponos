@@ -1,0 +1,133 @@
+{
+  "meta": {
+    "generatedAt": "2026-09-18T13:59:36.160Z",
+    "configDirTail": "T203-15/.yfw",
+    "corpus": {
+      "docs": 238,
+      "blocks": 6918,
+      "grams": 116808,
+      "digest": "256076300"
+    },
+    "opts": {
+      "limit": 100,
+      "topK": 5,
+      "maxBytes": 9007199254740991,
+      "seed": 20260918,
+      "spaces": null
+    },
+    "gold": {
+      "blocks": 6918,
+      "skippedNoGram": 661,
+      "skippedNotUnique": 741,
+      "minDf": 2,
+      "invertedCoverage": 0.818
+    },
+    "human": {
+      "cases": 14,
+      "skipped": []
+    },
+    "field": {
+      "cases": 40,
+      "pool": 220
+    },
+    "indexVersion": 4,
+    "scorer": "legacy"
+  },
+  "summary": {
+    "cases": 154,
+    "autoCases": 140,
+    "topK": 5,
+    "recallAtK": 0.8051948051948052,
+    "autoRecallAtK": 0.7928571428571428,
+    "fieldRecall": 0.75,
+    "top1": 0.6558441558441559,
+    "docRecallAtK": 0.9415584415584416,
+    "mrr": 0.7206709956709956,
+    "miss": 30,
+    "degradedRate": 0,
+    "msP50": 472,
+    "msP95": 915,
+    "avgBytes": 1192,
+    "negatives": {
+      "count": 12,
+      "falsePositive": 0,
+      "rate": 0
+    },
+    "byKind": {
+      "para": {
+        "n": 24,
+        "hit": 14,
+        "recall": 0.5833333333333334
+      },
+      "heading": {
+        "n": 22,
+        "hit": 21,
+        "recall": 0.9545454545454546
+      },
+      "list": {
+        "n": 20,
+        "hit": 18,
+        "recall": 0.9
+      },
+      "table": {
+        "n": 16,
+        "hit": 11,
+        "recall": 0.6875
+      },
+      "code": {
+        "n": 10,
+        "hit": 10,
+        "recall": 1
+      },
+      "entry": {
+        "n": 8,
+        "hit": 7,
+        "recall": 0.875
+      }
+    },
+    "bySpace": {
+      "session-memory": {
+        "n": 40,
+        "hit": 37,
+        "recall": 0.925
+      },
+      "政策": {
+        "n": 29,
+        "hit": 22,
+        "recall": 0.7586206896551724
+      },
+      "experience": {
+        "n": 21,
+        "hit": 14,
+        "recall": 0.6666666666666666
+      },
+      "skill-experience": {
+        "n": 10,
+        "hit": 8,
+        "recall": 0.8
+      }
+    },
+    "byType": {
+      "precise": {
+        "n": 60,
+        "hit": 51,
+        "recall": 0.85
+      },
+      "noisy": {
+        "n": 40,
+        "hit": 30,
+        "recall": 0.75
+      },
+      "field": {
+        "n": 40,
+        "hit": 30,
+        "recall": 0.75
+      },
+      "human": {
+        "n": 14,
+        "hit": 13,
+        "recall": 0.9285714285714286
+      }
+    }
+  }
+}

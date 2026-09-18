@@ -196,12 +196,15 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   const engineCtx = opts.context || null
   const LANE_COMPACT_ENABLED = process.env.PONOS_LANE_COMPACT === '1'
   // P2-2 预算护栏（热累计，进程内；跨会话/历史预算走 U1 文件聚合——两层互补）。
-  // 单价 env：PONOS_PRICE_PER_M_INPUT/OUTPUT、PONOS_CACHE_READ_RATIO；PONOS_BUDGET_USD
-  // >0 启用。告警不硬停（硬停决策交调用方/GUI）；进程重启护栏清零。
+  // 单价 env：PONOS_PRICE_PER_M_INPUT/OUTPUT、PONOS_CACHE_READ_RATIO、
+  // PONOS_PRICE_CACHE_WRITE_RATIO（P0-5：缓存写入溢价，默认 1.25 = Anthropic 5 分钟档；
+  // 1 小时 TTL 传 2）；PONOS_BUDGET_USD >0 启用。告警不硬停（硬停决策交调用方/GUI）；
+  // 进程重启护栏清零。
   const PRICES = {
     pricePerMInput: Number(process.env.PONOS_PRICE_PER_M_INPUT) || 0.2,
     pricePerMOutput: Number(process.env.PONOS_PRICE_PER_M_OUTPUT) || 1.2,
     cacheReadRatio: Number(process.env.PONOS_CACHE_READ_RATIO) || 0.1,
+    cacheWriteRatio: Number(process.env.PONOS_PRICE_CACHE_WRITE_RATIO) || 1.25,
   }
   const BUDGET_USD = Number(process.env.PONOS_BUDGET_USD) || 0
   const sessionUsageAcc = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }

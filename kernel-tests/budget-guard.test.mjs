@@ -69,5 +69,17 @@ test('阈值未设（PONOS_BUDGET_USD=0）→ 恒不发', async () => {
 
 test('costOf 纯函数：cache 计费与单价参数', () => {
   const c = costOf({ input_tokens: 1_000_000, output_tokens: 1_000_000, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 1_000_000 })
-  assert.ok(Math.abs(c - (0.2 + 1.2 + 0.2 * 0.1 + 0.2)) < 1e-9, `cache 计费错误: ${c}`)
+  assert.ok(Math.abs(c - (0.2 + 1.2 + 0.2 * 0.1 + 0.2 * 1.25)) < 1e-9, `cache 计费错误: ${c}`)
+})
+
+// 【2026-09-18 P0-5】缓存写入此前按**全价**（等价 ratio 1.0）计 ⇒ 系统性低估真实成本。
+// Anthropic 官方：写入 1.25x（5 分钟 TTL）/ 2x（1 小时 TTL），只有读取是 0.1x。
+// DeepSeek 系端点不单列 cache_creation（恒 0）⇒ 对其口径零影响。
+test('costOf 纯函数（P0-5）：写缓存按溢价计费，ratio 可覆盖，无写字段时不凭空计费', () => {
+  const usage = { cache_creation_input_tokens: 1_000_000 }
+  const def = costOf(usage) // 默认 5 分钟档
+  assert.ok(Math.abs(def - 0.2 * 1.25) < 1e-9, `默认写溢价应为 1.25x: ${def}`)
+  const hour = costOf(usage, { cacheWriteRatio: 2 }) // 1 小时档
+  assert.ok(Math.abs(hour - 0.4) < 1e-9, `1 小时档应为 2x: ${hour}`)
+  assert.equal(costOf({ input_tokens: 0, output_tokens: 0 }), 0, '无写缓存字段时不得凭空计入写溢价')
 })

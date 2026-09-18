@@ -15,30 +15,79 @@ import { makeSnippet, isBlockId } from '../shared/knowledge-core.mjs'
  * createKnowledgeStore + search，任何评分/过滤调整都会变成"两处改、漏一处"的隐患。
  * 永不抛异常：失败折成 `{ ok: false, error }`，让调用方各自决定降级文案。
  */
-export function searchKnowledgeItems({ configDir, query, keywords = [], spaces = null, topK = 5, mode = 'snippet' } = {}) {
+export function searchKnowledgeItems({
+  configDir, query, keywords = [], spaces = null, topK = 5, mode = 'snippet', offset = 0,
+} = {}) {
   const q = String(query || '').trim()
   const kws = (keywords || []).map((k) => String(k).trim()).filter(Boolean)
-  if (!q && !kws.length) return { ok: true, items: [], count: 0, indexAge: null, spaces: [], missingQuery: true }
+  if (!q && !kws.length) return { ok: true, items: [], count: 0, total: 0, offset: 0, indexAge: null, spaces: [], missingQuery: true }
   try {
     const store = createKnowledgeStore({ configDir })
     store.load({})
-    const r = store.search({ query: q, keywords: kws, spaces, topK, mode })
+    const r = store.search({ query: q, keywords: kws, spaces, topK, mode, offset })
     // spaces 一并返回：调用方要据 spaceId → root 拼出**可用于 Read 的绝对路径**
     // （工具回执给相对 docId 的话，模型拿它 Read 会直接失败）。
-    return { ok: true, items: r.items, count: r.count, indexAge: r.indexAge, spaces: store.getSpaces() }
+    // total/offset（P2）：调用方据此拼"还有 N 条，续看 offset=M" —— 只回 count 的话，
+    // 模型不知道"是只有 5 条"还是"是 300 条里的 5 条"，也就不会去翻页。
+    return {
+      ok: true, items: r.items, count: r.count, total: r.total ?? r.count,
+      offset: r.offset ?? 0, indexAge: r.indexAge, spaces: store.getSpaces(),
+    }
   } catch (e) {
     return { ok: false, error: e?.message || String(e), items: [], count: 0, indexAge: null, spaces: [] }
   }
 }
 
-export function searchKnowledge({ configDir, query, keywords = [], spaces = null, topK = 5, mode = 'snippet' } = {}) {
+/**
+ * 空间 id → 物理根（`store.getSpaces()` 的产物）。**绝不猜路径**：找不到就返回 null，
+ * 回执宁可少给一句，也不给一个可能不存在的路径（模型会照着它 Read 到"路径不存在"）。
+ */
+function rootOfSpace(spaces, id) {
+  const s = (Array.isArray(spaces) ? spaces : []).find((x) => x && String(x.id) === String(id))
+  return s?.root ? String(s.root) : null
+}
+
+/**
+ * 命中后的"全文怎么取"引导（P3，2026-09-20 文案收口）。
+ *
+ * **why 必须分支**：Read 只对**放行了目录**的空间可用，而放行与否由上层按会话授权算
+ * （`kernel/tools.mjs` 的"只读边界"块：只有本会话知识范围内的空间根才进只读白名单）。
+ * 旧文案无条件说"需全文用 Read 读对应文件行"，于是模型对未放行的空间照做，只会撞
+ * "拒绝访问：路径超出会话目录边界"——白烧一轮，还得不到正确做法（本仓库既有教训：
+ * 无权限的指引必须写明替代路径）。
+ *
+ * `readableSpaces` 三态：`Set` = 该会话确实放行了这些空间（据实分支）；`null` = 调用方没给
+ * 可读性信息（嵌入/测试/旧调用方）⇒ **不加任何引导**，回执与改造前逐字一致（零回归）。
+ * 长度纪律：这是每次工具调用都要付的固定成本，故只加一行，且空间根最多列 3 个。
+ */
+function fullTextHint(spaceIds, { readableSpaces, spaces }) {
+  if (!(readableSpaces instanceof Set)) return ''
+  const ids = [...new Set(spaceIds.filter(Boolean).map(String))]
+  if (!ids.length) return ''
+  const unread = ids.filter((s) => !readableSpaces.has(s))
+  const readable = ids.filter((s) => readableSpaces.has(s))
+  const roots = readable.map((s) => { const r = rootOfSpace(spaces, s); return r ? `${s}=${r}` : null }).filter(Boolean)
+  const rootTxt = roots.length
+    ? `（空间根：${roots.slice(0, 3).join('；')}${roots.length > 3 ? ` 等 ${roots.length} 个` : ''}）`
+    : ''
+  const readTip = `用 Read 打开上列文件（路径 = 空间根/<docId 去掉「空间id/」前缀>，行号见括号）${rootTxt}`
+  const fullTip = `空间「${unread.join('、')}」本会话不可 Read：需全文请用 mode:'full' 重试，或用 related 展开一跳`
+  if (!unread.length) return `\n（需全文：${readTip}）`
+  // 顺带说明"哪些照常可读"：否则同一份回执里两类空间混排时，模型会以为全都不许 Read。
+  return `\n（${readable.length ? `${fullTip}；可读空间照常${readTip}` : fullTip}）`
+}
+
+export function searchKnowledge({
+  configDir, query, keywords = [], spaces = null, topK = 5, mode = 'snippet', readableSpaces = null,
+  offset = 0,
+} = {}) {
   const q = String(query || '').trim()
   const kws = (keywords || []).map((k) => String(k).trim()).filter(Boolean)
   if (!q && !kws.length) {
     return { content: 'query 参数缺失：请描述想检索的知识主题', isError: true }
   }
   const qtext = q || kws.join(' ')
-  const r = searchKnowledgeItems({ configDir, query: q, keywords: kws, spaces, topK, mode })
+  const r = searchKnowledgeItems({ configDir, query: q, keywords: kws, spaces, topK, mode, offset })
   if (!r.ok) {
     // 检索失败不能变成会话阻断：降级为"无命中"提示（isError 保持 false——工具自身
     // 故障不该让模型以为整个会话出错了）。
@@ -54,11 +103,26 @@ export function searchKnowledge({ configDir, query, keywords = [], spaces = null
     // 来源一律用**完整 docId**（= `spaceId/relPath`），Heading 与行号齐备：
     // 模型据 docId 的 relPath 就能 Read 到原文，不必自己拼空间前缀。
     const where = `${it.docId}${it.heading ? ` › ${it.heading}` : ''} · 第 ${it.line} 行`
-    return `- [${where}] (${it.score.toFixed(2)}) ${makeSnippet(it.snippet, { maxLen: 300 })}`
+    // P2 可解释回执：给出"为什么返回这条"的**命中词**。来源材料三次强调这是词法检索对
+    // 模型的独特价值（字面匹配让模型能理解并据此改写查询）——只回一个分数等于把它扔掉。
+    // 有硬预算（≤4 个词、每词 ≤12 字）：回执是每次工具调用的固定成本，不能让"命中词"
+    // 变成第二个内容字段。legacy 打分器没有 `hits`（为 null）→ 这段为空，回执与改造前一致。
+    const hit = Array.isArray(it.hits) && it.hits.length
+      ? ` · 命中「${it.hits.slice(0, 4).map((h) => String(h).slice(0, 12)).join(' ')}」`
+      : ''
+    return `- [${where}] (${it.score.toFixed(2)}${hit}) ${makeSnippet(it.snippet, { maxLen: 300 })}`
   })
+  // P2 分页续看：只在"确实还有下一批"或"已在后续页"时说明。模型此前只看到 count，
+  // 无法区分"只有 5 条"与"是 300 条里的 5 条"，于是既不会翻页、也想不到换词
+  // —— 来源材料的 surfaced/previewed 区分正是这个（瓶颈常在"看到却没读"）。
+  const off = r.offset ?? 0
+  const total = r.total ?? r.count
+  const more = total > off + r.count
+    ? `\n（本页 ${off + 1}-${off + r.count} / 共 ${total} 条命中；续看下一页：offset=${off + r.count}）`
+    : (off > 0 ? `\n（本页 ${off + 1}-${off + r.count} / 共 ${total} 条命中：已是最后一批）` : '')
   return {
     content: `【相关知识检索】${r.count} 条命中（${new Set(r.items.map((i) => i.docId)).size} 篇文档）：
-${lines.join('\n')}`,
+${lines.join('\n')}${fullTextHint(r.items.map((i) => i.spaceId), { readableSpaces, spaces: r.spaces })}${more}`,
     isError: false,
   }
 }
@@ -110,10 +174,12 @@ export function expandRelatedItems({ configDir, blockId, limit = RELATED_EXPAND_
         ?.blocks?.some((b) => b.n === Number(id.slice(id.lastIndexOf('#') + 1))),
     )
     const related = store.getRelated(id, { validate: true, limit })
-    return { ok: true, blockId: id, related, count: related.length, exists }
+    // `spaces` 与 searchKnowledgeItems 同一理由（P3）：调用方要据 spaceId → 根判断"该空间
+    // 能否 Read"，再把回执里的全文引导分成两条路。多带一个字段、不改既有字段。
+    return { ok: true, blockId: id, related, count: related.length, exists, spaces: store.getSpaces() }
   } catch (e) {
     // 与 searchKnowledge 同一纪律：检索侧故障不打断会话，折成 ok:false 让调用方降级
-    return { ok: false, error: e?.message || String(e), blockId: id, related: [], count: 0, exists: false }
+    return { ok: false, error: e?.message || String(e), blockId: id, related: [], count: 0, exists: false, spaces: [] }
   }
 }
 
@@ -121,8 +187,12 @@ export function expandRelatedItems({ configDir, blockId, limit = RELATED_EXPAND_
  * 一跳展开的渲染层（`KnowledgeSearch` 的 `related` 参数）。
  * 回执只给 **blockId + 标题 + 理由**：要正文让模型自己 Read（`docId` 就在 blockId 里）——
  * 把正文预装进来等于让"展开一跳"变成"再注入一遍全文"。
+ *
+ * 尾句按**该空间能否 Read**分支（P3 文案收口，与 searchKnowledge 的 fullTextHint 同一判据）：
+ * 无条件说"需正文用 Read"会把模型推向"拒绝访问：路径超出会话目录边界"。
+ * `readableSpaces === null`（调用方未给可读性）⇒ 保留原措辞，零回归。
  */
-export function expandRelated({ configDir, blockId, limit = RELATED_EXPAND_LIMIT } = {}) {
+export function expandRelated({ configDir, blockId, limit = RELATED_EXPAND_LIMIT, readableSpaces = null } = {}) {
   const r = expandRelatedItems({ configDir, blockId, limit })
   if (r.missingBlockId) {
     return { content: 'related 参数缺失：请给出要展开的 blockId（形如 experience/workflow.md#2，取自命中行的括号内）', isError: true }
@@ -143,8 +213,14 @@ export function expandRelated({ configDir, blockId, limit = RELATED_EXPAND_LIMIT
     }
   }
   const lines = r.related.map((x) => `- [${x.blockId}]${x.title ? `「${x.title}」` : ''} ${whyLabel(x)}`)
+  // blockId 形状 `<spaceId>/<relPath>#<n>` ⇒ 首个 `/` 之前即空间 id（越界判定同款切法）。
+  const spaceId = String(r.blockId).split('/')[0]
+  const canRead = !(readableSpaces instanceof Set) || readableSpaces.has(spaceId)
+  const tail = canRead
+    ? `需正文用 Read 打开对应文件${readableSpaces instanceof Set ? `（空间根 ${rootOfSpace(r.spaces, spaceId) || '见该空间根目录'}）` : ''}，不再自动多跳`
+    : `该空间「${spaceId}」本会话不可 Read：需正文请用 query + mode:'full' 取整块原文，不再自动多跳`
   return {
-    content: `【一跳关联】「${r.blockId}」可继续阅读 ${r.count} 条（已按关联强度排序，最多 ${limit} 条；只给位置与理由，需正文用 Read 打开对应文件，不再自动多跳）：
+    content: `【一跳关联】「${r.blockId}」可继续阅读 ${r.count} 条（已按关联强度排序，最多 ${limit} 条；只给位置与理由，${tail}）：
 ${lines.join('\n')}`,
     isError: false,
   }

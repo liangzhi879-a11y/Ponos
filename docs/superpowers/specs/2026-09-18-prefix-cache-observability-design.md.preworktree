@@ -1,0 +1,211 @@
+# 前缀缓存命中率观测（Prefix Cache Observability）设计
+
+- 日期：2026-09-18
+- 来源：`billion-context`（ranxianglei/billion-context）调研——其每轮 `[acp-usage] round N input=X cached=Y (cache hit Z%)` 把前缀缓存健康度做成可观测指标，对照本仓实测后发现**缺口真实存在**。
+- 定位：**只观测，不调参**。本设计不修改任何压缩策略，只让"前缀缓存是否被打断"从不可见变为可见。
+
+## 1. 为什么需要（实测缺口）
+
+### 1.1 现状实测（2026-09-18，本机全量数据）
+
+| 观测面 | 实测结果 | 结论 |
+|---|---|---|
+| `kernel-stderr.log` 中 cache 相关行 | `grep -cE "cache"` = **0** | 生产日志**零**缓存观测 |
+| transcript（`~/.yfw/projects/**/*.jsonl`，447 个 / 169.1MB） | 37,196 条 assistant 条目中仅 **372 条带 usage（1.0%）** | 不能作 per-request 观测源 |
+| 上述 usage 的口径 | 单行出现 `req=14,296,011`、`req=39,029,145` | 是**轮级合计**（多步 API 调用累加），非单请求 |
+| `stats.mjs:59-62` `cacheRate` | 已有，但按 day/model/author **全局聚合** | 无时序、无 per-request 粒度 |
+| `context.mjs:313` `requestTokens()` | 已有正确口径（input+read+creation） | 口径函数可复用，**无观测出口** |
+| 单请求 usage（`engine.mjs:256` `callUsage`） | 内存中有，轮末进 `turnStats.lastUsage` | **进程结束即丢**，无持久化 |
+
+### 1.2 聚合口径为何不可用（实测反证）
+
+用 transcript 的轮级 usage 算命中率，得到：
+
+```
+逐轮命中率 n=372  p25=0.000  p50=0.960  p75=0.977  max=0.999
+按规模分层：>200K 档 n=276  p50=0.971（13% 完全未命中）
+会话内位置：第1个 p50=0.946 → 第7+ p50=0.972（基本平坦）
+```
+
+**p50 恒在 0.96 附近、且几乎不随会话推进变化**——这是聚合的必然结果：轮级合计的分母被数十次 API 调用放大（实测最大单轮请求面 3,900 万 token），单次请求的骤降被大数平滑掉。**用聚合口径永远得到"一切正常"，无法发现单请求级的前缀失效。**
+
+### 1.3 缺口指向的真实成本
+
+实测 `kernel-stderr.log`（2026-09-16T14:27 → 2026-09-18T02:26，约 36h）：
+
+| compact action | 次数 | 说明 |
+|---|---|---|
+| `none` | 3,163 | 含 `count-over-no-shrink` 3,099 次 |
+| **`aged`** | **1,991** | 平均 **65 秒一次**原地改写历史 |
+| `summarized` | 23 | 模型摘要 |
+| `pruned` | 2 | 结构裁剪 |
+
+`ageOutToolResults`（`compact.mjs:20`）从**最早**的可重放结果开始清除（`results.slice(0, cutoff)`，`keepRecent` 默认 2）——即改写位置在**历史前段**。KV 前缀缓存按前缀匹配，前段任一字节变化 ⇒ 该位置之后**全部失效**。而这两处原地改写（`compact.mjs:59`、`compact.mjs:199`）是"零模型成本"的免费收缩。
+
+**"免费"是 token 账上的，不是延迟与成本账上的**：节省的是被清除的 token 数，付出的是下一轮整段前缀重算（cache miss → 全价 input + prefill 延迟）。1,991 次改写的真实代价目前**完全不可见**。
+
+⇒ 这正是 perf 埋点（`perf.mjs`）与 usage 对账（`engine.mjs:599`）之间的盲区：前者测本端耗时，后者只做"异常放大"报警，**没有人观测服务端的缓存命中**。
+
+## 2. 目标（DoD）
+
+1. **per-request 缓存命中率可见**：每个 API 请求产出 `input / cache_read / cache_creation / hitRatio`，可落 stderr、可进 `turnStats`。
+2. **前缀失效可判定且不误报**：区分「预期性失效」（压缩/收缩导致）与「可疑失效」（请求面相当但缓存读骤降）与「端点不支持缓存」三态。
+3. **失效可归因**：失效事件自动标注是否紧随 `compaction` / `aged` / `pruned` 之后——把 §1.3 的"免费收缩当免费"变成可量化结论。
+4. **零默认成本**：默认关闭（与 `perf.mjs` 同纪律：每请求一行 stderr 有真实成本，见 `perf.mjs` 头注 3）。
+5. **不引入新进程/新依赖**：纯内核内埋点，不学 billion-context 的 proxy/MITM 形态。
+
+## 3. 数据契约
+
+### 3.1 纯函数（`kernel/context.mjs`，紧邻 `requestTokens`）
+
+```js
+// 三态语义：ok（命中）/ miss（真未命中）/ unsupported（端点无缓存字段）
+export function cacheStats(u = {}) {
+  const input = Number(u?.input_tokens) || 0
+  const read = Number(u?.cache_read_input_tokens) || 0
+  const create = Number(u?.cache_creation_input_tokens) || 0
+  const total = input + read + create            // = requestTokens(u)，口径唯一
+  const supported = read + create > 0            // ★ 关键：区分"未命中"与"端点不支持"
+  return { input, read, create, total, supported, hitRatio: input + read > 0 ? read / (input + read) : 0 }
+}
+```
+
+**为什么必须有 `supported`**：实测 <10K 档 92% 的轮次"完全未命中"——其中相当部分是本地/小请求端点的**缓存字段恒 0**（`context.mjs:311` 注释已确认"非缓存端点（vLLM 等本地）缓存字段为 0"）。若不加区分，会把"端点不支持缓存"混成"命中率为 0 的严重事故"，观测一上线就全是假警。
+
+**口径选择**：`hitRatio = read / (input + read)`，与 `stats.mjs:61` 既有口径一致（保持全仓单一口径，避免"第二个计数口径必然漂移"——见 `context.mjs:390` 历史教训）。`cache_creation` 不计入分母：它是"写入"，在 Anthropic 语义下与"读取"是互斥的两种状态，混入会让首轮写缓存的请求显示为"高命中"。
+
+### 3.2 观测器（状态机，跨请求保持）
+
+> **⚠️ 本节签名已被实施计划修订**（2026-09-18 对照 OpenAI Codex 源码后）：归因判据改为 `contentEpoch`（而非本节原设计的 `causes` 请求计数），`observe` 签名扩展为 `observe(rawUsage, { epoch, causeHint })`，并新增服务端压缩兜底判据。
+> **权威版本**：`docs/superpowers/plans/2026-09-18-prefix-cache-observability.md` 的「v2 增补 · A1/A2/A5」。本节仅保留原始设计意图。
+
+```js
+export function createCacheObserver({ minRead = 20_000, dropRatio = 0.5, sizeTol = 0.10 } = {})
+// 内部状态：{ prev: null, lastCause: null, stats: { requests, ok, suspicious, compacted, unsupported, readTotal, inputTotal } }
+// observe({ usage, causes }) → { state, reason, delta }
+//   causes = { sinceCompaction, sinceShrink }  // 距上次压缩/收缩的请求数
+//   ↑ 修订后：observe(rawUsage, { epoch, causeHint })；判据来自 epoch 变化，hint 只管命名
+```
+
+## 4. 埋点位置（代码层级）
+
+| # | 位置 | 动作 |
+|---|---|---|
+| 1 | `engine.mjs:596` `else if (chunk.type === 'usage')` | **唯一 per-request usage 观测点**。此处已有 `callUsage = addUsage(...)`（H2 单请求水位），并列加一次 `observer.observe()` |
+| 2 | `engine.mjs` 每迭代 API 调用前（`callUsage = {}` 重置处，L256 附近） | 请求边界：把上一条 per-request 记录**结算并落行**，重置 per-request 累计 |
+| 3 | `engine.mjs:2339` `turnStats.push(...)` | 新增 `cache: observer.turnSummary()` 字段（轮级聚合 + 失效计数），供 health/result 消费 |
+| 4 | `compact.mjs` 压缩完成处（`wire.system('compaction', {state:'done'})`，L985） | 置 `sinceCompaction = 0`，供归因 |
+| 5 | `engine.mjs:383` `[compact] action=` 日志处 | `action=aged/pruned` 时置 `sinceShrink = 0`，供归因 |
+| 6 | `perf.mjs`（可选） | 复用 `perfCount('cacheHit'/'cacheMiss')`，令 `[perf]` 行携带缓存的**计数**（对齐 `reqHit` 的设计理由：无计数则"观测失效"与"一切正常"长得一样） |
+
+**不放在 `api.mjs` 的理由**：`api.mjs` 是 provider 无关的流解析层，`session-id`/轮/压缩上下文都在 `engine.mjs`。把观测放 `api` 会迫使状态机跨层传递，且 `api` 的 mock 路径（`PONOS_MOCK_API=1`）会污染统计。
+
+## 5. 失效判定（三态，防误报）
+
+判定输入：上一次请求记录 `prev`、本次 `cur`、归因计数 `causes`。
+
+| 优先级 | 条件 | 判定 | 动作 |
+|---|---|---|---|
+| 1 | `!cur.supported && !prev?.supported` | `unsupported` | 静默计数，不报警 |
+| 2 | `causes.sinceCompaction <= 1 \|\| causes.sinceShrink <= 1` | `compacted` | **预期性**：压缩/收缩后首次请求必然失效，不算异常 |
+| 3 | `!cur.supported && prev?.supported` | `suspicious` | 端点缓存字段消失（方向性变化） |
+| 4 | `prev.read >= minRead` 且 `cur.read < prev.read * (1 - dropRatio)` 且 `\|cur.total - prev.total\| / prev.total <= sizeTol` | `suspicious` | **真未知失效**——最值得深挖 |
+| 5 | `cur.read >= prev.read * 0.9` | `ok` | 命中正常 |
+
+**条件 4 的三重约束是刻意的**（实测校准）：
+
+- `prev.read >= minRead`：小请求本身无缓存可失，避免噪声；
+- `cur.read < prev.read * 0.5`：真骤降（非抖动）；
+- `|Δtotal| / prev.total <= 0.10`：**请求面相当**——若请求面大幅缩小（压缩生效），`read` 下降是正常的规模效应，不该判为失效。**探针实测教训**：首版判据用 `±30%` 且基于轮级聚合，372 个样本仅命中 1 例失效——聚合平滑 + 阈值过宽双重失效。per-request 粒度下本判据才有分辨力。
+
+## 6. 输出面
+
+### 6.1 stderr 单行（与 `[compact]` / `[perf]` 同风格，便于 grep/awk）
+
+```
+[cache] turn=3 req=7 in=1200 read=298000 new=0 total=299200 hit=0.996 st=ok
+[cache] turn=3 req=8 in=299200 read=0 new=0 total=299200 hit=0.000 st=suspicious cause=post-aged drop=298000
+[cache] turn=4 req=1 in=4800 read=0 new=0 total=4800 hit=0.000 st=unsupported
+```
+
+字段：`in/read/new` = input / cache_read / cache_creation；`total` = 请求面（= `requestTokens`）；`st` = 三态；`cause` = 归因（`post-compaction` / `post-aged` / `post-pruned` / `unknown`）；`drop` = 相对上次的 read 降幅。
+
+### 6.2 `turnStats[i].cache`
+
+```js
+{ requests, ok, suspicious, compacted, unsupported, readTotal, inputTotal, hitRatio }
+```
+→ `health.mjs` 可在后续版本消费（本设计**不做**，只提供数据）。
+
+### 6.3 `[perf]` 行（`PONOS_PERF=1` 时）
+
+追加 `cacheHit=` / `cacheMiss=` 计数字段，复用既有 `perfCount`。
+
+## 7. 开关与配置
+
+| 项 | 默认 | 说明 |
+|---|---|---|
+| `PONOS_CACHE_OBS` | `0`（关） | `1` = 落 `[cache]` 行；`PONOS_PERF=1` 时仅出计数不出行 |
+| `PONOS_CACHE_DROP_RATIO` | `0.5` | 失效判定降幅阈值 |
+| `PONOS_CACHE_MIN_READ` | `20000` | 参与失效判定的最小 read 量 |
+| `PONOS_CACHE_SIZE_TOL` | `0.10` | "请求面相当"容差 |
+
+开关**惰性读取**（`perf.mjs` 头注 1 的坑：`cli.mjs` 的 settings 注入在所有 ESM 求值之后，模块级常量必然读不到）。
+
+## 8. 边界与坑
+
+1. **★ 相邻风险：同一请求的多个递增 usage 快照会被重复累加。**
+   `api.mjs:224-225` 在 `key !== lastUsageKey` 时 push——**同值**快照被去重，但**递增**快照（流式过程中 `output_tokens` 增长）会多次 push。而 `engine.mjs:597` 与 `compact.mjs:649` 的 `addUsage` 是**累加**语义 ⇒ 理论上同一请求会被计多次。实践中主流端点只在末尾发一次 usage（故未暴露），但**per-request 观测必须对其免疫**：观测记录取**覆盖**（以最后快照为准）而非累加。**实施前须实测确认**该路径是否可触发（方法见 §9.3）。
+2. **摘要请求污染**：压缩摘要自身是完整 API 请求，其 usage 并入轮级（`compact.mjs:648` 注释明确）。观测按**请求**记，摘要请求单独标 `kind=summary`，不参与主请求的失效判定（它的前缀是压缩请求的组装体，语义不同）。
+3. **非缓存端点静音**：见 §3.1 `supported`。本地 vLLM 场景必须完全不报警。
+4. **子 Agent / lane 请求**：`engine.mjs:1596` 的 lane 有自己的 compactor。首版仅观测主会话，lane 请求标 `kind=lane` 计数但不判定（避免两套状态机互相污染）。多会话并发也需按 session 隔离状态机。
+5. **取消/重试**：请求被 abort 时无 usage（`api.mjs` 无末尾快照），观测器需容忍 `usage` 缺失并**不推进** `prev`（否则下次比较基准错位）。
+6. **首轮无基准**：`prev === null` 时只记录不判定。
+7. **脱敏**：观测只含计数与 token 数，无内容，不涉及 `redactEntry` 路径。
+
+## 9. 验证方式
+
+### 9.1 单测（`kernel-tests/`）
+
+- `cacheStats` 边界：全 0（→ `supported:false`）、只 read（→ 高命中）、只 create（→ `hitRatio:0` 但 `supported:true`）、混合；
+- 观测器三态：正常命中 / 预期性（`sinceCompaction=1`）/ 可疑（请求面相当 + 骤降）/ 不支持（全 0）——**必须含"不该报警"的用例**：压缩后首次请求、小请求骤降、请求面大幅缩小。
+
+### 9.2 实测回归（复用本次调研探针）
+
+`scratch/cache-hit-probe.mjs`（轮级口径，证明聚合不可用）与 `scratch/cache-hit-probe2.mjs`（分层 + 位置效应）已在本次调研中产出基线数据。实施后新增 `scratch/cache-obs-regression.mjs`：直接解析 `[cache]` 行，断言——
+- 有 `supported` 请求时 `ok+suspicious+compacted+unsupported == requests`（无漏记）；
+- `hitRatio` 分布与 transcript 轮级口径**同向**（新口径不应给出相反的结论）。
+
+### 9.3 端到端判定（本设计的**核心验收**）
+
+在 `PONOS_CACHE_OBS=1` 下跑一个大会话（触发 `aged`），验证：
+
+| 期望 | 判据 |
+|---|---|
+| 老化后首次请求命中率骤降 | 出现 `st=suspicious cause=post-aged`（若**未**出现，说明老化改写位置在后段、或端点按块缓存——这是有价值的反向结论） |
+| 正常轮次不误报 | `st=ok` 占绝对多数 |
+| 压缩后失效被正确定性 | 出现 `st=compacted` 而非 `suspicious` |
+
+**这个验证同时回答了本次调研最关键的悬问**：1,991 次"免费收缩"到底打断了多少次前缀缓存、代价多少 token。它是本设计存在的理由，也是唯一的成功判据。
+
+反证演练：临时把 `PONOS_CACHE_MIN_READ` 设为 `0` → 应大量出现误报（证明阈值有效）；把 `sinceShrink` 归因关掉 → `post-aged` 消失（证明归因链路生效）。
+
+## 10. 不做
+
+- ❌ **不改压缩策略**（老化/裁剪/摘要阈值一律不动）——本设计只提供代价反馈，策略调整是后续独立决策。
+- ❌ **不做缓存优化**（`context.mjs` 的 usage 锚点优化已存在，本设计只观测其效果）。
+- ❌ **不引入 proxy / MITM / 独立进程**——billion-context 的 `[acp-usage]` 长在代理形态上，内核内注入无需那套复杂度（含其 SGLang 单 system 消息、session 碰撞等自找的约束）。
+- ❌ **不做多世代分层压缩**——本仓 `compact.mjs:548` 已 sealed（禁止对摘要再摘要，引 re-compaction penalty 实测 15.9pp），而 billion-context 的多世代依赖其原文存档（`blockContents`）+ `decompress` 兜底。**存档前置条件不满足前，不碰 sealed。**
+- ❌ **不加 GUI 展示**——首版只到 stderr + `turnStats`，UI 消费等数据积累后再定。
+
+## 附：调研来源要点（billion-context 可借鉴/不可借鉴）
+
+| 其做法 | 本设计取舍 |
+|---|---|
+| 每轮 `[acp-usage] round N input=X cached=Y (cache hit Z%)` | ✅ **采用**（本设计核心） |
+| prefix-cache friendly：小范围写入保持前缀完整 | ✅ 概念采用（已在 `context.mjs` 锚点优化体现） |
+| 压缩块 + 原文存档 + `decompress`/`search_context` 可逆 | ⛔ 超出本次范围（另案；且是多世代压缩的前置条件） |
+| `absorb`：大工具结果到达即蒸馏 | ⛔ 另案（与 `ageOutToolResults` 时机差异，价值独立） |
+| proxy / MITM / cert 注入 / 双模式（plugin vs proxy） | ⛔ 不适用（形态产物，非内核） |
+| 4 维 session key + 首消息哈希兜底 | ⛔ 不适用（内核内单会话，无碰撞问题） |
+| 数据可信度 | 其 README 自述 "Expect rough edges"、真实模型集成测试为"下一里程碑"，**代码参考优先于叙事** |

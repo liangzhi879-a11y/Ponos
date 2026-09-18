@@ -1,0 +1,121 @@
+{
+  "meta": {
+    "generatedAt": "2026-09-18T13:03:23.639Z",
+    "configDirTail": "T203-15/.yfw",
+    "corpus": {
+      "docs": 238,
+      "blocks": 6917,
+      "grams": 116719,
+      "digest": "105285777"
+    },
+    "opts": {
+      "limit": 150,
+      "topK": 5,
+      "maxBytes": 9007199254740991,
+      "seed": 20260918,
+      "spaces": null
+    },
+    "gold": {
+      "blocks": 6917,
+      "skippedNoGram": 660,
+      "skippedNotUnique": 611,
+      "invertedCoverage": 0.893
+    },
+    "human": {
+      "cases": 14,
+      "skipped": []
+    },
+    "indexVersion": 4
+  },
+  "summary": {
+    "cases": 164,
+    "autoCases": 150,
+    "topK": 5,
+    "recallAtK": 0.7378048780487805,
+    "autoRecallAtK": 0.72,
+    "top1": 0.6524390243902439,
+    "docRecallAtK": 0.8658536585365854,
+    "mrr": 0.6830284552845528,
+    "miss": 43,
+    "degradedRate": 0,
+    "msP50": 430,
+    "msP95": 923,
+    "avgBytes": 905,
+    "negatives": {
+      "count": 12,
+      "falsePositive": 0,
+      "rate": 0
+    },
+    "byKind": {
+      "para": {
+        "n": 36,
+        "hit": 21,
+        "recall": 0.5833333333333334
+      },
+      "heading": {
+        "n": 33,
+        "hit": 31,
+        "recall": 0.9393939393939394
+      },
+      "list": {
+        "n": 31,
+        "hit": 24,
+        "recall": 0.7741935483870968
+      },
+      "table": {
+        "n": 25,
+        "hit": 13,
+        "recall": 0.52
+      },
+      "code": {
+        "n": 13,
+        "hit": 12,
+        "recall": 0.9230769230769231
+      },
+      "entry": {
+        "n": 12,
+        "hit": 7,
+        "recall": 0.5833333333333334
+      }
+    },
+    "bySpace": {
+      "session-memory": {
+        "n": 58,
+        "hit": 51,
+        "recall": 0.8793103448275862
+      },
+      "政策": {
+        "n": 48,
+        "hit": 31,
+        "recall": 0.6458333333333334
+      },
+      "experience": {
+        "n": 29,
+        "hit": 14,
+        "recall": 0.4827586206896552
+      },
+      "skill-experience": {
+        "n": 15,
+        "hit": 12,
+        "recall": 0.8
+      }
+    },
+    "byType": {
+      "precise": {
+        "n": 90,
+        "hit": 74,
+        "recall": 0.8222222222222222
+      },
+      "noisy": {
+        "n": 60,
+        "hit": 34,
+        "recall": 0.5666666666666667
+      },
+      "human": {
+        "n": 14,
+        "hit": 13,
+        "recall": 0.9285714285714286
+      }
+    }
+  }
+}

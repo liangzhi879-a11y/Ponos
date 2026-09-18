@@ -588,7 +588,123 @@ function resolveRelateMode(configDir, explicit = null) {
   return 'on'
 }
 
-export function createKnowledgeStore({ configDir, root = null, relateMode = null, extraSpaceSpecs = [] } = {}) {
+/**
+ * `knowledgeScorer`：'bm25'（**缺省**）| 'legacy' | 'bm25f'。
+ *
+ * **它换掉的是什么**：只换**终评打分公式** —— `legacy` 用"索引期完全 L2 归一化的 cosine"
+ * （等价 BM25 里 `b=1` 的硬归一化），`bm25` 用 BM25 的"tf 饱和 + 部分长度归一化"
+ * （`k1=1.2 / b=0.75`）。索引格式、候选生成、融合权重、截断、关联**一律不变**。
+ * `bm25f` 在同一公式上再叠加**字段权重**（见 FIELD_WEIGHTS）。
+ *
+ * **为什么不改索引格式**：先把"公式"这一个变量单独测出来（P0 量尺的职责），
+ * 否则"索引换了 + 公式换了"两个变量一起动，量尺上的变化无法归因。
+ *
+ * **缺省为何已翻到 bm25**（2026-09-18 当日，经确认）：它在自有量尺上实测更优且耗时减半 ——
+ * 同语料 164 例：recall@5 0.738→0.866、top1 0.652→0.768、MRR 0.683→0.804、miss 43→22、
+ * P50 430→197ms。`legacy` 保留为可回退档（`knowledgeScorer: "legacy"`），不是死代码：
+ * 一旦 bm25 出现无法解释的退化，去掉配置即回到改造前行为。
+ * 注意 `legacy` 与 `bm25` 的**分数尺度不同**（0~1 融合分 vs 归一化后的 BM25），
+ * 任何"分数阈值"类的外部消费都可能需要各自标定 —— 这也是保留开关的原因之一。
+ */
+const SCORER_MODES = new Set(['legacy', 'bm25', 'bm25f'])
+
+function resolveScorerMode(configDir, explicit = null) {
+  const norm = (v) => {
+    const s = String(v ?? '').trim().toLowerCase()
+    return SCORER_MODES.has(s) ? s : null
+  }
+  const a = norm(explicit)
+  if (a) return a
+  const b = norm(process.env.PONOS_KNOWLEDGE_SCORER)
+  if (b) return b
+  if (configDir) {
+    try {
+      const cfg = JSON.parse(readFileSync(join(configDir, 'config.json'), 'utf-8'))
+      const c = norm(cfg && cfg.knowledgeScorer)
+      if (c) return c
+    } catch { /* 无 config.json / 损坏 → 落到缺省（bm25），不让坏配置把检索打回旧公式 */ }
+  }
+  return 'bm25'
+}
+
+/**
+ * BM25 参数（P1）。**为什么全部走 env 而不是写死**：文档《2026-09-18-BM25 智能体检索评估
+ * 与升级方案》§3 明确判定"照搬别人的 k1/b 不适用"（那些值是在 5000 词网页文档上网格搜出来的），
+ * 参数必须在**本应用自有量尺**（scripts/eval-retrieval.mjs）上定 —— 留出 env 才能做网格搜，
+ * 搜完再把胜出值固化成缺省，而不是反过来先固化再解释。
+ *
+ * ## 标定结果（2026-09-18，`scripts/grid-bm25.mjs` 跑在本机 238 篇 / 6917 块语料上）
+ *
+ * | 配置 | autoRecall@5 | top1 | MRR |
+ * |---|---|---|---|
+ * | **k1=1.2 b=0.75**（当前缺省） | **0.817** | **0.767** | **0.787** |
+ * | k1=0.9 b=0.75 | 0.889* | 0.800* | 0.833* |
+ * | k1=1.2 b=0.5 | 0.867* | 0.733* | 0.786* |
+ * | k1=1.2 b=1.0 | 0.783 | 0.733 | 0.753 |
+ * | k1=10 b=1（来源材料的值） | 0.767 | 0.650 | 0.694 |
+ * | k1=25 b=1（来源材料的值） | 0.733 | 0.617 | 0.663 |
+ *
+ * （* 为 45 例小样本组，与 60 例组不同批，只能看趋势不能逐格比较。）
+ *
+ * 三条结论：
+ *  ① `b=0.75` 稳健最优 —— 两端都差（b=0.5 与 b=1.0 均低于它），说明"部分长度归一化"
+ *     在本库确实是关键（legacy 的完全归一化等价 b=1，正好落在较差的一侧）。
+ *  ② **照搬来源材料的 k1=10/25 会让 top1 掉 11–15 个点**（0.767 → 0.650/0.617），
+ *     趋势单调（k1 越大越差）—— 那是为 5000 词长网页文档调的，本库是短块，
+ *     高 k1 等于放弃 tf 饱和。**数字不可照搬，方向（BM25 本身）才是可迁移的。**
+ *  ③ `k1` 在 0.9–1.2 之间差异仅 1 例（在 45 例样本的噪声内）→ 取经典值 1.2，
+ *     不为了几个噪声点去选 0.9（那是过拟合到量尺样本，不是泛化）。
+ *
+ * - `SAT`（归一化饱和点 `s/(s+SAT)`）：BM25 分无上界，而融合公式另两路（kw ≤0.375、
+ *   struct ≤1）都在 [0,1]，需把它压到可比区间。实测 sat=3 时 top1 掉到 0.700（过度饱和）、
+ *   sat=30 掉到 0.717（BM25 被压小、退化成 kw/struct 主导），**[6,10] 是平台区** → 取 8。
+ */
+function bm25Params(over = null) {
+  const num = (v, dft) => {
+    const n = Number(v)
+    return Number.isFinite(n) && n >= 0 ? n : dft
+  }
+  // 注入优先（测试与网格搜：同一进程内换参数跑多组，避免"一组一个进程"的加载开销）
+  const o = over && typeof over === 'object' ? over : {}
+  return {
+    k1: num(o.k1 ?? process.env.PONOS_BM25_K1, 1.2),
+    b: num(o.b ?? process.env.PONOS_BM25_B, 0.75),
+    sat: num(o.sat ?? process.env.PONOS_BM25_SAT, 8),
+    // 字段权重 [tag, heading, title]（BM25F，见 bm25OfBlock 的 why）。
+    //
+    // ## 标定结论：**本库上无稳定收益 → 缺省不启用**（2026-09-18，`bm25f` 需显式开启）
+    //
+    // | 样本 | bm25 | bm25f(3,2,2) | bm25f(8,4,2) | bm25f(15,5,3) |
+    // |---|---|---|---|---|
+    // | field 类 40 例 | 31/40 | **33/40** | — | — |
+    // | field 类 80 例 | 0.738 | **0.738** | **0.738** | **0.738** |
+    // | 全量 100 例 | 0.896 | 0.903 | — | — |
+    //
+    // 读法：40 例那两个"改善"在样本翻倍后**完全消失**（80 例上四组配置一模一样）。
+    // 也就是说字段加权**不构成系统性改善**，只是个别用例的排名抖动
+    // （单独构造"词落在标签里"的查询时它确实生效：分数 0.565→0.583、排名 3→2，
+    //  见 scratch/diag-fwcheck.mjs —— 实现正确，但整体分布上不足以改变指标）。
+    //
+    // 为什么不删实现：① 用户明确要求保留该能力；② 它的**适用条件可复验**
+    // （语料里若出现"标签与正文措辞分离"的情况，字段权重才有的可加）；
+    // ③ 它是可判断的开关（`knowledgeScorer: "bm25f"`），不是死代码。
+    // **不启用**的理由是纪律：默认值必须由证据支持 —— 无收益的默认值就是净负债
+    // （多付 tag/heading/title 的 countGrams 成本，收益是 0）。
+    // 三维数组传参：o.fw 为数组（标定/测试注入），否则读 env "3,2,2"。
+    fw: (() => {
+      const parse = (v) => (Array.isArray(v) ? v.map(Number) : String(v ?? '').split(',').map(Number))
+        .filter((x) => Number.isFinite(x) && x >= 0)
+      const fromEnv = parse(process.env.PONOS_BM25_FW)
+      const src = Array.isArray(o.fw) ? o.fw : (fromEnv.length === 3 ? fromEnv : [3, 2, 2])
+      return src.length === 3 ? src : [3, 2, 2]
+    })(),
+  }
+}
+
+export function createKnowledgeStore({
+  configDir, root = null, relateMode = null, extraSpaceSpecs = [],
+  scorerMode = null, scorerParams = null,
+} = {}) {
   const kroot = root || knowledgeRoot(configDir)
   const idxDir = join(kroot, '.index')
   let spaces = []
@@ -939,6 +1055,119 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     return { cos, kw, struct }
   }
 
+  /**
+   * BM25 打分上下文（P1，2026-09-18）。惰性构造：**只有 bm25 模式才付这份成本**
+   * （legacy 路径一次都不走这里，行为与性能逐字节不变）。
+   *
+   * **why dl 用字符数而不是 gram 数**：gram 数要全库分词（与建索引同量级的几秒），
+   * 字符数只需遍历块取 `length`（毫秒级），而中文里"bigram 数 ≈ 字符数"——
+   * 长度归一化要的是"这块比平均块长多少"这一比例，用字符数是 BM25 的常规做法（dl 是长度代理）。
+   * `indexTextOf(b).length` 与 tf 同源（都取含标签的索引文本），口径一致。
+   */
+  // avgdl 与参数无关、只与语料有关 → 进程内算一次就够（每次 search 重算是白烧：
+  // 6917 次 indexTextOf 字符串拼接虽然只有几毫秒，但它是**每次查询**的固定成本）。
+  let bm25Stats = null
+
+  function makeBm25Ctx(over = null, mode = 'bm25') {
+    const p = bm25Params(over || scorerParams)
+    if (!bm25Stats) {
+      // 字段级平均长度（BM25F 的长度归一化基准）。**用字符长度而非 gram 数**：
+      // 要的是"这块比平均长多少"这一比例，字符数就是合格的长度代理（BM25 的 dl 本就是代理量），
+      // 而 gram 数需要全库分词（与建索引同量级的秒级成本）—— 每次首查都付不起。
+      const acc = { body: 0, tag: 0, heading: 0, title: 0 }
+      let n = 0
+      for (const d of docs) {
+        for (const b of d.blocks) {
+          acc.body += retrievalText(b).length
+          acc.tag += String(b.tag || '').length
+          acc.heading += String(b.heading || '').length
+          acc.title += String(d.title || '').length
+          n += 1
+        }
+      }
+      const avg = (v) => (n && v ? v / n : 1)
+      bm25Stats = {
+        avgdl: avg(acc.body), blocks: n,
+        avgBody: avg(acc.body), avgTag: Math.max(1, avg(acc.tag)),
+        avgHeading: Math.max(1, avg(acc.heading)), avgTitle: Math.max(1, avg(acc.title)),
+      }
+    }
+    // 字段权重只在 bm25f 下生效：`bm25` 是 P1 已验证的单字段形态，必须保持逐字一致
+    // （否则"bm25f 比 bm25 好多少"这个归因就混进了"bm25 自己变了"）
+    return { ...p, ...bm25Stats, fw: mode === 'bm25f' ? p.fw : [0, 0, 0] }
+  }
+
+  /**
+   * 块级 BM25 分（未归一化）。
+   *
+   * 与 legacy 的 cosine 有两个结构性差别，正是 P0 基线暴露的缺陷所在：
+   *  ① **tf 饱和**：`f(k1+1)/(f + k1·…)` —— 一个 gram 在块里出现 10 次不比出现 3 次强 3 倍
+   *     （legacy 的 `(1+√tf)` 是次线性但无上界）；
+   *  ② **部分长度归一化**：`(1-b+b·dl/avgdl)` 且 `b=0.75` —— legacy 是**完全**归一化
+   *     （除以向量模长，等价 b=1），长块被系统性压制。P0 基线里 heading 94% vs
+   *     table 52% / para 58% 就是这个压制留下的指纹。
+   *
+   * **idf 用文档级**（`buildIdf` 的既有口径，N=文档数、df=含该 gram 的文档数）：
+   * 改它就要重建索引，而这版刻意不动索引（见 resolveScorerMode 注释）。混合口径
+   * （文档级 idf + 块级 tf）在 passage 级检索里是常见做法，也是量尺要验证的一环。
+   */
+  function bm25OfBlock(b, doc, qGrams, ctx) {
+    const fwOn = Array.isArray(ctx.fw) && ctx.fw.some((w) => w > 0)
+    // 正文文本：BM25F 下用 `retrievalText`（**不含** entryTag），让 tag 走独立字段 ——
+    // 否则标签会被计两次（一次随正文、一次作字段权重），字段权重就失去意义。
+    // 单字段模式（bm25）保持 `indexTextOf`（含 tag），与 P1 已验证的口径逐字一致。
+    const text = fwOn ? retrievalText(b) : indexTextOf(b)
+    const tf = countGrams(text)
+    const dl = text.length || 1
+    const denomLen = 1 - ctx.b + ctx.b * (dl / ctx.avgdl)
+    // 短字段（tag / heading / title）的 tf：文本都很短，countGrams 便宜。
+    // **不做长度归一化**（stepped normalization）：这三个字段长度方差小（标签固定格式、
+    // 标题一行），归一化的收益低于它带来的解释成本；正文才需要归一化，因为它跨块方差最大。
+    let tfTag = null; let tfHead = null; let tfTitle = null
+    if (fwOn) {
+      if (b.tag) tfTag = countGrams(String(b.tag))
+      if (b.heading) tfHead = countGrams(String(b.heading))
+      if (doc && doc.title) tfTitle = countGrams(String(doc.title))
+    }
+    let s = 0
+    const hits = []
+    for (const [gram, qtf] of qGrams) {
+      let f = tf.get(gram) || 0
+      if (fwOn) {
+        // BM25F 的字段加权：把各字段的 tf 按权重叠加成"有效词频" f̃，再走同一个饱和公式。
+        // 这样"标签里出现"比"正文里出现"更有分量，而正文的长块劣势仍由 denomLen 承担。
+        if (tfTag) f += ctx.fw[0] * (tfTag.get(gram) || 0)
+        if (tfHead) f += ctx.fw[1] * (tfHead.get(gram) || 0)
+        if (tfTitle) f += ctx.fw[2] * (tfTitle.get(gram) || 0)
+      }
+      if (!f) continue
+      const idfV = idf.get(gram) ?? 1
+      // qtf（查询里的词频）在 BM25 里通常不进公式；保留变量名是为了不误用成 tf
+      void qtf
+      const contrib = idfV * ((f * (ctx.k1 + 1)) / (f + ctx.k1 * denomLen))
+      s += contrib
+      // 命中词（P2 可解释回执）：tf map 本来就算出来了，**顺手收集零成本**。
+      // 这让模型能回答"为什么返回这条"——来源材料三次强调这是 BM25 的独特优势
+      // （字面匹配让模型能理解并据此改写查询），而回执里只给一个分数等于把它扔掉。
+      hits.push({ g: gram, w: contrib })
+    }
+    hits.sort((a, b) => b.w - a.w)
+    return { score: s, hits: hits.slice(0, 5).map((h) => h.g) }
+  }
+
+  /** BM25 版块级评分：`cos` 槽位放**归一化 BM25 分**，kw/struct 与 legacy 同源同公式。 */
+  function scoreBlockBm25(doc, b, qGrams, qtext, kws, degraded, ctx) {
+    // 降级路（查询 gram 全落空）与 legacy 一致地不参与向量/BM25 路：没有词可匹配
+    const r = degraded ? { score: 0, hits: [] } : bm25OfBlock(b, doc, qGrams, ctx)
+    const raw = r.score
+    const cos = raw > 0 ? raw / (raw + ctx.sat) : 0
+    const kw = keywordScore({
+      tag: b.tag || '', summary: retrievalText(b), full: b.full || '', theme: doc.title,
+    }, kws)
+    const struct = structBoostOf({ block: { kind: b.kind }, doc, query: qtext, keywords: kws })
+    return { cos, kw, struct, bm25: raw, hits: r.hits }
+  }
+
   /** 块所属 heading（取该行之前的最后一个 heading）——卡片与行内结果都要展示归属小节。 */
   function headingAt(doc, line) {
     let h = null
@@ -957,6 +1186,10 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       // （MemorySearch 转发的适配层）能原样渲染 `- [主题|标签] 摘要 -- 全文`，
       // 而不必为了拿 tag/full 再回调 getDoc 做一次块查询。
       tag: b.tag || null, text: b.text, full: b.full || null,
+      // P2 可解释回执（纯增量）：BM25 路径才有的"命中词"；legacy 下为 null（零回归）。
+      // **故意不造"命中字段"**：BM25-lite 没有字段级 tf（字段建模是 P1-full 的事），
+      // 硬报一个字段等于编一个不准的信息给模型 —— 宁可少给，不给假的。
+      hits: sc.hits || null,
     }
   }
 
@@ -1035,7 +1268,23 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     }
   }
 
-  function searchInner({ query = '', keywords = [], spaces: only = null, topK = 5, maxBytes = 2048, mode = 'snippet' } = {}) {
+  function searchInner({
+    query = '', keywords = [], spaces: only = null, topK = 5, maxBytes = 2048, mode = 'snippet',
+    // P2 分页：`topK` 仍控"一次给几条"（上下文预算纪律不变），深度靠 offset 续看 ——
+    // 来源材料的"检索深度要够"在本库的落地方式不是"一次给 1000 条"，而是"能翻页找深"。
+    offset = 0,
+    // 候选池大小覆盖（P1b，2026-09-18）：检索深度旋钮。缺省沿用公式 `max(topK*4, 20)`。
+    // why 留成参数：来源材料（Pi-Serini）实测"深度加大 → surfaced recall +25.3%"，
+    // 而本库的 P0 诊断显示剩余 miss **主要在候选之外**（文档压根没进池），
+    // 故深度是本库下一步最该标定的旋钮 —— 但它是"召回换耗时"的取舍，必须由量尺定价，
+    // 不能拍脑袋调大（候选池每翻倍，终评要遍历的块数同步翻倍）。
+    candTopN = null,
+    // 每篇文档最多贡献几个块（P1b）。缺省：legacy=1（与改造前一致）、bm25/bm25f=2。
+    perDoc = null,
+    // P1 参数覆盖（单次查询级）：让"同一进程内换 k1/b 跑多组"成为可能 —— 否则每次
+    // 标定都要重建 store（读 11MB 索引 + 解析），网格搜一多半时间耗在这上面。
+    bm25: bm25Over = null,
+  } = {}) {
     const q = String(query || '').trim()
     const kws = (keywords || []).map((k) => String(k).trim()).filter(Boolean)
     const rawText = q || kws.join(' ')
@@ -1046,7 +1295,11 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     // 检索语法层（批次 3）：解析成结构化查询，再"先过滤、后打分"。
     // 过滤器放打分**之前**不只是省算力：语义上就是"在这些文档里搜"，而不是"搜完再扔掉一些"。
     const parsed = parseSearchQuery(rawText)
-    const meta = { query: queryMeta(parsed) }
+    // 打分器模式解析提前到这里：让**每一处 return**（含 enumerate / 空查询 / 语法错误）
+    // 都带 `scorer`，否则消费方（量尺、UI）无法区分"这次结果是哪个打分器给的"——
+    // 那正是 P1 期间最需要确认的事（开关没生效却以为生效了，比不做还糟）。
+    const scorer = resolveScorerMode(configDir, scorerMode)
+    const meta = { query: queryMeta(parsed), scorer }
     if (!parsed.ok) {
       // 解析失败（无效正则 / 查询串过长）→ **明确报错**，不静默当成文本搜。
       // 静默降级会给出"看起来能搜到、语义完全不同"的结果，比报错难排查得多。
@@ -1067,6 +1320,16 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       return { items: [], count: 0, total: 0, indexAge: age, degraded: false, ...meta }
     }
     const qvec = vectorizeText(qtext, { idf })
+
+    // P1 打分器分派（2026-09-18）：只换"块级怎么算分"这一步，其余（候选生成、过滤、
+    // 图扩展、融合权重、截断、关联）一律沿用 —— 两个分支的**唯一**差别见 resolveScorerMode。
+    // qGrams 只在 bm25 模式下构造：BM25 要按 gram 文本查 idf 与块内词频，而 qvec 里只剩
+    // hash（拿不回 idf），故两条路径的查询表示天然不同，不必强行统一。
+    const bm25Ctx = (scorer === 'bm25' || scorer === 'bm25f') ? makeBm25Ctx(bm25Over, scorer) : null
+    const qGrams = bm25Ctx ? countGrams(qtext) : null
+    const scoreFn = bm25Ctx
+      ? (doc, b, qv, qt, kw, deg) => scoreBlockBm25(doc, b, qGrams, qt, kw, deg, bm25Ctx)
+      : scoreBlock
 
     // 1) 倒排候选：只遍历查询 gram 的 postings，成本 ∝ 命中量（不是全库 × 全 gram）
     const acc = new Map()
@@ -1089,7 +1352,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       .filter((i) => matchDocQuery(docs[i], parsed))
       .map((i) => ({ i, s: acc.get(i) || 0 }))
       .sort((a, b) => b.s - a.s)
-      .slice(0, Math.max(topK * 4, 20))
+      .slice(0, Math.max(Number(candTopN) || 0, topK * 4, 20))
       .map((x) => x.i)
 
     // 降级路额外要求"内容信号"（向量或关键词）：struct 是**放大器**，不能单独造出结果。
@@ -1098,24 +1361,44 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     const isHit = (sc, score) => score > 0.001 && (!degraded || sc.cos > 0 || sc.kw > 0)
 
     // 2) 块级重排：只在候选文档内逐块打分（块级才是精度的来源）
+    //
+    // 【每篇文档贡献几块】（P1b，2026-09-18）此前是**硬编码 1**（只留 best 块）。
+    // 诊断证据（scratch/diag-rank.mjs，150 例）：topK=60 时仍有 10 例期望块找不到，
+    // 且**全部是"文档对了、块不对"**的形态（例：期望 `workflow.md#11`，返回同文档
+    // 的 `#407`）—— 而实验已排除候选池太小（20→320 全覆盖，recall 不变）。
+    // 也就是说：候选池足够大、正确块也在候选内，只是**被同一篇文档里的另一个块挤掉了**。
+    // 一篇长记忆文档（workflow.md 973KB）里有几百个块，只让其中一块出场，等于把
+    // "文档内路由"这件事整个丢了。
+    // 变量名避开同作用域已存在的 `perDoc`（idf 构建用：每篇文档一个样本，见 search 下方）
+    // **缺省 1**（保留参数但默认关闭）：实测 perDoc=2/3/5 对 recall 无改善
+    // （0.833→0.833→0.817→0.817，scratch/diag-perdoc.mjs），只让平均回执从 1207B 涨到
+    // 1518B（同文档多块挤掉其他文档的槽位）。留成参数是因为"文档内路由"这一维度仍值得
+    // 在别的语料/查询形态上复验，但**不该默认付这份成本** —— 无收益的默认值就是负债。
+    const perDocCap = Math.max(1, Number(perDoc)
+      || Number(process.env.PONOS_KNOWLEDGE_PER_DOC) || 1)
     const items = []
     for (const i of cand) {
       const doc = docs[i]
-      let best = null
-      let bestSc = null
+      const kept = []
       for (const b of doc.blocks) {
         // 块级过滤（批次 3）：`section:` / `content:` / `block:` 与否定项。
-        // 过滤掉的块不参与 best 竞争 —— 若整篇的块都被过滤掉，这篇自然进不了结果（符合预期）。
+        // 过滤掉的块不参与竞争 —— 若整篇的块都被过滤掉，这篇自然进不了结果（符合预期）。
         if (!matchBlockQuery(b, doc, parsed)) continue
         // 严格文本判定（批次 3）：**只在用户显式写了布尔逻辑时**启用（`OR` 或 `-x`）。
         // 没写时保持既有"部分命中也能召回"的打分行为不变 —— 无条件改成 AND 语义会让
         // 老查询的结果突然变少，那是行为回退而不是修 bug（见 knowledge-query.mjs 的 strict 注释）。
         if (parsed.strict && !matchTextParts(b.text, parsed)) continue
-        const sc = scoreBlock(doc, b, qvec, qtext, kws, degraded)
-        const it = toItem(doc, b, sc, mode, false)
-        if (!best || it.score > best.score) { best = it; bestSc = sc }
+        const sc = scoreFn(doc, b, qvec, qtext, kws, degraded)
+        kept.push({ sc, it: toItem(doc, b, sc, mode, false) })
       }
-      if (best && isHit(bestSc, best.score)) items.push(best)
+      if (!kept.length) continue
+      kept.sort((a, b) => b.it.score - a.it.score)
+      // `isHit` 仍以**最好的那块**判定整篇的资格（与改造前完全一致），额外块再各自判一次。
+      // perDoc=1 时这个循环只走"最好那块"、判定也相同 → **legacy 路径逐字节等价**（零回归）。
+      if (!isHit(kept[0].sc, kept[0].it.score)) continue
+      for (const k of kept.slice(0, perDocCap)) {
+        if (k === kept[0] || isHit(k.sc, k.it.score)) items.push(k.it)
+      }
     }
 
     // 3) 图扩展：已命中文档的出链目标，取 heading/entry 块参与（×0.9 折扣）
@@ -1137,7 +1420,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
           if (!matchBlockQuery(b, tdoc, parsed)) continue
           const bid = toBlockId(tdoc.id, b.n)
           if (seen.has(bid)) continue
-          const sc2 = scoreBlock(tdoc, b, qvec, qtext, kws, degraded)
+          const sc2 = scoreFn(tdoc, b, qvec, qtext, kws, degraded)
           const cand2 = toItem(tdoc, b, sc2, mode, true)
           if (isHit(sc2, cand2.score)) { seen.add(bid); items.push(cand2) }
         }
@@ -1203,7 +1486,11 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     //    第一条无条件放入——否则预算极小时前端永远空白，用户看到"搜不到"。
     const out = []
     let used = 0
+    let skip = Math.max(0, Number(offset) || 0)
     for (const it of items) {
+      // 分页跳过发生在**预算之外**：跳过的条目不该消耗这次调用的 maxBytes，否则
+      // 翻到第 3 页时会因为"前两页的字节"而少给内容（用户会以为越翻越少是 bug）。
+      if (skip > 0) { skip -= 1; continue }
       if (out.length >= topK) break
       const bytes = Buffer.byteLength(it.snippet, 'utf-8') + 160
       if (out.length > 0 && used + bytes > maxBytes) break
@@ -1225,7 +1512,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     }
     // `...meta`（批次 3）：回给调用方"哪些算子生效、是否仅过滤、是否严格布尔"，
     // GUI 据此回显（否则用户看到结果变少却不知道是哪个算子起了作用）。
-    return { items: out, count: out.length, total, indexAge: age, degraded, ...meta }
+    return { items: out, count: out.length, total, offset: Math.max(0, Number(offset) || 0), indexAge: age, degraded, ...meta }
   }
 
   /**

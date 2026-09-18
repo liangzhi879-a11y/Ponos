@@ -1,0 +1,1348 @@
+# 前缀缓存命中率观测（Prefix Cache Observability）实施计划
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 让每个 API 请求的前缀缓存命中情况（input / cache_read / cache_creation / hitRatio）可见、可持久化、可归因，从而量化"免费收缩"（老化/裁剪）打断前缀缓存的真实代价。
+
+**Architecture:** 纯函数 `cacheStats`（口径层，进 `context.mjs`）+ 有状态观测器 `createCacheObserver`（判定层，独立新文件）+ 引擎三处接线（请求边界 / usage 到达 / 轮末）。观测器与内核既有 `perf.mjs` 埋点**同构**：惰性开关、迭代头结算、轮末补结算——复用其已被验证的"一处覆盖十余处 continue 出口"结构。
+
+**Tech Stack:** Node.js ESM、`node:test` + `node:assert/strict`、内核流式协议（NDJSON over stdin/stdout）、`PONOS_MOCK_API` mock 流。
+
+**Spec:** `docs/superpowers/specs/2026-09-18-prefix-cache-observability-design.md`
+**调研探针（实测基线，勿删）:** `scratch/cache-hit-probe.mjs`、`scratch/cache-hit-probe2.mjs`
+
+> ### ⚠️ 实施前必读：本文档末尾的「**v2 增补：OpenAI 官方资料对照后的技术路线细化**」是**权威章节**
+> 它修订了 Task 1（usage 字段防御）、Task 2（`observe` 签名 + epoch 判据）、Task 3（接线传 epoch）、Task 5（调用点降级为 `causeHint`）与 Task 6（H2/H3 假设）。
+> **凡本文档前文与 v2 增补冲突者，一律以 v2 增补为准。** 建议先通读 v2 增补再动手。
+
+## Global Constraints
+
+- **★ 归因判据 = `contentEpoch`，标签另算**（v2 增补 A1 权威）：预期性失效的**判据**只认 `contentEpoch()` 变化（代码库自身声明"任何原地改写必须 +1、可证无遗漏"）；`noteShrink()`/`noteCompaction()` 仅提供 `cause` **命名**。二者解耦 ⇒ 漏标只会让 `cause` 退化为 `history-rewrite`，**不会**把预期性失效误报成 `suspicious`。理由：实测 `compactCount`/`replaceGeneration` 只在 summary 落地时 +1（`session.mjs:146/408`），**看不见** aged/pruned（改块内容不改数组结构）。
+- **契约裁定（本节权威，spec §6.1 示例行与其 §5 判定表自相矛盾，以本节为准）**
+  - `state` ∈ `ok` | `suspicious` | `compacted` | `unsupported`
+  - `cause` ∈ `post-compaction` | `post-aged` | `history-rewrite` | `server-compact` | `null`（无归因时**省略该字段**，不输出 `cause=null`）
+    - 后两值由 v2 增补引入（A1 通用改写标签 / A2 服务端压缩），权威正则见 v2 增补 A5
+  - 因此 spec §6.1 第二行示例 `st=suspicious cause=post-aged` **修正为** `st=compacted cause=post-aged`
+- **默认关**：`PONOS_CACHE_OBS` 未设 `1` 时，零判定、零 stderr 输出。理由同 `perf.mjs` 头注 3：内核 stderr 经桥会 ① console.error 转发 ② 写 `logs/kernel-stderr.log` ③ 作为 stderr 事件转发渲染器，每请求一行是真实成本。
+- **开关必须惰性读**（`process.env` 在调用时读，不写模块级常量）。理由同 `perf.mjs` 头注 1：`cli.mjs` 的 `settings.env` 注入发生在所有 ESM 模块求值之后。
+- **★ per-request usage 取「覆盖」不取「累加」**。`api.mjs:224` 只对**同值**快照去重，**递增**快照（流式 `output_tokens` 增长）会多次 push；而 `engine.mjs:597` / `compact.mjs:649` 的 `addUsage` 是累加语义。观测若沿用累加会重复计数。
+- **最小改动**：`api.mjs` 有 **58 处** `yield { type: 'usage', usage: MOCK_USAGE }`。**一律不动**——mock 夹具用新增独立分支实现（只在显式设 env 时接管）。
+- **口径唯一**：`hitRatio = cache_read / (input_tokens + cache_read_input_tokens)`，与 `stats.mjs:61` 既有口径一致；`cache_creation` **不计入分母**（写入与读取是互斥状态，混入会让首轮写缓存显示为"高命中"）。
+- **测试命令**：`npm run test:kernel`（= `node --test --test-concurrency=4 --test-timeout=120000 "kernel-tests/*.test.mjs"`）。单文件调试：`node --test kernel-tests/<file>.test.mjs`。
+- **提交信息**：`feat(kernel): <摘要>` / `test(kernel): <摘要>`，正文注明 spec 章节。
+- **不做**（spec §10）：不改任何压缩策略与阈值；不改 `compact.mjs:548` 的 sealed；不引入 proxy/MITM/独立进程；不做多世代分层压缩；首版不加 GUI 展示。
+
+---
+
+### Task 1: `cacheStats` 纯函数（口径层）
+
+**Files:**
+- Modify: `kernel/context.mjs`（在 `requestTokens` 之后，约 L316）
+- Test: `kernel-tests/cache-stats.test.mjs`（新建）
+
+**Interfaces:**
+- Consumes: 无（首个任务）
+- Produces: `cacheStats(u) → { input, read, create, total, supported, hitRatio }`
+  - `u` = 原始 usage 对象（`{ input_tokens, cache_read_input_tokens, cache_creation_input_tokens }`，字段可能缺失/为 null）
+  - `total` = 请求面（数值上等于 `requestTokens(u)`)
+  - `supported` = `read + create > 0`（**区分"真未命中"与"端点无缓存字段"**）
+  - `hitRatio` = `read / (input + read)`，分母为 0 时取 0
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `kernel-tests/cache-stats.test.mjs`：
+
+```js
+// 前缀缓存观测 · 口径层契约（2026-09-18 spec §3.1）
+// ---------------------------------------------------------------------------
+// 本文件锁四件事：
+//   1) **三态可分辨**：`supported` 必须区分「端点不支持缓存」与「真未命中」。
+//      实测依据：`<10K` 请求档 92% 的轮次"完全未命中"——其中绝大部分是本地/小请求
+//      端点缓存字段恒 0（见 context.mjs requestTokens 注释）。不加区分，观测一上线
+//      就在本地 vLLM 场景全站假警。
+//   2) **口径唯一**：hitRatio 分母 = input + read（与 stats.mjs:61 一致），
+//      cache_creation **不计入**——它是"写入"，与"读取"互斥；混入会让首轮写缓存的
+//      请求显示为高命中（假象）。
+//   3) **total 与 requestTokens 数值一致**：全仓只有一个"请求面"口径
+//      （历史教训见 context.mjs:390「并行维护的第二个计数口径必然漂移」）。
+//   4) **防御**：字段缺失 / null / undefined / 字符串数字不抛异常。
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { cacheStats, requestTokens } from '../kernel/context.mjs'
+
+test('端点无缓存字段 → supported=false（不能误判为"命中率 0 的严重事故"）', () => {
+  const s = cacheStats({ input_tokens: 10, output_tokens: 20 })
+  assert.equal(s.input, 10)
+  assert.equal(s.read, 0)
+  assert.equal(s.create, 0)
+  assert.equal(s.supported, false)
+  assert.equal(s.hitRatio, 0)
+  assert.equal(s.total, 10)
+})
+
+test('只有 cache_read → supported=true 且高命中', () => {
+  const s = cacheStats({ input_tokens: 10_000, cache_read_input_tokens: 90_000 })
+  assert.equal(s.supported, true)
+  assert.equal(s.total, 100_000)
+  assert.equal(s.hitRatio, 0.9)
+})
+
+test('只有 cache_creation → supported=true 但 hitRatio=0（写入不是命中）', () => {
+  const s = cacheStats({ input_tokens: 0, cache_creation_input_tokens: 50_000 })
+  assert.equal(s.supported, true)
+  assert.equal(s.hitRatio, 0, 'cache_creation 不得计入分母')
+  assert.equal(s.total, 50_000)
+})
+
+test('read 与 create 并存 → 分母只含 input+read', () => {
+  const s = cacheStats({ input_tokens: 1_000, cache_read_input_tokens: 1_000, cache_creation_input_tokens: 8_000 })
+  assert.equal(s.hitRatio, 0.5)
+  assert.equal(s.total, 10_000)
+})
+
+test('total 与 requestTokens 数值一致（口径唯一）', () => {
+  const u = { input_tokens: 1_234, cache_read_input_tokens: 56_789, cache_creation_input_tokens: 321 }
+  assert.equal(cacheStats(u).total, requestTokens(u))
+})
+
+test('防御：空/缺字段/null/字符串数字均不抛，且按数值语义处理', () => {
+  assert.deepEqual(cacheStats(), { input: 0, read: 0, create: 0, total: 0, supported: false, hitRatio: 0 })
+  const s = cacheStats({ input_tokens: null, cache_read_input_tokens: undefined, cache_creation_input_tokens: '300' })
+  assert.equal(s.input, 0)
+  assert.equal(s.read, 0)
+  assert.equal(s.create, 300)
+  assert.equal(s.supported, true)
+})
+
+test('全零 → hitRatio=0 且不产生 NaN', () => {
+  const s = cacheStats({ input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })
+  assert.equal(s.hitRatio, 0)
+  assert.equal(Number.isNaN(s.hitRatio), false)
+})
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+```bash
+node --test kernel-tests/cache-stats.test.mjs
+```
+
+Expected: FAIL —— `SyntaxError: The requested module '../kernel/context.mjs' does not provide an export named 'cacheStats'`
+
+- [ ] **Step 3: 实现**
+
+在 `kernel/context.mjs` 的 `requestTokens`（L313-315）**之后**插入（紧邻，保持"请求面口径"聚在一起）：
+
+```js
+
+// 前缀缓存观测 · 口径层（2026-09-18 spec：docs/superpowers/specs/2026-09-18-prefix-cache-observability-design.md §3.1）
+// 三态语义：`supported` 区分「端点真未命中」与「端点根本没有缓存字段」——实测 <10K
+// 请求档 92% 的轮次"完全未命中"，其中绝大部分是本地 vLLM 类端点缓存字段恒 0
+// （见上方 requestTokens 注释）。不加这一位，观测一上线就在本地场景全站假警。
+// hitRatio 分母 = input + read（与 stats.mjs 既有 cacheRate 同口径，全仓唯一）；
+// cache_creation 不计入——写入与读取互斥，混入会让首轮写缓存显示为高命中。
+export function cacheStats(u = {}) {
+  const input = Number(u?.input_tokens) || 0
+  const read = Number(u?.cache_read_input_tokens) || 0
+  const create = Number(u?.cache_creation_input_tokens) || 0
+  return {
+    input,
+    read,
+    create,
+    total: input + read + create,
+    supported: read + create > 0,
+    hitRatio: input + read > 0 ? read / (input + read) : 0,
+  }
+}
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+```bash
+node --test kernel-tests/cache-stats.test.mjs
+```
+
+Expected: PASS（7 个用例全绿）
+
+- [ ] **Step 5: 回归 + 提交**
+
+```bash
+npm run test:kernel
+git add kernel/context.mjs kernel-tests/cache-stats.test.mjs
+git commit -m "feat(kernel): 新增 cacheStats 前缀缓存口径纯函数（spec §3.1）"
+```
+
+---
+
+### Task 2: `createCacheObserver` 状态机（判定层）
+
+**Files:**
+- Create: `kernel/cache-observer.mjs`
+- Test: `kernel-tests/cache-observer.test.mjs`（新建）
+
+**Interfaces:**
+- Consumes: `cacheStats`（Task 1）
+- Produces:
+  - `classifyCache({ prev, cur, cause, minRead, dropRatio, sizeTol }) → { state, reason, drop }`
+    - `prev` / `cur` = `cacheStats` 结果或 `null`
+    - `cause` = `'post-compaction'` | `'post-aged'` | `null`
+    - `drop` = `max(0, prev.read - cur.read)`（`prev` 为 null 时 0）
+  - `createCacheObserver({ minRead?, dropRatio?, sizeTol? }) → observer`
+    - `observer.noteCompaction()` / `observer.noteShrink()` — 归因标记
+    - `observer.observe(rawUsage) → { state, reason, drop, cur, seq }`（`seq` = 累计请求序号）
+    - `observer.snapshot() → { requests, ok, suspicious, compacted, unsupported, readTotal, inputTotal, hitRatio }`
+
+**★ 为什么独立成文件而不是塞进 `context.mjs`**（相对 spec §3.2 的偏离，理由充分）：`context.mjs` 头注锁定自身定位为「**零依赖纯函数**……全部确定性，无模型调用」，而本模块**有状态**（跨请求保持 `prev`、归因计数）。定位不同的东西分开，也便于单测（无需构造 engine）。
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `kernel-tests/cache-observer.test.mjs`：
+
+```js
+// 前缀缓存观测 · 判定层契约（2026-09-18 spec §3.2/§5）
+// ---------------------------------------------------------------------------
+// 本文件锁五件事：
+//   1) **三态可分辨**：ok / suspicious / compacted / unsupported。
+//   2) **不误报是硬要求**（比"能抓到失效"更重要）：压缩后首次请求、小请求骤降、
+//      请求面大幅缩小（压缩生效的正常规模效应）三种情形**都不得**判 suspicious。
+//      实测教训：首版探针判据用 ±30% 容差 + 轮级聚合口径，372 个样本只命中 1 例失效
+//      ——阈值与粒度双重失效；per-request 粒度 + 三重约束（§5）才有分辨力。
+//   3) **归因优先级**：归因命中断定"预期性失效"，压过骤降判定（否则每次压缩都误报）。
+//   4) **unsupported 静默**：端点无缓存字段时不报警、不计入异常。
+//   5) **覆盖语义**：observe 每次传入的是"该请求最终 usage 快照"，非增量。
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { classifyCache, createCacheObserver } from '../kernel/cache-observer.mjs'
+
+const U = (input, read, create = 0) => ({ input_tokens: input, cache_read_input_tokens: read, cache_creation_input_tokens: create })
+
+test('classifyCache：端点不支持（前后都不支持）→ unsupported，不报警', () => {
+  const cur = { input: 10, read: 0, create: 0, total: 10, supported: false, hitRatio: 0 }
+  const r = classifyCache({ prev: null, cur })
+  assert.equal(r.state, 'unsupported')
+})
+
+test('classifyCache：归因命中 → compacted（预期性，压过骤降）', () => {
+  const prev = { input: 5, read: 100_000, create: 0, total: 100_005, supported: true, hitRatio: 0.999 }
+  const cur = { input: 100_000, read: 0, create: 0, total: 100_000, supported: true, hitRatio: 0 }
+  // 请求面相当 + read 骤降，若无关因必判 suspicious；有关因则判 compacted
+  assert.equal(classifyCache({ prev, cur }).state, 'suspicious')
+  const r = classifyCache({ prev, cur, cause: 'post-aged' })
+  assert.equal(r.state, 'compacted')
+  assert.equal(r.reason, 'post-aged')
+})
+
+test('classifyCache：上次支持、本次不支持 → suspicious（方向性变化）', () => {
+  const prev = { input: 5, read: 100_000, create: 0, total: 100_005, supported: true, hitRatio: 0.999 }
+  const cur = { input: 100_000, read: 0, create: 0, total: 100_000, supported: false, hitRatio: 0 }
+  assert.equal(classifyCache({ prev, cur }).state, 'suspicious')
+})
+
+test('classifyCache：首个受支持请求无基准 → ok（不判 suspicious）', () => {
+  const cur = { input: 10, read: 90_000, create: 0, total: 90_010, supported: true, hitRatio: 0.999 }
+  assert.equal(classifyCache({ prev: null, cur }).state, 'ok')
+})
+
+test('classifyCache：请求面相当 + read 骤降 → suspicious（真失效）', () => {
+  const prev = { input: 10_000, read: 90_000, create: 0, total: 100_000, supported: true, hitRatio: 0.9 }
+  const cur = { input: 100_000, read: 0, create: 0, total: 100_000, supported: true, hitRatio: 0 }
+  const r = classifyCache({ prev, cur })
+  assert.equal(r.state, 'suspicious')
+  assert.equal(r.drop, 90_000)
+})
+
+test('classifyCache：不误报三连——小请求骤降 / 请求面大幅缩小 / 命中稳定', () => {
+  // ① 小请求（prev.read < minRead）不参与失效判定
+  const small = classifyCache({
+    prev: { input: 1_000, read: 5_000, create: 0, total: 6_000, supported: true, hitRatio: 0.83 },
+    cur: { input: 6_000, read: 0, create: 0, total: 6_000, supported: true, hitRatio: 0 },
+  })
+  assert.equal(small.state, 'ok', '小请求无缓存可失，不得误报')
+  // ② 请求面大幅缩小（压缩/裁剪的正常规模效应）→ 不得误报
+  const shrunk = classifyCache({
+    prev: { input: 10_000, read: 300_000, create: 0, total: 310_000, supported: true, hitRatio: 0.97 },
+    cur: { input: 5_000, read: 20_000, create: 0, total: 25_000, supported: true, hitRatio: 0.8 },
+  })
+  assert.equal(shrunk.state, 'ok', '请求面缩小导致的 read 下降是规模效应，不是失效')
+  // ③ 命中稳定
+  const stable = classifyCache({
+    prev: { input: 10_000, read: 90_000, create: 0, total: 100_000, supported: true, hitRatio: 0.9 },
+    cur: { input: 10_000, read: 89_000, create: 0, total: 99_000, supported: true, hitRatio: 0.899 },
+  })
+  assert.equal(stable.state, 'ok')
+})
+
+test('observer：连续三次请求 → ok / ok / suspicious（覆盖语义 + 计数正确）', () => {
+  const obs = createCacheObserver()
+  const a = obs.observe(U(10_000, 90_000))
+  assert.equal(a.state, 'ok')
+  assert.equal(a.seq, 1)
+  const b = obs.observe(U(10_000, 90_000))
+  assert.equal(b.state, 'ok')
+  const c = obs.observe(U(100_000, 0))
+  assert.equal(c.state, 'suspicious')
+  assert.equal(c.seq, 3)
+  const s = obs.snapshot()
+  assert.equal(s.requests, 3)
+  assert.equal(s.ok, 2)
+  assert.equal(s.suspicious, 1)
+  assert.equal(s.readTotal, 180_000)
+  assert.equal(s.inputTotal, 120_000)
+  assert.equal(s.hitRatio, 180_000 / 300_000)
+})
+
+test('observer：noteShrink 后首个请求判 compacted（预期性），次个恢复判定', () => {
+  const obs = createCacheObserver()
+  obs.observe(U(10_000, 90_000)) // 建基准
+  obs.noteShrink()
+  const a = obs.observe(U(100_000, 0)) // 紧跟收缩 → 预期性（请求面 100000 与基准相当）
+  assert.equal(a.state, 'compacted')
+  assert.equal(a.reason, 'post-aged')
+  // 恢复：请求面保持 100000（U(0,100_000) 的 total 也是 100000）——**刻意让请求面相当**，
+  // 否则下一步的骤降会被"规模效应"豁免（判据 ③），测不到真失效。
+  const b = obs.observe(U(0, 100_000))
+  assert.equal(b.state, 'ok')
+  const c = obs.observe(U(100_000, 0)) // 无归因 + 请求面相当 + read 100000→0 → 真失效
+  assert.equal(c.state, 'suspicious')
+  assert.equal(c.reason, 'cache-drop')
+})
+
+test('observer：noteCompaction 归因与 noteShrink 区分', () => {
+  const obs = createCacheObserver()
+  obs.observe(U(10_000, 90_000))
+  obs.noteCompaction()
+  assert.equal(obs.observe(U(100_000, 0)).reason, 'post-compaction')
+})
+
+test('observer：unsupported 不发归因、计入计数、不污染基准', () => {
+  const obs = createCacheObserver()
+  const a = obs.observe({ input_tokens: 10, output_tokens: 20 })
+  assert.equal(a.state, 'unsupported')
+  obs.noteShrink()
+  const b = obs.observe({ input_tokens: 10, output_tokens: 20 })
+  assert.equal(b.state, 'unsupported', '端点不支持时不谈失效')
+  assert.equal(obs.snapshot().unsupported, 2)
+})
+
+test('observer：阈值可配（minRead / dropRatio / sizeTol）', () => {
+  // sizeTol 收到 0 → 请求面稍有差异即不判失效
+  const obs = createCacheObserver({ sizeTol: 0 })
+  obs.observe(U(10_000, 90_000))
+  assert.equal(obs.observe(U(101_000, 0)).state, 'ok', '请求面不等（超容差）不判失效')
+  // dropRatio 放宽 → 小幅下降也算失效。**注意请求面必须相当**：改用 U(30_000, 70_000)
+  // 使 total 仍为 100000（若写 U(10_000,70_000) 则 total=80000，会被判据 ③ 豁免 → ok）。
+  const obs2 = createCacheObserver({ dropRatio: 0.1 })
+  obs2.observe(U(10_000, 90_000))
+  assert.equal(obs2.observe(U(30_000, 70_000)).state, 'suspicious')
+})
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+```bash
+node --test kernel-tests/cache-observer.test.mjs
+```
+
+Expected: FAIL —— `Cannot find module '../kernel/cache-observer.mjs'`
+
+- [ ] **Step 3: 实现**
+
+创建 `kernel/cache-observer.mjs`：
+
+```js
+// Ponos-turbo 前缀缓存观测器（2026-09-18 spec：docs/superpowers/specs/2026-09-18-prefix-cache-observability-design.md §3.2/§5）
+// ---------------------------------------------------------------------------
+// 职责：把「每请求的 usage 快照」判成四态并累计统计，供 engine 落 stderr / 进 turnStats。
+//   ok          命中正常
+//   suspicious  可疑失效（**唯一值得深挖的态**）
+//   compacted   预期性失效（紧跟压缩/收缩之后，不算异常）
+//   unsupported 端点无缓存字段（静默）
+//
+// 为什么独立成文件而不进 context.mjs：后者头注锁定「零依赖纯函数、全部确定性」，
+// 而本模块有状态（跨请求保持 prev、归因计数）——定位不同，分开也更好测。
+//
+// ★ 判定纪律（不误报优先于抓全）：三重约束缺一不可——
+//   ① prev.read >= minRead（小请求无缓存可失，纯噪声）
+//   ② cur.read < prev.read × (1 − dropRatio)（真骤降，非抖动）
+//   ③ 请求面相当（|Δtotal|/prev.total <= sizeTol）
+// 第 ③ 条最易漏：请求面大幅缩小是压缩/裁剪的**正常规模效应**，read 随之下降不是失效。
+// 实测教训：首版探针用 ±30% 容差 + 轮级聚合口径，372 样本只命中 1 例失效。
+import { cacheStats } from './context.mjs'
+
+const DEFAULTS = { minRead: 20_000, dropRatio: 0.5, sizeTol: 0.1 }
+
+// 纯判定（无状态，便于单测与复用）
+export function classifyCache({ prev = null, cur, cause = null, minRead, dropRatio, sizeTol } = {}) {
+  const cfg = {
+    minRead: Number.isFinite(minRead) ? minRead : DEFAULTS.minRead,
+    dropRatio: Number.isFinite(dropRatio) ? dropRatio : DEFAULTS.dropRatio,
+    sizeTol: Number.isFinite(sizeTol) ? sizeTol : DEFAULTS.sizeTol,
+  }
+  const drop = prev ? Math.max(0, prev.read - cur.read) : 0
+  // ① 端点本就不支持缓存（前后都不支持）→ unsupported；此处**优先于归因**：
+  //    无缓存可言时，"压缩导致失效"是无意义的说法。
+  if (!cur.supported && !prev?.supported) return { state: 'unsupported', reason: 'endpoint-no-cache', drop: 0 }
+  // ② 归因命中 → compacted（预期性）。压过骤降判定——否则每次压缩/老化都误报一次。
+  if (cause) return { state: 'compacted', reason: cause, drop }
+  // ③ 上次支持、本次不支持：方向性变化（端点行为变了 / 请求形态触发了不同路径）
+  if (!cur.supported) return { state: 'suspicious', reason: 'cache-fields-vanished', drop }
+  // ④ 首个受支持请求：无基准，不判失效
+  if (!prev?.supported) return { state: 'ok', reason: 'first-supported', drop: 0 }
+  // ⑤ 三重约束
+  const sizeSimilar = prev.total > 0 && Math.abs(cur.total - prev.total) / prev.total <= cfg.sizeTol
+  if (prev.read >= cfg.minRead && cur.read < prev.read * (1 - cfg.dropRatio) && sizeSimilar) {
+    return { state: 'suspicious', reason: 'cache-drop', drop }
+  }
+  // ⑥ 命中稳定（允许小幅抖动）
+  return { state: 'ok', reason: cur.read >= prev.read * 0.9 ? 'stable' : 'minor-drop', drop }
+}
+
+// 有状态观测器。**每次 observe 传"该请求最终 usage 快照"**，不是增量——
+// api.mjs 的同值去重会让递增快照多次到达（见 spec §8.1 相邻风险），engine 侧已收敛为覆盖。
+export function createCacheObserver(opts = {}) {
+  const cfg = {
+    minRead: Number.isFinite(opts.minRead) ? opts.minRead : DEFAULTS.minRead,
+    dropRatio: Number.isFinite(opts.dropRatio) ? opts.dropRatio : DEFAULTS.dropRatio,
+    sizeTol: Number.isFinite(opts.sizeTol) ? opts.sizeTol : DEFAULTS.sizeTol,
+  }
+  let prev = null
+  // 归因计数：0 = 紧随其后（下一次 observe 即归因命中），之后每请求 +1。
+  // 起点 Infinity 表示"尚无压缩/收缩"。
+  let sinceCompaction = Infinity
+  let sinceShrink = Infinity
+  const stats = { requests: 0, ok: 0, suspicious: 0, compacted: 0, unsupported: 0, readTotal: 0, inputTotal: 0 }
+  return {
+    noteCompaction() { sinceCompaction = 0 },
+    noteShrink() { sinceShrink = 0 },
+    observe(rawUsage) {
+      const cur = cacheStats(rawUsage)
+      const cause = sinceCompaction === 0 ? 'post-compaction' : (sinceShrink === 0 ? 'post-aged' : null)
+      const r = classifyCache({ prev, cur, cause, ...cfg })
+      stats.requests++
+      stats[r.state] += 1
+      stats.readTotal += cur.read
+      stats.inputTotal += cur.input
+      prev = cur
+      sinceCompaction++
+      sinceShrink++
+      return { ...r, cur, seq: stats.requests }
+    },
+    snapshot() {
+      const denom = stats.inputTotal + stats.readTotal
+      return { ...stats, hitRatio: denom > 0 ? stats.readTotal / denom : 0 }
+    },
+  }
+}
+```
+
+> **实现注**：`cfg` 用 `Number.isFinite(...) ? v : DEFAULTS.x` 而非 `v || DEFAULTS.x`——**刻意**如此：`PONOS_CACHE_MIN_READ=0` 是 Task 6 反向演练要用的合法值（关掉最小读取量门槛），`||` 会把它当假值悄悄回退成 20000，演练失效。
+
+- [ ] **Step 4: 跑测试确认通过**
+
+```bash
+node --test kernel-tests/cache-observer.test.mjs
+```
+
+Expected: PASS（11 个用例全绿）
+
+- [ ] **Step 5: 回归 + 提交**
+
+```bash
+npm run test:kernel
+git add kernel/cache-observer.mjs kernel-tests/cache-observer.test.mjs
+git commit -m "feat(kernel): 新增前缀缓存观测器 cache-observer（spec §3.2/§5）"
+```
+
+---
+
+### Task 3: engine 接线（per-request 观测 + 落行 + turnStats）
+
+**Files:**
+- Modify: `kernel/engine.mjs`（L40 导入；L256 后声明区；L476-483 迭代头；L559 请求边界；L596-598 usage 分支；L1132 轮末；L2339 turnStats）
+- Test: `kernel-tests/engine-cache-obs.test.mjs`（新建）
+
+**Interfaces:**
+- Consumes: `createCacheObserver`（Task 2）
+- Produces: `[cache]` stderr 行（形状见下）、`turnStats[i].cache`（= `observer.snapshot()`）
+  - 行形状：`[cache] turn=<n> req=<n> in=<n> read=<n> new=<n> total=<n> hit=<0.000> st=<state>[ cause=<cause>][ drop=<n>]`
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `kernel-tests/engine-cache-obs.test.mjs`：
+
+```js
+// 前缀缓存观测 · 引擎接线契约（2026-09-18 spec §4/§6）
+// ---------------------------------------------------------------------------
+// 本文件锁四件事：
+//   1) **默认关**：不设 PONOS_CACHE_OBS 时 stderr 零 `[cache]`，轮次照常收尾
+//      （内核 stderr 会 ① 转发 ② 落 kernel-stderr.log ③ 转发渲染器——每请求一行是真实成本）。
+//   2) **行形状**：字段齐全、定长字段名，便于 grep/awk。
+//   3) **unsupported 真实可达**：mock 的 MOCK_USAGE 不含 cache 字段（api.mjs:245），
+//      故本夹具下必判 unsupported——这恰好也是本地 vLLM 端点的真实形态，
+//      断言它证明"不假警"这条设计约束在端到端链路上成立。
+//   4) **开关惰性读**：走 settings.json 的 env 通道同样生效（perf.mjs 头注 1 的坑）。
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const KERNEL_CLI = fileURLToPath(new URL('../kernel/cli.mjs', import.meta.url))
+const FIXTURE = '[mock:tool-safe] 跑一次安全命令'
+
+// 行形状：[cache] turn=1 req=1 in=10 read=0 new=0 total=10 hit=0.000 st=unsupported
+// 可选后缀：cause=post-aged / drop=90000
+const LINE_RE = new RegExp(
+  '^\\[cache\\] turn=(\\d+) req=(\\d+) in=(\\d+) read=(\\d+) new=(\\d+) total=(\\d+)' +
+  ' hit=(\\d+\\.\\d{3}) st=(ok|suspicious|compacted|unsupported)' +
+  '(?: cause=(post-compaction|post-aged))?(?: drop=(\\d+))?$',
+)
+
+function spawnKernel(env, dir) {
+  const base = { ...process.env }
+  delete base.PONOS_CACHE_OBS
+  const proc = spawn(process.execPath, [
+    KERNEL_CLI, '--print', '--output-format', 'stream-json', '--input-format', 'stream-json',
+    '--verbose', '--dangerously-skip-permissions', '--add-dir', dir,
+  ], {
+    env: { ...base, PONOS_MOCK_API: '1', PONOS_CONFIG_DIR: dir, YFW_HOME: dir, ...env },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  let err = ''
+  const events = []
+  let buf = ''
+  proc.stdout.on('data', (d) => {
+    buf += d
+    const lines = buf.split('\n')
+    buf = lines.pop()
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try { events.push(JSON.parse(line)) } catch { /* 半行跳过 */ }
+    }
+  })
+  proc.stderr.on('data', (d) => err += d)
+  return { proc, events, get err() { return err } }
+}
+
+const waitFor = async (fn, ms = 20_000, step = 100) => {
+  const t0 = Date.now()
+  while (Date.now() - t0 < ms) {
+    if (fn()) return true
+    await new Promise((r) => setTimeout(r, step))
+  }
+  return fn()
+}
+
+const cacheLines = (err) => err.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('[cache]'))
+
+async function runTurn({ env = {}, settings = null } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'cache-obs-'))
+  if (settings) writeFileSync(join(dir, 'settings.json'), JSON.stringify(settings), 'utf8')
+  const k = spawnKernel(env, dir)
+  try {
+    await new Promise((r) => setTimeout(r, 800))
+    k.proc.stdin.write(JSON.stringify({
+      type: 'user', session_id: 'cache-obs-session',
+      message: { role: 'user', content: FIXTURE },
+    }) + '\n')
+    await waitFor(() => k.events.some((e) => e.type === 'result') || k.proc.exitCode !== null)
+    return { dir, events: k.events, err: k.err, lines: cacheLines(k.err), cleanup() {
+      try { k.proc.kill() } catch { /* 已退出 */ }
+      rmSync(dir, { recursive: true, force: true })
+    } }
+  } catch (e) {
+    try { k.proc.kill() } catch { /* 已退出 */ }
+    rmSync(dir, { recursive: true, force: true })
+    throw e
+  }
+}
+
+test('默认关：不设 PONOS_CACHE_OBS → stderr 零 [cache]，轮次照常收尾', async () => {
+  const r = await runTurn()
+  try {
+    assert.ok(r.events.some((e) => e.type === 'result'), `夹具应正常收尾\nstderr=${r.err.slice(-400)}`)
+    assert.deepEqual(r.lines, [], `默认必须零输出（内核 stderr 会落盘 + 转发渲染器）\n实际=${JSON.stringify(r.lines)}`)
+  } finally { r.cleanup() }
+})
+
+test('PONOS_CACHE_OBS=1：出现 [cache] 行、形状正确、mock 无缓存字段 → unsupported', async () => {
+  const r = await runTurn({ env: { PONOS_CACHE_OBS: '1' } })
+  try {
+    assert.ok(r.events.some((e) => e.type === 'result'), `夹具应正常收尾\nstderr=${r.err.slice(-400)}`)
+    assert.ok(r.lines.length >= 2, `夹具含 1 次工具调用（2 迭代）应至少 2 行（实际 ${r.lines.length}）\nstderr=${r.err.slice(-500)}`)
+    for (const line of r.lines) {
+      const m = LINE_RE.exec(line)
+      assert.ok(m, `行形状不符（字段缺失/改名/分隔符变化）：${line}`)
+      assert.equal(m[8], 'unsupported', `mock 的 MOCK_USAGE 不含 cache 字段，必判 unsupported（不假警）：${line}`)
+      assert.equal(m[3], '10', `in 应等于 mock 的 input_tokens=10：${line}`)
+      assert.equal(m[4], '0', `read 应为 0：${line}`)
+      assert.equal(m[7], '0.000', `hitRatio 应为 0.000：${line}`)
+    }
+    // req 序号连续递增，证明"每请求一条、不重不漏"
+    const seqs = r.lines.map((l) => Number(LINE_RE.exec(l)[2]))
+    assert.deepEqual(seqs, seqs.map((_, i) => i + 1), `req 序号应连续 1..N（实际 ${JSON.stringify(seqs)}）`)
+  } finally { r.cleanup() }
+})
+
+test('开关惰性读：settings.json 的 env.PONOS_CACHE_OBS=1 同样生效', async () => {
+  // spawn env 里没有 PONOS_CACHE_OBS（spawnKernel 已 delete），只能靠 cli.mjs 的
+  // settings.env 注入 → 若开关写成模块级常量，这里必红。
+  const r = await runTurn({ settings: { env: { PONOS_CACHE_OBS: '1' } } })
+  try {
+    assert.ok(r.events.some((e) => e.type === 'result'), `夹具应正常收尾\nstderr=${r.err.slice(-400)}`)
+    assert.ok(r.lines.length >= 2, `settings.json 通道应同样点亮观测（实际 ${r.lines.length} 行）\nstderr=${r.err.slice(-400)}`)
+    for (const line of r.lines) assert.ok(LINE_RE.test(line), `行形状不符：${line}`)
+  } finally { r.cleanup() }
+})
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+```bash
+node --test kernel-tests/engine-cache-obs.test.mjs
+```
+
+Expected: 第 1 个用例 PASS（默认关本来就成立），第 2、3 个 FAIL —— `行形状...` 断言失败，`r.lines` 为空数组。
+
+- [ ] **Step 3: 实现（7 处编辑 3a–3g，一次做完再跑测试）**
+
+**3a. 导入**（在 L40 `import { perfTime, ... } from './perf.mjs'` 之后**新增一行**，不要改动既有行）：
+
+```js
+import { createCacheObserver } from './cache-observer.mjs'
+```
+
+**3b. L256 声明区**（`let callUsage = {}` 之后立即插入）：
+
+```js
+    // 前缀缓存观测（2026-09-18 spec §4）：per-request 记录——**覆盖语义**，不是累加。
+    // ★ 相邻风险（spec §8.1）：api.mjs 只在"同值快照"层面去重（见 mergeCumulativeUsage
+    // 注释），递增快照（流式 output_tokens 增长）会多次 push；而 callUsage 走 addUsage
+    // 累加语义。观测若沿用累加会把同一请求记成多次 → pendingCacheUsage 只留最后一次。
+    // 默认关：开关惰性读（同 perf.mjs 头注 1 的坑——cli.mjs 的 settings.env 注入发生在
+    // 所有 ESM 模块求值之后，写成模块级常量必然读不到）。
+    const cacheObsOn = () => process.env.PONOS_CACHE_OBS === '1'
+    const cacheObs = createCacheObserver({
+      minRead: Number(process.env.PONOS_CACHE_MIN_READ),
+      dropRatio: Number(process.env.PONOS_CACHE_DROP_RATIO),
+      sizeTol: Number(process.env.PONOS_CACHE_SIZE_TOL),
+    })
+    let pendingCacheUsage = null
+    // 请求级结算：与 perfStep 同位置调用（迭代头 + 轮末补），一处覆盖十余处 continue 出口。
+    // 引用 perfTurn（下方 const，运行时求值）——调用点必在声明之后。
+    function flushCacheObs() {
+      if (!pendingCacheUsage) return
+      const u = pendingCacheUsage
+      pendingCacheUsage = null
+      let r
+      try { r = cacheObs.observe(u) } catch { return /* 观测失败不得影响主流程 */ }
+      if (!cacheObsOn()) return
+      try {
+        const cause = r.state === 'compacted' ? ` cause=${r.reason}` : ''
+        const drop = r.drop > 0 ? ` drop=${r.drop}` : ''
+        console.error(
+          `[cache] turn=${perfTurn} req=${r.seq} in=${r.cur.input} read=${r.cur.read} new=${r.cur.create} ` +
+          `total=${r.cur.total} hit=${r.cur.hitRatio.toFixed(3)} st=${r.state}${cause}${drop}`,
+        )
+      } catch { /* 埋点不得影响主流程 */ }
+    }
+```
+
+**3c. L476-483 迭代头**（`perfStep` / `perfBegin` 之后加一行）：
+
+```js
+      if (iter > 0) {
+        perfSpan('tail', 'genEnd') // 生成结束 → 本迭代头
+        perfStep(perfTurn, iter - 1)
+      } else {
+        perfBegin() // 首迭代只开账，无上一步可发
+      }
+      flushCacheObs() // 前缀缓存观测：结算上一迭代的请求（与 perfStep 同位置，覆盖全部出口）
+```
+
+**3d. L559 请求边界**（`callUsage = {}` 之后加一行）：
+
+```js
+      callUsage = {} // H2：本迭代单请求 usage 重置（retryStream 内部瞬时重试重发同请求，累加仍≈1 倍）
+      pendingCacheUsage = null // 前缀缓存观测：请求边界清空（上一请求已在迭代头结算）
+```
+
+**3e. L596-598 usage 分支**（在 `callUsage = addUsage(...)` 之后加一行）：
+
+```js
+          } else if (chunk.type === 'usage') {
+            usage = addUsage(usage, chunk.usage)
+            callUsage = addUsage(callUsage, chunk.usage) // H2：单请求水位信号
+            // ★ 覆盖而非累加：同一请求的递增快照只保留最后一次（见声明区相邻风险注）
+            pendingCacheUsage = chunk.usage ?? pendingCacheUsage
+```
+
+**3f. L1132 轮末**（`perfStep(perfTurn, perfIter)` 之后加一行）：
+
+```js
+    perfStep(perfTurn, perfIter) // K0：轮末结算最后一步（break 与正常退出都要发）
+    flushCacheObs() // 前缀缓存观测：结算最后一个迭代（未被下一迭代头覆盖）
+```
+
+**3g. L2339 turnStats**（在 push 的对象字面量里加 `cache` 字段）：
+
+```js
+      turnStats.push({ usage: outcome.usage, lastUsage: outcome.lastUsage ?? null, durationMs, model: outcome.model, ts: new Date().toISOString(), compactCount: session ? session.compactCount() : 0, cache: cacheObs.snapshot() })
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+```bash
+node --test kernel-tests/engine-cache-obs.test.mjs
+```
+
+Expected: PASS（3 个用例全绿）
+
+- [ ] **Step 5: 回归 + 提交**
+
+```bash
+npm run test:kernel
+git add kernel/engine.mjs kernel-tests/engine-cache-obs.test.mjs
+git commit -m "feat(kernel): engine 接线 per-request 前缀缓存观测（spec §4/§6）"
+```
+
+---
+
+### Task 4: mock 缓存序列夹具 + 三态端到端
+
+**Files:**
+- Modify: `kernel/api.mjs`（L245 后加模块级计数器；L276 后加夹具分支）
+- Test: `kernel-tests/engine-cache-obs-sequence.test.mjs`（新建）
+
+**Interfaces:**
+- Consumes: Task 3 的 `[cache]` 行
+- Produces: mock 夹具能力 —— env `PONOS_MOCK_CACHE_SEQ`
+  - 格式：`"in:10000,read:90000|in:10000,read:90000|in:100000,read:0"`
+  - 段间 `|` 分隔，**按请求序号取段**（越界取最后一段 ⇒ 稳态只需写一段）
+  - 段内 `key:val` 逗号分隔，key ∈ `in`（input_tokens）/ `read`（cache_read_input_tokens）/ `new`（cache_creation_input_tokens）/ `out`（output_tokens，默认 20）
+  - 激活时该分支**接管响应**：yield 一段文本 + 序列 usage + return
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `kernel-tests/engine-cache-obs-sequence.test.mjs`：
+
+```js
+// 前缀缓存观测 · 三态端到端（2026-09-18 spec §9.1/§9.3）
+// ---------------------------------------------------------------------------
+// 为什么要改 mock：api.mjs 的 MOCK_USAGE 是**常量**且不含 cache 字段，端到端只能上演
+// unsupported（Task 3 已覆盖）。要验证 ok / suspicious 必须让 usage 按请求序号变化。
+// 为什么新开分支而不替换 58 处 `usage: MOCK_USAGE`：全替换改动面大、无收益，且新分支
+// 只在显式设 env 时接管 ⇒ 零回归（不踩 mock 各分支的顺序陷阱）。
+//
+// 本文件锁三件事：
+//   1) **序列按请求序号推进**（不是按轮、不是随机）——三态判定依赖确定性的相邻比较。
+//   2) **ok → ok → suspicious**：第 3 请求请求面与第 2 请求相当（total 均 100000）且
+//      read 从 90000 骤降到 0 ⇒ 必判 suspicious。这是 spec §5 判据 ④ 的端到端证明。
+//   3) **hitRatio 口径**：90000/(10000+90000)=0.900。
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const KERNEL_CLI = fileURLToPath(new URL('../kernel/cli.mjs', import.meta.url))
+// 三段序列：稳定命中 → 稳定命中 → 请求面相当但 read 归零
+const SEQ = 'in:10000,read:90000|in:10000,read:90000|in:100000,read:0'
+const TURNS = 3
+const LINE_RE = /^\[cache\] turn=(\d+) req=(\d+) in=(\d+) read=(\d+) new=(\d+) total=(\d+) hit=(\d+\.\d{3}) st=([a-z]+)/
+
+function spawnKernel(env, dir) {
+  const proc = spawn(process.execPath, [
+    KERNEL_CLI, '--print', '--output-format', 'stream-json', '--input-format', 'stream-json',
+    '--verbose', '--dangerously-skip-permissions', '--add-dir', dir,
+  ], {
+    env: { ...process.env, PONOS_MOCK_API: '1', PONOS_CONFIG_DIR: dir, YFW_HOME: dir, ...env },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  let err = ''
+  const events = []
+  let buf = ''
+  proc.stdout.on('data', (d) => {
+    buf += d
+    const lines = buf.split('\n')
+    buf = lines.pop()
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try { events.push(JSON.parse(line)) } catch { /* 半行跳过 */ }
+    }
+  })
+  proc.stderr.on('data', (d) => err += d)
+  return { proc, events, get err() { return err } }
+}
+
+const waitFor = async (fn, ms = 30_000, step = 100) => {
+  const t0 = Date.now()
+  while (Date.now() - t0 < ms) {
+    if (fn()) return true
+    await new Promise((r) => setTimeout(r, step))
+  }
+  return fn()
+}
+
+test('三态端到端：ok → ok → suspicious（请求面相当 + read 骤降）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cache-seq-'))
+  const k = spawnKernel({ PONOS_CACHE_OBS: '1', PONOS_MOCK_CACHE_SEQ: SEQ }, dir)
+  try {
+    await new Promise((r) => setTimeout(r, 800)) // 等 init
+    // 多轮驱动：每轮等一个 result 再发下一条（result 计数递增，防匹配到旧事件）
+    for (let i = 0; i < TURNS; i++) {
+      const before = k.events.filter((e) => e.type === 'result').length
+      k.proc.stdin.write(JSON.stringify({
+        type: 'user', session_id: 'cache-seq-session',
+        message: { role: 'user', content: `第 ${i + 1} 轮：保持上下文` },
+      }) + '\n')
+      await waitFor(() => k.events.filter((e) => e.type === 'result').length > before)
+    }
+    const lines = k.err.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('[cache]'))
+    assert.ok(lines.length >= TURNS, `应至少 ${TURNS} 行 [cache]（实际 ${lines.length}）\nstderr 尾部=${k.err.slice(-600)}`)
+    const parsed = lines.map((l) => {
+      const m = LINE_RE.exec(l)
+      assert.ok(m, `行形状不符：${l}`)
+      return { req: Number(m[2]), in: Number(m[3]), read: Number(m[4]), total: Number(m[6]), hit: m[7], st: m[8] }
+    })
+    assert.deepEqual(parsed.slice(0, 3).map((p) => [p.in, p.read, p.total]), [
+      [10_000, 90_000, 100_000],
+      [10_000, 90_000, 100_000],
+      [100_000, 0, 100_000],
+    ], `序列应按请求序号推进（实际 ${JSON.stringify(parsed.slice(0, 3))}）`)
+    assert.equal(parsed[0].hit, '0.900', 'hitRatio = 90000/(10000+90000)')
+    assert.equal(parsed[0].st, 'ok', `首个受支持请求无基准 → ok：${lines[0]}`)
+    assert.equal(parsed[1].st, 'ok', `命中稳定 → ok：${lines[1]}`)
+    assert.equal(parsed[2].st, 'suspicious', `请求面相当（100000 vs 100000）+ read 90000→0 → suspicious：${lines[2]}`)
+  } finally {
+    try { k.proc.kill() } catch { /* 已退出 */ }
+    await new Promise((r) => setTimeout(r, 400)) // Windows：等句柄释放再删目录
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+```bash
+node --test kernel-tests/engine-cache-obs-sequence.test.mjs
+```
+
+Expected: FAIL —— `应至少 3 行 [cache]` 或序列断言失败（此时 mock 仍返回不含 cache 字段的 `MOCK_USAGE`，实际 `in=10 read=0`）。
+
+- [ ] **Step 3: 实现**
+
+**3a. `kernel/api.mjs` L245 后**（`const MOCK_USAGE = ...` 之后加模块级计数器）：
+
+```js
+const MOCK_USAGE = { input_tokens: 10, output_tokens: 20 }
+// 前缀缓存观测夹具的请求序号（2026-09-18 spec §9.1）：mockStream 每次调用 = 1 请求，
+// 每请求取一段 ⇒ 严格按请求推进。模块级：同进程内跨请求保持（每个 spawn 新进程自然归零）。
+let mockCacheSeqN = 0
+```
+
+**3b. `kernel/api.mjs` L276 后**（`PONOS_MOCK_LOOP` 分支的 `return` 之后、`PONOS_MOCK_SYS_PROBE` 分支之前插入）：
+
+```js
+  // 前缀缓存观测夹具（2026-09-18 spec §9.1）：PONOS_MOCK_CACHE_SEQ="in:10000,read:90000|..."
+  // 按请求序号取段（越界取最后一段 ⇒ 稳态只需写一段），字段 in/read/new/out。
+  // **为什么新开分支**：MOCK_USAGE 被 58 处 yield 引用，全替换改动面大且无收益；
+  // 本分支只在显式设 env 时接管 ⇒ 零回归。位置在 LOOP 之后（LOOP 有"必须放最顶"的
+  // 优先权），其余分支各有独立 env，互不抢先。
+  if (process.env.PONOS_MOCK_CACHE_SEQ) {
+    const seq = String(process.env.PONOS_MOCK_CACHE_SEQ).split('|')
+    const seg = seq[Math.min(mockCacheSeqN, seq.length - 1)]
+    const u = { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 20 }
+    for (const kv of seg.split(',')) {
+      const idx = kv.indexOf(':')
+      if (idx < 0) continue
+      const key = kv.slice(0, idx).trim()
+      const n = Number(kv.slice(idx + 1)) || 0
+      if (key === 'in') u.input_tokens = n
+      else if (key === 'read') u.cache_read_input_tokens = n
+      else if (key === 'new') u.cache_creation_input_tokens = n
+      else if (key === 'out') u.output_tokens = n
+    }
+    mockCacheSeqN++
+    if (signal?.aborted) throw abortError()
+    yield* streamText(`缓存观测夹具：第 ${mockCacheSeqN} 次请求`, signal)
+    yield { type: 'usage', usage: u }
+    return
+  }
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+```bash
+node --test kernel-tests/engine-cache-obs-sequence.test.mjs
+```
+
+Expected: PASS
+
+- [ ] **Step 5: 回归（**重点：证明 mock 改动零回归**）+ 提交**
+
+```bash
+npm run test:kernel
+git add kernel/api.mjs kernel-tests/engine-cache-obs-sequence.test.mjs
+git commit -m "test(kernel): mock 缓存序列夹具 + 三态端到端（spec §9.1）"
+```
+
+> **回归关切**：`npm run test:kernel` 覆盖 205 个测试文件、其中大量依赖 mock 各分支。本次只在 LOOP 分支后**新增**一个 env 门控分支，未触碰既有 58 处 `MOCK_USAGE`。若出现红，优先怀疑新分支的**位置**（是否抢在某个既有分支之前）——把插入点下移到 `PONOS_MOCK_ANCHOR_PROBE` 之后重试。
+
+---
+
+### Task 5: 失效归因接线（压缩 / 收缩）
+
+> **⚠️ 本任务的定位已被 v2 增补 A1 修订**：本节的 2 处调用点标记**降级为 `causeHint`（命名用）**，主判据改为 `contentEpoch`（见 v2 增补 A1）。代码块保持不变，但**语义变化**——请先读 v2 增补 A1 再执行。
+
+**Files:**
+- Modify: `kernel/engine.mjs`（L385 `[compact]` 日志处；L790 `forceCompact` 后）
+- Test: 复用 Task 2 的归因单测（逻辑层已覆盖）；本任务只加**端到端不破坏**断言（进 Task 6 验收）
+
+**Interfaces:**
+- Consumes: `observer.noteCompaction()` / `observer.noteShrink()`（Task 2）
+- Produces: `[cache]` 行在紧跟压缩/收缩的请求上带 `st=compacted cause=post-compaction|post-aged`
+
+**★ 为什么归因放在 engine 而不放 `compact.mjs:985`**（相对 spec §4 表格第 4 项的偏离）：压缩的 `action` 值域（`none` / `aged` / `pruned` / `summarized`）**在 engine 侧调用点已完整可得**（`compact.mjs` 的 `wire.system('compaction', …)` 落在 `finally` 里，反而拿不到 action）。改 engine 一处即可同时覆盖 `maybeCompact` 与 `forceCompact` 两条路径，改动面更小、归因更准。
+
+- [ ] **Step 1: 先跑既有测试建立基线**
+
+```bash
+npm run test:kernel
+```
+
+Expected: 全绿（记录当前通过数，作为改动前后的对照）
+
+- [ ] **Step 2: 实现（2 处编辑）**
+
+**2a. `kernel/engine.mjs` L385**（`[compact]` 日志的 `try/catch` 之后、`if (r?.usage)` 之前插入）：
+
+```js
+      // 归因标记（2026-09-18 spec §5）：压缩/收缩会打断 KV 前缀缓存，紧随其后的请求
+      // 命中率骤降是**预期性**的，不得报 suspicious。action 值域见 compact.mjs：
+      //   summarized（模型摘要，全量替换历史 → 前缀必然全失效）
+      //   aged / pruned（免费收缩，原地改写历史 → 改写点之后失效）
+      if (r?.action === 'summarized') cacheObs.noteCompaction()
+      else if (r?.action === 'aged' || r?.action === 'pruned') cacheObs.noteShrink()
+```
+
+**2b. `kernel/engine.mjs` L790 后**（forceCompact 的 `try/catch` 收尾之后、`const genAfter = ...` 之前插入）：
+
+```js
+          // 归因标记（溢出兜底的压缩路径，同上）：溢出路径的压缩同样是全量摘要
+          if (r?.action === 'summarized') cacheObs.noteCompaction()
+```
+
+- [ ] **Step 3: 跑测试确认无回归**
+
+```bash
+node --test kernel-tests/engine-cache-obs.test.mjs kernel-tests/engine-cache-obs-sequence.test.mjs
+npm run test:kernel
+```
+
+Expected: 全绿（归因标记默认不改变任何既有行为——`cacheObs` 在开关关闭时也照常记录状态，只是不输出）
+
+- [ ] **Step 4: 手工验证归因字段格式（不依赖真实压缩）**
+
+```bash
+PONOS_MOCK_API=1 PONOS_CACHE_OBS=1 PONOS_MOCK_CACHE_SEQ="in:10000,read:90000|in:100000,read:0" \
+  node kernel/cli.mjs --print --output-format stream-json --input-format stream-json --verbose \
+  --dangerously-skip-permissions 2>&1 | grep -E '^\[cache\]'
+```
+
+（stdin 手动发两条 `{"type":"user",...}` NDJSON；Windows 下可用 `echo '{...}' | node ...`）
+Expected: 第二行带 `st=suspicious`（**无归因**时仍判可疑——证明 `cause` 只在归因命中时出现；若打印出 `cause=` 说明标记被误置）。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add kernel/engine.mjs
+git commit -m "feat(kernel): 压缩/收缩后首个请求的缓存失效归因（spec §5）"
+```
+
+---
+
+### Task 6: 端到端验收（spec §9.3 —— 本设计的唯一成功判据）
+
+**Files:**
+- Create: `scratch/cache-obs-report.mjs`（分析脚本，不入库）
+- Modify: `docs/superpowers/specs/2026-09-18-prefix-cache-observability-design.md`（回填验收结论）
+
+**Interfaces:**
+- Consumes: `logs/kernel-stderr.log` 中的 `[cache]` 行、`~/.yfw/projects/**/*.jsonl`
+- Produces: 结论记录 —— **1,991 次老化改写打断了多少次前缀缓存、代价多少 token**（含"未打断"的反向结论，同样是有效产出）
+
+**★ 为什么这不在 CI 里自动化**：`aged` 的触发依赖"est ≥ clearRatio 门槛 + freeShrink 后回落"，在小夹具上确定性构造需要同时压 `settings.compact.thresholdTokens` 与 `PONOS_TOOL_RESULT_CLEAR_RATIO`，脆弱且与"真实长会话"形态相差甚远。spec §9.3 本就是**跑真实大会话 + 人工判据**的设计，本任务照此执行。
+
+- [ ] **Step 1: 写分析脚本**
+
+创建 `scratch/cache-obs-report.mjs`：
+
+```js
+// 前缀缓存观测验收报告（2026-09-18 spec §9.3）
+// 从 kernel-stderr.log 抽 [cache] 行，产出三态分布 + 失效事件清单 + 与 [compact] 的时序对照。
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+
+const LOG = process.argv[2] || join(homedir(), '.yfw', 'logs', 'kernel-stderr.log')
+const text = readFileSync(LOG, 'utf-8')
+const LINE_RE = /^\[cache\] turn=(\d+) req=(\d+) in=(\d+) read=(\d+) new=(\d+) total=(\d+) hit=(\d+\.\d{3}) st=([a-z]+)(?: cause=([a-z-]+))?(?: drop=(\d+))?/
+
+const rows = []
+const compactTimes = []
+for (const raw of text.split('\n')) {
+  const line = raw.trim()
+  const m = LINE_RE.exec(line)
+  if (m) {
+    const ts = /^\[([\d-T:.Z]+)\]/.exec(line)?.[1] || ''
+    rows.push({ ts, req: +m[2], in: +m[3], read: +m[4], total: +m[6], hit: m[7], st: m[8], cause: m[9] || null, drop: +(m[10] || 0) })
+    continue
+  }
+  if (line.includes('[compact] action=aged') || line.includes('[compact] action=pruned') || line.includes('[compact] action=summarized')) {
+    compactTimes.push({ ts: /^\[([\d-T:.Z]+)\]/.exec(line)?.[1] || '', kind: /action=(\w+)/.exec(line)?.[1] })
+  }
+}
+if (!rows.length) {
+  console.log('无 [cache] 行——请先以 PONOS_CACHE_OBS=1 跑一段时间（开关默认关）。')
+  process.exit(0)
+}
+const by = (k) => rows.filter((r) => r.st === k).length
+console.log(`[cache] 行数：${rows.length}`)
+console.log(`三态分布：ok=${by('ok')} compacted=${by('compacted')} suspicious=${by('suspicious')} unsupported=${by('unsupported')}`)
+const supported = rows.filter((r) => r.st !== 'unsupported')
+if (supported.length) {
+  const hits = supported.map((r) => +r.hit).sort((a, b) => a - b)
+  const q = (p) => hits[Math.min(hits.length - 1, Math.floor(hits.length * p))]
+  console.log(`受支持请求命中率：n=${supported.length} p25=${q(0.25)} p50=${q(0.5)} p75=${q(0.75)}`)
+}
+const sus = rows.filter((r) => r.st === 'suspicious')
+console.log(`\n可疑失效事件：${sus.length}`)
+let waste = 0
+for (const r of sus.slice(0, 40)) {
+  waste += r.drop
+  console.log(`  ${r.ts} req=${r.req} read ${r.read + r.drop}→${r.read}（降 ${r.drop}）total=${r.total}`)
+}
+console.log(`前 ${Math.min(sus.length, 40)} 起合计损失缓存读 ${waste} token（按 cacheReadRatio 折算成本）`)
+console.log(`\n同期 [compact] 事件：aged=${compactTimes.filter((c) => c.kind === 'aged').length} ` +
+  `pruned=${compactTimes.filter((c) => c.kind === 'pruned').length} summarized=${compactTimes.filter((c) => c.kind === 'summarized').length}`)
+console.log('\n判据：若 suspicious 事件的时间戳紧邻（±3s）某条 [compact] action=aged，说明归因未覆盖该路径'
+  + '（应判 compacted）——请检查 Task 5 的标记是否落在该路径上。')
+```
+
+- [ ] **Step 2: 跑真实会话采集数据（≥30 分钟）**
+
+以 `PONOS_CACHE_OBS=1` 正常使用应用（或长任务），随后：
+
+```bash
+node scratch/cache-obs-report.mjs
+```
+
+Expected: 输出三态分布 + 可疑失效清单。**当日志中 `[compact] action=aged` 计数为 0 时，本步应换一个能触发老化的长会话**（老化需上下文超过 clearRatio 门槛）。
+
+- [ ] **Step 3: 反向演练（证明观测不是恒绿）**
+
+```bash
+# 把归因关掉（临时注释 Task 5 的 noteShrink 调用）→ 预期 post-aged 消失、suspicious 增多
+# 复原后：把 PONOS_CACHE_MIN_READ 设为 0 运行 → 预期误报激增（证明阈值有效）
+PONOS_CACHE_OBS=1 PONOS_CACHE_MIN_READ=0 <正常启动方式>
+```
+
+Expected: 两条反向演练都产出**预期的变化**。若关掉归因后 `suspicious` 数量**不变**，说明归因链路未生效或该会话未发生收缩——属必须查明的阻塞。
+
+- [ ] **Step 4: 回填结论到 spec**
+
+在 spec 末尾追加「## 验收结论（YYYY-MM-DD）」小节，记录：三态分布、可疑失效次数与 token 损失、是否观察到 `cause=post-aged`。
+**必须如实记录反向结论**——若老化未打断缓存（例如端点按块缓存、或无 `suspicious`），那就是有价值的结论（说明 1,991 次免费收缩的延迟代价可忽略），照写不误。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add docs/superpowers/specs/2026-09-18-prefix-cache-observability-design.md
+git commit -m "docs(spec): 回填前缀缓存观测端到端验收结论（spec §9.3）"
+```
+
+---
+
+## Self-Review
+
+**1. Spec 覆盖**
+
+| spec 章节 | 覆盖任务 |
+|---|---|
+| §3.1 `cacheStats` 数据契约 | Task 1 |
+| §3.2 观测器状态机 | Task 2 |
+| §4 埋点位置 6 项 | #1/#2/#3/#5 → Task 3；#4 归因 → Task 5（**偏离**：改 engine 而非 compact.mjs，理由见 Task 5；**再修订**：主判据改 `contentEpoch`，见 v2 增补 A1）；#6 perf 计数 → **未覆盖**（见下方"已知缺口"） |
+| §5 三态判定表 | Task 2（单测全表）+ Task 4（端到端 ④） |
+| §6.1 stderr 行 / §6.2 turnStats | Task 3 |
+| §6.3 `[perf]` 行计数 | **未覆盖**（见"已知缺口"） |
+| §7 开关与配置（4 项） | Task 3（4 项 env 全部接线）+ Task 3 Step 3 的惰性读测试 |
+| §8 边界与坑 7 项 | #1 覆盖语义 → Task 3 Step 3e + 3b 注释；#2 摘要请求 → **未覆盖**（见"已知缺口"）；#3 非缓存端点 → Task 1/2/3；#4 lane → **未覆盖**；#5 取消 → Task 3（`pendingCacheUsage` 无 usage 时不推进）；#6 首轮无基准 → Task 2 用例；#7 脱敏 → 天然满足（只有计数） |
+| §9.1 单测 | Task 1/2/3/4 |
+| §9.2 实测回归 | Task 6 Step 1（`scratch/cache-obs-report.mjs`）+ 既有两个探针 |
+| §9.3 端到端判定 | Task 6 |
+| §10 不做 | Global Constraints 已声明 |
+| **v2 A1** epoch 归因判据 | Task 2（接口+4 个新单测）+ Task 3（`observe(u,{epoch})` 接线）+ Task 5（降级为 causeHint）+ A1 的 `snapshot().rewrites/epochDelta` |
+| **v2 A2** 服务端压缩兜底 | A2（`classifyCache` 追加判据⑦ + 单测） |
+| **v2 A3** H2/H3 假设 | Task 6 Step 1（脚本增两项输出）+ Step 2（keepRecent 三档控制实验） |
+| **v2 A4** usage 字段防御 | Task 1 增补（`normalizeUsage` 两条 fallback + 单测） |
+| **v2 A5** 行格式正则 | Task 3 Step 1 / Task 4 Step 1 的 `LINE_RE` 替换 |
+| **v2 A6** 不采纳项 | 已归纳，含远程压缩 / 记录时截断 / 只警告不禁用 / 保留预算 |
+
+**2. 已知缺口（刻意留到后续，非本计划范围）**
+
+- `[perf]` 行 `cacheHit=`/`cacheMiss=` 计数（spec §4 #6、§6.3）：属"可选"项，价值低于 `[cache]` 行本身；待 §9.3 数据表明需要"步级对齐"时再补。
+- 摘要请求用途标记（spec §8.2 的 `kind=summary`）：需在 `compact.mjs` 摘要调用点透传上下文到观测器，跨层改动大；首版摘要请求会被当作普通请求观测（表现为一次 `suspicious`，可接受，因归因已把紧随其后的主请求判为 `compacted`）。
+- lane 请求（spec §8.4）：lane 走独立 compactor（`engine.mjs:1596`），首版不观测（`cacheObs` 只在主循环接线），符合"首版仅观测主会话"的取舍。
+
+**3. 类型一致性核对**
+
+- `cacheStats` 返回 `{ input, read, create, total, supported, hitRatio }` —— Task 2 的 `classifyCache` 全程按此访问（`cur.supported` / `prev.read` / `prev.total`），Task 3 落行按 `r.cur.input` 等访问 ✔
+- `classifyCache` 返回 `{ state, reason, drop }` —— Task 2 单测与 Task 3 落行（`r.state` / `r.reason` / `r.drop`）一致 ✔
+- `observe` 返回 `{ state, reason, drop, cur, seq }` —— Task 3 落行用 `r.seq`（**不是** `r.requests`；`requests` 只在 `snapshot()` 里）✔
+- `state` 四值 `ok|suspicious|compacted|unsupported` —— Task 3 正则、Task 4 正则、Task 6 脚本三处取值一致 ✔
+- `cause` 二值 `post-compaction|post-aged` —— Task 2 断言、Task 3 正则 `(post-compaction|post-aged)`、Task 6 正则一致 ✔
+- `cacheObs.snapshot()` 字段名 `{ requests, ok, suspicious, compacted, unsupported, readTotal, inputTotal, hitRatio }` —— Task 2 单测与 Task 3 turnStats 一致 ✔
+- **v2 新增字段核对**：`observe(rawUsage, { epoch, causeHint })` —— A1 定义、Task 3 接线（`cacheObs.observe(u, { epoch: contentEpoch() })`）、A1 单测三处一致 ✔；`snapshot()` 新增 `rewrites` / `epochDelta` —— A1 定义、A3 Task 6 脚本消费一致 ✔；`reason` 全集见 A5，`cause` 四值（`post-compaction|post-aged|history-rewrite|server-compact`）在 A1/A2 产出、A5 正则、Task 6 脚本三处一致 ✔
+- **v2 易错点**：A1 中 `hint` 是**一次性**的（用后置 `null`），故 Task 5 的 `noteShrink()` 只在**紧邻的下一个请求**上生效；若实施时把它改成持久状态，会连续多请求标 `post-aged`，掩盖真实失效。A1 单测第 3 例（"标签不是免报凭证"）专门锁这一点 ✔
+
+**4. 行号漂移提示**
+
+本计划的 `kernel/engine.mjs` 行号基于 2026-09-18 的 `e7174e2`。每步实施前请以**代码内容**（old_string）而非行号定位；Task 3 与 Task 5 修改同一文件，务必先完成 Task 3 全部 7 处编辑（3a–3g）再进 Task 5。
+
+## v2 增补：OpenAI 官方资料对照后的技术路线细化（**权威，覆盖前文冲突处**）
+
+> 本节基于 2026-09-18 对 OpenAI Codex 源码 / 配置文档 / Responses API 与 GPT-5.1-Codex-Max 发布资料的对照得出。**凡与前文任务步骤冲突者，以本节为准**；前文未被本节修订的部分继续有效。
+
+### A. 对照结论（采纳 / 不采纳，逐条给理由）
+
+| # | OpenAI 做法 | 出处 | 我方现状 | 裁定 |
+|---|---|---|---|---|
+| 1 | `history_version`：**每次重写历史即递增**（"incremented whenever history is rewritten, such as during compaction or rollback, **to invalidate snapshots**"） | `context_manager/history.rs:73`（DeepWiki 3.5.1） | **已有等价物**：`contentEpoch`（`context.mjs:143-146`）——"任何原地改写历史内容后必须 +1（估算记忆的唯一失效源）"，且 `request-face.mjs:174` 已把它当失效保险丝（"刻意不依赖'已证明无第三处改写点'"） | **✅ 采纳**：归因主判据改用 epoch（见 A1，替换 Task 5 的调用点标记） |
+| 2 | 裁剪时"**从开头裁**以保前缀缓存"：`// Trim from the beginning to preserve cache (prefix-based) and keep recent messages intact.` | `compact.rs:110`（源码原文） | `ageOutToolResults` 同样是**前段原地改写**（`compact.mjs:59`），`keepRecent` 默认 2 | **⚠️ 采纳为待验证假设**：严格最长公共前缀（LCP）语义下，前段改写损失最大——与其注释相反。我方观测层正是裁决此事的仪器（见 A3） |
+| 3 | `TruncationPolicy` 在**记录时**按条目类型截断 + `tool_output_token_limit = 10000`（**tokens/条**，配置项） | `example-config.md`；`history.rs:118` | `resolveToolResultBudget`（`compact.mjs:179`）单位是**字节**、窗口/8、clamp[4000,24000]，且在**老化时**清除而非记录时预算 | **⛔ 不采纳（超出本设计范围）**：这是压缩**策略**改动，本设计只观测。但已成为**第三份**独立证据（Codex 记录时预算 / billion-context `absorb` / 我方 aged）——记为独立议题 |
+| 4 | Local vs **Remote** 压缩双轨：`should_use_remote_compact_task(provider) = provider.is_openai()`，服务端 `/responses/compact` | `compact.rs:113`；DeepWiki | 我方 `detectProtocol()` **仅返回 `anthropic`**（`api.mjs:112-114`），**全本地压缩** | **✅ 采纳为观测前提**：若端点自带压缩，则本地无 `action`、epoch 不变 → 需兜底判据（见 A2） |
+| 5 | 保留预算：本地 `COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000`；Remote V2 `RETAINED_MESSAGE_TOKEN_BUDGET = 64_000` | `compact.rs:63`；`compact_remote_v2.rs:76` | 我方为 9 节 checkpoint + `REPLAYABLE_TOOLS` 白名单 + `keepRecent` | **⛔ 不采纳**（压缩策略）。仅记录为量级参考 |
+| 6 | 多次压缩降精度 → **只警告不禁用**（"Long threads and multiple compactions can cause the model to be less accurate"） | `compact.rs` 末尾 `WarningEvent` | 我方 `compact.mjs:548` **sealed 明令禁止**对摘要再摘要（依据 re-compaction penalty 实测 15.9pp） | **⛔ 不采纳**：我方判据更硬。仅记为"警告式"产品行为备选 |
+| 7 | `replace_compacted_history` 后调 `recompute_token_usage()` | `compact.rs:411-426` | `freeShrink` 后重算 `context.estimate`（`compact.mjs:1013`）+ `bumpContentEpoch` 失效全部估算记忆 | **✅ 已对齐**（正是我方历史事故"est < 阈值 → 压缩 0 次、每轮多付 65s"的防线） |
+| 8 | `ensure_call_outputs_present` / `remove_orphan_outputs` 归一化工具配对 | `context_manager/normalize.rs` | `patchOrphanToolUses`（纯派生不入日志）+ 切点纪律"tool-call/result 配对不可拆" | **✅ 已对齐** |
+| 9 | usage 缓存字段：Chat Completions 用 `prompt_tokens_details.cached_tokens`；Responses API 用 `input_tokens_details.cached_tokens` | 官方 Prompt caching 文档 | `normalizeUsage`（`api.mjs:117-123`）**只认** `cache_read_input_tokens`，取不到时 `?? 0` | **✅ 采纳（防御硬化）**：见 A4。当前 latent（我方仅 Anthropic 协议），但一行成本、且同类集成 bug 有独立先例（strands-agents/harness-sdk#2407、comet-ml/opik#6971、unslothai/unsloth#5670） |
+
+### A1. 归因判据改造：epoch 优先（**替换 Task 5 的主判据**）
+
+**为什么改**：实测确认 `compactCount` / `replaceGeneration` **看不见** aged/pruned——`session.mjs:146`、`:408` 均只在 **summary 落地**时 `+1`；而 aged/pruned 是**改块内容不改数组结构**（`request-face.mjs:174` 原话）。因此：
+- 调用点标记（Task 5 原方案）只能覆盖**我手工挑中的 2 处**，未来新增改写点必然漏；
+- `contentEpoch` 按代码库自身设计"**紧邻改写点、可证无遗漏**"，且已被 request-face 当保险丝使用 ⇒ 它才是正确的仪器。
+
+**语义切分（关键）**：**epoch 决定"是否预期性失效"（可靠判据），`causeHint` 只决定"叫什么名字"（尽力标签）**。二者解耦，故偶发漏标只会让 `cause` 退化为 `history-rewrite`，**不会**把预期性失效误报成 `suspicious`。
+
+**Task 2 接口替换**（`createCacheObserver`）：
+
+```js
+// observe 签名扩展：epoch = 进程内容纪元（contentEpoch()），causeHint = 归因标签提示
+observer.observe(rawUsage, { epoch = null, causeHint = null } = {}) → { state, reason, drop, cur, seq }
+```
+
+实现要点（替换 Task 2 Step 3 中 `observe` 的函数体）：
+
+```js
+    let lastEpoch = null
+    let hint = null
+    return {
+      noteCompaction() { hint = 'post-compaction' },
+      noteShrink() { hint = 'post-aged' },
+      observe(rawUsage, { epoch = null, causeHint = null } = {}) {
+        const cur = cacheStats(rawUsage)
+        // ★ 判据来自 epoch：任何原地改写（aged/pruned/未来新增）都会 +1
+        const rewritten = epoch !== null && lastEpoch !== null && epoch !== lastEpoch
+        const cause = rewritten ? (causeHint || hint || 'history-rewrite') : null
+        const r = classifyCache({ prev, cur, cause, ...cfg })
+        stats.requests++
+        stats[r.state] += 1
+        stats.readTotal += cur.read
+        stats.inputTotal += cur.input
+        if (rewritten) { stats.rewrites = (stats.rewrites || 0) + 1; epochDelta += epoch - lastEpoch }
+        prev = cur
+        if (epoch !== null) lastEpoch = epoch
+        hint = null // 标签一次性：用在紧接着的第一个请求上
+        return { ...r, cur, seq: stats.requests }
+      },
+      // 供 Task 6 度量"改写频度 × 缓存损失"的联合指标
+      snapshot() { /* 原字段 + rewrites, epochDelta */ },
+    }
+```
+
+**Task 2 追加单测**（epoch 语义）：
+
+```js
+test('observer：epoch 变化 → compacted（即使无 causeHint，也不得误报 suspicious）', () => {
+  const obs = createCacheObserver()
+  obs.observe(U(10_000, 90_000), { epoch: 1 })
+  const r = obs.observe(U(100_000, 0), { epoch: 2 }) // 请求面相当 + 骤降 + epoch 变了
+  assert.equal(r.state, 'compacted')
+  assert.equal(r.reason, 'history-rewrite', '无标签时退化为通用标签，而非 suspicious')
+})
+
+test('observer：epoch 未变 + 无标签 → suspicious（真未知失效）', () => {
+  const obs = createCacheObserver()
+  obs.observe(U(10_000, 90_000), { epoch: 7 })
+  const r = obs.observe(U(100_000, 0), { epoch: 7 })
+  assert.equal(r.state, 'suspicious')
+  assert.equal(r.reason, 'cache-drop')
+})
+
+test('observer：causeHint 只影响命名，不影响判据（epoch 未变时不得因 hint 免报）', () => {
+  const obs = createCacheObserver()
+  obs.observe(U(10_000, 90_000), { epoch: 3 })
+  obs.noteShrink() // 有标签但 epoch 没变（改写实际未发生/已被别处消费）
+  const r = obs.observe(U(100_000, 0), { epoch: 3 })
+  assert.equal(r.state, 'suspicious', '标签不是免报凭证——判据只认 epoch')
+})
+
+test('observer：无 epoch（null）时退化为原行为（向后兼容）', () => {
+  const obs = createCacheObserver()
+  obs.observe(U(10_000, 90_000))
+  assert.equal(obs.observe(U(100_000, 0)).state, 'suspicious')
+})
+```
+
+**Task 3 接线替换**（`flushCacheObs` 内 `cacheObs.observe(u)` 一行改为）：
+
+```js
+      try { r = cacheObs.observe(u, { epoch: contentEpoch() }) } catch { return }
+```
+
+并在 `engine.mjs:17` 的既有 `contentEpoch` 导入处**确认已在**（实测已导入，无需新增）。
+
+**Task 5 修订**：原「2 处调用点标记做主判据」**降级为 `causeHint`（标签）**，代码不变但语义变化——
+- `r?.action === 'summarized'` → `cacheObs.noteCompaction()`
+- `r?.action === 'aged' || r?.action === 'pruned'` → `cacheObs.noteShrink()`
+主判据由 epoch 承担。**Task 5 Step 4 的手工验证期望随之修正**：无归因时若 epoch 未变，仍应输出 `st=suspicious`（原期望不变）；若 epoch 变了则应输出 `st=compacted`。
+
+**已知限制（必须记录，勿掩盖）**：`contentEpoch` 是**进程级**（`context.mjs:143` 模块级 `let`），非按会话隔离。故 lane / 子 Agent 的改写会让主会话的请求看起来"被改写"⇒ 偏保守（多报 `compacted`、少报 `suspicious`）。**误差方向偏向静默而非假警**，可接受；`snapshot()` 增记 `rewrites` / `epochDelta` 以便事后识别过报。
+
+### A2. 服务端压缩兜底（**新增判据**）
+
+若端点自带压缩（OpenAI 侧 `/responses/compact`、或任何代理层改写），则本地既无 `[compact] action` 也无 epoch 变化，但**输入面会骤降**——此时不得报 `suspicious`。
+
+**`classifyCache` 追加一条（置于归因判定之后、骤降判定之前）**：
+
+```js
+  // ⑦ 服务端压缩兜底：请求面大幅收缩且缓存读同向下降 ⇒ 判预期性（非本地动作所致）
+  const SHRINK_RATIO = Number(process.env.PONOS_CACHE_SERVER_SHRINK || 0.7)
+  if (prev?.supported && cur.supported && prev.total > 0
+      && cur.total < prev.total * SHRINK_RATIO && cur.read <= prev.read) {
+    return { state: 'compacted', reason: 'server-compact', drop }
+  }
+```
+
+**追加单测**：
+
+```js
+test('classifyCache：请求面骤降（服务端压缩）→ compacted 而非 suspicious', () => {
+  const prev = { input: 10_000, read: 90_000, create: 0, total: 100_000, supported: true, hitRatio: 0.9 }
+  const cur = { input: 20_000, read: 10_000, create: 0, total: 30_000, supported: true, hitRatio: 0.333 }
+  const r = classifyCache({ prev, cur })
+  assert.equal(r.state, 'compacted')
+  assert.equal(r.reason, 'server-compact')
+})
+```
+
+> 与 Task 2 既有用例「请求面大幅缩小 → ok」的关系：该用例 `cur.read=20_000 > 0` 但**签名不同**——那条的 `cur.read` 相对下降幅度小于本条触发条件（本条额外要求 `cur.read <= prev.read`，两条都成立时**本条优先**）。实施时把那条用例的期望按实际顺序复核一遍，若冲突以本条（⑦，插在骤降判定之前）为准。
+
+### A3. Task 6 假设锐化（把 OpenAI 的注释变成可裁决的实验）
+
+原 Task 6 只有一条假设（H1）。现补两条，**H2/H3 直接裁决 Codex 源码注释（对照表 #2）的正确性**：
+
+| 假设 | 内容 | 判据 |
+|---|---|---|
+| H1（原） | 老化后首次请求命中率骤降 | 出现 `st=compacted cause=post-aged` |
+| **H2（新）** | **前段原地改写的缓存损失随 `keepRecent` 减小而增大** | 控制实验：`PONOS_TOOL_RESULT_KEEP_RECENT ∈ {2, 8, 20}`（`compact.mjs:192` 已支持）各跑等长会话，比较 `ok` 占比与 `suspicious` 的 `drop` 总量。**若损失随 keepRecent 增大而显著下降** ⇒ 证实"改写点越靠后越保前缀"，Codex 注释的表述在我的语义下不成立、但其操作建议（保留近期）方向正确 |
+| **H3（新）** | **稳态命中率上限 = 最老占位符之前的比例**；`keepRecent=2` + 持续工具调用时，命中率应趋近"仅 system 前缀" | 在报告的命中率时序上拟合：若 p50 随会话推进**单调下滑**而非平坦，即证实（对照探针 2 的**轮级**数据是平坦的 p50≈0.96——那正说明轮级口径看不见此效应，per-request 口径才看得见） |
+
+**Task 6 Step 1 脚本追加两项输出**：① 按 `req` 序号窗口的命中率趋势（验证 H3）；② `snapshot().rewrites` / `epochDelta`（识别 A1 的进程级过报）。并在报告里显式对比 `keepRecent` 各档（H2）。
+
+### A4. Task 1 增补：usage 缓存字段防御（一行式硬化，**替换 Task 1 Step 3 的上下文**）
+
+`normalizeUsage`（`api.mjs:117-123`）当前：
+
+```js
+function normalizeUsage(u = {}) {
+  const cacheRead = u.cache_read_input_tokens ?? 0
+  return {
+    input_tokens: u.input_tokens ?? u.prompt_tokens ?? 0,
+    output_tokens: u.output_tokens ?? u.completion_tokens ?? 0,
+    cache_read_input_tokens: cacheRead ?? 0,
+    cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
+```
+
+改为（**只加两条 fallback，不动既有语义**）：
+
+```js
+function normalizeUsage(u = {}) {
+  // 缓存读字段跨协议别名（2026-09-18：对照 OpenAI 官方字段后补齐）：
+  //   Anthropic / DeepSeek：cache_read_input_tokens
+  //   OpenAI Chat Completions：prompt_tokens_details.cached_tokens
+  //   OpenAI Responses API：input_tokens_details.cached_tokens
+  // 缺此 fallback 时，OpenAI 形态的端点在观测层会被判 supported=false（"端点无缓存"），
+  // 从而整体静默——观测层对此完全盲区。同类集成 bug 先例：
+  // strands-agents/harness-sdk#2407、comet-ml/opik#6971、unslothai/unsloth#5670。
+  const cacheRead = u.cache_read_input_tokens
+    ?? u.prompt_tokens_details?.cached_tokens
+    ?? u.input_tokens_details?.cached_tokens
+    ?? 0
+```
+
+**Task 1 增补单测**（进 `kernel-tests/cache-stats.test.mjs` 或另建 `api-usage-normalize.test.mjs`——`normalizeUsage` 未导出，若需直测则在 `api.mjs` 加 `export`（当前为模块私有，按需最小改动）；**首选**经 `cacheStats` 间接断言，避免为测试扩大导出面）：
+
+```js
+test('cacheStats：OpenAI 形态的 cached_tokens 已被 normalizeUsage 归一（跨协议别名）', () => {
+  // 经 normalizeUsage 后的形态：read 已落到 cache_read_input_tokens
+  const s = cacheStats({ input_tokens: 10_000, cache_read_input_tokens: 90_000 })
+  assert.equal(s.supported, true)
+  assert.equal(s.hitRatio, 0.9)
+})
+```
+
+> 实测依据：我方 `detectProtocol()`（`api.mjs:112`）**仅返回 `anthropic`**，故此项为 **latent 防御**（非当前 P0）；但 OpenAI 兼容端点经代理层透传时字段形态即为此，且 `normalizeUsage` 已有 `?? prompt_tokens` 一类宽容先例，补齐别名与该设计意图一致。
+
+### A5. 行格式权威正则（替换 Task 3 Step 1 与 Task 4 Step 1 中的 `LINE_RE`）
+
+`cause` 值域随 A1/A2 扩展为四值，Task 3/Task 4 原正则只允许 `(post-compaction|post-aged)`，**必须按此替换**，否则新标签一出现测试即红：
+
+```js
+// 末尾锚点用 (?![\s\S])（= 已到输入末尾）而非 $ —— 语义上更严格（$ 允许末尾换行前匹配），
+// 且避免正则源码里出现"美元符号紧跟单引号"的序列（该序列在部分编辑器/工具链里会被吞掉，
+// 本计划文档即因此踩过一次：见下方修订说明）。
+const LINE_RE = new RegExp(
+  '^\\[cache\\] turn=(\\d+) req=(\\d+) in=(\\d+) read=(\\d+) new=(\\d+) total=(\\d+)' +
+  ' hit=(\\d+\\.\\d{3}) st=(ok|suspicious|compacted|unsupported)' +
+  '(?: cause=(post-compaction|post-aged|history-rewrite|server-compact))?(?: drop=(\\d+))?(?![\\s\\S])',
+)
+```
+
+> **修订说明（务必替换，勿沿用 Task 3/Task 4 原正则）**：Task 3 Step 1 与 Task 4 Step 1 中给出的 `LINE_RE` 结尾用了美元符号锚点，且其 `cause` 值域只有两值 `post-compaction` / `post-aged`。本节版本是**权威版本**：① `cause` 扩为四值；② 末尾锚点改为 `(?![\s\S])`（语义更严格：不允许末尾换行前匹配）。
+
+`classifyCache` 的 `reason` 全集（用于 Task 3 落行与 Task 6 脚本，**不直接进 `cause` 字段**）：`endpoint-no-cache` / `first-supported` / `cache-drop` / `stable` / `minor-drop` / `cache-fields-vanished` / `history-rewrite` / `server-compact`。落行规则不变：仅当 `state === 'compacted'` 时追加 ` cause=<reason>`。
+
+### A6. 不采纳项的理由归纳（避免后续被误引入）
+
+- **远程/服务端压缩（对照表 #4/#5）**：我方仅 Anthropic 协议、全本地压缩；引入需先有 OpenAI 系 wire，属独立工程。**但**其存在性推动了 A2 的兜底判据。
+- **记录时按类型截断（#3）**：是**策略**改动（改 token 回收时机与保真度），与本设计"只观测不调参"的边界冲突。三份独立证据已足够立项，但应作为**独立设计**（与"可逆压缩/原文存档"同批），不在本计划内。
+- **只警告不禁用（#6）**：我方 sealed 有 15.9pp 实测依据，比警告更硬；降级为警告会放开已知有损路径。
+- **`COMPACT_USER_MESSAGE_MAX_TOKENS` / `RETAINED_MESSAGE_TOKEN_BUDGET`（#5）**：属保留预算调参，同样超出本设计范围。
+
+---
+
+## Execution Handoff
+
+计划已保存至 `docs/superpowers/plans/2026-09-18-prefix-cache-observability.md`。两种执行方式：
+
+1. **Subagent-Driven（推荐）** —— 每个任务派一个全新子代理，任务间由我复核，迭代快、上下文不串味。
+2. **Inline Execution** —— 在本会话内按 `executing-plans` 批量执行，带检查点复核。
+
+**选哪种？**

@@ -114,13 +114,55 @@ export function detectProtocol(env = process.env) {
 }
 
 // usage 归一化：扩展 cache_read/cache_creation（deepseek 系）
+//
+// 【2026-09-18 P0-1】补**跨协议**缓存字段别名 + 口径归一。此前只认
+// `cache_read_input_tokens`，端点若回传别的形态，命中数被读成 0，且**全程静默**：缓存观测
+// （stats 命中率）、成本统计、预算熔断同时失真——所有缓存优化都变成在黑箱里做，这是整个
+// "前缀缓存"议题的验收前提。
+// 三家形态（按回传字段区分，不靠 baseUrl 猜）：
+//   ・Anthropic：`input_tokens` + `cache_read_input_tokens`（input **不含** read 部分）
+//   ・DeepSeek 原生：`prompt_tokens` + `prompt_cache_hit_tokens`
+//   ・OpenAI 形态：`prompt_tokens` + `prompt_tokens_details.cached_tokens`
+//                 （Responses API 为 `input_tokens_details.cached_tokens`）
+// 后两者的 `prompt_tokens` **都含**命中部分（hit 是它的子集）⇒ 归一到 Anthropic 语义时
+// 必须把命中数从 input 里扣掉，否则命中部分被按全价再计一次（重叠计费、成本虚高）。
+// 「含/不含」的判定只看用了哪个顶层字段：用 `prompt_tokens` 者一律含，用 `input_tokens` 者不含
+// （Anthropic 官方语义），这样混合形态（`prompt_tokens` + 显式 cache_read）也能正确归位。
+//
+// 与 `docs/superpowers/plans/2026-09-18-prefix-cache-observability.md`（worktree 备份态
+// `.preworktree`）v2 增补 **A4** 的关系：A4 只列了 OpenAI 两条别名、并主张"不动既有语义"；
+// 本实现**合并**其 OpenAI 别名（勿重复添加），并额外做了 ① DeepSeek 原生别名
+// ② 上面这层口径归一——因为按 A4 原样接线时，OpenAI/DeepSeek 形态仍会重叠计费（A4 的
+// "不动语义"在只考虑 Anthropic 时成立，跨形态则不成立）。两处合并后为完整集合。
+// 与 `docs/superpowers/plans/2026-09-18-prefix-cache-observability`（**已在 worktree 分支
+// `feat/prefix-cache-observability` 实施完毕**，33 提交）的关系——三处必须拉平：
+//   ① **OpenAI 两条别名**（A4 / 该分支 Task 1）：与本实现完全一致，勿重复添加。
+//   ② **`cache_fields_reported` 存在性信号**（该分支 Task 1 ★）：本实现**照抄保留**。它与
+//      "值为 0"完全不同：缺此信号，判定层无法区分「本轮真未命中（read=0）」与「端点根本
+//      没有该字段」，而二者处置相反（前者是 suspicious 候选，后者必须静默）。**必须先取
+//      原始值再兜 0**——`?? 0` 一旦在前，存在性会在到达判定层前被销毁。
+//   ③ **口径归一（扣减）**：该分支评审 **Major-2** 已识别此问题但裁定「只记录、本次不修」
+//      （理由：权威规格明令"不动既有语义"，口径变更须先有上游确认与观测对账）。本实现
+//      **经用户批准做了归一**，故此处与那个裁定**有意不同** ⇒ **合并该分支时须在此对账**：
+//      保留扣减，并把 Major-2 的"已修"结论回填到其评审记录（其描述的现象——hitRatio 被
+//      压低、total 偏大——正是本条修复的对象）。
 function normalizeUsage(u = {}) {
-  const cacheRead = u.cache_read_input_tokens ?? 0
+  const inputContainsCacheRead = u.input_tokens == null && u.prompt_tokens != null
+  const promptTokens = u.input_tokens ?? u.prompt_tokens ?? 0
+  const cacheReadRaw = u.cache_read_input_tokens
+    ?? u.prompt_cache_hit_tokens
+    ?? u.prompt_tokens_details?.cached_tokens
+    ?? u.input_tokens_details?.cached_tokens
+  const cacheCreateRaw = u.cache_creation_input_tokens
+  const cacheRead = cacheReadRaw ?? 0
   return {
-    input_tokens: u.input_tokens ?? u.prompt_tokens ?? 0,
+    input_tokens: inputContainsCacheRead ? Math.max(0, promptTokens - cacheRead) : promptTokens,
     output_tokens: u.output_tokens ?? u.completion_tokens ?? 0,
-    cache_read_input_tokens: cacheRead ?? 0,
-    cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
+    cache_read_input_tokens: cacheRead,
+    cache_creation_input_tokens: cacheCreateRaw ?? 0,
+    // ★ 存在性信号（与"值为 0"完全不同）：端点是否**上报**了缓存计量字段。
+    //   必须先取原始值再兜 0（理由见上 ②）——顺序颠倒即销毁该信号。
+    cache_fields_reported: cacheReadRaw !== undefined || cacheCreateRaw !== undefined,
   }
 }
 
@@ -128,12 +170,15 @@ function normalizeUsage(u = {}) {
 // 累计快照"，且常只带 output_tokens（input 在 message_start 已报全量）；逐字段直接
 // 覆盖会丢 input/cache，逐次相加会把累计值重复计。按字段取最大值即得正确终值，
 // 同时天然把网关重发/分段多次 delta 的同值快照去重。
+// 注意：第 5 键 cache_fields_reported 必须**显式合并**（取或）——它是布尔，漏掉即
+// `undefined` 传染，下游 cacheStats 退化为旧启发式（该分支 Task 1 已踩过此坑）。
 function mergeCumulativeUsage(a, b) {
   return {
     input_tokens: Math.max(a.input_tokens, b.input_tokens),
     output_tokens: Math.max(a.output_tokens, b.output_tokens),
     cache_read_input_tokens: Math.max(a.cache_read_input_tokens, b.cache_read_input_tokens),
     cache_creation_input_tokens: Math.max(a.cache_creation_input_tokens, b.cache_creation_input_tokens),
+    cache_fields_reported: Boolean(a.cache_fields_reported || b.cache_fields_reported),
   }
 }
 
@@ -154,7 +199,13 @@ export function createAnthropicParser() {
   // **从未**解析成功过（这正是桥侧"散文兜底"存在的原因）。与 text 共用同一切分器，
   // 标记不再被切开；模型耗时/推理内容本身不变，只是帧粒度变粗（默认 16 字）。
   let thinkBuf = ''
-  let usage = { input_tokens: 0, output_tokens: 0 }
+  let usage = normalizeUsage({})
+  // ↑ 初值必须含全部 4 字段（经 normalizeUsage 取单一真源），不能写成 {input,output} 两字段：
+  // 【2026-09-18 P0-1 顺带修的缺陷】某些兼容端点只发 message_delta.usage、不发
+  // message_start.message.usage，此时 mergeCumulativeUsage 与两字段初值做
+  // Math.max(undefined, n) ⇒ **NaN 贯穿**命中数与写缓存数，且 NaN 参与的成本比较恒 false，
+  // 预算守卫会静默失效（不报警、不拦截）。此前未暴露：Anthropic 官方与 DeepSeek /anthropic
+  // 都发 message_start.usage（normalizeUsage 会整体替换成 4 字段），掩盖了这条路径。
   let lastUsageKey = null // 最近一次已 push 的 usage 快照指纹（同值快照去重）
   let stopReason = null
   return {
@@ -1407,17 +1458,35 @@ function isEffortRejection(err) {
   return (status === 400 || status === 422) && /reasoning_effort|thinking|effort/i.test(msg)
 }
 
+// 是否给 system 打 ephemeral 缓存标记（P0-2，2026-09-18）。
+//
+// 为什么不再用单一手工 env 决定：两家端点的语义**相反且互斥**——
+//   ・Anthropic **官方**：不显式标记 ⇒ 完全不缓存（0 命中，缓存收益全丢）
+//   ・DeepSeek 兼容端点：**忽略** cache_control（官方兼容性表明确列为"忽略"），缓存自动
+//     生效；打了没用，还可能撞"未知字段 400"再触发一次"去标记重发"（多一次往返 + 重复 prefill）
+// 多端点混用下，`PONOS_PROMPT_CACHE` 无论默认开/关都必然对一半端点不合适。改按能力判定：
+//   ① `PONOS_PROMPT_CACHE` 显式 '1'/'0' ⇒ **一律以它为准**（保留既有手工契约与既有测试）
+//   ② 未设 ⇒ 只对"必须显式标记"的端点自动开启（Anthropic 官方 / Bedrock / Vertex）
+//   ③ 其余端点（DeepSeek、本地 vLLM、未知网关）⇒ 保持关闭 = **原有默认行为不变**（零回归）
+// 刻意**不**用 baseUrl 通配去猜"是不是 Anthropic 兼容"：第三方网关的缓存语义无法从域名
+// 推断，猜错要么丢收益、要么引入无谓的 400 重发。要给网关开，显式设 env 即可。
+export function cacheMarkerEnabled(baseUrl = '', env = process.env) {
+  const explicit = String(env.PONOS_PROMPT_CACHE ?? '').trim()
+  if (explicit === '1' || explicit === '0') return explicit === '1'
+  return /anthropic\.com|claude\.ai|bedrock|aiplatform\.googleapis\.com|vertex/i.test(String(baseUrl))
+}
+
 // Anthropic 协议流：tools 中立形状 → tools[]；system 抽顶层。
-// prompt cache 显式化：PONOS_PROMPT_CACHE=1 且 system 非空时，system 改数组形态并
-// 打 ephemeral 缓存标记（Anthropic 官方端点依赖显式标记命中缓存；DeepSeek 兼容
-// 端点自动缓存，显式标记无害）。端点拒绝该字段时自动去掉标记重发一次（兼容兜底）。
+// prompt cache 显式化：由 cacheMarkerEnabled() 判定（P0-2 起按端点能力，不再只看 env）
+// ——命中时 system 改数组形态并打 ephemeral 缓存标记。端点拒绝该字段时自动去掉标记
+// 重发一次（兼容兜底，见 isCacheRejection）。
 async function* anthropicStream({ model, messages, system, tools, maxTokens, signal, reasoningEffort = null, thinkingMode = null }) {
   // P4-5：注册表解析（setProvider 激活后固定；未激活 getProvider 现读 env，行为不变）
   const p = getProvider()
   const base = p.baseUrl
   const token = p.authToken
   if (!base || !token) throw new Error('内核：PONOS_BASE_URL / PONOS_AUTH_TOKEN 未配置')
-  const useCache = process.env.PONOS_PROMPT_CACHE === '1' && !!system
+  const useCache = cacheMarkerEnabled(base) && !!system
   // 鉴权头按 provider.authScheme 选择：默认 x-api-key（anthropic/deepseek/minimax）；
   // vLLM 等本地 Bearer-only 端点配置 authScheme=bearer 后改发 Authorization。
   const headers = { 'content-type': 'application/json', ...authHeaders(p), 'anthropic-version': '2023-06-01' }

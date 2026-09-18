@@ -22,6 +22,8 @@ export function createLoopController({ wire, engine, store = null, configDir = '
     pricePerMInput: Number(env.PONOS_PRICE_PER_M_INPUT) || 0.2,
     pricePerMOutput: Number(env.PONOS_PRICE_PER_M_OUTPUT) || 1.2,
     cacheReadRatio: Number(env.PONOS_CACHE_READ_RATIO) || 0.1,
+    // P0-5：缓存写入溢价（默认 1.25 = Anthropic 5 分钟档；1 小时 TTL 传 2）
+    cacheWriteRatio: Number(env.PONOS_PRICE_CACHE_WRITE_RATIO) || 1.25,
   }
   const noProgressN = Math.max(1, Number(env.PONOS_LOOP_NOPROGRESS_N) || 3)
   const onStall = String(env.PONOS_LOOP_ON_STALL || 'reflect_and_ask')

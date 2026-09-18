@@ -195,17 +195,20 @@ export function toolSourceSignature({ workflowRoots = [], workflowFiles = [], ap
   return parts.join(SIG_SEP)
 }
 
-// public 截断的稳定顺序：全部带 updatedAt 时按更新时间降序（最近优先），否则按 id
-// 字节序（不用 localeCompare——其顺序随 locale 变化，实测中文会排在英文前）。
+// 条目按工作流 id 字节序（不用 localeCompare——其顺序随 locale 变化，实测中文会排在英文前）。
+const byWorkflowId = (a, b) => { const x = a.wf.id || '', y = b.wf.id || ''; return x < y ? -1 : x > y ? 1 : 0 }
+
+// public 截断的稳定顺序：全部带 updatedAt 时按更新时间降序（最近优先），否则按 id 字节序。
+// ⚠️ 本函数只决定**谁被截断入池**（产品语义：最近编辑的优先保留），**不得**用作工具池的
+// 输出顺序——原因见 collectVisible 末尾 P0-4 的说明。
 function orderPublics(list) {
   const allDated = list.length > 1 && list.every((x) => x.wf.updatedAt)
-  const byId = (a, b) => { const x = a.wf.id || '', y = b.wf.id || ''; return x < y ? -1 : x > y ? 1 : 0 }
   return [...list].sort((a, b) => {
     if (allDated) {
       const ta = String(a.wf.updatedAt), tb = String(b.wf.updatedAt)
       if (ta !== tb) return ta < tb ? 1 : -1
     }
-    return byId(a, b)
+    return byWorkflowId(a, b)
   })
 }
 
@@ -232,7 +235,17 @@ function collectVisible({ roots = [], agentId = null, publicLimit = LIMIT_DEFAUL
   const others = visible.filter((x) => x.vis !== 'public')
   const n = Number(publicLimit)
   const limit = Number.isFinite(n) && n >= 0 ? Math.floor(n) : LIMIT_DEFAULT
-  return { picked: publics.slice(0, limit), others, sources }
+  const picked = publics.slice(0, limit)
+  // 【2026-09-18 P0-4】"截断优先级"与"输出顺序"必须分离：
+  //   ・谁进池 → orderPublics（最近编辑优先，产品语义，保持不变）
+  //   ・以什么顺序输出 → id 字节序（稳定，不随 mtime 漂移）
+  // 若直接沿用 orderPublics 的顺序输出，则**任一工作流被编辑/保存**（updatedAt 变）都会翻转
+  // 工具数组次序 ⇒ tools 整段前缀失效（前缀缓存逐字节精确匹配，顺序变等于全部不匹配，
+  // 实测代价见 docs/2026-09-18-前缀缓存命中率优化方案.md §3）。分离后两者各自只受一个
+  // 稳定量支配：成员变化才失内容，成员不变则顺序恒稳。
+  // 附带收益：工具名冲突时"谁拿首选名、谁加哈希后缀"的归属也从 mtime 顺序改为确定的 id
+  // 顺序（原先会随编辑漂移，同一会话里工具名可能改名）。
+  return { picked: [...picked].sort(byWorkflowId), others: [...others].sort(byWorkflowId), sources }
 }
 
 // 提示词/清单侧可见集合（I-3）：与工具池同一可见性口径（private / bound 未命中 /

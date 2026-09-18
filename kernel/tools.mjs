@@ -721,14 +721,11 @@ async function webSearch(query) {
 // （移动/销毁用户知识库文件）。放行它等于让"纯聊"会话具备删库能力，与 chat 的隔离承诺直接冲突。
 export const CHAT_MODE_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch', 'KnowledgeImport', 'KnowledgeDelete']
 
-export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null, readAllowFiles = [], dynamicTools = null, flatSkillRoots = null, knowledgeSpaces = null, disabledSkills = null }) {
+export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null, readAllowFiles = [], dynamicTools = null, flatSkillRoots = null, knowledgeSpaces = null, knowledgeReadDirs = null, disabledSkills = null }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
-  // 记忆只读边界扩展（2026-09-10）：Read 追加个人/项目记忆根——记忆文件是内核
-  // 自己维护的知识库（与 MemorySearch 同源），会话目录边界把它们排除在外会让
-  // 模型"引用记忆原文"被拒（用户实证：memory/personal/workflow.md 无法 Read）。
-  // 只扩只读工具：Write/Edit 仍锁会话目录（记忆写入走 memory.mjs 工具链与
-  // 会话工作记忆维护，不允许任意覆盖）。
-  const readAllowDirs = [...allowDirs, memoryRoot, projectMemoryRoot].filter(Boolean)
+  // 只读白名单（readAllowDirs = Read 的边界；scanAllowDirs = Grep/Glob 的边界与遍历根）
+  // 在下方"会话知识范围"之后构建：知识空间的只读放行要以 scopeEmpty 做 fail-closed，
+  // 两者放同一处才不会出现"边界有两份定义"的漂移。
   // 只读文件白名单（2026-09-11 渐进式披露）：会话 transcript 文件放行 Read——
   // 硬适配索引化后模型按行号展开历史细节；仅精确文件匹配，不放宽任何目录。
   const readAllowFilesSet = new Set((readAllowFiles || []).map((f) => resolve(String(f)).toLowerCase()))
@@ -768,6 +765,53 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
   const scopeSet = Array.isArray(knowledgeSpaces) ? new Set(knowledgeSpaces.map((s) => String(s))) : null
   const scopeList = scopeSet ? [...scopeSet] : null
   const scopeEmpty = scopeSet !== null && scopeSet.size === 0
+  // ── 只读边界：会话目录 + 记忆根 + **已授权知识空间根**（P3，2026-09-20）─────────────
+  //
+  // 记忆只读边界扩展（2026-09-10）：Read 追加个人/项目记忆根——记忆文件是内核自己维护的
+  // 知识库（与 MemorySearch 同源），会话目录边界把它们排除在外会让模型"引用记忆原文"被拒
+  // （用户实证：memory/personal/workflow.md 无法 Read）。
+  //
+  // 知识空间只读放行（P3）：`knowledgeReadDirs` = 上层（kernel/cli.mjs）按**本会话授权范围**
+  // 算好的知识空间根（元素 `{ id, root }`；`id` 供工具回执判断"这个空间能否 Read"）。
+  // 修复的实证病灶：任务模式下非 experience 的空间（如 id「政策」，物理在
+  // `<配置根>/knowledge/spaces/政策/…`）既不能 Read 也不能 Grep，而 KnowledgeSearch 的回执
+  // 却引导"需全文用 Read 读对应文件行"——模型照做只会撞"路径超出会话目录边界"。
+  //
+  // 为什么这样放行是安全的（改了本段请同步核对这四条）：
+  //   ① 放行的只有 **Read** 的边界与 **Grep/Glob** 的边界/遍历根；Write / Edit / Bash / OCR
+  //      仍用 `allowDirs`（会话目录 + --add-dir）——知识库文件在任务会话里照旧**只读**，
+  //      写入一律被拒（knowledge-import 等写盘能力另有自己的工具与台账）。
+  //   ② 本层**从不自己推导**任何知识路径（不知道配置根，与改造前一致）：放行集合 = 上层显式
+  //      给的那份。故"上层忘记传"只会**少**放行，不会多放行（fail-closed）。
+  //   ③ `knowledgeSpaces` 为空数组（本会话没有任何可检索库）时**强制清空**放行集合：三态里的
+  //      "明确无空间"是 fail-closed，只读边界必须与检索边界同口径——否则"一个库都没有"的会话
+  //      反而变成"整棵知识目录可读"，比改造前更宽。
+  //   ④ `knowledgeSpaces` 为 null（**不限**：嵌入/测试场景）**不因此放行任何空间**——"不限"只
+  //      影响 KnowledgeSearch 的范围过滤；文件边界严格等于上层显式给的那份，绝不等于"全部空间"。
+  let knowledgeReadSources = knowledgeReadDirs
+  let readAllowDirs = []
+  let scanAllowDirs = []
+  /** 回执文案的判据（"这些空间能否 Read"）；null = 无从判断 ⇒ 回执不加任何引导（零回归）。 */
+  let knowledgeReadableIds = null
+  const applyKnowledgeReadDirs = () => {
+    const entries = (Array.isArray(knowledgeReadSources) ? knowledgeReadSources : [])
+      .map((e) => (typeof e === 'string'
+        ? { id: null, root: e }
+        : { id: e?.id == null ? null : String(e.id), root: e?.root == null ? null : String(e.root) }))
+      .filter((e) => e.root)
+    const dirs = scopeEmpty ? [] : entries.map((e) => e.root)
+    const ids = entries.map((e) => e.id).filter(Boolean)
+    // 只有"确实放行了目录"且"知道空间 id"时才给分支文案：纯字符串入参（只要边界、不要文案
+    // 归属）与空白名单都退化为 null，回执措辞与改造前逐字一致。
+    knowledgeReadableIds = dirs.length && ids.length ? new Set(ids) : null
+    readAllowDirs = [...allowDirs, memoryRoot, projectMemoryRoot, ...dirs].filter(Boolean)
+    // Grep/Glob：边界与**默认遍历根**都要含知识空间——模型不知道空间的物理路径（提示词只给库名，
+    // 见 prompt.mjs 的 renderKnowledgeScope），只放行 path 参数等于要求它先猜出绝对路径才能搜。
+    // 反之**不**把记忆根并进来：记忆是 Read 的只读扩展，"默认在记忆库里全量搜"不是本任务的目标，
+    // 保持 Grep 的默认扫描面与改造前一致（要搜记忆仍可显式传 path…也会被拒，与改造前同）。
+    scanAllowDirs = [...allowDirs, ...dirs].filter(Boolean)
+  }
+  applyKnowledgeReadDirs()
   /**
    * 越界文案（**唯一处措辞**，两个工具共用）。三条硬要求：
    *   ① 说清"哪个空间越界 + 当前范围是什么"——模型据此能自己换策略，不必问用户；
@@ -819,7 +863,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
       isHighRisk: (input) => matchesHighRisk(String(input?.command ?? '')),
     },
     Read: {
-      description: `读取文本文件内容。一次读全文（上限 ${READ_MAX_LINES} 行 / ${READ_MAX_BYTES / 1024 / 1024}MB），默认应读全文而非分段取样；超大文件用 offset/limit 定向读取，结果会提示续读位置。重复读取未变化的文件会返回"文件自上次读取后未变化"提示——直接引用此前结果即可，勿重复发起。优先用本工具而非 Bash cat/sed 读文件；路径用绝对路径，或相对当前工作目录的相对路径。边界限制：仅可读取当前会话目录及其挂载目录（--add-dir）内的文件，以及个人记忆/项目记忆目录（memory/personal）中的记忆文件；其余会话外路径会被拒绝——调用前先确认目标文件位于会话目录或记忆目录内，否则改用 Bash 或让用户放入会话目录。`,
+      description: `读取文本文件内容。一次读全文（上限 ${READ_MAX_LINES} 行 / ${READ_MAX_BYTES / 1024 / 1024}MB），默认应读全文而非分段取样；超大文件用 offset/limit 定向读取，结果会提示续读位置。重复读取未变化的文件会返回"文件自上次读取后未变化"提示——直接引用此前结果即可，勿重复发起。优先用本工具而非 Bash cat/sed 读文件；路径用绝对路径，或相对当前工作目录的相对路径。边界限制：仅可读取当前会话目录及其挂载目录（--add-dir）、个人记忆/项目记忆目录，以及**本会话已授权知识库**目录内的文件；其余会话外路径会被拒绝（知识库文件只读，Write/Edit 对它们一律拒绝）。`,
       // concurrencySafe：只读工具可并发执行（P0-4 只读批并行）
       concurrencySafe: true,
       input_schema: {
@@ -863,7 +907,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
       run: (input) => editFile(String(input?.file_path ?? ''), String(input?.old_string ?? ''), String(input?.new_string ?? ''), input?.replace_all === true, allowDirs, cwd, readCache, skipBoundary),
     },
     Glob: {
-      description: '在会话目录内递归搜索文件路径（pattern 支持 * ? 和 ** 通配）。先 Glob 定位候选文件再 Read，避免无目标 ls。已知大致位置时务必传 path 收窄范围——省略 path 会遍历全部会话目录，代价极高。依赖/构建产物目录（node_modules/dist/build/release/vendors/workspace 等）默认剪枝不搜索——若目标在其中，pattern 需显式含目录名（如 **/node_modules/**）；无匹配时按返回提示换更精确的 pattern，勿反复全树试探。',
+      description: '在会话目录与已授权知识库内递归搜索文件路径（pattern 支持 * ? 和 ** 通配）。先 Glob 定位候选文件再 Read，避免无目标 ls。已知大致位置时务必传 path 收窄范围——省略 path 会遍历全部会话目录，代价极高。依赖/构建产物目录（node_modules/dist/build/release/vendors/workspace 等）默认剪枝不搜索——若目标在其中，pattern 需显式含目录名（如 **/node_modules/**）；无匹配时按返回提示换更精确的 pattern，勿反复全树试探。',
       concurrencySafe: true,
       input_schema: {
         type: 'object',
@@ -875,14 +919,14 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
         },
         required: ['pattern'],
       },
-      run: (input, ctx) => globSearch(String(input?.pattern ?? ''), allowDirs, {
+      run: (input, ctx) => globSearch(String(input?.pattern ?? ''), scanAllowDirs, {
         maxResults: Number(input?.maxResults) || 200,
         path: input?.path ? String(input.path) : undefined,
         cwd, signal: ctx?.signal, skipBoundary,
       }),
     },
     Grep: {
-      description: '在会话目录内按正则搜索文件内容，返回 file:line 匹配行。带精确 pattern 与 glob 过滤；需要上下文时用 context 参数；结果最多 200 条（超出截断并标注）。已知大致位置时务必传 path 收窄范围——省略 path 会遍历全部会话目录，代价极高。依赖/构建产物目录默认剪枝（同 Glob，显式引用可放行）。无匹配时按返回提示调整，避免试探性重复搜索。',
+      description: '在会话目录与已授权知识库内按正则搜索文件内容，返回 file:line 匹配行。带精确 pattern 与 glob 过滤；需要上下文时用 context 参数；结果最多 200 条（超出截断并标注）。已知大致位置时务必传 path 收窄范围——省略 path 会遍历全部会话目录，代价极高。依赖/构建产物目录默认剪枝（同 Glob，显式引用可放行）。无匹配时按返回提示调整，避免试探性重复搜索。',
       concurrencySafe: true,
       input_schema: {
         type: 'object',
@@ -896,7 +940,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
         },
         required: ['pattern'],
       },
-      run: (input, ctx) => grepSearch(String(input?.pattern ?? ''), allowDirs, {
+      run: (input, ctx) => grepSearch(String(input?.pattern ?? ''), scanAllowDirs, {
         glob: input?.glob ? String(input.glob) : undefined,
         context: Number(input?.context) || 0,
         maxResults: Number(input?.maxResults) || 200,
@@ -1172,7 +1216,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
     // S1 知识检索：走已建索引的块级检索（比 MemorySearch 的 O(N) 全量扫描快得多），
     // 支持按空间过滤与 snippet/full 两档。S1 阶段与 MemorySearch 并存，S3 收敛。
     KnowledgeSearch: {
-      description: '在知识库中做块级检索（本地索引，无网络）：可跨"个人经验/会话记忆/我的笔记/知识包"等空间，按语义+关键词命中到**单个知识块**（一条经验、一个标题段、一段正文）。返回命中清单（空间/文件/标题/行号/分数/摘要），需全文用 Read 读对应文件行。适合"知识库里有没有关于 X 的内容"类查询。spaces 可选限定空间；mode=full 返回整块原文。命中行括号内是 blockId；给 related=该 blockId 可展开这条的**一跳**关联锚点（只回 blockId/标题/理由，不做多跳扩散）。',
+      description: '在知识库中做块级检索（本地索引，无网络）：可跨"个人经验/会话记忆/我的笔记/知识包"等空间，按语义+关键词命中到**单个知识块**（一条经验、一个标题段、一段正文）。返回命中清单（空间/文件/标题/行号/分数/摘要 + **命中词**），mode=full 返回整块原文；命中很多时用 offset 翻页续看（回执末行给 total 与 nextOffset）；已授权（可 Read）空间需全文用 Read 打开对应文件行，其余空间只能用 mode=full。适合"知识库里有没有关于 X 的内容"类查询。spaces 可选限定空间；命中行括号内是 blockId；给 related=该 blockId 可展开这条的**一跳**关联锚点（只回 blockId/标题/理由，不做多跳扩散）。',
       concurrencySafe: true,
       input_schema: {
         type: 'object',
@@ -1182,8 +1226,9 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
           keywords: { type: 'array', items: { type: 'string' }, description: '可选：精确关键词（走关键词路，适合专有名词/表名）' },
           spaces: { type: 'array', items: { type: 'string' }, description: '可选：限定空间 id 列表（**仅限本会话知识范围内的 id**，范围见提示词的【本会话知识库】段；越界会被拒绝）' },
           topK: { type: 'number', description: '可选：返回条数上限（1-10，默认 5）' },
+          offset: { type: 'number', description: '可选：分页偏移（默认 0）。回执末行会给出 total 与 nextOffset —— 命中很多时**续看下一页**用起来，不要靠加大 topK 一次灌满上下文。' },
           mode: { type: 'string', description: "可选：'snippet'（默认，省上下文）| 'full'（整块原文）" },
-          related: { type: 'string', description: '可选：给一个命中行的 blockId（形如 experience/workflow.md#2），返回该条目的**一跳**关联锚点（最多 5 条，只给 blockId/标题/理由；需正文用 Read）。与 query 二选一或并用。' },
+          related: { type: 'string', description: '可选：给一个命中行的 blockId（形如 experience/workflow.md#2），返回该条目的**一跳**关联锚点（最多 5 条，只给 blockId/标题/理由；可 Read 空间用 Read，其余用 mode=full）。与 query 二选一或并用。' },
         },
         // S5 Task 10：`required` 由 ['query'] 放宽为二者皆可（至少给一个，由 run() 判）。
         // **why 必须放宽**：API 层会校验 required，若仍强制 query，"只想展开一跳"的调用会被
@@ -1210,9 +1255,12 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
           return { content: '知识库检索不可用（未配置知识根 memoryRoot）。可直接用 Read 打开记忆文件。', isError: false }
         }
         const configDir = resolve(memoryRoot, '..', '..')
+        // 回执文案的可读性判据（P3）：`knowledgeReadableIds` = 已放行只读边界的空间 id 集合
+        // （null = 无从判断 ⇒ 回执不加分支引导，措辞与改造前逐字一致）。同一份集合也决定
+        // Read/Grep 的边界，故"回执说能读"与"真能读"永远同源。
         // related 分支优先：给了 blockId 就是"展开这条往哪读"，与 query 检索互不干扰
         // （同一工具的两个查询维度；两条路都只读、都不含正文）。
-        if (relId) return expandRelated({ configDir, blockId: relId, limit: RELATED_EXPAND_LIMIT })
+        if (relId) return expandRelated({ configDir, blockId: relId, limit: RELATED_EXPAND_LIMIT, readableSpaces: knowledgeReadableIds })
         return searchKnowledge({
           configDir,
           query: q,
@@ -1220,7 +1268,11 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
           // 收窄后的空间集（越界已在上面拦掉）：未指定 → 本会话范围全集；不限（嵌入/测试）→ null。
           spaces: scoped.spaces,
           topK: Math.min(Number(input?.topK) || 5, 10),
+          // 分页（P2）：上限兜在 200 —— 它是"翻到很深处"的护栏（一份 6917 块的库翻到
+          // 第 500 条之后基本已不是"找得到"的问题，而是该换关键词或收窄空间了）。
+          offset: Math.min(Math.max(0, Number(input?.offset) || 0), 200),
           mode: input?.mode === 'full' ? 'full' : 'snippet',
+          readableSpaces: knowledgeReadableIds,
         })
       },
     },
@@ -1522,6 +1574,11 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
     // 动态工具源热替换（engine.mjs 不转发 dynamicTools —— 其调用点不在本任务改动范围，
     // cli 拿到 engine.tools 后经此注入；与 dynamicTools 构造参数等价，后设覆盖先设）
     setDynamicTools(fn) { dynamicToolsRef = fn || null },
+    // 知识空间只读边界注入（P3，2026-09-20）：同 setDynamicTools 的处境——engine.mjs 的
+    // createToolRegistry 调用点不转发该参数，cli 算出"本会话授权的空间根"后经此注入
+    // （与构造参数 knowledgeReadDirs 等价，后设覆盖先设）。边界与 fail-closed 论证见函数
+    // 开头"只读边界"块；**只影响只读侧**：Write/Edit/Bash 的边界在闭包里恒定，热注入改不到。
+    setKnowledgeReadDirs(dirs) { knowledgeReadSources = dirs; applyKnowledgeReadDirs() },
     // 执行入口：返回归一化 { content, isError }（成功路径可能缺省 isError）；
     // approval 决策由调用方（engine）先行。兜底铁律：任何工具实现抛异常
     // （含审批/hook 内部错误）都不得向上中断 turn——归一化为错误结果返回，
