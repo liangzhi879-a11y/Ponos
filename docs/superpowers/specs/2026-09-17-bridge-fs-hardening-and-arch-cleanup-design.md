@@ -378,19 +378,37 @@ if (url.pathname === '/read-file') {
 `bridge.mjs`(4,318，P1-1 已拆) → `knowledge.mjs`(2,554) → `engine.mjs`(2,390) → `tools.mjs`(1,902) → `main.cjs`(1,787)。
 **约束**：纯搬移 + 显式导出，**零行为变更**；每拆一个跑该模块的既有测试（无测试的先用图谱登记"改前行为快照"）。
 
-### P2-2 · 功能域归并
+### P2-2 · 功能域归并 ✅ 已完成
 
-把 25 个"1–2 模块域"并入邻近域（`search`→`chat` 侧栏能力、`vault`/`permissions`→`settings` 安全组、`usage`→`diagnostic` 观测组、`worktree`→`files`）。
+把"1–2 模块域"并入邻近域（`search`→`chat` 侧栏能力、`vault`/`permissions`→`settings` 安全组、`usage`→`diagnostic` 观测组、`worktree`→`files`）。
 **验收**：域数从 68 降到 ~50；**同步更新 `scripts/build-arch-graph.mjs` 的域表**并重跑图谱（覆盖核对仍须 ✅）。
+
+**实施结果（2026-09-17）**
+- **域数 70 → 52**（实测：生成器输出的"功能域 52"），达成"~50"。
+- 做法：在生成器里新增 **`SRC_DOMAIN_MERGE`** 归并表（18 条）+ 把 `domainOf` 拆成 `domainOfRaw`（机械分配）与 `domainOf`（套用归并）两层，归并只作用于 renderer 侧。
+- **判定标准**（写进了代码注释）：保留"代表独立概念 **且** 模块数 ≥3"的域；并入"只有 1–2 模块、语义上从属于某更大功能面"的目录。归并的 18 条：`search`/`history`→chat；`permissions`/`vault`/`shortcuts`/`auth`→settings；`rail`/`boot`/`command-palette`/`ErrorBoundary.tsx`/`src-root`→layout；`worktree`/`editor`→files；`usage`/`cockpit`→diagnostic；`browser`→apps；`hooks`/`types`→lib。
+- **刻意不合并后端域**：`kernel/bridge/host/tooling` 的域是 `DOMAINS` 里**手工策展、带 name/desc** 的语义域（如 `b-mcp`=MCP 配置面）。合并它们等于销毁架构信息，不能为凑数字而动——这也是为什么合并后仍有 10 个 ≤2 模块的域（全是后端语义域）。
+- **覆盖核对仍全 ✅**（8 个目录，251/36/68/62/21/1/29/2 全部 已收录=已跟踪）；域内文件合计 **476 = 节点数 476**（无文件在归并中丢失）；无名域 0。
+- **新增测试** `kernel-tests/arch-graph-domains.test.mjs`（8 项）：守归并表的四类"错了但不报错"形态——归并目标必须是有名字的真实域、不得出现链式映射（只应用一层）、不得自映射、来源与目标集合不相交、后端域不被卷入。为此把生成器的 `main()` 用 `import.meta` 守卫（否则 import 即触发全仓扫描）并导出纯函数。
+- **文档同步**：`docs/architecture.md` 的 §12 全部口径已对齐新图谱（域数 52、模块 476、行 118,482、边 1,274、按路径引用 49、覆盖 8 目录、孤立 27、测试排除 388、枢纽与跨层边数值），并**如实标注**了 §12.8 里那批布局度量（"64 个标签 / 填充率 80%"）取自 68 域时代、**需重测**。
 
 ### P2-3 · 死代码清点
 
 26 个孤立模块逐个判定。**已确认无任何 import（仅注释提及）**：`src/components/boot/LogoMorph.tsx`、`src/components/settings/experienceFormat.ts` ⇒ 优先删。其余（`shared/office-merge.mjs`、`server/provider-profile.mjs`、`server/workflow-store.mjs`、`server/provider-probe.mjs`、`kernel/config-scan.mjs`）先判"动态加载 or 废弃"。
 **验收**：每个孤立模块给出"删除 / 标注为动态入口（附加载点）/ 保留（附理由）"三态结论。
 
-### P2-4 · 文档口径纳入校验
+### P2-4 · 文档口径纳入校验 🚧 进行中
 
 把 §1.7 的口径问题制度化：把已在用的 `consistency` 校验脚本化并入 CI（当前 26/26），**并新增两条**：① 文档中的模块/边/域数字必须能在 `docs/architecture-graph.html` 内嵌数据中找到；② 若文档声称"循环依赖"，必须给出**文件级** SCC 证据（防止再把符号图读数当文件级结论）。
+
+**进展（2026-09-17）**
+- **① 已完成**：在 `scripts/check-doc-anchors.mjs` 里新增**门禁 C**——声明式地列出 10 条"文档数字 ↔ 图谱统计量"断言（模块数/域数/边数/行数/排除测试数/按路径引用数/孤立数），逐条与**已提交的** `docs/architecture-graph.html` 内嵌数据比对。
+  - **它为什么不会变成"每次重构都红"**：它比的是"文档 vs 图谱产物"两个**都在仓库里**的文件，而非"文档 vs 现场扫描"；平时一次改动会同时更新两者，只有**只更新了其中一边**（重生成图谱却忘改文档，或手改数字）时才报警——那正是要人介入的时刻。
+  - **断言失效会响亮报错**：若某条的措辞在文档里匹配不到（有人改写了句子没同步断言表），门禁报"匹配不到声明语句"而非静默放过。
+  - **已做正反两向验证**：正常态 10/10 通过；把文档的"52 域"临时改成"47 域"后门禁**确实**以退出码 1 报出可操作的修复指引，随后恢复。
+- **② 未做**（需先有一套"文件级 SCC"的计算与文档声明口径）。
+- **原计划提到的 `consistency` 脚本**在仓库中**找不到**（`grep` 无命中）——该编号的来源需确认；本次未凭猜测重建。
+
 
 ---
 
@@ -900,7 +918,9 @@ workspace-attribution-wiring、fidelity-chain、browser-whitelist-approval-e2e�
 | 文档口径纳入 CI | ✅ 完成（§13.4，本轮加固计数口径：只算 git 已跟踪文件，见下） |
 | 26 个孤立模块三态判定 | ✅ 完成 → `docs/dead-code-triage.md`（真死 10 / 仅测试 2 应保留 / 动态 23 不得删）。**第一批已删除** 5 个明确遗留的 chat 组件（`MessageBubble`/`TaskCwdBar`/`FirstBytePendingBar`/`KernelStallBar`/`SystemWarningStrip`），删前 grep 确认非注释引用为 0、删后 typecheck+build+三层测试全绿；其余（4 个组件 + `interject.e2e.mjs`）保留待定，理由见该文"清理结果"节 |
 | 5 个巨石拆分 | 🚧 进行中：`server/bridge.mjs` 已迁出 15 组端点（§12 的 9 组 + 批次 1 的 `/health`、`/boot-status` + 批次 2 的 5 组身份面/只读面），3904 → 3812 行。另 4 个巨石的**接缝勘察已完成** → `docs/2026-09-17-P2-巨石接缝勘察.md`（含推荐执行顺序与状态耦合清单） |
-| 68 → ~50 域归并 | ⏳ 未开始（需先确定"域"的判定口径，否则是无法验收的目标） |
+| 68 → ~50 域归并 | ✅ 完成：**70 → 52 域**（新增 `SRC_DOMAIN_MERGE` 18 条归并表 + 拆 `domainOf`/`domainOfRaw`），覆盖核对仍全 ✅、无文件丢失；新增 `kernel-tests/arch-graph-domains.test.mjs`（8 项守归并表的静默失效形态）；`docs/architecture.md` §12 全量口径已对齐。详见 P2-2 实施结果 |
+| 文档口径纳入 CI · ① 图谱数字 | ✅ 完成：`check-doc-anchors.mjs` 新增**门禁 C**（10 条"文档 ↔ 图谱产物"声明式断言），已做正反两向验证（改错数字即退出码 1） |
+| 文档口径纳入 CI · ② 循环依赖 SCC 证据 | ⏳ 未做（需先定"文件级 SCC"的计算与声明口径） |
 
 ### 14.1 本轮对 CI 口径的加固：计数只看 git 已跟踪文件
 

@@ -11,6 +11,14 @@
 //      确属**有意**引用的不存在路径（构建产物名、刻意构造的负例、文档在说明"该引用已失效"），
 //      登记到 docs/_anchors-allow.json（**手写**，每条写理由）即可放行。
 //   B. **各层测试文件数**：与 docs/_anchors.json 比对，抓"整层测试静默消失 / glob 写错"。
+//   C. **文档的图谱数字**（P2-4①）：docs/architecture.md 里声明的模块数/域数/边数等，
+//      必须与**已提交的** docs/architecture-graph.html 内嵌数据一致。
+//
+// 为什么 C 不会变成"每次重构都红"的负担（这是它与"硬卡源码行数"的关键区别）：
+//   C 比的是**文档与图谱产物这两个都在仓库里的文件**，而不是"文档 vs 现场扫描"。
+//   两者平时由同一次改动一起更新（跑 build-arch-graph.mjs 就会同时动图谱与 §12 的口径），
+//   因此只有当**只更新了其中一个**（重生成图谱却忘改文档，或手改了文档数字）时才会报警——
+//   那正是需要我们介入的时刻。反之若拿它去卡"源码总行数"，则每次重构都会红。
 //
 // 用法：
 //   node scripts/check-doc-anchors.mjs           # 校验（CI 用）
@@ -109,6 +117,66 @@ function extractDocPaths() {
   return found
 }
 
+// ── 门禁 C 的数据源：从已提交的图谱产物里读"权威数字" ────────────────────────
+// 图谱 HTML 是自包含的，数据内嵌在 `const DATA = {...}` 里。我们只读它、绝不现场重扫——
+// 现场重扫会让门禁依赖构建时序（CI 上不该为了校验文档而跑一遍架构扫描）。
+function readGraphStats() {
+  const p = resolve(ROOT, 'docs/architecture-graph.html')
+  if (!existsSync(p)) return null
+  const html = readFileSync(p, 'utf8')
+  const m = html.match(/const DATA = (\{[\s\S]*?\});\s*\n/)
+  if (!m) return null
+  let data
+  try { data = JSON.parse(m[1]) } catch { return null }
+  const s = data.stats || {}
+  return { files: s.files, edges: s.edges, domains: s.domains, loc: s.loc, testsExcluded: s.testsExcluded, orphans: s.orphans, refEdges: s.refEdges, untracked: s.untracked }
+}
+
+// 文档里声明的图谱数字 → 对应的图谱统计量。**措辞改动必须同步此表**：
+// 若某条的 re 在文档里匹配不到，门禁会明确报"断言失效"而不是静默放过（见下方）。
+const GRAPH_CLAIMS = [
+  { file: 'docs/architecture.md', re: /(\d[\d,]*)\s*个源码模块一个不漏/g, keys: ['files'], label: '§12 导语的总模块数' },
+  { file: 'docs/architecture.md', re: /覆盖全部\s*(\d[\d,]*)\s*个源码模块/g, keys: ['files'], label: '§1 的图谱覆盖模块数' },
+  { file: 'docs/architecture.md', re: /功能域视图\s*(\d[\d,]*)\s*域/g, keys: ['domains'], label: '§12.1 的功能域数' },
+  { file: 'docs/architecture.md', re: /功能域视图\*{0,2}（默认，\s*(\d[\d,]*)\s*域）/g, keys: ['domains'], label: '§12.7 的功能域数' },
+  { file: 'docs/architecture.md', re: /模块视图\s*(\d[\d,]*)\s*模块/g, keys: ['files'], label: '§12.1 的模块视图模块数' },
+  { file: 'docs/architecture.md', re: /模块视图\*{0,2}（\s*(\d[\d,]*)\s*模块）/g, keys: ['files'], label: '§12.7 的模块视图模块数' },
+  { file: 'docs/architecture.md', re: /排除\s*\*\*(\d[\d,]*)\s*个测试文件\*\*/g, keys: ['testsExcluded'], label: '§12.2 排除的测试文件数' },
+  { file: 'docs/architecture.md', re: /(\d[\d,]*)\s*模块\s*·\s*([\d,]+)\s*行\s*·\s*([\d,]+)\s*条依赖边/g, keys: ['files', 'loc', 'edges'], label: '§12.4 的模块/行/边合计' },
+  { file: 'docs/architecture.md', re: /其中\s*(\d[\d,]*)\s*条按路径引用/g, keys: ['refEdges'], label: '§12.4 的按路径引用边数' },
+  { file: 'docs/architecture.md', re: /孤立模块（(\d[\d,]*)\s*个/g, keys: ['orphans'], label: '§12.6 的孤立模块数' },
+]
+
+const num = (s) => Number(String(s).replace(/,/g, ''))
+
+function checkGraphNumbers(problemsC) {
+  const stats = readGraphStats()
+  if (!stats) {
+    problemsC.push('读不到 docs/architecture-graph.html 的内嵌数据（文件缺失或格式变了）——门禁 C 失效，请检查 scripts/build-arch-graph.mjs 的输出')
+    return
+  }
+  for (const claim of GRAPH_CLAIMS) {
+    let src
+    try { src = readFileSync(resolve(ROOT, claim.file), 'utf8') } catch { problemsC.push(`${claim.file} 读不到，无法校验「${claim.label}」`); continue }
+    const hits = [...src.matchAll(claim.re)]
+    if (hits.length === 0) {
+      // 静默放过会让门禁形同虚设：文档改写了措辞却没同步 GRAPH_CLAIMS 时必须报出来
+      problemsC.push(`${claim.label}：在 ${claim.file} 里匹配不到声明语句（措辞可能已改）——请同步 scripts/check-doc-anchors.mjs 的 GRAPH_CLAIMS`)
+      continue
+    }
+    for (const h of hits) {
+      claim.keys.forEach((k, i) => {
+        const declared = num(h[i + 1])
+        const actual = stats[k]
+        if (actual === undefined) { problemsC.push(`${claim.label}：图谱数据里没有 ${k}`); return }
+        if (declared !== actual) {
+          problemsC.push(`${claim.label} 与图谱不符：文档写 ${declared.toLocaleString('en-US')}，图谱实际 ${actual.toLocaleString('en-US')}（跑 node scripts/build-arch-graph.mjs 重建图谱后同步文档）`)
+        }
+      })
+    }
+  }
+}
+
 const anchors = computeAnchors()
 
 if (write) {
@@ -124,7 +192,7 @@ if (write) {
   const unresolved = missing.filter((p) => !allow.has(p))
   console.log('✅ 已写入 docs/_anchors.json（仅计数口径；白名单见 docs/_anchors-allow.json）')
   console.log(`   信息：源码模块 ${out.info.sourceModules} / 总行 ${out.info.sourceLoc} / 测试文件 ${out.testTotal}`)
-  console.log(`   门禁：各层测试文件数 + 文档路径存在性（手写白名单 ${allow.size} 条）`)
+  console.log(`   门禁：各层测试文件数 + 文档路径存在性（手写白名单 ${allow.size} 条）+ 文档图谱数字（${GRAPH_CLAIMS.length} 条声明）`)
   if (missing.length) {
     console.log(`\n${missing.length} 个文档引用的路径不存在：`)
     for (const p of missing) console.log(`   ${allow.has(p) ? '[已白名单]' : '[未处理]'} ${p}`)
@@ -175,11 +243,14 @@ for (const [p, refs] of extractDocPaths()) {
 // 已白名单却已存在的路径：提示清理（不算失败）
 for (const p of allowMissing.keys()) if (existsSync(resolve(ROOT, p))) warnings.push(`白名单里的 \`${p}\` 现已存在，可移除该条目`)
 
+// 门禁 C：文档声明的图谱数字必须与**已提交的图谱产物**一致（P2-4①）
+checkGraphNumbers(problems)
+
 for (const w of warnings) console.warn(`  ⚠️  ${w}`)
 if (problems.length) {
   console.error('\n❌ 文档口径校验未通过：')
   for (const p of problems) console.error(`   · ${p}`)
   process.exit(1)
 }
-console.log(`✅ 文档口径校验通过：${anchors.testTotal} 个测试文件（分层计数一致）；文档路径引用均存在或已白名单（${allowMissing.size} 条，每条有理由）`)
+console.log(`✅ 文档口径校验通过：${anchors.testTotal} 个测试文件（分层计数一致）；文档路径引用均存在或已白名单（${allowMissing.size} 条，每条有理由）；文档图谱数字与产物一致（${GRAPH_CLAIMS.length} 条声明）`)
 console.log(`   （信息）源码模块 ${anchors.info.sourceModules} / 总行 ${anchors.info.sourceLoc}；巨石行数：${Object.entries(anchors.info.monoliths).map(([k, v]) => `${k}=${v}`).join(', ')}`)

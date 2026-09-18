@@ -16,8 +16,8 @@
     "shared/**/*.test.mjs": 13,
     "server/*.test.mjs": 87,
     "electron/*.test.mjs": 12,
-    "kernel-tests/*.test.mjs": 202,
+    "kernel-tests/*.test.mjs": 203,
     "src/**/*.test.ts": 74
   },
-  "testTotal": 388
+  "testTotal": 389
 }
