@@ -34,7 +34,8 @@ test('门禁在「只含已跟踪文件」的干净检出里必须通过（防"�
     assert.equal(r.status, 0,
       '门禁在干净检出里失败 —— 说明判据依赖了工作树（gitignored 文件/构建产物），'
       + '这类门禁无法进 CI。原始输出：\n' + out.slice(-4000))
-    assert.match(out, /文档路径存在性/, '门禁应照常输出检查项')
+    // 顺带确认它真的跑完了检查（而不是静默早退）——成功态会打印"文档口径校验通过"
+    assert.match(out, /文档口径校验通过/, '门禁应照常完成检查并输出结论')
   } finally {
     try { execFileSync('git', ['worktree', 'remove', '--force', wt], { cwd: ROOT, stdio: 'pipe' }) } catch { /* 尽力清理 */ }
     rmSync(tmp, { recursive: true, force: true })
