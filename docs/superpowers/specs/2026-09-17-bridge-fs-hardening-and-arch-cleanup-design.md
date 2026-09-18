@@ -418,10 +418,22 @@ if (url.pathname === '/read-file') {
 - **新增测试** `kernel-tests/arch-graph-domains.test.mjs`（8 项）：守归并表的四类"错了但不报错"形态——归并目标必须是有名字的真实域、不得出现链式映射（只应用一层）、不得自映射、来源与目标集合不相交、后端域不被卷入。为此把生成器的 `main()` 用 `import.meta` 守卫（否则 import 即触发全仓扫描）并导出纯函数。
 - **文档同步**：`docs/architecture.md` 的 §12 全部口径已对齐新图谱（域数 52、模块 476、行 118,482、边 1,274、按路径引用 49、覆盖 8 目录、孤立 27、测试排除 388、枢纽与跨层边数值），并**如实标注**了 §12.8 里那批布局度量（"64 个标签 / 填充率 80%"）取自 68 域时代、**需重测**。
 
-### P2-3 · 死代码清点
+### P2-3 · 死代码清点 🚧 判定完成；第二批复核已完成，删除待确认
 
-26 个孤立模块逐个判定。**已确认无任何 import（仅注释提及）**：`src/components/boot/LogoMorph.tsx`、`src/components/settings/experienceFormat.ts` ⇒ 优先删。其余（`shared/office-merge.mjs`、`server/provider-profile.mjs`、`server/workflow-store.mjs`、`server/provider-probe.mjs`、`kernel/config-scan.mjs`）先判"动态加载 or 废弃"。
-**验收**：每个孤立模块给出"删除 / 标注为动态入口（附加载点）/ 保留（附理由）"三态结论。
+26 个孤立模块逐个判定（判定表见 `docs/dead-code-triage.md`）。**验收**：每个孤立模块给出"删除 / 标注为动态入口（附加载点）/ 保留（附理由）"三态结论。
+
+> ⚠️ **2026-09-17 纠正一处本节的判定错误**：本节原写"**已确认无任何 import（仅注释提及）**：`LogoMorph.tsx`、`experienceFormat.ts` ⇒ 优先删"——其中 **`experienceFormat.ts` 判错**。
+> - **实测**：它被 `ExperiencePanel.tsx:26` 导入（`{ fmtAge, fmtBytes, normalizeInjectMax }`），经 `SettingsView.tsx:20/:382` 在设置页"经验"分区**活跃渲染**，并有伴生测试 `experienceFormat.test.ts`。**删除会破坏设置页经验面板的构建**。另需注意它承载一条跨模块一致性约束（`normalizeInjectMax` 默认值须与 `server/bridge.mjs` 的 `experienceInjectConfig()` 一致），删掉会失去前端侧唯一落点。
+> - `LogoMorph.tsx` 的"无 import"**判定正确**（仅 2 处注释提及），且它已被**有意退役**（`ViewRouter.tsx:14`「2026-09-10 morph 退役」）⇒ 可删；它同时是 `framer-motion` 的**唯一使用者**，删除可连带卸载该运行时依赖。
+> - **复核还纠正了 `docs/dead-code-triage.md` 里的同类错误**：`ui/dropdown-menu.tsx` 被误列为"真死候选"，实为 `EffortPicker` / `ApprovalModePicker` 在用（并经 barrel 再导出）。
+> - **两处误判的共同根因**：使用关系在判定之前就存在，属**扫描漏判**（非时序问题）——`dropdown-menu` 恰好同时经由"`@/` 别名"与"barrel 再导出"两条路径被使用，而判定方法宣称已修的那两个缺陷在这条上仍然复发。**防复发做法**：候选清单每条都要用**独立于原扫描器**的正面检查（直接 grep 谁 import 了它）逐条复核，不可信任扫描输出。
+
+**第二批处置建议（证据见 `docs/dead-code-triage.md` 文末）**
+- ✅ **可删 3 个**（233 行）：`boot/LogoMorph.tsx`(87)、`diagnostic/DiagnosticBanner.tsx`(32)、`browser/BrowserStatusBar.tsx`(114) —— 三者的职责均已"迁移/收栏"进 `ViewRouter` / `RightStatusRail`（2026-09-10 同一批重构），零引用、无伴生测试；删 LogoMorph 时**连带卸载 `framer-motion`**（含 `vite.config.ts` 的 `vendor-framer` 分包规则）。
+- ⏸ **保留 1 个**：`server/interject.e2e.mjs` —— 服务于**活跃功能**（生成中插队/紧急插话，见 `kernel/cli.mjs`）的**唯一端到端探针**，README 有登记；删除会丢掉唯一 e2e 覆盖（与"清死代码"目的相反）。
+- ⛔ **撤回 2 条误判**：`ui/dropdown-menu.tsx`、`settings/experienceFormat.ts` —— **活代码，不得删除**。
+- **删除动作仍待人工确认**（判定 ≠ 删除；本工作包只产出证据与建议）。
+- **规格原先点名的 5 个后端模块**（`office-merge` / `provider-profile` / `workflow-store` / `provider-probe` / `config-scan`）**本清单从未收录，属漏落**，本次一并复核：3 个是**活代码**（bridge/workflow-routes 导入）、`config-scan.mjs` 是**设计如此的工具脚本**（独立 CLI，无 import 属正常）；规格里写的 `knowledge-export` **在仓库中不存在**（过期/笔误，已从本规格移除）。剩下的 `shared/office-merge.mjs`(409 行) 是**未完成的集成**而非死代码——UI 有 `edit-merge` 按钮、决策层注释指向它，但**两端都没真正调用**（唯一引用者是它自己的测试）⇒ **切勿当死代码删**，需人决策"接线 or 移除"。详见 `docs/dead-code-triage.md` §六。
 
 ### P2-4 · 文档口径纳入校验 🚧 进行中
 
