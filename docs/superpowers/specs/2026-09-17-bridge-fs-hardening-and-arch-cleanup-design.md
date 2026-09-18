@@ -373,9 +373,9 @@ if (url.pathname === '/read-file') {
 
 ## 5. P2 施工项（结构治理，可按周推进）
 
-### P2-1 · 巨石拆分（自上而下取前 5）🚧 两刀已完成（tools.mjs -356 行，消除 1 个文件级环）
+### P2-1 · 巨石拆分 ⏹ 已完成（两刀 + 评审后停止，`tools.mjs` -356 行、消除 1 个文件级环）
 
-`bridge.mjs`(4,318，P1-1 已拆) → `knowledge.mjs`(2,554) → `engine.mjs`(2,390) → `tools.mjs`(1,902) → `main.cjs`(1,787)。
+原计划目标（按体量降序）：`bridge.mjs`(P1-1 已拆；现值 3,812) → `knowledge.mjs`(2,554) → `engine.mjs`(2,390) → `tools.mjs`(计划时 1,902；**现 1,550**) → `main.cjs`(1,787)。
 **约束**：纯搬移 + 显式导出，**零行为变更**；每拆一个跑该模块的既有测试（无测试的先用图谱登记"改前行为快照"）。
 
 **首刀实施结果（2026-09-17）：`kernel/tools.mjs` 的执行基座下沉 → `kernel/exec-base.mjs`**
@@ -397,7 +397,12 @@ if (url.pathname === '/read-file') {
 
 **累计效果（两刀）**：`tools.mjs` **1,906 → 1,550 行（-356）**，新增 `exec-base.mjs`(178) + `media-tools.mjs`(275)；文件级环 **5 → 4**；依赖方向为单向 DAG（`exec-base ← {tools, media-tools} ← knowledge-import`）。
 
-**第三刀候选**：`tools.mjs` 余 1,550 行，可按同法再分，但收益递减。更值得优先做的是 `knowledge.mjs`(2,554) / `engine.mjs`(2,390) 两个更大的巨石——据勘察两者**模块级可变状态均为 0**，属"高行数、低耦合"，是拆分的更优目标。
+**第三刀评审结论：停止拆分（2026-09-17）**——原计划"继续切 `knowledge.mjs` / `engine.mjs`"，经实测**否决**。理由不是"拆不动"，而是"拆了不值得"（判据见 `docs/2026-09-17-P2-巨石接缝勘察.md` §5）：
+- `knowledge.mjs`(2,554)：其"工具区"（1–590）承担 **48%（63/131）的改动量**，且**变更耦合率 45%**（20 个提交里 9 个同时改工具区与工厂区）⇒ 拆开会让近半改动变成跨文件编辑。
+- `engine.mjs`(2,390)：**已拆过 4 个无状态子模块**，余下是 `createEngine` 闭包工厂（27 个闭包共享词法状态，`runTurnInternal` 单函数 906 行）⇒ 拆出需显式传参，把内聚换成参数搬运。
+- `bridge.mjs`(3,812)：`sessions` 被引用 **37 次**、`wsClients` 13、`diagInfo` 12…；对照 P1 成功拆出的 `auth-routes`/`readonly-routes`（各 5 个显式参数、**零会话依赖**）⇒"依赖窄"的簇已拆完，余下主体拆出必然签名爆炸或退化为"巨型 ctx"。
+- **由此确立的拆分判据（5 条）**：①变更源独立 ②变更耦合率低（<≈20%）③接口窄且单向 ④无主体共享活状态 ⑤附带结构收益（加分）。**判据 ①② 必须实测**——勘察表最初把 knowledge 工具区判为"最安全"，正是只看判据 ④（零状态）而败在变更耦合上。
+- 收益已兑现：`tools.mjs` 1,906 → 1,550（-356）、文件级环 5 → 4。**预算转向净减少维护面的工作（P2-3）与防回归（P2-4②）。**
 
 ### P2-2 · 功能域归并 ✅ 已完成
 
@@ -939,7 +944,7 @@ workspace-attribution-wiring、fidelity-chain、browser-whitelist-approval-e2e�
 - **各层测试文件数**（防 13.3-① 那类静默消失）；
 - **文档引用的仓库路径是否存在**（防文档腐烂）。
 
-**刻意不门禁**模块数/总行数/巨石行数——它们每次合法重构都会变，硬卡会逼人每次都重跑 `--write`，最终结果是人把检查绕过或删掉。这些数字仍写入 `docs/_anchors.json` 的 `info` 段供查看（当前：源码模块 421 / 108468 行；巨石 `kernel/knowledge.mjs` 2554、`kernel/engine.mjs` 2390、`kernel/tools.mjs` 1902、`electron/main.cjs` 1823、`server/bridge.mjs` 3847）。
+**刻意不门禁**模块数/总行数/巨石行数——它们每次合法重构都会变，硬卡会逼人每次都重跑 `--write`，最终结果是人把检查绕过或删掉。这些数字仍写入 `docs/_anchors.json` 的 `info` 段供查看（当前：源码模块 437 / 110950 行；巨石 `kernel/knowledge.mjs` 2554、`kernel/engine.mjs` 2390、`kernel/tools.mjs` **1550**、`electron/main.cjs` 1891、`server/bridge.mjs` 3812）。
 
 > 口径说明：本 spec 早先引用的 "461 模块 / 116,212 行" 来自 DevLens 建图统计，其统计范围与上述口径（git 跟踪的 `.mjs/.cjs/.ts/.tsx`、排除测试与 scripts）不同，故数值有差。以后者为准。
 
@@ -958,7 +963,7 @@ workspace-attribution-wiring、fidelity-chain、browser-whitelist-approval-e2e�
 | 测试基线 + CI | ✅ 完成（§13） |
 | 文档口径纳入 CI | ✅ 完成（§13.4，本轮加固计数口径：只算 git 已跟踪文件，见下） |
 | 26 个孤立模块三态判定 | ✅ 完成 → `docs/dead-code-triage.md`（真死 10 / 仅测试 2 应保留 / 动态 23 不得删）。**第一批已删除** 5 个明确遗留的 chat 组件（`MessageBubble`/`TaskCwdBar`/`FirstBytePendingBar`/`KernelStallBar`/`SystemWarningStrip`），删前 grep 确认非注释引用为 0、删后 typecheck+build+三层测试全绿；其余（4 个组件 + `interject.e2e.mjs`）保留待定，理由见该文"清理结果"节 |
-| 5 个巨石拆分 | 🚧 进行中：`server/bridge.mjs` 已迁出 15 组端点（§12 的 9 组 + 批次 1 的 `/health`、`/boot-status` + 批次 2 的 5 组身份面/只读面），3904 → 3812 行。另 4 个巨石的**接缝勘察已完成** → `docs/2026-09-17-P2-巨石接缝勘察.md`（含推荐执行顺序与状态耦合清单） |
+| 5 个巨石拆分 | ⏹ **已完成并停止**（评审后）。① `server/bridge.mjs`：已迁出 15 组端点（§12 的 9 组 + 批次 1 的 `/health`、`/boot-status` + 批次 2 的 5 组身份面/只读面），3904 → 3812。② `kernel/tools.mjs`：两刀拆出 `exec-base`（执行基座）+ `media-tools`（OCR/视觉），**1,906 → 1,550（-356）**，并顺带**消除 1 个文件级环**（`tools ↔ knowledge-import`，环数 5 → 4）。③ 接缝勘察 → `docs/2026-09-17-P2-巨石接缝勘察.md`（含推荐顺序 + **§5 第三刀评审：为何停止**——`knowledge`/`engine`/`bridge` 经实测均不满足拆分判据，附 5 条判据与可重现命令） |
 | 68 → ~50 域归并 | ✅ 完成：**70 → 52 域**（新增 `SRC_DOMAIN_MERGE` 18 条归并表 + 拆 `domainOf`/`domainOfRaw`），覆盖核对仍全 ✅、无文件丢失；新增 `kernel-tests/arch-graph-domains.test.mjs`（8 项守归并表的静默失效形态）；`docs/architecture.md` §12 全量口径已对齐。详见 P2-2 实施结果 |
 | 文档口径纳入 CI · ① 图谱数字 | ✅ 完成（含补全）：`check-doc-anchors.mjs` 新增**门禁 C**（**12 条**"文档 ↔ 图谱产物"声明式断言，覆盖 `.md` 与 `.html` **两个**文档）；已做 4 次正反两向验证（改错数字、改措辞均退出码 1）；并判清 `.html` 里的三种口径，**只改同源数字、不动 DevLens 符号级与内核文件数** |
 | 文档口径纳入 CI · ② 循环依赖 SCC 证据 | ⏳ 未做（需先定"文件级 SCC"的计算与声明口径）。**本轮已铺路**：用图谱数据实算 Tarjan SCC 得 5 组/最大 3 文件（与文档结论一致），证明该结论在新口径下仍成立 |
