@@ -11,8 +11,10 @@
 //      确属**有意**引用的不存在路径（构建产物名、刻意构造的负例、文档在说明"该引用已失效"），
 //      登记到 docs/_anchors-allow.json（**手写**，每条写理由）即可放行。
 //   B. **各层测试文件数**：与 docs/_anchors.json 比对，抓"整层测试静默消失 / glob 写错"。
-//   C. **文档的图谱数字**（P2-4①）：docs/architecture.md 里声明的模块数/域数/边数等，
-//      必须与**已提交的** docs/architecture-graph.html 内嵌数据一致。
+//   C. **文档的图谱数字**（P2-4①）：`docs/architecture.md`（文本真源）与 `docs/architecture.html`
+//      （可视化/汇报版）里声明的模块数/域数/边数等，必须与**已提交的** docs/architecture-graph.html
+//      内嵌数据一致。注意各文档另有**不同口径**的数字（DevLens 符号级、内核文件数），
+//      那些不进本表——见 GRAPH_CLAIMS 里的逐条说明。
 //
 // 为什么 C 不会变成"每次重构都红"的负担（这是它与"硬卡源码行数"的关键区别）：
 //   C 比的是**文档与图谱产物这两个都在仓库里的文件**，而不是"文档 vs 现场扫描"。
@@ -145,6 +147,19 @@ const GRAPH_CLAIMS = [
   { file: 'docs/architecture.md', re: /(\d[\d,]*)\s*模块\s*·\s*([\d,]+)\s*行\s*·\s*([\d,]+)\s*条依赖边/g, keys: ['files', 'loc', 'edges'], label: '§12.4 的模块/行/边合计' },
   { file: 'docs/architecture.md', re: /其中\s*(\d[\d,]*)\s*条按路径引用/g, keys: ['refEdges'], label: '§12.4 的按路径引用边数' },
   { file: 'docs/architecture.md', re: /孤立模块（(\d[\d,]*)\s*个/g, keys: ['orphans'], label: '§12.6 的孤立模块数' },
+
+  // ── architecture.html（可视化/汇报版，P2-4① 补全）────────────────────────────
+  // 该文件是**手工维护**（无生成脚本），且含两种**不同口径**的数字：
+  //   · 文件级（与图谱同源）→ 下面三条断言守住；
+  //   · DevLens 符号级（「1345 节点 / 3356 边」等）→ **不在此表**，它不是图谱产物的数，
+  //     拿它去比对会让门禁报假警；它已在文档里显式标注「DevLens 符号级口径」。
+  // 同理「内核模块地图 · 68 模块」是**内核文件数**（≠ 功能域数 52），也**不在此表**。
+  { file: 'docs/architecture.html', re: /以图谱数据全仓复核，\s*(\d[\d,]*)\s*模块\s*\/\s*([\d,]+)\s*边/g, keys: ['files', 'edges'], label: '第 9 章 文件级循环依赖的模块/边数' },
+  { file: 'docs/architecture.html', re: /（(\d[\d,]*)\s*模块\s*\/\s*(\d[\d,]*)\s*功能域，可点击过滤）/g, keys: ['files', 'domains'], label: '页脚 图谱的模块/功能域数' },
+  // 为什么**不**守「bridge.mjs 3812 行」这类**单文件行数**：
+  //   图谱 stats.loc 是**全仓总行数**，不含单文件值；而单文件行数会随每次重构变动
+  //   （P2-1 拆巨石时必然变），拿它做门禁等于"每改一次源码就红一次" —— 正是本门禁要避免的 churn。
+  //   故 HTML 里该处写「约 N 行」属**描述性快照**，不纳入断言；需要精确值时以图谱/源码为准。
 ]
 
 const num = (s) => Number(String(s).replace(/,/g, ''))
