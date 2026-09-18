@@ -262,3 +262,31 @@ export async function handleOfficeRoute({ method, pathname, searchParams, body, 
 
   return null
 }
+
+/**
+ * 以**同一套闸门**在服务端内部调用 office 端点（不经 HTTP），供 collab 的三路合并落盘复用。
+ *
+ * 为什么复用 `handleOfficeRoute` 而不是直接跑 python 脚本：路径策略（`roots` / deny 根）、
+ * 文件大小上限、`baseVersion` 防丢失更新——这三道校验都在这一层，绕过去等于把它们绕过去。
+ * 内部复用只需要"传参数"而不需要"造 HTTP 请求"，所以这里只做参数适配。
+ *
+ * @returns 与 HTTP 层同语义：命中返回 `{ status, body }`，未命中返回 `null`。
+ */
+export function createOfficeAccess ({ sep, roots, guard }) {
+  const call = (method, pathname, params, body) =>
+    handleOfficeRoute({
+      method,
+      pathname,
+      searchParams: new URLSearchParams(params || {}),
+      body: body || null,
+      sep,
+      roots,
+      guard,
+    })
+  return {
+    readDocx: (path) => call('GET', '/read-docx', { path }),
+    readSheet: (path) => call('GET', '/read-sheet', { path }),
+    writeDocx: (path, baseVersion, ops) => call('POST', '/write-docx', {}, { path, baseVersion, ops }),
+    writeSheet: (path, sheet, baseVersion, ops) => call('POST', '/write-sheet', {}, { path, sheet, baseVersion, ops }),
+  }
+}

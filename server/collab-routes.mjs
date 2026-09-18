@@ -19,9 +19,10 @@ import { teamStatus, createTeam, joinTeam, exportInvite, revokeMember, setSearch
 import {
   ingestFile, versionsOf, claimsOf, claimFile, checkinFile, releaseClaim, heartbeatClaim,
   resolveFileId, writabilityOf, policyForPath, readPolicies, writePolicies, ensureCollabDirs,
-  prepareConflictResolution, currentPathOf,
+  prepareConflictResolution, currentPathOf, readVersionBuffer,
 } from '../kernel/file-collab.mjs'
 import { planFallback } from '../shared/file-modal.mjs'
+import { executeOfficeMerge } from './office-merge-exec.mjs'
 import { DEFAULT_TAG_SCOPE } from '../shared/tag-registry.mjs'
 
 /** 本模块负责的固定路径（`/file-collab/…` 走前缀匹配，见 isCollabPath） */
@@ -72,9 +73,11 @@ function probeCaps(findPythonExe) {
  * @param {string} p.sep               平台路径分隔符
  * @param {string} p.configDir         YFW_HOME
  * @param {Function} p.findPythonExe
+ * @param {object}  [p.office]         office 读写出口（`createOfficeAccess()`），供 `edit-merge` 真正执行三路合并；
+ *                                     缺省时该选项退回"只回报动作"（与接线前行为一致，便于单独测试本模块）
  * @returns {Promise<{status:number,body:any}|null>}
  */
-export async function handleCollabRoute({ method, pathname, searchParams, body, sep, configDir, findPythonExe }) {
+export async function handleCollabRoute({ method, pathname, searchParams, body, sep, configDir, findPythonExe, office }) {
   if (!isCollabPath(pathname)) return null
 
   // ═══ /tags*：标签注册表（可观测 + 自动合并 + 可撤销）═══════════════════
@@ -310,6 +313,23 @@ export async function handleCollabRoute({ method, pathname, searchParams, body, 
       // Buffer 不进 JSON：只回报可序列化字段（内容落盘由调用方按 action 决定）
       if (r && r.ok) {
         const { content, ...rest } = r
+        // `edit-merge`：「进入编辑器逐处合并」这一选项过去只会回报一个动作名就结束——
+        // 前端于是提示"已交给三路合并"，而实际**既没合并也没落盘**（bytes: 0 就是那个空操作）。
+        // 这里把 kernel/file-collab.mjs 注释里写的"由上层按文件模态选择函数后调用"补齐：
+        // 读 base/mine（版本库）+ theirs（磁盘当前）→ 合并 → 落盘（带 baseVersion 乐观锁）。
+        // 冲突时**不写盘**，把冲突明细原样回报，由前端逐处让人决定。
+        if (r.action === 'merge-then-write' && office) {
+          const cur = currentPathOf(st.teamRoot, body.fileId)
+          const merge = await executeOfficeMerge({
+            teamRoot: st.teamRoot,
+            versionIds: r.versionIds,
+            logicalName: (cur && cur.logicalName) || body.logicalName || null,
+            targetPath: cur && cur.path,
+            office,
+            readVersionBuffer,
+          })
+          return s4Reject({ ...rest, ok: !!merge.ok, merge })
+        }
         return s4Reject({ ...rest, bytes: content ? content.length : 0 })
       }
       return s4Reject(r)

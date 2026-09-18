@@ -155,9 +155,38 @@ export const FileCollabBar = forwardRef<FileCollabHandle, Props>(function FileCo
     if (!conflict) return
     const d = await post('/file-collab/conflict', { ...conflict, choice, logicalName: name })
     if (!d) return
+
+    // `edit-merge` 现在会真的执行三路合并并落盘，所以按**真实结果**回报。
+    // （此前这里只写"已交给三路合并"，而服务端当年没有任何编排 —— 提示与事实不符，
+    //   会让人在以为已合并的状态下继续操作；谎报成功比报错更危险。）
+    const m = d.merge
+    if (m) {
+      if (m.ok && m.written) {
+        const sheets = Array.isArray(m.sheets) && m.sheets.length ? `，涉及 ${m.sheets.length} 张表` : ''
+        setNote(`三路合并完成并已落盘（${m.ops} 处改动${sheets}）`)
+        setConflict(null)
+        return
+      }
+      if (m.ok) {
+        setNote('三路合并：两边内容一致，无需改动')
+        setConflict(null)
+        return
+      }
+      if (m.reason === 'conflict') {
+        const n = Array.isArray(m.conflicts) ? m.conflicts.length : 0
+        const first = m.conflicts?.[0]
+        const where = first ? `${first.label || ''}${first.sheet ? `${first.sheet}!` : ''}${first.colId ? `${first.rowId}/${first.colId}` : ''} ` : ''
+        // 未落盘 ⇒ 保持弹窗打开，用户可改选其它处置方式
+        setNote(`三路合并有 ${n} 处无法自动判定（${where}${first?.reason || ''}）——未落盘，请改选其它方式`)
+        return
+      }
+      setNote(`三路合并未能落盘：${m.reason}${m.detail ? `（${m.detail.error || m.detail}）` : ''}`)
+      return
+    }
+
     setNote(d.action === 'save-draft'
       ? `已另存为草稿（见团队源 drafts/）：${d.draftPath}`
-      : `${d.action === 'merge-then-write' ? '已交给三路合并' : '已按所选版本处理'}（内容落盘需重新载入后再保存）`)
+      : '已按所选版本处理（内容落盘需重新载入后再保存）')
     setConflict(null)
   }
 

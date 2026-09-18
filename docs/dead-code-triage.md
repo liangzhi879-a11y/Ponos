@@ -170,7 +170,7 @@ grep -rn "<Name>" --include=*.ts --include=*.tsx src/ | grep -vE "^src/.*/<Name>
 | `server/workflow-store.mjs` | ✅ **活代码** | `server/workflow-routes.mjs:12` 导入 |
 | `kernel/config-scan.mjs` | ✅ **保留**（工具脚本） | 无 import 是**设计如此**——独立 CLI / 开发期文档生成器（`node kernel/config-scan.mjs [--out]`），已在 `docs/architecture.md` 与 `docs/2026-09-15-五引擎架构性能对比分析.md` 登记为"工具脚本" |
 | ~~`knowledge-export`~~ | ⚠️ **该名字在仓库中不存在** | 规格里的写法为过期/笔误，需修正规格（不要在清单里留幽灵条目） |
-| `shared/office-merge.mjs`（409 行 + 340 行测试） | 🔶 **未完成的集成（切勿当死代码删）** | 见下 |
+| `shared/office-merge.mjs`（409 行 + 340 行测试） | 🔶→✅ **未接线的集成（2026-09-18 已接线）** | 见下 |
 
 **`shared/office-merge.mjs` 是"未接线"而非"废弃"**——证据链完整且两端都对不上：
 - **UI 端**：`src/components/editor/FileCollabBar.tsx:282` 提供 `edit-merge`（"编辑合并"）按钮；`:54` 的类型里也有该选项。
@@ -178,7 +178,9 @@ grep -rn "<Name>" --include=*.ts --include=*.tsx src/ | grep -vE "^src/.*/<Name>
 - **实际**：全仓**没有任何代码调用** `office-merge` 的合并函数（`mergeDocxBlocks` / `mergeSheetRows` / `threeWayMerge` …）——唯一的 import 者是它**自己的测试**（`office-merge.test.mjs:27`）。
 - ⇒ **用户在 UI 上点"编辑合并"后，合并动作无人执行**。这是**功能缺口**（或已放弃的功能），**不是死代码**。
 - **需人决策**：①**接线**（在 HTTP/UI 层补调用，功能即补齐——测试已就绪，成本可控）；②**移除**（连 409+340 行一起删，并在 UI 上去掉按钮，避免留一个死按钮）。
-  👉 **功能到底要做什么、差哪一段、三个选项的成本对比，已单独成文**：`docs/2026-09-18-office-merge-功能说明与接线方案.md`（2026-09-18）。**一句话**：合并算法与落盘闭环都已写完并有 15 项测试，唯独 `server/collab-routes.mjs` 的 `/file-collab/conflict` 路由少了约 60–120 行的"按文件模态分派"编排；**当前用户点「进入编辑器逐处合并」会看到"已交给三路合并"的提示，但实际什么都没发生**（该提示会误导人）。已在源文件头加 `⚠️ 未接线` 警示，防止再次被当死代码评估。
+  👉 **功能到底要做什么、差哪一段、三个选项的成本对比，已单独成文**：`docs/2026-09-18-office-merge-功能说明与接线方案.md`（2026-09-18）。**一句话**：合并算法与落盘闭环都已写完并有 15 项测试，唯独 `server/collab-routes.mjs` 的 `/file-collab/conflict` 路由少了约 60–120 行的"按文件模态分派"编排；**当前用户点「进入编辑器逐处合并」会看到"已交给三路合并"的提示，但实际什么都没发生**（该提示会误导人）。
+
+  ✅ **2026-09-18 已按选项 ① 接线完成**：新增 `server/office-merge-exec.mjs`（执行编排）+ `createOfficeAccess()`（复用 office 读写原语，走同一套闸门），`collab-routes` 在 `edit-merge` 时真正执行合并并把结果/冲突回报前端，`FileCollabBar` 的误导提示改为按真实结果回报；新增 `server/office-merge-exec.test.mjs`（8 项，含真 python 的 docx 与 xlsx B2 端到端读回验证）。**接线时端到端测试抓出一个真 bug**：ops 必须相对**落盘目标当前内容**算（不能相对 base），否则内容指纹对不上会 `block-not-found`——桩测发现不了，只有真读真写才暴露。**该模块因此不再孤立**（图腾里它从孤立清单消失，孤立数 26 → 25）。
 - **在决策前不得删除**：删掉它会让 `FileCollabBar` 的 `edit-merge` 成为永久空操作，且丢失 S1 已写好的三路合并（含测试）。
 
 > **本条对"孤立模块"清单的启示**：图上的"孤立"有三种截然不同的成因——**废弃**（可删）、**工具/入口**（设计如此，保留）、**未接线**（功能缺口，需决策）。**只看"孤立 + 无 import"无法区分三者**，必须去看"谁本该调用它"（如本例的注释与 UI 按钮）。

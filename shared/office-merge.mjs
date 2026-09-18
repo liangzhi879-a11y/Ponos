@@ -1,12 +1,12 @@
 /**
  * S1-6 三路合并（base / mine / theirs → merged + conflicts）
  *
- * ⚠️ 未接线（2026-09-18 核实）：本模块**没有任何生产代码调用**——唯一引用者是它自己的测试。
- *    缺的不是算法，而是 server 层的一段编排：`server/collab-routes.mjs` 的 `/file-collab/conflict`
- *    路由收到 `choice === 'edit-merge'` 时，应读三版本 → 按模态调 mergeDocxBlocks / mergeSheetRows
- *    → blocksToOps / sheetMergeToOps → 写回（原语 `/read-docx` `/write-docx` `/read-sheet` `/write-sheet`
- *    均已存在）。**因此它不是死代码**：请勿当作废弃文件删除；功能说明与接线方案见
- *    `docs/2026-09-18-office-merge-功能说明与接线方案.md`。
+ * ✅ 已接线（2026-09-18）：本模块由 `server/office-merge-exec.mjs` 调用——该模块补齐了
+ *    "按文件模态选择函数后调用"的编排（读三版本 → 合并 → 落盘），并由
+ *    `server/collab-routes.mjs` 的 `/file-collab/conflict` 路由在 `choice === 'edit-merge'` 时触发。
+ *    接线时的端到端测试抓到一个真 bug：**ops 必须相对"落盘目标当前内容"算**，不能相对 base
+ *    （ops 里的 blockId 是内容指纹，目标文件里被改过的块 id 与 base 已不同，按 base 算会
+ *    `block-not-found`）。功能说明与接线记录见 `docs/2026-09-18-office-merge-功能说明与接线方案.md`。
  *
  * —— 为什么需要它 ——
  * 协同的本质是"两个人各自改了同一份文件"。spec §5.4 定义流程为"base + mine + theirs

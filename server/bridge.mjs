@@ -24,7 +24,7 @@ import { normalizeMaxSubAgents } from '../shared/subagent-concurrency.mjs'
 import { mergeProxyPatch, nodeProxyEnv, normalizeProxyConfig, redactProxyConfig, redactProxyUrl } from '../shared/proxy-config.mjs'
 import { resolveReadable, resolveWritable, guardErrorResponse, assertSizeOk, FSGuardError } from '../shared/fs-guard.mjs'
 import { handleFilesRoute } from './files-routes.mjs'
-import { handleOfficeRoute, OFFICE_ROUTE_PATHS } from './office-routes.mjs'
+import { handleOfficeRoute, OFFICE_ROUTE_PATHS, createOfficeAccess } from './office-routes.mjs'
 import { handleCollabRoute, isCollabPath } from './collab-routes.mjs'
 // git 调用走异步（见模块头注释：桥是单事件循环，同步 git 会停摆全部会话的 token 流与心跳）
 import { gitOut, parseWorktrees, parseBranches } from './git-async.mjs'
@@ -2210,6 +2210,9 @@ const httpServer = createServer(async (req, res) => {
       const r = await handleCollabRoute({
         method: req.method, pathname: url.pathname, searchParams: url.searchParams,
         body: collabBody, sep, configDir: YFW_HOME, findPythonExe,
+        // 供 `edit-merge` 真正执行三路合并并落盘：走与下面 office 派发**同一套闸门**
+        // （roots/deny 路径策略、大小上限、baseVersion 防丢失更新），而不是绕开校验直连脚本。
+        office: createOfficeAccess({ sep, roots: FS_ROOTS, guard: { resolveReadable, resolveWritable, assertSizeOk, findPythonExe } }),
       })
       if (r) return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.body))
     }
