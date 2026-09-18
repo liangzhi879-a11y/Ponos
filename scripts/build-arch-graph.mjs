@@ -44,7 +44,7 @@ const DOMAINS = {
     { id: 'k-workflow', name: '工作流引擎', p: '^workflow', desc: '工作流 DSL / DAG / 节点执行与授权清单' },
     { id: 'k-loop', name: '环路可靠性', p: '^loop|^guards|^gen-guards', desc: 'loop 状态机与循环守卫：主循环与子 lane 共用一份判定' },
     { id: 'k-engine', name: 'Agent 循环与模型调用', m: ['engine.mjs', 'engine-config.mjs', 'api.mjs', 'provider.mjs', 'context.mjs', 'compact.mjs', 'stream-runtime.mjs', 'request-face.mjs', 'perf.mjs', 'effort-policy.mjs', 'prompt.mjs'], desc: 'Agent 主循环、上下文压缩、流式运行时与思考策略' },
-    { id: 'k-tools', name: '工具与权限', m: ['tools.mjs', 'exec-base.mjs', 'permissions.mjs', 'highrisk.mjs', 'blacklist.mjs', 'readonly.mjs', 'approval-mode.mjs', 'dyntools.mjs'], desc: '工具注册表、执行基座（子进程登记/env 白名单/路径边界）、权限判定、高危词表、灾难命令黑名单与动态工具注入' },
+    { id: 'k-tools', name: '工具与权限', m: ['tools.mjs', 'exec-base.mjs', 'media-tools.mjs', 'permissions.mjs', 'highrisk.mjs', 'blacklist.mjs', 'readonly.mjs', 'approval-mode.mjs', 'dyntools.mjs'], desc: '工具注册表、执行基座（子进程登记/env 白名单/路径边界）、OCR 与视觉媒体工具、权限判定、高危词表、灾难命令黑名单与动态工具注入' },
     { id: 'k-capability', name: '知识与能力', m: ['skills.mjs', 'agents.mjs', 'memory.mjs', 'memory-search.mjs', 'skill-search.mjs'], desc: '技能、子 Agent、经验记忆及其检索' },
     { id: 'k-persist', name: '持久化与观测', m: ['session.mjs', 'hooks.mjs', 'audit.mjs', 'stats.mjs', 'cost.mjs', 'health.mjs', 'fidelity.mjs', 'redact.mjs'], desc: 'transcript 权威源、哈希链审计、用量成本、上下文失真健康与日志脱敏' },
     { id: 'k-entry', name: '入口与协议', m: ['cli.mjs', 'protocol.mjs', 'legacy-env-boot.mjs', 'disabled.mjs'], desc: '内核入口、NDJSON 线协议、旧环境变量垫片与全局停用注册表' },

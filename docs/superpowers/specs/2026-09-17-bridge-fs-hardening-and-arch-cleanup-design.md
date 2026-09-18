@@ -373,7 +373,7 @@ if (url.pathname === '/read-file') {
 
 ## 5. P2 施工项（结构治理，可按周推进）
 
-### P2-1 · 巨石拆分（自上而下取前 5）🚧 首刀已完成
+### P2-1 · 巨石拆分（自上而下取前 5）🚧 两刀已完成（tools.mjs -356 行，消除 1 个文件级环）
 
 `bridge.mjs`(4,318，P1-1 已拆) → `knowledge.mjs`(2,554) → `engine.mjs`(2,390) → `tools.mjs`(1,902) → `main.cjs`(1,787)。
 **约束**：纯搬移 + 显式导出，**零行为变更**；每拆一个跑该模块的既有测试（无测试的先用图谱登记"改前行为快照"）。
@@ -388,7 +388,16 @@ if (url.pathname === '/read-file') {
 **行为不变的验证**：内核层 **1969 项（1 skip）/ 0 失败**、server 741、unit 1067、build 通过；两个受影响的白名单/根一致性测试同步了断言路径（`proxy-env-whitelist.test.mjs` 的源码提取目标由 `kernel/tools.mjs` 改为 `kernel/exec-base.mjs`，`knowledge-root-consistency.test.mjs` 仅注释更新——其行为断言经 re-export 仍从 tools.mjs 导入，顺带验证了 re-export 链）。
 **顺带修正的图谱缺口**：新增文件默认落到兜底域 `kernel-other`（又一个 1 模块碎域，与 P2-2 方向相悖）⇒ 已在 `DOMAINS.kernel` 的 `k-tools`（工具与权限）里显式登记 `exec-base.mjs`，域数保持 52。
 
-**下一刀（条件已具备）**：媒体簇（OCR + 视觉，现 `tools.mjs` 795–1080 段）拆为 `kernel/media-tools.mjs` —— 只静态依赖 `exec-base`，`tools.mjs` 反向引用它（单向，无环）。
+**第二刀（2026-09-17）：媒体簇拆出 → `kernel/media-tools.mjs`**
+- `tools.mjs` **1,813 → 1,550 行**；新增 `media-tools.mjs`（275 行）。搬走 OCR 段（引擎探测 `findOcrEngine` + `runPythonCapture` + `ocrFile` + `IMAGE_EXTS`）与 Vision 段（`visionDescribe` + 端点/尺寸常量 + `visionMock`）。
+- **依赖面实测极干净**：簇内只依赖 node 内置 + `exec-base` 的 3 个符号（`withinBoundary`/`childEnv`/`registerChild`）+ `provider.mjs` 的 `visionEnv`。**零** 对 tools.mjs 工具逻辑的依赖 ⇒ 可无环拆出（这正是第一刀下沉 exec-base 换来的）。验证方式：用脚本抽取簇文本，对"调用点标识符"做差集，逐个排查未识别项（查出 `rmSync` 与 `visionEnv` 两个真实依赖）——**比只 grep 已知符号更可靠**。
+- **顺带消除一个文件级环**：`knowledge-import.mjs` 原从 `tools.mjs` 取 `{findOcrEngine, registerChild, childEnv}`（`:30` 静态）并动态取 `visionDescribe`（`:791`）——这正是 `tools ↔ knowledge-import` 环的成因（tools 用它的 KnowledgeImport 工具）。现改为直取 `media-tools`（`findOcrEngine`/`visionDescribe`）+ `exec-base`（`registerChild`/`childEnv`），**不再依赖 tools**；`tools.mjs` 里那条"为躲环才动态 import"的注释也随之更正（环已消除，动态加载现在纯为按需省启动开销）。**实测文件级环 5 组 → 4 组**，域数保持 52。
+- **零行为变更验证（含完整链路）**：内核层 **1969 项 / 1 skip**（与拆前一致）、server **741**、unit **1067**、build 通过；另做**接口级行为快照**——空路径→"file_path 缺失"、越界路径→"拒绝访问"、不存在文件→"文件不存在"，并**经工具注册表**（`createToolRegistry` → 21 个工具含 OCR/Vision）调用两条工具复核转发链路，全部与拆前一致；`findOcrEngine()` 在本机命中 `~/.yfw/skills/_common/ocr_engine.py`（多路径探测逻辑未受搬迁影响）。
+- 域登记：`media-tools.mjs` 已在 `DOMAINS.kernel` 的 `k-tools`（工具与权限）显式登记，避免落兜底碎域。
+
+**累计效果（两刀）**：`tools.mjs` **1,906 → 1,550 行（-356）**，新增 `exec-base.mjs`(178) + `media-tools.mjs`(275)；文件级环 **5 → 4**；依赖方向为单向 DAG（`exec-base ← {tools, media-tools} ← knowledge-import`）。
+
+**第三刀候选**：`tools.mjs` 余 1,550 行，可按同法再分，但收益递减。更值得优先做的是 `knowledge.mjs`(2,554) / `engine.mjs`(2,390) 两个更大的巨石——据勘察两者**模块级可变状态均为 0**，属"高行数、低耦合"，是拆分的更优目标。
 
 ### P2-2 · 功能域归并 ✅ 已完成
 
