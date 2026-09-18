@@ -23,11 +23,15 @@ import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { toDocId } from '../shared/knowledge-core.mjs'
-// OCR 引擎探测与内核 OCR 工具**同一份实现**（tools.mjs 已导出）：探测规则只有一处，
+// OCR 引擎探测与内核 OCR 工具**同一份实现**（现位于 media-tools.mjs）：探测规则只有一处，
 // 否则"工具能找到引擎、导入找不到"这类不一致会随环境差异随机出现。
 // childEnv/registerChild 同样是内核既有的两道纪律（env 白名单防子进程窃取宿主密钥、
-// 子进程登记以便会话中止时一起 kill）。
-import { findOcrEngine, registerChild, childEnv } from './tools.mjs'
+// 子进程登记以便会话中止时一起 kill），其实现在 exec-base.mjs。
+// P2-1：本文件**不再从 tools.mjs 取任何东西**（此前 `tools ↔ knowledge-import` 构成
+// 文件级 ESM 环）—— 四项依赖分别直取 media-tools（OCR 探测、视觉调用）与 exec-base
+// （子进程登记、env 白名单），环随之消失。
+import { findOcrEngine, visionDescribe } from './media-tools.mjs'
+import { registerChild, childEnv } from './exec-base.mjs'
 // 视觉是否可用：与 Vision 工具**同一份判定**（provider.visionEnv，兼容 PONOS_VISION_*/YFW_VISION_*）。
 // 各写一份"读哪个 env"必然漂移 —— 实测就发生过 bridge 注入 YFW_* 而内核只读 PONOS_*，
 // 导致用户配好了视觉模型却被判定"未配置"（详见 kernel/provider.mjs 的 visionEnv 注释）。
@@ -784,11 +788,11 @@ export async function augmentTablesViaVision({
  * 为什么不在这里自己写一遍 HTTP：那会变成"第二份视觉 API 契约"—— 鉴权头、图片编码、
  * Anthropic/OpenAI 两种 body 形状、错误映射都得同步维护，必然漂移（本项目反复踩的病灶）。
  *
- * 为什么动态 import：`tools.mjs` 是内核的大模块，而导入流程在**不用视觉**时（多数情况）
- * 根本不需要它 —— 延迟到真要调用那一刻再加载，顺带避免与 tools.mjs 的静态循环依赖风险。
+ * 为什么不动态 import 了（P2-1 后）：原先延迟加载是为了躲开"与 tools.mjs 的静态循环依赖
+ * 风险"（tools.mjs 又是内核的大模块）。依赖目标已改为 `media-tools.mjs` —— 一个只装载媒体
+ * 工具的薄模块，与本文件**无环**，故在文件顶部静态导入即可，无需为躲环付出延迟加载的复杂度。
  */
 async function defaultVisionCall(imagePath, instruction) {
-  const { visionDescribe } = await import('./tools.mjs')
   // skipBoundary=true：这些 PNG 是**我们自己**刚渲到系统临时目录的中间产物，
   // 不在用户配置的可读目录白名单里（不是用户的文件，无需边界校验）。
   const r = await visionDescribe(imagePath, null, { instruction }, true)
