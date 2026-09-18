@@ -34,6 +34,8 @@ const yfworkingAPI = {
   appUpsert: (app) => ipcRenderer.invoke('app:upsert', app),
   appRemove: (appId) => ipcRenderer.invoke('app:remove', appId),
   appReadSpec: (appId) => ipcRenderer.invoke('app:read-spec', appId),
+  // 控制命令覆盖率（P1，2026-09-17）：只读，供控制台显示"全量控制命令覆盖到多少 / 缺哪些"。
+  appCoverage: (appId) => ipcRenderer.invoke('app:coverage', appId),
   appWriteSpec: (payload) => ipcRenderer.invoke('app:write-spec', payload),
   /**
    * 自动分配下一个应用序号（工具识别号，形如 app-001）：新增对话框只读展示，用户不再手填。

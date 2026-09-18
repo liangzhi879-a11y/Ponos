@@ -59,10 +59,11 @@ const SPEC = {
   ],
 }
 
-test('app:* 22 条通道全部注册（新增 app:verify / app:mark-quality 质检通道）', () => {
+test('app:* 23 条通道全部注册（新增 app:verify / app:mark-quality 质检通道 / app:coverage 覆盖率）', () => {
   const ipc = fakeIpcMain()
   registerAppHandlers({ ipcMain: ipc, getExecutor: () => fakeExecutor([]) })
-  assert.equal(ipc.channels().length, 22)
+  // 数目变化即提醒：新增通道要同步更新本计数（以及 app-ipc-contract 的通道↔preload 对账表）
+  assert.equal(ipc.channels().length, 23)
 })
 
 test('app:next-id 走真实注册层：空目录给 app-001，落盘后给下一个（不撞车）', async () => {

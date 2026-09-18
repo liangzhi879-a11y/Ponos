@@ -3,7 +3,7 @@
 // driver 语义（与 Spec 的步骤 act 一一对应）：
 //   process → {act:'cli',    argv:[...]}                  execFile 一个 CLI 子命令
 //   script  → {act:'script', lang, file|code}             交给对应脚本宿主执行
-//   uia     → {act:'focus'|'click'|'type'|'key'|'wait'}   UI 自动化兜底
+//   uia     → {act:'focus'|'type'|'key'|'wait'}          UI 自动化兜底（**后端未接入**，见 runUia）
 //
 // 所有外呼能力都走 deps 注入（生产用默认实现，测试注入假实现）——因为真实执行会拉起
 // 用户机器上的进程，必须能在单测里完全隔离。
@@ -36,6 +36,14 @@ async function runCli({ exePath, argv = [], timeout = CLI_TIMEOUT }) {
 
 /** 脚本宿主映射：file 优先，其次 -e 内联代码 */
 const SCRIPT_HOSTS = { lua: (exePath) => exePath, python: () => 'python', node: () => process.execPath }
+
+/**
+ * uia 驱动允许的 act —— 与 `electron/app-generate.cjs` 的 `ACTS_BY_DRIVER.uia` **必须一致**。
+ * 为什么在这里另存一份而不是 require 那份契约：本模块刻意只依赖 `app-util.cjs`（便于单测注入假实现、
+ * 也避免拉进 600 行的生成器）；一致性改由测试对账（`kernel-tests/app-uia-contract.test.mjs`），
+ * 与 `shared/app-control-commands.cjs` 对 `app-generate`/`browser-executor` 的对账方式同源。
+ */
+const UIA_ACTS = ['focus', 'type', 'key', 'wait']
 
 async function runScript({ lang, file, code, exePath, timeout = CLI_TIMEOUT }) {
   const hostOf = SCRIPT_HOSTS[lang]
@@ -100,6 +108,14 @@ async function desktopRunner({ appId, action, args = {}, spec, deps = {} }) {
         if (!res.ok) throw new Error(res.error || '脚本执行失败')
         if (step.save) saved = res.stdout
       } else if (driver === 'uia') {
+        // 契约校验（2026-09-17，P1 控制命令覆盖）：本分支此前**不校验 act**，任意 act 都直通 runUia 桩。
+        // 后果具体而隐蔽：act 写错（如 'clic'）时用户看到的是"UI 自动化失败：后端尚未接入"，
+        // 会以为是后端问题，而不是自己拼错了 —— 报错误导比不报错更费时间。
+        // 本清单必须与 `electron/app-generate.cjs` 的 `ACTS_BY_DRIVER.uia` 一致，由
+        // kernel-tests/app-uia-contract.test.mjs 对账（两处漂移即红）。
+        if (!UIA_ACTS.includes(step.act)) {
+          throw new Error(`driver=uia 不支持步骤 ${String(step.act)}（可用：${UIA_ACTS.join(' / ')}）`)
+        }
         const res = await runUiaFn({ ...step, value: interpolate(step.value, args) })
         if (!res.ok) throw new Error(res.error || 'UI 自动化失败')
         if (step.save) saved = res
@@ -113,4 +129,4 @@ async function desktopRunner({ appId, action, args = {}, spec, deps = {} }) {
   }
 }
 
-module.exports = { desktopRunner, buildArgv, runCli, runScript, runUia, SCRIPT_HOSTS, CLI_TIMEOUT }
+module.exports = { desktopRunner, buildArgv, runCli, runScript, runUia, SCRIPT_HOSTS, CLI_TIMEOUT, UIA_ACTS }

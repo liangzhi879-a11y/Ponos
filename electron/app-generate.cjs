@@ -43,7 +43,11 @@ const DRIVERS = ['browser', 'process', 'script', 'uia', 'http', 'file']
  *   uia     → 同上的 runUia 分支（当前后端未接入，仅为契约占位）
  */
 const ACTS_BY_DRIVER = {
-  browser: ['goto', 'click', 'type', 'select', 'scroll', 'hover', 'js', 'wait', 'snapshot'],
+  // 2026-09-17（P1 控制命令覆盖）：补 back / forward / refresh —— 执行器的 runAction 一直有这三个分支
+  // （electron/browser-executor.cjs），但契约没暴露 ⇒ 模型写不出来、校验也拦，能力被白白锁住。
+  // 判据见 shared/app-control-commands.cjs（全量控制命令目录）与它的护栏测试：
+  // 「执行器支持的控制类 act 必须全部可被模型写出」——补之前那条断言是红的。
+  browser: ['goto', 'back', 'forward', 'refresh', 'click', 'type', 'select', 'scroll', 'hover', 'js', 'wait', 'snapshot'],
   process: ['cli'],
   script: ['script'],
   uia: ['focus', 'type', 'key', 'wait'],
@@ -126,6 +130,12 @@ const DESKTOP_ACTS = [...ACTS_BY_DRIVER.process, ...ACTS_BY_DRIVER.script, ...AC
  */
 const WEB_CONTRACT = {
   goto: { required: ['url'], note: 'url 可写绝对地址或相对路径（相对 target.url 解析）' },
+  // 导航三兄弟：无参数。补它们的原因见 ACTS_BY_DRIVER.browser 上方注释（执行器早有分支）。
+  // 为什么值得补：SPA 里"点返回"往往等价于浏览器后退，模型此前只能靠 js 猜 history.back()，
+  // 或干脆在页面上找一个可能不存在的返回按钮 —— 有正式动作就该用正式动作。
+  back: { note: '浏览器后退一页；无参数' },
+  forward: { note: '浏览器前进一页；无参数' },
+  refresh: { note: '重新加载当前页；无参数' },
   click: { required: ['ref'], note: 'ref 是**同一条命令内、前一个 snapshot 步骤**给出的元素编号；不要沿用生成时的编号' },
   type: { required: ['ref', 'text'], optional: ['clear'], note: 'text 里可用 ${参数名} 插值' },
   select: { required: ['ref', 'value'] },

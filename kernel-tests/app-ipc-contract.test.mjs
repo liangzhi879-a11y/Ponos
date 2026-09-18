@@ -24,6 +24,10 @@ const CHANNELS = {
   'app:upsert': 'appUpsert',
   'app:remove': 'appRemove',
   'app:read-spec': 'appReadSpec',
+  // 控制命令覆盖率（P1，2026-09-17）：只读，供控制台显示"全量控制命令覆盖到多少 / 缺哪些"。
+  // 走主进程而不是渲染层自算，是因为目录与可用性判定的唯一实现在 shared/（CJS），
+  // 渲染层再抄一份必然漂移 ⇒ 漂移出来的覆盖率是假指标。
+  'app:coverage': 'appCoverage',
   'app:write-spec': 'appWriteSpec',
   // 应用序号自动分配（新增对话框只读展示，用户不再手填 id）
   'app:next-id': 'appNextId',

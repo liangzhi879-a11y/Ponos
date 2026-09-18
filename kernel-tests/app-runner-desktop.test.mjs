@@ -36,14 +36,18 @@ test('script 驱动：script 步骤被派发', async () => {
 
 test('uia 驱动：无脚本接口时走 UI 自动化', async () => {
   let got = null
+  // 2026-09-17（P1 控制命令覆盖）：本用例原用 `act:'click'` —— 而 `click` **从来不在**
+  // `ACTS_BY_DRIVER.uia`（['focus','type','key','wait']）里，即这个 fixture 本身就是一个
+  // "契约没放行、运行器却照收"的实例。运行器现已按契约校验 act，故改用契约内的 `focus`。
+  // 断言意图与强度不变：仍是"uia 步骤能把参数原样交给 runUia 并成功返回"。
   const r = await desktopRunner({
     appId: 'app-d', action: 'tap', args: {},
     spec: { driver: 'uia', target: { exePath: 'C:/x/a.exe' },
-            commands: [{ action: 'tap', kind: 'write', params: [], steps: [{ act: 'click', selector: 'ok' }] }] },
+            commands: [{ action: 'tap', kind: 'write', params: [], steps: [{ act: 'focus', selector: 'ok' }] }] },
     deps: { runUia: async (p) => { got = p; return { ok: true } } },
   })
   assert.equal(r.ok, true)
-  assert.equal(got.act, 'click')
+  assert.equal(got.act, 'focus')
 })
 
 test('未知 driver → 明确报错', async () => {

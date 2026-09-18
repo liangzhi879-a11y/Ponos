@@ -37,6 +37,10 @@ const { loginEvidence } = require('./app-login-state.cjs')
 // 浏览器自动化白名单（*.gov.cn / localhost / 127.0.0.1 + {YFW_HOME}/browser-whitelist.json）。
 // 只用来决定"要不要用浏览器增强探测"；生成命令本身**不依赖**它（见 app-http-probe.cjs 头部说明）。
 const { isWhitelisted } = require('./browser-common.cjs')
+// 全量控制命令目录 + 覆盖率（P1「真正 agent 可智控」，2026-09-17）：**唯一实现**在 shared/。
+// 界面拿不到 CJS 模块，故由主进程算好经 app:coverage 下发；渲染层若自己再抄一份目录必然漂移，
+// 而漂移出来的覆盖率是**假指标**（显示 100% 却没那个能力），比没有指标更糟。
+const { classOfDriver, coverageForClass, coverageReport, specCoverage } = require('../shared/app-control-commands.cjs')
 
 /**
  * 生成时最多抓取多少页面。用户明确表示可以慢，但要求"尽可能充分获取所有能控制的接口信息"，
@@ -178,6 +182,26 @@ function registerAppHandlers({ ipcMain, getExecutor, getWebContents, deps = {} }
     return { ok: true }
   })
   ipcMain.handle('app:read-spec', (_e, appId) => appRegistry.readSpec({ roots: roots(), appId }))
+  /**
+   * 控制命令覆盖率（P1，2026-09-17）。纯读、无需审批。
+   * 返回：① `report` 两个目标类别的能力覆盖率（web / desktop）；② 该应用所在类别与其覆盖率；
+   *      ③ `spec`＝该应用"用到了哪些命令"（信息性，**不参与 70% 判定**，理由见 shared 模块注释：
+   *      真实语料里 web 应用普遍 `goto+js` 一步到位，拿"用到/全量"当覆盖率会得出 33% 的失真数字）。
+   * 读不到 spec（appId 缺失/文件损坏）**不报错**：界面少显示一行远好过整个控制台打不开。
+   */
+  ipcMain.handle('app:coverage', (_e, appId) => {
+    let spec = null
+    if (appId) {
+      try { spec = appRegistry.readSpec({ roots: roots(), appId }) } catch { spec = null }
+    }
+    const targetClass = spec && spec.driver ? classOfDriver(spec.driver) : null
+    return {
+      report: coverageReport(),
+      class: targetClass,
+      coverage: targetClass ? coverageForClass(targetClass) : null,
+      spec: spec ? specCoverage(spec) : null,
+    }
+  })
   ipcMain.handle('app:write-spec', (_e, payload) => {
     const { appId, spec } = payload || {}
     const path = appRegistry.writeSpec({ roots: roots(), appId, spec })

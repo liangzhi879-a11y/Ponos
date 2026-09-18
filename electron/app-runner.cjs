@@ -52,6 +52,29 @@ function resolveStepUrl(rawUrl, spec) {
   try { return new URL(u, base).toString() } catch { return u }
 }
 
+/**
+ * scroll 的像素缺省值：与执行器保持一致（`browser-executor.cjs` 的 `scroll` 分支缺省 400）。
+ * 抽成常量是为了让"direction 归一"与执行器同源，改了执行器缺省这里也得改（有测试对账）。
+ */
+const SCROLL_DEFAULT_PX = 400
+
+/**
+ * 历史字段 `direction` → `delta` 的归一（**只做兼容，不是新增能力**）。
+ *
+ * 背景（真实缺口）：`step.direction` 被原样转发给执行器，但执行器**从来不读 direction**，
+ * 它只读 `delta`（`browser-executor.cjs:1132`）；而 `stepParams` 又**从不转发 `delta`**。
+ * 两头各说各话的结果是：Spec 里写的滚动距离被**静默丢弃**，永远用缺省的 400px，
+ * 而且不报错 —— 命令"看着跑了，但没用你的值"，属最难查的一类问题。
+ * 所以这里：优先 `delta`；只有写了老字段 `direction` 才归一（`up` → 负、`down` → 正）。
+ */
+function directionToDelta(direction) {
+  const d = String(direction ?? '').trim().toLowerCase()
+  if (d === 'up' || d === 'top') return -SCROLL_DEFAULT_PX
+  if (d === 'down' || d === 'bottom') return SCROLL_DEFAULT_PX
+  const n = Number(d)
+  return Number.isFinite(n) && n !== 0 ? n : SCROLL_DEFAULT_PX
+}
+
 function stepParams(step, args, spec) {
   const p = {}
   if (step.url != null) p.url = resolveStepUrl(interpolate(step.url, args), spec)
@@ -61,7 +84,10 @@ function stepParams(step, args, spec) {
   if (step.text != null) p.text = interpolate(step.text, args)
   if (step.key != null) p.key = step.key
   if (step.expression != null) p.expression = interpolate(step.expression, args)
-  if (step.direction != null) p.direction = step.direction
+  // scroll：执行器只认 delta（像素，正数向下）。契约（WEB_CONTRACT.scroll）写的就是 ref|delta，
+  // 因此**必须**转发 delta（这是一处真实缺陷，不是重构：此前 delta 被静默丢弃）。
+  if (step.delta != null) p.delta = Number(step.delta)
+  else if (step.direction != null) p.delta = directionToDelta(step.direction)
   if (step.ms != null) p.ms = step.ms
   if (step.mode != null) p.mode = step.mode
   // js 字段别名兜底（契约字段是 expression）
@@ -120,4 +146,4 @@ async function runCommand({ roots, appId, action, args = {}, executor, sessionId
   }
 }
 
-module.exports = { runCommand, interpolate, checkRequired, appendHistory, desktopRunner, stepParams, resolveStepUrl }
+module.exports = { runCommand, interpolate, checkRequired, appendHistory, desktopRunner, stepParams, resolveStepUrl, directionToDelta, SCROLL_DEFAULT_PX }

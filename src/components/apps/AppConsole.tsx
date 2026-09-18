@@ -14,7 +14,7 @@
 //   从可视区消失（滚动到底部的跟踪也丢）。诊断/命令两棵树反之——它们带各自的 IPC 请求与
 //   表单状态，一次只挂一棵（切换即重挂，符合"看的时候才去查"）。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, LogIn, Play, Radio, Settings2, ShieldCheck, Sparkles, Wrench } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, LogIn, Play, Radio, Settings2, ShieldCheck, Sparkles, Terminal, Wrench } from 'lucide-react'
 import { Tabs, TabsList, TabsTrigger, Tooltip } from '@/components/ui'
 import { Button, Input } from '@/components/ui'
 import { ChatWindow } from '@/components/chat/ChatWindow'
@@ -27,6 +27,7 @@ import { APPS_TABS, readAppsTab, sanitizeAppsTab, writeAppsTab } from '@/lib/app
 import { buildQualityPrompt, shouldAutoQuality, specFingerprint } from '@/lib/appQuality'
 import { VERDICT_COPY, groupCapabilities, normalizeSurface, reviewSummary, summarizeSpec } from '@/lib/appSurface'
 import { cn } from '@/lib/utils'
+import { AppCoverage } from './AppCoverage'
 import { SpecEditor } from './SpecEditor'
 import type { AppsTab } from '@/lib/appsTab'
 import type { AppSurface } from '@/lib/appSurface'
@@ -38,6 +39,17 @@ const TAB_META: Record<AppsTab, { labelKey: 'apps.tabAgent' | 'apps.tabDiagnose'
   diagnose: { labelKey: 'apps.tabDiagnose', hintKey: 'apps.tabDiagnoseHint' },
   commands: { labelKey: 'apps.tabCommands', hintKey: 'apps.tabCommandsHint' },
 }
+
+/**
+ * 主标签（P1 面板降级，2026-09-17）：控制台以 **agent 智能运行为主**，`commands`（手工执行）
+ * **保留但从主标签条撤下**，改由页头「手工执行命令」入口打开。
+ *
+ * 为什么不直接改 `APPS_TABS`：它是**持久化契约**（`sanitizeAppsTab` 会校验历史值、
+ * localStorage / 会话里可能存着 `'commands'`）。把 `commands` 从 `APPS_TABS` 删掉会让
+ * 老用户的落点被静默改写。所以只改**渲染**：主标签条少一项，`shownTab` 仍可等于 `'commands'`，
+ * 只是那个状态现在由页头按钮进入（`shownTab === 'commands'` 时按钮呈激活态）。
+ */
+const PRIMARY_TABS = APPS_TABS.filter((v) => v !== 'commands')
 
 /**
  * 自动质检的可见状态机（每一步都必须能看见——本仓库纪律"不得静默"）：
@@ -397,6 +409,21 @@ export function AppConsole({ app, sessionId, onBack, autoQuality = false, onQual
         <h2 className="text-xs font-semibold text-primary truncate">{app.name || app.id}</h2>
         <span className="text-[10px] text-tertiary font-mono truncate">{spec?.driver || ''}</span>
         <div className="flex-1" />
+        {/* 手工执行命令的次级入口（P1 面板降级）：控制台以 agent 运行为主，命令执行仍可用但不再占主标签。
+            放在页头而非标签条，是为了让"以 agent 为主"在视觉上成立——它是一条退路，不是主路径。
+            激活态与 shownTab 同步（点开时高亮、"返回"式再点一次回到自检页）。 */}
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => onTabChange(shownTab === 'commands' ? 'diagnose' : 'commands')}
+          title={t('apps.manualCommandsHint')}
+          aria-pressed={shownTab === 'commands'}
+          className={shownTab === 'commands' ? 'text-primary bg-active' : 'text-tertiary'}
+          data-testid="app-manual-commands"
+        >
+          <Terminal className="w-3.5 h-3.5" />
+          <span className="text-[10px] ml-1">{t(TAB_META.commands.labelKey)}</span>
+        </Button>
         {sessionId ? (
           <span className="flex items-center gap-1 text-[10px] text-success" title={t('apps.aiBoundHint')}>
             <ShieldCheck className="w-3.5 h-3.5" />
@@ -407,10 +434,10 @@ export function AppConsole({ app, sessionId, onBack, autoQuality = false, onQual
         )}
       </div>
 
-      {/* 三标签：受控 Tabs（不用 TabsContent——agent 树常挂、另两棵条件渲染，见文件头注）*/}
+      {/* 主标签条：只渲染 agent / diagnose（commands 已降级为页头入口，见 PRIMARY_TABS 注释）*/}
       <Tabs value={shownTab} onValueChange={onTabChange}>
         <TabsList className="w-full justify-start gap-0.5 px-2 h-9 rounded-none bg-transparent p-0 border-b border-subtle">
-          {APPS_TABS.map((v) => {
+          {PRIMARY_TABS.map((v) => {
             const meta = TAB_META[v]
             const label = t(meta.labelKey)
             return (
@@ -500,6 +527,9 @@ export function AppConsole({ app, sessionId, onBack, autoQuality = false, onQual
       {/* ---- diagnose 树：自检结论 / 能力清单 / 评审 / 登录 / 修复（一次只挂这一棵）---- */}
       {shownTab === 'diagnose' && (
         <div className="flex-1 min-h-0 overflow-auto p-4 flex flex-col gap-3">
+          {/* 控制命令覆盖率（P1）：把"全量控制命令覆盖到多少 / 缺哪些"摆在自检结论旁，
+              因为这两个是同一类问题——"这个应用现在到底能不能被好好控制"。 */}
+          <AppCoverage appId={app.id} />
           {/* 自检结果 */}
           <div className="flex items-center gap-2 flex-wrap text-[11px]">
             {checking ? (
