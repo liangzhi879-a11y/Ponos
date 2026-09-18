@@ -17,7 +17,8 @@ import { tmpdir } from 'node:os'
 
 const require = createRequire(import.meta.url)
 const {
-  MARKER_FILE, SYNC_DIRS, looksLikeSourceRoot, readMarker, writeMarker, planSync, maybeAutoSync, describeReport,
+  MARKER_FILE, SYNC_DIRS, MIRROR_DIRS, MIRROR_GUARD,
+  looksLikeSourceRoot, readMarker, writeMarker, planSync, applySync, maybeAutoSync, describeReport,
 } = require('../electron/dev-source-sync.cjs')
 
 /** 造一个"看起来像源码根"的目录（looksLikeSourceRoot 的判定依据：kernel/cli.mjs + server/bridge.mjs + shared/） */
@@ -268,4 +269,109 @@ test('⑫ 排除生成物与测试：__pycache__ / *.test.* 不进同步集', ()
   assert.ok(!/\.test\./.test(j), '测试文件不是运行时执行体，不进同步集（避免报告失真）')
   // 但同一目录下的运行时文件仍要同步（别因排除规则误伤）
   assert.ok(plan.toCopy.includes('server/docx_edit.py'), '排除规则不得误伤同目录的运行时 .py')
+})
+
+// ── 镜像目录（dist）：清理陈旧构建产物 ───────────────────────────────────
+// 背景：vite 产物名带内容哈希 ⇒ 每次构建产生新文件名，旧的不会被覆盖，只能删。
+// 此前"只覆盖不删除"的设计让它们无限累积（实测一次积了 9 个文件 / 约 11MB，15M → 3.0M）。
+// 之所以只对 dist 开启删除（而不是全树）：`electron/` 下 75 个 Electron 运行时二进制不是构建
+// 产物，删错就是应用起不来 —— 所以放宽必须**限定在"完全由构建产生"的目录**上。
+
+test('⑬ 镜像 dist：应用树里陈旧的构建产物被删除，源码侧存在的文件保留', () => {
+  const app = mkAppRoot(tmp())
+  const src = mkSourceRoot(tmp(), { 'dist/assets/index-newhash.js': 'new content' })
+  mkdirSync(join(app, 'dist', 'assets'), { recursive: true })
+  // 三个陈旧产物：两个在 assets/、一个在 dist/ 根 —— 源侧都没有
+  writeFileSync(join(app, 'dist', 'assets', 'index-oldhash.js'), 'stale')
+  writeFileSync(join(app, 'dist', 'assets', 'index-oldhash.css'), 'stale')
+  writeFileSync(join(app, 'dist', 'index-oldhash.js'), 'stale')
+  // 这个源侧存在 ⇒ 属于"内容可能落后"而非"多余"，由覆盖逻辑负责，不得被删
+  writeFileSync(join(app, 'dist', 'assets', 'index-newhash.js'), 'old content')
+
+  const plan = planSync({ appRoot: app, sourceRoot: src })
+  assert.deepEqual(plan.toDelete.sort(), [
+    'dist/assets/index-oldhash.css', 'dist/assets/index-oldhash.js', 'dist/index-oldhash.js',
+  ])
+  assert.ok(!plan.toDelete.includes('dist/assets/index-newhash.js'), '源侧存在的文件不能被当陈旧产物删掉')
+
+  const res = applySync(plan, { appRoot: app, sourceRoot: src })
+  assert.equal(res.deleted, 3)
+  assert.equal(existsSync(join(app, 'dist', 'assets', 'index-oldhash.js')), false, '陈旧 js 应已删除')
+  assert.equal(existsSync(join(app, 'dist', 'index-oldhash.js')), false, '陈旧 js（dist 根）应已删除')
+  assert.equal(existsSync(join(app, 'dist', 'assets', 'index-newhash.js')), true, '源侧同名文件必须保留')
+  assert.equal(readFileSync(join(app, 'dist', 'assets', 'index-newhash.js'), 'utf8'), 'new content', '且内容被更新')
+})
+
+test('⑭ 安全对照：同一次同步里 dist 被清理，而非镜像目录（electron/）的多余文件仍保留', () => {
+  const app = mkAppRoot(tmp())
+  const src = mkSourceRoot(tmp())
+  // electron/ 下的"多余文件"模拟 Electron 运行时本体（75 个这类文件的代表）
+  writeFileSync(join(app, 'electron', 'release-only.cjs'), 'runtime')
+  writeFileSync(join(app, 'dist', 'stale-hash.js'), 'stale')
+
+  const res = applySync(planSync({ appRoot: app, sourceRoot: src }), { appRoot: app, sourceRoot: src })
+  assert.equal(existsSync(join(app, 'electron', 'release-only.cjs')), true, 'electron/ 的多余文件必须保留（删了应用起不来）')
+  assert.equal(existsSync(join(app, 'dist', 'stale-hash.js')), false, 'dist/ 的陈旧产物应被清理')
+  assert.equal(res.deleted, 1)
+})
+
+test('⑮ 护栏：源侧构建产物不完整（缺 dist/index.html）⇒ 放弃镜像，一个都不删', () => {
+  const app = mkAppRoot(tmp())
+  const src = mkSourceRoot(tmp())
+  mkdirSync(join(app, 'dist', 'assets'), { recursive: true })
+  writeFileSync(join(app, 'dist', 'assets', 'index-oldhash.js'), 'stale')
+  rmSync(join(src, 'dist', 'index.html')) // 模拟"构建失败/没构建"
+
+  const plan = planSync({ appRoot: app, sourceRoot: src })
+  assert.equal(MIRROR_GUARD.dist, 'dist/index.html')
+  assert.deepEqual(plan.toDelete, [], '源侧产物不完整时不得删任何东西')
+  assert.equal(plan.pruneSkipped.length, 1)
+  assert.equal(plan.pruneSkipped[0].dir, 'dist')
+  assert.match(plan.pruneSkipped[0].reason, /index\.html/)
+  const distExtras = plan.extraInApp.filter((r) => r.startsWith('dist/'))
+  assert.equal(plan.pruneSkipped[0].skipped, distExtras.length, '应报告"因此跳过了几个文件"（数量=该目录下全部多余文件）')
+
+  const res = applySync(plan, { appRoot: app, sourceRoot: src })
+  assert.equal(res.deleted, 0)
+  assert.equal(existsSync(join(app, 'dist', 'assets', 'index-oldhash.js')), true, '宁可留下陈旧文件，也不能因构建不完整误删产物')
+  assert.match(describeReport({ status: 'synced', deleted: 0, pruneSkipped: plan.pruneSkipped, copied: 0, scanned: 0, bytes: 0, ms: 1, missingInApp: [] }), /跳过镜像 dist/)
+})
+
+test('⑯ 预演不落地删除；镜像后再次扫描待删为 0（幂等）', () => {
+  const app = mkAppRoot(tmp())
+  const src = mkSourceRoot(tmp())
+  writeFileSync(join(app, 'dist', 'stale-hash.js'), 'stale')
+
+  const dry = maybeAutoSync({ appRoot: app, sourceRoot: src, env: {}, dryRun: true })
+  assert.equal(dry.status, 'dry-run')
+  assert.equal(dry.toDelete.length, 1, '预演应报告待删清单')
+  assert.equal(existsSync(join(app, 'dist', 'stale-hash.js')), true, '预演不得真的删文件')
+  assert.match(describeReport(dry), /将清理 1 个陈旧产物/)
+
+  maybeAutoSync({ appRoot: app, sourceRoot: src, env: {}, writeMarker: false })
+  assert.equal(existsSync(join(app, 'dist', 'stale-hash.js')), false)
+  assert.deepEqual(planSync({ appRoot: app, sourceRoot: src }).toDelete, [], '清理过一次后不应再有待删')
+})
+
+test('⑰ 删掉陈旧产物后回收空目录，但非空目录照旧', () => {
+  const app = mkAppRoot(tmp())
+  const src = mkSourceRoot(tmp())
+  mkdirSync(join(app, 'dist', 'legacy'), { recursive: true })
+  writeFileSync(join(app, 'dist', 'legacy', 'old.js'), 'stale')
+  // dist/ 根下还有被引用的产物 ⇒ dist/ 本身不能消失
+  assert.equal(planSync({ appRoot: app, sourceRoot: src }).toDelete.length, 1)
+
+  applySync(planSync({ appRoot: app, sourceRoot: src }), { appRoot: app, sourceRoot: src })
+  assert.equal(existsSync(join(app, 'dist', 'legacy')), false, '空目录应被回收')
+  assert.equal(existsSync(join(app, 'dist')), true, 'dist/ 仍装着在用的产物，不得被回收')
+  assert.equal(existsSync(join(app, 'dist', 'index.html')), true)
+})
+
+test('⑱ 镜像目录清单只含"完全由构建产生"的目录（防有人顺手把 electron/ 加进去）', () => {
+  assert.deepEqual(MIRROR_DIRS, ['dist'],
+    'MIRROR_DIRS 只能放"构建完全重建"的目录 —— 把 electron/ 之类放进来会在下次同步删掉 Electron 运行时本体')
+  for (const d of MIRROR_DIRS) {
+    assert.ok(SYNC_DIRS.includes(d), `镜像目录 ${d} 必须在 SYNC_DIRS 内，否则镜像无意义`)
+    assert.ok(MIRROR_GUARD[d], `镜像目录 ${d} 必须有完整性护栏，否则构建失败时会误删产物`)
+  }
 })

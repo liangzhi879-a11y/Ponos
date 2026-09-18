@@ -63,6 +63,16 @@ function countFiles(dir) {
 
 // ── Clean ───────────────────────────────────────────────────────────────
 console.log('[1/5] Cleaning...')
+// 前置检查：渲染产物必须已构建。否则后面 cpDir 要么抛 ENOENT、要么打出一个**白屏的包**——
+// 后者更糟（能装上但起不来），所以这里直接停下来报错。
+{
+  const built = path.join(ROOT, 'dist', 'index.html')
+  if (!fs.existsSync(built)) {
+    console.error('  ✗ 缺少构建产物 ' + built)
+    console.error('    先跑 `npm run build` 再打包（否则会得到一个白屏的便携版）。')
+    process.exit(1)
+  }
+}
 // If the canonical dir was previously locked, reuse the latest YFWorking_* sibling
 const releaseRoot = path.join(ROOT, 'release')
 if (!fs.existsSync(RELEASE) && fs.existsSync(releaseRoot)) {
@@ -86,6 +96,13 @@ if (fs.existsSync(RELEASE)) {
     if (siblings.length) {
       RELEASE = path.join(releaseRoot, siblings[siblings.length - 1])
       try { fs.rmSync(RELEASE, { recursive: true, force: true }) } catch {}
+      // 兜底：若上面这次 rm 也失败（同样被占用），该目录仍是"脏"的。继续往里复制会残留上一版的
+      // 文件（cpDir 只覆盖/新增、不清理，这在"目标已清空"的前提下无害，但脏目标就不是了）。
+      // 此时改用全新目录，保证 RELEASE 一定是本次构建的干净结果。
+      if (fs.existsSync(RELEASE) && fs.readdirSync(RELEASE).length) {
+        RELEASE += '_' + Date.now().toString(36)
+        console.warn('  Sibling dir also locked/dirty, packaging to: ' + RELEASE)
+      }
     } else {
       RELEASE = RELEASE + '_' + Date.now().toString(36)
     }

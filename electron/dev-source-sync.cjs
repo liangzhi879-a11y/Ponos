@@ -27,16 +27,29 @@
 //   · 只覆盖/补齐，**不删除**应用树里的多余文件。这不是"保守"，而是必须：
 //     便携版的 `electron/` 目录里躺着 **75 个 repo 根本没有的文件**（electron.exe、*.dll、
 //     chrome_*.pak、icudtl.dat 等 Electron 运行时二进制）—— 一旦按"镜像"语义删除多余文件，
-//     会直接把应用搞坏。同理 dist/ 下会有历史哈希产物、runtime/ 下有下载的运行时。
+//     会直接把应用搞坏。同理 runtime/ 下有下载的运行时。**例外见下面的 MIRROR_DIRS**。
 //   · 比尺寸与 mtime（拷贝后把目标 mtime 对齐源文件，故未改动时不会重复拷贝）；
 //   · 在 bridge 启动**之前**执行，故本次启动就能用上新代码（无需"重启两次"）。
-const { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, statSync, utimesSync } = require('node:fs')
+const { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, statSync, utimesSync, unlinkSync, rmdirSync } = require('node:fs')
 const { join, dirname, relative } = require('node:path')
 
 /** 便携版根目录里的标记文件名（记录源码根与是否自动同步） */
 const MARKER_FILE = '.yfw-dev-source.json'
 /** 需要同步的运行时子树：内核、内核共享、服务端（含 *.py）、主进程、渲染产物、运行时静态资源 */
 const SYNC_DIRS = ['kernel', 'shared', 'server', 'electron', 'dist', 'public', 'build/templates']
+// 「镜像目录」：这些目录的内容**完全由构建产生**（`npm run build` 会先清空 outDir），因此源码侧
+// 的目录树总是完整自洽的 —— 于是反向操作也安全：以源码为准**删掉应用树里多余的文件**。
+//
+// 为什么只列 dist（而不是给全树开启删除）：
+//   `electron/`（75 个 Electron 运行时二进制）、`runtime/`（下载的运行时）、`public/` 与
+//   `build/templates/`（手写资源）都**不是**构建产物，删错一个就是应用起不来；
+//   而 `dist/` 下多余的文件**每次构建都会新增**（vite 产物名带内容哈希），不清理就无限累积
+//   —— 实测一次积了 9 个文件 / 约 11MB（15M → 3.0M）。这正是本清单存在的唯一理由。
+const MIRROR_DIRS = ['dist']
+// 镜像前的**完整性护栏**：源码侧这些文件必须在，否则视为"构建产物不完整（构建失败/没构建）"，
+// 于是**放弃该目录的镜像（一个都不删）**。宁可多留几个陈旧文件，也绝不能因为一次失败的构建
+// 把正常运行所需的产物删掉——"删"比"留"的代价大得多。
+const MIRROR_GUARD = { dist: 'dist/index.html' }
 // 排除项：
 //   · node_modules/.git/.cache —— 依赖与 VCS，不属源码同步
 //   · *.log / *.bak —— 日志与备份
@@ -98,7 +111,7 @@ function listFiles(root, dir) {
  *   · 代价：若某次编辑**同时**保持尺寸与 mtime 不变，会被漏检（极罕见；改文件必改 mtime）。
  *     需要强保证时用 `scratch/verify-probe.mjs`（哈希逐文件比对）做独立复核。
  */
-function planSync({ appRoot, sourceRoot, dirs = SYNC_DIRS }) {
+function planSync({ appRoot, sourceRoot, dirs = SYNC_DIRS, mirrorDirs = MIRROR_DIRS }) {
   const toCopy = []
   const missingInApp = []
   const extraInApp = []
@@ -117,7 +130,35 @@ function planSync({ appRoot, sourceRoot, dirs = SYNC_DIRS }) {
     }
     for (const rel of listFiles(appRoot, d)) if (!srcSet.has(rel)) extraInApp.push(rel)
   }
-  return { toCopy, missingInApp, extraInApp, scanned }
+
+  // 镜像目录里的多余文件要删（其余多余文件一律保留，理由见 MIRROR_DIRS 注释）。
+  // 护栏：源码侧缺 MIRROR_GUARD 声明的文件 ⇒ 判定"产物不完整"，该目录**一个都不删**。
+  const toDelete = []
+  const pruneSkipped = []
+  for (const d of mirrorDirs) {
+    const extras = extraInApp.filter((rel) => rel === d || rel.startsWith(d + '/'))
+    if (!extras.length) continue
+    const guard = MIRROR_GUARD[d]
+    if (guard && !existsSync(join(sourceRoot, guard))) {
+      pruneSkipped.push({ dir: d, reason: `源侧缺少 ${guard}（构建产物不完整？）`, skipped: extras.length })
+      continue
+    }
+    toDelete.push(...extras)
+  }
+  return { toCopy, missingInApp, extraInApp, toDelete, pruneSkipped, scanned }
+}
+
+/** 删除文件后清理留下的空目录（只在确实为空时；非空一律留着，不影响正确性） */
+function pruneEmptyDirs (appRoot, deletedRels) {
+  const parents = new Set()
+  for (const rel of deletedRels) {
+    let d = dirname(rel)
+    while (d && d !== '.' && d !== '/' && d !== '\\') { parents.add(d); d = dirname(d) }
+  }
+  // 由深到浅，先空子目录、再空父目录
+  for (const d of [...parents].sort((a, b) => b.length - a.length)) {
+    try { rmdirSync(join(appRoot, d)) } catch { /* 非空或不可删（占用）—— 忽略，无碍 */ }
+  }
 }
 
 function applySync(plan, { appRoot, sourceRoot }) {
@@ -133,7 +174,14 @@ function applySync(plan, { appRoot, sourceRoot }) {
     try { utimesSync(a, st.atime, st.mtime) } catch { /* 某些文件系统不支持，忽略 */ }
     bytes += st.size
   }
-  return { copied: plan.toCopy.length, bytes }
+  // 镜像目录里的陈旧产物（vite 每次构建换新哈希名 ⇒ 旧文件不会被覆盖，只能删）
+  let deleted = 0
+  const deletedRels = []
+  for (const rel of plan.toDelete || []) {
+    try { unlinkSync(join(appRoot, rel)); deleted++; deletedRels.push(rel) } catch { /* 被占用/已删——跳过，下次再试 */ }
+  }
+  if (deletedRels.length) pruneEmptyDirs(appRoot, deletedRels)
+  return { copied: plan.toCopy.length, bytes, deleted }
 }
 
 /**
@@ -169,15 +217,22 @@ function describeReport(r) {
   if (!r) return 'dev-sync: 无结果'
   if (r.status === 'skipped') return `dev-sync: 跳过（${r.reason}）`
   if (r.status === 'error') return `dev-sync: 失败（${r.reason}）——已忽略，应用继续启动`
-  if (r.status === 'dry-run') return `dev-sync: 预演，需同步 ${r.toCopy.length}/${r.scanned} 个文件`
+  if (r.status === 'dry-run') {
+    const del = r.toDelete && r.toDelete.length ? `，将清理 ${r.toDelete.length} 个陈旧产物` : ''
+    return `dev-sync: 预演，需同步 ${r.toCopy.length}/${r.scanned} 个文件${del}`
+  }
   const parts = [`dev-sync: 已同步 ${r.copied} 个文件（扫描 ${r.scanned}）`]
   if (r.missingInApp.length) parts.push(`其中补齐缺失 ${r.missingInApp.length} 个`)
+  if (r.deleted) parts.push(`清理陈旧产物 ${r.deleted} 个`)
+  if (r.pruneSkipped && r.pruneSkipped.length) {
+    parts.push(`跳过镜像 ${r.pruneSkipped.map((s) => `${s.dir}(${s.reason})`).join('、')}`)
+  }
   parts.push(`${(r.bytes / 1048576).toFixed(2)}MB`, `${r.ms}ms`)
   return parts.join('｜')
 }
 
 module.exports = {
-  MARKER_FILE, SYNC_DIRS,
+  MARKER_FILE, SYNC_DIRS, MIRROR_DIRS, MIRROR_GUARD,
   looksLikeSourceRoot, readMarker, writeMarker, planSync, applySync, maybeAutoSync, describeReport,
 }
 
@@ -191,7 +246,9 @@ if (require.main === module) {
   else {
     console.log(describeReport(r))
     if (r.toCopy && r.toCopy.length) r.toCopy.slice(0, 40).forEach((f) => console.log('   · ' + f))
-    if (r.extraInApp && r.extraInApp.length) console.log(`   （应用树内多余文件 ${r.extraInApp.length} 个，按约定不删除）`)
+    if (r.toDelete && r.toDelete.length) r.toDelete.slice(0, 40).forEach((f) => console.log('   ✗ 清理 ' + f))
+    const kept = (r.extraInApp || []).filter((f) => !(r.toDelete || []).includes(f))
+    if (kept.length) console.log(`   （其余多余文件 ${kept.length} 个按约定保留：多为 Electron 运行时本体）`)
   }
   process.exit(r.status === 'error' ? 1 : 0)
 }
