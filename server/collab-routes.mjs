@@ -195,6 +195,10 @@ export async function handleCollabRoute({ method, pathname, searchParams, body, 
     const s4Reject = (r, okStatus = 200) => {
       const status = r && r.ok ? okStatus : ({
         'file-missing': 404,
+        // 未知端点：调用点写的是 `s4Reject({code:'unknown-endpoint'}, 404)`，但第二个参数是
+        // **ok 时**的状态码，不 ok 时状态只由这张表决定 —— 漏登记就会被兜底成 400（表意错误：
+        // 路径不存在是 404）。补上，让"未知端点"如实回报 404。
+        'unknown-endpoint': 404,
         'held-by-other': 409,
         'not-checked-out': 409,
         'blocked-by-other': 409,
