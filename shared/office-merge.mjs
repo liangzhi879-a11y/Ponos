@@ -1,6 +1,13 @@
 /**
  * S1-6 三路合并（base / mine / theirs → merged + conflicts）
  *
+ * ⚠️ 未接线（2026-09-18 核实）：本模块**没有任何生产代码调用**——唯一引用者是它自己的测试。
+ *    缺的不是算法，而是 server 层的一段编排：`server/collab-routes.mjs` 的 `/file-collab/conflict`
+ *    路由收到 `choice === 'edit-merge'` 时，应读三版本 → 按模态调 mergeDocxBlocks / mergeSheetRows
+ *    → blocksToOps / sheetMergeToOps → 写回（原语 `/read-docx` `/write-docx` `/read-sheet` `/write-sheet`
+ *    均已存在）。**因此它不是死代码**：请勿当作废弃文件删除；功能说明与接线方案见
+ *    `docs/2026-09-18-office-merge-功能说明与接线方案.md`。
+ *
  * —— 为什么需要它 ——
  * 协同的本质是"两个人各自改了同一份文件"。spec §5.4 定义流程为"base + mine + theirs
  * 三路合并（内容对齐）"，§10 给出验收用例 T5/T6/T7/T9 与 B2：
