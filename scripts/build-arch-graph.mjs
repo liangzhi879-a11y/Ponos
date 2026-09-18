@@ -297,7 +297,8 @@ function domainOfRaw (rel) {
   return `${top}-other`
 }
 
-function main () {
+// ── 建图（纯计算，不写盘）——导出供 kernel-tests 直接对真实源码算环，避免测试另写一份扫描逻辑而漂移。
+function buildGraph () {
   const files = collectFiles()
   const fileSet = new Set(files)
   let trackedSet = new Set()
@@ -445,6 +446,13 @@ function main () {
     domains, domainEdges, nodes, edges,
   }
 
+  return data
+}
+
+function main () {
+  const data = buildGraph()
+  const { unmatched, untracked, coverage } = data
+
   const outIdx = process.argv.indexOf('--out')
   const outPath = path.join(ROOT, outIdx > 0 ? process.argv[outIdx + 1] : 'docs/architecture-graph.html')
   const tpl = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'arch-graph.template.html'), 'utf8')
@@ -463,4 +471,6 @@ function main () {
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) main()
 
 // 供 kernel-tests/arch-graph-domains.test.mjs 断言：域的分配与归并是纯函数，可直接单测。
-export { domainOf, SRC_DOMAIN_MERGE, SRC_VIEW_DOMAIN, DOMAINS }
+// buildGraph 亦导出：kernel-tests/arch-graph-cycles.test.mjs 用它扫描**真实源码**算强连通分量（环），
+// 从而在改动引入新环时立刻失败，而不必等图谱重生成（也不会因图谱产物滞后而漏报）。
+export { domainOf, SRC_DOMAIN_MERGE, SRC_VIEW_DOMAIN, DOMAINS, buildGraph }

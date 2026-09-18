@@ -435,7 +435,7 @@ if (url.pathname === '/read-file') {
 - **删除动作已执行**（2026-09-17，经用户确认）：删 3 个组件（233 行）+ 卸载 `framer-motion`（连带 3 包）+ 同步 `vite.config.ts` 分包规则与 `scripts/package-portable.cjs` 排除表。**回滚锚点 `2edadf2`**，回归全绿（typecheck 0 / build 通过 / unit 1067 / server 741 / kernel 1969·1skip / 门禁通过）。执行前的安全复核（含"是否曾有调用点""是否未完成"实证）与发现的 **1 处能力差异（`clearSession` 未被右栏承接，因组件从未挂载故实际影响为零）** 详见 `docs/dead-code-triage.md` §七。
 - **规格原先点名的 5 个后端模块**（`office-merge` / `provider-profile` / `workflow-store` / `provider-probe` / `config-scan`）**本清单从未收录，属漏落**，本次一并复核：3 个是**活代码**（bridge/workflow-routes 导入）、`config-scan.mjs` 是**设计如此的工具脚本**（独立 CLI，无 import 属正常）；规格里写的 `knowledge-export` **在仓库中不存在**（过期/笔误，已从本规格移除）。剩下的 `shared/office-merge.mjs`(409 行) 是**未完成的集成**而非死代码——UI 有 `edit-merge` 按钮、决策层注释指向它，但**两端都没真正调用**（唯一引用者是它自己的测试）⇒ **切勿当死代码删**，需人决策"接线 or 移除"。详见 `docs/dead-code-triage.md` §六。
 
-### P2-4 · 文档口径纳入校验 🚧 进行中
+### P2-4 · 文档口径纳入校验 ✅ 已完成（① 门禁 C 12 条断言；② 文件级环基线守卫）
 
 把 §1.7 的口径问题制度化：把已在用的 `consistency` 校验脚本化并入 CI（当前 26/26），**并新增两条**：① 文档中的模块/边/域数字必须能在 `docs/architecture-graph.html` 内嵌数据中找到；② 若文档声称"循环依赖"，必须给出**文件级** SCC 证据（防止再把符号图读数当文件级结论）。
 
@@ -463,8 +463,13 @@ if (url.pathname === '/read-file') {
 
 **单文件行数为何不入门禁**：试图断言"bridge.mjs 3812 行"时发现图谱 `stats.loc` 是**全仓总行数**（118,482）而非单文件值；更关键的是单文件行数会随每次重构变动（P2-1 拆巨石必然变），拿它做门禁等于"每改一次源码就红一次"——正是门禁要避免的 churn。故该处按"描述性快照"处理，理由已写进 `GRAPH_CLAIMS` 注释。
 
-- **② 未做**（需先有一套"文件级 SCC"的计算与文档声明口径）。**但本轮已为它铺路**：用图谱数据（476 节点 / 1274 静态边）实算了一次 Tarjan SCC，得 **5 组、最大 3 文件**，首组 `titleGen ↔ chatStore ↔ settingsStore` —— 与 `.html` 原结论**完全一致**，说明该结论在新口径下依然成立，只是尚未自动化。
-- **② 未做**（需先有一套"文件级 SCC"的计算与文档声明口径）。
+- **② 已完成（2026-09-18）**：新增 `kernel-tests/arch-graph-cycles.test.mjs`（5 项）把「文件级环集合」变成**声明式基线**。
+  - **计算口径**：为免测试另写一份扫描逻辑（会与生成器漂移），把 `scripts/build-arch-graph.mjs` 的建图段**机械提取**为纯函数 `buildGraph()` 并导出（生成器 `main()` 改为调用它）。提取后**逐字节验证行为不变**：重构前后各跑一次生成，内嵌 `DATA` 序列化后长度同为 263,651、内容完全一致（已排除 `generatedAt`）。
+  - **它扫真实源码，不读已生成的 HTML**：后者会滞后（改完代码不重生成图谱时它仍是旧的），而守门需要"当前的真相"。
+  - **基线（4 组，实测）**：① `src/lib/titleGen.ts ↔ src/stores/chatStore.ts ↔ src/stores/settingsStore.ts`(3) ② `src/lib/healthUi.ts ↔ src/stores/healthStore.ts`(2) ③ `kernel/engine-config.mjs ↔ kernel/gen-guards.mjs`(2) ④ `kernel/compact.mjs ↔ kernel/engine.mjs`(2)。
+  - **正反两向验证**：①临时造 `kernel/tmp-cycle-a ↔ tmp-cycle-b` 两文件 ⇒ 报"**新增**文件级环"并点名成员（退出码 1）；②基线里去掉一条 ⇒ 报"该环已不存在，请更新基线"；③基线塞入不存在的环 ⇒ 另一项断言报"基线成员不存在于图谱"。三次均为**预期的红**，随后全部还原。
+  - **另有一条"防止守卫变摆设"的自检**：`buildGraph()` 若因环境问题（git 不可用、目录改名）返回空/极小图，"无新环"会**假通过**——故断言模块数 > 300、边数 > 500、且每个节点都有分层。
+  - **顺带纠正两处过期口径**：`docs/architecture.html` 第 9 章原写"文件级环**仅 5 组**"（与实测不符，`tools ↔ knowledge-import` 那个环在 P2-1 第二刀中已被消掉）→ 改为 **4 组**；本节原先那句"实算得 **5 组**"同此更正，并删去一行重复的"② 未做"。
 - **原计划提到的 `consistency` 脚本**在仓库中**找不到**（`grep` 无命中）——该编号的来源需确认；本次未凭猜测重建。
 
 
