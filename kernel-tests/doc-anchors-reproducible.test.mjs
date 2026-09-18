@@ -51,7 +51,9 @@ test('门禁的路径判据是「是否入库」，不是「盘上是否有」�
   // ③ 本地/构建产物目录的跳过清单必须是**已提交的显式清单**（用 git check-ignore 会让结果随本机
   //    的 .git/info/exclude 变化 —— 那正是要消灭的不可复现）
   assert.match(src, /LOCAL_PREFIXES/, '应有本地/产物目录的跳过清单')
-  assert.equal(/check-ignore/.test(src), false,
+  // 断言"不得把 check-ignore 当作 argv 使用"（用数组字面量精确匹配 —— 直接匹配裸词会命中
+  // 脚本里解释"为什么不用它"的注释）
+  assert.equal(/\['check-ignore'\]|'check-ignore',/.test(src), false,
     '不得用 git check-ignore 判本地路径（它读本机的 .git/info/exclude，结果不可复现）')
 })
 
