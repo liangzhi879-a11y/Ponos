@@ -119,6 +119,57 @@ function extractDocPaths() {
   return found
 }
 
+/**
+ * 文档引用的仓库相对路径 → 是否存在？
+ *
+ * **判据是「是否入库」（`git ls-files`），不是「盘上是否有」（原实现用 `existsSync`）。**
+ * 为什么必须这样：文档是写给**任何读者**的（CI、新克隆的同事、审查者）。只有已入库的文件
+ * 对别人来说才存在；拿工作树判定会让门禁**不可复现** —— 本地因 gitignored 的 `release/`、
+ * `scratch/` 恰好在磁盘上而"绿"，干净克隆必然变红。
+ * 2026-09-18 实测：同一提交，本地 0 问题，而仅凭 bundle 建出的干净检出里报 **13 处**悬空引用。
+ * 不可复现的门禁无法进 CI，也就等于没有门禁 —— 这正是本次修掉的问题。
+ */
+let _tracked = null
+function trackedSet() {
+  if (!_tracked) {
+    const out = execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    _tracked = new Set(out.split('\0').filter(Boolean))
+  }
+  return _tracked
+}
+const repoHas = (p) => trackedSet().has(p)
+
+/**
+ * 本地/构建产物目录：这些路径**不在仓库内容范围内**，文档提到它们属于"描述本地操作"，
+ * 不是"描述仓库结构"——门禁 B 的用途（防仓库文件改名/移动/删除造成的文档腐烂）对它们不适用，
+ * 故整体跳过并**提示**（不是静默放过）。
+ *
+ * 刻意用**显式清单**而不是 `git check-ignore`：后者会读**本机**的 `.git/info/exclude`，
+ * 于是同一份文档在不同机器上判定不同 —— 那正是本次要消灭的不可复现。
+ * 这份清单是**已提交**的，对所有环境一致。
+ *
+ * 注：`scripts/pack-source-zip.mjs`、`scripts/package-portable-zip.mjs` 不在此列 ——
+ * 它们不在 gitignored 目录下（是被 `.git/info/exclude` 本地排除的"只在本地用的交付工具"），
+ * 故走白名单并注明理由（见 docs/_anchors-allow.json；architecture.md 也刻意说明它们是本地未跟踪文件）。
+ */
+const LOCAL_PREFIXES = ['scratch/', 'release/', 'kernel-dist/', 'dist/', 'node_modules/']
+const isLocalPath = (p) => LOCAL_PREFIXES.some((pre) => p.startsWith(pre))
+
+/** 统一分诊：入库且存在 / 本地与构建产物（跳过）/ 白名单 / 真悬空。校验与写入两处共用，避免判据漂移。 */
+function triageDocPaths (allowMissing) {
+  const ok = []
+  const local = []
+  const allowlisted = []
+  const dangling = []
+  for (const [p, refs] of extractDocPaths()) {
+    if (repoHas(p)) ok.push(p)
+    else if (isLocalPath(p)) local.push(p)
+    else if (allowMissing.has(p)) allowlisted.push(p)
+    else dangling.push([p, refs])
+  }
+  return { ok, local, allowlisted, dangling }
+}
+
 // ── 门禁 C 的数据源：从已提交的图谱产物里读"权威数字" ────────────────────────
 // 图谱 HTML 是自包含的，数据内嵌在 `const DATA = {...}` 里。我们只读它、绝不现场重扫——
 // 现场重扫会让门禁依赖构建时序（CI 上不该为了校验文档而跑一遍架构扫描）。
@@ -202,14 +253,18 @@ if (write) {
   }
   writeFileSync(ANCHORS, JSON.stringify(out, null, 2) + '\n')
   const allow = readAllow()
-  const missing = []
-  for (const [p] of extractDocPaths()) if (!existsSync(resolve(ROOT, p))) missing.push(p)
-  const unresolved = missing.filter((p) => !allow.has(p))
+  const t = triageDocPaths(allow)
+  const missing = [...t.dangling.map(([p]) => p), ...t.allowlisted]
+  const unresolved = t.dangling.map(([p]) => p)
   console.log('✅ 已写入 docs/_anchors.json（仅计数口径；白名单见 docs/_anchors-allow.json）')
   console.log(`   信息：源码模块 ${out.info.sourceModules} / 总行 ${out.info.sourceLoc} / 测试文件 ${out.testTotal}`)
   console.log(`   门禁：各层测试文件数 + 文档路径存在性（手写白名单 ${allow.size} 条）+ 文档图谱数字（${GRAPH_CLAIMS.length} 条声明）`)
+  if (t.local.length) {
+    console.log(`\n${t.local.length} 处引用落在本地/构建产物目录（本门禁不校验）：`)
+    for (const p of t.local) console.log(`   [本地/产物] ${p}`)
+  }
   if (missing.length) {
-    console.log(`\n${missing.length} 个文档引用的路径不存在：`)
+    console.log(`\n${missing.length} 个文档引用的路径未入库（或不在本地目录）：`)
     for (const p of missing) console.log(`   ${allow.has(p) ? '[已白名单]' : '[未处理]'} ${p}`)
   }
   if (unresolved.length) {
@@ -232,6 +287,8 @@ if (!existsSync(ANCHORS)) {
 }
 const declared = JSON.parse(readFileSync(ANCHORS, 'utf8'))
 const allowMissing = readAllow()
+// 文档路径引用的统一分诊结果（门禁 B 与提示共用同一判据）
+const docPathTriage = triageDocPaths(allowMissing)
 
 // 门禁 A：各层测试文件数（防整层静默消失）
 for (const [g, n] of Object.entries(anchors.testFileCounts)) {
@@ -249,14 +306,16 @@ try {
   }
 } catch { warnings.push('无法读取 package.json 校验分层清单一致性') }
 
-// 门禁 B：文档路径存在性（未白名单的缺失 = 文档腐烂）
-for (const [p, refs] of extractDocPaths()) {
-  if (existsSync(resolve(ROOT, p))) continue
-  if (allowMissing.has(p)) continue
+// 门禁 B：文档路径存在性（判据 = **是否入库**，故结果与工作树状态无关、可复现）
+for (const [p, refs] of docPathTriage.dangling) {
   problems.push(`文档引用了不存在的路径 \`${p}\`（引用它的文档：${[...refs].join(', ')}）——首选修文档；确属真·历史引用才写进 docs/_anchors-allow.json 并注明理由`)
 }
-// 已白名单却已存在的路径：提示清理（不算失败）
-for (const p of allowMissing.keys()) if (existsSync(resolve(ROOT, p))) warnings.push(`白名单里的 \`${p}\` 现已存在，可移除该条目`)
+// 已白名单却已入库的路径：提示清理（不算失败）
+for (const p of allowMissing.keys()) if (repoHas(p)) warnings.push(`白名单里的 \`${p}\` 现已入库，可移除该条目`)
+// 落在本地/构建产物目录的引用：提示（不算失败，见 LOCAL_PREFIXES 说明）
+if (docPathTriage.local.length) {
+  warnings.push(`${docPathTriage.local.length} 处引用落在本地/构建产物目录（${LOCAL_PREFIXES.join('、')}）——本门禁不校验这类引用（它们不在仓库内容范围内）`)
+}
 
 // 门禁 C：文档声明的图谱数字必须与**已提交的图谱产物**一致（P2-4①）
 checkGraphNumbers(problems)

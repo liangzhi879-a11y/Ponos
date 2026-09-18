@@ -45,6 +45,14 @@
     {
       "path": "src/components/browser/BrowserStatusBar.tsx",
       "reason": "**已删除**（2026-09-17 死代码清理第二批）：职责已合并进 RightStatusRail 的浏览器胶囊段，自创建起从未被 import。docs/dead-code-triage.md 需记录合并前后能力对照（含右栏未承接的 clearSession 差异）。"
+    },
+    {
+      "path": "scripts/pack-source-zip.mjs",
+      "reason": "**本地未跟踪的交付工具**（被 .git/info/exclude 排除，注释写明「临时交付工具，只在本地用，不入库」）。docs/architecture.md 是**刻意**登记它，并明确标注「本地未跟踪文件」——登记的目的是让读者知道图里有它的标记、来源是本地而非仓库。文件不在仓库是它的正常状态。"
+    },
+    {
+      "path": "scripts/package-portable-zip.mjs",
+      "reason": "同上：本地未跟踪的交付工具，architecture.md 刻意登记并标注为「本地未跟踪文件」。"
     }
   ]
 }
