@@ -418,7 +418,7 @@ if (url.pathname === '/read-file') {
 - **新增测试** `kernel-tests/arch-graph-domains.test.mjs`（8 项）：守归并表的四类"错了但不报错"形态——归并目标必须是有名字的真实域、不得出现链式映射（只应用一层）、不得自映射、来源与目标集合不相交、后端域不被卷入。为此把生成器的 `main()` 用 `import.meta` 守卫（否则 import 即触发全仓扫描）并导出纯函数。
 - **文档同步**：`docs/architecture.md` 的 §12 全部口径已对齐新图谱（域数 52、模块 476、行 118,482、边 1,274、按路径引用 49、覆盖 8 目录、孤立 27、测试排除 388、枢纽与跨层边数值），并**如实标注**了 §12.8 里那批布局度量（"64 个标签 / 填充率 80%"）取自 68 域时代、**需重测**。
 
-### P2-3 · 死代码清点 🚧 判定完成；第二批复核已完成，删除待确认
+### P2-3 · 死代码清点 ✅ 已完成（判定 + 第二批删除已执行，3 组件 233 行 + 卸载 1 依赖）
 
 26 个孤立模块逐个判定（判定表见 `docs/dead-code-triage.md`）。**验收**：每个孤立模块给出"删除 / 标注为动态入口（附加载点）/ 保留（附理由）"三态结论。
 
@@ -432,7 +432,7 @@ if (url.pathname === '/read-file') {
 - ✅ **可删 3 个**（233 行）：`boot/LogoMorph.tsx`(87)、`diagnostic/DiagnosticBanner.tsx`(32)、`browser/BrowserStatusBar.tsx`(114) —— 三者的职责均已"迁移/收栏"进 `ViewRouter` / `RightStatusRail`（2026-09-10 同一批重构），零引用、无伴生测试；删 LogoMorph 时**连带卸载 `framer-motion`**（含 `vite.config.ts` 的 `vendor-framer` 分包规则）。
 - ⏸ **保留 1 个**：`server/interject.e2e.mjs` —— 服务于**活跃功能**（生成中插队/紧急插话，见 `kernel/cli.mjs`）的**唯一端到端探针**，README 有登记；删除会丢掉唯一 e2e 覆盖（与"清死代码"目的相反）。
 - ⛔ **撤回 2 条误判**：`ui/dropdown-menu.tsx`、`settings/experienceFormat.ts` —— **活代码，不得删除**。
-- **删除动作仍待人工确认**（判定 ≠ 删除；本工作包只产出证据与建议）。
+- **删除动作已执行**（2026-09-17，经用户确认）：删 3 个组件（233 行）+ 卸载 `framer-motion`（连带 3 包）+ 同步 `vite.config.ts` 分包规则与 `scripts/package-portable.cjs` 排除表。**回滚锚点 `2edadf2`**，回归全绿（typecheck 0 / build 通过 / unit 1067 / server 741 / kernel 1969·1skip / 门禁通过）。执行前的安全复核（含"是否曾有调用点""是否未完成"实证）与发现的 **1 处能力差异（`clearSession` 未被右栏承接，因组件从未挂载故实际影响为零）** 详见 `docs/dead-code-triage.md` §七。
 - **规格原先点名的 5 个后端模块**（`office-merge` / `provider-profile` / `workflow-store` / `provider-probe` / `config-scan`）**本清单从未收录，属漏落**，本次一并复核：3 个是**活代码**（bridge/workflow-routes 导入）、`config-scan.mjs` 是**设计如此的工具脚本**（独立 CLI，无 import 属正常）；规格里写的 `knowledge-export` **在仓库中不存在**（过期/笔误，已从本规格移除）。剩下的 `shared/office-merge.mjs`(409 行) 是**未完成的集成**而非死代码——UI 有 `edit-merge` 按钮、决策层注释指向它，但**两端都没真正调用**（唯一引用者是它自己的测试）⇒ **切勿当死代码删**，需人决策"接线 or 移除"。详见 `docs/dead-code-triage.md` §六。
 
 ### P2-4 · 文档口径纳入校验 🚧 进行中

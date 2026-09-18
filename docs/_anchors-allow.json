@@ -33,6 +33,18 @@
     {
       "path": "src/components/chat/SystemWarningStrip.tsx",
       "reason": "同上：死代码清理对象，docs/dead-code-triage.md 需保留其名字作为判定依据。"
+    },
+    {
+      "path": "src/components/boot/LogoMorph.tsx",
+      "reason": "**已删除**（2026-09-17 死代码清理第二批）：因「2026-09-10 morph 退役」而废弃，且是 framer-motion 的唯一使用者，删除时连带卸载该依赖。docs/dead-code-triage.md 需保留其名字与退役依据。"
+    },
+    {
+      "path": "src/components/diagnostic/DiagnosticBanner.tsx",
+      "reason": "**已删除**（2026-09-17 死代码清理第二批）：职责已于 2026-09-10「收栏」进 src/components/chat/RightStatusRail.tsx，自创建起从未被 import。docs/dead-code-triage.md 需记录其收栏去向。"
+    },
+    {
+      "path": "src/components/browser/BrowserStatusBar.tsx",
+      "reason": "**已删除**（2026-09-17 死代码清理第二批）：职责已合并进 RightStatusRail 的浏览器胶囊段，自创建起从未被 import。docs/dead-code-triage.md 需记录合并前后能力对照（含右栏未承接的 clearSession 差异）。"
     }
   ]
 }

@@ -36,7 +36,6 @@ export default defineConfig({
             if (rel.includes('@radix-ui') || rel.includes('radix-ui')) return 'vendor-radix'
             // assistant-ui 独立成组：内部跨包互相引用，与 react/radix 仅单向依赖
             if (rel.includes('@assistant-ui')) return 'vendor-assistant'
-            if (rel.includes('framer-motion')) return 'vendor-framer'
             if (rel.includes('react-markdown') || rel.includes('remark-gfm') || rel.includes('unified') || rel.includes('micromark') || rel.includes('mdast') || rel.includes('hast') || rel.includes('unist') || rel.includes('vfile') || rel.includes('bail') || rel.includes('is-plain-obj') || rel.includes('trough')) return 'vendor-markdown'
             if (rel.includes('lucide-react')) return 'vendor-icons'
             if (rel.includes('zustand')) return 'vendor-store'

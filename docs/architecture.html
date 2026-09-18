@@ -434,7 +434,7 @@ bridge 进程 node server/bridge.mjs
   </div>
   <table style="margin-top:12px">
     <tr><th style="width:20%">项</th><th>实测结果</th></tr>
-    <tr><td>循环依赖</td><td><b>文件级（以图谱数据全仓复核，478 模块 / 1,279 边 · 2026-09-17）</b>：仅 <b>5 组</b>、最大 <b>3 文件</b>（`titleGen` ↔ `chatStore` ↔ `settingsStore` 一组，其余为 kernel 与 renderer 内各一对）；`renderer→kernel` 静态边为 0。<br><b>DevLens 报称的「38 节点大环」未能复现</b>：App.tsx 仅被 `main.tsx` 引用、无回边，`getOrCreateWS` / `scheduleReconnect` 均为 `useYFWCLI.ts` 内部符号（该文件不被 App 引用）⇒ 应为<b>符号图（函数/方法级）产物</b>或推断关系，非文件级循环。文件级无环意味着<b>构建与初始化顺序层面无循环耦合</b>；符号级的互相引用（WS 心跳/重连链路横跨多组件）是实际的心智负担来源，值得单独治理。</td></tr>
+    <tr><td>循环依赖</td><td><b>文件级（以图谱数据全仓复核，475 模块 / 1,273 边 · 2026-09-17）</b>：仅 <b>4 组</b>、最大 <b>3 文件</b>（`titleGen` ↔ `chatStore` ↔ `settingsStore` 一组，另 kernel 内两对、renderer 内一对）；`renderer→kernel` 静态边为 0。<br><b>DevLens 报称的「38 节点大环」未能复现</b>：App.tsx 仅被 `main.tsx` 引用、无回边，`getOrCreateWS` / `scheduleReconnect` 均为 `useYFWCLI.ts` 内部符号（该文件不被 App 引用）⇒ 应为<b>符号图（函数/方法级）产物</b>或推断关系，非文件级循环。文件级无环意味着<b>构建与初始化顺序层面无循环耦合</b>；符号级的互相引用（WS 心跳/重连链路横跨多组件）是实际的心智负担来源，值得单独治理。</td></tr>
     <tr><td>最高危安全标记</td><td><b>未生成</b>（安全标记是 LLM 摘要阶段产物，本次因 402 未产出）。<b>待人工复核的线索</b>：<code>src/components/editor/FileEditor.tsx::OfficePreview</code> —— Office 预览会渲染服务端返回的 HTML，历史上被标记为可能的 <b>HTML 注入 / XSS 面</b>，但该标记<b>未经本轮验证</b>，重跑摘要后需重新确认。</td></tr>
     <tr><td>图谱覆盖边界</td><td>DevLens 本次只抽到 <code>src/</code>（<code>byType.FILE</code> 计 253 个文件节点，均为 TS/TSX）；<code>electron/*.cjs</code>、<code>kernel/*.mjs</code>、<code>server/*.mjs</code> <b>未入图</b> ⇒ 本图后端三层依据是源码真源与文档，而非图谱</td></tr>
     <tr><td>摘要覆盖</td><td><b>本次未生成</b>：DevLens 摘要需调用模型，本次因账号余额不足（HTTP 402）失败，覆盖率 <b>0/1345</b>；结构类结论（节点/边/循环依赖）不受影响。已配置恢复方式：把 <code>~/.devlens/config.json</code> 的 <code>summarization.batchSize</code> 降到 ≤20 后重跑 <code>devlens summarize</code>（默认 50 会触发 429）。此前版本里出现的「覆盖率 1212/1345（90%）」取自运行中的读数，<b>不代表最终态，已作废</b>。</td></tr>
@@ -479,7 +479,7 @@ dist/ + kernel   ──npm run build:electron──────►  release/inst
     <tr><td>「内核 ⊥ server」并非全局成立</td><td>该纪律被测试钉住的只有部分模块；<code>server/bridge.mjs</code> 自身就 import 了 <code>kernel/mcp.mjs</code>、<code>kernel/tag-store.mjs</code>、<code>kernel/team-store.mjs</code>、<code>kernel/file-collab.mjs</code>、<code>kernel/legacy-env-boot.mjs</code>。不要把「完全解耦」当作既成事实。</td></tr>
     <tr><td>打包产物不含 kernel/</td><td>只发 <code>dist/ electron/ server/ shared/ public/ bin/ node.exe</code> + <code>kernel-dist</code> ⇒ server 侧模块不得 import <code>kernel/*</code>（<code>electron-builder.yml:23-43</code> 注释已承认此隐患，靠 <code>shared/**</code> 一并打包缓解）。</td></tr>
     <tr><td>便携版树才是运行代码</td><td>dev 形态下改源码不生效：运行代码真实来源是 <code>release/YFWorking/</code>，由 <code>dev-source-sync.cjs</code> 门控同步，<b>失败只 warn 不报错</b>（<code>main.cjs:1682-1693</code>）。</td></tr>
-    <tr><td>文档 / 图谱的口径关系</td><td><code>docs/architecture.md</code> 是<b>文本真源</b>（可 diff、可评审）；本 HTML 是它的可视化 / 汇报版，<code>docs/architecture-graph.html</code> 是逐模块图谱。三者的<b>模块数 / 功能域数 / 边数 / 行数</b>已由 <code>scripts/check-doc-anchors.mjs</code> 的「门禁 C」互校，不一致即 CI 失败。<br><b>勿混用的口径差异</b>：本图第 6 章的「70 模块」是<b>内核文件数</b>（≠ 功能域数 52）；第 9 章的「1345 节点 / 3356 边」是 DevLens <b>符号级</b>读数 —— 二者与图谱的「文件级 478 模块 / 1,279 边」不是同一口径。</td></tr>
+    <tr><td>文档 / 图谱的口径关系</td><td><code>docs/architecture.md</code> 是<b>文本真源</b>（可 diff、可评审）；本 HTML 是它的可视化 / 汇报版，<code>docs/architecture-graph.html</code> 是逐模块图谱。三者的<b>模块数 / 功能域数 / 边数 / 行数</b>已由 <code>scripts/check-doc-anchors.mjs</code> 的「门禁 C」互校，不一致即 CI 失败。<br><b>勿混用的口径差异</b>：本图第 6 章的「70 模块」是<b>内核文件数</b>（≠ 功能域数 52）；第 9 章的「1345 节点 / 3356 边」是 DevLens <b>符号级</b>读数 —— 二者与图谱的「文件级 475 模块 / 1,273 边」不是同一口径。</td></tr>
     <tr><td>阈值皆环境相关</td><td><code>YFW_KERNEL_IDLE_MS</code>、<code>YFW_APPROVAL_STALE_MS</code> 等属可配置面而非硬编码常量，图上按「环境相关」标注。</td></tr>
     <tr><td>图谱覆盖盲区</td><td>DevLens 本次仅抽取 <code>src/</code>（TS/TSX），<code>.cjs/.mjs</code> 未入图 ⇒ 后端三层的结构结论来自源码直读（子 agent 交叉核对），非图谱推断。</td></tr>
   </table>
@@ -488,7 +488,7 @@ dist/ + kernel   ──npm run build:electron──────►  release/inst
 <footer>
   YFWorking 应用架构图 · 分层图版 · 基线 <code>4991ca6</code> + P2-1 第二刀（工作树）· 含 exec-base/media-tools 拆分、P2-2 域归并 70→52、P2-4① 文档口径门禁 · 更新于 2026-09-17<br>
   文本真源：<code>docs/architecture.md</code>（§1–§12，可 diff / 可评审）·
-  交互式全模块图谱：<a href="./architecture-graph.html">docs/architecture-graph.html</a>（478 模块 / 52 功能域，可点击过滤）
+  交互式全模块图谱：<a href="./architecture-graph.html">docs/architecture-graph.html</a>（475 模块 / 52 功能域，可点击过滤）
 </footer>
 
 </div>

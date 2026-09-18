@@ -181,3 +181,72 @@ grep -rn "<Name>" --include=*.ts --include=*.tsx src/ | grep -vE "^src/.*/<Name>
 - **在决策前不得删除**：删掉它会让 `FileCollabBar` 的 `edit-merge` 成为永久空操作，且丢失 S1 已写好的三路合并（含测试）。
 
 > **本条对"孤立模块"清单的启示**：图上的"孤立"有三种截然不同的成因——**废弃**（可删）、**工具/入口**（设计如此，保留）、**未接线**（功能缺口，需决策）。**只看"孤立 + 无 import"无法区分三者**，必须去看"谁本该调用它"（如本例的注释与 UI 按钮）。
+
+---
+
+## 七、删除执行记录（2026-09-17 已执行）
+
+**范围**：3 个前端组件（233 行）+ 卸载 `framer-motion` 运行时依赖。
+
+### 7.1 执行前的安全复核（要求"移除前评估是否影响功能 / 是否未开发完全"）
+
+| 复核项 | 方法 | 结论 |
+|---|---|---|
+| **是否曾有调用点** | `git log --all -G "import.*<Name>"`（全历史、正则匹配真实 import 语句） | **三者自创建起从未有过 import**——所有匹配都来自文档/图谱提交。即不是"曾接线后被替换"，而是**从未接线** |
+| **是否有未完成的开发意图** | 读文件头注释 + 用 `git log -S` 给注释定时间线 | `LogoMorph.tsx` 头部确有"Task 8 接入驾驶舱后才产生调用点"的**计划注释**，但该注释写于 **09-09**，而 ViewRouter 的「**morph 退役**」注释写在 **09-11（更晚）** ⇒ **计划已被主动放弃**，不是未完成 |
+| **是否影响功能** | 逐项做**新旧能力对照**（不只看引用） | 发现 **1 处能力差异**（见 7.3），其余对等 |
+| **是否有测试依赖** | grep 三个测试 glob | 零引用 ✅ |
+| **是否有独占 i18n/配置** | grep 三者的 key | 零独占 ✅ |
+| **是否连带影响打包** | grep `framer` 全仓 | 命中 `vite.config.ts` 分包规则 + `scripts/package-portable.cjs:213` 的 `browserOnly` 排除表 ⇒ 已同步 |
+
+### 7.2 回滚备份（已验证可还原）
+
+**删除前基准提交：`2edadf2`**（已推送远程，随时可取回文件）
+
+| 文件 | 行数 | md5（工作树） |
+|---|---|---|
+| `src/components/boot/LogoMorph.tsx` | 87 | `34440bed291b652927913d5a30acb2ea` |
+| `src/components/diagnostic/DiagnosticBanner.tsx` | 32 | `c035cdd34793ea04dc1574179925d4cc` |
+| `src/components/browser/BrowserStatusBar.tsx` | 114 | `1d0e59339600f359bf7196b9a84ab99c` |
+
+**回滚命令**（任选其一）：
+```bash
+git checkout 2edadf2 -- src/components/boot/LogoMorph.tsx src/components/diagnostic/DiagnosticBanner.tsx src/components/browser/BrowserStatusBar.tsx
+# 或整体回滚本次删除提交：
+git revert <本次删除提交>
+```
+> **注意**：md5 取自**工作树**（CRLF）而 blob 是 LF，直接比 md5 会不一致（字节差 = 行数）；内容本身一致（已用 `diff` 验证仅行尾差异）。**回滚后需重跑 `npm install` 才能恢复 `framer-motion`**（已从 `package.json`/lockfile 移除）。
+
+### 7.3 ⚠️ 能力差异：`clearSession` 未被 RightStatusRail 承接
+
+**这是本次复核发现的唯一功能差异（对应"仔细评估是否影响功能"的要求）**：
+
+- 旧 `BrowserStatusBar` 有一枚"清空会话"按钮，动作是 `clearSession(activeSessionId)` —— **用会话 id 清空某个会话**（语义 = 抹掉该会话内容），带二次确认。
+- `RightStatusRail` 的浏览器胶囊段有：打开窗口 / 暂停-恢复 / 清除（`clear()`）—— 但其中的 `clear()` 是 **`browserStore` 的动作**（清浏览器**事件列表**），**不是清空会话**。
+- 全仓 `clearSession`：`grep -rn "clearSession" src/ electron/` ⇒ **只有 BrowserStatusBar（已删）引用过**，无其它替代实现。
+
+⇒ **结论**：`clearSession` 作为"从浏览器条清空会话"的入口，**在右栏取代方案中丢失了**。但这**不等于用户无法清空会话**（聊天侧可能有会话删除入口），且该组件**自创建起从未被挂载**——用户从未见过这枚按钮，故**实际影响为零**。
+⇒ **处置建议**：**无需为此恢复组件**；若"清空会话"确实是需要的功能，应作为**独立小需求**补进 `RightStatusRail`，而非恢复一个从未渲染的组件。**建议记入待办，不阻塞本次清理**。
+
+### 7.4 回归验证（全绿）
+
+| 项 | 结果 |
+|---|---|
+| `npm run typecheck` | ✅ 退出码 0 |
+| `npm run build` | ✅ 通过（产物中**已无 `vendor-framer` chunk**） |
+| `node scripts/build-arch-graph.mjs` | ✅ 475 模块 / 118,427 行 / 1,273 边 / 52 域 / 孤立 26 |
+| `node scripts/check-doc-anchors.mjs` | ✅ 通过（389 测试文件 / 11 条白名单 / 12 条声明） |
+| `npm run test:unit` | ✅ **1067** 通过 / 0 失败 |
+| server（分 4 批 [a-c][d-g][h-m][n-z]） | ✅ 123+82+259+277 = **741** 通过 / 0 失败 |
+| kernel（分 3 批 [a-g][h-o][p-z]） | ✅ 1166+514+289 = **1969** 通过 / 1 skip / 0 失败 |
+
+**净收益**：删除 3 组件（233 行）+ 卸载 1 个运行时依赖（连带共 3 个包）⇒ 减少**代码面**与**供应链面**。
+
+### 7.5 顺带修正的两处文档口径
+
+1. **`docs/architecture.md` §12.6** 原把 5 个孤立模块混在一张表里笼统标注（把活代码 `experienceFormat.ts` 写成"同上，无引用"是**错的**；`provider-profile`/`workflow-store`/`provider-probe` 也非废弃）。现改为只登记真正需说明的两项，并写明"孤立"的三种成因。
+2. **`docs/architecture.html` 第 9 章**原写"文件级环**仅 5 组**……其余 kernel 与 renderer 各一对" —— 与当前图谱不符。**本次用 SCC 算法独立复核**（Tarjan）得 **4 组**：①`titleGen ↔ chatStore ↔ settingsStore`(3) ②`engine-config ↔ gen-guards`(2) ③`compact ↔ engine`(2) ④`healthUi ↔ healthStore`(2)，自环边 0。已更正为 4 组。
+   > 复核方式（可重现）：解析 `docs/architecture-graph.html` 内嵌的 `const DATA = {...}`，对 `nodes`/`edges` 跑 Tarjan SCC，取 size≥2 的分量。
+
+**小结**："真死候选"经两批清理由 **10 → 8 → 本轮删除 3 个（剩 0 个"已确证且待删"的前端组件）**；`server/interject.e2e.mjs` 与 `shared/office-merge.mjs` **均保留**（前者的功能活跃、后者待决策）。
+

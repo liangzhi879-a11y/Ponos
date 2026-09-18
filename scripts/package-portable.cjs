@@ -210,7 +210,7 @@ const prodDeps = Object.keys(pkg.dependencies || {})
 const neededDeps = prodDeps.filter(d => {
   // Bridge uses: ws, xlsx, mammoth, nanoid (via server/bridge.mjs)
   // Skip react/frontend deps — not needed at runtime (bundled in dist)
-  const browserOnly = ['react', 'react-dom', 'framer-motion', 'tailwind-merge', 'class-variance-authority',
+  const browserOnly = ['react', 'react-dom', 'tailwind-merge', 'class-variance-authority',
     'lucide-react', 'zustand', 'react-markdown', 'remark-gfm', 'diff']
   const browserRadix = prodDeps.filter(d => d.startsWith('@radix-ui/'))
   return !browserOnly.includes(d) && !browserRadix.includes(d)
