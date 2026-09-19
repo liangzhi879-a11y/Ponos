@@ -132,14 +132,11 @@ export function contractGrowth({ scope, recordedCount = null, recordedRedCount =
   return out
 }
 
-/** 报告用：把成员清单折成一行（超过上限只列前 N 条 + "…共 M 条"） */
-function listUpTo(items, n = 12) {
-  const arr = [...items].sort()
-  return arr.length <= n ? arr.join('、') : `${arr.slice(0, n).join('、')} …共 ${arr.length} 条`
-}
-
 /**
  * 范围登记的判定：`members`（有效条目）与 `truth`（代码真值 ∖ 文档已声明）**集合相等**。
+ *
+ * ★ 逐条报（subject 带键名）：原先折成 `N 条` 的计数 subject，会被一把基线认领**任意同类**单条
+ *   （第 3 批审查的 M2 实测）⇒ 现在一条成员一条 finding，放行必须指名道姓。
  *
  * @param {{scope:object, truth:object, docSections?:string[]}} p
  *   `truth` 形如 `{routes:[…], wsOut:[…], wsIn:[…], ipc:[…], tools:[…], doc:[…]}`（精确键名清单）。
@@ -190,18 +187,23 @@ export function checkScopeSets({ scope, truth = {}, docSections = null } = {}) {
     const missing = [...t].filter((x) => !r.has(x))
     const extra = [...r].filter((x) => !t.has(x))
     byKind[kind] = { truth: t.size, registered: r.size, missing: missing.length, extra: extra.length }
-    if (missing.length) {
+    // ★ subject 必须**带成员名**（第 3 批审查的 M2）：原先写 `${kind} 多登记 N 条` —— 计数型 subject
+    //   与"这一条是哪条"无关 ⇒ 一把基线（`rule+subject` 认领）就能压掉**任意同类**单条多登记
+    //   （审查实测：往 scope 里塞一个假成员也被同样降级）。改成逐条 + 带键名后，
+    //   要放行就必须**指名道姓**地写一条基线 —— 那是"人工且可见"的放行，符合不变量 I4。
+    //   同理 missing 侧也逐条（否则"少登记"同样可被一条计数基线认领）。
+    for (const x of missing) {
       findings.push({
-        rule: 'CT4', severity: 'red', subject: `${kind} 未登记 ${missing.length} 条`,
-        message: `代码真值 ∖ 文档已声明 里还有未登记的键：${listUpTo(missing)}`,
-        hint: '要么在 docs/bridge-contract.md 补齐声明（另开 P1.5），要么在 kit/manifest/contract-scope.json 逐条精确登记（人工）',
+        rule: 'CT4', severity: 'red', subject: `${kind} 未登记 ${x}`,
+        message: `代码真值 ∖ 文档已声明 里有该键，但 scope 里没有：${x}`,
+        hint: '要么在 docs/bridge-contract.md 补齐声明（另开 P1.5），要么在 kit/manifest/contract-scope.json 逐条精确登记（人工、带 reason）',
       })
     }
-    if (extra.length) {
+    for (const x of extra) {
       findings.push({
-        rule: 'CT4', severity: 'red', subject: `${kind} 多登记 ${extra.length} 条`,
-        message: `登记里有**不在**"代码真值 ∖ 文档已声明"中的键（文档已声明 / 已不存在 / 拼错）：${listUpTo(extra)}`,
-        hint: '多登记 = 给已由文档覆盖或根本不存在的键发放豁免；删除多余成员（登记集必须与真值差集**相等**）',
+        rule: 'CT4', severity: 'red', subject: `${kind} 多登记 ${x}`,
+        message: `登记里的该键**不在**"代码真值 ∖ 文档已声明"中（文档已声明 / 已不存在 / 拼错）：${x}`,
+        hint: '多登记 = 给已由文档覆盖或根本不存在的键发放豁免；删除该成员（登记集必须与真值差集**相等**）',
       })
     }
   }

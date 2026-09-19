@@ -1,57 +1,36 @@
 {
   "version": 1,
-  "_note": "已知漂移登记后不再报红，但条目数不得增加；减少时应摘除条目。",
-  "_shape": "{ rule, subject, reason, at }",
+  "_note": "已知漂移登记后不再报红，但条目数不得增加；减少时应摘除条目。★ 只放**真实的已知差异**（有据的欠账/噪声）—— 工作树 ∖ HEAD 的**在途改动**不进这里：契约规则的判据取自提交态，在途差异由 kit:check 的 CT8 逐条报黄灯。",
+  "_shape": "{ rule, subject, reason, at, severity? }",
   "entries": [
     {
       "rule": "CT9",
       "subject": "/save-temp-image",
-      "reason": "渲染层调 `POST /save-temp-image`（src/components/chat/ChatInput.tsx:357），server 侧**全仓零命中**（grep save-temp 无结果）⇒ 前端调后端无（plan §6 D8）。属功能缺口而非契约面变更，故按 CT9「黄、只报不拦」登记基线；修好（补端点或改前端路径）后请摘除本条并下调 versions.json#history.baselineCount。",
+      "reason": "**真欠账（功能缺口，不是噪声）**：渲染层调 `POST /save-temp-image`（src/components/chat/ChatInput.tsx:357），server 侧**全仓零命中**（grep save-temp 无结果）⇒ 前端调后端无（plan §6 D8）。为什么不是本仓 bug：该端点从未实现过（不是「路径改过」），CT9 只报不拦，故登记以待实现。何时摘除：补上端点（或改前端路径）后删本条，并下调 versions.json#history.baselineCount。",
       "at": "2026-09-19"
     },
     {
       "rule": "CT9",
       "subject": "/worktree/create",
-      "reason": "渲染层调 `POST /worktree/create`（src/components/worktree/WorktreePanel.tsx:60），server 侧只有 `/worktrees`（server/bridge.mjs:2839）—— 路径名差一个 s，create/remove 两个动作都没有对应端点（D8 同类）。登记基线以待确认是「后端已实现但路径变了」还是「前端调错」。",
+      "reason": "**真欠账（待确认归属）**：渲染层调 `POST /worktree/create`（src/components/worktree/WorktreePanel.tsx:60），server 侧只有 `/worktrees`（server/bridge.mjs:2839）—— 路径名差一个 s，create/remove 两个动作都没有对应端点（D8 同类）。何时摘除：确认「后端已实现但路径变了」还是「前端调错」并修好之后。",
       "at": "2026-09-19"
     },
     {
       "rule": "CT9",
       "subject": "/worktree/remove",
-      "reason": "同 `/worktree/create`：src/components/worktree/WorktreePanel.tsx:80 调用，server 侧无该端点。两条都属 D8（前端调后端无）历史欠账。",
+      "reason": "同上：src/components/worktree/WorktreePanel.tsx:80 调用，server 侧无该端点。与 `/worktree/create` 一起构成 worktree 面板的动作缺口；两条同修同摘。",
       "at": "2026-09-19"
     },
     {
       "rule": "CT9",
       "subject": "/v1/chat/completions",
-      "reason": "**上游 LLM 协议路径，不经 bridge**：`src/lib/titleGen.ts:91` 用用户配置的基址直连 `${p.baseUrl}/v1/chat/completions`（OpenAI 兼容，vLLM/deepseek 等）⇒ server 路由表里**本就不该有**它。属 CT9 的噪声（不是缺端点），按 plan §5「噪声仍走 drift-baseline.json」登记。（主树里这段调用已被他人在途改动搬到 server/title-gen.mjs，故主树上本条不再命中。）",
+      "reason": "**噪声（不是缺端点）**：`src/lib/titleGen.ts:91` 用用户配置的基址**直连** `${p.baseUrl}/v1/chat/completions`（OpenAI 兼容上游，vLLM/deepseek 等）—— 上游 LLM 协议不经 bridge，server 路由表里**本就不该有**它（plan §5：噪声仍走 drift-baseline.json）。判据两侧都取提交态（src 侧与 server 侧），故本树脏不脏都命中。何时摘除：title 生成整段搬出渲染层（或不再由渲染层 fetch）之后。",
       "at": "2026-09-19"
     },
     {
       "rule": "CT9",
       "subject": "/v1/messages",
-      "reason": "同上：`src/lib/titleGen.ts:112` 的 Anthropic 兼容回退路径（`${p.baseUrl}/v1/messages`）—— 上游 LLM 协议，不经 bridge。与 `/v1/chat/completions` 一起构成 CT9 的上游噪声对。",
-      "at": "2026-09-19"
-    },
-    {
-      "rule": "CT1",
-      "subject": "routes ANY /app-info",
-      "severity": "red",
-      "reason": "**他人在途端点**：`server/host-routes.mjs`（工作树已改、尚未提交）新增 `/app-info` 判定，而本提交的 `versions.json#channels` 按 **committed 状态**落盘（口径见 kit/README.md 铁律 4 与下条）⇒ 主树出现 CT1「台账缺、代码有」。⚠️ 这份在途改动提交后，跑 `npm run kit:sync` 并**摘除本条**；不摘除会把该键**将来**的真实 CT1 差异一并压掉。",
-      "at": "2026-09-19"
-    },
-    {
-      "rule": "CT1",
-      "subject": "routes POST /generate-title",
-      "severity": "red",
-      "reason": "同上：`server/bridge.mjs:2518`（工作树已改）与他人在途新增的 `server/title-gen.mjs` 提供 `/generate-title`。台账按 committed 状态落盘是为了让**干净检出/CI**（= 唯一会被复核的树）与提交内容一致 —— 若反过来按主树现场值落盘，干净检出席上会出现 CT1 两条 + CT2/CT4 一条（`/boot-status`）共 4 条红灯，等于把「台账描述了未提交的代码」这个错误固化进提交。",
-      "at": "2026-09-19"
-    },
-    {
-      "rule": "CT4",
-      "subject": "routes 多登记 1 条",
-      "severity": "red",
-      "reason": "`contract-scope.json` 登记了 `ANY /boot-status`：**committed** 代码有该端点（server/host-routes.mjs 的 host 面）而 **committed** 文档未声明 ⇒ 干净检出必须登记它（否则 CT2+CT4 各一条红）；而主树里他人在途的 `docs/bridge-contract.md` 编辑已补上该行 ⇒ 主树判为「多登记」。⚠️ 该文档改动提交后请**摘除 scope 里的 /boot-status 条目**（登记集变小，同时下调 channels.scopeCount/scopeRedCount），本条随之失效。",
+      "reason": "同 `/v1/chat/completions`：`src/lib/titleGen.ts:112` 的 Anthropic 兼容回退路径（`${p.baseUrl}/v1/messages`）—— 上游 LLM 协议，不经 bridge。两条一起构成 CT9 的上游噪声对；同进同出。",
       "at": "2026-09-19"
     }
   ]

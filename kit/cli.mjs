@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { trackedFiles, codeFiles, readTracked } from './lib/scan.mjs'
 import { makeReport, renderHuman, RED } from './lib/report.mjs'
 import { loadBaseline, applyBaseline, baselineGrowth } from './lib/baseline.mjs'
+import { materializeHead } from './lib/head-tree.mjs'
 import { readVersions, readDeps, readJson, syncVersions, syncDeps, syncSkillsLock, computeGhost } from './lib/ledger.mjs'
 import { runVersionRules } from './lib/version-rules.mjs'
 import { runDepRules } from './lib/dep-rules.mjs'
@@ -70,14 +71,22 @@ function scopeSummary(scope) {
 /**
  * 一次收集：扫描域（git ls-files，I2）+ 台账 + 全部规则（版本/依赖/契约）。
  * check 与 view **必须共用本函数** —— 各跑一套就会出现"两个真相"（测试已钉住 summary 逐字相等）。
- * 契约侧：文档**现场解析**、快照**现场重算**（CT1 的红线）、scope 只读加载。
+ * 契约侧（第 3 批起）：**真值取自提交态 HEAD**（`materializeHead` 物化成临时干净检出），
+ * 工作树只用于 `CT8`（在途差异、黄灯）；文档两侧都现场解析；快照**现场重算**（CT1 的红线）。
  */
 async function collect() {
   const files = trackedFiles({ root: ROOT })
+  // ★ 提交态 = 契约规则的唯一真值来源。物化失败（空仓/git 不可用）**不静默**：
+  //   把 error 交给 runContractRules 报成 CT1 红（"对账不可进行"不是"没事"），此时真值退化为工作树。
+  const head = materializeHead({ root: ROOT })
+  const headRoot = head.available ? head.dir : ROOT
+  const headFiles = head.available ? head.files : files
   const versions = readVersions({ root: ROOT })
   const deps = readDeps({ root: ROOT })
   const pkg = readJson({ root: ROOT, rel: 'package.json', fallback: null })
   const read = (f) => readTracked({ root: ROOT, file: f })
+  const readHeadOf = (f) => readTracked({ root: headRoot, file: f })
+  const readHead = head.available ? readHeadOf : read
   // 幽灵依赖：sync 与 check 共用 computeGhost（Rider 1）。探针清单优先用台账里已登记的
   // （`optionalProbes` 含 file:line，供人复核），台账缺失时该函数会现场重算。
   const ghost = deps
@@ -92,12 +101,16 @@ async function collect() {
   // pkg 显式传入：P7 的对账对象必须与 P2 的 declared 是**同一次读取**（否则两次读盘之间
   // 有人改了 package.json，报告里会出现互相矛盾的两段结论）。
   const d = runDepRules({ root: ROOT, deps, ghost, pkg })
-  const docText = read(DOC_FILE)
+  const docText = readHead(DOC_FILE)
   const doc = docText === null ? null : parseDoc(docText)
+  const docWorkText = read(DOC_FILE)
+  const docWorktree = docWorkText === null ? null : parseDoc(docWorkText)
   const scope = loadScope({ root: ROOT })
   const channels = versions && versions.channels && typeof versions.channels === 'object' ? versions.channels : null
   const c = await runContractRules({
-    root: ROOT, files, doc, snapshot: channels, scope, readTracked: read,
+    root: ROOT, files, doc, docWorktree, snapshot: channels, scope, readTracked: read,
+    headRoot, headFiles, headReadTracked: readHead,
+    headError: head.available ? null : head.error,
     recorded: { scopeCount: channels?.scopeCount ?? null, scopeRedCount: channels?.scopeRedCount ?? null },
   })
   return {
@@ -183,8 +196,11 @@ function renderRuleTable(report, sizes) {
 }
 
 /**
- * sync：把**代码里复算出来的契约快照**写进 `versions.json#channels`（P1-T6/T10）。
- * 两条纪律：
+ * sync：把**提交态（HEAD）复算出来的契约快照**写进 `versions.json#channels`（P1-T6/T10）。
+ * 三条纪律：
+ *   · **快照取自提交态**（第 3 批）：台账是**提交物**，与 CI 的干净检出同口径 ⇒ 脏工作树里跑
+ *     sync **不会**把在途改动写进台账（工作树 ∖ HEAD 的差异由 `kit:check` 的 CT8 逐条报黄，
+ *     并在下面如实打印条数，免得人以为"sync 过了 = 在途端点已入账"）；
  *   · `snapshotAt` **幂等**：机器字段没变时保留旧时间戳（否则每次 sync 都产生无意义 diff，
  *     "提交 channels 变化"这条约定会被噪声淹没）；
  *   · **绝不写 `contract-scope.json`**（人工文件）—— 这里只读它做摘要打印。
@@ -193,11 +209,18 @@ function renderRuleTable(report, sizes) {
 async function runSync({ dryRun }) {
   const files = trackedFiles({ root: ROOT })
   const read = (f) => readTracked({ root: ROOT, file: f })
+  const head = materializeHead({ root: ROOT })
+  const headRoot = head.available ? head.dir : ROOT
+  const headFiles = head.available ? head.files : files
+  const readHead = head.available ? (f) => readTracked({ root: headRoot, file: f }) : read
   const prev = readVersions({ root: ROOT }) || {}
   const before = prev.channels && typeof prev.channels === 'object' ? prev.channels : null
-  const live = await buildSnapshot({ root: ROOT, files, readTracked: read })
+  const live = await buildSnapshot({ root: headRoot, files: headFiles, readTracked: readHead })
   const same = before ? diffSnapshot(before, live).equal : false
   const channels = { ...live, snapshotAt: same && before.snapshotAt ? before.snapshotAt : live.snapshotAt }
+  // 在途差异只报数（逐条明细是 check 的 CT8 的职责）：主体是**没被落盘**这件事
+  const workSnap = await buildSnapshot({ root: ROOT, files, readTracked: read })
+  const inflight = diffSnapshot(live, workSnap).diffs.length
 
   // syncVersions/syncDeps 都是"重写台账"的操作；--dry-run 时两者都不落盘（测试已钉住）。
   const v = syncVersions({ root: ROOT, files, dryRun, channels })
@@ -220,6 +243,11 @@ async function runSync({ dryRun }) {
         + ` / ipc ${Object.values(live.ipc).reduce((n, a) => n + a.length, 0)} / tools ${Object.keys(live.tools).length} / excluded ${live.excluded.length}`,
       `  ${same ? '快照无变化（保留 snapshotAt）' : `快照已更新（机器字段差异 ${snapDiff.diffs.length} 处）`}`,
       ...[...new Set(snapDiff.diffs.map((x) => x.kind))].sort().map((k) => `    ~ ${k}：${snapDiff.diffs.filter((x) => x.kind === k).length} 处`),
+      // ★ 在途差异**只报数、不落盘**：台账按提交态生成（口径见 kit/README.md）。若这里静默，
+      //   人会以为"跑过 sync = 在途端点已入账"。逐条明细在 `check` 的 CT8（黄灯）。
+      inflight === 0
+        ? '  工作树与提交态的契约面一致（无在途差异）'
+        : `  ⚠ 工作树有 ${inflight} 处在途契约差异**未落盘**（台账按提交态生成）：先提交再 sync；明细见 npm run kit:check 的 CT8`,
       // scope 是**人工**文件：这里只报它多大，绝不改写（判据在 cli.test.mjs 的逐字节断言）
       `scope（人工维护，本次未改写）: ${scope.entries.length} 组 / ${scope.entries.reduce((n, e) => n + e.members.length, 0)} 键${scope.present ? '' : '（文件不存在）'}`,
       `skills-lock: updated ${lock.updated.length} / unchanged ${lock.unchanged.length} / missing ${lock.missing.length}`,
@@ -272,6 +300,12 @@ async function main() {
     else {
       console.log(renderHuman(report))
       if (verbose) console.log(renderRuleTable(report, ledgerSizes()))
+      // ★ 在途差异（CT8）**恒打印一行**：契约规则的判据取自提交态 ⇒ "工作树还有哪些契约改动没提交"
+      //   是读者必须一眼知道的事。空的时候也要**明说"无"**（"没打印"与"没有差异"不是一回事）。
+      const inflight = report.findings.filter((f) => f.rule === 'CT8')
+      console.log(`\n（契约）在途差异（CT8，黄、只报不拦）：${inflight.length
+        ? `${inflight.length} 条 —— 工作树 ∖ HEAD，逐条见上方黄灯段`
+        : '无 —— 工作树契约面与 HEAD 一致'}`)
       if (report.baselineUnused?.length) console.log(`\n（信息）基线中 ${report.baselineUnused.length} 条已不再命中，可摘除：${report.baselineUnused.join(', ')}`)
     }
     return report.ok ? 0 : 1

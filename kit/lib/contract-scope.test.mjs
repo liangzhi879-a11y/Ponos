@@ -95,6 +95,28 @@ test('★反例①/③：members 与代码真值**集合相等**（少一个红�
   assert.match(byRule(extra, 'CT4')[0].message, /GET \/knowledge\/ghost/)
 })
 
+test('★CT4 的 finding subject 必须**带成员名**（用计数当 subject ⇒ 一把基线可认领"任意同类单条"）', () => {
+  const missing = checkScopeSets({
+    scope: loadScope({ root: writeScope([entry()]) }),
+    truth: truth({ routes: ['GET /knowledge/a', 'GET /knowledge/b'] }),
+  })
+  const extra = checkScopeSets({
+    scope: loadScope({ root: writeScope([entry({ members: ['GET /knowledge/a', 'GET /knowledge/ghost'] })]) }),
+    truth: truth(),
+  })
+  assert.deepEqual(byRule(missing, 'CT4').map((f) => f.subject), ['routes 未登记 GET /knowledge/b'])
+  assert.deepEqual(byRule(extra, 'CT4').map((f) => f.subject), ['routes 多登记 GET /knowledge/ghost'])
+  for (const f of [...byRule(missing, 'CT4'), ...byRule(extra, 'CT4')]) {
+    assert.equal(/^\S+ (未登记|多登记) \d+ 条$/.test(f.subject), false, `subject 不得只剩计数：${f.subject}`)
+  }
+  // 多条缺/多时逐条一条 finding（不是折成一条计数）
+  const many = checkScopeSets({
+    scope: loadScope({ root: writeScope([entry({ members: ['GET /knowledge/a', 'GET /knowledge/x', 'GET /knowledge/y'] })]) }),
+    truth: truth(),
+  })
+  assert.equal(byRule(many, 'CT4').length, 2, `每条多登记一条 finding，实测 ${JSON.stringify(byRule(many, 'CT4'))}`)
+})
+
 test('重复登记（同 kind+ns 两条 / 同一键两条）→ 条目失效', () => {
   const dupNs = loadScope({ root: writeScope([entry(), entry({ members: ['GET /knowledge/b'] })]) })
   assert.equal(dupNs.entries.every((e) => e.problems.length > 0), true, '同 (kind,ns) 两条必须都失效')

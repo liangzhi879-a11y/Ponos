@@ -36,6 +36,13 @@ function run(args, { cwd = ROOT, env = {} } = {}) {
 // ── 夹具仓：mkdtemp + 真 git（不依赖本机磁盘状态；CI 无 scratch/ release/ 也能跑） ──
 // 为什么必须是真 git 仓：扫描域 = `git ls-files`（不变量 I2），未入库文件不参与判定，
 // 故夹具必须 `git add` 过；用磁盘遍历冒充会掩盖"未入库即不存在"这条口径。
+// ★ 第 3 批起还必须是**有提交**的仓：契约规则的真值取自**提交态 HEAD**（`kit/lib/head-tree.mjs`
+//   物化检出），没提交的仓连"提交态"都不存在 ⇒ 夹具一律 `git commit`（这也让夹具的
+//   "已入库"与"已提交"两种状态可分：`gitCommit(root)` 之后才是提交态，之前是在途改动）。
+const gitCommit = (root, msg = 'fx') => execFileSync('git',
+  ['-c', 'user.email=fx@example.com', '-c', 'user.name=fx', '-c', 'commit.gpgsign=false', 'commit', '-qm', msg],
+  { cwd: root })
+
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'yfw-kit-cli-'))
   const write = (rel, content) => {
@@ -51,12 +58,16 @@ function fixture() {
   write('.gitignore', 'node_modules/\n')
   execFileSync('git', ['init', '-q'], { cwd: root })
   execFileSync('git', ['add', '-A'], { cwd: root })
+  gitCommit(root)
   return { root, env: { YFW_KIT_ROOT: root } }
 }
 
 const readPkg = (root) => JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const writePkg = (root, pkg) => writeFileSync(join(root, 'package.json'), JSON.stringify(pkg, null, 2))
 const ledgerText = (root) => readFileSync(join(root, 'kit/manifest/deps.json'), 'utf8')
+/** 契约面（CT 规则关心的路径）是否有未提交改动 —— 决定真仓断言走"脏树"还是"干净树"分支 */
+const dirtyTree = () => execFileSync('git', ['status', '--porcelain', '--', 'server', 'electron', 'kernel', 'src', 'shared', 'docs/bridge-contract.md'],
+  { cwd: ROOT, encoding: 'utf8' }).trim().length > 0
 
 // ── 真仓：已提交的台账 + 已提交的测试层，干净克隆里同样成立 ────────────────
 
@@ -90,32 +101,38 @@ test('check（人话）：有红灯时退 1 且渲染红灯段（用夹具仓造
   assert.match(r.stdout, /红灯（阻断）/)
 })
 
-test('★RiderA：真仓红灯 0 / 黄灯 1（4 条 P2 幽灵依赖已补声明）—— 多一条红灯也要在这里变红', () => {
+test('★RiderA：真仓红灯 0 / 黄灯 = P5 + CT8 在途差异（多一条红灯也要在这里变红）', () => {
   const r = run(['check', '--json'])
   const j = JSON.parse(r.stdout)
   assert.equal(r.code, 0, `真仓必须零红灯（Rider A 已给 4 个包补声明），实测 findings=${JSON.stringify(j.findings)}`)
-  assert.deepEqual([j.summary.red, j.summary.yellow], [0, 1],
-    '黄灯 1 是 P5（两套 Python 清单差集，属预期，spec §6.3 已定不阻断）；红灯/黄灯数变了就必须有人来解释')
-  // 黄灯只允许 P5；CT9 的 3 条必须落在**基线**（黄、只报不拦，逐条）
-  assert.deepEqual(j.findings.filter((f) => f.severity === 'yellow').map((f) => f.rule), ['P5'])
+  assert.equal(j.summary.red, 0)
+  // ★ 第 3 批：契约规则的真值取自**提交态 HEAD** ⇒ 主树上的他人在途改动**不再**产生任何红灯
+  //   （也就不再需要"为在途差异加的红灯基线"）。在途改动一律由 CT8 逐条报黄、只报不拦。
+  assert.deepEqual([...new Set(j.findings.filter((f) => f.severity === 'red').map((f) => f.rule))], [])
+  // 黄灯只可能来自 P5（两套 Python 清单差集，属预期）与 CT8（工作树 ∖ HEAD 的在途差异）
+  const yellows = [...new Set(j.findings.filter((f) => f.severity === 'yellow').map((f) => f.rule))].sort()
+  assert.deepEqual(yellows, dirtyTree() ? ['CT8', 'P5'] : ['P5'],
+    `黄灯规则集只允许 P5（+ 脏树时的 CT8），实测 ${JSON.stringify(yellows)}`)
+  assert.equal(j.summary.yellow, j.findings.filter((f) => f.severity === 'yellow').length, 'summary 必须与实际逐条一致')
   // CT9 的差集（黄、只报不拦）必须**逐条**落在基线里（条数随渲染层调用点变化 ⇒ 不硬编码条数）
   const ct9 = j.findings.filter((f) => f.rule === 'CT9')
   assert.equal(ct9.length > 0, true, 'CT9 至少应报出 /save-temp-image 这类差集')
   assert.deepEqual([...new Set(ct9.map((f) => f.severity))], ['baselined'],
     `CT9 的每条都必须登记进 drift-baseline（不许裸黄），实测 ${JSON.stringify(ct9)}`)
-  // ★ 双树口径（铁律 4）：工作树里可能有**他人在途**的端点改动。那种情况下 CT1/CT2/CT4 会如实报出
-  //   "台账未同步"，且它们必须**已逐条登记基线**（drift-baseline.json，理由写明"他人在途 + 何时摘除"）——
-  //   既不许把真差异压成静默绿，也不许出现 CT1/CT2/CT4 之外的红灯。
-  const others = j.findings.filter((f) => !['P5', 'CT9'].includes(f.rule))
-  assert.deepEqual([...new Set(others.map((f) => f.rule))].filter((x) => !['CT1', 'CT2', 'CT4'].includes(x)), [],
-    `只允许"台账未同步"类（CT1/CT2/CT4）作为在途差异，实测 ${JSON.stringify(others)}`)
-  assert.deepEqual(others.filter((f) => f.severity !== 'baselined'), [], '在途差异必须逐条登记基线（可见），不许裸红')
-  // 干净工作树（= CI 与评审克隆跑的那棵树）上必须一条 CT 差异都没有
-  const dirty = execFileSync('git', ['status', '--porcelain', '--', 'server', 'electron', 'kernel', 'src', 'shared', 'docs/bridge-contract.md'],
-    { cwd: ROOT, encoding: 'utf8' }).trim()
-  if (!dirty) {
-    // 干净工作树：finding 只允许两类 —— P5（黄）+ CT9（基线里逐条，条数随渲染层调用点变化，
+  // ★ 本批的判据（第 2 批审查的两个漏洞的反面）：**CT1/CT2/CT4 不得再因为"工作树脏"出现在报告里**，
+  //   更不许靠红线基线放行 —— 那正是"基线为在途差异兜底"的做法，已被本批根治。
+  assert.deepEqual(j.findings.filter((f) => ['CT1', 'CT2', 'CT4'].includes(f.rule)), [],
+    '在途改动不得让 CT1/CT2/CT4 报出（真值取提交态 ⇒ 它们只反映"提交物与台账的关系"）')
+  // 在途差异必须**逐条**列出（不是只报总数）：脏树时 CT8 至少有 1 条，且每条都带方向
+  for (const f of j.findings.filter((x) => x.rule === 'CT8')) {
+    assert.match(String(f.subject), /\S/, 'CT8 的 subject 必须带键名（计数式 subject 会被一把基线认领任意同类）')
+    assert.match(String(f.expected), /^HEAD (有|缺)$/)
+    assert.match(String(f.actual), /^工作树 (有|缺)$/)
+  }
+  if (!dirtyTree()) {
+    // 干净工作树（= CI 与评审克隆跑的那棵树）：只允许 P5（黄）+ CT9（基线里逐条，条数随渲染层调用点变化，
     // ★ 故**不硬编码条数**：铁律 4 —— 该数字由 src/ 的现场内容决定，会随他人改动漂移）
+    assert.deepEqual(j.findings.filter((f) => f.rule === 'CT8'), [], '干净工作树不得有在途差异')
     assert.deepEqual([...new Set(j.findings.map((f) => f.rule))].sort(), ['CT9', 'P5'],
       '干净工作树只允许 P5（黄）+ CT9（已登记基线）')
     assert.deepEqual(j.findings.filter((f) => f.severity !== 'baselined').map((f) => f.rule), ['P5'])
@@ -129,8 +146,11 @@ test('check --verbose 逐条列出每条规则的判定结果（--verbose 必须
   assert.match(verbose.stdout, /P7/)
   assert.match(verbose.stdout, /台账包集与 package\.json 双向一致/)
   // P1：CT 规则也必须逐条出现在 --verbose 里（否则"契约对账有没有接线"看不出来）
-  assert.match(verbose.stdout, /\[CT1\] 快照可从代码现场重算/)
+  assert.match(verbose.stdout, /\[CT1\] 快照可从\*\*提交态\*\*代码现场重算/)
   assert.match(verbose.stdout, /\[CT4\] scope members/)
+  assert.match(verbose.stdout, /\[CT8\] 在途差异/)
+  // ★ 在途差异恒打印一行（无差异时也要**明说"无"**：不打印 ≠ 没有）
+  assert.match(verbose.stdout, /（契约）在途差异（CT8，黄、只报不拦）：/)
   assert.ok(verbose.stdout.length > plain.stdout.length, '--verbose 的输出必须严格多于默认输出')
 })
 
@@ -205,6 +225,9 @@ test('★P1-③：夹具仓契约**真红真绿** —— 新增端点未登记 �
   writeFileSync(join(root, 'server/fx-routes.mjs'),
     ["export function route(pathname) {", "  if (pathname === '/fx') return 1", '  return null', '}', ''].join('\n'))
   execFileSync('git', ['add', '-A'], { cwd: root })
+  // ★ 必须**提交**：契约规则的真值取提交态（HEAD）—— 端点只在 `git add` 过而没提交时属"在途"，
+  //   那由 CT8 报黄、不红（本文件下面有专门用例）。这里要造的是"提交了但没登记"⇒ 红。
+  gitCommit(root)
   assert.equal(run(['sync'], { env }).code, 0)
 
   const red = run(['check', '--json'], { env })
@@ -212,6 +235,8 @@ test('★P1-③：夹具仓契约**真红真绿** —— 新增端点未登记 �
   const rj = JSON.parse(red.stdout)
   assert.deepEqual([...new Set(rj.findings.filter((f) => f.severity === 'red').map((f) => f.rule))].sort(), ['CT2', 'CT4'],
     `实测红灯：${JSON.stringify(rj.findings.filter((f) => f.severity === 'red'))}`)
+  // ★ 逐条 + 带成员名（计数式 subject 会被一把基线认领"任意同类单条" —— 第 2 批审查的 M2）
+  assert.deepEqual(rj.findings.filter((f) => f.rule === 'CT4').map((f) => f.subject), ['routes 未登记 ANY /fx'])
 
   // 登记后转绿 —— 登记的"可放行"能力是真的，且只对它登记的那些键生效
   mkdirSync(join(root, 'kit/manifest'), { recursive: true })
@@ -236,6 +261,108 @@ test('★P1-③：夹具仓契约**真红真绿** —— 新增端点未登记 �
   assert.ok(JSON.parse(wild.stdout).findings.some((f) => f.rule === 'CT4C' && f.severity === 'red'))
 })
 
+// ── 第 3 批：提交态真值 + CT8 在途差异 + 基线不再被滥用 ─────────────────────
+//
+// 背景（第 2 批审查）：台账按 committed 落盘、规则却读工作树 ⇒ 主树上的在途改动与台账打架，
+// 于是给"在途差异"加了 3 条**红灯基线**。审查实测出两个真漏洞：① 基线按真实端点键认领 ⇒
+// `ANY /app-info` 这类键的差异在**任意方向**被永久降级；② 计数式 subject ⇒ 能认领**任意同类**单条。
+// 本批把规则真值改成提交态（物化 HEAD），在途差异改由 CT8 报黄、并把那 3 条红基线删掉。
+// 下面四条用例分别钉住"黄不红 / 提交后漏登记 → 红 / 假端点 → 红 / 假成员 → 红"。
+
+/** 夹具仓里写一个端点文件（`staged` 只 add 不 commit ⇒ 在途；否则提交 ⇒ 提交态） */
+function writeEndpoint(root, rel, path, { commit = true } = {}) {
+  mkdirSync(dirname(join(root, rel)), { recursive: true })
+  writeFileSync(join(root, rel), [
+    'export function route(pathname) {',
+    `  if (pathname === '${path}') return 1`,
+    '  return null',
+    '}',
+    '',
+  ].join('\n'))
+  execFileSync('git', ['add', '-A'], { cwd: root })
+  if (commit) gitCommit(root)
+}
+
+test('★第3批-①：在途端点（只 add 未 commit）→ 红 0、CT8 逐条黄；提交后漏登记 → CT2/CT4 红', () => {
+  const { root, env } = fixture()
+  writeEndpoint(root, 'server/wip-routes.mjs', '/zzz-wip', { commit: false })
+
+  const sync = run(['sync'], { env })
+  assert.equal(sync.code, 0)
+  assert.match(sync.stdout, /在途契约差异\*\*未落盘\*\*/, `sync 必须明说"在途改动没落盘"：${sync.stdout}`)
+  const ledger = JSON.parse(readFileSync(join(root, 'kit/manifest/versions.json'), 'utf8'))
+  assert.equal(Object.hasOwn(ledger.channels.routes, 'ANY /zzz-wip'), false,
+    'sync 落盘的是**提交态**快照 ⇒ 在途端点不得进台账（否则台账描述了未提交的代码）')
+
+  const c = run(['check', '--json'], { env })
+  assert.equal(c.code, 0, `在途改动不得让门禁变红：${c.stdout}`)
+  const j = JSON.parse(c.stdout)
+  assert.deepEqual(j.findings.filter((f) => f.severity === 'red'), [])
+  assert.deepEqual(j.findings.filter((f) => f.rule === 'CT8').map((f) => f.subject), ['routes ANY /zzz-wip'])
+  assert.deepEqual(j.findings.filter((f) => f.rule === 'CT8').map((f) => f.severity), ['yellow'])
+
+  // 提交之后：它成了"提交物里有、scope 没登记" ⇒ CT2/CT4 必须红（这就是"漏登记"该有的下场）
+  gitCommit(root)
+  assert.equal(run(['sync'], { env }).code, 0)
+  const c2 = run(['check', '--json'], { env })
+  assert.equal(c2.code, 1)
+  const j2 = JSON.parse(c2.stdout)
+  assert.deepEqual(j2.findings.filter((f) => f.rule === 'CT4').map((f) => f.subject), ['routes 未登记 ANY /zzz-wip'])
+  assert.deepEqual([...new Set(j2.findings.filter((f) => f.severity === 'red').map((f) => f.rule))].sort(), ['CT2', 'CT4'])
+})
+
+test('★第3批-②（审查 M1）：往台账塞一个 HEAD 里没有的端点 → CT1 红（删掉红基线后无法再被认领）', () => {
+  const { root, env } = fixture()
+  assert.equal(run(['sync'], { env }).code, 0)
+  const vPath = join(root, 'kit/manifest/versions.json')
+  const v = JSON.parse(readFileSync(vPath, 'utf8'))
+  v.channels.routes['ANY /zzz-fake'] = null            // 审查的 M1：台账与代码不符（代码里根本没有）
+  writeFileSync(vPath, JSON.stringify(v, null, 2))
+
+  const c = run(['check', '--json'], { env })
+  assert.equal(c.code, 1, '台账里的键必须能从提交态代码复算出来 —— 塞假键必须红')
+  const ct1 = JSON.parse(c.stdout).findings.filter((f) => f.rule === 'CT1')
+  assert.deepEqual(ct1.map((f) => f.subject), ['routes ANY /zzz-fake'])
+  assert.deepEqual(ct1.map((f) => f.severity), ['red'])
+  // 真仓的 `drift-baseline.json` 不得再为这类键留任何条目（旧的做法：给 `ANY /app-info` 加红灯基线）
+  const real = JSON.parse(readFileSync(join(ROOT, 'kit/manifest/drift-baseline.json'), 'utf8'))
+  assert.deepEqual(real.entries.filter((e) => String(e.subject).includes('/app-info')), [],
+    '在途端点键不得出现在基线里（"为在途差异加基线"已被本批根治）')
+  assert.deepEqual(real.entries.filter((e) => e.severity === 'red'), [], '基线里不得再有红灯条目')
+})
+
+test('★第3批-③（审查 M2）：往 scope 塞一个假成员 → CT4 红，且 subject 带成员名（计数式会被一把基线认领）', () => {
+  const { root, env } = fixture()
+  assert.equal(run(['sync'], { env }).code, 0)
+  mkdirSync(join(root, 'kit/manifest'), { recursive: true })
+  writeFileSync(join(root, 'kit/manifest/contract-scope.json'), JSON.stringify({
+    version: 1,
+    entries: [{ kind: 'routes', ns: '/zzz-bogus', members: ['ANY /zzz-bogus'], docSection: null, reason: '夹具：故意登记一个不存在的端点' }],
+  }, null, 2))
+  const c = run(['check', '--json'], { env })
+  assert.equal(c.code, 1)
+  const ct4 = JSON.parse(c.stdout).findings.filter((f) => f.rule === 'CT4')
+  assert.deepEqual(ct4.map((f) => f.subject), ['routes 多登记 ANY /zzz-bogus'])
+  assert.equal(/多登记 \d+ 条/.test(ct4[0].subject), false, 'subject 不得是计数（否则一条基线能认领任意同类单条）')
+})
+
+test('★第3批-④：空仓（git init 后没提交）→ CT1 红"HEAD 物化"（不假装能对账，也不静默拿工作树顶替）', () => {
+  const root = mkdtempSync(join(tmpdir(), 'yfw-kit-nocommit-'))
+  mkdirSync(join(root, 'src'), { recursive: true })
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'fx', version: '1.0.0', dependencies: {} }, null, 2))
+  writeFileSync(join(root, 'src/a.ts'), 'export const x = 1\n')
+  execFileSync('git', ['init', '-q'], { cwd: root })
+  execFileSync('git', ['add', '-A'], { cwd: root })
+  const c = run(['check', '--json'], { env: { YFW_KIT_ROOT: root } })
+  assert.equal(c.code, 1)
+  const j = JSON.parse(c.stdout)
+  const ct1 = j.findings.filter((f) => f.rule === 'CT1')
+  assert.ok(ct1.some((f) => f.subject === 'HEAD 物化' && f.severity === 'red'),
+    `必须明确报出"提交态读不到"：${JSON.stringify(ct1.map((f) => f.subject))}`)
+  assert.equal(j.checks.find((x) => x.rule === 'CT1').passed, false)
+  assert.equal(j.ok, false)
+})
+
 // ── Task 8 / B2 + B3：规则条数口径（规则号数）必须与实现一致 ────────────────
 //
 // 背景：`summary.rules` 原先报 18，而实现里有 19 个规则号 —— 差的那一个是 P0
@@ -244,16 +371,16 @@ test('★P1-③：夹具仓契约**真红真绿** —— 新增端点未登记 �
 // 口径写进 spec（§5.3/§6.3 的"规则号数"一节）。
 const EXPECTED_RULES = ['P0', 'P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7',
   'V1', 'V1b', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', "V8'", 'V8b',
-  // P1（契约快照 ↔ bridge-contract.md 对账）的 CT 号段：CT0–CT9，含 CT4 的两个子规则（CT4B 封顶 / CT4C 条目合法）。
-  // 刻意**没有 CT8**（号段按 plan §3 原样，不补空号）。
-  'CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT9']
+  // P1（契约快照 ↔ bridge-contract.md 对账）的 CT 号段：CT0–CT9，含 CT4 的两个子规则（CT4B 封顶 / CT4C 条目合法）
+  // 与 CT8（在途差异：工作树 ∖ HEAD，黄、只报不拦 —— 第 3 批拆"基线为在途差异兜底"时补的号位）。
+  'CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9']
 
-test('★B2/B3：summary.rules = 30，且逐条规则号与 spec 口径完全一致（含表外 V1b/V8b/P0 与 CT0–CT9）', () => {
+test('★B2/B3：summary.rules = 31，且逐条规则号与 spec 口径完全一致（含表外 V1b/V8b/P0 与 CT0–CT9）', () => {
   const j = JSON.parse(run(['check', '--json']).stdout)
   assert.deepEqual([...j.checks.map((c) => c.rule)].sort(), [...EXPECTED_RULES].sort(),
     '规则号集必须逐字对齐：多一个（自造号）或少一个（早退没 push）都要在这里变红')
-  assert.equal(j.summary.rules, 30)
-  assert.equal(new Set(j.checks.map((c) => c.rule)).size, 30, '同一个规则号不得重复计入')
+  assert.equal(j.summary.rules, 31)
+  assert.equal(new Set(j.checks.map((c) => c.rule)).size, 31, '同一个规则号不得重复计入')
   // V6 的标题必须与判据同口径（标题写三方 → 就得真核三方，见 kit/lib/version-rules.mjs）
   assert.match(j.checks.find((c) => c.rule === 'V6').title, /三方/)
   // CT1 的标题必须写明"现场重算"—— 它是红线（读快照当答案是 plan §7 反例⑤）
@@ -349,9 +476,9 @@ test('夹具仓无台账：check 退 1（P0/V0 红），绝不因"读不到台�
   //   若 rules 为 0，说明 P0 又退回了"只 push finding"（--verbose 里也会缺这一格）。
   //   ★ P1 之后：契约规则（CT0–CT9）**无条件**进 checks（判据本身要报"快照缺失"），故这里逐条列全。
   assert.deepEqual(j.checks.map((x) => x.rule).sort(),
-    ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT9', 'P0'].sort())
+    ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'P0'].sort())
   assert.equal(j.checks.find((x) => x.rule === 'P0').passed, false)
-  assert.equal(j.summary.rules, 12)
+  assert.equal(j.summary.rules, 13)
 })
 
 // ★ Rider 2：宿主删掉声明却不重跑 sync → 旧判据（P1/P2 只读台账）一条红都不报。

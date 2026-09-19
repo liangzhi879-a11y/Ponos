@@ -5,7 +5,7 @@
 //   也必须报红；本文件里"改坏代码而快照不动"与"手改快照"两个方向各有一条断言。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { readTracked } from './scan.mjs'
@@ -80,8 +80,8 @@ const DOC = [
   '',
 ].join('\n')
 
-/** 夹具仓：写盘 + 返回 {root, files, doc} */
-function fixture() {
+/** 夹具仓：写盘 + 返回 {root, files, doc}；`mutate` 在写盘后跑（造变异） */
+function fixture({ mutate = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'yfw-rules-'))
   const files = []
   const write = (rel, content) => {
@@ -110,7 +110,9 @@ function fixture() {
     'export const ghost = () => fetch(`${base}/ghost-path`)',
   ].join('\n'))
   write('docs/bridge-contract.md', DOC)
-  return { root, files, doc: parseDoc(DOC) }
+  if (mutate) mutate(root)
+  // ★ 文档**从磁盘重新解析**（不是直接用 `DOC` 常量）：`mutate` 可能改了文档（CT8 的文档在途差异就是这么造的）
+  return { root, files, doc: parseDoc(readFileSync(join(root, 'docs/bridge-contract.md'), 'utf8')) }
 }
 
 /** 人工登记（**逐条手写**，不由代码生成 —— 反例③）：3 组 = 1 端点 + 1 前缀命名空间 + 1 IPC 推送 */
@@ -126,8 +128,7 @@ function writeScope(root, entries = SCOPE_ENTRIES) {
 }
 
 async function setup({ entries = SCOPE_ENTRIES, recorded = { scopeCount: 3, scopeRedCount: 3 }, mutate = null } = {}) {
-  const { root, files, doc } = fixture()
-  if (mutate) mutate(root)
+  const { root, files, doc } = fixture({ mutate })
   const read = (f) => readTracked({ root, file: f })
   const snapshot = await buildSnapshot({ root, files, readTracked: read, now: 'T' })
   const scope = writeScope(root, entries)
@@ -136,13 +137,39 @@ async function setup({ entries = SCOPE_ENTRIES, recorded = { scopeCount: 3, scop
 const run = (f, over = {}) => runContractRules({
   root: f.root, files: f.files, doc: f.doc, snapshot: f.snapshot, scope: f.scope, recorded: f.recorded, readTracked: f.read, ...over,
 })
+
+/**
+ * 提交态 / 工作树 **两个**夹具（默认同内容，`mutateWork` 只动工作树那一份）—— CT8 的"在途差异"就靠它造。
+ *
+ * 为什么必须两个真实目录、而不是"同一个目录改文件"：提交态真值取自 HEAD（物化检出），
+ * 工作树取自工作树 —— 两者是**两棵树**。用一个目录造差异只能测出"文件列表不同"，
+ * 测不出"同一路径的内容在两侧不同"（那正是最常见的情形：改一行为变体）。
+ */
+async function setupPair({ mutateWork = null, entries = SCOPE_ENTRIES, recorded = { scopeCount: 3, scopeRedCount: 3 } } = {}) {
+  const head = fixture()
+  const work = fixture({ mutate: mutateWork })
+  const readHead = (f) => readTracked({ root: head.root, file: f })
+  const readWork = (f) => readTracked({ root: work.root, file: f })
+  const snapshot = await buildSnapshot({ root: head.root, files: head.files, readTracked: readHead, now: 'T' })
+  const scope = writeScope(work.root, entries)
+  const out = await runContractRules({
+    root: work.root, files: work.files, readTracked: readWork,
+    headRoot: head.root, headFiles: head.files, headReadTracked: readHead,
+    doc: head.doc, docWorktree: work.doc,
+    snapshot, scope, recorded,
+  })
+  return { out, head, work, snapshot, scope, recorded }
+}
+const ct8 = (out) => out.findings.filter((f) => f.rule === 'CT8')
+/** 读改写：供 mutateWork 造"同一路径两侧内容不同" */
+const rewrite = (root, rel, fn) => writeFileSync(join(root, rel), fn(readFileSync(join(root, rel), 'utf8')))
 const rulesFired = (out) => [...new Set(out.findings.map((x) => x.rule))].sort()
 const reds = (out) => out.findings.filter((x) => x.severity === 'red')
 
-test('规则集固定：CT0–CT9（含 CT4B/CT4C，无 CT8）逐条产出 checkResult', async () => {
+test('规则集固定：CT0–CT9（含 CT4B/CT4C 与 CT8）逐条产出 checkResult', async () => {
   const out = await run(await setup())
   assert.deepEqual([...out.checks.map((c) => c.rule)].sort(), [...CT_RULES].sort())
-  assert.deepEqual(CT_RULES, ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT9'])
+  assert.deepEqual(CT_RULES, ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9'])
 })
 
 test('基准夹具全绿（除 CT9 的黄灯：前端 fetch 存在无 server 路由的 /ghost-path）', async () => {
@@ -151,6 +178,9 @@ test('基准夹具全绿（除 CT9 的黄灯：前端 fetch 存在无 server 路
   assert.deepEqual(rulesFired(out), ['CT9'], `只有 CT9 允许出 finding（黄、只报不拦），实测 ${rulesFired(out)}`)
   assert.deepEqual(out.findings.map((f) => `${f.rule}:${f.subject}:${f.severity}`), ['CT9:/ghost-path:yellow'])
   assert.equal(out.checks.find((c) => c.rule === 'CT9').passed, false, 'CT9 的 check 如实反映"差集非空"，但 severity 是黄、不阻断')
+  // 两侧同一棵树 ⇒ 无在途差异（CT8 恒空、恒绿）
+  assert.deepEqual(ct8(out), [])
+  assert.equal(out.checks.find((c) => c.rule === 'CT8').passed, true)
 })
 
 // ── buildTruth：真值 = 代码真值 ∖ 文档已声明（含"空命名空间"的显式处理） ──────────
@@ -355,6 +385,57 @@ test('CT7：路由侧形态守恒（独立 naive 扫描）—— 删提取器的
   const crippled = { ...full, prefixes: [] }   // 模拟"提取器不再产出前缀"（startsWith 形态丢失）
   const orphans = routeFormOrphans({ files, readTracked: read, routes: crippled })
   assert.deepEqual(orphans, ['/ns/', '/workflows/'], `startsWith 形态丢失后必须报无归宿，实测 ${JSON.stringify(orphans)}`)
+})
+
+// ── CT8：在途差异（工作树 ∖ HEAD）—— 黄、只报不拦 ────────────────────
+//
+// ★ 本批的核心：契约规则的**真值来源 = 提交态（HEAD）**，在途改动只由 CT8 报黄。
+//   两个方向都必须证明：① 在途改动 → 红 0 + CT8 逐条黄；② 提交后漏登记 → CT1/CT2/CT4 红
+//   （② 在 cli.test.mjs 的夹具仓用例与"删基线后 M1/M2 必须红"的变异里钉）。
+test('★CT8：工作树新增端点（未提交）→ 红灯 0、CT1 不报、CT8 逐条黄灯列出该端点', async () => {
+  const { out } = await setupPair({ mutateWork: (root) => rewrite(root, 'server/alpha-routes.mjs', (s) => `${s}\nexport const wip = (p) => p === '/zzz-wip'\n`) })
+  assert.deepEqual(reds(out), [], `在途改动不得产生任何红：${JSON.stringify(reds(out))}`)
+  assert.equal(out.checks.find((c) => c.rule === 'CT1').passed, true, 'CT1 比的是"台账 vs HEAD"，在他人在途改动下必须照旧 ✔（否则又得靠基线压）')
+  const list = ct8(out)
+  assert.deepEqual(list.map((f) => f.subject), ['routes ANY /zzz-wip'], `必须逐条列出在途端点：${JSON.stringify(list)}`)
+  assert.deepEqual([...new Set(list.map((f) => f.severity))], ['yellow'], 'CT8 只报黄，绝不拦')
+  assert.match(list[0].hint, /kit:sync/)
+  assert.match(list[0].hint, /contract-scope/)
+  assert.equal(out.checks.find((c) => c.rule === 'CT8').passed, false, 'CT8 的 check 如实反映"有在途差异"（黄灯不阻断）')
+})
+
+test('★CT8：工作树**删除** committed 端点 → 黄灯，且方向写清（HEAD 有 / 工作树 缺）', async () => {
+  const { out } = await setupPair({ mutateWork: (root) => rewrite(root, 'server/alpha-routes.mjs', (s) => s.replace("  if (pathname === '/known') return 1\n", '')) })
+  assert.deepEqual(reds(out), [])
+  const one = ct8(out).find((f) => f.subject === 'routes ANY /known')
+  assert.ok(one, `删除方向也要逐条报：${JSON.stringify(ct8(out))}`)
+  assert.equal(one.expected, 'HEAD 有')
+  assert.equal(one.actual, '工作树 缺')
+})
+
+test('★CT8：在途**文档**改动（删 §7 一行）→ 红灯 0、CT2/CT3/CT4 照旧、CT8 报文档声明差异', async () => {
+  const { out } = await setupPair({ mutateWork: (root) => rewrite(root, 'docs/bridge-contract.md', (s) => s.replace('| `/known` | 前端 fetch 的端点 |\n', '')) })
+  assert.deepEqual(reds(out), [], `文档在途改动不得红（规则用的是 HEAD 文档）：${JSON.stringify(reds(out))}`)
+  const doc = ct8(out).filter((f) => f.subject.startsWith('doc.'))
+  assert.deepEqual(doc.map((f) => f.subject), ['doc.routes /known'], `必须报出该在途文档差异：${JSON.stringify(ct8(out))}`)
+  assert.equal(doc[0].expected, 'HEAD 有')
+  assert.equal(doc[0].actual, '工作树 缺')
+})
+
+test('★CT8：工作树把 kernel/tools.mjs 改坏（在途）→ CT6 照旧 ✔（提交态才判），CT8 报工具差异', async () => {
+  const { out } = await setupPair({ mutateWork: (root) => writeFileSync(join(root, 'kernel/tools.mjs'), 'export function createToolRegistry() {\n') })
+  assert.deepEqual(reds(out), [], `工作树里的工具文件坏掉不得让 CT6 红（提交态的工具出口才是判据）：${JSON.stringify(reds(out))}`)
+  assert.equal(out.checks.find((c) => c.rule === 'CT6').passed, true)
+  assert.ok(ct8(out).some((f) => f.subject.startsWith('tools ')), `CT8 必须报出工具在途差异：${JSON.stringify(ct8(out))}`)
+})
+
+test('★CT8 的边界：提交态读不到（headError）→ CT1 红（"对账不可进行"不是"没事"），不静默拿工作树顶替', async () => {
+  const f = await setup()
+  const out = await run(f, { headError: 'fatal: ambiguous argument HEAD' })
+  const ct1 = reds(out).filter((x) => x.rule === 'CT1')
+  assert.deepEqual(ct1.map((x) => x.subject), ['HEAD 物化'])
+  assert.equal(out.checks.find((c) => c.rule === 'CT1').passed, false)
+  assert.deepEqual(ct8(out), [], 'headError 是 CT1 的红，不是 CT8 的黄（CT8 只报在途差异）')
 })
 
 // ── CT9：前端 fetch 单向差集（黄、只报不拦） ──────────────────────────

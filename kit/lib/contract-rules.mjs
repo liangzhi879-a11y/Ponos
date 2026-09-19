@@ -3,11 +3,16 @@
 // 形状照抄 `version-rules.mjs#runVersionRules` / `dep-rules.mjs#runDepRules`：`{checks, findings}`，
 // 由 `finding(...)` / `checkResult(...)` / `RED|YELLOW` 构造（同一份报告 schema）。
 //
-// ★★ **红线：CT1 必须现场重算**（plan §7 反例⑤）。
-//    本模块不把台账里的快照当"答案"：每次判定都先 `buildSnapshot()` 从代码复算一遍 live 快照，
-//    再与台账里的快照 `diffSnapshot` —— 快照本身错了也必然被发现（"快照写错 ⇒ 拿它当答案 ⇒ 永远绿"
-//    是这类门禁最典型的自证陷阱，先例：V7 的判据恒为已提交的 skills-lock.json）。
-//    同理：CT2/CT3/CT5/CT6/CT7/CT9 的判据都来自**现场提取**（`doc` 也是现场解析的文本）。
+// ★★ **两条红线**：
+//    ① `CT1` 必须现场重算（plan §7 反例⑤）—— 本模块不把台账里的快照当"答案"：每次判定都先
+//       `buildSnapshot()` 从代码复算一遍 live 快照，再与台账里的快照 `diffSnapshot`；
+//    ② **真值来源 = 提交态（HEAD）**（第 3 批，第 2 批审查的结论）—— 代码侧与文档侧都取自
+//       `head*`（物化的 HEAD 检出，见 `kit/lib/head-tree.mjs`），**不是**工作树。
+//       为什么必须如此：台账是**提交物**、CI 在干净检出上跑；若规则读工作树，他人在途改动
+//       就会与台账产生差异，只能靠 `drift-baseline.json` 加**红灯基线**吸收 —— 而基线按
+//       `rule+subject` 认领，实测两个真漏洞：`ANY /app-info` 这类真实端点键的 CT1 差异在
+//       **任意方向**被永久降级；计数型 subject（`routes 多登记 1 条`）能认领**任意同类**单条。
+//       ⇒ 现在：**规则与工作树脏不脏无关**（CT0–CT7/CT9 全绿），在途改动只由 `CT8` 报**黄灯**。
 //
 // 覆盖面的两条腿（plan §1 方案 B）：
 //   · 文档侧做**真双向**（CT2 代码→文档 / CT3 文档→代码；有文档的只有路由与 WS 类型）；
@@ -20,7 +25,8 @@
 //      会与提取器漂移 ⇒ 他人新增黑名单条目就假红）；
 //   ② `shapeOf` 只含结构指纹（props 名+类型 / required / additionalProperties 存在性），
 //      enum/items 不入 ⇒ "改 schema 结构 → CT6 红"只覆盖这一部分（plan 明确取舍）；
-//   ③ CT9 是**单向差集**且只报不拦（黄）：前端调后端无是 D8 的历史欠账，登记在 drift-baseline。
+//   ③ CT9 是**单向差集**且只报不拦（黄）：前端调后端无是 D8 的历史欠账，登记在 drift-baseline；
+//   ④ `CT8` 只在"有提交态可比"时才有意义 ⇒ HEAD 不可读时**明说**（不假装能对账，见 ctx.headError）。
 import { RED, YELLOW, finding, checkResult } from './report.mjs'
 import { trackedFiles, codeFiles, readTracked, stripComments } from './scan.mjs'
 import { extractRoutes } from './contract-routes.mjs'
@@ -30,8 +36,8 @@ import { extractTools } from './contract-tools.mjs'
 import { buildSnapshot, diffSnapshot, channelsProblems } from './contract-snapshot.mjs'
 import { checkScopeSets, contractGrowth, keyOf } from './contract-scope.mjs'
 
-/** 规则号段（顺序即报告顺序）：CT0–CT9，含 CT4 的两个子规则；刻意**没有 CT8**（号段按 plan §3 原样） */
-export const CT_RULES = ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT9']
+/** 规则号段（顺序即报告顺序）：CT0–CT9，含 CT4 的两个子规则与在途差异 CT8 */
+export const CT_RULES = ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9']
 
 /** 路径主体标识符（与 contract-routes.mjs 的 SUBJECT 同口径 —— 独立实现，不 import 它的私有常量） */
 const NAIVE_FORMS = [
@@ -57,6 +63,53 @@ export function docDeclaredSets(doc) {
 
 /** `GET /x` → `/x` */
 const pathOfKey = (k) => String(k).slice(String(k).indexOf(' ') + 1)
+
+/** 文档**声明集**的四类（CT8 的文档面差异按这四类逐条报） */
+const DECLARED_FIELDS = [['paths', 'doc.routes'], ['wildcards', 'doc.wildcards'], ['wfKeys', 'doc.workflow'], ['ws', 'doc.ws']]
+
+/** 声明集大小（CT8 的 `evaluated` 用：判定到底比了多少条声明） */
+function declaredSize(d) {
+  return DECLARED_FIELDS.reduce((n, [f]) => n + (d?.[f]?.size || 0), 0)
+}
+
+/**
+ * 两份**文档声明集**的差异（CT8 的文档面）。
+ * 为什么文档面也要比：文档改动是"在途"的最常见形态之一 —— 规则读 HEAD 文档 ⇒ 文档的在途改动
+ * **不会**让 CT2/CT3 变红（那正是本批要的），但它也**不该**无声无息：由 CT8 逐条报出来。
+ */
+function declaredDiff(head, work) {
+  const out = []
+  for (const [field, kind] of DECLARED_FIELDS) {
+    const a = head?.[field] instanceof Set ? head[field] : new Set()
+    const b = work?.[field] instanceof Set ? work[field] : new Set()
+    for (const x of [...a].sort()) if (!b.has(x)) out.push({ subject: `${kind} ${x}`, expected: '有', actual: '缺' })
+    for (const x of [...b].sort()) if (!a.has(x)) out.push({ subject: `${kind} ${x}`, expected: '缺', actual: '有' })
+  }
+  return out
+}
+
+/** 契约面元素总数（CT8 的 `evaluated`：逐项比对了多少个契约面元素） */
+function surfaceSize(s) {
+  return Object.keys(s?.routes || {}).length + Object.keys(s?.routePrefixes || {}).length
+    + (s?.wsOut || []).length + (s?.wsIn || []).length
+    + Object.values(s?.ipc || {}).reduce((n, a) => n + (Array.isArray(a) ? a.length : 0), 0)
+    + Object.keys(s?.tools || {}).length
+}
+
+/**
+ * CT8 的噪声过滤：`toolSources.*.error` 的**文本**里含**绝对路径**（提交态物化树 vs 工作树必然不同），
+ * 直接比会造出"伪在途差异"（夹具仓里实测：没有 `kernel/tools.mjs` 时两边的 `Cannot find module` 文本不同）。
+ * 判据：两边的 `(file, role, present)` 相同、且**"有没有 error"也相同** ⇒ 只有文本差异 ⇒ 不是契约面变化。
+ * 反例守住：一边有 error、一边没有（工具出口从可用变不可用）**仍要报** —— 那才是真的在途变化。
+ */
+function isErrorTextOnlyDiff(d, a, b) {
+  if (d.kind !== 'toolSources') return false
+  const x = a?.toolSources?.[d.key]
+  const y = b?.toolSources?.[d.key]
+  if (!x || !y) return false
+  const proj = (o) => JSON.stringify({ file: o.file, role: o.role, present: o.present, hasError: Boolean(o.error) })
+  return proj(x) === proj(y)
+}
 
 /**
  * 把快照/提取器里的 `dynamic.pattern` 变成可用的正则。
@@ -230,26 +283,48 @@ const isRendererSide = (f) => f.indexOf('preload') !== -1
 
 /**
  * 跑全部契约规则。
- * @param {{root:string, files?:string[], doc?:object, snapshot?:object, scope?:object,
- *          recorded?:{scopeCount:number|null,scopeRedCount:number|null},
- *          readTracked?:Function, live?:object, parts?:object}} p
+ *
+ * **两棵树的分工（本模块最重要的一条约定）**：
+ *   · `head*`（`headRoot`/`headFiles`/`headReadTracked`/`headDoc`/`headParts`）= **提交态 HEAD** ⇒
+ *     CT0–CT7/CT9 的**唯一真值来源**（缺省回落到 `root`/`files`/… 的同名参数：夹具仓里
+ *     "夹具目录"同时代表两侧，CT8 恒空；造在途差异请显式传两棵树，见 `contract-rules.test.mjs`）；
+ *   · `root`/`files`/`readTracked`/`doc` = **工作树** ⇒ 只服务 `CT8`（在途差异）。
+ * @param {{root:string, headRoot?:string, headFiles?:string[], headReadTracked?:Function, headDoc?:object,
+ *          headParts?:object, headError?:string|null, files?:string[], doc?:object, docWorktree?:object,
+ *          snapshot?:object, scope?:object, recorded?:{scopeCount:number|null,scopeRedCount:number|null},
+ *          readTracked?:Function, live?:object, parts?:object, workParts?:object}} p
  *   `snapshot` 来自台账（`readSnapshot`）；`live` 若不给则**现场重算**（默认路径就是重算，见红线注释）。
+ *   `headError`：物化提交态失败时的原因（`head-tree.mjs` 的 `available:false`）—— 由调用方传入，
+ *   本模块把它报成 **CT1 红**（"提交物对账不可进行"不是"没事"）。
  */
 export async function runContractRules({
   root, files = null, doc = null, snapshot = null, scope = null, recorded = null,
   readTracked: rt = null, live = null, parts = null,
+  headRoot = null, headFiles = null, headReadTracked = null, headDoc = null, headParts = null,
+  headError = null, docWorktree = null, workFiles = null, workReadTracked = null, workParts = null,
 } = {}) {
-  const tracked = files || trackedFiles({ root })
-  const read = rt || ((f) => readTracked({ root, file: f }))
+  // ── 提交态（真值）与工作树（CT8）各自的文件集与读取器 ──────────────────
+  const filesWork = workFiles || files || trackedFiles({ root })
+  const readWork = workReadTracked || rt || ((f) => readTracked({ root, file: f }))
+  const filesHead = headFiles || files || filesWork
+  const rootHead = headRoot || root
+  const readHead = headReadTracked || (rootHead === root && !headFiles
+    ? readWork
+    : ((f) => readTracked({ root: rootHead, file: f })))
+  const docHead = headDoc === null ? doc : headDoc
+  const docWork = docWorktree === null ? doc : docWorktree
+
+  const tracked = filesHead
+  const read = readHead
   const code = codeFiles(tracked, { includeTests: false })
   const checks = []
   const findings = []
 
-  const routes = parts?.routes || extractRoutes({ files: tracked, readTracked: read })
-  const ws = parts?.ws || extractWs({ files: code, readTracked: read })
-  const ipcAll = parts?.ipc || extractIpc({ files: code, readTracked: read })
-  const tools = parts?.tools || await extractTools({ root })
-  const liveSnap = live || await buildSnapshot({ root, files: tracked, readTracked: read, parts: { routes, ws, ipc: ipcAll, tools } })
+  const routes = headParts?.routes || extractRoutes({ files: tracked, readTracked: read })
+  const ws = headParts?.ws || extractWs({ files: code, readTracked: read })
+  const ipcAll = headParts?.ipc || extractIpc({ files: code, readTracked: read })
+  const tools = headParts?.tools || await extractTools({ root: rootHead })
+  const liveSnap = live || await buildSnapshot({ root: rootHead, files: tracked, readTracked: read, parts: { routes, ws, ipc: ipcAll, tools } })
 
   // ── CT0：快照存在且形状完整 ──────────────────────────────────────────
   const shapeProblems = channelsProblems(snapshot)
@@ -275,16 +350,27 @@ export async function runContractRules({
     findings.push(finding({
       rule: 'CT1', severity: RED, subject: `${d.kind} ${d.key}`, expected: d.from, actual: d.to, file: loc ? loc.split(':')[0] : undefined,
       line: loc ? Number(loc.split(':')[1]) : undefined,
-      hint: '快照必须能从代码现场重算出来：跑 npm run kit:sync 更新快照；若代码才是错的，就修代码（不要把快照手改成与代码不一致的样子）',
+      hint: '快照必须能从**提交态**代码现场重算出来：提交改动后跑 npm run kit:sync 更新快照；若代码才是错的，就修代码（不要把快照手改成与代码不一致的样子）',
+    }))
+  }
+  // ★ 提交态读不到 ⇒ 现场重算无从谈起：显式报红（不静默拿工作树顶替 —— 那会把"在途噪声"
+  //   伪装成"提交物对账通过"）。正常仓里这条永不触发；空仓（无提交）或 git 不可用时才出现。
+  if (headError) {
+    findings.push(finding({
+      rule: 'CT1', severity: RED, subject: 'HEAD 物化',
+      expected: '能取到提交态（HEAD）以便把台账与提交物对账', actual: String(headError),
+      hint: '当前真值**退化为工作树**（等价性未验证）：先 `git commit`（仓里必须有提交）再跑 `npm run kit:check`；'
+        + '不要因为"读不到提交态"就当通过',
     }))
   }
   const snapSize = Object.keys(liveSnap.routes).length + liveSnap.wsOut.length + liveSnap.wsIn.length
     + Object.values(liveSnap.ipc).reduce((n, a) => n + a.length, 0) + Object.keys(liveSnap.tools).length + liveSnap.excluded.length
-  checks.push(checkResult({ rule: 'CT1', title: '快照可从代码现场重算（逐类逐元素相等）', evaluated: snapSize, passed: diff.equal }))
+  checks.push(checkResult({ rule: 'CT1', title: '快照可从**提交态**代码现场重算（逐类逐元素相等）',
+    evaluated: snapSize, passed: diff.equal && !headError }))
 
   // ── CT2/CT3：代码 ↔ 文档（有文档的两类：路由与 WS 类型）────────────────────
-  const truthData = buildTruth({ routes, prefixes: routes.prefixes, ws, ipc: ipcAll, doc })
-  const scopeOut = checkScopeSets({ scope, truth: truthData.truth, docSections: doc ? truthData.declared.sections : null })
+  const truthData = buildTruth({ routes, prefixes: routes.prefixes, ws, ipc: ipcAll, doc: docHead })
+  const scopeOut = checkScopeSets({ scope, truth: truthData.truth, docSections: docHead ? truthData.declared.sections : null })
   const coverage = scopeOut.coverage
 
   let ct2bad = 0
@@ -453,6 +539,38 @@ export async function runContractRules({
   }
   checks.push(checkResult({ rule: 'CT7', title: '提取守恒：`type:` 字面量 = 已归因 + 显式排除；路径字面量必有归宿（独立重扫）',
     evaluated: ws.rawTypeCount + formScan.sites, passed: ct7bad === 0 }))
+
+  // ── CT8：在途差异（工作树 ∖ HEAD）—— 黄、只报不拦，**不需要任何基线** ──────────
+  //   判据 = `diffSnapshot(提交态快照, 工作树快照)` 的逐条差异 + 文档**声明集**的差异。
+  //   为什么单列一条规则、而不是靠基线：基线按 `rule+subject` 认领（见文件头红线的两个实测漏洞），
+  //   与"契约面"语义不同 —— 在途改动是这个仓每天都有的正常状态，它既不是欠账也不该被永久压制：
+  //   提交之后 CT8 自己就空了（"提交后漏登记 → CT1/CT2/CT4 红"由别的规则接住）。
+  const declaredHead = docDeclaredSets(docHead)
+  const declaredWork = docDeclaredSets(docWork)
+  const workSnap = await buildSnapshot({ root, files: filesWork, readTracked: readWork, parts: workParts || null })
+  const inflight = diffSnapshot(liveSnap, workSnap).diffs.filter((d) => !isErrorTextOnlyDiff(d, liveSnap, workSnap))
+  const docInflight = declaredDiff(declaredHead, declaredWork)
+  const inflightHint = '这些改动**尚未提交**：提交后跑 `npm run kit:sync`（台账按**提交态**落盘）'
+    + '并在 kit/manifest/contract-scope.json 更新范围登记；在途期间本规则只报黄灯，红灯判定不受影响'
+  for (const d of inflight) {
+    findings.push(finding({
+      rule: 'CT8', severity: YELLOW, subject: `${d.kind} ${d.key}`,
+      expected: `HEAD ${d.from}`, actual: `工作树 ${d.to}`,
+      hint: inflightHint,
+    }))
+  }
+  for (const d of docInflight) {
+    findings.push(finding({
+      rule: 'CT8', severity: YELLOW, subject: d.subject, expected: `HEAD ${d.expected}`, actual: `工作树 ${d.actual}`,
+      hint: `${inflightHint}（本条是**文档声明集**的在途差异：文档改了但规则读的是 HEAD 文档）`,
+    }))
+  }
+  checks.push(checkResult({
+    rule: 'CT8',
+    title: '在途差异（工作树 ∖ HEAD：路由/前缀/WS 类型/IPC/工具/排除项 + 文档声明集）—— 黄、只报不拦',
+    evaluated: surfaceSize(liveSnap) + declaredSize(declaredHead) + declaredSize(declaredWork),
+    passed: inflight.length === 0 && docInflight.length === 0,
+  }))
 
   // ── CT9：前端 fetch ↔ server 路由单向差集（黄、只报不拦；D8）────────────
   const fetched = frontendFetchPaths({ files: tracked, readTracked: read })
