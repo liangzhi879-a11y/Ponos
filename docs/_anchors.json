@@ -3,7 +3,7 @@
   "_scope": "文档扫描范围：docs/*.md, docs/manual/**/*.md（已排除：/五引擎架构性能对比分析/）",
   "info": {
     "sourceModules": 444,
-    "sourceLoc": 112681,
+    "sourceLoc": 113108,
     "monoliths": {
       "kernel/knowledge.mjs": 2841,
       "kernel/engine.mjs": 2437,
