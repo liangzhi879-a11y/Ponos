@@ -68,7 +68,11 @@ test('view --json 输出稳定 schema，可被程序直接解析', () => {
   assert.equal(typeof j.ok, 'boolean')
   assert.ok(j.summary && typeof j.summary.red === 'number')
   assert.ok(j.ledgers.versions.lines >= 4)
-  assert.ok(j.ledgers.deps['npm-runtime'] >= 50)
+  // ★ Task 10（B1 删 10 个未用依赖）后**不再硬编码数字**：原先写 `>= 50`，而删到第 3 个就跌破 ——
+  //   与其每改一次声明就手改阈值，不如钉住更强的判据：view 报的就是**真仓 package.json#dependencies 的条数**
+  //   （两侧不等即为台账与宿主脱节，正是 P7 在生产里守的那条不变量）。
+  assert.equal(j.ledgers.deps['npm-runtime'], Object.keys(readPkg(ROOT).dependencies).length,
+    'view 的运行时声明数必须等于 package.json#dependencies 条数（B1 后 52→42）')
   assert.ok(Array.isArray(j.findings))
 })
 

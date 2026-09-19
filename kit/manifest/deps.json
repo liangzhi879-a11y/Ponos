@@ -349,14 +349,6 @@
           "status": "used"
         },
         {
-          "name": "@radix-ui/react-separator",
-          "evidence": {
-            "classes": [],
-            "files": []
-          },
-          "status": "unused"
-        },
-        {
           "name": "@radix-ui/react-slot",
           "evidence": {
             "classes": [
