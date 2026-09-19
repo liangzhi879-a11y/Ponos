@@ -70,7 +70,7 @@ const gitFiles = (root) => execFileSync('git', ['ls-files'], { cwd: root, encodi
 
 const read = (root, rel) => readFileSync(join(root, rel), 'utf8')
 
-function bumpFixture({ singleQuoteAssert = true } = {}) {
+function bumpFixture({ singleQuoteAssert = true, kernelPkg = '{ "name": "fx-kernel", "version": "0.2.0" }\n' } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'yfw-bump-'))
   const write = (rel, content) => {
     mkdirSync(dirname(join(root, rel)), { recursive: true })
@@ -90,7 +90,7 @@ function bumpFixture({ singleQuoteAssert = true } = {}) {
     '',
   ].join('\n'))
   write('package.json', '{\n  "name": "fx",\n  "version": "2.8.0",\n  "private": true\n}\n')
-  write('kernel/package.json', '{ "name": "fx-kernel", "version": "0.2.0" }\n')
+  write('kernel/package.json', kernelPkg)
   write('public/skills.json', '[]\n')
   write('skills-lock.json', '{ "skills": {} }\n')
   // 断言行的引号风格可切换：双引号形态 = bump 的字面替换必然找不到（A5 的硬约束反例）
@@ -219,4 +219,53 @@ test('非法输入（未知目标 / 非法版本号 / 缺版本号）→ 非 0 �
     assert.notEqual(r.code, 0, `${JSON.stringify(args)} 必须失败：${r.out}`)
     assert.deepEqual(snapshot(root), before, `${JSON.stringify(args)} 失败时不得改文件`)
   }
+})
+
+// ── Task 9 rider 1（治理）：台账 ≠ 宿主时 bump 必须 fail-loud，不许把漂移洗白 ──
+//
+// 修前实测的漏洞：history 记录的 `from` 取自**台账旧值**（`entry.value`）。于是
+//   ① 手改台账 APP_VERSION = 'dev 2.0.0'（此时 V1 已红：台账 ≠ 宿主真值 'dev 3.0.0'）
+//   ② 跑 `bump app 3.0.1` → history 记 from:'dev 2.0.0'（**与宿主真值不符**）
+//   ③ sync 之后 V1/V3 全绿 —— 漂移无痕消失，history 里还留下一段假历史。
+// 这与前几轮修掉的"基线抹平红灯""ghost 静默放行"同族：**一次动作把检查结果擦干净**。
+// 本仓取 fail-loud：带着脏台账发版必须在入口被挡住，而不是被一次 bump 顺手抹平。
+test('★Rider1：台账与宿主不一致 → bump 明确失败，且不把台账改成一致', () => {
+  const root = bumpFixture()
+  const ledgerPath = join(root, 'kit', 'manifest', 'versions.json')
+  const led = JSON.parse(readFileSync(ledgerPath, 'utf8'))
+  led.lines.find((l) => l.id === 'APP_VERSION').value = 'dev 2.0.0'   // 只改台账，宿主 version.mjs 仍是 dev 3.0.0
+  writeFileSync(ledgerPath, JSON.stringify(led, null, 2) + '\n')
+
+  const before = snapshot(root)
+  const r = runBump(root, ['app', '3.0.1'])
+  assert.notEqual(r.code, 0, `台账与宿主不一致时必须 fail-loud：${r.out}`)
+  assert.match(r.out, /台账与宿主不一致/, '必须说清是"台账≠宿主"这一类问题，而不是笼统报错')
+  assert.deepEqual(snapshot(root), before, '失败时宿主文件与台账都不得被改（改了就等于把漂移擦掉）')
+  // 反向：漂移必须仍被 V1 报红 —— 证明 bump 没能把它藏起来（否则这条测试自己就成了"洗白"的帮凶）
+  assert.equal(v3Of(root).reds('V1').length, 1, '漂移必须仍被 V1 报红（"台账≠宿主"的场景必须留在门禁视野里）')
+})
+
+// ── Task 9 rider 2：非原子 —— 先全量预检再落盘（某一路失败则其它文件一字节未改）──
+//
+// 修前实测：`patch()` 是"边找边写"。双引号反例下 version.mjs 已写、而 version.test.mjs 的
+// 断言找不到 → fail 退出，仓库停在"四分之三改了"的半成品状态；**重跑同命令不自愈**
+// （第二次从新值找旧文本，必然再失败），只能手改。下面两条分别打第 ② 路与第 ③ 路。
+test('★Rider2-②：断言写法替换不到 → 预检拦在落盘前，其它文件一字节未改', () => {
+  const root = bumpFixture({ singleQuoteAssert: false })
+  const before = snapshot(root)
+  const r = runBump(root, ['app', '3.0.1'])
+  assert.notEqual(r.code, 0, r.out)
+  assert.match(r.out, /未找到待替换文本/)
+  assert.deepEqual(snapshot(root), before, '预检失败时 version.mjs / 台账 / 断言文件都不得被改')
+})
+
+test('★Rider2-③：内核镜像文件替换不到 → version.mjs 的常量也不得被改（全量预检）', () => {
+  // kernel/package.json 写成 `"version" : "0.2.0"`（冒号前多一空格）：JSON.parse 读得出 0.2.0，
+  // 但 bump 的字面替换 `"version": "0.2.0"` 找不到 —— 第 ③ 路失败。
+  const root = bumpFixture({ kernelPkg: '{ "name": "fx-kernel", "version" : "0.2.0" }\n' })
+  const before = snapshot(root)
+  const r = runBump(root, ['kernel', '0.3'])
+  assert.notEqual(r.code, 0, r.out)
+  assert.match(r.out, /未找到/, '失败必须是"文本找不到"这一类可诊断的原因')
+  assert.deepEqual(snapshot(root), before, '第 ③ 路失败时 version.mjs（第 ① 路）必须保持未改')
 })

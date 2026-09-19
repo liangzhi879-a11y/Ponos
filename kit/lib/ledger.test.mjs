@@ -3,12 +3,15 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
+import { trackedFiles, readTracked } from './scan.mjs'
 import {
   parseByLocator, keyOfVersion, discoverVersionConsts, syncVersions, readVersions,
   collectEvidence, parseDeclaredImports, readRequirements, syncDeps, readDeps, writeDeps, computeGhost,
-  buildEvidenceIndex,
+  buildEvidenceIndex, syncSkillsLock, listCommonPy, readJson, COMMON_DIR,
 } from './ledger.mjs'
 
 function fixture(files) {
@@ -535,4 +538,107 @@ test('Rider4-①：@types 的模块级解析只认入参 files，cache 只是性
   // 反向：把文件真的放进 files，就必须命中（否则"收紧"会退化成"永远判空"）
   assert.equal(collectEvidence({ root, files: ['tsconfig.json', 'src/a.tsx'], dep: '@types/react' })
     .classes.includes('types'), true)
+})
+
+// ── Task 9（A7）：skills-lock 重算（D5 —— lock 记"本地安装后"哈希）─────────────
+//
+// ★ 为什么是"重算 lock 文件"而不是"把哈希记进台账"：台账由 sync 重写，若 V7 拿台账里的
+//   哈希去比对文件，那么"跑一次 sync"就必然让 V7 全绿 —— 门禁被自己的 sync 架空（自证陷阱）。
+//   判据必须是**已提交的 lock 文件**（version-rules.mjs V7 直读它，不读台账；反向断言见
+//   version-rules.test.mjs「V7 防自证：台账里塞入'正确'哈希也不影响判定」）。
+const SKILL_MD = '---\nname: demo\nversion: "1.0.0"\n---\n\n正文\n'
+const DEMO_SKILL = 'public/sample-skills/demo/SKILL.md'
+const sha256 = (s) => createHash('sha256').update(s).digest('hex')
+
+test('syncSkillsLock：重算 computedHash、保留 source/其他字段、不动 SKILL.md', () => {
+  const root = fixture({
+    [DEMO_SKILL]: SKILL_MD,
+    'skills-lock.json': JSON.stringify({ version: 1, skills: { demo: { source: 'anthropics/skills', upstreamHash: 'KEEP', computedHash: 'STALE' } } }),
+  })
+  const r = syncSkillsLock({ root, files: [DEMO_SKILL, 'skills-lock.json'] })
+  const after = JSON.parse(readFileSync(join(root, 'skills-lock.json'), 'utf8'))
+  assert.equal(after.skills.demo.upstreamHash, 'KEEP', '非目标字段必须原样保留（只改该改的）')
+  assert.equal(after.skills.demo.source, 'anthropics/skills')
+  assert.equal(after.version, 1, 'lock 顶层其他分区同样不得丢')
+  assert.deepEqual(r.updated, ['demo'])
+  // ★ 判据独立复算（不信任实现给出的值）：必须是该 SKILL.md 字节的 sha256。
+  //   少了这条，实现写个随机 64 位十六进制也能过（长度断言拦不住"值不对"）。
+  assert.equal(after.skills.demo.computedHash, sha256(SKILL_MD), '写入的哈希必须等于该文件字节的 sha256')
+  assert.equal(readFileSync(join(root, DEMO_SKILL), 'utf8'), SKILL_MD, 'syncSkillsLock 只改 lock，不得触碰 SKILL.md')
+})
+
+test('syncSkillsLock：lock 里登记但文件不存在 → 进 missing、不静默删除条目', () => {
+  // ★ 夹具里必须**同时**有一条待更新（demo）与一条 missing（ghost）：
+  //   missing 单条时 `updated.length === 0` → 根本不落盘，于是"实现把 missing 条目删掉"
+  //   这个 bug 在文件上看不出来（变异测试实测：只有 missing 的夹具抓不到 M2）。
+  const root = fixture({
+    [DEMO_SKILL]: SKILL_MD,
+    'skills-lock.json': JSON.stringify({ skills: { ghost: { computedHash: 'x' }, demo: { computedHash: 'STALE' } } }),
+  })
+  const r = syncSkillsLock({ root, files: [DEMO_SKILL, 'skills-lock.json'] })
+  assert.deepEqual(r.missing, ['ghost'])
+  assert.deepEqual(r.updated, ['demo'])
+  const after = JSON.parse(readFileSync(join(root, 'skills-lock.json'), 'utf8'))
+  assert.equal(after.skills.ghost.computedHash, 'x',
+    'missing 的条目必须原样保留（删掉它就等于把 V7 的红灯擦掉：文件没了反而无人报）')
+  assert.equal(after.skills.demo.computedHash, sha256(SKILL_MD))
+})
+
+test('syncSkillsLock：二次运行幂等（unchanged 全量、文件一字节不变）', () => {
+  const root = fixture({ [DEMO_SKILL]: SKILL_MD, 'skills-lock.json': JSON.stringify({ skills: { demo: { computedHash: 'x' } } }) })
+  const files = [DEMO_SKILL, 'skills-lock.json']
+  syncSkillsLock({ root, files })
+  const first = readFileSync(join(root, 'skills-lock.json'), 'utf8')
+  const second = syncSkillsLock({ root, files })
+  assert.deepEqual(second.updated, [])
+  assert.deepEqual(second.unchanged, ['demo'])
+  assert.equal(readFileSync(join(root, 'skills-lock.json'), 'utf8'), first, '幂等：内容必须一字节不变（否则每次 sync 都产生无意义 diff）')
+})
+
+test('syncSkillsLock：dryRun 只报告、不落盘（`kit sync --dry-run` 的承诺）', () => {
+  const root = fixture({ [DEMO_SKILL]: SKILL_MD, 'skills-lock.json': JSON.stringify({ skills: { demo: { computedHash: 'STALE' } } }) })
+  const before = readFileSync(join(root, 'skills-lock.json'), 'utf8')
+  const r = syncSkillsLock({ root, files: [DEMO_SKILL, 'skills-lock.json'], dryRun: true })
+  assert.deepEqual(r.updated, ['demo'], '预演必须报出"真跑会改哪几条"，否则预演没有信息量')
+  assert.equal(readFileSync(join(root, 'skills-lock.json'), 'utf8'), before, '--dry-run 不得写盘')
+})
+
+// ★ "CLI 的 sync 真的调用 syncSkillsLock"是 spawn 真进程的端到端断言，放在
+//   `kit/cli.test.mjs`（那里有 CLI 夹具与 run() 辅助）——本文件只测库函数行为。
+
+// ── Task 9（A6）：commonTools 覆盖 98/98 + manifest `_note` 的可校验性 ─────────//
+// 这条测试读**本仓真实文件**（git ls-files，干净克隆里同样成立）而不是夹具：A6 的交付物
+// 就是"台账 vs 实有 .py vs manifest 三者对得上"，夹具里造一份就等于自己证明自己。
+// 它补的是规则层的缺口：V8（登记的都存在）+ V8b（实有的都登记）**都不管版本值真伪**，
+// 于是"台账给某个未标注脚本编一个版本号"当前无人报红 —— 本条按 manifest 复算堵住它。
+test('A6：台账 commonTools 全量覆盖实有 .py，且非空版本可复算回 manifest（不得编造）', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+  const py = listCommonPy(trackedFiles({ root }))
+  const v = readVersions({ root })
+  const entries = (v && v.commonTools && v.commonTools.entries) || []
+  assert.deepEqual(entries.map((e) => e.file).sort(), py.map((n) => `${COMMON_DIR}/${n}`),
+    '台账必须与实有 .py 一一对应（spec §5.4：全量登记，版本可为空但不得漏登记）')
+
+  const manifest = readJson({ root, rel: `${COMMON_DIR}/_common_manifest.json` }) || { tools: {} }
+  const manifestTools = manifest.tools || {}
+  let filled = 0
+  for (const e of entries) {
+    const name = e.file.replace(`${COMMON_DIR}/`, '')
+    const truth = manifestTools[name]?.current_version ?? null
+    if (e.version === null) {
+      assert.equal(truth, null, `${name}: manifest 无版本，台账却填了 ${JSON.stringify(e.version)}（编造版本值）`)
+      assert.equal(e.versionSource, 'unmarked', `${name}: 未标注者必须显式标 unmarked（可为空的字段不许留 undefined）`)
+    } else {
+      filled++
+      assert.equal(e.version, truth, `${name}: 台账版本必须等于 manifest 的 current_version（唯一真源，可复算）`)
+      assert.equal(e.versionSource, 'manifest')
+    }
+  }
+  assert.ok(filled > 0, '至少要有一条 manifest 版本值被登记 —— 否则本条退化成空跑（filled=0 时下面全部断言都不执行）')
+
+  // `_note` 的两条声明必须与实测一致：零个 .py 声明 __version__、版本不从脚本内容校验。
+  // 有人给脚本加了 __version__ → 本条红 → 迫使同步 _note（否则 _note 变成过期谎言）。
+  const declared = py.filter((n) => /^\s*__version__\s*=/m.test(readTracked({ root, file: `${COMMON_DIR}/${n}` }) || ''))
+  assert.deepEqual(declared, [], `_note 声称存量脚本零个声明 __version__，实测已不符：${declared.join(', ')}`)
+  assert.match(String(manifest._note || ''), /不从脚本内容校验/, '_note 必须写明 current_version 不可从脚本内容校验')
 })

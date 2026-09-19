@@ -21,8 +21,7 @@ import { fileURLToPath } from 'node:url'
 import { trackedFiles, codeFiles, readTracked } from './lib/scan.mjs'
 import { makeReport, renderHuman, RED } from './lib/report.mjs'
 import { loadBaseline, applyBaseline, baselineGrowth } from './lib/baseline.mjs'
-import { readVersions, readDeps, readJson, syncVersions, syncDeps, computeGhost } from './lib/ledger.mjs'
-// Task 9 落地后改为：import { readVersions, readDeps, syncVersions, syncDeps, syncSkillsLock } from './lib/ledger.mjs'
+import { readVersions, readDeps, readJson, syncVersions, syncDeps, syncSkillsLock, computeGhost } from './lib/ledger.mjs'
 import { runVersionRules } from './lib/version-rules.mjs'
 import { runDepRules } from './lib/dep-rules.mjs'
 
@@ -128,8 +127,10 @@ function runSync({ dryRun }) {
   const files = trackedFiles({ root: ROOT })
   const v = syncVersions({ root: ROOT, files, dryRun })
   const d = syncDeps({ root: ROOT, files, dryRun })
-  // Task 9 落地后替换为： const lock = syncSkillsLock({ root: ROOT, dryRun })
-  const lock = { updated: [], unchanged: [], missing: [] }
+  // Task 9：lock 重算走真实现（此前是 `{updated:[],unchanged:[],missing:[]}` 占位 —— 占位期间
+  // 跑 sync 也不会重算哈希，V7 的 20 条红灯永远擦不掉）。
+  // 三件事都认 dryRun：预演**不得**落盘（否则"预演"会把仓库改到一半）。
+  const lock = syncSkillsLock({ root: ROOT, files, dryRun })
   const data = d.data
   return {
     lines: [
@@ -137,7 +138,8 @@ function runSync({ dryRun }) {
       `  added ${v.added.length}  removed ${v.removed.length}`,
       ...(v.added.length ? [`  + ${v.added.join('\n  + ')}`] : []),
       ...(v.removed.length ? [`  - ${v.removed.join('\n  - ')}`] : []),
-      `skills-lock: updated ${lock.updated.length} / unchanged ${lock.unchanged.length} / missing ${lock.missing.length}（Task 9 前为占位）`,
+      `skills-lock: updated ${lock.updated.length} / unchanged ${lock.unchanged.length} / missing ${lock.missing.length}`,
+      ...(lock.missing.length ? [`  ! lock 里登记但无对应 SKILL.md（条目保留，V7 会报红）：${lock.missing.join(', ')}`] : []),
       `deps: runtime ${data.domains['npm-runtime'].packages.length} / dev ${data.domains['npm-dev'].packages.length}`,
       `  unused ${d.unused.length}: ${d.unused.join(', ') || '(无)'}`,
       `  ghost  ${d.ghost.length}: ${d.ghost.join(', ') || '(无)'}`,

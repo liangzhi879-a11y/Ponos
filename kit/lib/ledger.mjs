@@ -119,6 +119,47 @@ export function sha256File({ root, file }) {
   return createHash('sha256').update(readFileSync(join(root, file))).digest('hex')
 }
 
+// ── Task 9（A7）：重算 skills-lock（D5 —— 记录"本地安装后"哈希） ────────────
+//
+// ★ 为什么必须改 lock 文件本身、而不是记进台账：
+//   台账由 sync 生成，若哈希也由 sync 写进台账、V7 又拿台账比对文件，
+//   则"跑一次 sync"必然让 V7 全绿 —— 门禁被自己的 sync 架空（自证陷阱）。
+//   判据必须是**已提交的 lock 文件**：改 SKILL.md 却忘了重算 lock → V7 红
+//   （V7 直读 lock，台账里的哈希不参与判定 —— 反向断言见 version-rules.test.mjs）。
+//   lock 的角色从"记上游原文哈希"（实测 20/20 与本地不符）改为"记本地安装后哈希"（D5）。
+export const LOCK_FILE = 'skills-lock.json'
+export const LOCK_FIELD = 'computedHash'
+
+/**
+ * 重算 lock 里每条技能的 `computedHash`。**只改这一个字段**（source / upstreamHash 等原样保留），
+ * 且只写 lock 文件本身 —— 这样每次重算产生的 diff 恰好是"哪些 SKILL.md 变了"，可复核。
+ *
+ * lock 是**唯一真源**：不在 lock 里的技能不会被"顺手补录"（补录是 sync-sample-skills 的职责），
+ * lock 里有而文件没有的进 `missing` 且条目保留（删掉条目 = 把 V7 的红灯擦掉：文件没了反而无人报）。
+ *
+ * @param files 扫描域（git 已跟踪文件）；省略则现取。传它是为了与 check 共用同一次扫描、
+ *              并让夹具能脱离 git 直接喂入（否则测试必须造真 git 仓）。
+ */
+export function syncSkillsLock({ root, files, dryRun = false } = {}) {
+  const tracked = files || trackedFiles({ root })
+  const lock = readJson({ root, rel: LOCK_FILE, fallback: null })
+  if (!lock || !lock.skills) return { updated: [], unchanged: [], missing: [], skipped: true }
+  const updated = []
+  const unchanged = []
+  const missing = []
+  for (const id of Object.keys(lock.skills)) {
+    const file = `${SKILLS_DIR}/${id}/SKILL.md`
+    // 判据是"已入库"（与 scan 的扫描域同一来源）：磁盘上存在但未入库的文件不算
+    if (!tracked.includes(file)) { missing.push(id); continue }
+    const actual = sha256File({ root, file })
+    if (lock.skills[id][LOCK_FIELD] === actual) { unchanged.push(id); continue }
+    lock.skills[id] = { ...lock.skills[id], [LOCK_FIELD]: actual }
+    updated.push(id)
+  }
+  if (!dryRun && updated.length) writeJson({ root, rel: LOCK_FILE, data: lock })
+  return { updated, unchanged, missing }
+}
+
 // ── _common 工具版本 ───────────────────────────────────────────────────────
 
 export const COMMON_DIR = 'public/sample-skills/_common'

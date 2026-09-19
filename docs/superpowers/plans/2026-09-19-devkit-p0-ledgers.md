@@ -2782,6 +2782,9 @@ Modify `scripts/bump-version.mjs`。四处改动：
 //   node scripts/bump-version.mjs pkg 2.9.0     # GUI 发布线（package.json version）
 //   node scripts/bump-version.mjs app 3.0.1 --dry-run   # 演练：只打印将发生的改动
 // 版本格式：dev <major>.<minor>[.<patch>]（发布稳定后去掉 dev 前缀）。
+//   ★ 例外（Task 9 rider 4）：`pkg` 目标的宿主是 npm 的 package.json，**不带** dev 前缀 ——
+//     它必须保持合法 semver（`app-builder-lib` 对非 semver 抛 `Invalid major number`；
+//     `semver.major('dev 2.9.0')` 实测抛错）。照"一律 dev 前缀"改回去会直接打断 GUI 发布线。
 // 自动同步位置：
 //   - version.mjs 常量（APP_VERSION / KERNEL_VERSION）
 //   - server/version.test.mjs 期望值断言（A5 后该文件已存在，分支不再跳过）

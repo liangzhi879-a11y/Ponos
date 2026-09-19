@@ -99,10 +99,10 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 | `lines` | 四线：APP / KERNEL / GUI / KB-schema | `dev 3.0.0`、`dev 0.2`、`2.8.0`、schema 1 | `version.mjs:9,12,15`、`package.json:3` |
 | `contracts` | 14 处项目自有版本常量 | 实测 `git grep` 得 **20 处** `*_VERSION = ` 声明（初稿写的"17 处"来自更窄的 grep 模式，2026-09-19 Task 3 实施时实测修正）；其中减 `ANTHROPIC_VERSION` ×2（外部协议版本，不纳管；该常量出现在 `electron/app-llm.cjs` 与 `electron/app-websearch.cjs` 两处）、`SUPERPOWERS_VERSION` ×1（上游技能资产，不纳管）、版本线已纳管 3 处（`version.mjs` 的 `APP_VERSION`/`KERNEL_VERSION`/`SCHEMA_VERSION`）→ 余 **14 处**纳管 | `kernel/graph.mjs`、`kernel/knowledge-import.mjs`、`kernel/loop.mjs`、`kernel/mcp-http.mjs`、`kernel/session.mjs`、`kernel/team-store.mjs`、`kernel/workflow-dsl.mjs`、`server/workflow-store.mjs`、`shared/knowledge-core.mjs`、`shared/tag-registry.mjs`、`shared/team-crypto.mjs`、`shared/team-members.mjs`、`shared/team-source.mjs`、`electron/vault.cjs` |
 | `skills` | 22 条技能版本（`skills.json` ↔ `SKILL.md` frontmatter） | **实测 22/22 一致（0 漂移）→ 好基线，纳入门禁即可** | `public/skills.json`、`public/sample-skills/*/SKILL.md` |
-| `skillsLock` | 20 条 sha256 | **实测 20/20 不符**（lock 记的是上游原文，本地已被 frontmatter/占位符改写）→ 按 D5 重定义为本地安装后哈希 | `skills-lock.json` |
-| `commonTools` | `_common` 下 Python 工具的版本 | **实测实有 98 个 `.py`，manifest 仅登记 9 条；且 98 个脚本中零个声明 `__version__`** | `public/sample-skills/_common/_common_manifest.json` |
+| `skillsLock` | 20 条 sha256 | **实测 20/20 与本地文件不符**（lock 原记上游原文，本地已被 frontmatter/占位符改写）→ 按 D5 重定义为本地安装后哈希。2026-09-19 Task 9 已重算：**重算后 20/20 一致**（`syncSkillsLock`：`updated 20 / unchanged 0 / missing 0`，二次运行 `updated 0 / unchanged 20` 幂等） | `skills-lock.json` |
+| `commonTools` | `_common` 下 Python 工具的版本 | 实测实有 **98 个 `.py`**；manifest 仅登记 9 条；且 98 个脚本中**零个**声明 `__version__`。2026-09-19 Task 9 已全量登记 **98/98**（有版本者 9 条 `versionSource=manifest` 且值等于 manifest 的 `current_version` 可复算；未标注者 89 条 `version=null` + `unmarked`，**不回填、不编造版本号**） | `public/sample-skills/_common/_common_manifest.json`（其顶层 `_note` 说明该版本不可从脚本内容校验） |
 | `channels` | 渠道身份（dev / release） | 新增，见 §8 | `release/YFWorking/kit-stamp.json`（local-only） |
-| `history` | 版本变更流水（`{id, from, to, at, reason}`） | 新增。**V3 单调性与 §7.3 基线数量护栏都读它**，故必须与台账同文件存放，不能另建文件（否则两者可能不同步） | `manifest/versions.json` 的 `history` 分区 |
+| `history` | 版本变更流水（`{key, from, to, at, reason}`） | 新增。**V3 单调性与 §7.3 基线数量护栏都读它**，故必须与台账同文件存放，不能另建文件（否则两者可能不同步）。★ 字段名是 **`key`**（`<id>@<file>`，与 `keyOfVersion` 同构）：`kit/lib/version-rules.mjs` 按 `r.key` 分组，写成 `id` 的记录会被归进 `undefined` 组 —— **V3 根本不核它（静默失效）**。2026-09-19 Task 9 rider 3 改正（此处曾误写为 `id`） | `manifest/versions.json` 的 `history` 分区 |
 
 ### 5.2 台账条目形状
 
@@ -131,8 +131,8 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 | V4 | 跨载体映射一致 | `KERNEL_VERSION='dev 0.2'` ↔ `kernel/package.json:3 '0.2.0'` | 否（当前一致） |
 | V5 | schema 变更需迁移链 | `kind=data-schema` 且值变更时，必须同时出现迁移条目 | 否（新机制） |
 | V6 | 技能版本**三方**一致（Task 8 补齐） | ① `skills.json.version` ↔ `SKILL.md` frontmatter 逐条相等；② **台账 `skills[].value` / `frontmatterVersion` 必须等于源文件复算出来的真值**（与 V1 同族）。缺②时台账可被静默改值而无人报红，且报告文案"三方一致"对外说假话（评审发现的 V6 返工项，2026-09-19 Task 8 落地并补反例测试） | 否（实测 22/22 三处一致） |
-| V7 | lock 语义落地 | 20 条 sha256 == 实际 `SKILL.md` 文件哈希 | **是（20/20 不符）** |
-| V8 | manifest 覆盖 | `commonTools` 记录的条目 ⊆ 实有 `.py`，且**覆盖率不得下降** | **是（9/98）** |
+| V7 | lock 语义落地 | 20 条 sha256 == 实际 `SKILL.md` 文件哈希（判据恒为**已提交的 `skills-lock.json`**，不读台账 —— 否则跑一次 sync 就能把门禁刷绿；见 §5.1 与 `version-rules.test.mjs` 的"防自证"反例） | 否（Task 9 重算后 20/20 一致，实测红灯 V7 20 → **0**） |
+| V8 | manifest 覆盖 | `commonTools` 记录的条目 ⊆ 实有 `.py`，且**覆盖率不得下降** | 否（Task 9 实测 98/98 登记，V8/V8b 全绿） |
 | V8′ | 新增文件必须自证版本 | **新增的** `.py` 必须携带 `__version__` 或显式登记 `version: null` + `versionSource:"unmarked"`（**存量 98 个豁免**，见 §5.4） | 否（新机制） |
 
 ### 5.4 关于 V8 与 98 个 `.py` 的处理口径（明确划界）
@@ -314,12 +314,12 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 | # | 欠账（实测） | 修复方式 | 验证 |
 |---|---|---|---|
 | A1 | `git tag` = 0 个 | 打首个 tag，建立版本锚点（**属写 git 操作，实施前单独获批**） | `git tag` 非空；`stamp` 能算 `ahead` |
-| A2 | GUI 版本线（`package.json` 2.8.0）无 bump 入口 | `bump-version.mjs` 增加 `pkg` 目标 | `--dry-run` 三线各自演练正确 |
+| A2 | GUI 版本线（`package.json` 2.8.0）无 bump 入口 | ✅ 已修（Task 8）：`bump-version.mjs` 增加 `pkg` 目标。★ **`pkg` 目标不带 `dev ` 前缀**（Task 9 rider 4 明写进本行）：宿主是 npm 的 `package.json`，值必须保持合法 semver —— `app-builder-lib` 对非 semver 抛 `Invalid major number`，`semver.major('dev 2.9.0')` 实测抛错。照"版本格式一律 `dev <major>.<minor>`"改回去会**打断 GUI 发布线** | `--dry-run` 三线各自演练正确；`pkg` 写出纯 semver |
 | A3 | `version.mjs:7` 注释称"三条独立版本线"，`bump-version.mjs` 只支持 `app\|kernel`（其他直接 fail）→ 注释↔代码不符 | 脚本补 `pkg`，注释同步为"四条" | 注释与代码一致；非法目标仍非 0 退出 |
 | A4 | 14 处版本常量无台账 | 纳入 `contracts` 分区（V1 可解析-回读） | `kit:check` V1 全绿 |
 | A5 | `server/version.test.mjs` 不存在 → `bump-version.mjs` 的"同步测试期望值"分支**永走跳过**（死路径） | 二选一：补该测试文件，或删除该死分支改为显式说明（**取"补测试文件"**，让版本断言真正存在） | 该测试能红（改错值即失败） |
-| A6 | `_common_manifest.json` 仅 9/98；98 个 `.py` 零个声明 `__version__` | 台账全量登记 98 条（未标注者 `null`），新增 V8′ 只对新文件强制 | V8 覆盖率记为 9/98 起点，之后不下降 |
-| A7 | `skills-lock.json` 20/20 哈希不符 | 按 D5 重定义为本地安装后哈希，`kit:sync` 重算 20 条 | V7 全绿；改任一 `SKILL.md` 后立刻红 |
+| A6 | `_common_manifest.json` 仅 9/98；98 个 `.py` 零个声明 `__version__` | ✅ 已修（Task 9）：台账全量登记 **98/98**（未标注者 `null` + `unmarked`，**不回填版本值**）；`_common_manifest.json` 补顶层 `_note` 说明 `current_version` 不可从脚本内容校验；V8′ 只对**新增**文件强制 | 漏登记计数 0（实测 `实有 98 已登记 98 漏登记 0`；9 条来自 manifest / 89 条 `null`）；V8、V8b、V8′ 全绿 |
+| A7 | `skills-lock.json` 20/20 哈希不符 | ✅ 已修（Task 9）：按 D5 重定义为**本地安装后哈希**，新增 `syncSkillsLock` 重算 20 条（`kit/cli.mjs sync` 的占位调用已替换为真实现）；V7 **直读 lock 文件**（不读台账，防"sync 自证"） | 实测 V7 红灯 **20 → 0**；二次运行 `updated 0 / unchanged 20`（幂等）；改任一 `SKILL.md` 后立刻红（含"台账里塞正确哈希也不影响判定"的防自证反例） |
 | B1 | 10 个未用运行时依赖 | **逐个核实后删除**（每个都跑 `typecheck` + `build` + 全量测试；`xlsx`/`mammoth` 需先确认无运行时动态加载） | 删除后 `kit:check` P1 无 `unused`；产物可构建 |
 | B2 | 内嵌 Python 13 包硬编码在构建脚本 | 提到 `deps.json`，脚本读清单 | 构建脚本行为不变（`node --test` + 干跑打印） |
 | B3 | 双 Python 清单（内嵌 13 vs requirements 约 25）无对账 | P5 差集显式标注（黄灯，不红） | 报告能列出差集 |

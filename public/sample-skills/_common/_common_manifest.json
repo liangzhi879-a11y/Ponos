@@ -1,4 +1,5 @@
 {
+  "_note": "tools[*].current_version 由本清单人工维护，不从脚本内容校验 —— 实测 98 个 _common 下的 .py 中零个声明 __version__（spec §5.4 刻意不回填，避免制造大量无关 diff）。版本台账见 kit/manifest/versions.json 的 commonTools 段（全量 98 条登记：有版本者 versionSource=manifest 且值必须等于本清单的 current_version；未标注者 version=null + versionSource=unmarked，**不得编造占位版本号**）；新增脚本必须声明 __version__ 或显式登记（规则 V8'）。",
   "schema_version": "1.0",
   "created_at": "2026-07-24T11:07:05.210103",
   "tools": {

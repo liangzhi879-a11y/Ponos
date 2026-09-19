@@ -3,7 +3,8 @@
 // 为什么必须 spawn 真进程：CLI 的全部价值都在"进程外可观察的行为"上 —— 退出码、stdout 的
 // JSON 形状、以及"check 绝不写文件"。这三样 import 都测不到（process.exit 会直接杀掉测试进程）。
 //
-// ★ 退出码的判据必须**双向**：真仓现在必然有红灯（V7 20 条，欠账 A7 未修），所以
+// ★ 退出码的判据必须**双向**：真仓现在必然有红灯（P1 10 条未用依赖 + P2 4 条真幽灵，
+//   欠账 B1 未修；A7 的 V7 20 条已在 Task 9 归零），所以
 //   "check 退出 1"单独看是**不可能独立失败的断言** —— 硬编码 `process.exit(1)` 也能过。
 //   故这里同时钉住三个方向：
 //     ① 真仓 check 退 1（红灯存在）；② 夹具仓（红灯 0）check 必须退 0；
@@ -11,6 +12,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
@@ -78,7 +80,7 @@ test('check --json 与 view --json 同源（summary 逐字相等）', () => {
 
 test('check（人话）有红灯 → 退出码 1，且报告首行是 DevKit 检查', () => {
   const r = run(['check', '--verbose'])
-  assert.equal(r.code, 1, '台账现状应至少含 V7 的红灯（A7 未修）')
+  assert.equal(r.code, 1, '台账现状应至少含 P1/P2 的红灯（依赖欠账 B1 未修；A7 的 V7 已归零）')
   assert.match(r.stdout, /DevKit 检查/)
   assert.match(r.stdout, /红灯（阻断）/)
 })
@@ -221,6 +223,31 @@ test('sync --dry-run 不落盘（否则"预演"会改仓库状态，比不做更
   assert.equal(r.code, 0)
   assert.equal(existsSync(join(root, 'kit/manifest/deps.json')), false, '--dry-run 不得写 deps.json')
   assert.equal(existsSync(join(root, 'kit/manifest/versions.json')), false, '--dry-run 不得写 versions.json')
+})
+
+// ── Task 9（A7）：sync 必须真的重算 skills-lock（占位实现是死代码） ──────────
+//
+// 为什么必须在**真进程**上钉：`kit/cli.mjs` 的 sync 分支原先写着
+// `const lock = { updated: [], unchanged: [], missing: [] }` 的**占位**（注释写"Task 9 落地后替换"）。
+// 占位与真实现从 stdout 的数上看分不出来（都是 0/0/0 的另一种写法），差别只体现在
+// **lock 文件到底有没有被重算** —— 而 V7 的判据恒为 lock 文件，占位留着 V7 就永远红。
+const SKILL_MD = '---\nname: demo\nversion: "1.0.0"\n---\n\n正文\n'
+
+test('★A7：cli sync 真的重算 skills-lock（占位实现会让 V7 永远红）', () => {
+  const { root, env } = fixture()
+  mkdirSync(join(root, 'public/sample-skills/demo'), { recursive: true })
+  writeFileSync(join(root, 'public/sample-skills/demo/SKILL.md'), SKILL_MD)
+  writeFileSync(join(root, 'skills-lock.json'), JSON.stringify({ skills: { demo: { computedHash: 'STALE' } } }))
+  execFileSync('git', ['add', '-A'], { cwd: root })
+
+  const r = run(['sync'], { env })
+  assert.equal(r.code, 0, r.stdout)
+  assert.match(r.stdout, /skills-lock: updated 1 \/ unchanged 0 \/ missing 0/, `报告必须来自真实现：${r.stdout}`)
+  const expected = createHash('sha256').update(SKILL_MD).digest('hex')
+  assert.equal(JSON.parse(readFileSync(join(root, 'skills-lock.json'), 'utf8')).skills.demo.computedHash, expected,
+    'sync 必须把 computedHash 重算成该 SKILL.md 的 sha256（占位实现会原样留着 STALE → V7 永远红）')
+  // 二次 sync：幂等（updated 归零）—— 否则每次 sync 都产生无意义 diff
+  assert.match(run(['sync'], { env }).stdout, /skills-lock: updated 0 \/ unchanged 1 \/ missing 0/)
 })
 
 test('stamp：要么真的盖章（写出 kit-stamp.json），要么明确报未实现 —— 绝不静默成功', () => {
