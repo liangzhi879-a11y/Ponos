@@ -22,6 +22,18 @@
       "at": "2026-09-19"
     },
     {
+      "rule": "CT9",
+      "subject": "/v1/chat/completions",
+      "reason": "**上游 LLM 协议路径，不经 bridge**：`src/lib/titleGen.ts:91` 用用户配置的基址直连 `${p.baseUrl}/v1/chat/completions`（OpenAI 兼容，vLLM/deepseek 等）⇒ server 路由表里**本就不该有**它。属 CT9 的噪声（不是缺端点），按 plan §5「噪声仍走 drift-baseline.json」登记。（主树里这段调用已被他人在途改动搬到 server/title-gen.mjs，故主树上本条不再命中。）",
+      "at": "2026-09-19"
+    },
+    {
+      "rule": "CT9",
+      "subject": "/v1/messages",
+      "reason": "同上：`src/lib/titleGen.ts:112` 的 Anthropic 兼容回退路径（`${p.baseUrl}/v1/messages`）—— 上游 LLM 协议，不经 bridge。与 `/v1/chat/completions` 一起构成 CT9 的上游噪声对。",
+      "at": "2026-09-19"
+    },
+    {
       "rule": "CT1",
       "subject": "routes ANY /app-info",
       "severity": "red",
