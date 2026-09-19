@@ -96,11 +96,24 @@ test('★RiderA：真仓红灯 0 / 黄灯 1（4 条 P2 幽灵依赖已补声明�
   assert.equal(r.code, 0, `真仓必须零红灯（Rider A 已给 4 个包补声明），实测 findings=${JSON.stringify(j.findings)}`)
   assert.deepEqual([j.summary.red, j.summary.yellow], [0, 1],
     '黄灯 1 是 P5（两套 Python 清单差集，属预期，spec §6.3 已定不阻断）；红灯/黄灯数变了就必须有人来解释')
-  // P1 之后：P5 + 3 条 CT9（渲染层调后端无的差集，**黄、只报不拦**，已逐条登记 drift-baseline.json）
-  // ⇒ summary.yellow 仍是 1，这 3 条落进 baselined（「绿灯里藏着放行」必须可见：见 renderHuman 的豁免段）
-  assert.deepEqual(j.findings.map((f) => f.rule), ['P5', 'CT9', 'CT9', 'CT9'])
-  assert.deepEqual(j.findings.filter((f) => f.rule === 'CT9').map((f) => f.severity), ['baselined', 'baselined', 'baselined'])
-  assert.equal(j.baselined.total, 3)
+  // 黄灯只允许 P5；CT9 的 3 条必须落在**基线**（黄、只报不拦，逐条）
+  assert.deepEqual(j.findings.filter((f) => f.severity === 'yellow').map((f) => f.rule), ['P5'])
+  assert.deepEqual(j.findings.filter((f) => f.rule === 'CT9').map((f) => f.severity),
+    ['baselined', 'baselined', 'baselined'])
+  // ★ 双树口径（铁律 4）：工作树里可能有**他人在途**的端点改动。那种情况下 CT1/CT2/CT4 会如实报出
+  //   "台账未同步"，且它们必须**已逐条登记基线**（drift-baseline.json，理由写明"他人在途 + 何时摘除"）——
+  //   既不许把真差异压成静默绿，也不许出现 CT1/CT2/CT4 之外的红灯。
+  const others = j.findings.filter((f) => !['P5', 'CT9'].includes(f.rule))
+  assert.deepEqual([...new Set(others.map((f) => f.rule))].filter((x) => !['CT1', 'CT2', 'CT4'].includes(x)), [],
+    `只允许"台账未同步"类（CT1/CT2/CT4）作为在途差异，实测 ${JSON.stringify(others)}`)
+  assert.deepEqual(others.filter((f) => f.severity !== 'baselined'), [], '在途差异必须逐条登记基线（可见），不许裸红')
+  // 干净工作树（= CI 与评审克隆跑的那棵树）上必须一条 CT 差异都没有
+  const dirty = execFileSync('git', ['status', '--porcelain', '--', 'server', 'electron', 'kernel', 'src', 'shared', 'docs/bridge-contract.md'],
+    { cwd: ROOT, encoding: 'utf8' }).trim()
+  if (!dirty) {
+    assert.deepEqual(j.findings.map((f) => f.rule), ['P5', 'CT9', 'CT9', 'CT9'],
+      '干净工作树必须只有 P5 + 3 条 CT9（台账与代码/文档完全同步）')
+  }
 })
 
 test('check --verbose 逐条列出每条规则的判定结果（--verbose 必须真的多说点什么）', () => {
@@ -148,20 +161,36 @@ test('★P1-②：`kit:sync` 不得改写 contract-scope.json（逐字节），�
   const versionsPath = join(ROOT, 'kit/manifest/versions.json')
   const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex')
   const before = sha(scopePath)
-  const vBefore = sha(versionsPath)
-  assert.equal(run(['sync']).code, 0)
-  assert.equal(sha(scopePath), before, 'sync 改了 scope 文件 = members 可被自动生成（反例③），登记失去意义')
-  // versions.json 也必须逐字节不变：快照内容未变时 snapshotAt 保留 ⇒ sync 幂等（否则每次 sync 都是噪声 diff）
-  assert.equal(sha(versionsPath), vBefore, 'sync 必须幂等：快照无变化时不得重写 snapshotAt/人工段')
-  const ch = JSON.parse(readFileSync(versionsPath, 'utf8')).channels
-  assert.equal(typeof ch.scopeCount, 'number', 'channels.scopeCount 是人工封顶值：sync 不得冲成 undefined')
-  assert.equal(typeof ch.scopeRedCount, 'number')
-  assert.ok(ch.snapshotAt && Object.keys(ch.routes).length > 0, '快照本体必须在（CT0/CT1 的前提）')
+  const vBackup = readFileSync(versionsPath)
+  try {
+    assert.equal(run(['sync']).code, 0)
+    assert.equal(sha(scopePath), before, 'sync 改了 scope 文件 = members 可被自动生成（反例③），登记失去意义')
+    const ch = JSON.parse(readFileSync(versionsPath, 'utf8')).channels
+    assert.equal(typeof ch.scopeCount, 'number', 'channels.scopeCount 是人工封顶值：sync 不得冲成 undefined')
+    assert.equal(typeof ch.scopeRedCount, 'number')
+    assert.ok(ch.snapshotAt && Object.keys(ch.routes).length > 0, '快照本体必须在（CT0/CT1 的前提）')
+  } finally {
+    // ★ 真仓 sync 在"工作树带他人在途端点"时会更新 channels（那正是它的职责，见 drift-baseline 里的 CT1 条目）；
+    //   本用例只关心 scope 文件，故把 versions.json 还原到测试前状态 —— **测试不得把仓库改脏**。
+    if (!readFileSync(versionsPath).equals(vBackup)) writeFileSync(versionsPath, vBackup)
+  }
+  // 幂等口径放在**夹具**（与台账自洽的树）里判：连跑两次，第二次必须逐字节不变
+  const { root, env } = fixture()
+  mkdirSync(join(root, 'kit/manifest'), { recursive: true })
+  writeFileSync(join(root, 'kit/manifest/contract-scope.json'), JSON.stringify({ version: 1, entries: [] }, null, 2))
+  execFileSync('git', ['add', '-A'], { cwd: root })
+  assert.equal(run(['sync'], { env }).code, 0)
+  const p = join(root, 'kit/manifest/versions.json')
+  const scopeP = join(root, 'kit/manifest/contract-scope.json')
+  const first = readFileSync(p, 'utf8')
+  const scopeFirst = readFileSync(scopeP, 'utf8')
+  assert.equal(run(['sync'], { env }).code, 0)
+  assert.equal(readFileSync(p, 'utf8'), first, 'sync 必须幂等：快照无变化时不得重写 snapshotAt')
+  assert.equal(readFileSync(scopeP, 'utf8'), scopeFirst, '夹具侧同样：sync 不得写 scope 文件')
   // --dry-run 同样不落盘
-  const dry = run(['sync', '--dry-run'])
+  const dry = run(['sync', '--dry-run'], { env })
   assert.equal(dry.code, 0)
-  assert.equal(sha(versionsPath), vBefore)
-  assert.equal(sha(scopePath), before)
+  assert.equal(readFileSync(p, 'utf8'), first)
 })
 
 test('★P1-③：夹具仓契约**真红真绿** —— 新增端点未登记 → CT2/CT4 红；登记后转绿', () => {

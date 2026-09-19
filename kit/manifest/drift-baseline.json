@@ -20,6 +20,27 @@
       "subject": "/worktree/remove",
       "reason": "同 `/worktree/create`：src/components/worktree/WorktreePanel.tsx:80 调用，server 侧无该端点。两条都属 D8（前端调后端无）历史欠账。",
       "at": "2026-09-19"
+    },
+    {
+      "rule": "CT1",
+      "subject": "routes ANY /app-info",
+      "severity": "red",
+      "reason": "**他人在途端点**：`server/host-routes.mjs`（工作树已改、尚未提交）新增 `/app-info` 判定，而本提交的 `versions.json#channels` 按 **committed 状态**落盘（口径见 kit/README.md 铁律 4 与下条）⇒ 主树出现 CT1「台账缺、代码有」。⚠️ 这份在途改动提交后，跑 `npm run kit:sync` 并**摘除本条**；不摘除会把该键**将来**的真实 CT1 差异一并压掉。",
+      "at": "2026-09-19"
+    },
+    {
+      "rule": "CT1",
+      "subject": "routes POST /generate-title",
+      "severity": "red",
+      "reason": "同上：`server/bridge.mjs:2518`（工作树已改）与他人在途新增的 `server/title-gen.mjs` 提供 `/generate-title`。台账按 committed 状态落盘是为了让**干净检出/CI**（= 唯一会被复核的树）与提交内容一致 —— 若反过来按主树现场值落盘，干净检出席上会出现 CT1 两条 + CT2/CT4 一条（`/boot-status`）共 4 条红灯，等于把「台账描述了未提交的代码」这个错误固化进提交。",
+      "at": "2026-09-19"
+    },
+    {
+      "rule": "CT4",
+      "subject": "routes 多登记 1 条",
+      "severity": "red",
+      "reason": "`contract-scope.json` 登记了 `ANY /boot-status`：**committed** 代码有该端点（server/host-routes.mjs 的 host 面）而 **committed** 文档未声明 ⇒ 干净检出必须登记它（否则 CT2+CT4 各一条红）；而主树里他人在途的 `docs/bridge-contract.md` 编辑已补上该行 ⇒ 主树判为「多登记」。⚠️ 该文档改动提交后请**摘除 scope 里的 /boot-status 条目**（登记集变小，同时下调 channels.scopeCount/scopeRedCount），本条随之失效。",
+      "at": "2026-09-19"
     }
   ]
 }
