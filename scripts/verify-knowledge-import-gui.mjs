@@ -15,6 +15,17 @@
 //   5. 数据层纪律：组件只走 useKnowledge.importDocuments，导入后必须失效 tree/search 等缓存
 //   6. 三档明细 / 只读空间排除 / 403 明确报错 / dryRun 预览入口
 //
+// ── 2026-09-19（P1 收尾 · 独立审查 ③）：给"只许 import type"补上**动态 import** 形态 ────
+// 审查实测（M7）：把子组件 `KnowledgeImportReport.tsx` 改成动态值导入
+// `const api = await import('@/lib/knowledgeApi')`，本脚本**仍绿** —— 上面那条加强根本拦不住它
+// （`importSpecifiers` 当时只匹配 `import … from '…'`）。修法 = 让 `importSpecifiers` 同时匹配
+// `import('…')`：动态形态没有绑定名，就把语句原文当说明符原文返回 ⇒ 无 `type` 前缀 ⇒ 判违规。
+// 判据仍是"**值**导入（静态或动态）即红，`import type` 放行"：不做"含 knowledgeApi 字样即红"
+// 那种宽匹配（`import type` 会被误报）。变异验证（改坏→红 / 还原→绿）见 commit message。
+// 本判据的**已知边界**（如实写下，不假装能判）：只认字面说明符 —— `const m = '…'; await import(m)`
+// 这类变量拼接的动态导入无法静态解析（与 `kit/lib/scan.mjs` 的同一限制，见 docs/architecture.md:404）；
+// 需要动态取值时请显式写成 `import type` + 静态值导入两条，别用变量绕过本门禁。
+//
 // ── 2026-09-19（P1 · pendingFix 修绿）：断言已按现行结构重写，并**顺势加强** ─────────
 // 原脚本有 7 项失败，全部是"行为已实现、位置/写法已变"（不是被测代码有 bug）：
 //   ① i18n key 数（当时写 ≥25，实测 22）：key 随明细渲染抽到了子组件
@@ -107,16 +118,30 @@ function bodyOf(code, name) {
 }
 
 /**
- * 取出某文件里 `from '<mod>'` 的那些 import 语句的**说明符原文**列表。
+ * 取出某文件里从 `<mod>` 导入的**说明符原文**列表 —— **静态与动态两种形态都算**。
  * 用途：「组件不得直连 knowledgeApi」这条不变量要按"导入了什么"判，而不是按关键字出现与否判。
+ *
+ * 为什么必须同时覆盖动态 `import('…')`：只匹配 `import … from '…'` 时，
+ * `await import('@/lib/knowledgeApi')` 这种动态值导入**完全绕过**这条断言
+ * （2026-09-19 审查实测：把子组件改成动态值导入，本脚本仍绿 ⇒ 静默逃逸）。
+ * 动态形态没有绑定名，故把**语句原文**（如 `import('@/lib/knowledgeApi')`）当作说明符原文返回：
+ * 它同样不含 `type` 前缀 ⇒ 会被"只许 import type"的谓词判成违规，且失败信息直接照出原文。
+ * 判据仍是"值导入即红、`import type` 放行"：TS 的动态 import **没有** `import type` 形态，
+ * 故此处一律按值导入判（若将来要用类型位置的 `typeof import('x')`，请改写成 `import type`）。
  */
 function importSpecifiers(code, mod) {
   const out = []
   for (const m of code.matchAll(/import\s+(?:([\s\S]*?)\s+from\s+)?['"]([^'"]+)['"]/g)) {
     if (m[2] === mod) out.push((m[1] || '').trim())
   }
+  for (const m of code.matchAll(/import\s*\(\s*['"]([^'"]+)['"]\s*\)/g)) {
+    if (m[1] === mod) out.push(m[0].trim())
+  }
   return out
 }
+
+/** 说明符原文是不是动态形态（没有绑定名可给，只有语句原文）。 */
+const isDynamicImport = (spec) => /^import\s*\(\s*['"]/.test(spec)
 
 // ── 2. IPC：三个通道逐字比对 ─────────────────────────────────────────────────
 //
@@ -234,7 +259,9 @@ check(/KnowledgeImportDialog[\s\S]*?spaces=\{spaces\}/.test(src.sidebar), 'Sideb
 // 写路径唯一入口：从 hook 里 import `importDocuments`（原断言要求**恰好**是那一项，过刚：
 // 2026-09-14 加了 `importDocumentsTracked`（可追踪的批量导入，同一份失效逻辑），
 // 语义没变 ⇒ 改为"名单里必须含 importDocuments，且**每个**具名导入都必须是 hook 真导出的"。
-const hookImports = importSpecifiers(src.dialog, '@/hooks/useKnowledge')
+// 动态形态（如 `await import('@/hooks/useKnowledge')`）给不出静态可见的名字，故从"名字名单"里剔除；
+// 这不是放行：对话框若**只**动态导入 hook，"必须含具名 importDocuments"那条（下一行）会红。
+const hookImports = importSpecifiers(src.dialog, '@/hooks/useKnowledge').filter(s => !isDynamicImport(s))
 const namedFromHook = hookImports.flatMap(s => s.replace(/^\{|\}$/g, '').split(','))
   .map(s => s.trim().replace(/^type\s+/, '')).filter(Boolean)
 check(hookImports.some(s => /\{/.test(s)) && namedFromHook.includes('importDocuments'),
@@ -247,9 +274,13 @@ check(notExported.length === 0,
 // 现在改为**两个渲染文件**都查，判据是"从 knowledgeApi 只许 import type"——
 // 组件直连数据层（值导入）在这条下立刻红，比关键字匹配严得多；类型导入不受影响
 // （KnowledgeImportEntry / KnowledgeImportReport / KnowledgeSpace 都是类型）。
+// ★ 2026-09-19 P1 收尾（②项审查遗留）：`importSpecifiers` 同时覆盖**动态** `import('…')`，
+// 故 `await import('@/lib/knowledgeApi')` 这种动态值导入同样落进 `items` 并被判违规 ——
+// 它在这条断言下必须红（原静态正则匹配不到它，实测逃逸）。
 for (const [name, code] of I18N_SOURCES) {
   const specs = importSpecifiers(code, '@/lib/knowledgeApi')
-  // 花括号名单（`import { type A, type B } from …`）要拆开逐项判；`import type {…}` 整体是类型导入也放行。
+  // 花括号名单（`import { type A, type B } from …`）要拆开逐项判；`import type {…}` 整体是类型导入也放行；
+  // 动态形态的原文（`import('…')`）无花括号，原样进名单 ⇒ 无 type 前缀 ⇒ 判违规。
   const items = specs.flatMap(s => (/^type\s*\{/.test(s) ? [] : s.replace(/^\{|\}$/g, '').split(',')))
     .map(s => s.trim()).filter(Boolean)
   const offenders = items.filter(s => !/^type\s/.test(s))

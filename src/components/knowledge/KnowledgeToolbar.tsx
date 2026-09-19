@@ -41,15 +41,17 @@ export function KnowledgeToolbar({ spaceName, readonly = false, stats, filesTrun
       </span>
       {readonly && <span className="micro shrink-0">{t('knowledge.readonly')}</span>}
       {/* 文件数上限提示（批次 4）：用 error 色而非 tertiary —— 它是"你的库不完整"这种
-          需要用户采取行动的状态（拆分空间 / 调高上限），不是无害的元信息。 */}
+          需要用户采取行动的状态（拆分空间 / 调高上限），不是无害的元信息。
+          省略号必须作用在**文本节点**上：`truncate`（text-overflow: ellipsis）与 `inline-flex`
+          同体时文字是匿名 flex item，部分引擎不渲染省略号 ⇒ 外层只留 flex + 限宽，内层 span 收 truncate。 */}
       {filesTruncatedHint && (
         <Tooltip content={filesTruncatedHint} side="bottom">
-          <span className="inline-flex items-center gap-1 text-[10px] text-error shrink-0 cursor-default max-w-[260px] truncate">
+          <span className="inline-flex items-center gap-1 text-[10px] text-error shrink-0 cursor-default max-w-[260px]">
             {/* 图标走 lucide（spec 2026-09-13-knowledge-gui-design.md §5「lucide only，禁 emoji」）：
                 原先是字面警示符号（U+26A0），`scripts/verify-knowledge-gui.mjs` 按 spec 的
                 Unicode 范围全文件扫描（注释同样命中）—— 与该项「注释命中 emoji 时改的是代码」先例一致。 */}
             <AlertTriangle className="w-[11px] h-[11px] shrink-0" />
-            {filesTruncatedHint}
+            <span className="truncate">{filesTruncatedHint}</span>
           </span>
         </Tooltip>
       )}
