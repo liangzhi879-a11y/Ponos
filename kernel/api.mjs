@@ -935,6 +935,20 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // 跨 Agent 证据面测试（output_file 语义回归锁）：[mock:write-edit-write] 在同一轮产
+  // Write A → Write B → Edit A ⇒ writePaths = [A, B, A]。用于锁住 output_file 仍取"最后
+  // 被写/改的文件"（A），而 outputs 是保序去重的 [A, B]——两者在去重后必须不同。目录
+  // 同 [mock:write]：PONOS_MOCK_WRITE_DIR 指定。
+  if (lastText.includes('[mock:write-edit-write]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    const base = process.env.PONOS_MOCK_WRITE_DIR || process.cwd()
+    yield { type: 'tool_use', id: 'tool_use_mock_wew_1', name: 'Write', input: { file_path: `${base}/mock-a.txt`, content: 'old\n' } }
+    yield { type: 'tool_use', id: 'tool_use_mock_wew_2', name: 'Write', input: { file_path: `${base}/mock-b.txt`, content: 'b' } }
+    yield { type: 'tool_use', id: 'tool_use_mock_wew_3', name: 'Edit', input: { file_path: `${base}/mock-a.txt`, old_string: 'old', new_string: 'new' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // R1-1 防重放测试：同一次调用输出两个【相同 id】的 tool_use（echo 安全命令）
   if (lastText.includes('[mock:replay]')) {
     if (signal?.aborted) throw abortError()

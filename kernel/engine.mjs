@@ -1906,12 +1906,17 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
     }
     // 产物与读面去重（同一文件可被多次 Edit / Read）：保序去重，避免回传给主 Agent
-    // 的清单里出现重复路径。writePaths 原为"最后产物"取用，去重不改变其末元素语义。
+    // 的清单里出现重复路径。**去重只用于下面这两个新增字段（outputs / reads）。**
+    // ⚠️ `outputs` 去重后**不能**拿来取"最后写入的产物"——保序去重取的是"最晚首次出现的
+    // 互异产物"，与原 writePaths 末元素语义不同（`Write A → Write B → Edit A` 时两者分别为
+    // B 与 A）。故 `output_file` 仍取自**原始** writePaths 末元素，保持既有 wire 语义逐字不变
+    // （字段只增不改：output_file = 该 lane 最近写入/修改的那个文件）。改动前请先读
+    // kernel-tests/subagent.test.mjs 的 `output_file 仍为"最后写入产物"…` 用例。
     const dedupe = (arr) => [...new Set((arr || []).filter(Boolean))]
     const outputs = dedupe(writePaths)
     const reads = dedupe(readPaths)
     const transcriptPath = String(laneStore?.file || '')
-    const outputFile = outputs[outputs.length - 1] || ''
+    const outputFile = writePaths[writePaths.length - 1] || ''
     const entry = pendingSubAgents.get(taskId)
     if (entry) Object.assign(entry, { status, summary: text, outputFile, outputs, reads, transcriptPath, usage: notifUsage })
     wire.taskNotification({ taskId, status, summary: text, outputFile, outputs, reads, transcriptPath, usage: notifUsage })

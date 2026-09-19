@@ -499,3 +499,29 @@ test('前台 Agent 返回体列出全部产物（不止最后一个）', async (
     env.cleanup()
   }
 })
+
+test('output_file 仍为"最后写入产物"，去重只作用于 outputs（Write A→Write B→Edit A）', async () => {
+  const env = makeEnvEvidence()
+  const prev = process.env.PONOS_MOCK_WRITE_DIR
+  try {
+    process.env.PONOS_MOCK_WRITE_DIR = env.workDir
+    // [mock:write-edit-write] 一轮内：Write A → Write B → Edit A ⇒ 原始 writePaths = [A, B, A]
+    const r = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: '[mock:write-edit-write]', run_in_background: true },
+      { toolUseId: 'tool_use_ev_5' },
+    )
+    const taskId = extractTaskId(r.content)
+    assert.ok(taskId)
+    const n = await env.waitNotif(taskId)
+    assert.ok(n, '完成通知应到达')
+    // ① output_file 语义 = "该 lane 最近写入/修改的文件" ⇒ 取**原始** writePaths 末元素 = A。
+    //    若误取去重数组末元素（outputs = [A, B]），这里会是 mock-b.txt —— 本断言即为此而设。
+    assert.equal(n.output_file, `${env.workDir}/mock-a.txt`, 'output_file 应为最后被写/改的 A，而非去重后末元素 B')
+    // ② 新增字段 outputs 为保序去重：[A, B]（第二次写 A 折叠），顺序与原出现顺序一致
+    assert.deepEqual(n.outputs, [`${env.workDir}/mock-a.txt`, `${env.workDir}/mock-b.txt`])
+  } finally {
+    if (prev === undefined) delete process.env.PONOS_MOCK_WRITE_DIR
+    else process.env.PONOS_MOCK_WRITE_DIR = prev
+    env.cleanup()
+  }
+})
