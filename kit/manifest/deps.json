@@ -1140,7 +1140,7 @@
       },
       {
         "script": "verify-portable-layout",
-        "reason": "scripts/verify-portable-layout.mjs:7 断言 release/YFWorking/ 打包产物（含 electron/electron.exe、runtime/python/python.exe）—— 需先出包"
+        "reason": "scripts/verify-portable-layout.mjs:10-18 断言 release/YFWorking/ 打包产物（:14 要求 electron/electron.exe、:15 要求 runtime/python/python.exe）—— 需先出包"
       },
       {
         "script": "verify-package-assets",
