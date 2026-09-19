@@ -13,7 +13,7 @@ npm run test:ci  # = 预检 → 文档口径 → DevKit 台账 → 单测层 →
 |---|---|---|
 | `npm run test:preflight` | 预检：Node 版本、测试 glob 必须匹配到文件、端口占用风险 | <1s |
 | `node scripts/check-doc-anchors.mjs` | 文档口径（路径存在性 + 各层测试文件数） | <1s |
-| `npm run kit:check` | DevKit 台账门禁（版本/依赖台账 ↔ 宿主文件；只读） | 3 次实测 853/863/815 ms（主仓）；干净克隆 3 次 8xx ms |
+| `npm run kit:check` | DevKit 台账门禁（版本/依赖台账 ↔ 宿主文件；只读） | 主仓 853/863/815 ms；干净克隆 1271/1283/1268 ms |
 | `npm run test:unit` | `shared` + `electron` + `src` + `kit` 四层 | 1041 项 / 23s（kit 层接入前实测；kit 层另加 6 项断言） |
 | `npm run test:server` | `server` 层（含起桥的端到端测试） | 694 项 / 91s |
 | `npm run test:kernel` | `kernel-tests` 层 | 1943 项 / 48s |
@@ -135,9 +135,25 @@ node scripts/ci-preflight.mjs --allow-running-app
 - **在 CI 里的位置**：`.github/workflows/ci.yml` 的 `test` 作业里**单独一步**（`typecheck` 之后、`test:ci` 之前），
   命令 `npm run kit:check`。单独一步是**归因**需要（"台账漂移"与"测试挂了"是两类问题，一眼可辨）；
   `test:ci` 链路里也含它，本地一条命令即可跑全。**这条门禁必须进 CI 的理由**见本节末。
-- **耗时**：实测 **中位数 853 ms**（主仓 3 次 853/863/815；干净克隆同量级）—— 纯文件解析 + `git ls-files`，零网络，远低于 spec §7.2 的 < 5s 硬约束。
+- **耗时**：**主仓** 3 次 853/863/815 ms（中位数 **853 ms**）；**盘根干净克隆**（`C:\t14rev` @`b59cdc7`，`npm ci` 后）3 次 1271/1283/1268 ms（中位数 **1271 ms**）——
+  纯文件解析 + `git ls-files`，零网络，两者都远低于 spec §7.2 的 < 5s 硬约束（克隆里更慢是冷文件系统缓存所致，不是网络）。
 - **退出码**：0 = 无红灯；1 = 有红灯（CI 失败）。黄灯（如 P5 的 Python 清单差集）不影响退出码。
-- **红灯怎么办**：按 `finding.hint` 操作。**默认动作是修宿主文件或跑 `npm run kit:sync`**，
+- **完整离线链路实测**（盘根干净克隆 `C:\t14rev` @`b59cdc7`，`CI=true` + `ELECTRON_SKIP_BINARY_DOWNLOAD=1`，2026-09-19 Task 14 Step 1）：
+
+  | 段 | 耗时 | EXIT |
+  |---|---|---|
+  | `npm ci` | 20.3 s | 0 |
+  | `npm run build` | 46.4 s | 0 |
+  | `npm run typecheck` | 16.0 s | 0 |
+  | `npm run test:preflight` | 1.0 s | 0 |
+  | `node scripts/check-doc-anchors.mjs` | 0.94 s | 0 |
+  | `npm run kit:check`（3 次取中位） | 1.27 s | 0 |
+  | `npm run verify:ci`（5 脚本） | 4.4 s | 0 |
+  | `npm run test:unit` | 30.1 s（1225 项 / 0 fail / 1 skip） | 0 |
+  | `npm run test:server` | 117.1 s（770 项 / 0 fail） | 0 |
+  | `npm run test:kernel` | 75.2 s | 0 |
+
+  **合计 ≈ 5 分 13 秒**（本机 8 核；CI 为 2 核 Windows 运行器，实耗更长，作业超时 30 分钟）。- **红灯怎么办**：按 `finding.hint` 操作。**默认动作是修宿主文件或跑 `npm run kit:sync`**，
   **不是**往 `kit/manifest/drift-baseline.json` 里加条目 —— 基线是"已知欠账"，
   条目数受 `versions.json` 的 `history.baselineCount` 护栏限制（超了直接红 `BASE`）；
   豁免**红灯**还必须在该条目里显式写 `"severity": "red"`（缺 `reason` 也红：`BASELINE_NO_REASON`）。
