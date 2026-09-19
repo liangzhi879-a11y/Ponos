@@ -79,7 +79,7 @@
 |---|---|---|
 | (a) | `kit:check` 双树**红 0 / EXIT=0**；`CT2`/`CT3` 覆盖 **routes + wsOut + wsIn + ipc + tools** 五类 | 规则表 `CT2`/`CT3` 行 |
 | (b) | `contract-scope.json` 只剩**无法文档化的空洞**（空命名空间）；`scopeCount`/`scopeRedCount` 人工下调到现值 | 见下面「P1.5 之后的登记面貌」 |
-| (c) | **反向可证伪**：删 §11 一条 push ⇒ `CT2`（未覆盖）+ `CT4`（未登记）双红；改 §12 一个指纹末位 ⇒ `CT3` 红；把已摘除的成员塞回 scope ⇒ `CT4` 多登记红 | 每条都有单元用例（`contract-rules.test.mjs` 的「P1.5-变异①②③」） |
+| (c) | **反向可证伪**：删 §11 一条 push ⇒ `CT2`（未覆盖）+ `CT4`（未登记）双红；改 §12 一个指纹末位 ⇒ `CT3` 红；把已摘除的成员塞回 scope ⇒ `CT4` 多登记红；**把 §5 的出站 WS 行挪进 §6 ⇒ `CT2`+`CT4`+`CT3` 三红**（收尾批补的方向判据） | 每条都有单元用例（`contract-rules.test.mjs` 的「P1.5-变异①②③」与「收尾批①②③⑤」） |
 | (d) | 88 条摘除**逐条可解释**：`CT4 多登记 = 0` 即"每条都真被文档声明了" | `CT4` 的 `extra` 方向 |
 | (e) | 遗留条目的 reason 必须说明"**为什么补不了文档**"（`children` 为空 / 动态拼装 ⇒ 没有具体端点可写） | `contract-scope.json#entries[].reason` |
 
@@ -132,8 +132,8 @@ node -e "const c=require('./kit/manifest/versions.json').channels;console.log(Ob
 |---|---|---|---|
 | CT0 | `versions.json#channels` 存在且形状完整 | 红 | 删 `channels` 键 |
 | CT1 | 台账快照 == 从**提交态**代码**现场重算**的快照（逐类逐元素；绝不读快照当答案） | 红 | 手改快照任一键；提交了端点改动却没跑 `kit:sync`；HEAD 读不到（subject `HEAD 物化`） |
-| CT2 | 代码 → 文档：真值里每条（**五类**：路由 / WS 出 / WS 入 / IPC 推送 / 工具出口）都能在 §5/§6/§7/§11/§12 定位**或**在 scope 命中 | 红 | 提交新端点后既没补文档也没登记 scope；新增工具不进 §12 |
-| CT3 | 文档 → 代码：文档声明的每条（路由 / WS / **IPC 通道 / 工具名 + 结构指纹逐字相等**）都真在代码里（抓"文档腐烂"） | 红 | 文档里写不存在的 `/fake`；§12 指纹改一位；§12 缺指纹（fail-closed，不"没写就不比"）；删掉代码里的端点 |
+| CT2 | 代码 → 文档：真值里每条（**五类**：路由 / WS 出（减 **§5** 的声明集）/ WS 入（减 **§6** 的）/ IPC 推送 / 工具出口）都能在 §5/§6/§7/§11/§12 定位**或**在 scope 命中 | 红 | 提交新端点后既没补文档也没登记 scope；新增工具不进 §12；**把 §5 的出站事件挪进 §6**（方向写反 ⇒ `wsOut` 真值里多出该事件） |
+| CT3 | 文档 → 代码：文档声明的每条（路由 / **WS 按方向**（§5 的必须在 `ws.out`、§6 的必须在 `ws.in`）/ **IPC 通道 / 工具名 + 结构指纹逐字相等**）都真在代码里（抓"文档腐烂"与方向写反） | 红 | 文档里写不存在的 `/fake`；§12 指纹改一位；§12 缺指纹（fail-closed，不"没写就不比"）；**把 §5 的出站事件挪进 §6**（§6 侧代码里没有它）；删掉代码里的端点。★ 工具指纹的口径与 `CT6` 的分工见下面「口径澄清」第 3 条 |
 | CT4 | scope `members` 与「代码真值 ∖ 文档已声明」**集合相等**（多一少一都红；**逐条报，subject 带键名**） | 红 | members 少一条 / 多一条 / 拼错 |
 | CT4B | scope 组数 / 键数不得超过 `channels.scopeCount` / `channels.scopeRedCount`（双护栏） | 红 | 往 scope 加条目超过封顶值 |
 | CT4C | scope 条目合法：`reason` 必填、`ns`/`members` 禁 `*` 与正则字符、无重复、`docSection` 真实存在 | 红 | 写 `ns: "/knowledge"` + `members: ["/knowledge/.*"]`；删 reason |
@@ -212,7 +212,7 @@ node -e "const c=require('./kit/manifest/versions.json').channels;console.log(Ob
 1. 提交后跑 `npm run kit:sync` 并**提交 `channels` 的变化**（搬家若同时新增/删除了端点，快照会变）；
 2. 若该端点在文档覆盖面之外，**同步更新 `contract-scope.json#members`**（键名若变 ⇒ CT4 集合相等报红）。
 
-### 两条口径澄清（审查点名要写的）
+### 三条口径澄清（审查点名要写的）
 
 - **`CT5 evaluated=156` 与 plan 说的"ipc 71"不是一回事**：`evaluated` 是**各侧独立计数之和**
   （invoke 61 + handle 61 + send 10 + on(main) 10 + on(renderer) 7 + push 7 = 156，配对判据必须按侧比，
@@ -221,6 +221,29 @@ node -e "const c=require('./kit/manifest/versions.json').channels;console.log(Ob
   `GET /x`（或反之）**不会红**。解析器把方法如实呈现（`synonyms`），但对账只做**路径集合**的差集；
   收紧到"方法 + 路径"需要先处理 §7 的"一行多端点、方法写在行内"等形态 —— **P1.5 也没做这一条**
   （P1.5 补的是**覆盖面**：72 条路由 + 9 条 WS + 7 条 IPC + 21 个工具），如实记为遗留。
+- **WS 的「方向」也是判据（P1.5 收尾批改的）**：`§5` = bridge → GUI（outbound）、`§6` = GUI → bridge（inbound）。
+  此前两节合成**一个**声明集（`§5 ∪ §6`）⇒ **方向写反不红**：实测把 §5 的 `bridge_hello` 挪进 §6 后
+  `kit:check` **红 0**（唯一信号是 `contract-doc.test.mjs` 的 26/16 计数）—— 而方向是契约语义：
+  GUI 实现者会把 `send`/`onmessage` 写反。现在 `wsOut` 只减 §5 的声明集、`wsIn` 只减 §6 的，CT3 同理
+  （§5 的每条声明必须在 `ws.out`、§6 的必须在 `ws.in`）。两个方向各有一条单元用例
+  （`contract-rules.test.mjs` 的「收尾批①②」：挪一条 ⇒ `CT2`（未覆盖）+ `CT4`（未登记）+ `CT3` 三红；
+  「收尾批③」钉住"只挪一行、条数不变，在 `CT8` 里也必须逐条可见"）。
+  ★ 同批**在 §5 补了 `browser:event`**（此前只在 §6 声明）：它在代码里**双向**
+  （`server/browser-routing.mjs` 广播给 GUI + bridge 的 `onmessage` 收执行器帧）⇒ "两节都写"才是对的
+  （同 `pet:show-main`/`pet:quit-app`）。不补它，按方向判时 `wsOut` 真值会多出这一条
+  （真仓实测：严格判据下的**唯一**红点 = `wsOut browser:event`）。**允许两节都声明同一类型**不是放宽：
+  两个方向都是真的；该红的只有"只声明在一节、而代码对应方向没有它"。
+- **`CT3` 的工具指纹取自哪里（`|| snapTools` 兜底的边界）**：`tools.shapeOf(name)` 是**运行时出口**
+  （`await import('kernel/tools.mjs')` → `toolSchemas()`），`snapTools[name]` 是**已提交快照**
+  （`versions.json#channels.tools`）；前者优先，`||` 兜底只在**"该工具名在出口清单里、但运行时给不出指纹"**
+  时生效（实测两类触发：`kernel/tools.mjs` 不可加载 ⇒ 运行时 `byName` 为空、`names` 退化成静态 registry 键；
+  静态 registry 有该键而 `toolSchemas()` 不导出它）。此时 CT3 对的是**快照** —— 于是分工是：
+  **CT3 = 文档 ↔ 快照**；**快照 ↔ 运行时**归 `CT6`（`tools runtime` 显式红 + 逐工具指纹 + `staticToolCount`）；
+  **快照 ↔ 代码**归 `CT1`（现场重算）。三者串起来 = **传递覆盖** ⇒ "改坏 `kernel/tools.mjs` 而 CT3 仍绿"
+  是**设计**不是漏判（盘根干净克隆 @`87342a3` 实测：CT1 红 22 + CT6 红 1，CT3 `evaluated=183` 仍绿）。
+  唯一保持 fail-closed 的方向：**两边都取不到指纹 ⇒ 红**（`liveFp === null` 分支）。**刻意不**收紧成
+  "取不到就红"：CT3 若也承担运行时职责，就会与 CT1/CT6 重复报同一件事，并惩罚"快照已落盘、运行时临时
+  不可用"的正常仓。单元用例 `contract-rules.test.mjs` 的「收尾批⑤」钉住这条分工（CT6 红 / CT3 不红）。
 
 ### CT2 与 CT4 的关系（如实的说明）
 

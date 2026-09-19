@@ -222,7 +222,9 @@ test('buildTruth：文档已声明的键不进真值；未被文档覆盖的**�
   const d = docDeclaredSets(doc)
   assert.deepEqual([...d.paths].sort(), ['/a', '/known'])
   assert.deepEqual([...d.wfKeys].sort(), ['GET /workflows/:id'])
-  assert.deepEqual([...d.ws].sort(), ['ev1', 'in1'])
+  // WS 按**方向**两个字段（收尾批起不再合成一个 `ws`）：出站只认 §5、入站只认 §6
+  assert.deepEqual([...d.wsOut].sort(), ['ev1'], '§5 只声明出站 ev1')
+  assert.deepEqual([...d.wsIn].sort(), ['in1'], '§6 只声明入站 in1')
   assert.equal(d.wildcards.size, 0)
 })
 
@@ -630,4 +632,84 @@ test('★P1.5-CT8：文档声明集的在途差异覆盖新增的 ipc/tools 两�
   const doc = ct8(out).filter((f) => f.subject.startsWith('doc.'))
   assert.deepEqual(doc.map((f) => `${f.subject}|${f.expected}|${f.actual}`), ['doc.ipc demo:push|HEAD 缺|工作树 有'],
     `§11 的在途新增必须被 CT8 报出来：${JSON.stringify(ct8(out))}`)
+})
+
+// ── P1.5 收尾批：**WS 方向按 §5/§6 各判**（此前两节合成一个集合 ⇒ 方向写反不红）──────────
+//
+// 为什么必须判方向：§5 = bridge → GUI（outbound）、§6 = GUI → bridge（inbound）。把出站事件抄进 §6
+// 会让 GUI 实现者把 `send`/`onmessage` 写反 —— 这是契约语义错误，不是排版问题。
+// 实测（收尾批在盘根干净克隆上跑过端到端变异）：合成口径下"把 §5 的 `bridge_hello` 挪进 §6"
+// ⇒ `kit:check` **红 0**（唯一信号是 `contract-doc.test.mjs` 的 26/16 计数）；按方向判后
+// ⇒ CT2（wsOut 未覆盖）+ CT4（未登记）+ CT3（§6 侧代码里没有）三红。
+//
+// 两个方向各一条（缺任一条，判据都可能被"只在一个方向实现"糊过去）。
+
+/** 把夹具文档里的某条 WS 行从它所在的那节**挪到另一节**（造"方向写反"） */
+function moveWsRow(text, rowToken, toHead) {
+  const lines = text.split('\n')
+  const idx = lines.indexOf(rowToken)
+  assert.notEqual(idx, -1, `夹具行没找到：${rowToken}`)
+  lines.splice(idx, 1)
+  const to = lines.indexOf(toHead)
+  assert.notEqual(to, -1, `目标节没找到：${toHead}`)
+  let i = to + 1
+  while (i < lines.length && !lines[i].startsWith('|')) i++   // 跳过表头
+  while (i < lines.length && lines[i].startsWith('|')) i++    // 跳过表体
+  lines.splice(i, 0, rowToken)
+  return lines.join('\n')
+}
+const S5 = '## 5. 桥 → GUI 事件'
+const S6 = '## 6. GUI → 桥'
+
+test('★收尾批①：§5 的出站事件挪进 §6 ⇒ CT2(wsOut 未覆盖) + CT4(未登记) + CT3(§6 侧代码里没有) 三红', async () => {
+  const f = await setup({
+    mutate: (root) => rewrite(root, 'docs/bridge-contract.md', (s) => moveWsRow(s, '| `ev1` | 出站 |', S6)),
+  })
+  const got = reds(await run(f)).map((x) => `${x.rule}:${x.subject}`)
+  assert.ok(got.includes('CT2:wsOut ev1'), `CT2 必须报"出站未覆盖"：${JSON.stringify(got)}`)
+  assert.ok(got.includes('CT4:wsOut 未登记 ev1'), `CT4 必须报"未登记"：${JSON.stringify(got)}`)
+  assert.ok(got.includes('CT3:ws ev1'), `§6 声明了、代码入站侧没有 ⇒ CT3 也要红：${JSON.stringify(got)}`)
+  // 反向断言：真值侧只多出 wsOut 那一条（说明减的是 §5 的声明集，不是并集）
+  assert.equal(got.some((x) => x === 'CT2:wsIn ev1' || x === 'CT4:wsIn 未登记 ev1'), false,
+    `§6 里多了一行不该让 wsIn 侧也报"未覆盖"（那是并集口径的误报）：${JSON.stringify(got)}`)
+})
+
+test('★收尾批②：§6 的入站事件挪进 §5 ⇒ 同样三红（两个方向都判，不是只判出站）', async () => {
+  const f = await setup({
+    mutate: (root) => rewrite(root, 'docs/bridge-contract.md', (s) => moveWsRow(s, '| `in1` | 入站 |', S5)),
+  })
+  const got = reds(await run(f)).map((x) => `${x.rule}:${x.subject}`)
+  assert.ok(got.includes('CT2:wsIn in1'), `CT2 必须报"入站未覆盖"：${JSON.stringify(got)}`)
+  assert.ok(got.includes('CT4:wsIn 未登记 in1'), `CT4 必须报"未登记"：${JSON.stringify(got)}`)
+  assert.ok(got.includes('CT3:ws in1'), `§5 声明了、代码出站侧没有 ⇒ CT3 也要红：${JSON.stringify(got)}`)
+})
+
+test('★收尾批③：只挪一行（未提交/未动条数）在 CT8 里也必须看得见（方向是声明集的两个字段）', async () => {
+  const { out } = await setupPair({ mutateWork: (root) => rewrite(root, 'docs/bridge-contract.md', (s) => moveWsRow(s, '| `ev1` | 出站 |', S6)) })
+  assert.deepEqual(reds(out), [], `文档在途改动不得红（规则读 HEAD 文档）：${JSON.stringify(reds(out))}`)
+  const doc = ct8(out).filter((f) => f.subject.startsWith('doc.')).map((f) => `${f.subject}|${f.expected}|${f.actual}`)
+  assert.deepEqual(doc.sort(), ['doc.wsIn ev1|HEAD 缺|工作树 有', 'doc.wsOut ev1|HEAD 有|工作树 缺'],
+    `方向搬家必须逐条报出来（合并成一类会看不出差异）：${JSON.stringify(ct8(out))}`)
+})
+
+test('★收尾批⑤：运行时出口不可用 ⇒ CT6 红而 CT3 仍绿（CT3 = 文档 ↔ 快照；快照 ↔ 运行时归 CT6）', async () => {
+  // 两棵树：**健康树**落盘快照（含 t1 的指纹），**坏树**只坏 `kernel/tools.mjs`。
+  //   为什么必须换目录：`await import(pathToFileURL(root/kernel/tools.mjs))` 按 **URL 缓存** ——
+  //   在同一个 root 上先成功导入过，再改坏文件也拿不到 error（同一进程内 URL 命中缓存）。
+  //   这也解释了真仓里为什么"改坏后新起一次 `kit:check` 才红"。
+  const healthy = fixture()
+  const readH = (f) => readTracked({ root: healthy.root, file: f })
+  const snapshot = await buildSnapshot({ root: healthy.root, files: healthy.files, readTracked: readH, now: 'T' })
+  assert.ok(snapshot.tools && snapshot.tools.t1, '前提：夹具快照里有 t1 的指纹（否则本用例测不到兜底通路）')
+  const broken = fixture({ mutate: (root) => rewrite(root, 'kernel/tools.mjs', (s) => `${s}\nthis is broken {{{\n`) })
+  const readB = (f) => readTracked({ root: broken.root, file: f })
+  const out = await runContractRules({
+    root: broken.root, files: broken.files, readTracked: readB, doc: broken.doc,
+    snapshot, scope: writeScope(broken.root, SCOPE_ENTRIES), recorded: { scopeCount: 3, scopeRedCount: 3 },
+  })
+  const got = reds(out).map((x) => `${x.rule}:${x.subject}`)
+  assert.ok(got.includes('CT6:tools runtime'), `CT6 必须报"运行时不可加载"（不许静默绿）：${JSON.stringify(got)}`)
+  assert.equal(got.some((x) => x.startsWith('CT3:tools')), false,
+    `CT3 对的是**已提交快照** ⇒ 文档与快照仍一致时不该红（运行时漂移由 CT6 接住）：${JSON.stringify(got)}`)
+  assert.ok(got.includes('CT1:tools t1'), `快照 ↔ 现场重算 由 CT1 接住（本用例同时钉住"失败没被吞掉"）：${JSON.stringify(got)}`)
 })

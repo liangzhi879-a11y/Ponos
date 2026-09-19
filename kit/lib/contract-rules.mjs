@@ -30,7 +30,10 @@
 //   ② `shapeOf` 只含结构指纹（props 名+类型 / required / additionalProperties 存在性），
 //      enum/items 不入 ⇒ "改 schema 结构 → CT6 红"只覆盖这一部分（plan 明确取舍）；
 //   ③ CT9 是**单向差集**且只报不拦（黄）：前端调后端无是 D8 的历史欠账，登记在 drift-baseline；
-//   ④ `CT8` 只在"有提交态可比"时才有意义 ⇒ HEAD 不可读时**明说**（不假装能对账，见 ctx.headError）。
+//   ④ `CT8` 只在"有提交态可比"时才有意义 ⇒ HEAD 不可读时**明说**（不假装能对账，见 ctx.headError）；
+//   ⑤ **WS 方向按 §5/§6 各判**（P1.5 收尾批，2026-09-19 起）：此前两节合成一个声明集，
+//      "把出站事件抄进 §6"不会红。详见 `docDeclaredSets` 的注释（含为什么此前必须合成、
+//      以及"在 §5 补 `browser:event`"这一步解锁了什么）。
 import { RED, YELLOW, finding, checkResult } from './report.mjs'
 import { trackedFiles, codeFiles, readTracked, stripComments } from './scan.mjs'
 import { extractRoutes } from './contract-routes.mjs'
@@ -54,16 +57,27 @@ const NAIVE_FORMS = [
 /**
  * 文档声明的集合（`*` 通配**单独放**：它只声明命名空间，**不给任何子路径覆盖信用** —— plan §7 反例⑧）。
  *
- * P1.5 起共六类：路由路径 / 通配 / §7.1 方法+路径 / WS 类型（§5+§6 并集）/ IPC 通道（§11）/
- * 工具名（§12）。后两类把"只能整类登记"的契约面拉回文档 ⇒ 契约对账回到"文档 ↔ 代码"直接双向。
+ * P1.5 起共七类：路由路径 / 通配 / §7.1 方法+路径 / **§5 WS 出站（`wsOut`）** / **§6 WS 入站（`wsIn`）**
+ * / IPC 通道（§11）/ 工具名（§12）。后两类把"只能整类登记"的契约面拉回文档 ⇒ 契约对账回到"文档 ↔ 代码"直接双向。
  * `toolFps` 是**指纹映射**（不参与声明集大小与 CT8 的声明差异 —— 那由 `tools` 名字集负责），
  * 专供 CT3 做"逐字比对"。
+ *
+ * ★ **WS 两个方向分开存**（P1.5 收尾批，2026-09-19）：此前是 `ws` = §5 ∪ §6 一个集合，
+ *   于是**方向错误静默通过** —— 把 §5 的出站事件抄进 §6（inbound 节），CT2/CT3 都只看并集 ⇒ 红 0
+ *   （唯一信号是 `contract-doc.test.mjs` 的 26/16 计数）。方向是契约的一部分：GUI 实现者照节写代码，
+ *   把 outbound 写成 inbound 会让 `onmessage` 分支与 `send` 调用完全反过来。故按节各判。
+ *   为什么之前必须合成（实测）：代码侧有**既 out 又 in 的同名事件**（`ws.out ∩ ws.in` =
+ *   `pet:show-main`、`pet:quit-app`、`browser:event`），其中 `browser:event` 当时**只在 §6 声明**
+ *   ⇒ 按方向判会把它算成"`wsOut` 未声明"（真仓实测唯一红点）。收尾批的处理：**在 §5 补该行**
+ *   （它是真出站：`server/browser-routing.mjs` 的 `c.send(JSON.stringify({type:'browser:event'…}))`
+ *   广播给 GUI，README 的下行事件清单里也有它）⇒ 两个方向都各有对应声明，判据不再需要并集。
  */
 export function docDeclaredSets(doc) {
   const paths = new Set()
   const wildcards = new Set()
   const wfKeys = new Set()
-  const ws = new Set()
+  const wsOut = new Set()
+  const wsIn = new Set()
   const ipc = new Set()
   const tools = new Set()
   const toolFps = new Map()
@@ -72,24 +86,25 @@ export function docDeclaredSets(doc) {
     else paths.add(p)
   }
   for (const k of (doc?.workflowRoutes || new Map()).keys()) wfKeys.add(k)
-  for (const t of doc?.wsOut || []) ws.add(t)
-  for (const t of doc?.wsIn || []) ws.add(t)
+  for (const t of doc?.wsOut || []) wsOut.add(t)
+  for (const t of doc?.wsIn || []) wsIn.add(t)
   for (const c of doc?.ipc || []) ipc.add(c)
   for (const [name, v] of doc?.tools || new Map()) {
     tools.add(name)
     toolFps.set(name, v && v.fp ? v.fp : null)
   }
-  return { paths, wildcards, wfKeys, ws, ipc, tools, toolFps, sections: [...(doc?.sections || new Map()).keys()] }
+  return { paths, wildcards, wfKeys, wsOut, wsIn, ipc, tools, toolFps, sections: [...(doc?.sections || new Map()).keys()] }
 }
 
 /** `GET /x` → `/x` */
 const pathOfKey = (k) => String(k).slice(String(k).indexOf(' ') + 1)
 
-/** 文档**声明集**的六类（CT8 的文档面差异按这六类逐条报）
- *  ★ `toolFps` 刻意**不在此列**：它是 `tools` 名字集的附加信息（指纹），入列会让声明集大小重复计数。 */
+/** 文档**声明集**的七类（CT8 的文档面差异按这七类逐条报）
+ *  ★ `toolFps` 刻意**不在此列**：它是 `tools` 名字集的附加信息（指纹），入列会让声明集大小重复计数。
+ *  ★ WS 按**方向**分两类：合并成一类时"把 §5 的行挪进 §6"在 CT8 眼里看不出差异（并集不变）。 */
 const DECLARED_FIELDS = [
   ['paths', 'doc.routes'], ['wildcards', 'doc.wildcards'], ['wfKeys', 'doc.workflow'],
-  ['ws', 'doc.ws'], ['ipc', 'doc.ipc'], ['tools', 'doc.tools'],
+  ['wsOut', 'doc.wsOut'], ['wsIn', 'doc.wsIn'], ['ipc', 'doc.ipc'], ['tools', 'doc.tools'],
 ]
 
 /** 声明集大小（CT8 的 `evaluated` 用：判定到底比了多少条声明） */
@@ -196,12 +211,14 @@ export function buildTruth({ routes, prefixes = [], ws, ipc, tools, doc }) {
     if (underDoc || dynHit) continue
     nsClaims.push(`ns ${prefix}`)
   }
-  const coveredWs = d.ws
+  // ★ WS：**按方向各减各的声明集**（§5 管出站、§6 管入站）。合成一个集合会让"方向写反"
+  //   静默通过（见 `docDeclaredSets` 的说明）。两个方向都声明同一类型是**允许**的
+  //   （代码里确实双向的事件：`pet:show-main`/`pet:quit-app`/`browser:event`）。
   return {
     truth: {
       routes: [...truthRoutes, ...nsClaims].sort(),
-      wsOut: [...(ws?.out || [])].filter((t) => !coveredWs.has(t)).sort(),
-      wsIn: [...(ws?.in || [])].filter((t) => !coveredWs.has(t)).sort(),
+      wsOut: [...(ws?.out || [])].filter((t) => !d.wsOut.has(t)).sort(),
+      wsIn: [...(ws?.in || [])].filter((t) => !d.wsIn.has(t)).sort(),
       // IPC 推送通道：§11 补齐前文档零章节 ⇒ 7 条全部要登记；补齐后按声明集做减法
       // （invoke↔handle、send↔on 走 CT5 的配对判据：那是"两方协议集合相等"，不需要文档面）
       ipc: [...(ipc?.push || [])].filter((c) => !d.ipc.has(c)).sort(),
@@ -432,7 +449,11 @@ export async function runContractRules({
   // CT3：文档声明的每一条都必须真的在代码里（文档腐烂；`*` 通配与动态段不报红）
   const livePaths = new Set([...routes.routes.keys()].map(pathOfKey))
   const pathExists = (p) => livePaths.has(p) || dynMatches(routes.prefixes, p)
-  const liveWs = new Set([...ws.out, ...ws.in])
+  // ★ WS 按方向逐节判（P1.5 收尾批）：§5 的每条声明必须在**出站**集里、§6 的必须在**入站**集里。
+  //   同一类型在两节都声明是允许的（真仓 `pet:show-main`/`pet:quit-app`/`browser:event` 代码里确实双向）；
+  //   该红的只有一种情形：**只声明在一节、而代码对应方向没有它**（方向写反 / 事件被删改名）。
+  const liveWsOut = new Set(ws.out)
+  const liveWsIn = new Set(ws.in)
   let ct3bad = 0
   const docRouteChecks = [...truthData.declared.paths, ...[...truthData.declared.wfKeys].map(pathOfKey)]
   for (const p of docRouteChecks) {
@@ -443,13 +464,20 @@ export async function runContractRules({
       hint: '文档说了代码没有 = 文档腐烂（先确认是不是端点被删/改名）；文档里 `*` 通配不算覆盖声明 —— 反例⑧',
     }))
   }
-  for (const t of truthData.declared.ws) {
-    if (liveWs.has(t)) continue
-    ct3bad++
-    findings.push(finding({
-      rule: 'CT3', severity: RED, subject: `ws ${t}`, expected: '代码里有该事件类型', actual: '代码里没有',
-      hint: '文档的 §5/§6 表里写着、代码里零命中 ⇒ 要么补代码，要么删/改文档行',
-    }))
+  for (const [section, declared, live, side] of [
+    ['§5', truthData.declared.wsOut, liveWsOut, '出站（ws.out）'],
+    ['§6', truthData.declared.wsIn, liveWsIn, '入站（ws.in）'],
+  ]) {
+    for (const t of declared) {
+      if (live.has(t)) continue
+      ct3bad++
+      findings.push(finding({
+        rule: 'CT3', severity: RED, subject: `ws ${t}`,
+        expected: `代码的${side}集里有该事件类型`, actual: `代码的${side}集里没有`,
+        hint: `${section} 声明的事件类型必须在代码**对应方向**存在：把出站事件写进入站节（或反之）= 方向错，`
+          + `GUI 实现者会照节写反 onmessage/send；事件被删或改名也一样命中这里`,
+      }))
+    }
   }
   // ★ P1.5：文档 §11 声明的 IPC 推送通道必须真的在代码的 **push 侧**（`webContents.send` 及其
   //   别名可选链形态）。判据只对 push：invoke↔handle、send↔on 是"两侧集合相等"，由 CT5 管。
@@ -474,6 +502,19 @@ export async function runContractRules({
       continue
     }
     const docFp = truthData.declared.toolFps.get(name) || null
+    // ★ 指纹取自**哪里**（分工说明，2026-09-19 收尾批查明后写死在这里）：
+    //   ① `tools.shapeOf(name)` = **运行时出口**（`await import('kernel/tools.mjs')` → `toolSchemas()`，
+    //      见 `contract-tools.mjs` 的 I1）；② `snapTools[name]` = **已提交快照**（`versions.json#channels.tools`）。
+    //   优先 ①，`||` 兜底的触发条件只有一个：**该工具名在出口清单里、但运行时给不出指纹**
+    //   （`shapeOf()` 返回 null）—— 实测两类：`kernel/tools.mjs` 不可加载（语法错/缺依赖 ⇒ 运行时 `byName`
+    //   为空，`names` 退化成静态 registry 键）；静态 registry 有该键而 `toolSchemas()` 不导出它。
+    //   ⇒ 此时 CT3 对的是**快照**（"文档 ↔ 提交物"），不是运行时。
+    //   **分工**：CT3 = 文档 ↔ 快照对账；**快照 ↔ 运行时**由 CT6 负责（`tools runtime` 显式红 +
+    //   逐工具指纹比对 + `staticToolCount`），快照 ↔ 代码由 CT1 负责。三者串起来 = 传递覆盖，
+    //   所以"改坏 `kernel/tools.mjs` 而 CT3 仍绿"是**设计**不是漏判（实测：CT1 红 22 + CT6 红 1，
+    //   而 CT3 `evaluated=183` 仍绿）。这里**不做** fail-closed 收紧：收紧等于让 CT3 承担运行时的职责，
+    //   会让"快照已落盘、运行时临时不可用"的仓在文档侧误报（且与 CT1/CT6 重复报同一件事）。
+    //   唯一保持 fail-closed 的方向：**两边都取不到指纹** ⇒ 红（下面的 `liveFp === null` 分支）。
     const liveFp = tools.shapeOf(name) || snapTools[name] || null
     if (!docFp) {
       ct3bad++
@@ -500,8 +541,9 @@ export async function runContractRules({
       }))
     }
   }
-  checks.push(checkResult({ rule: 'CT3', title: '文档 → 代码：文档声明的每条（路由/WS/IPC/工具指纹）都在代码里',
-    evaluated: docRouteChecks.length + truthData.declared.ws.size + truthData.declared.ipc.size + truthData.declared.tools.size,
+  checks.push(checkResult({ rule: 'CT3', title: '文档 → 代码：文档声明的每条（路由/WS/**按方向**/IPC/工具指纹）都在代码里',
+    evaluated: docRouteChecks.length + truthData.declared.wsOut.size + truthData.declared.wsIn.size
+      + truthData.declared.ipc.size + truthData.declared.tools.size,
     passed: ct3bad === 0 }))
 
   // ── CT4 / CT4B / CT4C：范围登记 ──────────────────────────────────────

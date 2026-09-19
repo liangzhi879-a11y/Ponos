@@ -125,11 +125,13 @@ test('★确定性：同一份文本两次解析逐字相同（快照可复算�
   assert.notEqual(dump(a), dump(parseDoc(FIXTURE_DOC.replace('`ack`', '`ack2`'))), '改一个字必须能被看见（不是恒真式）')
 })
 
-test('真仓 docs/bridge-contract.md：wsOut 26 / wsIn 16 / §7 ≥ 100 条 / §7.1 17 行（文档侧基线）', () => {
+test('真仓 docs/bridge-contract.md：wsOut 27 / wsIn 16 / §7 ≥ 100 条 / §7.1 17 行（文档侧基线）', () => {
   const d = parseDoc(readFileSync(DOC, 'utf8'))
   // ★ P1.5 起 §5/§6 已把"代码有、文档缺"的 9 条补齐（20+6 / 13+3）⇒ 条数从下界改为**精确**：
   //   这两节不受他人在途改动影响（他们只改 §7），故精确值在两个树上都成立，是更强的判据。
-  assert.equal(d.wsOut.size, 26, `§5 出站事件类型数，实测 ${[...d.wsOut].sort().join(',')}`)
+  // ★ P1.5 收尾批：§5 再 +1（`browser:event`，26 ⇒ 27）—— 它是**真出站**（`server/browser-routing.mjs`
+  //   广播给 GUI），补它之后 CT2/CT3 才能按方向判（否则"代码双向、文档只 §6 声明"会让 `wsOut` 真值非空）。
+  assert.equal(d.wsOut.size, 27, `§5 出站事件类型数，实测 ${[...d.wsOut].sort().join(',')}`)
   assert.equal(d.wsIn.size, 16, `§6 入站消息类型数，实测 ${[...d.wsIn].sort().join(',')}`)
   // ★ §7 的**精确**条数仍不钉：文档正被另一批在途改动补充端点（P1.5 后：干净克隆 100 = 32 + 68 distinct
   //   P1.5 条；主树 102 = 再加他人在途的 /app-info、/generate-title）。精确条数属于快照/CT3，不在提取器里硬卡。

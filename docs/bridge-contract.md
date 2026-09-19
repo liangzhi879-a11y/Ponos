@@ -208,6 +208,7 @@ env 调参：`PONOS_FIDELITY`（`0` 总开关关）、`_ANCHOR`（`0` 关内核�
 | `kernel-stall` | `{ sessionId, data:{ sessionId, silentMs } }` | 内核静默超过阈值（`silentMs` 无声）时的**告警**：只告警、不自动杀进程（杀了会丢会话工作），供前端提示"内核疑似卡住" |
 | `knowledge_changed` | `{ data:{ revision, count, paths } }` | 知识库目录（`knowledge/spaces`）被外部改动（监听器批次回调）⇒ 让 GUI 失效缓存并重取。带**单调递增** `revision`：客户端据此丢弃乱序到达的旧批次（网络抖动下可能后发先至） |
 | `provider_updated` | `{ data:{ providerId, updates, notes } }` | provider 能力探测回填后的广播（设置窗口据此实时刷新）。运行中的内核会话是否受影响由既有的 env 签名收割机制决定，不在这一帧里表达 |
+| `browser:event` | `{ sessionId, event }` | 执行器事件 → **广播 GUI**（出站）。与 §6 的同名行同型：代码两侧都有它 —— `server/browser-routing.mjs` 把执行器事件广播给所有已连接 GUI，bridge 的 `onmessage` 分支同时收执行器上报。**两节都写是刻意的**（同 `pet:show-main`/`pet:quit-app`）：这一类型的 out 与 in 都是真的 |
 
 背压：单客户端 WS 缓冲 >8MB 标记过载，丢弃低优先级事件（milestones/milestone-*/question-resolved/raw/stderr/task_progress），<2MB 恢复（滞回）。
 
