@@ -306,6 +306,9 @@ test('stamp：要么真的盖章（写出 kit-stamp.json），要么明确报未
 // 挂载本身不修复腐烂，但它终结了"没人跑"这件事 —— 实测干净克隆（C:\t12rev @HEAD）里
 // `verify-highrisk` / `verify-knowledge-gui` / `verify-knowledge-import-gui` 三个脚本当场
 // EXIT=1（断言与现行代码判据已漂移），而此前没有任何人会看到。
+// 2026-09-19 P1：三条里的 `verify-knowledge-import-gui`（7 项）与 `verify-highrisk`（5 项）
+// 已修绿并移入 `ci` ⇒ `gates.pendingFix` 现为空。桶集仍保留三个键（空桶是合法状态，
+// 将来"跑起来就红"的脚本照同一判据登记），下面的判据则改成对**任一非空非 ci 桶**成立。
 //
 // 三条判据（每条都能独立失败）：
 //   ① 每个脚本都能被 `npm run` 发现（G7：无"已尝试"项）；
@@ -357,7 +360,7 @@ test('★C2：11 个 verify 脚本全部挂在 npm script 上，且各自恰好�
   }
 })
 
-test('★C2：ci 桶 ⊆ verify:ci ⊆ test:ci；pendingFix（实测为红）不得串进 CI', () => {
+test('★C2：ci 桶 ⊆ verify:ci ⊆ test:ci；任一非空非 ci 桶都不得串进 CI', () => {
   const pkg = readPkg(ROOT)
   const gates = gatesOf(readDepsLedger())
   const ciChain = ciChainScripts(pkg.scripts)
@@ -369,9 +372,22 @@ test('★C2：ci 桶 ⊆ verify:ci ⊆ test:ci；pendingFix（实测为红）不
     assert.ok(verifyChain.includes(npmNameOf(e.script)),
       `ci 桶的 ${e.script} 必须真的在 verify:ci 链路里（否则 ci 桶只是装饰：写了不等于跑）`)
   }
-  for (const e of gates.pendingFix) {
-    assert.equal(verifyChain.includes(npmNameOf(e.script)), false,
-      `pendingFix 的 ${e.script} 在干净克隆里实测 EXIT=1，串进 verify:ci 会让 test:ci 永久红 —— 修到绿再从 pendingFix 移入 ci`)
+  // 原断言写的是 `for (const e of gates.pendingFix)` —— P1（2026-09-19）把 pendingFix 修空后，
+  // 那个循环变成**空转**：护栏看着还在，实际判据为零（"断言测空"）。故改为对所有非 ci 桶成立，
+  // 并把原本靠 pendingFix 承载的具体约束**显式补回**（见下面两条）。
+  for (const bucket of ['manual', 'pendingFix']) {
+    for (const e of gates[bucket]) {
+      assert.equal(verifyChain.includes(npmNameOf(e.script)), false,
+        `gates.${bucket} 的 ${e.script} 在干净克隆里实测 EXIT=1（环境依赖或脚本腐烂），串进 verify:ci 会让 test:ci 永久红 —— 修到绿再从 ${bucket} 移入 ci`)
+    }
+  }
+  // ★ 显式的"修好了"锁：两条从 pendingFix 修绿的脚本必须**同时**在 ci 桶与 verify:ci 链路里。
+  // 只有它俩都在这儿，"pendingFix 已清空"才是真的交付，而不是把脚本从头两份名单里一起删掉。
+  for (const stem of ['verify-highrisk', 'verify-knowledge-import-gui']) {
+    assert.ok(gates.ci.some((e) => e.script === stem),
+      `${stem} 必须在 gates.ci（2026-09-19 P1 修绿后从 pendingFix 移入；删了它等于门禁又靠"没人跑"来掩盖腐烂）`)
+    assert.ok(verifyChain.includes(npmNameOf(stem)),
+      `${stem} 必须在 verify:ci 链路里（ci 桶只是登记，链路才是"真的会跑"）`)
   }
 })
 

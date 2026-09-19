@@ -214,19 +214,22 @@ C2 的原状态是**零挂载**：`scripts/verify-*.mjs` 共 11 个，`package.j
 | `verify-s4-security` | ci | 0 | `mkdtempSync` 隔离 + `shared/pack-zip.mjs`（`:14-18`），无 GUI / 无外部进程 |
 | `verify-skill-listing` | ci | 0 | 只读技能库 + `kernel/prompt.mjs`（`:13-16`）；库不存在时降级为空库断言（`:61-63`，故 CI 上不假失败） |
 | `verify-experience-inject` | ci | 0 | 用**随机端口**（`:12` `39000+random`）+ 临时 home（`:8`）加载 `server/bridge.mjs`，与图形会话无关 |
-| `verify-highrisk` | pendingFix | **1** | 5 项失败（`rm` 后跟路径 / `erase` / `move` / `mv` / `Stop-Process`）—— 脚本判据与 `server/highrisk.mjs` 漂移 |
+| `verify-highrisk` | ci | 0 | 只 import `shared/high-risk.mjs` + 薄转发 `server/highrisk.mjs`，无外部进程；**2026-09-19 P1 修好 5 项失败后从 `pendingFix` 移入本桶**（原 5 项：断言 `47379e2` 有意删掉的 any-usage 模式） |
 | `verify-knowledge-gui` | ci | 0 | 静态读 `src/components/knowledge/**` + `knowledgeStore.ts`，无外部进程；**2026-09-19 Task 14 修好 3 项失败后从 `pendingFix` 移入本桶**（原 3 项：2 项真违规 + 1 项脚本字面量腐烂，见下节） |
-| `verify-knowledge-import-gui` | pendingFix | **1** | 7 项失败（i18n key 数、`useKnowledge.importDocuments` 写路径、dryRun 缓存失效、结果三档明细） |
+| `verify-knowledge-import-gui` | ci | 0 | 静态读对话框 + 明细报告子组件 + hook + 路由，无外部进程；**2026-09-19 P1 修好 7 项失败后从 `pendingFix` 移入本桶**（原 7 项：断言停在"抽组件/改写 hook 之前"的位置与写法） |
 | `verify-gui-fidelity` | manual | **1** | `:19` 定位 `electron/dist/electron.exe`、`:359` 用 `BrowserWindow` 加载真组件并截图比对 —— 干净克隆实测 `ENOENT ... dist/assets`（未构建） |
 | `verify-permission-flow` | manual | **1** | `:26` 用 `kernel-dist/cli.mjs` 拉起真内核、`:87` 打印 spawn args、按 stream-json 注入 `control_response` —— 干净克隆实测 `Cannot find module ... kernel-dist/cli.mjs` |
 | `verify-portable-layout` | manual | **1** | `:6-18` 断言 `release/YFWorking/` 打包产物（`:14` `electron/electron.exe`、`:15` `runtime/python/python.exe`）—— 干净克隆实测 `MISSING DIR: dist / electron / server / public` |
 | `verify-package-assets` | manual | **1** | `:28` 要求 `kernel-dist/cli.mjs` 存在（先跑 `build-kernel`）—— 干净克隆实测 `[FAIL] kernel-dist/cli.mjs 缺失`；它本就是出包前预检（`:2`） |
 
-> `manual` 那 4 条的 `EXIT=1` 是**构建产物不存在**造成的（不是脚本腐烂），与 `pendingFix` 桶那几条性质不同：
-> 前者"先构建/先出包就能跑"，后者"跑起来也断言失败"。上表把两类失败的具体原因都写出来，免得被混为一谈。
+> `manual` 那 4 条的 `EXIT=1` 是**构建产物不存在**造成的（不是脚本腐烂）："先构建/先出包就能跑"。
+> 上表里已没有实测为红的条目 —— `pendingFix` 桶**当前为空**（2026-09-19 P1 的两个脚本都已修绿并移入 `ci`）；
+> 空桶是合法状态，将来出现"跑起来也断言失败"的脚本照同一判据登记进该桶。
 
 > 上表由 `kit/cli.test.mjs` 的 3 条测试守：① 每个脚本都有 npm 入口且**恰好**归一个桶；
-> ② `ci` 桶 ⊆ `verify:ci` ⊆ `test:ci`，且 `pendingFix` **不得**出现在 `verify:ci` 链路里；
+> ② `ci` 桶 ⊆ `verify:ci` ⊆ `test:ci`，且**任一非空非 `ci` 桶**（`manual` / `pendingFix`）都**不得**出现在
+> `verify:ci` 链路里 —— 并显式锁住 `verify-highrisk` 与 `verify-knowledge-import-gui` **确在** `ci` 桶与链路里
+> （否则"清空 pendingFix"可以靠把脚本从两份名单里一起删掉来假达成）；
 > ③ `manual` / `pendingFix` 每条必须写 `reason`（I4：放行即人工，理由要能被读者看到）。
 > 新增或改名 `verify-*.mjs` 时，这三条会立刻红 —— 不要绕开它们改文档。
 
@@ -241,21 +244,23 @@ C2 的原状态是**零挂载**：`scripts/verify-*.mjs` 共 11 个，`package.j
 | `npm run verify:portable-layout` | `release/YFWorking/` 打包产物 | `release/` 是 gitignored，干净克隆必然 FAIL |
 | `npm run verify:package-assets` | `kernel-dist/cli.mjs` | 出包前预检，构建产物不在干净克隆里 |
 
-### 未过 CI 的门禁（`pendingFix` 桶）：实测为红，修到绿再移入 `ci`
+### `pendingFix` 桶：当前为**空**（2026-09-19 P1 修绿后清空）
 
-这两条（脚本自身已腐烂，与"环境不够"是两回事，所以**不能**丢进 `manual` 桶当解释）；
-也不串进 `test:ci`（串进去 = CI 永久红，红灯就被当成噪声，门禁随即失去意义）。
-它们现在的处置是：挂上 `npm run` 入口 + 在 `gates.pendingFix` 里写明失败断言 + 本表留证，
-**修脚本或修判据（二选一，要判清哪边才是对的口径）后从 `pendingFix` 移入 `ci`**。
+这个桶的用途是"**脚本自身已腐烂**：干净克隆实测 `EXIT=1`，断言与现行代码判据已漂移" ——
+这类失败与"环境不够"是两回事，所以**不能**丢进 `manual` 桶当解释；也不串进 `test:ci`
+（串进去 = CI 永久红，红灯就被当成噪声，门禁随即失去意义）。处置一律是：
+挂上 `npm run` 入口 + 在 `gates.pendingFix` 里写明失败断言 + 本表留证，**逐项判清哪边才是对的口径后修**，
+修到绿再从 `pendingFix` 移入 `ci`（`gates.pendingFix` 现为空数组，键位保留）。
 
-| 命令 | 失败断言（干净克隆实测） |
-|---|---|
-| `npm run verify:highrisk` | `rm 后跟路径命中` / `erase 命中` / `move 命中` / `mv 命中` / `Stop-Process 命中`（5 项） |
-| `npm run verify:knowledge-import-gui` | i18n key 数、`useKnowledge.importDocuments` 写路径唯一入口、dryRun 缓存失效、结果三档明细等（7 项） |
+| 曾经在桶里的脚本 | 原失败断言 | 哪边才是对的口径 |
+|---|---|---|
+| `verify-highrisk`（5 项，2026-09-19 修绿移入 `ci`） | `rm 后跟路径命中` / `erase 命中` / `move 命中` / `mv 命中` / `Stop-Process 命中` | **脚本陈旧**：提交 `47379e2`「高危命令判定改三级分类（T1 问+标 / T2 标不问 / T3 不问不标）」**有意删除**了 any-usage 模式（`rm <任意路径>`、`mv`、`move`、`erase`、无 `-Force` 的 `Stop-Process` 等日常操作），理由是**告警疲劳**会淹没真正危险的那几条。⇒ 改**脚本**：断言改成双向（T1 必须命中 / T3 日常操作必须不命中），样本取自单一真源 `shared/high-risk.mjs#HIGH_RISK_RULES`，并复算 `sign ⊇ approval` 不变量与"薄转发逐点一致"。 |
+| `verify-knowledge-import-gui`（7 项，2026-09-19 修绿移入 `ci`） | i18n key 计数、`import { importDocuments } from '@/hooks/useKnowledge'` 恰好一项、`r.data.dryRun \|\| !changed`、`const space = r.data.spaceId`、三档明细 / 失败原因 / 源文件名（三项在对话框里找不到） | **脚本陈旧**：明细渲染 2026-09-14 抽到子组件 `KnowledgeImportReport.tsx`、失效逻辑挪到 `useKnowledge.invalidateAfterImport(data)`、对话框 import 多了 `importDocumentsTracked`（**行为都在，位置/写法变了**）。⇒ 改**脚本**：明细断言改为"对话框 + 报告组件两文件合看"，hook 两条改为在 `invalidateAfterImport` 函数体内断言语义（dryRun 早退 + 用回执 `spaceId`），并**加强**成子组件同样受 i18n / 无硬编码中文 / 不得值导入 `knowledgeApi` 三条约束。 |
 
-> 逐项原因、修到绿后移入 `ci` 的判据，以及"为什么这两条之前没人发现"，已登记进 **`docs/待处理清单.md`**
-> 的 `P1`【DevKit 记入·2026-09-19】条（Task 14 / Rider 1）—— 门禁配置里的失败必须同时进"欠账台账"，
-> 否则翻页就丢。
+> 逐项原因与修法写进了提交信息与 **`docs/待处理清单.md`** 的 `P2`【DevKit 记入·2026-09-19 · Task 14 Rider 1】条
+> （已按该文件既有做法改成 `[x]` 并补实测证据）—— 门禁配置里的失败必须同时进"欠账台账"，否则翻页就丢。
+> ★ 两条修法的共同教训：**"组件演进、脚本未同步"这种含糊归因会让真违规被当成脚本问题放行**；
+> 每条失败都要按"哪边才是对的口径"逐项判（本节的"哪边才是对的口径"列即为该判据的留证）。
 
 #### `verify-knowledge-gui` 已移出本桶（2026-09-19 Task 14 · Rider 2）——归因被更正
 
@@ -270,7 +275,7 @@ C2 的原状态是**零挂载**：`scripts/verify-*.mjs` 共 11 个，`package.j
   6 值（2026-09-14 批次 1 新增 `tags`，`knowledgeStore.test.ts` 有「六视图集合」断言），脚本仍逐字比 5 值。
 
 修后干净环境实测 `EXIT=0`，故移入 `ci` 桶并串进 `verify:ci`（`package.json`）——
-`pendingFix` 从 **3 脚本 / 15 项失败** 降为 **2 脚本 / 12 项失败**。
+`pendingFix` 从 **3 脚本 / 15 项失败** 降为 **2 脚本 / 12 项失败**（两个剩余脚本已于 2026-09-19 P1 修绿，见上表 ⇒ 本桶清空）。
 教训写在这里：**"组件演进、脚本未同步"这种含糊归因会让真违规被当成脚本问题放行**；
 每条失败都要按"哪边才是对的口径"逐项判（本节与 `docs/待处理清单.md` 均按此写）。
 
