@@ -3313,11 +3313,49 @@ git commit -m "refactor(kit): 内嵌 Python 包清单单一真源 + 双清单对
 
 ## Task 12: 欠账 C1 / C2 / C3 —— 门禁孤岛与构建入口
 
+**★ 本任务额外并入 3 项（用户已裁定，见下 Rider A/B/C）**
+
+### Rider A —— 【用户裁定：补声明】消掉 4 条幽灵依赖红灯
+
+`kit:check` 当前 **红灯 4** 全部是 P2 幽灵依赖（源码真在用、`package.json` 未声明）：
+`@codemirror/autocomplete`、`@lezer/highlight`（`src/components/editor/CodeEditor.tsx`）、`esbuild`（`scripts/verify-gui-fidelity.mjs`）、`js-yaml`（`scripts/verify-package-assets.mjs`）。
+
+**用户裁定：补声明**（不是走基线豁免、也不是删代码）。理由：这些包**本来就因传递依赖被装进树里**，显式声明只是把"实际在用"这件事写清楚，不改变安装结果，是"声明与实际一致"的标准修法，且能让 CI 零红灯上线（否则 Task 14 接 CI 时会永久红，或被迫带 4 条豁免）。
+
+- `@codemirror/autocomplete`、`@lezer/highlight` → `dependencies`（`src/` 生产代码在用）
+- `esbuild`、`js-yaml` → `devDependencies`（`scripts/` 验证脚本在用）
+- **版本号必须用树里实际已装的版本**（`node_modules/<pkg>/package.json` 的 `version`，或用 `^` 匹配已装版本），**不要臆造**；补声明后跑 `npm install` 更新锁文件，并确认 `npm ls --depth=0` 无 UNMET/invalid，且**锁文件不因此多装新包**（若多装了，说明选的版本与已装的不一致，要回头对齐）。
+- 补完后 `npm run kit:sync`（台账跟上）→ `npm run kit:check` 必须 **红灯 0 / 黄灯 1**（黄灯是 P5，属预期）。
+- **补完必须再跑一遍 `git grep` 确认这 4 个包确实在源码里被 import**（避免"为了消红灯而给死包补声明"）—— 4 条 P2 的判据本身就是"源码 import 了但未声明"，所以**还要确认这个 import 是不是活代码**（例如 CodeEditor 组件是否仍被引用、两个 verify 脚本是否仍是有效门禁）。若某个包只被**已废弃**的代码引用 → 那不是补声明，应改代码（如实报告并停下确认）。
+
+### Rider B —— 把"杂散 node_modules 会掩盖缺依赖"写进 `docs/待处理清单.md`（用户裁定）
+
+**背景（已实证）**：`C:/Users/T203-15/` 本身是个 npm 项目（含 `package.json`，依赖 `@vue-flow/core`），历次 install 累积 **44 个包**（含 `nanoid`/`jszip`/`pako`/`immediate`/`lie`/`setimmediate`）。Node 会沿父目录链解析到它：实测 `cd server && node -e "import('nanoid')"` 在删掉 `nanoid` 后仍 **IMPORT OK**；`tsc` 同样被掩盖（同项目在该目录下 `tsc -p .` EXIT=0，放到 `C:\t10sub` 则 `TS2307 Cannot find module`）。
+**后果**：本机"删了依赖仍全绿"**不能作为证据**；唯一能抓"删了但其实在用"的是 `kit:check` 的 P2 规则。
+**★ 另一个连带陷阱**：MSYS 的 `/tmp` = `C:\Users\T203-15\AppData\Local\Temp`，**仍在家目录解析链上** ⇒ **`/tmp` 不是干净环境**，隔离验证必须用**盘根目录**（如 `C:\tNNclean`）。
+**用户裁定：写入待处理清单待后续处理**（不立即清理 —— 它在会话目录之外，属用户环境，且可能是有意保留的）。
+
+→ 在 `docs/待处理清单.md` 新增一条（与 B1 同级、按该文件既有格式），内容须含：
+- 现象与路径（那个目录是家目录下的 npm 项目，非本项目文件）；
+- **为什么危险**（掩盖缺依赖 ⇒ 删包/换包的安全证据系统性偏乐观；`tsc` 与全套测试都能被掩盖）；
+- **检测方法**（在仓库里 `import` 一个只在杂散目录存在的包，应当**失败**才算隔离；举例 `nanoid`）；
+- **正确隔离做法**（克隆到**盘根目录**，不要用 `/tmp`；判据是 `import nanoid` 必须失败）；
+- 处置建议（**由用户决定**是否清理；清理前先确认它是不是别的工具在依赖）。
+
+**⚠️ 该文件有他人 113 行在途改动 —— 绝不可卷入提交**：用 `git show HEAD:<file>` 取基线 → 叠加你自己的行 → `git hash-object -w` 造 blob → `git update-index --cacheinfo` 单文件入索引；提交后 `git diff --numstat` 必须仍是 **113/7**（行数按你新增后重新核对，关键是**他人的行完好**）。**若你无法安全地只提交自己那几行，就不要提交该文件**，把改好的内容与证据写在报告里交给协调者。
+
+### Rider C —— Task 13 的硬前置（用户裁定：红灯清零后打 tag）
+
+用户裁定 **首个 tag `v3.0.0-dev.0` 必须在 `kit:check` 红灯归零之后打**（tag 一经推出就有见证意义，不该打在一个带红的状态上）。
+⇒ **Task 12 结束时 `kit:check` 必须红灯 0**；Task 13（打 tag）以本任务的绿灯为前置。若 Rider A 因故无法让红灯归零（例如发现某包只被废弃代码引用），**必须停下来报告，不要带着红灯打 tag**。
+
 **Files:**
 - Modify: `docs/_anchors.json`（`anchors:write` 同步，C1）
-- Modify: `package.json`（C2 的 verify 挂载 + C3 的构建脚本 npm script）
-- Modify: `kit/manifest/deps.json`（`gates` 段登记分类结果）
+- Modify: `package.json`（C2 的 verify 挂载 + C3 的构建脚本 npm script + **Rider A 的 4 个补声明**）
+- Modify: `package-lock.json`（Rider A 的补声明）
+- Modify: `kit/manifest/deps.json`（`gates` 段登记分类结果；Rider A 后由 `kit:sync` 更新包状态）
 - Modify: `docs/ci.md`（新增"手动门禁"清单）
+- Modify: `docs/待处理清单.md`（Rider B，注意他人 113 行）
 
 - [ ] **Step 1: C1 —— 同步锚点计数**
 
