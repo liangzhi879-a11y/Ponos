@@ -118,12 +118,12 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 
 | # | 规则 | 判据 | 现状会红吗 |
 |---|---|---|---|
-| V1 | 声明位置可解析 | 台账 `{file,line}` 处仍存在该常量且值相等 | 否（初始同步后应全绿） |
+| V1 | 声明位置可解析 | 台账声明的定位（`file` + `locator`）处仍能解析出该常量且值相等 | 否（初始同步后应全绿） |
 | V2 | 每条线至少一个载体 | `lines` 每项有宿主文件 | 否 |
-| V3 | semver 单调 | 台账值 ≥ 上一记录值（`manifest/versions.history` 记账） | 否（新机制） |
+| V3 | 历史链连续（★ 比 semver 单调更严） | ① `history.records` 的链首尾相接（上一条 `to` == 下一条 `from`）；② **末条 `to` == 当前台账值**。即"任何值变更都必须记账"，防静默改值。**不**做 semver 大小比较（记账为 `from:4,to:2` 可过）——落地后按实测收紧措辞 | 否（新机制） |
 | V4 | 跨载体映射一致 | `KERNEL_VERSION='dev 0.2'` ↔ `kernel/package.json:3 '0.2.0'` | 否（当前一致） |
 | V5 | schema 变更需迁移链 | `kind=data-schema` 且值变更时，必须同时出现迁移条目 | 否（新机制） |
-| V6 | 技能三方一致 | `skills.json.version` ↔ `SKILL.md` frontmatter ↔ 台账 | 否（实测一致） |
+| V6 | 技能版本两方一致（★ 落地后按实测收紧） | `skills.json.version` ↔ `SKILL.md` frontmatter 逐条相等。**返工项**：还需覆盖"台账 `skills` 分区 ↔ 真实来源"（与 V1 同族：台账值必须能被源文件复算出来），否则台账 `value`/`frontmatterVersion` 可被静默改成任意值而无人报红。**在补齐前，报告文案不得写"三方一致"** | 否（实测 22/22 一致） |
 | V7 | lock 语义落地 | 20 条 sha256 == 实际 `SKILL.md` 文件哈希 | **是（20/20 不符）** |
 | V8 | manifest 覆盖 | `commonTools` 记录的条目 ⊆ 实有 `.py`，且**覆盖率不得下降** | **是（9/98）** |
 | V8′ | 新增文件必须自证版本 | **新增的** `.py` 必须携带 `__version__` 或显式登记 `version: null` + `versionSource:"unmarked"`（**存量 98 个豁免**，见 §5.4） | 否（新机制） |
@@ -214,15 +214,44 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 
 ```jsonc
 { "version": 1,
-  "_note": "已知漂移登记后不再报红，但数量不得增加；减少时应摘除条目",
+  "_note": "登记后不再计入漂移数，但条目数与「红灯豁免数」都不得增加；减少时应摘除条目",
   "entries": [
     { "rule": "P5", "subject": "python.embedded-vs-requirements",
       "reason": "内嵌集是分发态最小集，requirements.txt 含可选增强包（rapidocr-openvino 等）",
+      "at": "2026-09-19" },
+
+    // 豁免「红灯」必须在条目里显式认领（见下方规则 1）
+    { "rule": "V7", "subject": "skillsLock.brainstorming",
+      "severity": "red",
+      "reason": "20 条锁哈希为上游原文，待 A3 重算；本轮先登记以免阻塞 P0 落地",
       "at": "2026-09-19" }
   ] }
 ```
 
+#### 豁免规则（★ 2026-09-19 裁定：基线不得无声抹平红灯）
+
+> **为什么需要这条**：初版设计里 `applyBaseline` 无条件把命中的 finding 降级为 `baselined`，
+> 于是**加一行 JSON 就能把红灯变绿**，且报告首行照样打印「✅ 通过」。这使整个门禁可被
+> 单行人工编辑绕过 —— 与 I4「放行即人工」的初衷相反（I4 要求的是"人工且**可见**"，
+> 不是"人工即可静默"）。但完全禁止豁免红也不可行：P0 落地时仓库本身存在 20 条锁哈希红，
+> 若红不可豁免则门禁永远无法变绿。故取"**可豁免，但必须显式认领 + 始终可见 + 数量封顶**"。
+
+1. **默认只豁免黄**。基线条目命中**黄**灯时，直接记为 `baselined`（不计入漂移数）。
+   命中的是**红灯**时，**只有条目里显式写了 `"severity": "red"`** 才豁免；
+   没写就**不豁免**，该 finding 保持红（即"随手加一行 `{rule,subject,reason}`"只能豁免黄，豁免红必须亲手动笔认领）。
+2. **`reason` 必填且非空**。缺 reason 或 reason 为空白 → 该条目**不生效**，且额外报一条红
+   `BASELINE_NO_REASON`（把"I4 无处强制"变成"违反 I4 本身就是红灯"）。
+3. **豁免统计必须始终可见**。`makeReport` 暴露 `baselined: { total, red }`；`renderHuman`
+   **在任何情况下（含通过）**都要打印豁免统计行；**通过行不得写成裸「✅ 通过」** ——
+   有豁免时必须写成 `✅ 通过（红灯 0 / 基线豁免 N 条，其中红灯 M 条）`（M>0 时另起一行逐条列出
+   `rule subject reason`，让人一眼看到"绿灯里藏着 N 条人工放行"）。
+4. **两条数量护栏**（都记在 `versions.history`，都读 `baselineGrowth`）：
+   ① 基线条目**总数**不得超过上次记录数；
+   ② 其中**豁免红灯的条数**不得超过上次记录数。
+   防"遇到红灯就往基线里塞"。超限 → 红。
+
 **数量护栏**：`check` 会断言"基线条目数不超过上次记录数"（记在 `versions.history`），防"遇到红灯就往基线里塞"。
+（规则 4 的两条护栏是本条的精确化版本；`versions.history` 需同时记录 `baselineCount` 与 `baselineRedCount`。）
 
 ---
 
@@ -325,7 +354,7 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 | G2 | 每条校验规则有正反例测试 | `kit/*_test.mjs`：正例绿、反例红（**反例必须真跑真红，不允许只断言"函数返回 false"**） |
 | G3 | 依赖判定四类证据齐备 | 用 `rcedit`（动态 import）、`electron-builder`（CLI）、`@tailwindcss/typography`（配置文件）做**回归夹具**：三者都必须判为"在用" |
 | G4 | 扫描域 = `git ls-files` | 在 `scratch/` 放一个 import 了未用依赖的文件 → 判定**不受影响**（该文件不入库） |
-| G5 | 漂移基线可用且防滥用 | 登记一条 → 不再报红；条目数增加超过记录值 → 红 |
+| G5 | 漂移基线可用且防滥用 | 登记黄灯 → 不再计入漂移数；**登记红灯必须显式 `severity:"red"`，否则仍为红**；缺 reason → 红（`BASELINE_NO_REASON`）；豁免统计在报告里始终可见；条目总数或红灯豁免数增加超过记录值 → 红 |
 | G6 | 门禁接入且不拖慢 | `npm run verify` 全绿；`kit:check` 实测耗时 < 5s（结果写进 `docs/ci.md`） |
 | G7 | 历史欠账清零 | §10 的 A1–A7、B1–B3、C1–C4 **逐条**有证据（命令输出/diff），无"已尝试"项 |
 | G8 | 调试版可追溯 | `kit stamp` 产出 `release/YFWorking/kit-stamp.json`，字段完整；且**不进入** CI 门禁（`release/` 为 local-only） |
@@ -342,7 +371,7 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 |---|---|
 | `kit/cli.mjs` | 唯一入口：`check` / `sync` / `stamp` / `view` |
 | `kit/lib/{ledger,version-rules,dep-rules,scan,report,baseline}.mjs` | 纯函数实现（零第三方依赖） |
-| `kit/lib/*_test.mjs` | 与实现同层单测（对应 G2/G3/G4/G5） |
+| `kit/lib/*.test.mjs` | 与实现同层单测（对应 G2/G3/G4/G5） |
 | `kit/manifest/{versions,deps}.json` | 台账（唯一真源） |
 | `kit/manifest/drift-baseline.json` | 🖐 人工维护的已知漂移 |
 | `kit/schema/{versions,deps}.schema.json` | 台账自身 schema |

@@ -78,8 +78,14 @@
 - Create: `kit/lib/scan.mjs`
 - Create: `kit/lib/scan.test.mjs`
 - Modify: `scripts/test-tiers.mjs`（`TEST_GLOBS`）
-- Modify: `scripts/check-doc-anchors.mjs:300-307`（门禁 A′ 升级 + 门禁 A 双向）
+- Modify: `scripts/check-doc-anchors.mjs:300-316`（门禁 A′ 升级 + 门禁 A 双向 + **层→脚本映射**）
 - Modify: `package.json`（`test` / `test:unit` glob + `kit:*` 占位脚本）
+- Modify: `docs/ci.md`（口径说明补 kit 层一行 —— spec §7.1 明文列为"三处同步"之一）
+
+**新增不变量（Task 1 返工补入）：`kit/lib/*_test.mjs` 的命名是错的，一律用 `*.test.mjs`**
+spec §4/§13/§14 里写的 `kit/lib/*_test.mjs` 与 `TEST_GLOBS` 的 `kit/**/*.test.mjs` **不匹配** ——
+按 spec 命名会让测试**静默不被任何层运行**（门禁 A 只统计 glob 命中数，发现不了）。
+执行时统一用 `*.test.mjs`，并同步回改 spec 的措辞。
 
 **Interfaces:**
 - Consumes: 无（首个任务）
@@ -100,7 +106,6 @@ Create `kit/lib/scan.test.mjs`：
 // kit/lib/scan.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DOMAINS, trackedFiles, domainOf, isTestFile, codeFiles, inDomains, readTracked } from './scan.mjs'
@@ -113,15 +118,35 @@ test('trackedFiles 返回已入库文件（POSIX 分隔、数量级正确）', (
   assert.equal(files.some((f) => f.includes('\\')), false, '路径分隔符必须已归一为 /')
 })
 
-// G4 回归：扫描域 = git ls-files，不是磁盘遍历。
-// 反向证据（关键）：scratch/ 必须**确实存在于磁盘**，否则本测试是空断言。
-test('trackedFiles 不含 scratch/ —— 磁盘上的参考代码副本不得污染扫描域', () => {
+test('trackedFiles 返回已入库文件（POSIX 分隔、数量级正确）', () => {
   const files = trackedFiles({ root: ROOT })
-  assert.ok(existsSync(join(ROOT, 'scratch')), 'scratch/ 应存在于磁盘（否则本测试没有约束力）')
-  assert.equal(files.some((f) => f.startsWith('scratch/')), false)
-  assert.equal(files.some((f) => f.startsWith('release/')), false)
-  assert.equal(files.some((f) => f.startsWith('dist/')), false)
-  assert.equal(files.some((f) => f.startsWith('kernel-dist/')), false)
+  assert.ok(files.length > 1000, `已入库文件应超过 1000，实测 ${files.length}`)
+  assert.equal(files.some((f) => f.includes('\\')), false, '路径分隔符必须已归一为 /')
+})
+
+// G4 回归：扫描域 = git ls-files，不是磁盘遍历。
+// ★ 必须可注入构造（Task 1 返工）：**不得**依赖本机 disk 上恰好存在 scratch/ ——
+//    scratch/ 是 gitignored（.gitignore:21）、不入库，CI 工作流也没有任何创建它的步骤，
+//    于是"本地绿、CI 红"。用注入的 exec 造出"磁盘有、git 未跟踪"的场景，
+//    约束力不依赖环境，且正反两面都能断言。
+test('trackedFiles 只含已跟踪文件：磁盘上存在但未入库的文件不得进入扫描域（G4）', () => {
+  const onDiskButUntracked = ['scratch/ponos-repo/src/index.ts', 'scratch/claude-code-ref/a.ts', 'release/YFWorking/app.exe']
+  const tracked = ['src/a.ts', 'kernel/b.mjs']
+  // 注入 exec：模拟 `git ls-files -z` 只输出已跟踪文件
+  const exec = (_bin, _args) => tracked.join('\0') + '\0'
+  const files = trackedFiles({ root: '/fake', gitBin: 'git', exec })
+  assert.deepEqual(files, tracked)
+  for (const f of onDiskButUntracked) {
+    assert.equal(files.includes(f), false, `${f} 在磁盘上但未入库，不得进入扫描域`)
+  }
+})
+
+test('trackedFiles（真实仓库）：不含 scratch/ 与构建产物目录', () => {
+  const files = trackedFiles({ root: ROOT })
+  assert.ok(files.length > 1000, `已入库文件应超过 1000，实测 ${files.length}`)
+  for (const prefix of ['scratch/', 'release/', 'dist/', 'kernel-dist/', 'runtime/']) {
+    assert.equal(files.some((f) => f.startsWith(prefix)), false, `${prefix} 不得进入扫描域`)
+  }
 })
 
 test('domainOf / inDomains 按顶层目录归属', () => {
@@ -237,26 +262,47 @@ for (const [g, n] of Object.entries(anchors.testFileCounts)) {
   }
 }
 // 门禁 A（双向 ②）：TEST_GLOBS 有该层，但锚点里没这个键（新增测试层后漏跑 anchors:write）
-// 为什么必须补这一条：原实现只遍历 anchors.testFileCounts（现场算出来的键），
-// 于是"新增一层测试"完全不在遍历范围内 —— 新层既没锚点、也不被检查，静默不受任何保护。
 for (const g of TEST_GLOBS) {
   if (!(g in (declared.testFileCounts || {}))) {
     problems.push(`分层清单里的 ${g} 不在 docs/_anchors.json 的 testFileCounts 中（新增测试层后必须跑 npm run anchors:write）`)
   }
 }
-// 门禁 A′：分层清单本身要与 package.json 的测试脚本一致（防"改了脚本忘了改口径"）
-// ★ 2026-09-19（DevKit C4）由 warnings 升级为 problems：原先只黄不红（退出码 0），
-//   实测"新增 kit 层却忘改 package.json 的 test glob"不会让 CI 失败 —— 门禁形同虚设。
-try {
-  const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8'))
-  const scriptsText = JSON.stringify(pkg.scripts || {})
-  for (const g of TEST_GLOBS) {
-    if (!scriptsText.includes(g)) {
-      problems.push(`分层清单里的 ${g} 未出现在 package.json 的测试脚本中（口径与脚本已漂移，请同步 test/test:unit）`)
+// 门禁 A′（★ 二轮返工后版本）：层 → 脚本 逐脚本对齐 + CI 链路覆盖（就地解析，无第二真源）
+//
+// 首版写法是 `JSON.stringify(pkg.scripts).includes(g)` —— 只看 glob 是否出现在**任一**脚本里。
+// 两轮实测出的两个漏洞：
+//   ① 只加进 `test`、漏了 `test:unit`（CI 链路 test:ci → test:unit 从不跑 test）→ 旧判据 EXIT=0；
+//   ② 按 `ciChain.includes(scriptName)` 子串判断 → 把 test:unit 改名 test:unit:legacy
+//      （脚本仍在但 CI 不再跑它）→ 旧判据同样 EXIT=0。
+// 所以：(1) 每层在 TIER_SCRIPTS 声明必须出现的脚本名，逐脚本断言；
+//      (2) 覆盖率用 parseCiChain **就地解析** `test:ci` 原文后按 token 精确匹配。
+import { TIER_SCRIPTS, ciChainScripts } from './test-tiers.mjs'
+let pkgScripts = {}
+try { pkgScripts = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8')).scripts || {} }
+catch { problems.push('无法读取 package.json 校验分层清单一致性（门禁 A′ 失效）') }
+
+for (const [glob, required] of Object.entries(TIER_SCRIPTS)) {
+  for (const scriptName of required) {
+    const body = pkgScripts[scriptName] || ''
+    if (!body.includes(glob)) {
+      problems.push(`分层清单里的 ${glob} 未出现在 package.json 的 ${scriptName} 脚本中（口径与脚本已漂移，请同步 test/test:unit 与 test:ci）`)
     }
   }
-} catch {
-  problems.push('无法读取 package.json 校验分层清单一致性（门禁 A′ 失效）')
+}
+// test:ci 链路覆盖：每个层至少要有一个"CI 真的会跑到"的脚本
+// ★ 两条防"判据落空"的红：缺 test:ci、或解析不出任何脚本 —— 原先这两种情形会静默全绿。
+if (!pkgScripts['test:ci']) {
+  problems.push('package.json 缺 test:ci 脚本（门禁 A′ 的链路覆盖判据无法生效）')
+} else {
+  const chain = ciChainScripts(pkgScripts)
+  if (chain.length === 0) {
+    problems.push('无法从 test:ci 解析出任何 npm 脚本（门禁 A′ 的链路覆盖判据落空，请检查 test:ci 的写法）')
+  }
+  for (const [glob, required] of Object.entries(TIER_SCRIPTS)) {
+    if (!required.some((s) => chain.includes(s))) {
+      problems.push(`${glob} 只挂在 CI 不跑的脚本（${required.join('、')}）上 —— test:ci 实际串联的是（${chain.join(' → ')}），覆盖不到该层`)
+    }
+  }
 }
 ```
 
@@ -268,7 +314,48 @@ Modify `scripts/test-tiers.mjs` —— `TEST_GLOBS` 末尾（`'src/**/*.test.ts'
   'kit/**/*.test.mjs',
 ```
 
-并同步更新该文件头部注释里的三处提醒（`test` / `test:unit` / `test:server` / `test:kernel` 四脚本口径）。
+**紧邻 `TEST_GLOBS` 再定义两张映射表**（与 `TEST_GLOBS` 同处 = 单一真源，禁止在门禁里另抄一份）：
+
+```js
+/** 层 → 必须包含该层 glob 的 npm 脚本名（与 TEST_GLOBS 同处定义 = 单一真源） */
+export const TIER_SCRIPTS = {
+  'shared/**/*.test.mjs': ['test', 'test:unit'],
+  'electron/*.test.mjs': ['test', 'test:unit'],
+  'src/**/*.test.ts': ['test', 'test:unit'],
+  'kit/**/*.test.mjs': ['test', 'test:unit'],
+  'server/*.test.mjs': ['test', 'test:server'],
+  'kernel-tests/*.test.mjs': ['test', 'test:kernel'],
+}
+
+/**
+ * ★ 刻意**不**定义 `CI_CHAIN_SCRIPTS` 常量。
+ *   原因（Task 1 二轮返工实测）：那份常量是 `test:ci` 的第二份真源 ——
+ *   新增一层专用脚本（如 `test:kit`）并把它真正串进 `test:ci` 后，常量不会自动更新，
+ *   于是门禁报"只挂在 CI 不跑的脚本上"，**消息与事实相反**（误报）。
+ *   改为就地解析 `test:ci` 的原文，见下方 parseCiChain。
+ */
+
+/**
+ * 从 `test:ci` 的脚本文本里解析出**真正被串联执行**的脚本名。
+ * 必须按 `&&` / `||` 切分后做 token 精确匹配，**不能用子串 includes** ——
+ * 否则把 `npm run test:unit` 改成 `npm run test:unit:legacy`（脚本仍在但 CI 不再跑它）
+ * 会被判为"覆盖到了"，四层测试在 CI 里静默不跑而门禁全绿。
+ */
+export function parseCiChain(scripts) {
+  const body = (scripts && scripts['test:ci']) || ''
+  const names = []
+  for (const seg of body.split(/&&|\|\|/)) {
+    const m = seg.trim().match(/^npm(?:\s+run)?\s+([\w:.-]+)/)
+    if (m) names.push(m[1])
+  }
+  return names
+}
+
+/** 便捷包装：直接给 package.json 的 scripts 对象 */
+export function ciChainScripts(scripts) { return parseCiChain(scripts) }
+```
+
+（`TEST_GLOBS` 与 `TIER_SCRIPTS` 的键必须一一对应。`test-tiers.mjs` 头部注释要写明：**新增一层测试 = 改 `TEST_GLOBS` + `TIER_SCRIPTS` + `package.json` 对应脚本 + `docs/ci.md` 口径，再跑 `anchors:write`**，共四处。）
 
 Modify `package.json`：
 
@@ -288,28 +375,65 @@ Modify `package.json`：
 "kit:stamp": "node kit/cli.mjs stamp",
 ```
 
-- [ ] **Step 7: 验证 C4 真的能红（正反例都要跑）**
+- [ ] **Step 7: 验证 C4 真的能红（三个反例，逐脚本删净）**
+
+> **★ 反例的写法本身有坑（Task 1 返工实测）**：`String.replace(搜索串, '')` **只替换第一处**。
+> `kit/**/*.test.mjs` 同时出现在 `test` 与 `test:unit` 里，所以"删一处就以为删净"的命令
+> **实测 EXIT=0**（第一处在 `test` 里，`test:unit` 仍残留）——反例根本没生效，却会被误读成
+> "门禁失效"。下面改为**逐脚本删净并断言残留数为 0**的写法。
 
 Run:
 ```bash
-git add kit/lib/scan.mjs kit/lib/scan.test.mjs
-npm run anchors:write
-node scripts/check-doc-anchors.mjs
-```
-Expected: PASS（锚点已写入 kit 层）。
+# 备份（不要用 git checkout 还原：本任务的改动尚未提交，会连自己的改动一起丢）
+cp package.json /tmp/pkg.bak.json
+cp docs/_anchors.json /tmp/anchors.bak.json
 
-然后**故意破坏再观察**（反例验证，做完立刻还原）：
-```bash
-# 反例①：把 kit 层从 package.json 的 test glob 里删掉 → 必须红
-node -e "const f='package.json';const t=require('fs').readFileSync(f,'utf8');require('fs').writeFileSync(f,t.replace(' \\\\\"kit/**/*.test.mjs\\\\\"',''))"
+# 反例①：从 test 与 test:unit 里都删净 kit glob → 必须红
+node -e "
+const fs=require('fs');const p='package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));
+for (const k of ['test','test:unit']) j.scripts[k]=j.scripts[k].split(' ').filter(t=>!t.includes('kit/**')).join(' ');
+fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');
+console.log('残留 kit glob 数:',['test','test:unit'].filter(k=>j.scripts[k].includes('kit/**')).length);
+"
 node scripts/check-doc-anchors.mjs ; echo "EXIT=$?"
-git checkout -- package.json
-# 反例②：把 kit 层从锚点里删掉 → 必须红
-node -e "const f='docs/_anchors.json';const j=JSON.parse(require('fs').readFileSync(f,'utf8'));delete j.testFileCounts['kit/**/*.test.mjs'];j.testTotal=Object.values(j.testFileCounts).reduce((a,b)=>a+b,0);require('fs').writeFileSync(f,JSON.stringify(j,null,2)+'\n')"
+cp /tmp/pkg.bak.json package.json
+
+# 反例②：把 kit 键从 docs/_anchors.json 删掉 → 必须红
+node -e "
+const fs=require('fs');const f='docs/_anchors.json';const j=JSON.parse(fs.readFileSync(f,'utf8'));
+delete j.testFileCounts['kit/**/*.test.mjs'];
+j.testTotal=Object.values(j.testFileCounts).reduce((a,b)=>a+b,0);
+fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n');
+"
 node scripts/check-doc-anchors.mjs ; echo "EXIT=$?"
-npm run anchors:write
+cp /tmp/anchors.bak.json docs/_anchors.json
+
+# 反例③（★A′ 收紧后新增）：只从 CI 实跑的 test:unit 删 glob → 必须红
+# 为什么需要它：CI 链路是 test:ci → test:unit，**从不跑 test**；
+# 若 A′ 只检查"glob 出现在任一脚本里"，这个最现实的漂移形态仍会静默绿。
+node -e "
+const fs=require('fs');const p='package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));
+j.scripts['test:unit']=j.scripts['test:unit'].split(' ').filter(t=>!t.includes('kit/**')).join(' ');
+fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');
+console.log('test 含 kit:',j.scripts.test.includes('kit/**'),'| test:unit 含 kit:',j.scripts['test:unit'].includes('kit/**'));
+"
+node scripts/check-doc-anchors.mjs ; echo "EXIT=$?"
+cp /tmp/pkg.bak.json package.json
+
+# 还原确认
+node scripts/check-doc-anchors.mjs ; echo "还原后 EXIT=$?"
+rm -f /tmp/pkg.bak.json /tmp/anchors.bak.json
+git status --porcelain -- package.json docs/_anchors.json
 ```
-Expected: 两个反例的 `EXIT=` 均为非 0，且错误信息分别含"未出现在 package.json 的测试脚本中"与"不在 docs/_anchors.json 的 testFileCounts 中"。
+Expected: 三个反例的 `EXIT=` 均为非 0，错误信息分别含 `的 test 脚本中`/`的 test:unit 脚本中`（①③）与"不在 docs/_anchors.json 的 testFileCounts 中"（②）；还原后 `EXIT=0` 且 `git status` 只剩本任务自己的改动。
+**另加两个防误报/防漏报的对抗检查（复审补入）**：
+```bash
+# 误报检查：把 test:ci 里的 test:unit 改名成 test:unit:legacy（test:unit 脚本仍在，但 CI 不再跑）
+#   → 旧口径（子串 includes）会漏报（EXIT=0）；新口径必须红
+# 漏报检查：新增一层 test:kit 并把 glob 放进它、同时在 test:ci 里真正串上 npm run test:kit
+#   → 必须**不**误报（A′ 的覆盖判定要按 test:ci 实际解析出的脚本名，不能靠一份手写常量）
+```
+Expected: 前者红（提示 CI 链路覆盖不到该层）；后者绿。
 
 - [ ] **Step 8: 跑预检确认新层被承认**
 
@@ -323,11 +447,12 @@ git add kit/lib/scan.mjs kit/lib/scan.test.mjs scripts/test-tiers.mjs scripts/ch
 git commit -m "feat(kit): 扫描基座（git ls-files 域扫描）+ 测试层接入 + C4 门禁加固
 
 - kit/lib/scan.mjs：DOMAINS/CONFIG_FILES/trackedFiles/codeFiles/readTracked
-- 扫描域限定 git ls-files：scratch/ 的参考代码副本不得污染判定（I2，含反向证据测试）
-- TEST_GLOBS 新增 kit/**/*.test.mjs（三处同步：test-tiers / package.json / anchors）
-- C4：门禁 A′ 由 warnings 升级为 problems；门禁 A 补双向覆盖
-  （原先新增测试层漏同步不会让 CI 变红，门禁形同虚设）
-- 两个反例均已实测能红（EXIT 非 0）"
+- 扫描域限定 git ls-files：scratch/ 的参考代码副本不得污染判定（I2）
+- TEST_GLOBS 新增 kit 层；TIER_SCRIPTS/CI_CHAIN_SCRIPTS 与 TEST_GLOBS 同处定义（单一真源）
+- C4：门禁 A′ 由 warnings 升级为 problems 并改为**逐脚本**断言；
+  门禁 A 补双向覆盖。判据收紧后，'只加进 test 漏了 test:unit'
+  （CI 链路 test:ci → test:unit 从不跑 test）由 EXIT=0 变为 EXIT=1
+- 三个反例 + 误报/漏报对抗检查均已实测（真实 EXIT 值见提交说明）"
 ```
 
 ---
@@ -450,6 +575,32 @@ test('applyBaseline：命中降级为 baselined 并带 reason；未命中的原�
   assert.deepEqual(out.used, [keyOf({ rule: 'P5', subject: 'python.diff' })])
 })
 
+// ★ 裁定规则 1 的反例：基线不得无声抹平红灯（这是本任务最重要的一条测试）
+test('applyBaseline：登记了红灯但条目未显式认领 severity:red → 仍为红', () => {
+  const baseline = { version: 1, entries: [{ rule: 'V7', subject: 'skillsLock.x', reason: '想豁免但没认领' }] }
+  const out = applyBaseline([finding({ rule: 'V7', severity: RED, subject: 'skillsLock.x' })], baseline)
+  assert.equal(out.findings[0].severity, 'red', '未显式认领 severity:red 时红灯必须保持红')
+  assert.ok(out.findings[0].hint.includes('severity'), '必须提示如何正确认领')
+})
+
+test('applyBaseline：条目显式认领 severity:red → 才允许降级，且记下 baselinedFrom', () => {
+  const baseline = { version: 1, entries: [{ rule: 'V7', subject: 'skillsLock.x', severity: 'red', reason: '20 条锁哈希待 A3 重算' }] }
+  const out = applyBaseline([finding({ rule: 'V7', severity: RED, subject: 'skillsLock.x' })], baseline)
+  assert.equal(out.findings[0].severity, 'baselined')
+  assert.equal(out.findings[0].baselinedFrom, 'red', '必须能反查原本是红灯（报告的"其中红灯 M 条"靠它）')
+})
+
+// ★ 裁定规则 2 的反例：缺 reason 的条目不生效，且本身报红（I4 的强制执行点）
+test('applyBaseline：条目缺 reason / reason 为空白 → 条目不生效并报 BASELINE_NO_REASON 红', () => {
+  const baseline = { version: 1, entries: [{ rule: 'P5', subject: 'python.diff' }, { rule: 'P6', subject: 'x', reason: '   ' }] }
+  const out = applyBaseline([finding({ rule: 'P5', severity: YELLOW, subject: 'python.diff' })], baseline)
+  assert.equal(out.findings.find((f) => f.rule === 'P5').severity, 'yellow', '缺 reason 的条目不得生效')
+  assert.equal(out.ignoredNoReason, 2)
+  const nr = out.findings.filter((f) => f.rule === 'BASELINE_NO_REASON')
+  assert.equal(nr.length, 2)
+  assert.ok(nr.every((f) => f.severity === 'red'))
+})
+
 test('applyBaseline：基线里不再命中的条目进 unused（提示可摘除）', () => {
   const baseline = { version: 1, entries: [{ rule: 'V8', subject: 'gone', reason: 'r' }] }
   const out = applyBaseline([], baseline)
@@ -457,12 +608,19 @@ test('applyBaseline：基线里不再命中的条目进 unused（提示可摘除
   assert.deepEqual(out.unused, [keyOf({ rule: 'V8', subject: 'gone' })])
 })
 
-// G5 防滥用：基线是"欠账"不是"药方"，条目数不得增长
-test('baselineGrowth：条目数超过记录值即报超限；未记录（null）时不管', () => {
+// G5 防滥用：基线是"欠账"不是"药方"，条目数不得增长；红灯豁免数另有一条护栏
+test('baselineGrowth：条目总数与「红灯豁免数」分别超限都要报；未记录（null）时不管', () => {
   const b = { version: 1, entries: [{ rule: 'a', subject: 'b', reason: 'r' }, { rule: 'c', subject: 'd', reason: 'r' }] }
-  assert.equal(baselineGrowth({ baseline: b, recordedCount: null }), null)
-  assert.equal(baselineGrowth({ baseline: b, recordedCount: 2 }), null)
-  assert.deepEqual(baselineGrowth({ baseline: b, recordedCount: 1 }), { exceeded: 2, recordedCount: 1 })
+  assert.equal(baselineGrowth({ baseline: b, recordedCount: null, recordedRedCount: null }), null)
+  assert.equal(baselineGrowth({ baseline: b, recordedCount: 2, recordedRedCount: 0 }), null)
+  const g = baselineGrowth({ baseline: b, recordedCount: 1, recordedRedCount: 0 })
+  assert.equal(g.exceeded, 2)
+  assert.equal(g.count, 2)
+  // 红灯豁免数：2 条里 1 条 severity:red，记录值 0 → 报 redExceeded
+  const br = { version: 1, entries: [{ rule: 'a', subject: 'b', severity: 'red', reason: 'r' }, { rule: 'c', subject: 'd', reason: 'r' }] }
+  const g2 = baselineGrowth({ baseline: br, recordedCount: 2, recordedRedCount: 0 })
+  assert.equal(g2.redExceeded, 1)
+  assert.equal(g2.redCount, 1)
 })
 ```
 
@@ -575,28 +733,73 @@ export function loadBaseline({ root }) {
   } catch { return empty }
 }
 
-/** 套用基线：命中 → 降级为 baselined（附 reason）；未命中的原样保留。 */
+/**
+ * 套用基线：命中 → 降级为 baselined（附 reason）；未命中的原样保留。
+ *
+ * ★ 2026-09-19 裁定（spec §7.3 豁免规则）：**基线不得无声抹平红灯**。
+ *   初版无条件降级，实测"加一行 JSON 就能把红灯变绿"，且报告首行照样打印「✅ 通过」——
+ *   整个门禁可被单行人工编辑绕过，与 I4「放行即人工」的初衷相反
+ *   （I4 要的是"人工且**可见**"，不是"人工即可静默"）。
+ *   但完全禁止豁免红也不可行：P0 落地时仓库本身有 20 条锁哈希红，红不可豁免则门禁永远绿不了。
+ *   故：可豁免，但必须**显式认领 + 始终可见 + 数量封顶**。
+ *
+ *   规则 1：默认只豁免**黄**。命中红灯时，只有条目显式写了 `severity:'red'` 才豁免；
+ *          没写就不豁免（随手加 `{rule,subject,reason}` 只能豁免黄）。
+ *   规则 2：`reason` 必填非空。缺失/空白 → 条目**不生效**，并额外报一条红 `BASELINE_NO_REASON`
+ *          （把"I4 无处强制"变成"违反 I4 本身就是红灯"）。
+ */
 export function applyBaseline(findings, baseline) {
-  const map = new Map((baseline.entries || []).map((e) => [keyOf(e), e]))
+  const entries = baseline.entries || []
+  const valid = []
+  const noReason = []
+  for (const e of entries) {
+    if (typeof e.reason === 'string' && e.reason.trim() !== '') valid.push(e)
+    else noReason.push(e)
+  }
+  const map = new Map(valid.map((e) => [keyOf(e), e]))
   const findingsOut = findings.map((f) => {
     const e = map.get(keyOf(f))
-    return e ? { ...f, severity: 'baselined', reason: e.reason || '（未写理由）' } : f
+    if (!e) return f
+    // 规则 1：红灯必须有条目显式认领
+    const red = f.severity === 'red'
+    if (red && e.severity !== 'red') {
+      return { ...f, hint: `${f.hint || ''}（基线里登记了该条但未显式认领红灯，故仍报红；确认要豁免请在该条目加 "severity": "red"）`.trim() }
+    }
+    return { ...f, severity: 'baselined', baselinedFrom: f.severity, reason: e.reason }
   })
+  // 规则 2：缺 reason 的条目不生效，本身作为一条红灯
+  for (const e of noReason) {
+    findingsOut.push({
+      rule: 'BASELINE_NO_REASON', severity: 'red',
+      subject: `${e.rule || '?'} ${e.subject || '?'}`,
+      message: '基线条目缺 reason（不变量 I4：放行必须写明理由）—— 该条目已被忽略',
+      hint: '给该条目补上 reason；确属误加则直接删除条目',
+    })
+  }
   const present = new Set(findings.map(keyOf))
   const used = [...map.keys()].filter((k) => present.has(k))
   const unused = [...map.keys()].filter((k) => !present.has(k))
-  return { findings: findingsOut, used, unused }
+  const effective = findingsOut.filter((f) => f.severity !== 'baselined').length
+  return { findings: findingsOut, used, unused, ignoredNoReason: noReason.length, effective }
 }
 
 /**
- * 数量护栏：条目数不得超过台账记录值。
+ * 数量护栏：① 条目总数 ② 其中豁免红灯的条数 —— 均不得超过台账记录值。
  * 没有它，基线会变成"遇红就塞"的垃圾桶，门禁在半年内必然失效。
  */
-export function baselineGrowth({ baseline, recordedCount }) {
-  if (recordedCount === null || recordedCount === undefined) return null
-  const n = (baseline.entries || []).length
-  if (n > recordedCount) return { exceeded: n, recordedCount }
-  return null
+export function baselineGrowth({ baseline, recordedCount, recordedRedCount }) {
+  const entries = baseline.entries || []
+  const n = entries.length
+  const redN = entries.filter((e) => e.severity === 'red').length
+  const out = { exceeded: null, redExceeded: null, recordedCount, recordedRedCount, count: n, redCount: redN }
+  if (recordedCount !== null && recordedCount !== undefined && n > recordedCount) {
+    out.exceeded = n
+  }
+  if (recordedRedCount !== null && recordedRedCount !== undefined && redN > recordedRedCount) {
+    out.redExceeded = redN
+  }
+  if (out.exceeded === null && out.redExceeded === null) return null
+  return out
 }
 ```
 
@@ -653,6 +856,9 @@ git commit -m "feat(kit): 统一报告 schema 与漂移基线（含数量护栏�
   - **`skillsLock` 段只记 `{ source, field, ids }` 引用，不复制哈希值** —— 见下方"为什么"。
 
 `versions.json` 形状（`sync` 产出，人工只允许改 `exclude` / `note` / `consumers` / `migrationNote`）：
+> ★ 这 4 个（外加 `manual` 标记）是 `MANUAL_FIELDS` —— **lines 与 contracts 两个分区都必须继承它们**，
+>   不得只在一个分区里做继承（Task 3 复审实测：初版 lines 会静默丢弃人工 `note`/`consumers`）。
+>   继承时用显式白名单，**不要** `{...old}` 整条合并（否则陈旧的 `value`/`locator` 也会被继承回来）。
 
 ```jsonc
 {
@@ -930,20 +1136,40 @@ export function syncVersions({ root, files, dryRun = false } = {}) {
   const prev = readVersions({ root }) || {}
   const prevByKey = new Map((prev.contracts || []).map((e) => [keyOfVersion(e), e]))
   const excludes = prev.exclude || DEFAULT_EXCLUDES
-  const excludeKeys = new Set(excludes.map((e) => `${e.id}@${e.file}`))
+  // ★ 排除按 **id 全局匹配**（不是 id@file）—— 实测 ANTHROPIC_VERSION 出现在 **两个**文件
+  //   （electron/app-llm.cjs 与 electron/app-websearch.cjs），这是"外部协议版本"的属性，
+  //   与它出现在哪个文件无关；按 id@file 匹配的话，新增第三个调用点就会漏排。
+  //   JSON 里的 file 字段仅作"当前位于何处"的说明，不参与匹配。
+  const excludeIds = new Set(excludes.map((e) => e.id))
+  // ★ 版本线已纳管的常量不再重复进 contracts 分区。否则 APP_VERSION@version.mjs、
+  //   KERNEL_VERSION@version.mjs、SCHEMA_VERSION@version.mjs 会**同时**出现在 lines 与
+  //   contracts 两处（同一事实两份记录，违反不变量 I1），且 contracts 会变成 15 而非 14。
+  const lineLocatorKeys = new Set(LINE_SPECS.map(
+    (s) => `${s.locator.kind === 'const' ? s.locator.name : s.locator.path}@${s.file}`,
+  ))
 
   // lines
+  //
+  // ★ 人工字段继承（Task 3 复审返工）：契约里承诺"人工只允许改 exclude / note / consumers /
+  //   migrationNote"，但初版 lines 只做 `{...spec, value, valueType}` —— 宿主文件一旦改动导致
+  //   sync 重建，人工在 lines 条目上写的 note / consumers 就会被**静默丢弃**。
+  //   contracts 分支已经做了继承（`{...old, value, ...}`），lines 必须一致，否则同一条不变量
+  //   （I1：sync 不得覆盖人工内容）在两个分区里行为不同。
+  const prevLines = new Map((prev.lines || []).map((e) => [e.id, e]))
   const lines = LINE_SPECS.map((spec) => {
     const parsed = parseByLocator({ root, file: spec.file, locator: spec.locator })
     if (!parsed) return null
+    const old = prevLines.get(spec.id)
     const entry = { ...spec, value: parsed.value, valueType: typeof parsed.value }
     if (spec.mirror) entry.mirrorValue = parseByLocator({ root, file: spec.mirror.file, locator: spec.mirror.locator })?.value ?? null
+    // 只为人工可编辑的字段做继承，显式白名单（避免把陈旧的 value/locator 也一并继承回来）
+    for (const k of MANUAL_FIELDS) if (old && k in old) entry[k] = old[k]
     return entry
   }).filter(Boolean)
 
-  // contracts（发现 − 排除 + 人工字段保留）
+  // contracts（发现 − 排除 − 版本线已纳管 + 人工字段保留）
   const discovered = discoverVersionConsts({ root, files: tracked })
-    .filter((e) => !excludeKeys.has(keyOfVersion(e)))
+    .filter((e) => !excludeIds.has(e.id) && !lineLocatorKeys.has(keyOfVersion(e)))
   const manualContracts = (prev.contracts || []).filter((e) => e.manual === true)
   const contracts = []
   for (const d of discovered) {
@@ -1018,10 +1244,12 @@ export function syncVersions({ root, files, dryRun = false } = {}) {
   }
 }
 
-/** 默认排除项：外部协议版本，不是本仓契约（与 spec §5.1 一致） */
+/** 默认排除项：外部协议版本与上游技能资产，不是本仓契约（**按 id 全局匹配**，见 syncVersions） */
 export const DEFAULT_EXCLUDES = [
-  { file: 'electron/app-llm.cjs', id: 'ANTHROPIC_VERSION', reason: 'Anthropic Messages API 协议版本，外部标准，不参与本仓版本台账' },
-  { file: 'electron/app-websearch.cjs', id: 'ANTHROPIC_VERSION', reason: '同上（另一处调用点）' },
+  { id: 'ANTHROPIC_VERSION', file: 'electron/app-llm.cjs',
+    reason: 'Anthropic Messages API 协议版本（外部标准），不参与本仓版本台账；另一调用点见 electron/app-websearch.cjs' },
+  { id: 'SUPERPOWERS_VERSION', file: 'public/sample-skills/brainstorming/scripts/server.cjs',
+    reason: '上游 superpowers 技能包自带脚本（技能资产，随技能同步整体更新），非本仓契约；其值还是函数调用 readSuperpowersVersion() 而非字面量' },
 ]
 
 export function readVersions({ root }) { return readJson({ root, rel: VERSIONS_FILE, fallback: null }) }
@@ -1101,7 +1329,11 @@ node kit/cli.mjs sync 2>/dev/null || node -e "import('./kit/lib/ledger.mjs').the
 ```
 Expected: `lines 4 / contracts 14 / skills 22 / lock 20 / commonPy 98`。
 
-> **若 contracts ≠ 14**：不要臆造数字，把实际值与差异（多出/少了哪个 `id@file`）记入 spec §5.1 与 `docs/待处理清单.md`，并按实际值修正 spec 里的数字。
+> **口径已实测（写入计划前用 `scratch/kit-verify-partition.mjs` 验过）**：全仓 `*_VERSION` 常量声明共 **20 处** → 减去 `ANTHROPIC_VERSION`×2（外部协议）+ `SUPERPOWERS_VERSION`×1（上游技能资产）+ 版本线已纳管 3 处（`APP_VERSION`/`KERNEL_VERSION`/`SCHEMA_VERSION` @ `version.mjs`）= **contracts 14**。
+>
+> **若实施后 contracts ≠ 14**：不要臆造数字，把实际值与差异（多出/少了哪个 `id@file`）记入 spec §5.1 并按实际值修正 spec 里的数字。
+>
+> **同步修正 spec 的总数口径**：spec §5.1 的 `contracts` 行写的是"实测 `git grep` 得 **17 处**"——该数字来自更窄的 grep 模式，**实测应为 20 处（纳管 14）**。Step 5 之后一并改掉（这是 spec 里唯一一处需要修正的实测数字；"纳管 14"本身是对的）。
 
 然后**人工**为以下条目补 `migrationNote`（`kind:"data-schema"` 的 5 条）与 `consumers`（`src/lib/knowledgeQuery.ts` → `INDEX_VERSION`）：
 
