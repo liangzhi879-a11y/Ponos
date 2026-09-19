@@ -877,7 +877,16 @@ export function syncDeps({ root, files, sizes, dryRun = false } = {}) {
   return { data, unused: [...runtime, ...dev].filter((p) => p.status === 'unused').map((p) => p.name), ghost }
 }
 
-/** 内嵌 Python 包的初始真源（Task 11 会把它从 scripts/build-embedded-python.mjs:82 迁到这里） */
+/**
+ * 内嵌 Python 包的**首次建台账**默认值：仅当台账里还没有 `python.embedded` 时使用。
+ *
+ * ★ 真源只有一个：已提交的 `kit/manifest/deps.json#python.embedded`（人工维护；sync 原样保留，
+ *   见 syncDeps 的 `prev.python.embedded || DEFAULT_PYTHON_EMBEDDED`）。
+ *   B2（Task 11）已把构建脚本里那份硬编码 13 条搬到台账，构建脚本改为**读台账**
+ *   （`kit/lib/python-manifest.mjs` 的 `readEmbeddedPackages({ root })`）。
+ * ⚠️ 本常量**不是**可单独维护的第二清单：改它只影响"台账尚无该键时的首建"，对已建好的台账零作用
+ *   （消费方读的是台账）。要改内嵌包集，改 deps.json 的 python.embedded。
+ */
 export const DEFAULT_PYTHON_EMBEDDED = [
   'openpyxl', 'python-docx', 'xlrd', 'Pillow', 'beautifulsoup4', 'rapidocr-onnxruntime',
   'PyPDF2', 'pypdf', 'pypdfium2', 'requests', 'Jinja2', 'openai', 'pydantic',

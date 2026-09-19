@@ -1,7 +1,7 @@
 {
   "version": 1,
   "generatedBy": "node kit/cli.mjs sync",
-  "_note": "packages[].evidence 与 optionalProbes 由 sync 生成；notes / gates / sizes 可人工维护（sync 保留）。status=unused 的判定见 spec §6.2（五类引用证据）。",
+  "_note": "packages[].evidence 与 optionalProbes 由 sync 生成；python.embedded / notes / gates / sizes 可人工维护（sync 原样保留）。★ python.embedded 是内嵌 Python 包清单的**唯一真源**（B2）：scripts/build-embedded-python.mjs 读它安装 pip 包，故改内嵌包集只能改这里 —— 改构建脚本不会被任何门禁发现，且漏装一个包只在发出去的机器上炸（内嵌运行时不可在线补包）。status=unused 的判定见 spec §6.2（五类引用证据）。",
   "domains": {
     "npm-runtime": {
       "source": "package.json#dependencies",
@@ -949,7 +949,7 @@
     "pythonOnlyEmbedded": [
       {
         "name": "pypdfium2",
-        "reason": "技能侧有真实调用点却漏列：public/sample-skills/_common/doc_to_md.py:643/676、_common/pdf_splitter.py:311 都是 `import pypdfium2 as pdfium`（PDF 光栅化降级路径），但 requirements.txt 未列它 → 技能清单应补（P5 黄灯项）"
+        "reason": "技能侧有真实调用点却漏列：public/sample-skills/_common/doc_to_md.py:643/674、_common/pdf_splitter.py:311 都是 `import pypdfium2 as pdfium`（PDF 光栅化降级路径），但 requirements.txt 未列它 → 技能清单应补（P5 黄灯项；Task 11 复核调用点仍在，未擅自改 requirements.txt —— 那会改技能侧运行环境，属 skills 侧裁定）"
       },
       {
         "name": "pypdf",
@@ -957,11 +957,11 @@
       },
       {
         "name": "beautifulsoup4",
-        "reason": "未核实：git grep -w 在已跟踪代码里零 import（仅 scripts/build-embedded-python.mjs:82 安装清单与台账自身）。内嵌运行时不可在线补包 → 先保留，需 Task 11 责任人确认是否历史遗留"
+        "reason": "未核实：git grep -w 在已跟踪代码里零 import（包名在已跟踪文件里只出现在内嵌清单自身：本台账的 python.embedded 与 DEFAULT_PYTHON_EMBEDDED 首建默认值、以及构建脚本的冒烟 import 行）。内嵌运行时不可在线补包 → 先保留；Task 11 复核后仍无调用点，但**不据此删除**（删包属行为变更，须先真机验证再单独立项）"
       },
       {
         "name": "Jinja2",
-        "reason": "未核实：同 beautifulsoup4 —— 已跟踪代码零 import，只有 scripts/build-embedded-python.mjs:82 的安装清单；既不能证明在用，也不宜据此删除"
+        "reason": "未核实：同 beautifulsoup4 —— 已跟踪代码零 import（该包名只出现在内嵌清单自身与构建脚本的冒烟 import 行）；既不能证明在用，也不宜据此删除（删包属行为变更，须先真机验证再单独立项）"
       },
       {
         "name": "openai",

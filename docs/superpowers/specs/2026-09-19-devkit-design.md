@@ -324,8 +324,8 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 | A6 | `_common_manifest.json` 仅 9/98；98 个 `.py` 零个声明 `__version__` | ✅ 已修（Task 9）：台账全量登记 **98/98**（未标注者 `null` + `unmarked`，**不回填版本值**）；`_common_manifest.json` 补顶层 `_note` 说明 `current_version` 不可从脚本内容校验；V8′ 只对**新增**文件强制 | 漏登记计数 0（实测 `实有 98 已登记 98 漏登记 0`；9 条来自 manifest / 89 条 `null`）；V8、V8b、V8′ 全绿 |
 | A7 | `skills-lock.json` 20/20 哈希不符 | ✅ 已修（Task 9）：按 D5 重定义为**本地安装后哈希**，新增 `syncSkillsLock` 重算 20 条（`kit/cli.mjs sync` 的占位调用已替换为真实现）；V7 **直读 lock 文件**（不读台账，防"sync 自证"）；哈希**对行尾归一**（`core.autocrlf=true` 的干净克隆否则 15/20 假红） | 实测 V7 红灯 **20 → 0**（主仓与干净克隆都为 0）；二次运行 `updated 0 / unchanged 20`（幂等）；改任一 `SKILL.md` 后立刻红（含"台账里塞正确哈希也不影响判定"的防自证反例） |
 | B1 | 10 个未用运行时依赖 | **逐个核实后删除**（每个都跑 `typecheck` + `build` + 全量测试；`xlsx`/`mammoth` 需先确认无运行时动态加载） | 删除后 `kit:check` P1 无 `unused`；产物可构建 |
-| B2 | 内嵌 Python 13 包硬编码在构建脚本 | 提到 `deps.json`，脚本读清单 | 构建脚本行为不变（`node --test` + 干跑打印） |
-| B3 | 双 Python 清单（内嵌 13 vs requirements 约 25）无对账 | P5 差集显式标注（黄灯，不红） | 报告能列出差集 |
+| B2 | ✅ 已修（Task 11）：内嵌 Python 13 包硬编码在 `scripts/build-embedded-python.mjs` | 真源移到 `kit/manifest/deps.json#python.embedded`（人工维护、`sync` 原样保留）；新增**唯一读取入口** `kit/lib/python-manifest.mjs` 的 `readEmbeddedPackages({ root })` —— **构建脚本与测试共用它**，读不到 / 键为空 / 条目非字符串一律**抛错**（绝不返回空清单：那会"装 0 个包却报成功"）。★ 为什么不把 `readEmbeddedPackages` 直接写在构建脚本里：测试不能 import 构建脚本（它会下载并安装 Python 运行时），写在脚本内 = 测试只能"读源码正则"，退化成弱断言 | 实测包清单与迁移前**逐条一致**（13 条，真源搬家不改行为）；`kit/lib/python-manifest.test.mjs` 8 用例：① 行为——换 `root` 下的台账 ⇒ 返回值**跟着变**；② 失败开放——缺失/空/形状错/**不传 root** 均抛错；③ 构建脚本**调用点**（`= readEmbeddedPackages({ root: … })`，只 import 不调用是假绿）+ 无本地实现 + 无引号包裹的包名字面量 + 无裸数组；④ 同源——构建脚本 import 的说明符必须解析到测试 import 的同一文件；⑤ 真仓清单**不得缩水**（删包必须是有意改基线）。变异测试三处（改回硬编码列表 / 让实现缓存首值 / 从台账删一个包）均被抓红后还原 |
+| B3 | ✅ 已修（Task 11）：双 Python 清单（内嵌 13 vs requirements 23）无对账 | 差集**逐项**写进 `deps.json#notes`：`pythonOnlyEmbedded` **6** 条（beautifulsoup4 / jinja2 / openai / pydantic / pypdf / pypdfium2）、`pythonOnlySkills` **16** 条，每条 `reason` 指向真实调用点或**显式**标注"未核实"；P5 黄灯**刻意保留**（差集是预期事实、不是错误 —— 见 spec §6.3），但不再可能"静默"（差集逐条列在报告里） | 测试断言（读真仓台账）：实测差集里的**每个**包都必须在 `notes` 里有非空且 ≥10 字的 `reason`，且 `reason` 要么含调用点文件名、要么显式写"未核实"（删条目 / 清空理由 / 写一句空话 → 立刻红）；`kit:check` 黄灯 **1**（P5，差集原样列出，条目数未变：仅内嵌 6 / 仅技能 16） |
 | C1 | `_anchors.json`：407 vs 已跟踪 **408**（`kernel-tests` 209 vs 210） | `npm run anchors:write` | `check-doc-anchors` 绿 |
 | C2 | 11 个 `verify-*.mjs` **零挂载** | 分两类：CI 可跑的挂进 `test:ci`；需图形会话/真内核的挂**独立 npm script** 并在台账登记为 `manual` 门禁 | `package.json` 中 11 个均可执行；CI 不因图形依赖而假红 |
 | C3 | `build-kernel` / `build-embedded-python` / `build-installer` / `package-portable` / `sync-builtin-skills` / `bump-version` 均无 npm script | 全部挂 npm script（`kit:` 与 `build:` 命名空间） | `npm run` 列表可发现全部构建/校验入口 |
@@ -389,6 +389,7 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 |---|---|
 | `kit/cli.mjs` | 唯一入口：`check` / `sync` / `stamp` / `view` |
 | `kit/lib/{ledger,version-rules,dep-rules,scan,report,baseline}.mjs` | 纯函数实现（零第三方依赖） |
+| `kit/lib/python-manifest.mjs` | 内嵌 Python 包清单的**唯一读取入口**（`readEmbeddedPackages({ root })`，B2）：构建脚本与测试共用，保证"构建脚本装的包"与"台账记的包"同源 |
 | `kit/lib/*.test.mjs` | 与实现同层单测（对应 G2/G3/G4/G5） |
 | `kit/manifest/{versions,deps}.json` | 台账（唯一真源） |
 | `kit/manifest/drift-baseline.json` | 🖐 人工维护的已知漂移 |

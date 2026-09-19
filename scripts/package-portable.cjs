@@ -223,12 +223,19 @@ if (fs.existsSync(kernelSrc)) {
 console.log('[3/5] Copying production dependencies...')
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'))
 const prodDeps = Object.keys(pkg.dependencies || {})
-// Only copy deps that bridge/main actually need
+// Only copy deps that bridge/main actually need.
+// ★ 2026-09-19 更正（原注释「Bridge uses: ws, xlsx, mammoth, nanoid」已过时且误导）：
+//   · bridge 运行期真正需要的第三方包只有 **`ws`**（server/bridge.mjs 的唯一外部依赖；
+//     node.exe 由下面第 [4/5] 步单独随包）；
+//   · `xlsx` / `mammoth` / `nanoid` 已在 B1 从 dependencies 删除（它们已不在 prodDeps 里，
+//     注释留着会让人以为还有三个包要跟着走）；
+//   · 剩下这份清单是**粗过滤**（按包名排除"确定只给渲染层用"的包），不是可达性分析 ——
+//     被复制进来的还有 @codemirror/*、@assistant-ui/react 等前端包，属既有行为，本次不改。
 const neededDeps = prodDeps.filter(d => {
-  // Bridge uses: ws, xlsx, mammoth, nanoid (via server/bridge.mjs)
   // Skip react/frontend deps — not needed at runtime (bundled in dist)
+  // 'diff' 已于 B1 删除（原为浏览器侧依赖）；保留死条目会让人以为它还在树里，故一并移除。
   const browserOnly = ['react', 'react-dom', 'tailwind-merge', 'class-variance-authority',
-    'lucide-react', 'zustand', 'react-markdown', 'remark-gfm', 'diff']
+    'lucide-react', 'zustand', 'react-markdown', 'remark-gfm']
   const browserRadix = prodDeps.filter(d => d.startsWith('@radix-ui/'))
   return !browserOnly.includes(d) && !browserRadix.includes(d)
 })

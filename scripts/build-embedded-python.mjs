@@ -4,6 +4,9 @@ import { execSync } from 'child_process'
 import { existsSync, mkdirSync, rmSync, statSync, readdirSync, createWriteStream, unlinkSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { get } from 'https'
+// 内嵌包清单的**单一真源**在 kit/manifest/deps.json#python.embedded（B2）。
+// 见下方 [6/7] 的调用点与 kit/lib/python-manifest.mjs 的文件头说明。
+import { readEmbeddedPackages } from '../kit/lib/python-manifest.mjs'
 
 const ROOT = join(import.meta.dirname, '..')
 const RUNTIME = join(ROOT, 'runtime', 'python')
@@ -79,12 +82,11 @@ try {
   unlinkSync(getPipPath)
   console.log('  pip installed')
 
-  const packages = [
-    'openpyxl', 'python-docx', 'xlrd', 'Pillow',
-    'beautifulsoup4', 'rapidocr-onnxruntime', 'PyPDF2', 'pypdf', 'pypdfium2',
-    'requests', 'Jinja2', 'openai', 'pydantic',
-  ]
-  console.log('  Installing packages...')
+  // ★ 内嵌 Python 包清单的单一真源是 kit/manifest/deps.json#python.embedded（B2）。
+  //   原先这里硬编码 13 个包名，与台账各写一份 —— 改一处漏一处，而漏的后果是**发出去的应用
+  //   缺包、运行时才炸**（内嵌运行时不可在线补包）。故此处只读台账，脚本里不再有任何包名字面量。
+  const packages = readEmbeddedPackages({ root: ROOT })
+  console.log(`  Installing packages (${packages.length} 个，真源 kit/manifest/deps.json#python.embedded)...`)
   for (const pkg of packages) {
     try {
       console.log(`    ${pkg}`)
@@ -98,6 +100,10 @@ try {
 
   console.log('[7/7] Verifying runtime...')
   const testScript = join(RUNTIME, '_test.py')
+  // 注意：这里是**冒烟抽样**（挑几条有代表性的 import 看解释器能不能起来），**不是**第二份清单。
+  // pip 名 → import 名不是一一对应（Pillow→PIL、python-docx→docx、beautifulsoup4→bs4、
+  // rapidocr-onnxruntime→rapidocr_onnxruntime），在此维护映射表等于又造一份会漂移的真源；
+  // 待安装清单只有一处：上面的 readEmbeddedPackages({ root })。缺失包由上面逐个 pip install 报 WARNING。
   writeFileSync(testScript, [
     'import openpyxl, docx, xlrd, PIL, bs4, requests, jinja2, pydantic',
     'import rapidocr_onnxruntime',
