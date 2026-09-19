@@ -4,9 +4,12 @@
 //   I1 **禁止按文件找 Set 表**（D1）：`FILES_ROUTE_PATHS` 定义在 `server/bridge.mjs:271`，
 //      而它的处理器在 `server/files-routes.mjs` ⇒ 必须扫**全部源码文本**做形态识别，
 //      而不是"打开 bridge.mjs 找那张表"。
-//   I2 扫描域 = 调用方传入的 `files`（来自 `scan.mjs#trackedFiles` = `git ls-files`）+
-//      `readTracked`（只读已入库文件）。**禁止 readdirSync**：磁盘上的
+//   I2 扫描域 = 调用方传入的 `files`（`scan.mjs#trackedFiles` = `git ls-files` 即可，
+//      **内部自筛**：再过一遍 `codeFiles(files, {includeTests:false})`，剔 test 文件与非代码文件）
+//      + `readTracked`（只读已入库文件）。**禁止 readdirSync**：磁盘上的
 //      `release/YFWorking/server/*-routes.mjs`、`release/_backup_*/` 都是副本，不是真相（D4）。
+//      ★ 自筛不是可选项：raw `trackedFiles` 直传会多出 test 文件里的端点（`server/workflow-api.test.mjs`
+//      的 `/workflows/verify`）与一堆 `docs/*.md` 噪声 ⇒ T9 接线自伤（假阳性）。接口自己免疫，不靠调用顺序。
 //   I3 注释不是代码：匹配前先过 `scan.mjs#stripComments`（真形态：`bridge.mjs:1757/1829`
 //      的注释里写着 `pathname === '…'`）。
 //   I4 "提取不到 ≠ 不存在"：每个被形态识别到、但**不是** bridge 端点的字面量都进 `excluded`，
@@ -15,12 +18,15 @@
 //      `/knowledge`、`/logs/` 这类 `startsWith` 是**命名空间**，children 可能为空 ——
 //      "通配到底有没有被枚举"必须一眼可判（`providers/` 空 = 段是动态拼的）。
 //
-// 四形态（`routes` 的 `forms` 字段逐条记录来源）：
-//   `eq`         `pathname === '/x'`（含 `p === '/x'`、`url.pathname`；真仓最多的一类）
-//   `set`        `const X = new Set(['/x', …])`（`set:<变量名>`）
-//   `isPath`     `isXxxPath(pathname)` 返回式谓词（`isPath:<函数名>`）—— 是**认领关系**，不是新端点
-//   `startsWith` `pathname.startsWith('/x')` —— 前缀，落 `prefixes` 而不是 `routes`
-import { stripComments } from './scan.mjs'
+// 五形态（`routes` 的 `forms` 字段逐条记录来源）：
+//   `eq`            `pathname === '/x'`（含 `p === '/x'`、`url.pathname`；真仓最多的一类）
+//   `negated-guard` `pathname !== '/x'`（早退守卫 `if (pathname !== '/x') return null`）——
+//                   与 `eq` 同为**认领关系**（真形态：`server/agents-routes.mjs:28`、
+//                   `server/disabled-routes.mjs:23`、`server/skill-detail-routes.mjs:28`）。
+//   `set`           `const X = new Set(['/x', …])`（`set:<变量名>`）
+//   `isPath`        `isXxxPath(pathname)` 返回式谓词（`isPath:<函数名>`）—— 是**认领关系**，不是新端点
+//   `startsWith`    `pathname.startsWith('/x')` —— 前缀，落 `prefixes` 而不是 `routes`
+import { stripComments, codeFiles } from './scan.mjs'
 
 /** 换行符常量（源码里写裸转义会被编辑链吃掉，这里显式构造） */
 const NL = String.fromCharCode(10)
@@ -171,13 +177,19 @@ function occurrencesOf(code, file, starts, out, isComment) {
   }
   const isPathOnly = (s) => s.startsWith('/')
 
-  // ① `pathname === '/x'`（`!==` 不是判定点，必须跳过）
+  // ① `pathname === '/x'` 与 `pathname !== '/x'` 两种判定点
   EQ_RE.lastIndex = 0
   let m
   while ((m = EQ_RE.exec(code))) {
-    if (m[2].startsWith('!')) continue
     if (!isPathOnly(m[3])) continue
-    push(m[3], 'eq', 'eq', m.index, guardWindow(code, m.index))
+    // ★ `!==` 早退守卫（`if (pathname !== '/x') return null`）是**认领该端点**，不是"跳过项"：
+    //   真形态 server/agents-routes.mjs:28 / server/disabled-routes.mjs:23 /
+    //   server/skill-detail-routes.mjs:28（三条 handler 的入口都是这个形态）。
+    //   早先把它 continue 掉，症状是这三条**既不在 routes、也不在 excluded** ——
+    //   直接违反 I4"每条字面量都有归宿"（审查 M1 实测：同形态探针文件加进去，路由数纹丝不动）。
+    //   归类仍走下面的统一流程（`/` 这类非端点会被 excludable 判为 root-path-check 进 excluded），
+    //   故这里不存在"第三条路"。form 记 `negated-guard`，让"守卫形态"在快照里可判。
+    push(m[3], m[2].startsWith('!') ? 'negated-guard' : 'eq', 'eq', m.index, guardWindow(code, m.index))
   }
   // ② `pathname.startsWith('/x')` —— 前缀 + 段匹配，落 prefixes（不是端点）
   STARTS_RE.lastIndex = 0
@@ -226,8 +238,10 @@ function occurrencesOf(code, file, starts, out, isComment) {
 /**
  * 提取 bridge HTTP 路由。
  * @param {{files?: string[], readTracked?: (file: string) => (string|null)}} p
- *   `files` 来自 `scan.mjs#trackedFiles`（已入库）；`readTracked` 按**相对路径**读该文件
- *   （调用方自行 bind root：`(f) => readTracked({ root, file: f })`）。
+ *   `files` 可**直接**传 `scan.mjs#trackedFiles`（含 test 文件与 `docs/*.md`）：本函数内部会再
+ *   过一遍 `codeFiles(files, { includeTests: false })`（**自筛**，见 I2）—— 接口对误用免疫，
+ *   调用方不必记得"先 codeFiles 再传进来"（历史 JSDoc 只说"来自 trackedFiles"，照做会自伤）。
+ *   `readTracked` 按**相对路径**读该文件（调用方自行 bind root：`(f) => readTracked({ root, file: f })`）。
  * @returns {{routes: Map<string, {forms:string[],file:string,line:number,hints:object[]}>,
  *            prefixes: Array<{prefix:string,children:string[],hints:object[],dynamic:object|null}>,
  *            excluded: Array<{literal:string,reason:string,file:string,line:number}>}}
@@ -235,10 +249,11 @@ function occurrencesOf(code, file, starts, out, isComment) {
 export function extractRoutes({ files = [], readTracked } = {}) {
   if (!Array.isArray(files)) throw new Error('extractRoutes: files 必须是数组（来自 scan.mjs#trackedFiles）')
   if (typeof readTracked !== 'function') throw new Error('extractRoutes: readTracked(file) 必须注入')
+  const scanFiles = codeFiles(files, { includeTests: false })   // ★ 自筛（I2）：接口对误用免疫
 
   const hits = []          // 全部形态命中点（含非端点）
   const sets = []          // 全局 Set 表（跨文件按变量名匹配 isPath 谓词）
-  for (const file of files) {
+  for (const file of scanFiles) {
     const text = readTracked(file)
     if (typeof text !== 'string') continue
     const code = stripComments(text)      // I3：注释先行剥掉，假路径不进任何集合

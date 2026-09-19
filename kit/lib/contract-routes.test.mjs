@@ -68,6 +68,33 @@ const MCP_ROUTES = [
   '',
 ].join('\n')
 
+// ★ `!==` 早退守卫 = **认领该端点**（真形态：`server/agents-routes.mjs:28`、
+//   `server/disabled-routes.mjs:23`、`server/skill-detail-routes.mjs:28` 三条都是
+//   `if (pathname !== '/x') return null`）。把 `!==` 一律跳过 ⇒ 这三条既不在 routes
+//   也不在 excluded（"每条字面量都有归宿"被违反，且报告里 100 条是漏抓后的数）。
+const NEG_GUARD_ROUTES = [
+  '/** `/agents` 的 GET（真形态 server/agents-routes.mjs）*/',
+  'export async function handleAgentsRoute(ctx) {',
+  '  const { method, pathname } = ctx || {}',
+  "  if (pathname !== '/agents') return null",
+  "  if (method !== 'GET') return null",     // ★ 主语是 method，不是 pathname ⇒ 不得当路径判定
+  '  return { status: 200, body: {} }',
+  '}',
+  '',
+  'export async function handleDisabledRoute(ctx) {',
+  '  const { pathname } = ctx || {}',
+  "  if (pathname !== '/disabled') return null",
+  '  return { status: 200, body: {} }',
+  '}',
+  '',
+  'export async function handleSkillDetailRoute(ctx) {',
+  '  const { pathname } = ctx || {}',
+  "  if (pathname !== '/skill-detail') return null",
+  '  return { status: 200, body: {} }',
+  '}',
+  '',
+].join('\n')
+
 const HOST_ROUTES = [
   "const FIXED_PATHS = new Set(['/health', '/boot-status'])",
   'export function isHostPath(pathname) {',
@@ -103,9 +130,12 @@ const WORKFLOW_ROUTES = [
 const BASE_FIXTURE = {
   'server/bridge.mjs': SET_IN_BRIDGE,
   'server/files-routes.mjs': FILES_ROUTES,
-  // 系统目录字面量（文件系统判定）与"名字里含系统目录名的端点"必须分开：
+  // ★ 系统目录字面量（文件系统判定）与"名字里含系统目录名的端点"必须分开：
   // `'/boot-status'.startsWith('/boot')` 为真 —— 裸前缀比对会把真端点误判成系统目录（实测踩过）
   'server/fs-guard.mjs': ["if (path === '/usr/bin') { deny() }", ''].join('\n'),
+  // ★ `!==` 早退守卫三形态（/agents /disabled /skill-detail）与"非端点的 `!==`"（根路径判定）
+  'server/neg-guard-routes.mjs': NEG_GUARD_ROUTES,
+  'server/root-neg-guard.mjs': ["if (pathname !== '/') return null", ''].join('\n'),
   // ★ stripComments 的已知边界：正则字面量里的撇号会开一个伪字符串 ⇒ **其后的注释整段留下**
   //   （真形态：server/bridge.mjs:1716 的注释在剥注释后仍在）。命中的 raw 行是注释时必须丢掉。
   'server/leaky.mjs': ["const re = /'/", "// if (pathname === '/from-comment') { hidden() }", 'export const x = re', ''].join('\n'),
@@ -279,14 +309,65 @@ test('isPath 谓词（返回式）= 认领关系，不是新端点：forms 里�
   assert.deepEqual([...new Set(t.hints.flatMap((h) => h.forms))].sort(), ['isPath:isHostPath', 'startsWith'])
 })
 
-test('真仓：路由集与排除清单都能复算（floor 而非精确条数 —— 在途改动会正常新增端点）', () => {
+test('★`!==` 早退守卫 = 认领该端点（真形态 /agents /disabled /skill-detail 三条）', () => {
+  const { out } = extract()
+  // 漏抓时的症状：这三条**既不在 routes 也不在 excluded**（违反"每条字面量都有归宿"）
+  for (const p of ['/agents', '/disabled', '/skill-detail']) {
+    assert.deepEqual(anyKeyWithPath(out.routes, p), [`ANY ${p}`],
+      `${p} 的 `!==` 早退守卫是认领关系，必须进 routes（实测 routes=${out.routes.size}）`)
+    assert.deepEqual(out.routes.get(`ANY ${p}`).forms, ['negated-guard'],
+      'form 必须标出守卫形态（与 `===` 的 eq 区分：形态是判据的一部分）')
+    assert.deepEqual(out.routes.get(`ANY ${p}`).hints.map((h) => h.file), ['server/neg-guard-routes.mjs'])
+    assert.equal(out.excluded.some((e) => e.literal === p), false, '认领关系不得同时落进 excluded')
+  }
+  // 反向：无方法约束的守卫 ⇒ ANY（`method !== 'GET'` 的主语是 method，不得当成路径判定）
+  assert.deepEqual([...out.routes.keys()].filter((k) => k.endsWith('/agents')), ['ANY /agents'])
+  // `!==` **不豁免**归类：非端点的 `!==` 仍必须进 excluded（没有"第三条路"）
+  const rootNeg = out.excluded.find((e) => e.file === 'server/root-neg-guard.mjs')
+  assert.ok(rootNeg, '`if (pathname !== \'/\') return null` 是绝对路径判定 ⇒ 必须进 excluded')
+  assert.match(rootNeg.reason, /^root-path-check/)
+  assert.deepEqual(anyKeyWithPath(out.routes, '/'), [])
+  // workflow-routes 的 `p !== '/workflows' && !p.startsWith('/workflows/')`：也是认领（/workflows 已是端点）
+  assert.deepEqual(out.routes.get('GET /workflows').forms, ['eq', 'negated-guard'])
+  assert.deepEqual(out.routes.get('POST /workflows').forms, ['eq', 'negated-guard'])
+})
+
+test('★接口对误用免疫：直接传 trackedFiles（含 test/.md）与传 codeFiles 结果**逐字相同**', () => {
+  // JSDoc 曾写"`files` 来自 trackedFiles"，但实际必须**先**过 `codeFiles(..., {includeTests:false})`：
+  // 照 JSDoc 传 raw 会多出 test 文件里的端点（假阳性）+ `docs/*.md` 噪声 ⇒ T9 接线自伤。
+  // 修法：自筛进提取器内部（接口对误用免疫），而不是靠调用方记得排序调用。
+  const raw = trackedFiles({ root: ROOT })
+  const filtered = codeFiles(raw, { includeTests: false })
+  assert.ok(raw.length > filtered.length, '夹具前提：raw 里确实有 test/.md 文件')
+  const read = (f) => readTracked({ root: ROOT, file: f })
+  const a = extractRoutes({ files: raw, readTracked: read })
+  const b = extractRoutes({ files: filtered, readTracked: read })
+  assert.deepEqual([...a.routes.keys()], [...b.routes.keys()], 'raw 传参不得多出（或少掉）任何路由')
+  assert.deepEqual(a.routes.size, b.routes.size)
+  assert.deepEqual(a.prefixes, b.prefixes)
+  assert.deepEqual(a.excluded, b.excluded, 'raw 传参不得让 docs/*.md 之类的噪声进 excluded')
+  // 点名两处曾经的自伤面：test 文件里的端点与文档路径
+  assert.equal(a.routes.has('ANY /workflows/verify'), false, 'server/*.test.mjs 里的路径不得进 routes（假阳性）')
+  assert.equal(a.excluded.some((e) => e.file.endsWith('.md')), false, '文档不是代码，不得进 excluded')
+})
+
+test('真仓：路由集**精确**复算（floor 会掩盖漏抓：审查 M1 就是同形态探针仍 100 条）', () => {
   const files = codeFiles(trackedFiles({ root: ROOT }), { includeTests: false })
   const out = extractRoutes({ files, readTracked: (f) => readTracked({ root: ROOT, file: f }) })
   // ★ 只钉两棵树都成立的端点（`/generate-title` 是在途加的，HEAD 上还没有）
   for (const k of ['ANY /list-dir', 'POST /write-file', 'ANY /health', 'ANY /drives', 'ANY /config', 'POST /session/anchor-applied']) {
     assert.ok(out.routes.has(k), `真仓必须有 ${k}（实测 keys=${out.routes.size}）`)
   }
-  assert.ok(out.routes.size >= 100, `路由总数应在百条量级（P1 计划记 ~105），实测 ${out.routes.size}`)
+  // ★★ 三条 `!==` 早退守卫（真形态 `server/agents-routes.mjs:28` / `disabled-routes.mjs:23` /
+  //    `skill-detail-routes.mjs:28`）：漏抓时它们**既不在 routes 也不在 excluded** —— 直接点名
+  for (const k of ['ANY /agents', 'ANY /disabled', 'ANY /skill-detail']) {
+    assert.ok(out.routes.has(k), `真仓必须有 ${k}（`!==` 早退守卫形态，实测 keys=${[...out.routes.keys()].filter((x) => /agents|disabled|skill-detail/.test(x)).join('|') || '无'}）`)
+    assert.deepEqual(out.routes.get(k).forms, ['negated-guard'], `${k} 的 form 必须标出守卫形态`)
+    assert.equal(out.excluded.some((e) => e.literal === k.slice('ANY '.length)), false, `${k} 是认领关系，不得同时出现在 excluded`)
+  }
+  // ★ 精确条数（**不是 floor**）：floor 恰好掩盖过上面三条的漏抓（M1 变异实测仍绿）。
+  //   真仓增删端点时必须**显式**改这一行 —— 那正是要人看一眼的时刻。
+  assert.equal(out.routes.size, 105, `路由总数必须精确等于 105（实测 ${out.routes.size}）；floor 口径会掩盖同形态漏抓`)
   for (const p of ['/transcript/', '/file-collab/', '/providers/', '/workflows/', '/knowledge', '/logs/']) {
     assert.ok(out.prefixes.some((x) => x.prefix === p), `真仓动态前缀 ${p} 必须单列`)
   }
