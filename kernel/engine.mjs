@@ -1950,6 +1950,10 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       if (!target) return { content: `任务不存在：${resumeTaskId}`, isError: true }
       if (target.status === 'running') return { content: `任务 ${resumeTaskId} 仍在运行中，无法续跑`, isError: true }
       if (!target.laneStore) return { content: `任务 ${resumeTaskId} 无可恢复的会话`, isError: true }
+      // 证据面接线（Task 3）：resume 也要让该 lane 的 transcript 可读——resume 是唯一
+      // 能再次触达既有 lane 的入口（spawn 分支的登记只覆盖新建 lane）。Set 去重，
+      // 同一 lane 反复 resume 无副作用。
+      tools.addReadAllowFiles([target.laneStore.file])
       if (!prompt) return { content: 'prompt 缺失：请说明续跑指令', isError: true }
       // 续跑：追加 user 消息到既有 lane（子循环 deriveMessages 起点 = 原历史 + 续跑指令）
       target.laneStore.appendUser(prompt)
@@ -2011,6 +2015,11 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     }
     wire.taskStarted({ taskId, toolUseId, prompt, parentTaskId: lineage.parentTaskId, depth: lineage.depth })
     const laneStore = createSessionStore({ configDir: opts.configDir, cwd: opts.addDirs?.[0] || '', sessionId: taskId })
+    // 证据面接线（Task 3）：lane transcript 纳入 Read 只读白名单——主 Agent 可据
+    // task_notification.transcript_path 用 Read offset/limit 精确展开子 Agent 过程，
+    // 不必让子 Agent 把细节"说"一遍（低带宽有损编码 → 无损引用）。
+    // 登记在 lane 落盘路径建立之后、开跑之前；resume 分支同样登记（见上）。
+    tools.addReadAllowFiles([laneStore.file])
     // B1 上下文继承档（2026-09-11）：none（默认，现状）| summary（压缩摘要 + 最近
     // 20 轮文本）| full（最近 200 条全量文本）。继承内容为纯文本投影（剥离
     // tool_use/tool_result 块，避免半截消息链破坏 API 合法性），先于任务指令入 lane。

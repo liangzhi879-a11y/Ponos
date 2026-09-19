@@ -736,6 +736,7 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
   // 两者放同一处才不会出现"边界有两份定义"的漂移。
   // 只读文件白名单（2026-09-11 渐进式披露）：会话 transcript 文件放行 Read——
   // 硬适配索引化后模型按行号展开历史细节；仅精确文件匹配，不放宽任何目录。
+  // 必须**保持 const**：run: 闭包捕获的是这个 Set 引用，追加条目即时可见（见 addReadAllowFiles）。
   const readAllowFilesSet = new Set((readAllowFiles || []).map((f) => resolve(String(f)).toLowerCase()))
   // P10-A：技能加载根 = 显式 skillsDirs（发现根，含默认 <configDir>/skills）优先，
   // 缺省回退 allowDirs——Skill 工具与提示词【可用技能】块同一数据源（cli 发现用同 roots）。
@@ -1587,6 +1588,18 @@ export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, 
     // （与构造参数 knowledgeReadDirs 等价，后设覆盖先设）。边界与 fail-closed 论证见函数
     // 开头"只读边界"块；**只影响只读侧**：Write/Edit/Bash 的边界在闭包里恒定，热注入改不到。
     setKnowledgeReadDirs(dirs) { knowledgeReadSources = dirs; applyKnowledgeReadDirs() },
+    // 跨 Agent 证据面（lane transcript 只读放行）：子 Agent 会话的落盘 transcript 由
+    // 内核自己构造路径（createSessionStore 的 file），**不是用户输入** ⇒ 不会因放行
+    // 而扩大攻击面；且只进 Read 白名单——Write / Edit / Bash / OCR 仍用 allowDirs，
+    // 子 Agent 会话文件对模型**只读**。与既有 readAllowFiles（主会话自身 transcript）
+    // 同性质，收口在同一片边界。
+    // 用追加而非替换：主会话 transcript 与多个 lane transcript 需同时可读，
+    // 且 Set 天然去重（resume 同一 lane 重复注册无副作用）。
+    addReadAllowFiles(files) {
+      for (const f of Array.isArray(files) ? files : []) {
+        if (f) readAllowFilesSet.add(resolve(String(f)).toLowerCase())
+      }
+    },
     // 执行入口：返回归一化 { content, isError }（成功路径可能缺省 isError）；
     // approval 决策由调用方（engine）先行。兜底铁律：任何工具实现抛异常
     // （含审批/hook 内部错误）都不得向上中断 turn——归一化为错误结果返回，

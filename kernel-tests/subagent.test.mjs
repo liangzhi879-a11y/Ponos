@@ -384,9 +384,9 @@ test('S3 outputs：子 agent Write 产物路径全部进 task_notification.outpu
 
 // ===== 跨 Agent 证据面（Task 1/2/3）=====
 // ---------------------------------------------------------------------------
-// 覆盖「跨 Agent 证据面」系列任务的用例：Task 1 = Edit 产物计入 outputs（已落地）；
-// Task 2（reads 采集与限量回传）、Task 3（lane transcript 可被 Read 展开）尚未落地，
-// 其用例将在各自任务中追加到本区块。
+// 覆盖「跨 Agent 证据面」系列任务的用例：Task 1 = Edit 产物计入 outputs；
+// Task 2 = reads 采集 + 产物/过程入口回传；Task 3 = lane transcript 可被 Read 展开。
+// 三个任务均已在下方落地（Task 3 用例同时守住"只放行精确文件、不放宽目录"）。
 // 为什么不另建 subagent-evidence.test.mjs：仓库门禁 doc-anchors-reproducible 会校验
 // docs/_anchors.json 中的 testFileCounts（kernel-tests/*.test.mjs 计数），新增测试文件
 // 即触发锚点失配；并入既有文件可零接触 docs/。
@@ -524,4 +524,34 @@ test('output_file 仍为"最后写入产物"，去重只作用于 outputs（Writ
     else process.env.PONOS_MOCK_WRITE_DIR = prev
     env.cleanup()
   }
+})
+
+test('lane transcript 可被主 Agent 用 Read 展开（落盘在会话目录之外）', async () => {
+  const env = makeEnvEvidence()
+  try {
+    const marker = '证据面可读性标记文本'
+    const r = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: marker, run_in_background: true },
+      { toolUseId: 'tool_use_ev_4' },
+    )
+    const taskId = extractTaskId(r.content)
+    assert.ok(taskId)
+    await env.waitNotif(taskId)
+    const lanePath = env.laneFile(taskId)
+    // 前置事实：该文件确实落在会话目录之外（否则本测试恒通过、测不出放行效果）
+    assert.ok(!lanePath.startsWith(env.workDir), 'lane transcript 必须在 addDirs 之外')
+    // 直调注册表里的 Read 条目。注意 registry 的形态是 { Read: { run(input) }, ... }
+    // （tools.mjs 的 Read.run: readFile(path, readAllowDirs, input, cwd, readCache, skipBoundary, readAllowFilesSet)），
+    // Read.run 只需 input、不需要 ctx。入口是 engine.tools.registry.Read——engine 暴露的
+    // tools 是 createToolRegistry 的**外层包装**（{ registry, toolNames, run, ... }），
+    // 工具条目挂在 registry 下（同既有先例 kernel-tests/read-memory-boundary.test.mjs:86）。
+    const rr = env.engine.tools.registry.Read.run({ file_path: lanePath })
+    assert.notEqual(rr.isError, true, `Read lane transcript 不应被边界拒绝：${String(rr.content).slice(0, 200)}`)
+    assert.match(String(rr.content), new RegExp(marker), 'Read 结果应含 lane 内的任务文本')
+    // 放行须是**逐文件精确匹配**、不是放宽目录：同目录（<configDir>/projects/<cwd>/）的
+    // 邻文件仍要被拒——否则"登记一条 lane 路径"就等于整棵 projects 树开读，那才是真的扩大化。
+    const sibling = join(env.configDir, 'projects', env.workDir.replace(/[^a-zA-Z0-9]/g, '-'), 'sibling-transcript.jsonl')
+    writeFileSync(sibling, '{"note":"非白名单邻文件"}\n', 'utf-8')
+    assert.equal(env.engine.tools.registry.Read.run({ file_path: sibling }).isError, true, '同目录邻文件不得因 lane 放行而可读')
+  } finally { env.cleanup() }
 })
