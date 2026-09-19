@@ -18,7 +18,7 @@ YFWorking 现状（全部实测，非推断）：
 | 面 | 已具备 | 缺口 |
 |---|---|---|
 | 规范 | `README.md`（源码自述，含 §8 的 17 条「注释↔代码不一致」清单）、`docs/architecture.md`(467 行)、`docs/bridge-contract.md`(456 行)、`docs/ci.md`(130 行)、`docs/_anchors.json` | 全是**散文**：AI 与人需读数万字才能判断是否合规，没有一条可被程序判定 |
-| 版本 | 4 条版本线 + 17 处版本常量 + 技能 3 套版本载体 | **`git tag` = 0 个**；四类载体互不校验；`skills-lock.json` 20/20 哈希不符 |
+| 版本 | 4 条版本线 + 20 处版本常量 + 技能 3 套版本载体 | **`git tag` = 0 个**；四类载体互不校验；`skills-lock.json` 20/20 哈希不符 |
 | 依赖 | npm 52 运行时 + 13 dev、内核零依赖、内嵌 Python 13 包、技能侧 requirements | 四域**零台账**：无来源/用途/未用判定/体积门禁 |
 | 测试 | **408** 个测试文件、3678 断言、`scripts/test-tiers.mjs` 为分层口径单一真源、`ci-preflight` 抓"零测试绿灯"、`perf-baseline` 性能门禁 | 11 个 `verify-*.mjs` **零挂载**；6 个构建/校验脚本无 npm script；无覆盖率 |
 | 设计资源 | `themes.css` 三主题、`tailwind.config.ts`、logo/icon 派生链、安装图 | **无机器可读 token 真源**（CSS 是真源、Tailwind 是手抄镜像）；派生资产无谱系 |
@@ -97,7 +97,7 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 | 分区 | 内容 | 实测现状 | 宿主 |
 |---|---|---|---|
 | `lines` | 四线：APP / KERNEL / GUI / KB-schema | `dev 3.0.0`、`dev 0.2`、`2.8.0`、schema 1 | `version.mjs:9,12,15`、`package.json:3` |
-| `contracts` | 14 处项目自有版本常量 | 实测 `git grep` 得 **17 处** `*_VERSION = ` 声明；其中 2 处为外部协议版本（`ANTHROPIC_VERSION`，不纳管）、1 处（`version.mjs` 的 `SCHEMA_VERSION`）归 `lines` → 余 **14 处**纳管 | `kernel/graph.mjs`、`kernel/knowledge-import.mjs`、`kernel/loop.mjs`、`kernel/mcp-http.mjs`、`kernel/session.mjs`、`kernel/team-store.mjs`、`kernel/workflow-dsl.mjs`、`server/workflow-store.mjs`、`shared/knowledge-core.mjs`、`shared/tag-registry.mjs`、`shared/team-crypto.mjs`、`shared/team-members.mjs`、`shared/team-source.mjs`、`electron/vault.cjs` |
+| `contracts` | 14 处项目自有版本常量 | 实测 `git grep` 得 **20 处** `*_VERSION = ` 声明（初稿写的"17 处"来自更窄的 grep 模式，2026-09-19 Task 3 实施时实测修正）；其中减 `ANTHROPIC_VERSION` ×2（外部协议版本，不纳管；该常量出现在 `electron/app-llm.cjs` 与 `electron/app-websearch.cjs` 两处）、`SUPERPOWERS_VERSION` ×1（上游技能资产，不纳管）、版本线已纳管 3 处（`version.mjs` 的 `APP_VERSION`/`KERNEL_VERSION`/`SCHEMA_VERSION`）→ 余 **14 处**纳管 | `kernel/graph.mjs`、`kernel/knowledge-import.mjs`、`kernel/loop.mjs`、`kernel/mcp-http.mjs`、`kernel/session.mjs`、`kernel/team-store.mjs`、`kernel/workflow-dsl.mjs`、`server/workflow-store.mjs`、`shared/knowledge-core.mjs`、`shared/tag-registry.mjs`、`shared/team-crypto.mjs`、`shared/team-members.mjs`、`shared/team-source.mjs`、`electron/vault.cjs` |
 | `skills` | 22 条技能版本（`skills.json` ↔ `SKILL.md` frontmatter） | **实测 22/22 一致（0 漂移）→ 好基线，纳入门禁即可** | `public/skills.json`、`public/sample-skills/*/SKILL.md` |
 | `skillsLock` | 20 条 sha256 | **实测 20/20 不符**（lock 记的是上游原文，本地已被 frontmatter/占位符改写）→ 按 D5 重定义为本地安装后哈希 | `skills-lock.json` |
 | `commonTools` | `_common` 下 Python 工具的版本 | **实测实有 98 个 `.py`，manifest 仅登记 9 条；且 98 个脚本中零个声明 `__version__`** | `public/sample-skills/_common/_common_manifest.json` |

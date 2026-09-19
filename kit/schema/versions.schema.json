@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DevKit versions ledger",
+  "type": "object",
+  "required": ["version", "lines", "contracts", "skills", "skillsLock", "commonTools"],
+  "properties": {
+    "version": { "const": 1 },
+    "generatedBy": { "type": "string" },
+    "exclude": { "type": "array", "items": { "type": "object", "required": ["file", "id", "reason"] } },
+    "history": {
+      "type": "object",
+      "required": ["baselineCount", "records"],
+      "properties": {
+        "baselineCount": { "type": "integer", "minimum": 0 },
+        "commonToolsBaseline": { "type": "integer", "minimum": 0 },
+        "records": {
+          "type": "array",
+          "items": { "type": "object", "required": ["key", "from", "to", "at"], "properties": {
+            "key": { "type": "string" }, "from": {}, "to": {}, "at": { "type": "string" }, "reason": { "type": "string" } } }
+        }
+      }
+    },
+    "lines": { "type": "array", "items": { "$ref": "#/$defs/entry" } },
+    "contracts": { "type": "array", "items": { "$ref": "#/$defs/entry" } },
+    "skills": { "type": "array", "items": { "type": "object", "required": ["id", "file"] } },
+    "skillsLock": { "type": "object", "required": ["source", "field", "ids"],
+      "properties": { "source": { "const": "skills-lock.json" }, "field": { "const": "computedHash" },
+        "ids": { "type": "array", "items": { "type": "string" } } } },
+    "commonTools": {
+      "type": "object",
+      "required": ["baseline", "entries"],
+      "properties": {
+        "baseline": { "type": "array", "items": { "type": "string" } },
+        "addedSinceBaseline": { "type": "array", "items": { "type": "string" } },
+        "entries": { "type": "array", "items": { "type": "object", "required": ["file", "versionSource"] } }
+      }
+    },
+    "channels": { "type": "object" }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": ["id", "value", "file", "locator"],
+      "properties": {
+        "id": { "type": "string" }, "value": {}, "valueType": { "type": "string" },
+        "file": { "type": "string" }, "line": { "type": "integer" },
+        "locator": { "type": "object", "required": ["kind"] },
+        "kind": { "type": "string" }, "note": { "type": "string" },
+        "migrationNote": { "type": "string" },
+        "consumers": { "type": "array", "items": { "type": "string" } },
+        "manual": { "type": "boolean" }
+      }
+    }
+  }
+}

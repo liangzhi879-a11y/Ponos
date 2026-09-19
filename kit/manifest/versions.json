@@ -1,0 +1,1015 @@
+{
+  "version": 1,
+  "generatedBy": "node kit/cli.mjs sync",
+  "_note": "本文件由 sync 生成骨架。人工只可编辑：exclude / note / consumers / migrationNote / manual 条目 / history。",
+  "exclude": [
+    {
+      "id": "ANTHROPIC_VERSION",
+      "file": "electron/app-llm.cjs",
+      "reason": "Anthropic Messages API 协议版本（外部标准），不参与本仓版本台账；另一调用点见 electron/app-websearch.cjs"
+    },
+    {
+      "id": "SUPERPOWERS_VERSION",
+      "file": "public/sample-skills/brainstorming/scripts/server.cjs",
+      "reason": "上游 superpowers 技能包自带脚本（技能资产，随技能同步整体更新），非本仓契约；其值还是函数调用 readSuperpowersVersion() 而非字面量"
+    }
+  ],
+  "history": {
+    "baselineCount": 0,
+    "commonToolsBaseline": 98,
+    "records": []
+  },
+  "lines": [
+    {
+      "id": "APP_VERSION",
+      "label": "Ponos 应用（turbo 内核版）",
+      "file": "version.mjs",
+      "locator": {
+        "kind": "const",
+        "name": "APP_VERSION"
+      },
+      "kind": "app-line",
+      "value": "dev 3.0.0",
+      "valueType": "string"
+    },
+    {
+      "id": "KERNEL_VERSION",
+      "label": "Ponos-Turbo 内核",
+      "file": "version.mjs",
+      "locator": {
+        "kind": "const",
+        "name": "KERNEL_VERSION"
+      },
+      "kind": "app-line",
+      "mirror": {
+        "file": "kernel/package.json",
+        "locator": {
+          "kind": "json",
+          "path": "version"
+        }
+      },
+      "value": "dev 0.2",
+      "valueType": "string",
+      "mirrorValue": "0.2.0"
+    },
+    {
+      "id": "GUI_VERSION",
+      "label": "GUI 发布线（Vite 注入 __APP_VERSION__）",
+      "file": "package.json",
+      "locator": {
+        "kind": "json",
+        "path": "version"
+      },
+      "kind": "app-line",
+      "value": "2.8.0",
+      "valueType": "string"
+    },
+    {
+      "id": "KB_SCHEMA_VERSION",
+      "label": "settings 文件 schema",
+      "file": "version.mjs",
+      "locator": {
+        "kind": "const",
+        "name": "SCHEMA_VERSION"
+      },
+      "kind": "data-schema",
+      "migrationNote": "settings 无 schemaVersion 的旧文件视为 v0，读取时沿迁移链升级（version.mjs:15）",
+      "value": 1,
+      "valueType": "number"
+    }
+  ],
+  "contracts": [
+    {
+      "id": "VAULT_VERSION",
+      "value": 1,
+      "valueType": "number",
+      "file": "electron/vault.cjs",
+      "line": 21,
+      "locator": {
+        "kind": "const",
+        "name": "VAULT_VERSION"
+      },
+      "kind": "contract"
+    },
+    {
+      "id": "GRAPH_VERSION",
+      "value": 1,
+      "valueType": "number",
+      "file": "kernel/graph.mjs",
+      "line": 28,
+      "locator": {
+        "kind": "const",
+        "name": "GRAPH_VERSION"
+      },
+      "kind": "contract"
+    },
+    {
+      "id": "LEDGER_VERSION",
+      "value": 1,
+      "valueType": "number",
+      "file": "kernel/knowledge-import.mjs",
+      "line": 42,
+      "locator": {
+        "kind": "const",
+        "name": "LEDGER_VERSION"
+      },
+      "kind": "data-schema",
+      "migrationNote": "导入台账版本，变更需可重放"
+    },
+    {
+      "id": "SCHEMA_VERSION",
+      "value": 1,
+      "valueType": "number",
+      "file": "kernel/loop.mjs",
+      "line": 14,
+      "locator": {
+        "kind": "const",
+        "name": "SCHEMA_VERSION"
+      },
+      "kind": "contract"
+    },
+    {
+      "id": "MCP_HTTP_PROTOCOL_VERSION",
+      "value": "2025-03-26",
+      "valueType": "string",
+      "file": "kernel/mcp-http.mjs",
+      "line": 22,
+      "locator": {
+        "kind": "const",
+        "name": "MCP_HTTP_PROTOCOL_VERSION"
+      },
+      "kind": "contract"
+    },
+    {
+      "id": "TRANSCRIPT_SCHEMA_VERSION",
+      "value": 1,
+      "valueType": "number",
+      "file": "kernel/session.mjs",
+      "line": 27,
+      "locator": {
+        "kind": "const",
+        "name": "TRANSCRIPT_SCHEMA_VERSION"
+      },
+      "kind": "data-schema",
+      "migrationNote": "会话转录格式，变更需兼容旧转录"
+    },
+    {
+      "id": "TEAM_CONFIG_VERSION",
+      "value": 1,
+      "valueType": "number",
+      "file": "kernel/team-store.mjs",
+      "line": 37,
+      "locator": {
+        "kind": "const",
+        "name": "TEAM_CONFIG_VERSION"
+      },
+      "kind": "contract"
+    },
+    {
+      "id": "DSL_VERSION",
+      "value": 2,
+      "valueType": "number",
+      "file": "kernel/workflow-dsl.mjs",
+      "line": 19,
+      "locator": {
+        "kind": "const",
+        "name": "DSL_VERSION"
+      },
+      "kind": "data-schema",
+      "migrationNote": "工作流 DSL，变更需迁移步骤"
+    },
+    {
+      "id": "SCHEMA_VERSION",
+      "value": 2,
+      "valueType": "number",
+      "file": "server/workflow-store.mjs",
+      "line": 10,
+      "locator": {
+        "kind": "const",
+        "name": "SCHEMA_VERSION"
+      },
+      "kind": "contract"
+    },
+    {
+      "id": "INDEX_VERSION",
+      "value": 4,
+      "valueType": "number",
+      "file": "shared/knowledge-core.mjs",
+      "line": 44,
+      "locator": {
+        "kind": "const",
+        "name": "INDEX_VERSION"
+      },
+      "kind": "data-schema",
+      "migrationNote": "索引版本变更必须提供重建链（kernel/knowledge-import.mjs 的 LEDGER_VERSION 配合）",
+      "consumers": [
+        "src/lib/knowledgeQuery.ts"
+      ]
+    },
+    {
+      "id": "TAG_REGISTRY_VERSION",
+      "value": 1,
+      "valueType": "number",
+      "file": "shared/tag-registry.mjs",
+      "line": 28,
+      "locator": {
+        "kind": "const",
+        "name": "TAG_REGISTRY_VERSION"
+      },
+      "kind": "contract"
+    },
+    {
+      "id": "ENVELOPE_VERSION",
+      "value": 1,
+      "valueType": "number",
+      "file": "shared/team-crypto.mjs",
+      "line": 37,
+      "locator": {
+        "kind": "const",
+        "name": "ENVELOPE_VERSION"
+      },
+      "kind": "contract"
+    },
+    {
+      "id": "MEMBER_LOG_VERSION",
+      "value": 1,
+      "valueType": "number",
+      "file": "shared/team-members.mjs",
+      "line": 20,
+      "locator": {
+        "kind": "const",
+        "name": "MEMBER_LOG_VERSION"
+      },
+      "kind": "contract"
+    },
+    {
+      "id": "TEAM_LAYOUT_VERSION",
+      "value": 2,
+      "valueType": "number",
+      "file": "shared/team-source.mjs",
+      "line": 54,
+      "locator": {
+        "kind": "const",
+        "name": "TEAM_LAYOUT_VERSION"
+      },
+      "kind": "data-schema",
+      "migrationNote": "团队库布局，变更需迁移步骤"
+    }
+  ],
+  "skills": [
+    {
+      "id": "gxtz-achievement-materials",
+      "value": "1.38.0",
+      "frontmatterVersion": "1.38.0",
+      "file": "public/sample-skills/gxtz-achievement-materials/SKILL.md"
+    },
+    {
+      "id": "gxtz-audit-verification",
+      "value": "1.10.0",
+      "frontmatterVersion": "1.10.0",
+      "file": "public/sample-skills/gxtz-audit-verification/SKILL.md"
+    },
+    {
+      "id": "gxtz-contract-review",
+      "value": "1.1.0",
+      "frontmatterVersion": "1.1.0",
+      "file": "public/sample-skills/gxtz-contract-review/SKILL.md"
+    },
+    {
+      "id": "gxtz-core-tables",
+      "value": "1.40.1",
+      "frontmatterVersion": "1.40.1",
+      "file": "public/sample-skills/gxtz-core-tables/SKILL.md"
+    },
+    {
+      "id": "gxtz-experience-sync",
+      "value": "1.4.0",
+      "frontmatterVersion": "1.4.0",
+      "file": "public/sample-skills/gxtz-experience-sync/SKILL.md"
+    },
+    {
+      "id": "gxtz-file-compressor",
+      "value": "1.0.0",
+      "frontmatterVersion": "1.0.0",
+      "file": "public/sample-skills/gxtz-file-compressor/SKILL.md"
+    },
+    {
+      "id": "gxtz-file-organizer",
+      "value": "1.0.0",
+      "frontmatterVersion": "1.0.0",
+      "file": "public/sample-skills/gxtz-file-organizer/SKILL.md"
+    },
+    {
+      "id": "gxtz-info-collector",
+      "value": "1.31.1",
+      "frontmatterVersion": "1.31.1",
+      "file": "public/sample-skills/gxtz-info-collector/SKILL.md"
+    },
+    {
+      "id": "gxtz-invoice-ps-matching",
+      "value": "1.11.0",
+      "frontmatterVersion": "1.11.0",
+      "file": "public/sample-skills/gxtz-invoice-ps-matching/SKILL.md"
+    },
+    {
+      "id": "gxtz-ip-materials",
+      "value": "1.25.0",
+      "frontmatterVersion": "1.25.0",
+      "file": "public/sample-skills/gxtz-ip-materials/SKILL.md"
+    },
+    {
+      "id": "gxtz-ip-tables",
+      "value": "1.40.1",
+      "frontmatterVersion": "1.40.1",
+      "file": "public/sample-skills/gxtz-ip-tables/SKILL.md"
+    },
+    {
+      "id": "gxtz-management-materials",
+      "value": "1.26.0",
+      "frontmatterVersion": "1.26.0",
+      "file": "public/sample-skills/gxtz-management-materials/SKILL.md"
+    },
+    {
+      "id": "gxtz-precision-refiner",
+      "value": "1.0.0",
+      "frontmatterVersion": "1.0.0",
+      "file": "public/sample-skills/gxtz-precision-refiner/SKILL.md"
+    },
+    {
+      "id": "gxtz-progress-manager",
+      "value": "1.0.0",
+      "frontmatterVersion": "1.0.0",
+      "file": "public/sample-skills/gxtz-progress-manager/SKILL.md"
+    },
+    {
+      "id": "gxtz-ps-materials",
+      "value": "1.33.0",
+      "frontmatterVersion": "1.33.0",
+      "file": "public/sample-skills/gxtz-ps-materials/SKILL.md"
+    },
+    {
+      "id": "gxtz-ps-tables",
+      "value": "1.40.1",
+      "frontmatterVersion": "1.40.1",
+      "file": "public/sample-skills/gxtz-ps-tables/SKILL.md"
+    },
+    {
+      "id": "gxtz-rd-report",
+      "value": "1.34.0",
+      "frontmatterVersion": "1.34.0",
+      "file": "public/sample-skills/gxtz-rd-report/SKILL.md"
+    },
+    {
+      "id": "gxtz-rd-tables",
+      "value": "1.40.1",
+      "frontmatterVersion": "1.40.1",
+      "file": "public/sample-skills/gxtz-rd-tables/SKILL.md"
+    },
+    {
+      "id": "gxtz-staff-materials",
+      "value": "1.27.0",
+      "frontmatterVersion": "1.27.0",
+      "file": "public/sample-skills/gxtz-staff-materials/SKILL.md"
+    },
+    {
+      "id": "gxtz-submission-packager",
+      "value": "1.1.0",
+      "frontmatterVersion": "1.1.0",
+      "file": "public/sample-skills/gxtz-submission-packager/SKILL.md"
+    },
+    {
+      "id": "gxtz-toai-tables",
+      "value": "1.40.1",
+      "frontmatterVersion": "1.40.1",
+      "file": "public/sample-skills/gxtz-toai-tables/SKILL.md"
+    },
+    {
+      "id": "gxtz-wecom-collector",
+      "value": "1.11.0",
+      "frontmatterVersion": "1.11.0",
+      "file": "public/sample-skills/gxtz-wecom-collector/SKILL.md"
+    }
+  ],
+  "skillsLock": {
+    "source": "skills-lock.json",
+    "field": "computedHash",
+    "ids": [
+      "brainstorming",
+      "context7",
+      "dispatching-parallel-agents",
+      "executing-plans",
+      "find-skills",
+      "finishing-a-development-branch",
+      "frontend-design",
+      "receiving-code-review",
+      "requesting-code-review",
+      "shadcn",
+      "subagent-driven-development",
+      "systematic-debugging",
+      "tailwindcss",
+      "test-driven-development",
+      "ui-ux-pro-max",
+      "using-git-worktrees",
+      "using-superpowers",
+      "verification-before-completion",
+      "writing-plans",
+      "writing-skills"
+    ]
+  },
+  "commonTools": {
+    "baseline": [
+      "_archive_clean.py",
+      "_finalize_macro_inject.py",
+      "_fix_config.py",
+      "_stats_session.py",
+      "_sync_macro.py",
+      "_sync_macro_finalize.py",
+      "_sync_pending_to_global.py",
+      "_sync_project_status.py",
+      "add_autonomous_confirmation.py",
+      "add_questioning_review.py",
+      "add_swarm_collaboration.py",
+      "archive_extractor.py",
+      "audit_report_verifier.py",
+      "check_dependencies.py",
+      "company_research_agent.py",
+      "compare_skill_versions.py",
+      "contract_invoice_extractor.py",
+      "contract_invoice_validator.py",
+      "convert_skills.py",
+      "cross_model_validator.py",
+      "detect_file_types.py",
+      "diagnose_pdf_pages.py",
+      "dify_workflow.py",
+      "doc_to_md.py",
+      "doc_toolkit.py",
+      "enterprise_info_search.py",
+      "extract_dates_amounts.py",
+      "file_compressor.py",
+      "file_content_classifier.py",
+      "file_lock.py",
+      "filing_mapper.py",
+      "generate_achievement_proofs.py",
+      "generate_approval_resolution.py",
+      "generate_checklist.py",
+      "generate_tables_from_template.py",
+      "inject_authoritative_terms.py",
+      "inject_cross_validation.py",
+      "inject_date_compliance.py",
+      "inject_no_watermark.py",
+      "inject_ocr_reference.py",
+      "inject_provenance_terms.py",
+      "inject_tech_stack.py",
+      "invoice_ps_matcher.py",
+      "knowledge_base.py",
+      "merge_version_history.py",
+      "naming_compliance.py",
+      "ocr_engine.py",
+      "onedrive_utils.py",
+      "output_version_manager.py",
+      "pack_interaction_v2.py",
+      "pack_skills_questioning_review.py",
+      "path_config.py",
+      "path_config_selftest.py",
+      "path_config_v2.py",
+      "pdf_splitter.py",
+      "policy_compliance.py",
+      "precision_refiner.py",
+      "progress_dashboard.py",
+      "progress_scanner.py",
+      "progress_sync.py",
+      "project_context_manager.py",
+      "provenance_manager.py",
+      "push_skills.py",
+      "rd_ip_ps_matching.py",
+      "rewrite_skill_md.py",
+      "safe_workspace.py",
+      "skill_orchestrator.py",
+      "submission_packager.py",
+      "supplement_materials.py",
+      "sync_common_tools.py",
+      "sync_gui.py",
+      "sync_gui_client.py",
+      "template_filler.py",
+      "template_injector.py",
+      "test_mixed_ocr.py",
+      "test_provenance_e2e.py",
+      "update_and_pack_v2.py",
+      "upgrade_interaction_v2.py",
+      "upgrade_versions.py",
+      "validate_achievement.py",
+      "validate_audit_verification.py",
+      "validate_contract-review.py",
+      "validate_info_collector.py",
+      "validate_invoice_ps.py",
+      "validate_ip.py",
+      "validate_management.py",
+      "validate_organizer.py",
+      "validate_ps.py",
+      "validate_rd_report.py",
+      "validate_staff.py",
+      "validate_submission.py",
+      "validate_tables.py",
+      "verify_authoritative_terms.py",
+      "version_bump_v2.py",
+      "wecom_crypto.py",
+      "wecom_crypto_selftest.py",
+      "wecom_query.py",
+      "year_compliance_checker.py"
+    ],
+    "addedSinceBaseline": [],
+    "entries": [
+      {
+        "file": "public/sample-skills/_common/_archive_clean.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/_finalize_macro_inject.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/_fix_config.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/_stats_session.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/_sync_macro.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/_sync_macro_finalize.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/_sync_pending_to_global.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/_sync_project_status.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/add_autonomous_confirmation.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/add_questioning_review.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/add_swarm_collaboration.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/archive_extractor.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/audit_report_verifier.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/check_dependencies.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/company_research_agent.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/compare_skill_versions.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/contract_invoice_extractor.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/contract_invoice_validator.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/convert_skills.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/cross_model_validator.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/detect_file_types.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/diagnose_pdf_pages.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/dify_workflow.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/doc_to_md.py",
+        "version": "1.2.0",
+        "versionSource": "manifest"
+      },
+      {
+        "file": "public/sample-skills/_common/doc_toolkit.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/enterprise_info_search.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/extract_dates_amounts.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/file_compressor.py",
+        "version": "2.1",
+        "versionSource": "manifest"
+      },
+      {
+        "file": "public/sample-skills/_common/file_content_classifier.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/file_lock.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/filing_mapper.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/generate_achievement_proofs.py",
+        "version": "1.2.0",
+        "versionSource": "manifest"
+      },
+      {
+        "file": "public/sample-skills/_common/generate_approval_resolution.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/generate_checklist.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/generate_tables_from_template.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/inject_authoritative_terms.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/inject_cross_validation.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/inject_date_compliance.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/inject_no_watermark.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/inject_ocr_reference.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/inject_provenance_terms.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/inject_tech_stack.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/invoice_ps_matcher.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/knowledge_base.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/merge_version_history.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/naming_compliance.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/ocr_engine.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/onedrive_utils.py",
+        "version": "1.0.0",
+        "versionSource": "manifest"
+      },
+      {
+        "file": "public/sample-skills/_common/output_version_manager.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/pack_interaction_v2.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/pack_skills_questioning_review.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/path_config.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/path_config_selftest.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/path_config_v2.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/pdf_splitter.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/policy_compliance.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/precision_refiner.py",
+        "version": "1.0.0",
+        "versionSource": "manifest"
+      },
+      {
+        "file": "public/sample-skills/_common/progress_dashboard.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/progress_scanner.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/progress_sync.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/project_context_manager.py",
+        "version": "1.0.0",
+        "versionSource": "manifest"
+      },
+      {
+        "file": "public/sample-skills/_common/provenance_manager.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/push_skills.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/rd_ip_ps_matching.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/rewrite_skill_md.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/safe_workspace.py",
+        "version": "1.0.0",
+        "versionSource": "manifest"
+      },
+      {
+        "file": "public/sample-skills/_common/skill_orchestrator.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/submission_packager.py",
+        "version": "1.0.0",
+        "versionSource": "manifest"
+      },
+      {
+        "file": "public/sample-skills/_common/supplement_materials.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/sync_common_tools.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/sync_gui.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/sync_gui_client.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/template_filler.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/template_injector.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/test_mixed_ocr.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/test_provenance_e2e.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/update_and_pack_v2.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/upgrade_interaction_v2.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/upgrade_versions.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/validate_achievement.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/validate_audit_verification.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/validate_contract-review.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/validate_info_collector.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/validate_invoice_ps.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/validate_ip.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/validate_management.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/validate_organizer.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/validate_ps.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/validate_rd_report.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/validate_staff.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/validate_submission.py",
+        "version": "1.0.0",
+        "versionSource": "manifest"
+      },
+      {
+        "file": "public/sample-skills/_common/validate_tables.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/verify_authoritative_terms.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/version_bump_v2.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/wecom_crypto.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/wecom_crypto_selftest.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/wecom_query.py",
+        "version": null,
+        "versionSource": "unmarked"
+      },
+      {
+        "file": "public/sample-skills/_common/year_compliance_checker.py",
+        "version": null,
+        "versionSource": "unmarked"
+      }
+    ]
+  },
+  "channels": {}
+}
