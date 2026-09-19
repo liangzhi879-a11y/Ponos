@@ -386,14 +386,6 @@
           "status": "used"
         },
         {
-          "name": "@tanstack/react-virtual",
-          "evidence": {
-            "classes": [],
-            "files": []
-          },
-          "status": "unused"
-        },
-        {
           "name": "@xyflow/react",
           "evidence": {
             "classes": [
