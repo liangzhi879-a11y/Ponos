@@ -6,9 +6,11 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { runVersionRules } from './version-rules.mjs'
+import { readVersions } from './ledger.mjs'
 
 /** 造一个"最小但结构完整"的仓：能同时喂给 V1–V8′ */
 function fixture(over = {}) {
@@ -114,6 +116,54 @@ test('V6 反例：SKILL.md 与 skills.json 不一致 → 红', () => {
   writeFileSync(join(root, 'public/sample-skills/demo/SKILL.md'), '---\nname: demo\nversion: "1.1.0"\n---\n\n正文\n')
   const { findings } = runVersionRules({ root, versions, files })
   assert.equal(redOf(findings, 'V6').length, 1)
+})
+
+// ── Task 8 / B1：V6 必须真的是**三方**一致（台账侧也被核） ────────────────────
+//
+// 背景：标题原写"技能版本三方一致"，但实现只比了 skills.json ↔ frontmatter 两方 ——
+// 台账 `skills[].value` / `frontmatterVersion` 被手改成任意值无人报红，而 --verbose
+// 会把"三方一致"这句话直接打给操作者（= 报告对外说假话）。spec §5.3 的 V6 返工项
+// 明确要求补上"台账值必须能被源文件复算出来"（与 V1 同族）。
+test('★V6 反例：台账 skills[].value 被手改成 9.9.9 → 红（第三"方"就是台账）', () => {
+  const { root, files, versions } = fixture()
+  const v = { ...versions, skills: versions.skills.map((s) => ({ ...s, value: '9.9.9' })) }
+  const { findings, checks } = runVersionRules({ root, versions: v, files })
+  const hits = redOf(findings, 'V6')
+  assert.equal(hits.length, 1, '台账值与源文件不一致必须红 —— 否则"三方一致"是假话')
+  assert.equal(hits[0].subject, 'demo')
+  assert.equal(hits[0].actual, '1.0.0', 'actual 应给出源文件（可复算的真值），expected 给出台账值')
+  assert.equal(hits[0].expected, '9.9.9')
+  assert.match(hits[0].hint, /value/, 'hint 必须点名是台账哪个字段漂了')
+  // 标题与判据必须一致：标题写三方，就得真的核三方
+  assert.match(checks.find((c) => c.rule === 'V6').title, /三方/)
+})
+
+test('★V6 反例：台账 skills[].frontmatterVersion（源文件的存根副本）被改成 9.9.9 → 红', () => {
+  const { root, files, versions } = fixture()
+  const v = { ...versions, skills: versions.skills.map((s) => ({ ...s, frontmatterVersion: '9.9.9' })) }
+  const { findings } = runVersionRules({ root, versions: v, files })
+  assert.equal(redOf(findings, 'V6').length, 1, '台账里的存根副本同样必须能被源文件复算（V1 同族口径）')
+})
+
+test('★V6 反向：台账值 == 源文件 → 无红（补三方比对不得把正常台账判成红）', () => {
+  const { root, files, versions } = fixture()
+  const { findings } = runVersionRules({ root, versions, files })
+  assert.deepEqual(redOf(findings, 'V6'), [])
+})
+
+// ── Task 8 / B1：真仓实测（22 条技能三处一致；改坏台账值必然红） ──────────────
+test('★V6 真仓：22 条技能在 台账 / skills.json / frontmatter 三处一致，改坏台账值即红', () => {
+  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
+  const versions = readVersions({ root: ROOT })
+  const base = runVersionRules({ root: ROOT, versions })
+  const v6 = base.checks.find((c) => c.rule === 'V6')
+  assert.equal(v6.evaluated, 22, '技能数变了就同步改这条（数字本身就是"V6 真在判"的证据）')
+  assert.deepEqual(base.findings.filter((f) => f.rule === 'V6'), [])
+  // 内存副本上改坏，不写盘：真仓第一条技能的台账值 → 9.9.9 必须报红
+  const tampered = { ...versions, skills: versions.skills.map((s, i) => (i === 0 ? { ...s, value: '9.9.9' } : s)) }
+  const hits = runVersionRules({ root: ROOT, versions: tampered }).findings.filter((f) => f.rule === 'V6')
+  assert.equal(hits.length, 1)
+  assert.equal(hits[0].subject, versions.skills[0].id)
 })
 
 // V7 反例（本次真实欠账 A7）：lock 哈希不符

@@ -43,6 +43,13 @@ export function runDepRules({ root, deps, ghost, pkg, packagePath = 'package.jso
   }
   const checks = []
   const findings = []
+  // ★ 2026-09-19 Task 8（B2）：P0 也进 checks，且**无条件** push（台账在就 passed=true）。
+  //   原先这里只 push finding 就 return → `summary.rules` 报 18 而实现里有 19 个规则号
+  //   （V1,V1b,V2–V8,V8b,V8′,P0–P7），且 `--verbose` 的"规则逐条"表里永远看不到 P0 ——
+  //   而 --verbose 的全部价值就是"让哪条规则真的跑过、evaluated 是多少"可见。
+  //   若只在"台账缺失"分支 push，正常仓的 rules 仍是 18（P0 与 P1–P7 互斥）→ 计数依旧对不上，
+  //   所以必须是**无条件**的一条 checkResult。
+  checks.push(checkResult({ rule: 'P0', title: '依赖台账文件存在（kit/manifest/deps.json）', evaluated: 1, passed: deps != null }))
   if (!deps) {
     // P0：台账文件本身缺失。它是"另一条判据轴"（文件在不在），故单列规则号而非并入 P1（见文件头注释）。
     findings.push(finding({ rule: 'P0', severity: RED, subject: 'deps.json', hint: '跑 npm run kit:sync 生成台账' }))

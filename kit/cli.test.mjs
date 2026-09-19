@@ -92,6 +92,25 @@ test('check --verbose 逐条列出每条规则的判定结果（--verbose 必须
   assert.ok(verbose.stdout.length > plain.stdout.length, '--verbose 的输出必须严格多于默认输出')
 })
 
+// ── Task 8 / B2 + B3：规则条数口径（规则号数）必须与实现一致 ────────────────
+//
+// 背景：`summary.rules` 原先报 18，而实现里有 19 个规则号 —— 差的那一个是 P0
+// （deps.json 缺失时早退，只 push finding 不 push checkResult）。三处口径并存
+// （spec §5.3 表 9 行 + §6.3 表 8 行 = 17、报告 18、实现 19）→ 报告与实现必须对齐，
+// 口径写进 spec（§5.3/§6.3 的"规则号数"一节）。
+const EXPECTED_RULES = ['P0', 'P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7',
+  'V1', 'V1b', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', "V8'", 'V8b']
+
+test('★B2/B3：summary.rules = 19，且逐条规则号与 spec 口径完全一致（含表外 V1b/V8b/ P0）', () => {
+  const j = JSON.parse(run(['check', '--json']).stdout)
+  assert.deepEqual([...j.checks.map((c) => c.rule)].sort(), [...EXPECTED_RULES].sort(),
+    '规则号集必须逐字对齐：多一个（自造号）或少一个（早退没 push）都要在这里变红')
+  assert.equal(j.summary.rules, 19)
+  assert.equal(new Set(j.checks.map((c) => c.rule)).size, 19, '同一个规则号不得重复计入')
+  // V6 的标题必须与判据同口径（标题写三方 → 就得真核三方，见 kit/lib/version-rules.mjs）
+  assert.match(j.checks.find((c) => c.rule === 'V6').title, /三方/)
+})
+
 test('未知子命令 → 非 0 退出且给出用法；无参数 → 只给用法（不允许静默忽略）', () => {
   const bad = run(['nope'])
   assert.notEqual(bad.code, 0)
@@ -154,6 +173,11 @@ test('夹具仓无台账：check 退 1（P0/V0 红），绝不因"读不到台�
   assert.ok(j.findings.some((f) => f.rule === 'P0' && f.severity === 'red'), '缺 deps.json 必须是红灯')
   assert.ok(j.findings.some((f) => f.rule === 'V0'), '缺 versions.json 必须是红灯')
   assert.equal(j.ok, false)
+  // ★ B2：P0 必须也进 checks。两条台账都缺时，唯一可判定的规则就是 P0 ——
+  //   若 rules 为 0，说明 P0 又退回了"只 push finding"（--verbose 里也会缺这一格）。
+  assert.deepEqual(j.checks.map((x) => x.rule), ['P0'])
+  assert.equal(j.checks[0].passed, false)
+  assert.equal(j.summary.rules, 1)
 })
 
 // ★ Rider 2：宿主删掉声明却不重跑 sync → 旧判据（P1/P2 只读台账）一条红都不报。

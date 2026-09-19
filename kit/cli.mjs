@@ -11,6 +11,9 @@
 //   · Rider 1：ghost 只能由 `ledger.computeGhost` 算（sync/check 共用一份判据）。
 //     计划原文另写的 `ghostOf()` 在真仓会多报 `~` 与 `jszip` 两条假幽灵（ghost 4→6），
 //     与 docs/待处理清单.md 记的"4 条"对不上，也会让 P2 的红灯数报错。
+//     ★ Task 8 更正：Task 7 的提交信息曾把这里写成"P2 涨到 **15** 条"——**那是错的**。
+//       实测按计划原文（**带** builtins 过滤）是 **6** 条（多报 `~`、`jszip`），与上面"4→6"一致；
+//       "15"只在**去掉** builtins 过滤时才会出现。**以后不要引用"15"这个数字。**
 //   · Rider 3：`runDepRules` 的 ghost 是必传参数（缺省抛错），所以这里的 collect() 必须
 //     真的算出来 —— 漏了不会"静默全绿"，会直接炸。
 import { resolve, dirname } from 'node:path'

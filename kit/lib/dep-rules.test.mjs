@@ -253,7 +253,26 @@ test('★Rider4-③ P0：deps.json 缺失 → 红（人话提示重跑 kit:sync�
   assert.deepEqual(findings.map((f) => f.rule), ['P0'])
   assert.equal(findings[0].severity, 'red')
   assert.match(findings[0].hint, /kit:sync/)
-  assert.deepEqual(checks, [], '台账都不在，其余规则没有可判定的对象')
+  // ★ Task 8 / B2：P0 必须也 push checkResult。原先早退只 push finding →
+  //   summary.rules 报 18 而实现有 19 个规则号，且 --verbose 的逐条表里**看不到 P0**
+  //   （"哪条规则真的跑过"在报告里缺一块，正是 --verbose 存在的理由）。
+  assert.equal(checks.length, 1, '台账缺失时唯一可判定的规则就是 P0 —— 它必须出现在 checks 里')
+  assert.equal(checks[0].rule, 'P0')
+  assert.equal(checks[0].passed, false, '台账不在 → P0 未通过（红线与 checks 两处必须同口径）')
+  assert.equal(checks[0].evaluated, 1)
+})
+
+test('★B2：台账在时 P0 同样进 checks（passed=true）—— 否则正常仓 rules 仍是 18', () => {
+  // 若 P0 只在"台账缺失"分支里 push，两个分支互斥 → 正常仓永远少一个规则号，
+  // 报告与实现依旧两套口径。这条断言钉住"无条件 push"。
+  const { checks, findings } = rules({})
+  assert.deepEqual(findings.filter((f) => f.rule === 'P0'), [])
+  const p0 = checks.filter((c) => c.rule === 'P0')
+  assert.equal(p0.length, 1)
+  assert.equal(p0[0].passed, true)
+  assert.equal(p0[0].evaluated, 1)
+  assert.deepEqual(checks.map((c) => c.rule), ['P0', 'P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7'],
+    '依赖侧 8 条规则号一条都不能少')
 })
 
 // ── Rider 4-②：P6 标题与判据对齐（旧判据 `keys.length > 0` 漏记两项也照样通过） ──────

@@ -114,6 +114,10 @@ export function runVersionRules({ root, versions, files } = {}) {
   checks.push(checkResult({ rule: 'V5', title: 'data-schema 条目有迁移说明', evaluated: schemaEntries.length, passed: v5.length === 0 }))
 
   // ── V6：技能三方一致（skills.json ↔ frontmatter ↔ 台账） ───────────────
+  // ★ 2026-09-19 Task 8（B1）：标题原先就写"三方一致"而实现只比两方（skills.json ↔ frontmatter），
+  //   台账 `skills[].value` / `frontmatterVersion` 被手改成任意值无人报红 —— 而 --verbose 会把
+  //   "三方一致"直接打给操作者（报告对外说假话）。spec §5.3 的 V6 返工项要求补上
+  //   "台账值必须能被源文件复算出来"（与 V1 同族）。现补齐：三方全比对，标题才名副其实。
   const skillsJson = readJson({ root, rel: SKILLS_JSON, fallback: [] }) || []
   const jsonVer = new Map(skillsJson.map((s) => [s.id, s.version]))
   let v6 = 0
@@ -122,9 +126,25 @@ export function runVersionRules({ root, versions, files } = {}) {
     const fm = readSkillFrontmatterVersion({ root, file })
     const j = jsonVer.get(s.id)
     if (fm === null) { v6++; findings.push(finding({ rule: 'V6', severity: RED, subject: s.id, file, hint: 'SKILL.md 缺 version frontmatter' })); continue }
-    if (String(fm) !== String(j)) { v6++; findings.push(finding({ rule: 'V6', severity: RED, subject: s.id, file, expected: String(j), actual: String(fm), hint: 'public/skills.json 与 SKILL.md 版本不一致' })) }
+    if (String(fm) !== String(j)) { v6++; findings.push(finding({ rule: 'V6', severity: RED, subject: s.id, file, expected: String(j), actual: String(fm), hint: 'public/skills.json 与 SKILL.md 版本不一致' })); continue }
+    // 第三方：台账里存的 skill 值 / frontmatter 副本，都必须等于**源文件复算出来的真值**。
+    // 与 V1 同族口径（check 回读宿主文件，绝不信任台账里的值），否则台账可被静默改写。
+    const drifted = []
+    if (String(s.value) !== String(fm)) drifted.push({ field: 'value', value: String(s.value) })
+    if (s.frontmatterVersion !== undefined && String(s.frontmatterVersion) !== String(fm)) {
+      drifted.push({ field: 'frontmatterVersion', value: String(s.frontmatterVersion) })
+    }
+    if (drifted.length) {
+      v6++
+      // 单字段漂移时 expected 就是台账值（与 V1 的 `expected=台账值 / actual=宿主解析值` 同形）；
+      // 两字段同时漂移才带上字段名，否则读者分不清是哪一个字段。
+      findings.push(finding({ rule: 'V6', severity: RED, subject: s.id, file,
+        expected: drifted.length === 1 ? drifted[0].value : drifted.map((d) => `${d.field}=${d.value}`).join(' / '),
+        actual: String(fm),
+        hint: `台账 skills 分区的 ${drifted.map((d) => d.field).join(' / ')} 与源文件不一致：台账值必须能被源文件复算出来，跑 kit:sync 重建（不要手改台账）` }))
+    }
   }
-  checks.push(checkResult({ rule: 'V6', title: '技能版本三方一致', evaluated: (versions.skills || []).length, passed: v6 === 0 }))
+  checks.push(checkResult({ rule: 'V6', title: '技能版本三方一致（skills.json ↔ SKILL.md ↔ 台账）', evaluated: (versions.skills || []).length, passed: v6 === 0 }))
 
   // ── V7：skills-lock 哈希（D5：lock 记录"本地安装后"哈希） ────────────────
   // ★ 判据是**已提交的 lock 文件**（skills-lock.json），不是台账里存的值。
