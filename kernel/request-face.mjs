@@ -143,18 +143,45 @@ export function patchOrphanToolUses(msgs) {
   //（Anthropic API 硬约束"tool_result blocks immediately after"）。旧实现补在
   // 数组末尾——崩溃残留的历史中段孤儿补不上，818 条消息处直接 400。
   // 按位置从后往前插入，索引不受前面插入影响。
-  const entries = [...unpaired.values()].sort((a, b) => b.outIdx - a.outIdx)
+  //
+  // 2026-09-19 修复：上面那条约束是**消息级**的——"该 assistant 消息里的**全部** tool_use
+  // 都要被紧邻的下一条消息回答"，不是"每个 tool_use 各有一条结果紧随其后"。旧实现逐个
+  // 孤儿插一条独立 user 消息（且倒序），于是并行批次 assistant(use0,use1) 补成
+  // assistant → user(→use1) → user(→use0)：use0 的结果被挤到第二位，API 继续 400
+  //（报错点名的正是 call_00）。实况：`~/.yfw/.../37e6fd11-*.jsonl` 的 seq=16 有两个
+  // tool_use，App 里"重启该会话"仍 400——因为**每次重试都重新补成这个非法形状**。
+  // 故：按 assistant 消息分组，一组**只产出/只并入一条** user 消息，块序与 tool_use 一致。
+  const byMsg = new Map() // outIdx → block[]（Map 插入序 = tool_use 原顺序）
+  for (const { block, outIdx } of unpaired.values()) {
+    const arr = byMsg.get(outIdx)
+    if (arr) arr.push(block)
+    else byMsg.set(outIdx, [block])
+  }
+  const synth = (block) => ({
+    type: 'tool_result',
+    tool_use_id: block.id,
+    content: '（该工具调用因上下文压缩/恢复丢失，未执行，标记为错误）',
+    is_error: true,
+  })
   const result = [...out]
-  for (const { block, outIdx } of entries) {
-    result.splice(outIdx + 1, 0, {
-      role: 'user',
-      content: [{
-        type: 'tool_result',
-        tool_use_id: block.id,
-        content: '（该工具调用因上下文压缩/恢复丢失，未执行，标记为错误）',
-        is_error: true,
-      }],
-    })
+  for (const [outIdx, blocks] of [...byMsg].sort((a, b) => b[0] - a[0])) {
+    const next = result[outIdx + 1]
+    const nextHasResult = Array.isArray(next?.content) && next.content.some((b) => b?.type === 'tool_result')
+    if (next?.role === 'user' && nextHasResult) {
+      // 残缺批次（同一批 tool_use 只落了一部分结果）：紧邻的下一条已经带着这批的一部分
+      // 结果，另插一条会把它们挤到第二位——犯的是同一条"immediately after"约束。只能
+      // 并入同一条消息（结果块排在前：同一消息里 tool_result 必须先于 text）。这是唯一
+      // 需要换掉既有对象的路径；换出来的是新对象，下面那条 insert 路径**不动任何既有
+      // 对象**（session.seqsForMessages 靠对象引用反查 seq，替换会让压缩遮蔽区间反查失败）。
+      const content = Array.isArray(next.content)
+        ? [...blocks.map(synth), ...next.content]
+        : [...blocks.map(synth), { type: 'text', text: String(next.content ?? '') }]
+      result[outIdx + 1] = { ...next, content }
+    } else {
+      // 其余情形（无下一条的尾部孤儿 / 下一条是 assistant / 下一条是纯文本用户消息，
+      // 例如用户抢在工具跑完前发的"继续"）：插一条新的，不影响任何既有消息。
+      result.splice(outIdx + 1, 0, { role: 'user', content: blocks.map(synth) })
+    }
   }
   return result
 }
