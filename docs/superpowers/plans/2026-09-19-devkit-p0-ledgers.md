@@ -2222,7 +2222,8 @@ git commit -m "feat(kit): 依赖台账 sync（五类引用证据）
 
 **Interfaces:**
 - Consumes: Task 1/5；Task 2 的 `finding` / `checkResult` / `RED` / `YELLOW`
-- Produces: `runDepRules({ root, deps, files? }): { checks, findings }`，规则 id `P1`–`P6`
+- Produces: `runDepRules({ root, deps, ghost, pkg? }): { checks, findings }`，规则 id `P0`、`P1`–`P7`
+  （★ Task 7 收口后的真实契约：`ghost` **必传**——缺省抛错，禁止 fail-open；原契约里的 `files?` 从未被使用，已删）
 
 - [ ] **Step 1: 写失败测试**
 
@@ -2409,9 +2410,39 @@ git commit -m "feat(kit): 依赖校验规则 P1–P6
 
 ## Task 7: `kit/cli.mjs` 装配（check / sync / view / stamp）
 
+**★ 本任务的两项 rider（Task 6 交付时实测发现，必须在本任务内收口，不得绕过）**
+
+**Rider 1 —— 必须改用 `computeGhost`，不要用计划原文的 `ghostOf`**
+Task 6 实测：计划里设计的 `ghostOf` 会**多报 2 条假幽灵**（`~` 与 `jszip`），真仓 ghost 从 4 条虚增到 6 条 → 会直接把 P2 的红灯数报错，并让"4 条幽灵"这个已记入 `docs/待处理清单.md` 的事实与门禁输出对不上。
+→ 改调 Task 6 已导出的 **`computeGhost({root, files, declared, probes})`**（sync 与 check 共用，避免两处实现漂移）。接线后必须实测真仓 ghost **恰为 4 条**，且与 `docs/待处理清单.md` 记录一致。
+
+**Rider 2 —— 必须补规则 P7（台账包集 ↔ `package.json` 包集，双向）**
+Task 6 实测暴露一个真缺口：宿主从 `package.json` **删掉依赖声明**而不重跑 `sync` → **P1/P2 都不报红**（这两条规则只读台账，不回读 `package.json`）。
+这不是理论风险：**Task 10 的任务就是删掉 10 个依赖**。若门禁只读台账，"删了却忘 sync"将完全不被发现，`deps.json` 会与实际长期脱节 —— 违反 I1（单一真源）。
+→ 新增 **P7**：
+- 台账声明的包（`domains[*].packages[].name`）**必须**在 `package.json` 的 `dependencies`/`devDependencies`/`optionalDependencies` 里出现（少一个 = 台账陈旧 → 红，提示"重跑 `npm run kit:sync`"）；
+- 反向：`package.json` 里声明了但台账没有的包 → 红（说明漏登记）。
+- 判据必须**双向**（两个方向各自有反例测试）；`peerDependencies` 是否纳入由实测决定并写明理由。
+→ 同时补测试：① 从 `package.json` 删一个包 → P7 红；② 往 `package.json` 加一个包 → P7 红；③ 台账与 `package.json` 一致 → P7 绿。
+
+**Rider 3 —— `ghost` 参数必须改成"必传或内部推导"（现在是 fail-open）**
+Task 6 审查实测：`kit/lib/dep-rules.mjs:4` 的 `ghost = []` 是**失败开放**默认值，且 `dep-rules.test.mjs:174` 把"不传 ghost → P2 全绿"钉成了断言 —— 这意味着 **Task 7 若忘了接线，P2 会静默全绿**（门禁失效却看不出来）。
+→ 改为**必传**（缺省时抛错，或内部直接用 `computeGhost` 推导）。同时 `files` 入参在 brief 里写明却未被使用 —— 一并修正接口（要么用上，要么从契约里删掉）。
+→ 补测试：不传 `ghost` 时必须**报错/报红**，而不是全绿。
+
+**Rider 4 —— 顺带收口的低危项（Task 6 审查列出的其余几条）**
+- `kit/lib/ledger.mjs` 的 R2 分支扫的是内部 cache 的 `idx.values()` 而非入参 `files` → 结论依赖 cache 覆盖面。实测 `collectEvidence({files:['tsconfig.json'], dep:'@types/react'})`（无 cache）得 `[]`，带含 `src/a.tsx` 的 cache 才得 `["types"]`。→ 改成扫 `files`，或把该约束明确写进契约。
+- `kit/lib/dep-rules.mjs:63` P6 标题写"四域体积已记账"但只核 3 键、通过条件仅 `keys.length > 0` → 标题与判据对齐（要么核 4 键，要么改标题）。
+- `kit/lib/dep-rules.mjs:8-11` 的 `P0` 分支（`deps.json` 缺失）**无测试**，且 `P0` 不在 spec 的 P1–P6 集合内 → 补测试并把 P0 写进 spec 的规则表（或并入 P1）。
+
+**★ 交付顺序硬约束（Task 6 审查提出）：Task 10 必须排在 Task 7 之后**
+理由：P1/P2 只读台账。在 P7 落地之前删依赖，"删了却忘 sync"不会被任何规则发现 —— 门禁是**自证**的。Task 7 落地 P7 之后，Task 10 的每次删除才会被真实校验。
+
 **Files:**
 - Create: `kit/cli.mjs`
 - Create: `kit/cli.test.mjs`
+- Modify: `kit/lib/dep-rules.mjs`（新增 P7、修 ghost fail-open、P6 标题对齐、P0 补测）+ `kit/lib/dep-rules.test.mjs`（P7 三条测试 + ghost 必传测试）
+- Modify: `kit/lib/ledger.mjs`（R2 分支改扫 `files`，视实测决定）
 
 **Interfaces:**
 - Consumes: 全部 Task 1–6 的导出

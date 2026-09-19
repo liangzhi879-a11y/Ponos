@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process'
 import {
   parseByLocator, keyOfVersion, discoverVersionConsts, syncVersions, readVersions,
   collectEvidence, parseDeclaredImports, readRequirements, syncDeps, readDeps, writeDeps, computeGhost,
+  buildEvidenceIndex,
 } from './ledger.mjs'
 
 function fixture(files) {
@@ -514,4 +515,24 @@ test('syncDeps：packages[].status 是**事实字段**（人工不可篡改）�
   assert.deepEqual(after.find((p) => p.name === 'classic-level').evidence.classes, [],
     '伪造的证据与 status 同属事实字段，一并重算')
   assert.deepEqual(unused, ['classic-level'], '未用判定只由本次重算的证据决定，与人工改过的 status 无关')
+})
+
+// ── Rider 4-①（Task 7）：types 分支只扫入参 files，结论不得随 cache 覆盖面变化 ──────────
+// 实测的问题：旧实现扫的是内部 cache 的 `idx.values()`，于是
+//   collectEvidence({files:['tsconfig.json'], dep:'@types/react'})              → []         （无 cache）
+//   collectEvidence({..., cache: 含 src/a.tsx 的索引})                          → ['types']  （有 cache）
+// 同一函数、同一 files 入参，两个结论 —— check 与 sync 各自建索引的覆盖面不同，门禁结论就不可复现。
+test('Rider4-①：@types 的模块级解析只认入参 files，cache 只是性能优化（不得改语义）', () => {
+  const root = fixture({
+    'tsconfig.json': '{ "compilerOptions": { "types": ["node"] } }',
+    'src/a.tsx': "import { useState } from 'react'" + String.fromCharCode(10),
+  })
+  assert.deepEqual(collectEvidence({ root, files: ['tsconfig.json'], dep: '@types/react' }).classes, [],
+    'files 里没有 import react 的文件 → 证据必须是空（旧实现会靠 cache 里的 src/a.tsx 把结论救回来）')
+  const cache = buildEvidenceIndex({ root, files: ['tsconfig.json', 'src/a.tsx'] })
+  assert.deepEqual(collectEvidence({ root, files: ['tsconfig.json'], dep: '@types/react', cache }).classes, [],
+    '带 cache 也必须同结论：cache 的覆盖面不得泄漏进判据')
+  // 反向：把文件真的放进 files，就必须命中（否则"收紧"会退化成"永远判空"）
+  assert.equal(collectEvidence({ root, files: ['tsconfig.json', 'src/a.tsx'], dep: '@types/react' })
+    .classes.includes('types'), true)
 })

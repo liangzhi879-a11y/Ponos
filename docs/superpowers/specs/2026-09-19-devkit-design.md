@@ -167,16 +167,18 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 
 > 注：`ws` 经核实**在用**（`electron/` + `server/`），`README.md` §4.8.8 把它与 `classic-level` 并列描述，实测二者不同——以台账判定为准。
 
-### 6.3 校验规则（6 条）
+### 6.3 校验规则（8 条）
 
 | # | 规则 | 说明 |
 |---|---|---|
+| P0 | 台账存在 | **读不到 `deps.json` → 红**（单列规则号而不并入 P1：P0 是"文件在不在"这条判据轴，并入 P1 会把"没台账"说成"某条声明没证据"，而那时根本没有声明可判定） |
 | P1 | 声明 ⊆ 有证据 | 每个依赖至少一类引用证据，否则 `unused` |
 | P2 | 反向幽灵依赖 | 源码 import 了但未声明 → 红 |
 | P3 | 域隔离 | 内核域恒零依赖（复用既有断言）；`ws` 归 `electron,server` 而非 `src` |
 | P4 | Python 包清单化 | 13 包从 `build-embedded-python.mjs` **提到 `deps.json`**，脚本读清单（消 double） |
 | P5 | 双 Python 清单对账 | 内嵌集 vs `requirements.txt` 的差集必须显式标注（一方缺项 → 黄灯+说明，不红） |
-| P6 | 体积记账 | 记录每域体积（`node_modules` 实测 379M、`runtime/python` 415M、`runtime/skills` 180M），仅趋势，不设阈值 |
+| P6 | 体积记账 | 记录每域体积（`node_modules` 实测 379M、`runtime/python` 415M、`runtime/skills` 180M），仅趋势，不设阈值；**核对的键 = `syncDeps` 真正写下的 3 个**（`SIZES_KEYS`），缺一项即该规则未通过（旧口径"有任意一键就通过"宽到无法失败） |
+| P7 | 台账 ↔ `package.json` 双向对账 | ① 台账声明的包必须出现在 `package.json` 的 `dependencies` / `devDependencies` / `optionalDependencies`（少一个 = 台账陈旧 → 红，提示重跑 `npm run kit:sync`）；② 反向：`package.json` 声明了但台账没有 → 红。**`peerDependencies` 不纳入**（peer 是消费方约束、不是本仓分发内容；纳入会让正常配置假红，且"把包从 dependencies 挪进 peer"会变成绕过 P7 的后门）。为什么必须有：P1/P2 **只读台账**，宿主删掉声明却不重跑 sync 时两条规则一条红都不报（实测删 zustand / xlsx / @types/node，红灯数仍是 14） |
 
 ---
 

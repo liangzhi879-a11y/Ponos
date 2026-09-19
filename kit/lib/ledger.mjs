@@ -662,10 +662,21 @@ export function collectEvidence({ root, files, dep, includeTests = true, cache =
         // ★ R2：`types` 字段只关掉"全局自动包含"，**模块级**类型包（@types/react 这类）是靠
         //   `import 'react'` 的模块解析生效的 —— 把它一并判死等于给 B1 递刀（删了 typecheck 才炸）。
         const base = typedModuleOf(dep)
-        const importers = [...idx.values()].filter((r) => r && r.specifiers.some((o) => packageRootOf(o.spec) === base))
+        // ★ Rider 4-①（Task 7 复审）：这里原来扫的是内部 cache 的 `idx.values()`，于是结论
+        //   取决于**cache 覆盖面**而非入参 `files` —— 实测 `collectEvidence({files:['tsconfig.json'],
+        //   dep:'@types/react'})` 无 cache 得 `[]`，同一个调用只要缓存里恰好多一个 `src/a.tsx`
+        //   就变成 `['types']`。同一函数同参数两个结论 = check/sync 的结论不可复现。
+        //   现改为**只扫入参 `files`**：入参是契约（"在哪些文件里找证据"），cache 只是性能优化，
+        //   优化不得改变语义（测试同时钉住"有无 cache 结论一致"）。
+        const importers = []
+        for (const f of files) {
+          if (!includeTests && isTestFile(f)) continue
+          const rec = fileRecord({ root, file: f, cache: idx })
+          if (rec && rec.specifiers.some((o) => packageRootOf(o.spec) === base)) importers.push(rec.file)
+        }
         if (importers.length) {
           classes.add('types')
-          hitFiles.push(...importers.map((r) => r.file).sort())
+          hitFiles.push(...importers.sort())
         }
       }
     }
@@ -742,7 +753,7 @@ export function computeGhost({ root, files, declared, probes = null, cache = nul
     .sort()
 }
 
-export function syncDeps({ root, files, sizes } = {}) {
+export function syncDeps({ root, files, sizes, dryRun = false } = {}) {
   const tracked = files || trackedFiles({ root })
   const codeTracked = codeFiles(tracked, { includeTests: true })
   // package.json 的 scripts 属 CLI 证据（spec §6.2 类 4），故与代码文件一起参与判定
@@ -807,7 +818,10 @@ export function syncDeps({ root, files, sizes } = {}) {
       'runtime/skills': dirSizeOf({ root, rel: 'runtime/skills' }),
     },
   }
-  writeDeps({ root, data })
+  // ★ dryRun（Task 7）：`kit/cli.mjs sync --dry-run` 是"预演"，**不得**落盘。
+  //   加这个参数的原因：初版只有 syncVersions 认 dryRun，syncDeps 照样写 —— 于是"预演"会改掉
+  //   一半台账（deps.json 变了、versions.json 没变），仓库进入两边口径不一致的状态，比不做预演更坏。
+  if (!dryRun) writeDeps({ root, data })
   return { data, unused: [...runtime, ...dev].filter((p) => p.status === 'unused').map((p) => p.name), ghost }
 }
 
