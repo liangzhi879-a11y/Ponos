@@ -721,6 +721,14 @@ async function webSearch(query) {
 // （移动/销毁用户知识库文件）。放行它等于让"纯聊"会话具备删库能力，与 chat 的隔离承诺直接冲突。
 export const CHAT_MODE_DISALLOWED = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'OCR', 'Vision', 'Skill', 'SkillSearch', 'Workflow', 'Browser', 'MemorySearch', 'KnowledgeImport', 'KnowledgeDelete']
 
+/**
+ * 会改变文件内容的工具（lane 产物清单来源）。
+ * 为什么必须显式列全：`Write` 与 `Edit` 是**两个独立注册工具**（见本文件 Write / Edit 条目），
+ * 而 engine 的产物采集原先只认 `Write` ⇒ 最常见的改动方式（小改走 Edit）产物完全不入账，
+ * outputs/output_file 恒为"最后一个 Write"。**今后新增会改文件的工具必须加进这里**。
+ */
+export const MUTATING_FILE_TOOLS = new Set(['Write', 'Edit'])
+
 export function createToolRegistry({ cwd, addDirs, skillsDirs, skipPermissions, allowOutsideDirs = false, disallowedTools = [], workflow = null, memoryRoot = null, projectMemoryRoot = null, readAllowFiles = [], dynamicTools = null, flatSkillRoots = null, knowledgeSpaces = null, knowledgeReadDirs = null, disabledSkills = null }) {
   const allowDirs = [cwd, ...(addDirs || [])].filter(Boolean)
   // 只读白名单（readAllowDirs = Read 的边界；scanAllowDirs = Grep/Glob 的边界与遍历根）

@@ -28,7 +28,7 @@ import {
 } from './guards.mjs'
 import { normalizeApprovalMode, deriveApprovalMode } from './approval-mode.mjs'
 import { withLaneSkillCatalog } from './prompt.mjs'
-import { createToolRegistry, killActiveChildren } from './tools.mjs'
+import { createToolRegistry, killActiveChildren, MUTATING_FILE_TOOLS } from './tools.mjs'
 import { createSessionStore, newSessionId, sanitizeSegment } from './session.mjs'
 import { resolveAgent, resolveAgents, resolveLaneTools } from './agents.mjs'
 import { normalizeWhitelistHost } from '../shared/browser-whitelist-host.cjs'
@@ -1856,12 +1856,17 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
   }
 
   // —— 子任务执行与登记（S1 血缘 / S2 可继续 / S3 结果承接）——
-  // 子 lane 产物收集：Write 工具成功路径记录文件路径（outputs 交付 + 最后产物）
-  function makeLaneOnTool({ taskId, writePaths, t0 }) {
+  // 子 lane 产物收集：会改文件的工具（MUTATING_FILE_TOOLS：Write/Edit）成功路径记文件路径
+  // （outputs 交付 + 最后产物）；Read 路径另记 readPaths（证据面：读过的文件也是审计线索）。
+  // 只认 Write 会让"小改走 Edit"的产物全部漏账，故改按集合判定（新工具须加进该集合）。
+  function makeLaneOnTool({ taskId, writePaths, readPaths, t0 }) {
     return (b, r, count) => {
-      if (b.name === 'Write' && !r.isError) {
+      if (!r.isError) {
         const p = String(b.input?.file_path || '')
-        if (p) writePaths.push(p)
+        if (p) {
+          if (MUTATING_FILE_TOOLS.has(b.name)) writePaths.push(p)
+          else if (b.name === 'Read') readPaths.push(p)
+        }
       }
       try {
         wire.taskProgress({
@@ -1943,7 +1948,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       wire.taskResumed({ taskId: resumeTaskId, prompt })
       const t0 = Date.now()
       const writePaths = []
-      const onTool = makeLaneOnTool({ taskId: resumeTaskId, writePaths, t0 })
+      const readPaths = []
+      const onTool = makeLaneOnTool({ taskId: resumeTaskId, writePaths, readPaths, t0 })
       target.promise = runLaneExecution({
         taskId: resumeTaskId, laneStore: target.laneStore, sysPrompt: target.sysPrompt,
         signal: subController.signal, writePaths, t0, onTool, laneOptions: target.laneOptions,
@@ -2023,8 +2029,9 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     const subController = new AbortController()
     const t0 = Date.now()
     const writePaths = []
+    const readPaths = []
     const inbox = [] // B2 主 Agent 消息投递队列（lane 工具边界吸收；后台/前台共用同一引用）
-    const onTool = makeLaneOnTool({ taskId, writePaths, t0 })
+    const onTool = makeLaneOnTool({ taskId, writePaths, readPaths, t0 })
     const exec = () => runLaneExecution({
       taskId, laneStore, sysPrompt,
       signal: subController.signal, writePaths, t0, onTool, laneOptions, inbox,

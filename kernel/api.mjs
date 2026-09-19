@@ -924,6 +924,17 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // 跨 Agent 证据面测试：[mock:edit] 触发一次 Edit + 一次 Read
+  // （Edit 产物须计入 outputs；Read 路径须进 task_notification.reads）
+  if (lastText.includes('[mock:edit]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    const base = process.env.PONOS_MOCK_WRITE_DIR || process.cwd()
+    yield { type: 'tool_use', id: 'tool_use_mock_edit_1', name: 'Edit', input: { file_path: `${base}/mock-c.txt`, old_string: 'old', new_string: 'new' } }
+    yield { type: 'tool_use', id: 'tool_use_mock_read_1', name: 'Read', input: { file_path: `${base}/mock-c.txt` } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // R1-1 防重放测试：同一次调用输出两个【相同 id】的 tool_use（echo 安全命令）
   if (lastText.includes('[mock:replay]')) {
     if (signal?.aborted) throw abortError()
