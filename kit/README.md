@@ -66,11 +66,39 @@
 | `BASE` | 基线条目总数 / 豁免红灯条数**超过**上次登记值（红） | 基线是"已知欠账"，不是"遇红就塞"：修代码，别加条目 |
 | `baselineUnused` | 基线里**未生效或已不再命中**的条目（提示） | 应摘除（避免基线长期挂着过期豁免；`BASELINE_FORBIDDEN` 的条目也会列在这里） |
 
-## 契约快照与范围登记（P1 · T12）
+## 契约快照与范围登记（P1 · T12；**P1.5 起登记只剩空命名空间**）
 
-契约面四类（bridge 路由 / WS 事件类型 / IPC 通道 / 工具 `input_schema`）↔ `docs/bridge-contract.md` 的对账。
+契约面**五类**（bridge 路由 / WS 事件类型（出、入）/ IPC 推送通道 / 工具 `input_schema`）↔ `docs/bridge-contract.md` 的对账。
 设计依据：spec §12 的 P1 判据**两条** —— **(a)** 快照可从代码**复算**、差异 = 0；**(b)** **范围登记完整**
 （登记集 = 代码真值 ∖ 文档已声明）；实施计划 `.superpowers/sdd/2026-09-19-devkit-p1-contracts/plan.md`。
+
+**P1.5（2026-09-19）把"登记"升级为"真对账"**：文档此前**缺半壁**（IPC 与工具零章节、§7 只覆盖
+32/103 条路由）⇒ 那 92 条契约面只能"人工承认边界"（登记），不是对账。P1.5 补齐了文档面：
+
+| 判据 | 内容 | 落点 |
+|---|---|---|
+| (a) | `kit:check` 双树**红 0 / EXIT=0**；`CT2`/`CT3` 覆盖 **routes + wsOut + wsIn + ipc + tools** 五类 | 规则表 `CT2`/`CT3` 行 |
+| (b) | `contract-scope.json` 只剩**无法文档化的空洞**（空命名空间）；`scopeCount`/`scopeRedCount` 人工下调到现值 | 见下面「P1.5 之后的登记面貌」 |
+| (c) | **反向可证伪**：删 §11 一条 push ⇒ `CT2`（未覆盖）+ `CT4`（未登记）双红；改 §12 一个指纹末位 ⇒ `CT3` 红；把已摘除的成员塞回 scope ⇒ `CT4` 多登记红 | 每条都有单元用例（`contract-rules.test.mjs` 的「P1.5-变异①②③」） |
+| (d) | 88 条摘除**逐条可解释**：`CT4 多登记 = 0` 即"每条都真被文档声明了" | `CT4` 的 `extra` 方向 |
+| (e) | 遗留条目的 reason 必须说明"**为什么补不了文档**"（`children` 为空 / 动态拼装 ⇒ 没有具体端点可写） | `contract-scope.json#entries[].reason` |
+
+文档新增面：**§7** 72 条端点（25 行，按命名空间+方法分组）、**§5** +6 / **§6** +3 WS 类型、
+**§11**（新章）7 条 IPC 推送通道、**§12**（新章）21 个工具 + 结构指纹。
+
+### P1.5 之后的登记面貌（2 组 / 2 键，`scopeCount=scopeRedCount=2`）
+
+`contract-scope.json` 现在只有**两条 `ns` 声明**，两条都是"**没有具体端点可写**"的命名空间：
+
+| 条目 | 为什么补不了文档（= reason 的要点） |
+|---|---|
+| `ns /knowledge/import/jobs/` | 前缀 `children` 为空**且**无锚定正则（`dynamic:null`）⇒ 路径段由运行时 job id 拼装、静态不可枚举。带斜杠的 `/knowledge/import/jobs/` 在代码里**不存在**（代码只认 `/knowledge/import/jobs` 与其子路径）⇒ 写进 §7 会让 `CT3` 判"文档腐烂"。 |
+| `ns /providers/` | §7 的 `/providers/*` 只声明命名空间、**不给子路径覆盖信用**（反例⑧），`/providers` 是另一条具体端点；子路径由 provider id 运行时拼装（`children` 为空、无锚定正则）⇒ 没有具体子路径可写。 |
+
+★ 与之对照：`ns /file-collab/`、`ns /knowledge` 两条**已随着子路径补进 §7 自动消失** ——
+`buildTruth` 的 `underDoc` 判据（"文档里有具体路径落在该前缀下 ⇒ 该命名空间已被覆盖"）本就是为此设计的，
+与 `/transcript/`、`/logs/` 同理。**判据方向**：文档声明得越全，登记越小；登记里出现**新**成员
+= 代码新增了未文档化的契约面（该补 §7/§11/§12，或说明为什么补不了）。
 
 ### 怎么跑
 
@@ -90,8 +118,9 @@ node kit/cli.mjs view --json | node -e "let s='';process.stdin.on('data',d=>s+=d
 # ② 键级明细（哪条路由/哪个工具）：直接读 manifest 的 `channels`
 node -e "const c=require('./kit/manifest/versions.json').channels;console.log(Object.keys(c.routes).length, Object.keys(c.routes).slice(0,3))"
 ```
-（实测：① 打印 `routes 103 / prefixes 7 / wsOut 27 / ipc 156 / tools 21 / scopeCount 20`；② 打印 `103 [ 'ANY /agents', 'ANY /api/audit', 'ANY /api/auth/status' ]`。
-`kit/manifest/versions.json#channels` 与 `ledgers.versions.channels` 同源 —— 后者是前者的**按类计数**投影。）
+（实测：① 打印 `routes 103 / prefixes 7 / wsOut 27 / ipc 156 / tools 21 / scopeCount 2`；② 打印 `103 [ 'ANY /agents', 'ANY /api/audit', 'ANY /api/auth/status' ]`。
+`kit/manifest/versions.json#channels` 与 `ledgers.versions.channels` 同源 —— 后者是前者的**按类计数**投影。
+★ 口径：`routes 103` 是**盘根干净克隆**值（主树 105，含他人在途改动的 2 条）；`scopeCount 2` 是 P1.5 后的终态。）
 
 ★ `check` **恒打印**两段：范围登记逐条（`── 契约范围登记（N 组 / M 键）──`，逐条带 kind/ns/键数/docSection/reason）
 与在途差异一行（`（契约）在途差异（CT8，黄、只报不拦）：…`）—— **无差异时也明说"无"**（"没打印"与"没有差异"不是一回事），
@@ -103,15 +132,15 @@ node -e "const c=require('./kit/manifest/versions.json').channels;console.log(Ob
 |---|---|---|---|
 | CT0 | `versions.json#channels` 存在且形状完整 | 红 | 删 `channels` 键 |
 | CT1 | 台账快照 == 从**提交态**代码**现场重算**的快照（逐类逐元素；绝不读快照当答案） | 红 | 手改快照任一键；提交了端点改动却没跑 `kit:sync`；HEAD 读不到（subject `HEAD 物化`） |
-| CT2 | 代码 → 文档：真值里每条路由/WS 类型都能在文档小节定位**或**在 scope 命中 | 红 | 提交新端点后既没补文档也没登记 scope |
-| CT3 | 文档 → 代码：文档声明的每条都真在代码里（抓"文档腐烂"） | 红 | 文档里写不存在的 `/fake`；删掉代码里的端点 |
+| CT2 | 代码 → 文档：真值里每条（**五类**：路由 / WS 出 / WS 入 / IPC 推送 / 工具出口）都能在 §5/§6/§7/§11/§12 定位**或**在 scope 命中 | 红 | 提交新端点后既没补文档也没登记 scope；新增工具不进 §12 |
+| CT3 | 文档 → 代码：文档声明的每条（路由 / WS / **IPC 通道 / 工具名 + 结构指纹逐字相等**）都真在代码里（抓"文档腐烂"） | 红 | 文档里写不存在的 `/fake`；§12 指纹改一位；§12 缺指纹（fail-closed，不"没写就不比"）；删掉代码里的端点 |
 | CT4 | scope `members` 与「代码真值 ∖ 文档已声明」**集合相等**（多一少一都红；**逐条报，subject 带键名**） | 红 | members 少一条 / 多一条 / 拼错 |
 | CT4B | scope 组数 / 键数不得超过 `channels.scopeCount` / `channels.scopeRedCount`（双护栏） | 红 | 往 scope 加条目超过封顶值 |
 | CT4C | scope 条目合法：`reason` 必填、`ns`/`members` 禁 `*` 与正则字符、无重复、`docSection` 真实存在 | 红 | 写 `ns: "/knowledge"` + `members: ["/knowledge/.*"]`；删 reason |
-| CT5 | IPC 三方配对（invoke↔handle / send↔on / push↔on）**双向集合相等**；`push` 每条在文档或 scope | 红 | 删一个 `ipcMain.handle(...)`；preload 里加 invoke 而 main 侧没有 handle |
+| CT5 | IPC 三方配对（invoke↔handle / send↔on / push↔on）**双向集合相等**；`push` 每条在**文档 §11**或 scope | 红 | 删一个 `ipcMain.handle(...)`；preload 里加 invoke 而 main 侧没有 handle；新推送通道两处都不声明 |
 | CT6 | `toolSchemas()` 出口 ⊆ 快照 + 静态 registry 计数一致 + 动态源逐条登记 + 结构指纹一致 | 红 | 加工具、改 `input_schema` 结构、加动态源不登记（**`description` 散文不入指纹** ⇒ 改文案不红） |
 | CT7 | **提取守恒**：`type:` 字面量 = 已归因（sink 白名单）+ 显式 `excluded`；路径字面量必有归宿（独立重扫） | 红 | 非 sink 处写 `{ type: 'typo' }`；新增 sink 形态不登记 |
-| CT8 | **在途差异**：工作树 ∖ HEAD 的契约面（路由/前缀/WS 类型/IPC/工具/排除项 + 文档声明集）**逐条列出** | **黄、只报不拦** | ——（在途改动就是这个状态；提交后自己变空，不需要任何基线） |
+| CT8 | **在途差异**：工作树 ∖ HEAD 的契约面（路由/前缀/WS 类型/IPC/工具/排除项 + 文档声明集**六类**）**逐条列出** | **黄、只报不拦** | ——（在途改动就是这个状态；提交后自己变空，不需要任何基线） |
 | CT8 的**扫描域** | 提交态侧 = `git ls-files`（索引）；**工作树侧 = 索引 ∪ 未忽略的未跟踪文件**（`git ls-files --cached --others --exclude-standard`，第 4 批补：未 `git add` 的新源文件原先整块不可见） | —— | 域仍由 git 决定（**不是**磁盘遍历）：`release/`、`kernel-dist/`、`node_modules` 等被忽略的镜像/产物目录在域外；`worktreeClean` 的捷径还要求索引里全是普通 `H`（`--assume-unchanged`/`--skip-worktree` 会让 `git status` 说谎） |
 | CT9 | 渲染层 `src` 的 fetch 路径 → server 路由**单向**差集 | **黄、只报不拦** | ——（D8 历史欠账，逐条登记在 `drift-baseline.json`） |
 
@@ -190,7 +219,8 @@ node -e "const c=require('./kit/manifest/versions.json').channels;console.log(Ob
   同一个通道在多侧各算一次）；"71 通道"是**去重后的通道数**（61 + 10）。数字不同是口径不同，不是漂移。
 - **`contract-doc.mjs` 解析出的 method 目前不入账（只比路径）** ⇒ **已知边界**：文档写 `POST /x` 而代码只有
   `GET /x`（或反之）**不会红**。解析器把方法如实呈现（`synonyms`），但对账只做**路径集合**的差集；
-  收紧到"方法 + 路径"需要先处理 §7 的"一行多端点、方法写在行内"等形态（P1.5 的活），本批不做假。
+  收紧到"方法 + 路径"需要先处理 §7 的"一行多端点、方法写在行内"等形态 —— **P1.5 也没做这一条**
+  （P1.5 补的是**覆盖面**：72 条路由 + 9 条 WS + 7 条 IPC + 21 个工具），如实记为遗留。
 
 ### CT2 与 CT4 的关系（如实的说明）
 
@@ -199,7 +229,8 @@ node -e "const c=require('./kit/manifest/versions.json').channels;console.log(Ob
 也就是说 `CT2` 判的东西被 `CT4` 完全覆盖。
 
 **为什么不合并、也不硬造差异**：留 `CT2` 是为了报告的**归因可读性**（它逐条挂在"代码→文档"这条腿上，
-hint 指文档补遗；`CT4` 的 hint 指 scope 登记），以及给"将来补文档（P1.5）"留一个**已经接线**的判据位。
+hint 指文档补遗；`CT4` 的 hint 指 scope 登记），以及让"代码真值"这一侧**逐类可读**
+（P1.5 起它遍历**五类**：routes/wsOut/wsIn/ipc/tools，每类的 `expected` 直接写成该补哪一节）。
 把它改成独立职责（例如"每条真值必须能在文档小节定位"）需要引入新的口径（真值定义就要跟着改），
 而"跨文档小节定位"的判据已经在 `CT4C` 的 `docSection` 指针与 `CT3` 里各有一半 ——
 硬造一条新判据只会新增一套真相，属于 plan §7 反例的边界（做假）。**故如实写明"退化的形式"，不假装它独立。**
