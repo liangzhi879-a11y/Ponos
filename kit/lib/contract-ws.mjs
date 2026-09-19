@@ -19,6 +19,18 @@
 //      （主进程执行器协议：`cdp.sendCommand({type:'mouseMoved'})` 这类必须显式排除）。
 //      域内**反向方向**的脚本（`server/interject.e2e.mjs` 是手工 WS 客户端，它的 `ws.send`
 //      是"发给桥"）按文件角色排除，理由写在 `excluded` 里而不是悄悄跳过。
+//
+// ★ **出站出现数（`outOccurrences`）的口径 —— 38/39 别绕进去**（真仓实测，两棵树同值）：
+//   · **修前真值 = 38**：别名 sink（`for (const c of clients) c.send(msg)` + `const msg =
+//     JSON.stringify({type:'browser:event'…})`，真形态 `server/browser-routing.mjs:46-47`）**没被识别**，
+//     故 `browser:event` 既不在 out、也不在 excluded。
+//   · **返工后（`9c8cc3f`）现值 = 39**：别名 sink 认领 `browser:event` ⇒ 它归 `out`，出现数 +1。
+//   · 提交 `9c8cc3f` 的信息里写着"报告里的 **39** 更正为 **38**" —— 这句**口径倒挂**（把返工**前**的
+//     真值当成了报告的错误值）。事实是：修订前的报告写 39 是**误记**（当时真值就是 38），
+//     而**返工后的现值正是 39**（38 + 别名 sink 认领的 1 条）。该提交信息不改（历史如实留痕），
+//     但**以本注释为准**：读 39 时问一句"这是哪一版的口径"。
+//   · 同一批：域内 `(sub)type:` 字面量独立重数 = **117**（= 101 顶层 + 16 `subtype:`），
+//     其中 `outOccurrences + excluded.length == 117`（守恒，见 I4）。
 import { stripComments } from './scan.mjs'
 
 /** 换行符常量（源码里写裸转义会被编辑链吃掉，这里显式构造） */
@@ -61,7 +73,6 @@ const REASON = {
   'entry-kind': 'entry-kind：目录/文件条目 kind（/list-dir、/drives 的 entries[].type），不是消息类型',
   'json-schema': 'json-schema：JSON Schema 的 type 字段（input_schema.type），不是消息类型',
   'packager-manifest': 'packager-manifest：打包清单的条目 kind（skipped[].type），不是 GUI 消息类型',
-  'non-message': 'non-message：非消息通道的 type 字面量（文件/条目/内容 kind 等），上下文见文件行',
 }
 
 /** 该文件在域内应被当作哪种角色（null = 按 sink 判定） */
@@ -396,12 +407,17 @@ export function extractWs({ files = [], readTracked } = {}) {
     for (const a of at.values()) {
       if (a.effRole === 'out') { if (a.literal) out.add(a.literal); outOccurrences++ }
       else {
-        excluded.push({
-          literal: a.literal,
-          reason: role && a.effRole === role.role ? `${a.effRole}：${role.why}` : REASON[a.effRole] || REASON['non-message'],
-          file,
-          line: a.fileLine,
-        })
+        // ★ **不许兜底**（plan §7 反例 ⑥：`excluded` 不得含兜底语义）：
+        //   旧写法 `REASON[a.effRole] || REASON['non-message']` 把"没分类的角色"悄悄倒进
+        //   `non-message` 兜底桶 —— 该桶当前**不可达**（`effRole` 取自 REASON/role 的有限集合），
+        //   于是那行成了死码：它既没有被覆盖，又给后来者留了"随便加个角色也有人接住"的错觉。
+        //   现改为：查不到有据分类即**抛错**（这是编程错误：新增 sink / 新角色时必须同时补 REASON）。
+        const why = role && a.effRole === role.role ? `${a.effRole}：${role.why}` : REASON[a.effRole]
+        if (!why) {
+          throw new Error(`extractWs: 未知归因角色 '${a.effRole}'（${file}:${a.fileLine}）`
+            + ' —— 新形态必须在 REASON 里补一条有据分类，不许兜底成"其余全部"')
+        }
+        excluded.push({ literal: a.literal, reason: why, file, line: a.fileLine })
       }
     }
 

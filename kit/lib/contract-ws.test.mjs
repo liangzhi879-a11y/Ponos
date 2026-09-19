@@ -14,6 +14,21 @@
 //     永远不红（审查 M3：非 sink 处写 `{type:'zzz-typo-probe'}` 后 raw 111→112、excl 73→74，
 //     断言照绿）。故 `rawTypeCount` 走**独立一遍**（自己的遍历、自己的正则、读 raw 文本），
 //     而 `excluded`/`outOccurrences` 来自花括号深度归因 —— 两边独立 ⇒ 有一条没归宿就红。
+//
+// ★ 测试侧的"重数"也必须**独立于被测实现**（第二轮审查 ③）：原写法把 `countTypeLiterals`
+//   的正则**逐字复制**进测试 ⇒ 同源镜像（自己和自己比、恒真）：把提取器的正则改坏
+//   （例如漏认 `subtype`）时，测试里的复制版跟着一起变，等值断言照绿。
+//   现改为 `countLiteralsNaive`（**逐字符扫描**，见下）：与被测实现两条独立路径 ⇒ 可证伪。
+//
+// ★ `excluded` 的分类**不许有兜底桶**（plan §7 反例 ⑥）：`contract-ws.mjs` 里
+//   `REASON[a.effRole] || REASON['non-message']` 的兜底回退已删（改为**抛错**），
+//   随之成为死码的 `non-message` 条目也删除；末尾「★兜底回退不得复活」用例是本条的机读护栏。
+//
+// ★ **出站出现数口径（38 / 39 别绕进去）**：修前真值 **38**（别名 sink 未识别 ⇒ `browser:event`
+//   既不进 out 也不进 excluded）；`9c8cc3f` 返工后别名 sink 认领 `browser:event` ⇒ **现值 39**。
+//   该提交信息里"报告里的 39 更正为 38"是**口径倒挂**（返工前真值就是 38，报告写 39 属误记；
+//   被更正的是那个误记，而返工后的现值正好回到 39）。提交信息不改，以 `contract-ws.mjs`
+//   顶部注释 + 本行为准；域内 `(sub)type:` 独立重数 = **117**。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
@@ -26,6 +41,40 @@ import { extractWs, inWsDomain } from './contract-ws.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const NL = String.fromCharCode(10)   // 行分隔符常量（源码里写裸转义会被编辑链吃掉）
+
+// ★ **独立来源的朴素重数**（审查 ③：原实现把 `countTypeLiterals` 的正则逐字复制 ⇒ 同源镜像）。
+//   实现路径与被测模块**完全不同**：不用正则、不调用 `contract-ws.mjs` 的任何函数，
+//   而是逐字符扫描 —— 每行找 `'`，向左跳过空白要求是 `:`，再向左读标识符要求是
+//   `type`/`subtype`，且更左的字符不得是标识符/`.`/`$`（对应原正则的 `(?:^|[^\w.$])` 边界）。
+//   两条独立实现 ⇒ 任一方被改坏（少认一类形态）两边就不等，等值断言随之可证伪。
+const WORD_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_'
+function countLiteralsNaive(files, read) {
+  const hits = []
+  for (const file of files) {
+    const text = read(file)
+    if (typeof text !== 'string') continue
+    const lines = text.split(NL)
+    for (let ln = 0; ln < lines.length; ln++) {
+      const line = lines[ln]
+      const head = line.trimStart()
+      if (head.startsWith('//') || head.startsWith('/*') || head.startsWith('*')) continue
+      for (let at = line.indexOf("'"); at !== -1; at = line.indexOf("'", at + 1)) {
+        let i = at - 1
+        while (i >= 0 && (line[i] === ' ' || line[i] === '\t')) i--
+        if (i < 0 || line[i] !== ':') continue
+        i--
+        while (i >= 0 && (line[i] === ' ' || line[i] === '\t')) i--
+        const end = i + 1
+        while (i >= 0 && WORD_CHARS.includes(line[i])) i--
+        const ident = line.slice(i + 1, end)
+        if (ident !== 'type' && ident !== 'subtype') continue
+        if (i >= 0 && (WORD_CHARS.includes(line[i]) || line[i] === '.' || line[i] === '$')) continue
+        hits.push({ file, line: ln + 1 })
+      }
+    }
+  }
+  return hits
+}
 
 function fixture(filesMap) {
   const root = mkdtempSync(join(tmpdir(), 'yfw-ct-ws-'))
@@ -162,18 +211,13 @@ test('★入站只认 ws.on("message") 处理器里的 msg.type 比较（方向�
 
 test('★提取守恒：rawTypeCount（独立重数）= 出站出现数 + excluded 条数（无归宿的必须让断言红）', () => {
   const { out, files, read } = extract()
-  // 独立重数：直接数夹具源码里的 `(sub)type: '…'` 字面量个数（不依赖提取器的任何中间量）
-  let literalTotal = 0
-  for (const f of files) {
-    const text = read(f)
-    if (typeof text !== 'string') continue
-    for (const line of text.split(NL)) {
-      if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) continue   // 注释行不是代码（raw 行口径，与提取器独立实现）
-      literalTotal += (line.match(/(?:^|[^\w.$])(?:sub)?type\s*:\s*'/g) || []).length
-    }
-  }
-  assert.ok(literalTotal >= 8, `夹具至少应有 8 个 type 字面量，实测 ${literalTotal}`)
-  assert.equal(out.rawTypeCount, literalTotal, 'rawTypeCount 必须等于域内 (sub)type 字面量的独立重数')
+  // 独立重数：**逐字符扫描**夹具源码（`countLiteralsNaive`，不调用被测模块、不用被测正则）
+  const naiveHits = countLiteralsNaive(files, read)
+  const literalTotal = naiveHits.length
+  assert.ok(literalTotal >= 8,
+    `夹具至少应有 8 个 type 字面量，实测 ${literalTotal}｜清单=${naiveHits.map((h) => `${h.file}:${h.line}`).join(' ')}`)
+  assert.equal(out.rawTypeCount, literalTotal,
+    `rawTypeCount 必须等于**独立实现**的逐字符重数（清单=${naiveHits.map((h) => `${h.file}:${h.line}`).join(' ')}）`)
   // ★ 守恒等式两侧来自**两条独立代码路径**（左=独立重数，右=花括号深度归因），故可证伪：
   //   任何"没被任何规则认领"的字面量都会让左边多 1 而右边不动 ⇒ 红。
   //   ―― 历史实现里这一等式是**构造恒等式**（同一遍循环两处累加），M3 探针插进去照绿。
@@ -210,11 +254,16 @@ test('★excluded 不得含兜底桶：reason 全部是有据分类（plan §7 �
   // 兜底语义的桶名黑名单（**不许**把"其余全部"换个名字继续用）
   const FALLBACK_REASONS = ['non-message', 'other', 'others', 'misc', 'rest', 'remainder', 'unknown',
     'unclassified', 'fallback', 'catchall', 'catch-all', '其余', '其他', '其余全部', '其他全部', '其他东西']
+  // 有据分类的**白名单**（白名单式比黑名单强：新造一个桶名也得先在此登记，登记即意味着"说得出证据"）
+  const EVIDENCE_REASONS = new Set(['kernel-stdin', 'executor-protocol', 'client-harness', 'nested',
+    'nested-subtype', 'subtype-elsewhere', 'entry-kind', 'json-schema', 'packager-manifest'])
   const { out } = extract()
   const reasons = [...new Set(out.excluded.map((e) => e.reason.split('：')[0]))].sort()
   for (const r of reasons) {
     assert.equal(FALLBACK_REASONS.includes(r), false,
       `reason '${r}' 是兜底桶语义（不是有据分类）｜现有 reason 集合=${reasons.join(',')}`)
+    assert.equal(EVIDENCE_REASONS.has(r), true,
+      `reason '${r}' 不在有据分类白名单里 ｜白名单=${[...EVIDENCE_REASONS].sort().join(',')}`)
   }
   // 真仓同一判据（夹具只覆盖夹具形态；兜底桶在真仓里更可能先冒出来）
   const realFiles = codeFiles(trackedFiles({ root: ROOT }), { includeTests: false })
@@ -223,6 +272,8 @@ test('★excluded 不得含兜底桶：reason 全部是有据分类（plan §7 �
   for (const r of realReasons) {
     assert.equal(FALLBACK_REASONS.includes(r), false,
       `真仓 reason '${r}' 是兜底桶语义｜真仓 reason 集合=${realReasons.join(',')}`)
+    assert.equal(EVIDENCE_REASONS.has(r), true,
+      `真仓 reason '${r}' 不在有据分类白名单里｜白名单=${[...EVIDENCE_REASONS].sort().join(',')}｜实测集合=${realReasons.join(',')}`)
   }
   assert.ok(realReasons.length >= 6, `真仓必须拆细成多个有据分类，实测 ${realReasons.join(',')}`)
   // 有据分类必须**逐条**落到证据上：条目 kind / JSON Schema 各自独立成类
@@ -232,6 +283,31 @@ test('★excluded 不得含兜底桶：reason 全部是有据分类（plan §7 �
   assert.deepEqual(bySlash('personal').map((e) => e.reason.split('：')[0]), ['packager-manifest'])
   assert.deepEqual(bySlash('run').map((e) => e.reason.split('：')[0]), ['subtype-elsewhere'])
   assert.ok(out.excluded.some((e) => /^subtype-elsewhere/.test(e.reason)), 'sink 外 subtype 单列成类')
+})
+
+test('★兜底回退不得复活：无 `|| REASON[…]` 兜底、无死码桶、未知角色必须抛错（plan §7 反例 ⑥）', () => {
+  // 审查（第二轮 ②）指出：`REASON[a.effRole] || REASON['non-message']` 的兜底回退仍在，
+  // 而 `non-message` 条目**当前不可达**（`effRole` 取自 REASON/role 的有限集合）⇒ 死码 + 兜底语义。
+  // 修法：回退删除、改为抛错；死码条目删除。**下面三条是源码级护栏**（防止"顺手加回一个默认桶"），
+  // 判据可机读：`REASON[...]` 后紧跟 `||` 即违规。
+  const src = readTracked({ root: ROOT, file: 'kit/lib/contract-ws.mjs' })
+  assert.ok(typeof src === 'string' && src.length > 2000, '前提：能读到提取器源码')
+  // ★ 判据只看**代码视图**：注释里会（刻意）写着旧写法 `REASON[a.effRole] || REASON['non-message']`
+  //   作为"为什么删"的说明，那不是回退本身 ⇒ 先剔掉注释行再断言。
+  //   （这里用"行首判据"而不是 `stripComments`：后者对本文件有已知边界（正则字面量里的撇号会
+  //   开伪字符串、其后的注释整段留下），实测它在本文件的这段注释上失效；行首判据简单且足够。）
+  const code = src.split(NL).filter((l) => {
+    const t = l.trimStart()
+    return !(t.startsWith('//') || t.startsWith('/*') || t.startsWith('*'))
+  }).join(NL)
+  assert.equal(/REASON\[[^\]]+\]\s*\|\|/.test(code), false,
+    "`excluded` 的分类不得有 `|| 兜底`：查不到有据分类就必须抛错（plan §7 反例 ⑥）")
+  assert.equal(/['"]non-message['"]\s*:/.test(code), false,
+    "兜底桶 `non-message` 的 REASON 条目已删（它是死码）；不得加回")
+  assert.match(code, /throw new Error\(`extractWs: 未知归因角色/,
+    '未知归因角色必须**抛错**（不许静默丢进某个桶 —— 抛错才会让守恒断言/调用方立刻看见）')
+  // 反向：源码里出现 `REASON[...]` 的取值仍要有（不是把整条分类逻辑删了）
+  assert.match(code, /REASON\[a\.effRole\]/, '分类查表本身必须还在（删的是兜底，不是分类）')
 })
 
 test('★无归宿的字面量必须让守恒断言红（自证式断言的替代品；审查 M3 的判据）', () => {
@@ -265,18 +341,15 @@ test('真仓：出站 26 / 入站 16 量级，且集合与排除清单都能复�
   assert.equal(out.out.has('first_byte_pending'), false)
   assert.ok(out.rawTypeCount > out.out.size, '真仓 type 字面量总出现数必须显著大于出站集合（否则守恒无意义）')
   assert.ok(out.excluded.length >= 20, `真仓不可提取区必须逐条登记，实测 ${out.excluded.length}`)
-  // ★ 守恒真仓版：分母（rawTypeCount）由**独立重数**给出 —— 现场照 raw 文本重数一遍
-  let recount = 0
-  for (const f of files) {
-    if (!inWsDomain(f)) continue
-    const text = readTracked({ root: ROOT, file: f })
-    if (typeof text !== 'string') continue
-    for (const line of text.split(NL)) {
-      if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) continue
-      recount += (line.match(/(?:^|[^\w.$])(?:sub)?type\s*:\s*'/g) || []).length
-    }
-  }
-  assert.equal(out.rawTypeCount, recount, 'rawTypeCount 必须等于域内字面量独立重数（不是归因那一遍的副产品）')
+  // ★ 守恒真仓版：分母（rawTypeCount）由**独立重数**给出 —— 用 `countLiteralsNaive` 现场重数一遍。
+  //   修前这里是 `(?:^|[^\w.$])(?:sub)?type\s*:\s*'` 的**逐字复制** ⇒ 同源镜像（恒真）；
+  //   现在换成逐字符扫描（与 `countTypeLiterals` 的正则路径无关）⇒ 任一实现改坏即红。
+  const recountHits = countLiteralsNaive(files.filter((f) => inWsDomain(f)), (f) => readTracked({ root: ROOT, file: f }))
+  assert.ok(recountHits.length >= 20, `独立重数应有量级，实测 ${recountHits.length}`)
+  assert.ok(new Set(recountHits.map((h) => h.file)).size >= 5,
+    `独立重数必须覆盖多个文件（实测覆盖 ${[...new Set(recountHits.map((h) => h.file))].sort().join(',')}）`)
+  assert.equal(out.rawTypeCount, recountHits.length,
+    `rawTypeCount（${out.rawTypeCount}）必须等于**独立实现**的逐字符重数（${recountHits.length}）｜清单=${recountHits.map((h) => `${h.file}:${h.line}`).join(' ')}`)
   assert.equal(out.rawTypeCount, out.outOccurrences + out.excluded.length,
     `守恒破裂：raw=${out.rawTypeCount} 出站出现=${out.outOccurrences} excluded=${out.excluded.length}｜无归宿=${out.unattributed.map((u) => `${u.literal}@${u.file}:${u.line}`).join(' ')}`)
   assert.deepEqual(out.unattributed, [], '真仓每个 `(sub)type:` 字面量都必须有归宿（无归宿 ⇒ 提取器漏了一类形态）')
