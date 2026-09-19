@@ -12,7 +12,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -65,9 +65,63 @@ function fixture() {
 const readPkg = (root) => JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const writePkg = (root, pkg) => writeFileSync(join(root, 'package.json'), JSON.stringify(pkg, null, 2))
 const ledgerText = (root) => readFileSync(join(root, 'kit/manifest/deps.json'), 'utf8')
+const sha256 = (buf) => createHash('sha256').update(buf).digest('hex')
 /** 契约面（CT 规则关心的路径）是否有未提交改动 —— 决定真仓断言走"脏树"还是"干净树"分支 */
 const dirtyTree = () => execFileSync('git', ['status', '--porcelain', '--', 'server', 'electron', 'kernel', 'src', 'shared', 'docs/bridge-contract.md'],
   { cwd: ROOT, encoding: 'utf8' }).trim().length > 0
+
+// ── 真仓根的"会写盘"用例：唯一入口（第 5 批 ①） ────────────────────────────────
+//
+// `runSync`（kit/cli.mjs）写哪些文件是**查代码**得到的清单，不是猜的：
+//   · `syncVersions`   → `kit/manifest/versions.json`（ledger.mjs:VERSIONS_FILE，dryRun 外无条件写）
+//   · `syncDeps`       → `kit/manifest/deps.json`（ledger.mjs:DEPS_FILE，同上）
+//   · `syncSkillsLock` → `skills-lock.json`（ledger.mjs:LOCK_FILE，仅当有哈希需要重算时写）
+// 三处都在真仓根直接落盘 ⇒ 在真仓根跑 sync 的用例**必须**把这三个（以及 `kit/manifest/` 下将来
+// 可能新增的任何 manifest）备份还原到位。原实现只还原 versions.json，实测后果两条：
+//   ① 行尾假阳性：deps.json 被重写成 LF（core.autocrlf=true 的检出里显示 ` M`，而 hash-object 恰好仍等于 HEAD）；
+//   ② **内容级污染**（危险面）：sync 会如实把"宿主真相"写进台账，而台账的人工段（如
+//      `deps.json#python.embedded`）是**原样保留**的 ⇒ 注入一条假依赖会被**吸收并留下改动状态**，
+//      直接违背该用例自述的"测试不得把仓库改脏"。
+// 故本函数快照 `kit/manifest/*` + `skills-lock.json`，退出时**逐字节还原**并**自证**。
+// 判据用字节而不是 `git status`：行尾归一化会让 status 把"行尾变了"与"内容真变了"显示得一模一样。
+const MANIFEST_DIR = join(ROOT, 'kit/manifest')
+/** 台账以外的 sync 落盘目标（与 MANIFEST_DIR 一起构成快照面） */
+const SYNC_EXTRA_WRITABLE = [join(ROOT, 'skills-lock.json')]
+
+/** 快照 sync 能写的全部文件（含**文件名集合**：多出一个文件同样是"把仓库改脏"） */
+function snapshotSyncWritable() {
+  const files = [...SYNC_EXTRA_WRITABLE]
+  for (const name of readdirSync(MANIFEST_DIR)) {
+    const p = join(MANIFEST_DIR, name)
+    if (statSync(p).isFile()) files.push(p)
+  }
+  return new Map(files.map((p) => [p, readFileSync(p)]))
+}
+
+/** 还原 + 自证：还原后文件**集合**与每个文件的**字节**都必须与进入前完全一致（不是"看着差不多"） */
+function restoreSyncWritable(before) {
+  for (const [p, bytes] of before) {
+    if (!existsSync(p) || !readFileSync(p).equals(bytes)) writeFileSync(p, bytes)
+  }
+  for (const p of snapshotSyncWritable().keys()) if (!before.has(p)) rmSync(p)   // sync 新落盘的 manifest 也要撤
+  const now = snapshotSyncWritable()
+  const rel = (p) => p.slice(ROOT.length + 1)
+  assert.deepEqual([...now.keys()].map(rel).sort(), [...before.keys()].map(rel).sort(),
+    '还原后文件集合必须与进入前一致（"多出一个文件"也是把仓库改脏）')
+  for (const [p, bytes] of before) {
+    assert.ok(now.get(p).equals(bytes),
+      `${rel(p)} 还原后必须与进入前逐字节相同（sha256 ${sha256(now.get(p))} ≠ ${sha256(bytes)}）`)
+  }
+}
+
+/** 真仓根写盘用例的统一包装：进入前快照 → 跑 → 无论如何都还原 → 还原不彻底即红 */
+function withSyncWritesRestored(fn) {
+  const before = snapshotSyncWritable()
+  let thrown = null
+  try { fn() } catch (e) { thrown = e }
+  restoreSyncWritable(before)   // 先还原再抛：即便用例自身失败，也不许把仓库留在脏状态
+  if (thrown) throw thrown
+}
 
 // ── 真仓：已提交的台账 + 已提交的测试层，干净克隆里同样成立 ────────────────
 
@@ -185,21 +239,25 @@ test('★P1-①：契约范围登记段恒打印，且**逐条**列 kind/ns/键�
 test('★P1-②：`kit:sync` 不得改写 contract-scope.json（逐字节），且不冲掉 channels 的人工封顶值', () => {
   const scopePath = join(ROOT, 'kit/manifest/contract-scope.json')
   const versionsPath = join(ROOT, 'kit/manifest/versions.json')
-  const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex')
-  const before = sha(scopePath)
-  const vBackup = readFileSync(versionsPath)
-  try {
+  const depsPath = join(ROOT, 'kit/manifest/deps.json')
+  const sha = (p) => sha256(readFileSync(p))
+  // ★ 第 5 批 ①：真仓根的写盘用例一律经 `withSyncWritesRestored` —— 它备份/还原 `runSync` 能写的
+  //   **每一个**文件（versions.json / deps.json / skills-lock.json，以及 kit/manifest 下任何将来新增的
+  //   manifest），退出时逐字节自证。"测试不得把仓库改脏"这条承诺由它兑现，不再靠手写 finally 的记忆。
+  withSyncWritesRestored(() => {
+    const before = sha(scopePath)
     assert.equal(run(['sync']).code, 0)
     assert.equal(sha(scopePath), before, 'sync 改了 scope 文件 = members 可被自动生成（反例③），登记失去意义')
     const ch = JSON.parse(readFileSync(versionsPath, 'utf8')).channels
     assert.equal(typeof ch.scopeCount, 'number', 'channels.scopeCount 是人工封顶值：sync 不得冲成 undefined')
     assert.equal(typeof ch.scopeRedCount, 'number')
     assert.ok(ch.snapshotAt && Object.keys(ch.routes).length > 0, '快照本体必须在（CT0/CT1 的前提）')
-  } finally {
-    // ★ 真仓 sync 在"工作树带他人在途端点"时会更新 channels（那正是它的职责，见 drift-baseline 里的 CT1 条目）；
-    //   本用例只关心 scope 文件，故把 versions.json 还原到测试前状态 —— **测试不得把仓库改脏**。
-    if (!readFileSync(versionsPath).equals(vBackup)) writeFileSync(versionsPath, vBackup)
-  }
+    // deps.json 是 sync 的**另一个**落盘目标（原 finally 漏掉的正是它）：跑完之后它必须是"从宿主真相
+    // 复算"的产物 —— 两侧都现场读、都不写死数字（铁律 4：真仓数字会随他人在途改动漂移）
+    const deps = JSON.parse(readFileSync(depsPath, 'utf8'))
+    assert.deepEqual(deps.domains['npm-runtime'].packages.map((p) => p.name), Object.keys(readPkg(ROOT).dependencies).sort(),
+      'sync 后 deps.json 的运行时包集必须等于 package.json#dependencies（P7 守的那条不变量在写侧也成立）')
+  })
   // 幂等口径放在**夹具**（与台账自洽的树）里判：连跑两次，第二次必须逐字节不变
   const { root, env } = fixture()
   mkdirSync(join(root, 'kit/manifest'), { recursive: true })
@@ -217,6 +275,35 @@ test('★P1-②：`kit:sync` 不得改写 contract-scope.json（逐字节），�
   const dry = run(['sync', '--dry-run'], { env })
   assert.equal(dry.code, 0)
   assert.equal(readFileSync(p, 'utf8'), first)
+})
+
+// ── 第 5 批 ①（回归）：真仓 sync 用例不得留下改动 —— 注入一条假依赖 ──────────────
+//
+// 这条用例复现的是**真缺陷**（不只是"行尾假阳性"）：往 `deps.json` 的**人工段**（`python.embedded`，
+// sync 的承诺是"人工段原样保留"）注入一条假依赖，再跑一次真仓 sync 用例的同一条路径。sync 会如实把
+// 人工段连同它派生的 `domains['python-embedded']` 一起写出来 ⇒ 若还原清单漏了 deps.json，假依赖就
+// **留在仓库里**（` M kit/manifest/deps.json`，而 hash-object ≠ HEAD blob —— 内容真变了，不是行尾）。
+// 原实现的 finally 只还原 versions.json ⇒ 本用例在修前必红（变异证据见批报告）。
+const FAKE_DEP = 'zzz-fake-regression'   // zzz- 前缀：万一残留，人一眼看出是测试注入的
+test('★①回归：跑真仓 sync 用例不得让注入的假依赖残留在 deps.json（与注入前逐字节相同）', () => {
+  const depsPath = join(ROOT, 'kit/manifest/deps.json')
+  const pristine = readFileSync(depsPath)          // ← "注入前"的字节：helper 的还原目标就是它
+  assert.equal(pristine.includes(FAKE_DEP), false, '前提：入口时仓库里不该已经有这条假依赖')
+  withSyncWritesRestored(() => {
+    const j = JSON.parse(pristine.toString('utf8'))
+    j.python.embedded.push(FAKE_DEP)               // 人工段 ⇒ sync 原样保留 ⇒ 必然"被吸收"
+    writeFileSync(depsPath, JSON.stringify(j, null, 2) + '\n')
+    const r = run(['sync'])
+    assert.equal(r.code, 0, r.stdout)
+    // 前提（否则本用例在测空气）：跑完这一刻，假依赖**确实**被 sync 写进了 deps.json
+    assert.equal(readFileSync(depsPath).includes(FAKE_DEP), true,
+      'sync 必须真的把宿主真相写进 deps.json —— 否则"注入→残留"这条通路不复现，用例会退化成恒绿')
+  })
+  // helper 已把 sync 能写的每个文件逐字节还原到进入前（= 注入前）；这里用两条**独立**判据再钉一次：
+  // ① 假依赖不残留（只有还原能清掉它：sync 的承诺是保留人工段）；② 与注入前逐字节相同（不是"看着差不多"）
+  const now = readFileSync(depsPath)
+  assert.equal(now.includes(FAKE_DEP), false, `${FAKE_DEP} 不得残留（残留 = 跑一次测试就把仓库改脏）`)
+  assert.ok(now.equals(pristine), `deps.json 必须与注入前逐字节相同：sha256 ${sha256(now)} ≠ ${sha256(pristine)}`)
 })
 
 test('★P1-③：夹具仓契约**真红真绿** —— 新增端点未登记 → CT2/CT4 红；登记后转绿', () => {
