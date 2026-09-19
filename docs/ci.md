@@ -164,10 +164,13 @@ C2 的原状态是**零挂载**：`scripts/verify-*.mjs` 共 11 个，`package.j
 | `verify-highrisk` | pendingFix | **1** | 5 项失败（`rm` 后跟路径 / `erase` / `move` / `mv` / `Stop-Process`）—— 脚本判据与 `server/highrisk.mjs` 漂移 |
 | `verify-knowledge-gui` | pendingFix | **1** | 3 项失败（`KnowledgeSidebar.tsx`/`KnowledgeToolbar.tsx` 的 `⚠` emoji；五视图白名单）—— 组件演进后脚本未同步 |
 | `verify-knowledge-import-gui` | pendingFix | **1** | 7 项失败（i18n key 数、`useKnowledge.importDocuments` 写路径、dryRun 缓存失效、结果三档明细） |
-| `verify-gui-fidelity` | manual | 未跑 | `:19` 定位 `electron/dist/electron.exe`、`:359` 用 `BrowserWindow` 加载真组件并截图比对 —— 需真二进制 + 图形会话 |
-| `verify-permission-flow` | manual | 未跑 | `:26` 用 `kernel-dist/cli.mjs` 拉起真内核、`:87` 打印 spawn args、按 stream-json 注入 `control_response` —— 需内核产物与协议往返 |
-| `verify-portable-layout` | manual | **1** | `:6-18` 断言 `release/YFWorking/` 打包产物（`:14` `electron/electron.exe`、`:15` `runtime/python/python.exe`）—— `release/` 是 gitignored，干净克隆必有假失败 |
-| `verify-package-assets` | manual | **1** | `:28` 要求 `kernel-dist/cli.mjs` 存在（先跑 `build-kernel`）—— 构建产物不在干净克隆里；它本就是出包前预检（`:2`） |
+| `verify-gui-fidelity` | manual | **1** | `:19` 定位 `electron/dist/electron.exe`、`:359` 用 `BrowserWindow` 加载真组件并截图比对 —— 干净克隆实测 `ENOENT ... dist/assets`（未构建） |
+| `verify-permission-flow` | manual | **1** | `:26` 用 `kernel-dist/cli.mjs` 拉起真内核、`:87` 打印 spawn args、按 stream-json 注入 `control_response` —— 干净克隆实测 `Cannot find module ... kernel-dist/cli.mjs` |
+| `verify-portable-layout` | manual | **1** | `:6-18` 断言 `release/YFWorking/` 打包产物（`:14` `electron/electron.exe`、`:15` `runtime/python/python.exe`）—— 干净克隆实测 `MISSING DIR: dist / electron / server / public` |
+| `verify-package-assets` | manual | **1** | `:28` 要求 `kernel-dist/cli.mjs` 存在（先跑 `build-kernel`）—— 干净克隆实测 `[FAIL] kernel-dist/cli.mjs 缺失`；它本就是出包前预检（`:2`） |
+
+> `manual` 那 4 条的 `EXIT=1` 是**构建产物不存在**造成的（不是脚本腐烂），与 `pendingFix` 那 3 条性质不同：
+> 前者"先构建/先出包就能跑"，后者"跑起来也断言失败"。上表把两类失败的具体原因都写出来，免得被混为一谈。
 
 > 上表由 `kit/cli.test.mjs` 的 3 条测试守：① 每个脚本都有 npm 入口且**恰好**归一个桶；
 > ② `ci` 桶 ⊆ `verify:ci` ⊆ `test:ci`，且 `pendingFix` **不得**出现在 `verify:ci` 链路里；
