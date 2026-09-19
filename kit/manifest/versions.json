@@ -1013,13 +1013,12 @@
     ]
   },
   "channels": {
-    "snapshotAt": "2026-09-19T14:11:52.578Z",
+    "snapshotAt": "2026-09-19T14:17:51.327Z",
     "routes": {
       "ANY /agents": null,
       "ANY /api/audit": null,
       "ANY /api/auth/status": null,
       "ANY /api/usage": null,
-      "ANY /app-info": null,
       "ANY /boot-status": null,
       "ANY /branches": null,
       "ANY /config": null,
@@ -1091,7 +1090,6 @@
       "POST /file-collab/ingest": null,
       "POST /file-collab/policies": null,
       "POST /file-collab/release": null,
-      "POST /generate-title": null,
       "POST /install-skill": null,
       "POST /knowledge/append": null,
       "POST /knowledge/doc": null,
@@ -1693,7 +1691,7 @@
         "reason": "vendored-sample-skill：public/sample-skills/ 是上游示例技能副本，自带私有 HTTP 面，不属于本仓 bridge 契约"
       }
     ],
-    "scopeCount": 19,
-    "scopeRedCount": 91
+    "scopeCount": 20,
+    "scopeRedCount": 92
   }
 }

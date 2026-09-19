@@ -30,6 +30,14 @@
     },
     {
       "kind": "routes",
+      "ns": "/boot-status",
+      "members": ["ANY /boot-status"],
+      "docSection": "§7",
+      "reason": "committed 代码里已有该端点（server/host-routes.mjs 的 host 面），而 **committed 的 bridge-contract.md §7 尚未声明它** —— 这是「代码有、文档未写」的真缺口，故按精确键登记。⚠️ 他人在途的 bridge-contract.md 编辑里已经补上了 `/boot-status`：那份改动落地后本条目应**从本文件摘除**（登记集变小 ⇒ 同时下调 channels.scopeCount/scopeRedCount）。",
+      "at": "2026-09-19"
+    },
+    {
+      "kind": "routes",
       "ns": "/diag",
       "members": ["POST /diag/render-frame"],
       "docSection": "§7",
