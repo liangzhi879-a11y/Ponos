@@ -125,27 +125,33 @@ test('★确定性：同一份文本两次解析逐字相同（快照可复算�
   assert.notEqual(dump(a), dump(parseDoc(FIXTURE_DOC.replace('`ack`', '`ack2`'))), '改一个字必须能被看见（不是恒真式）')
 })
 
-test('真仓 docs/bridge-contract.md：wsOut 20 / wsIn 13 / §7 ≥ 32 条 / §7.1 17 行（文档侧基线）', () => {
+test('真仓 docs/bridge-contract.md：wsOut 26 / wsIn 16 / §7 ≥ 100 条 / §7.1 17 行（文档侧基线）', () => {
   const d = parseDoc(readFileSync(DOC, 'utf8'))
-  assert.equal(d.wsOut.size, 20, `§5 出站事件类型数，实测 ${[...d.wsOut].sort().join(',')}`)
-  assert.equal(d.wsIn.size, 13, `§6 入站消息类型数，实测 ${[...d.wsIn].sort().join(',')}`)
-  // ★ §7 的**精确**条数刻意不钉：文档正被另一批在途改动补充端点
-  //   （HEAD 上 32 条，工作树已 35 条）—— 精确条数属于快照/CT3（T7），不在提取器里硬卡。
-  //   这里只钉不受在途改动影响的部分：计数下界 + 秳固的端点 + 逐项属性。
-  assert.ok(d.routes.size >= 32, `§7 声明的端点条数（P1 计划记 ≈38），实测 ${d.routes.size}`)
+  // ★ P1.5 起 §5/§6 已把"代码有、文档缺"的 9 条补齐（20+6 / 13+3）⇒ 条数从下界改为**精确**：
+  //   这两节不受他人在途改动影响（他们只改 §7），故精确值在两个树上都成立，是更强的判据。
+  assert.equal(d.wsOut.size, 26, `§5 出站事件类型数，实测 ${[...d.wsOut].sort().join(',')}`)
+  assert.equal(d.wsIn.size, 16, `§6 入站消息类型数，实测 ${[...d.wsIn].sort().join(',')}`)
+  // ★ §7 的**精确**条数仍不钉：文档正被另一批在途改动补充端点（P1.5 后：干净克隆 100 = 32 + 68 distinct
+  //   P1.5 条；主树 102 = 再加他人在途的 /app-info、/generate-title）。精确条数属于快照/CT3，不在提取器里硬卡。
+  assert.ok(d.routes.size >= 100, `§7 声明的端点条数（P1 批记 ≈38 → P1.5 后 ≥100），实测 ${d.routes.size}`)
   assert.equal(d.workflowRoutes.size, 17, '§7.1 逐行的方法+路径条数')
-  for (const p of ['/drives', '/health', '/session/anchor-applied', '/workflows', '/workflows/*']) {
+  for (const p of ['/drives', '/health', '/session/anchor-applied', '/workflows', '/workflows/*',
+    // P1.5 补齐的代表性端点（每个命名空间挑一条：漏抽任何一族都会在这里红）
+    '/agents', '/disabled', '/skill-detail', '/api/usage', '/team/status', '/boot-status',
+    '/knowledge/search', '/file-collab/claim', '/mcp/prompts/get', '/transcript/delete', '/egress/policy']) {
     assert.ok(d.routes.has(p), `§7 必须声明 ${p}`)
   }
   assert.equal(d.routes.get('/providers/*').wildcard, true)
   assert.equal(d.routes.get('/providers/*').docSection, '§7')
   assert.equal(d.routes.get('/session/anchor-applied').method, 'POST')
   assert.ok(d.workflowRoutes.has('GET /workflows') && d.workflowRoutes.has('POST /workflows'))
-  // 代码侧有、文档侧没有的（如 §6 缺 effort/ping/app:exec:response）是**真差异**，
-  // 这里只钉住"解析器如实呈现"：文档 §6 的 13 条里不得混进代码特有的那三条
-  for (const t of ['effort', 'ping', 'app:exec:response', 'app-info']) {
-    assert.equal(d.wsIn.has(t) || d.wsOut.has(t), false, `${t} 不在文档里就不该被解析出来（不得凭代码补文档）`)
+  // P1.5 补齐的 9 条 WS 类型必须在**正确的那一节**（入站三条进 §6；`bridge_hello` 等出站进 §5）
+  for (const t of ['effort', 'ping', 'app:exec:response']) assert.ok(d.wsIn.has(t), `§6 必须声明入站类型 ${t}`)
+  for (const t of ['bridge_hello', 'pong', 'approval-expired', 'kernel-stall', 'knowledge_changed', 'provider_updated']) {
+    assert.ok(d.wsOut.has(t), `§5 必须声明出站类型 ${t}`)
   }
+  // `app-info` 是**路由**（且属他人在途的代码+文档）⇒ 任何情况下都不得出现在 WS 集合里
+  assert.equal(d.wsIn.has('app-info') || d.wsOut.has('app-info'), false, '`/app-info` 是端点，不是 WS 类型（不得混进 §5/§6）')
 })
 
 test('真仓 §11/§12（P1.5 新增面）：7 条 IPC 推送 + 21 个工具，指纹与台账逐字相等', () => {
