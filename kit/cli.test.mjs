@@ -98,8 +98,11 @@ test('★RiderA：真仓红灯 0 / 黄灯 1（4 条 P2 幽灵依赖已补声明�
     '黄灯 1 是 P5（两套 Python 清单差集，属预期，spec §6.3 已定不阻断）；红灯/黄灯数变了就必须有人来解释')
   // 黄灯只允许 P5；CT9 的 3 条必须落在**基线**（黄、只报不拦，逐条）
   assert.deepEqual(j.findings.filter((f) => f.severity === 'yellow').map((f) => f.rule), ['P5'])
-  assert.deepEqual(j.findings.filter((f) => f.rule === 'CT9').map((f) => f.severity),
-    ['baselined', 'baselined', 'baselined'])
+  // CT9 的差集（黄、只报不拦）必须**逐条**落在基线里（条数随渲染层调用点变化 ⇒ 不硬编码条数）
+  const ct9 = j.findings.filter((f) => f.rule === 'CT9')
+  assert.equal(ct9.length > 0, true, 'CT9 至少应报出 /save-temp-image 这类差集')
+  assert.deepEqual([...new Set(ct9.map((f) => f.severity))], ['baselined'],
+    `CT9 的每条都必须登记进 drift-baseline（不许裸黄），实测 ${JSON.stringify(ct9)}`)
   // ★ 双树口径（铁律 4）：工作树里可能有**他人在途**的端点改动。那种情况下 CT1/CT2/CT4 会如实报出
   //   "台账未同步"，且它们必须**已逐条登记基线**（drift-baseline.json，理由写明"他人在途 + 何时摘除"）——
   //   既不许把真差异压成静默绿，也不许出现 CT1/CT2/CT4 之外的红灯。
@@ -111,8 +114,11 @@ test('★RiderA：真仓红灯 0 / 黄灯 1（4 条 P2 幽灵依赖已补声明�
   const dirty = execFileSync('git', ['status', '--porcelain', '--', 'server', 'electron', 'kernel', 'src', 'shared', 'docs/bridge-contract.md'],
     { cwd: ROOT, encoding: 'utf8' }).trim()
   if (!dirty) {
-    assert.deepEqual(j.findings.map((f) => f.rule), ['P5', 'CT9', 'CT9', 'CT9'],
-      '干净工作树必须只有 P5 + 3 条 CT9（台账与代码/文档完全同步）')
+    // 干净工作树：finding 只允许两类 —— P5（黄）+ CT9（基线里逐条，条数随渲染层调用点变化，
+    // ★ 故**不硬编码条数**：铁律 4 —— 该数字由 src/ 的现场内容决定，会随他人改动漂移）
+    assert.deepEqual([...new Set(j.findings.map((f) => f.rule))].sort(), ['CT9', 'P5'],
+      '干净工作树只允许 P5（黄）+ CT9（已登记基线）')
+    assert.deepEqual(j.findings.filter((f) => f.severity !== 'baselined').map((f) => f.rule), ['P5'])
   }
 })
 
