@@ -2704,11 +2704,30 @@ git commit -m "feat(kit): CLI 装配（check / sync / view / stamp 四命令）
 
 ## Task 8: 欠账 A2 / A3 / A5 —— 版本号入口补齐
 
+**★ 本任务额外并入 4 项 Task 7 审查发现的"文案/口径一致性"收口（都很小，但都是"报告对外说假话"，不做则门禁上线即误导操作者）**
+
+1. **【必做】`kit/lib/version-rules.mjs:127` 的标题写"技能版本三方一致"，但 V6 只比了两方**（`skills.json` ↔ `SKILL.md` frontmatter，`:124-125`），**没有**比台账 `versions.skills[].version`。
+   spec §5.3 明写了"**在补齐前，报告文案不得写「三方一致」**"，而 Task 7 的 `--verbose` 逐条表会把这句话**直接打给操作者** → 现在就是在对外说假话。
+   → 二选一：(a) 标题改为"技能版本两方一致"（最小改动）；(b) 补齐台账侧比对（= spec §5.3 的 V6 返工项）。
+   **推荐 (b)**：加"台账 `skills[].version` == 真实来源（`skills.json` / frontmatter）"的比对 —— 这样 V6 才是真的三方，且与 spec 一致。若选 (a)，必须同时把 spec §5.3 的"返工项"改成明确的后续任务号，别让它悬着。
+   **无论选哪个，都要补反例测试**：手动把 `versions.skills[0].version` 改成 `9.9.9` → 若选 (b) 必须报红；若选 (a) 则该场景明确不在 V6 保护范围内（在 spec 里写明）。
+
+2. **`P0` 不进 `checks`**：`kit/lib/dep-rules.mjs:46-50` 早退时只 push finding、不 push `checkResult` → `summary.rules` 报 18，而实现里实际有 19 个规则号（V1,V1b,V2–V8,V8b,V8′,P0–P7）。→ 让 P0 也 push `checkResult`，使 `rules` 计数与实现一致（也让 `--verbose` 能看到它）。
+
+3. **口径三处并存**：spec §5.3 表 9 行 + §6.3 表 8 行 = 17；`summary.rules` = 18；实现规则号 = 19。→ 在 spec 里把"规则条数"的口径写清（**规则号数**，含表外的 `V1b`/`V8b`/`P0`），并让报告与之一致。
+
+4. **更正一条不实的证据陈述**：Task 7 提交信息称"换回计划原文的 `ghostOf` → P2 从 4 涨到 **15** 条（含内建模块）"。
+   审查实测：按**计划原文**（`plan:2587-2589`，**带** builtins 过滤）实为 **6 条**（多报 `~`、`jszip`）——与 `kit/cli.mjs:20-22` 自己的注释"4→6"一致。"15 条"只在**去掉** builtins 过滤时才出现。
+   结论（计划版会多报）不受影响，但那个数字是错的，且与自身注释矛盾。→ 在本次提交信息或本文件里如实更正，**以后不要再引用"15"这个数字**。
+
 **为什么必须一起做**：`bump-version.mjs` 是目前唯一的版本号入口，但它**写不了 GUI 线**（`package.json` 2.8.0 无 bump 路径）、**写不进历史**（台账 `history.records` 是 V3 的判据）、而它的"同步测试期望值"分支**永走跳过**（`server/version.test.mjs` 不存在）。三条不一起修，台账上线当天就会被一次正常发版打红。
+
+**★ 另有一条 Task 4 遗留需在本任务确认**：V3 当前**空跑**（真实仓 `history.records = 0` → `evaluated 0`）。若 `bump-version` 不写 history，V3 将**永不触发** —— 本任务落地 bump 后，必须**实测一次 bump（dry-run 或夹具仓）产生的 `history.records` 是否非空**，并确认 V3 从 0 条 evaluated 变成真的在判。**若 bump 不写 history，必须在本次补上**（这是 A3 的实质内容）。
 
 **Files:**
 - Modify: `scripts/bump-version.mjs`
 - Modify: `version.mjs:3-7`（注释口径）
+- Modify: `kit/lib/version-rules.mjs`（V6 标题/补台账侧比对、P0 也 push checkResult）
 - Create: `server/version.test.mjs`
 
 **Interfaces:**
@@ -2928,13 +2947,26 @@ git commit -m "fix(kit): 补齐版本号入口（A2/A3/A5）
 
 ## Task 9: 欠账 A6 / A7 —— `_common` 覆盖与 lock 重算
 
+**★ 本任务额外并入 Task 8 审查发现的 4 项（都是小改，但第 1 项与"漂移可被无声洗白"同族，属治理问题）**
+
+1. **【必做，治理】`scripts/bump-version.mjs:133` 的 `from` 取自台账旧值 → bump 会"洗白漂移"**
+   审查实测：先手改台账 `APP_VERSION = dev 2.0.0`（此时 V1 已红），再跑 `bump app 3.0.1` → 记录写成 `from:"dev 2.0.0"`（**与宿主真值 `dev 3.0.0` 不符**），sync 之后 **V1/V3 全绿** —— 漂移**无痕消失**。
+   这与前面几轮修掉的"基线抹平红灯""ghost 静默放行"是同一族：**用一次动作把检查结果擦干净**。
+   → 修法二选一：(a) `from` 改用 bump 已经读到的**宿主真值** `currentValue`；(b) 若 `entry.value !== currentValue` 则直接 `fail()`，告警"台账与宿主不一致，先跑 `kit:sync` 或查因"。
+   **推荐 (b)**（fail-loud，且能挡住"带着脏台账发版"）。无论选哪个都要**补测试**：造"台账与宿主不一致"场景 → bump 必须要么记真值、要么明确失败，**不得**静默把台账改成一致。
+2. **`bump-version.mjs` 非原子**：`scripts/bump-version.mjs:81` 与 `:89` 之间——双引号反例下 `version.mjs` 已被改、而断言替换失败，**重跑同命令不自愈**（审查实测仍 EXIT=1，需手改）。
+   → 改为**先全量预检（所有待改文本都能找到）再落盘**；或在失败时回滚已改文件。补测试：某一路替换失败 → 其它文件不被改动。
+3. **spec §5.1 的 history 字段名写错**：spec 写 `{id, from, to, at, reason}`，而实现与计划用 **`key`**（`kit/lib/version-rules.mjs:74` 按 `r.key` 分组）。按 spec 字段名写出的记录会被归入 `undefined` 组、**V3 根本不核它**（静默失效）。→ spec 改成 `key`。
+4. **`package.json#version` 不带 `dev ` 前缀**这一事实只存在于代码注释与提交信息里。计划 Task 8 段仍写"版本格式：dev `<major>.<minor>…`"，照计划改回会**破坏 GUI 发布线**（`app-builder-lib` 对非 semver 抛 `Invalid major number`；`semver.major('dev 2.9.0')` 实测抛错）。→ 把"pkg 目标不带前缀、且必须保持 npm semver 合法"写进 spec §10 的 A2 行与计划 Task 8 段。
+
 **Files:**
 - Modify: `kit/lib/ledger.mjs`（追加 `syncSkillsLock`）
 - Modify: `kit/lib/ledger.test.mjs`（追加其测试）
 - Modify: `skills-lock.json`（20 条 `computedHash` 重算）
 - Modify: `public/sample-skills/_common/_common_manifest.json`（补 `_note` 说明 `current_version` 的来源与可校验性）
 - Modify: `kit/manifest/versions.json`（`commonTools` 覆盖到 98/98）
-- Modify: `docs/superpowers/specs/2026-09-19-devkit-design.md`（A6/A7 状态标记，**同步数字**）
+- Modify: `scripts/bump-version.mjs`（rider 1、2）
+- Modify: `docs/superpowers/specs/2026-09-19-devkit-design.md`（A6/A7 状态标记 + rider 3、4，**同步数字**）
 
 **Interfaces:**
 - Produces: `syncSkillsLock({ root, files? }): { updated: string[], unchanged: string[], missing: string[] }`
