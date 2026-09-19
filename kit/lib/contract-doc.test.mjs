@@ -147,3 +147,70 @@ test('真仓 docs/bridge-contract.md：wsOut 20 / wsIn 13 / §7 ≥ 32 条 / §7
     assert.equal(d.wsIn.has(t) || d.wsOut.has(t), false, `${t} 不在文档里就不该被解析出来（不得凭代码补文档）`)
   }
 })
+
+// ── P1.5：§11（IPC 推送通道）与 §12（工具结构指纹）──────────────────────────
+//
+// 新增章节的**目的**：把"只能登记、无法对账"的两类（IPC / 工具 input_schema）拉回文档面 ⇒
+// 契约对账回到"文档 ↔ 代码"直接双向（P1 的 92 条登记降到只剩无法文档化的空洞）。
+// 解析纪律与 §5/§6 **完全相同**（反引号分组、一行可多条、` / ` 与顿号二次拆），另加两条：
+//   I4 §11/§12 同样**只解析章节的第一张连续表**（后文的示例表不得混进声明集）；
+//   I5 §12 的**指纹必须被反引号包住**且形如 8 位十六进制 —— 表里散文中的裸串不算、缺指纹即
+//      `fp:null`（由 CT3 报红）。理由：指纹是被**逐字比对**的东西，靠"扫行内像不像指纹"来猜
+//      等于把判定交给正则的宽容度；宁可要求写清，也不要"猜对了就绿"。
+const FIXTURE_P15 = [
+  '# 契约夹具（P1.5）',
+  '',
+  '## 11. IPC 通道（main ↔ renderer 推送）',
+  '',
+  '表外散文里的 `ch:not-a-decl` 不算声明（只有表内才进集合）。',
+  '',
+  '| 通道 | 方向 | 时机 |',
+  '|---|---|---|',
+  '| `app:generate-progress` | main → renderer | 生成长任务进度 |',
+  '| `boot:progress` / `gpu:crash` | main → renderer | 启动进度与 GPU 崩溃 |',
+  '',
+  '下面这张表是**示例**，不得进声明集：',
+  '',
+  '| 通道 | 方向 |',
+  '|---|---|',
+  '| `zzz-second-table` | main → renderer |',
+  '',
+  '## 12. 工具 input_schema 出口',
+  '',
+  '| 工具 | 结构指纹 | 用途 |',
+  '|---|---|---|',
+  '| `Agent` | `1977c7ba` | 委派子 Agent |',
+  '| `Bash` | `055829fc` | 执行 shell 命令 |',
+  '| `NoFp` | 缺指纹 | 故意不包反引号（必须解析成 null，不得猜） |',
+  '',
+].join('\n')
+
+test('★§11/§12（P1.5）：IPC 通道进 Set、工具名+指纹进 Map；只取第一张连续表、指纹必须反引号', () => {
+  const d = parseDoc(FIXTURE_P15)
+  assert.deepEqual([...d.ipc].sort(), ['app:generate-progress', 'boot:progress', 'gpu:crash'],
+    '一行可声明多条（` / ` 拆）；表外散文的反引号不进集合')
+  assert.equal(d.ipc.has('ch:not-a-decl'), false, '§11 的声明只来自表内')
+  assert.equal(d.ipc.has('zzz-second-table'), false, '只解析章节的**第一张**连续表（后文示例表不算声明）')
+  assert.deepEqual([...d.tools.keys()].sort(), ['Agent', 'Bash', 'NoFp'])
+  assert.equal(d.tools.get('Agent').fp, '1977c7ba', '指纹逐字取反引号里的 8 位十六进制')
+  assert.equal(d.tools.get('Bash').fp, '055829fc')
+  assert.equal(d.tools.get('NoFp').fp, null, '缺指纹（没包反引号）⇒ null，绝不猜（由 CT3 报红）')
+  for (const n of d.tools.keys()) {
+    assert.equal(Number.isInteger(d.tools.get(n).row) && d.tools.get(n).line > 1, true, `${n} 必须能反查行号`)
+  }
+  // 章节反查与形状：§11/§12 各自进 sections（types = 该节声明的名字清单）
+  assert.deepEqual([...d.sections.keys()].sort(), ['§11', '§12'])
+  assert.deepEqual([...d.sections.get('§11').types].sort(), [...d.ipc].sort())
+  assert.deepEqual([...d.sections.get('§12').types].sort(), [...d.tools.keys()].sort())
+  assert.equal(d.sections.get('§11').rows, 2, '表行数（表头与分隔行不算）')
+  assert.equal(d.sections.get('§12').rows, 3)
+  // 确定性：同输入必同输出（快照/复算的前提）；改一个字必须能被看见（不是恒真式）
+  const dump = (x) => JSON.stringify({ ipc: [...x.ipc].sort(), tools: [...x.tools.entries()] })
+  assert.equal(dump(parseDoc(FIXTURE_P15)), dump(d))
+  assert.notEqual(dump(parseDoc(FIXTURE_P15.replace('1977c7ba', '1977c7bb'))), dump(d),
+    '指纹改一位必须能被看见 —— 否则 CT3 的"逐字比对"就是恒真的')
+  // 完全没有 §11/§12 的文档 ⇒ 两个集合为空（解析器是纯增量，老文档不炸）
+  const old = parseDoc(FIXTURE_DOC)
+  assert.equal(old.ipc.size, 0)
+  assert.equal(old.tools.size, 0)
+})

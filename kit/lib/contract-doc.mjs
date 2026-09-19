@@ -8,13 +8,22 @@
 //   I3 **文档里的 `*` 不给覆盖信用**（plan §7 反例 ⑧）：`/providers/*`、`/workflows/*` 只声明
 //      命名空间 ⇒ 保留 `*` 原样并打 `wildcard:true`，**绝不展开成子路径**（展开 = 给未覆盖的
 //      子路径凭空发放"已被文档声明"的信用，对账会假绿）。判定留给 T7。
+//   I4 **P1.5 新增 §11/§12**（IPC 推送通道 / 工具 input_schema 出口）：纪律与 §5/§6 一致
+//      （反引号分组、一行可多条、` / ` 与顿号二次拆），同样**只解析章节的第一张连续表**；
+//      §12 的**指纹必须被反引号包住**且形如 8 位十六进制，否则 `fp:null` —— 指纹是被**逐字比对**
+//      的东西，靠"扫行内像不像指纹"去猜等于把判定交给正则的宽容度（宁可要求写清、缺了就红）。
+//      为什么把这两类拉回文档面：P1 时它们"零章节"⇒ 只能整类登记（92 条），登记是"人工承认边界"，
+//      不是对账；补上文档后契约面回到"文档 ↔ 代码"直接双向（P1.5 的判据 (a)）。
 //
 // 返回形状（`sections` 是反查索引：每条解析结果都能回到它的章节与行号）：
 //   · `wsOut: Set<string>`          §5（bridge → GUI）
 //   · `wsIn:  Set<string>`          §6（GUI → bridge）
 //   · `routes: Map<path, {method, wildcard, row, line, section, docSection}>`  §7
 //   · `workflowRoutes: Map<'<METHOD> <path>', {raw, synonyms, row, line, section}>`  §7.1
+//   · `ipc:   Set<string>`          §11（Electron IPC 推送通道；主进程 → 渲染层）
+//   · `tools: Map<name, {fp, row, line, section}>`  §12（工具名 + 结构指纹；`fp` 可为 null）
 //   · `sections: Map<'§N', {title, line, rows, types, routes, workflowRoutes, wildcards}>`
+//     （`types` = 该节声明的名字清单：§3/§4 消息类型、§5/§6 WS 类型、§11 通道、§12 工具名）
 /** 文档里的章节标题：`## 7. HTTP REST API…` / `### 7.1 工作流模块…` */
 const HEADING_RE = /^(#{2,4})\s*(\d+(?:\.\d+)*)\.?\s+(.*)$/
 
@@ -90,10 +99,25 @@ function parseEndpointRow(cell, row, line, section) {
 }
 
 /**
+ * §12 的一行：`| `Agent` | `1977c7ba` | 一句用途 |`。
+ * 取该行**全部反引号 token**：第 1 个形如标识符的是工具名，第 1 个形如 8 位十六进制的是指纹。
+ * 指纹**必须包反引号**（散文里的裸串不算）—— 逐字比对的东西不许靠"像不像"来猜。
+ * @returns {{name:string, value:{fp:string|null,row:number,line:number,section:string}}|null}
+ */
+function parseToolRow(text, row, line, section) {
+  const toks = ticked(text)
+  const name = toks.find((t) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(t))
+  if (!name) return null
+  const fp = toks.find((t) => /^[0-9a-f]{8}$/.test(t)) || null
+  return { name, value: { fp, row, line, section } }
+}
+
+/**
  * 解析契约文档文本（纯函数，同输入必同输出）。
  * @param {string} text
  * @returns {{wsOut:Set<string>, wsIn:Set<string>, routes:Map<string,object>,
- *            workflowRoutes:Map<string,object>, sections:Map<string,object>}}
+ *            workflowRoutes:Map<string,object>, ipc:Set<string>, tools:Map<string,object>,
+ *            sections:Map<string,object>}}
  */
 export function parseDoc(text) {
   // Windows 检出是 CRLF：行尾的 CR 在 JS 里是**行终止符**，点号与行尾锚都够不到它
@@ -126,6 +150,8 @@ const lines = String(text ?? '').split(/\r?\n/)
   const wsIn = new Set()
   const routes = new Map()
   const workflowRoutes = new Map()
+  const ipc = new Set()
+  const tools = new Map()
 
   for (const h of heads) {
     const sec = sections.get(h.id)
@@ -133,7 +159,7 @@ const lines = String(text ?? '').split(/\r?\n/)
     sec.rows = rows.length
     const cells = rows.map((r) => firstCell(r.text))
 
-    if (h.id === '§3' || h.id === '§4' || h.id === '§5' || h.id === '§6') {
+    if (h.id === '§3' || h.id === '§4' || h.id === '§5' || h.id === '§6' || h.id === '§11') {
       // `milestones` / `milestone-start` / `milestone-ok` ⇒ 三条（按 ` / ` 与顿号拆）
       const types = []
       for (const cell of cells) {
@@ -148,7 +174,21 @@ const lines = String(text ?? '').split(/\r?\n/)
       for (const t of sec.types) {
         if (h.id === '§5') wsOut.add(t)
         else if (h.id === '§6') wsIn.add(t)
+        else if (h.id === '§11') ipc.add(t)
       }
+      continue
+    }
+
+    if (h.id === '§12') {
+      let row = 0
+      for (const r of rows) {
+        row++
+        const e = parseToolRow(r.text, row, r.line, h.id)
+        if (!e) continue
+        if (!tools.has(e.name)) tools.set(e.name, e.value)
+        sec.types.push(e.name)
+      }
+      sec.types = [...new Set(sec.types)]
       continue
     }
 
@@ -182,5 +222,5 @@ const lines = String(text ?? '').split(/\r?\n/)
     }
   }
 
-  return { wsOut, wsIn, routes, workflowRoutes, sections }
+  return { wsOut, wsIn, routes, workflowRoutes, ipc, tools, sections }
 }
