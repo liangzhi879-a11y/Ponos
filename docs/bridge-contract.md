@@ -202,6 +202,12 @@ env 调参：`PONOS_FIDELITY`（`0` 总开关关）、`_ANCHOR`（`0` 关内核�
 | `approval-mode-rejected` | `{ sessionId, data:{ reason, mode } }` | 档位切换被 bridge 拒绝（非法值 / 工作流宿主会话 `_wfhost` 不支持临时覆盖）→ GUI 弹同一条提示条 |
 | `pet:show-main` / `pet:quit-app` | `{}` | 宠物双击/退出广播 |
 | `workflow_event` | `{ sessionId, event: { type:'start'\|'node'\|'node_skipped'\|'edge_taken'\|'end', runId, … } }` | 工作流运行事件（§7.1），`sessionId` 通常为宿主会话 `_wfhost` |
+| `bridge_hello` | `{ id }` | 桥在**每个 WS 连接建立后立刻**发一帧（带桥实例 id）。解决的是"GUI 以为连着、实际连的是重启前的旧桥"——首包即身份，不需要额外握手往返（2026-09-12 桥树杀事故的无感愈合） |
+| `pong` | `{ t }` | 应用层心跳回执：收到 GUI 的 `ping` 即回（TCP 假死时浏览器 `send` 会静默失败且不触发 `error`/`close`，仅靠传输层 ping 感知不到失联）。判死与自愈重连由 GUI 侧负责，bridge 只回帧 |
+| `approval-expired` | `{ sessionId, data:{ toolUseId, reason } }` | 审批请求已过期（内核不再等这次回答）而审批结果此刻才到 ⇒ **明确告诉 UI 这条没能生效**，避免把一次 no-op 读成"已放行"。`reason` 区分成因（如 `tool-result` = 该工具结果已到、审批窗口已关闭） |
+| `kernel-stall` | `{ sessionId, data:{ sessionId, silentMs } }` | 内核静默超过阈值（`silentMs` 无声）时的**告警**：只告警、不自动杀进程（杀了会丢会话工作），供前端提示"内核疑似卡住" |
+| `knowledge_changed` | `{ data:{ revision, count, paths } }` | 知识库目录（`knowledge/spaces`）被外部改动（监听器批次回调）⇒ 让 GUI 失效缓存并重取。带**单调递增** `revision`：客户端据此丢弃乱序到达的旧批次（网络抖动下可能后发先至） |
+| `provider_updated` | `{ data:{ providerId, updates, notes } }` | provider 能力探测回填后的广播（设置窗口据此实时刷新）。运行中的内核会话是否受影响由既有的 env 签名收割机制决定，不在这一帧里表达 |
 
 背压：单客户端 WS 缓冲 >8MB 标记过载，丢弃低优先级事件（milestones/milestone-*/question-resolved/raw/stderr/task_progress），<2MB 恢复（滞回）。
 
@@ -221,6 +227,9 @@ env 调参：`PONOS_FIDELITY`（`0` 总开关关）、`_ANCHOR`（`0` 关内核�
 | `browser:exec:response` | `{ requestId, … }` | 执行器完成 → 回写内核 stdin |
 | `browser:event` | `{ sessionId, event }` | 执行器事件 → 广播 GUI |
 | `pet:show-main` / `pet:quit-app` | `{}` | 宠物请求显示主窗口 / 退出应用（广播） |
+| `effort` | `{ sessionId, level }` | 思考深度热切换：对**运行中**的内核会话注入 `control_request(reasoning_effort)`。会话不存在 / 进程已死 / `level` 为空 ⇒ 幂等忽略（新会话由 `buildChildEnv` 的 `PONOS_REASONING_EFFORT` env 兜底）。bridge 没有"上次会话"概念，目标会话由前端解析后随消息带来 |
+| `ping` | `{}` | 应用层保活：GUI 定期 ping 探测 WS 是否半开（假死时 `send` 静默失败）；bridge 收到即回 `pong`，不自行判超时 |
+| `app:exec:response` | `{ requestId, ok, data?, error?, kind?, durationMs }` | 应用命令执行器的**回执**（由 Electron 主进程侧以执行器身份发回）⇒ bridge 回写内核 stdin 的 `control_request/app_response`。回执丢失不影响内核侧的超时兜底 |
 
 ### 6.1 GUI 文本 `/loop` 转译（2026-09-14 打通点）
 

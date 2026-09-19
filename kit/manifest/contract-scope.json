@@ -21,33 +21,6 @@
       "docSection": "§7",
       "reason": "§7 里 `/providers` 与 `/providers/*` 两行都**不给子路径覆盖信用**：`*` 只声明命名空间（反例⑧：把 `/providers/*` 当覆盖就是做假），而 `/providers` 是另一条具体端点（列表）。该前缀 `children` 为空且无锚定正则——provider id 由运行时拼装、静态不可枚举。**为什么补不了文档**：没有具体子路径可写；只能显式登记命名空间本身，让「这个前缀存在」这件事可见。",
       "at": "2026-09-19"
-    },
-    {
-      "kind": "wsOut",
-      "ns": "bridge→GUI",
-      "members": [
-        "approval-expired",
-        "bridge_hello",
-        "kernel-stall",
-        "knowledge_changed",
-        "pong",
-        "provider_updated"
-      ],
-      "docSection": "§5",
-      "reason": "§5（桥 → GUI）只列 20 个类型，这 6 个出站类型文档缺：`bridge_hello`/`pong` 是握手与心跳、`approval-expired` 是审批超时、`kernel-stall`/`knowledge_changed`/`provider_updated` 是内核与知识库的状态通知。全部来自 T2 的发送函数白名单（非裸抓 `type:`）。",
-      "at": "2026-09-19"
-    },
-    {
-      "kind": "wsIn",
-      "ns": "GUI→bridge",
-      "members": [
-        "app:exec:response",
-        "effort",
-        "ping"
-      ],
-      "docSection": "§6",
-      "reason": "§6（GUI → 桥）只列 13 个类型，这 3 个入站类型文档缺：`effort`（推理强度切换）、`ping`（保活）、`app:exec:response`（应用智控应答）。",
-      "at": "2026-09-19"
     }
   ]
 }
