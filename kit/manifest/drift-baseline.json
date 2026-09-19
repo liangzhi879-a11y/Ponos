@@ -2,5 +2,24 @@
   "version": 1,
   "_note": "已知漂移登记后不再报红，但条目数不得增加；减少时应摘除条目。",
   "_shape": "{ rule, subject, reason, at }",
-  "entries": []
+  "entries": [
+    {
+      "rule": "CT9",
+      "subject": "/save-temp-image",
+      "reason": "渲染层调 `POST /save-temp-image`（src/components/chat/ChatInput.tsx:357），server 侧**全仓零命中**（grep save-temp 无结果）⇒ 前端调后端无（plan §6 D8）。属功能缺口而非契约面变更，故按 CT9「黄、只报不拦」登记基线；修好（补端点或改前端路径）后请摘除本条并下调 versions.json#history.baselineCount。",
+      "at": "2026-09-19"
+    },
+    {
+      "rule": "CT9",
+      "subject": "/worktree/create",
+      "reason": "渲染层调 `POST /worktree/create`（src/components/worktree/WorktreePanel.tsx:60），server 侧只有 `/worktrees`（server/bridge.mjs:2839）—— 路径名差一个 s，create/remove 两个动作都没有对应端点（D8 同类）。登记基线以待确认是「后端已实现但路径变了」还是「前端调错」。",
+      "at": "2026-09-19"
+    },
+    {
+      "rule": "CT9",
+      "subject": "/worktree/remove",
+      "reason": "同 `/worktree/create`：src/components/worktree/WorktreePanel.tsx:80 调用，server 侧无该端点。两条都属 D8（前端调后端无）历史欠账。",
+      "at": "2026-09-19"
+    }
+  ]
 }

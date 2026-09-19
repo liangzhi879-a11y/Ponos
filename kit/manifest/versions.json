@@ -15,7 +15,8 @@
     }
   ],
   "history": {
-    "baselineCount": 0,
+    "baselineCount": 3,
+    "baselineRedCount": 0,
     "commonToolsBaseline": 98,
     "records": []
   },
@@ -1011,5 +1012,688 @@
       }
     ]
   },
-  "channels": {}
+  "channels": {
+    "snapshotAt": "2026-09-19T14:11:52.578Z",
+    "routes": {
+      "ANY /agents": null,
+      "ANY /api/audit": null,
+      "ANY /api/auth/status": null,
+      "ANY /api/usage": null,
+      "ANY /app-info": null,
+      "ANY /boot-status": null,
+      "ANY /branches": null,
+      "ANY /config": null,
+      "ANY /convert-office": null,
+      "ANY /diag/info": null,
+      "ANY /disabled": null,
+      "ANY /drives": null,
+      "ANY /health": null,
+      "ANY /known-folders": null,
+      "ANY /list-dir": null,
+      "ANY /logs/list": null,
+      "ANY /logs/prune": null,
+      "ANY /logs/tail": null,
+      "ANY /providers": null,
+      "ANY /raw-file": null,
+      "ANY /read-docx": null,
+      "ANY /read-file": null,
+      "ANY /read-sheet": null,
+      "ANY /sample-skills": null,
+      "ANY /skill-detail": null,
+      "ANY /skills": null,
+      "ANY /transcript/list": null,
+      "ANY /transcript/load": null,
+      "ANY /transcript/search": null,
+      "ANY /worktrees": null,
+      "DELETE /knowledge/delete": null,
+      "DELETE /knowledge/delete-space": null,
+      "DELETE /knowledge/purge": null,
+      "DELETE /knowledge/restore": null,
+      "GET /api/profile": null,
+      "GET /egress/policy": null,
+      "GET /file-collab/claims": null,
+      "GET /file-collab/policies": null,
+      "GET /file-collab/status": null,
+      "GET /file-collab/versions": null,
+      "GET /knowledge/broken-links": null,
+      "GET /knowledge/doc": null,
+      "GET /knowledge/entries": null,
+      "GET /knowledge/graph": null,
+      "GET /knowledge/import/jobs": null,
+      "GET /knowledge/index-tags": null,
+      "GET /knowledge/links": null,
+      "GET /knowledge/mentions": null,
+      "GET /knowledge/packs": null,
+      "GET /knowledge/packs/detail": null,
+      "GET /knowledge/related": null,
+      "GET /knowledge/search": null,
+      "GET /knowledge/spaces": null,
+      "GET /knowledge/stats": null,
+      "GET /knowledge/tags": null,
+      "GET /knowledge/trash": null,
+      "GET /knowledge/tree": null,
+      "GET /mcp": null,
+      "GET /mcp/prompts": null,
+      "GET /mcp/status": null,
+      "GET /tags": null,
+      "GET /team/status": null,
+      "GET /workflows": null,
+      "POST /api/auth/change-password": null,
+      "POST /api/auth/login": null,
+      "POST /api/auth/logout": null,
+      "POST /api/auth/setup": null,
+      "POST /api/profile": null,
+      "POST /diag/render-frame": null,
+      "POST /file-collab/checkin": null,
+      "POST /file-collab/claim": null,
+      "POST /file-collab/conflict": null,
+      "POST /file-collab/heartbeat": null,
+      "POST /file-collab/ingest": null,
+      "POST /file-collab/policies": null,
+      "POST /file-collab/release": null,
+      "POST /generate-title": null,
+      "POST /install-skill": null,
+      "POST /knowledge/append": null,
+      "POST /knowledge/doc": null,
+      "POST /knowledge/import": null,
+      "POST /knowledge/packs/export": null,
+      "POST /knowledge/packs/install": null,
+      "POST /knowledge/packs/uninstall": null,
+      "POST /knowledge/reindex": null,
+      "POST /mcp/prompts/get": null,
+      "POST /mcp/test": null,
+      "POST /probe-provider": null,
+      "POST /session/anchor-applied": null,
+      "POST /tags/merge": null,
+      "POST /tags/undo": null,
+      "POST /team/create": null,
+      "POST /team/invite": null,
+      "POST /team/join": null,
+      "POST /team/revoke": null,
+      "POST /team/search-root": null,
+      "POST /test-provider": null,
+      "POST /transcript/delete": null,
+      "POST /uninstall-skill": null,
+      "POST /verify-provider": null,
+      "POST /workflows": null,
+      "POST /write-docx": null,
+      "POST /write-file": null,
+      "POST /write-sheet": null,
+      "PUT /mcp": null
+    },
+    "routePrefixes": {
+      "/file-collab/": {
+        "dynamic": null,
+        "segments": [],
+        "suffixes": [],
+        "childCount": 10
+      },
+      "/knowledge": {
+        "dynamic": null,
+        "segments": [],
+        "suffixes": [],
+        "childCount": 27
+      },
+      "/knowledge/import/jobs/": {
+        "dynamic": null,
+        "segments": [],
+        "suffixes": [],
+        "childCount": 0
+      },
+      "/logs/": {
+        "dynamic": null,
+        "segments": [],
+        "suffixes": [],
+        "childCount": 3
+      },
+      "/providers/": {
+        "dynamic": null,
+        "segments": [],
+        "suffixes": [],
+        "childCount": 0
+      },
+      "/transcript/": {
+        "dynamic": null,
+        "segments": [],
+        "suffixes": [],
+        "childCount": 4
+      },
+      "/workflows/": {
+        "dynamic": "/^\\/workflows\\/([^/]+)(\\/.*)?$",
+        "segments": [
+          "bindings",
+          "confirm",
+          "import",
+          "run",
+          "run-status",
+          "runs",
+          "stop",
+          "verify"
+        ],
+        "suffixes": [
+          "/duplicate",
+          "/export",
+          "/rollback",
+          "/validate",
+          "/versions"
+        ],
+        "childCount": 0
+      }
+    },
+    "wsOut": [
+      "ack",
+      "approval",
+      "approval-expired",
+      "approval-mode-changed",
+      "approval-mode-degraded",
+      "approval-mode-rejected",
+      "approval-resolved",
+      "bridge_hello",
+      "browser:event",
+      "cancelled",
+      "closed",
+      "error",
+      "event",
+      "kernel-stall",
+      "knowledge_changed",
+      "milestone-ok",
+      "milestone-start",
+      "milestones",
+      "pet:quit-app",
+      "pet:show-main",
+      "pong",
+      "provider_updated",
+      "question",
+      "question-resolved",
+      "raw",
+      "stderr",
+      "workflow_event"
+    ],
+    "wsIn": [
+      "answer",
+      "app:exec:response",
+      "approval-mode",
+      "approval-response",
+      "browser:event",
+      "browser:exec:response",
+      "browser_control",
+      "cancel",
+      "effort",
+      "executor:hello",
+      "loop-command",
+      "pet:quit-app",
+      "pet:show-main",
+      "ping",
+      "question-dismiss",
+      "send"
+    ],
+    "ipc": {
+      "invoke": [
+        "agents:sync",
+        "app:check",
+        "app:check-spec",
+        "app:console-bound",
+        "app:console-enter",
+        "app:console-leave",
+        "app:coverage",
+        "app:generate",
+        "app:list",
+        "app:list-backups",
+        "app:login",
+        "app:login-cancel",
+        "app:login-done",
+        "app:mark-quality",
+        "app:next-id",
+        "app:notify-task",
+        "app:probe",
+        "app:read-spec",
+        "app:remove",
+        "app:repair",
+        "app:restore-spec",
+        "app:run",
+        "app:upsert",
+        "app:verify",
+        "app:write-spec",
+        "browser:clear-session",
+        "browser:open",
+        "browser:pause",
+        "browser:resume",
+        "browser:status",
+        "diag:export",
+        "diag:get-boot-summary",
+        "diag:get-status",
+        "diag:open-log-dir",
+        "diag:rerun",
+        "diag:rerun-all",
+        "diag:run-kernel-check",
+        "dialog:open-knowledge-pack",
+        "dialog:open-skill-package",
+        "dialog:pick-knowledge-files",
+        "dialog:pick-knowledge-folder",
+        "editor:get-pending",
+        "editor:open-file",
+        "experience:delete-entry",
+        "experience:export",
+        "experience:import",
+        "experience:list",
+        "experience:set-active",
+        "pet:config",
+        "shell:open-path",
+        "vault:copy",
+        "vault:list",
+        "vault:remove",
+        "vault:reveal",
+        "vault:secret-delete",
+        "vault:secret-get-all",
+        "vault:secret-keys",
+        "vault:secret-set",
+        "vault:status",
+        "vault:upsert",
+        "window:is-maximized"
+      ],
+      "handle": [
+        "agents:sync",
+        "app:check",
+        "app:check-spec",
+        "app:console-bound",
+        "app:console-enter",
+        "app:console-leave",
+        "app:coverage",
+        "app:generate",
+        "app:list",
+        "app:list-backups",
+        "app:login",
+        "app:login-cancel",
+        "app:login-done",
+        "app:mark-quality",
+        "app:next-id",
+        "app:notify-task",
+        "app:probe",
+        "app:read-spec",
+        "app:remove",
+        "app:repair",
+        "app:restore-spec",
+        "app:run",
+        "app:upsert",
+        "app:verify",
+        "app:write-spec",
+        "browser:clear-session",
+        "browser:open",
+        "browser:pause",
+        "browser:resume",
+        "browser:status",
+        "diag:export",
+        "diag:get-boot-summary",
+        "diag:get-status",
+        "diag:open-log-dir",
+        "diag:rerun",
+        "diag:rerun-all",
+        "diag:run-kernel-check",
+        "dialog:open-knowledge-pack",
+        "dialog:open-skill-package",
+        "dialog:pick-knowledge-files",
+        "dialog:pick-knowledge-folder",
+        "editor:get-pending",
+        "editor:open-file",
+        "experience:delete-entry",
+        "experience:export",
+        "experience:import",
+        "experience:list",
+        "experience:set-active",
+        "pet:config",
+        "shell:open-path",
+        "vault:copy",
+        "vault:list",
+        "vault:remove",
+        "vault:reveal",
+        "vault:secret-delete",
+        "vault:secret-get-all",
+        "vault:secret-keys",
+        "vault:secret-set",
+        "vault:status",
+        "vault:upsert",
+        "window:is-maximized"
+      ],
+      "send": [
+        "app:save-theme",
+        "app:set-tray-behavior",
+        "auth:close",
+        "auth:granted",
+        "editor:close-window",
+        "utility:close",
+        "utility:open",
+        "window:close",
+        "window:maximize-toggle",
+        "window:minimize"
+      ],
+      "on": [
+        "app:generate-progress",
+        "app:save-theme",
+        "app:set-tray-behavior",
+        "auth:close",
+        "auth:granted",
+        "boot:progress",
+        "diag:status-changed",
+        "editor:close-window",
+        "editor:open-file",
+        "editor:sync-bounds",
+        "experience:pending-alert",
+        "gpu:crash",
+        "utility:close",
+        "utility:open",
+        "window:close",
+        "window:maximize-toggle",
+        "window:minimize"
+      ],
+      "push": [
+        "app:generate-progress",
+        "boot:progress",
+        "diag:status-changed",
+        "editor:open-file",
+        "editor:sync-bounds",
+        "experience:pending-alert",
+        "gpu:crash"
+      ]
+    },
+    "tools": {
+      "Agent": "1977c7ba",
+      "Bash": "055829fc",
+      "Browser": "86ce9ad2",
+      "Edit": "5436b49a",
+      "Glob": "592c57e3",
+      "Grep": "99fce8ec",
+      "KnowledgeDelete": "12f1b059",
+      "KnowledgeImport": "b3e8452f",
+      "KnowledgeSearch": "993f420a",
+      "MemorySearch": "1edaca9f",
+      "OCR": "5212b607",
+      "Read": "51593762",
+      "Skill": "154548da",
+      "SkillSearch": "21f28990",
+      "Task": "6ec016f1",
+      "TodoWrite": "bd3bb4d1",
+      "Vision": "76c39a88",
+      "WebFetch": "3a4fd6c6",
+      "WebSearch": "72636915",
+      "Workflow": "75df9186",
+      "Write": "5060eed0"
+    },
+    "staticToolCount": 21,
+    "toolSources": {
+      "static": {
+        "file": "kernel/tools.mjs",
+        "role": "definition",
+        "present": true
+      },
+      "workflow": {
+        "file": "kernel/dyntools.mjs",
+        "role": "dynamic",
+        "present": true
+      },
+      "mcp": {
+        "file": "kernel/mcp-tools.mjs",
+        "role": "dynamic",
+        "present": true
+      },
+      "app": {
+        "file": "kernel/app-tools.mjs",
+        "role": "dynamic",
+        "present": true
+      },
+      "wire": {
+        "file": "kernel/api.mjs",
+        "role": "egress",
+        "present": true
+      }
+    },
+    "excluded": [
+      {
+        "kind": "client-harness",
+        "literal": "send",
+        "reason": "client-harness：手工 WS 客户端脚本：它的 ws.send 是\"发给桥\"的入站方向，不是桥的广播"
+      },
+      {
+        "kind": "entry-kind",
+        "literal": "directory",
+        "reason": "entry-kind：目录/文件条目 kind（/list-dir、/drives 的 entries[].type），不是消息类型"
+      },
+      {
+        "kind": "entry-kind",
+        "literal": "drive",
+        "reason": "entry-kind：目录/文件条目 kind（/list-dir、/drives 的 entries[].type），不是消息类型"
+      },
+      {
+        "kind": "entry-kind",
+        "literal": "file",
+        "reason": "entry-kind：目录/文件条目 kind（/list-dir、/drives 的 entries[].type），不是消息类型"
+      },
+      {
+        "kind": "executor-protocol",
+        "literal": "app:exec",
+        "reason": "executor-protocol：桥↔主进程执行器 / CDP 私有协议，不经 GUI"
+      },
+      {
+        "kind": "executor-protocol",
+        "literal": "browser:exec",
+        "reason": "executor-protocol：桥↔主进程执行器 / CDP 私有协议，不经 GUI"
+      },
+      {
+        "kind": "executor-protocol",
+        "literal": "closed",
+        "reason": "executor-protocol：主进程浏览器执行器：CDP 与执行器私有协议，不经 GUI"
+      },
+      {
+        "kind": "executor-protocol",
+        "literal": "download",
+        "reason": "executor-protocol：主进程浏览器执行器：CDP 与执行器私有协议，不经 GUI"
+      },
+      {
+        "kind": "executor-protocol",
+        "literal": "keyDown",
+        "reason": "executor-protocol：主进程浏览器执行器：CDP 与执行器私有协议，不经 GUI"
+      },
+      {
+        "kind": "executor-protocol",
+        "literal": "keyUp",
+        "reason": "executor-protocol：主进程浏览器执行器：CDP 与执行器私有协议，不经 GUI"
+      },
+      {
+        "kind": "executor-protocol",
+        "literal": "mode",
+        "reason": "executor-protocol：主进程浏览器执行器：CDP 与执行器私有协议，不经 GUI"
+      },
+      {
+        "kind": "executor-protocol",
+        "literal": "mouseMoved",
+        "reason": "executor-protocol：主进程浏览器执行器：CDP 与执行器私有协议，不经 GUI"
+      },
+      {
+        "kind": "executor-protocol",
+        "literal": "mousePressed",
+        "reason": "executor-protocol：主进程浏览器执行器：CDP 与执行器私有协议，不经 GUI"
+      },
+      {
+        "kind": "executor-protocol",
+        "literal": "mouseReleased",
+        "reason": "executor-protocol：主进程浏览器执行器：CDP 与执行器私有协议，不经 GUI"
+      },
+      {
+        "kind": "executor-protocol",
+        "literal": "paused",
+        "reason": "executor-protocol：主进程浏览器执行器：CDP 与执行器私有协议，不经 GUI"
+      },
+      {
+        "kind": "executor-protocol",
+        "literal": "resumed",
+        "reason": "executor-protocol：主进程浏览器执行器：CDP 与执行器私有协议，不经 GUI"
+      },
+      {
+        "kind": "executor-protocol",
+        "literal": "status",
+        "reason": "executor-protocol：主进程浏览器执行器：CDP 与执行器私有协议，不经 GUI"
+      },
+      {
+        "kind": "json-schema",
+        "literal": "object",
+        "reason": "json-schema：JSON Schema 的 type 字段（input_schema.type），不是消息类型"
+      },
+      {
+        "kind": "kernel-stdin",
+        "literal": "anchor_applied",
+        "reason": "kernel-stdin：写内核 stdin 的消息类型（§3 协议），不是 GUI 出站事件"
+      },
+      {
+        "kind": "kernel-stdin",
+        "literal": "control_request",
+        "reason": "kernel-stdin：写内核 stdin 的消息类型（§3 协议），不是 GUI 出站事件"
+      },
+      {
+        "kind": "kernel-stdin",
+        "literal": "control_response",
+        "reason": "kernel-stdin：写内核 stdin 的消息类型（§3 协议），不是 GUI 出站事件"
+      },
+      {
+        "kind": "kernel-stdin",
+        "literal": "loop_command",
+        "reason": "kernel-stdin：写内核 stdin 的消息类型（§3 协议），不是 GUI 出站事件"
+      },
+      {
+        "kind": "kernel-stdin",
+        "literal": "user",
+        "reason": "kernel-stdin：写内核 stdin 的消息类型（§3 协议），不是 GUI 出站事件"
+      },
+      {
+        "kind": "kernel-stdin",
+        "literal": "workflow_command",
+        "reason": "kernel-stdin：写内核 stdin 的消息类型（§3 协议），不是 GUI 出站事件"
+      },
+      {
+        "kind": "kernel-stdin",
+        "literal": "workflow_confirm",
+        "reason": "kernel-stdin：写内核 stdin 的消息类型（§3 协议），不是 GUI 出站事件"
+      },
+      {
+        "kind": "nested",
+        "literal": "system",
+        "reason": "nested：位于消息对象的第二层（如 event.data.type），不是顶层 WS 类型"
+      },
+      {
+        "kind": "nested-subtype",
+        "literal": "app_response",
+        "reason": "nested-subtype：subtype 是消息的子层标识（如 system/subtype=first_byte_pending），不是顶层 WS 类型"
+      },
+      {
+        "kind": "nested-subtype",
+        "literal": "approval_mode",
+        "reason": "nested-subtype：subtype 是消息的子层标识（如 system/subtype=first_byte_pending），不是顶层 WS 类型"
+      },
+      {
+        "kind": "nested-subtype",
+        "literal": "browser_response",
+        "reason": "nested-subtype：subtype 是消息的子层标识（如 system/subtype=first_byte_pending），不是顶层 WS 类型"
+      },
+      {
+        "kind": "nested-subtype",
+        "literal": "cancel",
+        "reason": "nested-subtype：subtype 是消息的子层标识（如 system/subtype=first_byte_pending），不是顶层 WS 类型"
+      },
+      {
+        "kind": "nested-subtype",
+        "literal": "first_byte_pending",
+        "reason": "nested-subtype：subtype 是消息的子层标识（如 system/subtype=first_byte_pending），不是顶层 WS 类型"
+      },
+      {
+        "kind": "nested-subtype",
+        "literal": "load",
+        "reason": "nested-subtype：subtype 是消息的子层标识（如 system/subtype=first_byte_pending），不是顶层 WS 类型"
+      },
+      {
+        "kind": "nested-subtype",
+        "literal": "reasoning_effort",
+        "reason": "nested-subtype：subtype 是消息的子层标识（如 system/subtype=first_byte_pending），不是顶层 WS 类型"
+      },
+      {
+        "kind": "nested-subtype",
+        "literal": "save-raw",
+        "reason": "nested-subtype：subtype 是消息的子层标识（如 system/subtype=first_byte_pending），不是顶层 WS 类型"
+      },
+      {
+        "kind": "nested-subtype",
+        "literal": "stop",
+        "reason": "nested-subtype：subtype 是消息的子层标识（如 system/subtype=first_byte_pending），不是顶层 WS 类型"
+      },
+      {
+        "kind": "nested-subtype",
+        "literal": "success",
+        "reason": "nested-subtype：subtype 是消息的子层标识（如 system/subtype=first_byte_pending），不是顶层 WS 类型"
+      },
+      {
+        "kind": "nested-subtype",
+        "literal": "validate",
+        "reason": "nested-subtype：subtype 是消息的子层标识（如 system/subtype=first_byte_pending），不是顶层 WS 类型"
+      },
+      {
+        "kind": "packager-manifest",
+        "literal": "chats",
+        "reason": "packager-manifest：打包清单的条目 kind（skipped[].type），不是 GUI 消息类型"
+      },
+      {
+        "kind": "packager-manifest",
+        "literal": "config",
+        "reason": "packager-manifest：打包清单的条目 kind（skipped[].type），不是 GUI 消息类型"
+      },
+      {
+        "kind": "packager-manifest",
+        "literal": "personal",
+        "reason": "packager-manifest：打包清单的条目 kind（skipped[].type），不是 GUI 消息类型"
+      },
+      {
+        "kind": "packager-manifest",
+        "literal": "project",
+        "reason": "packager-manifest：打包清单的条目 kind（skipped[].type），不是 GUI 消息类型"
+      },
+      {
+        "kind": "packager-manifest",
+        "literal": "skill_exp",
+        "reason": "packager-manifest：打包清单的条目 kind（skipped[].type），不是 GUI 消息类型"
+      },
+      {
+        "kind": "root-path-check",
+        "literal": "/",
+        "reason": "root-path-check：`=== '/'` / `startsWith('/')` 这类根路径或绝对路径判定，不是端点"
+      },
+      {
+        "kind": "subtype-elsewhere",
+        "literal": "run",
+        "reason": "subtype-elsewhere：sink 之外的 subtype 字面量（消息子命令/子层标识，真形态 workflow-host/workflow-routes 的 host 请求），不是顶层 WS 类型"
+      },
+      {
+        "kind": "subtype-elsewhere",
+        "literal": "verify",
+        "reason": "subtype-elsewhere：sink 之外的 subtype 字面量（消息子命令/子层标识，真形态 workflow-host/workflow-routes 的 host 请求），不是顶层 WS 类型"
+      },
+      {
+        "kind": "token-guard",
+        "literal": "/api/auth",
+        "reason": "token-guard：令牌豁免/守卫判定面（不是端点处理器；/health 的处理器在 server/host-routes.mjs，/api/auth/* 在 server/auth-routes.mjs）"
+      },
+      {
+        "kind": "token-guard",
+        "literal": "/api/auth/",
+        "reason": "token-guard：令牌豁免/守卫判定面（不是端点处理器；/health 的处理器在 server/host-routes.mjs，/api/auth/* 在 server/auth-routes.mjs）"
+      },
+      {
+        "kind": "token-guard",
+        "literal": "/health",
+        "reason": "token-guard：令牌豁免/守卫判定面（不是端点处理器；/health 的处理器在 server/host-routes.mjs，/api/auth/* 在 server/auth-routes.mjs）"
+      },
+      {
+        "kind": "vendored-sample-skill",
+        "literal": "/files/",
+        "reason": "vendored-sample-skill：public/sample-skills/ 是上游示例技能副本，自带私有 HTTP 面，不属于本仓 bridge 契约"
+      }
+    ],
+    "scopeCount": 19,
+    "scopeRedCount": 91
+  }
 }
