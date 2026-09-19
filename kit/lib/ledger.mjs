@@ -202,8 +202,17 @@ export const MANUAL_FIELDS = ['note', 'consumers', 'migrationNote']
  * 从宿主文件重建版本台账。
  * 合并语义：以发现结果为"骨架"，只为 `MANUAL_FIELDS`（人工字段）继承旧台账值。
  * 这样 `sync` 可以随时跑，不会把人工写的说明冲掉，也不会把过期的版本值留住。
+ *
+ * ★ `channels`（契约快照，P1 · T6）是**另一套合并语义**：它同时住着
+ *   · **机器字段**（routes/wsOut/… ，由 `buildSnapshot` 复算，`channels` 入参传入）与
+ *   · **人工段**（`scopeCount` / `scopeRedCount` / `history` —— 范围登记的封顶值）。
+ *   故必须 `{ ...prev.channels, ...channels }`：写侧只覆盖它算得出来的字段，人工段原样留下。
+ *   反例（本行最初的写法 `channels: prev.channels || {}` 与"顺手写成 `channels`"）：
+ *   ① 前者让快照**永远落不了盘**（跑 sync 也不更新 ⇒ CT0/CT1 的红灯擦不掉）；
+ *   ② 后者把 `scopeCount` 这类人工封顶值一次 sync 就冲成 undefined ⇒ 封顶护栏失守且**无告警**。
+ *   两种错法都"看起来正常"（文件仍在、JSON 仍合法），只有保留性测试能抓（改回任一写法即红）。
  */
-export function syncVersions({ root, files, dryRun = false } = {}) {
+export function syncVersions({ root, files, dryRun = false, channels = null } = {}) {
   const tracked = files || trackedFiles({ root })
   const prev = readVersions({ root }) || {}
   const prevByKey = new Map((prev.contracts || []).map((e) => [keyOfVersion(e), e]))
@@ -307,7 +316,11 @@ export function syncVersions({ root, files, dryRun = false } = {}) {
       addedSinceBaseline,
       entries: commonEntries,
     },
-    channels: prev.channels || {},
+    // ★ channels：机器字段（本次复算）覆盖 + 人工段（prev 里的 scopeCount/history）保留 —— 见函数头注释。
+    channels: {
+      ...(prev.channels && typeof prev.channels === 'object' && !Array.isArray(prev.channels) ? prev.channels : {}),
+      ...(channels && typeof channels === 'object' && !Array.isArray(channels) ? channels : {}),
+    },
   }
   data.history.commonToolsBaseline = pyNames.length
   data.history.baselineCount = (prev.history?.baselineCount ?? 0)

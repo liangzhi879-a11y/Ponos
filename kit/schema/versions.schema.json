@@ -35,7 +35,27 @@
         "entries": { "type": "array", "items": { "type": "object", "required": ["file", "versionSource"] } }
       }
     },
-    "channels": { "type": "object" }
+    "channels": {
+      "type": "object",
+      "required": ["snapshotAt", "routes", "routePrefixes", "wsOut", "wsIn", "ipc", "tools", "staticToolCount", "toolSources", "excluded"],
+      "properties": {
+        "snapshotAt": { "type": "string" },
+        "routes": { "type": "object", "description": "只存语义键 `<METHOD> <path>` → null；绝不存 file:line" },
+        "routePrefixes": { "type": "object", "description": "前缀命名空间 → {dynamic, segments, suffixes, childCount}" },
+        "wsOut": { "type": "array", "items": { "type": "string" } },
+        "wsIn": { "type": "array", "items": { "type": "string" } },
+        "ipc": { "type": "object", "required": ["invoke", "handle", "send", "on", "push"],
+          "properties": { "invoke": { "type": "array" }, "handle": { "type": "array" }, "send": { "type": "array" },
+            "on": { "type": "array" }, "push": { "type": "array" } } },
+        "tools": { "type": "object", "description": "工具名 → 8hex 结构指纹（description 散文不入指纹）" },
+        "staticToolCount": { "type": "integer", "minimum": 0 },
+        "toolSources": { "type": "object", "description": "动态/派生工具来源逐条登记（present:false 表示「提取不到」，不是「不存在」）" },
+        "excluded": { "type": "array", "items": { "type": "object", "required": ["kind", "literal", "reason"] } },
+        "scopeCount": { "type": "integer", "minimum": 0, "description": "人工维护的 scope 组数封顶值（sync 不得改写）" },
+        "scopeRedCount": { "type": "integer", "minimum": 0, "description": "人工维护的 scope 键数封顶值（sync 不得改写）" },
+        "history": { "type": "object" }
+      }
+    }
   },
   "$defs": {
     "entry": {
