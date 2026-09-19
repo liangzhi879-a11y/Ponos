@@ -23,6 +23,30 @@ export const BASELINE_FILE = 'kit/manifest/drift-baseline.json'
 export function keyOf({ rule, subject }) { return JSON.stringify([rule, subject]) }
 
 /**
+ * **契约对账类规则不支持基线豁免**（`BASELINE_FORBIDDEN` 红）。
+ *
+ * ★ 为什么必须有这条（第 4 批收口，审查实测的通路）：第 3 批把"为在途差异加的红灯基线"删掉了
+ *   （规则真值改取提交态），但**能力本身还在** —— 审查在 HEAD 上实测：往 `drift-baseline.json` 加一条
+ *   `{rule:'CT1', subject:'routes ANY /zzz-red', severity:'red'}` + 把 `baselineCount 5→6 /
+ *   baselineRedCount 0→1` ⇒ **EXIT=0**（只多一行「⚠ 基线放行」）。即"删了条目，没关掉通路"，
+ *   下次有人可以再走一遍。这里的判据把通路关掉：契约红灯**一律**降不了级。
+ *
+ * 分类判据（为什么是"除 CT9 外的全部 CT"）：`CT0–CT8` 的红灯语义都是"契约面 与 提交物/登记 不一致"，
+ *   处置动作只有三种 —— **修代码 / `npm run kit:sync` / 在 `contract-scope.json` 逐条登记**；
+ *   **没有一种**是"记一笔欠账长期放行"（I4「放行即人工且可见」在这里的正确解法是修正契约面本身）。
+ *   `CT9` 是例外且正当：它是"渲染层调了后端不存在的端点"的**历史欠账**（黄、只报不拦、D8），
+ *   那 5 条基线正是它该有的用法 ⇒ **保留**可豁免。
+ *
+ * 保守方向：`/^CT/` 前缀 + 白名单 `CT9` ⇒ 将来新增的 CT 号自动落入"禁豁免"（fail-closed）；
+ *   契约高亮不因"忘了更新名单"而漏掉。
+ */
+export const BASELINE_EXEMPT_ALLOWED = ['CT9']
+export function baselineForbidden(rule) {
+  const r = String(rule == null ? '' : rule)
+  return r.startsWith('CT') && !BASELINE_EXEMPT_ALLOWED.includes(r)
+}
+
+/**
  * 基线条目必须是**普通对象**。
  * ★ 为什么要单独判形状（Task 2 复审低危项）：`loadBaseline` 初版只校验 `Array.isArray(entries)`，
  *   元素形状不管。人工编辑该文件时写成 `"entries": [null]`（或字符串/数字）是现实路径，
@@ -62,6 +86,9 @@ export function loadBaseline({ root }) {
  *   规则 2：reason 必填非空。缺失/空白 → 条目**不生效**，并额外报一条红 BASELINE_NO_REASON
  *          （把"I4 无处强制"变成"违反 I4 本身就是红灯"）。
  *   规则 3：降级时记 baselinedFrom（保留原始 severity），报告的"其中红灯 M 条"靠它。
+ *   规则 4（第 4 批收口）：**契约对账类规则（CT0–CT8）一律不许降级**，条目本身报一条红
+ *          `BASELINE_FORBIDDEN`（"该规则不支持豁免"）—— 见 `baselineForbidden` 的注释：
+ *          删条目没关通路时，单行 JSON 人工编辑又能把契约红灯变绿（实测）。`CT9` 保留可豁免。
  */
 export function applyBaseline(findings, baseline) {
   const entries = baseline.entries || []
@@ -71,8 +98,20 @@ export function applyBaseline(findings, baseline) {
     if (isEntryObject(e) && typeof e.reason === 'string' && e.reason.trim() !== '') valid.push(e)
     else noReason.push(e)
   }
-  const map = new Map(valid.map((e) => [keyOf(e), e]))
+  // 规则 4：契约类条目**不生效**（既不降级，也不算"已用"）⇒ 见下面两处分支
+  const forbidden = valid.filter((e) => baselineForbidden(e.rule))
+  const allowed = valid.filter((e) => !baselineForbidden(e.rule))
+  const map = new Map(allowed.map((e) => [keyOf(e), e]))
+  const forbMap = new Map(forbidden.map((e) => [keyOf(e), e]))
   const findingsOut = findings.map((f) => {
+    const fb = forbMap.get(keyOf(f))
+    if (fb) {
+      return {
+        ...f,
+        hint: `${f.hint || ''}（基线里有为它登记的条目，但 **${f.rule} 属契约对账类规则：不支持豁免** ⇒ 条目不生效。`
+          + '契约红灯的处置只有三种：修代码 / `npm run kit:sync` / 在 `contract-scope.json` 逐条登记；请删除该条目）'.trim(),
+      }
+    }
     const e = map.get(keyOf(f))
     if (!e) return f
     // 规则 1：红灯必须有条目显式认领
@@ -94,11 +133,24 @@ export function applyBaseline(findings, baseline) {
         : '该条目不是对象（文件被写坏或手工编辑出错），请改成 {rule, subject, reason} 形状',
     })
   }
+  // 规则 4：契约类条目**无条件报红**（即使没有任何 finding 命中它 —— "留着条目"就是留着下次走的通路）
+  for (const e of forbidden) {
+    findingsOut.push({
+      rule: 'BASELINE_FORBIDDEN', severity: 'red',
+      subject: `${e.rule} ${e.subject || '?'}`,
+      message: `${e.rule} 属契约对账类规则：**不支持基线豁免**（该条目已被忽略，红灯不会被降级）`,
+      hint: '契约对账类红灯只能靠修契约面本身消除：修代码 / `npm run kit:sync`（台账按提交态落盘）/ 在 '
+        + '`kit/manifest/contract-scope.json` 逐条登记（人工、带 reason）。请删除该条基线；'
+        + '（`CT9` 是"渲染层幽灵 fetch"的历史欠账，仍可登记豁免）',
+    })
+  }
   const present = new Set(findings.map(keyOf))
-  const used = [...map.keys()].filter((k) => present.has(k))
-  const unused = [...map.keys()].filter((k) => !present.has(k))
+  const allKeys = [...map.keys(), ...forbMap.keys()]
+  // 契约类条目一律不算"已用"：它们不生效 ⇒ 报告里应出现"可摘除"提示（否则会长期挂着装作在挡事）
+  const used = allKeys.filter((k) => present.has(k) && !forbMap.has(k))
+  const unused = allKeys.filter((k) => !present.has(k) || forbMap.has(k))
   const effective = findingsOut.filter((f) => f.severity !== 'baselined').length
-  return { findings: findingsOut, used, unused, ignoredNoReason: noReason.length, effective }
+  return { findings: findingsOut, used, unused, ignoredNoReason: noReason.length, forbidden: forbidden.length, effective }
 }
 
 /**

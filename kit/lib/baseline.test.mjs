@@ -67,6 +67,54 @@ test('applyBaseline：条目显式认领 severity:red → 才允许降级，且�
   assert.equal(out.findings[0].baselinedFrom, 'red', '必须能反查原本是红灯（报告的"其中红灯 M 条"靠它）')
 })
 
+// ★ 第 4 批（收口）：**关掉"用基线把契约红灯变绿"的通路**。
+// 背景：第 2 批删掉了 3 条**红灯基线**（给在途差异兜底的那三条），但**通路本身没关** ——
+//   审查实测（HEAD `3b013eb`）：把 `{rule:'CT1', subject:'routes ANY /zzz-red', severity:'red'}`
+//   塞进 `drift-baseline.json`、并把 `baselineCount 5→6 / baselineRedCount 0→1` 一起上调 ⇒ **EXIT=0**
+//   （只多一行「⚠ 基线放行」）。即：删了条目，但"下次再走一遍"的能力还在。
+// 判决：契约**对账 / 范围 / 快照存在性**类规则（CT0–CT8）**一律不许被基线降级**，条目本身报红
+//   （`BASELINE_FORBIDDEN`）。例外只有 `CT9`：它是"渲染层幽灵 fetch"的**历史欠账**（黄、只报不拦），
+//   基线里那 5 条正当 —— 所以这里**不是**把基线一刀切禁掉。
+// 为什么禁在契约侧而不禁在别处：契约红灯的语义是"契约面与提交物/登记不一致"，处置动作只有
+//   三种（修代码 / `kit:sync` / 登记 scope），**没有一种**是"记一笔欠账长期放行"。
+const FORBIDDEN_CT = ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8']
+
+test('applyBaseline：契约类规则即使显式认领 severity:red 也不得降级，且条目本身报 BASELINE_FORBIDDEN 红', () => {
+  for (const rule of FORBIDDEN_CT) {
+    const baseline = { version: 1, entries: [{ rule, subject: 'x', severity: 'red', reason: '想用基线放行契约红灯' }] }
+    const out = applyBaseline([finding({ rule, severity: RED, subject: 'x' })], baseline)
+    const f = out.findings.find((x) => x.rule === rule)
+    assert.equal(f.severity, 'red', `${rule} 不得被降级（契约规则不支持豁免）`)
+    assert.equal(f.reason, undefined, `${rule} 没被豁免 ⇒ 不得留下 reason（否则报告会显示"已登记基线"）`)
+    assert.deepEqual(out.findings.filter((x) => x.rule === 'BASELINE_FORBIDDEN').map((x) => [x.subject, x.severity]),
+      [[`${rule} x`, 'red']], `${rule} 的条目本身必须报红（"该规则不支持豁免"，不许静默忽略）`)
+    assert.deepEqual(out.used, [], `${rule} 的条目不算"已用"（否则会被当成生效）`)
+    assert.deepEqual(out.unused, [keyOf({ rule, subject: 'x' })], '必须进 unused ⇒ 报告里能提示摘除')
+  }
+})
+
+test('applyBaseline：契约类条目**即使不命中**也报红（"出现即红"：留着它就等于留着下次走的通路）', () => {
+  const baseline = { version: 1, entries: [{ rule: 'CT4B', subject: 'channels.scopeCount', severity: 'red', reason: 'r' }] }
+  const out = applyBaseline([finding({ rule: 'P5', severity: YELLOW, subject: 'python.diff' })], baseline)
+  assert.deepEqual(out.findings.filter((f) => f.rule === 'BASELINE_FORBIDDEN').map((f) => f.severity), ['red'])
+  assert.equal(out.findings.find((f) => f.rule === 'P5').severity, 'yellow', '无关 finding 不受影响（不是"一有 CT 条目就全红"）')
+})
+
+test('applyBaseline：CT9 与版本/依赖类的豁免能力**不变**（不许一刀切禁掉基线）', () => {
+  // CT9：那 5 条正当欠账（黄、只报不拦）必须照旧逐条豁免
+  const ct9 = { version: 1, entries: [{ rule: 'CT9', subject: '/save-temp-image', reason: '**真欠账**：前端调了后端不存在的端点' }] }
+  const o1 = applyBaseline([finding({ rule: 'CT9', severity: YELLOW, subject: '/save-temp-image' })], ct9)
+  assert.deepEqual(o1.findings.map((f) => `${f.rule}:${f.severity}`), ['CT9:baselined'])
+  assert.equal(o1.findings[0].reason, '**真欠账**：前端调了后端不存在的端点')
+  assert.deepEqual(o1.used, [keyOf({ rule: 'CT9', subject: '/save-temp-image' })])
+  assert.deepEqual(o1.findings.filter((f) => f.rule === 'BASELINE_FORBIDDEN'), [])
+  // V7（P0 落地时那 20 条锁哈希债）仍可被显式认领红灯豁免 —— 否则门禁上线当天就绿不了
+  const v7 = { version: 1, entries: [{ rule: 'V7', subject: 'skillsLock.x', severity: 'red', reason: '20 条锁哈希待重算' }] }
+  const o2 = applyBaseline([finding({ rule: 'V7', severity: RED, subject: 'skillsLock.x' })], v7)
+  assert.equal(o2.findings[0].severity, 'baselined')
+  assert.deepEqual(o2.findings.filter((f) => f.rule === 'BASELINE_FORBIDDEN'), [])
+})
+
 // ★ 裁定规则 2 的反例：缺 reason 的条目不生效，且本身报红（I4 的强制执行点）
 test('applyBaseline：条目缺 reason / reason 为空白 → 条目不生效并报 BASELINE_NO_REASON 红', () => {
   const baseline = { version: 1, entries: [{ rule: 'P5', subject: 'python.diff' }, { rule: 'P6', subject: 'x', reason: '   ' }] }

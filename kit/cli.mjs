@@ -76,6 +76,11 @@ function scopeSummary(scope) {
  */
 async function collect() {
   const files = trackedFiles({ root: ROOT })
+  // ★ CT8 的**工作树侧**域 = 索引 ∪ 未忽略的未跟踪文件（plan §6 D7）：`git ls-files` 只列索引，
+  //   未 `git add` 的新路由模块会整块从 CT8 的视野里消失（审查实测：`?? server/zzz-wip-routes.mjs`
+  //   摆在那里，报告却打印"工作树契约面与 HEAD 一致"）。契约**真值侧**（head*/CT0–CT7/CT9）与
+  //   `kit:sync` 照旧用上面的 `files`（索引域，不变量 I2 不变）。
+  const workFiles = trackedFiles({ root: ROOT, includeUntracked: true })
   // ★ 提交态 = 契约规则的唯一真值来源。物化失败（空仓/git 不可用）**不静默**：
   //   把 error 交给 runContractRules 报成 CT1 红（"对账不可进行"不是"没事"），此时真值退化为工作树。
   const head = materializeHead({ root: ROOT })
@@ -108,7 +113,7 @@ async function collect() {
   const scope = loadScope({ root: ROOT })
   const channels = versions && versions.channels && typeof versions.channels === 'object' ? versions.channels : null
   const c = await runContractRules({
-    root: ROOT, files, doc, docWorktree, snapshot: channels, scope, readTracked: read,
+    root: ROOT, files, workFiles, doc, docWorktree, snapshot: channels, scope, readTracked: read,
     headRoot, headFiles, headReadTracked: readHead,
     headError: head.available ? null : head.error,
     // 工作树与 HEAD 一致（CI/干净克隆的常态）⇒ CT8 侧不必再跑一遍全量提取（等价性捷径，见 head-tree.mjs）
@@ -304,11 +309,14 @@ async function main() {
       if (verbose) console.log(renderRuleTable(report, ledgerSizes()))
       // ★ 在途差异（CT8）**恒打印一行**：契约规则的判据取自提交态 ⇒ "工作树还有哪些契约改动没提交"
       //   是读者必须一眼知道的事。空的时候也要**明说"无"**（"没打印"与"没有差异"不是一回事）。
+      //   ★ 域必须自报（第 4 批）：CT8 的工作树侧 = **git 跟踪 + 未忽略的未跟踪文件**（含未 `git add`
+      //   的新源文件）—— 不写清楚，读者会把这一行读成"连 `release/` 里的副本都算过了"。
       const inflight = report.findings.filter((f) => f.rule === 'CT8')
+      const CT8_DOMAIN = '扫描域：git 跟踪 + 未忽略的未跟踪文件'
       console.log(`\n（契约）在途差异（CT8，黄、只报不拦）：${inflight.length
-        ? `${inflight.length} 条 —— 工作树 ∖ HEAD，逐条见上方黄灯段`
-        : '无 —— 工作树契约面与 HEAD 一致'}`)
-      if (report.baselineUnused?.length) console.log(`\n（信息）基线中 ${report.baselineUnused.length} 条已不再命中，可摘除：${report.baselineUnused.join(', ')}`)
+        ? `${inflight.length} 条 —— 工作树 ∖ HEAD，逐条见上方黄灯段（${CT8_DOMAIN}）`
+        : `无 —— ${CT8_DOMAIN}，与 HEAD 契约面一致`}`)
+      if (report.baselineUnused?.length) console.log(`\n（信息）基线中 ${report.baselineUnused.length} 条未生效或已不再命中，可摘除：${report.baselineUnused.join(', ')}`)
     }
     return report.ok ? 0 : 1
   }

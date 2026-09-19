@@ -1,6 +1,7 @@
 // kit/lib/scan.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -47,6 +48,31 @@ test('trackedFiles 只含已跟踪文件：磁盘上真实存在但未入库的�
   }
   // 顺带断言精确相等（没有多出别的路径）
   assert.deepEqual(files, tracked)
+})
+
+// ★ 第 4 批（收口，plan §6 D7）：域有两档 —— 契约**真值侧**仍是 `git ls-files`（索引，I2 不变）；
+//   CT8 的**工作树侧**必须多含"未忽略的未跟踪文件"，否则 `git add` 之前的新路由模块对 CT8
+//   完全不可见（审查实测：`?? server/zzz-wip-routes.mjs` 摆在磁盘上，CT8 却打印"与 HEAD 一致"）。
+//   三条判据：① 未跟踪且未忽略的进；② 已跟踪的仍在；③ 被 .gitignore 覆盖的**不进**（域边界）。
+//   ⚠️ 这不许退化成 readdirSync 磁盘遍历（D4：`release/` `kernel-dist/` 里的 `*-routes.mjs`
+//   是**镜像副本**）：域仍由 git 给出，只是把"未忽略的未跟踪"也交给 git 列出来。
+test('trackedFiles：默认只含索引；includeUntracked 时追加"未忽略的未跟踪文件"（CT8 的域）', () => {
+  const root = mkdtempSync(join(tmpdir(), 'yfw-scan-wt-'))
+  const write = (f) => { mkdirSync(dirname(join(root, f)), { recursive: true }); writeFileSync(join(root, f), `// ${f}\n`) }
+  for (const f of ['kitsrc/tracked.mjs', 'kitsrc/untracked.mjs', 'ignored/skip.mjs']) write(f)
+  writeFileSync(join(root, '.gitignore'), 'ignored/\n')
+  execFileSync('git', ['init', '-q'], { cwd: root })
+  execFileSync('git', ['add', 'kitsrc/tracked.mjs', '.gitignore'], { cwd: root })   // 只 add，不提交
+
+  const index = trackedFiles({ root })
+  assert.deepEqual(index.slice().sort(), ['.gitignore', 'kitsrc/tracked.mjs'].sort(),
+    '默认口径 = 索引（I2 不变：契约真值侧与既有全部规则靠它）')
+  const work = trackedFiles({ root, includeUntracked: true })
+  assert.equal(work.includes('kitsrc/untracked.mjs'), true,
+    '未跟踪且未忽略的新文件必须进 CT8 的域（D7：它就是"磁盘有、索引无"的路由模块）')
+  assert.equal(work.includes('kitsrc/tracked.mjs'), true, '已跟踪的仍在（域是"索引 ∪ 未忽略的未跟踪"，不是替换）')
+  assert.equal(work.includes('ignored/skip.mjs'), false,
+    '被 .gitignore 覆盖的不进（域边界；`release/` `kernel-dist/` `node_modules` 等副本同理在域外 —— D4）')
 })
 
 test('trackedFiles（真实仓库）：不含 scratch/ 与构建产物目录', () => {

@@ -62,8 +62,9 @@
 | 规则/字段 | 含义 | 动作 |
 |---|---|---|
 | `BASELINE_NO_REASON` | 基线条目缺 `reason`（红，违反 I4） | 补 `reason`，或摘除该条目 |
+| `BASELINE_FORBIDDEN` | **契约对账类规则（`CT0`–`CT8`）不支持基线豁免**：条目里出现这些规则号即红（第 4 批收口，堵掉"单行 JSON 就能把契约红灯变绿"的通路） | 删掉该条目；契约红灯只能靠修契约面消除（修代码 / `kit:sync` / `contract-scope.json` 登记）。`CT9`（幽灵 fetch 历史欠账，黄）**仍可**登记豁免 |
 | `BASE` | 基线条目总数 / 豁免红灯条数**超过**上次登记值（红） | 基线是"已知欠账"，不是"遇红就塞"：修代码，别加条目 |
-| `baselineUnused` | 基线里已不再命中的条目（提示） | 应摘除（避免基线长期挂着过期豁免） |
+| `baselineUnused` | 基线里**未生效或已不再命中**的条目（提示） | 应摘除（避免基线长期挂着过期豁免；`BASELINE_FORBIDDEN` 的条目也会列在这里） |
 
 ## 契约快照与范围登记（P1 · T12）
 
@@ -81,7 +82,8 @@
 | `npm run kit:view` | 固定 schema JSON（`findings` / `ledgerSizes.channels` / `scope`），AI 读它，不解析散文 | 否 |
 
 ★ `check` **恒打印**两段：范围登记逐条（`── 契约范围登记（N 组 / M 键）──`，逐条带 kind/ns/键数/docSection/reason）
-与在途差异一行（`（契约）在途差异（CT8，黄、只报不拦）：…`）—— **无差异时也明说"无"**（"没打印"与"没有差异"不是一回事）。
+与在途差异一行（`（契约）在途差异（CT8，黄、只报不拦）：…`）—— **无差异时也明说"无"**（"没打印"与"没有差异"不是一回事），
+且这一行**自报扫描域**（`扫描域：git 跟踪 + 未忽略的未跟踪文件` —— CT8 的工作树侧域，见规则表 `CT8` 行）。
 
 ### 规则表（`CT` 号段：CT0–CT9，含 CT4 的两个子规则）
 
@@ -98,6 +100,7 @@
 | CT6 | `toolSchemas()` 出口 ⊆ 快照 + 静态 registry 计数一致 + 动态源逐条登记 + 结构指纹一致 | 红 | 加工具、改 `input_schema` 结构、加动态源不登记（**`description` 散文不入指纹** ⇒ 改文案不红） |
 | CT7 | **提取守恒**：`type:` 字面量 = 已归因（sink 白名单）+ 显式 `excluded`；路径字面量必有归宿（独立重扫） | 红 | 非 sink 处写 `{ type: 'typo' }`；新增 sink 形态不登记 |
 | CT8 | **在途差异**：工作树 ∖ HEAD 的契约面（路由/前缀/WS 类型/IPC/工具/排除项 + 文档声明集）**逐条列出** | **黄、只报不拦** | ——（在途改动就是这个状态；提交后自己变空，不需要任何基线） |
+| CT8 的**扫描域** | 提交态侧 = `git ls-files`（索引）；**工作树侧 = 索引 ∪ 未忽略的未跟踪文件**（`git ls-files --cached --others --exclude-standard`，第 4 批补：未 `git add` 的新源文件原先整块不可见） | —— | 域仍由 git 决定（**不是**磁盘遍历）：`release/`、`kernel-dist/`、`node_modules` 等被忽略的镜像/产物目录在域外；`worktreeClean` 的捷径还要求索引里全是普通 `H`（`--assume-unchanged`/`--skip-worktree` 会让 `git status` 说谎） |
 | CT9 | 渲染层 `src` 的 fetch 路径 → server 路由**单向**差集 | **黄、只报不拦** | ——（D8 历史欠账，逐条登记在 `drift-baseline.json`） |
 
 两条"黄、只报不拦"的规则在报告里各占一个 `checkResult`，`passed=false` 表示"确实有东西"，但**不影响退出码**。
@@ -128,7 +131,7 @@
 
 两条线索（都在 `check` 的输出里）：
 
-- **scope / 基线已不再命中** ⇒ `（信息）基线中 N 条已不再命中，可摘除：…`（`kit:check` 默认输出的最后一行）
+- **scope / 基线未生效或已不再命中** ⇒ `（信息）基线中 N 条未生效或已不再命中，可摘除：…`（`kit:check` 默认输出的最后一行）
   以及 `CT4 多登记 <键>`（文档补上该键、或端点已删除/改名后出现）。摘除后**同步下调**
   `channels.scopeCount` / `scopeRedCount`（scope）或 `history.baselineCount`（基线）。
 - **理由里的"何时摘除"**：每条保留的条目都写了可判定的摘除条件（例：CT9 的 `/v1/*` 是"上游 LLM 协议不经 bridge"的噪声，
@@ -206,6 +209,8 @@ hint 指文档补遗；`CT4` 的 hint 指 scope 登记），以及给"将来补�
    人工段（sync 原样保留）只有：`versions` 的 `exclude` / `note` / `consumers` / `migrationNote` / `manual` 条目 / `history`；`deps` 的 `_note` / `python.embedded` / `notes` / `gates` / `sizes`。
 2. **放行即人工且可见**：`kit/manifest/drift-baseline.json` 独立成文件、每条写 `reason`；豁免**红灯**必须在该条目显式写 `"severity": "red"`，条目数不得增加。
 3. **扫描域是 `git ls-files`**：新写的文件/测试不 `git add` 就不在判定范围内；新增测试文件后必须重算 `docs/_anchors.json`。
+   ★ **唯一例外（第 4 批）**：`CT8` 的**工作树侧**额外含「未忽略的未跟踪文件」（`--others --exclude-standard`）——
+   否则未 `git add` 的新路由模块对"在途差异"整块不可见（实测：报告还打印"与 HEAD 一致"）。契约**真值侧**与其余全部规则照旧只看索引。
 4. **铁律 4（真仓数字口径）**：凡从真仓实测得到、且会随他人未提交改动漂移的数字（测试计数、**路由/端点条数**、文件数、行数、schema 数…），引用时**必须取干净克隆（盘根目录）的值**；主树数字必须显式标注「含他人在途改动」并给出干净克隆值。
    **本规矩同样适用于测试代码里的硬编码期望值**（例：`kit/lib/contract-routes.test.mjs` 的真仓路由数）。
    **替代做法**：若该数字会在主树漂移，**改用"点名断言 + 下界"**，并在注释里写明口径。

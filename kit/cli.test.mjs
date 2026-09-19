@@ -269,17 +269,20 @@ test('★P1-③：夹具仓契约**真红真绿** —— 新增端点未登记 �
 // 本批把规则真值改成提交态（物化 HEAD），在途差异改由 CT8 报黄、并把那 3 条红基线删掉。
 // 下面四条用例分别钉住"黄不红 / 提交后漏登记 → 红 / 假端点 → 红 / 假成员 → 红"。
 
-/** 夹具仓里写一个端点文件（`staged` 只 add 不 commit ⇒ 在途；否则提交 ⇒ 提交态） */
-function writeEndpoint(root, rel, path, { commit = true } = {}) {
+/** 夹具仓里写一个端点文件（`staged` 只 add 不 commit ⇒ 在途；否则提交 ⇒ 提交态）
+ *  `stage:false` = **只写盘、不 git add**（第 4 批的盲区形态：磁盘有、索引无）；`quote` 选引号形态。 */
+function writeEndpoint(root, rel, path, { commit = true, stage = true, quote = "'" } = {}) {
   mkdirSync(dirname(join(root, rel)), { recursive: true })
   writeFileSync(join(root, rel), [
     'export function route(pathname) {',
-    `  if (pathname === '${path}') return 1`,
+    `  if (pathname === ${quote}${path}${quote}) return 1`,
     '  return null',
     '}',
     '',
   ].join('\n'))
-  execFileSync('git', ['add', '-A'], { cwd: root })
+  if (stage) execFileSync('git', ['add', '-A'], { cwd: root })
+  // `stage:false, commit:true` 是矛盾组合（什么都没暂存就 commit 会直接失败）⇒ 显式禁掉
+  if (commit && !stage) throw new Error('writeEndpoint: commit 需要 stage（否则 git commit 无事可提交）')
   if (commit) gitCommit(root)
 }
 
@@ -311,6 +314,51 @@ test('★第3批-①：在途端点（只 add 未 commit）→ 红 0、CT8 逐�
   assert.deepEqual([...new Set(j2.findings.filter((f) => f.severity === 'red').map((f) => f.rule))].sort(), ['CT2', 'CT4'])
 })
 
+// ── 第 4 批（收口）：CT8 的域必须含"未忽略的未跟踪文件"（plan §6 D7 的承诺） ──────────────
+//
+// 审查实测的盲区：`server/zzz-wip-routes.mjs` **没 `git add`** 时，CT8 完全没反应，
+// 人类可读报告还打印「无 —— 工作树契约面与 HEAD 一致」，而 `git status` 明明有 `??`；
+// `git add` 之后立刻报出。根因：文件集取 `git ls-files`（**索引**，不含未跟踪）。
+// 修法只改 **CT8 的工作树侧文件集**（`git ls-files --cached --others --exclude-standard`）——
+// 契约真值侧仍是索引域（I2 不变），也不许退化成 readdirSync 磁盘遍历（D4：`release/`
+// `kernel-dist/` 里的 `*-routes.mjs` 是镜像副本，卷进来就是"把副本当真相"）。
+
+test('★第4批-②：未 `git add` 的新路由模块 → CT8 报出（修前静默：打印"与 HEAD 一致"）', () => {
+  const { root, env } = fixture()
+  assert.equal(run(['sync'], { env }).code, 0)
+  writeEndpoint(root, 'server/zzz-wip-routes.mjs', '/zzz-wip', { stage: false, commit: false })   // 只写盘，不 add
+  assert.match(execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: root, encoding: 'utf8' }),
+    /\?\? server\/zzz-wip-routes\.mjs/, '前提：必须是"磁盘有、索引无"（未 git add）')
+
+  const c = run(['check', '--json'], { env })
+  assert.equal(c.code, 0, `在途改动只报黄、不拦：${c.stdout}`)
+  const j = JSON.parse(c.stdout)
+  assert.deepEqual(j.findings.filter((f) => f.rule === 'CT8').map((f) => f.subject), ['routes ANY /zzz-wip'],
+    `未跟踪的新端点必须由 CT8 报出（修前这里是 []，报告还谎报"与 HEAD 一致"）：${JSON.stringify(j.findings.filter((f) => f.rule === 'CT8'))}`)
+  assert.deepEqual([...new Set(j.findings.filter((f) => f.rule === 'CT8').map((f) => f.severity))], ['yellow'],
+    '仍**只报黄**：未跟踪文件不得产生任何红（plan D7 写的就是"黄灯提示（不拦）"）')
+  assert.deepEqual(j.findings.filter((f) => f.severity === 'red'), [], '未跟踪新文件不得让任何规则报红')
+  // 打印行必须注明扫描域：否则读者会把"无差异"读成"磁盘上的新文件也算过了"
+  const human = run(['check', '--verbose'], { env }).stdout
+  assert.match(human, /在途差异（CT8，黄、只报不拦）：1 条/)
+  assert.match(human, /扫描域：git 跟踪 \+ 未忽略的未跟踪文件/, `打印行必须写明扫描域：${human.split('\n').filter((l) => l.includes('在途差异')).join('|')}`)
+})
+
+test('★第4批-②（域边界）：被 .gitignore 覆盖的文件不在 CT8 域（不报，域由 git 决定不是磁盘遍历）', () => {
+  const { root, env } = fixture()
+  assert.equal(run(['sync'], { env }).code, 0)
+  writeFileSync(join(root, '.gitignore'), 'node_modules/\nscratch/\n')
+  mkdirSync(join(root, 'scratch'), { recursive: true })
+  writeFileSync(join(root, 'scratch/zzz-routes.mjs'), "export const r = (p) => p === '/zzz-ignored'\n")
+  const c = run(['check', '--json'], { env })
+  assert.equal(c.code, 0)
+  assert.deepEqual(JSON.parse(c.stdout).findings.filter((f) => f.rule === 'CT8'), [],
+    '`scratch/` 被 .gitignore 覆盖 ⇒ 域外（`release/` `kernel-dist/` 这类副本目录同理：D4 明令禁止把它们卷进来）')
+  assert.match(run(['check', '--verbose'], { env }).stdout,
+    /无 —— 扫描域：git 跟踪 \+ 未忽略的未跟踪文件，与 HEAD 契约面一致/,
+    '无差异时的措辞必须**如实**（既不能再说"工作树契约面一致"这种含糊话，也不能漏掉域边界）')
+})
+
 test('★第3批-②（审查 M1）：往台账塞一个 HEAD 里没有的端点 → CT1 红（删掉红基线后无法再被认领）', () => {
   const { root, env } = fixture()
   assert.equal(run(['sync'], { env }).code, 0)
@@ -329,6 +377,31 @@ test('★第3批-②（审查 M1）：往台账塞一个 HEAD 里没有的端点
   assert.deepEqual(real.entries.filter((e) => String(e.subject).includes('/app-info')), [],
     '在途端点键不得出现在基线里（"为在途差异加基线"已被本批根治）')
   assert.deepEqual(real.entries.filter((e) => e.severity === 'red'), [], '基线里不得再有红灯条目')
+})
+
+test('★第4批-③：关闭"用基线把契约红灯变绿"的通路 —— CT1 红即使被条目显式认领 severity:red 也必须红', () => {
+  const { root, env } = fixture()
+  assert.equal(run(['sync'], { env }).code, 0)
+  // 造一条真 CT1 红（审查 M1 的做法：台账里塞一个提交态代码里没有的键）
+  const vPath = join(root, 'kit/manifest/versions.json')
+  const v = JSON.parse(readFileSync(vPath, 'utf8'))
+  v.channels.routes['ANY /zzz-red'] = null
+  v.history = { ...(v.history || {}), baselineCount: 1, baselineRedCount: 1 }   // 数量护栏不越界 ⇒ 红只能来自 CT1/基线禁豁免
+  writeFileSync(vPath, JSON.stringify(v, null, 2))
+  writeFileSync(join(root, 'kit/manifest/drift-baseline.json'), JSON.stringify({
+    version: 1,
+    entries: [{ rule: 'CT1', subject: 'routes ANY /zzz-red', severity: 'red', reason: '变异：用基线把契约红灯降级（第 2 批删掉 3 条走的就是这条路）' }],
+  }, null, 2))
+
+  const c = run(['check', '--json'], { env })
+  assert.equal(c.code, 1, `契约红灯不得被基线变绿（修前实测 EXIT=0，只有一行"⚠ 基线放行"）：${c.stdout}`)
+  const j = JSON.parse(c.stdout)
+  assert.deepEqual(j.findings.filter((f) => f.rule === 'CT1').map((f) => [f.subject, f.severity]),
+    [['routes ANY /zzz-red', 'red']], 'CT1 必须如实保持红（没被降级成 baselined）')
+  assert.deepEqual(j.findings.filter((f) => f.rule === 'BASELINE_FORBIDDEN').map((f) => [f.subject, f.severity]),
+    [['CT1 routes ANY /zzz-red', 'red']], '该条目本身必须报红（"该规则不支持豁免"，不许静默忽略）')
+  assert.deepEqual(JSON.parse(run(['check', '--json'], { env }).stdout).findings.filter((f) => f.severity === 'baselined'), [],
+    '契约类条目不得生效 ⇒ 一条 baselined 都不该有')
 })
 
 test('★第3批-③（审查 M2）：往 scope 塞一个假成员 → CT4 红，且 subject 带成员名（计数式会被一把基线认领）', () => {

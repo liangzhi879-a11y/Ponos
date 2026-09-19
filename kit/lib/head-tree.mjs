@@ -62,9 +62,22 @@ export function headFiles({ root, ref = HEAD_REF, exec = execFileSync } = {}) {
  * 用途（`contract-rules.mjs` 的 CT8）：一致时工作树侧契约面与提交态**必然相同** ⇒ 可跳过第二遍全量提取
  * （实测 ≈0.8 s；而 CI 与干净克隆走的正是这条路）。判据来自 git 本身，本模块不自己猜：
  * 出错（非仓/无 git）时返回 `false` ⇒ 调用方照常逐项比对（保守方向 = 宁可多跑一遍）。
+ *
+ * ★ 第 4 批（收口）：`status` 会被**索引标记**骗过 —— `git update-index --assume-unchanged` 或
+ *   `--skip-worktree` 的文件改了内容也不出现在 `status` 里（审查实测：追加一个真端点后
+ *   `worktreeClean=true` ⇒ 捷径跳过 ⇒ CT8 静默漏报）。故再加一条证据：索引里**每个条目都必须是普通
+ *   `H`**（`git ls-files -v`；小写 = assume-unchanged，`S` = skip-worktree，其余 = unmerged/removed
+ *   等异常态）—— 任一非 `H` 就按"不干净"处理。代价只是"多跑一遍全量提取"（≈0.8 s），
+ *   换的是"绝不因索引标记而少报在途差异"（CT8 是只报不拦的黄灯，漏报等于丢信息）。
  */
 export function worktreeClean({ root, exec = execFileSync } = {}) {
-  try { return String(git(['status', '--porcelain'], { root, exec })).trim() === '' } catch { return false }
+  try {
+    if (String(git(['status', '--porcelain'], { root, exec })).trim() !== '') return false
+    for (const line of String(git(['ls-files', '-v'], { root, exec })).split('\n')) {
+      if (line && line[0] !== 'H') return false
+    }
+    return true
+  } catch { return false }
 }
 
 /**

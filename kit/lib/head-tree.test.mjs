@@ -111,6 +111,28 @@ test('★worktreeClean：只在"与 HEAD 完全一致"时为 true（改文件 / 
     '非 git 目录 ⇒ false（保守：照常逐项比对，不假装"一致"）')
 })
 
+// ★ 第 4 批（收口，低危）：`git status` 会被 `assume-unchanged` / `skip-worktree` **骗过**。
+//   审查实测：`git update-index --assume-unchanged <file>` 后往该文件追加真端点 ⇒ `worktreeClean=true`
+//   ⇒ CT8 的等价性捷径直接跳过第二遍提取 ⇒ 在途端点**静默**。
+//   危害等级：只丢**黄灯信息**（CT8 是"只报不拦"），不影响任何红 —— 所以这里不引入新的红，
+//   只把"捷径的前提"补严：`status` 为空 **且** 索引里没有特殊标记（`git ls-files -v` 全为 `H`）。
+//   保守方向明确：判错只会"多跑一遍全量提取"（≈0.8 s），绝不漏报。
+test('★worktreeClean：assume-unchanged / skip-worktree 下不得假装"干净"（否则 CT8 捷径静默漏报）', () => {
+  const root = repo(FILES)
+  assert.equal(worktreeClean({ root }), true)
+  git(root, ['update-index', '--assume-unchanged', 'server/a.mjs'])
+  writeFileSync(join(root, 'server/a.mjs'), "export const route = (p) => p === '/wip'\n")
+  assert.equal(git(root, ['status', '--porcelain']), '', '前提：assume-unchanged 的用途就是让 status **看不见**这处改动')
+  assert.equal(worktreeClean({ root }), false, 'status 被骗过时必须由索引标记兜住 ⇒ 按脏处理（宁可多跑一遍，不多报/漏报）')
+  git(root, ['update-index', '--no-assume-unchanged', 'server/a.mjs'])
+  git(root, ['checkout', '--', 'server/a.mjs'])
+  assert.equal(worktreeClean({ root }), true, '恢复正常后照旧 true（捷径没有被永久关掉）')
+  git(root, ['update-index', '--skip-worktree', 'server/a.mjs'])
+  writeFileSync(join(root, 'server/a.mjs'), "export const route = (p) => p === '/wip2'\n")
+  assert.equal(git(root, ['status', '--porcelain']), '', '前提：skip-worktree 同样让 status 看不见改动')
+  assert.equal(worktreeClean({ root }), false, 'skip-worktree 同样按脏处理')
+})
+
 test('★HEAD 不可读（空仓/非仓）→ available:false + error，不抛（由调用方报出来）', () => {
   const empty = repo({ 'a.txt': 'x\n' }, { commit: false })   // git init + add，没有提交
   const h = materializeHead({ root: empty, cacheDir: cacheDir() })

@@ -31,10 +31,26 @@ export const CONFIG_FILES = [
 
 const CODE_EXT = /\.(mjs|cjs|js|jsx|ts|tsx)$/
 
-/** 列出 git **已跟踪** 文件（POSIX 分隔）。exec 可注入以便单测。 */
-export function trackedFiles({ root, gitBin = 'git', exec = execFileSync } = {}) {
+/**
+ * 列出文件（POSIX 分隔）。exec 可注入以便单测。
+ *
+ * `includeUntracked: true` ⇒ 域 = **索引 ∪ 未忽略的未跟踪文件**
+ * （`git ls-files --cached --others --exclude-standard`）。**只给 `CT8`（工作树 ∖ HEAD 的在途差异）用**：
+ * plan §6 D7 要求"磁盘有、索引无"的路由模块报黄灯提示，而默认口径（`git ls-files` = 索引）看不见它们
+ * —— 审查实测：未 `git add` 的 `server/zzz-wip-routes.mjs` 对 CT8 **完全不可见**，报告还打印
+ * "工作树契约面与 HEAD 一致"（`git status` 明明有 `??`），`git add` 之后立刻报出。
+ *
+ * ★ 这**不是**磁盘遍历（D4 明令禁止 `readdirSync`）：域仍由 git 给出（谁被忽略由 `.gitignore` 决定），
+ *   `release/`、`kernel-dist/`、`node_modules` 这类镜像/产物目录**不在**结果里
+ *   （它们被忽略，且里面那些 `*-routes.mjs` 是**副本**，卷进来就是"把副本当真相"）。
+ *   契约**真值侧**（CT0–CT7/CT9 与 `kit:sync`）照旧用默认口径 —— 不变量 I2（扫描域 = 已入库文件）不变。
+ */
+export function trackedFiles({ root, gitBin = 'git', exec = execFileSync, includeUntracked = false } = {}) {
   if (!root) throw new Error('trackedFiles: 缺少 root')
-  const out = exec(gitBin, ['ls-files', '-z'], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  const args = includeUntracked
+    ? ['ls-files', '--cached', '--others', '--exclude-standard', '-z']
+    : ['ls-files', '-z']
+  const out = exec(gitBin, args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
   return String(out).split('\0').filter(Boolean).map((f) => f.replace(/\\/g, '/'))
 }
 
