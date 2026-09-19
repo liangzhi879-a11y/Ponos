@@ -417,14 +417,6 @@
           "status": "used"
         },
         {
-          "name": "classic-level",
-          "evidence": {
-            "classes": [],
-            "files": []
-          },
-          "status": "unused"
-        },
-        {
           "name": "clsx",
           "evidence": {
             "classes": [

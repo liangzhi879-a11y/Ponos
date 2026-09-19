@@ -63,7 +63,6 @@
     "@tailwindcss/typography": "^0.5.20",
     "@xyflow/react": "^12.11.6",
     "class-variance-authority": "^0.7.0",
-    "classic-level": "^3.0.0",
     "clsx": "^2.1.0",
     "diff": "^7.0.0",
     "lucide-react": "^0.400.0",
