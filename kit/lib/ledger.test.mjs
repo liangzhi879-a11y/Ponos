@@ -404,3 +404,39 @@ test('syncDeps：notes / gates 是人工维护段，sync 必须原样保留（�
   assert.deepEqual(data.gates.ci, ['verify-highrisk'])
   assert.deepEqual(data.gates.manual, [{ script: 'verify-gui-fidelity', reason: '需图形会话' }])
 })
+
+test('syncDeps：packages[].status 是**事实字段**（人工不可篡改）——手改成 used/unused 都会被重算纠正回来', () => {
+  // 与 notes / gates 相反：那两个是"人工段"（sync 必须原样保留），status 是"宿主事实"（sync 必须重算）。
+  // 二者混淆的后果不对称：status 被人工留住 ⇒ 台账说"未用"而源码在用（或反之），
+  // P1/P2 规则与后续 B1 的删除动作都建立在它上面 —— 会据一条假事实删掉在用的依赖。
+  const root = fixture({
+    'package.json': JSON.stringify({
+      dependencies: { react: '^18', 'classic-level': '^3' },
+      devDependencies: {},
+      scripts: {},
+    }),
+    'src/a.ts': "import { x } from 'react'\n",
+    'kernel/package.json': '{}',
+  })
+  const files = ['package.json', 'src/a.ts', 'kernel/package.json']
+  syncDeps({ root, files })
+
+  // 手工篡改两个方向：真未用的改成 used（连证据一起伪造，模拟"装得更像"），在用的改成 unused
+  const d = readDeps({ root })
+  const pkgs = d.domains['npm-runtime'].packages
+  const cl = pkgs.find((p) => p.name === 'classic-level')
+  cl.status = 'used'
+  cl.evidence = { classes: ['import'], files: ['src/a.ts'] }
+  pkgs.find((p) => p.name === 'react').status = 'unused'
+  writeDeps({ root, data: d })
+
+  const { data, unused } = syncDeps({ root, files })
+  const after = data.domains['npm-runtime'].packages
+  assert.equal(after.find((p) => p.name === 'classic-level').status, 'unused',
+    '人工把 status 改成 used 必须被重算纠正回来（不得沿用旧值）')
+  assert.equal(after.find((p) => p.name === 'react').status, 'used',
+    '反方向同样：人工把在用的改成 unused 也必须纠正回来')
+  assert.deepEqual(after.find((p) => p.name === 'classic-level').evidence.classes, [],
+    '伪造的证据与 status 同属事实字段，一并重算')
+  assert.deepEqual(unused, ['classic-level'], '未用判定只由本次重算的证据决定，与人工改过的 status 无关')
+})
