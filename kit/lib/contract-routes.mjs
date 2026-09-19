@@ -133,7 +133,11 @@ function anchoredPatternFor(code, prefix, starts) {
 function excludable(file, literal, line) {
   const of = (reason) => ({ literal, reason, file, line })
   if (literal === '/') {
-    return of("root-path-check：'/' 是根路径判定（绝对路径 / URL 根），不是端点")
+    // 两种真实形态都归这一类：`path === '/'`（bare `'/files/'` 前缀判定也是这一族，见下）与
+    // `path.startsWith('/')`（绝对路径检查，如 scripts/check-doc-anchors.mjs:117）。
+    // ★ 本模块自身也会被扫到（`kit/**` 是已入库源码）：`if (!path.startsWith('/')) continue`
+    //   就是这一类，说明"扫描域 = 全部源码文本"是真的在生效。
+    return of("root-path-check：`=== '/'` / `startsWith('/')` 这类根路径或绝对路径判定，不是端点")
   }
   if (file.startsWith(VENDORED)) {
     return of(`vendored-sample-skill：${VENDORED} 是上游示例技能副本，自带私有 HTTP 面，不属于本仓 bridge 契约`)
