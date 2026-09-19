@@ -9,18 +9,19 @@ npm run verify   # = typecheck + test:ci（本地推之前跑这个）
 npm run test:ci  # = 预检 → 文档口径 → DevKit 台账 → 单测层 → server 层 → 内核层 → verify:ci（实测为绿的门禁）
 ```
 
-| 命令 | 内容 | 本机实测 |
+| 命令 | 内容 | 本机实测（**主树** —— 即**含他人在途改动**；口径见「测数口径」一节） |
 |---|---|---|
 | `npm run test:preflight` | 预检：Node 版本、测试 glob 必须匹配到文件、端口占用风险 | <1s |
 | `node scripts/check-doc-anchors.mjs` | 文档口径（路径存在性 + 各层测试文件数） | <1s |
 | `npm run kit:check` | DevKit 台账门禁（版本/依赖台账 ↔ 宿主文件；只读） | 主仓 853/863/815 ms；干净克隆 1271/1283/1268 ms |
-| `npm run test:unit` | `shared` + `electron` + `src` + `kit` 四层 | 1041 项 / 23s（kit 层接入前实测；kit 层另加 6 项断言） |
-| `npm run test:server` | `server` 层（含起桥的端到端测试） | 694 项 / 91s |
-| `npm run test:kernel` | `kernel-tests` 层 | 1943 项 / 48s |
-| `npm run verify:ci` | 实测为绿的 `verify-*.mjs` 门禁（见「门禁挂载」两节） | 5 个脚本 / 实测 ≈4.0s（含 npm 启动开销） |
+| `npm run test:unit` | `shared` + `electron` + `src` + `kit` 四层 | 1041 项 / 23s（**主树、含他人在途改动**；kit 层接入前实测，kit 层另加 6 项断言） |
+| `npm run test:server` | `server` 层（含起桥的端到端测试） | 694 项 / 91s（**主树、含他人在途改动**） |
+| `npm run test:kernel` | `kernel-tests` 层 | 1943 项 / 48s（**主树、含他人在途改动**） |
+| `npm run verify:ci` | 实测为绿的 `verify-*.mjs` 门禁（见「门禁挂载」两节） | 7 个脚本 / 实测 ≈6.0s（含 npm 启动开销；**主树**实测、含他人在途改动；5 脚本时代为 ≈4.0s） |
 | `npm run typecheck` | `tsc --noEmit` | 16s |
 
-合计 **3678 项断言 / 约 3 分钟**（kit 层接入前实测，本机 8 核）。CI 为 2 核 Windows 运行器，实耗会更长，作业超时设 30 分钟。
+合计 **3678 项断言 / 约 3 分钟**（**主树**实测、**含他人在途改动**，且为 kit 层接入前，本机 8 核）。CI 为 2 核 Windows 运行器，实耗会更长，作业超时设 30 分钟。
+★ 引用上表任何数字都要按「测数口径」注明测量树：这张表是**主树**口径（含别人尚未提交的测试文件，数字会漂）；**对外引用请用干净克隆的数字** —— 「DevKit 台账门禁」一节有盘根干净克隆的完整链路实测（如 `test:unit` 1225 项 / `test:server` 770 项）。
 
 ## 两个刻意的环境决策
 
@@ -54,7 +55,7 @@ node scripts/ci-preflight.mjs --allow-running-app
 
 | 并发 | 结果 |
 |---|---|
-| 4（`server` 层独立跑） | 694/694 通过，91s |
+| 4（`server` 层独立跑） | 694/694 通过，91s（**主树、含他人在途改动**） |
 | 8（全部层合成一次调用） | `server/reap-guard.test.mjs` 与 `server/sheet-ops.test.mjs` **失败**（各约 39s） |
 
 这两个测试单独跑均全绿，说明是**资源争抢**（它们会 spawn python / 子进程，并带内部超时），不是真 bug。
@@ -148,7 +149,7 @@ node scripts/ci-preflight.mjs --allow-running-app
   | `npm run test:preflight` | 1.0 s | 0 |
   | `node scripts/check-doc-anchors.mjs` | 0.94 s | 0 |
   | `npm run kit:check`（3 次取中位） | 1.27 s | 0 |
-  | `npm run verify:ci`（5 脚本） | 4.4 s | 0 |
+  | `npm run verify:ci`（该克隆当时 **5** 脚本；2026-09-19 P1 起为 **7** 脚本，故 4.4 s 是 5 脚本口径） | 4.4 s | 0 |
   | `npm run test:unit` | 30.1 s（1225 项 / 0 fail / 1 skip） | 0 |
   | `npm run test:server` | 117.1 s（770 项 / 0 fail） | 0 |
   | `npm run test:kernel` | 75.2 s | 0 |
@@ -168,6 +169,18 @@ node scripts/ci-preflight.mjs --allow-running-app
 
 - **扫描域**：全部判定基于 `git ls-files`（**已入库**文件），不是磁盘遍历 ——
   `scratch/`、`release/`、`dist/`、`kernel-dist/`、`runtime/` 一律不参与（见 spec 不变量 I2）。
+
+### 测数口径：引用测试计数必须注明测量树（铁律 4）
+
+**规矩（照抄 `kit/README.md` 的「四条铁律」第 4 条，违反即违规）**：任何报告、提交信息、文档里引用测试计数时，**只允许两种形态**：
+① 用**干净克隆**（**盘根目录**，如 `C:\p2rev` / `C:\t14rev`；`/tmp` 不算 —— 它仍在家目录解析链上，会命中杂散 `node_modules`）实测的数字；
+② 主树数字，但**必须在同一句里显式写「含他人在途改动」并同时给出干净克隆的数字**。
+**裸数字**（只写"762 项"而不说测的是哪棵树）与**拿主树数字当全量数字**（不标注）**一律算违反本条** ——
+判定方法：把那个数字拿来问"**这是哪棵树测的？**"，答不出来即违规。
+
+原因（实测，2026-09-19 同一提交）：主树长期有**他人在途的测试文件**，同一个提交在两棵树上计数不同 ——
+`src/**/*.test.ts` **762 项（主树）/ 710 项（盘根干净克隆）**。这套口径本身也有机器门禁的另一面：
+锚点只统计 `git ls-files`（见「计数口径：只算 git 已跟踪的文件」），故**引用锚点式的"文件数"要说是已入库口径**。
 
 ### ★ 为什么这条门禁必须进 CI（Task 10 审查指出的唯一关卡）
 
@@ -223,8 +236,7 @@ C2 的原状态是**零挂载**：`scripts/verify-*.mjs` 共 11 个，`package.j
 | `verify-package-assets` | manual | **1** | `:28` 要求 `kernel-dist/cli.mjs` 存在（先跑 `build-kernel`）—— 干净克隆实测 `[FAIL] kernel-dist/cli.mjs 缺失`；它本就是出包前预检（`:2`） |
 
 > `manual` 那 4 条的 `EXIT=1` 是**构建产物不存在**造成的（不是脚本腐烂）："先构建/先出包就能跑"。
-> 上表里已没有「**跑起来就断言失败**」的条目（`manual` 桶那 4 条的 `EXIT=1` 是缺构建产物所致，不是断言失败，
-> 见上一条注）—— `pendingFix` 桶**当前为空**（2026-09-19 P1 的两个脚本都已修绿并移入 `ci`）；
+> 上表里已没有「**跑起来就断言失败**」的条目 —— `pendingFix` 桶**当前为空**（2026-09-19 P1 的两个脚本都已修绿并移入 `ci`）；
 > 空桶是合法状态，将来出现"跑起来也断言失败"的脚本照同一判据登记进该桶。
 
 > 上表由 `kit/cli.test.mjs` 的 3 条测试守：① 每个脚本都有 npm 入口且**恰好**归一个桶；

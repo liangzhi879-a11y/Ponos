@@ -20,7 +20,7 @@ YFWorking 现状（全部实测，非推断）：
 | 规范 | `README.md`（源码自述，含 §8 的 17 条「注释↔代码不一致」清单）、`docs/architecture.md`(467 行)、`docs/bridge-contract.md`(456 行)、`docs/ci.md`(130 行)、`docs/_anchors.json` | 全是**散文**：AI 与人需读数万字才能判断是否合规，没有一条可被程序判定 |
 | 版本 | 4 条版本线 + 20 处版本常量 + 技能 3 套版本载体 | **`git tag` = 0 个**；四类载体互不校验；`skills-lock.json` 20/20 哈希不符 |
 | 依赖 | npm 52 运行时 + 13 dev、内核零依赖、内嵌 Python 13 包、技能侧 requirements | 四域**零台账**：无来源/用途/未用判定/体积门禁 |
-| 测试 | **408** 个测试文件、3678 断言、`scripts/test-tiers.mjs` 为分层口径单一真源、`ci-preflight` 抓"零测试绿灯"、`perf-baseline` 性能门禁 | 11 个 `verify-*.mjs` **零挂载**；6 个构建/校验脚本无 npm script；无覆盖率 |
+| 测试 | **408** 个测试文件（**已入库**口径，与 `docs/_anchors.json` 的 `testTotal` 一致）、3678 断言（**主树**实测、**含他人在途改动** —— 测试计数必须注明测量树，见 `kit/README.md`「四条铁律」第 4 条）、`scripts/test-tiers.mjs` 为分层口径单一真源、`ci-preflight` 抓"零测试绿灯"、`perf-baseline` 性能门禁 | 11 个 `verify-*.mjs` **零挂载**；6 个构建/校验脚本无 npm script；无覆盖率 |
 | 设计资源 | `themes.css` 三主题、`tailwind.config.ts`、logo/icon 派生链、安装图 | **无机器可读 token 真源**（CSS 是真源、Tailwind 是手抄镜像）；派生资产无谱系 |
 | AI 通道 | 约 30 个内置技能、11 个 agent 定义、7 个记忆模板、工具模板、spec-dev 工作流、MCP | 各一套格式，无统一 schema、无版本、无一致性校验 |
 | GUI 载体 | `FilesHistoryOverlay` + `viewStore.SecondTabId` 抽屉机制、Settings、AppsPanel、知识/工作流/用量/诊断面板 | 无"套件资源"视图，无"红灯在哪"的统一入口 |

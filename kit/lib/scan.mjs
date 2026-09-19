@@ -59,3 +59,63 @@ export function inDomains(files, domains = DOMAINS) {
 export function readTracked({ root, file }) {
   try { return readFileSync(join(root, file), 'utf8') } catch { return null }
 }
+
+/**
+ * 剥掉注释，返回源码的**代码视图**（`//` 行注释，以及斜杠星号 到 星号斜杠 的块注释；JSX 的注释块同属块注释）。
+ *
+ * 为什么需要它（实测）：`scripts/verify-knowledge-import-gui.mjs` 这类**源码级静态走查**在注释里
+ * 也会看见关键字——审查在 `KnowledgeImportReport.tsx` / 对话框的**注释**里写
+ * `import('@/lib/knowledgeApi')`（说明性文字）时脚本就**假红**了。注释不是代码，
+ * 断言必须只看代码（本仓既有约定，先例：`server/transcript.test.mjs` 的源码守卫）。
+ *
+ * 判据（不许放宽的地方）：本函数**只改变"扫哪段文本"**，不改变任何断言的真值条件——
+ * 真代码里的**值**导入（静态或动态 `import(…)`）照旧命中，`import type` 照旧放行。
+ * 剥注释后仍留在代码视图里的 import 一定是真代码，故"值导入即红"一字未动。
+ *
+ * `//` / 斜杠星号 会不会被误剥：字符串字面量（`'…'`、`"…"`、`` `…` ``，含转义）内的内容**整体原样保留**，
+ * 故 `'https://example.com'` 与"字符串里写着斜杠星号"这类内容都不会被误剥。
+ * 块注释用空格占位并**保留其中的换行**（行首判据如 `^[ \t]*key:` 依赖换行，缺了会跨行误匹配）。
+ *
+ * 已知边界（如实写下，不假装能判）：① 不认正则字面量 —— `/[//]/` 这类写法里的 `//` 会被当行注释，
+ * 其后同行内容丢失；② 不认 JSX 文本节点里的 `'`/`"` —— `<p>It's fine</p>` 的撇号会被当字符串起始，
+ * 直到下一个同类引号为止的内容被当作字符串保留（即**该段内的注释不会被剥**，方向偏保守：宁可漏剥，不误剥）。
+ * 两者对本次用途（组件 `.tsx` / 钩子 / 路由 `.mjs` 的 import 与 i18n key 扫描）实测无影响。
+ */
+export function stripComments(code) {
+  const s = String(code)
+  let out = ''
+  let i = 0
+  while (i < s.length) {
+    const c = s[i]
+    const d = s[i + 1]
+    if (c === '/' && d === '/') { // 行注释：丢到行尾（换行本身由下一轮原样输出）
+      i += 2
+      while (i < s.length && s[i] !== '\n') i++
+      continue
+    }
+    if (c === '/' && d === '*') { // 块注释：保留其中的换行，末尾用空格占位避免两侧 token 粘连
+      i += 2
+      while (i < s.length && !(s[i] === '*' && s[i + 1] === '/')) {
+        if (s[i] === '\n') out += '\n'
+        i++
+      }
+      i = Math.min(i + 2, s.length)
+      out += ' '
+      continue
+    }
+    if (c === '"' || c === "'" || c === '`') { // 字符串字面量：整体原样拷贝（含转义），其中的 // 与 /* 不算注释
+      const start = i
+      i++
+      while (i < s.length) {
+        if (s[i] === '\\') { i += 2; continue }
+        if (s[i] === c) { i++; break }
+        i++
+      }
+      out += s.slice(start, Math.min(i, s.length))
+      continue
+    }
+    out += c
+    i++
+  }
+  return out
+}

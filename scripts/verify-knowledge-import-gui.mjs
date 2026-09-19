@@ -43,8 +43,21 @@
 //     用回执 spaceId），而不是全文搜一个变量名；并补上同函数内另外几类键的失效。
 //
 // 失败即退出码 1。**不要为了让本脚本通过而放宽这里的断言**：放宽 = 把静默失败放回生产。
+//
+// ── 2026-09-19（P1 收尾 · 独立审查 ①）：扫描前**剥注释**，消掉"注释里写字面量即假红" ──────
+// 审查实测：在两个组件的**注释**里写 `import('@/lib/knowledgeApi')`（说明文字）→ 本脚本**红**
+// （误报：注释不是代码）。同族既有行为，本轮一并修干净。
+// 修法 = 读文件时构建"代码视图"（`stripComments`，见 `kit/lib/scan.mjs`，是**可单测的纯函数**，
+// 测试在 `kit/lib/scan.test.mjs`），此后所有文本断言都跑在代码视图上。
+// ★ 判据一字未动：**值**导入（静态或动态）即红、`import type` 放行 —— 剥注释只改"扫哪段文本"。
+//   变异验证（改坏→红 / 还原→绿，共 5 组，见 commit message）：
+//   注释内动态值导入 → 绿；注释内静态值导入 → 绿；真代码动态值导入 → 红；
+//   真代码静态值导入 → 红；`import type`（静态或内联 `type` 说明符）→ 绿。
+// 已知边界：`stripComments` 不认正则字面量与 JSX 文本里的撇号（详见其 JSDoc），方向偏保守
+// （宁可漏剥注释，绝不误剥真代码）—— 对本脚本扫的这几个文件实测无影响。
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { stripComments } from '../kit/lib/scan.mjs'
 
 const ROOT = process.cwd()
 const read = (rel) => readFileSync(join(ROOT, rel), 'utf-8')
@@ -74,7 +87,13 @@ const FILES = {
 for (const [k, rel] of Object.entries(FILES)) {
   check(existsSync(join(ROOT, rel)), `文件存在：${rel}（${k}）`)
 }
-const src = Object.fromEntries(Object.entries(FILES).map(([k, rel]) => [k, read(rel)]))
+// 两份视图，故意分开：
+//   · `raw`   = 原文，**只**给"JSX 里无硬编码中文"那条用（剥注释只会让可见文本变少 ⇒ 可能假绿，
+//               故这条取证据最多的原文；注释里的中文在该判据下不会命中：注释块的 `>` 后面紧跟 `{`）；
+//   · `src`   = **代码视图**（剥掉行注释与块注释），其余所有文本/import 断言都跑在它上面 ——
+//               否则注释里的说明文字（例如"曾经这样写过 `import('@/lib/knowledgeApi')`"）会被当代码判违规。
+const raw = Object.fromEntries(Object.entries(FILES).map(([k, rel]) => [k, read(rel)]))
+const src = Object.fromEntries(Object.entries(raw).map(([k, code]) => [k, stripComments(code)]))
 
 /**
  * 取 `exposeInMainWorld('<win>', { … })` 的对象字面量正文（花括号配对）。
@@ -234,7 +253,9 @@ for (const k of usedKeys) {
 }
 // JSX 文本节点里的中文 = 英文界面下漏出中文（i18n 只在 {t(...)} 里生效）。
 // 两个渲染文件各自断言，失败信息里带上**是哪个文件**（否则抽组件后不知道该去哪改）。
-for (const [name, code] of I18N_SOURCES) {
+// ★ 这里刻意用**原文 `raw`**（不是剥了注释的代码视图）：剥注释只会减少可见文本（宁可假红不可假绿），
+//   而注释里的中文在本判据下不会命中 —— 注释块的 `>` 后面紧跟的是 `{`，模式 `>\s*中文` 不成立。
+for (const [name, code] of [['dialog', raw.dialog], ['report', raw.report]]) {
   const cjkText = [...code.matchAll(/>\s*([\u4e00-\u9fa5][^<>{}]*?)\s*</g)].map(m => m[1])
   check(cjkText.length === 0, `${name} 的 JSX 无硬编码中文${cjkText.length ? ` → ${cjkText.join(' / ')}` : ''}`)
 }
@@ -341,14 +362,13 @@ check(/setSpace\(res\.data\.spaceId\)/.test(src.dialog), '导入成功后切到�
 // 明细清单的配色必须用**主题里真有的** token：`text-error`（失败）/ `text-warning`（告警）。
 // 这是抽组件时修掉的一类静默失败（原先写 `text-danger`/`text-warn`，主题无此 token ⇒ 类名不生效、
 // 告警渲染成普通灰）—— 未定义类名不报错，只能靠对照主题定义发现。新增一条防它复发。
-const themeTokens = read('tailwind.config.ts')
+const themeTokens = stripComments(read('tailwind.config.ts'))
 check(/['"]?error['"]?\s*:/.test(themeTokens) && /['"]?warning['"]?\s*:/.test(themeTokens),
   '主题定义了 error / warning 色 token（明细配色断言的前提）')
 // 判据只看**代码**、不看注释：报告组件头注释里正引用着旧类名（说明这桩缺陷怎么修的），
-// 那种引用是文档、不是缺陷。朴素剥离器（正则去掉 // 与块注释）对本文件足够 ——
-// 它没有 "https://…" 这类会被误剥的字符串字面量。
-const stripComments = (code) => code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
-check(/tone="text-error"/.test(stripComments(src.report)) && !/text-(danger|warn)\b/.test(stripComments(src.report)),
+// 那种引用是文档、不是缺陷。剥注释用 `kit/lib/scan.mjs#stripComments`（全局代码视图，可单测）——
+// 原先这里的就地朴素剥离器（正则去 `//` 与块注释）已被它取代：那版对字符串里的 `//` 会误剥。
+check(/tone="text-error"/.test(src.report) && !/text-(danger|warn)\b/.test(src.report),
   '报告组件的告警配色只用主题真有的 token（失败清单 text-error；不再出现 text-danger/text-warn）')
 
 // 设备降级：浏览器 dev 下没有窗口对话框 API → 按钮禁用 + 文案说明，不能点了没反应
