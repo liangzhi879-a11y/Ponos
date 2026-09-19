@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "_note": "已知漂移登记后不再报红，但条目数不得增加；减少时应摘除条目。",
+  "_shape": "{ rule, subject, reason, at }",
+  "entries": []
+}
