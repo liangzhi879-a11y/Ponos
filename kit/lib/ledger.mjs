@@ -410,8 +410,7 @@ function insideEnclosingString(text, index) {
   return false
 }
 
-function specifiersIn(text) {
-  const masked = maskNonCode(text)
+function specifiersIn(text, masked = maskNonCode(text)) {
   const out = []
   const push = (spec, kind, index) => {
     if (!spec) return
@@ -426,13 +425,71 @@ function specifiersIn(text) {
   return out
 }
 
+/**
+ * ★ 2026-09-19 性能改造（Task 5 复审 rider R1）：**每个文件只读一次、只 mask 一次**。
+ *
+ * 旧写法是"每个依赖自己去遍历全仓、逐个文件 readFileSync + maskNonCode"，
+ * 于是复杂度是 O(依赖数 × 文件数)：实测全仓（52+13=65 个依赖 × 886 个文件）`syncDeps` 要 **56.8s**，
+ * 而 Task 7 把 `kit:check` 接进 CI 后 sync+check 要付两遍。
+ * 现在改为：先按文件把**与具体依赖无关**的中间结果解析一遍（masked 文本 / 说明符清单 / CLI 命令词），
+ * 再让每个依赖在这个索引上做匹配。匹配用的 `configTokenRe` 等仍然逐依赖跑 —— 但那部分是 O(文本) 且无 I/O。
+ *
+ * 为什么用"显式传入的 cache（Map）"而不是模块级缓存：模块级缓存会把"上一次跑的结果"
+ * 泄漏给下一次调用（同一进程里跑两个不同的 root 就串味），而门禁最怕这种不可复现的脏状态。
+ */
+function isEvidenceCandidate(file) {
+  return MODULE_EXT.test(file) || CONFIG_FILES.includes(file) || file === 'package.json'
+}
+
+/** 单文件解析结果；读不到 / 不是候选文件 → null（null 也会被缓存，避免反复试探） */
+function fileRecord({ root, file, cache }) {
+  if (cache && cache.has(file)) return cache.get(file)
+  let rec = null
+  if (isEvidenceCandidate(file)) {
+    const text = readTracked({ root, file })
+    if (text !== null) {
+      const masked = maskNonCode(text)
+      rec = {
+        file,
+        text,
+        masked,
+        specifiers: specifiersIn(text, masked),
+        _commands: null,
+        _tryRanges: null,
+        /** CLI 证据的词表（package.json 的 scripts 与代码里的 npx/exec 家族）—— 与依赖无关，故只算一次 */
+        commands() {
+          if (this._commands === null) {
+            this._commands = file === 'package.json' ? packageJsonCommands(this.masked) : cliCommandsIn(this.masked)
+          }
+          return this._commands
+        },
+        /** try/catch 覆盖区间（可选探针用）—— 同上，只算一次 */
+        tryRanges() {
+          if (this._tryRanges === null) this._tryRanges = tryCatchRanges(this.masked)
+          return this._tryRanges
+        },
+      }
+    }
+  }
+  if (cache) cache.set(file, rec)
+  return rec
+}
+
+/** 建索引：把一次扫描里要用到的文件全解析进同一个 Map（调用方可跨函数复用） */
+export function buildEvidenceIndex({ root, files }) {
+  const cache = new Map()
+  for (const file of files) fileRecord({ root, file, cache })
+  return cache
+}
+
 /** 源码里出现的全部模块说明符（用于反向幽灵依赖判定） */
-export function parseDeclaredImports({ root, files }) {
+export function parseDeclaredImports({ root, files, cache = null }) {
+  const idx = cache || buildEvidenceIndex({ root, files })
   const names = new Set()
   for (const file of files.filter((f) => MODULE_EXT.test(f))) {
-    const text = readTracked({ root, file })
-    if (text === null) continue
-    for (const s of specifiersIn(text)) names.add(s.spec)
+    const rec = fileRecord({ root, file, cache: idx })
+    if (!rec) continue
+    for (const s of rec.specifiers) names.add(s.spec)
   }
   return [...names].sort()
 }
@@ -530,17 +587,18 @@ const lineOf = (text, index) => text.slice(0, index).split('\n').length
  * jszip 是 mammoth 的传递依赖，源码显式允许它缺失 —— 把它当"幽灵依赖"报红，红的是**有意设计**；
  * 但也不能静默放过：清单照原样写进台账 `optionalProbes`（含 file:line），供人复核。
  */
-export function optionalProbes({ root, files }) {
+export function optionalProbes({ root, files, cache = null }) {
+  const idx = cache || buildEvidenceIndex({ root, files })
   const found = []
   for (const file of files.filter((f) => MODULE_EXT.test(f))) {
-    const text = readTracked({ root, file })
-    if (text === null) continue
-    const ranges = tryCatchRanges(maskNonCode(text))
+    const rec = fileRecord({ root, file, cache: idx })
+    if (!rec) continue
+    const ranges = rec.tryRanges()
     if (!ranges.length) continue
     const inside = (i) => ranges.some(([a, b]) => i >= a && i <= b)
     const agg = new Map()
-    for (const o of specifiersIn(text)) {
-      const e = agg.get(o.spec) || { total: 0, optional: 0, line: lineOf(text, o.index) }
+    for (const o of rec.specifiers) {
+      const e = agg.get(o.spec) || { total: 0, optional: 0, line: lineOf(rec.text, o.index) }
       e.total++
       if (inside(o.index)) e.optional++
       agg.set(o.spec, e)
@@ -550,27 +608,42 @@ export function optionalProbes({ root, files }) {
   return found.sort((a, b) => a.spec.localeCompare(b.spec) || a.file.localeCompare(b.file))
 }
 
-export function collectEvidence({ root, files, dep, includeTests = true }) {
+/**
+ * tsconfig 的 `compilerOptions.types`（缺字段 → null = TS 默认"自动包含全部 @types/*"）。
+ * 用正则而不是 JSON.parse：tsconfig 是"允许注释与尾逗号"的 JSONC，严格解析会 throw。
+ */
+function tsconfigTypes(ts) {
+  const m = ts.match(/"types"\s*:\s*\[([^\]]*)\]/)
+  if (!m) return null
+  return m[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean)
+}
+
+/** `@types/x` → `x`；`@types/babel__core` → `@babel/core`（DefinitelyTyped 的作用域名 `__` 约定） */
+function typedModuleOf(dep) {
+  const rest = dep.slice('@types/'.length)
+  return rest.includes('__') ? '@' + rest.replace('__', '/') : rest
+}
+
+export function collectEvidence({ root, files, dep, includeTests = true, cache = null }) {
+  const idx = cache || buildEvidenceIndex({ root, files })
   const classes = new Set()
   const hitFiles = []
   const productionFiles = []
-  const candidates = files.filter((f) => MODULE_EXT.test(f) || CONFIG_FILES.includes(f) || f === 'package.json')
-  for (const file of candidates) {
+  for (const file of files) {
     if (!includeTests && isTestFile(file)) continue
-    const text = readTracked({ root, file })
-    if (text === null) continue
-    const masked = maskNonCode(text)
+    const rec = fileRecord({ root, file, cache: idx })
+    if (!rec) continue
+    const masked = rec.masked
     const isConfig = CONFIG_FILES.includes(file)
     let hit = false
-    for (const o of specifiersIn(text)) {
+    for (const o of rec.specifiers) {
       if (packageRootOf(o.spec) !== dep) continue
       hit = true
       classes.add(o.kind === 'dynamic' ? 'dynamic-import' : 'import')
       if (isConfig) classes.add('config-file')
     }
     if (isConfig && configTokenRe(dep).test(masked)) { classes.add('config-file'); hit = true }
-    const commands = file === 'package.json' ? packageJsonCommands(masked) : cliCommandsIn(masked)
-    if (commands.includes(dep)) { classes.add('cli'); hit = true }
+    if (rec.commands().includes(dep)) { classes.add('cli'); hit = true }
     if (hit) {
       hitFiles.push(file)
       if (!isTestFile(file)) productionFiles.push(file)
@@ -579,7 +652,23 @@ export function collectEvidence({ root, files, dep, includeTests = true }) {
   // types 类：@types/* 由 tsconfig 自动包含（tsconfig.json 未声明 "types" 字段时全部生效）
   if (dep.startsWith('@types/')) {
     const ts = readTracked({ root, file: 'tsconfig.json' })
-    if (ts !== null && !/"types"\s*:/.test(ts)) { classes.add('types'); hitFiles.push('tsconfig.json') }
+    if (ts !== null) {
+      const declared = tsconfigTypes(ts)
+      if (declared === null) {
+        classes.add('types'); hitFiles.push('tsconfig.json')
+      } else if (declared.includes(dep) || declared.includes(dep.slice('@types/'.length))) {
+        classes.add('types'); hitFiles.push('tsconfig.json')
+      } else {
+        // ★ R2：`types` 字段只关掉"全局自动包含"，**模块级**类型包（@types/react 这类）是靠
+        //   `import 'react'` 的模块解析生效的 —— 把它一并判死等于给 B1 递刀（删了 typecheck 才炸）。
+        const base = typedModuleOf(dep)
+        const importers = [...idx.values()].filter((r) => r && r.specifiers.some((o) => packageRootOf(o.spec) === base))
+        if (importers.length) {
+          classes.add('types')
+          hitFiles.push(...importers.map((r) => r.file).sort())
+        }
+      }
+    }
   }
   // 工具约定：包没有 import，它读的配置文件就是证据（tsconfig.json 不是代码文件，走不了上面的候选过滤）
   const owner = TOOL_CONFIG_FILES[dep]
@@ -630,6 +719,29 @@ function isBuiltinModule(n) { return BUILTIN_MODULES.has(n) }
 /** tsconfig 的 `@/*` 别名与项目内的 `~/`（上游技能示例文件的工程别名）不算依赖；入参是**原始说明符** */
 function isLocalAlias(spec) { return spec.startsWith('@/') || spec.startsWith('~/') }
 
+/**
+ * 幽灵依赖判定（源码 import 了但没声明）。
+ *
+ * ★ R4（Task 5 复审 rider）：**sync 与 check 必须共用这一份判据**。
+ *   实测代价：Task 7 计划里另写的 `ghostOf()`（只滤 `@/`、不看 optionalProbes）
+ *   在真仓会多报两条 —— `~`（public/sample-skills 上游示例里的 `~/threads/...` 别名）
+ *   与 `jszip`（shared/pack-zip.test.mjs:85 的 try/catch 可选探针）。
+ *   这两类"必须不报"在 ledger.test.mjs 的夹具里已经钉住，两边各写一份 = 门禁自己打自己脸。
+ *
+ * @param declared 已声明的包名集合（sync 传本次新扫出的；check 传台账里的）
+ * @param probes   可选探针清单（省略则现场算；check 路径可直接用台账里的 `optionalProbes`）
+ */
+export function computeGhost({ root, files, declared, probes = null, cache = null }) {
+  const idx = cache || buildEvidenceIndex({ root, files })
+  const imported = parseDeclaredImports({ root, files, cache: idx })
+    .filter((s) => !isLocalAlias(s))
+    .map(packageRootOf)
+  const optionalSpecs = new Set((probes || optionalProbes({ root, files, cache: idx })).map((o) => packageRootOf(o.spec)))
+  return [...new Set(imported)]
+    .filter((n) => n && !declared.has(n) && !isBuiltinModule(n) && !isLocalAlias(n) && !optionalSpecs.has(n))
+    .sort()
+}
+
 export function syncDeps({ root, files, sizes } = {}) {
   const tracked = files || trackedFiles({ root })
   const codeTracked = codeFiles(tracked, { includeTests: true })
@@ -637,9 +749,14 @@ export function syncDeps({ root, files, sizes } = {}) {
   const evidenceFiles = [...codeTracked, 'package.json']
   const pkg = readJson({ root, rel: 'package.json', fallback: { dependencies: {}, devDependencies: {}, scripts: {} } })
   const kernelPkg = readJson({ root, rel: 'kernel/package.json', fallback: {} })
+  // ★ R1：一次扫描里**只解析一次**（读盘 + mask + 抽说明符），下面三个消费者共用同一份索引。
+  //   否则 65 个依赖各扫一遍全仓 = 56.8s（实测）；共享后见 `docs/待处理清单.md` / 本任务报告。
+  //   索引取 `tracked`（而不是 evidenceFiles）：配置文件（tsconfig.json / electron-builder.yml 等）
+  //   也要在内（@types/* 与 TOOL_CONFIG_FILES 的判定会用到），多解析几个小文件换掉整轮重扫。
+  const cache = buildEvidenceIndex({ root, files: tracked })
 
   const buildPackages = (depsObj) => Object.keys(depsObj || {}).sort().map((name) => {
-    const ev = collectEvidence({ root, files: evidenceFiles, dep: name })
+    const ev = collectEvidence({ root, files: evidenceFiles, dep: name, cache })
     return {
       name,
       evidence: { classes: ev.classes, files: ev.files.slice(0, 20) },
@@ -656,18 +773,14 @@ export function syncDeps({ root, files, sizes } = {}) {
   const embedded = (prev.python && prev.python.embedded) || DEFAULT_PYTHON_EMBEDDED
   const reqs = readRequirements({ root, file: REQUIREMENTS_FILE })
 
-  const optional = optionalProbes({ root, files: codeTracked })
+  const optional = optionalProbes({ root, files: codeTracked, cache })
   const declaredAll = new Set([...runtime, ...dev].map((p) => p.name))
   // 只登记**未声明**的探针：这条清单的作用是解释"为什么它没被报成幽灵依赖"，
   // 已声明的包（如 rcedit）不需要解释，登记进去反而让清单变噪声。
   const unresolvedProbes = optional.filter((o) => !declaredAll.has(packageRootOf(o.spec)))
-  const optionalSpecs = new Set(unresolvedProbes.map((o) => packageRootOf(o.spec)))
-  const imported = parseDeclaredImports({ root, files: codeTracked })
-    .filter((s) => !isLocalAlias(s))
-    .map(packageRootOf)
-  const ghost = [...new Set(imported)]
-    .filter((n) => n && !declaredAll.has(n) && !isBuiltinModule(n) && !isLocalAlias(n) && !optionalSpecs.has(n))
-    .sort()
+  // 幽灵判定走公共实现（computeGhost）：check 侧回读时用**台账里的** declared/optionalProbes
+  // 调同一个函数，两侧判据不可能漂移 —— 见 computeGhost 的注释（实测漂移会多报 `~` 与 jszip）。
+  const ghost = computeGhost({ root, files: codeTracked, declared: declaredAll, probes: unresolvedProbes, cache })
 
   const data = {
     version: 1,

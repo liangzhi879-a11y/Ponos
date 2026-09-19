@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import {
   parseByLocator, keyOfVersion, discoverVersionConsts, syncVersions, readVersions,
-  collectEvidence, parseDeclaredImports, readRequirements, syncDeps, readDeps, writeDeps,
+  collectEvidence, parseDeclaredImports, readRequirements, syncDeps, readDeps, writeDeps, computeGhost,
 } from './ledger.mjs'
 
 function fixture(files) {
@@ -217,6 +217,81 @@ test('collectEvidence：@types/* 归 types 类（由 tsconfig 自动包含，不
   const root = fixture({ 'tsconfig.json': '{ "include": ["src"] }' })
   const ev = collectEvidence({ root, files: ['tsconfig.json'], dep: '@types/node' })
   assert.equal(ev.classes.includes('types'), true)
+})
+
+// ── R2（Task 5 复审 rider）：tsconfig 的 types 字段 ──────────────────────────
+// 旧判据只看"tsconfig 里有没有 `types` 这个键"：一旦写上 `"types": ["node"]`，
+// 全部 @types/* 立刻被判 unused → P1 报红 → B1 会去删**真在用**的类型包。
+test('collectEvidence：tsconfig 写了 types 字段 —— 列出的包判 used，未列出的照旧参与未用判定', () => {
+  const root = fixture({ 'tsconfig.json': '{ "compilerOptions": { "strict": true, "types": ["node"] } }' })
+  assert.equal(collectEvidence({ root, files: ['tsconfig.json'], dep: '@types/node' }).classes.includes('types'), true,
+    '列在 compilerOptions.types 里的是"全局类型包"，必须判 used')
+  assert.equal(collectEvidence({ root, files: ['tsconfig.json'], dep: '@types/diff' }).classes.includes('types'), false,
+    '判据不得放宽成"有 types 字段就全放行"：没列出的类型包要照旧走未用判定，否则真未用的 @types/* 永远删不掉')
+})
+
+test('collectEvidence：types 字段存在时，宿主真 import 的那个模块对应的 @types/* 仍判 used（模块级类型包不受 types 字段影响）', () => {
+  const root = fixture({
+    'tsconfig.json': '{ "compilerOptions": { "types": ["node"] } }',
+    'src/a.tsx': "import { useState } from 'react'\n",
+  })
+  const files = ['tsconfig.json', 'src/a.tsx']
+  assert.equal(collectEvidence({ root, files, dep: '@types/react' }).classes.includes('types'), true,
+    'types 字段只管"全局自动包含"；@types/react 是靠 `import react` 的模块解析生效的，仍是必需依赖')
+  assert.equal(collectEvidence({ root, files, dep: '@types/react-dom' }).classes.includes('types'), false,
+    '宿主没 import react-dom → 它对应的类型包不得被"顺手救回"（反向约束，防止判据从宽）')
+  assert.equal(collectEvidence({ root, files, dep: '@types/babel__core' }).classes.includes('types'), false,
+    '作用域包 @types/babel__core 同理：没 import @babel/core 就不算在用')
+})
+
+test('collectEvidence：无 types 字段时回退现行为（@types/* 全部自动包含）', () => {
+  const root = fixture({ 'tsconfig.json': '{ "compilerOptions": { "strict": true } }' })
+  assert.equal(collectEvidence({ root, files: ['tsconfig.json'], dep: '@types/diff' }).classes.includes('types'), true)
+  assert.equal(collectEvidence({ root, files: ['tsconfig.json'], dep: '@types/react-dom' }).classes.includes('types'), true)
+})
+
+test('syncDeps：types:["node"] 下三个类型包一条 unused 都不许出（R2 的落地：P1 不得对此报红）', () => {
+  const root = fixture({
+    'package.json': JSON.stringify({
+      dependencies: {},
+      devDependencies: { '@types/node': '^20', '@types/react': '^18', '@types/react-dom': '^18' },
+      scripts: {},
+    }),
+    'tsconfig.json': '{ "compilerOptions": { "types": ["node"] } }',
+    'src/a.tsx': "import { useState } from 'react'\nimport { createRoot } from 'react-dom/client'\n",
+    'kernel/package.json': '{}',
+  })
+  const files = ['package.json', 'tsconfig.json', 'src/a.tsx', 'kernel/package.json']
+  const { data, unused } = syncDeps({ root, files })
+  assert.deepEqual(unused, [], 'tsconfig 一旦写上 types 字段，在用的类型包仍须判 used（否则 P1 红 → B1 误删）')
+  assert.deepEqual(data.domains['npm-dev'].packages.map((p) => p.status), ['used', 'used', 'used'])
+})
+
+// ── R4（Task 5 复审 rider）：check 侧与 sync 侧必须共用同一份幽灵判据 ──────────
+// 起因：Task 7 计划里的 `ghostOf()` 自己重写了一遍判定（只滤 `@/`、不看 optionalProbes），
+// 在真仓实测会多报两条：`~`（public/sample-skills 上游示例的 `~/threads/...`）与
+// `jszip`（shared/pack-zip.test.mjs:85 的 try/catch 可选探针）—— 这两类"不得报红"下面的夹具已钉住。
+test('computeGhost：check 路径（传台账里的 declared/optionalProbes）与 sync 路径结论一致', () => {
+  const root = fixture({
+    'package.json': JSON.stringify({ dependencies: { react: '^18' }, devDependencies: {}, scripts: {} }),
+    'src/a.ts': [
+      "import { x } from 'react'",
+      "import type { T } from '~/threads/thread-manager'",  // 上游技能示例的工程别名
+      "import 'left-pad'",                                  // 真幽灵
+    ].join('\n') + '\n',
+    'shared/opt.test.mjs': "try {\n  await import('jszip')\n} catch { /* 可选探针 */ }\n",
+    'kernel/package.json': '{}',
+  })
+  const files = ['package.json', 'src/a.ts', 'shared/opt.test.mjs', 'kernel/package.json']
+  const sync = syncDeps({ root, files })
+  assert.deepEqual(sync.ghost, ['left-pad'], 'sync 侧：~ 别名与可选探针都不算幽灵')
+
+  // check 侧：不回写台账，只用台账里的 declared + optionalProbes 现场扫宿主
+  const ledger = readDeps({ root })
+  const declared = new Set(Object.values(ledger.domains).flatMap((d) => (d.packages || []).map((p) => p.name)))
+  assert.deepEqual(computeGhost({ root, files, declared, probes: ledger.optionalProbes }), ['left-pad'],
+    'check 侧不得多报 ~ / jszip（多报 = 门禁自己打自己脸，且会诱导人删掉不该删的 import）')
+  assert.deepEqual(ledger.optionalProbes.map((o) => o.spec), ['jszip'])
 })
 
 test('collectEvidence：测试文件里的 import 不算生产证据（但会被记录到 files）', () => {
