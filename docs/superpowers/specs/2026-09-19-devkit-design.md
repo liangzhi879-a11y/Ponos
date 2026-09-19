@@ -393,7 +393,7 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 | 期 | 内容 | 交付判据 |
 |---|---|---|
 | **P0** ✅ **已交付（2026-09-19，分支 `kit/p0-ledgers`，tag `v3.0.0-dev.0`）** | `kit/` 骨架 + 版本台账 + 依赖台账 + `check/sync/stamp/view` + 测试层接入 + CI 接入 + §10 全部欠账（A1–A7、B1–B3、C1–C4 = **14 条**，原文误写"17 条"，已在 §10 更正） | 交付物：`kit/cli.mjs` + `kit/lib/{scan,ledger,version-rules,dep-rules,report,baseline,stamp,python-manifest}.mjs` + 8 个同层测试文件 + `kit/manifest/{versions,deps,drift-baseline}.json` + `kit/schema/*.json` + `kit/README.md`（AI 操作契约）+ `.github/workflows/ci.yml` 的「DevKit 台账门禁」单独一步 + `docs/ci.md` 的 DevKit 一节。判据：`npm run kit:check` **红灯 0 / 黄灯 1（P5 差集，刻意保留）**、实测 **853 ms**（< 5s 硬约束，零网络）；19 个规则号各有正反例测试（反例真跑真红，逐一做过变异验证） |
-| P1 | 契约快照（bridge 路由 / WS 事件类型 / IPC 通道 / 工具 `input_schema`）↔ `docs/bridge-contract.md` 双向对账 | 快照差异 = 0 或已登记 |
+| P1 | 契约快照（bridge 路由 / WS 事件类型 / IPC 通道 / 工具 `input_schema`）↔ `docs/bridge-contract.md` 双向对账 | 判据**两条**（原文"双向对账、差异 = 0 或已登记"在文档缺半壁时不可行，见 `.superpowers/sdd/2026-09-19-devkit-p1-contracts/plan.md` §1）：**(a)** 快照可从代码**复算**、差异 = 0（`CT0`/`CT1`，复算对象 = **提交态 HEAD**）；**(b)** **范围登记完整** = 代码真值 ∖ 文档已声明（`CT2`–`CT4`/`CT4B`/`CT4C`，登记只允许逐条精确键、禁通配）。另：在途改动（工作树 ∖ HEAD）只报 `CT8` **黄灯**，不需要基线 |
 | P2 | 设计资源单一真源（`tokens.json` → 生成 `themes.css` + `tailwind.config.ts`，消灭手抄镜像；派生资产谱系） | 生成物与手写版逐字节对齐后才替换 |
 | P3 | `KitPanel` GUI（四视图）+ `server/kit-routes.mjs` | 面板可用；路由层有端到端测试 |
 | P4 | 包化 `@yfw/kit`（exports / 类型 / 独立 semver） | 按需启动，前置是 P0–P2 稳定 |

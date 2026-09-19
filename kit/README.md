@@ -14,6 +14,8 @@
 | 新增/删除依赖 | `npm run kit:sync` | 然后看 `check` 的 P1（未用）/ P2（幽灵）/ P7（双向对账） |
 | 改了 `_common/*.py` | `npm run kit:sync` | 台账会补登记；**新增**脚本必须有 `__version__` 或显式登记（V8′） |
 | 新增/改名 `scripts/verify-*.mjs` | 同步 `package.json` + `kit/manifest/deps.json#gates` | 三条挂载完整性测试会红（`kit/cli.test.mjs`），不要绕开它们改文档 |
+| 改了端点 / WS 事件类型 / IPC 通道 / 工具 `input_schema` | 先 `npm run kit:check` 看 **CT8 在途差异**（黄）→ **提交** → `npm run kit:sync` → 提交台账变化 | 台账按**提交态**落盘，故顺序不能反（见「契约快照与范围登记」的 committed 口径） |
+| 契约面**不在** `docs/bridge-contract.md` 覆盖面内 | 在 `kit/manifest/contract-scope.json` 逐条精确登记（人工），并上调 `channels.scopeCount` / `scopeRedCount` | 别用通配/前缀（CT4C 红）；`sync` 不会替你写它 |
 | 新增测试文件 | `git add` 后跑 `npm run anchors:write` | 文档锚点门禁只算**已跟踪**文件（否则 CI 在干净克隆上必红） |
 | 同步调试版给用户测 | `npm run kit:stamp` | 产出 `release/YFWorking/kit-stamp.json`（local-only） |
 | 汇报现状给用户 | `npm run kit:view` | 输出固定 schema JSON，不必解析散文 |
@@ -63,6 +65,130 @@
 | `BASE` | 基线条目总数 / 豁免红灯条数**超过**上次登记值（红） | 基线是"已知欠账"，不是"遇红就塞"：修代码，别加条目 |
 | `baselineUnused` | 基线里已不再命中的条目（提示） | 应摘除（避免基线长期挂着过期豁免） |
 
+## 契约快照与范围登记（P1 · T12）
+
+契约面四类（bridge 路由 / WS 事件类型 / IPC 通道 / 工具 `input_schema`）↔ `docs/bridge-contract.md` 的对账。
+设计依据：spec §12 的 P1 判据**两条** —— **(a)** 快照可从代码**复算**、差异 = 0；**(b)** **范围登记完整**
+（登记集 = 代码真值 ∖ 文档已声明）；实施计划 `.superpowers/sdd/2026-09-19-devkit-p1-contracts/plan.md`。
+
+### 怎么跑
+
+| 命令 | 作用 | 写文件？ |
+|---|---|---|
+| `npm run kit:check` | 三类规则（版本 V / 依赖 P / 契约 CT）的**门禁**，只读，退出码 0/1 | 否（**仓库内**只读；见下面「committed 口径」） |
+| `npm run kit:check -- --verbose` | 追加「规则逐条」表：每条规则的 `evaluated`（判了多少条）+ 台账规模 | 否 |
+| `npm run kit:sync` | 从**提交态**复算契约快照写进 `versions.json#channels`（人工段原样保留） | 是 |
+| `npm run kit:view` | 固定 schema JSON（`findings` / `ledgerSizes.channels` / `scope`），AI 读它，不解析散文 | 否 |
+
+★ `check` **恒打印**两段：范围登记逐条（`── 契约范围登记（N 组 / M 键）──`，逐条带 kind/ns/键数/docSection/reason）
+与在途差异一行（`（契约）在途差异（CT8，黄、只报不拦）：…`）—— **无差异时也明说"无"**（"没打印"与"没有差异"不是一回事）。
+
+### 规则表（`CT` 号段：CT0–CT9，含 CT4 的两个子规则）
+
+| id | 判据（一句话） | 严重度 | 改坏了会怎样（变异） |
+|---|---|---|---|
+| CT0 | `versions.json#channels` 存在且形状完整 | 红 | 删 `channels` 键 |
+| CT1 | 台账快照 == 从**提交态**代码**现场重算**的快照（逐类逐元素；绝不读快照当答案） | 红 | 手改快照任一键；提交了端点改动却没跑 `kit:sync`；HEAD 读不到（subject `HEAD 物化`） |
+| CT2 | 代码 → 文档：真值里每条路由/WS 类型都能在文档小节定位**或**在 scope 命中 | 红 | 提交新端点后既没补文档也没登记 scope |
+| CT3 | 文档 → 代码：文档声明的每条都真在代码里（抓"文档腐烂"） | 红 | 文档里写不存在的 `/fake`；删掉代码里的端点 |
+| CT4 | scope `members` 与「代码真值 ∖ 文档已声明」**集合相等**（多一少一都红；**逐条报，subject 带键名**） | 红 | members 少一条 / 多一条 / 拼错 |
+| CT4B | scope 组数 / 键数不得超过 `channels.scopeCount` / `channels.scopeRedCount`（双护栏） | 红 | 往 scope 加条目超过封顶值 |
+| CT4C | scope 条目合法：`reason` 必填、`ns`/`members` 禁 `*` 与正则字符、无重复、`docSection` 真实存在 | 红 | 写 `ns: "/knowledge"` + `members: ["/knowledge/.*"]`；删 reason |
+| CT5 | IPC 三方配对（invoke↔handle / send↔on / push↔on）**双向集合相等**；`push` 每条在文档或 scope | 红 | 删一个 `ipcMain.handle(...)`；preload 里加 invoke 而 main 侧没有 handle |
+| CT6 | `toolSchemas()` 出口 ⊆ 快照 + 静态 registry 计数一致 + 动态源逐条登记 + 结构指纹一致 | 红 | 加工具、改 `input_schema` 结构、加动态源不登记（**`description` 散文不入指纹** ⇒ 改文案不红） |
+| CT7 | **提取守恒**：`type:` 字面量 = 已归因（sink 白名单）+ 显式 `excluded`；路径字面量必有归宿（独立重扫） | 红 | 非 sink 处写 `{ type: 'typo' }`；新增 sink 形态不登记 |
+| CT8 | **在途差异**：工作树 ∖ HEAD 的契约面（路由/前缀/WS 类型/IPC/工具/排除项 + 文档声明集）**逐条列出** | **黄、只报不拦** | ——（在途改动就是这个状态；提交后自己变空，不需要任何基线） |
+| CT9 | 渲染层 `src` 的 fetch 路径 → server 路由**单向**差集 | **黄、只报不拦** | ——（D8 历史欠账，逐条登记在 `drift-baseline.json`） |
+
+两条"黄、只报不拦"的规则在报告里各占一个 `checkResult`，`passed=false` 表示"确实有东西"，但**不影响退出码**。
+
+### 怎么登记（`kit/manifest/contract-scope.json`，**人工文件**）
+
+`CT2/CT4` 的"登记"指这份文件：它表达**范围边界**（哪些契约面**不在**文档覆盖面内、为什么）。
+
+| 字段 | 含义 |
+|---|---|
+| `kind` | `routes` / `wsOut` / `wsIn` / `ipc` / `tools` / `doc`（白名单，其它值 ⇒ 条目失效 + CT4C 红） |
+| `ns` | 命名空间标签，**只用于人读与 CT4C 的分组检查**；不含通配/正则字符 |
+| `members` | **逐条精确键**：`routes` 写 `GET /x` 或 `ns /x/`；`ws*` 写事件类型；`ipc` 写通道名。**禁 `*`、禁正则**（写了即条目失效 + CT4C 红）；**禁止用计数或前缀代替成员清单** |
+| `docSection` | 该命名空间"本该在哪一节声明"的**可核对指针**（如 `"§7"`）；无相关章节写 `null`。指向不存在的章节 ⇒ CT4C 红 |
+| `reason` | **必填**：为什么这些键不在文档覆盖面内（缺 reason ⇒ 条目失效 + CT4C 红；不变量 I4：放行即人工且可见） |
+
+三条硬规矩：
+
+1. **`members` 必须逐条精确**：`CT4` 做的是**集合相等**（多一少一都红），且匹配只用 `keyOf(kind, name)` 的精确 tuple
+   —— `contract-scope.mjs` 里**不得出现** `startsWith`/`includes`/正则（有源码级断言钉住）；
+2. **`sync` 不会写它**：`kit:sync` 只读它做摘要（`kit/cli.test.mjs` 断言"sync 前后逐字节不变"）。
+   若由代码自动生成成员，登记就永远自洽、等于没有门禁；
+3. **封顶值人工维护**：`versions.json#channels.scopeCount`（组数）/ `scopeRedCount`（键数）是人工写死的上限，
+   超了报 `CT4B`。**新增范围**的正规流程：先确认这些键是真边界 → 加 `members` → **同时**上调这两个封顶值
+   （它们只在升级时下调、不随入口自动涨，这是"范围被显式批准"的唯一痕迹）。
+
+### 怎么摘条目
+
+两条线索（都在 `check` 的输出里）：
+
+- **scope / 基线已不再命中** ⇒ `（信息）基线中 N 条已不再命中，可摘除：…`（`kit:check` 默认输出的最后一行）
+  以及 `CT4 多登记 <键>`（文档补上该键、或端点已删除/改名后出现）。摘除后**同步下调**
+  `channels.scopeCount` / `scopeRedCount`（scope）或 `history.baselineCount`（基线）。
+- **理由里的"何时摘除"**：每条保留的条目都写了可判定的摘除条件（例：CT9 的 `/v1/*` 是"上游 LLM 协议不经 bridge"的噪声，
+  title 生成搬出渲染层后即可摘）。
+
+### ★ committed 口径（为什么真值取提交态，而不是工作树）
+
+**契约规则的真值 = 提交态（HEAD）**：`kit/lib/head-tree.mjs` 把 HEAD 物化成一份**临时干净检出**
+（`git read-tree` + `checkout-index` → 系统临时目录；按 `(仓路径, sha)` 缓存，`marker.json` 最后写），
+代码侧与文档侧都在它上面读，规则因此**与工作树脏不脏无关**。三条理由：
+
+1. **台账是提交物**（`versions.json#channels` 随代码一起提交），CI 在**干净检出**上跑，
+   本机门禁必须与 CI 同口径（铁律 4 的同一条理由）；
+2. 反过来（规则读工作树）会逼出"为在途差异加基线"这种做法 —— 而基线按 `rule+subject` 认领，
+   实测两个真漏洞：**真实端点键**的差异在任意方向被永久降级、**计数式 subject** 能认领任意同类单条；
+3. 工作树∖HEAD 的差异不是欠账、是这个仓每天都有的状态 ⇒ **只由 CT8 报黄灯**，不需要任何基线。
+
+配套的三条约定：
+
+- **在途改动只报 CT8 黄灯、不红**：工作树里的新端点/新 WS 类型/新 IPC 通道/文档改动 ⇒ 红 0 + 逐条黄灯；
+  **提交之后**同一处改动若没同步台账、没登记 scope，CT1/CT2/CT4 立刻红 —— 这才是"漏登记"该有的下场；
+- **`drift-baseline.json` 只放真实的已知差异**（有据的欠账或噪声，每条写清"为什么不是 bug / 何时摘除"）。
+  **不放"在途噪声"**：那些由 CT8 负责可见；
+- **`sync` 也按提交态落盘**：脏树里跑 `sync` 不会把在途端点写进台账；它会打印
+  `⚠ 工作树有 N 处在途契约差异**未落盘**`。所以流程是**先提交、再 `kit:sync`、再提交台账**。
+
+★ **check 仍然只读仓库**：物化只写系统临时目录（`GIT_INDEX_FILE` 指到临时目录，不碰 `.git/` 与工作树），
+`git status --porcelain` 不受影响。临时树按 sha 缓存 ⇒ 同一提交上只有第一次跑要付物化开销。
+
+### ★ 端点搬家重构的协作约定（plan §8 的串行点）
+
+"端点拆分 P1"（把 handler 从 `bridge.mjs` 搬到 `*-routes.mjs`）与本契约门禁**无耦合**：快照只存**语义键**
+（方法 + 路径），**不存 `file:line`**（判定位置只出现在 finding 的 `hint` 里 —— plan §6 D2 的"搬家免疫"）。
+
+**但搬家 PR 必须多做两件事**（否则 CI 红，且红的原因与搬家无关，会白花时间排查）：
+
+1. 提交后跑 `npm run kit:sync` 并**提交 `channels` 的变化**（搬家若同时新增/删除了端点，快照会变）；
+2. 若该端点在文档覆盖面之外，**同步更新 `contract-scope.json#members`**（键名若变 ⇒ CT4 集合相等报红）。
+
+### 两条口径澄清（审查点名要写的）
+
+- **`CT5 evaluated=156` 与 plan 说的"ipc 71"不是一回事**：`evaluated` 是**各侧独立计数之和**
+  （invoke 61 + handle 61 + send 10 + on(main) 10 + on(renderer) 7 + push 7 = 156，配对判据必须按侧比，
+  同一个通道在多侧各算一次）；"71 通道"是**去重后的通道数**（61 + 10）。数字不同是口径不同，不是漂移。
+- **`contract-doc.mjs` 解析出的 method 目前不入账（只比路径）** ⇒ **已知边界**：文档写 `POST /x` 而代码只有
+  `GET /x`（或反之）**不会红**。解析器把方法如实呈现（`synonyms`），但对账只做**路径集合**的差集；
+  收紧到"方法 + 路径"需要先处理 §7 的"一行多端点、方法写在行内"等形态（P1.5 的活），本批不做假。
+
+### CT2 与 CT4 的关系（如实的说明）
+
+**`CT2` 是 `CT4` 的单向投影，没有独立判据**：`CT2` = "真值 ⊆ scope 命中"（逐条报"未覆盖"），
+`CT4` = "真值 ∖ 文档已声明 == scope members"（集合相等：既含 `missing` 方向，也含 `extra` 方向）。
+也就是说 `CT2` 判的东西被 `CT4` 完全覆盖。
+
+**为什么不合并、也不硬造差异**：留 `CT2` 是为了报告的**归因可读性**（它逐条挂在"代码→文档"这条腿上，
+hint 指文档补遗；`CT4` 的 hint 指 scope 登记），以及给"将来补文档（P1.5）"留一个**已经接线**的判据位。
+把它改成独立职责（例如"每条真值必须能在文档小节定位"）需要引入新的口径（真值定义就要跟着改），
+而"跨文档小节定位"的判据已经在 `CT4C` 的 `docSection` 指针与 `CT3` 里各有一半 ——
+硬造一条新判据只会新增一套真相，属于 plan §7 反例的边界（做假）。**故如实写明"退化的形式"，不假装它独立。**
+
 ## 章（`kit-stamp.json`）的字段集
 
 `npm run kit:stamp` 写出 `release/YFWorking/kit-stamp.json`（`release/` 被 `.gitignore` 覆盖 → **local-only，不进 CI 门禁**）。
@@ -103,12 +229,22 @@ kit/lib/scan.mjs            扫描基座（git ls-files 域扫描）
 kit/lib/ledger.mjs          台账读写 + syncVersions / syncDeps / syncSkillsLock
 kit/lib/version-rules.mjs   V1–V8′（11 个规则号）
 kit/lib/dep-rules.mjs       P0–P7（8 个规则号）
+kit/lib/head-tree.mjs       提交态（HEAD）物化：契约规则的唯一真值来源 + worktreeClean
+kit/lib/contract-routes.mjs 路由提取器（4 种判定形态 + 动态前缀）
+kit/lib/contract-ws.mjs     WS 事件类型提取器（发送函数白名单 + 守恒）
+kit/lib/contract-ipc.mjs    IPC 通道提取器（按侧：invoke/handle/send/on/push）
+kit/lib/contract-tools.mjs  工具 schema 提取器（运行时出口 + 静态 registry + 结构指纹）
+kit/lib/contract-doc.mjs    bridge-contract.md 解析器（§5/§6/§7/§7.1 表）
+kit/lib/contract-snapshot.mjs 契约快照（复算 / 落盘 / 逐类比较）
+kit/lib/contract-rules.mjs  CT0–CT9（含 CT4B/CT4C/CT8）
+kit/lib/contract-scope.mjs  范围登记判定（只读；禁通配、禁自动生成）
 kit/lib/python-manifest.mjs 内嵌 Python 包清单的唯一读取入口（构建脚本与测试同源）
 kit/lib/report.mjs          统一报告 schema + 人话渲染
 kit/lib/baseline.mjs        漂移基线、红灯认领与数量护栏
 kit/lib/stamp.mjs           dev 渠道身份（章）
-kit/manifest/versions.json  版本台账（唯一真源）
+kit/manifest/versions.json  版本台账（唯一真源；`#channels` 是契约快照）
 kit/manifest/deps.json      依赖台账（唯一真源）
-kit/manifest/drift-baseline.json  🖐 人工维护的已知漂移（每条写 reason）
+kit/manifest/contract-scope.json  🖐 人工维护的范围登记（sync 绝不写它）
+kit/manifest/drift-baseline.json  🖐 人工维护的已知漂移（每条写 reason；**不放"在途噪声"**）
 kit/schema/*.json           台账自身 schema
 ```

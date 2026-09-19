@@ -13,7 +13,7 @@ npm run test:ci  # = 预检 → 文档口径 → DevKit 台账 → 单测层 →
 |---|---|---|
 | `npm run test:preflight` | 预检：Node 版本、测试 glob 必须匹配到文件、端口占用风险 | <1s |
 | `node scripts/check-doc-anchors.mjs` | 文档口径（路径存在性 + 各层测试文件数） | <1s |
-| `npm run kit:check` | DevKit 台账门禁（版本/依赖台账 ↔ 宿主文件；只读） | 主仓 853/863/815 ms；干净克隆 1271/1283/1268 ms |
+| `npm run kit:check` | DevKit 台账门禁（版本/依赖/契约台账 ↔ 宿主文件；只读） | 主仓 **2.38/2.46/2.59 s**（**含他人在途改动** ⇒ CT8 走两遍契约提取）；盘根干净克隆 `C:\p3\yfwk-clone` @`945a837` **2.27/2.29/2.35 s**；两者冷缓存首跑 ≈3.9 s（物化 HEAD 1.2 s） |
 | `npm run test:unit` | `shared` + `electron` + `src` + `kit` 四层 | 1041 项 / 23s（**主树、含他人在途改动**；kit 层接入前实测，kit 层另加 6 项断言） |
 | `npm run test:server` | `server` 层（含起桥的端到端测试） | 694 项 / 91s（**主树、含他人在途改动**） |
 | `npm run test:kernel` | `kernel-tests` 层 | 1943 项 / 48s（**主树、含他人在途改动**） |
@@ -131,13 +131,28 @@ node scripts/ci-preflight.mjs --allow-running-app
 
 ## DevKit 台账门禁
 
-`npm run kit:check` —— 校验 `kit/manifest/versions.json` 与 `kit/manifest/deps.json` 是否与宿主文件一致。
+`npm run kit:check` —— 校验 `kit/manifest/versions.json`（版本台账 + **契约快照 `#channels`**）与
+`kit/manifest/deps.json` 是否与宿主文件一致（**契约侧的真值取提交态 HEAD**，见下）。
 
 - **在 CI 里的位置**：`.github/workflows/ci.yml` 的 `test` 作业里**单独一步**（`typecheck` 之后、`test:ci` 之前），
   命令 `npm run kit:check`。单独一步是**归因**需要（"台账漂移"与"测试挂了"是两类问题，一眼可辨）；
   `test:ci` 链路里也含它，本地一条命令即可跑全。**这条门禁必须进 CI 的理由**见本节末。
-- **耗时**：**主仓** 3 次 853/863/815 ms（中位数 **853 ms**）；**盘根干净克隆**（`C:\t14rev` @`b59cdc7`，`npm ci` 后）3 次 1271/1283/1268 ms（中位数 **1271 ms**）——
-  纯文件解析 + `git ls-files`，零网络，两者都远低于 spec §7.2 的 < 5s 硬约束（克隆里更慢是冷文件系统缓存所致，不是网络）。
+- **规则集**：版本侧 `V1–V8′`（11 个规则号）+ 依赖侧 `P0–P7`（8 个）+ **契约侧 `CT0–CT9`（12 个，含 `CT4B`/`CT4C`/`CT8`）**
+  + 护栏 `BASE`/`BASELINE_NO_REASON`，逐条释义见 `kit/README.md`（「读红灯的正确姿势」与「契约快照与范围登记」两节）。
+  契约侧里 **`CT8`（在途差异：工作树 ∖ HEAD）与 `CT9`（渲染层 fetch 单向外）都是黄灯、只报不拦**
+  —— `CT8` 逐条列出"尚未提交"的契约改动，提交后自己变空；`CT9` 的差集逐条登记在
+  `kit/manifest/drift-baseline.json`。契约规则的真值取**提交态 HEAD**（物化一份临时干净检出），
+  故**主树脏不脏都不产生红灯**，与 CI 的干净检出同口径（**为什么**见 README 的「committed 口径」。
+  这同时说明：**"为在途差异加基线"不是本门禁的用法** —— 基线条目现在只剩 5 条真实已知差异，且没有一条是红灯）。
+- **耗时**：**主仓 2.38/2.46/2.59 s**（3 次；**含他人在途改动** ⇒ `CT8` 要多跑一遍契约提取）；
+  **盘根干净克隆**（`C:\p3\yfwk-clone` @`945a837`）**2.27/2.29/2.35 s**（3 次，中位 **2.29 s**）；
+  两者**冷缓存首跑 ≈3.9 s**（其中物化 HEAD 1.2 s，热缓存后 0.07 s）。契约侧细分（干净克隆、热缓存）：
+  物化 65 ms + 契约规则 ≈1.8 s（`extractRoutes` 481 ms / `extractWs` 256 ms 为主）；脏树再 +≈0.8 s（`CT8` 的第二遍提取）。
+  纯解析 + `git ls-files`/`git read-tree`，**零网络**，两者都仍低于 spec §7.2 的 < 5 s 硬约束
+  （P0 时代 853 ms/1271 ms；本批为"提交态对账"多付了第二棵树与物化的代价）。
+  ★ 数字口径：主仓那三个数**含他人在途改动**（走 `CT8` 两遍提取，故比克隆慢），对外引用请用克隆值（铁律 4）。
+  （P0 时代本项为「主仓 853/863/815 ms；干净克隆 `C:\t14rev` @`b59cdc7` 1271/1283/1268 ms」——
+  那时代码侧与文档侧**都读工作树**、没有第二棵树与物化开销，后来也为"规则读工作树"付出了加红灯基线的代价。）
 - **退出码**：0 = 无红灯；1 = 有红灯（CI 失败）。黄灯（如 P5 的 Python 清单差集）不影响退出码。
 - **完整离线链路实测**（盘根干净克隆 `C:\t14rev` @`b59cdc7`，`CI=true` + `ELECTRON_SKIP_BINARY_DOWNLOAD=1`，2026-09-19 Task 14 Step 1）：
 
@@ -154,11 +169,14 @@ node scripts/ci-preflight.mjs --allow-running-app
   | `npm run test:server` | 117.1 s（770 项 / 0 fail） | 0 |
   | `npm run test:kernel` | 75.2 s | 0 |
 
-  **合计 ≈ 5 分 13 秒**（本机 8 核；CI 为 2 核 Windows 运行器，实耗更长，作业超时 30 分钟）。- **红灯怎么办**：按 `finding.hint` 操作。**默认动作是修宿主文件或跑 `npm run kit:sync`**，
+  **合计 ≈ 5 分 13 秒**（本机 8 核；CI 为 2 核 Windows 运行器，实耗更长，作业超时 30 分钟）。
+  ★ 该表是 P0 时代（`b59cdc7`）的链路快照：其中 `kit:check` 现为 **2.29 s**（干净克隆，见上一条「耗时」），
+  其余各段口径未变（`verify:ci` 已由 5 脚本变 7 脚本，表内已标注）。- **红灯怎么办**：按 `finding.hint` 操作。**默认动作是修宿主文件或跑 `npm run kit:sync`**，
   **不是**往 `kit/manifest/drift-baseline.json` 里加条目 —— 基线是"已知欠账"，
   条目数受 `versions.json` 的 `history.baselineCount` 护栏限制（超了直接红 `BASE`）；
   豁免**红灯**还必须在该条目里显式写 `"severity": "red"`（缺 `reason` 也红：`BASELINE_NO_REASON`）。
-  规则号逐条释义（19 个规则号 + `BASE`/`BASELINE_NO_REASON`）见 `kit/README.md`。
+  规则号逐条释义（**31 个规则号** + `BASE`/`BASELINE_NO_REASON`）见 `kit/README.md`；
+  契约侧（`CT0–CT9`、登记文件、committed 口径）见该文「**契约快照与范围登记**」一节。
 - **相关命令**：
   | 命令 | 作用 | 是否写文件 |
   |---|---|---|
