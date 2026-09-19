@@ -172,6 +172,9 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 **实测结论（四类证据齐备后）**：真正未用的运行时依赖 **10 个**：
 `classic-level`、`diff`、`mammoth`、`nanoid`、`xlsx`、`@tanstack/react-virtual`、`@radix-ui/react-collapsible`、`@radix-ui/react-context-menu`、`@radix-ui/react-popover`、`@radix-ui/react-separator`。
 
+> **状态：这 10 个已于 2026-09-19 全部删除**（DevKit Task 10 / 欠账 B1）。做法与证据：**逐个**删（不批量 —— 删错的代价是线上功能静默失效），每删一个跑 `npx tsc --noEmit` + `npm run test:unit`（`xlsx`/`mammoth` 两个高风险包另跑 `npm run test:server`），并立刻 `npm run kit:sync` 让台账跟上（P7 双向对账因此不许"删了忘 sync"），单包单提交便于回滚。结果：`dependencies` 52 → 42、`kit:check` 红灯 **14 → 4**（P1 清零，只剩 P2 的 4 条真幽灵）、`npm run build` 产物与删前**逐字节一致**。
+> 副作用（如实登记，需后续裁定）：`jszip` 在锁里的**唯一**来源就是 `mammoth`，删后 `shared/pack-zip.test.mjs` 的"与 jszip 双向对拍"在干净环境会 `t.skip` 跳过 —— 见 `docs/待处理清单.md` 的 B1 条目。
+
 > 注：`ws` 经核实**在用**（`electron/` + `server/`），`README.md` §4.8.8 把它与 `classic-level` 并列描述，实测二者不同——以台账判定为准。
 
 ### 6.3 校验规则（依赖侧 8 个规则号：`P0`–`P7`）

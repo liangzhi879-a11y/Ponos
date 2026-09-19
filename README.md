@@ -49,8 +49,8 @@
 
 ### 1.4 技术栈（依据 `package.json` 依赖段与 import 实证）
 
-- **前端**：React 18.3 + TypeScript 5.7 + zustand 4.5（14 个 store）+ Radix UI（声明 11 个包，实际引用 7 个）+ Tailwind 3.4 + CodeMirror 6（20 个语言包）+ `@xyflow/react` 12（工作流画布与知识图谱）+ `@assistant-ui/react` 0.15（聊天线）+ `react-markdown`/`remark-gfm`。
-- **服务端**：Node 原生 `http`/`ws` 8 + `classic-level` + `xlsx`/`mammoth`（经 bridge 转发给 Python 或纯 JS 处理）。
+- **前端**：React 18.3 + TypeScript 5.7 + zustand 4.5（14 个 store）+ Radix UI（声明 7 个包，**7 个全部在用** —— 原先的 11 个声明里 `collapsible`/`context-menu`/`popover`/`separator` 零引用，已于 2026-09-19 删除，见 §4.8 第 8 条）+ Tailwind 3.4 + CodeMirror 6（20 个语言包）+ `@xyflow/react` 12（工作流画布与知识图谱）+ `@assistant-ui/react` 0.15（聊天线）+ `react-markdown`/`remark-gfm`。
+- **服务端**：Node 原生 `http` + `ws`（实测在用：`server/bridge.mjs`、`electron/main.cjs`）；Office/表格解析由 **Python 脚本**承担（如 `server/convert_xls.py` 走 openpyxl/xlrd），不由 npm 包承担 —— 原先并列的 `classic-level`/`xlsx`/`mammoth` 已于 2026-09-19 按依赖台账删除（实测零引用，见 §4.8 第 8 条）。
 - **内核**：**零第三方依赖**——`kernel/package.json` 无 `dependencies` 键，且 `server/deploy-smoke.test.mjs` 断言其恒为空；内核只 import `node:*` 内置模块，故可被 `bun build --external=node:*` 打成单文件。
 - **桌面/构建**：Electron 43 + electron-builder 26 + Vite 5.4 + `bun build`（仅用于内核 bundling）+ 内嵌 Python 3.12。
 
@@ -428,13 +428,13 @@ node kernel/cli.mjs --print --output-format stream-json --input-format stream-js
 ### 4.8 性能债（源码可证的优化余地）
 
 1. **无代码分割**：`React.lazy`/`<Suspense>` 零命中，`import()` 仅出现在测试文件 → 首包 `index.js` 2.13 MB（gzip 680 KB）一次性加载。
-2. **虚拟滚动声明未用**：`@tanstack/react-virtual` 在 `dependencies` 中但零引用；长列表靠 `content-visibility` 兜底。
+2. **虚拟滚动声明未用**【**已消除（2026-09-19）**】：`@tanstack/react-virtual` 曾声明但零引用，已按依赖台账删除（B1）；长列表仍靠 `content-visibility` 兜底 —— 将来若要真虚拟滚动，需重新引入并接线。
 3. **降频/合帧常量偏保守**：满速 16ms 一帧 + `coalesceMs 120`，超长会话下依靠滞回门控，未做按消息数自适应。
 4. **约 20 处整店订阅**：`useChatStore()` 无 selector，流式高频更新时可能放大渲染。
 5. **字体走 CDN**：`index.html:13-15` 引 Google Fonts（Inter/Sora/JetBrains Mono），离线环境下首屏字体退化（无本地字体、无子集化）。
 6. **静态打包语言包**：CodeMirror 20 个 `@codemirror/lang-*` 全量静态 import（`CodeEditor.tsx:13-29`），未按需加载。
 7. **空转的分包规则**：`vite.config.ts:39` 的 `vendor-framer` 无命中（`framer-motion` 唯一引用点 `boot/LogoMorph.tsx` 无调用方），实测产物无该 chunk。
-8. **声明未用依赖**：`src/` 零 import 的运行时依赖包括 `mammoth`、`xlsx`、`diff`、`nanoid`、`classic-level`、`ws`、`@tanstack/react-virtual`、`framer-motion` 与 4 个 Radix 包（其中 `ws`/`classic-level` 服务于主进程/桥，不在 GUI bundle）。
+8. **声明未用依赖**【**已消除（2026-09-19）**】：逐个复核五类引用证据后删除了 **10 个**零引用的运行时依赖 —— `@radix-ui/react-collapsible`、`@radix-ui/react-context-menu`、`@radix-ui/react-popover`、`@radix-ui/react-separator`、`@tanstack/react-virtual`、`classic-level`、`diff`、`mammoth`、`nanoid`、`xlsx`（`dependencies` 52 → 42 条；`kit:check` 红灯 14 → 4）。**原描述把 `ws` 与 `classic-level` 并列是错的**：`ws` 实测在用（`server/bridge.mjs`、`electron/main.cjs`），真未用的是 `classic-level`；`framer-motion` 与这 10 个不同类（它在 `package.json` 里**根本没有声明**），见第 7 条。
 9. **`electron-builder.yml:37` 声明的 `node.exe` 在仓库根不存在**（仅打包期临时复制），`npm run build:electron` 路径与该声明不一致。
 
 ---
