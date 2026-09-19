@@ -399,7 +399,7 @@ flowchart LR
 ### 12.2 口径（决定这张图能证明什么、不能证明什么）
 
 - **节点** = git 跟踪的源文件（`.ts/.tsx/.mjs/.cjs/.js/.py`）+ 根级模块（`version.mjs`、`vite.config.ts` 等）；排除 **393 个测试文件**与构建产物（`release/`、`dist/`、`kernel-dist/`）。
-  ★ **口径（铁律 4）**：这个 393 **不是**"本仓当前有多少测试文件"，而是**图谱产物** `docs/architecture-graph.html` 内嵌 `stats.testsExcluded` 的值（生成于提交 `916adf1`，`node scripts/build-arch-graph.mjs` 的判据 = 已入库文件里 `*.test.*` / `*.spec.*`）；`scripts/check-doc-anchors.mjs` 的「门禁 C」会拿它与产物逐字对账 —— **改这里必须同时重算图谱**，否则 CI 红。要问"当前有多少测试文件"请看另一口径：**盘根干净克隆 `C:\p4\yfwk-clone@ba878fa` 实测 417 个**（`docs/_anchors.json#testTotal`；主树含他人在途改动为 427）。两者差 24 是"图谱产物未重算"，不是漏数。
+  ★ **口径（铁律 4）**：这个 393 **不是**"本仓当前有多少测试文件"，而是**图谱产物** `docs/architecture-graph.html` 内嵌 `stats.testsExcluded` 的值（生成于提交 `916adf1`，`node scripts/build-arch-graph.mjs` 的判据 = 已入库文件里 `*.test.*` / `*.spec.*`）；`scripts/check-doc-anchors.mjs` 的「门禁 C」会拿它与产物逐字对账 —— **改这里必须同时重算图谱**，否则 CI 红。要问"当前有多少测试文件"请看另一口径：**盘根干净克隆 `<盘根目录>/<克隆名>@ba878fa` 实测 417 个**（`docs/_anchors.json#testTotal`；主树含他人在途改动为 427）。两者差 24 是"图谱产物未重算"，不是漏数。
 - **边** = 两类真实依赖：① 静态 `import` / `require` / `export…from` / 动态 `import()`；② **按路径引用**（字符串字面量指向仓库内真实文件，覆盖 `spawn` 与按路径加载，图中以**虚线**区分）。
 - **抽取前先剔注释**——注释里提到的文件名不是依赖（未剔注释时会多出 143 条假边，典型是 11 条指向内核的「renderer→kernel」，实际全在注释里）。
 - **不解析**：变量拼接的动态导入、`require(变量)`、构建产物内部引用、不存在的别名。

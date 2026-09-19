@@ -34,7 +34,7 @@
 | 其它 | — | — | `build/`、`pet/`、`workflows/`、`public/`、配置与文档 |
 
 测试文件合计 **417** 个：`shared/` 13、`server/` 90、`electron/` 12、`kernel-tests/` 210、`src/` 74（全部为 `.test.ts`，无 `.test.tsx`）、`kit/` 18 —— 见 §3.6。
-★ 口径（铁律 4）：这是**盘根干净克隆** `C:\p4\yfwk-clone@ba878fa` 的 `git ls-files` 实测值（= `docs/_anchors.json#testTotal`，与 `npm test` 的 glob 分组一致）；**主树含他人在途改动为 427**（`server/` 93、`src/` 81，其余同）。上面那张表是**另一口径**（各目录文件总数，非测试文件名录），未随本行同步重算。
+★ 口径（铁律 4）：这是**盘根干净克隆** `<盘根目录>/<克隆名>@ba878fa` 的 `git ls-files` 实测值（= `docs/_anchors.json#testTotal`，与 `npm test` 的 glob 分组一致）；**主树含他人在途改动为 427**（`server/` 93、`src/` 81，其余同）。上面那张表是**另一口径**（各目录文件总数，非测试文件名录），未随本行同步重算。
 
 ### 1.3 版本线（四条，实测）
 
@@ -182,7 +182,7 @@ node kernel/cli.mjs --knowledge search --text "关键词"
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # node --test --test-timeout=300000，6 组 glob（417 个测试文件：干净克隆 C:\p4\yfwk-clone@ba878fa；主树含他人在途改动为 427）
+npm test            # node --test --test-timeout=300000，6 组 glob（417 个测试文件：干净克隆 <盘根目录>/<克隆名>@ba878fa；主树含他人在途改动为 427）
 node scripts/verify-portable-layout.mjs     # 便携布局校验（需 S6_TEST_DESKTOP 等环境）
 node scripts/verify-gui-fidelity.mjs        # GUI 保真度（需 electron + 图形会话）
 ```
