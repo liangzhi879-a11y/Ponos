@@ -375,7 +375,10 @@ test('真仓①：关键端点**逐条点名**（这是主护栏：漏抓就红�
   // ── 1) 三条 `!==` 早退守卫（真形态 `server/agents-routes.mjs:28` / `disabled-routes.mjs:23` /
   //    `skill-detail-routes.mjs:28`）：漏抓时它们**既不在 routes 也不在 excluded**，直接点名
   for (const k of ['ANY /agents', 'ANY /disabled', 'ANY /skill-detail']) {
-    assert.ok(out.routes.has(k), `真仓必须有 ${k}（`!==` 早退守卫形态，实测 keys=${[...out.routes.keys()].filter((x) => /agents|disabled|skill-detail/.test(x)).join('|') || '无'}）`)
+    // ★ 失败消息里的 `!==` 用**单引号**包（P1 终审低危①）：写成模板串内嵌反引号时，
+    //   反引号会**提前终止模板**，第二个实参退化成 `A !== B` 的布尔值 —— 审查者实测看到
+    //   `AssertionError: true`，**无法定位失败**。断言失败消息必须真的带路径/数值。
+    assert.ok(out.routes.has(k), `真仓必须有 ${k}（'!==' 早退守卫形态，实测 keys=${[...out.routes.keys()].filter((x) => /agents|disabled|skill-detail/.test(x)).join('|') || '无'}）`)
     assert.deepEqual(out.routes.get(k).forms, ['negated-guard'], `${k} 的 form 必须标出守卫形态`)
     assert.equal(out.excluded.some((e) => e.literal === k.slice('ANY '.length)), false, `${k} 是认领关系，不得同时出现在 excluded`)
   }
@@ -396,8 +399,13 @@ test('真仓①：关键端点**逐条点名**（这是主护栏：漏抓就红�
     '/workflows': ['GET /workflows', 'POST /workflows'],
     '其它直判端点': ['POST /session/anchor-applied', 'POST /probe-provider', 'POST /verify-provider', 'POST /install-skill'],
   }
+  // 判据②（**替换**掉原先的 `assert.ok(keys.length >= 2, …)`）：那一行断的是**测试自己的表**——
+  //   表里每族都写了 ≥2 条，故它**恒真**、不可能独立失败（终审低危②）。现在断的是"每族的代表键
+  //   必须**互不相同且 ≥2**"：把某族删到只剩 1 条 / 复制成同一条即红。承重判据仍是下面的逐条点名
+  //   （键必须出现在**提取器输出**里），这条只负责别让点名表本身退化成单点。
+  const thinNs = Object.entries(NAMESPACES).filter(([, ks]) => new Set(ks).size < 2).map(([ns]) => ns)
+  assert.deepEqual(thinNs, [], `每个命名空间至少点两个**不同**端点，薄弱的命名空间：${thinNs.join('、') || '(无)'}`)
   for (const [ns, keys] of Object.entries(NAMESPACES)) {
-    assert.ok(keys.length >= 2, `${ns} 至少点两个端点（单点不足以代表一族）`)
     for (const k of keys) assert.ok(out.routes.has(k), `真仓必须有 ${k}（命名空间 ${ns}；实测未命中键=${[...out.routes.keys()].filter((x) => x.endsWith(k.slice(k.indexOf(' ')))).join('|') || '无'}）`)
   }
   // ── 3) **每种形态各取代表**：`set:<表名>` / `isXxxPath` / `pathname ===` / `negated-guard` / 前缀
@@ -424,8 +432,14 @@ test('真仓①：关键端点**逐条点名**（这是主护栏：漏抓就红�
       `${k} 的判定文件 ${own} 不得把自己的字面量同时写进 excluded`)
     void lit
   }
-  assert.deepEqual(out.excluded.filter((e) => e.literal === '/health').map((e) => e.file), ['server/bridge-token.cjs'],
-    '真仓 /health 的排除记录只应来自 token-guard（端点本身在 host-routes）')
+  // ★ 铁律 4（真仓数字口径）：**不写精确相等**。`/health` 的排除记录当前来自 token-guard
+  //   （`server/bridge-token.cjs:87`），但"他人新增一处 guard/豁免判定"会让精确清单变红 ——
+  //   而那是**真实新增**、不是本测试要守的性质。这里改断**性质**：排除记录里的每一条 `/health`
+  //   都必须带 `token-guard` 分类（端点本身在 host-routes，端点绝不许落进 excluded）。
+  const healthEx = out.excluded.filter((e) => e.literal === '/health')
+  assert.ok(healthEx.length >= 1, `真仓 /health 至少有一条 token-guard 排除记录，实测 ${healthEx.length}`)
+  assert.deepEqual([...new Set(healthEx.map((e) => e.reason.split('：')[0]))], ['token-guard'],
+    `真仓 /health 的排除记录只应来自 token-guard（端点本身在 host-routes），实测分类=${healthEx.map((e) => e.reason.split('：')[0]).join('|')}`)
   // ── 6) ★形态闭环（唯一能抓"**未知新**端点被漏抓"的断言，且与任何计数无关）：
   //   源码里每个 `pathname !== '<path>'` 早退守卫的**路径字面量**都必须在 routes∪excluded 里有归宿 ——
   //   独立来源：直接扫源码（stripComments 后的代码视图），**不经过提取器**。
@@ -438,7 +452,14 @@ test('真仓①：关键端点**逐条点名**（这是主护栏：漏抓就红�
     if (typeof text !== 'string') continue
     for (const m of stripComments(text).matchAll(GUARD_LITERAL)) guardLits.add(m[1])
   }
-  assert.ok(guardLits.size >= 5, `真仓 `!==` 守卫字面量应 >= 5 条，实测 ${[...guardLits].join(',')}`)
+  // ★ 地板口径（终审低危③）：原先写 `guardLits.size >= 5`，而第 5 条实为 `!== '/'` 的**根路径判定**
+  //   （`shared/proxy-config.cjs:83` / `src/lib/proxyUi.ts:104`）——它是 root-path-check、不是端点守卫，
+  //   有效端点守卫 floor 只有 **4**（下列四条，逐条点名）。**不写上界/精确相等**：他人新增守卫是真实新增，
+  //   精确值会让主树假红（铁律 4）。兜底由下面的"每条字面量都必须有归宿"覆盖。
+  for (const lit of ['/agents', '/disabled', '/skill-detail', '/workflows']) {
+    assert.ok(guardLits.has(lit), `真仓必须有 '!==' 守卫字面量 ${lit}（实测 ${[...guardLits].join(',')}）`)
+  }
+  assert.ok(guardLits.size >= 4, `真仓 '!==' 守卫字面量（含根路径判定）应 >= 4 条，实测 ${[...guardLits].join(',')}`)
   const keysNow = [...out.routes.keys()]
   const ownedLits = new Set(out.excluded.map((e) => e.literal))
   for (const lit of guardLits) {
@@ -451,7 +472,7 @@ test('真仓①：关键端点**逐条点名**（这是主护栏：漏抓就红�
     const key = keysNow.find((k) => k.endsWith(' ' + lit))
     if (!key) continue
     assert.equal(out.routes.get(key).forms.includes('negated-guard'), true,
-      `${key} 由 `!==` 守卫认领 ⇒ forms 必须含 negated-guard（实测 ${[...out.routes.get(key).forms].join(',')}）`)
+      `${key} 由 '!==' 守卫认领 ⇒ forms 必须含 negated-guard（实测 ${[...out.routes.get(key).forms].join(',')}）`)
   }
   void files
 })
