@@ -92,7 +92,7 @@ node scripts/ci-preflight.mjs --allow-running-app
 
 为什么必须逐脚本，而不是"这个 glob 出现在**某个**测试脚本里就算过"：CI 跑的是 `test:ci`，**从不跑 `test`**（全量脚本，只在本机手工用）。实测只从 `test:unit` 删掉 `kit` 层的 glob（`test` 里仍保留）时，旧写法 **EXIT=0** —— kit 层在 CI 里静默不跑，门禁却全绿；逐脚本校验后同一操作 **EXIT=1**。层是否真的在 CI 上跑，必须按**脚本名**核对，不能按"glob 字符串出现过"核对。
 
-于是**新增一层测试目录要同步四处**（spec §7.1 的清单）：
+于是**新增一层测试目录要同步四处**（spec §7.1 的清单；该清单第 3 项把"`docs/ci.md` 的口径说明 + `npm run anchors:write`"合成一条，这里拆成两个可见步骤，故是四处）：
 
 1. `scripts/test-tiers.mjs`：`TEST_GLOBS` 加一行 + `TIER_SCRIPTS` 补上该层必须归属的脚本；
 2. `package.json`：`test` / `test:unit` / `test:server` / `test:kernel` 里补该层的 glob，并确认 `test:ci` 链路覆盖到它；
