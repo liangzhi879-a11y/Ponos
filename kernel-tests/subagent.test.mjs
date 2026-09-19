@@ -381,3 +381,72 @@ test('S3 outputs：子 agent Write 产物路径全部进 task_notification.outpu
     env.cleanup()
   }
 })
+
+// ===== 跨 Agent 证据面（Task 1/2/3）=====
+// ---------------------------------------------------------------------------
+// 覆盖「跨 Agent 证据面」系列任务的用例：Task 1 = Edit 产物计入 outputs（已落地）；
+// Task 2（reads 采集与限量回传）、Task 3（lane transcript 可被 Read 展开）尚未落地，
+// 其用例将在各自任务中追加到本区块。
+// 为什么不另建 subagent-evidence.test.mjs：仓库门禁 doc-anchors-reproducible 会校验
+// docs/_anchors.json 中的 testFileCounts（kernel-tests/*.test.mjs 计数），新增测试文件
+// 即触发锚点失配；并入既有文件可零接触 docs/。
+//
+// 本地需要**独立于会话目录的 configDir 布局**（transcript 落在会话目录之外，越界/放行才有区分度）。
+// ——参见下方 makeEnvEvidence 注释。
+
+// 与上方 makeEnv 的关键差异：**configDir 不在 addDirs 内**。
+// 这样 lane transcript（<configDir>/projects/<cwd>/<taskId>.jsonl）落在会话目录之外，
+// "未放行 ⇒ 越界 / 放行 ⇒ 可读"才有区分度（若 configDir 在会话目录内，测试恒通过、测不出东西）。
+// 对照既有 makeEnv（约 :27-48）—— 它是 dir = mkdtempSync(...)；configDir = join(dir,'home')；
+// cwd: dir；addDirs: [dir] ⇒ laneFile 落在 dir/home/... ，**本就在 addDirs 内**，故既有测试
+// 无法验证跨出边界的情形。本用例必须分离 work / home 两个目录，这是不能照抄它的原因。
+function makeEnvEvidence() {
+  const events = []
+  const wire = makeWire({ write(s) { events.push(JSON.parse(s)) } })
+  const root = mkdtempSync(join(tmpdir(), 'ponos-evidence-'))
+  const workDir = join(root, 'work')
+  const configDir = join(root, 'home')
+  mkdirSync(workDir, { recursive: true })
+  const store = createSessionStore({ configDir, cwd: workDir, sessionId: 'main-session' })
+  const engine = createEngine({
+    opts: { model: 'mock-model', configDir, addDirs: [workDir], skipPermissions: true },
+    wire,
+    session: store,
+  })
+  engine.setSystemPrompt('你是 Ponos-turbo 测试内核。')
+  const laneFile = (taskId) => join(configDir, 'projects', workDir.replace(/[^a-zA-Z0-9]/g, '-'), `${taskId}.jsonl`)
+  const waitNotif = async (taskId, timeoutMs = 8000, nth = 1) => {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const ns = events.filter((e) => e.type === 'system' && e.subtype === 'task_notification' && e.task_id === taskId)
+      if (ns.length >= nth) return ns[nth - 1]
+      await sleep(10)
+    }
+    return null
+  }
+  return { events, engine, store, root, workDir, configDir, laneFile, waitNotif, cleanup: () => rmSync(root, { recursive: true, force: true }) }
+}
+
+test('Edit 产物计入 outputs（原先只认 Write）', async () => {
+  const env = makeEnvEvidence()
+  const prev = process.env.PONOS_MOCK_WRITE_DIR
+  try {
+    process.env.PONOS_MOCK_WRITE_DIR = env.workDir
+    // Edit 需要目标文件已存在（Edit 是"先读后改"，old_string 必须精确命中）
+    writeFileSync(join(env.workDir, 'mock-c.txt'), 'old\n', 'utf-8')
+    const r = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: '[mock:edit]', run_in_background: true },
+      { toolUseId: 'tool_use_ev_1' },
+    )
+    const taskId = extractTaskId(r.content)
+    assert.ok(taskId)
+    const n = await env.waitNotif(taskId)
+    assert.ok(n, '完成通知应到达')
+    // Edit 的目标文件必须进 outputs（改造前恒为空数组）
+    assert.deepEqual(n.outputs, [`${env.workDir}/mock-c.txt`])
+  } finally {
+    if (prev === undefined) delete process.env.PONOS_MOCK_WRITE_DIR
+    else process.env.PONOS_MOCK_WRITE_DIR = prev
+    env.cleanup()
+  }
+})
