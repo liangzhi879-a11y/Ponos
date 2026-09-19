@@ -11,6 +11,8 @@
 //      确属**有意**引用的不存在路径（构建产物名、刻意构造的负例、文档在说明"该引用已失效"），
 //      登记到 docs/_anchors-allow.json（**手写**，每条写理由）即可放行。
 //   B. **各层测试文件数**：与 docs/_anchors.json 比对，抓"整层测试静默消失 / glob 写错"。
+//      配套 **A′**：分层清单（scripts/test-tiers.mjs）与 package.json 的测试脚本**逐脚本**对齐，
+//      并要求 `test:ci` 链路覆盖每一层 —— 抓"口径改了脚本没改 / 层只挂在 CI 不跑的脚本上"。
 //   C. **文档的图谱数字**（P2-4①）：`docs/architecture.md`（文本真源）与 `docs/architecture.html`
 //      （可视化/汇报版）里声明的模块数/域数/边数等，必须与**已提交的** docs/architecture-graph.html
 //      内嵌数据一致。注意各文档另有**不同口径**的数字（DevLens 符号级、内核文件数），
@@ -30,7 +32,7 @@ import { execFileSync } from 'node:child_process'
 import { globSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { TEST_GLOBS, trackedTestCounts } from './test-tiers.mjs'
+import { TEST_GLOBS, TIER_SCRIPTS, CI_CHAIN_SCRIPTS, trackedTestCounts } from './test-tiers.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const ANCHORS = resolve(ROOT, 'docs/_anchors.json')
@@ -308,12 +310,41 @@ for (const g of TEST_GLOBS) {
 // 门禁 A′：分层清单本身要与 package.json 的测试脚本一致（防"改了脚本忘了改口径"）
 // ★ 2026-09-19（DevKit C4）由 warnings 升级为 problems：原先只黄不红（退出码 0），
 //   实测"新增 kit 层却忘改 package.json 的 test glob"不会让 CI 失败 —— 门禁形同虚设。
+// ★★ 2026-09-19（Task 1 返工）由"任一脚本含 glob"收紧为**逐脚本校验**：
+//   原实现是 `JSON.stringify(pkg.scripts).includes(g)`，**不区分脚本**。实测：
+//   只从 `test:unit` 删掉 kit glob（`test` 仍保留）→ EXIT=0；而 CI 链路是
+//   `test:ci → test:unit`（**从不跑 `test`**）→ kit 层在 CI 里静默不跑，C4 目标未达成。
+//   现在按 scripts/test-tiers.mjs 的 TIER_SCRIPTS 逐脚本断言，并要求 `test:ci` 链路覆盖全部层。
 try {
   const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8'))
-  const scriptsText = JSON.stringify(pkg.scripts || {})
+  const scripts = pkg.scripts || {}
+  const ciChain = String(scripts['test:ci'] || '')
+  const ciCovers = new Set()
+  for (const s of CI_CHAIN_SCRIPTS) {
+    if (typeof scripts[s] !== 'string') {
+      problems.push(`package.json 缺少脚本 ${s}（门禁 A′ 依赖它在 test:ci 链路里覆盖测试层）`)
+    } else if (!ciChain.includes(s)) {
+      problems.push(`npm run test:ci 的链路里没有 ${s}（该层本地跑得到、CI 跑不到 → 在 CI 上不受保护）`)
+    } else {
+      ciCovers.add(s)
+    }
+  }
   for (const g of TEST_GLOBS) {
-    if (!scriptsText.includes(g)) {
-      problems.push(`分层清单里的 ${g} 未出现在 package.json 的测试脚本中（口径与脚本已漂移，请同步 test/test:unit）`)
+    const need = TIER_SCRIPTS[g]
+    if (!Array.isArray(need) || need.length === 0) {
+      problems.push(`分层清单里的 ${g} 未在 scripts/test-tiers.mjs 的 TIER_SCRIPTS 里声明必须归属的脚本`)
+      continue
+    }
+    for (const s of need) {
+      const body = scripts[s]
+      if (typeof body !== 'string') {
+        problems.push(`${g} 必须出现在 package.json 的 ${s} 脚本中，但该脚本不存在`)
+      } else if (!body.includes(g)) {
+        problems.push(`分层清单里的 ${g} 未出现在 package.json 的 ${s} 脚本中（口径与脚本已漂移，请同步 ${need.join('/')} 与 test:ci）`)
+      }
+    }
+    if (!need.some((s) => ciCovers.has(s))) {
+      problems.push(`分层清单里的 ${g} 只挂在 CI 不跑的脚本（${need.join('、')}）上 —— test:ci 链路（${CI_CHAIN_SCRIPTS.join(' → ')}）覆盖不到该层`)
     }
   }
 } catch {

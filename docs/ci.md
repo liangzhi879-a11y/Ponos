@@ -13,12 +13,12 @@ npm run test:ci  # = 预检 → 文档口径 → 单测层 → server 层 → �
 |---|---|---|
 | `npm run test:preflight` | 预检：Node 版本、测试 glob 必须匹配到文件、端口占用风险 | <1s |
 | `node scripts/check-doc-anchors.mjs` | 文档口径（路径存在性 + 各层测试文件数） | <1s |
-| `npm run test:unit` | `shared` + `electron` + `src` 三层 | 1041 项 / 23s |
+| `npm run test:unit` | `shared` + `electron` + `src` + `kit` 四层 | 1041 项 / 23s（kit 层接入前实测；kit 层另加 6 项断言） |
 | `npm run test:server` | `server` 层（含起桥的端到端测试） | 694 项 / 91s |
 | `npm run test:kernel` | `kernel-tests` 层 | 1943 项 / 48s |
 | `npm run typecheck` | `tsc --noEmit` | 16s |
 
-合计 **3678 项断言 / 约 3 分钟**（本机 8 核）。CI 为 2 核 Windows 运行器，实耗会更长，作业超时设 30 分钟。
+合计 **3678 项断言 / 约 3 分钟**（kit 层接入前实测，本机 8 核）。CI 为 2 核 Windows 运行器，实耗会更长，作业超时设 30 分钟。
 
 ## 两个刻意的环境决策
 
@@ -78,6 +78,20 @@ node scripts/ci-preflight.mjs --allow-running-app
 - 反过来，新加的测试文件即使还没 `git add`，也要能立刻发现"glob 失效"，所以那一项用工作树。
 
 由此预检里的比对语义是**不对称**的（`scripts/ci-preflight.mjs`）：工作树数 **少于**锚点 → 疑似测试文件被删（失败）；已跟踪数 **少于**锚点 → 提交后 CI 会失败，提醒先 `git add`。本地比锚点多属正常（有新文件没提交），不报错。
+
+### 门禁 A′：层与脚本**逐脚本**对齐（新增测试层要同步三处）
+
+同一份分层清单里还登记了**每一层必须出现在哪些 package.json 脚本里**（`scripts/test-tiers.mjs` 的 `TIER_SCRIPTS`，与 `TEST_GLOBS` 定义在同一文件、紧邻，避免第二处真源）。门禁 A′ 按它**逐脚本**断言，并要求 `test:ci` 链路（`test:preflight → test:unit → test:server → test:kernel`）覆盖到每一层。
+
+为什么不写成"这个 glob 出现在**某个**测试脚本里就算过"：CI 跑的是 `test:ci`，**从不跑 `test`**（全量脚本，只在本机手工用）。实测只从 `test:unit` 删掉 `kit` 层的 glob（`test` 里仍保留）时，旧写法 **EXIT=0** —— kit 层在 CI 里静默不跑，门禁却全绿；逐脚本校验后同一操作 **EXIT=1**。层是否真的在 CI 上跑，必须按**脚本名**核对，不能按"glob 字符串出现过"核对。
+
+于是**新增一层测试目录要同步三处**，漏任一处都会被门禁 A/A′ 变成硬失败：
+
+1. `scripts/test-tiers.mjs`：`TEST_GLOBS` 加一行 + `TIER_SCRIPTS` 补上该层必须归属的脚本；
+2. `package.json`：`test` / `test:unit` / `test:server` / `test:kernel` 里补该层的 glob，并确认 `test:ci` 链路覆盖到它；
+3. `docs/_anchors.json`：跑 `npm run anchors:write` 重新生成（新增层若漏了这一步，门禁 A 会报"不在 testFileCounts 中"）。
+
+本文件（`docs/ci.md`）的分层说明也随之一并更新——它是这套口径的对外表述，spec §7.1 把它与上面三处并列为需要同步的位置。
 
 **刻意不门禁**：模块数、总行数、巨石行数——它们每次合法重构都会变，硬卡会逼人每次都重跑 `anchors:write`，最终结果是人把检查绕过或删掉，那还不如一开始就别卡。这些数字仍写进 `docs/_anchors.json` 的 `info` 段供人查看。
 
