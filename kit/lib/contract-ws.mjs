@@ -21,6 +21,9 @@
 //      是"发给桥"）按文件角色排除，理由写在 `excluded` 里而不是悄悄跳过。
 import { stripComments } from './scan.mjs'
 
+/** 换行符常量（源码里写裸转义会被编辑链吃掉，这里显式构造） */
+const NL = String.fromCharCode(10)
+
 /** 发送函数白名单 → 角色（只有 `out` 才进 GUI 出站集合；其余进 excluded）。
  *  ★ 每个模式都要挡住"被别的前缀调用"：`executor.send(` 里也有 `send(`，
  *  用 `B`（负向后顾）而不是 `\b` —— `\b` 在 `.` 与 `s` 之间**成立**，
@@ -174,6 +177,10 @@ export function extractWs({ files = [], readTracked } = {}) {
     const code = stripComments(text)
     const starts = lineMap(code)
     const role = fileRoleOf(file)
+    // 第二道注释过滤：stripComments **不认正则字面量**（`/'/` 会开一个伪字符串），
+    // 击穿后注释会整段留在代码视图里（真形态 server/bridge.mjs:1716）⇒ raw 行判一次。
+    const rawLines = text.split(NL)
+    const isComment = (line) => /^\s*(?:\/\/|\/\*|\*)/.test(rawLines[line - 1] || '')
 
     // ① 入站：桥的 ws.on('message') 处理器里的 msg.type 比较
     const range = messageHandlerRange(code)
@@ -194,6 +201,7 @@ export function extractWs({ files = [], readTracked } = {}) {
         covered.push([argStart, argStart + arg.length])
         for (const f of typeFieldsIn(arg)) {
           const fileLine = lineAt(starts, argStart + f.at)
+          if (isComment(fileLine)) continue      // 注释行上的 type: 不是字面量（也不计入守恒）
           rawTypeCount++
           const effRole = f.subtype ? 'nested-subtype' : f.nested ? 'nested' : (role ? role.role : sink.role)
           if (effRole === 'out') {
@@ -216,6 +224,7 @@ export function extractWs({ files = [], readTracked } = {}) {
       const idx = m.index + (m[0].length - m[0].trimStart().length)
       if (inCovered(idx)) continue
       if (m[1]) continue          // `subtype:` 只可能在消息对象里，上面 ② 已覆盖 sink 内的；sink 外的 subtype 不是 WS 类型
+      if (isComment(lineAt(starts, idx))) continue
       rawTypeCount++
       const head = code.slice(Math.max(0, idx - 160), idx)
       const effRole = role

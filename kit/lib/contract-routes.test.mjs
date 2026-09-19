@@ -106,6 +106,9 @@ const BASE_FIXTURE = {
   // 系统目录字面量（文件系统判定）与"名字里含系统目录名的端点"必须分开：
   // `'/boot-status'.startsWith('/boot')` 为真 —— 裸前缀比对会把真端点误判成系统目录（实测踩过）
   'server/fs-guard.mjs': ["if (path === '/usr/bin') { deny() }", ''].join('\n'),
+  // ★ stripComments 的已知边界：正则字面量里的撇号会开一个伪字符串 ⇒ **其后的注释整段留下**
+  //   （真形态：server/bridge.mjs:1716 的注释在剥注释后仍在）。命中的 raw 行是注释时必须丢掉。
+  'server/leaky.mjs': ["const re = /'/", "// if (pathname === '/from-comment') { hidden() }", 'export const x = re', ''].join('\n'),
   'server/mcp-routes.mjs': MCP_ROUTES,
   'server/host-routes.mjs': HOST_ROUTES.concat("if (pathname === '/boot-status') { status() }\n"),
   'server/knowledge-routes.mjs': KNOWLEDGE_ROUTES,
@@ -251,6 +254,10 @@ test('★excluded 逐条带 reason、无兜底条目；非 bridge 面的字面�
   assert.deepEqual(out.excluded.filter((e) => e.file === 'server/fs-guard.mjs').map((e) => e.literal), ['/usr/bin'])
   assert.match(out.excluded.find((e) => e.file === 'server/fs-guard.mjs').reason, /^system-dir/)
   assert.ok(out.routes.has('ANY /boot-status'), '/boot-status 是端点，不得被系统目录规则吞掉')
+  // ★ 剥注释被击穿时（正则里的撇号）注释里的假路径仍不得入集 —— raw 行再兜一道
+  assert.deepEqual(anyKeyWithPath(out.routes, '/from-comment'), [],
+    '注释行上的假路径必须丢掉（stripComments 不认正则字面量，会连注释一起留下）')
+  assert.equal(out.excluded.some((e) => e.literal === '/from-comment'), false, '注释里的字面量连 excluded 都不该进')
   // 反向：/health 在 bridge-token 的豁免判定不进 routes，但同名字面量在 host-routes 是真端点
   assert.ok(out.routes.has('GET /health'), '同名字面量在 host-routes 是真端点（bridge-token 的豁免另走 excluded）')
   assert.deepEqual(out.routes.get('GET /health').hints.map((h) => h.file),

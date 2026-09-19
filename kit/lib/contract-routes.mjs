@@ -22,6 +22,9 @@
 //   `startsWith` `pathname.startsWith('/x')` —— 前缀，落 `prefixes` 而不是 `routes`
 import { stripComments } from './scan.mjs'
 
+/** 换行符常量（源码里写裸转义会被编辑链吃掉，这里显式构造） */
+const NL = String.fromCharCode(10)
+
 /** 方法字面量（守卫表达式里出现的才算；不出现则方法不可静态判定）。
  *  ★ 不能写尾随 `\b`：`'GET'` 的右侧是引号/空格/行尾（全是非单词字符），`\b` 恒不成立 ——
  *  实测那会让 `method === 'GET'` 一个都读不到（本文件最初就踩了这一脚）。 */
@@ -156,10 +159,15 @@ function excludable(file, literal, line) {
 
 /** 形态识别：把一份源码文本里的路径字面量按四形态收集为"命中点"。
  *  每个命中点带两个字段：`form`（来源标签，进 routes/prefixes 的 `forms`）与
- *  `via`（`eq` | `set` | `startsWith` —— 决定这条字面量是**端点**还是**前缀**）。 */
-function occurrencesOf(code, file, starts, out) {
+ *  `via`（`eq` | `set` | `startsWith` —— 决定这条字面量是**端点**还是**前缀**）。
+ *  `isComment(line)` 是**再兜一道**的注释过滤：`stripComments` 不认正则字面量，
+ *  源码里出现 `/'/` 这类写法时会把其后文本当成字符串、**连注释一起留下**（真形态：
+ *  `server/bridge.mjs:1716` 的注释在剥注释后仍然存在）⇒ 命中点落在这类行上必须丢掉。 */
+function occurrencesOf(code, file, starts, out, isComment) {
   const push = (literal, form, via, idx, methodWin) => {
-    out.push({ literal, form, via, file, line: lineAt(starts, idx), methods: methodsIn(methodWin) })
+    const line = lineAt(starts, idx)
+    if (isComment(line)) return
+    out.push({ literal, form, via, file, line, methods: methodsIn(methodWin) })
   }
   const isPathOnly = (s) => s.startsWith('/')
 
@@ -199,14 +207,17 @@ function occurrencesOf(code, file, starts, out) {
     for (const ref of body.matchAll(/\b([A-Za-z_$][\w$]*)\s*\.\s*has\(/g)) {
       const set = sets.find((s) => s.name === ref[1])
       if (!set) continue
-      for (const lit of set.members) out.push({ literal: lit, form: tag, via: 'set', file, line: set.line, methods: [] })
+      if (!isComment(set.line)) {
+        for (const lit of set.members) out.push({ literal: lit, form: tag, via: 'set', file, line: set.line, methods: [] })
+      }
     }
     // 4b 函数体里的路径字面量（`startsWith('/transcript/')` / `=== '/api/profile'`）
     for (const lit of body.matchAll(new RegExp(`(===|==|startsWith\\()\\s*'([^']*)'`, 'g'))) {
       if (!isPathOnly(lit[2])) continue
       const idx = bodyIdx + lit.index
       const via = lit[1] === 'startsWith(' ? 'startsWith' : 'eq'
-      out.push({ literal: lit[2], form: tag, via, file, line: lineAt(starts, idx), methods: methodsIn(guardWindow(code, idx)) })
+      const line = lineAt(starts, idx)
+      if (!isComment(line)) out.push({ literal: lit[2], form: tag, via, file, line, methods: methodsIn(guardWindow(code, idx)) })
     }
   }
   return sets
@@ -231,7 +242,10 @@ export function extractRoutes({ files = [], readTracked } = {}) {
     const text = readTracked(file)
     if (typeof text !== 'string') continue
     const code = stripComments(text)      // I3：注释先行剥掉，假路径不进任何集合
-    sets.push(...occurrencesOf(code, file, lineMap(code), hits))
+    // 第二道：raw 行以注释起头的一律不算（stripComments 被正则字面量击穿时的兜底）
+    const rawLines = text.split(NL)
+    const isComment = (line) => /^\s*(?:\/\/|\/\*|\*)/.test(rawLines[line - 1] || '')
+    sets.push(...occurrencesOf(code, file, lineMap(code), hits, isComment))
   }
 
   // ── 归类：端点（via=eq/set） / 前缀（via=startsWith） / 排除 ────────────────

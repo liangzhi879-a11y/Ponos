@@ -21,6 +21,7 @@ import { trackedFiles, codeFiles, readTracked } from './scan.mjs'
 import { extractWs } from './contract-ws.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
+const NL = String.fromCharCode(10)   // 行分隔符常量（源码里写裸转义会被编辑链吃掉）
 
 function fixture(filesMap) {
   const root = mkdtempSync(join(tmpdir(), 'yfw-ct-ws-'))
@@ -69,6 +70,8 @@ const FIXTURE = {
   'server/bridge.mjs': BRIDGE,
   'server/health-anchor.mjs': "export const buildAnchor = (sid, list) => ({ sessionId: sid, message: { type: 'anchor_applied', issueIds: list } })\n",
   'server/app-routing.mjs': "executor.send(JSON.stringify({ type: 'app:exec', requestId, sessionId, payload }))\n",
+  // ★ stripComments 不认正则字面量（伪字符串会吞掉 `//`）⇒ 注释里的假类型必须被 raw 行拦下
+  'server/leaky.mjs': ["const re = /'/", "// send({ type: 'fake_from_comment' })", 'export const x = re', ''].join('\n'),
   'server/interject.e2e.mjs': "ws.send(JSON.stringify({ type: 'send', prompt: '你好', sessionId: sid }))\n",
   'electron/browser-executor.cjs': "await cdp.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.cx, y: box.cy })\n",
 }
@@ -122,6 +125,8 @@ test('★first_byte_pending 判为嵌套：不进顶层，但在 excluded 里能
 test('★入站只认 ws.on("message") 处理器里的 msg.type 比较（方向不得反）', () => {
   const { out } = extract()
   assert.deepEqual([...out.in].sort(), ['cancel', 'executor:hello', 'send'])
+  assert.equal(out.out.has('fake_from_comment'), false, '注释行上的 type 不是字面量（raw 行兜底过滤）')
+  assert.equal(out.excluded.some((e) => e.literal === 'fake_from_comment'), false, '注释里的不算 excluded 条目')
   assert.equal(out.in.has('milestones'), false,
     '`msg.type === \'milestones\'` 出现在出站低优先级判定里 —— 算成入站会让契约表说反话')
   assert.equal(out.in.has('raw'), false)
@@ -135,7 +140,10 @@ test('★提取守恒：rawTypeCount = 出站出现数 + excluded 条数（夹�
   for (const f of files) {
     const text = read(f)
     if (typeof text !== 'string') continue
-    literalTotal += (text.match(/type\s*:\s*'/g) || []).length
+    for (const line of text.split(NL)) {
+      if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) continue   // 注释行不是代码（raw 行口径，与提取器独立实现）
+      literalTotal += (line.match(/type\s*:\s*'/g) || []).length
+    }
   }
   assert.ok(literalTotal >= 8, `夹具至少应有 8 个 type 字面量，实测 ${literalTotal}`)
   assert.equal(out.rawTypeCount, literalTotal, 'rawTypeCount 必须等于域内 type 字面量总出现数')
