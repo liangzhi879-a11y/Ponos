@@ -33,13 +33,27 @@ const NL = String.fromCharCode(10)
 
 /** 方法字面量（守卫表达式里出现的才算；不出现则方法不可静态判定）。
  *  ★ 不能写尾随 `\b`：`'GET'` 的右侧是引号/空格/行尾（全是非单词字符），`\b` 恒不成立 ——
- *  实测那会让 `method === 'GET'` 一个都读不到（本文件最初就踩了这一脚）。 */
-const METHOD_RE = /'(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)'/g
+ *  实测那会让 `method === 'GET'` 一个都读不到（本文件最初就踩了这一脚）。
+ *  ★ 引号同样是单/双都认（`method === "POST"` 漏掉的话，端点键会从 `POST /x` 退化成 `ANY /x`
+ *  —— 与路径字面量是**同一类**静默漏抓，只是后果轻一点：键的方法语义丢失）。 */
+const METHOD_RE = /(['"])(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\1/g
 
 /** 路径主体标识符：只认这些名字，避免把 `target === '/x'` 这类文件系统判定当路由 */
 const SUBJECT = '(?:\\w+\\.)?(?:pathname|p|path)'
-const EQ_RE = new RegExp(`\\b(${SUBJECT})\\s*(!?={2,3})\\s*'([^']*)'`, 'g')
-const STARTS_RE = new RegExp(`\\b(${SUBJECT})\\.startsWith\\(\\s*'([^']*)'`, 'g')
+/**
+ * 字符串字面量：**单引号与双引号都认**（第 4 批收口）。
+ * ★ 为什么必须两样都认（审查核实的能力边界）：原先只有 `'…'`，于是 `if (pathname === "/x")`
+ *   这种**完全合法**的写法**静默漏抓** —— 不是"少报一条"，而是整条链路（CT1/CT2/CT4/CT8）都看不见它
+ *   （真仓实测 0 处双引号 / 77 处单引号，且仓里**没有** `.prettierrc` 兜底格式 ⇒ 属潜在漏抓）。
+ * ★ 取舍：① **不**接纳反引号 —— 这些判定位置出现模板串时就是**动态**的（`` `${base}/x` ``），
+ *   把它当静态端点会造出假端点/假红；② 不做转义解义：体内 `[^'"]` 不含引号（路径字面量里出现引号
+ *   不是本仓形态），加逃逸支持只会让正则更脆（宁可漏抓一处怪异写法，不要误抓一片）。
+ * ★ 反向引用的序号**逐条写死在下面**（别抽成一个共用常量）：`EQ_RE` 中间有一个操作符捕获组，
+ *   引号是第 3 组；`STARTS_RE` 里它是第 2 组 —— 写死 `\1` 会指向**主语**（实测：整条正则永不匹配，
+ *   提取结果只剩 Set 表那些键，看起来像"注释剥多了"，实际是反向引用指错组）。
+ */
+const EQ_RE = new RegExp(`\\b(${SUBJECT})\\s*(!?={2,3})\\s*(['"])([^'"]*)\\3`, 'g')
+const STARTS_RE = new RegExp(`\\b(${SUBJECT})\\.startsWith\\(\\s*(['"])([^'"]*)\\2`, 'g')
 const SET_RE = /(?:(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*)?new Set\(\[([^\]]*)\]\)/g
 const ISPATH_RE = /(?:export\s+)?(?:function\s+(is[A-Za-z]*Path)\s*\(|(?:const|let)\s+(is[A-Za-z]*Path)\s*=\s*(?:async\s*)?\()/g
 
@@ -97,7 +111,7 @@ function methodsIn(win) {
   const out = new Set()
   METHOD_RE.lastIndex = 0
   let m
-  while ((m = METHOD_RE.exec(win))) out.add(m[1])
+  while ((m = METHOD_RE.exec(win))) out.add(m[2])
   if (out.size === 0) {
     if (/!\s*isPost\b/.test(win)) out.add('GET')      // `!isPost` = 非 POST 侧（knowledge-routes 的 GET 写法）
     else if (/\bisPost\b/.test(win)) out.add('POST')
@@ -177,11 +191,11 @@ function occurrencesOf(code, file, starts, out, isComment) {
   }
   const isPathOnly = (s) => s.startsWith('/')
 
-  // ① `pathname === '/x'` 与 `pathname !== '/x'` 两种判定点
+  // ① `pathname === 单/双引号路径 与 `pathname !== ...` 两种判定点（引号单/双都认，见 EQ_RE）
   EQ_RE.lastIndex = 0
   let m
   while ((m = EQ_RE.exec(code))) {
-    if (!isPathOnly(m[3])) continue
+    if (!isPathOnly(m[4])) continue
     // ★ `!==` 早退守卫（`if (pathname !== '/x') return null`）是**认领该端点**，不是"跳过项"：
     //   真形态 server/agents-routes.mjs:28 / server/disabled-routes.mjs:23 /
     //   server/skill-detail-routes.mjs:28（三条 handler 的入口都是这个形态）。
@@ -189,20 +203,20 @@ function occurrencesOf(code, file, starts, out, isComment) {
     //   直接违反 I4"每条字面量都有归宿"（审查 M1 实测：同形态探针文件加进去，路由数纹丝不动）。
     //   归类仍走下面的统一流程（`/` 这类非端点会被 excludable 判为 root-path-check 进 excluded），
     //   故这里不存在"第三条路"。form 记 `negated-guard`，让"守卫形态"在快照里可判。
-    push(m[3], m[2].startsWith('!') ? 'negated-guard' : 'eq', 'eq', m.index, guardWindow(code, m.index))
+    push(m[4], m[2].startsWith('!') ? 'negated-guard' : 'eq', 'eq', m.index, guardWindow(code, m.index))
   }
   // ② `pathname.startsWith('/x')` —— 前缀 + 段匹配，落 prefixes（不是端点）
   STARTS_RE.lastIndex = 0
   while ((m = STARTS_RE.exec(code))) {
-    if (!isPathOnly(m[2])) continue
-    push(m[2], 'startsWith', 'startsWith', m.index, guardWindow(code, m.index))
+    if (!isPathOnly(m[3])) continue
+    push(m[3], 'startsWith', 'startsWith', m.index, guardWindow(code, m.index))
   }
-  // ③ `new Set(['/x', …])`
+  // ③ `new Set(['/x', …])`（成员同样单/双引号都认）
   SET_RE.lastIndex = 0
   const sets = []
   while ((m = SET_RE.exec(code))) {
     const name = m[1] || '(anonymous)'
-    const members = [...m[2].matchAll(/'([^']*)'/g)].map((x) => x[1]).filter(isPathOnly)
+    const members = [...m[2].matchAll(/(['"])([^'"]*)\1/g)].map((x) => x[2]).filter(isPathOnly)
     if (!members.length) continue
     const line = lineAt(starts, m.index)
     sets.push({ name, members, file, line })
@@ -223,13 +237,13 @@ function occurrencesOf(code, file, starts, out, isComment) {
         for (const lit of set.members) out.push({ literal: lit, form: tag, via: 'set', file, line: set.line, methods: [] })
       }
     }
-    // 4b 函数体里的路径字面量（`startsWith('/transcript/')` / `=== '/api/profile'`）
-    for (const lit of body.matchAll(new RegExp(`(===|==|startsWith\\()\\s*'([^']*)'`, 'g'))) {
-      if (!isPathOnly(lit[2])) continue
+    // 4b 函数体里的路径字面量（`startsWith('/transcript/')` / `=== "/api/profile"`；引号单/双都认，见 EQ_RE）
+    for (const lit of body.matchAll(new RegExp(`(===|==|startsWith\\()\\s*(['"])([^'"]*)\\2`, 'g'))) {
+      if (!isPathOnly(lit[3])) continue
       const idx = bodyIdx + lit.index
       const via = lit[1] === 'startsWith(' ? 'startsWith' : 'eq'
       const line = lineAt(starts, idx)
-      if (!isComment(line)) out.push({ literal: lit[2], form: tag, via, file, line, methods: methodsIn(guardWindow(code, idx)) })
+      if (!isComment(line)) out.push({ literal: lit[3], form: tag, via, file, line, methods: methodsIn(guardWindow(code, idx)) })
     }
   }
   return sets

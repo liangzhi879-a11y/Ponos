@@ -379,6 +379,22 @@ test('★第3批-②（审查 M1）：往台账塞一个 HEAD 里没有的端点
   assert.deepEqual(real.entries.filter((e) => e.severity === 'red'), [], '基线里不得再有红灯条目')
 })
 
+test('★第4批-④：双引号端点不得静默漏抓 —— 未跟踪时 CT8 报出；提交后不 sync/不登记 ⇒ CT1/CT2/CT4 红', () => {
+  const { root, env } = fixture()
+  assert.equal(run(['sync'], { env }).code, 0)
+  // 真形态（审查核实：真仓 0 处双引号 / 77 处单引号）：`if (pathname === "/zzz-dq")`
+  writeEndpoint(root, 'server/dq-routes.mjs', '/zzz-dq', { stage: false, commit: false, quote: '"' })
+  const c = run(['check', '--json'], { env })
+  assert.deepEqual(JSON.parse(c.stdout).findings.filter((f) => f.rule === 'CT8').map((f) => f.subject),
+    ['routes ANY /zzz-dq'], '双引号端点必须与单引号同待遇（修前：提取器认不出它 ⇒ CT8 也是空的）')
+  execFileSync('git', ['add', '-A'], { cwd: root })
+  gitCommit(root)
+  const c2 = run(['check', '--json'], { env })
+  assert.equal(c2.code, 1, '提交了却没 sync、没登记 ⇒ 必须红（修前这条路 CT1/CT2/CT4 全绿）')
+  assert.deepEqual([...new Set(JSON.parse(c2.stdout).findings.filter((f) => f.severity === 'red').map((f) => f.rule))].sort(),
+    ['CT1', 'CT2', 'CT4'], `双引号端点提交后必须被 CT1/CT2/CT4 抓住：${c2.stdout}`)
+})
+
 test('★第4批-③：关闭"用基线把契约红灯变绿"的通路 —— CT1 红即使被条目显式认领 severity:red 也必须红', () => {
   const { root, env } = fixture()
   assert.equal(run(['sync'], { env }).code, 0)

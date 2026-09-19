@@ -20,7 +20,8 @@
 //     CT7 用"路径字面量 / 顶层 `type:` 字面量守恒"防止"提取不到就当作不存在"。
 //
 // 已知边界（如实写下，勿高估）：
-//   ① 路由提取器只认**内联单引号**形态 ⇒ `const P='/x'`（间接量）与双引号比较两种写法抓不到；
+//   ① 路由提取器只认**内联字符串字面量**（单/双引号，第 4 批起；原先只认单引号 ⇒ `pathname === "/x"`
+//      静默漏抓）⇒ `const P='/x'`（间接量）与反引号模板串（动态）抓不到；
 //      CT7 的路由侧只覆盖提取器的 4 形态（见 `routeFormOrphans` 的注释：更宽的口径需要第二份黑名单，
 //      会与提取器漂移 ⇒ 他人新增黑名单条目就假红）；
 //   ② `shapeOf` 只含结构指纹（props 名+类型 / required / additionalProperties 存在性），
@@ -39,10 +40,12 @@ import { checkScopeSets, contractGrowth, keyOf } from './contract-scope.mjs'
 /** 规则号段（顺序即报告顺序）：CT0–CT9，含 CT4 的两个子规则与在途差异 CT8 */
 export const CT_RULES = ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9']
 
-/** 路径主体标识符（与 contract-routes.mjs 的 SUBJECT 同口径 —— 独立实现，不 import 它的私有常量） */
+/** 路径主体标识符（与 contract-routes.mjs 的 SUBJECT 同口径 —— 独立实现，不 import 它的私有常量）
+ *  ★ 引号必须与提取器**同口径**（第 4 批）：单/双都认。少认一种 ⇒ 同一处字面量在提取器里"有归宿"、
+ *    在独立重扫里"无归宿"（或反之），守恒等式就成了噪声源；反引号两边都不认（模板串 = 动态）。 */
 const NAIVE_FORMS = [
-  { re: /\b(?:\w+\.)?(?:pathname|p|path)\s*(?:===|==|!==|!=)\s*'(\/[^']*)'/g, group: 1 },
-  { re: /\b(?:\w+\.)?(?:pathname|p|path)\s*\.startsWith\(\s*'(\/[^']*)'/g, group: 1 },
+  { re: /\b(?:\w+\.)?(?:pathname|p|path)\s*(?:===|==|!==|!=)\s*(['"])(\/[^'"]*)\1/g, group: 2 },
+  { re: /\b(?:\w+\.)?(?:pathname|p|path)\s*\.startsWith\(\s*(['"])(\/[^'"]*)\1/g, group: 2 },
 ]
 
 /** 文档声明的集合（`*` 通配**单独放**：它只声明命名空间，**不给任何子路径覆盖信用** —— plan §7 反例⑧） */
@@ -204,7 +207,7 @@ export function routeFormScan({ files, readTracked: read, routes }) {
       while ((m = re.exec(code))) seen.push(m[form.group])
     }
     for (const m of code.matchAll(/new Set\(\[([^\]]*)\]\)/g)) {
-      for (const x of m[1].matchAll(/'(\/[^']*)'/g)) seen.push(x[1])
+      for (const x of m[1].matchAll(/(['"])(\/[^'"]*)\1/g)) seen.push(x[2])
     }
     for (const lit of seen) {
       sites++

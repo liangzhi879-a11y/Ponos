@@ -336,6 +336,37 @@ test('★`!==` 早退守卫 = 认领该端点（真形态 /agents /disabled /ski
   assert.deepEqual(out.routes.get('POST /workflows').forms, ['eq', 'negated-guard'])
 })
 
+// ★ 第 4 批（收口，低危）：提取器原先**只认单引号** ⇒ 双引号写的端点**静默漏抓**
+//   （审查核实：真仓 0 处双引号 / 77 处单引号；仓里也没有 `.prettierrc` 兜底格式）——
+//   漏抓不是"少报一条"，而是**整条链路（CT1/CT2/CT4/CT8）都看不见它**。
+//   取舍：① 接纳 `"`（JS 里与 `'` 完全等价的字符串字面量形态，必须认）；
+//   ② **不接纳反引号**：这些判定位置（`pathname === \`…\``）在真仓与合理写法里都是**动态**模板
+//   （`${base}/x`），把它当静态路径会造出假端点/假红；③ 不处理转义（`[^'"]` 体内不含引号）：
+//   路径字面量里出现引号不是本仓形态，逃逸支持只会让正则更脆（取舍写在测试里，不做假）。
+test('★双引号形态：`pathname === "/x"` / `startsWith("/ns/")` / `new Set(["…"])` 都必须被提取', () => {
+  const { root, read } = fixture({
+    'server/dq-routes.mjs': [
+      'export function route(pathname) {',
+      '  if (pathname === "/dq-eq") return 1',
+      '  if (pathname !== "/dq-neg") return null',
+      '  if (pathname.startsWith("/dq-ns/")) return 2',
+      '  return null',
+      '}',
+      "const S = new Set(['/dq-set-a', \"/dq-set-b\"])",
+      "const notPath = pathname === \"GET\"",   // 主语是 pathname 但字面量不以 / 开头 ⇒ 不算端点
+      'export { S, notPath }',
+      '',
+    ].join('\n'),
+  })
+  const out = extractRoutes({ files: filesOf(root), readTracked: read })
+  for (const k of ['ANY /dq-eq', 'ANY /dq-neg', 'ANY /dq-set-a', 'ANY /dq-set-b']) {
+    assert.ok(out.routes.has(k), `${k} 必须被提取（双引号与单引号同待遇），实测 ${[...out.routes.keys()].filter((x) => x.includes('dq')).join('|') || '无'}`)
+  }
+  assert.deepEqual(out.routes.get('ANY /dq-neg').forms, ['negated-guard'], '形态标签与引号无关')
+  assert.deepEqual(out.prefixes.map((p) => p.prefix), ['/dq-ns/'], '双引号 startsWith 同样进 prefixes')
+  assert.deepEqual(anyKeyWithPath(out.routes, '/not-a-path'), [], '非路径双引号字面量仍被 isPathOnly 挡住（不许放宽成"见双引号就收"）')
+})
+
 test('★接口对误用免疫：直接传 trackedFiles（含 test/.md）与传 codeFiles 结果**逐字相同**', () => {
   // JSDoc 曾写"`files` 来自 trackedFiles"，但实际必须**先**过 `codeFiles(..., {includeTests:false})`：
   // 照 JSDoc 传 raw 会多出 test 文件里的端点（假阳性）+ `docs/*.md` 噪声 ⇒ T9 接线自伤。

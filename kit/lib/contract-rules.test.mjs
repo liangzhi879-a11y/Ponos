@@ -387,6 +387,34 @@ test('CT7：路由侧形态守恒（独立 naive 扫描）—— 删提取器的
   assert.deepEqual(orphans, ['/ns/', '/workflows/'], `startsWith 形态丢失后必须报无归宿，实测 ${JSON.stringify(orphans)}`)
 })
 
+// ★ 第 4 批（收口，低危）：双引号形态（`pathname === "/x"`）原先**两侧都只认单引号** ⇒ 静默漏抓：
+//   提取器看不见它（CT1/CT2/CT4 全绿），CT7 的独立重扫也看不见它（守恒等式照样成立）。
+//   这里钉两件事：① 提取器认双引号（进而 CT2/CT4 会红）；② CT7 的独立重扫与提取器**同口径**
+//   （否则同一处字面量会一边"有归宿"一边"无归宿" ⇒ 假红）。
+test('★双引号端点：CT2/CT4 必须红（修前提取器只认单引号 ⇒ 全静默）', async () => {
+  const f = await setup({ mutate: (root) => writeFileSync(join(root, 'server/alpha-routes.mjs'),
+    `${ALPHA}\nexport const dq = (p) => p === "/zzz-dq"\n`) })
+  const out = await run(f)
+  assert.ok(reds(out).some((x) => x.rule === 'CT2' && /zzz-dq/.test(x.subject)),
+    `双引号端点必须进代码真值 ⇒ CT2 报"未覆盖"，实测 reds=${JSON.stringify(reds(out).map((x) => `${x.rule}:${x.subject}`))}`)
+  assert.ok(reds(out).some((x) => x.rule === 'CT4' && /zzz-dq/.test(x.subject)),
+    `同样必须进 scope 集合对账（CT4），实测 reds=${JSON.stringify(reds(out).map((x) => `${x.rule}:${x.subject}`))}`)
+})
+
+test('★双引号形态：CT7 的独立重扫与提取器同口径（双引号字面量必须有归宿）', async () => {
+  const { root, files } = fixture({ mutate: (r) => writeFileSync(join(r, 'server/alpha-routes.mjs'),
+    `${ALPHA}\nexport const dq = (p) => p === "/zzz-dq"\nexport const dqNs = (p) => p.startsWith("/zzz-ns/")\nexport const DQS = new Set(["/zzz-set"])`) })
+  const read = (f) => readTracked({ root, file: f })
+  const { extractRoutes } = await import('./contract-routes.mjs')
+  const { routeFormOrphans } = await import('./contract-rules.mjs')
+  const full = extractRoutes({ files, readTracked: read })
+  assert.deepEqual([...full.routes.keys()].filter((k) => k.includes('/zzz-')).sort(), ['ANY /zzz-dq', 'ANY /zzz-set'],
+    `三种双引号形态（=== / new Set / startsWith）都必须被提取：实测 ${[...full.routes.keys()].filter((k) => k.includes('/zzz-')).join('|') || '无'}`)
+  assert.deepEqual(full.prefixes.filter((p) => p.prefix === '/zzz-ns/').length, 1, '双引号 startsWith 进 prefixes')
+  assert.deepEqual(routeFormOrphans({ files, readTracked: read, routes: full }), [],
+    '独立重扫必须与提取器同口径（少认一种引号 ⇒ 同一处一边"有归宿"一边"无归宿"）')
+})
+
 // ── CT8：在途差异（工作树 ∖ HEAD）—— 黄、只报不拦 ────────────────────
 //
 // ★ 本批的核心：契约规则的**真值来源 = 提交态（HEAD）**，在途改动只由 CT8 报黄。
