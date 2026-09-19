@@ -1,208 +1,25 @@
 {
   "version": 1,
-  "_note": "契约范围登记（人工维护，**唯一写者是人**）。语义：`members` 必须与「代码真值 ∖ 文档已声明」**集合相等**（多一少一都红，CT4）。`npm run kit:sync` 禁止改写本文件（kit/cli.test.mjs 断言 sync 前后逐字节不变）；members 也不得由代码生成——自动生成等于让登记失去意义。禁 `*` 与正则字符：登记只认精确键（keyOf 精确 tuple）；缺 reason 的条目**失效**并报 CT4C。条数封顶见 versions.json#channels.scopeCount / scopeRedCount。补文档另开 P1.5：文档补齐后，对应成员应从这里**摘除**（登记集变小，封顶值随之人工下调）。",
+  "_note": "契约范围登记（人工维护，**唯一写者是人**）。语义：`members` 必须与「代码真值 ∖ 文档已声明」**集合相等**（多一少一都红，CT4）。`npm run kit:sync` 禁止改写本文件（kit/cli.test.mjs 断言 sync 前后逐字节不变）；members 也不得由代码生成——自动生成等于让登记失去意义。禁 `*` 与正则字符：登记只认精确键（keyOf 精确 tuple）；缺 reason 的条目**失效**并报 CT4C。条数封顶见 versions.json#channels.scopeCount / scopeRedCount。★ P1.5（2026-09-19）已把 routes/wsOut/wsIn/ipc/tools 五类补进 docs/bridge-contract.md（§5/§6/§7/§11/§12）+ 规则新增 truth.tools ⇒ 契约面回到「文档 ↔ 代码」直接双向对账（CT2/CT3），登记只剩**没法写进文档的空洞**：`children` 为空且无锚定正则的命名空间（静态不可枚举，没有具体端点可写）。判据方向：文档声明得越全，这里越小；这里出现新成员 = 代码新增了未文档化的契约面。",
   "entries": [
     {
       "kind": "routes",
-      "ns": "/agents",
-      "members": ["ANY /agents"],
-      "docSection": "§7",
-      "reason": "§7 未声明该端点。判定形态是 `pathname !== '/agents'` 早退守卫（server/agents-routes.mjs），此前正是被漏抓的三条之一；补文档后可从本文件摘除。",
-      "at": "2026-09-19"
-    },
-    {
-      "kind": "routes",
-      "ns": "/api",
-      "members": [
-        "ANY /api/audit",
-        "ANY /api/auth/status",
-        "ANY /api/usage",
-        "GET /api/profile",
-        "POST /api/auth/change-password",
-        "POST /api/auth/login",
-        "POST /api/auth/logout",
-        "POST /api/auth/setup",
-        "POST /api/profile"
-      ],
-      "docSection": "§7",
-      "reason": "§7 零覆盖整个 /api 面：认证（server/auth-routes.mjs）、用量与审计（server/readonly-routes.mjs）都不在文档里。注意 §7 只有 `/providers/*`/`/workflows/*` 两个通配，`*` 不给任何子路径覆盖信用（plan §7 反例⑧）。",
-      "at": "2026-09-19"
-    },
-    {
-      "kind": "routes",
-      "ns": "/boot-status",
-      "members": ["ANY /boot-status"],
-      "docSection": "§7",
-      "reason": "committed 代码里已有该端点（server/host-routes.mjs 的 host 面），而 **committed 的 bridge-contract.md §7 尚未声明它** —— 这是「代码有、文档未写」的真缺口，故按精确键登记。⚠️ 他人在途的 bridge-contract.md 编辑里已经补上了 `/boot-status`：那份改动落地后本条目应**从本文件摘除**（登记集变小 ⇒ 同时下调 channels.scopeCount/scopeRedCount）。",
-      "at": "2026-09-19"
-    },
-    {
-      "kind": "routes",
-      "ns": "/diag",
-      "members": ["POST /diag/render-frame"],
-      "docSection": "§7",
-      "reason": "§7 只声明了 `/diag/info`；同族的 `POST /diag/render-frame`（server/host-routes.mjs）漏写。",
-      "at": "2026-09-19"
-    },
-    {
-      "kind": "routes",
-      "ns": "/disabled",
-      "members": ["ANY /disabled"],
-      "docSection": "§7",
-      "reason": "§7 未声明。判定形态 `pathname !== '/disabled'` 早退守卫（server/disabled-routes.mjs）—— 与 /agents、/skill-detail 同族的漏抓点，故一并登记。",
-      "at": "2026-09-19"
-    },
-    {
-      "kind": "routes",
-      "ns": "/egress",
-      "members": ["GET /egress/policy"],
-      "docSection": "§7",
-      "reason": "§7 未声明出网策略端点（server/bridge.mjs）。它是「哪些外部域名被允许」的对外承诺面，登记在此以免被当成「不存在的端点」。",
-      "at": "2026-09-19"
-    },
-    {
-      "kind": "routes",
-      "ns": "/file-collab/",
-      "members": [
-        "GET /file-collab/claims",
-        "GET /file-collab/policies",
-        "GET /file-collab/status",
-        "GET /file-collab/versions",
-        "POST /file-collab/checkin",
-        "POST /file-collab/claim",
-        "POST /file-collab/conflict",
-        "POST /file-collab/heartbeat",
-        "POST /file-collab/ingest",
-        "POST /file-collab/policies",
-        "POST /file-collab/release",
-        "ns /file-collab/"
-      ],
-      "docSection": "§7",
-      "reason": "§7 零覆盖协作面（server/collab-routes.mjs，11 个端点）。extra 成员 `ns /file-collab/` 是**命名空间声明**：该前缀存在但静态子集可枚举，必须与「空命名空间」（如 /providers/）在快照里区分开。",
-      "at": "2026-09-19"
-    },
-    {
-      "kind": "routes",
-      "ns": "/knowledge",
-      "members": [
-        "DELETE /knowledge/delete",
-        "DELETE /knowledge/delete-space",
-        "DELETE /knowledge/purge",
-        "DELETE /knowledge/restore",
-        "GET /knowledge/broken-links",
-        "GET /knowledge/doc",
-        "GET /knowledge/entries",
-        "GET /knowledge/graph",
-        "GET /knowledge/import/jobs",
-        "GET /knowledge/index-tags",
-        "GET /knowledge/links",
-        "GET /knowledge/mentions",
-        "GET /knowledge/packs",
-        "GET /knowledge/packs/detail",
-        "GET /knowledge/related",
-        "GET /knowledge/search",
-        "GET /knowledge/spaces",
-        "GET /knowledge/stats",
-        "GET /knowledge/tags",
-        "GET /knowledge/trash",
-        "GET /knowledge/tree",
-        "POST /knowledge/append",
-        "POST /knowledge/doc",
-        "POST /knowledge/import",
-        "POST /knowledge/packs/export",
-        "POST /knowledge/packs/install",
-        "POST /knowledge/packs/uninstall",
-        "POST /knowledge/reindex",
-        "ns /knowledge"
-      ],
-      "docSection": "§7",
-      "reason": "§7 零覆盖知识库面（server/knowledge-routes.mjs，28 个端点 + 命名空间声明）—— 这是全仓最大的「文档缺口族」，正是范围登记要显式化而不是让它悄悄不检查的地方。",
-      "at": "2026-09-19"
-    },
-    {
-      "kind": "routes",
       "ns": "/knowledge/import/jobs/",
-      "members": ["ns /knowledge/import/jobs/"],
-      "docSection": null,
-      "reason": "前缀 `children` 为空**且**没有锚定正则（`dynamic:null`）⇒ 与「空命名空间」不可区分：路径段由运行时 job id 拼装，静态不可枚举。故只能登记命名空间本身（唯一成员就是它），「children 为空 = 不存在」在这里被显式否掉。",
-      "at": "2026-09-19"
-    },
-    {
-      "kind": "routes",
-      "ns": "/known-folders",
-      "members": ["ANY /known-folders"],
-      "docSection": "§7",
-      "reason": "§7 未声明（server/host-routes.mjs）。",
-      "at": "2026-09-19"
-    },
-    {
-      "kind": "routes",
-      "ns": "/mcp",
       "members": [
-        "GET /mcp",
-        "GET /mcp/prompts",
-        "GET /mcp/status",
-        "POST /mcp/prompts/get",
-        "POST /mcp/test",
-        "PUT /mcp"
+        "ns /knowledge/import/jobs/"
       ],
       "docSection": "§7",
-      "reason": "§7 零覆盖 MCP 面 6 键（server/bridge.mjs 与 server/mcp-routes.mjs 双判同一字面量 ⇒ 快照只记一个语义键）。",
-      "at": "2026-09-19"
-    },
-    {
-      "kind": "routes",
-      "ns": "/probe-provider",
-      "members": ["POST /probe-provider"],
-      "docSection": "§7",
-      "reason": "§7 声明了同族的 `/test-provider`、`/verify-provider`，但漏了 `/probe-provider`（server/bridge.mjs）。",
+      "reason": "唯一成员就是命名空间本身：该前缀 `children` 为空**且**没有锚定正则（`dynamic:null`）⇒ 与「空命名空间」不可区分，路径段由运行时 job id 拼装、静态不可枚举。**为什么补不了文档**：文档只能声明具体端点，而这里没有具体端点可写——带斜杠的 `/knowledge/import/jobs/` 在代码里不存在（代码只认 `/knowledge/import/jobs` 与 `/knowledge/import/jobs/<id>`），把它写进 §7 会让 CT3 立刻按「文档腐烂」报红。故命名空间本身留在登记里；同族的 `/knowledge/import/jobs`（无斜杠）已在 §7 声明，docSection 指回那一节。",
       "at": "2026-09-19"
     },
     {
       "kind": "routes",
       "ns": "/providers/",
-      "members": ["ns /providers/"],
-      "docSection": "§7",
-      "reason": "doc §7 里 `/providers` 与 `/providers/*` 两行都**不给子路径覆盖信用**：`*` 只声明命名空间（plan §7 反例⑧：把 `/providers/*` 当覆盖就是做假）。该前缀 `children` 为空且无锚定正则（provider id 运行时拼装）⇒ 只能显式登记命名空间本身。",
-      "at": "2026-09-19"
-    },
-    {
-      "kind": "routes",
-      "ns": "/skill-detail",
-      "members": ["ANY /skill-detail"],
-      "docSection": "§7",
-      "reason": "§7 未声明。判定形态 `pathname !== '/skill-detail'` 早退守卫（server/skill-detail-routes.mjs）—— 与 /agents、/disabled 同族。",
-      "at": "2026-09-19"
-    },
-    {
-      "kind": "routes",
-      "ns": "/tags",
-      "members": ["GET /tags", "POST /tags/merge", "POST /tags/undo"],
-      "docSection": "§7",
-      "reason": "§7 零覆盖标签面 3 键（server/collab-routes.mjs）。",
-      "at": "2026-09-19"
-    },
-    {
-      "kind": "routes",
-      "ns": "/team",
       "members": [
-        "GET /team/status",
-        "POST /team/create",
-        "POST /team/invite",
-        "POST /team/join",
-        "POST /team/revoke",
-        "POST /team/search-root"
+        "ns /providers/"
       ],
       "docSection": "§7",
-      "reason": "§7 零覆盖团队面 6 键（server/collab-routes.mjs）。",
-      "at": "2026-09-19"
-    },
-    {
-      "kind": "routes",
-      "ns": "/transcript/",
-      "members": ["POST /transcript/delete"],
-      "docSection": "§7",
-      "reason": "§7 声明了 `/transcript/list`、`/transcript/load`、`/transcript/search`，但漏了 `POST /transcript/delete`（server/host-routes.mjs）。命名空间本身已被文档的子路径声明覆盖，故不重复登记 `ns /transcript/`。",
+      "reason": "§7 里 `/providers` 与 `/providers/*` 两行都**不给子路径覆盖信用**：`*` 只声明命名空间（反例⑧：把 `/providers/*` 当覆盖就是做假），而 `/providers` 是另一条具体端点（列表）。该前缀 `children` 为空且无锚定正则——provider id 由运行时拼装、静态不可枚举。**为什么补不了文档**：没有具体子路径可写；只能显式登记命名空间本身，让「这个前缀存在」这件事可见。",
       "at": "2026-09-19"
     },
     {
@@ -223,7 +40,11 @@
     {
       "kind": "wsIn",
       "ns": "GUI→bridge",
-      "members": ["app:exec:response", "effort", "ping"],
+      "members": [
+        "app:exec:response",
+        "effort",
+        "ping"
+      ],
       "docSection": "§6",
       "reason": "§6（GUI → 桥）只列 13 个类型，这 3 个入站类型文档缺：`effort`（推理强度切换）、`ping`（保活）、`app:exec:response`（应用智控应答）。",
       "at": "2026-09-19"

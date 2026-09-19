@@ -265,6 +265,31 @@ prompt 交给模型 → loop 状态机永不启动；且 `10m` 经 `Number()` �
 | `/skills`、`/sample-skills`、`/install-skill`、`/uninstall-skill` | 技能管理（写入 `~/.yfworking/skills/`） |
 | `/worktrees`、`/branches` | git worktree/分支管理 |
 | `/workflows`、`/workflows/*` | 工作流模块（CRUD/运行/停止/确认/审计记录/导入导出/绑定，见 §7.1） |
+| `/agents` | Agent 全量目录（GET）：直接调内核 `resolveAgents({disabled:[]})`（不在 GUI 再抄一份名单），逐项附 `disabled` 标记供界面分组与"点回启用"。刻意**不过滤**停用项——过滤会让停用的内置 agent 再也回不到列表（开关成了单向操作） |
+| `/api/auth/status`、`/api/usage`、`/api/audit` | 身份状态（登录屏据此决定 setup 还是 login）与内核只读聚合（用量 / 审计）。后两者异步 spawn 内核子命令 + TTL 缓存（fresh / stale-while-revalidate / computing 三态）：冷启动未算好回 503、真失败回 502、成功**原样透传**内核 JSON 文本（不二次 stringify） |
+| `/api/auth/setup`、`/api/auth/login`、`/api/auth/logout`、`/api/auth/change-password`（POST） | 本地口令面（scrypt）：初始化 / 登录 / 登出 / 改密。登录失败按"锁定"与"口令错"分 423 与 401（前端据此决定倒计时还是提示重输）。这四个端点属登录前豁免面，故必须**在令牌闸门之后**处理——顺序即安全边界 |
+| `/api/profile` | 用户档案读（昵称 / 头像 / 简介）：**原样透传**文件文本（raw，不经 parse/stringify）——换成解析再序列化会改变响应字节（键序、空白、非标准 JSON 的行为差异）。文件缺失回空档而不是 404 |
+| `/api/profile`（POST） | 用户档案写：昵称 ≤64 字符、简介 ≤500、头像 dataURL ≤400KB（超限 400），落盘 `<YFW_HOME>/userData/profile.json` |
+| `/boot-status` | 启动预热状态：main 轮询它驱动 BootScreen，回包 = 桥的启动进度对象，各模块**真实完成后置位**（桥侧按引用读活对象，传副本会让进度永远停在初始态）。需持令牌（不在 /health 那类豁免面内） |
+| `/diag/render-frame`（POST） | 渲染帧指标上报（渲染进程每 5s 汇总：帧数 / 单帧处理 ms p50,p95 / 真实帧间隔 p50,max / 降频成因的入出次数与队列压力峰值）。**只存桥内存、不落盘**，供 diag-monitor 的 render-health 读；老 GUI 不上报 ⇒ 字段缺失，读取方按"无数据"降级 |
+| `/disabled` | Agent / Skill 全局停用注册表（GET 读 / PUT 写），落点 `<configDir>/disabled.json`——与内核读的是**同一个文件**（不靠 spawn 参数透传，少一条会静默失效的链路）。写语义是"只改传入的键"：整体替换会让两个面板互相覆盖（跨面板丢配置） |
+| `/egress/policy` | 数据出网闸的**只读**策略面（唯一判定面在桥请求入口、闸门之后 ⇒ 自动受令牌保护，不动豁免清单）。返回各数据实体当前的 syncPolicy 与"能否过团队源"的结论；单机版恒为 local-only 档、allowedEntities 必为空。它的存在就是为了让"无出网路径"这句话**可观测、可验收** |
+| `/file-collab/claims`、`/file-collab/versions`、`/file-collab/status`、`/file-collab/policies` | 文件协同只读面（GET）：占用记录、版本链与当前路径、团队源概况（含可写性判定 modal/readonly/reason 与剩余租期）、目录策略与指定路径的**有效策略** |
+| `/file-collab/ingest`、`/file-collab/claim`、`/file-collab/heartbeat`、`/file-collab/release`、`/file-collab/checkin`、`/file-collab/conflict`、`/file-collab/policies`（POST） | 文件协同写入面：纳管（首次分配 fileId 并入 CAS）、检出、续租、释放、检入（生成新版本）、冲突处置（四选一，save-copy 降级为草稿、edit-merge 真执行三路合并）、写目录策略。**拒绝要彻底**：失败一律不落盘（不做部分写入） |
+| `/knowledge/spaces`、`/knowledge/tree`、`/knowledge/doc`、`/knowledge/entries`、`/knowledge/links`、`/knowledge/related`、`/knowledge/graph`、`/knowledge/stats`、`/knowledge/tags`、`/knowledge/index-tags`、`/knowledge/mentions`、`/knowledge/broken-links`、`/knowledge/search`、`/knowledge/trash`、`/knowledge/packs`、`/knowledge/packs/detail`、`/knowledge/import/jobs` | 知识库只读面（GET，薄转发内核 `--knowledge`）：空间与目录树、文档与条目、链接与关联锚点、图谱（可选局部图 / 条目级）、统计、两套标签枚举（经验条目 / 全库文档）、未链接提及、断链清单、块级检索、回收站列表、知识包市场与详情、异步导入任务进度。**参数形状错就 400**（如 related 的 blockId 缺 #、mentions 少 id）——静默空集会被读成"没有提及" |
+| `/knowledge/append`、`/knowledge/doc`、`/knowledge/import`、`/knowledge/reindex`、`/knowledge/packs/install`、`/knowledge/packs/uninstall`、`/knowledge/packs/export`（POST） | 知识库写入面：追加一条经验（append-only，结构上没有覆盖/删除路径）、整体覆盖写文档（GUI 编辑器语义，带四道路径防护）、文件与目录导入（支持 async 转后台任务）、强制重建索引、知识包安装 / 卸载 / 导出。闸门拒绝（内容不合规）映射 **400** 而不是 500——调用方必须能区分"我的内容被拒"与"内核崩了" |
+| `/knowledge/delete`、`/knowledge/delete-space`、`/knowledge/restore`、`/knowledge/purge` | 知识库回收站四件套（用 DELETE 动词承载"对垃圾桶的操作"）：删条目、删整个知识库（需 confirm）、还原、彻底删除（单条或 all:true）。权限判定 / 路径穿越防护 / confirm 校验**全在内核一份**，本层只做薄转发——两套口径必然漂移，而这里漂移意味着"绕过权限删库" |
+| `/known-folders` | 主目录下**存在**的常用文件夹（主目录 / 桌面 / 文档 / 下载 / 图片 / 音乐 / 视频），供目录选择器左栏；逐项探测，单项失败不影响其余 |
+| `/mcp`、`/mcp/status`、`/mcp/prompts` | MCP 配置与状态面（GET）：读 `<configDir>/mcp.json`、最近一次内核上报的接入状态快照、以及各**启用中**服务器的 prompt 模板与参数声明。三条纪律：enabled:false 的绝不连接、逐台隔离失败、无论成败都回收连接（stdio 半启动会留子进程） |
+| `/mcp/test`、`/mcp/prompts/get`（POST） | 逐台探测 MCP 连接（耗时夹在 15s 上限内：请求挂死会把 GUI 转成假死），以及把一个 prompt 模板渲染为文本。"测试连接失败"是**正常业务结果**（200 + ok:false）；只有数据不合规才 400、磁盘 IO 失败才 500 |
+| `/mcp`（PUT） | 写 MCP 服务器配置（落 `<configDir>/mcp.json`，与内核读的是同一个文件）。写前校验：非法配置 400 且磁盘不动 |
+| `/probe-provider`（POST） | provider 能力探测 + 自动回填（GUI 在保存/激活后异步触发）：探 /v1/models 元数据 + 1-token TTFT + 约 8k tokens 预填充基准，**只填空位**（用户手配值优先），24h 缓存；探测本身不进模型上下文 |
+| `/skill-detail` | 技能详情（GET ?id=技能名）：触发规则 / 关联脚本清单 / 来源目录与文件路径。决策是**只读展示 + 系统打开文件**（应用不写用户的 SKILL.md，避免参与用户技能文件的格式演进）；按需单独取而不并进技能列表——列表要列几十个技能，逐个 readdir + stat 会明显拖慢打开 |
+| `/tags` | 标签注册表快照（GET ?scope=）：标签面"可观测 + 自动合并 + 可撤销"的读取侧 |
+| `/tags/merge`、`/tags/undo`（POST） | 标签合并与撤销合并。写侧是**严格**模式：注册表损坏时拒绝写（不把损坏内容覆盖成空表），失败如实回报 reason |
+| `/team/status` | 团队源概况（GET ?teamId=）：供界面判断"能否协同" |
+| `/team/create`、`/team/invite`、`/team/join`、`/team/revoke`、`/team/search-root`（POST） | 团队源管理：创建 / 导出邀请（含 TTL）/ 加入 / 撤销成员 / 设搜索根。每个 handler 都**不允许异常逃逸**（团队是可选能力，不该让桥 500），统一捕获并如实回报 reason |
+| `/transcript/delete`（POST） | 删除单个会话的磁盘转录（GUI 删会话时调用）：body 里的 sessionId 必须是**内核 sessionId**（GUI 的 conversation.id 是另一套 id，传错只会 not-found）；会话仍在运行时 409（内核还在 append 写同一文件，删了会被立刻重建且丢当前上下文）；非法 id / 路径越界 400；not-found 视为成功（幂等） |
 
 ### 7.1 工作流模块（`/workflows`）（2026-09-11，UI Task 12）
 
