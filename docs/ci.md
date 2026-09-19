@@ -13,11 +13,11 @@ npm run test:ci  # = 预检 → 文档口径 → DevKit 台账 → 单测层 →
 |---|---|---|
 | `npm run test:preflight` | 预检：Node 版本、测试 glob 必须匹配到文件、端口占用风险 | <1s |
 | `node scripts/check-doc-anchors.mjs` | 文档口径（路径存在性 + 各层测试文件数） | <1s |
-| `npm run kit:check` | DevKit 台账门禁（版本/依赖台账 ↔ 宿主文件；只读） | 3 次实测 753/792/808 ms |
+| `npm run kit:check` | DevKit 台账门禁（版本/依赖台账 ↔ 宿主文件；只读） | 3 次实测 853/863/815 ms（主仓）；干净克隆 3 次 8xx ms |
 | `npm run test:unit` | `shared` + `electron` + `src` + `kit` 四层 | 1041 项 / 23s（kit 层接入前实测；kit 层另加 6 项断言） |
 | `npm run test:server` | `server` 层（含起桥的端到端测试） | 694 项 / 91s |
 | `npm run test:kernel` | `kernel-tests` 层 | 1943 项 / 48s |
-| `npm run verify:ci` | 实测为绿的 `verify-*.mjs` 门禁（见「门禁挂载」两节） | 4 个脚本 / 实测 3.1s |
+| `npm run verify:ci` | 实测为绿的 `verify-*.mjs` 门禁（见「门禁挂载」两节） | 5 个脚本 / 实测 ≈4.0s（含 npm 启动开销） |
 | `npm run typecheck` | `tsc --noEmit` | 16s |
 
 合计 **3678 项断言 / 约 3 分钟**（kit 层接入前实测，本机 8 核）。CI 为 2 核 Windows 运行器，实耗会更长，作业超时设 30 分钟。
@@ -128,6 +128,43 @@ node scripts/ci-preflight.mjs --allow-running-app
 
 ---
 
+## DevKit 台账门禁
+
+`npm run kit:check` —— 校验 `kit/manifest/versions.json` 与 `kit/manifest/deps.json` 是否与宿主文件一致。
+
+- **在 CI 里的位置**：`.github/workflows/ci.yml` 的 `test` 作业里**单独一步**（`typecheck` 之后、`test:ci` 之前），
+  命令 `npm run kit:check`。单独一步是**归因**需要（"台账漂移"与"测试挂了"是两类问题，一眼可辨）；
+  `test:ci` 链路里也含它，本地一条命令即可跑全。**这条门禁必须进 CI 的理由**见本节末。
+- **耗时**：实测 **中位数 853 ms**（主仓 3 次 853/863/815；干净克隆同量级）—— 纯文件解析 + `git ls-files`，零网络，远低于 spec §7.2 的 < 5s 硬约束。
+- **退出码**：0 = 无红灯；1 = 有红灯（CI 失败）。黄灯（如 P5 的 Python 清单差集）不影响退出码。
+- **红灯怎么办**：按 `finding.hint` 操作。**默认动作是修宿主文件或跑 `npm run kit:sync`**，
+  **不是**往 `kit/manifest/drift-baseline.json` 里加条目 —— 基线是"已知欠账"，
+  条目数受 `versions.json` 的 `history.baselineCount` 护栏限制（超了直接红 `BASE`）；
+  豁免**红灯**还必须在该条目里显式写 `"severity": "red"`（缺 `reason` 也红：`BASELINE_NO_REASON`）。
+  规则号逐条释义（19 个规则号 + `BASE`/`BASELINE_NO_REASON`）见 `kit/README.md`。
+- **相关命令**：
+  | 命令 | 作用 | 是否写文件 |
+  |---|---|---|
+  | `npm run kit:check` | 门禁（只读） | 否 |
+  | `npm run kit:sync` | 重建台账（保留人工字段） | 是 |
+  | `npm run kit:view` | 输出台账摘要 JSON（AI 用） | 否 |
+  | `npm run kit:stamp` | 给 dev 渠道盖章到 `release/YFWorking/` | 是（local-only） |
+
+- **扫描域**：全部判定基于 `git ls-files`（**已入库**文件），不是磁盘遍历 ——
+  `scratch/`、`release/`、`dist/`、`kernel-dist/`、`runtime/` 一律不参与（见 spec 不变量 I2）。
+
+### ★ 为什么这条门禁必须进 CI（Task 10 审查指出的唯一关卡）
+
+`kit:check` 的 **P2 规则（反向幽灵依赖：源码 `import` 了却没在 `package.json` 声明）**是仓库里
+**唯一**能抓"这个依赖被删了、但其实还有人在用"的判据。而它在本机**恰好不成立**：
+
+Node 解析 `import`/`require` 会沿父目录链向上找 `node_modules`，本仓（`…\yfworking`）的父链上有
+`C:\Users\T203-15\node_modules`（家目录里另一个小工程留下的安装树，约 46 个条目）。实测：
+`cd <仓库根> && node -e "import('nanoid')"` → **IMPORT OK**（`nanoid` 已随 B1 从本仓删除，是从家目录那棵树解析到的）；
+把同样的夹具放到**盘根目录** → `ERR_MODULE_NOT_FOUND`。⇒ **"删包之后本机测试全绿"不构成任何证据。**
+CI 是干净检出、没有那棵树，所以只有 CI（与盘根克隆）上的 P2 判定才是真实的。
+完整实测记录与本机隔离方法见 `docs/待处理清单.md` 的「杂散 `node_modules` 会掩盖缺依赖」条。
+
 ## 两个会让人白折腾半天的坑
 
 ### 1. 块注释里的 `**/` 会提前结束注释
@@ -162,14 +199,14 @@ C2 的原状态是**零挂载**：`scripts/verify-*.mjs` 共 11 个，`package.j
 | `verify-skill-listing` | ci | 0 | 只读技能库 + `kernel/prompt.mjs`（`:13-16`）；库不存在时降级为空库断言（`:61-63`，故 CI 上不假失败） |
 | `verify-experience-inject` | ci | 0 | 用**随机端口**（`:12` `39000+random`）+ 临时 home（`:8`）加载 `server/bridge.mjs`，与图形会话无关 |
 | `verify-highrisk` | pendingFix | **1** | 5 项失败（`rm` 后跟路径 / `erase` / `move` / `mv` / `Stop-Process`）—— 脚本判据与 `server/highrisk.mjs` 漂移 |
-| `verify-knowledge-gui` | pendingFix | **1** | 3 项失败（`KnowledgeSidebar.tsx`/`KnowledgeToolbar.tsx` 的 `⚠` emoji；五视图白名单）—— 组件演进后脚本未同步 |
+| `verify-knowledge-gui` | ci | 0 | 静态读 `src/components/knowledge/**` + `knowledgeStore.ts`，无外部进程；**2026-09-19 Task 14 修好 3 项失败后从 `pendingFix` 移入本桶**（原 3 项：2 项真违规 + 1 项脚本字面量腐烂，见下节） |
 | `verify-knowledge-import-gui` | pendingFix | **1** | 7 项失败（i18n key 数、`useKnowledge.importDocuments` 写路径、dryRun 缓存失效、结果三档明细） |
 | `verify-gui-fidelity` | manual | **1** | `:19` 定位 `electron/dist/electron.exe`、`:359` 用 `BrowserWindow` 加载真组件并截图比对 —— 干净克隆实测 `ENOENT ... dist/assets`（未构建） |
 | `verify-permission-flow` | manual | **1** | `:26` 用 `kernel-dist/cli.mjs` 拉起真内核、`:87` 打印 spawn args、按 stream-json 注入 `control_response` —— 干净克隆实测 `Cannot find module ... kernel-dist/cli.mjs` |
 | `verify-portable-layout` | manual | **1** | `:6-18` 断言 `release/YFWorking/` 打包产物（`:14` `electron/electron.exe`、`:15` `runtime/python/python.exe`）—— 干净克隆实测 `MISSING DIR: dist / electron / server / public` |
 | `verify-package-assets` | manual | **1** | `:28` 要求 `kernel-dist/cli.mjs` 存在（先跑 `build-kernel`）—— 干净克隆实测 `[FAIL] kernel-dist/cli.mjs 缺失`；它本就是出包前预检（`:2`） |
 
-> `manual` 那 4 条的 `EXIT=1` 是**构建产物不存在**造成的（不是脚本腐烂），与 `pendingFix` 那 3 条性质不同：
+> `manual` 那 4 条的 `EXIT=1` 是**构建产物不存在**造成的（不是脚本腐烂），与 `pendingFix` 桶那几条性质不同：
 > 前者"先构建/先出包就能跑"，后者"跑起来也断言失败"。上表把两类失败的具体原因都写出来，免得被混为一谈。
 
 > 上表由 `kit/cli.test.mjs` 的 3 条测试守：① 每个脚本都有 npm 入口且**恰好**归一个桶；
@@ -190,7 +227,7 @@ C2 的原状态是**零挂载**：`scripts/verify-*.mjs` 共 11 个，`package.j
 
 ### 未过 CI 的门禁（`pendingFix` 桶）：实测为红，修到绿再移入 `ci`
 
-这三个脚本是**脚本自身腐烂**，与"环境不够"是两回事，所以**不能**丢进 `manual` 桶当解释；
+这两条（脚本自身已腐烂，与"环境不够"是两回事，所以**不能**丢进 `manual` 桶当解释）；
 也不串进 `test:ci`（串进去 = CI 永久红，红灯就被当成噪声，门禁随即失去意义）。
 它们现在的处置是：挂上 `npm run` 入口 + 在 `gates.pendingFix` 里写明失败断言 + 本表留证，
 **修脚本或修判据（二选一，要判清哪边才是对的口径）后从 `pendingFix` 移入 `ci`**。
@@ -198,8 +235,28 @@ C2 的原状态是**零挂载**：`scripts/verify-*.mjs` 共 11 个，`package.j
 | 命令 | 失败断言（干净克隆实测） |
 |---|---|
 | `npm run verify:highrisk` | `rm 后跟路径命中` / `erase 命中` / `move 命中` / `mv 命中` / `Stop-Process 命中`（5 项） |
-| `npm run verify:knowledge-gui` | `无 emoji：KnowledgeSidebar.tsx → ⚠`、`无 emoji：KnowledgeToolbar.tsx → ⚠`、`五视图白名单 read/edit/graph/search/market`（3 项） |
 | `npm run verify:knowledge-import-gui` | i18n key 数、`useKnowledge.importDocuments` 写路径唯一入口、dryRun 缓存失效、结果三档明细等（7 项） |
+
+> 逐项原因、修到绿后移入 `ci` 的判据，以及"为什么这两条之前没人发现"，已登记进 **`docs/待处理清单.md`**
+> 的 `P1`【DevKit 记入·2026-09-19】条（Task 14 / Rider 1）—— 门禁配置里的失败必须同时进"欠账台账"，
+> 否则翻页就丢。
+
+#### `verify-knowledge-gui` 已移出本桶（2026-09-19 Task 14 · Rider 2）——归因被更正
+
+它原在本桶，理由写的是"组件演进后脚本未同步"。**这个归因是错的**（Task 12 实现者的判断，Task 14 复核推翻）：
+
+- **2 项是真违规**（改的是**组件**，不是脚本）：`docs/superpowers/specs/2026-09-13-knowledge-gui-design.md:92` 明文
+  「图标 lucide only，**禁 emoji**」，且该 spec 的 `:208-209` 记着先例 —— 上一轮 emoji 命中（`KnowledgeDocView.tsx`
+  与 `src/components/knowledge/graph/KnowledgeEdge.tsx` 的注释）当时的修法就是**改代码**。故：
+  `KnowledgeToolbar.tsx` 的 UI 警示符号（commit `8664f1e`）改为 lucide `AlertTriangle` 图标；
+  `KnowledgeSidebar.tsx` 注释里的符号改为文字。
+- **1 项是脚本字面量腐烂**（改的是**脚本**）：视图白名单，真源 `src/stores/knowledgeStore.ts:27` 已是
+  6 值（2026-09-14 批次 1 新增 `tags`，`knowledgeStore.test.ts` 有「六视图集合」断言），脚本仍逐字比 5 值。
+
+修后干净环境实测 `EXIT=0`，故移入 `ci` 桶并串进 `verify:ci`（`package.json`）——
+`pendingFix` 从 **3 脚本 / 15 项失败** 降为 **2 脚本 / 12 项失败**。
+教训写在这里：**"组件演进、脚本未同步"这种含糊归因会让真违规被当成脚本问题放行**；
+每条失败都要按"哪边才是对的口径"逐项判（本节与 `docs/待处理清单.md` 均按此写）。
 
 ## 更新文档锚点
 
@@ -213,7 +270,7 @@ npm run anchors:write   # 重新生成 docs/_anchors.json（只在计数确实�
 
 | 作业 | 内容 | 为什么单列 |
 |---|---|---|
-| `test` | typecheck + `test:ci` | 主要门禁 |
+| `test` | typecheck + `npm run kit:check`（单独一步，见「DevKit 台账门禁」）+ `test:ci` | 主要门禁 |
 | `build` | `npm run build` + `node scripts/build-kernel.mjs` | **产物可产出本身就是断言**：类型、导入、打包配置坏了时，测试可能全绿，而用户拿到的是坏包 |
 
 `concurrency` 设了按分支取消旧跑批：既省额度，也避免"旧提交的绿灯"被误当成当前状态。

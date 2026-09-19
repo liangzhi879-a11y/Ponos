@@ -84,9 +84,12 @@ const readRel = (...p) => readFileSync(join(ROOT, ...p), 'utf-8')
 check(/w-\[236px\] shrink-0/.test(readRel('src/components/knowledge/KnowledgeSidebar.tsx')), '左栏 236px + shrink-0（KnowledgeSidebar）')
 check(/w-\[212px\] shrink-0/.test(readRel('src/components/knowledge/KnowledgeInspector.tsx')), '右栏 212px + shrink-0（KnowledgeInspector）')
 check(/flex-1 min-w-0/.test(readRel('src/components/knowledge/KnowledgePanel.tsx')), '中栏 flex-1 min-w-0（KnowledgePanel）')
-// S4 Task 6：视图白名单由 4 → 5（新增 'market'）。这是**有意的功能扩展**（知识包市场视图），
-// 不是放宽阈值——白名单仍是逐字比对，只是把新的合法值加进去（与 knowledgeStore.test.ts 同步改）。
-check(/KNOWLEDGE_VIEWS[^\n]*\['read', 'edit', 'graph', 'search', 'market'\]/.test(readRel('src/stores/knowledgeStore.ts')), '五视图白名单 read/edit/graph/search/market')
+// S4 Task 6：视图白名单由 4 → 5（新增 'market'）；2026-09-14 批次 1 再 5 → 6（新增 'tags'）。
+// 两次都是**有意的功能扩展**（知识包市场视图 / 标签视图），不是放宽阈值——白名单仍是逐字比对，
+// 只是把新的合法值加进去（真源 `src/stores/knowledgeStore.ts` 的 `KNOWLEDGE_VIEWS`，
+// 与 `knowledgeStore.test.ts` 的「六视图集合」断言同步）。这类字面量随功能扩展而陈旧，属**脚本腐烂**：
+// 与下一条 emoji 命中性质不同（那两处是 spec §5 明文的真违规，改的是组件）。
+check(/KNOWLEDGE_VIEWS[^\n]*\['read', 'edit', 'graph', 'search', 'tags', 'market'\]/.test(readRel('src/stores/knowledgeStore.ts')), '六视图白名单 read/edit/graph/search/tags/market')
 // 市场视图不依赖当前空间，必须排在 `!space` 空态之前——顺序写反 = 没有空间的用户永远进不去市场
 const panelSrc = readRel('src/components/knowledge/KnowledgePanel.tsx')
 check(panelSrc.includes("view === 'market'") , 'KnowledgePanel 含 market 分支')

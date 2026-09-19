@@ -6,7 +6,7 @@
 //   2) 主操作钮需要 disabled（只读空间无新建）与 loading 态（转圈），PanelToolbar 的接口没有；
 //   3) 它的标题槽是单个字符串，塞不下"空间名 + 只读徽标"。
 // 强行扩 PanelToolbar 的接口会牵动 chat/task 两个既有面板——所以只沿用其**结构与类名规格**。
-import { Library, RefreshCw } from 'lucide-react'
+import { AlertTriangle, Library, RefreshCw } from 'lucide-react'
 import { Button, Tooltip } from '@/components/ui'
 import { useTranslation } from '@/i18n/useTranslation'
 import { cn } from '@/lib/utils'
@@ -44,8 +44,12 @@ export function KnowledgeToolbar({ spaceName, readonly = false, stats, filesTrun
           需要用户采取行动的状态（拆分空间 / 调高上限），不是无害的元信息。 */}
       {filesTruncatedHint && (
         <Tooltip content={filesTruncatedHint} side="bottom">
-          <span className="text-[10px] text-error shrink-0 cursor-default max-w-[260px] truncate">
-            ⚠ {filesTruncatedHint}
+          <span className="inline-flex items-center gap-1 text-[10px] text-error shrink-0 cursor-default max-w-[260px] truncate">
+            {/* 图标走 lucide（spec 2026-09-13-knowledge-gui-design.md §5「lucide only，禁 emoji」）：
+                原先是字面警示符号（U+26A0），`scripts/verify-knowledge-gui.mjs` 按 spec 的
+                Unicode 范围全文件扫描（注释同样命中）—— 与该项「注释命中 emoji 时改的是代码」先例一致。 */}
+            <AlertTriangle className="w-[11px] h-[11px] shrink-0" />
+            {filesTruncatedHint}
           </span>
         </Tooltip>
       )}

@@ -225,6 +225,8 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 ```
 
 **性能约束**：`kit:check` 必须 **< 5s、零网络**（纯文件解析 + `git ls-files`），否则会拖慢 30 分钟上限的 CI 作业。
+实测（Task 14 Step 1，主仓 3 次 853/863/815 ms）满足；落地位置见 `.github/workflows/ci.yml` 的「DevKit 台账门禁」步骤（**单独一步**，`typecheck` 之后、`test:ci` 之前；`test:ci` 内也含它）。
+★ 该步骤的**存在理由**不只是"接进门禁"：本仓唯一能抓"依赖删了但其实还在用"的是 `kit:check` 的 P2，而本机因家目录杂散 `node_modules` 会给出假绿 ⇒ 只有 CI（干净检出）上的判定才是真实的（详见 `docs/ci.md`「为什么这条门禁必须进 CI」与 `docs/待处理清单.md` 的同名条目）。
 
 ### 7.3 漂移基线（`manifest/drift-baseline.json`）
 
@@ -290,7 +292,30 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 
 回答的问题：**"用户正在测的这版，对应哪个 commit、含哪些产物、是否 dirty、差多少个提交"**——现在这个问题无法回答。
 
-**Task 13 交付时定下的几处判据**（都以 `kit/lib/stamp.test.mjs` 的断言为准；上面那段是形状示意，不是契约）：
+**字段集（明确列表 —— 上段 JSON 只是形状示意，本列表才是契约；Task 14 / Rider 4-2 补）**：
+
+`kit-stamp.json` 的字段**恰好**为以下 13 个（顺序即原子写落盘顺序）：
+
+| 字段 | 类型 | 语义 |
+|---|---|---|
+| `channel` | `"dev"` | 渠道身份（本节第一性字段；release 渠道另有其身份，本任务不做） |
+| `appVersion` | string \| null | 读 `kit/manifest/versions.json` 的 `APP_VERSION` |
+| `kernelVersion` | string \| null | 同上，`KERNEL_VERSION` |
+| `guiVersion` | string \| null | 同上，`GUI_VERSION` |
+| `commit` | string \| null | `git rev-parse --short HEAD` |
+| `commitSubject` | string \| null | `git log -1 --pretty=%s` |
+| `dirty` | `{ tracked, untracked }` | `git status --porcelain` 的**分类**计数（已跟踪改动 / 未跟踪文件） |
+| `tag` | string \| null | 可达的**最近** tag（`git describe --tags --abbrev=0`）；无 tag ⇒ `null` |
+| `ahead` | number \| null | 最近 tag 到 HEAD 的提交数；无 tag ⇒ `null`（不拿"全部提交数"冒充） |
+| `builtAt` | string | ISO 时间（可注入，便于复现） |
+| `artifacts` | `[{ path, sha256, bytes }]` | 产物清单；`path` = 仓库相对 + 正斜杠，按码元序稳定排序 |
+| `missing` | string[] | 未构建的产物根（如 `["dist","kernel-dist"]`）—— 未构建**不是错误** |
+| `stampFile` | string | 落盘绝对路径（`<root>/release/YFWorking/kit-stamp.json`） |
+
+**不含 `debug`**：早期计划草图里写过"未构建时 `debug: null`"，但本节从未定义该字段（Task 13 审查裁定：仓内不存在可记的调试状态，一个恒 `null` 的字段只会让人误以为"调试态可查"）⇒ **不要加回**。
+字段集的执行判据是 `kit/lib/stamp.test.mjs` 的断言（含"可 JSON 无损序列化"、`null` 而非 `undefined`），本文档与它必须同时改。
+
+**Task 13 交付时定下的几处判据**（都以 `kit/lib/stamp.test.mjs` 的断言为准）：
 - `artifacts` 的 `path` 一律**仓库相对 + 正斜杠**；未构建的产物根进 `missing`（`["dist","kernel-dist"]`），**不是**报错 —— 未构建也要能盖章。
 - `tag` / `ahead`：无 tag ⇒ 两者都是 `null`（"没有锚点"是**未知**，不冒充成"等于全部提交数"）；有 tag ⇒ `ahead` = 最近 tag 到 HEAD 的提交数。
 - 版本三字段只**读** `kit/manifest/versions.json`（单一真源，不重复采集）；读不到 ⇒ `null` 而不是 `undefined`（`undefined` 落盘会被 JSON 丢掉，字段看着"在"实际"没了"）。
@@ -320,22 +345,27 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 
 ## 10. P0 历史欠账清单与修复方式（D6：顺带修完）
 
+> **逐条状态（2026-09-19 Task 14 收尾时按实测回填，本条规则：只允许"✅ 已修 + 实测证据"或"⏸ 未执行 + 用户决定 + 原因"，不允许"已尝试"）**。
+> 表中每一行都带状态标记；`⏸` 项 0 条 —— A1–A7、B1–B3、C1–C4 **全部已修**。
+> ★ 行数口径更正：§12 曾写"共 17 条"，但本表实际只有 **14 行**（A1–A7 七行 + B1–B3 三行 + C1–C4 四行）；
+> 此处按**实际行数**逐条标注，并把 §12 的数字一并改正。
+
 | # | 欠账（实测） | 修复方式 | 验证 |
 |---|---|---|---|
-| A1 | ✅ 已修（Task 13）：`git tag` = 0 个 | 首个版本锚点 `v3.0.0-dev.0`（annotated）打在本轮**红灯归零后**的 HEAD 上（属写仓库操作，**用户单独批准**；只打本地 tag、**不 push**）；`kit/lib/stamp.mjs` 让"距锚点差多少提交"可算 —— `ahead` = `git describe --tags --abbrev=0`（可达的**最近** tag）到 HEAD 的提交数，**无 tag 时 `ahead: null` + `tag: null`**（不拿 `rev-list --count HEAD` 这个"全部提交数"冒充锚点：真仓会报出 4 位数，看的人会误以为"落后很多"） | `git tag -l` → `v3.0.0-dev.0`（0 → 1）；`git show v3.0.0-dev.0 --stat` 指向 P0 落地提交；`stamp` 实测 `tag: "v3.0.0-dev.0"` / `ahead: 0`（夹具：tag 后再提交 → 1；多 tag 仓取最近 tag ⇒ 1 而非 2）。两处变异（ahead 回退成全部提交数 / 改取最老 tag）均被抓红后还原 |
+| A1 | ✅ 已修（Task 13）：`git tag` = 0 个 | 首个版本锚点 `v3.0.0-dev.0`（annotated）打在本轮**红灯归零后**的 HEAD 上（属写仓库操作，**用户单独批准**；只打本地 tag、**不 push**）；`kit/lib/stamp.mjs` 让"距锚点差多少提交"可算 —— `ahead` = `git describe --tags --abbrev=0`（可达的**最近** tag）到 HEAD 的提交数，**无 tag 时 `ahead: null` + `tag: null`**（不拿 `rev-list --count HEAD` 这个"全部提交数"冒充锚点：真仓会报出 4 位数，看的人会误以为"落后很多"）。★ **tag 落在 `5684580`（`anchors` 归零提交，即 P0 HEAD）** —— 不是丢在功能提交上：`git show v3.0.0-dev.0 --stat` 只见 `docs/_anchors.json`，因为 P0 的功能提交（`816f7f0` 等）都在它之前，而 tag 刻意打在"红灯 0 + 锚点复核完"的那一刻（语出 Task 14 / Rider 4-4，`kit/README.md` 同步写明） | `git tag -l` → `v3.0.0-dev.0`（0 → 1）；`git show v3.0.0-dev.0 --stat` 指向 P0 归零提交 `5684580`；`stamp` 实测 `tag: "v3.0.0-dev.0"` / `ahead: 0`（夹具：tag 后再提交 → 1；多 tag 仓取最近 tag ⇒ 1 而非 2）。两处变异（ahead 回退成全部提交数 / 改取最老 tag）均被抓红后还原 |
 | A2 | GUI 版本线（`package.json` 2.8.0）无 bump 入口 | ✅ 已修（Task 8）：`bump-version.mjs` 增加 `pkg` 目标。★ **`pkg` 目标不带 `dev ` 前缀**（Task 9 rider 4 明写进本行）：宿主是 npm 的 `package.json`，值必须保持合法 semver —— `app-builder-lib` 对非 semver 抛 `Invalid major number`，`semver.major('dev 2.9.0')` 实测抛错。照"版本格式一律 `dev <major>.<minor>`"改回去会**打断 GUI 发布线** | `--dry-run` 三线各自演练正确；`pkg` 写出纯 semver |
-| A3 | `version.mjs:7` 注释称"三条独立版本线"，`bump-version.mjs` 只支持 `app\|kernel`（其他直接 fail）→ 注释↔代码不符 | 脚本补 `pkg`，注释同步为"四条" | 注释与代码一致；非法目标仍非 0 退出 |
-| A4 | 14 处版本常量无台账 | 纳入 `contracts` 分区（V1 可解析-回读） | `kit:check` V1 全绿 |
-| A5 | `server/version.test.mjs` 不存在 → `bump-version.mjs` 的"同步测试期望值"分支**永走跳过**（死路径） | 二选一：补该测试文件，或删除该死分支改为显式说明（**取"补测试文件"**，让版本断言真正存在） | 该测试能红（改错值即失败） |
+| A3 | ✅ 已修（Task 8）：`version.mjs:7` 注释称"三条独立版本线"，`bump-version.mjs` 只支持 `app\|kernel`（其他直接 fail）→ 注释↔代码不符 | 脚本补 `pkg`，注释同步为"四条" | 实测 `version.mjs:3` 现写"四条版本线"并逐条列出；`bump-version.mjs` 的 `TARGETS` = `app`/`kernel`/`pkg`（`:33-35`），非法目标仍非 0 退出（用法行 `:43`） |
+| A4 | ✅ 已修（Task 3 落地 · Task 14 复核）：14 处版本常量无台账 | 纳入 `contracts` 分区（V1 可解析-回读） | `kit:check --verbose` 实测 `[V1] evaluated=18`（14 条 `contracts` + 4 条 `lines`）全绿；`[V1b] evaluated=18`（台账键唯一）全绿 |
+| A5 | ✅ 已修（Task 8）：`server/version.test.mjs` 不存在 → `bump-version.mjs` 的"同步测试期望值"分支**永走跳过**（死路径） | 二选一：补该测试文件，或删除该死分支改为显式说明（**取"补测试文件"**，让版本断言真正存在） | `server/version.test.mjs` 已入库（15,338 字节，Task 8 交付）；"该测试能红"的实测：改错版本值即失败（Task 8 变异验证）；`bump-version.mjs` 的同步分支现在真的命中它 |
 | A6 | `_common_manifest.json` 仅 9/98；98 个 `.py` 零个声明 `__version__` | ✅ 已修（Task 9）：台账全量登记 **98/98**（未标注者 `null` + `unmarked`，**不回填版本值**）；`_common_manifest.json` 补顶层 `_note` 说明 `current_version` 不可从脚本内容校验；V8′ 只对**新增**文件强制 | 漏登记计数 0（实测 `实有 98 已登记 98 漏登记 0`；9 条来自 manifest / 89 条 `null`）；V8、V8b、V8′ 全绿 |
 | A7 | `skills-lock.json` 20/20 哈希不符 | ✅ 已修（Task 9）：按 D5 重定义为**本地安装后哈希**，新增 `syncSkillsLock` 重算 20 条（`kit/cli.mjs sync` 的占位调用已替换为真实现）；V7 **直读 lock 文件**（不读台账，防"sync 自证"）；哈希**对行尾归一**（`core.autocrlf=true` 的干净克隆否则 15/20 假红） | 实测 V7 红灯 **20 → 0**（主仓与干净克隆都为 0）；二次运行 `updated 0 / unchanged 20`（幂等）；改任一 `SKILL.md` 后立刻红（含"台账里塞正确哈希也不影响判定"的防自证反例） |
-| B1 | 10 个未用运行时依赖 | **逐个核实后删除**（每个都跑 `typecheck` + `build` + 全量测试；`xlsx`/`mammoth` 需先确认无运行时动态加载） | 删除后 `kit:check` P1 无 `unused`；产物可构建 |
+| B1 | ✅ 已修（Task 10）：10 个未用运行时依赖 | **逐个核实后删除**（每个都跑 `typecheck` + `build` + 全量测试；`xlsx`/`mammoth` 需先确认无运行时动态加载） | 删除后 `kit:check` **P1 的 10 条 `unused` 清零**（红灯 14 → 4，余下 4 条是 P2 真幽灵，已由 Task 12 Rider A 补声明清零 → 红灯 0）；`npm run build` 产物与删前**逐字节一致**。完整证据（含"4 个 `@radix-ui/*` 仍在锁里"的诚实更正）在 `docs/待处理清单.md` 的 DevKit B1 条 |
 | B2 | ✅ 已修（Task 11）：内嵌 Python 13 包硬编码在 `scripts/build-embedded-python.mjs` | 真源移到 `kit/manifest/deps.json#python.embedded`（人工维护、`sync` 原样保留）；新增**唯一读取入口** `kit/lib/python-manifest.mjs` 的 `readEmbeddedPackages({ root })` —— **构建脚本与测试共用它**，读不到 / 键为空 / 条目非字符串一律**抛错**（绝不返回空清单：那会"装 0 个包却报成功"）。★ 为什么不把 `readEmbeddedPackages` 直接写在构建脚本里：测试不能 import 构建脚本（它会下载并安装 Python 运行时），写在脚本内 = 测试只能"读源码正则"，退化成弱断言 | 实测包清单与迁移前**逐条一致**（13 条，真源搬家不改行为）；`kit/lib/python-manifest.test.mjs` 8 用例：① 行为——换 `root` 下的台账 ⇒ 返回值**跟着变**；② 失败开放——缺失/空/形状错/**不传 root** 均抛错；③ 构建脚本**调用点**（`= readEmbeddedPackages({ root: … })`，只 import 不调用是假绿）+ 无本地实现 + 无引号包裹的包名字面量 + 无裸数组；④ 同源——构建脚本 import 的说明符必须解析到测试 import 的同一文件；⑤ 真仓清单**不得缩水**（删包必须是有意改基线）。变异测试三处（改回硬编码列表 / 让实现缓存首值 / 从台账删一个包）均被抓红后还原 |
 | B3 | ✅ 已修（Task 11）：双 Python 清单（内嵌 13 vs requirements 23）无对账 | 差集**逐项**写进 `deps.json#notes`：`pythonOnlyEmbedded` **6** 条（beautifulsoup4 / jinja2 / openai / pydantic / pypdf / pypdfium2）、`pythonOnlySkills` **16** 条，每条 `reason` 指向真实调用点或**显式**标注"未核实"；P5 黄灯**刻意保留**（差集是预期事实、不是错误 —— 见 spec §6.3），但不再可能"静默"（差集逐条列在报告里） | 测试断言（读真仓台账）：实测差集里的**每个**包都必须在 `notes` 里有非空且 ≥10 字的 `reason`，且 `reason` 要么含调用点文件名、要么显式写"未核实"（删条目 / 清空理由 / 写一句空话 → 立刻红）；`kit:check` 黄灯 **1**（P5，差集原样列出，条目数未变：仅内嵌 6 / 仅技能 16） |
-| C1 | `_anchors.json`：407 vs 已跟踪 **408**（`kernel-tests` 209 vs 210） | `npm run anchors:write` | `check-doc-anchors` 绿 |
-| C2 | 11 个 `verify-*.mjs` **零挂载** | 分两类：CI 可跑的挂进 `test:ci`；需图形会话/真内核的挂**独立 npm script** 并在台账登记为 `manual` 门禁 | `package.json` 中 11 个均可执行；CI 不因图形依赖而假红 |
-| C3 | `build-kernel` / `build-embedded-python` / `build-installer` / `package-portable` / `sync-builtin-skills` / `bump-version` 均无 npm script | 全部挂 npm script（`kit:` 与 `build:` 命名空间） | `npm run` 列表可发现全部构建/校验入口 |
-| C4 | **门禁 A′ 只管黄不管红**（§7.1 实测）→ "新增测试层漏同步"不会让 CI 变红 | `check-doc-anchors.mjs`：A′ 由 `warnings` 升级为 `problems`；门禁 A 双向覆盖（`TEST_GLOBS` 有键而锚点无该键 → 红） | 故意漏改 `package.json` 的 test script → `node scripts/check-doc-anchors.mjs` **退出码非 0** |
+| C1 | ✅ 已修（Task 12 · Task 14 在干净克隆复核）：`_anchors.json`：407 vs 已跟踪 **408**（`kernel-tests` 209 vs 210） | `npm run anchors:write` | 干净克隆（盘根 `C:\t14rev`，`npm ci` 后）`node scripts/check-doc-anchors.mjs` **EXIT=0**；最近一次重算见 commit `5684580`（kit 层 8→9 个测试文件、总 407→408） |
+| C2 | ✅ 已修（Task 12 · Task 14 更新）：11 个 `verify-*.mjs` **零挂载** | 分两类：CI 可跑的挂进 `test:ci`；需图形会话/真内核的挂**独立 npm script** 并在台账登记为 `manual` 门禁 | `package.json` 中 11 个均可执行（`npm run verify:<后缀>`）；`deps.json#gates` 三桶由**实测**决定，`kit/cli.test.mjs` 三条测试守（每个脚本恰好归一个桶 / `ci ⊆ verify:ci ⊆ test:ci` / 非 ci 桶必写 reason）。Task 14 更新：`verify-knowledge-gui` 的 3 项失败已修（2 项改组件、1 项改脚本），从 `pendingFix` 移入 `ci` 并串进 `verify:ci` ⇒ `pendingFix` **3 脚本 15 项失败 → 2 脚本 12 项失败** |
+| C3 | ✅ 已修（Task 12）：`build-kernel` / `build-embedded-python` / `build-installer` / `package-portable` / `sync-builtin-skills` / `bump-version` 均无 npm script | 全部挂 npm script（`kit:` 与 `build:` 命名空间） | `kit/cli.test.mjs` 的 C3 测试逐条断言 6 个脚本文件存在且各有 npm 入口（命名空间为 `build:*` / `skills:*` / `version:*`） |
+| C4 | ✅ 已修（Task 1）：**门禁 A′ 只管黄不管红**（§7.1 实测）→ "新增测试层漏同步"不会让 CI 变红 | `check-doc-anchors.mjs`：A′ 由 `warnings` 升级为 `problems`；门禁 A 双向覆盖（`TEST_GLOBS` 有键而锚点无该键 → 红） | `scripts/check-doc-anchors.mjs:331-351` 全部走 `problems.push`（含"该层只挂在 CI 不跑的脚本上"）；`:309` 是"锚点缺键"方向的 `problems.push`。Task 1 的变异验证：故意漏改 `package.json` 的 test script → 退出码非 0 |
 
 > **C2 的分类判据（实施时逐条判定，判定结果写入 `deps.json` 的 `gates` 段）**：需要 Electron 真二进制、图形会话或真内核进程者归 `manual`（先例：`docs/ci.md` 已记载 `verify-gui-fidelity.mjs` 与权限流校验依赖图形会话/真内核）；纯 Node 且无外部进程依赖者归 `ci`。**不允许凭印象分类**——每条都要给出"为什么不能进 CI"的一句话依据。
 
@@ -362,7 +392,7 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 
 | 期 | 内容 | 交付判据 |
 |---|---|---|
-| **P0** | `kit/` 骨架 + 版本台账 + 依赖台账 + `check/sync/stamp/view` + 测试层接入 + CI 接入 + §10 全部欠账（A1–A7、B1–B3、C1–C4，共 17 条） | `npm run kit:check` < 5s 零网络且全绿；每条规则有**正反例测试**（反例必须真能红） |
+| **P0** ✅ **已交付（2026-09-19，分支 `kit/p0-ledgers`，tag `v3.0.0-dev.0`）** | `kit/` 骨架 + 版本台账 + 依赖台账 + `check/sync/stamp/view` + 测试层接入 + CI 接入 + §10 全部欠账（A1–A7、B1–B3、C1–C4 = **14 条**，原文误写"17 条"，已在 §10 更正） | 交付物：`kit/cli.mjs` + `kit/lib/{scan,ledger,version-rules,dep-rules,report,baseline,stamp,python-manifest}.mjs` + 8 个同层测试文件 + `kit/manifest/{versions,deps,drift-baseline}.json` + `kit/schema/*.json` + `kit/README.md`（AI 操作契约）+ `.github/workflows/ci.yml` 的「DevKit 台账门禁」单独一步 + `docs/ci.md` 的 DevKit 一节。判据：`npm run kit:check` **红灯 0 / 黄灯 1（P5 差集，刻意保留）**、实测 **853 ms**（< 5s 硬约束，零网络）；19 个规则号各有正反例测试（反例真跑真红，逐一做过变异验证） |
 | P1 | 契约快照（bridge 路由 / WS 事件类型 / IPC 通道 / 工具 `input_schema`）↔ `docs/bridge-contract.md` 双向对账 | 快照差异 = 0 或已登记 |
 | P2 | 设计资源单一真源（`tokens.json` → 生成 `themes.css` + `tailwind.config.ts`，消灭手抄镜像；派生资产谱系） | 生成物与手写版逐字节对齐后才替换 |
 | P3 | `KitPanel` GUI（四视图）+ `server/kit-routes.mjs` | 面板可用；路由层有端到端测试 |
@@ -396,7 +426,9 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 | `kit/cli.mjs` | 唯一入口：`check` / `sync` / `stamp` / `view` |
 | `kit/lib/{ledger,version-rules,dep-rules,scan,report,baseline}.mjs` | 纯函数实现（零第三方依赖） |
 | `kit/lib/python-manifest.mjs` | 内嵌 Python 包清单的**唯一读取入口**（`readEmbeddedPackages({ root })`，B2）：构建脚本与测试共用，保证"构建脚本装的包"与"台账记的包"同源 |
-| `kit/lib/*.test.mjs` | 与实现同层单测（对应 G2/G3/G4/G5） |
+| `kit/lib/stamp.mjs` | dev 渠道身份（章）：§8 的 13 个字段（含 `tag`/`ahead`/`missing`），字段契约由 `kit/lib/stamp.test.mjs` 钉住 |
+| `kit/lib/*.test.mjs` | 与实现同层单测（对应 G2/G3/G4/G5）；共 8 个（scan/report/baseline/ledger/version-rules/dep-rules/python-manifest/stamp） |
+| `kit/cli.test.mjs` | CLI 层集成测试：四个子命令（`check`/`sync`/`view`/`stamp`）+ C2/C3 的挂载完整性三条 |
 | `kit/manifest/{versions,deps}.json` | 台账（唯一真源） |
 | `kit/manifest/drift-baseline.json` | 🖐 人工维护的已知漂移 |
 | `kit/schema/{versions,deps}.schema.json` | 台账自身 schema |
@@ -409,15 +441,18 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 |---|---|
 | `scripts/test-tiers.mjs` | `TEST_GLOBS` 增加 `kit/**/*.test.mjs` |
 | `scripts/check-doc-anchors.mjs` | A′ 门禁由 warning 升级为 problem；门禁 A 双向覆盖（C4） |
-| `package.json` | `test`/`test:unit` glob 同步；新增 `kit:check`/`kit:sync`/`kit:stamp`/`kit:view`；§10 C3 的构建脚本 npm script |
+| `package.json` | `test`/`test:unit` glob 同步；新增 `kit:check`/`kit:sync`/`kit:stamp`/`kit:view`；§10 C3 的构建脚本 npm script；`verify:ci` 追加 `npm run verify:knowledge-gui`（Rider 2 把该脚本从 `pendingFix` 移入 `ci` 桶的必要条件 —— `ci` 桶 ⊆ `verify:ci` 由 `kit/cli.test.mjs` 守着） |
 | `scripts/bump-version.mjs` | 增加 `pkg` 目标（A2）；修正注释口径（A3） |
 | `scripts/build-embedded-python.mjs` | 包列表改读 `deps.json`（B2） |
 | `skills-lock.json` | 20 条哈希重算（A7） |
 | `public/sample-skills/_common/_common_manifest.json` | 全量登记 98 条（A6） |
 | `version.mjs` | 注释口径同步（A3） |
 | `docs/_anchors.json` | `anchors:write` 同步（C1） |
-| `docs/ci.md` | 新增 DevKit 门禁一节 + 实测耗时（G6） |
-| `.github/workflows/ci.yml` | `test` 作业插入 `npm run kit:check` |
+| `docs/ci.md` | 新增 DevKit 门禁一节 + 实测耗时（G6）+ `verify-knowledge-gui` 归因更正（Rider 2） |
+| `docs/待处理清单.md` | 登记 3 个 `verify-*.mjs` 的 15 项既有失败（Task 14 / Rider 1）——改的是**别人 113 行在途改动同在的文件**，只按基线叠加本任务的行 |
+| `scripts/verify-knowledge-gui.mjs` | 视图白名单字面量 5 → 6 值（真源已含 `tags`）；Rider 2 的"脚本腐烂"那一项 |
+| `src/components/knowledge/{KnowledgeToolbar,KnowledgeSidebar}.tsx` | Rider 2 的 2 处**真违规**：UI 警示符号改 lucide `AlertTriangle`、注释里的符号改文字（spec 2026-09-13 §5「lucide only，禁 emoji」） |
+| `.github/workflows/ci.yml` | `test` 作业插入 `npm run kit:check`（单独一步） |
 
 **不改**：三条构建链的核心逻辑（`build-kernel.mjs` / `vite.config.ts` / `electron-builder.yml`）；`release/` 调试版工作方式；任何 `public/sample-skills/_common/*.py`（§5.4 划界）。
 

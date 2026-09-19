@@ -14,7 +14,10 @@
 //   ⑤ git 层：dirty 的**分类**（已跟踪改动 vs 未跟踪）与 ahead（**相对最近 tag**）
 //      都在夹具里造真 git 仓来钉 —— 不依赖本机仓的 tag/脏工作树状态（CI 无 release/、也无本机改动）。
 //
-// ★ 夹具一律 mkdtempSync(tmpdir())：绝不往真仓写 kit-stamp.json（那会变成需提交的产物或脏工作树）。
+// ★ 夹具一律 mkdtempSync(tmpdir())：**本文件的断言绝不往真仓写** kit-stamp.json（那会变成需提交的产物或脏工作树）。
+//   与 `kit/cli.test.mjs` 里那条"跑真 `stamp` 子命令"的测试区分开：那边写的是**主树**的
+//   `release/YFWorking/kit-stamp.json`，而 `release/` 被 `.gitignore` 覆盖 —— 是 local-only 的**产物区**，
+//   实测不产生 git 脏状态（`git status` 不显示）。两类"写"性质不同，别把本行的"不写真仓"读成"任何测试都不许碰 release/"。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
@@ -79,6 +82,13 @@ test('stampChannel：接口字段齐全，且可 JSON 无损序列化（undefine
   assert.equal(info.channel, 'dev', '渠道身份是这条记录的第一性字段')
   assert.equal(info.builtAt, '2026-09-19T08:30:00.000Z', 'builtAt 必须用注入的 now（用运行时时钟就不可复现）')
   assert.deepEqual(JSON.parse(JSON.stringify(info)), info, '序列化必须无损：undefined 字段会被 JSON.stringify 丢掉')
+  // ★ 字段集**恰好**等于 spec §8 的明确列表（Task 14 / Rider 4-2 把 §8 的形状示意写成了 13 个字段的清单）。
+  //   为什么要钉死集合而不是只查"该有的都在"：多一个字段同样是契约漂移 —— 早期计划草图里有 `debug: null`，
+  //   而 spec §8 从未定义它、仓内也没有可记的调试状态（一个恒 null 的字段会让人误以为"调试态可查"）。
+  //   Task 13 审查裁定"不加回"，本断言让这条裁定**可执行**（加回即红）。
+  assert.deepEqual(Object.keys(info).sort(), ['ahead', 'appVersion', 'artifacts', 'builtAt', 'channel',
+    'commit', 'commitSubject', 'dirty', 'guiVersion', 'kernelVersion', 'missing', 'stampFile', 'tag'],
+  '字段集必须恰好是 spec §8 的 13 个字段（多一个/少一个都是契约漂移；不含 debug）')
 })
 
 // ── ② 真源层：版本字段只从台账来 ───────────────────────────────────────────
@@ -132,6 +142,24 @@ test('stampChannel：artifacts 的 sha256/bytes 与磁盘字节独立重算一�
   const pick = (r) => r.artifacts.find((a) => a.path === 'dist/index-abc.js').sha256
   assert.equal(pick(after), sha256(Buffer.from('AAB')), '改了内容必须重算，不得复用上次结果')
   assert.notEqual(pick(after), pick(info))
+})
+
+test('stampChannel：artifacts 顺序稳定且已排序（同一棵树连跑两次严格相等；目录项顺序不得泄漏进章）', () => {
+  // ★ 为什么必须单独钉这一条（Task 14 / Rider 4-1）：`collectFiles` 末尾的 `.sort()` 是"稳定顺序"
+  //   那句承诺的**唯一**实现，而上面那条断言**两端都先 `.sort()`**，等于把实现的顺序掩盖了 ——
+  //   审查的变异④（删掉 `.sort()`）实测 11/11 全绿，即那条断言对顺序零约束。
+  //   本断言不额外排序，且夹具刻意让 **目录项返回顺序 ≠ 码元序**：
+  //   NTFS 的目录序是大小写不敏感校对（`a.js` 排在 `A1.js` 之前），而 `Array#sort()` 是 UTF-16 码元序
+  //   （`A1.js` 排在 `a.js` 之前）。⇒ 删掉 `.sort()` 时本断言**必红**（已做变异验证）。
+  const files = { 'dist/a.js': 'A', 'dist/A1.js': 'B', 'dist/assets/z.js': 'Z', 'kernel-dist/b.js': 'K' }
+  const root = fixtureRoot(files)
+  const first = stampChannel({ root, write: false }).artifacts.map((a) => a.path)
+  const second = stampChannel({ root, write: false }).artifacts.map((a) => a.path)
+  assert.deepEqual(second, first, '同一棵树连跑两次，artifacts 的路径数组必须严格相等（比对时不额外排序）')
+  assert.deepEqual(first, [...first].sort(),
+    `artifacts 必须已按码元序排好（目录项返回顺序不得泄漏进章）：实测 ${JSON.stringify(first)}`)
+  assert.deepEqual(first, ['dist/A1.js', 'dist/a.js', 'dist/assets/z.js', 'kernel-dist/b.js'],
+    '顺序契约的具体形态（递归：同一目录内先文件后子目录的展开顺序由路径序决定）')
 })
 
 // ── ④ 失败开放层：未构建也要能盖章 ─────────────────────────────────────────

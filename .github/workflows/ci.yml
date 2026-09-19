@@ -58,6 +58,19 @@ jobs:
       - name: 类型检查
         run: npm run typecheck
 
+      # 台账门禁单独成一步（而不是只依赖 test:ci 里的同一条命令）：
+      # 它校验的是**声明一致性**（kit/manifest/*.json ↔ 宿主文件），与"测试挂没挂"是两类问题，
+      # 单独一步失败时一眼可辨是"台账漂移"还是"测试挂了"；test:ci 里也含它，便于本地一条命令跑全。
+      #
+      # ★ 为什么这条必须进 CI（Task 10 审查指出的唯一关卡）：仓库里唯一能抓
+      #   "这个依赖被删了、但其实还有人在用"的就是本门禁的 P2 规则（反向幽灵依赖：源码
+      #   import 了却没声明）。在本机它**不成立** —— 家目录下的杂散 node_modules 会沿父目录链
+      #   把缺声明的包解析到（实测 `import('nanoid')` 在本仓内 OK、在盘根克隆 ERR_MODULE_NOT_FOUND，
+      #   见 docs/待处理清单.md 的"杂散 node_modules"条）。只有 CI（干净检出、无那棵树）与盘根
+      #   克隆上的判定才是真实的。
+      - name: DevKit 台账门禁
+        run: npm run kit:check
+
       - name: 预检 + 文档口径 + 全量测试
         run: npm run test:ci
 

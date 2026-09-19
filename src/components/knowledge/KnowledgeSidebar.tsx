@@ -28,7 +28,7 @@ import { canDeleteSpace } from '@/lib/knowledgeDeleteUi'
 import { isAssociableSpace, isLargeSpace, toggleKnowledgeSpace, MAX_ASSOC_SPACES } from '@/lib/knowledgeScopeUi'
 // 【S3】侧边栏默认列表（**知识空间清单**）按模式筛选（spec §5.9「受模式影响」一栏）。
 // 判据取**空间 id**（知识条目的归属在既有模型里已由 `spaceId` 承载）。
-// ⚠️ 只筛"列表显示"，**不**影响检索范围 —— 检索恒跨全部空间（见 teamModeUi.knowledgeSearchScopeFor
+// 注意：只筛"列表显示"，**不**影响检索范围 —— 检索恒跨全部空间（见 teamModeUi.knowledgeSearchScopeFor
 // 与 KnowledgeSearchView 的接线，反向断言①在 teamModeUi.test.ts）。
 import { filterKnowledgeSpacesByMode } from '@/lib/teamModeUi'
 import { useModeFilter } from '@/stores/teamStore'

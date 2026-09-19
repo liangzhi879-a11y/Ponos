@@ -1088,12 +1088,13 @@
     ]
   },
   "gates": {
-    "_note": "三个桶，分类由**实测**决定（spec §10 C2 明令不允许凭印象）：\n  ci         干净克隆实测 EXIT=0，且不依赖图形会话 / Electron 真二进制 / 内核产物 / 打包产物 → 串进 verify:ci（→ test:ci）\n  manual     需上述外部环境之一，干净克隆必有假失败（或无法执行）→ 只挂 npm script 手动触发\n  pendingFix **脚本自身已腐烂**：干净克隆实测 EXIT=1，断言与现行代码判据已漂移 → 刻意不串进 CI（串进去 test:ci 永久红），修到绿再从本桶移入 ci\n逐脚本实测值（11 个脚本的 EXIT 与失败断言）见 docs/ci.md 的「手动门禁」与「未过 CI 的门禁（pendingFix）」两节；判据=kit/cli.test.mjs 的 3 条挂载完整性测试。",
+    "_note": "三个桶，分类由**实测**决定（spec §10 C2 明令不允许凭印象）：\n  ci         干净克隆实测 EXIT=0，且不依赖图形会话 / Electron 真二进制 / 内核产物 / 打包产物 → 串进 verify:ci（→ test:ci）\n  manual     需上述外部环境之一，干净克隆必有假失败（或无法执行）→ 只挂 npm script 手动触发\n  pendingFix **脚本自身已腐烂**：干净克隆实测 EXIT=1，断言与现行代码判据已漂移 → 刻意不串进 CI（串进去 test:ci 永久红），修到绿再从本桶移入 ci\n逐脚本实测值（11 个脚本的 EXIT 与失败断言）见 docs/ci.md 的「手动门禁」与「未过 CI 的门禁（pendingFix）」两节；判据=kit/cli.test.mjs 的 3 条挂载完整性测试。\n2026-09-19 Task 14（Rider 2）：`verify-knowledge-gui` 的 3 项失败已修 —— 其中 2 项（KnowledgeToolbar.tsx 的 UI 警示符号、KnowledgeSidebar.tsx 的注释符号）经 spec 2026-09-13-knowledge-gui-design.md §5 与 :208-209 复核判定为**真违规**（原文写明 lucide only、禁 emoji，且已有\"注释命中 emoji 时改代码\"的先例），改的是**组件**；第 3 项（视图白名单）是**脚本字面量腐烂**（真源 knowledgeStore.ts 已 6 值含 tags），改的是**脚本**。修后干净环境实测 EXIT=0，故已从 pendingFix 移入 ci（pendingFix：3 脚本 15 项失败 → 2 脚本 12 项）。",
     "ci": [
       "verify-milestones-start",
       "verify-s4-security",
       "verify-skill-listing",
-      "verify-experience-inject"
+      "verify-experience-inject",
+      "verify-knowledge-gui"
     ],
     "manual": [
       {
@@ -1117,10 +1118,6 @@
       {
         "script": "verify-highrisk",
         "reason": "干净克隆（C:\t12rev @9825c96）实测 EXIT=1：5 项断言失败（rm 后跟路径 / erase / move / mv / Stop-Process）—— 脚本判据与 server/highrisk.mjs 的现行实现已漂移。零挂载期间无人发现；修脚本或修判据后再移入 ci"
-      },
-      {
-        "script": "verify-knowledge-gui",
-        "reason": "干净克隆实测 EXIT=1：3 项失败（KnowledgeSidebar.tsx / KnowledgeToolbar.tsx 含 ⚠ emoji；五视图白名单 read/edit/graph/search/market）—— 组件演进后脚本未同步"
       },
       {
         "script": "verify-knowledge-import-gui",
