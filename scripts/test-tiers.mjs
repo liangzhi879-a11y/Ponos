@@ -5,7 +5,12 @@
 // 于是"预检通过、门禁失败"（或反之）这种自相矛盾的状态就会出现，而且很难查。
 //
 // ⚠️ 本清单必须与 package.json 的 `test` / `test:unit` / `test:server` / `test:kernel` 保持一致。
-// 新增一层测试目录时，三处一起改。
+// 新增一层测试目录时**三处一起改**：
+//   ① 本文件的 TEST_GLOBS；
+//   ② package.json 的 `test` 与 `test:unit`（以及对应分层脚本）里的 glob；
+//   ③ docs/_anchors.json（跑 `npm run anchors:write` 重新生成）。
+// 漏改任一处都已被 scripts/check-doc-anchors.mjs 的门禁 A/A′ 变成**硬失败**（2026-09-19 C4）——
+// 原先 A′ 只是 warning 不红，于是"新增测试层却漏同步"会静默不受任何保护。
 import { execFileSync } from 'node:child_process'
 import { globSync } from 'node:fs'
 
@@ -15,6 +20,7 @@ export const TEST_GLOBS = [
   'electron/*.test.mjs',
   'kernel-tests/*.test.mjs',
   'src/**/*.test.ts',
+  'kit/**/*.test.mjs',
 ]
 
 /** 把本文件用到的 glob 子集转成正则：支持双星号跨目录（写作 星号星号斜杠）与单星号（不跨目录） */

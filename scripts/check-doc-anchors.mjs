@@ -290,21 +290,35 @@ const allowMissing = readAllow()
 // 文档路径引用的统一分诊结果（门禁 B 与提示共用同一判据）
 const docPathTriage = triageDocPaths(allowMissing)
 
-// 门禁 A：各层测试文件数（防整层静默消失）
+// 门禁 A（双向 ①）：锚点声明了但现场计数不符（原有方向）
 for (const [g, n] of Object.entries(anchors.testFileCounts)) {
   const expect = (declared.testFileCounts || {})[g]
   if (expect !== undefined && n !== expect) {
     problems.push(`测试文件数[${g}] 与锚点不符：实际 ${n}，锚点 ${expect}（确认无误后跑 npm run anchors:write）`)
   }
 }
+// 门禁 A（双向 ②）：TEST_GLOBS 有该层，但锚点里没这个键（新增测试层后漏跑 anchors:write）
+// 为什么必须补这一条：原实现只遍历 anchors.testFileCounts（现场算出来的键），
+// 于是"新增一层测试"完全不在遍历范围内 —— 新层既没锚点、也不被检查，静默不受任何保护。
+for (const g of TEST_GLOBS) {
+  if (!(g in (declared.testFileCounts || {}))) {
+    problems.push(`分层清单里的 ${g} 不在 docs/_anchors.json 的 testFileCounts 中（新增测试层后必须跑 npm run anchors:write）`)
+  }
+}
 // 门禁 A′：分层清单本身要与 package.json 的测试脚本一致（防"改了脚本忘了改口径"）
+// ★ 2026-09-19（DevKit C4）由 warnings 升级为 problems：原先只黄不红（退出码 0），
+//   实测"新增 kit 层却忘改 package.json 的 test glob"不会让 CI 失败 —— 门禁形同虚设。
 try {
   const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8'))
   const scriptsText = JSON.stringify(pkg.scripts || {})
   for (const g of TEST_GLOBS) {
-    if (!scriptsText.includes(g)) warnings.push(`分层清单里的 ${g} 未出现在 package.json 的测试脚本中（口径与脚本已漂移，请同步）`)
+    if (!scriptsText.includes(g)) {
+      problems.push(`分层清单里的 ${g} 未出现在 package.json 的测试脚本中（口径与脚本已漂移，请同步 test/test:unit）`)
+    }
   }
-} catch { warnings.push('无法读取 package.json 校验分层清单一致性') }
+} catch {
+  problems.push('无法读取 package.json 校验分层清单一致性（门禁 A′ 失效）')
+}
 
 // 门禁 B：文档路径存在性（判据 = **是否入库**，故结果与工作树状态无关、可复现）
 for (const [p, refs] of docPathTriage.dangling) {
