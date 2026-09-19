@@ -66,9 +66,6 @@ const readPkg = (root) => JSON.parse(readFileSync(join(root, 'package.json'), 'u
 const writePkg = (root, pkg) => writeFileSync(join(root, 'package.json'), JSON.stringify(pkg, null, 2))
 const ledgerText = (root) => readFileSync(join(root, 'kit/manifest/deps.json'), 'utf8')
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex')
-/** 契约面（CT 规则关心的路径）是否有未提交改动 —— 决定真仓断言走"脏树"还是"干净树"分支 */
-const dirtyTree = () => execFileSync('git', ['status', '--porcelain', '--', 'server', 'electron', 'kernel', 'src', 'shared', 'docs/bridge-contract.md'],
-  { cwd: ROOT, encoding: 'utf8' }).trim().length > 0
 
 // ── 真仓根的"会写盘"用例：唯一入口（第 5 批 ①） ────────────────────────────────
 //
@@ -163,10 +160,20 @@ test('★RiderA：真仓红灯 0 / 黄灯 = P5 + CT8 在途差异（多一条红
   // ★ 第 3 批：契约规则的真值取自**提交态 HEAD** ⇒ 主树上的他人在途改动**不再**产生任何红灯
   //   （也就不再需要"为在途差异加的红灯基线"）。在途改动一律由 CT8 逐条报黄、只报不拦。
   assert.deepEqual([...new Set(j.findings.filter((f) => f.severity === 'red').map((f) => f.rule))], [])
-  // 黄灯只可能来自 P5（两套 Python 清单差集，属预期）与 CT8（工作树 ∖ HEAD 的在途差异）
+  // 黄灯只可能来自 P5（两套 Python 清单差集 1 条，属预期）与 CT8（工作树 ∖ HEAD 的在途差异，逐条）。
+  // ★ 第 5 批：断言改为**漂移免疫**（铁律 4）—— 原先靠 `dirtyTree()`（一张**手维护的脏目录清单**：
+  //   server/electron/kernel/src/shared/docs-bridge-contract.md）决定树脏不脏，而 CT8 的域是
+  //   "git 跟踪 + 未忽略的未跟踪文件"（根目录或其它目录里的在途新文件都会被 CT8 看见）⇒ 两者不一致时
+  //   断言会在"工作树稍被扰动"时误红；写死黄灯数同理。现在只钉**规则归属**：
+  //   `yellow == 1（P5）+ CT8 条数`（干净树上 CT8 为空 ⇒ 恰为 1），红灯仍**硬约束为 0**。
   const yellows = [...new Set(j.findings.filter((f) => f.severity === 'yellow').map((f) => f.rule))].sort()
-  assert.deepEqual(yellows, dirtyTree() ? ['CT8', 'P5'] : ['P5'],
-    `黄灯规则集只允许 P5（+ 脏树时的 CT8），实测 ${JSON.stringify(yellows)}`)
+  const ct8 = j.findings.filter((f) => f.rule === 'CT8')
+  assert.equal(j.summary.yellow, 1 + ct8.length,
+    `黄灯必须恰好 = P5(1) + CT8(${ct8.length})，实测 ${j.summary.yellow}：${JSON.stringify(j.findings.filter((f) => f.severity === 'yellow'))}`)
+  assert.deepEqual(yellows, ct8.length ? ['CT8', 'P5'] : ['P5'],
+    `黄灯规则集只允许 P5（+ 有在途差异时的 CT8），实测 ${JSON.stringify(yellows)}`)
+  assert.deepEqual([...new Set(ct8.map((f) => f.severity))], ct8.length ? ['yellow'] : [],
+    'CT8 只能报黄（在途改动不拦）')
   assert.equal(j.summary.yellow, j.findings.filter((f) => f.severity === 'yellow').length, 'summary 必须与实际逐条一致')
   // CT9 的差集（黄、只报不拦）必须**逐条**落在基线里（条数随渲染层调用点变化 ⇒ 不硬编码条数）
   const ct9 = j.findings.filter((f) => f.rule === 'CT9')
@@ -183,12 +190,12 @@ test('★RiderA：真仓红灯 0 / 黄灯 = P5 + CT8 在途差异（多一条红
     assert.match(String(f.expected), /^HEAD (有|缺)$/)
     assert.match(String(f.actual), /^工作树 (有|缺)$/)
   }
-  if (!dirtyTree()) {
-    // 干净工作树（= CI 与评审克隆跑的那棵树）：只允许 P5（黄）+ CT9（基线里逐条，条数随渲染层调用点变化，
+  if (ct8.length === 0) {
+    // 无在途差异（= CI 与评审克隆跑的那棵树）：只允许 P5（黄）+ CT9（基线里逐条，条数随渲染层调用点变化，
     // ★ 故**不硬编码条数**：铁律 4 —— 该数字由 src/ 的现场内容决定，会随他人改动漂移）
-    assert.deepEqual(j.findings.filter((f) => f.rule === 'CT8'), [], '干净工作树不得有在途差异')
+    assert.deepEqual(j.findings.filter((f) => f.rule === 'CT8'), [], '无在途差异时 CT8 必须是空的')
     assert.deepEqual([...new Set(j.findings.map((f) => f.rule))].sort(), ['CT9', 'P5'],
-      '干净工作树只允许 P5（黄）+ CT9（已登记基线）')
+      '无在途差异的工作树只允许 P5（黄）+ CT9（已登记基线）')
     assert.deepEqual(j.findings.filter((f) => f.severity !== 'baselined').map((f) => f.rule), ['P5'])
   }
 })

@@ -79,7 +79,19 @@
 | `npm run kit:check` | 三类规则（版本 V / 依赖 P / 契约 CT）的**门禁**，只读，退出码 0/1 | 否（**仓库内**只读；见下面「committed 口径」） |
 | `npm run kit:check -- --verbose` | 追加「规则逐条」表：每条规则的 `evaluated`（判了多少条）+ 台账规模 | 否 |
 | `npm run kit:sync` | 从**提交态**复算契约快照写进 `versions.json#channels`（人工段原样保留） | 是 |
-| `npm run kit:view` | 固定 schema JSON（`findings` / `ledgerSizes.channels` / `scope`），AI 读它，不解析散文 | 否 |
+| `npm run kit:view` | 固定 schema JSON（`findings` / `ledgers.versions.channels` / `scope`），AI 读它，不解析散文 | 否 |
+
+★ **`view --json` 的顶层 schema 是 `schemaVersion` / `generatedAt` / `ok` / `summary` / `ledgers` / `scope` / `findings`
+—— `channels` 明细不在顶层**（顶层只有 `summary.red/yellow/baselined/rules` 这类计数）。channels 读数路径两条：
+
+```bash
+# ① 计数摘要：ledgers.versions.channels（routes/routePrefixes/wsOut/wsIn/ipc/tools/... 都是**数字**，不是键表）
+node kit/cli.mjs view --json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const c=JSON.parse(s).ledgers.versions.channels;console.log('routes',c.routes,'/ prefixes',c.routePrefixes,'/ wsOut',c.wsOut,'/ ipc',c.ipc,'/ tools',c.tools,'/ scopeCount',c.scopeCount)})"
+# ② 键级明细（哪条路由/哪个工具）：直接读 manifest 的 `channels`
+node -e "const c=require('./kit/manifest/versions.json').channels;console.log(Object.keys(c.routes).length, Object.keys(c.routes).slice(0,3))"
+```
+（实测：① 打印 `routes 103 / prefixes 7 / wsOut 27 / ipc 156 / tools 21 / scopeCount 20`；② 打印 `103 [ 'ANY /agents', 'ANY /api/audit', 'ANY /api/auth/status' ]`。
+`kit/manifest/versions.json#channels` 与 `ledgers.versions.channels` 同源 —— 后者是前者的**按类计数**投影。）
 
 ★ `check` **恒打印**两段：范围登记逐条（`── 契约范围登记（N 组 / M 键）──`，逐条带 kind/ns/键数/docSection/reason）
 与在途差异一行（`（契约）在途差异（CT8，黄、只报不拦）：…`）—— **无差异时也明说"无"**（"没打印"与"没有差异"不是一回事），
