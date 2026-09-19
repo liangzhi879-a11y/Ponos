@@ -290,6 +290,12 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 
 回答的问题：**"用户正在测的这版，对应哪个 commit、含哪些产物、是否 dirty、差多少个提交"**——现在这个问题无法回答。
 
+**Task 13 交付时定下的几处判据**（都以 `kit/lib/stamp.test.mjs` 的断言为准；上面那段是形状示意，不是契约）：
+- `artifacts` 的 `path` 一律**仓库相对 + 正斜杠**；未构建的产物根进 `missing`（`["dist","kernel-dist"]`），**不是**报错 —— 未构建也要能盖章。
+- `tag` / `ahead`：无 tag ⇒ 两者都是 `null`（"没有锚点"是**未知**，不冒充成"等于全部提交数"）；有 tag ⇒ `ahead` = 最近 tag 到 HEAD 的提交数。
+- 版本三字段只**读** `kit/manifest/versions.json`（单一真源，不重复采集）；读不到 ⇒ `null` 而不是 `undefined`（`undefined` 落盘会被 JSON 丢掉，字段看着"在"实际"没了"）。
+- `write` 为真就落盘（原子写），**拿不到 git 事实也照写**（`commit: null`）："退出码 0 但什么都没写"比没有章更危险。
+
 ---
 
 ## 9. 双通道（AI 与人）
@@ -316,7 +322,7 @@ kit/cli.mjs    npm run kit:check      server/kit-routes.mjs   kit/README.md
 
 | # | 欠账（实测） | 修复方式 | 验证 |
 |---|---|---|---|
-| A1 | `git tag` = 0 个 | 打首个 tag，建立版本锚点（**属写 git 操作，实施前单独获批**） | `git tag` 非空；`stamp` 能算 `ahead` |
+| A1 | ✅ 已修（Task 13）：`git tag` = 0 个 | 首个版本锚点 `v3.0.0-dev.0`（annotated）打在本轮**红灯归零后**的 HEAD 上（属写仓库操作，**用户单独批准**；只打本地 tag、**不 push**）；`kit/lib/stamp.mjs` 让"距锚点差多少提交"可算 —— `ahead` = `git describe --tags --abbrev=0`（可达的**最近** tag）到 HEAD 的提交数，**无 tag 时 `ahead: null` + `tag: null`**（不拿 `rev-list --count HEAD` 这个"全部提交数"冒充锚点：真仓会报出 4 位数，看的人会误以为"落后很多"） | `git tag -l` → `v3.0.0-dev.0`（0 → 1）；`git show v3.0.0-dev.0 --stat` 指向 P0 落地提交；`stamp` 实测 `tag: "v3.0.0-dev.0"` / `ahead: 0`（夹具：tag 后再提交 → 1；多 tag 仓取最近 tag ⇒ 1 而非 2）。两处变异（ahead 回退成全部提交数 / 改取最老 tag）均被抓红后还原 |
 | A2 | GUI 版本线（`package.json` 2.8.0）无 bump 入口 | ✅ 已修（Task 8）：`bump-version.mjs` 增加 `pkg` 目标。★ **`pkg` 目标不带 `dev ` 前缀**（Task 9 rider 4 明写进本行）：宿主是 npm 的 `package.json`，值必须保持合法 semver —— `app-builder-lib` 对非 semver 抛 `Invalid major number`，`semver.major('dev 2.9.0')` 实测抛错。照"版本格式一律 `dev <major>.<minor>`"改回去会**打断 GUI 发布线** | `--dry-run` 三线各自演练正确；`pkg` 写出纯 semver |
 | A3 | `version.mjs:7` 注释称"三条独立版本线"，`bump-version.mjs` 只支持 `app\|kernel`（其他直接 fail）→ 注释↔代码不符 | 脚本补 `pkg`，注释同步为"四条" | 注释与代码一致；非法目标仍非 0 退出 |
 | A4 | 14 处版本常量无台账 | 纳入 `contracts` 分区（V1 可解析-回读） | `kit:check` V1 全绿 |
