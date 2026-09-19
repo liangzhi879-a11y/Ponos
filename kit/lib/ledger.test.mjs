@@ -595,8 +595,31 @@ test('syncSkillsLock：二次运行幂等（unchanged 全量、文件一字节�
   assert.equal(readFileSync(join(root, 'skills-lock.json'), 'utf8'), first, '幂等：内容必须一字节不变（否则每次 sync 都产生无意义 diff）')
 })
 
-test('syncSkillsLock：dryRun 只报告、不落盘（`kit sync --dry-run` 的承诺）', () => {
-  const root = fixture({ [DEMO_SKILL]: SKILL_MD, 'skills-lock.json': JSON.stringify({ skills: { demo: { computedHash: 'STALE' } } }) })
+// ★ 实测踩出来的坑（干净克隆验证时发现）：哈希必须**与检出方式无关**。
+//   本仓 `core.autocrlf=true` 且无 .gitattributes，同一个 SKILL.md 在长驻工作树里是 LF、
+//   在 `git clone` 出来的干净克隆里是 CRLF（brainstorming/SKILL.md 实测 156 处 CRLF）。
+//   按原始字节哈希 → 干净克隆里 20 条有 **15 条假红**（V7），门禁变成"怎么检出"的函数。
+//   归一（CRLF → LF）后：改内容必然变哈希（判据仍有效），只改行尾不再误报。
+test('sha256File/syncSkillsLock：哈希对行尾归一 —— 同一内容的 CRLF 版与 LF 版必须同哈希', () => {
+  const crlf = 'public/sample-skills/crlf/SKILL.md'
+  const lf = 'public/sample-skills/lf/SKILL.md'
+  const root = fixture({
+    [crlf]: SKILL_MD.replace(/\n/g, '\r\n'),
+    [lf]: SKILL_MD,
+    'skills-lock.json': JSON.stringify({ skills: { crlf: {}, lf: {} } }),
+  })
+  syncSkillsLock({ root, files: [crlf, lf, 'skills-lock.json'] })
+  const after = JSON.parse(readFileSync(join(root, 'skills-lock.json'), 'utf8'))
+  assert.equal(after.skills.crlf.computedHash, sha256(SKILL_MD),
+    'CRLF 文件必须按归一后的内容哈希（否则干净克隆里 V7 全红）')
+  assert.equal(after.skills.lf.computedHash, sha256(SKILL_MD))
+  // 反向：归一不得把"内容变了"也归一掉 —— 否则判据会退化成"永远绿"
+  const root2 = fixture({ [lf]: `${SKILL_MD}\n多一行\n`, 'skills-lock.json': JSON.stringify({ skills: { lf: { computedHash: sha256(SKILL_MD) } } }) })
+  assert.notEqual(syncSkillsLock({ root: root2, files: [lf, 'skills-lock.json'] }).updated.length, 0,
+    '内容变了必须算 updated（归一只能吃掉行尾差异）')
+})
+
+test('syncSkillsLock：dryRun 只报告、不落盘（`kit sync --dry-run` 的承诺）', () => {  const root = fixture({ [DEMO_SKILL]: SKILL_MD, 'skills-lock.json': JSON.stringify({ skills: { demo: { computedHash: 'STALE' } } }) })
   const before = readFileSync(join(root, 'skills-lock.json'), 'utf8')
   const r = syncSkillsLock({ root, files: [DEMO_SKILL, 'skills-lock.json'], dryRun: true })
   assert.deepEqual(r.updated, ['demo'], '预演必须报出"真跑会改哪几条"，否则预演没有信息量')

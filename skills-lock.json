@@ -11,7 +11,7 @@
       "source": "intellectronica/agent-skills",
       "sourceType": "github",
       "skillPath": "skills/context7/SKILL.md",
-      "computedHash": "a1538a782647ebe352dbca18550b9734447219d5b64525475695422d1519e35e"
+      "computedHash": "e1c404ae31f71cb1ef108abfbd153f5761f1ed715a9d9e4c2067e61ff673f42f"
     },
     "dispatching-parallel-agents": {
       "source": "obra/superpowers",
@@ -41,7 +41,7 @@
       "source": "anthropics/skills",
       "sourceType": "github",
       "skillPath": "skills/frontend-design/SKILL.md",
-      "computedHash": "35c43b9d10c2388dbb228047ad028c989a14033750812125f351c85aa42c7a4a"
+      "computedHash": "1608ea77fbb6fc30d13a97d12cfa8ebf31358d40f0dd97beed24829d6b3f45dd"
     },
     "receiving-code-review": {
       "source": "obra/superpowers",
@@ -59,7 +59,7 @@
       "source": "shadcn/ui",
       "sourceType": "github",
       "skillPath": "skills/shadcn/SKILL.md",
-      "computedHash": "e39871b64b1ba34f1aefc50ffea1b162c5a0750bc42a9ba54282ac503534429b"
+      "computedHash": "deba6c5152d9835892fa7dffeb1fedbb689ddac7e59e14e57ec5eaf9463309e4"
     },
     "subagent-driven-development": {
       "source": "obra/superpowers",
@@ -77,7 +77,7 @@
       "source": "hairyf/skills",
       "sourceType": "github",
       "skillPath": "skills/tailwindcss/SKILL.md",
-      "computedHash": "01a9f60585dbe67a65a53b5493a8de5b23f06c1e35ec17cc458b9ac2ce779db4"
+      "computedHash": "c2fa19b055945dc89ee0cbf154138f680237fd6d7d3263cbf0977f9e4def1eeb"
     },
     "test-driven-development": {
       "source": "obra/superpowers",
@@ -89,7 +89,7 @@
       "source": "nextlevelbuilder/ui-ux-pro-max-skill",
       "sourceType": "github",
       "skillPath": ".claude/skills/ui-ux-pro-max/SKILL.md",
-      "computedHash": "04e3332c3f82b3dfc60962477b834db1b0d1e2150cc4c96d7139150df612ad1f"
+      "computedHash": "305a7527fcb2f5b6e4129ab22cd839b5172d26df7f14d3324bfdec8fc1763560"
     },
     "using-git-worktrees": {
       "source": "obra/superpowers",

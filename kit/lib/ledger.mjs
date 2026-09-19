@@ -113,10 +113,21 @@ export function readSkillFrontmatterVersion({ root, file }) {
   return m ? m[1].trim() : null
 }
 
+/**
+ * 文件内容的 sha256。
+ *
+ * ★ 行尾**先归一（CRLF → LF）再哈希**：哈希必须与"怎么检出"无关。
+ *   实测（Task 9 干净克隆验证）：本仓 `core.autocrlf=true` 且无 `.gitattributes`，
+ *   同一个 `SKILL.md` 在长驻工作树里是 LF、在 `git clone` 出来的干净克隆里是 CRLF
+ *   （`brainstorming/SKILL.md` 实测 156 处 CRLF）—— 按原始字节哈希，干净克隆里 20 条锁
+ *   有 **15 条假红**，门禁成了"检出方式"的函数而不是"内容有没有变"的函数。
+ *   归一后：改内容必然变哈希（V7 判据仍然有效），只改行尾（git 自己视为同一内容）不再误报。
+ *   注意写入侧（syncSkillsLock）与判定侧（V7）都用本函数 —— 两侧口径不可能漂移。
+ */
 export function sha256File({ root, file }) {
   const text = readTracked({ root, file })
   if (text === null) return null
-  return createHash('sha256').update(readFileSync(join(root, file))).digest('hex')
+  return createHash('sha256').update(text.replace(/\r\n/g, '\n')).digest('hex')
 }
 
 // ── Task 9（A7）：重算 skills-lock（D5 —— 记录"本地安装后"哈希） ────────────
