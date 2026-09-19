@@ -22,6 +22,17 @@ export const BASELINE_FILE = 'kit/manifest/drift-baseline.json'
  */
 export function keyOf({ rule, subject }) { return JSON.stringify([rule, subject]) }
 
+/**
+ * 基线条目必须是**普通对象**。
+ * ★ 为什么要单独判形状（Task 2 复审低危项）：`loadBaseline` 初版只校验 `Array.isArray(entries)`，
+ *   元素形状不管。人工编辑该文件时写成 `"entries": [null]`（或字符串/数字）是现实路径，
+ *   于是 `null.reason` 直接抛 `TypeError: Cannot read properties of null (reading 'reason')` ——
+ *   门禁从"报红"变成"崩掉"，与本文件"不能因坏文件崩掉"的声明相反。
+ *   数组也不算合法条目：它有 `.reason`（undefined）不会崩，但 `keyOf` 会把
+ *   `[undefined, undefined]` 序列化成 `[null,null]`，是"碰巧撞上别人"的隐患。
+ */
+function isEntryObject(e) { return !!e && typeof e === 'object' && !Array.isArray(e) }
+
 /** 读基线；文件缺失/损坏一律返回空基线（门禁不能因坏文件崩掉） */
 export function loadBaseline({ root }) {
   const p = join(root, BASELINE_FILE)
@@ -29,6 +40,9 @@ export function loadBaseline({ root }) {
   if (!existsSync(p)) return empty
   try {
     const j = JSON.parse(readFileSync(p, 'utf8'))
+    // ★ 刻意**不**在这里过滤掉非对象元素（"坏元素直接丢掉"看似更省事）：静默丢弃会把
+    //   "有人手工把文件写坏了"藏起来，与 I4「放行必须人工且**可见**」相反。
+    //   这里原样返回，由 applyBaseline 把每个坏元素显式报成一条 BASELINE_NO_REASON 红灯。
     return { ...empty, ...j, entries: Array.isArray(j.entries) ? j.entries : [] }
   } catch { return empty }
 }
@@ -54,7 +68,7 @@ export function applyBaseline(findings, baseline) {
   const valid = []
   const noReason = []
   for (const e of entries) {
-    if (typeof e.reason === 'string' && e.reason.trim() !== '') valid.push(e)
+    if (isEntryObject(e) && typeof e.reason === 'string' && e.reason.trim() !== '') valid.push(e)
     else noReason.push(e)
   }
   const map = new Map(valid.map((e) => [keyOf(e), e]))
@@ -70,11 +84,14 @@ export function applyBaseline(findings, baseline) {
   })
   // 规则 2：缺 reason 的条目不生效，本身作为一条红灯
   for (const e of noReason) {
+    const o = isEntryObject(e) ? e : {}
     findingsOut.push({
       rule: 'BASELINE_NO_REASON', severity: 'red',
-      subject: `${e.rule || '?'} ${e.subject || '?'}`,
+      subject: `${o.rule || '?'} ${o.subject || '?'}`,
       message: '基线条目缺 reason（不变量 I4：放行必须写明理由）—— 该条目已被忽略',
-      hint: '给该条目补上 reason；确属误加则直接删除条目',
+      hint: isEntryObject(e)
+        ? '给该条目补上 reason；确属误加则直接删除条目'
+        : '该条目不是对象（文件被写坏或手工编辑出错），请改成 {rule, subject, reason} 形状',
     })
   }
   const present = new Set(findings.map(keyOf))
@@ -101,7 +118,7 @@ export function reportWithBaseline(findings, baseline, opts = {}) {
 export function baselineGrowth({ baseline, recordedCount, recordedRedCount }) {
   const entries = baseline.entries || []
   const n = entries.length
-  const redN = entries.filter((e) => e.severity === 'red').length
+  const redN = entries.filter((e) => isEntryObject(e) && e.severity === 'red').length
   const out = { exceeded: null, redExceeded: null, recordedCount, recordedRedCount, count: n, redCount: redN }
   if (recordedCount !== null && recordedCount !== undefined && n > recordedCount) out.exceeded = n
   if (recordedRedCount !== null && recordedRedCount !== undefined && redN > recordedRedCount) out.redExceeded = redN

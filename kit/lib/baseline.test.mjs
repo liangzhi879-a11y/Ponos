@@ -121,3 +121,23 @@ test('reportWithBaseline：套用基线后重建报告（summary/baselined 与 f
   assert.equal(lines[0], 'DevKit 检查：✅ 通过（红灯 0 / 基线豁免 1 条，其中红灯 1 条）')
   assert.equal(lines[1], '基线豁免：1 条（其中红灯 1 条）')
 })
+
+// ★ 低危项（Task 2 复审）：手工把 entries 写成 [null] 是**现实路径**（人工编辑该文件），
+//   而门禁声明的是"不能因坏文件崩掉"。初版只校验 Array.isArray(entries)，元素形状不管：
+//   `null.reason` 直接抛 TypeError，整个 check 变成崩溃而不是红灯。
+test('applyBaseline / baselineGrowth：entries 里的非对象元素不得抛错，按"缺 reason"处理', () => {
+  const root = fixture({ version: 1, entries: [null, 'x', 3] })
+  const loaded = loadBaseline({ root })
+  const findings = [finding({ rule: 'P5', severity: YELLOW, subject: 'python.diff' })]
+  assert.doesNotThrow(() => applyBaseline(findings, loaded), '坏条目不得让门禁崩掉（应降级为红灯）')
+  const out = applyBaseline(findings, loaded)
+  assert.equal(out.ignoredNoReason, 3, '三个坏条目都当作缺 reason')
+  assert.equal(out.findings.filter((f) => f.rule === 'BASELINE_NO_REASON' && f.severity === 'red').length, 3, '每条都要有一条红灯（坏文件必须可见）')
+  assert.equal(out.findings.find((f) => f.rule === 'P5').severity, 'yellow', '坏条目不得顺手把正常 finding 豁免掉')
+  assert.deepEqual(out.used, [])
+  assert.doesNotThrow(() => baselineGrowth({ baseline: loaded, recordedCount: 0, recordedRedCount: 0 }))
+  const g = baselineGrowth({ baseline: loaded, recordedCount: 0, recordedRedCount: 0 })
+  assert.equal(g.count, 3, '坏条目也占条目数（否则"塞垃圾条目"可绕过条目数护栏）')
+  assert.equal(g.exceeded, 3)
+  assert.equal(g.redExceeded, null, '坏条目不是"红灯豁免"，不得计入红灯护栏')
+})
