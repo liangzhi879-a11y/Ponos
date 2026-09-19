@@ -101,12 +101,12 @@ test('全绿基线：无未用、无幽灵、内核零依赖、台账与宿主�
 // 且不依赖 scratch/ release/ 这类磁盘状态。
 // ⚠️ B1（Task 10）按 spec 删掉这 10 个未用运行时依赖后，本测试必须同步更新为 0 条
 //    —— 这是刻意的：真仓数字要有人负责，删完不更新就报红。
-test('R4：真仓台账的实测数字被 P1 覆盖（51+13 声明 / 9 未用，逐条报红）', () => {
+test('R4：真仓台账的实测数字被 P1 覆盖（50+13 声明 / 8 未用，逐条报红）', () => {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
   const depsData = readDeps({ root: ROOT })
   assert.ok(depsData, 'kit/manifest/deps.json 必须存在（干净克隆里它是已跟踪文件）')
   const counts = Object.fromEntries(Object.entries(depsData.domains).map(([k, d]) => [k, (d.packages || []).length]))
-  assert.equal(counts['npm-runtime'], 51, '运行时声明数（Task 5 实测）')
+  assert.equal(counts['npm-runtime'], 50, '运行时声明数（Task 5 实测）')
   assert.equal(counts['npm-dev'], 13, 'dev 声明数（Task 5 实测）')
   assert.equal(counts.kernel, 0, '内核域恒零依赖')
 
@@ -114,11 +114,10 @@ test('R4：真仓台账的实测数字被 P1 覆盖（51+13 声明 / 9 未用，
     pkg: readJson({ root: ROOT, rel: 'package.json' }) })
   const p1 = findings.filter((f) => f.rule === 'P1').map((f) => f.subject).sort()
   assert.deepEqual(p1, [
-    '@radix-ui/react-collapsible@npm-runtime', '@radix-ui/react-context-menu@npm-runtime',
-    '@radix-ui/react-popover@npm-runtime', '@tanstack/react-virtual@npm-runtime',
-    'classic-level@npm-runtime', 'diff@npm-runtime', 'mammoth@npm-runtime', 'nanoid@npm-runtime',
-    'xlsx@npm-runtime'
-  ], '真仓"零引用证据"的 9 条必须逐条报红（B1 的删除清单就是它）')
+    '@radix-ui/react-context-menu@npm-runtime', '@radix-ui/react-popover@npm-runtime',
+    '@tanstack/react-virtual@npm-runtime', 'classic-level@npm-runtime', 'diff@npm-runtime',
+    'mammoth@npm-runtime', 'nanoid@npm-runtime', 'xlsx@npm-runtime'
+  ], '真仓"零引用证据"的 8 条必须逐条报红（B1 的删除清单就是它）')
   assert.equal(findings.filter((f) => f.rule === 'P3' || f.rule === 'P4').length, 0)
   // P5 的差集是黄灯（内嵌 13 个 vs requirements 的差集），绝不是红
   assert.equal(findings.filter((f) => f.severity === 'red' && f.rule === 'P5').length, 0)
