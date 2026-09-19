@@ -201,13 +201,22 @@ export function frontendFetchPaths({ files, readTracked: read }) {
   return out
 }
 
-/** 前端 fetch 与 server 路由的**单向差集**：精确键命中 / 动态前缀正则命中 / 组合基址（以 `/` 收尾）下有静态路由 */
+/**
+ * 前端 fetch 与 server 路由的**单向差集**。命中口径（三种，都不算差集）：
+ *   ① 精确路径命中某个静态端点键；
+ *   ② 命中某条**锚定正则**（`prefixes[].dynamic`，如 `/workflows/:id` 系）；
+ *   ③ 落在桥**已分派的命名空间**下（`prefixes[].prefix`，如 `/providers/` —— 桥用 `startsWith` 分派，
+ *      具体子路径由运行时拼装）。★ ②③ 是"后端有没有人接"的判据；**不**在这里判"子路径是否被登记"
+ *      ——那是 T1 的 `prefixes.children` 与 scope 登记（CT4）的职责，重复判定只会制造两套真相。
+ */
 export function frontendDiff({ fetched, routes, prefixes = [] }) {
   const livePaths = new Set([...(routes || new Map()).keys()].map(pathOfKey))
+  const nsPrefixes = (prefixes || []).map((p) => p.prefix).filter(Boolean)
   const diff = []
   for (const p of fetched.keys()) {
     if (livePaths.has(p)) continue
     let hit = dynMatches(prefixes, p)
+    if (!hit) hit = nsPrefixes.some((x) => p === x || p.indexOf(x) === 0)
     if (!hit && p.endsWith('/')) {
       for (const live of livePaths) if (live.indexOf(p) === 0) { hit = true; break }
     }

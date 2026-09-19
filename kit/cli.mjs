@@ -16,6 +16,13 @@
 //       "15"只在**去掉** builtins 过滤时才会出现。**以后不要引用"15"这个数字。**
 //   · Rider 3：`runDepRules` 的 ghost 是必传参数（缺省抛错），所以这里的 collect() 必须
 //     真的算出来 —— 漏了不会"静默全绿"，会直接炸。
+//
+// ★ 2026-09-19 P1-T9：契约对账（CT0–CT9）接线。三条约束直接落在这里：
+//   · **同源**：`collect()` 是 check/view 的唯一入口（含契约提取）—— 两处各跑一套会出现"两个真相"；
+//   · **可见性**：`renderHuman` 恒打印「契约范围登记（N 组 / M 键）」**逐条**（kind/ns/count/docSection/reason）
+//     —— 只报总数等于把"范围边界"藏起来（先例：spec §7.3 规则 3）；
+//   · **sync 不写 scope**：`contract-scope.json` 是人工文件，sync 只**读**它做摘要，绝不改写
+//     （同一心智先例：sync 不写 drift-baseline.json）。
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { trackedFiles, codeFiles, readTracked } from './lib/scan.mjs'
@@ -24,8 +31,14 @@ import { loadBaseline, applyBaseline, baselineGrowth } from './lib/baseline.mjs'
 import { readVersions, readDeps, readJson, syncVersions, syncDeps, syncSkillsLock, computeGhost } from './lib/ledger.mjs'
 import { runVersionRules } from './lib/version-rules.mjs'
 import { runDepRules } from './lib/dep-rules.mjs'
+import { parseDoc } from './lib/contract-doc.mjs'
+import { buildSnapshot, readSnapshot, diffSnapshot } from './lib/contract-snapshot.mjs'
+import { loadScope } from './lib/contract-scope.mjs'
+import { runContractRules } from './lib/contract-rules.mjs'
 
 const ROOT = process.env.YFW_KIT_ROOT || resolve(dirname(fileURLToPath(import.meta.url)), '..')
+/** 契约文档（受控子集；P1 只解析不修改 —— 补文档另开 P1.5） */
+const DOC_FILE = 'docs/bridge-contract.md'
 const USAGE = `用法：node kit/cli.mjs <check|sync|view|stamp> [选项]
 
   check [--json] [--verbose]   台账门禁（只读）。退出码 0=无红灯，1=有红灯
@@ -40,15 +53,31 @@ function declaredNames(pkg) {
   return new Set(['dependencies', 'devDependencies'].flatMap((f) => Object.keys(pkg?.[f] || {})))
 }
 
+/** 范围登记的摘要（给报告用：**逐条**带 kind/ns/count/docSection/reason，绝不只给总数） */
+function scopeSummary(scope) {
+  const entries = scope?.entries || []
+  return {
+    present: Boolean(scope?.present),
+    total: entries.length,
+    keys: entries.reduce((n, e) => n + e.members.length, 0),
+    groups: entries.map((e) => ({
+      kind: e.kind, ns: e.ns, count: e.members.length, docSection: e.docSection,
+      reason: e.reason, problems: e.problems.length,
+    })),
+  }
+}
+
 /**
- * 一次收集：扫描域（git ls-files，I2）+ 台账 + 全部规则。
+ * 一次收集：扫描域（git ls-files，I2）+ 台账 + 全部规则（版本/依赖/契约）。
  * check 与 view **必须共用本函数** —— 各跑一套就会出现"两个真相"（测试已钉住 summary 逐字相等）。
+ * 契约侧：文档**现场解析**、快照**现场重算**（CT1 的红线）、scope 只读加载。
  */
-function collect() {
+async function collect() {
   const files = trackedFiles({ root: ROOT })
   const versions = readVersions({ root: ROOT })
   const deps = readDeps({ root: ROOT })
   const pkg = readJson({ root: ROOT, rel: 'package.json', fallback: null })
+  const read = (f) => readTracked({ root: ROOT, file: f })
   // 幽灵依赖：sync 与 check 共用 computeGhost（Rider 1）。探针清单优先用台账里已登记的
   // （`optionalProbes` 含 file:line，供人复核），台账缺失时该函数会现场重算。
   const ghost = deps
@@ -63,15 +92,34 @@ function collect() {
   // pkg 显式传入：P7 的对账对象必须与 P2 的 declared 是**同一次读取**（否则两次读盘之间
   // 有人改了 package.json，报告里会出现互相矛盾的两段结论）。
   const d = runDepRules({ root: ROOT, deps, ghost, pkg })
-  return { files, versions, deps, checks: [...v.checks, ...d.checks], findings: [...v.findings, ...d.findings] }
+  const docText = read(DOC_FILE)
+  const doc = docText === null ? null : parseDoc(docText)
+  const scope = loadScope({ root: ROOT })
+  const channels = versions && versions.channels && typeof versions.channels === 'object' ? versions.channels : null
+  const c = await runContractRules({
+    root: ROOT, files, doc, snapshot: channels, scope, readTracked: read,
+    recorded: { scopeCount: channels?.scopeCount ?? null, scopeRedCount: channels?.scopeRedCount ?? null },
+  })
+  return {
+    files, versions, deps, scope,
+    checks: [...v.checks, ...d.checks, ...c.checks],
+    findings: [...v.findings, ...d.findings, ...c.findings],
+  }
 }
 
-function buildReport() {
-  const { checks, findings, versions } = collect()
+async function buildReport() {
+  const { checks, findings, versions, scope } = await collect()
   const baseline = loadBaseline({ root: ROOT })
   const applied = applyBaseline(findings, baseline)
-  const report = makeReport({ checks, findings: applied.findings })
-  const growth = baselineGrowth({ baseline, recordedCount: versions?.history?.baselineCount ?? null })
+  const report = makeReport({ checks, findings: applied.findings, scope: scopeSummary(scope) })
+  // ★ P0 暴露的坑（P1-T8 一次写全）：`baselineGrowth` 的第二道护栏（豁免红灯的条数）需要
+  //   `history.baselineRedCount` —— 此前**只读不写**（台账里没有该键）⇒ 第二道护栏形同不存在。
+  //   现在两侧都接线：值由人工写进 versions.json#history（与 baselineCount 同段），这里读它。
+  const growth = baselineGrowth({
+    baseline,
+    recordedCount: versions?.history?.baselineCount ?? null,
+    recordedRedCount: versions?.history?.baselineRedCount ?? null,
+  })
   if (growth) {
     // BASE：基线条目数超过登记值 → 红。没有它，基线会变成"遇红就塞"的垃圾桶。
     const exceeded = growth.exceeded ?? growth.redExceeded
@@ -80,7 +128,7 @@ function buildReport() {
       rule: 'BASE', severity: RED, subject: 'drift-baseline.entries',
       expected: growth.exceeded !== null && growth.exceeded !== undefined ? String(growth.recordedCount) : String(growth.recordedRedCount),
       actual: String(exceeded),
-      hint: `基线的${what}超过了每次签入时登记的数量（versions.json#history.baselineCount）：基线是"已知欠账"，不是"遇红就塞"`,
+      hint: `基线的${what}超过了每次签入时登记的数量（versions.json#history.baselineCount / baselineRedCount）：基线是"已知欠账"，不是"遇红就塞"`,
     })
     report.ok = false
     report.summary.red += 1
@@ -94,11 +142,21 @@ function ledgerSizes() {
   const v = readVersions({ root: ROOT }) || {}
   const d = readDeps({ root: ROOT }) || {}
   const count = (k) => ((d.domains?.[k]?.packages) || []).length
+  // 契约快照摘要（P1-T9）：口径与 `--verbose` 里 CT 规则的 evaluated 同源 —— 数字对不上时一眼可见
+  const c = v.channels && typeof v.channels === 'object' ? v.channels : {}
+  const ipcCount = Object.values(c.ipc || {}).reduce((n, a) => n + (Array.isArray(a) ? a.length : 0), 0)
   return {
     versions: {
       lines: (v.lines || []).length, contracts: (v.contracts || []).length,
       skills: (v.skills || []).length, skillsLock: (v.skillsLock?.ids || []).length,
       commonTools: (v.commonTools?.entries || []).length,
+      channels: {
+        routes: Object.keys(c.routes || {}).length,
+        routePrefixes: Object.keys(c.routePrefixes || {}).length,
+        wsOut: (c.wsOut || []).length, wsIn: (c.wsIn || []).length, ipc: ipcCount,
+        tools: Object.keys(c.tools || {}).length, staticToolCount: c.staticToolCount ?? null,
+        excluded: (c.excluded || []).length, scopeCount: c.scopeCount ?? null, scopeRedCount: c.scopeRedCount ?? null,
+      },
     },
     deps: {
       'npm-runtime': count('npm-runtime'), 'npm-dev': count('npm-dev'), kernel: count('kernel'),
@@ -111,33 +169,59 @@ function ledgerSizes() {
  * --verbose 的额外内容：**逐条规则的判定结果**。
  * 为什么必须由 --verbose 提供：默认报告只列 findings，"哪条规则真的跑过、evaluated 是多少"
  * 在红灯之外看不见 —— P7 这种"两个集合对账"的规则若因故没接线，报告会与"全绿"长得一样。
+ * 契约侧同理：CT0–CT9 的 evaluated 与台账规模里的 channels 计数必须能互相对照。
  */
 function renderRuleTable(report, sizes) {
   const lines = ['', `规则逐条（${report.checks.length}）`]
   for (const c of report.checks) {
     lines.push(`  ${c.passed ? '✔' : '✘'} [${c.rule}] ${c.title}  evaluated=${c.evaluated}`)
   }
-  lines.push('', `台账规模：versions ${JSON.stringify(sizes.versions)}`)
+  lines.push('', `台账规模：versions ${JSON.stringify({ ...sizes.versions, channels: undefined })}`)
+  lines.push(`          channels ${JSON.stringify(sizes.versions.channels)}`)
   lines.push(`          deps ${JSON.stringify(sizes.deps)}`)
   return lines.join('\n')
 }
 
-function runSync({ dryRun }) {
-  // syncVersions/syncDeps 都是"重写台账"的操作；--dry-run 时两者都不落盘（测试已钉住）。
+/**
+ * sync：把**代码里复算出来的契约快照**写进 `versions.json#channels`（P1-T6/T10）。
+ * 两条纪律：
+ *   · `snapshotAt` **幂等**：机器字段没变时保留旧时间戳（否则每次 sync 都产生无意义 diff，
+ *     "提交 channels 变化"这条约定会被噪声淹没）；
+ *   · **绝不写 `contract-scope.json`**（人工文件）—— 这里只读它做摘要打印。
+ *     `kit/cli.test.mjs` 断言"sync 前后 scope 文件逐字节不变"。
+ */
+async function runSync({ dryRun }) {
   const files = trackedFiles({ root: ROOT })
-  const v = syncVersions({ root: ROOT, files, dryRun })
+  const read = (f) => readTracked({ root: ROOT, file: f })
+  const prev = readVersions({ root: ROOT }) || {}
+  const before = prev.channels && typeof prev.channels === 'object' ? prev.channels : null
+  const live = await buildSnapshot({ root: ROOT, files, readTracked: read })
+  const same = before ? diffSnapshot(before, live).equal : false
+  const channels = { ...live, snapshotAt: same && before.snapshotAt ? before.snapshotAt : live.snapshotAt }
+
+  // syncVersions/syncDeps 都是"重写台账"的操作；--dry-run 时两者都不落盘（测试已钉住）。
+  const v = syncVersions({ root: ROOT, files, dryRun, channels })
   const d = syncDeps({ root: ROOT, files, dryRun })
   // Task 9：lock 重算走真实现（此前是 `{updated:[],unchanged:[],missing:[]}` 占位 —— 占位期间
   // 跑 sync 也不会重算哈希，V7 的 20 条红灯永远擦不掉）。
   // 三件事都认 dryRun：预演**不得**落盘（否则"预演"会把仓库改到一半）。
   const lock = syncSkillsLock({ root: ROOT, files, dryRun })
   const data = d.data
+  const scope = loadScope({ root: ROOT })
+  const snapDiff = before ? diffSnapshot(before, live) : { equal: false, diffs: [] }
   return {
     lines: [
       `versions: lines ${v.data.lines.length} / contracts ${v.data.contracts.length} / skills ${v.data.skills.length} / lockIds ${v.data.skillsLock.ids.length} / commonPy ${v.data.commonTools.entries.length}`,
       `  added ${v.added.length}  removed ${v.removed.length}`,
       ...(v.added.length ? [`  + ${v.added.join('\n  + ')}`] : []),
       ...(v.removed.length ? [`  - ${v.removed.join('\n  - ')}`] : []),
+      // 契约快照：**每次 sync 都打印规模与"变没变"** —— 端点搬家/新增后必须由人确认并提交 channels 变化
+      `channels: routes ${Object.keys(live.routes).length} / prefixes ${Object.keys(live.routePrefixes).length} / wsOut ${live.wsOut.length} / wsIn ${live.wsIn.length}`
+        + ` / ipc ${Object.values(live.ipc).reduce((n, a) => n + a.length, 0)} / tools ${Object.keys(live.tools).length} / excluded ${live.excluded.length}`,
+      `  ${same ? '快照无变化（保留 snapshotAt）' : `快照已更新（机器字段差异 ${snapDiff.diffs.length} 处）`}`,
+      ...[...new Set(snapDiff.diffs.map((x) => x.kind))].sort().map((k) => `    ~ ${k}：${snapDiff.diffs.filter((x) => x.kind === k).length} 处`),
+      // scope 是**人工**文件：这里只报它多大，绝不改写（判据在 cli.test.mjs 的逐字节断言）
+      `scope（人工维护，本次未改写）: ${scope.entries.length} 组 / ${scope.entries.reduce((n, e) => n + e.members.length, 0)} 键${scope.present ? '' : '（文件不存在）'}`,
       `skills-lock: updated ${lock.updated.length} / unchanged ${lock.unchanged.length} / missing ${lock.missing.length}`,
       ...(lock.missing.length ? [`  ! lock 里登记但无对应 SKILL.md（条目保留，V7 会报红）：${lock.missing.join(', ')}`] : []),
       `deps: runtime ${data.domains['npm-runtime'].packages.length} / dev ${data.domains['npm-dev'].packages.length}`,
@@ -183,7 +267,7 @@ async function main() {
   const verbose = rest.includes('--verbose')
 
   if (cmd === 'check') {
-    const report = buildReport()
+    const report = await buildReport()
     if (asJson) console.log(JSON.stringify(report, null, 2))
     else {
       console.log(renderHuman(report))
@@ -194,14 +278,14 @@ async function main() {
   }
 
   if (cmd === 'view') {
-    const report = buildReport()
+    const report = await buildReport()
     const payload = {
       schemaVersion: 1, generatedAt: report.generatedAt, ok: report.ok, summary: report.summary,
-      ledgers: ledgerSizes(), findings: report.findings,
+      ledgers: ledgerSizes(), scope: report.scope, findings: report.findings,
     }
     console.log(asJson
       ? JSON.stringify(payload, null, 2)
-      : `${renderHuman(makeReport({ checks: [], findings: report.findings }))}\n\n${renderRuleTable(report, ledgerSizes())}`)
+      : `${renderHuman(makeReport({ checks: [], findings: report.findings, scope: report.scope }))}\n\n${renderRuleTable(report, ledgerSizes())}`)
     // view 是"查看"：契约恒 0（门禁退出码只在 check 上）。测试已钉住这条反向断言。
     return 0
   }
@@ -212,7 +296,8 @@ async function main() {
       console.error(`sync 前置条件不满足：\n  - ${problems.join('\n  - ')}`)
       return 1
     }
-    console.log(runSync({ dryRun: rest.includes('--dry-run') }).lines)
+    const r = await runSync({ dryRun: rest.includes('--dry-run') })
+    console.log(r.lines)
     return 0
   }
 

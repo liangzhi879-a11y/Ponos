@@ -96,7 +96,11 @@ test('★RiderA：真仓红灯 0 / 黄灯 1（4 条 P2 幽灵依赖已补声明�
   assert.equal(r.code, 0, `真仓必须零红灯（Rider A 已给 4 个包补声明），实测 findings=${JSON.stringify(j.findings)}`)
   assert.deepEqual([j.summary.red, j.summary.yellow], [0, 1],
     '黄灯 1 是 P5（两套 Python 清单差集，属预期，spec §6.3 已定不阻断）；红灯/黄灯数变了就必须有人来解释')
-  assert.deepEqual(j.findings.map((f) => f.rule), ['P5'])
+  // P1 之后：P5 + 3 条 CT9（渲染层调后端无的差集，**黄、只报不拦**，已逐条登记 drift-baseline.json）
+  // ⇒ summary.yellow 仍是 1，这 3 条落进 baselined（「绿灯里藏着放行」必须可见：见 renderHuman 的豁免段）
+  assert.deepEqual(j.findings.map((f) => f.rule), ['P5', 'CT9', 'CT9', 'CT9'])
+  assert.deepEqual(j.findings.filter((f) => f.rule === 'CT9').map((f) => f.severity), ['baselined', 'baselined', 'baselined'])
+  assert.equal(j.baselined.total, 3)
 })
 
 test('check --verbose 逐条列出每条规则的判定结果（--verbose 必须真的多说点什么）', () => {
@@ -105,7 +109,96 @@ test('check --verbose 逐条列出每条规则的判定结果（--verbose 必须
   assert.match(verbose.stdout, /规则逐条/)
   assert.match(verbose.stdout, /P7/)
   assert.match(verbose.stdout, /台账包集与 package\.json 双向一致/)
+  // P1：CT 规则也必须逐条出现在 --verbose 里（否则"契约对账有没有接线"看不出来）
+  assert.match(verbose.stdout, /\[CT1\] 快照可从代码现场重算/)
+  assert.match(verbose.stdout, /\[CT4\] scope members/)
   assert.ok(verbose.stdout.length > plain.stdout.length, '--verbose 的输出必须严格多于默认输出')
+})
+
+// ── P1（T9）：契约侧的可见性 / sync 边界 / 夹具真红真绿 ──────────────────────
+//
+// 三条判据各自对应一个**不许做假**的反例：
+//   ① 报告只打 scope 总数不打逐条（反例⑦）⇒ 逐条 kind/ns/count/docSection/reason 必须在人类可读报告里能找到；
+//   ② `sync` 会写 `contract-scope.json`（反例③：members 自动生成 ⇒ 登记永远自洽、失去意义）⇒ 逐字节断言；
+//   ③ 契约规则只在真仓"看起来绿"、夹具里根本不会红（恒绿）⇒ 夹具必须能造出**真红**再转绿。
+
+const readScopeFile = () => JSON.parse(readFileSync(join(ROOT, 'kit/manifest/contract-scope.json'), 'utf8'))
+
+test('★P1-①：契约范围登记段恒打印，且**逐条**列 kind/ns/键数/docSection/reason（只报总数即反例⑦）', () => {
+  const scope = readScopeFile()
+  const keys = scope.entries.reduce((n, e) => n + e.members.length, 0)
+  const human = run(['check']).stdout
+  assert.ok(human.includes(`── 契约范围登记（${scope.entries.length} 组 / ${keys} 键）──`),
+    `人类可读报告必须有"N 组 / M 键"段（N/M 由登记文件本身算出，不硬编码数字 —— 铁律 4）`)
+  for (const e of scope.entries) {
+    assert.ok(human.includes(`  [${e.kind}] ${e.ns}  ${e.members.length} 键  docSection=`),
+      `${e.kind} ${e.ns} 必须逐条出现（缺一条 = 边界被藏起来）`)
+    assert.ok(human.includes(e.reason.slice(0, 16)), `${e.kind} ${e.ns} 的 reason 必须打印出来`)
+  }
+  // view --json 同源：scope 摘要必须一起输出（AI 侧也要看得见边界）
+  const j = JSON.parse(run(['view', '--json']).stdout)
+  assert.equal(j.scope.total, scope.entries.length)
+  assert.equal(j.scope.keys, keys)
+  assert.deepEqual(j.scope.groups.map((g) => `${g.kind}|${g.ns}|${g.count}`),
+    scope.entries.map((e) => `${e.kind}|${e.ns}|${e.members.length}`))
+})
+
+test('★P1-②：`kit:sync` 不得改写 contract-scope.json（逐字节），且不冲掉 channels 的人工封顶值', () => {
+  const scopePath = join(ROOT, 'kit/manifest/contract-scope.json')
+  const versionsPath = join(ROOT, 'kit/manifest/versions.json')
+  const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex')
+  const before = sha(scopePath)
+  const vBefore = sha(versionsPath)
+  assert.equal(run(['sync']).code, 0)
+  assert.equal(sha(scopePath), before, 'sync 改了 scope 文件 = members 可被自动生成（反例③），登记失去意义')
+  // versions.json 也必须逐字节不变：快照内容未变时 snapshotAt 保留 ⇒ sync 幂等（否则每次 sync 都是噪声 diff）
+  assert.equal(sha(versionsPath), vBefore, 'sync 必须幂等：快照无变化时不得重写 snapshotAt/人工段')
+  const ch = JSON.parse(readFileSync(versionsPath, 'utf8')).channels
+  assert.equal(typeof ch.scopeCount, 'number', 'channels.scopeCount 是人工封顶值：sync 不得冲成 undefined')
+  assert.equal(typeof ch.scopeRedCount, 'number')
+  assert.ok(ch.snapshotAt && Object.keys(ch.routes).length > 0, '快照本体必须在（CT0/CT1 的前提）')
+  // --dry-run 同样不落盘
+  const dry = run(['sync', '--dry-run'])
+  assert.equal(dry.code, 0)
+  assert.equal(sha(versionsPath), vBefore)
+  assert.equal(sha(scopePath), before)
+})
+
+test('★P1-③：夹具仓契约**真红真绿** —— 新增端点未登记 → CT2/CT4 红；登记后转绿', () => {
+  const { root, env } = fixture()
+  mkdirSync(join(root, 'server'), { recursive: true })
+  writeFileSync(join(root, 'server/fx-routes.mjs'),
+    ["export function route(pathname) {", "  if (pathname === '/fx') return 1", '  return null', '}', ''].join('\n'))
+  execFileSync('git', ['add', '-A'], { cwd: root })
+  assert.equal(run(['sync'], { env }).code, 0)
+
+  const red = run(['check', '--json'], { env })
+  assert.equal(red.code, 1, '代码里有端点而 scope 文件不存在 ⇒ 未覆盖的契约面必须报红')
+  const rj = JSON.parse(red.stdout)
+  assert.deepEqual([...new Set(rj.findings.filter((f) => f.severity === 'red').map((f) => f.rule))].sort(), ['CT2', 'CT4'],
+    `实测红灯：${JSON.stringify(rj.findings.filter((f) => f.severity === 'red'))}`)
+
+  // 登记后转绿 —— 登记的"可放行"能力是真的，且只对它登记的那些键生效
+  mkdirSync(join(root, 'kit/manifest'), { recursive: true })
+  writeFileSync(join(root, 'kit/manifest/contract-scope.json'), JSON.stringify({
+    version: 1,
+    entries: [{
+      kind: 'routes', ns: '/fx', members: ['ANY /fx'], docSection: null,
+      reason: '夹具：端点 /fx 未在文档声明（夹具无 bridge-contract.md），按精确键登记',
+      at: '2026-09-19',
+    }],
+  }, null, 2))
+  const green = run(['check', '--json'], { env })
+  assert.equal(green.code, 0, `登记后必须转绿：${green.stdout}`)
+  assert.deepEqual(JSON.parse(green.stdout).findings.filter((f) => f.severity === 'red'), [])
+  // 反向：把成员改成前缀（通配）→ CT4C 红（登记不许放宽到"放行一切"）
+  writeFileSync(join(root, 'kit/manifest/contract-scope.json'), JSON.stringify({
+    version: 1,
+    entries: [{ kind: 'routes', ns: '/fx', members: ['ANY /fx*'], docSection: null, reason: '夹具：故意写成通配', at: '2026-09-19' }],
+  }, null, 2))
+  const wild = run(['check', '--json'], { env })
+  assert.equal(wild.code, 1)
+  assert.ok(JSON.parse(wild.stdout).findings.some((f) => f.rule === 'CT4C' && f.severity === 'red'))
 })
 
 // ── Task 8 / B2 + B3：规则条数口径（规则号数）必须与实现一致 ────────────────
@@ -115,16 +208,21 @@ test('check --verbose 逐条列出每条规则的判定结果（--verbose 必须
 // （spec §5.3 表 9 行 + §6.3 表 8 行 = 17、报告 18、实现 19）→ 报告与实现必须对齐，
 // 口径写进 spec（§5.3/§6.3 的"规则号数"一节）。
 const EXPECTED_RULES = ['P0', 'P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7',
-  'V1', 'V1b', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', "V8'", 'V8b']
+  'V1', 'V1b', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', "V8'", 'V8b',
+  // P1（契约快照 ↔ bridge-contract.md 对账）的 CT 号段：CT0–CT9，含 CT4 的两个子规则（CT4B 封顶 / CT4C 条目合法）。
+  // 刻意**没有 CT8**（号段按 plan §3 原样，不补空号）。
+  'CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT9']
 
-test('★B2/B3：summary.rules = 19，且逐条规则号与 spec 口径完全一致（含表外 V1b/V8b/ P0）', () => {
+test('★B2/B3：summary.rules = 30，且逐条规则号与 spec 口径完全一致（含表外 V1b/V8b/P0 与 CT0–CT9）', () => {
   const j = JSON.parse(run(['check', '--json']).stdout)
   assert.deepEqual([...j.checks.map((c) => c.rule)].sort(), [...EXPECTED_RULES].sort(),
     '规则号集必须逐字对齐：多一个（自造号）或少一个（早退没 push）都要在这里变红')
-  assert.equal(j.summary.rules, 19)
-  assert.equal(new Set(j.checks.map((c) => c.rule)).size, 19, '同一个规则号不得重复计入')
+  assert.equal(j.summary.rules, 30)
+  assert.equal(new Set(j.checks.map((c) => c.rule)).size, 30, '同一个规则号不得重复计入')
   // V6 的标题必须与判据同口径（标题写三方 → 就得真核三方，见 kit/lib/version-rules.mjs）
   assert.match(j.checks.find((c) => c.rule === 'V6').title, /三方/)
+  // CT1 的标题必须写明"现场重算"—— 它是红线（读快照当答案是 plan §7 反例⑤）
+  assert.match(j.checks.find((c) => c.rule === 'CT1').title, /现场重算/)
 })
 
 test('未知子命令 → 非 0 退出且给出用法；无参数 → 只给用法（不允许静默忽略）', () => {
@@ -214,9 +312,11 @@ test('夹具仓无台账：check 退 1（P0/V0 红），绝不因"读不到台�
   assert.equal(j.ok, false)
   // ★ B2：P0 必须也进 checks。两条台账都缺时，唯一可判定的规则就是 P0 ——
   //   若 rules 为 0，说明 P0 又退回了"只 push finding"（--verbose 里也会缺这一格）。
-  assert.deepEqual(j.checks.map((x) => x.rule), ['P0'])
-  assert.equal(j.checks[0].passed, false)
-  assert.equal(j.summary.rules, 1)
+  //   ★ P1 之后：契约规则（CT0–CT9）**无条件**进 checks（判据本身要报"快照缺失"），故这里逐条列全。
+  assert.deepEqual(j.checks.map((x) => x.rule).sort(),
+    ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT9', 'P0'].sort())
+  assert.equal(j.checks.find((x) => x.rule === 'P0').passed, false)
+  assert.equal(j.summary.rules, 12)
 })
 
 // ★ Rider 2：宿主删掉声明却不重跑 sync → 旧判据（P1/P2 只读台账）一条红都不报。

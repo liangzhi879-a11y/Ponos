@@ -35,7 +35,7 @@ export function checkResult({ rule, title, evaluated = 0, passed = true }) {
  * 必须**重建**报告，不能"复用旧 report 只把 findings 换掉"—— 那会留下脏的红灯计数。
  * lib 层为此提供 baseline.mjs 的 `reportWithBaseline(findings, baseline)`，渲染路径一律走它。
  */
-export function makeReport({ checks = [], findings = [], generatedAt = new Date().toISOString() } = {}) {
+export function makeReport({ checks = [], findings = [], generatedAt = new Date().toISOString(), scope = null } = {}) {
   const count = (s) => findings.filter((f) => f.severity === s).length
   const red = count(RED)
   const baselined = count(BASELINED)
@@ -54,6 +54,9 @@ export function makeReport({ checks = [], findings = [], generatedAt = new Date(
     baselined: { total: baselined, red: findings.filter((f) => f.severity === BASELINED && f.baselinedFrom === RED).length },
     checks,
     findings,
+    // 契约范围登记摘要（P1）。**只有调用方显式传入时才有该键**：report.mjs 的既有测试断言
+    // renderHuman 的逐行输出，凭空多一段会让它们变红；CLI 侧两条渲染路径（check/view）都会传。
+    ...(scope ? { scope } : {}),
   }
 }
 
@@ -102,5 +105,32 @@ export function renderHuman(report) {
   section(RED, '红灯（阻断）')
   section(YELLOW, '黄灯（提示）')
   section(BASELINED, '基线（已知断账）')
+  renderScope(report, lines)
   return lines.join('\n')
+}
+
+/**
+ * 契约范围登记段（P1 · 先例 §7.3 规则 3 的同族要求：**豁免/范围统计始终可见**）。
+ *
+ * ★ 为什么**逐条**列而不是只报总数：范围登记就是"哪些契约面不在文档覆盖面内"的**边界**本身。
+ *   只打「37 键」等于把边界藏起来 —— 读者无法判断"这 37 键是真边界还是被人塞进来凑数的"；
+ *   逐条带 `kind/ns/count/docSection/reason` 才让"为什么它可以不检查"当场可核对。
+ * ★ 为什么"恒打印"：`report.scope` 由 CLI 的两条渲染路径（check / view）都传；
+ *   只有 lib 层的旧测试没传（那时不打印，避免破坏它们的逐行断言）。
+ */
+function renderScope(report, lines) {
+  const s = report.scope
+  if (!s) return
+  lines.push('')
+  lines.push(`── 契约范围登记（${s.total} 组 / ${s.keys} 键）──`)
+  if (!s.total) {
+    lines.push(`  （${s.present ? '登记为空' : '无 kit/manifest/contract-scope.json'}：代码真值里没有"文档未声明"的键，或登记文件缺失）`)
+    return
+  }
+  for (const g of s.groups) {
+    const doc = g.docSection === null || g.docSection === undefined ? '无' : g.docSection
+    const bad = g.problems ? `  ⚠ ${g.problems} 条问题（条目失效，CT4C）` : ''
+    lines.push(`  [${g.kind}] ${g.ns}  ${g.count} 键  docSection=${doc}${bad}`)
+    lines.push(`        ${g.reason}`)
+  }
 }

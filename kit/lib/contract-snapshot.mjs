@@ -43,11 +43,14 @@ const sorted = (arr) => [...arr].sort()
 
 /**
  * 构造契约快照（**纯读**：不写任何文件）。
- * @param {{root: string, files?: string[], readTracked?: (f: string) => (string|null), now?: string}} p
+ * @param {{root: string, files?: string[], readTracked?: (f: string) => (string|null), now?: string,
+ *          parts?: {routes?: object, ws?: object, ipc?: object, tools?: object}}} p
  *   `files` 省略则走 `trackedFiles`（`git ls-files`，不变量 I2）；`readTracked` 默认绑 root。
+ *   `parts` 允许调用方复用**同一次扫描**的提取结果（同一进程里 T7 既要 live 快照又要各提取器的明细，
+ *   复用可避免把全仓读两遍；口径不变 —— parts 必须来自本次运行的提取器，不许来自台账）。
  * @returns {Promise<object>} 快照（含 `snapshotAt`；**不含**人工段字段）
  */
-export async function buildSnapshot({ root, files = null, readTracked: rt = null, now = undefined } = {}) {
+export async function buildSnapshot({ root, files = null, readTracked: rt = null, now = undefined, parts = null } = {}) {
   if (!root) throw new Error('buildSnapshot: 缺少 root')
   const tracked = files || trackedFiles({ root })
   const read = rt || ((f) => readTracked({ root, file: f }))
@@ -55,10 +58,10 @@ export async function buildSnapshot({ root, files = null, readTracked: rt = null
   //   `.e2e.mjs` 不是 `*.test.mjs`，仍在域内 —— 它由提取器的 client-harness 角色排除，不是这里筛）。
   const code = codeFiles(tracked, { includeTests: false })
 
-  const routes = extractRoutes({ files: tracked, readTracked: read })
-  const ws = extractWs({ files: code, readTracked: read })
-  const ipc = extractIpc({ files: code, readTracked: read })
-  const tools = await extractTools({ root })
+  const routes = parts?.routes || extractRoutes({ files: tracked, readTracked: read })
+  const ws = parts?.ws || extractWs({ files: code, readTracked: read })
+  const ipc = parts?.ipc || extractIpc({ files: code, readTracked: read })
+  const tools = parts?.tools || await extractTools({ root })
 
   // ── 路由：只存语义键（值恒 null）+ 前缀命名空间（动态段的"能不能枚举"必须可判，见 T1 的 I5）──
   const routesOut = {}
