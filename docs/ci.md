@@ -79,19 +79,36 @@ node scripts/ci-preflight.mjs --allow-running-app
 
 由此预检里的比对语义是**不对称**的（`scripts/ci-preflight.mjs`）：工作树数 **少于**锚点 → 疑似测试文件被删（失败）；已跟踪数 **少于**锚点 → 提交后 CI 会失败，提醒先 `git add`。本地比锚点多属正常（有新文件没提交），不报错。
 
-### 门禁 A′：层与脚本**逐脚本**对齐（新增测试层要同步三处）
+但 `check-doc-anchors.mjs` 的门禁 A 是**精确相等**判定（不是"至少"），所以**工作树红 ≠ 你的改动坏了**：工作树里只要有**他人尚未提交**的测试文件，它就会红。实测本仓库并发跑多任务时：`node scripts/check-doc-anchors.mjs` → **EXIT=1**，报 `测试文件数[server/*.test.mjs] 与锚点不符：实际 92，锚点 89` 与 `测试文件数[src/**/*.test.ts] … 实际 81，锚点 74`；而**同一提交的干净克隆里 EXIT=0**。那些文件各自提交后计数即恢复；确属本层合法新增时才跑 `npm run anchors:write` 重算锚点（**不要**为了让自己的工作树变绿而把别人在途文件的计数写进锚点）。
 
-同一份分层清单里还登记了**每一层必须出现在哪些 package.json 脚本里**（`scripts/test-tiers.mjs` 的 `TIER_SCRIPTS`，与 `TEST_GLOBS` 定义在同一文件、紧邻，避免第二处真源）。门禁 A′ 按它**逐脚本**断言，并要求 `test:ci` 链路（`test:preflight → test:unit → test:server → test:kernel`）覆盖到每一层。
+### 门禁 A′：层与脚本**逐脚本**对齐（新增测试层要同步四处，含本文件）
 
-为什么不写成"这个 glob 出现在**某个**测试脚本里就算过"：CI 跑的是 `test:ci`，**从不跑 `test`**（全量脚本，只在本机手工用）。实测只从 `test:unit` 删掉 `kit` 层的 glob（`test` 里仍保留）时，旧写法 **EXIT=0** —— kit 层在 CI 里静默不跑，门禁却全绿；逐脚本校验后同一操作 **EXIT=1**。层是否真的在 CI 上跑，必须按**脚本名**核对，不能按"glob 字符串出现过"核对。
+同一份分层清单里还登记了**每一层必须出现在哪些 package.json 脚本里**（`scripts/test-tiers.mjs` 的 `TIER_SCRIPTS`，与 `TEST_GLOBS` 定义在同一文件、紧邻，避免第二处真源）。门禁 A′ 按它**逐脚本**断言。
 
-于是**新增一层测试目录要同步三处**，漏任一处都会被门禁 A/A′ 变成硬失败：
+"CI 真的会跑这一层吗"的判据**不是**一份手写的链路常量，而是**从 `package.json` 的 `test:ci` 解析出来的脚本名**（`scripts/test-tiers.mjs` 的 `ciChainScripts`：按 `&&` / `||` 切分后逐段 token 精确匹配 `npm [run] <name>`）。两条判据都有实测取证：
+
+- **不用子串 `includes`**：实测把 `test:ci` 里的 `npm run test:unit` 改成 `npm run test:unit:legacy`（`test:unit` 脚本仍在，但 CI 不再跑它）→ 子串判据 **EXIT=0**，即 `shared`/`electron`/`src`/`kit` 四层在 CI 里静默不跑而门禁全绿；改为 token 精确匹配后同一操作 **EXIT=1**。判据必须是"**这个脚本名**是否被执行"，不是"这个字符串是否出现过"。
+- **不另存 `CI_CHAIN_SCRIPTS` 常量**：那是会漂移的第二份真源，漂移的后果是**误报**（消息与事实相反）。实测新增一层专用脚本 `test:kit`（glob 放进它）、并在 `test:ci` 里**确实**追加 `npm run test:kit` 时，常量口径仍报"只挂在 CI 不跑的脚本上"（**EXIT=1**，而事实是 CI 已经跑到它）；改为就地解析 `test:ci` 后 **EXIT=0**。
+
+为什么必须逐脚本，而不是"这个 glob 出现在**某个**测试脚本里就算过"：CI 跑的是 `test:ci`，**从不跑 `test`**（全量脚本，只在本机手工用）。实测只从 `test:unit` 删掉 `kit` 层的 glob（`test` 里仍保留）时，旧写法 **EXIT=0** —— kit 层在 CI 里静默不跑，门禁却全绿；逐脚本校验后同一操作 **EXIT=1**。层是否真的在 CI 上跑，必须按**脚本名**核对，不能按"glob 字符串出现过"核对。
+
+于是**新增一层测试目录要同步四处**（spec §7.1 的清单）：
 
 1. `scripts/test-tiers.mjs`：`TEST_GLOBS` 加一行 + `TIER_SCRIPTS` 补上该层必须归属的脚本；
 2. `package.json`：`test` / `test:unit` / `test:server` / `test:kernel` 里补该层的 glob，并确认 `test:ci` 链路覆盖到它；
-3. `docs/_anchors.json`：跑 `npm run anchors:write` 重新生成（新增层若漏了这一步，门禁 A 会报"不在 testFileCounts 中"）。
+3. **本文件**（`docs/ci.md`）的口径说明——它是这套规则的对外表述，spec §7.1 把它与上面几处并列为需要同步的位置；
+4. `docs/_anchors.json`：跑 `npm run anchors:write` 重新生成（新增层若漏了这一步，门禁 A 会报"不在 testFileCounts 中"）。
 
-本文件（`docs/ci.md`）的分层说明也随之一并更新——它是这套口径的对外表述，spec §7.1 把它与上面三处并列为需要同步的位置。
+门禁 A/A′ **实际覆盖到的**与**刻意没覆盖的**（如实列出，避免把"没检查"当成"已检查"）：
+
+| 漂移形态 | 门禁反应 |
+|---|---|
+| `TIER_SCRIPTS` 里某个必需脚本漏了该层 glob（含"只加进 `test`、漏了 CI 实跑的 `test:unit`"） | 🔴 红：`未出现在 package.json 的 <脚本> 脚本中` |
+| 该层归属的脚本**全都不在** `test:ci` 链路里（按解析出的脚本名判定） | 🔴 红：`只挂在 CI 不跑的脚本…上` |
+| `TEST_GLOBS` 有该层、但 `_anchors.json` 的 `testFileCounts` 里没有该键 | 🔴 红：`不在 docs/_anchors.json 的 testFileCounts 中` |
+| 某层测试文件数与锚点不符 | 🔴 红 |
+| 锚点里**多**了 `TEST_GLOBS` 里没有的键 | ⚪ **不**检查（遍历以 `TEST_GLOBS` 为准） |
+| `_anchors.json` 的 `testTotal` 写错 | ⚪ **不**检查（门禁只逐层比计数，`testTotal` 仅作展示） |
 
 **刻意不门禁**：模块数、总行数、巨石行数——它们每次合法重构都会变，硬卡会逼人每次都重跑 `anchors:write`，最终结果是人把检查绕过或删掉，那还不如一开始就别卡。这些数字仍写进 `docs/_anchors.json` 的 `info` 段供人查看。
 

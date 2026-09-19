@@ -1,7 +1,9 @@
 // kit/lib/scan.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { dirname, resolve } from 'node:path'
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DOMAINS, trackedFiles, domainOf, isTestFile, codeFiles, inDomains, readTracked } from './scan.mjs'
 
@@ -13,21 +15,38 @@ test('trackedFiles 返回已入库文件（POSIX 分隔、数量级正确）', (
   assert.equal(files.some((f) => f.includes('\\')), false, '路径分隔符必须已归一为 /')
 })
 
-// G4 回归：扫描域 = git ls-files，不是磁盘遍历。
-// ★ 必须可注入构造（Task 1 返工）：**不得**依赖本机 disk 上恰好存在 scratch/ ——
-//    scratch/ 是 gitignored（.gitignore:21）、不入库，CI 工作流也没有任何创建它的步骤，
-//    于是"本地绿、CI 红"。用注入的 exec 造出"磁盘有、git 未跟踪"的场景，
-//    约束力不依赖环境，且正反两面都能断言。
-test('trackedFiles 只含已跟踪文件：磁盘上存在但未入库的文件不得进入扫描域（G4）', () => {
+// G4 回归：扫描域 = git ls-files，**不是磁盘遍历**。
+// ★ 构造要求（Task 1 二轮返工）：这里造的是**真实存在的目录与文件**（mkdtempSync），
+//   而不是 `root:'/fake'` 那种"磁盘上一个文件都没有"的空场景 —— 后者下
+//   "磁盘上有、git 未跟踪的文件不得进入结果"这句话是**空断言**（磁盘上根本没有那些文件，
+//   任何实现都满足它）。实测：把 scan.mjs 改成"git ls-files ∪ 磁盘遍历"（即 G4 真正要防的回归），
+//   空场景版本的测试仍 EXIT=0，**回归未被发现**。
+//   同时不依赖本机环境：scratch/ 是 gitignored（.gitignore:21）且 CI 没有创建它的步骤，
+//   依赖"本机恰好存在 scratch/"会让测试本地绿、CI 红。所以：临时目录 + 注入 exec。
+test('trackedFiles 只含已跟踪文件：磁盘上真实存在但未入库的文件不得进入扫描域（G4）', () => {
+  const root = mkdtempSync(join(tmpdir(), 'yfw-kit-'))
   const onDiskButUntracked = ['scratch/ponos-repo/src/index.ts', 'scratch/claude-code-ref/a.ts', 'release/YFWorking/app.exe']
   const tracked = ['src/a.ts', 'kernel/b.mjs']
-  // 注入 exec：模拟 `git ls-files -z` 只输出已跟踪文件
-  const exec = (_bin, _args) => tracked.join('\0') + '\0'
-  const files = trackedFiles({ root: '/fake', gitBin: 'git', exec })
-  assert.deepEqual(files, tracked)
-  for (const f of onDiskButUntracked) {
-    assert.equal(files.includes(f), false, `${f} 在磁盘上但未入库，不得进入扫描域`)
+  // 1) 把"已跟踪"与"磁盘上有但未入库"的文件都**真实写到磁盘**
+  for (const f of [...tracked, ...onDiskButUntracked]) {
+    const abs = join(root, f)
+    mkdirSync(dirname(abs), { recursive: true })
+    writeFileSync(abs, `// ${f}\n`)
   }
+  for (const f of onDiskButUntracked) {
+    assert.equal(existsSync(join(root, f)), true, `前提：${f} 必须真实存在于磁盘（否则下面的断言没有约束力）`)
+  }
+  // 2) 注入 exec：模拟 `git ls-files -z` 只输出已跟踪文件
+  const exec = (_bin, _args) => tracked.join('\0') + '\0'
+  const files = trackedFiles({ root, gitBin: 'git', exec })
+  // 正向：已入库的必须在
+  for (const f of tracked) assert.ok(files.includes(f), `${f} 已入库，必须进入扫描域`)
+  // 反向（G4 的约束力所在）：真实存在于磁盘但未入库的必须**不**在
+  for (const f of onDiskButUntracked) {
+    assert.equal(files.includes(f), false, `${f} 真实存在于磁盘但未入库，不得进入扫描域（扫描域只能是 git ls-files）`)
+  }
+  // 顺带断言精确相等（没有多出别的路径）
+  assert.deepEqual(files, tracked)
 })
 
 test('trackedFiles（真实仓库）：不含 scratch/ 与构建产物目录', () => {

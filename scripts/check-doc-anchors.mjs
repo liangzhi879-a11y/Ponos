@@ -13,6 +13,8 @@
 //   B. **各层测试文件数**：与 docs/_anchors.json 比对，抓"整层测试静默消失 / glob 写错"。
 //      配套 **A′**：分层清单（scripts/test-tiers.mjs）与 package.json 的测试脚本**逐脚本**对齐，
 //      并要求 `test:ci` 链路覆盖每一层 —— 抓"口径改了脚本没改 / 层只挂在 CI 不跑的脚本上"。
+//      "CI 是否真的跑某脚本"的判据是**从 package.json 的 test:ci 解析出的脚本名**（token 精确匹配），
+//      既不另存一份 `CI_CHAIN_SCRIPTS` 常量（漂移即误报），也不用子串 `includes`（`:legacy` 后缀会漏报）。
 //   C. **文档的图谱数字**（P2-4①）：`docs/architecture.md`（文本真源）与 `docs/architecture.html`
 //      （可视化/汇报版）里声明的模块数/域数/边数等，必须与**已提交的** docs/architecture-graph.html
 //      内嵌数据一致。注意各文档另有**不同口径**的数字（DevLens 符号级、内核文件数），
@@ -32,7 +34,7 @@ import { execFileSync } from 'node:child_process'
 import { globSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { TEST_GLOBS, TIER_SCRIPTS, CI_CHAIN_SCRIPTS, trackedTestCounts } from './test-tiers.mjs'
+import { TEST_GLOBS, TIER_SCRIPTS, ciChainScripts, trackedTestCounts } from './test-tiers.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const ANCHORS = resolve(ROOT, 'docs/_anchors.json')
@@ -310,24 +312,25 @@ for (const g of TEST_GLOBS) {
 // 门禁 A′：分层清单本身要与 package.json 的测试脚本一致（防"改了脚本忘了改口径"）
 // ★ 2026-09-19（DevKit C4）由 warnings 升级为 problems：原先只黄不红（退出码 0），
 //   实测"新增 kit 层却忘改 package.json 的 test glob"不会让 CI 失败 —— 门禁形同虚设。
-// ★★ 2026-09-19（Task 1 返工）由"任一脚本含 glob"收紧为**逐脚本校验**：
+// ★★ 2026-09-19（Task 1 一轮返工）由"任一脚本含 glob"收紧为**逐脚本校验** TIER_SCRIPTS：
 //   原实现是 `JSON.stringify(pkg.scripts).includes(g)`，**不区分脚本**。实测：
 //   只从 `test:unit` 删掉 kit glob（`test` 仍保留）→ EXIT=0；而 CI 链路是
 //   `test:ci → test:unit`（**从不跑 `test`**）→ kit 层在 CI 里静默不跑，C4 目标未达成。
-//   现在按 scripts/test-tiers.mjs 的 TIER_SCRIPTS 逐脚本断言，并要求 `test:ci` 链路覆盖全部层。
+// ★★★ 2026-09-19（Task 1 二轮返工）把"CI 是否真的跑某脚本"的判据从两处放宽处收紧：
+//   ① **删掉 `CI_CHAIN_SCRIPTS` 常量**（第二份真源 → 漂移即**误报**）：实测新增一层
+//      `test:kit` 并在 `test:ci` 里确实串上 `npm run test:kit` 后，旧常量口径仍报
+//      "只挂在 CI 不跑的脚本上"（EXIT=1，消息与事实相反）。现在改为从 `test:ci` 解析。
+//   ② **不用子串 `includes`**：实测把 `test:ci` 里的 `npm run test:unit` 改成
+//      `npm run test:unit:legacy`（脚本仍在但 CI 不跑它）→ 子串判据 EXIT=0（四层静默不跑
+//      而门禁全绿）。现在按 `&&` / `||` 切分后做 **token 精确匹配**（见 test-tiers.mjs 的 parseCiChain）。
 try {
   const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8'))
   const scripts = pkg.scripts || {}
-  const ciChain = String(scripts['test:ci'] || '')
-  const ciCovers = new Set()
-  for (const s of CI_CHAIN_SCRIPTS) {
-    if (typeof scripts[s] !== 'string') {
-      problems.push(`package.json 缺少脚本 ${s}（门禁 A′ 依赖它在 test:ci 链路里覆盖测试层）`)
-    } else if (!ciChain.includes(s)) {
-      problems.push(`npm run test:ci 的链路里没有 ${s}（该层本地跑得到、CI 跑不到 → 在 CI 上不受保护）`)
-    } else {
-      ciCovers.add(s)
-    }
+  const ciScripts = new Set(ciChainScripts(scripts))
+  if (typeof scripts['test:ci'] !== 'string') {
+    problems.push('package.json 缺少脚本 test:ci（门禁 A′ 的 CI 链路覆盖判定失去依据）')
+  } else if (ciScripts.size === 0) {
+    problems.push('无法从 package.json 的 test:ci 解析出任何 npm 脚本（门禁 A′ 的链路覆盖判定失效）—— 请把 CI 链路写成 `npm run <script> && …` 形式')
   }
   for (const g of TEST_GLOBS) {
     const need = TIER_SCRIPTS[g]
@@ -343,8 +346,9 @@ try {
         problems.push(`分层清单里的 ${g} 未出现在 package.json 的 ${s} 脚本中（口径与脚本已漂移，请同步 ${need.join('/')} 与 test:ci）`)
       }
     }
-    if (!need.some((s) => ciCovers.has(s))) {
-      problems.push(`分层清单里的 ${g} 只挂在 CI 不跑的脚本（${need.join('、')}）上 —— test:ci 链路（${CI_CHAIN_SCRIPTS.join(' → ')}）覆盖不到该层`)
+    // CI 链路覆盖：该层至少要有**一个**归属脚本被 test:ci 真正串起来（按解析出的脚本名判定）
+    if (!need.some((s) => ciScripts.has(s))) {
+      problems.push(`分层清单里的 ${g} 只挂在 CI 不跑的脚本（${need.join('、')}）上 —— test:ci 实际串联的是（${[...ciScripts].join(' → ') || '（解析为空）'}），覆盖不到该层`)
     }
   }
 } catch {

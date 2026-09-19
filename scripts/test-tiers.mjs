@@ -5,15 +5,18 @@
 // 于是"预检通过、门禁失败"（或反之）这种自相矛盾的状态就会出现，而且很难查。
 //
 // ⚠️ 本清单必须与 package.json 的 `test` / `test:unit` / `test:server` / `test:kernel` 保持一致。
-// 新增一层测试目录时**三处一起改**：
+// 新增一层测试目录时要同步**四处**（spec §7.1）：
 //   ① 本文件的 TEST_GLOBS（并在这里的 TIER_SCRIPTS 补上"该层必须归属哪些脚本"）；
-//   ② package.json 的 `test` 与 `test:unit`（以及对应分层脚本）里的 glob；
-//   ③ docs/_anchors.json（跑 `npm run anchors:write` 重新生成）。
-// 漏改任一处都已被 scripts/check-doc-anchors.mjs 的门禁 A/A′ 变成**硬失败**（2026-09-19 C4）——
-// 原先 A′ 只是 warning 不红，于是"新增测试层却漏同步"会静默不受任何保护；
-// 且 A′ 已由"glob 出现在任一脚本里"收紧为"逐脚本校验 TIER_SCRIPTS 的归属 + test:ci 链路覆盖"，
-// 因为 CI 跑的是 test:ci（→ test:unit / test:server / test:kernel），**从不跑 `test`**。
-// 文档侧口径（docs/ci.md）与本节的三处同步说明同步维护（spec §7.1）。
+//   ② package.json 的 `test` 与 `test:unit`（以及对应分层脚本）里的 glob，并让 `test:ci` 链路带上它；
+//   ③ docs/ci.md 的口径说明（本套口径的对外表述）；
+//   ④ docs/_anchors.json（跑 `npm run anchors:write` 重新生成）。
+// ①②的漏改已由 scripts/check-doc-anchors.mjs 的门禁 A/A′ 变成**硬失败**（2026-09-19 C4），
+// ④的漏跑由门禁 A 的"TEST_GLOBS 有键而锚点无该键"方向覆盖。判据的两次收紧都留下了取证：
+//   · A′ 由"glob 出现在**任一**脚本里"收紧为**逐脚本**校验 TIER_SCRIPTS 的归属；
+//   · "CI 真的会跑它"按 package.json 的 `test:ci` **解析出的脚本名**判定（ciChainScripts），
+//     且判据是 **token 精确匹配**：不写第二份 `CI_CHAIN_SCRIPTS` 常量（那是会漂移的真源，
+//     实测会导致**误报**），也不用子串 `includes`（`test:unit:legacy` 会让它**漏报**）。
+//   · 因为 CI 跑的是 test:ci（→ test:unit / test:server / test:kernel），**从不跑 `test`**。
 import { execFileSync } from 'node:child_process'
 import { globSync } from 'node:fs'
 
@@ -48,11 +51,39 @@ export const TIER_SCRIPTS = {
 }
 
 /**
- * `test:ci` **链路里必须实际出现**的分层脚本。
- * 只要求"glob 出现在某个脚本里"是不够的：CI 跑的是 `test:ci`（`&&` 串联各层），
- * 一个层若只挂在 `test`（全量脚本）上，本地能跑、CI 永远跑不到 —— 仍然等于没有保护。
+ * 从 `test:ci` 的脚本体里解析出**实际会被串行执行**的 npm 脚本名。
+ *
+ * ★ 为什么不能另写一份 `CI_CHAIN_SCRIPTS = [...]` 常量（Task 1 二轮返工删除）：
+ *   那是"第二份真源"，漂移的后果是**误报**（消息与事实相反）。实测：
+ *   新增一层专用脚本 `test:kit`（glob 放进它），并在 `test:ci` 里**确实**追加
+ *   `npm run test:kit` → 常量里没有 `test:kit`，旧口径仍报"只挂在 CI 不跑的脚本上"，
+ *   门禁 EXIT=1 而事实是它已经被 CI 跑到。真源是 `package.json` 的 `test:ci`，
+ *   就地从它解析，恒不失配。
+ *
+ * ★ 判据必须是 **token 精确匹配**（不能用 `body.includes(name)`）：
+ *   实测把 `test:ci` 里的 `npm run test:unit` 改成 `npm run test:unit:legacy`
+ *   （`test:unit` 脚本仍在，但 CI 不再跑它）时，子串判据 **EXIT=0** ——
+ *   shared/electron/src/kit 四层在 CI 里静默不跑而门禁全绿。
+ *
+ * 做法：按 `&&` / `||` 切分脚本体，逐段取 token，脚本名必须是该段的
+ * `npm [run] <name>` 形式（`<name>` 整体匹配，故 `test:unit:legacy` ≠ `test:unit`）。
  */
-export const CI_CHAIN_SCRIPTS = ['test:preflight', 'test:unit', 'test:server', 'test:kernel']
+export function parseCiChain(body) {
+  const out = []
+  for (const seg of String(body || '').split(/\s*(?:&&|\|\|)\s*/)) {
+    const tokens = seg.trim().split(/\s+/).filter(Boolean)
+    if (tokens.length === 0 || tokens[0] !== 'npm') continue
+    const name = tokens[1] === 'run' ? tokens[2] : tokens[1]
+    if (!name || name.startsWith('-')) continue
+    out.push(name)
+  }
+  return out
+}
+
+/** `test:ci` 实际串联的脚本名（真源 = package.json，不另存常量） */
+export function ciChainScripts(scripts) {
+  return parseCiChain((scripts || {})['test:ci'])
+}
 
 /** 把本文件用到的 glob 子集转成正则：支持双星号跨目录（写作 星号星号斜杠）与单星号（不跨目录） */
 export function globToRe(glob) {
