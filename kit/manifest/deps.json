@@ -313,14 +313,6 @@
           "status": "used"
         },
         {
-          "name": "@radix-ui/react-popover",
-          "evidence": {
-            "classes": [],
-            "files": []
-          },
-          "status": "unused"
-        },
-        {
           "name": "@radix-ui/react-scroll-area",
           "evidence": {
             "classes": [
