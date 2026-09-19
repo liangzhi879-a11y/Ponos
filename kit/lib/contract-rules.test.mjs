@@ -11,6 +11,7 @@ import { join, dirname } from 'node:path'
 import { readTracked } from './scan.mjs'
 import { buildSnapshot } from './contract-snapshot.mjs'
 import { parseDoc } from './contract-doc.mjs'
+import { fingerprintOf } from './contract-tools.mjs'
 import { loadScope, SCOPE_FILE } from './contract-scope.mjs'
 import {
   runContractRules, buildTruth, docDeclaredSets, frontendFetchPaths, frontendDiff, CT_RULES,
@@ -50,6 +51,12 @@ const TOOLS = [
   'export { registry }',
 ].join('\n')
 
+/** 夹具工具的**结构指纹**：现算（不写死 8 位字面量）—— 写死会在指纹算法演进时变成"文档腐烂"假红，
+ *  而本文件要测的是"文档 ↔ 代码逐字对账"这条通路，不是指纹算法本身（它有自己的测试）。 */
+const T1_FP = fingerprintOf({ type: 'object', properties: { a: { type: 'string' } }, required: ['a'] })
+/** 末位翻一位（改指纹用；保证仍是 8 位十六进制） */
+const flipLast = (hex) => hex.slice(0, -1) + (hex.slice(-1) === '0' ? '1' : '0')
+
 const DOC = [
   '# 契约夹具',
   '',
@@ -78,7 +85,18 @@ const DOC = [
   '| --- | --- |',
   '| `GET /workflows/:id` | 详情（动态段） |',
   '',
+  // ★ P1.5：夹具也要有 §12（工具出口），否则 `t1` 进真值 ⇒ 基准夹具不再全绿。
+  //   注意**用途列不写反引号**：§12 的行是整行取反引号 token 的（散文里的裸串会被当候选）。
+  '## 12. 工具 input_schema 出口',
+  '',
+  '| 工具 | 结构指纹 | 用途 |',
+  '| --- | --- | --- |',
+  `| \`t1\` | \`${T1_FP}\` | 夹具工具 |`,
+  '',
 ].join('\n')
+
+/** 夹具文档 + 一节 §11（IPC 推送）：P1.5 起 IPC 也能靠文档面覆盖，不再只有"登记"一条路 */
+const docWithIpc = (ch = 'demo:push', base = DOC) => `${base}\n## 11. IPC 通道（主进程 → 渲染层推送）\n\n| 通道 | 方向 | 时机 |\n| --- | --- | --- |\n| \`${ch}\` | 主进程 → 渲染层 | 夹具：推送通道 |\n`
 
 /** 夹具仓：写盘 + 返回 {root, files, doc}；`mutate` 在写盘后跑（造变异） */
 function fixture({ mutate = null } = {}) {
@@ -198,7 +216,8 @@ test('buildTruth：文档已声明的键不进真值；未被文档覆盖的**�
   assert.deepEqual(t.truth.routes, ['ANY /b', 'ns /ns/'], '已声明的 /a、/known 不进真值；/ns/ 是命名空间声明（文档零声明）')
   assert.deepEqual(t.truth.wsOut, [], 'ev1 已由 §5 声明')
   assert.deepEqual(t.truth.wsIn, [], 'in1 已由 §6 声明')
-  assert.deepEqual(t.truth.ipc, ['demo:push'], 'IPC 无文档章节 ⇒ 推送通道全部需登记')
+  assert.deepEqual(t.truth.ipc, ['demo:push'], 'IPC 在夹具文档里零章节 ⇒ 推送通道全部需登记')
+  assert.deepEqual(t.truth.tools, [], 't1 已由 §12 声明（P1.5 起工具出口进真值；声明的从真值减掉）')
   // 文档侧：`*` 通配**不给覆盖信用**（反例⑧）—— 只登记在 wildcards 里
   const d = docDeclaredSets(doc)
   assert.deepEqual([...d.paths].sort(), ['/a', '/known'])
@@ -336,7 +355,7 @@ test('CT5：删 main 侧 handle → 红；renderer 侧多 invoke → 红；push 
 
   const f3 = await setup({ entries: [SCOPE_ENTRIES[0], SCOPE_ENTRIES[1]], recorded: { scopeCount: 2, scopeRedCount: 2 } })
   assert.ok(reds(await run(f3)).some((x) => x.rule === 'CT5' && /demo:push/.test(x.subject)),
-    'push 每条必须在文档或 scope 里（IPC 无文档章节 ⇒ 只能靠 scope）')
+    'push 每条必须在文档 §11 或 scope 里（夹具文档没有 §11 ⇒ 只能靠 scope）')
 })
 
 // ── CT6：工具出口 ⊆ 快照 / 静态计数 / 动态源登记 ──────────────────────
@@ -504,6 +523,111 @@ test('与 plan 一致：CT 规则逐条带 title/evaluated（--verbose 要能看
     assert.equal(Number.isInteger(c.evaluated), true, `${c.rule} 的 evaluated 必须是整数`)
   }
   assert.equal(out.checks.find((c) => c.rule === 'CT1').evaluated > 0, true)
-  assert.equal(out.checks.find((c) => c.rule === 'CT4').evaluated, 3, 'CT4 的 evaluated = 真值键数（夹具 2 路由 + 1 IPC）')
+  assert.equal(out.checks.find((c) => c.rule === 'CT4').evaluated, 3, 'CT4 的 evaluated = 真值键数（夹具 2 路由 + 1 IPC；§12 声明的 t1 从真值里减掉了，故不计）')
   rmSync(join(tmpdir(), 'yfw-rules-'), { recursive: true, force: true })
+})
+
+// ── P1.5：真对账从「路由 + WS」扩到**五类**（IPC §11 / 工具出口 §12 进文档面）─────────
+//
+// 判据 (c) 的三个方向在下面各有一条**单元级**用例（端到端版在 cli.test.mjs 与批报告变异记录里）：
+//   ① 删掉一条 §11 声明 ⇒ 该通道回到真值 ⇒ **CT2（未覆盖）+ CT4（未登记）双红**；
+//   ② 改掉一个工具指纹（末位改一位）⇒ **CT3 红**（逐字比对）；缺指纹同样红（fail-closed）；
+//   ③ 反向：把已摘除的成员塞回 scope ⇒ **CT4 多登记红**。
+// 三条共同证明的不是"能报红"，而是**登记的语义变了**：文档声明得越全，登记集越小 ——
+// 登记只该剩"没法写进文档的空洞"，而不是"文档没写的部分"。
+
+test('★P1.5-buildTruth：工具出口进真值；§12 声明后从真值里减掉（两个方向都可证伪）', async () => {
+  const { root, files } = fixture()
+  const read = (f) => readTracked({ root, file: f })
+  const { extractRoutes } = await import('./contract-routes.mjs')
+  const { extractWs } = await import('./contract-ws.mjs')
+  const { extractIpc } = await import('./contract-ipc.mjs')
+  const { extractTools } = await import('./contract-tools.mjs')
+  const routes = extractRoutes({ files, readTracked: read })
+  const ws = extractWs({ files, readTracked: read })
+  const ipc = extractIpc({ files, readTracked: read })
+  const tools = await extractTools({ root })
+  assert.deepEqual(tools.names, ['t1'], '前提：夹具只有一个静态工具')
+  const text = readFileSync(join(root, 'docs/bridge-contract.md'), 'utf8')
+  const withS12 = parseDoc(text)
+  assert.deepEqual(buildTruth({ routes, prefixes: routes.prefixes, ws, ipc, tools, doc: withS12 }).truth.tools, [],
+    '§12 声明了 t1 ⇒ 不在真值里')
+  // 删掉整节 §12 ⇒ t1 回到真值（= "代码有、文档没有" ⇒ 必须有人接住：补文档或登记）
+  const noS12 = parseDoc(text.replace(/^## 12\.[\s\S]*$/m, ''))
+  assert.deepEqual(buildTruth({ routes, prefixes: routes.prefixes, ws, ipc, tools, doc: noS12 }).truth.tools, ['t1'])
+  // 老调用口径（不传 tools）不炸：空集（夹具之外的调用方不必改签名）
+  assert.deepEqual(buildTruth({ routes, prefixes: [], ws, ipc, doc: noS12 }).truth.tools, [])
+})
+
+test('★P1.5-变异①：§11 声明后 IPC 不必登记；删掉该声明 ⇒ CT2（未覆盖）+ CT4（未登记）双红', async () => {
+  // 基准：文档补上 §11 且**摘掉** ipc 的 scope 登记（P1.5 的形状：登记集 3 → 2）
+  const f = await setup({
+    entries: [SCOPE_ENTRIES[0], SCOPE_ENTRIES[1]], recorded: { scopeCount: 2, scopeRedCount: 2 },
+    mutate: (root) => writeFileSync(join(root, 'docs/bridge-contract.md'), docWithIpc()),
+  })
+  const green = await run(f)
+  assert.deepEqual(reds(green), [], `§11 声明 + 摘掉登记后必须全绿：${JSON.stringify(reds(green))}`)
+  assert.equal(green.checks.find((c) => c.rule === 'CT5').passed, true, 'CT5 的 push 覆盖判据必须认文档 §11')
+  // 变异：把 §11 里的通道名改掉（= 原通道不再被声明）
+  rewrite(f.root, 'docs/bridge-contract.md', () => docWithIpc('demo:push-renamed'))
+  const doc2 = parseDoc(readTracked({ root: f.root, file: 'docs/bridge-contract.md' }))
+  const out = await run(f, { doc: doc2 })
+  const got = reds(out).map((x) => `${x.rule}:${x.subject}`)
+  assert.ok(got.includes('CT2:ipc demo:push'), `CT2 必须报"未覆盖"：${JSON.stringify(got)}`)
+  assert.ok(got.includes('CT4:ipc 未登记 demo:push'), `CT4 必须报"未登记"：${JSON.stringify(got)}`)
+  assert.ok(got.includes('CT3:ipc demo:push-renamed'), `文档写的新通道代码里没有 ⇒ CT3 也红：${JSON.stringify(got)}`)
+})
+
+test('★P1.5-变异②：§12 工具指纹改末位一位 ⇒ CT3 红（逐字比对）；缺指纹同样红（fail-closed）', async () => {
+  const f = await setup({ mutate: (root) => rewrite(root, 'docs/bridge-contract.md', (s) => s.replace(T1_FP, flipLast(T1_FP))) })
+  const ct3 = reds(await run(f)).filter((x) => x.rule === 'CT3')
+  assert.deepEqual(ct3.map((x) => x.subject), ['tools t1'], `指纹不一致必须报在 tools t1：${JSON.stringify(reds(await run(f)))}`)
+  assert.equal(ct3[0].expected, flipLast(T1_FP), 'expected = 文档里写的（含错的那位）')
+  assert.equal(ct3[0].actual, T1_FP, 'actual = 代码出口的实际指纹')
+  // 缺指纹（把反引号摘掉 ⇒ 解析成 fp=null）不许"跳过比对"，必须红
+  const f2 = await setup({ mutate: (root) => rewrite(root, 'docs/bridge-contract.md', (s) => s.replace('`' + T1_FP + '`', T1_FP)) })
+  const ct3b = reds(await run(f2)).filter((x) => x.rule === 'CT3')
+  assert.deepEqual(ct3b.map((x) => x.subject), ['tools t1'])
+  assert.equal(ct3b[0].actual, '文档里没给指纹')
+})
+
+test('★P1.5-变异③：把已由 §11 覆盖的成员塞回 scope ⇒ CT4 多登记红（登记集必须与真值差集相等）', async () => {
+  const f = await setup({
+    entries: [...SCOPE_ENTRIES], recorded: { scopeCount: 3, scopeRedCount: 3 },
+    mutate: (root) => writeFileSync(join(root, 'docs/bridge-contract.md'), docWithIpc()),
+  })
+  const got = reds(await run(f)).map((x) => `${x.rule}:${x.subject}`)
+  assert.ok(got.includes('CT4:ipc 多登记 demo:push'),
+    `文档已声明却仍登记 = 给已覆盖的键发放豁免 ⇒ 必须红：${JSON.stringify(got)}`)
+  assert.equal(got.some((x) => x.startsWith('CT2:ipc')), false, 'CT2 是"未覆盖"方向：已被文档声明 ⇒ 不该出现在这一侧')
+})
+
+test('★P1.5：工具出口进 CT2/CT4 —— §12 声明被删 ⇒ CT2+CT4 双红；登记后转绿', async () => {
+  const f = await setup({ mutate: (root) => rewrite(root, 'docs/bridge-contract.md', (s) => s.split('\n').filter((l) => !l.includes('| `t1` |')).join('\n')) })
+  const got = reds(await run(f)).map((x) => `${x.rule}:${x.subject}`)
+  assert.ok(got.includes('CT2:tools t1'), `CT2 必须报"未覆盖"：${JSON.stringify(got)}`)
+  assert.ok(got.includes('CT4:tools 未登记 t1'), `CT4 必须报"未登记"：${JSON.stringify(got)}`)
+  const fixed = await run(f, {
+    scope: writeScope(f.root, [...SCOPE_ENTRIES, { kind: 'tools', ns: 'static', members: ['t1'], docSection: '§12', reason: '夹具：工具未在 §12 声明，按精确键登记' }]),
+    recorded: { scopeCount: 4, scopeRedCount: 4 },
+  })
+  assert.deepEqual(reds(fixed), [], `登记后必须转绿（登记这条通路是真的能放行且只放行它登记的那条）：${JSON.stringify(reds(fixed))}`)
+})
+
+test('★P1.5-CT3：文档声明了代码没有的工具 ⇒ 红（文档腐烂），且不掩盖真差异', async () => {
+  const f = await setup({
+    mutate: (root) => rewrite(root, 'docs/bridge-contract.md',
+      (s) => s.replace(`| \`t1\` | \`${T1_FP}\` |`, `| \`NoSuchTool\` | \`${T1_FP}\` | 夹具：代码里没有 |\n| \`t1\` | \`${T1_FP}\` |`)),
+  })
+  const ct3 = reds(await run(f)).filter((x) => x.rule === 'CT3')
+  assert.deepEqual(ct3.map((x) => x.subject), ['tools NoSuchTool'])
+  assert.equal(ct3[0].actual, '代码里没有该工具')
+})
+
+test('★P1.5-CT8：文档声明集的在途差异覆盖新增的 ipc/tools 两类（DECLARED_FIELDS 扩域）', async () => {
+  const { out } = await setupPair({ mutateWork: (root) => rewrite(root, 'docs/bridge-contract.md', (s) => docWithIpc('demo:push', s)) })
+  assert.deepEqual(reds(out), [], `文档在途改动不得红（规则读 HEAD 文档）：${JSON.stringify(reds(out))}`)
+  const doc = ct8(out).filter((f) => f.subject.startsWith('doc.'))
+  assert.deepEqual(doc.map((f) => `${f.subject}|${f.expected}|${f.actual}`), ['doc.ipc demo:push|HEAD 缺|工作树 有'],
+    `§11 的在途新增必须被 CT8 报出来：${JSON.stringify(ct8(out))}`)
 })

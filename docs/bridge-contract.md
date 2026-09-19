@@ -453,3 +453,62 @@ S4 把 bridge 内核解析/构建/bootstrap 全指向本库内核，并落地在
 | App 身份 / userData | 在售 appId/productName | S6 定案（正式替换身份）：与在售同 appId `com.yfworking.desktop` / productName `YFWorking`，版本 2.8.0；userData 恒重定向 `<数据根>/userData`（入口兜底注入 `YFWORKING_HOME` 后 D6 恒成立；2026-09-09 前两版曾共用 `%APPDATA%\Electron`——default_app.asar 无 app 名——theme.json 互串） | 安装形态走 `build/installer.nsh` 版本比较（2.8.0）覆盖升级保留数据；双版并存由便携/dev 目录隔离 + userData 重定向兜底，无需独立 appId |
 
 双版冒烟（2026-09-08，Task 6）：旧版 51309（在售运行中）与新版 51517（隔离 home）同机同时 healthy；隔离 home 下 bootstrap 落地 `runtime/ponos-kernel`，在售 `runtime/kernel` 前后 md5 不变（`86697d84…`）；bridge 级 mock 会话、真实云端 ds、真实本地 Qwen 三态全通。产物身份/userData 区分 S6 定案落位（正式替换身份 = 与在售同 appId/productName，版本 2.8.0，userData 规则 = main.cjs:95-97 现行为），本节后续项仅剩文档面旧值清洗（S6）。
+
+## 11. Electron IPC：主进程 → 渲染层推送（`webContents.send`）
+
+本仓 IPC 是**两方协议**（注册与调用必须双向集合相等）：`ipcRenderer.invoke` ↔ `ipcMain.handle`、
+`ipcRenderer.send` ↔ `ipcMain.on`、主进程推送 ↔ `ipcRenderer.on`（订阅）。前两族的判据是"两侧集合相等"
+（无需文档面）；**第三族（推送）是本节的契约面**——它没有对应的调用点，"谁在什么时候发"只能靠文档声明。
+
+| 通道 | 方向 | 时机与用途 |
+|---|---|---|
+| `app:generate-progress` | 主进程 → 渲染层 | 应用智控生成过程中**逐阶段**上报（appId + 阶段字段 + 真实字符数与耗时；没有百分比，只有阶段与真实计数）。窗口已关 / 未就绪即丢弃——进度只用于展示，绝不因此中断生成 |
+| `boot:progress` | 主进程 → 主窗口 | 启动预热各步的真实进度。窗口还在加载时先入队，`did-finish-load` 后一次性冲刷（`flushBootProgress`）；早发会丢，所以必须排队 |
+| `diag:status-changed` | 主进程 → 主窗口 | 诊断监视器每次快照变化即推送（`monitor.setOnChange`），诊断面板据此刷新 |
+| `editor:open-file` | 主窗口 → 编辑器窗口 | 编辑器窗口**已就绪**时直接推送待打开文件；未就绪则先记为 pending，由渲染层挂载后 invoke 拉取——规避"推送早于监听器注册"的 IPC 竞态 |
+| `editor:sync-bounds` | 编辑器窗口 → 主窗口 | 编辑器窗口 moved / resized 时回传窗口边界，同步主窗口的 `uiStore.editorRect` 缓存 |
+| `experience:pending-alert` | 主进程 → 主窗口 | 页面 `did-finish-load` 后检查技能经验积压：`shouldAlert` 且总数 > 0 时推送一次并记 `recordExperienceAlert`（不重复打扰） |
+| `gpu:crash` | 主进程 → 主窗口 | `child-process-gone` 判定为 GPU 进程时推送崩溃原因：渲染层负责落盘设置并提示用户（不自动重启，防止恢复阶段再把驱动压垮） |
+
+订阅侧一律在 `electron/preload.cjs`（`ipcRenderer.on` + 返回 `removeListener` 的取消函数）；
+推送侧在 `electron/main.cjs` / `electron/app-ipc.cjs`。**改通道名必须同改三处**（发送、订阅、本节），
+`CT3` 会逐字对账本节声明与代码里的推送点。
+
+## 12. 工具 `input_schema` 出口（静态 registry，21 个）
+
+工具的直接真相 = `kernel/tools.mjs` 的 registry 与唯一运行时出口 `toolSchemas()`（模型真正看到的那份），
+本节**只声明"名字 + 结构指纹"**，不复制 props 明细——抄一份明细 = 第二份真相 + 双份维护。
+
+指纹 = `kit/lib/contract-tools.mjs#fingerprintOf`：`properties` 名+类型 / `required` / `additionalProperties`
+存在性 → 规范化 JSON → sha256 前 8 位（**description 散文不入哈希**：文案改动是噪声，不该让门禁红）。
+取新值：结构改动后跑 `npm run kit:sync`，或直接
+`node -e "import('./kit/lib/contract-tools.mjs').then(m=>console.log(m.fingerprintOf(S)))"`。
+指纹不符 ⇒ `CT3` 红（模型契约变更必须同步到这里）。已知边界（如实）：枚举值 / 嵌套 properties / `items` 不在指纹内。
+
+| 工具 | 结构指纹 | 用途 |
+|---|---|---|
+| `Agent` | `1977c7ba` | 把子任务委派给子 Agent：前台同步回填，或后台异步执行（可基于既有任务续跑）；context 档控制主会话上下文的继承量 |
+| `Bash` | `055829fc` | 执行 shell 命令（系统命令 / 测试 / 构建 / git）；120s 超时、无 stdin、输出超 200KB 截断保留尾部 |
+| `Browser` | `86ce9ad2` | 驱动内置浏览器（快照驱动：先 snapshot 看页面结构与可交互元素 ref，再按 ref 操作） |
+| `Edit` | `5436b49a` | 先读后改的字符串替换编辑：old_string 需与文件字节精确匹配且唯一，或显式 replace_all |
+| `Glob` | `592c57e3` | 按通配模式递归搜索文件路径（先 Glob 定位候选再 Read，避免无目标 ls） |
+| `Grep` | `99fce8ec` | 按正则搜索文件内容，返回 file:line 匹配行（可带 glob 过滤与上下文行数） |
+| `KnowledgeDelete` | `12f1b059` | 管理知识库删除（**软删除到回收站**）：列回收站 / 删条目 / 删整个知识库 / 还原 / 彻底删除 |
+| `KnowledgeImport` | `b3e8452f` | 把文件或整个目录（递归）导入知识空间——写盘操作；支持 PDF / Word / Excel / PPT / 图片，扫描件走 OCR |
+| `KnowledgeSearch` | `993f420a` | 知识库块级检索（跨空间，语义 + 关键词，命中到单个知识块而非整篇） |
+| `MemorySearch` | `1edaca9f` | 检索个人 / 项目经验库（本地检索、无网络）：按 query 找过往沉淀的经验条目与知识块 |
+| `OCR` | `5212b607` | 对扫描件 PDF 或图片做 OCR（mode=table 额外识别表格；结果按 project 缓存，重复识别秒回） |
+| `Read` | `51593762` | 读取文本文件全文（超大文件用 offset/limit 定向读取；只读会话目录、已授权知识库与记忆目录内的文件） |
+| `Skill` | `154548da` | 加载技能指令：按技能名读取对应 SKILL.md 的完整操作步骤，读取后按流程执行（同一任务可多轮换不同技能） |
+| `SkillSearch` | `21f28990` | 联网搜索技能市场（只读检索，不安装）：按关键词找可用技能及其来源 |
+| `Task` | `6ec016f1` | 管理后台子 Agent 任务：list / status / output / stop / resume / send_message / followup |
+| `TodoWrite` | `bd3bb4d1` | 维护任务规划清单（**覆盖式**更新：每次须传完整清单，遗漏的项会被移除） |
+| `Vision` | `76c39a88` | 用视觉模型理解图片内容（版面 / 物体 / 图表趋势 / 图中文字语义），与 OCR 互补 |
+| `WebFetch` | `3a4fd6c6` | 抓取 URL 并提取文本（仅 http/https，仅文本；图片 / PDF / 二进制返回非文本提示，不走重试） |
+| `WebSearch` | `72636915` | 搜索互联网获取最新信息（返回带摘要的来源列表；需全文再用 WebFetch 跟进） |
+| `Workflow` | `75df9186` | 执行固定流程工作流（严格输出、审计留痕）：确定性流程用 Workflow，灵活探索用 Skill |
+| `Write` | `5060eed0` | 写入文本文件（**整体覆盖**语义：必须携带完整新内容，遗漏会清空文件） |
+
+> 动态 / 派生工具（工作流即工具 `run_<slug>`、MCP `mcp__<server>__<tool>`、应用智控、出网映射）**不在此表**：
+> 它们随磁盘与配置变化，逐条登记在 `kit/manifest/contract-scope.json` 之外的提取器登记表里
+> （`kit/lib/contract-tools.mjs#TOOL_SOURCES`，含 `present:false` 的如实登记），由 `CT6` 对账。

@@ -227,22 +227,6 @@
       "docSection": "§6",
       "reason": "§6（GUI → 桥）只列 13 个类型，这 3 个入站类型文档缺：`effort`（推理强度切换）、`ping`（保活）、`app:exec:response`（应用智控应答）。",
       "at": "2026-09-19"
-    },
-    {
-      "kind": "ipc",
-      "ns": "push",
-      "members": [
-        "app:generate-progress",
-        "boot:progress",
-        "diag:status-changed",
-        "editor:open-file",
-        "editor:sync-bounds",
-        "experience:pending-alert",
-        "gpu:crash"
-      ],
-      "docSection": null,
-      "reason": "bridge-contract.md **没有 IPC 章节**（T3 实测 0 命中）⇒ 7 条 main→renderer 推送通道无处声明，只能在此逐条登记。invoke↔handle、send↔on 的配对由 CT5 判（两方协议集合相等，不需要文档面），故不在这里重复登记 61+61+10+17 条。",
-      "at": "2026-09-19"
     }
   ]
 }

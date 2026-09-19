@@ -148,6 +148,27 @@ test('真仓 docs/bridge-contract.md：wsOut 20 / wsIn 13 / §7 ≥ 32 条 / §7
   }
 })
 
+test('真仓 §11/§12（P1.5 新增面）：7 条 IPC 推送 + 21 个工具，指纹与台账逐字相等', () => {
+  const d = parseDoc(readFileSync(DOC, 'utf8'))
+  // §11：IPC 推送侧（主进程 → 渲染层）。这里钉的是**文档 ↔ 台账**的一致（台账是提交物、
+  // 由 CT1 保证可从代码复算）——工具指纹尤其重要：它是 CT3 逐字比对的那一份。
+  assert.equal(d.ipc.size, 7, `§11 通道数，实测 ${[...d.ipc].sort().join(',')}`)
+  assert.deepEqual([...d.ipc].sort(), [
+    'app:generate-progress', 'boot:progress', 'diag:status-changed', 'editor:open-file',
+    'editor:sync-bounds', 'experience:pending-alert', 'gpu:crash',
+  ])
+  // §12：工具出口。名字集与指纹都直接对台账（versions.json#channels.tools）——不写死 21 个名字，
+  // 铁律 4：真仓数字会随他人改动漂移；"逐字相等"才是判据（名字多一个少一个都会红）。
+  const ledger = JSON.parse(readFileSync(join(ROOT, 'kit/manifest/versions.json'), 'utf8')).channels.tools
+  assert.deepEqual([...d.tools.keys()].sort(), Object.keys(ledger).sort(),
+    `§12 的工具名集必须与台账一致（实测 doc=${d.tools.size} / 台账=${Object.keys(ledger).length}）`)
+  const mismatch = [...d.tools.entries()].filter(([n, v]) => v.fp !== ledger[n]).map(([n, v]) => `${n}: doc=${v.fp} 台账=${ledger[n]}`)
+  assert.deepEqual(mismatch, [], `§12 的指纹必须与台账逐字相等：${mismatch.join(' | ')}`)
+  assert.equal([...d.tools.values()].every((v) => typeof v.fp === 'string' && /^[0-9a-f]{8}$/.test(v.fp)), true,
+    '§12 的每一行都必须给出 8 位十六进制指纹（缺了就 null，由 CT3 报红）')
+  assert.deepEqual(d.sections.get('§12').types, [...d.tools.keys()], '§12 的 types = 该节声明的工具名清单')
+})
+
 // ── P1.5：§11（IPC 推送通道）与 §12（工具结构指纹）──────────────────────────
 //
 // 新增章节的**目的**：把"只能登记、无法对账"的两类（IPC / 工具 input_schema）拉回文档面 ⇒

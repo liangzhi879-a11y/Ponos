@@ -15,9 +15,12 @@
 //       ⇒ 现在：**规则与工作树脏不脏无关**（CT0–CT7/CT9 全绿），在途改动只由 `CT8` 报**黄灯**。
 //
 // 覆盖面的两条腿（plan §1 方案 B）：
-//   · 文档侧做**真双向**（CT2 代码→文档 / CT3 文档→代码；有文档的只有路由与 WS 类型）；
-//   · 无文档侧（IPC、工具 schema）靠 CT5/CT6 + `contract-scope.json` 的**逐条精确登记**（CT4）兜住，
+//   · 文档侧做**真双向**（CT2 代码→文档 / CT3 文档→代码）—— P1.5 起覆盖**五类**：
+//     路由（§7）、WS 出/入（§5/§6）、IPC 推送（§11）、工具出口 + 结构指纹（§12）；
+//   · 无文档侧（空命名空间、CT5 的配对关系）靠 CT5/CT6 + `contract-scope.json` 的**逐条精确登记**（CT4）兜住，
 //     CT7 用"路径字面量 / 顶层 `type:` 字面量守恒"防止"提取不到就当作不存在"。
+//   ⇒ 判据的读法：**文档声明得越全，登记集越小**（登记 = 代码真值 ∖ 文档已声明）。P1.5 把这两类
+//     补进文档后，登记只剩"没法写进文档的空洞"（空命名空间）。
 //
 // 已知边界（如实写下，勿高估）：
 //   ① 路由提取器只认**内联字符串字面量**（单/双引号，第 4 批起；原先只认单引号 ⇒ `pathname === "/x"`
@@ -48,12 +51,22 @@ const NAIVE_FORMS = [
   { re: /\b(?:\w+\.)?(?:pathname|p|path)\s*\.startsWith\(\s*(['"])(\/[^'"]*)\1/g, group: 2 },
 ]
 
-/** 文档声明的集合（`*` 通配**单独放**：它只声明命名空间，**不给任何子路径覆盖信用** —— plan §7 反例⑧） */
+/**
+ * 文档声明的集合（`*` 通配**单独放**：它只声明命名空间，**不给任何子路径覆盖信用** —— plan §7 反例⑧）。
+ *
+ * P1.5 起共六类：路由路径 / 通配 / §7.1 方法+路径 / WS 类型（§5+§6 并集）/ IPC 通道（§11）/
+ * 工具名（§12）。后两类把"只能整类登记"的契约面拉回文档 ⇒ 契约对账回到"文档 ↔ 代码"直接双向。
+ * `toolFps` 是**指纹映射**（不参与声明集大小与 CT8 的声明差异 —— 那由 `tools` 名字集负责），
+ * 专供 CT3 做"逐字比对"。
+ */
 export function docDeclaredSets(doc) {
   const paths = new Set()
   const wildcards = new Set()
   const wfKeys = new Set()
   const ws = new Set()
+  const ipc = new Set()
+  const tools = new Set()
+  const toolFps = new Map()
   for (const [p, v] of doc?.routes || []) {
     if (v && v.wildcard) wildcards.add(p)
     else paths.add(p)
@@ -61,19 +74,31 @@ export function docDeclaredSets(doc) {
   for (const k of (doc?.workflowRoutes || new Map()).keys()) wfKeys.add(k)
   for (const t of doc?.wsOut || []) ws.add(t)
   for (const t of doc?.wsIn || []) ws.add(t)
-  return { paths, wildcards, wfKeys, ws, sections: [...(doc?.sections || new Map()).keys()] }
+  for (const c of doc?.ipc || []) ipc.add(c)
+  for (const [name, v] of doc?.tools || new Map()) {
+    tools.add(name)
+    toolFps.set(name, v && v.fp ? v.fp : null)
+  }
+  return { paths, wildcards, wfKeys, ws, ipc, tools, toolFps, sections: [...(doc?.sections || new Map()).keys()] }
 }
 
 /** `GET /x` → `/x` */
 const pathOfKey = (k) => String(k).slice(String(k).indexOf(' ') + 1)
 
-/** 文档**声明集**的四类（CT8 的文档面差异按这四类逐条报） */
-const DECLARED_FIELDS = [['paths', 'doc.routes'], ['wildcards', 'doc.wildcards'], ['wfKeys', 'doc.workflow'], ['ws', 'doc.ws']]
+/** 文档**声明集**的六类（CT8 的文档面差异按这六类逐条报）
+ *  ★ `toolFps` 刻意**不在此列**：它是 `tools` 名字集的附加信息（指纹），入列会让声明集大小重复计数。 */
+const DECLARED_FIELDS = [
+  ['paths', 'doc.routes'], ['wildcards', 'doc.wildcards'], ['wfKeys', 'doc.workflow'],
+  ['ws', 'doc.ws'], ['ipc', 'doc.ipc'], ['tools', 'doc.tools'],
+]
 
 /** 声明集大小（CT8 的 `evaluated` 用：判定到底比了多少条声明） */
 function declaredSize(d) {
   return DECLARED_FIELDS.reduce((n, [f]) => n + (d?.[f]?.size || 0), 0)
 }
+
+/** 每类真值在文档里的归宿（CT2 的 expected 文案用：一眼看出该补哪一节） */
+const DOC_SECTIONS_OF = { routes: '§7', wsOut: '§5', wsIn: '§6', ipc: '§11', tools: '§12' }
 
 /**
  * 两份**文档声明集**的差异（CT8 的文档面）。
@@ -140,14 +165,17 @@ function dynMatches(prefixes, path) {
 
 /**
  * 真值 = **代码真值 ∖ 文档已声明**（plan §1 判据 b 的"登记集"定义）。
- * @returns {{truth:{routes:string[],wsOut:string[],wsIn:string[],ipc:string[]}, declared:object, nsClaims:string[]}}
+ * 五类各做一次减法：routes（`ns` 前缀声明见下）/ wsOut / wsIn / ipc（§11）/ tools（§12）。
+ * @returns {{truth:{routes:string[],wsOut:string[],wsIn:string[],ipc:string[],tools:string[]}, declared:object, nsClaims:string[]}}
  *   `truth.routes` 里除端点键外还有**命名空间声明**（`ns /前缀/`）：`children` 为空的前缀
  *   （`/providers/`、`/knowledge/import/jobs/`）与"动态拼装"的前缀在快照里外观相同
  *   （`childCount===0`），只有靠这种显式声明才能区分"空命名空间"与"不存在"（T1 的 I5 / plan §2 T10）。
  *   命名空间声明**是否已被文档覆盖**的判据：文档里有具体路径落在该前缀下，或 §7.1 的路径能被该前缀的
  *   锚定正则匹配（`/workflows/`）。**文档的 `*` 通配一律不给信用**（反例⑧）。
+ *   ★ P1.5 的关键性质：**文档声明得越全，真值越小** —— 五类补进文档后，"登记集"只剩真正无法
+ *     文档化的空洞（空命名空间），这正是把"登记"升级为"真对账"的机制。
  */
-export function buildTruth({ routes, prefixes = [], ws, ipc, doc }) {
+export function buildTruth({ routes, prefixes = [], ws, ipc, tools, doc }) {
   const d = docDeclaredSets(doc)
   const truthRoutes = []
   for (const k of routes?.routes ? routes.routes.keys() : (routes || new Map()).keys()) {
@@ -174,9 +202,12 @@ export function buildTruth({ routes, prefixes = [], ws, ipc, doc }) {
       routes: [...truthRoutes, ...nsClaims].sort(),
       wsOut: [...(ws?.out || [])].filter((t) => !coveredWs.has(t)).sort(),
       wsIn: [...(ws?.in || [])].filter((t) => !coveredWs.has(t)).sort(),
-      // IPC：文档**零章节** ⇒ 全部推送通道都要登记（invoke/handle/send/on 走 CT5 的配对判据，
-      // 那是"两方协议集合相等"，不需要文档面 —— 这两条的分工写在 plan §3 的 CT5 行）
-      ipc: [...(ipc?.push || [])].sort(),
+      // IPC 推送通道：§11 补齐前文档零章节 ⇒ 7 条全部要登记；补齐后按声明集做减法
+      // （invoke↔handle、send↔on 走 CT5 的配对判据：那是"两方协议集合相等"，不需要文档面）
+      ipc: [...(ipc?.push || [])].filter((c) => !d.ipc.has(c)).sort(),
+      // 工具出口（toolSchemas 的静态+运行时并集名）：§12 补齐前**完全不在真值里**（P1 的已知盲区），
+      // P1.5 起进真值 ⇒ 新工具漏了文档或登记，CT2/CT4 立刻报出来
+      tools: [...(tools?.names || [])].filter((n) => !d.tools.has(n)).sort(),
     },
     declared: d,
     nsClaims,
@@ -374,24 +405,28 @@ export async function runContractRules({
   checks.push(checkResult({ rule: 'CT1', title: '快照可从**提交态**代码现场重算（逐类逐元素相等）',
     evaluated: snapSize, passed: diff.equal && !headError }))
 
-  // ── CT2/CT3：代码 ↔ 文档（有文档的两类：路由与 WS 类型）────────────────────
-  const truthData = buildTruth({ routes, prefixes: routes.prefixes, ws, ipc: ipcAll, doc: docHead })
+  // ── CT2/CT3：代码 ↔ 文档（P1.5 起覆盖五类：路由 / WS 出 / WS 入 / IPC 推送 / 工具出口）──
+  const truthData = buildTruth({ routes, prefixes: routes.prefixes, ws, ipc: ipcAll, tools, doc: docHead })
   const scopeOut = checkScopeSets({ scope, truth: truthData.truth, docSections: docHead ? truthData.declared.sections : null })
   const coverage = scopeOut.coverage
+  // 快照里的工具出口（CT3 的指纹兜底 + CT6 的比对基准）：**提到 CT3 之前** —— `const` 在同一函数
+  // 作用域里有 TDZ，若只在 CT6 段声明，CT3 引用时会直接抛 ReferenceError（不是"取不到值"）。
+  const snapTools = snapshot && typeof snapshot.tools === 'object' && snapshot.tools ? snapshot.tools : {}
+  const snapSources = snapshot && typeof snapshot.toolSources === 'object' && snapshot.toolSources ? snapshot.toolSources : {}
 
   let ct2bad = 0
-  for (const kind of ['routes', 'wsOut', 'wsIn']) {
+  for (const kind of ['routes', 'wsOut', 'wsIn', 'ipc', 'tools']) {
     for (const name of truthData.truth[kind]) {
       if (coverage.has(keyOf(kind, name))) continue
       ct2bad++
       findings.push(finding({
-        rule: 'CT2', severity: RED, subject: `${kind} ${name}`, expected: '在 docs/bridge-contract.md §5/§6/§7 声明，或在 contract-scope.json 登记',
+        rule: 'CT2', severity: RED, subject: `${kind} ${name}`, expected: `${DOC_SECTIONS_OF[kind]} 声明，或在 contract-scope.json 登记`,
         actual: '两处都没有',
-        hint: '代码里有、文档与登记里都没有 = 未覆盖的契约面：补文档（P1.5）或在 kit/manifest/contract-scope.json 逐条登记（人工、带 reason）',
+        hint: '代码里有、文档与登记里都没有 = 未覆盖的契约面：补文档（§7 路由 / §5§6 WS / §11 IPC / §12 工具）或在 kit/manifest/contract-scope.json 逐条登记（人工、带 reason）',
       }))
     }
   }
-  checks.push(checkResult({ rule: 'CT2', title: '代码 → 文档：每条路由/WS 类型在 §5/§6/§7 出现，或在 scope 登记',
+  checks.push(checkResult({ rule: 'CT2', title: '代码 → 文档：每条路由/WS 类型/IPC 推送/工具出口在 §5/§6/§7/§11/§12 出现，或在 scope 登记',
     evaluated: Object.keys(truthData.truth).reduce((n, k) => n + truthData.truth[k].length, 0), passed: ct2bad === 0 }))
 
   // CT3：文档声明的每一条都必须真的在代码里（文档腐烂；`*` 通配与动态段不报红）
@@ -416,8 +451,58 @@ export async function runContractRules({
       hint: '文档的 §5/§6 表里写着、代码里零命中 ⇒ 要么补代码，要么删/改文档行',
     }))
   }
-  checks.push(checkResult({ rule: 'CT3', title: '文档 → 代码：文档声明的每条都在代码里（文档腐烂）',
-    evaluated: docRouteChecks.length + truthData.declared.ws.size, passed: ct3bad === 0 }))
+  // ★ P1.5：文档 §11 声明的 IPC 推送通道必须真的在代码的 **push 侧**（`webContents.send` 及其
+  //   别名可选链形态）。判据只对 push：invoke↔handle、send↔on 是"两侧集合相等"，由 CT5 管。
+  for (const ch of truthData.declared.ipc) {
+    if (ipcAll.push.has(ch)) continue
+    ct3bad++
+    findings.push(finding({
+      rule: 'CT3', severity: RED, subject: `ipc ${ch}`, expected: '代码里有该推送通道（webContents.send / `wc?.send?.(…)`）', actual: '代码里没有',
+      hint: '文档 §11 写了代码没有 = 文档腐烂（通道被删/改名）；推送侧只认 `webContents.send(...)` 与别名可选链两种形态（见 contract-ipc.mjs 的 PUSH_PATTERNS）',
+    }))
+  }
+  // ★ P1.5：文档 §12 声明的工具必须在代码出口里，且**结构指纹逐字相等**。
+  //   指纹比对是这条规则的核：文档里只写"名字 + 指纹"（明细的唯一真相在 kernel/tools.mjs），
+  //   结构一变指纹就变 ⇒ 必须同步文档，否则红。缺指纹 / 取不到出口指纹一律**报红**（fail-closed）。
+  for (const name of truthData.declared.tools) {
+    if (!tools.names.includes(name)) {
+      ct3bad++
+      findings.push(finding({
+        rule: 'CT3', severity: RED, subject: `tools ${name}`, expected: '在 toolSchemas() 出口（或静态 registry）里', actual: '代码里没有该工具',
+        hint: '文档 §12 列了代码没有的工具 = 文档腐烂（工具被删/改名）',
+      }))
+      continue
+    }
+    const docFp = truthData.declared.toolFps.get(name) || null
+    const liveFp = tools.shapeOf(name) || snapTools[name] || null
+    if (!docFp) {
+      ct3bad++
+      findings.push(finding({
+        rule: 'CT3', severity: RED, subject: `tools ${name}`, expected: '结构指纹（8 位十六进制）', actual: '文档里没给指纹',
+        hint: '§12 的指纹必须**用反引号包住**才被解析（表内散文里的裸串不算）：跑 `npm run kit:sync` 或 fingerprintOf 取值后补上',
+      }))
+      continue
+    }
+    if (liveFp === null) {
+      ct3bad++
+      findings.push(finding({
+        rule: 'CT3', severity: RED, subject: `tools ${name}`, expected: String(docFp), actual: '取不到出口指纹（工具不在运行时出口，且台账里也没有）',
+        hint: '文档声明了工具却无法从代码/台账取到指纹 ⇒ 无法证明结构一致（不许当通过）：跑 `npm run kit:sync` 落盘后再对账',
+      }))
+      continue
+    }
+    if (liveFp !== docFp) {
+      ct3bad++
+      findings.push(finding({
+        rule: 'CT3', severity: RED, subject: `tools ${name}`, expected: String(docFp), actual: String(liveFp),
+        hint: '工具 input_schema 的**结构指纹**与文档 §12 不一致（props 名+类型 / required / additionalProperties）：'
+          + '这是模型契约变更 ⇒ 跑 `npm run kit:sync` 并同步 §12 的指纹（description 散文不入指纹）',
+      }))
+    }
+  }
+  checks.push(checkResult({ rule: 'CT3', title: '文档 → 代码：文档声明的每条（路由/WS/IPC/工具指纹）都在代码里',
+    evaluated: docRouteChecks.length + truthData.declared.ws.size + truthData.declared.ipc.size + truthData.declared.tools.size,
+    passed: ct3bad === 0 }))
 
   // ── CT4 / CT4B / CT4C：范围登记 ──────────────────────────────────────
   for (const f of scopeOut.findings) findings.push(f)
@@ -467,18 +552,20 @@ export async function runContractRules({
   pair('send', ipcR.send, 'on(main)', ipcM.on)
   pair('push', ipcM.push, 'on(renderer)', ipcR.on)
   for (const ch of ipcM.push) {
-    if (coverage.has(keyOf('ipc', ch))) continue
+    // ★ P1.5：覆盖判据 = **scope 登记** 或 **文档 §11 声明**（否则 §11 补完仍红）。
+    //   与 CT2/CT4 的分工：那两条判"代码真值 ∖ 文档已声明"是否都被登记；这条判"推送通道
+    //   有没有契约面上的归宿"（文档面或登记面二选一）。三者都红 = 该通道确实两处都没有。
+    if (coverage.has(keyOf('ipc', ch)) || truthData.declared.ipc.has(ch)) continue
     ct5bad++
-    findings.push(finding({ rule: 'CT5', severity: RED, subject: `push ${ch}`, expected: '在文档声明 或在 scope 登记', actual: '两处都没有',
-      hint: 'bridge-contract.md 没有 IPC 章节 ⇒ 推送通道只能进 contract-scope.json（kind 写 ipc，逐条精确键 + reason）' }))
+    findings.push(finding({ rule: 'CT5', severity: RED, subject: `push ${ch}`, expected: '在文档 §11 声明 或在 scope 登记', actual: '两处都没有',
+      hint: 'IPC 推送侧没有对应的调用点，只能靠文档 §11（推荐，P1.5 起该章已存在）或 kit/manifest/contract-scope.json 逐条登记（人工、带 reason）' }))
   }
-  checks.push(checkResult({ rule: 'CT5', title: 'IPC 三方配对（invoke↔handle / send↔on / push↔on）双向相等，push 在文档或 scope',
+  checks.push(checkResult({ rule: 'CT5', title: 'IPC 三方配对（invoke↔handle / send↔on / push↔on）双向相等，push 在文档 §11 或 scope',
     evaluated: ipcR.invoke.size + ipcR.send.size + ipcM.handle.size + ipcM.on.size + ipcR.on.size + ipcM.push.size, passed: ct5bad === 0 }))
 
   // ── CT6：工具出口 ⊆ 快照 / 静态计数 / 动态源登记 / 结构指纹 ─────────────
+  //    （快照工具出口 `snapTools`/`snapSources` 已在 CT2 段之前取出：见那里的 TDZ 说明）
   let ct6bad = 0
-  const snapTools = snapshot && typeof snapshot.tools === 'object' && snapshot.tools ? snapshot.tools : {}
-  const snapSources = snapshot && typeof snapshot.toolSources === 'object' && snapshot.toolSources ? snapshot.toolSources : {}
   // ★ 变异实测补的洞：`kernel/tools.mjs` 语法坏掉时，运行时出口不可用 ⇒ `names` 退化成"静态键"、
   //   `shapeOf()` 全 null。旧写法只在 `liveHash !== null` 时比对 ⇒ **静默全绿**（M12 变异实测 CT6 红 0）。
   //   判据：**快照里有指纹**（说明这个仓本来能导出）而运行时**不可用** ⇒ 红。夹具仓（快照 tools 为空、
