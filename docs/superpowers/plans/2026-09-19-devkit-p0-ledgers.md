@@ -3686,11 +3686,43 @@ git commit -m "feat(kit): 调试版渠道身份 stamp（A1/A4）+ 首个版本�
 
 ## Task 14: 门禁接入 CI + AI 操作契约
 
+**★ 本任务额外并入 3 项遗留（Task 12/13 审查提出，都是"欠账没进台账"或"理由说错"）**
+
+### Rider 1 —— 把 3 个 verify 脚本的 15 项既有失败登记进 `docs/待处理清单.md`
+Task 12 修好 C2（挂载）后**暴露出**：`verify-highrisk`（5 项）、`verify-knowledge-gui`（3 项）、`verify-knowledge-import-gui`（7 项）**脚本自身腐烂**，故被归入新增的 `pendingFix` 桶（`kit/manifest/deps.json#gates.pendingFix` + `docs/ci.md:191-202` 有留证）。
+但审查指出：**这 15 项失败目前只在门禁配置里可见，没有进"欠账台账"** → 属"欠账没登记"，容易随文档翻页丢失。
+→ 按 `docs/待处理清单.md` **既有格式**补 1 条，含：3 个脚本名、各自失败断言数（5/3/7）、**每条的失败原因**（见下）、**修到绿后移入 `ci` 桶的判据**。
+**★ 该文件有他人 113 行在途改动 —— 绝不可卷入提交**（用 `git show HEAD:<file>` + `hash-object -w` + `update-index --cacheinfo` 单文件入索引；提交后 numstat 里他人的行必须完好；做不到就不提交，把内容贴报告里）。
+
+### Rider 2 —— 修正 `verify-knowledge-gui` 的失败归因（审查认为是**真违规**，不是"脚本腐烂"）
+Task 12 实现者把它归因"组件演进、脚本未同步"。审查提出反证：`docs/superpowers/specs/2026-09-13-knowledge-gui-design.md:92/208-209` 明文要求 **lucide only、禁 emoji**，且**有先例：注释命中 emoji 时改的是代码**。而：
+- `KnowledgeToolbar.tsx:48` 的 **UI `⚠`**（commit `8664f1e`，2026-09-17）
+- `KnowledgeSidebar.tsx:31` 的**注释 `⚠️`**
+
+这两处更像**真违规**（不是脚本读旧文件）。只有"五视图白名单"（现 `knowledgeStore.ts:27` 已是 6 值含 `tags`）确属字面量腐烂。
+
+→ 二选一（**推荐前者**）：(a) **按 spec 改这 2 行**（去掉 emoji / 换成 lucide 图标）→ 该脚本即可升入 `ci` 桶（12 → 10 项失败）；(b) 若判定 spec 该放宽，则**改 spec 并写明理由**，同时把 `pendingFix` 的 reason 措辞改准（不得含糊写"组件演进"）。
+→ 无论选哪个，`deps.json` 的 `pendingFix` reason 与 `docs/ci.md` 的记载都要与最终结论一致。
+
+### Rider 4 —— Task 13 审查的 4 项低危（在本次收尾一并了结）
+
+1. **【该项有真实测空】** `kit/lib/stamp.mjs:64` 的 `out.sort()`（"稳定顺序"）**无断言**：审查做变异④把 `out.sort()` **删掉 → 11/11 全绿（未被抓）**。原因：`kit/lib/stamp.test.mjs:124` 比对时**两端都先 `.sort()`**，把实现的顺序掩盖了。
+   → 补一条断言："**同一棵树连跑两次，`artifacts` 的路径数组严格相等**"（不额外排序），使顺序真的被钉住。
+2. `docs/superpowers/specs/2026-09-19-devkit-design.md:293` 把 §8 的形状声明为"不是契约"，于是**契约实际降为测试文件**。→ 把字段集（含 `tag`/`missing`）以**明确列表**写回 §8（让 spec 自身可读即可判）。
+3. `kit/cli.test.mjs:291` 跑 `stamp` 会写主树 `release/`（gitignored，实测不脏），与 `kit/lib/stamp.test.mjs:17` 注释"绝不往真仓写"口气有张力。→ 注释补一句区分（测试夹具 vs 真仓 gitignored 产物区），消除矛盾表述。
+4. spec §10 的 A1 行建议注明"**tag 位于 anchors 归零提交（P0 HEAD）**"——因为 tag 落在 `5684580`（`anchors` 归零提交），`git show v3.0.0-dev.0 --stat` 只见 `docs/_anchors.json`。README 里也应写清这点（否则后人会以为 tag 漏了功能提交）。
+
+### Rider 3 —— 记录 `debug` 字段争议的结论（含 Task 13 审查的裁定）
+Task 13 交付时出现一处**指令与规格不一致**：派发指令按计划草图写了"未构建时 `debug: null`"，实现者核实 **spec §8 原文并没有 `debug` 字段**（spec 明写"上面那段是形状示意，不是契约"），故章里不含该字段 —— 符合用户"调试版保留、**只加渠道身份**"的裁定本意。
+→ 在 `docs/ci.md` 或 `kit/README.md` 里**一句话记明**"`kit-stamp.json` 的字段集以 spec §8 + `stamp.test.mjs` 为准，不含 `debug`"，避免后人照计划草图加回。
+
 **Files:**
 - Create: `kit/README.md`
 - Modify: `.github/workflows/ci.yml`
 - Modify: `docs/ci.md`
 - Modify: `docs/superpowers/specs/2026-09-19-devkit-design.md`（P0 完成标记）
+- Modify: `docs/待处理清单.md`（Rider 1，注意他人 113 行）
+- Modify: `kit/manifest/deps.json` + `docs/ci.md`（Rider 2 的 reason 校正，若选 (a) 还要改 2 处组件）
 
 - [ ] **Step 1: 实测 `kit:check` 耗时（G6 的硬约束 < 5s）**
 
