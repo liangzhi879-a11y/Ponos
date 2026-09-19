@@ -1,0 +1,1156 @@
+{
+  "version": 1,
+  "generatedBy": "node kit/cli.mjs sync",
+  "_note": "packages[].evidence 与 optionalProbes 由 sync 生成；notes / gates / sizes 可人工维护（sync 保留）。status=unused 的判定见 spec §6.2（五类引用证据）。",
+  "domains": {
+    "npm-runtime": {
+      "source": "package.json#dependencies",
+      "packages": [
+        {
+          "name": "@assistant-ui/react",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/chat/AssistantMessageView.tsx",
+              "src/components/chat/ChatWindow.tsx",
+              "src/components/chat/MarkdownText.tsx",
+              "src/components/chat/ReasoningPanel.tsx",
+              "src/components/chat/ToolCallCard.tsx",
+              "src/lib/chatParts.ts",
+              "src/lib/chatRuntime.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/commands",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/lang-cpp",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/lang-css",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/lang-html",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/lang-java",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/lang-javascript",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/lang-json",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/lang-less",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/lang-markdown",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/lang-php",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/lang-python",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/lang-rust",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/lang-sass",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/lang-sql",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/lang-vue",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/lang-xml",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/lang-yaml",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/language",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/lint",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/search",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/state",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/view",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@radix-ui/react-collapsible",
+          "evidence": {
+            "classes": [],
+            "files": []
+          },
+          "status": "unused"
+        },
+        {
+          "name": "@radix-ui/react-context-menu",
+          "evidence": {
+            "classes": [],
+            "files": []
+          },
+          "status": "unused"
+        },
+        {
+          "name": "@radix-ui/react-dialog",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/ui/dialog.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@radix-ui/react-dropdown-menu",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/ui/dropdown-menu.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@radix-ui/react-popover",
+          "evidence": {
+            "classes": [],
+            "files": []
+          },
+          "status": "unused"
+        },
+        {
+          "name": "@radix-ui/react-scroll-area",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/ui/scroll-area.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@radix-ui/react-separator",
+          "evidence": {
+            "classes": [],
+            "files": []
+          },
+          "status": "unused"
+        },
+        {
+          "name": "@radix-ui/react-slot",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/ui/button.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@radix-ui/react-switch",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/ui/switch.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@radix-ui/react-tabs",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/ui/tabs.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@radix-ui/react-tooltip",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/ui/tooltip.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@tailwindcss/typography",
+          "evidence": {
+            "classes": [
+              "import",
+              "config-file"
+            ],
+            "files": [
+              "tailwind.config.ts"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@tanstack/react-virtual",
+          "evidence": {
+            "classes": [],
+            "files": []
+          },
+          "status": "unused"
+        },
+        {
+          "name": "@xyflow/react",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/knowledge/KnowledgeGraphView.tsx",
+              "src/components/knowledge/graph/KnowledgeEdge.tsx",
+              "src/components/knowledge/graph/KnowledgeNode.tsx",
+              "src/components/knowledge/graph/SectionLabel.tsx",
+              "src/components/workflows/canvas/WorkflowCanvas.tsx",
+              "src/components/workflows/canvas/edges/WorkflowEdge.tsx",
+              "src/components/workflows/canvas/nodes/WorkflowNode.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "class-variance-authority",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/ui/badge.tsx",
+              "src/components/ui/button.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "classic-level",
+          "evidence": {
+            "classes": [],
+            "files": []
+          },
+          "status": "unused"
+        },
+        {
+          "name": "clsx",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/lib/utils.ts"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "diff",
+          "evidence": {
+            "classes": [],
+            "files": []
+          },
+          "status": "unused"
+        },
+        {
+          "name": "lucide-react",
+          "evidence": {
+            "classes": [
+              "import",
+              "config-file"
+            ],
+            "files": [
+              "src/components/agents/AgentsPanel.tsx",
+              "src/components/agents/AvatarCropDialog.tsx",
+              "src/components/apps/AddAppDialog.tsx",
+              "src/components/apps/AppCard.tsx",
+              "src/components/apps/AppConsole.tsx",
+              "src/components/apps/AppCoverage.tsx",
+              "src/components/apps/AppsPanel.tsx",
+              "src/components/apps/SpecEditor.tsx",
+              "src/components/auth/AuthScreen.tsx",
+              "src/components/auth/AuthWindowRoot.tsx",
+              "src/components/auth/PasswordField.tsx",
+              "src/components/boot/BootScreen.tsx",
+              "src/components/chat/AssistantMessageView.tsx",
+              "src/components/chat/ChatInput.tsx",
+              "src/components/chat/ChatWindow.tsx",
+              "src/components/chat/CodeBlock.tsx",
+              "src/components/chat/CompressedToast.tsx",
+              "src/components/chat/DirectoryPicker.tsx",
+              "src/components/chat/FloatingQuestionCard.tsx",
+              "src/components/chat/HealthSuggestCard.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "mammoth",
+          "evidence": {
+            "classes": [],
+            "files": []
+          },
+          "status": "unused"
+        },
+        {
+          "name": "nanoid",
+          "evidence": {
+            "classes": [],
+            "files": []
+          },
+          "status": "unused"
+        },
+        {
+          "name": "react",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/App.tsx",
+              "src/components/ErrorBoundary.tsx",
+              "src/components/agents/AgentToolsEditor.tsx",
+              "src/components/agents/AgentsPanel.tsx",
+              "src/components/agents/AvatarCropDialog.tsx",
+              "src/components/agents/KernelAgentsSection.tsx",
+              "src/components/apps/AddAppDialog.tsx",
+              "src/components/apps/AppConsole.tsx",
+              "src/components/apps/AppCoverage.tsx",
+              "src/components/apps/AppsPanel.tsx",
+              "src/components/apps/SpecEditor.tsx",
+              "src/components/auth/AuthScreen.tsx",
+              "src/components/auth/PasswordField.tsx",
+              "src/components/auth/SetupWizard.tsx",
+              "src/components/boot/BootScreen.tsx",
+              "src/components/chat/AssistantMessageView.tsx",
+              "src/components/chat/ChatInput.tsx",
+              "src/components/chat/ChatWindow.tsx",
+              "src/components/chat/CodeBlock.tsx",
+              "src/components/chat/CompressedToast.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "react-dom",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "scripts/verify-gui-fidelity.mjs",
+              "src/components/layout/Header.tsx",
+              "src/components/rail/TaskListPanel.tsx",
+              "src/main.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "react-markdown",
+          "evidence": {
+            "classes": [
+              "import",
+              "config-file"
+            ],
+            "files": [
+              "src/components/chat/MarkdownText.tsx",
+              "src/components/chat/SubAgentPanel.tsx",
+              "src/components/files/FilePreview.tsx",
+              "src/components/knowledge/KnowledgeDocView.tsx",
+              "src/components/knowledge/KnowledgePackDetail.tsx",
+              "vite.config.ts"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "remark-gfm",
+          "evidence": {
+            "classes": [
+              "import",
+              "config-file"
+            ],
+            "files": [
+              "src/components/chat/MarkdownText.tsx",
+              "src/components/chat/SubAgentPanel.tsx",
+              "src/components/files/FilePreview.tsx",
+              "vite.config.ts"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "tailwind-merge",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/lib/utils.ts"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "ws",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "electron/main.cjs",
+              "server/bridge-auth-token.test.mjs",
+              "server/bridge-listen-loopback.test.mjs",
+              "server/bridge.mjs",
+              "server/browser-routing.test.mjs"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "xlsx",
+          "evidence": {
+            "classes": [],
+            "files": []
+          },
+          "status": "unused"
+        },
+        {
+          "name": "zustand",
+          "evidence": {
+            "classes": [
+              "import",
+              "config-file"
+            ],
+            "files": [
+              "src/lib/stableStorage.test.ts",
+              "src/lib/stableStorage.ts",
+              "src/stores/agentStore.ts",
+              "src/stores/appsStore.ts",
+              "src/stores/authStore.ts",
+              "src/stores/browserStore.ts",
+              "src/stores/chatStore.ts",
+              "src/stores/diagStore.ts",
+              "src/stores/disabledStore.ts",
+              "src/stores/healthStore.ts",
+              "src/stores/knowledgeStore.ts",
+              "src/stores/mcpStore.ts",
+              "src/stores/settingsStore.ts",
+              "src/stores/teamStore.ts",
+              "src/stores/uiStore.ts",
+              "src/stores/viewStore.ts",
+              "src/stores/warningStore.ts",
+              "vite.config.ts"
+            ]
+          },
+          "status": "used"
+        }
+      ]
+    },
+    "npm-dev": {
+      "source": "package.json#devDependencies",
+      "packages": [
+        {
+          "name": "@types/diff",
+          "evidence": {
+            "classes": [
+              "types"
+            ],
+            "files": [
+              "tsconfig.json"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@types/node",
+          "evidence": {
+            "classes": [
+              "types"
+            ],
+            "files": [
+              "tsconfig.json"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@types/react",
+          "evidence": {
+            "classes": [
+              "types"
+            ],
+            "files": [
+              "tsconfig.json"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@types/react-dom",
+          "evidence": {
+            "classes": [
+              "types"
+            ],
+            "files": [
+              "tsconfig.json"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@vitejs/plugin-react",
+          "evidence": {
+            "classes": [
+              "import",
+              "config-file"
+            ],
+            "files": [
+              "vite.config.ts"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "autoprefixer",
+          "evidence": {
+            "classes": [
+              "config-file"
+            ],
+            "files": [
+              "postcss.config.js"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "electron",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "electron/browser-executor.cjs",
+              "electron/main.cjs",
+              "electron/preload.cjs",
+              "scripts/verify-gui-fidelity.mjs"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "electron-builder",
+          "evidence": {
+            "classes": [
+              "config-file",
+              "cli"
+            ],
+            "files": [
+              "kit/lib/ledger.test.mjs",
+              "scripts/build-installer.mjs",
+              "package.json",
+              "electron-builder.yml"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "postcss",
+          "evidence": {
+            "classes": [
+              "config-file"
+            ],
+            "files": [
+              "postcss.config.js"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "rcedit",
+          "evidence": {
+            "classes": [
+              "dynamic-import"
+            ],
+            "files": [
+              "scripts/patch-icon.mjs"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "tailwindcss",
+          "evidence": {
+            "classes": [
+              "import",
+              "config-file"
+            ],
+            "files": [
+              "postcss.config.js",
+              "tailwind.config.ts"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "typescript",
+          "evidence": {
+            "classes": [
+              "config-file"
+            ],
+            "files": [
+              "tsconfig.json"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "vite",
+          "evidence": {
+            "classes": [
+              "import",
+              "config-file",
+              "cli"
+            ],
+            "files": [
+              "vite.config.ts",
+              "package.json"
+            ]
+          },
+          "status": "used"
+        }
+      ]
+    },
+    "kernel": {
+      "source": "kernel/package.json#dependencies",
+      "assertZero": true,
+      "packages": []
+    },
+    "python-embedded": {
+      "source": "kit/manifest/deps.json#python.embedded",
+      "packages": [
+        {
+          "name": "openpyxl"
+        },
+        {
+          "name": "python-docx"
+        },
+        {
+          "name": "xlrd"
+        },
+        {
+          "name": "Pillow"
+        },
+        {
+          "name": "beautifulsoup4"
+        },
+        {
+          "name": "rapidocr-onnxruntime"
+        },
+        {
+          "name": "PyPDF2"
+        },
+        {
+          "name": "pypdf"
+        },
+        {
+          "name": "pypdfium2"
+        },
+        {
+          "name": "requests"
+        },
+        {
+          "name": "Jinja2"
+        },
+        {
+          "name": "openai"
+        },
+        {
+          "name": "pydantic"
+        }
+      ]
+    },
+    "python-skills": {
+      "source": "public/sample-skills/_common/requirements.txt",
+      "packages": [
+        {
+          "name": "openpyxl",
+          "spec": ">=3.1.0"
+        },
+        {
+          "name": "python-docx",
+          "spec": ">=0.8.11"
+        },
+        {
+          "name": "pypdf2",
+          "spec": ">=3.0.0"
+        },
+        {
+          "name": "pdfplumber",
+          "spec": ">=0.9.0"
+        },
+        {
+          "name": "pymupdf",
+          "spec": ">=1.23.0"
+        },
+        {
+          "name": "pillow",
+          "spec": ">=10.0.0"
+        },
+        {
+          "name": "rapidocr-onnxruntime",
+          "spec": ">=1.4.4"
+        },
+        {
+          "name": "onnxruntime",
+          "spec": ">=1.7.0"
+        },
+        {
+          "name": "pdf2image",
+          "spec": ">=1.16.0"
+        },
+        {
+          "name": "opencv-python",
+          "spec": ">=4.5.1"
+        },
+        {
+          "name": "shapely",
+          "spec": ">=1.7.1"
+        },
+        {
+          "name": "pyclipper",
+          "spec": ">=1.2.0"
+        },
+        {
+          "name": "rapidocr-openvino",
+          "spec": ">=1.4.0"
+        },
+        {
+          "name": "requests",
+          "spec": ">=2.28.0"
+        },
+        {
+          "name": "pycryptodome",
+          "spec": ">=3.18.0"
+        },
+        {
+          "name": "jieba",
+          "spec": ">=0.42.1"
+        },
+        {
+          "name": "portalocker",
+          "spec": ">=2.7.0"
+        },
+        {
+          "name": "pytesseract",
+          "spec": ">=0.3.10"
+        },
+        {
+          "name": "pywin32",
+          "spec": ">=305"
+        },
+        {
+          "name": "xlrd",
+          "spec": ">=2.0.1"
+        },
+        {
+          "name": "img2pdf",
+          "spec": ">=0.6.0"
+        },
+        {
+          "name": "playwright",
+          "spec": ">=1.40.0"
+        },
+        {
+          "name": "python-dateutil",
+          "spec": ">=2.8.0"
+        }
+      ]
+    }
+  },
+  "python": {
+    "embedded": [
+      "openpyxl",
+      "python-docx",
+      "xlrd",
+      "Pillow",
+      "beautifulsoup4",
+      "rapidocr-onnxruntime",
+      "PyPDF2",
+      "pypdf",
+      "pypdfium2",
+      "requests",
+      "Jinja2",
+      "openai",
+      "pydantic"
+    ]
+  },
+  "optionalProbes": [
+    {
+      "spec": "jszip",
+      "file": "shared/pack-zip.test.mjs",
+      "line": 85
+    }
+  ],
+  "notes": {
+    "pythonOnlyEmbedded": [
+      {
+        "name": "pypdfium2",
+        "reason": "技能侧有真实调用点却漏列：public/sample-skills/_common/doc_to_md.py:643/676、_common/pdf_splitter.py:311 都是 `import pypdfium2 as pdfium`（PDF 光栅化降级路径），但 requirements.txt 未列它 → 技能清单应补（P5 黄灯项）"
+      },
+      {
+        "name": "pypdf",
+        "reason": "kernel/knowledge-import.mjs:540 注释说明自带 Python 正是为了 pypdf/python-docx 这类解析依赖；本仓已跟踪 .py 无直接 import，真实调用点在运行态技能脚本（runtime/skills/**/scripts，gitignored，不在扫描域）"
+      },
+      {
+        "name": "beautifulsoup4",
+        "reason": "未核实：git grep -w 在已跟踪代码里零 import（仅 scripts/build-embedded-python.mjs:82 安装清单与台账自身）。内嵌运行时不可在线补包 → 先保留，需 Task 11 责任人确认是否历史遗留"
+      },
+      {
+        "name": "Jinja2",
+        "reason": "未核实：同 beautifulsoup4 —— 已跟踪代码零 import，只有 scripts/build-embedded-python.mjs:82 的安装清单；既不能证明在用，也不宜据此删除"
+      },
+      {
+        "name": "openai",
+        "reason": "未核实：已跟踪代码里 `openai` 只作为 provider 名出现（server/title-gen.mjs 等），无 Python import；内嵌态装了 openai-3.8.0 但本仓找不到调用点"
+      },
+      {
+        "name": "pydantic",
+        "reason": "未核实：已跟踪代码零 import（pydantic 是 openai SDK 的运行期依赖，随 openai 进来）；若 openai 本身未被使用则二者都是候选清理项"
+      }
+    ],
+    "pythonOnlySkills": [
+      {
+        "name": "pdfplumber",
+        "reason": "内嵌态未装；技能侧直接调用：_common/doc_toolkit.py、file_content_classifier.py、filing_mapper.py（PDF 文本/表格抽取主路径）"
+      },
+      {
+        "name": "PyMuPDF",
+        "reason": "内嵌态未装；技能侧直接调用：_common/contract_invoice_extractor.py、contract_invoice_validator.py（`import fitz`，申请书/发票解析）"
+      },
+      {
+        "name": "rapidocr-openvino",
+        "reason": "内嵌态未装；技能侧直接调用：_common/ocr_engine.py、pdf_splitter.py（[推荐] Intel 加速后端，缺失时回退 ONNX）"
+      },
+      {
+        "name": "pdf2image",
+        "reason": "内嵌态未装；技能侧直接调用：_common/pdf_splitter.py（PDF→图片，另需系统 poppler）"
+      },
+      {
+        "name": "opencv-python",
+        "reason": "内嵌态未装；已跟踪 .py 无直接 import —— requirements.txt 标为 RapidOCR 依赖（间接装）"
+      },
+      {
+        "name": "Shapely",
+        "reason": "内嵌态未装；已跟踪 .py 无直接 import —— requirements.txt 标为 RapidOCR 依赖（间接装）"
+      },
+      {
+        "name": "pyclipper",
+        "reason": "内嵌态未装；已跟踪 .py 无直接 import —— requirements.txt 标为 RapidOCR 依赖（间接装）"
+      },
+      {
+        "name": "onnxruntime",
+        "reason": "内嵌态未装；已跟踪 .py 无直接 import —— requirements.txt 标为 ONNX 推理引擎（rapidocr-onnxruntime 的运行期依赖）"
+      },
+      {
+        "name": "pycryptodome",
+        "reason": "内嵌态未装；技能侧直接调用：_common/wecom_crypto.py（`import Crypto`，企微 AES-128-CBC 解密）"
+      },
+      {
+        "name": "jieba",
+        "reason": "内嵌态未装；技能侧直接调用：_common/invoice_ps_matcher.py（发票货物名称匹配）"
+      },
+      {
+        "name": "portalocker",
+        "reason": "内嵌态未装；技能侧直接调用：_common/file_lock.py（跨进程文件锁，缺失时回退 msvcrt）"
+      },
+      {
+        "name": "pytesseract",
+        "reason": "内嵌态未装；技能侧直接调用：_common/pdf_splitter.py（RapidOCR 不可用时的降级 OCR，另需系统 Tesseract）"
+      },
+      {
+        "name": "pywin32",
+        "reason": "内嵌态未装；技能侧直接调用：_common/audit_report_verifier.py、doc_toolkit.py（`import win32com`，.doc→.docx，仅 Windows）"
+      },
+      {
+        "name": "img2pdf",
+        "reason": "内嵌态未装；已跟踪 .py 无直接 import —— requirements.txt 注明用途为 PNG→PDF（gxtz-achievement-materials R17 案例），调用点在技能包内"
+      },
+      {
+        "name": "playwright",
+        "reason": "内嵌态未装；技能侧直接调用：public/sample-skills/yfwweb-verify/query_detail.py、query_enterprise.py（浏览器自动化截图）"
+      },
+      {
+        "name": "python-dateutil",
+        "reason": "内嵌态未装；已跟踪 .py 无直接 import —— requirements.txt 注明 core-tables 用 relativedelta 做日期计算"
+      }
+    ]
+  },
+  "gates": {
+    "ci": [
+      "verify-highrisk",
+      "verify-milestones-start",
+      "verify-s4-security",
+      "verify-knowledge-gui",
+      "verify-knowledge-import-gui",
+      "verify-experience-inject",
+      "verify-skill-listing"
+    ],
+    "manual": [
+      {
+        "script": "verify-gui-fidelity",
+        "reason": "scripts/verify-gui-fidelity.mjs:19 定位 electron/dist/electron.exe、:359 用 BrowserWindow 加载真组件并截图比对 —— 需 Electron 真二进制 + 图形会话"
+      },
+      {
+        "script": "verify-permission-flow",
+        "reason": "scripts/verify-permission-flow.mjs:26 用 kernel-dist/cli.mjs 拉起真内核进程并按 stream-json 注入 control_response —— 需真内核进程与协议往返"
+      },
+      {
+        "script": "verify-portable-layout",
+        "reason": "scripts/verify-portable-layout.mjs:7 断言 release/YFWorking/ 打包产物（含 electron/electron.exe、runtime/python/python.exe）—— 需先出包"
+      },
+      {
+        "script": "verify-package-assets",
+        "reason": "scripts/verify-package-assets.mjs:28 要求 kernel-dist/cli.mjs 存在（先跑 build-kernel），:7 还 import 未声明的 js-yaml（P2 幽灵）—— clean clone 下必然 FAIL"
+      }
+    ]
+  },
+  "sizes": {
+    "node_modules": 616137688,
+    "runtime/python": 411349607,
+    "runtime/skills": 184848670
+  }
+}

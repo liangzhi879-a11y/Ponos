@@ -3,10 +3,11 @@
 // "sync" 的职责是**从宿主文件发现事实、写进台账**；"check" 的职责是**回读宿主文件、与台账比对**。
 // 两者永不共享"已解析的缓存值" —— 否则一个 bug 会同时污染写侧与读侧，门禁就成了自证。
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { builtinModules } from 'node:module'
 import { join } from 'node:path'
 import { writeFileAtomicSync } from '../../shared/atomic-write.mjs'
-import { trackedFiles, codeFiles, readTracked } from './scan.mjs'
+import { trackedFiles, codeFiles, readTracked, isTestFile, CONFIG_FILES } from './scan.mjs'
 
 export const VERSIONS_FILE = 'kit/manifest/versions.json'
 export const DEPS_FILE = 'kit/manifest/deps.json'
@@ -279,3 +280,429 @@ export const DEFAULT_EXCLUDES = [
 
 export function readVersions({ root }) { return readJson({ root, rel: VERSIONS_FILE, fallback: null }) }
 export function writeVersions({ root, data }) { writeJson({ root, rel: VERSIONS_FILE, data }) }
+
+// ── Task 5：依赖台账 ────────────────────────────────────────────────────────
+//
+// ★ 为什么必须有"五类证据"而不是只扫 import：
+//   实测只扫 import 会得出 11 个"未用"，其中 6 个是假阳性：
+//     · rcedit            → scripts/patch-icon.mjs:10 的 `await import('rcedit')`（动态）
+//     · electron-builder  → scripts/build-installer.mjs:65 的 `npx electron-builder`（CLI）
+//     · @tailwindcss/typography / @vitejs/plugin-react / tailwindcss / postcss / autoprefixer /
+//       typescript / vite → 根级配置文件消费（vite.config.ts / tailwind.config.ts / postcss.config.js / tsconfig.json）
+//   误判的代价不是"多报几条"，而是**让人删掉正在用的依赖**（B1 会真的执行删除）；
+//   反向的代价同样真实：判据太宽（把"文件里出现过包名"当证据）会让**真未用**的依赖逃掉判定，
+//   B1 就不会删它们 —— 两侧都必须是"可复现的证据"，不是印象。
+export const EVIDENCE_CLASSES = ['import', 'dynamic-import', 'config-file', 'cli', 'types']
+
+const MODULE_EXT = /\.(mjs|cjs|js|jsx|ts|tsx)$/
+
+/**
+ * "工具 ⇒ 它读的根级配置文件"：配置文件名就是消费证据。
+ * 实测 `postcss` / `autoprefixer` / `typescript` 全仓源码**零 import**（只有配置文件里以
+ * 插件名/工具名出现）——少了这张表，三者会被判 unused ⇒ P1 变红 ⇒ 最短"修红"路径是删掉
+ * 正在用的工具链。表里的每一行都能在仓里指到具体文件。
+ */
+export const TOOL_CONFIG_FILES = {
+  postcss: 'postcss.config.js',
+  tailwindcss: 'tailwind.config.ts',
+  typescript: 'tsconfig.json',
+  vite: 'vite.config.ts',
+  'electron-builder': 'electron-builder.yml',
+}
+
+/**
+ * 从一段源码里抽出模块说明符。
+ * 已知局限（有意保留）：不做注释剥离 —— `// 各调用点自己 require('electron')` 这类注释也会命中。
+ * 方向是"多给证据"（不会造成误删），且实测未出现"注释救回真未用依赖"的情况（逐个包 git grep 核对过）。
+ */
+/**
+ * 把**注释**与**正则字面量**的内容替换成空格：长度与换行保持不变，故所有基于下标的判定
+ * （行号、try/catch 区间、引号计数）继续成立。
+ *
+ * 为什么必须做：实测这两类位置会凭空造出"幽灵依赖"（P2 全红）：
+ *   · 注释：src/i18n/translations/en-US.ts:220 的 `… from "pressure"`（英文散文里的 of/from）；
+ *   · 正则字面量：scripts/verify-knowledge-import-gui.mjs:167 的 `/from '@\/hooks\/useKnowledge'/`
+ *     —— 校验脚本把"源码里的 import 长什么样"写成正则，扫描器却把它当成了 import。
+ * 字符串字面量**不**掩掉：模块说明符本身就是字符串（`from 'clsx'`），掩掉就什么都抽不到了；
+ * "更外层还有字符串" 这种情况由 insideEnclosingString() 判掉。
+ */
+export function maskNonCode(text) {
+  const out = text.split('')
+  const n = text.length
+  const blank = (from, to) => { for (let k = Math.max(from, 0); k < to && k < n; k++) if (out[k] !== '\n') out[k] = ' ' }
+  let i = 0
+  while (i < n) {
+    const ch = text[i]
+    if (ch === '/' && text[i + 1] === '/') {
+      const end = text.indexOf('\n', i)
+      const to = end === -1 ? n : end
+      blank(i, to); i = to; continue
+    }
+    if (ch === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2)
+      const to = end === -1 ? n : end + 2
+      blank(i, to); i = to; continue
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      let j = i + 1
+      while (j < n) {
+        if (text[j] === '\\') { j += 2; continue }
+        if (text[j] === ch) break
+        if (ch !== '`' && text[j] === '\n') break
+        j++
+      }
+      i = Math.min(j + 1, n); continue
+    }
+    if (ch === '/' && regexCanStart(text, i)) {
+      let j = i + 1
+      let inClass = false
+      while (j < n) {
+        const c = text[j]
+        if (c === '\\') { j += 2; continue }
+        if (c === '\n') break
+        if (inClass) { if (c === ']') inClass = false }
+        else if (c === '[') inClass = true
+        else if (c === '/') break
+        j++
+      }
+      if (j < n && text[j] === '/') {
+        let k = j + 1
+        while (k < n && /[A-Za-z0-9_$]/.test(text[k])) k++
+        blank(i + 1, j)
+        i = k; continue
+      }
+    }
+    i++
+  }
+  return out.join('')
+}
+
+/** `/` 是正则字面量开头还是除号：看前一个非空白字符（关键字/运算符之后是正则） */
+const REGEX_PREV = '=(,:[!&|?{};+-*%~^<>'
+const REGEX_KEYWORDS = new Set(['return', 'typeof', 'case', 'in', 'of', 'instanceof', 'new', 'delete', 'void',
+  'throw', 'await', 'yield', 'do', 'else'])
+function regexCanStart(text, i) {
+  let k = i - 1
+  while (k >= 0 && /[ \t\r\n]/.test(text[k])) k--
+  if (k < 0) return true
+  const prev = text[k]
+  if (REGEX_PREV.includes(prev)) return true
+  if (!/[A-Za-z0-9_$]/.test(prev)) return false
+  let s = k
+  while (s >= 0 && /[A-Za-z0-9_$]/.test(text[s])) s--
+  return REGEX_KEYWORDS.has(text.slice(s + 1, k + 1))
+}
+
+/**
+ * 匹配起点是否落在**更外层的字符串字面量**里（同一行内数引号奇偶）。
+ * 实测形态：测试夹具把待扫描的源码写成字符串 ——
+ * `'src/a.test.ts': "import { d } from 'diff'\n"` —— 若不判掉，夹具里的 `diff`
+ * 就成了"diff 包在用"的证据，真未用的 `diff` 直接逃掉判定。
+ */
+function insideEnclosingString(text, index) {
+  const lineStart = text.lastIndexOf('\n', index - 1) + 1
+  const before = text.slice(lineStart, index)
+  for (const q of ['"', "'", '`']) {
+    let count = 0
+    for (let i = 0; i < before.length; i++) if (before[i] === q && before[i - 1] !== BACKSLASH) count++
+    if (count % 2 === 1) return true
+  }
+  return false
+}
+
+function specifiersIn(text) {
+  const masked = maskNonCode(text)
+  const out = []
+  const push = (spec, kind, index) => {
+    if (!spec) return
+    if (spec.startsWith('.') || spec.startsWith('/') || spec.startsWith('node:') || spec.startsWith('#')) return
+    if (insideEnclosingString(text, index)) return
+    out.push({ spec, kind, index })
+  }
+  for (const m of masked.matchAll(/\bfrom\s+['"]([^'"]+)['"]/g)) push(m[1], 'static', m.index)
+  for (const m of masked.matchAll(/\brequire\(\s*['"]([^'"]+)['"]\s*\)/g)) push(m[1], 'static', m.index)
+  for (const m of masked.matchAll(/\bimport\(\s*['"]([^'"]+)['"]\s*\)/g)) push(m[1], 'dynamic', m.index)
+  for (const m of masked.matchAll(/^[ \t]*import\s+['"]([^'"]+)['"]/gm)) push(m[1], 'static', m.index)
+  return out
+}
+
+/** 源码里出现的全部模块说明符（用于反向幽灵依赖判定） */
+export function parseDeclaredImports({ root, files }) {
+  const names = new Set()
+  for (const file of files.filter((f) => MODULE_EXT.test(f))) {
+    const text = readTracked({ root, file })
+    if (text === null) continue
+    for (const s of specifiersIn(text)) names.add(s.spec)
+  }
+  return [...names].sort()
+}
+
+/** 包名归一：`@scope/pkg/sub/path` → `@scope/pkg`；`pkg/sub` → `pkg` */
+export function packageRootOf(spec) {
+  const parts = String(spec).split('/')
+  return spec.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]
+}
+
+const BACKSLASH = String.fromCharCode(92)
+/** 正则转义（用 fromCharCode 取反斜杠，避免在模板/字符串里手写转义序列时被上层工具吞掉） */
+function escapeRe(s) {
+  const specials = '.*+?^${}()|[]' + BACKSLASH
+  return String(s).split('').map((ch) => (specials.includes(ch) ? BACKSLASH + ch : ch)).join('')
+}
+
+/**
+ * 配置文件里的包名 token 证据：**对象键**（`autoprefixer: {}`）或**字符串字面量**（`'postcss'`）。
+ * 刻意不接受"裸标识符" —— vite.config.ts 里的 `plugins: [react()]` 中 `react` 是本地变量名
+ * （来自 @vitejs/plugin-react），把它当"react 包的证据"就是纯噪声。
+ */
+function configTokenRe(dep) {
+  const e = escapeRe(dep)
+  const b = BACKSLASH
+  // 对象键：`autoprefixer: {}`（前导边界排除 word 字符与 @ / - ，避免 `my-autoprefixerx` 这类子串误命中）
+  const asKey = new RegExp('(?:^|[^' + b + 'w@/-])' + e + '[ ' + b + 't]*:')
+  // 字符串字面量：`'postcss'`
+  const asLiteral = new RegExp('[\'"]' + e + '[\'"]')
+  return { test: (text) => asKey.test(text) || asLiteral.test(text) }
+}
+
+/** 每段 `&&` / `||` / `;` / `|` 的第一个 token；`npx X` 取 X（剥掉 @version） */
+const RESERVED_CMD = new Set(['npm', 'pnpm', 'yarn', 'bun', 'node', 'deno', 'run', 'exec', 'cmd', 'sh', 'bash',
+  'pwsh', 'powershell', 'cd', 'echo', 'set', 'rem', 'exit', 'call', 'start', 'if', 'for'])
+const stripVersion = (t) => t.replace(/@[\w.^~*-]+$/, '').replace(/[)("'`,;]+$/, '').replace(/^[("'`]+/, '')
+
+function commandWords(script) {
+  const out = []
+  for (const seg of String(script).split(/&&|\|\||;|\|/)) {
+    const toks = seg.trim().split(/\s+/).filter(Boolean)
+    if (!toks.length) continue
+    if (toks[0] === 'npx') {
+      const t = toks.slice(1).find((x) => !x.startsWith('-'))
+      if (t) out.push(stripVersion(t))
+    } else if (!RESERVED_CMD.has(toks[0])) out.push(stripVersion(toks[0]))
+  }
+  return out
+}
+
+/** 代码文本里的 CLI 证据：`npx X`，以及 exec/spawn 家族字符串实参里的命令词 */
+function cliCommandsIn(text) {
+  const out = []
+  for (const m of text.matchAll(/\bnpx\s+([^\n'"`]+)/g)) {
+    const first = m[1].trim().split(/\s+/).find((t) => t && !t.startsWith('-'))
+    if (first) out.push(stripVersion(first))
+  }
+  for (const m of text.matchAll(/\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync)\(\s*(['"`])([\s\S]*?)\1/g)) {
+    out.push(...commandWords(m[2]))
+  }
+  return out
+}
+
+/** package.json 的 scripts 也是 CLI 证据（spec §6.2 类 4 明列） */
+function packageJsonCommands(text) {
+  try {
+    return Object.values(JSON.parse(text).scripts || {}).flatMap((cmd) => commandWords(cmd))
+  } catch { return [] }
+}
+
+/** `try { … } catch` 覆盖的字符区间（用 `catch` 结尾才算"可降级"；try/finally 不算） */
+function tryCatchRanges(text) {
+  const ranges = []
+  const re = /\btry\s*\{/g
+  let m
+  while ((m = re.exec(text)) !== null) {
+    const open = text.indexOf('{', m.index)
+    let depth = 0
+    for (let i = open; i < text.length; i++) {
+      if (text[i] === '{') depth++
+      else if (text[i] === '}' && --depth === 0) {
+        if (/^\s*catch\b/.test(text.slice(i + 1))) ranges.push([open, i])
+        break
+      }
+    }
+  }
+  return ranges
+}
+
+const lineOf = (text, index) => text.slice(0, index).split('\n').length
+
+/**
+ * 可选探针：**全部**出现位置都落在 `try/catch` 里的模块 import。
+ * 实测 `shared/pack-zip.test.mjs:85` 的 `JSZip = (await import('jszip')).default`（catch 里跳过）：
+ * jszip 是 mammoth 的传递依赖，源码显式允许它缺失 —— 把它当"幽灵依赖"报红，红的是**有意设计**；
+ * 但也不能静默放过：清单照原样写进台账 `optionalProbes`（含 file:line），供人复核。
+ */
+export function optionalProbes({ root, files }) {
+  const found = []
+  for (const file of files.filter((f) => MODULE_EXT.test(f))) {
+    const text = readTracked({ root, file })
+    if (text === null) continue
+    const ranges = tryCatchRanges(maskNonCode(text))
+    if (!ranges.length) continue
+    const inside = (i) => ranges.some(([a, b]) => i >= a && i <= b)
+    const agg = new Map()
+    for (const o of specifiersIn(text)) {
+      const e = agg.get(o.spec) || { total: 0, optional: 0, line: lineOf(text, o.index) }
+      e.total++
+      if (inside(o.index)) e.optional++
+      agg.set(o.spec, e)
+    }
+    for (const [spec, e] of agg) if (e.optional === e.total) found.push({ spec, file, line: e.line })
+  }
+  return found.sort((a, b) => a.spec.localeCompare(b.spec) || a.file.localeCompare(b.file))
+}
+
+export function collectEvidence({ root, files, dep, includeTests = true }) {
+  const classes = new Set()
+  const hitFiles = []
+  const productionFiles = []
+  const candidates = files.filter((f) => MODULE_EXT.test(f) || CONFIG_FILES.includes(f) || f === 'package.json')
+  for (const file of candidates) {
+    if (!includeTests && isTestFile(file)) continue
+    const text = readTracked({ root, file })
+    if (text === null) continue
+    const masked = maskNonCode(text)
+    const isConfig = CONFIG_FILES.includes(file)
+    let hit = false
+    for (const o of specifiersIn(text)) {
+      if (packageRootOf(o.spec) !== dep) continue
+      hit = true
+      classes.add(o.kind === 'dynamic' ? 'dynamic-import' : 'import')
+      if (isConfig) classes.add('config-file')
+    }
+    if (isConfig && configTokenRe(dep).test(masked)) { classes.add('config-file'); hit = true }
+    const commands = file === 'package.json' ? packageJsonCommands(masked) : cliCommandsIn(masked)
+    if (commands.includes(dep)) { classes.add('cli'); hit = true }
+    if (hit) {
+      hitFiles.push(file)
+      if (!isTestFile(file)) productionFiles.push(file)
+    }
+  }
+  // types 类：@types/* 由 tsconfig 自动包含（tsconfig.json 未声明 "types" 字段时全部生效）
+  if (dep.startsWith('@types/')) {
+    const ts = readTracked({ root, file: 'tsconfig.json' })
+    if (ts !== null && !/"types"\s*:/.test(ts)) { classes.add('types'); hitFiles.push('tsconfig.json') }
+  }
+  // 工具约定：包没有 import，它读的配置文件就是证据（tsconfig.json 不是代码文件，走不了上面的候选过滤）
+  const owner = TOOL_CONFIG_FILES[dep]
+  if (owner && readTracked({ root, file: owner }) !== null) { classes.add('config-file'); hitFiles.push(owner) }
+  return {
+    classes: EVIDENCE_CLASSES.filter((c) => classes.has(c)),
+    files: [...new Set(hitFiles)],
+    productionFiles: [...new Set(productionFiles)],
+  }
+}
+
+/** 解析 requirements.txt（跳过注释与行内注释） */
+export function readRequirements({ root, file }) {
+  const text = readTracked({ root, file })
+  if (text === null) return []
+  const out = []
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/#.*$/, '').trim()
+    if (!line) continue
+    const m = line.match(/^([A-Za-z0-9_.\-]+)\s*(.*)$/)
+    if (!m) continue
+    out.push({ name: m[1].replace(/_/g, '-').toLowerCase(), spec: m[2].trim() })
+  }
+  return out
+}
+
+export const REQUIREMENTS_FILE = 'public/sample-skills/_common/requirements.txt'
+
+/** 暂存目录体积（缺失记 0；仅趋势，不设阈值 —— 见 spec §6.3 P6） */
+export function dirSizeOf({ root, rel }) {
+  let total = 0
+  const walk = (d) => {
+    let ents
+    try { ents = readdirSync(join(root, d), { withFileTypes: true }) } catch { return }
+    for (const e of ents) {
+      const r = `${d}/${e.name}`
+      if (e.isDirectory()) walk(r)
+      else { try { total += statSync(join(root, r)).size } catch { /* 并发删除等，忽略 */ } }
+    }
+  }
+  walk(rel)
+  return total
+}
+
+const BUILTIN_MODULES = new Set([...builtinModules, ...builtinModules.map((m) => m.replace(/^node:/, ''))])
+/** 运行时内建模块不算依赖（用 node 的 builtinModules，不手抄清单 —— 手抄必漏） */
+function isBuiltinModule(n) { return BUILTIN_MODULES.has(n) }
+/** tsconfig 的 `@/*` 别名与项目内的 `~/`（上游技能示例文件的工程别名）不算依赖；入参是**原始说明符** */
+function isLocalAlias(spec) { return spec.startsWith('@/') || spec.startsWith('~/') }
+
+export function syncDeps({ root, files, sizes } = {}) {
+  const tracked = files || trackedFiles({ root })
+  const codeTracked = codeFiles(tracked, { includeTests: true })
+  // package.json 的 scripts 属 CLI 证据（spec §6.2 类 4），故与代码文件一起参与判定
+  const evidenceFiles = [...codeTracked, 'package.json']
+  const pkg = readJson({ root, rel: 'package.json', fallback: { dependencies: {}, devDependencies: {}, scripts: {} } })
+  const kernelPkg = readJson({ root, rel: 'kernel/package.json', fallback: {} })
+
+  const buildPackages = (depsObj) => Object.keys(depsObj || {}).sort().map((name) => {
+    const ev = collectEvidence({ root, files: evidenceFiles, dep: name })
+    return {
+      name,
+      evidence: { classes: ev.classes, files: ev.files.slice(0, 20) },
+      status: ev.classes.length ? 'used' : 'unused',
+    }
+  })
+
+  const runtime = buildPackages(pkg.dependencies)
+  const dev = buildPackages(pkg.devDependencies)
+  const kernelDeps = Object.keys(kernelPkg.dependencies || {})
+
+  // Python：内嵌集（真源在本台账的 python.embedded；构建脚本改读它 —— 见 Task 11 B2）
+  const prev = readDeps({ root }) || {}
+  const embedded = (prev.python && prev.python.embedded) || DEFAULT_PYTHON_EMBEDDED
+  const reqs = readRequirements({ root, file: REQUIREMENTS_FILE })
+
+  const optional = optionalProbes({ root, files: codeTracked })
+  const declaredAll = new Set([...runtime, ...dev].map((p) => p.name))
+  // 只登记**未声明**的探针：这条清单的作用是解释"为什么它没被报成幽灵依赖"，
+  // 已声明的包（如 rcedit）不需要解释，登记进去反而让清单变噪声。
+  const unresolvedProbes = optional.filter((o) => !declaredAll.has(packageRootOf(o.spec)))
+  const optionalSpecs = new Set(unresolvedProbes.map((o) => packageRootOf(o.spec)))
+  const imported = parseDeclaredImports({ root, files: codeTracked })
+    .filter((s) => !isLocalAlias(s))
+    .map(packageRootOf)
+  const ghost = [...new Set(imported)]
+    .filter((n) => n && !declaredAll.has(n) && !isBuiltinModule(n) && !isLocalAlias(n) && !optionalSpecs.has(n))
+    .sort()
+
+  const data = {
+    version: 1,
+    generatedBy: 'node kit/cli.mjs sync',
+    _note: 'packages[].evidence 与 optionalProbes 由 sync 生成；notes / gates / sizes 可人工维护（sync 保留）。status=unused 的判定见 spec §6.2（五类引用证据）。',
+    domains: {
+      'npm-runtime': { source: 'package.json#dependencies', packages: runtime },
+      'npm-dev': { source: 'package.json#devDependencies', packages: dev },
+      kernel: {
+        source: 'kernel/package.json#dependencies',
+        assertZero: true,
+        packages: kernelDeps.map((name) => ({ name, status: 'declared' })),
+      },
+      'python-embedded': { source: 'kit/manifest/deps.json#python.embedded', packages: embedded.map((name) => ({ name })) },
+      'python-skills': { source: REQUIREMENTS_FILE, packages: reqs.map((r) => ({ name: r.name, spec: r.spec })) },
+    },
+    python: { embedded },
+    optionalProbes: unresolvedProbes,
+    notes: prev.notes || {},
+    gates: prev.gates || { ci: [], manual: [] },
+    sizes: sizes || prev.sizes || {
+      node_modules: dirSizeOf({ root, rel: 'node_modules' }),
+      'runtime/python': dirSizeOf({ root, rel: 'runtime/python' }),
+      'runtime/skills': dirSizeOf({ root, rel: 'runtime/skills' }),
+    },
+  }
+  writeDeps({ root, data })
+  return { data, unused: [...runtime, ...dev].filter((p) => p.status === 'unused').map((p) => p.name), ghost }
+}
+
+/** 内嵌 Python 包的初始真源（Task 11 会把它从 scripts/build-embedded-python.mjs:82 迁到这里） */
+export const DEFAULT_PYTHON_EMBEDDED = [
+  'openpyxl', 'python-docx', 'xlrd', 'Pillow', 'beautifulsoup4', 'rapidocr-onnxruntime',
+  'PyPDF2', 'pypdf', 'pypdfium2', 'requests', 'Jinja2', 'openai', 'pydantic',
+]
+
+export function readDeps({ root }) { return readJson({ root, rel: DEPS_FILE, fallback: null }) }
+export function writeDeps({ root, data }) { writeJson({ root, rel: DEPS_FILE, data }) }

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DevKit deps ledger",
+  "type": "object",
+  "required": ["version", "domains", "python"],
+  "properties": {
+    "version": { "const": 1 },
+    "generatedBy": { "type": "string" },
+    "domains": {
+      "type": "object",
+      "required": ["npm-runtime", "npm-dev", "kernel", "python-embedded", "python-skills"],
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "source": { "type": "string" },
+          "assertZero": { "type": "boolean" },
+          "packages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name"],
+              "properties": {
+                "name": { "type": "string" },
+                "spec": { "type": "string" },
+                "status": { "enum": ["used", "unused", "declared"] },
+                "evidence": {
+                  "type": "object",
+                  "properties": {
+                    "classes": { "type": "array", "items": { "enum": ["import", "dynamic-import", "config-file", "cli", "types"] } },
+                    "files": { "type": "array", "items": { "type": "string" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "python": {
+      "type": "object",
+      "required": ["embedded"],
+      "properties": { "embedded": { "type": "array", "items": { "type": "string" } } }
+    },
+    "optionalProbes": {
+      "type": "array",
+      "items": { "type": "object", "required": ["spec", "file", "line"],
+        "properties": { "spec": { "type": "string" }, "file": { "type": "string" }, "line": { "type": "integer" } } }
+    },
+    "notes": {
+      "type": "object",
+      "properties": {
+        "pythonOnlyEmbedded": { "type": "array", "items": { "type": "object", "required": ["name", "reason"] } },
+        "pythonOnlySkills": { "type": "array", "items": { "type": "object", "required": ["name", "reason"] } }
+      }
+    },
+    "gates": {
+      "type": "object",
+      "properties": {
+        "ci": { "type": "array", "items": { "type": "string" } },
+        "manual": { "type": "array", "items": { "type": "object", "required": ["script", "reason"] } }
+      }
+    },
+    "sizes": { "type": "object", "additionalProperties": { "type": "number" } }
+  }
+}

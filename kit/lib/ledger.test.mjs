@@ -4,7 +4,11 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parseByLocator, keyOfVersion, discoverVersionConsts, syncVersions, readVersions } from './ledger.mjs'
+import { execFileSync } from 'node:child_process'
+import {
+  parseByLocator, keyOfVersion, discoverVersionConsts, syncVersions, readVersions,
+  collectEvidence, parseDeclaredImports, readRequirements, syncDeps, readDeps, writeDeps,
+} from './ledger.mjs'
 
 function fixture(files) {
   const root = mkdtempSync(join(tmpdir(), 'yfw-kit-'))
@@ -169,4 +173,234 @@ test('syncVersions：exclude 列表里的常量不进台账', () => {
   const { data } = syncVersions({ root, files })
   assert.equal(data.contracts.some((e) => e.id === 'ANTHROPIC_VERSION'), false)
   assert.equal(data.contracts.some((e) => e.id === 'INDEX_VERSION'), true)
+})
+
+// ── Task 5：依赖台账 ────────────────────────────────────────────────────────
+
+test('collectEvidence：静态 import / require 命中', () => {
+  const root = fixture({
+    'src/a.ts': "import { x } from 'clsx'\n",
+    'server/b.mjs': "const y = require('ws')\n",
+  })
+  const files = ['src/a.ts', 'server/b.mjs']
+  assert.deepEqual(collectEvidence({ root, files, dep: 'clsx' }).classes, ['import'])
+  assert.deepEqual(collectEvidence({ root, files, dep: 'ws' }).classes, ['import'])
+  assert.deepEqual(collectEvidence({ root, files, dep: 'nope' }).classes, [])
+})
+
+// G3 回归夹具之一：动态 import
+test('collectEvidence：动态 import() 命中 —— rcedit 就是这一类（scripts/patch-icon.mjs:10）', () => {
+  const root = fixture({ 'scripts/p.mjs': "const { rcedit } = await import('rcedit')\n" })
+  const ev = collectEvidence({ root, files: ['scripts/p.mjs'], dep: 'rcedit' })
+  assert.deepEqual(ev.classes, ['dynamic-import'])
+})
+
+// G3 回归夹具之二：根级配置文件
+test('collectEvidence：配置文件引用命中 —— @tailwindcss/typography 就是这一类', () => {
+  const root = fixture({ 'tailwind.config.ts': "import typography from '@tailwindcss/typography'\n" })
+  const ev = collectEvidence({ root, files: ['tailwind.config.ts'], dep: '@tailwindcss/typography' })
+  assert.equal(ev.classes.includes('config-file'), true)
+})
+
+// G3 回归夹具之三：CLI 调用
+test('collectEvidence：CLI 调用命中 —— electron-builder 就是这一类（npx electron-builder）', () => {
+  const root = fixture({
+    'scripts/build-installer.mjs': "execSync('npx electron-builder --win nsis', { stdio: 'inherit' })\n",
+    'package.json': '{ "scripts": { "build:electron": "npm run build && electron-builder" } }',
+  })
+  const ev = collectEvidence({ root, files: ['scripts/build-installer.mjs', 'package.json'], dep: 'electron-builder' })
+  assert.equal(ev.classes.includes('cli'), true)
+})
+
+// G3 回归夹具之四：类型包
+test('collectEvidence：@types/* 归 types 类（由 tsconfig 自动包含，不参与未用判定）', () => {
+  const root = fixture({ 'tsconfig.json': '{ "include": ["src"] }' })
+  const ev = collectEvidence({ root, files: ['tsconfig.json'], dep: '@types/node' })
+  assert.equal(ev.classes.includes('types'), true)
+})
+
+test('collectEvidence：测试文件里的 import 不算生产证据（但会被记录到 files）', () => {
+  const root = fixture({ 'src/a.test.ts': "import { d } from 'diff'\n" })
+  const ev = collectEvidence({ root, files: ['src/a.test.ts'], dep: 'diff', includeTests: true })
+  assert.equal(ev.productionFiles.length, 0)
+})
+
+test('parseDeclaredImports：抽出模块说明符，过滤 node: 与相对路径', () => {
+  const root = fixture({
+    'src/a.ts': "import x from 'react'\nimport y from './local'\nimport z from 'node:fs'\nimport '@radix-ui/react-slot'\n",
+  })
+  const names = parseDeclaredImports({ root, files: ['src/a.ts'] })
+  assert.ok(names.includes('react'))
+  assert.ok(names.includes('@radix-ui/react-slot'))
+  assert.equal(names.includes('./local'), false)
+  assert.equal(names.some((n) => n.startsWith('node:')), false)
+})
+
+test('readRequirements：解析 requirements.txt 的名称与版本约束，跳过注释', () => {
+  const root = fixture({
+    'public/sample-skills/_common/requirements.txt': '# 注释\nopenpyxl>=3.1.0  # 注释\npdfplumber>=0.9.0\n\n# pywin32>=305\n',
+  })
+  const reqs = readRequirements({ root, file: 'public/sample-skills/_common/requirements.txt' })
+  assert.deepEqual(reqs.map((r) => r.name), ['openpyxl', 'pdfplumber'])
+  assert.equal(reqs[0].spec, '>=3.1.0')
+})
+
+test('syncDeps：判出 unused 与 ghost，且守卫 types/config/cli 不被误判', () => {
+  const root = fixture({
+    'package.json': JSON.stringify({
+      dependencies: { react: '^18', 'classic-level': '^3', '@tailwindcss/typography': '^0.5' },
+      devDependencies: { '@types/node': '^20' },
+      scripts: {},
+    }),
+    'src/a.ts': "import { x } from 'react'\n",
+    'tailwind.config.ts': "import typography from '@tailwindcss/typography'\n",
+    'tsconfig.json': '{ "include": ["src"] }',
+    'kernel/package.json': '{ "version": "0.2.0" }',
+  })
+  const files = ['package.json', 'src/a.ts', 'tailwind.config.ts', 'tsconfig.json', 'kernel/package.json']
+  const { data, unused } = syncDeps({ root, files })
+  assert.deepEqual(unused, ['classic-level'])
+  assert.equal(data.domains['npm-runtime'].packages.find((p) => p.name === 'react').status, 'used')
+  assert.equal(data.domains['npm-runtime'].packages.find((p) => p.name === '@tailwindcss/typography').status, 'used',
+    '配置文件证据必须救回 @tailwindcss/typography（G3）')
+  assert.equal(data.domains['kernel'].assertZero, true)
+})
+
+test('syncDeps：ghost（源码 import 了但未声明）能被发现', () => {
+  const root = fixture({
+    'package.json': JSON.stringify({ dependencies: {}, devDependencies: {}, scripts: {} }),
+    'src/a.ts': "import { x } from 'left-pad'\n",
+    'kernel/package.json': '{}',
+  })
+  const { ghost } = syncDeps({ root, files: ['package.json', 'src/a.ts', 'kernel/package.json'] })
+  assert.deepEqual(ghost, ['left-pad'])
+})
+
+// ── Task 5 追加：判据的边界（每条都对应一次实测假阳性） ─────────────────────
+
+test('collectEvidence：CLI 判据只认命令调用 —— 裸包名 token 不算（实测 electron/main.cjs:1153 的扩展名清单里有 xlsx，且该文件有 execSync）', () => {
+  const root = fixture({
+    'electron/main.cjs': "execSync('git status', { cwd: ROOT })\nconst extensions = ['pdf', 'xlsx', 'xls']\n",
+  })
+  assert.deepEqual(collectEvidence({ root, files: ['electron/main.cjs'], dep: 'xlsx' }).classes, [],
+    '把"文件里有 execSync + 出现包名"当 CLI 证据会让真未用的 xlsx/nanoid 逃掉未用判定（B1 就不会删它们）')
+})
+
+test('collectEvidence：工具配置文件按约定消费对应包（实测 postcss / autoprefixer / typescript 全仓源码零 import）', () => {
+  const root = fixture({
+    'postcss.config.js': 'export default {\n  plugins: {\n    tailwindcss: {},\n    autoprefixer: {},\n  },\n}\n',
+    'tsconfig.json': '{ "include": ["src"] }',
+  })
+  const files = ['postcss.config.js', 'tsconfig.json']
+  assert.equal(collectEvidence({ root, files, dep: 'postcss' }).classes.includes('config-file'), true)
+  assert.equal(collectEvidence({ root, files, dep: 'autoprefixer' }).classes.includes('config-file'), true)
+  assert.equal(collectEvidence({ root, files, dep: 'typescript' }).classes.includes('config-file'), true)
+})
+
+test('syncDeps：五类证据齐备后 dev 域零 unused（漏一类就会误红 P1 → 诱导删掉在用的工具链）', () => {
+  const root = fixture({
+    'package.json': JSON.stringify({
+      dependencies: {},
+      devDependencies: {
+        '@types/node': '^20', 'electron': '^31', 'rcedit': '^4', 'electron-builder': '^24',
+        'vite': '^5', '@vitejs/plugin-react': '^4', 'tailwindcss': '^3', '@tailwindcss/typography': '^0.5',
+        'postcss': '^8', 'autoprefixer': '^10', 'typescript': '^5',
+      },
+      scripts: {},
+    }),
+    'vite.config.ts': "import { defineConfig } from 'vite'\nimport react from '@vitejs/plugin-react'\n",
+    'tailwind.config.ts': "import { Config } from 'tailwindcss'\nimport typography from '@tailwindcss/typography'\n",
+    'postcss.config.js': 'export default {\n  plugins: {\n    tailwindcss: {},\n    autoprefixer: {},\n  },\n}\n',
+    'tsconfig.json': '{ "include": ["src"] }',
+    'electron/main.cjs': "const { app } = require('electron')\n",
+    'scripts/patch-icon.mjs': "const { rcedit } = await import('rcedit')\n",
+    'scripts/build-installer.mjs': "execSync('npx electron-builder --win nsis', { stdio: 'inherit' })\n",
+    'kernel/package.json': '{}',
+  })
+  const files = ['package.json', 'vite.config.ts', 'tailwind.config.ts', 'postcss.config.js', 'tsconfig.json',
+    'electron/main.cjs', 'scripts/patch-icon.mjs', 'scripts/build-installer.mjs', 'kernel/package.json']
+  const { data, unused } = syncDeps({ root, files })
+  assert.deepEqual(unused, [])
+  assert.ok(data.domains['npm-dev'].packages.every((p) => p.status === 'used'))
+})
+
+test('syncDeps：默认扫描域是 git ls-files —— 未跟踪文件（scratch/ 参考副本）不得翻转判定（I2）', () => {
+  const root = fixture({
+    'package.json': JSON.stringify({ dependencies: { react: '^18', 'classic-level': '^3' }, devDependencies: {}, scripts: {} }),
+    'src/a.ts': "import { x } from 'react'\n",
+    'kernel/package.json': '{}',
+  })
+  execFileSync('git', ['init', '-q'], { cwd: root })
+  execFileSync('git', ['add', '-A'], { cwd: root })
+  // 未跟踪副本（scratch/ 里 claude-code 参考源码的真实形态）：import 大量真未用依赖
+  mkdirSync(join(root, 'scratch-ref'), { recursive: true })
+  writeFileSync(join(root, 'scratch-ref', 'evil.ts'), "import 'classic-level'\nimport 'diff'\n")
+  const { unused } = syncDeps({ root }) // 不传 files：走 trackedFiles 默认路径
+  assert.deepEqual(unused, ['classic-level'],
+    '扫描域若退化为磁盘遍历，scratch-ref/ 的 import 会把它判成在用（实测 scratch/ 里 diff 与 @tanstack/react-virtual 有大量 import）')
+})
+
+test('syncDeps：try/catch 包裹的可选探针不算幽灵依赖，但必须记入台账 optionalProbes（实测 jszip@shared/pack-zip.test.mjs:85）', () => {
+  const root = fixture({
+    'package.json': JSON.stringify({ dependencies: {}, devDependencies: {}, scripts: {} }),
+    'shared/pack-zip.test.mjs': "test('与 jszip 对拍', async (t) => {\n  let JSZip = null\n  try {\n    JSZip = (await import('jszip')).default\n  } catch { /* 未安装则跳过 */ }\n  if (!JSZip) return\n})\n",
+    'src/a.ts': "import 'left-pad'\n",
+    'kernel/package.json': '{}',
+  })
+  const files = ['package.json', 'shared/pack-zip.test.mjs', 'src/a.ts', 'kernel/package.json']
+  const { ghost, data } = syncDeps({ root, files })
+  assert.deepEqual(ghost, ['left-pad'], '硬依赖照旧报幽灵（不得因为"有可选探针规则"而整体放宽）')
+  assert.deepEqual(data.optionalProbes, [{ spec: 'jszip', file: 'shared/pack-zip.test.mjs', line: 4 }])
+})
+
+test('syncDeps：注释 / 正则字面量 / 夹具字符串 / `~/` 别名都不产生幽灵依赖（实测 7 条假幽灵）', () => {
+  const root = fixture({
+    'package.json': JSON.stringify({ dependencies: {}, devDependencies: {}, scripts: {} }),
+    'src/a.ts': [
+      '// Distortion axis: a separate measurement from "pressure" — the meter',
+      "const re = /import \\{ x \\} from '@\\/hooks\\/useKnowledge'/",
+      "const fixture = \"import y from 'left-pad'\"",
+      "import type { ThreadManager } from '~/threads/thread-manager'",
+    ].join('\n') + '\n',
+    'kernel/package.json': '{}',
+  })
+  const files = ['package.json', 'src/a.ts', 'kernel/package.json']
+  const { ghost } = syncDeps({ root, files })
+  assert.deepEqual(ghost, [], '7 条假幽灵（pressure@en-US.ts:220 / @\\/hooks\\@verify-knowledge-import-gui.mjs:167 / left-pad·diff·@\\/lib\\ 等夹具字符串 / ~@技能示例）必须一条都不报')
+})
+
+test('syncDeps：真幽灵照旧被抓 —— "把传递依赖当直接依赖"（实测 @codemirror/autocomplete@CodeEditor.tsx:6、js-yaml@verify-package-assets.mjs:7）', () => {
+  const root = fixture({
+    'package.json': JSON.stringify({ dependencies: {}, devDependencies: {}, scripts: {} }),
+    'src/components/editor/CodeEditor.tsx': "import { closeBrackets } from '@codemirror/autocomplete'\n",
+    'scripts/verify-package-assets.mjs': "import { load } from 'js-yaml'\n",
+    'kernel/package.json': '{}',
+  })
+  const files = ['package.json', 'src/components/editor/CodeEditor.tsx', 'scripts/verify-package-assets.mjs', 'kernel/package.json']
+  const { ghost } = syncDeps({ root, files })
+  assert.deepEqual(ghost, ['@codemirror/autocomplete', 'js-yaml'], '收紧噪声判据不得顺手把真幽灵也放过')
+})
+
+test('collectEvidence：同一行两个 require 都能命中（引号奇偶判据不得误伤真实证据）', () => {
+  const root = fixture({ 'src/a.ts': "const a = require('clsx'); const b = require('ws')\n" })
+  assert.deepEqual(collectEvidence({ root, files: ['src/a.ts'], dep: 'ws' }).classes, ['import'])
+})
+
+test('syncDeps：notes / gates 是人工维护段，sync 必须原样保留（否则 Task 11/12 的实测内容会被静默冲掉）', () => {
+  const root = fixture({
+    'package.json': JSON.stringify({ dependencies: { react: '^18' }, devDependencies: {}, scripts: {} }),
+    'src/a.ts': "import { x } from 'react'\n",
+    'kernel/package.json': '{}',
+  })
+  const files = ['package.json', 'src/a.ts', 'kernel/package.json']
+  syncDeps({ root, files })
+  const d = readDeps({ root })
+  d.notes = { pythonOnlyEmbedded: [{ name: 'pydantic', reason: '人工实测' }] }
+  d.gates = { ci: ['verify-highrisk'], manual: [{ script: 'verify-gui-fidelity', reason: '需图形会话' }] }
+  writeDeps({ root, data: d })
+
+  const { data } = syncDeps({ root, files })
+  assert.deepEqual(data.notes.pythonOnlyEmbedded, [{ name: 'pydantic', reason: '人工实测' }])
+  assert.deepEqual(data.gates.ci, ['verify-highrisk'])
+  assert.deepEqual(data.gates.manual, [{ script: 'verify-gui-fidelity', reason: '需图形会话' }])
 })
