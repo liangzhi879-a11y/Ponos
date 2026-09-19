@@ -2,8 +2,8 @@
   "_note": "由 node scripts/check-doc-anchors.mjs --write 生成（**不要手改**）。info 段仅信息展示；testFileCounts 参与 CI 门禁（只计 git 已跟踪文件）。文档路径白名单是手写的 docs/_anchors-allow.json。",
   "_scope": "文档扫描范围：docs/*.md, docs/manual/**/*.md（已排除：/五引擎架构性能对比分析/）",
   "info": {
-    "sourceModules": 446,
-    "sourceLoc": 113706,
+    "sourceModules": 447,
+    "sourceLoc": 113762,
     "monoliths": {
       "kernel/knowledge.mjs": 2841,
       "kernel/engine.mjs": 2437,
@@ -18,7 +18,7 @@
     "electron/*.test.mjs": 12,
     "kernel-tests/*.test.mjs": 210,
     "src/**/*.test.ts": 74,
-    "kit/**/*.test.mjs": 7
+    "kit/**/*.test.mjs": 8
   },
-  "testTotal": 406
+  "testTotal": 407
 }
