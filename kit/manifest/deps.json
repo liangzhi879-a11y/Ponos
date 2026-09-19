@@ -577,14 +577,6 @@
           "status": "used"
         },
         {
-          "name": "xlsx",
-          "evidence": {
-            "classes": [],
-            "files": []
-          },
-          "status": "unused"
-        },
-        {
           "name": "zustand",
           "evidence": {
             "classes": [
