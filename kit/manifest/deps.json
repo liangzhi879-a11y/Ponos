@@ -477,14 +477,6 @@
           "status": "unused"
         },
         {
-          "name": "nanoid",
-          "evidence": {
-            "classes": [],
-            "files": []
-          },
-          "status": "unused"
-        },
-        {
           "name": "react",
           "evidence": {
             "classes": [
