@@ -387,6 +387,18 @@ export async function runContractRules({
   let ct6bad = 0
   const snapTools = snapshot && typeof snapshot.tools === 'object' && snapshot.tools ? snapshot.tools : {}
   const snapSources = snapshot && typeof snapshot.toolSources === 'object' && snapshot.toolSources ? snapshot.toolSources : {}
+  // ★ 变异实测补的洞：`kernel/tools.mjs` 语法坏掉时，运行时出口不可用 ⇒ `names` 退化成"静态键"、
+  //   `shapeOf()` 全 null。旧写法只在 `liveHash !== null` 时比对 ⇒ **静默全绿**（M12 变异实测 CT6 红 0）。
+  //   判据：**快照里有指纹**（说明这个仓本来能导出）而运行时**不可用** ⇒ 红。夹具仓（快照 tools 为空、
+  //   没有 kernel/tools.mjs）不受影响 —— 那里"没有工具"是事实，不是故障。
+  const staticSource = tools.sources.find((s) => s.id === 'static')
+  if (Object.keys(snapTools).length > 0 && staticSource && staticSource.error) {
+    ct6bad++
+    findings.push(finding({ rule: 'CT6', severity: RED, subject: 'tools runtime',
+      expected: 'toolSchemas() 可调用（运行时出口是模型真正看到的那份）', actual: `导入/调用失败：${staticSource.error}`,
+      hint: '`kernel/tools.mjs` 不可加载（语法错/缺依赖）⇒ 工具出口比对全部失效。修好再跑 kit:sync；'
+        + '**不要**因为"比不出差异"就当通过（这正是本次变异实测抓到的静默绿）' }))
+  }
   for (const name of tools.names) {
     if (!Object.hasOwn(snapTools, name)) {
       ct6bad++
