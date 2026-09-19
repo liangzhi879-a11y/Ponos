@@ -1,7 +1,7 @@
 {
   "version": 1,
   "generatedBy": "node kit/cli.mjs sync",
-  "_note": "本文件由 sync 生成骨架。人工只可编辑：exclude / note / consumers / migrationNote / manual 条目 / history。",
+  "_note": "本文件由 sync 生成骨架：value / line / locator 等事实字段每次 sync 都从宿主文件重算，人工改动会被覆盖。人工只可编辑：exclude / note / consumers / migrationNote（lines 与 contracts 两个分区都会被继承）/ manual 条目（仅 contracts 分区）/ history。",
   "exclude": [
     {
       "id": "ANTHROPIC_VERSION",

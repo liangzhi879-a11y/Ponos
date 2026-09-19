@@ -83,6 +83,80 @@ test('syncVersions：首次 sync 建立台账；二次 sync 保留人工字段�
   assert.deepEqual(entry.consumers, ['src/mirror.ts'])
 })
 
+test('syncVersions：lines 分区的人工字段（note/consumers/migrationNote）也必须被继承', () => {
+  const root = fixture({
+    'version.mjs': "export const APP_VERSION = 'dev 3.0.0'\nexport const KERNEL_VERSION = 'dev 0.2'\nexport const SCHEMA_VERSION = 1\n",
+    'kernel/package.json': '{ "version": "0.2.0" }',
+    'package.json': '{ "version": "2.8.0" }',
+    'public/skills.json': '[]',
+  })
+  const files = ['version.mjs', 'kernel/package.json', 'package.json', 'public/skills.json']
+  syncVersions({ root, files })
+
+  // 人工在 lines 条目上写说明（契约允许：note / consumers / migrationNote）
+  const data = readVersions({ root })
+  const app = data.lines.find((e) => e.id === 'APP_VERSION')
+  app.note = '人工写的说明'
+  app.consumers = ['electron/main.cjs']
+  data.lines.find((e) => e.id === 'KB_SCHEMA_VERSION').migrationNote = '人工写的迁移说明'
+  writeFileSync(join(root, 'kit/manifest/versions.json'), JSON.stringify(data, null, 2))
+
+  // 宿主文件同时漂移（版本值真的变了），迫使 sync 重建 lines
+  writeFileSync(join(root, 'version.mjs'),
+    "export const APP_VERSION = 'dev 4.0.0'\nexport const KERNEL_VERSION = 'dev 0.2'\nexport const SCHEMA_VERSION = 2\n")
+  const second = syncVersions({ root, files })
+  const app2 = second.data.lines.find((e) => e.id === 'APP_VERSION')
+  assert.equal(app2.note, '人工写的说明')
+  assert.deepEqual(app2.consumers, ['electron/main.cjs'])
+  assert.equal(second.data.lines.find((e) => e.id === 'KB_SCHEMA_VERSION').migrationNote, '人工写的迁移说明')
+  // 白名单继承的前提是"不把陈旧 value 带回来"：value 必须是本次从源文件解析出来的
+  assert.equal(app2.value, 'dev 4.0.0')
+  assert.equal(second.data.lines.find((e) => e.id === 'KB_SCHEMA_VERSION').value, 2)
+})
+
+test('syncVersions：lines 的 value 是源文件真源，人工改不动（会被纠正回来）', () => {
+  const root = fixture({
+    'version.mjs': "export const APP_VERSION = 'dev 3.0.0'\nexport const KERNEL_VERSION = 'dev 0.2'\nexport const SCHEMA_VERSION = 1\n",
+    'kernel/package.json': '{ "version": "0.2.0" }',
+    'package.json': '{ "version": "2.8.0" }',
+    'public/skills.json': '[]',
+  })
+  const files = ['version.mjs', 'kernel/package.json', 'package.json', 'public/skills.json']
+  syncVersions({ root, files })
+
+  const data = readVersions({ root })
+  data.lines.find((e) => e.id === 'APP_VERSION').value = '9.9.9-人工篡改'
+  writeFileSync(join(root, 'kit/manifest/versions.json'), JSON.stringify(data, null, 2))
+
+  const { data: corrected } = syncVersions({ root, files })
+  const app = corrected.lines.find((e) => e.id === 'APP_VERSION')
+  assert.equal(app.value, 'dev 3.0.0')            // 正向：等于源文件真实值
+  assert.notEqual(app.value, '9.9.9-人工篡改')     // 反向：人工篡改不留存
+})
+
+test('syncVersions：exclude 的人工编辑（新增排除项 + note）同样被保留', () => {
+  const root = fixture({
+    'version.mjs': "export const APP_VERSION = 'dev 3.0.0'\nexport const KERNEL_VERSION = 'dev 0.2'\nexport const SCHEMA_VERSION = 1\n",
+    'kernel/package.json': '{ "version": "0.2.0" }',
+    'package.json': '{ "version": "2.8.0" }',
+    'k/c.mjs': "export const UPSTREAM_VERSION = '2023-06-01'\nexport const INDEX_VERSION = 4\n",
+    'public/skills.json': '[]',
+  })
+  const files = ['version.mjs', 'kernel/package.json', 'package.json', 'k/c.mjs', 'public/skills.json']
+  const first = syncVersions({ root, files })
+  assert.equal(first.data.contracts.some((e) => e.id === 'UPSTREAM_VERSION'), true)
+
+  // 人工把它登记为排除项（附人工理由/说明）
+  const data = readVersions({ root })
+  data.exclude.push({ id: 'UPSTREAM_VERSION', file: 'k/c.mjs', reason: '上游协议版本', note: '人工加的说明' })
+  writeFileSync(join(root, 'kit/manifest/versions.json'), JSON.stringify(data, null, 2))
+
+  const second = syncVersions({ root, files })
+  assert.equal(second.data.contracts.some((e) => e.id === 'UPSTREAM_VERSION'), false)
+  assert.deepEqual(second.data.exclude.find((e) => e.id === 'UPSTREAM_VERSION'),
+    { id: 'UPSTREAM_VERSION', file: 'k/c.mjs', reason: '上游协议版本', note: '人工加的说明' })
+})
+
 test('syncVersions：exclude 列表里的常量不进台账', () => {
   const root = fixture({
     'version.mjs': "export const APP_VERSION = 'dev 3.0.0'\nexport const KERNEL_VERSION = 'dev 0.2'\nexport const SCHEMA_VERSION = 1\n",

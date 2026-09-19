@@ -132,14 +132,31 @@ export function listCommonPy(files) {
 // ── syncVersions ──────────────────────────────────────────────────────────
 
 /**
+ * 人工可编辑字段的**显式白名单**（契约：`versions.json` 里只有这些字段属于人写内容）。
+ *
+ * 为什么必须是显式名单、而不是 `{ ...old }` 整条合并：台账里同时住着**事实字段**
+ * （`value` / `line` / `locator`）与**人工字段**。整条合并会把旧条目里已经过期的
+ * `value` / `locator` 一并"继承"回来，`sync` 就不再是从宿主文件重算事实，而是
+ * "宿主文件与旧台账谁赢看实现细节"——同一条不变量（I1：sync 不得覆盖人工内容）
+ * 反过来被违反（sync 覆盖了事实）。白名单把两侧焊死：事实永远来自宿主文件，人工字段永远来自人。
+ *
+ * `manual` 不在本名单里：它是 contracts 分区的**整条人工条目**标记（由下方 manualContracts 分支
+ * 单独处理），不是"某条记录上的可编辑字段"，两者语义不同，混在一起会让 lines 也能伪造事实条目。
+ */
+export const MANUAL_FIELDS = ['note', 'consumers', 'migrationNote']
+
+/**
  * 从宿主文件重建版本台账。
- * 合并语义：以发现结果为"骨架"，用**既有台账**覆盖人工字段（note/consumers/migrationNote/kind）。
- * 这样 `sync` 可以随时跑，不会把人工写的说明冲掉。
+ * 合并语义：以发现结果为"骨架"，只为 `MANUAL_FIELDS`（人工字段）继承旧台账值。
+ * 这样 `sync` 可以随时跑，不会把人工写的说明冲掉，也不会把过期的版本值留住。
  */
 export function syncVersions({ root, files, dryRun = false } = {}) {
   const tracked = files || trackedFiles({ root })
   const prev = readVersions({ root }) || {}
   const prevByKey = new Map((prev.contracts || []).map((e) => [keyOfVersion(e), e]))
+  // ★ `exclude` 整条列表来自旧台账（人工可编辑区），不是每次由 DEFAULT_EXCLUDES 重算 ——
+  //   实测已验证：人工新增的排除项（含 note）在二次 sync 后仍在、且真的生效（对应测试
+  //   「exclude 的人工编辑同样被保留」）。DEFAULT_EXCLUDES 只用于**首次**建台账（prev 为空时）。
   const excludes = prev.exclude || DEFAULT_EXCLUDES
   // ★ 排除按 **id 全局匹配**（不是 id@file）—— 实测 ANTHROPIC_VERSION 出现在 **两个**文件
   //   （electron/app-llm.cjs 与 electron/app-websearch.cjs），这是"外部协议版本"的属性，
@@ -154,11 +171,22 @@ export function syncVersions({ root, files, dryRun = false } = {}) {
   ))
 
   // lines
+  //
+  // ★ 人工字段继承（Task 3 复审返工）：契约承诺"人工只允许改 exclude / note / consumers /
+  //   migrationNote"，但初版 lines 只做 `{...spec, value, valueType}` —— 宿主文件一改导致
+  //   sync 重建，人工写在 lines 条目上的 note / consumers / migrationNote 就被**静默丢弃**。
+  //   contracts 分支本来就做了继承，lines 必须与之一致：否则同一条不变量（I1：sync 不得
+  //   覆盖人工内容）在两个分区里行为不同，且失败是静默的（无告警）。
+  //   注意按 id 建 map：台账键 `${id}@${file}` 对 lines 而言 id 已唯一（LINE_SPECS 手写枚举）。
+  const prevLines = new Map((prev.lines || []).map((e) => [e.id, e]))
   const lines = LINE_SPECS.map((spec) => {
     const parsed = parseByLocator({ root, file: spec.file, locator: spec.locator })
     if (!parsed) return null
+    const old = prevLines.get(spec.id)
     const entry = { ...spec, value: parsed.value, valueType: typeof parsed.value }
     if (spec.mirror) entry.mirrorValue = parseByLocator({ root, file: spec.mirror.file, locator: spec.mirror.locator })?.value ?? null
+    // 只继承白名单（人工）字段：`value`/`locator`/`mirrorValue` 等事实字段一律以本次解析为准
+    for (const k of MANUAL_FIELDS) if (old && k in old) entry[k] = old[k]
     return entry
   }).filter(Boolean)
 
@@ -212,7 +240,9 @@ export function syncVersions({ root, files, dryRun = false } = {}) {
   const data = {
     version: 1,
     generatedBy: 'node kit/cli.mjs sync',
-    _note: '本文件由 sync 生成骨架。人工只可编辑：exclude / note / consumers / migrationNote / manual 条目 / history。',
+    // ★ `_note` 是对**行为**的承诺，改 sync 的合并语义时必须同步改这里（否则文档撒谎）：
+    //   事实字段（value/line/locator/mirrorValue）每次重算；人工字段见 MANUAL_FIELDS。
+    _note: '本文件由 sync 生成骨架：value / line / locator 等事实字段每次 sync 都从宿主文件重算，人工改动会被覆盖。人工只可编辑：exclude / note / consumers / migrationNote（lines 与 contracts 两个分区都会被继承）/ manual 条目（仅 contracts 分区）/ history。',
     exclude: excludes,
     history: prev.history || { baselineCount: 0, commonToolsBaseline: pyNames.length, records: [] },
     lines,
