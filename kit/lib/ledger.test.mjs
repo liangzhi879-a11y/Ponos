@@ -484,6 +484,36 @@ test('syncDeps：notes / gates 是人工维护段，sync 必须原样保留（�
   assert.deepEqual(data.gates.manual, [{ script: 'verify-gui-fidelity', reason: '需图形会话' }])
 })
 
+// ── Task 12 / Rider D：`_note` 与 notes / gates 同属**人工段** ────────────────
+//
+// 实测（Task 11 审查）：deps.json 的 `_note` 里写着 "★ python.embedded 是内嵌 Python 包清单的
+// **唯一真源**…"，而这行被 `syncDeps` 的硬编码文案**无条件覆盖** —— 跑一次 `npm run kit:sync`
+// 告警就被静默抹掉（唯一真源的功能不受影响，但读者再也看不到"改构建脚本不会被任何门禁发现"）。
+// 与"基线抹平红灯""报告说假话"同族：**文字承诺被一个日常动作擦掉**。
+// 判据必须双向：① 人工写过的 `_note` 原样保留；② 首次建台账（无 prev）仍要写出默认说明 ——
+// 否则"永不写 `_note`"也能满足①，而文件会失去它本该有的解释。
+test('★Rider D：deps.json 的 `_note` 是人工段（sync 保留），首次建台账仍写默认说明', () => {
+  const root = fixture({
+    'package.json': JSON.stringify({ dependencies: { react: '^18' }, devDependencies: {}, scripts: {} }),
+    'src/a.ts': "import { x } from 'react'\n",
+    'kernel/package.json': '{}',
+  })
+  const files = ['package.json', 'src/a.ts', 'kernel/package.json']
+  const HUMAN_NOTE = '★ python.embedded 是唯一真源：改内嵌包集只能改这里 —— 改构建脚本不会被任何门禁发现'
+
+  // ② 首次 sync（无 prev）必须写出默认说明，不得留空
+  const first = syncDeps({ root, files }).data._note
+  assert.match(String(first || ''), /sync 生成/, '首次建台账必须写出默认 `_note`（"永不写"不是保留）')
+
+  const d = readDeps({ root })
+  d._note = HUMAN_NOTE
+  writeDeps({ root, data: d })
+
+  const { data } = syncDeps({ root, files })
+  assert.equal(data._note, HUMAN_NOTE,
+    'sync 覆盖 `_note` = 人工写的告警被静默抹掉（Task 11 审查实测 diff 即此一处，且它是"唯一真源"的唯一书面说明）')
+})
+
 test('syncDeps：packages[].status 是**事实字段**（人工不可篡改）——手改成 used/unused 都会被重算纠正回来', () => {
   // 与 notes / gates 相反：那两个是"人工段"（sync 必须原样保留），status 是"宿主事实"（sync 必须重算）。
   // 二者混淆的后果不对称：status 被人工留住 ⇒ 台账说"未用"而源码在用（或反之），

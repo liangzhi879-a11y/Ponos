@@ -6,16 +6,18 @@
 
 ```
 npm run verify   # = typecheck + test:ci（本地推之前跑这个）
-npm run test:ci  # = 预检 → 文档口径 → 单测层 → server 层 → 内核层
+npm run test:ci  # = 预检 → 文档口径 → DevKit 台账 → 单测层 → server 层 → 内核层 → verify:ci（实测为绿的门禁）
 ```
 
 | 命令 | 内容 | 本机实测 |
 |---|---|---|
 | `npm run test:preflight` | 预检：Node 版本、测试 glob 必须匹配到文件、端口占用风险 | <1s |
 | `node scripts/check-doc-anchors.mjs` | 文档口径（路径存在性 + 各层测试文件数） | <1s |
+| `npm run kit:check` | DevKit 台账门禁（版本/依赖台账 ↔ 宿主文件；只读） | 3 次实测 753/792/808 ms |
 | `npm run test:unit` | `shared` + `electron` + `src` + `kit` 四层 | 1041 项 / 23s（kit 层接入前实测；kit 层另加 6 项断言） |
 | `npm run test:server` | `server` 层（含起桥的端到端测试） | 694 项 / 91s |
 | `npm run test:kernel` | `kernel-tests` 层 | 1943 项 / 48s |
+| `npm run verify:ci` | 实测为绿的 `verify-*.mjs` 门禁（见「门禁挂载」两节） | 4 个脚本 / 实测 3.1s |
 | `npm run typecheck` | `tsc --noEmit` | 16s |
 
 合计 **3678 项断言 / 约 3 分钟**（kit 层接入前实测，本机 8 核）。CI 为 2 核 Windows 运行器，实耗会更长，作业超时设 30 分钟。
@@ -142,6 +144,59 @@ node scripts/ci-preflight.mjs --allow-running-app
 
 > 未做全仓批量修补：`rmSync` 出现在约 155 个测试文件里，但只有"**被 kill 的子进程的 cwd 就是该目录**"这一种形态才有风险（约 47 处）。在没有实际命中的证据前不动它们，避免一次无法审阅的大改动；命中时按上面的 `rmSyncRetry` 模式就地修即可。
 
+
+## 门禁挂载：11 个 `verify-*.mjs` 现在都有入口了
+
+C2 的原状态是**零挂载**：`scripts/verify-*.mjs` 共 11 个，`package.json` 里一个入口都没有 ——
+既不在 CI，也没有 `npm run` 名字，于是**没有任何人会看到它们腐烂**。实测（干净克隆 `@9825c96`）：
+其中 3 个当场 `EXIT=1`，断言与现行代码判据早已漂移。
+
+现在每个脚本都有 `npm run verify:<后缀>` 入口（后缀 = 文件名去掉 `verify-` 前缀），
+并**恰好**归入 `kit/manifest/deps.json#gates` 的一个桶。分类**由实测决定**（spec §10 C2 明令不允许凭印象），
+下面是逐脚本的实测值（干净克隆 + `node_modules`，即 CI `npm ci` 之后的状态）：
+
+| 脚本 | 桶 | 干净克隆实测 EXIT | 一句话依据 |
+|---|---|---|---|
+| `verify-milestones-start` | ci | 0 | 只 import `server/milestones.mjs` 做纯函数断言（`scripts/verify-milestones-start.mjs:2`） |
+| `verify-s4-security` | ci | 0 | `mkdtempSync` 隔离 + `shared/pack-zip.mjs`（`:14-18`），无 GUI / 无外部进程 |
+| `verify-skill-listing` | ci | 0 | 只读技能库 + `kernel/prompt.mjs`（`:13-16`）；库不存在时降级为空库断言（`:61-63`，故 CI 上不假失败） |
+| `verify-experience-inject` | ci | 0 | 用**随机端口**（`:12` `39000+random`）+ 临时 home（`:8`）加载 `server/bridge.mjs`，与图形会话无关 |
+| `verify-highrisk` | pendingFix | **1** | 5 项失败（`rm` 后跟路径 / `erase` / `move` / `mv` / `Stop-Process`）—— 脚本判据与 `server/highrisk.mjs` 漂移 |
+| `verify-knowledge-gui` | pendingFix | **1** | 3 项失败（`KnowledgeSidebar.tsx`/`KnowledgeToolbar.tsx` 的 `⚠` emoji；五视图白名单）—— 组件演进后脚本未同步 |
+| `verify-knowledge-import-gui` | pendingFix | **1** | 7 项失败（i18n key 数、`useKnowledge.importDocuments` 写路径、dryRun 缓存失效、结果三档明细） |
+| `verify-gui-fidelity` | manual | 未跑 | `:19` 定位 `electron/dist/electron.exe`、`:359` 用 `BrowserWindow` 加载真组件并截图比对 —— 需真二进制 + 图形会话 |
+| `verify-permission-flow` | manual | 未跑 | `:26` 用 `kernel-dist/cli.mjs` 拉起真内核、`:87` 打印 spawn args、按 stream-json 注入 `control_response` —— 需内核产物与协议往返 |
+| `verify-portable-layout` | manual | **1** | `:6-18` 断言 `release/YFWorking/` 打包产物（`:14` `electron/electron.exe`、`:15` `runtime/python/python.exe`）—— `release/` 是 gitignored，干净克隆必有假失败 |
+| `verify-package-assets` | manual | **1** | `:28` 要求 `kernel-dist/cli.mjs` 存在（先跑 `build-kernel`）—— 构建产物不在干净克隆里；它本就是出包前预检（`:2`） |
+
+> 上表由 `kit/cli.test.mjs` 的 3 条测试守：① 每个脚本都有 npm 入口且**恰好**归一个桶；
+> ② `ci` 桶 ⊆ `verify:ci` ⊆ `test:ci`，且 `pendingFix` **不得**出现在 `verify:ci` 链路里；
+> ③ `manual` / `pendingFix` 每条必须写 `reason`（I4：放行即人工，理由要能被读者看到）。
+> 新增或改名 `verify-*.mjs` 时，这三条会立刻红 —— 不要绕开它们改文档。
+
+### 手动门禁（不在 CI 自动跑，需图形会话 / 真内核 / 打包产物）
+
+判据是**环境依赖**，不是工作量 ——「因为麻烦所以放手动」不是理由。
+
+| 命令 | 依赖 | 为什么不能进 CI |
+|---|---|---|
+| `npm run verify:gui-fidelity` | Electron 真二进制 + 图形会话 | 截图比对无法在无头环境稳定复现 |
+| `npm run verify:permission-flow` | `kernel-dist/cli.mjs` 真内核进程 | 需真实审批协议往返（还会按档位删临时文件） |
+| `npm run verify:portable-layout` | `release/YFWorking/` 打包产物 | `release/` 是 gitignored，干净克隆必然 FAIL |
+| `npm run verify:package-assets` | `kernel-dist/cli.mjs` | 出包前预检，构建产物不在干净克隆里 |
+
+### 未过 CI 的门禁（`pendingFix` 桶）：实测为红，修到绿再移入 `ci`
+
+这三个脚本是**脚本自身腐烂**，与"环境不够"是两回事，所以**不能**丢进 `manual` 桶当解释；
+也不串进 `test:ci`（串进去 = CI 永久红，红灯就被当成噪声，门禁随即失去意义）。
+它们现在的处置是：挂上 `npm run` 入口 + 在 `gates.pendingFix` 里写明失败断言 + 本表留证，
+**修脚本或修判据（二选一，要判清哪边才是对的口径）后从 `pendingFix` 移入 `ci`**。
+
+| 命令 | 失败断言（干净克隆实测） |
+|---|---|
+| `npm run verify:highrisk` | `rm 后跟路径命中` / `erase 命中` / `move 命中` / `mv 命中` / `Stop-Process 命中`（5 项） |
+| `npm run verify:knowledge-gui` | `无 emoji：KnowledgeSidebar.tsx → ⚠`、`无 emoji：KnowledgeToolbar.tsx → ⚠`、`五视图白名单 read/edit/graph/search/market`（3 项） |
+| `npm run verify:knowledge-import-gui` | i18n key 数、`useKnowledge.importDocuments` 写路径唯一入口、dryRun 缓存失效、结果三档明细等（7 项） |
 
 ## 更新文档锚点
 

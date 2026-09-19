@@ -1,7 +1,7 @@
 {
   "version": 1,
   "generatedBy": "node kit/cli.mjs sync",
-  "_note": "packages[].evidence 与 optionalProbes 由 sync 生成；python.embedded / notes / gates / sizes 可人工维护（sync 原样保留）。★ python.embedded 是内嵌 Python 包清单的**唯一真源**（B2）：scripts/build-embedded-python.mjs 读它安装 pip 包，故改内嵌包集只能改这里 —— 改构建脚本不会被任何门禁发现，且漏装一个包只在发出去的机器上炸（内嵌运行时不可在线补包）。status=unused 的判定见 spec §6.2（五类引用证据）。",
+  "_note": "packages[].evidence 与 optionalProbes 由 sync 生成；_note / python.embedded / notes / gates / sizes 是人工段（sync 原样保留）。★ python.embedded 是内嵌 Python 包清单的**唯一真源**（B2）：scripts/build-embedded-python.mjs 读它安装 pip 包，故改内嵌包集只能改这里 —— 改构建脚本不会被任何门禁发现，且漏装一个包只在发出去的机器上炸（内嵌运行时不可在线补包）。status=unused 的判定见 spec §6.2（五类引用证据）；gates 的三个桶（ci / manual / pendingFix）见 gates._note。",
   "domains": {
     "npm-runtime": {
       "source": "package.json#dependencies",
@@ -20,6 +20,18 @@
               "src/components/chat/ToolCallCard.tsx",
               "src/lib/chatParts.ts",
               "src/lib/chatRuntime.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@codemirror/autocomplete",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
             ]
           },
           "status": "used"
@@ -278,6 +290,18 @@
         },
         {
           "name": "@codemirror/view",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "src/components/editor/CodeEditor.tsx"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "@lezer/highlight",
           "evidence": {
             "classes": [
               "import"
@@ -708,6 +732,30 @@
           "status": "used"
         },
         {
+          "name": "esbuild",
+          "evidence": {
+            "classes": [
+              "dynamic-import"
+            ],
+            "files": [
+              "scripts/verify-gui-fidelity.mjs"
+            ]
+          },
+          "status": "used"
+        },
+        {
+          "name": "js-yaml",
+          "evidence": {
+            "classes": [
+              "import"
+            ],
+            "files": [
+              "scripts/verify-package-assets.mjs"
+            ]
+          },
+          "status": "used"
+        },
+        {
           "name": "postcss",
           "evidence": {
             "classes": [
@@ -1040,31 +1088,43 @@
     ]
   },
   "gates": {
+    "_note": "三个桶，分类由**实测**决定（spec §10 C2 明令不允许凭印象）：\n  ci         干净克隆实测 EXIT=0，且不依赖图形会话 / Electron 真二进制 / 内核产物 / 打包产物 → 串进 verify:ci（→ test:ci）\n  manual     需上述外部环境之一，干净克隆必有假失败（或无法执行）→ 只挂 npm script 手动触发\n  pendingFix **脚本自身已腐烂**：干净克隆实测 EXIT=1，断言与现行代码判据已漂移 → 刻意不串进 CI（串进去 test:ci 永久红），修到绿再从本桶移入 ci\n逐脚本实测值（11 个脚本的 EXIT 与失败断言）见 docs/ci.md 的「手动门禁」与「未过 CI 的门禁（pendingFix）」两节；判据=kit/cli.test.mjs 的 3 条挂载完整性测试。",
     "ci": [
-      "verify-highrisk",
       "verify-milestones-start",
       "verify-s4-security",
-      "verify-knowledge-gui",
-      "verify-knowledge-import-gui",
-      "verify-experience-inject",
-      "verify-skill-listing"
+      "verify-skill-listing",
+      "verify-experience-inject"
     ],
     "manual": [
       {
         "script": "verify-gui-fidelity",
-        "reason": "scripts/verify-gui-fidelity.mjs:19 定位 electron/dist/electron.exe、:359 用 BrowserWindow 加载真组件并截图比对 —— 需 Electron 真二进制 + 图形会话"
+        "reason": "scripts/verify-gui-fidelity.mjs:19 定位 electron/dist/electron.exe、:359 用 BrowserWindow 加载真组件并截图比对 —— 需 Electron 真二进制 + 图形会话，无头 CI 无法稳定复现"
       },
       {
         "script": "verify-permission-flow",
-        "reason": "scripts/verify-permission-flow.mjs:26 用 kernel-dist/cli.mjs 拉起真内核进程并按 stream-json 注入 control_response —— 需真内核进程与协议往返"
+        "reason": "scripts/verify-permission-flow.mjs:26 用 kernel-dist/cli.mjs 拉起真内核进程（:14 spawn import、:87 打印 spawn args），再按 stream-json 注入 control_response —— 需内核产物与真实协议往返"
       },
       {
         "script": "verify-portable-layout",
-        "reason": "scripts/verify-portable-layout.mjs:10-18 断言 release/YFWorking/ 打包产物（:14 要求 electron/electron.exe、:15 要求 runtime/python/python.exe）—— 需先出包"
+        "reason": "scripts/verify-portable-layout.mjs:6-18 断言 release/YFWorking/ 打包产物（:14 electron/electron.exe、:15 runtime/python/python.exe）—— release/ 为 gitignored，干净克隆必有假失败（实测 EXIT=1）"
       },
       {
         "script": "verify-package-assets",
-        "reason": "scripts/verify-package-assets.mjs:28 要求 kernel-dist/cli.mjs 存在（先跑 build-kernel），:7 还 import 未声明的 js-yaml（P2 幽灵）—— clean clone 下必然 FAIL"
+        "reason": "scripts/verify-package-assets.mjs:28 要求 kernel-dist/cli.mjs 存在（先跑 build-kernel，:2 注释即出包前预检）—— 构建产物不在干净克隆里（实测 EXIT=1）"
+      }
+    ],
+    "pendingFix": [
+      {
+        "script": "verify-highrisk",
+        "reason": "干净克隆（C:\t12rev @9825c96）实测 EXIT=1：5 项断言失败（rm 后跟路径 / erase / move / mv / Stop-Process）—— 脚本判据与 server/highrisk.mjs 的现行实现已漂移。零挂载期间无人发现；修脚本或修判据后再移入 ci"
+      },
+      {
+        "script": "verify-knowledge-gui",
+        "reason": "干净克隆实测 EXIT=1：3 项失败（KnowledgeSidebar.tsx / KnowledgeToolbar.tsx 含 ⚠ emoji；五视图白名单 read/edit/graph/search/market）—— 组件演进后脚本未同步"
+      },
+      {
+        "script": "verify-knowledge-import-gui",
+        "reason": "干净克隆实测 EXIT=1：7 项失败（i18n key 数、useKnowledge.importDocuments 写路径唯一入口、dryRun 缓存失效、结果三档明细…）—— KnowledgeImportDialog 落地后脚本未同步"
       }
     ]
   },

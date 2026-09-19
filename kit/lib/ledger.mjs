@@ -848,7 +848,12 @@ export function syncDeps({ root, files, sizes, dryRun = false } = {}) {
   const data = {
     version: 1,
     generatedBy: 'node kit/cli.mjs sync',
-    _note: 'packages[].evidence 与 optionalProbes 由 sync 生成；notes / gates / sizes 可人工维护（sync 保留）。status=unused 的判定见 spec §6.2（五类引用证据）。',
+    // ★ Task 12 / Rider D：`_note` 是**人工段**，与 notes / gates / sizes 同等处置。
+    //   硬编码覆盖的实测后果：人工在 `_note` 里写的告警（Task 11 的"python.embedded 是唯一真源"）
+    //   跑一次 `kit:sync` 就无声消失（审查 diff 只有这一处，最容易当成"无害"而放过）。
+    //   它不改变 P4/P5 的判定，但它是"改构建脚本不会被任何门禁发现"这件事的**唯一书面说明** ——
+    //   说明被擦掉后，下一个人只看到一份没有理由的台账。
+    _note: prev._note || DEFAULT_DEPS_NOTE,
     domains: {
       'npm-runtime': { source: 'package.json#dependencies', packages: runtime },
       'npm-dev': { source: 'package.json#devDependencies', packages: dev },
@@ -891,6 +896,15 @@ export const DEFAULT_PYTHON_EMBEDDED = [
   'openpyxl', 'python-docx', 'xlrd', 'Pillow', 'beautifulsoup4', 'rapidocr-onnxruntime',
   'PyPDF2', 'pypdf', 'pypdfium2', 'requests', 'Jinja2', 'openai', 'pydantic',
 ]
+
+/**
+ * `deps.json#_note` 的**首次建台账**默认文案（Task 12 / Rider D）。
+ *
+ * ★ 它只能是"没有人工文案时的兜底"：文件里已有 `_note` 时 sync 必须**原样保留**
+ *   （`_note: prev._note || DEFAULT_DEPS_NOTE`）。理由见 syncDeps 里那行注释 ——
+ *   硬编码覆盖会把人工写的告警静默擦掉，而那条告警可能是某条口径的唯一书面说明。
+ */
+export const DEFAULT_DEPS_NOTE = 'packages[].evidence 与 optionalProbes 由 sync 生成；_note / python.embedded / notes / gates / sizes 是人工段（sync 原样保留）。status=unused 的判定见 spec §6.2（五类引用证据）。'
 
 export function readDeps({ root }) { return readJson({ root, rel: DEPS_FILE, fallback: null }) }
 export function writeDeps({ root, data }) { writeJson({ root, rel: DEPS_FILE, data }) }

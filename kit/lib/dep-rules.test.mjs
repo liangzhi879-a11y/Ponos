@@ -99,15 +99,18 @@ test('全绿基线：无未用、无幽灵、内核零依赖、台账与宿主�
 // ── R4（Task 5 复审 rider）：真仓数字必须被规则钉住，不能只有夹具测试 ──────────
 // 用**已提交的** ledger（kit/manifest/deps.json）而不是现场扫描：干净克隆里稳定，
 // 且不依赖 scratch/ release/ 这类磁盘状态。
-// ⚠️ B1（Task 10）按 spec 删掉这 10 个未用运行时依赖后，本测试必须同步更新为 0 条
-//    —— 这是刻意的：真仓数字要有人负责，删完不更新就报红。
-test('R4：真仓台账的实测数字被 P1 覆盖（42+13 声明 / 0 未用，逐条报红）', () => {
+// ⚠️ 真仓数字每次合法变动都必须在这里同步更新 —— 这是刻意的：真仓数字要有人负责。
+//   · B1（Task 10）删掉 10 个未用运行时依赖 → 52→42；
+//   · **Task 12（Rider A）给 4 个幽灵依赖补声明** → 运行时 42→44（+@codemirror/autocomplete、
+//     +@lezer/highlight）、dev 13→15（+esbuild、+js-yaml）。补声明不改变安装结果
+//     （4 个包本来就以传递依赖的身份装在树里），只把"源码真的在用"写清楚。
+test('R4：真仓台账的实测数字被 P1 覆盖（44+15 声明 / 0 未用，逐条报红）', () => {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
   const depsData = readDeps({ root: ROOT })
   assert.ok(depsData, 'kit/manifest/deps.json 必须存在（干净克隆里它是已跟踪文件）')
   const counts = Object.fromEntries(Object.entries(depsData.domains).map(([k, d]) => [k, (d.packages || []).length]))
-  assert.equal(counts['npm-runtime'], 42, '运行时声明数（Task 5 实测）')
-  assert.equal(counts['npm-dev'], 13, 'dev 声明数（Task 5 实测）')
+  assert.equal(counts['npm-runtime'], 44, '运行时声明数（Task 12 Rider A 后实测：42+2）')
+  assert.equal(counts['npm-dev'], 15, 'dev 声明数（Task 12 Rider A 后实测：13+2）')
   assert.equal(counts.kernel, 0, '内核域恒零依赖')
 
   const { findings, checks } = runDepRules({ root: ROOT, deps: depsData, ghost: [],

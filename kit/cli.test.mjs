@@ -3,12 +3,11 @@
 // 为什么必须 spawn 真进程：CLI 的全部价值都在"进程外可观察的行为"上 —— 退出码、stdout 的
 // JSON 形状、以及"check 绝不写文件"。这三样 import 都测不到（process.exit 会直接杀掉测试进程）。
 //
-// ★ 退出码的判据必须**双向**：真仓现在必然有红灯（P1 10 条未用依赖 + P2 4 条真幽灵，
-//   欠账 B1 未修；A7 的 V7 20 条已在 Task 9 归零），所以
-//   "check 退出 1"单独看是**不可能独立失败的断言** —— 硬编码 `process.exit(1)` 也能过。
-//   故这里同时钉住三个方向：
-//     ① 真仓 check 退 1（红灯存在）；② 夹具仓（红灯 0）check 必须退 0；
-//     ③ view（契约恒 0）不得被写成 1。三者合起来才唯一确定 `exit(report.ok ? 0 : 1)`。
+// ★ 退出码的判据必须**双向**，而 Task 12（Rider A 补 4 条声明）之后**真仓已全绿**，
+//   所以"真仓 check 退 1"这个方向必须由**夹具仓**来钉（三条：缺台账 → P0/V0 红；
+//   台账与 package.json 脱节 → P7 红；一致 → 退 0）。真仓侧改为钉"红灯 0 / 黄灯 1"这个
+//   已知状态 —— 它本身也是断言：多一条红灯（例如 P2 幽灵依赖复发）同样会在这里变红。
+//   只钉"退 0"会退化成不可能独立失败的断言（硬编码 exit(0) 也能过），故两个方向都留着。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
@@ -17,6 +16,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parseCiChain, ciChainScripts } from '../scripts/test-tiers.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CLI = resolve(ROOT, 'kit/cli.mjs')
@@ -82,11 +82,21 @@ test('check --json 与 view --json 同源（summary 逐字相等）', () => {
   assert.deepEqual(b.summary, a.summary, 'check 与 view 若各跑一套规则，就会出现"两个真相"')
 })
 
-test('check（人话）有红灯 → 退出码 1，且报告首行是 DevKit 检查', () => {
-  const r = run(['check', '--verbose'])
-  assert.equal(r.code, 1, '台账现状应至少含 P1/P2 的红灯（依赖欠账 B1 未修；A7 的 V7 已归零）')
+test('check（人话）：有红灯时退 1 且渲染红灯段（用夹具仓造真红灯，不靠真仓的欠账）', () => {
+  const { env } = fixture()   // 夹具仓**不** sync → 缺台账 = P0/V0 红灯
+  const r = run(['check', '--verbose'], { env })
+  assert.equal(r.code, 1, '有红灯必须退 1（硬编码 exit(0) 会被这条抓住）')
   assert.match(r.stdout, /DevKit 检查/)
   assert.match(r.stdout, /红灯（阻断）/)
+})
+
+test('★RiderA：真仓红灯 0 / 黄灯 1（4 条 P2 幽灵依赖已补声明）—— 多一条红灯也要在这里变红', () => {
+  const r = run(['check', '--json'])
+  const j = JSON.parse(r.stdout)
+  assert.equal(r.code, 0, `真仓必须零红灯（Rider A 已给 4 个包补声明），实测 findings=${JSON.stringify(j.findings)}`)
+  assert.deepEqual([j.summary.red, j.summary.yellow], [0, 1],
+    '黄灯 1 是 P5（两套 Python 清单差集，属预期，spec §6.3 已定不阻断）；红灯/黄灯数变了就必须有人来解释')
+  assert.deepEqual(j.findings.map((f) => f.rule), ['P5'])
 })
 
 test('check --verbose 逐条列出每条规则的判定结果（--verbose 必须真的多说点什么）', () => {
@@ -136,13 +146,36 @@ test('check 是纯只读门禁：不得改动 kit/manifest（brief 的反例断�
 // ★ Rider 1：ghost 只能走 ledger.mjs 的 computeGhost（sync 与 check 共用一份判据）。
 //   计划原文的 ghostOf() 会多报 `~`（public/sample-skills 上游示例的工程别名）与
 //   `jszip`（shared/pack-zip.test.mjs:85 的 try/catch 可选探针）→ 真仓 ghost 从 4 虚增到 6。
-test('★Rider1：真仓 P2 红灯恰为 4 条真幽灵，与 docs/待处理清单.md 记的 4 条同名', () => {
+//
+//   ★ Task 12（Rider A 补声明）之后真仓 P2 归零，于是"真仓恰好 4 条"这条判据**失去了
+//   发现"多报"的能力**（多报 0 条与多报 2 条现在都等价于"没有 P2 红灯"）。
+//   故这里改成双向两条：
+//     ① 真仓 P2 必须为空（4 条已补声明；少补一个包 → 立刻红）；
+//     ② 用**夹具仓**复现真仓那两类易假阳性的写法（`~/` 别名 + try/catch 可选探针 jszip），
+//        断言它们不报、而真幽灵恰好报一条 —— 这才是"不得多报"的判据所在。
+test('★RiderA/1：真仓 P2 幽灵依赖归零（4 条已补声明），黄灯只剩 P5', () => {
   const j = JSON.parse(run(['check', '--json']).stdout)
-  const p2 = j.findings.filter((f) => f.rule === 'P2')
-  assert.deepEqual(p2.map((f) => f.subject),
-    ['@codemirror/autocomplete', '@lezer/highlight', 'esbuild', 'js-yaml'],
-    '多报（`~` / jszip 之类假幽灵）或少报（忘接线 → ghost 恒空）都必须在这里变红')
-  assert.ok(p2.every((f) => f.severity === 'red'))
+  assert.deepEqual(j.findings.filter((f) => f.rule === 'P2'), [],
+    '少补一个包 / 又出现新的幽灵依赖都会在这里变红')
+})
+
+test('★Rider1：P2 判据双向 —— `~/` 别名与 try/catch 可选探针不报，真幽灵必须报', () => {
+  const { root, env } = fixture()
+  mkdirSync(join(root, 'src'), { recursive: true })
+  writeFileSync(join(root, 'src/a.ts'), [
+    "import { useState } from 'react'",
+    "import type { T } from '~/threads/thread-manager'",   // 上游技能示例的工程别名
+    "import { real } from 'left-pad'",                     // 真幽灵
+    'export const x = useState; export type X = T; export const y = real',
+  ].join('\n'))
+  writeFileSync(join(root, 'src/optional.mjs'),
+    "let J = null\ntry { J = (await import('jszip')).default } catch { /* 未安装则跳过 */ }\nexport { J }\n")
+  execFileSync('git', ['add', '-A'], { cwd: root })
+  assert.equal(run(['sync'], { env }).code, 0)
+
+  const j = JSON.parse(run(['check', '--json'], { env }).stdout)
+  assert.deepEqual(j.findings.filter((f) => f.rule === 'P2').map((f) => f.subject), ['left-pad'],
+    '多报（`~/` 别名 / jszip 这类"有意允许缺失"的探针）与少报（ghost 恒空）都要在这里变红')
 })
 
 test('退出码反向：view 必须退 0（否则"check 退 1"可能只是"一律退 1"）', () => {
@@ -264,5 +297,97 @@ test('stamp：要么真的盖章（写出 kit-stamp.json），要么明确报未
   } else {
     assert.match(r.stdout, /stamp|未实现|Task 13/, '不做也可以，但必须说清楚为什么')
     assert.ok(!/^\s*at /.test(r.stdout), '不得只丢一段栈就算交代')
+  }
+})
+
+// ── Task 12（C2 / C3）：门禁挂载完整性 ─────────────────────────────────────
+//
+// C2 的原状态是**零挂载**：11 个 `scripts/verify-*.mjs` 在 package.json 里没有任何入口。
+// 挂载本身不修复腐烂，但它终结了"没人跑"这件事 —— 实测干净克隆（C:\t12rev @HEAD）里
+// `verify-highrisk` / `verify-knowledge-gui` / `verify-knowledge-import-gui` 三个脚本当场
+// EXIT=1（断言与现行代码判据已漂移），而此前没有任何人会看到。
+//
+// 三条判据（每条都能独立失败）：
+//   ① 每个脚本都能被 `npm run` 发现（G7：无"已尝试"项）；
+//   ② 每个脚本**恰好**归入 `deps.json#gates` 的一个桶（ci / manual / pendingFix）；
+//   ③ manual 与 pendingFix 的每条必须写 reason（I4：放行即人工，且理由必须可见）。
+const verifyStems = () => execFileSync('git', ['ls-files', 'scripts/verify-*.mjs'], { cwd: ROOT, encoding: 'utf8' })
+  .split('\n').filter(Boolean).map((f) => f.replace(/^scripts\//, '').replace(/\.mjs$/, ''))
+
+const readDepsLedger = () => JSON.parse(readFileSync(join(ROOT, 'kit/manifest/deps.json'), 'utf8'))
+
+/** gates 段归一为 { 桶名: [{script, reason}] }（ci 桶用裸字符串登记，其余带 reason） */
+const gatesOf = (deps) => {
+  const out = {}
+  for (const [bucket, list] of Object.entries(deps.gates || {})) {
+    if (bucket.startsWith('_')) continue
+    out[bucket] = (list || []).map((e) => (typeof e === 'string' ? { script: e, reason: '' } : e))
+  }
+  return out
+}
+/** `verify-<suffix>.mjs` ↔ npm script `verify:<suffix>`（命名约定，避免两处手抄映射表） */
+const npmNameOf = (stem) => `verify:${stem.replace(/^verify-/, '')}`
+
+test('★C2：11 个 verify 脚本全部挂在 npm script 上，且各自恰好归入 gates 的一个桶', () => {
+  const stems = verifyStems()
+  assert.equal(stems.length, 11, `verify 脚本数按实测钉住（现 11 个），实测 ${stems.length}`)
+  const pkg = readPkg(ROOT)
+  const gates = gatesOf(readDepsLedger())
+  assert.deepEqual(Object.keys(gates).sort(), ['ci', 'manual', 'pendingFix'],
+    'gates 桶集固定为三个（新增桶要同步本测试与 docs/ci.md 的口径说明）')
+
+  for (const stem of stems) {
+    const npmName = npmNameOf(stem)
+    const body = pkg.scripts[npmName] || ''
+    assert.ok(body.includes(`scripts/${stem}.mjs`),
+      `${stem} 没有 npm script 入口（C2 欠账"零挂载"复发 —— 它会腐烂而无人发现）`)
+    const hit = Object.entries(gates).filter(([, list]) => list.some((e) => e.script === stem))
+    assert.equal(hit.length, 1, `${stem} 必须恰好归入一个桶，实测归入 ${hit.map(([k]) => k).join('、') || '无'}`)
+  }
+
+  // 反向：桶里登记的每个门禁都必须真实存在（防"登记了一个不存在的门禁"，那种登记只会骗人）
+  for (const [bucket, list] of Object.entries(gates)) {
+    for (const e of list) {
+      assert.ok(stems.includes(e.script), `gates.${bucket} 登记了不存在的门禁 ${e.script}`)
+      if (bucket !== 'ci') {
+        assert.ok(String(e.reason || '').trim().length > 0,
+          `gates.${bucket} 的 ${e.script} 必须写 reason（I4：放行即人工，且理由要能被读者看到）`)
+      }
+    }
+  }
+})
+
+test('★C2：ci 桶 ⊆ verify:ci ⊆ test:ci；pendingFix（实测为红）不得串进 CI', () => {
+  const pkg = readPkg(ROOT)
+  const gates = gatesOf(readDepsLedger())
+  const ciChain = ciChainScripts(pkg.scripts)
+  assert.ok(ciChain.includes('verify:ci'), `test:ci 必须真的跑 verify:ci，实测链路 ${ciChain.join(' → ')}`)
+  const verifyChain = parseCiChain(pkg.scripts['verify:ci'])
+  assert.ok(verifyChain.length > 0, 'verify:ci 必须能解析出脚本名，否则"CI 真的跑了"这条判据落空')
+
+  for (const e of gates.ci) {
+    assert.ok(verifyChain.includes(npmNameOf(e.script)),
+      `ci 桶的 ${e.script} 必须真的在 verify:ci 链路里（否则 ci 桶只是装饰：写了不等于跑）`)
+  }
+  for (const e of gates.pendingFix) {
+    assert.equal(verifyChain.includes(npmNameOf(e.script)), false,
+      `pendingFix 的 ${e.script} 在干净克隆里实测 EXIT=1，串进 verify:ci 会让 test:ci 永久红 —— 修到绿再从 pendingFix 移入 ci`)
+  }
+})
+
+test('★C3：构建/校验脚本都有 npm script 入口（原先 6 个脚本零入口）', () => {
+  const pkg = readPkg(ROOT)
+  const cmds = Object.values(pkg.scripts)
+  // ★ 清单以**实测 tree** 为准：计划原文写 `scripts/package-portable.mjs`，实际文件是
+  //   `scripts/package-portable.cjs`（同名 .mjs 不存在）。按计划原文抄会挂一个跑不起来的入口 ——
+  //   这类"文档里的文件名与实际不符"正是本门禁要抓的，故测试里显式断言文件存在。
+  for (const rel of ['scripts/build-kernel.mjs', 'scripts/build-embedded-python.mjs', 'scripts/build-installer.mjs',
+    'scripts/package-portable.cjs', 'scripts/sync-builtin-skills.mjs', 'scripts/bump-version.mjs']) {
+    assert.ok(existsSync(join(ROOT, rel)), `${rel} 不存在（清单须与 tree 对齐）`)
+    assert.ok(cmds.some((c) => c.includes(rel)), `${rel} 没有 npm script 入口（C3 欠账）`)
+  }
+  // 命名空间本身也是判据：构建入口一律 `build:*` / `skills:*` / `version:*`，便于 `npm run` 发现
+  for (const name of ['build:kernel', 'build:python', 'build:installer', 'build:portable', 'skills:sync', 'version:bump']) {
+    assert.ok(pkg.scripts[name], `缺 npm script ${name}`)
   }
 })
