@@ -461,14 +461,6 @@
           "status": "used"
         },
         {
-          "name": "mammoth",
-          "evidence": {
-            "classes": [],
-            "files": []
-          },
-          "status": "unused"
-        },
-        {
           "name": "react",
           "evidence": {
             "classes": [
