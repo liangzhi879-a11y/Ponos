@@ -210,3 +210,8 @@ function probeCores() {
 // B3 子 agent 并发槽（2026-09-11）：同时运行的子代理上限（默认按系统配置推导，见上）；
 // 超限派发排队（FIFO），槽位释放自动启动。0 = 不限（既有行为）。
 export const LANE_MAX_CONCURRENT = LOOP_GUARD_OFF ? 0 : envNonNeg('PONOS_LANE_MAX_CONCURRENT', defaultLaneConcurrency(probeCores()))
+// 跨 Agent 证据面（2026-09-19）：前台子 Agent 回传给主 Agent 的"已读文件"条数上限。
+// 为什么限量：reads 可能上百条，全量进主上下文会挤掉真正要用的历史，小窗口本地模型
+// 尤其吃不消。**产物（outputs）不设上限**——每个都是需要主 Agent 接力的交付物，
+// 漏一个就是任务断链（两者的信息价值不同：读面可再生，产物不可再生）。0 = 不限。
+export const LANE_READS_MAX = envNonNeg('PONOS_LANE_READS_MAX', 15)

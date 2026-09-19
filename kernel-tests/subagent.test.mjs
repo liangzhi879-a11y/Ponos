@@ -450,3 +450,52 @@ test('Edit 产物计入 outputs（原先只认 Write）', async () => {
     env.cleanup()
   }
 })
+
+test('Read 路径进 reads 且主 Agent 前台回传含完整产物与过程入口', async () => {
+  const env = makeEnvEvidence()
+  const prev = process.env.PONOS_MOCK_WRITE_DIR
+  try {
+    process.env.PONOS_MOCK_WRITE_DIR = env.workDir
+    writeFileSync(join(env.workDir, 'mock-c.txt'), 'old\n', 'utf-8')
+    // desc 含 [mock:edit] 但不以它开头：确保子 Agent 首轮就命中触发词
+    const r = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: '[mock:edit] 请改这个文件', run_in_background: true },
+      { toolUseId: 'tool_use_ev_2' },
+    )
+    const taskId = extractTaskId(r.content)
+    const n = await env.waitNotif(taskId)
+    assert.ok(n)
+    // reads 采集：Read 的 file_path 进通知
+    assert.deepEqual(n.reads, [`${env.workDir}/mock-c.txt`])
+    // transcript 路径暴露（Task 3 使其可读）
+    assert.equal(n.transcript_path, env.laneFile(taskId))
+  } finally {
+    if (prev === undefined) delete process.env.PONOS_MOCK_WRITE_DIR
+    else process.env.PONOS_MOCK_WRITE_DIR = prev
+    env.cleanup()
+  }
+})
+
+test('前台 Agent 返回体列出全部产物（不止最后一个）', async () => {
+  const env = makeEnvEvidence()
+  const prev = process.env.PONOS_MOCK_WRITE_DIR
+  try {
+    process.env.PONOS_MOCK_WRITE_DIR = env.workDir
+    const r = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: '[mock:write]' }, // 无 run_in_background ⇒ 前台同步
+      { toolUseId: 'tool_use_ev_3' },
+    )
+    assert.equal(r.isError, false)
+    // 两个产物都要出现（改造前只出现最后一个）
+    assert.match(r.content, /mock-a\.txt/)
+    assert.match(r.content, /mock-b\.txt/)
+    // 产物清单段与过程入口段为本次新增。不能只断路径出现：mock 的工具结果回显
+    // 本身就带 mock-a.txt、output_file 单行带 mock-b.txt，路径断言在改造前也过。
+    assert.match(r.content, /产物（2）：/)
+    assert.match(r.content, /过程记录：/)
+  } finally {
+    if (prev === undefined) delete process.env.PONOS_MOCK_WRITE_DIR
+    else process.env.PONOS_MOCK_WRITE_DIR = prev
+    env.cleanup()
+  }
+})

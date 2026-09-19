@@ -38,7 +38,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { createCompactor } from './compact.mjs'
 import { perfTime, perfTimeAsync, perfMark, perfSpan, perfStep, perfBegin, perfCount } from './perf.mjs'
-import { CONTINUE_HEAL_MAX, FID_ANCHOR_MAX_CONSEC, FID_ANCHOR_REINJECT_EVERY, IDLE_DEAD_RETRY_BACKOFF_MS, IDLE_DEAD_RETRY_MAX, IDLE_HEAL_MAX, LANE_MAX_CONCURRENT, LOOP_STALL_MS, MAX_ERROR_ITERATIONS, MAX_OVERFLOW_RETRIES, MAX_TOOL_ITERATIONS, MELTDOWN_HEAL_MAX, NEAR_REPEAT_AVG, NEAR_REPEAT_BACK, NEAR_REPEAT_CODE_SKIP, NEAR_REPEAT_RECENT, NEAR_REPEAT_SIM, OUTPUT_TIERS, REPEAT_HEAL_MAX, REPEAT_REMIND_AT, STALL_HEAL_MAX, STREAM_FIRST_BYTE_MS, STREAM_IDLE_MS, TURN_TIMEOUT_MS, UPSTREAM_DEAD_HEAL_BACKOFF_MS, UPSTREAM_DEAD_HEAL_MAX, adaptiveFirstByteMs, isFidAnchorOn, withAnchorTail } from './engine-config.mjs'
+import { CONTINUE_HEAL_MAX, FID_ANCHOR_MAX_CONSEC, FID_ANCHOR_REINJECT_EVERY, IDLE_DEAD_RETRY_BACKOFF_MS, IDLE_DEAD_RETRY_MAX, IDLE_HEAL_MAX, LANE_MAX_CONCURRENT, LANE_READS_MAX, LOOP_STALL_MS, MAX_ERROR_ITERATIONS, MAX_OVERFLOW_RETRIES, MAX_TOOL_ITERATIONS, MELTDOWN_HEAL_MAX, NEAR_REPEAT_AVG, NEAR_REPEAT_BACK, NEAR_REPEAT_CODE_SKIP, NEAR_REPEAT_RECENT, NEAR_REPEAT_SIM, OUTPUT_TIERS, REPEAT_HEAL_MAX, REPEAT_REMIND_AT, STALL_HEAL_MAX, STREAM_FIRST_BYTE_MS, STREAM_IDLE_MS, TURN_TIMEOUT_MS, UPSTREAM_DEAD_HEAL_BACKOFF_MS, UPSTREAM_DEAD_HEAL_MAX, adaptiveFirstByteMs, isFidAnchorOn, withAnchorTail } from './engine-config.mjs'
 import { addUsage, applyAggregateResultBudget, hasUsage, makeIdleWatchdog, normalizeEffort, rawAbortSignal, retryStream, sleep, withToolDeadline } from './stream-runtime.mjs'
 import { createRequestFace, fitRequestToWindow, messageTextOf, patchOrphanToolUses, trimOversizedRequestCopy } from './request-face.mjs'
 import { canonicalToolCallKey, createNearRepeatDetector, detectGenerationRepeat, isPlanTail, isThinkOnly } from './gen-guards.mjs'
@@ -1881,7 +1881,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
 
   // 子 lane 执行体（spawn 与 resume 共用）：跑完整子循环 → 登记更新 + 终态通知。
   // resume 复用同一 laneStore（历史经 deriveMessages 原样保留，无副作用重放）
-  async function runLaneExecution({ taskId, laneStore, sysPrompt, signal: subSignal, writePaths, t0, onTool, laneOptions, inbox }) {
+  async function runLaneExecution({ taskId, laneStore, sysPrompt, signal: subSignal, writePaths, readPaths, t0, onTool, laneOptions, inbox }) {
     let text = ''
     let status = 'completed'
     let usage = {}
@@ -1905,12 +1905,18 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       cache_read_input_tokens: usage.cache_read_input_tokens ?? 0,
       cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
     }
-    const outputFile = writePaths[writePaths.length - 1] || ''
+    // 产物与读面去重（同一文件可被多次 Edit / Read）：保序去重，避免回传给主 Agent
+    // 的清单里出现重复路径。writePaths 原为"最后产物"取用，去重不改变其末元素语义。
+    const dedupe = (arr) => [...new Set((arr || []).filter(Boolean))]
+    const outputs = dedupe(writePaths)
+    const reads = dedupe(readPaths)
+    const transcriptPath = String(laneStore?.file || '')
+    const outputFile = outputs[outputs.length - 1] || ''
     const entry = pendingSubAgents.get(taskId)
-    if (entry) Object.assign(entry, { status, summary: text, outputFile, usage: notifUsage })
-    wire.taskNotification({ taskId, status, summary: text, outputFile, usage: notifUsage, outputs: [...writePaths] })
+    if (entry) Object.assign(entry, { status, summary: text, outputFile, outputs, reads, transcriptPath, usage: notifUsage })
+    wire.taskNotification({ taskId, status, summary: text, outputFile, outputs, reads, transcriptPath, usage: notifUsage })
     drainQueuedLanes() // B3：槽位释放 → 启动最早排队任务
-    return { status, text, usage, outputFile }
+    return { status, text, usage, outputFile, outputs, reads, transcriptPath }
   }
 
   // AS1：agent tools/skills 引用未知项诊断（提示不拦截；skillIds 仅在 cli 提供时校验，
@@ -1952,7 +1958,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       const onTool = makeLaneOnTool({ taskId: resumeTaskId, writePaths, readPaths, t0 })
       target.promise = runLaneExecution({
         taskId: resumeTaskId, laneStore: target.laneStore, sysPrompt: target.sysPrompt,
-        signal: subController.signal, writePaths, t0, onTool, laneOptions: target.laneOptions,
+        signal: subController.signal, writePaths, readPaths, t0, onTool, laneOptions: target.laneOptions,
         inbox: target.inbox || [],
       })
       return { content: `子 Agent 任务已续跑（task_id: ${resumeTaskId}）。完成时收到通知，可用 Task 工具查询/中止。`, isError: false }
@@ -2034,7 +2040,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     const onTool = makeLaneOnTool({ taskId, writePaths, readPaths, t0 })
     const exec = () => runLaneExecution({
       taskId, laneStore, sysPrompt,
-      signal: subController.signal, writePaths, t0, onTool, laneOptions, inbox,
+      signal: subController.signal, writePaths, readPaths, t0, onTool, laneOptions, inbox,
     })
     if (runInBackground) {
       // 登记含 sysPrompt/laneStore/lineage/laneOptions/inbox：resume 复用会话与血缘
@@ -2069,10 +2075,22 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     if (r.status === 'failed') return { content: r.text, isError: true }
     const totalTokens = (r.usage.input_tokens ?? 0) + (r.usage.output_tokens ?? 0)
       + (r.usage.cache_read_input_tokens ?? 0) + (r.usage.cache_creation_input_tokens ?? 0)
+    // 证据面回传：产物**全量**（原只给 outputFile 一个，多产物任务会被主 Agent 漏接）、
+    // 读面限量（读过的文件可能很多，全量会淹掉主上下文；上限内全列，超出给总数提示）、
+    // 过程入口（transcript 路径，主 Agent 可 Read offset/limit 展开，替代原文复述）。
+    const outs = Array.isArray(r.outputs) ? r.outputs : []
+    const reads = Array.isArray(r.reads) ? r.reads : []
+    // LANE_READS_MAX = 0 表示"不限"（与 LANE_MAX_CONCURRENT 的 0 语义一致）；
+    // 不能直接 slice(0, 0)——那会返回空数组，把"不限"变成"不列"。
+    const shownReads = LANE_READS_MAX > 0 ? reads.slice(0, LANE_READS_MAX) : reads
     const detail = [
       `子 Agent「${agent.id}」执行完成（${totalTokens} tokens）`,
       r.text,
-      r.outputFile ? `输出文件：${r.outputFile}` : '',
+      outs.length ? `产物（${outs.length}）：${outs.join('、')}` : '',
+      shownReads.length
+        ? `已读文件（${reads.length}）：${shownReads.join('、')}${reads.length > shownReads.length ? `\n（仅列前 ${LANE_READS_MAX} 个，其余见过程记录）` : ''}`
+        : '',
+      r.transcriptPath ? `过程记录：${r.transcriptPath}（需要细节用 Read offset/limit 展开，勿让子 Agent 复述）` : '',
     ].filter(Boolean).join('\n\n')
     return { content: detail, isError: false }
   }
@@ -2144,7 +2162,12 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       const t = pendingSubAgents.get(String(taskId || ''))
       if (!t) return { content: `任务不存在：${taskId}`, isError: true }
       if (t.status === 'running') return { content: '任务仍在运行中', isError: false }
-      return { content: String(t.summary || '(无输出)'), isError: false }
+      const parts = [
+        String(t.summary || '(无输出)'),
+        Array.isArray(t.outputs) && t.outputs.length ? `产物（${t.outputs.length}）：${t.outputs.join('、')}` : '',
+        t.transcriptPath ? `过程记录：${t.transcriptPath}（用 Read offset/limit 展开）` : '',
+      ].filter(Boolean)
+      return { content: parts.join('\n\n'), isError: false }
     },
     stop(taskId) {
       const t = pendingSubAgents.get(String(taskId || ''))

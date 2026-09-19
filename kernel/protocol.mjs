@@ -152,13 +152,17 @@ export function makeWire(stream = process.stdout) {
         usage: { tool_uses: usage.tool_uses ?? 0, total_tokens: usage.total_tokens ?? 0, duration_ms: usage.duration_ms ?? 0 },
       })
     },
-    // S3 结果承接：outputs 为子 agent 会话内全部 Write 产物路径（主 agent 中转
-    // 给下家子 agent 的"接力清单"，配合共享工作区实现流水线协同）
-    taskNotification({ taskId, status, summary, outputFile, usage = {}, outputs = [] }) {
+    // S3 结果承接：outputs 为子 agent 会话内**全部产物**路径（Write + Edit；主 agent
+    // 中转给下家子 agent 的"接力清单"，配合共享工作区实现流水线协同）；
+    // reads 为其 Read 过的文件（主 agent 据此避免重读）；transcriptPath 为其会话落盘
+    // 文件（可用 Read offset/limit 精确展开过程细节，替代"让子 agent 复述"）。
+    taskNotification({ taskId, status, summary, outputFile, usage = {}, outputs = [], reads = [], transcriptPath = '' }) {
       writeLine(stream, {
         type: 'system', subtype: 'task_notification', task_id: taskId,
         status: status || 'completed', summary: summary || '', output_file: outputFile || '',
         outputs: Array.isArray(outputs) ? outputs : [],
+        reads: Array.isArray(reads) ? reads : [],
+        transcript_path: transcriptPath || '',
         usage: { tool_uses: usage.tool_uses ?? 0, total_tokens: usage.total_tokens ?? 0, duration_ms: usage.duration_ms ?? 0 },
       })
     },
