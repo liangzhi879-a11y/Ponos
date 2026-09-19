@@ -58,6 +58,16 @@ export function headFiles({ root, ref = HEAD_REF, exec = execFileSync } = {}) {
 }
 
 /**
+ * 工作树是否与 HEAD **完全一致**（`git status --porcelain` 为空：无 staged / 无修改 / 无未跟踪文件）。
+ * 用途（`contract-rules.mjs` 的 CT8）：一致时工作树侧契约面与提交态**必然相同** ⇒ 可跳过第二遍全量提取
+ * （实测 ≈0.8 s；而 CI 与干净克隆走的正是这条路）。判据来自 git 本身，本模块不自己猜：
+ * 出错（非仓/无 git）时返回 `false` ⇒ 调用方照常逐项比对（保守方向 = 宁可多跑一遍）。
+ */
+export function worktreeClean({ root, exec = execFileSync } = {}) {
+  try { return String(git(['status', '--porcelain'], { root, exec })).trim() === '' } catch { return false }
+}
+
+/**
  * 缓存目录：`<cacheRoot>/<仓路径 hash>/<sha 前 12>`。
  * 键里带 sha ⇒ 不同提交不共用目录（并发/中断都不会踩到别人的树），带仓 hash ⇒ 主树与克隆不互扰。
  */

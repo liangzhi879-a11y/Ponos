@@ -14,7 +14,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
-import { materializeHead, headTreeDir } from './head-tree.mjs'
+import { materializeHead, headTreeDir, worktreeClean } from './head-tree.mjs'
 
 function git(root, args) {
   return execFileSync('git', ['-c', 'user.email=fx@example.com', '-c', 'user.name=fx', '-c', 'commit.gpgsign=false', ...args],
@@ -92,6 +92,23 @@ test('headTreeDir：缓存目录键控 (仓路径, sha) —— 不同 sha / 不�
   assert.notEqual(a, b)
   assert.notEqual(a, c)
   assert.equal(headTreeDir({ cacheDir: '/tmp/c', root: '/repo/one', sha: 'a'.repeat(40) }), a)
+})
+
+test('★worktreeClean：只在"与 HEAD 完全一致"时为 true（改文件 / 未跟踪 / 暂存后都算脏）', () => {
+  const root = repo(FILES)
+  assert.equal(worktreeClean({ root }), true, '刚提交过的仓 = 干净')
+  writeFileSync(join(root, 'server/a.mjs'), "export const route = (p) => p === '/wip'\n")
+  assert.equal(worktreeClean({ root }), false, '改了已入库文件 ⇒ 脏')
+  git(root, ['checkout', '--', 'server/a.mjs'])
+  assert.equal(worktreeClean({ root }), true)
+  writeFileSync(join(root, 'server/new.mjs'), "export const x = (p) => p === '/n'\n")
+  assert.equal(worktreeClean({ root }), false, '未跟踪新文件 ⇒ 脏（否则 CT8 会漏报在途新端点）')
+  git(root, ['add', '-A'])
+  assert.equal(worktreeClean({ root }), false, '已暂存未提交 ⇒ 仍算脏')
+  git(root, ['commit', '-qm', 'new'])
+  assert.equal(worktreeClean({ root }), true)
+  assert.equal(worktreeClean({ root: mkdtempSync(join(tmpdir(), 'yfw-nogit2-')) }), false,
+    '非 git 目录 ⇒ false（保守：照常逐项比对，不假装"一致"）')
 })
 
 test('★HEAD 不可读（空仓/非仓）→ available:false + error，不抛（由调用方报出来）', () => {

@@ -429,6 +429,21 @@ test('★CT8：工作树把 kernel/tools.mjs 改坏（在途）→ CT6 照旧 �
   assert.ok(ct8(out).some((f) => f.subject.startsWith('tools ')), `CT8 必须报出工具在途差异：${JSON.stringify(ct8(out))}`)
 })
 
+test('★CT8 的等价性捷径：`worktreeIdentical:true` ⇒ **不读工作树**（第二遍提取整段跳过）、CT8 空', async () => {
+  const f = await setup()
+  let calls = 0
+  const out = await runContractRules({
+    root: f.root, files: f.files, doc: f.doc, snapshot: f.snapshot, scope: f.scope, recorded: f.recorded,
+    headRoot: f.root, headFiles: f.files, headReadTracked: f.read,
+    // 只有"跳过"才可能一次都不读工作树；读了就抛（把"捷径真的走了"变成可证伪的断言）
+    readTracked: () => { calls++; throw new Error('worktreeIdentical:true 时不得读工作树') },
+    worktreeIdentical: true,
+  })
+  assert.equal(calls, 0, '捷径必须真的跳过第二遍提取（实测 ≈0.8 s/次，CI 每次都会走这条路）')
+  assert.deepEqual(ct8(out), [])
+  assert.equal(out.checks.find((c) => c.rule === 'CT8').passed, true)
+})
+
 test('★CT8 的边界：提交态读不到（headError）→ CT1 红（"对账不可进行"不是"没事"），不静默拿工作树顶替', async () => {
   const f = await setup()
   const out = await run(f, { headError: 'fatal: ambiguous argument HEAD' })

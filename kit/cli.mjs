@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { trackedFiles, codeFiles, readTracked } from './lib/scan.mjs'
 import { makeReport, renderHuman, RED } from './lib/report.mjs'
 import { loadBaseline, applyBaseline, baselineGrowth } from './lib/baseline.mjs'
-import { materializeHead } from './lib/head-tree.mjs'
+import { materializeHead, worktreeClean } from './lib/head-tree.mjs'
 import { readVersions, readDeps, readJson, syncVersions, syncDeps, syncSkillsLock, computeGhost } from './lib/ledger.mjs'
 import { runVersionRules } from './lib/version-rules.mjs'
 import { runDepRules } from './lib/dep-rules.mjs'
@@ -111,6 +111,8 @@ async function collect() {
     root: ROOT, files, doc, docWorktree, snapshot: channels, scope, readTracked: read,
     headRoot, headFiles, headReadTracked: readHead,
     headError: head.available ? null : head.error,
+    // 工作树与 HEAD 一致（CI/干净克隆的常态）⇒ CT8 侧不必再跑一遍全量提取（等价性捷径，见 head-tree.mjs）
+    worktreeIdentical: worktreeClean({ root: ROOT }),
     recorded: { scopeCount: channels?.scopeCount ?? null, scopeRedCount: channels?.scopeRedCount ?? null },
   })
   return {

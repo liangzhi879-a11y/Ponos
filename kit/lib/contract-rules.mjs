@@ -292,16 +292,19 @@ const isRendererSide = (f) => f.indexOf('preload') !== -1
  * @param {{root:string, headRoot?:string, headFiles?:string[], headReadTracked?:Function, headDoc?:object,
  *          headParts?:object, headError?:string|null, files?:string[], doc?:object, docWorktree?:object,
  *          snapshot?:object, scope?:object, recorded?:{scopeCount:number|null,scopeRedCount:number|null},
- *          readTracked?:Function, live?:object, parts?:object, workParts?:object}} p
+ *          readTracked?:Function, live?:object, parts?:object, workParts?:object, worktreeIdentical?:boolean|null}} p
  *   `snapshot` 来自台账（`readSnapshot`）；`live` 若不给则**现场重算**（默认路径就是重算，见红线注释）。
  *   `headError`：物化提交态失败时的原因（`head-tree.mjs` 的 `available:false`）—— 由调用方传入，
  *   本模块把它报成 **CT1 红**（"提交物对账不可进行"不是"没事"）。
+ *   `worktreeIdentical`：调用方**验证过**"工作树 == HEAD"（`head-tree.mjs#worktreeClean`）时传 `true`，
+ *   跳过 CT8 的第二遍全量提取（等价性捷径，见 CT8 段落注释）。缺省 = 逐项比对。
  */
 export async function runContractRules({
   root, files = null, doc = null, snapshot = null, scope = null, recorded = null,
   readTracked: rt = null, live = null, parts = null,
   headRoot = null, headFiles = null, headReadTracked = null, headDoc = null, headParts = null,
   headError = null, docWorktree = null, workFiles = null, workReadTracked = null, workParts = null,
+  worktreeIdentical = null,
 } = {}) {
   // ── 提交态（真值）与工作树（CT8）各自的文件集与读取器 ──────────────────
   const filesWork = workFiles || files || trackedFiles({ root })
@@ -547,7 +550,13 @@ export async function runContractRules({
   //   提交之后 CT8 自己就空了（"提交后漏登记 → CT1/CT2/CT4 红"由别的规则接住）。
   const declaredHead = docDeclaredSets(docHead)
   const declaredWork = docDeclaredSets(docWork)
-  const workSnap = await buildSnapshot({ root, files: filesWork, readTracked: readWork, parts: workParts || null })
+  // ★ 等价性捷径：调用方已用 git 验证"工作树与 HEAD 完全一致"（`head-tree.mjs#worktreeClean`）⇒
+  //   工作树侧快照与提交态快照**必然相同**，不必再跑第二遍全量提取（实测 ≈0.8 s，而 CI/干净克隆
+  //   走的正是这条路）。本模块**不自己判断**"干不干净"（那是 git 的事）：只有调用方明确传 `true`
+  //   才跳过；缺省/`false`/`null` 一律照常逐项比对（保守方向 = 宁可多跑一遍，不少报在途差异）。
+  const workSnap = worktreeIdentical === true
+    ? liveSnap
+    : await buildSnapshot({ root, files: filesWork, readTracked: readWork, parts: workParts || null })
   const inflight = diffSnapshot(liveSnap, workSnap).diffs.filter((d) => !isErrorTextOnlyDiff(d, liveSnap, workSnap))
   const docInflight = declaredDiff(declaredHead, declaredWork)
   const inflightHint = '这些改动**尚未提交**：提交后跑 `npm run kit:sync`（台账按**提交态**落盘）'
