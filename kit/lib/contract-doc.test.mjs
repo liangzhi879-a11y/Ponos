@@ -177,6 +177,74 @@ test('真仓 §11/§12（P1.5 新增面）：7 条 IPC 推送 + 21 个工具，�
   assert.deepEqual(d.sections.get('§12').types, [...d.tools.keys()], '§12 的 types = 该节声明的工具名清单')
 })
 
+// ── 批 M：**方法维度**（§7 的行内方法必须逐条入账，同路径多方法不得互相覆盖）──────
+//
+// 为什么要这三条（此前是"真做假面"）：`routes` 的 key 是 **path** ⇒
+//   ① 同一路径在多行声明（`/api/profile` 的读行 + `（POST）` 写行）时，**后一条整条丢失**
+//      （`if (!routes.has(p))` 只留第一条）⇒ 方法声明凭空消失；
+//   ② 方法只从**行尾全角括号**里读 ⇒ 反引号里的行内方法（`POST /x`、`GET/POST /x`）**整条端点
+//      都解析不出来**（旧解析器要求 token 以 `/` 开头，`GET /x` 直接 continue）⇒ 静默漏声明。
+// 解析器只如实记录"文档写了什么方法"，判定（相容/不相容）留给 CT3（见 contract-rules.test.mjs）。
+const FIXTURE_METHODS = [
+  '# 契约夹具（方法维度）',
+  '',
+  '## 7. HTTP REST API',
+  '',
+  '| 端点 | 用途 |',
+  '|---|---|',
+  '| `/config`、`/providers` | 配置读写（这行没写方法 ⇒ 该路径方法集为空，不猜 GET） |',
+  '| `/api/profile` | 读档案（同一路径的**另一行**写了方法：旧解析器会把它整条丢掉） |',
+  '| `/api/profile`（POST） | 写档案 |',
+  '| `GET /a`、`POST /b` | 行内方法写在反引号里（两个 token 各带一个方法） |',
+  '| `GET/POST /c` | 一个 token 里两种方法（逐个判） |',
+  '| `/d`、`/e`（PUT） | 行尾全角括号的方法适用于本行**未自带宽方法**的 token |',
+  '| `/f` (DELETE/PATCH) | 行尾半角括号同样认（`(A/B)` 形态） |',
+  '',
+].join('\n')
+
+test('★批 M —— §7 方法入账：同路径多方法不互相覆盖、行内方法（`POST /x` / `GET/POST`）、行尾括号适用本行', () => {
+  const d = parseDoc(FIXTURE_METHODS)
+  const lineOf = (needle) => FIXTURE_METHODS.split('\n').findIndex((l) => l.includes(needle)) + 1
+  assert.deepEqual([...d.routes.keys()].sort(),
+    ['/a', '/api/profile', '/b', '/c', '/config', '/d', '/e', '/f', '/providers'],
+    '行内方法形态（`GET /a`、`GET/POST /c`）也必须被解析成端点，不得整条漏掉')
+  // ① 同路径多方法：两行声明**合并**进同一路径的值（旧实现只留第一行 ⇒ POST 声明凭空消失）
+  assert.deepEqual([...d.routes.get('/api/profile').methods], ['POST'])
+  assert.equal(d.routes.get('/api/profile').method, 'POST', '兼容字段 `method` = 按字典序首个被声明的方法（此前因覆盖而恒为 null）')
+  assert.equal(d.routes.get('/api/profile').methodLines.get('POST'), lineOf('写档案'),
+    '每个方法都要能反查它出现的行（finding 要指到那一行）')
+  assert.equal(d.routes.get('/api/profile').line, lineOf('读档案'), '`line` 仍是首次声明那行（既有消费方语义不变）')
+  // ② 没写方法的路径：方法集为空、`method` 为 null（不猜 GET —— 一猜就是海量假红）
+  assert.equal(d.routes.get('/config').method, null)
+  assert.equal(d.routes.get('/config').methods.size, 0)
+  assert.equal(d.routes.get('/providers').methods.size, 0)
+  // ③ 行内方法形态：token 自带方法（`GET /a`、`POST /b`、`GET/POST /c`）
+  assert.deepEqual([...d.routes.get('/a').methods], ['GET'])
+  assert.deepEqual([...d.routes.get('/b').methods], ['POST'])
+  assert.deepEqual([...d.routes.get('/c').methods].sort(), ['GET', 'POST'], '一个 token 里的 `GET/POST` 逐个记')
+  // ④ 行尾括号（全角/半角）适用于本行所有未自带宽方法的 token
+  assert.deepEqual([...d.routes.get('/d').methods], ['PUT'])
+  assert.deepEqual([...d.routes.get('/e').methods], ['PUT'])
+  assert.deepEqual([...d.routes.get('/f').methods].sort(), ['DELETE', 'PATCH'])
+  // 章节反查：同一条路径声明两行时**只记一次**（也不是"少记一行"：rows 仍是 7）
+  assert.equal(d.sections.get('§7').rows, 7)
+  assert.deepEqual([...d.sections.get('§7').routes].sort(), [...d.routes.keys()].sort())
+  assert.equal(d.sections.get('§7').routes.length, 9, '9 条 distinct 路径（/api/profile 两行声明只记一次）')
+})
+
+test('★批 M —— 确定性：方法集合与顺序无关（`GET/POST` 与 `POST/GET` 解析结果相同）', () => {
+  const dump = (text) => JSON.stringify({
+    routes: [...parseDoc(text).routes.entries()]
+      .map(([p, v]) => [p, [...v.methods].sort(), v.method, [...(v.methodLines || new Map())].sort()])
+      .sort(),
+  })
+  assert.equal(dump(FIXTURE_METHODS), dump(FIXTURE_METHODS), '同输入必同输出（可复算）')
+  const swapped = FIXTURE_METHODS.replace('`GET/POST /c`', '`POST/GET /c`').replace('(DELETE/PATCH)', '(PATCH/DELETE)')
+  assert.equal(dump(swapped), dump(FIXTURE_METHODS), '方法次序是噪声：`GET/POST` 与 `POST/GET` 必须给出同一结果')
+  assert.notEqual(dump(FIXTURE_METHODS.replace('/api/profile`（POST）', '/api/profile`（DELETE）')), dump(FIXTURE_METHODS),
+    '改一个方法必须能被看见（否则 CT3 的方法判据就是恒真的）')
+})
+
 // ── P1.5：§11（IPC 推送通道）与 §12（工具结构指纹）──────────────────────────
 //
 // 新增章节的**目的**：把"只能登记、无法对账"的两类（IPC / 工具 input_schema）拉回文档面 ⇒

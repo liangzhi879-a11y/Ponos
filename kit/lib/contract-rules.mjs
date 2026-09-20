@@ -81,11 +81,23 @@ export function docDeclaredSets(doc) {
   const ipc = new Set()
   const tools = new Set()
   const toolFps = new Map()
+  // ★ 批 M：文档**写了方法**的声明（`'<METHOD> <path>'` → 行号）—— CT3 的"方法 + 路径"维度。
+  //   §7 的行内方法（`（POST）` / `POST /x` / `GET/POST`）聚合在 `routes.get(p).methods`；
+  //   §7.1 的键**本身**就是 `METHOD path`（那节的方法不需要再解析）。
+  //   §7.1 的 `synonyms`（`（POST 同义）`）**不入**这里：它是"也接受"的注释，不是"必须存在"的声明。
+  const routeMethods = new Map()
   for (const [p, v] of doc?.routes || []) {
     if (v && v.wildcard) wildcards.add(p)
     else paths.add(p)
+    if (!v || v.wildcard) continue
+    for (const m of v.methods || []) {
+      if (!routeMethods.has(`${m} ${p}`)) routeMethods.set(`${m} ${p}`, (v.methodLines && v.methodLines.get(m)) || v.line || 0)
+    }
   }
-  for (const k of (doc?.workflowRoutes || new Map()).keys()) wfKeys.add(k)
+  for (const [k, v] of doc?.workflowRoutes || new Map()) {
+    wfKeys.add(k)
+    if (!routeMethods.has(k)) routeMethods.set(k, (v && v.line) || 0)
+  }
   for (const t of doc?.wsOut || []) wsOut.add(t)
   for (const t of doc?.wsIn || []) wsIn.add(t)
   for (const c of doc?.ipc || []) ipc.add(c)
@@ -93,7 +105,7 @@ export function docDeclaredSets(doc) {
     tools.add(name)
     toolFps.set(name, v && v.fp ? v.fp : null)
   }
-  return { paths, wildcards, wfKeys, wsOut, wsIn, ipc, tools, toolFps, sections: [...(doc?.sections || new Map()).keys()] }
+  return { paths, wildcards, wfKeys, routeMethods, wsOut, wsIn, ipc, tools, toolFps, sections: [...(doc?.sections || new Map()).keys()] }
 }
 
 /** `GET /x` → `/x` */
@@ -449,6 +461,13 @@ export async function runContractRules({
   // CT3：文档声明的每一条都必须真的在代码里（文档腐烂；`*` 通配与动态段不报红）
   const livePaths = new Set([...routes.routes.keys()].map(pathOfKey))
   const pathExists = (p) => livePaths.has(p) || dynMatches(routes.prefixes, p)
+  // ★ 批 M（方法维度）：代码侧"路径 → 方法集合"（键形如 `GET /x` / `ANY /x`）。只为 CT3 的方法判据服务。
+  const codeMethodsByPath = new Map()
+  for (const k of routes.routes.keys()) {
+    const p = pathOfKey(k)
+    if (!codeMethodsByPath.has(p)) codeMethodsByPath.set(p, new Set())
+    codeMethodsByPath.get(p).add(String(k).slice(0, String(k).indexOf(' ')))
+  }
   // ★ WS 按方向逐节判（P1.5 收尾批）：§5 的每条声明必须在**出站**集里、§6 的必须在**入站**集里。
   //   同一类型在两节都声明是允许的（真仓 `pet:show-main`/`pet:quit-app`/`browser:event` 代码里确实双向）；
   //   该红的只有一种情形：**只声明在一节、而代码对应方向没有它**（方向写反 / 事件被删改名）。
@@ -462,6 +481,37 @@ export async function runContractRules({
     findings.push(finding({
       rule: 'CT3', severity: RED, subject: `routes ${p}`, expected: '代码里有该端点（或其动态前缀能匹配）', actual: '代码里没有',
       hint: '文档说了代码没有 = 文档腐烂（先确认是不是端点被删/改名）；文档里 `*` 通配不算覆盖声明 —— 反例⑧',
+    }))
+  }
+  // ★★ 批 M：**方法维度**（把 CT3 从"路径对账"升级为"方法 + 路径对账"）—— 相容规则**原文**：
+  //   ① 代码键 = `'<METHOD> <path>'`（`METHOD ∈ {ANY, GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS}`，
+  //      代码提取器对"不可静态判定方法"的端点发 `ANY` 键）；
+  //   ② 代码为 `ANY` ⇒ 与**任意**方法相容（真仓有 `ANY /agents`、`ANY /api/audit` 这类键）；
+  //   ③ **文档未写方法**（只写路径）⇒ **不判方法**（只判路径存在，保持这批之前的语义 ——
+  //      一行没写方法就按方法判会炸出海量假红，而"没声明"与"声明错"不是一回事）；
+  //   ④ 文档写了方法 ⇒ **逐个判**：每个被声明的方法都要有相容的代码键（`GET /x、POST /x` 需要代码里
+  //      两种都有，或 `ANY`）。★ 这条比"（文档方法 ∩ 代码方法）= ∅ 才红"**更严**：后者在
+  //      "文档 GET+POST、代码只有 GET"时会绿掉（两个集合相交），而那正是"文档声明了代码没有的方法"。
+  //      两个方向都不相交（`PUT` vs 代码 `GET/POST`）自然也被它覆盖。
+  //   ⑤ 路径**只被动态前缀认领**（`/workflows/:id` 这类靠锚定正则匹配）⇒ 方法不可静态判定 ⇒
+  //      只判路径、**不判方法**（避免拿"不可静态判定"当"错"）。
+  //   §7 与 §7.1 的声明同等对待（§7.1 的键本身就是 `METHOD path`）；`（POST 同义）` 只记 synonyms，
+  //   不当作"必须存在"的方法（它是"也接受"的注释）。判据**只**加在 CT3 —— CT2/CT4 仍是**路径粒度**
+  //   （覆盖面/登记集的口径不变：否则"文档未写方法"会在真值侧炸出海量假红）。
+  for (const [key, line] of truthData.declared.routeMethods) {
+    const m = key.slice(0, key.indexOf(' '))
+    const p = pathOfKey(key)
+    const codeM = codeMethodsByPath.get(p)
+    if (!codeM) continue            // 路径不存在（已由上面的路径判据报出）或只靠动态前缀认领 ⇒ 不判方法
+    if (codeM.has('ANY') || codeM.has(m)) continue
+    ct3bad++
+    findings.push(finding({
+      rule: 'CT3', severity: RED, subject: `routes ${key}`,
+      expected: `代码里有 ${key}（或 ANY ${p}）`,
+      actual: `文档声明 ${m}，代码该路径下只有 ${[...codeM].sort().join('/')}`,
+      file: 'docs/bridge-contract.md', line,
+      hint: '文档声明了代码没有的方法 = 文档腐烂（方法写反/端点改成别的方法/被删）：'
+        + '先确认代码才是对的，再改文档那一行；代码侧写成 `ANY` 的键与任意方法相容',
     }))
   }
   for (const [section, declared, live, side] of [
@@ -541,8 +591,9 @@ export async function runContractRules({
       }))
     }
   }
-  checks.push(checkResult({ rule: 'CT3', title: '文档 → 代码：文档声明的每条（路由/WS/**按方向**/IPC/工具指纹）都在代码里',
-    evaluated: docRouteChecks.length + truthData.declared.wsOut.size + truthData.declared.wsIn.size
+  checks.push(checkResult({ rule: 'CT3', title: '文档 → 代码：文档声明的每条（路由/**方法+路径**/WS/**按方向**/IPC/工具指纹）都在代码里',
+    evaluated: docRouteChecks.length + truthData.declared.routeMethods.size
+      + truthData.declared.wsOut.size + truthData.declared.wsIn.size
       + truthData.declared.ipc.size + truthData.declared.tools.size,
     passed: ct3bad === 0 }))
 

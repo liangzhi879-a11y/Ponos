@@ -18,7 +18,11 @@
 // 返回形状（`sections` 是反查索引：每条解析结果都能回到它的章节与行号）：
 //   · `wsOut: Set<string>`          §5（bridge → GUI）
 //   · `wsIn:  Set<string>`          §6（GUI → bridge）
-//   · `routes: Map<path, {method, wildcard, row, line, section, docSection}>`  §7
+//   · `routes: Map<path, {method, methods, methodLines, wildcard, row, line, section, docSection}>`  §7
+//     ★ 批 M（方法入账）：key 仍是 **path**（CT2/CT4/CT8 的路径粒度不变），方法作为同值的第二维度 ——
+//       `methods: Set` = 该路径声明的方法并集；`method` = **兼容字段** = 首个被声明的方法（其余情况 null）；
+//       `methodLines: Map<method, line>` = 方法 → 首次出现的行号。取舍与形态说明见 `parseEndpointRow`
+//       与 §7 分支（为什么不用 `'<METHOD> <path>'` 作 key：那要连带改所有路径粒度消费方）。
 //   · `workflowRoutes: Map<'<METHOD> <path>', {raw, synonyms, row, line, section}>`  §7.1
 //   · `ipc:   Set<string>`          §11（Electron IPC 推送通道；主进程 → 渲染层）
 //   · `tools: Map<name, {fp, row, line, section}>`  §12（工具名 + 结构指纹；`fp` 可为 null）
@@ -64,6 +68,13 @@ function firstTable(lines, from) {
   return out
 }
 
+/** 方法名（与 `contract-routes.mjs#METHOD_RE` 同集合；**不含** `ANY` —— 那是代码侧口径） */
+const METHOD = 'GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS'
+/** 行尾行内方法：`（POST）` / `（GET/POST）` / `(DELETE/PATCH)` —— 全角半角都认，括号里必须**只有**方法名 */
+const CELL_METHOD_RE = new RegExp(`[（(]\\s*((?:${METHOD})(?:\\s*[/、]\\s*(?:${METHOD}))*)\\s*[）)]`, 'g')
+/** 反引号 token 里的行内方法前缀：`POST /x` / `GET/POST /x`（批 M 前这类 token 被整条丢掉 —— 见下） */
+const TOKEN_METHOD_RE = new RegExp(`^((?:${METHOD})(?:[/](?:${METHOD}))*)\\s+(\\/\\S+)`)
+
 /** `GET /workflows/runs?name=x`（兼容 `?id=`）→ { method:'GET', path:'/workflows/runs', raw, synonyms } */
 function parseMethodPath(cell) {
   const raw = ticked(cell)[0] || ''
@@ -76,24 +87,40 @@ function parseMethodPath(cell) {
   return { method: m[1], path, raw, synonyms }
 }
 
-/** §7 的一行：`| `a`、`b` | 用途 |` / `| `x`（POST） | … |` */
-function parseEndpointRow(cell, row, line, section) {
+/**
+ * §7 的一行 → 逐 token 的（路径, 方法）声明：
+ *   `| `a`、`b` | 用途 |` / `| `x`（POST） | … |` / `| `POST /x` | … |` / `| `GET/POST /x` | … |`
+ *
+ * 两种**方法写法**（批 M 补全，此前只认第一种）：
+ *   ① 行尾括号：`（POST）` / `(POST)` / `（GET/POST）` —— 适用于本行**未自带宽方法**的 token
+ *      （真仓最常见的形态：`| `/mcp/test`、`/mcp/prompts/get`（POST） |`）；
+ *   ② 行内前缀：`POST /x` / `GET/POST /x` —— token 自带方法，优先于行尾括号。
+ *   ★ 旧解析器要求 token **以 `/` 开头**（`if (!path.startsWith('/')) continue`）⇒ 形态 ② 的端点
+ *     **整条解析不出来**（`GET /a` 被当成"不是路径"跳过）= 静默漏声明；现在两者都收。
+ *   ★ 方法只从**第一列**读：真仓把 `（GET）` 写在"用途"列的行（文件协同只读面等）**不**算方法声明
+ *     —— 那是散文里提到的方法，不是"这一行声明的方法"（照收会凭空造出方法声明）。
+ * @returns {Array<{path:string, methods:string[]}>} 逐条声明（`methods` 为空 = 该条没写方法）
+ */
+function parseEndpointRow(cell) {
+  const text = String(cell)
+  const rowMethods = []
+  CELL_METHOD_RE.lastIndex = 0
+  let m
+  while ((m = CELL_METHOD_RE.exec(text))) {
+    for (const x of m[1].split(/\s*[/、]\s*/)) if (x) rowMethods.push(x)
+  }
   const out = []
-  const method = /（(GET|POST|PUT|PATCH|DELETE)）/u.exec(cell) || /\((GET|POST|PUT|PATCH|DELETE)\)/.exec(cell)
-  for (const tok of ticked(cell)) {
-    const path = tok.split('（')[0].split('(')[0].trim()
-    if (!path.startsWith('/')) continue
-    out.push({
-      path,
-      value: {
-        method: method ? method[1] : null,
-        wildcard: path.includes('*'),
-        row,
-        line,
-        section,
-        docSection: section,
-      },
-    })
+  for (const tok of ticked(text)) {
+    // 一个反引号里也可能用顿号并写多条（兜底，并非真盘现状）
+    for (const piece of tok.split('、')) {
+      const t = piece.trim()
+      if (!t) continue
+      const inline = TOKEN_METHOD_RE.exec(t)
+      const rest = inline ? inline[2] : t
+      const path = rest.split('（')[0].split('(')[0].split('?')[0].trim()
+      if (!path.startsWith('/')) continue
+      out.push({ path, methods: inline ? inline[1].split('/') : rowMethods })
+    }
   }
   return out
 }
@@ -196,10 +223,27 @@ const lines = String(text ?? '').split(/\r?\n/)
       let row = 0
       for (const r of rows) {
         row++
-        for (const e of parseEndpointRow(firstCell(r.text), row, r.line, h.id)) {
-          if (!routes.has(e.path)) routes.set(e.path, e.value)
-          sec.routes.push(e.path)
-          if (e.value.wildcard && !sec.wildcards.includes(e.path)) sec.wildcards.push(e.path)
+        for (const e of parseEndpointRow(firstCell(r.text))) {
+          // ★ 批 M：**同路径多方法合并**（key 仍是 path ⇒ CT2/CT4/CT8 的路径粒度不变）。
+          //   旧写法 `if (!routes.has(path)) routes.set(...)` 让"同一路径的第二条声明"整条消失 ——
+          //   真仓 `/api/profile`（读行无方法 + 写行 `（POST）`）的 POST 声明就是这么丢的。
+          let v = routes.get(e.path)
+          if (!v) {
+            v = {
+              method: null,                 // 兼容字段：首个被声明的方法（null = 该路径没有任何声明写方法）
+              methods: new Set(),           // 该路径在 §7 声明的方法并集（**只收写了方法的声明**）
+              methodLines: new Map(),       // 方法 → 首次出现的行号（finding 要指到那一行）
+              wildcard: e.path.includes('*'),
+              row, line: r.line, section: h.id, docSection: h.id,
+            }
+            routes.set(e.path, v)
+          }
+          for (const mm of e.methods) {
+            v.methods.add(mm)
+            if (!v.methodLines.has(mm)) v.methodLines.set(mm, r.line)
+          }
+          if (!sec.routes.includes(e.path)) sec.routes.push(e.path)
+          if (v.wildcard && !sec.wildcards.includes(e.path)) sec.wildcards.push(e.path)
         }
       }
       continue
@@ -221,6 +265,11 @@ const lines = String(text ?? '').split(/\r?\n/)
       continue
     }
   }
+
+  // ★ 批 M：兼容字段 `method` = **按字典序的首个**被声明方法（null = 该路径没有任何声明写方法）。
+  //   为什么不用"首个出现的"：那是**书写次序**的函数 —— `GET/POST /x` 与 `POST/GET /x`
+  //   （同一份契约的两种写法）会给出不同的 `method`，同输入必同输出这条就不成立了（确定性可复算）。
+  for (const v of routes.values()) v.method = [...v.methods].sort()[0] ?? null
 
   return { wsOut, wsIn, routes, workflowRoutes, ipc, tools, sections }
 }

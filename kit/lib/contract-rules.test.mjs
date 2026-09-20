@@ -297,6 +297,115 @@ test('CT3：文档声明的 /fake 在代码里不存在 → 红（文档腐烂�
   assert.deepEqual(reds(out).filter((x) => x.rule === 'CT3' && /workflows/.test(x.subject)), [])
 })
 
+// ── 批 M：CT3 的**方法维度**（文档声明的方法必须在代码里有相容的键）──────────────
+//
+// 为什么单立一节：此前 CT3 只比**路径**（`POST /x` 与 `GET /x` 视为同一端点）⇒ 文档把方法写反
+// **不红**（"真做假面"）。相容关系必须**明确定义**（原文见 contract-rules.mjs 的 CT3 段）：
+//   · 代码键 = `'<METHOD> <path>'`（`METHOD ∈ {ANY, GET, POST, …}`），**`ANY` 与任意方法相容**；
+//   · **文档没写方法**（只写路径）⇒ **不判方法**（只判路径存在；否则一行未写方法就炸出假红）；
+//   · 文档写了方法 ⇒ **逐个判**：每个被声明的方法都要有相容的代码键（`GET /x、POST /x` 需要代码里
+//     两种都有，或 `ANY`；两个方向都不相交时当然也红 —— 逐条判是"不相交⇒红"的严格化）；
+//   · 路径只被**动态前缀**认领（`/workflows/:id` 这类）⇒ 方法不可静态判定 ⇒ 只判路径、不判方法。
+/** 方法维度的最小夹具：代码侧一个受方法守卫的端点 + 文档 §7 一行（两棵树同内容 ⇒ 无 CT8 噪声） */
+async function methodFixture({ docRow, code, wfRow = null }) {
+  const mk = () => {
+    const root = mkdtempSync(join(tmpdir(), 'yfw-method-'))
+    mkdirSync(join(root, 'server'), { recursive: true })
+    writeFileSync(join(root, 'server/m-routes.mjs'), code)
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(join(root, 'docs/bridge-contract.md'), [
+      '# 方法维度夹具', '',
+      '## 7. HTTP REST API', '',
+      '| 端点 | 用途 |', '| --- | --- |', docRow, '',
+      ...(wfRow ? ['### 7.1 工作流', '', '| 方法 + 路径 | 请求体 |', '| --- | --- |', wfRow, ''] : []),
+    ].join('\n'))
+    return root
+  }
+  const headRoot = mk()
+  const workRoot = mk()
+  const files = ['server/m-routes.mjs', 'docs/bridge-contract.md']
+  const readHead = (f) => readTracked({ root: headRoot, file: f })
+  const readWork = (f) => readTracked({ root: workRoot, file: f })
+  const doc = parseDoc(readHead('docs/bridge-contract.md'))
+  const snapshot = await buildSnapshot({ root: headRoot, files, readTracked: readHead, now: 'T' })
+  const out = await runContractRules({
+    root: workRoot, files, readTracked: readWork,
+    headRoot, headFiles: files, headReadTracked: readHead, doc, docWorktree: doc,
+    snapshot, scope: null, recorded: { scopeCount: null, scopeRedCount: null },
+  })
+  return { out, root: workRoot, docLine: 7 }
+}
+const ct3red = (out) => reds(out).filter((x) => x.rule === 'CT3')
+/** 代码侧只认 GET 的端点（键 = `GET /m`） */
+const CODE_GET_ONLY = ['export function route(pathname, method) {', "  if (pathname === '/m' && method === 'GET') return 1", '  return null', '}'].join('\n')
+/** 代码侧不认方法（键 = `ANY /m`）：与任意文档方法相容 */
+const CODE_ANY = ['export function route(pathname) {', "  if (pathname === '/m') return 1", '  return null', '}'].join('\n')
+/** 代码侧认 GET 与 POST（键 = `GET /m` + `POST /m`） */
+const CODE_GET_POST = [
+  'export function route(pathname, method) {',
+  "  if (pathname === '/m' && method === 'GET') return 1",
+  "  if (pathname === '/m' && method === 'POST') return 1",
+  '  return null',
+  '}',
+].join('\n')
+
+test('★批 M① 文档写 `（POST）`、代码只有 `GET /m` ⇒ CT3 红（finding 写清"文档声明 POST、代码只有 GET"）', async () => {
+  const { out } = await methodFixture({ docRow: '| `/m`（POST） | 写端点 |', code: CODE_GET_ONLY })
+  const f = ct3red(out)
+  assert.equal(f.length, 1, `必须恰好一条方法红灯：${JSON.stringify(f)}`)
+  assert.equal(f[0].subject, 'routes POST /m')
+  assert.match(f[0].expected, /POST \/m/, 'expected 要写出文档声明的方法+路径')
+  assert.match(f[0].actual, /GET/, 'actual 要写出代码实际有的方法（"代码只有 GET"）')
+  assert.equal(f[0].file, 'docs/bridge-contract.md', '文档侧的问题要指到文档那行（可定位）')
+  assert.equal(f[0].line, 7)
+})
+
+test('★批 M② 代码是 `ANY /m`（不认方法）⇒ 与任意文档方法相容 ⇒ 绿', async () => {
+  const { out } = await methodFixture({ docRow: '| `/m`（POST） | 写端点 |', code: CODE_ANY })
+  assert.deepEqual(ct3red(out), [], `ANY 与任意方法相容（真仓有 ANY /agents 这类键）：${JSON.stringify(ct3red(out))}`)
+})
+
+test('★批 M③ 文档只写路径（没写方法）⇒ **不判方法**（保持路径粒度语义，避免海量假红）', async () => {
+  const { out } = await methodFixture({ docRow: '| `/m` | 只写路径 |', code: CODE_GET_ONLY })
+  assert.deepEqual(ct3red(out), [], `没写方法就只判路径存在：${JSON.stringify(ct3red(out))}`)
+})
+
+test('★批 M④ 文档 `GET /m、POST /m`、代码只有 `GET /m` ⇒ 红（一条声明里多方法要逐个判）', async () => {
+  const { out } = await methodFixture({ docRow: '| `GET /m`、`POST /m` | 行内两方法 |', code: CODE_GET_ONLY })
+  const f = ct3red(out)
+  assert.deepEqual(f.map((x) => x.subject), ['routes POST /m'], `缺的那条要指名道姓：${JSON.stringify(f.map((x) => x.subject))}`)
+})
+
+test('★批 M⑤ 方法**完备**时绿；声明的方法与代码方法集**不相交**时红（`PUT` vs 代码 `GET/POST`）', async () => {
+  const ok = await methodFixture({ docRow: '| `POST /m` | 写端点 |', code: CODE_GET_POST })
+  assert.deepEqual(ct3red(ok.out), [], '代码里有 `POST /m` ⇒ 绿')
+  const bad = await methodFixture({ docRow: '| `PUT /m` | 覆盖写 |', code: CODE_GET_POST })
+  const f = ct3red(bad.out)
+  assert.equal(f.length, 1)
+  assert.equal(f[0].subject, 'routes PUT /m')
+  assert.match(f[0].actual, /GET\/POST|POST\/GET/, 'actual 列出代码该路径下的全部方法键')
+})
+
+test('★批 M⑥ §7.1 的静态行同样判方法；只有动态段认领的路径不判（方法不可静态判定）', async () => {
+  const code = ['export function route(pathname, method) {',
+    "  if (pathname === '/workflows' && method === 'GET') return 1",
+    "  if (pathname.startsWith('/workflows/')) return wf(pathname)",
+    '  return null',
+    '}',
+    'export function wf(p) { return p.match(/^\\/workflows\\/([^/]+)(\\/.*)?$/) ? 1 : 0 }'].join('\n')
+  const badWf = await methodFixture({
+    docRow: '| `/workflows` | 只写路径（不判方法） |', code,
+    wfRow: '| `POST /workflows` | 建工作流 |',
+  })
+  assert.deepEqual(ct3red(badWf.out).map((x) => x.subject), ['routes POST /workflows'],
+    '§7.1 的 `METHOD path` 键也是"文档声明的方法"，静态命中时必须判')
+  const dyn = await methodFixture({
+    docRow: '| `/workflows` | 只写路径（不判方法） |', code,
+    wfRow: '| `DELETE /workflows/:id` | 删（只有动态段认领 ⇒ 不判方法） |',
+  })
+  assert.deepEqual(ct3red(dyn.out), [], '动态段认领的路径只判路径（`/workflows/:id` 系列方法不可静态判定）')
+})
+
 // ── CT4 / CT4B / CT4C ────────────────────────────────────────────────
 test('CT4：members 少一个 → 红；多一个 → 红；写成通配 → CT4C 红且条目失效', async () => {
   const f = await setup()
