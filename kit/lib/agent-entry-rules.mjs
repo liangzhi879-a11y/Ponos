@@ -87,6 +87,46 @@ export function agentEntryCheck({ readTracked, guide = AGENT_GUIDE } = {}) {
     }))
   }
 
+  // ★ 送达链路本身：内核发现入口时**按内容去重**（同一份规范出现在多个候选路径 ⇒ 只注入一份）。
+  //   实测（2026-09-20）：便携版目录 `release/YFWorking` 就在**仓库内部** ⇒ 从它上溯同时命中
+  //   「便携版/AGENTS.md」（同步副本）与「仓库根/AGENTS.md」（原版）= 同一份规范的两份副本；
+  //   内核原按 **path** 去重挡不住 ⇒ 实测返回 7732 字符 ≈ 两份之和；两份因同步时机漂移时
+  //   （实测 83 行 vs 81 行）模型还会同时收到**互相矛盾**的两版规范。
+  //   ⇒ 核"内核里仍有内容去重"（`entry.delivery.mustContain`）；删掉就红（否则回归静默发生）。
+  const delivery = entry.delivery || {}
+  let deliveryChecked = 0
+  if (!delivery.file || !(delivery.mustContain || []).length) {
+    findings.push(finding({
+      rule: 'CT11', severity: RED, subject: 'no-delivery', file: 'kit/lib/agent-guide.mjs', line: null,
+      expected: '真源 `entry.delivery` 至少登记 1 条（送达链路：内核如何发现并去重入口）',
+      actual: '（未登记 / mustContain 为空）',
+      hint: '未登记时"送达链路"这条判据会**恒真跳过** ⇒ 内核里的去重被删掉也不会有人发现（重复注入会静默回来）。',
+    }))
+  } else {
+    const body = read(delivery.file)
+    if (body === null || body === undefined) {
+      findings.push(finding({
+        rule: 'CT11', severity: RED, subject: `delivery-missing:${delivery.file}`, file: delivery.file, line: null,
+        expected: `可读且含 ${(delivery.mustContain || []).join(' / ')}`,
+        actual: '（读不到这个文件）',
+        hint: `${delivery.why || ''} —— 内核文件读不到 ⇒ 无法判定送达链路（不是"没问题"）。`,
+      }))
+    } else {
+      deliveryChecked += 1
+      for (const needle of delivery.mustContain || []) {
+        if (!body.includes(needle)) {
+          findings.push(finding({
+            rule: 'CT11', severity: RED, subject: `delivery-missing-needle:${needle}`, file: delivery.file, line: null,
+            expected: `内核里应仍含 ${JSON.stringify(needle)}（内容级去重的实现锚点）`,
+            actual: '（找不到）',
+            hint: `${delivery.why || ''} ★ 删掉它 = 退回按 path 去重 ⇒ 开发机上跑便携版时同一份规范会被注入两遍`
+              + '（浪费上下文；两份版本漂移时还会互相矛盾）。',
+          }))
+        }
+      }
+    }
+  }
+
   // ★ 入口必须能随"更新"进入**便携版（调试版）**。用户口径：人工测试跑的就是 release 里的便携版，
   //   "确保调试版更新了不会掉"。实测此前**完全没保障**：`AGENTS.md` 不在任何同步清单里
   //   ⇒ 便携版从来没有入口、调试版里的 agent 静默地不受规范约束（症状是"从来没有过"，不是"掉了"）。
@@ -161,8 +201,8 @@ export function agentEntryCheck({ readTracked, guide = AGENT_GUIDE } = {}) {
   return {
     check: checkResult({
       rule: 'CT11', title: 'agent 自动注入入口与真源一致（规范能被自动送达，且能进便携版）',
-      // 如实：实际核过的检查点数（必备锚点 + 便携版同步路径；健康态 = 真源登记数之和）
-      evaluated: anchors.length + syncedChecked,
+      // 如实：实际核过的检查点数（必备锚点 + 送达链路 + 便携版同步路径；健康态 = 真源登记数之和）
+      evaluated: anchors.length + deliveryChecked + syncedChecked,
       passed: findings.length === 0,
     }),
     findings,

@@ -113,7 +113,10 @@ const FX_BRAND_JSON = JSON.stringify({
  *  CT11 还核"入口是否留在便携版同步清单里"，所以同步路径文件也要造出来（内容含登记的关键串）。 */
 function writeEntryFixture(write) {
   const e = AGENT_GUIDE.entry
-  write('AGENTS.md', ['# AGENTS（夹具入口）', ...e.mustMention.map((m) => `- ${m.contains}`)].join('\n') + '\n')
+  write(e.file, ['# AGENTS（夹具入口）', ...e.mustMention.map((m) => `- ${m.contains}`)].join('\n') + '\n')
+  // ★ 送达链路（CT11）：夹具仓也要有内核文件、且含真源登记的锚点（`seenContent`）——
+  //   否则夹具仓因"读不到内核文件"集体红（fail-closed 对，但红的是夹具）。
+  write(e.delivery.file, ['// 夹具：内核送达链路（内容去重锚点）', ...e.delivery.mustContain].join('\n') + '\n')
   for (const p of [...e.portableSync.paths, ...(e.portableSync.pending || [])]) {
     write(p.file, `// 夹具：便携版同步清单\n${p.mustContain.join('\n')}\n`)
   }

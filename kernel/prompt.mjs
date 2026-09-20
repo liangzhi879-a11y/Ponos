@@ -15,6 +15,7 @@ import { join, dirname } from 'node:path'
 export function discoverAgentsMd({ cwd, addDirs = [] }) {
   const found = []
   const seen = new Set()
+  const seenContent = new Set()
   const candidates = []
   let dir = cwd
   while (dir) {
@@ -32,6 +33,17 @@ export function discoverAgentsMd({ cwd, addDirs = [] }) {
       seen.add(p)
       let content = ''
       try { content = readFileSync(p, 'utf-8') } catch { continue }
+      // ★ 内容级去重（2026-09-20）：同一份规范出现在**多个候选路径**时只注入一次。
+      //   实测场景：调试版（便携版）目录 `release/YFWorking` 就在**仓库内部**，从它上溯会同时命中
+      //   「release/YFWorking/AGENTS.md」（同步副本）与「<仓库根>/AGENTS.md」（原版）——
+      //   两者内容相同却因 **path 不同**各注入一次（实测返回 7732 字符 ≈ 两份之和）；
+      //   若两份因同步时机不同而漂移（本次实测 83 行 vs 81 行），模型还会同时收到**互相矛盾**的两版规范。
+      //   内容相同 ⇒ 保留更近的那份（近者优先语义不变）；内容不同 ⇒ 仍各自注入（多项目规则是设计意图）。
+      const key = content.trim()
+      if (key) {
+        if (seenContent.has(key)) continue
+        seenContent.add(key)
+      }
       found.push({ path: p, content })
     }
   }

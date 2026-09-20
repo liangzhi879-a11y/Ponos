@@ -26,7 +26,11 @@ import { AGENT_GUIDE } from './lib/agent-guide.mjs'
  *  CT11 还核"入口是否留在便携版同步清单里"，所以同步路径文件也要造出来（内容含登记的关键串）。 */
 function writeEntryFixture(write) {
   const e = AGENT_GUIDE.entry
-  write('AGENTS.md', ['# AGENTS（夹具入口；真实入口见仓根）', ...e.mustMention.map((m) => `- ${m.contains}`)].join('\n') + '\n')
+  write(e.file, ['# AGENTS（夹具入口；真实入口见仓根）', ...e.mustMention.map((m) => `- ${m.contains}`)].join('\n') + '\n')
+  // ★ 送达链路（CT11 新增判据）：夹具仓也要有**内核文件**，且内容含真源登记的锚点（如 `seenContent`）。
+  //   少了它 ⇒ 所有夹具仓因"读不到内核文件"集体红 —— fail-closed 本身是对的，但红的是**夹具**不是规则，
+  //   所以夹具必须跟真源一起演化（同"夹具从真源派生"的原则）。
+  write(e.delivery.file, ['// 夹具：内核送达链路（内容去重锚点）', ...e.delivery.mustContain].join('\n') + '\n')
   for (const p of [...e.portableSync.paths, ...(e.portableSync.pending || [])]) {
     write(p.file, `// 夹具：便携版同步清单\n${p.mustContain.join('\n')}\n`)
   }
