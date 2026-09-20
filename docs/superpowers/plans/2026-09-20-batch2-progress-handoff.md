@@ -35,48 +35,55 @@
 
 ## 三、剩余工作
 
-### Task 3 ✅ 已完成（`refactor(loop): … Task 3`）
+### Task 4 ✅ 已完成（`refactor(loop): … Task 4`）
 
-流内守卫搬入 loop-core：`streamWallClock` / `genRepeat` / `nearRepeat`（chunk 尾）。
-**关键修正**：`idleWatchdog` / `upstreamDead` 从 `inStream` **移到 `afterStream`** ——
-命中判定源于流内，但**处理时机在 catch 块**（:739-800）⇒ 按执行时机归"流后"。
-新增等价锁 `kernel-tests/loop-guard-instream-equivalence.test.mjs`（12 例）。
+afterStream 6 守卫（repeatHeal / progressRefresh / repeatReminder / meltdown / idleWatchdog /
+upstreamDead）已搬入 loop-core 并由 **timing 门控**驱动三站点（`postStream` / `postTools` /
+`onErrorIdle` / `onErrorDeadStream`）+ engine 三处接线。**为何不拆相位**：拆要改 `PHASES`
+与全部相位集断言（结构代价大），timing 门控零结构代价且顺序仍在 profile 内定义。
 
-### Task 4 ⚠️ 有实质设计难点，**不可按计划原样实施**（下一步入口）
+### Task 5 ✅ 已完成（Step 1 + 等价锁；Step 2 见下）
 
-**难点**：计划 Step 4 假设 afterStream 能**一次调用**跑完（`runAfterStreamGuards(...)`）。
-实测**不成立** —— 该相位的 6 个守卫**散布在三个互不相邻的时机**，中间夹着工具执行与内存写入：
+- **Step 1** profile 完整性 3 例：MAIN 覆盖全部 12 守卫且无重复 / LANE 与 MAIN 守卫集逐项相同 /
+  三相位齐备非空
+- **等价锁** `kernel-tests/loop-guard-afterstream-equivalence.test.mjs`（15 例）——
+  ★ **锁出并修复 4 个真 bug**（详见下表）。这 4 个都逃过了 Task 2/3 的守卫族测试
+  （那些守卫不发事件、不传空文本）⇒ **每个搬移相位都必须配一把等价锁**。
 
-| 时机 | 守卫 | 精确落点 | 语义要点 |
+| # | Bug | 根因 | 修法 |
 |---|---|---|---|
-| **流后·工具前** | `repeatHeal` | engine `:947-961` | `loopStop && REPEAT_HEAL_MAX!==0 && (<0 \|\| repeatHeals<MAX) && reason ∈ {gen-repeat,near-repeat}` ⇒ hits.push + injections++ + `repeatHeals++` + `healedLastIter=true` + **`loopStop=null`** + `textBuf=''` + 注入 + `wire('guard_heal')` + **`continue`** |
-| **工具后** | `progressRefresh` | `:1133-1134` | `madeProgress` ⇒ `lastProgressAt=Date.now(); stallHeals=0`（纯状态更新，**无 stop/注入**） |
-| **工具后** | `repeatReminder` | `:1140-1162` | `!loopStop && REPEAT_REMIND_AT.length && blocks.length` ⇒ 链键比对 `repeatStreak`、`shouldRemindRepeat` ⇒ hits.push + injections++ + 注入（**只提醒不否决**，无 stop） |
-| **工具后** | `meltdown` | `:1163-1183` | `errorStreak>=MAX_ERROR_ITERATIONS` ⇒ 自愈（injections++、`meltdownHeals++`、`errorStreak=0`、注入、**`continue`**）或硬停（`loopStop={reason:'error-meltdown'}` + **`break`**） |
-| **catch 块** | `idleWatchdog` | `:739-800` | `watchdog.tripped` ⇒ 三态：`idleDeadRetry`（**continue**）/ 自愈注入（**continue**）/ 硬停（`loopStop`） |
-| **catch 块** | `upstreamDead` | 同上 | `classifyApiError(err).kind==='dead-stream'` ⇒ 自愈（事件 + `sleep` + **continue**）或硬停 |
+| 1 | 看门狗场景收尾原因被改写 | 两 catch 站点共用 `onError` ⇒ `guardUpstreamDead` 在无该字段的站点被判"预算耗尽" | timing 细到**每个调用站点** |
+| 2 | 落了一条**空 user 消息** | `emitInjection('')` 照样调 `pushInjection` | 空文本 = 只发事件 |
+| 3 | 事件**重复派发 ×2** | `inject` 垫片调 `emitInjection` 后又调一次 `onGuardInject` | 派发统一归 `emitInjection` |
+| 4 | 有文本路径**漏派发事件** | 修 3 后暴露：非空路径原先靠垫片补 | 两条路径都派发 |
 
-**建议路径（需先定案再动手）**：把 `afterStream` 相位**拆分**为三个相位
-（例：`postStream` / `postTools` / `onError`），`PHASES` 从 3 → 5，`KNOWN_GUARDS` 分组同步。
-这样每相位仍是"一次调用 + profile 定序"，且 `action`（`continue`/`break`）语义与
-`runOnce`（Task 6）的编排天然对齐。**代价**：`loop-core-contract.test.mjs` 的相位集断言要同步更新。
+- **Step 2 未做**（主循环改调 `runOnce`）：**与计划 Task 4 自相矛盾** —— Task 4 勘察已证明
+  afterStream 的 6 守卫分布在三个不相邻的宿主时机，中间夹着工具执行与内存写入 ⇒
+  单个 `runOnce(state, ctx)` **无法**覆盖真实主循环（除非把工具执行/重试/压缩一起搬进
+  loop-core，那是 Task 6 的范围）。**需先改计划再动手**。
 
-**必守的等价细节**（易错）：
-1. `repeatHeal` 会把 `loopStop` **清空并 continue** ⇒ `action:'continue'` + 返回 `loopStop:null`
-   （若只返回 stop 而不清空，会误收尾）
-2. 计数清零规则不同：`repeatHeals` 由"干净迭代"（`healedLastIter`）清零、
-   `stallHeals` 由"恢复进展"清零、`meltdownHeals` 由"工具成功"清零 —— **三条规则不能合并**
-3. `meltdown` 自愈后 `errorStreak=0`（重开失败预算）；硬停走 `break`（**置 loopStop + 停迭代**）
-4. `progressRefresh` **不是守卫**语义上是"状态更新"，但它在 profile 里占位 —— 实现为
-   `{state}` 返回（无 stop/action），保留可配置性
-5. catch 块两个守卫的 `continue` 是**迭代级重试**，属宿主循环控制流 ⇒ 必须经 `action` 回传
+### Task 6 ⚠️ lane 接线（下一步入口）
 
-### Task 5–7
+**目标**：lane 段（engine `:1590-1917`）复用 `LANE_PROFILE` 驱动的同一套守卫体（A2 的实质）。
 
-- **Task 5**：lane 接线（`LANE_PROFILE` 目前**未被 engine 使用**，lane 段 `:1590-1917` 仍是内联实现；
-  注意 lane 的 `REPEAT_HEAL_MAX` 判据曾与主循环漂移，已在 `:1781-1783` 注释登记）
-- **Task 6**：`runOnce` 真实编排（把 api/流/工具/守卫串起来）
-- **Task 7**：注入总线（把散在各处的注入收敛到 `emitInjection`）
+**现状**：lane 仍是**完全内联**实现（自带 iterHead/inStream/afterStream 三组守卫副本），
+`LANE_PROFILE` 定义了却**未被 engine 使用**。已知 drift 前科：lane 的 `REPEAT_HEAL_MAX`
+判据曾与主循环漂移（已在 `:1781-1783` 注释登记）。
+
+**建议路径**（与 Task 4 同型，逐站点接）：
+1. 先 grep 出 lane 段内联守卫的**全部落点行号**，做"落点分布勘察"（判据见下方坑 3）
+2. 按站点逐个替换为 `runIterHeadGuards` / `runInStreamGuards` / `runAfterStreamGuards`
+   —— 关键是**传 `profile: LANE_PROFILE`**（否则 lane 与 main 无法差异化配置）
+3. 每接一个站点跑一次 lane 相关测试 + spawn 端到端
+4. 收尾：加一条断言"engine 不得再内联 lane 的守卫命中登记"（同 Task 3/4 的接线断言）
+
+**注意**：lane 的 `emitInjection` 需接 lane 自己的宿主实现（注入要落到 lane 的 memory/transcript，
+不是主会话）——`ctx.pushInjection` 指向 lane 的落库路径。
+
+### Task 7 注入总线
+
+把散在各处的注入收敛到 `emitInjection`（唯一出口）。Task 4 已把守卫类注入全部收敛；
+剩余的是非守卫注入（如 workspace/知识注入）——需先 grep 出 `pushMemory({ role: 'user'` 的全部落点。
 
 ## 四、关键坑（本批实测，务必先读）
 
@@ -102,6 +109,19 @@
    ③ 核实最终态自洽（import/常量就位）后才跑验证。
 8. **`kernel-tests/mcp.test.mjs` 的「请求超时」**在本机稳定失败（300ms 时序敏感）——
    已用 `git worktree add --detach /tmp/chx HEAD` 干净检出证实**预存**，与本批无关。
+
+9. **★ 等价锁能抓出守卫族测试抓不到的 bug**：Task 4 的 afterstream 锁一次抓出 **4 个真 bug**
+   （跨站点误触发 / 空 user 消息 / 事件重复派发 / 有文本路径漏派发）—— 它们都逃过了
+   Task 2/3 的 `engine-guard-*` 测试，因为那些守卫**不发事件、不传空文本**。
+   ⇒ **每搬移一个相位就配一把等价锁**，不是形式主义。三个具体教训：
+   ① timing 粒度必须细到**每个调用站点**，不能到"每个 catch 块"（否则缺字段的守卫
+   在别的站点被判为"条件成立"）；② **空文本注入必须拦下**（否则落一条空 user 消息）；
+   ③ **事件派发只能有一个派发点**（垫片里"顺手再补一刀" = 双重派发）。
+10. **★ 测试基线不能用 HEAD，要用固定 SHA**：Task 3 的等价锁以 `HEAD:kernel/engine.mjs` 为基线，
+   搬移一入库 HEAD 前移 ⇒ 自检假红（"基线应含某文案"失败）。固定 SHA 才真正表达"与搬移前逐字一致"。
+11. **★ 新增测试文件必须当场 `git add`**：Task 2 的 `loop-guard-order-equivalence.test.mjs`
+   + 2 个 fixture + 录制脚本从未入库 ⇒ 锚点计数与实际不符，`doc-anchors-reproducible` 红。
+   ★ 该用例只在**干净检出**（仅已跟踪文件）里暴露 ⇒ 单跑工作树看不出来。
 
 ## 五、验收命令（每条都必须 EXIT=0 或全绿）
 
