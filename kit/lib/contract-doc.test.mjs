@@ -245,6 +245,89 @@ test('★批 M —— 确定性：方法集合与顺序无关（`GET/POST` 与 `
     '改一个方法必须能被看见（否则 CT3 的方法判据就是恒真的）')
 })
 
+// ── 批 M 复审：方法名**大小写不敏感** + 结果**规范化为大写** ──────────────────────
+//
+// 为什么必须单列（审查发现的**可绕过口**，且此前**零测试覆盖**）：判据（CT3 的方法维度）在，
+// 但输入一变小写就整条失效 —— 三种失效方向都不一样，正好把"假绿"和"误导性红"都覆盖了：
+//   ① 行尾括号写小写 `（delete）` ⇒ 旧解析器只认大写 ⇒ 该条被当成"没写方法" ⇒ **静默绿**
+//      （按规则③"文档没写方法 ⇒ 不判方法"跳过，门禁毫无反应）；
+//   ② 反引号里写小写 `post /x` ⇒ 旧解析器要求 token 以 `/` 开头 ⇒ **整条端点消失** ⇒ 反被 CT2 报
+//      "代码有、文档没有"（红是红了，但红在错的地方，会把维护者引向"补文档"而不是"改大小写"）；
+//   ③ §7.1 写小写 `get /workflows` ⇒ 整行解析不出 ⇒ 既不在 `paths` 也不在 `routeMethods`
+//      ⇒ **连 CT2 都不红**（纯假绿：这一行的路径与方法都不参与任何对账）。
+// 规范化到**大写**是判据的前提（不是美观）：`Set`/`Map` 是逐字键 —— 若 `post` 与 `POST` 并存，
+// `methods.size` 会虚高、CT3 会各判一半，台账与快照也会跟着漂。
+const FIXTURE_CASE = [
+  '# 契约夹具（方法名大小写）',
+  '',
+  '## 7. HTTP REST API',
+  '',
+  '| 端点 | 用途 |',
+  '|---|---|',
+  '| `/alpha`（post） | 行尾括号写小写（① 静默绿的那一类） |',
+  '| `delete /beta` | 行内方法写小写（② 整条消失的那一类） |',
+  '| `GET/POST /gamma` | 大小写混排的 token（方法名与路径都要能拆） |',
+  '| `/delta`（put 同义） | 同义注释写小写：**仍不是**方法声明（只是注解） |',
+  '',
+  '### 7.1 工作流模块',
+  '',
+  '| 方法 + 路径 | 请求体 | 响应（成功） |',
+  '|---|---|---|',
+  '| `get /workflows` | — | `{ ok:true }` |',
+  '| `PUT /workflows/bindings`（post 同义） | `{ agents }` | `{ ok:true }` |',
+  '',
+].join('\n')
+
+test('★批 M 复审① —— 方法名大小写不敏感：小写括号（不再静默绿）、小写行内（不再整条消失）、小写 §7.1 键', () => {
+  const d = parseDoc(FIXTURE_CASE)
+  // ③ 小写 §7.1 键：整行必须解析出来（旧解析器 ⇒ 这条路径与方法**都不进任何集合** = 纯假绿）
+  assert.deepEqual([...d.workflowRoutes.keys()].sort(), ['GET /workflows', 'PUT /workflows/bindings'],
+    '§7.1 的小写 `get /workflows` 必须被解析成 `GET /workflows`；同义注释不另生成键')
+  assert.equal([...d.workflowRoutes.keys()].every((k) => {
+    const m = k.slice(0, k.indexOf(' '))
+    return m === m.toUpperCase()
+  }), true, '键里的方法必须规范化成大写（否则 `get /x` 与 `GET /x` 在 Map 里是两个键，各判一半）')
+  // ① 行尾括号小写：必须是"写了 POST"，而不是"没写方法"（后者会让 CT3 跳过 ⇒ 静默绿）
+  assert.deepEqual([...d.routes.get('/alpha').methods], ['POST'], '`（post）` 与 `（POST）` 必须等价')
+  assert.equal(d.routes.get('/alpha').method, 'POST')
+  // ② 行内小写：端点本身必须存在（旧解析器让 `/beta` 整条消失 ⇒ CT2 误导性红）
+  assert.deepEqual([...d.routes.keys()].sort(), ['/alpha', '/beta', '/delta', '/gamma'])
+  assert.deepEqual([...d.routes.get('/beta').methods], ['DELETE'])
+  // 混排 token：方法集与路径都拆对
+  assert.deepEqual([...d.routes.get('/gamma').methods].sort(), ['GET', 'POST'])
+  // 同义注释（小写形态）**仍不判**：`（put 同义）` 不给 `/delta` 发放 PUT 声明，也不改 `（post 同义）` 的语义
+  assert.equal(d.routes.get('/delta').methods.size, 0, '同义注释是"也接受"的注解，不是"这一行声明的方法"')
+  assert.equal(d.routes.has('/delta'), true)
+  assert.deepEqual(d.workflowRoutes.get('PUT /workflows/bindings').synonyms, ['POST'],
+    '`（post 同义）` 照旧只记 synonyms（加 `i` 只防"小写把注释丢掉"，注解语义未变）')
+  assert.equal(d.workflowRoutes.has('POST /workflows/bindings'), false,
+    '同义注释**不得**生成一条"必须存在"的方法声明（否则门禁会凭空多出假红）')
+})
+
+test('★批 M 复审② —— 大小写是噪声而非信息：同一份契约的大小写两版必须解析出**逐字相同**的结果', () => {
+  const UPPER = FIXTURE_CASE
+    .replace('（post）', '（POST）')
+    .replace('`delete /beta`', '`DELETE /beta`')
+    .replace('（put 同义）', '（PUT 同义）')
+    .replace('`get /workflows`', '`GET /workflows`')
+    .replace('（post 同义）', '（POST 同义）')
+  assert.notEqual(UPPER, FIXTURE_CASE, '夹具替换必须真的生效（否则这条等价断言是恒真式）')
+  const dump = (text) => JSON.stringify({
+    routes: [...parseDoc(text).routes.entries()].map(([p, v]) => [p, [...v.methods].sort(), v.method, [...(v.methodLines || new Map())].sort()]).sort(),
+    // `raw` 刻意保留**原文**（大小写原样，供 finding/复查看），它不是判据 ⇒ 不参与等价性比较；
+    // 其余字段（键、同义注释、行号、章节）都必须逐字相同。
+    wf: [...parseDoc(text).workflowRoutes.entries()]
+      .map(([k, v]) => [k, { synonyms: v.synonyms, row: v.row, line: v.line, section: v.section }]).sort(),
+  })
+  assert.equal(dump(FIXTURE_CASE), dump(UPPER),
+    '大小写不该影响任何结论：小写形态必须与大写形态给出同一份解析结果（含方法集、兼容字段、行号映射）')
+  assert.equal(parseDoc(FIXTURE_CASE).workflowRoutes.get('GET /workflows').raw, 'get /workflows',
+    '`raw` 保留原文（只有规范化后的键/方法集参与判定）')
+  // 不是恒真式：把小写换成**另一个**方法必须能被看见
+  assert.notEqual(dump(FIXTURE_CASE.replace('（post）', '（delete）')), dump(FIXTURE_CASE),
+    '改方法名（不只是改大小写）必须能被看见')
+})
+
 // ── P1.5：§11（IPC 推送通道）与 §12（工具结构指纹）──────────────────────────
 //
 // 新增章节的**目的**：把"只能登记、无法对账"的两类（IPC / 工具 input_schema）拉回文档面 ⇒

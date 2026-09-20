@@ -5,6 +5,8 @@
 //   I1 §5/§6 表按**反引号分组**：`milestones` / `milestone-start` / `milestone-ok` 是三件事（真盘写法）；
 //      同一格内写成 `a / b`（共用一对反引号）时再按 ` / ` 与、 二次拆（兜底，并非真盘现状）。
 //   I2 §7 每行按**反引号 + 顿号**分组（一行可以声明 5 条端点）；`（POST）` 是文档声明的方法。
+//      ★ 方法名**大小写不敏感**、解析结果**规范化成大写**（`（post）` / `post /x` / `get /x` 与小写
+//        形态必须与大写等价；此前只认大写 ⇒ 小写法会静默退化成"没写方法"甚至"整条不存在"）。
 //   I3 **文档里的 `*` 不给覆盖信用**（plan §7 反例 ⑧）：`/providers/*`、`/workflows/*` 只声明
 //      命名空间 ⇒ 保留 `*` 原样并打 `wildcard:true`，**绝不展开成子路径**（展开 = 给未覆盖的
 //      子路径凭空发放"已被文档声明"的信用，对账会假绿）。判定留给 T7。
@@ -20,7 +22,8 @@
 //   · `wsIn:  Set<string>`          §6（GUI → bridge）
 //   · `routes: Map<path, {method, methods, methodLines, wildcard, row, line, section, docSection}>`  §7
 //     ★ 批 M（方法入账）：key 仍是 **path**（CT2/CT4/CT8 的路径粒度不变），方法作为同值的第二维度 ——
-//       `methods: Set` = 该路径声明的方法并集；`method` = **兼容字段** = 首个被声明的方法（其余情况 null）；
+//       `methods: Set` = 该路径声明的方法并集（**规范化为大写**）；`method` = **兼容字段** =
+//       **按字典序首个**被声明的方法（其余情况 null；见文末的收口说明）；
 //       `methodLines: Map<method, line>` = 方法 → 首次出现的行号。取舍与形态说明见 `parseEndpointRow`
 //       与 §7 分支（为什么不用 `'<METHOD> <path>'` 作 key：那要连带改所有路径粒度消费方）。
 //   · `workflowRoutes: Map<'<METHOD> <path>', {raw, synonyms, row, line, section}>`  §7.1
@@ -68,23 +71,39 @@ function firstTable(lines, from) {
   return out
 }
 
-/** 方法名（与 `contract-routes.mjs#METHOD_RE` 同集合；**不含** `ANY` —— 那是代码侧口径） */
+/**
+ * 方法名（与 `contract-routes.mjs#METHOD_RE` 同集合；**不含** `ANY` —— 那是代码侧口径）。
+ * ★ 大小写不敏感（批 M 复审批）：HTTP 方法在 RFC 里是**大小写敏感**的 token（应写大写），
+ *   但文档里的写法不是判据 —— 若解析器只认大写，一处小写就变成"这条声明没写方法"（乃至整条消失）。
+ *   实测三类**假绿**（都已在 `contract-doc.test.mjs`「批 M 复审」里钉住）：
+ *     ① `（delete）` ⇒ 被当成"没写方法" ⇒ **静默绿**；
+ *     ② 行内 `post /x` ⇒ 旧的"token 必须以 `/` 开头"把它整条丢掉 ⇒ 反被 CT2 报"未覆盖"（误导）；
+ *     ③ §7.1 的 `get /x` ⇒ 整行解析不出 ⇒ 连 CT2 都不红（纯假绿）。
+ *   ⇒ 三个方法正则一律加 `i`，并在解析结果里**规范化成大写**（下游比较、报告、台账都只认大写，
+ *     避免 `post` 与 `POST` 在 `Set`/`Map` 里成为两个不同的键）。
+ */
 const METHOD = 'GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS'
-/** 行尾行内方法：`（POST）` / `（GET/POST）` / `(DELETE/PATCH)` —— 全角半角都认，括号里必须**只有**方法名 */
-const CELL_METHOD_RE = new RegExp(`[（(]\\s*((?:${METHOD})(?:\\s*[/、]\\s*(?:${METHOD}))*)\\s*[）)]`, 'g')
-/** 反引号 token 里的行内方法前缀：`POST /x` / `GET/POST /x`（批 M 前这类 token 被整条丢掉 —— 见下） */
-const TOKEN_METHOD_RE = new RegExp(`^((?:${METHOD})(?:[/](?:${METHOD}))*)\\s+(\\/\\S+)`)
+/** 行尾行内方法：`（POST）` / `（GET/POST）` / `(DELETE/PATCH)` —— 全角半角都认（`i` 大小写不敏感），括号里必须**只有**方法名 */
+const CELL_METHOD_RE = new RegExp(`[（(]\\s*((?:${METHOD})(?:\\s*[/、]\\s*(?:${METHOD}))*)\\s*[）)]`, 'gi')
+/** 反引号 token 里的行内方法前缀：`POST /x` / `GET/POST /x`（批 M 前这类 token 被整条丢掉 —— 见下；`i` 认小写） */
+const TOKEN_METHOD_RE = new RegExp(`^((?:${METHOD})(?:[/](?:${METHOD}))*)\\s+(\\/\\S+)`, 'i')
+/** 方法名的规范化形态（解析结果的唯一形态：**大写**） */
+const normMethod = (m) => String(m).toUpperCase()
 
 /** `GET /workflows/runs?name=x`（兼容 `?id=`）→ { method:'GET', path:'/workflows/runs', raw, synonyms } */
 function parseMethodPath(cell) {
   const raw = ticked(cell)[0] || ''
-  const m = /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(\S+)/.exec(raw)
+  const m = /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(\S+)/i.exec(raw)
   if (!m) return null
   const path = m[2].split('?')[0]
   const synonyms = []
-  const syn = /（([A-Z]+)\s*同义）/u.exec(cell) || /\(([A-Z]+)\s*同义\)/.exec(cell)
-  if (syn) synonyms.push(syn[1])
-  return { method: m[1], path, raw, synonyms }
+  // ★ `（POST 同义）` 这类注释**照旧只记 synonyms、不当"必须存在"的方法**（它是"也接受"的注解，
+  //   不是"这一行声明的方法"；`contract-rules.mjs#buildTruth` 不把 synonyms 收进 `routeMethods`）。
+  //   这里同样加 `i` 只是"小写别把注释丢掉"（否则 `（post 同义）` 会静默变成没有同义注释），
+  //   规范化成大写后与既有断言/消费方一致 —— 注解语义一字未变。
+  const syn = /（([A-Z]+)\s*同义）/iu.exec(cell) || /\(([A-Z]+)\s*同义\)/i.exec(cell)
+  if (syn) synonyms.push(normMethod(syn[1]))
+  return { method: normMethod(m[1]), path, raw, synonyms }
 }
 
 /**
@@ -99,6 +118,7 @@ function parseMethodPath(cell) {
  *     **整条解析不出来**（`GET /a` 被当成"不是路径"跳过）= 静默漏声明；现在两者都收。
  *   ★ 方法只从**第一列**读：真仓把 `（GET）` 写在"用途"列的行（文件协同只读面等）**不**算方法声明
  *     —— 那是散文里提到的方法，不是"这一行声明的方法"（照收会凭空造出方法声明）。
+ *   ★ 两种写法里的方法名都**大小写不敏感**（`（post）` 与 `（POST）` 等价），出参**一律大写**。
  * @returns {Array<{path:string, methods:string[]}>} 逐条声明（`methods` 为空 = 该条没写方法）
  */
 function parseEndpointRow(cell) {
@@ -107,7 +127,7 @@ function parseEndpointRow(cell) {
   CELL_METHOD_RE.lastIndex = 0
   let m
   while ((m = CELL_METHOD_RE.exec(text))) {
-    for (const x of m[1].split(/\s*[/、]\s*/)) if (x) rowMethods.push(x)
+    for (const x of m[1].split(/\s*[/、]\s*/)) if (x) rowMethods.push(normMethod(x))
   }
   const out = []
   for (const tok of ticked(text)) {
@@ -119,7 +139,7 @@ function parseEndpointRow(cell) {
       const rest = inline ? inline[2] : t
       const path = rest.split('（')[0].split('(')[0].split('?')[0].trim()
       if (!path.startsWith('/')) continue
-      out.push({ path, methods: inline ? inline[1].split('/') : rowMethods })
+      out.push({ path, methods: inline ? inline[1].split('/').map(normMethod) : rowMethods })
     }
   }
   return out
@@ -150,7 +170,7 @@ export function parseDoc(text) {
   // Windows 检出是 CRLF：行尾的 CR 在 JS 里是**行终止符**，点号与行尾锚都够不到它
   //   （实测：标题行带 CR 时正则全失配 ⇒ 真仓解析出 0 个章节、全表为空）。
   //   故统一按 CRLF 与裸 LF 两种行尾切行。
-const lines = String(text ?? '').split(/\r?\n/)
+  const lines = String(text ?? '').split(/\r?\n/)
   // ① 章节切分（含子节 §7.1/§7.2/§7.3）
   const heads = []
   for (let i = 0; i < lines.length; i++) {
