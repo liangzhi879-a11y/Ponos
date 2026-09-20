@@ -614,8 +614,8 @@ test('★B2/B3：summary.rules = 32，且逐条规则号与 spec 口径完全一
   const j = JSON.parse(run(['check', '--json']).stdout)
   assert.deepEqual([...j.checks.map((c) => c.rule)].sort(), [...EXPECTED_RULES].sort(),
     '规则号集必须逐字对齐：多一个（自造号）或少一个（早退没 push）都要在这里变红')
-  assert.equal(j.summary.rules, 32)
-  assert.equal(new Set(j.checks.map((c) => c.rule)).size, 32, '同一个规则号不得重复计入')
+  assert.equal(j.summary.rules, 33)
+  assert.equal(new Set(j.checks.map((c) => c.rule)).size, 33, '同一个规则号不得重复计入')
   // V6 的标题必须与判据同口径（标题写三方 → 就得真核三方，见 kit/lib/version-rules.mjs）
   assert.match(j.checks.find((c) => c.rule === 'V6').title, /三方/)
   // CT1 的标题必须写明"现场重算"—— 它是红线（读快照当答案是 plan §7 反例⑤）
@@ -713,7 +713,7 @@ test('夹具仓无台账：check 退 1（P0/V0 红），绝不因"读不到台�
   assert.deepEqual(j.checks.map((x) => x.rule).sort(),
     ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10', 'CT11', 'P0'].sort())
   assert.equal(j.checks.find((x) => x.rule === 'P0').passed, false)
-  assert.equal(j.summary.rules, 14)
+  assert.equal(j.summary.rules, 15)
 })
 
 // ★ Rider 2：宿主删掉声明却不重跑 sync → 旧判据（P1/P2 只读台账）一条红都不报。
