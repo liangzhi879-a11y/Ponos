@@ -931,7 +931,7 @@ spawnDepthLimit: 1             # ③ 该 agent 能否再派子代理
 | S3 | B1 契约应用到 lane（复用同一 `runOnce`） | lane 测试全绿；可共享逻辑只有一份 |
 | **S3.5** | **注入总线抽取**（`kernel/inject-bus.mjs`；12 处指令注入改走 `ctx.emitInjection`） | A17a/A17b 双重等价（含 `LOOP_GUARD=0` 对照）+ 主 spec L1 全绿 |
 | S4 | `kernel/loop-mode.mjs` + `kernel/methodology.mjs`（纯函数 + 单测） | 模式/方法论定义、判据、切换校验单测覆盖 |
-| **S4.5** | **经验三层化 + 线索层**（去重 / `front.active` / 字节口径 / `knowledge-recommend.mjs` / EL1↔unified 互斥） | A12/A14/A16/A18/A20；新增 `knowledge-recommend.test.mjs` |
+| **S4.5** | **经验三层化 + 线索层**（去重 / `front.active` **内核侧过滤** / 字节口径 / `knowledge-recommend.mjs` / EL1↔unified 互斥） | A12/A14/A16/A18/A20；新增 `knowledge-recommend.test.mjs` |
 | S5 | **首批下沉：`verification-before-completion`**（性价比最高）**——批 3 的试点单点** | 有测试：声称完成而无验证调用 → 注入自愈；误伤对照通过 |
 | S6 | **下沉：`using-superpowers` 路由**（t=0 规则匹配 + 建议） | 建议准确率可观测；用户拒绝后不自动切 |
 | S7 | Plan 模式（= `writing-plans`+`executing-plans`+`subagent-driven` 编译产物） | 端到端：复杂任务进入 Plan 后产出计划且逐项推进 |
@@ -941,6 +941,14 @@ spawnDepthLimit: 1             # ③ 该 agent 能否再派子代理
 | S10 | 切换协议 + GUI 建议卡 + 模式徽标 | 留痕完整；用户拒绝后不自动切 |
 | S11 | **下沉：`brainstorming` HARD-GATE**（门控） | 设计阶段出现实现代码 → 门控生效 |
 | S12 | 观测期收数据 → 定默认阈值（**并行轨道，非末步**） | 阈值有数据依据，附录记录 |
+
+> **S4.5 的事实修正（写计划时逐行核实发现，2026-09-20）**——实施时按此，勿照抄增量 spec §4.1 的旧表述：
+>
+> | 项 | 增量 spec 旧表述 | **实测事实** |
+> |---|---|---|
+> | ②`active` | "`memory.mjs` 补 `front.active`" | **写入侧已实现**（`kernel/memory.mjs:87-89` 写 `{name,description,active:true}`；`server/experience.mjs:37`）；**服务端读取侧已生效**（`server/experience.mjs:101/115/131/163` 按 `active` 过滤）。**真实缺口 = 内核注入侧不过滤**：`kernel/memory.mjs:99 buildMemoryIndex` 在 `:105` 只解构 `const { entries } = readTheme(...)`、从不读 `front.active`；`:140 buildRelevantMemory` 同样不读 ⇒ **标了 `active:false` 的主题在内核侧仍被注入**。S4.5② 的正确任务 = **让内核两个注入函数尊重 `active`** |
+> | ①去重路径 | "移除 `bridge.mjs:1608-1609/1646-1647`" | 文件实为 **`server/bridge.mjs`**（调用点 `:1609`/`:1647`）；`buildExperienceIndex` **定义**在 `server/experience.mjs:161`，并在 `server/bridge.mjs:90-91` 有 import + re-export。⚠️ **只移除两处「注入调用」，不得删函数定义与 re-export**——`npm run verify:experience-inject`、`server/experience.test.mjs:133/146/154/158`、以及 S4.5⑦ 的面板口径都依赖它存在 |
+> | ⑦面板口径 | "`server/experience.mjs:219/223`" | 核实无误：`:219` 单主题 `inject_bytes`、`:223` `totalInjectBytes`；三层化后两处口径须同步，否则面板显示与实际注入不符 |
 
 ### 12.2 二期（块 3 + 块 4）
 
