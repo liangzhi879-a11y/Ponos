@@ -220,7 +220,7 @@ test('真仓数据端到端渲染：产物仍满足零外链/可解析/八段齐
   assert.ok(parsed.brand.assets.length >= 10, '真仓标识资源清单不应为空')
   // 品牌真源（本批新增）：8 条声明点 + 两层名 + 废弃别名 + 已知广泛存在，都要进页面数据与 HTML
   assert.deepEqual(parsed.brand.truth.layers.map((l) => [l.id, l.name]), [['app', 'YFWorking'], ['kernel', 'ponos']])
-  assert.equal(parsed.brand.truth.declarations.length, 8, '8 条声明点都要在真源表里')
+  assert.equal(parsed.brand.truth.declarations.length, 14, '14 条声明点都要在真源表里')
   assert.match(parsed.brand.truth.retiredAliases[0].alias, /^Ponos-Turbo$/)
   // ★ 不写死数字（会漂移）：与真仓 brand.json 现读的值比对，证明页面数字来自真源而非另一份副本
   const wide = JSON.parse(readFileSync(new URL('../../kit/manifest/brand.json', import.meta.url), 'utf8')).knownWidespread[0]
@@ -228,6 +228,20 @@ test('真仓数据端到端渲染：产物仍满足零外链/可解析/八段齐
     '已知广泛存在的数字来自真源（不在这里另写一份）')
   assert.ok(html.includes('为什么算声明点（why）'), '声明点表必须带 why 一列（回答"它为什么算声明点"）')
   assert.ok(html.includes('不在门禁范围'), '已知广泛存在必须标注"不在门禁范围"')
+  // ── ★ 渲染级断言（复核审查抓到：早先只断言 data 层 ⇒ 渲染读错字段、单元格空白却仍然绿）────────────
+  //   教训：**数据层有值 ≠ 页面出数**。改数据结构时必须有一条断言"落在 HTML 里能看到"。
+  const wideTable = html.slice(html.indexOf('已知广泛存在（★ 不在门禁范围'), html.indexOf('</table>', html.indexOf('已知广泛存在（★ 不在门禁范围')))
+  const ex = wide.counts.exactCaseSensitive
+  assert.ok(wideTable.includes(`${ex.lines} 处 / ${ex.files} 文件`),
+    `★ 规模必须真的渲染到单元格里（期望出现 "${ex.lines} 处 / ${ex.files} 文件"）—— 只断言 data 层会漏掉渲染读错字段`)
+  assert.ok(!/>—</.test(wideTable), '规模单元格不得是占位符「—」（说明渲染没读到 counts 结构）')
+  assert.ok(wideTable.includes(wide.recompute.split('\n')[0].slice(0, 40)), '复算命令要能复制（读者得能自己验证规模）')
+  // 「已知未纳管」表：必须真的有行、且行数与真源一致（否则页面给人"全都统一了"的错觉）
+  const ungated = JSON.parse(readFileSync(new URL('../../kit/manifest/brand.json', import.meta.url), 'utf8')).knownUngated
+  const ungatedSeg = html.slice(html.indexOf('已知**未**纳管的声明点'), html.indexOf('</table>', html.indexOf('已知**未**纳管的声明点')))
+  assert.equal((ungatedSeg.match(/<tr>/g) || []).length, ungated.length + 1,
+    `未纳管表应有 ${ungated.length} 条数据行（+1 表头），实际 ${(ungatedSeg.match(/<tr>/g) || []).length - 1} 条`)
+  assert.ok(ungatedSeg.includes(ungated[0].what), '未纳管的"是什么"要渲染出来')
   for (const s of GUI_SECTIONS) assert.ok(html.includes(`<h2>${s.title}</h2>`))
   assert.ok(html.length > 20000 && html.length < 3 * 1024 * 1024, `体积应在一个合理区间，实际 ${html.length}`)
 })

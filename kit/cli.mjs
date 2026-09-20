@@ -17,7 +17,7 @@
 //   · Rider 3：`runDepRules` 的 ghost 是必传参数（缺省抛错），所以这里的 collect() 必须
 //     真的算出来 —— 漏了不会"静默全绿"，会直接炸。
 //
-// ★ 2026-09-19 P1-T9：契约对账（CT0–CT9）接线。三条约束直接落在这里：
+// ★ 2026-09-19 P1-T9：契约对账（CT0–CT10）接线；★ 2026-09-20 品牌批加 CT10。三条约束直接落在这里：
 //   · **同源**：`collect()` 是 check/view 的唯一入口（含契约提取）—— 两处各跑一套会出现"两个真相"；
 //   · **可见性**：`renderHuman` 恒打印「契约范围登记（N 组 / M 键）」**逐条**（kind/ns/count/docSection/reason）
 //     —— 只报总数等于把"范围边界"藏起来（先例：spec §7.3 规则 3）；
@@ -189,7 +189,7 @@ function ledgerSizes() {
  * --verbose 的额外内容：**逐条规则的判定结果**。
  * 为什么必须由 --verbose 提供：默认报告只列 findings，"哪条规则真的跑过、evaluated 是多少"
  * 在红灯之外看不见 —— P7 这种"两个集合对账"的规则若因故没接线，报告会与"全绿"长得一样。
- * 契约侧同理：CT0–CT9 的 evaluated 与台账规模里的 channels 计数必须能互相对照。
+ * 契约侧同理：CT0–CT10 的 evaluated 与台账规模里的 channels 计数必须能互相对照。
  */
 function renderRuleTable(report, sizes) {
   const lines = ['', `规则逐条（${report.checks.length}）`]

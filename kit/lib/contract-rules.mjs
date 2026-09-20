@@ -39,7 +39,7 @@
 //      "把出站事件抄进 §6"不会红。详见 `docDeclaredSets` 的注释（含为什么此前必须合成、
 //      以及"在 §5 补 `browser:event`"这一步解锁了什么）。
 //   ⑥ **CT10 只查品牌真源登记的 8 条声明点**（`kit/manifest/brand.json`），**不扫全仓**：
-//      全仓另有 91 处 `Ponos-Turbo` 散在 kernel/、kernel-tests/ 与 docs 的叙述文本里
+//      全仓另有 `Ponos-Turbo` 散在 kernel/、kernel-tests/ 与 docs 的叙述文本里（规模见 brand.json 的 knownWidespread，含复算命令）
 //      （真源 `knownWidespread` 如实登记），那是独立工作项 —— 若扫全仓，CT10 会永远红。
 //      CT10 与其它 CT 同口径读**提交态**：品牌声明点的在途改动由 `node scripts/brand.mjs check`
 //      （读工作树）即时反馈，不进本门禁的红灯。
@@ -791,7 +791,7 @@ export async function runContractRules({
     evaluated: fetched.size, passed: srcDiff.length === 0 }))
 
   // ── CT10：品牌声明点 ↔ 品牌真源（`kit/manifest/brand.json`；不可基线豁免）──────────
-  //   ★ 读**提交态**（`read` / `tracked` 都来自 head*），与 CT0–CT9 同口径：品牌声明点的**在途**改动
+  //   ★ 读**提交态**（`read` / `tracked` 都来自 head*），与 CT0–CT10 同口径：品牌声明点的**在途**改动
   //     不会在这里变红（要看工作树里的当下状态，用 `node scripts/brand.mjs check` —— 它读工作树，
   //     给的是"现在改完没有"的即时反馈）。
   //   ★ 基线：`BASELINE_FORBIDDEN` 的判据是"除 CT9 外全部 CT" ⇒ CT10 自动**不可豁免**（刻意如此：

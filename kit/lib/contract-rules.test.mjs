@@ -1,4 +1,4 @@
-// kit/lib/contract-rules.test.mjs —— 契约对账规则 CT0–CT9（T7）
+// kit/lib/contract-rules.test.mjs —— 契约对账规则 CT0–CT10（T7）
 //
 // 全部用**夹具仓**（mkdtemp + 显式 files，不依赖 git 与本机状态），每条规则都能独立失败。
 // ★ 红线（plan §7 反例⑤）：**CT1 必须现场重算** —— 手改快照一个端点即使文档/scope 全都自洽，

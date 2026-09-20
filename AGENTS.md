@@ -55,6 +55,6 @@ npm run verify:ci                                      # EXIT=0
 | 「只报不拦」规则集 | `kit/lib/report.mjs#NON_BLOCKING_RULES` |
 | 版本线台账 | `kit/manifest/versions.json#lines`（推进用 `node scripts/bump-version.mjs`） |
 | 版本快照/回退 | 归 `docs/superpowers/specs/2026-09-15-version-manager-design.md` 的 version-manager 工作线（**不在本 GUI 内**） |
-| 品牌名称声明点 | 分散在 `package.json` / `electron-builder.yml` / `index.html` / `version.mjs`（GUI 第 7 段只读汇总） |
+| 品牌名称/标识 | `kit/manifest/brand.json`（改它 = **重新定义品牌**；`node scripts/brand.mjs show\|check\|set <layer> <name>`；一致性由 **CT10** 把关，**不可基线豁免**） |
 
 <!-- 维护约定：本文件只放"入口 + 红线 + 坑"。完整清单改 kit/lib/agent-guide.mjs；若要加规则，加在真源里。 -->

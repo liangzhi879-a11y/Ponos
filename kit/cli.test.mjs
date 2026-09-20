@@ -52,8 +52,13 @@ function fixture({ ledgers = true } = {}) {
     mkdirSync(dirname(join(root, rel)), { recursive: true })
     writeFileSync(join(root, rel), content)
   }
+  // ★ 层名从**真仓真源**现读（不写死）：CT10 判据与真源绑死 ⇒ 夹具也必须照真源的层名来造文件
+  const truth = JSON.parse(readFileSync(join(ROOT, 'kit/manifest/brand.json'), 'utf8'))
+  const APP = truth.layers.find((l) => l.id === 'app').name
+  const KERNEL = truth.layers.find((l) => l.id === 'kernel').name
   write('package.json', JSON.stringify({
     name: 'fx', version: '1.0.0',
+    description: `${APP} 夹具应用（CT10 的 pkg-description 声明点）`,
     dependencies: { react: '^18' }, devDependencies: { '@types/node': '^20' }, scripts: {},
   }, null, 2))
   write('src/a.ts', "import { useState } from 'react'\nexport const x = useState\n")
@@ -63,12 +68,21 @@ function fixture({ ledgers = true } = {}) {
   //   夹具的 `fx`）：因为台账 `lines[].label` 由**真 `kit:sync`** 从 `LINE_SPECS` 生成 —— 夹具若用
   //   自造的品牌层名，sync 一次就会把 label 写成真仓口径，`CT10` 立刻红。抄真仓还顺带钉住
   //   "真仓品牌文件与生成点自洽"这件事（真仓改名而夹具没跟上 ⇒ 用例红）。
-  const truth = JSON.parse(readFileSync(join(ROOT, 'kit/manifest/brand.json'), 'utf8'))
+  //   （`truth` 在本函数开头已读，供上面的声明点夹具共用 —— 只读一次、避免两处各读一份。）
   truth.declarations.find((d) => d.id === 'npm-name').expects.literal = 'fx'
   write('kit/manifest/brand.json', JSON.stringify(truth, null, 2))
   write('electron-builder.yml', `appId: ${truth.declarations.find((d) => d.id === 'app-id').expects.literal}\n`
-    + `productName: ${truth.layers.find((l) => l.id === 'app').name}\n`)
-  write('index.html', `<!doctype html>\n<html><head>\n  <title>${truth.layers.find((l) => l.id === 'app').name}</title>\n</head></html>\n`)
+    + `productName: ${APP}\n`
+    // ★ 后 6 条声明点里的两个 yaml 标量（快捷方式名 / 版权行）：夹具不写它们 ⇒ `CT10` 报"取不到值"而红
+    + `  shortcutName: ${APP}\n`
+    + `copyright: Copyright © 2026 ${APP}\n`)
+  write('index.html', `<!doctype html>\n<html><head>\n  <title>${APP}</title>\n`
+    // ★ `meta-description` 声明点：没有这个 meta 就是"取不到值"⇒ 红
+    + `  <meta name="description" content="${APP} —— 夹具应用">\n</head></html>\n`)
+  // ★ `kernel-pkg-name` / `kernel-pkg-description`：内核可独立部署包的机器可读声明点。
+  //   与其它品牌文件同原则 —— **抄真仓原件**（不手写）：手写版本号会跟 `V4`（KERNEL_VERSION ↔ kernel/package.json）
+  //   打架，而这条规则本来就该由真仓自己保持一致。
+  write('kernel/package.json', readFileSync(join(ROOT, 'kernel/package.json'), 'utf8'))
   write('version.mjs', readFileSync(join(ROOT, 'version.mjs'), 'utf8'))
   write('.gitignore', 'node_modules/\n')
   execFileSync('git', ['init', '-q'], { cwd: root })

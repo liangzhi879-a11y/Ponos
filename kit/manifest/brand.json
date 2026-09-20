@@ -36,6 +36,59 @@
       "severityIfWrong": "red"
     },
     {
+      "id": "meta-description",
+      "file": "index.html",
+      "kind": "html-meta-description",
+      "expects": { "layer": "app" },
+      "why": "页面摘要（<meta name=description>）：写进 WebView/分享/无障碍读取的说明文字，对外描述产品时用的就是这个名字 —— 属「机器可读」而非纯叙述，故纳管。",
+      "severityIfWrong": "red"
+    },
+    {
+      "id": "shortcut-name",
+      "file": "electron-builder.yml",
+      "kind": "yaml-scalar",
+      "key": "shortcutName",
+      "expects": { "layer": "app" },
+      "why": "★ 桌面/开始菜单快捷方式名（nsis 段）：用户点开的那一行字。与 productName 是两个独立字段、都可能各自漂移，所以**分开登记**（早先只登记 productName ⇒ 快捷方式名无人管）。",
+      "severityIfWrong": "red"
+    },
+    {
+      "id": "copyright",
+      "file": "electron-builder.yml",
+      "kind": "yaml-scalar",
+      "key": "copyright",
+      "expects": { "layer": "app" },
+      "why": "安装器/程序属性里的版权行：随安装产物分发给外部，含 app 层名称，属对外署名声明点。",
+      "severityIfWrong": "red"
+    },
+    {
+      "id": "pkg-description",
+      "file": "package.json",
+      "kind": "json-key",
+      "key": "description",
+      "expects": { "layer": "app" },
+      "why": "npm 包摘要：随包分发给外部（registry/README 引用），对外描述产品时用的名字。",
+      "severityIfWrong": "red"
+    },
+    {
+      "id": "kernel-pkg-name",
+      "file": "kernel/package.json",
+      "kind": "json-key",
+      "key": "name",
+      "expects": { "layer": "kernel" },
+      "why": "★ 内核可独立部署包名（`ponos-kernel`）：内核层面向机器/分发的名字。此前**完全没纳管** —— 内核层名称的门禁只覆盖 version.mjs 注释与台账 label，包名漂移了没人知道。",
+      "severityIfWrong": "red"
+    },
+    {
+      "id": "kernel-pkg-description",
+      "file": "kernel/package.json",
+      "kind": "json-key",
+      "key": "description",
+      "expects": { "layer": "kernel" },
+      "why": "★ 内核包摘要：实测它此前写着 `Ponos-turbo 内核独立部署包…`（**机器可读的内核声明点里残留废弃别名**，而门禁当时看不见这个文件）—— 这条正是为堵这个洞而加。",
+      "severityIfWrong": "red"
+    },
+    {
       "id": "app-id",
       "file": "electron-builder.yml",
       "kind": "yaml-scalar",
@@ -103,15 +156,43 @@
     {
       "alias": "Ponos-Turbo",
       "counts": {
-        "exactCaseSensitive": { "lines": 35, "files": 13 },
-        "caseInsensitiveExact": { "lines": 14, "files": 8 },
-        "aliasFamily": { "lines": 117, "files": 62 },
+        "exactCaseSensitive": { "lines": 33, "files": 12 },
+        "lowercaseVariantExact": { "lines": 14, "files": 8 },
+        "aliasFamily": { "lines": 115, "files": 61 },
         "aliasFamilyInKernelDocs": { "files": 49 }
       },
-      "measuredAt": "8624451",
-      "recompute": "git grep -F \"Ponos-Turbo\" HEAD -- ':!*.lock' | wc -l  # ⇒ 35（行）；git grep -inE \"ponos[- ]turbo|turbo 内核\" HEAD -- ':!*.lock' | wc -l  # ⇒ 117（家族：含 ponos-turbo / Ponos turbo / turbo 内核版）；限定 kernel/** kernel-tests/** docs/** 的家族文件数 ⇒ 49。★ 口径：提交态 HEAD、排除 lock 文件、行数/文件数",
-      "why": "散在 kernel/、kernel-tests/ 与 docs 的**叙述性文本**里 —— **不在本门禁范围**（CT10 只查上面登记的 8 个声明点）。全仓统一改名是独立工作项。",
-      "whyNotGated": "若把叙述文本也纳入门禁 ⇒ 这 62 个文件会永远红，门禁立刻变噪声；正确顺序是先做一次专门的改名工作项，再考虑收紧。★ 这几个数字是**在某次提交上量的快照**，会随仓库演进漂移 —— 要当前值就按 `recompute` 自己跑一遍，别把这里当实时值。"
+      "measuredAt": "1999d86",
+      "recompute": "★ 口径：提交态 HEAD、**排除 lock 文件与品牌真源自身**、报 行数/文件数。\n# 精确写法（区分大小写）\ngit grep -F \"Ponos-Turbo\" HEAD -- ':!*.lock' ':!kit/manifest/brand.json' | wc -l        # ⇒ 33 行\ngit grep -lF \"Ponos-Turbo\" HEAD -- ':!*.lock' ':!kit/manifest/brand.json' | wc -l       # ⇒ 12 文件\n# 家族（不分大小写，含 ponos-turbo / Ponos turbo / turbo 内核版）\ngit grep -inE \"ponos[- ]turbo|turbo 内核\" HEAD -- ':!*.lock' ':!kit/manifest/brand.json' | wc -l   # ⇒ 115 行\ngit grep -ilE \"ponos[- ]turbo|turbo 内核\" 'kernel/**' 'kernel-tests/**' 'docs/**' | wc -l          # ⇒ 49 文件（副本，不含真源）\n# 仅小写写法\ngit grep -F \"ponos-turbo\" HEAD -- ':!*.lock' ':!kit/manifest/brand.json' | wc -l       # ⇒ 14 行 / 8 文件",
+      "why": "散在 kernel/、kernel-tests/ 与 docs 的**叙述性文本**里 —— **不在本门禁范围**（CT10 只查上面登记的 14 个声明点）。全仓统一改名是独立工作项。",
+      "whyNotGated": "若把叙述文本也纳入门禁 ⇒ 这 61 个文件会永远红，门禁立刻变噪声；正确顺序是先做一次专门的改名工作项，再考虑收紧。",
+      "whyExcludeTruth": "★ **必须排除品牌真源自身**：`brand.json` 里 `retiredAliases.alias`、`knownWidespread.alias`、以及下面这条 `recompute` 命令**本身就含 `Ponos-Turbo` 这个字符串**（它正是「定义废弃别名」的地方）。不排除的话，数字会**自己数到自己** —— 实测踩过：早先把命令写成 `… HEAD | wc -l # ⇒ 35`，而同一提交又往真源里加了这行命令 ⇒ 按它复算得 36，**快照与命令自相矛盾**。",
+      "snapshotNote": "这几个数字是**在 measuredAt 提交上量的快照**，会随仓库演进漂移 —— 要当前值就按 `recompute` 自己跑。★ 不写「实时保证」，因为本仓吃过「写死数字必然漂移」的亏。"
+    }
+  ],
+  "knownUngated": [
+    {
+      "what": "Electron 主进程里的窗口/对话框标题与菜单文案",
+      "where": "electron/main.cjs（含 new BrowserWindow({title}) 与 dialog 文案）、electron/browser-executor.cjs",
+      "why": "属**运行时代码里的字符串**，形态零散（可能拼接/来自变量），无法用「取某一行某 key」的方式稳定取值 ⇒ 强行纳管会做成「扫代码猜意图」的脆弱门禁。",
+      "carry": "独立工作项：若要纳管，先在这些位置引入**引用真源的常量**（如从 brand.json 生成一个 brand.gen.mjs），再让门禁查常量来源 —— 而不是查字符串。"
+    },
+    {
+      "what": "前端界面文案（i18n 欢迎语 / 图片 alt 等）",
+      "where": "src/**（多语言资源与组件）",
+      "why": "面向界面的产品名通常**故意**随语言/位置变化（如中文界面用中文名），一律钉死会误伤本地化。",
+      "carry": "保持不纳管；若要统一，走 i18n 文案评审而非门禁。"
+    },
+    {
+      "what": "安装器与便携包里的名称文案、图标与图像资产",
+      "where": "build/installer.nsh、build/installerSidebar.bmp、scripts/package-portable.cjs（release/YFWorking 目录名）",
+      "why": "安装器脚本是 NSIS 方言、图像资产是二进制 —— 既难稳定取值，也不适合「改了必须红」的强拦。",
+      "carry": "登记在此：它们是**已知的未纳管声明点**，不是「已统一」。改名时需人工过一遍这份清单。"
+    },
+    {
+      "what": "CLI 启动横幅（bin/cli.mjs 等）",
+      "where": "bin/cli.mjs",
+      "why": "与 electron 标题同理：运行时代码字符串，形态不稳定。",
+      "carry": "登记在此。"
     }
   ]
 }

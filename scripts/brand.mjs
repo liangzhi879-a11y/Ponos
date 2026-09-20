@@ -149,6 +149,12 @@ function cmdCheck({ root }) {
   lines.push(`小计：${decls.length - new Set(decls.map((d) => d.id).filter((id) => badFor(id).length)).size} / ${decls.length} 条已跟上真源`
     + `；evaluated=${out.check.evaluated}，passed=${out.check.passed}`)
   lines.push('★ 门禁（`npm run kit:check` 的 CT10）读的是**提交态** ⇒ 这里绿了之后记得提交，否则 CI 还看不到。')
+  // ★ 反向也要说清（复核审查指出只提示了一个方向）：这里红、门禁却可能是绿的 —— 因为工作树与 HEAD 不同。
+  //   不点明的话，人会以为"门禁绿 = 没问题"，然后带着未提交的品牌漂移继续干活。
+  if (out.findings.length) {
+    lines.push('★ 反过来：这里有红**不等于** `kit:check` 会红 —— 门禁看的是**已提交**的内容。'
+      + '所以"当下状态"以本命令为准、"提交后会不会被拦"以 `npm run kit:check` 为准（两者互补，别只看一个）。')
+  }
   process.stdout.write(lines.join('\n') + '\n')
   return out.findings.length ? 1 : 0
 }
@@ -283,6 +289,13 @@ const parsed = parseArgs(process.argv.slice(2))
 if (parsed.error) die(parsed.error)
 if (!parsed.cmd) die('缺子命令')
 if (!['show', 'check', 'set'].includes(parsed.cmd)) die(`未知子命令：${parsed.cmd}`)
+// ★ 多余参数不再静默忽略（复核审查抓到：`set app X 额外` 会 exit 0 让人以为生效了）。
+//   允许的位置参数个数：`set` 是 2（层 + 新名），`show`/`check` 是 0；其余一律报错退出。
+const allowedPositionals = parsed.cmd === 'set' ? 2 : 0
+const extra = (parsed.args || []).slice(allowedPositionals)
+if (extra.length) {
+  die(`多余参数：${extra.join(' ')} —— ${parsed.cmd} 只接受 ${allowedPositionals} 个位置参数（可用选项：--root <dir>）`)
+}
 const code = parsed.cmd === 'show' ? cmdShow(parsed)
   : parsed.cmd === 'check' ? cmdCheck(parsed)
     : cmdSet(parsed)

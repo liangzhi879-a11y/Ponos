@@ -11,7 +11,7 @@
 //
 // ── 三条纪律（判据的边界，别把范围读大）─────────────────────────────────
 // ① **只查声明点指向的那段文本**（某 key 的值 / `<title>` 的内容 / 某行注释 / 台账里某个 label），
-//    **不扫整文件、更不扫全仓** —— 全仓还有 **91 处 `Ponos-Turbo`** 散在 `kernel/`、`kernel-tests/`
+//    **不扫整文件、更不扫全仓** —— 全仓还有一批 `Ponos-Turbo` 散在 `kernel/`、`kernel-tests/`
 //    与 `docs/` 的**叙述性文本**里（真源 `knownWidespread` 已如实登记这些数字），那是**独立工作项**；
 //    若这里改成扫全仓，CT10 会永远红、红灯失去信息量（"经常红的门禁等于没有门禁"）。
 // ② **判据全部来自真源**：层名与字面量都写在 `brand.json` 的 `expects` 里 ⇒ 规则里**不硬编码任何
@@ -40,10 +40,19 @@ export const BRAND_TRUTH = 'kit/manifest/brand.json'
 export const REQUIRED_DECLARATIONS = [
   'product-name', 'window-title', 'app-id', 'npm-name',
   'app-label', 'kernel-label', 'lines-label-app', 'lines-label-kernel',
+  // ★ 第 9–14 条：复核审查指出"8 条 = 过度承诺"后补的 —— 这些都是**用户可见或对外分发**的声明点，
+  //   而且 kernel/package.json 那两条实测**残留着废弃别名**（`Ponos-turbo 内核独立部署包`），
+  //   恰恰证明了"没登记的声明点会悄悄漂移"。加进来后才算真的"统一管理"。
+  'meta-description', 'shortcut-name', 'copyright', 'pkg-description',
+  'kernel-pkg-name', 'kernel-pkg-description',
 ]
 
 /** 本规则支持的取值形态（真源里 kind 写别的 ⇒ 结构不合法，红） */
-export const DECL_KINDS = ['json-key', 'json-pointer', 'yaml-scalar', 'html-title', 'comment-label']
+export const DECL_KINDS = ['json-key', 'json-pointer', 'yaml-scalar', 'html-title', 'html-meta-description', 'comment-label']
+
+/** `retiredAliases[].scope` 的合法值。★ 只有 `declarations` 是**已实现**的语义；
+ *  `repo`（全仓禁）**没有实现** —— 真源若写成 repo 必须红，否则会给人"全仓都已受管"的错觉。 */
+export const RETIRED_SCOPES = ['declarations']
 
 /** 行号：在原始文本里 indexOf → 数换行（不引依赖；index<0 ⇒ null） */
 function lineOfIndex(text, index) {
@@ -153,6 +162,16 @@ export function extractDeclaration(decl, text) {
       if (m[1].trim() === '') return { missing: '<title> 的内容是空的' }
       return { value: m[1].trim(), segment: m[1], line: lineOfIndex(text, m.index) }
     }
+    case 'html-meta-description': {
+      // `<meta name="description" content="…">` —— 属性顺序/引号形态都不固定，所以只认"该标签里出现
+      // `name=description`" + 取 `content` 的值；取不到就 fail-closed 报"取不到值"（不静默绿）。
+      const tag = /<meta\b[^>]*name\s*=\s*["']?description["']?[^>]*>/i.exec(text)
+      if (!tag) return { missing: '没有 <meta name="description" …> 标签' }
+      const c = /content\s*=\s*"([^"]*)"|content\s*=\s*'([^']*)'/i.exec(tag[0])
+      const val = (c && (c[1] !== undefined ? c[1] : c[2])) || ''
+      if (val.trim() === '') return { missing: '<meta name="description"> 的 content 是空的' }
+      return { value: val.trim(), segment: tag[0], line: lineOfIndex(text, tag.index) }
+    }
     case 'comment-label': {
       // 「含该常量名的那一行注释」：只认**整行注释**（行首 `//`），取该行去掉注释符后的文本。
       // 为什么是"整行注释"而不是"该常量所在的行"：常量行（`export const APP_VERSION = …`）是**代码**，
@@ -204,6 +223,31 @@ export function loadBrandTruth({ readTracked } = {}) {
       // ★ severityIfWrong 的含义是"这一条错了会怎样"；本门禁只支持 red（品牌声明点一律**不可**降级：
       //   它既不能进基线豁免 —— BASELINE_FORBIDDEN 覆盖除 CT9 外的全部 CT —— 也不该只报不拦）。
       if (d.severityIfWrong !== RED) problems.push(`declaration ${d.id} 的 severityIfWrong 必须是 "${RED}"（品牌声明点不允许"只报不拦"）`)
+    }
+  }
+  // ★ 下面两块以前**没被校验**，但 finding 文案却宣称"已校验"（复核审查抓到的"说法与实现不符"）。
+  //   现在真校验：`retiredAliases` 的 `scope` 也真正参与判断（不再是"声明了却没意义"的装饰字段）。
+  if (!Array.isArray(truth.retiredAliases)) problems.push('retiredAliases[] 缺失（废弃别名是判据的来源）')
+  else {
+    for (const a of truth.retiredAliases) {
+      if (!a || typeof a !== 'object') { problems.push('retiredAliases[] 里有非对象条目'); continue }
+      if (!a.alias) problems.push('有一条 retiredAliases 没有 alias')
+      if (!a.replaceWith) problems.push(`retiredAliases ${a.alias} 没有 replaceWith（hint 要告诉人改成什么）`)
+      // scope 只有两种合法语义：'declarations' = 只在受管声明点里禁（当前唯一的语义，防门禁变噪声）；
+      // 'repo' = 全仓禁（**当前没有实现**，若真源写成 repo 就必须红 —— 否则会给人"全仓都已受管"的错觉）。
+      if (!RETIRED_SCOPES.includes(a.scope)) {
+        problems.push(`retiredAliases ${a.alias} 的 scope 不支持："${a.scope}"（合法值：${RETIRED_SCOPES.join(' / ')}；repo 语义未实现）`)
+      }
+    }
+  }
+  if (!Array.isArray(truth.knownWidespread)) problems.push('knownWidespread[] 缺失（规模快照要如实登记，哪怕数字会漂移）')
+  else {
+    for (const k of truth.knownWidespread) {
+      if (!k || typeof k !== 'object') { problems.push('knownWidespread[] 里有非对象条目'); continue }
+      if (!k.alias) problems.push('有一条 knownWidespread 没有 alias')
+      if (!k.counts || typeof k.counts !== 'object') problems.push(`knownWidespread ${k.alias} 缺少 counts（不要写裸数字：规模必须带口径）`)
+      if (!k.recompute) problems.push(`knownWidespread ${k.alias} 缺少 recompute（数字会漂移 ⇒ 必须给出可复算命令）`)
+      if (!k.why) problems.push(`knownWidespread ${k.alias} 缺少 why（要说明为什么不在门禁范围）`)
     }
   }
   return { truth, problems }

@@ -1,7 +1,7 @@
 {
   "name": "ponos-kernel",
   "version": "0.2.0",
-  "description": "Ponos-turbo 内核独立部署包（零 npm 依赖，无 GUI）",
+  "description": "ponos 内核独立部署包（零 npm 依赖，无 GUI）",
   "type": "module",
   "bin": { "ponos-kernel": "cli.mjs" },
   "main": "engine.mjs",

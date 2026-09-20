@@ -322,8 +322,20 @@ function renderBrand(d) {
   const aliasRows = ((t && t.retiredAliases) || []).map((a) => `<tr class="sev-red"><td class="mono">${esc(a.alias)}</td>`
     + `<td class="mono">${esc(a.replaceWith)}</td><td>${esc(orDash(a.layer))}</td><td>${esc(orDash(a.why))}</td>`
     + `<td class="mono">${esc(orDash(a.scope))}</td></tr>`)
+  // ★ 规模必须**从真源的 counts 结构读**（不是 `occurrences` 裸数字）：真源里存的是**带口径的多组计数**
+  //   + `recompute` 命令 —— 页面照抄真源、自己不另算一份（否则页面与真源会各说一套，本仓已吃过这个亏）。
+  const cnt = (k, key) => {
+    const c = (k.counts || {})[key]
+    return c ? `${c.lines} 处 / ${c.files} 文件` : '—'
+  }
   const wideRows = ((t && t.knownWidespread) || []).map((k) => `<tr><td class="mono">${esc(k.alias)}</td>`
-    + `<td class="num">${esc(k.occurrences)}</td><td class="num">${esc(k.files)}</td><td>${esc(orDash(k.why))}</td></tr>`)
+    + `<td class="num">${esc(cnt(k, 'exactCaseSensitive'))}</td>`
+    + `<td class="num">${esc(cnt(k, 'aliasFamily'))}</td>`
+    + `<td>${esc(orDash(k.why))}${k.measuredAt ? `<div class="dim">@${esc(k.measuredAt)} 量的快照（会漂移）</div>` : ''}`
+    + `${k.recompute ? `<div class="cmd"><code>${esc(String(k.recompute).split('\n')[0])}</code>${copyBtn(String(k.recompute).split('\n')[0])}</div>` : ''}</td></tr>`)
+  // 「已知**未**纳管」—— 把"还没统一"的地方如实摊开，避免页面给人"全都统一了"的错觉
+  const ungatedRows = ((t && t.knownUngated) || []).map((u) => `<tr><td>${esc(orDash(u.what))}</td>`
+    + `<td class="mono">${esc(orDash(u.where))}</td><td>${esc(orDash(u.why))}</td><td>${esc(orDash(u.carry))}</td></tr>`)
   const cmd = (c) => `<div class="cmd"><code>${esc(c)}</code>${copyBtn(c)}</div>`
   return ''
     + `<div class="card"><div class="card-h">品牌真源（<span class="mono">kit/manifest/brand.json</span>）—— 改它 = 重新定义品牌</div>`
@@ -348,7 +360,7 @@ function renderBrand(d) {
     + `<div class="note">别名判据：<b>只查受管声明点指向的那段文本</b>（某行注释 / 某 key 的值 / &lt;title&gt; 的内容 / 台账里的某条 label），`
     + `匹配<b>不区分大小写</b>；<b>不扫整文件、更不扫全仓</b>。</div>`
     + `<div class="card-h">已知广泛存在（★ 不在门禁范围：全仓统一改名是独立工作项）</div>`
-    + table(['别名', '出现处数', '文件数', '说明'], wideRows.length ? wideRows
+    + table(['别名', '精确写法', '含各种写法', '说明与复算命令'], wideRows.length ? wideRows
       : ['<tr><td colspan="4" class="note">真源里没有 knownWidespread。</td></tr>'], 'tbl')
     + `<div class="note">这些文本散在 <span class="mono">kernel/</span>、<span class="mono">kernel-tests/</span> 与 <span class="mono">docs/</span> 的`
     + `<b>叙述性文本</b>里 —— 它们不是"声明点"，改不改都不影响安装/显示；CT10 若去扫全仓会永远红（红灯失去信息量），故明确划在范围外。</div></div>`
@@ -356,8 +368,13 @@ function renderBrand(d) {
     + table(['id', 'label', '值', 'file:line', '声明载体', '真源声明点'], nameRows.length ? nameRows : ['<tr><td colspan="6" class="note">未取到。</td></tr>'], 'tbl') + '</div>'
     + `<div class="card"><div class="card-h">一致性提示（${(b.consistency || []).length}；warn 醒目、info 普通）</div>`
     + table(['level', 'message'], conRows.length ? conRows : ['<tr><td colspan="2" class="note">无提示。</td></tr>'], 'tbl')
-    + `<div class="note">一致性提示**只提示不断言**：真正的断言在 <b>CT10</b>（品牌真源 ↔ 8 条声明点，不可基线豁免）；`
+    + `<div class="note">一致性提示**只提示不断言**：真正的断言在 <b>CT10</b>（品牌真源 ↔ ${(t && t.declarations || []).length} 条声明点，不可基线豁免）；`
     + `本段只把"名分散在哪几处"显形。</div></div>`
+    + `<div class="card"><div class="card-h">已知**未**纳管的声明点（${((t && t.knownUngated) || []).length} 类；如实摊开，别把这里读成"全都统一了"）</div>`
+    + table(['是什么', '在哪', '为什么不纳管', '后续怎么处理'], ungatedRows.length ? ungatedRows
+      : ['<tr><td colspan="4" class="note">真源里没有 knownUngated。</td></tr>'], 'tbl')
+    + `<div class="note">这些位置<b>确实还带着旧名/未统一</b>，但形态零散（运行时代码字符串、i18n 文案、二进制资产、NSIS 方言），`
+    + `强行"改了必须红"会做成脆弱门禁 ⇒ 如实登记为<b>已知未纳管</b>，改名时按这份清单人工过一遍。</div></div>`
     + `<div class="card"><div class="card-h">标识资源清单（${(b.assets || []).length} 项；尺寸零依赖解析 —— PNG 读 IHDR，.ico 只记字节数）</div>`
     + table(['文件', 'kind', '尺寸（px）', '字节数'], assetRows.length ? assetRows : ['<tr><td colspan="4" class="note">未取到（资源文件都不存在？见「概览」的取数警告）。</td></tr>'], 'tbl')
     + `<div class="note">本视图<b>只读汇总</b>：名称与标识的<b>唯一真源</b>是 <span class="mono">kit/manifest/brand.json</span>，`

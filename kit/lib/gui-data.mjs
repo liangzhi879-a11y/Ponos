@@ -449,6 +449,9 @@ export function collectBrand({ root, warnings = [] } = {}) {
     })),
     retiredAliases: plain(truthRaw.retiredAliases) ?? [],
     knownWidespread: plain(truthRaw.knownWidespread) ?? [],
+    // ★ 也带上"已知**未**纳管"清单：页面必须能回答"还有哪些品牌声明点没被管住"，
+    //   否则读者会把这 14 条当成"品牌已全部统一"（过度承诺）。
+    knownUngated: plain(truthRaw.knownUngated) ?? [],
   }
   const declIds = new Set((truth?.declarations || []).map((d) => d.id))
 

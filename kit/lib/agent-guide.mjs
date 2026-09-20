@@ -35,7 +35,7 @@ export const AGENT_GUIDE = {
       title: '开工前（3 步）',
       items: [
         {
-          do: '读 `kit/README.md` 的「契约快照与范围登记」（含 committed 口径）与「规则表」（CT0–CT9）两节',
+          do: '读 `kit/README.md` 的「契约快照与范围登记」（含 committed 口径）与「规则表」（CT0–CT10）两节',
           why: '契约规则的真值取自**提交态（HEAD）**，不是工作树：不懂这条会把 CT8 的在途黄灯当成自己造的错，也会把"跑过 sync 了"误当成"在途端点已入账"。',
           cmd: null,
         },
@@ -149,7 +149,7 @@ export const AGENT_GUIDE = {
         },
         {
           do: '`CT9` = 渲染层 fetch 的历史欠账 ⇒ 基线**必须仍是 5 条且全 CT9**；摘除条目时同步下调 `history.baselineCount`',
-          why: '动这条等于伪造门禁：基线条目数超登记值会报 `BASE` 红，而契约对账类规则（CT0–CT8）根本不接受基线豁免（`BASELINE_FORBIDDEN`）。',
+          why: '动这条等于伪造门禁：基线条目数超登记值会报 `BASE` 红，而契约对账类规则（CT0–CT8）与品牌规则（CT10）根本不接受基线豁免（`BASELINE_FORBIDDEN`）。',
           cmd: 'node kit/cli.mjs check',
         },
       ],
@@ -162,7 +162,7 @@ export const AGENT_GUIDE = {
     '不许放宽断言：门禁要能红。删断言、把"精确相等"改成"包含"、把期望值改成实际值，都等于拆门禁。',
     '不许恒真断言：`assert.ok(true)`、`x === x` 这类恒真式，以及"用实现算出来的值当期望值"，都是做假。',
     '不许 `|| true` 吞错：CI 步骤不许 `continue-on-error` / `|| true` / `; exit 0` 把红变绿。',
-    '不许靠加基线让红变绿：`drift-baseline.json` 只放**真实的已知差异**（每条写 reason + 何时摘除），条目数不得增加；契约对账类（CT0–CT8）**不支持**基线豁免（`BASELINE_FORBIDDEN`），只有 CT9 的历史欠账可登记。',
+    '不许靠加基线让红变绿：`drift-baseline.json` 只放**真实的已知差异**（每条写 reason + 何时摘除），条目数不得增加；契约对账类（CT0–CT8）**与品牌规则（CT10）**都不支持基线豁免（`BASELINE_FORBIDDEN`），只有 CT9 的历史欠账可登记。',
   ],
   ci: {
     file: '.github/workflows/ci.yml',

@@ -14,7 +14,7 @@
 | 版本线 / 契约快照 | `kit/manifest/versions.json`（`npm run kit:sync` 重写事实字段） | `kit-report.html`、`kit-stamp.json` |
 | 依赖 / 内嵌 Python / 体积 | `kit/manifest/deps.json` | `docs/ci.md` 的计数 |
 | 契约面 ↔ 文档 | `docs/bridge-contract.md` §5/§6/§7/§7.1/§11/§12 + `kit/manifest/contract-scope.json` | 台账 `#channels`（快照） |
-| **品牌名称 / 标识** | **`kit/manifest/brand.json`（改它 = 重新定义，CT10 把关；`node scripts/brand.mjs show\|check\|set`）** | `version.mjs` 的两行注释、`versions.json` 的 `lines[].label` 由 `set`/sync 同步；`productName`/`<title>`/npm 包名/appId 要**手工**改（`set` 会列清单 + 给建议值） |
+| **品牌名称 / 标识** | **`kit/manifest/brand.json`（改它 = 重新定义，CT10 把关；`node scripts/brand.mjs show\|check\|set`）** | `version.mjs` 的两行注释、`versions.json` 的 `lines[].label` 由 `set`/sync 同步；`productName`/`<title>`/npm 包名/appId 要**手工**改（`set` 会列清单 + 给建议值）。★ 真源里还有 `knownUngated[]`（**已知未纳管**的声明点：运行时窗口标题、i18n 文案、安装器与图像资产、CLI 横幅）—— 改品牌时**要按这份清单人工过一遍**，别以为 14 条就是全部 |
 | agent 套件规范 | `kit/lib/agent-guide.mjs` | 本文件（只给指针）、GUI 第 8 段 |
 
 ## 开工前（3 步）

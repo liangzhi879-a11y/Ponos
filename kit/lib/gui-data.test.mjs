@@ -100,7 +100,7 @@ test('品牌一致性：缺 appId ⇒ 出现 level:warn（并在 warnings 里留
 
 // ── 品牌**真源**（本批新增：品牌标识与名称的统一管理）─────────────────────────
 
-test('★ 品牌真源进数据：真仓 8 条声明点（每条带 why）+ 探针按 id 对齐 + "已统一管理/CT10 把关"那条 info', () => {
+test('★ 品牌真源进数据：真仓 14 条声明点（每条带 why）+ 探针按 id 对齐 + "已统一管理/CT10 把关"那条 info', () => {
   const data = buildGuiData({ root: ROOT, checkJson: null })
   assert.deepEqual(data.brand.truth.layers.map((l) => [l.id, l.name]), [['app', 'YFWorking'], ['kernel', 'ponos']])
   assert.equal(data.brand.truth.declarations.length, 8, '8 条声明点都要在（少一条 = CT10 会红）')
