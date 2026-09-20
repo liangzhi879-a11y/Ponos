@@ -1,8 +1,8 @@
 // 版本升级脚本（开发流程强制入口）——升级版本号禁止手改文件。
 // ---------------------------------------------------------------------------
 // 用法：
-//   node scripts/bump-version.mjs app 3.0.1     # Ponos 应用（turbo 内核版）
-//   node scripts/bump-version.mjs kernel 0.2    # Ponos-Turbo 内核（同步 kernel/package.json）
+//   node scripts/bump-version.mjs app 3.0.1     # YFWorking 应用（ponos 内核版）
+//   node scripts/bump-version.mjs kernel 0.2    # ponos 内核（同步 kernel/package.json）
 //   node scripts/bump-version.mjs pkg 2.9.0     # GUI 发布线（package.json version）
 //   node scripts/bump-version.mjs app 3.0.1 --dry-run   # 演练：只打印将发生的改动
 // 版本格式：dev <major>.<minor>[.<patch>]（发布稳定后去掉 dev 前缀）。
@@ -30,8 +30,8 @@ const VERSIONS_LEDGER = join(ROOT, 'kit', 'manifest', 'versions.json')
 // 三条可 bump 的版本线。`ledgerKeyOf()` 返回该线在 kit/manifest/versions.json 里的台账键
 // （`<id>@<file>`，与 ledger.mjs 的 keyOfVersion 同构）—— 台账同步靠它对号入座。
 const TARGETS = {
-  app: { const: 'APP_VERSION', label: 'Ponos 应用（turbo 内核版）', ledgerKeyOf: () => 'APP_VERSION@version.mjs' },
-  kernel: { const: 'KERNEL_VERSION', label: 'Ponos-Turbo 内核', ledgerKeyOf: () => 'KERNEL_VERSION@version.mjs' },
+  app: { const: 'APP_VERSION', label: 'YFWorking 应用（ponos 内核版）', ledgerKeyOf: () => 'APP_VERSION@version.mjs' },
+  kernel: { const: 'KERNEL_VERSION', label: 'ponos 内核', ledgerKeyOf: () => 'KERNEL_VERSION@version.mjs' },
   pkg: { jsonPath: 'version', label: 'GUI 发布线', ledgerKeyOf: () => 'GUI_VERSION@package.json' },
 }
 
