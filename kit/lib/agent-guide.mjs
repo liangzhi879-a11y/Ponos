@@ -35,7 +35,7 @@ export const AGENT_GUIDE = {
       title: '开工前（3 步）',
       items: [
         {
-          do: '读 `kit/README.md` 的「契约快照与范围登记」（含 committed 口径）与「规则表」（CT0–CT10）两节',
+          do: '读 `kit/README.md` 的「契约快照与范围登记」（含 committed 口径）与「规则表」（CT0–CT11）两节',
           why: '契约规则的真值取自**提交态（HEAD）**，不是工作树：不懂这条会把 CT8 的在途黄灯当成自己造的错，也会把"跑过 sync 了"误当成"在途端点已入账"。',
           cmd: null,
         },
@@ -164,6 +164,74 @@ export const AGENT_GUIDE = {
     '不许 `|| true` 吞错：CI 步骤不许 `continue-on-error` / `|| true` / `; exit 0` 把红变绿。',
     '不许靠加基线让红变绿：`drift-baseline.json` 只放**真实的已知差异**（每条写 reason + 何时摘除），条目数不得增加；契约对账类（CT0–CT8）**与品牌规则（CT10）**都不支持基线豁免（`BASELINE_FORBIDDEN`），只有 CT9 的历史欠账可登记。',
   ],
+  // ★ 自动注入入口：规范"不必靠 agent 自觉去找"的那一层。此前它**只在会话提示词里被口头描述**、
+  //   真源里零登记 ⇒ 改了真源忘改入口不会红（与本批刚修的 `lines[].label` 是同一类"无门禁"漏洞）。
+  entry: {
+    file: 'AGENTS.md',
+    why: '多数 agent 工具（Codex / Cursor / Cline 等）开工时会自动读**仓库根**的这个文件；'
+      + 'Ponos 内核自己也自动发现它（`kernel/prompt.mjs`：从 cwd 逐级向上直到 `.git` 所在目录 + `--add-dir` 的根）。'
+      + '⇒ 它是"入口层"，**不是**第二份清单。',
+    mustMention: [
+      {
+        id: 'truth-source',
+        contains: 'kit/lib/agent-guide.mjs',
+        why: '入口必须指出**完整清单在哪**（本文件）。不指出来，入口自己就会长成第二份清单 —— 那必然漂移。',
+      },
+      {
+        id: 'kit-check',
+        contains: 'npm run kit:check',
+        why: '"开工拿基线 / 交付红 0"必须可见 —— 这是唯一被 CI 拦的命令，agent 不照做整套纪律都落空。',
+      },
+      {
+        id: 'assertion-rules',
+        contains: '四条断言与基线纪律',
+        why: '入口与真源必须用**同一个名字**称呼这份清单（真源 `assertionRules`），否则会被读成两份不同的规矩。',
+      },
+      {
+        id: 'iron-rules-disambiguation',
+        contains: '四条铁律',
+        why: '★ 本仓有**两份**"四条"清单（`assertionRules` 与 README 的「四条铁律」）同名不同物、并行生效；'
+          + '入口必须点明这一点并指向真源，否则"铁律 4"会被当成同一个东西 —— 这是本批实际修过的误解。',
+      },
+      {
+        id: 'no-add-all',
+        contains: 'git add -A',
+        why: '本仓常态**数十项**他人在途改动 ⇒ "不许 `git add -A`"是开工第一次提交就会踩的红线。',
+      },
+      {
+        id: 'quote-test-glob',
+        contains: '"kit/**/*.test.mjs"',
+        why: '引号不是风格问题：不加引号时 shell 把 `**` 当单个 `*`，**静默漏跑** `kit/cli.test.mjs` 与 `kit/gui.test.mjs`。',
+      },
+    ],
+    maxLines: 90,
+    maxLinesWhy: '入口写长就必然**变成第二份清单** —— 把真源的内容抄一份，两份漂移是迟早的事。'
+      + `真源永远只允许一份（\`kit/lib/agent-guide.mjs\`）：入口只放"入口 + 红线 + 坑"。`,
+    // ★ 入口必须能随"更新"进入便携版（调试版）。**用户口径（2026-09-20）**：
+    //   "人工测试跑的是 release 中的便携版（调试版）" + "确保调试版更新了不会掉"。
+    //   实测这件事此前**完全没有保障**：`AGENTS.md` 不在任何同步清单里 ⇒ 便携版里从来就没有入口，
+    //   调试版里跑的 agent **不受规范约束**，而且**症状是静默的**（面板上看不出来 —— 不是"掉了"，
+    //   而是"从来没有过"）。所以把它登记进真源、由 CT11 核（删掉清单项即红）。
+    portableSync: {
+      why: '人工测试跑的是 `release/YFWorking`（便携版/调试版）⇒ 入口必须能随更新进入便携版，'
+        + '否则调试版里的 agent 不受规范约束。★ 三条路径缺哪条都会造成"以为同步了、其实没带上"。',
+      paths: [
+        { file: 'electron/dev-source-sync.cjs', mustContain: ['AGENTS.md'], what: '调试版**每次启动**的 autoSync（`.yfw-dev-source.json` 的 `autoSync: true`）—— 这条才是人工测试时实际走的路径' },
+        { file: 'scripts/verify-portable-layout.mjs', mustContain: ['AGENTS.md'], what: '便携版布局校验（真掉了会让这条红，而不是无声无息）' },
+      ],
+      // ★ 为什么"打包同步"那条**没**登记成判据（而不是漏了）：
+      //   `scripts/package-portable-zip.mjs` 目前**未被 git 跟踪**（他人在途的新文件）。
+      //   CT11 读**提交态** ⇒ 若把它登记进 `paths[]`，门禁会**永远红**（读不到文件），
+      //   而"永远红"等于没有红灯（本仓最忌）。本批已把它改好（新增 `SYNC_FILES = ['AGENTS.md']`
+      //   + `walk()` 之外的单文件循环），等它入库后应**立刻**补进 `paths[]`。
+      pending: [{
+        file: 'scripts/package-portable-zip.mjs',
+        mustContain: ['AGENTS.md'],
+        what: '打包/手工同步（`--sync`：把仓库源码同步进 release/YFWorking）—— 少了它，用打包/同步方式更新出来的便携版就没有入口（调试版里 agent 静默不受约束）',
+        why: '★ 未跟踪期间不登记成判据（否则门禁永远红 ⇒ "永远红"等于没有红灯）；**一旦它入库就自动开始核**（条件判据，无需人工补登记）。',
+      }],
+    },
+  },
   ci: {
     file: '.github/workflows/ci.yml',
     line: 72,

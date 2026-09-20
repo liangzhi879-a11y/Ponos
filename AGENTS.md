@@ -10,6 +10,17 @@
 （`docs/bridge-contract.md`）或快照（`kit/manifest/versions.json`）不一致，`npm run kit:check` 就会**红**，
 CI（`.github/workflows/ci.yml`）会拦。**任何改动契约面的开发都必须按套件规范执行。**
 
+## 本入口自身也受门禁管（CT11）
+
+- 本文件是**自动注入入口**：多数 agent 工具开工时自动读**仓库根**的同名文件；Ponos 内核也自动发现它
+  （`kernel/prompt.mjs#discoverAgentsMd`：从 cwd 逐级向上到 `.git` 所在目录 + `--add-dir` 的根）
+  ⇒ 所以它必须在**仓根**（放子目录无效；工具只看打开的那个根）。
+- **CT11** 核它，且**不可基线豁免**：① 真源登记的必备锚点是否还在（如 `npm run kit:check`、`git add -A` 红线、
+  测试 glob 的引号风险）；② 行数是否 ≤ 90（**写长 = 变成第二份清单 ⇒ 必然漂移**）；
+  ③ ★ **它是否还在便携版同步清单里** —— 人工测试跑的是 `release/` 里的**便携版（调试版）**，
+  入口进不去 = 调试版里的 agent **静默地不受规范约束**（面板上看不出来）。
+- 入场/改入口时**同时**维护真源 `kit/lib/agent-guide.mjs` 的 `entry`（锚点、行数上限、三条同步路径都登记在那儿）。
+
 ## 开工前必做（两条）
 
 1. **读规范**：`npm run kit:agent`（打印完整清单的纯文本；真源 `kit/lib/agent-guide.mjs`），或读 `kit/AGENT.md`。

@@ -137,7 +137,10 @@ node scripts/ci-preflight.mjs --allow-running-app
 - **在 CI 里的位置**：`.github/workflows/ci.yml` 的 `test` 作业里**单独一步**（`typecheck` 之后、`test:ci` 之前），
   命令 `npm run kit:check`。单独一步是**归因**需要（"台账漂移"与"测试挂了"是两类问题，一眼可辨）；
   `test:ci` 链路里也含它，本地一条命令即可跑全。**这条门禁必须进 CI 的理由**见本节末。
-- **规则集**：版本侧 `V1–V8′`（11 个规则号）+ 依赖侧 `P0–P7`（8 个）+ **契约侧 `CT0–CT10`（13 个，含 `CT4B`/`CT4C`/`CT8`/`CT10`）**
+- **规则集**：版本侧 `V1–V8′`（11 个规则号）+ 依赖侧 `P0–P7`（8 个）+ **契约侧 `CT0–CT11`（14 个，含 `CT4B`/`CT4C`/`CT8`/`CT10`/`CT11`）**
+  - `CT10`（品牌声明点 ↔ `kit/manifest/brand.json`）与 `CT11`（agent 自动注入入口 ↔ `AGENT_GUIDE.entry`，
+    含"入口必须留在便携版同步清单里"）都是**不可基线豁免**的红灯规则 —— 判据落在
+    `BASELINE_FORBIDDEN`（"除 `CT9` 外全部 `CT`"）之内，因此新增规则号会自动继承这一点。
   + 护栏 `BASE`/`BASELINE_NO_REASON`，逐条释义见 `kit/README.md`（「读红灯的正确姿势」与「契约快照与范围登记」两节）。
   **P1.5（2026-09-19）起契约面对账覆盖五类**：路由（§7）、WS 出/入（§5/§6）、IPC 推送通道（§11）、
   工具出口 + 结构指纹（§12）—— `CT2` 由"3 类"扩到"5 类"，`CT3` 新增"IPC 通道 ∈ 代码 push 侧"与
@@ -234,7 +237,8 @@ node scripts/ci-preflight.mjs --allow-running-app
   条目数受 `versions.json` 的 `history.baselineCount` 护栏限制（超了直接红 `BASE`）；
   豁免**红灯**还必须在该条目里显式写 `"severity": "red"`（缺 `reason` 也红：`BASELINE_NO_REASON`）。
   规则号逐条释义（**32 个规则号** + `BASE`/`BASELINE_NO_REASON`）见 `kit/README.md`；
-  契约侧（`CT0–CT10`、登记文件、committed 口径）见该文「**契约快照与范围登记**」与「**品牌标识与名称的统一管理**」两节。
+  契约侧（`CT0–CT11`、登记文件、committed 口径）见该文「**契约快照与范围登记**」、「**品牌标识与名称的统一管理**」
+  与「**agent 自动注入入口（`AGENTS.md`）与其「不掉」保障**」三节。
 - **相关命令**：
   | 命令 | 作用 | 是否写文件 |
   |---|---|---|

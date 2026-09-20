@@ -12,7 +12,12 @@ const requiredDir = ['dist', 'electron', 'server', 'public', 'pet', 'pet/assets'
   'kernel', 'shared', 'node_modules/electron']
 const requiredFile = ['node.exe', 'YFWorking.vbs', 'YFWorking-debug.bat',
   'electron/electron.exe', 'electron/main.cjs', 'kernel/cli.mjs',
-  'runtime/python/python.exe', 'public/icon.ico', 'public/icon.png', 'public/logo.png']
+  'runtime/python/python.exe', 'public/icon.ico', 'public/icon.png', 'public/logo.png',
+  // ★ agent 自动注入入口：工具开工自动读**仓根**同名文件；Ponos 内核也自动发现它
+  //   （`kernel/prompt.mjs#discoverAgentsMd`：从 cwd 逐级向上 + `--add-dir` 的根）。
+  //   ★ 用户口径（2026-09-20）：**人工测试跑的就是 release 里的便携版（调试版）** ⇒ 入口没进便携版，
+  //   调试版里的 agent 就**不受规范约束**（静默失效）。它此前不在任何同步清单里 ⇒ 从不进便携版。
+  'AGENTS.md']
 let fail = 0
 for (const d of requiredDir) if (!existsSync(join(R, d))) { console.error('MISSING DIR:', d); fail++ }
 for (const f of requiredFile) if (!existsSync(join(R, f))) { console.error('MISSING FILE:', f); fail++ }

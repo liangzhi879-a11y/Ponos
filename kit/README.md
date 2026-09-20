@@ -134,7 +134,37 @@ node -e "const c=require('./kit/manifest/versions.json').channels;console.log(Ob
 与在途差异一行（`（契约）在途差异（CT8，黄、只报不拦）：…`）—— **无差异时也明说"无"**（"没打印"与"没有差异"不是一回事），
 且这一行**自报扫描域**（`扫描域：git 跟踪 + 未忽略的未跟踪文件` —— CT8 的工作树侧域，见规则表 `CT8` 行）。
 
-### 规则表（`CT` 号段：CT0–CT10，含 CT4 的两个子规则与品牌 CT10）
+### agent 自动注入入口（`AGENTS.md`）与其「不掉」保障
+
+**入口是什么**：仓根的 `AGENTS.md`。多数 agent 工具（Codex / Cursor / Cline…）开工时会**自动读仓库根**的这个文件；
+Ponos 内核自己也自动发现它 —— `kernel/prompt.mjs#discoverAgentsMd`：从 cwd **逐级向上直到 `.git` 所在目录**，
+再加 `--add-dir` 的根（每个候选目录里若有 `AGENTS.md` 就注入）。⇒ 它是"规范不必靠 agent 自觉去找"的那一层，
+**不是**第二份清单（唯一真源仍是 `kit/lib/agent-guide.mjs`）。
+
+**为什么要有门禁（CT11）**：实测它此前**只在会话提示词里被口头描述、真源零登记、无任何校验** ——
+改了真源忘改入口**不会红**，跟 `versions.json#lines[].label` 当初"无门禁、标签与口径正面冲突却永远不红"
+是**同一类漏洞**。CT11 把它登记进真源（`entry.mustMention[]` 锚点 + `entry.maxLines` 上限 + `entry.portableSync`）并逐条核。
+
+**★ 便携版（调试版）"更新了不会掉"**（用户口径 2026-09-20："人工测试跑的是 release 中的便携版（调试版）"）：
+实测 `AGENTS.md` 此前**不在任何同步清单里** ⇒ 便携版里**从来就没有入口** ⇒ 在调试版里跑的 agent
+**静默地不受规范约束**（症状不是"更新后掉了"，而是"从来没有过"，而且面板上看不出来）。
+CT11 因此把**三条同步路径**也纳入判据（`entry.portableSync.paths`），谁删清单项就红：
+
+| 路径 | 作用 |
+|---|---|
+| `scripts/package-portable-zip.mjs` 的 `SYNC_FILES` | 打包/手工同步（`--sync`）——★ 注意 `--dry-run` **只**决定"是否写 zip"，`syncPortable()` 照常执行 |
+| `electron/dev-source-sync.cjs` 的 `SYNC_DIRS` | 调试版**每次启动**的 autoSync（`.yfw-dev-source.json` 的 `autoSync: true`）；`listFiles()` 已支持**单文件条目** |
+| `scripts/verify-portable-layout.mjs` 的 `requiredFile` | 便携版布局校验：入口真掉了会 **EXIT=1**（而不是无声无息） |
+
+**边界**：`kit/` **不**进便携版 —— 它是**开发门禁**（规则读 `HEAD`、要 `docs/bridge-contract.md` 与台账），
+便携版没有 `docs/`、也不是 git 仓 ⇒ 塞进去跑必然全红，只会变噪声。盖章（`kit/cli.mjs stamp`）也是在**仓库里**跑、
+写 `release/YFWorking/kit-stamp.json`，因此同样不需要把 `kit/` 同步进产品。
+
+**入口自己也要守规矩**：CT11 会核"必备锚点是否还在"（如 `npm run kit:check`、四条断言与基线纪律、不许 `git add -A`、
+测试 glob 必须带引号、以及"本仓有两份『四条』清单"的消歧），并限制行数（>90 行 ⇒ 红，那是"变成第二份清单"的信号）。
+★ 反过来，CT11 **不评价**入口的文风/排版（锚点齐全但排版难看 ⇒ 仍然绿）—— 门禁不做风格警察。
+
+### 规则表（`CT` 号段：CT0–CT11，含 CT4 的两个子规则、品牌 CT10 与 agent 入口 CT11）
 
 | id | 判据（一句话） | 严重度 | 改坏了会怎样（变异） |
 |---|---|---|---|
@@ -152,6 +182,7 @@ node -e "const c=require('./kit/manifest/versions.json').channels;console.log(Ob
 | CT8 的**扫描域** | 提交态侧 = `git ls-files`（索引）；**工作树侧 = 索引 ∪ 未忽略的未跟踪文件**（`git ls-files --cached --others --exclude-standard`，第 4 批补：未 `git add` 的新源文件原先整块不可见） | —— | 域仍由 git 决定（**不是**磁盘遍历）：`release/`、`kernel-dist/`、`node_modules` 等被忽略的镜像/产物目录在域外；`worktreeClean` 的捷径还要求索引里全是普通 `H`（`--assume-unchanged`/`--skip-worktree` 会让 `git status` 说谎） |
 | CT9 | 渲染层 `src` 的 fetch 路径 → server 路由**单向**差集 | **黄、只报不拦** | ——（D8 历史欠账，逐条登记在 `drift-baseline.json`） |
 | CT10 | **品牌声明点 ↔ 品牌真源**：`kit/manifest/brand.json` 的 14 条声明点逐条对账（层名"出现"即过 / 字面量须精确相等）+ 受管声明点里不得出现废弃别名 `Ponos-Turbo`（大小写不敏感） | 红（**不可基线豁免**） | 改 `productName` / `<title>` / `version.mjs` 的那两行注释 / 台账 `lines[].label` 而不动真源；把内核层注释改回 `Ponos-Turbo`；删掉或写坏 `brand.json`（真源不可读 ⇒ 红且不抛） |
+| CT11 | **agent 自动注入入口 ↔ 真源**：仓根 `AGENTS.md` 必须存在、含真源 `entry.mustMention[]` 登记的每条必备锚点、行数 ≤ `entry.maxLines`（不许长成第二份清单）；★ 并且**必须留在便携版同步清单里**（详见下节） | 红（**不可基线豁免**） | 删掉入口、抠掉某条锚点（如 `git add -A` 那条红线）、把入口写长、走 `rename` 把入口搬走；或从 `scripts/package-portable-zip.mjs` / `electron/dev-source-sync.cjs` 的清单里删掉 `AGENTS.md` |
 
 两条"黄、只报不拦"的规则在报告里各占一个 `checkResult`，`passed=false` 表示"确实有东西"，但**不影响退出码**。
 
@@ -504,13 +535,21 @@ npm run kit:agent                        # ★ 给 agent：打印套件规范纯
   **CT10 已生效**（14 条声明点逐条对账、**不可基线豁免**），结论逐条出现在「红灯与黄灯」与「规则矩阵」里；
   探针表新增 `declId` 一列（探针与真源声明点**按 id 对齐**，对不齐的显示 `—`，不硬凑）。
 
-### agent 每次开发如何按套件规范执行（三层，防漂移）
+### agent 每次开发如何按套件规范执行（四层，防漂移）
 
 1. **单一真源**：`kit/lib/agent-guide.mjs` 的 `AGENT_GUIDE`（纯数据：四段「开工前 / 改动契约面时 / 交付前 / 红灯怎么修」
-   + 四条铁律 + CI 锚点）。**清单内容只写在这一处**。
+   + 四条铁律 + CI 锚点 + **入口登记 `entry`**）。**清单内容只写在这一处**。
 2. **两个消费端**：GUI 的第 8 段渲染它；`npm run kit:agent` 给 agent 打印**纯文本**（含可复制命令）。
-3. **入口**：`kit/AGENT.md`（简短，≤60 行，**只指向真源、不复制清单**）+ CI 已有的 `npm run kit:check`
-   （`.github/workflows/ci.yml`）作最后拦截。
+3. **入口层（两个文件，别混）**：
+   - **仓根 `AGENTS.md`** = **自动注入入口**（工具开工自动读仓根同名文件；Ponos 内核也自动发现 ——
+     `kernel/prompt.mjs#discoverAgentsMd` 从 cwd 逐级向上到 `.git` 所在目录 + `--add-dir` 根）。
+     极短，只放"入口 + 红线 + 坑"，**必须指向真源**（否则它自己会长成第二份清单）。
+     ★ **它要进便携版**（调试版人工测试环境）—— 三条同步路径见上文《agent 自动注入入口与其「不掉」保障》；
+     此前它**不在任何同步清单里** ⇒ 调试版里**从来没有**入口，agent 静默不受约束。
+   - **`kit/AGENT.md`** = 规范清单的**可读副本**（≈ `npm run kit:agent` 的内容，≤60 行），给"已经在本仓翻文档的人"。
+     ★ 它**不是**自动注入入口 —— 别把这两者当成一个（这正是本节的由来：早先 README 把入口写成了 `kit/AGENT.md`）。
+4. **门禁**：**CT11** 核入口（必备锚点 + 行数上限 + **便携版同步清单**，真源 = `AGENT_GUIDE.entry`，
+   **不可基线豁免**）；CI 里的 `npm run kit:check`（`.github/workflows/ci.yml`）作最后拦截。
    ★ **有牙齿**：`report.test.mjs` 会核对 `AGENT_GUIDE.ci.line` 与 CI 文件里 `kit:check` 的**实际行号**
    —— CI 挪了行号而没同步 ⇒ 测试红。
 
@@ -537,7 +576,7 @@ kit/lib/contract-ipc.mjs    IPC 通道提取器（按侧：invoke/handle/send/on
 kit/lib/contract-tools.mjs  工具 schema 提取器（运行时出口 + 静态 registry + 结构指纹）
 kit/lib/contract-doc.mjs    bridge-contract.md 解析器（§5/§6/§7/§7.1 表）
 kit/lib/contract-snapshot.mjs 契约快照（复算 / 落盘 / 逐类比较）
-kit/lib/contract-rules.mjs  CT0–CT10（含 CT4B/CT4C/CT8 与品牌 CT10）
+kit/lib/contract-rules.mjs  CT0–CT11（含 CT4B/CT4C/CT8 与品牌 CT10、agent 入口 CT11）
 kit/lib/brand-rules.mjs     ★ CT10：品牌声明点 ↔ 品牌真源（8 条；零依赖取值；只查声明点那一段）
 kit/lib/contract-scope.mjs  范围登记判定（只读；禁通配、禁自动生成）
 kit/lib/python-manifest.mjs 内嵌 Python 包清单的唯一读取入口（构建脚本与测试同源）

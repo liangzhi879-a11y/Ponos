@@ -52,9 +52,10 @@ import { extractTools } from './contract-tools.mjs'
 import { buildSnapshot, diffSnapshot, channelsProblems } from './contract-snapshot.mjs'
 import { checkScopeSets, contractGrowth, keyOf } from './contract-scope.mjs'
 import { brandCheck } from './brand-rules.mjs'
+import { agentEntryCheck } from './agent-entry-rules.mjs'
 
-/** 规则号段（顺序即报告顺序）：CT0–CT10，含 CT4 的两个子规则、在途差异 CT8 与品牌声明点 CT10 */
-export const CT_RULES = ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10']
+/** 规则号段（顺序即报告顺序）：CT0–CT11，含 CT4 的两个子规则、在途差异 CT8、品牌声明点 CT10、agent 入口 CT11 */
+export const CT_RULES = ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10', 'CT11']
 
 /** 路径主体标识符（与 contract-routes.mjs 的 SUBJECT 同口径 —— 独立实现，不 import 它的私有常量）
  *  ★ 引号必须与提取器**同口径**（第 4 批）：单/双都认。少认一种 ⇒ 同一处字面量在提取器里"有归宿"、
@@ -799,6 +800,16 @@ export async function runContractRules({
   const brand = brandCheck({ readTracked: read, files: tracked })
   for (const f of brand.findings) findings.push(f)
   checks.push(brand.check)
+
+  // ── CT11：agent 自动注入入口 ↔ 真源（仓根 `AGENTS.md`；不可基线豁免）────────────────
+  //   ★ 存在的理由：入口是"规范不必靠 agent 自觉去找"的那一层（工具开工自动读仓根同名文件；
+  //     Ponos 内核也自动发现 —— `kernel/prompt.mjs#discoverAgentsMd` 从 cwd 上溯到 `.git` 所在目录）。
+  //     它此前**只在会话提示词里被口头描述、真源零登记** ⇒ 改了真源忘改入口不红。
+  //   ★ 读**提交态**，与 CT0–CT10 同口径（口径一致才谈得上"一整套规则"）。
+  //   ★ 基线：`BASELINE_FORBIDDEN` 判据是"除 CT9 外全部 CT" ⇒ CT11 自动**不可豁免**（刻意如此）。
+  const entry = agentEntryCheck({ readTracked: read })
+  for (const f of entry.findings) findings.push(f)
+  checks.push(entry.check)
 
   return { checks, findings }
 }

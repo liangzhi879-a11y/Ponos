@@ -36,7 +36,12 @@ const { join, dirname, relative } = require('node:path')
 /** 便携版根目录里的标记文件名（记录源码根与是否自动同步） */
 const MARKER_FILE = '.yfw-dev-source.json'
 /** 需要同步的运行时子树：内核、内核共享、服务端（含 *.py）、主进程、渲染产物、运行时静态资源 */
-const SYNC_DIRS = ['kernel', 'shared', 'server', 'electron', 'dist', 'public', 'build/templates']
+//   末尾的 `AGENTS.md` 是**单文件条目**（`listFiles` 已支持）：它是 **agent 自动注入入口** ——
+//   工具开工自动读**仓根**同名文件，Ponos 内核也自动发现它（`kernel/prompt.mjs#discoverAgentsMd`：
+//   从 cwd 逐级向上到 `.git` 所在目录 + `--add-dir` 的根）。★ 用户口径（2026-09-20）：
+//   **人工测试跑的就是 release 里的便携版（调试版）** ⇒ 入口不进便携版，调试版里的 agent 就**不受规范约束**。
+//   它此前不在任何同步清单里 ⇒ 从来没进过便携版（表现为"更新了也一直没有"，而非"更新后掉了"）。
+const SYNC_DIRS = ['kernel', 'shared', 'server', 'electron', 'dist', 'public', 'build/templates', 'AGENTS.md']
 // 「镜像目录」：这些目录的内容**完全由构建产生**（`npm run build` 会先清空 outDir），因此源码侧
 // 的目录树总是完整自洽的 —— 于是反向操作也安全：以源码为准**删掉应用树里多余的文件**。
 //
@@ -87,6 +92,12 @@ function listFiles(root, dir) {
   const base = join(root, dir)
   const out = []
   if (!existsSync(base)) return out
+  // ★ 单文件条目（如 `AGENTS.md`）：`readdirSync` 对文件会抛 ENOTDIR ⇒ 先识别再决定怎么遍历。
+  //   没有这一步，"把入口文件放进同步清单"会在启动同步时直接抛错（比不同步更糟）。
+  if (statSync(base).isFile()) {
+    const rel = relative(root, base).replace(/\\/g, '/')
+    return SKIP_RE.test(rel) ? out : [rel]
+  }
   const walk = (p) => {
     for (const e of readdirSync(p, { withFileTypes: true })) {
       const f = join(p, e.name)

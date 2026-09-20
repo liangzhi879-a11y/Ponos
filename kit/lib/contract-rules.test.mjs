@@ -1,4 +1,4 @@
-// kit/lib/contract-rules.test.mjs —— 契约对账规则 CT0–CT10（T7）
+// kit/lib/contract-rules.test.mjs —— 契约对账规则 CT0–CT11（T7）
 //
 // 全部用**夹具仓**（mkdtemp + 显式 files，不依赖 git 与本机状态），每条规则都能独立失败。
 // ★ 红线（plan §7 反例⑤）：**CT1 必须现场重算** —— 手改快照一个端点即使文档/scope 全都自洽，
@@ -9,6 +9,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { readTracked } from './scan.mjs'
+import { AGENT_GUIDE } from './agent-guide.mjs'
 import { buildSnapshot } from './contract-snapshot.mjs'
 import { parseDoc } from './contract-doc.mjs'
 import { fingerprintOf } from './contract-tools.mjs'
@@ -107,6 +108,17 @@ const FX_BRAND_JSON = JSON.stringify({
 /** 把 **14 条**声明点所需的文件写进夹具（`write` 由各夹具自己给，签名见 `fixture()`）
  *  ★ 条数必须与 `brand-rules.mjs#REQUIRED_DECLARATIONS` 一致：少写一条 ⇒ `CT10` 判"真源结构不合法"而红
  *  ——这是 fail-closed 该有的行为，所以夹具必须跟着真源走。 */
+/** 写"**合格的 agent 入口夹具**"（CT11 用）：内容**从真源锚点派生** ⇒ 真源加锚点/加同步路径时夹具自动跟上
+ *  （否则每扩一次真源，一堆夹具仓就集体红 —— 那是夹具的问题，不是规则的问题）。
+ *  CT11 还核"入口是否留在便携版同步清单里"，所以同步路径文件也要造出来（内容含登记的关键串）。 */
+function writeEntryFixture(write) {
+  const e = AGENT_GUIDE.entry
+  write('AGENTS.md', ['# AGENTS（夹具入口）', ...e.mustMention.map((m) => `- ${m.contains}`)].join('\n') + '\n')
+  for (const p of [...e.portableSync.paths, ...(e.portableSync.pending || [])]) {
+    write(p.file, `// 夹具：便携版同步清单\n${p.mustContain.join('\n')}\n`)
+  }
+}
+
 function writeBrandFixture(write, { npmName = 'fx-pkg' } = {}) {
   const truth = JSON.parse(FX_BRAND_JSON)
   truth.declarations.find((d) => d.id === 'npm-name').expects.literal = npmName
@@ -183,6 +195,7 @@ function fixture({ mutate = null } = {}) {
     files.push(rel)
   }
   writeBrandFixture(write)
+  writeEntryFixture(write)
   write('server/alpha-routes.mjs', ALPHA)
   write('server/ws-hub.mjs', WS_HUB)
   write('electron/preload.cjs', [
@@ -260,10 +273,10 @@ const rewrite = (root, rel, fn) => writeFileSync(join(root, rel), fn(readFileSyn
 const rulesFired = (out) => [...new Set(out.findings.map((x) => x.rule))].sort()
 const reds = (out) => out.findings.filter((x) => x.severity === 'red')
 
-test('规则集固定：CT0–CT10（含 CT4B/CT4C、CT8 与品牌 CT10）逐条产出 checkResult', async () => {
+test('规则集固定：CT0–CT11（含 CT4B/CT4C、CT8、品牌 CT10 与 agent 入口 CT11）逐条产出 checkResult', async () => {
   const out = await run(await setup())
   assert.deepEqual([...out.checks.map((c) => c.rule)].sort(), [...CT_RULES].sort())
-  assert.deepEqual(CT_RULES, ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10'])
+  assert.deepEqual(CT_RULES, ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10', 'CT11'])
 })
 
 test('基准夹具全绿（除 CT9 的黄灯：前端 fetch 存在无 server 路由的 /ghost-path）', async () => {

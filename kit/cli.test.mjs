@@ -19,6 +19,18 @@ import { fileURLToPath } from 'node:url'
 import { parseCiChain, ciChainScripts } from '../scripts/test-tiers.mjs'
 import { trackedFiles } from './lib/scan.mjs'
 import { syncVersions } from './lib/ledger.mjs'
+import { AGENT_GUIDE } from './lib/agent-guide.mjs'
+
+/** 写"**合格的 agent 入口夹具**"：内容**从真源锚点派生** ⇒ 真源加锚点时夹具自动跟上
+ *  （否则每次扩真源都会让一堆夹具仓集体红 —— 那是夹具的问题，不是规则的问题）。
+ *  CT11 还核"入口是否留在便携版同步清单里"，所以同步路径文件也要造出来（内容含登记的关键串）。 */
+function writeEntryFixture(write) {
+  const e = AGENT_GUIDE.entry
+  write('AGENTS.md', ['# AGENTS（夹具入口；真实入口见仓根）', ...e.mustMention.map((m) => `- ${m.contains}`)].join('\n') + '\n')
+  for (const p of [...e.portableSync.paths, ...(e.portableSync.pending || [])]) {
+    write(p.file, `// 夹具：便携版同步清单\n${p.mustContain.join('\n')}\n`)
+  }
+}
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CLI = resolve(ROOT, 'kit/cli.mjs')
@@ -84,6 +96,10 @@ function fixture({ ledgers = true } = {}) {
   //   打架，而这条规则本来就该由真仓自己保持一致。
   write('kernel/package.json', readFileSync(join(ROOT, 'kernel/package.json'), 'utf8'))
   write('version.mjs', readFileSync(join(ROOT, 'version.mjs'), 'utf8'))
+  // ── agent 自动注入入口（CT11）──────────────────────────────────────────
+  // CT11 核三件事：入口存在、含真源登记的必备锚点、行数 ≤ 上限；外加"入口是否留在便携版同步清单里"。
+  // 夹具从真源派生（见 writeEntryFixture 注释）⇒ 真源扩锚点/加同步路径时，夹具自动跟上。
+  writeEntryFixture(write)
   write('.gitignore', 'node_modules/\n')
   execFileSync('git', ['init', '-q'], { cwd: root })
   // ★ 台账必须在**提交态**里可读：品牌有两条声明点落在 `versions.json#lines[].label` 上，而
@@ -588,12 +604,13 @@ test('★第3批-④：空仓（git init 后没提交）→ CT1 红"HEAD 物化"
 // 口径写进 spec（§5.3/§6.3 的"规则号数"一节）。
 const EXPECTED_RULES = ['P0', 'P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7',
   'V1', 'V1b', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', "V8'", 'V8b',
-  // P1（契约快照 ↔ bridge-contract.md 对账）的 CT 号段：CT0–CT10，含 CT4 的两个子规则（CT4B 封顶 / CT4C 条目合法）
+  // P1（契约快照 ↔ bridge-contract.md 对账）的 CT 号段：CT0–CT11，含 CT4 的两个子规则（CT4B 封顶 / CT4C 条目合法）
   // 与 CT8（在途差异：工作树 ∖ HEAD，黄、只报不拦 —— 第 3 批拆"基线为在途差异兜底"时补的号位）、
-  // CT10（品牌声明点 ↔ 品牌真源：品牌标识与名称的统一管理；不可基线豁免）。
-  'CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10']
+  // CT10（品牌声明点 ↔ 品牌真源）、CT11（agent 自动注入入口 ↔ AGENT_GUIDE.entry：锚点 + 行数 + 便携版同步清单；
+  // ★ 二者都不可基线豁免 —— 判据落在 BASELINE_FORBIDDEN 的"除 CT9 外全部 CT"之内）。
+  'CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10', 'CT11']
 
-test('★B2/B3：summary.rules = 32，且逐条规则号与 spec 口径完全一致（含表外 V1b/V8b/P0 与 CT0–CT10）', () => {
+test('★B2/B3：summary.rules = 32，且逐条规则号与 spec 口径完全一致（含表外 V1b/V8b/P0 与 CT0–CT11）', () => {
   const j = JSON.parse(run(['check', '--json']).stdout)
   assert.deepEqual([...j.checks.map((c) => c.rule)].sort(), [...EXPECTED_RULES].sort(),
     '规则号集必须逐字对齐：多一个（自造号）或少一个（早退没 push）都要在这里变红')
@@ -692,9 +709,9 @@ test('夹具仓无台账：check 退 1（P0/V0 红），绝不因"读不到台�
   assert.equal(j.ok, false)
   // ★ B2：P0 必须也进 checks。两条台账都缺时，唯一可判定的规则就是 P0 ——
   //   若 rules 为 0，说明 P0 又退回了"只 push finding"（--verbose 里也会缺这一格）。
-  //   ★ P1 之后：契约规则（CT0–CT10）**无条件**进 checks（判据本身要报"快照缺失"），故这里逐条列全。
+  //   ★ P1 之后：契约规则（CT0–CT11）**无条件**进 checks（判据本身要报"快照缺失"），故这里逐条列全。
   assert.deepEqual(j.checks.map((x) => x.rule).sort(),
-    ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10', 'P0'].sort())
+    ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10', 'CT11', 'P0'].sort())
   assert.equal(j.checks.find((x) => x.rule === 'P0').passed, false)
   assert.equal(j.summary.rules, 14)
 })
