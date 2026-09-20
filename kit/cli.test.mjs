@@ -40,10 +40,17 @@ function writeEntryFixture(write) {
 function writeDevkitFixture(write) {
   const text = readFileSync(join(ROOT, 'kit/manifest/devkit.json'), 'utf8')
   write('kit/manifest/devkit.json', text)
+  // ★ 有些文件**同时**是 CT11 的便携版同步清单（如 `verify-portable-layout.mjs`、`package-portable-zip.mjs`）
+  //   ⇒ 必须**合并写**：各写一遍会互相覆盖，把 CT11 的锚点冲掉（本夹具第一次写出来时就踩了这个坑：
+  //   夹具仓报 `portable-sync:... 找不到 AGENTS.md`，看着像规则错，其实是夹具自伤）。
+  const need = new Map()
+  for (const p of [...AGENT_GUIDE.entry.portableSync.paths, ...(AGENT_GUIDE.entry.portableSync.pending || [])]) {
+    need.set(p.file, [...(need.get(p.file) || []), ...(p.mustContain || [])])
+  }
   for (const s of JSON.parse(text).releaseSurfaces) {
     const f = s?.guard?.file
     if (!f || s.guard.kind === 'structural') continue // yml 由品牌夹具写（白名单本就干净）
-    write(f, '// 夹具：DevKit 边界清单从真源取（kit/lib/devkit-rules.mjs）\n')
+    write(f, ['// 夹具：DevKit 边界清单从真源取（kit/lib/devkit-rules.mjs）', ...(need.get(f) || [])].join('\n') + '\n')
   }
 }
 

@@ -164,7 +164,48 @@ CT11 因此把**三条同步路径**也纳入判据（`entry.portableSync.paths`
 测试 glob 必须带引号、以及"本仓有两份『四条』清单"的消歧），并限制行数（>90 行 ⇒ 红，那是"变成第二份清单"的信号）。
 ★ 反过来，CT11 **不评价**入口的文风/排版（锚点齐全但排版难看 ⇒ 仍然绿）—— 门禁不做风格警察。
 
-### 规则表（`CT` 号段：CT0–CT11，含 CT4 的两个子规则、品牌 CT10 与 agent 入口 CT11）
+### DevKit 边界：发行物不得含开发门禁（CT12）
+
+**口径（用户，2026-09-20）**：「确保正式打包不会带 devkit，也就是**发行给用户的版本不带 kit 及相关配置**」。
+
+**为什么要有这条**：本仓有四条"会把东西带出去"的路径，其中一条**真的漏了** ——
+
+| 发行面 | 现状（本批修前） |
+|---|---|
+| 安装包（`build:installer` → `electron-builder.yml`） | 白名单本就干净，但**没有门禁**：哪天有人把 `files` 改成 `**/*`（很常见的"顺手全带上"），devkit 就静默进包 |
+| **源码交付包**（`scripts/pack-source-zip.mjs` → `release/YFWorking-src-*.zip`，文件头注释写明"给客户/外部"） | ★ **真漏洞**：排除规则里**既没有 `kit/` 也没有 `AGENTS.md`**，而候选清单来自 `git ls-files` ⇒ 实测 **59 个 devkit 文件**（`kit/` 58 + `AGENTS.md` 1）会随包发出去 |
+| 调试版便携包（`package-portable-zip.mjs`） | 清单不含 devkit，但无自查（"今天干净 ≠ 明天干净"） |
+| 免安装便携目录（`package-portable.cjs`） | 复制清单是白名单、本就干净；但布局校验此前是**纯手工**命令 ⇒ **没人跑就等于没有** |
+
+**真源与实现（单一真源，别各抄一份）**：
+- `kit/manifest/devkit.json`：`patterns[]`（禁含路径，**每条都写 why**）+ `devChannelAllow[]`（调试渠道例外）+
+  `releaseSurfaces[]`（四条发行面各带 `guard` 与 `status`）+ `engine`（匹配语义）+ `recompute`（59 怎么算出来）。
+- `kit/lib/devkit-rules.mjs`：`devkitMatcher` 是**唯一**匹配实现（`/` 结尾 = 目录前缀；否则 = **仓根文件精确匹配**）
+  —— 打包脚本 import 它、规则核它，谁都不许再抄一份路径清单。
+  **零外部依赖**（不引 YAML 解析器）：规则要能在"干净克隆 + 仅装 node"的 CI 场景下跑。
+
+**★ 与 CT11 的分工（容易混）**：CT11 管「要**有**什么」（agent 入口必须送达），CT12 管「要**没有**什么」（devkit 不得外泄）。
+两者在调试渠道上刚好**相反** —— `AGENTS.md` 在调试版**必须有**（CT11）、在发行物**必须无**（CT12）。
+这就是 `devChannelAllow[]` 存在的理由：**例外必须被显式登记**，不能靠"反正扫不到"。
+
+**四条发行面各自怎么守**（`releaseSurfaces[].guard`）：
+
+| 发行面 | 守在哪 | 怎么守 |
+|---|---|---|
+| 安装包 | `electron-builder.yml` | **结构校验**（声明式配置没法 import 模块）：从 `files`/`extraResources` 提取入包路径，逐条判"会不会把 devkit 带进来"，**含 `**/*` 全包含** |
+| 源码交付包 | `scripts/pack-source-zip.mjs` | 排除规则**从真源取**（`DEVKIT_RULES` 插在 `EXCLUDE_RULES` 最前）+ 打包期 `assertNoDevkit(kept)`（★ 在**写 zip 之前**抛，不是"打完记条日志"） |
+| 调试版便携包 | `scripts/package-portable-zip.mjs` | 入包前 `assertNoDevkit(payload, { allowDevChannel: true })`（调试渠道按真源例外放行 `AGENTS.md`/`kit-stamp.json`） |
+| 免安装便携目录 | `scripts/verify-portable-layout.mjs` | 扫产物按真源判定，命中即 **EXIT=1**；且 `build:portable` 已链上它 ⇒ **打包即校验**（不再靠人记得手动跑） |
+
+另外 `scripts/verify-package-assets.mjs`（出包预检）加了两道：`files`/`extraResources` **结构级** +
+若已有 `win-unpacked` 产物则**直接扫安装包**（★ 发行物**零例外**，不像调试渠道能放行入口）。
+
+**两个"条件判据"（`guard.pending`）**：`scripts/pack-source-zip.mjs` 与 `scripts/package-portable-zip.mjs`
+被**本地 `.git/info/exclude` 排除**（开发者本机在途文件，尚未入库）⇒ CT12 读**提交态**会读不到。
+若照常报红，门禁会**永远红**，而"永远红"等于没有红灯 ⇒ 未入库**跳过**（不计 `evaluated`、不报红）、
+**一旦入库自动开始核**（与 CT11 的 `pending` 同一套语义）。
+
+### 规则表（`CT` 号段：CT0–CT12，含 CT4 的两个子规则、品牌 CT10、agent 入口 CT11 与 DevKit 边界 CT12）
 
 | id | 判据（一句话） | 严重度 | 改坏了会怎样（变异） |
 |---|---|---|---|
@@ -183,6 +224,7 @@ CT11 因此把**三条同步路径**也纳入判据（`entry.portableSync.paths`
 | CT9 | 渲染层 `src` 的 fetch 路径 → server 路由**单向**差集 | **黄、只报不拦** | ——（D8 历史欠账，逐条登记在 `drift-baseline.json`） |
 | CT10 | **品牌声明点 ↔ 品牌真源**：`kit/manifest/brand.json` 的 14 条声明点逐条对账（层名"出现"即过 / 字面量须精确相等）+ 受管声明点里不得出现废弃别名 `Ponos-Turbo`（大小写不敏感） | 红（**不可基线豁免**） | 改 `productName` / `<title>` / `version.mjs` 的那两行注释 / 台账 `lines[].label` 而不动真源；把内核层注释改回 `Ponos-Turbo`；删掉或写坏 `brand.json`（真源不可读 ⇒ 红且不抛） |
 | CT11 | **agent 自动注入入口 ↔ 真源**：仓根 `AGENTS.md` 必须存在、含真源 `entry.mustMention[]` 登记的每条必备锚点、行数 ≤ `entry.maxLines`（不许长成第二份清单）；★ 并且**必须留在便携版同步清单里**（详见下节） | 红（**不可基线豁免**） | 删掉入口、抠掉某条锚点（如 `git add -A` 那条红线）、把入口写长、走 `rename` 把入口搬走；或从 `scripts/package-portable-zip.mjs` / `electron/dev-source-sync.cjs` 的清单里删掉 `AGENTS.md` |
+| CT12 | **DevKit 边界 ↔ 打包配置**：真源 `kit/manifest/devkit.json` 的 `patterns[]`（`kit/`、`AGENTS.md`、门禁文档…）**不得出现在任何发行物**；四条发行面必须**从真源取清单**；`electron-builder.yml` 的 `files`/`extraResources` 结构上不得含 devkit（含 `**/*` 全包含） | 红（**不可基线豁免**） | 往源码交付包/便携包的排除规则里各抄一份清单而不引用真源；把 `electron-builder.yml` 的 `files` 改成 `**/*`；`devkit.json` 被删/写坏/`patterns` 清空（恒真防护）；`devChannelAllow` 写成"什么都放行" |
 
 两条"黄、只报不拦"的规则在报告里各占一个 `checkResult`，`passed=false` 表示"确实有东西"，但**不影响退出码**。
 
@@ -576,7 +618,7 @@ kit/lib/contract-ipc.mjs    IPC 通道提取器（按侧：invoke/handle/send/on
 kit/lib/contract-tools.mjs  工具 schema 提取器（运行时出口 + 静态 registry + 结构指纹）
 kit/lib/contract-doc.mjs    bridge-contract.md 解析器（§5/§6/§7/§7.1 表）
 kit/lib/contract-snapshot.mjs 契约快照（复算 / 落盘 / 逐类比较）
-kit/lib/contract-rules.mjs  CT0–CT11（含 CT4B/CT4C/CT8 与品牌 CT10、agent 入口 CT11）
+kit/lib/contract-rules.mjs  CT0–CT12（含 CT4B/CT4C/CT8 与品牌 CT10、agent 入口 CT11、DevKit 边界 CT12）
 kit/lib/brand-rules.mjs     ★ CT10：品牌声明点 ↔ 品牌真源（8 条；零依赖取值；只查声明点那一段）
 kit/lib/contract-scope.mjs  范围登记判定（只读；禁通配、禁自动生成）
 kit/lib/python-manifest.mjs 内嵌 Python 包清单的唯一读取入口（构建脚本与测试同源）

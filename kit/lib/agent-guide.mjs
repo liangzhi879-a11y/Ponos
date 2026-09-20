@@ -35,7 +35,7 @@ export const AGENT_GUIDE = {
       title: '开工前（3 步）',
       items: [
         {
-          do: '读 `kit/README.md` 的「契约快照与范围登记」（含 committed 口径）与「规则表」（CT0–CT11）两节',
+          do: '读 `kit/README.md` 的「契约快照与范围登记」（含 committed 口径）与「规则表」（CT0–CT12）两节',
           why: '契约规则的真值取自**提交态（HEAD）**，不是工作树：不懂这条会把 CT8 的在途黄灯当成自己造的错，也会把"跑过 sync 了"误当成"在途端点已入账"。',
           cmd: null,
         },

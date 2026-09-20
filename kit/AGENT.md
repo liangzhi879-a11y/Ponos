@@ -15,6 +15,7 @@
 | 依赖 / 内嵌 Python / 体积 | `kit/manifest/deps.json` | `docs/ci.md` 的计数 |
 | 契约面 ↔ 文档 | `docs/bridge-contract.md` §5/§6/§7/§7.1/§11/§12 + `kit/manifest/contract-scope.json` | 台账 `#channels`（快照） |
 | **品牌名称 / 标识** | **`kit/manifest/brand.json`（改它 = 重新定义，CT10 把关；`node scripts/brand.mjs show\|check\|set`）** | `version.mjs` 的两行注释、`versions.json` 的 `lines[].label` 由 `set`/sync 同步；`productName`/`<title>`/npm 包名/appId 要**手工**改（`set` 会列清单 + 给建议值）。★ 真源里还有 `knownUngated[]`（**已知未纳管**的声明点：运行时窗口标题、i18n 文案、安装器与图像资产、CLI 横幅）—— 改品牌时**要按这份清单人工过一遍**，别以为 14 条就是全部 |
+| **DevKit 边界（发行物禁含）** | `kit/manifest/devkit.json`（**CT12** 把关：四条发行面必须**从真源取清单**，各自抄一份即红） | 加载顺序低于开发质量；有疑问以**提交态**的 `kit/manifest/versions.json` 为准 |
 | agent 套件规范 | `kit/lib/agent-guide.mjs` | 本文件（只给指针）、GUI 第 8 段 |
 | **agent 自动注入入口** | **仓根 `AGENTS.md`**（真源登记在 `AGENT_GUIDE.entry`，**CT11** 把关：必备锚点 + 行数上限 + **便携版同步清单**） | ★ 别与本文件混：`AGENTS.md` 是**自动注入**入口（工具开工自动读仓根；内核 `kernel/prompt.mjs#discoverAgentsMd` 从 cwd 上溯到 `.git` 目录也会找它）；**本文件只是可读副本**。★ 它还必须留在便携版三条同步路径里（`package-portable-zip` 的 `SYNC_FILES`、`dev-source-sync` 的 `SYNC_DIRS`、`verify-portable-layout` 的 `requiredFile`）—— 否则调试版人工测试环境里**没有入口**，agent 静默不受约束 |
 

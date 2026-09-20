@@ -125,10 +125,16 @@ function writeEntryFixture(write) {
 function writeDevkitFixture(write) {
   const text = readFileSync(new URL('../../kit/manifest/devkit.json', import.meta.url), 'utf8')
   write('kit/manifest/devkit.json', text)
+  // ★ 与 CT11 的便携版同步清单**合并写**（有些文件两者都登记，各写一遍会互相覆盖 ⇒ 假红）；
+  //   见 cli.test.mjs 同名函数的注释。
+  const need = new Map()
+  for (const p of [...AGENT_GUIDE.entry.portableSync.paths, ...(AGENT_GUIDE.entry.portableSync.pending || [])]) {
+    need.set(p.file, [...(need.get(p.file) || []), ...(p.mustContain || [])])
+  }
   for (const s of JSON.parse(text).releaseSurfaces) {
     const f = s?.guard?.file
     if (!f || s.guard.kind === 'structural') continue
-    write(f, '// 夹具：DevKit 边界清单从真源取（kit/lib/devkit-rules.mjs）\n')
+    write(f, ['// 夹具：DevKit 边界清单从真源取（kit/lib/devkit-rules.mjs）', ...(need.get(f) || [])].join('\n') + '\n')
   }
 }
 
