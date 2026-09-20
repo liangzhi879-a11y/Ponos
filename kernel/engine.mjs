@@ -537,7 +537,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         break
       }
       // 守卫②：迭代硬上限——耗尽即收尾（无文本时补说明，见轮末 iterCapHit）
-      if (MAX_TOOL_ITERATIONS > 0 && iter >= MAX_TOOL_ITERATIONS) { turnGuardHits.push('iterCap'); iterCapHit = true; break }
+      if (MAX_TOOL_ITERATIONS > 0 && iter >= MAX_TOOL_ITERATIONS) { turnGuardHits.push('iterCap'); iterCapHit = true; break } // O2：② **不发任何事件、不置 loopStop**（只置 iterCapHit）—— 如实登记，勿脑补 reason
       // 守卫⑥：无进展停滞（自愈优先，2026-09-10）——距上次实质进展超限时先注入
       // "推进指令"续跑（用户无感知）；恢复实质进展即清零愈合计数；耗尽
       // STALL_HEAL_MAX 仍无进展才落可见收尾（硬停是最后防线，非默认路径）。
@@ -778,13 +778,13 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           // UPSTREAM_DEAD_HEAL_MAX 次才可见收尾（retryStream 的 1 次快重试仍保留，
           // 本层是更长的退避重试）。
           if (upstreamDeadHeals < UPSTREAM_DEAD_HEAL_MAX) {
-            turnGuardHits.push('upstreamDead')
+            turnGuardHits.push('upstreamDead') // O2：上游死亡**只发事件、无注入** ⇒ 只登记不计数（如实，不粉饰）
             upstreamDeadHeals++
             try { wire?.system?.('guard_heal', { reason: 'upstream-dead', attempt: upstreamDeadHeals, max: UPSTREAM_DEAD_HEAL_MAX }) } catch { /* 事件失败不影响主流程 */ }
             await sleep(UPSTREAM_DEAD_HEAL_BACKOFF_MS)
             continue
           }
-          turnGuardHits.push('upstreamDead')
+          turnGuardHits.push('upstreamDead') // O2：上游死亡硬停（同样只有事件、无注入）
           loopStop = {
             reason: 'upstream-dead',
             message: `【上游服务空流：请求已被受理但未返回任何数据（疑似模型服务未就绪、加载中或已崩溃），已自动收尾。请检查 provider 对应服务是否正常，或切换 provider 后重试。】`,
