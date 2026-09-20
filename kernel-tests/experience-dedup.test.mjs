@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildMemoryIndex, buildRelevantMemory } from '../kernel/memory.mjs'
+import { buildMemoryIndex, buildRelevantMemory, memoryBytes } from '../kernel/memory.mjs'
 
 /** 造一个含 active:true / active:false 两个主题的记忆根（★ 扁平文件形状）
  *  与服务端 server/experience.mjs 的写入（kernel/memory.mjs:83-85）同构：
@@ -72,4 +72,30 @@ test('server/bridge.mjs 仍保留 import 与 re-export（供 verify:experience-i
   const src = readFileSync(BRIDGE, 'utf8')
   const importLines = src.split(/\r?\n/).filter((l) => /^\s*(import|export)/.test(l) && l.includes('buildExperienceIndex'))
   assert.ok(importLines.length >= 2, `import 与 re-export 都应保留，实际: ${JSON.stringify(importLines)}`)
+})
+
+// ── Task 5：S4.5③ 字节口径统一 ─────────────────────────────────────────────
+
+test('memoryBytes 按 UTF-8 字节计（中文不得被当成 1 字节）', () => {
+  assert.equal(memoryBytes('abc'), 3)
+  assert.equal(memoryBytes('中文'), 6, '2 个汉字 = 6 字节（非 2）')
+  assert.equal(memoryBytes('中a'), 4)
+})
+
+test('memoryBytes 与 Buffer.byteLength 一致（单一真源）', () => {
+  for (const s of ['', 'a', '中文', 'emoji🙂']) {
+    assert.equal(memoryBytes(s), Buffer.byteLength(s, 'utf8'))
+  }
+})
+
+test('buildMemoryIndex 输出字节 ≤ maxBytes（而非按字符漏报）', () => {
+  const root = mkdtempSync(join(tmpdir(), 'mem-buf-'))
+  // 7 个主题全为中文（每条 ~2x 字字节差）—— 按"字符"批 4096 字符 ⇒ 实际 ~8192 字节
+  for (let i = 0; i < 7; i++) {
+    writeFileSync(join(root, `中文主题${i}.md`),
+      `---\nname: 中文主题${i}\nactive: true\n---\n- [会话|标签] 中文主题${i} 的第一条中文条目 -- 全文\n- [会话|标签] 中文主题${i} 的第二条中文条目 -- 全文\n- [会话|标签] 中文主题${i} 的第三条中文条目 -- 全文\n`, 'utf-8')
+  }
+  const out = buildMemoryIndex({ root, maxBytes: 4096 })
+  assert.ok(Buffer.byteLength(out, 'utf8') <= 4096 + 4,
+    `应按字节截断；实际 ${Buffer.byteLength(out, 'utf8')} 字节（maxBytes=4096）`)
 })

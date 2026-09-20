@@ -31,6 +31,17 @@ function themePath(root, theme) {
   return join(root, `${theme}.md`)
 }
 
+/**
+ * 经验注入的唯一字节口径（S4.5③：字符→字节换算只在此处）。
+ * 用 UTF-8 字节而非 String.length —— 后者对中文系统性低估 ~2 倍
+ * （实测同一份"中文主题"输出：.length=225 / Buffer.byteLength=475）。
+ * 唯一性纪律：S1+（Task 2 buildSegmentMeters）只接收已算好的字节数，
+ * 不在此做换算；本函数是经验侧**唯一**的换算入口。
+ */
+export function memoryBytes(s) {
+  return Buffer.byteLength(String(s ?? ''), 'utf8')
+}
+
 function readTheme(root, theme) {
   const fp = themePath(root, theme)
   if (!existsSync(fp)) return { front: {}, entries: [] }
@@ -121,6 +132,7 @@ export function buildMemoryIndex({ root = '', maxBytes = 4096 } = {}) {
   list.sort((a, b) => b.updatedAt - a.updatedAt)
   const header = '\n\n【个人经验索引】过往会话沉淀的个人经验（按 主题|任务标签 分组，含未标注条目）。需要某任务的具体经验时，用 Read 读取该行末尾标注的文件（每行条目格式：- [会话|标签] 摘要 -- 全文），摘要判断相关性，全文含完整要点；与当前任务无关的标签无需读取。\n'
   let out = header
+  let outBytes = memoryBytes(header)              // S4.5③：累加（避免 O(n²)）
   const fmt = (ts) => new Date(ts).toISOString().slice(0, 10)
   const lines = []
   for (const item of list) {
@@ -128,9 +140,10 @@ export function buildMemoryIndex({ root = '', maxBytes = 4096 } = {}) {
     if (item.untagged > 0) lines.push(`- [${item.theme}] ${item.untagged} 条未标注经验 · 最近 ${fmt(item.updatedAt)} · ${item.file}`)
   }
   for (const line of lines) {
-    const lb = line.length + 1
-    if (out.length + lb > maxBytes) break
+    const lb = memoryBytes(line) + 1
+    if (outBytes + lb > maxBytes) break
     out += line + '\n'
+    outBytes += lb
   }
   return out
 }
@@ -161,14 +174,16 @@ export function buildRelevantMemory({ root = '', keywords = [], maxBytes = 2048 
   items.sort((a, b) => b.score - a.score || b.summary.localeCompare(a.summary))
   const header = '\n\n【相关经验抽调】根据当前任务关键词，以下过往经验与任务直接相关，可直接参考（格式：-[主题|标签] 摘要 -- 全文）：\n'
   let out = header
+  let outBytes = memoryBytes(header)              // S4.5③：累加（避免 O(n²)）
   const seen = new Set()
   for (const it of items) {
     if (seen.has(it.text)) continue
     const line = it.text
-    const lb = line.length + 1
-    if (out.length + lb > maxBytes) break
+    const lb = memoryBytes(line) + 1
+    if (outBytes + lb > maxBytes) break
     seen.add(it.text)
     out += line + '\n'
+    outBytes += lb
   }
   return out === header ? '' : out
 }
