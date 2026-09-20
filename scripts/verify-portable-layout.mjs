@@ -19,7 +19,11 @@ const requiredFile = ['node.exe', 'YFWorking.vbs', 'YFWorking-debug.bat',
   //   （`kernel/prompt.mjs#discoverAgentsMd`：从 cwd 逐级向上 + `--add-dir` 的根）。
   //   ★ 用户口径（2026-09-20）：**人工测试跑的就是 release 里的便携版（调试版）** ⇒ 入口没进便携版，
   //   调试版里的 agent 就**不受规范约束**（静默失效）。它此前不在任何同步清单里 ⇒ 从不进便携版。
-  'AGENTS.md']
+  'AGENTS.md',
+  // ★ 用户口径（2026-09-20，第二次）：**开发就在调试版上跑** ⇒ 门禁本体也必须在便携版里，
+  //   否则 `node kit/cli.mjs check` 无从跑起。登记在这里是为了抓"清单改了但没同步"这种
+  //   "以为自己能跑门禁、其实目录里没有"的状态（CT11 只核同步**清单**里有没有它）。
+  'kit/cli.mjs', 'docs/bridge-contract.md']
 let fail = 0
 for (const d of requiredDir) if (!existsSync(join(R, d))) { console.error('MISSING DIR:', d); fail++ }
 for (const f of requiredFile) if (!existsSync(join(R, f))) { console.error('MISSING FILE:', f); fail++ }

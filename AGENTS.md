@@ -32,6 +32,10 @@ CI（`.github/workflows/ci.yml`）会拦。**任何改动契约面的开发都�
   `kit-stamp.json` 是盖章凭据）。⇒ `AGENTS.md` 在调试版**必须有**、在发行物**必须无**，别搞反。
 - ★ 渠道（debug/release）**由产物证据推导**（`resolveChannel()`：包认名字里的 `debug`、目录认 `.yfw-dev-source.json`），
   **不许调用方传开关自证**（旧参数 `allowDevChannel` 传入即抛错）⇒ 把产物改成正式名、或删掉 marker，门禁**自动变严**。
+- ★ **开发就在调试版（`release/YFWorking`）上跑** ⇒ 除入口外还带 `kit/` + `docs/bridge-contract.md`，
+  可直接 `node kit/cli.mjs check`（便携版无 `package.json`，没有 `npm run`）。但门禁真值是 **git 提交态**、
+  便携版不是 git 仓 ⇒ 根解析走 `kit/lib/kit-root.mjs`（读 marker 的 `sourceRoot` **借源仓真值**，与在仓库里跑逐字一致）；
+  认不出来就**明确拒绝**，不跑出满屏假红。
 
 ## 开工前必做（两条）
 

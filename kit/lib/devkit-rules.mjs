@@ -297,8 +297,16 @@ export function devkitBoundaryCheck({ readTracked, read } = {}) {
   const legacyParamThrows = (() => {
     try { devkitLeaks(['AGENTS.md'], devkit, { allowDevChannel: true }); return false } catch { return true }
   })()
-  const leakDebug = devkitLeaks(['AGENTS.md'], devkit, { channel: 'debug' }).length === 0
-  const leakRelease = devkitLeaks(['AGENTS.md'], devkit, { channel: 'release' }).length > 0
+  // ★ 渠道语义两个方向都要对（用户口径：**开发就在调试版上跑** ⇒ 调试版必须放行**全套** devkit，
+  //   否则 `kit:check` 在调试版里跑不起来；而 release 必须**零例外**）：
+  //   · `allAllowedInDebug`：`patterns[]` 里**每条**在 debug 渠道都能放行 —— 谁加了 pattern 却忘了登记
+  //     `devChannelAllow`，调试版就会静默缺一件（跑门禁才知道），所以这里必须红；
+  //   · `noLeakInRelease`：release 渠道下**每条**都被拦（零例外）。
+  const patternPaths = (devkit?.patterns || []).map((p) => p.path)
+  const debugLeaks = devkitLeaks(patternPaths, devkit, { channel: 'debug' })
+  const releaseLeaks = devkitLeaks(patternPaths, devkit, { channel: 'release' })
+  const allAllowedInDebug = debugLeaks.length === 0
+  const noLeakInRelease = releaseLeaks.length === patternPaths.length
   const leakDefault = devkitLeaks(['AGENTS.md'], devkit).length > 0 // ★ 不传 channel = 从严
   evaluated += 10
 
@@ -329,10 +337,11 @@ export function devkitBoundaryCheck({ readTracked, read } = {}) {
     '`allowDevChannel` 必须**抛错**（旧的自证开关已作废）',
     legacyParamThrows ? '已抛错' : '被静默接受',
     '★ 留着自证开关 = 洞还在（总有人接着用）。必须抛错才能逼所有调用点改用 `resolveChannel()`。')
-  pushCh(leakDebug && leakRelease, 'dev-channel-allow-broken',
-    'debug 渠道放行 `AGENTS.md`（CT11 要求调试版有入口）、release 渠道拦住它',
-    `debug=${leakDebug ? '放行' : '拦住'} / release=${leakRelease ? '拦住' : '放行'}`,
-    '两个方向都要对：只会放行 = 规则失效；只会拦 = 调试版里 agent 静默不受规范约束（CT11 管这件事）。')
+  pushCh(allAllowedInDebug && noLeakInRelease, 'dev-channel-allow-broken',
+    'debug 渠道放行 `patterns[]` **全部**（调试版要能跑 `kit:check`）、release 渠道拦住**全部**（零例外）',
+    `debug 拦住 ${debugLeaks.length} 条 / release 放行 ${patternPaths.length - releaseLeaks.length} 条`,
+    '两个方向都要对：debug 漏放行 = 调试版里门禁跑不起来（开发没法自查）；release 漏拦 = 发行物夹带开发件。'
+      + '★ 谁加了新 pattern 却忘了登记 `devChannelAllow`，这条就会红 —— 这正是"调试版静默缺一件"的唯一防线。')
   pushCh(leakDefault, 'channel-evidence:default-strict',
     '不传 channel 时**默认从严**（`AGENTS.md` 被拦）',
     leakDefault ? '已从严' : '默认放行',

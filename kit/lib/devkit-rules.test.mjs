@@ -182,13 +182,16 @@ test('★ resolveChannel：由**产物证据**推导，推导不出即 release�
   assert.match(resolveChannel({}, d).evidence, /默认按发行物/, '完全给不出证据时也要说清"从严"这一档')
 })
 
-test('★ 渠道语义：debug 放行两项、release 零例外、不传参数 = 从严', () => {
+test('★ 渠道语义：debug 放行**全套** devkit（开发在调试版上跑）、release 零例外、不传参数 = 从严', () => {
   const d = fixture(() => {})
-  assert.equal(devkitLeaks(['AGENTS.md'], d, { channel: 'debug' }).length, 0, '调试版必须有入口（CT11 管）')
-  assert.equal(devkitLeaks(['AGENTS.md'], d, { channel: 'release' }).length, 1, '发行物必须拦')
+  const all = d.patterns.map((p) => p.path)
+  assert.equal(devkitLeaks(all, d, { channel: 'debug' }).length, 0,
+    '★ 调试版必须能带全套 devkit —— 用户口径："开发是在调试版上运行的"，缺一件就跑不了 kit:check')
+  assert.ok(all.includes('kit/') && all.includes('docs/bridge-contract.md'),
+    '其中包括 kit 本体与契约文档（kit 只读 bridge-contract.md）')
+  assert.equal(devkitLeaks(all, d, { channel: 'release' }).length, all.length,
+    '★ 发行物：**每一条**都拦（零例外）—— 这是 CT12 存在的理由')
   assert.equal(devkitLeaks(['AGENTS.md'], d).length, 1, '★ 默认值必须是最安全那一侧（忘传参数是常态）')
-  // ★ 即使 debug 渠道，`kit/` 本体与门禁文档也照拦
-  assert.equal(devkitLeaks(['kit/cli.mjs', 'docs/ci.md'], d, { channel: 'debug' }).length, 2)
 })
 
 test('★ 真源 + 门禁自证：渠道判据本身被核（改坏 ⇒ CT12 红）', () => {

@@ -41,7 +41,19 @@ const MARKER_FILE = '.yfw-dev-source.json'
 //   从 cwd 逐级向上到 `.git` 所在目录 + `--add-dir` 的根）。★ 用户口径（2026-09-20）：
 //   **人工测试跑的就是 release 里的便携版（调试版）** ⇒ 入口不进便携版，调试版里的 agent 就**不受规范约束**。
 //   它此前不在任何同步清单里 ⇒ 从来没进过便携版（表现为"更新了也一直没有"，而非"更新后掉了"）。
-const SYNC_DIRS = ['kernel', 'shared', 'server', 'electron', 'dist', 'public', 'build/templates', 'AGENTS.md']
+//   ★ 用户口径（2026-09-20，第二次）：**开发就在调试版上跑** ⇒ `kit/`（门禁本体）与它解析的契约文档也必须进来，
+//   否则调试版里没有可用 `kit:check`。注意**只带 devkit 登记的那几个 docs 文件**，不搬整个 `docs/`
+//   （17MB：plans/architecture-history/eval 与门禁无关）；kit 实际只读 `docs/bridge-contract.md`
+//   （`kit/cli.mjs#DOC_FILE`），另三个是发行物禁含的 devkit 件（带上便于查阅、也便于 CT12 登记放行）。
+//   ⚠️ 光带代码还不够：便携版**不是 git 仓**，门禁真值是 `git ls-files` + HEAD ⇒ 根目录必须指向源仓，
+//   这件事由 `kit/lib/kit-root.mjs` 处理（读 marker 的 `sourceRoot`）。
+//   ⚠️ `*.test.*` 仍被 SKIP_RE 排除（测试不是运行时执行体）—— 故这里同步的 kit 是不含测试的那份；
+//   `node kit/cli.mjs check` 不 import 测试，照常可用。
+const SYNC_DIRS = [
+  'kernel', 'shared', 'server', 'electron', 'dist', 'public', 'build/templates',
+  'kit', 'docs/bridge-contract.md', 'docs/ci.md', 'docs/_anchors.json', 'docs/_anchors-allow.json',
+  'AGENTS.md',
+]
 // 「镜像目录」：这些目录的内容**完全由构建产生**（`npm run build` 会先清空 outDir），因此源码侧
 // 的目录树总是完整自洽的 —— 于是反向操作也安全：以源码为准**删掉应用树里多余的文件**。
 //

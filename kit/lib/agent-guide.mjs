@@ -227,20 +227,27 @@ export const AGENT_GUIDE = {
         + '⇒ **同一份规范出现在多个候选路径时必须按内容去重**（否则重复注入；版本漂移时更会注入互相矛盾的两版）。',
     },
     portableSync: {
-      why: '人工测试跑的是 `release/YFWorking`（便携版/调试版）⇒ 入口必须能随更新进入便携版，'
-        + '否则调试版里的 agent 不受规范约束。★ 三条路径缺哪条都会造成"以为同步了、其实没带上"。',
+      why: '人工测试跑的是 `release/YFWorking`（便携版/调试版）⇒ 这些东西必须能随更新进入便携版，'
+        + '否则调试版里的 agent 不受规范约束（入口）、开发也没法在调试版里自查门禁（`kit/`）。'
+        + '★ 用户口径（2026-09-20，第二次）：**开发就在调试版上跑** ⇒ 同步清单除入口外还必须含 `kit/`'
+        + '与契约文档（kit 只读 `docs/bridge-contract.md`）。'
+        + '★ 三条路径缺哪条都会造成"以为同步了、其实没带上"。'
+        + '★ 另一件事（不在这条规则里、但同属"调试版能跑门禁"）：便携版**不是 git 仓**，'
+        + '门禁真值是提交态 ⇒ 根目录解析走 `kit/lib/kit-root.mjs`（读 marker 的 sourceRoot 指回源仓）。',
       paths: [
-        { file: 'electron/dev-source-sync.cjs', mustContain: ['AGENTS.md'], what: '调试版**每次启动**的 autoSync（`.yfw-dev-source.json` 的 `autoSync: true`）—— 这条才是人工测试时实际走的路径' },
+        { file: 'electron/dev-source-sync.cjs', mustContain: ['AGENTS.md', "'kit', 'docs/bridge-contract.md'"], what: '调试版**每次启动**的 autoSync（`.yfw-dev-source.json` 的 `autoSync: true`）—— 这条才是人工测试时实际走的路径' },
         { file: 'scripts/verify-portable-layout.mjs', mustContain: ['AGENTS.md'], what: '便携版布局校验（真掉了会让这条红，而不是无声无息）' },
       ],
       // ★ 为什么"打包同步"那条**没**登记成判据（而不是漏了）：
       //   `scripts/package-portable-zip.mjs` 目前**未被 git 跟踪**（他人在途的新文件）。
       //   CT11 读**提交态** ⇒ 若把它登记进 `paths[]`，门禁会**永远红**（读不到文件），
-      //   而"永远红"等于没有红灯（本仓最忌）。本批已把它改好（新增 `SYNC_FILES = ['AGENTS.md']`
-      //   + `walk()` 之外的单文件循环），等它入库后应**立刻**补进 `paths[]`。
+      //   而"永远红"等于没有红灯（本仓最忌）。本批已把它改好（`SYNC_DIRS` 含 `kit` + `SYNC_FILES`
+      //   含 `AGENTS.md` 与 4 个 devkit 文档），等它入库后应**立刻**补进 `paths[]`。
+      //   ⚠️ `mustContain` 里的 `'kit', 'docs/bridge-contract.md'` 是**相邻的一段数组字面量**：
+      //   核的是"清单里真的排了这两项"，而不是随便出现过一个 `kit` 字样（宽松匹配 = 假绿灯）。
       pending: [{
         file: 'scripts/package-portable-zip.mjs',
-        mustContain: ['AGENTS.md'],
+        mustContain: ['AGENTS.md', "'kit'"],
         what: '打包/手工同步（`--sync`：把仓库源码同步进 release/YFWorking）—— 少了它，用打包/同步方式更新出来的便携版就没有入口（调试版里 agent 静默不受约束）',
         why: '★ 未跟踪期间不登记成判据（否则门禁永远红 ⇒ "永远红"等于没有红灯）；**一旦它入库就自动开始核**（条件判据，无需人工补登记）。',
       }],

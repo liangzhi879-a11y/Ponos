@@ -153,16 +153,19 @@ export function agentEntryCheck({ readTracked, guide = AGENT_GUIDE } = {}) {
       continue
     }
     syncedChecked += 1
-    for (const needle of p.mustContain || []) {
-      if (!body.includes(needle)) {
-        findings.push(finding({
-          rule: 'CT11', severity: RED, subject: `portable-sync:${p.file}`, file: p.file, line: null,
-          expected: `清单里应含 ${JSON.stringify(needle)}`,
-          actual: '（文件里找不到这段文本）',
-          hint: `${p.what || ''} —— ★ 删掉它 = 调试版（人工测试环境）里不再有 agent 入口，`
-            + '而且**症状是静默的**（面板上看不出来）。若确实要改成别的机制，改真源 `entry.portableSync`。',
-        }))
-      }
+    // ★ 按文件**聚合**成一条（而不是每个 needle 各报一条）：一个文件少了两样东西时，operator 要看的是
+    //   "这个清单缺了 X 和 Y"，而不是两条 subject 相同、只能靠 actual 分辨的红灯。
+    //   ⇒ `actual` 里点名缺的是哪几条（否则同 subject 重复红灯会互相淹没）。
+    const missing = (p.mustContain || []).filter((n) => !body.includes(n))
+    if (missing.length) {
+      findings.push(finding({
+        rule: 'CT11', severity: RED, subject: `portable-sync:${p.file}`, file: p.file, line: null,
+        expected: `清单里应含 ${(p.mustContain || []).map((n) => JSON.stringify(n)).join(' / ')}`,
+        actual: `缺 ${missing.map((n) => JSON.stringify(n)).join('、')}`,
+        hint: `${p.what || ''} —— ★ 删掉它 = 调试版（人工测试环境）里缺东西：`
+          + '入口没了则 agent 静默不受规范约束、`kit/` 没了则开发没法在调试版里自查门禁；'
+          + '而且**症状是静默的**（面板上看不出来）。若确实要改成别的机制，改真源 `entry.portableSync`。',
+      }))
     }
   }
 
@@ -174,16 +177,15 @@ export function agentEntryCheck({ readTracked, guide = AGENT_GUIDE } = {}) {
     const body = read(p.file)
     if (body === null || body === undefined) continue // 未入库：跳过（这正是 pending 的语义）
     syncedChecked += 1
-    for (const needle of p.mustContain || []) {
-      if (!body.includes(needle)) {
-        findings.push(finding({
-          rule: 'CT11', severity: RED, subject: `portable-sync:${p.file}`, file: p.file, line: null,
-          expected: `清单里应含 ${JSON.stringify(needle)}`,
-          actual: '（文件里找不到这段文本）',
-          hint: `${p.what || ''} —— ★ 这个文件已经入库（能从提交态读到），所以 pending 已转为正式判据：`
-            + '把入口留在清单里；若确实要换机制，改真源 `entry.portableSync`。',
-        }))
-      }
+    const missingPending = (p.mustContain || []).filter((n) => !body.includes(n))
+    if (missingPending.length) {
+      findings.push(finding({
+        rule: 'CT11', severity: RED, subject: `portable-sync:${p.file}`, file: p.file, line: null,
+        expected: `清单里应含 ${(p.mustContain || []).map((n) => JSON.stringify(n)).join(' / ')}`,
+        actual: `缺 ${missingPending.map((n) => JSON.stringify(n)).join('、')}`,
+        hint: `${p.what || ''} —— ★ 这个文件已经入库（能从提交态读到），所以 pending 已转为正式判据：`
+          + '把入口/门禁留在清单里；若确实要换机制，改真源 `entry.portableSync`。',
+      }))
     }
   }
 

@@ -31,13 +31,21 @@ import { loadBaseline, applyBaseline, baselineGrowth } from './lib/baseline.mjs'
 import { materializeHead, worktreeClean } from './lib/head-tree.mjs'
 import { readVersions, readDeps, readJson, syncVersions, syncDeps, syncSkillsLock, computeGhost } from './lib/ledger.mjs'
 import { runVersionRules } from './lib/version-rules.mjs'
+import { resolveKitRoot, rootFailureHint } from './lib/kit-root.mjs'
 import { runDepRules } from './lib/dep-rules.mjs'
 import { parseDoc } from './lib/contract-doc.mjs'
 import { buildSnapshot, readSnapshot, diffSnapshot } from './lib/contract-snapshot.mjs'
 import { loadScope } from './lib/contract-scope.mjs'
 import { runContractRules } from './lib/contract-rules.mjs'
 
-const ROOT = process.env.YFW_KIT_ROOT || resolve(dirname(fileURLToPath(import.meta.url)), '..')
+// ★ 根目录解析（含"调试版里跑门禁"的借用源仓路径）：见 `kit/lib/kit-root.mjs` 顶部说明。
+//   从前这里是 `process.env.YFW_KIT_ROOT || <本文件上一级>` —— 在便携版里（不是 git 仓顶层）
+//   要么全红（release/ 被 gitignore ⇒ `git ls-files` 空）要么直接崩（拷到仓库外）。行为兼容：
+//   env 优先、仓库里就地跑，两条都不变；只在"调试版"这个新场景下才借用源仓。
+const ROOT_INFO = resolveKitRoot()
+const ROOT = ROOT_INFO.root
+/** 需要提交态真值的子命令（都要 `trackedFiles`）—— 根不可用时必须**明确拒绝**，不跑出一堆假红 */
+const TRUTH_CMDS = new Set(['check', 'sync', 'view', 'stamp'])
 /** 契约文档（受控子集；P1 只解析不修改 —— 补文档另开 P1.5） */
 const DOC_FILE = 'docs/bridge-contract.md'
 const USAGE = `用法：node kit/cli.mjs <check|sync|view|stamp> [选项]
@@ -300,6 +308,18 @@ async function main() {
   const [, , cmd, ...rest] = process.argv
   const asJson = rest.includes('--json')
   const verbose = rest.includes('--verbose')
+
+  // ★ 根不可用（不是 git 仓顶层、也借不到源仓）⇒ **明确拒绝**这些子命令。
+  //   为什么不是"照跑": 门禁真值 = git 提交态；在便携版这种副本里跑，`git ls-files` 是 0 条 ⇒
+  //   每条规则都红（假红），而假红比不跑更糟 —— 它教人不再相信红灯。
+  //   ★ 提示走 **stderr**：`--json` 的 stdout 必须保持纯 JSON（有测试逐字 parse）。
+  if (TRUTH_CMDS.has(cmd) && !ROOT_INFO.ok) {
+    console.error(rootFailureHint(ROOT_INFO))
+    return 1
+  }
+  if (ROOT_INFO.source === 'dev-source') {
+    console.error(`kit: 调试版 —— ${ROOT_INFO.why}（${ROOT}）`)
+  }
 
   if (cmd === 'check') {
     const report = await buildReport()

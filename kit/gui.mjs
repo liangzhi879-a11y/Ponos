@@ -15,12 +15,15 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { resolveKitRoot, rootFailureHint } from './lib/kit-root.mjs'
 import { AGENT_GUIDE, renderAgentGuideText } from './lib/agent-guide.mjs'
 import { buildGuiData, collectGitInfo } from './lib/gui-data.mjs'
 import { renderGuiHtml } from './lib/gui-html.mjs'
 
-// 与 kit/cli.mjs 同源：允许测试/多仓场景覆盖根目录（默认 = 本文件上一级）
-const ROOT = process.env.YFW_KIT_ROOT || resolve(dirname(fileURLToPath(import.meta.url)), '..')
+// 与 kit/cli.mjs 同源：根目录解析统一走 `kit/lib/kit-root.mjs`（env 优先 → 仓顶层就地跑 →
+// 调试版借源仓 → 明确失败）。★ 别在这里再写一套 —— 两份 ROOT 解析必然漂移。
+const ROOT_INFO = resolveKitRoot()
+const ROOT = ROOT_INFO.root
 
 const USAGE = `用法：node kit/gui.mjs [选项]
 
@@ -121,6 +124,16 @@ function main() {
   if (opts.agent) {
     console.log(renderAgentGuideText(AGENT_GUIDE))
     return 0
+  }
+
+  // ★ 根不可用 ⇒ 明确拒绝（GUI 要跑 check/view；在便携版副本里跑只会得到满屏假红）。
+  //   措辞与 `kit/cli.mjs` 共用 `rootFailureHint`，免得两处越走越远。
+  if (!ROOT_INFO.ok) {
+    console.error(rootFailureHint(ROOT_INFO))
+    return 1
+  }
+  if (ROOT_INFO.source === 'dev-source') {
+    console.error(`kit: 调试版 —— ${ROOT_INFO.why}（${ROOT}）`)
   }
 
   const check = runKitJson('check')

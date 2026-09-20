@@ -43,12 +43,32 @@
   ],
   "devChannelAllow": [
     {
+      "path": "kit/",
+      "why": "门禁本体：调试版里要能跑 `node kit/cli.mjs check`（开发就在调试版上跑）。 ★ 只在**渠道由产物证据判定为 debug** 时生效；release 渠道零例外。"
+    },
+    {
       "path": "AGENTS.md",
-      "why": "★ 调试版（`release/YFWorking` 与 `YFWorking-portable-debug-*.zip`）**必须**带它：人工测试就是在这个渠道里跑 agent，入口进不去 ⇒ 里面的 agent 静默地不受规范约束（CT11 已把这件事钉住）。 ★ 注意：本例外**只在渠道由证据判定为 debug 时生效**；`release` 渠道零例外。"
+      "why": "agent 自动注入入口：CT11 要求调试版必须有它，否则调试版里的 agent 不受规范约束。 ★ 只在**渠道由产物证据判定为 debug** 时生效；release 渠道零例外。"
+    },
+    {
+      "path": "docs/ci.md",
+      "why": "DevKit 台账门禁的口径说明（读数/计数以它为准）。 ★ 只在**渠道由产物证据判定为 debug** 时生效；release 渠道零例外。"
+    },
+    {
+      "path": "docs/bridge-contract.md",
+      "why": "契约契约文档：CT2/CT3 直接解析它，缺了门禁跑不出结论。 ★ 只在**渠道由产物证据判定为 debug** 时生效；release 渠道零例外。"
+    },
+    {
+      "path": "docs/_anchors.json",
+      "why": "文档锚点台账（生成物），核对文档锚点用。 ★ 只在**渠道由产物证据判定为 debug** 时生效；release 渠道零例外。"
+    },
+    {
+      "path": "docs/_anchors-allow.json",
+      "why": "锚点放行名单（人工维护），与上一份分离。 ★ 只在**渠道由产物证据判定为 debug** 时生效；release 渠道零例外。"
     },
     {
       "path": "kit-stamp.json",
-      "why": "调试渠道盖章：记录『被测的这一版是哪个 commit / 产物哈希』，供『你测的到底是哪一版』对账。 ★ 注意：本例外**只在渠道由证据判定为 debug 时生效**；`release` 渠道零例外。"
+      "why": "盖章凭据：记录被测的是哪一版。 ★ 只在**渠道由产物证据判定为 debug** 时生效；release 渠道零例外。"
     }
   ],
   "releaseSurfaces": [

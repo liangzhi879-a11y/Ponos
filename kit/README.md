@@ -201,6 +201,17 @@ CT11 因此把**三条同步路径**也纳入判据（`entry.portableSync.paths`
 > 旧参数 `allowDevChannel` **传入即抛错**（留着它就等于洞还在 —— 总有人接着用），CT12 另核"调用点文本里
 > 不得出现该参数（只扫代码，注释里写清历史不算）"与"`product-evidence` 面必须真的调用 `resolveChannel(`"。
 
+**★ 调试版（便携版）里怎么跑门禁**（用户口径：**开发就在调试版上跑**）：
+- `kit/` 与它解析的 `docs/bridge-contract.md` 会随同步进 `release/YFWorking`（`devChannelAllow[]` 放行**全套** devkit）
+  ⇒ 在便携版里可直接 `node kit/cli.mjs check`（便携版**没有 `package.json`**，所以没有 `npm run`，只能直接跑 node）。
+- ⚠️ 但**门禁真值是 git 提交态**（`git ls-files` + HEAD），而**便携版不是 git 仓**。判据不是"在不在某个仓里"
+  而是"**根是不是 git 仓的顶层**"—— 便携版在仓库内部时 `git ls-files` 在该目录下是 **0 条**（`release/` 被 gitignore），
+  那样跑出来是"每条都红"的**假红**，比不跑更糟。
+- ⇒ `kit/lib/kit-root.mjs#resolveKitRoot` 按此顺序解析：① `YFW_KIT_ROOT` 显式指定；
+  ② 自身是 git 仓顶层（在仓库里的常态，行为不变）；③ 自身带 dev-source marker 且其 `sourceRoot` 是 git 仓顶层
+  ⇒ **借源仓真值**（便携版代码本就是源仓副本 ⇒ 与在仓库里跑**逐字一致**，实测 diff 为空）；④ 都不成立 ⇒
+  **明确拒绝并给可照做的诊断**（不静默跑出满屏假红）。
+
 **四条发行面各自怎么守**（`releaseSurfaces[].guard`）：
 
 | 发行面 | 守在哪 | 怎么守 |
