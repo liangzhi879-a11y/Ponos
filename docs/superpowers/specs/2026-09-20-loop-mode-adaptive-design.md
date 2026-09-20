@@ -1,27 +1,38 @@
-# Loop 模式自适应 · 设计
+# Loop 模式自适应 · 设计（v2 完整版）
 
 > 状态：设计定稿（用户已确认全部决策点），待评审 → 转 plan
 > 日期：2026-09-20
-> 基线：`kernel/engine.mjs`(2436 行) / `kernel/loop.mjs` / `kernel/cli.mjs` / `kernel/agents.mjs` / `kernel/compact.mjs` / `kernel/health.mjs` / `server/bridge.mjs` / `src/components/chat/*`
+> 基线：`kernel/engine.mjs`(2436 行) / `kernel/loop.mjs` / `kernel/cli.mjs` / `kernel/prompt.mjs` / `kernel/gen-guards.mjs` / `kernel/agents.mjs` / `kernel/compact.mjs` / `kernel/loop-verify.mjs` / `kernel/tools.mjs` / `server/bridge.mjs` / `src/components/chat/*`
 > 前序：`docs/superpowers/audits/2026-09-08-agentloop-guide-gap.md`（指南第 13 章底稿 G7）、`docs/superpowers/specs/2026-09-17-loop-redesign-phase1-reliability-design.md`（loop 四期总纲）、`docs/superpowers/audits/2026-09-19-reviewer-cross-model.md`（评审模型对照实测）
+> v2 变更：① 论证方式回归技术可行性（不以"无先例"作否决依据，见 §2.0）② 块 3/4 展开为详细设计 ③ 新增块 5「方法论编译」（方法论融入 loop，见 §9）
 
 ---
 
 ## 0. 一句话
 
-把"一个循环干所有事"改为"**可选的执行模式 + 轮边界切换 + 全程留痕**"，模式不是新理论而是既有构件的重新组合；**切换权在用户，LLM 只提建议**；阈值**先观测再定**。
+把"一个循环干所有事、方法论靠提示词自觉"改为"**可选的执行模式 + 轮边界切换 + 方法论由引擎强制**"——模式不是新理论而是既有构件的重新组合；**切换权在用户，LLM 只提建议**；阈值**先观测再定**；**方法论从"读提示词"下沉为"引擎约束"**。
+
+四块交付：
+| 块 | 内容 | 期 |
+|---|---|---|
+| 块 1 | B1 循环体契约（纯重构） | 一期 |
+| 块 2 | B2 模式 = LoopProfile 预设 + 阶段钩子 | 一期 |
+| 块 5 | **方法论编译（下沉）** | 一期（与块 2 同源，见 §5.2） |
+| 块 3 | 子 Agent 三闸 + 深度闸 + 人工闸门 | 二期 |
+| 块 4 | MAGI 三评审 | 二期 |
 
 ---
 
 ## 1. 需求与已确认决策
 
-用户提出的原始需求（三条）：
+### 1.1 原始需求
 
-1. 任务开始时由 LLM 评估内容 → 选择进入不同 loop 模式（ReAct / Plan-and-Execute / Reflection），且**执行过程中可自主切换**以适配任务要求
+1. 任务开始时由 LLM 评估内容 → 选择进入不同 loop 模式（ReAct / Plan-and-Execute / Reflection），且**执行过程中可自主切换**
 2. 子 Agent 提供**人工开关**
-3. 审查提供 **MAGI 模式**（三评审不同视角并行 → 集中评审；费用大但发现更多），并基于用户更多自定义选择
+3. 审查提供 **MAGI 模式**（三评审不同视角并行 → 集中评审），并基于用户更多自定义选择
+4. **（v2 新增）** 把 superpowers 技能等**专业工程师/架构师的方法论融入 loop**——"不仅仅是使用 skill 实现，而是融入到工作 loop，实现更低开支，更高效的 agent 工作流程"
 
-**已确认决策（7 项，全部经用户逐项拍板）**：
+### 1.2 已确认决策
 
 | # | 决策点 | 用户选择 | 对设计的约束 |
 |---|---|---|---|
@@ -30,32 +41,53 @@
 | D3 | MAGI 触发 | **显式开启 + 高风险自动建议** | 默认单 reviewer；命中高风险特征只**建议**不自动跑 |
 | D4 | 落地路径 | **B1 纯重构 → B2 加模式** | B1 零行为变更且独立可交付；B2 才引入模式 |
 | D5 | 模式表达力 | **允许改控制流** | 必须有策略契约抽象，不能只做提示词预设 |
-| D6 | t=0（任务开始） | **高置信时才建议，用户一键确认** | 不做 t=0 的 LLM 分类器；零额外固定成本 |
+| D6 | t=0（任务开始） | **高置信时才建议，用户一键确认** | 不做 t=0 的复杂度分类器 |
 | D7 | t=1 阈值口径 | **阈值可配 + 先观测再定默认值** | 先补采集与事件、不切换；用真实数据定默认阈值 |
+| D8 | 方法论融入方式 | **融入 loop（下沉），不止于 Skill 调用** | 需方法论→引擎约束的编译机制（§9） |
+| D9 | 辩论方式 | **客观可行性与技术实现为准，不以"无先例"否决** | §2 论证不得以"没人做过"作否决理由 |
 
 **D6/D7 的由来（用户原话）**：
 
 > "如果默认 react，如何定义和检测到复杂任务？仅根据用户对话不现实，有些任务指令简短，但是实现复杂"
 
-这条质疑是本设计的起点，第 2 章给出直接回答。
+**D9 的由来（用户原话）**：
+
+> "成熟项目无先例的，可以从客观可行、技术实现上讨论，不要别人没做，我们也不能做。"
+
+**D8 的由来（用户原话）**：
+
+> "我希望融入 superpower 技能等专业工程师、架构师处理问题的逻辑和方法论到 loop 中，不仅仅是使用 skill 实现，而是融入到工作 loop，实现更低开支，更高效的 agent 工作流程"
 
 ---
 
-## 2. 为什么 t=0 判不准、而 t=1 可以（本设计的核心论证）
+## 2. 判定机制：从技术可行性论证
 
-### 2.1 t=0 从对话文本判复杂度：证据不支持
+### 2.0 论证方式声明（回应 D9）
 
-| 证据 | 内容 | 来源 |
-|---|---|---|
-| 无先例 | 成熟项目**没有**"LLM 分类器选整体 loop 模式"的实现；只有更窄的三种：选**模型档**（GPT-5 router）、选**是否先规划**（Cursor Plan Mode）、选**专家 agent**（LangChain Router） | Anthropic《Building effective agents》；LangChain multi-agent docs |
-| 自动路由的真实代价 | GPT-5 全自动 router + 无过渡期下架旧模型 → 用户反弹核心是"**响应变得不可预测、失去显式选择权**"，OpenAI 当日承诺回滚、4 天后恢复模型选择器 | simonwillison.net 2025-08-07 / 2025-08-08 |
-| 计划本身已降级为 opt-in | LangChain 把 planning 从独立架构降为 **`TodoListMiddleware` 默认关闭**；Claude Code 的 todo 工具是 **no-op**（"just context engineering strategy"） | LangChain Deep Agents docs；blog.langchain.com/deep-agents |
-| 固定成本可量化 | Router 模式**每次请求**多 1 次 LLM 调用，且**无状态、重复请求不省钱** | LangChain multi-agent docs（含调用次数表） |
-| 误判代价不对称 | Anthropic 早期失败模式：简单查询 spawn 50 个 subagent → 需把 scaling rules 写进 prompt 才收敛 | Anthropic multi-agent research system |
+本章不以"成熟项目无先例"作为否决依据。外部对标仅用于**提供实现参考与已知风险**，判定依据是：
 
-→ **结论**：t=0 做 LLM 分类器，成本是固定支出、收益不确定、失败模式是"用户失去控制感"。**不做。**
+| 判据 | 含义 |
+|---|---|
+| **可观测性** | 引擎能否客观检测到"该切/该约束"的信号？ |
+| **误判代价对称性** | 误判（该切没切 / 不该切却切了）两个方向的代价是否可控？ |
+| **修复动作明确性** | 检测到之后，能否给出明确的下一步动作（而非只提示"再想想"）？ |
+| **成本量级** | 检测本身的 token / 时延开销是多少？是否随会话数线性增长？ |
 
-### 2.2 t=1（首轮探索后）复杂度是客观事实，但当前采集不到
+### 2.1 t=0（任务开始）：可做，但**不该做成复杂度分类器**
+
+**技术可行性分析**：
+
+| 方案 | 可观测性 | 成本量级 | 误判代价 | 结论 |
+|---|---|---|---|---|
+| ① 用 LLM 从对话文本判"任务复杂度" | **低**——短指令可实现复杂任务，文本不含足够信息（**用户已指出此点**） | +1 次调用/任务，线性增长 | **高**——判浅了：该规划的没规划，返工在后期；判深了：简单任务背上计划开销 | ❌ 不可靠 |
+| ② 用规则匹配**任务类型**（bug 修复/新功能/重构/调查/文档/数据） | **高**——关键词与上下文特征明确（"修一下 X"/"实现 Y"/"为什么 Z 失败"） | **0**（纯规则，无 LLM） | **低**——类型判错的后果是"用错方法论"，最坏是多几步流程；且可在 t=1 纠正 | ✅ 可行 |
+| ③ 用已有信号（skill/workflow 自动匹配、前序残留 todo、用户显式指定） | **高** | 0 | 低 | ✅ 可行 |
+
+**结论**：t=0 **做**，但做的是 **②③：任务类型/方法论匹配**，**不是**①：复杂度分类。
+
+> **技术上的关键区别**：复杂度是**连续量**且 t=0 信息不足 → 判不准；任务类型是**离散标签**且 t=0 特征明确 → 判得准。方法论匹配依赖类型，不依赖复杂度。
+
+### 2.2 t=1（首轮探索后）：复杂度成为客观事实，但当前采集不到
 
 **代码事实（逐行核实）**：
 
@@ -64,7 +96,7 @@
 const toolResults = blocks.map((b, i) => ({
   type: 'tool_result', tool_use_id: b.id,
   content: executed[i]?.content ?? '',          // ← 结果正文在这里
-  is_error: executed[i]?.isError === true,
+  is_error: executed[i]?.is_error === true,
 }))
 // kernel/engine.mjs:1031-1036 —— 但观测面只取了 4 个字段
 turnToolDigest.push({
@@ -73,7 +105,6 @@ turnToolDigest.push({
   isError: toolResults[i]?.is_error === true,
   errorText: String(...).slice(0, 200),
 })
-if (turnToolDigest.length > 40) turnToolDigest.splice(0, turnToolDigest.length - 40)
 ```
 
 **没有结果规模字段**。`Glob` 命中 3 个文件与命中 300 个文件，在观测面上**完全一样**——而"命中面多大、要改几个文件"正是复杂度的客观代理量。
@@ -88,15 +119,13 @@ if (turnToolDigest.length > 40) turnToolDigest.splice(0, turnToolDigest.length -
 
 → 4 字段限制**出于体积与隐私考虑**，是对既有决策的遵守。
 
-**关键点**：`toolResults[i].content` 就在同一函数、5 行之前**手边可用**（`engine.mjs:1026-1034` 内已在读它的 `.slice(0,200)` 作 `errorText`），而本设计只需要补一个**整数长度**：
+**关键点**：本设计只需要补一个**整数长度**：
 
 ```js
 size: typeof toolResults[i]?.content === 'string' ? toolResults[i].content.length : 0,
 ```
 
-→ **`size` 只存长度、不复制正文，不违反"不复制结果正文（体积与隐私）"约束**——这是 3 行改动且与既有决策相容。
-
-> **这回答了用户的质疑**：检测不出"简短指令背后的复杂实现"，不是缺分类器，是**首轮探索的真实结果规模没被采集**；而补齐它的代价是一个整数字段。
+→ **`size` 只存长度、不复制正文，不违反"不复制结果正文"约束**；`errorText`（截断 200）已是内容派生字段的先例，`size` 比它更保守。
 
 ### 2.3 系统"已经在检测任务比预期复杂"，只是没把检测用于模式
 
@@ -110,9 +139,17 @@ size: typeof toolResults[i]?.content === 'string' ? toolResults[i].content.lengt
 这正是既有审计 **13.1-1（G1）** 指出的缺口：
 
 > "turnStats 无守卫 reason/失败分类字段 → 守卫类型无聚合统计 …… 即'失败模式'未进测量面"
-> 建议："把守卫收尾 reason 计入 turnStats（如 `guard:{type}`）…… 届时再评估 13.1-2 式路由是否有价值"
 
-→ **本设计把 13.1-1 的建议作为 D7 的第一交付物**（先采集，不切换）。
+### 2.4 判定链总览
+
+```
+t=0  规则匹配任务类型（0 token） → 建议方法论/模式 → 用户一键确认（D6）
+t=1  观测真实命中面（=补齐 O1 字段）→ 建议升级/降级 → 用户确认（D7，先观测期）
+轮末  守卫命中（④⑤③⑥）→ 允许自动切 + 全程留痕（D2）
+任意  用户显式指定 → 优先级最高，LLM 不得切走（D1）
+```
+
+**关键设计性质**：方法论/模式**判错可在执行中被观测纠正**——这是它比"复杂度分类器"可靠的根本原因：复杂度猜错的结果是"该做的没做"（不可逆），方法论选错的结果是"流程不适配"（可在下一轮换）。
 
 ---
 
@@ -126,16 +163,16 @@ size: typeof toolResults[i]?.content === 'string' ? toolResults[i].content.lengt
 | 13.1-6 未引入超收益的自适应复杂度 | **G0 覆盖** | "维持现状（单策略引擎），不引入 13.5 融合形态"；"用数据再决定要不要路由——**而非现在上框架**" |
 | 2.1-4 策略接口 | — | "指南 1.6 易错点 1 恰好警告「**80% 一种模式时勿为 20% 引入整套编排复杂度**」" |
 | 2.2.4 策略接口 | 缺口 | "engine 与子 lane 两套循环复制 600+ 行镜像逻辑…… 是本章最值得借鉴的抽象" |
-| 12.1-5 子 Agent 边界 | G1 | "可配粒度不足…… **无 per-agent 步数/token/成本硬预算上限**；独立超时**非独立配置**" |
+| 12.1-5 子 Agent 边界 | G1 | "可配粒度不足…… **无 per-agent 步数/token/成本硬预算上限**" |
 
 ### 3.1 逐条判定：反对的是 A，本设计是 B
 
 | 审计反对的对象 | 本设计是否涉及 |
 |---|---|
-| **自动路由框架**（`TaskProfile` + `can_handle` 评分路由 + 历史成功率回填） | ❌ 不涉及。本设计**无评分路由、无历史回填**；LLM 只出建议，用户确认（D1/D6） |
+| **自动路由框架**（`TaskProfile` + `can_handle` 评分路由 + 历史成功率回填） | ❌ 不涉及。**无评分路由、无历史回填**；LLM 只出建议，用户确认（D1/D6） |
 | **13.5 融合投票**（同请求多策略并跑） | ❌ 不涉及 |
-| 三模式同接口**为 20% 场景引入 80% 复杂度** | ⚠️ **部分涉及，已收窄**：不引入新运行时，模式 = 既有构件重组合（见 §5.2）；且分 B1/B2，B1 零行为变更 |
-| 策略接口造成的抽象成本 | ⚠️ **必须正视**——见 §3.2 对审计 600 行的修正 |
+| 三模式同接口**为 20% 场景引入 80% 复杂度** | ⚠️ 部分涉及，**已收窄**：不引入新运行时，模式 = 既有构件重组合（§5.2）；分 B1/B2，B1 零行为变更 |
+| 策略接口的抽象成本 | ⚠️ 必须正视——见 §3.2 |
 
 ### 3.2 修正审计一处乐观估计（影响方案选型）
 
@@ -143,131 +180,147 @@ size: typeof toolResults[i]?.content === 'string' ? toolResults[i].content.lengt
 
 | 分类 | 规模 | 内容 |
 |---|---|---|
-| **可共享（真重复）** | **约 300-350 行** | 守卫检查组（①②③③b④⑤⑥同族）、自愈注入、流式聚合（text/thinking/tool_use/usage/stop_reason）、停流判定、usage 累加、`canonicalToolCallKey` 链 |
+| **可共享（真重复）** | **约 300-350 行** | 守卫检查组、自愈注入、流式聚合（text/thinking/tool_use/usage/stop_reason）、停流判定、usage 累加、`canonicalToolCallKey` 链 |
 | **刻意不同（不该收敛）** | **约 250 行** | lane 无 health / 无锚点注入 / 无完整 `preStep`（engine.mjs:1502-1504 注释明说"无健康（短会话）；无压缩器"）、`inbox`(B2) vs `pendingNext`(P8)、`guardStop`(return) vs `loopStop`+`break`、无 `asksUser` 挂起 |
 
-→ **修正后的收益预期**：策略接口的真实价值是「**模式逻辑一处实现、主循环与 lane 两处生效**」，而非"消掉 600 行"。这**同时降低了收益预期与风险预期**——不必强行统一那 250 行刻意差异。
+→ **修正后的收益预期**：策略接口的真实价值是「**模式逻辑一处实现、主循环与 lane 两处生效**」，而非"消掉 600 行"。这**同时降低收益预期与风险预期**——不必强行统一那 250 行刻意差异。
 
 ### 3.3 本设计吃下的三条审计前置条件
 
 | 前置条件 | 审计条目 | 本设计落实处 |
 |---|---|---|
-| 失败模式进测量面 | 13.1-1 | §7 观测层（`turnToolDigest.size` + 守卫 reason 入 turnStats + 模式事件） |
-| 切换带理由与遥测 | 13.1-3 | §8 切换协议（`loop_mode_switched{from,to,reason,source}` + wire 事件） |
-| 切换四步协议、不裸切 | 13.1-4 | §8.2（切换边界=轮末，天然满足"不裸切"） |
+| 失败模式进测量面 | 13.1-1 | §7 观测层 |
+| 切换带理由与遥测 | 13.1-3 | §8.4 切换事件（含 reason） |
+| 切换四步协议、不裸切 | 13.1-4 | §8.2 |
 
 ---
 
-## 4. 外部对标：模式各自的成熟骨架（用于定实现形态）
+## 4. "下沉"：Ponos 已验证的既有路径（本设计的核心依据）
 
-### 4.1 Plan-and-Execute
+### 4.1 铁证：引擎已经把"提示词纪律"下沉为守卫，且经 lean 档工程验证
 
-| 做法 | 骨架 | 来源 |
-|---|---|---|
-| LangChain 原版 | **planner**（生成多步清单）→ **executor**（接收 query + 单步，调工具）→ **re-planning prompt**（决定"给最终回答"还是"生成后续计划"） | blog.langchain.com/planning-agents |
-| ReWOO | 计划内允许**变量赋值**（`E1: Search[...]`、`E4: Search[#E2]`），顺序执行 + 变量替换 | 同上 |
-| LLMCompiler | Planner **流式输出任务 DAG**；依赖满足即调度；**Joiner 依整图历史决定 replan 或收尾** | 同上 |
-| **计划的最佳落地形态** | Claude Code 的 todo = **no-op**，纯上下文工程；Manus 的 `todo.md` = "**把目标背诵到上下文末尾**"以抗 lost-in-the-middle 与目标漂移（复杂任务平均 ~50 次工具调用） | blog.langchain.com/deep-agents；manus.im blog |
-| **重规划三判据** | ①每步执行后询问（LangChain）②依赖图状态变化后判定（LLMCompiler）③**保留失败轨迹**让模型自行更新（Manus："keep the wrong stuff in"） | planning-agents；manus.im blog |
-| 趋势 | LangChain 把 planning 降为 **opt-in 中间件、默认关** | LangChain Deep Agents docs |
+`kernel/prompt.mjs:45-46` 原文注释：
 
-→ **对本设计的直接影响**：Plan 模式**不新增 plan 数据结构**，用 `TodoWrite` 作为计划表示（**已存在**，见 §5.2），复述动作本身即抗漂移手段。
+> lean 剪枝原则：**只删有引擎守卫兜底的细则**（计划尾/想完即停/报错重试均在 engine.mjs 注入自愈），功能协议核心（工具纪律/回复规范）一字不动。
 
-### 4.2 Reflection
+**这意味着：凡是引擎能兜底的纪律，提示词就不必写**——lean 档已实证（删掉提示词后引擎守卫仍生效）。
 
-| 做法 | 触发/退出/产物 | 证据 |
-|---|---|---|
-| Reflexion | draft → execute_tools → revise；**最多 5 次迭代**；反思**强制接地**：须引用来源、显式枚举缺失与多余 | arXiv 2303.11366 |
-| LangChain Basic Reflection | generator + reflector；**固定轮数**退出（`if len(state) > 6: END`）；产物=消息列表追加 | blog.langchain.com/reflection-agents |
-| LATS | 反思作 value function：Expand(5) → Reflect+Evaluate 打分 → Backpropagate；退出 `is_solved` 或树高 > 5 | 同上 |
-| **收益不稳定的强实证** | TACL 2024 综述：**除极适合自纠的任务外，没有任何工作证明"prompted LLM 的自反馈"能成功自纠**；有**可靠外部反馈**时自纠才有效 | arXiv 2406.01297 |
-| 自纠可能变差 | ICLR 2024：无外部反馈时难以自纠推理错误，**有时性能反而下降** | arXiv 2310.01798 |
-| 机制质疑 | 图着色任务：批评内容正确与否**与最终表现基本无关**，提升主要来自 top-k 采样 | arXiv 2310.12397 |
-| 成本 | 一轮反思 ≈ **+2 次生成调用**（约 3x）；多 agent 叠加 4x→15x | reflection blog；Anthropic |
+### 4.2 已下沉 vs 未下沉（逐条核实）
 
-→ **对本设计的直接影响**（硬约束）：
-1. **Reflection 只在有外部可验证信号时开**——接 `loop-verify.mjs` 的 `doneWhen`（cmd 验真 / judge 判词）、工具结果、测试输出；**无信号默认关闭**。
-2. **固定轮数退出**（不靠模型自评"我满意了"）+ 预算上限。
-3. **产物写回上下文并改写下一步动作**，不只出报告（Reflexion 的价值在"反思进入后续 trial 的记忆"）。
+| 纪律 | 提示词里有 | 引擎是否强制 | 状态 |
+|---|---|---|---|
+| 禁止"计划尾巴" | ✅ | ✅ `isPlanTail`（gen-guards.mjs:22）+ 自愈（engine.mjs:970/1773） | **已下沉** |
+| 禁止"想完即停" | ✅ | ✅ `isThinkOnly`（gen-guards.mjs:34）+ 续写（engine.mjs:981） | **已下沉** |
+| 禁止"报错即停" | ✅ | ✅ `hadToolError` + 自愈（engine.mjs:962/1760） | **已下沉** |
+| 禁止生成打转 | 部分 | ✅ `detectGenerationRepeat`（守卫③）/ `createNearRepeatDetector`（守卫③b） | **已下沉** |
+| **【里程碑进度协议】输出 MILESTONE 标记** | ✅ 长文详述 | ❌ **纯解析，无校验** | ❌ **未下沉** |
+| **【互动问答】用 ASK_USER 卡片** | ✅ 长文详述 | ⚠️ 仅逐帧解析（api.mjs:56/81/197），不校验"该问没问" | ⚠️ **半下沉** |
+| **【经验沉淀】写经验** | ✅ | ❌ | ❌ **未下沉** |
+| **【改动聚焦】最小改动** | ✅ | ❌ | ❌ **未下沉** |
+| **【子 Agent 编排】逐任务派发+审查** | 仅 Skill 内 | ❌ | ❌ **未下沉** |
+| **【完成前验证】** | 仅 Skill 内 | 部分（`loop-verify.mjs` 仅在 `doneWhen` 显式配置时生效） | ⚠️ **半下沉** |
 
-### 4.3 多评审（MAGI）
+**MILESTONE 的核实证据**：`MILESTONE` 在 kernel 下共 5 处命中，**全部是解析/剥离，无一处校验**：
+- `api.mjs:56` —— "依据：ASK_USER 提问卡与 MILESTONE 进度标记**都是 HTML 注释**，而桥侧是**逐帧**正则"（解析）
+- `api.mjs:81` —— 切点处理（解析）
+- `api.mjs:197` —— "推理模型常把 MILESTONE 标记写在 thinking 里"（解析）
+- `compact.mjs:441` —— 压缩时剥离（不当正文）
 
-| 做法 | 视角切分 / 汇总 | 来源 |
-|---|---|---|
-| Claude Code 并行 review | **按审查维度切分而非人格**：security / performance / test coverage 各一名，要求"distinct lens so they don't overlap"，**lead 汇总** | docs.claude.com agent-teams |
-| Claude Code 竞争假设 | 5 个 teammate 各持假设**互相证伪**（对抗性，非 persona 表演）；动机：顺序调查有 anchoring | 同上 |
-| **汇总：单判官优于多判官** | Anthropic 实测：试过"多 judge 各评一维"，发现 **"a single LLM call with a single prompt outputting scores 0.0–1.0 + pass/fail 最一致、最贴合人类判断"** | Anthropic multi-agent research system |
-| 汇总：异构小模型陪审团（PoLL） | 多个小模型 panel 优于单一大 judge，**成本低 7 倍以上**，跨模型家族降 intra-model bias | arXiv 2404.18796 |
-| **"多评审≈浪费"的反面证据** | MAD benchmark："multi-agent debating systems, in their current form, **do not reliably outperform** self-consistency and ensembling"；但对超参极敏感 | arXiv 2311.17371 |
-| 辩论何时有效 | 有**明确正确答案的裁决任务**：弱模型/人类判题准确率 48%→76%、60%→88% | arXiv 2402.06782 |
-| 成本 | Claude Code：每个 teammate 独立 context，token **线性增长** + 协调开销 + 收益递减，建议 **3–5 个**，"三个专注的常常胜过五个分散的" | docs.claude.com agent-teams |
-| **本地实测** | n=3 样本 / 13 注入缺陷：异族模型（MiniMax-M3）命中 10.5/13（≈81%）vs 现状 deepseek 族 13/13（100%），**且漏掉唯一"必然崩溃"级缺陷** → 结论"不改变默认值" | `docs/superpowers/audits/2026-09-19-reviewer-cross-model.md` |
+→ **结论：`【任务里程碑进度协议】` 目前是纯提示词约束，引擎只解析不 Enforcement。**
 
-→ **对本设计的直接影响**（硬约束）：
-1. 三视角 = **正交审查维度**（如：事实/来源正确性、方案/风险、覆盖/完整性），**不是三种人格**。
-2. 汇总 = **1 次主席裁决**合并问题清单，**不做"三份评分取平均"**。
-3. MAGI **默认关、显式开启、写死预算**（3 评审 + 主席 = 4 次调用）。本地实测已证"换更强模型不必然更好"，不能用"多一个评审"当默认保险。
+### 4.3 技术路线图
 
-### 4.4 子 Agent 开关
-
-| 产品 | 机制 | 关键语义 |
-|---|---|---|
-| Claude Code | `tools: Agent(worker, researcher)` 白名单；`permissions.deny: Agent` = 完全禁止委派；`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`(默认 20，超限**报错并告知模型不要重试**)；`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`(默认 **3**，`1`=关嵌套，**到上限收回 Agent 工具**) | 三闸：白名单 + 并发 + 深度 |
-| Cursor | frontmatter `readonly` / `is_background` / `model`；嵌套**硬两层**（二层不能再派） | 深度是有限资源 |
-| OpenAI Agents SDK | `Agent.as_tool(needs_approval=..., is_enabled=..., max_turns=...)`；`needs_approval` → run 暂停 → `result.interruptions` → `state.approve()/reject()` | **暂停-恢复式人工闸门**（最干净的语义） |
-| GitHub Copilot | `.github/agents/*.agent.md` frontmatter `tools`（省略=全部） | 仅白名单，无并发/嵌套控制 |
-| **Ponos 现状** | `agents.mjs`（注册即路由依据）、`disabled.mjs`（**全局**停用，语义=不进提示词/不在 Task 表）、`shared/subagent-concurrency.mjs`（`MAX_SUBAGENTS_CAP=32`）、**无深度闸**（`engine.mjs:2013` 的 `depth` 只透传，注释标"S4 预留"） | 缺：任务级软开关、深度闸、人工闸门 |
+Ponos 的"下沉"路径**已验证 4 条纪律**，尚有 6+ 条未下沉。用户诉求（D8）= **把这条已验证的路径系统化、扩展到方法论族**。这不是新发明，是既有工程实践的推广。
 
 ---
 
 ## 5. 设计总览
 
-### 5.1 分块与分期（决策 D4）
+### 5.1 核心架构洞察：**"模式"与"方法论"是同一件事的两个视角**
+
+| 视角 | 表述 |
+|---|---|
+| 从**控制流**看 | 「Plan 模式」= 先规划再执行的阶段机 |
+| 从**方法论**看 | 「Plan 模式」= `writing-plans` + `executing-plans` + `subagent-driven-development` 的编译产物 |
+
+**统一结论**：模式 = 方法论编译产物的运行时实例。因此**块 2（模式）与块 5（方法论编译）共用同一套机制**——不需要为每个模式单独设计，只需要一个编译器 + 一份方法论声明。
+
+```
+SKILL.md（方法论源）
+    ↓ 编译（§9.3）
+MethodologySpec（声明式）
+    ├ when:     触发判据（规则，0 token）
+    ├ phases:   阶段机
+    ├ gates:    门控（审批）
+    ├ guards:   守卫（Iron Law → 引擎断言）
+    └ budget:   预算/上限
+        ↓
+LoopProfile + PhaseHooks（运行期）
+        ↓
+引擎强制执行（0 token）
+```
+
+### 5.2 模式 = 既有构件重组合（不新增运行时）
+
+| 模式 | 本质 | **既有构件**（已存在，非新建） | 方法论来源（编译） |
+|---|---|---|---|
+| **ReAct**（默认） | 现状不变 | `runTurnInternal` | 无 |
+| **Plan** | 把 `TodoWrite` 从"**提示词建议**"升级为"**控制流约束**" | `prompt.mjs:91` 已要求先规划（**仅非 lean 分支**，见 §15 风险）；`compact.mjs:308` **已把 TodoWrite 当权威清单提取** | `writing-plans` + `executing-plans` + `subagent-driven-development` |
+| **Reflect** | 守卫升格为"结构化自省" | 守卫家族 + `guardHeal` wire + `loop-verify.mjs:verifyDoneWhen` + `engine.mjs:2255 judgeUntil` | `systematic-debugging`（+ `verification-before-completion` 守卫） |
+
+**横切约束**（不属任何模式，全局生效，均由方法论编译而来）：
+
+| 约束 | 来源方法论 | 落点 |
+|---|---|---|
+| 完成前验证（Iron Law） | `verification-before-completion` | 收尾前守卫（所有模式） |
+| 设计未批准不得实现（HARD-GATE） | `brainstorming` | 门控（复用 `awaiting_approval`） |
+| 技能路由 | `using-superpowers` | t=0 规则匹配（引擎侧） |
+| 测试先行 | `test-driven-development` | 门控（按任务类型启用） |
+| 并行派发纪律 | `dispatching-parallel-agents` | 块 3 并发闸 |
+| 审查请求/接收 | `requesting/receiving-code-review` | 块 4 审查钩子 |
+
+### 5.3 分块与分期
 
 | 块 | 内容 | 期 | 交付判据 |
 |---|---|---|---|
-| **块 1** | **B1 循环体契约**（纯重构） | 一期 | 零行为变更 + 现有 kernel-tests 全绿 + 可共享逻辑一处实现 |
-| **块 2** | **B2 模式 = LoopProfile 预设 + 阶段钩子** | 一期 | 三模式可选/可切/可留痕；t=1 观测数据产出 |
+| **块 1** | B1 循环体契约（纯重构） | 一期 | 零行为变更 + kernel-tests 全绿 |
+| **块 2** | B2 模式 = LoopProfile + 阶段钩子 | 一期 | 三模式可选/可切/可留痕 |
+| **块 5** | 方法论编译（下沉） | 一期 | ≥4 个方法论下沉生效；Skill 加载量可测下降 |
 | **块 3** | 子 Agent 三闸 + 深度闸 + 人工闸门 | 二期 | 用户可关/可限/可批 |
 | **块 4** | MAGI 三评审 | 二期 | 显式开启 + 4 次调用预算 + 主席裁决 |
 
-**块 1 与块 2 的关系**：块 1 是**纯重构**（等价变换），必须能**单独合并、单独回滚**。块 2 在其上注册模式。
+**块 1 独立可交付**：纯重构，必须能单独合并、单独回滚。
 
-### 5.2 关键设计决策：模式 = 既有构件重组合（不新增运行时）
-
-| 模式 | 本质 | **既有构件**（已存在，非新建） | 需补的控制流 |
-|---|---|---|---|
-| **ReAct**（默认） | 现状不变 | `runTurnInternal` | 无 |
-| **Plan** | 把 `TodoWrite` 从"**提示词建议**"升级为"**控制流约束**" | `prompt.mjs:91` 已在要求"复杂任务先规划"（**仅非 lean 分支**，见 §13 风险）；`compact.mjs:308` **已把 TodoWrite 当权威清单提取**（`extractKeyInfo`）——计划表示**已经存在** | ①首轮后产出计划 ②每轮末对照计划项 ③每步后一次廉价重规划判定 |
-| **Reflection** | 守卫升格为"结构化自省" | 守卫家族 + `guardHeal` wire + `loop-verify.mjs:verifyDoneWhen` + `engine.mjs:2255 judgeUntil` | ①**挂外部信号**（硬约束）②结构化问题清单（非单条 done/reason）③固定轮数退出 |
-
-**为什么这是最小设计**：三模式的构件**全部已在仓库里**，本设计做的是"把它们按模式重新编排 + 补控制流约束"，而非引入新框架。这直接回应审计 13.1-6 的"勿引入超收益复杂度"。
-
-### 5.3 架构图（一期）
+### 5.4 架构图（一期）
 
 ```
-[用户/建议卡]──确认──┐
-                     ↓
-              loop-mode.mjs (纯函数)
-              ├ 模式定义 REACT|PLAN|REFLECT
-              ├ resolveMode({explicit, prev, signals})  ← 决策纯函数
-              ├ 模式提示词片段 modeDirective(mode)
-              └ 切换校验 canSwitch(from,to,phase)
-                     ↓ profile = PROFILE[mode]
+[用户 / 建议卡 / 显式参数]
+        ↓
+  loop-mode.mjs (纯函数)
+  ├ 模式定义 REACT|PLAN|REFLECT
+  ├ resolveMode({explicit, prev, taskType, signals})   ← 决策纯函数
+  ├ modeDirective(mode)                                 ← 提示词片段
+  └ canSwitch(from, to, phase)
+        ↓ profile = compile(PROFILE[mode] + METHODOLOGY[ids])
 [cli.mjs:1322 loop.onTurnEnd] ← 轮边界切换落点（已存在）
-                     ↓
+        ↓
 [engine.mjs]  LoopProfile 驱动
-   ├ iterHead  守卫序 ①②⑥（可配）
-   ├ inStream  守卫序 ①b③③b + watchdog（可配）
-   ├ afterStream 守卫序 R3-2④⑥⑤（可配）
-   ├ phaseHooks beforeIter / afterToolBatch / afterTurn（模式挂载点）
-   └ stopFn    main=loopStop+break ／ lane=guardStop(return)
-                     ↓
+  ├ iterHead    守卫序 ①②⑥（可配）
+  ├ inStream    守卫序 ①b③③b + watchdog（可配）
+  ├ afterStream 守卫序 R3-2④⑥⑤（可配）
+  ├ phaseHooks  beforeIter / afterToolBatch / afterTurn ← 模式与方法论挂载点
+  └ stopFn      main=loopStop+break ／ lane=guardStop(return)
+        ↓
+[方法论执行层 §9] MethodologySpec
+  ├ gates  门控（HARD-GATE / TDD / 验证）→ awaiting_approval
+  ├ guards 守卫（Iron Law → 断言 + 自愈注入）
+  └ budget 预算（fix loop ≤ 5 rounds 等）
+        ↓
 [观测] turnToolDigest.size + guardReason + turnStats
-                     ↓
-[留痕] appendMeta('loop_mode_switched',{from,to,reason,source})
+        ↓
+[留痕] appendMeta('loop_mode_switched'|'methodology_applied', {...})
        wire.system('loop_mode_updated'|'loop_mode_suggested')
-                     ↓
+        ↓
 [GUI] SessionModeBar（模式徽标，照 sessionMode 范式）
 ```
 
@@ -281,9 +334,9 @@ size: typeof toolResults[i]?.content === 'string' ? toolResults[i].content.lengt
 // kernel/loop-core.mjs —— 循环体契约（新建）
 /**
  * 一轮迭代的执行体。纯参数化——不持有闭包状态。
- * @param {LoopState} state  迭代可变状态（含守卫计数、usage、textBuf、flags）
- * @param {LoopCtx}   ctx    依赖注入（stream/store/wire/守卫阈值/钩子）
- * @returns {Promise<LoopState>} 更新后的 state（return 而非 mutate 语义便于测试）
+ * @param {LoopState} state  迭代可变状态（守卫计数、usage、textBuf、flags）
+ * @param {LoopCtx}   ctx    依赖注入（stream/store/wire/阈值/钩子）
+ * @returns {Promise<LoopState>}
  */
 export async function runOnce(state, ctx)
 
@@ -296,16 +349,16 @@ export function shouldStop(state, ctx)   // → null | { reason, message }
 ```js
 {
   guards: {
-    iterHead:    ['wallClock', 'iterCap', 'stall'],          // 主：①②⑥
+    iterHead:    ['wallClock', 'iterCap', 'stall'],                    // 主：①②⑥
     inStream:    ['streamWallClock', 'genRepeat', 'nearRepeat', 'idleWatchdog'],
     afterStream: ['failureHeal', 'meltdown', 'progressRefresh', 'repeatReminder'],
   },
   thresholds: { ... },            // 阈值来源（默认 engine-config.mjs）
-  compactor:  { preStep: true, laneCompact: false },  // 主 true / lane 看 LANE_COMPACT_ENABLED
-  health:     { fidelityAnchor: true, recordTurnContent: true }, // lane false
-  inject:     { pendingNext: true, inbox: false },    // 主 P8 / lane B2
-  stop:       'loopStop' | 'guardStop',               // 收尾方式
-  phaseHooks: {},                 // B2 由模式填充
+  compactor:  { preStep: true, laneCompact: false },
+  health:     { fidelityAnchor: true, recordTurnContent: true },      // lane false
+  inject:     { pendingNext: true, inbox: false },                    // 主 P8 / lane B2
+  stop:       'loopStop' | 'guardStop',
+  phaseHooks: {},                 // §9 由方法论填充
 }
 ```
 
@@ -319,8 +372,8 @@ export function shouldStop(state, ctx)   // → null | { reason, message }
 - usage 累加（`addUsage`）与 `canonicalToolCallKey` 链
 
 **不纳入契约**（约 250 行，保留在各自宿主）：
-- 主循环独有：`preStep` 完整压缩、`health` 锚点注入（`requestFaceWithAnchor`）、`asksUser`/`waitForAnswer` 挂起、`pendingNext`(P8)
-- lane 独有：`inbox`(B2) 吸收、`guardStop` 收尾语义、`laneCompactor`（`LANE_COMPACT_ENABLED` 门控）
+- 主循环独有：`preStep` 完整压缩、`health` 锚点注入、`asksUser`/`waitForAnswer` 挂起、`pendingNext`(P8)
+- lane 独有：`inbox`(B2) 吸收、`guardStop` 收尾语义、`laneCompactor`
 
 ### 6.3 回归锁（B1 必须有）
 
@@ -334,9 +387,9 @@ export function shouldStop(state, ctx)   // → null | { reason, message }
 
 | 风险 | 缓解 |
 |---|---|
-| `runTurnInternal` 是 2436 行文件里的核心函数，重入风险高 | 契约抽取**只做等价搬移**，不做顺手的逻辑修正（发现的 bug 另开 issue）；分 3-4 次提交，每次一个守卫组 |
-| 闭包变量捕获（`model`/`systemPrompt`/`session`）跨函数边界 | `LoopCtx` 显式注入，**禁止在 loop-core 里引用 engine 闭包**（用 lint/评审把关） |
-| 回归锁覆盖不到的路径 | 保留 `PONOS_LOOP_GUARD=0` 全关路径的等价性测试（现有 kernel-tests 已覆盖部分） |
+| `runTurnInternal` 是 2436 行文件里的核心函数，重入风险高 | 契约抽取**只做等价搬移**，不做顺手逻辑修正（发现的 bug 另开 issue）；分 3-4 次提交，每次一个守卫组 |
+| 闭包变量捕获跨函数边界 | `LoopCtx` 显式注入，**禁止在 loop-core 里引用 engine 闭包**（lint + 评审把关） |
+| 回归锁覆盖不到的路径 | 保留 `PONOS_LOOP_GUARD=0` 全关路径的等价性测试 |
 
 ---
 
@@ -346,17 +399,13 @@ export function shouldStop(state, ctx)   // → null | { reason, message }
 
 | # | 位置 | 改动 | 目的 |
 |---|---|---|---|
-| O1 | `engine.mjs:1031-1036` | `turnToolDigest.push` 增 `size: content.length`（`content` 在同函数 `:1026` 已读取，用作 `errorText`） | **复杂度客观代理量**：命中面/结果规模 |
-| O2 | 守卫命中点（①②③③b④⑤⑥） | `turnStats.push` 增 `guard: { type, attempt, heal }`（现仅 `{usage,lastUsage,durationMs,model,ts,compactCount}`，`engine.mjs:2386`） | 落实审计 13.1-1"守卫 reason 进 turnStats" |
-| O3 | 模式切换点 | `appendMeta('loop_mode_switched', {from,to,reason,source,at})` | 落实审计 13.1-3/13.1-5"切换带理由 + 时间线" |
+| O1 | `engine.mjs:1031-1036` | `turnToolDigest.push` 增 `size`（`content` 在同函数 `:1026` 已读取） | 复杂度客观代理量 |
+| O2 | 守卫命中点（①②③③b④⑤⑥） | `turnStats.push` 增 `guard: { type, attempt, heal }`（现仅 `{usage,lastUsage,durationMs,model,ts,compactCount}`，`engine.mjs:2386`） | 落实审计 13.1-1 |
+| O3 | 模式/方法论应用点 | `appendMeta('loop_mode_switched' \| 'methodology_applied', {...})` | 落实审计 13.1-3/13.1-5 |
 
-**O1 与既有 `2026-09-12 spec §4.2` 约束相容性**（必须遵守）：该处注释明确"**不复制结果正文（体积与隐私）**"。`size` 只存**整数长度**、不落正文，因此**不违反**该约束；`errorText`（截断 200）已是"内容派生字段"的先例，`size` 比它更保守。
+**O1 与既有 `2026-09-12 spec §4.2` 约束相容性**：该处注释明确"**不复制结果正文（体积与隐私）**"。`size` 只存**整数长度**、不落正文，因此**不违反**该约束。
 
-**O2 的既有缺口证据**：`engine.mjs:2386` 的 `turnStats.push` 字段清单里**没有** guard 字段；`health.mjs` 的 `failures` 已接线（`recordFailure()`，:199），但**守卫类型仍无聚合统计**——审计 13.1-1 的缺口未修。
-
-### 7.2 复杂度信号（t=1 判定输入）
-
-混合信号，**全部来自客观事实、非文本猜测**：
+### 7.2 复杂度与方法论信号
 
 | 信号 | 来源 | 语义 |
 |---|---|---|
@@ -364,26 +413,25 @@ export function shouldStop(state, ctx)   // → null | { reason, message }
 | `exploreHits` | O1 + `Glob`/`Grep` 结果规模 | 命中面多大 |
 | `todoCount` | 已有：`compact.mjs:308` 已提取 TodoWrite | 模型自己认为有几步 |
 | `guardReason` | O2 | 是否已命中守卫（=比预期难） |
-| `turnIndex` / `iterCount` | 已有 | 已跑多远 |
+| `taskType` | §9.2 的规则匹配 | 方法论路由输入 |
 
-### 7.3 阈值口径（D7：可配 + 先观测）
+### 7.3 阈值口径（D7）
 
 ```js
 // engine-config.mjs 新增（env 可配）
-export const MODE_SWITCH_OBSERVE_ONLY = envFlag('PONOS_MODE_OBSERVE_ONLY', true)  // 默认 true：只观测不切换
-// 阈值默认值由 §7.3 步骤 3 的观测期分布确定，本 spec 不预设数值（D7）
+export const MODE_SWITCH_OBSERVE_ONLY = envFlag('PONOS_MODE_OBSERVE_ONLY', true)  // 默认 true
 export const MODE_PLAN_WRITE_FILES_MIN = envNonNeg('PONOS_MODE_PLAN_WRITE_FILES', PLAN_FILES_MIN_DEFAULT)
 export const MODE_PLAN_EXPLORE_HITS_MIN = envNonNeg('PONOS_MODE_PLAN_EXPLORE_HITS', PLAN_HITS_MIN_DEFAULT)
-// 上述两个 *_DEFAULT 常量在 S8 步骤由观测数据填入；在此之前保持 OBSERVE_ONLY=true
+// 上述 *_DEFAULT 在 S8 由观测数据填入；在此之前保持 OBSERVE_ONLY=true
 ```
 
-**默认值定法**（D7 明确）：
-1. 阶段一：`MODE_SWITCH_OBSERVE_ONLY=true`，只发 `wire.system('loop_mode_suggested')` 与落 meta，**不切换**
-2. 收集真实会话的分布数据（`writeFiles.size` / `exploreHits` 直方图）
-3. 依据分布定默认阈值（如取"明显高于单轮中位数"的分位点），阈值语义写进 spec 附录
-4. 阶段二：默认阈值生效，但仍受 D6"建议制"约束（见 §8.3）
+**默认值定法**：
+1. 阶段一：`OBSERVE_ONLY=true`，只发 `wire.system('loop_mode_suggested')` 与落 meta，**不切换**
+2. 收集真实会话分布（`writeFiles.size` / `exploreHits` 直方图）
+3. 依分布定默认阈值（如取"明显高于单轮中位数"的分位点），取法写进本 spec 附录
+4. 阶段二：默认阈值生效，但仍受 D6"建议制"约束（§8.3）
 
-> **不接受"拍一个 N"**：用户明确要求"不要拍脑壳"，审计 13.1-6 也要求"用数据再决定"。
+> 不接受"拍一个 N"：用户明确要求不以"拍脑壳"方式定参数；审计 13.1-6 也要求"用数据再决定"。
 
 ---
 
@@ -394,49 +442,49 @@ export const MODE_PLAN_EXPLORE_HITS_MIN = envNonNeg('PONOS_MODE_PLAN_EXPLORE_HIT
 | 项 | REACT（默认） | PLAN | REFLECT |
 |---|---|---|---|
 | 触发 | 一切任务的起点 | 建议确认 / 用户显式 / 信号命中 | **守卫命中**（④/⑤/③）+ 有外部信号 / 用户显式 |
-| 提示词 | 现状 `prompt.mjs` | `modeDirective('plan')`：首轮只读探索 + 产出 TodoWrite 计划；每轮末复述当前项 | `modeDirective('reflect')`：结构化自省清单（问题/证据/下一步） |
-| 控制流约束 | 无 | ①首轮后强制计划 ②`afterTurn` 对照计划项 ③`afterToolBatch` 一次廉价 replan 判定 | ①强制收尾前一轮反思 ②`attempts ≤ N` 固定轮数退出 |
-| 退出 | 自然收尾 | 计划项全完 / 用户接管 | attempts 耗尽 → 升级人工（不无限自省） |
-| 外部信号要求 | — | — | **硬约束**：无 `doneWhen`/工具失败证据时不进入（见 §4.2） |
-| 预算 | 现状 | 现状 + 1 次 replan 判定/轮 | 现状 + 2 次/轮（反思 + 改写），`attempts ≤ 2` 默认 |
+| 提示词 | 现状 `prompt.mjs` | `modeDirective('plan')` | `modeDirective('reflect')` |
+| 控制流约束 | 无 | ①首轮后强制计划 ②`afterTurn` 对照计划项 ③`afterToolBatch` 一次廉价 replan | ①强制收尾前一轮反思 ②`attempts ≤ N` 固定轮数 |
+| 退出 | 自然收尾 | 计划项全完 / 用户接管 | attempts 耗尽 → 升级人工 |
+| 外部信号要求 | — | — | **硬约束**：无 `doneWhen`/工具失败证据时不进入（见 §4 与 §9.4） |
+| 预算 | 现状 | 现状 + 1 次 replan 判定/轮 | 现状 + 2 次/轮，`attempts ≤ 2` 默认 |
 
-**Plan 的计划表示**：直接用 `TodoWrite`（不复用不新建数据结构）。依据：Claude Code 的 todo 是 no-op 但有效（上下文工程）、Manus 的 `todo.md` 是注意力机制、LangChain 已把 planning 降为 opt-in。**复述即抗漂移**。
+**Plan 的计划表示**：直接用 `TodoWrite`（不新建数据结构）。依据：`compact.mjs:308` 已把它当权威清单提取；Claude Code 的 todo 是 no-op 但有效（上下文工程）；Manus 的 `todo.md` 是注意力机制。**复述即抗漂移**。
 
 ### 8.2 切换协议（吃下审计 13.1-4"不裸切"）
 
-审计四步 = 摘要 → 共享记忆 → 计量保留 → warm-up。本设计的落点：
+审计四步 = 摘要 → 共享记忆 → 计量保留 → warm-up：
 
-| 步 | 本设计落实 | 依据 |
+| 步 | 落实 | 依据 |
 |---|---|---|
-| ①摘要 | 轮末切换时**已有压缩器状态**（`compactor.lastSummary()`，`spawnSubAgent` 已在用，`engine.mjs:2032`），模式切换时把当前计划/反思摘要注入请求面尾部 | 复用 `withAnchorTail` 式注入（`engine-config.mjs`），不改前缀缓存 |
-| ②共享记忆 | 计划/反思**落 `store`（TodoWrite 或 meta）**，不放在临时变量里 | `TodoWrite` 已在 transcript；meta 用 `appendMeta` |
-| ③计量保留 | **天然满足**：`usage`/`turnStats` 跨轮累计（`engine.mjs:2386`） | 审计已确认此点成立 |
-| ④warm-up | 切换后**不立即执行**——插入一个显式的"模式生效"注入（说明新模式要求），让模型下一轮按新约定产出 | 避免"切了但模型不知道" |
+| ①摘要 | 轮末切换时用**已有压缩器状态**（`compactor.lastSummary()`，`spawnSubAgent` 已在用 `engine.mjs:2032`），把当前计划/反思摘要注入请求面尾部 | 复用 `withAnchorTail` 式注入，不改前缀缓存 |
+| ②共享记忆 | 计划/反思**落 `store`（TodoWrite 或 meta）**，不放临时变量 | `TodoWrite` 已在 transcript；meta 用 `appendMeta` |
+| ③计量保留 | **天然满足**：`usage`/`turnStats` 跨轮累计（`engine.mjs:2386`） | 审计已确认 |
+| ④warm-up | 切换后**不立即执行**——插入显式"模式生效"注入（说明新模式要求） | 避免"切了但模型不知道" |
 
 **切换边界**：**仅轮末**（`cli.mjs:1322 loop.onTurnEnd`）+ 迭代头。**不打断进行中的一轮**（D2）。
 
-**不裸切的硬要求**：禁止在无摘要/无注入说明的情况下改 `profile`——否则模式切换等价于"守卫静默失效"，是最难排查的 bug 类型（见 §9.2）。
+**不裸切的硬要求**：禁止在无摘要/无注入说明的情况下改 `profile`——否则模式切换等价于"守卫静默失效"，是最难排查的 bug 类型（见 §8.5）。
 
 ### 8.3 切换权与建议流程（D1/D2/D6）
 
 ```
 t=0（任务开始）
- ├ 用户显式指定模式 → 直接生效（最高优先级）
- ├ 高置信特征命中（触发 skill/workflow 自动匹配 / 消息含明确分步多文件特征 / 前序残留 todo）
- │   → 发 wire.system('loop_mode_suggested', {mode, reason, confidence}) + GUI 建议卡
+ ├ 用户显式指定模式/方法论 → 直接生效（最高优先级）
+ ├ 高置信特征命中（任务类型规则匹配 / skill-workflow 自动匹配 / 前序残留 todo）
+ │   → wire.system('loop_mode_suggested', {mode, reason, confidence, signals}) + GUI 建议卡
  │   → 用户一键确认才切（Cursor 形态，零额外 LLM 成本）
  └ 其他 → REACT，不打扰
 
 t=1（首轮探索后）
- └ 观测信号命中阈值（§7.3，且已过阶段一观测期）
+ └ 观测信号命中阈值（§7.3，且已过观测期）
      → 同样走"建议 → 确认"（不在 t=1 静默自动切）
 
-轮末（进行中）
- └ LLM 自主切换请求：仅当**守卫命中**（④/⑤/③/⑥）→ 允许自动切（D2"轮边界自动切"）
-     → 但必须落 meta + wire（全程留痕）
+轮末（执行中）
+ └ LLM 自主切换请求：仅当**守卫命中**（④/⑤/③/⑥）→ 允许自动切（D2）
+     → 必须落 meta + wire（全程留痕）
 ```
 
-**用户显式优先级**：`explicit > 自动切换`。用户手动指定后，**LLM 不得自动切走**（否则违反 GPT-5 事件的教训：失去显式选择权）。
+**用户显式优先级**：`explicit > 自动切换`。用户手动指定后，**LLM 不得自动切走**（D1）。
 
 ### 8.4 留痕与事件面
 
@@ -444,65 +492,306 @@ t=1（首轮探索后）
 |---|---|---|
 | `wire.system('loop_mode_suggested')` | 建议产生 | `{mode, reason, confidence, signals}` |
 | `wire.system('loop_mode_updated')` | 切换生效 | `{from, to, reason, source: 'user'\|'llm-signal'\|'guard', at}` |
-| `wire.system('loop_mode_rejected')` | 用户拒绝建议 / 非法值 | `{reason, value, fallback}` |
-| `appendMeta('loop_mode_switched')` | 同上（可审计时间线） | 同 `loop_mode_updated` + `seq` |
+| `wire.system('loop_mode_rejected')` | 用户拒绝 / 非法值 | `{reason, value, fallback}` |
+| `wire.system('methodology_applied')` | 方法论生效 | `{id, gates, guards, source}` |
+| `appendMeta('loop_mode_switched' \| 'methodology_applied')` | 同上（可审计时间线） | 同 + `seq` |
 
-**照抄既有范式**：`reasoning_effort`（`cli.mjs:1538-1559`）与 `approval_mode`（`cli.mjs:1565-1571`）的"热切 + 校验 + meta + wire"四件套已验证可用，**不新造链路**。并**补上审计 13.1-3 指出的 reason 缺失**。
+**照抄既有范式**：`reasoning_effort`（`cli.mjs:1538-1559`）与 `approval_mode`（`cli.mjs:1565-1571`）的"热切 + 校验 + meta + wire"四件套已验证可用；并**补上审计 13.1-3 指出的 reason 缺失**。
 
----
-
-## 9. 一期实现顺序（B1 → B2）
-
-### 9.1 步骤
-
-| 步 | 内容 | 判据 |
-|---|---|---|
-| S1 | 观测层 O1/O2/O3（**先做**，纯增量、零风险） | 新字段出现在 turnStats / meta；测试覆盖 |
-| S2 | B1 契约抽取：守卫序参数化 | L1/L2/L3 回归锁全绿，**零行为变更** |
-| S3 | B1 契约应用到 lane（复用同一 `runOnce`） | lane 测试全绿；可共享逻辑确实只有一份 |
-| S4 | `kernel/loop-mode.mjs`（纯函数 + 单测） | 模式定义/切换校验/提示词片段单测覆盖 |
-| S5 | Plan 模式（控制流约束 + TodoWrite 计划表示） | 端到端：复杂任务进入 Plan 后产出计划且逐项推进 |
-| S6 | Reflect 模式（挂 `doneWhen` 外部信号 + 固定轮数） | 端到端：验证失败时反思并改写下一步；无信号时不进入 |
-| S7 | 切换协议 + GUI 建议卡 + 模式徽标 | 留痕完整；用户拒绝后不自动切 |
-| S8 | 观测期收数据 → 定默认阈值 | 阈值有数据依据，附录记录 |
-
-### 9.2 必须显式定义的语义（否则出隐蔽 bug）
+### 8.5 必须显式定义的语义（否则出隐蔽 bug）
 
 | 语义 | 决策 | 理由 |
 |---|---|---|
-| 切换时守卫计数器保留还是清零？ | **保留**（`errorStreak`/`repeatStreak`/`stallHeals` 不清零） | 清零 = 模式切换变成"守卫预算重置"，可被模型反复利用来规避熔断（`REPEAT_HEAL_MAX=-1` 持久自愈下尤其危险） |
+| 切换时守卫计数器保留还是清零？ | **保留** | 清零 = 切换变成"守卫预算重置"，可被反复利用来规避熔断（`REPEAT_HEAL_MAX` 默认 `-1` 持久自愈下尤其危险） |
 | `attemptMaxTokens` 是否重置？ | **保留** | 它是溢出自愈的产物，与模式无关 |
-| 计划项未完成时切走怎么办？ | **保留计划 + 注入说明**（不静默丢弃） | 计划在 transcript（TodoWrite），天然保留；须注入"计划仍在，请继续" |
-| 自动切换的频率上限？ | **每轮至多一次**（照 `guardInjections` 上限范式） | 防"模式抖动"（切来切去每轮都在切） |
-| 用户显式指定后 LLM 能否切走？ | **不能** | D1 + GPT-5 事件教训 |
+| 计划项未完成时切走怎么办？ | **保留计划 + 注入说明** | 计划在 transcript（TodoWrite）天然保留；须注入"计划仍在，请继续" |
+| 自动切换频率上限？ | **每轮至多一次**（照 `guardInjections` 上限范式） | 防"模式抖动" |
+| 用户显式指定后 LLM 能否切走？ | **不能** | D1 |
 
 ---
 
-## 10. 块 3/4（二期，设计级）
+## 9. 块 5：方法论编译（下沉）★ 核心新增
 
-### 10.1 块 3：子 Agent 三闸 + 人工闸门
+### 9.1 问题陈述（用可量化的技术语言）
 
-**现状缺口**（已核实）：
-- `disabled.mjs` 只有**全局**停用（跨所有会话），无任务级/会话级软开关
-- **无深度闸**：`engine.mjs:2013` 的 `depth` 只透传进血缘，注释标"S4 预留"，无上限检查
-- 无"派发前人工批准"闸门（`approval-mode.mjs` 的 `agent: 'loose'` 是**工具级**放行，非"每次派发问一次"）
-- 审计 12.1-5：**无 per-agent 步数/token/成本硬预算上限**；独立超时**非独立配置**
+**现状机制**：`Skill` 工具把 SKILL.md **全文**注入上下文，靠模型读完后自觉执行。
 
-**设计骨架（照成熟产品字段语义）**：
+```js
+// kernel/tools.mjs:1120-1145（Skill 工具）
+const content = loadSkillContent({ roots: skillLoadRoots, id, flatRoots: flatSkillRootsArg })
+return { content: `技能「${id}」已加载，严格按以下指引执行：\n\n${content}`, isError: false }
+```
 
-| 闸 | 语义 | 对标 | 落点 |
+**量化成本**（实测文件体量）：
+
+| 方法论 | SKILL.md 体量 | 估算 tokens |
+|---|---|---|
+| subagent-driven-development | 28170 B | ~7000 |
+| brainstorming | 10137 B | ~2500 |
+| systematic-debugging | 9561 B | ~2400 |
+| test-driven-development | 9067 B | ~2300 |
+| writing-plans | 6974 B | ~1750 |
+| verification-before-completion | 3646 B | ~900 |
+| using-superpowers | 3157 B | ~800 |
+| executing-plans | 2364 B | ~600 |
+| **合计** | **~83 KB** | **~20.6K tokens** |
+
+**一个典型开发任务**若按现状加载 TDD + verification + subagent-driven + writing-plans + executing-plans ≈ **14.5K tokens**，且这些 tokens 在**每一轮**都要重复计费（在上下文里）。
+
+**更深的问题（非成本）**：这些方法论里的**硬规则靠提示词约束不可靠**——证据是清单本身：
+
+> `verification-before-completion` 列出 **8 条** Rationalization Prevention（"Should work now" → RUN the verification / "I'm confident" → Confidence ≠ evidence / "I'm tired" → Exhaustion ≠ excuse …）
+> `using-superpowers` 列出 **12 条** Red Flags（"This is just a simple question" → Questions are tasks …）
+> `subagent-driven-development` 有 `## Common Rationalizations` 节
+
+**一个由引擎强制的规则，不需要列举 20 条"你会怎么给自己找借口"。** 这些表格的存在本身就是"靠自觉执行不可靠"的自我承认。
+
+### 9.2 方法论的可编译性证据
+
+superpowers 方法论族的标题骨架（实测提取）呈现**高度一致的四段结构**：
+
+```
+## The Iron Law / Core principle      ← 硬规则        → guards（引擎断言）
+## The Process / The N Phases         ← 阶段序列      → phases（状态机）
+## When to Use / When NOT to Use      ← 适用判据      → when（规则匹配）
+## Red Flags / Common Rationalizations ← 劝阻清单     → 若 guards 生效则可删
+```
+
+| 方法论 | Iron Law / 核心 | Process / 阶段 | 可编译性 |
 |---|---|---|---|
-| ①工具级白名单 | 不给 `Agent`/`Task` 工具 = 彻底关 | Claude Code `permissions.deny: Agent`；Cursor `readonly` | 已有 `CHAT_MODE_DISALLOWED` 同构（`tools.mjs:722`） |
-| ②并发上限 | 前台+后台**共用**预算 | Claude Code `MAX_CONCURRENT_SUBAGENTS`(20) | 已有 `LANE_MAX_CONCURRENT` + `shared/subagent-concurrency.mjs` |
-| ③**深度闸（新增）** | 到上限**收回 Agent 工具**（非运行时报错） | Claude Code 默认 3；Cursor 硬 2 | 新增，读 `ctx.lane.depth`（已存在） |
-| ④人工闸门 | 暂停-恢复式：派发前挂起 → 主会话批/拒 | OpenAI SDK `needs_approval` | 接 `loop.mjs` 已有 `awaiting_approval` 短路位 |
-| ⑤per-agent 预算（可选） | `maxSteps`/`maxTokens`/`maxCostUsd` | 审计 12.1-5 建议 | `agents.mjs` frontmatter + `laneOptions` |
+| `verification-before-completion` | "NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE" | Gate Function 5 步（IDENTIFY→RUN→READ→VERIFY→CLAIM） | **极高**：信号+动作都明确 |
+| `test-driven-development` | "Iron Law" | RED → Verify RED → GREEN → Verify GREEN → REFACTOR | **高**：阶段机 + 门控 |
+| `systematic-debugging` | "Iron Law" | Four Phases: Root Cause → Pattern Analysis → Hypothesis and Testing → Implementation | **高**：阶段机 |
+| `brainstorming` | **HARD-GATE**："Do NOT invoke any implementation skill, write any code… until you have presented a design and the user has approved it" | Checklist 9 步 | **极高**：门控可复用 `awaiting_approval` |
+| `subagent-driven-development` | "Fresh subagent per task + task review + broad final review" | The Task Loop 5 步（Dispatch → Handle report → Review → Fix loop → Complete） | **极高**：完整状态机 |
+| `writing-plans` | — | Scope Check → File Structure → Task Right-Sizing → Bite-Sized Granularity → No Placeholders | **高**：产出物结构可校验 |
+| `executing-plans` | — | Step 1 Load → Step 2 Execute → Step 3 Complete | **高**：阶段机 |
+| `using-superpowers` | "IF A SKILL APPLIES, YOU MUST USE IT" | Skill Priority 规则 | **高**：可下沉为引擎路由 |
+| `dispatching-parallel-agents` | — | Identify Domains → Focused Tasks → Dispatch Parallel → Review and Integrate | **高**：并发编排 |
+| `requesting/receiving-code-review` | — | When to Request / How to Request | **高**：钩子 |
 
-**关键取舍**：③用"收回工具"而非"运行时报错"——依据 Claude Code 语义（"到上限就收回 Agent 工具"），报错会让模型反复重试（已有前车之鉴：并发超限文案明确写"不要重试"）。
+**`subagent-driven-development` 的状态机细节**（可直接编译，实测骨架）：
 
-### 10.2 块 4：MAGI
+| 环节 | 内容 | 可程序化表达 |
+|---|---|---|
+| Dispatch implementer | 显式指定 model（mechanical→cheap / integration→standard / architecture→capable） | ✅ 模型选择规则 |
+| Handle report | 状态枚举 `DONE` / `DONE_WITH_CONCERNS` / `NEEDS_CONTEXT` / `BLOCKED` | ✅ **状态机分支** |
+| Review the task | 用 `scripts/review-package PLAN_FILE BASE HEAD` 生成审查包 | ✅ 命令固定 |
+| Fix loop | Rounds 1-3 resume 原 implementer；Rounds 4-5 换更强模型 | ✅ **升级规则** |
+| Breaker | round 5 仍有 open findings → 停 | ✅ **上限** |
+| Ledger | 每轮 append 到 ledger | ✅ 记账 |
+| Final Review | 收尾前广度审查 | ✅ 阶段 |
 
-**设计**（严守 §4.3 硬约束）：
+→ **这是一台完整的、可编译的状态机**，而不是"提示词建议"。它当前以 **28 KB / ~7000 tokens** 的形式每轮占着上下文。
+
+### 9.3 编译产物：`MethodologySpec`
+
+```js
+// kernel/methodology.mjs —— 声明式方法论（可由 SKILL.md 编译，也可手写）
+/** @typedef {object} MethodologySpec */
+export const VERIFICATION_BEFORE_COMPLETION = {
+  id: 'verification-before-completion',
+  when: { taskTypes: ['*'] },                       // 全任务适用
+  guards: [{
+    id: 'verify-before-claim',
+    // 违规信号：文本含完成/成功表述，且本任务内无验证类工具调用
+    detect: (state) => hasCompletionClaim(state.textBuf) && !state.sawVerificationCall,
+    // 修复动作明确（非"再想想"）
+    heal: '你声称完成/通过，但本任务内没有运行验证命令。请先实际执行验证命令并查看输出，再下结论。',
+    // 误判方向（宁漏勿滥）：仅在"完成表述"命中时触发
+    budget: { maxInjections: 2 },
+  }],
+}
+
+export const TDD = {
+  id: 'test-driven-development',
+  when: { taskTypes: ['feature', 'bugfix'], excludePatterns: [/改(文档|配置|注释)/, /rename/i] },
+  gates: [{ id: 'red-first', before: 'Write:impl', require: 'sawFailingTest', heal: '先写失败测试并运行看它失败（RED），再写实现。' }],
+  phases: ['RED', 'VERIFY_RED', 'GREEN', 'VERIFY_GREEN', 'REFACTOR'],
+}
+
+export const SUBAGENT_DRIVEN = {
+  id: 'subagent-driven-development',
+  when: { taskTypes: ['feature', 'refactor'], minPlanItems: 2 },
+  phases: ['DISPATCH', 'HANDLE_REPORT', 'REVIEW', 'FIX_LOOP', 'COMPLETE', 'FINAL_REVIEW'],
+  budget: { fixLoopMaxRounds: 5, escalateModelAtRound: 4 },
+  hooks: {
+    afterToolBatch: 'dispatch-progress-check',   // 计划 N 项 vs 已派 M 个
+    afterTurn: 'task-loop-advance',
+  },
+}
+```
+
+### 9.4 三层加载策略（省 token 的核心）
+
+| 层 | 内容 | 成本 | 何时用 |
+|---|---|---|---|
+| **L0** 元数据 | 技能名 + description | ~50 tokens × N（已在提示词） | 恒在，用于路由 |
+| **L1** 骨架 | `MethodologySpec`（编译产物） | **0 tokens**（引擎内，不进 LLM 上下文） | 常态——方法论由引擎强制 |
+| **L2** 细则 | SKILL.md 全文 | 按需（~0.6K–7K tokens） | **仅在需要语义细节时**（如"如何写好计划的粒度"） |
+
+**收益**：常态下方法论成本从 **14.5K → 0**；只在明确需要细则时加载 L2。
+
+**且这不损失能力**：L1 保证"流程不会走偏"（引擎强制），L2 提供"怎么做得更好"（语义指导）。
+
+### 9.5 可下沉性四维判据（不拿"无先例"当理由）
+
+| 判据 | 问题 | 通过条件 |
+|---|---|---|
+| **C1 可观测性** | 引擎能否客观检测"违反了"？ | 信号在生成文本/工具调用/状态里可判定，不依赖语义理解 |
+| **C2 误判对称性** | 误判与漏检的代价是否都可控？ | 可设"宁漏勿滥"（参照 `isPlanTail` 的既有取舍） |
+| **C3 修复明确性** | 检测到后能否给出明确动作？ | 能（如"先运行验证命令"）而非空泛提示（"再检查一下"） |
+| **C4 成本量级** | 检测开销？ | 0 token（纯结构判据），不随会话数线性增长 |
+
+**逐项评估结果**：
+
+| 方法论 | C1 | C2 | C3 | C4 | 判定 |
+|---|---|---|---|---|---|
+| `verification-before-completion` | ✅ 完成表述 + 无验证调用 | ✅ | ✅ "运行验证命令" | ✅ 0 | **下沉** |
+| `subagent-driven-development` | ✅ 计划项 vs 派发数；审查缺失 | ✅ | ✅ 状态机分支固定 | ✅ 0 | **下沉** |
+| `brainstorming`（HARD-GATE） | ✅ 设计阶段出现 Write 实现 | ✅ | ✅ "先出设计并获批" | ✅ 0 | **下沉**（门控） |
+| `test-driven-development` | ✅ 实现先于失败测试 | ⚠️ 需任务类型前置 | ✅ "先写失败测试" | ✅ 0 | **下沉**（带 `when` 条件） |
+| `systematic-debugging` | ✅ 改码前无读取/复现 | ✅ | ✅ "先复现并定位根因" | ✅ 0 | **下沉**（Reflect 核心） |
+| `using-superpowers`（路由） | ✅ 任务类型特征 | ✅ | ✅ 建议+确认 | ✅ 0 | **下沉**（引擎路由） |
+| `writing-plans` / `executing-plans` | ✅ 计划结构可校验 | ✅ | ✅ | ✅ 0 | **下沉**（Plan 模式） |
+| `dispatching-parallel-agents` | ✅ 领域独立性 | ⚠️ | ✅ | ✅ 0 | **下沉为并发闸**（块 3） |
+| `requesting/receiving-code-review` | ✅ 审查缺失 | ✅ | ✅ | ✅ 0 | **下沉为钩子**（块 4） |
+| `## Red Flags` / `Rationalizations` 表 | ❌ 靠语言劝阻 | — | — | — | **不下沉，但 guards 生效后可不再加载** |
+| `## Visual Companion` 等操作细节 | ❌ 需人机交互上下文 | — | — | — | **保留 L2**（按需加载） |
+
+### 9.6 编译来源：SKILL.md → MethodologySpec
+
+**两种方式**（建议先手写、后编译）：
+
+| 方式 | 说明 | 何时用 |
+|---|---|---|
+| **①手写 spec**（阶段一） | 在 `kernel/methodology.mjs` 内声明（如 §9.3） | 首批 4-6 个方法论，可控、可逐步验证 |
+| **②编译 frontmatter**（阶段二） | 在 SKILL.md frontmatter 增 `methodology:` 块，启动时/构建时解析 | 方法论文集化后 |
+
+**②的 frontmatter 形态草案**：
+
+```yaml
+---
+name: verification-before-completion
+description: ...
+methodology:
+  when: { taskTypes: ["*"] }
+  guards:
+    - id: verify-before-claim
+      detect: completion-claim-without-verification   # 具名判据（引擎内置库）
+      heal: "你声称完成/通过，但本任务内没有运行验证命令。请先实际执行验证命令并查看输出，再下结论。"
+      budget: { maxInjections: 2 }
+---
+```
+
+**关键约束**：`detect` **不引入任意代码执行**（安全性）——只允许引用**引擎内置的具名判据库**（`completion-claim-without-verification` / `impl-before-failing-test` / `plan-items-unadvanced` 等）。这样 frontmatter 是**纯声明**，无注入风险。
+
+### 9.7 与块 2（模式）的关系
+
+**模式 = 方法论的组合**（§5.1）：
+
+| 模式 | = 方法论组合 |
+|---|---|
+| REACT | `[]`（仅全局横切：verify-before-claim） |
+| PLAN | `[writing-plans, executing-plans, subagent-driven]` |
+| REFLECT | `[systematic-debugging]` + 全局 `verify-before-claim` |
+
+→ **块 2 与块 5 共用 `LoopProfile` + `phaseHooks`**，无重复机制。这也是分块上把二者并列在一期的原因。
+
+### 9.8 首批下沉范围（建议 4 个，按性价比）
+
+| 优先 | 方法论 | 理由 | 省 token |
+|---|---|---|---|
+| 1 | `verification-before-completion` | 判据最明确、动作最硬、全任务适用；且已有 `loop-verify.mjs` 基础 | ~900 |
+| 2 | `using-superpowers`（路由部分） | 纯规则，零成本，且是"该用哪个方法论"的入口 | ~800 |
+| 3 | `subagent-driven-development` | 体量最大、最能省；状态机最完整（块 3 的基础） | ~7000 |
+| 4 | `brainstorming` 的 HARD-GATE | 最硬的约束，复用 `awaiting_approval` 可低成本实现 | ~2500（部分） |
+| 5（备选） | `systematic-debugging` | 作为 REFLECT 模式的核心 | ~2400 |
+
+**首批合计节省**：约 **11–13K tokens/任务**（且每轮重复计费的部分一并消失）。
+
+### 9.9 风险与缓解
+
+| 风险 | 缓解 |
+|---|---|
+| 判据误伤（如把"已完成"的**叙述**当"声称完成"） | 参照 `isPlanTail` 的既有取舍：**宁漏勿滥**；`PLAN_TAIL_DONE_RE` 已有完成语词表可复用；为每个判据补**误伤对照用例** |
+| 引擎强制过强，阻断正常流程 | 所有 gate/guard **可配 + 可关**（`PONOS_METHODOLOGY=off`）；门控只**注入自愈**、不硬 veto（与既有守卫家族语义一致） |
+| 方法论编译与 SKILL.md 版本漂移 | 阶段一手写 spec 与 SKILL.md 并存，spec 记 `sourceVersion`；漂移检查进 CI（`verifySkillVersions` 已有基础） |
+| L1 生效但 L2 未加载导致"知其然不知其所以然" | 保留"需要时可加载 L2"的通道（模型仍可调 `Skill`）；且 L1 的 `heal` 文案本身给出可执行动作 |
+| 首批 4 个下沉后效果不达预期 | 观测层（§7）记录 `methodology_applied` 与守卫命中，可量化"注入次数/成功率"；不达预期可回退为纯提示词 |
+
+### 9.10 为什么这比"让模型读更多提示词"更高效（技术论证）
+
+| 维度 | 提示词约束 | 引擎约束（下沉） |
+|---|---|---|
+| 遵守率 | 依赖模型自觉（清单越长的规则越易失守——见 20 条 Rationalizations） | **强制**（不依赖模型意愿） |
+| 成本 | 每轮重复计费（上下文常驻） | **0**（引擎内，不进上下文） |
+| 跨模型鲁棒性 | 弱模型易失守（`prompt.mjs` lean 档即为弱模型而设） | 与模型能力无关 |
+| 可观测性 | 无法统计"是否遵守" | 可统计（命中/注入/成功率） |
+| lean 档收益 | lean 档必须删掉（否则上下文爆） | **lean 档无需删**（本就在引擎里） |
+
+**最后一行是关键**：`prompt.mjs:45-46` 说"只删有引擎守卫兜底的细则"——**下沉得越多，lean 档能删得越多，弱模型的可用性越高**。
+
+---
+
+## 10. 块 3：子 Agent 三闸 + 深度闸 + 人工闸门（详细）
+
+### 10.1 现状缺口（逐项核实）
+
+| 缺口 | 证据 |
+|---|---|
+| 只有**全局**停用，无任务级/会话级软开关 | `disabled.mjs`（语义 = 不进提示词 / 不在 Task 子 agent 表） |
+| **无深度闸** | `engine.mjs:2013` 的 `depth` 只入血缘，注释标"S4 预留"，无上限检查 |
+| 无"派发前人工批准"闸门 | `approval-mode.mjs` 的 `agent: 'loose'` 是**工具级**放行，非"每次派发问一次" |
+| 无 per-agent 步数/token/成本预算 | 审计 12.1-5 |
+| 独立超时非独立配置 | 审计 12.1-5 |
+| 已有并发闸 | `engine-config.mjs` `LANE_MAX_CONCURRENT`；`shared/subagent-concurrency.mjs`（`MAX_SUBAGENTS_CAP=32`） |
+
+### 10.2 设计：五个正交闸
+
+| 闸 | 语义 | 取值参考 | 落点 |
+|---|---|---|---|
+| ①工具级白名单 | 不给 `Agent`/`Task` 工具 = 彻底关 | 列表省略=继承全部；列表=白名单 | 复用 `CHAT_MODE_DISALLOWED` 同构（`tools.mjs:722`） |
+| ②并发上限 | 前台+后台共用预算，超限**报错并告知模型不要重试** | 已有 `MAX_SUBAGENTS_CAP=32`；Claude Code 默认 20 | 已有 |
+| ③**深度闸（新增）** | 到上限**收回 Agent 工具**（非运行时报错） | 默认 3；`1`=关嵌套 | `LoopCtx.lane.depth`（已存在） |
+| ④**人工闸门（新增）** | 暂停-恢复式：派发前挂起 → 主会话批/拒 | — | 接 `loop.mjs` 已有 `awaiting_approval` 短路位 |
+| ⑤**per-agent 预算（新增）** | `maxSteps` / `maxTokens` / `maxCostUsd` / `timeoutMs` | 按 agent 分档 | `agents.mjs` frontmatter + laneOptions |
+
+### 10.3 关键取舍
+
+| 取舍 | 决策 | 理由 |
+|---|---|---|
+| 深度到限：**收回工具** vs 运行时报错 | **收回工具** | 报错会让模型反复重试；已有前车之鉴（并发超限文案明确写"不要重试"） |
+| 人工闸门：**暂停-恢复** vs 运行时拒绝 | **暂停-恢复** | 拒绝会让模型换参数重试；暂停把决策权交人 |
+| 闸门粒度 | **三闸正交**（白名单/并发/深度各管一事） | 单一闸做多件事会导致语义含混（现有 `disabled.mjs` 的注释已在澄清语义边界） |
+| 复用 vs 新建审批链路 | **复用 `awaiting_approval`** | 不新增第二条审批链路（避免语义分叉） |
+
+### 10.4 前端配置面（用户自定义，D3 延伸）
+
+```yaml
+# agent frontmatter 扩展（kernel/agents.mjs 解析）
+---
+name: implementer
+description: ...
+maxSteps: 40
+maxTokens: 200000
+timeoutMs: 600000
+requiresApproval: false        # ④ 人工闸门（该 agent 每次派发是否需批）
+spawnDepthLimit: 1             # ③ 该 agent 能否再派子代理
+---
+```
+
+**用户可见开关**（会话级/项目级）：
+- 全局：允许派子 Agent（关 = 白名单为空）
+- 并发：`N`（默认按现有 cap）
+- 深度：`1`（关嵌套）/ `2` / `3`（默认）
+- 每次派发需批准：开/关
+
+---
+
+## 11. 块 4：MAGI（详细）
+
+### 11.1 设计
 
 ```
 用户显式开启 MAGI（默认关）
@@ -511,60 +800,117 @@ t=1（首轮探索后）
   └ 评审 C：覆盖/完整性（需求是否全覆盖、验收是否可验）  ← 三维度正交，非人格
        ↓ 各自只读（复用 reviewer 的 disallowedTools 只读语义，agents.mjs:69）
   主席裁决（1 次调用）：输入三份问题清单 → 输出合并清单 + 严重度 + 去重
-  → 拒绝"三份评分取平均"（Anthropic 实测单判官更一致）
+  → 拒绝"三份评分取平均"
 ```
+
+### 11.2 关键决策
 
 | 项 | 决策 | 依据 |
 |---|---|---|
-| 视角 | 正交维度，非 persona | Claude Code agent-teams"distinct lens so they don't overlap" |
-| 汇总 | 1 次主席裁决 | Anthropic 实测"single LLM call 最一致" |
-| 调用数 | 3 + 1 = **4 次**（写死上限） | Claude Code"3–5 个 teammate，收益递减" |
-| 触发 | 显式开启；高风险**建议**不自动 | D3；本地实测已证"换更强模型不必然更好" |
+| 视角 | **正交审查维度，非 persona** | Claude Code agent-teams 要求 "distinct lens so they don't overlap" |
+| 汇总 | **1 次主席裁决**（合并问题清单 + 严重度 + 去重） | Anthropic 实测："a single LLM call with a single prompt outputting scores… 最一致、最贴合人类判断" |
+| 调用数 | **3 + 1 = 4 次**（写死上限） | Claude Code："3–5 个 teammate，收益递减" |
+| 触发 | 显式开启；高风险**建议**不自动 | D3 |
 | 高风险特征 | 改动面大 / 涉金 / 不可逆 | 复用 `kernel/highrisk.mjs:12` 导出的 `matchesHighRisk`（源头 `shared/high-risk.mjs` 的 `matchesApprovalTrigger`，已核实） |
-| 模型选择 | 三评审**同模型**（不追求异族） | `2026-09-19-reviewer-cross-model.md` n=3 实测：异族 81% < 现状 100%，且漏必崩缺陷 |
+| 模型选择 | 三评审**同模型**（不追求异族） | `2026-09-19-reviewer-cross-model.md` 本地 n=3 实测：异族 81% < 现状 100%，且漏必崩缺陷 |
+| 汇总输出 | 一份合并清单 | 非三份并列（用户要看结论不是看三份报告） |
 
-### 10.3 块 3/4 的接缝（一期须预留）
+### 11.3 与"多评审≈浪费"证据的关系（设计如何规避）
 
-| 接缝 | 一期要做的预备 |
+外部实证显示多评审收益**条件性**：
+
+| 证据 | 对本设计的要求 |
 |---|---|
-| 深度闸 | `LoopCtx` 暴露 `lane.depth`（已有，接线即可） |
-| 人工闸门 | 复用 `loop.mjs` 的 `awaiting_approval` 短路位（**不新增审批链路**） |
-| 模式 × 子 Agent | Plan 模式下子 Agent 仍可用；MAGI 可作 Plan 模式的一个阶段钩子 |
+| MAD benchmark：多 agent 辩论"**do not reliably outperform** self-consistency and ensembling"，且对超参极敏感 | 不做辩论（不做多轮互相说服）——本设计是**并行独立评审 + 一次裁决**，比辩论便宜且对超参不敏感 |
+| Anthropic：单判官比多判官更一致 | **汇总用 1 次调用**，而非多判官平均 |
+| 辩论在**有明确正确答案的裁决任务**上有效（48%→76%、60%→88%） | MAGI 定位为**裁决型**（找问题、判对错），不做开放式"好不好"评价 |
+| PoLL：异构小模型陪审团成本低 7 倍 | 可选优化方向（若效果达标可换小模型 trio 降本），**但本地实测支持"当前模型族"**，故先不换 |
+| Claude Code：token 成本**线性增长** + 收益递减 | 写死 4 次调用；默认关 |
+
+### 11.4 审查产出结构（统一格式，便于主席裁决）
+
+```json
+{
+  "reviewer": "facts|risk|coverage",
+  "findings": [
+    { "id": "F1", "severity": "critical|major|minor", "claim": "…", "evidence": "文件:行 或 引用", "suggestedFix": "…" }
+  ],
+  "confidence": 0.0-1.0
+}
+```
+
+**要求**：每条 finding 必须带 `evidence`（文件:行 或 明确引用）——**无证据的发现降级为 observation**，这与 `verification-before-completion` 的"evidence before claims"一致，也契合本仓库审计文化。
 
 ---
 
-## 11. 明确不做（含依据）
+## 12. 实现顺序
 
-| 不做 | 依据 |
+### 12.1 一期（块 1 + 块 2 + 块 5）
+
+| 步 | 内容 | 判据 |
+|---|---|---|
+| S1 | 观测层 O1/O2/O3（**先做**，纯增量、零风险） | 新字段出现在 turnStats / meta；测试覆盖 |
+| S2 | B1 契约抽取：守卫序参数化 | L1/L2/L3 回归锁全绿，**零行为变更** |
+| S3 | B1 契约应用到 lane（复用同一 `runOnce`） | lane 测试全绿；可共享逻辑只有一份 |
+| S4 | `kernel/loop-mode.mjs` + `kernel/methodology.mjs`（纯函数 + 单测） | 模式/方法论定义、判据、切换校验单测覆盖 |
+| S5 | **首批下沉：`verification-before-completion`**（性价比最高） | 有测试：声称完成而无验证调用 → 注入自愈；误伤对照通过 |
+| S6 | **下沉：`using-superpowers` 路由**（t=0 规则匹配 + 建议） | 建议准确率可观测；用户拒绝后不自动切 |
+| S7 | Plan 模式（= `writing-plans`+`executing-plans`+`subagent-driven` 编译产物） | 端到端：复杂任务进入 Plan 后产出计划且逐项推进 |
+| S8 | **下沉：`subagent-driven-development` 状态机** | 端到端：逐任务派发 + 每任务审查 + fix loop 上限 |
+| S9 | Reflect 模式（= `systematic-debugging` 编译产物 + 外部信号硬约束） | 端到端：验证失败时反思并改写下一步；**无信号时不进入** |
+| S10 | 切换协议 + GUI 建议卡 + 模式徽标 | 留痕完整；用户拒绝后不自动切 |
+| S11 | **下沉：`brainstorming` HARD-GATE**（门控） | 设计阶段出现实现代码 → 门控生效 |
+| S12 | 观测期收数据 → 定默认阈值 | 阈值有数据依据，附录记录 |
+
+### 12.2 二期（块 3 + 块 4）
+
+| 步 | 内容 | 判据 |
+|---|---|---|
+| S13 | 子 Agent 三闸（白名单/并发/深度） | 各自可关可限；深度到限收回工具 |
+| S14 | 人工闸门（暂停-恢复，复用 `awaiting_approval`） | 批准/拒绝均生效 |
+| S15 | per-agent 预算 | frontmatter 字段生效；超限有明确语义 |
+| S16 | MAGI 三评审 + 主席裁决 | 默认关；开启时 4 次调用；输出合并清单 |
+
+---
+
+## 13. 明确不做（含技术理由，不用"无先例"）
+
+| 不做 | 技术理由 |
 |---|---|
-| ❌ t=0 的 LLM 复杂度分类器 | 无成熟先例；GPT-5 事件（失去可预测性/显式控制权）；LangChain Router 每次请求 +1 调用且无状态 |
-| ❌ 自动路由框架（`TaskProfile`/`can_handle` 评分/历史成功率回填） | 审计 13.1-2 明确"不建议"；13.1-6 判"维持现状" |
-| ❌ 13.5 融合投票（同请求多策略并跑） | 审计 13.1-6 判"不引入" |
-| ❌ 无外部信号时开 Reflection | TACL 2024（无外部反馈时自纠不成立）+ ICLR 2024（可能变差）+ arXiv 2310.12397（批评正确性与表现无关） |
-| ❌ MAGI 三份评分取平均 | Anthropic 实测：单次调用单 prompt 更一致 |
-| ❌ Plan 设为默认模式 | LangChain 已把 planning 降为 opt-in 默认关；Claude Code todo 是 no-op |
-| ❌ 为 MAGI 追求异族模型 | 本地 n=3 实测：异族 81% vs 现状 100%，漏必崩缺陷 |
+| ❌ t=0 的**复杂度**分类器 | 复杂度是连续量且 t=0 信息不足（用户已指出）；误判方向代价不对称（判浅→后期返工，不可逆）。**改为任务类型匹配**（离散、特征明确、误判可纠正） |
+| ❌ 自动路由框架（`TaskProfile`/`can_handle` 评分/历史成功率回填） | 成本随会话数线性增长；且评分路由的误判同样不可逆。审计 13.1-2/13.1-6 亦判定不建议 |
+| ❌ 13.5 融合投票（同请求多策略并跑） | 成本×策略数；无收益证据。审计 13.1-6 |
+| ❌ 无外部信号时开 Reflection | TACL 2024：无外部反馈时自纠**不成立**；ICLR 2024：**可能变差**；arXiv 2310.12397：批评正确性与表现无关。**技术理由：无真值信号时"自省"是空转，只增成本** |
+| ❌ MAGI 三份评分取平均 | Anthropic 实测：单次调用单 prompt 更一致。**技术理由：平均会稀释强信号，且增加一次聚合的不确定性** |
+| ❌ MAGI 多轮辩论 | MAD benchmark：辩论不优于 self-consistency/ensembling，且对超参极敏感。**技术理由：辩论轮数×评审数 = 成本平方增长** |
+| ❌ Plan 设为默认模式 | 默认模式的成本应最低（多数任务无需规划）；且 lean 档无规划提示词基础（§15） |
+| ❌ 为 MAGI 追求异族模型 | 本地 n=3 实测：异族 81% vs 现状 100%，漏必崩缺陷。**技术理由：当前证据不支持换模型，且换模型引入额外不确定性** |
 | ❌ 强行统一主循环与 lane 的 250 行刻意差异 | §3.2：那是设计意图（lane 无 health/锚点/完整压缩），统一会引入不该有的依赖 |
-| ❌ 模式切换清零守卫计数器 | §9.2：会变成"守卫预算重置"，可被反复利用规避熔断 |
+| ❌ 模式切换清零守卫计数器 | §8.5：会变成"守卫预算重置"，可被反复利用规避熔断 |
+| ❌ 在 frontmatter 里放可执行代码（`detect` 任意表达式） | §9.6：引入注入风险。**只允许引用引擎内置具名判据库** |
+| ❌ 一次性下沉全部方法论 | §9.8：先 4 个验证判据准确率，避免"大面积误伤"同时上线 |
 
 ---
 
-## 12. 验收标准
+## 14. 验收标准
 
-### 12.1 一期（块 1+2）
+### 14.1 一期
 
 | # | 标准 | 判据 |
 |---|---|---|
-| A1 | B1 零行为变更 | kernel-tests 全绿且数量不变；守卫命中用例的文案/事件/计数逐一不变 |
+| A1 | B1 零行为变更 | kernel-tests 全绿且数量不变；每个守卫的文案/事件/计数逐一不变 |
 | A2 | 可共享逻辑一处实现 | 守卫检查组只有一份源码（`loop-core.mjs`），主循环与 lane 各传 profile |
 | A3 | 三模式可选可切 | `REACT`/`PLAN`/`REFLECT` 可经参数/UI 指定并生效 |
-| A4 | 切换留痕完整 | 每次切换有 wire 事件 + meta 条目，含 `from/to/reason/source` |
+| A4 | 切换留痕完整 | 每次切换有 wire 事件 + meta，含 `from/to/reason/source` |
 | A5 | 用户显式优先 | 用户指定后 LLM 不得自动切走（有测试） |
-| A6 | Reflection 不无信号启动 | 无 `doneWhen`/无工具失败证据时，不进入 REFLECT（有测试） |
-| A7 | 观测数据产出 | `turnToolDigest.size`、`turnStats.guard`、模式 meta 三者可读 |
+| A6 | Reflection 不无信号启动 | 无 `doneWhen`/无工具失败证据时不进入 REFLECT（有测试） |
+| A7 | 观测数据产出 | `turnToolDigest.size`、`turnStats.guard`、模式/方法论 meta 三者可读 |
 | A8 | 阈值有数据依据 | 默认阈值来自观测期分布，附录记录取法 |
+| A9 | **首批方法论下沉生效** | ≥4 个方法论（§9.8）的守卫/门控在无 SKILL.md 加载时仍生效（**有对照测试**） |
+| A10 | **判据误伤受控** | 每个下沉判据有误伤对照用例；误伤率 ≤ 阈值（观测期定） |
+| A11 | **成本可量化下降** | 同类任务的平均上下文 tokens 可对比（下沉前/后），且不明显反弹 |
 
-### 12.2 二期（块 3+4）
+### 14.2 二期
 
 | # | 标准 | 判据 |
 |---|---|---|
@@ -573,67 +919,101 @@ t=1（首轮探索后）
 | E3 | 人工闸门可暂停恢复 | 派发前挂起 → 批准/拒绝均生效；复用 `awaiting_approval` |
 | E4 | MAGI 默认关、4 次调用 | 未显式开启时零额外调用；开启后调用数 = 4（有测试） |
 | E5 | MAGI 汇总为单次裁决 | 输出一份合并清单，非三份并列 |
-
-> 注：验收项编号用 `A*`（一期）/`E*`（二期），与 §5.1 的"块 1=B1 重构 / 块 2=B2 模式"区分，避免与 `B*` 撞车。
+| E6 | per-agent 预算生效 | `maxSteps`/`maxTokens`/`timeoutMs` 超限有明确语义（非静默） |
 
 ---
 
-## 13. 风险清单
+## 15. 风险清单
 
 | 风险 | 等级 | 缓解 |
 |---|---|---|
 | B1 重构触碰 engine 核心函数（2436 行文件） | **高** | 只做等价搬移、分守卫组提交、三重回归锁（§6.3）、可单独回滚 |
-| 模式切换引入隐蔽 bug（守卫静默失效） | **中高** | §9.2 显式定义五条语义；"不裸切"硬要求（§8.2） |
+| 模式切换引入隐蔽 bug（守卫静默失效） | **中高** | §8.5 显式定义五条语义；"不裸切"硬要求（§8.2） |
+| **方法论判据误伤正常流程** | **中高** | 宁漏勿滥（参照 `isPlanTail` 既有取舍）；每判据配误伤对照；可全局关（`PONOS_METHODOLOGY=off`）；先 4 个再扩 |
 | Reflection 收益为负（文献已证） | **中** | 硬约束：只在有外部信号时开；固定轮数；默认关 |
-| **lean 会话缺 Plan 模式的提示词基础** | **中高（已核实为真）** | `prompt.mjs:91`「复杂任务先规划：…先用 TodoWrite 建立任务清单」**只在非 lean 分支**（`changeFocus` 的 `: [ ... ]` 侧）；**lean 分支无此行**（lean 版 `changeFocus` 只有最小改动/收敛范围/禁止 Bash 三条，见 `prompt.mjs:86-88`）。→ Plan 模式在 lean 会话下**必须自行注入规划指令**（`modeDirective('plan')` 不能依赖既有提示词），且需在 lean 档做端到端验证 |
-| 每次 replan 判定增加成本 | **中** | Plan 模式 +1 次/轮，需在观测期测出收益/成本比再定默认 |
+| **lean 会话缺 Plan 模式的提示词基础（已核实为真）** | **中高** | `prompt.mjs:91`「复杂任务先规划：…先用 TodoWrite 建立任务清单」**只在非 lean 分支**（`changeFocus` 的 `: [ ... ]` 侧）；**lean 分支无此行**（lean 版 `changeFocus` 只有最小改动/收敛范围/禁止 Bash 三条，见 `prompt.mjs:86-88`）。→ Plan 模式在 lean 会话下**必须自行注入规划指令**（`modeDirective('plan')` 不能依赖既有提示词），且需在 lean 档做端到端验证 |
+| 每次 replan 判定增加成本 | **中** | Plan 模式 +1 次/轮，需在观测期测收益/成本比再定默认 |
+| 方法论编译与 SKILL.md 版本漂移 | **中** | spec 记 `sourceVersion`；漂移检查进 CI（`verifySkillVersions` 已有基础） |
+| 下沉后 L2 细节缺失导致产出质量下降 | **中** | 保留 Skill 加载通道；L1 的 `heal` 文案给出可执行动作；观测质量指标（返工率） |
 | GUI 改动面（建议卡 + 徽标 + 事件归约） | **低中** | 照 `SessionModeBar`/`EffortPicker` 范式（已存在），事件挂 `useYFWCLI.ts` 的 system 归约（`:1020+`） |
 | 阈值拍脑袋 | **低**（已规避） | D7：先观测后定，附录留数据依据 |
 
 ---
 
-## 14. 附录：证据与来源
+## 16. 附录
 
-### 14.1 代码事实（逐行核实，2026-09-20）
+### 16.1 代码事实（逐行核实，2026-09-20）
 
 | 事实 | 位置 |
 |---|---|
 | 主循环 = 单策略 ReAct | `engine.mjs:248` `runTurnInternal`；迭代循环 `:476` |
-| `turnToolDigest` 缺结果规模字段（**且 4 字段限制是既定设计**：`2026-09-12 spec §4.2` 要求"不复制结果正文（体积与隐私）"） | `engine.mjs:1031-1036`；注释 `:1024-1025`；原始 `content` 在同函数 `:1026` 已读 |
+| `turnToolDigest` 缺结果规模字段（**4 字段限制是既定设计**：`2026-09-12 spec §4.2` 要求"不复制结果正文（体积与隐私）"） | `engine.mjs:1031-1036`；注释 `:1024-1025`；原始 `content` 在同函数 `:1026` 已读 |
 | `turnStats` 缺守卫字段 | `engine.mjs:2386` |
 | lane 循环 = 整段镜像 | `engine.mjs:1505` `runSubAgentLoop`（约 350 行）；`:1502-1504` 注释"无健康（短会话）；无压缩器" |
 | 守卫序（主） | 迭代头 ①②⑥（`:486/:495/:497`）→ 流内 ①b③③b+watchdog（`:620/:630/:643`）→ 流后 R3-2④⑥⑤（`:932/:1066/:1076/:1083`） |
 | 轮边界切换落点 | `cli.mjs:1322` `loop.onTurnEnd` |
-| 守卫 reason 未入 turnStats | `engine.mjs:2386` 字段清单；`health.mjs:199` `recordFailure` 已接线但无守卫分类 |
-| TodoWrite 已是事实上的计划表示 | `compact.mjs:308` `extractKeyInfo` 把它当权威清单；`prompt.mjs:91` 已要求先规划 |
-| 无深度闸 | `engine.mjs:2013` `depth` 只入血缘，注释标"S4 预留"，无上限检查 |
-| 子 Agent 仅全局停用 | `disabled.mjs`（语义=不进提示词/不在 Task 表） |
+| **健壮性/方法论已下沉的 4 条** | `gen-guards.mjs`：`isPlanTail`(:22) / `isThinkOnly`(:34) / `detectGenerationRepeat`(:45) / `createNearRepeatDetector`(:82)；接入 `engine.mjs:962/970/981/1760/1773` |
+| **lean 剪枝原则（下沉路径的官方表述）** | `prompt.mjs:45-46`："只删有引擎守卫兜底的细则" |
+| **MILESTONE 标记 = 纯提示词约束（引擎不校验）** | `MILESTONE` 仅 5 处命中，全为解析/剥离：`api.mjs:56/81/197`（桥侧逐帧正则）、`compact.mjs:441`（压缩剥离） |
+| TodoWrite 已是事实上的计划表示 | `compact.mjs:308` `extractKeyInfo`；`prompt.mjs:91`（**仅非 lean**） |
+| 无深度闸 | `engine.mjs:2013` `depth` 只入血缘，注释标"S4 预留" |
+| 子 Agent 仅全局停用 | `disabled.mjs` |
 | 并发闸已有 | `engine-config.mjs` `LANE_MAX_CONCURRENT`；`shared/subagent-concurrency.mjs`（`MAX_SUBAGENTS_CAP=32`） |
 | 热切四件套范式 | `cli.mjs:1538-1559`（effort）、`:1565-1571`（approval_mode） |
-| 完成条件双层验证器 | `loop-verify.mjs` `verifyDoneWhen`（cmd 验真 + judge 判词，fail-closed） |
+| 完成条件双层验证器 | `loop-verify.mjs:27` `verifyDoneWhen`（cmd 验真 + judge 判词，fail-closed）；调用点 `loop.mjs:12/31` |
 | LLM 判词 | `engine.mjs:2255` `judgeUntil` |
+| Skill 全文注入（成本源） | `tools.mjs:1120-1145`（`loadSkillContent` → 全文进上下文） |
+| 高风险判据可复用 | `kernel/highrisk.mjs:12` `matchesHighRisk` ← `shared/high-risk.mjs` `matchesApprovalTrigger` |
 
-### 14.2 既有审计（本仓库）
+### 16.2 方法论体量实测（下沉收益依据）
 
-- `docs/superpowers/audits/2026-09-08-agentloop-guide-gap.md`：13.1-1(G1) / 13.1-2(G2) / 13.1-3(G1) / 13.1-4(G2) / 13.1-5(G1) / 13.1-6(**G0**) / 12.1-5(G1) / 2.1-4 / 2.2.4 / 2.1-5(Reflection G1)
+| 方法论 | 字节 | 行 | 估算 tokens |
+|---|---|---|---|
+| subagent-driven-development | 28170 | 508 | ~7000 |
+| brainstorming | 10137 | 156 | ~2500 |
+| systematic-debugging | 9561 | 289 | ~2400 |
+| test-driven-development | 9067 | 324 | ~2300 |
+| writing-plans | 6974 | 172 | ~1750 |
+| verification-before-completion | 3646 | 120 | ~900 |
+| using-superpowers | 3157 | 66 | ~800 |
+| executing-plans | 2364 | 67 | ~600 |
+| **合计** | **~83 KB** | ~1700 | **~20.6K** |
+
+### 16.3 方法论骨架（可编译性实测）
+
+```
+verification-before-completion: The Iron Law → The Gate Function(5步) → Common Failures → Red Flags → Rationalization Prevention(8条)
+test-driven-development:        The Iron Law → Red-Green-Refactor(RED/Verify RED/GREEN/Verify GREEN/REFACTOR/Repeat) → Good Tests
+systematic-debugging:           The Iron Law → The Four Phases(Root Cause/Pattern Analysis/Hypothesis and Testing/Implementation) → Red Flags
+brainstorming:                  Anti-Pattern → Checklist(9项) → Process Flow → The Process → After the Design（含 HARD-GATE）
+subagent-driven-development:    Core principle → When to Use → The Process → Setup → Model Selection → The Task Loop(5步) → Final Review → Common Rationalizations
+writing-plans:                  Scope Check → File Structure → Task Right-Sizing → Bite-Sized Granularity → Task Structure → No Placeholders
+executing-plans:                Step 1 Load and Review → Step 2 Execute Tasks → Step 3 Complete Development → When to Stop
+using-superpowers:              The Rule → Skill Priority → Red Flags(12条) → Platform Adaptation
+dispatching-parallel-agents:    When to Use → The Pattern(4步) → Agent Prompt Structure → When NOT to Use
+```
+
+**共性**：`Iron Law`（断言）+ `Process/Phases`（状态机）+ `When to Use`（前置条件）+ `Red Flags`（劝阻）。
+**前三个都是程序可表达的结构；第四个在 guards 生效后可不加载。**
+
+### 16.4 既有审计（本仓库）
+
+- `docs/superpowers/audits/2026-09-08-agentloop-guide-gap.md`：13.1-1(G1) / 13.1-2(G2) / 13.1-3(G1) / 13.1-4(G2) / 13.1-5(G1) / 13.1-6(**G0**) / 12.1-5(G1) / 2.1-4 / 2.2.4 / 2.1-5
 - `docs/superpowers/audits/2026-09-19-reviewer-cross-model.md`：异族评审 n=3 实测（10.5/13 vs 13/13）
 - `docs/superpowers/specs/2026-09-17-loop-redesign-phase1-reliability-design.md`：loop 四期总纲（Phase 2 = 语义能力升级，与本设计方向一致）
+- `docs/superpowers/specs/2026-09-12-*.md`（§4.2 失真观测：turnToolDigest 的 4 字段约束来源）
 
-### 14.3 外部来源
+### 16.5 外部来源（供实现参考；不作为"可行性"判据）
 
 **官方工程博客 / 文档**
 - Anthropic《Building effective agents》 https://www.anthropic.com/engineering/building-effective-agents
 - Anthropic《How we built our multi-agent research system》 https://www.anthropic.com/engineering/built-multi-agent-research-system
-- LangChain《Plan-and-Execute Agents》 https://blog.langchain.com/planning-agents/
-- LangChain《Reflection Agents》 https://blog.langchain.com/reflection-agents/
-- LangChain《Deep Agents》 https://blog.langchain.com/deep-agents/
-- LangChain Deep Agents 文档 https://docs.langchain.com/oss/python/deepagents/overview
-- LangChain Multi-agent 文档（含调用成本表） https://docs.langchain.com/oss/python/langchain/multi-agent
+- LangChain《Plan-and-Execute Agents》 https://blog.langchain.com/planning-agents/ ／《Reflection Agents》 https://blog.langchain.com/reflection-agents/ ／《Deep Agents》 https://blog.langchain.com/deep-agents/
+- LangChain Deep Agents 文档 https://docs.langchain.com/oss/python/deepagents/overview ／Multi-agent 文档（含调用成本表） https://docs.langchain.com/oss/python/langchain/multi-agent
 - Manus《Context Engineering for AI Agents》 https://manus.im/blog/Context-Engineering-for-AI-Agents-Lessons-from-Building-Manus
-- Claude Code《Create custom subagents》 https://docs.claude.com/en/docs/claude-code/sub-agents
-- Claude Code《Orchestrate teams》 https://docs.claude.com/en/docs/claude-code/agent-teams
-- OpenAI Agents SDK《Agent orchestration》/《Tools》 https://openai.github.io/openai-agents-python/multi_agent/ ／ https://openai.github.io/openai-agents-python/tools/
-- Cursor《Subagents》/《Plan Mode》 https://cursor.com/docs/agent/subagents ／ https://cursor.com/docs/agent/planning
+- Claude Code《Create custom subagents》 https://docs.claude.com/en/docs/claude-code/sub-agents ／《Orchestrate teams》 https://docs.claude.com/en/docs/claude-code/agent-teams
+- OpenAI Agents SDK《Agent orchestration》 https://openai.github.io/openai-agents-python/multi_agent/ ／《Tools》 https://openai.github.io/openai-agents-python/tools/
+- Cursor《Subagents》 https://cursor.com/docs/agent/subagents ／《Plan Mode》 https://cursor.com/docs/agent/planning
 - GPT-5 router 引文与回滚事件 https://simonwillison.net/2025/Aug/7/gpt-5/ ／ https://simonwillison.net/2025/Aug/8/surprise-deprecation-of-gpt-4o/
 
 **论文**
@@ -642,7 +1022,4 @@ t=1（首轮探索后）
 - Multiagent Debate 2305.14325 ／ Should we be going MAD? 2311.17371 ／ Debating with More Persuasive LLMs 2402.06782 ／ Replacing Judges with Juries (PoLL) 2404.18796 ／ ChatEval 2308.07201
 - RouteLLM 2406.18665
 
-**证据强度标注**：
-- **实证**（论文/受控实验）：Reflection 收益不稳定（强）、多评审收益条件性（强）、MAGI 汇总方式（Anthropic 内部实测 + PoLL）
-- **生产实践**：Manus todo.md、Claude Code todo no-op、GPT-5 事件、Anthropic scaling rules
-- **文档宣称**（无效果数据）：各家 subagent 字段语义、Cursor Plan Mode 触发条件
+**证据强度标注**：外部资料仅用于**实现参考与风险提示**；本设计的可行性判据见 §2.0（可观测性/误判对称性/修复明确性/成本量级）。
