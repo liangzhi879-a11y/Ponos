@@ -50,6 +50,46 @@ export { applyAggregateResultBudget, makeIdleWatchdog, normalizeEffort, withTool
 export { buildHistoryIndex, createRequestFace, fitRequestToWindow, patchOrphanToolUses, trimOversizedRequestCopy } from './request-face.mjs'
 export { canonicalToolCallKey, createNearRepeatDetector, detectGenerationRepeat, isCodeLikeUnit, isPlanTail, isThinkOnly } from './gen-guards.mjs'
 
+// ── S1/O2 观测：守卫可观测契约（只读，不参与控制流）────────────────────────
+/**
+ * 全部守卫 id（11 个）。顺序 = 主循环里"可能命中"的语义顺序，供测试与面板对齐。
+ * ★ 单一真源：本常量 + GUARD_INJECT_IDS；改动守卫集必须同步这里（与批 2 的 profile 对齐）。
+ */
+export const GUARD_IDS = [
+  'wallClock',       // ① 轮次墙钟超时（置 loopStop.reason='timeout'；不发事件、无注入）
+  'iterCap',         // ② 单轮迭代硬上限（置 iterCapHit=true；不发事件、无注入）
+  'stall',           // ⑥ 无进展停滞（自愈注入 / 硬停）
+  'streamWallClock', // ①b 流内墙钟超时（无注入）
+  'genRepeat',       // ③ 生成重复（检测；自愈注入记在 repeatHeal）
+  'nearRepeat',      // ③b 句级近重复（检测；自愈注入记在 repeatHeal）
+  'idleWatchdog',    // 流空闲看门狗（自愈注入 / 硬停）
+  'upstreamDead',    // 上游死亡（只发事件、无注入 —— 如实登记，不粉饰）
+  'repeatHeal',      // R3-2 重复自愈（注入"推进模板"）
+  'meltdown',        // ④ 连续全工具失败熔断（自愈注入 / 硬停）
+  'repeatReminder',  // ⑤ 同工具重复提醒（注入）
+]
+
+/** 会**真的产生注入**的守卫 id（5 个）。GUARD_INJECT_IDS ⊆ GUARD_IDS 由单测守护。 */
+export const GUARD_INJECT_IDS = ['stall', 'idleWatchdog', 'repeatHeal', 'meltdown', 'repeatReminder']
+
+/**
+ * 归一化一轮的守卫状态（纯函数；O2 的 `turnStats[i].guard` 形状）。
+ * 只做"如实登记"：缺失按 0/null/false —— 不做推断、不做美化。
+ */
+export function collectGuardState(input = {}) {
+  const n = (v) => (Number.isFinite(v) && v > 0 ? Math.floor(v) : 0)
+  const { hits, injections, iterCapHit, loopStopReason, stallHeals, errorStreak, repeatStreak } = input || {}
+  return {
+    hits: Array.isArray(hits) ? hits.map(String) : [],
+    injections: n(injections),
+    iterCapHit: iterCapHit === true,
+    loopStopReason: typeof loopStopReason === 'string' && loopStopReason ? loopStopReason : null,
+    stallHeals: n(stallHeals),
+    errorStreak: n(errorStreak),
+    repeatStreak: n(repeatStreak),
+  }
+}
+
 export function createEngine({ opts = {}, wire, session, compactor, health }) {
   // signal 是轮次级取消标志（aborted 每轮由 runTurn 重置）；rawSignal 暴露真正
   // 的 AbortSignal，供 api.mjs 中断底层 fetch（undici 要求 AbortSignal 实例）
@@ -295,6 +335,9 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     let repeatHeals = 0    // ③/③b 命中后注入"推进指令"续跑次数（干净迭代清零，上限 REPEAT_HEAL_MAX）
     let healedLastIter = false // 上一迭代是否触发③/③b自愈注入（干净迭代后清零 repeatHeals 的判据）
     let stallHeals = 0     // ⑥ 命中后注入"推进指令"续跑次数（恢复实质进展即清零，上限 STALL_HEAL_MAX）
+    // S1/O2 观测：本轮守卫命中登记（★ 只观测，不参与控制流；登记本身绝不影响守卫语义）
+    const turnGuardHits = []    // 命中的守卫 id（顺序即实际命中顺序；同一 id 可重复）
+    let turnGuardInjections = 0 // 命中并**真的产生注入**的次数（无注入守卫不计，见 GUARD_INJECT_IDS）
     let meltdownHeals = 0  // ④ 熔断前注入"排查失败原因"次数（工具成功即清零，上限 MELTDOWN_HEAL_MAX）
     let idleHeals = 0      // 空闲中断（已产出后停顿）续写注入次数（实质进展即清零，上限 IDLE_HEAL_MAX）
     let upstreamDeadHeals = 0 // 上游空流退避重试次数（收到任意块即清零，上限 UPSTREAM_DEAD_HEAL_MAX）
@@ -486,6 +529,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // 守卫①：轮次墙钟——默认关闭（2026-09-10 取消 30 分钟上限，见 TURN_TIMEOUT_MS
       // 注释）；显式设 PONOS_TURN_TIMEOUT_MS>0 时单轮累计时长超限即优雅收尾。
       if (TURN_TIMEOUT_MS > 0 && Date.now() - turnT0 >= TURN_TIMEOUT_MS) {
+        turnGuardHits.push('wallClock') // O2：如实登记（① 不发 guard_heal、无注入）
         loopStop = {
           reason: 'timeout',
           message: `【已达单轮时长上限（${Math.max(1, Math.round(TURN_TIMEOUT_MS / 60000))} 分钟），为防止挂起已自动收尾。任务可能未完——可发送「继续」让模型接续。】`,
@@ -493,7 +537,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         break
       }
       // 守卫②：迭代硬上限——耗尽即收尾（无文本时补说明，见轮末 iterCapHit）
-      if (MAX_TOOL_ITERATIONS > 0 && iter >= MAX_TOOL_ITERATIONS) { iterCapHit = true; break }
+      if (MAX_TOOL_ITERATIONS > 0 && iter >= MAX_TOOL_ITERATIONS) { turnGuardHits.push('iterCap'); iterCapHit = true; break }
       // 守卫⑥：无进展停滞（自愈优先，2026-09-10）——距上次实质进展超限时先注入
       // "推进指令"续跑（用户无感知）；恢复实质进展即清零愈合计数；耗尽
       // STALL_HEAL_MAX 仍无进展才落可见收尾（硬停是最后防线，非默认路径）。
@@ -504,9 +548,12 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           const inject = '【系统】检测到你长时间没有实质进展（连续只读测量/重复调用、无新结果或文件变更）。请停止测量与重复尝试，直接执行下一步实质操作（修改文件/执行命令/完成剩余步骤），或向用户明确汇报当前卡点与结论。'
           pushMemory({ role: 'user', content: inject })
           if (session) session.appendUser(inject)
+          turnGuardHits.push('stall')
+          turnGuardInjections++ // O2：⑥ 自愈确实注入（pushMemory + guard_heal）
           try { wire?.system?.('guard_heal', { reason: 'loop-stall', attempt: stallHeals, max: STALL_HEAL_MAX }) } catch { /* 事件失败不影响主流程 */ }
           continue
         }
+        turnGuardHits.push('stall')
         loopStop = {
           reason: 'loop-stall',
           message: `【检测到长时间无实质进展（${Math.max(1, Math.round(LOOP_STALL_MS / 60000))} 分钟内只有只读测量/重复调用、无新结果或文件变更），已自动收尾以防循环。可发送「继续」让模型换一种方式推进，或补充更明确的指令。】`,
@@ -621,6 +668,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           // PONOS_TURN_TIMEOUT_MS>0 时覆盖"块持续流动但整体久拖不完"形态（iteration
           // 边界的墙钟检查拦不住单次超长生成）。命中即中断流，说明文本见轮末 finalize。
           if (!loopStop && TURN_TIMEOUT_MS > 0 && Date.now() - turnT0 >= TURN_TIMEOUT_MS) {
+            turnGuardHits.push('streamWallClock') // O2：如实登记（①b 无注入）
             loopStop = {
               reason: 'timeout',
               message: `【已达单轮时长上限（${Math.max(1, Math.round(TURN_TIMEOUT_MS / 60000))} 分钟），为防止挂起已自动收尾。任务可能未完——可发送「继续」让模型接续。】`,
@@ -633,6 +681,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           if (!loopStop) {
             const rep = detectGenerationRepeat(genWindow)
             if (rep) {
+              turnGuardHits.push('genRepeat')
               loopStop = {
                 reason: 'gen-repeat',
                 message: `【检测到模型生成内容重复打转（同一片段连续重复 ${rep.repeats} 次、周期 ${rep.p} 字符），已自动收尾以防死循环。可发送「继续」让模型换一种方式接续，或补充更明确的指令。】`,
@@ -646,6 +695,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           if (!loopStop && nearRep && (chunk.type === 'text' || chunk.type === 'thinking')) {
             const nrep = nearRep.push(chunk.text)
             if (nrep) {
+              turnGuardHits.push('nearRepeat')
               loopStop = {
                 reason: 'near-repeat',
                 message: `【检测到模型输出近似内容反复打转（同一批内容措辞微变重复重述，近期每句平均约 ${nrep.avgNeighbor} 句近似旧句），已自动收尾以防死循环。可发送「继续」让模型换一种方式接续，或补充更明确的指令。】`,
@@ -687,10 +737,13 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
             const inject = '【系统】检测到你的回复在中途停顿（疑似推理中断）。请从上一条回复的断点处直接继续输出剩余内容——不要从头复述，不要重新解释已完成的部分。'
             pushMemory({ role: 'user', content: inject })
             if (session) session.appendUser(inject)
+            turnGuardHits.push('idleWatchdog')
+            turnGuardInjections++ // O2：空闲自愈确实注入
             try { wire?.system?.('guard_heal', { reason: 'idle-interrupted', attempt: idleHeals, max: IDLE_HEAL_MAX }) } catch { /* 事件失败不影响主流程 */ }
             textBuf = ''
             continue
           }
+          turnGuardHits.push(attemptData ? 'idleWatchdog' : 'upstreamDead')
           loopStop = attemptData
             ? {
                 reason: 'idle',
@@ -725,11 +778,13 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           // UPSTREAM_DEAD_HEAL_MAX 次才可见收尾（retryStream 的 1 次快重试仍保留，
           // 本层是更长的退避重试）。
           if (upstreamDeadHeals < UPSTREAM_DEAD_HEAL_MAX) {
+            turnGuardHits.push('upstreamDead')
             upstreamDeadHeals++
             try { wire?.system?.('guard_heal', { reason: 'upstream-dead', attempt: upstreamDeadHeals, max: UPSTREAM_DEAD_HEAL_MAX }) } catch { /* 事件失败不影响主流程 */ }
             await sleep(UPSTREAM_DEAD_HEAL_BACKOFF_MS)
             continue
           }
+          turnGuardHits.push('upstreamDead')
           loopStop = {
             reason: 'upstream-dead',
             message: `【上游服务空流：请求已被受理但未返回任何数据（疑似模型服务未就绪、加载中或已崩溃），已自动收尾。请检查 provider 对应服务是否正常，或切换 provider 后重试。】`,
@@ -877,7 +932,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
               try { wire.assistant([{ type: 'text', text: errText }]) } catch { /* 事件流异常不再掩盖原错误 */ }
               watchdog.stop()
               finalizeUsage()
-              return { usage, model, text: errText, error: 'overflow-compact-failed', lastUsage: callUsage, toolDigest: turnToolDigest, assistantTexts: turnTexts }
+              return { usage, model, text: errText, error: 'overflow-compact-failed', lastUsage: callUsage, toolDigest: turnToolDigest,
+            guard: collectGuardState({ hits: turnGuardHits, injections: turnGuardInjections, iterCapHit, loopStopReason: loopStop ? loopStop.reason : null, stallHeals, errorStreak, repeatStreak }), assistantTexts: turnTexts }
             }
           }
         } else {
@@ -898,6 +954,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // 持续复现 → 耗尽上限后走下方 break 收尾（说明文本仍兜底，不烧死 token）。
       if (loopStop && REPEAT_HEAL_MAX !== 0 && (REPEAT_HEAL_MAX < 0 || repeatHeals < REPEAT_HEAL_MAX) &&
           (loopStop.reason === 'gen-repeat' || loopStop.reason === 'near-repeat')) {
+        turnGuardHits.push('repeatHeal')
+        turnGuardInjections++ // O2：R3-2 自愈确实注入
         repeatHeals++
         healedLastIter = true // 本迭代触发自愈注入（干净迭代清零的判据，见迭代起点）
         const healReason = loopStop.reason
@@ -1033,6 +1091,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
             path: String(inp.file_path ?? inp.path ?? inp.pattern ?? inp.notebook_path ?? '').slice(0, 300),
             isError: toolResults[i]?.is_error === true,
             errorText: String(typeof toolResults[i]?.content === 'string' ? toolResults[i].content : '').slice(0, 200),
+            // O1：结果体积（字节）—— 只取长度，不复制正文（延续"体积与隐私"约束）
+            size: Buffer.byteLength(String(executed[i]?.content ?? ''), 'utf8'),
           })
         }
         if (turnToolDigest.length > 40) turnToolDigest.splice(0, turnToolDigest.length - 40)
@@ -1101,6 +1161,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         // 防两侧漂移——此前两份模板串字面相同却是两处维护）
         if (shouldRemindRepeat(repeatStreak, REPEAT_REMIND_AT, remindedAt)) {
           remindedAt.add(repeatStreak)
+          turnGuardHits.push('repeatReminder')
+          turnGuardInjections++ // O2：⑤ 提醒确实注入
           const inject = repeatRemindText(repeatStreak, blocks[0].name)
           pushMemory({ role: 'user', content: inject })
           if (session) session.appendUser(inject)
@@ -1110,6 +1172,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         // 无感愈合（2026-09-10）：连续全败达阈值先注入"排查失败原因"指令静默续跑
         // （重开失败预算）；耗尽 MELTDOWN_HEAL_MAX 才落可见收尾。
         if (hasMeltdownBudget(meltdownHeals, MELTDOWN_HEAL_MAX)) {
+          turnGuardHits.push('meltdown')
+          turnGuardInjections++ // O2：④ 熔断自愈确实注入
           meltdownHeals++
           errorStreak = 0 // 重开失败预算（愈合窗口内再给一轮完整容错）
           const inject = errorMeltdownText('main')
@@ -1119,6 +1183,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           textBuf = ''
           continue
         }
+        turnGuardHits.push('meltdown')
         loopStop = {
           reason: 'error-meltdown',
           message: `【连续 ${errorStreak} 轮工具调用全部失败，已自动收尾停止重试。请检查失败原因（权限/环境/参数）后重新发起，或明确告知用户无法推进。】`,
@@ -1145,7 +1210,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       pushMemory({ role: 'assistant', content: textBuf })
     }
     finalizeUsage()
-    return { usage, model, text: textBuf, lastUsage: callUsage, toolDigest: turnToolDigest, assistantTexts: turnTexts }
+    return { usage, model, text: textBuf, lastUsage: callUsage, toolDigest: turnToolDigest,
+            guard: collectGuardState({ hits: turnGuardHits, injections: turnGuardInjections, iterCapHit, loopStopReason: loopStop ? loopStop.reason : null, stallHeals, errorStreak, repeatStreak }), assistantTexts: turnTexts }
   }
 
   // P0-3：大工具结果磁盘持久化 + 预览替换——超阈值全文落盘
@@ -2360,8 +2426,8 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       else pushMemory({ role: 'user', content: String(content ?? '') })
       let outcome
       try {
-        const { usage, model: turnModel, text, lastUsage, toolDigest, assistantTexts } = await runTurnInternal({ content })
-        outcome = { usage, model: turnModel, text, lastUsage, toolDigest, assistantTexts }
+        const { usage, model: turnModel, text, lastUsage, toolDigest, assistantTexts, guard: turnGuard } = await runTurnInternal({ content })
+        outcome = { usage, model: turnModel, text, lastUsage, toolDigest, assistantTexts, guard: turnGuard }
       } catch (e) {
         // 用户取消（Stop 按钮/打断插入，契约 §8）原样上抛 → cli 输出「已取消。」+ result
         // 收尾、进程保留可续聊。不落入下方"内部错误"兜底——AbortError 是有意信号，
@@ -2383,7 +2449,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       const durationMs = Date.now() - t0
       // turnStats 每轮尾部产出（health/result/stats 共用）。lastUsage = 本轮最后一次
       // 单请求 usage（health 水位信号；usage 为轮级合计，仅成本/计费口径）
-      turnStats.push({ usage: outcome.usage, lastUsage: outcome.lastUsage ?? null, durationMs, model: outcome.model, ts: new Date().toISOString(), compactCount: session ? session.compactCount() : 0 })
+      turnStats.push({ usage: outcome.usage, lastUsage: outcome.lastUsage ?? null, durationMs, model: outcome.model, ts: new Date().toISOString(), compactCount: session ? session.compactCount() : 0, guard: outcome.guard ?? collectGuardState() })
       // P2-2：会话级用量累计（四字段）→ costOf 单价 env → 跨 PONOS_BUDGET_USD 阈值
       // 发 budget 告警（每会话单次 crossing，防刷屏）。usage null（内部错误轮）不累计。
       if (outcome.usage) {
