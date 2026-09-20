@@ -133,8 +133,17 @@ function writeDevkitFixture(write) {
   }
   for (const s of JSON.parse(text).releaseSurfaces) {
     const f = s?.guard?.file
-    if (!f || s.guard.kind === 'structural') continue
-    write(f, ['// 夹具：DevKit 边界清单从真源取（kit/lib/devkit-rules.mjs）', ...(need.get(f) || [])].join('\n') + '\n')
+    if (!f) continue
+    // ★ 渠道方式照真源写：`product-evidence` 面必须真的出现 `resolveChannel(`（CT12 核代码文本）
+    const derive = s.guard.channelFrom === 'product-evidence'
+      ? 'const ch = resolveChannel({ target: out }, DEVKIT.devkit)\n'
+      : ''
+    if (s.guard.kind !== 'structural') {
+      write(f, ['// 夹具：DevKit 边界清单从真源取（kit/lib/devkit-rules.mjs）', derive, ...(need.get(f) || [])].join('\n') + '\n')
+    }
+    for (const also of s.guard.alsoFiles || []) {
+      write(also, ['// 夹具：从真源取（kit/lib/devkit-rules.mjs）', ...(need.get(also) || [])].join('\n') + '\n')
+    }
   }
 }
 

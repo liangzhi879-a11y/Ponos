@@ -49,8 +49,19 @@ function writeDevkitFixture(write) {
   }
   for (const s of JSON.parse(text).releaseSurfaces) {
     const f = s?.guard?.file
-    if (!f || s.guard.kind === 'structural') continue // yml 由品牌夹具写（白名单本就干净）
-    write(f, ['// 夹具：DevKit 边界清单从真源取（kit/lib/devkit-rules.mjs）', ...(need.get(f) || [])].join('\n') + '\n')
+    if (!f) continue
+    // ★ 渠道方式要照真源写：`product-evidence` 面必须**真的**出现 `resolveChannel(`（CT12 核代码文本）；
+    //   `fixed-release` 面则只引用真源、不许推导（也**不许**出现旧的自证开关）。
+    const derive = s.guard.channelFrom === 'product-evidence'
+      ? 'const ch = resolveChannel({ target: out }, DEVKIT.devkit)\n'
+      : ''
+    if (s.guard.kind !== 'structural') {
+      write(f, ['// 夹具：DevKit 边界清单从真源取（kit/lib/devkit-rules.mjs）', derive, ...(need.get(f) || [])].join('\n') + '\n')
+    }
+    // 伴生扫描脚本（如安装包面的 `verify-package-assets.mjs`）也要造出来：CT12 会核它不含旧自证开关。
+    for (const also of s.guard.alsoFiles || []) {
+      write(also, ['// 夹具：从真源取（kit/lib/devkit-rules.mjs）', ...(need.get(also) || [])].join('\n') + '\n')
+    }
   }
 }
 
