@@ -42,6 +42,11 @@ export function memoryBytes(s) {
   return Buffer.byteLength(String(s ?? ''), 'utf8')
 }
 
+/** 记忆根下的主题文件清单（**唯一**遍历入口：buildMemoryIndex / buildRelevantMemory 共用）。 */
+function listThemeFiles(root) {
+  return readdirSync(root).filter((x) => x.endsWith('.md'))
+}
+
 function readTheme(root, theme) {
   const fp = themePath(root, theme)
   if (!existsSync(fp)) return { front: {}, entries: [] }
@@ -107,45 +112,73 @@ export function appendMemoryEntry({ root = '', theme = '', tag = null, summary =
   return { ok: true, deduped: false }
 }
 
-export function buildMemoryIndex({ root = '', maxBytes = 4096 } = {}) {
+/** EL0 目标字节（注入 spec §4.2 :416：7 主题 ≈200 B。纯清单实测 254 B；含串头 368 B） */
+export const EL0_TARGET_BYTES = 200
+/** EL0 硬上限（A14：**恒在**的 EL0 ≤ 512 B） */
+export const EL0_MAX_BYTES = 512
+
+/**
+ * EL0 串头。**必须含`【个人经验索引】`** —— kernel-tests/knowledge-inject-e2e.test.mjs 的 NEEDLES
+ * 用它判定"经验层确实进了 system"，改文案前先看那个测试。
+ *
+ * 为何一定要有串头（不是可省的装饰）：改前串头告诉模型"用 Read 读取该行末尾标注的文件"——
+ * EL0 把**路径裁掉了**，那条指引不再可行；必须换成"用 KnowledgeSearch 检索该主题"的指引，
+ * 否则模型看到一堆裸主题列表不知道如何取详情（S4.5 的分层路由就断在这一句上）。
+ */
+const EL0_HEADER = '\n\n【个人经验索引】按主题汇总的过往经验（需要具体经验时用 KnowledgeSearch 检索对应主题）：\n'
+
+/**
+ * EL0 渲染：主题清单 `- [主题] N 条 · 最近日期`。
+ * lean 档 = 去掉"最近日期"，**保留全部主题名与条数**（只裁条目级细节，spec :475）。
+ */
+export function renderThemeList(themes, { lean = false } = {}) {
+  return (themes || [])
+    .map((t) => {
+      const suffix = !lean && t.latest ? ` · ${t.latest}` : ''
+      return `- [${t.theme}] ${t.count} 条${suffix}`
+    })
+    .join('\n')
+}
+
+/**
+ * EL0：经验**主题清单**（常驻 ~368 B）。
+ *
+ * 改前：条目式索引 —— 真实库 42 行 / 5131 B，本质是 L2 内容被当 L0 恒在塞进**每一轮**
+ * system（注入 spec :57 的原话诊断）。改后：每主题一行，只留主题名 + 条数 + 最近日期。
+ * 逐项核算（spec §4.2 :416）：5131 → 254 = **−4877 B/轮**（含串头 368 ⇒ −4763）。
+ * 归通道①②（system 静态）。
+ *
+ * 有意取舍（**不是漏洞，是 spec :475 的要求**）：
+ *   · 保留**全部**主题名 + 条数 —— 不得只留"最近 N 个"（那会让模型不知道还有哪些主题）。
+ *   · 因此当主题数很多（~15 个以上）时，lean 之后**不再截断**，输出可能 > EL0_MAX_BYTES。
+ *     真实库 7 主题 ⇒ 368 B，A14（≤512）成立；边界已被
+ *     kernel-tests/experience-dedup.test.mjs 锁成事实（改截断即红 ⇒ 提醒那是 spec 变更）。
+ *   · 0 条的主题**仍然列出**：模型据此区分"该主题存在但还没沉淀"与"库没有这个主题"。
+ *   · 空库 / 无 root ⇒ 空串（调用方据此判"无注入"）。
+ */
+export function buildMemoryIndex({ root = '', maxBytes = EL0_MAX_BYTES } = {}) {
   if (!root || !existsSync(root)) return ''
-  const list = []
+  const themes = []
   try {
-    for (const f of readdirSync(root).filter((x) => x.endsWith('.md'))) {
+    for (const f of listThemeFiles(root)) {
       const theme = f.slice(0, -3)
       const { front, entries } = readTheme(root, theme)
       // A16：内核注入侧尊重 front.active（服务端 server/experience.mjs:101 早用此口径，
       // String(active)==='false' 才算停用；缺省视为启用）
       if (String(front?.active) === 'false') continue
-      if (!entries.length) continue
-      const groups = new Map()
-      let untagged = 0
-      for (const e of entries) {
-        if (!e.tag) { untagged++; continue }
-        const g = groups.get(e.tag) || { tag: e.tag, count: 0 }
-        g.count++
-        groups.set(e.tag, g)
-      }
-      list.push({ theme, file: join(root, f), updatedAt: statSync(join(root, f)).mtimeMs, groups: [...groups.values()], untagged })
+      // 最近日期取**文件 mtime**：实测条目行无 date 字段（shared/knowledge-core.mjs#parseEntryLine
+      // 只返回 tag/summary/full），frontmatter 也只有 name/description/active/归属字段
+      // ⇒ mtime 是唯一可得且如实的时间源（不臆造日期）。
+      const mtimeMs = statSync(themePath(root, theme)).mtimeMs
+      themes.push({ theme, count: entries.length, latest: new Date(mtimeMs).toISOString().slice(0, 10), mtimeMs })
     }
   } catch { return '' }
-  list.sort((a, b) => b.updatedAt - a.updatedAt)
-  const header = '\n\n【个人经验索引】过往会话沉淀的个人经验（按 主题|任务标签 分组，含未标注条目）。需要某任务的具体经验时，用 Read 读取该行末尾标注的文件（每行条目格式：- [会话|标签] 摘要 -- 全文），摘要判断相关性，全文含完整要点；与当前任务无关的标签无需读取。\n'
-  let out = header
-  let outBytes = memoryBytes(header)              // S4.5③：累加（避免 O(n²)）
-  const fmt = (ts) => new Date(ts).toISOString().slice(0, 10)
-  const lines = []
-  for (const item of list) {
-    for (const g of item.groups) lines.push(`- [${item.theme}|${g.tag}] ${g.count} 条 · 最近 ${fmt(item.updatedAt)} · ${item.file}`)
-    if (item.untagged > 0) lines.push(`- [${item.theme}] ${item.untagged} 条未标注经验 · 最近 ${fmt(item.updatedAt)} · ${item.file}`)
-  }
-  for (const line of lines) {
-    const lb = memoryBytes(line) + 1
-    if (outBytes + lb > maxBytes) break
-    out += line + '\n'
-    outBytes += lb
-  }
-  return out
+  if (!themes.length) return ''
+  themes.sort((a, b) => b.mtimeMs - a.mtimeMs)
+  const full = EL0_HEADER + renderThemeList(themes)
+  if (memoryBytes(full) <= maxBytes) return full
+  // 二级降级：只去"最近日期"（串头与主题名/条数一个都不丢）
+  return EL0_HEADER + renderThemeList(themes, { lean: true })
 }
 
 // 关键词触发抽调（M4）：按当前任务上下文关键词，从经验库匹配高相关条目并注入
@@ -159,7 +192,7 @@ export function buildRelevantMemory({ root = '', keywords = [], maxBytes = 2048 
   if (!kws.length) return ''
   const items = []
   try {
-    for (const f of readdirSync(root).filter((x) => x.endsWith('.md'))) {
+    for (const f of listThemeFiles(root)) {
       const theme = f.slice(0, -3)
       const { front, entries } = readTheme(root, theme)
       // A16：内核注入侧尊重 front.active（服务端 server/experience.mjs:101 早用此口径，

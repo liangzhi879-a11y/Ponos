@@ -478,8 +478,17 @@ test('resume 兼容：--resume <session_id> 重开进程加载同转录 → init
     assert.equal(t2.text, 'mock: 第二轮 (turn=2)')
     // 同一转录文件追加续写（meta+user1+assistant1+user2+assistant2）
     const entries = readFileSync(file, 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
-    assert.equal(entries.length, 5)
-    assert.equal(entries[3].message.content, '第二轮')
+    // 【批1 Task 2 后改写】旧断言 `entries.length === 5` 已不成立：轮末统一出口现在会追加
+    // `{type:'meta', kind:'inject_snapshot'}` 的注入总账条目（S1+/O4），且第二轮那条与
+    // collectTurn 返回存在竞态（落盘可能稍晚）⇒ 总数 6/7 都合法。
+    // 本条要守的**真实契约**是"同一转录追加续写、历史消息一条不少"，故按**消息条目**计数，
+    // 并顺带锁住总账条目确实落了盘（比原来的总数断言更强）。
+    const msgs = entries.filter((e) => e.type === 'user' || e.type === 'assistant')
+    assert.equal(msgs.length, 4, `消息条目应为 4（user1/assistant1/user2/assistant2），实际 ${msgs.length}`)
+    assert.equal(msgs[2].message.content, '第二轮')
+    const snaps = entries.filter((e) => e.kind === 'inject_snapshot')
+    assert.ok(snaps.length >= 1, '轮末注入总账必须落盘（S1+/O4：每轮一条 inject_snapshot）')
+    assert.ok(Array.isArray(snaps[0].segments), '快照应含分段计量 segments')
     const infoB = await b.k.stop()
     assert.equal(infoB.code, 0)
   } finally {

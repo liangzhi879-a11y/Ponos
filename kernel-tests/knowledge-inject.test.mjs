@@ -125,10 +125,11 @@ test('unified：两层合计不超总预算（含让渡：索引层小 → 抽�
         query: '四表联动 企微CLI化 沟通渠道 申报材料', keywords: KW, mode: 'unified', totalBudget: budget,
       })
       const used = Buffer.byteLength(r.indexSection, 'utf-8') + Buffer.byteLength(r.recallSection, 'utf-8')
-      // 口径说明：预算按**字节**计量（新代码如实），而索引层复用的 buildMemoryIndex 内部按
-      // **字符数**比较 maxBytes（既有约定，不动 = 零回归）。极小预算下索引层的固定串头
-      // （约 400 字节）自身就可能超限——此时抽调层必须为空（本函数把它置 0），
-      // 故断言上界取 max(budget, 索引层单层字节)。
+      // 口径说明（S4.5③④ 后已更新）：索引层自 Task 6 起是 **EL0 主题清单**（每主题一行，
+      // 真实库 ~368 B），且其内部预算比较也改为**按字节**（memoryBytes，Task 5）——
+      // 原注释"复用的 buildMemoryIndex 内部按字符数比较 maxBytes（既有约定，不动 = 零回归）"
+      // 已不成立，故此处按新形态核对：EL0 很小 ⇒ 极小预算下索引层一般仍装得下；
+      // 只有"索引层自身就超预算"时才要求抽调层为空。
       const indexOnly = Buffer.byteLength(buildMemoryIndex({ root, maxBytes: budget }), 'utf-8')
       assert.ok(used <= Math.max(budget, indexOnly), `预算 ${budget} 超限（实际 ${used}）`)
       if (indexOnly > budget) assert.equal(r.recallSection, '', '索引层自身超限时抽调层必须为空')
@@ -240,7 +241,12 @@ test('注入内容不含真实 home 路径（隔离纪律）', () => {
       configDir: dir, memoryRootDir: join(dir, 'memory', 'personal'),
       query: '四表联动', keywords: KW, mode: 'unified',
     })
-    assert.ok(r.indexSection.includes(dir), '索引层路径应指向临时目录')
+    // 【S4.5④-1 EL0 化后改写】原断言是 `r.indexSection.includes(dir)`（"索引层路径应指向临时目录"）——
+    // EL0 主题清单**不再含任何文件路径**（每行的 `· <绝对路径>` 已裁掉，那正是 −4877 B/轮 的来源），
+    // 该断言已不可能成立。隔离意图因此改成**更强的**判据：注入里根本不出现绝对路径。
+    assert.ok(!r.indexSection.includes(dir), 'EL0 不得回显记忆根路径（路径已裁掉）')
+    assert.ok(!/[A-Za-z]:[\\/]/.test(r.indexSection), 'EL0 不得含 Windows 绝对路径')
+    assert.ok(r.indexSection.includes('【个人经验索引】'), '经验层仍在（只是变成主题清单形态）')
     assert.ok(!/\.yfworking|\.yfw[/\\]/.test(r.indexSection + r.recallSection), '不得出现真实 home 路径')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
