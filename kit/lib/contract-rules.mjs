@@ -27,8 +27,12 @@
 //      静默漏抓）⇒ `const P='/x'`（间接量）与反引号模板串（动态）抓不到；
 //      CT7 的路由侧只覆盖提取器的 4 形态（见 `routeFormOrphans` 的注释：更宽的口径需要第二份黑名单，
 //      会与提取器漂移 ⇒ 他人新增黑名单条目就假红）；
-//   ② `shapeOf` 只含结构指纹（props 名+类型 / required / additionalProperties 存在性），
-//      enum/items 不入 ⇒ "改 schema 结构 → CT6 红"只覆盖这一部分（plan 明确取舍）；
+//   ② `shapeOf` 的指纹（批 F 起**递归**）覆盖 type / enum（排序后比较）/ items（数组元素）/
+//      **嵌套** properties / required（排序）/ additionalProperties 存在性 / pattern / format，深度上限 8；
+//      **仍不覆盖**：散文与展示（description/title/examples）、数值范围（minimum/maxLength…）、default、
+//      元信息（deprecated/readOnly/writeOnly）、组合子（$ref/oneOf/anyOf/allOf，真仓零使用）
+//      ⇒ "改 schema 结构 → CT6 红"只覆盖**纳入名单内**的那部分（plan 明确取舍；
+//      名单由 `contract-tools.test.mjs`「批 F④」关键字守卫钉住，真仓出现未纳入的结构类关键字即失败）；
 //   ③ CT9 是**单向差集**且只报不拦（黄）：前端调后端无是 D8 的历史欠账，登记在 drift-baseline；
 //   ④ `CT8` 只在"有提交态可比"时才有意义 ⇒ HEAD 不可读时**明说**（不假装能对账，见 ctx.headError）；
 //   ⑤ **WS 方向按 §5/§6 各判**（P1.5 收尾批，2026-09-19 起）：此前两节合成一个声明集，
@@ -586,7 +590,8 @@ export async function runContractRules({
       ct3bad++
       findings.push(finding({
         rule: 'CT3', severity: RED, subject: `tools ${name}`, expected: String(docFp), actual: String(liveFp),
-        hint: '工具 input_schema 的**结构指纹**与文档 §12 不一致（props 名+类型 / required / additionalProperties）：'
+        hint: '工具 input_schema 的**结构指纹**与文档 §12 不一致（递归：type/enum/items/嵌套 properties/'
+          + 'required/additionalProperties/pattern/format，深度上限 8）：'
           + '这是模型契约变更 ⇒ 跑 `npm run kit:sync` 并同步 §12 的指纹（description 散文不入指纹）',
       }))
     }
@@ -682,7 +687,9 @@ export async function runContractRules({
     if (liveHash !== null && snapTools[name] !== liveHash) {
       ct6bad++
       findings.push(finding({ rule: 'CT6', severity: RED, subject: `tools ${name}`, expected: String(snapTools[name]), actual: String(liveHash),
-        hint: '工具 input_schema 的**结构指纹**变了（props 名+类型 / required / additionalProperties）：这是模型契约的变更 ⇒ 跑 kit:sync 并说明变更（description 散文不入指纹）' }))
+        hint: '工具 input_schema 的**结构指纹**变了（递归：type/enum/items/嵌套 properties/'
+          + 'required/additionalProperties/pattern/format，深度上限 8）：这是模型契约的变更 ⇒ '
+          + '跑 kit:sync 并说明变更（description 散文不入指纹）' }))
     }
   }
   if (snapshot && snapshot.staticToolCount !== tools.staticCount) {

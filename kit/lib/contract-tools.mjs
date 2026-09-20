@@ -7,11 +7,15 @@
 //        ② 静态解析：`kernel/tools.mjs` 里 `const registry = { … }` 的顶层键（4 空格缩进）。
 //      `names` = 两路的并集 ⇒ "注册表有、出口没有"和"出口有、注册表没有"都会让
 //      `names.length !== staticCount`，一眼可见（只信一路就会静默丢工具）。
-//   I2 `shapeOf(name)` 只取**结构指纹**：properties 名+类型、required、additionalProperties
-//      存在性 → 规范化 JSON → sha256 前 8 位。
+//   I2 `shapeOf(name)` 只取**结构指纹**（批 F 起**递归**）：`type` / `enum`（排序后比较）/
+//      `items`（数组元素）/**嵌套** `properties` / `required`（排序）/ `additionalProperties`（存在性）/
+//      `pattern`·`format`（取值约束），深度上限 8（超出记 `nested:'<deep>'`）→ 规范化 JSON → sha256 前 8 位。
 //      ★ **description 散文绝不入哈希**（plan §7 反例 ⑩）：改文案即红会让门禁被基线淹没 = 噪声门禁。
-//      已知边界（如实写下）：枚举值 / 嵌套 properties / items 结构暂不入指纹 —— 语义变更靠
-//      契约规则的"任务/图"两套测试（T7）兜，本模块不假装能判。
+//      已知边界（批 F 之后的**现行**口径，如实写下）：散文/展示（`description`/`title`/`examples`）、
+//      数值范围（`minimum`/`maximum`/`minLength`/`maxLength`/`minItems`/`maxItems`/`uniqueItems`/`multipleOf`）、
+//      `default`、元信息（`deprecated`/`readOnly`/`writeOnly`）、组合子（`$ref`/`oneOf`/`anyOf`/`allOf`，
+//      真仓零使用）**仍不入指纹**。这是**有意的取舍**，不是遗漏：名单由 `contract-tools.test.mjs`
+//      的「批 F④」关键字守卫钉住 —— 真仓出现"结构类关键字"却没进名单时**直接失败**，逼后来者显式决定。
 //   I3 动态源逐条登记（`sources`）：工作流派生工具（`kernel/dyntools.mjs`，`run_<slug>`）、
 //      MCP 工具（`kernel/mcp-tools.mjs`，`mcp__<server>__<tool>`）、应用智控（`kernel/app-tools.mjs`）、
 //      出网映射（`kernel/api.mjs`，tools → wire 的 `{name,description,input_schema}` 打包）。

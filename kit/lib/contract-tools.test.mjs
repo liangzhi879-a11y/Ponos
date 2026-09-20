@@ -4,9 +4,11 @@
 //   · **双路交叉校验**：运行时 `createToolRegistry({cwd}).toolSchemas()` 是出口真相，
 //     静态解析 `kernel/tools.mjs` 的 registry 键是"代码里写了什么"。两路必须都能复算 ——
 //     只信一路就抓不到"注册表有、出口没有"（工具声明存在但模型永远看不到）这一整类缺陷。
-//   · `shapeOf` 只取**结构指纹**（properties 名+类型 / required / additionalProperties 存在性）：
+//   · `shapeOf` 只取**结构指纹**（批 F 起递归：type / enum（排序）/ items / 嵌套 properties /
+//     required / additionalProperties 存在性 / pattern / format，深度上限 8）：
 //     改结构必须变（否则 schema 漂移无人发现），**改 description 散文绝不能变**
-//     （否则改文案即红 → 门禁被基线淹没 = 噪声门禁，plan §7 反例 ⑩）。
+//     （否则改文案即红 → 门禁被基线淹没 = 噪声门禁，plan §7 反例 ⑩）。批 F 之前"枚举值/items/嵌套
+//     properties 不入指纹"的边界**已作废**，现行边界见 `contract-tools.mjs` 的 I2 与「批 F④」守卫。
 //   · 动态源（工作流 `run_<slug>` / MCP `mcp__*` / 应用智控 / 出网映射）必须逐条登记：
 //     它们是**随磁盘与配置变化**的工具，静态计数 21 不是全貌，"提取不到 ≠ 不存在"。
 import { test } from 'node:test'
@@ -208,6 +210,16 @@ test('★批 F③ `pattern`/`format` 入指纹；散文与默认值**绝不**入
 })
 
 test('★批 F④ 关键字**守卫**：真仓工具 schema 出现"结构类关键字"却未被指纹覆盖 ⇒ 直接失败（逼后来者显式决定，不许静默漏判）', async () => {
+  // ★★ 本守卫的**词汇依赖**（审查实测，如实写明 —— 否则"名单里有 8 个键"会被误读成"8 个都被守卫覆盖"）：
+  //   `seen` 只收到**真仓 schema 里真出现**的键，实测（干净克隆，21 条工具）只有 5 个：
+  //   `type` / `enum` / `items` / `required` / `additionalProperties` ⇒ 这 5 个**真有牙**；
+  //   另外 3 个进不了 `seen`，守卫对它们**此刻是空转**：
+  //     · `pattern` / `format` —— 真仓**零出现**（名单里有只是"万一以后用了别误报"的前置声明）；
+  //     · `properties` —— 它在 `NAME_MAPS` 里被**提前 `continue`**（它的键是参数名、不是 schema
+  //       关键字，故只递归其**值**）⇒ `seen.add('properties')` 永不执行。
+  //   ⇒ 这三条的意义是"豁免面/纳入面的**声明**"，不是"当前被守卫证明过"；要真验证它们，
+  //     得靠上面的 `shapeFp(...)` 夹具断言（`批 F①/②/③` 已逐条钉住 `enum`/`items`/嵌套 `properties`
+  //     /`pattern`/`format` 的**存在即变**）。改名单时别只看这条守卫绿就以为覆盖到了。
   // 本函数纳入的键（改这里就必须同步 README 边界说明 + §12 的 21 个指纹 + `npm run kit:sync`）
   const COVERED = new Set(['type', 'enum', 'items', 'properties', 'required', 'additionalProperties', 'pattern', 'format'])
   // 明确**不纳入**且**允许存在**（都要在 README 写明理由：散文/展示、数值范围、默认值）
@@ -218,21 +230,34 @@ test('★批 F④ 关键字**守卫**：真仓工具 schema 出现"结构类关�
   const { createToolRegistry } = await import(pathToFileURL(join(ROOT, 'kernel/tools.mjs')).href)
   // 这些键的值是"**名字 → schema**"映射（名字是参数名/定义名，**不是** schema 关键字）⇒ 只递归其值
   const NAME_MAPS = new Set(['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas'])
+  // ★ 这些键的值是**数据**而不是 schema（`default: {x:1}` / `examples: [{y:2}]` / 对象型 `enum` 取值）
+  //   ⇒ 只登记**键本身**、不递归其值：否则内层会冒出 `x`/`y` 这种既非纳入也非豁免的"关键字"，
+  //   未来某天写一个对象型 `default` 就会**假失败**（把数据当 schema 走）。键本身照旧进 `seen`
+  //   ⇒ "出现未豁免的取值类关键字"仍然会红（守卫的 fail-closed 方向不变）。
+  const NO_DESCEND = new Set(['default', 'examples', 'enum', 'const'])
   const seen = new Set()
-  const walk = (n, isNameMap = false) => {
+  const walk = (n, sink, isNameMap = false) => {
     if (!n || typeof n !== 'object') return
-    if (Array.isArray(n)) { for (const x of n) walk(x, false); return }
+    if (Array.isArray(n)) { for (const x of n) walk(x, sink, false); return }
     for (const k of Object.keys(n)) {
-      if (isNameMap) { walk(n[k], false); continue }
-      if (NAME_MAPS.has(k)) { walk(n[k], true); continue }
-      seen.add(k)
-      walk(n[k], false)
+      if (isNameMap) { walk(n[k], sink, false); continue }
+      if (NAME_MAPS.has(k)) { walk(n[k], sink, true); continue }
+      sink.add(k)
+      if (NO_DESCEND.has(k)) continue
+      walk(n[k], sink, false)
     }
   }
-  for (const s of createToolRegistry({ cwd: ROOT }).toolSchemas()) walk(s.input_schema)
+  for (const s of createToolRegistry({ cwd: ROOT }).toolSchemas()) walk(s.input_schema, seen)
   const uncovered = [...seen].filter((k) => !COVERED.has(k) && !EXEMPT.has(k)).sort()
   assert.deepEqual(uncovered, [],
     `真仓出现未覆盖的 schema 关键字：${uncovered.join(', ')} —— 要么纳入指纹（并同步 README + §12 指纹 + kit:sync），要么加进 EXEMPT 并写明理由`)
+  // ★ 自证 `NO_DESCEND`（否则无测试的"散文式承诺"）：数据值（`default`/`examples`/对象型 `enum`）
+  //   只登记**键本身**，内层键名**不得**被当成 schema 关键字 —— 否则未来某天写 `default:{x:1}`
+  //   会冒出未豁免的 `x` ⇒ **假失败**（把数据当 schema 走）。
+  const sink = new Set()
+  walk({ type: 'object', default: { x: 1 }, examples: [{ y: 2 }], enum: [{ z: 3 }], const: { w: 4 } }, sink)
+  assert.deepEqual([...sink].sort(), ['const', 'default', 'enum', 'examples', 'type'],
+    '取值类关键字只登记键本身、不递归其值（内层 x/y/z/w 都不是 schema 关键字）')
   // 反向自证：守卫**真会**抓到未覆盖关键字（否则它是恒真断言）
   const probe = await shapeFp({ withUncovered: true })
   assert.match(probe, /^[0-9a-f]{8}$/, '带 `oneOf` 的夹具能正常出指纹')
