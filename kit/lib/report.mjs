@@ -4,6 +4,24 @@ export const YELLOW = 'yellow'
 export const BASELINED = 'baselined'
 
 /**
+ * **只报不拦**的规则集 —— 它们的 finding 一律是 `YELLOW`（或被基线降级成 `BASELINED`），
+ * 因此**永不影响退出码**，只在报告里"报一声"。渲染层（`report.mjs` 人类可读输出、GUI）
+ * 必须据此区分「✘ 未通过（红，会拦）」与「✘ 有待办（只报不拦）」——
+ * 否则读者会把"确实有东西但本来就不拦"误读成"门禁失败"。
+ *
+ * ★ 为什么要有这份**单一真源**：此前 GUI 里各自硬编码 `['CT8','CT9']`，而
+ * `dep-rules.mjs` 的 `P5`/`P6` 同样只发 `YELLOW` ⇒ 它们被**误标成「阻断」**。
+ * 这类"某个概念在多处各写一份"正是漂移之源（与「合同文档腐烂」同因）。
+ *
+ * ★ 与规则实现的**锁**：`report.test.mjs` 会扫描各 `*-rules.mjs` 源码里
+ * `rule: 'X', severity: <SEV>` 的字面量配对，双向断言：
+ *   ① 凡是发过 `YELLOW` 的规则 ⇒ **必须**在本集合里；
+ *   ② 本集合里的规则 ⇒ **不得**发过 `RED`。
+ * 于是"新增一条黄灯规则却忘了登记"会被测试当场拦下（不是靠自觉）。
+ */
+export const NON_BLOCKING_RULES = new Set(['CT8', 'CT9', 'P5', 'P6'])
+
+/**
  * 构造一条发现（finding）。
  * 刻意把 expected/actual 字符串化：版本常量里既有数字（INDEX_VERSION=4）又有字符串，
  * 若按原类型存进 JSON 再比对，会出现 `4 !== "4"` 这种与业务无关的假红。

@@ -388,6 +388,56 @@ hint 指文档补遗；`CT4` 的 hint 指 scope 登记），以及让"代码真�
 
 **为什么它必须进 CI**：本仓唯一能抓"依赖删了但其实还在用"的就是 P2；而**本机这条判定不成立** —— 家目录下的杂散 `node_modules` 会沿父目录链把缺声明的包解析到（本仓内 `import('nanoid')` 实测 OK，盘根克隆 `ERR_MODULE_NOT_FOUND`，见 `docs/待处理清单.md` 的"杂散 node_modules"条）。所以"删包之后本机全绿"不构成证据，**只有 CI / 盘根克隆上的判定才是真实的**。
 
+## GUI（报告）与 agent 入口
+
+**一块完全独立的报告界面**——**不起服务、不监听端口、不接应用界面**（不碰 `src/**`/`server/**`，
+不引任何依赖，不复用应用主题）。生成一个**自包含单文件 HTML**（CSS/JS/数据全内联、零外链），
+`file://` 双击即可打开：
+
+```bash
+npm run kit:gui                          # → kit-report.html（默认）
+node kit/gui.mjs --out scratch/r.html    # 指定输出
+node kit/gui.mjs --open                  # 生成后用默认程序打开
+node kit/gui.mjs --json                  # 只打数据包（给脚本消费）
+npm run kit:agent                        # ★ 给 agent：打印套件规范纯文本
+```
+
+★ **产物不入仓**（`.gitignore` 里有 `/kit-report.html`）：它是生成物，随时 `npm run kit:gui` 再生。
+★ 生成**总是 exit 0**（报告工具）：哪怕门禁红，也要能生成报告看为什么红 —— 结论写在页面顶部与 stdout 里
+（`门禁结论：红 N ⇒ EXIT=1`）。数据来源是**公开 JSON 出口**（`kit/cli.mjs check --json` + `view --json`），
+所以 GUI 与 agent 读的是**同一份**契约输出；注意 `check` 在红时**退出码 1 但仍有完整 JSON**，取数要解析 stdout 而不是看退出码。
+
+页面共**八段**（侧边锚点导航）：概览 / 红灯与黄灯（可按 rule 与 severity 筛选）/ 规则矩阵 /
+台账 / 依赖域 / **版本控制** / **品牌标识与名称** / **Agent 套件规范**。
+
+- **版本控制**段是**只读展示**：版本线（`versions.json` 的 `lines`/`contracts`/`history`）+ **git 锚定现状**
+  （分支 / HEAD / HEAD 标题 / 未提交 tracked·untracked / tag 数与最新 tag / worktree 列表）。
+  **快照、回退、对比、清理**（影子引用快照 `refs/yfw/snap/*`）由 `docs/superpowers/specs/2026-09-15-version-manager-design.md`
+  （已批准）的 **version-manager 工作线**实施 —— 本 GUI **不重复实现、不写 git**。
+- **品牌标识与名称**段同样是**只读汇总**：把当前**分散**在各处的名称声明点集中列出（`package.json` 的
+  `name`/`version`、`electron-builder.yml` 的 `appId`/`productName`、`index.html` 的 `<title>`、
+  `version.mjs` 的 `APP_VERSION`/`KERNEL_VERSION`，各带 `file:line`），加**一致性提示**（`warn`/`info` 分级，
+  只提示不断言）与标识资源清单（尺寸/字节数）。★ 现状本仓**混用多个名字**（`YFWorking`、`Ponos`/`Ponos-Turbo`、
+  新远方数据、boost）—— 本视图只把它**显形**；**要做一致性门禁（新 CT 规则）须另立一批**。
+
+### agent 每次开发如何按套件规范执行（三层，防漂移）
+
+1. **单一真源**：`kit/lib/agent-guide.mjs` 的 `AGENT_GUIDE`（纯数据：四段「开工前 / 改动契约面时 / 交付前 / 红灯怎么修」
+   + 四条铁律 + CI 锚点）。**清单内容只写在这一处**。
+2. **两个消费端**：GUI 的第 8 段渲染它；`npm run kit:agent` 给 agent 打印**纯文本**（含可复制命令）。
+3. **入口**：`kit/AGENT.md`（简短，≤60 行，**只指向真源、不复制清单**）+ CI 已有的 `npm run kit:check`
+   （`.github/workflows/ci.yml`）作最后拦截。
+   ★ **有牙齿**：`report.test.mjs` 会核对 `AGENT_GUIDE.ci.line` 与 CI 文件里 `kit:check` 的**实际行号**
+   —— CI 挪了行号而没同步 ⇒ 测试红。
+
+### 「只报不拦」是**一份**名单，别再各处硬编码
+
+`report.mjs#NON_BLOCKING_RULES` 是唯一真源（当前 `CT8`/`CT9`/`P5`/`P6`），`gui-data.mjs` 把它算进
+`checks[].nonBlocking` 供渲染层使用。★ 起因是一次实测缺陷：渲染层曾各自硬编码 `['CT8','CT9']`，
+而 `P5`/`P6` 同样只发 `YELLOW` ⇒ 被**误标成「阻断」**，读者会把"本来就不拦"读成"门禁失败"。
+现在 `report.test.mjs` 把名单与规则实现**双向锁死**：源码里发过 `YELLOW` 的规则**必须**在名单里，
+名单里的规则**不得**发过 `RED`（并含反向自证，防正则写坏导致断言恒真）。
+
 ## 目录
 
 ```
@@ -406,9 +456,14 @@ kit/lib/contract-snapshot.mjs 契约快照（复算 / 落盘 / 逐类比较）
 kit/lib/contract-rules.mjs  CT0–CT9（含 CT4B/CT4C/CT8）
 kit/lib/contract-scope.mjs  范围登记判定（只读；禁通配、禁自动生成）
 kit/lib/python-manifest.mjs 内嵌 Python 包清单的唯一读取入口（构建脚本与测试同源）
-kit/lib/report.mjs          统一报告 schema + 人话渲染
+kit/lib/report.mjs          统一报告 schema + 人话渲染 + **NON_BLOCKING_RULES（只报不拦的唯一真源）**
 kit/lib/baseline.mjs        漂移基线、红灯认领与数量护栏
 kit/lib/stamp.mjs           dev 渠道身份（章）
+kit/lib/agent-guide.mjs     ★ agent 套件规范唯一真源（AGENT_GUIDE + 纯文本渲染）
+kit/lib/gui-data.mjs        独立 GUI 的数据组装（纯函数；走公开 JSON 出口 + 只读台账）
+kit/lib/gui-html.mjs        独立 GUI 的单文件 HTML 渲染（零外链、数据内联）
+kit/gui.mjs                 独立 GUI 入口：--out | --json | --agent | --open
+kit/AGENT.md                ★ agent 入口（简短指针，不含清单内容）
 kit/manifest/versions.json  版本台账（唯一真源；`#channels` 是契约快照）
 kit/manifest/deps.json      依赖台账（唯一真源）
 kit/manifest/contract-scope.json  🖐 人工维护的范围登记（sync 绝不写它）

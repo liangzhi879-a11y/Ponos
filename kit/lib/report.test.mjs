@@ -1,7 +1,10 @@
 // kit/lib/report.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { RED, YELLOW, BASELINED, finding, checkResult, makeReport, renderHuman } from './report.mjs'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { RED, YELLOW, BASELINED, NON_BLOCKING_RULES, finding, checkResult, makeReport, renderHuman } from './report.mjs'
 
 test('finding 只带非空字段（报告里不出现 undefined 噪声）', () => {
   const f = finding({ rule: 'V1', severity: RED, subject: 'APP_VERSION@version.mjs' })
@@ -95,4 +98,49 @@ test('renderHuman：BASELINE_NO_REASON 红必须渲染出来（含说明与修�
   assert.ok(lines.includes('  [BASELINE_NO_REASON] P5 python.diff'), '缺 reason 的红必须整行出现')
   assert.ok(lines.includes('        基线条目缺 reason（不变量 I4：放行必须写明理由）—— 该条目已被忽略'), '说明必须整行出现')
   assert.ok(lines.includes('        → 给该条目补上 reason；确属误加则直接删除条目'), '修法必须整行出现')
+})
+
+// ── 「只报不拦」名单的守卫：概念只有**一份真源**，且与规则实现**双向锁死** ──────────
+// 背景（GUI 实测挖出的真缺陷）：渲染层曾各自硬编码 `['CT8','CT9']`，而 `dep-rules.mjs` 的
+// `P5`/`P6` 同样只发 `YELLOW` ⇒ 被误标成「阻断」，读者会把"本来就不拦"读成"门禁失败"。
+// 这里把「名单」与「实现」锁在一起：**新增一条黄灯规则却忘了登记 ⇒ 本测试当场红**（不靠自觉）。
+test('★ NON_BLOCKING_RULES 与规则实现双向锁死（新增黄灯规则忘登记 ⇒ 红）', () => {
+  const dir = dirname(fileURLToPath(import.meta.url))
+  const SEV = '(RED|YELLOW|BASELINED)'
+  // ★ 先把换行/制表**展平**成空格，再用 `.` 开窗口匹配 —— 这样正则里**一个反斜杠都不需要**。
+  //   （踩过的坑：在 shell heredoc 里写 `\\s` 会被吞成 `\s`，而模板字面量里的 `\s` 等于 `s`
+  //    ⇒ 正则静默失效、扫描恒为 0 条；下面"反向自证"断言就是为此设的。）
+  const flatten = (s) => s.replaceAll('\n', ' ').replaceAll('\t', ' ')
+  // 两条正则覆盖「rule 在前」与「severity 在前」两种写法；60 字符窗口足够（展平后无换行）
+  const reRuleFirst = new RegExp("rule: '([A-Za-z0-9_]+)'.{0,60}?severity: " + SEV, 'g')
+  const reSevFirst = new RegExp('severity: ' + SEV + ".{0,60}?rule: '([A-Za-z0-9_]+)'", 'g')
+
+  /** @type {Map<string, Set<string>>} 规则 → 源码里用过的 severity 常量名 */
+  const used = new Map()
+  const scan = (src, re, ruleIdx, sevIdx) => {
+    for (const m of src.matchAll(re)) {
+      if (!used.has(m[ruleIdx])) used.set(m[ruleIdx], new Set())
+      used.get(m[ruleIdx]).add(m[sevIdx])
+    }
+  }
+  for (const f of ['contract-rules.mjs', 'dep-rules.mjs', 'version-rules.mjs']) {
+    const src = flatten(readFileSync(join(dir, f), 'utf8'))
+    scan(src, reRuleFirst, 1, 2)
+    scan(src, reSevFirst, 2, 1)
+  }
+
+  const yellowRules = [...used].filter(([, s]) => s.has('YELLOW')).map(([r]) => r).sort()
+  const missing = yellowRules.filter((r) => !NON_BLOCKING_RULES.has(r))
+  assert.deepEqual(missing, [],
+    `这些规则发过 YELLOW 却不在 NON_BLOCKING_RULES 里 ⇒ 渲染层会把它们误标成「阻断」：${missing.join(', ')}`)
+
+  const wrong = [...NON_BLOCKING_RULES].filter((r) => used.get(r)?.has('RED')).sort()
+  assert.deepEqual(wrong, [],
+    `这些规则被列为「只报不拦」却发过 RED ⇒ 命中时其实会拦，标错会误导读者：${wrong.join(', ')}`)
+
+  // 反向自证：证明上面的扫描**不是空转**（正则一旦写坏，前两条断言会恒真）
+  assert.ok(yellowRules.length >= 4,
+    `只扫到 ${yellowRules.length} 条黄灯规则（应 ≥4：CT8/CT9/P5/P6）—— 正则失效会让本测试失去意义`)
+  assert.ok([...used].some(([, s]) => s.has('RED')), '应至少扫到一条 RED 规则（否则说明只覆盖了黄灯写法）')
+  assert.ok(used.has('CT8') && used.has('P5'), 'CT8/P5 必须被扫到（两者的 rule/severity 写法各是一种形态）')
 })

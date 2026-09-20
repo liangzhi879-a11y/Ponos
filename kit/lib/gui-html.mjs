@@ -28,8 +28,9 @@ export const GUI_SECTIONS = [
   { id: 'agent', title: 'Agent 套件规范' },
 ]
 
-/** 黄灯类规则（只报不拦）—— 表格里显式标注，避免读者把"passed=false"读成"门禁失败" */
-const NON_BLOCKING_RULES = new Set(['CT8', 'CT9'])
+/** 黄灯类规则（只报不拦）—— ★ 不再在这里硬编码名单：由 `gui-data.mjs` 从真源
+ *  `report.mjs#NON_BLOCKING_RULES` 读进 `checks[].nonBlocking`（此前正是这里硬编码
+ *  `['CT8','CT9']`，把同样只发黄灯的 `P5`/`P6` 漏标成了「阻断」）。 */
 
 const SEVERITY_LABEL = { red: '红（阻断）', yellow: '黄（提示）', baselined: '基线（已知欠账）' }
 
@@ -163,13 +164,13 @@ function renderFindings(d) {
 
 function renderRules(d) {
   const rows = d.gate.checks.map((c) => {
-    const nb = NON_BLOCKING_RULES.has(c.rule)
+    const nb = c.nonBlocking === true
     return `<tr><td class="mono">${esc(orDash(c.rule))}</td><td>${esc(orDash(c.title))}</td>`
       + `<td class="num">${esc(c.evaluated)}</td>`
       + `<td>${c.passed ? '✔ 通过' : (nb ? '✘ 有待办（只报不拦）' : '✘ 未通过（红）')}</td>`
       + `<td>${nb ? '<span class="tag warn">只报不拦</span>' : '<span class="tag">阻断</span>'}</td></tr>`
   })
-  const nonBlocking = d.gate.checks.filter((c) => NON_BLOCKING_RULES.has(c.rule)).map((c) => c.rule)
+  const nonBlocking = d.gate.checks.filter((c) => c.nonBlocking === true).map((c) => c.rule)
   return `<div class="card"><div class="card-h">${esc(d.gate.checks.length)} 条规则；green ${esc(d.gate.summary.green)} / 规则数 ${esc(d.gate.summary.rules)}</div>`
     + `<div class="note">口径：<code>evaluated</code> 是"这条规则判了多少条"（各侧独立计数之和，例如 CT5 的 156 = invoke 61 + handle 61 + send 10 + on 17 + push 7）。`
     + `标「只报不拦」的规则 <code>${nonBlocking.map((r) => esc(r)).join(' / ') || '—'}</code>：它们 <code>passed=false</code> 表示"确实有东西"，但<b>不影响退出码</b>。`

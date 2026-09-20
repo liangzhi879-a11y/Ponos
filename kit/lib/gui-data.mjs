@@ -20,6 +20,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { AGENT_GUIDE } from './agent-guide.mjs'
+import { NON_BLOCKING_RULES } from './report.mjs'
 
 /** 台账文件（只读；路径拼 root，便于夹具注入临时目录） */
 const VERSIONS_FILE = 'kit/manifest/versions.json'
@@ -242,6 +243,9 @@ function buildGate(checkJson, findings) {
       ? checkJson.checks.map((c) => ({
         rule: c.rule ?? null, title: c.title ?? null,
         evaluated: Number(c.evaluated) || 0, passed: c.passed !== false,
+        // ★ 由**真源**（report.mjs 的 NON_BLOCKING_RULES）判定，渲染层不再自己判断 ——
+        //   否则每个渲染端各写一份名单，P5/P6 这种"也发黄灯"的规则迟早被漏标成「阻断」。
+        nonBlocking: NON_BLOCKING_RULES.has(c.rule),
       }))
       : [],
   }
