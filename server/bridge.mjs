@@ -105,6 +105,8 @@ import { loadTeamConfig } from '../kernel/team-store.mjs'
 import { sanitizeWorkspaceId } from '../shared/attribution.mjs'
 import { MANAGED_KEYS, providerProfileEnv, buildIdentityPrompt, activeProviderModel, resolveProviderProfile } from './provider-profile.mjs'
 import { probeProviderCapabilities, applyProbeResults, resolveWindowFromProbe, maybeAdoptWindowFromEvent } from './provider-probe.mjs'
+// 会话标题生成的服务端实现（2026-09-18）：见 /generate-title 路由与 server/title-gen.mjs 的说明
+import { requestTitleText } from './title-gen.mjs'
 
 const PORT = parseInt(process.env.YFW_BRIDGE_PORT || '51517', 10)
 // 【S2-D1（2026-09-16）】桥只绑回环地址。原先 `httpServer.listen(PORT)` 未指定 host ⇒ 同时对
@@ -924,6 +926,20 @@ function bootstrapKernelToUserDir(kernel) {
   }
 }
 
+// 启动预热状态（2026-09-11 真实 boot 进度）：各模块真实完成后置位——main 轮询
+// /boot-status 转发给 BootScreen 渲染真实步骤，全部就绪才交棒进入主界面。
+// ⚠️ 声明位置必须在 `const YFWORKING = findYFWorking()` **之前**：findYFWorking 里
+// 会写 `bootState.kernelBootstrapped = true`，而模块级 const 求值顺序即书写顺序，
+// 放在后面就是 TDZ —— 那句赋值会抛 ReferenceError，又被同处 `catch {}` 静默吞掉，
+// 表现为"内核自举"步骤永远红、/boot-status 的 ready 永远不成立（2026-09-18 修复，
+// 此前长期如此；门禁见 server/boot-state-order.test.mjs）。
+const bootState = {
+  kernelBootstrapped: false,  // 内核自举缓存同步完成（findYFWorking 路径）
+  samplesInstalled: false,    // 内置示例技能安装完成
+  workflowsInstalled: false,  // 内置工作流（spec-dev）安装完成
+  probeDone: false,           // 活跃供应商实测探测完成（含欠费检测）
+}
+
 function findYFWorking() {
   // NOTE: 必须 spawn 本库 ponos 内核（kernel/ 源码或 kernel-dist bundle，node
   // 直跑）——NOT npm-global yfworking.cmd（那是 GUI launcher：会起 bridge+vite+
@@ -947,8 +963,15 @@ function findYFWorking() {
   //    YFWORKING_HOME）随启动同步（D3），install 缺失时作兜底（3）。
   const rp = resolveKernelPaths({ appDir: join(__dirname, '..') })
   if (rp.install.kernel) {
-    // 缓存同步失败不阻断：install 候选仍可直接 spawn（node 读 cli.mjs 无 EPERM）
-    try { bootstrapKernelToUserDir(rp.install.kernel); bootState.kernelBootstrapped = true } catch { }
+    // 缓存同步失败不阻断：install 候选仍可直接 spawn（node 读 cli.mjs 无 EPERM）。
+    // 但**必须留痕**——此前这里是空 catch，把 TDZ ReferenceError 一起吞了，导致
+    // "内核自举"步骤长期显示失败却查不出原因（2026-09-18 修复）：任何失败都打一行。
+    try {
+      bootstrapKernelToUserDir(rp.install.kernel)
+      bootState.kernelBootstrapped = true
+    } catch (e) {
+      console.warn('[bridge] kernel bootstrap to home failed:', e?.message ?? e)
+    }
     return `"${node}" "${rp.install.kernel}"`
   }
   // 3) 罕见兜底：安装/源码路径消失但 home 缓存仍在（升级/卸载残留）→ 直接用缓存
@@ -1033,14 +1056,7 @@ function workflowHost() {
   return _wfHost
 }
 
-// 启动预热状态（2026-09-11 真实 boot 进度）：各模块真实完成后置位——main 轮询
-// /boot-status 转发给 BootScreen 渲染真实步骤，全部就绪才交棒进入主界面。
-const bootState = {
-  kernelBootstrapped: false,  // 内核自举缓存同步完成（findYFWorking 路径）
-  samplesInstalled: false,    // 内置示例技能安装完成
-  workflowsInstalled: false,  // 内置工作流（spec-dev）安装完成
-  probeDone: false,           // 活跃供应商实测探测完成（含欠费检测）
-}
+// 启动预热状态声明已上移至 findYFWorking 之前（TDZ 修复，2026-09-18；见该处注释）
 
 // 登录 token 占位表（token -> expiry）已随登录/登出端点迁至 server/auth-routes.mjs
 // —— 状态跟着它的唯一使用者走，比留在桥里再按引用注入更不易出错。
@@ -1049,6 +1065,31 @@ const bootState = {
 // 恒定——GUI 用它区分"重连到同一桥"（瞬时闪断，无需动作）与"换了个新桥"
 // （旧会话已随旧桥消亡，需静默自动续接）。
 const BRIDGE_INSTANCE_ID = randomBytes(12).toString('hex')
+
+// ── /app-info（P3，2026-09-18）：桥身份/落点 + AI 引擎实跑版本 ──────────────
+// `APP_META` 是**静态**身份（进程存续期不变，故启动时算一次）；
+// `kernelRuntime` 是**活状态**——每收到一次内核 system/init 帧就就地改写，供
+// host-routes **每次请求现读**（若在模块级缓存成快照，界面上的"实跑版本"会静静过期）。
+// kernelSource 四态：env（YFWORKING_KERNEL 指定）/ install（<app>/kernel 或 resources/kernel）
+// / cache（home 自举缓存）/ none。解析优先级必须与 findYFWorking() 一致——
+// 否则界面显示的"内核落点"不是真正在跑的那个（本端点唯一的卖点就是"现在真在跑什么"）。
+const APP_META = (() => {
+  const base = { port: PORT, instanceId: BRIDGE_INSTANCE_ID, home: YFW_HOME }
+  try {
+    const envKernel = process.env.YFWORKING_KERNEL
+    if (envKernel) return { ...base, kernelPath: envKernel, kernelSource: 'env' }
+    const rp = resolveKernelPaths({ appDir: join(__dirname, '..') })
+    return {
+      ...base,
+      kernelPath: rp.kernel || '',
+      kernelSource: rp.install.kernel ? 'install' : (rp.kernel ? 'cache' : 'none'),
+    }
+  } catch {
+    // 落点解析失败不该让桥起不来（本信息纯粹是"给人看"），如实降级为 none
+    return { ...base, kernelPath: '', kernelSource: 'none' }
+  }
+})()
+let kernelRuntime = null
 
 // 诊断埋点：供主进程 diag-monitor 查询（只读内存统计，跨会话累计，仅统计最近 7 天）
 const diagInfo = { firstTokenOk: 0, firstTokenTotal: 0, kernelCrashCount: 0, lastApiSuccessAt: null }
@@ -1565,7 +1606,7 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     // 思考后提前 end_turn（注入时 225 tokens 截断 / 移除后 3923 chars 完整）。
     if (injectCfg.enabled && mode === 'task') {
       resumePrompt += buildSedimentPrompt()
-      resumePrompt += buildExperienceIndex(injectCfg.maxBytes)
+      // S4.5① 去重：移除 buildExperienceIndex 调用（注入已由内核侧 buildMemoryIndex 统一提供）
     }
     const resumePromptFile = join(tmpdir(), 'yfw-prompt-' + sid.replace(/[^\w-]/g, '_') + '.resume.txt')
     promptFile = resumePromptFile
@@ -1603,7 +1644,7 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     // 纯聊会话本就不应沉淀经验，chat 跳过语义无损。
     if (injectCfg.enabled && mode === 'task') {
       effectivePrompt += buildSedimentPrompt()      // 沉积引导仅新会话注入
-      effectivePrompt += buildExperienceIndex(injectCfg.maxBytes)
+      // S4.5① 去重：移除 buildExperienceIndex 调用（注入已由内核侧 buildMemoryIndex 统一提供）
     }
     // 写入临时文件传入（--append-system-prompt-file）：提示词/经验文本可能很长，
     // 命令行直接传会超 cmd.exe 8191 字符限制导致 spawn 失败；文件方式还保留换行，格式示例更清晰。
@@ -1753,6 +1794,22 @@ function getOrCreateSession(sid, cwd, resumeId, systemPrompt, model, compactCoun
     //   realign  → 内核认账了 spawn 档，只是窗口内切过档 ⇒ 不告警，登记待补热切 + 补广播
     //   unknown  → 回显缺失（更老的内核无该字段），无从判断，不动作
     if (parsed && parsed.type === 'system' && parsed.subtype === 'init') {
+      // 记录内核自报身份（/app-info 的"AI 引擎实跑版本"唯一来源，2026-09-18 P3）：
+      // init 帧带 version（KERNEL_VERSION）/ buildId / model / capacity / skills / workflows /
+      // provider。为什么要记这个而不用源码常量：**运行中的内核未必来自当前源码树**
+      //（home 自举缓存 kernelSource='cache'、或打包版 resources/kernel bundle），
+      // 只有内核自己回显的版本才是"现在真正在跑的那个"。只留最近一次（每次 spawn 覆盖）。
+      kernelRuntime = {
+        version: parsed.version || '',
+        buildId: parsed.buildId || '',
+        model: parsed.model || '',
+        providerVersion: parsed.provider?.version || '',
+        skills: Number(parsed.skills) || 0,
+        workflows: Number(parsed.workflows) || 0,
+        capacity: Number(parsed.capacity) || 0,
+        sessionId: sid,
+        at: Date.now(),
+      }
       const echoed = parsed.approval_mode
       const spawnMode = session._spawnApprovalMode
       const liveMode = effectiveApprovalMode(sid)
@@ -2243,6 +2300,8 @@ const httpServer = createServer(async (req, res) => {
       const r = await handleHostRoute({
         method: req.method, pathname: url.pathname, searchParams: url.searchParams,
         body: hostBody, sep, diagInfo, sessions, bootState, createTranscriptHandlers,
+        // /app-info 的三个注入点：静态身份 + 两个**按引用**传的活状态（内核自报、WS 客户端）
+        appMeta: APP_META, kernelRuntime, wsClients,
       })
       if (r) return reply(r.status, { 'Content-Type': 'application/json' }, JSON.stringify(r.body))
     }
@@ -2445,6 +2504,45 @@ const httpServer = createServer(async (req, res) => {
         }
       }
       return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, reachable: false, error: lastErr }))
+    }
+
+    // 会话/任务标题生成（2026-09-18）：渲染层把"要发给模型的提示词"交过来，桥**直连 provider**
+    // 取回原文，渲染层再做清洗与截断。
+    // 为什么必须经桥（而不是渲染层直接 fetch，之前就是这么做的，效果一直不好）：
+    //   · 打包后页面 origin 是 file://（未开 webSecurity:false），Chromium 对不透明源的跨域请求
+    //     规则很脆，失败方式是 fetch reject → 被 .catch 吞掉 → 标题永远停留在"首句截断"；
+    //   · 基址约定不一致（用户常带 /v1）会拼出 /v1/v1 → 404，见 server/title-gen.mjs 的说明；
+    //   · 密钥本来就在磁盘 config 里，没必要下发到渲染层去发这个请求。
+    // 契约很薄：只做"发出去、带回来"，文本策略（prompt/清洗/截断）留在 src/lib/titleGen.ts，
+    // 免得两处各存一份规则。**不记录 prompt 与模型输出**（会话内容属隐私）。
+    if (url.pathname === '/generate-title' && req.method === 'POST') {
+      const body = await readJsonBody(req)
+      const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : ''
+      if (!prompt) return reply(400, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: 'prompt required' }))
+      const cfg = loadConfig()
+      const list = Array.isArray(cfg.providers) ? cfg.providers : []
+      // 供应商解析与既有探测/校验路径同口径：指定 id → 活动 → 第一个
+      const provider = (body.providerId ? list.find(p => p.id === body.providerId) : null)
+        || list.find(p => p.id === cfg.activeProvider) || list[0]
+      if (!provider) return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({ ok: false, error: 'no provider configured', tried: [] }))
+      // 模型口径与服务端 activeProviderModel 一致（primaryModel || models[0]）——
+      // 早先渲染层用的是 `subagentModel || primaryModel`，把"给子代理用的弱模型"排在了前面。
+      const model = provider.primaryModel
+        || (Array.isArray(provider.models) ? provider.models[0] : '')
+        || ''
+      const r = await requestTitleText({
+        baseUrl: provider.apiBaseUrl,
+        authToken: provider.authToken,
+        model,
+        prompt,
+        log: (m) => { try { console.log(m) } catch { /* stdout 关闭时忽略 */ } },
+      })
+      return reply(200, { 'Content-Type': 'application/json' }, JSON.stringify({
+        ok: r.ok, text: r.text || '', error: r.error || null,
+        endpoint: r.endpoint || null, providerId: provider.id,
+        // tried 只在失败时回给界面用于排障（成功时不含端点细节，避免无谓噪音）
+        tried: r.ok ? undefined : r.tried,
+      }))
     }
 
     // API 能力探测 + 自动回填（2026-09-09）：provider 保存/激活后由 GUI 异步触发。
