@@ -57,5 +57,6 @@ err
 
 # DevKit GUI 报告（生成物，不入仓）：重跑 `npm run kit:gui` 可随时再生
 # 为什么不入库：它是**同一份真源**（kit/manifest/*.json + check/view 的 JSON 出口）的渲染结果，
-# 入库只会让"数据变了但报告没重生成"变成一种假红；且单文件 HTML 数 MB，diff 无意义。
+# 入库只会让"数据变了但报告没重生成"变成一种假红；且这份 HTML 内联了全部数据与样式
+# （实测约 116 KB / 单文件），diff 无意义。
 /kit-report.html

@@ -359,6 +359,7 @@ code{font-family:var(--mono);background:var(--tag);padding:1px 5px;border-radius
 .chip.ok{color:var(--green);border-color:var(--green)}
 .chip.warn{color:var(--yellow);border-color:var(--yellow)}
 .chip.base{color:var(--base);border-color:var(--base)}
+.topnote{margin-left:auto;font-size:12px;color:var(--muted)}
 .wrap{display:flex;align-items:flex-start}
 .side{position:sticky;top:52px;flex:0 0 168px;padding:14px 10px;border-right:1px solid var(--line);min-height:calc(100vh - 52px)}
 .side a{display:block;padding:4px 8px;border-radius:6px;text-decoration:none;font-size:13px;color:var(--muted)}
@@ -483,6 +484,8 @@ export function renderGuiHtml(data) {
     + `<span class="chip base">基线 ${esc(summary.baselined ?? 0)}</span>`
     + `<span class="chip">green ${esc(summary.green ?? 0)} / rules ${esc(summary.rules ?? 0)}</span>`
     + `<span class="chip">生成 ${esc(d.generatedAt ?? '—')}</span>`
+    // 页顶显式指路：本页的数据与 agent 读的是**同一份真源**（否则人看页面、agent 看文本，两份规范会漂移）
+    + `<span class="note topnote">本页数据即 agent 读取的同一份真源 ⇒ 可跑 <code>node kit/gui.mjs --agent</code> 打印纯文本</span>`
     + `</header>`
   const body = `<div class="wrap"><nav class="side">${nav}</nav><main>`
     + `<section id="overview"><h2>概览</h2>${renderOverview(d)}</section>`
