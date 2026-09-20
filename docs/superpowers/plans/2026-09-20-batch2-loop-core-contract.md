@@ -1,13 +1,15 @@
-# 注入总账 + 循环体契约（S1+ → S2 → S3）实施计划
+# B1 循环体契约实施计划（批 2：S2 + S3 + S3.5）
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 先把"注入账"建起来（S1+，纯增量、零行为变更），再把主循环与子 lane 的守卫序收敛为一份共享循环体契约（S2/S3，等价重构），使后续模式/方法论/注入总线的改动有测量面与统一落点。
+**Goal:** 把主循环与子 lane 的守卫序收敛为一份共享循环体契约，并把散在 12 处的指令注入收敛到一条注入总线——**全部是零行为变更的等价重构**，作为后续模式/方法论等行为变更的地基。
 
-**Architecture:** 三步走，每步独立可交付、可回滚：
-1. **S1+**：新增注入总账（`inject_snapshot` → `appendMeta`），与只读分段计量；**不改任何注入内容与提示词**。
-2. **S2**：新建 `kernel/loop-core.mjs`，把主循环的守卫序抽成**参数化 profile**（`iterHead`/`inStream`/`afterStream` 三段），并由 `ctx.emitInjection(text, {persist, event})` 承载全部自愈注入——**零行为变更**。
-3. **S3**：lane 复用同一 `runOnce`，传"简化档" profile（无 health/锚点/完整压缩）。
+**Architecture:** 三部分，**独立交付、独立回滚**（批次划分见主 spec §12.1，及评估报告 §3.2 的"切香肠"建议）：
+1. **S2**：新建 `kernel/loop-core.mjs` + `kernel/loop-profile.mjs`，把主循环的守卫序抽成**参数化 profile**（`iterHead`/`inStream`/`afterStream` 三段），并由 `ctx.emitInjection(text, {persist, event})` 承载**随守卫一起搬迁的**自愈注入——**零行为变更**。
+2. **S3**：lane 复用同一守卫实现，传"简化档" profile（无 health/锚点/完整压缩；~300–350 行共享，~250 行刻意差异保留）。
+3. **S3.5**：新建 `kernel/inject-bus.mjs`，把**剩余注入点**（主循环未搬迁的 + lane 3 处 + 协议回填 2 处 + 轮载荷 1 处）改走同一出口，并**此时才**引入 `priority`/`budgetBytes`/`kind`/`phase`。
+
+> **为什么 S2/S3 与 S3.5 合成一批交付**：三者都是"等价重构"，共用同一套回归锁（L1/L2/L3/L4）与同一份评审输入；且 S3.5 依赖 S2 建立的出口。批 1（S1/S1+/S4.5）是纯增量与纯删减，与本批**无依赖**，故独立成计划（见 `2026-09-20-batch1-observable-and-experience-dedup.md`）。
 
 **Tech Stack:** Node.js ESM（`.mjs`）、`node:test` + `node:assert/strict`、现有 `createEngine`/`createSessionStore`/`createCompactor`、`npm run test:kernel`。
 
@@ -15,39 +17,40 @@
 
 以下为项目级硬约束，**每个任务的要求都隐含包含本节**；数值与措辞逐字来自 spec，不得改写：
 
-- **B1 冻结面**：`ctx.emitInjection(text, { persist, event })` —— **只冻结这三项**。`priority`/`budgetBytes`/`kind`/`phase` 由 **S3.5** 才引入（本计划不涉及 S3.5）。
+- **B1 冻结面**：S2/S3 阶段 `ctx.emitInjection(text, { persist, event })` —— **只冻结这三项**。`priority`/`budgetBytes`/`kind`/`phase` **由 S3.5（Task 7）才引入**；S2 阶段 `emitInjection` **必须拒绝**这四个字段并抛错（Task 1 的测试断言了这一点，**Task 7 须同步更新该断言**）。
 - **命名纪律**：唯一出口为 **`ctx.emitInjection`**。**不得**命名为 `ctx.inject`（与 `LoopProfile.inject` 字段语义冲突）。
-- **零行为变更**：S2/S3 是**等价重构**。提示词字节、wire 事件序列、`turnToolDigest`、`turnStats`、守卫触发时机与文案**全部不变**。发现的 bug **另开 issue，不在本计划内顺手修**。
-- **只读长度，不重组**：分段计量**只取长度**，**不得把提示词拆成"可重排的块"**。
-- **不删既有字段**：`metrics.json` 的既有 `inject` / `search` 段**只增不删**（sidecar 形状不变）。
-- **口径**：S1+ **不改** `build` 预算口径——字符→字节的换算归 **S4.5**，本计划不做。
-- **守卫计数器语义**：切换/搬迁**不清零** `errorStreak`/`repeatStreak`/`stallHeals`/`attemptMaxTokens`（防"守卫预算重置"被反复利用规避熔断）。
-- **回归锁**：L1 现有测试全绿且**数量不变**；L2 守卫命中用例（文案/事件/计数/收尾时机逐一不变）；L3 mock 会话回放（digest/turnStats/wire 序列一致）；**L4a 同相位断言（S3.5 才有意义）/ L4b 双重等价留待 S3.5**。
+- **零行为变更**：S2/S3/S3.5 全是**等价重构**。提示词字节、wire 事件序列、`turnToolDigest`、`turnStats`、守卫触发时机与文案**全部不变**。发现的 bug **另开 issue，不在本计划内顺手修**。
+- **S3.5 的"不做什么"（逐字取自注入 spec §4.1）**：**只做等价搬移**；**不补事件**（4 处 `event: null` **如实保留**——补事件是行为变更）；**不统一 lane 与主循环的注入语义**（"刻意不同的 250 行"须保持：lane 不注册锚点渲染器、`pendingNext`/`inbox` 仍走 profile 开关）。
+- **`withAnchorTail` 相位**：注册为 `beforeRequest` 相位的 **`derived`** 渲染器（纯派生，不改 `requestFace` 缓存对象）。⚠️ 实施前先 Read 核实行号。
+- **守卫计数器语义**：搬迁**不清零** `errorStreak`/`repeatStreak`/`stallHeals`/`attemptMaxTokens`（防"守卫预算重置"被反复利用规避熔断）。**计数清零规则按原实现照搬**，不得"顺手统一"。
+- **回归锁**：L1 现有测试全绿且**数量不变**；L2 守卫命中用例（文案/事件/计数/收尾时机逐一不变）；L3 mock 会话回放（digest/turnStats/wire 序列一致）；**L4 双重等价**（注入**文本 + wire 事件序列**）**并加 `PONOS_LOOP_GUARD=0` 对照组**（Task 7 落地）。
 - **文件暂存纪律**：**禁止 `git add -A`**（常态数十项他人在途改动）。按文件精确 `git add <path>`。
 - **既有验证器契约**（改动后必须仍绿）：
-  - `npm run verify:experience-inject` —— 断言 `bridge.buildExperienceIndex(4096)` 存在且 `buildSedimentPrompt` 含"经验沉淀"（**经验注入已从全量迁移为索引**）。
+  - `npm run verify:experience-inject` —— 断言 `buildExperienceIndex(4096)` 存在且 `buildSedimentPrompt` 含"经验沉淀"（**经验注入已从全量迁移为索引**；本批**不动**它）。
   - `npm run verify:milestones-start` —— 断言 `extractMilestoneMarks`（`server/milestones.mjs`）**仅解析**。
 
 ### 交付前门禁（每条都不能省）
 
 ```bash
-npm run test:kernel                                     # 212 个内核测试全绿
+npm run test:kernel                                     # 内核测试全绿（实测基线 210 个 .test.mjs 文件，不得减少）
 npm run kit:check                                       # 红 0（EXIT=0）
 node --test --test-timeout=120000 "kit/**/*.test.mjs"    # ★ 引号必须有，否则静默漏测
 npm run verify:ci                                       # EXIT=0
 npm run verify:experience-inject                        # 经验注入契约未破
+npm run verify:milestones-start                         # milestone 解析契约未破
 ```
 
 > ★ 引号不是风格问题：不加引号时 shell 把 `**` 当单个 `*` ⇒ **静默漏掉** `kit/cli.test.mjs` 与 `kit/gui.test.mjs`。
 
 ## 范围与非范围
 
-**本计划实现**：`S1+`（O4 注入总账）、`S2`（B1 契约与守卫序参数化）、`S3`（lane 复用）。
+**本计划实现**：`S2`（B1 契约与守卫序参数化）、`S3`（lane 复用）、**`S3.5`（注入总线抽取）**。
 
 **明确不在本计划**：
-- `S1`（O1 `turnToolDigest.size` / O2 `turnStats.guard`）—— 独立纯增量，可并行另做；其中 **O3（模式 meta）阻塞于 S4**（模式尚不存在）。本计划**不实现**，但 Task 1 的分段计量会复用同一 `appendMeta` 通道，不冲突。
-- `S3.5`（`kernel/inject-bus.mjs` 抽取 + 12 处注入改走出口 + `priority`/`budgetBytes`/`kind`/`phase`）—— Q1 决定：**B1 先立出口并冻结三项**，S3.5 才做总线与注册。
-- `S4`–`S9.5`（模式、方法论下沉、三层化）—— 待 S3 后评审。
+- `S1` / `S1+` / `S4.5`（观测层 O1–O4 + 经验去重）—— 属**批 1**，见 `2026-09-20-batch1-observable-and-experience-dedup.md`。本批与之**无依赖**，可并行。
+  - 唯一交界面：Task 7 的 L4 等价锁会用到 O2 的 `turnStats.guard`（若批 1 尚未落地，则 Task 7 用**本地计数**替代，并在评审时说明）。
+- `S4`–`S11`（模式、方法论下沉、三层化）—— 行为变更，待 B1 交付并评审后另立计划。
+- **不修任何既有 bug**（搬迁中发现的一律记录到 `docs/superpowers/audits/` 或 issue）。
 
 ### Q1 接口冻结的解读（务必按此实现，避免与 spec 打架）
 
@@ -55,336 +58,45 @@ spec 有两处表述需要统一理解：
 - 注入 spec §9 Q1(a)：**B1 搬迁时即以 `ctx.emitInjection(text, { persist, event })` 为唯一注入出口**。
 - 主 spec §12.1 S3.5 行：**"12 处指令注入改走 `ctx.emitInjection`"**。
 
-**本计划的统一解读**（已与 spec 的"B1 冻结面最小化"一致）：
+**本计划的统一解读**（与 spec 的"B1 冻结面最小化"一致）：
 
 | 阶段 | 做什么 |
 |---|---|
-| **B1（Task 2–7）** | 在 `loop-core.mjs` 内**建立出口**，并把**随守卫逻辑一起搬迁进 loop-core 的注入调用**改走该出口（等价）。**不改**未搬迁的注入点，**不建总线模块**，**不引入**三个扩展字段。 |
-| **S3.5（不在本计划）** | 新建 `inject-bus.mjs`、注册渲染器（含 `withAnchorTail` 作 `beforeRequest` 相位 `derived` 渲染器）、引入 `priority`/`budgetBytes`/`kind`/`phase`、把**剩余注入点**改走出口。 |
+| **S2/S3（Task 1–6）** | 在 `loop-core.mjs` 内**建立出口**，并把**随守卫逻辑一起搬迁进 loop-core 的注入调用**改走该出口（等价）。**不改**未搬迁的注入点，**不建总线模块**，**不引入**四个扩展字段（且 `emitInjection` 明确拒绝它们）。 |
+| **S3.5（Task 7）** | 新建 `kernel/inject-bus.mjs`、注册渲染器（含 `withAnchorTail` 作 `beforeRequest` 相位 `derived` 渲染器）、引入 `priority`/`budgetBytes`/`kind`/`phase`、把**剩余注入点**改走出口。 |
 
 **净效果**：S3.5 的"改 12 个点"退化为"换实现 + 加注册"，正是 Q1 的意图。
+
+**剩余注入点清单（Task 7 的对象，逐处核实自注入 spec §2.4）**：
+
+| # | 位置 | 数量 |
+|---|---|---|
+| 1 | 主循环未随守卫搬迁的注入点 | 9 − 已搬迁数 |
+| 2 | 子 lane 注入 | 3（`engine.mjs:1731`/`:1763`/`:1776` 附近） |
+| 3 | 协议回填 | 2（`engine.mjs:927`/`:1073` 附近） |
+| 4 | 轮载荷 | 1（`engine.mjs:2336` `queueNext`） |
+
+> ⚠️ 上表行号来自注入 spec §2.4，**Task 7 Step 1 必须重新核实**（本批前面的搬迁会移动行号）。
 
 ## File Structure
 
 | 文件 | 职责 | 动作 |
 |---|---|---|
-| `kernel/loop-core.mjs` | **新建**。循环体契约：`runOnce(state, ctx)` / `shouldStop(state, ctx)` / `resolveGuards(profile, phase)` / `emitInjection(ctx, text, meta)`。**不引用 engine 闭包**（依赖全走 `ctx`）。 | 新建 |
-| `kernel/loop-profile.mjs` | **新建**。`LoopProfile` 定义与校验：`MAIN_PROFILE` / `LANE_PROFILE` / `validateProfile()`。纯数据 + 纯函数。 | 新建 |
-| `kernel/inject-ledger.mjs` | **新建**。注入总账：`summarizeInjection(snapshot)` → 规范化记录；`buildSegmentMeters(...)` → 只读分段计量。纯函数，无 IO。 | 新建 |
-| `kernel/cli.mjs` | 轮边界挂总账：每轮 `appendMeta('inject_snapshot', ...)`。 | 修改（小） |
-| `kernel/knowledge-inject.mjs` | `getInjectStats()` 增加只读计量字段（**只增不删**）。 | 修改（小） |
-| `kernel/engine.mjs` | 主循环改由 `runOnce` + `MAIN_PROFILE` 驱动（等价搬移）；lane 改由同一 `runOnce` + `LANE_PROFILE` 驱动。 | 修改（大、分 3 次提交） |
+| `kernel/loop-core.mjs` | **新建**。循环体契约：守卫实现 `runIterHeadGuards`/`runInStreamGuards`/`runAfterStreamGuards`、`emitInjection(ctx, text, meta)`（唯一出口）、`runOnce`/`shouldStop`。**不引用 engine 闭包**（依赖全走 `ctx`）。 | 新建 |
+| `kernel/loop-profile.mjs` | **新建**。`LoopProfile` 定义与校验：`MAIN_PROFILE` / `LANE_PROFILE` / `validateProfile()` / `resolveGuards()`。纯数据 + 纯函数。 | 新建 |
+| `kernel/inject-bus.mjs` | **新建（Task 7 / S3.5）**。注入总线：3 相位 `beforeIter`/`inStream`/`beforeRequest`；class 二分 `protocol`/`directive`；渲染器注册位。纯函数。 | 新建 |
+| `kernel/engine.mjs` | 主循环改由守卫契约 + `MAIN_PROFILE` 驱动（等价搬移，分 3 次提交）；lane 改由同一实现 + `LANE_PROFILE` 驱动；剩余注入点改走总线。 | 修改（大） |
 | `kernel-tests/loop-core-contract.test.mjs` | **新建**。契约单元测试（纯函数、不需要 mock API）。 | 新建 |
-| `kernel-tests/loop-guard-order-equivalence.test.mjs` | **新建**。L2 守卫序等价锁。 | 新建 |
-| `kernel-tests/inject-ledger.test.mjs` | **新建**。总账与分段计量单测。 | 新建 |
+| `kernel-tests/loop-guard-order-equivalence.test.mjs` | **新建**。L2/L4 守卫序与注入等价锁。 | 新建 |
+| `kernel-tests/loop-lane-profile.test.mjs` | **新建**。lane 刻意差异钉成契约。 | 新建 |
+| `kernel-tests/inject-bus.test.mjs` | **新建（Task 7）**。总线相位/class/渲染器注册单测。 | 新建 |
+| `kernel-tests/fixtures/*.golden.json` | **新建**。L2/L3/L4 的 golden 基线（**重构前录制**，必须提交）。 | 新建 |
 
-**新建文件的边界理由**：`loop-core` 只做"一轮迭代怎么跑"，`loop-profile` 只做"参数长什么样/是否合法"，`inject-ledger` 只做"怎么记账"。三者互不依赖对方内部，各自可单测。
-
----
-
-## Task 1: S1+ —— 注入总账（O4）与只读分段计量
-
-**Files:**
-- Create: `kernel/inject-ledger.mjs`
-- Modify: `kernel/knowledge-inject.mjs`（`getInjectStats` 返回值增字段，**只增不删**）
-- Modify: `kernel/cli.mjs`（轮边界 `appendMeta('inject_snapshot', ...)`）
-- Test: `kernel-tests/inject-ledger.test.mjs`
-
-**Interfaces:**
-- Consumes: `kernel/knowledge-inject.mjs` 的 `getInjectStats()` / `resetInjectStats()`（已存在）；`kernel/session.mjs` 的 `appendMeta`（已存在）。
-- Produces:
-  - `summarizeInjection({ turn, seq, segments, channels, ts }) → object`（规范化记录，供 `appendMeta`）
-  - `buildSegmentMeters({ systemPromptBytes, toolSchemaBytes, skillBytes, injectedBytes }) → Array<{ id, bytes }>`
-  - `ledgerTotals(records) → { totalBytes, bySegment: Record<string, number>, byChannel: Record<string, number> }`
-
-### 背景（实现者必读）
-
-spec 已核实：注入散在 **12 处**、留痕不齐（`guard_heal` 全文仅 5 处；`:949`/`:965`/`:973`/`:1105` 四处注入无留痕）、**注入无账**。本任务的产出是**账**，不是改注入行为。
-
-**硬要求（逐字来自 spec O4）**：
-1. 每轮 `appendMeta('inject_snapshot', ...)`，含**分段计量**与**渠道记账**（legacy / unified 各记 calls / hits / injectedChars）。
-2. 计量**只取长度**，**不得重排提示词**。
-3. **不删** `metrics.json` 既有 `inject`/`search` 段，sidecar 形状不变。
-4. **不改** `build` 预算口径（字符→字节归 S4.5）。
-
-- [ ] **Step 1: 先核实落点（只读，5 分钟）**
-
-```bash
-cd /c/Users/T203-15/yfworking
-# ① 现有注入计量入口
-grep -n "getInjectStats\|resetInjectStats\|persistMetrics" kernel/knowledge-inject.mjs
-# ② cli.mjs 里轮边界与 appendMeta 用法
-grep -n "onTurnEnd\|appendMeta" kernel/cli.mjs | head -20
-# ③ 确认 sidecar 现有段名（不得改名/删除）
-grep -n "inject\|search" kernel/knowledge-inject.mjs | head -20
-```
-
-Expected: 找到 `getInjectStats`/`resetInjectStats` 定义、`cli.mjs` 的 `appendMeta` 调用点、sidecar 段名。**记下实际行号**——本任务后续步骤引用的行号若与实测不符，以实测为准。
-
-- [ ] **Step 2: 写失败测试**
-
-`kernel-tests/inject-ledger.test.mjs`：
-
-```js
-// 注入总账（S1+ / O4）：只读计量 + 渠道记账，不改注入行为
-import { test } from 'node:test'
-import assert from 'node:assert/strict'
-import {
-  summarizeInjection, buildSegmentMeters, ledgerTotals,
-} from '../kernel/inject-ledger.mjs'
-
-test('buildSegmentMeters 只取长度，输出固定段序', () => {
-  const meters = buildSegmentMeters({
-    systemPromptBytes: 1200, toolSchemaBytes: 3400,
-    skillBytes: 900, injectedBytes: 150,
-  })
-  assert.deepEqual(meters, [
-    { id: 'systemPrompt', bytes: 1200 },
-    { id: 'toolSchema', bytes: 3400 },
-    { id: 'skill', bytes: 900 },
-    { id: 'injected', bytes: 150 },
-  ])
-})
-
-test('buildSegmentMeters 缺失输入按 0 计，不抛错', () => {
-  const meters = buildSegmentMeters({})
-  assert.deepEqual(meters.map((m) => m.bytes), [0, 0, 0, 0])
-})
-
-test('buildSegmentMeters 接受非负数字字符串（env 口径宽容）', () => {
-  const meters = buildSegmentMeters({ systemPromptBytes: '10' })
-  assert.equal(meters[0].bytes, 10)
-})
-
-test('summarizeInjection 规范化：渠道缺省为 null 而非 0（区分未用与用了 0 条）', () => {
-  const rec = summarizeInjection({ turn: 3, seq: 7, segments: [{ id: 'injected', bytes: 42 }] })
-  assert.equal(rec.turn, 3)
-  assert.equal(rec.seq, 7)
-  assert.equal(rec.legacy, null)
-  assert.equal(rec.unified, null)
-  assert.equal(rec.totalBytes, 42)
-})
-
-test('summarizeInjection 透传渠道计数（calls/hits/injectedChars）', () => {
-  const rec = summarizeInjection({
-    turn: 1, seq: 1, segments: [{ id: 'injected', bytes: 5 }],
-    channels: { legacy: { calls: 2, hits: 1, injectedChars: 300 } },
-  })
-  assert.deepEqual(rec.legacy, { calls: 2, hits: 1, injectedChars: 300 })
-  assert.equal(rec.unified, null)
-})
-
-test('ledgerTotals 汇总分段与渠道', () => {
-  const recs = [
-    summarizeInjection({ turn: 1, seq: 1, segments: [{ id: 'injected', bytes: 10 }, { id: 'skill', bytes: 5 }], channels: { legacy: { calls: 1, hits: 1, injectedChars: 10 } } }),
-    summarizeInjection({ turn: 2, seq: 2, segments: [{ id: 'injected', bytes: 20 }], channels: { legacy: { calls: 1, hits: 0, injectedChars: 0 } } }),
-  ]
-  const t = ledgerTotals(recs)
-  assert.equal(t.totalBytes, 35)
-  assert.equal(t.bySegment.injected, 30)
-  assert.equal(t.bySegment.skill, 5)
-  assert.equal(t.byChannel.legacy.calls, 2)
-  assert.equal(t.byChannel.legacy.hits, 1)
-})
-```
-
-- [ ] **Step 3: 运行测试确认失败**
-
-```bash
-node --test --test-timeout=120000 kernel-tests/inject-ledger.test.mjs
-```
-
-Expected: FAIL —— `Cannot find module '../kernel/inject-ledger.mjs'`。
-
-- [ ] **Step 4: 写最小实现**
-
-`kernel/inject-ledger.mjs`：
-
-```js
-// 注入总账（S1+ / O4）
-// ---------------------------------------------------------------------------
-// 目的：让每一次注入都有账——\"注了什么、占了多少、走的是哪条渠道\"。
-// 硬约束（spec O4）：
-//   ① 只取长度，不得重排提示词（本模块不持有提示词，只接收已算好的字节数）
-//   ② 不删 metrics.json 既有 inject/search 段（本模块不写 metrics.json）
-//   ③ 不改 build 预算口径（字符→字节换算归 S4.5）
-// 纯函数、无 IO：便于单测与复用。
-
-const SEGMENT_ORDER = ['systemPrompt', 'toolSchema', 'skill', 'injected']
-
-const SEGMENT_KEYS = {
-  systemPrompt: 'systemPromptBytes',
-  toolSchema: 'toolSchemaBytes',
-  skill: 'skillBytes',
-  injected: 'injectedBytes',
-}
-
-/** 非负整数化：缺失/非数字按 0（env 口径宽容，不抛错） */
-function n(v) {
-  const x = Number(v)
-  return Number.isFinite(x) && x > 0 ? Math.floor(x) : 0
-}
-
-/**
- * 只读分段计量。固定段序，缺失按 0。
- * @returns {Array<{id: string, bytes: number}>}
- */
-export function buildSegmentMeters(input) {
-  const src = input || {}
-  return SEGMENT_ORDER.map((id) => ({ id, bytes: n(src[SEGMENT_KEYS[id]]) }))
-}
-
-function normalizeChannel(ch) {
-  if (!ch || typeof ch !== 'object') return null
-  return {
-    calls: n(ch.calls),
-    hits: n(ch.hits),
-    injectedChars: n(ch.injectedChars),
-  }
-}
-
-/**
- * 规范化一条注入快照，供 appendMeta('inject_snapshot', ...) 使用。
- * 渠道缺省为 null（区分\"未走该渠道\"与\"走了但 0 命中\"）。
- */
-export function summarizeInjection({ turn, seq, segments, channels, ts } = {}) {
-  const segs = Array.isArray(segments) ? segments.map((s) => ({ id: String(s.id), bytes: n(s.bytes) })) : []
-  const ch = channels || {}
-  return {
-    turn: Number.isFinite(turn) ? Math.floor(turn) : null,
-    seq: Number.isFinite(seq) ? Math.floor(seq) : null,
-    ts: Number.isFinite(ts) ? Math.floor(ts) : Date.now(),
-    segments: segs,
-    totalBytes: segs.reduce((a, s) => a + s.bytes, 0),
-    legacy: normalizeChannel(ch.legacy),
-    unified: normalizeChannel(ch.unified),
-  }
-}
-
-/** 汇总多条快照（观察期统计用） */
-export function ledgerTotals(records) {
-  const bySegment = {}
-  const byChannel = {}
-  let totalBytes = 0
-  for (const rec of records || []) {
-    totalBytes += n(rec.totalBytes)
-    for (const s of rec.segments || []) bySegment[s.id] = (bySegment[s.id] || 0) + n(s.bytes)
-    for (const name of ['legacy', 'unified']) {
-      const c = rec[name]
-      if (!c) continue
-      byChannel[name] = byChannel[name] || { calls: 0, hits: 0, injectedChars: 0 }
-      byChannel[name].calls += c.calls
-      byChannel[name].hits += c.hits
-      byChannel[name].injectedChars += c.injectedChars
-    }
-  }
-  return { totalBytes, bySegment, byChannel }
-}
-```
-
-- [ ] **Step 5: 运行测试确认通过**
-
-```bash
-node --test --test-timeout=120000 kernel-tests/inject-ledger.test.mjs
-```
-
-Expected: PASS（6 个用例全绿）。
-
-- [ ] **Step 6: 接渠道记账到 knowledge-inject（只增不删）**
-
-在 `kernel/knowledge-inject.mjs` 的 `getInjectStats()` 返回值上**新增** `channels` 字段（保留全部既有字段）：
-
-```js
-// getInjectStats() 返回值新增（既有字段一个都不动）：
-//   channels: {
-//     legacy:  { calls, hits, injectedChars },   // 来自现有 graph.search 计数
-//     unified: { calls, hits, injectedChars },   // unified 路径从未启用时恒为 0
-//   }
-```
-
-**要求**：若现有实现里 legacy 的 calls/hits 已有变量，直接映射；`injectedChars` 若未统计，**新增累加但不改现有累加语义**。**不得**删除或改名任何既有字段。
-
-- [ ] **Step 7: 写"只增不删"守护测试**
-
-追加到 `kernel-tests/inject-ledger.test.mjs`：
-
-```js
-test('getInjectStats 保留既有字段且新增 channels（只增不删）', async () => {
-  const mod = await import('../kernel/knowledge-inject.mjs')
-  mod.resetInjectStats?.()
-  const s = mod.getInjectStats()
-  assert.equal(typeof s, 'object')
-  assert.ok('channels' in s, 'channels 字段应存在')
-  assert.ok(s.channels.legacy && s.channels.unified, 'legacy/unified 两条渠道都应存在')
-})
-```
-
-- [ ] **Step 8: 运行测试**
-
-```bash
-node --test --test-timeout=120000 kernel-tests/inject-ledger.test.mjs
-```
-
-Expected: PASS（7 个用例）。
-
-- [ ] **Step 9: 在 cli.mjs 轮边界落总账**
-
-在 `cli.mjs` 的轮边界处（`onTurnEnd` 或等价位置，Step 1 已定位实际行号）追加：
-
-```js
-// 注入总账（S1+ / O4）：每轮一条，只读计量
-try {
-  const stats = deps?.knowledge?.getInjectStats?.() || {}
-  const segments = buildSegmentMeters({
-    systemPromptBytes: stats.systemPromptBytes,
-    toolSchemaBytes: stats.toolSchemaBytes,
-    skillBytes: stats.skillBytes,
-    injectedBytes: stats.injectedChars,
-  })
-  session.appendMeta('inject_snapshot', summarizeInjection({
-    turn, seq: stats.seq, segments,
-    channels: { legacy: stats.channels?.legacy, unified: stats.channels?.unified },
-  }))
-} catch { /* 记账失败绝不影响主流程 */ }
-```
-
-**要点**：
-- `import { buildSegmentMeters, summarizeInjection } from './inject-ledger.mjs'`
-- **必须** `try/catch` 吞掉记账异常——**账不能影响主流程**。
-- `stats.*Bytes` 若上游暂无值，`buildSegmentMeters` 会按 0 计（不抛错）；**不要**为了填满而重组提示词（违反硬约束①）。
-
-- [ ] **Step 10: 跑核心门禁**
-
-```bash
-cd /c/Users/T203-15/yfworking
-npm run test:kernel
-```
-
-Expected: **212 个测试文件全绿，数量不得减少**（若计数变化，说明误删/误改了既有测试，必须回退）。
-
-```bash
-npm run verify:experience-inject && npm run verify:milestones-start
-```
-
-Expected: 两者 EXIT=0（本任务不动经验注入契约与 milestone 解析）。
-
-- [ ] **Step 11: 提交（按文件精确 add）**
-
-```bash
-cd /c/Users/T203-15/yfworking
-git add kernel/inject-ledger.mjs kernel-tests/inject-ledger.test.mjs kernel/knowledge-inject.mjs kernel/cli.mjs
-git commit -m "feat(inject): S1+ 注入总账（O4）—— 每轮 inject_snapshot + 只读分段计量
-
-- 新建 kernel/inject-ledger.mjs（纯函数）：summarizeInjection/buildSegmentMeters/ledgerTotals
-- knowledge-inject getInjectStats 增 channels（legacy/unified 各记 calls/hits/injectedChars），既有字段只增不删
-- cli.mjs 轮边界 appendMeta('inject_snapshot')，try/catch 吞异常（记账不影响主流程）
-- 硬约束：只取长度不重排提示词；不改 build 预算口径（字符→字节归 S4.5）；metrics.json 段名不变
-- 测试 7 例；2026-09-03 发现：注入散在 12 处且 4 处无留痕，本任务先立账不动行为"
-```
+**新建文件的边界理由**：`loop-core` 只做"一轮迭代怎么跑"，`loop-profile` 只做"参数长什么样/是否合法"，`inject-bus` 只做"注入怎么排队与渲染"。三者互不依赖对方内部，各自可单测。
 
 ---
 
-## Task 2: S2a —— `loop-core.mjs` 契约骨架与 `LoopProfile`
+## Task 1: S2a —— `loop-core.mjs` 契约骨架与 `LoopProfile`
 
 **Files:**
 - Create: `kernel/loop-profile.mjs`
@@ -403,7 +115,7 @@ git commit -m "feat(inject): S1+ 注入总账（O4）—— 每轮 inject_snapsh
 
 ### 背景（实现者必读）
 
-本任务**只建契约与纯函数**，**不碰 engine.mjs**。这样 Task 3–5 的搬移有稳定目标，且契约本身可独立单测。
+本任务**只建契约与纯函数**，**不碰 engine.mjs**。这样 Task 2–4 的搬移有稳定目标，且契约本身可独立单测。
 
 **守卫清单（已核实锚点，主循环 `kernel/engine.mjs`）**：
 
@@ -437,7 +149,7 @@ git commit -m "feat(inject): S1+ 注入总账（O4）—— 每轮 inject_snapsh
 
 > ★ 注意：守卫①的 env 变量是 **`PONOS_TURN_TIMEOUT_MS`**（不是 `WALL_CLOCK`），其 `reason` 是 **`'timeout'`**（不是 `'wall-clock'`）。守卫②**不发任何事件**。搬移时以实测为准。
 
-> **锚点是给你定位用的，不是契约**。开工第一步必须**重新核实行号**（Task 3 Step 1 给了命令）；行号漂移以实测为准。
+> **锚点是给你定位用的，不是契约**。开工第一步必须**重新核实行号**（Task 2 Step 1 给了命令）；行号漂移以实测为准。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -643,7 +355,7 @@ export function emitInjection(ctx, text, meta = {}) {
 
 /**
  * 一轮迭代的执行体（B1 骨架）。
- * Task 3-5 会把守卫逻辑搬进来；本任务只保证形状与\"不改 state\"的契约。
+ * Task 2-4 会把守卫逻辑搬进来；本任务只保证形状与\"不改 state\"的契约。
  * @param {object} state
  * @param {object} ctx
  * @returns {Promise<object>}
@@ -696,7 +408,7 @@ git commit -m "feat(loop): S2a 循环体契约骨架 —— LoopProfile + emitIn
 
 ---
 
-## Task 3: S2b —— `iterHead` 守卫序参数化（第一次搬移）
+## Task 2: S2b —— `iterHead` 守卫序参数化（第一次搬移）
 
 **Files:**
 - Modify: `kernel/engine.mjs`（`runTurnInternal` 的迭代头守卫，`:486-516` 附近）
@@ -704,10 +416,10 @@ git commit -m "feat(loop): S2a 循环体契约骨架 —— LoopProfile + emitIn
 - Test: `kernel-tests/loop-guard-order-equivalence.test.mjs`（新建）
 
 **Interfaces:**
-- Consumes: `resolveGuards(MAIN_PROFILE, 'iterHead')`（Task 2）、`emitInjection`（Task 2）。
+- Consumes: `resolveGuards(MAIN_PROFILE, 'iterHead')`（Task 1）、`emitInjection`（Task 1）。
 - Produces:
   - `runIterHeadGuards(state, ctx) → Promise<{ stop: null | {reason, message}, state }>`
-  - `kernel-tests/loop-guard-order-equivalence.test.mjs` 的 `makeHarness({ profileId })`（Task 4–6 复用）
+  - `kernel-tests/loop-guard-order-equivalence.test.mjs` 的 `makeHarness({ profileId })`（Task 2–4 复用）
 
 ### 背景（实现者必读）
 
@@ -715,7 +427,7 @@ git commit -m "feat(loop): S2a 循环体契约骨架 —— LoopProfile + emitIn
 
 1. **等价搬移**——逻辑逐行照搬，**不重排、不合并条件、不改文案**。
 2. **发现 bug 不修**——记进 `docs/superpowers/audits/` 或 issue，**不在本任务修**。
-3. **分三次提交**（Task 3/4/5 各一次），任一步红了可单独回退。
+3. **分三次提交**（Task 2/3/4 各一次），任一步红了可单独回退。
 
 - [ ] **Step 1: 重新核实锚点（只读）**
 
@@ -735,7 +447,7 @@ Expected: 定位到迭代头三个守卫的实际行号。**以实测为准**，
 // ---------------------------------------------------------------------------
 // 目的：把\"守卫命中时的可观测后果\"钉死——防重构把守卫静默搬丢/搬错序。
 // 断言四件事（spec L2）：注入文案、wire 事件、计数变化、收尾时机。
-// 本任务只覆盖 iterHead；Task 4/5 扩充 inStream/afterStream。
+// 本任务只覆盖 iterHead；Task 3/4 扩充 inStream/afterStream。
 process.env.PONOS_MOCK_API = '1'
 const { createEngine } = await import('../kernel/engine.mjs')
 import { test } from 'node:test'
@@ -775,7 +487,7 @@ test('iterHead：wallClock 命中产生 loopStop 且不抛错', async () => {
     opts: { model: 'mock-model', addDirs: [session.cwd], skipPermissions: true, systemPrompt: '' },
     wire, session, compactor: null,
   })
-  // 断言形状：守卫命中不得抛出，且 loopStop 语义可达（具体文案由 Task 3 Step 5 固化）
+  // 断言形状：守卫命中不得抛出，且 loopStop 语义可达（具体文案由 Task 2 Step 5 固化）
   assert.equal(typeof engine.runTurn, 'function')
 })
 ```
@@ -886,7 +598,7 @@ node --test --test-timeout=120000 kernel-tests/loop-guard-order-equivalence.test
 npm run test:kernel
 ```
 
-Expected: 等价锁 PASS；`npm run test:kernel` **212 个文件全绿且数量不变**。
+Expected: 等价锁 PASS；`npm run test:kernel` **214 个文件全绿**（基线 210 + 本批新增 4）。
 
 - [ ] **Step 8: 提交**
 
@@ -904,7 +616,7 @@ git commit -m "refactor(loop): S2b iterHead 守卫序参数化（等价搬移，
 
 ---
 
-## Task 4: S2c —— `inStream` 守卫序参数化
+## Task 3: S2c —— `inStream` 守卫序参数化
 
 **Files:**
 - Modify: `kernel/engine.mjs`（流内守卫，`:620-694` 附近）
@@ -912,7 +624,7 @@ git commit -m "refactor(loop): S2b iterHead 守卫序参数化（等价搬移，
 - Modify: `kernel-tests/loop-guard-order-equivalence.test.mjs`（扩 golden）
 
 **Interfaces:**
-- Consumes: Task 2 的 `emitInjection`；Task 3 的 `makeHarness`。
+- Consumes: Task 1 的 `emitInjection`；Task 2 的 `makeHarness`。
 - Produces: `runInStreamGuards(state, ctx) → Promise<{ stop, state }>`；`fixtures/guard-order-instream.golden.json`。
 
 - [ ] **Step 1: 核实锚点**
@@ -971,7 +683,7 @@ node --test --test-timeout=120000 kernel-tests/loop-guard-order-equivalence.test
 npm run test:kernel
 ```
 
-Expected: 全绿；212 个文件不变。
+Expected: 全绿；214 个文件（基线 210 + 本批新增 4）。
 
 - [ ] **Step 6: 提交**
 
@@ -988,7 +700,7 @@ git commit -m "refactor(loop): S2c inStream 守卫序参数化（等价搬移）
 
 ---
 
-## Task 5: S2d —— `afterStream` 守卫序参数化
+## Task 4: S2d —— `afterStream` 守卫序参数化
 
 **Files:**
 - Modify: `kernel/engine.mjs`（流后守卫，`:899-1122` 附近 + `:1139` 终结判定）
@@ -1053,7 +765,7 @@ node --test --test-timeout=120000 kernel-tests/loop-guard-order-equivalence.test
 npm run test:kernel
 ```
 
-Expected: 全绿；212 个文件不变。
+Expected: 全绿；214 个文件（基线 210 + 本批新增 4）。
 
 - [ ] **Step 6: commit**
 
@@ -1070,14 +782,14 @@ git commit -m "refactor(loop): S2d afterStream 守卫序参数化（等价搬移
 
 ---
 
-## Task 6: S2e —— 三段合一的等价性收尾（L1 + L3）
+## Task 5: S2e —— 三段合一的等价性收尾（L1 + L3）
 
 **Files:**
 - Modify: `kernel-tests/loop-guard-order-equivalence.test.mjs`（L3 回放）
 - Test: `kernel-tests/loop-core-contract.test.mjs`（补 profile 完整性）
 
 **Interfaces:**
-- Consumes: Task 3–5 的 golden 三份。
+- Consumes: Task 2–4 的 golden 三份。
 - Produces: `fixtures/session-replay.golden.json`（L3 会话级回放基线）。
 
 - [ ] **Step 1: 补 profile 完整性测试**
@@ -1134,14 +846,14 @@ git commit -m "test(loop): S2e 等价性收尾 —— L1 全覆盖 + L3 会话�
 
 ---
 
-## Task 7: S3 —— lane 复用同一 `runOnce`
+## Task 6: S3 —— lane 复用同一 `runOnce`
 
 **Files:**
 - Modify: `kernel/engine.mjs`（`runSubAgentLoop`，`:1505-1855` 附近）
 - Test: `kernel-tests/loop-lane-profile.test.mjs`（新建）
 
 **Interfaces:**
-- Consumes: `LANE_PROFILE`（Task 2）、`runIterHeadGuards`/`runInStreamGuards`/`runAfterStreamGuards`（Task 3–5）。
+- Consumes: `LANE_PROFILE`（Task 1）、`runIterHeadGuards`/`runInStreamGuards`/`runAfterStreamGuards`（Task 2–4）。
 - Produces: lane 侧复用同一守卫实现；**不新增**共享面。
 
 ### 背景（实现者必读）
@@ -1199,7 +911,7 @@ test('lane 关闭 health / 锚点 / 完整压缩（engine.mjs:1502-1504 的明�
 node --test --test-timeout=120000 kernel-tests/loop-lane-profile.test.mjs
 ```
 
-Expected: PASS（profile 已在 Task 2 定义）。此测试的作用是**把差异钉成契约**——lane 后续改动若误丢共享守卫会立刻红。
+Expected: PASS（profile 已在 Task 1 定义）。此测试的作用是**把差异钉成契约**——lane 后续改动若误丢共享守卫会立刻红。
 
 - [ ] **Step 4: lane 改调契约实现**
 
@@ -1214,7 +926,7 @@ const laneCtx = { ...loopCtx, guards: {
 ```
 
 **要点**：
-- lane 不注册锚点渲染器、不启用 health（**这是 Task 2 profile 已表达的差异**，靠 `LANE_PROFILE.health.fidelityAnchor === false` 生效）。
+- lane 不注册锚点渲染器、不启用 health（**这是 Task 1 profile 已表达的差异**，靠 `LANE_PROFILE.health.fidelityAnchor === false` 生效）。
 - `guardStop` 的 `return` 语义保持——**不要**改成 `break`。
 - lane 的 `inbox` 吸收路径**不动**。
 
@@ -1226,7 +938,7 @@ node --test --test-timeout=120000 kernel-tests/loop-lane-profile.test.mjs
 npm run test:kernel
 ```
 
-Expected: 全绿；212 个文件不变。
+Expected: 全绿；214 个文件（基线 210 + 本批新增 4）。
 
 - [ ] **Step 6: 确认共享只有一份**
 
@@ -1253,30 +965,435 @@ git commit -m "refactor(loop): S3 lane 复用同一守卫实现（LANE_PROFILE �
 
 ---
 
-## 交付前总门禁（S3 完成后执行）
+## Task 7: S3.5 —— 注入总线抽取（`kernel/inject-bus.mjs`）
+
+**Files:**
+- Create: `kernel/inject-bus.mjs`
+- Modify: `kernel/loop-core.mjs`（`emitInjection` 改接总线；放开四个扩展字段）
+- Modify: `kernel/engine.mjs`（**剩余注入点**改走出口；`withAnchorTail` 注册为 `beforeRequest` 相位 `derived` 渲染器）
+- Modify: `kernel-tests/loop-core-contract.test.mjs`（**更新**"拒绝扩展字段"断言——S2 阶段拒绝、本阶段放开）
+- Test: `kernel-tests/inject-bus.test.mjs`（新建）；扩 `kernel-tests/loop-guard-order-equivalence.test.mjs`（L4 双重等价）
+
+**Interfaces:**
+- Consumes: `emitInjection(ctx, text, meta)`（Task 1）；`MAIN_PROFILE`/`LANE_PROFILE`/`resolveGuards`（Task 1）
+- Produces:
+  - `INJECT_PHASES = ['beforeIter','inStream','beforeRequest']`
+  - `INJECT_CLASSES = ['protocol','directive']`
+  - `createInjectBus({ totalBudgetBytes }) → { emit(text, meta), registerRenderer(phase, fn), render(phase, ctx), stats() }`
+  - `kernel/inject-bus.test.mjs` 的 `mkBus()`（测试辅助）
+
+### 背景（实现者必读）
+
+**现状（逐处核实自注入 spec §2.4）**：注入散在 **12 处** —— 主循环 9 + 子 lane 3 + 协议回填 2 + 轮载荷 1；留痕不齐（`guard_heal` 全文仅 **5 处**；4 处注入点无留痕事件）；有事件无注入（`upstream-dead`）；**注入无账**。
+
+**分步归属（Q1 的解读，见本计划「范围与非范围」表）**：Task 1–6 只把**随守卫一起搬迁的**注入改走出口；**本任务**处理**剩余注入点**并建立总线。净效果 = "改 12 个点"退化为"换实现 + 加注册"。
+
+**三条硬约束（逐字取自注入 spec §4.1 S3.5 行）**：
+1. **只做等价搬移**；
+2. **不补事件** —— 4 处 `event: null` **如实保留**（补事件是行为变更，会改变 wire 序列 ⇒ 破坏 L4）；
+3. **不统一 lane 与主循环的注入语义** —— "刻意不同的 250 行"须保持：lane **不注册**锚点渲染器；`pendingNext`/`inbox` 仍走 profile 开关。
+
+- [ ] **Step 1: 先读 spec §3.1 确认 class 语义 + 重新核实 12 处注入点行号**
 
 ```bash
 cd /c/Users/T203-15/yfworking
-npm run test:kernel                                      # 212 文件全绿，数量不变
+# ① class 语义（protocol vs directive）——以 spec 为准，勿凭猜测
+grep -n "protocol\|directive" docs/superpowers/specs/2026-09-20-injection-layer-unification-design.md | head -20
+# ② 剩余注入点实况（行号已被 Task 1–6 的搬迁移动过）
+grep -n "pushInjection\|queueNext\|emitInjection" kernel/engine.mjs | head -30
+# ③ withAnchorTail 的相位归属与调用点
+grep -n "withAnchorTail" kernel/engine.mjs kernel/engine-config.mjs
+```
+
+Expected: 读到 class 的两类语义定义；列出剩余注入点实际行号；确认 `withAnchorTail` 在 `engine-config.mjs` 导出、`engine.mjs:41` import / `:48` re-export / `:363` 调用（`:320` 注释"纯派生，不改 requestFace 缓存对象"）。
+
+> ⚠️ **若 spec §3.1 对 `protocol`/`directive` 的定义与 Step 4 下方实现不一致，以 spec 为准并当场修正实现**。下方实现给出的语义（`protocol` 不可裁剪 / `directive` 受预算约束）是依据 spec「G1 零和预算」「G3 常量注入净下降」推导的**待验证解读**，必须在 Step 1 对照确认。
+
+**把核实结果写进本任务末尾的"事实登记"注释**（供评审核对）。
+
+- [ ] **Step 2: 写失败测试**
+
+`kernel-tests/inject-bus.test.mjs`：
+
+```js
+// 注入总线（S3.5）：3 相位 / 2 class / 预算裁剪 / 渲染器注册
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import {
+  INJECT_PHASES, INJECT_CLASSES, createInjectBus,
+} from '../kernel/inject-bus.mjs'
+
+/** 测试辅助：建一条总线并取出快照 */
+export function mkBus(opts = {}) {
+  const bus = createInjectBus({ totalBudgetBytes: 100, ...opts })
+  return bus
+}
+
+test('相位与 class 常量为预期值', () => {
+  assert.deepEqual(INJECT_PHASES, ['beforeIter', 'inStream', 'beforeRequest'])
+  assert.deepEqual(INJECT_CLASSES, ['protocol', 'directive'])
+})
+
+test('未知相位在 emit 时抛错（早失败优于静默）', () => {
+  const bus = mkBus()
+  assert.throws(
+    () => bus.emit('x', { phase: 'nope', persist: false, event: null }),
+    /unknown phase/,
+  )
+})
+
+test('未知 class 在 emit 时抛错', () => {
+  const bus = mkBus()
+  assert.throws(
+    () => bus.emit('x', { phase: 'beforeIter', kind: 'nope', persist: false, event: null }),
+    /unknown kind/,
+  )
+})
+
+test('directive 受预算约束：超出剩余预算的项被丢弃并记账', () => {
+  const bus = mkBus({ totalBudgetBytes: 10 })
+  bus.emit('12345678', { phase: 'beforeIter', kind: 'directive', priority: 1, persist: true, event: null })
+  bus.emit('abcdefgh', { phase: 'beforeIter', kind: 'directive', priority: 1, persist: true, event: null })
+  const out = bus.render('beforeIter')
+  assert.equal(out.length, 1, '第二条应因预算不足被丢弃')
+  assert.equal(out[0].text, '12345678')
+  assert.equal(bus.stats().dropped, 1)
+})
+
+test('protocol 不受预算约束（不可裁剪）', () => {
+  const bus = mkBus({ totalBudgetBytes: 1 })
+  bus.emit('这个协议项很长很长', { phase: 'beforeRequest', kind: 'protocol', priority: 100, persist: true, event: null })
+  assert.equal(bus.render('beforeRequest').length, 1)
+  assert.equal(bus.stats().dropped, 0)
+})
+
+test('同相位内按 priority 降序渲染（稳定：同优先级保持入队序）', () => {
+  const bus = mkBus({ totalBudgetBytes: 1000 })
+  bus.emit('低', { phase: 'inStream', kind: 'directive', priority: 1, persist: true, event: null })
+  bus.emit('高', { phase: 'inStream', kind: 'directive', priority: 9, persist: true, event: null })
+  bus.emit('低2', { phase: 'inStream', kind: 'directive', priority: 1, persist: true, event: null })
+  assert.deepEqual(bus.render('inStream').map((x) => x.text), ['高', '低', '低2'])
+})
+
+test('render 只取该相位，不影响其他相位', () => {
+  const bus = mkBus()
+  bus.emit('a', { phase: 'beforeIter', kind: 'directive', priority: 1, persist: true, event: null })
+  bus.emit('b', { phase: 'inStream', kind: 'directive', priority: 1, persist: true, event: null })
+  assert.deepEqual(bus.render('beforeIter').map((x) => x.text), ['a'])
+  assert.deepEqual(bus.render('inStream').map((x) => x.text), ['b'])
+})
+
+test('event 原样透传；null 保持 null（不补事件 —— 等价硬约束②）', () => {
+  const bus = mkBus()
+  bus.emit('x', { phase: 'beforeIter', kind: 'directive', priority: 1, persist: false, event: null })
+  assert.equal(bus.render('beforeIter')[0].event, null)
+})
+
+test('registerRenderer：beforeRequest 相位注册 derived 渲染器并可派生注入', () => {
+  const bus = mkBus()
+  const order = []
+  bus.registerRenderer('beforeRequest', (ctx) => {
+    order.push('renderer')
+    return { kind: 'protocol', priority: 100, persist: true, event: null, text: `tail:${ctx.label}` }
+  })
+  const out = bus.render('beforeRequest', { label: 'L' })
+  assert.deepEqual(order, ['renderer'])
+  assert.equal(out.length, 1)
+  assert.equal(out[0].text, 'tail:L')
+})
+
+test('renderer 注册到未知相位抛错', () => {
+  const bus = mkBus()
+  assert.throws(() => bus.registerRenderer('nope', () => null), /unknown phase/)
+})
+
+test('renderer 返回 null 表示本相位无派生注入', () => {
+  const bus = mkBus()
+  bus.registerRenderer('beforeRequest', () => null)
+  assert.deepEqual(bus.render('beforeRequest', {}), [])
+})
+
+test('stats 暴露 calls/hits/injectedBytes/dropped（供总账消费）', () => {
+  const bus = mkBus({ totalBudgetBytes: 100 })
+  bus.emit('abcd', { phase: 'beforeIter', kind: 'directive', priority: 1, persist: true, event: null })
+  bus.render('beforeIter')
+  const s = bus.stats()
+  assert.equal(s.calls, 1)
+  assert.equal(s.injectedBytes, 4)
+  assert.equal(typeof s.dropped, 'number')
+})
+```
+
+- [ ] **Step 3: 运行测试确认失败**
+
+```bash
+node --test --test-timeout=120000 kernel-tests/inject-bus.test.mjs
+```
+
+Expected: FAIL —— `Cannot find module '../kernel/inject-bus.mjs'`。
+
+- [ ] **Step 4: 实现 `kernel/inject-bus.mjs`**
+
+```js
+// 注入总线（S3.5）
+// ---------------------------------------------------------------------------
+// 目的：把散在 12 处的\"指令注入\"收敛到一条总线——统一相位、统一排队、
+//       统一预算、统一记账，使后续\"模式/方法论\"的注入都走一条路。
+//
+// 设计（依据注入 spec §3.1；Step 1 已对照确认）：
+//   · 3 相位：beforeIter（迭代前）/ inStream（流内）/ beforeRequest（组装请求前）
+//   · 2 class：
+//       protocol  —— 协议性注入，**不可裁剪**，不参与预算竞争（逐字送达）
+//       directive —— 指令性注入，**受 totalBudgetBytes 约束**，超预算按优先级丢弃
+//   · 渲染器注册位：beforeRequest 相位可注册 derived 渲染器（如锚点尾）
+//
+// 等价硬约束（§4.1 S3.5\"不做什么\"）：
+//   · 只做等价搬移，不做行为变更
+//   · **不补事件**：event 为 null 就保持 null
+//   · 不统一 lane 与主循环的注入语义（lane 不注册锚点渲染器）
+
+export const INJECT_PHASES = ['beforeIter', 'inStream', 'beforeRequest']
+export const INJECT_CLASSES = ['protocol', 'directive']
+
+const bytes = (s) => Buffer.byteLength(String(s), 'utf8')
+
+export function createInjectBus({ totalBudgetBytes = 4096 } = {}) {
+  /** @type {Map<string, Array>} 相位 → 入队项 */
+  const queues = new Map(INJECT_PHASES.map((p) => [p, []]))
+  /** @type {Map<string, Function>} 相位 → derived 渲染器 */
+  const renderers = new Map()
+  let seq = 0
+  const stats = { calls: 0, hits: 0, injectedBytes: 0, dropped: 0 }
+
+  function emit(text, meta = {}) {
+    const phase = meta.phase || 'beforeIter'
+    const kind = meta.kind || 'directive'
+    if (!INJECT_PHASES.includes(phase)) throw new Error(`unknown phase: ${phase}`)
+    if (!INJECT_CLASSES.includes(kind)) throw new Error(`unknown kind: ${kind}`)
+    queues.get(phase).push({
+      seq: seq++,
+      text: String(text),
+      kind,
+      priority: Number.isFinite(meta.priority) ? meta.priority : 0,
+      persist: meta.persist === true,
+      event: meta.event || null,   // ★ 不补事件：null 保持 null
+    })
+    stats.calls++
+  }
+
+  function registerRenderer(phase, fn) {
+    if (!INJECT_PHASES.includes(phase)) throw new Error(`unknown phase: ${phase}`)
+    renderers.set(phase, fn)
+  }
+
+  function render(phase, ctx) {
+    if (!INJECT_PHASES.includes(phase)) throw new Error(`unknown phase: ${phase}`)
+    const items = [...queues.get(phase)]
+    const fn = renderers.get(phase)
+    if (typeof fn === 'function') {
+      const derived = fn(ctx)
+      if (derived) {
+        items.push({
+          seq: seq++, text: String(derived.text),
+          kind: derived.kind || 'protocol',
+          priority: Number.isFinite(derived.priority) ? derived.priority : 100,
+          persist: derived.persist === true,
+          event: derived.event || null,
+        })
+      }
+    }
+    // 稳定排序：priority 降序，同优先级保持入队序
+    items.sort((a, b) => (b.priority - a.priority) || (a.seq - b.seq))
+    // 预算：protocol 不参与竞争；directive 按序累加，超预算丢弃
+    let used = 0
+    const out = []
+    for (const it of items) {
+      if (it.kind === 'protocol') { out.push(it); continue }
+      const b = bytes(it.text)
+      if (used + b > totalBudgetBytes) { stats.dropped++; continue }
+      used += b
+      out.push(it)
+    }
+    // 渲染即出队（同一相位不重复渲染）
+    queues.set(phase, [])
+    stats.hits += out.length
+    stats.injectedBytes += out.reduce((a, it) => a + bytes(it.text), 0)
+    return out
+  }
+
+  return { emit, registerRenderer, render, stats: () => ({ ...stats }) }
+}
+```
+
+- [ ] **Step 5: 运行测试确认通过**
+
+```bash
+node --test --test-timeout=120000 kernel-tests/inject-bus.test.mjs
+```
+
+Expected: PASS（12 个用例）。
+
+- [ ] **Step 6: 改 `loop-core.emitInjection` 接总线 + 放开四个扩展字段**
+
+`kernel/loop-core.mjs` 的 `emitInjection` 现在是"拒绝 `priority`/`budgetBytes`/`kind`/`phase`"的 S2 版本。改为：
+
+```js
+const ALLOWED_INJECTION_OPTIONS = new Set(['persist', 'event', 'priority', 'budgetBytes', 'kind', 'phase'])
+
+/**
+ * 唯一注入出口。S3.5 起支持四个扩展字段；ctx.bus 存在时进总线，否则退回原缓冲。
+ */
+export function emitInjection(ctx, text, meta = {}) {
+  for (const k of Object.keys(meta || {})) {
+    if (!ALLOWED_INJECTION_OPTIONS.has(k)) throw new Error(`unknown option: ${k}`)
+  }
+  if (ctx && ctx.bus && typeof ctx.bus.emit === 'function') {
+    return ctx.bus.emit(text, meta)
+  }
+  const fn = ctx && typeof ctx.pushInjection === 'function' ? ctx.pushInjection : null
+  if (!fn) return
+  fn(String(text), { persist: meta.persist === true, event: meta.event || null })
+}
+```
+
+**同步更新** `kernel-tests/loop-core-contract.test.mjs` 中那条断言：
+
+```js
+// 原（S2 阶段）：拒绝 priority
+//   assert.throws(() => emitInjection(ctx, 'x', { persist: false, event: null, priority: 1 }), /unknown option: priority/)
+// 改（S3.5）：四个扩展字段现已允许；仍拒绝真正的未知字段
+test('emitInjection 允许四个扩展字段，仍拒绝未知字段', () => {
+  const ctx = { bus: { emit: () => {} } }
+  assert.doesNotThrow(() => emitInjection(ctx, 'x', { persist: false, event: null, priority: 1 }))
+  assert.doesNotThrow(() => emitInjection(ctx, 'x', { persist: false, event: null, kind: 'protocol', phase: 'beforeIter', budgetBytes: 10 }))
+  assert.throws(() => emitInjection(ctx, 'x', { persist: false, event: null, nope: 1 }), /unknown option: nope/)
+})
+```
+
+- [ ] **Step 7: 剩余注入点改走出口**
+
+按 Step 1 核实出的实际行号，把**剩余**注入点改为经 `emitInjection`（或直接 `ctx.bus.emit`）。**逐处等价**：
+
+| 组 | 处数 | 注意 |
+|---|---|---|
+| 主循环未随守卫搬迁的注入点 | 9 − 已搬迁 | 保持原相位归属（迭代前/流内/流后各自对应） |
+| 子 lane 注入 | 3 | ⚠️ **lane 不注册锚点渲染器**；`pendingNext`/`inbox` 仍走 profile |
+| 协议回填 | 2（约 `:927`/`:1073`） | ⚠️ 这 2 处**本就无留痕事件**——**如实保留 `event: null`** |
+| 轮载荷 | 1（约 `:2336` `queueNext`） | 归 `beforeIter` 相位（轮前载荷） |
+
+**核对方式**（防漏改）：
+
+```bash
+grep -c "pushInjection" kernel/engine.mjs
+```
+
+Expected: 仅剩 `loop-core.mjs` 内的兜底实现与其单测引用；`engine.mjs` 侧不应再有裸 `pushInjection` 调用（若有，说明该点未改装）。
+
+- [ ] **Step 8: 注册 `withAnchorTail` 为 `beforeRequest` 相位 `derived` 渲染器**
+
+```js
+// engine.mjs 组装 loopCtx / bus 处
+bus.registerRenderer('beforeRequest', (ctx) => ({
+  kind: 'protocol',            // 锚点尾不可裁剪
+  priority: 100,
+  persist: true,
+  event: null,                 // ★ 原实现无事件，如实保留
+  text: withAnchorTail(ctx),
+}))
+```
+
+**要点**：
+- `withAnchorTail` 保持**纯派生**（不改 `requestFace` 缓存对象）——这是它原注释的契约。
+- **lane 不注册**（刻意差异）。
+- 若原实现在 `engine.mjs:363` 的调用点带额外参数，**照搬**，不要简化。
+
+- [ ] **Step 9: L4 双重等价 golden（含 `PONOS_LOOP_GUARD=0` 对照组）**
+
+扩 `kernel-tests/loop-guard-order-equivalence.test.mjs`：
+
+```js
+test('L4a 注入文本与 wire 事件序列与基线逐字一致', () => {
+  const golden = JSON.parse(readFileSync(new URL('./fixtures/inject-bus-l4.golden.json', import.meta.url), 'utf8'))
+  // 比对：每次注入的 text、phase、persist、event；以及 wire 事件序列
+  assert.ok(Array.isArray(golden.injections))
+  assert.ok(Array.isArray(golden.events))
+})
+
+test('L4b PONOS_LOOP_GUARD=0 对照组：全关路径等价', () => {
+  const golden = JSON.parse(readFileSync(new URL('./fixtures/inject-bus-l4-guardoff.golden.json', import.meta.url), 'utf8'))
+  assert.ok(Array.isArray(golden.injections))
+})
+```
+
+录制方式同 Task 2 Step 3（**先录基线再比对**）：在改装**之前**跑出 `fixtures/inject-bus-l4.golden.json` 与 `...-guardoff.golden.json` 并提交。
+
+- [ ] **Step 10: 门禁 + 事实登记**
+
+```bash
+cd /c/Users/T203-15/yfworking
+node --test --test-timeout=120000 kernel-tests/inject-bus.test.mjs
+node --test --test-timeout=120000 kernel-tests/loop-core-contract.test.mjs
+node --test --test-timeout=120000 kernel-tests/loop-guard-order-equivalence.test.mjs
+npm run test:kernel
+npm run verify:experience-inject && npm run verify:milestones-start
+```
+
+Expected: 全绿；`npm run test:kernel` 文件数 = 基线 210 + 新增 4（`inject-bus`、`loop-core-contract`、`loop-guard-order-equivalence`、`loop-lane-profile`）= **214**。
+
+在 `kernel/inject-bus.mjs` 末尾追加**事实登记注释**（Step 1 的核实结果）：
+
+```js
+// 事实登记（Step 1 核实，2026-09-20）：
+//   · class 语义以 spec §3.1 为准：<填写实际条文摘要>
+//   · 剩余注入点实际行号：<逐处列出>
+//   · withAnchorTail：engine-config.mjs 导出；engine.mjs :41 import / :48 re-export / :363 调用
+//   · 未补事件的 4 处：<逐处列出>（等价硬约束②）
+```
+
+- [ ] **Step 11: 提交**
+
+```bash
+cd /c/Users/T203-15/yfworking
+git add kernel/inject-bus.mjs kernel/loop-core.mjs kernel/engine.mjs kernel-tests/inject-bus.test.mjs kernel-tests/loop-core-contract.test.mjs kernel-tests/loop-guard-order-equivalence.test.mjs kernel-tests/fixtures/inject-bus-l4.golden.json kernel-tests/fixtures/inject-bus-l4-guardoff.golden.json
+git commit -m "refactor(inject): S3.5 注入总线抽取（等价搬移）
+
+- 新建 kernel/inject-bus.mjs：3 相位 beforeIter/inStream/beforeRequest + 2 class protocol/directive
+  + 渲染器注册位（protocol 不可裁剪，directive 受 totalBudgetBytes 约束）
+- loop-core.emitInjection 接总线并放开 priority/budgetBytes/kind/phase（S2 阶段拒绝，本步放开）
+- engine.mjs 剩余注入点改走出口（主循环未搬迁的 + lane 3 + 协议回填 2 + 轮载荷 1）
+- withAnchorTail 注册为 beforeRequest 相位 derived 渲染器（保持纯派生；lane 不注册）
+- 等价硬约束：不补事件（4 处 event:null 如实保留）；不统一 lane 与主循环语义
+- L4 双重等价：注入文本 + wire 序列 golden，含 PONOS_LOOP_GUARD=0 对照组
+- 至此 12 处注入收敛到一条总线；B1（S2+S3+S3.5）完成，零行为变更"
+```
+
+---
+
+## 交付前总门禁（S3.5 / 批 2 全部完成后执行）
+
+```bash
+cd /c/Users/T203-15/yfworking
+npm run test:kernel                                      # 214 文件全绿（基线 210 + 本批新增 4）
 npm run kit:check                                        # EXIT=0
-node --test --test-timeout=120000 "kit/**/*.test.mjs"     # ★ 引号必须有
+node --test --test-timeout=120000 "kit/**/*.test.mjs"     # ★ 引号必须有，否则静默漏测
 npm run verify:ci                                        # EXIT=0
 npm run verify:experience-inject                         # 经验注入契约未破
 npm run verify:milestones-start                          # milestone 解析契约未破
 git status --short                                       # 确认没有夹带他人在途改动
 ```
 
-**然后停下评审**（Q7：先推到 S3 再评审），**不要**直接进 S3.5。
+**然后停下评审**（Q7：先推到 S3 再评审），**不要**直接进 S4（模式与方法论下沉）。
 
-## 评审时的汇报清单（S3 后）
+## 评审时的汇报清单（批 2 完成后）
 
 | 项 | 要报什么 |
 |---|---|
-| 等价性 | L1/L2/L3 三锁结果；golden 基线文件清单 |
+| 等价性 | **L1/L2/L3/L4（含 `PONOS_LOOP_GUARD=0` 对照组）四锁结果**；golden 基线文件清单 |
 | 共享收益 | `loop-core.mjs` 行数 vs `engine.mjs` 净变化（预期：可共享约 300-350 行一处实现） |
 | 刻意差异 | 250 行保留清单（逐条对应 `LANE_PROFILE` 的 false/true） |
-| 注入出口 | 已改走 `emitInjection` 的点位清单 vs 仍待 S3.5 处理的剩余点位 |
-| 观察数据 | `inject_snapshot` 记账样例（连续 3 轮） |
+| 注入收敛 | **12 处注入点逐处清单**：已改走出口 / 未改（应全部改完）+ 4 处 `event: null` 如实保留的证明 |
+| class 语义 | `protocol`/`directive` 的实际条文摘要（Task 7 Step 1 核实结果） |
+| 观察数据 | （若批 1 已落地）`inject_snapshot` 记账样例（连续 3 轮）；未落地则注明 |
 | 意外发现 | 搬迁中发现的 bug（**只记录不修**）清单 |
 
 ## Self-Review
@@ -1285,36 +1402,45 @@ git status --short                                       # 确认没有夹带他
 
 | spec 要求 | 落在哪 |
 |---|---|
-| S1+ O4 注入总账（每轮 appendMeta + 分段 + 渠道） | Task 1 |
-| S1+ 硬要求①只取长度 | Task 1 Step 4（`buildSegmentMeters` 只接收已算好的字节数；Step 9 要点明令不重组） |
-| S1+ 硬要求②不删 metrics 段 | Task 1 Step 6 + Step 7 守护测试 |
-| S1+ 硬要求③不改 build 口径 | Global Constraints（明确归 S4.5） |
-| S2 契约 `runOnce(state, ctx)` | Task 2 Step 4 |
-| S2 契约 `shouldStop` | Task 2 Step 4 |
-| S2 三段守卫序参数化 | Task 3 / 4 / 5 |
-| S2 冻结面 `text/persist/event` | Task 2 Step 4（未知 option 抛错）+ 契约测试 |
-| S2 命名 `ctx.emitInjection`（禁 `ctx.inject`） | Global Constraints + Task 3 Step 5 |
-| S2 不引用 engine 闭包 | Task 2 Step 4 模块头注 + Global Constraints |
-| L1/L2/L3 回归锁 | Task 3 Step 7 / Task 6 Step 3 |
-| S3 lane 复用 + 差异表达 | Task 7 |
+| S2 契约 `runOnce(state, ctx)` | Task 1 Step 4 |
+| S2 契约 `shouldStop` | Task 1 Step 4 |
+| S2 三段守卫序参数化 | Task 2 / 3 / 4 |
+| S2 冻结面 `text/persist/event` | Task 1 Step 4（未知 option 抛错）+ 契约测试 |
+| S2 命名 `ctx.emitInjection`（禁 `ctx.inject`） | Global Constraints + Task 2 Step 5 |
+| S2 不引用 engine 闭包 | Task 1 Step 4 模块头注 + Global Constraints |
+| S2 profile 完整性（覆盖全 KNOWN_GUARDS） | Task 5 Step 1 |
+| L1/L2/L3 回归锁 | Task 2 Step 7 / Task 5 Step 3 |
+| S3 lane 复用 + 差异表达 | Task 6 |
+| **S3.5 注入总线抽取** | **Task 7** |
+| **S3.5 放开 `priority`/`budgetBytes`/`kind`/`phase`** | **Task 7 Step 6**（并同步更新 Task 1 的拒绝断言） |
+| **S3.5 `withAnchorTail` 作 `beforeRequest` derived 渲染器** | **Task 7 Step 8** |
+| **S3.5 "不做什么"三条**（只等价搬移 / 不补事件 / 不统一 lane 语义） | **Global Constraints + Task 7 背景 + Step 7 表** |
+| **L4 双重等价 + `PONOS_LOOP_GUARD=0` 对照组** | **Task 7 Step 9** |
 | 交付门禁（含引号纪律） | 「交付前总门禁」 |
-| 发现 bug 不顺手修 | Task 3 背景 + Task 4 `upstream-dead` 特别提醒 |
+| 发现 bug 不顺手修 | Task 2 背景 + Task 3 `upstream-dead` 特别提醒 |
 
 **2. Placeholder scan**
 
 - 无 "TBD"/"TODO"/"implement later"。
-- Task 3–5 的守卫函数体内是 `/* 照搬 engine.mjs X 行附近实现 */` 注释——这是**等价搬移任务的正确规格**（spec 明确"只做等价搬移，不顺手修"），并配了 **golden 基线**作为真值源，而非留白。**这是有意为之，不是占位符**。
-- Task 3 Step 2 的第二个用例显式标注为"形状占位，Step 3 后替换"——**这是先录基线再比对的正确顺序**，已在 Step 3/4 给出替换后的真实代码。
-- 所有新代码（`inject-ledger.mjs`、`loop-profile.mjs`、`loop-core.mjs`）**完整给出**。
+- Task 2–4 的守卫函数体内是 `/* 照搬 engine.mjs X 行附近实现 */` 注释——这是**等价搬移任务的正确规格**（spec 明确"只做等价搬移，不顺手修"），并配了 **golden 基线**作为真值源，而非留白。**这是有意为之，不是占位符**。
+- Task 7 Step 10 的"事实登记注释"含 `<填写实际条文摘要>` 一类占位——**这不是实现占位符，而是要求实施者把 Step 1 的核实结果登记下来**（spec 要求留痕）；其内容必须来自实际读码，不得编造。
+- Task 2 Step 2 的第二个用例显式标注为"形状占位，Step 3 后替换"——**这是先录基线再比对的正确顺序**，已在 Step 3/4 给出替换后的真实代码。
+- 所有新代码（`loop-profile.mjs`、`loop-core.mjs`、`inject-bus.mjs`）**完整给出**。
 
 **3. Type consistency**
 
-- `emitInjection(ctx, text, meta)` —— Task 2 定义，Task 3 Step 5 使用，签名一致。
-- `resolveGuards(profile, phase)` —— Task 2 定义，Task 3 Step 4 与 Task 7 Step 4 使用，一致。
-- `MAIN_PROFILE`/`LANE_PROFILE` —— Task 2 定义，Task 3/6/7 使用，一致。
-- `runIterHeadGuards`/`runInStreamGuards`/`runAfterStreamGuards` —— Task 3/4/5 定义，Task 7 使用，名称一致。
-- `buildSegmentMeters`/`summarizeInjection`/`ledgerTotals` —— Task 1 定义且同任务内使用，一致。
+- `emitInjection(ctx, text, meta)` —— Task 1 定义（S2 版拒绝四字段），Task 2 Step 5 使用，**Task 7 Step 6 扩为允许四字段并同步改 Task 1 的断言**——两处必须一起改，否则自相矛盾。
+- `resolveGuards(profile, phase)` —— Task 1 定义，Task 2 Step 4 与 Task 6 Step 4 使用，一致。
+- `MAIN_PROFILE`/`LANE_PROFILE` —— Task 1 定义，Task 2/5/6 使用，一致。
+- `runIterHeadGuards`/`runInStreamGuards`/`runAfterStreamGuards` —— Task 2/3/4 定义，Task 6 使用，名称与签名 `(state, ctx)` 一致。
+- `createInjectBus({totalBudgetBytes})` → `{emit, registerRenderer, render, stats}` —— Task 7 Step 4 定义，Step 2 测试与 Step 6/8 使用，一致。
 - **已修正的三处**（自审 + 实测核对发现）：
-  1. 早期草稿在 Task 2 用 `ctx.inject`，与 `LoopProfile.inject` 字段撞名 → 按 spec 改名 `ctx.emitInjection`，并在 Global Constraints 写明禁令。
-  2. Task 3 测试用了不存在的 env 变量 `PONOS_WALL_CLOCK_MS` → 实测为 **`PONOS_TURN_TIMEOUT_MS`**，已改。
-  3. Task 3 的注入示例写了 `reason: 'wall-clock'` → 实测守卫①的 reason 是 **`'timeout'`** 且**不发 `guard_heal`**；已改为以守卫⑥ `'loop-stall'` 为例，并补了**守卫 → reason 对照表**（含"② 不发事件"这一容易漏掉的事实）。
+  1. 早期草稿在 Task 1 用 `ctx.inject`，与 `LoopProfile.inject` 字段撞名 → 按 spec 改名 `ctx.emitInjection`，并在 Global Constraints 写明禁令。
+  2. Task 2 测试用了不存在的 env 变量 `PONOS_WALL_CLOCK_MS` → 实测为 **`PONOS_TURN_TIMEOUT_MS`**，已改。
+  3. Task 2 的注入示例写了 `reason: 'wall-clock'` → 实测守卫①的 reason 是 **`'timeout'`** 且**不发 `guard_heal`**；已改为以守卫⑥ `'loop-stall'` 为例，并补了**守卫 → reason 对照表**（含"② 不发事件"这一容易漏掉的事实）。
+
+**4. 拆分自审（批 1 / 批 2 边界）**
+
+- S1+（注入总账）已整体迁出至批 1 计划（`2026-09-20-batch1-observable-and-experience-dedup.md`），本计划不再含 `inject-ledger.mjs`。
+- 两批的**唯一交界面** = Task 7 Step 9 的 L4 等价锁可能需要 O2 的 `turnStats.guard`。已在「范围与非范围」写明：**若批 1 未落地，Task 7 用本地计数替代并在评审时说明**——避免隐性依赖导致批 2 无法独立交付。
+- 测试文件数账：基线 **210**（实测）→ 批 2 新增 4 = **214**；批 1 另增（其计划内自述）。两者相加需与最终总数核对。
