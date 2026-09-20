@@ -2,7 +2,7 @@
 //
 // 为什么放在 kit/ 而不是 kit/lib/：这份测试跑的是 `node kit/gui.mjs` 进程本身（与 kit/cli.test.mjs 同族），
 // 判据是**命令行契约**（退出码 / stdout 文案 / 产物落盘），不是某个 lib 函数的返回值。
-import { test } from 'node:test'
+import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
@@ -13,9 +13,27 @@ import { fileURLToPath } from 'node:url'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const GUI = 'kit/gui.mjs'
 
+/**
+ * ★ 把 HEAD 物化缓存**隔离到本测试自己的临时目录**（`YFW_KIT_HEAD_CACHE` 是 head-tree.mjs 提供的正式旋钮）。
+ *
+ * 为什么必须隔离（实测，不是保守起见）：`head-tree.mjs` 的缓存目录按 `(仓路径, sha)` 键控、**无锁**，
+ * 重建时先 `rmSync(dir)` 再物化。于是**两个并发**的 `kit/cli.mjs check` 会互删对方正在建的树，
+ * 而 `usable()` 只看 marker + 首个文件是否存在 ⇒ 半棵树被当成有效缓存，之后**每次 check 都稳定报假红**。
+ * 复现（干净缓存目录 + 4 个并发 check）：2 个 `红 0 / EXIT=0`、**2 个 `红 3 / EXIT=1`**。
+ *
+ * `node --test` 会**并行跑测试文件**，而 kit/cli.test.mjs 与本文件都会 spawn `kit/cli.mjs check`
+ * ⇒ 共享缓存下这份端到端测试会随机红（且会把坏缓存留给别人）。隔离后每个缓存目录同一时刻只有一个写者。
+ */
+const HEAD_CACHE = mkdtempSync(join(tmpdir(), 'kitgui-headcache-'))
+after(() => rmSync(HEAD_CACHE, { recursive: true, force: true, maxRetries: 3 }))
+
 /** 跑 CLI；`execFileSync` 在非零退出时**抛错** ⇒ "不抛错"就是"exit 0"（下面每条 happy path 都依赖这条） */
 function runGui(args, opts = {}) {
-  return execFileSync(process.execPath, [GUI, ...args], { cwd: ROOT, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024, ...opts })
+  return execFileSync(process.execPath, [GUI, ...args], {
+    cwd: ROOT, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024,
+    env: { ...process.env, YFW_KIT_HEAD_CACHE: HEAD_CACHE },
+    ...opts,
+  })
 }
 
 const EIGHT_TITLES = ['概览', '红灯与黄灯', '规则矩阵', '台账', '依赖域', '版本控制', '品牌标识与名称', 'Agent 套件规范']
