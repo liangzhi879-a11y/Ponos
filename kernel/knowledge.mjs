@@ -574,7 +574,7 @@ function indexTextOf(b) {
  * （没有 configDir），此时若去读相对路径的 config.json，会误取启动 cwd 里的文件；
  * 缺省一律 'on' —— 缺省值必须等于"新能力开启"（spec §10）。
  */
-function resolveRelateMode(configDir, explicit = null) {
+export function resolveRelateMode(configDir, explicit = null) {
   const norm = (v) => (String(v ?? '').trim().toLowerCase() === 'off' ? 'off' : 'on')
   if (explicit !== null && explicit !== undefined && String(explicit).trim() !== '') return norm(explicit)
   const env = process.env.PONOS_KNOWLEDGE_RELATE_MODE

@@ -45,7 +45,10 @@ import { buildKnowledgeInjection, resolveInjectMode, resolveInjectBudget, getInj
 // S1+/O4：注入总账的纯函数（CHANNELS/BY_SOURCE/summarizeInjection/ledgerTotals/nextTurnSeq）
 import { summarizeInjection } from './inject-ledger.mjs'
 import { readDisabled, excludeDisabled } from './disabled.mjs'
-import { createKnowledgeStore, resolveSessionKnowledgeScope, discoverSpaces, MAX_ASSOC_SPACES } from './knowledge.mjs'
+import { createKnowledgeStore, resolveSessionKnowledgeScope, discoverSpaces, MAX_ASSOC_SPACES, resolveRelateMode } from './knowledge.mjs'
+// S4.5④-3：EL1 线索层的渲染与接线判据（shouldInjectEl1 做 A18 前置 + A20 互斥 + 逃生阀）
+import { buildRecommendSection, shouldInjectEl1, HYDRATE_EL1_MAX_BYTES } from './knowledge-recommend.mjs'
+import { searchKnowledgeItems } from './knowledge-search.mjs'
 import { createGraphStore } from './graph.mjs'
 import { getProvider, setProvider, providerVersion, seedFromFile, visionFromEnv } from './provider.mjs'
 import { discoverSkills, verifySkillVersions } from './skills.mjs'
@@ -920,6 +923,9 @@ export async function main(argv) {
   // PONOS_MEMORY_KEYWORDS，逗号分隔可追加）。PONOS_MEMORY_INJECT=index-only 时仅索引（旧行为）。
   const memoryRootDir = memoryRoot(configDir)
   let memoryBlock = ''
+  // EL1 线索段（S4.5④-3）：与 memoryBlock 同款——启动时算一次、并入 append，
+  // 不每轮重算（检索不便宜，且与"删除工作流"无关；理由同下方 refreshSystemPrompt 的 why）。
+  let el1Block = ''
   const injectOpts = {
     mode: resolveInjectMode({ settings: settings.merged }),
     budget: resolveInjectBudget({ settings: settings.merged }),
@@ -983,6 +989,46 @@ export async function main(argv) {
       }
       memoryBlock += inj.recallSection
       memoryBlock += inj.indexSection
+
+      // ── S4.5④-3：EL1 线索层接线 ──────────────────────────────────────────────
+      // 判据三件套（A18 前置 relateMode==='on'、A20 互斥 strategy!=='unified'、D6 逃生阀）
+      // 全在 shouldInjectEl1 里，此处只喂参数——不在此重抄一遍（同一口径两处定义必漂移）。
+      try {
+        const strategy = injectOpts.mode
+        const relateMode = resolveRelateMode(configDir)
+        const el1Enabled = process.env.PONOS_MEMORY_EL1 !== '0'
+        if (shouldInjectEl1({ strategy, relateMode, enabled: el1Enabled })) {
+          // 观察期（A18/A19）：`PONOS_MEMORY_EL1_OBSERVE` **默认 1** —— 即"只登记推荐集合、
+          // 不产生可注入文本"。这是 A18 的落地方式：先拿到"会推荐什么"的真实数据
+          // （采纳率无从伪造），确认无退化后再置 0 转正。默认开 = 最保守。
+          const observe = process.env.PONOS_MEMORY_EL1_OBSERVE !== '0'
+          const r = searchKnowledgeItems({
+            configDir, query: kw.join(' '), keywords: kw,
+            spaces: knowledgeScope.spaces, topK: 8, mode: 'snippet',
+          })
+          const items = (r.ok ? r.items : []).map((it) => ({
+            blockId: it.blockId, space: it.spaceId,
+            title: it.heading || it.docId, snippet: it.snippet,
+            // 一跳锚点（R4）本轮留空：逐条展开是 N 次额外检索，成本与收益待观察期数据说话；
+            // R4 的渲染契约已由 kernel-tests/knowledge-recommend.test.mjs 逐条钉住，
+            // 接线只差"把 related 填进来"这一步（不预造数据）。
+            related: [],
+          }))
+          const rec = buildRecommendSection(items, {
+            budgetBytes: HYDRATE_EL1_MAX_BYTES, dryRun: observe,
+            readableSpaces: knowledgeScope.spaces ? new Set(knowledgeScope.spaces) : null,
+          })
+          if (!observe) el1Block = rec.text
+          // 登记分名（S-1③）：`offered` / `offeredDryRun` 是两种语义，混用会污染采纳率口径；
+          // 观察期 adopted 记 **null** 而非 0 —— 0 会被算成"推荐了但没被采纳"。
+          try {
+            store.appendMeta(observe ? 'inject_recommend_dryrun' : 'inject_recommend', {
+              offered: rec.offered, bytes: rec.bytes, dropped: rec.dropped,
+              adopted: null, strategy, relateMode, observe,
+            })
+          } catch { /* 登记失败不影响注入 */ }
+        }
+      } catch { /* EL1 故障绝不阻塞主流程（与既有注入段同款） */ }
     }
   }
   // 提示词组装：内核基础行为规范 + 可用子 Agent 区块（内置 ∪ 用户级）+ AGENTS.md
@@ -1006,7 +1052,7 @@ export async function main(argv) {
     // （composeSystemPrompt 的 mode='chat' 分支另有兜底，即便此处漏传也不会注入）。
     subagents: chatMode ? [] : engine.agents,
     agents: chatMode ? [] : discoverAgentsMd({ cwd: args.addDirs[0] || '', addDirs: args.addDirs }),
-    append: readPromptFile(args.appendSystemPromptFile),
+    append: readPromptFile(args.appendSystemPromptFile) + el1Block,
     cwd: chatMode ? '' : (args.addDirs[0] || ''),
     skills,
     workflows: chatMode ? [] : currentVisibleWorkflows(),

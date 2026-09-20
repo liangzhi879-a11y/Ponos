@@ -118,13 +118,15 @@ export function buildRecommendSection(items, opts = {}) {
     lines.push(line)
     offered.push(line.blockId)
   }
-  if (!lines.length) return { lines, offered, dropped, bytes: 0, upgraded: false, text: '' }
+  const base = { lines, offered, dropped, bytes: lines.length ? used : 0, upgraded: false }
+  if (!lines.length) return { ...base, dryRun: opts.dryRun === true, text: '' }
+  // 观察期（opts.dryRun，由 PONOS_MEMORY_EL1_OBSERVE 控制）：**登记推荐集合但不产生可注入文本**。
+  // 为什么要分名（`offered` / `offeredDryRun`）：dryRun 的"被推荐"与转正后的"被注入"是两种
+  // 语义，混在一个字段里会把观察期的采纳率口径污染成"曾经推荐过"(D5)。
+  if (opts.dryRun === true) return { ...base, dryRun: true, text: '' }
   return {
-    lines,
-    offered,
-    dropped,
-    bytes: used,                             // 含段头：预算必须按实际装入的字节记账
-    upgraded: false,                         // R1：恒定（本层永不升级全文）
+    ...base,
+    dryRun: false,
     text: `${EL1_HEADER}\n${lines.map((l) => l.text).join('\n')}`,
   }
 }
