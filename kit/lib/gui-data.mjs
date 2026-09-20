@@ -30,6 +30,23 @@ import { NON_BLOCKING_RULES } from './report.mjs'
 const VERSIONS_FILE = 'kit/manifest/versions.json'
 const DEPS_FILE = 'kit/manifest/deps.json'
 const BASELINE_FILE = 'kit/manifest/drift-baseline.json'
+/** 品牌**唯一真源**（与 `kit/lib/brand-rules.mjs` 的 `BRAND_TRUTH` 同路径；GUI 只读不改） */
+const BRAND_TRUTH_FILE = 'kit/manifest/brand.json'
+
+/**
+ * 探针 id → 真源 declaration id 的对应表（能对齐的才标 `declId`，对不齐的保持原样）。
+ * 为什么只有这 6 条：`pkg-version` 是"GUI 发布线版本"（版本事实，不是品牌声明点）；
+ * 真源里另两条 `lines-label-*` 落在台账 `lines[].label` 上，**没有对应的探针**（它们由 CT10 把关，
+ * 在品牌真源表里展示）。★ 表只放在这一处：渲染层不得各自猜"哪条探针对应哪条声明"。
+ */
+export const PROBE_DECLARATION = {
+  'pkg-name': 'npm-name',
+  'product-name': 'product-name',
+  'window-title': 'window-title',
+  'app-id': 'app-id',
+  'app-version': 'app-label',
+  'kernel-version': 'kernel-label',
+}
 
 /**
  * 品牌/名称探针清单（**给定**的 7 条，不许在这里发挥）。
@@ -43,7 +60,7 @@ export const BRAND_PROBES = [
   { id: 'app-id', label: '安装身份 appId', file: 'electron-builder.yml', kind: 'yaml', source: 'yaml-appId' },
   { id: 'product-name', label: '安装产品名 productName', file: 'electron-builder.yml', kind: 'yaml', source: 'yaml-productName' },
   { id: 'window-title', label: '窗口标题', file: 'index.html', kind: 'html', source: 'html-title' },
-  { id: 'app-version', label: '应用版本线（turbo 内核版）', file: 'version.mjs', kind: 'js', source: 'js-APP_VERSION' },
+  { id: 'app-version', label: '应用版本线', file: 'version.mjs', kind: 'js', source: 'js-APP_VERSION' },
   { id: 'kernel-version', label: '内核版本线', file: 'version.mjs', kind: 'js', source: 'js-KERNEL_VERSION' },
 ]
 
@@ -409,16 +426,32 @@ function pngSize(buf) {
 }
 
 /**
- * 收 7 条名称声明点 + 标识资源清单 + 一致性提示。
- * 三条纪律：
+ * 收 7 条名称声明点 + **品牌真源**（`kit/manifest/brand.json`）+ 标识资源清单 + 一致性提示。
+ * 四条纪律：
  *   · 取不到 ⇒ `value: null` + warning（**不抛错**：仓里少一个 index.html 不该让报告消失）；
- *   · 一致性提示**只提示不断言**（info/warn），本批**不加任何 CT 门禁规则** ——
- *     名称与标识分散在 4 个载体里是当前事实，把它变成门禁是另一批的设计工作；
+ *   · 一致性提示**只提示不断言**（info/warn）—— 品牌一致性现在有 CT10 把关（在读 `checkJson.findings`
+ *     的那一段里逐条出现），本段只把"名在哪几处、真源长什么样"显形；
+ *   · 真源读**文件**（GUI 是报告工具；门禁 CT10 读提交态是另一件事）：读不到 ⇒ `truth: null` + warning；
  *   · 资源尺寸零依赖解析（PNG 读 IHDR；`.ico` 只记字节数）。
  */
 export function collectBrand({ root, warnings = [] } = {}) {
   if (!root) throw new Error('collectBrand: 缺少 root')
   const texts = new Map()
+  // ★ 真源先读（探针要与它的 declaration **按 id 对齐** ⇒ 得先知道真源里有哪些 id）
+  const truthRaw = readJsonRel(root, BRAND_TRUTH_FILE, warnings)
+  const truth = truthRaw === null ? null : {
+    layers: plain(truthRaw.layers) ?? [],
+    brandZh: plain(truthRaw.brandZh) ?? null,
+    // 只带渲染/对齐需要的字段（why 要带上：页面上要能回答"它为什么算声明点"）
+    declarations: (Array.isArray(truthRaw.declarations) ? truthRaw.declarations : []).map((d) => ({
+      id: d.id ?? null, file: d.file ?? null, kind: d.kind ?? null,
+      expects: plain(d.expects) ?? null, why: d.why ?? null,
+    })),
+    retiredAliases: plain(truthRaw.retiredAliases) ?? [],
+    knownWidespread: plain(truthRaw.knownWidespread) ?? [],
+  }
+  const declIds = new Set((truth?.declarations || []).map((d) => d.id))
+
   const names = BRAND_PROBES.map((probe) => {
     if (!texts.has(probe.file)) texts.set(probe.file, readRel(root, probe.file))
     const text = texts.get(probe.file)
@@ -427,7 +460,13 @@ export function collectBrand({ root, warnings = [] } = {}) {
     // 文件被改格式（缩进/引号/改成 JSON5）时会取不到 —— 那时必须有人能看见，而不是页面上悄悄少一格
     if (text === null) warnings.push(`品牌探针：读不到 ${probe.file}（${probe.id} 留空）`)
     else if (!hit || hit.value === null || hit.value === '') warnings.push(`品牌探针：${probe.id} 在 ${probe.file} 里精确匹配不到值（${probe.source}）`)
-    return { id: probe.id, label: probe.label, file: probe.file, kind: probe.kind, value: hit ? hit.value : null, line: hit ? hit.line : null }
+    const declId = PROBE_DECLARATION[probe.id]
+    return {
+      id: probe.id, label: probe.label, file: probe.file, kind: probe.kind,
+      value: hit ? hit.value : null, line: hit ? hit.line : null,
+      // 与真源对齐（对齐不上 = null，渲染层照原样显示 —— 宁可显示"没对齐"也不猜）
+      declId: declId && declIds.has(declId) ? declId : null,
+    }
   })
 
   const assets = []
@@ -454,11 +493,11 @@ export function collectBrand({ root, warnings = [] } = {}) {
     assets.push({ file, kind: isIco ? 'ico' : 'png', w, h, bytes })
   }
 
-  return { names, assets, consistency: brandConsistency(names, assets) }
+  return { names, assets, truth, consistency: brandConsistency(names, assets, truth) }
 }
 
 /** 一致性提示（每条 `{ level, message }`；warn 只在"真的取不到值"时出现） */
-function brandConsistency(names, assets) {
+function brandConsistency(names, assets, truth = null) {
   const val = (id) => names.find((n) => n.id === id)?.value ?? null
   const out = []
   const productName = val('product-name')
@@ -467,6 +506,13 @@ function brandConsistency(names, assets) {
   const kernelVersion = val('kernel-version')
   const pkgVersion = val('pkg-version')
   const appId = val('app-id')
+
+  // ⓪ 本批之后品牌**已**统一管理：真源一处 + CT10 把关（不可基线豁免）—— 先说结论，再谈各处分歧
+  out.push({
+    level: 'info',
+    message: `品牌已统一管理：真源 \`${BRAND_TRUTH_FILE}\`${truth ? '' : '（**读不到** ⇒ 本段只能显示探针，见「概览」的取数警告）'}，`
+      + '一致性由 CT10 把关（不可基线豁免）—— 8 条声明点逐条对账，见「规则矩阵」的 CT10 行与「红灯与黄灯」里的 CT10 条目。',
+  })
 
   // ① 中文品牌名 vs 安装产品名：两者本来就不同（中文品牌用于对外材料，productName 是安装身份）
   const cjk = assets.map((a) => /[\u4e00-\u9fa5]+/.exec(a.file)).find(Boolean)?.[0] ?? null
@@ -486,7 +532,7 @@ function brandConsistency(names, assets) {
   if (anyDev && pkgPlain) {
     out.push({
       level: 'info',
-      message: `应用线「${appVersion ?? '—'}」/ 内核线「${kernelVersion ?? '—'}」（带 dev 前缀）与 GUI 发布线「${pkgVersion}」（正式号）是**三条独立版本线**（turbo 内核版 / 内核 / GUI 发布线），不是不一致 —— 四/三条线的口径见 version.mjs 头部注释与台账 versions.json#lines。`,
+      message: `应用线「${appVersion ?? '—'}」/ 内核线「${kernelVersion ?? '—'}」（带 dev 前缀）与 GUI 发布线「${pkgVersion}」（正式号）是**三条独立版本线**（应用线 / 内核线 / GUI 发布线），不是不一致 —— 四/三条线的口径见 version.mjs 头部注释与台账 versions.json#lines。`,
     })
   }
   // ④ 真 warn：取不到值

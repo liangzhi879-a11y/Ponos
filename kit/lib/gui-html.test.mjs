@@ -39,7 +39,7 @@ function makeData(overrides = {}) {
     scope: { present: true, total: 2, keys: 2, groups: [{ kind: 'routes', ns: '/providers/', count: 1, docSection: '§7', reason: '没有具体子路径可写', problems: 0 }] },
     baseline: { count: 5, redCount: 0, matched: 1, entries: [{ rule: 'CT9', subject: '/worktree/create', severity: null, at: '2026-09-19' }] },
     versions: {
-      lines: [{ id: 'APP_VERSION', label: 'Ponos 应用（turbo 内核版）', file: 'version.mjs', locator: { kind: 'const', name: 'APP_VERSION' }, value: 'dev 3.0.0' }],
+      lines: [{ id: 'APP_VERSION', label: 'YFWorking 应用（ponos 内核版）', file: 'version.mjs', locator: { kind: 'const', name: 'APP_VERSION' }, value: 'dev 3.0.0' }],
       contracts: [{ id: 'VAULT_VERSION', value: 1, file: 'electron/vault.cjs', line: 21, kind: 'contract' }],
       history: { baselineCount: 5, baselineRedCount: 0, commonToolsBaseline: 98, records: [] },
       skills: [{ id: 'brainstorming', value: '1.0.0', file: 'public/sample-skills/brainstorming/SKILL.md' }],
@@ -168,11 +168,16 @@ test('台账/依赖域/版本控制/品牌 四段：缺数据时**显式说明**
   // 依赖域：notes 无 ⇒ 说明；sizes 在 ⇒ 表格里有键
   assert.ok(html.includes('没有 notes 段'), 'notes 为空必须说明"无则说明"')
   assert.ok(html.includes('node_modules'))
-  // 品牌：只读汇总 + 本批不加门禁规则 + warn 醒目
+  // 品牌：只读汇总 + **已生效的 CT10**（"需另立一批"那句必须已改掉）+ warn 醒目
   assert.ok(html.includes('本视图<b>只读汇总</b>'))
-  assert.ok(html.includes('本批不加门禁规则'))
+  assert.ok(html.includes('一致性由 <b>CT10</b> 把关'), '品牌段必须写明一致性已有 CT10 把关（不再"待另立一批"）')
+  assert.ok(html.includes('不可基线豁免'), '必须写明 CT10 不可靠基线豁免')
+  assert.equal(html.includes('需另立一批'), false, '旧口径（"要做一致性门禁需另立一批"）必须已改掉')
+  assert.ok(html.includes('node scripts/brand.mjs set &lt;layer&gt; &lt;name&gt;'), '重新定义的可复制命令要放上')
   assert.ok(html.includes('class="bad">warn'), 'warn 必须用醒目色')
   assert.ok(html.includes('public/icon.ico') && html.includes('—'), 'ico 尺寸列显示 —（不假装有尺寸）')
+  // 真源读不到时也要显式说明（夹具注入的 brand 段没有 truth）
+  assert.ok(html.includes('读不到品牌真源'), '缺真源必须显式说明，而不是留白')
 
   // scope 缺失（present:false）必须显式说明，而不是当作"没有范围"
   const noScope = renderGuiHtml(makeData({ scope: { present: false, total: 0, keys: 0, groups: [] } }))
@@ -213,6 +218,13 @@ test('真仓数据端到端渲染：产物仍满足零外链/可解析/八段齐
   const parsed = JSON.parse(dataBlock(html))
   assert.equal(parsed.brand.names.length, 7, '真仓 7 条名称声明点都要在')
   assert.ok(parsed.brand.assets.length >= 10, '真仓标识资源清单不应为空')
+  // 品牌真源（本批新增）：8 条声明点 + 两层名 + 废弃别名 + 已知广泛存在，都要进页面数据与 HTML
+  assert.deepEqual(parsed.brand.truth.layers.map((l) => [l.id, l.name]), [['app', 'YFWorking'], ['kernel', 'ponos']])
+  assert.equal(parsed.brand.truth.declarations.length, 8, '8 条声明点都要在真源表里')
+  assert.match(parsed.brand.truth.retiredAliases[0].alias, /^Ponos-Turbo$/)
+  assert.equal(parsed.brand.truth.knownWidespread[0].occurrences, 91, '已知广泛存在的数字来自真源（不在这里另写一份）')
+  assert.ok(html.includes('为什么算声明点（why）'), '声明点表必须带 why 一列（回答"它为什么算声明点"）')
+  assert.ok(html.includes('不在门禁范围'), '已知广泛存在必须标注"不在门禁范围"')
   for (const s of GUI_SECTIONS) assert.ok(html.includes(`<h2>${s.title}</h2>`))
   assert.ok(html.length > 20000 && html.length < 3 * 1024 * 1024, `体积应在一个合理区间，实际 ${html.length}`)
 })

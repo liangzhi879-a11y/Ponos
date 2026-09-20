@@ -15,6 +15,7 @@
 | 改了 `_common/*.py` | `npm run kit:sync` | 台账会补登记；**新增**脚本必须有 `__version__` 或显式登记（V8′） |
 | 新增/改名 `scripts/verify-*.mjs` | 同步 `package.json` + `kit/manifest/deps.json#gates` | 三条挂载完整性测试会红（`kit/cli.test.mjs`），不要绕开它们改文档 |
 | 改了端点 / WS 事件类型 / IPC 通道 / 工具 `input_schema` | 先 `npm run kit:check` 看 **CT8 在途差异**（黄）→ **提交** → `npm run kit:sync` → 提交台账变化 | 台账按**提交态**落盘，故顺序不能反（见「契约快照与范围登记」的 committed 口径） |
+| 改品牌名 / 窗口标题 / 安装产品名 | `node scripts/brand.mjs check` 看还差哪些 → `set <layer> <name>` 重新定义 → 提交 → `npm run kit:check` | 品牌真源 = `kit/manifest/brand.json`（见「品牌标识与名称的统一管理」）；CT10 读**提交态** |
 | 契约面**不在** `docs/bridge-contract.md` 覆盖面内 | 在 `kit/manifest/contract-scope.json` 逐条精确登记（人工），并上调 `channels.scopeCount` / `scopeRedCount` | 别用通配/前缀（CT4C 红）；`sync` 不会替你写它 |
 | 新增测试文件 | `git add` 后跑 `npm run anchors:write` | 文档锚点门禁只算**已跟踪**文件（否则 CI 在干净克隆上必红） |
 | 同步调试版给用户测 | `npm run kit:stamp` | 产出 `release/YFWorking/kit-stamp.json`（local-only） |
@@ -133,7 +134,7 @@ node -e "const c=require('./kit/manifest/versions.json').channels;console.log(Ob
 与在途差异一行（`（契约）在途差异（CT8，黄、只报不拦）：…`）—— **无差异时也明说"无"**（"没打印"与"没有差异"不是一回事），
 且这一行**自报扫描域**（`扫描域：git 跟踪 + 未忽略的未跟踪文件` —— CT8 的工作树侧域，见规则表 `CT8` 行）。
 
-### 规则表（`CT` 号段：CT0–CT9，含 CT4 的两个子规则）
+### 规则表（`CT` 号段：CT0–CT10，含 CT4 的两个子规则与品牌 CT10）
 
 | id | 判据（一句话） | 严重度 | 改坏了会怎样（变异） |
 |---|---|---|---|
@@ -150,6 +151,7 @@ node -e "const c=require('./kit/manifest/versions.json').channels;console.log(Ob
 | CT8 | **在途差异**：工作树 ∖ HEAD 的契约面（路由/前缀/WS 类型/IPC/工具/排除项 + 文档声明集**六类**）**逐条列出** | **黄、只报不拦** | ——（在途改动就是这个状态；提交后自己变空，不需要任何基线） |
 | CT8 的**扫描域** | 提交态侧 = `git ls-files`（索引）；**工作树侧 = 索引 ∪ 未忽略的未跟踪文件**（`git ls-files --cached --others --exclude-standard`，第 4 批补：未 `git add` 的新源文件原先整块不可见） | —— | 域仍由 git 决定（**不是**磁盘遍历）：`release/`、`kernel-dist/`、`node_modules` 等被忽略的镜像/产物目录在域外；`worktreeClean` 的捷径还要求索引里全是普通 `H`（`--assume-unchanged`/`--skip-worktree` 会让 `git status` 说谎） |
 | CT9 | 渲染层 `src` 的 fetch 路径 → server 路由**单向**差集 | **黄、只报不拦** | ——（D8 历史欠账，逐条登记在 `drift-baseline.json`） |
+| CT10 | **品牌声明点 ↔ 品牌真源**：`kit/manifest/brand.json` 的 8 条声明点逐条对账（层名"出现"即过 / 字面量须精确相等）+ 受管声明点里不得出现废弃别名 `Ponos-Turbo`（大小写不敏感） | 红（**不可基线豁免**） | 改 `productName` / `<title>` / `version.mjs` 的那两行注释 / 台账 `lines[].label` 而不动真源；把内核层注释改回 `Ponos-Turbo`；删掉或写坏 `brand.json`（真源不可读 ⇒ 红且不抛） |
 
 两条"黄、只报不拦"的规则在报告里各占一个 `checkResult`，`passed=false` 表示"确实有东西"，但**不影响退出码**。
 
@@ -354,7 +356,75 @@ hint 指文档补遗；`CT4` 的 hint 指 scope 登记），以及让"代码真�
 而"跨文档小节定位"的判据已经在 `CT4C` 的 `docSection` 指针与 `CT3` 里各有一半 ——
 硬造一条新判据只会新增一套真相，属于 plan §7 反例的边界（做假）。**故如实写明"退化的形式"，不假装它独立。**
 
+## 品牌标识与名称的统一管理（真源 = `kit/manifest/brand.json`；门禁 = CT10）
+
+品牌名此前**分散在 4 个载体**里各写一份（`electron-builder.yml` 的 `productName`、`index.html` 的
+`<title>`、`version.mjs` 的两行版本线注释、`versions.json` 的 `lines[].label`）—— 改一处没人告诉你另三处
+没跟上。现在**唯一真源**是 `kit/manifest/brand.json`：
+
+| 真源字段 | 内容 |
+|---|---|
+| `layers[]` | 两层名：`app` = **`YFWorking`**（用户可见：窗口标题 / 安装产品名）、`kernel` = **`ponos`**（★ 无 turbo） |
+| `brandZh` | 中文品牌名（`新远方数据`）与它出现的位置（标识资源） |
+| `declarations[]` | **8 条声明点**：`id` + `file` + `kind` + 取值位置（`key` / `pointer` / `constName`）+ `expects`（`{layer}` 或 `{literal}`）+ `why` + `severityIfWrong` |
+| `retiredAliases[]` | 待废弃别名（`Ponos-Turbo` → `ponos`，层 `kernel`）+ 为什么废弃 + `scope` |
+| `knownWidespread[]` | **已知广泛存在、明确不在门禁范围**：`Ponos-Turbo` **91 处 / 33 个文件**，散在 `kernel/`、`kernel-tests/` 与 `docs/` 的**叙述性文本**里（全仓统一改名是**独立工作项**） |
+
+**8 条声明点**（判据口径在 CT10，逐条都能红）：
+
+| id | file | kind | 取值位置 | 期望 |
+|---|---|---|---|---|
+| `product-name` | `electron-builder.yml` | `yaml-scalar` | `productName` | 层 `app` |
+| `window-title` | `index.html` | `html-title` | `<title>` | 层 `app` |
+| `app-id` | `electron-builder.yml` | `yaml-scalar` | `appId` | 字面量 `com.yfworking.desktop` |
+| `npm-name` | `package.json` | `json-key` | 顶层 `name` | 字面量 `yfworking-gui` |
+| `app-label` | `version.mjs` | `comment-label` | 含 `APP_VERSION` 的那行注释 | 层 `app` |
+| `kernel-label` | `version.mjs` | `comment-label` | 含 `KERNEL_VERSION` 的那行注释 | 层 `kernel` |
+| `lines-label-app` | `kit/manifest/versions.json` | `json-pointer` | `lines[id=APP_VERSION].label` | 层 `app` |
+| `lines-label-kernel` | `kit/manifest/versions.json` | `json-pointer` | `lines[id=KERNEL_VERSION].label` | 层 `kernel` |
+
+两条 `expects` 口径（**别混**）：`{"layer":"x"}` ⇒ 实际值里**出现**该层名（**不区分大小写**、子串即过，
+因为声明点通常还带别的说明文字，如「YFWorking 应用（ponos 内核版）」）；`{"literal":"…"}` ⇒ **精确等于**。
+
+四条判据（`kit/lib/brand-rules.mjs`）：
+
+1. **(a) 层名/字面量不符** ⇒ 红：`subject` = declaration id、`file` = 该文件、`line` = **实际行号**
+   （定不到就 null）、`expected` = 期望的人话、`actual` = **实际取到的值**、`hint` = 怎么修
+   （改那个文件，**或**改真源重新定义）；
+2. **(b) 受管声明点里出现 `retiredAliases`** ⇒ 红（别名匹配**不区分大小写**）。★ 判据**只查声明点指向的
+   那段文本**（某行注释 / 某 key 的值 / `<title>` 的内容 / 台账某条 label）—— **不扫整文件、更不扫全仓**：
+   全仓那 91 处叙述文本是 `knownWidespread`，明确不在范围（否则 CT10 会永远红，红灯失去信息量）；
+3. **(c) 真源不可读/结构不合法**（文件缺、JSON 坏、8 条 declaration 不齐、`kind` 不认识、
+   `severityIfWrong` 不是 `red`、声明点引用了不存在的层）⇒ 红（`subject` = `brand.json`）且**不抛异常**；
+4. **`evaluated` 如实** = 实际检查的声明点数（健康态 = 8；真源不可读 = **0** —— 不许报成"8 条都过"）。
+   另有 fail-closed 的一支：某条声明点**取不到值**（文件缺失、key 被删、格式变了）同样红 ——
+   "取不到"不等于"没问题"（窗口标题丢了你不会收到任何别的告警）。
+
+**读哪棵树（与其它 CT 一致）**：CT10 读**提交态**（`head*` / `readTracked`）⇒ 改完品牌**要提交**才被门禁看见；
+要"现在这棵树改完没有"的即时反馈用 `node scripts/brand.mjs check`（**读工作树**，与 CT10 是同一份判据实现）。
+**不可基线豁免**：`baseline.mjs` 的 `BASELINE_FORBIDDEN` 判据是"除 `CT9` 外全部 `CT`" ⇒ CT10 自动落进去
+（这正是意图：品牌门禁不许靠加一条基线蒙过去）。
+
+### 重新定义品牌（`scripts/brand.mjs`）
+
+| 命令 | 作用 |
+|---|---|
+| `node scripts/brand.mjs show` | 打印真源（层名 + 8 条声明点含 `why` + 废弃别名 + 已知广泛存在 + 下一步） |
+| `node scripts/brand.mjs check` | 按 CT10 判据查**工作树**：每条声明点一行（✔/✘ + `file:line` + 期望 + 实际 + 怎么修），有红 exit 1 |
+| `node scripts/brand.mjs set <layer> <name>` | **重新定义**：改真源 `layers[].name` → **自动同步可安全同步的**声明点（`version.mjs` 两行注释、`versions.json` 的 `lines[].label`；两级名都进文本）→ 打印**仍需手工改**的清单（`productName` / `<title>` / npm 包名 / `appId` —— 改了会影响安装与发布身份，**不自动改**，只给具体建议值） |
+
+用法错（未知子命令 / 缺参数 / 层名不合法）⇒ usage + **exit 2**。零依赖、不联网、不碰 git、不碰 `src/**` 与 `server/**`。
+`set` 只在**本机**跑，且**不动**安装身份类声明点。
+
+★ **生成点**（不在 8 条声明点内，但改品牌时必须同改，否则会被 `kit:sync` 冲掉）：
+`kit/lib/ledger.mjs` 的 `LINE_SPECS` 里 `APP_VERSION.label` / `KERNEL_VERSION.label` ——
+`versions.json` 的 `lines[].label` 由它**重写**（`label` 不在 `MANUAL_FIELDS` 里）⇒
+**只改 `versions.json` 会在下一次 `kit:sync` 被改回旧名**。`set` 的清单里会给出这两条的具体新文本。
+（同理 `scripts/bump-version.mjs` 的控制台标签是同源文案，人手维护。）
+
 ## 章（`kit-stamp.json`）的字段集
+
+
 
 `npm run kit:stamp` 写出 `release/YFWorking/kit-stamp.json`（`release/` 被 `.gitignore` 覆盖 → **local-only，不进 CI 门禁**）。
 
@@ -414,11 +484,14 @@ npm run kit:agent                        # ★ 给 agent：打印套件规范纯
   （分支 / HEAD / HEAD 标题 / 未提交 tracked·untracked / tag 数与最新 tag / worktree 列表）。
   **快照、回退、对比、清理**（影子引用快照 `refs/yfw/snap/*`）由 `docs/superpowers/specs/2026-09-15-version-manager-design.md`
   （已批准）的 **version-manager 工作线**实施 —— 本 GUI **不重复实现、不写 git**。
-- **品牌标识与名称**段同样是**只读汇总**：把当前**分散**在各处的名称声明点集中列出（`package.json` 的
-  `name`/`version`、`electron-builder.yml` 的 `appId`/`productName`、`index.html` 的 `<title>`、
-  `version.mjs` 的 `APP_VERSION`/`KERNEL_VERSION`，各带 `file:line`），加**一致性提示**（`warn`/`info` 分级，
-  只提示不断言）与标识资源清单（尺寸/字节数）。★ 现状本仓**混用多个名字**（`YFWorking`、`Ponos`/`Ponos-Turbo`、
-  新远方数据、boost）—— 本视图只把它**显形**；**要做一致性门禁（新 CT 规则）须另立一批**。
+- **品牌标识与名称**段现在展示**真源**（两块的顺序）：(a) **品牌真源**（`kit/manifest/brand.json`：层级名
+  `app=YFWorking` / `kernel=ponos`、中文品牌名、**8 条声明点表**（含每条 `why`））；
+  (b) **废弃别名与已知广泛存在**（`Ponos-Turbo` → 应替换为 `ponos`；**91 处 / 33 文件**散在
+  `kernel/`、`kernel-tests/` 与 `docs/` 的叙述文本里 —— **不在门禁范围**，是独立工作项），
+  外加"重新定义"的**可复制命令**（`node scripts/brand.mjs show | check | set <layer> <name>`）。
+  段内仍保留"只读汇总"的定位（页面无任何写操作），但**一致性不再是"只提示不断言"**：
+  **CT10 已生效**（8 条声明点逐条对账、**不可基线豁免**），结论逐条出现在「红灯与黄灯」与「规则矩阵」里；
+  探针表新增 `declId` 一列（探针与真源声明点**按 id 对齐**，对不齐的显示 `—`，不硬凑）。
 
 ### agent 每次开发如何按套件规范执行（三层，防漂移）
 
@@ -453,7 +526,8 @@ kit/lib/contract-ipc.mjs    IPC 通道提取器（按侧：invoke/handle/send/on
 kit/lib/contract-tools.mjs  工具 schema 提取器（运行时出口 + 静态 registry + 结构指纹）
 kit/lib/contract-doc.mjs    bridge-contract.md 解析器（§5/§6/§7/§7.1 表）
 kit/lib/contract-snapshot.mjs 契约快照（复算 / 落盘 / 逐类比较）
-kit/lib/contract-rules.mjs  CT0–CT9（含 CT4B/CT4C/CT8）
+kit/lib/contract-rules.mjs  CT0–CT10（含 CT4B/CT4C/CT8 与品牌 CT10）
+kit/lib/brand-rules.mjs     ★ CT10：品牌声明点 ↔ 品牌真源（8 条；零依赖取值；只查声明点那一段）
 kit/lib/contract-scope.mjs  范围登记判定（只读；禁通配、禁自动生成）
 kit/lib/python-manifest.mjs 内嵌 Python 包清单的唯一读取入口（构建脚本与测试同源）
 kit/lib/report.mjs          统一报告 schema + 人话渲染 + **NON_BLOCKING_RULES（只报不拦的唯一真源）**
@@ -465,6 +539,8 @@ kit/lib/gui-html.mjs        独立 GUI 的单文件 HTML 渲染（零外链、�
 kit/gui.mjs                 独立 GUI 入口：--out | --json | --agent | --open
 kit/AGENT.md                ★ agent 入口（简短指针，不含清单内容）
 kit/manifest/versions.json  版本台账（唯一真源；`#channels` 是契约快照）
+kit/manifest/brand.json      ★ 品牌**唯一真源**（层名 / 8 条声明点 / 废弃别名 / 已知广泛存在）—— 改它 = 重新定义
+scripts/brand.mjs           品牌「可重新定义」入口：show | check（读工作树）| set <layer> <name>
 kit/manifest/deps.json      依赖台账（唯一真源）
 kit/manifest/contract-scope.json  🖐 人工维护的范围登记（sync 绝不写它）
 kit/manifest/drift-baseline.json  🖐 人工维护的已知漂移（每条写 reason；**不放"在途噪声"**）

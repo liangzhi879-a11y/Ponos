@@ -302,22 +302,67 @@ function renderVersion(d) {
 
 function renderBrand(d) {
   const b = d.brand || {}
+  const t = b.truth || null
   const nameRows = (b.names || []).map((n) => `<tr><td class="mono">${esc(n.id)}</td><td>${esc(n.label)}</td>`
     + `<td class="mono">${n.value === null || n.value === '' ? '<span class="bad">取不到值</span>' : esc(n.value)}</td>`
-    + `<td class="mono">${esc(loc(n.file, n.line))}</td><td>${esc(orDash(n.kind))}</td></tr>`)
+    + `<td class="mono">${esc(loc(n.file, n.line))}</td><td>${esc(orDash(n.kind))}</td>`
+    + `<td class="mono">${n.declId ? esc(n.declId) : '—（不在真源的声明点里）'}</td></tr>`)
   const conRows = (b.consistency || []).map((c) => `<tr class="${c.level === 'warn' ? 'sev-red' : ''}">`
     + `<td>${c.level === 'warn' ? '<span class="bad">warn</span>' : '<span class="tag">info</span>'}</td><td>${esc(c.message)}</td></tr>`)
   const assetRows = (b.assets || []).map((a) => `<tr><td class="mono">${esc(a.file)}</td><td>${esc(a.kind)}</td>`
     + `<td class="num">${a.kind === 'ico' ? '—' : `${esc(a.w)} × ${esc(a.h)}`}</td><td class="num">${esc(a.bytes)}</td></tr>`)
-  return `<div class="card"><div class="card-h">名称声明点（${(b.names || []).length} 条）</div>`
-    + table(['id', 'label', '值', 'file:line', '声明载体'], nameRows.length ? nameRows : ['<tr><td colspan="5" class="note">未取到。</td></tr>'], 'tbl') + '</div>'
+  // (a) 品牌真源：层级名 + 8 条声明点（含 why）
+  const layerRows = ((t && t.layers) || []).map((l) => `<tr><td class="mono">${esc(l.id)}</td>`
+    + `<td class="mono">${esc(l.name)}</td><td>${esc(orDash(l.note))}</td></tr>`)
+  const declRows = ((t && t.declarations) || []).map((x) => `<tr><td class="mono">${esc(x.id)}</td>`
+    + `<td class="mono">${esc(x.file)}</td><td>${esc(orDash(x.kind))}</td>`
+    + `<td class="mono">${esc(x.expects ? (x.expects.literal !== undefined ? `字面量 "${x.expects.literal}"` : `层 ${x.expects.layer} 的名称`) : '—')}</td>`
+    + `<td>${esc(orDash(x.why))}</td></tr>`)
+  // (b) 废弃别名 + 已知广泛存在
+  const aliasRows = ((t && t.retiredAliases) || []).map((a) => `<tr class="sev-red"><td class="mono">${esc(a.alias)}</td>`
+    + `<td class="mono">${esc(a.replaceWith)}</td><td>${esc(orDash(a.layer))}</td><td>${esc(orDash(a.why))}</td>`
+    + `<td class="mono">${esc(orDash(a.scope))}</td></tr>`)
+  const wideRows = ((t && t.knownWidespread) || []).map((k) => `<tr><td class="mono">${esc(k.alias)}</td>`
+    + `<td class="num">${esc(k.occurrences)}</td><td class="num">${esc(k.files)}</td><td>${esc(orDash(k.why))}</td></tr>`)
+  const cmd = (c) => `<div class="cmd"><code>${esc(c)}</code>${copyBtn(c)}</div>`
+  return ''
+    + `<div class="card"><div class="card-h">品牌真源（<span class="mono">kit/manifest/brand.json</span>）—— 改它 = 重新定义品牌</div>`
+    + (t
+      ? `<div class="note">层级名（用户可见层名 vs 内核层名）+ 中文品牌名：</div>`
+        + table(['层 id', '层名', '说明'], layerRows.length ? layerRows : ['<tr><td colspan="3" class="note">真源里没有 layers。</td></tr>'], 'tbl')
+        + `<div class="note">中文品牌名：<b>${esc(t.brandZh?.name ?? '—')}</b> ${esc(orDash(t.brandZh?.where))}</div>`
+        + `<div class="card-h">声明点（${((t && t.declarations) || []).length} 条；CT10 逐条对账 —— 每条都写明"为什么算声明点"）</div>`
+        + table(['id', 'file', 'kind', '期望', '为什么算声明点（why）'], declRows.length ? declRows : ['<tr><td colspan="5" class="note">真源里没有 declarations。</td></tr>'], 'tbl')
+      : '<div class="note">读不到品牌真源（<span class="mono">kit/manifest/brand.json</span>）—— 见「概览」的取数警告；CT10 会把"真源不可读"报成红。</div>')
+    + `<div class="note">一致性由 <b>CT10</b> 把关（8 条声明点逐条对账；★ <b>不可基线豁免</b> —— 品牌门禁不许靠加一条基线蒙过去）：`
+    + `结果见「红灯与黄灯」与「规则矩阵」的 CT10 行。改真源之后跑下面三条命令看"哪里还没跟上"。</div>`
+    + cmd('node scripts/brand.mjs show')
+    + cmd('node scripts/brand.mjs check')
+    + cmd('node scripts/brand.mjs set <layer> <name>')
+    + `<div class="note"><span class="mono">show</span> 打印真源；<span class="mono">check</span> 按 CT10 判据查<b>工作树</b>（改完立刻能看）；`
+    + `<span class="mono">set</span> 重新定义某层名：改真源 + 自动同步能同步的声明点（version.mjs 注释、台账 label），`
+    + `再把<b>仍需手工改</b>的（productName / &lt;title&gt; / npm 包名 / appId —— 改了会影响安装与发布身份）列成清单 + 给出建议值。</div></div>`
+    + `<div class="card"><div class="card-h">废弃别名与已知广泛存在（边界必须一眼看清）</div>`
+    + table(['废弃别名', '应替换为', '层', '为什么废弃', '范围'], aliasRows.length ? aliasRows
+      : ['<tr><td colspan="5" class="note">真源里没有 retiredAliases。</td></tr>'], 'tbl')
+    + `<div class="note">别名判据：<b>只查受管声明点指向的那段文本</b>（某行注释 / 某 key 的值 / &lt;title&gt; 的内容 / 台账里的某条 label），`
+    + `匹配<b>不区分大小写</b>；<b>不扫整文件、更不扫全仓</b>。</div>`
+    + `<div class="card-h">已知广泛存在（★ 不在门禁范围：全仓统一改名是独立工作项）</div>`
+    + table(['别名', '出现处数', '文件数', '说明'], wideRows.length ? wideRows
+      : ['<tr><td colspan="4" class="note">真源里没有 knownWidespread。</td></tr>'], 'tbl')
+    + `<div class="note">这些文本散在 <span class="mono">kernel/</span>、<span class="mono">kernel-tests/</span> 与 <span class="mono">docs/</span> 的`
+    + `<b>叙述性文本</b>里 —— 它们不是"声明点"，改不改都不影响安装/显示；CT10 若去扫全仓会永远红（红灯失去信息量），故明确划在范围外。</div></div>`
+    + `<div class="card"><div class="card-h">名称声明点（${(b.names || []).length} 条；探针取值，<span class="mono">declId</span> = 与真源声明点的对齐结果）</div>`
+    + table(['id', 'label', '值', 'file:line', '声明载体', '真源声明点'], nameRows.length ? nameRows : ['<tr><td colspan="6" class="note">未取到。</td></tr>'], 'tbl') + '</div>'
     + `<div class="card"><div class="card-h">一致性提示（${(b.consistency || []).length}；warn 醒目、info 普通）</div>`
     + table(['level', 'message'], conRows.length ? conRows : ['<tr><td colspan="2" class="note">无提示。</td></tr>'], 'tbl')
-    + `<div class="note">一致性**只提示不断言**：本批<b>不加</b>任何门禁（CT）规则。</div></div>`
+    + `<div class="note">一致性提示**只提示不断言**：真正的断言在 <b>CT10</b>（品牌真源 ↔ 8 条声明点，不可基线豁免）；`
+    + `本段只把"名分散在哪几处"显形。</div></div>`
     + `<div class="card"><div class="card-h">标识资源清单（${(b.assets || []).length} 项；尺寸零依赖解析 —— PNG 读 IHDR，.ico 只记字节数）</div>`
     + table(['文件', 'kind', '尺寸（px）', '字节数'], assetRows.length ? assetRows : ['<tr><td colspan="4" class="note">未取到（资源文件都不存在？见「概览」的取数警告）。</td></tr>'], 'tbl')
-    + `<div class="note">本视图<b>只读汇总</b>：当前仓内名称与标识分散在 <code>package.json</code> / <code>electron-builder.yml</code> / `
-    + '<code>index.html</code> / <code>version.mjs</code>；若要做<b>一致性门禁</b>（CT 规则），需另立一批 —— <b>本批不加门禁规则</b>。</div></div>'
+    + `<div class="note">本视图<b>只读汇总</b>：名称与标识的<b>唯一真源</b>是 <span class="mono">kit/manifest/brand.json</span>，`
+    + `上面那些文件里的声明点由 <b>CT10</b> 逐条对账（<b>已生效</b>，不是"待另立一批"）；`
+    + `本页不做任何写操作 —— 要改品牌走 <span class="mono">node scripts/brand.mjs set &lt;layer&gt; &lt;name&gt;</span>。</div></div>`
 }
 
 function renderAgent(d) {

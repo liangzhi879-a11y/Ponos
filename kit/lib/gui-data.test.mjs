@@ -98,6 +98,38 @@ test('品牌一致性：缺 appId ⇒ 出现 level:warn（并在 warnings 里留
   assert.ok(data.warnings.some((w) => w.includes('app-id')), '取不到值要在 warnings 留痕（不能只在 consistency 里）')
 })
 
+// ── 品牌**真源**（本批新增：品牌标识与名称的统一管理）─────────────────────────
+
+test('★ 品牌真源进数据：真仓 8 条声明点（每条带 why）+ 探针按 id 对齐 + "已统一管理/CT10 把关"那条 info', () => {
+  const data = buildGuiData({ root: ROOT, checkJson: null })
+  assert.deepEqual(data.brand.truth.layers.map((l) => [l.id, l.name]), [['app', 'YFWorking'], ['kernel', 'ponos']])
+  assert.equal(data.brand.truth.declarations.length, 8, '8 条声明点都要在（少一条 = CT10 会红）')
+  // 每条都要带 why（页面上要能回答"它为什么算声明点"，否则那格是空的、没人知道该不该改它）
+  for (const dd of data.brand.truth.declarations) assert.ok(dd.why && dd.why.length > 8, `${dd.id} 缺 why`)
+  // 对齐：能对齐的探针标 declId；对不齐的（发布线版本）保持 null —— 不硬凑
+  const byId = new Map(data.brand.names.map((n) => [n.id, n.declId]))
+  assert.deepEqual(
+    ['product-name', 'window-title', 'app-id', 'pkg-name', 'app-version', 'kernel-version'].map((id) => byId.get(id)),
+    ['product-name', 'window-title', 'app-id', 'npm-name', 'app-label', 'kernel-label'])
+  assert.equal(byId.get('pkg-version'), null, '发布线版本不是品牌声明点 ⇒ 不对齐（对齐表只放一处：PROBE_DECLARATION）')
+  // 废弃别名与已知广泛存在都要带进数据（页面第 2 块表要渲染它们）
+  assert.equal(data.brand.truth.retiredAliases[0].alias, 'Ponos-Turbo')
+  assert.equal(data.brand.truth.retiredAliases[0].replaceWith, 'ponos')
+  assert.ok(data.brand.truth.knownWidespread[0].occurrences > 0, '已知广泛存在的处数来自真源（页面不另写一份）')
+  // 先给结论：品牌已统一管理 + CT10 把关（不可基线豁免）
+  assert.ok(data.brand.consistency.some((c) => c.level === 'info' && /CT10/.test(c.message) && /不可基线豁免/.test(c.message)),
+    '一致性提示里必须有那条 info：真源位置 + CT10 把关 + 不可基线豁免')
+})
+
+test('品牌真源读不到：truth=null + warning（GUI 不崩，页面显式说明而不是留白）', (t) => {
+  const dir = makeFixture(FULL_FILES)   // FULL_FILES 里没有 kit/manifest/brand.json
+  cleanup(t, dir)
+  const data = buildGuiData({ root: dir })
+  assert.equal(data.brand.truth, null)
+  assert.ok(data.warnings.some((w) => w.includes('kit/manifest/brand.json')), '读不到真源必须在 warnings 留痕')
+  assert.ok(data.brand.consistency.some((c) => /读不到/.test(c.message)), '一致性提示要明说真源读不到')
+})
+
 test('brand 段还收 assets（PNG 读 IHDR 尺寸、.ico 只记字节数），缺文件记 warning 不抛错', (t) => {
   // 造一张 3×2 的合法 PNG 文件头（签名 + IHDR 长度/类型 + 宽 3 + 高 2），只为钉住"零依赖解析"这条判据
   const png = Buffer.concat([

@@ -7,9 +7,19 @@
 > 而"agent 读的规范"与"人看到的规范"不一致是最坏的一种漂移。human 视图见仓库根的 `kit-report.html`
 > （`npm run kit:gui` 生成，**产物不入仓**）。
 
+## 单一真源一览（改前先认清"改的是真源还是副本"）
+
+| 概念 | 单一真源 | 副本 / 消费方（**别手改**） |
+|---|---|---|
+| 版本线 / 契约快照 | `kit/manifest/versions.json`（`npm run kit:sync` 重写事实字段） | `kit-report.html`、`kit-stamp.json` |
+| 依赖 / 内嵌 Python / 体积 | `kit/manifest/deps.json` | `docs/ci.md` 的计数 |
+| 契约面 ↔ 文档 | `docs/bridge-contract.md` §5/§6/§7/§7.1/§11/§12 + `kit/manifest/contract-scope.json` | 台账 `#channels`（快照） |
+| **品牌名称 / 标识** | **`kit/manifest/brand.json`（改它 = 重新定义，CT10 把关；`node scripts/brand.mjs show\|check\|set`）** | `version.mjs` 的两行注释、`versions.json` 的 `lines[].label` 由 `set`/sync 同步；`productName`/`<title>`/npm 包名/appId 要**手工**改（`set` 会列清单 + 给建议值） |
+| agent 套件规范 | `kit/lib/agent-guide.mjs` | 本文件（只给指针）、GUI 第 8 段 |
+
 ## 开工前（3 步）
 
-1. 读 `kit/README.md` 的「契约快照与范围登记」（含 **committed 口径**）与「规则表」（`CT0`–`CT9`）。
+1. 读 `kit/README.md` 的「契约快照与范围登记」（含 **committed 口径**）与「规则表」（`CT0`–`CT10`）。
 2. 先跑 `npm run kit:check` 拿**基线**红灯/黄灯（本仓现状：红 0 / 黄 5 / 基线 5）——避免把存量问题当自己造的。
 3. `git worktree list` 确认并行工作线（本仓常态 4+ 条）；**绝不** `git add -A`（本仓常态约 40 项他人在途改动）。
 
@@ -38,6 +48,8 @@
 - `CT6` 快照 ↔ 运行时：现场重算（`toolSchemas()` 出口 / 静态计数 / 结构指纹）。
 - `CT8` 在途差异：**黄灯只报不拦**，提交后自己变空——**不要**为它加基线。
 - `CT9` 基线：必须仍是 5 条且全 `CT9`（动它等于伪造门禁）。
+- `CT10` 品牌声明点：跑 `node scripts/brand.mjs check`（读工作树）看哪条没跟上真源
+  （`kit/manifest/brand.json`）；要**重新定义**品牌走 `node scripts/brand.mjs set <layer> <name>`。
 
 ## 四条断言与基线纪律（★ 与 README 的「四条铁律」是**两份**不同清单）
 
@@ -45,7 +57,7 @@
 2. **不许恒真断言**（`assert.ok(true)`、恒真式、拿实现算出的值当期望）。
 3. **不许 `|| true` 吞错**（CI 步骤不许 `continue-on-error` / `; exit 0` 把红变绿）。
 4. **不许靠加基线让红变绿**（`drift-baseline.json` 每条写 reason + 摘除条件、条目数不得增加；
-   契约对账类 `CT0`–`CT8` **不支持**基线豁免，只有 `CT9` 的历史欠账可登记）。
+   契约对账类 `CT0`–`CT8` 与品牌 `CT10` **不支持**基线豁免，只有 `CT9` 的历史欠账可登记）。
 
 ## CI 锚点
 
