@@ -182,7 +182,7 @@ test('台账/依赖域/版本控制/品牌 四段：缺数据时**显式说明**
   assert.ok(renderGuiHtml(makeData({ findings: [] })).includes('findings 为空'))
 })
 
-test('Agent 段：顶部指路 + 四段条目 + cmd 可一键复制 + 铁律', () => {
+test('Agent 段：顶部指路 + 四段条目 + cmd 可一键复制 + 断言与基线纪律', () => {
   const html = renderGuiHtml(makeData())
   // 属性里的转义规则（`data-copy` 是 HTML 属性：引号/尖括号必须转义，否则属性被提前闭合）
   const escAttr = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
@@ -196,7 +196,7 @@ test('Agent 段：顶部指路 + 四段条目 + cmd 可一键复制 + 铁律', (
       if (item.cmd) assert.ok(html.includes(`data-copy="${escAttr(item.cmd)}"`), `缺 cmd 的复制按钮：${item.cmd}`)
     }
   }
-  for (const r of AGENT_GUIDE.ironRules) assert.ok(html.includes(escAttr(r.slice(0, 20))), `四条铁律必须逐条渲染：${r.slice(0, 16)}`)
+  for (const r of AGENT_GUIDE.assertionRules) assert.ok(html.includes(escAttr(r.slice(0, 20))), `四条断言与基线纪律必须逐条渲染：${r.slice(0, 16)}`)
   assert.ok(html.includes(`${AGENT_GUIDE.ci.file}:${AGENT_GUIDE.ci.line}`), 'CI 锚点（文件:行号）必须显示')
   // 复制按钮的降级路径必须存在（clipboard 不可用时不报错，退回 select）
   assert.ok(html.includes('navigator.clipboard') && html.includes('createRange'))

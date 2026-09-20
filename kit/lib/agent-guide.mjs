@@ -11,13 +11,17 @@
 //   一旦本对象里混进 Set/Map/函数，内联就会静默丢字段（JSON.stringify 会把它们变成 {} 或直接丢弃）
 //   —— 于是"页面上的规范"比真源少几条而没人发现。测试里钉了 JSON round-trip 与"每条 cmd 都在文本里"。
 //
-// 内容口径：**从当前仓库事实出发**（kit/README.md 的「契约快照与范围登记」「规则表」「四条铁律」、
+// 内容口径：**从当前仓库事实出发**（kit/README.md 的「契约快照与范围登记」「规则表」、
 //   docs/ci.md 的「DevKit 台账门禁」、package.json 的 scripts、.github/workflows/ci.yml）。
+//   ★ 但**不含** README 的「四条铁律」—— 那是**另一份清单**（sync 字段 / 放行可见 / 扫描域 = `git ls-files` /
+//   **真仓数字口径**），真源在 `kit/README.md`，与本文件的 `assertionRules`（**断言与基线纪律**）
+//   内容与用途都不同、**并行生效**。此前把两者混称为"铁律"⇒ 同一份指南里"铁律 4"能指到两个东西
+//   （README 的"数字口径" vs 本文件的"不许加基线"），照它执行会理解错 ⇒ 现已改名区分。
 //   引用的数字（如 CI 行号）由测试**对着真源复核**：ci.line 与 ci.yml 里 `kit:check` 的实际行号必须一致，
 //   CI 文件改了行号这条就会红 —— 规范文本不允许"大概对"。
 
 /**
- * agent 套件规范。结构固定为 `{ version, intro, sections[4], ironRules[], ci }`。
+ * agent 套件规范。结构固定为 `{ version, intro, sections[4], assertionRules[], ci }`。
  *
  * `sections[].items[].cmd` 为 `null` 表示"这条没有可复制的命令"（纯纪律项），
  * 刻意用 `null` 而不是省略键：GUI 与文本渲染都要能一眼看出"这条没命令"。
@@ -37,12 +41,12 @@ export const AGENT_GUIDE = {
         },
         {
           do: '先跑 `npm run kit:check`，记下**基线**红灯/黄灯数再动手',
-          why: '本仓长期有他人在途改动 ⇒ 报告里的黄灯/红灯未必是你造的。先拿基线才能把"存量"与"本次引入"分开（仓内现状：红 0 / 黄 5 / 基线 5；CT8 黄灯来自他人在途端点）。',
+          why: '本仓长期有他人在途改动 ⇒ 报告里的黄灯/红灯未必是你造的。先拿基线才能把"存量"与"本次引入"分开。★ 别照抄"应该是红 0/黄几条"之类数字：**口径必需**（盘根**干净克隆** @ 当时 HEAD 才是权威；本机**主树**因他人在途会多出 CT8 黄灯）。要拿准确数就自己跑一次，别信任何写死在文档里的数字。',
           cmd: 'npm run kit:check',
         },
         {
           do: '`git worktree list` 确认并行工作线；`git status --porcelain` 确认他人在途改动量',
-          why: '本仓常态有 4+ 条并行工作线（knowledge-s1 / loop-phase1 / prefix-cache-obs / version-manager）+ 约 40 项他人在途改动 ⇒ 绝不许 `git add -A`（会把别人的改动一起提交），也不要在别人的 worktree 里跑 `kit:sync`。',
+          why: '本仓常态有 4+ 条并行工作线（`git worktree list` 实测）+ **数十项**他人在途改动（数量随时变化，以 `git status --porcelain | wc -l` 实测为准，别信写死的数字）⇒ 绝不许 `git add -A`（会把别人的改动一起提交），也不要在别人的 worktree 里跑 `kit:sync`。',
           cmd: 'git worktree list',
         },
       ],
@@ -89,7 +93,7 @@ export const AGENT_GUIDE = {
         },
         {
           do: '`node --test --test-timeout=120000 "kit/**/*.test.mjs"` ⇒ 全绿（★ glob **必须加引号**）',
-          why: '不加引号时 shell 先展开 glob，`kit/**/*.test.mjs` 会展开成不含 `kit/cli.test.mjs` 的形式 —— 于是"全绿"里少了整个入口测试（静默漏跑）。',
+          why: '实测：不加引号时 shell 先把 `**` 当单个 `*` 展开 ⇒ 实际只跑 `kit/lib/*.test.mjs`（19 个），**漏掉 `kit/` 根下的两个入口测试** `kit/cli.test.mjs` 与 `kit/gui.test.mjs`。漏跑是静默的（照样打印"全绿"）⇒ 必须加引号让 node 自己展开。',
           cmd: 'node --test --test-timeout=120000 "kit/**/*.test.mjs"',
         },
         {
@@ -104,7 +108,7 @@ export const AGENT_GUIDE = {
         },
         {
           do: '若动了端点/工具面：在**盘根**干净克隆上复算 `routes` / `wsOut` / `wsIn` / `tools` 数与基线比（并自证 `import nanoid` 失败）',
-          why: '本仓家目录链上有杂散 node_modules，会把缺声明的包解析到 ⇒ "本机全绿"不构成证据；只有 CI（干净检出）与盘根克隆上的判定才是真实的（铁律 4：裸数字违规，必须写清测的是哪棵树）。',
+          why: '本仓家目录链上有杂散 node_modules，会把缺声明的包解析到 ⇒ "本机全绿"不构成证据；只有 CI（干净检出）与盘根克隆上的判定才是真实的（★ README「四条铁律」之 4：真仓数字必须写清测的是哪棵树 —— 注意这是 **README 那份**铁律，不是本文件末尾的"断言与基线纪律"）。',
           cmd: 'git clone . C:/p2rev',
         },
       ],
@@ -151,7 +155,10 @@ export const AGENT_GUIDE = {
       ],
     },
   ],
-  ironRules: [
+  // ★ 这四条**不是** README 的「四条铁律」（sync 字段 / 放行可见 / 扫描域 / 真仓数字口径 —— 那份真源在 README，
+  //   并行生效）。它们是**断言与基线纪律**：讲"怎么改测试/基线才算老实"，避免把门禁做成摆设。
+  //   此前沿用"铁律"之名，导致同一份指南里"铁律 4"既能指 README 的数字口径、又能指这里的"不许加基线" ⇒ 已改名。
+  assertionRules: [
     '不许放宽断言：门禁要能红。删断言、把"精确相等"改成"包含"、把期望值改成实际值，都等于拆门禁。',
     '不许恒真断言：`assert.ok(true)`、`x === x` 这类恒真式，以及"用实现算出来的值当期望值"，都是做假。',
     '不许 `|| true` 吞错：CI 步骤不许 `continue-on-error` / `|| true` / `; exit 0` 把红变绿。',
@@ -191,8 +198,11 @@ export function renderAgentGuideText(guide = AGENT_GUIDE) {
     })
   }
   lines.push('')
-  lines.push(`${BAR} 四条铁律 ${BAR}`)
-  guide.ironRules.forEach((r, i) => lines.push(`  ${i + 1}. ${r}`))
+  lines.push(`${BAR} 四条断言与基线纪律 ${BAR}`)
+  guide.assertionRules.forEach((r, i) => lines.push(`  ${i + 1}. ${r}`))
+  lines.push('')
+  lines.push('★ 另有一套「四条铁律」在 kit/README.md（sync 字段 / 放行可见 / 扫描域 = git ls-files / 真仓数字口径）——')
+  lines.push('  那是**另一份清单**、并行生效，真源在 README，本文件不复制其内容。')
   lines.push('')
   lines.push(`CI 锚点：${guide.ci.file}:${guide.ci.line} → ${guide.ci.script}`)
   lines.push(`  ${guide.ci.note}`)

@@ -334,8 +334,12 @@ function renderAgent(d) {
     + `<div class="cmd"><code>node kit/gui.mjs --agent</code>${copyBtn('node kit/gui.mjs --agent')}</div>`
     + `<div class="note">${esc(guide.intro)}</div></div>`
     + sections
-    + `<div class="card"><div class="card-h">四条铁律</div><ol class="items tight">`
-    + guide.ironRules.map((r) => `<li><div class="do">${esc(r)}</div></li>`).join('') + '</ol></div>'
+    + `<div class="card"><div class="card-h">四条断言与基线纪律</div>`
+    + `<div class="note">★ 这四条与 <span class="mono">kit/README.md</span> 里那套「<b>四条铁律</b>」`
+    + `（sync 字段 / 放行可见 / 扫描域 = <span class="mono">git ls-files</span> / 真仓数字口径）是`
+    + `<b>两份不同清单</b>、并行生效，别把"铁律 4"当成同一个东西（真源在 README，本页不复制其内容）。</div>`
+    + '<ol class="items tight">'
+    + guide.assertionRules.map((r) => `<li><div class="do">${esc(r)}</div></li>`).join('') + '</ol></div>'
     + `<div class="card"><div class="card-h">CI 锚点</div><div class="mono">${esc(guide.ci.file)}:${esc(guide.ci.line)} → <code>${esc(guide.ci.script)}</code></div>`
     + `<div class="cmd"><code>${esc(guide.ci.script)}</code>${copyBtn(guide.ci.script)}</div>`
     + `<div class="note">${esc(guide.ci.note)}</div></div>`

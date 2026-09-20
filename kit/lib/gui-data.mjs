@@ -9,8 +9,12 @@
 //      而那时读者无法分辨谁对。★ 注意 `check --json` 在被拦时**退出码为 1 但仍打印完整 JSON**，
 //      所以解析 JSON、不要拿退出码当判据（退出码只用于 GUI 顶部的结论条）。
 //   3. **体积上限意识**：`kit/manifest/versions.json` 有 50 KB（`channels.routes` 103 条、`commonTools.entries`
-//      98 条明细），整包内联进 HTML 会让页面巨大且无人读那些明细 ⇒ 这里**只保留计数**，
+//      98 条明细），整包内联进 HTML 会让页面巨大且无人读那些明细 ⇒ 这两处**只保留计数**，
 //      明细留给 `node kit/cli.mjs view --json` / 台账文件本身（它们才是明细的单一真源）。
+//      ★ 但 `deps.domains[].packages[].evidence.files` 这类**依赖证据明细没有裁剪**（实测约 7 KB / 150 条，
+//      独占 deps 段大头）——因为它正是「这个包为什么算被引用」的证据，裁掉会让依赖域段失去说服力。
+//      当前整包 40–80 KB（远低于 2 MB 上限，有测试守着），**暂不裁**；若将来依赖域暴涨，
+//      优先裁这里的 evidence（保留"证据条数 + 前 N 条"）而不是砍掉整段。
 //
 // 关于 git：`collectGitInfo` 用 `execFileSync('git', ...)` 跑**只读**命令（rev-parse/log/status/tag/branch/worktree）。
 // ★ 任何一条失败都**降级为 null/空并记 warnings**，绝不抛错：GUI 是给人看报告的工具，
