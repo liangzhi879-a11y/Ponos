@@ -251,11 +251,196 @@ async function guardNearRepeat(state, ctx) {
   }
 }
 
+// ── Task 4：afterStream（由三个不相邻的宿主时机共同支撑）─────────────────────────
+//
+// ★ 为何 afterStream 需要 `timing` 门控（Task 4 实测，计划未预见）：
+//   本相位的 6 个守卫**不在同一时刻执行** —— 原实现里它们分别位于
+//     ① 流后·工具前（`:947` repeatHeal，夹在流结束与工具执行之间）
+//     ② 工具后（`:1133-1183` progressRefresh / repeatReminder / meltdown）
+//     ③ catch 块（`:739-800` idleWatchdog / upstreamDead，流抛错后按错误分类）
+//   三段之间夹着工具执行与内存写入 ⇒ **无法用一次调用包住**。
+//   若拆成三个相位，要改 `PHASES` 与全部相位集断言（结构代价大，且 `runOnce` 编排随之复杂）；
+//   故用 `state.timing` 门控：宿主在三个时机各调一次 `runAfterStreamGuards`，
+//   守卫体只在自己那一刻生效（不匹配即跳过），**顺序仍在 profile 里定义**（单一真源不变）。
+//   `state.timing` 缺省时**全放行**（向后兼容直接单测守卫体的用法）。
+
+/** 守卫名 → 生效时机（`afterStream` 专用；未列出 = 不限时机） */
+const GUARD_TIMING = {
+  repeatHeal: 'postStream',
+  progressRefresh: 'postTools', repeatReminder: 'postTools', meltdown: 'postTools',
+  idleWatchdog: 'onError', upstreamDead: 'onError',
+}
+
+/** repeatHeal 自愈注入文案（逐字搬移自 engine.mjs:955，**勿改标点**） */
+const REPEAT_HEAL_INJECT_TEXT = '【系统】检测到你刚才的回复在反复复述近似内容（疑似陷入生成循环），该部分已被丢弃。请立即停止复述，直接推进当前任务——执行下一步具体行动或直接给出最终结论。'
+
+/** ① 流后·工具前：R3-2 重复自愈 —— 退化流丢弃 + 注入推进指令 + `continue`（有上限） */
+async function guardRepeatHeal(state, ctx) {
+  const { loopStop, REPEAT_HEAL_MAX, repeatHeals } = state
+  if (!loopStop) return { state }
+  if (REPEAT_HEAL_MAX === 0) return { state }
+  if (!(REPEAT_HEAL_MAX < 0 || repeatHeals < REPEAT_HEAL_MAX)) return { state }
+  if (!(loopStop.reason === 'gen-repeat' || loopStop.reason === 'near-repeat')) return { state }
+  ctx.turnGuardHits?.push('repeatHeal')
+  ctx.turnGuardInjections?.bump()
+  const healReason = loopStop.reason
+  ctx.inject?.(REPEAT_HEAL_INJECT_TEXT, {
+    persist: true,
+    event: { name: 'guard_heal', payload: { reason: healReason, attempt: repeatHeals + 1, max: REPEAT_HEAL_MAX } },
+  })
+  // ★ `loopStop` 必须**清空**并 `continue` —— 只"返回 stop"会误收尾（本次已由单测钉住）；
+  //   同时 `textBuf` 清空 = 退化内容不落模型输入（与收尾路径"不落退化内容"同哲学）。
+  return {
+    state: { ...state, repeatHeals: repeatHeals + 1, healedLastIter: true, loopStop: null, textBuf: '' },
+    action: 'continue',
+  }
+}
+
+/** ② 工具后：进展刷新 ——**纯状态更新**，无 stop、无注入、不登记命中（原实现亦不登记） */
+async function guardProgressRefresh(state) {
+  if (!state.madeProgress) return { state }
+  return { state: { ...state, lastProgressAt: Date.now(), stallHeals: 0 } }
+}
+
+/** ② 工具后：守卫⑤ 连续同工具提醒（仅提醒不否决，硬性由迭代上限兜底） */
+async function guardRepeatReminder(state, ctx) {
+  if (state.loopStop) return { state }
+  const { REPEAT_REMIND_AT, blocks, batchToolKey, canonicalToolCallKey, shouldRemindRepeat, repeatRemindText } = state
+  if (!REPEAT_REMIND_AT?.length || !blocks?.length) return { state }
+  const key = batchToolKey(blocks, canonicalToolCallKey)
+  let repeatStreak = state.repeatStreak ?? 0
+  let lastToolKey = state.lastToolKey
+  let remindedAt = state.remindedAt
+  if (key && key === lastToolKey) {
+    repeatStreak++
+  } else {
+    repeatStreak = 1
+    lastToolKey = key
+    remindedAt = new Set()
+  }
+  const next = { ...state, repeatStreak, lastToolKey, remindedAt }
+  if (!shouldRemindRepeat(repeatStreak, REPEAT_REMIND_AT, remindedAt)) return { state: next }
+  remindedAt.add(repeatStreak)
+  ctx.turnGuardHits?.push('repeatReminder')
+  ctx.turnGuardInjections?.bump()
+  ctx.inject?.(repeatRemindText(repeatStreak, blocks[0].name), { persist: true })
+  return { state: next }
+}
+
+/** ② 工具后：守卫④ 连续全败熔断 —— 先自愈（重开失败预算 + `continue`），耗尽才硬停 `break` */
+async function guardMeltdown(state, ctx) {
+  const { MAX_ERROR_ITERATIONS, errorStreak, hasMeltdownBudget, MELTDOWN_HEAL_MAX, errorMeltdownText } = state
+  if (!(MAX_ERROR_ITERATIONS > 0 && errorStreak >= MAX_ERROR_ITERATIONS)) return { state }
+  if (hasMeltdownBudget(state.meltdownHeals, MELTDOWN_HEAL_MAX)) {
+    ctx.turnGuardHits?.push('meltdown')
+    ctx.turnGuardInjections?.bump()
+    ctx.inject?.(errorMeltdownText('main'), {
+      persist: true,
+      event: { name: 'guard_heal', payload: { reason: 'error-meltdown', attempt: state.meltdownHeals + 1, max: MELTDOWN_HEAL_MAX } },
+    })
+    // `errorStreak = 0` = 重开失败预算（愈合窗口内再给一轮完整容错）；`textBuf` 清空同自愈路径
+    return {
+      state: { ...state, meltdownHeals: state.meltdownHeals + 1, errorStreak: 0, textBuf: '' },
+      action: 'continue',
+    }
+  }
+  ctx.turnGuardHits?.push('meltdown')
+  return {
+    state,
+    stop: {
+      reason: 'error-meltdown',
+      message: `【连续 ${errorStreak} 轮工具调用全部失败，已自动收尾停止重试。请检查失败原因（权限/环境/参数）后重新发起，或明确告知用户无法推进。】`,
+    },
+    action: 'break',
+  }
+}
+
+/** ③ catch 块：内部空闲看门狗 —— 三态（零产出重试 / 已产出自愈 / 硬停），前两态均 `continue` */
+async function guardIdleWatchdog(state, ctx) {
+  const {
+    watchdogTripped, attemptData, loopStop, IDLE_DEAD_RETRY_MAX, idleDeadRetries,
+    IDLE_HEAL_MAX, idleHeals, STREAM_IDLE_MS, STREAM_FIRST_BYTE_MS,
+  } = state
+  if (loopStop) return { state }
+  if (!watchdogTripped) return { state }
+  // 态一：全程 0 产出（上游空转/未就绪）→ 退避重发一次常能恢复（自建服务 prefill 排队常见）
+  if (!attemptData && idleDeadRetries < IDLE_DEAD_RETRY_MAX) {
+    return {
+      state: { ...state, idleDeadRetries: idleDeadRetries + 1 },
+      action: 'continue',
+      // 宿主动作：回收旧看门狗定时器 + 退避等待（新迭代重建 watchdog，首内容窗口重新计时）
+      signal: 'idle-dead-retry', backoffMs: state.IDLE_DEAD_RETRY_BACKOFF_MS,
+    }
+  }
+  // 态二：已产出后停顿（疑似推理中断）→ 保留已产出内容、注入续写指令静默续跑
+  if (attemptData && (IDLE_HEAL_MAX < 0 || idleHeals < IDLE_HEAL_MAX)) {
+    ctx.turnGuardHits?.push('idleWatchdog')
+    ctx.turnGuardInjections?.bump()
+    ctx.turnGuardHits  // （命中登记与实际注入分列，同 O2 口径）
+    ctx.inject?.('【系统】检测到你的回复在中途停顿（疑似推理中断）。请从上一条回复的断点处直接继续输出剩余内容——不要从头复述，不要重新解释已完成的部分。', {
+      persist: true,
+      event: { name: 'guard_heal', payload: { reason: 'idle-interrupted', attempt: idleHeals + 1, max: IDLE_HEAL_MAX } },
+    })
+    // `flushText` 是**清空前的原文**：宿主需先把这段已产出内容落 memory/transcript
+    // （用户看到"无缝续写"的前提），守卫体不碰会话对象 ⇒ 只能把原文交回宿主。
+    return {
+      state: { ...state, idleHeals: idleHeals + 1, textBuf: '' },
+      action: 'continue',
+      signal: 'idle-heal', flushText: state.textBuf,
+    }
+  }
+  // 态三：硬停 —— 按是否已产出分两种 reason/文案（文案逐字搬移）
+  ctx.turnGuardHits?.push(attemptData ? 'idleWatchdog' : 'upstreamDead')
+  return {
+    state,
+    stop: attemptData
+      ? {
+          reason: 'idle',
+          message: `【模型输出中断（${Math.max(1, Math.round(STREAM_IDLE_MS / 1000))} 秒无数据，此前已产出部分内容——疑似模型推理中途停顿），已按挂起自动收尾。可发送「继续」让模型重试。】`,
+        }
+      : {
+          reason: 'upstream-dead',
+          message: `【模型输出中断（连接建立后 ${Math.max(1, Math.round(STREAM_FIRST_BYTE_MS / 1000))} 秒未收到任何数据——上游疑似未就绪/空转），已按挂起自动收尾。可发送「继续」重试，或检查 provider 对应模型服务是否正常后换一种方式继续。】`,
+        },
+  }
+}
+
+/** ③ catch 块（dead-stream 分支）：上游空流（HTTP 200 却 0 事件）——退避静默重试，耗尽才可见收尾 */
+async function guardUpstreamDead(state, ctx) {
+  const { upstreamDeadHeals, UPSTREAM_DEAD_HEAL_MAX } = state
+  if (!(upstreamDeadHeals < UPSTREAM_DEAD_HEAL_MAX)) {
+    // 预算耗尽 ⇒ 硬停（★ 文案与 idleWatchdog 的 `upstream-dead` **不同**：
+    // 那是"连接建立后超时未收到数据"，本处是"请求已受理却空流 EOF"——两个站点、两种文案，
+    // 归一成一条会把用户引向错误的排查方向，故逐字保留站点各自的原文。）
+    ctx.turnGuardHits?.push('upstreamDead') // O2：上游死亡硬停（同样只有事件、无注入）
+    return {
+      state,
+      stop: {
+        reason: 'upstream-dead',
+        message: '【上游服务空流：请求已被受理但未返回任何数据（疑似模型服务未就绪、加载中或已崩溃），已自动收尾。请检查 provider 对应服务是否正常，或切换 provider 后重试。】',
+      },
+    }
+  }
+  ctx.turnGuardHits?.push('upstreamDead') // O2：上游死亡**只发事件、无注入** ⇒ 只登记不计数（如实，不粉饰）
+  ctx.inject?.('', {
+    event: { name: 'guard_heal', payload: { reason: 'upstream-dead', attempt: upstreamDeadHeals + 1, max: UPSTREAM_DEAD_HEAL_MAX } },
+  })
+  return {
+    state: { ...state, upstreamDeadHeals: upstreamDeadHeals + 1 },
+    action: 'continue',
+    signal: 'upstream-dead-retry', backoffMs: state.UPSTREAM_DEAD_HEAL_BACKOFF_MS,
+  }
+}
+
 // Task 2：iterHead（① / ② / ⑥）—— 见上方等价搬移注释
 // Task 3：inStream（①b / ③ / ③b）
+// Task 4：afterStream（按 timing 门控的三个时机）
 registerGuards({
   wallClock: guardWallClock, iterCap: guardIterCap, stall: guardStall,
   streamWallClock: guardStreamWallClock, genRepeat: guardGenRepeat, nearRepeat: guardNearRepeat,
+  repeatHeal: guardRepeatHeal, progressRefresh: guardProgressRefresh,
+  repeatReminder: guardRepeatReminder, meltdown: guardMeltdown,
+  idleWatchdog: guardIdleWatchdog, upstreamDead: guardUpstreamDead,
 })
 
 /**
@@ -285,12 +470,20 @@ async function runPhaseGuards(phase, state, ctx) {
     const body = GUARD_BODIES[name]
     // profile 里出现了未登记的守卫名 ⇒ 早失败，别静默跳过
     if (typeof body !== 'function') throw new Error(`守卫 ${name} 未实现（未注册实现，相位 ${phase}）`)
+    // timing 门控：afterStream 由三个不相邻的宿主时机共同支撑，守卫只在自己那一刻生效。
+    // 缺省（undefined）**全放行** —— 直接单测某守卫体时无需伪造 timing。
+    const need = GUARD_TIMING[name]
+    if (need && cur?.timing && cur.timing !== need) continue
     const r = await body(cur, inner)
     if (r && r.state !== undefined) cur = r.state
     const action = r?.action || null
-    if (r?.stop) return { state: cur, stop: normalizeStop(r.stop), action }
-    // 无 stop 但要求继续跑下一迭代（⑥ 自愈）⇒ 也必须短路，否则后续守卫会叠加判定
-    if (action) return { state: cur, stop: null, action }
+    // `signal`/`flushText`/`backoffMs` 是**宿主专属动作**的载荷：守卫体不能碰会话对象、
+    // 定时器、sleep ⇒ 只能把"要做什么"交回宿主（宿主是唯一知道怎么做的层）。
+    const extra = { signal: r?.signal, flushText: r?.flushText, backoffMs: r?.backoffMs }
+    if (r?.stop) return { state: cur, stop: normalizeStop(r.stop), action, ...extra }
+    // 无 stop 但要求继续跑下一迭代（⑥ 自愈 / R3-2 重复自愈 / 熔断自愈 / 空闲自愈）⇒ 也必须
+    // 短路，否则后续守卫会叠加判定
+    if (action) return { state: cur, stop: null, action, ...extra }
   }
   return { state: cur, stop: null, action: null }
 }

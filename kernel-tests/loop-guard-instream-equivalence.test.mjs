@@ -128,12 +128,16 @@ test('Task3 · 本相位不注入（①b/③/③b 命中都不调 emitInjection�
 // ── ③ 源级等价 + 接线 ───────────────────────────────────────────────────────
 
 test('Task3 · 源级等价：HEAD 搬移前块的文案逐字保留在 loop-core.mjs', () => {
-  const old = execFileSync('git', ['show', 'HEAD:kernel/engine.mjs'], { encoding: 'utf8' })
+  // ★ 基线必须**钉死在搬移前的固定版本**（Task 2 提交 `fda0d87`），不能用 `HEAD`：
+  //   HEAD 随每次提交前移，搬移一旦入库，`HEAD:kernel/engine.mjs` 里就没有这些字面量了，
+  //   自检会假红（实测：Task 3 提交后本用例立刻红）。固定 SHA 才真正表达"与搬移前逐字一致"。
+  const BASE_REV = 'fda0d87' // Task 2 完成时的提交（inStream 守卫仍在 engine 内联）
+  const old = execFileSync('git', ['show', `${BASE_REV}:kernel/engine.mjs`], { encoding: 'utf8' })
   const core = readFileSync(new URL('../kernel/loop-core.mjs', import.meta.url), 'utf8')
   // 基线选取自检 + 搬移后文案逐字比对（改文案 = 改用户可见说明，必须是有意为之）
   const needles = ['已达单轮时长上限', '为防止挂起已自动收尾', '重复打转', '近似内容反复打转', '措辞微变重复重述']
   for (const n of needles) {
-    assert.ok(old.includes(n), `HEAD 基线应含「${n}」——否则基线选错，本断言失去意义`)
+    assert.ok(old.includes(n), `基线 ${BASE_REV} 应含「${n}」——否则基线选错，本断言失去意义`)
     assert.ok(core.includes(n), `搬移后必须逐字保留：「${n}」`)
   }
 })

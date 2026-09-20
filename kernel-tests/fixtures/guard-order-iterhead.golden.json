@@ -1,0 +1,91 @@
+{
+  "recordedFrom": "git HEAD:kernel/engine.mjs（S2/B1 Task 2 搬移前）",
+  "recordedAt": "2026-09-20",
+  "note": "iterHead 守卫（wallClock/iterCap/stall）搬移前源码 + 搬移后可观测后果快照；测试逐项比对，防文案/事件/计数/收尾时机漂移。",
+  "iterHeadSource": "// 守卫①：轮次墙钟——默认关闭（2026-09-10 取消 30 分钟上限，见 TURN_TIMEOUT_MS\n      // 注释）；显式设 PONOS_TURN_TIMEOUT_MS>0 时单轮累计时长超限即优雅收尾。\n      if (TURN_TIMEOUT_MS > 0 && Date.now() - turnT0 >= TURN_TIMEOUT_MS) {\n        turnGuardHits.push('wallClock') // O2：如实登记（① 不发 guard_heal、无注入）\n        loopStop = {\n          reason: 'timeout',\n          message: `【已达单轮时长上限（${Math.max(1, Math.round(TURN_TIMEOUT_MS / 60000))} 分钟），为防止挂起已自动收尾。任务可能未完——可发送「继续」让模型接续。】`,\n        }\n        break\n      }\n      // 守卫②：迭代硬上限——耗尽即收尾（无文本时补说明，见轮末 iterCapHit）\n      if (MAX_TOOL_ITERATIONS > 0 && iter >= MAX_TOOL_ITERATIONS) { turnGuardHits.push('iterCap'); iterCapHit = true; break } // O2：② **不发任何事件、不置 loopStop**（只置 iterCapHit）—— 如实登记，勿脑补 reason\n      // 守卫⑥：无进展停滞（自愈优先，2026-09-10）——距上次实质进展超限时先注入\n      // \"推进指令\"续跑（用户无感知）；恢复实质进展即清零愈合计数；耗尽\n      // STALL_HEAL_MAX 仍无进展才落可见收尾（硬停是最后防线，非默认路径）。\n      if (LOOP_STALL_MS > 0 && Date.now() - lastProgressAt >= LOOP_STALL_MS) {\n        if (stallHeals < STALL_HEAL_MAX) {\n          stallHeals++\n          lastProgressAt = Date.now() // 注入后重开一个完整观察窗\n          const inject = '【系统】检测到你长时间没有实质进展（连续只读测量/重复调用、无新结果或文件变更）。请停止测量与重复尝试，直接执行下一步实质操作（修改文件/执行命令/完成剩余步骤），或向用户明确汇报当前卡点与结论。'\n          pushMemory({ role: 'user', content: inject })\n          if (session) session.appendUser(inject)\n          turnGuardHits.push('stall')\n          turnGuardInjections++ // O2：⑥ 自愈确实注入（pushMemory + guard_heal）\n          try { wire?.system?.('guard_heal', { reason: 'loop-stall', attempt: stallHeals, max: STALL_HEAL_MAX }) } catch { /* 事件失败不影响主流程 */ }\n          continue\n        }\n        turnGuardHits.push('stall')\n        loopStop = {\n          reason: 'loop-stall',\n          message: `【检测到长时间无实质进展（${Math.max(1, Math.round(LOOP_STALL_MS / 60000))} 分钟内只有只读测量/重复调用、无新结果或文件变更），已自动收尾以防循环。可发送「继续」让模型换一种方式推进，或补充更明确的指令。】`,\n        }\n        break\n      }\n      ",
+  "runtime": {
+    "wallClock": {
+      "stop": {
+        "reason": "timeout",
+        "message": "【已达单轮时长上限（1 分钟），为防止挂起已自动收尾。任务可能未完——可发送「继续」让模型接续。】"
+      },
+      "action": "break",
+      "state": {
+        "iterCapHit": false,
+        "stallHeals": 0,
+        "progressRefreshed": false
+      },
+      "injections": [],
+      "events": [],
+      "hits": [
+        "wallClock"
+      ],
+      "injectionsCount": 0
+    },
+    "iterCap": {
+      "stop": null,
+      "action": "break",
+      "state": {
+        "iterCapHit": true,
+        "stallHeals": 0,
+        "progressRefreshed": false
+      },
+      "injections": [],
+      "events": [],
+      "hits": [
+        "iterCap"
+      ],
+      "injectionsCount": 0
+    },
+    "stallHeal": {
+      "stop": null,
+      "action": "continue",
+      "state": {
+        "iterCapHit": false,
+        "stallHeals": 1,
+        "progressRefreshed": true
+      },
+      "injections": [
+        {
+          "text": "【系统】检测到你长时间没有实质进展（连续只读测量/重复调用、无新结果或文件变更）。请停止测量与重复尝试，直接执行下一步实质操作（修改文件/执行命令/完成剩余步骤），或向用户明确汇报当前卡点与结论。",
+          "persist": true,
+          "event": {
+            "reason": "loop-stall",
+            "attempt": 1,
+            "max": 2
+          }
+        }
+      ],
+      "events": [
+        {
+          "subtype": "guard_heal",
+          "reason": "loop-stall",
+          "attempt": 1,
+          "max": 2
+        }
+      ],
+      "hits": [
+        "stall"
+      ],
+      "injectionsCount": 1
+    },
+    "stallHardStop": {
+      "stop": {
+        "reason": "loop-stall",
+        "message": "【检测到长时间无实质进展（1 分钟内只有只读测量/重复调用、无新结果或文件变更），已自动收尾以防循环。可发送「继续」让模型换一种方式推进，或补充更明确的指令。】"
+      },
+      "action": "break",
+      "state": {
+        "iterCapHit": false,
+        "stallHeals": 2,
+        "progressRefreshed": false
+      },
+      "injections": [],
+      "events": [],
+      "hits": [
+        "stall"
+      ],
+      "injectionsCount": 0
+    }
+  }
+}

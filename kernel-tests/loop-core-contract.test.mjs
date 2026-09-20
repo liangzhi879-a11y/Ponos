@@ -65,9 +65,17 @@ test('★ runOnce 相位顺序：相位 1 停止时不得进入取流（A2「一
   assert.deepEqual(order, [], '相位 1 停止时不得进入 streamOnce（相位顺序正确性）')
 })
 
-test('★ runOnce：守卫未实现时抛错而非静默跳过（防「漏实现=静默失效」）', async () => {
-  const ctx = { profile: MAIN_PROFILE, pushInjection: () => {}, async streamOnce() { return {} } }
-  await assert.rejects(() => runOnce({}, ctx), /未实现/)
+test('★ 未实现/未注册的守卫必须抛错而非静默跳过（防「漏实现=静默失效」）', async () => {
+  // 【Task 4 后改写】原用例靠"守卫体未实现 ⇒ 抛错"制造失败（Task 2–4 的临时状态）。
+  // 12 个守卫现已全部注册 ⇒ 改用**永久有效**的等价判据：profile 里引用一个**未注册**的
+  // 守卫名。这条不变量（未知守卫名 → 早失败）才是"防静默失效"的真正载体，且与实现进度无关。
+  const badProfile = {
+    ...MAIN_PROFILE,
+    guards: { ...MAIN_PROFILE.guards, iterHead: ['wallClock', 'noSuchGuard'] },
+  }
+  const ctx = { profile: badProfile, pushInjection: () => {}, async streamOnce() { return {} } }
+  await assert.rejects(() => runIterHeadGuards({ TURN_TIMEOUT_MS: 0 }, ctx), /未实现|未注册/,
+    'profile 引用未注册守卫名时必须早失败（静默跳过 = 漏实现永不被发现）')
 })
 
 test('★ 三个相位入口齐备（Task 2–4 的落点；防「漏建某个相位入口」）', () => {

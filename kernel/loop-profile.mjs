@@ -23,15 +23,20 @@
 //                                                              含 guard_heal 与 loopStop
 //                                                              两支），不存在独立的
 //                                                              `failureHeal`
-//   `progressRefresh`        → `stall`                        engine 里「进展刷新」
-//                                                              （madeProgress → lastProgressAt
-//                                                              /stallHeals 清零）是 ⑥ stall
-//                                                              的**内部状态维护**，engine 不
-//                                                              单独登记为 GUARD_ID
+//   `progressRefresh`        → **保留独立名**（骨架期曾归一为 `stall`，Task 4 实测不成立）
+//                              进展刷新（madeProgress → lastProgressAt/stallHeals 清零）与
+//                              ⑥ stall 是**不同相位、不同语义、不同动作**：stall 在迭代头做
+//                              停滞检测并注入/break；progressRefresh 在工具后做纯状态更新
+//                              （无 stop、无注入）。而守卫注册表**按名注册**（`registerGuards`），
+//                              同名只能指向同一函数 ⇒ 归一为 `stall` 会让某个相位调错函数
+//                              （iterHead 调到位"工具后状态更新"、或 afterStream 调到位
+//                              "停滞检测"），两者都是**静默错行为**。故保留两名。
+//                              （`GUARD_IDS` 里无 progressRefresh 是因为它从不登记命中，
+//                               与其"独立守卫"身份不矛盾。）
 //
 // 其余 7 名（wallClock / iterCap / streamWallClock / genRepeat / nearRepeat /
 // upstreamDead / repeatHeal / repeatReminder）计划名与 engine 逐字一致，无需改名。
-// 归一后 `KNOWN_GUARDS` 与 `GUARD_IDS` **同集同义**，不再保留两套名字。
+// 归一后 `KNOWN_GUARDS` 与 `GUARD_IDS` **同集同义**（+ progressRefresh 这一非命中项）。
 // （同步改动：loop-core.mjs 的守卫体注册表、kernel-tests/loop-core-contract.test.mjs）
 
 /** 允许的守卫名（= engine.mjs `GUARD_IDS` 的语义投影；**主循环与 lane 同集**，见下方 profile 说明） */
@@ -46,7 +51,15 @@ export const KNOWN_GUARDS = new Set([
   //   （流抛错后按错误分类处理，engine.mjs:739-800）⇒ 按**执行时机**归"流后"，
   //   与 repeatHeal/meltdown（同在该 catch 后续路径）同层。放进 inStream 会诱导
   //   实现者去"每块检查"，而它们本来每块都不检查。
-  'repeatHeal', 'meltdown', 'stall', 'repeatReminder', 'idleWatchdog', 'upstreamDead',
+  //
+  // ★ 本相位由**三个不相邻的宿主时机**共同支撑（Task 4 实测，见 state.timing 门控）：
+  //   `postStream`（流后工具前）/ `postTools`（工具后）/ `onError`（catch 块）。
+  //   三者之间夹着工具执行与内存写入，**无法用一次调用包住** ⇒ 宿主在三个时机各调
+  //   一次 `runAfterStreamGuards`，守卫体按 `state.timing` 自行门控（不匹配即跳过）。
+  //   为何不用"拆成三个相位"：那要改 PHASES 与全部相位集断言，而 timing 门控能以
+  //   零结构代价换同样的效果，且顺序仍在 profile 内定义（单一真源不变）。
+  //   下方顺序 = 真实执行顺序（组内顺序亦为准）。
+  'repeatHeal', 'progressRefresh', 'repeatReminder', 'meltdown', 'idleWatchdog', 'upstreamDead',
 ])
 
 /** 允许的注入相位（S3.5 才扩 priority/budgetBytes/kind/phase；此处只列相位） */
@@ -69,7 +82,7 @@ export const MAIN_PROFILE = {
     // ★ 归一后 `'stall'` 在 afterStream 与 iterHead **同名出现**，这是如实登记而非笔误：
     //   engine 里 ⑥ stall 的「进展刷新」状态维护在轮末（madeProgress → lastProgressAt/
     //   stallHeals 清零，engine.mjs:1142），命中判定在迭代头。同一守卫跨相位 → 两处列出。
-    afterStream: ['repeatHeal', 'meltdown', 'stall', 'repeatReminder', 'idleWatchdog', 'upstreamDead'],
+    afterStream: ['repeatHeal', 'progressRefresh', 'repeatReminder', 'meltdown', 'idleWatchdog', 'upstreamDead'],
   },
   compactor: { preStep: true, laneCompact: false },
   health: { fidelityAnchor: true, recordTurnContent: true },
@@ -90,7 +103,7 @@ export const LANE_PROFILE = {
   guards: {
     iterHead: ['wallClock', 'iterCap', 'stall'],
     inStream: ['streamWallClock', 'genRepeat', 'nearRepeat'],
-    afterStream: ['repeatHeal', 'meltdown', 'stall', 'repeatReminder', 'idleWatchdog', 'upstreamDead'],
+    afterStream: ['repeatHeal', 'progressRefresh', 'repeatReminder', 'meltdown', 'idleWatchdog', 'upstreamDead'],
   },
   compactor: { preStep: false, laneCompact: true },
   health: { fidelityAnchor: false, recordTurnContent: false },

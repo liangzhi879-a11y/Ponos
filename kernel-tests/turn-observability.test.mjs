@@ -98,27 +98,40 @@ test('collectGuardState：透传真实值 + 防御非法输入（不造数）', 
 
 // ── 静态接线：声明与实装必须一致（防"声明了却没接"或"多计"）───────────────
 
+const ENGINE_SRC = readFileSync(new URL('../kernel/engine.mjs', import.meta.url), 'utf8')
+const LOOP_CORE_SRC = readFileSync(new URL('../kernel/loop-core.mjs', import.meta.url), 'utf8')
+
 test('★ 源码接线：11 个守卫 id 每个都有命中登记；注入计数恰 5 处', () => {
-  const src = readFileSync(new URL('../kernel/engine.mjs', import.meta.url), 'utf8')
-  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // ★ 2026-09-20 批2 Task 2 起：iterHead 守卫体已**等价搬移**进 kernel/loop-core.mjs，
+  //   登记语句跟着守卫一起搬走（批1 与批2 计划双向写明的串行纪律）。
+  //   故此处改为**两文件合扫**判定「声明与实装一致」——断言语义不变：
+  //   · 每个声明 id 有 1~2 处命中登记   · 无未声明 id
+  //   · 真注入登记点总数恰 = GUARD_INJECT_IDS.length
+  const src = `${ENGINE_SRC}\n${LOOP_CORE_SRC}`
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)
+  const pat = (id) => new RegExp(String.raw`turnGuardHits\??\.push\('${esc(id)}'\)`, 'g')
 
   for (const id of GUARD_IDS) {
-    const n = (src.match(new RegExp(`turnGuardHits\\.push\\('${esc(id)}'\\)`, 'g')) || []).length
+    // 允许 `turnGuardHits.push(`（engine 内联）与 `turnGuardHits?.push(`（loop-core 走 ctx）
+    const n = (src.match(pat(id)) || []).length
     assert.ok(n >= 1, `守卫 ${id} 声明了却没有任何命中登记（漏接）`)
     assert.ok(n <= 2, `守卫 ${id} 的登记超过 2 处（可能重复计数）：${n}`)
   }
   // 反向：源码里不得出现未登记的 id（写了别人的 id = 契约漂移）
-  for (const m of src.matchAll(/turnGuardHits\.push\('([^']+)'\)/g)) {
+  for (const m of src.matchAll(/turnGuardHits\??\.push\('([^']+)'\)/g)) {
     assert.ok(GUARD_IDS.includes(m[1]) || m[1].startsWith('${'), `出现未声明的守卫 id: ${m[1]}`)
   }
-  // 注入计数：必须与 GUARD_INJECT_IDS 数量一致
-  const inj = (src.match(/turnGuardInjections\+\+/g) || []).length
-  assert.equal(inj, GUARD_INJECT_IDS.length, `turnGuardInjections++ 应恰 ${GUARD_INJECT_IDS.length} 处，实际 ${inj}`)
+  // 注入计数：真注入登记点总数必须与 GUARD_INJECT_IDS 数量一致。
+  //  · engine 侧未搬移的守卫仍是内联 `turnGuardInjections++`
+  //  · loop-core 侧走唯一注入出口的计数钩子 `turnGuardInjections?.bump()`
+  const inj = (ENGINE_SRC.match(/turnGuardInjections\+\+/g) || []).length
+    + (LOOP_CORE_SRC.match(/turnGuardInjections\??\.bump\(\)/g) || []).length
+  assert.equal(inj, GUARD_INJECT_IDS.length, `真注入登记点应恰 ${GUARD_INJECT_IDS.length} 处，实际 ${inj}`)
 
   // O1 只取长度、不复制正文
-  assert.match(src, /size: Buffer\.byteLength\(/, 'O1 的 size 必须用 Buffer.byteLength 取字节')
+  assert.match(ENGINE_SRC, /size: Buffer\.byteLength\(/, 'O1 的 size 必须用 Buffer.byteLength 取字节')
   // O2 落到轮次统计
-  assert.match(src, /guard: outcome\.guard \?\? collectGuardState\(\)/, 'O2 必须落到 turnStats.push')
+  assert.match(ENGINE_SRC, /guard: outcome\.guard \?\? collectGuardState\(\)/, 'O2 必须落到 turnStats.push')
 })
 
 // ── 运行时：干净轮（无守卫命中）─────────────────────────────────────────────

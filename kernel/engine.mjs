@@ -44,7 +44,7 @@ import { createRequestFace, fitRequestToWindow, messageTextOf, patchOrphanToolUs
 import { canonicalToolCallKey, createNearRepeatDetector, detectGenerationRepeat, isPlanTail, isThinkOnly } from './gen-guards.mjs'
 // S2/B1 Task 2：迭代头守卫体已搬入 loop-core（profile 驱动守卫序）；此处只保留宿主接线。
 // 无循环依赖：loop-core 只依赖 loop-profile（纯数据 + 纯函数），不反向引用 engine。
-import { runIterHeadGuards, runInStreamGuards } from './loop-core.mjs'
+import { runIterHeadGuards, runInStreamGuards, runAfterStreamGuards } from './loop-core.mjs'
 import { MAIN_PROFILE } from './loop-profile.mjs'
 
 // P1-6 拆分：环境阈值层与模块级支撑函数已外提为下列模块，此处以 re-export 维持原导出面，
@@ -538,9 +538,16 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         if (session) session.appendUser(text)
       },
       onGuardInject(inj) {
+        // 事件形状容两种：`{name, payload}`（契约侧规范形状，守卫统一用它）与扁平
+        // `{reason, attempt, max}`（早期手写）。**必须在宿主侧归一**，理由：守卫体不知道
+        // `wire` 长什么样（那是宿主专属），而宿主不能强求所有守卫记住同一嵌套层数 ——
+        // 实测踩过：Task 4 首个发事件的守卫传 `{name,payload}`，宿主只读 `ev.reason`
+        // ⇒ 事件被静默丢弃（注入照常、事件消失），单测才发现。
         const ev = inj?.event
-        if (!ev || typeof ev.reason !== 'string') return
-        try { wire?.system?.('guard_heal', { reason: ev.reason, attempt: ev.attempt, max: ev.max }) } catch { /* 事件失败不影响主流程 */ }
+        if (!ev) return
+        const pl = ev.payload || ev
+        if (typeof pl?.reason !== 'string') return
+        try { wire?.system?.(ev.name || 'guard_heal', { reason: pl.reason, attempt: pl.attempt, max: pl.max }) } catch { /* 事件失败不影响主流程 */ }
       },
     }
     const loopCtx = () => headGuardCtx
@@ -711,40 +718,34 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           // （疑似模型推理卡住）。2026-09-09：零数据形态优先自动重试——自建/共享
           // 服务 prefill 排队超时常见（首内容宽限耗尽≠服务已死），小幅退避后重发
           // 一次常能恢复；重试耗尽才按挂起收尾引导检查 provider。
-          if (!attemptData && idleDeadRetries < IDLE_DEAD_RETRY_MAX) {
-            idleDeadRetries++
-            watchdog.stop() // 旧看门狗定时器回收（新迭代会重建）
-            await sleep(IDLE_DEAD_RETRY_BACKOFF_MS)
-            continue // 新迭代重建 watchdog（首内容窗口重新计时）
+          //
+          // S2/B1 Task 4（等价搬移）：三态判定与文案已移入 loop-core 的 guardIdleWatchdog
+          // （afterStream 相位，timing='onError'）。此处只承担宿主专属动作：
+          // 回收看门狗定时器、退避 sleep、把已产出内容落 memory/transcript、中断迭代。
+          const idleR = await runAfterStreamGuards({
+            timing: 'onError', watchdogTripped: true, attemptData, loopStop,
+            IDLE_DEAD_RETRY_MAX, idleDeadRetries, IDLE_DEAD_RETRY_BACKOFF_MS,
+            IDLE_HEAL_MAX, idleHeals, STREAM_IDLE_MS, STREAM_FIRST_BYTE_MS, textBuf,
+          }, loopCtx())
+          if (idleR.state !== undefined) {
+            if (idleR.state.idleDeadRetries !== undefined) idleDeadRetries = idleR.state.idleDeadRetries
+            if (idleR.state.idleHeals !== undefined) idleHeals = idleR.state.idleHeals
+            if (idleR.state.textBuf !== undefined) textBuf = idleR.state.textBuf
           }
-          // 无感愈合（2026-09-10）：已产出后停顿（疑似推理中断）→ 保留已产出内容、
-          // 注入续写指令静默续跑（用户看到无缝续写）；耗尽 IDLE_HEAL_MAX 才可见收尾。
-          if (attemptData && (IDLE_HEAL_MAX < 0 || idleHeals < IDLE_HEAL_MAX)) {
-            idleHeals++
-            watchdog.stop()
-            if (textBuf.trim()) {
-              pushMemory({ role: 'assistant', content: [{ type: 'text', text: textBuf }] })
-              if (session) session.appendAssistant([{ type: 'text', text: textBuf }], { model })
+          if (idleR.stop) {
+            loopStop = idleR.stop
+          } else if (idleR.action === 'continue') {
+            if (idleR.signal === 'idle-dead-retry' || idleR.signal === 'idle-heal') {
+              watchdog.stop() // 旧看门狗定时器回收（新迭代会重建）
             }
-            const inject = '【系统】检测到你的回复在中途停顿（疑似推理中断）。请从上一条回复的断点处直接继续输出剩余内容——不要从头复述，不要重新解释已完成的部分。'
-            pushMemory({ role: 'user', content: inject })
-            if (session) session.appendUser(inject)
-            turnGuardHits.push('idleWatchdog')
-            turnGuardInjections++ // O2：空闲自愈确实注入
-            try { wire?.system?.('guard_heal', { reason: 'idle-interrupted', attempt: idleHeals, max: IDLE_HEAL_MAX }) } catch { /* 事件失败不影响主流程 */ }
-            textBuf = ''
+            if (idleR.signal === 'idle-heal' && idleR.flushText?.trim()) {
+              // 保留已产出内容（用户看到无缝续写的前提；未落库的续写会丢上下文）
+              pushMemory({ role: 'assistant', content: [{ type: 'text', text: idleR.flushText }] })
+              if (session) session.appendAssistant([{ type: 'text', text: idleR.flushText }], { model })
+            }
+            if (idleR.backoffMs) await sleep(idleR.backoffMs)
             continue
           }
-          turnGuardHits.push(attemptData ? 'idleWatchdog' : 'upstreamDead')
-          loopStop = attemptData
-            ? {
-                reason: 'idle',
-                message: `【模型输出中断（${Math.max(1, Math.round(STREAM_IDLE_MS / 1000))} 秒无数据，此前已产出部分内容——疑似模型推理中途停顿），已按挂起自动收尾。可发送「继续」让模型重试。】`,
-              }
-            : {
-                reason: 'upstream-dead',
-                message: `【模型输出中断（连接建立后 ${Math.max(1, Math.round(STREAM_FIRST_BYTE_MS / 1000))} 秒未收到任何数据——上游疑似未就绪/空转），已按挂起自动收尾。可发送「继续」重试，或检查 provider 对应模型服务是否正常后换一种方式继续。】`,
-              }
         } else if (classifyApiError(err).kind === 'model-not-found') {
           // 模型不存在/已下线（2026-09-11 改名适配）：配置级错误——引导用户重新探测
           // 模型清单（桥探测按服务端清单自动适配旧名），不盲目重试
@@ -769,17 +770,18 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           // 的典型形态）。无感愈合（2026-09-10）：引擎加载中常见，退避后静默重试
           // UPSTREAM_DEAD_HEAL_MAX 次才可见收尾（retryStream 的 1 次快重试仍保留，
           // 本层是更长的退避重试）。
-          if (upstreamDeadHeals < UPSTREAM_DEAD_HEAL_MAX) {
-            turnGuardHits.push('upstreamDead') // O2：上游死亡**只发事件、无注入** ⇒ 只登记不计数（如实，不粉饰）
-            upstreamDeadHeals++
-            try { wire?.system?.('guard_heal', { reason: 'upstream-dead', attempt: upstreamDeadHeals, max: UPSTREAM_DEAD_HEAL_MAX }) } catch { /* 事件失败不影响主流程 */ }
-            await sleep(UPSTREAM_DEAD_HEAL_BACKOFF_MS)
-            continue
-          }
-          turnGuardHits.push('upstreamDead') // O2：上游死亡硬停（同样只有事件、无注入）
-          loopStop = {
-            reason: 'upstream-dead',
-            message: `【上游服务空流：请求已被受理但未返回任何数据（疑似模型服务未就绪、加载中或已崩溃），已自动收尾。请检查 provider 对应服务是否正常，或切换 provider 后重试。】`,
+          // S2/B1 Task 4（等价搬移）：预算判定、事件与两条文案已移入 loop-core 的
+          // guardUpstreamDead（afterStream 相位，timing='onError'）；宿主只承担 sleep 与中断迭代。
+          {
+            const deadR = await runAfterStreamGuards({
+              timing: 'onError', upstreamDeadHeals, UPSTREAM_DEAD_HEAL_MAX, UPSTREAM_DEAD_HEAL_BACKOFF_MS, loopStop,
+            }, loopCtx())
+            if (deadR.state?.upstreamDeadHeals !== undefined) upstreamDeadHeals = deadR.state.upstreamDeadHeals
+            if (deadR.stop) loopStop = deadR.stop
+            else if (deadR.action === 'continue') {
+              if (deadR.backoffMs) await sleep(deadR.backoffMs)
+              continue
+            }
           }
         } else if (classifyApiError(err).kind === 'context-window' && compactor && session) {
           // 溢出兜底：先压缩腾 prompt 空间；压缩落地 → 全量输出预算重试；压缩不可落地
@@ -944,20 +946,20 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       // ——先丢弃退化流，注入"推进指令"续跑（上限 REPEAT_HEAL_MAX）。一次性打转/探测器
       // 误判 → 一轮注入即恢复，用户无感（无收尾说明进会话、无报错体感）；真死循环模型
       // 持续复现 → 耗尽上限后走下方 break 收尾（说明文本仍兜底，不烧死 token）。
-      if (loopStop && REPEAT_HEAL_MAX !== 0 && (REPEAT_HEAL_MAX < 0 || repeatHeals < REPEAT_HEAL_MAX) &&
-          (loopStop.reason === 'gen-repeat' || loopStop.reason === 'near-repeat')) {
-        turnGuardHits.push('repeatHeal')
-        turnGuardInjections++ // O2：R3-2 自愈确实注入
-        repeatHeals++
-        healedLastIter = true // 本迭代触发自愈注入（干净迭代清零的判据，见迭代起点）
-        const healReason = loopStop.reason
-        loopStop = null
-        textBuf = '' // 退化部分内容不落模型输入（与收尾路径"不落退化内容"同哲学）
-        const inject = '【系统】检测到你刚才的回复在反复复述近似内容（疑似陷入生成循环），该部分已被丢弃。请立即停止复述，直接推进当前任务——执行下一步具体行动或直接给出最终结论。'
-        pushMemory({ role: 'user', content: inject })
-        if (session) session.appendUser(inject)
-        try { wire?.system?.('guard_heal', { reason: healReason, attempt: repeatHeals, max: REPEAT_HEAL_MAX }) } catch { /* 事件异常不影响主流程 */ }
-        continue
+      // S2/B1 Task 4（等价搬移）：R3-2 重复自愈已移入 loop-core 的 guardRepeatHeal，
+      // 由 afterStream 相位（timing='postStream'）驱动。此处只保留宿主状态接线。
+      {
+        const healResult = await runAfterStreamGuards({
+          timing: 'postStream', loopStop, REPEAT_HEAL_MAX, repeatHeals, textBuf,
+        }, loopCtx())
+        if (healResult.state !== undefined) {
+          if (healResult.state.repeatHeals !== undefined) repeatHeals = healResult.state.repeatHeals
+          if (healResult.state.healedLastIter !== undefined) healedLastIter = healResult.state.healedLastIter
+          if (healResult.state.loopStop !== undefined) loopStop = healResult.state.loopStop
+          if (healResult.state.textBuf !== undefined) textBuf = healResult.state.textBuf
+        }
+        // 自愈 = 丢弃退化内容后继续下一迭代（原 `continue`，照原样）
+        if (healResult.action === 'continue') continue
       }
       if (loopStop) break // 生成重复/挂起已优雅收尾 → 本轮结束（说明文本见轮末 finalize）
       // P0-2：输出被 max_tokens 截断且已产出工具调用 → 不执行残缺参数，注入
@@ -1125,63 +1127,32 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
         pushMemory({ role: 'user', content: toolResults })
         if (session) session.appendToolResults(toolResults)
       }
-      // 守卫⑥ 进展刷新：成功且非只读测量的工具结果 = 实质进展（Write/Edit/Read/
-      // Grep/Bash/goto 等）；Browser js/snapshot（只读测量）与失败结果不刷新——
-      // "测量打转"循环因此被 LOOP_STALL_MS 停滞守卫拦下（见常量注释）。
-      // 恢复进展即清零愈合计数：自愈成功的轮次重新获得完整愈合预算。
-      // P1-6：判据来自 guards.mjs（与子 lane 共用，防两侧漂移）
-      const madeProgress = isRealProgress(blocks, toolResults)
-      if (madeProgress) { lastProgressAt = Date.now(); stallHeals = 0 }
-      // 守卫⑤：连续同工具提醒（仅提醒不否决，硬性
-      // 由迭代上限兜底）。以每轮首个 tool_use 的规范键（name+参数深排序）为基准；
-      // 键变化视为换了方向，链复位。到阈值把提示并入下一条 user 消息——顺序为
-      // assistant(tool_use) → user(tool_result) → user(提醒)，与 R3-2 注入先例
-      // 一致（连续 user 消息 API 接受）。
-      if (!loopStop && REPEAT_REMIND_AT.length && blocks.length) {
-        // 2026-09-16 口径收紧：链键取**整批**工具调用（原来只取 blocks[0]）——模型每轮以
-        // 同一调用开头、后续调用完全不同时不再误判为"连续同工具"（实测该提示是最高频的
-        // 循环守卫注入）。判据见 guards.mjs batchToolKey。
-        const key = batchToolKey(blocks, canonicalToolCallKey)
-        if (key && key === lastToolKey) {
-          repeatStreak++
-        } else {
-          repeatStreak = 1
-          lastToolKey = key
-          remindedAt = new Set()
-        }
-        // P1-6：阈值命中判定与注入文案来自 guards.mjs（与子 lane 共用同一实现与同一文案，
-        // 防两侧漂移——此前两份模板串字面相同却是两处维护）
-        if (shouldRemindRepeat(repeatStreak, REPEAT_REMIND_AT, remindedAt)) {
-          remindedAt.add(repeatStreak)
-          turnGuardHits.push('repeatReminder')
-          turnGuardInjections++ // O2：⑤ 提醒确实注入
-          const inject = repeatRemindText(repeatStreak, blocks[0].name)
-          pushMemory({ role: 'user', content: inject })
-          if (session) session.appendUser(inject)
-        }
+      // S2/B1 Task 4（等价搬移）：工具后的三类守卫（progressRefresh / repeatReminder /
+      // meltdown）已移入 loop-core，由 afterStream 相位（timing='postTools'）驱动。
+      // 判据函数（isRealProgress / batchToolKey / shouldRemindRepeat / repeatRemindText /
+      // errorMeltdownText / hasMeltdownBudget）经 state 显式传入——它们本就是
+      // guards.mjs 的纯函数（主循环与 lane 共用），搬移后共享关系不变。
+      const postToolResult = await runAfterStreamGuards({
+        timing: 'postTools',
+        loopStop, madeProgress: isRealProgress(blocks, toolResults), blocks, toolResults,
+        REPEAT_REMIND_AT, batchToolKey, canonicalToolCallKey, shouldRemindRepeat, repeatRemindText,
+        repeatStreak, lastToolKey, remindedAt,
+        MAX_ERROR_ITERATIONS, errorStreak, MELTDOWN_HEAL_MAX, meltdownHeals,
+        hasMeltdownBudget, errorMeltdownText, textBuf,
+      }, loopCtx())
+      if (postToolResult.state !== undefined) {
+        const st = postToolResult.state
+        if (st.lastProgressAt !== undefined) lastProgressAt = st.lastProgressAt
+        if (st.stallHeals !== undefined) stallHeals = st.stallHeals
+        if (st.repeatStreak !== undefined) repeatStreak = st.repeatStreak
+        if (st.lastToolKey !== undefined) lastToolKey = st.lastToolKey
+        if (st.remindedAt !== undefined) remindedAt = st.remindedAt
+        if (st.meltdownHeals !== undefined) meltdownHeals = st.meltdownHeals
+        if (st.errorStreak !== undefined) errorStreak = st.errorStreak
+        if (st.textBuf !== undefined) textBuf = st.textBuf
       }
-      if (MAX_ERROR_ITERATIONS > 0 && errorStreak >= MAX_ERROR_ITERATIONS) {
-        // 无感愈合（2026-09-10）：连续全败达阈值先注入"排查失败原因"指令静默续跑
-        // （重开失败预算）；耗尽 MELTDOWN_HEAL_MAX 才落可见收尾。
-        if (hasMeltdownBudget(meltdownHeals, MELTDOWN_HEAL_MAX)) {
-          turnGuardHits.push('meltdown')
-          turnGuardInjections++ // O2：④ 熔断自愈确实注入
-          meltdownHeals++
-          errorStreak = 0 // 重开失败预算（愈合窗口内再给一轮完整容错）
-          const inject = errorMeltdownText('main')
-          pushMemory({ role: 'user', content: inject })
-          if (session) session.appendUser(inject)
-          try { wire?.system?.('guard_heal', { reason: 'error-meltdown', attempt: meltdownHeals, max: MELTDOWN_HEAL_MAX }) } catch { /* 事件失败不影响主流程 */ }
-          textBuf = ''
-          continue
-        }
-        turnGuardHits.push('meltdown')
-        loopStop = {
-          reason: 'error-meltdown',
-          message: `【连续 ${errorStreak} 轮工具调用全部失败，已自动收尾停止重试。请检查失败原因（权限/环境/参数）后重新发起，或明确告知用户无法推进。】`,
-        }
-        break
-      }
+      if (postToolResult.action === 'continue') continue // ④ 熔断自愈（原 `continue`，照原样）
+      if (postToolResult.stop) { loopStop = postToolResult.stop; break } // ④ 硬停（原 `break`）
       // 继续下一轮 API 调用（模型看到 tool_result 后产出新回复）
       // 提问与工具调用同期（模型边问边做）：工具已执行，仍在下一轮 API 调用前挂起等待
       // ——不这么做就等于"问题还没被回答，模型已经基于工具结果继续推理"（原病灶）。

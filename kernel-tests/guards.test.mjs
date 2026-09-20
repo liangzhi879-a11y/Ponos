@@ -226,13 +226,19 @@ test('反挂账：engine.mjs 两侧 R3-2 必须都经 isClosedOut 门控（防�
   assert.match(engineSrc, /from '\.\/guards\.mjs'/)
 })
 
-test('反挂账：engine.mjs 不得回退到"每轮首个工具调用"作守卫⑤链键', () => {
+test('反挂账：守卫⑤链键不得回退到"每轮首个工具调用"（engine 主循环+lane 与 loop-core）', () => {
+  // 【Task 4 后改写】主循环的重复提醒守卫已搬入 kernel/loop-core.mjs（契约化），
+  // 故"两处都用 batchToolKey"的判据要跨两个文件数：loop-core（主循环）+ engine（子 lane）。
+  // 判据**反而更强**：它同时证明了搬移后的守卫体确实在用规范链键，而不只是"搬家了"。
+  const coreSrc = readFileSync(new URL('../kernel/loop-core.mjs', import.meta.url), 'utf8')
   assert.ok(
-    !/canonicalToolCallKey\(blocks\[0\]\)/.test(engineSrc),
+    !/canonicalToolCallKey\(blocks\[0\]\)/.test(engineSrc + coreSrc),
     '守卫⑤ 链键应走 batchToolKey(blocks, canonicalToolCallKey)，不得回退到 blocks[0]',
   )
-  const uses = [...engineSrc.matchAll(/batchToolKey\(blocks, canonicalToolCallKey\)/g)].length
-  assert.ok(uses >= 2, `主循环与子 lane 都应改用 batchToolKey，实测 ${uses} 处`)
+  const uses = [...(engineSrc + coreSrc).matchAll(/batchToolKey\(blocks, canonicalToolCallKey\)/g)].length
+  assert.ok(uses >= 2, `主循环(loop-core)与子 lane(engine)都应使用 batchToolKey，实测 ${uses} 处`)
+  assert.ok(/batchToolKey\(blocks, canonicalToolCallKey\)/.test(coreSrc),
+    'loop-core 的 repeatReminder 必须使用规范链键（否则搬移即退化）')
 })
 
 test('反挂账：子 lane 的重复自愈须与主循环同为 "-1 = 不限次" 语义', () => {
