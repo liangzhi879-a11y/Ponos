@@ -2,12 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 先把"看得见"和"最确定的浪费"解决掉——补上观测字段（O1/O2）、建立注入总账（O4）、消除经验元数据的重复常驻注入并修好其三层化（S4.5），**全部为纯增量或纯删减，零行为变更**。
+**Goal:** 先把"看得见"和"最确定的浪费"解决掉——补上观测字段（O1/O2）、建立注入总账（O4）、消除经验元数据的重复常驻注入并把经验供给三层化（S4.5）。**S1/S1+ 为零行为变更；S4.5 是口径与分层变更，目标 −8526 B/轮。**
 
-**Architecture:** 8 个任务，按"无依赖 → 有依赖"排序，每步独立可交付、可回滚：
+**Architecture:** 9 个任务，按"无依赖 → 有依赖"排序，每步独立可交付、可回滚：
 1. **S1（Task 1）**：观测层 O1（`turnToolDigest.size`）+ O2（`turnStats.guard`）。**纯增量**。
-2. **S1+（Task 2）**：注入总账 O4（`inject_snapshot` + 只读分段计量 + 渠道记账）。**纯增量**。
-3. **S4.5（Task 3–8）**：经验三层化——去重（2→1）→ 内核侧尊重 `active` → 字节口径统一 → 线索层（EL1）→ 接线与互斥 → 面板口径同步。**纯删减 + 新增只读线索**，目标 **−8526 B/轮**。
+2. **S1+（Task 2）**：注入总账 O4（`inject_snapshot` + 只读分段计量 + 渠道五分 + 来源归因）。**纯增量**。
+3. **S4.5（Task 3–9）**：经验三层化 ——
+   **Task 3** 内核侧尊重 `active`（A16，硬前置）→ **Task 4** 去重（2→1）→ **Task 5** 字节口径统一 →
+   **Task 6** **EL0 主题清单**（−4931 B/轮，A14/G3 的载体）→ **Task 7** EL1 线索层（R1–R6）→
+   **Task 8** 接线 + 观察期分名 + 与 unified 互斥（A18/A20）→ **Task 9** 面板口径同步。
+
+> ★ **任务顺序不可调**：Task 3 必须在 Task 4 之前（spec D3/§3.4 硬前置：先补 `active` 过滤再移除桥侧注入，
+> 否则"停用主题仍被注入"会从隐性变显性）。
 
 **Tech Stack:** Node.js ESM（`.mjs`）、`node:test` + `node:assert/strict`、现有 `createEngine`/`createSessionStore`、`npm run test:kernel`。
 
@@ -15,22 +21,30 @@
 
 以下为项目级硬约束，**每个任务的要求都隐含包含本节**；数值与措辞逐字来自 spec，不得改写：
 
-- **零行为变更（批 1 总原则）**：S1/S1+ **只增字段与账，不改任何注入内容、提示词、wire 序列**；S4.5 **只做去重与分层**，检索口径（评分 / 过滤 / `topK`）**一字不动**。
-- **只读长度，不重组**：分段计量**只取长度**（`Buffer.byteLength`），**不得把提示词拆成"可重排的块"**。
+- **变更性质（★ 勿读成"整批零行为变更"）**：
+  - **S1 / S1+（Task 1/2）＝ 零行为变更**：**只增字段与账**，不改任何注入内容、提示词、wire 序列。
+  - **S4.5（Task 3–9）＝ 口径与分层变更**（spec §9 Q4：「口径变更属行为变更，唯一归属 S4.5」）：去重、`active` 过滤、EL0/EL1 三层化、字节口径统一**都会改变注入量**——**这正是本批的目的**。
+    ★ **唯一不许动的是检索口径**：评分 / 过滤 / `topK` / `smartFilter` **一字不动**（三层化只改"注什么"，不改"搜什么"）。
+- **★ 与批 2 的串行纪律（文件级，非接口级）**：本批 Task 1 要在 `kernel/engine.mjs` 的**守卫命中处**插 `turnGuardHits.add(...)`；批 2 的 Task 2/3/4 会把**同一段代码**搬进 `loop-core.mjs` ⇒ **两批对 `engine.mjs` 的改动必须串行**（优选本批先落地，登记语句随后被批 2 一并搬走）。「两批无依赖」仅指**接口无依赖**。
+- **只读长度，不重组**：分段计量**只取长度**（`Buffer.byteLength`），**不得把提示词拆成"可重排的块"**（spec §4.1 S1+ ④：在 `prompt.mjs` 各段就地取长度、桥侧取 append 长度）。
 - **S1+ 不改 `build` 预算口径**：字符→字节的换算**唯一归属 S4.5（Task 5）**，S1+ 不做。
 - **不删既有字段**：`metrics.json` 的既有 `inject` / `search` 段**只增不删**（sidecar 形状不变）；`getInjectStats()` 既有字段一个都不动。
 - **不引入** `priority` / `budgetBytes` / `kind` / `phase`：那是 **S3.5**（批 2）的事。
-- **单步归属**：字节口径统一（字符→字节）**只在 Task 5 做**，其他任务不得顺手改。
+- **单步归属**：字节口径统一（字符→字节）**只在 Task 5 做**，其他任务不得顺手改；`experienceInjectBytes` 类工具**不得另造第二套换算**（复用 `kernel/memory.mjs` 的 `memoryBytes`）。
 - **EL1 关键约束**（逐字取自注入 spec §3.2.1 R1–R6 + D2/D6）：
   - **只发索引线索，不含正文**；`upgraded` 恒 `false`（**禁止全文升级**）
-  - 每行必带 `blockId`；摘要走 `makeSnippet`（默认 160，线索层可放宽至 **300**）
-  - 预载一跳锚点 ≤ **`INJECT_RELATED_TOPN`(3)**，剔除 `duplicate`；未授权空间**只给** `related` / `mode:'full'`
+  - 每行必带 `blockId`；摘要走 `makeSnippet`（默认 160，线索层可放宽至 **300**）——**复用既有实现，不另造**
+  - 预载一跳锚点 ≤ **`INJECT_RELATED_TOPN`(3)**，**按 `why.kind` 打理由**，剔除 `duplicate`；未授权空间**只给** `related` / `mode:'full'`
+  - **可读性据实三态**（`Set` 放行 / `null` 不给指引 / 未授权只给替代路径）
   - 预算**按字节记账**，装不下**丢弃整行**（不截断行内正文），**首条无条件放入**
-  - EL1 上限 **≤1.5 KB（1536 B）**；恒在 EL0 **~200 B**（A14 断言 ≤512 B）
+  - EL1 上限 **≤1.5 KB（1536 B）**；恒在 **EL0 ~200 B**（A14 断言 **≤512 B**）
   - 逃生阀**只留 `PONOS_MEMORY_EL1=0`**，**不与** `PONOS_MEMORY_INJECT` 耦合（D6）
-  - **观察期默认 `OBSERVE_ONLY`**（不真注入；`offered` / `offeredDryRun` 分名记录）
+  - **观察期默认**（`PONOS_MEMORY_EL1_OBSERVE=1`，不真注入；`offered` / `offeredDryRun` 分名记录）；
+    `adopted` / `adoptRate` 按 spec §3.2.3 提供，★ 观察期 `adopted` 语义为**不适用** ⇒ 记 `null`，**不得记 0**（A19）
+- **EL0 关键约束**（Task 6）：**保留全部主题名 + 条数**（spec :475，只裁条目级细节）；**不含条目正文**；≤512 B（A14）；停用主题不得出现（A16）。
 - **EL1 与 unified 抽调层互斥（A20）**：`strategy=legacy` → 线索段存在；`strategy=unified` → **线索段不存在**。**不改** unified 抽调层为线索形态。
 - **不删函数定义**：`buildExperienceIndex` 的**定义与 re-export 必须保留**（`npm run verify:experience-inject` 与 `server/experience.test.mjs` 四处测试依赖它）；本批**只移除 `server/bridge.mjs` 的两处「注入调用」**。
+- **点名受影响的既有测试**（spec §9 Q6）：实测最小受影响面 = `kernel-tests/knowledge-inject.test.mjs`（`:39`/`:59`/`:63` 与 `:128-132` 注释写明"`buildMemoryIndex` 内部按**字符数**比较 `maxBytes`（既有约定，不动 = 零回归）"）⇒ Task 5/Task 6 改口径后该注释**必须同步更新**（改断言使其对新形态仍有意义，**不是删断言**）。
 - **文件暂存纪律**：**禁止 `git add -A`**（常态数十项他人在途改动）。按文件精确 `git add <path>`。
 
 ### 交付前门禁（每条都不能省）
@@ -62,18 +76,20 @@ npm run verify:milestones-start                          # milestone 解析契�
 
 | 文件 | 职责 | 动作 |
 |---|---|---|
-| `kernel/inject-ledger.mjs` | **新建**。注入总账：`summarizeInjection` / `buildSegmentMeters` / `ledgerTotals`。纯函数，无 IO。 | 新建 |
-| `kernel/knowledge-recommend.mjs` | **新建（Task 6）**。EL1 线索层：`buildRecommendSection`，复用 `searchKnowledgeItems`。纯函数。 | 新建 |
+| `kernel/inject-ledger.mjs` | **新建（Task 2）**。注入总账：`CHANNELS`/`BY_SOURCE`/`buildSegmentMeters`/`summarizeInjection`/`ledgerTotals`。纯函数，无 IO。 | 新建 |
+| `kernel/knowledge-recommend.mjs` | **新建（Task 7）**。EL1 线索层：`buildRecommendSection`/`renderRecommendLine`/`shouldInjectEl1`，复用 `searchKnowledgeItems` + `makeSnippet`。纯函数。 | 新建 |
 | `kernel/engine.mjs` | O1（`turnToolDigest.size`）+ O2（`turnStats.guard`）。 | 修改（小） |
-| `kernel/knowledge-inject.mjs` | `getInjectStats()` 增 `channels`（**只增不删**）。 | 修改（小） |
-| `kernel/cli.mjs` | 轮边界挂总账（Task 2）；`beforeIter` 接线 EL1 + 推荐集合登记（Task 7）。 | 修改（小） |
-| `kernel/memory.mjs` | 内核注入侧尊重 `front.active`（Task 4）；字节口径统一（Task 5）。 | 修改（小） |
-| `server/bridge.mjs` | 移除两处常驻经验注入调用（Task 3）。**不动定义与 re-export**。 | 修改（小） |
-| `server/experience.mjs` | GUI 面板字节口径同步（Task 8）。 | 修改（小） |
-| `kernel-tests/turn-observability.test.mjs` | **新建**。O1/O2 单测。 | 新建 |
-| `kernel-tests/inject-ledger.test.mjs` | **新建**。总账与分段计量单测。 | 新建 |
-| `kernel-tests/experience-dedup.test.mjs` | **新建**。去重（2→1）与 `active` 过滤单测。 | 新建 |
-| `kernel-tests/knowledge-recommend.test.mjs` | **新建**。EL1 线索层单测（含 R1–R6 六条对照 + 边界）。 | 新建 |
+| `kernel/prompt.mjs` | **新增只读段计量** `getPromptSegmentMeters()`（spec §4.1 S1+ ④ / Q13）；**不改**内容与顺序。 | 修改（小） |
+| `kernel/knowledge-inject.mjs` | `getInjectStats()` 增 `channels`（五分）+ `bySource` + 场景三元组（**只增不删**）。 | 修改（小） |
+| `kernel/cli.mjs` | **轮末统一出口**挂总账（Task 2；★ 不是 `loop.onTurnEnd`——它在 `loop.isActive()` 内）；每轮 system 组装处接线 EL1（Task 8）。 | 修改（小） |
+| `kernel/memory.mjs` | 内核注入侧尊重 `front.active`（Task 3）；字节口径统一 `memoryBytes`（Task 5）；**EL0 主题清单**渲染（Task 6）。 | 修改（中） |
+| `server/bridge.mjs` | 移除两处常驻经验注入调用（Task 4）；桥侧 append 长度计量（Task 2）。**不动定义与 re-export**。 | 修改（小） |
+| `server/experience.mjs` | GUI 面板字节口径同步（Task 9）。 | 修改（小） |
+| `kernel-tests/turn-observability.test.mjs` | **新建（Task 1）**。O1/O2 单测。 | 新建 |
+| `kernel-tests/inject-ledger.test.mjs` | **新建（Task 2）**。总账、渠道五分与“只增不删”守护单测。 | 新建 |
+| `kernel-tests/experience-dedup.test.mjs` | **新建（Task 3）**。`active` 过滤（A16）、去重（2→1）、字节口径、**EL0**（Task 6 追加）单测。 | 新建 |
+| `kernel-tests/knowledge-recommend.test.mjs` | **新建（Task 7）**。EL1 线索层单测（R1–R6 六条对照 + 边界 + A18/A20 互斥）。 | 新建 |
+| `kernel-tests/knowledge-inject.test.mjs` | **既有，需同步更新**（Task 5/Task 6 改口径后，"按字符数比较 maxBytes"的既有注释与断言须改写为对新形态仍有意义的断言，**不删断言**）。 | 修改（小） |
 
 ---
 
@@ -282,105 +298,151 @@ git commit -m "feat(observe): S1 观测层 O1/O2 —— digest 带结果规模�
 
 **Files:**
 - Create: `kernel/inject-ledger.mjs`
-- Modify: `kernel/knowledge-inject.mjs`（`getInjectStats` 返回值增字段，**只增不删**）
-- Modify: `kernel/cli.mjs`（轮边界 `appendMeta('inject_snapshot', ...)`）
+- Modify: `kernel/prompt.mjs`（各段 `Buffer.byteLength` **只读**计量，spec §4.1 S1+ ④ / Q13）
+- Modify: `kernel/knowledge-inject.mjs`（`getInjectStats()` 增 `channels` 与 `bySource`，**只增不删**）
+- Modify: `kernel/cli.mjs`（**轮末统一出口**落快照）
 - Test: `kernel-tests/inject-ledger.test.mjs`
 
 **Interfaces:**
-- Consumes: `kernel/knowledge-inject.mjs` 的 `getInjectStats()` / `resetInjectStats()`（已存在）；`kernel/session.mjs` 的 `appendMeta`（已存在）。
+- Consumes: `kernel/knowledge-inject.mjs` 的 `getInjectStats()`/`resetInjectStats()`；`kernel/session.mjs` 的 `appendMeta`（实测 `kernel/session.mjs:343`；cli 内变量名是 `store`，不是 `session`）
 - Produces:
-  - `summarizeInjection({ turn, seq, segments, channels, ts }) → object`（规范化记录，供 `appendMeta`）
-  - `buildSegmentMeters({ systemPromptBytes, toolSchemaBytes, skillBytes, injectedBytes }) → Array<{ id, bytes }>`
-  - `ledgerTotals(records) → { totalBytes, bySegment: Record<string, number>, byChannel: Record<string, number> }`
+  - `CHANNELS = ['static', 'bridge', 'guard', 'derived', 'payload']`
+  - `BY_SOURCE = ['systemPrompt', 'toolSchema', 'skill', 'experience', 'knowledge', 'protocol', 'payload']`
+  - `buildSegmentMeters(input) → Array<{ id, bytes }>`
+  - `summarizeInjection({ turn, seq, segments, channels, bySource, promptTier, sessionMode, kb, ts }) → object`
+  - `ledgerTotals(records) → { totalBytes, bySegment, byChannel, bySource }`
+  - `resetTurnLedger()` / `nextTurnSeq()`（逐轮语义，见 Step 4d）
 
-### 背景（实现者必读）
+### 背景（实现者必读）—— 为什么不能只记 legacy/unified
 
-spec 已核实：注入散在 **12 处**、留痕不齐（`guard_heal` 全文仅 5 处；`:949`/`:965`/`:973`/`:1105` 四处注入无留痕）、**注入无账**。本任务的产出是**账**，不是改注入行为。
+spec 已核实：注入散在 **18 处**、留痕不齐（`guard_heal` 全文仅 5 处；4 处注入无留痕）、**注入无账**。
 
-**硬要求（逐字来自 spec O4）**：
-1. 每轮 `appendMeta('inject_snapshot', ...)`，含**分段计量**与**渠道记账**（legacy / unified 各记 calls / hits / injectedChars）。
-2. 计量**只取长度**，**不得重排提示词**。
+**A13 的达标条件（spec §3.3 原文口径）**：总账要能"**归因到 5% 以内**"，因此字段集必须包含
+- **渠道五分** `channels.{static, bridge, guard, derived, payload}`（不是 legacy/unified 两分——那是**检索策略**维度，不是**注入渠道**维度）
+- **来源** `bySource`（按 `systemPrompt` / `toolSchema` / `skill` / `experience` / `knowledge` / `protocol` / `payload` 归因）
+- **场景** `promptTier` / `sessionMode` / `kb`（否则跨场景混算，5% 会假红）
+
+★ **本任务原稿的三处致命问题（已按实测修正）**：
+1. 原稿 `channels` 只有 `legacy`/`unified` ⇒ 与 A13 要求的渠道五分不符，**不可归因**。
+2. 原稿 Step 9 读 `stats.systemPromptBytes` / `toolSchemaBytes` / `skillBytes` / `injectedChars` / `seq` —— **`getInjectStats()` 里这些字段全都不存在**（实测返回：`calls/strategy/indexLines/recallBlocks/elapsedMs/indexAgeMs/degraded/queries/hitQueries/scope/spacesDropped/spacesCapped/hitRate`）⇒ 全部按 0 计，**账是空的**。
+3. 原稿落点在 `cli.mjs:1322 loop.onTurnEnd`，而它位于 `if (loop.isActive())`（实测 `:1319`）内 ⇒ 只有 loop 会话有快照，**"每轮一条"不成立**。
+
+**硬要求（spec O4）**：
+1. **每轮** `appendMeta('inject_snapshot', ...)` —— 落点必须是**轮末统一出口**，与 `loop.isActive()` 无关。
+2. 计量**只取长度**（`Buffer.byteLength`），**不得重排提示词**（spec §4.1 S1+ ④：在 `prompt.mjs` 各段就地取长度、桥侧取 append 长度）。
 3. **不删** `metrics.json` 既有 `inject`/`search` 段，sidecar 形状不变。
-4. **不改** `build` 预算口径（字符→字节归 **Task 5**）。
+4. **不改** `build` 预算口径（字符→字节换算唯一归属 **Task 5**）。
+5. **`settings.memory.inject === false` 时记忆类注入全停，总账记 0 而非不记**（spec `:211`）。
 
-- [ ] **Step 1: 先核实落点（只读，5 分钟）**
+- [ ] **Step 1: 核实落点（只读，务必做完再动手）**
 
 ```bash
 cd /c/Users/T203-15/yfworking
-# ① 现有注入计量入口
-grep -n "getInjectStats\|resetInjectStats\|persistMetrics" kernel/knowledge-inject.mjs
-# ② cli.mjs 里轮边界与 appendMeta 用法
-grep -n "onTurnEnd\|appendMeta" kernel/cli.mjs | head -20
-# ③ 确认 sidecar 现有段名（不得改名/删除）
-grep -n "inject\|search" kernel/knowledge-inject.mjs | head -20
+# ① 现有注入计量入口与真实返回字段
+grep -n "export function getInjectStats\|export function resetInjectStats\|channels\|bySource" kernel/knowledge-inject.mjs
+sed -n '/export function getInjectStats/,/^}/p' kernel/knowledge-inject.mjs
+# ② prompt.mjs 的段落构成（要按段取长度）
+grep -n "export function build\|systemPrompt\|toolSchema\|skill" kernel/prompt.mjs | head -20
+# ③ 轮末统一出口（★ 不是 loop.onTurnEnd —— 它在 if (loop.isActive()) 内，实测 :1319）
+grep -n "appendMeta\|onTurnEnd\|isActive()" kernel/cli.mjs | head -20
+# ④ appendMeta 真实 API
+grep -n "appendMeta" kernel/session.mjs
 ```
 
-Expected: 找到 `getInjectStats`/`resetInjectStats` 定义、`cli.mjs` 的 `appendMeta` 调用点、sidecar 段名。**记下实际行号**——本任务后续步骤引用的行号若与实测不符，以实测为准。
+Expected:
+- 读到 `getInjectStats()` 的**真实返回字段**（据此改测试，**不要**假设 `*Bytes` 存在）
+- 定位 `prompt.mjs` 的段构造处（各段可加就地 `Buffer.byteLength`）
+- 找到**在 `if (loop.isActive())` 之外的轮末收尾段**（实测约 `:1290-1318`，以实际为准）——**记下真实行号**
+- 确认 `appendMeta` 定义（实测 `kernel/session.mjs:343`）与 cli 内持有它的变量名（实测是 `store`）
 
 - [ ] **Step 2: 写失败测试**
 
 `kernel-tests/inject-ledger.test.mjs`：
 
 ```js
-// 注入总账（S1+ / O4）：只读计量 + 渠道记账，不改注入行为
+// 注入总账（S1+ / O4）：只读计量 + 渠道五分 + 来源归因，不改注入行为
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  summarizeInjection, buildSegmentMeters, ledgerTotals,
+  CHANNELS, BY_SOURCE, buildSegmentMeters, summarizeInjection, ledgerTotals,
 } from '../kernel/inject-ledger.mjs'
 
-test('buildSegmentMeters 只取长度，输出固定段序', () => {
-  const meters = buildSegmentMeters({
-    systemPromptBytes: 1200, toolSchemaBytes: 3400,
-    skillBytes: 900, injectedBytes: 150,
-  })
-  assert.deepEqual(meters, [
-    { id: 'systemPrompt', bytes: 1200 },
-    { id: 'toolSchema', bytes: 3400 },
-    { id: 'skill', bytes: 900 },
-    { id: 'injected', bytes: 150 },
-  ])
+test('渠道五分与来源清单为规范值（A13 可归因的前提）', () => {
+  assert.deepEqual(CHANNELS, ['static', 'bridge', 'guard', 'derived', 'payload'])
+  assert.deepEqual(BY_SOURCE, ['systemPrompt', 'toolSchema', 'skill', 'experience', 'knowledge', 'protocol', 'payload'])
 })
 
-test('buildSegmentMeters 缺失输入按 0 计，不抛错', () => {
-  const meters = buildSegmentMeters({})
-  assert.deepEqual(meters.map((m) => m.bytes), [0, 0, 0, 0])
+test('buildSegmentMeters：固定段序、只取长度、缺失按 0 不抛错', () => {
+  assert.deepEqual(
+    buildSegmentMeters({ systemPromptBytes: 1200, toolSchemaBytes: 3400, skillBytes: 900, injectedBytes: 150 }),
+    [{ id: 'systemPrompt', bytes: 1200 }, { id: 'toolSchema', bytes: 3400 }, { id: 'skill', bytes: 900 }, { id: 'injected', bytes: 150 }],
+  )
+  assert.deepEqual(buildSegmentMeters({}).map((m) => m.bytes), [0, 0, 0, 0])
+  assert.equal(buildSegmentMeters({ systemPromptBytes: '10' })[0].bytes, 10)
 })
 
-test('buildSegmentMeters 接受非负数字字符串（env 口径宽容）', () => {
-  const meters = buildSegmentMeters({ systemPromptBytes: '10' })
-  assert.equal(meters[0].bytes, 10)
-})
-
-test('summarizeInjection 规范化：渠道缺省为 null 而非 0（区分未用与用了 0 条）', () => {
+test('summarizeInjection：五渠道全部就位，缺失渠道为 null（区分未用与 0 命中）', () => {
   const rec = summarizeInjection({ turn: 3, seq: 7, segments: [{ id: 'injected', bytes: 42 }] })
   assert.equal(rec.turn, 3)
   assert.equal(rec.seq, 7)
-  assert.equal(rec.legacy, null)
-  assert.equal(rec.unified, null)
   assert.equal(rec.totalBytes, 42)
+  for (const c of CHANNELS) assert.ok(c in rec.channels, `缺渠道 ${c}`)
+  assert.equal(rec.channels.static, null)
 })
 
-test('summarizeInjection 透传渠道计数（calls/hits/injectedChars）', () => {
+test('summarizeInjection：渠道计数透传（calls/hits/injectedBytes）', () => {
   const rec = summarizeInjection({
     turn: 1, seq: 1, segments: [{ id: 'injected', bytes: 5 }],
-    channels: { legacy: { calls: 2, hits: 1, injectedChars: 300 } },
+    channels: { guard: { calls: 2, hits: 1, injectedBytes: 300 } },
   })
-  assert.deepEqual(rec.legacy, { calls: 2, hits: 1, injectedChars: 300 })
-  assert.equal(rec.unified, null)
+  assert.deepEqual(rec.channels.guard, { calls: 2, hits: 1, injectedBytes: 300 })
+  assert.equal(rec.channels.bridge, null)
 })
 
-test('ledgerTotals 汇总分段与渠道', () => {
+test('summarizeInjection：场景三元组齐备（跨场景混算会让 5% 假红）', () => {
+  const rec = summarizeInjection({ turn: 1, seq: 1, promptTier: 'full', sessionMode: 'task', kb: 'on' })
+  assert.equal(rec.promptTier, 'full')
+  assert.equal(rec.sessionMode, 'task')
+  assert.equal(rec.kb, 'on')
+})
+
+test('bySource 归因：来源缺失按 0，存在则透传', () => {
+  const rec = summarizeInjection({ turn: 1, seq: 1, bySource: { experience: 90, knowledge: 10 } })
+  assert.equal(rec.bySource.experience, 90)
+  assert.equal(rec.bySource.knowledge, 10)
+  assert.equal(rec.bySource.guard ?? 0, 0)
+})
+
+test('ledgerTotals：汇总分段、五渠道与来源', () => {
   const recs = [
-    summarizeInjection({ turn: 1, seq: 1, segments: [{ id: 'injected', bytes: 10 }, { id: 'skill', bytes: 5 }], channels: { legacy: { calls: 1, hits: 1, injectedChars: 10 } } }),
-    summarizeInjection({ turn: 2, seq: 2, segments: [{ id: 'injected', bytes: 20 }], channels: { legacy: { calls: 1, hits: 0, injectedChars: 0 } } }),
+    summarizeInjection({ turn: 1, seq: 1, segments: [{ id: 'injected', bytes: 10 }, { id: 'skill', bytes: 5 }], channels: { guard: { calls: 1, hits: 1, injectedBytes: 10 } }, bySource: { experience: 10 } }),
+    summarizeInjection({ turn: 2, seq: 2, segments: [{ id: 'injected', bytes: 20 }], channels: { guard: { calls: 1, hits: 0, injectedBytes: 0 } }, bySource: { experience: 20 } }),
   ]
   const t = ledgerTotals(recs)
   assert.equal(t.totalBytes, 35)
   assert.equal(t.bySegment.injected, 30)
   assert.equal(t.bySegment.skill, 5)
-  assert.equal(t.byChannel.legacy.calls, 2)
-  assert.equal(t.byChannel.legacy.hits, 1)
+  assert.equal(t.byChannel.guard.calls, 2)
+  assert.equal(t.byChannel.guard.hits, 1)
+  assert.equal(t.bySource.experience, 30)
+})
+
+test('★ 记忆注入关闭时记 0 而非不记（spec :211）', () => {
+  const rec = summarizeInjection({ turn: 1, seq: 1, channels: { derived: { calls: 0, hits: 0, injectedBytes: 0 } } })
+  assert.deepEqual(rec.channels.derived, { calls: 0, hits: 0, injectedBytes: 0 })
+  assert.notEqual(rec.channels.derived, null)
+})
+
+test('getInjectStats 保留既有字段且新增 channels/bySource（只增不删）', async () => {
+  const mod = await import('../kernel/knowledge-inject.mjs')
+  const before = mod.getInjectStats()
+  const baseline = Object.keys(before).sort()
+  assert.ok(baseline.length > 0, '既有返回不得为空')
+  mod.resetInjectStats?.()
+  assert.ok('channels' in mod.getInjectStats(), 'channels 字段应存在')
+  assert.ok('bySource' in mod.getInjectStats(), 'bySource 字段应存在')
+  // 既有字段一个都不能少
+  for (const k of baseline) assert.ok(k in mod.getInjectStats(), `既有字段被删: ${k}`)
 })
 ```
 
@@ -390,7 +452,7 @@ test('ledgerTotals 汇总分段与渠道', () => {
 node --test --test-timeout=120000 kernel-tests/inject-ledger.test.mjs
 ```
 
-Expected: FAIL —— `Cannot find module '../kernel/inject-ledger.mjs'`。
+Expected: FAIL —— `Cannot find module '../kernel/inject-ledger.mjs'`（后续 `getInjectStats` 用例亦红：`channels`/`bySource` 尚不存在）。
 
 - [ ] **Step 4: 写最小实现**
 
@@ -399,15 +461,21 @@ Expected: FAIL —— `Cannot find module '../kernel/inject-ledger.mjs'`。
 ```js
 // 注入总账（S1+ / O4）
 // ---------------------------------------------------------------------------
-// 目的：让每一次注入都有账——"注了什么、占了多少、走的是哪条渠道"。
+// 目的：让每一次注入都有账——"注了什么、占了多少、走哪条渠道、来自哪个来源"。
+// A13 要求"可归因到 5% 以内"，故维度必须齐备：
+//   · 渠道五分 channels.{static,bridge,guard,derived,payload}（注入渠道维度）
+//   · 来源归因 bySource（systemPrompt/toolSchema/skill/experience/knowledge/protocol/payload）
+//   · 场景三元组 promptTier/sessionMode/kb（跨场景混算会让 5% 假红）
 // 硬约束（spec O4）：
 //   ① 只取长度，不得重排提示词（本模块不持有提示词，只接收已算好的字节数）
 //   ② 不删 metrics.json 既有 inject/search 段（本模块不写 metrics.json）
 //   ③ 不改 build 预算口径（字符→字节换算归 S4.5 / Task 5）
-// 纯函数、无 IO：便于单测与复用。
+// 纯函数、无 IO。
+
+export const CHANNELS = ['static', 'bridge', 'guard', 'derived', 'payload']
+export const BY_SOURCE = ['systemPrompt', 'toolSchema', 'skill', 'experience', 'knowledge', 'protocol', 'payload']
 
 const SEGMENT_ORDER = ['systemPrompt', 'toolSchema', 'skill', 'injected']
-
 const SEGMENT_KEYS = {
   systemPrompt: 'systemPromptBytes',
   toolSchema: 'toolSchemaBytes',
@@ -415,16 +483,13 @@ const SEGMENT_KEYS = {
   injected: 'injectedBytes',
 }
 
-/** 非负整数化：缺失/非数字按 0（env 口径宽容，不抛错） */
+/** 非负整数化：缺失/非数字按 0（口径宽容，不抛错） */
 function n(v) {
   const x = Number(v)
   return Number.isFinite(x) && x > 0 ? Math.floor(x) : 0
 }
 
-/**
- * 只读分段计量。固定段序，缺失按 0。
- * @returns {Array<{id: string, bytes: number}>}
- */
+/** 只读分段计量。固定段序，缺失按 0。 */
 export function buildSegmentMeters(input) {
   const src = input || {}
   return SEGMENT_ORDER.map((id) => ({ id, bytes: n(src[SEGMENT_KEYS[id]]) }))
@@ -432,28 +497,38 @@ export function buildSegmentMeters(input) {
 
 function normalizeChannel(ch) {
   if (!ch || typeof ch !== 'object') return null
-  return {
-    calls: n(ch.calls),
-    hits: n(ch.hits),
-    injectedChars: n(ch.injectedChars),
-  }
+  return { calls: n(ch.calls), hits: n(ch.hits), injectedBytes: n(ch.injectedBytes) }
+}
+
+function normalizeBySource(bs) {
+  const out = {}
+  for (const k of BY_SOURCE) out[k] = n(bs?.[k])
+  return out
 }
 
 /**
  * 规范化一条注入快照，供 appendMeta('inject_snapshot', ...) 使用。
- * 渠道缺省为 null（区分"未走该渠道"与"走了但 0 命中"）。
+ * 渠道缺失为 null（区分"未走该渠道"与"走了但 0 命中"）；
+ * ★ 但显式传入的 0 必须保留（"记忆注入关闭 ⇒ 记 0 而非不记"，spec :211）。
  */
-export function summarizeInjection({ turn, seq, segments, channels, ts } = {}) {
+export function summarizeInjection({
+  turn, seq, segments, channels, bySource, promptTier, sessionMode, kb, ts,
+} = {}) {
   const segs = Array.isArray(segments) ? segments.map((s) => ({ id: String(s.id), bytes: n(s.bytes) })) : []
   const ch = channels || {}
+  const outChannels = {}
+  for (const name of CHANNELS) outChannels[name] = normalizeChannel(ch[name])
   return {
     turn: Number.isFinite(turn) ? Math.floor(turn) : null,
     seq: Number.isFinite(seq) ? Math.floor(seq) : null,
     ts: Number.isFinite(ts) ? Math.floor(ts) : Date.now(),
     segments: segs,
     totalBytes: segs.reduce((a, s) => a + s.bytes, 0),
-    legacy: normalizeChannel(ch.legacy),
-    unified: normalizeChannel(ch.unified),
+    channels: outChannels,
+    bySource: normalizeBySource(bySource),
+    promptTier: promptTier ?? null,
+    sessionMode: sessionMode ?? null,
+    kb: kb ?? null,
   }
 }
 
@@ -461,22 +536,85 @@ export function summarizeInjection({ turn, seq, segments, channels, ts } = {}) {
 export function ledgerTotals(records) {
   const bySegment = {}
   const byChannel = {}
+  const bySource = {}
   let totalBytes = 0
   for (const rec of records || []) {
     totalBytes += n(rec.totalBytes)
     for (const s of rec.segments || []) bySegment[s.id] = (bySegment[s.id] || 0) + n(s.bytes)
-    for (const name of ['legacy', 'unified']) {
-      const c = rec[name]
+    for (const name of CHANNELS) {
+      const c = rec.channels?.[name]
       if (!c) continue
-      byChannel[name] = byChannel[name] || { calls: 0, hits: 0, injectedChars: 0 }
+      byChannel[name] = byChannel[name] || { calls: 0, hits: 0, injectedBytes: 0 }
       byChannel[name].calls += c.calls
       byChannel[name].hits += c.hits
-      byChannel[name].injectedChars += c.injectedChars
+      byChannel[name].injectedBytes += c.injectedBytes
     }
+    for (const k of BY_SOURCE) bySource[k] = (bySource[k] || 0) + n(rec.bySource?.[k])
   }
-  return { totalBytes, bySegment, byChannel }
+  return { totalBytes, bySegment, byChannel, bySource }
 }
 ```
+
+- [ ] **Step 4b: `kernel/prompt.mjs` 各段只读计量（spec §4.1 S1+ ④ / Q13）**
+
+spec 原文要求：**「`prompt.mjs` 各段 `Buffer.byteLength` + 桥侧 append 长度」**。这是 A13 的**数据来源**，不做这一步则总账没有真值。
+
+在 `kernel/prompt.mjs` 段构造处就地记录长度（**只读，不改内容与顺序**）：
+
+```js
+// S1+ O4：各段只读字节计量（只取长度，不重排、不改内容）
+// 说明：用 Buffer.byteLength 而非 String.length（UTF-16 码元数对中文低估 3 倍）
+const __segMeters = { systemPromptBytes: 0, toolSchemaBytes: 0, skillBytes: 0, injectedBytes: 0 }
+function __meter(key, text) { __segMeters[key] = Buffer.byteLength(String(text ?? ''), 'utf8'); return text }
+```
+
+在各段（system prompt / tool schema / skill 注入段 / 注入拼接段）取值后调用 `__meter('systemPromptBytes', sys)` 等，并把结果挂到既有导出上（**新增导出** `getPromptSegmentMeters()`，不删任何既有导出）。
+
+> ★ **桥侧 append 长度**：`server/bridge.mjs` 的 append 处同样取一次 `Buffer.byteLength`，累加进 `bySource.bridge`（spec Q13 明确这一步属于 S1+ 范围）。
+
+- [ ] **Step 4c: `getInjectStats()` 增字段（**只增不删**）**
+
+在 `kernel/knowledge-inject.mjs` 的 `getInjectStats()` 返回值上**新增**（保留全部既有字段）：
+
+```js
+// 新增（既有字段一个都不动）：
+//   channels: { static:{calls,hits,injectedBytes}, bridge:…, guard:…, derived:…, payload:… },
+//   bySource: { systemPrompt:…, toolSchema:…, skill:…, experience:…, knowledge:…, protocol:…, payload:… },
+//   promptTier, sessionMode, kb
+```
+
+**要求**：
+- `static` 由 Step 4b 的 prompt 段计量映射；`bridge` 由桥侧 append 累加；`guard` 由守卫注入累加；`derived` 由 `beforeIter` 派生注入累加；`payload` 由轮载荷累加。
+- `unified` 路径从未在生产启用（实测 `resolveInjectMode` 默认 `legacy`）⇒ **如实为 0，不造数**。
+- **不得**删除或改名任何既有字段（`calls`/`strategy`/`indexLines`/`recallBlocks`/`elapsedMs`/`indexAgeMs`/`degraded`/`queries`/`hitQueries`/`scope`/`spacesDropped`/`spacesCapped`/`hitRate`）。
+
+- [ ] **Step 4d: 落点改到**轮末统一出口**（★ 不是 `loop.onTurnEnd`）**
+
+实测 `cli.mjs:1322 loop.onTurnEnd` 位于 `if (loop.isActive())`（`:1319`）内 ⇒ 只在 loop 会话生效。改为在**每个轮末都走的收尾段**（实测约 `:1290-1318`，以 Step 1 实测为准）落快照：
+
+```js
+// S1+ O4：每轮一条注入总账（与 loop.isActive() 无关）
+try {
+  const stats = deps?.knowledge?.getInjectStats?.() || {}
+  const segments = buildSegmentMeters({
+    ...getPromptSegmentMeters(),                  // Step 4b
+    injectedBytes: stats.channels?.derived?.injectedBytes
+      + stats.channels?.guard?.injectedBytes
+      + stats.channels?.bridge?.injectedBytes,
+  })
+  store.appendMeta('inject_snapshot', summarizeInjection({   // ★ 变量名实测是 store
+    turn, seq: nextTurnSeq(),
+    segments,
+    channels: stats.channels,
+    bySource: stats.bySource,
+    promptTier: stats.promptTier, sessionMode: stats.sessionMode, kb: stats.kb,
+  }))
+} catch { /* 记账失败绝不影响主流程 */ }
+```
+
+**逐轮语义（易错点）**：`resetInjectStats()` 现有 `acc` 是**进程级累计**，逐轮直接读会拿到累计值 ⇒ 由本任务新增的 `nextTurnSeq()` 记录轮号，并在**每轮开始或轮末读数后**调用 `resetInjectStats()`（**二选一，选定后在注释里写明**，不要两头都调导致漏账）。
+
+**必须 `try/catch`**：账不能影响主流程。
 
 - [ ] **Step 5: 运行测试确认通过**
 
@@ -484,105 +622,175 @@ export function ledgerTotals(records) {
 node --test --test-timeout=120000 kernel-tests/inject-ledger.test.mjs
 ```
 
-Expected: PASS（6 个用例全绿）。
+Expected: PASS（9 个用例全绿）。
 
-- [ ] **Step 6: 接渠道记账到 knowledge-inject（只增不删）**
-
-在 `kernel/knowledge-inject.mjs` 的 `getInjectStats()` 返回值上**新增** `channels` 字段（保留全部既有字段）：
-
-```js
-// getInjectStats() 返回值新增（既有字段一个都不动）：
-//   channels: {
-//     legacy:  { calls, hits, injectedChars },   // 来自现有 graph.search 计数
-//     unified: { calls, hits, injectedChars },   // unified 路径从未启用时恒为 0
-//   }
-```
-
-**要求**：若现有实现里 legacy 的 calls/hits 已有变量，直接映射；`injectedChars` 若未统计，**新增累加但不改现有累加语义**。**不得**删除或改名任何既有字段。
-
-> 参考：`resolveInjectMode`（`kernel/knowledge-inject.mjs` 约 `:52`）默认 `legacy`（unified 从未在生产启用）⇒ `unified` 渠道记账应如实为 0，**不要**造数。
-
-- [ ] **Step 7: 写"只增不删"守护测试**
-
-追加到 `kernel-tests/inject-ledger.test.mjs`：
-
-```js
-test('getInjectStats 保留既有字段且新增 channels（只增不删）', async () => {
-  const mod = await import('../kernel/knowledge-inject.mjs')
-  mod.resetInjectStats?.()
-  const s = mod.getInjectStats()
-  assert.equal(typeof s, 'object')
-  assert.ok('channels' in s, 'channels 字段应存在')
-  assert.ok(s.channels.legacy && s.channels.unified, 'legacy/unified 两条渠道都应存在')
-})
-```
-
-- [ ] **Step 8: 运行测试**
-
-```bash
-node --test --test-timeout=120000 kernel-tests/inject-ledger.test.mjs
-```
-
-Expected: PASS（7 个用例）。
-
-- [ ] **Step 9: 在 cli.mjs 轮边界落总账**
-
-在 `cli.mjs` 的轮边界处（`loop.onTurnEnd` 或等价位置，Step 1 已定位实际行号）追加：
-
-```js
-// 注入总账（S1+ / O4）：每轮一条，只读计量
-try {
-  const stats = deps?.knowledge?.getInjectStats?.() || {}
-  const segments = buildSegmentMeters({
-    systemPromptBytes: stats.systemPromptBytes,
-    toolSchemaBytes: stats.toolSchemaBytes,
-    skillBytes: stats.skillBytes,
-    injectedBytes: stats.injectedChars,
-  })
-  session.appendMeta('inject_snapshot', summarizeInjection({
-    turn, seq: stats.seq, segments,
-    channels: { legacy: stats.channels?.legacy, unified: stats.channels?.unified },
-  }))
-} catch { /* 记账失败绝不影响主流程 */ }
-```
-
-**要点**：
-- `import { buildSegmentMeters, summarizeInjection } from './inject-ledger.mjs'`
-- **必须** `try/catch` 吞掉记账异常——**账不能影响主流程**。
-- `stats.*Bytes` 若上游暂无值，`buildSegmentMeters` 会按 0 计（不抛错）；**不要**为了填满而重组提示词（违反硬约束①）。
-
-- [ ] **Step 10: 跑核心门禁**
+- [ ] **Step 6: 跑核心门禁**
 
 ```bash
 cd /c/Users/T203-15/yfworking
 npm run test:kernel
-```
-
-Expected: 212 个测试文件全绿（基线 **210** + Task 1 新增 1 + 本任务新增 1）。
-
-```bash
 npm run verify:experience-inject && npm run verify:milestones-start
 ```
 
-Expected: 两者 EXIT=0（本任务不动经验注入契约与 milestone 解析）。
+Expected: 全绿（基线 210 + Task 1 新增 1 + 本任务新增 1 = 212 文件）；两个 verify EXIT=0（本任务不动经验注入契约与 milestone 解析）。
 
-- [ ] **Step 11: 提交（按文件精确 add）**
+- [ ] **Step 7: 提交（按文件精确 add）**
 
 ```bash
 cd /c/Users/T203-15/yfworking
-git add kernel/inject-ledger.mjs kernel-tests/inject-ledger.test.mjs kernel/knowledge-inject.mjs kernel/cli.mjs
-git commit -m "feat(inject): S1+ 注入总账（O4）—— 每轮 inject_snapshot + 只读分段计量
+git add kernel/inject-ledger.mjs kernel-tests/inject-ledger.test.mjs kernel/prompt.mjs kernel/knowledge-inject.mjs kernel/cli.mjs server/bridge.mjs
+git commit -m "feat(inject): S1+ 注入总账（O4）—— 每轮 inject_snapshot，渠道五分 + 来源归因
 
-- 新建 kernel/inject-ledger.mjs（纯函数）：summarizeInjection/buildSegmentMeters/ledgerTotals
-- knowledge-inject getInjectStats 增 channels（legacy/unified 各记 calls/hits/injectedChars），既有字段只增不删
-- cli.mjs 轮边界 appendMeta('inject_snapshot')，try/catch 吞异常（记账不影响主流程）
-- 硬约束：只取长度不重排提示词；不改 build 预算口径（字符→字节归 S4.5/Task 5）；metrics.json 段名不变
-- 测试 7 例；注入散在 12 处且 4 处无留痕，本任务先立账不动行为"
+- 新建 kernel/inject-ledger.mjs（纯函数）：CHANNELS/BY_SOURCE、
+  buildSegmentMeters/summarizeInjection/ledgerTotals
+- ★ 修正原稿三处致命问题（逐行实测）：
+  1) 渠道原为 legacy/unified 两分 ⇒ 那是检索策略维度，不是注入渠道维度，
+     与 A13「可归因到 5% 以内」不符；已改为渠道五分 static/bridge/guard/derived/payload
+  2) 原稿读 stats.systemPromptBytes/toolSchemaBytes/skillBytes/injectedChars/seq
+     —— 这些字段在 getInjectStats() 中**均不存在**，账会全为 0；
+     改为补做 spec §4.1 S1+④ 的 prompt.mjs 各段 Buffer.byteLength 只读计量 + 桥侧 append 长度
+  3) 原稿落点 cli.mjs:1322 loop.onTurnEnd 位于 if (loop.isActive()) 内 ⇒ 只有 loop 会话有账；
+     改为落在轮末统一收尾段，与 loop.isActive() 无关
+- 场景三元组 promptTier/sessionMode/kb 齐备（跨场景混算会让 5% 假红）
+- 记忆注入关闭时记 0 而非不记（spec :211）；unified 渠道如实为 0（不造数）
+- 逐轮语义：resetInjectStats 原为进程级累计，新增 nextTurnSeq 并明确重置时点
+- 硬约束：只取长度不重排提示词；不改 build 预算口径（归 Task 5）；metrics.json 段名不变
+- 记账异常 try/catch 吞掉，绝不影响主流程
+- 测试 9 例（含\"只增不删\"守护）"
 ```
 
 ---
 
-## Task 3: S4.5① —— 去重：移除 `server/bridge.mjs` 两处常驻经验注入
+## Task 3: S4.5② —— 内核注入侧尊重 `active`（A16）
+
+**Files:**
+- Modify: `kernel/memory.mjs`（`buildMemoryIndex` 约 `:99`、`buildRelevantMemory` 约 `:140`）
+- Test: `kernel-tests/experience-dedup.test.mjs`（追加）
+
+**Interfaces:**
+- Consumes: `readTheme(root, theme) → { front, entries }`（`kernel/memory.mjs`，`front.active` 由 `:87-89` 写入）
+- Produces: `buildMemoryIndex(...)` / `buildRelevantMemory(...)` 跳过 `front.active === 'false'` 的主题
+
+### 背景（实现者必读）—— 这是本批**最关键的事实修正**
+
+spec（增量 §4.1）旧表述写的是「`memory.mjs` 补 `front.active`」。**逐行核实后：这个表述不准确**：
+
+| 环节 | 实测状态 |
+|---|---|
+| **写入侧** | ✅ **已实现**：`kernel/memory.mjs:87-89` 写 `{ name: theme, description: theme, active: true }`；`server/experience.mjs:37` 同 |
+| **服务端读取侧** | ✅ **已生效**：`server/experience.mjs:101`（`active: data.front.active !== 'false'`）、`:115`、`:131`、`:163`（`.filter(x => x.active && ...)`）、`:217` |
+| **内核注入侧** | ❌ **漏判（真实缺口）**：`kernel/memory.mjs:99 buildMemoryIndex` 在 `:105` 只解构 `const { entries } = readTheme(root, theme)`，**从不读 `front.active`**；`:140 buildRelevantMemory` 同样不读 |
+
+⇒ **后果（A16）**：用户在图谱 GUI 里停用主题 T 后，**服务端不注入 T，但内核仍会注入 T** —— 停用形同虚设。
+
+⇒ **本任务的正确目标**：让**内核的两个注入函数尊重 `active`**，**不是**"补写入 active"。
+
+- [ ] **Step 1: 核实缺口（只读，确认我的结论）**
+
+```bash
+cd /c/Users/T203-15/yfworking
+grep -n "active" kernel/memory.mjs server/experience.mjs | head -20
+grep -n "const { entries } = readTheme\|const { front\b\|readTheme(" kernel/memory.mjs | head -20
+```
+
+Expected: 看到写入侧（`kernel/memory.mjs:87-89`）、服务端过滤（`server/experience.mjs:101/115/131/163`）、内核侧 `:105` 只取 `entries` 的证据。**若实测与上表不符，以实测为准并改写本任务**。
+
+- [ ] **Step 2: 写失败测试**
+
+追加到 `kernel-tests/experience-dedup.test.mjs`：
+
+```js
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { mkdirSync } from 'node:fs'   // ← 仅当 Step 1 确认需要造目录时保留；实测扁平文件形状**不需要**
+import { buildMemoryIndex, buildRelevantMemory } from '../kernel/memory.mjs'
+
+/** 造一个含 active:true / active:false 两个主题的记忆根（★ 扁平文件形状） */
+function mkMemoryRoot() {
+  const root = mkdtempSync(join(tmpdir(), 'mem-active-'))
+  for (const { theme, active } of [{ theme: '启用主题', active: 'true' }, { theme: '停用主题', active: 'false' }]) {
+    // ★ 实测形状：主题是**扁平文件** root/<主题>.md（kernel/memory.mjs:29-31 themePath），
+    //   frontmatter 与条目**同文件**（:83-85 写 front + 条目）；**不是**目录，也**没有** _front.md
+    const lines = ['---', `name: ${theme}`, `description: ${theme}`, `active: ${active}`, '---',
+      `- [会话|标签] ${theme} 的条目 -- 全文`]
+    writeFileSync(join(root, `${theme}.md`), `${lines.join('\n')}\n`, 'utf8')
+  }
+  return root
+}
+
+test('buildMemoryIndex 跳过 active:false 的主题（A16）', () => {
+  const root = mkMemoryRoot()
+  const text = buildMemoryIndex({ root, maxBytes: 4096 })      // ★ 实测签名 ({root, maxBytes})，无 keywords
+  assert.ok(text.includes('启用主题'), '启用主题应被注入')
+  assert.ok(!text.includes('停用主题'), '停用主题不应被注入')
+})
+
+test('buildRelevantMemory 同样跳过 active:false 的主题（A16：两个注入函数都要覆盖）', () => {
+  const root = mkMemoryRoot()
+  const text = buildRelevantMemory({ root, keywords: ['启用主题', '停用主题'], maxBytes: 4096 })
+  assert.ok(!String(text).includes('停用主题'), '停用主题不应被相关记忆注入')
+})
+```
+
+> ⚠️ `buildMemoryIndex`（实测 `:99 ({root, maxBytes})`）与 `buildRelevantMemory`（实测 `:140`）的**真实签名与返回形状必须先 Read 确认**（`keywords` 属后者，不属前者——原稿把两者的参数混用了）。若实测不同，**改测试以匹配真实签名**，但**断言意图不变**（停用主题在两处都不得出现）。
+
+- [ ] **Step 3: 运行测试确认失败**
+
+```bash
+node --test --test-timeout=120000 kernel-tests/experience-dedup.test.mjs
+```
+
+Expected: FAIL —— 输出中**仍含** `停用主题`（复现 A16 的漏判）。
+
+- [ ] **Step 4: 实现（内核侧尊重 active）**
+
+在 `kernel/memory.mjs` 的**两个**注入函数中，改为同时取 `front` 并跳过停用主题：
+
+```js
+// buildMemoryIndex（约 :99，原：const { entries } = readTheme(root, theme)）
+const { front, entries } = readTheme(root, theme)
+// A16：内核侧也尊重 active（此前只读 entries，导致停用主题仍被注入）
+if (front && String(front.active) === 'false') continue   // 若在循环内
+```
+
+并在 `buildRelevantMemory`（约 `:140`）做**同样的**判断。
+
+**实现要点**：
+- 判定语义与服务端**保持一致**：`server/experience.mjs:101` 用的是 `data.front.active !== 'false'` ⇒ 内核侧用**同一口径** `String(front.active) === 'false'` 视为停用（**不要**改成 `!front.active`——那会把 `undefined` 也判成停用，与现状不兼容）。
+- 若函数是"先收集后渲染"结构，`continue` 替换为等价的过滤（如 `.filter(...)`）。
+- **不改** `readTheme`（它已返回 `front`）。
+
+- [ ] **Step 5: 运行测试确认通过 + 门禁**
+
+```bash
+cd /c/Users/T203-15/yfworking
+node --test --test-timeout=120000 kernel-tests/experience-dedup.test.mjs
+npm run test:kernel
+```
+
+Expected: PASS；内核测试全绿（**A16** 达成）。
+
+- [ ] **Step 6: 提交**
+
+```bash
+cd /c/Users/T203-15/yfworking
+git add kernel/memory.mjs kernel-tests/experience-dedup.test.mjs
+git commit -m "fix(memory): S4.5② 内核注入侧尊重 front.active（A16）
+
+- 事实修正：active 的写入侧（kernel/memory.mjs:87-89）与服务端读取侧
+  （server/experience.mjs:101/115/131/163）**早已实现**，真实缺口在内核注入侧——
+  buildMemoryIndex(:99，:105 只解构 entries) 与 buildRelevantMemory(:140) 从不读 front.active
+  ⇒ 图谱停用主题后服务端不注入、内核仍注入，停用形同虚设
+- 修复：两个函数同时取 front，按 String(front.active)==='false' 跳过
+  （口径与服务端 data.front.active !== 'false' 一致；不改成 !front.active 以免 undefined 判成停用）
+- 新增测试：停用主题不得出现在注入文本中（复现→修复）
+- 不改 readTheme（已返回 front）"
+```
+
+---
+
+## Task 4: S4.5① —— 去重：移除 `server/bridge.mjs` 两处常驻经验注入
 
 **Files:**
 - Modify: `server/bridge.mjs`（移除约 `:1609` / `:1647` 两处 `buildExperienceIndex(...)` **调用**）
@@ -593,6 +801,12 @@ git commit -m "feat(inject): S1+ 注入总账（O4）—— 每轮 inject_snapsh
 - Produces: system 中经验相关内容**出现次数 2 → 1**
 
 ### 背景（实现者必读）
+
+> ★★ **硬前置（spec D3 / §3.4）：必须先完成 Task 3（内核侧尊重 `active`）再执行本任务。**
+> 依据：spec D3「**前置硬约束**：先补 `front.active` 过滤，**再**移除桥侧 `buildExperienceIndex`」；
+> §3.4「**必须先做**，否则去重后'停用主题仍被注入'从隐性变**显性**」——去重后只剩内核侧一份注入，
+> 若内核侧不认 `active`，用户在图谱停用主题**将完全无效**（比去重前更难解释）。
+> ⇒ **本任务不得先于 Task 3 提交**；已在 `kernel-tests/experience-dedup.test.mjs` 有 Task 3 的 A16 用例作为前置哨兵。
 
 **问题**：`server/bridge.mjs` 有两处把经验索引拼进 prompt：
 
@@ -706,128 +920,6 @@ git commit -m "fix(experience): S4.5① 去重 —— 移除 server/bridge.mjs �
 
 ---
 
-## Task 4: S4.5② —— 内核注入侧尊重 `active`（A16）
-
-**Files:**
-- Modify: `kernel/memory.mjs`（`buildMemoryIndex` 约 `:99`、`buildRelevantMemory` 约 `:140`）
-- Test: `kernel-tests/experience-dedup.test.mjs`（追加）
-
-**Interfaces:**
-- Consumes: `readTheme(root, theme) → { front, entries }`（`kernel/memory.mjs`，`front.active` 由 `:87-89` 写入）
-- Produces: `buildMemoryIndex(...)` / `buildRelevantMemory(...)` 跳过 `front.active === 'false'` 的主题
-
-### 背景（实现者必读）—— 这是本批**最关键的事实修正**
-
-spec（增量 §4.1）旧表述写的是「`memory.mjs` 补 `front.active`」。**逐行核实后：这个表述不准确**：
-
-| 环节 | 实测状态 |
-|---|---|
-| **写入侧** | ✅ **已实现**：`kernel/memory.mjs:87-89` 写 `{ name: theme, description: theme, active: true }`；`server/experience.mjs:37` 同 |
-| **服务端读取侧** | ✅ **已生效**：`server/experience.mjs:101`（`active: data.front.active !== 'false'`）、`:115`、`:131`、`:163`（`.filter(x => x.active && ...)`）、`:217` |
-| **内核注入侧** | ❌ **漏判（真实缺口）**：`kernel/memory.mjs:99 buildMemoryIndex` 在 `:105` 只解构 `const { entries } = readTheme(root, theme)`，**从不读 `front.active`**；`:140 buildRelevantMemory` 同样不读 |
-
-⇒ **后果（A16）**：用户在图谱 GUI 里停用主题 T 后，**服务端不注入 T，但内核仍会注入 T** —— 停用形同虚设。
-
-⇒ **本任务的正确目标**：让**内核的两个注入函数尊重 `active`**，**不是**"补写入 active"。
-
-- [ ] **Step 1: 核实缺口（只读，确认我的结论）**
-
-```bash
-cd /c/Users/T203-15/yfworking
-grep -n "active" kernel/memory.mjs server/experience.mjs | head -20
-grep -n "const { entries } = readTheme\|const { front\b\|readTheme(" kernel/memory.mjs | head -20
-```
-
-Expected: 看到写入侧（`kernel/memory.mjs:87-89`）、服务端过滤（`server/experience.mjs:101/115/131/163`）、内核侧 `:105` 只取 `entries` 的证据。**若实测与上表不符，以实测为准并改写本任务**。
-
-- [ ] **Step 2: 写失败测试**
-
-追加到 `kernel-tests/experience-dedup.test.mjs`：
-
-```js
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { buildMemoryIndex } from '../kernel/memory.mjs'
-
-/** 造一个含 active:true / active:false 两个主题的记忆根目录 */
-function mkMemoryRoot() {
-  const root = mkdtempSync(join(tmpdir(), 'mem-active-'))
-  for (const [theme, active] of [['启用主题', 'true'], ['停用主题', 'false']]) {
-    const dir = join(root, theme)
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'a.md'), '内容A\n', 'utf8')
-    writeFileSync(join(dir, '_front.md'), `name: ${theme}\ndescription: ${theme}\nactive: ${active}\n`, 'utf8')
-  }
-  return root
-}
-
-test('buildMemoryIndex 跳过 active:false 的主题（A16）', () => {
-  const root = mkMemoryRoot()
-  const out = buildMemoryIndex({ root, keywords: ['', '启用', '停用'] })
-  const text = typeof out === 'string' ? out : JSON.stringify(out)
-  assert.ok(text.includes('启用主题'), '启用主题应被注入')
-  assert.ok(!text.includes('停用主题'), '停用主题不应被注入')
-})
-```
-
-> ⚠️ `buildMemoryIndex` 的**实际签名**必须先在 Step 1 读出来（本测试的参数形状需与之对齐）。若签名不同，**改测试以匹配真实签名**，但**断言意图不变**（停用主题不得出现）。
-
-- [ ] **Step 3: 运行测试确认失败**
-
-```bash
-node --test --test-timeout=120000 kernel-tests/experience-dedup.test.mjs
-```
-
-Expected: FAIL —— 输出中**仍含** `停用主题`（复现 A16 的漏判）。
-
-- [ ] **Step 4: 实现（内核侧尊重 active）**
-
-在 `kernel/memory.mjs` 的**两个**注入函数中，改为同时取 `front` 并跳过停用主题：
-
-```js
-// buildMemoryIndex（约 :99，原：const { entries } = readTheme(root, theme)）
-const { front, entries } = readTheme(root, theme)
-// A16：内核侧也尊重 active（此前只读 entries，导致停用主题仍被注入）
-if (front && String(front.active) === 'false') continue   // 若在循环内
-```
-
-并在 `buildRelevantMemory`（约 `:140`）做**同样的**判断。
-
-**实现要点**：
-- 判定语义与服务端**保持一致**：`server/experience.mjs:101` 用的是 `data.front.active !== 'false'` ⇒ 内核侧用**同一口径** `String(front.active) === 'false'` 视为停用（**不要**改成 `!front.active`——那会把 `undefined` 也判成停用，与现状不兼容）。
-- 若函数是"先收集后渲染"结构，`continue` 替换为等价的过滤（如 `.filter(...)`）。
-- **不改** `readTheme`（它已返回 `front`）。
-
-- [ ] **Step 5: 运行测试确认通过 + 门禁**
-
-```bash
-cd /c/Users/T203-15/yfworking
-node --test --test-timeout=120000 kernel-tests/experience-dedup.test.mjs
-npm run test:kernel
-```
-
-Expected: PASS；内核测试全绿（**A16** 达成）。
-
-- [ ] **Step 6: 提交**
-
-```bash
-cd /c/Users/T203-15/yfworking
-git add kernel/memory.mjs kernel-tests/experience-dedup.test.mjs
-git commit -m "fix(memory): S4.5② 内核注入侧尊重 front.active（A16）
-
-- 事实修正：active 的写入侧（kernel/memory.mjs:87-89）与服务端读取侧
-  （server/experience.mjs:101/115/131/163）**早已实现**，真实缺口在内核注入侧——
-  buildMemoryIndex(:99，:105 只解构 entries) 与 buildRelevantMemory(:140) 从不读 front.active
-  ⇒ 图谱停用主题后服务端不注入、内核仍注入，停用形同虚设
-- 修复：两个函数同时取 front，按 String(front.active)==='false' 跳过
-  （口径与服务端 data.front.active !== 'false' 一致；不改成 !front.active 以免 undefined 判成停用）
-- 新增测试：停用主题不得出现在注入文本中（复现→修复）
-- 不改 readTheme（已返回 front）"
-```
-
----
-
 ## Task 5: S4.5③ —— 字节口径统一（字符 → 字节，唯一归属本步）
 
 **Files:**
@@ -926,7 +1018,210 @@ git commit -m "fix(memory): S4.5③ 字节口径统一 —— 字符→字节换
 
 ---
 
-## Task 6: S4.5④ —— 新增 EL1 线索层 `kernel/knowledge-recommend.mjs`（R1–R6）
+## Task 6: S4.5④-1 —— EL0 主题清单渲染（常驻 ~200 B，A14/G3）
+
+**Files:**
+- Modify: `kernel/memory.mjs`（`buildMemoryIndex`，实测约 `:99`）
+- Test: `kernel-tests/experience-dedup.test.mjs`（追加）
+
+**Interfaces:**
+- Consumes: `readTheme(root, theme) → { front, entries }`（`kernel/memory.mjs`）；Task 3 落地的 `front.active` 过滤；Task 5 的 `memoryBytes`
+- Produces:
+  - `buildMemoryIndex({ root, maxBytes }) → string`：输出**主题清单**（每行 `- [主题] N 条 · 最近日期`）
+  - `EL0_TARGET_BYTES = 200`、`EL0_MAX_BYTES = 512`
+  - `renderThemeList(themes, { lean }) → string`
+
+### 背景（实现者必读）—— **本任务是 headline 收益（−8526 B/轮）的主要载体**
+
+**现状（实测）**：`kernel/memory.mjs:99 buildMemoryIndex` 输出**约 42 行条目式索引 ≈5131 B**，且**每轮恒在**。注入 spec `:57` 的诊断原话：
+
+> 经验索引的现状是**同一个病症**：42 行 / 5131 B 的"完整条目索引"（本质是 L2 内容）被当作 L0 恒在，塞进每一轮的 system。
+
+**目标（spec §3.2 `:230` + §4.2 `:402`/`:416`）**：
+
+| 层 | 内容 | 成本 |
+|---|---|---|
+| **EL0** | 主题清单：`- [主题] N 条 · 最近日期`（7 主题） | **~200 B**（恒在，**替代现 42 行**），通道①②（system 静态） |
+
+逐项核算（spec `:416`）：**经验索引（内核 `memory` 段）5131 → 200（EL0）= −4931 B/轮**。这是 A14/G3「每轮恒在合计 ≤1736 B」成立的前提——**没有这一步，去重后仍恒在 ≈6667 B，A14 与 G3 均不可达**。
+
+**硬要求**：
+1. **保留全部主题名 + 条数**（spec `:475`：EL0 保留**全部**主题名 + 条数（~200 B），**只裁条目级细节**；对齐主 spec §9.4"L0 元数据恒在用于路由"）。⇒ **不得**只保留"前 N 个主题"——那会让模型"不知道有哪些主题"。
+2. **A14**：恒在的 EL0 **≤512 B**。
+3. **不含条目摘要正文**（否则又变回 L2）。
+4. **停用主题不得出现**（A16；由 Task 3 的 `front.active` 过滤保证，本任务不得绕过）。
+5. **不改检索口径**、不改 `settings.memory.inject` 语义（后者 `false` ⇒ 记忆类注入全停，总账**记 0 而非不记**，spec `:211`）。
+
+- [ ] **Step 1: 核实落点与真实形状（只读）**
+
+```bash
+cd /c/Users/T203-15/yfworking
+grep -n "export function buildMemoryIndex" kernel/memory.mjs
+grep -n "function readTheme\|function themePath\|parseFrontmatter\|date" kernel/memory.mjs | head -20
+sed -n '95,135p' kernel/memory.mjs
+```
+
+Expected: 读出 `buildMemoryIndex` 的**真实签名**（实测 `:99 ({root, maxBytes})`）、列主题的真实方式（实测 `readdirSync(root).filter(x=>x.endsWith('.md'))`，`:102`）、`readTheme` 的返回（含 `front`/`entries`）、条目是否带 `date` 字段。
+★ **若条目无 `date`**：`最近日期` 取**主题文件**（`root/<主题>.md`）的 frontmatter 字段（如 `updated`）或文件 `mtime`；**先用 Grep 确认可用字段，不要臆造**——若确实无从取得，则该列**省略**（并在事实登记里写明），**但主题名 + 条数不得省**。
+
+- [ ] **Step 2: 写失败测试**
+
+追加到 `kernel-tests/experience-dedup.test.mjs`：
+
+```js
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { buildMemoryIndex, renderThemeList, memoryBytes, EL0_MAX_BYTES, EL0_TARGET_BYTES } from '../kernel/memory.mjs'
+
+/** 造记忆根：扁平文件 root/<主题>.md（★ 实测形状：不是目录，也不是 _front.md） */
+function mkFlatRoot(themes) {
+  const root = mkdtempSync(join(tmpdir(), 'mem-el0-'))
+  for (const { theme, active = 'true', entries = 3 } of themes) {
+    const lines = ['---', `name: ${theme}`, `description: ${theme}`, `active: ${active}`, '---']
+    for (let i = 0; i < entries; i++) lines.push(`- [会话|标签] ${theme} 的第 ${i} 条摘要 -- 全文${i}`)
+    writeFileSync(join(root, `${theme}.md`), `${lines.join('\n')}\n`, 'utf8')
+  }
+  return root
+}
+
+test('EL0：输出主题清单形态（- [主题] N 条）', () => {
+  const root = mkFlatRoot([{ theme: '经验沉淀', entries: 4 }])
+  const text = buildMemoryIndex({ root })
+  assert.ok(/^- \[经验沉淀\] 4 条/m.test(text), `应为主题清单形态，实际:\n${text}`)
+})
+
+test('A14：EL0 恒在 ≤512 B（7 主题 ≈200 B）', () => {
+  const root = mkFlatRoot(Array.from({ length: 7 }, (_, i) => ({ theme: `主题${i}`, entries: 5 })))
+  const text = buildMemoryIndex({ root })
+  assert.ok(memoryBytes(text) <= EL0_MAX_BYTES, `EL0 应 ≤${EL0_MAX_BYTES} B，实际 ${memoryBytes(text)}`)
+  assert.ok(memoryBytes(text) <= EL0_TARGET_BYTES * 2, `应接近目标 ~${EL0_TARGET_BYTES} B，实际 ${memoryBytes(text)}`)
+})
+
+test('★ 保留全部主题名 + 条数（不得只留前 N 个 —— spec :475）', () => {
+  const themes = Array.from({ length: 40 }, (_, i) => ({ theme: `主题${i}`, entries: i + 1 }))
+  const text = buildMemoryIndex({ root: mkFlatRoot(themes) })
+  for (const t of themes) assert.ok(text.includes(t.theme), `缺主题名: ${t.theme}`)
+  assert.ok(text.includes('40 条'), '应含条数')
+})
+
+test('★ EL0 不含条目摘要正文（否则又变回 L2）', () => {
+  const text = buildMemoryIndex({ root: mkFlatRoot([{ theme: '经验沉淀', entries: 3 }]) })
+  assert.ok(!text.includes('全文0'), 'EL0 不得含条目正文')
+  assert.ok(!text.includes('的第 0 条摘要'), 'EL0 不得含条目摘要')
+})
+
+test('A16：停用主题不出现在 EL0', () => {
+  const root = mkFlatRoot([{ theme: '启用主题' }, { theme: '停用主题', active: 'false' }])
+  const text = buildMemoryIndex({ root })
+  assert.ok(text.includes('启用主题'))
+  assert.ok(!text.includes('停用主题'))
+})
+
+test('renderThemeList：lean 档只去日期，不漏主题名与条数', () => {
+  const lean = renderThemeList([{ theme: 'A', count: 2, latest: '2026-09-20' }], { lean: true })
+  assert.ok(lean.includes('A'))
+  assert.ok(lean.includes('2 条'))
+  assert.ok(!lean.includes('2026-09-20'))
+})
+```
+
+- [ ] **Step 3: 运行测试确认失败**
+
+```bash
+node --test --test-timeout=120000 kernel-tests/experience-dedup.test.mjs
+```
+
+Expected: FAIL —— `renderThemeList`/`EL0_MAX_BYTES` 未导出；且 `buildMemoryIndex` 当前输出条目式索引（不含 `- [主题] N 条` 形态、含"全文0"）。
+
+- [ ] **Step 4: 实现**
+
+在 `kernel/memory.mjs` 新增并导出：
+
+```js
+/** EL0 目标字节（spec §3.2：7 主题 ≈200 B） */
+export const EL0_TARGET_BYTES = 200
+/** EL0 硬上限（A14：恒在的 EL0 ≤ 512 B） */
+export const EL0_MAX_BYTES = 512
+
+/**
+ * EL0 渲染：主题清单 `- [主题] N 条 · 最近日期`。
+ * lean 档 = 去掉"最近日期"，**保留全部主题名与条数**（只裁条目级细节，spec :475）。
+ */
+export function renderThemeList(themes, { lean = false } = {}) {
+  return (themes || [])
+    .map((t) => {
+      const suffix = !lean && t.latest ? ` · ${t.latest}` : ''
+      return `- [${t.theme}] ${t.count} 条${suffix}`
+    })
+    .join('\n')
+}
+```
+
+并把 `buildMemoryIndex` 改为输出主题清单**（★ 签名与列目录方式以 Step 1 实测为准）**：
+
+```js
+/**
+ * EL0：经验**主题清单**（常驻 ~200 B）。
+ * 改前：42 行条目式索引 ≈5131 B（本质 L2 被当 L0，spec :57）。
+ * 改后：`- [主题] N 条 · 最近日期`，**保留全部主题名 + 条数**，只裁条目级细节。
+ * 归通道①②（system 静态）。
+ */
+export function buildMemoryIndex({ root, maxBytes = EL0_MAX_BYTES } = {}) {
+  const themes = []
+  for (const name of listThemeNames(root)) {          // ← Step 1 实测的真实列目录方式
+    const { front, entries } = readTheme(root, name)
+    if (String(front?.active) === 'false') continue    // A16（Task 3 已落地）
+    const latest = latestDateOf(front, entries, root, name)   // ← Step 1 决定取值来源
+    themes.push({ theme: name, count: entries.length, latest })
+  }
+  const full = renderThemeList(themes)
+  if (memoryBytes(full) <= maxBytes) return full
+  // 二级降级：只去"最近日期"，**绝不丢主题名与条数**
+  return renderThemeList(themes, { lean: true })
+}
+```
+
+**要点**：
+- `listThemeNames` / `latestDateOf` 若现有代码里已有等价逻辑，**直接复用**（不要另造第二套遍历）。
+- **删除**原条目式索引的渲染分支（那是本任务要替掉的形态）；若该分支有别的调用方，**先 Grep 确认**再删。
+- **不要**动 `readTheme` 与 `front.active` 判定口径。
+
+- [ ] **Step 5: 运行测试确认通过 + 点名受影响测试**
+
+```bash
+cd /c/Users/T203-15/yfworking
+node --test --test-timeout=120000 kernel-tests/experience-dedup.test.mjs
+npm run test:kernel
+```
+
+Expected: 全绿。
+
+★ **必须同步处理既有测试**（spec §9 Q6 要求把"已知会变的测试"列为交付前置检查单）：实测最小受影响面是 `kernel-tests/knowledge-inject.test.mjs` —— 其 `:39`/`:59`/`:63` 的"零回归锁"与 `:128-132` 的注释明确写着"`buildMemoryIndex` 内部按**字符数**比较 `maxBytes`（既有约定，不动 = 零回归）"。**本任务改了输出形态与口径 ⇒ 该注释必须同步更新，相关断言按新形态核对**（不是删断言，而是改成对新形态成立且仍有意义的断言）。
+
+```bash
+grep -rn "buildMemoryIndex" kernel-tests/ | head
+```
+
+- [ ] **Step 6: 提交**
+
+```bash
+cd /c/Users/T203-15/yfworking
+git add kernel/memory.mjs kernel-tests/experience-dedup.test.mjs kernel-tests/knowledge-inject.test.mjs
+git commit -m "feat(memory): S4.5④-1 EL0 主题清单渲染（常驻 5131→200 B，A14/G3）
+
+- buildMemoryIndex 输出形态改为 EL0 主题清单 \`- [主题] N 条 · 最近日期\`（替代原 42 行条目式索引）
+- 依据：注入 spec :57 诊断\"42 行/5131 B 的完整条目索引（本质 L2）被当作 L0 恒在\"
+  ⇒ spec §4.2 逐项核算：经验索引 5131 → 200（EL0）= −4931 B/轮
+- 硬要求：保留全部主题名 + 条数（:475，只裁条目级细节）；EL0 ≤512 B（A14）；不含条目正文
+- 二级降级只去\"最近日期\"，绝不丢主题名与条数（防\"模型不知道有哪些主题\"）
+- 复用 Task 3 的 front.active 过滤 ⇒ 停用主题不出现在 EL0（A16）
+- 同步更新 kernel-tests/knowledge-inject.test.mjs 中\"按字符数比较 maxBytes\"的既有约定注释
+- ★ 无此步则去重后仍恒在 ≈6667 B，A14 与 G3（≤1736 B）均不可达"
+```
+
+---
+## Task 7: S4.5④ —— 新增 EL1 线索层 `kernel/knowledge-recommend.mjs`（R1–R6）
 
 **Files:**
 - Create: `kernel/knowledge-recommend.mjs`
@@ -951,7 +1246,7 @@ git commit -m "fix(memory): S4.5③ 字节口径统一 —— 字符→字节换
 | **R6** | **预算按字节记账**，装不下**丢弃整行**（不截断行内正文），**首条无条件放入** | `renderRecall` 既有纪律（"预算必须按实际装入的字节记账"/"首条无条件放入"） |
 
 **硬上限**：EL1 ≤ **1536 B**（1.5 KB）。
-**观察期**：默认 `OBSERVE_ONLY` ⇒ **不真注入**（Task 7 接线时生效）。
+**观察期**：由 `PONOS_MEMORY_EL1_OBSERVE`（**默认 `1`**）控制 ⇒ **不真注入**（Task 8 接线时生效）。
 
 - [ ] **Step 1: 核实既有工具的真实签名（只读）**
 
@@ -972,7 +1267,7 @@ Expected: 读出 `searchKnowledgeItems` 的参数与返回形状、`makeSnippet`
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  buildRecommendSection, HYDRATE_EL1_MAX_BYTES, EL1_SNIPPET_MAX,
+  buildRecommendSection, renderRecommendLine, HYDRATE_EL1_MAX_BYTES, EL1_SNIPPET_MAX,
 } from '../kernel/knowledge-recommend.mjs'
 
 const item = (over = {}) => ({
@@ -984,11 +1279,13 @@ const item = (over = {}) => ({
   ...over,
 })
 
-test('R1：永不升级全文（upgraded 恒 false，且不含全文标记）', () => {
+test('R1：永不升级全文（upgraded 恒 false，输入含 full 也不得进入输出）', () => {
   const r = buildRecommendSection([item({ full: '整篇正文……' })], { budgetBytes: HYDRATE_EL1_MAX_BYTES })
   assert.equal(r.upgraded, false)
   assert.ok(!r.text.includes('整篇正文'), 'R1：不得注入正文')
-  assert.ok(!r.text.includes(' ·全文'), 'R1：不得出现全文升级标记')
+  // ★ 有效断言：即使输入带 full 且预算充足，输出长度也不得因正文而膨胀
+  const withoutFull = buildRecommendSection([item()], { budgetBytes: HYDRATE_EL1_MAX_BYTES })
+  assert.equal(r.bytes, withoutFull.bytes, 'R1：带上 full 输入不得改变注入字节数（否则等于注正文）')
 })
 
 test('R2：无线索凭据（blockId）的行不渲染', () => {
@@ -1017,20 +1314,35 @@ test('R4：一跳锚点 ≤3 且剔除 duplicate', () => {
   assert.ok(!r.lines[0].related.some((x) => x.blockId === 'b#2'), 'R4：必须剔除 duplicate')
 })
 
-test('R5：未授权空间只给 related / mode:full 的替代路径', () => {
+test('R5：未授权空间只给 related / mode:full 的替代路径，且不得指向 Read', () => {
   const r = buildRecommendSection(
     [item({ space: 'secret', readable: false })],
     { budgetBytes: HYDRATE_EL1_MAX_BYTES, readableSpaces: [] },
   )
-  assert.ok(r.lines[0].hint.includes("related") || r.lines[0].hint.includes('full'), 'R5：须写明替代路径')
+  assert.ok(r.lines[0].hint.includes("mode:'full'"), 'R5：须写明 mode:full 替代路径')
+  assert.ok(r.lines[0].hint.includes('related'), 'R5：须写明 related 替代路径')
+  assert.ok(!r.lines[0].hint.includes('Read'), 'R5：无权限时不得指向 Read（会失败）')
 })
 
-test('R6：预算按字节记账，装不下丢弃整行（不截断行内正文），首条无条件放入', () => {
+test('R6：预算按字节记账，装不下丢弃整行（不截断行内正文）', () => {
   const many = Array.from({ length: 20 }, (_, i) => item({ blockId: `s#${i}`, title: `标题${i}` }))
   const r = buildRecommendSection(many, { budgetBytes: 200 })
   assert.ok(r.bytes <= 200, `字节数不得超预算，实际 ${r.bytes}`)
-  assert.equal(r.lines.length, 1, '预算极小 ⇒ 只剩首条（首条无条件放入）')
+  assert.ok(r.lines.length >= 1, '至少首条（首条无条件放入）')
+  assert.ok(r.lines.length < 20, `预算不足 ⇒ 必须丢行，实际装入 ${r.lines.length}`)
   assert.ok(r.dropped > 0, '应记录被丢弃的行数')
+  // ★ 不得截断行内正文：装入的每行 text 必须与渲染结果逐字相等（未被切短）
+  for (const line of r.lines) {
+    assert.equal(line.text, renderRecommendLine(many.find((x) => x.blockId === line.blockId), {}).text,
+      '装入的行不得被截断')
+  }
+})
+
+test('R6：预算小到只装得下首条时，只剩首条（首条无条件放入）', () => {
+  const many = Array.from({ length: 20 }, (_, i) => item({ blockId: `s#${i}`, title: `标题${i}` }))
+  const one = buildRecommendSection([many[0]], { budgetBytes: 1 }).bytes          // 实测单行字节
+  const r = buildRecommendSection(many, { budgetBytes: one })                     // 只够一条
+  assert.equal(r.lines.length, 1, `预算=${one} 时只剩首条，实际 ${r.lines.length}`)
 })
 
 test('R6：首条即使超预算也放入（无条件）', () => {
@@ -1086,10 +1398,23 @@ export const EL1_SNIPPET_MAX = 300          // 线索层摘要上限（默认 16
 
 const RELATE_TOPN = 3                       // = INJECT_RELATED_TOPN
 
-/** 摘要化：优先复用既有 makeSnippet 口径；此处按 EL1_SNIPPET_MAX 截断 */
+// ★ R3：摘要必须复用既有 makeSnippet（shared/knowledge-core.mjs；kernel/knowledge-search.mjs:10 已导入）
+//    —— 不要另造第二个摘要实现（单一口径）。EL1 只把 max 放宽到 300。
+import { makeSnippet } from '../shared/knowledge-core.mjs'
+
+/** 摘要化：走 makeSnippet，max=EL1_SNIPPET_MAX(300) */
 function snippetOf(text, max = EL1_SNIPPET_MAX) {
-  const s = String(text ?? '').replace(/\s+/g, ' ').trim()
-  return s.length <= max ? s : `${s.slice(0, max - 1)}…`
+  return makeSnippet(String(text ?? ''), max)
+}
+
+/** R4：把 why.kind 打成简短理由标签（契约要求"按 why.kind 打理由"） */
+const WHY_LABEL = {
+  'same-space': '同空间',
+  keyword: '关键词',
+  'anchor': '锚点',
+  'blockId': '直指',
+  'linked': '关联',
+  'duplicate': '重复',
 }
 
 const bytes = (s) => Buffer.byteLength(String(s), 'utf8')
@@ -1103,11 +1428,13 @@ export function renderRecommendLine(item, opts = {}) {
   const related = (item.related || [])
     .filter((r) => r?.why?.kind !== 'duplicate')    // R4：剔除 duplicate
     .slice(0, RELATE_TOPN)                          // R4：≤3
-  // R5：未授权空间只给替代路径
-  const unreadable = item.readable === false || (opts.readableSpaces && !opts.readableSpaces.includes(item.space))
+    .map((r) => ({ ...r, label: WHY_LABEL[r?.why?.kind] || String(r?.why?.kind || '关联') }))  // R4：打理由
+  // R5：三态 —— Set 放行 / null 不给指引 / 未授权只给 related|mode:'full'（含替代路径，且不得指向 Read）
+  const unreadable = item.readable === false
+    || (Array.isArray(opts.readableSpaces) && !opts.readableSpaces.includes(item.space))
   const hint = unreadable
     ? `（无读取权限：用 KnowledgeSearch {related:'${item.blockId}'} 或 {mode:'full'} 获取）`
-    : (related.length ? `（展开：KnowledgeSearch {related:'${item.blockId}'}）` : '')
+    : (related.length ? `（展开：KnowledgeSearch {related:'${item.blockId}'}）` : '')  // 无锚点则不给展开动作
   return {
     blockId: item.blockId,
     space: item.space,
@@ -1178,7 +1505,7 @@ git commit -m "feat(knowledge): S4.5④ EL1 线索层 —— 只发索引线索�
 
 ---
 
-## Task 7: S4.5⑤⑥ —— `beforeIter` 接线 + 观察期分名 + EL1↔unified 互斥（A18/A20）
+## Task 8: S4.5⑤⑥ —— 每轮 system 组装处接线 + 观察期分名 + EL1↔unified 互斥（A18/A20）
 
 **Files:**
 - Modify: `kernel/cli.mjs`（`beforeIter` 相位接线；推荐集合登记 `offered` / `offeredDryRun`）
@@ -1191,7 +1518,7 @@ git commit -m "feat(knowledge): S4.5④ EL1 线索层 —— 只发索引线索�
 ### 背景（实现者必读）
 
 **⑤ 接线**：EL1 走通道④（`beforeIter` 派生注入）。同时**登记推荐集合**：
-- 观察期（默认 `OBSERVE_ONLY`）：登记为 **`offeredDryRun`**（**不真注入**）
+- 观察期（`PONOS_MEMORY_EL1_OBSERVE=1`，**默认**）：登记为 **`offeredDryRun`**（**不真注入**）
 - 转正后：登记为 **`offered`**
 
 **⑥ 互斥（A20）**：EL1 线索层与 unified 抽调层（`renderRecall`）做的是**同一件事的两种渲染**。若同时启用 ⇒ **同一批知识块注入两遍**（本次评估 P0「双注入」的新版本）。故：
@@ -1203,16 +1530,29 @@ git commit -m "feat(knowledge): S4.5④ EL1 线索层 —— 只发索引线索�
 
 **前置（A18）**：`knowledgeRelateMode === 'on'`（`kernel/knowledge.mjs:566`）。
 
-- [ ] **Step 1: 核实开关与接线点（只读）**
+- [ ] **Step 1: 核实开关与接线点（只读，★ 必做：原稿引用了不存在的符号）**
 
 ```bash
 cd /c/Users/T203-15/yfworking
-grep -n "knowledgeRelateMode" kernel/knowledge.mjs | head
-grep -n "beforeIter\|offered\|OBSERVE_ONLY" kernel/cli.mjs kernel/*.mjs | head -20
-grep -n "resolveInjectMode" kernel/knowledge-inject.mjs
+# ① relate 模式的真实实现（★ 实测 :566 是 JSDoc，:577 才是实现）
+grep -n "resolveRelateMode\|knowledgeRelateMode" kernel/knowledge.mjs
+# ② 每轮 system 组装处（★ EL1 的真实落点在这里，不是"beforeIter 相位"）
+grep -n "refreshSystemPrompt\|function buildSystem\|systemPrompt =" kernel/cli.mjs | head
+# ③ 既有"相位/相位钩子"是否存在（★ 实测：不存在，phaseHooks 是 B2 概念）
+grep -rn "beforeIter\|phaseHooks\|emitIterDerived\|OBSERVE_ONLY" kernel/ server/ | head
+# ④ 检索入口与 appendMeta API
+grep -n "export async function searchKnowledgeItems" kernel/knowledge-search.mjs
+grep -n "appendMeta" kernel/session.mjs
 ```
 
-Expected: 确认 `knowledgeRelateMode` 的读取方式（`config.json`）、`beforeIter` 相位的既有接线位置、`OBSERVE_ONLY` 是否已有开关。**以实测为准**。
+Expected:
+- ① `resolveRelateMode(configDir, explicit)`（实测约 `:577`）—— **用真实函数名，不是 `knowledgeRelateMode`**
+- ② 定位每轮 system 组装函数（实测 `kernel/cli.mjs:999-1011 refreshSystemPrompt()`）—— **这是接线落点**
+- ③ **应零命中** ⇒ 说明"`beforeIter` 相位 / `OBSERVE_ONLY` / `emitIterDerived`"**都是不存在的概念**（`phaseHooks` 属 spec §5.4 的 B2）
+  ⇒ **本任务必须落在真实位置**：把线索段拼进 system 组装处（②），**不要**去造一套相位机制（那是 B2 的事）
+- ④ `searchKnowledgeItems`（实测 `kernel/knowledge-search.mjs:18`）；`appendMeta`（实测 `kernel/session.mjs:343`）
+
+**把 ② 的真实函数名与行号写进 Step 5 的代码注释**。
 
 - [ ] **Step 2: 写失败测试**
 
@@ -1234,7 +1574,7 @@ test('逃生阀：PONOS_MEMORY_EL1=0 时关闭（与 PONOS_MEMORY_INJECT 不耦�
   assert.equal(shouldInjectEl1({ strategy: 'legacy', relateMode: 'on', enabled: false }), false)
 })
 
-test('观察期：offeredDryRun 计数，不真注入', () => {
+test('观察期：dryRun 下 offered 有值但 text 为空（offeredDryRun 语义）', () => {
   const r = buildRecommendSection([{ blockId: 'x#1', space: 's', title: 't', snippet: 's', related: [] }], { budgetBytes: 1536, dryRun: true })
   assert.equal(r.dryRun, true)
   assert.ok(Array.isArray(r.offered))
@@ -1269,41 +1609,48 @@ export function shouldInjectEl1({ strategy, relateMode, enabled } = {}) {
 并在 `buildRecommendSection` 支持 `opts.dryRun`：
 
 ```js
-  // 观察期（OBSERVE_ONLY）：登记 offered，但不产生可注入文本
+  // 观察期（opts.dryRun，由 PONOS_MEMORY_EL1_OBSERVE 控制）：登记 offered，但不产生可注入文本
   if (opts.dryRun === true) {
     return { lines, offered, dropped, bytes: used, upgraded: false, dryRun: true, text: '' }
   }
 ```
 
-- [ ] **Step 5: 在 `kernel/cli.mjs` 接线**
+- [ ] **Step 5: 在**每轮 system 组装处**接线（★ 落点实测 = `kernel/cli.mjs:999-1011 refreshSystemPrompt()`，以 Step 1 实测为准）**
 
 ```js
-// beforeIter 相位：EL1 线索层（S4.5⑤）
+// S4.5⑤ EL1 线索层接线（在 refreshSystemPrompt / 每轮 system 组装处，Step 1 已核实真实位置）
 const el1On = shouldInjectEl1({
-  strategy: mode,                                   // resolveInjectMode(...) 的结果
-  relateMode: knowledgeRelateMode,                   // 来自 config.json
-  enabled: process.env.PONOS_MEMORY_EL1 !== '0',     // D6：唯一逃生阀
+  strategy: resolveInjectMode(settings),                 // kernel/knowledge-inject.mjs:50（默认 legacy）
+  relateMode: resolveRelateMode(configDir),               // kernel/knowledge.mjs:577（不是 :566）
+  enabled: process.env.PONOS_MEMORY_EL1 !== '0',          // D6：唯一逃生阀，不与 PONOS_MEMORY_INJECT 耦合
 })
 if (el1On) {
+  // hits 来源：KnowledgeSearch 同一入口（Step 1 已核实签名）
+  const hits = await searchKnowledgeItems({ configDir, query, keywords, spaces: readableSpaces })
   const rec = buildRecommendSection(hits, {
     budgetBytes: HYDRATE_EL1_MAX_BYTES,
     readableSpaces,
-    dryRun: OBSERVE_ONLY,                            // 观察期默认 true
+    dryRun: el1ObserveOnly,                               // 观察期默认 true
   })
-  if (OBSERVE_ONLY) {
-    session.appendMeta('inject_recommend_dryrun', { offered: rec.offered, bytes: rec.bytes })
+  if (el1ObserveOnly) {
+    // 观察期：只登记，**不注入**（rec.text 为空）
+    store.appendMeta('inject_recommend_dryrun', { offered: rec.offered, bytes: rec.bytes })  // ★ 变量名是 store
   } else {
-    // 真注入（转正后）；登记为 offered 供采纳率统计
-    emitIterDerived(rec.text)
-    session.appendMeta('inject_recommend', { offered: rec.offered, bytes: rec.bytes })
+    sys += `\n${rec.text}`                                // 真注入（转正后）
+    store.appendMeta('inject_recommend', { offered: rec.offered, bytes: rec.bytes })
   }
 }
 ```
 
-**要点**：
-- **`offeredDryRun` 与 `offered` 必须分名**（混用会让观察期数据污染采纳率口径）。
-- 观察期**不注入**（`rec.text === ''`）。
-- `emitIterDerived` 只是示意名——**按现有 `beforeIter` 注入机制的实际 API 替换**（Step 1 已核实）。
+**要点（逐条都是实测修正）**：
+- **落点**是每轮 system 组装处，**不是**"`beforeIter` 相位"——实测 `beforeIter`/`phaseHooks`/`emitIterDerived` **全部不存在**（`phaseHooks` 是 spec §5.4 的 **B2** 概念）。**不要**为接线去造一套相位机制。
+- `resolveRelateMode(configDir)` 是**真实函数名**（实测 `kernel/knowledge.mjs:577`；`:566` 只是 JSDoc）。
+- `store` 是 cli 内持有 session 的**真实变量名**（`appendMeta` 实测 `kernel/session.mjs:343`）。
+- **观察期开关**：用 `PONOS_MEMORY_EL1_OBSERVE`（**默认 `1` = 观察期**，与逃生阀 `PONOS_MEMORY_EL1=0` 相互独立；前者控"是否真注入"，后者控"是否启用该层"）。
+- `query` / `keywords` 的来源**必须写明**（取自当前用户消息与检索上下文；若存在多个候选来源，选定一个并在注释里说明理由）。
+- **`offeredDryRun` 与 `offered` 必须分名**（混用会污染采纳率口径）。
+- **A18②③ / A19 补充**：除 `offered` 外，还要按 spec §3.2.3 提供 **`adopted`** 与 **`adoptRate`**；
+  ★ 观察期 `adopted` 的**语义为"不适用"**（A19）——**不得记 0**，应记 `null` 并在面板/日志中标注"观察期不适用"。
 
 - [ ] **Step 6: 运行测试 + 门禁**
 
@@ -1327,14 +1674,17 @@ git commit -m "feat(knowledge): S4.5⑤⑥ EL1 接线 + 观察期分名 + 与 un
   （D6：不与 PONOS_MEMORY_INJECT 耦合）
 - A20 互斥：strategy=legacy → EL1 生效（补 legacy 缺失的供给）；unified → 关闭
   （避免同一批知识块被 renderRecall 与 EL1 注入两遍 —— 评估 P0「双注入」的新版本）
-- cli.mjs beforeIter 相位接线；观察期 OBSERVE_ONLY 默认 → 登记 inject_recommend_dryrun 且不注入
+- ★ 落点修正：接在每轮 system 组装处（refreshSystemPrompt），**不造相位机制**
+  原稿引用的 beforeIter/phaseHooks/emitIterDerived/knowledgeRelateMode 实测均不存在（phaseHooks 属 spec §5.4 的 B2）
+  改用真实函数 resolveRelateMode(:577) 与 store.appendMeta(session.mjs:343)
+- 观察期 PONOS_MEMORY_EL1_OBSERVE 默认 1 → 登记 inject_recommend_dryrun 且不注入
   转正后登记 inject_recommend（offered/offeredDryRun 分名，防污染采纳率口径）
 - buildRecommendSection 支持 dryRun（text 恒空）"
 ```
 
 ---
 
-## Task 8: S4.5⑦ —— GUI 面板口径同步（`server/experience.mjs`）
+## Task 9: S4.5⑦ —— GUI 面板口径同步（`server/experience.mjs`）
 
 **Files:**
 - Modify: `server/experience.mjs`（约 `:219` 单主题 `inject_bytes`、`:223` `totalInjectBytes`）
@@ -1387,29 +1737,37 @@ node --test --test-timeout=120000 kernel-tests/experience-dedup.test.mjs
 
 Expected: FAIL（当前仍有 `.length` 直接计量）。
 
-- [ ] **Step 4: 实现口径同步**
+- [ ] **Step 4: 实现口径同步（★ 读 EL0 的真实渲染，不是旧的全量索引）**
 
-把两处改为**三层化后的真实口径**（EL0 ~200 B + 命中时的 EL1）：
+**关键**：Task 6 已把内核侧经验供给改为 **EL0 主题清单（~200 B）**。面板若仍以 `buildExperienceIndex(4096, theme)` 为底，
+数字会**停在 ≈5131 B**——"面板与实际一致"的目标**不成立**（原稿只换单位的做法已被否）。
 
 ```js
-// :219 单主题
-inject_bytes: experienceInjectBytes(item.theme),   // 按 EL0(+EL1) 实际口径，且用字节而非 .length
+// server/experience.mjs 顶部：复用内核侧的唯一字节口径与 EL0 渲染（不另造换算函数）
+import { memoryBytes, buildMemoryIndex, EL0_MAX_BYTES } from '../kernel/memory.mjs'
 
-// :223 合计
+// :219 单主题 —— 按内核侧 EL0 实际注入口径
+inject_bytes: experienceInjectBytes(),
+
+// :223 合计 —— 同上
 const totalInjectBytes = experienceInjectBytes()
-```
 
-其中 `experienceInjectBytes` 是**本文件内的小工具**（或复用 `kernel/memory.mjs` 的 `memoryBytes`）：
-
-```js
-/** 经验注入的实际字节口径（三层化：EL0 恒在 + EL1 命中） */
-function experienceInjectBytes(theme) {
-  // 用统一的字节口径（与 kernel/memory.mjs 的 memoryBytes 同源）
-  return Buffer.byteLength(buildExperienceIndex(4096, theme) ?? '', 'utf8')
+/**
+ * 经验注入的实际字节口径（三层化：EL0 恒在 + 命中时的 EL1）。
+ * ★ 复用 kernel/memory.mjs 的 EL0 渲染与 memoryBytes —— 不另造第二套口径。
+ */
+function experienceInjectBytes() {
+  const el0 = buildMemoryIndex({ root: memoryRoot, maxBytes: EL0_MAX_BYTES })
+  return memoryBytes(el0)
 }
 ```
 
-> ⚠️ **本步只做"口径同步"**：若三层化的 EL0 渲染在 `server/` 侧另有一份实现，**复用它**；若没有，就先用 `buildExperienceIndex` 的结果 + 字节口径（**诚实反映现状**，不编造更小的数字）。**不要**为了"数字好看"而硬编码 200。
+**要求**：
+- **必须**复用 `memoryBytes`（禁止第二份换算）；**必须**以 EL0 渲染为底（不得再用 `buildExperienceIndex(...).length`）。
+- `memoryRoot` 用本文件**既有的**记忆根路径变量（Step 1 核实真实名，不要新造）。
+- 若本文件无法 import `kernel/memory.mjs`（循环依赖等），**先尝试**；确实不行才在本文件内联一份**同名同语义**的 EL0 渲染，
+  并在注释写明"与 `kernel/memory.mjs` 的 EL0 渲染必须同步"——**不得**只是换个单位仍用旧全量口径。
+- **不得**硬编码 200/512 等数字（从 `EL0_MAX_BYTES` 取）。
 
 - [ ] **Step 5: 运行测试 + 门禁 + 提交**
 
@@ -1449,19 +1807,20 @@ npm run verify:milestones-start                          # milestone 解析契�
 git status --short                                       # 确认没有夹带他人在途改动
 ```
 
-**新增测试文件 4 个**：`turn-observability`（Task 1）、`inject-ledger`（Task 2）、`experience-dedup`（Task 3，Task 4/5/8 追加用例）、`knowledge-recommend`（Task 6，Task 7 追加用例）。⇒ 期望总数 **214**（基线 210 + 4，以实测为准；若差值不为 +4，逐一核对原因——最可能是 Task 4/5/7/8 误建成了新文件而非追加）。
+**新增测试文件 4 个**：`turn-observability`（Task 1）、`inject-ledger`（Task 2）、`experience-dedup`（Task 3，Task 3/5/6/9 追加用例）、`knowledge-recommend`（Task 7，Task 8 追加用例）。⇒ 期望总数 **214**（基线 210 + 4，以实测为准；若差值不为 +4，逐一核对原因——最可能是 Task 6/8/9 误建成了新文件而非追加）。另需同步更新既有 `kernel-tests/knowledge-inject.test.mjs`（Task 5/6 改口径；**文件数不变**）。
 
 ## 评审时的汇报清单（批 1 完成后）
 
 | 项 | 要报什么 |
 |---|---|
 | 观测层 | `turnToolDigest.size` / `turnStats.guard` 的真实样例（连续 2–3 轮） |
-| 注入总账 | `inject_snapshot` 记账样例（连续 3 轮）；legacy 渠道非空；unified 如实为 0 |
-| 去重收益 | 经验常驻字节 **实测前后对比**（目标 10262 B → ≤1736 B，−8526 B/轮） |
+| 注入总账 | `inject_snapshot` 记账样例（连续 3 轮，**含非 loop 会话**）；渠道五分 `static/bridge/guard/derived/payload` 的实测值；`bySource` 归因；场景三元组 `promptTier/sessionMode/kb` 齐备 |
+| 去重 + EL0 收益 | 经验常驻字节 **实测前后对比**：去重 `10262 → 5131`（−5131）+ EL0 `5131 → ~200`（−4931）⇒ 合计 **≈4668 B，−8526 B/轮**；EL0 实测字节 ≤512（A14） |
 | A16 | 停用主题后内核 EL0/EL1 均不含该主题的证明 |
 | R1–R6 | 六条渲染契约的对照测试结果；EL1 实测字节（≤1536） |
 | A20 | `strategy=legacy` 有线索段 / `unified` 无线索段的对照结果 |
-| 观察期 | `inject_recommend_dryrun` 记账存在且 `text` 为空（未真注入） |
+| A18/A19 | `blockId` 喂 `related` 必返非空；`offered`/`adopted`/`adoptRate` 三字段就位；★ 观察期 `adopted === null`（**不是 0**） |
+| 观察期 | `inject_recommend_dryrun` 记账存在且 `text` 为空（未真注入）；`PONOS_MEMORY_EL1_OBSERVE` 默认 1 |
 | 意外发现 | 实施中发现的 bug（**只记录不修**）清单 |
 
 ## Self-Review
@@ -1473,21 +1832,24 @@ git status --short                                       # 确认没有夹带他
 | S1 O1（`turnToolDigest.size`） | Task 1 Step 4 |
 | S1 O2（`turnStats.guard`） | Task 1 Step 5 |
 | S1 O3（模式 meta） | **不在本批**（阻塞于 S4，已在「范围与非范围」写明） |
-| S1+ O4 每轮 `appendMeta('inject_snapshot')` | Task 2 Step 9 |
-| S1+ 只读分段计量（只取长度、不重组） | Task 2 Step 4 + Step 9 要点 |
-| S1+ 渠道记账（legacy/unified） | Task 2 Step 6 + Step 7 守护测试 |
-| S1+ 不删 `metrics.json` 段 | Global Constraints + Task 2 Step 7 |
+| S1+ O4 每轮 `appendMeta('inject_snapshot')` | Task 2 Step 4d（**轮末统一出口**，★ 不是 `loop.onTurnEnd`——它在 `if (loop.isActive())` 内） |
+| S1+ 只读分段计量（只取长度、不重组） | Task 2 Step 4 + **Step 4b**（`prompt.mjs` 各段 `Buffer.byteLength` + 桥侧 append 长度，spec §4.1 S1+④ / Q13） |
+| **A13 可归因（≤5%）** | **Task 2 Step 4**（渠道五分 `static/bridge/guard/derived/payload` + `bySource` + 场景三元组 `promptTier/sessionMode/kb`） |
+| S1+ `getInjectStats` 只增不删 | Task 2 Step 4c + 「只增不删」守护测试 |
+| S1+ 不删 `metrics.json` 段 | Global Constraints + 「只增不删」守护测试 |
 | S1+ 不改 `build` 预算口径 | Global Constraints（明确归 Task 5） |
-| S4.5① 去重（2→1，**只删调用**） | Task 3 |
-| S4.5② 内核侧尊重 `active`（A16） | Task 4 |
-| S4.5③ 字节口径统一（唯一归属本步） | Task 5 |
-| S4.5④ `knowledge-recommend.mjs` + R1–R6 | Task 6 |
-| S4.5⑤ `beforeIter` 接线 + `offered`/`offeredDryRun` | Task 7 |
-| S4.5⑥ EL1↔unified 互斥（A20） | Task 7 |
-| S4.5⑦ 面板口径同步 | Task 8 |
-| A18 前置 `knowledgeRelateMode==='on'` | Task 7 Step 2/4 |
-| A14 EL0 ≤512 B / EL1 无线索正文 / 逃生阀 | Global Constraints + Task 6 + Task 7 |
-| 「不改检索口径」 | Global Constraints + Task 6 提交说明 |
+| **S4.5② 内核侧尊重 `active`（A16）——★ 硬前置，必须先于去重** | **Task 3**（spec D3 / §3.4） |
+| S4.5① 去重（2→1，**只删调用**） | **Task 4**（其背景写明"必须后于 Task 3"） |
+| S4.5③ 字节口径统一（唯一归属本步） | Task 5（唯一性纪律） |
+| **S4.5④-1 EL0 主题清单（−4931 B/轮，A14/G3 的载体）** | **Task 6**（保留全部主题名 + 条数、≤512 B、不含条目正文、停用主题不出现） |
+| **受影响既有测试点名（spec §9 Q6）** | **Task 5 Step 5 + Task 6 Step 5**（`kernel-tests/knowledge-inject.test.mjs` 的"按字符数比较 maxBytes"注释与断言须同步更新，**不删断言**） |
+| S4.5④ EL1 线索层 `knowledge-recommend.mjs` + R1–R6（含 R3 复用 `makeSnippet`、R4 打理由、R5 三态） | Task 7 |
+| S4.5⑤ 每轮 system 组装处接线 + `offered`/`offeredDryRun` 分名 | Task 8（★ 落点为实测的 system 组装处，**不造相位机制**） |
+| S4.5⑥ EL1↔unified 互斥（A20） | Task 8 |
+| S4.5⑦ 面板口径同步（★ 读 EL0 真实渲染，非旧全量） | Task 9 |
+| A18 前置 relateMode === 'on'（真实函数 `resolveRelateMode`） | Task 8 Step 2/4 |
+| **A14** EL0 ≤512 B（Task 6）/ EL1 无线索正文 / 逃生阀 | Task 6 + Task 7 + Task 8 + Global Constraints |
+| 「不改检索口径」 | Global Constraints + Task 7 提交说明 |
 
 **2. Placeholder scan**
 
@@ -1505,13 +1867,22 @@ git status --short                                       # 确认没有夹带他
 - `buildRecommendSection(items, opts) → {lines, offered, dropped, bytes, upgraded, dryRun?, text}` —— Task 6 定义，Task 7 使用（**新增 `dryRun` 字段**，已在 Task 7 Step 4 明确）。
 - `shouldInjectEl1({strategy,relateMode,enabled})` —— Task 7 定义并使用，一致。
 - `HYDRATE_EL1_MAX_BYTES=1536` / `EL1_SNIPPET_MAX=300` —— Task 6 定义，测试与 Task 7 使用，一致。
-- **已修正的两处**：
-  1. spec 增量 §4.1 写「`bridge.mjs` 两处」与「`memory.mjs` 补 `front.active`」——实测分别是 **`server/bridge.mjs`** 与 **"内核侧漏判 `active`（写入侧早已实现）"**，已在 Task 3/Task 4 的"背景"里以**事实修正**形式写明，并同步修进主 spec §12.1。
-  2. 测试基线原写作 212 → **实测 210**，全篇已改。
+- **已修正的九处**（自审 + 独立审查 + 逐行实测）：
+  1. **★ 缺 EL0 任务（headline 收益不可达）**：原稿目标"−8526 B/轮 / ≤1736 B"，但无任何一步改 `buildMemoryIndex` 的输出形态 ⇒ 去重后仍恒在 ≈6667 B，**A14（EL0 ≤512 B）与 G3（≤1736 B）均不成立**。已**新增 Task 6（EL0 主题清单）**：`5131 → ~200 B（−4931）`，并把 Goal/Architecture/File Structure/门禁/Self-Review 全部同步。
+  2. **★ 任务顺序违反 spec 硬前置**：原稿"去重(Task 3) → active(Task 4)"，而 spec D3/§3.4 明确**必须先补 `front.active` 过滤、再移除桥侧注入**（否则"停用主题仍被注入"会从隐性变显性）。已**交换为 Task 3（active）→ Task 4（去重）**，并在 Task 4 背景写明"不得先于 Task 3 提交"。
+  3. **★ Task 3（原 Task 4）测试 fixture 与签名全错**：原稿造 `root/<主题>/_front.md` 目录结构并传 `keywords` —— 实测主题是**扁平文件** `root/<主题>.md`（`kernel/memory.mjs:29-31 themePath`，frontmatter 与条目同文件，`grep _front.md` 零命中），且 `keywords` 属 `buildRelevantMemory` 不属 `buildMemoryIndex`（实测签名 `:99 ({root, maxBytes})`）。已改为扁平文件 fixture + 真实签名，并**补 `buildRelevantMemory` 的 A16 用例**（两个注入函数都要覆盖）。
+  4. **★ Task 2 总账三处致命问题**：① 渠道只有 `legacy/unified`（那是**检索策略**维度，不是注入渠道维度，与 A13「可归因 5%」不符）⇒ 改为**渠道五分** `static/bridge/guard/derived/payload` + `bySource` + 场景三元组；② 原稿读 `stats.systemPromptBytes/toolSchemaBytes/skillBytes/injectedChars/seq`，**这些字段在 `getInjectStats()` 中均不存在**（账会全为 0）⇒ 补做 spec §4.1 S1+④ 的 `prompt.mjs` 各段 `Buffer.byteLength` 只读计量 + 桥侧 append 长度；③ 落点 `cli.mjs:1322 loop.onTurnEnd` 位于 `if (loop.isActive())`（实测 `:1319`）内 ⇒ 只有 loop 会话有账 ⇒ 改为**轮末统一出口**，并明确 `resetInjectStats` 的逐轮语义（原为进程级累计）。
+  5. **★ Task 8（接线）无落点**：原稿引用的 `beforeIter` / `phaseHooks` / `OBSERVE_ONLY` / `emitIterDerived` / `knowledgeRelateMode` **实测全部不存在**（`phaseHooks` 是 spec §5.4 的 **B2** 概念）⇒ 改为落在**真实的每轮 system 组装处**（实测 `kernel/cli.mjs:999-1011 refreshSystemPrompt()`）、用真实函数 `resolveRelateMode`（`:577`，`:566` 只是 JSDoc）与 `store.appendMeta`（`kernel/session.mjs:343`），并明确观察期开关 `PONOS_MEMORY_EL1_OBSERVE`（默认 1）与逃生阀的分工。
+  6. **★ Task 7（原 Task 6）R6 断言与自带实现矛盾**：`assert.equal(r.lines.length, 1)` 在 `budgetBytes:200` 下实测为 `lines=2`（每行 ≈75 B）⇒ **必红**。已改为忠实表达 R6 语义的断言（`bytes ≤ 预算` + 至少首条 + 丢行 + **装入行不得被截断**），并另加一条"预算小到只够首条"的用例。
+  7. **R1/R5 两条空转断言**：R1 的 `!`text.includes(' ·全文')`（实现永不产出该串）、R5 的 `hint.includes('related')`（任何分支都含）⇒ 已改为有效断言（R1：带 `full` 输入不得改变注入字节数；R5：未授权时 `hint` 须含 `mode:'full'` 与 `related` 且**不得指向 `Read`**）。
+  8. **R3/R4/R5 与 spec 不符**：R3 已改为**复用 `makeSnippet`**（`shared/knowledge-core.mjs`，`kernel/knowledge-search.mjs:10` 已导入）而非另造 `snippetOf`；R4 补上**按 `why.kind` 打理由标签**（原实现只用于过滤 `duplicate`）；R5 补成**三态**（据实分支）。
+  9. **事实/口径与行号修正**：spec 增量 §4.1 的「`bridge.mjs` 两处」实测是 **`server/bridge.mjs`**、写入侧 `active` 在 **`:83-85`**（原写 `:87-89`）；「`memory.mjs` 补 `front.active`」的正确表述是**内核注入侧漏判**（写入侧与服务端读取侧早已实现）；`content` 读取处实测 **`:1021`**（原写 `:1026` 指向 `try {`）；`turnToolDigest.push` 字面量 `:1031-1036`；测试基线 **210**（原写 212）；`injectCfg`/4 处无留痕**18 处注入点**（原写 12 处，主 9 + lane **6** + 协议回填 2 + 轮载荷 1）已随批 2 同步登记。
+- **Task 9（面板）目标修正**：原稿只换单位（仍以 `buildExperienceIndex(4096)` 为底）⇒ 面板数字停在 ≈5131 B，"与实际一致"不成立。已改为**读 EL0 真实渲染**并复用 `memoryBytes`（禁止第二套换算）。
 
 **4. 批次边界自审（批 1 / 批 2）**
 
 - 本批**不含** `inject-bus.mjs`、`emitInjection` 的字段扩展、守卫序参数化 —— 全在批 2。
-- 本批**含** `inject-ledger.mjs`（O4 总账）—— 它与批 2 的注入总线**不是同一物**：总账负责"记账与只读计量"，总线负责"排队与渲染"。**两者互不依赖**，可并行落地。
-- 交界面唯一：批 2 的 L4 等价锁可能消费本批 `turnStats.guard`。已在批 2 计划写明降级方案。
-- 测试文件数账：基线 **210** → 本批 **+4 = 214**；批 2 另 **+4**（`inject-bus`/`loop-core-contract`/`loop-guard-order-equivalence`/`loop-lane-profile`）= 214。**两批都落地后总数应为 218**（以实测为准，用于发现"重复计数/漏建文件/误建新文件"）。
+- 本批**含** `inject-ledger.mjs`（O4 总账）—— 它与批 2 的注入总线**不是同一物**：总账负责"记账与只读计量"，总线负责"排队与渲染"。**两者接口互不依赖**。
+- ★ **但文件级必须串行**：本批 Task 1 在 `kernel/engine.mjs` 的守卫命中处插 `turnGuardHits.add(...)`，批 2 的 Task 2/3/4 会搬走**同一段代码** ⇒ 优选**本批先落地**（登记语句随后被批 2 一并搬进 `loop-core.mjs`）。已在 Global Constraints 与批 2 计划双向写明。
+- 交界面之二：批 2 的 L4 等价锁可能消费本批 `turnStats.guard`。已在批 2 计划写明降级方案（未落地则用本地计数替代）。
+- 测试文件数账：基线 **210** → 本批 **+4 = 214**（`turn-observability`/`inject-ledger`/`experience-dedup`/`knowledge-recommend`；EL0 用例追加进 `experience-dedup`，**不新增文件**）；批 2 另 **+4** = 214。**两批都落地后总数应为 218**（以实测为准，用于发现"重复计数/漏建文件/误建新文件"）。
