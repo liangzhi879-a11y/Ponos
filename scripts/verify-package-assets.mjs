@@ -68,7 +68,10 @@ if (!devkit.ok) {
       }
     }
     scan('', 0)
-    const leaks = devkitLeaks(rels, devkit.devkit) // ★ 发行物：零例外
+    // ★ 安装包 = **固定发行物**（真源 `channelFrom: 'fixed-release'`）⇒ 显式按 release 判定，**零例外**。
+    //   这里**不**做渠道推导：安装包不可能是"调试渠道"，给它推导能力只会多一个被绕过的入口
+    //   （早先 `allowDevChannel` 那类"调用方自证"正是这么漏的）。
+    const leaks = devkitLeaks(rels, devkit.devkit, { channel: 'release' })
     console.log(`[${leaks.length ? 'FAIL' : 'ok'  }] 安装包产物不含 devkit（扫描 ${rels.length} 项）`)
     for (const l of leaks.slice(0, 10)) console.log(`       ⚠ ${l.rel}（命中 ${l.path}）`)
     if (leaks.length) failed = true

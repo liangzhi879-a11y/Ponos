@@ -188,6 +188,19 @@ CT11 因此把**三条同步路径**也纳入判据（`entry.portableSync.paths`
 两者在调试渠道上刚好**相反** —— `AGENTS.md` 在调试版**必须有**（CT11）、在发行物**必须无**（CT12）。
 这就是 `devChannelAllow[]` 存在的理由：**例外必须被显式登记**，不能靠"反正扫不到"。
 
+**★ 渠道（debug / release）由产物证据推导，不许调用方自证**（真源 `channelEvidence` + `resolveChannel()`）：
+- **包**（`.zip/.7z/.tgz/.tar.gz/.exe`）：**文件名就是发布意图** ⇒ 名字不含 `debug` **一律 release，不认 marker**；
+- **目录**（免安装便携目录 `release/YFWorking`）：名字**天生不含** debug ⇒ 认 `.yfw-dev-source.json`（dev-source marker）为调试态；
+- **推导不出来 ⇒ release（默认从严，零例外）**。
+
+> ★ 这一条是**修过一个真洞**才长成这样的：早先的实现是 `devkitLeaks(files, dk, { allowDevChannel: true })`，
+> 而两个调用点**硬编码了 `true`** —— 等于"谁调谁自称调试渠道"，与产物是什么**无关**。后果实测过两处：
+> ① 免安装便携目录被压成**正式**便携包、或发布前清理凭据（删 marker）后，`AGENTS.md` 仍会静默随包发出；
+> ② `--out` 指定**正式包名**时，包内残留的 marker 会把渠道判成 debug ⇒ 同样放行。
+> 现在：把产物洗成发行物（改正式名 / 删 marker）⇒ 渠道**自动变严** ⇒ 门禁红。
+> 旧参数 `allowDevChannel` **传入即抛错**（留着它就等于洞还在 —— 总有人接着用），CT12 另核"调用点文本里
+> 不得出现该参数（只扫代码，注释里写清历史不算）"与"`product-evidence` 面必须真的调用 `resolveChannel(`"。
+
 **四条发行面各自怎么守**（`releaseSurfaces[].guard`）：
 
 | 发行面 | 守在哪 | 怎么守 |

@@ -4,44 +4,105 @@
   "engine": {
     "match": "`patterns[].path` 按**路径前缀**解释：以 `/` 结尾 = 目录前缀（`kit/` 命中 `kit/xxx`，不命中 `kitfoo/`）；否则 = **仓根文件精确匹配**（`AGENTS.md` 只命中仓根那份，不命中 `sub/AGENTS.md`）。",
     "note": "存字符串而非正则：JSON 存不了正则；由消费端用『转义 + ^…(/|$)』构造。若把正则写进真源，各消费端就会各自解释它 —— 那正是本仓反复在防的『两份清单漂移』。",
-    "matchImpl": "kit/lib/devkit-rules.mjs#devkitMatcher（唯一实现；打包脚本与规则都调它，别再各写一遍）"
+    "matchImpl": "kit/lib/devkit-rules.mjs#devkitMatcher（唯一实现；打包脚本与规则都调它，别再各写一遍）",
+    "channel": "渠道（debug / release）**必须由产物自身的证据推导**，不许调用方声明。`resolveChannel()` 只看：① 产物名称是否匹配 `channelEvidence.debug.namePattern`；② 产物里是否含 `channelEvidence.debug.markers`。**推导不出来就是 release（默认从严、零例外）**。★ 旧参数 `allowDevChannel` 已作废：传入即抛错（留着它就等于洞还在 —— 总有人接着用）。",
+    "channelFrom": {
+      "fixed-release": "固定发行物：**永远**按 release 判定（不许推导 debug、不许出现旧的自证开关）。",
+      "product-evidence": "产物既可能当调试版、也可能当发行物 ⇒ **必须**用 `resolveChannel()` 从产物证据推导（CT12 核文本里是否有 `resolveChannel(`）。"
+    }
   },
   "patterns": [
-    { "path": "kit/", "why": "DevKit 本体：契约门禁（CT0–CT12）、GUI 报告、台账生成、agent 规范真源。其规则读 git 提交态与 `docs/`，在产品环境里跑必然全红 —— 塞进发行物只会变噪声，且暴露内部契约面。" },
-    { "path": "AGENTS.md", "why": "agent 自动注入入口（多数 agent 工具开工自动读仓根同名文件）。开发期规范入口：发行物里既无用，又会让收件人误以为要按它组织开发（它还引用了 `kit/` 与 `npm run kit:check`，在包里都是悬空引用）。" },
-    { "path": "docs/ci.md", "why": "CI 与门禁说明文档（含 CT0–CT12 规则集口径、`npm run kit:check` 的判据说明），属开发期文档。" },
-    { "path": "docs/bridge-contract.md", "why": "门禁契约真源：CT3/CT8 等规则直接读它核对路由/WS/IPC/工具 schema，含『在途差异』等纯内部工程口径。" },
-    { "path": "docs/_anchors.json", "why": "文档锚点台账：`check-doc-anchors.mjs` 校验 README/AGENTS 里引用的路径与测试 glob 是否仍存在，属门禁中间数据。" },
-    { "path": "docs/_anchors-allow.json", "why": "文档锚点豁免台账：允许清单（哪些锚点允许指向尚不存在的路径），纯开发期数据 —— 发出去只会让人以为产品里有这套校验。" },
-    { "path": "kit-stamp.json", "why": "`kit/cli.mjs stamp` 的盖章产物（『被测这一版对应哪个 commit / 哪些产物哈希』）—— 调试渠道凭据，不是产品文件。" }
+    {
+      "path": "kit/",
+      "why": "DevKit 本体：契约门禁（CT0–CT12）、GUI 报告、台账生成、agent 规范真源。其规则读 git 提交态与 `docs/`，在产品环境里跑必然全红 —— 塞进发行物只会变噪声，且暴露内部契约面。"
+    },
+    {
+      "path": "AGENTS.md",
+      "why": "agent 自动注入入口（多数 agent 工具开工自动读仓根同名文件）。开发期规范入口：发行物里既无用，又会让收件人误以为要按它组织开发（它还引用了 `kit/` 与 `npm run kit:check`，在包里都是悬空引用）。"
+    },
+    {
+      "path": "docs/ci.md",
+      "why": "CI 与门禁说明文档（含 CT0–CT12 规则集口径、`npm run kit:check` 的判据说明），属开发期文档。"
+    },
+    {
+      "path": "docs/bridge-contract.md",
+      "why": "门禁契约真源：CT3/CT8 等规则直接读它核对路由/WS/IPC/工具 schema，含『在途差异』等纯内部工程口径。"
+    },
+    {
+      "path": "docs/_anchors.json",
+      "why": "文档锚点台账：`check-doc-anchors.mjs` 校验 README/AGENTS 里引用的路径与测试 glob 是否仍存在，属门禁中间数据。"
+    },
+    {
+      "path": "docs/_anchors-allow.json",
+      "why": "文档锚点豁免台账：允许清单（哪些锚点允许指向尚不存在的路径），纯开发期数据 —— 发出去只会让人以为产品里有这套校验。"
+    },
+    {
+      "path": "kit-stamp.json",
+      "why": "`kit/cli.mjs stamp` 的盖章产物（『被测这一版对应哪个 commit / 哪些产物哈希』）—— 调试渠道凭据，不是产品文件。"
+    }
   ],
   "devChannelAllow": [
-    { "path": "AGENTS.md", "why": "★ 调试版（`release/YFWorking` 与 `YFWorking-portable-debug-*.zip`）**必须**带它：人工测试就是在这个渠道里跑 agent，入口进不去 ⇒ 里面的 agent 静默地不受规范约束（CT11 已把这件事钉住）。" },
-    { "path": "kit-stamp.json", "why": "调试渠道盖章：记录『被测的这一版是哪个 commit / 产物哈希』，供『你测的到底是哪一版』对账。" }
+    {
+      "path": "AGENTS.md",
+      "why": "★ 调试版（`release/YFWorking` 与 `YFWorking-portable-debug-*.zip`）**必须**带它：人工测试就是在这个渠道里跑 agent，入口进不去 ⇒ 里面的 agent 静默地不受规范约束（CT11 已把这件事钉住）。 ★ 注意：本例外**只在渠道由证据判定为 debug 时生效**；`release` 渠道零例外。"
+    },
+    {
+      "path": "kit-stamp.json",
+      "why": "调试渠道盖章：记录『被测的这一版是哪个 commit / 产物哈希』，供『你测的到底是哪一版』对账。 ★ 注意：本例外**只在渠道由证据判定为 debug 时生效**；`release` 渠道零例外。"
+    }
   ],
   "releaseSurfaces": [
     {
       "id": "installer",
       "what": "NSIS 安装包（`npm run build:installer` → `electron-builder --win nsis`）",
-      "guard": { "kind": "structural", "file": "electron-builder.yml", "how": "`files`/`extraResources` 是**声明式白名单**（没法 import 规则模块）⇒ 由 CT12 做**结构校验**：从段里提取入包路径（按缩进跳过 `filter:` 里的 `**/*`），逐条判『会不会把 devkit 带进来』，含 `**/*` 这种全包含。" },
+      "guard": {
+        "kind": "structural",
+        "file": "electron-builder.yml",
+        "how": "`files`/`extraResources` 是**声明式白名单**（没法 import 规则模块）⇒ 由 CT12 做**结构校验**：从段里提取入包路径（按缩进跳过 `filter:` 里的 `**/*`），逐条判『会不会把 devkit 带进来』，含 `**/*` 这种全包含。",
+        "channelFrom": "fixed-release",
+        "alsoFiles": [
+          "scripts/verify-package-assets.mjs"
+        ],
+        "channelHow": "固定发行物（零例外）：源码交付包 / 安装包不可能是\"调试渠道\"，所以不许推导 debug，也不许出现 `allowDevChannel`。"
+      },
       "status": "白名单本就干净（`files` 只列 dist/ electron/ server/ shared/ public/ package.json node.exe bin/），但**没有门禁**：哪天有人把 `files` 改成全包含（很常见的『顺手』改动），devkit 就会静默进包。CT12 补上这道。"
     },
     {
       "id": "source-zip",
       "what": "源码交付包（`scripts/pack-source-zip.mjs` → `release/YFWorking-src-*.zip`，文件头注释声明『给客户/外部』）",
-      "guard": { "kind": "reference", "pending": true, "file": "scripts/pack-source-zip.mjs", "how": "排除规则**从本真源生成**（不再各抄一份）+ 打包期自查（入包清单命中 devkit 即抛错，不写 zip）；CT12 核它仍引用真源。" },
+      "guard": {
+        "kind": "reference",
+        "pending": true,
+        "file": "scripts/pack-source-zip.mjs",
+        "how": "排除规则**从本真源生成**（不再各抄一份）+ 打包期自查（入包清单命中 devkit 即抛错，不写 zip）；CT12 核它仍引用真源。",
+        "channelFrom": "fixed-release",
+        "channelHow": "固定发行物（零例外）：源码交付包 / 安装包不可能是\"调试渠道\"，所以不许推导 debug，也不许出现 `allowDevChannel`。"
+      },
       "status": "★ 本批修的就是它：此前 devkit 会整包带出去（59 个文件）。⚠️ 本文件当前被**本地 `.git/info/exclude:11` 排除**（未入库）⇒ CT12 用 `guard.pending` 条件判据（未入库跳过、入库即自动开始核），因此这条现在**尚未在门禁里生效**；入库后自动生效。"
     },
     {
       "id": "portable-debug-zip",
       "what": "调试版便携包（`scripts/package-portable-zip.mjs` → `release/YFWorking-portable-debug-*.zip`）",
-      "guard": { "kind": "reference", "pending": true, "file": "scripts/package-portable-zip.mjs", "how": "入包前断言：命中 devkit 且不在 `devChannelAllow` 里 ⇒ 抛错；CT12 核这条自查仍在（被删即红）。" },
+      "guard": {
+        "kind": "reference",
+        "pending": true,
+        "file": "scripts/package-portable-zip.mjs",
+        "how": "入包前断言：命中 devkit 且不在 `devChannelAllow` 里 ⇒ 抛错；CT12 核这条自查仍在（被删即红）。",
+        "channelFrom": "product-evidence",
+        "channelHow": "从产物推导：免安装便携目录靠 `.yfw-dev-source.json` marker；调试版便携包靠产物名称里的 `debug`。"
+      },
       "status": "调试**渠道**（文件名带 debug、内含 `.yfw-dev-source.json` 本机路径），不是发行物；`AGENTS.md` 按 `devChannelAllow` 例外允许。⚠️ 本文件当前被**本地 `.git/info/exclude:12` 排除**（未入库）⇒ 同样走 `guard.pending` 条件判据。"
     },
     {
       "id": "portable-dir",
       "what": "免安装便携目录（`scripts/package-portable.cjs` → `release/YFWorking/`）及其布局校验",
-      "guard": { "kind": "reference", "file": "scripts/verify-portable-layout.mjs", "how": "扫产物顶层（限深 2 层）后按真源判定并 `fail++` ⇒ 真掉了 **EXIT=1**；CT12 核它仍引用真源。" },
+      "guard": {
+        "kind": "reference",
+        "file": "scripts/verify-portable-layout.mjs",
+        "how": "扫产物顶层（限深 2 层）后按真源判定并 `fail++` ⇒ 真掉了 **EXIT=1**；CT12 核它仍引用真源。",
+        "channelFrom": "product-evidence",
+        "channelHow": "从产物推导：免安装便携目录靠 `.yfw-dev-source.json` marker；调试版便携包靠产物名称里的 `debug`。"
+      },
       "status": "打包脚本 `package-portable.cjs` 是 **CJS**（引不了 ESM 规则模块），所以防线落在**扫产物**的布局校验里，并由 `build:portable` 链式调用 ⇒ **打包即校验**（此前它是纯手工命令 ⇒ 没人跑就等于没有）。★ 该目录还默认带 dev-source marker（`autoSync: true`）⇒ 在开发机上启动会把源码（含 `AGENTS.md`）同步进来；发布到别的机器时 `sourceRoot` 不存在 ⇒ no-op。"
     }
   ],
@@ -55,5 +116,18 @@
   "recompute": {
     "how": "列一份『会被源码交付包带出去的 devkit 文件』：`git ls-files | grep -E '^(kit/|AGENTS\\.md$)' | wc -l` ⇒ 本批实测 **59**（`kit/` 58 + `AGENTS.md` 1）。",
     "whyCounted": "只数 `patterns[]` 里**能被 `git ls-files` 枚举到**的两项；`docs/` 与 `kit-stamp.json` 在 `pack-source-zip.mjs` 里另有处置或不在跟踪范围 ⇒ 不计入这个数，避免把不同口径混成一个。"
+  },
+  "channelEvidence": {
+    "debug": {
+      "why": "人工测试渠道：agent 要在里面受规范约束，所以必须带 `AGENTS.md`（由 CT11 要求）；`kit-stamp.json` 是\"被测的是哪一版\"的盖章凭据。",
+      "namePattern": "debug",
+      "markers": [
+        ".yfw-dev-source.json"
+      ],
+      "note": "★ 两个证据都取自**产物本身**：改个正式名字、或发布前清理凭据（删 marker），渠道就自动变成 release ⇒ 门禁**自动变严**。这正是修过的洞：早先由调用方传 `allowDevChannel: true` 自证，与产物无关。"
+    },
+    "release": {
+      "why": "默认档：**推导不出 debug 证据的一律按发行物**（零例外）。忘传参数、认不出来、路径写错 —— 全都落到这一档。"
+    }
   }
 }

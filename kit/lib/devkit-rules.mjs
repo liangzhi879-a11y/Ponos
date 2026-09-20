@@ -54,11 +54,62 @@ export function loadDevkit({ read } = {}) {
   }
 }
 
-/** 一份文件清单里，哪些踩到了 devkit 边界（`allowDevChannel` 时按真源例外放行）。
+/**
+ * ★ 渠道判定：**必须由产物自身的证据推导，不许调用方自证**。
+ *
+ * 为什么（本仓实测过的洞 —— 用户指出）：
+ * 早先的签名是 `devkitLeaks(files, dk, { allowDevChannel: true })`，而两个调用点**硬编码了 `true`**。
+ * 那等于"谁调谁自称调试渠道"，跟产物到底是不是调试版**毫无关系**。后果：
+ *   · `release/YFWorking/`（免安装便携目录，名字**不带** debug）被压成正式便携包发出去时，
+ *     `verify-portable-layout` 仍传 `true` ⇒ `AGENTS.md` **静默随包发出**（而那正是"发行给用户的版本"）；
+ *   · `package-portable-zip.mjs` 同理：产物改名叫正式包（去掉 `-debug-`）也照样不红。
+ * ⇒ 现在只看**产物证据**：① 产物名称匹配 `channelEvidence.debug.namePattern`；② 产物里含
+ *   `channelEvidence.debug.markers`（dev-source marker）。**推导不出来就是 `release`（默认从严、零例外）**。
+ * ★ 旧参数 `allowDevChannel` 一旦传入**直接抛错**（不是静默忽略）：留着它就等于洞还在 —— 总会有人接着用。
+ */
+export function resolveChannel({ target = '', files = [] } = {}, devkit = null) {
+  const ev = devkit?.channelEvidence?.debug || {}
+  const pat = String(ev.namePattern || 'debug')
+  const t = String(target)
+  if (t && new RegExp(pat, 'i').test(t)) {
+    return { channel: 'debug', via: 'name', evidence: `产物名称匹配 /${pat}/i：「${t}」` }
+  }
+  // ★ 「包」与「目录」规则不同 —— 这个是关键，别合成一条：
+  //   · **包**（`.zip/.7z/.tar.gz/.tgz/.exe`）：**文件名就是发布意图**。名字不含 debug ⇒ 一律 release，
+  //     **不认 marker**。否则"用正式名打包、却因目录里还留着调试凭据而被判 debug"就成了可被利用的组合
+  //     （实测：`--out YFWorking-portable-1.0.0.zip` 曾因 marker 判成 debug 而放行 `AGENTS.md`）。
+  //   · **目录**（免安装便携目录 `release/YFWorking`）：名字**天生不含** debug，marker 是它唯一的调试证据
+  //     ⇒ 必须认 marker（否则正在跑的调试版会被判成发行物，反而红）。
+  if (/\.(zip|7z|tgz|tar\.gz|exe)$/i.test(t)) {
+    return {
+      channel: 'release', via: 'package-name',
+      evidence: `产物是包且名称不含 /${pat}/i ⇒ 按发行物（包名即发布意图，不认 marker）：「${t}」`,
+    }
+  }
+  const markers = (ev.markers || []).map(String)
+  const hit = (files || [])
+    .map((f) => String(f).replace(/\\/g, '/'))
+    .find((f) => markers.includes(f) || markers.includes(f.split('/').pop()))
+  if (hit) return { channel: 'debug', via: 'marker', evidence: `产物内含调试标记文件「${hit}」` }
+  return { channel: 'release', via: 'none', evidence: '推导不出 debug 证据 ⇒ 默认按发行物（零例外）' }
+}
+
+/** 一份文件清单里，哪些踩到了 devkit 边界。
+ *  - `channel: 'debug'` ⇒ 按真源 `devChannelAllow[]` 放行那两项（`AGENTS.md` / `kit-stamp.json`）；
+ *  - **其余一律 release（默认从严，零例外）** —— 包括"没传 channel"和传了别的东西。
+ *  - ★ `allowDevChannel` 已作废：传了直接抛（见 `resolveChannel` 的说明）。
  *  files 用 `/` 分隔的相对路径（`\` 会被归一，免得 Windows 侧调用方先踩坑）。 */
-export function devkitLeaks(files, devkit, { allowDevChannel = false } = {}) {
+export function devkitLeaks(files, devkit, opts = {}) {
+  if ('allowDevChannel' in opts) {
+    throw new Error(
+      'devkitLeaks: `allowDevChannel` 已作废 —— 它让调用方**自证**渠道（谁调谁放行），与产物是不是调试版无关，'
+      + '会让 `AGENTS.md` 在正式便携包里静默发出。请改用 `resolveChannel()` 从**产物证据**推导'
+      + '（名称含 debug / 含 dev-source marker），推导不出即 release（零例外）。',
+    )
+  }
+  const channel = opts.channel === 'debug' ? 'debug' : 'release'
   const rules = (devkit?.patterns || []).map((p) => ({ path: p.path, why: p.why, re: devkitMatcher(p.path) }))
-  const allow = new Set(allowDevChannel ? (devkit?.devChannelAllow || []).map((p) => p.path) : [])
+  const allow = new Set(channel === 'debug' ? (devkit?.devChannelAllow || []).map((p) => p.path) : [])
   const out = []
   for (const f of files || []) {
     const rel = String(f).replace(/\\/g, '/')
@@ -126,6 +177,16 @@ export function ymlPathEntries(text, keys = ['files', 'extraResources']) {
     if (v) out.push({ key: cur, value: v })
   }
   return out
+}
+
+/** 去掉 JS 注释，只留代码。
+ *  ★ 为什么需要它：CT12 要核"调用点有没有用旧的自证开关 / 有没有真的推导渠道"，但**注释里**提到
+ *  `allowDevChannel`（写明"这参数已作废、为什么"）恰恰是**好事**，不该判红 —— 否则等于禁止后人写清历史，
+ *  而"为什么不用它"的记录正是防回退的关键。所以检测只针对代码，不针对注释。 */
+export function stripJsComments(text) {
+  return String(text)
+    .replace(/\/\*[\s\S]*?\*\//g, ' ') // 块注释
+    .split(/\r?\n/).map((l) => l.replace(/\/\/.*$/, '')).join('\n') // 行注释
 }
 
 /** 一个包含模式（如 `dist/**\/*`、`kit/**\/*`、`**\/*`）会不会把 devkit 带进来。
@@ -222,26 +283,60 @@ export function devkitBoundaryCheck({ readTracked, read } = {}) {
     }
   }
 
-  // ④ 例外机制自证（2 条）
-  const allowOn = devkitLeaks(['AGENTS.md'], devkit, { allowDevChannel: true }).length === 0
-  const allowOff = devkitLeaks(['AGENTS.md'], devkit).length > 0
-  evaluated += 2
-  if (!allowOn) {
-    findings.push(finding({
-      rule: 'CT12', severity: RED, subject: 'dev-channel-allow-broken', file: DEVKIT_TRUTH, line: null,
-      expected: 'allowDevChannel=true 时 AGENTS.md 被放行（调试版必须带它 —— CT11 管这件事）',
-      actual: '仍被拦住',
-      hint: '调试版（release/YFWorking 与 portable-debug zip）里 agent 要靠这个入口受规范约束；放行不了 ⇒ 调试版要么缺入口、要么被迫绕过规则。',
-    }))
+  // ④ 渠道判定的自证（★ 用户指出的洞就在这一块，所以这里判得最细）
+  //   要点：渠道**由产物证据推导**，不是调用方声明。下面 6 条覆盖"该放行的"与"该拦的"两个方向，
+  //   尤其钉住"把调试产物洗成发行物"（去掉 debug 名 / 删掉 marker）必须**自动变严**。
+  const zipDebug = resolveChannel({ target: 'YFWorking-portable-debug-1.2.3.zip' }, devkit)
+  const zipRelease = resolveChannel({ target: 'YFWorking-portable-1.2.3.zip' }, devkit)
+  // ★ 「正式包名 + 目录里还留着调试凭据」必须仍判 release（实测过的绕过路径：`--out` 正式名时
+  //   曾因 marker 被判成 debug ⇒ `AGENTS.md` 仍随包走）——包名即发布意图，包不认 marker。
+  const zipReleaseDespiteMarker = resolveChannel(
+    { target: 'YFWorking-portable-1.2.3.zip', files: ['AGENTS.md', '.yfw-dev-source.json'] }, devkit)
+  const dirDebug = resolveChannel({ target: 'release/YFWorking', files: ['AGENTS.md', '.yfw-dev-source.json'] }, devkit)
+  const dirRelease = resolveChannel({ files: ['AGENTS.md'] }, devkit)
+  const legacyParamThrows = (() => {
+    try { devkitLeaks(['AGENTS.md'], devkit, { allowDevChannel: true }); return false } catch { return true }
+  })()
+  const leakDebug = devkitLeaks(['AGENTS.md'], devkit, { channel: 'debug' }).length === 0
+  const leakRelease = devkitLeaks(['AGENTS.md'], devkit, { channel: 'release' }).length > 0
+  const leakDefault = devkitLeaks(['AGENTS.md'], devkit).length > 0 // ★ 不传 channel = 从严
+  evaluated += 10
+
+  const pushCh = (ok, subject, expected, actual, hint) => {
+    if (!ok) findings.push(finding({ rule: 'CT12', severity: RED, subject, file: DEVKIT_TRUTH, line: null, expected, actual, hint }))
   }
-  if (!allowOff) {
-    findings.push(finding({
-      rule: 'CT12', severity: RED, subject: 'dev-channel-allow-overbroad', file: DEVKIT_TRUTH, line: null,
-      expected: 'allowDevChannel=false（发行物）时 AGENTS.md 必须被拦住',
-      actual: '被放行了',
-      hint: '★ 例外被写成"什么都放行"= 规则失效。发行物里出现 agent 入口，收件人会以为要按它组织开发。',
-    }))
-  }
+  pushCh(zipDebug.channel === 'debug', 'channel-evidence:zip-debug',
+    '`YFWorking-portable-debug-1.2.3.zip` ⇒ 判为 debug（调试渠道，可带 AGENTS.md）',
+    zipDebug.channel, '调试包靠**产物名称**识别；认不出来 ⇒ 人工测试渠道会被当成发行物（要么被迫缺入口，要么被迫绕过规则）。')
+  pushCh(zipRelease.channel === 'release', 'channel-evidence:zip-release',
+    '`YFWorking-portable-1.2.3.zip`（无 debug 名）⇒ 判为 **release**，`AGENTS.md` 必须被拦',
+    zipRelease.channel,
+    '★ 这就是那个洞：免安装便携目录/便携包一旦以正式名义发出（名字不带 debug），入口就不该跟着走。'
+      + '判据锚在**产物名称**上 ⇒ 谁把产出的包改个正式名字，门禁立刻自动变严。')
+  pushCh(zipReleaseDespiteMarker.channel === 'release', 'channel-evidence:package-name-wins',
+    '正式包名 + 包内仍有调试凭据 ⇒ **仍判 release**（包名即发布意图，包不认 marker）',
+    zipReleaseDespiteMarker.channel,
+    '★ 实测过的绕过路径：`--out YFWorking-portable-1.0.0.zip`（正式名）时若认 marker 就会判成 debug '
+      + '⇒ `AGENTS.md` 仍随包走。所以**包只认名字**，目录才认 marker（目录名天生不含 debug）。')
+  pushCh(dirDebug.channel === 'debug', 'channel-evidence:dir-marker',
+    '产物内含 `.yfw-dev-source.json`（dev-source marker）⇒ 判为 debug',
+    dirDebug.channel, '免安装便携目录（`release/YFWorking`）名字不带 debug，靠 marker 识别它是"开发机上的调试态"。')
+  pushCh(dirRelease.channel === 'release', 'channel-evidence:marker-removed',
+    '产物里**没有** marker ⇒ 判为 release，`AGENTS.md` 必须被拦',
+    dirRelease.channel,
+    '★ "发布前清理凭据（删 marker）"这个动作本身就会把它变成发行物 ⇒ 渠道自动变严。若此时仍带入口，就是发行物夹带 devkit。')
+  pushCh(legacyParamThrows, 'channel-evidence:legacy-param',
+    '`allowDevChannel` 必须**抛错**（旧的自证开关已作废）',
+    legacyParamThrows ? '已抛错' : '被静默接受',
+    '★ 留着自证开关 = 洞还在（总有人接着用）。必须抛错才能逼所有调用点改用 `resolveChannel()`。')
+  pushCh(leakDebug && leakRelease, 'dev-channel-allow-broken',
+    'debug 渠道放行 `AGENTS.md`（CT11 要求调试版有入口）、release 渠道拦住它',
+    `debug=${leakDebug ? '放行' : '拦住'} / release=${leakRelease ? '拦住' : '放行'}`,
+    '两个方向都要对：只会放行 = 规则失效；只会拦 = 调试版里 agent 静默不受规范约束（CT11 管这件事）。')
+  pushCh(leakDefault, 'channel-evidence:default-strict',
+    '不传 channel 时**默认从严**（`AGENTS.md` 被拦）',
+    leakDefault ? '已从严' : '默认放行',
+    '默认值必须是最安全的那一侧 —— 忘了传参数是常态，忘一次就漏一次包。')
 
   // ⑤ 各发行面仍**引用真源**。
   //   ★ 只对 `guard.kind === 'reference'`（可写 import 的 JS/脚本）要求"文本里出现引用"：
@@ -251,6 +346,22 @@ export function devkitBoundaryCheck({ readTracked, read } = {}) {
   for (const s of devkit.releaseSurfaces || []) {
     const file = s?.guard?.file
     if (!file) continue
+    // ★ 结构面（`electron-builder.yml`）自己没法"引用真源"，但它的**伴生脚本**（`guard.alsoFiles`，
+    //   即真正扫安装包产物的 `verify-package-assets.mjs`）仍必须守规矩 ⇒ 先核 alsoFiles，
+    //   再决定要不要 continue（早先把这段写在末尾，structural 面一 `continue` 就整段跳过 = 漏核）。
+    for (const also of s.guard.alsoFiles || []) {
+      evaluated += 1
+      const alsoBody = readAny(also)
+      if (alsoBody === null) continue
+      if (/allowDevChannel/.test(stripJsComments(alsoBody))) {
+        findings.push(finding({
+          rule: 'CT12', severity: RED, subject: `surface-legacy-channel-flag:${also}`, file: also, line: null,
+          expected: '文本里**不得**出现 `allowDevChannel`（旧的自证开关已作废）',
+          actual: '（仍在使用）',
+          hint: `同 ${file}：自证开关会让发行物静默夹带 devkit（谁调谁放行，与产物无关）。`,
+        }))
+      }
+    }
     if (s.guard.kind === 'structural') continue
     const body = readAny(file)
     if (body === null) {
@@ -278,6 +389,33 @@ export function devkitBoundaryCheck({ readTracked, read } = {}) {
         hint: `${s.what || ''}：★ 排除清单必须**从真源取**，不能各抄一份 —— 抄一份就是下一个"改了这处忘了那处"，`
           + '而这类漏的后果是**把内部开发配置发给客户**（本批修的就是这个：59 个 devkit 文件差点随源码包发出）。',
       }))
+    }
+
+    // ★ 渠道判定方式必须与真源登记一致 —— 防"改回调用方自证"这种回退（用户指出的洞就是这么长的）。
+    //   检测**只针对代码**（剥掉注释）：注释里写明"这参数已作废、为什么不许用"是好事，不该判红。
+    const code = stripJsComments(body)
+    evaluated += 1
+    if (/allowDevChannel/.test(code)) {
+      findings.push(finding({
+        rule: 'CT12', severity: RED, subject: `surface-legacy-channel-flag:${file}`, file, line: null,
+        expected: '文本里**不得**出现 `allowDevChannel`（旧的自证开关已作废）',
+        actual: '（仍在使用）',
+        hint: '★ 自证开关 = "谁调谁放行"，与产物是不是调试版无关 ⇒ 正式便携包里 `AGENTS.md` 会被静默带走。'
+          + '改用 `resolveChannel()` 从产物证据推导（名称含 debug / 含 dev-source marker），推导不出即 release。',
+      }))
+    }
+    if (s.guard.channelFrom === 'product-evidence' && !/resolveChannel\s*\(/.test(code)) {
+      findings.push(finding({
+        rule: 'CT12', severity: RED, subject: `surface-channel-not-derived:${file}`, file, line: null,
+        expected: '该面按真源登记应**从产物推导渠道**（文本里出现 `resolveChannel(`）',
+        actual: '（没找到推导调用）',
+        hint: `${s.what || ''}：这是"产物既可能当调试版、也可能当发行物"的面 —— 必须靠**产物证据**判定渠道。`
+          + '若改成固定放行/固定拦截，就丢了"洗成发行物时自动变严"的能力。',
+      }))
+    }
+    for (const also of s.guard.alsoFiles || []) {
+      // （alsoFiles 在循环开头已核过 —— 这里不再重复，见上方注释）
+      void also
     }
   }
 

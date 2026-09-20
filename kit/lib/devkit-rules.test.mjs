@@ -15,7 +15,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
-  DEVKIT_TRUTH, loadDevkit, devkitMatcher, devkitLeaks,
+  DEVKIT_TRUTH, loadDevkit, devkitMatcher, devkitLeaks, resolveChannel,
   assertNoDevkit, ymlPathEntries, includeHitsDevkit, devkitBoundaryCheck,
 } from './devkit-rules.mjs'
 
@@ -35,19 +35,42 @@ const okMap = (over = {}) => {
     'electron-builder.yml': readReal('electron-builder.yml'),
   }
   for (const s of d.releaseSurfaces) {
-    if (s.guard.file === 'electron-builder.yml') continue
-    map[s.guard.file] = '// 清单从真源取：kit/lib/devkit-rules.mjs\n'
+    if (s.guard.kind === 'structural') continue // yml 由上面那份真实内容负责
+    // ★ `product-evidence` 面的夹具必须**真的用 resolveChannel()**：真源登记了"这一面要从产物推导渠道"，
+    //   CT12 会核文本里有没有这个调用（防有人改回"调用方自证"）。夹具照真源要求写。
+    const derive = s.guard.channelFrom === 'product-evidence'
+      ? "const ch = resolveChannel({ target: out }, DEVKIT.devkit)\n"
+      : ''
+    map[s.guard.file] = `// 清单从真源取：kit/lib/devkit-rules.mjs\n${derive}`
+    for (const also of s.guard.alsoFiles || []) map[also] = '// 从真源取：kit/lib/devkit-rules.mjs\n'
   }
   return { ...map, ...over }
 }
-/** 健康态的期望核验点数：真源 + 匹配自证 3 + 例外自证 2 + **需引用真源的**发行面 + yml（读取 + 结构）。
- *  ★ 从真源算、不写死：`guard.kind === 'structural'`（声明式配置，如 electron-builder.yml）不参与
- *    "是否引用真源"那条判据 —— 它由 yml 结构校验守。 */
+/** 健康态的期望核验点数：真源 1 + 匹配自证 3 + 渠道自证 8 + 需引用真源的发行面 ×2（引用 + 渠道方式）
+ *  + alsoFiles + yml 2（读取 + 结构）。★ 全部从真源算、不写死；读不到的（未入库/不存在的）不计。 */
 const expectedEvaluated = () => {
   const d = JSON.parse(truthText())
-  const refSurfaces = d.releaseSurfaces.filter((s) => s.guard.kind !== 'structural').length
-  return 1 + 3 + 2 + refSurfaces + 2
+  const refs = d.releaseSurfaces.filter((s) => s.guard.kind !== 'structural' && worktree(s.guard.file) !== null)
+  const also = d.releaseSurfaces.flatMap((s) => s.guard.alsoFiles || []).filter((f) => worktree(f) !== null)
+  return 1 + 3 + 10 + refs.length * 2 + also.length + 2
 }
+
+test('★★ 包只认名字：正式包名 + 包内仍有调试凭据 ⇒ **仍判 release**（实测过的绕过路径）', () => {
+  const d = fixture(() => {})
+  const r = resolveChannel({ target: 'YFWorking-portable-1.0.0.zip', files: ['AGENTS.md', '.yfw-dev-source.json'] }, d)
+  assert.equal(r.channel, 'release',
+    '★ 包名就是发布意图：若这里认 marker，就能"用 --out 正式名打包"而仍放行 AGENTS.md（实测踩过）')
+  assert.match(r.evidence, /包名即发布意图/)
+  assert.equal(r.via, 'package-name', '要能看出判定依据来自"包名"这一路')
+})
+
+test('★ 目录认 marker：免安装便携目录名天生不含 debug ⇒ 靠 marker 判调试态；凭据清了就变发行物', () => {
+  const d = fixture(() => {})
+  assert.equal(resolveChannel({ target: 'release/YFWorking', files: ['.yfw-dev-source.json'] }, d).channel, 'debug',
+    '这个目录正在被人工测试跑 ⇒ 必须认它是调试态（否则 CT11 要求的入口反而会被拦）')
+  assert.equal(resolveChannel({ target: 'release/YFWorking', files: [] }, d).channel, 'release',
+    '★ 发布前清理凭据（删 marker）⇒ 自动按发行物 ⇒ 入口必须不在了')
+})
 
 test('真仓自检：CT12 全绿，且 evaluated = 真源 + 自证 + 各发行面 + yml 结构（不写死数字）', () => {
   const r = devkitBoundaryCheck({ readTracked: worktree })
@@ -132,15 +155,58 @@ test('路径归一：Windows 反斜杠也要能命中（否则打包脚本在 Wi
 
 // ── 例外机制自证 ───────────────────────────────────────────────────────────
 
-test('★ 例外自证：开 devChannelAllow ⇒ AGENTS.md 放行；不开（发行物）⇒ 必须拦住', () => {
+test('★ 渠道自证开关已作废：传 `allowDevChannel` 必须**抛错**（不是静默忽略）', () => {
   const d = fixture(() => {})
-  assert.equal(devkitLeaks(['AGENTS.md'], d, { allowDevChannel: true }).length, 0,
-    '调试版必须能带 AGENTS.md —— CT11 要求人工测试环境里有这个入口')
-  assert.equal(devkitLeaks(['AGENTS.md'], d).length, 1,
-    '发行物里必须拦 —— 这条如果失效，本规则就变成"什么都放行"')
-  // ★ 例外只放行登记过的那两项：kit/ 在本体在**两个渠道**都必须被拦
-  assert.equal(devkitLeaks(['kit/cli.mjs'], d, { allowDevChannel: true }).length, 1)
-  assert.equal(devkitLeaks(['docs/ci.md'], d, { allowDevChannel: true }).length, 1)
+  assert.throws(() => devkitLeaks(['AGENTS.md'], d, { allowDevChannel: true }),
+    /allowDevChannel.*已作废/s, '★ 留着自证开关就等于洞还在 —— 必须抛错才能逼所有调用点改用 resolveChannel()')
+  assert.throws(() => assertNoDevkit(['AGENTS.md'], d, { allowDevChannel: true }), /allowDevChannel/)
+})
+
+// ── ★ 渠道推导（用户指出的洞：渠道不能由调用方自证）───────────────────────
+// 早先两个调用点硬编码 `allowDevChannel: true` ⇒ `release/YFWorking/`（免安装便携目录，名字**不带** debug）
+// 被压成**正式便携包**、或发布前清理凭据（删 marker）之后，`AGENTS.md` 仍会静默随包发出。
+
+test('★ resolveChannel：由**产物证据**推导，推导不出即 release（默认从严）', () => {
+  const d = fixture(() => {})
+  assert.equal(resolveChannel({ target: 'YFWorking-portable-debug-1.2.3.zip' }, d).channel, 'debug',
+    '调试包靠产物名识别')
+  assert.equal(resolveChannel({ target: 'YFWorking-portable-1.2.3.zip' }, d).channel, 'release',
+    '★ 同一个包改个正式名字 ⇒ 自动变发行物（这正是洞的场景）')
+  assert.equal(resolveChannel({ files: ['AGENTS.md', '.yfw-dev-source.json'] }, d).channel, 'debug',
+    '免安装便携目录名不带 debug，靠 dev-source marker 识别为开发机调试态')
+  assert.equal(resolveChannel({ files: ['AGENTS.md'] }, d).channel, 'release',
+    '★ 发布前清理凭据（删 marker）⇒ 自动变发行物')
+  assert.equal(resolveChannel({}, d).channel, 'release', '什么都没给 ⇒ 从严')
+  assert.match(resolveChannel({ target: 'YFWorking-portable-1.2.3.zip' }, d).evidence, /包名即发布意图/,
+    '要给出判定依据（否则红的时候不知道为什么）')
+  assert.match(resolveChannel({}, d).evidence, /默认按发行物/, '完全给不出证据时也要说清"从严"这一档')
+})
+
+test('★ 渠道语义：debug 放行两项、release 零例外、不传参数 = 从严', () => {
+  const d = fixture(() => {})
+  assert.equal(devkitLeaks(['AGENTS.md'], d, { channel: 'debug' }).length, 0, '调试版必须有入口（CT11 管）')
+  assert.equal(devkitLeaks(['AGENTS.md'], d, { channel: 'release' }).length, 1, '发行物必须拦')
+  assert.equal(devkitLeaks(['AGENTS.md'], d).length, 1, '★ 默认值必须是最安全那一侧（忘传参数是常态）')
+  // ★ 即使 debug 渠道，`kit/` 本体与门禁文档也照拦
+  assert.equal(devkitLeaks(['kit/cli.mjs', 'docs/ci.md'], d, { channel: 'debug' }).length, 2)
+})
+
+test('★ 真源 + 门禁自证：渠道判据本身被核（改坏 ⇒ CT12 红）', () => {
+  // 把 namePattern 改成一个永不匹配的串 ⇒ 调试包认不出来 ⇒ 必须红（否则调试渠道会被当发行物）
+  const bad = fixture((x) => { x.channelEvidence.debug.namePattern = '绝不会出现的串' })
+  const r = devkitBoundaryCheck({ readTracked: reader(okMap({ [DEVKIT_TRUTH]: JSON.stringify(bad) })) })
+  assert.ok(r.findings.map((f) => f.subject).includes('channel-evidence:zip-debug'),
+    '调试包认不出来 ⇒ 必须报（人工测试渠道要么缺入口、要么被迫绕过规则）')
+})
+
+test('★★ 真源 + 门禁自证：marker 证据被删 ⇒ 必须红（调试渠道不能认不出来）', () => {
+  const bad = fixture((x) => { x.channelEvidence.debug.markers = [] })
+  const r = devkitBoundaryCheck({ readTracked: reader(okMap({ [DEVKIT_TRUTH]: JSON.stringify(bad) })) })
+  assert.ok(r.findings.map((f) => f.subject).includes('channel-evidence:dir-marker'),
+    '★ marker 是**免安装便携目录**唯一的调试证据（它的名字不带 debug）：证不出来 ⇒ 人工测试环境里 agent 静默不受约束')
+  // 反向：此时"无证据 ⇒ release"仍须成立（这条不因上面那条而失效）
+  const d = JSON.parse(JSON.stringify(bad))
+  assert.equal(resolveChannel({ files: ['AGENTS.md'] }, d).channel, 'release')
 })
 
 test('★ 例外机制被写坏（恒放行）⇒ 红', () => {
@@ -149,8 +215,8 @@ test('★ 例外机制被写坏（恒放行）⇒ 红', () => {
   const r = devkitBoundaryCheck({ readTracked: reader(okMap({ [DEVKIT_TRUTH]: JSON.stringify(d) })) })
   const subjects = r.findings.map((f) => f.subject)
   assert.ok(subjects.includes('allow-not-in-patterns:AGENTS.md'), '例外不在 patterns 里 ⇒ 永不生效，必须报')
-  assert.ok(subjects.includes('dev-channel-allow-overbroad') || subjects.includes('matcher-proof:AGENTS.md'),
-    'AGENTS.md 不再被拦 ⇒ 必须有红（要么例外跑偏、要么匹配自证失败）')
+  assert.ok(subjects.includes('matcher-proof:AGENTS.md'),
+    'AGENTS.md 不再被拦 ⇒ 匹配自证必须报（否则"例外"会变成恒放行）')
 })
 
 // ── 发行面（四路）──────────────────────────────────────────────────────────
@@ -189,12 +255,14 @@ test('★ `guard.pending` 是真判据不是借口：文件读得到却没引用
 test('★ pending 发行面**未入库**时跳过、不计 evaluated（否则未入库文件会让门禁永远红）', () => {
   const d = JSON.parse(truthText())
   const pending = d.releaseSurfaces.filter((s) => s.guard.pending)
+  assert.ok(pending.length, '真源里应登记至少一个 pending 发行面')
   const map = okMap()
   for (const s of pending) delete map[s.guard.file] // 模拟"提交态读不到"（正是本机 .git/info/exclude 的效果）
   const r = devkitBoundaryCheck({ readTracked: reader(map) })
   assert.equal(r.check.passed, true, '未入库 ⇒ 不该红（"永远红"等于没有红灯）')
-  const refCommitted = d.releaseSurfaces.filter((s) => s.guard.kind !== 'structural' && !s.guard.pending).length
-  assert.equal(r.check.evaluated, 1 + 3 + 2 + refCommitted + 2, '未入库的不计入，已入库的照常计入')
+  // ★ 每个未入库的 reference 面少算 2 点（"引用真源" + "渠道方式"）；其余照常计入
+  assert.equal(r.check.evaluated, expectedEvaluated() - pending.length * 2,
+    '未入库的不计入，已入库的照常计入')
 })
 
 // ── electron-builder.yml 结构校验（安装包 = 主要发行物）────────────────────
@@ -272,8 +340,10 @@ test('★ assertNoDevkit：命中 ⇒ 抛错（不是"记条日志继续打包"�
     /DevKit 边界.*1 个/s, '必须抛 —— 日志留不住，包会照样发出去')
   assert.throws(() => assertNoDevkit(['AGENTS.md'], d), /DevKit 边界/)
   assert.doesNotThrow(() => assertNoDevkit(['src/a.ts', 'server/x.mjs'], d), '干净清单不该被误拦')
-  assert.doesNotThrow(() => assertNoDevkit(['AGENTS.md'], d, { allowDevChannel: true }),
-    '调试渠道按例外放行（CT11 要求调试版必须有入口）')
+  assert.doesNotThrow(() => assertNoDevkit(['AGENTS.md'], d, { channel: 'debug' }),
+    '调试渠道（由产物证据推导出来的）可带入口 —— CT11 要求调试版必须有它')
+  assert.throws(() => assertNoDevkit(['AGENTS.md'], d, { channel: 'release' }),
+    '★ 发行渠道必须拦')
 })
 
 test('★ assertNoDevkit 的报错信息要**指名**命中项与命中规则（否则拿到报错也不知道改哪儿）', () => {

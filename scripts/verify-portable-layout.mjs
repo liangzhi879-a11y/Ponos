@@ -2,7 +2,7 @@
 import { existsSync, statSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 // ★ DevKit 边界（CT12）：真源 + 唯一匹配实现（不在这里另写一份路径清单）
-import { loadDevkit, devkitLeaks } from '../kit/lib/devkit-rules.mjs'
+import { loadDevkit, devkitLeaks, resolveChannel } from '../kit/lib/devkit-rules.mjs'
 
 const ROOT = process.cwd()
 const R = join(ROOT, 'release', 'YFWorking')
@@ -60,14 +60,20 @@ if (!devkit.ok) {
     }
   }
   scan('', 0)
-  const leaks = devkitLeaks(rels, devkit.devkit, { allowDevChannel: true })
+  // ★ 渠道**由产物证据推导**，不许调用方自证（早先这里硬编码 `allowDevChannel: true` —— 那等于
+  //   "这个脚本永远自称调试渠道"，与产物是不是调试版无关）。
+  //   实测意义：把这个目录压成**正式**便携包、或发布前**清理凭据**（删 `.yfw-dev-source.json`）之后，
+  //   渠道自动变 `release` ⇒ `AGENTS.md` 会被拦 ⇒ 本脚本红。这正是"发行版不带 devkit"的实际保障。
+  const ch = resolveChannel({ target: R, files: rels }, devkit.devkit)
+  const leaks = devkitLeaks(rels, devkit.devkit, { channel: ch.channel })
   if (leaks.length) {
     console.error(`DEVKIT LEAK: 便携版里有 ${leaks.length} 个开发门禁文件（发行物不该含 kit/ 及相关配置）`)
+    console.error(`  渠道：${ch.channel} —— ${ch.evidence}`)
     for (const l of leaks.slice(0, 10)) console.error('  -', l.rel, '（命中', l.path, '）')
     if (leaks.length > 10) console.error(`  … 另有 ${leaks.length - 10} 个`)
     fail++
   } else {
-    console.log(`OK DevKit 边界：扫描 ${rels.length} 项，无开发门禁泄漏（调试渠道例外按真源放行）`)
+    console.log(`OK DevKit 边界：扫描 ${rels.length} 项，无泄漏（渠道 ${ch.channel} —— ${ch.evidence}）`)
   }
 }
 
