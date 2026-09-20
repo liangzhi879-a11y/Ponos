@@ -1,0 +1,103 @@
+// 循环体契约（S2/B1）：profile 校验、守卫序解析、注入出口形状
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import {
+  MAIN_PROFILE, LANE_PROFILE, validateProfile, resolveGuards,
+} from '../kernel/loop-profile.mjs'
+import { emitInjection, runOnce, shouldStop, runIterHeadGuards, runInStreamGuards, runAfterStreamGuards } from '../kernel/loop-core.mjs'
+
+test('MAIN_PROFILE / LANE_PROFILE 合法', () => {
+  assert.equal(validateProfile(MAIN_PROFILE).ok, true)
+  assert.equal(validateProfile(LANE_PROFILE).ok, true)
+})
+
+test('validateProfile 拒绝未知相位与未知守卫', () => {
+  const bad = { guards: { iterHead: ['wallClock', '不存在'], inStream: [], afterStream: [] } }
+  const r = validateProfile(bad)
+  assert.equal(r.ok, false)
+  assert.ok(r.errors.some((e) => e.includes('不存在')))
+})
+
+test('validateProfile 拒绝缺失相位', () => {
+  const r = validateProfile({ guards: { iterHead: [] } })
+  assert.equal(r.ok, false)
+})
+
+test('resolveGuards 返回副本，外部改动不回写 profile', () => {
+  const g = resolveGuards(MAIN_PROFILE, 'iterHead')
+  g.push('hacked')
+  assert.ok(!resolveGuards(MAIN_PROFILE, 'iterHead').includes('hacked'))
+})
+
+test('resolveGuards 对未知相位抛错（早失败优于静默）', () => {
+  assert.throws(() => resolveGuards(MAIN_PROFILE, 'nope'), /unknown phase/)
+})
+
+test('LANE_PROFILE 的刻意差异只在 compactor/health/inject/stop —— 守卫集与主循环相同', () => {
+  // 差异（spec §6.2 明列的四项 + 收尾方式）
+  assert.equal(LANE_PROFILE.health.fidelityAnchor, false)
+  assert.equal(LANE_PROFILE.compactor.preStep, false)
+  assert.equal(LANE_PROFILE.inject.pendingNext, false)
+  assert.equal(LANE_PROFILE.inject.inbox, true)
+  assert.equal(LANE_PROFILE.stop, 'guardStop')
+  // ★ 守卫集**不**是差异：lane 与主循环逐项同集（实测 engine.mjs lane 段）
+  for (const phase of ['iterHead', 'inStream', 'afterStream']) {
+    assert.deepEqual(
+      resolveGuards(LANE_PROFILE, phase),
+      resolveGuards(MAIN_PROFILE, phase),
+      `lane 的 ${phase} 守卫集必须与主循环相同（漏一个 = 静默丢守卫）`,
+    )
+  }
+})
+
+test('★ runOnce 相位顺序：相位 1 抛错时不得进入取流（A2「一处实现」的载体）', async () => {
+  const order = []
+  const ctx = {
+    profile: MAIN_PROFILE,
+    pushInjection: () => {},
+    async streamOnce() { order.push('stream'); return { ok: true } },
+  }
+  // Task 2–4 补齐守卫体之前，相位 1 必然抛错 ⇒ streamOnce **不应**被调用
+  await assert.rejects(() => runOnce({}, ctx), /未实现/)
+  assert.deepEqual(order, [], '相位 1 未通过时不得进入 streamOnce（相位顺序正确性）')
+})
+
+test('★ runOnce：守卫未实现时抛错而非静默跳过（防「漏实现=静默失效」）', async () => {
+  const ctx = { profile: MAIN_PROFILE, pushInjection: () => {}, async streamOnce() { return {} } }
+  await assert.rejects(() => runOnce({}, ctx), /未实现/)
+})
+
+test('★ 三个相位入口齐备（Task 2–4 的落点；防「漏建某个相位入口」）', () => {
+  assert.equal(typeof runIterHeadGuards, 'function')
+  assert.equal(typeof runInStreamGuards, 'function')
+  assert.equal(typeof runAfterStreamGuards, 'function')
+})
+
+test('shouldStop：无 stop 返回 null，有 stop 时规范化 reason', () => {
+  assert.equal(shouldStop({}), null)
+  assert.deepEqual(shouldStop({ stop: { reason: 'loop-stall', message: 'm' } }), { reason: 'loop-stall', message: 'm' })
+  assert.deepEqual(shouldStop({ stop: {} }), { reason: 'unknown', message: undefined })
+})
+
+test('emitInjection 冻结 text/persist/event：拒绝扩展字段', () => {
+  const ctx = { emitInjection: null, wire: { system: () => {} } }
+  // 出口由 loop-core 注入到 ctx 上；这里直接测形状校验函数
+  assert.throws(
+    () => emitInjection(ctx, 'x', { persist: false, event: null, priority: 1 }),
+    /unknown option: priority/,
+  )
+})
+
+test('emitInjection 记录到 ctx 注入缓冲，persist 语义透传', () => {
+  const buf = []
+  const ctx = { pushInjection: (text, meta) => buf.push({ text, ...meta }) }
+  emitInjection(ctx, '自愈：继续', { persist: true, event: { reason: 'wall-clock' } })
+  assert.equal(buf.length, 1)
+  assert.equal(buf[0].text, '自愈：继续')
+  assert.equal(buf[0].persist, true)
+  assert.equal(buf[0].event.reason, 'wall-clock')
+})
+
+test('emitInjection 无 pushInjection 时静默（不抛错、不阻断主流程）', () => {
+  assert.doesNotThrow(() => emitInjection({}, 'x', { persist: false, event: null }))
+})
