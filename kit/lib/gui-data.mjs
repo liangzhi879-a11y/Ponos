@@ -121,7 +121,13 @@ export function collectGitInfo({ root, exec = execFileSync, timeout = 20000 } = 
   const warnings = []
   const run = (args) => {
     try {
-      const out = exec('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout })
+      const out = exec('git', args, {
+        cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout,
+        // ★ 显式指定 stderr 走管道：`execFileSync` 的默认行为是把子进程 stderr **继承给父进程**
+        //   ⇒ 在"目录不是 git 仓"时，控制台会先刷一屏 `fatal: not a git repository` 再出报告。
+        //   那是**预期内**的降级（已经记进 warnings 了），不该冒充错误刷屏。
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
       return String(out).replace(/\r\n/g, '\n')
     } catch (e) {
       warnings.push(`git ${args.join(' ')} 失败：${shortError(e)}`)

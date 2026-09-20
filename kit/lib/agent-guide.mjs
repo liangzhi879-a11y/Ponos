@@ -146,7 +146,7 @@ export const AGENT_GUIDE = {
         {
           do: '`CT9` = 渲染层 fetch 的历史欠账 ⇒ 基线**必须仍是 5 条且全 CT9**；摘除条目时同步下调 `history.baselineCount`',
           why: '动这条等于伪造门禁：基线条目数超登记值会报 `BASE` 红，而契约对账类规则（CT0–CT8）根本不接受基线豁免（`BASELINE_FORBIDDEN`）。',
-          cmd: 'node -e "const b=require(\'./kit/manifest/drift-baseline.json\');console.log(b.entries.length, b.entries.map(e=>e.rule).join(\',\'))"',
+          cmd: 'node kit/cli.mjs check',
         },
       ],
     },
