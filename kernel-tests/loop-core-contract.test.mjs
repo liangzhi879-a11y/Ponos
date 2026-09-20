@@ -50,16 +50,19 @@ test('LANE_PROFILE 的刻意差异只在 compactor/health/inject/stop —— 守
   }
 })
 
-test('★ runOnce 相位顺序：相位 1 抛错时不得进入取流（A2「一处实现」的载体）', async () => {
+test('★ runOnce 相位顺序：相位 1 停止时不得进入取流（A2「一处实现」的载体）', async () => {
   const order = []
   const ctx = {
     profile: MAIN_PROFILE,
     pushInjection: () => {},
     async streamOnce() { order.push('stream'); return { ok: true } },
   }
-  // Task 2–4 补齐守卫体之前，相位 1 必然抛错 ⇒ streamOnce **不应**被调用
-  await assert.rejects(() => runOnce({}, ctx), /未实现/)
-  assert.deepEqual(order, [], '相位 1 未通过时不得进入 streamOnce（相位顺序正确性）')
+  // 【Task 2 后改写】原用例靠"守卫未实现 ⇒ 抛错"制造相位 1 中断（Task 2–4 的临时状态）。
+  // 迭代头守卫现已实现 ⇒ 改用**真实停止场景**：墙钟阈值 1ms、turnT0=0 ⇒ guardWallClock
+  // 立即返回 stop。判据比原来更强（验的是"真实守卫的 stop 会阻止取流"，而非"抛错会阻止"）。
+  const r = await runOnce({ TURN_TIMEOUT_MS: 1, turnT0: 0 }, ctx)
+  assert.equal(r.stop?.reason, 'timeout', '相位 1 应因墙钟超时停止')
+  assert.deepEqual(order, [], '相位 1 停止时不得进入 streamOnce（相位顺序正确性）')
 })
 
 test('★ runOnce：守卫未实现时抛错而非静默跳过（防「漏实现=静默失效」）', async () => {

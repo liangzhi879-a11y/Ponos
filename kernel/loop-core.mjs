@@ -6,6 +6,22 @@
 // B1 冻结面（最小化）：ctx.emitInjection(text, { persist, event })
 //   priority / budgetBytes / kind / phase 由 S3.5 引入，本阶段**必须拒绝**，
 //   以免调用方提前依赖未定形状。
+// ★ 相位内部注入走 `ctx.inject(text, meta)`：由 runPhaseGuards 装配
+//   = emitInjection（记账/注入）+ ctx.onGuardInject?.(Injected)（宿主副作用钩子，
+//   engine 侧对应 pushMemory / session.appendUser / wire `guard_heal`）。
+//   业务守卫**不得**自造注入路径。
+//
+// ctx 形状（Task 2 起生效）：
+//   ctx.profile             —— LoopProfile（守卫序真源）
+//   ctx.pushInjection       —— 注入缓冲（可选；缺省静默，注入失败不得阻断主流程）
+//   ctx.onGuardInject(I)    —— 宿主副作用钩子（可选）；I = { text, persist, event }
+//   ctx.turnGuardHits       —— { push(id) }   O2 命中登记（可选）
+//   ctx.turnGuardInjections —— { bump() }     O2 真注入计数（可选）
+//   state（守卫入参，字段名与原实现同名，便于逐字对照）：
+//     TURN_TIMEOUT_MS / turnT0 / MAX_TOOL_ITERATIONS / iter / LOOP_STALL_MS /
+//     lastProgressAt / stallHeals / STALL_HEAL_MAX / iterCapHit
+//   ★ 阈值与计数器**由宿主传入**（与 engine 模块加载期读 env 同源：跑同一 env 即同一批
+//     常量）；命中判定（`>0` / `>=` / `<`）与文案渲染留在本模块，逐字等价。
 //
 // 本任务只固定「编排顺序 + 契约」；守卫体由 Task 2–4 逐相位补齐：
 //   Task 2 → iterHead（MAIN/LANE 共用），Task 3 → inStream，Task 4 → afterStream。
@@ -15,6 +31,9 @@ const ALLOWED_INJECTION_OPTIONS = new Set(['persist', 'event'])
 
 /** 每个相位归哪个补缺任务（仅用于「未实现」报错文案，便于定位漏实现项） */
 const PHASE_TASK = { iterHead: 'Task 2', inStream: 'Task 3', afterStream: 'Task 4' }
+
+/** ⑥ stall 自愈注入文案（逐字搬移自 engine.mjs:548，**勿改标点**） */
+const STALL_INJECT_TEXT = '【系统】检测到你长时间没有实质进展（连续只读测量/重复调用、无新结果或文件变更）。请停止测量与重复尝试，直接执行下一步实质操作（修改文件/执行命令/完成剩余步骤），或向用户明确汇报当前卡点与结论。'
 
 /** 守卫名 → 所属相位（从 MAIN_PROFILE 反查，单一真源） */
 const GUARD_PHASE = Object.create(null)
@@ -48,6 +67,68 @@ function normalizeStop(stop) {
   return { reason: String(stop.reason || 'unknown'), message: stop.message }
 }
 
+// ── 相位 1（iterHead）守卫体：等价搬移自 engine.mjs runTurnInternal 迭代头（Task 2）──
+// 纪律：逻辑逐行照搬，**不重排、不合并条件、不改文案**；engine 闭包值一律走 ctx/state。
+//
+// 搬移源（2026-09-20 实测行号，计划里的 :486-516 已整体漂移 +43~+45）：
+//   ① wallClock  engine.mjs:529-538（命中登记在 :532）
+//   ② iterCap    engine.mjs:539-540（:540 的 `iterCapHit = true` + 命中登记）
+//   ⑥ stall      engine.mjs:541-561（自愈注入 :543-554，硬停 :555-561）
+//   末行 `if (loopStop) break` 在 :562（由相位驱动器/宿主统一表达）
+
+/** ① 轮次墙钟：置 loopStop.reason='timeout'；**不发事件、无注入**（不经过注入出口） */
+async function guardWallClock(state, ctx) {
+  const { TURN_TIMEOUT_MS, turnT0 } = state
+  if (!(TURN_TIMEOUT_MS > 0 && Date.now() - turnT0 >= TURN_TIMEOUT_MS)) return { state }
+  ctx.turnGuardHits?.push('wallClock') // O2：如实登记（① 不发 guard_heal、无注入）
+  return {
+    state,
+    stop: {
+      reason: 'timeout',
+      message: `【已达单轮时长上限（${Math.max(1, Math.round(TURN_TIMEOUT_MS / 60000))} 分钟），为防止挂起已自动收尾。任务可能未完——可发送「继续」让模型接续。】`,
+    },
+    action: 'break',
+  }
+}
+
+/**
+ * ② 单轮迭代硬上限：只置 iterCapHit=true；**不发事件、不置 loopStop**（勿脑补 reason）。
+ * 收尾方式是 `action: 'break'`（原实现即 `break`——不是置 loopStop）。
+ */
+async function guardIterCap(state, ctx) {
+  const { MAX_TOOL_ITERATIONS, iter } = state
+  if (!(MAX_TOOL_ITERATIONS > 0 && iter >= MAX_TOOL_ITERATIONS)) return { state }
+  ctx.turnGuardHits?.push('iterCap')
+  return { state: { ...state, iterCapHit: true }, stop: null, action: 'break' }
+}
+
+/**
+ * ⑥ 无进展停滞（自愈优先）：先注入"推进指令"续跑（用户无感知），耗尽 STALL_HEAL_MAX
+ * 仍无进展才落可见收尾（硬停是最后防线）。注入**经唯一出口** `ctx.inject`。
+ */
+async function guardStall(state, ctx) {
+  const { LOOP_STALL_MS, lastProgressAt, stallHeals, STALL_HEAL_MAX } = state
+  if (!(LOOP_STALL_MS > 0 && Date.now() - lastProgressAt >= LOOP_STALL_MS)) return { state }
+  if (stallHeals < STALL_HEAL_MAX) {
+    const heals = stallHeals + 1
+    // 顺序与 engine 原实现一致：先登记（hits、injections++），再注入，事件由出口触发
+    ctx.turnGuardHits?.push('stall')
+    ctx.turnGuardInjections?.bump() // O2：⑥ 自愈确实注入（pushMemory + guard_heal）
+    ctx.inject(STALL_INJECT_TEXT, { persist: true, event: { reason: 'loop-stall', attempt: heals, max: STALL_HEAL_MAX } })
+    // 注入后重开一个完整观察窗，并 `continue` 重跑本轮迭代（原实现在此 continue）
+    return { state: { ...state, stallHeals: heals, lastProgressAt: Date.now() }, stop: null, action: 'continue' }
+  }
+  ctx.turnGuardHits?.push('stall')
+  return {
+    state,
+    stop: {
+      reason: 'loop-stall',
+      message: `【检测到长时间无实质进展（${Math.max(1, Math.round(LOOP_STALL_MS / 60000))} 分钟内只有只读测量/重复调用、无新结果或文件变更），已自动收尾以防循环。可发送「继续」让模型换一种方式推进，或补充更明确的指令。】`,
+    },
+    action: 'break',
+  }
+}
+
 /**
  * 一轮迭代的执行体（B1 契约，spec §6.1 / A2）。
  *
@@ -71,13 +152,13 @@ export async function runOnce(state, ctx) {
   //   后续相位必须看到这些变化（否则"迭代上限"这类守卫会在后续相位里读到过期值）
   const cur = head?.state ?? state
 
-  // 相位 2：流内守卫（①b 流内墙钟 / ③ gen-repeat / ③b near-repeat / 闲置重试 / 上游死亡）
+  // 相位 2：流内守卫（①b 流内墙钟 / ③ gen-repeat / ③b near-repeat / idleWatchdog / 上游死亡）
   const streamed = await ctx.streamOnce(cur, phaseCtx())
   const inStream = await runInStreamGuards(cur, phaseCtx({ streamed }))
   if (inStream?.stop) return { state: inStream.state ?? cur, stop: normalizeStop(inStream.stop) }
   const afterStreamState = inStream?.state ?? cur
 
-  // 相位 3：流后守卫（⑥ 进展刷新 / ③ 重复自愈 / ⑤ 同工具提醒 / ④ 熔断）
+  // 相位 3：流后守卫（⑥ 进展维护 / ③ 重复自愈 / ⑤ 同工具提醒 / ④ 熔断）
   const after = await runAfterStreamGuards(afterStreamState, phaseCtx({ streamed }))
   if (after?.stop) return { state: after.state ?? afterStreamState, stop: normalizeStop(after.stop) }
 
@@ -85,8 +166,9 @@ export async function runOnce(state, ctx) {
   return { state: after?.state ?? afterStreamState, stop: null }
 }
 
-// —— 守卫体注册表（Task 2–4 逐个把 `未实现` 占位替换为真实实现）——
+// ── 守卫体注册表（Task 2–4 逐个把 `未实现` 占位替换为真实实现）──
 // ★ 纪律：**未实现必须抛错**，不得静默跳过 —— 静默跳过 = 等价重构失效且无人发现。
+// 表以**函数名**为键：守卫与函数一一对应，故 profile 里的守卫名直接查表。
 const GUARD_BODIES = Object.create(null)
 for (const name of KNOWN_GUARDS) {
   GUARD_BODIES[name] = async function notImplemented() {
@@ -96,9 +178,29 @@ for (const name of KNOWN_GUARDS) {
 }
 
 /**
+ * 注册某相位已实现（已搬移）的守卫体；重复注册/未声明名一律抛错（防拼错后静默失效）。
+ * ★ 同名守卫出现在多个相位时（归一后 `stall` 同属 iterHead 与 afterStream），
+ *   注册表按名唯一 ⇒ 两相位共用同一实现（与 profile 里同名同义一致）。
+ */
+function registerGuards(bodies) {
+  for (const [name, body] of Object.entries(bodies)) {
+    if (!KNOWN_GUARDS.has(name)) throw new Error(`注册了未声明的守卫: ${name}`)
+    if (GUARD_BODIES[name].isReal) throw new Error(`守卫 ${name} 重复注册`)
+    GUARD_BODIES[name] = Object.assign(body, { isReal: true })
+  }
+}
+
+// Task 2：iterHead（① / ② / ⑥）—— 见上方等价搬移注释
+registerGuards({ wallClock: guardWallClock, iterCap: guardIterCap, stall: guardStall })
+
+/**
  * 相位驱动器：按 `resolveGuards(ctx.profile, phase)` 的守卫序**串行**执行。
  * 任一守卫返回 `{ stop }` 即短路返回（后续守卫不再执行）。
- * @returns {Promise<{stop: null | {reason: string, message?: any}, state?: object}>}
+ *
+ * 返回值同时回传命中守卫要求的**迭代控制动作** `action`（`'break' | 'continue' | null`），
+ * 因为它与 stop 并不等价：② 迭代上限是 `break` 而**不置 loopStop**，⑥ 自愈是
+ * `continue`。原实现在这三处分别写 break/break/continue，此处**照原样**表达，不统一。
+ * @returns {Promise<{stop: null | {reason: string, message?: any}, state?: object, action: null|'break'|'continue'}>}
  */
 async function runPhaseGuards(phase, state, ctx) {
   // 未知相位在此抛错（resolveGuards 早失败）；
@@ -107,16 +209,25 @@ async function runPhaseGuards(phase, state, ctx) {
   if (names.length === 0) {
     throw new Error(`相位 ${phase} 无守卫体：未实现（${PHASE_TASK[phase] || '后续任务'} 补齐 / profile 缺相位）`)
   }
+  // 唯一注入出口在相位的装配点成型：守卫只能用这个（不得自造 pushMemory/wire 路径）
+  const inject = (text, meta) => {
+    emitInjection(ctx, text, meta)
+    ctx.onGuardInject?.({ text, persist: meta?.persist === true, event: meta?.event || null })
+  }
+  const inner = { ...ctx, inject }
   let cur = state
   for (const name of names) {
     const body = GUARD_BODIES[name]
     // profile 里出现了未登记的守卫名 ⇒ 早失败，别静默跳过
     if (typeof body !== 'function') throw new Error(`守卫 ${name} 未实现（未注册实现，相位 ${phase}）`)
-    const r = await body(cur, ctx)
+    const r = await body(cur, inner)
     if (r && r.state !== undefined) cur = r.state
-    if (r?.stop) return { state: cur, stop: normalizeStop(r.stop) }
+    const action = r?.action || null
+    if (r?.stop) return { state: cur, stop: normalizeStop(r.stop), action }
+    // 无 stop 但要求继续跑下一迭代（⑥ 自愈）⇒ 也必须短路，否则后续守卫会叠加判定
+    if (action) return { state: cur, stop: null, action }
   }
-  return { state: cur, stop: null }
+  return { state: cur, stop: null, action: null }
 }
 
 /** 相位 1 入口：迭代前守卫（Task 2 补齐守卫体） */

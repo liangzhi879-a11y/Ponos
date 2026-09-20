@@ -6,23 +6,42 @@
 //     显式表达为 false，而不是靠「不传就是没有」——否则差异会变成隐形假设
 //   · validateProfile 早失败：未知守卫名/未知相位一律拒绝（避免拼错守卫名后静默失效）
 //
-// 与 engine.mjs 现有 `GUARD_IDS`（S1/O2 观测面）的对照（2026-09-20 实测 engine.mjs:58-70）：
-//   wallClock / iterCap / stall / streamWallClock / genRepeat / nearRepeat /
-//   upstreamDead / repeatHeal / repeatReminder —— 与本 profile 逐字一致；
-//   `idleDeadRetry` ↔ engine 的 `idleWatchdog`、`meltdownStop` ↔ engine 的 `meltdown`
-//   （同物两名，Task 2–4 搬移时须做一次命名归一）；
-//   `failureHeal` / `progressRefresh` 是 engine 里**不单独登记为 GUARD_ID** 的两项
-//   （失败计数 / 进展刷新），此处作为相位守卫显式列出。
-//   ★ 归一动作属 Task 2–4，本任务不做（避免在契约期改可观测面）。
+// ★ 守卫命名归一（Task 2 首步，2026-09-20 实测 kernel/engine.mjs:58-70 `GUARD_IDS`）
+// ---------------------------------------------------------------------------
+// 真源 = engine.mjs 的 `GUARD_IDS`（S1/O2 已落地的**可观测面**，由 turn-observability
+// .test.mjs 断言 11 个且与 engine 源码登记逐一对齐）。骨架期本文件曾用「计划名」，
+// 与 engine 实际 id 同物异名 —— 那是漂移源（同一守卫两个名字，命中率无法横向对比，
+// 搬移时极易错配）。故此处做一次**单向归一**：计划名 → engine 实际名。
+//
+//   计划名（骨架期，已废弃） → engine 实际名（本文件现名）      理由
+//   ───────────────────────────────────────────────────────  ──────────────────────────
+//   `idleDeadRetry`          → `idleWatchdog`                  engine:65 登记名；同物
+//   `meltdownStop`           → `meltdown`                      engine:68 登记名；同物
+//   `failureHeal`            → `meltdown`                      engine 里 ④「失败熔断」
+//                                                              的**愈合注入与硬停同属
+//                                                              一个 GUARD_ID**（:68，
+//                                                              含 guard_heal 与 loopStop
+//                                                              两支），不存在独立的
+//                                                              `failureHeal`
+//   `progressRefresh`        → `stall`                        engine 里「进展刷新」
+//                                                              （madeProgress → lastProgressAt
+//                                                              /stallHeals 清零）是 ⑥ stall
+//                                                              的**内部状态维护**，engine 不
+//                                                              单独登记为 GUARD_ID
+//
+// 其余 7 名（wallClock / iterCap / streamWallClock / genRepeat / nearRepeat /
+// upstreamDead / repeatHeal / repeatReminder）计划名与 engine 逐字一致，无需改名。
+// 归一后 `KNOWN_GUARDS` 与 `GUARD_IDS` **同集同义**，不再保留两套名字。
+// （同步改动：loop-core.mjs 的守卫体注册表、kernel-tests/loop-core-contract.test.mjs）
 
-/** 允许的守卫名（与 engine.mjs 现有守卫逐一对齐；**主循环与 lane 同集**，见下方 profile 说明） */
+/** 允许的守卫名（= engine.mjs `GUARD_IDS` 的语义投影；**主循环与 lane 同集**，见下方 profile 说明） */
 export const KNOWN_GUARDS = new Set([
   // iterHead
   'wallClock', 'iterCap', 'stall',
   // inStream
-  'streamWallClock', 'genRepeat', 'nearRepeat', 'idleDeadRetry', 'upstreamDead',
+  'streamWallClock', 'genRepeat', 'nearRepeat', 'idleWatchdog', 'upstreamDead',
   // afterStream
-  'repeatHeal', 'failureHeal', 'progressRefresh', 'repeatReminder', 'meltdownStop',
+  'repeatHeal', 'meltdown', 'stall', 'repeatReminder',
 ])
 
 /** 允许的注入相位（S3.5 才扩 priority/budgetBytes/kind/phase；此处只列相位） */
@@ -41,8 +60,11 @@ export const PHASES = ['iterHead', 'inStream', 'afterStream']
 export const MAIN_PROFILE = {
   guards: {
     iterHead: ['wallClock', 'iterCap', 'stall'],
-    inStream: ['streamWallClock', 'genRepeat', 'nearRepeat', 'idleDeadRetry', 'upstreamDead'],
-    afterStream: ['repeatHeal', 'failureHeal', 'progressRefresh', 'repeatReminder', 'meltdownStop'],
+    inStream: ['streamWallClock', 'genRepeat', 'nearRepeat', 'idleWatchdog', 'upstreamDead'],
+    // ★ 归一后 `'stall'` 在 afterStream 与 iterHead **同名出现**，这是如实登记而非笔误：
+    //   engine 里 ⑥ stall 的「进展刷新」状态维护在轮末（madeProgress → lastProgressAt/
+    //   stallHeals 清零，engine.mjs:1142），命中判定在迭代头。同一守卫跨相位 → 两处列出。
+    afterStream: ['repeatHeal', 'meltdown', 'stall', 'repeatReminder'],
   },
   compactor: { preStep: true, laneCompact: false },
   health: { fidelityAnchor: true, recordTurnContent: true },
@@ -62,8 +84,8 @@ export const LANE_PROFILE = {
   //    ⇒ 那是**错的**，照那样实现会**静默丢掉 lane 的 4 个守卫**（③b/⑥/⑤/④）。已按实测修正。
   guards: {
     iterHead: ['wallClock', 'iterCap', 'stall'],
-    inStream: ['streamWallClock', 'genRepeat', 'nearRepeat', 'idleDeadRetry', 'upstreamDead'],
-    afterStream: ['repeatHeal', 'failureHeal', 'progressRefresh', 'repeatReminder', 'meltdownStop'],
+    inStream: ['streamWallClock', 'genRepeat', 'nearRepeat', 'idleWatchdog', 'upstreamDead'],
+    afterStream: ['repeatHeal', 'meltdown', 'stall', 'repeatReminder'],
   },
   compactor: { preStep: false, laneCompact: true },
   health: { fidelityAnchor: false, recordTurnContent: false },

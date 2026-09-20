@@ -42,6 +42,10 @@ import { CONTINUE_HEAL_MAX, FID_ANCHOR_MAX_CONSEC, FID_ANCHOR_REINJECT_EVERY, ID
 import { addUsage, applyAggregateResultBudget, hasUsage, makeIdleWatchdog, normalizeEffort, rawAbortSignal, retryStream, sleep, withToolDeadline } from './stream-runtime.mjs'
 import { createRequestFace, fitRequestToWindow, messageTextOf, patchOrphanToolUses, trimOversizedRequestCopy } from './request-face.mjs'
 import { canonicalToolCallKey, createNearRepeatDetector, detectGenerationRepeat, isPlanTail, isThinkOnly } from './gen-guards.mjs'
+// S2/B1 Task 2：迭代头守卫体已搬入 loop-core（profile 驱动守卫序）；此处只保留宿主接线。
+// 无循环依赖：loop-core 只依赖 loop-profile（纯数据 + 纯函数），不反向引用 engine。
+import { runIterHeadGuards } from './loop-core.mjs'
+import { MAIN_PROFILE } from './loop-profile.mjs'
 
 // P1-6 拆分：环境阈值层与模块级支撑函数已外提为下列模块，此处以 re-export 维持原导出面，
 // 外部导入方（cli.mjs / compact.mjs / kernel-tests）无需任何改动。createEngine 闭包保持原样。
@@ -516,6 +520,30 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
     // K0 观测：轮序号（turnStats 每轮尾 push 一条 ⇒ 本轮序号 = 已完成轮数 + 1）
     const perfTurn = turnStats.length + 1
     let perfIter = 0 // 末次迭代号（循环外结算最后一步用：迭代变量出不了 for 作用域）
+    // ── S2/B1 Task 2：迭代头守卫的宿主侧接线（等价搬移，守卫体见 loop-core.runIterHeadGuards）──
+    // 契约：守卫体不引用 engine 闭包，阈值/计数器由 state 传入、注入走唯一出口。
+    //  · pushInjection —— 唯一出口的宿主实现：persist ⇒ 落 memory + transcript（原
+    //    pushMemory + session.appendUser 两步，逐字保留）
+    //  · onGuardInject —— 出口事件面：guard_heal（原 try/catch 包裹的 wire?.system 调用）
+    // ★ 不改控制流：命中/自愈/收尾语义全在 loop-core，此处只做状态与副作用接线。
+    const headInjections = [] // 本轮迭代头的自愈注入记账（只记账，不参与判定）
+    const headGuardCtx = {
+      profile: MAIN_PROFILE,
+      turnGuardHits,
+      turnGuardInjections: { bump() { turnGuardInjections += 1 } },
+      pushInjection(text, meta) {
+        headInjections.push({ text, persist: meta?.persist === true })
+        if (meta?.persist !== true) return
+        pushMemory({ role: 'user', content: text })
+        if (session) session.appendUser(text)
+      },
+      onGuardInject(inj) {
+        const ev = inj?.event
+        if (!ev || typeof ev.reason !== 'string') return
+        try { wire?.system?.('guard_heal', { reason: ev.reason, attempt: ev.attempt, max: ev.max }) } catch { /* 事件失败不影响主流程 */ }
+      },
+    }
+    const loopCtx = () => headGuardCtx
     for (let iter = 0; ; iter++) {
       perfIter = iter
       // K0 观测：结算**上一步**。放迭代头而非各出口——continue 出口有十余处
@@ -526,41 +554,27 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
       } else {
         perfBegin() // 首迭代只开账，无上一步可发
       }
-      // 守卫①：轮次墙钟——默认关闭（2026-09-10 取消 30 分钟上限，见 TURN_TIMEOUT_MS
-      // 注释）；显式设 PONOS_TURN_TIMEOUT_MS>0 时单轮累计时长超限即优雅收尾。
-      if (TURN_TIMEOUT_MS > 0 && Date.now() - turnT0 >= TURN_TIMEOUT_MS) {
-        turnGuardHits.push('wallClock') // O2：如实登记（① 不发 guard_heal、无注入）
-        loopStop = {
-          reason: 'timeout',
-          message: `【已达单轮时长上限（${Math.max(1, Math.round(TURN_TIMEOUT_MS / 60000))} 分钟），为防止挂起已自动收尾。任务可能未完——可发送「继续」让模型接续。】`,
-        }
-        break
+      // ── 迭代头守卫（① 轮次墙钟 / ② 迭代硬上限 / ⑥ 无进展停滞）────────────────
+      // S2/B1 Task 2（等价搬移）：三段守卫体已移入 kernel/loop-core.mjs 的
+      // runIterHeadGuards，守卫**集合与顺序**由 resolveGuards(MAIN_PROFILE,'iterHead')
+      // 驱动（= wallClock → iterCap → stall，与搬移前逐行等价）。此处只保留
+      // 宿主状态与副作用接线，命中语义（stop / break / continue）不变。
+      const headResult = await runIterHeadGuards({
+        TURN_TIMEOUT_MS, turnT0, MAX_TOOL_ITERATIONS, iter, LOOP_STALL_MS,
+        lastProgressAt, stallHeals, STALL_HEAL_MAX, iterCapHit,
+      }, loopCtx())
+      if (headResult.state !== undefined) {
+        // 反向同步被守卫更新的宿主状态（iterCapHit / stallHeals / lastProgressAt）
+        if (headResult.state.iterCapHit !== undefined) iterCapHit = headResult.state.iterCapHit
+        if (headResult.state.stallHeals !== undefined) stallHeals = headResult.state.stallHeals
+        if (headResult.state.lastProgressAt !== undefined) lastProgressAt = headResult.state.lastProgressAt
       }
-      // 守卫②：迭代硬上限——耗尽即收尾（无文本时补说明，见轮末 iterCapHit）
-      if (MAX_TOOL_ITERATIONS > 0 && iter >= MAX_TOOL_ITERATIONS) { turnGuardHits.push('iterCap'); iterCapHit = true; break } // O2：② **不发任何事件、不置 loopStop**（只置 iterCapHit）—— 如实登记，勿脑补 reason
-      // 守卫⑥：无进展停滞（自愈优先，2026-09-10）——距上次实质进展超限时先注入
-      // "推进指令"续跑（用户无感知）；恢复实质进展即清零愈合计数；耗尽
-      // STALL_HEAL_MAX 仍无进展才落可见收尾（硬停是最后防线，非默认路径）。
-      if (LOOP_STALL_MS > 0 && Date.now() - lastProgressAt >= LOOP_STALL_MS) {
-        if (stallHeals < STALL_HEAL_MAX) {
-          stallHeals++
-          lastProgressAt = Date.now() // 注入后重开一个完整观察窗
-          const inject = '【系统】检测到你长时间没有实质进展（连续只读测量/重复调用、无新结果或文件变更）。请停止测量与重复尝试，直接执行下一步实质操作（修改文件/执行命令/完成剩余步骤），或向用户明确汇报当前卡点与结论。'
-          pushMemory({ role: 'user', content: inject })
-          if (session) session.appendUser(inject)
-          turnGuardHits.push('stall')
-          turnGuardInjections++ // O2：⑥ 自愈确实注入（pushMemory + guard_heal）
-          try { wire?.system?.('guard_heal', { reason: 'loop-stall', attempt: stallHeals, max: STALL_HEAL_MAX }) } catch { /* 事件失败不影响主流程 */ }
-          continue
-        }
-        turnGuardHits.push('stall')
-        loopStop = {
-          reason: 'loop-stall',
-          message: `【检测到长时间无实质进展（${Math.max(1, Math.round(LOOP_STALL_MS / 60000))} 分钟内只有只读测量/重复调用、无新结果或文件变更），已自动收尾以防循环。可发送「继续」让模型换一种方式推进，或补充更明确的指令。】`,
-        }
-        break
-      }
-      if (loopStop) break
+      // 控制动作**照原样**（不统一）：⑥ 自愈 = continue；①/②/⑥硬停 = break。
+      // ★ ② 是 `break` 但**不置 loopStop**（只有 iterCapHit=true）——原来的 break 语义
+      //   保留在此处，loopStop 仍为 null，轮末按 iterCapHit 补收尾说明（:1204 附近）。
+      if (headResult.action === 'continue') continue
+      if (headResult.stop) loopStop = headResult.stop
+      if (headResult.stop || headResult.action === 'break') break
       // ③/③b 愈合计数清零：上一迭代未触发自愈注入（干净迭代 = 已恢复）→ 重新获得
       // 完整愈合预算；真循环每轮必命中（healedLastIter 恒 true），预算照常耗尽。
       if (!healedLastIter) repeatHeals = 0
