@@ -18,7 +18,7 @@
     "electron/*.test.mjs": 12,
     "kernel-tests/*.test.mjs": 210,
     "src/**/*.test.ts": 74,
-    "kit/**/*.test.mjs": 25
+    "kit/**/*.test.mjs": 26
   },
-  "testTotal": 424
+  "testTotal": 425
 }
