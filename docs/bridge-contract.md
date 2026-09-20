@@ -514,11 +514,23 @@ S4 把 bridge 内核解析/构建/bootstrap 全指向本库内核，并落地在
 工具的直接真相 = `kernel/tools.mjs` 的 registry 与唯一运行时出口 `toolSchemas()`（模型真正看到的那份），
 本节**只声明"名字 + 结构指纹"**，不复制 props 明细——抄一份明细 = 第二份真相 + 双份维护。
 
-指纹 = `kit/lib/contract-tools.mjs#fingerprintOf`：`properties` 名+类型 / `required` / `additionalProperties`
-存在性 → 规范化 JSON → sha256 前 8 位（**description 散文不入哈希**：文案改动是噪声，不该让门禁红）。
+指纹 = `kit/lib/contract-tools.mjs#fingerprintOf`（批 F 起**递归**）：`type` / `enum`（**排序后**比较）/
+`items`（数组元素，递归）/ `properties`（**含嵌套对象字段**，递归，键按字典序）/ `required`（排序）/
+`additionalProperties`（存在性即判据）/ `pattern`·`format`（取值约束）→ 规范化 JSON →
+sha256 前 8 位，**深度上限 8 层**（触顶记 `nested:"<deep>"` 并提前返回，防病态嵌套吹爆输入）。
+**description 散文不入哈希**：文案改动是噪声，不该让门禁红。
 取新值：结构改动后跑 `npm run kit:sync`，或直接
 `node -e "import('./kit/lib/contract-tools.mjs').then(m=>console.log(m.fingerprintOf(S)))"`。
-指纹不符 ⇒ `CT3` 红（模型契约变更必须同步到这里）。已知边界（如实）：枚举值 / 嵌套 properties / `items` 不在指纹内。
+指纹不符 ⇒ `CT3` 红（模型契约变更必须同步到这里）。**仍不纳入**（逐项理由见 `kit/README.md` 的边界说明，
+名单由 `contract-tools.test.mjs` 的「批 F④」关键字守卫钉住 —— 真仓出现"结构类关键字"却不在名单里会**直接失败**）：
+散文与展示 `description`/`title`/`examples`；数值范围 `minimum`/`maximum`/`minLength`/`maxLength`/
+`minItems`/`maxItems`/`uniqueItems`/`multipleOf`；`default`；元信息 `deprecated`/`readOnly`/`writeOnly`；
+组合子 `$ref`/`oneOf`/`anyOf`/`allOf`（真仓**当前零使用**，一旦引入会被守卫测试挡下）。
+
+改这批口径的流程（改坏哪一步都会红）：改 `shapeOfNode` → 同步 `contract-tools.test.mjs` 的纳入/豁免名单 →
+`npm run kit:sync`（重算 `versions.json#channels.tools`）→ `node kit/sync-fingerprints.mjs <in> <out>`
+同步本节 21 个指纹 → `node kit/cli.mjs check` 绿（该脚本带双向校验：文档有而快照没有 = 文档腐烂；
+快照有而文档缺 = 漏登记）。
 
 | 工具 | 结构指纹 | 用途 |
 |---|---|---|
