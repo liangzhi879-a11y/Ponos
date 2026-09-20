@@ -123,7 +123,7 @@ spec 有两处表述需要统一理解：
   - `validateProfile(profile) → { ok: boolean, errors: string[] }`
   - `resolveGuards(profile, phase) → string[]`（`phase ∈ 'iterHead'|'inStream'|'afterStream'`）
   - `emitInjection(ctx, text, meta) → void`（**唯一注入出口**，冻结 `text`/`persist`/`event`）
-  - `runOnce(state, ctx) → Promise<LoopState>`（本任务只建骨架，返回未变更 state）
+  - `runOnce(state, ctx) → Promise<{ state, stop }>` —— **真实编排骨架**（按 `ctx.profile` 相位序驱动三段守卫；守卫体未实现时**抛错**，不静默跳过）
   - `shouldStop(state, ctx) → null | { reason, message }`
 
 ### 背景（实现者必读）
@@ -175,7 +175,7 @@ import assert from 'node:assert/strict'
 import {
   MAIN_PROFILE, LANE_PROFILE, validateProfile, resolveGuards,
 } from '../kernel/loop-profile.mjs'
-import { emitInjection, runOnce, shouldStop } from '../kernel/loop-core.mjs'
+import { emitInjection, runOnce, shouldStop, runIterHeadGuards, runInStreamGuards, runAfterStreamGuards } from '../kernel/loop-core.mjs'
 
 test('MAIN_PROFILE / LANE_PROFILE 合法', () => {
   assert.equal(validateProfile(MAIN_PROFILE).ok, true)
@@ -221,21 +221,27 @@ test('LANE_PROFILE 的刻意差异只在 compactor/health/inject/stop —— 守
   }
 })
 
-test('★ runOnce 按 profile 相位顺序驱动（A2「一处实现」的载体）', async () => {
+test('★ runOnce 相位顺序：相位 1 抛错时不得进入取流（A2「一处实现」的载体）', async () => {
   const order = []
   const ctx = {
     profile: MAIN_PROFILE,
     pushInjection: () => {},
     async streamOnce() { order.push('stream'); return { ok: true } },
   }
-  // Task 2–4 会实现守卫体；本任务阶段用 try/catch 观察"相位 1 先于取流"
-  try { await runOnce({}, ctx) } catch { /* 守卫体未实现：Task 1 阶段预期抛错 */ }
-  assert.deepEqual(order, [], '相位 1 命中/抛错时不应进入 streamOnce（顺序正确性）')
+  // Task 2–4 补齐守卫体之前，相位 1 必然抛错 ⇒ streamOnce **不应**被调用
+  await assert.rejects(() => runOnce({}, ctx), /未实现/)
+  assert.deepEqual(order, [], '相位 1 未通过时不得进入 streamOnce（相位顺序正确性）')
 })
 
-test('★ runOnce：守卫体未实现时抛错而非静默跳过（防"漏实现=静默失效"）', async () => {
+test('★ runOnce：守卫未实现时抛错而非静默跳过（防"漏实现=静默失效"）', async () => {
   const ctx = { profile: MAIN_PROFILE, pushInjection: () => {}, async streamOnce() { return {} } }
   await assert.rejects(() => runOnce({}, ctx), /未实现/)
+})
+
+test('★ 三个相位入口齐备（Task 2–4 的落点；防"漏建某个相位入口"）', () => {
+  assert.equal(typeof runIterHeadGuards, 'function')
+  assert.equal(typeof runInStreamGuards, 'function')
+  assert.equal(typeof runAfterStreamGuards, 'function')
 })
 
 test('shouldStop：无 stop 返回 null，有 stop 时规范化 reason', () => {
@@ -423,50 +429,44 @@ export async function runOnce(state, ctx) {
   const emit = (text, meta) => emitInjection(ctx, text, meta)
   const phaseCtx = (extra) => ({ ...ctx, emit, ...extra })
 
-  // 相位 1：迭代前守卫（① 墙钟 / ⑥ 停滞 / ② 迭代上限）
-  for (const name of resolveGuards(ctx.profile, 'iterHead')) {
-    const stop = await runIterHeadGuard(name, state, phaseCtx())
-    if (stop) return { state, stop }
-  }
+  // 相位 1：迭代前守卫（① 墙钟 / ⑥ 停滞 / ② 迭代上限）—— 集合由 profile 决定
+  const head = await runIterHeadGuards(state, phaseCtx())
+  if (head?.stop) return { state: head.state ?? state, stop: head.stop }
 
   // 相位 2：流内守卫（①b 流内墙钟 / ③ gen-repeat / ③b near-repeat / idleDeadRetry / upstreamDead）
   const streamed = await ctx.streamOnce(state, phaseCtx())
-  for (const name of resolveGuards(ctx.profile, 'inStream')) {
-    const stop = await runInStreamGuard(name, state, phaseCtx({ streamed }))
-    if (stop) return { state, stop }
-  }
+  const inStream = await runInStreamGuards(state, phaseCtx({ streamed }))
+  if (inStream?.stop) return { state: inStream.state ?? state, stop: inStream.stop }
 
-  // 相位 3：流后守卫（⑥ 进展刷新 / ③自愈 / ⑤ 提醒 / ④ 熔断）
-  for (const name of resolveGuards(ctx.profile, 'afterStream')) {
-    const stop = await runAfterStreamGuard(name, state, phaseCtx({ streamed }))
-    if (stop) return { state, stop }
-  }
+  // 相位 3：流后守卫（⑥ 进展刷新 / ③ 自愈 / ⑤ 提醒 / ④ 熔断）
+  const after = await runAfterStreamGuards(state, phaseCtx({ streamed }))
+  if (after?.stop) return { state: after.state ?? state, stop: after.stop }
 
   return { state, stop: null }
 }
 
-// —— 三段守卫的相位分发器（Task 2–4 逐个补守卫体；未实现的守卫名一律抛错，避免静默漏守卫）——
+// —— 三段守卫的相位入口（Task 2–4 逐个补齐守卫体）——
+// ★ 每个入口内部按 `resolveGuards(ctx.profile, phase)` 逐守卫**串行**执行；
+//   **未实现的守卫必须抛错**（不得静默跳过 —— 静默跳过 = 等价重构失效且无人发现）。
 
-async function runIterHeadGuard(name, state, ctx) {
-  void name; void state; void ctx
-  throw new Error(`runIterHeadGuard 未实现: ${name}（Task 2 补齐）`)
+/** @returns {Promise<{stop: null | {reason: string, message?: string}, state?: object}>} */
+async function runIterHeadGuards(state, ctx) {
+  void state; void ctx
+  throw new Error('runIterHeadGuards 未实现（Task 2 补齐）')
 }
 
-async function runInStreamGuard(name, state, ctx) {
-  void name; void state; void ctx
-  throw new Error(`runInStreamGuard 未实现: ${name}（Task 3 补齐）`)
+/** @returns {Promise<{stop: null | {reason: string, message?: string}, state?: object}>} */
+async function runInStreamGuards(state, ctx) {
+  void state; void ctx
+  throw new Error('runInStreamGuards 未实现（Task 3 补齐）')
 }
 
-async function runAfterStreamGuard(name, state, ctx) {
-  void name; void state; void ctx
-  throw new Error(`runAfterStreamGuard 未实现: ${name}（Task 4 补齐）`)
+/** @returns {Promise<{stop: null | {reason: string, message?: string}, state?: object}>} */
+async function runAfterStreamGuards(state, ctx) {
+  void state; void ctx
+  throw new Error('runAfterStreamGuards 未实现（Task 4 补齐）')
 }
 
-/**
- * 循环终止判定（B1 契约）。
- * 收尾方式因宿主而异：主循环 `loopStop` + break；lane `guardStop` return。
- * @returns {null | {reason: string, message?: string}}
- */
 export function shouldStop(state, ctx) {
   const s = state?.stop
   if (!s) return null
@@ -498,7 +498,7 @@ git add kernel/loop-profile.mjs kernel/loop-core.mjs kernel-tests/loop-core-cont
 git commit -m "feat(loop): S2a 循环体契约骨架 —— LoopProfile + emitInjection 冻结面
 
 - kernel/loop-profile.mjs：MAIN/LANE profile + validateProfile + resolveGuards（纯函数）
-- kernel/loop-core.mjs：emitInjection(text,{persist,event}) 唯一注入出口 + runOnce/shouldStop 骨架
+- kernel/loop-core.mjs：`ctx.emitInjection(text,{persist,event})` 唯一注入出口 + `runOnce` 真实编排骨架 + `shouldStop`
 - 出口冻结面最小化：只 text/persist/event；priority/budgetBytes/kind/phase 留给 S3.5（未知项抛错）
 - lane 刻意差异（无 health/锚点/完整 preStep）在 profile 显式表达，不靠\"不传就是没有\"
 - 边界纪律：loop-core 不得引用 engine 闭包，依赖全走 ctx

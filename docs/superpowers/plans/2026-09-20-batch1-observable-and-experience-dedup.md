@@ -559,7 +559,7 @@ export function ledgerTotals(records) {
 
 spec 原文要求：**「`prompt.mjs` 各段 `Buffer.byteLength` + 桥侧 append 长度」**。这是 A13 的**数据来源**，不做这一步则总账没有真值。
 
-在 `kernel/prompt.mjs` 段构造处就地记录长度（**只读，不改内容与顺序**）：
+在 `kernel/prompt.mjs` 的 **`composeSystemPrompt({ toolNames, agents, subagents, append, cwd, skills, workflows, memory, tier, mode, knowledgeScope })`**（实测 **`:218`** 定义）内就地记录各段长度（**只读，不改内容与顺序**；★ 这些参数名就是"段"的真源）：
 
 ```js
 // S1+ O4：各段只读字节计量（只取长度，不重排、不改内容）
@@ -1402,9 +1402,9 @@ const RELATE_TOPN = 3                       // = INJECT_RELATED_TOPN
 //    —— 不要另造第二个摘要实现（单一口径）。EL1 只把 max 放宽到 300。
 import { makeSnippet } from '../shared/knowledge-core.mjs'
 
-/** 摘要化：走 makeSnippet，max=EL1_SNIPPET_MAX(300) */
+/** 摘要化：走 makeSnippet —— ★ 实测签名为**对象参数** `makeSnippet(text, { maxLen })`，不是位置参数 */
 function snippetOf(text, max = EL1_SNIPPET_MAX) {
-  return makeSnippet(String(text ?? ''), max)
+  return makeSnippet(String(text ?? ''), { maxLen: max })
 }
 
 /** R4：把 why.kind 打成简短理由标签（契约要求"按 why.kind 打理由"） */
@@ -1547,7 +1547,10 @@ grep -n "appendMeta" kernel/session.mjs
 
 Expected:
 - ① `resolveRelateMode(configDir, explicit)`（实测约 `:577`）—— **用真实函数名，不是 `knowledgeRelateMode`**
-- ② 定位每轮 system 组装函数（实测 `kernel/cli.mjs:999-1011 refreshSystemPrompt()`）—— **这是接线落点**
+- ② 定位每轮 system 组装函数（实测 **`kernel/cli.mjs:1001 refreshSystemPrompt()`**，函数体是
+  `engine.setSystemPrompt(composeSystemPrompt({ toolNames, subagents, agents, append, cwd, skills, workflows, memory, knowledgeScope, mode, tier }))`）
+  —— **这是接线落点**。而 `composeSystemPrompt`（定义在 **`kernel/prompt.mjs:218`**）**已有 `append = ''` 参数**
+  ⇒ **线索段最稳的落点是并入 `append`**（零改动风险）；若要新增独立参数，须同步该函数全部调用方
 - ③ **应零命中** ⇒ 说明"`beforeIter` 相位 / `OBSERVE_ONLY` / `emitIterDerived`"**都是不存在的概念**（`phaseHooks` 属 spec §5.4 的 B2）
   ⇒ **本任务必须落在真实位置**：把线索段拼进 system 组装处（②），**不要**去造一套相位机制（那是 B2 的事）
 - ④ `searchKnowledgeItems`（实测 `kernel/knowledge-search.mjs:18`）；`appendMeta`（实测 `kernel/session.mjs:343`）
@@ -1643,7 +1646,7 @@ if (el1On) {
 ```
 
 **要点（逐条都是实测修正）**：
-- **落点**是每轮 system 组装处，**不是**"`beforeIter` 相位"——实测 `beforeIter`/`phaseHooks`/`emitIterDerived` **全部不存在**（`phaseHooks` 是 spec §5.4 的 **B2** 概念）。**不要**为接线去造一套相位机制。
+- **落点**是每轮 system 组装处（`kernel/cli.mjs:1001 refreshSystemPrompt()` → `composeSystemPrompt({ append })`，定义在 `kernel/prompt.mjs:218`）——**不是**"`beforeIter` 相位"：实测 `beforeIter`/`phaseHooks`/`emitIterDerived` **全部不存在**（`phaseHooks` 是 spec §5.4 的 **B2** 概念）。**不要**为接线去造一套相位机制。
 - `resolveRelateMode(configDir)` 是**真实函数名**（实测 `kernel/knowledge.mjs:577`；`:566` 只是 JSDoc）。
 - `store` 是 cli 内持有 session 的**真实变量名**（`appendMeta` 实测 `kernel/session.mjs:343`）。
 - **观察期开关**：用 `PONOS_MEMORY_EL1_OBSERVE`（**默认 `1` = 观察期**，与逃生阀 `PONOS_MEMORY_EL1=0` 相互独立；前者控"是否真注入"，后者控"是否启用该层"）。
@@ -1791,6 +1794,73 @@ git commit -m "fix(experience): S4.5⑦ GUI 面板字节口径同步（三层化
 - 纪律：不硬编码数字；三层化若无 server 侧实现则先用 buildExperienceIndex+字节口径诚实反映现状
 - verify:experience-inject 必须仍绿"
 ```
+
+---
+
+## 数字口径（★ 本机实测，实施前必读）
+
+本计划的收益数字有两个口径：**spec 口径**（spec 时点语料）与**实测口径**（本机真实语料）。
+实施者**必须两者都知道**，否则"改前改后对不对"无从判断。
+
+**实测命令（可复现）**：
+
+```bash
+cd /c/Users/T203-15/yfworking
+node --input-type=module -e '
+import { buildMemoryIndex } from "./kernel/memory.mjs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+const root = join(homedir(), ".yfworking", "memory", "personal");
+const out = String(buildMemoryIndex({ root, maxBytes: 4096 }));
+console.log("现状字节 =", Buffer.byteLength(out, "utf8"));
+console.log("条目行数 =", out.split("\n").filter(l => l.startsWith("- [")).length);
+'
+```
+
+**实测结果（2026-09-20，root = `~/.yfworking/memory/personal`）**：
+
+| 指标 | 实测值 | 说明 |
+|---|---|---|
+| 现状 `buildMemoryIndex` 输出 | **5053 B** | 恒在，每轮注入 |
+| 现状条目行数 | **40 行** | ★ 粒度是 **`[主题\|标签]` 二级**，且**每行带完整文件路径**（`C:\Users\…\workflow.md`，纯噪声约 60 B/行） |
+| 记忆根主题数 | **7 个 .md**（`code-style`/communication/finance/office-docs/policy/project-application/workflow） | 其中 3 个当前 0 条 |
+| **EL0（主题级，7 行）** | **211 B** | 形态 `- [主题] N 条 · 最近日期` |
+| 现状 → EL0 差值 | **−4842 B/轮** | 单份 |
+
+**分项与合计（务必按此核对）**：
+
+| 步骤 | 口径 | 变化 |
+|---|---|---|
+| 现状（2 份：`server/bridge.mjs` 两处） | 2 × 5053 = **10106 B** | — |
+| Task 4 去重后（1 份） | 10106 → 5053 | **−5053 B** |
+| Task 6 EL0 后 | 5053 → **211 B** | **−4842 B** |
+| **合计（EL1 = 0 时）** | 10106 → 211 | **−9895 B/轮** |
+| **合计（EL1 满 1536 B 时）** | 10106 → 1747 | **−8359 B/轮** |
+
+**与 spec 口径的关系（★ 结论：spec 的 ~200 B 口径成立，不修正）**：
+- spec §4.2 写「经验索引 5131 → 200（EL0）= −4931 B/轮」、G3「≤1736 B」、总账「−8526 B/轮」。
+- 实测现网是 **5053 → 211（−4842）**，与 spec 的 5131 → 200 **同量级且更接近**（差异来自 spec 时点语料）。
+- ⇒ **本计划沿用 spec 的 headline「−8526 B/轮」（保守：按 EL1 满额算）**，但在汇报时**必须同时给出实测口径**（去重 −5053 / EL0 −4842 / 合计 −9895 ~ −8359）。
+- ⇒ **A14（EL0 ≤512 B）与 G3（≤1736 B）按实测口径均已满足**（211 B ≪ 512 B）。
+
+> ⚠️ **不要**把"现状"写成 42 行——实测 **40 行**（另有 4 行非条目行）。也不要把 EL0 目标写成"不可达"——实测 211 B 说明 ~200 B 目标**可达**。
+
+---
+
+## 受影响既有测试检查单（spec §9 Q6 交付前置）
+
+spec §9 Q6 要求：把**已知会变的既有测试**列为**交付前置检查单**，避免"实现改完、既有测试红一片才发现"。
+
+**实测最小受影响面**（已用 Grep 核实）：
+
+| 文件 | 位置 | 为何受影响 | 处理 |
+|---|---|---|---|
+| `kernel-tests/knowledge-inject.test.mjs` | `:39`/`:59`/`:63`（"零回归锁"）与 `:128-132` 注释 | 该注释明确写"**`buildMemoryIndex` 内部按字符数比较 `maxBytes`（既有约定，不动 = 零回归）**"。Task 5（字节口径）与 Task 6（EL0 输出形态）**都会改变**这两个前提 | **必须同步更新该注释与相关断言**（改成对新形态仍有意义的断言，★ **不是删断言**）；由 Task 5 Step 5 与 Task 6 Step 5 各自负责，并在提交时一并 `git add` |
+| `kernel-tests/memory-*.test.mjs`（memory 四件套） | — | spec Q6 曾点名，但**实测并不引用** `buildMemoryIndex`/`buildRelevantMemory` | 无需改（如实施时发现引用，按上一条同样处理） |
+| `npm run verify:experience-inject` | — | 断言 `buildExperienceIndex(4096)` 存在 | **改动后必须仍绿**（Task 4 只删调用、保留定义与 re-export ⇒ 不应红；**若红说明删过头了**） |
+| `server/experience.test.mjs` | `:133`/`:146`/`:154`/`:158` | 同上的四处测试 | 同上，**不应红** |
+
+**交付前动作**：每个改口径的 Task（5/6）在提交前，先跑一次全量 `npm run test:kernel`，把**红清单**与上表对照：上表内的 ⇒ 本任务范围内同步改；**上表外的 ⇒ 停下来评估**（可能是改超范围了）。
 
 ---
 
