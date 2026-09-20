@@ -222,7 +222,10 @@ test('真仓数据端到端渲染：产物仍满足零外链/可解析/八段齐
   assert.deepEqual(parsed.brand.truth.layers.map((l) => [l.id, l.name]), [['app', 'YFWorking'], ['kernel', 'ponos']])
   assert.equal(parsed.brand.truth.declarations.length, 8, '8 条声明点都要在真源表里')
   assert.match(parsed.brand.truth.retiredAliases[0].alias, /^Ponos-Turbo$/)
-  assert.equal(parsed.brand.truth.knownWidespread[0].occurrences, 91, '已知广泛存在的数字来自真源（不在这里另写一份）')
+  // ★ 不写死数字（会漂移）：与真仓 brand.json 现读的值比对，证明页面数字来自真源而非另一份副本
+  const wide = JSON.parse(readFileSync(new URL('../../kit/manifest/brand.json', import.meta.url), 'utf8')).knownWidespread[0]
+  assert.deepEqual(parsed.brand.truth.knownWidespread[0].counts, wide.counts,
+    '已知广泛存在的数字来自真源（不在这里另写一份）')
   assert.ok(html.includes('为什么算声明点（why）'), '声明点表必须带 why 一列（回答"它为什么算声明点"）')
   assert.ok(html.includes('不在门禁范围'), '已知广泛存在必须标注"不在门禁范围"')
   for (const s of GUI_SECTIONS) assert.ok(html.includes(`<h2>${s.title}</h2>`))

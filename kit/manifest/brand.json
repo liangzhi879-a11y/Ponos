@@ -102,9 +102,16 @@
   "knownWidespread": [
     {
       "alias": "Ponos-Turbo",
-      "occurrences": 91,
-      "files": 33,
-      "why": "散在 kernel/、kernel-tests/ 与 docs 的叙述性文本里 —— 不在本门禁范围（全仓统一改名是独立工作项）"
+      "counts": {
+        "exactCaseSensitive": { "lines": 35, "files": 13 },
+        "caseInsensitiveExact": { "lines": 14, "files": 8 },
+        "aliasFamily": { "lines": 117, "files": 62 },
+        "aliasFamilyInKernelDocs": { "files": 49 }
+      },
+      "measuredAt": "8624451",
+      "recompute": "git grep -F \"Ponos-Turbo\" HEAD -- ':!*.lock' | wc -l  # ⇒ 35（行）；git grep -inE \"ponos[- ]turbo|turbo 内核\" HEAD -- ':!*.lock' | wc -l  # ⇒ 117（家族：含 ponos-turbo / Ponos turbo / turbo 内核版）；限定 kernel/** kernel-tests/** docs/** 的家族文件数 ⇒ 49。★ 口径：提交态 HEAD、排除 lock 文件、行数/文件数",
+      "why": "散在 kernel/、kernel-tests/ 与 docs 的**叙述性文本**里 —— **不在本门禁范围**（CT10 只查上面登记的 8 个声明点）。全仓统一改名是独立工作项。",
+      "whyNotGated": "若把叙述文本也纳入门禁 ⇒ 这 62 个文件会永远红，门禁立刻变噪声；正确顺序是先做一次专门的改名工作项，再考虑收紧。★ 这几个数字是**在某次提交上量的快照**，会随仓库演进漂移 —— 要当前值就按 `recompute` 自己跑一遍，别把这里当实时值。"
     }
   ]
 }

@@ -54,7 +54,7 @@ function makeFixture() {
       decl('lines-label-kernel', 'kit/manifest/versions.json', 'json-pointer', { pointer: 'lines[id=KERNEL_VERSION].label' }, { layer: 'kernel' }),
     ],
     retiredAliases: [{ alias: 'Ponos-Turbo', replaceWith: 'ponos', layer: 'kernel', why: '夹具', scope: 'declarations' }],
-    knownWidespread: [{ alias: 'Ponos-Turbo', occurrences: 91, files: 33, why: '夹具：不在本门禁范围' }],
+    knownWidespread: [{ alias: 'Ponos-Turbo', counts: { exactCaseSensitive: { lines: 7, files: 3 }, aliasFamily: { lines: 9, files: 4 } }, measuredAt: 'abc1234', recompute: 'git grep -F "Ponos-Turbo" HEAD | wc -l', why: '夹具：不在本门禁范围' }],
   }, null, 2) + '\n')
   write('electron-builder.yml', `appId: com.fx.desktop\nproductName: ${FX_APP}\n`)
   write('index.html', `<!doctype html>\n<html><head>\n  <title>${FX_APP}</title>\n</head></html>\n`)
@@ -73,9 +73,12 @@ function makeFixture() {
 
 const cleanup = (t, root) => t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3 }))
 
+/** 读**真仓**的品牌真源（`show`/`check` 按设计跑真仓，断言因此也要对着真源、而不是写死字面量） */
+const truth = () => JSON.parse(readFileSync(join(ROOT, 'kit/manifest/brand.json'), 'utf8'))
+
 // ── show / check（真仓）──────────────────────────────────────────────────────
 
-test('show：exit 0，打印层级名 / 8 条声明点 / 废弃别名 / 已知广泛存在（91 处不在范围）', () => {
+test('show：exit 0，打印层级名 / 8 条声明点 / 废弃别名 / 已知广泛存在（规模来自真源）', () => {
   const r = run(['show'])
   assert.equal(r.code, 0)
   assert.match(r.stdout, /品牌真源：kit\/manifest\/brand\.json/)
@@ -86,8 +89,16 @@ test('show：exit 0，打印层级名 / 8 条声明点 / 废弃别名 / 已知�
     assert.ok(r.stdout.includes(id), `8 条声明点缺 ${id}`)
   }
   assert.match(r.stdout, /Ponos-Turbo → ponos/, '废弃别名与替换目标要出现')
-  assert.match(r.stdout, /91 处 \/ 33 个文件/, '已知广泛存在必须带真实数字（口径来自真源）')
-  assert.match(r.stdout, /不在门禁范围/, '必须点明那 91 处不在门禁范围（否则读者以为要改全仓）')
+  // ★ 这里**不断言具体数字**（写死的数字必然漂移 —— 本仓已吃过这个亏）。
+  //   做法：从**真源**读出数字，再断言 stdout 里出现同样的一串 ⇒ 证明渲染是**读真源**而不是写死在代码里。
+  //   这比"断言 91 处"强：数字变了测试照样绿（只要渲染跟得上真源），而渲染若写死就会被抓。
+  const { counts, alias } = truth().knownWidespread[0]
+  const ex = counts.exactCaseSensitive
+  assert.match(r.stdout, new RegExp(`${alias}：精确写法 ${ex.lines} 处 / ${ex.files} 个文件`),
+    '规模必须从真源读出来（渲染写死就会被这条抓住）')
+  assert.match(r.stdout, /复算：git grep -F/, '必须给出可复算命令 —— 否则读者无法验证规模')
+  assert.match(r.stdout, /不在本门禁范围的理由/, '必须说明为什么这些文本不纳入门禁')
+  assert.match(r.stdout, /不在门禁范围/, '必须点明那批叙述文本不在门禁范围（否则读者以为要改全仓）')
   assert.match(r.stdout, /为什么算声明点/, '每条声明的 why 要打印（人得知道它为什么算声明点）')
 })
 

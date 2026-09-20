@@ -37,7 +37,8 @@ const USAGE = `用法：node scripts/brand.mjs <show|check|set> [选项]
 ★ 与门禁的分工（同判据、不同树）：
   本工具 check 读**工作树**（改完立刻能看）；\`npm run kit:check\` 的 CT10 读**提交态**
   （CI 与评审克隆的口径）⇒ 改完品牌记得**提交**，否则门禁那边还看不到。
-  另：全仓还有 91 处 \`Ponos-Turbo\` 散在 kernel/、kernel-tests/ 与 docs 的**叙述文本**里，
+  另：全仓还有一批 \`Ponos-Turbo\` 散在 kernel/、kernel-tests/ 与 docs 的**叙述文本**里
+  （规模见 \`brand show\` 的"已知广泛存在"，数字以真源登记的 \`recompute\` 命令为准 —— 别信写死的数），
   那是独立工作项 —— 门禁只查**受管声明点**，不扫全仓。`
 
 /** 解析 argv：子命令 + 位置参数 + --root（不引参数解析库：只有这一种选项） */
@@ -88,7 +89,18 @@ function cmdShow({ root }) {
   out.push('')
   out.push('已知广泛存在（**不在门禁范围**，独立工作项）：')
   for (const k of truth.knownWidespread || []) {
-    out.push(`  ${k.alias}：${k.occurrences} 处 / ${k.files} 个文件 —— ${k.why}`)
+    const c = k.counts || {}
+    const ex = c.exactCaseSensitive
+    const fam = c.aliasFamily
+    const parts = []
+    if (ex) parts.push(`精确写法 ${ex.lines} 处 / ${ex.files} 个文件`)
+    if (fam) parts.push(`含各种写法共 ${fam.lines} 处 / ${fam.files} 个文件`)
+    if (c.aliasFamilyInKernelDocs) parts.push(`其中 kernel+kernel-tests+docs ${c.aliasFamilyInKernelDocs.files} 个文件`)
+    const at = k.measuredAt ? `（@${k.measuredAt} 量的**快照**，会漂移 —— 要当前值就按下面的命令自己跑）` : ''
+    out.push(`  ${k.alias}：${parts.join('；') || '（真源未登记规模）'}${at}`)
+    out.push(`    不在本门禁范围的理由：${k.why}`)
+    if (k.whyNotGated) out.push(`    为什么不纳入：${k.whyNotGated}`)
+    if (k.recompute) out.push(`    复算：${k.recompute}`)
   }
   out.push('')
   out.push('下一步：')

@@ -115,7 +115,10 @@ test('★ 品牌真源进数据：真仓 8 条声明点（每条带 why）+ 探�
   // 废弃别名与已知广泛存在都要带进数据（页面第 2 块表要渲染它们）
   assert.equal(data.brand.truth.retiredAliases[0].alias, 'Ponos-Turbo')
   assert.equal(data.brand.truth.retiredAliases[0].replaceWith, 'ponos')
-  assert.ok(data.brand.truth.knownWidespread[0].occurrences > 0, '已知广泛存在的处数来自真源（页面不另写一份）')
+  // ★ 断言"规模取自真源"，但**不写死数字**（数字会漂移）：与真仓 brand.json 现读的值比对
+  const wide = JSON.parse(readFileSync(new URL('../../kit/manifest/brand.json', import.meta.url), 'utf8')).knownWidespread[0]
+  assert.deepEqual(data.brand.truth.knownWidespread[0].counts, wide.counts,
+    '已知广泛存在的规模必须原样来自真源（页面不另写一份、也不改写数字）')
   // 先给结论：品牌已统一管理 + CT10 把关（不可基线豁免）
   assert.ok(data.brand.consistency.some((c) => c.level === 'info' && /CT10/.test(c.message) && /不可基线豁免/.test(c.message)),
     '一致性提示里必须有那条 info：真源位置 + CT10 把关 + 不可基线豁免')

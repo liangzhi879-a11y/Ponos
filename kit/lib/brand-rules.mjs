@@ -209,6 +209,26 @@ export function loadBrandTruth({ readTracked } = {}) {
   return { truth, problems }
 }
 
+/** 把真源里 `knownWidespread` 的规模摘要成一句人话（用于 finding 的 hint）
+ *
+ * ★ 这里刻意**不把数字写死**：`knownWidespread[].counts` 是"在某次提交上量的快照"，会随仓库演进漂移。
+ * 所以只把真源登记的数字**如实转述**，并告诉读者"要当前值就按 `recompute` 自己跑"——
+ * 避免出现"文档里的数字"与"真实规模"两处各说一套（本仓已经吃过"写死数字必然漂移"的亏）。 */
+function wideSummary(truth) {
+  const list = Array.isArray(truth?.knownWidespread) ? truth.knownWidespread : []
+  if (!list.length) return ''
+  return list.map((k) => {
+    const c = k.counts || {}
+    const fam = c.aliasFamily
+    const ex = c.exactCaseSensitive
+    const bits = []
+    if (ex) bits.push(`精确写法 ${ex.lines} 处/${ex.files} 文件`)
+    if (fam) bits.push(`含各种写法共 ${fam.lines} 处/${fam.files} 文件`)
+    const at = k.measuredAt ? `（@${k.measuredAt} 量的快照` + (k.recompute ? '，要当前值按真源里的 recompute 命令自己跑）' : '）') : ''
+    return `${k.alias}：${bits.join('、')}${at}`
+  }).join('；')
+}
+
 /** 真源结构问题 → 一条红 finding（subject 固定为 brand.json，因为问题出在真源本身） */
 function truthProblemFinding(problem) {
   return finding({
@@ -321,8 +341,8 @@ export function brandCheck({ readTracked = null, files = null } = {}) {
           actual: got.value,
           hint: `把 ${decl.file} 的${where}里的 "${a.alias}" 改成 "${a.replaceWith}"`
             + `（废弃理由：${a.why || '见品牌真源 retiredAliases'}）；`
-            + `★ 只查**受管声明点**这一段文本：全仓另有 ${(truth.knownWidespread || []).reduce((n, k) => n + (k.occurrences || 0), 0)} 处`
-            + `同类文本散在 kernel/、kernel-tests/ 与 docs 的叙述里，那是独立工作项，不在本门禁范围`,
+            + `★ 只查**受管声明点**这一段文本（不扫整文件、更不扫全仓）—— 真源登记了散在 kernel/、kernel-tests/ 与 docs 的`
+            + `同类叙述文本${wideSummary(truth)}，那是独立工作项，不在本门禁范围`,
         }))
       }
     }
