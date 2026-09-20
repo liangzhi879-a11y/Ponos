@@ -80,6 +80,35 @@ upstreamDead）已搬入 loop-core 并由 **timing 门控**驱动三站点（`po
 **注意**：lane 的 `emitInjection` 需接 lane 自己的宿主实现（注入要落到 lane 的 memory/transcript，
 不是主会话）——`ctx.pushInjection` 指向 lane 的落库路径。
 
+#### ★ lane 落点勘察（已做，省下一步的开场成本）
+
+lane 段行号（`kernel/engine.mjs`，勘察时 2502 行基线，**已含 Task 4 改动，行号会继续漂**）：
+
+| 相位 | 守卫 | 落点 | lane 特有语义 |
+|---|---|---|---|
+| iterHead | `wallClock` | `:1600` | `guardStop(stopNotice('运行超时', …))` |
+| iterHead | `stall` | `:1604-1613` | 用 `subLastProgressAt`（**不是** `lastProgressAt`） |
+| iterHead | `iterCap` | `:1624` | `guardStop(stopNotice('达到迭代上限', …))` |
+| inStream | `streamWallClock` | `:1677` | 把 `textBuf.trim()` **拼在** stopNotice 前（与主循环不同） |
+| inStream | `genRepeat`/`nearRepeat` | `:1763` | 统一走 `subStop.reason` 二分文案 |
+| afterStream(onError) | `upstreamDead` | `:1711-1725` | 三条分支（含"流内已产出"形态） |
+| afterStream(onError) | `idleWatchdog` | `:1743` | — |
+| afterStream(postTools) | `meltdown` | `:1865-1880` | `meltdownNotice` |
+| afterStream(postTools) | `repeatReminder` | `:1891` 附近 | `repeatRemindText` |
+
+★★ **lane 的控制流惯例与主循环根本不同**：lane 用 `return guardStop(...)`（直接**返回**一个
+stop 对象结束本 lane），而主循环用 `break`/`continue` + `loopStop` 变量。⇒ **不能机械照搬
+Task 2/3/4 的接线方式**。两条可选路径：
+- **A（保守，推荐）**：给 `loop-core` 的相位入口加一个 `stopShape: 'return'` 适配，
+  lane 侧把 `return guardStop(x)` 改为 `const r = await runXxx(...); if (r?.stop) return guardStop(adapt(r))`
+- **B（激进）**：让 lane 也改造成 `loopStop` + break/continue 惯例（统一两处控制流，
+  但 lane 的 `guardStop` 还承担"拼 textBuf""lane 结束事件"等副作用，改造面大）
+
+★ lane 还有**独立的宿主副作用**要保住：`guardStop` 内部会发 lane 结束事件、`subStop.detail`
+文案、`streamProduced` 判定 —— 这些不属于守卫体（守卫只判定），**留在 lane 宿主**。
+★ 建议**逐相位接**（iterHead → inStream → afterStream），每步全绿再下一步，
+不要一次接完（lane 的 `engine-guard-*` 与 lane 专属测试都要每步跑）。
+
 ### Task 7 注入总线
 
 把散在各处的注入收敛到 `emitInjection`（唯一出口）。Task 4 已把守卫类注入全部收敛；
