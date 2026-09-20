@@ -158,6 +158,14 @@ node scripts/ci-preflight.mjs --allow-running-app
     这不是缺陷（"没声明≠声明错"），但要如实计入门禁强度：**覆盖率要上去得先补文档的方法写法**。
     真仓实测（盘根干净克隆）：**绿**（50 条全部相容）；变异（把 §7 `/probe-provider` 的 `（POST）` 改 `（DELETE）` 并提交）
     ⇒ **红 1**：`[CT3] routes DELETE /probe-provider docs/bridge-contract.md:296`；还原 ⇒ 红 0。
+  - **批 F：工具指纹从"只有顶层"改为递归**，纳入 `enum`（排序后比较）· `items` · **嵌套 `properties`** ·
+    `pattern`/`format`（深度上限 8）。此前"某工具 `mode` 的枚举悄悄放宽一个取值"⇒ 指纹不变 ⇒ **无人发现**；
+    现在 ⇒ 指纹变 ⇒ `CT3` 红（须同步 `versions.json` 与 §12）。**仍不纳入**（README 有逐项理由）：
+    散文/展示（`description`/`title`/`examples`）、数值范围（`minimum`/`maxLength`…）、`default`、元信息、组合子（`oneOf` 等，真仓零使用）。
+    ★ 新增 **关键字守卫测试**：扫描真仓全部工具 schema，出现"结构类关键字"却未在纳入/豁免名单 ⇒ **直接失败**
+    （逼后来者显式决定，杜绝静默漏判）。改口径的流程：改 `shapeOfNode` → 同步测试名单 → `npm run kit:sync`
+    → `node kit/sync-fingerprints.mjs <in> <out>` 同步 §12 → `check` 绿。
+    实测：21 条指纹**全变**（如 `Bash 055829fc → 5622e4cf`），`CT3` 一次报满 **21 条红** ⇒ 逐条同步后才绿。
   契约侧里 **`CT8`（在途差异：工作树 ∖ HEAD）与 `CT9`（渲染层 fetch 单向外）都是黄灯、只报不拦**
   —— `CT8` 逐条列出"尚未提交"的契约改动，提交后自己变空；`CT9` 的差集逐条登记在
   `kit/manifest/drift-baseline.json`。契约规则的真值取**提交态 HEAD**（物化一份临时干净检出），

@@ -522,27 +522,27 @@ S4 把 bridge 内核解析/构建/bootstrap 全指向本库内核，并落地在
 
 | 工具 | 结构指纹 | 用途 |
 |---|---|---|
-| `Agent` | `1977c7ba` | 把子任务委派给子 Agent：前台同步回填，或后台异步执行（可基于既有任务续跑）；context 档控制主会话上下文的继承量 |
-| `Bash` | `055829fc` | 执行 shell 命令（系统命令 / 测试 / 构建 / git）；120s 超时、无 stdin、输出超 200KB 截断保留尾部 |
-| `Browser` | `86ce9ad2` | 驱动内置浏览器（快照驱动：先 snapshot 看页面结构与可交互元素 ref，再按 ref 操作） |
-| `Edit` | `5436b49a` | 先读后改的字符串替换编辑：old_string 需与文件字节精确匹配且唯一，或显式 replace_all |
-| `Glob` | `592c57e3` | 按通配模式递归搜索文件路径（先 Glob 定位候选再 Read，避免无目标 ls） |
-| `Grep` | `99fce8ec` | 按正则搜索文件内容，返回 file:line 匹配行（可带 glob 过滤与上下文行数） |
-| `KnowledgeDelete` | `12f1b059` | 管理知识库删除（**软删除到回收站**）：列回收站 / 删条目 / 删整个知识库 / 还原 / 彻底删除 |
-| `KnowledgeImport` | `b3e8452f` | 把文件或整个目录（递归）导入知识空间——写盘操作；支持 PDF / Word / Excel / PPT / 图片，扫描件走 OCR |
-| `KnowledgeSearch` | `993f420a` | 知识库块级检索（跨空间，语义 + 关键词，命中到单个知识块而非整篇） |
-| `MemorySearch` | `1edaca9f` | 检索个人 / 项目经验库（本地检索、无网络）：按 query 找过往沉淀的经验条目与知识块 |
-| `OCR` | `5212b607` | 对扫描件 PDF 或图片做 OCR（mode=table 额外识别表格；结果按 project 缓存，重复识别秒回） |
-| `Read` | `51593762` | 读取文本文件全文（超大文件用 offset/limit 定向读取；只读会话目录、已授权知识库与记忆目录内的文件） |
-| `Skill` | `154548da` | 加载技能指令：按技能名读取对应 SKILL.md 的完整操作步骤，读取后按流程执行（同一任务可多轮换不同技能） |
-| `SkillSearch` | `21f28990` | 联网搜索技能市场（只读检索，不安装）：按关键词找可用技能及其来源 |
-| `Task` | `6ec016f1` | 管理后台子 Agent 任务：list / status / output / stop / resume / send_message / followup |
-| `TodoWrite` | `bd3bb4d1` | 维护任务规划清单（**覆盖式**更新：每次须传完整清单，遗漏的项会被移除） |
-| `Vision` | `76c39a88` | 用视觉模型理解图片内容（版面 / 物体 / 图表趋势 / 图中文字语义），与 OCR 互补 |
-| `WebFetch` | `3a4fd6c6` | 抓取 URL 并提取文本（仅 http/https，仅文本；图片 / PDF / 二进制返回非文本提示，不走重试） |
-| `WebSearch` | `72636915` | 搜索互联网获取最新信息（返回带摘要的来源列表；需全文再用 WebFetch 跟进） |
-| `Workflow` | `75df9186` | 执行固定流程工作流（严格输出、审计留痕）：确定性流程用 Workflow，灵活探索用 Skill |
-| `Write` | `5060eed0` | 写入文本文件（**整体覆盖**语义：必须携带完整新内容，遗漏会清空文件） |
+| `Agent` | `1e6d67b0` | 把子任务委派给子 Agent：前台同步回填，或后台异步执行（可基于既有任务续跑）；context 档控制主会话上下文的继承量 |
+| `Bash` | `5622e4cf` | 执行 shell 命令（系统命令 / 测试 / 构建 / git）；120s 超时、无 stdin、输出超 200KB 截断保留尾部 |
+| `Browser` | `7693f6bd` | 驱动内置浏览器（快照驱动：先 snapshot 看页面结构与可交互元素 ref，再按 ref 操作） |
+| `Edit` | `bda1ce9f` | 先读后改的字符串替换编辑：old_string 需与文件字节精确匹配且唯一，或显式 replace_all |
+| `Glob` | `0d7c615b` | 按通配模式递归搜索文件路径（先 Glob 定位候选再 Read，避免无目标 ls） |
+| `Grep` | `9d658cbb` | 按正则搜索文件内容，返回 file:line 匹配行（可带 glob 过滤与上下文行数） |
+| `KnowledgeDelete` | `3520c208` | 管理知识库删除（**软删除到回收站**）：列回收站 / 删条目 / 删整个知识库 / 还原 / 彻底删除 |
+| `KnowledgeImport` | `4c4f0363` | 把文件或整个目录（递归）导入知识空间——写盘操作；支持 PDF / Word / Excel / PPT / 图片，扫描件走 OCR |
+| `KnowledgeSearch` | `d8b9fb8d` | 知识库块级检索（跨空间，语义 + 关键词，命中到单个知识块而非整篇） |
+| `MemorySearch` | `b4feb9bd` | 检索个人 / 项目经验库（本地检索、无网络）：按 query 找过往沉淀的经验条目与知识块 |
+| `OCR` | `f4574019` | 对扫描件 PDF 或图片做 OCR（mode=table 额外识别表格；结果按 project 缓存，重复识别秒回） |
+| `Read` | `d656cc7a` | 读取文本文件全文（超大文件用 offset/limit 定向读取；只读会话目录、已授权知识库与记忆目录内的文件） |
+| `Skill` | `3d06a408` | 加载技能指令：按技能名读取对应 SKILL.md 的完整操作步骤，读取后按流程执行（同一任务可多轮换不同技能） |
+| `SkillSearch` | `7f6a8b2d` | 联网搜索技能市场（只读检索，不安装）：按关键词找可用技能及其来源 |
+| `Task` | `e496796a` | 管理后台子 Agent 任务：list / status / output / stop / resume / send_message / followup |
+| `TodoWrite` | `99407f37` | 维护任务规划清单（**覆盖式**更新：每次须传完整清单，遗漏的项会被移除） |
+| `Vision` | `6678a895` | 用视觉模型理解图片内容（版面 / 物体 / 图表趋势 / 图中文字语义），与 OCR 互补 |
+| `WebFetch` | `bb0f3d92` | 抓取 URL 并提取文本（仅 http/https，仅文本；图片 / PDF / 二进制返回非文本提示，不走重试） |
+| `WebSearch` | `a75a52df` | 搜索互联网获取最新信息（返回带摘要的来源列表；需全文再用 WebFetch 跟进） |
+| `Workflow` | `f10c1910` | 执行固定流程工作流（严格输出、审计留痕）：确定性流程用 Workflow，灵活探索用 Skill |
+| `Write` | `106d114e` | 写入文本文件（**整体覆盖**语义：必须携带完整新内容，遗漏会清空文件） |
 
 > 动态 / 派生工具（工作流即工具 `run_<slug>`、MCP `mcp__<server>__<tool>`、应用智控、出网映射）**不在此表**：
 > 它们随磁盘与配置变化，逐条登记在 `kit/manifest/contract-scope.json` 之外的提取器登记表里

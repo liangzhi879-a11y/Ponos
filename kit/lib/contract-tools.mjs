@@ -47,23 +47,58 @@ export function staticRegistryKeys(src) {
   return keys
 }
 
-/** 结构指纹的规范化输入（**只取结构，绝不取散文**） */
-function structureOf(schema) {
-  const s = schema && typeof schema === 'object' ? schema : {}
-  const props = s.properties && typeof s.properties === 'object' ? s.properties : {}
-  const properties = {}
-  for (const k of Object.keys(props).sort()) {
-    const p = props[k] && typeof props[k] === 'object' ? props[k] : {}
-    const t = Array.isArray(p.type) ? [...p.type].sort().join('|') : (typeof p.type === 'string' ? p.type : '<none>')
-    properties[k] = t
+/** 指纹深度上限（防病态/自引用式嵌套把规范化输入吹爆；超出记 `nested:'<deep>'`） */
+const MAX_DEPTH = 8
+
+/** 取值约束里**纳入指纹**的字符串键（调用方要按它们构造入参 ⇒ 属"输入形状"） */
+const SHAPE_KEYS = ['pattern', 'format']
+
+/** 排序键：任意 JSON 标量的稳定字符串（`enum` 值可能是串/数/布尔/null） */
+const sortKey = (v) => (typeof v === 'string' ? `s:${v}` : `j:${JSON.stringify(v) ?? 'undefined'}`)
+
+/**
+ * 单个 schema 节点的结构（**递归**；只取结构，绝不取散文）。
+ * ★ 批 F（2026-09-19）把指纹从"只有顶层"扩到**递归**，纳入：
+ *   `type` / `enum`（**排序后**比较 —— 换顺序不算契约变更）/ `items`（数组元素，递归）/
+ *   `properties`（含**嵌套**对象字段，递归）/ `required`（排序）/ `additionalProperties`（存在性即判据）/
+ *   `pattern`·`format`（取值约束）。
+ *   **仍不纳入**（见 `kit/README.md` 的边界说明，以及 `contract-tools.test.mjs` 的"关键字守卫"测试）：
+ *   散文与展示字段（`description`/`title`/`examples`）、数值范围（`minimum`/`maximum`/`minLength`…）、
+ *   默认值（`default` —— 属行为不属形状）、`$ref`、`oneOf`/`anyOf`/`allOf`。
+ *   守卫测试会**扫描真仓所有工具 schema**：出现"结构类关键字"却未被本函数覆盖时**直接失败**，
+ *   逼着后来者显式决定（而不是静默漏判）。
+ */
+function shapeOfNode(node, depth) {
+  const o = node && typeof node === 'object' && !Array.isArray(node) ? node : {}
+  const out = {}
+  out.type = Array.isArray(o.type) ? [...o.type].map(String).sort().join('|') : (typeof o.type === 'string' ? o.type : '<none>')
+  // 存在性即判据：写了 `enum`（哪怕是空数组）与没写是两种契约
+  if (Object.hasOwn(o, 'enum')) {
+    out.enum = Array.isArray(o.enum)
+      ? [...o.enum].sort((a, b) => { const x = sortKey(a), y = sortKey(b); return x < y ? -1 : x > y ? 1 : 0 })
+      : '<not-array>'
   }
-  return JSON.stringify({
-    type: typeof s.type === 'string' ? s.type : '<none>',
-    properties,
-    required: Array.isArray(s.required) ? [...s.required].sort() : [],
-    // "存在性"是判据本身：`additionalProperties:false` 与"没写"是两种契约
-    additionalProperties: Object.hasOwn(s, 'additionalProperties') ? String(s.additionalProperties) : '<absent>',
-  })
+  for (const k of SHAPE_KEYS) if (typeof o[k] === 'string') out[k] = o[k]
+  if (depth >= MAX_DEPTH) {
+    if (Object.hasOwn(o, 'items') || Object.hasOwn(o, 'properties')) out.nested = '<deep>'
+    return out
+  }
+  if (Object.hasOwn(o, 'items')) {
+    out.items = Array.isArray(o.items) ? o.items.map((x) => shapeOfNode(x, depth + 1)) : shapeOfNode(o.items, depth + 1)
+  }
+  if (o.properties && typeof o.properties === 'object') {
+    const properties = {}
+    for (const k of Object.keys(o.properties).sort()) properties[k] = shapeOfNode(o.properties[k], depth + 1)
+    out.properties = properties
+  }
+  if (Array.isArray(o.required)) out.required = [...o.required].sort()
+  if (Object.hasOwn(o, 'additionalProperties')) out.additionalProperties = String(o.additionalProperties)
+  return out
+}
+
+/** 结构指纹的规范化输入（**只取结构，绝不取散文**）—— 顶层节点，等价于 `shapeOfNode(schema, 0)` */
+function structureOf(schema) {
+  return JSON.stringify(shapeOfNode(schema, 0))
 }
 
 /** sha256 前 8 位（指纹只用于"逐位相等"比较，不承载语义） */

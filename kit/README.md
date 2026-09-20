@@ -277,6 +277,24 @@ node -e "const c=require('./kit/manifest/versions.json').channels;console.log(Ob
   **CT3 = 文档 ↔ 快照**；**快照 ↔ 运行时**归 `CT6`（`tools runtime` 显式红 + 逐工具指纹 + `staticToolCount`）；
   **快照 ↔ 代码**归 `CT1`（现场重算）。三者串起来 = **传递覆盖** ⇒ "改坏 `kernel/tools.mjs` 而 CT3 仍绿"
   是**设计**不是漏判（盘根干净克隆 @`87342a3` 实测：CT1 红 22 + CT6 红 1，CT3 `evaluated=183` 仍绿）。
+- **工具指纹到底覆盖哪些 schema 关键字（批 F 收紧后的**如实边界**）**：`fingerprintOf` 的输入 =
+  `JSON.stringify(shapeOfNode(schema, 0))`，**递归**取：
+  `type`（数组则排序后 `|` 连接）· `enum`（**排序后**比较 ⇒ 换书写顺序不红）· `items`（含数组元素，递归）·
+  `properties`（**含嵌套对象字段**，递归）· `required`（排序）· `additionalProperties`（**存在性**即判据，`<absent>` 与 `"false"` 不同）·
+  `pattern` · `format`。**深度上限 8 层**（超出记 `nested:'<deep>'`，防病态嵌套吹爆输入）。
+  **仍不纳入**（都有原因，不是遗漏）：`description`/`title`/`examples` —— **散文与展示**，改文案不该红；
+  `minimum`/`maximum`/`minLength`/`maxLength`/`minItems`/`maxItems`/`uniqueItems`/`multipleOf` —— **数值范围约束**
+  （值域，非形状；若日后要纳，需先想清"范围放宽"是否算契约变更）；`default` —— 属**行为**不属形状；
+  `deprecated`/`readOnly`/`writeOnly` —— 元信息；`$ref`/`oneOf`/`anyOf`/`allOf` —— **组合子**（真仓当前**零使用**，
+  一旦引入会被下面的守卫测试挡下）。
+  ★ **守卫测试**（`contract-tools.test.mjs` 的「批 F④」）会**扫描真仓全部工具 schema**，
+  出现"结构类关键字"却未在纳入/豁免名单里 ⇒ **直接失败**，逼后来者显式决定（杜绝静默漏判）。
+  **改这批口径的完整流程**：改 `shapeOfNode` → 同步该测试的两份名单 → `npm run kit:sync`
+  （重算 `versions.json#channels.tools`）→ `node kit/sync-fingerprints.mjs <in.md> <out.md>` 同步 §12 的 21 个指纹 → `check` 绿。
+  （该脚本带**双向校验**：文档有而快照没有 ⇒ 报"文档腐烂"；快照有而文档缺 ⇒ 报"漏登记"；`--check` 只校验不写，
+  可用来防"指纹过期"。刻意做成"对任意基线文件可复现"⇒ 提交时能走 `git show HEAD:` + `hash-object` + `update-index` 的**局部暂存**路径。）
+  **批 F 实测**：21 条指纹**全变**（如 `Bash 055829fc → 5622e4cf`），`CT3` 一次报满 21 条红 ⇒ 逐条同步后才绿；
+  变异（改某工具 `enum` 一个取值）⇒ `CT6` 红（快照↔运行时）；缺口证伪见「批 F①②③」三条单元用例。
   唯一保持 fail-closed 的方向：**两边都取不到指纹 ⇒ 红**（`liveFp === null` 分支）。**刻意不**收紧成
   "取不到就红"：CT3 若也承担运行时职责，就会与 CT1/CT6 重复报同一件事，并惩罚"快照已落盘、运行时临时
   不可用"的正常仓。单元用例 `contract-rules.test.mjs` 的「收尾批⑤」钉住这条分工（CT6 红 / CT3 不红）。

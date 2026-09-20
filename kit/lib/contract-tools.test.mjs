@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { extractTools } from './contract-tools.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -130,4 +130,112 @@ test('真仓：静态 21 = 运行时出口 21，且两路逐名相等（CT6 的�
   assert.ok(wf.schemaSites.length >= 1)
   assert.equal(r.sources.find((s) => s.id === 'wire').file, 'kernel/api.mjs',
     'tools → wire 的映射在 kernel/api.mjs（出网时按 {name,description,input_schema} 打包）')
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★ 批 F（2026-09-19）：指纹从"只有顶层"扩到**递归** —— 专测敏感度与边界
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 批 F 夹具：只有 `Shape` 一个工具的最小仓。
+ * ★ 设计要点：`tag`/`count`/`note` 三个 prop **恒在**（参数只改它们的**字段值**）——
+ * 这样"改了 description ⇒ 指纹不变"才是在测"散文不入指纹"，而不是在测"新增属性"。
+ * 每种变化只动一处 ⇒ "变/不变"能唯一定位到那个维度。
+ */
+function shapeFixture(o = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'yfw-ct-shape-'))
+  const write = (rel, content) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), content) }
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      mode: { type: 'string', enum: o.enumValues || ['fast', 'slow'] },
+      paths: { type: 'array', items: { type: 'string', enum: o.itemsEnum || ['a', 'b'] } },
+      nested: { type: 'object', properties: { [o.nestedKey || 'deep']: { type: 'string' } } },
+      tag: { type: 'string', pattern: o.pattern || "^[a-z]+[0-9]*" },
+      count: { type: 'number', default: o.defaultValue === undefined ? 1 : o.defaultValue },
+      note: { type: 'string', description: o.prose || '甲' },
+      ...(o.withUncovered ? { blob: { oneOf: [{ type: 'string' }, { type: 'number' }] } } : {}),
+    },
+    required: ['mode'],
+  }
+  write('kernel/tools.mjs', [
+    'export function createToolRegistry({ cwd } = {}) {',
+    '  return {',
+    '    toolSchemas: () => [',
+    `      { name: 'Shape', description: 'shape probe', input_schema: ${JSON.stringify(schema)} },`,
+    '    ],',
+    '  }',
+    '}',
+    '',
+  ].join('\n'))
+  execFileSync('git', ['init', '-q'], { cwd: root })
+  execFileSync('git', ['add', '-A'], { cwd: root })
+  return { root }
+}
+
+/** `Shape` 的指纹（夹具只有它） */
+async function shapeFp(o) {
+  const r = await extractTools({ root: shapeFixture(o).root })
+  return r.shapeOf('Shape')
+}
+
+test('★批 F① `enum` 是结构：加/减取值必变指纹；**换顺序绝不 变**（集合语义 ⇒ 书写次序不是契约）', async () => {
+  const base = await shapeFp({})
+  assert.match(base, /^[0-9a-f]{8}$/)
+  assert.notEqual(await shapeFp({ enumValues: ['fast', 'slow', 'auto'] }), base,
+    '`enum` 多一个取值必须变 —— 否则"枚举悄悄放宽"无人发现（批 F 前的实际漏洞）')
+  assert.notEqual(await shapeFp({ enumValues: ['fast'] }), base, '`enum` 少一个取值也必须变')
+  assert.equal(await shapeFp({ enumValues: ['slow', 'fast'] }), base,
+    '**换顺序不变** —— 指纹比的是取值**集合**，不是书写次序（否则改顺序即红 = 噪声门禁）')
+})
+
+test('★批 F② `items` 与**嵌套** `properties` 递归入指纹（批 F 前只取顶层 ⇒ 这两类漂移全漏）', async () => {
+  const base = await shapeFp({})
+  assert.notEqual(await shapeFp({ itemsEnum: ['a', 'b', 'c'] }), base, '`items.enum` 变必须变（数组元素约束）')
+  assert.notEqual(await shapeFp({ nestedKey: 'deeper' }), base,
+    '**嵌套** `properties` 里的字段改名必须变（此前完全不在指纹内；对象入参的第二层正是最容易漂移的地方）')
+})
+
+test('★批 F③ `pattern`/`format` 入指纹；散文与默认值**绝不**入', async () => {
+  const base = await shapeFp({})
+  assert.notEqual(await shapeFp({ pattern: "^[A-Z]+[0-9]*" }), base,
+    '`pattern` 是调用方要照着构造入参的取值约束 ⇒ 属"输入形状"')
+  assert.equal(await shapeFp({ prose: '完全换一段散文' }), base,
+    '改 prop 的 `description` 绝不 变（否则改文案即红 = 噪声门禁，反例 ⑩）')
+  assert.equal(await shapeFp({ defaultValue: 999 }), base,
+    '改 `default` 不变 —— 默认值属**行为**不属**形状**（已在 README 边界说明里写明）')
+})
+
+test('★批 F④ 关键字**守卫**：真仓工具 schema 出现"结构类关键字"却未被指纹覆盖 ⇒ 直接失败（逼后来者显式决定，不许静默漏判）', async () => {
+  // 本函数纳入的键（改这里就必须同步 README 边界说明 + §12 的 21 个指纹 + `npm run kit:sync`）
+  const COVERED = new Set(['type', 'enum', 'items', 'properties', 'required', 'additionalProperties', 'pattern', 'format'])
+  // 明确**不纳入**且**允许存在**（都要在 README 写明理由：散文/展示、数值范围、默认值）
+  const EXEMPT = new Set(['description', 'title', 'examples', 'default', 'minimum', 'maximum',
+    'exclusiveMinimum', 'exclusiveMaximum', 'minLength', 'maxLength', 'minItems', 'maxItems',
+    'uniqueItems', 'multipleOf', 'deprecated', 'readOnly', 'writeOnly'])
+  // ★ Windows 下 ESM 动态 import 必须用 file:// URL（`join()` 出来的 `C:\…` 会被判为非法 scheme）
+  const { createToolRegistry } = await import(pathToFileURL(join(ROOT, 'kernel/tools.mjs')).href)
+  // 这些键的值是"**名字 → schema**"映射（名字是参数名/定义名，**不是** schema 关键字）⇒ 只递归其值
+  const NAME_MAPS = new Set(['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas'])
+  const seen = new Set()
+  const walk = (n, isNameMap = false) => {
+    if (!n || typeof n !== 'object') return
+    if (Array.isArray(n)) { for (const x of n) walk(x, false); return }
+    for (const k of Object.keys(n)) {
+      if (isNameMap) { walk(n[k], false); continue }
+      if (NAME_MAPS.has(k)) { walk(n[k], true); continue }
+      seen.add(k)
+      walk(n[k], false)
+    }
+  }
+  for (const s of createToolRegistry({ cwd: ROOT }).toolSchemas()) walk(s.input_schema)
+  const uncovered = [...seen].filter((k) => !COVERED.has(k) && !EXEMPT.has(k)).sort()
+  assert.deepEqual(uncovered, [],
+    `真仓出现未覆盖的 schema 关键字：${uncovered.join(', ')} —— 要么纳入指纹（并同步 README + §12 指纹 + kit:sync），要么加进 EXEMPT 并写明理由`)
+  // 反向自证：守卫**真会**抓到未覆盖关键字（否则它是恒真断言）
+  const probe = await shapeFp({ withUncovered: true })
+  assert.match(probe, /^[0-9a-f]{8}$/, '带 `oneOf` 的夹具能正常出指纹')
+  assert.equal(await shapeFp({ withUncovered: true }), probe, '`oneOf` 目前**不**入指纹（= 未覆盖）')
+  assert.notEqual(probe, await shapeFp({}), '`oneOf` 的**存在**也不改变指纹 ⇒ 它确实是"未被覆盖"的维度，上面那条守卫不是空转')
 })
