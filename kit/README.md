@@ -224,6 +224,19 @@ node -e "const c=require('./kit/manifest/versions.json').channels;console.log(Ob
 落地后只是**同一端点声明两行**（解析器按 `Map` 去重 ⇒ 门禁无害，`CT3`/`CT2` 都只认路径集合）。
 他人在途改动落地后**删其一（保留 P1.5 补的那行）**即可。
 
+**★ 用「局部暂存」提交 `docs/bridge-contract.md` 后，必须把工作树补回同步（否则你的改动会被下一次提交覆盖）**：
+本仓的规矩是"改这份文档时**不许** `git add <path>`"（会把他人在途改动一起提交），
+所以流程是 `git show HEAD:<path>` → 改 → `hash-object -w` → `update-index --cacheinfo`。
+**代价**：提交后 **`HEAD` 变了、工作树还是旧版** ⇒ `git diff` 里会显示"你自己的改动被回退"，
+且**下一手若 `git add`/`git commit -a` 这份文件，你的改动就被覆盖回去了**（静默丢失，门禁不会报警 ——
+因为 `HEAD` 是对的）。
+⇒ **提交完立刻做一次同步**（把工作树补成"新 `HEAD` + 他人在途改动"）：用三方 `git merge-file -p ours base theirs`，
+其中 `ours = git show HEAD:<path>`、`base = 局部暂存前那次提交的版本`、`theirs = 工作树文件`；
+★ **注意两件事**：① 该文件**以 LF 存储**，比对前要把工作树转成 LF（否则 CRLF 会让全文件冲突）；
+② MSYS 的 `/tmp` 与 node 眼里的 `C:\tmp` **不是同一路径**（临时文件写到会话目录更稳）。
+**验收形态**：修完后 `git diff --numstat -- <path>` 应只剩**他人在途的改动量**（如 `2 1`），
+你自己的改动不再出现在 diff 里（因为已在 `HEAD`）。
+
 ### 三条口径澄清（审查点名要写的）
 
 - **`CT5 evaluated=156` 与 plan 说的"ipc 71"不是一回事**：`evaluated` 是**各侧独立计数之和**
