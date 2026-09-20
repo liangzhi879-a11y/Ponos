@@ -1013,12 +1013,13 @@
     ]
   },
   "channels": {
-    "snapshotAt": "2026-09-20T00:25:40.836Z",
+    "snapshotAt": "2026-09-20T14:26:48.012Z",
     "routes": {
       "ANY /agents": null,
       "ANY /api/audit": null,
       "ANY /api/auth/status": null,
       "ANY /api/usage": null,
+      "ANY /app-info": null,
       "ANY /boot-status": null,
       "ANY /branches": null,
       "ANY /config": null,
@@ -1090,6 +1091,7 @@
       "POST /file-collab/ingest": null,
       "POST /file-collab/policies": null,
       "POST /file-collab/release": null,
+      "POST /generate-title": null,
       "POST /install-skill": null,
       "POST /knowledge/append": null,
       "POST /knowledge/doc": null,
