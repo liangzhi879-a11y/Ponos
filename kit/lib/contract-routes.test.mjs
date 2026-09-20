@@ -242,6 +242,23 @@ test('方法推断：显式字面量 > isPost 写法（knowledge-routes 的 GET 
   assert.equal([...out.routes.keys()].some((k) => k.startsWith('ANY /workflows')), false)
 })
 
+test('★批 M 复审：代码侧方法字面量**大小写不敏感**（原先小写 ⇒ 键退化成 `ANY /x` ⇒ 靠相容规则② 静默判绿）', () => {
+  const { out } = extract({
+    'server/lower.mjs': [
+      'const pathname = new URL(req.url, "http://x").pathname',
+      "if (pathname === '/lower-a') { if (req.method === 'post') return }",
+      "if (pathname === '/lower-b') { const m = 'delete'; if (m === 'DELETE') return }",
+      'export {}',
+    ].join('\n'),
+  })
+  assert.ok(out.routes.has('POST /lower-a'), "小写 `=== 'post'` 必须归一大写 ⇒ 键是 `POST /lower-a`（不是 `ANY /lower-a`）")
+  assert.equal([...out.routes.keys()].some((k) => k.startsWith('ANY /lower-a')), false,
+    '若退化成 `ANY /lower-a`，CT3 的相容规则②（ANY 与任意方法相容）会让该端点的方法维度**静默不可判**')
+  assert.ok(out.routes.has('DELETE /lower-b'), '夹具里 `\'DELETE\'` 是大写（对照），仍必须是 `DELETE`')
+  // 反向自证：小写**不是**被当成 ANY 收进去的
+  assert.notEqual([...out.routes.keys()].find((k) => k.endsWith('/lower-a')), 'ANY /lower-a')
+})
+
 test('★动态前缀单列：/transcript/ 有枚举子路径，/providers/ 为空且不可枚举（通配是否被枚举可判定）', () => {
   const { out } = extract()
   const byPrefix = new Map(out.prefixes.map((p) => [p.prefix, p]))

@@ -35,8 +35,12 @@ const NL = String.fromCharCode(10)
  *  ★ 不能写尾随 `\b`：`'GET'` 的右侧是引号/空格/行尾（全是非单词字符），`\b` 恒不成立 ——
  *  实测那会让 `method === 'GET'` 一个都读不到（本文件最初就踩了这一脚）。
  *  ★ 引号同样是单/双都认（`method === "POST"` 漏掉的话，端点键会从 `POST /x` 退化成 `ANY /x`
- *  —— 与路径字面量是**同一类**静默漏抓，只是后果轻一点：键的方法语义丢失）。 */
-const METHOD_RE = /(['"])(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\1/g
+ *  —— 与路径字面量是**同一类**静默漏抓，只是后果轻一点：键的方法语义丢失）。
+ *  ★ 大小写不敏感（批 M 复审，与 `contract-doc.mjs` 的文档侧同法）：原先只认大写字面量，
+ *  于是代码里写 `method === 'post'` ⇒ 键退化成 `ANY /x` ⇒ 靠 CT3 相容规则②（ANY 与任意方法相容）**判绿**
+ *  ⇒ 该端点的方法维度**静默不可判**。捕获后一律 `.toUpperCase()` 归一（键与 finding 都用大写）。
+ *  真仓当前 0 处小写写法（所以加 `i` 后 **键集与快照都不变**），但这是与文档侧对称的口子，一并堵上。 */
+const METHOD_RE = /(['"])(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\1/gi
 
 /** 路径主体标识符：只认这些名字，避免把 `target === '/x'` 这类文件系统判定当路由 */
 const SUBJECT = '(?:\\w+\\.)?(?:pathname|p|path)'
@@ -111,7 +115,7 @@ function methodsIn(win) {
   const out = new Set()
   METHOD_RE.lastIndex = 0
   let m
-  while ((m = METHOD_RE.exec(win))) out.add(m[2])
+  while ((m = METHOD_RE.exec(win))) out.add(m[2].toUpperCase())
   if (out.size === 0) {
     if (/!\s*isPost\b/.test(win)) out.add('GET')      // `!isPost` = 非 POST 侧（knowledge-routes 的 GET 写法）
     else if (/\bisPost\b/.test(win)) out.add('POST')
