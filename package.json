@@ -25,6 +25,8 @@
     "kit:check": "node kit/cli.mjs check",
     "kit:sync": "node kit/cli.mjs sync",
     "kit:view": "node kit/cli.mjs view --json",
+    "kit:gui": "node kit/gui.mjs",
+    "kit:agent": "node kit/gui.mjs --agent",
     "kit:stamp": "node kit/cli.mjs stamp",
     "verify:ci": "npm run verify:milestones-start && npm run verify:s4-security && npm run verify:skill-listing && npm run verify:experience-inject && npm run verify:knowledge-gui && npm run verify:highrisk && npm run verify:knowledge-import-gui",
     "verify:milestones-start": "node scripts/verify-milestones-start.mjs",
