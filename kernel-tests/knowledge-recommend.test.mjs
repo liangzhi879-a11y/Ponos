@@ -5,7 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  buildRecommendSection, renderRecommendLine, HYDRATE_EL1_MAX_BYTES, EL1_SNIPPET_MAX,
+  buildRecommendSection, renderRecommendLine, shouldInjectEl1, HYDRATE_EL1_MAX_BYTES, EL1_SNIPPET_MAX,
 } from '../kernel/knowledge-recommend.mjs'
 
 const item = (over = {}) => ({
@@ -151,4 +151,50 @@ test('空输入返回空段（不抛错）', () => {
 test('非法输入不抛错（null/字符串项混入 ⇒ 跳过）', () => {
   const r = buildRecommendSection([null, 'x', item()], { budgetBytes: HYDRATE_EL1_MAX_BYTES })
   assert.equal(r.lines.length, 1)
+})
+
+// ── Task 8：S4.5⑤⑥ 接线判据（A18 前置 / A20 互斥 / 逃生阀 / 观察期分名）──────────
+
+test('A20：strategy=legacy 时 EL1 生效；unified 时关闭（互斥）', () => {
+  assert.equal(shouldInjectEl1({ strategy: 'legacy', relateMode: 'on', enabled: true }), true)
+  assert.equal(shouldInjectEl1({ strategy: 'unified', relateMode: 'on', enabled: true }), false)
+})
+
+test('A18：前置 knowledgeRelateMode === on（off 时不注入）', () => {
+  assert.equal(shouldInjectEl1({ strategy: 'legacy', relateMode: 'off', enabled: true }), false)
+})
+
+test('逃生阀：PONOS_MEMORY_EL1=0 时关闭（与 PONOS_MEMORY_INJECT 不耦合）', () => {
+  assert.equal(shouldInjectEl1({ strategy: 'legacy', relateMode: 'on', enabled: false }), false)
+})
+
+test('观察期：dryRun 下 offered 有值但 text 为空（offeredDryRun 语义）', () => {
+  const r = buildRecommendSection([item()], { budgetBytes: HYDRATE_EL1_MAX_BYTES, dryRun: true })
+  assert.equal(r.dryRun, true)
+  assert.deepEqual(r.offered, ['experience/workflow.md#1'], '观察期也要登记推荐集合（否则无从评估）')
+  assert.equal(r.text, '', 'dryRun 不产生可注入文本')
+  assert.ok(r.bytes > 0, '字节仍要记账（面板要显示"若不注入会花多少"）')
+})
+
+test('★ offered 与 offeredDryRun 分名：转正后 dryRun=false（混用会污染采纳率口径）', () => {
+  const on = buildRecommendSection([item()], { budgetBytes: HYDRATE_EL1_MAX_BYTES })
+  assert.equal(on.dryRun, false)
+  assert.ok(on.text.length > 0)
+})
+
+test('A19：观察期 adopted 语义为"不适用"(null) —— 不得记 0（记 0 会被算成"未被采纳"）', () => {
+  // adopted/adoptRate 由调用方（cli）在登记时填；本层只提供 observed 集合口径。
+  const r = buildRecommendSection([item()], { budgetBytes: HYDRATE_EL1_MAX_BYTES, dryRun: true })
+  assert.ok(!('adopted' in r), '本层不伪造 adopted —— 观察期该字段由登记方显式写 null')
+  assert.equal(r.dryRun, true)
+})
+
+test('dryRun 下 R1–R6 仍全部生效（观察期不得绕过契约）', () => {
+  const r = buildRecommendSection(
+    [item({ blockId: '', full: 'x'.repeat(50) }), item({ related: [{ blockId: 'a#1', why: { kind: 'duplicate' } }] })],
+    { budgetBytes: 1, dryRun: true },   // 极小预算：R6 首条无条件放入
+  )
+  assert.equal(r.lines.length, 1, 'R2：非法 blockId 的行仍不渲染')
+  assert.equal(r.lines[0].related.length, 0, 'R4：duplicate 仍被剔除')
+  assert.equal(r.upgraded, false)
 })
