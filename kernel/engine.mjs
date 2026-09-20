@@ -723,7 +723,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           // （afterStream 相位，timing='onError'）。此处只承担宿主专属动作：
           // 回收看门狗定时器、退避 sleep、把已产出内容落 memory/transcript、中断迭代。
           const idleR = await runAfterStreamGuards({
-            timing: 'onError', watchdogTripped: true, attemptData, loopStop,
+            timing: 'onErrorIdle', watchdogTripped: true, attemptData, loopStop,
             IDLE_DEAD_RETRY_MAX, idleDeadRetries, IDLE_DEAD_RETRY_BACKOFF_MS,
             IDLE_HEAL_MAX, idleHeals, STREAM_IDLE_MS, STREAM_FIRST_BYTE_MS, textBuf,
           }, loopCtx())
@@ -774,7 +774,7 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           // guardUpstreamDead（afterStream 相位，timing='onError'）；宿主只承担 sleep 与中断迭代。
           {
             const deadR = await runAfterStreamGuards({
-              timing: 'onError', upstreamDeadHeals, UPSTREAM_DEAD_HEAL_MAX, UPSTREAM_DEAD_HEAL_BACKOFF_MS, loopStop,
+              timing: 'onErrorDeadStream', upstreamDeadHeals, UPSTREAM_DEAD_HEAL_MAX, UPSTREAM_DEAD_HEAL_BACKOFF_MS, loopStop,
             }, loopCtx())
             if (deadR.state?.upstreamDeadHeals !== undefined) upstreamDeadHeals = deadR.state.upstreamDeadHeals
             if (deadR.stop) loopStop = deadR.stop

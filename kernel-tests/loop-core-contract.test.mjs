@@ -112,3 +112,28 @@ test('emitInjection 记录到 ctx 注入缓冲，persist 语义透传', () => {
 test('emitInjection 无 pushInjection 时静默（不抛错、不阻断主流程）', () => {
   assert.doesNotThrow(() => emitInjection({}, 'x', { persist: false, event: null }))
 })
+
+// ── Task 5 Step 1：profile 完整性（A2「不漏守卫」的静态保险）──────────────────
+
+test('Task5 · MAIN_PROFILE 覆盖全部 12 个已实现守卫，且无重复', () => {
+  const all = resolveGuards(MAIN_PROFILE, 'iterHead')
+    .concat(resolveGuards(MAIN_PROFILE, 'inStream'), resolveGuards(MAIN_PROFILE, 'afterStream'))
+  // 12 = engine 的 GUARD_IDS(11) + progressRefresh（非命中项，见 loop-profile 头部说明）
+  assert.equal(all.length, 12, `应恰好覆盖 12 个守卫，实测 ${all.length}`)
+  assert.equal(new Set(all).size, all.length, '守卫不得在两个相位重复出现（否则会执行两次）')
+})
+
+test('Task5 · LANE_PROFILE 与 MAIN_PROFILE 守卫集逐项相同（差异只允许在配置项）', () => {
+  // lane 段实测同样跑全部守卫（含 genRepeat/nearRepeat/停滞/熔断）——
+  // 若写成缩减集会**静默丢掉守卫**（计划草稿即如此，已按实测修正）。
+  for (const phase of ['iterHead', 'inStream', 'afterStream']) {
+    assert.deepEqual(resolveGuards(LANE_PROFILE, phase), resolveGuards(MAIN_PROFILE, phase),
+      `${phase} 相位：lane 与 main 的守卫集与顺序都必须相同`)
+  }
+})
+
+test('Task5 · 三相位齐备且非空（缺相位 = 该类检查静默失效）', () => {
+  for (const p of ['iterHead', 'inStream', 'afterStream']) {
+    assert.ok(resolveGuards(MAIN_PROFILE, p).length > 0, `${p} 相位不得为空`)
+  }
+})

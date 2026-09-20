@@ -57,10 +57,21 @@ export function emitInjection(ctx, text, meta = {}) {
   }
   const fn = ctx && typeof ctx.pushInjection === 'function' ? ctx.pushInjection : null
   if (!fn) return  // 无缓冲时静默：注入失败不得阻断主流程
+  // ★ 空文本 = **只发事件**（不落任何消息）：有的守卫（如 upstreamDead 的静默重试）
+  //   只需要上报 `guard_heal` 事件，原实现走的是 `wire.system(...)` 而没有 pushMemory。
+  //   若不在此拦下，空串会被宿主当作用户消息落 memory/transcript（写入一条空 user 消息）
+  //   —— 实测由 Task 4 等价锁捕获（pushInjection 收到 ''）。
+  if (!String(text || '').length) {
+    if (meta.event) ctx.onGuardInject?.({ text: '', persist: false, event: meta.event })
+    return
+  }
   fn(String(text), {
     persist: meta.persist === true,
     event: meta.event || null,
   })
+  // 事件派发**统一在本函数内**（唯一出口 = 唯一派发点）：`pushInjection` 只负责持久化，
+  // 不碰 `wire`（那是宿主专属）。两条路径（有文本 / 空文本）都要派发，否则会漏事件。
+  if (meta.event) ctx.onGuardInject?.({ text: String(text), persist: meta.persist === true, event: meta.event })
 }
 
 /** 归一化 stop 形状：`null | { reason: string, message: any }`（reason 缺失 → 'unknown'） */
@@ -264,11 +275,19 @@ async function guardNearRepeat(state, ctx) {
 //   守卫体只在自己那一刻生效（不匹配即跳过），**顺序仍在 profile 里定义**（单一真源不变）。
 //   `state.timing` 缺省时**全放行**（向后兼容直接单测守卫体的用法）。
 
-/** 守卫名 → 生效时机（`afterStream` 专用；未列出 = 不限时机） */
+/** 守卫名 → 生效时机（`afterStream` 专用；未列出 = 不限时机）
+ *
+ * ★ 两个 catch 站点的 timing **必须分开**（`onErrorIdle` / `onErrorDeadStream`）：它们在
+ *   engine 里是两个不同的 `else if` 分支，各自只传自己的状态字段。若共用一个 `onError`，
+ *   `guardUpstreamDead` 会在看门狗站点被调用，而那里没有 `upstreamDeadHeals` ⇒
+ *   `!(undefined < undefined)` 为真 ⇒ **误判为"预算耗尽"并覆写硬停结果**（实测：idleWatchdog
+ *   场景的收尾原因被改写成 upstream-dead）。timing 粒度必须细到"每个调用站点"，
+ *   而非"每个 catch 块"。
+ */
 const GUARD_TIMING = {
   repeatHeal: 'postStream',
   progressRefresh: 'postTools', repeatReminder: 'postTools', meltdown: 'postTools',
-  idleWatchdog: 'onError', upstreamDead: 'onError',
+  idleWatchdog: 'onErrorIdle', upstreamDead: 'onErrorDeadStream',
 }
 
 /** repeatHeal 自愈注入文案（逐字搬移自 engine.mjs:955，**勿改标点**） */
@@ -459,11 +478,12 @@ async function runPhaseGuards(phase, state, ctx) {
   if (names.length === 0) {
     throw new Error(`相位 ${phase} 无守卫体：未实现（${PHASE_TASK[phase] || '后续任务'} 补齐 / profile 缺相位）`)
   }
-  // 唯一注入出口在相位的装配点成型：守卫只能用这个（不得自造 pushMemory/wire 路径）
-  const inject = (text, meta) => {
-    emitInjection(ctx, text, meta)
-    ctx.onGuardInject?.({ text, persist: meta?.persist === true, event: meta?.event || null })
-  }
+  // 唯一注入出口在相位的装配点成型：守卫只能用这个（不得自造 pushMemory/wire 路径）。
+  // ★ 只调 emitInjection —— 事件派发由它内部统一负责（含"空文本只发事件"分支）。
+  //   实测踩过：此处**再调一次** `ctx.onGuardInject(...)` 会让每个注入派发**两次**事件
+  //   （upstreamDead 的 2 次重试上报成 4 条 guard_heal，单测才发现）。
+  //   单一出口 = 单一派发点，任何"顺手补一刀"都是重复。
+  const inject = (text, meta) => emitInjection(ctx, text, meta)
   const inner = { ...ctx, inject }
   let cur = state
   for (const name of names) {
