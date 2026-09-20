@@ -28,9 +28,12 @@ export function writeJson({ root, rel, data }) {
 // ── 版本：四条版本线的定位方式（手写，因为它们的位置是刻意的契约） ────────────
 
 export const LINE_SPECS = [
-  { id: 'APP_VERSION', label: 'Ponos 应用（turbo 内核版）', file: 'version.mjs',
+  // ★ `label` 是**品牌声明点**（`kit/manifest/brand.json` 的 `lines-label-app` / `lines-label-kernel`）：
+  //   `versions.json` 的 labels 由这里**重写**（label 不在 MANUAL_FIELDS 里）⇒ 重新定义品牌时
+  //   **必须改这里**，否则下一次 `kit:sync` 会把台账里的新 label 冲回旧名（CT10 会把这事报出来）。
+  { id: 'APP_VERSION', label: 'YFWorking 应用（ponos 内核版）', file: 'version.mjs',
     locator: { kind: 'const', name: 'APP_VERSION' }, kind: 'app-line' },
-  { id: 'KERNEL_VERSION', label: 'Ponos-Turbo 内核', file: 'version.mjs',
+  { id: 'KERNEL_VERSION', label: 'ponos 内核', file: 'version.mjs',
     locator: { kind: 'const', name: 'KERNEL_VERSION' }, kind: 'app-line',
     mirror: { file: 'kernel/package.json', locator: { kind: 'json', path: 'version' } } },
   { id: 'GUI_VERSION', label: 'GUI 发布线（Vite 注入 __APP_VERSION__）', file: 'package.json',

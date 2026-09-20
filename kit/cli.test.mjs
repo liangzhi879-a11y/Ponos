@@ -17,6 +17,8 @@ import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseCiChain, ciChainScripts } from '../scripts/test-tiers.mjs'
+import { trackedFiles } from './lib/scan.mjs'
+import { syncVersions } from './lib/ledger.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CLI = resolve(ROOT, 'kit/cli.mjs')
@@ -43,7 +45,8 @@ const gitCommit = (root, msg = 'fx') => execFileSync('git',
   ['-c', 'user.email=fx@example.com', '-c', 'user.name=fx', '-c', 'commit.gpgsign=false', 'commit', '-qm', msg],
   { cwd: root })
 
-function fixture() {
+/** 夹具仓：真 git 仓（**有提交**）；`ledgers: false` 用于"无台账"那条用例 */
+function fixture({ ledgers = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'yfw-kit-cli-'))
   const write = (rel, content) => {
     mkdirSync(dirname(join(root, rel)), { recursive: true })
@@ -55,8 +58,25 @@ function fixture() {
   }, null, 2))
   write('src/a.ts', "import { useState } from 'react'\nexport const x = useState\n")
   write('tsconfig.json', '{ "include": ["src"] }')
+  // ── 品牌声明点（CT10）────────────────────────────────────────────────────
+  // ★ 夹具的品牌文件**抄真仓**（`brand.json` / `version.mjs` 原件，只把 npm 包名那条的字面量改成
+  //   夹具的 `fx`）：因为台账 `lines[].label` 由**真 `kit:sync`** 从 `LINE_SPECS` 生成 —— 夹具若用
+  //   自造的品牌层名，sync 一次就会把 label 写成真仓口径，`CT10` 立刻红。抄真仓还顺带钉住
+  //   "真仓品牌文件与生成点自洽"这件事（真仓改名而夹具没跟上 ⇒ 用例红）。
+  const truth = JSON.parse(readFileSync(join(ROOT, 'kit/manifest/brand.json'), 'utf8'))
+  truth.declarations.find((d) => d.id === 'npm-name').expects.literal = 'fx'
+  write('kit/manifest/brand.json', JSON.stringify(truth, null, 2))
+  write('electron-builder.yml', `appId: ${truth.declarations.find((d) => d.id === 'app-id').expects.literal}\n`
+    + `productName: ${truth.layers.find((l) => l.id === 'app').name}\n`)
+  write('index.html', `<!doctype html>\n<html><head>\n  <title>${truth.layers.find((l) => l.id === 'app').name}</title>\n</head></html>\n`)
+  write('version.mjs', readFileSync(join(ROOT, 'version.mjs'), 'utf8'))
   write('.gitignore', 'node_modules/\n')
   execFileSync('git', ['init', '-q'], { cwd: root })
+  // ★ 台账必须在**提交态**里可读：品牌有两条声明点落在 `versions.json#lines[].label` 上，而
+  //   `CT10` 与其它 CT 同口径读**提交态** ⇒ 夹具要先生成一次台账再提交（`syncVersions` 走真实现，
+  //   in-process 调用只为造夹具状态，不测行为）。之后用例里的 `sync`（spawn 真进程）会照常重写它，
+  //   labels 不变 ⇒ `CT10` 仍绿。要造"无台账"的下场（P0/V0 红）用 `fixture({ ledgers: false })`。
+  if (ledgers) syncVersions({ root, files: trackedFiles({ root }) })
   execFileSync('git', ['add', '-A'], { cwd: root })
   gitCommit(root)
   return { root, env: { YFW_KIT_ROOT: root } }
@@ -554,16 +574,17 @@ test('★第3批-④：空仓（git init 后没提交）→ CT1 红"HEAD 物化"
 // 口径写进 spec（§5.3/§6.3 的"规则号数"一节）。
 const EXPECTED_RULES = ['P0', 'P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7',
   'V1', 'V1b', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', "V8'", 'V8b',
-  // P1（契约快照 ↔ bridge-contract.md 对账）的 CT 号段：CT0–CT9，含 CT4 的两个子规则（CT4B 封顶 / CT4C 条目合法）
-  // 与 CT8（在途差异：工作树 ∖ HEAD，黄、只报不拦 —— 第 3 批拆"基线为在途差异兜底"时补的号位）。
-  'CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9']
+  // P1（契约快照 ↔ bridge-contract.md 对账）的 CT 号段：CT0–CT10，含 CT4 的两个子规则（CT4B 封顶 / CT4C 条目合法）
+  // 与 CT8（在途差异：工作树 ∖ HEAD，黄、只报不拦 —— 第 3 批拆"基线为在途差异兜底"时补的号位）、
+  // CT10（品牌声明点 ↔ 品牌真源：品牌标识与名称的统一管理；不可基线豁免）。
+  'CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10']
 
-test('★B2/B3：summary.rules = 31，且逐条规则号与 spec 口径完全一致（含表外 V1b/V8b/P0 与 CT0–CT9）', () => {
+test('★B2/B3：summary.rules = 32，且逐条规则号与 spec 口径完全一致（含表外 V1b/V8b/P0 与 CT0–CT10）', () => {
   const j = JSON.parse(run(['check', '--json']).stdout)
   assert.deepEqual([...j.checks.map((c) => c.rule)].sort(), [...EXPECTED_RULES].sort(),
     '规则号集必须逐字对齐：多一个（自造号）或少一个（早退没 push）都要在这里变红')
-  assert.equal(j.summary.rules, 31)
-  assert.equal(new Set(j.checks.map((c) => c.rule)).size, 31, '同一个规则号不得重复计入')
+  assert.equal(j.summary.rules, 32)
+  assert.equal(new Set(j.checks.map((c) => c.rule)).size, 32, '同一个规则号不得重复计入')
   // V6 的标题必须与判据同口径（标题写三方 → 就得真核三方，见 kit/lib/version-rules.mjs）
   assert.match(j.checks.find((c) => c.rule === 'V6').title, /三方/)
   // CT1 的标题必须写明"现场重算"—— 它是红线（读快照当答案是 plan §7 反例⑤）
@@ -648,7 +669,7 @@ test('夹具仓 check 只读（内容级断言：deps.json 逐字不变）', () 
 })
 
 test('夹具仓无台账：check 退 1（P0/V0 红），绝不因"读不到台账"静默变绿', () => {
-  const { env } = fixture()
+  const { env } = fixture({ ledgers: false })   // ★ 刻意不生成台账（其余夹具都带台账：CT10 读提交态）
   const c = run(['check', '--json'], { env })
   assert.equal(c.code, 1)
   const j = JSON.parse(c.stdout)
@@ -657,11 +678,11 @@ test('夹具仓无台账：check 退 1（P0/V0 红），绝不因"读不到台�
   assert.equal(j.ok, false)
   // ★ B2：P0 必须也进 checks。两条台账都缺时，唯一可判定的规则就是 P0 ——
   //   若 rules 为 0，说明 P0 又退回了"只 push finding"（--verbose 里也会缺这一格）。
-  //   ★ P1 之后：契约规则（CT0–CT9）**无条件**进 checks（判据本身要报"快照缺失"），故这里逐条列全。
+  //   ★ P1 之后：契约规则（CT0–CT10）**无条件**进 checks（判据本身要报"快照缺失"），故这里逐条列全。
   assert.deepEqual(j.checks.map((x) => x.rule).sort(),
-    ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'P0'].sort())
+    ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10', 'P0'].sort())
   assert.equal(j.checks.find((x) => x.rule === 'P0').passed, false)
-  assert.equal(j.summary.rules, 13)
+  assert.equal(j.summary.rules, 14)
 })
 
 // ★ Rider 2：宿主删掉声明却不重跑 sync → 旧判据（P1/P2 只读台账）一条红都不报。
@@ -700,7 +721,8 @@ test('★Rider2-②：package.json 新增声明但台账没有 → P7 红（漏�
 })
 
 test('sync --dry-run 不落盘（否则"预演"会改仓库状态，比不做更坏）', () => {
-  const { root, env } = fixture()
+  // ★ 用**无台账**夹具（`ledgers: false`）：判据是"dry-run 之后两个台账仍不存在" ⇒ 前提就得是它们本来不存在
+  const { root, env } = fixture({ ledgers: false })
   const r = run(['sync', '--dry-run'], { env })
   assert.equal(r.code, 0)
   assert.equal(existsSync(join(root, 'kit/manifest/deps.json')), false, '--dry-run 不得写 deps.json')

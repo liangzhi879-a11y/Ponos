@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "note": "品牌标识与名称的唯一真源。改这里 = 重新定义品牌；改完跑 `node scripts/brand.mjs check`（或 `npm run kit:check` 的 CT10）看哪些声明点还没跟上。",
+  "layers": [
+    {
+      "id": "app",
+      "name": "YFWorking",
+      "note": "用户可见的应用层名称：窗口标题 / 安装产品名"
+    },
+    {
+      "id": "kernel",
+      "name": "ponos",
+      "note": "内核层名称（★ 无 turbo）"
+    }
+  ],
+  "brandZh": {
+    "name": "新远方数据",
+    "where": "docs/manual/images/logo_新远方数据LOGO.png 等标识资源用此名"
+  },
+  "declarations": [
+    {
+      "id": "product-name",
+      "file": "electron-builder.yml",
+      "kind": "yaml-scalar",
+      "key": "productName",
+      "expects": { "layer": "app" },
+      "why": "安装产品名：electron-builder 用它命名安装产物与快捷方式，是用户在安装/开始菜单里看到的名字 —— 应用层名称的用户可见声明点。",
+      "severityIfWrong": "red"
+    },
+    {
+      "id": "window-title",
+      "file": "index.html",
+      "kind": "html-title",
+      "expects": { "layer": "app" },
+      "why": "窗口标题（<title>）：Electron 窗口/任务栏上显示的第一个名字，是应用层名称最直接的用户可见声明点。",
+      "severityIfWrong": "red"
+    },
+    {
+      "id": "app-id",
+      "file": "electron-builder.yml",
+      "kind": "yaml-scalar",
+      "key": "appId",
+      "expects": { "literal": "com.yfworking.desktop" },
+      "why": "安装身份的唯一键（与在售产品同 appId ⇒ 走覆盖升级而非并存安装）：它决定操作系统层面的产品身份，改了就是改安装身份，故钉字面量、不随层名自动跟随。",
+      "severityIfWrong": "red"
+    },
+    {
+      "id": "npm-name",
+      "file": "package.json",
+      "kind": "json-key",
+      "key": "name",
+      "expects": { "literal": "yfworking-gui" },
+      "why": "npm 包名（发布/分发身份）：与应用层名字面向不同受众（npm registry / 用户），故钉字面量 —— 重新定义品牌时不应顺手改掉发布身份。",
+      "severityIfWrong": "red"
+    },
+    {
+      "id": "app-label",
+      "file": "version.mjs",
+      "kind": "comment-label",
+      "constName": "APP_VERSION",
+      "expects": { "layer": "app" },
+      "why": "version.mjs 头部「1. APP_VERSION」那行注释：四条版本线说明里对人声明应用层名称的那一行（人读版本线时口径的来源）。",
+      "severityIfWrong": "red"
+    },
+    {
+      "id": "kernel-label",
+      "file": "version.mjs",
+      "kind": "comment-label",
+      "constName": "KERNEL_VERSION",
+      "expects": { "layer": "kernel" },
+      "why": "version.mjs 头部「2. KERNEL_VERSION」那行注释：对人声明内核层名称的那一行（内核层统一为 ponos，不得出现 turbo）。",
+      "severityIfWrong": "red"
+    },
+    {
+      "id": "lines-label-app",
+      "file": "kit/manifest/versions.json",
+      "kind": "json-pointer",
+      "pointer": "lines[id=APP_VERSION].label",
+      "expects": { "layer": "app" },
+      "why": "版本台账 lines[] 里**应用线**（id=APP_VERSION）的 label：GUI/报告与 kit-stamp 读它展示版本线，是应用层名称面向读者的声明点。★ 该字段由 sync 按 kit/lib/ledger.mjs 的 LINE_SPECS 重写 —— 重新定义品牌时必须同时改 LINE_SPECS（生成点），否则下一次 kit:sync 会把这里改回旧名。",
+      "severityIfWrong": "red"
+    },
+    {
+      "id": "lines-label-kernel",
+      "file": "kit/manifest/versions.json",
+      "kind": "json-pointer",
+      "pointer": "lines[id=KERNEL_VERSION].label",
+      "expects": { "layer": "kernel" },
+      "why": "版本台账 lines[] 里**内核线**（id=KERNEL_VERSION）的 label：同上，是内核层名称面向读者的声明点；生成点也在 LINE_SPECS（见上一条）。",
+      "severityIfWrong": "red"
+    }
+  ],
+  "retiredAliases": [
+    {
+      "alias": "Ponos-Turbo",
+      "replaceWith": "ponos",
+      "layer": "kernel",
+      "why": "内核层统一为 ponos（无 turbo）",
+      "scope": "declarations"
+    }
+  ],
+  "knownWidespread": [
+    {
+      "alias": "Ponos-Turbo",
+      "occurrences": 91,
+      "files": 33,
+      "why": "散在 kernel/、kernel-tests/ 与 docs 的叙述性文本里 —— 不在本门禁范围（全仓统一改名是独立工作项）"
+    }
+  ]
+}

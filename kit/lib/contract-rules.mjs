@@ -1,4 +1,4 @@
-// kit/lib/contract-rules.mjs —— 契约对账规则 CT0–CT9（DevKit P1 · T7）
+// kit/lib/contract-rules.mjs —— 契约对账规则 CT0–CT10（DevKit P1 · T7；CT10 = 品牌声明点）
 //
 // 形状照抄 `version-rules.mjs#runVersionRules` / `dep-rules.mjs#runDepRules`：`{checks, findings}`，
 // 由 `finding(...)` / `checkResult(...)` / `RED|YELLOW` 构造（同一份报告 schema）。
@@ -38,6 +38,11 @@
 //   ⑤ **WS 方向按 §5/§6 各判**（P1.5 收尾批，2026-09-19 起）：此前两节合成一个声明集，
 //      "把出站事件抄进 §6"不会红。详见 `docDeclaredSets` 的注释（含为什么此前必须合成、
 //      以及"在 §5 补 `browser:event`"这一步解锁了什么）。
+//   ⑥ **CT10 只查品牌真源登记的 8 条声明点**（`kit/manifest/brand.json`），**不扫全仓**：
+//      全仓另有 91 处 `Ponos-Turbo` 散在 kernel/、kernel-tests/ 与 docs 的叙述文本里
+//      （真源 `knownWidespread` 如实登记），那是独立工作项 —— 若扫全仓，CT10 会永远红。
+//      CT10 与其它 CT 同口径读**提交态**：品牌声明点的在途改动由 `node scripts/brand.mjs check`
+//      （读工作树）即时反馈，不进本门禁的红灯。
 import { RED, YELLOW, finding, checkResult } from './report.mjs'
 import { trackedFiles, codeFiles, readTracked, stripComments } from './scan.mjs'
 import { extractRoutes } from './contract-routes.mjs'
@@ -46,9 +51,10 @@ import { extractIpc } from './contract-ipc.mjs'
 import { extractTools } from './contract-tools.mjs'
 import { buildSnapshot, diffSnapshot, channelsProblems } from './contract-snapshot.mjs'
 import { checkScopeSets, contractGrowth, keyOf } from './contract-scope.mjs'
+import { brandCheck } from './brand-rules.mjs'
 
-/** 规则号段（顺序即报告顺序）：CT0–CT9，含 CT4 的两个子规则与在途差异 CT8 */
-export const CT_RULES = ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9']
+/** 规则号段（顺序即报告顺序）：CT0–CT10，含 CT4 的两个子规则、在途差异 CT8 与品牌声明点 CT10 */
+export const CT_RULES = ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10']
 
 /** 路径主体标识符（与 contract-routes.mjs 的 SUBJECT 同口径 —— 独立实现，不 import 它的私有常量）
  *  ★ 引号必须与提取器**同口径**（第 4 批）：单/双都认。少认一种 ⇒ 同一处字面量在提取器里"有归宿"、
@@ -783,6 +789,16 @@ export async function runContractRules({
   }
   checks.push(checkResult({ rule: 'CT9', title: '渲染层 fetch 路径 ↔ server 路由单向差集（只报不拦；差集为空才 ✔）',
     evaluated: fetched.size, passed: srcDiff.length === 0 }))
+
+  // ── CT10：品牌声明点 ↔ 品牌真源（`kit/manifest/brand.json`；不可基线豁免）──────────
+  //   ★ 读**提交态**（`read` / `tracked` 都来自 head*），与 CT0–CT9 同口径：品牌声明点的**在途**改动
+  //     不会在这里变红（要看工作树里的当下状态，用 `node scripts/brand.mjs check` —— 它读工作树，
+  //     给的是"现在改完没有"的即时反馈）。
+  //   ★ 基线：`BASELINE_FORBIDDEN` 的判据是"除 CT9 外全部 CT" ⇒ CT10 自动**不可豁免**（刻意如此：
+  //     品牌门禁不许靠加一条基线蒙过去）。
+  const brand = brandCheck({ readTracked: read, files: tracked })
+  for (const f of brand.findings) findings.push(f)
+  checks.push(brand.check)
 
   return { checks, findings }
 }

@@ -57,6 +57,58 @@ const T1_FP = fingerprintOf({ type: 'object', properties: { a: { type: 'string' 
 /** 末位翻一位（改指纹用；保证仍是 8 位十六进制） */
 const flipLast = (hex) => hex.slice(0, -1) + (hex.slice(-1) === '0' ? '1' : '0')
 
+// ── 品牌夹具（CT10 的 8 条声明点）─────────────────────────────────────────────
+//
+// 为什么契约夹具也要配品牌文件：下面的「基准夹具全绿」是一条**判据**（"只有 CT9 允许出 finding"），
+// 而 CT10 对"真源/声明点取不到值"是 **fail-closed** ⇒ 夹具里缺品牌文件会多出一条与契约无关的红灯，
+// 把那些精确断言污染成噪声。⇒ 夹具一开始就配齐 8 条声明点（真源 + 5 个声明点文件）。
+// ★ 品牌名**故意不用真仓的**（`FxApp` / `fxk`）：CT10 的判据必须全部来自真源 ——
+//   若规则里硬编码了 `YFWorking` / `ponos`，这里的"全绿"立刻变红（这正是该夹具的哨兵作用）。
+const FX_APP = 'FxApp'
+const FX_KERNEL = 'fxk'
+const FX_APP_LABEL = `${FX_APP} 应用（${FX_KERNEL} 内核版）`
+const FX_KERNEL_LABEL = `${FX_KERNEL} 内核`
+const FX_BRAND_JSON = JSON.stringify({
+  schemaVersion: 1,
+  note: '夹具品牌真源（8 条声明点；判据见 kit/lib/brand-rules.test.mjs）',
+  layers: [
+    { id: 'app', name: FX_APP, note: '夹具应用层' },
+    { id: 'kernel', name: FX_KERNEL, note: '夹具内核层' },
+  ],
+  brandZh: { name: '夹具中文名', where: '夹具标识资源用此名' },
+  declarations: [
+    { id: 'product-name', file: 'electron-builder.yml', kind: 'yaml-scalar', key: 'productName', expects: { layer: 'app' }, why: '夹具：安装产品名', severityIfWrong: 'red' },
+    { id: 'window-title', file: 'index.html', kind: 'html-title', expects: { layer: 'app' }, why: '夹具：窗口标题', severityIfWrong: 'red' },
+    { id: 'app-id', file: 'electron-builder.yml', kind: 'yaml-scalar', key: 'appId', expects: { literal: 'com.fx.desktop' }, why: '夹具：安装身份', severityIfWrong: 'red' },
+    { id: 'npm-name', file: 'package.json', kind: 'json-key', key: 'name', expects: { literal: 'fx-pkg' }, why: '夹具：包名', severityIfWrong: 'red' },
+    { id: 'app-label', file: 'version.mjs', kind: 'comment-label', constName: 'APP_VERSION', expects: { layer: 'app' }, why: '夹具：应用线注释', severityIfWrong: 'red' },
+    { id: 'kernel-label', file: 'version.mjs', kind: 'comment-label', constName: 'KERNEL_VERSION', expects: { layer: 'kernel' }, why: '夹具：内核线注释', severityIfWrong: 'red' },
+    { id: 'lines-label-app', file: 'kit/manifest/versions.json', kind: 'json-pointer', pointer: 'lines[id=APP_VERSION].label', expects: { layer: 'app' }, why: '夹具：台账应用线 label', severityIfWrong: 'red' },
+    { id: 'lines-label-kernel', file: 'kit/manifest/versions.json', kind: 'json-pointer', pointer: 'lines[id=KERNEL_VERSION].label', expects: { layer: 'kernel' }, why: '夹具：台账内核线 label', severityIfWrong: 'red' },
+  ],
+  retiredAliases: [{ alias: 'Ponos-Turbo', replaceWith: 'ponos', layer: 'kernel', why: '夹具：内核层统一为 ponos（无 turbo）', scope: 'declarations' }],
+  knownWidespread: [{ alias: 'Ponos-Turbo', occurrences: 91, files: 33, why: '夹具：散在 kernel/、kernel-tests/ 与 docs 的叙述文本里（不在本门禁范围）' }],
+}, null, 2)
+
+/** 把 8 条声明点所需的 6 个文件写进夹具（`write` 由各夹具自己给，签名见 `fixture()`） */
+function writeBrandFixture(write, { npmName = 'fx-pkg' } = {}) {
+  const truth = JSON.parse(FX_BRAND_JSON)
+  truth.declarations.find((d) => d.id === 'npm-name').expects.literal = npmName
+  write('kit/manifest/brand.json', JSON.stringify(truth, null, 2))
+  write('electron-builder.yml', `appId: com.fx.desktop\nproductName: ${FX_APP}\n`)
+  write('index.html', `<!doctype html>\n<html><head>\n  <title>${FX_APP}</title>\n</head></html>\n`)
+  write('version.mjs', `// 夹具版本线\n//   1. APP_VERSION     — ${FX_APP_LABEL}\n//   2. KERNEL_VERSION  — ${FX_KERNEL_LABEL}\n`
+    + "export const APP_VERSION = 'dev 1.0.0'\nexport const KERNEL_VERSION = 'dev 0.1'\n")
+  write('package.json', JSON.stringify({ name: npmName, version: '1.0.0' }, null, 2))
+  write('kit/manifest/versions.json', JSON.stringify({
+    version: 1,
+    lines: [
+      { id: 'APP_VERSION', label: FX_APP_LABEL, file: 'version.mjs', value: 'dev 1.0.0' },
+      { id: 'KERNEL_VERSION', label: FX_KERNEL_LABEL, file: 'version.mjs', value: 'dev 0.1' },
+    ],
+  }, null, 2))
+}
+
 const DOC = [
   '# 契约夹具',
   '',
@@ -107,6 +159,7 @@ function fixture({ mutate = null } = {}) {
     writeFileSync(join(root, rel), content)
     files.push(rel)
   }
+  writeBrandFixture(write)
   write('server/alpha-routes.mjs', ALPHA)
   write('server/ws-hub.mjs', WS_HUB)
   write('electron/preload.cjs', [
@@ -184,10 +237,10 @@ const rewrite = (root, rel, fn) => writeFileSync(join(root, rel), fn(readFileSyn
 const rulesFired = (out) => [...new Set(out.findings.map((x) => x.rule))].sort()
 const reds = (out) => out.findings.filter((x) => x.severity === 'red')
 
-test('规则集固定：CT0–CT9（含 CT4B/CT4C 与 CT8）逐条产出 checkResult', async () => {
+test('规则集固定：CT0–CT10（含 CT4B/CT4C、CT8 与品牌 CT10）逐条产出 checkResult', async () => {
   const out = await run(await setup())
   assert.deepEqual([...out.checks.map((c) => c.rule)].sort(), [...CT_RULES].sort())
-  assert.deepEqual(CT_RULES, ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9'])
+  assert.deepEqual(CT_RULES, ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10'])
 })
 
 test('基准夹具全绿（除 CT9 的黄灯：前端 fetch 存在无 server 路由的 /ghost-path）', async () => {
@@ -310,6 +363,11 @@ test('CT3：文档声明的 /fake 在代码里不存在 → 红（文档腐烂�
 async function methodFixture({ docRow, code, wfRow = null }) {
   const mk = () => {
     const root = mkdtempSync(join(tmpdir(), 'yfw-method-'))
+    // 品牌文件同样要齐（CT10 fail-closed ⇒ 少了会多出与"方法维度"无关的红灯）
+    writeBrandFixture((rel, content) => {
+      mkdirSync(dirname(join(root, rel)), { recursive: true })
+      writeFileSync(join(root, rel), content)
+    })
     mkdirSync(join(root, 'server'), { recursive: true })
     writeFileSync(join(root, 'server/m-routes.mjs'), code)
     mkdirSync(join(root, 'docs'), { recursive: true })

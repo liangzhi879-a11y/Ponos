@@ -23,7 +23,7 @@
   "lines": [
     {
       "id": "APP_VERSION",
-      "label": "Ponos 应用（turbo 内核版）",
+      "label": "YFWorking 应用（ponos 内核版）",
       "file": "version.mjs",
       "locator": {
         "kind": "const",
@@ -35,7 +35,7 @@
     },
     {
       "id": "KERNEL_VERSION",
-      "label": "Ponos-Turbo 内核",
+      "label": "ponos 内核",
       "file": "version.mjs",
       "locator": {
         "kind": "const",
