@@ -194,3 +194,21 @@ test('★ 主题数超过字节上限时**不截断**（主题名完整性 > 字
   assert.ok(memoryBytes(text) > EL0_MAX_BYTES,
     '该形态确会超 512 B —— 记录下来，便于将来判断 A14 是否被真实数据突破')
 })
+
+// ── Task 9：S4.5⑦ GUI 面板口径同步（三层化后与实际注入一致）────────────────────
+
+test('S4.5⑦：面板字节口径改用字节计量（不再用 .length 直接算）', () => {
+  const src = readFileSync(new URL('../server/experience.mjs', import.meta.url), 'utf8')
+  // 排除注释行：说明文字里提到旧写法不算"还在用"（判据只看**实际代码**）
+  const code = src.split(/\r?\n/).filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  assert.ok(!/buildExperienceIndex\([^)]*\)\s*\.length/.test(code),
+    '不应再用 .length 直接算面板字节（UTF-16 码元数，对中文低估 ~2 倍）')
+})
+
+test('S4.5⑦：面板以内核侧 EL0 渲染为底（面板数字 = 实际注入，不再是旧全量索引）', () => {
+  const src = readFileSync(new URL('../server/experience.mjs', import.meta.url), 'utf8')
+  assert.ok(src.includes('buildMemoryIndex'), '面板须以 EL0 渲染（buildMemoryIndex）为底')
+  assert.ok(src.includes('memoryBytes'), '面板须复用内核侧唯一字节口径 memoryBytes')
+  assert.ok(src.includes('EL0_MAX_BYTES'), 'EL0 上限须取自常量，不得硬编码 512')
+  assert.ok(!/\b(200|512|4096)\b.*inject_bytes/i.test(src), '不得硬编码上限数字')
+})

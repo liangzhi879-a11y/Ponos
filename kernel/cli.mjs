@@ -1021,12 +1021,17 @@ export async function main(argv) {
           if (!observe) el1Block = rec.text
           // 登记分名（S-1③）：`offered` / `offeredDryRun` 是两种语义，混用会污染采纳率口径；
           // 观察期 adopted 记 **null** 而非 0 —— 0 会被算成"推荐了但没被采纳"。
-          try {
-            store.appendMeta(observe ? 'inject_recommend_dryrun' : 'inject_recommend', {
-              offered: rec.offered, bytes: rec.bytes, dropped: rec.dropped,
-              adopted: null, strategy, relateMode, observe,
-            })
-          } catch { /* 登记失败不影响注入 */ }
+          //
+          // ★ 为什么走 stderr 而不是 store.appendMeta（实测教训）：转录是**协议面** ——
+          //   server/kernel-bridge.test.mjs「协议闭环」逐条核验转录序列（meta + user + assistant），
+          //   启动时同步写入一条 meta 会**必然**把它变成 4 条 ⇒ 稳定红。
+          //   观察期数据没有转录读方（面板读的是 server/experience.mjs 写的 themes.json），
+          //   写转录是"为写而写"却要付协议面代价 ⇒ 改用一行结构化日志，信息量不减、零协议影响。
+          //   （Task 2 的 inject_snapshot 保留在转录里：S1+ spec 明确要求"每轮一条"落 store。）
+          process.stderr.write(`[el1] ${JSON.stringify({
+            observe, offered: rec.offered, bytes: rec.bytes, dropped: rec.dropped,
+            adopted: null, strategy, relateMode,
+          })}\n`)
         }
       } catch { /* EL1 故障绝不阻塞主流程（与既有注入段同款） */ }
     }

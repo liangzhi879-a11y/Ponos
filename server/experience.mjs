@@ -1,6 +1,9 @@
 import { join } from 'node:path'
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, statSync, existsSync, rmSync } from 'node:fs'
 import { resolveYfwHome } from './yfw-home.cjs'
+// S4.5⑦：面板口径必须与内核**实际注入**一致 —— 复用内核侧唯一的 EL0 渲染与字节口径，
+// 不另造第二套换算（两套口径 = 面板数字迟早与实际分叉，正是本步要修的问题）。
+import { memoryBytes, buildMemoryIndex, EL0_MAX_BYTES, renderThemeList } from '../kernel/memory.mjs'
 
 // 数据根经共享模块解析（YFWORKING_HOME || PONOS_CONFIG_DIR || ~/.yfworking）；
 // 测试设 YFWORKING_HOME 指向临时目录即隔离，不碰真实 ~/.yfworking。
@@ -215,11 +218,25 @@ export function refreshIndex() {
       entry_count: item.entryCount,
       updated_at: new Date(item.updatedAt).toISOString(),
       active: item.active,
-      // 单主题索引段贡献字节数（仅该主题激活时），供面板/维护观察各主题负载
-      inject_bytes: buildExperienceIndex(4096, item.theme).length,
+      // 单主题在 EL0 主题清单里占的字节（三层化后：EL0 恒在、EL1 命中时才注入）。
+      // ★ 不再用旧的 `buildExperienceIndex(...)` 全量口径 —— 那是 ≈5 KB 的旧值，
+      //   且 String.length 是 UTF-16 码元数，对中文低估 ~2 倍；改后与真实注入同源同单位。
+      inject_bytes: memoryBytes(renderThemeList([{
+        theme: item.theme, count: item.entryCount,
+        latest: new Date(item.updatedAt).toISOString().slice(0, 10),
+      }])),
     }
   }
-  // 整段真实注入尺寸（默认上限 4096 下）——真正的上下文成本指标
-  const totalInjectBytes = buildExperienceIndex(4096).length
+  // 整段真实注入尺寸（三层化后 = EL0 主题清单，恒在；EL1 线索层为命中时才注入的浮动部分）
+  const totalInjectBytes = experienceInjectBytes()
   writeFileSync(INDEX_FILE, JSON.stringify({ total_inject_bytes: totalInjectBytes, themes }, null, 2), 'utf-8')
+}
+
+/**
+ * 经验注入的实际字节口径（三层化：EL0 恒在 ≈200 B + 命中时的 EL1 ≤1536 B）。
+ * ★ 复用 kernel/memory.mjs 的 EL0 渲染（buildMemoryIndex）与 memoryBytes —— 不另造口径；
+ *   EL0 上限取自 EL0_MAX_BYTES（不硬编码），故内核侧调整上限时面板自动跟随。
+ */
+function experienceInjectBytes() {
+  return memoryBytes(buildMemoryIndex({ root: PERSONAL_DIR, maxBytes: EL0_MAX_BYTES }))
 }
