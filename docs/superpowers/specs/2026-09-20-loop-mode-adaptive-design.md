@@ -5,6 +5,7 @@
 > 基线：`kernel/engine.mjs`(2436 行) / `kernel/loop.mjs` / `kernel/cli.mjs` / `kernel/prompt.mjs` / `kernel/gen-guards.mjs` / `kernel/agents.mjs` / `kernel/compact.mjs` / `kernel/loop-verify.mjs` / `kernel/tools.mjs` / `server/bridge.mjs` / `src/components/chat/*`
 > 前序：`docs/superpowers/audits/2026-09-08-agentloop-guide-gap.md`（指南第 13 章底稿 G7）、`docs/superpowers/specs/2026-09-17-loop-redesign-phase1-reliability-design.md`（loop 四期总纲）、`docs/superpowers/audits/2026-09-19-reviewer-cross-model.md`（评审模型对照实测）
 > v2 变更：① 论证方式回归技术可行性（不以"无先例"作否决依据，见 §2.0）② 块 3/4 展开为详细设计 ③ 新增块 5「方法论编译」（方法论融入 loop，见 §9）
+> v3 增量（**已并入本节 §12.1 与 §14.1**）：`docs/superpowers/specs/2026-09-20-injection-layer-unification-design.md` —— 注入层统一（经验/知识/方法论共用一条注入总线）。已拍板：① 并入一期（S1+ 注入总账 / S3.5 总线抽取 / S4.5 经验三层化+线索层 / S9.5 第 5 个下沉项）② 经验供给形态 = **只发索引线索**（不含正文，agent 自主读取，支持 `related` 一跳扩展线索阅读）③ 去重随 S4.5 ④ **S3.5 前移为 B1 设计约束**（B1 即以 `ctx.emitInjection(text,{persist,event})` 为唯一注入出口，只冻结这三项）⑤ EL1 逃生阀 = `PONOS_MEMORY_EL1=0`。**命名与边界**：不得用 `ctx.inject`（与 §6.1 `LoopProfile.inject` 区分）；总线只提供宿主侧渲染器注册位（lane 不注册锚点渲染器，保持 §6.2"刻意不同 250 行"）。新增验收 A12-A20 与**全局注入护栏 G1-G4**（§14.1）。该增量文件的角色 = 设计论证 + 评审留痕（Q1-Q21），**实施以本文件的 S 序列与判据为准**。
 
 ---
 
@@ -335,8 +336,11 @@ LoopProfile + PhaseHooks（运行期）
 /**
  * 一轮迭代的执行体。纯参数化——不持有闭包状态。
  * @param {LoopState} state  迭代可变状态（守卫计数、usage、textBuf、flags）
- * @param {LoopCtx}   ctx    依赖注入（stream/store/wire/阈值/钩子）
+ * @param {LoopCtx}   ctx    依赖注入（stream/store/wire/阈值/钩子/注入出口）
  * @returns {Promise<LoopState>}
+ * 注入出口：ctx.emitInjection(text, { persist, event })
+ *   —— B1 的唯一注入出口（S3.5 换实现）；**命名不得用 ctx.inject**（与 LoopProfile.inject 区分）
+ *   —— B1 冻结面仅 text/persist/event；priority/budgetBytes/kind/phase 由 S3.5 引入
  */
 export async function runOnce(state, ctx)
 
@@ -366,7 +370,7 @@ export function shouldStop(state, ctx)   // → null | { reason, message }
 
 **纳入契约**（约 300-350 行）：
 - 守卫检查组（`iterHead` / `inStream` / `afterStream` 三段序）
-- 自愈注入（`guard_heal` wire + 注入文案 + 计数清零规则）
+- 自愈注入（`guard_heal` wire + 注入文案 + 计数清零规则）——**经 `ctx.emitInjection` 出口**（12 处指令注入全部改走该出口；出口本身属 B1，实现替换属 S3.5）
 - 流式聚合（text / thinking / tool_use / usage / stop_reason）
 - 停流判定（`detectGenerationRepeat` / `createNearRepeatDetector` / `makeIdleWatchdog`）
 - usage 累加（`addUsage`）与 `canonicalToolCallKey` 链
@@ -845,19 +849,23 @@ spawnDepthLimit: 1             # ③ 该 agent 能否再派子代理
 
 ## 12. 实现顺序
 
-### 12.1 一期（块 1 + 块 2 + 块 5）
+### 12.1 一期（块 1 + 块 2 + 块 5；**含注入层统一增量 S1+/S3.5/S4.5/S9.5**）
 
 | 步 | 内容 | 判据 |
 |---|---|---|
 | S1 | 观测层 O1/O2/O3（**先做**，纯增量、零风险） | 新字段出现在 turnStats / meta；测试覆盖 |
+| **S1+** | **O4 注入总账**（`inject_snapshot` + legacy 侧记账 + prompt 分段**只读**计量） | `inject_snapshot` 字段齐备且 legacy 非空；A13 | 
 | S2 | B1 契约抽取：守卫序参数化 | L1/L2/L3 回归锁全绿，**零行为变更** |
 | S3 | B1 契约应用到 lane（复用同一 `runOnce`） | lane 测试全绿；可共享逻辑只有一份 |
+| **S3.5** | **注入总线抽取**（`kernel/inject-bus.mjs`；12 处指令注入改走 `ctx.emitInjection`） | A17a/A17b 双重等价（含 `LOOP_GUARD=0` 对照）+ 主 spec L1 全绿 |
 | S4 | `kernel/loop-mode.mjs` + `kernel/methodology.mjs`（纯函数 + 单测） | 模式/方法论定义、判据、切换校验单测覆盖 |
+| **S4.5** | **经验三层化 + 线索层**（去重 / `front.active` / 字节口径 / `knowledge-recommend.mjs` / EL1↔unified 互斥） | A12/A14/A16/A18/A20；新增 `knowledge-recommend.test.mjs` |
 | S5 | **首批下沉：`verification-before-completion`**（性价比最高） | 有测试：声称完成而无验证调用 → 注入自愈；误伤对照通过 |
 | S6 | **下沉：`using-superpowers` 路由**（t=0 规则匹配 + 建议） | 建议准确率可观测；用户拒绝后不自动切 |
 | S7 | Plan 模式（= `writing-plans`+`executing-plans`+`subagent-driven` 编译产物） | 端到端：复杂任务进入 Plan 后产出计划且逐项推进 |
 | S8 | **下沉：`subagent-driven-development` 状态机** | 端到端：逐任务派发 + 每任务审查 + fix loop 上限 |
 | S9 | Reflect 模式（= `systematic-debugging` 编译产物 + 外部信号硬约束） | 端到端：验证失败时反思并改写下一步；**无信号时不进入** |
+| **S9.5** | **下沉第 5 项 `experience-sediment`**（判据 `reusable-finding-unrecorded` + `recommend-ignored`） | 本步只发 wire/落账，阈值随 S12 转正（**不得硬编码**，A10） |
 | S10 | 切换协议 + GUI 建议卡 + 模式徽标 | 留痕完整；用户拒绝后不自动切 |
 | S11 | **下沉：`brainstorming` HARD-GATE**（门控） | 设计阶段出现实现代码 → 门控生效 |
 | S12 | 观测期收数据 → 定默认阈值 | 阈值有数据依据，附录记录 |
@@ -909,6 +917,25 @@ spawnDepthLimit: 1             # ③ 该 agent 能否再派子代理
 | A9 | **首批方法论下沉生效** | ≥4 个方法论（§9.8）的守卫/门控在无 SKILL.md 加载时仍生效（**有对照测试**） |
 | A10 | **判据误伤受控** | 每个下沉判据有误伤对照用例；误伤率 ≤ 阈值（观测期定） |
 | A11 | **成本可量化下降** | 同类任务的平均上下文 tokens 可对比（下沉前/后），且不明显反弹 |
+| A12 | 经验索引**只注入一次** | 任务模式会话中 `【个人经验索引】` 出现次数 = 1（当前 = 2，5.1 KB/轮冗余） |
+| A13 | 注入总账可归因 | 每轮 `inject_snapshot` 的 `channels`/`bySource` 字节和 = 实测提示词 + 派生注入（≤5% 误差，**同 tier/sessionMode 内比较**） |
+| A14 | EL0/EL1 分层且 **EL1 不含正文** | EL0 ≤ 512 B 恒在；EL1 仅命中时出现且无 ` ·全文` 标记；`PONOS_MEMORY_EL1=0` 时 EL1 为空 |
+| A15 | 单轮注入受**全局总预算**约束 | 各通道字节和 ≤ 派生自 `resolveInjectBudget()` 的总预算；超限按 priority 抽让渡并留痕 |
+| A16 | 停用主题不再被注入 | GUI 停用主题 T → 内核 EL0/EL1 均不含 T（当前内核侧漏判 `front.active`） |
+| A17a | 轮内注入等价（L4a） | 总线抽取前后：12 处注入文本 + wire 事件序列逐字节等价（4 处 `event:null` 如实保留） |
+| A17b | 请求面派生注入等价（L4b） | `withAnchorTail` 注册为 `beforeRequest` 渲染器后，每次请求末条 user 派生结果等价、前缀不变 |
+| A18 | 线索可展开且可采纳可测 | 前置 `knowledgeRelateMode==='on'`；线索 `blockId` 喂 `related` 必返非空；`offered/adopted/adoptRate` 可读；未授权空间不给 Read 指引 |
+| A19 | 观察期不注入且**不产生假采纳率** | `OBSERVE_ONLY=true` 时无线索段，`offeredDryRun` 有值而 `adopted` 语义为"不适用"（**不得记 0**） |
+| A20 | EL1 与 unified 抽调层**互斥** | `legacy` → 线索段存在；`unified` → 线索段不存在（防同一批知识块注入两遍） |
+
+**全局注入护栏（跨块约束，G 系列 —— 防"越改越乱"）**
+
+| # | 护栏 | 判据 |
+|---|---|---|
+| G1 | **零和预算** | 任何新增注入通道必须在既有总预算内**抽让渡**，不得为新通道加预算；确需加预算时须先有观测数据证明净收益 |
+| G2 | **通道数不增** | 每条新通道必须声明它**替换/合并**了哪条既有路径；通道数净增即视为回归 |
+| G3 | **常量注入净下降** | 一期结束时"每轮恒在注入字节"必须低于基线（当前经验侧 10262 B；S4.5 后目标 ≤ 1736 B），有实测数字 |
+| G4 | **单账** | 同一事实只有一处采集（O4 为 O2/O3 的派生视图）；禁止同一现象两本账 |
 
 ### 14.2 二期
 
