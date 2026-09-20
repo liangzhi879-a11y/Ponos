@@ -35,10 +35,48 @@
 
 ## 三、剩余工作
 
-- **Task 3**：流内守卫搬移（`streamWallClock` / `genRepeat` / `nearRepeat` / `idleWatchdog` /
-  `upstreamDead`）——与 Task 2 同型
-- **Task 4**：流后守卫搬移（`repeatHeal` / `errorMeltdown` + `stall` 的进展刷新）
-- **Task 5–7**：lane 接线 / `runOnce` 真实编排 / 注入总线
+### Task 3 ✅ 已完成（`refactor(loop): … Task 3`）
+
+流内守卫搬入 loop-core：`streamWallClock` / `genRepeat` / `nearRepeat`（chunk 尾）。
+**关键修正**：`idleWatchdog` / `upstreamDead` 从 `inStream` **移到 `afterStream`** ——
+命中判定源于流内，但**处理时机在 catch 块**（:739-800）⇒ 按执行时机归"流后"。
+新增等价锁 `kernel-tests/loop-guard-instream-equivalence.test.mjs`（12 例）。
+
+### Task 4 ⚠️ 有实质设计难点，**不可按计划原样实施**（下一步入口）
+
+**难点**：计划 Step 4 假设 afterStream 能**一次调用**跑完（`runAfterStreamGuards(...)`）。
+实测**不成立** —— 该相位的 6 个守卫**散布在三个互不相邻的时机**，中间夹着工具执行与内存写入：
+
+| 时机 | 守卫 | 精确落点 | 语义要点 |
+|---|---|---|---|
+| **流后·工具前** | `repeatHeal` | engine `:947-961` | `loopStop && REPEAT_HEAL_MAX!==0 && (<0 \|\| repeatHeals<MAX) && reason ∈ {gen-repeat,near-repeat}` ⇒ hits.push + injections++ + `repeatHeals++` + `healedLastIter=true` + **`loopStop=null`** + `textBuf=''` + 注入 + `wire('guard_heal')` + **`continue`** |
+| **工具后** | `progressRefresh` | `:1133-1134` | `madeProgress` ⇒ `lastProgressAt=Date.now(); stallHeals=0`（纯状态更新，**无 stop/注入**） |
+| **工具后** | `repeatReminder` | `:1140-1162` | `!loopStop && REPEAT_REMIND_AT.length && blocks.length` ⇒ 链键比对 `repeatStreak`、`shouldRemindRepeat` ⇒ hits.push + injections++ + 注入（**只提醒不否决**，无 stop） |
+| **工具后** | `meltdown` | `:1163-1183` | `errorStreak>=MAX_ERROR_ITERATIONS` ⇒ 自愈（injections++、`meltdownHeals++`、`errorStreak=0`、注入、**`continue`**）或硬停（`loopStop={reason:'error-meltdown'}` + **`break`**） |
+| **catch 块** | `idleWatchdog` | `:739-800` | `watchdog.tripped` ⇒ 三态：`idleDeadRetry`（**continue**）/ 自愈注入（**continue**）/ 硬停（`loopStop`） |
+| **catch 块** | `upstreamDead` | 同上 | `classifyApiError(err).kind==='dead-stream'` ⇒ 自愈（事件 + `sleep` + **continue**）或硬停 |
+
+**建议路径（需先定案再动手）**：把 `afterStream` 相位**拆分**为三个相位
+（例：`postStream` / `postTools` / `onError`），`PHASES` 从 3 → 5，`KNOWN_GUARDS` 分组同步。
+这样每相位仍是"一次调用 + profile 定序"，且 `action`（`continue`/`break`）语义与
+`runOnce`（Task 6）的编排天然对齐。**代价**：`loop-core-contract.test.mjs` 的相位集断言要同步更新。
+
+**必守的等价细节**（易错）：
+1. `repeatHeal` 会把 `loopStop` **清空并 continue** ⇒ `action:'continue'` + 返回 `loopStop:null`
+   （若只返回 stop 而不清空，会误收尾）
+2. 计数清零规则不同：`repeatHeals` 由"干净迭代"（`healedLastIter`）清零、
+   `stallHeals` 由"恢复进展"清零、`meltdownHeals` 由"工具成功"清零 —— **三条规则不能合并**
+3. `meltdown` 自愈后 `errorStreak=0`（重开失败预算）；硬停走 `break`（**置 loopStop + 停迭代**）
+4. `progressRefresh` **不是守卫**语义上是"状态更新"，但它在 profile 里占位 —— 实现为
+   `{state}` 返回（无 stop/action），保留可配置性
+5. catch 块两个守卫的 `continue` 是**迭代级重试**，属宿主循环控制流 ⇒ 必须经 `action` 回传
+
+### Task 5–7
+
+- **Task 5**：lane 接线（`LANE_PROFILE` 目前**未被 engine 使用**，lane 段 `:1590-1917` 仍是内联实现；
+  注意 lane 的 `REPEAT_HEAL_MAX` 判据曾与主循环漂移，已在 `:1781-1783` 注释登记）
+- **Task 6**：`runOnce` 真实编排（把 api/流/工具/守卫串起来）
+- **Task 7**：注入总线（把散在各处的注入收敛到 `emitInjection`）
 
 ## 四、关键坑（本批实测，务必先读）
 
