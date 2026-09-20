@@ -53,9 +53,11 @@ import { buildSnapshot, diffSnapshot, channelsProblems } from './contract-snapsh
 import { checkScopeSets, contractGrowth, keyOf } from './contract-scope.mjs'
 import { brandCheck } from './brand-rules.mjs'
 import { agentEntryCheck } from './agent-entry-rules.mjs'
+import { devkitBoundaryCheck } from './devkit-rules.mjs'
 
-/** 规则号段（顺序即报告顺序）：CT0–CT11，含 CT4 的两个子规则、在途差异 CT8、品牌声明点 CT10、agent 入口 CT11 */
-export const CT_RULES = ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10', 'CT11']
+/** 规则号段（顺序即报告顺序）：CT0–CT12，含 CT4 的两个子规则、在途差异 CT8、品牌声明点 CT10、
+ *  agent 入口 CT11、DevKit 边界 CT12 */
+export const CT_RULES = ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10', 'CT11', 'CT12']
 
 /** 路径主体标识符（与 contract-routes.mjs 的 SUBJECT 同口径 —— 独立实现，不 import 它的私有常量）
  *  ★ 引号必须与提取器**同口径**（第 4 批）：单/双都认。少认一种 ⇒ 同一处字面量在提取器里"有归宿"、
@@ -810,6 +812,19 @@ export async function runContractRules({
   const entry = agentEntryCheck({ readTracked: read })
   for (const f of entry.findings) findings.push(f)
   checks.push(entry.check)
+
+  // ── CT12：DevKit 边界 —— 发行物不得含开发门禁（`kit/` 及相关配置；不可基线豁免）──────────
+  //   ★ 存在的理由：用户口径『确保正式打包不会带 devkit，也就是发行给用户的版本不带 kit 及相关配置』。
+  //     实测漏洞：`scripts/pack-source-zip.mjs`（源码交付包，注释声明"给客户/外部"）的排除规则里
+  //     **既没有 `kit/` 也没有 `AGENTS.md`**，而候选清单来自 `git ls-files` ⇒ **59 个 devkit 文件**
+  //     （`kit/` 58 + `AGENTS.md` 1）本会随包发出去。
+  //   ★ 与 CT11 的分工（易混）：CT11 管"要**有**什么"（入口送达），CT12 管"要**没有**什么"（devkit 外泄）；
+  //     两者在调试渠道上刚好相反 —— `AGENTS.md` 在调试版**必须有**、在发行物**必须无**。
+  //   ★ 读**提交态**，与 CT0–CT11 同口径。
+  //   ★ 基线：`BASELINE_FORBIDDEN` 是"除 CT9 外全部 CT" ⇒ CT12 自动**不可豁免**（刻意如此）。
+  const devkit = devkitBoundaryCheck({ readTracked: read })
+  for (const f of devkit.findings) findings.push(f)
+  checks.push(devkit.check)
 
   return { checks, findings }
 }

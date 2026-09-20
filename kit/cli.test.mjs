@@ -32,6 +32,21 @@ function writeEntryFixture(write) {
   }
 }
 
+/** 写"**合格的 DevKit 边界夹具**"（CT12 用）：**真源抄真仓**，发行面脚本按真源登记逐个造出来。
+ *  ⇒ 真源加一条发行面时夹具自动跟上（同 writeEntryFixture 的原则：夹具从真源派生，不手抄）。
+ *  ★ 注意 CT12 **不扫目标仓里有没有 `kit/`** —— 它核的是"打包配置有没有把 devkit 带出去"，
+ *    所以夹具仓自己带着 `kit/manifest/devkit.json`（真源）与 `AGENTS.md`（CT11 要求）都**不会**被判泄漏。
+ *    真正的"拦包"动作在打包脚本里（`assertNoDevkit`），由 devkit-rules.test.mjs 直接测。 */
+function writeDevkitFixture(write) {
+  const text = readFileSync(join(ROOT, 'kit/manifest/devkit.json'), 'utf8')
+  write('kit/manifest/devkit.json', text)
+  for (const s of JSON.parse(text).releaseSurfaces) {
+    const f = s?.guard?.file
+    if (!f || s.guard.kind === 'structural') continue // yml 由品牌夹具写（白名单本就干净）
+    write(f, '// 夹具：DevKit 边界清单从真源取（kit/lib/devkit-rules.mjs）\n')
+  }
+}
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CLI = resolve(ROOT, 'kit/cli.mjs')
 
@@ -100,6 +115,8 @@ function fixture({ ledgers = true } = {}) {
   // CT11 核三件事：入口存在、含真源登记的必备锚点、行数 ≤ 上限；外加"入口是否留在便携版同步清单里"。
   // 夹具从真源派生（见 writeEntryFixture 注释）⇒ 真源扩锚点/加同步路径时，夹具自动跟上。
   writeEntryFixture(write)
+  // ── DevKit 边界（CT12）：真源 + 各发行面（真仓同款）────────────────────
+  writeDevkitFixture(write)
   write('.gitignore', 'node_modules/\n')
   execFileSync('git', ['init', '-q'], { cwd: root })
   // ★ 台账必须在**提交态**里可读：品牌有两条声明点落在 `versions.json#lines[].label` 上，而
@@ -604,18 +621,18 @@ test('★第3批-④：空仓（git init 后没提交）→ CT1 红"HEAD 物化"
 // 口径写进 spec（§5.3/§6.3 的"规则号数"一节）。
 const EXPECTED_RULES = ['P0', 'P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7',
   'V1', 'V1b', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', "V8'", 'V8b',
-  // P1（契约快照 ↔ bridge-contract.md 对账）的 CT 号段：CT0–CT11，含 CT4 的两个子规则（CT4B 封顶 / CT4C 条目合法）
+  // P1（契约快照 ↔ bridge-contract.md 对账）的 CT 号段：CT0–CT12，含 CT4 的两个子规则（CT4B 封顶 / CT4C 条目合法）
   // 与 CT8（在途差异：工作树 ∖ HEAD，黄、只报不拦 —— 第 3 批拆"基线为在途差异兜底"时补的号位）、
   // CT10（品牌声明点 ↔ 品牌真源）、CT11（agent 自动注入入口 ↔ AGENT_GUIDE.entry：锚点 + 行数 + 便携版同步清单；
   // ★ 二者都不可基线豁免 —— 判据落在 BASELINE_FORBIDDEN 的"除 CT9 外全部 CT"之内）。
-  'CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10', 'CT11']
+  'CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10', 'CT11', 'CT12']
 
-test('★B2/B3：summary.rules = 32，且逐条规则号与 spec 口径完全一致（含表外 V1b/V8b/P0 与 CT0–CT11）', () => {
+test('★B2/B3：summary.rules = 34，且逐条规则号与 spec 口径完全一致（含表外 V1b/V8b/P0 与 CT0–CT12）', () => {
   const j = JSON.parse(run(['check', '--json']).stdout)
   assert.deepEqual([...j.checks.map((c) => c.rule)].sort(), [...EXPECTED_RULES].sort(),
     '规则号集必须逐字对齐：多一个（自造号）或少一个（早退没 push）都要在这里变红')
-  assert.equal(j.summary.rules, 33)
-  assert.equal(new Set(j.checks.map((c) => c.rule)).size, 33, '同一个规则号不得重复计入')
+  assert.equal(j.summary.rules, 34)
+  assert.equal(new Set(j.checks.map((c) => c.rule)).size, 34, '同一个规则号不得重复计入')
   // V6 的标题必须与判据同口径（标题写三方 → 就得真核三方，见 kit/lib/version-rules.mjs）
   assert.match(j.checks.find((c) => c.rule === 'V6').title, /三方/)
   // CT1 的标题必须写明"现场重算"—— 它是红线（读快照当答案是 plan §7 反例⑤）
@@ -709,11 +726,11 @@ test('夹具仓无台账：check 退 1（P0/V0 红），绝不因"读不到台�
   assert.equal(j.ok, false)
   // ★ B2：P0 必须也进 checks。两条台账都缺时，唯一可判定的规则就是 P0 ——
   //   若 rules 为 0，说明 P0 又退回了"只 push finding"（--verbose 里也会缺这一格）。
-  //   ★ P1 之后：契约规则（CT0–CT11）**无条件**进 checks（判据本身要报"快照缺失"），故这里逐条列全。
+  //   ★ P1 之后：契约规则（CT0–CT12）**无条件**进 checks（判据本身要报"快照缺失"），故这里逐条列全。
   assert.deepEqual(j.checks.map((x) => x.rule).sort(),
-    ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10', 'CT11', 'P0'].sort())
+    ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10', 'CT11', 'CT12', 'P0'].sort())
   assert.equal(j.checks.find((x) => x.rule === 'P0').passed, false)
-  assert.equal(j.summary.rules, 15)
+  assert.equal(j.summary.rules, 16)
 })
 
 // ★ Rider 2：宿主删掉声明却不重跑 sync → 旧判据（P1/P2 只读台账）一条红都不报。

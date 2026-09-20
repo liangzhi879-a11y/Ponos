@@ -43,7 +43,7 @@
     "build:kernel": "node scripts/build-kernel.mjs",
     "build:python": "node scripts/build-embedded-python.mjs",
     "build:installer": "node scripts/build-installer.mjs",
-    "build:portable": "node scripts/package-portable.cjs",
+    "build:portable": "node scripts/package-portable.cjs && npm run verify:portable-layout",
     "skills:sync": "node scripts/sync-builtin-skills.mjs",
     "version:bump": "node scripts/bump-version.mjs",
     "anchors:write": "node scripts/check-doc-anchors.mjs --write",

@@ -1,4 +1,4 @@
-// kit/lib/contract-rules.test.mjs —— 契约对账规则 CT0–CT11（T7）
+// kit/lib/contract-rules.test.mjs —— 契约对账规则 CT0–CT12（T7）
 //
 // 全部用**夹具仓**（mkdtemp + 显式 files，不依赖 git 与本机状态），每条规则都能独立失败。
 // ★ 红线（plan §7 反例⑤）：**CT1 必须现场重算** —— 手改快照一个端点即使文档/scope 全都自洽，
@@ -119,6 +119,19 @@ function writeEntryFixture(write) {
   }
 }
 
+/** 写"**合格的 DevKit 边界夹具**"（CT12）：真源**抄真仓** + 各发行面脚本按真源登记逐个造出来。
+ *  ⇒ 真源加一条发行面时夹具自动跟上。★ CT12 不扫目标仓里有没有 `kit/`（它核的是打包配置），
+ *    所以夹具仓自己带 `kit/manifest/devkit.json` 不会被判泄漏。 */
+function writeDevkitFixture(write) {
+  const text = readFileSync(new URL('../../kit/manifest/devkit.json', import.meta.url), 'utf8')
+  write('kit/manifest/devkit.json', text)
+  for (const s of JSON.parse(text).releaseSurfaces) {
+    const f = s?.guard?.file
+    if (!f || s.guard.kind === 'structural') continue
+    write(f, '// 夹具：DevKit 边界清单从真源取（kit/lib/devkit-rules.mjs）\n')
+  }
+}
+
 function writeBrandFixture(write, { npmName = 'fx-pkg' } = {}) {
   const truth = JSON.parse(FX_BRAND_JSON)
   truth.declarations.find((d) => d.id === 'npm-name').expects.literal = npmName
@@ -196,6 +209,7 @@ function fixture({ mutate = null } = {}) {
   }
   writeBrandFixture(write)
   writeEntryFixture(write)
+  writeDevkitFixture(write)
   write('server/alpha-routes.mjs', ALPHA)
   write('server/ws-hub.mjs', WS_HUB)
   write('electron/preload.cjs', [
@@ -273,10 +287,10 @@ const rewrite = (root, rel, fn) => writeFileSync(join(root, rel), fn(readFileSyn
 const rulesFired = (out) => [...new Set(out.findings.map((x) => x.rule))].sort()
 const reds = (out) => out.findings.filter((x) => x.severity === 'red')
 
-test('规则集固定：CT0–CT11（含 CT4B/CT4C、CT8、品牌 CT10 与 agent 入口 CT11）逐条产出 checkResult', async () => {
+test('规则集固定：CT0–CT12（含 CT4B/CT4C、CT8、品牌 CT10、agent 入口 CT11 与 DevKit 边界 CT12）逐条产出 checkResult', async () => {
   const out = await run(await setup())
   assert.deepEqual([...out.checks.map((c) => c.rule)].sort(), [...CT_RULES].sort())
-  assert.deepEqual(CT_RULES, ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10', 'CT11'])
+  assert.deepEqual(CT_RULES, ['CT0', 'CT1', 'CT2', 'CT3', 'CT4', 'CT4B', 'CT4C', 'CT5', 'CT6', 'CT7', 'CT8', 'CT9', 'CT10', 'CT11', 'CT12'])
 })
 
 test('基准夹具全绿（除 CT9 的黄灯：前端 fetch 存在无 server 路由的 /ghost-path）', async () => {
