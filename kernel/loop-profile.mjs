@@ -38,10 +38,15 @@
 export const KNOWN_GUARDS = new Set([
   // iterHead
   'wallClock', 'iterCap', 'stall',
-  // inStream
-  'streamWallClock', 'genRepeat', 'nearRepeat', 'idleWatchdog', 'upstreamDead',
-  // afterStream
-  'repeatHeal', 'meltdown', 'stall', 'repeatReminder',
+  // inStream（流进行中，**块级**检查）
+  'streamWallClock', 'genRepeat', 'nearRepeat',
+  // afterStream（流结束/异常后处理）
+  // ★ `idleWatchdog`/`upstreamDead` 归此处而非 inStream（Task 3 的划分修正）：
+  //   它们的**命中判定**源于流内（空闲超时/上游断流），但**处理时机在 catch 块**
+  //   （流抛错后按错误分类处理，engine.mjs:739-800）⇒ 按**执行时机**归"流后"，
+  //   与 repeatHeal/meltdown（同在该 catch 后续路径）同层。放进 inStream 会诱导
+  //   实现者去"每块检查"，而它们本来每块都不检查。
+  'repeatHeal', 'meltdown', 'stall', 'repeatReminder', 'idleWatchdog', 'upstreamDead',
 ])
 
 /** 允许的注入相位（S3.5 才扩 priority/budgetBytes/kind/phase；此处只列相位） */
@@ -60,11 +65,11 @@ export const PHASES = ['iterHead', 'inStream', 'afterStream']
 export const MAIN_PROFILE = {
   guards: {
     iterHead: ['wallClock', 'iterCap', 'stall'],
-    inStream: ['streamWallClock', 'genRepeat', 'nearRepeat', 'idleWatchdog', 'upstreamDead'],
+    inStream: ['streamWallClock', 'genRepeat', 'nearRepeat'],
     // ★ 归一后 `'stall'` 在 afterStream 与 iterHead **同名出现**，这是如实登记而非笔误：
     //   engine 里 ⑥ stall 的「进展刷新」状态维护在轮末（madeProgress → lastProgressAt/
     //   stallHeals 清零，engine.mjs:1142），命中判定在迭代头。同一守卫跨相位 → 两处列出。
-    afterStream: ['repeatHeal', 'meltdown', 'stall', 'repeatReminder'],
+    afterStream: ['repeatHeal', 'meltdown', 'stall', 'repeatReminder', 'idleWatchdog', 'upstreamDead'],
   },
   compactor: { preStep: true, laneCompact: false },
   health: { fidelityAnchor: true, recordTurnContent: true },
@@ -84,8 +89,8 @@ export const LANE_PROFILE = {
   //    ⇒ 那是**错的**，照那样实现会**静默丢掉 lane 的 4 个守卫**（③b/⑥/⑤/④）。已按实测修正。
   guards: {
     iterHead: ['wallClock', 'iterCap', 'stall'],
-    inStream: ['streamWallClock', 'genRepeat', 'nearRepeat', 'idleWatchdog', 'upstreamDead'],
-    afterStream: ['repeatHeal', 'meltdown', 'stall', 'repeatReminder'],
+    inStream: ['streamWallClock', 'genRepeat', 'nearRepeat'],
+    afterStream: ['repeatHeal', 'meltdown', 'stall', 'repeatReminder', 'idleWatchdog', 'upstreamDead'],
   },
   compactor: { preStep: false, laneCompact: true },
   health: { fidelityAnchor: false, recordTurnContent: false },

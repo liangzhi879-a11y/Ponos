@@ -44,7 +44,7 @@ import { createRequestFace, fitRequestToWindow, messageTextOf, patchOrphanToolUs
 import { canonicalToolCallKey, createNearRepeatDetector, detectGenerationRepeat, isPlanTail, isThinkOnly } from './gen-guards.mjs'
 // S2/B1 Task 2：迭代头守卫体已搬入 loop-core（profile 驱动守卫序）；此处只保留宿主接线。
 // 无循环依赖：loop-core 只依赖 loop-profile（纯数据 + 纯函数），不反向引用 engine。
-import { runIterHeadGuards } from './loop-core.mjs'
+import { runIterHeadGuards, runInStreamGuards } from './loop-core.mjs'
 import { MAIN_PROFILE } from './loop-profile.mjs'
 
 // P1-6 拆分：环境阈值层与模块级支撑函数已外提为下列模块，此处以 re-export 维持原导出面，
@@ -681,41 +681,19 @@ export function createEngine({ opts = {}, wire, session, compactor, health }) {
           // 守卫①b：墙钟（流内版）——默认关闭（同守卫①，2026-09-10）；显式设
           // PONOS_TURN_TIMEOUT_MS>0 时覆盖"块持续流动但整体久拖不完"形态（iteration
           // 边界的墙钟检查拦不住单次超长生成）。命中即中断流，说明文本见轮末 finalize。
-          if (!loopStop && TURN_TIMEOUT_MS > 0 && Date.now() - turnT0 >= TURN_TIMEOUT_MS) {
-            turnGuardHits.push('streamWallClock') // O2：如实登记（①b 无注入）
-            loopStop = {
-              reason: 'timeout',
-              message: `【已达单轮时长上限（${Math.max(1, Math.round(TURN_TIMEOUT_MS / 60000))} 分钟），为防止挂起已自动收尾。任务可能未完——可发送「继续」让模型接续。】`,
-            }
-            watchdog.controller?.abort()
-          }
-          // 守卫③：生成重复检测（每块尾部滚动查一次）——同一片段连续重复 ≥3 次
-          // 即判退化循环，abort 当前流并优雅收尾（防 thinking/文本死循环烧 token）。
-          // genWindow 满 60 字符才可能触发（minPeriod×minRepeats），短输出不受影响。
+          // 守卫①b / ③ / ③b（流内相位）：守卫体与守卫序已搬到 kernel/loop-core.mjs，
+          // 由 ctx.profile 驱动（S2：顺序可配置、改一处生效）。宿主只负责接线：
+          // 传入本块（chunk）与流内累积态，并把返回的 stop 写回 loopStop + 中断流。
+          // ★ 本相位不 break —— 与搬移前逐字等价：原实现在流内设完 loopStop 后，
+          //   流仍会自然结束或被 abort，控制流从不在此处 break（break 在迭代头）。
           if (!loopStop) {
-            const rep = detectGenerationRepeat(genWindow)
-            if (rep) {
-              turnGuardHits.push('genRepeat')
-              loopStop = {
-                reason: 'gen-repeat',
-                message: `【检测到模型生成内容重复打转（同一片段连续重复 ${rep.repeats} 次、周期 ${rep.p} 字符），已自动收尾以防死循环。可发送「继续」让模型换一种方式接续，或补充更明确的指令。】`,
-              }
-              watchdog.controller?.abort() // 终止当前流，不再消费后续块
-            }
-          }
-          // 守卫③b：句级近重复检测（每块把 text/thinking 喂入句指纹池）——编织变体
-          // 循环（同一批内容措辞微变反复重述，无整段原样复制）由本守卫在句粒度识别：
-          // 最近窗内新句的平均"旧句近邻数"超标即中止。精确周期检测（③）抓不到的形态。
-          if (!loopStop && nearRep && (chunk.type === 'text' || chunk.type === 'thinking')) {
-            const nrep = nearRep.push(chunk.text)
-            if (nrep) {
-              turnGuardHits.push('nearRepeat')
-              loopStop = {
-                reason: 'near-repeat',
-                message: `【检测到模型输出近似内容反复打转（同一批内容措辞微变重复重述，近期每句平均约 ${nrep.avgNeighbor} 句近似旧句），已自动收尾以防死循环。可发送「继续」让模型换一种方式接续，或补充更明确的指令。】`,
-              }
-              watchdog.controller?.abort() // 终止当前流，不再消费后续块
-            }
+            const inR = await runInStreamGuards(
+              { TURN_TIMEOUT_MS, turnT0, genWindow, nearRep, chunk, loopStop },
+              // ★ ctx 必须复用 loopCtx()（含 profile：守卫序真源），只叠加 abort ——
+              //   自造 ctx 会漏掉 profile ⇒ 驱动器按"空守卫序"判为未实现而抛错（实测踩过）。
+              { ...loopCtx(), abort: () => watchdog.controller?.abort() },
+            )
+            if (inR?.stop) loopStop = inR.stop
           }
         }
         perfSpan('gen', 'firstChunk') // K0：首 chunk → 生成结束

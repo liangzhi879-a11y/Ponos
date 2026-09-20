@@ -26,6 +26,8 @@
 // 本任务只固定「编排顺序 + 契约」；守卫体由 Task 2–4 逐相位补齐：
 //   Task 2 → iterHead（MAIN/LANE 共用），Task 3 → inStream，Task 4 → afterStream。
 import { KNOWN_GUARDS, MAIN_PROFILE, PHASES, resolveGuards } from './loop-profile.mjs'
+// ③ 生成重复检测（每块尾部滚动查一次）：纯函数模块，无反向依赖 ⇒ 不违反上方边界纪律
+import { detectGenerationRepeat } from './gen-guards.mjs'
 
 const ALLOWED_INJECTION_OPTIONS = new Set(['persist', 'event'])
 
@@ -190,8 +192,71 @@ function registerGuards(bodies) {
   }
 }
 
+// ── Task 3：inStream（①b 流内墙钟 / ③ 生成重复 / ③b 近重复）────────────────────
+// 与 iterHead 的关键差异：本相位**不产生 break/continue** —— 命中只置 stop 并中断当前流，
+// 由宿主在轮末 finalize 统一收尾。这与搬移前**逐字等价**：原实现在流内设 loopStop 后，
+// 流仍会自然结束或被 abort，控制流从不走 break（break 在迭代头）。
+// 调用粒度不同：iterHead 是迭代级，本相位是**块级**（每块尾部调一次）。
+//
+// state 需带 `loopStop`：原实现三处都有 `!loopStop &&` 前置（已停就不再重复检查），
+// 此处由守卫首行复现——不能省（省了会在已停后继续 push 命中、重复 abort）。
+
+/** ①b 流内墙钟：拦「块持续流动但整体久拖不完」（迭代边界的墙钟检查拦不住单次超长生成） */
+async function guardStreamWallClock(state, ctx) {
+  if (state.loopStop) return { state }
+  if (!(state.TURN_TIMEOUT_MS > 0)) return { state }
+  if (Date.now() - state.turnT0 < state.TURN_TIMEOUT_MS) return { state }
+  ctx.turnGuardHits?.push('streamWallClock') // O2：如实登记（①b 无注入）
+  ctx.abort?.() // 终止当前流，不再消费后续块
+  return {
+    state,
+    stop: {
+      reason: 'timeout',
+      message: `【已达单轮时长上限（${Math.max(1, Math.round(state.TURN_TIMEOUT_MS / 60000))} 分钟），为防止挂起已自动收尾。任务可能未完——可发送「继续」让模型接续。】`,
+    },
+  }
+}
+
+/** ③ 生成重复：同一片段连续重复 ≥3 次即判退化循环（genWindow 满 60 字符才可能触发） */
+async function guardGenRepeat(state, ctx) {
+  if (state.loopStop) return { state }
+  const rep = detectGenerationRepeat(state.genWindow)
+  if (!rep) return { state }
+  ctx.turnGuardHits?.push('genRepeat')
+  ctx.abort?.()
+  return {
+    state,
+    stop: {
+      reason: 'gen-repeat',
+      message: `【检测到模型生成内容重复打转（同一片段连续重复 ${rep.repeats} 次、周期 ${rep.p} 字符），已自动收尾以防死循环。可发送「继续」让模型换一种方式接续，或补充更明确的指令。】`,
+    },
+  }
+}
+
+/** ③b 句级近重复：编织变体循环（措辞微变反复重述）——③ 的精确周期检测抓不到的形态 */
+async function guardNearRepeat(state, ctx) {
+  if (state.loopStop) return { state }
+  const { nearRep, chunk } = state
+  if (!nearRep || !(chunk?.type === 'text' || chunk?.type === 'thinking')) return { state }
+  const nrep = nearRep.push(chunk.text)
+  if (!nrep) return { state }
+  ctx.turnGuardHits?.push('nearRepeat')
+  ctx.abort?.()
+  return {
+    state,
+    stop: {
+      reason: 'near-repeat',
+      message: `【检测到模型输出近似内容反复打转（同一批内容措辞微变重复重述，近期每句平均约 ${nrep.avgNeighbor} 句近似旧句），已自动收尾以防死循环。可发送「继续」让模型换一种方式接续，或补充更明确的指令。】`,
+    },
+  }
+}
+
 // Task 2：iterHead（① / ② / ⑥）—— 见上方等价搬移注释
-registerGuards({ wallClock: guardWallClock, iterCap: guardIterCap, stall: guardStall })
+// Task 3：inStream（①b / ③ / ③b）
+registerGuards({
+  wallClock: guardWallClock, iterCap: guardIterCap, stall: guardStall,
+  streamWallClock: guardStreamWallClock, genRepeat: guardGenRepeat, nearRepeat: guardNearRepeat,
+})
 
 /**
  * 相位驱动器：按 `resolveGuards(ctx.profile, phase)` 的守卫序**串行**执行。
