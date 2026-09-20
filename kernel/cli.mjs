@@ -41,7 +41,9 @@ import { contextWindowFor, estimateRequest, estimateMessage, estimateHistory } f
 import { resolveCompactSettings } from './compact.mjs'
 import { extractConstraints } from './fidelity.mjs'
 import { memoryRoot, captureMemoryCandidates, appendMemoryEntry, syncKnowledgeIndex } from './memory.mjs'
-import { buildKnowledgeInjection, resolveInjectMode, resolveInjectBudget } from './knowledge-inject.mjs'
+import { buildKnowledgeInjection, resolveInjectMode, resolveInjectBudget, getInjectStats, resetInjectStats } from './knowledge-inject.mjs'
+// S1+/O4：注入总账的纯函数（CHANNELS/BY_SOURCE/summarizeInjection/ledgerTotals/nextTurnSeq）
+import { summarizeInjection } from './inject-ledger.mjs'
 import { readDisabled, excludeDisabled } from './disabled.mjs'
 import { createKnowledgeStore, resolveSessionKnowledgeScope, discoverSpaces, MAX_ASSOC_SPACES } from './knowledge.mjs'
 import { createGraphStore } from './graph.mjs'
@@ -56,7 +58,7 @@ import { buildWorkflowTools, listVisibleWorkflows, toolSourceSignature, createTo
 import { loadSettings } from './settings.mjs'
 import { createHooks } from './hooks.mjs'
 import { normalizeApprovalMode, deriveApprovalMode } from './approval-mode.mjs'
-import { discoverAgentsMd, composeSystemPrompt } from './prompt.mjs'
+import { discoverAgentsMd, composeSystemPrompt, getPromptSegmentMeters } from './prompt.mjs'
 import { runReadonly } from './readonly.mjs'
 import { KERNEL_VERSION, SCHEMA_VERSION, buildId } from '../version.mjs'
 // 应用智控：内核侧 Spec 读取（纯函数）与权限规则注入
@@ -1310,6 +1312,27 @@ export async function main(argv) {
           }
         }
       } catch { /* 工作记忆写失败不影响主流程 */ }
+      // S1+/O4：每轮一条 inject_snapshot（★ 不在 if (loop.isActive()) 内 ⇒ 非 loop 会话也有账）
+      try {
+        const stats = getInjectStats?.() || {}
+        const segs = getPromptSegmentMeters?.() || {}
+        const __injBytes = Number(stats.channels?.derived?.injectedBytes || 0)
+        store.appendMeta('inject_snapshot', summarizeInjection({
+          // ★ seq 不要传 —— appendMeta 内部已自管 nextSeq++；...extra 排在本条 entry.seq
+          // 之后，传参会**覆盖**真实的写入顺序号（实测：会引发依赖 seq 的下游读取错位）
+          segments: [{ id: 'systemPrompt', bytes: segs.systemPromptBytes || 0 },
+                     { id: 'toolSchema', bytes: segs.toolSchemaBytes || 0 },
+                     { id: 'skill', bytes: segs.skillBytes || 0 },
+                     { id: 'injected', bytes: (segs.injectedBytes || 0) + __injBytes }],
+          channels: stats.channels,
+          bySource: stats.bySource,
+          promptTier: process.env.PONOS_PROMPT_TIER === 'lean' ? 'lean' : 'full',
+          sessionMode: chatMode ? 'chat' : 'task',
+          kb: 'on',
+        }))
+        // ★ resetInjectStats 是进程级累计；逐轮读会拿到累计值 ⇒ 轮末读数后立即清零
+        resetInjectStats?.()
+      } catch { /* 账记失败绝不阻塞主流程 */ }
       state.turnActive = false
       state.cancelling = false
       // loop 推进（轮次已完成）：控制器统一决策（暂停/预算/无进展/验证/次数）→

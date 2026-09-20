@@ -191,6 +191,20 @@ function canReadFiles(toolNames) {
   return set.has('Read') && set.has('Grep')
 }
 
+const __segPromptBytes = { systemPrompt: 0, toolSchema: 0, skill: 0, injected: 0 }
+export function getPromptSegmentMeters() {
+  return {
+    systemPromptBytes: __segPromptBytes.systemPrompt,
+    toolSchemaBytes: __segPromptBytes.toolSchema,
+    skillBytes: __segPromptBytes.skill,
+    injectedBytes: __segPromptBytes.injected,
+  }
+}
+export function resetPromptSegmentMeters() {
+  __segPromptBytes.systemPrompt = 0; __segPromptBytes.toolSchema = 0
+  __segPromptBytes.skill = 0; __segPromptBytes.injected = 0
+}
+
 export function renderKnowledgeScope(scope, { readEnabled = false } = {}) {
   const names = Array.isArray(scope?.names) ? scope.names.filter(Boolean) : []
   if (!names.length) return ''
@@ -294,7 +308,19 @@ export function composeSystemPrompt({ toolNames, agents, subagents = [], append 
   // 逐字节匹配，断裂点之后全部重算 + 重写）；放末尾则失效范围只剩这一行。原先它在
   // buildBaseSystemPrompt 的末行（system 前 1/3 处），故下沉到此处——内容一字未删。
   if (toolNames && toolNames.length) parts.push(`可用工具：${toolNames.join(', ')}。`)
-  return parts.join('\n\n')
+  const sys = parts.join('\n\n')
+  // S1+/O4：清零后按本文档段落就地处累加（★ 不重排、不拼接，仅取长度）
+  resetPromptSegmentMeters()
+  for (const p of parts) {
+    const b = Buffer.byteLength(p, 'utf8') + 2 // +2 是 join 的 '\n\n' 字节
+    if (p.startsWith('# 项目指令')) __segPromptBytes.systemPrompt += b
+    // base 系统提示（实测前缀为「你是 Ponos...」或【工具纪律】，与"项目指令"以 # 开头相区别）
+    else if (p.startsWith('【技能与编排】') || p.startsWith('【可用技能】') || p.startsWith('【可用工作流】') || p.startsWith('【可用子 Agent】')) __segPromptBytes.skill += b
+    else if (p.startsWith('可用工具：')) __segPromptBytes.toolSchema += b
+    else if (p.startsWith('你是 Ponos') || p.startsWith('You are') || p.startsWith('你是一个') || p.startsWith('【工具纪律】')) __segPromptBytes.systemPrompt += b
+    else __segPromptBytes.injected += b
+  }
+  return sys
 }
 
 // 子 lane 系统提示词补齐技能目录（2026-09-12 AS2）。

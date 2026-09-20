@@ -15,6 +15,8 @@ import { resolve, join } from 'node:path'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { createKnowledgeStore, knowledgeRoot } from './knowledge.mjs'
 import { buildMemoryIndex, memoryRoot } from './memory.mjs'
+// S1+/O4：渠道五分与来源清单的**单一真源**在 inject-ledger.mjs（本文件只引用，不重抄）
+import { CHANNELS, BY_SOURCE } from './inject-ledger.mjs'
 
 /** 总预算默认值与 server 侧 experienceInjectMaxBytes 的默认一致（4096，见 spec §11.3 N6）。 */
 const DEFAULT_TOTAL_BUDGET = 4096
@@ -65,11 +67,18 @@ export function resolveInjectBudget({ settings = null, env = process.env } = {})
 // 只会是初值）。真实消费者是长驻会话的日志/调试与 server 进程内的 `GET /knowledge/stats`。
 let acc = freshStats()
 function freshStats() {
-  return { calls: 0, strategy: 'legacy', indexLines: 0, recallBlocks: 0, elapsedMs: 0, indexAgeMs: null, degraded: null, queries: 0, hitQueries: 0,
+  const zeroChannels = () => Object.fromEntries(CHANNELS.map((c) => [c, { calls: 0, hits: 0, injectedBytes: 0 }]))
+  const zeroBySource = () => Object.fromEntries(BY_SOURCE.map((s) => [s, 0]))
+  return {
+    calls: 0, strategy: 'legacy', indexLines: 0, recallBlocks: 0, elapsedMs: 0, indexAgeMs: null, degraded: null, queries: 0, hitQueries: 0,
+    // S1+/O4 新增（**只增不删**）：渠道五分 + 来源归因。
+    // 为什么是这五个渠道而不是 legacy/unified：后者是**检索策略**维度，回答不了
+    // "这些字节从哪个渠道进来"，达不到 A13「可归因到 5% 以内」。
+    channels: zeroChannels(),
+    bySource: zeroBySource(),
     // 会话知识范围观测（2026-09-15，P1「数据膨胀的应对措施」）：scope = 本次注入实际使用的
     // 白名单（null = 不限/未参与），spacesDropped = 因超关联上限被忽略的库，
     // spacesCapped = 因单库配额（MAX_RECALL_PER_SPACE）被压制的库。
-    // 三项都是"范围是否按预期生效"的唯一事后证据——没有它们，膨胀问题只能靠体感。
     scope: null, spacesDropped: [], spacesCapped: [] }
 }
 
@@ -78,6 +87,27 @@ export function getInjectStats() {
 }
 
 export function resetInjectStats() { acc = freshStats() }
+
+/**
+ * S1+/O4：外部注入点登记渠道活动（**只增不删**既有统计）。
+ * patch 只接受 calls/hits/injectedBytes 三个计数（缺省按 0）—— 不接受任意字段，
+ * 防止别的语义被塞进渠道账（要加维度就改 inject-ledger 的 CHANNELS）。
+ */
+export function recordChannel(name, patch = {}) {
+  if (!CHANNELS.includes(name)) throw new Error(`未知注入渠道: ${name}`)
+  const cur = acc.channels[name]
+  const n0 = (v) => (Number.isFinite(v) && v > 0 ? Math.floor(v) : 0)
+  cur.calls += n0(patch.calls)
+  cur.hits += n0(patch.hits)
+  cur.injectedBytes += n0(patch.injectedBytes)
+}
+
+/** S1+/O4：外部注入点登记来源字节（如 systemPrompt 段的实测长度）。 */
+export function recordSource(name, bytes = 0) {
+  if (!BY_SOURCE.includes(name)) throw new Error(`未知注入来源: ${name}`)
+  const n0 = Number(bytes)
+  acc.bySource[name] += Number.isFinite(n0) && n0 > 0 ? Math.floor(n0) : 0
+}
 
 /**
  * 指标落盘（S3 §6）：`--knowledge stats` 每次都是新进程，进程内累加器恒为初值 —— 不落盘
@@ -136,7 +166,7 @@ export function buildKnowledgeInjection({
       spaces: [], elapsedMs: Date.now() - t0, indexAgeMs: null, degraded: null,
       scope: null, spacesDropped: [], spacesCapped: [],
     }
-    record(stats, { queried: false })
+    record(stats, { queried: false, indexBytes: byteLen(indexSection) })
     persistMetrics({ configDir, inject: getInjectStats(), search: null })
     return { indexSection, recallSection: '', stats }
   }
@@ -157,7 +187,7 @@ export function buildKnowledgeInjection({
   // scopeEmpty：空白名单 = 本会话无可检索知识库 → 同样不抽调（见上方三态说明）。
   if (!recall || scopeEmpty) {
     stat.elapsedMs = Date.now() - t0
-    record(stat, { queried: false })
+    record(stat, { queried: false, indexBytes: byteLen(indexSection) })
     persistMetrics({ configDir, inject: getInjectStats(), search: null })
     return { indexSection, recallSection: '', stats: stat }
   }
@@ -231,7 +261,7 @@ export function buildKnowledgeInjection({
     recallSection = ''
     stat.recallBlocks = 0
   }
-  record(stat, { queried: true })
+  record(stat, { queried: true, indexBytes: byteLen(indexSection), recallBytes: byteLen(recallSection) })
   persistMetrics({
     configDir,
     inject: getInjectStats(),
@@ -367,7 +397,15 @@ function renderLine(row, withMarker, useAnchors = false) {
   return `- [${it.spaceId}|${it.title}] ${text} -- ${where}${marker}${rel}`
 }
 
-function record(stat, { queried }) {
+function record(stat, { queried, indexBytes = 0, recallBytes = 0 }) {
+  // S1+/O4：derived 渠道（统一注入的派生内容）+ 经验/知识来源的**实测字节**归因。
+  // ★ 只累加真实测到的长度，不估算、不按行数折算（不造数）。
+  const __injected = byteLen(indexBytes) + byteLen(recallBytes)
+  acc.channels.derived.calls += 1
+  acc.channels.derived.injectedBytes += __injected
+  if (__injected > 0) acc.channels.derived.hits += 1
+  acc.bySource.experience += byteLen(indexBytes)
+  acc.bySource.knowledge += byteLen(recallBytes)
   acc.calls += 1
   acc.strategy = stat.strategy
   acc.indexLines = stat.indexLines
