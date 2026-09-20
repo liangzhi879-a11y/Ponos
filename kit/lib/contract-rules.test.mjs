@@ -85,21 +85,44 @@ const FX_BRAND_JSON = JSON.stringify({
     { id: 'kernel-label', file: 'version.mjs', kind: 'comment-label', constName: 'KERNEL_VERSION', expects: { layer: 'kernel' }, why: '夹具：内核线注释', severityIfWrong: 'red' },
     { id: 'lines-label-app', file: 'kit/manifest/versions.json', kind: 'json-pointer', pointer: 'lines[id=APP_VERSION].label', expects: { layer: 'app' }, why: '夹具：台账应用线 label', severityIfWrong: 'red' },
     { id: 'lines-label-kernel', file: 'kit/manifest/versions.json', kind: 'json-pointer', pointer: 'lines[id=KERNEL_VERSION].label', expects: { layer: 'kernel' }, why: '夹具：台账内核线 label', severityIfWrong: 'red' },
+    // ★ 与真源同步的第 9–14 条（`REQUIRED_DECLARATIONS` 已扩到 14 ⇒ 夹具也必须凑齐，
+    //   否则 `CT10` 会判"真源结构不合法"而红 —— 这正是它该有的 fail-closed 行为）
+    { id: 'meta-description', file: 'index.html', kind: 'html-meta-description', expects: { layer: 'app' }, why: '夹具：页面摘要', severityIfWrong: 'red' },
+    { id: 'shortcut-name', file: 'electron-builder.yml', kind: 'yaml-scalar', key: 'shortcutName', expects: { layer: 'app' }, why: '夹具：快捷方式名', severityIfWrong: 'red' },
+    { id: 'copyright', file: 'electron-builder.yml', kind: 'yaml-scalar', key: 'copyright', expects: { layer: 'app' }, why: '夹具：版权行', severityIfWrong: 'red' },
+    { id: 'pkg-description', file: 'package.json', kind: 'json-key', key: 'description', expects: { layer: 'app' }, why: '夹具：包摘要', severityIfWrong: 'red' },
+    { id: 'kernel-pkg-name', file: 'kernel/package.json', kind: 'json-key', key: 'name', expects: { layer: 'kernel' }, why: '夹具：内核包名', severityIfWrong: 'red' },
+    { id: 'kernel-pkg-description', file: 'kernel/package.json', kind: 'json-key', key: 'description', expects: { layer: 'kernel' }, why: '夹具：内核包摘要', severityIfWrong: 'red' },
   ],
   retiredAliases: [{ alias: 'Ponos-Turbo', replaceWith: 'ponos', layer: 'kernel', why: '夹具：内核层统一为 ponos（无 turbo）', scope: 'declarations' }],
-  knownWidespread: [{ alias: 'Ponos-Turbo', occurrences: 91, files: 33, why: '夹具：散在 kernel/、kernel-tests/ 与 docs 的叙述文本里（不在本门禁范围）' }],
+  knownWidespread: [{
+    alias: 'Ponos-Turbo',
+    counts: { exactCaseSensitive: { lines: 33, files: 12 }, aliasFamily: { lines: 115, files: 61 } },
+    measuredAt: 'fixture',
+    recompute: 'git grep -F "Ponos-Turbo" HEAD -- \':!*.lock\' | wc -l',
+    why: '夹具：散在 kernel/、kernel-tests/ 与 docs 的叙述文本里（不在本门禁范围）',
+  }],
 }, null, 2)
 
-/** 把 8 条声明点所需的 6 个文件写进夹具（`write` 由各夹具自己给，签名见 `fixture()`） */
+/** 把 **14 条**声明点所需的文件写进夹具（`write` 由各夹具自己给，签名见 `fixture()`）
+ *  ★ 条数必须与 `brand-rules.mjs#REQUIRED_DECLARATIONS` 一致：少写一条 ⇒ `CT10` 判"真源结构不合法"而红
+ *  ——这是 fail-closed 该有的行为，所以夹具必须跟着真源走。 */
 function writeBrandFixture(write, { npmName = 'fx-pkg' } = {}) {
   const truth = JSON.parse(FX_BRAND_JSON)
   truth.declarations.find((d) => d.id === 'npm-name').expects.literal = npmName
   write('kit/manifest/brand.json', JSON.stringify(truth, null, 2))
-  write('electron-builder.yml', `appId: com.fx.desktop\nproductName: ${FX_APP}\n`)
-  write('index.html', `<!doctype html>\n<html><head>\n  <title>${FX_APP}</title>\n</head></html>\n`)
+  // 后 6 条新增声明点落在这些文件里：yml 的 shortcutName/copyright、html 的 meta、
+  // package.json 的 description、以及内核包 kernel/package.json 的 name/description
+  write('electron-builder.yml', `appId: com.fx.desktop\nproductName: ${FX_APP}\n`
+    + `  shortcutName: ${FX_APP}\ncopyright: Copyright © 2026 ${FX_APP}\n`)
+  write('index.html', `<!doctype html>\n<html><head>\n  <title>${FX_APP}</title>\n`
+    + `  <meta name="description" content="${FX_APP} —— 夹具应用">\n</head></html>\n`)
   write('version.mjs', `// 夹具版本线\n//   1. APP_VERSION     — ${FX_APP_LABEL}\n//   2. KERNEL_VERSION  — ${FX_KERNEL_LABEL}\n`
     + "export const APP_VERSION = 'dev 1.0.0'\nexport const KERNEL_VERSION = 'dev 0.1'\n")
-  write('package.json', JSON.stringify({ name: npmName, version: '1.0.0' }, null, 2))
+  write('package.json', JSON.stringify({ name: npmName, version: '1.0.0', description: `${FX_APP} 夹具应用` }, null, 2))
+  write('kernel/package.json', JSON.stringify({
+    name: `${FX_KERNEL}-kernel`, version: '0.1.0', description: `${FX_KERNEL} 内核独立部署包（夹具）`,
+  }, null, 2))
   write('kit/manifest/versions.json', JSON.stringify({
     version: 1,
     lines: [

@@ -103,7 +103,10 @@ test('品牌一致性：缺 appId ⇒ 出现 level:warn（并在 warnings 里留
 test('★ 品牌真源进数据：真仓 14 条声明点（每条带 why）+ 探针按 id 对齐 + "已统一管理/CT10 把关"那条 info', () => {
   const data = buildGuiData({ root: ROOT, checkJson: null })
   assert.deepEqual(data.brand.truth.layers.map((l) => [l.id, l.name]), [['app', 'YFWorking'], ['kernel', 'ponos']])
-  assert.equal(data.brand.truth.declarations.length, 8, '8 条声明点都要在（少一条 = CT10 会红）')
+  // ★ 条数从**真源**现读再比（不写死 14）：否则每次加声明点都得改测试，而"改测试去迎合"正是漂移的温床。
+  const truthFile = JSON.parse(readFileSync(join(ROOT, 'kit/manifest/brand.json'), 'utf8'))
+  assert.equal(data.brand.truth.declarations.length, truthFile.declarations.length,
+    `真源里的 ${truthFile.declarations.length} 条声明点都要进数据（少一条 = CT10 会红）`)
   // 每条都要带 why（页面上要能回答"它为什么算声明点"，否则那格是空的、没人知道该不该改它）
   for (const dd of data.brand.truth.declarations) assert.ok(dd.why && dd.why.length > 8, `${dd.id} 缺 why`)
   // 对齐：能对齐的探针标 declId；对不齐的（发布线版本）保持 null —— 不硬凑

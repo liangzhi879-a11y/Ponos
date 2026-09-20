@@ -1,6 +1,6 @@
 // kit/lib/brand-rules.mjs —— CT10：品牌声明点与品牌真源一致（品牌标识与名称的**统一管理**）
 //
-// **唯一真源 = `kit/manifest/brand.json`**（`BRAND_TRUTH`）：层名（app / kernel）、8 条声明点、
+// **唯一真源 = `kit/manifest/brand.json`**（`BRAND_TRUTH`）：层名（app / kernel）、**14 条**声明点、
 // 废弃别名、已知广泛存在，全在那一个文件里。本规则只做一件事：把真源里登记的每条声明点与
 // 它在文件里的**实际取值**对账 —— 于是"改真源 = 重新定义品牌，门禁告诉你哪里还没跟上"。
 //
@@ -15,9 +15,9 @@
 //    与 `docs/` 的**叙述性文本**里（真源 `knownWidespread` 已如实登记这些数字），那是**独立工作项**；
 //    若这里改成扫全仓，CT10 会永远红、红灯失去信息量（"经常红的门禁等于没有门禁"）。
 // ② **判据全部来自真源**：层名与字面量都写在 `brand.json` 的 `expects` 里 ⇒ 规则里**不硬编码任何
-//    层名/字面量**；硬编码的只有 8 条 declaration 的 **id 名单**（那是"必须凑齐"的结构约束，
+//    层名/字面量**；硬编码的只有 declaration 的 **id 名单**（`REQUIRED_DECLARATIONS`）（那是"必须凑齐"的结构约束，
 //    不是品牌内容）。
-// ③ **fail-closed**：真源读不到 / JSON 坏 / 8 条不齐 ⇒ 红；某条声明点**取不到值**（文件缺失、
+// ③ **fail-closed**：真源读不到 / JSON 坏 / declaration 名单不齐 ⇒ 红；某条声明点**取不到值**（文件缺失、
 //    key 被删、格式变了）同样 ⇒ 红 —— "取不到"不等于"没问题"（窗口标题丢了也不会有人来报）。
 //
 // ── 零依赖的取值实现（不许新增依赖）──────────────────────────────────────
@@ -33,7 +33,7 @@ import { RED, finding, checkResult } from './report.mjs'
 export const BRAND_TRUTH = 'kit/manifest/brand.json'
 
 /**
- * 必须凑齐的 8 条声明点 id（结构约束）。
+ * 必须凑齐的 **14 条**声明点 id（结构约束）。★ 加声明点时**改这里**，规则与提示文案都会跟着走。
  * 每条的 file/kind/取值位置/expects/why 全部来自真源 —— 这里只是"少一条就算真源不合法"的名单。
  * 为什么少一条要红：声明点是"品牌在用户可见处的落点"，静默少一条等于某个落点从此无人看管。
  */
@@ -211,7 +211,9 @@ export function loadBrandTruth({ readTracked } = {}) {
   else {
     const ids = truth.declarations.map((d) => (d && d.id) || '(无 id)')
     const missing = REQUIRED_DECLARATIONS.filter((id) => !ids.includes(id))
-    if (missing.length) problems.push(`8 条 declaration 不齐，缺：${missing.join(' / ')}`)
+    // ★ 条数**从 REQUIRED_DECLARATIONS 现读**（不写死）：早先这里硬编码「8 条」，名单扩到 14 后提示仍说 8
+    //   —— 提示文案与判据不一致，会让人以为「只缺这几条」，实际是「必须凑齐的名单变了」。
+    if (missing.length) problems.push(`${REQUIRED_DECLARATIONS.length} 条 declaration 不齐，缺：${missing.join(' / ')}`)
     for (const d of truth.declarations) {
       if (!d || typeof d !== 'object') { problems.push('declarations[] 里有非对象条目'); continue }
       if (!d.id) problems.push('有一条 declaration 没有 id')
@@ -277,7 +279,7 @@ function wideSummary(truth) {
 function truthProblemFinding(problem) {
   return finding({
     rule: 'CT10', severity: RED, subject: 'brand.json',
-    expected: '真源可读且结构合法（layers[] + 8 条 declarations + retiredAliases + knownWidespread）',
+    expected: `真源可读且结构合法（layers[] + ${REQUIRED_DECLARATIONS.length} 条 declarations + retiredAliases + knownWidespread）`,
     actual: problem,
     hint: `修 ${BRAND_TRUTH}（它是品牌的唯一真源）；声明点清单见 kit/README.md「品牌标识与名称的统一管理」一节，`
       + '或用 `node scripts/brand.mjs show` 打印当前真源',
@@ -303,7 +305,7 @@ export function brandCheck({ readTracked = null, files = null } = {}) {
     return {
       check: checkResult({
         rule: 'CT10', title: '品牌声明点与品牌真源一致（名称/标识的统一管理）',
-        // ★ evaluated 如实：真源不可读时**一条声明点都没检查**（不是"检查了 8 条且都过"）
+        // ★ evaluated 如实：真源不可读时**一条声明点都没检查**（不是"检查了若干条且都过"）
         evaluated: 0, passed: false,
       }),
       findings,
