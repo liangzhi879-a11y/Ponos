@@ -102,7 +102,10 @@ export function buildMemoryIndex({ root = '', maxBytes = 4096 } = {}) {
   try {
     for (const f of readdirSync(root).filter((x) => x.endsWith('.md'))) {
       const theme = f.slice(0, -3)
-      const { entries } = readTheme(root, theme)
+      const { front, entries } = readTheme(root, theme)
+      // A16：内核注入侧尊重 front.active（服务端 server/experience.mjs:101 早用此口径，
+      // String(active)==='false' 才算停用；缺省视为启用）
+      if (String(front?.active) === 'false') continue
       if (!entries.length) continue
       const groups = new Map()
       let untagged = 0
@@ -145,7 +148,10 @@ export function buildRelevantMemory({ root = '', keywords = [], maxBytes = 2048 
   try {
     for (const f of readdirSync(root).filter((x) => x.endsWith('.md'))) {
       const theme = f.slice(0, -3)
-      const { entries } = readTheme(root, theme)
+      const { front, entries } = readTheme(root, theme)
+      // A16：内核注入侧尊重 front.active（服务端 server/experience.mjs:101 早用此口径，
+      // String(active)==='false' 才算停用；缺省视为启用）
+      if (String(front?.active) === 'false') continue
       for (const e of entries) {
         const score = keywordScore({ ...e, theme }, kws)
         if (score > 0) items.push({ theme, text: e.text, tag: e.tag, summary: e.summary, full: e.full, score })
